@@ -26,6 +26,10 @@ e=t:taboption("base",Value, "token", translate("Token"), translate("Time duratio
 e.optional=false
 e.password=true
 e.rmempty=false
+e=t:taboption("base",Value, "user", translate("User"), translate("Commonly used to distinguish you with other clients."))
+e.optional=true
+e.default = ""
+e.rmempty=false
 e=t:taboption("base",Value, "vhost_http_port", translate("Vhost HTTP Port"))
 e.datatype = "port"
 e.rmempty=false
@@ -37,6 +41,9 @@ e.default = "1"
 e.rmempty=false
 e=t:taboption("other",Flag, "tcp_mux", translate("TCP Stream Multiplexing"), translate("Default is Ture. This feature in frps.ini and frpc.ini must be same."))
 e.default = "1"
+e.rmempty=false
+e=t:taboption("other",Flag, "tls_enable", translate("Use TLS Connection"), translate("if tls_enable is true, frpc will connect frps by tls."))
+e.default = "0"
 e.rmempty=false
 e=t:taboption("other",ListValue, "protocol", translate("Protocol Type"),translate("Frp support kcp protocol since v0.12.0"))
 e.default = "tcp"
@@ -74,6 +81,26 @@ e.datatype = "uinteger"
 e.default = "3"
 e.rmempty=false
 e.optional=false
+e=t:taboption("other",Flag, "admin_enable", translate("Enable Web API"), translate("set admin address for control frpc's action by http api such as reload."))
+e.default = "0"
+e.rmempty=false
+e=t:taboption("other",Value, "admin_port", translate("Admin Web Port"))
+e.datatype = "port"
+e.default=7400
+e.rmempty=false
+e:depends("admin_enable",1)
+e=t:taboption("other",Value, "admin_user", translate("Admin Web UserName"))
+e.optional=false
+e.default = "admin"
+e.rmempty=false
+e:depends("admin_enable",1)
+e=t:taboption("other",Value, "admin_pwd", translate("Admin Web PassWord"))
+e.optional=false
+e.default = "admin"
+e.password=true
+e.rmempty=false
+e:depends("admin_enable",1)
+
 e=t:taboption("log",TextValue,"log")
 e.rows=26
 e.wrap="off"

@@ -1,14 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017 Yousong Zhou
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 define Profile/Default
   NAME:=Default Profile (all drivers)
   PACKAGES:= \
-	kmod-ata-core \
 	kmod-ata-sunxi \
 	kmod-brcmfmac \
 	kmod-rtc-sunxi \
@@ -17,7 +13,7 @@ define Profile/Default
 	kmod-sun4i-emac \
 	rtl8188eu-firmware \
 	swconfig \
-	wpad-basic
+	wpad-basic-wolfssl
   PRIORITY := 1
 endef
 

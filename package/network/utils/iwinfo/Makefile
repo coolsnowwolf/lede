@@ -7,13 +7,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libiwinfo
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/iwinfo.git
-PKG_SOURCE_DATE:=2020-03-22
-PKG_SOURCE_VERSION:=9f5a7c4f9b78cb2de8fe5dd7af55bf0221706402
-PKG_MIRROR_HASH:=d62cae4b3d2f65c189f179c3dabf1c8c244c5de801439c483ea87dcf8e85b476
+PKG_SOURCE_DATE:=2021-06-28
+PKG_SOURCE_VERSION:=c9b1672f5a83c8dcb14fdbaee651f775a7defe52
+PKG_MIRROR_HASH:=f33779035153da6bd0b2f100f402f62f1554ab87ed6fbbd938d41df6b9947a1f
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=GPL-2.0
 
@@ -23,7 +23,10 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_PACKAGE_kmod-brcm-wl \
 	CONFIG_PACKAGE_kmod-brcm-wl-mini \
 	CONFIG_PACKAGE_kmod-brcm-wl-mimo \
+	CONFIG_PACKAGE_kmod-mt7615d_dbdc \
 	CONFIG_PACKAGE_kmod-cfg80211
+
+IWINFO_ABI_VERSION:=20210430
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -33,7 +36,7 @@ define Package/libiwinfo
   CATEGORY:=Libraries
   TITLE:=Generalized Wireless Information Library (iwinfo)
   DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny +libuci +libubus
-  ABI_VERSION:=20200105
+  ABI_VERSION:=$(IWINFO_ABI_VERSION)
 endef
 
 define Package/libiwinfo/description
@@ -75,6 +78,7 @@ IWINFO_BACKENDS := \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mini),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mimo),wl) \
+	$(if $(CONFIG_PACKAGE_kmod-mt7615d_dbdc),ra) \
 	$(if $(CONFIG_PACKAGE_kmod-cfg80211),nl80211)
 
 TARGET_CFLAGS += \
@@ -86,21 +90,22 @@ MAKE_FLAGS += \
 	FPIC="$(FPIC)" \
 	CFLAGS="$(TARGET_CFLAGS)" \
 	LDFLAGS="$(TARGET_LDFLAGS)" \
-	BACKENDS="$(IWINFO_BACKENDS)"
+	BACKENDS="$(IWINFO_BACKENDS)" \
+	SOVERSION="$(IWINFO_ABI_VERSION)"
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/iwinfo
 	$(CP) $(PKG_BUILD_DIR)/include/iwinfo.h $(1)/usr/include/
 	$(CP) $(PKG_BUILD_DIR)/include/iwinfo/* $(1)/usr/include/iwinfo/
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libiwinfo.so $(1)/usr/lib/libiwinfo.so
+	$(CP) $(PKG_BUILD_DIR)/libiwinfo.so* $(1)/usr/lib/
 	$(INSTALL_DIR) $(1)/usr/lib/lua
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/iwinfo.so $(1)/usr/lib/lua/iwinfo.so
 endef
 
 define Package/libiwinfo/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libiwinfo.so $(1)/usr/lib/libiwinfo.so
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libiwinfo.so.$(IWINFO_ABI_VERSION) $(1)/usr/lib/libiwinfo.so.$(IWINFO_ABI_VERSION)
 	$(INSTALL_DIR) $(1)/usr/share/libiwinfo
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/hardware.txt $(1)/usr/share/libiwinfo/hardware.txt
 endef

@@ -1,0 +1,219 @@
+--- a/block/blk.h
++++ b/block/blk.h
+@@ -357,6 +357,7 @@ char *disk_name(struct gendisk *hd, int
+ #define ADDPART_FLAG_NONE	0
+ #define ADDPART_FLAG_RAID	1
+ #define ADDPART_FLAG_WHOLEDISK	2
++#define ADDPART_FLAG_ROOTDEV	4
+ void delete_partition(struct hd_struct *part);
+ int bdev_add_partition(struct block_device *bdev, int partno,
+ 		sector_t start, sector_t length);
+--- a/block/partitions/Kconfig
++++ b/block/partitions/Kconfig
+@@ -101,6 +101,13 @@ config ATARI_PARTITION
+ 	  Say Y here if you would like to use hard disks under Linux which
+ 	  were partitioned under the Atari OS.
+ 
++config FIT_PARTITION
++	bool "Flattened-Image-Tree (FIT) partition support" if PARTITION_ADVANCED
++	default n
++	help
++	  Say Y here if your system needs to mount the filesystem part of
++	  a Flattened-Image-Tree (FIT) image commonly used with Das U-Boot.
++
+ config IBM_PARTITION
+ 	bool "IBM disk label and partition support"
+ 	depends on PARTITION_ADVANCED && S390
+--- a/block/partitions/Makefile
++++ b/block/partitions/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_ACORN_PARTITION) += acorn.o
+ obj-$(CONFIG_AMIGA_PARTITION) += amiga.o
+ obj-$(CONFIG_ATARI_PARTITION) += atari.o
+ obj-$(CONFIG_AIX_PARTITION) += aix.o
++obj-$(CONFIG_FIT_PARTITION) += fit.o
+ obj-$(CONFIG_CMDLINE_PARTITION) += cmdline.o
+ obj-$(CONFIG_MAC_PARTITION) += mac.o
+ obj-$(CONFIG_LDM_PARTITION) += ldm.o
+--- a/block/partitions/check.h
++++ b/block/partitions/check.h
+@@ -58,6 +58,7 @@ int amiga_partition(struct parsed_partit
+ int atari_partition(struct parsed_partitions *state);
+ int cmdline_partition(struct parsed_partitions *state);
+ int efi_partition(struct parsed_partitions *state);
++int fit_partition(struct parsed_partitions *state);
+ int ibm_partition(struct parsed_partitions *);
+ int karma_partition(struct parsed_partitions *state);
+ int ldm_partition(struct parsed_partitions *state);
+@@ -68,3 +69,5 @@ int sgi_partition(struct parsed_partitio
+ int sun_partition(struct parsed_partitions *state);
+ int sysv68_partition(struct parsed_partitions *state);
+ int ultrix_partition(struct parsed_partitions *state);
++
++int parse_fit_partitions(struct parsed_partitions *state, u64 start_sector, u64 nr_sectors, int *slot, int add_remain);
+--- a/block/partitions/core.c
++++ b/block/partitions/core.c
+@@ -10,6 +10,10 @@
+ #include <linux/vmalloc.h>
+ #include <linux/blktrace_api.h>
+ #include <linux/raid/detect.h>
++#ifdef CONFIG_FIT_PARTITION
++#include <linux/root_dev.h>
++#endif
++
+ #include "check.h"
+ 
+ static int (*check_part[])(struct parsed_partitions *) = {
+@@ -46,6 +50,9 @@ static int (*check_part[])(struct parsed
+ #ifdef CONFIG_EFI_PARTITION
+ 	efi_partition,		/* this must come before msdos */
+ #endif
++#ifdef CONFIG_FIT_PARTITION
++	fit_partition,
++#endif
+ #ifdef CONFIG_SGI_PARTITION
+ 	sgi_partition,
+ #endif
+@@ -215,6 +222,18 @@ static ssize_t part_discard_alignment_sh
+ 				p->start_sect));
+ }
+ 
++static ssize_t part_name_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct hd_struct *p = dev_to_part(dev);
++
++	if (p->info && p->info->volname)
++		return sprintf(buf, "%s\n", p->info->volname);
++
++	buf[0] = '\0';
++	return 0;
++}
++
+ static DEVICE_ATTR(partition, 0444, part_partition_show, NULL);
+ static DEVICE_ATTR(start, 0444, part_start_show, NULL);
+ static DEVICE_ATTR(size, 0444, part_size_show, NULL);
+@@ -223,6 +242,7 @@ static DEVICE_ATTR(alignment_offset, 044
+ static DEVICE_ATTR(discard_alignment, 0444, part_discard_alignment_show, NULL);
+ static DEVICE_ATTR(stat, 0444, part_stat_show, NULL);
+ static DEVICE_ATTR(inflight, 0444, part_inflight_show, NULL);
++static DEVICE_ATTR(name, 0444, part_name_show, NULL);
+ #ifdef CONFIG_FAIL_MAKE_REQUEST
+ static struct device_attribute dev_attr_fail =
+ 	__ATTR(make-it-fail, 0644, part_fail_show, part_fail_store);
+@@ -237,6 +257,7 @@ static struct attribute *part_attrs[] =
+ 	&dev_attr_discard_alignment.attr,
+ 	&dev_attr_stat.attr,
+ 	&dev_attr_inflight.attr,
++	&dev_attr_name.attr,
+ #ifdef CONFIG_FAIL_MAKE_REQUEST
+ 	&dev_attr_fail.attr,
+ #endif
+@@ -694,6 +715,11 @@ static bool blk_add_partition(struct gen
+ 	    (state->parts[p].flags & ADDPART_FLAG_RAID))
+ 		md_autodetect_dev(part_to_dev(part)->devt);
+ 
++#ifdef CONFIG_FIT_PARTITION
++	if ((state->parts[p].flags & ADDPART_FLAG_ROOTDEV) && ROOT_DEV == 0)
++		ROOT_DEV = part_to_dev(part)->devt;
++#endif
++
+ 	return true;
+ }
+ 
+--- a/drivers/mtd/ubi/block.c
++++ b/drivers/mtd/ubi/block.c
+@@ -396,7 +396,11 @@ int ubiblock_create(struct ubi_volume_in
+ 	dev->leb_size = vi->usable_leb_size;
+ 
+ 	/* Initialize the gendisk of this ubiblock device */
++#ifdef CONFIG_FIT_PARTITION
++	gd = alloc_disk(0);
++#else
+ 	gd = alloc_disk(1);
++#endif
+ 	if (!gd) {
+ 		pr_err("UBI: block: alloc_disk failed\n");
+ 		ret = -ENODEV;
+@@ -413,6 +417,9 @@ int ubiblock_create(struct ubi_volume_in
+ 		goto out_put_disk;
+ 	}
+ 	gd->private_data = dev;
++#ifdef CONFIG_FIT_PARTITION
++	gd->flags |= GENHD_FL_EXT_DEVT;
++#endif
+ 	sprintf(gd->disk_name, "ubiblock%d_%d", dev->ubi_num, dev->vol_id);
+ 	set_capacity(gd, disk_capacity);
+ 	dev->gd = gd;
+--- a/block/partitions/efi.c
++++ b/block/partitions/efi.c
+@@ -706,6 +706,9 @@ int efi_partition(struct parsed_partitio
+ 	gpt_entry *ptes = NULL;
+ 	u32 i;
+ 	unsigned ssz = bdev_logical_block_size(state->bdev) / 512;
++#ifdef CONFIG_FIT_PARTITION
++	u32 extra_slot = 64;
++#endif
+ 
+ 	if (!find_valid_gpt(state, &gpt, &ptes) || !gpt || !ptes) {
+ 		kfree(gpt);
+@@ -739,6 +742,11 @@ int efi_partition(struct parsed_partitio
+ 				ARRAY_SIZE(ptes[i].partition_name));
+ 		utf16_le_to_7bit(ptes[i].partition_name, label_max, info->volname);
+ 		state->parts[i + 1].has_info = true;
++#ifdef CONFIG_FIT_PARTITION
++		/* If this is a U-Boot FIT volume it may have subpartitions */
++		if (!efi_guidcmp(ptes[i].partition_type_guid, PARTITION_LINUX_FIT_GUID))
++			(void) parse_fit_partitions(state, start * ssz, size * ssz, &extra_slot, 1);
++#endif
+ 	}
+ 	kfree(ptes);
+ 	kfree(gpt);
+--- a/block/partitions/efi.h
++++ b/block/partitions/efi.h
+@@ -52,6 +52,9 @@
+ #define PARTITION_LINUX_LVM_GUID \
+     EFI_GUID( 0xe6d6d379, 0xf507, 0x44c2, \
+               0xa2, 0x3c, 0x23, 0x8f, 0x2a, 0x3d, 0xf9, 0x28)
++#define PARTITION_LINUX_FIT_GUID \
++    EFI_GUID( 0xcae9be83, 0xb15f, 0x49cc, \
++              0x86, 0x3f, 0x08, 0x1b, 0x74, 0x4a, 0x2d, 0x93)
+ 
+ typedef struct _gpt_header {
+ 	__le64 signature;
+--- a/drivers/mtd/mtdblock.c
++++ b/drivers/mtd/mtdblock.c
+@@ -334,7 +334,11 @@ static void mtdblock_remove_dev(struct m
+ static struct mtd_blktrans_ops mtdblock_tr = {
+ 	.name		= "mtdblock",
+ 	.major		= MTD_BLOCK_MAJOR,
++#ifdef CONFIG_FIT_PARTITION
++	.part_bits	= 1,
++#else
+ 	.part_bits	= 0,
++#endif
+ 	.blksize 	= 512,
+ 	.open		= mtdblock_open,
+ 	.flush		= mtdblock_flush,
+--- a/drivers/mtd/mtd_blkdevs.c
++++ b/drivers/mtd/mtd_blkdevs.c
+@@ -407,18 +407,8 @@ int add_mtd_blktrans_dev(struct mtd_blkt
+ 	gd->first_minor = (new->devnum) << tr->part_bits;
+ 	gd->fops = &mtd_block_ops;
+ 
+-	if (tr->part_bits)
+-		if (new->devnum < 26)
+-			snprintf(gd->disk_name, sizeof(gd->disk_name),
+-				 "%s%c", tr->name, 'a' + new->devnum);
+-		else
+-			snprintf(gd->disk_name, sizeof(gd->disk_name),
+-				 "%s%c%c", tr->name,
+-				 'a' - 1 + new->devnum / 26,
+-				 'a' + new->devnum % 26);
+-	else
+-		snprintf(gd->disk_name, sizeof(gd->disk_name),
+-			 "%s%d", tr->name, new->devnum);
++	snprintf(gd->disk_name, sizeof(gd->disk_name),
++		 "%s%d", tr->name, new->devnum);
+ 
+ 	set_capacity(gd, ((u64)new->size * tr->blksize) >> 9);
+ 

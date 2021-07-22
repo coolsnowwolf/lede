@@ -20,6 +20,8 @@ preinit_match_diag_led() {
 	json_init
 	json_load "$(cat $CFG)"
 	json_get_keys keys led
+	json_is_a led object || return
+
 	json_select led
 	for key in $keys; do
 		json_select "$key"
@@ -68,6 +70,10 @@ set_state() {
 		;;
 
 	preinit_regular)
+		status_led_blink_preinit_regular
+		;;
+
+	upgrade)
 		status_led_blink_preinit_regular
 		;;
 

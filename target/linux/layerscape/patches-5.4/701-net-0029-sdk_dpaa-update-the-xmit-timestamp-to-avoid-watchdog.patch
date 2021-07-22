@@ -1,0 +1,75 @@
+From 7207c6eaead4fbcf6dfec2a185550cd30aba5071 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Thu, 7 Sep 2017 14:49:09 +0300
+Subject: [PATCH] sdk_dpaa: update the xmit timestamp to avoid watchdog
+ timeouts
+
+Update txq0's trans_start in order to prevent the netdev watchdog from
+triggering too quickly. Since we set the LLTX flag, the stack won't update
+the jiffies for other tx queues. Prevent the watchdog from checking the
+other tx queues by adding the NETIF_HW_ACCEL_MQ flag.
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c    | 3 +++
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c | 1 +
+ include/linux/netdev_features.h                       | 2 ++
+ net/sched/sch_generic.c                               | 7 +++++++
+ 4 files changed, 13 insertions(+)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.c
+@@ -772,6 +772,9 @@ static int dpa_private_netdev_init(struc
+ 	/* Advertise GRO support */
+ 	net_dev->features |= NETIF_F_GRO;
+ 
++	/* Advertise NETIF_F_HW_ACCEL_MQ to avoid Tx timeout warnings */
++	net_dev->features |= NETIF_F_HW_ACCEL_MQ;
++
+ 	return dpa_netdev_init(net_dev, mac_addr, tx_timeout);
+ }
+ 
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
+@@ -1140,6 +1140,7 @@ int __hot dpa_tx_extended(struct sk_buff
+ 	if (unlikely(dpa_xmit(priv, percpu_stats, &fd, egress_fq, conf_fq) < 0))
+ 		goto xmit_failed;
+ 
++	netif_trans_update(net_dev);
+ 	return NETDEV_TX_OK;
+ 
+ xmit_failed:
+--- a/include/linux/netdev_features.h
++++ b/include/linux/netdev_features.h
+@@ -77,6 +77,7 @@ enum {
+ 	NETIF_F_RX_UDP_TUNNEL_PORT_BIT, /* Offload of RX port for UDP tunnels */
+ 	NETIF_F_HW_TLS_TX_BIT,		/* Hardware TLS TX offload */
+ 	NETIF_F_HW_TLS_RX_BIT,		/* Hardware TLS RX offload */
++	NETIF_F_HW_ACCEL_MQ_BIT,	/* Hardware-accelerated multiqueue */
+ 
+ 	NETIF_F_GRO_HW_BIT,		/* Hardware Generic receive offload */
+ 	NETIF_F_HW_TLS_RECORD_BIT,	/* Offload TLS record */
+@@ -150,6 +151,7 @@ enum {
+ #define NETIF_F_GSO_UDP_L4	__NETIF_F(GSO_UDP_L4)
+ #define NETIF_F_HW_TLS_TX	__NETIF_F(HW_TLS_TX)
+ #define NETIF_F_HW_TLS_RX	__NETIF_F(HW_TLS_RX)
++#define NETIF_F_HW_ACCEL_MQ	__NETIF_F(HW_ACCEL_MQ)
+ 
+ /* Finds the next feature with the highest number of the range of start till 0.
+  */
+--- a/net/sched/sch_generic.c
++++ b/net/sched/sch_generic.c
+@@ -465,6 +465,13 @@ static void dev_watchdog(struct timer_li
+ 					txq->trans_timeout++;
+ 					break;
+ 				}
++
++				/* Devices with HW_ACCEL_MQ have multiple txqs
++				 * but update only the first one's transmission
++				 * timestamp so avoid checking the rest.
++				 */
++				if (dev->features & NETIF_F_HW_ACCEL_MQ)
++					break;
+ 			}
+ 
+ 			if (some_queue_timedout) {

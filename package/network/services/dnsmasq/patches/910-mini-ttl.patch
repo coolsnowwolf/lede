@@ -1,7 +1,6 @@
-diff --git a/src/dnsmasq.h b/src/dnsmasq.h
---- a/src/dnsmasq.h  2018-10-19 02:21:55.000000000 +0800
-+++ b/src/dnsmasq.h      2020-01-13 10:38:16.940067371 +0800
-@@ -1017,7 +1017,7 @@
+--- a/src/dnsmasq.h
++++ b/src/dnsmasq.h
+@@ -1059,7 +1059,7 @@ extern struct daemon {
    int max_logs;  /* queue limit */
    int cachesize, ftabsize;
    int port, query_port, min_port, max_port;
@@ -10,99 +9,94 @@ diff --git a/src/dnsmasq.h b/src/dnsmasq.h
    char *dns_client_id;
    struct hostsfile *addn_hosts;
    struct dhcp_context *dhcp, *dhcp6;
-diff --git a/src/option.c b/src/option.c
---- a/src/option.c   2018-10-19 02:21:55.000000000 +0800
-+++ b/src/option.c       2020-01-13 17:21:13.925164926 +0800
-@@ -106,6 +106,7 @@
- #define LOPT_PROXY         295
- #define LOPT_GEN_NAMES     296
- #define LOPT_MAXTTL        297
-+#define LOPT_MINTTL        397
- #define LOPT_NO_REBIND     298
- #define LOPT_LOC_REBND     299
- #define LOPT_ADD_MAC       300
-@@ -282,6 +283,7 @@
+--- a/src/option.c
++++ b/src/option.c
+@@ -170,6 +170,7 @@ struct myoption {
+ #define LOPT_PXE_VENDOR    361
+ #define LOPT_DYNHOST       362
+ #define LOPT_LOG_DEBUG     363
++#define LOPT_MINTTL        364
+  
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -288,6 +289,7 @@ static const struct myoption opts[] =
+     { "dhcp-name-match", 1, 0, LOPT_NAME_MATCH },
      { "dhcp-broadcast", 2, 0, LOPT_BROADCAST },
      { "neg-ttl", 1, 0, LOPT_NEGTTL },
-     { "max-ttl", 1, 0, LOPT_MAXTTL },
 +    { "min-ttl", 1, 0, LOPT_MINTTL },
+     { "max-ttl", 1, 0, LOPT_MAXTTL },
      { "min-cache-ttl", 1, 0, LOPT_MINCTTL },
      { "max-cache-ttl", 1, 0, LOPT_MAXCTTL },
-     { "dhcp-alternate-port", 2, 0, LOPT_ALTPORT },
-@@ -411,6 +413,7 @@
+@@ -417,6 +419,7 @@ static struct {
+   { 't', ARG_ONE, "<host_name>", gettext_noop("Specify default target in an MX record."), NULL },
    { 'T', ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for replies from /etc/hosts."), NULL },
    { LOPT_NEGTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for negative caching."), NULL },
-   { LOPT_MAXTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for maximum TTL to send to clients."), NULL },
 +  { LOPT_MINTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for minimum TTL to send to clients."), NULL },
+   { LOPT_MAXTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live in seconds for maximum TTL to send to clients."), NULL },
    { LOPT_MAXCTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live ceiling for cache."), NULL },
    { LOPT_MINCTTL, ARG_ONE, "<integer>", gettext_noop("Specify time-to-live floor for cache."), NULL },
-   { 'u', ARG_ONE, "<username>", gettext_noop("Change to this user after startup. (defaults to %s)."), CHUSER }, 
-@@ -2747,6 +2750,7 @@
+@@ -2835,6 +2838,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+       
      case 'T':         /* --local-ttl */
      case LOPT_NEGTTL: /* --neg-ttl */
-     case LOPT_MAXTTL: /* --max-ttl */
 +    case LOPT_MINTTL: /* --min-ttl */
+     case LOPT_MAXTTL: /* --max-ttl */
      case LOPT_MINCTTL: /* --min-cache-ttl */
      case LOPT_MAXCTTL: /* --max-cache-ttl */
-     case LOPT_AUTHTTL: /* --auth-ttl */
-@@ -2759,6 +2763,8 @@
+@@ -2846,6 +2850,8 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
+ 	  ret_err(gen_err);
+ 	else if (option == LOPT_NEGTTL)
  	  daemon->neg_ttl = (unsigned long)ttl;
- 	else if (option == LOPT_MAXTTL)
- 	  daemon->max_ttl = (unsigned long)ttl;
 +	else if (option == LOPT_MINTTL)
 +	  daemon->min_ttl = (unsigned long)ttl;
+ 	else if (option == LOPT_MAXTTL)
+ 	  daemon->max_ttl = (unsigned long)ttl;
  	else if (option == LOPT_MINCTTL)
- 	  {
- 	    if (ttl > TTL_FLOOR_LIMIT)
-diff --git a/src/rfc1035.c b/src/rfc1035.c
---- a/src/rfc1035.c  2018-10-19 02:21:55.000000000 +0800
-+++ b/src/rfc1035.c      2020-01-13 17:12:25.455445871 +0800
-@@ -664,11 +664,20 @@
- 		  GETSHORT(aqtype, p1); 
+--- a/src/rfc1035.c
++++ b/src/rfc1035.c
+@@ -606,6 +606,7 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
+ 	      for (j = 0; j < ntohs(header->ancount); j++) 
+ 		{
+ 		  int secflag = 0;
++		  unsigned long mttl = 0;
+ 		  unsigned char *tmp = namep;
+ 		  /* the loop body overwrites the original name, so get it back here. */
+ 		  if (!extract_name(header, qlen, &tmp, name, 1, 0) ||
+@@ -616,6 +617,14 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
  		  GETSHORT(aqclass, p1);
  		  GETLONG(attl, p1);
-+		  unsigned long mttl = 0;
  		  if ((daemon->max_ttl != 0) && (attl > daemon->max_ttl) && !is_sign)
++		    {
++		      mttl = daemon->max_ttl;
++		    }
++		  if ((daemon->min_ttl != 0) && (attl < daemon->min_ttl) && !is_sign)
++		    {
++		       mttl = daemon->min_ttl;
++		    }
++		  if (mttl != 0)
  		    {
--		      (p1) -= 4;
--		      PUTLONG(daemon->max_ttl, p1);
--		    }
-+           mttl = daemon->max_ttl;
-+        }
-+      if ((daemon->min_ttl != 0) && (attl < daemon->min_ttl) && !is_sign)
-+        {
-+           mttl = daemon->min_ttl;
-+        }
-+       if (mttl != 0)
-+       {
-+          (p1) -= 4;
-+          PUTLONG(mttl, p1);
-+       }
- 		  GETSHORT(ardlen, p1);
- 		  endrr = p1+ardlen;
- 		  
-@@ -755,11 +764,20 @@
- 	      GETSHORT(aqtype, p1); 
+ 		      (p1) -= 4;
+ 		      PUTLONG(daemon->max_ttl, p1);
+@@ -704,6 +713,7 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
+ 	  for (j = 0; j < ntohs(header->ancount); j++) 
+ 	    {
+ 	      int secflag = 0;
++	      unsigned long mttl = 0;
+ 	      
+ 	      if (!(res = extract_name(header, qlen, &p1, name, 0, 10)))
+ 		return 0; /* bad packet */
+@@ -712,6 +722,14 @@ int extract_addresses(struct dns_header *header, size_t qlen, char *name, time_t
  	      GETSHORT(aqclass, p1);
  	      GETLONG(attl, p1);
-+	      unsigned long mttl = 0;
  	      if ((daemon->max_ttl != 0) && (attl > daemon->max_ttl) && !is_sign)
--		{
--		  (p1) -= 4;
--		  PUTLONG(daemon->max_ttl, p1);
--		}
-+          {
-+             mttl = daemon->max_ttl;
-+          }
-+        if ((daemon->min_ttl != 0) && (attl < daemon->min_ttl) && !is_sign)
-+          {
-+             mttl = daemon->min_ttl;
-+          }
-+         if (mttl != 0)
-+         {
-+            (p1) -= 4;
-+            PUTLONG(mttl, p1);
-+         }
- 	      GETSHORT(ardlen, p1);
- 	      endrr = p1+ardlen;
- 	      
++		{
++		  mttl = daemon->max_ttl;
++		}
++		  if ((daemon->min_ttl != 0) && (attl < daemon->min_ttl) && !is_sign)
++		{
++		  mttl = daemon->min_ttl;
++		}
++		if (mttl != 0)
+ 		{
+ 		  (p1) -= 4;
+ 		  PUTLONG(daemon->max_ttl, p1);

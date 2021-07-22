@@ -16,8 +16,6 @@ vti_generic_setup() {
 	local mtu zone ikey
 	json_get_vars mtu zone ikey okey
 
-	[ -z "$zone" ] && zone="wan"
-
 	proto_init_update "$link" 1
 
 	proto_add_tunnel
@@ -151,6 +149,6 @@ proto_vti6_init_config() {
 }
 
 [ -n "$INCLUDE_ONLY" ] || {
-	[ -f /lib/modules/$(uname -r)/ip_vti.ko ] && add_protocol vti
-	[ -f /lib/modules/$(uname -r)/ip6_vti.ko ] && add_protocol vti6
+	[ -d /sys/module/ip_vti ] && add_protocol vti
+	[ -d /sys/module/ip6_vti ] && add_protocol vti6
 }

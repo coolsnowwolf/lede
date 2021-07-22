@@ -24,8 +24,7 @@ SOUNDCORE_FILES ?= \
 	$(LINUX_DIR)/sound/soundcore.ko \
 	$(LINUX_DIR)/sound/core/snd.ko \
 	$(LINUX_DIR)/sound/core/snd-hwdep.ko \
-	$(LINUX_DIR)/sound/core/seq/snd-seq-device.ko@lt4.13 \
-	$(LINUX_DIR)/sound/core/snd-seq-device.ko@ge4.13 \
+	$(LINUX_DIR)/sound/core/snd-seq-device.ko \
 	$(LINUX_DIR)/sound/core/snd-rawmidi.ko \
 	$(LINUX_DIR)/sound/core/snd-timer.ko \
 	$(LINUX_DIR)/sound/core/snd-pcm.ko \
@@ -192,10 +191,10 @@ define KernelPackage/sound-soc-core
   KCONFIG:= \
 	CONFIG_SND_SOC \
 	CONFIG_SND_SOC_ADI=n \
-	CONFIG_SND_SOC_DMAENGINE_PCM=y \
+	CONFIG_SND_SOC_GENERIC_DMAENGINE_PCM=y \
 	CONFIG_SND_SOC_ALL_CODECS=n
   FILES:=$(LINUX_DIR)/sound/soc/snd-soc-core.ko
-  AUTOLOAD:=$(call AutoLoad,55, snd-soc-core)
+  AUTOLOAD:=$(call AutoLoad,55,snd-soc-core)
   $(call AddDepends/sound)
 endef
 
@@ -255,6 +254,20 @@ endef
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
 
 
+define KernelPackage/sound-soc-spdif
+  TITLE:=SoC S/PDIF codec support
+  KCONFIG:=CONFIG_SND_SOC_SPDIF
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-spdif-tx.ko \
+	$(LINUX_DIR)/sound/soc/codecs/snd-soc-spdif-rx.ko
+  DEPENDS:=+kmod-sound-soc-core
+  AUTOLOAD:=$(call AutoProbe,snd-soc-spdif-tx snd-soc-spdif-rx)
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-soc-spdif))
+
+
 define KernelPackage/pcspkr
   DEPENDS:=@TARGET_x86 +kmod-input-core
   TITLE:=PC speaker support
@@ -291,6 +304,7 @@ $(eval $(call KernelPackage,sound-dummy))
 define KernelPackage/sound-hda-core
   SUBMENU:=$(SOUND_MENU)
   TITLE:=HD Audio Sound Core Support
+  DEPENDS:=+kmod-ledtrig-audio
   KCONFIG:= \
 	CONFIG_SND_HDA_CORE \
 	CONFIG_SND_HDA_HWDEP=y \
@@ -509,7 +523,8 @@ define KernelPackage/sound-hda-intel
 	CONFIG_SND_HDA_INTEL
   FILES:= \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-intel.ko \
-	$(LINUX_DIR)/sound/hda/snd-intel-nhlt.ko@ge5.4
+	$(LINUX_DIR)/sound/hda/snd-intel-nhlt.ko@lt5.5 \
+	$(LINUX_DIR)/sound/hda/snd-intel-dspcfg.ko@ge5.5
   AUTOLOAD:=$(call AutoProbe,snd-hda-intel)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef

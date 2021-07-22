@@ -1,0 +1,211 @@
+# Copyright (C) 2006-2015 OpenWrt.org
+
+. /lib/functions/system.sh
+. /lib/functions/uci-defaults.sh
+
+configure_by_vlanports() {
+	local vlan0ports="$(nvram get vlan0ports)"
+	local vlan1ports="$(nvram get vlan1ports)"
+	local vlan2ports="$(nvram get vlan2ports)"
+	local cpuport="$(swconfig dev switch0 help 2>/dev/null | sed -ne "s|.*cpu @ \([0-9]*\).*|\1|p")"
+
+	if [ "${vlan0ports:0:9}" = "0 1 2 3 8" -a "${vlan1ports:0:3}" = "4 8" -a ${cpuport:-0} -eq 8 ] || \
+	   [ "${vlan1ports:0:9}" = "0 1 2 3 8" -a "${vlan2ports:0:3}" = "4 8" -a ${cpuport:-0} -eq 8 ] || \
+	   [ "${vlan2ports:0:9}" = "0 1 2 3 8" -a "${vlan1ports:0:3}" = "4 8" -a ${cpuport:-0} -eq 8 ];
+	then
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "8@eth0"
+
+	elif [ "${vlan0ports:0:9}" = "1 2 3 4 8" -a "${vlan1ports:0:3}" = "0 8" -a ${cpuport:-0} -eq 8 ] || \
+	     [ "${vlan1ports:0:9}" = "1 2 3 4 8" -a "${vlan2ports:0:3}" = "0 8" -a ${cpuport:-0} -eq 8 ] || \
+	     [ "${vlan2ports:0:9}" = "1 2 3 4 8" -a "${vlan1ports:0:3}" = "0 8" -a ${cpuport:-0} -eq 8 ];
+	then
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "8@eth0"
+
+	elif [ "${vlan0ports:0:9}" = "0 1 2 3 5" -a "${vlan1ports:0:3}" = "4 5" -a ${cpuport:-0} -eq 5 ] || \
+		 [ "${vlan1ports:0:9}" = "0 1 2 3 5" -a "${vlan2ports:0:3}" = "4 5" -a ${cpuport:-0} -eq 5 ] || \
+		 [ "${vlan2ports:0:9}" = "0 1 2 3 5" -a "${vlan1ports:0:3}" = "4 5" -a ${cpuport:-0} -eq 5 ];
+	then
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5@eth0"
+
+	elif [ "${vlan0ports:0:9}" = "1 2 3 4 5" -a "${vlan1ports:0:3}" = "0 5" -a ${cpuport:-0} -eq 5 ] || \
+	     [ "${vlan1ports:0:9}" = "1 2 3 4 5" -a "${vlan2ports:0:3}" = "0 5" -a ${cpuport:-0} -eq 5 ] || \
+	     [ "${vlan2ports:0:9}" = "1 2 3 4 5" -a "${vlan1ports:0:3}" = "0 5" -a ${cpuport:-0} -eq 5 ];
+	then
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "5@eth0"
+
+	else
+		logger -t "01_network" "Unable to determine network configuration"
+		ucidef_set_interface_lan "eth0"
+	fi
+}
+
+configure_by_boardnum() {
+	local boardnum="$1"
+
+	case "$boardnum" in
+	# WAP54G, Sitecom WL-105b
+	"2" | \
+	"1024")
+		ucidef_set_interface_lan "eth0"
+		;;
+
+	# Generic detection fallback
+	*)
+		configure_by_vlanports
+		;;
+	esac
+}
+
+configure_by_boardtype() {
+	local boardtype="$1"
+	local boardnum="$2"
+
+	case "$boardtype" in
+	"bcm94710r4")
+		ucidef_set_interfaces_lan_wan "eth0" "eth1"
+		;;
+
+	"0x0467")
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5@eth0"
+		;;
+
+	"0x042f" | \
+	"0x0472")
+		# WL-500gP
+		if [ "$boardnum" = "45" ]; then
+			ucidef_add_switch "switch0" \
+				"0:wan" "1:lan" "2:lan" "3:lan" "4:lan" "5@eth0"
+
+		# Generic BCM94704
+		else
+			ucidef_set_interface_wan "eth1"
+			ucidef_add_switch "switch0" \
+				"0:lan" "1:lan" "2:lan" "3:lan" "4:lan" "5@eth0"
+
+			# MAC addresses on 4704 tend to be screwed up. Add a workaround here
+			local mac="$(nvram get et0macaddr)"
+			local pat="[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
+				  pat="$pat:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
+				  pat="$pat:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
+
+			case "$mac" in
+			$pat)
+				ucidef_set_interface_macaddr "lan" "$mac"
+				ucidef_set_interface_macaddr "wan" "$(macaddr_add "$mac" 1)"
+				;;
+			esac
+		fi
+		;;
+
+	# Buffalo WBR-B11 and Buffalo WBR-G54
+	"bcm94710ap")
+		ucidef_set_interface_wan "eth1"
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:lan" "5@eth0"
+		;;
+
+	*)
+		configure_by_boardnum "$boardnum"
+		;;
+	esac
+}
+
+configure_by_model() {
+	local model="$1"
+	local boardtype="$2"
+	local boardnum="$3"
+
+	# Netgear WGT634U exception
+	if grep -sqE 'mtd0: 000(6|a)0000' /proc/mtd; then
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5@eth0"
+		return
+	fi
+
+	case "$model" in
+	"Asus WLHDD" | \
+	"Asus WL300G")
+		ucidef_set_interface_lan "eth1"
+		;;
+
+	"Asus WL330GE")
+		ucidef_add_switch "switch0" "4:lan" "5t@eth0"
+		;;
+
+	"Asus WL500G" | \
+	"Microsoft MN-700")
+		ucidef_set_interfaces_lan_wan "eth0" "eth1"
+		;;
+
+	"Asus WL500GP V2")
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "4:wan" "5@eth0"
+		;;
+
+	"Asus RT-N12"* | \
+	"Buffalo WHR-G125" | \
+	"D-Link DIR-330" | \
+	"Motorola WR850G" | \
+	"Siemens SE505 V2")
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5@eth0"
+		;;
+
+	"Asus WL700")
+		ucidef_add_switch "switch0" \
+			"0:wan" "1:lan" "2:lan" "3:lan" "4:lan" "5@eth0"
+		;;
+
+	"Asus WL500W" | \
+	"Dell TrueMobile 2300")
+		ucidef_set_interface_wan "eth1"
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "5@eth0"
+		;;
+
+	"Asus RT-N16"* | \
+	"Linksys E3000 V1" | \
+	"Linksys WRT610N V2" | \
+	"Netgear WNR3500 V2" | \
+	"Netgear WNR3500L")
+		ucidef_add_switch "switch0" \
+			"0:wan" "1:lan:4" "2:lan:3" "3:lan:2" "4:lan:1" "8@eth0"
+		;;
+
+	"Netgear R6200 V1")
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "4:wan" "8@eth0"
+		;;
+
+	"Netgear WN2500RP V1")
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "5@eth0"
+		;;
+
+	*)
+		configure_by_boardtype "$boardtype" "$boardnum"
+		;;
+	esac
+}
+
+
+model="$(cat /tmp/sysinfo/model)"
+boardtype="$(board_name)"
+
+case "$boardtype" in
+	*:*)
+		boardnum="${boardtype##*:}"
+		boardtype="${boardtype%:*}"
+	;;
+esac
+
+board_config_update
+
+configure_by_model "$model" "$boardtype" "$boardnum"
+
+board_config_flush

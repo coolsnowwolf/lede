@@ -1,0 +1,100 @@
+From 001937cc21a05165530c0775c4646bd04e797658 Mon Sep 17 00:00:00 2001
+From: Viorel Suman <viorel.suman@nxp.com>
+Date: Mon, 27 Aug 2018 13:50:17 +0300
+Subject: [PATCH] MLK-18898-1: ASoC: fsl_sai: select pinctrl state as function
+ of bitclock rate
+
+Similar to DSD512 case we need a PCM pinctrl state option to map SAI BCLK
+to codec MCLK pin. Given that bitclock rate is function of slots number and
+slot width - pass bclk rate as parameter value from SAI driver.
+
+Signed-off-by: Viorel Suman <viorel.suman@nxp.com>
+(cherry picked from commit 826caeae32713cff7ad50de8ebc9915de975edd9)
+---
+ sound/soc/fsl/fsl_dsd.h | 15 +++++++--------
+ sound/soc/fsl/fsl_sai.c | 24 ++++++++++--------------
+ 2 files changed, 17 insertions(+), 22 deletions(-)
+
+--- a/sound/soc/fsl/fsl_dsd.h
++++ b/sound/soc/fsl/fsl_dsd.h
+@@ -30,23 +30,22 @@ static bool fsl_is_dsd(struct snd_pcm_hw
+ }
+ 
+ static struct pinctrl_state *fsl_get_pins_state(struct pinctrl *pinctrl,
+-	struct snd_pcm_hw_params *params)
++	struct snd_pcm_hw_params *params, u32 bclk)
+ {
+-	int dsd_bclk;
+ 	struct pinctrl_state *state = 0;
+ 
+ 	if (fsl_is_dsd(params)) {
+-		dsd_bclk = params_rate(params) * params_physical_width(params);
+-
+-		switch (dsd_bclk) {
+-		case 22579200: /* DSD512 */
++		/* DSD512@44.1kHz, DSD512@48kHz */
++		if (bclk >= 22579200)
+ 			state = pinctrl_lookup_state(pinctrl, "dsd512");
+-			break;
+-		}
+ 
+ 		/* Get default DSD state */
+ 		if (IS_ERR_OR_NULL(state))
+ 			state = pinctrl_lookup_state(pinctrl, "dsd");
++	} else {
++		/* 706k32b2c, 768k32b2c, etc */
++		if (bclk >= 45158400)
++			state = pinctrl_lookup_state(pinctrl, "pcm_b2m");
+ 	}
+ 
+ 	/* Get default state */
+--- a/sound/soc/fsl/fsl_sai.c
++++ b/sound/soc/fsl/fsl_sai.c
+@@ -620,7 +620,7 @@ static int fsl_sai_hw_params(struct snd_
+ 	u32 val_cr4 = 0, val_cr5 = 0;
+ 	u32 slots = (channels == 1) ? 2 : channels;
+ 	u32 slot_width = word_width;
+-	u32 pins;
++	u32 pins, bclk;
+ 	int ret;
+ 	int i;
+ 	int trce_mask = 0;
+@@ -630,9 +630,16 @@ static int fsl_sai_hw_params(struct snd_
+ 
+ 	pins = DIV_ROUND_UP(channels, slots);
+ 	sai->is_dsd = fsl_is_dsd(params);
++	if (sai->is_dsd)
++		pins = channels;
++
++	if (sai->slot_width)
++		slot_width = sai->slot_width;
++
++	bclk = rate*(sai->bitclk_ratio ? sai->bitclk_ratio : slots * slot_width);
+ 
+ 	if (!IS_ERR_OR_NULL(sai->pinctrl)) {
+-		sai->pins_state = fsl_get_pins_state(sai->pinctrl, params);
++		sai->pins_state = fsl_get_pins_state(sai->pinctrl, params, bclk);
+ 
+ 		if (!IS_ERR_OR_NULL(sai->pins_state)) {
+ 			ret = pinctrl_select_state(sai->pinctrl, sai->pins_state);
+@@ -644,19 +651,8 @@ static int fsl_sai_hw_params(struct snd_
+ 		}
+ 	}
+ 
+-	if (sai->is_dsd)
+-		pins = channels;
+-
+-	if (sai->slot_width)
+-		slot_width = sai->slot_width;
+-
+ 	if (!sai->slave_mode[tx]) {
+-		if (sai->bitclk_ratio)
+-			ret = fsl_sai_set_bclk(cpu_dai, tx,
+-					rate * sai->bitclk_ratio);
+-		else
+-			ret = fsl_sai_set_bclk(cpu_dai, tx,
+-					rate * slots * slot_width);
++		ret = fsl_sai_set_bclk(cpu_dai, tx, bclk);
+ 		if (ret)
+ 			return ret;
+ 

@@ -1,0 +1,446 @@
+From 126e6f022c749ac1bf3a607269a106ccd87d0594 Mon Sep 17 00:00:00 2001
+From: Claudiu Manoil <claudiu.manoil@nxp.com>
+Date: Mon, 12 Aug 2019 20:26:42 +0300
+Subject: [PATCH] enetc: Make MDIO accessors more generic and export to
+ include/linux/fsl
+
+Within the LS1028A SoC, the register map for the ENETC MDIO controller
+is instantiated a few times: for the central (external) MDIO controller,
+for the internal bus of each standalone ENETC port, and for the internal
+bus of the Felix switch.
+
+Refactoring is needed to support multiple MDIO buses from multiple
+drivers. The enetc_hw structure is made an opaque type and a smaller
+enetc_mdio_priv is created.
+
+'mdio_base' - MDIO registers base address - is being parameterized, to
+be able to work with different MDIO register bases.
+
+The ENETC MDIO bus operations are exported from the fsl-enetc-mdio
+kernel object, the same that registers the central MDIO controller (the
+dedicated PF). The ENETC main driver has been changed to select it, and
+use its exported helpers to further register its private MDIO bus. The
+DSA Felix driver will do the same.
+
+Signed-off-by: Claudiu Manoil <claudiu.manoil@nxp.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+
+Conflicts:
+	drivers/net/ethernet/freescale/enetc/enetc_mdio.c
+	drivers/net/ethernet/freescale/enetc/enetc_mdio.h
+	drivers/net/ethernet/freescale/enetc/enetc_pci_mdio.c
+	drivers/net/ethernet/freescale/enetc/enetc_pf.c
+	drivers/net/ethernet/freescale/enetc/enetc_pf.h
+
+mostly with the previous (downstream version of this commit) patch
+572ee5d842da ("enetc: Make mdio accessors more generic"), which couldn't
+be reverted cleanly due to the existing downstream workaround for the
+MDIO erratum.
+---
+ drivers/net/ethernet/freescale/enetc/Kconfig       |  1 +
+ drivers/net/ethernet/freescale/enetc/Makefile      |  2 +-
+ drivers/net/ethernet/freescale/enetc/enetc_mdio.c  | 76 ++++------------------
+ drivers/net/ethernet/freescale/enetc/enetc_mdio.h  | 12 ----
+ .../net/ethernet/freescale/enetc/enetc_pci_mdio.c  | 41 +++++++-----
+ drivers/net/ethernet/freescale/enetc/enetc_pf.c    | 71 ++++++++++++++++++++
+ drivers/net/ethernet/freescale/enetc/enetc_pf.h    |  5 --
+ include/linux/fsl/enetc_mdio.h                     | 55 ++++++++++++++++
+ 8 files changed, 163 insertions(+), 100 deletions(-)
+ delete mode 100644 drivers/net/ethernet/freescale/enetc/enetc_mdio.h
+ create mode 100644 include/linux/fsl/enetc_mdio.h
+
+--- a/drivers/net/ethernet/freescale/enetc/Kconfig
++++ b/drivers/net/ethernet/freescale/enetc/Kconfig
+@@ -2,6 +2,7 @@
+ config FSL_ENETC
+ 	tristate "ENETC PF driver"
+ 	depends on PCI && PCI_MSI && (ARCH_LAYERSCAPE || COMPILE_TEST)
++	select FSL_ENETC_MDIO
+ 	select PHYLIB
+ 	help
+ 	  This driver supports NXP ENETC gigabit ethernet controller PCIe
+--- a/drivers/net/ethernet/freescale/enetc/Makefile
++++ b/drivers/net/ethernet/freescale/enetc/Makefile
+@@ -3,7 +3,7 @@
+ common-objs := enetc.o enetc_cbdr.o enetc_ethtool.o
+ 
+ obj-$(CONFIG_FSL_ENETC) += fsl-enetc.o
+-fsl-enetc-y := enetc_pf.o enetc_mdio.o $(common-objs)
++fsl-enetc-y := enetc_pf.o $(common-objs)
+ fsl-enetc-$(CONFIG_PCI_IOV) += enetc_msg.o
+ fsl-enetc-$(CONFIG_FSL_ENETC_QOS) += enetc_qos.o
+ fsl-enetc-$(CONFIG_ENETC_TSN) += enetc_tsn.o
+--- a/drivers/net/ethernet/freescale/enetc/enetc_mdio.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_mdio.c
+@@ -1,13 +1,13 @@
+ // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+ /* Copyright 2019 NXP */
+ 
++#include <linux/fsl/enetc_mdio.h>
+ #include <linux/mdio.h>
+ #include <linux/of_mdio.h>
+ #include <linux/iopoll.h>
+ #include <linux/of.h>
+ 
+ #include "enetc_pf.h"
+-#include "enetc_mdio.h"
+ 
+ #define	ENETC_MDIO_CFG	0x0	/* MDIO configuration and status */
+ #define	ENETC_MDIO_CTL	0x4	/* MDIO control */
+@@ -99,6 +99,7 @@ int enetc_mdio_write(struct mii_bus *bus
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(enetc_mdio_write);
+ 
+ int enetc_mdio_read(struct mii_bus *bus, int phy_id, int regnum)
+ {
+@@ -154,73 +155,18 @@ int enetc_mdio_read(struct mii_bus *bus,
+ 
+ 	return value;
+ }
++EXPORT_SYMBOL_GPL(enetc_mdio_read);
+ 
+-int enetc_mdio_probe(struct enetc_pf *pf)
++struct enetc_hw *enetc_hw_alloc(struct device *dev, void __iomem *port_regs)
+ {
+-	struct device *dev = &pf->si->pdev->dev;
+-	struct enetc_mdio_priv *mdio_priv;
+-	struct device_node *np;
+-	struct mii_bus *bus;
+-	int err;
+-
+-	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
+-	if (!bus)
+-		return -ENOMEM;
+-
+-	bus->name = "Freescale ENETC MDIO Bus";
+-	bus->read = enetc_mdio_read;
+-	bus->write = enetc_mdio_write;
+-	bus->parent = dev;
+-	mdio_priv = bus->priv;
+-	mdio_priv->hw = &pf->si->hw;
+-	mdio_priv->mdio_base = ENETC_EMDIO_BASE;
+-	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
+-
+-	np = of_get_child_by_name(dev->of_node, "mdio");
+-	if (!np) {
+-		dev_err(dev, "MDIO node missing\n");
+-		return -EINVAL;
+-	}
+-
+-	err = of_mdiobus_register(bus, np);
+-	if (err) {
+-		of_node_put(np);
+-		dev_err(dev, "cannot register MDIO bus\n");
+-		return err;
+-	}
+-
+-	of_node_put(np);
+-	pf->mdio = bus;
+-
+-	return 0;
+-}
++	struct enetc_hw *hw;
+ 
+-void enetc_mdio_remove(struct enetc_pf *pf)
+-{
+-	if (pf->mdio)
+-		mdiobus_unregister(pf->mdio);
+-}
+-
+-int enetc_imdio_init(struct enetc_pf *pf)
+-{
+-	struct device *dev = &pf->si->pdev->dev;
+-	struct enetc_mdio_priv *mdio_priv;
+-	struct mii_bus *bus;
++	hw = devm_kzalloc(dev, sizeof(*hw), GFP_KERNEL);
++	if (!hw)
++		return ERR_PTR(-ENOMEM);
+ 
+-	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
+-	if (!bus)
+-		return -ENOMEM;
++	hw->port = port_regs;
+ 
+-	bus->name = "FSL ENETC internal MDIO Bus";
+-	bus->read = enetc_mdio_read;
+-	bus->write = enetc_mdio_write;
+-	bus->parent = dev;
+-	mdio_priv = bus->priv;
+-	mdio_priv->hw = &pf->si->hw;
+-	mdio_priv->mdio_base = ENETC_PM_IMDIO_BASE;
+-	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
+-
+-	pf->imdio = bus;
+-
+-	return 0;
++	return hw;
+ }
++EXPORT_SYMBOL_GPL(enetc_hw_alloc);
+--- a/drivers/net/ethernet/freescale/enetc/enetc_mdio.h
++++ /dev/null
+@@ -1,12 +0,0 @@
+-/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
+-/* Copyright 2019 NXP */
+-
+-#include <linux/phy.h>
+-
+-struct enetc_mdio_priv {
+-	struct enetc_hw *hw;
+-	int mdio_base;
+-};
+-
+-int enetc_mdio_write(struct mii_bus *bus, int phy_id, int regnum, u16 value);
+-int enetc_mdio_read(struct mii_bus *bus, int phy_id, int regnum);
+--- a/drivers/net/ethernet/freescale/enetc/enetc_pci_mdio.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_pci_mdio.c
+@@ -1,8 +1,8 @@
+ // SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+ /* Copyright 2019 NXP */
++#include <linux/fsl/enetc_mdio.h>
+ #include <linux/of_mdio.h>
+ #include "enetc_pf.h"
+-#include "enetc_mdio.h"
+ 
+ #define ENETC_MDIO_DEV_ID	0xee01
+ #define ENETC_MDIO_DEV_NAME	"FSL PCIe IE Central MDIO"
+@@ -14,17 +14,29 @@ static int enetc_pci_mdio_probe(struct p
+ {
+ 	struct enetc_mdio_priv *mdio_priv;
+ 	struct device *dev = &pdev->dev;
++	void __iomem *port_regs;
+ 	struct enetc_hw *hw;
+ 	struct mii_bus *bus;
+ 	int err;
+ 
+-	hw = devm_kzalloc(dev, sizeof(*hw), GFP_KERNEL);
+-	if (!hw)
+-		return -ENOMEM;
++	port_regs = pci_iomap(pdev, 0, 0);
++	if (!port_regs) {
++		dev_err(dev, "iomap failed\n");
++		err = -ENXIO;
++		goto err_ioremap;
++	}
++
++	hw = enetc_hw_alloc(dev, port_regs);
++	if (IS_ERR(enetc_hw_alloc)) {
++		err = PTR_ERR(hw);
++		goto err_hw_alloc;
++	}
+ 
+ 	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
+-	if (!bus)
+-		return -ENOMEM;
++	if (!bus) {
++		err = -ENOMEM;
++		goto err_mdiobus_alloc;
++	}
+ 
+ 	bus->name = ENETC_MDIO_BUS_NAME;
+ 	bus->read = enetc_mdio_read;
+@@ -39,7 +51,7 @@ static int enetc_pci_mdio_probe(struct p
+ 	err = pci_enable_device_mem(pdev);
+ 	if (err) {
+ 		dev_err(dev, "device enable failed\n");
+-		return err;
++		goto err_pci_enable;
+ 	}
+ 
+ 	err = pci_request_region(pdev, 0, KBUILD_MODNAME);
+@@ -48,13 +60,6 @@ static int enetc_pci_mdio_probe(struct p
+ 		goto err_pci_mem_reg;
+ 	}
+ 
+-	hw->port = pci_iomap(pdev, 0, 0);
+-	if (!hw->port) {
+-		err = -ENXIO;
+-		dev_err(dev, "iomap failed\n");
+-		goto err_ioremap;
+-	}
+-
+ 	err = of_mdiobus_register(bus, dev->of_node);
+ 	if (err)
+ 		goto err_mdiobus_reg;
+@@ -64,12 +69,14 @@ static int enetc_pci_mdio_probe(struct p
+ 	return 0;
+ 
+ err_mdiobus_reg:
+-	iounmap(mdio_priv->hw->port);
+-err_ioremap:
+ 	pci_release_mem_regions(pdev);
+ err_pci_mem_reg:
+ 	pci_disable_device(pdev);
+-
++err_pci_enable:
++err_mdiobus_alloc:
++	iounmap(port_regs);
++err_hw_alloc:
++err_ioremap:
+ 	return err;
+ }
+ 
+--- a/drivers/net/ethernet/freescale/enetc/enetc_pf.c
++++ b/drivers/net/ethernet/freescale/enetc/enetc_pf.c
+@@ -2,6 +2,7 @@
+ /* Copyright 2017-2019 NXP */
+ 
+ #include <linux/module.h>
++#include <linux/fsl/enetc_mdio.h>
+ #include <linux/of_mdio.h>
+ #include <linux/of_net.h>
+ #include "enetc_pf.h"
+@@ -760,6 +761,52 @@ static void enetc_pf_netdev_setup(struct
+ 	enetc_get_primary_mac_addr(&si->hw, ndev->dev_addr);
+ }
+ 
++static int enetc_mdio_probe(struct enetc_pf *pf)
++{
++	struct device *dev = &pf->si->pdev->dev;
++	struct enetc_mdio_priv *mdio_priv;
++	struct device_node *np;
++	struct mii_bus *bus;
++	int err;
++
++	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
++	if (!bus)
++		return -ENOMEM;
++
++	bus->name = "Freescale ENETC MDIO Bus";
++	bus->read = enetc_mdio_read;
++	bus->write = enetc_mdio_write;
++	bus->parent = dev;
++	mdio_priv = bus->priv;
++	mdio_priv->hw = &pf->si->hw;
++	mdio_priv->mdio_base = ENETC_EMDIO_BASE;
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
++
++	np = of_get_child_by_name(dev->of_node, "mdio");
++	if (!np) {
++		dev_err(dev, "MDIO node missing\n");
++		return -EINVAL;
++	}
++
++	err = of_mdiobus_register(bus, np);
++	if (err) {
++		of_node_put(np);
++		dev_err(dev, "cannot register MDIO bus\n");
++		return err;
++	}
++
++	of_node_put(np);
++	pf->mdio = bus;
++
++	return 0;
++}
++
++static void enetc_mdio_remove(struct enetc_pf *pf)
++{
++	if (pf->mdio)
++		mdiobus_unregister(pf->mdio);
++}
++
+ static int enetc_of_get_phy(struct enetc_pf *pf)
+ {
+ 	struct device *dev = &pf->si->pdev->dev;
+@@ -911,6 +958,30 @@ static void enetc_configure_sxgmii(struc
+ 		     ENETC_PCS_CR_LANE_RESET | ENETC_PCS_CR_RESET_AN);
+ }
+ 
++static int enetc_imdio_init(struct enetc_pf *pf)
++{
++	struct device *dev = &pf->si->pdev->dev;
++	struct enetc_mdio_priv *mdio_priv;
++	struct mii_bus *bus;
++
++	bus = devm_mdiobus_alloc_size(dev, sizeof(*mdio_priv));
++	if (!bus)
++		return -ENOMEM;
++
++	bus->name = "FSL ENETC internal MDIO Bus";
++	bus->read = enetc_mdio_read;
++	bus->write = enetc_mdio_write;
++	bus->parent = dev;
++	mdio_priv = bus->priv;
++	mdio_priv->hw = &pf->si->hw;
++	mdio_priv->mdio_base = ENETC_PM_IMDIO_BASE;
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s", dev_name(dev));
++
++	pf->imdio = bus;
++
++	return 0;
++}
++
+ static int enetc_configure_serdes(struct enetc_ndev_priv *priv)
+ {
+ 	struct enetc_pf *pf = enetc_si_priv(priv->si);
+--- a/drivers/net/ethernet/freescale/enetc/enetc_pf.h
++++ b/drivers/net/ethernet/freescale/enetc/enetc_pf.h
+@@ -53,8 +53,3 @@ struct enetc_pf {
+ int enetc_msg_psi_init(struct enetc_pf *pf);
+ void enetc_msg_psi_free(struct enetc_pf *pf);
+ void enetc_msg_handle_rxmsg(struct enetc_pf *pf, int mbox_id, u16 *status);
+-
+-/* MDIO */
+-int enetc_mdio_probe(struct enetc_pf *pf);
+-void enetc_mdio_remove(struct enetc_pf *pf);
+-int enetc_imdio_init(struct enetc_pf *pf);
+--- /dev/null
++++ b/include/linux/fsl/enetc_mdio.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause) */
++/* Copyright 2019 NXP */
++
++#ifndef _FSL_ENETC_MDIO_H_
++#define _FSL_ENETC_MDIO_H_
++
++#include <linux/phy.h>
++
++/* PCS registers */
++#define ENETC_PCS_LINK_TIMER1			0x12
++#define ENETC_PCS_LINK_TIMER1_VAL		0x06a0
++#define ENETC_PCS_LINK_TIMER2			0x13
++#define ENETC_PCS_LINK_TIMER2_VAL		0x0003
++#define ENETC_PCS_IF_MODE			0x14
++#define ENETC_PCS_IF_MODE_SGMII_EN		BIT(0)
++#define ENETC_PCS_IF_MODE_USE_SGMII_AN		BIT(1)
++#define ENETC_PCS_IF_MODE_SGMII_SPEED(x)	(((x) << 2) & GENMASK(3, 2))
++
++/* Not a mistake, the SerDes PLL needs to be set at 3.125 GHz by Reset
++ * Configuration Word (RCW, outside Linux control) for 2.5G SGMII mode. The PCS
++ * still thinks it's at gigabit.
++ */
++enum enetc_pcs_speed {
++	ENETC_PCS_SPEED_10	= 0,
++	ENETC_PCS_SPEED_100	= 1,
++	ENETC_PCS_SPEED_1000	= 2,
++	ENETC_PCS_SPEED_2500	= 2,
++};
++
++struct enetc_hw;
++
++struct enetc_mdio_priv {
++	struct enetc_hw *hw;
++	int mdio_base;
++};
++
++#if IS_REACHABLE(CONFIG_FSL_ENETC_MDIO)
++
++int enetc_mdio_read(struct mii_bus *bus, int phy_id, int regnum);
++int enetc_mdio_write(struct mii_bus *bus, int phy_id, int regnum, u16 value);
++struct enetc_hw *enetc_hw_alloc(struct device *dev, void __iomem *port_regs);
++
++#else
++
++static inline int enetc_mdio_read(struct mii_bus *bus, int phy_id, int regnum)
++{ return -EINVAL; }
++static inline int enetc_mdio_write(struct mii_bus *bus, int phy_id, int regnum,
++				   u16 value)
++{ return -EINVAL; }
++struct enetc_hw *enetc_hw_alloc(struct device *dev, void __iomem *port_regs)
++{ return ERR_PTR(-EINVAL); }
++
++#endif
++
++#endif

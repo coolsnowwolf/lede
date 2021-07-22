@@ -255,7 +255,7 @@ network_find_wan() { __network_wan "$1" "0.0.0.0" "$2"; }
 
 # find the logical interface which holds the current IPv6 default route
 # 1: destination variable
-# 2: consider inactive dafault routes if "true" (optional)
+# 2: consider inactive default routes if "true" (optional)
 network_find_wan6() { __network_wan "$1" "::" "$2"; }
 
 # test whether the given logical interface is running
@@ -270,6 +270,11 @@ network_is_up()
 # 1: destination variable
 # 2: interface
 network_get_protocol() { __network_ifstatus "$1" "$2" ".proto"; }
+
+# determine the uptime of the given logical interface
+# 1: destination variable
+# 2: interface
+network_get_uptime() { __network_ifstatus "$1" "$2" ".uptime"; }
 
 # determine the metric of the given logical interface
 # 1: destination variable

@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2006-2015 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2006-2020 OpenWrt.org
 
 ifneq ($(filter check,$(MAKECMDGOALS)),)
 CHECK:=1
@@ -118,7 +115,11 @@ KERNEL_MAKE_FLAGS = \
 	CONFIG_SHELL="$(BASH)" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
 	$(if $(PKG_BUILD_ID),LDFLAGS_MODULE=--build-id=0x$(PKG_BUILD_ID)) \
-	cmd_syscalls=
+	cmd_syscalls= \
+	$(if $(__package_mk),KBUILD_EXTRA_SYMBOLS="$(wildcard $(PKG_SYMVERS_DIR)/*.symvers)")
+
+KERNEL_NOSTDINC_FLAGS = \
+	-nostdinc $(if $(DUMP),, -isystem $(shell $(TARGET_CC) -print-file-name=include))
 
 ifeq ($(call qstrip,$(CONFIG_EXTERNAL_KERNEL_TREE))$(call qstrip,$(CONFIG_KERNEL_GIT_CLONE_URI)),)
   KERNEL_MAKE_FLAGS += \
@@ -138,13 +139,7 @@ endif
 
 PKG_EXTMOD_SUBDIRS ?= .
 
-define populate_module_symvers
-	@mkdir -p $(PKG_INFO_DIR)
-	cat /dev/null > $(PKG_INFO_DIR)/$(PKG_NAME).symvers; \
-	for subdir in $(PKG_EXTMOD_SUBDIRS); do \
-		cat $(PKG_INFO_DIR)/*.symvers 2>/dev/null > $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers; \
-	done
-endef
+PKG_SYMVERS_DIR = $(KERNEL_BUILD_DIR)/symvers
 
 define collect_module_symvers
 	for subdir in $(PKG_EXTMOD_SUBDIRS); do \
@@ -154,12 +149,12 @@ define collect_module_symvers
 			grep -F $$$$realdir $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers >> $(PKG_BUILD_DIR)/Module.symvers.tmp; \
 	done; \
 	sort -u $(PKG_BUILD_DIR)/Module.symvers.tmp > $(PKG_BUILD_DIR)/Module.symvers; \
-	mv $(PKG_BUILD_DIR)/Module.symvers $(PKG_INFO_DIR)/$(PKG_NAME).symvers
+	mkdir -p $(PKG_SYMVERS_DIR); \
+	mv $(PKG_BUILD_DIR)/Module.symvers $(PKG_SYMVERS_DIR)/$(PKG_NAME).symvers
 endef
 
 define KernelPackage/hooks
   ifneq ($(PKG_NAME),kernel)
-    Hooks/Compile/Pre += populate_module_symvers
     Hooks/Compile/Post += collect_module_symvers
   endif
   define KernelPackage/hooks

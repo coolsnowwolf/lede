@@ -1,0 +1,67 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 27 Aug 2020 06:32:03 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: cache hardware pointer of last
+ freed tx descriptor
+
+The value is only updated by the CPU, so it is cheaper to access from the ring
+data structure than from a hardware register
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1379,7 +1379,7 @@ static int mtk_poll_tx_qdma(struct mtk_e
+ 	struct mtk_tx_buf *tx_buf;
+ 	u32 cpu, dma;
+ 
+-	cpu = mtk_r32(eth, MTK_QTX_CRX_PTR);
++	cpu = ring->last_free_ptr;
+ 	dma = mtk_r32(eth, MTK_QTX_DRX_PTR);
+ 
+ 	desc = mtk_qdma_phys_to_virt(ring, cpu);
+@@ -1413,6 +1413,7 @@ static int mtk_poll_tx_qdma(struct mtk_e
+ 		cpu = next_cpu;
+ 	}
+ 
++	ring->last_free_ptr = cpu;
+ 	mtk_w32(eth, cpu, MTK_QTX_CRX_PTR);
+ 
+ 	return budget;
+@@ -1613,6 +1614,7 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 	atomic_set(&ring->free_count, MTK_DMA_SIZE - 2);
+ 	ring->next_free = &ring->dma[0];
+ 	ring->last_free = &ring->dma[MTK_DMA_SIZE - 1];
++	ring->last_free_ptr = (u32)(ring->phys + ((MTK_DMA_SIZE - 1) * sz));
+ 	ring->thresh = MAX_SKB_FRAGS;
+ 
+ 	/* make sure that all changes to the dma ring are flushed before we
+@@ -1626,9 +1628,7 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 		mtk_w32(eth,
+ 			ring->phys + ((MTK_DMA_SIZE - 1) * sz),
+ 			MTK_QTX_CRX_PTR);
+-		mtk_w32(eth,
+-			ring->phys + ((MTK_DMA_SIZE - 1) * sz),
+-			MTK_QTX_DRX_PTR);
++		mtk_w32(eth, ring->last_free_ptr, MTK_QTX_DRX_PTR);
+ 		mtk_w32(eth, (QDMA_RES_THRES << 8) | QDMA_RES_THRES,
+ 			MTK_QTX_CFG(0));
+ 	} else {
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -644,6 +644,7 @@ struct mtk_tx_buf {
+  * @phys:		The physical addr of tx_buf
+  * @next_free:		Pointer to the next free descriptor
+  * @last_free:		Pointer to the last free descriptor
++ * @last_free_ptr:	Hardware pointer value of the last free descriptor
+  * @thresh:		The threshold of minimum amount of free descriptors
+  * @free_count:		QDMA uses a linked list. Track how many free descriptors
+  *			are present
+@@ -654,6 +655,7 @@ struct mtk_tx_ring {
+ 	dma_addr_t phys;
+ 	struct mtk_tx_dma *next_free;
+ 	struct mtk_tx_dma *last_free;
++	u32 last_free_ptr;
+ 	u16 thresh;
+ 	atomic_t free_count;
+ 	int dma_size;

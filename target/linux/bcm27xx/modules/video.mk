@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2019 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 define KernelPackage/camera-bcm2835
   TITLE:=BCM2835 Camera
@@ -33,12 +30,13 @@ define KernelPackage/drm-vc4
     +kmod-sound-soc-core
   KCONFIG:= \
     CONFIG_DRM_VC4 \
-    CONFIG_DRM_VC4_HDMI_CEC=n \
+    CONFIG_DRM_VC4_HDMI_CEC=y \
     CONFIG_DRM_V3D=n \
     CONFIG_DRM_TVE200=n
   FILES:= \
     $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko
+    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko \
+    $(LINUX_DIR)/drivers/media/cec/cec.ko
   AUTOLOAD:=$(call AutoProbe,vc4)
 endef
 

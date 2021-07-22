@@ -1,5 +1,3 @@
-#!/bin/ash
-
 . /lib/functions.sh
 . /usr/share/libubox/jshn.sh
 
@@ -41,7 +39,13 @@ ucidef_set_interface() {
 
 		[ -n "$opt" -a -n "$val" ] || break
 
-		json_add_string "$opt" "$val"
+		[ "$opt" = "ifname" -a "$val" != "${val/ //}" ] && {
+			json_select_array "ports"
+			for e in $val; do json_add_string "" "$e"; done
+			json_close_array
+		} || {
+			json_add_string "$opt" "$val"
+		}
 	done
 
 	if ! json_is_a protocol string; then
@@ -68,6 +72,12 @@ ucidef_set_model_name() {
 	json_select ..
 }
 
+ucidef_set_compat_version() {
+	json_select_object system
+	json_add_string compat_version "${1:-1.0}"
+	json_select ..
+}
+
 ucidef_set_interface_lan() {
 	ucidef_set_interface "lan" ifname "$1" protocol "${2:-static}"
 }
@@ -82,6 +92,26 @@ ucidef_set_interfaces_lan_wan() {
 
 	ucidef_set_interface_lan "$lan_if"
 	ucidef_set_interface_wan "$wan_if"
+}
+
+ucidef_set_bridge_device() {
+	json_select_object bridge
+	json_add_string name "${1:switch0}"
+	json_select ..
+}
+
+ucidef_set_bridge_mac() {
+	json_select_object bridge
+	json_add_string macaddr "${1}"
+	json_select ..
+}
+
+ucidef_set_network_device_mac() {
+	json_select_object "network-device"
+	json_select_object "${1}"
+	json_add_string macaddr "${2}"
+	json_select ..
+	json_select ..
 }
 
 _ucidef_add_switch_port() {
@@ -180,6 +210,19 @@ _ucidef_finish_switch_roles() {
 
 		ucidef_set_interface "$role" ifname "$devices"
 	done
+}
+
+ucidef_set_ar8xxx_switch_mib() {
+	local name="$1"
+	local type="$2"
+	local interval="$3"
+
+	json_select_object switch
+		json_select_object "$name"
+			json_add_int ar8xxx_mib_type $type
+			json_add_int ar8xxx_mib_poll_interval $interval
+		json_select ..
+	json_select ..
 }
 
 ucidef_add_switch() {
@@ -294,6 +337,14 @@ ucidef_set_interface_macaddr() {
 	ucidef_set_interface "$network" macaddr "$macaddr"
 }
 
+ucidef_set_label_macaddr() {
+	local macaddr="$1"
+
+	json_select_object system
+		json_add_string label_macaddr "$macaddr"
+	json_select ..
+}
+
 ucidef_add_atm_bridge() {
 	local vpi="$1"
 	local vci="$2"
@@ -383,7 +434,7 @@ ucidef_set_led_gpio() {
 }
 
 ucidef_set_led_ide() {
-	_ucidef_set_led_trigger "$1" "$2" "$3" ide-disk
+	_ucidef_set_led_trigger "$1" "$2" "$3" disk-activity
 }
 
 ucidef_set_led_netdev() {
@@ -463,6 +514,7 @@ _ucidef_set_led_timer() {
 
 	_ucidef_set_led_common "$1" "$2" "$3"
 
+	json_add_string type "$trigger_name"
 	json_add_string trigger "$trigger_name"
 	json_add_int delayon "$delayon"
 	json_add_int delayoff "$delayoff"
@@ -551,7 +603,7 @@ ucidef_add_gpio_switch() {
 	json_select_object gpioswitch
 		json_select_object "$cfg"
 			json_add_string name "$name"
-			json_add_int pin "$pin"
+			json_add_string pin "$pin"
 			json_add_int default "$default"
 		json_select ..
 	json_select ..
@@ -593,6 +645,5 @@ board_config_update() {
 }
 
 board_config_flush() {
-	json_dump -i > /tmp/.board.json
-	mv /tmp/.board.json ${CFG}
+	json_dump -i -o ${CFG}
 }

@@ -1,0 +1,61 @@
+From e8c0a77a831843a66b3ac0048aa6c76bc39b0332 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Mon, 4 Sep 2017 14:03:01 +0300
+Subject: [PATCH] sdk_dpaa: ls1043a errata: do not recycle the realigned
+ buffers
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h    | 10 ++++++----
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c |  9 +++++++++
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
+@@ -680,15 +680,17 @@ static inline void _dpa_bp_free_pf(void
+ 	put_page(virt_to_head_page(addr));
+ }
+ 
+-/* TODO: LS1043A SoC has a HW issue regarding FMan DMA transactions; The issue
+- * manifests itself at high traffic rates when frames exceed 4K memory
+- * boundaries; For the moment, we use a SW workaround to avoid frames larger
+- * than 4K or that exceed 4K alignments.
++/* LS1043A SoC has a HW issue regarding FMan DMA transactions; The issue
++ * manifests itself at high traffic rates when frames cross 4K memory
++ * boundaries or when they are not aligned to 16 bytes; For the moment, we
++ * use a SW workaround to avoid frames larger than 4K or that exceed 4K
++ * alignments and to realign the frames to 16 bytes.
+  */
+ 
+ #ifndef CONFIG_PPC
+ extern bool dpaa_errata_a010022; /* SoC affected by A010022 errata */
+ 
++#define NONREC_MARK	0x01
+ #define HAS_DMA_ISSUE(start, size) \
+ 	(((u64)(start) + (size)) > (((u64)(start) + 0x1000) & ~0xFFF))
+ #define BOUNDARY_4K(start, size) (((u64)(start) + (u64)(size)) & ~0xFFF)
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
+@@ -302,6 +302,12 @@ EXPORT_SYMBOL(_dpa_cleanup_tx_fd);
+ #ifndef CONFIG_FSL_DPAA_TS
+ bool dpa_skb_is_recyclable(struct sk_buff *skb)
+ {
++#ifndef CONFIG_PPC
++	/* Do no recycle skbs realigned by the errata workaround */
++	if (unlikely(dpaa_errata_a010022) && skb->mark == NONREC_MARK)
++		return false;
++#endif
++
+ 	/* No recycling possible if skb buffer is kmalloc'ed  */
+ 	if (skb->head_frag == 0)
+ 		return false;
+@@ -838,6 +844,9 @@ static struct sk_buff *a010022_realign_s
+ 	skb_set_network_header(nskb, net_offset);
+ 	skb_set_transport_header(nskb, trans_offset);
+ 
++	/* We don't want the buffer to be recycled so we mark it accordingly */
++	nskb->mark = NONREC_MARK;
++
+ 	dev_kfree_skb(skb);
+ 	return nskb;
+ 

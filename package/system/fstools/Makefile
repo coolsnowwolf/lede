@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fstools
-PKG_RELEASE:=3
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_SOURCE_DATE:=2019-08-28
-PKG_SOURCE_VERSION:=6a61b9ac105b8eb28680e728a2723e302a91304d
-PKG_MIRROR_HASH:=f617d06ccea732fcbfdc2a2bd70c59726d37f61de100fae895d718884a9624d1
+PKG_MIRROR_HASH:=41c9c51d193f5150db67fcd898b6ea904b88476c94cdfd021d81e2711441b430
+PKG_SOURCE_DATE:=2021-05-16
+PKG_SOURCE_VERSION:=3d40a1b591cd569f95891116cd033b496de0f92b
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -79,7 +79,7 @@ define Package/block-mount
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=Block device mounting and checking
-  DEPENDS:=+ubox +libubox +libuci +libblobmsg-json +libjson-c
+  DEPENDS:=+fstools +ubox +libubox +libuci +libblobmsg-json +libjson-c
 endef
 
 define Package/blockd

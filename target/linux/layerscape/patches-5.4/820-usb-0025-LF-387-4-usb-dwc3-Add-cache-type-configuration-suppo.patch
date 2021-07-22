@@ -1,0 +1,157 @@
+From cda32ee78d8b448bcbfc8e3d55dc04d809657ce2 Mon Sep 17 00:00:00 2001
+From: Ran Wang <ran.wang_1@nxp.com>
+Date: Wed, 20 Nov 2019 14:09:23 +0800
+Subject: [PATCH] LF-387-4 usb: dwc3: Add cache type configuration support
+
+This feature is telling how to configure cache type on 4 different
+transfer types: Data Read, Desc Read, Data Write and Desc write. For each
+treasfer type, controller has a 4-bit register field to enable different
+cache type. Quoted from DWC3 data book Table 6-5 Cache Type Bit Assignments:
+----------------------------------------------------------------
+MBUS_TYPE| bit[3]       |bit[2]       |bit[1]     |bit[0]
+----------------------------------------------------------------
+AHB      |Cacheable     |Bufferable   |Privilegge |Data
+AXI3     |Write Allocate|Read Allocate|Cacheable  |Bufferable
+AXI4     |Allocate Other|Allocate     |Modifiable |Bufferable
+AXI4     |Other Allocate|Allocate     |Modifiable |Bufferable
+Native   |Same as AXI   |Same as AXI  |Same as AXI|Same as AXI
+----------------------------------------------------------------
+Note: The AHB, AXI3, AXI4, and PCIe busses use different names for certain
+signals, which have the same meaning:
+  Bufferable = Posted
+  Cacheable = Modifiable = Snoop (negation of No Snoop)
+
+In most cases, driver support is not required unless the default values of
+registers are not correct *and* DWC3 node has enabled dma-coherent. So far we
+have observed USB device detect failure on some Layerscape platforms if this
+programming was not applied.
+
+Related struct:
+struct dwc3_cache_type {
+	u8 transfer_type_datard;
+	u8 transfer_type_descrd;
+	u8 transfer_type_datawr;
+	u8 transfer_type_descwr;
+};
+
+Signed-off-by: Ran Wang <ran.wang_1@nxp.com>
+Reviewed-by: Jun Li <jun.li@nxp.com>
+---
+ drivers/usb/dwc3/core.c | 67 ++++++++++++++++++++++++++++++++++++++++++++-----
+ drivers/usb/dwc3/core.h | 15 +++++++++++
+ 2 files changed, 76 insertions(+), 6 deletions(-)
+
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -919,6 +919,53 @@ static void dwc3_set_power_down_clk_scal
+ 	dwc3_writel(dwc->regs, DWC3_GCTL, reg);
+ }
+ 
++#ifdef CONFIG_OF
++struct dwc3_cache_type {
++	u8 transfer_type_datard;
++	u8 transfer_type_descrd;
++	u8 transfer_type_datawr;
++	u8 transfer_type_descwr;
++};
++
++static const struct dwc3_cache_type ls1088a_dwc3_cache_type = {
++	.transfer_type_datard = 2,
++	.transfer_type_descrd = 2,
++	.transfer_type_datawr = 2,
++	.transfer_type_descwr = 2,
++};
++
++/**
++ * dwc3_set_cache_type - Configure cache type registers
++ * @dwc: Pointer to our controller context structure
++ */
++static void dwc3_set_cache_type(struct dwc3 *dwc)
++{
++	u32 tmp, reg;
++	const struct dwc3_cache_type *cache_type =
++		device_get_match_data(dwc->dev);
++
++	if (cache_type) {
++		reg = dwc3_readl(dwc->regs,  DWC3_GSBUSCFG0);
++		tmp = reg;
++
++		reg &= ~DWC3_GSBUSCFG0_DATARD(~0);
++		reg |= DWC3_GSBUSCFG0_DATARD(cache_type->transfer_type_datard);
++
++		reg &= ~DWC3_GSBUSCFG0_DESCRD(~0);
++		reg |= DWC3_GSBUSCFG0_DESCRD(cache_type->transfer_type_descrd);
++
++		reg &= ~DWC3_GSBUSCFG0_DATAWR(~0);
++		reg |= DWC3_GSBUSCFG0_DATAWR(cache_type->transfer_type_datawr);
++
++		reg &= ~DWC3_GSBUSCFG0_DESCWR(~0);
++		reg |= DWC3_GSBUSCFG0_DESCWR(cache_type->transfer_type_descwr);
++
++		if (tmp != reg)
++			dwc3_writel(dwc->regs, DWC3_GSBUSCFG0, reg);
++	}
++}
++#endif
++
+ /**
+  * dwc3_core_init - Low-level initialization of DWC3 Core
+  * @dwc: Pointer to our controller context structure
+@@ -979,6 +1026,10 @@ static int dwc3_core_init(struct dwc3 *d
+ 
+ 	dwc3_set_incr_burst_type(dwc);
+ 
++#ifdef CONFIG_OF
++	dwc3_set_cache_type(dwc);
++#endif
++
+ 	usb_phy_set_suspend(dwc->usb2_phy, 0);
+ 	usb_phy_set_suspend(dwc->usb3_phy, 0);
+ 	ret = phy_power_on(dwc->usb2_generic_phy);
+@@ -1932,12 +1983,16 @@ static const struct dev_pm_ops dwc3_dev_
+ 
+ #ifdef CONFIG_OF
+ static const struct of_device_id of_dwc3_match[] = {
+-	{
+-		.compatible = "snps,dwc3"
+-	},
+-	{
+-		.compatible = "synopsys,dwc3"
+-	},
++	{ .compatible = "fsl,ls1012a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls1021a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls1028a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls1043a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls1046a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls1088a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,ls2088a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "fsl,lx2160a-dwc3", .data = &ls1088a_dwc3_cache_type, },
++	{ .compatible = "snps,dwc3" },
++	{ .compatible = "synopsys,dwc3"	},
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(of, of_dwc3_match);
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -167,6 +167,21 @@
+ /* Bit fields */
+ 
+ /* Global SoC Bus Configuration INCRx Register 0 */
++#ifdef CONFIG_OF
++#define DWC3_GSBUSCFG0_DATARD_SHIFT	28
++#define DWC3_GSBUSCFG0_DATARD(n)	(((n) & 0xf)		\
++			<< DWC3_GSBUSCFG0_DATARD_SHIFT)
++#define DWC3_GSBUSCFG0_DESCRD_SHIFT	24
++#define DWC3_GSBUSCFG0_DESCRD(n)	(((n) & 0xf)		\
++			<< DWC3_GSBUSCFG0_DESCRD_SHIFT)
++#define DWC3_GSBUSCFG0_DATAWR_SHIFT	20
++#define DWC3_GSBUSCFG0_DATAWR(n)	(((n) & 0xf)		\
++			<< DWC3_GSBUSCFG0_DATAWR_SHIFT)
++#define DWC3_GSBUSCFG0_DESCWR_SHIFT	16
++#define DWC3_GSBUSCFG0_DESCWR(n)	(((n) & 0xf)		\
++			<< DWC3_GSBUSCFG0_DESCWR_SHIFT)
++#endif
++
+ #define DWC3_GSBUSCFG0_INCR256BRSTENA	(1 << 7) /* INCR256 burst */
+ #define DWC3_GSBUSCFG0_INCR128BRSTENA	(1 << 6) /* INCR128 burst */
+ #define DWC3_GSBUSCFG0_INCR64BRSTENA	(1 << 5) /* INCR64 burst */

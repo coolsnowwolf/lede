@@ -19,17 +19,14 @@ function index()
 		return
 	end
 
-	entry({"admin", "nas"}, firstchild(), "NAS", 45).dependent = false
-        
-	local page = entry({"admin", "nas", "amule"}, cbi("amule"), _("aMule Settings"))
-	page.dependent = true
-	entry( {"admin", "nas", "amule", "logview"}, call("logread") ).leaf = true
-	entry( {"admin", "nas", "amule", "status"}, call("get_pid") ).leaf = true
-	entry( {"admin", "nas", "amule", "amulecmd"}, call("amulecmd") ).leaf = true
-	entry( {"admin", "nas", "amule", "startstop"}, post("startstop") ).leaf = true
-	entry( {"admin", "nas", "amule", "down_kad"}, post("down_kad") ).leaf = true
-	entry( {"admin", "nas", "amule", "down_ed2k"}, post("down_ed2k") ).leaf = true
-
+	entry({"admin", "nas"}, firstchild(), "NAS", 45).dependent = false    
+	entry({"admin", "nas", "amule"}, cbi("amule"), _("aMule Settings")).dependent = true
+	entry({"admin", "nas", "amule", "logview"}, call("logread")).leaf = true
+	entry({"admin", "nas", "amule", "status"}, call("get_pid")).leaf = true
+	entry({"admin", "nas", "amule", "amulecmd"}, call("amulecmd")).leaf = true
+	entry({"admin", "nas", "amule", "startstop"}, post("startstop")).leaf = true
+	entry({"admin", "nas", "amule", "down_kad"}, post("down_kad")).leaf = true
+	entry({"admin", "nas", "amule", "down_ed2k"}, post("down_ed2k")).leaf = true
 end
 
 -- called by XHR.get from detail_logview.htm
@@ -69,50 +66,50 @@ end
 
 function down_kad()
 	url = uci:get("amule", "main", "kad_nodes_url")
-        data_path = configdir .. "/nodes.dat"
-        proto = string.gsub(url, "://%S*", "")
-        proto_opt = ( proto == "https" ) and " --no-check-certificate" or ""
-        cmd = "wget -O /tmp/down_nodes.dat \"" .. url .. "\"" .. proto_opt ..
-                " && cat /tmp/down_nodes.dat > " .. "\"" .. data_path .. "\""
-        luci.sys.call(cmd)
+		data_path = configdir .. "/nodes.dat"
+		proto = string.gsub(url, "://%S*", "")
+		proto_opt = ( proto == "https" ) and " --no-check-certificate" or ""
+		cmd = "wget -O /tmp/down_nodes.dat \"" .. url .. "\"" .. proto_opt ..
+				" && cat /tmp/down_nodes.dat > " .. "\"" .. data_path .. "\""
+		luci.sys.call(cmd)
 end
 
 function down_ed2k()
 	url = uci:get("amule", "main", "ed2k_servers_url")
 	data_path = configdir .. "/server.met"
-        proto = string.gsub(url, "://%S*", "")
-        proto_opt = ( proto == "https" ) and " --no-check-certificate" or ""
-        cmd = "wget -O /tmp/down_server.met \"" .. url .. "\"" .. proto_opt ..
-                " && cat /tmp/down_server.met > " .. "\"" .. data_path .. "\""
-        luci.sys.call(cmd)
+		proto = string.gsub(url, "://%S*", "")
+		proto_opt = ( proto == "https" ) and " --no-check-certificate" or ""
+		cmd = "wget -O /tmp/down_server.met \"" .. url .. "\"" .. proto_opt ..
+				" && cat /tmp/down_server.met > " .. "\"" .. data_path .. "\""
+		luci.sys.call(cmd)
 end
 
 -- called by XHR.poll from detail_startstop.htm
 -- and from lua (with parameter "true")
 function get_pid(from_lua)
 	local pid_amuled = tonumber(luci.sys.exec("pidof amuled")) or 0 
-        local amuled_stat =false
+		local amuled_stat =false
 	if pid_amuled > 0 and not nixio.kill(pid_amuled, 0) then
 		pid_amuled = 0
 	end
         
-        if pid_amuled > 0 then
-            amuled_stat =true
-        else
-            amuled_stat =false
-        end
+		if pid_amuled > 0 then
+			amuled_stat =true
+		else
+			amuled_stat =false
+		end
         
 	local pid_amuleweb = tonumber(luci.sys.exec("pidof amuleweb")) or 0 
-        local amuleweb_stat = false
+		local amuleweb_stat = false
 	if pid_amuleweb > 0 and not nixio.kill(pid_amuleweb, 0) then
 		pid_amuleweb = 0
 	end
         
-        if pid_amuleweb > 0 then
-            amuleweb_stat =true
-        else
-            amuleweb_stat =false
-        end
+		if pid_amuleweb > 0 then
+			amuleweb_stat =true
+		else
+			amuleweb_stat =false
+		end
         
 	local status = {
 		amuled = amuled_stat,
@@ -127,7 +124,6 @@ function get_pid(from_lua)
 		luci.http.write_json(status)	
 	end
 end
-
 
 function amulecmd()
 	local re =""

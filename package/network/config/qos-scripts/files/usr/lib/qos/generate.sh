@@ -22,15 +22,20 @@ add_insmod() {
 [ -e /etc/config/network ] && {
 	# only try to parse network config on openwrt
 
-	find_ifname() {(
-		reset_cb
-		include /lib/network
-		scan_interfaces
-		config_get "$1" ifname
-	)}
+	. /lib/functions/network.sh
+
+	find_ifname() {
+		local ifname
+		if network_get_device ifname "$1"; then
+			echo "$ifname"
+		else
+			echo "Device for interface $1 not found." >&2
+			exit 1
+		fi
+	}
 } || {
 	find_ifname() {
-		echo "Interface not found."
+		echo "Interface not found." >&2
 		exit 1
 	}
 }
@@ -218,6 +223,7 @@ qos_parse_config() {
 				config_get device "$1" device
 				[ -z "$device" ] && {
 					device="$(find_ifname $1)"
+					[ -z "$device" ] && exit 1
 					config_set "$1" device "$device"
 				}
 			}
@@ -320,7 +326,7 @@ start_interface() {
 			append cstr "$classnr:$prio:$avgrate:$pktsize:$pktdelay:$maxrate:$qdisc:$filter" "$N"
 		done
 		append ${prefix}q "$(tcrules)" "$N"
-		export dev_${dir}="ifconfig $dev up >&- 2>&-
+		export dev_${dir}="ip link set $dev up >&- 2>&-
 tc qdisc del dev $dev root >&- 2>&-
 tc qdisc add dev $dev root handle 1: hfsc default ${class_default}0
 tc class add dev $dev parent 1: classid 1:1 hfsc sc rate ${rate}kbit ul rate ${rate}kbit"

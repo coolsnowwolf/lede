@@ -1,0 +1,43 @@
+#!/bin/sh
+
+[ -e /lib/firmware/$FIRMWARE ] && exit 0
+
+. /lib/functions/caldata.sh
+
+case "$FIRMWARE" in
+	"ath9k-eeprom-pci-0000:00:0e.0.bin" | \
+	"ath9k-eeprom-pci-0000:01:00.0.bin" | \
+	"ath9k-eeprom-pci-0000:02:00.0.bin")
+		board=$(board_name)
+
+		case "$board" in
+			avm,fritz3370-rev2-hynix|\
+			avm,fritz3370-rev2-micron|\
+			avm,fritz7362sl)
+				caldata_extract_reverse "urlader" 0x1541 0x440
+				;;
+			avm,fritz3390)
+				caldata_extract_reverse "urlader" 0x2546 0x440
+				;;
+			avm,fritz7360sl|\
+			avm,fritz7360-v2)
+				caldata_extract "urlader" 0x985 0x1000
+				;;
+			avm,fritz7412|\
+			avm,fritz7430)
+				/usr/bin/fritz_cal_extract -i 1 -s 0x1e000 -e 0x207 -l 4096 -o /lib/firmware/$FIRMWARE $(find_mtd_chardev "urlader")
+				;;
+			bt,homehub-v5a)
+				caldata_extract_ubi "caldata" 0x1000 0x1000
+				ath9k_patch_mac_crc $(macaddr_add $(mtd_get_mac_binary_ubi caldata 0x110c) 2) 0x10c
+				;;
+			tplink,tdw8970|\
+			tplink,tdw8980)
+				caldata_extract "boardconfig" 0x21000 0x1000
+				;;
+			*)
+				caldata_die "board $board is not supported yet"
+				;;
+		esac
+		;;
+esac

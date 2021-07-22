@@ -1,0 +1,246 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Wed, 26 Feb 2020 10:23:41 +0000
+Subject: [PATCH] net: phylink: propagate resolved link config via
+ mac_link_up()
+
+Propagate the resolved link parameters via the mac_link_up() call for
+MACs that do not automatically track their PCS state. We propagate the
+link parameters via function arguments so that inappropriate members
+of struct phylink_link_state can't be accessed, and creating a new
+structure just for this adds needless complexity to the API.
+
+Tested-by: Andre Przywara <andre.przywara@arm.com>
+Tested-by: Alexandre Belloni <alexandre.belloni@bootlin.com>
+Tested-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/Documentation/networking/sfp-phylink.rst
++++ b/Documentation/networking/sfp-phylink.rst
+@@ -74,10 +74,13 @@ phylib to the sfp/phylink support.  Plea
+ this documentation.
+ 
+ 1. Optionally split the network driver's phylib update function into
+-   three parts dealing with link-down, link-up and reconfiguring the
+-   MAC settings. This can be done as a separate preparation commit.
++   two parts dealing with link-down and link-up. This can be done as
++   a separate preparation commit.
+ 
+-   An example of this preparation can be found in git commit fc548b991fb0.
++   An older example of this preparation can be found in git commit
++   fc548b991fb0, although this was splitting into three parts; the
++   link-up part now includes configuring the MAC for the link settings.
++   Please see :c:func:`mac_link_up` for more information on this.
+ 
+ 2. Replace::
+ 
+@@ -207,6 +210,14 @@ this documentation.
+    using. This is particularly important for in-band negotiation
+    methods such as 1000base-X and SGMII.
+ 
++   The :c:func:`mac_link_up` method is used to inform the MAC that the
++   link has come up. The call includes the negotiation mode and interface
++   for reference only. The finalised link parameters are also supplied
++   (speed, duplex and flow control/pause enablement settings) which
++   should be used to configure the MAC when the MAC and PCS are not
++   tightly integrated, or when the settings are not coming from in-band
++   negotiation.
++
+    The :c:func:`mac_config` method is used to update the MAC with the
+    requested state, and must avoid unnecessarily taking the link down
+    when making changes to the MAC configuration.  This means the
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -3655,9 +3655,11 @@ static void mvneta_mac_link_down(struct
+ 	mvneta_set_eee(pp, false);
+ }
+ 
+-static void mvneta_mac_link_up(struct phylink_config *config, unsigned int mode,
+-			       phy_interface_t interface,
+-			       struct phy_device *phy)
++static void mvneta_mac_link_up(struct phylink_config *config,
++			       struct phy_device *phy,
++			       unsigned int mode, phy_interface_t interface,
++			       int speed, int duplex,
++			       bool tx_pause, bool rx_pause)
+ {
+ 	struct net_device *ndev = to_net_dev(config->dev);
+ 	struct mvneta_port *pp = netdev_priv(ndev);
+--- a/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c
++++ b/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c
+@@ -58,8 +58,11 @@ static struct {
+  */
+ static void mvpp2_mac_config(struct phylink_config *config, unsigned int mode,
+ 			     const struct phylink_link_state *state);
+-static void mvpp2_mac_link_up(struct phylink_config *config, unsigned int mode,
+-			      phy_interface_t interface, struct phy_device *phy);
++static void mvpp2_mac_link_up(struct phylink_config *config,
++			      struct phy_device *phy,
++			      unsigned int mode, phy_interface_t interface,
++			      int speed, int duplex,
++			      bool tx_pause, bool rx_pause);
+ 
+ /* Queue modes */
+ #define MVPP2_QDIST_SINGLE_MODE	0
+@@ -3468,8 +3471,9 @@ static void mvpp2_start_dev(struct mvpp2
+ 			.interface = port->phy_interface,
+ 		};
+ 		mvpp2_mac_config(&port->phylink_config, MLO_AN_INBAND, &state);
+-		mvpp2_mac_link_up(&port->phylink_config, MLO_AN_INBAND,
+-				  port->phy_interface, NULL);
++		mvpp2_mac_link_up(&port->phylink_config, NULL,
++				  MLO_AN_INBAND, port->phy_interface,
++				  SPEED_UNKNOWN, DUPLEX_UNKNOWN, false, false);
+ 	}
+ 
+ 	netif_tx_start_all_queues(port->dev);
+@@ -5137,8 +5141,11 @@ static void mvpp2_mac_config(struct phyl
+ 	mvpp2_port_enable(port);
+ }
+ 
+-static void mvpp2_mac_link_up(struct phylink_config *config, unsigned int mode,
+-			      phy_interface_t interface, struct phy_device *phy)
++static void mvpp2_mac_link_up(struct phylink_config *config,
++			      struct phy_device *phy,
++			      unsigned int mode, phy_interface_t interface,
++			      int speed, int duplex,
++			      bool tx_pause, bool rx_pause)
+ {
+ 	struct mvpp2_port *port = mvpp2_phylink_to_port(config);
+ 	u32 val;
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -449,9 +449,10 @@ static void mtk_mac_link_down(struct phy
+ 	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
+ }
+ 
+-static void mtk_mac_link_up(struct phylink_config *config, unsigned int mode,
+-			    phy_interface_t interface,
+-			    struct phy_device *phy)
++static void mtk_mac_link_up(struct phylink_config *config,
++			    struct phy_device *phy,
++			    unsigned int mode, phy_interface_t interface,
++			    int speed, int duplex, bool tx_pause, bool rx_pause)
+ {
+ 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+ 					   phylink_config);
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -925,8 +925,10 @@ static void stmmac_mac_link_down(struct
+ }
+ 
+ static void stmmac_mac_link_up(struct phylink_config *config,
++			       struct phy_device *phy,
+ 			       unsigned int mode, phy_interface_t interface,
+-			       struct phy_device *phy)
++			       int speed, int duplex,
++			       bool tx_pause, bool rx_pause)
+ {
+ 	struct stmmac_priv *priv = netdev_priv(to_net_dev(config->dev));
+ 
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -1499,9 +1499,10 @@ static void axienet_mac_link_down(struct
+ }
+ 
+ static void axienet_mac_link_up(struct phylink_config *config,
+-				unsigned int mode,
+-				phy_interface_t interface,
+-				struct phy_device *phy)
++				struct phy_device *phy,
++				unsigned int mode, phy_interface_t interface,
++				int speed, int duplex,
++				bool tx_pause, bool rx_pause)
+ {
+ 	/* nothing meaningful to do */
+ }
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -447,8 +447,11 @@ static void phylink_mac_link_up(struct p
+ 	struct net_device *ndev = pl->netdev;
+ 
+ 	pl->cur_interface = link_state.interface;
+-	pl->ops->mac_link_up(pl->config, pl->cur_link_an_mode,
+-			     pl->cur_interface, pl->phydev);
++	pl->ops->mac_link_up(pl->config, pl->phydev,
++			     pl->cur_link_an_mode, pl->cur_interface,
++			     link_state.speed, link_state.duplex,
++			     !!(link_state.pause & MLO_PAUSE_TX),
++			     !!(link_state.pause & MLO_PAUSE_RX));
+ 
+ 	if (ndev)
+ 		netif_carrier_on(ndev);
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -91,9 +91,10 @@ struct phylink_mac_ops {
+ 	void (*mac_an_restart)(struct phylink_config *config);
+ 	void (*mac_link_down)(struct phylink_config *config, unsigned int mode,
+ 			      phy_interface_t interface);
+-	void (*mac_link_up)(struct phylink_config *config, unsigned int mode,
+-			    phy_interface_t interface,
+-			    struct phy_device *phy);
++	void (*mac_link_up)(struct phylink_config *config,
++			    struct phy_device *phy, unsigned int mode,
++			    phy_interface_t interface, int speed, int duplex,
++			    bool tx_pause, bool rx_pause);
+ };
+ 
+ #if 0 /* For kernel-doc purposes only. */
+@@ -217,19 +218,34 @@ void mac_link_down(struct phylink_config
+ /**
+  * mac_link_up() - allow the link to come up
+  * @config: a pointer to a &struct phylink_config.
++ * @phy: any attached phy
+  * @mode: link autonegotiation mode
+  * @interface: link &typedef phy_interface_t mode
+- * @phy: any attached phy
++ * @speed: link speed
++ * @duplex: link duplex
++ * @tx_pause: link transmit pause enablement status
++ * @rx_pause: link receive pause enablement status
++ *
++ * Configure the MAC for an established link.
++ *
++ * @speed, @duplex, @tx_pause and @rx_pause indicate the finalised link
++ * settings, and should be used to configure the MAC block appropriately
++ * where these settings are not automatically conveyed from the PCS block,
++ * or if in-band negotiation (as defined by phylink_autoneg_inband(@mode))
++ * is disabled.
++ *
++ * Note that when 802.3z in-band negotiation is in use, it is possible
++ * that the user wishes to override the pause settings, and this should
++ * be allowed when considering the implementation of this method.
+  *
+- * If @mode is not an in-band negotiation mode (as defined by
+- * phylink_autoneg_inband()), allow the link to come up. If @phy
+- * is non-%NULL, configure Energy Efficient Ethernet by calling
++ * If in-band negotiation mode is disabled, allow the link to come up. If
++ * @phy is non-%NULL, configure Energy Efficient Ethernet by calling
+  * phy_init_eee() and perform appropriate MAC configuration for EEE.
+  * Interface type selection must be done in mac_config().
+  */
+-void mac_link_up(struct phylink_config *config, unsigned int mode,
+-		 phy_interface_t interface,
+-		 struct phy_device *phy);
++void mac_link_up(struct phylink_config *config, struct phy_device *phy,
++		 unsigned int mode, phy_interface_t interface,
++		 int speed, int duplex, bool tx_pause, bool rx_pause);
+ #endif
+ 
+ struct phylink *phylink_create(struct phylink_config *, struct fwnode_handle *,
+--- a/net/dsa/port.c
++++ b/net/dsa/port.c
+@@ -529,9 +529,11 @@ void dsa_port_phylink_mac_link_down(stru
+ EXPORT_SYMBOL_GPL(dsa_port_phylink_mac_link_down);
+ 
+ void dsa_port_phylink_mac_link_up(struct phylink_config *config,
++				  struct phy_device *phydev,
+ 				  unsigned int mode,
+ 				  phy_interface_t interface,
+-				  struct phy_device *phydev)
++				  int speed, int duplex,
++				  bool tx_pause, bool rx_pause)
+ {
+ 	struct dsa_port *dp = container_of(config, struct dsa_port, pl_config);
+ 	struct dsa_switch *ds = dp->ds;

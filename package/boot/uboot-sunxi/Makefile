@@ -9,9 +9,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2019.01
+PKG_VERSION:=2020.04
 
-PKG_HASH:=50bd7e5a466ab828914d080d5f6a432345b500e8fba1ad3b7b61e95e60d51c22
+PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
 
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 
@@ -23,6 +23,24 @@ define U-Boot/Default
   UBOOT_IMAGE:=u-boot-sunxi-with-spl.bin
   UENV:=default
   HIDDEN:=1
+endef
+
+define U-Boot/a64-olinuxino
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Olimex A64-OLinuXino
+  BUILD_DEVICES:=olimex_a64-olinuxino
+  DEPENDS:=+PACKAGE_u-boot-olimex_a64-olinuxino:arm-trusted-firmware-sunxi-a64
+  UENV:=a64
+  ATF:=a64
+endef
+
+define U-Boot/a64-olinuxino-emmc
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Olimex A64-OLinuXino eMMC
+  BUILD_DEVICES:=olimex_a64-olinuxino-emmc
+  DEPENDS:=+PACKAGE_u-boot-olimex_a64-olinuxino-emmc:arm-trusted-firmware-sunxi-a64
+  UENV:=a64
+  ATF:=a64
 endef
 
 define U-Boot/A10-OLinuXino-Lime
@@ -126,6 +144,12 @@ define U-Boot/Linksprite_pcDuino3
   BUILD_DEVICES:=linksprite_pcduino3
 endef
 
+define U-Boot/Linksprite_pcDuino3_Nano
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=Linksprite pcDuino3 Nano
+  BUILD_DEVICES:=linksprite_pcduino3-nano
+endef
+
 define U-Boot/Lamobo_R1
   BUILD_SUBTARGET:=cortexa7
   NAME:=Lamobo R1
@@ -138,6 +162,12 @@ define U-Boot/nanopi_m1_plus
   BUILD_DEVICES:=friendlyarm_nanopi-m1-plus
 endef
 
+define U-Boot/zeropi
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=ZeroPi (H3)
+  BUILD_DEVICES:=friendlyarm_zeropi
+endef
+
 define U-Boot/nanopi_neo_air
   BUILD_SUBTARGET:=cortexa7
   NAME:=U-Boot for NanoPi NEO Air (H3)
@@ -148,6 +178,12 @@ define U-Boot/nanopi_neo
   BUILD_SUBTARGET:=cortexa7
   NAME:=U-Boot for NanoPi NEO (H3)
   BUILD_DEVICES:=friendlyarm_nanopi-neo
+endef
+
+define U-Boot/nanopi_r1
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=U-Boot for NanoPi R1 (H3)
+  BUILD_DEVICES:=friendlyarm_nanopi-r1
 endef
 
 define U-Boot/orangepi_r1
@@ -166,6 +202,15 @@ define U-Boot/orangepi_one
   BUILD_SUBTARGET:=cortexa7
   NAME:=Orange Pi One (H3)
   BUILD_DEVICES:=xunlong_orangepi-one
+endef
+
+define U-Boot/orangepi_one_plus
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Orange Pi One Plus (H6)
+  DEPENDS:=+PACKAGE_u-boot-orangepi_one_plus:arm-trusted-firmware-sunxi-h6
+  BUILD_DEVICES:=xunlong_orangepi-one-plus
+  UENV:=h6
+  ATF:=h6
 endef
 
 define U-Boot/orangepi_pc
@@ -198,33 +243,45 @@ define U-Boot/pangolin
   UENV:=pangolin
 endef
 
+define U-Boot/libretech_all_h3_cc_h5
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Libre Computer ALL-H3-CC H5
+  BUILD_DEVICES:=libretech_all-h3-cc-h5
+  DEPENDS:=+PACKAGE_u-boot-libretech_all_h3_cc_h5:arm-trusted-firmware-sunxi-a64
+  UENV:=a64
+  ATF:=a64
+endef
+
 define U-Boot/nanopi_neo_plus2
   BUILD_SUBTARGET:=cortexa53
   NAME:=NanoPi NEO Plus2 (H5)
   BUILD_DEVICES:=friendlyarm_nanopi-neo-plus2
-  DEPENDS:=+PACKAGE_u-boot-nanopi_neo_plus2:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-nanopi_neo_plus2:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
 define U-Boot/nanopi_neo2
   BUILD_SUBTARGET:=cortexa53
   NAME:=NanoPi NEO2 (H5)
   BUILD_DEVICES:=friendlyarm_nanopi-neo2
-  DEPENDS:=+PACKAGE_u-boot-nanopi_neo2:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-nanopi_neo2:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
 define U-Boot/pine64_plus
   BUILD_SUBTARGET:=cortexa53
   NAME:=Pine64 Plus A64
   BUILD_DEVICES:=pine64_pine64-plus
-  DEPENDS:=+PACKAGE_u-boot-pine64_plus:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-pine64_plus:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
-define U-Boot/Sinovoip_BPI_M2_Plus
+define U-Boot/bananapi_m2_plus_h3
   BUILD_SUBTARGET:=cortexa7
-  NAME:=Bananapi M2 Plus
+  NAME:=Bananapi M2 Plus H3
   BUILD_DEVICES:=sinovoip_bananapi-m2-plus
 endef
 
@@ -232,8 +289,9 @@ define U-Boot/sopine_baseboard
   BUILD_SUBTARGET:=cortexa53
   NAME:=Sopine Baseboard
   BUILD_DEVICES:=pine64_sopine-baseboard
-  DEPENDS:=+PACKAGE_u-boot-sopine_baseboard:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-sopine_baseboard:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
 
@@ -241,32 +299,45 @@ define U-Boot/orangepi_zero_plus
   BUILD_SUBTARGET:=cortexa53
   NAME:=Xunlong Orange Pi Zero Plus
   BUILD_DEVICES:=xunlong_orangepi-zero-plus
-  DEPENDS:=+PACKAGE_u-boot-orangepi_zero_plus:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-orangepi_zero_plus:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
 define U-Boot/orangepi_pc2
   BUILD_SUBTARGET:=cortexa53
   NAME:=Xunlong Orange Pi PC2
   BUILD_DEVICES:=xunlong_orangepi-pc2
-  DEPENDS:=+PACKAGE_u-boot-orangepi_pc2:arm-trusted-firmware-sunxi
+  DEPENDS:=+PACKAGE_u-boot-orangepi_pc2:arm-trusted-firmware-sunxi-a64
   UENV:=a64
+  ATF:=a64
 endef
 
-define U-Boot/Sinovoip_BPI_M2_Ultra
+define U-Boot/Bananapi_M2_Ultra
   BUILD_SUBTARGET:=cortexa7
   NAME:=Bananapi M2 Ultra
-  BUILD_DEVICES:=lemaker_bananapi-m2-ultra
+  BUILD_DEVICES:=sinovoip_bananapi-m2-ultra
+endef
+
+define U-Boot/bananapi_m2_berry
+  BUILD_SUBTARGET:=cortexa7
+  NAME:=Bananapi M2 Berry
+  BUILD_DEVICES:=sinovoip_bananapi-m2-berry
 endef
 
 UBOOT_TARGETS := \
+	a64-olinuxino \
+	a64-olinuxino-emmc \
 	A10-OLinuXino-Lime \
 	A13-OLinuXino \
 	A20-OLinuXino-Lime \
 	A20-OLinuXino-Lime2 \
 	A20-OLinuXino-Lime2-eMMC \
 	A20-OLinuXino_MICRO \
+	bananapi_m2_plus_h3 \
 	Bananapi \
+	bananapi_m2_berry \
+	Bananapi_M2_Ultra \
 	Bananapro \
 	Cubieboard \
 	Cubieboard2 \
@@ -277,15 +348,19 @@ UBOOT_TARGETS := \
 	OLIMEX_A13_SOM \
 	Linksprite_pcDuino \
 	Linksprite_pcDuino3 \
+	Linksprite_pcDuino3_Nano \
 	Lamobo_R1 \
 	nanopi_m1_plus \
+	zeropi \
 	nanopi_neo \
 	nanopi_neo_air \
 	nanopi_neo_plus2 \
 	nanopi_neo2 \
+	nanopi_r1 \
 	orangepi_zero \
 	orangepi_r1 \
 	orangepi_one \
+	orangepi_one_plus \
 	orangepi_pc \
 	orangepi_pc_plus \
 	orangepi_plus \
@@ -293,15 +368,14 @@ UBOOT_TARGETS := \
 	orangepi_pc2 \
 	pangolin \
 	pine64_plus \
-	Sinovoip_BPI_M2_Plus \
-	Sinovoip_BPI_M2_Ultra \
 	sopine_baseboard \
-	orangepi_zero_plus
+	orangepi_zero_plus \
+	libretech_all_h3_cc_h5
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
 UBOOT_MAKE_FLAGS += \
-	BL31=$(STAGING_DIR_IMAGE)/bl31.bin
+	BL31=$(STAGING_DIR_IMAGE)/bl31_sun50i_$(ATF).bin
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)

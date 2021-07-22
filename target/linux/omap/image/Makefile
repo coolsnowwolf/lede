@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2012-2014 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -19,7 +17,7 @@ define Build/omap-sdcard
 
 	mcopy -i $@.boot $(STAGING_DIR_IMAGE)/$(DEVICE_NAME)/MLO ::MLO
 	mcopy -i $@.boot $(STAGING_DIR_IMAGE)/$(DEVICE_NAME)/u-boot.img ::u-boot.img
-	mcopy -i $@.boot $(STAGING_DIR_IMAGE)/$(DEVICE_NAME)/uEnv.txt ::uEnv.txt
+	mcopy -i $@.boot $(STAGING_DIR_IMAGE)/$(DEVICE_NAME)/boot.scr ::boot.scr
 	mmd -i $@.boot ::/dtbs
 	mcopy -i $@.boot $(DTS_DIR)/$(DEVICE_DTS).dtb ::/dtbs/$(DEVICE_DTS).dtb
 	mcopy -i $@.boot $(IMAGE_KERNEL) ::/zImage
@@ -33,43 +31,43 @@ endef
 
 define Device/Default
   PROFILES := Default
-  DEVICE_VARS :=
   KERNEL_NAME := zImage
   KERNEL := kernel-bin
+  DEVICE_DTS = $(lastword $(subst _, ,$(1)))
   IMAGES := sdcard.img.gz
   IMAGE/sdcard.img.gz := omap-sdcard | append-metadata | gzip
-  SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
 endef
 
 #uboot-omap-am335x_evm uboot-omap-omap3_beagle uboot-omap-omap3_overo uboot-omap-omap4_panda
 
 define Device/ti_am335x-evm
-  DEVICE_TITLE := TI AM335x EVM
-  DEVICE_DTS := am335x-evm
+  DEVICE_VENDOR := Texas Instruments
+  DEVICE_MODEL := AM335x EVM
 endef
 
 TARGET_DEVICES += ti_am335x-evm
 
 define Device/ti_am335x-bone-black
-  DEVICE_TITLE := TI AM335x BeagleBone Black
+  DEVICE_VENDOR := Texas Instruments
+  DEVICE_MODEL := AM335x BeagleBone Black
   DEVICE_DTS := am335x-boneblack
 endef
 
 TARGET_DEVICES += ti_am335x-bone-black
 
 define Device/ti_omap4-panda
-  DEVICE_TITLE := OMAP4 TI pandaboard
-  DEVICE_DTS := omap4-panda
+  DEVICE_VENDOR := PandaBoard.org
+  DEVICE_MODEL := OMAP4 TI pandaboard
   DEVICE_PACKAGES := kmod-usb-net-smsc95xx
 endef
 
 TARGET_DEVICES += ti_omap4-panda
 
 define Device/ti_omap3-beagle
-  DEVICE_TITLE := OMAP3 TI beagleboard
-  DEVICE_DTS := omap3-beagle
+  DEVICE_VENDOR := BeagleBoard.org
+  DEVICE_MODEL := OMAP3 TI beagleboard
   # beagleboard doesn't have a network interface, support most common usb net
-  DEVICE_PACKAGES := kmod-usb-net \
+  DEVICE_PACKAGES := \
 	kmod-usb-net-asix kmod-usb-net-asix-ax88179 kmod-usb-net-hso \
 	kmod-usb-net-kaweth kmod-usb-net-pegasus kmod-usb-net-mcs7830 \
 	kmod-usb-net-smsc95xx kmod-usb-net-dm9601-ether

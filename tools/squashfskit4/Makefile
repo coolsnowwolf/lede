@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=squashfskit4
 PKG_VERSION:=4.14
-
+PKG_RELEASE:=2
 PKG_SOURCE:=squashfskit-v$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://github.com/squashfskit/squashfskit/releases/download/v$(PKG_VERSION)/
 PKG_HASH:=5761aaa3aedc4f7112b708367d891c9abdc1ffea972e3fe47923ddba23984d95
@@ -22,7 +22,7 @@ define Host/Compile
 	$(MAKE) -C $(HOST_BUILD_DIR)/squashfs-tools \
 		XZ_SUPPORT=1 \
 		LZMA_XZ_SUPPORT=1 \
-		XATTR_SUPPORT= \
+		XATTR_SUPPORT=1 \
 		LZMA_LIB="$(STAGING_DIR_HOST)/lib/liblzma.a" \
 		EXTRA_CFLAGS="-I$(STAGING_DIR_HOST)/include" \
 		mksquashfs unsquashfs

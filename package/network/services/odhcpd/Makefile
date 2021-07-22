@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=odhcpd
-PKG_RELEASE:=3
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/odhcpd.git
-PKG_SOURCE_DATE:=2020-01-14
-PKG_SOURCE_VERSION:=6db312a698e920ff61505ef1f42469880829774d
-PKG_MIRROR_HASH:=4c9f5effd379fed3119f0a2d2661c5929ac234d9b2e3d7a6a1de72409b04a0f1
+PKG_SOURCE_DATE:=2021-06-19
+PKG_SOURCE_VERSION:=564d25e53fad925fa3ed56e3004c107d40925fa4
+PKG_MIRROR_HASH:=a0644d31f99f20e5c2cee74153b81a0c2eae9ebeb644662cc76b0984b44dd490
 
 PKG_MAINTAINER:=Hans Dedecker <dedeckeh@gmail.com>
 PKG_LICENSE:=GPL-2.0
@@ -100,7 +100,7 @@ define Package/odhcpd/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/odhcpd.init $(1)/etc/init.d/odhcpd
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
-	$(INSTALL_BIN) ./files/odhcpd.defaults $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/odhcpd.defaults $(1)/etc/uci-defaults/15_odhcpd
 endef
 
 Package/odhcpd-ipv6only/install = $(Package/odhcpd/install)

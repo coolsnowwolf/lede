@@ -1,0 +1,90 @@
+From 1693e5693b77f0d172aac8adcfaa4888d64f8996 Mon Sep 17 00:00:00 2001
+From: Marc Kleine-Budde <mkl@pengutronix.de>
+Date: Fri, 1 Mar 2019 13:54:19 +0100
+Subject: [PATCH] can: flexcan: introduce struct flexcan_priv::tx_mask and make
+ use of it
+
+The current driver uses FLEXCAN_IFLAG2_MB() to generate the mask to check for
+the TX complete interrupt. This works well, as the driver will always use the
+last mailbox for TX, which falls into the iflag2 register.
+
+To support CANFD the payload size has to increase to 64 bytes and the
+number of mailboxes will decrease so much that the TX mailbox will be
+handled in the iflag1 register.
+
+This patch introduces a tx_mask in the struct flexcan_priv (similar to rx_mask)
+and makes use of it. The actual support to handle the TX mailbox in iflag1 will
+be added in the next patches.
+
+Signed-off-by: Marc Kleine-Budde <mkl@pengutronix.de>
+---
+ drivers/net/can/flexcan.c | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/can/flexcan.c
++++ b/drivers/net/can/flexcan.c
+@@ -143,7 +143,6 @@
+ #define FLEXCAN_TX_MB_RESERVED_OFF_TIMESTAMP	0
+ #define FLEXCAN_RX_MB_OFF_TIMESTAMP_FIRST	(FLEXCAN_TX_MB_RESERVED_OFF_TIMESTAMP + 1)
+ #define FLEXCAN_IFLAG_MB(x)		BIT_ULL(x)
+-#define FLEXCAN_IFLAG2_MB(x)		BIT((x) & 0x1f)
+ #define FLEXCAN_IFLAG_RX_FIFO_OVERFLOW	BIT(7)
+ #define FLEXCAN_IFLAG_RX_FIFO_WARN	BIT(6)
+ #define FLEXCAN_IFLAG_RX_FIFO_AVAILABLE	BIT(5)
+@@ -279,6 +278,7 @@ struct flexcan_priv {
+ 	u8 clk_src;	/* clock source of CAN Protocol Engine */
+ 
+ 	u64 rx_mask;
++	u64 tx_mask;
+ 	u32 reg_ctrl_default;
+ 
+ 	struct clk *clk_ipg;
+@@ -898,7 +898,8 @@ static irqreturn_t flexcan_irq(int irq,
+ 	struct flexcan_priv *priv = netdev_priv(dev);
+ 	struct flexcan_regs __iomem *regs = priv->regs;
+ 	irqreturn_t handled = IRQ_NONE;
+-	u32 reg_iflag2, reg_esr;
++	u64 reg_iflag_tx;
++	u32 reg_esr;
+ 	enum can_state last_state = priv->can.state;
+ 
+ 	/* reception interrupt */
+@@ -932,10 +933,10 @@ static irqreturn_t flexcan_irq(int irq,
+ 		}
+ 	}
+ 
+-	reg_iflag2 = priv->read(&regs->iflag2);
++	reg_iflag_tx = (u64)priv->read(&regs->iflag2) << 32;
+ 
+ 	/* transmission complete interrupt */
+-	if (reg_iflag2 & FLEXCAN_IFLAG2_MB(priv->tx_mb_idx)) {
++	if (reg_iflag_tx & priv->tx_mask) {
+ 		u32 reg_ctrl = priv->read(&priv->tx_mb->can_ctrl);
+ 
+ 		handled = IRQ_HANDLED;
+@@ -947,7 +948,7 @@ static irqreturn_t flexcan_irq(int irq,
+ 		/* after sending a RTR frame MB is in RX mode */
+ 		priv->write(FLEXCAN_MB_CODE_TX_INACTIVE,
+ 			    &priv->tx_mb->can_ctrl);
+-		priv->write(FLEXCAN_IFLAG2_MB(priv->tx_mb_idx), &regs->iflag2);
++		priv->write(priv->tx_mask >> 32, &regs->iflag2);
+ 		netif_wake_queue(dev);
+ 	}
+ 
+@@ -1232,7 +1233,7 @@ static int flexcan_chip_start(struct net
+ 	/* enable interrupts atomically */
+ 	disable_irq(dev->irq);
+ 	priv->write(priv->reg_ctrl_default, &regs->ctrl);
+-	reg_imask = priv->rx_mask | FLEXCAN_IFLAG_MB(priv->tx_mb_idx);
++	reg_imask = priv->rx_mask | priv->tx_mask;
+ 	priv->write(upper_32_bits(reg_imask), &regs->imask2);
+ 	priv->write(lower_32_bits(reg_imask), &regs->imask1);
+ 	enable_irq(dev->irq);
+@@ -1327,6 +1328,7 @@ static int flexcan_open(struct net_devic
+ 			flexcan_get_mb(priv, FLEXCAN_TX_MB_RESERVED_OFF_FIFO);
+ 	priv->tx_mb_idx = priv->mb_count - 1;
+ 	priv->tx_mb = flexcan_get_mb(priv, priv->tx_mb_idx);
++	priv->tx_mask = FLEXCAN_IFLAG_MB(priv->tx_mb_idx);
+ 
+ 	priv->offload.mailbox_read = flexcan_mailbox_read;
+ 

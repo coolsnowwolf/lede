@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2019.04
+PKG_VERSION:=2021.01
 PKG_RELEASE:=1
 
-PKG_HASH:=76b7772d156b3ddd7644c8a1736081e55b78828537ff714065d21dbade229bef
+PKG_HASH:=b407e1510a74e863b8b5cb42a24625344f0e0c2fc7582d8c866bd899367d0454
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -29,24 +29,41 @@ define U-Boot/clearfog
   UBOOT_IMAGE:=u-boot-spl.kwb
 endef
 
+define U-Boot/helios4
+  NAME:=Kobol Helios 4
+  BUILD_DEVICES:=kobol_helios4
+  BUILD_SUBTARGET:=cortexa9
+  UBOOT_IMAGE:=u-boot-spl.kwb
+endef
+
+define U-Boot/espressobin
+  NAME:=Marvell ESPRESSObin
+  BUILD_SUBTARGET:=cortexa53
+  UBOOT_CONFIG:=mvebu_espressobin-88f3720
+endef
+
 define U-Boot/uDPU
   NAME:=Methode uDPU
-  BUILD_DEVICES:=methode_udpu
   BUILD_SUBTARGET:=cortexa53
 endef
 
 UBOOT_TARGETS:= \
 	clearfog \
+	helios4 \
+	espressobin \
 	uDPU
 
 Build/Exports:=$(Host/Exports)
 
 define Build/Configure
-	# enable additional options beyond clearfog_defconfig
-	echo CONFIG_NET_RANDOM_ETHADDR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
-	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(BUILD_VARIANT)_defconfig
+	# enable additional options beyond <device>_defconfig
+	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(UBOOT_CONFIG)_defconfig
 
-	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) $(UBOOT_CONFIGURE_VARS) $(UBOOT_CONFIG)_config
+	$(call Build/Configure/U-Boot)
+endef
+
+define Package/u-boot/install
+	$(if $(findstring cortexa53,$(BUILD_SUBTARGET)),,$(Package/u-boot/install/default))
 endef
 
 define Build/InstallDev

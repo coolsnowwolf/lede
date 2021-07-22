@@ -70,7 +70,7 @@ struct sgdma_request {
 
 /* Controller information */
 enum {
-	SATA_OXNAS_MAX_PRD = 254,
+	SATA_OXNAS_MAX_PRD = 63,
 	SATA_OXNAS_DMA_SIZE = SATA_OXNAS_MAX_PRD *
 				sizeof(struct ata_bmdma_prd) +
 				sizeof(struct sgdma_request),
@@ -1802,7 +1802,7 @@ static inline void sata_oxnas_reset_ucode(struct ata_host *ah, int force,
  * Prepare as much as possible for a command without involving anything that is
  * shared between ports.
  */
-static void sata_oxnas_qc_prep(struct ata_queued_cmd *qc)
+static enum ata_completion_errors sata_oxnas_qc_prep(struct ata_queued_cmd *qc)
 {
 	struct sata_oxnas_port_priv *pd;
 	int port_no = qc->ap->port_no;
@@ -1848,6 +1848,8 @@ static void sata_oxnas_qc_prep(struct ata_queued_cmd *qc)
 		/* tell it to wait */
 		iowrite32(SGDMA_CONTROL_NOGO, pd->sgdma_base + SGDMA_CONTROL);
 	}
+
+	return AC_ERR_OK;
 }
 
 static int sata_oxnas_port_start(struct ata_port *ap)
@@ -2123,7 +2125,7 @@ static void sata_oxnas_port_irq(struct ata_port *ap, int force_error)
 	DPRINTK("ENTER port %d irqstatus %x\n", ap->port_no,
 		ioread32(port_base + INT_STATUS));
 
-	if (ap->qc_active & (1 << ATA_TAG_INTERNAL)) {
+	if (ap->qc_active & (1ULL << ATA_TAG_INTERNAL)) {
 			qc = ata_qc_from_tag(ap, ATA_TAG_INTERNAL);
 			DPRINTK("completing non-ncq cmd\n");
 

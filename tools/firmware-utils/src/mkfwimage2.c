@@ -65,7 +65,6 @@ typedef struct image_info {
 } image_info_t;
 
 static image_info_t im;
-static int debug = 0;
 static int zero_part_baseaddr = 0;
 
 static void write_header(void* mem, const char* version)
@@ -363,12 +362,15 @@ static int build_image(void)
 	/* write in-memory buffer into file */
 	if ((f = fopen(im.outputfile, "w")) == NULL) {
 		ERROR("Can not create output file: '%s'\n", im.outputfile);
+		free(mem);
 		return -10;
 	}
 
 	if (fwrite(mem, mem_size, 1, f) != 1) {
 		ERROR("Could not write %d bytes into file: '%s'\n",
 				mem_size, im.outputfile);
+		free(mem);
+		fclose(f);
 		return -11;
 	}
 

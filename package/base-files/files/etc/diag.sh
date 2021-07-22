@@ -37,6 +37,8 @@ set_led_state() {
 		;;
 	done)
 		status_led_off
+		[ "$status_led" != "$running" ] && \
+			status_led_restore_trigger "boot"
 		[ -n "$running" ] && {
 			status_led="$running"
 			status_led_on

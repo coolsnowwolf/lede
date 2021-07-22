@@ -1,8 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017 Cezary Jackiewicz <cezary@eko.one.pll>
-#
-# This is free software, licensed under the GNU General Public License v2.
-#
+
+define KernelPackage/amazon-ena
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Elastic Network Adapter (for Amazon AWS T3)
+  DEPENDS:=@TARGET_x86_64
+  KCONFIG:=CONFIG_ENA_ETHERNET
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/amazon/ena/ena.ko
+  AUTOLOAD:=$(call AutoLoad,12,ena)
+endef
+
+define KernelPackage/amazon-ena/description
+  This driver supports Elastic Network Adapter (ENA)
+  used by Amazon AWS T3 instances.
+endef
+
+$(eval $(call KernelPackage,amazon-ena))
+
+
+define KernelPackage/amd-xgbe
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=AMD Ethernet on SoC support
+  DEPENDS:=@PCI_SUPPORT @TARGET_x86_64 +kmod-lib-crc32c +kmod-ptp +kmod-libphy +LINUX_5_10:kmod-mdio-devres
+  KCONFIG:=CONFIG_AMD_XGBE
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/amd/xgbe/amd-xgbe.ko
+  AUTOLOAD:=$(call AutoLoad,35,amd-xgbe)
+endef
+
+define KernelPackage/amd-xgbe/description
+ Kernel modules for AMD 10GbE Ethernet device on an AMD SoC.
+endef
+
+$(eval $(call KernelPackage,amd-xgbe))
+
 
 define KernelPackage/sound-cs5535audio
   TITLE:=CS5535/CS5536 Audio Controller
@@ -20,7 +51,7 @@ endef
 
 $(eval $(call KernelPackage,sound-cs5535audio))
 
-define KernelPackage/sp5100_tco
+define KernelPackage/sp5100-tco
   SUBMENU:=$(OTHER_MENU)
   TITLE:=SP5100 Watchdog Support
   DEPENDS:=@TARGET_x86
@@ -29,8 +60,25 @@ define KernelPackage/sp5100_tco
   AUTOLOAD:=$(call AutoLoad,50,sp5100_tco,1)
 endef
 
-define KernelPackage/sp5100_tco/description
+define KernelPackage/sp5100-tco/description
  Kernel module for the SP5100_TCO hardware watchdog.
 endef
 
-$(eval $(call KernelPackage,sp5100_tco))
+$(eval $(call KernelPackage,sp5100-tco))
+
+
+define KernelPackage/pcengines-apuv2
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=PC Engines APUv2/3 front button and LEDs driver
+  DEPENDS:=@TARGET_x86 +kmod-gpio-amd-fch +kmod-leds-gpio
+  KCONFIG:=CONFIG_PCENGINES_APU2
+  FILES:=$(LINUX_DIR)/drivers/platform/x86/pcengines-apuv2.ko
+  AUTOLOAD:=$(call AutoLoad,60,pcengines-apuv2)
+endef
+
+define KernelPackage/pcengines-apuv2/description
+  This driver provides support for the front button and LEDs on
+  PC Engines APUv2/APUv3 board.
+endef
+
+$(eval $(call KernelPackage,pcengines-apuv2))

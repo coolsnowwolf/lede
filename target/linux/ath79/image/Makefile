@@ -3,7 +3,18 @@ include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR = 0x80060000
 
-DEVICE_VARS += IMAGE_SIZE LOADER_FLASH_OFFS LOADER_TYPE
+DEVICE_VARS += LOADER_FLASH_OFFS LOADER_TYPE
+DEVICE_VARS += LOADER_FLASH_MAX LOADER_KERNEL_MAGIC
+DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
+DEVICE_VARS += RAS_BOARD RAS_ROOTFS_SIZE RAS_VERSION
+
+define Build/combined-image
+	sh $(TOPDIR)/scripts/combined-image.sh \
+		"$(IMAGE_KERNEL)" \
+		"$@" \
+		"$@.new"
+	@mv $@.new $@
+endef
 
 define Build/loader-common
 	rm -rf $@.src
@@ -19,13 +30,11 @@ define Build/loader-kernel
 	$(call Build/loader-common,LOADER_DATA="$@")
 endef
 
-define Build/loader-kernel-cmdline
-	$(call Build/loader-common,LOADER_DATA="$@")
-endef
-
-
 define Build/loader-okli-compile
-	$(call Build/loader-common,FLASH_OFFS=$(LOADER_FLASH_OFFS) FLASH_MAX=0)
+	$(call Build/loader-common, \
+		FLASH_OFFS=$(LOADER_FLASH_OFFS) \
+		FLASH_MAX=$(LOADER_FLASH_MAX) \
+		KERNEL_MAGIC=$(LOADER_KERNEL_MAGIC) )
 endef
 
 # Arguments: <output name> <kernel offset>
@@ -37,6 +46,10 @@ endef
 
 define Build/append-loader-okli
 	cat "$(KDIR)/loader-$(word 1,$(1)).$(LOADER_TYPE)" >> "$@"
+endef
+
+define Build/append-loader-okli-uimage
+	cat "$(KDIR)/loader-$(word 1,$(1)).uImage" >> "$@"
 endef
 
 define Build/relocate-kernel
@@ -52,6 +65,16 @@ define Build/relocate-kernel
 	rm -rf $@.relocate
 endef
 
+define Build/append-okli-kernel
+	dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" >> "$@"
+endef
+
+define Build/prepad-okli-kernel
+  -[ -f "$@" ] && \
+  dd if="$(KDIR)/loader-$(word 1,$(1)).uImage" of="$@".tmp bs=64k conv=sync && \
+  cat "$@" >>"$@".tmp && \
+  mv "$@".tmp "$@"
+endef
 
 define Device/Default
   DEVICE_DTS_DIR := ../dts
@@ -61,24 +84,26 @@ define Device/Default
   BLOCKSIZE := 64k
   KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | uImage lzma
+  LOADER_KERNEL_MAGIC :=
+  LOADER_FLASH_MAX :=
+  LOADER_FLASH_OFFS :=
+  LOADER_TYPE :=
   COMPILE :=
-  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin = append-kernel | pad-to $$$$(BLOCKSIZE) | \
-	append-rootfs | pad-rootfs | append-metadata | check-size $$$$(IMAGE_SIZE)
+	append-rootfs | pad-rootfs | check-size | append-metadata
 endef
 
+include $(SUBTARGET).mk
+
 ifeq ($(SUBTARGET),generic)
-include ./generic.mk
-include ./generic-tp-link.mk
-include ./generic-ubnt.mk
+include generic-tp-link.mk
+include generic-ubnt.mk
 endif
-ifeq ($(SUBTARGET),nand)
-include ./nand.mk
-endif
+
 ifeq ($(SUBTARGET),tiny)
-include ./tiny.mk
-include ./tiny-netgear.mk
-include ./tiny-tp-link.mk
+include tiny-netgear.mk
+include tiny-tp-link.mk
 endif
+
 $(eval $(call BuildImage))

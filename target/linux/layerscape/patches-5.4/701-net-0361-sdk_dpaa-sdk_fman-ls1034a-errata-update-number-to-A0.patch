@@ -1,0 +1,259 @@
+From 512bb2bd0555a8e78713dfdc109d87723a9da5c1 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Fri, 13 Dec 2019 14:49:16 +0200
+Subject: [PATCH] sdk_dpaa: sdk_fman: ls1034a errata: update number to A050385
+
+The A050385 erratum extends the A010022 erratum by defining additional
+FMan lock-up conditions and suggests new w/a restrictions.
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h | 14 +++----
+ .../net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c  | 44 +++++++++++-----------
+ .../inc/integrations/LS1043/dpaa_integration_ext.h |  2 +-
+ .../sdk_fman/src/inc/wrapper/lnxwrp_fsl_fman.h     |  8 ++--
+ .../freescale/sdk_fman/src/wrapper/lnxwrp_fm.c     | 16 ++++----
+ 5 files changed, 42 insertions(+), 42 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth.h
+@@ -99,15 +99,15 @@ struct dpa_buffer_layout_s {
+  * space to account for further alignments.
+  */
+ #define DPA_MAX_FRM_SIZE	9600
+-#ifndef FM_ERRATUM_A010022
++#ifndef FM_ERRATUM_A050385
+ #define DPA_BP_RAW_SIZE \
+ 	((DPA_MAX_FRM_SIZE + DPA_MAX_FD_OFFSET + \
+ 	  sizeof(struct skb_shared_info) + 128) & ~(SMP_CACHE_BYTES - 1))
+-#else /* FM_ERRATUM_A010022 */
+-#define DPA_BP_RAW_SIZE ((unlikely(fm_has_errata_a010022())) ? 2048 : \
++#else /* FM_ERRATUM_A050385 */
++#define DPA_BP_RAW_SIZE ((unlikely(fm_has_errata_a050385())) ? 2048 : \
+ 	((DPA_MAX_FRM_SIZE + DPA_MAX_FD_OFFSET + \
+ 	  sizeof(struct skb_shared_info) + 128) & ~(SMP_CACHE_BYTES - 1)))
+-#endif /* FM_ERRATUM_A010022 */
++#endif /* FM_ERRATUM_A050385 */
+ #endif /* CONFIG_FSL_DPAA_ETH_JUMBO_FRAME */
+ 
+ /* This is what FMan is ever allowed to use.
+@@ -660,14 +660,14 @@ static inline void _dpa_bp_free_pf(void
+  * on egress.
+  */
+ 
+-#ifdef FM_ERRATUM_A010022
++#ifdef FM_ERRATUM_A050385
+ #define CROSS_4K(start, size) \
+ 	(((uintptr_t)(start) + (size)) > \
+ 	 (((uintptr_t)(start) + 0x1000) & ~0xFFF))
+ /* The headroom needs to accommodate our private data (64 bytes) but
+  * we reserve 256 bytes instead to guarantee 256 data alignment.
+  */
+-#define DPAA_A010022_HEADROOM	256
+-#endif  /* FM_ERRATUM_A010022 */
++#define DPAA_A050385_HEADROOM	256
++#endif  /* FM_ERRATUM_A050385 */
+ 
+ #endif	/* __DPA_H */
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_sg.c
+@@ -101,8 +101,8 @@ static int _dpa_bp_add_8_bufs(const stru
+ 		 * We only need enough space to store a pointer, but allocate
+ 		 * an entire cacheline for performance reasons.
+ 		 */
+-#ifdef FM_ERRATUM_A010022
+-		if (unlikely(fm_has_errata_a010022())) {
++#ifdef FM_ERRATUM_A050385
++		if (unlikely(fm_has_errata_a050385())) {
+ 			struct page *new_page = alloc_page(GFP_ATOMIC);
+ 			if (unlikely(!new_page))
+ 				goto netdev_alloc_failed;
+@@ -765,15 +765,15 @@ int __hot skb_to_contig_fd(struct dpa_pr
+ }
+ EXPORT_SYMBOL(skb_to_contig_fd);
+ 
+-#ifdef FM_ERRATUM_A010022
+-/* Verify the conditions that trigger the A010022 errata:
++#ifdef FM_ERRATUM_A050385
++/* Verify the conditions that trigger the A050385 errata:
+  * - 4K memory address boundary crossings when the data/SG fragments aren't
+  *   aligned to 256 bytes
+  * - data and SG fragments that aren't aligned to 16 bytes
+  * - SG fragments that aren't mod 16 bytes in size (except for the last
+  *   fragment)
+  */
+-static bool a010022_check_skb(struct sk_buff *skb, struct dpa_priv_s *priv)
++static bool a050385_check_skb(struct sk_buff *skb, struct dpa_priv_s *priv)
+ {
+ 	skb_frag_t *frag;
+ 	int i, nr_frags;
+@@ -840,7 +840,7 @@ static bool a010022_check_skb(struct sk_
+  * page. Build a new skb around the new buffer and release the old one.
+  * A performance drop should be expected.
+  */
+-static struct sk_buff *a010022_realign_skb(struct sk_buff *skb,
++static struct sk_buff *a050385_realign_skb(struct sk_buff *skb,
+ 					   struct dpa_priv_s *priv)
+ {
+ 	int trans_offset = skb_transport_offset(skb);
+@@ -850,7 +850,7 @@ static struct sk_buff *a010022_realign_s
+ 	struct page *npage;
+ 	void *npage_addr;
+ 
+-	headroom = DPAA_A010022_HEADROOM;
++	headroom = DPAA_A050385_HEADROOM;
+ 
+ 	/* For the new skb we only need the old one's data (both non-paged and
+ 	 * paged). We can skip the old tailroom.
+@@ -941,8 +941,8 @@ int __hot skb_to_sg_fd(struct dpa_priv_s
+ 	/* Get a page frag to store the SGTable, or a full page if the errata
+ 	 * is in place and we need to avoid crossing a 4k boundary.
+ 	 */
+-#ifdef FM_ERRATUM_A010022
+-	if (unlikely(fm_has_errata_a010022())) {
++#ifdef FM_ERRATUM_A050385
++	if (unlikely(fm_has_errata_a050385())) {
+ 		struct page *new_page = alloc_page(GFP_ATOMIC);
+ 
+ 		if (unlikely(!new_page))
+@@ -1099,9 +1099,9 @@ int __hot dpa_tx_extended(struct sk_buff
+ 	int *countptr, offset = 0;
+ 	struct sk_buff *nskb;
+ 
+-	/* Flags to help optimize the A010022 errata restriction checks.
++	/* Flags to help optimize the A050385 errata restriction checks.
+ 	 *
+-	 * First flag marks if the skb changed between the first A010022 check
++	 * First flag marks if the skb changed between the first A050385 check
+ 	 * and the moment it's converted to an FD.
+ 	 *
+ 	 * The second flag marks if the skb needs to be realigned in order to
+@@ -1121,8 +1121,8 @@ int __hot dpa_tx_extended(struct sk_buff
+ 
+ 	clear_fd(&fd);
+ 
+-#ifdef FM_ERRATUM_A010022
+-	if (unlikely(fm_has_errata_a010022()) && a010022_check_skb(skb, priv))
++#ifdef FM_ERRATUM_A050385
++	if (unlikely(fm_has_errata_a050385()) && a050385_check_skb(skb, priv))
+ 		skb_need_wa = true;
+ #endif
+ 
+@@ -1176,7 +1176,7 @@ int __hot dpa_tx_extended(struct sk_buff
+ 		/* We're going to store the skb backpointer at the beginning
+ 		 * of the data buffer, so we need a privately owned skb
+ 		 *
+-		 * Under the A010022 errata, we are going to have a privately
++		 * Under the A050385 errata, we are going to have a privately
+ 		 * owned skb after realigning the current one, so no point in
+ 		 * copying it here in that case.
+ 		 */
+@@ -1194,12 +1194,12 @@ int __hot dpa_tx_extended(struct sk_buff
+ 			 * more fragments than we support. In this case,
+ 			 * we have no choice but to linearize it ourselves.
+ 			 */
+-#ifdef FM_ERRATUM_A010022
++#ifdef FM_ERRATUM_A050385
+ 			/* No point in linearizing the skb now if we are going
+ 			 * to realign and linearize it again further down due
+-			 * to the A010022 errata
++			 * to the A050385 errata
+ 			 */
+-			if (unlikely(fm_has_errata_a010022()))
++			if (unlikely(fm_has_errata_a050385()))
+ 				skb_need_wa = true;
+ 			else
+ #endif
+@@ -1209,16 +1209,16 @@ int __hot dpa_tx_extended(struct sk_buff
+ 			/* Common out-of-memory error path */
+ 			goto enomem;
+ 
+-#ifdef FM_ERRATUM_A010022
++#ifdef FM_ERRATUM_A050385
+ 		/* Verify the skb a second time if it has been updated since
+ 		 * the previous check
+ 		 */
+-		if (unlikely(fm_has_errata_a010022()) && skb_changed &&
+-		    a010022_check_skb(skb, priv))
++		if (unlikely(fm_has_errata_a050385()) && skb_changed &&
++		    a050385_check_skb(skb, priv))
+ 			skb_need_wa = true;
+ 
+-		if (unlikely(fm_has_errata_a010022()) && skb_need_wa) {
+-			nskb = a010022_realign_skb(skb, priv);
++		if (unlikely(fm_has_errata_a050385()) && skb_need_wa) {
++			nskb = a050385_realign_skb(skb, priv);
+ 			if (!nskb)
+ 				goto skb_to_fd_failed;
+ 			dev_kfree_skb(skb);
+--- a/drivers/net/ethernet/freescale/sdk_fman/inc/integrations/LS1043/dpaa_integration_ext.h
++++ b/drivers/net/ethernet/freescale/sdk_fman/inc/integrations/LS1043/dpaa_integration_ext.h
+@@ -271,7 +271,7 @@ typedef enum
+ #define FM_AID_MODE_NO_TNUM_SW005 /* refer to pdm TKT068794 - only support of port_id on aid */
+ #define FM_ERROR_VSP_NO_MATCH_SW006 /* refer to pdm TKT174304 - no match between errorQ and VSP */
+ 
+-#define FM_ERRATUM_A010022
++#define FM_ERRATUM_A050385
+ 
+ /*****************************************************************************
+  RMan INTEGRATION-SPECIFIC DEFINITIONS
+--- a/drivers/net/ethernet/freescale/sdk_fman/src/inc/wrapper/lnxwrp_fsl_fman.h
++++ b/drivers/net/ethernet/freescale/sdk_fman/src/inc/wrapper/lnxwrp_fsl_fman.h
+@@ -490,12 +490,12 @@ int fm_get_max_frm(void);
+ int fm_get_rx_extra_headroom(void);
+ 
+ /**************************************************************************//**
+- @Function	fm_has_errata_a010022
++ @Function	fm_has_errata_a050385
+ 
+- @Description   Detect if the SoC is vulnerable to the A010022 errata
++ @Description   Detect if the SoC is vulnerable to the A050385 errata
+ *//***************************************************************************/
+-#ifdef FM_ERRATUM_A010022
+-bool fm_has_errata_a010022(void);
++#ifdef FM_ERRATUM_A050385
++bool fm_has_errata_a050385(void);
+ #endif
+ 
+ /**************************************************************************//**
+--- a/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_fm.c
++++ b/drivers/net/ethernet/freescale/sdk_fman/src/wrapper/lnxwrp_fm.c
+@@ -156,8 +156,8 @@ static int fsl_fm_pfc_quanta[] = {
+ 
+ static t_LnxWrpFm   lnxWrpFm;
+ 
+-#ifdef FM_ERRATUM_A010022
+-static bool fm_has_err_a010022;
++#ifdef FM_ERRATUM_A050385
++static bool fm_has_err_a050385;
+ #endif
+ 
+ int fm_get_max_frm()
+@@ -172,12 +172,12 @@ int fm_get_rx_extra_headroom()
+ }
+ EXPORT_SYMBOL(fm_get_rx_extra_headroom);
+ 
+-#ifdef FM_ERRATUM_A010022
+-bool fm_has_errata_a010022(void)
++#ifdef FM_ERRATUM_A050385
++bool fm_has_errata_a050385(void)
+ {
+-	return fm_has_err_a010022;
++	return fm_has_err_a050385;
+ }
+-EXPORT_SYMBOL(fm_has_errata_a010022);
++EXPORT_SYMBOL(fm_has_errata_a050385);
+ #endif
+ 
+ static int __init fm_set_max_frm(char *str)
+@@ -762,8 +762,8 @@ static t_LnxWrpFmDev * ReadFmDevTreeNode
+             p_LnxWrpFmDev->defPcd = e_NO_PCD;
+     }
+ 
+-#ifdef FM_ERRATUM_A010022
+-    fm_has_err_a010022 = of_property_read_bool(fm_node, "fsl,erratum-a010022");
++#ifdef FM_ERRATUM_A050385
++    fm_has_err_a050385 = of_property_read_bool(fm_node, "fsl,erratum-a050385");
+ #endif
+ 
+     of_node_put(fm_node);

@@ -8,19 +8,19 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mtd-utils
-PKG_VERSION:=2.0.2
+PKG_VERSION:=2.1.2
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=ftp://ftp.infradead.org/pub/mtd-utils/
-PKG_HASH:=fb3de61be8e932abb424e8ea3c30298f553d5f970ad158a737bb303bbf9660b8
+PKG_HASH:=8ad4c5f34716d40646aa28724a2f5616d325a6f119254f914e26976f1f76e9d6
 
 PKG_INSTALL:=1
 PKG_FIXUP:=autoreconf
 
 PKG_FLAGS:=nonshared
 
-PKG_BUILD_DEPENDS:=util-linux lzo zlib
+PKG_BUILD_DEPENDS:=util-linux
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
@@ -58,7 +58,9 @@ MAKE_FLAGS += LDLIBS+="$(LIBGCC_S)"
 
 CONFIGURE_ARGS += \
 	--disable-tests \
+	--without-crypto \
 	--without-xattr \
+	--without-zstd \
 	--without-lzo
 
 TARGET_CFLAGS += -ffunction-sections -fdata-sections

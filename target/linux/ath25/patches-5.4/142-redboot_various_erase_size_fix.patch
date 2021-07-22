@@ -1,0 +1,72 @@
+--- a/drivers/mtd/parsers/redboot.c
++++ b/drivers/mtd/parsers/redboot.c
+@@ -70,6 +70,22 @@ static void parse_redboot_of(struct mtd_
+ 	directory = dirblock;
+ }
+ 
++static uint32_t mtd_get_offset_erasesize(struct mtd_info *mtd, uint64_t offset)
++{
++	struct mtd_erase_region_info *regions = mtd->eraseregions;
++	int i;
++
++	for (i = 0; i < mtd->numeraseregions; i++) {
++		if (regions[i].offset +
++		    regions[i].numblocks * regions[i].erasesize <= offset)
++			continue;
++
++		return regions[i].erasesize;
++	}
++
++	return mtd->erasesize;
++}
++
+ static int parse_redboot_partitions(struct mtd_info *master,
+ 				    const struct mtd_partition **pparts,
+ 				    struct mtd_part_parser_data *data)
+@@ -86,6 +102,7 @@ static int parse_redboot_partitions(stru
+ 	int namelen = 0;
+ 	int nulllen = 0;
+ 	int numslots;
++	int first_slot;
+ 	unsigned long offset;
+ #ifdef CONFIG_MTD_REDBOOT_PARTS_UNALLOCATED
+ 	static char nullstring[] = "unallocated";
+@@ -200,7 +217,10 @@ static int parse_redboot_partitions(stru
+ 		goto out;
+ 	}
+ 
+-	for (i = 0; i < numslots; i++) {
++	first_slot = (buf[i].flash_base & (master->erasesize - 1)) /
++		     sizeof(struct fis_image_desc);
++
++	for (i = first_slot; i < first_slot + numslots; i++) {
+ 		struct fis_list *new_fl, **prev;
+ 
+ 		if (buf[i].name[0] == 0xff) {
+@@ -276,12 +296,13 @@ static int parse_redboot_partitions(stru
+ 	}
+ #endif
+ 	for ( ; i<nrparts; i++) {
+-		if (max_offset < buf[i].flash_base + buf[i].size)
+-			max_offset = buf[i].flash_base + buf[i].size;
+ 		parts[i].size = fl->img->size;
+ 		parts[i].offset = fl->img->flash_base;
+ 		parts[i].name = names;
+ 
++		if (max_offset < parts[i].offset + parts[i].size)
++			max_offset = parts[i].offset + parts[i].size;
++
+ 		strcpy(names, fl->img->name);
+ #ifdef CONFIG_MTD_REDBOOT_PARTS_READONLY
+ 		if (!memcmp(names, "RedBoot", 8) ||
+@@ -311,7 +332,9 @@ static int parse_redboot_partitions(stru
+ 		fl = fl->next;
+ 		kfree(tmp_fl);
+ 	}
+-	if (master->size - max_offset >= master->erasesize) {
++
++	if (master->size - max_offset >=
++	    mtd_get_offset_erasesize(master, max_offset)) {
+ 		parts[nrparts].size = master->size - max_offset;
+ 		parts[nrparts].offset = max_offset;
+ 		parts[nrparts].name = names;

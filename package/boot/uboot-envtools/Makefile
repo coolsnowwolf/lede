@@ -9,16 +9,17 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uboot-envtools
 PKG_DISTNAME:=u-boot
-PKG_VERSION:=2019.07
-PKG_RELEASE:=2
+PKG_VERSION:=2021.01
+PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE:=$(PKG_DISTNAME)-$(PKG_VERSION).tar.xz
+PKG_SOURCE:=$(PKG_DISTNAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL:= \
+    https://ftp.denx.de/pub/u-boot \
+    https://mirror.cyberbits.eu/u-boot \
+    ftp://ftp.denx.de/pub/u-boot
+PKG_HASH:=b407e1510a74e863b8b5cb42a24625344f0e0c2fc7582d8c866bd899367d0454
 PKG_SOURCE_SUBDIR:=$(PKG_DISTNAME)-$(PKG_VERSION)
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_DISTNAME)-$(PKG_VERSION)
-PKG_SOURCE_URL:=https://git.denx.de/u-boot.git
-PKG_SOURCE_VERSION:=e5aee22e4be75e75a854ab64503fc80598bc2004
-PKG_MIRROR_HASH:=58c1ecaf901b6bf65c5e872b5449b642694ae5acebf61f91f0d4bc20b4c654b7
 
 PKG_BUILD_DEPENDS:=fstools
 
@@ -60,18 +61,25 @@ MAKE_FLAGS += \
 define Package/uboot-envtools/conffiles
 /etc/config/ubootenv
 /etc/fw_env.config
+/etc/fw_sys.config
 endef
 
 define Package/uboot-envtools/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tools/env/fw_printenv $(1)/usr/sbin
 	$(LN) fw_printenv $(1)/usr/sbin/fw_setenv
+	$(INSTALL_BIN) ./files/fw_printsys $(1)/usr/sbin
+	$(INSTALL_BIN) ./files/fw_setsys $(1)/usr/sbin
 	$(INSTALL_DIR) $(1)/lib
 	$(INSTALL_DATA) ./files/uboot-envtools.sh $(1)/lib
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
-	$(if $(wildcard ./files/$(BOARD)), \
-		$(INSTALL_DATA) ./files/$(BOARD) \
-		$(1)/etc/uci-defaults/30_uboot-envtools \
+	$(if $(wildcard ./files/$(BOARD)_$(SUBTARGET)), \
+		$(INSTALL_DATA) ./files/$(BOARD)_$(SUBTARGET) \
+		$(1)/etc/uci-defaults/30_uboot-envtools, \
+		$(if $(wildcard ./files/$(BOARD)), \
+			$(INSTALL_DATA) ./files/$(BOARD) \
+			$(1)/etc/uci-defaults/30_uboot-envtools \
+		) \
 	)
 endef
 

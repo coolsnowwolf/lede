@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=omcproxy
-PKG_RELEASE:=8
+PKG_RELEASE:=9
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/omcproxy.git
@@ -26,6 +26,10 @@ define Package/omcproxy
   CATEGORY:=Network
   DEPENDS:=+libubox +libubus
   TITLE:=IGMPv3 and MLDv2 Multicast Proxy
+endef
+
+define Package/omcproxy/conffiles
+/etc/config/omcproxy
 endef
 
 CMAKE_OPTIONS += -DWITH_LIBUBOX=1

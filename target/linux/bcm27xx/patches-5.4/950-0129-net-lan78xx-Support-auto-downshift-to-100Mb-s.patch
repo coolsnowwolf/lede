@@ -1,0 +1,91 @@
+From d205110391b7a85af9d45d4e634f1e5595c0a518 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 26 Nov 2018 19:46:58 +0000
+Subject: [PATCH] net: lan78xx: Support auto-downshift to 100Mb/s
+
+Ethernet cables with faulty or missing pairs (specifically pairs C and
+D) allow auto-negotiation to 1000Mbs, but do not support the successful
+establishment of a link. Add a DT property, "microchip,downshift-after",
+to configure the number of auto-negotiation failures after which it
+falls back to 100Mbs. Valid values are 2, 3, 4, 5 and 0, where 0 means
+never downshift.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ .../bindings/net/microchip,lan78xx.txt        |  3 +++
+ drivers/net/phy/microchip.c                   | 27 +++++++++++++++++++
+ include/linux/microchipphy.h                  |  8 ++++++
+ 3 files changed, 38 insertions(+)
+
+--- a/Documentation/devicetree/bindings/net/microchip,lan78xx.txt
++++ b/Documentation/devicetree/bindings/net/microchip,lan78xx.txt
+@@ -14,6 +14,9 @@ Optional properties of the embedded PHY:
+ - microchip,led-modes: a 0..4 element vector, with each element configuring
+   the operating mode of an LED. Omitted LEDs are turned off. Allowed values
+   are defined in "include/dt-bindings/net/microchip-lan78xx.h".
++- microchip,downshift-after: sets the number of failed auto-negotiation
++  attempts after which the link is downgraded from 1000BASE-T. Should be one of
++  2, 3, 4, 5 or 0, where 0 means never downshift.
+ 
+ Example:
+ 
+--- a/drivers/net/phy/microchip.c
++++ b/drivers/net/phy/microchip.c
+@@ -217,6 +217,7 @@ static int lan88xx_probe(struct phy_devi
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct lan88xx_priv *priv;
+ 	u32 led_modes[4];
++	u32 downshift_after = 0;
+ 	int len;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+@@ -246,6 +247,32 @@ static int lan88xx_probe(struct phy_devi
+ 		return -EINVAL;
+ 	}
+ 
++	if (!of_property_read_u32(dev->of_node,
++				  "microchip,downshift-after",
++				  &downshift_after)) {
++		u32 mask = LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_MASK;
++		u32 val= LAN78XX_PHY_CTRL3_AUTO_DOWNSHIFT;
++
++		switch (downshift_after) {
++		case 2:	val |= LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_2;
++			break;
++		case 3:	val |= LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_3;
++			break;
++		case 4:	val |= LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_4;
++			break;
++		case 5:	val |= LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_5;
++			break;
++		case 0: // Disable completely
++			mask = LAN78XX_PHY_CTRL3_AUTO_DOWNSHIFT;
++			val = 0;
++			break;
++		default:
++			return -EINVAL;
++		}
++		(void)phy_modify_paged(phydev, 1, LAN78XX_PHY_CTRL3,
++				       mask, val);
++	}
++
+ 	/* these values can be used to identify internal PHY */
+ 	priv->chip_id = phy_read_mmd(phydev, 3, LAN88XX_MMD3_CHIP_ID);
+ 	priv->chip_rev = phy_read_mmd(phydev, 3, LAN88XX_MMD3_CHIP_REV);
+--- a/include/linux/microchipphy.h
++++ b/include/linux/microchipphy.h
+@@ -61,6 +61,14 @@
+ /* Registers specific to the LAN7800/LAN7850 embedded phy */
+ #define LAN78XX_PHY_LED_MODE_SELECT		(0x1D)
+ 
++#define LAN78XX_PHY_CTRL3			(0x14)
++#define LAN78XX_PHY_CTRL3_AUTO_DOWNSHIFT	(0x0010)
++#define LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_MASK	(0x000c)
++#define LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_2	(0x0000)
++#define LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_3	(0x0004)
++#define LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_4	(0x0008)
++#define LAN78XX_PHY_CTRL3_DOWNSHIFT_CTRL_5	(0x000c)
++
+ /* DSP registers */
+ #define PHY_ARDENNES_MMD_DEV_3_PHY_CFG		(0x806A)
+ #define PHY_ARDENNES_MMD_DEV_3_PHY_CFG_ZD_DLY_EN_	(0x2000)

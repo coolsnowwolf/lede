@@ -1,0 +1,62 @@
+From 59876225748221d7ebbdb9c892a2086420ddd80d Mon Sep 17 00:00:00 2001
+From: Sean Nyekjaer <sean@geanix.com>
+Date: Thu, 14 Nov 2019 19:56:28 +0800
+Subject: [PATCH] can: flexcan: fix deadlock when using self wakeup
+
+When suspending, when there is still can traffic on the interfaces the
+flexcan immediately wakes the platform again. As it should :-). But it
+throws this error msg:
+[ 3169.378661] PM: noirq suspend of devices failed
+
+On the way down to suspend the interface that throws the error message does
+call flexcan_suspend but fails to call flexcan_noirq_suspend. That means the
+flexcan_enter_stop_mode is called, but on the way out of suspend the driver
+only calls flexcan_resume and skips flexcan_noirq_resume, thus it doesn't call
+flexcan_exit_stop_mode. This leaves the flexcan in stop mode, and with the
+current driver it can't recover from this even with a soft reboot, it requires
+a hard reboot.
+
+This patch can fix deadlock when using self wakeup, it happenes to be
+able to fix another issue that frames out-of-order in first IRQ handler
+run after wakeup.
+
+In wakeup case, after system resume, frames received out-of-order,the
+problem is wakeup latency from frame reception to IRQ handler is much
+bigger than the counter overflow. This means it's impossible to sort the
+CAN frames by timestamp. The reason is that controller exits stop mode
+during noirq resume, then it can receive the frame immediately. If
+noirq reusme stage consumes much time, it will extend interrupt response
+time.
+
+Fixes: de3578c198c6 ("can: flexcan: add self wakeup support")
+Signed-off-by: Sean Nyekjaer <sean@geanix.com>
+Signed-off-by: Joakim Zhang <qiangqing.zhang@nxp.com>
+---
+ drivers/net/can/flexcan.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/can/flexcan.c
++++ b/drivers/net/can/flexcan.c
+@@ -137,8 +137,7 @@
+ 	(FLEXCAN_ESR_ERR_BUS | FLEXCAN_ESR_ERR_STATE)
+ #define FLEXCAN_ESR_ALL_INT \
+ 	(FLEXCAN_ESR_TWRN_INT | FLEXCAN_ESR_RWRN_INT | \
+-	 FLEXCAN_ESR_BOFF_INT | FLEXCAN_ESR_ERR_INT | \
+-	 FLEXCAN_ESR_WAK_INT)
++	 FLEXCAN_ESR_BOFF_INT | FLEXCAN_ESR_ERR_INT)
+ 
+ /* FLEXCAN Bit Timing register (CBT) bits */
+ #define FLEXCAN_CBT_BTF			BIT(31)
+@@ -1062,6 +1061,12 @@ static irqreturn_t flexcan_irq(int irq,
+ 
+ 	reg_esr = priv->read(&regs->esr);
+ 
++	/* ACK wakeup interrupt */
++	if (reg_esr & FLEXCAN_ESR_WAK_INT) {
++		handled = IRQ_HANDLED;
++		priv->write(reg_esr & FLEXCAN_ESR_WAK_INT, &regs->esr);
++	}
++
+ 	/* ACK all bus error and state change IRQ sources */
+ 	if (reg_esr & FLEXCAN_ESR_ALL_INT) {
+ 		handled = IRQ_HANDLED;

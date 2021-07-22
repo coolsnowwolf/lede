@@ -1,0 +1,229 @@
+From 0153f87972bfa3ef33bf369b8e91142f7c2b284a Mon Sep 17 00:00:00 2001
+From: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+Date: Wed, 17 Oct 2018 20:14:24 +0300
+Subject: [PATCH] dpaa2-eth: Add support for new link state APIs
+
+Add v2 of dpni_get_link_state() and dpni_set_link_cfg() commands.
+The new version allows setting & getting advertised and supported
+link options.
+
+Signed-off-by: Valentin Catalin Neacsu <valentin-catalin.neacsu@nxp.com>
+Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+---
+ drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h | 33 ++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpni.c     | 70 +++++++++++++++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpni.h     | 27 ++++++++++
+ 3 files changed, 130 insertions(+)
+
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni-cmd.h
+@@ -44,9 +44,11 @@
+ #define DPNI_CMDID_GET_QDID				DPNI_CMD(0x210)
+ #define DPNI_CMDID_GET_TX_DATA_OFFSET			DPNI_CMD(0x212)
+ #define DPNI_CMDID_GET_LINK_STATE			DPNI_CMD(0x215)
++#define DPNI_CMDID_GET_LINK_STATE_V2			DPNI_CMD_V2(0x215)
+ #define DPNI_CMDID_SET_MAX_FRAME_LENGTH			DPNI_CMD(0x216)
+ #define DPNI_CMDID_GET_MAX_FRAME_LENGTH			DPNI_CMD(0x217)
+ #define DPNI_CMDID_SET_LINK_CFG				DPNI_CMD(0x21A)
++#define DPNI_CMDID_SET_LINK_CFG_V2			DPNI_CMD_V2(0x21A)
+ #define DPNI_CMDID_SET_TX_SHAPING			DPNI_CMD_V2(0x21B)
+ 
+ #define DPNI_CMDID_SET_MCAST_PROMISC			DPNI_CMD(0x220)
+@@ -304,8 +306,22 @@ struct dpni_cmd_link_cfg {
+ 	__le64 options;
+ };
+ 
++struct dpni_cmd_set_link_cfg_v2 {
++	/* cmd word 0 */
++	__le64 pad0;
++	/* cmd word 1 */
++	__le32 rate;
++	__le32 pad1;
++	/* cmd word 2 */
++	__le64 options;
++	/* cmd word 3 */
++	__le64 advertising;
++};
++
+ #define DPNI_LINK_STATE_SHIFT		0
+ #define DPNI_LINK_STATE_SIZE		1
++#define DPNI_STATE_VALID_SHIFT		1
++#define DPNI_STATE_VALID_SIZE		1
+ 
+ struct dpni_rsp_get_link_state {
+ 	/* response word 0 */
+@@ -320,6 +336,23 @@ struct dpni_rsp_get_link_state {
+ 	__le64 options;
+ };
+ 
++struct dpni_rsp_get_link_state_v2 {
++	/* response word 0 */
++	__le32 pad0;
++	/* from LSB: up:1, valid:1 */
++	u8 flags;
++	u8 pad1[3];
++	/* response word 1 */
++	__le32 rate;
++	__le32 pad2;
++	/* response word 2 */
++	__le64 options;
++	/* cmd word 3 */
++	__le64 supported;
++	/* cmd word 4 */
++	__le64 advertising;
++};
++
+ #define DPNI_COUPLED_SHIFT	0
+ #define DPNI_COUPLED_SIZE	1
+ 
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni.c
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni.c
+@@ -853,6 +853,36 @@ int dpni_set_link_cfg(struct fsl_mc_io *
+ }
+ 
+ /**
++ * dpni_set_link_cfg_v2() - set the link configuration.
++ * @mc_io:      Pointer to MC portal's I/O object
++ * @cmd_flags:  Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:      Token of DPNI object
++ * @cfg:        Link configuration
++ *
++ * Return:      '0' on Success; Error code otherwise.
++ */
++int dpni_set_link_cfg_v2(struct fsl_mc_io *mc_io,
++			 u32 cmd_flags,
++			 u16 token,
++			 const struct dpni_link_cfg *cfg)
++{
++	struct fsl_mc_command cmd = { 0 };
++	struct dpni_cmd_set_link_cfg_v2 *cmd_params;
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_SET_LINK_CFG_V2,
++					  cmd_flags,
++					  token);
++	cmd_params = (struct dpni_cmd_set_link_cfg_v2 *)cmd.params;
++	cmd_params->rate = cpu_to_le32(cfg->rate);
++	cmd_params->options = cpu_to_le64(cfg->options);
++	cmd_params->advertising = cpu_to_le64(cfg->advertising);
++
++	/* send command to mc*/
++	return mc_send_command(mc_io, &cmd);
++}
++
++/**
+  * dpni_get_link_cfg() - return the link configuration
+  * @mc_io:	Pointer to MC portal's I/O object
+  * @cmd_flags:	Command flags; one or more of 'MC_CMD_FLAG_'
+@@ -924,6 +954,46 @@ int dpni_get_link_state(struct fsl_mc_io
+ 
+ 	return 0;
+ }
++
++/**
++ * dpni_get_link_state_v2() - Return the link state (either up or down)
++ * @mc_io:      Pointer to MC portal's I/O object
++ * @cmd_flags:  Command flags; one or more of 'MC_CMD_FLAG_'
++ * @token:      Token of DPNI object
++ * @state:      Returned link state;
++ *
++ * Return:      '0' on Success; Error code otherwise.
++ */
++int dpni_get_link_state_v2(struct fsl_mc_io *mc_io,
++			   u32 cmd_flags,
++			   u16 token,
++			   struct dpni_link_state *state)
++{
++	struct fsl_mc_command cmd = { 0 };
++	struct dpni_rsp_get_link_state_v2 *rsp_params;
++	int err;
++
++	/* prepare command */
++	cmd.header = mc_encode_cmd_header(DPNI_CMDID_GET_LINK_STATE_V2,
++					  cmd_flags,
++					  token);
++
++	/* send command to mc*/
++	err = mc_send_command(mc_io, &cmd);
++	if (err)
++		return err;
++
++	/* retrieve response parameters */
++	rsp_params = (struct dpni_rsp_get_link_state_v2 *)cmd.params;
++	state->up = dpni_get_field(rsp_params->flags, LINK_STATE);
++	state->state_valid = dpni_get_field(rsp_params->flags, STATE_VALID);
++	state->rate = le32_to_cpu(rsp_params->rate);
++	state->options = le64_to_cpu(rsp_params->options);
++	state->supported = le64_to_cpu(rsp_params->supported);
++	state->advertising = le64_to_cpu(rsp_params->advertising);
++
++	return 0;
++}
+ 
+ /**
+  * dpni_set_tx_shaping() - Set the transmit shaping
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni.h
+@@ -522,6 +522,19 @@ int dpni_reset_statistics(struct fsl_mc_
+  * Enable priority flow control pause frames
+  */
+ #define DPNI_LINK_OPT_PFC_PAUSE		0x0000000000000010ULL
++/**
++ * Advertised link speeds
++ */
++#define DPNI_ADVERTISED_10BASET_FULL           0x0000000000000001ULL
++#define DPNI_ADVERTISED_100BASET_FULL          0x0000000000000002ULL
++#define DPNI_ADVERTISED_1000BASET_FULL         0x0000000000000004ULL
++#define DPNI_ADVERTISED_10000BASET_FULL        0x0000000000000010ULL
++#define DPNI_ADVERTISED_2500BASEX_FULL         0x0000000000000020ULL
++
++/**
++ * Advertise auto-negotiation enabled
++ */
++#define DPNI_ADVERTISED_AUTONEG                0x0000000000000008ULL
+ 
+ /**
+  * struct - Structure representing DPNI link configuration
+@@ -531,6 +544,7 @@ int dpni_reset_statistics(struct fsl_mc_
+ struct dpni_link_cfg {
+ 	u32 rate;
+ 	u64 options;
++	u64 advertising;
+ };
+ 
+ int dpni_set_link_cfg(struct fsl_mc_io			*mc_io,
+@@ -538,6 +552,11 @@ int dpni_set_link_cfg(struct fsl_mc_io
+ 		      u16				token,
+ 		      const struct dpni_link_cfg	*cfg);
+ 
++int dpni_set_link_cfg_v2(struct fsl_mc_io		*mc_io,
++			 u32				cmd_flags,
++			 u16				token,
++			 const struct dpni_link_cfg	*cfg);
++
+ int dpni_get_link_cfg(struct fsl_mc_io			*mc_io,
+ 		      u32				cmd_flags,
+ 		      u16				token,
+@@ -552,7 +571,10 @@ int dpni_get_link_cfg(struct fsl_mc_io
+ struct dpni_link_state {
+ 	u32	rate;
+ 	u64	options;
++	u64	supported;
++	u64	advertising;
+ 	int	up;
++	int	state_valid;
+ };
+ 
+ int dpni_get_link_state(struct fsl_mc_io	*mc_io,
+@@ -560,6 +582,11 @@ int dpni_get_link_state(struct fsl_mc_io
+ 			u16			token,
+ 			struct dpni_link_state	*state);
+ 
++int dpni_get_link_state_v2(struct fsl_mc_io	*mc_io,
++			   u32			cmd_flags,
++			   u16			token,
++			   struct dpni_link_state	*state);
++
+ /**
+  * struct dpni_tx_shaping - Structure representing DPNI tx shaping configuration
+  * @rate_limit: rate in Mbps

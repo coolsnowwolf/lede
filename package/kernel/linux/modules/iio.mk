@@ -159,7 +159,7 @@ $(eval $(call KernelPackage,iio-dht11))
 define KernelPackage/iio-bme680
   SUBMENU:=$(IIO_MENU)
   TITLE:=BME680 gas/humidity/pressure/temperature sensor
-  DEPENDS:=@!LINUX_4_14 +kmod-iio-core +kmod-regmap-core
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core
   KCONFIG:=CONFIG_BME680
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/bme680_core.ko
 endef
@@ -328,25 +328,93 @@ endef
 $(eval $(call KernelPackage,iio-st_accel))
 
 
-define KernelPackage/iio-st_sensors-i2c
+define KernelPackage/iio-st_accel-i2c
   SUBMENU:=$(IIO_MENU)
   TITLE:=STMicroelectronics accelerometer 3-Axis Driver (I2C)
   DEPENDS:=+kmod-iio-st_accel +kmod-i2c-core +kmod-regmap-i2c
   KCONFIG:= CONFIG_IIO_ST_ACCEL_I2C_3AXIS
-  FILES:=$(LINUX_DIR)/drivers/iio/common/st_sensors/st_sensors_i2c.ko
-  AUTOLOAD:=$(call AutoLoad,56,st_sensors_i2c)
+  FILES:= \
+	$(LINUX_DIR)/drivers/iio/accel/st_accel_i2c.ko \
+	$(LINUX_DIR)/drivers/iio/common/st_sensors/st_sensors_i2c.ko
+  AUTOLOAD:=$(call AutoLoad,56,st_accel_i2c)
 endef
 
-define KernelPackage/iio-st_sensors-i2c/description
+define KernelPackage/iio-st_accel-i2c/description
  This package adds support for STMicroelectronics I2C based accelerometers
 endef
 
-$(eval $(call KernelPackage,iio-st_sensors-i2c))
+$(eval $(call KernelPackage,iio-st_accel-i2c))
+
+
+define KernelPackage/iio-st_accel-spi
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=STMicroelectronics accelerometer 3-Axis Driver (SPI)
+  DEPENDS:=+kmod-iio-st_accel +kmod-regmap-spi
+  KCONFIG:= CONFIG_IIO_ST_ACCEL_SPI_3AXIS
+  FILES:= \
+	$(LINUX_DIR)/drivers/iio/accel/st_accel_spi.ko \
+	$(LINUX_DIR)/drivers/iio/common/st_sensors/st_sensors_spi.ko
+  AUTOLOAD:=$(call AutoLoad,56,st_accel_spi)
+endef
+
+define KernelPackage/iio-st_accel-spi/description
+ This package adds support for STMicroelectronics SPI based accelerometers
+endef
+
+$(eval $(call KernelPackage,iio-st_accel-spi))
+
+
+define KernelPackage/iio-lsm6dsx
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-core +kmod-iio-kfifo-buf +kmod-regmap-core
+  TITLE:=ST LSM6DSx driver for IMU MEMS sensors
+  KCONFIG:=CONFIG_IIO_ST_LSM6DSX
+  FILES:=$(LINUX_DIR)/drivers/iio/imu/st_lsm6dsx/st_lsm6dsx.ko
+  AUTOLOAD:=$(call AutoProbe,st_lsm6dsx)
+endef
+
+define KernelPackage/iio-lsm6dsx/description
+ Support for the ST LSM6DSx and related IMU MEMS sensors.
+endef
+
+$(eval $(call KernelPackage,iio-lsm6dsx))
+
+
+define KernelPackage/iio-lsm6dsx-i2c
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-lsm6dsx +kmod-i2c-core +kmod-regmap-i2c
+  TITLE:=ST LSM6DSx driver for IMU MEMS sensors (I2C)
+  KCONFIG:=CONFIG_IIO_ST_LSM6DSX
+  FILES:=$(LINUX_DIR)/drivers/iio/imu/st_lsm6dsx/st_lsm6dsx_i2c.ko
+  AUTOLOAD:=$(call AutoProbe,st_lsm6dsx-i2c)
+endef
+
+define KernelPackage/iio-lsm6dsx-i2c/description
+ Support for the ST LSM6DSx and related IMU MEMS I2C sensors.
+endef
+
+$(eval $(call KernelPackage,iio-lsm6dsx-i2c))
+
+
+define KernelPackage/iio-lsm6dsx-spi
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-lsm6dsx +kmod-regmap-spi
+  TITLE:=ST LSM6DSx driver for IMU MEMS sensors (SPI)
+  KCONFIG:=CONFIG_IIO_ST_LSM6DSX
+  FILES:=$(LINUX_DIR)/drivers/iio/imu/st_lsm6dsx/st_lsm6dsx_spi.ko
+  AUTOLOAD:=$(call AutoProbe,st_lsm6dsx-spi)
+endef
+
+define KernelPackage/iio-lsm6dsx-spi/description
+ Support for the ST LSM6DSx and related IMU MEMS SPI sensors.
+endef
+
+$(eval $(call KernelPackage,iio-lsm6dsx-spi))
 
 
 define KernelPackage/iio-sps30
   SUBMENU:=$(IIO_MENU)
-  DEPENDS:=@!LINUX_4_14 +kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
   TITLE:=Sensirion SPS30 particulate matter sensor
   KCONFIG:=CONFIG_SPS30
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/sps30.ko
@@ -358,22 +426,6 @@ define KernelPackage/iio-sps30/description
 endef
 
 $(eval $(call KernelPackage,iio-sps30))
-
-
-define KernelPackage/iio-st_sensors-spi
-  SUBMENU:=$(IIO_MENU)
-  TITLE:=STMicroelectronics accelerometer 3-Axis Driver (SPI)
-  DEPENDS:=+kmod-iio-st_accel +kmod-regmap-spi
-  KCONFIG:= CONFIG_IIO_ST_ACCEL_SPI_3AXIS
-  FILES:=$(LINUX_DIR)/drivers/iio/common/st_sensors/st_sensors_spi.ko
-  AUTOLOAD:=$(call AutoLoad,56,st_sensors_spi)
-endef
-
-define KernelPackage/iio-st_sensors-spi/description
- This package adds support for STMicroelectronics SPI based accelerometers
-endef
-
-$(eval $(call KernelPackage,iio-st_sensors-spi))
 
 
 define KernelPackage/iio-tsl4531
@@ -392,6 +444,56 @@ define KernelPackage/iio-tsl4531/description
 endef
 
 $(eval $(call KernelPackage,iio-tsl4531))
+
+
+define KernelPackage/iio-fxas21002c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core +kmod-industrialio-triggered-buffer
+  KCONFIG:= CONFIG_FXAS21002C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_core.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c)
+endef
+
+define KernelPackage/iio-fxas21002c/description
+ Support for Freescale FXAS21002C 3-axis gyro.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c))
+
+
+define KernelPackage/iio-fxas21002c-i2c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (I2C)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-i2c-core +kmod-regmap-i2c
+  KCONFIG:= CONFIG_FXAS21002C_I2C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_i2c.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_i2c)
+endef
+
+define KernelPackage/iio-fxas21002c-i2c/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via I2C.
+endef
+
+
+$(eval $(call KernelPackage,iio-fxas21002c-i2c))
+
+define KernelPackage/iio-fxas21002c-spi
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-regmap-spi
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (SPI)
+  KCONFIG:= CONFIG_FXAS21002C_SPI
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_spi.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_spi)
+endef
+
+define KernelPackage/iio-fxas21002c-spi/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via SPI.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c-spi))
 
 
 define KernelPackage/iio-fxos8700

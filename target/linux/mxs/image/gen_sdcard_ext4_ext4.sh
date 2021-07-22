@@ -1,10 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2015 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 set -x
 [ $# -eq 4 ] || {
@@ -21,7 +18,7 @@ head=4
 sect=63
 
 # set the Boot stream partition size to 1M
-set `ptgen -o $OUTPUT -h $head -s $sect -l 1024 -t 53 -p 1M -t 83 -p ${ROOTFSSIZE}M -t 83 -p ${ROOTFSSIZE}M`
+set $(ptgen -o $OUTPUT -h $head -s $sect -l 1024 -t 53 -p 1M -t 83 -p ${ROOTFSSIZE}M -t 83 -p ${ROOTFSSIZE}M)
 
 ROOTFS1OFFSET="$(($3 / 512))"
 ROOTFS1SIZE="$(($4 / 512))"

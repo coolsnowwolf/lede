@@ -1,0 +1,671 @@
+From 36b446d44d66a6d6a072d3f5e87ebb05e0b88d98 Mon Sep 17 00:00:00 2001
+From: Xiaoliang Yang <xiaoliang.yang_1@nxp.com>
+Date: Fri, 29 Nov 2019 14:28:37 +0800
+Subject: [PATCH] net: dsa: ocelot: add tsn support for felix switch
+
+Support tsn capabilities in DSA felix switch driver. This felix tsn
+driver is using tsn configuration of ocelot, and registered on each
+switch port through DSA port setup.
+
+Signed-off-by: Xiaoliang Yang <xiaoliang.yang_1@nxp.com>
+---
+ drivers/net/dsa/ocelot/Kconfig         |   8 +
+ drivers/net/dsa/ocelot/Makefile        |   2 +
+ drivers/net/dsa/ocelot/felix.c         |  50 ++++
+ drivers/net/dsa/ocelot/felix_tsn.c     | 432 +++++++++++++++++++++++++++++++++
+ drivers/net/dsa/ocelot/felix_tsn.h     |  61 +++++
+ drivers/net/dsa/ocelot/felix_vsc9959.c |   8 +-
+ include/net/dsa.h                      |   1 +
+ net/dsa/dsa2.c                         |   4 +
+ 8 files changed, 564 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/net/dsa/ocelot/felix_tsn.c
+ create mode 100644 drivers/net/dsa/ocelot/felix_tsn.h
+
+--- a/drivers/net/dsa/ocelot/Kconfig
++++ b/drivers/net/dsa/ocelot/Kconfig
+@@ -9,3 +9,11 @@ config NET_DSA_MSCC_FELIX
+ 	  the Vitesse / Microsemi / Microchip Ocelot family of switching cores.
+ 	  It is embedded as a PCIe function of the NXP LS1028A ENETC integrated
+ 	  endpoint.
++
++config MSCC_FELIX_SWITCH_TSN
++	tristate "TSN on FELIX switch driver"
++	depends on NET_DSA_MSCC_FELIX
++	depends on TSN
++	help
++	  This driver supports TSN on felix switch.
++
+--- a/drivers/net/dsa/ocelot/Makefile
++++ b/drivers/net/dsa/ocelot/Makefile
+@@ -4,3 +4,5 @@ obj-$(CONFIG_NET_DSA_MSCC_FELIX) += mscc
+ mscc_felix-objs := \
+ 	felix.o \
+ 	felix_vsc9959.o
++
++obj-$(CONFIG_MSCC_FELIX_SWITCH_TSN) += felix_tsn.o
+--- a/drivers/net/dsa/ocelot/felix.c
++++ b/drivers/net/dsa/ocelot/felix.c
+@@ -9,6 +9,38 @@
+ #include <linux/of.h>
+ #include <net/dsa.h>
+ #include "felix.h"
++#include "felix_tsn.h"
++
++#ifdef CONFIG_MSCC_FELIX_SWITCH_TSN
++const struct tsn_ops switch_tsn_ops = {
++	.device_init			= felix_tsn_init,
++	.get_capability                 = felix_tsn_get_cap,
++	.qbv_set			= felix_qbv_set,
++	.qbv_get			= felix_qbv_get,
++	.qbv_get_status			= felix_qbv_get_status,
++	.qbu_set			= felix_qbu_set,
++	.qbu_get                        = felix_qbu_get,
++	.cb_streamid_set		= felix_cb_streamid_set,
++	.cb_streamid_get		= felix_cb_streamid_get,
++	.cb_streamid_counters_get	= felix_cb_streamid_counters_get,
++	.qci_sfi_set			= felix_qci_sfi_set,
++	.qci_sfi_get			= felix_qci_sfi_get,
++	.qci_sfi_counters_get		= felix_qci_sfi_counters_get,
++	.qci_get_maxcap			= felix_qci_max_cap_get,
++	.qci_sgi_set			= felix_qci_sgi_set,
++	.qci_sgi_get			= felix_qci_sgi_get,
++	.qci_sgi_status_get		= felix_qci_sgi_status_get,
++	.qci_fmi_set			= felix_qci_fmi_set,
++	.qci_fmi_get			= felix_qci_fmi_get,
++	.cbs_set			= felix_cbs_set,
++	.cbs_get			= felix_cbs_get,
++	.ct_set				= felix_cut_thru_set,
++	.cbgen_set			= felix_seq_gen_set,
++	.cbrec_set			= felix_seq_rec_set,
++	.cb_get				= felix_cb_get,
++	.dscp_set			= felix_dscp_set,
++};
++#endif
+ 
+ static enum dsa_tag_protocol felix_get_tag_protocol(struct dsa_switch *ds,
+ 						    int port)
+@@ -138,6 +170,21 @@ static int felix_vlan_del(struct dsa_swi
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_MSCC_FELIX_SWITCH_TSN
++static int felix_tsn_enable(struct dsa_port *dp)
++{
++	struct net_device *dev;
++
++	if (dp->type == DSA_PORT_TYPE_USER) {
++		dev = dp->slave;
++		tsn_port_register(dev,
++				  (struct tsn_ops *)&switch_tsn_ops,
++				  GROUP_OFFSET_SWITCH);
++	}
++	return 0;
++}
++#endif
++
+ static int felix_port_enable(struct dsa_switch *ds, int port,
+ 			     struct phy_device *phy)
+ {
+@@ -386,6 +433,9 @@ static const struct dsa_switch_ops felix
+ 	.port_hwtstamp_set	= felix_hwtstamp_set,
+ 	.port_rxtstamp		= felix_rxtstamp,
+ 	.port_txtstamp		= felix_txtstamp,
++#ifdef CONFIG_MSCC_FELIX_SWITCH_TSN
++	.port_tsn_enable	= felix_tsn_enable,
++#endif
+ };
+ 
+ static struct felix_info *felix_instance_tbl[] = {
+--- /dev/null
++++ b/drivers/net/dsa/ocelot/felix_tsn.c
+@@ -0,0 +1,432 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++/* Felix Switch TSN driver
++ *
++ * Copyright 2018-2019 NXP
++ */
++
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/pci.h>
++#include <soc/mscc/ocelot.h>
++#include <net/tsn.h>
++#include "felix.h"
++
++static struct ocelot *felix_dev_to_ocelot(struct net_device *ndev)
++{
++	struct pci_dev *pdev;
++	struct felix *felix;
++
++	pdev = list_entry(ndev->dev.parent, struct pci_dev, dev);
++	felix = pci_get_drvdata(pdev);
++	if (!felix)
++		return NULL;
++
++	return &felix->ocelot;
++}
++
++static int felix_dev_to_port(struct net_device *ndev, struct ocelot *ocelot)
++{
++	struct felix *felix = ocelot_to_felix(ocelot);
++	struct dsa_switch *ds = felix->ds;
++	struct dsa_port *dp;
++	int i;
++
++	for (i = 0; i < ds->num_ports; i++) {
++		dp = &ds->ports[i];
++		if (dp->dn == ndev->dev.of_node)
++			return dp->index;
++	}
++
++	return -ENODEV;
++}
++
++u32 felix_tsn_get_cap(struct net_device *ndev)
++{
++	u32 cap = 0;
++
++	cap = (TSN_CAP_QBV | TSN_CAP_QCI | TSN_CAP_QBU | TSN_CAP_CBS |
++	       TSN_CAP_CB | TSN_CAP_TBS | TSN_CAP_CTH);
++
++	return cap;
++}
++
++int felix_qbv_set(struct net_device *ndev,
++		  struct tsn_qbv_conf *shaper_config)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qbv_set(ocelot, port, shaper_config);
++}
++
++int felix_qbv_get(struct net_device *ndev,
++		  struct tsn_qbv_conf *shaper_config)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qbv_get(ocelot, port, shaper_config);
++}
++
++int felix_qbv_get_status(struct net_device *ndev,
++			 struct tsn_qbv_status *qbvstatus)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qbv_get_status(ocelot, port, qbvstatus);
++}
++
++int felix_qbu_set(struct net_device *ndev, u8 preemptible)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qbu_set(ocelot, port, preemptible);
++}
++
++int felix_qbu_get(struct net_device *ndev, struct tsn_preempt_status *c)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qbu_get(ocelot, port, c);
++}
++
++int felix_cb_streamid_set(struct net_device *ndev, u32 index, bool enable,
++			  struct tsn_cb_streamid *streamid)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cb_streamid_set(ocelot, port, index, enable, streamid);
++}
++
++int felix_cb_streamid_get(struct net_device *ndev, u32 index,
++			  struct tsn_cb_streamid *streamid)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cb_streamid_get(ocelot, port, index, streamid);
++}
++
++int felix_cb_streamid_counters_get(struct net_device *ndev, u32 index,
++				   struct tsn_cb_streamid_counters *sc)
++{
++	return 0;
++}
++
++int felix_qci_sfi_set(struct net_device *ndev, u32 index, bool enable,
++		      struct tsn_qci_psfp_sfi_conf *sfi)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sfi_set(ocelot, port, index, enable, sfi);
++}
++
++int felix_qci_sfi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sfi_conf *sfi)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sfi_get(ocelot, port, index, sfi);
++}
++
++int felix_qci_sfi_counters_get(struct net_device *ndev, u32 index,
++			       struct tsn_qci_psfp_sfi_counters *sfi_cnt)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sfi_counters_get(ocelot, port, index, sfi_cnt);
++}
++
++int felix_qci_max_cap_get(struct net_device *ndev,
++			  struct tsn_qci_psfp_stream_param *stream_para)
++{
++	struct ocelot *ocelot;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++
++	return ocelot_qci_max_cap_get(ocelot, stream_para);
++}
++
++int felix_qci_sgi_set(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *sgi_conf)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sgi_set(ocelot, port, index, sgi_conf);
++}
++
++int felix_qci_sgi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *sgi_conf)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sgi_get(ocelot, port, index, sgi_conf);
++}
++
++int felix_qci_sgi_status_get(struct net_device *ndev, u32 index,
++			     struct tsn_psfp_sgi_status *sgi_status)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_sgi_status_get(ocelot, port, index, sgi_status);
++}
++
++int felix_qci_fmi_set(struct net_device *ndev, u32 index,
++		      bool enable, struct tsn_qci_psfp_fmi *fmi)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_fmi_set(ocelot, port, index, enable, fmi);
++}
++
++int felix_qci_fmi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_fmi *fmi,
++		      struct tsn_qci_psfp_fmi_counters *counters)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_qci_fmi_get(ocelot, port, index, fmi, counters);
++}
++
++int felix_cbs_set(struct net_device *ndev, u8 tc, u8 bw)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cbs_set(ocelot, port, tc, bw);
++}
++
++int felix_cbs_get(struct net_device *ndev, u8 tc)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cbs_get(ocelot, port, tc);
++}
++
++int felix_cut_thru_set(struct net_device *ndev, u8 cut_thru)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cut_thru_set(ocelot, port, cut_thru);
++}
++
++int felix_seq_gen_set(struct net_device *ndev, u32 index,
++		      struct tsn_seq_gen_conf *sg_conf)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_seq_gen_set(ocelot, port, index, sg_conf);
++}
++
++int felix_seq_rec_set(struct net_device *ndev, u32 index,
++		      struct tsn_seq_rec_conf *sr_conf)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_seq_rec_set(ocelot, port, index, sr_conf);
++}
++
++int felix_cb_get(struct net_device *ndev, u32 index,
++		 struct tsn_cb_status *c)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_cb_get(ocelot, port, index, c);
++}
++
++int felix_dscp_set(struct net_device *ndev, bool enable, const u8 dscp_ix,
++		   struct tsn_qos_switch_dscp_conf *c)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return -ENODEV;
++	port = felix_dev_to_port(ndev, ocelot);
++	if (port < 0)
++		return -ENODEV;
++
++	return ocelot_dscp_set(ocelot, port, enable, dscp_ix, c);
++}
++
++void felix_tsn_init(struct net_device *ndev)
++{
++	struct ocelot *ocelot;
++	int port;
++
++	ocelot = felix_dev_to_ocelot(ndev);
++	if (!ocelot)
++		return;
++	port = felix_dev_to_port(ndev, ocelot);
++
++	ocelot_pcp_map_enable(ocelot, port);
++	ocelot_rtag_parse_enable(ocelot, port);
++}
+--- /dev/null
++++ b/drivers/net/dsa/ocelot/felix_tsn.h
+@@ -0,0 +1,61 @@
++/* SPDX-License-Identifier: (GPL-2.0 OR MIT)
++ *
++ * TSN_SWITCH driver
++ *
++ * Copyright 2018-2019 NXP
++ */
++
++#ifndef _MSCC_FELIX_SWITCH_TSN_H_
++#define _MSCC_FELIX_SWITCH_TSN_H_
++#include <net/tsn.h>
++
++u32 felix_tsn_get_cap(struct net_device *ndev);
++int felix_qbv_set(struct net_device *ndev,
++		  struct tsn_qbv_conf *shaper_config);
++int felix_qbv_get(struct net_device *ndev,
++		  struct tsn_qbv_conf *shaper_config);
++int felix_qbv_get_status(struct net_device *ndev,
++			 struct tsn_qbv_status *qbvstatus);
++int felix_cut_thru_set(struct net_device *ndev, u8 cut_thru);
++int felix_cbs_set(struct net_device *ndev, u8 tc, u8 bw);
++int felix_cbs_get(struct net_device *ndev, u8 tc);
++int felix_qbu_set(struct net_device *ndev, u8 preemptible);
++int felix_qbu_get(struct net_device *ndev, struct tsn_preempt_status *c);
++int felix_cb_streamid_get(struct net_device *ndev, u32 index,
++			  struct tsn_cb_streamid *streamid);
++int felix_cb_streamid_set(struct net_device *ndev, u32 index,
++			  bool enable, struct tsn_cb_streamid *streamid);
++int felix_cb_streamid_counters_get(struct net_device *ndev, u32 index,
++				   struct tsn_cb_streamid_counters *sc);
++int felix_qci_sfi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sfi_conf *sfi);
++int felix_qci_sfi_set(struct net_device *ndev, u32 index,
++		      bool enable, struct tsn_qci_psfp_sfi_conf *sfi);
++int felix_cb_streamid_counters_get(struct net_device *ndev, u32 index,
++				   struct tsn_cb_streamid_counters *s_counters);
++int felix_qci_sfi_counters_get(struct net_device *ndev, u32 index,
++			       struct tsn_qci_psfp_sfi_counters *sfi_counters);
++int felix_qci_max_cap_get(struct net_device *ndev,
++			  struct tsn_qci_psfp_stream_param *stream_para);
++int felix_qci_sgi_set(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *sgi_conf);
++int felix_qci_sgi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_sgi_conf *sgi_conf);
++int felix_qci_sgi_status_get(struct net_device *ndev, u16 index,
++			     struct tsn_psfp_sgi_status *sgi_status);
++int felix_qci_fmi_set(struct net_device *ndev, u32 index,
++		      bool enable, struct tsn_qci_psfp_fmi *fmi);
++int felix_qci_fmi_get(struct net_device *ndev, u32 index,
++		      struct tsn_qci_psfp_fmi *fmi,
++		      struct tsn_qci_psfp_fmi_counters *counters);
++int felix_seq_gen_set(struct net_device *ndev, u32 index,
++		      struct tsn_seq_gen_conf *sg_conf);
++int felix_seq_rec_set(struct net_device *ndev, u32 index,
++		      struct tsn_seq_rec_conf *sr_conf);
++int felix_cb_get(struct net_device *ndev, u32 index,
++		 struct tsn_cb_status  *c);
++int felix_dscp_set(struct net_device *ndev, bool enable, const u8 dscp_ix,
++		   struct tsn_qos_switch_dscp_conf *c);
++
++void felix_tsn_init(struct net_device *ndev);
++#endif
+--- a/drivers/net/dsa/ocelot/felix_vsc9959.c
++++ b/drivers/net/dsa/ocelot/felix_vsc9959.c
+@@ -176,7 +176,7 @@ static const u32 vsc9959_qsys_regmap[] =
+ 	REG(QSYS_QMAXSDU_CFG_6,			0x00f62c),
+ 	REG(QSYS_QMAXSDU_CFG_7,			0x00f648),
+ 	REG(QSYS_PREEMPTION_CFG,		0x00f664),
+-	REG_RESERVED(QSYS_CIR_CFG),
++	REG(QSYS_CIR_CFG,			0x000000),
+ 	REG(QSYS_EIR_CFG,			0x000004),
+ 	REG(QSYS_SE_CFG,			0x000008),
+ 	REG(QSYS_SE_DWRR_CFG,			0x00000c),
+@@ -269,7 +269,7 @@ static const u32 vsc9959_sys_regmap[] =
+ 	REG_RESERVED(SYS_MMGT_FAST),
+ 	REG_RESERVED(SYS_EVENTS_DIF),
+ 	REG_RESERVED(SYS_EVENTS_CORE),
+-	REG_RESERVED(SYS_CNT),
++	REG(SYS_CNT,				0x000000),
+ 	REG(SYS_PTP_STATUS,			0x000f14),
+ 	REG(SYS_PTP_TXSTAMP,			0x000f18),
+ 	REG(SYS_PTP_NXT,			0x000f1c),
+@@ -290,6 +290,10 @@ static const u32 vsc9959_ptp_regmap[] =
+ 	REG(PTP_CFG_MISC,                  0x0000a0),
+ 	REG(PTP_CLK_CFG_ADJ_CFG,           0x0000a4),
+ 	REG(PTP_CLK_CFG_ADJ_FREQ,          0x0000a8),
++	REG(PTP_CUR_NSF,                   0x0000bc),
++	REG(PTP_CUR_NSEC,                  0x0000c0),
++	REG(PTP_CUR_SEC_LSB,               0x0000c4),
++	REG(PTP_CUR_SEC_MSB,               0x0000c8),
+ };
+ 
+ static const u32 vsc9959_gcb_regmap[] = {
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -559,6 +559,7 @@ struct dsa_switch_ops {
+ 	 */
+ 	netdev_tx_t (*port_deferred_xmit)(struct dsa_switch *ds, int port,
+ 					  struct sk_buff *skb);
++	int	(*port_tsn_enable)(struct dsa_port *dp);
+ };
+ 
+ struct dsa_switch_driver {
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -323,6 +323,10 @@ static int dsa_port_setup(struct dsa_por
+ 		if (err)
+ 			break;
+ 
++		/* Enable TSN function on switch port */
++		if (ds->ops->port_tsn_enable)
++			ds->ops->port_tsn_enable(dp);
++
+ 		devlink_port_type_eth_set(dlp, dp->slave);
+ 		break;
+ 	}

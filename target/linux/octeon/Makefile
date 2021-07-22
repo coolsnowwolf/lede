@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2013 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 ARCH:=mips64
@@ -11,9 +9,9 @@ BOARD:=octeon
 BOARDNAME:=Cavium Networks Octeon
 FEATURES:=squashfs ramdisk pci usb
 CPU_TYPE:=octeonplus
-MAINTAINER:=John Crispin <john@phrozen.org>
 
-KERNEL_PATCHVER:=4.14
+KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.10
 
 define Target/Description
 	Build firmware images for Cavium Networks Octeon-based boards.

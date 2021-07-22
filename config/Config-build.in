@@ -1,18 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
 # Copyright (C) 2006-2013 OpenWrt.org
 # Copyright (C) 2016 LEDE Project
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
+config EXPERIMENTAL
+	bool "Enable experimental features by default"
+	default n
+	help
+	  Set this option to build with latest bleeding edge features
+	  which may or may not work as expected.
+	  If you would like to help the development of OpenWrt, you are
+	  encouraged to set this option and provide feedback (both
+	  positive and negative). But do so only if you know how to
+	  recover your device in case of flashing potentially non-working
+	  firmware.
+	
+	  If you plan to use this build in production, say NO!
 
 menu "Global build settings"
 
-	config JSON_ADD_IMAGE_INFO
-		bool "Create JSON info files per build image"
+	config JSON_OVERVIEW_IMAGE_INFO
+		bool "Create JSON info file overview per target"
 		default BUILDBOT
 		help
-		  The JSON info files contain information about the device and
-		  build images, stored next to the firmware images.
+		  Create a JSON info file called profiles.json in the target
+		  directory containing machine readable list of built profiles
+		  and resulting images.
 
 	config ALL_NONSHARED
 		bool "Select all target specific packages by default"
@@ -39,7 +52,7 @@ menu "Global build settings"
 
 	config SIGNED_PACKAGES
 		bool "Cryptographically signed package lists"
-		default n
+		default y
 
 	config SIGNATURE_CHECK
 		bool "Enable signature checking in opkg"
@@ -47,12 +60,21 @@ menu "Global build settings"
 
 	comment "General build options"
 
+	config TESTING_KERNEL
+		bool "Use the testing kernel version"
+		depends on HAS_TESTING_KERNEL
+		default EXPERIMENTAL
+		help
+		  If the target supports a newer kernel version than the default,
+		  you can use this config option to enable it
+
+
 	config DISPLAY_SUPPORT
 		bool "Show packages that require graphics support (local or remote)"
 		default n
 
 	config BUILD_PATENTED
-		default y
+		default n
 		bool "Compile with support for patented functionality"
 		help
 		  When this option is disabled, software which provides patented functionality
@@ -79,11 +101,28 @@ menu "Global build settings"
 		  This removes all ipkg/opkg status data files from the target directory
 		  before building the root filesystem.
 
+	config IPK_FILES_CHECKSUMS
+		bool
+		prompt "Record files checksums in package metadata"
+		default n
+		help
+		  This makes file checksums part of package metadata. It increases size
+		  but provides you with pkg_check command to check for flash coruptions.
+
 	config INCLUDE_CONFIG
 		bool "Include build configuration in firmware" if DEVEL
 		default n
 		help
-		  If enabled, config.seed will be stored in /etc/build.config of firmware.
+		  If enabled, buildinfo files will be stored in /etc/build.* of firmware.
+
+	config REPRODUCIBLE_DEBUG_INFO
+		bool "Make debug information reproducible"
+		default BUILDBOT
+		help
+		  This strips the local build path out of debug information. This has the
+		  advantage of making it reproducible, but the disadvantage of making local
+		  debugging using ./scripts/remote-gdb harder, since the debug data will
+		  no longer point to the full path on the build host.
 
 	config COLLECT_KERNEL_DEBUG
 		bool
@@ -155,6 +194,14 @@ menu "Global build settings"
 		help
 		  Specifies arguments passed to the strip command when stripping binaries.
 
+	config SSTRIP_ARGS
+		string
+		prompt "Sstrip arguments"
+		depends on USE_SSTRIP
+		default "-z"
+		help
+		  Specifies arguments passed to the sstrip command when stripping binaries.
+
 	config STRIP_KERNEL_EXPORTS
 		bool "Strip unnecessary exports from the kernel image"
 		help
@@ -179,9 +226,6 @@ menu "Global build settings"
 
 		config USE_UCLIBCXX
 			bool "uClibc++"
-
-		config USE_LIBCXX
-			bool "libc++"
 
 		config USE_LIBSTDCXX
 			bool "libstdc++"
@@ -230,7 +274,6 @@ menu "Global build settings"
 
 	choice
 		prompt "User space Stack-Smashing Protection"
-		depends on USE_MUSL
 		default PKG_CC_STACKPROTECTOR_REGULAR
 		help
 		  Enable GCC Stack Smashing Protection (SSP) for userspace applications
@@ -238,19 +281,13 @@ menu "Global build settings"
 			bool "None"
 		config PKG_CC_STACKPROTECTOR_REGULAR
 			bool "Regular"
-			select GCC_LIBSSP if !USE_MUSL
-			depends on KERNEL_CC_STACKPROTECTOR_REGULAR
 		config PKG_CC_STACKPROTECTOR_STRONG
 			bool "Strong"
-			select GCC_LIBSSP if !USE_MUSL
-			depends on !GCC_VERSION_4_8
-			depends on KERNEL_CC_STACKPROTECTOR_STRONG
 	endchoice
 
 	choice
 		prompt "Kernel space Stack-Smashing Protection"
 		default KERNEL_CC_STACKPROTECTOR_REGULAR
-		depends on USE_MUSL || !(x86_64 || i386)
 		help
 		  Enable GCC Stack-Smashing Protection (SSP) for the kernel
 		config KERNEL_CC_STACKPROTECTOR_NONE
@@ -258,15 +295,14 @@ menu "Global build settings"
 		config KERNEL_CC_STACKPROTECTOR_REGULAR
 			bool "Regular"
 		config KERNEL_CC_STACKPROTECTOR_STRONG
-			depends on !GCC_VERSION_4_8
 			bool "Strong"
 	endchoice
 
-	config  KERNEL_STACKPROTECTOR
+	config KERNEL_STACKPROTECTOR
 		bool
 		default KERNEL_CC_STACKPROTECTOR_REGULAR || KERNEL_CC_STACKPROTECTOR_STRONG
 
-	config  KERNEL_STACKPROTECTOR_STRONG
+	config KERNEL_STACKPROTECTOR_STRONG
 		bool
 		default KERNEL_CC_STACKPROTECTOR_STRONG
 
@@ -306,6 +342,48 @@ menu "Global build settings"
 			bool "Partial"
 		config PKG_RELRO_FULL
 			bool "Full"
+	endchoice
+
+	config TARGET_ROOTFS_SECURITY_LABELS
+		bool
+		select KERNEL_SQUASHFS_XATTR
+		select KERNEL_EXT4_FS_SECURITY
+		select KERNEL_F2FS_FS_SECURITY
+		select KERNEL_UBIFS_FS_SECURITY
+		select KERNEL_JFFS2_FS_SECURITY
+
+	config SELINUX
+		bool "Enable SELinux"
+		select KERNEL_SECURITY_SELINUX
+		select TARGET_ROOTFS_SECURITY_LABELS
+		select PACKAGE_procd-selinux
+		select PACKAGE_busybox-selinux
+		help
+		  This option enables SELinux kernel features, applies security labels
+		  in squashfs rootfs and selects the selinux-variants of busybox and procd.
+
+		  Selecting this option results in about 0.5MiB of additional flash space
+		  usage accounting for increased kernel and rootfs size.
+
+	choice
+		prompt "default SELinux type"
+		depends on TARGET_ROOTFS_SECURITY_LABELS
+		default SELINUXTYPE_dssp
+		help
+		  Select SELinux policy to be installed and used for applying rootfs labels.
+
+		config SELINUXTYPE_targeted
+			bool "targeted"
+			select PACKAGE_refpolicy
+			help
+			  SELinux Reference Policy (refpolicy)
+
+		config SELINUXTYPE_dssp
+			bool "dssp"
+			select PACKAGE_selinux-policy
+			help
+			  Defensec SELinux Security Policy -- OpenWrt edition
+
 	endchoice
 
 endmenu

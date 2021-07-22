@@ -1,0 +1,86 @@
+From 7a342f60e569047e1632f6af91f503993769a2ec Mon Sep 17 00:00:00 2001
+From: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+Date: Tue, 17 Sep 2019 19:51:15 +0300
+Subject: [PATCH] dpaa2-eth: Enable Rx PFC
+
+Instruct the hardware to respond to received PFC frames.
+
+Current firmware doesn't allow us to selectively enable PFC
+on the Rx side for some priorities only, so we will react to
+all incoming PFC frames (and stop transmitting on the traffic
+classes specified in the frame).
+
+PFC depends on the PAUSE flag also being set in link options.
+Don't set it implicitly when user configures PFC, but issue
+a warning if the two settings are not in sync.
+
+For the Tx side, setting the PFC_PAUSE flag in the link options
+is necessary but not sufficient, so PFC frame generation is
+not enabled yet.
+
+Signed-off-by: Ioana Radulescu <ruxandra.radulescu@nxp.com>
+---
+ drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c | 23 +++++++++++++++++++++++
+ drivers/net/ethernet/freescale/dpaa2/dpni.h      |  5 +++++
+ 2 files changed, 28 insertions(+)
+
+--- a/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
++++ b/drivers/net/ethernet/freescale/dpaa2/dpaa2-eth.c
+@@ -3620,6 +3620,9 @@ static int dpaa2_eth_dcbnl_ieee_getpfc(s
+ {
+ 	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
+ 
++	if (!(priv->link_state.options & DPNI_LINK_OPT_PFC_PAUSE))
++		return 0;
++
+ 	memcpy(pfc, &priv->pfc, sizeof(priv->pfc));
+ 	pfc->pfc_cap = dpaa2_eth_tc_count(priv);
+ 
+@@ -3630,6 +3633,8 @@ static int dpaa2_eth_dcbnl_ieee_setpfc(s
+ 				       struct ieee_pfc *pfc)
+ {
+ 	struct dpaa2_eth_priv *priv = netdev_priv(net_dev);
++	struct dpni_link_cfg link_cfg = {0};
++	int err;
+ 
+ 	if (pfc->mbc || pfc->delay)
+ 		return -EOPNOTSUPP;
+@@ -3638,6 +3643,24 @@ static int dpaa2_eth_dcbnl_ieee_setpfc(s
+ 	if (priv->pfc.pfc_en == pfc->pfc_en)
+ 		return 0;
+ 
++	/* We allow PFC configuration even if it won't have any effect until
++	 * general pause frames are enabled
++	 */
++	if (!dpaa2_eth_rx_pause_enabled(priv->link_state.options))
++		netdev_warn(net_dev, "Pause support must be enabled in order for PFC to work!\n");
++
++	link_cfg.rate = priv->link_state.rate;
++	link_cfg.options = priv->link_state.options;
++	if (pfc->pfc_en)
++		link_cfg.options |= DPNI_LINK_OPT_PFC_PAUSE;
++	else
++		link_cfg.options &= ~DPNI_LINK_OPT_PFC_PAUSE;
++	err = dpni_set_link_cfg(priv->mc_io, 0, priv->mc_token, &link_cfg);
++	if (err) {
++		netdev_err(net_dev, "dpni_set_link_cfg failed\n");
++		return err;
++	}
++
+ 	memcpy(&priv->pfc, pfc, sizeof(priv->pfc));
+ 
+ 	return 0;
+--- a/drivers/net/ethernet/freescale/dpaa2/dpni.h
++++ b/drivers/net/ethernet/freescale/dpaa2/dpni.h
+@@ -514,6 +514,11 @@ int dpni_get_statistics(struct fsl_mc_io
+ #define DPNI_LINK_OPT_ASYM_PAUSE	0x0000000000000008ULL
+ 
+ /**
++ * Enable priority flow control pause frames
++ */
++#define DPNI_LINK_OPT_PFC_PAUSE		0x0000000000000010ULL
++
++/**
+  * struct - Structure representing DPNI link configuration
+  * @rate: Rate
+  * @options: Mask of available options; use 'DPNI_LINK_OPT_<X>' values

@@ -9,12 +9,13 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_DATE:=2019-10-21
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Chion82/netfilter-full-cone-nat.git
 PKG_SOURCE_VERSION:=0cf3b48fd7d2fa81d0297d1fff12bbd0580fc435
+PKG_MIRROR_HASH:=e7bb77d9916d190b3c02975faf62d1794557d4a4a774cd0cf1f3a6ddb7403e3e
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -55,7 +56,7 @@ define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
         CROSS_COMPILE="$(TARGET_CROSS)" \
         ARCH="$(LINUX_KARCH)" \
-        SUBDIRS="$(PKG_BUILD_DIR)" \
+        M="$(PKG_BUILD_DIR)" \
         EXTRA_CFLAGS="$(BUILDFLAGS)" \
         modules
 	$(call Build/Compile/Default)

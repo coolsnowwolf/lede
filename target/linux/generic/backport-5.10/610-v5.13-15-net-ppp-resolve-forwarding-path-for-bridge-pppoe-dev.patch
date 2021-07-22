@@ -1,0 +1,113 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 24 Mar 2021 02:30:36 +0100
+Subject: [PATCH] net: ppp: resolve forwarding path for bridge pppoe
+ devices
+
+Pass on the PPPoE session ID, destination hardware address and the real
+device.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -1450,12 +1450,34 @@ static void ppp_dev_priv_destructor(stru
+ 		ppp_destroy_interface(ppp);
+ }
+ 
++static int ppp_fill_forward_path(struct net_device_path_ctx *ctx,
++				 struct net_device_path *path)
++{
++	struct ppp *ppp = netdev_priv(ctx->dev);
++	struct ppp_channel *chan;
++	struct channel *pch;
++
++	if (ppp->flags & SC_MULTILINK)
++		return -EOPNOTSUPP;
++
++	if (list_empty(&ppp->channels))
++		return -ENODEV;
++
++	pch = list_first_entry(&ppp->channels, struct channel, clist);
++	chan = pch->chan;
++	if (!chan->ops->fill_forward_path)
++		return -EOPNOTSUPP;
++
++	return chan->ops->fill_forward_path(ctx, path, chan);
++}
++
+ static const struct net_device_ops ppp_netdev_ops = {
+ 	.ndo_init	 = ppp_dev_init,
+ 	.ndo_uninit      = ppp_dev_uninit,
+ 	.ndo_start_xmit  = ppp_start_xmit,
+ 	.ndo_do_ioctl    = ppp_net_ioctl,
+ 	.ndo_get_stats64 = ppp_get_stats64,
++	.ndo_fill_forward_path = ppp_fill_forward_path,
+ };
+ 
+ static struct device_type ppp_type = {
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -972,8 +972,31 @@ static int pppoe_xmit(struct ppp_channel
+ 	return __pppoe_xmit(sk, skb);
+ }
+ 
++static int pppoe_fill_forward_path(struct net_device_path_ctx *ctx,
++				   struct net_device_path *path,
++				   const struct ppp_channel *chan)
++{
++	struct sock *sk = (struct sock *)chan->private;
++	struct pppox_sock *po = pppox_sk(sk);
++	struct net_device *dev = po->pppoe_dev;
++
++	if (sock_flag(sk, SOCK_DEAD) ||
++	    !(sk->sk_state & PPPOX_CONNECTED) || !dev)
++		return -1;
++
++	path->type = DEV_PATH_PPPOE;
++	path->encap.proto = htons(ETH_P_PPP_SES);
++	path->encap.id = be16_to_cpu(po->num);
++	memcpy(path->encap.h_dest, po->pppoe_pa.remote, ETH_ALEN);
++	path->dev = ctx->dev;
++	ctx->dev = dev;
++
++	return 0;
++}
++
+ static const struct ppp_channel_ops pppoe_chan_ops = {
+ 	.start_xmit = pppoe_xmit,
++	.fill_forward_path = pppoe_fill_forward_path,
+ };
+ 
+ static int pppoe_recvmsg(struct socket *sock, struct msghdr *m,
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -831,6 +831,7 @@ enum net_device_path_type {
+ 	DEV_PATH_ETHERNET = 0,
+ 	DEV_PATH_VLAN,
+ 	DEV_PATH_BRIDGE,
++	DEV_PATH_PPPOE,
+ };
+ 
+ struct net_device_path {
+@@ -840,6 +841,7 @@ struct net_device_path {
+ 		struct {
+ 			u16		id;
+ 			__be16		proto;
++			u8		h_dest[ETH_ALEN];
+ 		} encap;
+ 		struct {
+ 			enum {
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -28,6 +28,9 @@ struct ppp_channel_ops {
+ 	int	(*start_xmit)(struct ppp_channel *, struct sk_buff *);
+ 	/* Handle an ioctl call that has come in via /dev/ppp. */
+ 	int	(*ioctl)(struct ppp_channel *, unsigned int, unsigned long);
++	int	(*fill_forward_path)(struct net_device_path_ctx *,
++				     struct net_device_path *,
++				     const struct ppp_channel *);
+ };
+ 
+ struct ppp_channel {

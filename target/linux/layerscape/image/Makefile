@@ -1,15 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2016 Jiang Yutang <jiangyutang1978@gmail.com>
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
+LS_SD_KERNELPART_SIZE = 40
+LS_SD_KERNELPART_OFFSET = 16
 LS_SD_ROOTFSPART_OFFSET = 64
 LS_SD_IMAGE_SIZE = $(shell echo $$((($(LS_SD_ROOTFSPART_OFFSET) + \
-	$(CONFIG_TARGET_ROOTFS_PARTSIZE)) * 1024 * 1024)))
+	$(CONFIG_TARGET_ROOTFS_PARTSIZE)))))
+
+# The limitation of flash sysupgrade.bin is 1MB dtb + 16MB kernel + 32MB rootfs
+LS_SYSUPGRADE_IMAGE_SIZE = 49m
+
+define Image/Prepare
+	# Build .dtb for all boards we may run on
+	$(foreach dts,$(DEVICE_DTS_LIST),
+		$(call Image/BuildDTB,$(DTS_DIR)/$(dts).dts,$(DTS_DIR)/$(dts).dtb)
+	)
+endef
 
 define Build/ls-clean
 	rm -f $@
@@ -20,12 +30,21 @@ define Build/ls-append
 endef
 
 define Build/ls-append-dtb
-	$(call Image/BuildDTB,$(DTS_DIR)/$(1).dts,$(DTS_DIR)/$(1).dtb)
 	dd if=$(DTS_DIR)/$(1).dtb >> $@
+endef
+
+define Build/ls-append-kernel
+	mkdir -p $@.tmp && \
+	cp $(IMAGE_KERNEL) $@.tmp/fitImage && \
+	make_ext4fs -J -L kernel -l "$(LS_SD_KERNELPART_SIZE)M" "$@.kernel.part" "$@.tmp" && \
+	dd if=$@.kernel.part >> $@ && \
+	rm -rf $@.tmp && \
+	rm -f $@.kernel.part
 endef
 
 define Build/ls-append-sdhead
 	./gen_sdcard_head_img.sh $(STAGING_DIR_IMAGE)/$(1)-sdcard-head.img \
+		$(LS_SD_KERNELPART_OFFSET) $(LS_SD_KERNELPART_SIZE) \
 		$(LS_SD_ROOTFSPART_OFFSET) $(CONFIG_TARGET_ROOTFS_PARTSIZE)
 	dd if=$(STAGING_DIR_IMAGE)/$(1)-sdcard-head.img >> $@
 endef
@@ -43,12 +62,19 @@ define Build/traverse-fit
 	@mv -f $@.new $@
 endef
 
-ifeq ($(SUBTARGET),armv8_64b)
-include armv8_64b.mk
-endif
+define Device/fix-sysupgrade
+  DEVICE_COMPAT_VERSION := 2.0
+  DEVICE_COMPAT_MESSAGE := DTB was added to sysupgrade. Image format is different. \
+	To use sysupgrade You need to change firmware partition in bootargs to "49m@0xf00000(firmware)" and saveenv. \
+	After that, You can use "sysupgrade -F".
+endef
 
-ifeq ($(SUBTARGET),armv7)
-include armv7.mk
-endif
+define Device/rework-sdcard-images
+  DEVICE_COMPAT_VERSION := 2.0
+  DEVICE_COMPAT_MESSAGE := SD-card images were changed to squashfs + ext4 overlay combined images. \
+	It is required to flash the entire sd-card again and manually copy config.
+endef
+
+include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

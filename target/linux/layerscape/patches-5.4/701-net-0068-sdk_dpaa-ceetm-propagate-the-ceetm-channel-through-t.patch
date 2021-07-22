@@ -1,0 +1,298 @@
+From dfd2deb8bc482588999a4f03b5ab5d049e50fdb0 Mon Sep 17 00:00:00 2001
+From: Camelia Groza <camelia.groza@nxp.com>
+Date: Wed, 30 May 2018 14:51:35 +0300
+Subject: [PATCH] sdk_dpaa: ceetm: propagate the ceetm channel through the
+ qdisc tree
+
+Signed-off-by: Camelia Groza <camelia.groza@nxp.com>
+---
+ .../ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.c   | 61 +++++++++-------------
+ .../ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.h   |  4 +-
+ 2 files changed, 29 insertions(+), 36 deletions(-)
+
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.c
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.c
+@@ -242,7 +242,6 @@ static int ceetm_config_lfq(struct qm_ce
+ /* Configure a prio ceetm class */
+ static int ceetm_config_prio_cls(struct ceetm_class *cls,
+ 				 struct net_device *dev,
+-				 struct qm_ceetm_channel *channel,
+ 				 unsigned int id)
+ {
+ 	int err;
+@@ -253,22 +252,22 @@ static int ceetm_config_prio_cls(struct
+ 		return err;
+ 
+ 	/* Claim and configure the CCG */
+-	err = ceetm_config_ccg(&cls->prio.ccg, channel, id, cls->prio.fq,
++	err = ceetm_config_ccg(&cls->prio.ccg, cls->ch, id, cls->prio.fq,
+ 			       dpa_priv);
+ 	if (err)
+ 		return err;
+ 
+ 	/* Claim and configure the CQ */
+-	err = qman_ceetm_cq_claim(&cls->prio.cq, channel, id, cls->prio.ccg);
++	err = qman_ceetm_cq_claim(&cls->prio.cq, cls->ch, id, cls->prio.ccg);
+ 	if (err)
+ 		return err;
+ 
+ 	if (cls->shaped) {
+-		err = qman_ceetm_channel_set_cq_cr_eligibility(channel, id, 1);
++		err = qman_ceetm_channel_set_cq_cr_eligibility(cls->ch, id, 1);
+ 		if (err)
+ 			return err;
+ 
+-		err = qman_ceetm_channel_set_cq_er_eligibility(channel, id, 1);
++		err = qman_ceetm_channel_set_cq_er_eligibility(cls->ch, id, 1);
+ 		if (err)
+ 			return err;
+ 	}
+@@ -284,7 +283,6 @@ static int ceetm_config_prio_cls(struct
+ /* Configure a wbfs ceetm class */
+ static int ceetm_config_wbfs_cls(struct ceetm_class *cls,
+ 				 struct net_device *dev,
+-				 struct qm_ceetm_channel *channel,
+ 				 unsigned int id, int type)
+ {
+ 	int err;
+@@ -295,17 +293,17 @@ static int ceetm_config_wbfs_cls(struct
+ 		return err;
+ 
+ 	/* Claim and configure the CCG */
+-	err = ceetm_config_ccg(&cls->wbfs.ccg, channel, id, cls->wbfs.fq,
++	err = ceetm_config_ccg(&cls->wbfs.ccg, cls->ch, id, cls->wbfs.fq,
+ 			       dpa_priv);
+ 	if (err)
+ 		return err;
+ 
+ 	/* Claim and configure the CQ */
+ 	if (type == WBFS_GRP_B)
+-		err = qman_ceetm_cq_claim_B(&cls->wbfs.cq, channel, id,
++		err = qman_ceetm_cq_claim_B(&cls->wbfs.cq, cls->ch, id,
+ 					    cls->wbfs.ccg);
+ 	else
+-		err = qman_ceetm_cq_claim_A(&cls->wbfs.cq, channel, id,
++		err = qman_ceetm_cq_claim_A(&cls->wbfs.cq, cls->ch, id,
+ 					    cls->wbfs.ccg);
+ 	if (err)
+ 		return err;
+@@ -366,10 +364,10 @@ static void ceetm_cls_destroy(struct Qdi
+ 			cl->root.child = NULL;
+ 		}
+ 
+-		if (cl->root.ch && qman_ceetm_channel_release(cl->root.ch))
++		if (cl->ch && qman_ceetm_channel_release(cl->ch))
+ 			pr_err(KBUILD_BASENAME
+ 			       " : %s : error releasing the channel %d\n",
+-			       __func__, cl->root.ch->idx);
++			       __func__, cl->ch->idx);
+ 
+ 		break;
+ 
+@@ -766,6 +764,7 @@ static int ceetm_init_prio(struct Qdisc
+ 
+ 	priv->shaped = parent_cl->shaped;
+ 	priv->prio.qcount = qopt->qcount;
++	priv->prio.ch = parent_cl->ch;
+ 
+ 	/* Create and configure qcount child classes */
+ 	for (i = 0; i < priv->prio.qcount; i++) {
+@@ -790,6 +789,7 @@ static int ceetm_init_prio(struct Qdisc
+ 		child_cl->type = CEETM_PRIO;
+ 		child_cl->shaped = priv->shaped;
+ 		child_cl->prio.child = NULL;
++		child_cl->ch = priv->prio.ch;
+ 
+ 		/* All shaped CQs have CR and ER enabled by default */
+ 		child_cl->prio.cr = child_cl->shaped;
+@@ -798,8 +798,7 @@ static int ceetm_init_prio(struct Qdisc
+ 		child_cl->prio.cq = NULL;
+ 
+ 		/* Configure the corresponding hardware CQ */
+-		err = ceetm_config_prio_cls(child_cl, dev,
+-					    parent_cl->root.ch, i);
++		err = ceetm_config_prio_cls(child_cl, dev, i);
+ 		if (err) {
+ 			pr_err(KBUILD_BASENAME " : %s : failed to configure the ceetm prio class %X\n",
+ 			       __func__, child_cl->common.classid);
+@@ -831,7 +830,6 @@ static int ceetm_init_wbfs(struct Qdisc
+ 	struct ceetm_class *parent_cl, *child_cl, *root_cl;
+ 	struct Qdisc *parent_qdisc;
+ 	struct ceetm_qdisc *parent_priv;
+-	struct qm_ceetm_channel *channel;
+ 	struct net_device *dev = qdisc_dev(sch);
+ 
+ 	pr_debug(KBUILD_BASENAME " : %s : qdisc %X\n", __func__, sch->handle);
+@@ -904,8 +902,7 @@ static int ceetm_init_wbfs(struct Qdisc
+ 	priv->wbfs.qcount = qopt->qcount;
+ 	priv->wbfs.cr = qopt->cr;
+ 	priv->wbfs.er = qopt->er;
+-
+-	channel = root_cl->root.ch;
++	priv->wbfs.ch = parent_cl->ch;
+ 
+ 	/* Configure the hardware wbfs channel groups */
+ 	if (priv->wbfs.qcount == CEETM_MAX_WBFS_QCOUNT) {
+@@ -920,7 +917,7 @@ static int ceetm_init_wbfs(struct Qdisc
+ 		/* Configure the group B */
+ 		priv->wbfs.group_type = WBFS_GRP_B;
+ 
+-		err = qman_ceetm_channel_get_group(channel, &small_group,
++		err = qman_ceetm_channel_get_group(priv->wbfs.ch, &small_group,
+ 						   &prio_a, &prio_b);
+ 		if (err) {
+ 			pr_err(KBUILD_BASENAME " : %s : failed to get group details\n",
+@@ -938,7 +935,7 @@ static int ceetm_init_wbfs(struct Qdisc
+ 		/* Configure the small group A */
+ 		priv->wbfs.group_type = WBFS_GRP_A;
+ 
+-		err = qman_ceetm_channel_get_group(channel, &small_group,
++		err = qman_ceetm_channel_get_group(priv->wbfs.ch, &small_group,
+ 						   &prio_a, &prio_b);
+ 		if (err) {
+ 			pr_err(KBUILD_BASENAME " : %s : failed to get group details\n",
+@@ -953,13 +950,13 @@ static int ceetm_init_wbfs(struct Qdisc
+ 		prio_b = prio_b ? : prio_a;
+ 	}
+ 
+-	err = qman_ceetm_channel_set_group(channel, small_group, prio_a,
++	err = qman_ceetm_channel_set_group(priv->wbfs.ch, small_group, prio_a,
+ 					   prio_b);
+ 	if (err)
+ 		goto err_init_wbfs;
+ 
+ 	if (priv->shaped) {
+-		err = qman_ceetm_channel_set_group_cr_eligibility(channel,
++		err = qman_ceetm_channel_set_group_cr_eligibility(priv->wbfs.ch,
+ 								  group_b,
+ 								priv->wbfs.cr);
+ 		if (err) {
+@@ -968,7 +965,7 @@ static int ceetm_init_wbfs(struct Qdisc
+ 			goto err_init_wbfs;
+ 		}
+ 
+-		err = qman_ceetm_channel_set_group_er_eligibility(channel,
++		err = qman_ceetm_channel_set_group_er_eligibility(priv->wbfs.ch,
+ 								  group_b,
+ 								priv->wbfs.er);
+ 		if (err) {
+@@ -1003,13 +1000,14 @@ static int ceetm_init_wbfs(struct Qdisc
+ 		child_cl->wbfs.fq = NULL;
+ 		child_cl->wbfs.cq = NULL;
+ 		child_cl->wbfs.weight = qopt->qweight[i];
++		child_cl->ch = priv->wbfs.ch;
+ 
+ 		if (priv->wbfs.group_type == WBFS_GRP_B)
+ 			id = WBFS_GRP_B_OFFSET + i;
+ 		else
+ 			id = WBFS_GRP_A_OFFSET + i;
+ 
+-		err = ceetm_config_wbfs_cls(child_cl, dev, channel, id,
++		err = ceetm_config_wbfs_cls(child_cl, dev, id,
+ 					    priv->wbfs.group_type);
+ 		if (err) {
+ 			pr_err(KBUILD_BASENAME " : %s : failed to configure the ceetm wbfs class %X\n",
+@@ -1178,9 +1176,6 @@ static int ceetm_change_wbfs(struct Qdis
+ {
+ 	int err;
+ 	bool group_b;
+-	struct qm_ceetm_channel *channel;
+-	struct ceetm_class *prio_class, *root_class;
+-	struct ceetm_qdisc *prio_qdisc;
+ 
+ 	if (qopt->qcount) {
+ 		pr_err("CEETM: the qcount can not be modified\n");
+@@ -1206,14 +1201,10 @@ static int ceetm_change_wbfs(struct Qdis
+ 	if (!priv->shaped)
+ 		return 0;
+ 
+-	prio_class = priv->wbfs.parent;
+-	prio_qdisc = qdisc_priv(prio_class->parent);
+-	root_class = prio_qdisc->prio.parent;
+-	channel = root_class->root.ch;
+ 	group_b = priv->wbfs.group_type == WBFS_GRP_B;
+ 
+ 	if (qopt->cr != priv->wbfs.cr) {
+-		err = qman_ceetm_channel_set_group_cr_eligibility(channel,
++		err = qman_ceetm_channel_set_group_cr_eligibility(priv->wbfs.ch,
+ 								  group_b,
+ 								  qopt->cr);
+ 		if (err)
+@@ -1222,7 +1213,7 @@ static int ceetm_change_wbfs(struct Qdis
+ 	}
+ 
+ 	if (qopt->er != priv->wbfs.er) {
+-		err = qman_ceetm_channel_set_group_er_eligibility(channel,
++		err = qman_ceetm_channel_set_group_er_eligibility(priv->wbfs.ch,
+ 								  group_b,
+ 								  qopt->er);
+ 		if (err)
+@@ -1337,7 +1328,7 @@ static int ceetm_cls_change_root(struct
+ 
+ 	if (cl->shaped && cl->root.rate != copt->rate) {
+ 		bps = copt->rate << 3; /* Bps -> bps */
+-		err = qman_ceetm_channel_set_commit_rate_bps(cl->root.ch, bps,
++		err = qman_ceetm_channel_set_commit_rate_bps(cl->ch, bps,
+ 							     dev->mtu);
+ 		if (err)
+ 			goto change_cls_err;
+@@ -1346,7 +1337,7 @@ static int ceetm_cls_change_root(struct
+ 
+ 	if (cl->shaped && cl->root.ceil != copt->ceil) {
+ 		bps = copt->ceil << 3; /* Bps -> bps */
+-		err = qman_ceetm_channel_set_excess_rate_bps(cl->root.ch, bps,
++		err = qman_ceetm_channel_set_excess_rate_bps(cl->ch, bps,
+ 							     dev->mtu);
+ 		if (err)
+ 			goto change_cls_err;
+@@ -1354,7 +1345,7 @@ static int ceetm_cls_change_root(struct
+ 	}
+ 
+ 	if (!cl->shaped && cl->root.tbl != copt->tbl) {
+-		err = qman_ceetm_channel_set_weight(cl->root.ch, copt->tbl);
++		err = qman_ceetm_channel_set_weight(cl->ch, copt->tbl);
+ 		if (err)
+ 			goto change_cls_err;
+ 		cl->root.tbl = copt->tbl;
+@@ -1555,7 +1546,7 @@ static int ceetm_cls_change(struct Qdisc
+ 		goto claim_err;
+ 	}
+ 
+-	cl->root.ch = channel;
++	cl->ch = channel;
+ 
+ 	if (cl->shaped) {
+ 		/* Configure the channel shaper */
+--- a/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.h
++++ b/drivers/net/ethernet/freescale/sdk_dpaa/dpaa_eth_ceetm.h
+@@ -121,12 +121,14 @@ struct root_q {
+ struct prio_q {
+ 	__u16 qcount;
+ 	struct ceetm_class *parent;
++	struct qm_ceetm_channel *ch;
+ };
+ 
+ struct wbfs_q {
+ 	__u16 qcount;
+ 	int group_type;
+ 	struct ceetm_class *parent;
++	struct qm_ceetm_channel *ch;
+ 	__u16 cr;
+ 	__u16 er;
+ };
+@@ -165,7 +167,6 @@ struct root_c {
+ 	bool wbfs_grp_b;
+ 	bool wbfs_grp_large;
+ 	struct Qdisc *child;
+-	struct qm_ceetm_channel *ch;
+ };
+ 
+ struct prio_c {
+@@ -194,6 +195,7 @@ struct ceetm_class {
+ 	struct tcf_proto *filter_list; /* class attached filters */
+ 	struct tcf_block *block;
+ 	struct Qdisc *parent;
++	struct qm_ceetm_channel *ch;
+ 	bool shaped;
+ 	int type; /* ROOT/PRIO/WBFS */
+ 	union {

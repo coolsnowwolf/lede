@@ -41,6 +41,7 @@
 #include <linux/atm.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/version.h>
 #ifdef CONFIG_XFRM
   #include <net/xfrm.h>
 #endif
@@ -199,7 +200,11 @@ static inline void mailbox_aal_rx_handler(void);
 static irqreturn_t mailbox_irq_handler(int, void *);
 static inline void mailbox_signal(unsigned int, int);
 static void do_ppe_tasklet(unsigned long);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 DECLARE_TASKLET(g_dma_tasklet, do_ppe_tasklet, 0);
+#else
+DECLARE_TASKLET_OLD(g_dma_tasklet, do_ppe_tasklet);
+#endif
 
 /*
  *  QSB & HTU setting functions
@@ -289,9 +294,9 @@ static int ppe_ioctl(struct atm_dev *dev, unsigned int cmd, void *arg)
 		return -ENOTTY;
 
 	if ( _IOC_DIR(cmd) & _IOC_READ )
-		ret = !access_ok(VERIFY_WRITE, arg, _IOC_SIZE(cmd));
+		ret = !access_ok(arg, _IOC_SIZE(cmd));
 	else if ( _IOC_DIR(cmd) & _IOC_WRITE )
-		ret = !access_ok(VERIFY_READ, arg, _IOC_SIZE(cmd));
+		ret = !access_ok(arg, _IOC_SIZE(cmd));
 	if ( ret )
 		return -EFAULT;
 
@@ -1777,7 +1782,7 @@ static int ltq_atm_probe(struct platform_device *pdev)
 		goto INIT_PRIV_DATA_FAIL;
 	}
 
-	ops->init();
+	ops->init(pdev);
 	init_rx_tables();
 	init_tx_tables();
 
@@ -1801,11 +1806,7 @@ static int ltq_atm_probe(struct platform_device *pdev)
 	}
 
 	/*  register interrupt handler  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0)
 	ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, 0, "atm_mailbox_isr", &g_atm_priv_data);
-#else
-	ret = request_irq(PPE_MAILBOX_IGU1_INT, mailbox_irq_handler, IRQF_DISABLED, "atm_mailbox_isr", &g_atm_priv_data);
-#endif
 	if ( ret ) {
 		if ( ret == -EBUSY ) {
 			pr_err("IRQ may be occupied by other driver, please reconfig to disable it.\n");

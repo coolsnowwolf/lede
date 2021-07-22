@@ -16,6 +16,7 @@
 #include <linux/netdevice.h>
 #include <linux/switch.h>
 #include <linux/phy.h>
+#include <linux/version.h>
 
 #define PSB6970_MAX_VLANS		16
 #define PSB6970_NUM_PORTS		7
@@ -325,7 +326,9 @@ static int psb6970_config_init(struct phy_device *pdev)
 		return 0;
 	}
 
-	pdev->supported = pdev->advertising = SUPPORTED_100baseT_Full;
+	linkmode_zero(pdev->supported);
+	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, pdev->supported);
+	linkmode_copy(pdev->advertising, pdev->supported);
 
 	mutex_init(&priv->reg_mutex);
 	priv->read = psb6970_mii_read;
@@ -351,8 +354,6 @@ static int psb6970_config_init(struct phy_device *pdev)
 		kfree(priv);
 		goto done;
 	}
-
-	dev->phy_ptr = priv;
 
 done:
 	return ret;
