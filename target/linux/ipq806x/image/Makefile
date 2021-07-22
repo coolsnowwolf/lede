@@ -30,7 +30,7 @@ define Build/linksys-bin
 endef
 # Use Linksys fw header generator to upgrade openwrt factory image over the native Linksys WEB interface
 define Build/linksys-addfwhdr
-        -$(STAGING_DIR_HOST)/bin/linksys/addfwhdr -i $@ -o $@.new \
+        -$(STAGING_DIR_HOST)/bin/addfwhdr -i $@ -o $@.new \
        	;mv "$@.new" "$@"
 endef
 
