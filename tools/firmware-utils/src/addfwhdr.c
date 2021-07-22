@@ -63,7 +63,7 @@ typedef unsigned int    uint32;
 typedef uint32_t cyg_uint32;
 typedef uint16_t cyg_uint16;
 
-extern cyg_uint32 cyg_crc32_accumulate(cyg_uint32 crc32val, unsigned char *s, int len);
+extern cyg_uint32 cyg_crc32_accumulate(cyg_uint32 crc, void *s, int len);
 //extern uint32 crc32(uint8 *pdata, uint nbytes, uint32 crc);
 
 int fd, fd_w;
