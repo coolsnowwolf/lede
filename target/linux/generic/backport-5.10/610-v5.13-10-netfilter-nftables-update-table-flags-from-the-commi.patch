@@ -1,0 +1,103 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Tue, 23 Mar 2021 00:56:28 +0100
+Subject: [PATCH] netfilter: nftables: update table flags from the commit
+ phase
+
+Do not update table flags from the preparation phase. Store the flags
+update into the transaction, then update the flags from the commit
+phase.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/net/netfilter/nf_tables.h
++++ b/include/net/netfilter/nf_tables.h
+@@ -1470,13 +1470,16 @@ struct nft_trans_chain {
+ 
+ struct nft_trans_table {
+ 	bool				update;
+-	bool				enable;
++	u8				state;
++	u32				flags;
+ };
+ 
+ #define nft_trans_table_update(trans)	\
+ 	(((struct nft_trans_table *)trans->data)->update)
+-#define nft_trans_table_enable(trans)	\
+-	(((struct nft_trans_table *)trans->data)->enable)
++#define nft_trans_table_state(trans)	\
++	(((struct nft_trans_table *)trans->data)->state)
++#define nft_trans_table_flags(trans)	\
++	(((struct nft_trans_table *)trans->data)->flags)
+ 
+ struct nft_trans_elem {
+ 	struct nft_set			*set;
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -891,6 +891,12 @@ static void nf_tables_table_disable(stru
+ 	nft_table_disable(net, table, 0);
+ }
+ 
++enum {
++	NFT_TABLE_STATE_UNCHANGED	= 0,
++	NFT_TABLE_STATE_DORMANT,
++	NFT_TABLE_STATE_WAKEUP
++};
++
+ static int nf_tables_updtable(struct nft_ctx *ctx)
+ {
+ 	struct nft_trans *trans;
+@@ -914,19 +920,17 @@ static int nf_tables_updtable(struct nft
+ 
+ 	if ((flags & NFT_TABLE_F_DORMANT) &&
+ 	    !(ctx->table->flags & NFT_TABLE_F_DORMANT)) {
+-		nft_trans_table_enable(trans) = false;
++		nft_trans_table_state(trans) = NFT_TABLE_STATE_DORMANT;
+ 	} else if (!(flags & NFT_TABLE_F_DORMANT) &&
+ 		   ctx->table->flags & NFT_TABLE_F_DORMANT) {
+-		ctx->table->flags &= ~NFT_TABLE_F_DORMANT;
+ 		ret = nf_tables_table_enable(ctx->net, ctx->table);
+ 		if (ret >= 0)
+-			nft_trans_table_enable(trans) = true;
+-		else
+-			ctx->table->flags |= NFT_TABLE_F_DORMANT;
++			nft_trans_table_state(trans) = NFT_TABLE_STATE_WAKEUP;
+ 	}
+ 	if (ret < 0)
+ 		goto err;
+ 
++	nft_trans_table_flags(trans) = flags;
+ 	nft_trans_table_update(trans) = true;
+ 	list_add_tail(&trans->list, &ctx->net->nft.commit_list);
+ 	return 0;
+@@ -7878,11 +7882,10 @@ static int nf_tables_commit(struct net *
+ 		switch (trans->msg_type) {
+ 		case NFT_MSG_NEWTABLE:
+ 			if (nft_trans_table_update(trans)) {
+-				if (!nft_trans_table_enable(trans)) {
+-					nf_tables_table_disable(net,
+-								trans->ctx.table);
+-					trans->ctx.table->flags |= NFT_TABLE_F_DORMANT;
+-				}
++				if (nft_trans_table_state(trans) == NFT_TABLE_STATE_DORMANT)
++					nf_tables_table_disable(net, trans->ctx.table);
++
++				trans->ctx.table->flags = nft_trans_table_flags(trans);
+ 			} else {
+ 				nft_clear(net, trans->ctx.table);
+ 			}
+@@ -8095,11 +8098,9 @@ static int __nf_tables_abort(struct net
+ 		switch (trans->msg_type) {
+ 		case NFT_MSG_NEWTABLE:
+ 			if (nft_trans_table_update(trans)) {
+-				if (nft_trans_table_enable(trans)) {
+-					nf_tables_table_disable(net,
+-								trans->ctx.table);
+-					trans->ctx.table->flags |= NFT_TABLE_F_DORMANT;
+-				}
++				if (nft_trans_table_state(trans) == NFT_TABLE_STATE_WAKEUP)
++					nf_tables_table_disable(net, trans->ctx.table);
++
+ 				nft_trans_destroy(trans);
+ 			} else {
+ 				list_del_rcu(&trans->ctx.table->list);

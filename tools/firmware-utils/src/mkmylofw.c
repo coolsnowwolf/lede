@@ -98,7 +98,7 @@ struct cpx_board {
 #define CPX_BOARD_AR23XX(_did, _flash, _mod, _name, _desc) \
 	CPX_BOARD(_did, _flash, _mod, _name, _desc, 0x10000, 0x10000)
 
-#define ALIGN(x,y)	((x)+((y)-1)) & ~((y)-1)
+#define ALIGN(x,y)	(((x)+((y)-1)) & ~((y)-1))
 
 char	*progname;
 char	*ofname = NULL;
@@ -478,18 +478,20 @@ process_partitions(void)
  * routines to write data to the output file
  */
 int
-write_out_data(FILE *outfile, uint8_t *data, size_t len, uint32_t *crc)
+write_out_data(FILE *outfile, void *data, size_t len, uint32_t *crc)
 {
+	uint8_t *ptr = data;
+
 	errno = 0;
 
-	fwrite(data, len, 1, outfile);
+	fwrite(ptr, len, 1, outfile);
 	if (errno) {
 		errmsg(1,"unable to write output file");
 		return -1;
 	}
 
 	if (crc) {
-		update_crc(data, len, crc);
+		update_crc(ptr, len, crc);
 	}
 
 	return 0;
@@ -581,7 +583,7 @@ write_out_file(FILE *outfile, struct fw_block *block, uint32_t *crc)
 	fclose(f);
 
 	/* align next block on a 4 byte boundary */
-	len = ALIGN(len,4) - block->size;
+	len = block->size % 4;
 	if (write_out_padding(outfile, len, 0xFF, crc))
 		return -1;
 
@@ -848,14 +850,13 @@ parse_opt_id(char ch, char *arg)
 {
 	char buf[MAX_ARG_LEN];
 	char *argv[MAX_ARG_COUNT];
-	int argc;
 	char *p;
 
 	if (required_arg(ch, arg)) {
 		goto err_out;
 	}
 
-	argc = parse_arg(arg, buf, argv);
+	parse_arg(arg, buf, argv);
 
 	/* processing vendor ID*/
 	p = argv[0];
@@ -1011,7 +1012,6 @@ parse_opt_partition(char ch, char *arg)
 {
 	char buf[MAX_ARG_LEN];
 	char *argv[MAX_ARG_COUNT];
-	int argc;
 	char *p;
 	struct mylo_partition *part;
 	struct fw_part *fp;
@@ -1028,7 +1028,7 @@ parse_opt_partition(char ch, char *arg)
 	fp = &fw_parts[fw_num_partitions++];
 	part = &fp->mylo;
 
-	argc = parse_arg(arg, buf, argv);
+	parse_arg(arg, buf, argv);
 
 	/* processing partition address */
 	p = argv[0];

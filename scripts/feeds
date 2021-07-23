@@ -158,8 +158,8 @@ my %update_method = (
 		'init'          => "git clone --depth 1 '%s' '%s'",
 		'init_branch'   => "git clone --depth 1 --branch '%s' '%s' '%s'",
 		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
-		'update'	=> "git pull --ff",
-		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'update'	=> "git pull --ff-only",
+		'update_force'	=> "git pull --ff-only || (git reset --hard HEAD; git pull --ff-only; exit 1)",
 		'post_update'	=> "git submodule update --init --recursive",
 		'controldir'	=> ".git",
 		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
@@ -517,26 +517,31 @@ sub install_src {
 	my $force = shift;
 	my $ret = 0;
 
-	$feed = lookup_src($feed, $name);
-	unless ($feed) {
+	my $select_feed = lookup_src($feed, $name);
+	unless ($select_feed) {
 		$installed{$name} and return 0;
 		$feed_src->{$name} or warn "WARNING: No feed for source package '$name' found\n";
 		return 0;
 	}
 
 	# switch to the metadata for the selected feed
-	get_feed($feed->[1]);
+	get_feed($select_feed->[1]);
 	my $src = $feed_src->{$name} or return 1;
 
 	# enable force flag if feed src line was declared with --force
-	if (exists($feed->[3]{force})) {
+	if (exists($select_feed->[3]{force})) {
 		$force = 1;
 	}
 
 	# If it's a core package and we don't want to override, just return
 	my $override = 0;
 	if (is_core_src($name)) {
-		return 0 unless $force;
+		if (!$force) {
+			if ($name ne "toolchain" && $name ne "linux") {
+				warn "WARNING: Not overriding core package '$name'; use -f to force\n";
+			}
+			return 0;
+		}
 		$override = 1;
 	}
 
@@ -554,12 +559,12 @@ sub install_src {
 	}
 
 	if ($override) {
-		warn "Overriding core package '$name' with version from $feed->[1]\n";
+		warn "Overriding core package '$name' with version from $select_feed->[1]\n";
 	} else {
-		warn "Installing package '$name' from $feed->[1]\n";
+		warn "Installing package '$name' from $select_feed->[1]\n";
 	}
 
-	do_install_src($feed, $src) == 0 or do {
+	do_install_src($select_feed, $src) == 0 or do {
 		warn "failed.\n";
 		return 1;
 	};
@@ -594,15 +599,15 @@ sub install_package {
 	my $name = shift;
 	my $force = shift;
 
-	$feed = lookup_package($feed, $name);
-	unless ($feed) {
+	my $select_feed = lookup_package($feed, $name);
+	unless ($select_feed) {
 		$installed_pkg{$name} and return 0;
 		$feed_vpackage->{$name} or warn "WARNING: No feed for package '$name' found\n";
 		return 0;
 	}
 
 	# switch to the metadata for the selected feed
-	get_feed($feed->[1]);
+	get_feed($select_feed->[1]);
 	my $pkg = $feed_vpackage->{$name} or return 1;
 	return install_src($feed, $pkg->[0]{src}{name}, $force);
 }
@@ -612,14 +617,12 @@ sub install_target_or_package {
 	my $name = shift;
 	my $force = shift;
 
-	my $this_feed_target = lookup_target($feed, $name);
-	$this_feed_target and do {
-		return install_target($this_feed_target, $name);
+	lookup_target($feed, $name) and do {
+		return install_target($feed, $name);
 	};
 
-	my $this_feed_src = lookup_src($feed, $name);
-	$this_feed_src and do {
-		return install_src($this_feed_src, $name, $force);
+	lookup_src($feed, $name) and do {
+		return install_src($feed, $name, $force);
 	};
 
 	return install_package($feed, $name, $force);
@@ -753,12 +756,11 @@ sub uninstall {
 	return 0;
 }
 
-sub update_feed($$$$$)
+sub update_feed($$$$)
 {
 	my $type=shift;
 	my $name=shift;
 	my $src=shift;
-	my $perform_update=shift;
 	my $force_update=shift;
 	my $force_relocate=update_location( $name, "@$src" );
 	my $rv=0;
@@ -770,28 +772,22 @@ sub update_feed($$$$$)
 		warn "Unknown type '$type' in feed $name\n";
 		return 1;
 	};
-	$perform_update and do {
-		my $failed = 1;
-		foreach my $feedsrc (@$src) {
-			warn "Updating feed '$name' from '$feedsrc' ...\n";
-			if (update_feed_via($type, $name, $feedsrc, $force_relocate, $force_update) != 0) {
-				if ($force_update) {
-					$rv=1;
-					$failed=0;
-					warn "failed, ignore.\n";
-					next;
-				}
-				last;
+
+	my $failed = 1;
+	foreach my $feedsrc (@$src) {
+		warn "Updating feed '$name' from '$feedsrc' ...\n";
+		if (update_feed_via($type, $name, $feedsrc, $force_relocate, $force_update) != 0) {
+			if ($force_update) {
+				$rv=1;
+				$failed=0;
+				warn "failed, ignore.\n";
+				next;
 			}
-			$failed = 0;
+			last;
 		}
-		$failed and do {
-			warn "failed.\n";
-			return 1;
-		};
-	};
-	warn "Create index file './feeds/$name.index' \n";
-	update_index($name) == 0 or do {
+		$failed = 0;
+	}
+	$failed and do {
 		warn "failed.\n";
 		return 1;
 	};
@@ -800,45 +796,39 @@ sub update_feed($$$$$)
 
 sub update {
 	my %opts;
-	my $feed_name;
-	my $perform_update=1;
+	my %argv_feeds;
 	my $failed=0;
 
 	$ENV{SCAN_COOKIE} = $$;
 	$ENV{OPENWRT_VERBOSE} = 's';
 
 	getopts('ahif', \%opts);
+	%argv_feeds = map { $_ => 1 } @ARGV;
 
 	if ($opts{h}) {
 		usage();
 		return 0;
 	}
 
-	if ($opts{i}) {
-		# don't update from (remote) repository
-		# only re-create index information
-		$perform_update=0;
-	}
-
 	-d "feeds" or do {
 			mkdir "feeds" or die "Unable to create the feeds directory";
 		};
 
-	if ( ($#ARGV == -1) or $opts{a}) {
-		foreach my $feed (@feeds) {
-			my ($type, $name, $src) = @$feed;
-			update_feed($type, $name, $src, $perform_update, $opts{f}) == 0 or $failed=1;
+	my @index_feeds;
+	foreach my $feed (@feeds) {
+		my ($type, $name, $src) = @$feed;
+		next unless $#ARGV == -1 or $opts{a} or $argv_feeds{$name};
+		if (not $opts{i}) {
+			update_feed($type, $name, $src, $opts{f}) == 0 or $failed=1;
 		}
-	} else {
-		while ($feed_name = shift @ARGV) {
-			foreach my $feed (@feeds) {
-				my ($type, $name, $src) = @$feed;
-				if($feed_name ne $name) {
-					next;
-				}
-				update_feed($type, $name, $src, $perform_update, $opts{f}) == 0 or $failed=1;
-			}
-		}
+		push @index_feeds, $name;
+	}
+	foreach my $name (@index_feeds) {
+		warn "Create index file './feeds/$name.index' \n";
+		update_index($name) == 0 or do {
+			warn "failed.\n";
+			$failed=1;
+		};
 	}
 
 	refresh_config();

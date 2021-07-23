@@ -138,16 +138,35 @@ endef
 $(eval $(call KernelPackage,mii))
 
 
+define KernelPackage/mdio-devres
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Supports MDIO device registration
+  DEPENDS:=@LINUX_5_10 +kmod-libphy PACKAGE_kmod-of-mdio:kmod-of-mdio
+  KCONFIG:=CONFIG_MDIO_DEVRES
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
+  AUTOLOAD:=$(call AutoProbe,mdio-devres)
+endef
+
+define KernelPackage/mdio-devres/description
+ Supports MDIO device registration
+endef
+
+$(eval $(call KernelPackage,mdio-devres))
+
+
 define KernelPackage/mdio-gpio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:= Supports GPIO lib-based MDIO busses
-  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_samsung||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
   KCONFIG:= \
 	CONFIG_MDIO_BITBANG \
 	CONFIG_MDIO_GPIO
   FILES:= \
-	$(LINUX_DIR)/drivers/net/phy/mdio-gpio.ko \
-	$(LINUX_DIR)/drivers/net/phy/mdio-bitbang.ko
+	$(LINUX_DIR)/drivers/net/phy/mdio-gpio.ko@lt5.10 \
+	$(LINUX_DIR)/drivers/net/phy/mdio-bitbang.ko@lt5.10 \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-gpio.ko@ge5.10 \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-bitbang.ko@ge5.10
   AUTOLOAD:=$(call AutoProbe,mdio-gpio)
 endef
 
@@ -286,20 +305,6 @@ endef
 
 $(eval $(call KernelPackage,switch-bcm53xx-mdio))
 
-define KernelPackage/switch-mvsw61xx
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Marvell 88E61xx switch support
-  DEPENDS:=+kmod-swconfig
-  KCONFIG:=CONFIG_MVSW61XX_PHY
-  FILES:=$(LINUX_DIR)/drivers/net/phy/mvsw61xx.ko
-  AUTOLOAD:=$(call AutoLoad,42,mvsw61xx)
-endef
-
-define KernelPackage/switch-mvsw61xx/description
- Marvell 88E61xx switch support
-endef
-
-$(eval $(call KernelPackage,switch-mvsw61xx))
 
 define KernelPackage/switch-ip17xx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
@@ -336,7 +341,7 @@ $(eval $(call KernelPackage,switch-rtl8306))
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_samsung||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi,1)
@@ -557,8 +562,9 @@ $(eval $(call KernelPackage,8139cp))
 define KernelPackage/r8169
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=RealTek RTL-8169 PCI Gigabit Ethernet Adapter kernel support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +!LINUX_4_14:kmod-phy-realtek
-  KCONFIG:=CONFIG_R8169 \
+  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +LINUX_5_10:kmod-mdio-devres
+  KCONFIG:= \
+    CONFIG_R8169 \
     CONFIG_R8169_NAPI=y \
     CONFIG_R8169_VLAN=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/realtek/r8169.ko
@@ -682,7 +688,7 @@ $(eval $(call KernelPackage,igbvf))
 define KernelPackage/ixgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +LINUX_5_4:kmod-libphy
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +LINUX_5_10:kmod-mdio-devres
   KCONFIG:=CONFIG_IXGBE \
     CONFIG_IXGBE_VXLAN=n \
     CONFIG_IXGBE_HWMON=y \
@@ -720,7 +726,7 @@ $(eval $(call KernelPackage,ixgbevf))
 define KernelPackage/i40e
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller XL710 Family support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +LINUX_5_4:kmod-libphy
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy
   KCONFIG:=CONFIG_I40E \
     CONFIG_I40E_VXLAN=n \
     CONFIG_I40E_HWMON=y \
@@ -744,8 +750,7 @@ define KernelPackage/iavf
        CONFIG_I40EVF \
        CONFIG_IAVF
   FILES:= \
-       $(LINUX_DIR)/drivers/net/ethernet/intel/i40evf/i40evf.ko@lt4.20 \
-       $(LINUX_DIR)/drivers/net/ethernet/intel/iavf/iavf.ko@ge4.20
+       $(LINUX_DIR)/drivers/net/ethernet/intel/iavf/iavf.ko
   AUTOLOAD:=$(call AutoProbe,i40evf iavf)
   AUTOLOAD:=$(call AutoProbe,iavf)
 endef
@@ -864,36 +869,6 @@ endef
 $(eval $(call KernelPackage,hfcmulti))
 
 
-define KernelPackage/gigaset
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Siemens Gigaset support for isdn4linux
-  DEPENDS:=@USB_SUPPORT +kmod-isdn4linux +kmod-lib-crc-ccitt +kmod-usb-core @!LINUX_5_4
-  URL:=http://gigaset307x.sourceforge.net/
-  KCONFIG:= \
-    CONFIG_ISDN_DRV_GIGASET \
-    CONFIG_GIGASET_BASE \
-    CONFIG_GIGASET_M101 \
-    CONFIG_GIGASET_M105 \
-    CONFIG_GIGASET_UNDOCREQ=y \
-    CONFIG_GIGASET_I4L=y
-  FILES:= \
-    $(LINUX_DIR)/drivers/isdn/gigaset/gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/bas_gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/ser_gigaset.ko \
-    $(LINUX_DIR)/drivers/isdn/gigaset/usb_gigaset.ko
-  AUTOLOAD:=$(call AutoProbe,gigaset bas_gigaset ser_gigaset usb_gigaset)
-endef
-
-define KernelPackage/gigaset/description
- This driver supports the Siemens Gigaset SX205/255 family of
- ISDN DECT bases, including the predecessors Gigaset 3070/3075
- and 4170/4175 and their T-Com versions Sinus 45isdn and Sinus
- 721X.
-endef
-
-$(eval $(call KernelPackage,gigaset))
-
-
 define KernelPackage/macvlan
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MAC-VLAN support
@@ -908,6 +883,22 @@ define KernelPackage/macvlan/description
 endef
 
 $(eval $(call KernelPackage,macvlan))
+
+
+define KernelPackage/ipvlan
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=IP-VLAN support
+  KCONFIG:=CONFIG_IPVLAN
+  FILES:=$(LINUX_DIR)/drivers/net/ipvlan/ipvlan.ko
+  AUTOLOAD:=$(call AutoProbe,ipvlan)
+endef
+
+define KernelPackage/ipvlan/description
+ A kernel module which allows one to create virtual interfaces that
+ map packets to or from specific IP addresses to a particular interface
+endef
+
+$(eval $(call KernelPackage,ipvlan))
 
 
 define KernelPackage/tulip
@@ -1031,11 +1022,12 @@ $(eval $(call KernelPackage,forcedeth))
 define KernelPackage/of-mdio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=OpenFirmware MDIO support
-  DEPENDS:=+kmod-libphy
+  DEPENDS:=+kmod-libphy @!TARGET_x86
   KCONFIG:=CONFIG_OF_MDIO
   FILES:= \
 	$(LINUX_DIR)/drivers/net/phy/fixed_phy.ko \
-	$(LINUX_DIR)/drivers/of/of_mdio.ko
+	$(LINUX_DIR)/drivers/of/of_mdio.ko@lt5.10 \
+	$(LINUX_DIR)/drivers/net/mdio/of_mdio.ko@ge5.10
   AUTOLOAD:=$(call AutoLoad,41,of_mdio)
 endef
 
@@ -1201,6 +1193,25 @@ endef
 $(eval $(call KernelPackage,mlx5-core))
 
 
+define KernelPackage/qlcnic
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  DEPENDS:=@PCI_SUPPORT +kmod-hwmon-core
+  TITLE:=QLogic QLE8240 and QLE8242 device support
+  KCONFIG:= \
+	CONFIG_QLCNIC \
+	CONFIG_QLCNIC_HWMON=y
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/qlogic/qlcnic/qlcnic.ko
+  AUTOLOAD:=$(call AutoProbe,qlcnic)
+endef
+
+define KernelPackage/qlcnic/description
+  This driver supports QLogic QLE8240 and QLE8242 Converged Ethernet
+  devices.
+endef
+
+$(eval $(call KernelPackage,qlcnic))
+
+
 define KernelPackage/sfp
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=SFP cage support
@@ -1210,7 +1221,8 @@ define KernelPackage/sfp
 	CONFIG_MDIO_I2C
   FILES:= \
 	$(LINUX_DIR)/drivers/net/phy/sfp.ko \
-	$(LINUX_DIR)/drivers/net/phy/mdio-i2c.ko
+	$(LINUX_DIR)/drivers/net/phy/mdio-i2c.ko@lt5.10 \
+	$(LINUX_DIR)/drivers/net/mdio/mdio-i2c.ko@ge5.10
   AUTOLOAD:=$(call AutoProbe,mdio-i2c sfp)
 endef
 
@@ -1223,7 +1235,7 @@ $(eval $(call KernelPackage,sfp))
 define KernelPackage/igc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller I225 Series support
-  DEPENDS:=@PCI_SUPPORT
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
   KCONFIG:=CONFIG_IGC
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
   AUTOLOAD:=$(call AutoProbe,igc)

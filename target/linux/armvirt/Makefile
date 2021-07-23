@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017 Yousong Zhou <yszhou4tech@gmail.com>
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 BOARD:=armvirt
@@ -12,6 +10,7 @@ FEATURES:=fpu pci rtc usb
 FEATURES+=cpiogz ext4 ramdisk squashfs targz
 
 KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.10
 
 include $(INCLUDE_DIR)/target.mk
 

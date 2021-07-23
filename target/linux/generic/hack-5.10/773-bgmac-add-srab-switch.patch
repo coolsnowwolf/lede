@@ -1,0 +1,98 @@
+From 3cb240533ab787899dc7f17aa7d6c5b4810e2e58 Mon Sep 17 00:00:00 2001
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Fri, 7 Jul 2017 17:26:01 +0200
+Subject: bcm53xx: bgmac: use srab switch driver
+
+use the srab switch driver on these SoCs.
+
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ drivers/net/ethernet/broadcom/bgmac-bcma.c |  1 +
+ drivers/net/ethernet/broadcom/bgmac.c      | 24 ++++++++++++++++++++++++
+ drivers/net/ethernet/broadcom/bgmac.h      |  4 ++++
+ 3 files changed, 29 insertions(+)
+
+--- a/drivers/net/ethernet/broadcom/bgmac-bcma.c
++++ b/drivers/net/ethernet/broadcom/bgmac-bcma.c
+@@ -268,6 +268,7 @@ static int bgmac_probe(struct bcma_devic
+ 		bgmac->feature_flags |= BGMAC_FEAT_CLKCTLST;
+ 		bgmac->feature_flags |= BGMAC_FEAT_NO_RESET;
+ 		bgmac->feature_flags |= BGMAC_FEAT_FORCE_SPEED_2500;
++		bgmac->feature_flags |= BGMAC_FEAT_SRAB;
+ 		break;
+ 	default:
+ 		bgmac->feature_flags |= BGMAC_FEAT_CLKCTLST;
+--- a/drivers/net/ethernet/broadcom/bgmac.c
++++ b/drivers/net/ethernet/broadcom/bgmac.c
+@@ -12,6 +12,7 @@
+ #include <linux/bcma/bcma.h>
+ #include <linux/etherdevice.h>
+ #include <linux/interrupt.h>
++#include <linux/platform_data/b53.h>
+ #include <linux/bcm47xx_nvram.h>
+ #include <linux/phy.h>
+ #include <linux/phy_fixed.h>
+@@ -1408,6 +1409,17 @@ static const struct ethtool_ops bgmac_et
+ 	.set_link_ksettings     = phy_ethtool_set_link_ksettings,
+ };
+ 
++static struct b53_platform_data bgmac_b53_pdata = {
++};
++
++static struct platform_device bgmac_b53_dev = {
++	.name		= "b53-srab-switch",
++	.id		= -1,
++	.dev		= {
++		.platform_data = &bgmac_b53_pdata,
++	},
++};
++
+ /**************************************************
+  * MII
+  **************************************************/
+@@ -1542,6 +1554,14 @@ int bgmac_enet_probe(struct bgmac *bgmac
+ 	/* Omit FCS from max MTU size */
+ 	net_dev->max_mtu = BGMAC_RX_MAX_FRAME_SIZE - ETH_FCS_LEN;
+ 
++	if ((bgmac->feature_flags & BGMAC_FEAT_SRAB) && !bgmac_b53_pdata.regs) {
++		bgmac_b53_pdata.regs = ioremap_nocache(0x18007000, 0x1000);
++
++		err = platform_device_register(&bgmac_b53_dev);
++		if (!err)
++			bgmac->b53_device = &bgmac_b53_dev;
++	}
++
+ 	err = register_netdev(bgmac->net_dev);
+ 	if (err) {
+ 		dev_err(bgmac->dev, "Cannot register net device\n");
+@@ -1564,6 +1584,10 @@ EXPORT_SYMBOL_GPL(bgmac_enet_probe);
+ 
+ void bgmac_enet_remove(struct bgmac *bgmac)
+ {
++	if (bgmac->b53_device)
++		platform_device_unregister(&bgmac_b53_dev);
++	bgmac->b53_device = NULL;
++
+ 	unregister_netdev(bgmac->net_dev);
+ 	phy_disconnect(bgmac->net_dev->phydev);
+ 	netif_napi_del(&bgmac->napi);
+--- a/drivers/net/ethernet/broadcom/bgmac.h
++++ b/drivers/net/ethernet/broadcom/bgmac.h
+@@ -428,6 +428,7 @@
+ #define BGMAC_FEAT_CC4_IF_SW_TYPE_RGMII	BIT(18)
+ #define BGMAC_FEAT_CC7_IF_TYPE_RGMII	BIT(19)
+ #define BGMAC_FEAT_IDM_MASK		BIT(20)
++#define BGMAC_FEAT_SRAB			BIT(21)
+ 
+ struct bgmac_slot_info {
+ 	union {
+@@ -533,6 +534,9 @@ struct bgmac {
+ 	void (*cmn_maskset32)(struct bgmac *bgmac, u16 offset, u32 mask,
+ 			      u32 set);
+ 	int (*phy_connect)(struct bgmac *bgmac);
++
++	/* platform device for associated switch */
++	struct platform_device *b53_device;
+ };
+ 
+ struct bgmac *bgmac_alloc(struct device *dev);

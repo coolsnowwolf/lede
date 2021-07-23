@@ -577,6 +577,82 @@ static void ag71xx_bit_clear(void __iomem *reg, u32 bit)
 	__raw_readl(reg);
 }
 
+static void ag71xx_sgmii_serdes_init_qca956x(struct device_node *np)
+{
+	struct device_node *np_dev;
+	void __iomem *gmac_base;
+	u32 serdes_cal;
+	u32 t;
+
+	np = of_get_child_by_name(np, "gmac-config");
+	if (!np)
+		return;
+
+	if (of_property_read_u32(np, "serdes-cal", &serdes_cal))
+		/* By default, use middle value for resistor calibration */
+		serdes_cal = 0x7;
+
+	np_dev = of_parse_phandle(np, "device", 0);
+	if (!np_dev)
+		goto out;
+
+	gmac_base = of_iomap(np_dev, 0);
+	if (!gmac_base) {
+		pr_err("%pOF: can't map GMAC registers\n", np_dev);
+		goto err_iomap;
+	}
+
+	t = __raw_readl(gmac_base + QCA956X_GMAC_REG_SGMII_CONFIG);
+	t &= ~(QCA956X_SGMII_CONFIG_MODE_CTRL_MASK << QCA956X_SGMII_CONFIG_MODE_CTRL_SHIFT);
+	t |= QCA956X_SGMII_CONFIG_MODE_CTRL_SGMII_MAC;
+	__raw_writel(t, gmac_base + QCA956X_GMAC_REG_SGMII_CONFIG);
+
+	pr_debug("%pOF: fixup SERDES calibration to value %i\n",
+		np_dev, serdes_cal);
+	t = __raw_readl(gmac_base + QCA956X_GMAC_REG_SGMII_SERDES);
+	t &= ~(QCA956X_SGMII_SERDES_RES_CALIBRATION_MASK
+			<< QCA956X_SGMII_SERDES_RES_CALIBRATION_SHIFT);
+	t |= (serdes_cal & QCA956X_SGMII_SERDES_RES_CALIBRATION_MASK)
+			<< QCA956X_SGMII_SERDES_RES_CALIBRATION_SHIFT;
+	__raw_writel(t, gmac_base + QCA956X_GMAC_REG_SGMII_SERDES);
+
+	ath79_pll_wr(QCA956X_PLL_ETH_SGMII_SERDES_REG,
+			QCA956X_PLL_ETH_SGMII_SERDES_LOCK_DETECT
+					| QCA956X_PLL_ETH_SGMII_SERDES_EN_PLL);
+
+	t = __raw_readl(gmac_base + QCA956X_GMAC_REG_SGMII_SERDES);
+
+	/* missing in QCA u-boot code, clear before setting */
+	t &= ~(QCA956X_SGMII_SERDES_CDR_BW_MASK
+			<< QCA956X_SGMII_SERDES_CDR_BW_SHIFT |
+		QCA956X_SGMII_SERDES_TX_DR_CTRL_MASK
+			<< QCA956X_SGMII_SERDES_TX_DR_CTRL_SHIFT |
+		QCA956X_SGMII_SERDES_VCO_REG_MASK
+			<< QCA956X_SGMII_SERDES_VCO_REG_SHIFT);
+
+	t |= (3 << QCA956X_SGMII_SERDES_CDR_BW_SHIFT) |
+		(1 << QCA956X_SGMII_SERDES_TX_DR_CTRL_SHIFT) |
+		QCA956X_SGMII_SERDES_PLL_BW |
+		QCA956X_SGMII_SERDES_EN_SIGNAL_DETECT |
+		QCA956X_SGMII_SERDES_FIBER_SDO |
+		(3 << QCA956X_SGMII_SERDES_VCO_REG_SHIFT);
+
+	__raw_writel(t, gmac_base + QCA956X_GMAC_REG_SGMII_SERDES);
+
+	ath79_device_reset_clear(QCA956X_RESET_SGMII_ANALOG);
+	ath79_device_reset_clear(QCA956X_RESET_SGMII);
+
+	while (!(__raw_readl(gmac_base + QCA956X_GMAC_REG_SGMII_SERDES)
+			& QCA956X_SGMII_SERDES_LOCK_DETECT_STATUS))
+		;
+
+	iounmap(gmac_base);
+err_iomap:
+	of_node_put(np_dev);
+out:
+	of_node_put(np);
+}
+
 static void ag71xx_sgmii_init_qca955x(struct device_node *np)
 {
 	struct device_node *np_dev;
@@ -658,6 +734,37 @@ static void ag71xx_sgmii_init_qca955x(struct device_node *np)
 	} while (!(sgmii_status == 0xf || sgmii_status == 0x10));
 
 sgmii_out:
+	iounmap(gmac_base);
+err_iomap:
+	of_node_put(np_dev);
+out:
+	of_node_put(np);
+}
+
+static void ag71xx_mux_select_sgmii_qca956x(struct device_node *np)
+{
+	struct device_node *np_dev;
+	void __iomem *gmac_base;
+	u32 t;
+
+	np = of_get_child_by_name(np, "gmac-config");
+	if (!np)
+		return;
+
+	np_dev = of_parse_phandle(np, "device", 0);
+	if (!np_dev)
+		goto out;
+
+	gmac_base = of_iomap(np_dev, 0);
+	if (!gmac_base) {
+		pr_err("%pOF: can't map GMAC registers\n", np_dev);
+		goto err_iomap;
+	}
+
+	t = __raw_readl(gmac_base + QCA956X_GMAC_REG_ETH_CFG);
+	t |= QCA956X_ETH_CFG_GE0_SGMII;
+	__raw_writel(t, gmac_base + QCA956X_GMAC_REG_ETH_CFG);
+
 	iounmap(gmac_base);
 err_iomap:
 	of_node_put(np_dev);
@@ -834,7 +941,7 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 		 * The wr, rr functions cannot be used since this hidden register
 		 * is outside of the normal ag71xx register block.
 		 */
-		void __iomem *dam = ioremap_nocache(0xb90001bc, 0x4);
+		void __iomem *dam = ioremap(0xb90001bc, 0x4);
 		if (dam) {
 			__raw_writel(__raw_readl(dam) & ~BIT(27), dam);
 			(void)__raw_readl(dam);
@@ -1091,7 +1198,11 @@ static void ag71xx_oom_timer_handler(struct timer_list *t)
 	napi_schedule(&ag->napi);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+static void ag71xx_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#else
 static void ag71xx_tx_timeout(struct net_device *dev)
+#endif
 {
 	struct ag71xx *ag = netdev_priv(dev);
 
@@ -1423,6 +1534,11 @@ static int ag71xx_probe(struct platform_device *pdev)
 	if (!res)
 		return -EINVAL;
 
+	if (of_property_read_bool(np, "qca956x-serdes-fixup")) {
+		ag71xx_sgmii_serdes_init_qca956x(np);
+		ag71xx_sgmii_init_qca955x(np);
+	}
+
 	err = ag71xx_setup_gmac(np);
 	if (err)
 		return err;
@@ -1472,14 +1588,14 @@ static int ag71xx_probe(struct platform_device *pdev)
 		ag->pllregmap = NULL;
 	}
 
-	ag->mac_base = devm_ioremap_nocache(&pdev->dev, res->start,
-					    res->end - res->start + 1);
+	ag->mac_base = devm_ioremap(&pdev->dev, res->start,
+				    res->end - res->start + 1);
 	if (!ag->mac_base)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	if (res) {
-		ag->mii_base = devm_ioremap_nocache(&pdev->dev, res->start,
+		ag->mii_base = devm_ioremap(&pdev->dev, res->start,
 					    res->end - res->start + 1);
 		if (!ag->mii_base)
 			return -ENOMEM;
@@ -1560,11 +1676,20 @@ static int ag71xx_probe(struct platform_device *pdev)
 		memcpy(dev->dev_addr, mac_addr, ETH_ALEN);
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
+	err = of_get_phy_mode(np, &ag->phy_if_mode);
+	if (err < 0) {
+#else
 	ag->phy_if_mode = of_get_phy_mode(np);
 	if (ag->phy_if_mode < 0) {
+#endif
 		dev_err(&pdev->dev, "missing phy-mode property in DT\n");
 		return ag->phy_if_mode;
 	}
+
+	if (of_device_is_compatible(np, "qca,qca9560-eth") &&
+	    ag->phy_if_mode == PHY_INTERFACE_MODE_SGMII)
+		ag71xx_mux_select_sgmii_qca956x(np);
 
 	if (of_property_read_u32(np, "qca,mac-idx", &ag->mac_idx))
 		ag->mac_idx = -1;

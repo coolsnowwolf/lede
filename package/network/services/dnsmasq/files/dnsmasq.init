@@ -161,7 +161,7 @@ append_server() {
 }
 
 append_rev_server() {
-        xappend "--rev-server=$1"
+	xappend "--rev-server=$1"
 }
 
 append_address() {
@@ -878,8 +878,16 @@ dnsmasq_start()
 	append_bool "$cfg" noresolv "--no-resolv"
 	append_bool "$cfg" localise_queries "--localise-queries"
 	append_bool "$cfg" readethers "--read-ethers"
-	append_bool "$cfg" dbus "--enable-dbus"
-	append_bool "$cfg" ubus "--enable-ubus"	1
+
+	local instance_name="dnsmasq.$cfg"
+	if [ "$cfg" = "$DEFAULT_INSTANCE" ]; then
+		instance_name="dnsmasq"
+	fi
+	config_get_bool dbus "$cfg" "dbus" 0
+	[ $dbus -gt 0 ] && xappend "--enable-dbus=uk.org.thekelleys.$instance_name"
+	config_get_bool ubus "$cfg" "ubus" 1
+	[ $ubus -gt 0 ] && xappend "--enable-ubus=$instance_name"
+
 	append_bool "$cfg" expandhosts "--expand-hosts"
 	config_get tftp_root "$cfg" "tftp_root"
 	[ -n "$tftp_root" ] && mkdir -p "$tftp_root" && append_bool "$cfg" enable_tftp "--enable-tftp"
@@ -895,10 +903,12 @@ dnsmasq_start()
 	append_bool "$cfg" noping "--no-ping"
 	append_bool "$cfg" rapidcommit "--dhcp-rapid-commit"
 	append_bool "$cfg" scriptarp "--script-arp"
-
+	
 	append_bool "$cfg" filter_aaaa "--filter-aaaa"
 
 	append_parm "$cfg" logfacility "--log-facility"
+	
+	append_parm "$cfg" mini_ttl "--min-ttl"
 
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
@@ -909,7 +919,7 @@ dnsmasq_start()
 	append_parm "$cfg" "minport" "--min-port"
 	append_parm "$cfg" "maxport" "--max-port"
 	append_parm "$cfg" "domain" "--domain"
-	append_parm "$cfg" "local" "--server"
+	append_parm "$cfg" "local" "--local"
 	config_list_foreach "$cfg" "listen_address" append_listenaddress
 	config_list_foreach "$cfg" "server" append_server
 	config_list_foreach "$cfg" "rev_server" append_rev_server
@@ -1014,7 +1024,12 @@ dnsmasq_start()
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
-	xappend "--addn-hosts=$(dirname $HOSTFILE)"
+	config_get_bool ignore_hosts_dir "$cfg" ignore_hosts_dir 0
+	if [ "$ignore_hosts_dir" = "1" ]; then
+		xappend "--addn-hosts=$HOSTFILE"
+	else
+		xappend "--addn-hosts=$(dirname $HOSTFILE)"
+	fi
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
 	xappend "--conf-dir=$dnsmasqconfdir"
@@ -1108,7 +1123,7 @@ dnsmasq_start()
 	procd_set_param respawn
 
 	procd_add_jail dnsmasq ubus log
-	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE $DHCPBOGUSHOSTNAMEFILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT
+	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE $DHCPBOGUSHOSTNAMEFILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT /tmp/hosts/
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
@@ -1157,6 +1172,7 @@ boot()
 start_service() {
 	local instance="$1"
 	local instance_found=0
+	local first_instance=""
 
 	. /lib/functions/network.sh
 
@@ -1167,10 +1183,27 @@ start_service() {
 			if [ -n "$instance" ] && [ "$instance" = "$name" ]; then
 				instance_found=1
 			fi
+			if [ -z "$DEFAULT_INSTANCE" ]; then
+				local disabled
+				config_get_bool disabled "$name" disabled 0
+				if [ "$disabled" -eq 0 ]; then
+					# First enabled section will be assigned default instance name.
+					# Unnamed sections get precedence over named sections.
+					if expr "$cfg" : 'cfg[0-9a-f]*$' >/dev/null = "9"; then # See uci_fixup_section.
+						DEFAULT_INSTANCE="$name" # Unnamed config section.
+					elif [ -z "$first_instance" ]; then
+						first_instance="$name"
+					fi
+				fi
+			fi
 		fi
 	}
 
+	DEFAULT_INSTANCE=""
 	config_load dhcp
+	if [ -z "$DEFAULT_INSTANCE" ]; then
+		DEFAULT_INSTANCE="$first_instance" # No unnamed config section was found.
+	fi
 
 	if [ -n "$instance" ]; then
 		[ "$instance_found" -gt 0 ] || return

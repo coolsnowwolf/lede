@@ -16,6 +16,7 @@ PKG_HASH:=ed7fe39311d7a4a13d23ed0ae2445c0d825b472b5a98da9b72bcaabcf5ed2d5f
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 PKG_LICENSE:=GPL-2.0 BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE
+PKG_EXTMOD_SUBDIRS:=src
 
 PKG_FIXUP:=autoreconf
 

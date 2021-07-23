@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=e2fsprogs
 PKG_VERSION:=1.45.6
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/people/tytso/e2fsprogs/v$(PKG_VERSION)/
@@ -315,10 +315,10 @@ define Package/lsattr/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lsattr $(1)/usr/bin/
 endef
 
-$(eval $(call BuildPackage,e2fsprogs))
 $(eval $(call BuildPackage,libcomerr))
 $(eval $(call BuildPackage,libss))
 $(eval $(call BuildPackage,libext2fs))
+$(eval $(call BuildPackage,e2fsprogs))
 $(eval $(call BuildPackage,tune2fs))
 $(eval $(call BuildPackage,resize2fs))
 $(eval $(call BuildPackage,badblocks))

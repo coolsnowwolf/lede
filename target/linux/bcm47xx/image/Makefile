@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2016 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -139,7 +137,7 @@ DEVICE_VARS += BIN_TAIL
 
 define Device/Default
 	KERNEL := kernel-bin
-	IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+	DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
 	KERNEL_NAME = vmlinux.lzma
 	KERNEL_INITRAMFS_NAME = vmlinux-initramfs.lzma
 	FILESYSTEMS := $(FS_64K)

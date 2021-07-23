@@ -1,0 +1,132 @@
+--- a/cmd/bootm.c
++++ b/cmd/bootm.c
+@@ -228,6 +228,65 @@ U_BOOT_CMD(
+ /* iminfo - print header info for a requested image */
+ /*******************************************************************/
+ #if defined(CONFIG_CMD_IMI)
++#define SECTOR_SHIFT 9
++static int image_totalsize(struct cmd_tbl *cmdtp, int flag, int argc,
++			   char *const argv[], short int in_blocks)
++{
++	ulong addr;
++	void *fit;
++	int bsize, tsize;
++	char buf[16];
++
++	if (argc >= 2)
++		addr = simple_strtoul(argv[1], NULL, 16);
++	else
++		addr = image_load_addr;
++
++	fit = (void *)map_sysmem(addr, 0);
++	tsize = fit_get_totalsize(fit);
++	unmap_sysmem(fit);
++	if (tsize == 0)
++		return 1;
++
++	bsize = (tsize >> SECTOR_SHIFT) + ((tsize & ((1 << SECTOR_SHIFT) - 1))?1:0);
++
++	if (!in_blocks)
++		snprintf(buf, sizeof(buf), "%x", tsize);
++	else
++		snprintf(buf, sizeof(buf), "%x", bsize);
++
++	if (argc >= 3)
++		return env_set(argv[2], buf);
++	else
++		printf("%s\n", buf);
++
++	return 0;
++}
++
++static int do_imsz(struct cmd_tbl *cmdtp, int flag, int argc,
++		     char *const argv[])
++{
++	return image_totalsize(cmdtp, flag, argc, argv, 0);
++}
++
++static int do_imszb(struct cmd_tbl *cmdtp, int flag, int argc,
++		     char *const argv[])
++{
++	return image_totalsize(cmdtp, flag, argc, argv, 1);
++}
++
++U_BOOT_CMD(
++	imsz,	CONFIG_SYS_MAXARGS,	1,	do_imsz,
++	"get image total size (in bytes)",
++	"addr [maxhdrlen] [varname]\n"
++);
++
++U_BOOT_CMD(
++	imszb,	CONFIG_SYS_MAXARGS,	1,	do_imszb,
++	"get image total size (in blocks)",
++	"addr [maxhdrlen] [varname]\n"
++);
++
+ static int do_iminfo(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		     char *const argv[])
+ {
+--- a/common/image-fit.c
++++ b/common/image-fit.c
+@@ -1970,6 +1970,51 @@ static const char *fit_get_image_type_pr
+ 	return "unknown";
+ }
+ 
++size_t fit_get_totalsize(const void *fit)
++{
++	int ret, ndepth, noffset, images_noffset;
++	size_t data_size, hdrsize, img_total, max_size = 0;
++	const void *data;
++
++	ret = fdt_check_header(fit);
++	if (ret) {
++		debug("Wrong FIT format: not a flattened device tree (err=%d)\n",
++			  ret);
++		return 0;
++	}
++
++	hdrsize = fdt_totalsize(fit);
++
++	/* simple FIT with internal images */
++	if (hdrsize > 0x1000)
++		return hdrsize;
++
++	images_noffset = fdt_path_offset(fit, FIT_IMAGES_PATH);
++	if (images_noffset < 0) {
++		printf("Can't find images parent node '%s' (%s)\n",
++		FIT_IMAGES_PATH, fdt_strerror(images_noffset));
++		return 0;
++	}
++
++	for (ndepth = 0,
++	     noffset = fdt_next_node(fit, images_noffset, &ndepth);
++	     (noffset >= 0) && (ndepth > 0);
++	     noffset = fdt_next_node(fit, noffset, &ndepth)) {
++		if (ndepth == 1) {
++			ret = fit_image_get_data_and_size(fit, noffset, &data, &data_size);
++			if (ret)
++				return 0;
++
++			img_total = data_size + (data - fit);
++
++			max_size = (max_size > img_total) ? max_size : img_total;
++		}
++	}
++
++	return max_size;
++}
++
++
+ int fit_image_load(bootm_headers_t *images, ulong addr,
+ 		   const char **fit_unamep, const char **fit_uname_configp,
+ 		   int arch, int image_type, int bootstage_id,
+--- a/include/image.h
++++ b/include/image.h
+@@ -1041,6 +1041,7 @@ int fit_parse_subimage(const char *spec,
+ 		ulong *addr, const char **image_name);
+ 
+ int fit_get_subimage_count(const void *fit, int images_noffset);
++size_t fit_get_totalsize(const void *fit);
+ void fit_print_contents(const void *fit);
+ void fit_image_print(const void *fit, int noffset, const char *p);
+ 

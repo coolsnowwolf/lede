@@ -1,0 +1,408 @@
+From 9e3f1d0805b2d919904dd9a4ff0d956314cc3cba Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sat, 8 Jul 2017 08:20:09 +0200
+Subject: debloat: procfs
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ fs/locks.c               |  2 ++
+ fs/proc/Kconfig          |  5 +++++
+ fs/proc/consoles.c       |  3 +++
+ fs/proc/proc_tty.c       | 11 ++++++++++-
+ include/net/snmp.h       | 18 +++++++++++++++++-
+ ipc/msg.c                |  3 +++
+ ipc/sem.c                |  2 ++
+ ipc/shm.c                |  2 ++
+ ipc/util.c               |  3 +++
+ kernel/exec_domain.c     |  2 ++
+ kernel/irq/proc.c        |  9 +++++++++
+ kernel/time/timer_list.c |  2 ++
+ mm/vmalloc.c             |  2 ++
+ mm/vmstat.c              |  8 +++++---
+ net/8021q/vlanproc.c     |  6 ++++++
+ net/core/net-procfs.c    | 18 ++++++++++++------
+ net/core/sock.c          |  2 ++
+ net/ipv4/fib_trie.c      | 18 ++++++++++++------
+ net/ipv4/proc.c          |  3 +++
+ net/ipv4/route.c         |  3 +++
+ 20 files changed, 105 insertions(+), 17 deletions(-)
+
+--- a/fs/locks.c
++++ b/fs/locks.c
+@@ -2993,6 +2993,8 @@ static const struct seq_operations locks
+ 
+ static int __init proc_locks_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
+ 	proc_create_seq_private("locks", 0, NULL, &locks_seq_operations,
+ 			sizeof(struct locks_iterator), NULL);
+ 	return 0;
+--- a/fs/proc/Kconfig
++++ b/fs/proc/Kconfig
+@@ -100,6 +100,11 @@ config PROC_CHILDREN
+ 	  Say Y if you are running any user-space software which takes benefit from
+ 	  this interface. For example, rkt is such a piece of software.
+ 
++config PROC_STRIPPED
++	default n
++	depends on EXPERT
++	bool "Strip non-essential /proc functionality to reduce code size"
++
+ config PROC_PID_ARCH_STATUS
+ 	def_bool n
+ 	depends on PROC_FS
+--- a/fs/proc/consoles.c
++++ b/fs/proc/consoles.c
+@@ -92,6 +92,9 @@ static const struct seq_operations conso
+ 
+ static int __init proc_consoles_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
++
+ 	proc_create_seq("consoles", 0, NULL, &consoles_op);
+ 	return 0;
+ }
+--- a/fs/proc/proc_tty.c
++++ b/fs/proc/proc_tty.c
+@@ -133,7 +133,10 @@ static const struct seq_operations tty_d
+ void proc_tty_register_driver(struct tty_driver *driver)
+ {
+ 	struct proc_dir_entry *ent;
+-		
++
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	if (!driver->driver_name || driver->proc_entry ||
+ 	    !driver->ops->proc_show)
+ 		return;
+@@ -150,6 +153,9 @@ void proc_tty_unregister_driver(struct t
+ {
+ 	struct proc_dir_entry *ent;
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	ent = driver->proc_entry;
+ 	if (!ent)
+ 		return;
+@@ -164,6 +170,9 @@ void proc_tty_unregister_driver(struct t
+  */
+ void __init proc_tty_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	if (!proc_mkdir("tty", NULL))
+ 		return;
+ 	proc_mkdir("tty/ldisc", NULL);	/* Preserved: it's userspace visible */
+--- a/include/net/snmp.h
++++ b/include/net/snmp.h
+@@ -124,6 +124,21 @@ struct linux_tls_mib {
+ #define DECLARE_SNMP_STAT(type, name)	\
+ 	extern __typeof__(type) __percpu *name
+ 
++#ifdef CONFIG_PROC_STRIPPED
++#define __SNMP_STATS_DUMMY(mib)	\
++	do { (void) mib->mibs[0]; } while(0)
++
++#define __SNMP_INC_STATS(mib, field) __SNMP_STATS_DUMMY(mib)
++#define SNMP_INC_STATS_ATOMIC_LONG(mib, field) __SNMP_STATS_DUMMY(mib)
++#define SNMP_INC_STATS(mib, field) __SNMP_STATS_DUMMY(mib)
++#define SNMP_DEC_STATS(mib, field) __SNMP_STATS_DUMMY(mib)
++#define __SNMP_ADD_STATS(mib, field, addend) __SNMP_STATS_DUMMY(mib)
++#define SNMP_ADD_STATS(mib, field, addend) __SNMP_STATS_DUMMY(mib)
++#define SNMP_UPD_PO_STATS(mib, basefield, addend) __SNMP_STATS_DUMMY(mib)
++#define __SNMP_UPD_PO_STATS(mib, basefield, addend) __SNMP_STATS_DUMMY(mib)
++
++#else
++
+ #define __SNMP_INC_STATS(mib, field)	\
+ 			__this_cpu_inc(mib->mibs[field])
+ 
+@@ -154,8 +169,9 @@ struct linux_tls_mib {
+ 		__this_cpu_add(ptr[basefield##OCTETS], addend);	\
+ 	} while (0)
+ 
++#endif
+ 
+-#if BITS_PER_LONG==32
++#if (BITS_PER_LONG==32) && !defined(CONFIG_PROC_STRIPPED)
+ 
+ #define __SNMP_ADD_STATS64(mib, field, addend) 				\
+ 	do {								\
+--- a/ipc/msg.c
++++ b/ipc/msg.c
+@@ -1350,6 +1350,9 @@ void __init msg_init(void)
+ {
+ 	msg_init_ns(&init_ipc_ns);
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	ipc_init_proc_interface("sysvipc/msg",
+ 				"       key      msqid perms      cbytes       qnum lspid lrpid   uid   gid  cuid  cgid      stime      rtime      ctime\n",
+ 				IPC_MSG_IDS, sysvipc_msg_proc_show);
+--- a/ipc/sem.c
++++ b/ipc/sem.c
+@@ -266,6 +266,8 @@ void sem_exit_ns(struct ipc_namespace *n
+ void __init sem_init(void)
+ {
+ 	sem_init_ns(&init_ipc_ns);
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
+ 	ipc_init_proc_interface("sysvipc/sem",
+ 				"       key      semid perms      nsems   uid   gid  cuid  cgid      otime      ctime\n",
+ 				IPC_SEM_IDS, sysvipc_sem_proc_show);
+--- a/ipc/shm.c
++++ b/ipc/shm.c
+@@ -144,6 +144,8 @@ pure_initcall(ipc_ns_init);
+ 
+ void __init shm_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
+ 	ipc_init_proc_interface("sysvipc/shm",
+ #if BITS_PER_LONG <= 32
+ 				"       key      shmid perms       size  cpid  lpid nattch   uid   gid  cuid  cgid      atime      dtime      ctime        rss       swap\n",
+--- a/ipc/util.c
++++ b/ipc/util.c
+@@ -140,6 +140,9 @@ void __init ipc_init_proc_interface(cons
+ 	struct proc_dir_entry *pde;
+ 	struct ipc_proc_iface *iface;
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	iface = kmalloc(sizeof(*iface), GFP_KERNEL);
+ 	if (!iface)
+ 		return;
+--- a/kernel/exec_domain.c
++++ b/kernel/exec_domain.c
+@@ -29,6 +29,8 @@ static int execdomains_proc_show(struct
+ 
+ static int __init proc_execdomains_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
+ 	proc_create_single("execdomains", 0, NULL, execdomains_proc_show);
+ 	return 0;
+ }
+--- a/kernel/irq/proc.c
++++ b/kernel/irq/proc.c
+@@ -341,6 +341,9 @@ void register_irq_proc(unsigned int irq,
+ 	void __maybe_unused *irqp = (void *)(unsigned long) irq;
+ 	char name [MAX_NAMELEN];
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED) && !IS_ENABLED(CONFIG_SMP))
++		return;
++
+ 	if (!root_irq_dir || (desc->irq_data.chip == &no_irq_chip))
+ 		return;
+ 
+@@ -394,6 +397,9 @@ void unregister_irq_proc(unsigned int ir
+ {
+ 	char name [MAX_NAMELEN];
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED) && !IS_ENABLED(CONFIG_SMP))
++		return;
++
+ 	if (!root_irq_dir || !desc->dir)
+ 		return;
+ #ifdef CONFIG_SMP
+@@ -432,6 +438,9 @@ void init_irq_proc(void)
+ 	unsigned int irq;
+ 	struct irq_desc *desc;
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED) && !IS_ENABLED(CONFIG_SMP))
++		return;
++
+ 	/* create /proc/irq */
+ 	root_irq_dir = proc_mkdir("irq", NULL);
+ 	if (!root_irq_dir)
+--- a/kernel/time/timer_list.c
++++ b/kernel/time/timer_list.c
+@@ -370,6 +370,8 @@ static int __init init_timer_list_procfs
+ {
+ 	struct proc_dir_entry *pe;
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
+ 	pe = proc_create_seq_private("timer_list", 0400, NULL, &timer_list_sops,
+ 			sizeof(struct timer_list_iter), NULL);
+ 	if (!pe)
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -3572,6 +3572,8 @@ static const struct seq_operations vmall
+ 
+ static int __init proc_vmalloc_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
+ 	if (IS_ENABLED(CONFIG_NUMA))
+ 		proc_create_seq_private("vmallocinfo", 0400, NULL,
+ 				&vmalloc_op,
+--- a/mm/vmstat.c
++++ b/mm/vmstat.c
+@@ -2044,10 +2044,12 @@ void __init init_mm_internals(void)
+ 	start_shepherd_timer();
+ #endif
+ #ifdef CONFIG_PROC_FS
+-	proc_create_seq("buddyinfo", 0444, NULL, &fragmentation_op);
+-	proc_create_seq("pagetypeinfo", 0400, NULL, &pagetypeinfo_op);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED)) {
++		proc_create_seq("buddyinfo", 0444, NULL, &fragmentation_op);
++		proc_create_seq("pagetypeinfo", 0400, NULL, &pagetypeinfo_op);
++		proc_create_seq("zoneinfo", 0444, NULL, &zoneinfo_op);
++	}
+ 	proc_create_seq("vmstat", 0444, NULL, &vmstat_op);
+-	proc_create_seq("zoneinfo", 0444, NULL, &zoneinfo_op);
+ #endif
+ }
+ 
+--- a/net/8021q/vlanproc.c
++++ b/net/8021q/vlanproc.c
+@@ -93,6 +93,9 @@ void vlan_proc_cleanup(struct net *net)
+ {
+ 	struct vlan_net *vn = net_generic(net, vlan_net_id);
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return;
++
+ 	if (vn->proc_vlan_conf)
+ 		remove_proc_entry(name_conf, vn->proc_vlan_dir);
+ 
+@@ -112,6 +115,9 @@ int __net_init vlan_proc_init(struct net
+ {
+ 	struct vlan_net *vn = net_generic(net, vlan_net_id);
+ 
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
++
+ 	vn->proc_vlan_dir = proc_net_mkdir(net, name_root, net->proc_net);
+ 	if (!vn->proc_vlan_dir)
+ 		goto err;
+--- a/net/core/net-procfs.c
++++ b/net/core/net-procfs.c
+@@ -290,10 +290,12 @@ static int __net_init dev_proc_net_init(
+ 	if (!proc_create_net("dev", 0444, net->proc_net, &dev_seq_ops,
+ 			sizeof(struct seq_net_private)))
+ 		goto out;
+-	if (!proc_create_seq("softnet_stat", 0444, net->proc_net,
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
++			!proc_create_seq("softnet_stat", 0444, net->proc_net,
+ 			 &softnet_seq_ops))
+ 		goto out_dev;
+-	if (!proc_create_net("ptype", 0444, net->proc_net, &ptype_seq_ops,
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
++			!proc_create_net("ptype", 0444, net->proc_net, &ptype_seq_ops,
+ 			sizeof(struct seq_net_private)))
+ 		goto out_softnet;
+ 
+@@ -303,9 +305,11 @@ static int __net_init dev_proc_net_init(
+ out:
+ 	return rc;
+ out_ptype:
+-	remove_proc_entry("ptype", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
++		remove_proc_entry("ptype", net->proc_net);
+ out_softnet:
+-	remove_proc_entry("softnet_stat", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
++		remove_proc_entry("softnet_stat", net->proc_net);
+ out_dev:
+ 	remove_proc_entry("dev", net->proc_net);
+ 	goto out;
+@@ -315,8 +319,10 @@ static void __net_exit dev_proc_net_exit
+ {
+ 	wext_proc_exit(net);
+ 
+-	remove_proc_entry("ptype", net->proc_net);
+-	remove_proc_entry("softnet_stat", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED)) {
++		remove_proc_entry("ptype", net->proc_net);
++		remove_proc_entry("softnet_stat", net->proc_net);
++	}
+ 	remove_proc_entry("dev", net->proc_net);
+ }
+ 
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -3682,6 +3682,8 @@ static __net_initdata struct pernet_oper
+ 
+ static int __init proto_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
+ 	return register_pernet_subsys(&proto_net_ops);
+ }
+ 
+--- a/net/ipv4/fib_trie.c
++++ b/net/ipv4/fib_trie.c
+@@ -2986,11 +2986,13 @@ static const struct seq_operations fib_r
+ 
+ int __net_init fib_proc_init(struct net *net)
+ {
+-	if (!proc_create_net("fib_trie", 0444, net->proc_net, &fib_trie_seq_ops,
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
++			!proc_create_net("fib_trie", 0444, net->proc_net, &fib_trie_seq_ops,
+ 			sizeof(struct fib_trie_iter)))
+ 		goto out1;
+ 
+-	if (!proc_create_net_single("fib_triestat", 0444, net->proc_net,
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED) &&
++			!proc_create_net_single("fib_triestat", 0444, net->proc_net,
+ 			fib_triestat_seq_show, NULL))
+ 		goto out2;
+ 
+@@ -3001,17 +3003,21 @@ int __net_init fib_proc_init(struct net
+ 	return 0;
+ 
+ out3:
+-	remove_proc_entry("fib_triestat", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
++		remove_proc_entry("fib_triestat", net->proc_net);
+ out2:
+-	remove_proc_entry("fib_trie", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED))
++		remove_proc_entry("fib_trie", net->proc_net);
+ out1:
+ 	return -ENOMEM;
+ }
+ 
+ void __net_exit fib_proc_exit(struct net *net)
+ {
+-	remove_proc_entry("fib_trie", net->proc_net);
+-	remove_proc_entry("fib_triestat", net->proc_net);
++	if (!IS_ENABLED(CONFIG_PROC_STRIPPED)) {
++		remove_proc_entry("fib_trie", net->proc_net);
++		remove_proc_entry("fib_triestat", net->proc_net);
++	}
+ 	remove_proc_entry("route", net->proc_net);
+ }
+ 
+--- a/net/ipv4/proc.c
++++ b/net/ipv4/proc.c
+@@ -528,5 +528,8 @@ static __net_initdata struct pernet_oper
+ 
+ int __init ip_misc_proc_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
++
+ 	return register_pernet_subsys(&ip_proc_ops);
+ }
+--- a/net/ipv4/route.c
++++ b/net/ipv4/route.c
+@@ -410,6 +410,9 @@ static struct pernet_operations ip_rt_pr
+ 
+ static int __init ip_rt_proc_init(void)
+ {
++	if (IS_ENABLED(CONFIG_PROC_STRIPPED))
++		return 0;
++
+ 	return register_pernet_subsys(&ip_rt_proc_ops);
+ }
+ 

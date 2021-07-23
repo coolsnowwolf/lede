@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2014 OpenWrt.org
+# Copyright (C) 2021 OpenWrt.org
 #
 
 platform_get_rootfs() {
@@ -7,10 +7,6 @@ platform_get_rootfs() {
 
 	if read cmdline < /proc/cmdline; then
 		case "$cmdline" in
-			*block2mtd=*)
-				rootfsdev="${cmdline##*block2mtd=}"
-				rootfsdev="${rootfsdev%%,*}"
-			;;
 			*root=*)
 				rootfsdev="${cmdline##*root=}"
 				rootfsdev="${rootfsdev%% *}"
@@ -21,22 +17,25 @@ platform_get_rootfs() {
 	fi
 }
 
+platform_copy_config_helper() {
+	local device=$1
+
+	mount -t vfat "$device" /mnt
+	cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
+	umount /mnt
+}
+
 platform_copy_config() {
 	case "$(board_name)" in
 	erlite)
-		mount -t vfat /dev/sda1 /mnt
-		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
-		umount /mnt
+		platform_copy_config_helper /dev/sda1
 		;;
 	itus,shield-router)
-		mount -t vfat /dev/mmcblk1p1 /mnt
-		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
-		umount /mnt
+		platform_copy_config_helper /dev/mmcblk1p1
 		;;
-	ubnt,edgerouter-4)
-		mount -t vfat /dev/mmcblk0p1 /mnt
-		cp -af "$UPGRADE_BACKUP" "/mnt/$BACKUP_FILE"
-		umount /mnt
+	ubnt,edgerouter-4|\
+	ubnt,edgerouter-6p)
+		platform_copy_config_helper /dev/mmcblk0p1
 		;;
 	esac
 }
@@ -88,7 +87,8 @@ platform_do_upgrade() {
 	[ -b "${rootfs}" ] || return 1
 	case "$board" in
 	er | \
-	ubnt,edgerouter-4)
+	ubnt,edgerouter-4 | \
+	ubnt,edgerouter-6p)
 		kernel=mmcblk0p1
 		;;
 	erlite)
@@ -118,7 +118,8 @@ platform_check_image() {
 	er | \
 	erlite | \
 	itus,shield-router | \
-	ubnt,edgerouter-4)
+	ubnt,edgerouter-4 | \
+	ubnt,edgerouter-6p)
 		local kernel_length=$(tar xf $tar_file $board_dir/kernel -O | wc -c 2> /dev/null)
 		local rootfs_length=$(tar xf $tar_file $board_dir/root -O | wc -c 2> /dev/null)
 		[ "$kernel_length" = 0 -o "$rootfs_length" = 0 ] && {

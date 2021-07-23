@@ -8,24 +8,26 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libiconv-full
-PKG_VERSION:=1.11.1
-PKG_RELEASE:=4
-
-PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
+PKG_VERSION:=1.16
+PKG_RELEASE:=1
 
 PKG_SOURCE:=libiconv-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/libiconv
-PKG_HASH:=e78c347a1a0cb15f2648519e9799151f4b4a934b61ad9ee7424478efe2b8257f
+PKG_HASH:=e6a1b1b589654277ee790cce3734f07876ac4ccfaecbee8afa0b649cf529cc04
 PKG_BUILD_DIR:=$(BUILD_DIR)/libiconv-$(PKG_VERSION)
-PKG_LICENSE:=LGPL-2.0
+
+PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
+PKG_LICENSE:=LGPL-2.1-or-later
 PKG_LICENSE_FILES:=COPYING.LIB
 
 PKG_FIXUP:=patch-libtool
+PKG_INSTALL:=1
+PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/libiconv-full/Default
-  URL:=http://www.gnu.org/software/libiconv/
+  URL:=https://www.gnu.org/software/libiconv/
   TITLE:=Character set conversion
 endef
 
@@ -53,20 +55,11 @@ define Package/iconv
   TITLE+= utility
 endef
 
-TARGET_CFLAGS += $(FPIC) -DUSE_DOS -std=gnu89
-
 CONFIGURE_ARGS += \
 	--enable-shared \
 	--enable-static \
 	--disable-rpath \
 	--enable-relocatable
-
-define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		CC="$(TARGET_CC)" \
-		DESTDIR="$(PKG_INSTALL_DIR)" \
-		install
-endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib/libiconv-full/include

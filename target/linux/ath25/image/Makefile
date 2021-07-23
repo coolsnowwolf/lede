@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2010 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -69,7 +67,7 @@ define Device/generic
   IMAGE/kernel.lzma := elf-kernel | lzma-kernel
   IMAGE/rootfs.bin := append-rootfs | pad-rootfs | pad-to 128k
   IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | pad-to 128k | combined-image
-  IMAGE_NAME = $$(IMAGE_PREFIX)-$$(if $$(findstring kernel,$$(2)),,$$(1)-)$$(2)
+  DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(if $$(findstring kernel,$$(2)),,$$(1)-)$$(2)
 endef
 TARGET_DEVICES += generic
 

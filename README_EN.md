@@ -13,7 +13,7 @@ Note:
 
 Let's start!
 ---
-1. First, install Ubuntu 64bit (Ubuntu 18 LTS x86 is recommended).
+1. First, install Ubuntu 64bit (Ubuntu 20.04 LTS x86 is recommended).
 
 2. Run `sudo apt-get update` in the terminal, and then run
     `

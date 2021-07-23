@@ -1,0 +1,81 @@
+From fc8ea40f6130ac18d9c66797de2cf1d5af55d496 Mon Sep 17 00:00:00 2001
+From: Markus Theil <markus.theil@tu-ilmenau.de>
+Date: Tue, 30 Jun 2020 14:19:07 +0200
+Subject: [PATCH 19/19] mesh: use deterministic channel on channel switch
+
+This patch uses a deterministic channel on DFS channel switch
+in mesh networks. Otherwise, when switching to a usable but not
+available channel, no CSA can be sent and a random channel is choosen
+without notification of other nodes. It is then quite likely, that
+the mesh network gets disconnected.
+
+Fix this by using a deterministic number, based on the sha256 hash
+of the mesh ID, in order to use at least a different number in each
+mesh network.
+
+Signed-off-by: Markus Theil <markus.theil@tu-ilmenau.de>
+---
+ src/ap/dfs.c                 | 20 +++++++++++++++++++-
+ src/drivers/driver_nl80211.c |  4 ++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+--- a/src/ap/dfs.c
++++ b/src/ap/dfs.c
+@@ -17,6 +17,7 @@
+ #include "ap_drv_ops.h"
+ #include "drivers/driver.h"
+ #include "dfs.h"
++#include "crypto/crypto.h"
+ 
+ 
+ static int dfs_get_used_n_chans(struct hostapd_iface *iface, int *seg1)
+@@ -480,9 +481,14 @@ dfs_get_valid_channel(struct hostapd_ifa
+ 	int num_available_chandefs;
+ 	int chan_idx, chan_idx2;
+ 	int sec_chan_idx_80p80 = -1;
++	bool is_mesh = false;
+ 	int i;
+ 	u32 _rand;
+ 
++#ifdef CONFIG_MESH
++	is_mesh = iface->mconf;
++#endif
++
+ 	wpa_printf(MSG_DEBUG, "DFS: Selecting random channel");
+ 	*secondary_channel = 0;
+ 	*oper_centr_freq_seg0_idx = 0;
+@@ -502,8 +508,20 @@ dfs_get_valid_channel(struct hostapd_ifa
+ 	if (num_available_chandefs == 0)
+ 		return NULL;
+ 
+-	if (os_get_random((u8 *) &_rand, sizeof(_rand)) < 0)
++	/* try to use deterministic channel in mesh, so that both sides
++	 * have a chance to switch to the same channel */
++	if (is_mesh) {
++#ifdef CONFIG_MESH
++		u64 hash[4];
++		const u8 *meshid[1] = { &iface->mconf->meshid[0] };
++		const size_t meshid_len = iface->mconf->meshid_len;
++
++		sha256_vector(1, meshid, &meshid_len, (u8 *)&hash[0]);
++		_rand = hash[0] + hash[1] + hash[2] + hash[3];
++#endif
++	} else if (os_get_random((u8 *) &_rand, sizeof(_rand)) < 0)
+ 		return NULL;
++
+ 	chan_idx = _rand % num_available_chandefs;
+ 	dfs_find_channel(iface, &chan, chan_idx, skip_radar);
+ 	if (!chan) {
+--- a/src/drivers/driver_nl80211.c
++++ b/src/drivers/driver_nl80211.c
+@@ -9872,6 +9872,10 @@ static int nl80211_switch_channel(void *
+ 	if (ret)
+ 		goto error;
+ 
++	if (drv->nlmode == NL80211_IFTYPE_MESH_POINT) {
++		nla_put_flag(msg, NL80211_ATTR_HANDLE_DFS);
++	}
++
+ 	/* beacon_csa params */
+ 	beacon_csa = nla_nest_start(msg, NL80211_ATTR_CSA_IES);
+ 	if (!beacon_csa)
