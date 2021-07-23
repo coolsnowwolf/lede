@@ -72,7 +72,7 @@ define KernelPackage/qca-nss-drv-l2tpv2
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-l2tpv2)
 endef
 
-define KernelPackage/qca-nss-drv-l2tp/Description
+define KernelPackage/qca-nss-drv-l2tpv2/Description
 Kernel modules for NSS connection manager - Support for l2tp tunnel
 endef
 
