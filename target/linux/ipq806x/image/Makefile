@@ -199,7 +199,7 @@ define Device/linksys_e8350-v1
 	IMAGES = factory.bin sysupgrade.ubi
 	IMAGE/sysupgrade.ubi := append-ubi | check-size 0x04000000 | append-metadata
 	IMAGE/factory.bin := append-ubi | check-size 0x04000000 | linksys-addfwhdr | linksys-bin
-	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct
+	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct qtn-utils qtn-firmware qtn-proto kmod-qtn-pcie2
 endef
 TARGET_DEVICES += linksys_e8350-v1
 
@@ -276,7 +276,7 @@ define Device/netgear_r7500
 	PAGESIZE := 2048
 	BOARD_NAME := r7500
 	SUPPORTED_DEVICES += r7500
-	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct
+	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct qtn-utils qtn-firmware qtn-proto kmod-qtn-pcie2
 endef
 TARGET_DEVICES += netgear_r7500
 
