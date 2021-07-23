@@ -9,30 +9,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=quantenna
 PKG_VERSION:=37.3.2.44
-PKG_RELEASE:=1
+PKG_RELEASE:=6
 
-PKG_MAINTAINER:=Bjørn Mork <bjorn@mork.no>
-
-# available versions, ref https://kb.netgear.com/2649/NETGEAR-Open-Source-Code-for-Programmers-GPL
-# qtn sdk v36.6.0.23: 1.0.0.46,
-# qtn sdk v36.6.0.28: 1.0.0.52,
-# qtn sdk v36.6.0.30: 1.0.0.68, 1.0.0.70,
-# qtn sdk v36.7.3.23: 1.0.0.76, 1.0.0.82,
-# qtn sdk v37.3.1.25: 1.0.0.94, 1.0.0.108, 1.0.0.110 , 1.0.0.112, 1.0.0.116, 1.0.0.122,
-# qtn sdk v37.3.2.44: 1.0.0.124
-
-NETGEAR_R7500V1_SRC-37.3.2.44=R7500-and_qtn_gpl_src_v1.0.0.124.tar.bz2.zip
-
-NETGEAR_R7500V1_HASH-37.3.2.44=6592e3286c66a8b0ba689e6cff2d10cac5aea3ddef8ca8746d7771319e47112e
-
-PKG_SOURCE:=$(NETGEAR_R7500V1_SRC-$(strip $(PKG_VERSION)))
-PKG_SOURCE_URL:=https://www.downloads.netgear.com/files/GPL
-PKG_HASH:=$(NETGEAR_R7500V1_HASH-$(strip $(PKG_VERSION)))
-
-QCSAPI_ARCHIVE-37.3.2.44=quantenna_gpl_v$(PKG_VERSION).tar.bz2
-
-UNPACK_CMD-37.3.2.44=unzip -q -p $(DL_DIR)/$(PKG_SOURCE) | bzcat | $(HOST_TAR) -C $(PKG_BUILD_DIR) $(TAR_OPTIONS)
-UNPACK_CMD=$(UNPACK_CMD-$(strip $(PKG_VERSION)))
+PKG_MAINTAINER:=lean
 
 PKG_BUILD_DEPENDS:=libtirpc
 
@@ -40,14 +19,7 @@ include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
 define Build/Prepare
-	$(PKG_UNPACK)
-	bzcat $(PKG_BUILD_DIR)/$(QCSAPI_ARCHIVE-$(strip $(PKG_VERSION))) | \
-		$(HOST_TAR) -C $(PKG_BUILD_DIR) $(TAR_OPTIONS) --strip-components=1 \
-		--wildcards */libqcsapi_client_src.zip --wildcards *drivers/pcie2*
-	bzcat $(PKG_BUILD_DIR)/R7500-*.tar.bz2 | \
-		$(HOST_TAR) -C $(PKG_BUILD_DIR) $(TAR_OPTIONS) --strip-components=4 \
-		--wildcards */package/qt-wireless/binary/{topaz-linux.lzma.img,u-boot.bin}
-	unzip -q -d $(PKG_BUILD_DIR) $(PKG_BUILD_DIR)/libqcsapi_client_src.zip
+	$(CP) ./src/* $(PKG_BUILD_DIR)/
 	# tunning to make the same patch apply to versions with or without -fstrict-aliasing
 	sed -i -e 's/ -fstrict-aliasing//' $(PKG_BUILD_DIR)/Makefile
 	$(Build/Patch)
@@ -82,6 +54,7 @@ define Package/qtn-utils/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/qcsapi_sockrpc $(1)/usr/sbin/
 	ln -s /tmp/qcsapi_target_ip.conf $(1)/etc
 	$(INSTALL_BIN) ./files/qtn-utils.init $(1)/etc/init.d/qtn-utils
+	$(INSTALL_BIN) ./files/qtn-wifi.init $(1)/etc/init.d/qtn-wifi
 endef
 
 define Package/qtn-firmware
