@@ -7,6 +7,7 @@ PKG_RELEASE:=1
 PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/nss-crypto
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=e7651c2986d30b5e8ca5ad6b9a72c47febdf3cca
+PKG_MIRROR_HASH:=381ba448ccd9e0ff69fa52b3e10687b72260b7d0bf865cac10be7f159573b6c8
 
 include $(INCLUDE_DIR)/package.mk
 

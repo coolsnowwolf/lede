@@ -11,8 +11,8 @@ platform_check_image() {
 platform_do_upgrade() {
 	case "$(board_name)" in
 	askey,rt4230w-rev6 |\
-	compex,wpq864|\
-	linksys,e8350-v1|\
+	compex,wpq864 |\
+	linksys,e8350-v1 |\
 	netgear,d7800 |\
 	netgear,r7500 |\
 	netgear,r7500v2 |\
