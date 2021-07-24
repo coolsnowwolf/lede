@@ -25,15 +25,18 @@ detect_quantenna() {
 		set wireless.radio${devidx}.type=quantenna
 		set wireless.radio${devidx}.channel=${channel:-36}
 		set wireless.radio${devidx}.hwmode=11ac
+		set wireless.radio${devidx}.band=5g
+		set wireless.radio${devidx}.htmode=VHT80
 		set wireless.radio${devidx}.phy=${phy}
-		set wireless.radio${devidx}.disabled=1
+		set wireless.radio${devidx}.disabled=0
 
 		set wireless.default_radio${devidx}=wifi-iface
 		set wireless.default_radio${devidx}.device=radio${devidx}
 		set wireless.default_radio${devidx}.network=lan
 		set wireless.default_radio${devidx}.mode=ap
-		set wireless.default_radio${devidx}.ssid=OpenWrt
-		set wireless.default_radio${devidx}.encryption=none
+		set wireless.default_radio${devidx}.ssid=OpenWrt-5G
+		set wireless.default_radio${devidx}.encryption=psk2+ccmp
+		set wireless.default_radio${devidx}.key=12345678
 EOF
 	uci -q commit wireless
 }		

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020 OpenWrt.org
+# Copyright (C) 2021 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=quantenna
 PKG_VERSION:=37.3.2.44
-PKG_RELEASE:=6
+PKG_RELEASE:=8
 
 PKG_MAINTAINER:=lean
 
@@ -54,7 +54,6 @@ define Package/qtn-utils/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/qcsapi_sockrpc $(1)/usr/sbin/
 	ln -s /tmp/qcsapi_target_ip.conf $(1)/etc
 	$(INSTALL_BIN) ./files/qtn-utils.init $(1)/etc/init.d/qtn-utils
-	$(INSTALL_BIN) ./files/qtn-wifi.init $(1)/etc/init.d/qtn-wifi
 endef
 
 define Package/qtn-firmware
