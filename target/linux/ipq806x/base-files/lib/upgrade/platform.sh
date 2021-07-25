@@ -12,7 +12,6 @@ platform_do_upgrade() {
 	case "$(board_name)" in
 	askey,rt4230w-rev6 |\
 	compex,wpq864 |\
-	linksys,e8350-v1 |\
 	netgear,d7800 |\
 	netgear,r7500 |\
 	netgear,r7500v2 |\
@@ -20,6 +19,10 @@ platform_do_upgrade() {
 	netgear,xr500 |\
 	qcom,ipq8064-ap148 |\
 	qcom,ipq8064-ap161)
+		nand_do_upgrade "$1"
+		;;
+	linksys,e8350-v1)
+		fwtool -q -t -i /dev/null "$1"
 		nand_do_upgrade "$1"
 		;;
 	asrock,g10)
