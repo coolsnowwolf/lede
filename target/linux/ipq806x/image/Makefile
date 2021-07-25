@@ -197,8 +197,8 @@ define Device/linksys_e8350-v1
 	BLOCKSIZE := 128k
 	KERNEL_IN_UBI := 1
 	IMAGES = factory.bin sysupgrade.ubi
-	IMAGE/sysupgrade.ubi := append-ubi | check-size 0x04000000 | append-metadata
-	IMAGE/factory.bin := append-ubi | check-size 0x04000000 | linksys-addfwhdr | linksys-bin
+	IMAGE/sysupgrade.ubi := append-ubi | check-size 0x08000000 | append-metadata
+	IMAGE/factory.bin := append-ubi | check-size 0x08000000 | linksys-addfwhdr | linksys-bin
 	DEVICE_PACKAGES := ath10k-firmware-qca988x-ct qtn-utils qtn-firmware qtn-proto kmod-qtn-pcie2
 endef
 TARGET_DEVICES += linksys_e8350-v1
