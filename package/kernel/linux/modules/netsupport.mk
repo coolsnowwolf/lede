@@ -963,7 +963,7 @@ define KernelPackage/tcp-bbrplus
   AUTOLOAD:=$(call AutoProbe,tcp_bbrplus)
 endef
 
-define KernelPackage/tcp-bbr/description
+define KernelPackage/tcp-bbrplus/description
  BBRplus is an enhanced version of BBR (Bottleneck Bandwidth and RTT).
  Originally introduced by dog250 & cx9208.
  Same as BBR, requires the fq ("Fair Queue") pacing packet scheduler.
