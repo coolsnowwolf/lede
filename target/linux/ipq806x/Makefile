@@ -23,6 +23,6 @@ DEFAULT_PACKAGES += \
 	kmod-phy-qcom-ipq806x-usb kmod-usb3 kmod-usb-dwc3-qcom \
 	kmod-ath10k-ct wpad-openssl uboot-envtools \
 	kmod-shortcut-fe kmod-qca-nss-drv kmod-qca-nss-ecm-standard kmod-qca-nss-gmac kmod-qca-nss-drv-pppoe \
-	autocore-arm htop automount autosamba luci-app-adbyby-plus luci-app-ipsec-vpnd luci-app-unblockmusic luci-app-zerotier luci-app-sqm
+	autocore-arm htop automount autosamba luci-app-adbyby-plus luci-app-ipsec-vpnd luci-app-unblockmusic UnblockNeteaseMusic luci-app-zerotier
 	
 $(eval $(call BuildTarget))
