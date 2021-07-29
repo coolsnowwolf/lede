@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020 OpenWrt.org
+# Copyright (C) 2021 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=quantenna
 PKG_VERSION:=37.3.2.44
-PKG_RELEASE:=6
+PKG_RELEASE:=9
 
 PKG_MAINTAINER:=lean
 
@@ -50,18 +50,18 @@ define Package/qtn-utils/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_DIR) $(1)/etc/config
 	$(CP) $(PKG_BUILD_DIR)/libqcsapi_client.so* $(1)/usr/lib/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/qcsapi_sockrpc $(1)/usr/sbin/
 	ln -s /tmp/qcsapi_target_ip.conf $(1)/etc
 	$(INSTALL_BIN) ./files/qtn-utils.init $(1)/etc/init.d/qtn-utils
-	$(INSTALL_BIN) ./files/qtn-wifi.init $(1)/etc/init.d/qtn-wifi
+	$(INSTALL_DATA) ./files/qtn.wireless $(1)/etc/config/wireless
 endef
 
 define Package/qtn-firmware
   SECTION:=firmware
   CATEGORY:=Firmware
   TITLE:=Quantenna QV840 (QTS1000) firmware
-  DEPENDS:=+dnsmasq
 endef
 
 define Package/qtn-firmware/description
@@ -70,7 +70,6 @@ endef
 
 define Package/qtn-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/qtn
-	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/topaz-linux.lzma.img \
@@ -78,7 +77,6 @@ define Package/qtn-firmware/install
 	ln -s u-boot.bin $(1)/lib/firmware/qtn/uboot_qsr1000.img
 	ln -s topaz-linux.lzma.img $(1)/lib/firmware/qtn/fmac_qsr1000.img
 	cd $(1)/lib/firmware && ln -s qtn/u-boot.bin . && ln -s qtn/topaz-linux.lzma.img .
-	$(INSTALL_BIN) ./files/qtn-firmware.defaults $(1)/etc/uci-defaults
 endef
 
 define Package/qtn-proto
