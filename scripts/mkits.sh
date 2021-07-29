@@ -46,7 +46,7 @@ LOADABLES=
 DTOVERLAY=
 DTADDR=
 
-while getopts ":A:a:c:C:D:d:e:f:i:k:n:o:O:v:r:S" OPTION
+while getopts ":A:a:c:C:D:d:e:f:i:k:n:o:O:v:r:H:" OPTION
 do
 	case $OPTION in
 		A ) ARCH=$OPTARG;;
@@ -63,7 +63,7 @@ do
 		o ) OUTPUT=$OPTARG;;
 		O ) DTOVERLAY="$DTOVERLAY ${OPTARG}";;
 		r ) ROOTFS=$OPTARG;;
-		S ) HASH=$OPTARG;;
+		H ) HASH=$OPTARG;;
 		v ) VERSION=$OPTARG;;
 		* ) echo "Invalid option passed to '$0' (options:$*)"
 		usage;;
