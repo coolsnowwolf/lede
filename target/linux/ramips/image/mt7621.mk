@@ -1560,7 +1560,6 @@ endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
 define Device/xiaomi_mi-router-cr660x
-  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -1575,6 +1574,7 @@ define Device/xiaomi_mi-router-cr660x
   DEVICE_MODEL := Mi Router CR660x
   DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
   SUPPORTED_DEVICES += xiaomi,mi-router-cr6606
+  DEVICE_COMPAT_VERSION := 1.1
 endef
 TARGET_DEVICES += xiaomi_mi-router-cr660x
 
