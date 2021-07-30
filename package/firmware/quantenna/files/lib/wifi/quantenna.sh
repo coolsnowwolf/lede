@@ -23,7 +23,7 @@ detect_quantenna() {
 	uci -q batch <<-EOF
 		set wireless.radio${devidx}=wifi-device
 		set wireless.radio${devidx}.type=quantenna
-		set wireless.radio${devidx}.channel=${channel:-36}
+		set wireless.radio${devidx}.channel=149
 		set wireless.radio${devidx}.hwmode=11ac
 		set wireless.radio${devidx}.band=5g
 		set wireless.radio${devidx}.htmode=VHT80
