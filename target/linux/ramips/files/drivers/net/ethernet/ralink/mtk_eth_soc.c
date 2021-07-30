@@ -575,7 +575,7 @@ static inline u32 fe_empty_txd(struct fe_tx_ring *ring)
 	barrier();
 	return (u32)(ring->tx_ring_size -
 			((ring->tx_next_idx - ring->tx_free_idx) &
-			 (ring->tx_ring_size - 1)));
+			 (ring->tx_ring_size - 1)) - 1);
 }
 
 struct fe_map_state {
@@ -889,6 +889,8 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 	struct fe_rx_dma *rxd, trxd;
 	int done = 0, pad;
 
+	fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
+
 	if (netdev->features & NETIF_F_RXCSUM)
 		checksum_bit = soc->checksum_bit;
 	else
@@ -951,11 +953,18 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
 					       RX_DMA_VID(trxd.rxd3));
 
-		stats->rx_packets++;
-		stats->rx_bytes += pktlen;
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+		if (ra_offload_check_rx(priv, skb, trxd.rxd4) == 0) {
+#endif
+			stats->rx_packets++;
+			stats->rx_bytes += pktlen;
 
-		napi_gro_receive(napi, skb);
-
+			napi_gro_receive(napi, skb);
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+		} else {
+			dev_kfree_skb(skb);
+		}
+#endif
 		ring->rx_data[idx] = new_data;
 		rxd->rxd1 = (unsigned int)dma_addr;
 
@@ -974,9 +983,6 @@ release_desc:
 		done++;
 	}
 
-	if (done < budget)
-		fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
-
 	return done;
 }
 
@@ -990,6 +996,8 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	int done = 0;
 	u32 idx, hwidx;
 	struct fe_tx_ring *ring = &priv->tx_ring;
+
+	fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
 
 	idx = ring->tx_free_idx;
 	hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
@@ -1014,9 +1022,7 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	if (idx == hwidx) {
 		/* read hw index again make sure no new tx packet */
 		hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
-		if (idx == hwidx)
-			fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
-		else
+		if (idx != hwidx)
 			*tx_again = 1;
 	} else {
 		*tx_again = 1;
@@ -1296,6 +1302,9 @@ static int fe_open(struct net_device *dev)
 	napi_enable(&priv->rx_napi);
 	fe_int_enable(priv->soc->tx_int | priv->soc->rx_int);
 	netif_start_queue(dev);
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+	ra_ppe_probe(priv);
+#endif
 
 	return 0;
 }
@@ -1331,6 +1340,10 @@ static int fe_stop(struct net_device *dev)
 	}
 
 	fe_free_dma(priv);
+
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+	ra_ppe_remove(priv);
+#endif
 
 	return 0;
 }
@@ -1500,6 +1513,23 @@ static int fe_change_mtu(struct net_device *dev, int new_mtu)
 	return fe_open(dev);
 }
 
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+static int
+fe_flow_offload(enum flow_offload_type type, struct flow_offload *flow,
+		struct flow_offload_hw_path *src,
+		struct flow_offload_hw_path *dest)
+{
+	struct fe_priv *priv;
+
+	if (src->dev != dest->dev)
+		return -EINVAL;
+
+	priv = netdev_priv(src->dev);
+
+	return mtk_flow_offload(priv, type, flow, src, dest);
+}
+#endif
+
 static const struct net_device_ops fe_netdev_ops = {
 	.ndo_init		= fe_init,
 	.ndo_uninit		= fe_uninit,
@@ -1516,6 +1546,9 @@ static const struct net_device_ops fe_netdev_ops = {
 	.ndo_vlan_rx_kill_vid	= fe_vlan_rx_kill_vid,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= fe_poll_controller,
+#endif
+#ifdef CONFIG_NET_RALINK_OFFLOAD
+	.ndo_flow_offload	= fe_flow_offload,
 #endif
 };
 
@@ -1705,7 +1738,7 @@ static struct platform_driver fe_driver = {
 	.probe = fe_probe,
 	.remove = fe_remove,
 	.driver = {
-		.name = "mtk_soc_eth",
+		.name = "ralink_soc_eth",
 		.owner = THIS_MODULE,
 		.of_match_table = of_fe_match,
 	},
