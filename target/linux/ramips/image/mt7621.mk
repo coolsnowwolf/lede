@@ -407,6 +407,7 @@ define Device/d-team_newifi-d2
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := Newifi
   DEVICE_MODEL := D2
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
 	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
 endef
@@ -1152,6 +1153,7 @@ define Device/phicomm_k2p
   DEVICE_VENDOR := Phicomm
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES := -luci-newapi -wpad-openssl kmod-mt7615d_dbdc wireless-tools
 endef
 TARGET_DEVICES += phicomm_k2p
@@ -1554,6 +1556,7 @@ define Device/xiaomi_mi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router AC2100
   IMAGE_SIZE := 120320k
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
 	-wpad-openssl
 endef
@@ -1582,6 +1585,7 @@ define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Redmi Router AC2100
   IMAGE_SIZE := 120320k
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
 	-wpad-openssl
 endef
@@ -1591,6 +1595,7 @@ define Device/xiaoyu_xy-c5
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := XiaoYu
   DEVICE_MODEL := XY-C5
+  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES := kmod-ata-ahci kmod-usb3 -wpad-openssl
 endef
 TARGET_DEVICES += xiaoyu_xy-c5
