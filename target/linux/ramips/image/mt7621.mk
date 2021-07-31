@@ -1476,6 +1476,7 @@ endef
 TARGET_DEVICES += winstars_ws-wn583a6
 
 define Device/xiaomi_nand_separate
+  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   DEVICE_VENDOR := Xiaomi
   DEVICE_PACKAGES := uboot-envtools
@@ -1490,7 +1491,6 @@ define Device/xiaomi_nand_separate
 endef
 
 define Device/xiaomi_mi-router-3g
-  $(Device/dsa-migration)
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router 3G
   IMAGE_SIZE := 124416k
@@ -1533,7 +1533,6 @@ endef
 TARGET_DEVICES += xiaomi_mi-router-3-pro
 
 define Device/xiaomi_mi-router-4
-  $(Device/dsa-migration)
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router 4
   IMAGE_SIZE := 124416k
@@ -1556,13 +1555,13 @@ define Device/xiaomi_mi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
 	-wpad-openssl
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
 define Device/xiaomi_mi-router-cr660x
+  $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -1577,7 +1576,6 @@ define Device/xiaomi_mi-router-cr660x
   DEVICE_MODEL := Mi Router CR660x
   DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
   SUPPORTED_DEVICES += xiaomi,mi-router-cr6606
-  DEVICE_COMPAT_VERSION := 1.1
 endef
 TARGET_DEVICES += xiaomi_mi-router-cr660x
 
@@ -1585,7 +1583,6 @@ define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Redmi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_COMPAT_VERSION := 1.1
   DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
 	-wpad-openssl
 endef
