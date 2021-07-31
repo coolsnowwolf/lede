@@ -24,10 +24,7 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_PACKAGE_kmod-brcm-wl-mini \
 	CONFIG_PACKAGE_kmod-brcm-wl-mimo \
 	CONFIG_PACKAGE_kmod-mt7615d_dbdc \
-	CONFIG_PACKAGE_kmod-qtn-pcie2 \
 	CONFIG_PACKAGE_kmod-cfg80211
-
-PKG_BUILD_DEPENDS:=libtirpc
 
 IWINFO_ABI_VERSION:=20210430
 
@@ -38,7 +35,7 @@ define Package/libiwinfo
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Generalized Wireless Information Library (iwinfo)
-  DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny +libuci +libubus +PACKAGE_kmod-qtn-pcie2:libtirpc
+  DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny +libuci +libubus
   ABI_VERSION:=$(IWINFO_ABI_VERSION)
 endef
 
@@ -75,7 +72,6 @@ endef
 
 
 define Build/Configure
-	$(CP) ./files/*  $(PKG_BUILD_DIR)
 endef
 
 IWINFO_BACKENDS := \
@@ -83,13 +79,11 @@ IWINFO_BACKENDS := \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mini),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-brcm-wl-mimo),wl) \
 	$(if $(CONFIG_PACKAGE_kmod-mt7615d_dbdc),ra) \
-	$(if $(CONFIG_PACKAGE_kmod-qtn-pcie2),qtnawifi) \
 	$(if $(CONFIG_PACKAGE_kmod-cfg80211),nl80211)
 
 TARGET_CFLAGS += \
 	-I$(STAGING_DIR)/usr/include/libnl-tiny \
 	-I$(STAGING_DIR)/usr/include \
-	-I$(STAGING_DIR)/usr/include/tirpc \
 	-D_GNU_SOURCE
 
 MAKE_FLAGS += \
