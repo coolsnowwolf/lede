@@ -19,6 +19,7 @@ BASEDHCPSTAMPFILE="/var/run/dnsmasq"
 DHCPBOGUSHOSTNAMEFILE="/usr/share/dnsmasq/dhcpbogushostname.conf"
 RFC6761FILE="/usr/share/dnsmasq/rfc6761.conf"
 DHCPSCRIPT="/usr/lib/dnsmasq/dhcp-script.sh"
+DHCPSCRIPT_DEPENDS="/usr/share/libubox/jshn.sh /usr/bin/jshn /bin/ubus"
 
 DNSMASQ_DHCP_VER=4
 
@@ -186,7 +187,22 @@ append_notinterface() {
 	xappend "--except-interface=$ifname"
 }
 
+ismounted() {
+	local filename="$1"
+	local dirname
+	for dirname in $EXTRA_MOUNT ; do
+		case "$filename" in
+			"${dirname}/"* | "${dirname}" )
+				return 1
+				;;
+		esac
+	done
+
+	return 0
+}
+
 append_addnhosts() {
+	ismounted "$1" || append EXTRA_MOUNT "$1"
 	xappend "--addn-hosts=$1"
 }
 
@@ -801,9 +817,10 @@ dnsmasq_start()
 	config_get_bool disabled "$cfg" disabled 0
 	[ "$disabled" -gt 0 ] && return 0
 
-	# reset list of DOMAINS and DNS servers (for each dnsmasq instance)
+	# reset list of DOMAINS, DNS servers and EXTRA mounts (for each dnsmasq instance)
 	DNS_SERVERS=""
 	DOMAIN=""
+	EXTRA_MOUNT=""
 	CONFIGFILE="${BASECONFIGFILE}.${cfg}"
 	CONFIGFILE_TMP="${CONFIGFILE}.$$"
 	HOSTFILE="${BASEHOSTFILE}.${cfg}"
@@ -929,6 +946,14 @@ dnsmasq_start()
 		config_list_foreach "$cfg" "interface" append_interface
 		config_list_foreach "$cfg" "notinterface" append_notinterface
 	}
+	config_get_bool ignore_hosts_dir "$cfg" ignore_hosts_dir 0
+	if [ "$ignore_hosts_dir" = "1" ]; then
+		xappend "--addn-hosts=$HOSTFILE"
+		append EXTRA_MOUNT "$HOSTFILE"
+	else
+		xappend "--addn-hosts=$(dirname $HOSTFILE)"
+		append EXTRA_MOUNT "$(dirname $HOSTFILE)"
+	fi
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
@@ -1024,12 +1049,6 @@ dnsmasq_start()
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
-	config_get_bool ignore_hosts_dir "$cfg" ignore_hosts_dir 0
-	if [ "$ignore_hosts_dir" = "1" ]; then
-		xappend "--addn-hosts=$HOSTFILE"
-	else
-		xappend "--addn-hosts=$(dirname $HOSTFILE)"
-	fi
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
 	xappend "--conf-dir=$dnsmasqconfdir"
@@ -1123,7 +1142,10 @@ dnsmasq_start()
 	procd_set_param respawn
 
 	procd_add_jail dnsmasq ubus log
-	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE $DHCPBOGUSHOSTNAMEFILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT /tmp/hosts/
+	procd_add_jail_mount $CONFIGFILE $DHCPBOGUSHOSTNAMEFILE $DHCPSCRIPT $DHCPSCRIPT_DEPENDS
+	procd_add_jail_mount $EXTRA_MOUNT $RFC6761FILE $TRUSTANCHORSFILE
+	procd_add_jail_mount $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript
+	procd_add_jail_mount /etc/passwd /etc/group /etc/TZ /etc/hosts /etc/ethers
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
