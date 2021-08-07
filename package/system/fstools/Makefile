@@ -49,7 +49,7 @@ define Package/fstools/config
 		depends on PACKAGE_fstools
 		depends on NAND_SUPPORT
 		bool "Support extroot functionality with UBIFS"
-		default y
+		default n
 		help
 			This option makes it possible to use extroot functionality if the root filesystem resides on an UBIFS partition
 
