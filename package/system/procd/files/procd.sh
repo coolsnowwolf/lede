@@ -384,8 +384,8 @@ procd_get_mountpoints() {
 	) | sort -u
 }
 
-_procd_add_start_mount_trigger() {
-	_procd_add_action_mount_trigger start $(procd_get_mountpoints "$@")
+_procd_add_restart_mount_trigger() {
+	_procd_add_action_mount_trigger restart $(procd_get_mountpoints "$@")
 }
 
 _procd_add_reload_mount_trigger() {
@@ -627,7 +627,7 @@ _procd_wrapper \
 	procd_add_reload_trigger \
 	procd_add_reload_interface_trigger \
 	procd_add_reload_mount_trigger \
-	procd_add_start_mount_trigger \
+	procd_add_restart_mount_trigger \
 	procd_open_trigger \
 	procd_close_trigger \
 	procd_open_instance \
