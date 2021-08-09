@@ -1168,7 +1168,7 @@ wpa_supplicant_set_fixed_freq() {
 	append network_data "frequency=$freq" "$N$T"
 	case "$htmode" in
 		NOHT) append network_data "disable_ht=1" "$N$T";;
-		HT20|VHT20) append network_data "disable_ht40=1" "$N$T";;
+		HE20|HT20|VHT20) append network_data "disable_ht40=1" "$N$T";;
 		HT40*|VHT40*|VHT80*|VHT160*) append network_data "ht40=1" "$N$T";;
 	esac
 	case "$htmode" in
