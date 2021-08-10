@@ -1,8 +1,7 @@
 module("luci.controller.pushbot",package.seeall)
 
 function index()
-
-	if not nixio.fs.access("/etc/config/pushbot")then
+	if not nixio.fs.access("/etc/config/pushbot") then
 		return
 	end
 
