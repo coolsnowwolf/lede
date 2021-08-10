@@ -13,7 +13,7 @@ translate("「全能推送」，英文名「PushBot」，是一款从服务器�
 .. [[</a>]]
 )
 
-m:section(SimpleSection).template  = "pushbot/status"
+m:section(SimpleSection).template  = "pushbot/pushbot_status"
 
 s=m:section(NamedSection,"pushbot","pushbot",translate(""))
 s:tab("basic", translate("基本设置"))
