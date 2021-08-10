@@ -105,6 +105,7 @@ proto_dhcpv6_setup() {
 	[ -n "$iface_464xlat" ] && proto_export "IFACE_464XLAT=$iface_464xlat"
 	[ "$delegate" = "0" ] && proto_export "IFACE_DSLITE_DELEGATE=0"
 	[ "$delegate" = "0" ] && proto_export "IFACE_MAP_DELEGATE=0"
+	[ "$delegate" = "0" ] && proto_export "IFACE_464XLAT_DELEGATE=0"
 	[ -n "$zone_dslite" ] && proto_export "ZONE_DSLITE=$zone_dslite"
 	[ -n "$zone_map" ] && proto_export "ZONE_MAP=$zone_map"
 	[ -n "$zone_464xlat" ] && proto_export "ZONE_464XLAT=$zone_464xlat"
