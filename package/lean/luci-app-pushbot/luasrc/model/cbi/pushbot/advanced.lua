@@ -1,8 +1,8 @@
 local nt = require "luci.sys".net
 local fs=require"nixio.fs"
 
-m=Map("pushbot",translate("提示："),
-translate("如果你不了解这些选项的含义，请不要修改这些选项"))
+m=Map("pushbot",translate("提示"),
+translate("如果你不了解这些选项的含义，请不要修改这些选项。"))
 
 s = m:section(TypedSection, "pushbot", "高级设置")
 s.anonymous = true
