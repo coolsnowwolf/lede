@@ -38,7 +38,6 @@ define Package/ethtool-full
   TITLE += (full)
   VARIANT:=full
   PROVIDES:=ethtool
-  CONFLICTS:=ethtool
   DEPENDS:=+libmnl
 endef
 
