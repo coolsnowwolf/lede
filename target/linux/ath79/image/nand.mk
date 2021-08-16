@@ -204,8 +204,7 @@ define Device/netgear_ath79_nand
   IMAGES := sysupgrade.bin factory.img
   IMAGE/factory.img := append-kernel | append-ubi | netgear-dni | \
 	check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | \
-	check-size
+  IMAGE/sysupgrade.bin := sysupgrade-tar | check-size | append-metadata
   UBINIZE_OPTS := -E 5
 endef
 

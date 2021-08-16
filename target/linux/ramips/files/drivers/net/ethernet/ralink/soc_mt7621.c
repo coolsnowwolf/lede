@@ -88,7 +88,7 @@ static int mt7621_gsw_config(struct fe_priv *priv)
 	return 0;
 }
 
-static void mt7621_fe_reset(void)
+static void mt7621_fe_reset(struct fe_priv *priv)
 {
 	fe_reset(MT7621_RESET_FE);
 }

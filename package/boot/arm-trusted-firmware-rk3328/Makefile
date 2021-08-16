@@ -13,9 +13,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/rockchip-linux/rkbin.git
-PKG_SOURCE_DATE:=2020-10-30
-PKG_SOURCE_VERSION:=0bb1c512492386a72a3a0b5a0e18e49c636577b9
-PKG_MIRROR_HASH:=6dffe95b83f37a280f98c105fce529f45e39ce333b24709a9645aac1352457ce
+PKG_SOURCE_DATE:=2021-06-01
+PKG_SOURCE_VERSION:=7d631e0d5b2d373b54d4533580d08fb9bd2eaad4
+PKG_MIRROR_HASH:=73deb217d7f1dc87bb7a32a1b6855f957aeeb21dca86cdd5840c463683dc0f7d
 
 PKG_MAINTAINER:=AmadeusGhost <amadeus@immortalwrt.org>
 
@@ -36,14 +36,14 @@ define Build/Configure
 endef
 
 define Build/Compile
-	mkimage -n rk3328 -T rksd -d $(PKG_BUILD_DIR)/bin/rk33/rk3328_ddr_333MHz_v1.16.bin $(PKG_BUILD_DIR)/idbloader.bin
+	mkimage -n rk3328 -T rksd -d $(PKG_BUILD_DIR)/bin/rk33/rk3328_ddr_333MHz_v1.17.bin $(PKG_BUILD_DIR)/idbloader.bin
 	cat $(PKG_BUILD_DIR)/bin/rk33/rk322xh_miniloader_v2.50.bin >> $(PKG_BUILD_DIR)/idbloader.bin
-	$(PKG_BUILD_DIR)/tools/trust_merger --replace bl31.elf $(PKG_BUILD_DIR)/bin/rk33/rk322xh_bl31_v1.44.elf $(PKG_BUILD_DIR)/trust.ini
+	$(PKG_BUILD_DIR)/tools/trust_merger --replace bl31.elf $(PKG_BUILD_DIR)/bin/rk33/rk322xh_bl31_v1.46.elf $(PKG_BUILD_DIR)/trust.ini
 endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) -p $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/bin/rk33/rk322xh_bl31_v1.44.elf $(STAGING_DIR_IMAGE)/
+	$(CP) $(PKG_BUILD_DIR)/bin/rk33/rk322xh_bl31_v1.46.elf $(STAGING_DIR_IMAGE)/
 	$(CP) $(PKG_BUILD_DIR)/tools/loaderimage $(STAGING_DIR_IMAGE)/
 	$(CP) $(PKG_BUILD_DIR)/idbloader.bin $(STAGING_DIR_IMAGE)/
 	$(CP) $(PKG_BUILD_DIR)/trust.bin $(STAGING_DIR_IMAGE)/

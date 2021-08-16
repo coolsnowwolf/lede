@@ -1,0 +1,111 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 9 Jan 2021 18:57:51 +0100
+Subject: [PATCH] mac80211: introduce aql_enable node in debugfs
+
+Introduce aql_enable node in debugfs in order to enable/disable aql.
+This is useful for debugging purpose.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/e7a934d5d84e4796c4f97ea5de4e66c824296b07.1610214851.git.lorenzo@kernel.org
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/debugfs.c
++++ b/net/mac80211/debugfs.c
+@@ -281,6 +281,56 @@ static const struct file_operations aql_
+ 	.llseek = default_llseek,
+ };
+ 
++static ssize_t aql_enable_read(struct file *file, char __user *user_buf,
++			       size_t count, loff_t *ppos)
++{
++	char buf[3];
++	int len;
++
++	len = scnprintf(buf, sizeof(buf), "%d\n",
++			!static_key_false(&aql_disable.key));
++
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t aql_enable_write(struct file *file, const char __user *user_buf,
++				size_t count, loff_t *ppos)
++{
++	bool aql_disabled = static_key_false(&aql_disable.key);
++	char buf[3];
++	size_t len;
++
++	if (count > sizeof(buf))
++		return -EINVAL;
++
++	if (copy_from_user(buf, user_buf, count))
++		return -EFAULT;
++
++	buf[sizeof(buf) - 1] = '\0';
++	len = strlen(buf);
++	if (len > 0 && buf[len - 1] == '\n')
++		buf[len - 1] = 0;
++
++	if (buf[0] == '0' && buf[1] == '\0') {
++		if (!aql_disabled)
++			static_branch_inc(&aql_disable);
++	} else if (buf[0] == '1' && buf[1] == '\0') {
++		if (aql_disabled)
++			static_branch_dec(&aql_disable);
++	} else {
++		return -EINVAL;
++	}
++
++	return count;
++}
++
++static const struct file_operations aql_enable_ops = {
++	.write = aql_enable_write,
++	.read = aql_enable_read,
++	.open = simple_open,
++	.llseek = default_llseek,
++};
++
+ static ssize_t force_tx_status_read(struct file *file,
+ 				    char __user *user_buf,
+ 				    size_t count,
+@@ -569,6 +619,7 @@ void debugfs_hw_add(struct ieee80211_loc
+ 	DEBUGFS_ADD(power);
+ 	DEBUGFS_ADD(hw_conf);
+ 	DEBUGFS_ADD_MODE(force_tx_status, 0600);
++	DEBUGFS_ADD_MODE(aql_enable, 0600);
+ 
+ 	if (local->ops->wake_tx_queue)
+ 		DEBUGFS_ADD_MODE(aqm, 0600);
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -1140,6 +1140,8 @@ enum mac80211_scan_state {
+ 	SCAN_ABORT,
+ };
+ 
++DECLARE_STATIC_KEY_FALSE(aql_disable);
++
+ struct ieee80211_local {
+ 	/* embed the driver visible part.
+ 	 * don't cast (use the static inlines below), but we keep
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3887,6 +3887,8 @@ void __ieee80211_schedule_txq(struct iee
+ }
+ EXPORT_SYMBOL(__ieee80211_schedule_txq);
+ 
++DEFINE_STATIC_KEY_FALSE(aql_disable);
++
+ bool ieee80211_txq_airtime_check(struct ieee80211_hw *hw,
+ 				 struct ieee80211_txq *txq)
+ {
+@@ -3896,6 +3898,9 @@ bool ieee80211_txq_airtime_check(struct
+ 	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
+ 		return true;
+ 
++	if (static_branch_unlikely(&aql_disable))
++		return true;
++
+ 	if (!txq->sta)
+ 		return true;
+ 

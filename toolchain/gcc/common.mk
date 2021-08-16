@@ -44,6 +44,10 @@ ifeq ($(PKG_VERSION),10.3.0)
   PKG_HASH:=64f404c1a650f27fc33da242e1f2df54952e3963a49e06e73f6940f3223ac344
 endif
 
+ifeq ($(PKG_VERSION),11.2.0)
+  PKG_HASH:=d08edc536b54c372a1010ff6619dd274c0f1603aa49212ba20f7aa2cda36fa8b
+endif
+
 PATCH_DIR=../patches/$(GCC_VERSION)
 
 BUGURL=http://bugs.openwrt.org/
