@@ -147,6 +147,9 @@ mac80211_hostapd_setup_base() {
 	[ "$noscan" -gt 0 ] && hostapd_noscan=1
 	[ "$tx_burst" = 0 ] && tx_burst=
 
+	chan_ofs=0
+	[ "$band" = "6g" ] && chan_ofs=1
+
 	ieee80211n=1
 	ht_capab=
 	case "$htmode" in
@@ -154,7 +157,7 @@ mac80211_hostapd_setup_base() {
 		HT40*|VHT40|VHT80|VHT160|HE40|HE80|HE160)
 			case "$hwmode" in
 				a)
-					case "$(( ($channel / 4) % 2 ))" in
+					case "$(( (($channel / 4) + $chan_ofs) % 2 ))" in
 						1) ht_capab="[HT40+]";;
 						0) ht_capab="[HT40-]";;
 					esac
@@ -223,8 +226,6 @@ mac80211_hostapd_setup_base() {
 	enable_ac=0
 	vht_oper_chwidth=0
 	vht_center_seg0=
-	chan_ofs=0
-	[ "$band" = "6g" ] && chan_ofs=1
 
 	idx="$channel"
 	case "$htmode" in
