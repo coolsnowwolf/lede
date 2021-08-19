@@ -57,11 +57,11 @@ a:value("3",translate("飞书"))
 a:value("4",translate("Bark"))
 a:value("2",translate("PushPlus"))
 
-a=s:taboption("basic", Value,"dd_webhook",translate('Webhook'), translate("钉钉机器人 Webhook").."<br>调用代码获取<a href='https://ding-doc.dingtalk.com/' target='_blank'>点击这里</a><br><br>")
+a=s:taboption("basic", Value,"dd_webhook",translate('Webhook'), translate("钉钉机器人 Webhook").."<br>调用代码获取<a href='https://developers.dingtalk.com/document/robots/custom-robot-access' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("send_we","")
 
-a=s:taboption("basic", Value, "we_webhook", translate("Webhook"),translate("企业微信机器人 Webhook").."<br>调用代码获取<a href='https://www.baidu.com/s?wd=%E4%BC%81%E4%B8%9A%E5%BE%AE%E4%BF%A1%20%E6%B7%BB%E5%8A%A0%E6%9C%BA%E5%99%A8%E4%BA%BA' target='_blank'>点击这里</a><br><br>")
+a=s:taboption("basic", Value, "we_webhook", translate("Webhook"),translate("企业微信机器人 Webhook").."<br>调用代码获取<a href='https://work.weixin.qq.com/api/doc/90000/90136/91770' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("send_we","1")
 
