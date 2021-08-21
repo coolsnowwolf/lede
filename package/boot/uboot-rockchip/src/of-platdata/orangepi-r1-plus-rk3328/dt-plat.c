@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * DO NOT MODIFY
  *
@@ -16,7 +15,7 @@
 /* Node /clock-controller@ff440000 index 0 */
 static struct dtd_rockchip_rk3328_cru dtv_clock_controller_at_ff440000 = {
 	.reg			= {0xff440000, 0x1000},
-	.rockchip_grf		= 0x37,
+	.rockchip_grf		= 0x3a,
 };
 U_BOOT_DRVINFO(clock_controller_at_ff440000) = {
 	.name		= "rockchip_rk3328_cru",
@@ -75,11 +74,16 @@ static struct dtd_rockchip_rk3288_dw_mshc dtv_mmc_at_ff500000 = {
 	.fifo_depth		= 0x100,
 	.interrupts		= {0x0, 0xc, 0x4},
 	.max_frequency		= 0x8f0d180,
-	.pinctrl_0		= {0x44, 0x45, 0x46, 0x47},
+	.pinctrl_0		= {0x47, 0x48, 0x49, 0x4a},
 	.pinctrl_names		= "default",
 	.reg			= {0xff500000, 0x4000},
+	.sd_uhs_sdr104		= true,
+	.sd_uhs_sdr12		= true,
+	.sd_uhs_sdr25		= true,
+	.sd_uhs_sdr50		= true,
 	.u_boot_spl_fifo_mode	= true,
-	.vmmc_supply		= 0x48,
+	.vmmc_supply		= 0x4b,
+	.vqmmc_supply		= 0x1e,
 };
 U_BOOT_DRVINFO(mmc_at_ff500000) = {
 	.name		= "rockchip_rk3288_dw_mshc",
@@ -97,7 +101,7 @@ static struct dtd_ns16550_serial dtv_serial_at_ff130000 = {
 	.dma_names		= {"tx", "rx"},
 	.dmas			= {0x10, 0x6, 0x10, 0x7},
 	.interrupts		= {0x0, 0x39, 0x4},
-	.pinctrl_0		= 0x23,
+	.pinctrl_0		= 0x26,
 	.pinctrl_names		= "default",
 	.reg			= {0xff130000, 0x100},
 	.reg_io_width		= 0x4,
@@ -110,38 +114,7 @@ U_BOOT_DRVINFO(serial_at_ff130000) = {
 	.parent_idx	= -1,
 };
 
-/* Node /spi@ff190000 index 4 */
-static struct dtd_rockchip_rk3328_spi dtv_spi_at_ff190000 = {
-	.clocks			= {
-			{0, {32}},
-			{0, {209}},},
-	.dma_names		= {"tx", "rx"},
-	.dmas			= {0x10, 0x8, 0x10, 0x9},
-	.interrupts		= {0x0, 0x31, 0x4},
-	.pinctrl_0		= {0x2b, 0x2c, 0x2d, 0x2e},
-	.pinctrl_names		= "default",
-	.reg			= {0xff190000, 0x1000},
-};
-U_BOOT_DRVINFO(spi_at_ff190000) = {
-	.name		= "rockchip_rk3328_spi",
-	.plat	= &dtv_spi_at_ff190000,
-	.plat_size	= sizeof(dtv_spi_at_ff190000),
-	.parent_idx	= -1,
-};
-
-/* Node /spi@ff190000/spiflash@0 index 5 */
-static struct dtd_jedec_spi_nor dtv_spiflash_at_0 = {
-	.reg			= {0x0, 0x0},
-	.spi_max_frequency	= 0x2faf080,
-};
-U_BOOT_DRVINFO(spiflash_at_0) = {
-	.name		= "jedec_spi_nor",
-	.plat	= &dtv_spiflash_at_0,
-	.plat_size	= sizeof(dtv_spiflash_at_0),
-	.parent_idx	= 4,
-};
-
-/* Node /syscon@ff100000 index 6 */
+/* Node /syscon@ff100000 index 4 */
 static struct dtd_rockchip_rk3328_grf dtv_syscon_at_ff100000 = {
 	.reg			= {0xff100000, 0x1000},
 };
@@ -151,3 +124,4 @@ U_BOOT_DRVINFO(syscon_at_ff100000) = {
 	.plat_size	= sizeof(dtv_syscon_at_ff100000),
 	.parent_idx	= -1,
 };
+

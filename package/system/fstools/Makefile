@@ -12,9 +12,9 @@ PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_MIRROR_HASH:=41c9c51d193f5150db67fcd898b6ea904b88476c94cdfd021d81e2711441b430
-PKG_SOURCE_DATE:=2021-05-16
-PKG_SOURCE_VERSION:=3d40a1b591cd569f95891116cd033b496de0f92b
+PKG_MIRROR_HASH:=faa4679562ae31cb6dbbc90b7f3f297294a51f7be1b12d10a5f0b7acfaae7252
+PKG_SOURCE_DATE:=2021-08-14
+PKG_SOURCE_VERSION:=2e3aca299ea7bbe74f219860510c4b34e77c7aa4
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -49,7 +49,7 @@ define Package/fstools/config
 		depends on PACKAGE_fstools
 		depends on NAND_SUPPORT
 		bool "Support extroot functionality with UBIFS"
-		default y
+		default n
 		help
 			This option makes it possible to use extroot functionality if the root filesystem resides on an UBIFS partition
 
