@@ -10,6 +10,7 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	arris,rac2v1a |\
 	askey,rt4230w-rev6 |\
 	askey,rt4230w-rev9.3 |\
 	compex,wpq864 |\
