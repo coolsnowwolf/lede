@@ -1,0 +1,526 @@
+#=================================================
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
+# Lisence: MIT
+# Author: P3TERX
+# Blog: https://p3terx.com
+#=================================================
+
+name: FusionWRT_X86-64
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 16 * * *
+  # release:
+    # types: [published]
+
+env:
+  UPLOAD_BIN_DIR: true
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: true
+  UPLOAD_WETRANSFER: true
+  UPLOAD_RELEASE: true
+  SERVERCHAN_SCKEY: true
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 检查项目分支
+      uses: actions/checkout@main
+
+    - name: 安装编译环境 
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig rsync libtinfo5
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+    - name: 下载固件源码
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+        
+    - name: 加载自定义插件主题
+      run: |
+       cd package
+       rm -rf lean/luci-theme-argon
+       rm -rf lean/luci-app-adbyby-plus
+       mkdir openwrt-packages
+       cd openwrt-packages
+       git clone https://github.com/longcat99/long.git
+       git clone https://github.com/xiaorouji/openwrt-passwall.git
+       # git clone https://github.com/longcat99/helloworld.git
+       git clone https://github.com/fw876/helloworld.git
+       # git clone https://github.com/longcat99/OpenClash.git
+       git clone https://github.com/vernesong/OpenClash.git
+       # git clone https://github.com/frainzy1477/luci-app-clash.git
+       git clone --depth 1 -b oaf-3.0.1 https://github.com/destan19/OpenAppFilter.git
+       git clone https://github.com/jerrykuku/luci-app-ttnode.git
+       git clone https://github.com/linkease/ddnsto-openwrt.git
+       git clone https://github.com/jerrykuku/luci-app-vssr.git
+       # git clone https://github.com/longcat99/luci-app-dnsfilter.git
+       git clone https://github.com/garypang13/luci-app-dnsfilter.git
+       git clone --depth 1 https://github.com/DHDAXCW/smartdns-le
+       # git clone --depth 1 https://github.com/longcat99/smartdns-le
+       # git clone --depth 1 https://github.com/pymumu/smartdns
+       # git clone --depth 1 https://github.com/pymumu/luci-app-smartdns
+       # git clone https://github.com/longcat99/luci-app-bypass.git
+       git clone https://github.com/kuoruan/luci-app-kcptun.git
+       git clone https://github.com/project-lede/luci-app-godproxy.git
+       svn co https://github.com/garypang13/openwrt-packages/trunk/lua-maxminddb
+       svn co https://github.com/MrH723/openwrt-packages/trunk/luci-app-adbyby-plus
+       git clone https://github.com/riverscn/openwrt-iptvhelper.git && mv openwrt-iptvhelper/luci-app-iptvhelper/po/zh_Hans openwrt-iptvhelper/luci-app-iptvhelper/po/zh-cn
+       svn co https://github.com/Lienol/openwrt/trunk/package/network/fullconenat && rm -f fullconenat/patches/000-printk.patch        
+       git clone --depth 1 -b LUCI-LUA-UCITRACK https://github.com/CCnut/feed-netkeeper && mv -n feed-netkeeper/* ./ ; rm -Rf feed-netkeeper
+       git clone https://github.com/immortalwrt/openwrt-gowebdav.git
+       git clone --depth 1 -b 18.06 https://github.com/jerrykuku/luci-theme-argon.git
+       git clone https://github.com/jerrykuku/luci-app-argon-config.git
+       git clone https://github.com/garypang13/luci-app-eqos.git && mv luci-app-eqos/po/zh_Hans luci-app-eqos/po/zh-cn
+       git clone https://github.com/tty228/luci-app-serverchan.git
+       git clone https://github.com/sirpdboy/luci-app-autotimeset.git
+       # git clone https://github.com/sirpdboy/NetSpeedTest
+       svn co https://github.com/Lienol/openwrt-package/trunk/luci-app-nginx-pingos
+       svn co https://github.com/Lienol/openwrt-package/trunk/luci-app-pppoe-server
+       git clone https://github.com/BoringCat/luci-app-mentohust.git
+       
+    - name: 下载插件
+      run: ./scripts/feeds update -a
+
+    - name: 读取插件
+      run: ./scripts/feeds install -a      
+    
+    - name: MOD index file
+      run: |
+         cd $GITHUB_WORKSPACE/package/lean/autocore/files/x86
+         sed -i '/Load Average/i\\t\t<tr><td width="33%"><%:Telegram %></td><td><a href="https://t.me/DHDAXCW"><%:电报交流群%></a></td></tr>' index.htm
+         
+    - name: 固件定制
+      run: |
+          rm -f ./.config*
+          touch ./.config
+          cat >> .config <<EOF
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          CONFIG_TARGET_ROOTFS_TARGZ=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          CONFIG_TARGET_IMAGES_GZIP=y
+          CONFIG_TARGET_KERNEL_PARTSIZE=64
+          CONFIG_TARGET_ROOTFS_PARTSIZE=960
+          CONFIG_EFI_IMAGES=y
+          CONFIG_PACKAGE_dnsmasq_full_dhcpv6=y
+          CONFIG_PACKAGE_ipv6helper=y
+          CONFIG_PACKAGE_fullconenat=y
+          CONFIG_PACKAGE_kmod-fs-f2fs=y
+          CONFIG_PACKAGE_kmod-fs-nfs=y
+          CONFIG_PACKAGE_kmod-fs-nfs-common=y
+          CONFIG_PACKAGE_kmod-fs-nfs-common-rpcsec=y
+          CONFIG_PACKAGE_kmod-fs-nfs-v3=y
+          CONFIG_PACKAGE_kmod-fs-nfs-v4=y
+          CONFIG_PACKAGE_kmod-fs-nfsd=y
+          CONFIG_PACKAGE_kmod-fs-squashfs=y
+          CONFIG_PACKAGE_kmod-usb-ehci=y
+          CONFIG_PACKAGE_kmod-usb-net-aqc111=y
+          CONFIG_PACKAGE_kmod-usb-net-pl=y
+          CONFIG_PACKAGE_kmod-usb-ohci=y
+          CONFIG_PACKAGE_kmod-usb-ohci-pci=y
+          CONFIG_PACKAGE_kmod-usb-printer=y
+          CONFIG_PACKAGE_kmod-usb-serial=y
+          CONFIG_PACKAGE_kmod-usb-uhci=y
+          CONFIG_PACKAGE_kmod-usb-wdm=y
+          CONFIG_PACKAGE_kmod-usb2=y
+          CONFIG_PACKAGE_kmod-usb2-pci=y
+          CONFIG_PACKAGE_kmod-usb3=y
+          CONFIG_PACKAGE_kmod-3c59x=y
+          CONFIG_PACKAGE_kmod-alx=y
+          CONFIG_PACKAGE_kmod-atl1=y
+          CONFIG_PACKAGE_kmod-atl1c=y
+          CONFIG_PACKAGE_kmod-atl1e=y
+          CONFIG_PACKAGE_kmod-atl2=y
+          CONFIG_PACKAGE_kmod-b44=y
+          CONFIG_PACKAGE_kmod-be2net=y
+          CONFIG_PACKAGE_kmod-bnx2x=y
+          CONFIG_PACKAGE_kmod-dm9000=y
+          CONFIG_PACKAGE_kmod-dummy=y
+          CONFIG_PACKAGE_kmod-e100=y
+          CONFIG_PACKAGE_kmod-et131x=y
+          CONFIG_PACKAGE_kmod-ethoc=y
+          CONFIG_PACKAGE_kmod-gigaset=y
+          CONFIG_PACKAGE_kmod-hfcmulti=y
+          CONFIG_PACKAGE_kmod-hfcpci=y
+          CONFIG_PACKAGE_kmod-i40evf=y
+          CONFIG_PACKAGE_kmod-iavf=y
+          CONFIG_PACKAGE_kmod-ifb=y
+          CONFIG_PACKAGE_kmod-ixgbevf=y
+          CONFIG_PACKAGE_kmod-mdio-gpio=y
+          CONFIG_PACKAGE_kmod-natsemi=y
+          CONFIG_PACKAGE_kmod-ne2k-pci=y
+          CONFIG_PACKAGE_kmod-niu=y
+          CONFIG_PACKAGE_kmod-of-mdio=y
+          CONFIG_PACKAGE_kmod-phy-bcm84881=y
+          CONFIG_PACKAGE_kmod-phy-broadcom=y
+          CONFIG_PACKAGE_kmod-phy-realtek=y
+          CONFIG_PACKAGE_kmod-phylink=y
+          CONFIG_PACKAGE_kmod-r6040=y
+          CONFIG_PACKAGE_kmod-r8169=y
+          CONFIG_PACKAGE_kmod-sfc=y
+          CONFIG_PACKAGE_kmod-sfc-falcon=y
+          CONFIG_PACKAGE_kmod-sfp=y
+          CONFIG_PACKAGE_kmod-siit=y
+          CONFIG_PACKAGE_kmod-sis190=y
+          CONFIG_PACKAGE_kmod-sis900=y
+          CONFIG_PACKAGE_kmod-skge=y
+          CONFIG_PACKAGE_kmod-sky2=y
+          CONFIG_PACKAGE_kmod-solos-pci=y
+          CONFIG_PACKAGE_kmod-spi-ks8995=y
+          CONFIG_PACKAGE_kmod-swconfig=y
+          CONFIG_PACKAGE_kmod-switch-bcm53xx=y
+          CONFIG_PACKAGE_kmod-switch-bcm53xx-mdio=y
+          CONFIG_PACKAGE_kmod-switch-ip17xx=y
+          CONFIG_PACKAGE_kmod-switch-mvsw61xx=y
+          CONFIG_PACKAGE_kmod-switch-rtl8306=y
+          CONFIG_PACKAGE_kmod-switch-rtl8366-smi=y
+          CONFIG_PACKAGE_kmod-switch-rtl8366rb=y
+          CONFIG_PACKAGE_kmod-switch-rtl8366s=y
+          CONFIG_PACKAGE_kmod-switch-rtl8367b=y
+          CONFIG_PACKAGE_kmod-tg3=y
+          CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+          CONFIG_PACKAGE_kmod-via-rhine=y
+          CONFIG_PACKAGE_kmod-via-velocity=y
+          CONFIG_PACKAGE_kmod-sched-connmark=y
+          CONFIG_PACKAGE_kmod-sched=y
+          CONFIG_PACKAGE_kmod-ipt-hashlimit=y
+          CONFIG_BRCMFMAC_PCIE=y
+          CONFIG_BRCMFMAC_USB=y
+          CONFIG_DRIVER_11AX_SUPPORT=y
+          CONFIG_DRIVER_WEXT_SUPPORT=y
+          CONFIG_PACKAGE_ath10k-board-qca988x=y
+          CONFIG_PACKAGE_ath10k-board-qca99x0=y
+          CONFIG_PACKAGE_ath10k-firmware-qca9888=y
+          CONFIG_PACKAGE_ath10k-firmware-qca9888-ct=y
+          CONFIG_PACKAGE_ath10k-firmware-qca9888-ct-full-htt=y
+          CONFIG_PACKAGE_ath10k-firmware-qca9888-ct-htt=y
+          CONFIG_PACKAGE_ath10k-firmware-qca988x=y
+          CONFIG_PACKAGE_ath10k-firmware-qca988x-ct=y
+          CONFIG_PACKAGE_ath10k-firmware-qca988x-ct-full-htt=y
+          CONFIG_PACKAGE_ath10k-firmware-qca99x0=y
+          CONFIG_PACKAGE_ath10k-firmware-qca99x0-ct=y 
+          CONFIG_PACKAGE_ath10k-firmware-qca99x0-ct-full-htt=y
+          CONFIG_PACKAGE_ath10k-firmware-qca99x0-ct-htt=y
+          
+          CONFIG_PACKAGE_luci-app-accesscontrol=y
+          CONFIG_PACKAGE_luci-app-adbyby-plus=y
+          CONFIG_PACKAGE_luci-app-adguardhome=y
+          CONFIG_PACKAGE_luci-app-advanced-reboot=y
+          CONFIG_PACKAGE_luci-app-aliddns=y
+          CONFIG_PACKAGE_luci-app-argon-config=y
+          CONFIG_PACKAGE_luci-app-aria2=y
+          CONFIG_PACKAGE_luci-app-arpbind=y
+          CONFIG_PACKAGE_luci-app-autotimeset=y
+          CONFIG_PACKAGE_luci-app-autoreboot=y
+          CONFIG_PACKAGE_luci-app-baidupcs-web=y
+          CONFIG_PACKAGE_luci-app-brook-server=y
+          CONFIG_PACKAGE_luci-app-cifs-mount=y
+          CONFIG_PACKAGE_luci-app-commands=y
+          CONFIG_PACKAGE_luci-app-clash=y
+          CONFIG_PACKAGE_ddnsto=y
+          CONFIG_PACKAGE_luci-app-ddnsto=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_luci-app-diag-core=y
+          CONFIG_PACKAGE_luci-app-diskman=y
+          CONFIG_PACKAGE_luci-app-diskman_INCLUDE_lsblk=y
+          CONFIG_PACKAGE_luci-app-diskman_INCLUDE_mdadm=y
+          CONFIG_PACKAGE_luci-app-dnsforwarder=y
+          CONFIG_PACKAGE_luci-app-eqos=y
+          CONFIG_PACKAGE_luci-app-fileassistant=y
+          CONFIG_PACKAGE_luci-app-filebrowser=y
+          CONFIG_PACKAGE_luci-app-filetransfer=y
+          CONFIG_PACKAGE_luci-app-firewall=y
+          CONFIG_PACKAGE_luci-app-frpc=y
+          CONFIG_PACKAGE_luci-app-frps=y
+          CONFIG_PACKAGE_luci-app-gowebdav=y
+          CONFIG_PACKAGE_luci-app-haproxy-tcp=y
+          CONFIG_PACKAGE_luci-app-hd-idle=y
+          CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+          CONFIG_PACKAGE_luci-app-iptvhelper=y
+          CONFIG_PACKAGE_iptvhelper=y
+          CONFIG_PACKAGE_luci-app-jd-dailybonus=y
+          CONFIG_PACKAGE_luci-app-kcptun=y
+          CONFIG_PACKAGE_luci-app-kodexplorer=y
+          CONFIG_PACKAGE_luci-app-godproxy=y
+          CONFIG_PACKAGE_LingTiGameAcc=y
+          CONFIG_PACKAGE_luci-app-LingTiGameAcc=y
+          CONFIG_PACKAGE_luci-app-meshwizard=y
+          CONFIG_PACKAGE_luci-app-minidlna=y
+          CONFIG_PACKAGE_luci-app-music-remote-center=y
+          CONFIG_PACKAGE_luci-app-mwan3=y
+          CONFIG_PACKAGE_luci-app-mwan3helper=y
+          CONFIG_PACKAGE_luci-app-mentohust=y
+          CONFIG_PACKAGE_luci-app-n2n_v2=y
+          CONFIG_PACKAGE_luci-app-naiveproxy=y
+          CONFIG_PACKAGE_luci-app-netdata-zh=y
+          CONFIG_PACKAGE_luci-app-nfs=y
+          CONFIG_PACKAGE_luci-app-nps=y
+          CONFIG_PACKAGE_luci-app-nginx-pingos=y
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+          CONFIG_PACKAGE_luci-app-netkeeper-interception=y
+          CONFIG_PACKAGE_luci-app-ntpc=y
+          CONFIG_PACKAGE_luci-app-netspeedtest=y
+          CONFIG_PACKAGE_speedtest=y
+          CONFIG_PACKAGE_luci-app-ocserv=y
+          CONFIG_PACKAGE_luci-app-omcproxy=y
+          CONFIG_PACKAGE_luci-app-openclash=y
+          CONFIG_PACKAGE_luci-app-openvpn-server=y
+          CONFIG_PACKAGE_luci-app-openvpn=y
+          CONFIG_PACKAGE_luci-app-oscam=y
+          CONFIG_PACKAGE_oscam=y
+          CONFIG_PACKAGE_tvheadend=y
+          CONFIG_PACKAGE_luci-app-p910nd=y
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Server=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ShadowsocksR=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ShadowsocksR_Server=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_GO=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Brook=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_kcptun=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_haproxy=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ChinaDNS_NG=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_dns2socks=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_v2ray-plugin=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_simple-obfs=y
+          CONFIG_PACKAGE_luci-app-pptp-vpnserver=y
+          CONFIG_PACKAGE_luci-app-qbittorrent=y
+          CONFIG_PACKAGE_luci-app-qbittorrent_static=y          
+          CONFIG_PACKAGE_luci-app-ramfree=y
+          CONFIG_PACKAGE_luci-app-rclone=y
+          CONFIG_PACKAGE_luci-app-rclone_INCLUDE_rclone-webui=y
+          CONFIG_PACKAGE_luci-app-rclone_INCLUDE_rclone-ng=y
+          CONFIG_PACKAGE_luci-app-rclone_INCLUDE_fuse-utils=y
+          CONFIG_PACKAGE_luci-app-pppoe-server=y
+          CONFIG_PACKAGE_luci-app-samba=y
+          CONFIG_PACKAGE_luci-app-serverchan=y
+          CONFIG_PACKAGE_luci-app-turboacc=y
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_luci-app-socat=y
+          CONFIG_PACKAGE_luci-app-softethervpn=y
+          CONFIG_PACKAGE_luci-app-ssr-libev-server=y
+          CONFIG_PACKAGE_luci-app-ssr-mudb-server=y
+          CONFIG_PACKAGE_luci-app-ssr-plus=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Kcptun=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_NaiveProxy=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Redsocks2=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Server=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Rust=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Rust_Server=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_ShadowsocksR=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_ShadowsocksR_Server=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Simple_Obfs=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Trojan=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_V2ray_Plugin=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-ssrserver-python=y
+          CONFIG_PACKAGE_luci-app-statistics=y
+          CONFIG_PACKAGE_luci-app-syncdial=y
+          CONFIG_PACKAGE_luci-app-tencentddns=y
+          CONFIG_PACKAGE_luci-app-tinyproxy=y
+          CONFIG_PACKAGE_luci-app-transmission=y
+          CONFIG_PACKAGE_luci-app-trojan-server=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-app-udpxy=y
+          CONFIG_PACKAGE_luci-app-uhttpd=y
+          CONFIG_PACKAGE_luci-app-unblockmusic=y
+          CONFIG_UnblockNeteaseMusic_Go=y
+          CONFIG_UnblockNeteaseMusic_NodeJS=y
+          CONFIG_PACKAGE_luci-app-upnp=y
+          CONFIG_PACKAGE_luci-app-usb-printer=y
+          CONFIG_PACKAGE_luci-app-uugamebooster=y
+          CONFIG_PACKAGE_luci-app-v2ray-server=y
+          CONFIG_PACKAGE_luci-app-verysync=y
+          CONFIG_PACKAGE_luci-app-vlmcsd=y
+          CONFIG_PACKAGE_luci-app-vsftpd=y
+          CONFIG_PACKAGE_luci-app-vssr=y
+          CONFIG_PACKAGE_luci-app-vssr_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-vssr_INCLUDE_Trojan=y
+          CONFIG_PACKAGE_luci-app-vssr_INCLUDE_Kcptun=y
+          CONFIG_PACKAGE_luci-app-vssr_INCLUDE_Xray_plugin=y
+          CONFIG_PACKAGE_luci-app-vssr_INCLUDE_ShadowsocksR_Server=y
+          CONFIG_PACKAGE_luci-app-webadmin=y
+          CONFIG_PACKAGE_luci-app-wireguard=y
+          CONFIG_PACKAGE_luci-app-wol=y
+          CONFIG_PACKAGE_luci-app-wrtbwmon=y
+          CONFIG_PACKAGE_luci-app-xlnetacc=y
+          CONFIG_PACKAGE_luci-app-zerotier=y
+          EOF
+          # LuCI主题:
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_luci-theme-argon=y
+          # CONFIG_PACKAGE_luci-theme-argon-lean=y
+          # CONFIG_PACKAGE_luci-theme-netgear=y
+          CONFIG_PACKAGE_luci-theme-bootstrap=y
+          CONFIG_PACKAGE_luci-theme-freifunk-generic=y
+          # CONFIG_PACKAGE_luci-theme-argon-leanimg=y
+          CONFIG_PACKAGE_luci-theme-material=y
+          CONFIG_PACKAGE_luci-theme-opentomcat=y
+          CONFIG_PACKAGE_luci-theme-opentomato=y
+          CONFIG_PACKAGE_luci-theme-opentopd=y
+          CONFIG_PACKAGE_luci-theme-edge=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_iperf3=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_screen=y
+          CONFIG_PACKAGE_tree=y
+          CONFIG_PACKAGE_vim-fuller=y
+          CONFIG_PACKAGE_wget=y
+          CONFIG_PACKAGE_zsh=y
+          CONFIG_PACKAGE_cfdisk=y
+          CONFIG_VMDK_IMAGES=y
+          EOF
+          sed -i 's/^[ \t]*//g' ./.config
+          make defconfig
+          chmod +x scripts/*.sh
+          ./scripts/preset-clash-core.sh amd64
+          ./scripts/preset-terminal-tools.sh
+    - name: 修改自定义配置
+      run: |
+        # 修改内核为5.4
+        sed -i 's/KERNEL_PATCHVER:=5.10/KERNEL_PATCHVER:=5.4/g' target/linux/x86/Makefile
+        sed -i 's/KERNEL_TESTING_PATCHVER:=5.10/KERNEL_TESTING_PATCHVER:=5.4/g' target/linux/x86/Makefile
+        sed -i 's/192.168.1.1/192.168.2.1/g' package/base-files/files/bin/config_generate
+        sed -i '/uci commit system/i\uci set system.@system[0].hostname='FusionWRT'' package/lean/default-settings/files/zzz-default-settings
+        sed -i "s/OpenWrt /DHDAXCW build $(TZ=UTC-8 date "+%Y%m%d") @FusionWRT  /g" package/lean/default-settings/files/zzz-default-settings
+        sed -i 's/"网络存储"/"存储"/g' package/lean/luci-app-vsftpd/po/zh-cn/vsftpd.po
+        sed -i 's/"网络存储"/"存储"/g' package/lean/luci-app-usb-printer/po/zh-cn/usb-printer.po
+        sed -i 's/"BaiduPCS Web"/"百度网盘"/g' package/lean/luci-app-baidupcs-web/luasrc/controller/baidupcs-web.lua
+        sed -i 's/"带宽监控"/"带宽"/g' feeds/luci/applications/luci-app-nlbwmon/po/zh-cn/nlbwmon.po
+        sed -i 's/"实时流量监测"/"流量"/g' package/lean/luci-app-wrtbwmon/po/zh-cn/wrtbwmon.po
+        # 修改luci-app-ddns导航菜单位置
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/controller/ddns.lua" | xargs -i sed -i 's/\"services\"/\"ddns\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/model/cbi/ddns/detail.lua" | xargs -i sed -i 's/\"services\"/\"ddns\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/model/cbi/ddns/global.lua" | xargs -i sed -i 's/\"services\"/\"ddns\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/model/cbi/ddns/hints.lua" | xargs -i sed -i 's/\"services\"/\"ddns\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/model/cbi/ddns/overview.lua" | xargs -i sed -i 's/\"services\"/\"ddns\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/view/ddns/detail_logview.htm" | xargs -i sed -i 's/services/ddns/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/view/ddns/overview_status.htm" | xargs -i sed -i 's/services/ddns/g' {}
+        find package/*/ feeds/*/ -maxdepth 8 -path "*luci-app-ddns/luasrc/view/ddns/system_status.htm" | xargs -i sed -i 's/services/ddns/g' {}
+        # 修改luci-app-v2ray-server导航菜单位置到vpn
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-v2ray-server/luasrc/controller/v2ray_server.lua" | xargs -i sed -i 's/\"services\"/\"vpn\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-v2ray-server/luasrc/model/cbi/v2ray_server/index.lua" | xargs -i sed -i 's/\"services\"/\"vpn\"/g' {}
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-v2ray-server/luasrc/model/cbi/v2ray_server/user.lua" | xargs -i sed -i 's/\"services\"/\"vpn\"/g' {}       
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-frpc/luasrc/controller/frp.lua" | xargs -i sed -i 's/\"Frp Setting\")\, 100/\"Frp Setting\")\, 95/g' {}
+        find package/*/ feeds/*/ -maxdepth 5 -path "*lean/luci-app-frps/luasrc/controller/frps.lua" | xargs -i sed -i 's/\"Frps\"))/\"Frps\")\, 95)/g' {}
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-nps/luasrc/controller/nps.lua" | xargs -i sed -i 's/\"Nps Setting\")\, 100/\"Nps Setting\")\, 94/g' {}
+        find package/*/ feeds/*/ -maxdepth 5 -path "*luci-app-pppoe-server/luasrc/controller/pppoe-server.lua" | xargs -i sed -i 's/\"PPPoE Server\")\, 3/\"PPPoE Server\")\, 5/g' {}
+    - name: 下载安装包
+      id: package
+      run: |
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+        
+    - name: 开始编译固件
+      id: compile
+      run: |
+        echo -e "$(nproc) thread compile"
+        curl https://sc.ftqq.com/${{ secrets.SCKEY }}.send?text=开始编译OpenWrt-5.4Docker内核固件&desp=${{ env.DEVICE_NAME }}
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "::set-output name=status::success"
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+        echo "FILE_TIME=$(date "+%Y年%m月%d日-%H点")" >> $GITHUB_ENV
+    - name: 查看磁盘使用情况
+      if: (!cancelled())
+      run: df -hT
+
+    - name: 上传bin压缩目录
+      uses: actions/upload-artifact@main
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: bin/packages/x86_64
+
+    - name: 整理编译好的固件
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd bin/targets/*/*
+        rm -rf packages && mkdir packages
+        find -name "*esxi-flat.vmdk*" | xargs -i mv -f {} packages
+        find -name "*kernel.bin*" | xargs -i mv -f {} packages
+        find -name "*rootfs*" | xargs -i mv -f {} packages
+        find -name "*.manifest*" | xargs -i mv -f {} packages
+        find -name "*vmlinuz*" | xargs -i mv -f {} packages
+        find -name "*esxi.vmdk*" | xargs -i mv -f {} packages
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "::set-output name=status::success"
+    - name: Upload firmware to GitHub
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: FusionWrt-DHDAXCW-5.10${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Upload firmware to CowTransfer
+      id: cowtransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
+        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
+        echo "::set-output name=url::$(cat cowtransfer.log | grep https | cut -f3 -d" ")"
+        
+    - name: Uploade firmware to WeTransfer
+      id: wetransfer
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
+        echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
+        echo "::set-output name=url::$(cat wetransfer.log | grep https | cut -f3 -d" ")"
+        
+    - name: 创建release标签
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
+        touch release.txt
+        [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [国内NN网盘](${{ steps.cowtransfer.outputs.url }})" >> release.txt
+        [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [国外WT网盘](${{ steps.wetransfer.outputs.url }})" >> release.txt
+        echo "::set-output name=status::success"
+    - name: 发布至release
+      uses: softprops/action-gh-release@v1
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        name: ${{ env.FILE_TIME }} 「 FusionWRT-5.4-X86-64 」
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    - name: 删除旧的Releases
+      uses: dev-drprasad/delete-older-releases@v0.1.0
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 7
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
