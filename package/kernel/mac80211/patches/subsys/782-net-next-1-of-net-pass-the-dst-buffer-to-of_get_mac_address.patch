@@ -1,0 +1,237 @@
+From 83216e3988cd196183542937c9bd58b279f946af Mon Sep 17 00:00:00 2001
+From: Michael Walle <michael@walle.cc>
+Date: Mon, 12 Apr 2021 19:47:17 +0200
+Subject: of: net: pass the dst buffer to of_get_mac_address()
+
+of_get_mac_address() returns a "const void*" pointer to a MAC address.
+Lately, support to fetch the MAC address by an NVMEM provider was added.
+But this will only work with platform devices. It will not work with
+PCI devices (e.g. of an integrated root complex) and esp. not with DSA
+ports.
+
+There is an of_* variant of the nvmem binding which works without
+devices. The returned data of a nvmem_cell_read() has to be freed after
+use. On the other hand the return of_get_mac_address() points to some
+static data without a lifetime. The trick for now, was to allocate a
+device resource managed buffer which is then returned. This will only
+work if we have an actual device.
+
+Change it, so that the caller of of_get_mac_address() has to supply a
+buffer where the MAC address is written to. Unfortunately, this will
+touch all drivers which use the of_get_mac_address().
+
+Usually the code looks like:
+
+  const char *addr;
+  addr = of_get_mac_address(np);
+  if (!IS_ERR(addr))
+    ether_addr_copy(ndev->dev_addr, addr);
+
+This can then be simply rewritten as:
+
+  of_get_mac_address(np, ndev->dev_addr);
+
+Sometimes is_valid_ether_addr() is used to test the MAC address.
+of_get_mac_address() already makes sure, it just returns a valid MAC
+address. Thus we can just test its return code. But we have to be
+careful if there are still other sources for the MAC address before the
+of_get_mac_address(). In this case we have to keep the
+is_valid_ether_addr() call.
+
+The following coccinelle patch was used to convert common cases to the
+new style. Afterwards, I've manually gone over the drivers and fixed the
+return code variable: either used a new one or if one was already
+available use that. Mansour Moufid, thanks for that coccinelle patch!
+
+<spml>
+@a@
+identifier x;
+expression y, z;
+@@
+- x = of_get_mac_address(y);
++ x = of_get_mac_address(y, z);
+  <...
+- ether_addr_copy(z, x);
+  ...>
+
+@@
+identifier a.x;
+@@
+- if (<+... x ...+>) {}
+
+@@
+identifier a.x;
+@@
+  if (<+... x ...+>) {
+      ...
+  }
+- else {}
+
+@@
+identifier a.x;
+expression e;
+@@
+- if (<+... x ...+>@e)
+-     {}
+- else
++ if (!(e))
+      {...}
+
+@@
+expression x, y, z;
+@@
+- x = of_get_mac_address(y, z);
++ of_get_mac_address(y, z);
+  ... when != x
+</spml>
+
+All drivers, except drivers/net/ethernet/aeroflex/greth.c, were
+compile-time tested.
+
+Suggested-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Michael Walle <michael@walle.cc>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ arch/arm/mach-mvebu/kirkwood.c                     |  3 +-
+ arch/powerpc/sysdev/tsi108_dev.c                   |  5 +-
+ drivers/net/ethernet/aeroflex/greth.c              |  6 +--
+ drivers/net/ethernet/allwinner/sun4i-emac.c        | 10 ++--
+ drivers/net/ethernet/altera/altera_tse_main.c      |  7 +--
+ drivers/net/ethernet/arc/emac_main.c               |  8 +--
+ drivers/net/ethernet/atheros/ag71xx.c              |  7 +--
+ drivers/net/ethernet/broadcom/bcm4908_enet.c       |  7 +--
+ drivers/net/ethernet/broadcom/bcmsysport.c         |  7 +--
+ drivers/net/ethernet/broadcom/bgmac-bcma.c         | 10 ++--
+ drivers/net/ethernet/broadcom/bgmac-platform.c     | 11 ++--
+ drivers/net/ethernet/cadence/macb_main.c           | 11 ++--
+ drivers/net/ethernet/cavium/octeon/octeon_mgmt.c   |  8 +--
+ drivers/net/ethernet/cavium/thunder/thunder_bgx.c  |  5 +-
+ drivers/net/ethernet/davicom/dm9000.c              | 10 ++--
+ drivers/net/ethernet/ethoc.c                       |  6 +--
+ drivers/net/ethernet/ezchip/nps_enet.c             |  7 +--
+ drivers/net/ethernet/freescale/fec_main.c          |  7 +--
+ drivers/net/ethernet/freescale/fec_mpc52xx.c       |  7 +--
+ drivers/net/ethernet/freescale/fman/mac.c          |  9 ++--
+ .../net/ethernet/freescale/fs_enet/fs_enet-main.c  |  5 +-
+ drivers/net/ethernet/freescale/gianfar.c           |  8 +--
+ drivers/net/ethernet/freescale/ucc_geth.c          |  5 +-
+ drivers/net/ethernet/hisilicon/hisi_femac.c        |  7 +--
+ drivers/net/ethernet/hisilicon/hix5hd2_gmac.c      |  7 +--
+ drivers/net/ethernet/lantiq_xrx200.c               |  7 +--
+ drivers/net/ethernet/marvell/mv643xx_eth.c         |  5 +-
+ drivers/net/ethernet/marvell/mvneta.c              |  6 +--
+ .../net/ethernet/marvell/prestera/prestera_main.c  | 11 ++--
+ drivers/net/ethernet/marvell/pxa168_eth.c          |  9 +---
+ drivers/net/ethernet/marvell/sky2.c                |  8 ++-
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c        | 11 ++--
+ drivers/net/ethernet/micrel/ks8851_common.c        |  7 ++-
+ drivers/net/ethernet/microchip/lan743x_main.c      |  5 +-
+ drivers/net/ethernet/nxp/lpc_eth.c                 |  4 +-
+ drivers/net/ethernet/qualcomm/qca_spi.c            | 10 ++--
+ drivers/net/ethernet/qualcomm/qca_uart.c           |  9 +---
+ drivers/net/ethernet/renesas/ravb_main.c           | 12 +++--
+ drivers/net/ethernet/renesas/sh_eth.c              |  5 +-
+ .../net/ethernet/samsung/sxgbe/sxgbe_platform.c    | 13 ++---
+ drivers/net/ethernet/socionext/sni_ave.c           | 10 ++--
+ .../net/ethernet/stmicro/stmmac/dwmac-anarion.c    |  2 +-
+ .../ethernet/stmicro/stmmac/dwmac-dwc-qos-eth.c    |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-generic.c    |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-imx.c    |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-intel-plat.c |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-ipq806x.c    |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-lpc18xx.c    |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-mediatek.c   |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-meson.c  |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-meson8b.c    |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-oxnas.c  |  2 +-
+ .../ethernet/stmicro/stmmac/dwmac-qcom-ethqos.c    |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-rk.c     |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-socfpga.c    |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-sti.c    |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c  |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-sun8i.c  |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/dwmac-sunxi.c  |  2 +-
+ .../net/ethernet/stmicro/stmmac/dwmac-visconti.c   |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/stmmac.h       |  2 +-
+ drivers/net/ethernet/stmicro/stmmac/stmmac_main.c  |  2 +-
+ .../net/ethernet/stmicro/stmmac/stmmac_platform.c  | 14 ++---
+ .../net/ethernet/stmicro/stmmac/stmmac_platform.h  |  2 +-
+ drivers/net/ethernet/ti/am65-cpsw-nuss.c           | 19 ++++---
+ drivers/net/ethernet/ti/cpsw.c                     |  7 +--
+ drivers/net/ethernet/ti/cpsw_new.c                 |  7 +--
+ drivers/net/ethernet/ti/davinci_emac.c             |  8 +--
+ drivers/net/ethernet/ti/netcp_core.c               |  7 +--
+ drivers/net/ethernet/wiznet/w5100-spi.c            |  8 ++-
+ drivers/net/ethernet/wiznet/w5100.c                |  2 +-
+ drivers/net/ethernet/xilinx/ll_temac_main.c        |  8 +--
+ drivers/net/ethernet/xilinx/xilinx_axienet_main.c  | 15 +++---
+ drivers/net/ethernet/xilinx/xilinx_emaclite.c      |  8 +--
+ drivers/net/wireless/ath/ath9k/init.c              |  5 +-
+ drivers/net/wireless/mediatek/mt76/eeprom.c        |  9 +---
+ drivers/net/wireless/ralink/rt2x00/rt2x00dev.c     |  6 +--
+ drivers/of/of_net.c                                | 60 ++++++++++------------
+ drivers/staging/octeon/ethernet.c                  | 10 ++--
+ drivers/staging/wfx/main.c                         |  7 ++-
+ include/linux/of_net.h                             |  6 +--
+ include/net/dsa.h                                  |  2 +-
+ net/dsa/dsa2.c                                     |  2 +-
+ net/dsa/slave.c                                    |  2 +-
+ net/ethernet/eth.c                                 | 11 ++--
+ 85 files changed, 218 insertions(+), 364 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath9k/init.c
++++ b/drivers/net/wireless/ath/ath9k/init.c
+@@ -618,7 +618,6 @@ static int ath9k_of_init(struct ath_soft
+ 	struct ath_hw *ah = sc->sc_ah;
+ 	struct ath_common *common = ath9k_hw_common(ah);
+ 	enum ath_bus_type bus_type = common->bus_ops->ath_bus_type;
+-	const char *mac;
+ 	char eeprom_name[100];
+ 	int ret;
+ 
+@@ -641,9 +640,7 @@ static int ath9k_of_init(struct ath_soft
+ 		ah->ah_flags |= AH_NO_EEP_SWAP;
+ 	}
+ 
+-	mac = of_get_mac_address(np);
+-	if (!IS_ERR(mac))
+-		ether_addr_copy(common->macaddr, mac);
++	of_get_mac_address(np, common->macaddr);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/wireless/mediatek/mt76/eeprom.c
++++ b/drivers/net/wireless/mediatek/mt76/eeprom.c
+@@ -90,15 +90,9 @@ out_put_node:
+ void
+ mt76_eeprom_override(struct mt76_dev *dev)
+ {
+-#ifdef CONFIG_OF
+ 	struct device_node *np = dev->dev->of_node;
+-	const u8 *mac = NULL;
+ 
+-	if (np)
+-		mac = of_get_mac_address(np);
+-	if (!IS_ERR_OR_NULL(mac))
+-		ether_addr_copy(dev->macaddr, mac);
+-#endif
++	of_get_mac_address(np, dev->macaddr);
+ 
+ 	if (!is_valid_ether_addr(dev->macaddr)) {
+ 		eth_random_addr(dev->macaddr);
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00dev.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00dev.c
+@@ -990,11 +990,7 @@ static void rt2x00lib_rate(struct ieee80
+ 
+ void rt2x00lib_set_mac_address(struct rt2x00_dev *rt2x00dev, u8 *eeprom_mac_addr)
+ {
+-	const char *mac_addr;
+-
+-	mac_addr = of_get_mac_address(rt2x00dev->dev->of_node);
+-	if (!IS_ERR(mac_addr))
+-		ether_addr_copy(eeprom_mac_addr, mac_addr);
++	of_get_mac_address(rt2x00dev->dev->of_node, eeprom_mac_addr);
+ 
+ 	if (!is_valid_ether_addr(eeprom_mac_addr)) {
+ 		eth_random_addr(eeprom_mac_addr);
