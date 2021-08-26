@@ -385,15 +385,11 @@ procd_get_mountpoints() {
 }
 
 _procd_add_restart_mount_trigger() {
-	local mountpoints="$(procd_get_mountpoints "$@")"
-	[ "${mountpoints//[[:space:]]}" ] &&
-		_procd_add_action_mount_trigger restart $mountpoints
+	_procd_add_action_mount_trigger restart $(procd_get_mountpoints "$@")
 }
 
 _procd_add_reload_mount_trigger() {
-	local mountpoints="$(procd_get_mountpoints "$@")"
-	[ "${mountpoints//[[:space:]]}" ] &&
-		_procd_add_action_mount_trigger reload $mountpoints
+	_procd_add_action_mount_trigger reload $(procd_get_mountpoints "$@")
 }
 
 _procd_add_raw_trigger() {
