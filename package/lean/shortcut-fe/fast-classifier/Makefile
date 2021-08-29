@@ -1,3 +1,17 @@
+#
+# Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+# Permission to use, copy, modify, and/or distribute this software for
+# any purpose with or without fee is hereby granted, provided that the
+# above copyright notice and this permission notice appear in all copies.
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+# OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+#
+ 
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
@@ -14,7 +28,10 @@ define KernelPackage/$(PKG_NAME)/Default
   DEPENDS:=+kmod-ipt-conntrack +kmod-shortcut-fe
   TITLE:=Kernel driver for FAST Classifier
   FILES:=$(PKG_BUILD_DIR)/fast-classifier.ko
-  KCONFIG:=CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y CONFIG_NF_CONNTRACK_MARK=y
+  KCONFIG:=CONFIG_NF_CONNTRACK_EVENTS=y \
+  	   CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y \
+  	   CONFIG_NF_CONNTRACK_MARK=y \
+  	   CONFIG_XFRM=y
   PROVIDES:=$(PKG_NAME)
 endef
 
@@ -51,6 +68,10 @@ classifier kernel module
 endef
 
 SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=$(if $(CONFIG_IPV6),y,n)
+
+ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard),)
+	EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y"
+endif
 
 define Build/Compile/kmod
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(SFE_MAKE_OPTS) \
