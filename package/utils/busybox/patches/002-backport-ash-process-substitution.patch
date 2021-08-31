@@ -1,0 +1,77 @@
+Stacy Harper reports that this script:
+
+   test() { . /tmp/bb_test; }
+   echo "export TEST=foo" >/tmp/bb_test
+   test 2>/dev/null
+   echo "$TEST"
+
+correctly prints 'foo' in BusyBox 1.33 but hangs in 1.34.
+
+Bisection suggested the problem was caused by commit a1b0d3856 (ash: add
+process substitution in bash-compatibility mode).  Removing the call to
+unwindredir() in cmdloop() introduced in that commit makes the script
+work again.
+
+Additionally, these examples of process substitution:
+
+   while true; do cat <(echo hi); done
+   f() { while true; do cat <(echo hi); done }
+   f
+
+result in running out of file descriptors.  This is a regression from
+v5 of the process substitution patch caused by changes to evalcommand()
+not being transferred to v6.
+
+function                                             old     new   delta
+static.pushredir                                       -      99     +99
+evalcommand                                         1729    1750     +21
+exitreset                                             69      86     +17
+cmdloop                                              372     365      -7
+unwindredir                                           28       -     -28
+pushredir                                            112       -    -112
+------------------------------------------------------------------------------
+(add/remove: 1/2 grow/shrink: 2/1 up/down: 137/-147)          Total: -10 bytes
+
+Signed-off-by: Ron Yorston <rmy at pobox.com>
+---
+ shell/ash.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/shell/ash.c b/shell/ash.c
+index b5947147a..53c140930 100644
+--- a/shell/ash.c
++++ b/shell/ash.c
+@@ -10278,6 +10278,9 @@ evalcommand(union node *cmd, int flags)
+ 
+ 	/* First expand the arguments. */
+ 	TRACE(("evalcommand(0x%lx, %d) called\n", (long)cmd, flags));
++#if BASH_PROCESS_SUBST
++	redir_stop = redirlist;
++#endif
+ 	file_stop = g_parsefile;
+ 	back_exitstatus = 0;
+ 
+@@ -10356,7 +10359,11 @@ evalcommand(union node *cmd, int flags)
+ 		lastarg = nargv[-1];
+ 
+ 	expredir(cmd->ncmd.redirect);
++#if !BASH_PROCESS_SUBST
+ 	redir_stop = pushredir(cmd->ncmd.redirect);
++#else
++	pushredir(cmd->ncmd.redirect);
++#endif
+ 	preverrout_fd = 2;
+ 	if (BASH_XTRACEFD && xflag) {
+ 		/* NB: bash closes fd == $BASH_XTRACEFD when it is changed.
+@@ -13476,9 +13483,6 @@ cmdloop(int top)
+ #if JOBS
+ 		if (doing_jobctl)
+ 			showjobs(SHOW_CHANGED|SHOW_STDERR);
+-#endif
+-#if BASH_PROCESS_SUBST
+-		unwindredir(NULL);
+ #endif
+ 		inter = 0;
+ 		if (iflag && top) {
+-- 
+2.31.1
