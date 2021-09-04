@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ethtool
 PKG_VERSION:=5.13
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
@@ -31,6 +31,7 @@ define Package/ethtool
   TITLE:=Display or change ethernet card settings
   URL:=http://www.kernel.org/pub/software/network/ethtool/
   VARIANT:=tiny
+  CONFLICTS:=ethtool-full
 endef
 
 define Package/ethtool-full
@@ -39,6 +40,7 @@ define Package/ethtool-full
   VARIANT:=full
   PROVIDES:=ethtool
   DEPENDS:=+libmnl
+  CONFLICTS:=
 endef
 
 define Package/ethtool/description

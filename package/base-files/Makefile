@@ -173,8 +173,13 @@ define Package/base-files/install
 	mkdir -p $(1)/www
 	mkdir -p $(1)/root
 	$(LN) /proc/mounts $(1)/etc/mtab
+ifneq ($(CONFIG_TARGET_ROOTFS_PERSIST_VAR),y)
 	rm -f $(1)/var
 	$(LN) tmp $(1)/var
+else
+	mkdir -p $(1)/var
+	$(LN) /tmp/run $(1)/var/run
+endif
 	mkdir -p $(1)/etc
 	$(LN) /tmp/resolv.conf /tmp/TZ /tmp/localtime $(1)/etc/
 
