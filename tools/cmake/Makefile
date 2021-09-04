@@ -7,14 +7,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=cmake
-PKG_VERSION:=3.19.1
+PKG_VERSION:=3.21.2
 PKG_RELEASE:=1
 PKG_CPE_ID:=cpe:/a:kitware:cmake
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/Kitware/CMake/releases/download/v$(PKG_VERSION)/ \
 		https://cmake.org/files/v3.19/
-PKG_HASH:=1d266ea3a76ef650cdcf16c782a317cb4a7aa461617ee941e389cb48738a3aba
+PKG_HASH:=94275e0b61c84bb42710f5320a23c6dcb2c6ee032ae7d2a616f53f68b3d21659
 
 HOST_BUILD_PARALLEL:=1
 HOST_CONFIGURE_PARALLEL:=1
