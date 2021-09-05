@@ -1,0 +1,143 @@
+--- a/src/cipher.c
++++ b/src/cipher.c
+@@ -8,6 +8,10 @@ cipher module for lua-openssl binding
+ #include "openssl.h"
+ #include "private.h"
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
++#define EVP_CIPHER_CTX_reset EVP_CIPHER_CTX_init
++#endif
++
+ /***
+ list all support cipher algs
+ 
+@@ -109,7 +113,7 @@ static LUA_FUNCTION(openssl_evp_encrypt)
+       memcpy(evp_iv, iv, iv_len);
+     }
+ 
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     ret = EVP_EncryptInit_ex(c, cipher, e, (const byte*)evp_key, iv_len > 0 ? (const byte*)evp_iv : NULL);
+     if (ret == 1)
+     {
+@@ -131,8 +135,12 @@ static LUA_FUNCTION(openssl_evp_encrypt)
+         OPENSSL_free(buffer);
+       }
+     }
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
++    EVP_CIPHER_CTX_reset(c);
++#else
+     EVP_CIPHER_CTX_cleanup(c);
+     EVP_CIPHER_CTX_free(c);
++#endif
+     return (ret == 1) ? ret : openssl_pushresult(L, ret);
+   }
+   else
+@@ -196,7 +204,7 @@ static LUA_FUNCTION(openssl_evp_decrypt)
+       memcpy(evp_iv, iv, iv_len);
+     }
+ 
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     ret = EVP_DecryptInit_ex(c, cipher, e, key ? (const byte*)evp_key : NULL, iv_len > 0 ? (const byte*)evp_iv : NULL);
+     if (ret == 1)
+     {
+@@ -220,8 +228,12 @@ static LUA_FUNCTION(openssl_evp_decrypt)
+         OPENSSL_free(buffer);
+       }
+     }
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
++    EVP_CIPHER_CTX_reset(c);
++#else
+     EVP_CIPHER_CTX_cleanup(c);
+     EVP_CIPHER_CTX_free(c);
++#endif
+     return (ret == 1) ? ret : openssl_pushresult(L, ret);
+   }
+   else
+@@ -292,7 +304,7 @@ static LUA_FUNCTION(openssl_evp_cipher)
+       memcpy(evp_iv, iv, iv_len);
+     }
+ 
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     ret = EVP_CipherInit_ex(c, cipher, e, (const byte*)evp_key, iv_len > 0 ? (const byte*)evp_iv : NULL, enc);
+     if (ret == 1)
+     {
+@@ -317,8 +329,12 @@ static LUA_FUNCTION(openssl_evp_cipher)
+         OPENSSL_free(buffer);
+       }
+     }
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
++    EVP_CIPHER_CTX_reset(c);
++#else
+     EVP_CIPHER_CTX_cleanup(c);
+     EVP_CIPHER_CTX_free(c);
++#endif
+     return (ret == 1) ? ret : openssl_pushresult(L, ret);
+   }
+   else
+@@ -376,7 +392,7 @@ static LUA_FUNCTION(openssl_cipher_new)
+       memcpy(evp_iv, iv, iv_len);
+     }
+     c = EVP_CIPHER_CTX_new();
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     if (!EVP_CipherInit_ex(c, cipher, e, key ? (const byte*)evp_key : NULL, iv_len > 0 ? (const byte*)evp_iv : NULL, enc))
+     {
+       luaL_error(L, "EVP_CipherInit_ex failed, please check openssl error");
+@@ -431,7 +447,7 @@ static LUA_FUNCTION(openssl_cipher_encry
+       memcpy(evp_iv, iv, iv_len);
+     }
+     c = EVP_CIPHER_CTX_new();
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     ret = EVP_EncryptInit_ex(c, cipher, e,
+                              key ? (const byte*)evp_key : NULL,
+                              iv_len > 0 ? (const byte*)evp_iv : NULL);
+@@ -491,7 +507,7 @@ static LUA_FUNCTION(openssl_cipher_decry
+       memcpy(evp_iv, iv, iv_len);
+     }
+     c = EVP_CIPHER_CTX_new();
+-    EVP_CIPHER_CTX_init(c);
++    EVP_CIPHER_CTX_reset(c);
+     ret = EVP_DecryptInit_ex(c, cipher, e,
+                              key ? (const byte*)evp_key : NULL,
+                              iv_len > 0 ? (const byte*)evp_iv : NULL);
+@@ -937,8 +953,12 @@ static LUA_FUNCTION(openssl_cipher_ctx_f
+     return 0;
+   lua_pushnil(L);
+   lua_rawsetp(L, LUA_REGISTRYINDEX, ctx);
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
++  EVP_CIPHER_CTX_reset(ctx);
++#else
+   EVP_CIPHER_CTX_cleanup(ctx);
+   EVP_CIPHER_CTX_free(ctx);
++#endif
+   FREE_OBJECT(1);
+   return 0;
+ }
+--- a/src/openssl.c
++++ b/src/openssl.c
+@@ -523,9 +523,7 @@ LUALIB_API int luaopen_openssl(lua_State
+ #endif
+ 
+ #ifndef OPENSSL_NO_ENGINE
+-    ENGINE_load_dynamic();
+-    ENGINE_load_openssl();
+-    ENGINE_load_builtin_engines();
++    ENGINE_register_all_complete();
+ #endif
+ #ifdef LOAD_ENGINE_CUSTOM
+     LOAD_ENGINE_CUSTOM
+--- a/src/th-lock.c
++++ b/src/th-lock.c
+@@ -310,7 +310,7 @@ unsigned long irix_thread_id(void)
+ 
+ /* Linux and a few others */
+ #ifdef PTHREADS
+-#ifndef OPENSSL_SYS_WIN32
++#if !defined(OPENSSL_SYS_WIN32) && (OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER))
+ static pthread_mutex_t *lock_cs;
+ static long *lock_count;
+ 

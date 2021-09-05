@@ -1,0 +1,174 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2019 Chao Liu <expiron18@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+USE_PROCD=1
+START=99
+
+confdir=/var/etc/kcptun
+bindir=/usr/bin
+
+mkjson_server_conf() {
+	[ "$disabled" = 0 ] || return 1
+	[ -n "$listen" ] || return 1
+	[ -n "$target" ] || return 1
+	[ -n "$target_port" ] || return 1
+	json_add_string listen ":$listen"
+	json_add_string target "$target:$target_port"
+	json_add_boolean pprof "$pprof"
+}
+
+mkjson_client_conf() {
+	[ "$disabled" = 0 ] || return 1
+	[ -n "$local_port" ] || return 1
+	[ -n "$server" ] || return 1
+	[ -n "$server_port" ] || return 1
+	json_add_string localaddr "$bind_address:$local_port"
+	json_add_string remoteaddr "$server:$server_port"
+	[ -z "$conn" ] || json_add_int conn "$conn"
+	[ -z "$autoexpire" ] || json_add_int autoexpire "$autoexpire"
+	[ -z "$scavengettl" ] || json_add_int scavengettl "$scavengettl"
+}
+
+kcptun() {
+	local cfg="$1"
+	local cfgtype="$2"
+	local bin="$bindir/kcptun-$cfgtype"
+	local confjson="$confdir/$cfgtype.$cfg.json"
+
+	[ -x "$bin" ] || return
+	eval "$("validate_${cfgtype}_section" "$cfg" validate_mklocal)"
+	"validate_${cfgtype}_section" "$cfg" || return
+	[ "$disabled" = 0 ] || return
+
+	json_init
+	mkjson_${cfgtype}_conf || return
+	[ -z "$crypt" ] || json_add_string crypt "$crypt"
+	[ -z "$key" ] || json_add_string key "$key"
+	[ -z "$mode" ] || json_add_string mode "$mode"
+	[ -z "$mtu" ] || json_add_int mtu "$mtu"
+	[ -z "$sndwnd" ] || json_add_int sndwnd "$sndwnd"
+	[ -z "$rcvwnd" ] || json_add_int rcvwnd "$rcvwnd"
+	[ -z "$datashard" ] || json_add_int datashard "$datashard"
+	[ -z "$parityshard" ] || json_add_int parityshard "$parityshard"
+	[ -z "$dscp" ] || json_add_int dscp "$dscp"
+	json_add_boolean nocomp "$nocomp"
+	[ -z "$sockbuf" ] || json_add_int sockbuf "$sockbuf"
+	[ -z "$smuxver" ] || json_add_int smuxver "$smuxver"
+	[ -z "$smuxbuf" ] || json_add_int smuxbuf "$smuxbuf"
+	[ -z "$streambuf" ] || json_add_int streambuf "$streambuf"
+	[ -z "$keepalive" ] || json_add_int keepalive "$keepalive"
+	[ -z "$snmplog" ] || json_add_string snmplog "$snmplog"
+	[ -z "$snmpperiod" ] || json_add_int snmpperiod "$snmpperiod"
+	json_add_boolean quiet "$quiet"
+	json_dump -i > "$confjson"
+
+	procd_open_instance "$cfgtype.$cfg"
+	procd_set_param command "$bin" -c "$confjson"
+	[ -z "$gogc" ] || procd_set_param env GOGC="$gogc"
+	[ -z "$syslog" ] || procd_set_param stderr 1
+	[ -z "$user" ] || procd_set_param user "$user"
+	procd_set_param file "$confjson"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+start_service() {
+	local cfgtype
+
+	mkdir -p "$confdir"
+	config_load kcptun
+	for cfgtype in server client; do
+		config_foreach kcptun "$cfgtype" "$cfgtype"
+	done
+}
+
+stop_service() {
+	rm -rf "$confdir"
+}
+
+service_triggers() {
+	procd_add_reload_interface_trigger wan
+	procd_add_reload_trigger kcptun
+	procd_open_validate
+	validate_server_section
+	validate_client_section
+	procd_close_validate
+}
+
+validate_mklocal() {
+	local tuple opts
+
+	shift 2
+	for tuple in "$@"; do
+		opts="${tuple%%:*} $opts"
+	done
+	[ -z "$opts" ] || echo "local $opts"
+}
+
+validate() {
+	uci_validate_section kcptun "$@"
+}
+
+validate_common_options() {
+	local cfgtype="$1"; shift
+	local cfg="$1"; shift
+	local func="$1"; shift
+	local crypt_methods='"aes", "aes-128", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none"'
+	local mode_profiles='"fast3", "fast2", "fast", "normal", "manual"'
+
+	"${func:-validate}" "$cfgtype" "$cfg" "$@" \
+		'disabled:bool:0' \
+		'key:string' \
+		"crypt:or($crypt_methods)" \
+		"mode:or($mode_profiles)" \
+		'mtu:uinteger' \
+		'sndwnd:uinteger' \
+		'rcvwnd:uinteger' \
+		'datashard:uinteger' \
+		'parityshard:uinteger' \
+		'dscp:uinteger' \
+		'nocomp:bool' \
+		'sockbuf:uinteger' \
+		'smuxver:uinteger' \
+		'smuxbuf:uinteger' \
+		'streambuf:uinteger' \
+		'keepalive:uinteger' \
+		'snmplog:string' \
+		'snmpperiod:uinteger' \
+		'quiet:bool' \
+		'gogc:uinteger' \
+		'syslog:bool:1' \
+		'user:string:nobody'
+}
+
+validate_server_options() {
+	validate_common_options server "$@" \
+		'listen:port' \
+		'target:host' \
+		'target_port:port' \
+		'pprof:bool'
+}
+
+validate_client_options() {
+	validate_common_options client "$@" \
+		'bind_address:ipaddr' \
+		'local_port:port' \
+		'server:host' \
+		'server_port:port' \
+		'conn:uinteger' \
+		'autoexpire:uinteger' \
+		'scavengettl:uinteger'
+}
+
+validate_server_section() {
+	validate_server_options "$1" "$2"
+}
+
+validate_client_section() {
+	validate_client_options "$1" "$2"
+}

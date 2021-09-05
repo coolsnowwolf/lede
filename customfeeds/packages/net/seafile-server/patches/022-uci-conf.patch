@@ -1,0 +1,583 @@
+--- a/common/seaf-utils.c
++++ b/common/seaf-utils.c
+@@ -238,7 +238,12 @@ create_ccnet_rpc_client ()
+     SearpcNamedPipeClient *transport = NULL;
+     char *pipe_path = NULL;
+ 
+-    pipe_path = g_build_path ("/", seaf->ccnet_dir, CCNET_RPC_PIPE_NAME, NULL);
++    char *socket_dir = g_strdup (g_getenv ("SEAFILE_UCI_SOCKET_DIR"));
++    if (!socket_dir) {
++        socket_dir = g_strdup (seaf->ccnet_dir);
++    }
++    pipe_path = g_build_path ("/", socket_dir, CCNET_RPC_PIPE_NAME, NULL);
++    g_free (socket_dir);
+     transport = searpc_create_named_pipe_client(pipe_path);
+     g_free(pipe_path);
+     if (!transport)
+--- a/controller/seafile-controller.c
++++ b/controller/seafile-controller.c
+@@ -511,7 +511,10 @@ stop_services ()
+ static void
+ init_pidfile_path (SeafileController *ctl)
+ {
+-    char *pid_dir = g_build_filename (topdir, "pids", NULL);
++    char *pid_dir = g_strdup (g_getenv ("SEAFILE_UCI_PID_DIR"));
++    if (!pid_dir) {
++        pid_dir = g_build_filename (topdir, "pids", NULL);
++    }
+     if (!g_file_test(pid_dir, G_FILE_TEST_EXISTS)) {
+         if (g_mkdir(pid_dir, 0777) < 0) {
+             seaf_warning("failed to create pid dir %s: %s", pid_dir, strerror(errno));
+@@ -523,6 +526,8 @@ init_pidfile_path (SeafileController *ct
+     ctl->pidfile[PID_SERVER] = g_build_filename (pid_dir, "seaf-server.pid", NULL);
+     ctl->pidfile[PID_SEAFDAV] = g_build_filename (pid_dir, "seafdav.pid", NULL);
+     ctl->pidfile[PID_SEAFEVENTS] = g_build_filename (pid_dir, "seafevents.pid", NULL);
++
++    g_free (pid_dir);
+ }
+ 
+ static int
+@@ -545,7 +550,10 @@ seaf_controller_init (SeafileController
+ 
+     if (logdir == NULL) {
+         char *topdir = g_path_get_dirname(config_dir);
+-        logdir = g_build_filename (topdir, "logs", NULL);
++        logdir = g_strdup (g_getenv ("SEAFILE_UCI_LOG_DIR"));
++        if (!logdir) {
++            logdir = g_build_filename (topdir, "logs", NULL);
++        }
+         if (checkdir_with_mkdir(logdir) < 0) {
+             fprintf (stderr, "failed to create log folder \"%s\": %s\n",
+                      logdir, strerror(errno));
+@@ -554,10 +562,15 @@ seaf_controller_init (SeafileController
+         g_free (topdir);
+     }
+ 
++    char *socket_dir = g_strdup (g_getenv ("SEAFILE_UCI_SOCKET_DIR"));
++    if (!socket_dir) {
++        socket_dir = g_build_filename (installpath, "runtime", NULL);
++    }
++
+     ctl->central_config_dir = central_config_dir;
+     ctl->config_dir = config_dir;
+     ctl->seafile_dir = seafile_dir;
+-    ctl->rpc_pipe_path = g_build_filename (installpath, "runtime", NULL);
++    ctl->rpc_pipe_path = socket_dir;
+     ctl->logdir = logdir;
+ 
+     if (read_seafdav_config() < 0) {
+--- a/python/seaserv/service.py
++++ b/python/seaserv/service.py
+@@ -32,11 +32,17 @@ CCNET_CONF_PATH = _load_path_from_env('C
+ SEAFILE_CONF_DIR = _load_path_from_env('SEAFILE_CONF_DIR')
+ SEAFILE_CENTRAL_CONF_DIR = _load_path_from_env('SEAFILE_CENTRAL_CONF_DIR', check=False)
+ SEAFILE_RPC_PIPE_PATH = _load_path_from_env ("SEAFILE_RPC_PIPE_PATH", check=False)
++SEAFILE_UCI_SOCKET_DIR = _load_path_from_env('SEAFILE_UCI_SOCKET_DIR', check=False)
+ 
+-ccnet_pipe_path = os.path.join (CCNET_CONF_PATH, 'ccnet-rpc.sock')
++ccnet_pipe_path = os.path.join (SEAFILE_UCI_SOCKET_DIR if SEAFILE_UCI_SOCKET_DIR else CCNET_CONF_PATH, 'ccnet-rpc.sock')
+ ccnet_threaded_rpc = ccnet.CcnetThreadedRpcClient(ccnet_pipe_path)
+ 
+-seafile_pipe_path = os.path.join(SEAFILE_RPC_PIPE_PATH if SEAFILE_RPC_PIPE_PATH else SEAFILE_CONF_DIR,
++socket_dir = SEAFILE_CONF_DIR
++if SEAFILE_RPC_PIPE_PATH:
++    socket_dir = SEAFILE_RPC_PIPE_PATH
++elif SEAFILE_UCI_SOCKET_DIR:
++    socket_dir = SEAFILE_UCI_SOCKET_DIR
++seafile_pipe_path = os.path.join(socket_dir,
+                                  'seafile.sock')
+ seafserv_threaded_rpc = seafile.ServerThreadedRpcClient(seafile_pipe_path)
+ 
+--- a/scripts/check_init_admin.py
++++ b/scripts/check_init_admin.py
+@@ -284,7 +284,7 @@ class RPC(object):
+         import ccnet
+         ccnet_dir = os.environ['CCNET_CONF_DIR']
+         central_config_dir = os.environ['SEAFILE_CENTRAL_CONF_DIR']
+-        ccnet_named_pipe_path = ccnet_dir + '/' + 'ccnet-rpc.sock'
++        ccnet_named_pipe_path = os.environ.get('SEAFILE_UCI_SOCKET_DIR', ccnet_dir) + '/' + 'ccnet-rpc.sock'
+         self.rpc_client = ccnet.CcnetThreadedRpcClient(ccnet_named_pipe_path)
+ 
+     def get_db_email_users(self):
+--- a/scripts/reset-admin.sh
++++ b/scripts/reset-admin.sh
+@@ -1,11 +1,13 @@
+ #!/bin/bash
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-central_config_dir=${TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++central_config_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
+ 
+ function check_python_executable() {
+     if [[ "$PYTHON" != "" && -x $PYTHON ]]; then
+--- a/scripts/seaf-fsck.sh
++++ b/scripts/seaf-fsck.sh
+@@ -2,12 +2,14 @@
+ 
+ echo ""
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-default_conf_dir=${TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++default_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
+ seaf_fsck=/usr/libexec/seaf-fsck
+ 
+ export PATH=/usr/libexec:$PATH
+--- a/scripts/seaf-fuse.sh
++++ b/scripts/seaf-fuse.sh
+@@ -2,12 +2,14 @@
+ 
+ echo ""
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-default_conf_dir=${TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++default_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
+ seaf_fuse=/usr/libexec/seaf-fuse
+ 
+ export PATH=/usr/libexec:$PATH
+@@ -78,7 +80,7 @@ function start_seaf_fuse () {
+ 
+     echo "Starting seaf-fuse, please wait ..."
+ 
+-    logfile=${TOPDIR}/logs/seaf-fuse.log
++    logfile=${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}/seaf-fuse.log
+ 
+     LD_LIBRARY_PATH=$SEAFILE_LD_LIBRARY_PATH ${seaf_fuse} \
+         -c "${default_ccnet_conf_dir}" \
+--- a/scripts/seaf-gc.sh
++++ b/scripts/seaf-gc.sh
+@@ -2,12 +2,14 @@
+ 
+ echo ""
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-default_conf_dir=${TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++default_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
+ seaf_gc=/usr/libexec/seafserv-gc
+ seaf_gc_opts=""
+ 
+--- a/scripts/seafile.sh
++++ b/scripts/seafile.sh
+@@ -12,12 +12,14 @@
+ 
+ echo ""
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-central_config_dir=${TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++central_config_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
+ seaf_controller="/usr/libexec/seafile-controller"
+ 
+ export PATH=/usr/libexec:$PATH
+@@ -121,7 +123,7 @@ function start_seafile_server () {
+ 
+     echo "Starting seafile server, please wait ..."
+ 
+-    mkdir -p $TOPDIR/logs
++    mkdir -p ${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}
+     LD_LIBRARY_PATH=$SEAFILE_LD_LIBRARY_PATH ${seaf_controller} \
+                    -c "${default_ccnet_conf_dir}" \
+                    -d "${default_seafile_data_dir}" \
+--- a/scripts/seahub.sh
++++ b/scripts/seahub.sh
+@@ -12,19 +12,21 @@
+ 
+ echo ""
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-central_config_dir=${TOPDIR}/conf
+-seafile_rpc_pipe_path=${INSTALLPATH}/runtime
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++central_config_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
++seafile_rpc_pipe_path=${SEAFILE_UCI_SOCKET_DIR-$INSTALLPATH/runtime}
+ 
+ manage_py=${INSTALLPATH}/seahub/manage.py
+-gunicorn_conf=${TOPDIR}/conf/gunicorn.conf.py
+-pidfile=${TOPDIR}/pids/seahub.pid
+-errorlog=${TOPDIR}/logs/gunicorn_error.log
+-accesslog=${TOPDIR}/logs/gunicorn_access.log
++gunicorn_conf=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf/gunicorn.conf.py
++pidfile=${SEAFILE_UCI_PID_DIR-$TOPDIR/pids}/seahub.pid
++errorlog=${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}/gunicorn_error.log
++accesslog=${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}/gunicorn_access.log
+ gunicorn_exe=/usr/bin/gunicorn3
+ 
+ script_name=$0
+@@ -138,7 +140,7 @@ function warning_if_seafile_not_running
+ }
+ 
+ function prepare_seahub_log_dir() {
+-    logdir=${TOPDIR}/logs
++    logdir=${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}
+     if ! [[ -d ${logsdir} ]]; then
+         if ! mkdir -p "${logdir}"; then
+             echo "ERROR: failed to create logs dir \"${logdir}\""
+--- a/scripts/setup-seafile-mysql.py
++++ b/scripts/setup-seafile-mysql.py
+@@ -300,9 +300,9 @@ class EnvManager(object):
+         self.install_path = os.path.dirname(os.path.abspath(__file__))
+         self.top_dir = os.path.dirname(self.install_path)
+         self.bin_dir = '/usr/libexec'
+-        self.central_config_dir = os.path.join(self.top_dir, 'conf')
+-        self.central_pids_dir = os.path.join(self.top_dir, 'pids')
+-        self.central_logs_dir = os.path.join(self.top_dir, 'logs')
++        self.central_config_dir = os.path.join(os.environ.get('SEAFILE_UCI_CONF_DIR', self.top_dir), 'conf')
++        self.central_pids_dir = os.environ.get('SEAFILE_UCI_PID_DIR', os.path.join(self.top_dir, 'pids'))
++        self.central_logs_dir = os.environ.get('SEAFILE_UCI_LOG_DIR', os.path.join(self.top_dir, 'logs'))
+         Utils.must_mkdir(self.central_config_dir)
+ 
+     def check_pre_condiction(self):
+@@ -790,7 +790,7 @@ class CcnetConfigurator(AbstractConfigur
+     def __init__(self):
+         '''Initialize default values of ccnet configuration'''
+         AbstractConfigurator.__init__(self)
+-        self.ccnet_dir = os.path.join(env_mgr.top_dir, 'ccnet')
++        self.ccnet_dir = os.path.join(os.environ.get('SEAFILE_UCI_CONF_DIR', env_mgr.top_dir), 'ccnet')
+         self.port = 10001
+         self.server_name = None
+         self.ip_or_domain = None
+@@ -919,7 +919,7 @@ class CcnetConfigurator(AbstractConfigur
+ class SeafileConfigurator(AbstractConfigurator):
+     def __init__(self):
+         AbstractConfigurator.__init__(self)
+-        self.seafile_dir = os.path.join(env_mgr.top_dir, 'seafile-data')
++        self.seafile_dir = os.path.join(os.environ.get('SEAFILE_UCI_DATA_DIR', env_mgr.top_dir), 'seafile-data')
+         self.port = 12001
+         self.fileserver_port = None
+         self.seafile_conf = os.path.join(env_mgr.central_config_dir, 'seafile.conf')
+@@ -983,7 +983,7 @@ class SeafileConfigurator(AbstractConfig
+         question = 'Where do you want to put your seafile data?'
+         key = 'seafile-data'
+         note = 'Please use a volume with enough free space'
+-        default = os.path.join(env_mgr.top_dir, 'seafile-data')
++        default = os.path.join(os.environ.get('SEAFILE_UCI_DATA_DIR', env_mgr.top_dir), 'seafile-data')
+         self.seafile_dir = Utils.ask_question(question,
+                                               key=key,
+                                               note=note,
+@@ -1204,7 +1204,7 @@ class SeahubConfigurator(AbstractConfigu
+             media_dir = os.path.join(env_mgr.install_path, 'seahub', 'media')
+             orig_avatar_dir = os.path.join(media_dir, 'avatars')
+ 
+-            seahub_data_dir = os.path.join(env_mgr.top_dir, 'seahub-data')
++            seahub_data_dir = os.path.join(os.environ.get('SEAFILE_UCI_DATA_DIR', env_mgr.top_dir), 'seahub-data')
+             dest_avatar_dir = os.path.join(seahub_data_dir, 'avatars')
+ 
+             if os.path.exists(dest_avatar_dir):
+@@ -1214,7 +1214,7 @@ class SeahubConfigurator(AbstractConfigu
+                 os.mkdir(seahub_data_dir)
+ 
+             shutil.move(orig_avatar_dir, dest_avatar_dir)
+-            os.symlink('../../../seahub-data/avatars', orig_avatar_dir)
++            os.symlink(dest_avatar_dir, orig_avatar_dir)
+         except Exception as e:
+             Utils.error('Failed to prepare seahub avatars dir: %s' % e)
+ 
+@@ -1390,7 +1390,7 @@ def check_params(args):
+     seafile_config.fileserver_port = Utils.validate_port(fileserver_port)
+ 
+     seafile_dir = get_param_val(args.seafile_dir, 'SEAFILE_DIR',
+-                                os.path.join(env_mgr.top_dir, 'seafile-data'))
++                                os.path.join(os.environ.get('SEAFILE_UCI_DATA_DIR', env_mgr.top_dir), 'seafile-data'))
+     seafile_config.seafile_dir = seafile_config.validate_seafile_dir(seafile_dir)
+ 
+     global db_config
+--- a/scripts/setup-seafile-mysql.sh
++++ b/scripts/setup-seafile-mysql.sh
+@@ -6,6 +6,8 @@
+ 
+ set -e
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ 
+--- a/scripts/setup-seafile.sh
++++ b/scripts/setup-seafile.sh
+@@ -1,14 +1,16 @@
+ #!/bin/bash
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0")
+ INSTALLPATH=/usr/share/seafile/seafile-server
+ TOPDIR=$(dirname "${INSTALLPATH}")
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-default_seafile_data_dir=${TOPDIR}/seafile-data
+-default_seahub_db=${TOPDIR}/seahub.db
+-default_conf_dir=${TOPDIR}/conf
+-default_pids_dir=${TOPDIR}/pids
+-default_logs_dir=${TOPDIR}/logs
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++default_seafile_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data
++default_seahub_db=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub.db
++default_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
++default_pids_dir=${SEAFILE_UCI_PID_DIR-$TOPDIR/pids}
++default_logs_dir=${SEAFILE_UCI_LOG_DIR-$TOPDIR/logs}
+ 
+ export SEAFILE_LD_LIBRARY_PATH=${INSTALLPATH}/seafile/lib/:${INSTALLPATH}/seafile/lib64:${LD_LIBRARY_PATH}
+ 
+@@ -516,7 +518,7 @@ gen_seafdav_conf;
+ # -------------------------------------------
+ # generate seahub/settings.py
+ # -------------------------------------------
+-dest_settings_py=${TOPDIR}/conf/seahub_settings.py
++dest_settings_py=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf/seahub_settings.py
+ seahub_secret_keygen=${INSTALLPATH}/seahub/tools/secret_key_generator.py
+ 
+ if [[ ! -f ${dest_settings_py} ]]; then
+@@ -621,44 +623,44 @@ function get_seahub_admin_passwd () {
+ echo "Creating database now, it may take one minute, please wait... "
+ echo
+ 
+-cd ${TOPDIR}/ccnet && mkdir -m 0755 GroupMgr misc OrgMgr PeerMgr && cd -
++cd ${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet && mkdir -m 0755 GroupMgr misc OrgMgr PeerMgr && cd -
+ 
+-ccnet_group_db=${TOPDIR}/ccnet/GroupMgr/groupmgr.db
++ccnet_group_db=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet/GroupMgr/groupmgr.db
+ ccnet_group_sql=${INSTALLPATH}/sql/sqlite/groupmgr.sql
+ if ! sqlite3 ${ccnet_group_db} ".read ${ccnet_group_sql}" 2>/dev/null 1>&2; then
+     echo "Failed to sync ccnet groupmgr database."
+     err_and_quit;
+ fi
+ 
+-ccnet_config_db=${TOPDIR}/ccnet/misc/config.db
++ccnet_config_db=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet/misc/config.db
+ ccnet_config_sql=${INSTALLPATH}/sql/sqlite/config.sql
+ if ! sqlite3 ${ccnet_config_db} ".read ${ccnet_config_sql}" 2>/dev/null 1>&2; then
+     echo "Failed to sync ccnet config database."
+     err_and_quit;
+ fi
+ 
+-ccnet_org_db=${TOPDIR}/ccnet/OrgMgr/orgmgr.db
++ccnet_org_db=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet/OrgMgr/orgmgr.db
+ ccnet_org_sql=${INSTALLPATH}/sql/sqlite/org.sql
+ if ! sqlite3 ${ccnet_org_db} ".read ${ccnet_org_sql}" 2>/dev/null 1>&2; then
+     echo "Failed to sync ccnet org database."
+     err_and_quit;
+ fi
+ 
+-ccnet_user_db=${TOPDIR}/ccnet/PeerMgr/usermgr.db
++ccnet_user_db=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet/PeerMgr/usermgr.db
+ ccnet_user_sql=${INSTALLPATH}/sql/sqlite/user.sql
+ if ! sqlite3 ${ccnet_user_db} ".read ${ccnet_user_sql}" 2>/dev/null 1>&2; then
+     echo "Failed to sync ccnet user database."
+     err_and_quit;
+ fi
+ 
+-seafile_db=${TOPDIR}/seafile-data/seafile.db
++seafile_db=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seafile-data/seafile.db
+ seafile_sql=${INSTALLPATH}/sql/sqlite/seafile.sql
+ if ! sqlite3 ${seafile_db} ".read ${seafile_sql}" 2>/dev/null 1>&2; then
+     echo "Failed to sync seafile database."
+     err_and_quit;
+ fi
+ 
+-seahub_db=${TOPDIR}/seahub.db
++seahub_db=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub.db
+ seahub_sqls=${INSTALLPATH}/seahub/sql/sqlite3.sql
+ if ! sqlite3 ${seahub_db} ".read ${seahub_sqls}" 2>/dev/null 1>&2; then
+     echo "Failed to sync seahub database."
+@@ -671,12 +673,12 @@ echo "Done."
+ 
+ media_dir=${INSTALLPATH}/seahub/media
+ orig_avatar_dir=${INSTALLPATH}/seahub/media/avatars
+-dest_avatar_dir=${TOPDIR}/seahub-data/avatars
++dest_avatar_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/avatars
+ 
+ if [[ ! -d ${dest_avatar_dir} ]]; then
+-    mkdir -p "${TOPDIR}/seahub-data"
++    mkdir -p "${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data"
+     mv "${orig_avatar_dir}" "${dest_avatar_dir}"
+-    ln -s ../../../seahub-data/avatars ${media_dir}
++    ln -s ${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/avatars ${media_dir}
+ fi
+ 
+ # Make a seafile-server symlink, like this:
+--- a/scripts/sqlite2mysql.sh
++++ b/scripts/sqlite2mysql.sh
+@@ -13,17 +13,19 @@
+ #     (mysql> source ccnet-db.sql)
+ # 
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ CCNET_DB='ccnet-db.sql'
+ SEAFILE_DB='seafile-db.sql'
+ SEAHUB_DB='seahub-db.sql'
+ 
+ ########## ccnet
+ seafile_path=$(pwd)
+-if [ -f "${seafile_path}/conf/ccnet.conf" ]; then
+-    USER_MGR_DB=${seafile_path}/ccnet/PeerMgr/usermgr.db
+-    GRP_MGR_DB=${seafile_path}/ccnet/GroupMgr/groupmgr.db
++if [ -f "${SEAFILE_UCI_CONF_DIR-$seafile_path}/conf/ccnet.conf" ]; then
++    USER_MGR_DB=${SEAFILE_UCI_CONF_DIR-$seafile_path}/ccnet/PeerMgr/usermgr.db
++    GRP_MGR_DB=${SEAFILE_UCI_CONF_DIR-$seafile_path}/ccnet/GroupMgr/groupmgr.db
+ else
+-    echo "${seafile_path}/conf/ccnet.conf does not exists."
++    echo "${SEAFILE_UCI_CONF_DIR-$seafile_path}/conf/ccnet.conf does not exists."
+     read -p "Please provide your ccnet.conf path(e.g. /data/haiwen/conf/ccnet.conf): " ccnet_conf_path
+     if [ -f ${ccnet_conf_path} ]; then
+         USER_MGR_DB=$(dirname $(dirname "${ccnet_conf_path}"))/ccnet/PeerMgr/usermgr.db
+@@ -50,11 +52,11 @@ sed 's/email TEXT, role TEXT/email VARCH
+ ########## seafile
+ rm -rf ${SEAFILE_DB}
+ 
+-if [ -f "${seafile_path}/seafile-data/seafile.db" ]; then
+-    echo "sqlite3 ${seafile_path}/seafile-data/seafile.db .dump | python sqlite2mysql.py > ${SEAFILE_DB}"
+-    sqlite3 ${seafile_path}/seafile-data/seafile.db .dump | python sqlite2mysql.py > ${SEAFILE_DB}
++if [ -f "${SEAFILE_UCI_DATA_DIR-$seafile_path}/seafile-data/seafile.db" ]; then
++    echo "sqlite3 ${SEAFILE_UCI_DATA_DIR-$seafile_path}/seafile-data/seafile.db .dump | python sqlite2mysql.py > ${SEAFILE_DB}"
++    sqlite3 ${SEAFILE_UCI_DATA_DIR-$seafile_path}/seafile-data/seafile.db .dump | python sqlite2mysql.py > ${SEAFILE_DB}
+ else
+-    echo "${seafile_path}/seafile-data/seafile.db does not exists."
++    echo "${SEAFILE_UCI_DATA_DIR-$seafile_path}/seafile-data/seafile.db does not exists."
+     read -p "Please provide your seafile.db path(e.g. /data/haiwen/seafile-data/seafile.db): " seafile_db_path
+     if [ -f ${seafile_db_path} ];then
+         echo "sqlite3 ${seafile_db_path} .dump | python sqlite2mysql.py > ${SEAFILE_DB}"
+@@ -74,11 +76,11 @@ sed 's/user_name TEXT/user_name VARCHAR(
+ ########## seahub
+ rm -rf ${SEAHUB_DB}
+ 
+-if [ -f "${seafile_path}/seahub.db" ]; then
+-    echo "sqlite3 ${seafile_path}/seahub.db .dump | tr -d '\n' | sed 's/;/;\n/g' | python sqlite2mysql.py > ${SEAHUB_DB}"
+-    sqlite3 ${seafile_path}/seahub.db .dump | tr -d '\n' | sed 's/;/;\n/g' | python sqlite2mysql.py > ${SEAHUB_DB}
++if [ -f "${SEAFILE_UCI_DATA_DIR-$seafile_path}/seahub.db" ]; then
++    echo "sqlite3 ${SEAFILE_UCI_DATA_DIR-$seafile_path}/seahub.db .dump | tr -d '\n' | sed 's/;/;\n/g' | python sqlite2mysql.py > ${SEAHUB_DB}"
++    sqlite3 ${SEAFILE_UCI_DATA_DIR-$seafile_path}/seahub.db .dump | tr -d '\n' | sed 's/;/;\n/g' | python sqlite2mysql.py > ${SEAHUB_DB}
+ else
+-    echo "${seafile_path}/seahub.db does not exists."
++    echo "${SEAFILE_UCI_DATA_DIR-$seafile_path}/seahub.db does not exists."
+     read -p "Please prove your seahub.db path(e.g. /data/haiwen/seahub.db): " seahub_db_path
+     if [ -f ${seahub_db_path} ]; then
+         echo "sqlite3 ${seahub_db_path} .dump | tr -d '\n' | sed 's/;/;\n/g' | python sqlite2mysql.py > ${SEAHUB_DB}"
+--- a/scripts/upgrade/minor-upgrade.sh
++++ b/scripts/upgrade/minor-upgrade.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+ 
++/etc/init.d/seafile-server generate_uci_conf && . /var/run/seafile/uci.conf
++
+ SCRIPT=$(readlink -f "$0") # haiwen/seafile-server-1.3.0/upgrade/upgrade_xx_xx.sh
+ UPGRADE_DIR=$(dirname "$SCRIPT") # haiwen/seafile-server-1.3.0/upgrade/
+ INSTALLPATH=$(dirname "$UPGRADE_DIR") # haiwen/seafile-server-1.3.0/
+@@ -15,11 +17,11 @@ read dummy
+ 
+ media_dir=${INSTALLPATH}/seahub/media
+ orig_avatar_dir=${INSTALLPATH}/seahub/media/avatars
+-dest_avatar_dir=${TOPDIR}/seahub-data/avatars
++dest_avatar_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/avatars
+ seafile_server_symlink=${TOPDIR}/seafile-server-latest
+-default_conf_dir=${TOPDIR}/conf
+-default_ccnet_conf_dir=${TOPDIR}/ccnet
+-seahub_data_dir=${TOPDIR}/seahub-data
++default_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/conf
++default_ccnet_conf_dir=${SEAFILE_UCI_CONF_DIR-$TOPDIR}/ccnet
++seahub_data_dir=${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data
+ elasticsearch_config_file=${seafile_server_symlink}/pro/elasticsearch/config/jvm.options
+ 
+ function migrate_avatars() {
+@@ -37,7 +39,7 @@ function migrate_avatars() {
+     elif [[ ! -L ${orig_avatar_dir} ]]; then
+         mv "${orig_avatar_dir}"/* "${dest_avatar_dir}" 2>/dev/null 1>&2
+         rm -rf "${orig_avatar_dir}"
+-        ln -s ../../../seahub-data/avatars "${media_dir}"
++        ln -s ${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/avatars "${media_dir}"
+     fi
+     echo
+     echo "DONE"
+@@ -51,14 +53,14 @@ function make_media_custom_symlink() {
+         return
+ 
+     elif [[ ! -e "${media_symlink}" ]]; then
+-        ln -s ../../../seahub-data/custom "${media_symlink}"
++        ln -s ${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/custom "${media_symlink}"
+         return
+ 
+ 
+     elif [[ -d "${media_symlink}" ]]; then
+         cp -rf "${media_symlink}" "${seahub_data_dir}/"
+         rm -rf "${media_symlink}"
+-        ln -s ../../../seahub-data/custom "${media_symlink}"
++        ln -s ${SEAFILE_UCI_DATA_DIR-$TOPDIR}/seahub-data/custom "${media_symlink}"
+     fi
+ 
+ }
+--- a/server/seaf-server.c
++++ b/server/seaf-server.c
+@@ -767,8 +767,12 @@ static void start_rpc_service (const cha
+                                      "set_server_config_boolean",
+                                      searpc_signature_int__string_string_int());
+ 
++    const char *socket_dir = g_getenv ("SEAFILE_UCI_SOCKET_DIR");
++
+     if (rpc_pipe_path) {
+         pipe_path = g_build_path ("/", rpc_pipe_path, SEAFILE_RPC_PIPE_NAME, NULL);
++    } else if (socket_dir) {
++        pipe_path = g_build_path ("/", socket_dir, SEAFILE_RPC_PIPE_NAME, NULL);
+     } else {
+         pipe_path = g_build_path ("/", seafile_dir, SEAFILE_RPC_PIPE_NAME, NULL);
+     }
+@@ -973,8 +977,14 @@ main (int argc, char **argv)
+ 
+     if (seafile_dir == NULL)
+         seafile_dir = g_build_filename (ccnet_dir, "seafile", NULL);
+-    if (logfile == NULL)
+-        logfile = g_build_filename (seafile_dir, "seafile.log", NULL);
++    if (logfile == NULL) {
++        char *log_dir = g_strdup (g_getenv("SEAFILE_UCI_LOG_DIR"));
++        if (!log_dir) {
++            log_dir = g_strdup (seafile_dir);
++        }
++        logfile = g_build_filename (log_dir, "seafile.log", NULL);
++        g_free (log_dir);
++    }
+ 
+     if (seafile_log_init (logfile, "info", "debug") < 0) {
+         seaf_warning ("Failed to init log.\n");

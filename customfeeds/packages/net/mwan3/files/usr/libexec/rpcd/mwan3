@@ -1,0 +1,230 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /usr/share/libubox/jshn.sh
+. /lib/mwan3/common.sh
+
+MWAN3TRACK_STATUS_DIR="/var/run/mwan3track"
+
+IPS="ipset"
+IPT4="iptables -t mangle -w"
+IPT6="ip6tables -t mangle -w"
+
+report_connected_v4() {
+	local address
+
+	if [ -n "$($IPT4 -S mwan3_connected 2> /dev/null)" ]; then
+		for address in $($IPS -o save list mwan3_connected_v4 | grep add | cut -d " " -f 3); do
+			json_add_string "" "${address}"
+		done
+	fi
+}
+
+report_connected_v6() {
+	local address
+
+	if [ -n "$($IPT6 -S mwan3_connected 2> /dev/null)" ]; then
+		for address in $($IPS -o save list mwan3_connected_v6 | grep add | cut -d " " -f 3); do
+			json_add_string "" "${address}"
+		done
+	fi
+}
+
+report_policies() {
+	local ipt="$1"
+	local policy="$2"
+
+	local percent total_weight weight iface
+
+	total_weight=$($ipt -S $policy | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | head -1 | awk '{print $3}')
+
+	for iface in $($ipt -S $policy | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | awk '{print $1}'); do
+		weight=$($ipt -S $policy | grep -v '.*--comment "out .*" .*$' | cut -s -d'"' -f2 | awk '$1 == "'$iface'"' | awk '{print $2}')
+		percent=$(($weight*100/$total_weight))
+		json_add_object
+		json_add_string interface "$iface"
+		json_add_int percent "$percent"
+		json_close_object
+	done
+}
+
+report_policies_v4() {
+	local policy
+
+	for policy in $($IPT4 -S | awk '{print $2}' | grep mwan3_policy_ | sort -u); do
+		json_add_array "${policy##*mwan3_policy_}"
+		report_policies "$IPT4" "$policy"
+		json_close_array
+	done
+}
+
+report_policies_v6() {
+	local policy
+
+	for policy in $($IPT6 -S | awk '{print $2}' | grep mwan3_policy_ | sort -u); do
+		json_add_array "${policy##*mwan3_policy_}"
+		report_policies "$IPT6" "$policy"
+		json_close_array
+	done
+}
+
+get_mwan3_status() {
+	local iface="${1}"
+	local iface_select="${2}"
+	local running="0"
+	local age=0
+	local online=0
+	local offline=0
+	local up="0"
+	local enabled pid device time_p time_n time_u time_d status
+
+	network_get_device device $1
+
+	if [ "${iface}" = "${iface_select}" ] || [ "${iface_select}" = "" ]; then
+		pid="$(pgrep -f "mwan3track $iface $device")"
+		if [ "${pid}" != "" ]; then
+			running="1"
+		fi
+
+		time_p="$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/TIME")"
+		[ -z "${time_p}" ] || {
+			time_n="$(get_uptime)"
+			let age=time_n-time_p
+		}
+
+		time_u="$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/ONLINE")"
+		[ -z "${time_u}" ] || [ "${time_u}" = "0" ] || {
+			time_n="$(get_uptime)"
+			let online=time_n-time_u
+		}
+
+		time_d="$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/OFFLINE")"
+		[ -z "${time_d}" ] || [ "${time_d}" = "0" ] || {
+			time_n="$(get_uptime)"
+			let offline=time_n-time_d
+		}
+
+		local uptime="0"
+
+		config_get enabled "$iface" enabled 0
+		network_get_uptime uptime "$iface"
+		network_is_up "$iface" && up="1"
+
+		if [ -f "$MWAN3TRACK_STATUS_DIR/${iface}/STATUS" ]; then
+			status="$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/STATUS")"
+		else
+			status="unknown"
+		fi
+
+		json_add_object "${iface}"
+		json_add_int age "$age"
+		json_add_int online "${online}"
+		json_add_int offline "${offline}"
+		json_add_int uptime "${uptime}"
+		json_add_int "score" "$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/SCORE")"
+		json_add_int "lost" "$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/LOST")"
+		json_add_int "turn" "$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/TURN")"
+		json_add_string "status" "${status}"
+		json_add_boolean "enabled" "${enabled}"
+		json_add_boolean "running" "${running}"
+		json_add_boolean "up" "${up}"
+		json_add_array "track_ip"
+		for file in $MWAN3TRACK_STATUS_DIR/${iface}/*; do
+			track="${file#*/TRACK_}"
+			if [ "${track}" != "${file}" ]; then
+				json_add_object
+				json_add_string ip "${track}"
+				json_add_string status "$(cat "${file}")"
+				json_add_int latency "$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/LATENCY_${track}")"
+				json_add_int packetloss "$(cat "$MWAN3TRACK_STATUS_DIR/${iface}/LOSS_${track}")"
+				json_close_object
+			fi
+		done
+		json_close_array
+		json_close_object
+	fi
+}
+
+main () {
+
+	case "$1" in
+		list)
+			json_init
+			json_add_object "status"
+			json_add_string "section" "x"
+			json_add_string "interface" "x"
+			json_add_string "policies" "x"
+			json_close_object
+			json_dump
+			;;
+		call)
+			case "$2" in
+			status)
+				local section iface
+				read input;
+				json_load "$input"
+				json_get_var section section
+				json_get_var iface interface
+
+				config_load mwan3
+				json_init
+				case "$section" in
+					interfaces)
+						json_add_object interfaces
+						config_foreach get_mwan3_status interface "${iface}"
+						json_close_object
+						;;
+					connected)
+						json_add_object connected
+						json_add_array ipv4
+						report_connected_v4
+						json_close_array
+						json_add_array ipv6
+						report_connected_v6
+						json_close_array
+						json_close_object
+						;;
+					policies)
+						json_add_object policies
+						json_add_object ipv4
+						report_policies_v4
+						json_close_object
+						json_add_object ipv6
+						report_policies_v6
+						json_close_object
+						json_close_object
+						;;
+					*)
+						# interfaces
+						json_add_object interfaces
+						config_foreach get_mwan3_status interface
+						json_close_object
+						# connected
+						json_add_object connected
+						json_add_array ipv4
+						report_connected_v4
+						json_close_array
+						json_add_array ipv6
+						report_connected_v6
+						json_close_array
+						json_close_object
+						# policies
+						json_add_object policies
+						json_add_object ipv4
+						report_policies_v4
+						json_close_object
+						json_add_object ipv6
+						report_policies_v6
+						json_close_object
+						json_close_object
+						;;
+				esac
+				json_dump
+				;;
+			esac
+			;;
+	esac
+}
+
+main "$@"

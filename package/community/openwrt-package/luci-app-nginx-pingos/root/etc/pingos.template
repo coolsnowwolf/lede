@@ -1,0 +1,209 @@
+user  root;
+daemon on;
+master_process on;
+worker_processes  1;
+#worker_rlimit 4g;
+
+#error_log |TMP_PATH|/error.log;
+#error_log |TMP_PATH|/error.log  notice;
+error_log |TMP_PATH|/error.log  info;
+
+worker_rlimit_nofile 102400;
+worker_rlimit_core   2G;
+working_directory    |TMP_PATH|;
+
+pid |TMP_PATH|/pingos.pid;
+
+events {
+    use epoll;
+    worker_connections  4096;
+    multi_listen unix:|TMP_PATH|/http |HTTP_PORT|;
+    multi_listen unix:|TMP_PATH|/rtmp |RTMP_PORT|;
+
+    dynamic_refresh_interval 5s;
+    dynamic_domain_buckets   1001;
+    resolver 114.114.114.114  valid=1m;
+    resolver_timeout 30s;
+}
+
+#stream_zone buckets=1024 streams=4096;
+
+#dynamic_conf conf/nginx_dynamic.conf 10;
+#dynamic_log |TMP_PATH|/dynamic.log info;
+
+rtmp {
+    log_format log_bandwidth '{"app":"$app","name":"$name","bitrate":$bitrate,"args":"$args","timestamp":$ntp,"ts":"$time_local","type":"$command","remote_addr":"$remote_addr","domain":"$domain"}';
+    access_log |TMP_PATH|/bandwidth.log log_bandwidth trunc=60s;
+
+    server {
+        listen |RTMP_PORT|;
+        listen [::]:|RTMP_PORT| ipv6only=on;
+        serverid 000;
+        out_queue 2048;
+        server_name localhost;
+        rtmp_auto_pull on;
+        rtmp_auto_pull_port unix:|TMP_PATH|/rtmp;
+   
+        application push {
+            live on;
+            push rtmp://127.0.0.1:|RTMP_PORT|/live app=live;
+        }
+
+        application live {
+           live_record |TS_RECORD|;
+           live_record_path |RECORD_PATH|;
+
+            recorder r1{
+                record |FLV_RECORD|;
+                record_path |RECORD_PATH|;
+            }
+
+            live on;
+            hls |HLS|;
+            hls_path |TMP_PATH|/hls;
+            hls_fragment 4000ms;
+			#hls_max_fragment 10000ms;
+            hls_playlist_length 12000ms;
+            hls_type live;
+
+            hls2 |HLS2|;
+            mpegts_cache_time 20s;
+
+            hls2_fragment 2000ms;
+            hls2_max_fragment 3000ms;
+            hls2_playlist_length 6000ms;
+
+            wait_key on;
+            wait_video on;
+            cache_time 1s;
+            send_all on;
+            low_latency off;
+            fix_timestamp 2s;
+			# h265 codecid, default 12
+            hevc_codecid  12;
+        }
+    }
+}
+
+http {
+    include       /usr/share/pingos/conf/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_X-Forwarded-For" "$http_X-Real-IP" "$host"';
+
+
+    access_log  |TMP_PATH|/access.log  main;
+
+    sendfile        on;
+    #tcp_nopush     on;
+
+    #keepalive_timeout  0;
+    keepalive_timeout  65;
+
+    #reset_server_name www.test1.com www.test2.com;
+    #gzip  on;
+
+    upstream hlsm {
+        #hash $remote_addr consistent;
+        hash $arg_session consistent;
+        # 这里需要注意，你要开几个进程，就要按这个规则写几条记录
+        server unix:|TMP_PATH|/http.0;
+        #server unix:|TMP_PATH|/http.1;
+    }
+
+    server {
+        listen |HTTP_PORT|;
+        listen [::]:|HTTP_PORT|;
+        |ssl_certificate|
+        |ssl_certificate_key|
+        ssl_session_cache shared:SSL:1m;
+        ssl_session_timeout 5m;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+		
+        location /rtmp_stat {
+            rtmp_stat all;
+            rtmp_stat_stylesheet /stat.xsl;
+        }
+
+        location /xstat {
+            rtmp_stat all;
+        }
+
+        location /sys_stat {
+            sys_stat;
+        }
+        location ~ .mp4$ {
+            root /usr/share/pingos/html;
+            #mp4;
+        }
+
+        location /control {
+            rtmp_control all;
+        }
+         location /flv {
+             flv_live |RTMP_PORT| app=live;
+             add_header 'Access-Control-Allow-Origin' '*';
+             add_header "Access-Control-Allow-Credentials" "true";
+             add_header "Access-Control-Allow-Methods" "*";
+             add_header "Access-Control-Allow-Headers" "Content-Type,Access-Token";
+             add_header "Access-Control-Expose-Headers" "*";
+         }
+         location /ts {
+             ts_live |RTMP_PORT| app=live;
+             expires -1;
+             add_header 'Access-Control-Allow-Origin' '*';
+             add_header "Access-Control-Allow-Credentials" "true";
+             add_header "Access-Control-Allow-Methods" "*";
+             add_header "Access-Control-Allow-Headers" "Content-Type,Access-Token";
+             add_header "Access-Control-Expose-Headers" "*";
+         }
+         location /hls {
+            # Serve HLS fragments
+             types {
+                 application/vnd.apple.mpegurl m3u8;
+                 video/mp2t ts;
+             }
+             root |TMP_PATH|;
+             expires -1;
+             add_header Cache-Control no-cache;
+             add_header 'Access-Control-Allow-Origin' '*';
+             add_header "Access-Control-Allow-Credentials" "true";
+             add_header "Access-Control-Allow-Methods" "*";
+             add_header "Access-Control-Allow-Headers" "Content-Type,Access-Token";
+             add_header "Access-Control-Expose-Headers" "*";
+         }
+
+        location /hlsm {
+             hls2_live |RTMP_PORT| app=live;
+             add_header 'Access-Control-Allow-Origin' '*';
+             add_header Cache-Control no-cache;
+             add_header "Access-Control-Allow-Credentials" "true";
+             add_header "Access-Control-Allow-Methods" "*";
+             add_header "Access-Control-Allow-Headers" "Content-Type,Access-Token";
+             add_header "Access-Control-Expose-Headers" "*";
+         }
+
+         location /hls2 {
+             proxy_buffering on;
+             proxy_buffer_size 4k; 
+             proxy_buffers 8 1M;
+             proxy_busy_buffers_size 2M;
+             proxy_max_temp_file_size 0;
+             set $hls_args location=/hls2&scheme=$scheme;
+#             if ($args) {
+#                 set $hls_args $args&location=/hls2&scheme=$scheme;
+#             }
+             proxy_set_header Host $host:$server_port;
+             rewrite ^/(.*)/(.*)\.(.*)$ /hlsm/$2.$3?$hls_args break;
+             proxy_pass http://hlsm;
+         }
+
+         location / {
+             chunked_transfer_encoding on;
+             root /usr/share/pingos/html/;
+         }
+    }
+}

@@ -1,0 +1,257 @@
+From: Debian MySQL Maintainers <pkg-mysql-maint@lists.alioth.debian.org>
+Date: Thu, 10 Aug 2017 20:40:28 +0200
+Subject: mips-connect-unaligned
+
+---
+ storage/connect/valblk.cpp | 41 ++++++++++++++++++-------------------
+ storage/connect/valblk.h   | 51 +++++++++++++++++++++++++++++-----------------
+ 2 files changed, 52 insertions(+), 40 deletions(-)
+
+--- a/storage/connect/valblk.cpp
++++ b/storage/connect/valblk.cpp
+@@ -268,14 +268,14 @@ bool TYPBLK<TYPE>::Init(PGLOBAL g, bool
+ template <class TYPE>
+ char *TYPBLK<TYPE>::GetCharString(char *p, int n)
+   {
+-  sprintf(p, Fmt, Typp[n]);
++  sprintf(p, Fmt, UnalignedRead(n));
+   return p;
+   } // end of GetCharString
+ 
+ template <>
+ char *TYPBLK<double>::GetCharString(char *p, int n)
+   {
+-  sprintf(p, Fmt, Prec, Typp[n]);
++  sprintf(p, Fmt, Prec, UnalignedRead(n));
+   return p;
+   } // end of GetCharString
+ 
+@@ -291,7 +291,7 @@ void TYPBLK<TYPE>::SetValue(PVAL valp, i
+   ChkTyp(valp);
+ 
+   if (!(b = valp->IsNull()))
+-    Typp[n] = GetTypedValue(valp);
++    UnalignedWrite(n, GetTypedValue(valp));
+   else
+     Reset(n);
+ 
+@@ -353,9 +353,9 @@ void TYPBLK<TYPE>::SetValue(PCSZ p, int
+   ulonglong val = CharToNumber(p, strlen(p), maxval, Unsigned, &minus); 
+     
+   if (minus && val < maxval)
+-    Typp[n] = (TYPE)(-(signed)val);
++    UnalignedWrite(n, (TYPE)(-(signed)val));
+   else
+-    Typp[n] = (TYPE)val;
++    UnalignedWrite(n, (TYPE)val);
+ 
+   SetNull(n, false);
+   } // end of SetValue
+@@ -398,7 +398,7 @@ void TYPBLK<double>::SetValue(PCSZ p, in
+ 		throw Type;
+ 	} // endif Check
+ 
+-  Typp[n] = atof(p);
++  UnalignedWrite(n, atof(p));
+   SetNull(n, false);
+   } // end of SetValue
+ 
+@@ -430,7 +430,7 @@ void TYPBLK<TYPE>::SetValue(PVBLK pv, in
+   ChkTyp(pv);
+ 
+   if (!(b = pv->IsNull(n2) && Nullable))
+-    Typp[n1] = GetTypedValue(pv, n2);
++    UnalignedWrite(n1, GetTypedValue(pv, n2));
+   else
+     Reset(n1);
+ 
+@@ -481,10 +481,10 @@ void TYPBLK<TYPE>::SetMin(PVAL valp, int
+   {
+   CheckParms(valp, n)
+   TYPE  tval = GetTypedValue(valp);
+-  TYPE& tmin = Typp[n];
++  TYPE  tmin = UnalignedRead(n);
+ 
+   if (tval < tmin)
+-    tmin = tval;
++    UnalignedWrite(n, tval);
+ 
+   } // end of SetMin
+ 
+@@ -496,10 +496,10 @@ void TYPBLK<TYPE>::SetMax(PVAL valp, int
+   {
+   CheckParms(valp, n)
+   TYPE  tval = GetTypedValue(valp);
+-  TYPE& tmin = Typp[n];
++  TYPE  tmin = UnalignedRead(n);
+ 
+   if (tval > tmin)
+-    tmin = tval;
++    UnalignedWrite(n, tval);
+ 
+   } // end of SetMax
+ 
+@@ -513,8 +513,7 @@ void TYPBLK<TYPE>::SetValues(PVBLK pv, i
+   CheckType(pv)
+   TYPE *lp = ((TYPBLK*)pv)->Typp;
+ 
+-  for (int i = k; i < n; i++)          // TODO
+-    Typp[i] = lp[i];
++  memcpy(Typp + k, lp + k, sizeof(TYPE) * n);
+ 
+   } // end of SetValues
+ #endif // 0
+@@ -525,7 +524,7 @@ void TYPBLK<TYPE>::SetValues(PVBLK pv, i
+ template <class TYPE>
+ void TYPBLK<TYPE>::Move(int i, int j)
+   {
+-  Typp[j] = Typp[i];
++  UnalignedWrite(j, UnalignedRead(i));
+   MoveNull(i, j);
+   } // end of Move
+ 
+@@ -539,7 +538,7 @@ int TYPBLK<TYPE>::CompVal(PVAL vp, int n
+   ChkIndx(n);
+   ChkTyp(vp);
+ #endif   // _DEBUG
+-  TYPE mlv = Typp[n];
++  TYPE mlv = UnalignedRead(n);
+   TYPE vlv = GetTypedValue(vp);
+ 
+   return (vlv > mlv) ? 1 : (vlv < mlv) ? (-1) : 0;
+@@ -551,8 +550,8 @@ int TYPBLK<TYPE>::CompVal(PVAL vp, int n
+ template <class TYPE>
+ int TYPBLK<TYPE>::CompVal(int i1, int i2)
+   {
+-  TYPE lv1 = Typp[i1];
+-  TYPE lv2 = Typp[i2];
++  TYPE lv1 = UnalignedRead(i1);
++  TYPE lv2 = UnalignedRead(i2);
+ 
+   return (lv1 > lv2) ? 1 : (lv1 < lv2) ? (-1) : 0;
+   } // end of CompVal
+@@ -589,7 +588,7 @@ int TYPBLK<TYPE>::Find(PVAL vp)
+   TYPE n = GetTypedValue(vp);
+ 
+   for (i = 0; i < Nval; i++)
+-    if (n == Typp[i])
++    if (n == UnalignedRead(i))
+       break;
+ 
+   return (i < Nval) ? i : (-1);
+@@ -605,7 +604,7 @@ int TYPBLK<TYPE>::GetMaxLength(void)
+   int i, n, m;
+ 
+   for (i = n = 0; i < Nval; i++) {
+-    m = sprintf(buf, Fmt, Typp[i]);
++    m = sprintf(buf, Fmt, UnalignedRead(i));
+     n = MY_MAX(n, m);
+     } // endfor i
+ 
+@@ -1335,7 +1334,7 @@ char *DATBLK::GetCharString(char *p, int
+   char *vp;
+ 
+   if (Dvalp) {
+-    Dvalp->SetValue(Typp[n]);
++    Dvalp->SetValue(UnalignedRead(n));
+     vp = Dvalp->GetCharString(p);
+   } else
+     vp = TYPBLK<int>::GetCharString(p, n);
+@@ -1351,7 +1350,7 @@ void DATBLK::SetValue(PCSZ p, int n)
+   if (Dvalp) {
+     // Decode the string according to format
+     Dvalp->SetValue_psz(p);
+-    Typp[n] = Dvalp->GetIntValue();
++    UnalignedWrite(n, Dvalp->GetIntValue());
+   } else
+     TYPBLK<int>::SetValue(p, n);
+ 
+--- a/storage/connect/valblk.h
++++ b/storage/connect/valblk.h
+@@ -139,6 +139,7 @@ class VALBLK : public BLOCK {
+   int     Prec;             // Precision of float values
+   }; // end of class VALBLK
+ 
++
+ /***********************************************************************/
+ /*  Class TYPBLK: represents a block of typed values.                  */
+ /***********************************************************************/
+@@ -151,40 +152,41 @@ class TYPBLK : public VALBLK {
+   // Implementation
+   virtual bool   Init(PGLOBAL g, bool check);
+   virtual int    GetVlen(void) {return sizeof(TYPE);}
+-  virtual char   GetTinyValue(int n) {return (char)Typp[n];}
+-  virtual uchar  GetUTinyValue(int n) {return (uchar)Typp[n];}
+-  virtual short  GetShortValue(int n) {return (short)Typp[n];}
+-  virtual ushort GetUShortValue(int n) {return (ushort)Typp[n];}
+-  virtual int    GetIntValue(int n) {return (int)Typp[n];}
+-  virtual uint   GetUIntValue(int n) {return (uint)Typp[n];}
+-  virtual longlong GetBigintValue(int n) {return (longlong)Typp[n];}
+-  virtual ulonglong GetUBigintValue(int n) {return (ulonglong)Typp[n];}
+-  virtual double GetFloatValue(int n) {return (double)Typp[n];}
++
++  virtual char   GetTinyValue(int n) {return (char)UnalignedRead(n);}
++  virtual uchar  GetUTinyValue(int n) {return (uchar)UnalignedRead(n);}
++  virtual short  GetShortValue(int n) {return (short)UnalignedRead(n);}
++  virtual ushort GetUShortValue(int n) {return (ushort)UnalignedRead(n);}
++  virtual int    GetIntValue(int n) {return (int)UnalignedRead(n);}
++  virtual uint   GetUIntValue(int n) {return (uint)UnalignedRead(n);}
++  virtual longlong GetBigintValue(int n) {return (longlong)UnalignedRead(n);}
++  virtual ulonglong GetUBigintValue(int n) {return (ulonglong)UnalignedRead(n);}
++  virtual double GetFloatValue(int n) {return (double)UnalignedRead(n);}
+   virtual char  *GetCharString(char *p, int n);
+-  virtual void   Reset(int n) {Typp[n] = 0;}
++  virtual void   Reset(int n) {UnalignedWrite(n, 0);}
+ 
+   // Methods
+   using VALBLK::SetValue;
+   virtual void   SetValue(PCSZ sp, int n);
+   virtual void   SetValue(const char *sp, uint len, int n);
+   virtual void   SetValue(short sval, int n)
+-                  {Typp[n] = (TYPE)sval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)sval); SetNull(n, false);}
+   virtual void   SetValue(ushort sval, int n)
+-                  {Typp[n] = (TYPE)sval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)sval); SetNull(n, false);}
+   virtual void   SetValue(int lval, int n)
+-                  {Typp[n] = (TYPE)lval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)lval); SetNull(n, false);}
+   virtual void   SetValue(uint lval, int n)
+-                  {Typp[n] = (TYPE)lval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)lval); SetNull(n, false);}
+   virtual void   SetValue(longlong lval, int n)
+-                  {Typp[n] = (TYPE)lval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)lval); SetNull(n, false);}
+   virtual void   SetValue(ulonglong lval, int n)
+-                  {Typp[n] = (TYPE)lval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)lval); SetNull(n, false);}
+   virtual void   SetValue(double fval, int n)
+-                  {Typp[n] = (TYPE)fval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)fval); SetNull(n, false);}
+   virtual void   SetValue(char cval, int n)
+-                  {Typp[n] = (TYPE)cval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)cval); SetNull(n, false);}
+   virtual void   SetValue(uchar cval, int n)
+-                  {Typp[n] = (TYPE)cval; SetNull(n, false);}
++                  {UnalignedWrite(n, (TYPE)cval); SetNull(n, false);}
+   virtual void   SetValue(PVAL valp, int n);
+   virtual void   SetValue(PVBLK pv, int n1, int n2);
+   virtual void   SetMin(PVAL valp, int n);
+@@ -206,6 +208,17 @@ class TYPBLK : public VALBLK {
+   // Members
+   TYPE* const &Typp;
+   const char  *Fmt;
++
++  // Unaligned access
++  TYPE UnalignedRead(int n) const {
++    TYPE result;
++    memcpy(&result, Typp + n, sizeof(TYPE));
++    return result;
++  }
++
++  void UnalignedWrite(int n, TYPE value) {
++    memcpy(Typp + n, &value, sizeof(TYPE));
++  }
+   }; // end of class TYPBLK
+ 
+ /***********************************************************************/

@@ -1,0 +1,94 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/functions/network.sh
+. /lib/mwan3/mwan3.sh
+. /usr/share/libubox/jshn.sh
+
+[ "$ACTION" == "ifup" -o "$ACTION" == "ifdown" ] || exit 1
+[ -n "$INTERFACE" ] || exit 2
+
+if [ "$ACTION" == "ifup" ]; then
+        [ -n "$DEVICE" ] || exit 3
+fi
+
+config_load mwan3
+config_get_bool enabled globals 'enabled' '0'
+[ ${enabled} -gt 0 ] || exit 0
+
+mwan3_lock "$ACTION" "$INTERFACE"
+mwan3_init
+mwan3_set_connected_iptables
+mwan3_set_custom_ipset
+mwan3_unlock "$ACTION" "$INTERFACE"
+
+config_get enabled $INTERFACE enabled 0
+config_get initial_state $INTERFACE initial_state "online"
+[ "$enabled" == "1" ] || exit 0
+
+if [ "$ACTION" == "ifup" ]; then
+	config_get family $INTERFACE family ipv4
+	if [ "$family" = "ipv4" ]; then
+		ubus call network.interface.${INTERFACE}_4 status &>/dev/null
+		if [ "$?" -eq "0" ]; then
+			network_get_ipaddr src_ip ${INTERFACE}_4
+		else
+			network_get_ipaddr src_ip ${INTERFACE}
+		fi
+		[ -n "$src_ip" ] || src_ip="0.0.0.0"
+	elif [ "$family" = "ipv6" ]; then
+		ubus call network.interface.${INTERFACE}_6 status &>/dev/null
+		if [ "$?" -eq "0" ]; then
+			network_get_ipaddr6 src_ip ${INTERFACE}_6
+		else
+			network_get_ipaddr6 src_ip ${INTERFACE}
+		fi
+		[ -n "$src_ip" ] || src_ip="::"
+	fi
+fi
+
+if [ "$initial_state" = "offline" ]; then
+	json_load "$(ubus call mwan3 status '{"section":"interfaces"}')"
+	json_select "interfaces"
+	json_select "${INTERFACE}"
+	json_get_var running running
+	json_get_var status status
+else
+	status=online
+	running=1
+fi
+
+mwan3_lock "$ACTION" "$INTERFACE"
+$LOG notice "Execute "$ACTION" event on interface $INTERFACE (${DEVICE:-unknown})"
+
+case "$ACTION" in
+	ifup)
+		mwan3_set_general_rules
+		mwan3_set_general_iptables
+		mwan3_create_iface_iptables $INTERFACE $DEVICE
+		mwan3_create_iface_rules $INTERFACE $DEVICE
+		mwan3_create_iface_route $INTERFACE $DEVICE
+		if [ ${running} -eq 1 -a "${status}" = "online" ]; then
+			$LOG notice "Starting tracker on interface $INTERFACE (${DEVICE:-unknown})"
+			mwan3_set_iface_hotplug_state $INTERFACE "online"
+			mwan3_track $INTERFACE $DEVICE "online" "$src_ip"
+		else
+			$LOG notice "Starting tracker on interface $INTERFACE (${DEVICE:-unknown})"
+			mwan3_set_iface_hotplug_state $INTERFACE "offline"
+			mwan3_track $INTERFACE $DEVICE "offline" "$src_ip"
+		fi
+		mwan3_set_policies_iptables
+		mwan3_set_user_rules
+	;;
+	ifdown)
+		mwan3_set_iface_hotplug_state $INTERFACE "offline"
+		mwan3_delete_iface_ipset_entries $INTERFACE
+		mwan3_track_signal $INTERFACE $DEVICE
+		mwan3_set_policies_iptables
+		mwan3_set_user_rules
+	;;
+esac
+
+mwan3_unlock "$ACTION" "$INTERFACE"
+
+exit 0

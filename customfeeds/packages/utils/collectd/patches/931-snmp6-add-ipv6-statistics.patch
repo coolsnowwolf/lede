@@ -1,0 +1,239 @@
+From: Nick Hainke <vincent@systemli.org>
+Date: Mon, 7 Dec 2020 19:29:54 +0100
+Subject: [PATCH] snmp6: add ipv6 statistics
+
+ChangeLog: snmp6 plugin: Add plugin for parsing IPv6 statistics
+
+We would like to have pure ipv6 interface statistics. To get them,
+we parse the snmp6 interface.
+
+Signed-off-by: Nick Hainke <vincent@systemli.org>
+---
+ Makefile.am          |   8 +++
+ README               |   4 ++
+ configure.ac         |   2 +
+ src/collectd.conf.in |   6 ++
+ src/snmp6.c          | 135 +++++++++++++++++++++++++++++++++++++++++++
+ src/types.db         |   2 +
+ 6 files changed, 157 insertions(+)
+ create mode 100644 src/snmp6.c
+
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -1964,6 +1964,14 @@ TESTS += test_plugin_snmp_agent
+ 
+ endif
+ 
++if BUILD_PLUGIN_SNMP6
++pkglib_LTLIBRARIES += snmp6.la
++snmp6_la_SOURCES = src/snmp6.c
++snmp6_la_CFLAGS = $(AM_CFLAGS)
++snmp6_la_LDFLAGS = $(PLUGIN_LDFLAGS)
++snmp6_la_LIBADD = libignorelist.la
++endif # BUILD_PLUGIN_SNMP6
++
+ if BUILD_PLUGIN_STATSD
+ pkglib_LTLIBRARIES += statsd.la
+ statsd_la_SOURCES = src/statsd.c
+--- a/README
++++ b/README
+@@ -422,6 +422,10 @@ Features
+       network devices such as switches, routers, thermometers, rack monitoring
+       servers, etc. See collectd-snmp(5).
+ 
++    - snmp6
++      Read values from SNMP6 (Simple Network Management Protocol). Supports pure
++      IPv6 interface statistics.
++
+     - statsd
+       Acts as a StatsD server, reading values sent over the network from StatsD
+       clients and calculating rates and other aggregates out of these values.
+--- a/configure.ac
++++ b/configure.ac
+@@ -7162,6 +7162,7 @@ AC_PLUGIN([slurm],               [$with_
+ AC_PLUGIN([smart],               [$plugin_smart],             [SMART statistics])
+ AC_PLUGIN([snmp],                [$with_libnetsnmp],          [SNMP querying plugin])
+ AC_PLUGIN([snmp_agent],          [$with_libnetsnmpagent],     [SNMP agent plugin])
++AC_PLUGIN([snmp6],               [yes],                       [IPv6 Interface traffic statistics via snmp6])
+ AC_PLUGIN([statsd],              [yes],                       [StatsD plugin])
+ AC_PLUGIN([swap],                [$plugin_swap],              [Swap usage statistics])
+ AC_PLUGIN([synproxy],            [$plugin_synproxy],          [Synproxy stats plugin])
+@@ -7611,6 +7612,7 @@ AC_MSG_RESULT([    slurm . . . . . . . .
+ AC_MSG_RESULT([    smart . . . . . . . . $enable_smart])
+ AC_MSG_RESULT([    snmp  . . . . . . . . $enable_snmp])
+ AC_MSG_RESULT([    snmp_agent  . . . . . $enable_snmp_agent])
++AC_MSG_RESULT([    snmp6 . . . . . . . . $enable_snmp6])
+ AC_MSG_RESULT([    statsd  . . . . . . . $enable_statsd])
+ AC_MSG_RESULT([    swap  . . . . . . . . $enable_swap])
+ AC_MSG_RESULT([    synproxy  . . . . . . $enable_synproxy])
+--- a/src/collectd.conf.in
++++ b/src/collectd.conf.in
+@@ -207,6 +207,7 @@
+ #@BUILD_PLUGIN_SMART_TRUE@LoadPlugin smart
+ #@BUILD_PLUGIN_SNMP_TRUE@LoadPlugin snmp
+ #@BUILD_PLUGIN_SNMP_AGENT_TRUE@LoadPlugin snmp_agent
++#@BUILD_PLUGIN_SNMP6_TRUE@LoadPlugin snmp6
+ #@BUILD_PLUGIN_STATSD_TRUE@LoadPlugin statsd
+ #@BUILD_PLUGIN_SWAP_TRUE@LoadPlugin swap
+ #@BUILD_PLUGIN_SYSEVENT_TRUE@LoadPlugin sysevent
+@@ -1718,6 +1719,11 @@
+ #  </Table>
+ #</Plugin>
+ 
++#<Plugin snmp6>
++#	Interface "eth0"
++#	IgnoreSelected false
++#</Plugin>
++
+ #<Plugin statsd>
+ #  Host "::"
+ #  Port "8125"
+--- /dev/null
++++ b/src/snmp6.c
+@@ -0,0 +1,135 @@
++/*
++  This Plugin is based opn the interface.c Plugin.
++*/
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <stdbool.h>
++#include <stdio.h>
++
++#include <net/if.h>
++#include <sys/types.h>
++#include <ifaddrs.h>
++
++#include "plugin.h"
++#include "utils/cmds/putval.h"
++#include "utils/common/common.h"
++#include "utils/ignorelist/ignorelist.h"
++
++static const char *config_keys[] = {
++    "Interface",
++    "IgnoreSelected",
++};
++static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
++
++static ignorelist_t *ignorelist;
++
++static int snmp6_config(const char *key, const char *value) {
++  if (ignorelist == NULL)
++    ignorelist = ignorelist_create(/* invert = */ 1);
++
++  if (strcasecmp(key, "Interface") == 0) {
++    ignorelist_add(ignorelist, value);
++  } else if (strcasecmp(key, "IgnoreSelected") == 0) {
++    int invert = 1;
++    if (IS_TRUE(value))
++      invert = 0;
++    ignorelist_set_invert(ignorelist, invert);
++  }
++
++  return 0;
++}
++
++/* Copied from interface.c */
++static void snmp6_submit(const char *dev, const char *type, derive_t rx,
++                         derive_t tx) {
++  value_list_t vl = VALUE_LIST_INIT;
++  value_t values[] = {
++      {.derive = rx},
++      {.derive = tx},
++  };
++
++  vl.values = values;
++  vl.values_len = STATIC_ARRAY_SIZE(values);
++  sstrncpy(vl.plugin, "snmp6", sizeof(vl.plugin));
++  sstrncpy(vl.plugin_instance, dev, sizeof(vl.plugin_instance));
++  sstrncpy(vl.type, type, sizeof(vl.type));
++
++  plugin_dispatch_values(&vl);
++} /* void if_submit */
++
++int snmp_read(char *ifname) {
++  FILE *fh;
++  char buffer[1024];
++  char *fields[2];
++  int numfields;
++  int currline = 0;
++  derive_t data[76];
++  char procpath[1024];
++  int offset = 0;
++
++  if (ignorelist_match(ignorelist, ifname) != 0)
++    return 0;
++
++  if (strncmp("all", ifname, strlen("all")) == 0) {
++    snprintf(procpath, 1024, "/proc/net/snmp6");
++    offset = 1;
++  } else {
++    snprintf(procpath, 1024, "/proc/net/dev_snmp6/%s", ifname);
++  }
++
++  if ((fh = fopen(procpath, "r")) == NULL) {
++    WARNING("snmp6 plugin: try opening %s : fopen: %s", procpath, STRERRNO);
++    return -1;
++  }
++
++  while (fgets(buffer, 1024, fh) != NULL) {
++    numfields = strsplit(buffer, fields, 2);
++
++    if (numfields < 2)
++      return -1;
++
++    data[currline++] = atoll(fields[1]);
++  }
++
++  fclose(fh);
++
++  if (currline < 28) {
++    return -1;
++  }
++
++  snmp6_submit(ifname, "if_octets", data[23 - offset], data[24 - offset]);
++  snmp6_submit(ifname, "if_octets_mcast", data[25 - offset], data[26 - offset]);
++  snmp6_submit(ifname, "if_octets_bcast", data[27 - offset], data[28 - offset]);
++  return 0;
++}
++
++int read_all_interfaces(void) {
++#ifndef HAVE_IFADDRS_H
++  return -1;
++#else
++
++  // getifaddrs is not working all the time (e.g. wireguard interfaces)
++  // instead we use if_nameindex() syscall as suggested in:
++  // https://stackoverflow.com/a/45796495/8474618
++  struct if_nameindex *if_nidxs, *intf;
++
++  if_nidxs = if_nameindex();
++
++  if (if_nidxs != NULL) {
++    for (intf = if_nidxs; intf->if_index != 0 || intf->if_name != NULL; intf++) {
++      snmp_read(intf->if_name);
++    }
++    if_freenameindex(if_nidxs);
++  }
++
++  snmp_read("all");
++  return 0;
++#endif
++}
++
++void module_register(void) {
++  plugin_register_config("snmp6", snmp6_config, config_keys, config_keys_num);
++  plugin_register_read("snmp6", read_all_interfaces);
++} /* void module_register */
+--- a/src/types.db
++++ b/src/types.db
+@@ -132,6 +132,8 @@ if_dropped              rx:DERIVE:0:U, t
+ if_errors               rx:DERIVE:0:U, tx:DERIVE:0:U
+ if_multicast            value:DERIVE:0:U
+ if_octets               rx:DERIVE:0:U, tx:DERIVE:0:U
++if_octets_mcast         rx:DERIVE:0:U, tx:DERIVE:0:U
++if_octets_bcast         rx:DERIVE:0:U, tx:DERIVE:0:U
+ if_packets              rx:DERIVE:0:U, tx:DERIVE:0:U
+ if_rx_dropped           value:DERIVE:0:U
+ if_rx_errors            value:DERIVE:0:U

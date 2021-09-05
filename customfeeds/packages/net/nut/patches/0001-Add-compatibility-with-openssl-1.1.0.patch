@@ -1,0 +1,166 @@
+commit 612c05efb3c3b243da603a3a050993281888b6e3
+Author: Arjen de Korte <build+github@de-korte.org>
+Date:   Fri Mar 15 10:17:32 2019 +0100
+
+    Add support for openssl-1.1.0 (#504)
+    
+    * Add support for openssl-1.1.0
+    
+    * Allow TLSv1 and higher (not just TLSv1)
+    
+    * Fix check for empty string
+    
+    * Report TLS handshake in debug mode
+    
+    * Update nut_check_libopenssl.m4
+    
+    * Update upsclient.c
+    
+    * Update netssl.c
+
+--- a/clients/upsclient.c
++++ b/clients/upsclient.c
+@@ -299,11 +299,6 @@ int upscli_init(int certverify, const ch
+ {
+ #ifdef WITH_OPENSSL
+ 	int ret, ssl_mode = SSL_VERIFY_NONE;
+-#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+-	const SSL_METHOD	*ssl_method;
+-#else
+-	SSL_METHOD	*ssl_method;
+-#endif
+ #elif defined(WITH_NSS) /* WITH_OPENSSL */
+ 	SECStatus	status;
+ #endif /* WITH_OPENSSL | WITH_NSS */
+@@ -315,22 +310,32 @@ int upscli_init(int certverify, const ch
+ 	}
+ 	
+ #ifdef WITH_OPENSSL
+-	
+-	SSL_library_init();
+-	SSL_load_error_strings();
+ 
+-	ssl_method = TLSv1_client_method();
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++	SSL_load_error_strings();
++	SSL_library_init();
+ 
+-	if (!ssl_method) {
+-		return 0;
+-	}
++	ssl_ctx = SSL_CTX_new(SSLv23_client_method());
++#else
++	ssl_ctx = SSL_CTX_new(TLS_client_method());
++#endif
+ 
+-	ssl_ctx = SSL_CTX_new(ssl_method);
+ 	if (!ssl_ctx) {
+ 		upslogx(LOG_ERR, "Can not initialize SSL context");
+ 		return -1;
+ 	}
+ 	
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++	/* set minimum protocol TLSv1 */
++	SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
++#else
++	ret = SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_VERSION);
++	if (ret != 1) {
++		upslogx(LOG_ERR, "Can not set minimum protocol to TLSv1");
++		return -1;
++	}
++#endif
++
+ 	if (!certpath) {
+ 		if (certverify == 1) {
+ 			upslogx(LOG_ERR, "Can not verify certificate if any is specified");
+@@ -737,7 +742,7 @@ static int upscli_sslinit(UPSCONN_t *ups
+ 	switch(res)
+ 	{
+ 	case 1:
+-		upsdebugx(3, "SSL connected");
++		upsdebugx(3, "SSL connected (%s)", SSL_get_version(ups->ssl));
+ 		break;
+ 	case 0:
+ 		upslog_with_errno(1, "SSL_connect do not accept handshake.");
+--- a/clients/upssched.c
++++ b/clients/upssched.c
+@@ -794,7 +794,7 @@ static void parse_at(const char *ntype,
+ 	}
+ 
+ 	if (!strcmp(cmd, "EXECUTE")) {
+-		if (ca1 == '\0') {
++		if (ca1[0] == '\0') {
+ 			upslogx(LOG_ERR, "Empty EXECUTE command argument");
+ 			return;
+ 		}
+--- a/m4/nut_check_libopenssl.m4
++++ b/m4/nut_check_libopenssl.m4
+@@ -58,7 +58,7 @@ if test -z "${nut_have_libopenssl_seen}"
+ 
+ 	dnl check if openssl is usable
+ 	AC_CHECK_HEADERS(openssl/ssl.h, [nut_have_openssl=yes], [nut_have_openssl=no], [AC_INCLUDES_DEFAULT])
+-	AC_CHECK_FUNCS(SSL_library_init, [], [nut_have_openssl=no])
++	AC_CHECK_FUNCS(SSL_CTX_new, [], [nut_have_openssl=no])
+ 
+ 	if test "${nut_have_openssl}" = "yes"; then
+ 		nut_with_ssl="yes"
+--- a/server/netssl.c
++++ b/server/netssl.c
+@@ -274,7 +274,7 @@ void net_starttls(nut_ctype_t *client, i
+ 	{
+ 	case 1:
+ 		client->ssl_connected = 1;
+-		upsdebugx(3, "SSL connected");
++		upsdebugx(3, "SSL connected (%s)", SSL_get_version(client->ssl));
+ 		break;
+ 		
+ 	case 0:
+@@ -370,13 +370,7 @@ void ssl_init(void)
+ {
+ #ifdef WITH_NSS
+ 	SECStatus status;
+-#elif defined(WITH_OPENSSL)
+-#if OPENSSL_VERSION_NUMBER >= 0x10000000L
+-	const SSL_METHOD	*ssl_method;
+-#else
+-	SSL_METHOD	*ssl_method;
+-#endif
+-#endif /* WITH_NSS|WITH_OPENSSL */
++#endif /* WITH_NSS */
+ 
+ 	if (!certfile) {
+ 		return;
+@@ -386,18 +380,29 @@ void ssl_init(void)
+ 
+ #ifdef WITH_OPENSSL
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	SSL_load_error_strings();
+ 	SSL_library_init();
+ 
+-	if ((ssl_method = TLSv1_server_method()) == NULL) {
++	ssl_ctx = SSL_CTX_new(SSLv23_server_method());
++#else
++	ssl_ctx = SSL_CTX_new(TLS_server_method());
++#endif
++
++	if (!ssl_ctx) {
+ 		ssl_debug();
+-		fatalx(EXIT_FAILURE, "TLSv1_server_method failed");
++		fatalx(EXIT_FAILURE, "SSL_CTX_new failed");
+ 	}
+ 
+-	if ((ssl_ctx = SSL_CTX_new(ssl_method)) == NULL) {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++	/* set minimum protocol TLSv1 */
++	SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
++#else
++	if (SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_VERSION) != 1) {
+ 		ssl_debug();
+-		fatalx(EXIT_FAILURE, "SSL_CTX_new failed");
++		fatalx(EXIT_FAILURE, "SSL_CTX_set_min_proto_version(TLS1_VERSION)");
+ 	}
++#endif
+ 
+ 	if (SSL_CTX_use_certificate_chain_file(ssl_ctx, certfile) != 1) {
+ 		ssl_debug();

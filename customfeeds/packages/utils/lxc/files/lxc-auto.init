@@ -1,0 +1,73 @@
+#!/bin/sh /etc/rc.common
+
+. /lib/functions.sh
+
+START=99
+STOP=00
+
+run_command() {
+	local command="$1"
+	$command
+}
+
+start_container() {
+	local cfg="$1"
+	local name
+
+	config_get name "$cfg" name
+	config_list_foreach "$cfg" command run_command
+	if [ -n "$name" ]; then
+		/usr/bin/lxc-start -n "$name"
+	fi
+}
+
+max_timeout=0
+
+stop_container() {
+	local cfg="$1"
+	local name timeout
+
+	config_get name "$cfg" name
+	config_get timeout "$cfg" timeout 300
+
+	if [ "$max_timeout" -lt "$timeout" ]; then
+		max_timeout=$timeout
+	fi
+
+	if [ -n "$name" ]; then
+		if [ "$timeout" = "0" ]; then
+			/usr/bin/lxc-stop -n "$name" &
+		else
+			/usr/bin/lxc-stop -n "$name" -t $timeout &
+		fi
+	fi
+}
+
+start() {
+	config_load lxc-auto
+	config_foreach start_container container
+}
+
+stop() {
+	config_load lxc-auto
+	config_foreach stop_container container
+	# ensure e.g. shutdown doesn't occur before maximum timeout on
+	# containers that are shutting down
+	if [ $max_timeout -gt 0 ]; then
+		sleep $max_timeout
+	fi
+}
+
+#Export systemd cgroups
+boot() {
+	if [ ! -d /sys/fs/cgroup/systemd ]; then
+		mkdir -p /sys/fs/cgroup/systemd
+		mount -t cgroup -o rw,nosuid,nodev,noexec,relatime,none,name=systemd cgroup /sys/fs/cgroup/systemd
+	fi
+
+	if [ ! -d /run ]; then
+		ln -s /var/run /run
+	fi
+
+	start
+}

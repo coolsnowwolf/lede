@@ -1,0 +1,117 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+CONFIG="luci-app-pptp-server"
+PPTP_PATH=/var/etc/pptpd
+PPTP_CONFIG_FILE=${PPTP_PATH}/pptpd.conf
+PPTP_OPTIONS_FILE=${PPTP_PATH}/options.pptpd
+CHAP_SECRETS=/etc/ppp/chap-secrets
+
+vt_localip=$(uci -q get $CONFIG.@service[0].localip)
+[ -z "$vt_localip" ] && vt_localip="172.16.100.1"
+
+ipt_flag="PPTP VPN Server"
+
+get_enabled_anonymous_secs() {
+	uci -q show "${CONFIG}" | grep "${1}\[.*\.enabled='1'" | cut -d '.' -sf2
+}
+
+ipt_rule() {
+	if [ "$1" = "add" ]; then
+		iptables -t nat -I POSTROUTING -s ${vt_localip%.*}.0/24 -m comment --comment "${ipt_flag}" -j MASQUERADE 2>/dev/null
+		iptables -I forwarding_rule -s ${vt_localip%.*}.0/24 -m comment --comment "${ipt_flag}" -j ACCEPT 2>/dev/null
+		iptables -I INPUT -p tcp --dport 1723 -m comment --comment "${ipt_flag}" -j ACCEPT 2>/dev/null
+		iptables -t mangle -I OUTPUT -p tcp --sport 1723 -m comment --comment "${ipt_flag}" -j RETURN 2>/dev/null
+	else
+		ipt_del() {
+			for i in $(seq 1 $($1 -nL $2 | grep -c "${ipt_flag}")); do
+				local index=$($1 --line-number -nL $2 | grep "${ipt_flag}" | head -1 | awk '{print $1}')
+				$1 -w -D $2 $index 2>/dev/null
+			done
+		}
+		ipt_del "iptables" "forwarding_rule"
+		ipt_del "iptables" "INPUT"
+		ipt_del "iptables -t nat" "POSTROUTING"
+		ipt_del "iptables -t mangle" "OUTPUT"
+	fi
+}
+
+gen_include() {
+	echo '#!/bin/sh' > /var/etc/$CONFIG.include
+	extract_rules() {
+		echo "*$1"
+		iptables-save -t $1 | grep "${ipt_flag}" | \
+		sed -e "s/^-A \(INPUT\)/-I \1 1/"
+		echo 'COMMIT'
+	}
+	cat <<-EOF >> /var/etc/$CONFIG.include
+		iptables-save -c | grep -v "${ipt_flag}" | iptables-restore -c
+		iptables-restore -n <<-EOT
+		$(extract_rules filter)
+		$(extract_rules nat)
+		EOT
+	EOF
+	return 0
+}
+
+start() {
+	local vt_enabled=$(uci -q get $CONFIG.@service[0].enabled)
+	[ "$vt_enabled" -eq 1 ] || return 1
+	touch $CHAP_SECRETS
+	mkdir -p $PPTP_PATH
+	
+	cp /etc/ppp/options.pptpd $PPTP_OPTIONS_FILE
+	sed -i '/mppe/d' $PPTP_OPTIONS_FILE 2>/dev/null
+	sed -i '/ms-dns/d' $PPTP_OPTIONS_FILE 2>/dev/null
+	sed -i '/name/d' $PPTP_OPTIONS_FILE 2>/dev/null
+	echo "name pptp-server">> $PPTP_OPTIONS_FILE
+	
+	local vt_mppe=$(uci -q get $CONFIG.@service[0].mppe)
+	[ -n "$vt_mppe" ] && [ "$vt_mppe" -eq 1 ] && echo "mppe required,no40,no56,stateless" >> $PPTP_OPTIONS_FILE
+	
+	local vt_dns=$(uci -q get $CONFIG.@service[0].dns)
+	[ -z "$vt_dns" ] && vt_dns="8.8.4.4"
+	echo "ms-dns ${vt_dns}">> $PPTP_OPTIONS_FILE
+	
+	cp /etc/pptpd.conf $PPTP_CONFIG_FILE
+	sed -i '/localip/d' $PPTP_CONFIG_FILE 2>/dev/null
+	sed -i '/remoteip/d' $PPTP_CONFIG_FILE 2>/dev/null
+	sed -i '/option/d' $PPTP_CONFIG_FILE 2>/dev/null
+	sed -i '/name/d' $PPTP_CONFIG_FILE 2>/dev/null
+	echo "name pptp-server">> $PPTP_CONFIG_FILE
+	
+	local vt_remoteip=$(uci -q get $CONFIG.@service[0].remoteip)
+	[ -z "$vt_remoteip" ] && vt_remoteip="172.16.100.10-20"
+	
+	echo "localip ${vt_localip}" >> $PPTP_CONFIG_FILE
+	echo "remoteip ${vt_remoteip}" >> $PPTP_CONFIG_FILE
+	echo "option ${PPTP_OPTIONS_FILE}" >> $PPTP_CONFIG_FILE
+	
+	local pptp_users=$(get_enabled_anonymous_secs "@users")
+	[ -n "$pptp_users" ] && {
+		for user in $pptp_users; do
+			eval $(uci -q show "${CONFIG}.${user}" | cut -d'.' -sf 3-)
+			[ "$enabled" -eq 1 ] || return 0
+			[ -n "$username" ] || return 0
+			[ -n "$password" ] || return 0
+			[ -n "$ipaddress" ] || ipaddress="*"
+			echo "$username pptp-server $password $ipaddress" >> $CHAP_SECRETS
+		done
+	}
+	
+	for m in arc4 sha1_generic slhc crc-ccitt ppp_generic ppp_async ppp_mppe; do
+		insmod $m >/dev/null 2>&1
+	done
+	/usr/sbin/pptpd -c $PPTP_CONFIG_FILE
+	
+	ipt_rule add
+	gen_include
+}
+
+stop() {
+	sed -i '/pptp-server/d' $CHAP_SECRETS 2>/dev/null
+	top -bn1 | grep "${PPTP_PATH}" | grep -v "grep" | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1
+	ipt_rule del
+	rm -rf /var/etc/$CONFIG.include
+	rm -rf $PPTP_PATH
+}

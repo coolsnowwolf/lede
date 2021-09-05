@@ -1,0 +1,175 @@
+#!/bin/sh
+TAG="_SS_SPEC_RULE_"
+IPT="iptables -t nat"
+FWI=$(uci -q get firewall.bypass.path) || FWI=/var/etc/bypass.include
+A=0
+B=0
+C=0
+MODE=0
+
+flush_iptables(){
+	local ipt="iptables -t $1"
+	local DAT=$(iptables-save -t $1)
+	eval $(echo "$DAT" | grep "$TAG" | sed -e 's/^-A/$ipt -D/' -e 's/$/;/')
+	for chain in $(echo "$DAT" | awk '/^:SS_SPEC/{print$1}');do
+		$ipt -F ${chain:1} 2>/dev/null && $ipt -X ${chain:1}
+	done
+}
+
+flush_r(){
+	flush_iptables nat
+	flush_iptables mangle
+	ip rule del fwmark 1 lookup 100 2>/dev/null
+	ip route del local 0.0.0.0/0 dev lo table 100 2>/dev/null
+	ipset -X ss_spec_wan_ac 2>/dev/null
+	ipset -X ss_spec_lan_ac 2>/dev/null
+	ipset -X fplan 2>/dev/null
+	ipset -X gmlan 2>/dev/null
+	ipset -X blacklist 2>/dev/null
+	ipset -X netflix 2>/dev/null
+	ipset -X china_v4 2>/dev/null
+	ipset -X china_v6 2>/dev/null
+	ipset -X bypass_all 2>/dev/null
+	echo '#!/bin/sh' > $FWI
+}
+
+ipset_r(){
+	$IPT -N SS_SPEC_WAN_FW || return 1
+	$IPT -A SS_SPEC_WAN_FW -p tcp $PROXY_PORTS -j REDIRECT --to-ports $local_port 2>/dev/null
+	[ $MODE = oversea ] && B=1
+	[ $MODE = router -o $MODE = all ] && [ -z "$PROXY_PORTS" ] && B=1
+	[ -n "$NF_SERVER" ] && ipset -N netflix hash:net 2>/dev/null
+	if [ $MODE != all ];then
+		[ -n "$LAN_FP_IP" ] && ipset -N fplan hash:net 2>/dev/null
+		[ -n "$WAN_FW_IP" -o $MODE != router -o -s /etc/bypass/black.list ] && ipset -N blacklist hash:net 2>/dev/null
+		for ip in $LAN_FP_IP;do ipset -! add fplan $ip;done
+		for ip in $WAN_FW_IP;do ipset -! add blacklist $ip;done
+	fi
+	if [ -n "$LAN_GM_IP" -a $B = 0 ];then
+		C=1
+		ipset -N gmlan hash:net 2>/dev/null
+		for ip in $LAN_GM_IP;do ipset -! add gmlan $ip;done
+	fi
+	[ $A = 1 -o $C = 1 ] && /usr/share/bypass/chinaipset
+	[ $MODE = router ] && /usr/share/bypass/chinaipset v6
+	cat > /tmp/by_local.ipset  <<EOF
+0.0.0.0/8
+10.0.0.0/8
+100.64.0.0/10
+127.0.0.0/8
+169.254.0.0/16
+172.16.0.0/12
+192.0.0.0/24
+192.0.2.0/24
+192.88.99.0/24
+192.168.0.0/16
+198.18.0.0/15
+198.51.100.0/24
+203.0.113.0/24
+224.0.0.0/4
+240.0.0.0/4
+EOF
+	sed -i 's/^/add ss_spec_wan_ac /' /tmp/by_local.ipset
+	sed -i '1i\create ss_spec_wan_ac hash:net' /tmp/by_local.ipset
+	ipset -F ss_spec_wan_ac 2>/dev/null
+	ipset -R < /tmp/by_local.ipset 2>/dev/null
+	rm -f /tmp/by_local.ipset
+	for ip in $WAN_BP_IP;do ipset -! add ss_spec_wan_ac $ip;done
+	$IPT -N SS_SPEC_WAN_AC
+	$IPT -A SS_SPEC_WAN_AC -d $server -j RETURN
+	$IPT -A SS_SPEC_WAN_AC -m set --match-set ss_spec_wan_ac dst -j RETURN
+	if ipset list netflix >/dev/null 2>&1;then
+		[ "$(uci -q get bypass.@global[0].nf_proxy)" = 1 ] && $IPT -A SS_SPEC_WAN_AC -d $NF_SERVER -j SS_SPEC_WAN_FW || ipset -! add ss_spec_wan_ac $NF_SERVER
+		$IPT -A SS_SPEC_WAN_AC -p tcp -m set --match-set netflix dst -j REDIRECT --to-ports $NF_PORT
+	fi
+	ipset list fplan >/dev/null 2>&1 && $IPT -A SS_SPEC_WAN_AC -m set --match-set fplan src -j SS_SPEC_WAN_FW
+	ipset list blacklist >/dev/null 2>&1 && $IPT -A SS_SPEC_WAN_AC -m set --match-set blacklist dst -j SS_SPEC_WAN_FW
+	ipset list gmlan >/dev/null 2>&1 && $IPT -A SS_SPEC_WAN_AC -m set --match-set gmlan src -m set ! --match-set china_v4 dst -j SS_SPEC_WAN_FW
+
+	case $MODE in
+		router)$IPT -A SS_SPEC_WAN_AC -m set ! --match-set china_v4 dst -j SS_SPEC_WAN_FW;;
+		oversea)$IPT -A SS_SPEC_WAN_AC -m set --match-set china_v4 dst -j SS_SPEC_WAN_FW;;
+		all)$IPT -A SS_SPEC_WAN_AC -j SS_SPEC_WAN_FW;;
+	esac
+
+	if [ -n "$LAN_AC_IP" ];then
+		ipset -! -R <<-EOF || return 1
+		create ss_spec_lan_ac hash:net
+		$(for ip in ${LAN_AC_IP:1};do echo "add ss_spec_lan_ac $ip";done)
+EOF
+		case "${LAN_AC_IP:0:1}" in
+			w|W)MATCH_SET="-m set --match-set ss_spec_lan_ac src";;
+			b|B)MATCH_SET="-m set ! --match-set ss_spec_lan_ac src";;
+		esac
+	fi
+
+	$IPT -I PREROUTING 1 -p tcp $MATCH_SET -m comment --comment "$TAG" -j SS_SPEC_WAN_AC
+	$IPT -I OUTPUT 1 -p tcp -m comment --comment "$TAG" -j SS_SPEC_WAN_AC
+}
+
+tp_rule(){
+	[ -n "$SERVER" ] || return 0
+	ip rule add fwmark 1 lookup 100
+	ip route add local 0.0.0.0/0 dev lo table 100
+	ipt="iptables -t mangle"
+	$ipt -N SS_SPEC_TPROXY
+	$ipt -A SS_SPEC_TPROXY -p udp --dport 443 -j DROP
+	$ipt -A SS_SPEC_TPROXY -p udp --dport 53 -j RETURN
+	$ipt -A SS_SPEC_TPROXY -p udp -d $SERVER -j RETURN
+	$ipt -A SS_SPEC_TPROXY -p udp -m set --match-set ss_spec_wan_ac dst -j RETURN
+	ipset list fplan >/dev/null 2>&1 && $ipt -A SS_SPEC_TPROXY -p udp $PROXY_PORTS -m set --match-set fplan src -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1
+	ipset list blacklist >/dev/null 2>&1 && $ipt -A SS_SPEC_TPROXY -p udp $PROXY_PORTS -m set --match-set blacklist dst -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1
+	ipset list gmlan >/dev/null 2>&1 && $ipt -A SS_SPEC_TPROXY -p udp -m set --match-set gmlan src -m set ! --match-set china_v4 dst -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1
+
+	case $MODE in
+		router)$ipt -A SS_SPEC_TPROXY -p udp $PROXY_PORTS -m set ! --match-set china_v4 dst -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1;;
+		oversea)$ipt -A SS_SPEC_TPROXY -p udp $PROXY_PORTS -m set --match-set china_v4 dst -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1;;
+		all)$ipt -A SS_SPEC_TPROXY -p udp $PROXY_PORTS -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x1/0x1;;
+	esac
+
+	ipset -N bypass_all hash:net 2>/dev/null
+	for i in $(ip -4 add show | grep -v $(uci -qP /tmp/state get network.wan.ifname || echo 127.0.0.1) | grep inet | grep -v 127.0.0.1 | awk '{print$2}');do
+		ipset -! add bypass_all $i
+	done
+	$ipt -I PREROUTING 1 -p udp $MATCH_SET -m set --match-set bypass_all src -m comment --comment "$TAG" -j SS_SPEC_TPROXY
+}
+
+gen_include(){
+	extract_rules() {
+		echo "*$2"
+		$1-save -t $2 | grep SS_SPEC_ |\
+			sed -e "s/^-A \(OUTPUT\|PREROUTING\)/-I \1 1/"
+		echo 'COMMIT'
+	}
+	cat <<-EOF >> $FWI
+	iptables-save -c | grep -v "SS_SPEC" | iptables-restore -c
+	iptables-restore -n <<-EOT
+	$(extract_rules iptables nat)
+	$(extract_rules iptables mangle)
+	EOT
+EOF
+}
+
+while getopts ":s:l:S:L:N:P:a:b:w:p:G:D:rczf" arg;do
+	case $arg in
+		s)server=$OPTARG;;
+		l)local_port=$OPTARG;;
+		S)SERVER=$OPTARG;;
+		L)LOCAL_PORT=$OPTARG;;
+		N)NF_SERVER=$OPTARG;;
+		P)NF_PORT=$OPTARG;;
+		a)LAN_AC_IP=$OPTARG;;
+		b)WAN_BP_IP=$(for ip in $OPTARG;do echo $ip;done);;
+		w)WAN_FW_IP=$OPTARG;;
+		p)LAN_FP_IP=$OPTARG;;
+		G)LAN_GM_IP=$OPTARG;;
+		D)PROXY_PORTS=$OPTARG;;
+		r)MODE=router;A=1;;
+		c)MODE=oversea;A=1;;
+		z)MODE=all;;
+		f)flush_r;exit 0;;
+	esac
+done
+
+[ -z "$server" -o -z "$local_port" ] && exit 1
+flush_r;ipset_r && tp_rule && gen_include || exit 1

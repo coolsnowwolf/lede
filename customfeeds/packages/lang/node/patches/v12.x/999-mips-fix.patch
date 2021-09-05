@@ -1,0 +1,210 @@
+Description: upstream mips fix
+Origin: https://github.com/nodejs/node/issues/31118
+Last-Update: 2020-05-30
+
+--- a/deps/v8/AUTHORS
++++ b/deps/v8/AUTHORS
+@@ -106,6 +106,7 @@ James Pike <g00gle@chilon.net>
+ James M Snell <jasnell@gmail.com>
+ Jianghua Yang <jianghua.yjh@alibaba-inc.com>
+ Jiawen Geng <technicalcute@gmail.com>
++Jiaxun Yang <jiaxun.yang@flygoat.com>
+ Joel Stanley <joel@jms.id.au>
+ Johan Bergström <johan@bergstroem.nu>
+ Jonathan Liu <net147@gmail.com>
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-aix.cc
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-aix.cc
+@@ -94,10 +94,6 @@ void PlatformEmbeddedFileWriterAIX::Decl
+ 
+ void PlatformEmbeddedFileWriterAIX::DeclareFunctionEnd(const char* name) {}
+ 
+-int PlatformEmbeddedFileWriterAIX::HexLiteral(uint64_t value) {
+-  return fprintf(fp_, "0x%" PRIx64, value);
+-}
+-
+ void PlatformEmbeddedFileWriterAIX::FilePrologue() {}
+ 
+ void PlatformEmbeddedFileWriterAIX::DeclareExternalFilename(
+@@ -120,12 +116,6 @@ DataDirective PlatformEmbeddedFileWriter
+   return kLong;
+ }
+ 
+-int PlatformEmbeddedFileWriterAIX::WriteByteChunk(const uint8_t* data) {
+-  DCHECK_EQ(ByteChunkDataDirective(), kLong);
+-  const uint32_t* long_ptr = reinterpret_cast<const uint32_t*>(data);
+-  return HexLiteral(*long_ptr);
+-}
+-
+ #undef SYMBOL_PREFIX
+ 
+ }  // namespace internal
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-aix.h
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-aix.h
+@@ -37,8 +37,6 @@ class PlatformEmbeddedFileWriterAIX : pu
+   void DeclareFunctionBegin(const char* name) override;
+   void DeclareFunctionEnd(const char* name) override;
+ 
+-  int HexLiteral(uint64_t value) override;
+-
+   void Comment(const char* string) override;
+ 
+   void FilePrologue() override;
+@@ -48,7 +46,6 @@ class PlatformEmbeddedFileWriterAIX : pu
+   int IndentedDataDirective(DataDirective directive) override;
+ 
+   DataDirective ByteChunkDataDirective() const override;
+-  int WriteByteChunk(const uint8_t* data) override;
+ 
+  private:
+   void DeclareSymbolGlobal(const char* name);
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-base.cc
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-base.cc
+@@ -24,6 +24,10 @@ DataDirective PointerSizeDirective() {
+   }
+ }
+ 
++int PlatformEmbeddedFileWriterBase::HexLiteral(uint64_t value) {
++  return fprintf(fp_, "0x%" PRIx64, value);
++}
++
+ int DataDirectiveSize(DataDirective directive) {
+   switch (directive) {
+     case kByte:
+@@ -39,24 +43,37 @@ int DataDirectiveSize(DataDirective dire
+ }
+ 
+ int PlatformEmbeddedFileWriterBase::WriteByteChunk(const uint8_t* data) {
+-  DCHECK_EQ(ByteChunkDataDirective(), kOcta);
+-
+-  static constexpr size_t kSize = kInt64Size;
+-
+-  uint64_t part1, part2;
+-  // Use memcpy for the reads since {data} is not guaranteed to be aligned.
++  size_t kSize = DataDirectiveSize(ByteChunkDataDirective());
++  size_t kHalfSize = kSize / 2;
++  uint64_t high = 0, low = 0;
++
++  switch (kSize) {
++    case 1:
++      low = *data;
++      break;
++    case 4:
++      low = *reinterpret_cast<const uint32_t*>(data);
++      break;
++    case 8:
++      low = *reinterpret_cast<const uint64_t*>(data);
++      break;
++    case 16:
+ #ifdef V8_TARGET_BIG_ENDIAN
+-  memcpy(&part1, data, kSize);
+-  memcpy(&part2, data + kSize, kSize);
++      memcpy(&high, data, kHalfSize);
++      memcpy(&low, data + kHalfSize, kHalfSize);
+ #else
+-  memcpy(&part1, data + kSize, kSize);
+-  memcpy(&part2, data, kSize);
++      memcpy(&high, data + kHalfSize, kHalfSize);
++      memcpy(&low, data, kHalfSize);
+ #endif  // V8_TARGET_BIG_ENDIAN
++      break;
++    default:
++      UNREACHABLE();
++  }
+ 
+-  if (part1 != 0) {
+-    return fprintf(fp(), "0x%" PRIx64 "%016" PRIx64, part1, part2);
++  if (high != 0) {
++    return fprintf(fp(), "0x%" PRIx64 "%016" PRIx64, high, low);
+   } else {
+-    return fprintf(fp(), "0x%" PRIx64, part2);
++    return fprintf(fp(), "0x%" PRIx64, low);
+   }
+ }
+ 
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-base.h
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-base.h
+@@ -67,7 +67,7 @@ class PlatformEmbeddedFileWriterBase {
+   virtual void DeclareFunctionEnd(const char* name) = 0;
+ 
+   // Returns the number of printed characters.
+-  virtual int HexLiteral(uint64_t value) = 0;
++  virtual int HexLiteral(uint64_t value);
+ 
+   virtual void Comment(const char* string) = 0;
+   virtual void Newline() { fprintf(fp_, "\n"); }
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-generic.cc
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-generic.cc
+@@ -112,10 +112,6 @@ void PlatformEmbeddedFileWriterGeneric::
+ 
+ void PlatformEmbeddedFileWriterGeneric::DeclareFunctionEnd(const char* name) {}
+ 
+-int PlatformEmbeddedFileWriterGeneric::HexLiteral(uint64_t value) {
+-  return fprintf(fp_, "0x%" PRIx64, value);
+-}
+-
+ void PlatformEmbeddedFileWriterGeneric::FilePrologue() {}
+ 
+ void PlatformEmbeddedFileWriterGeneric::DeclareExternalFilename(
+@@ -142,6 +138,18 @@ int PlatformEmbeddedFileWriterGeneric::I
+   return fprintf(fp_, "  %s ", DirectiveAsString(directive));
+ }
+ 
++DataDirective PlatformEmbeddedFileWriterGeneric::ByteChunkDataDirective()
++    const {
++#if defined(V8_TARGET_ARCH_MIPS) || defined(V8_TARGET_ARCH_MIPS64)
++  // MIPS uses a fixed 4 byte instruction set, using .long
++  // to prevent any unnecessary padding.
++  return kLong;
++#else
++  // Other ISAs just listen to the base
++  return PlatformEmbeddedFileWriterBase::ByteChunkDataDirective();
++#endif
++}
++
+ #undef SYMBOL_PREFIX
+ 
+ }  // namespace internal
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-generic.h
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-generic.h
+@@ -39,8 +39,6 @@ class PlatformEmbeddedFileWriterGeneric
+   void DeclareFunctionBegin(const char* name) override;
+   void DeclareFunctionEnd(const char* name) override;
+ 
+-  int HexLiteral(uint64_t value) override;
+-
+   void Comment(const char* string) override;
+ 
+   void FilePrologue() override;
+@@ -49,6 +47,8 @@ class PlatformEmbeddedFileWriterGeneric
+ 
+   int IndentedDataDirective(DataDirective directive) override;
+ 
++  DataDirective ByteChunkDataDirective() const override;
++
+  private:
+   void DeclareSymbolGlobal(const char* name);
+ 
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-mac.cc
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-mac.cc
+@@ -87,10 +87,6 @@ void PlatformEmbeddedFileWriterMac::Decl
+ 
+ void PlatformEmbeddedFileWriterMac::DeclareFunctionEnd(const char* name) {}
+ 
+-int PlatformEmbeddedFileWriterMac::HexLiteral(uint64_t value) {
+-  return fprintf(fp_, "0x%" PRIx64, value);
+-}
+-
+ void PlatformEmbeddedFileWriterMac::FilePrologue() {}
+ 
+ void PlatformEmbeddedFileWriterMac::DeclareExternalFilename(
+--- a/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-mac.h
++++ b/deps/v8/src/snapshot/embedded/platform-embedded-file-writer-mac.h
+@@ -37,8 +37,6 @@ class PlatformEmbeddedFileWriterMac : pu
+   void DeclareFunctionBegin(const char* name) override;
+   void DeclareFunctionEnd(const char* name) override;
+ 
+-  int HexLiteral(uint64_t value) override;
+-
+   void Comment(const char* string) override;
+ 
+   void FilePrologue() override;

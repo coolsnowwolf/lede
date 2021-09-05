@@ -1,0 +1,96 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+USE_PROCD=1
+PROG=/usr/bin/kadnode
+OPTS=""
+
+
+boot()
+{
+	# Wait for the loopback interface to be ready
+	ubus -t 30 wait_for network.interface network.loopback 2>/dev/null
+	rc_procd start_service
+}
+
+xappend() {
+	local name="$2" value="$1"
+	OPTS="$OPTS--${name//_/-} ${value//'/\\'}
+"
+}
+
+append_opts_list() {
+	local name cfg="$1"; shift
+	for name in $*; do
+		config_list_foreach "$cfg" "$name" xappend "$name"
+	done
+}
+
+append_opts() {
+	local name value cfg="$1"; shift
+	for name in $*; do
+		config_get value "$cfg" "$name"
+		[ -n "$value" ] && xappend "$value" "$name"
+	done
+}
+
+append_opts_boolean() {
+	local name value cfg="$1"; shift
+	for name in $*; do
+		config_get_bool value "$cfg" "$name" 0
+		[ $value -gt 0 ] && xappend '' $name
+	done
+}
+
+section_enabled() {
+	config_get_bool enabled "$1" 'enabled' 0
+	[ $enabled -gt 0 ]
+}
+
+start_instance() {
+	local cfg="$1"
+	local CONFIG_FILE=/tmp/kadnode.${cfg}.conf
+
+	section_enabled "$cfg" || return
+
+	OPTS=""
+
+	append_opts "$cfg" lpd_addr dns_server dns_port verbosity peerfile config \
+		query_tld user port ifname cmd_port
+
+	append_opts_list "$cfg" announce peer tls_client_cert tls_server_cert bob_load_key
+
+	append_opts_boolean "$cfg" dns_proxy_enable lpd_disable fwd_disable ipv4 ipv6
+
+	# Close stdin when cmd feature is present
+	if [ $($PROG --version | grep -c cmd) -eq 1 ]; then
+		xappend "" "cmd_disable_stdin"
+	fi
+
+	echo "$OPTS" > $CONFIG_FILE
+
+	procd_open_instance
+	procd_set_param command $PROG
+	procd_set_param file $CONFIG_FILE
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_append_param command --config $CONFIG_FILE
+	procd_close_instance
+}
+
+stop_instance() {
+	local cfg="$1"
+	local CONFIG_FILE=/tmp/kadnode.${cfg}.conf
+
+	rm -f $CONFIG_FILE
+}
+
+start_service() {
+	config_load 'kadnode'
+	config_foreach start_instance 'kadnode'
+}
+
+stop_service() {
+	config_load 'kadnode'
+	config_foreach stop_instance 'kadnode'
+}

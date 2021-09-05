@@ -1,0 +1,80 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2014 OpenWrt.org
+
+START=60
+
+USE_PROCD=1
+
+PROG=/usr/sbin/mactelnetd
+USERS=/var/etc/mactelnetd.users
+SSHMODE=0
+
+add_account() {
+	local cfg="$1"
+	local user pass
+
+	[ $SSHMODE -eq 0 ] || {
+		[ -n "$already_warned" ] || {
+			echo "mactelnet.$cfg: login sections ignored in SSH mode" >&1
+			already_warned=1
+		}
+		return
+	}
+
+	config_get username "$cfg" username
+	config_get password "$cfg" password
+
+	[ -n "$username" ] || {
+		echo "mactelnet.$cfg: username missing" >&2
+		return
+	}
+
+	[ -n "$password" ] || {
+		echo "mactelnet.$cfg: password missing" >&2
+		return
+	}
+
+	echo "$username:$password" >> $USERS
+}
+
+add_interface() {
+	local iface="$1"
+	local device
+
+	[ -n "$iface" ] || return
+
+	if network_get_physdev device "$iface"; then
+		procd_append_param command -i "$device"
+	fi
+
+	procd_add_reload_interface_trigger "$iface"
+}
+
+add_globals() {
+	local cfg="$1"
+
+	config_get_bool SSHMODE "$cfg" sshmode 0
+	[ $SSHMODE -eq 0 ] || procd_append_param command -S
+
+	config_list_foreach "$cfg" interface add_interface
+}
+
+start_service() {
+	. /lib/functions/network.sh
+
+	procd_open_instance
+
+	procd_add_reload_trigger mactelnet
+	procd_set_param command "$PROG" -f
+
+	config_load mactelnet
+	config_foreach add_globals mactelnetd
+
+	[ $SSHMODE -eq 1 ] || {
+		rm -f $USERS
+		config_foreach add_account login
+	}
+
+	procd_close_instance
+}
+

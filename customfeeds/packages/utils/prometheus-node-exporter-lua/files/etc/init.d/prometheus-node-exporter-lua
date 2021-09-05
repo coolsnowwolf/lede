@@ -1,0 +1,59 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2013-2017 OpenWrt.org
+
+START=60
+USE_PROCD=1
+
+_log() {
+	logger -p daemon.info -t prometheus-node-exporter-lua "$@"
+}
+
+start_service() {
+	. /lib/functions/network.sh
+
+	local interface ipv6 port bind
+
+	config_load prometheus-node-exporter-lua.main
+	config_get interface "main" listen_interface "loopback"
+	config_get_bool ipv6 "main" listen_ipv6 0
+	config_get port "main" listen_port 9100
+
+	if [ "$interface" = "*" ]; then
+		[ "$ipv6" = 1 ] && bind="::" || bind="0.0.0.0"
+	else
+		if [ "$ipv6" = 1 ]; then
+			network_get_ipaddr6 bind "$interface"
+		else
+			network_get_ipaddr bind "$interface"
+		fi
+
+		network_is_up "$interface" && [ -n "$bind" ] || {
+			_log "defering start until listen interface $interface becomes ready"
+			return 0
+		}
+	fi
+
+	procd_open_instance
+
+	procd_set_param command /usr/bin/prometheus-node-exporter-lua
+	procd_append_param command --bind ${bind}
+	procd_append_param command --port ${port}
+
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn
+
+	procd_close_instance
+}
+
+service_triggers()
+{
+	local interface
+
+	procd_add_reload_trigger "prometheus-node-exporter-lua"
+
+	config_load prometheus-node-exporter-lua.main
+	config_get interface "main" listen_interface "loopback"
+
+	[ "$interface" = "*" ] || procd_add_reload_interface_trigger "$interface"
+}

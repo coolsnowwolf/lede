@@ -1,0 +1,178 @@
+From 402150eed057fc9fa52c8471ae645e23913a2805 Mon Sep 17 00:00:00 2001
+From: Philip Homburg <phomburg@ripe.net>
+Date: Tue, 23 Jun 2020 12:25:08 -0400
+Subject: [PATCH] replace stime with clock_settime
+
+---
+ coreutils/date.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+--- a/coreutils/date.c
++++ b/coreutils/date.c
+@@ -246,6 +246,9 @@ int date_main(int argc UNUSED_PARAM, cha
+ 	if (*argv)
+ 		bb_show_usage();
+ 
++    /* Clear ts.tv_nsec, in case we need to set the time later */
++  	ts.tv_nsec= 0;
++
+ 	/* Now we have parsed all the information except the date format
+ 	 * which depends on whether the clock is being set or read */
+ 
+@@ -310,7 +313,7 @@ int date_main(int argc UNUSED_PARAM, cha
+ 		}
+ 
+ 		/* if setting time, set it */
+-		if ((opt & OPT_SET) && stime(&ts.tv_sec) < 0) {
++		if ((opt & OPT_SET) && clock_settime(CLOCK_REALTIME, &ts) < 0) {
+ 			bb_perror_msg("can't set date");
+ 		}
+ 	}
+--- a/util-linux/rdate.c
++++ b/util-linux/rdate.c
+@@ -65,27 +65,27 @@ static time_t askremotedate(const char *
+ int rdate_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
+ int rdate_main(int argc UNUSED_PARAM, char **argv)
+ {
+-	time_t remote_time;
++	struct timespec remote_time;
+ 	unsigned flags;
+ 
+ 	opt_complementary = "-1";
+ 	flags = getopt32(argv, "sp");
+ 
+-	remote_time = askremotedate(argv[optind]);
++	remote_time.tv_sec = askremotedate(argv[optind]);
+ 
+ 	if (!(flags & 2)) { /* no -p (-s may be present) */
+ 		time_t current_time;
+ 
+ 		time(&current_time);
+-		if (current_time == remote_time)
++		if (current_time == remote_time.tv_sec)
+ 			bb_error_msg("current time matches remote time");
+ 		else
+-			if (stime(&remote_time) < 0)
++			if (clock_settime(CLOCK_REALTIME,&remote_time) < 0)
+ 				bb_perror_msg_and_die("can't set time of day");
+ 	}
+ 
+ 	if (flags != 1) /* not lone -s */
+-		printf("%s", ctime(&remote_time));
++		printf("%s", ctime(&remote_time.tv_sec));
+ 
+ 	return EXIT_SUCCESS;
+ }
+--- a/networking/httpget.c
++++ b/networking/httpget.c
+@@ -947,8 +947,9 @@ static int eat_headers(FILE *tcp_file, i
+ 		if (time_tolerance && strncmp(line, "Date: ", 6) == 0)
+ 		{
+ 			/* Try to set time from server */
+-			time_t now, tim, tolerance;
++			time_t now, tolerance;
+ 			struct tm tm;
++			struct timespec tim;
+ 
+ 			tolerance= strtoul(time_tolerance, &cp, 10);
+ 			if (cp[0] != '\0')
+@@ -966,16 +967,16 @@ static int eat_headers(FILE *tcp_file, i
+ 						line+6);
+ 				}
+ 			}
+-			tim= timegm(&tm);
++			tim.tv_sec= timegm(&tm);
+ 			now= time(NULL);
+-			if (now < tim-tolerance || now > tim+tolerance)
++			if (now < tim.tv_sec-tolerance || now > tim.tv_sec+tolerance)
+ 			{
+ 				if (debug)
+ 				{	fprintf(stderr,
+ 				"setting time, time difference is %d\n",
+-						(int)(tim-now));
++						(int)(tim.tv_sec-now));
+ 				}
+-				stime(&tim);
++				clock_settime(CLOCK_REALTIME,&tim);
+ 			}
+ 		}
+ 
+--- a/networking/httppost.c
++++ b/networking/httppost.c
+@@ -92,13 +92,14 @@ int httppost_main(int argc, char *argv[]
+ 	char *time_tolerance, *rebased_fn= NULL;
+ 	char *fn_new, *fn;
+ 	FILE *tcp_file, *out_file, *fh;
+-	time_t server_time, tolerance;
++	time_t tolerance;
++	struct timespec server_time;
+ 	struct stat sbF, sbH, sbS;
+ 	off_t cLength, dir_length, maxpostsize;
+ 	struct sigaction sa;
+ 
+-	post_dir= NULL; 
+-	post_file= NULL; 
++	post_dir= NULL;
++	post_file= NULL;
+ 	post_footer=NULL;
+ 	post_header=NULL;
+ 	atlas_id= NULL;
+@@ -470,12 +471,12 @@ int httppost_main(int argc, char *argv[]
+ 	if (!check_result(tcp_file))
+ 		goto err;
+ 	fprintf(stderr, "httppost: getting reply headers \n");
+-	server_time= 0;
++	server_time.tv_sec = 0;
+ 	content_length= -1;
+-	if (!eat_headers(tcp_file, &chunked, &content_length, &server_time))
++	if (!eat_headers(tcp_file, &chunked, &content_length, &server_time.tv_sec))
+ 		goto err;
+ 
+-	if (tolerance && server_time > 0)
++	if (tolerance && server_time.tv_sec > 0)
+ 	{
+ 		/* Try to set time from server */
+ 		int need_set_time;
+@@ -486,35 +487,35 @@ int httppost_main(int argc, char *argv[]
+ 		rtt= now.tv_sec-start_time.tv_sec;
+ 		rtt += (now.tv_usec-start_time.tv_usec)/1e6;
+ 		if (rtt < 0) rtt= 0;
+-		need_set_time= (now.tv_sec < server_time-tolerance-rtt ||
+-			now.tv_sec > server_time+tolerance+rtt);
++		need_set_time= (now.tv_sec < server_time.tv_sec-tolerance-rtt ||
++			now.tv_sec > server_time.tv_sec+tolerance+rtt);
+ 		if (need_set_time && getenv("HTTPPOST_ALLOW_STIME"))
+ 		{
+ 			fprintf(stderr,
+ 				"setting time, time difference is %ld\n",
+-				(long)server_time-now.tv_sec);
+-			stime(&server_time);
++				(long)server_time.tv_sec-now.tv_sec);
++			clock_settime(CLOCK_REALTIME,&server_time);
+ 			if (atlas_id)
+ 			{
+ 				printf(
+ 	"RESULT %s ongoing %ld httppost setting time, local %ld, remote %ld\n",
+ 					atlas_id, (long)time(NULL),
+ 					(long)now.tv_sec,
+-					(long)server_time);
++					(long)server_time.tv_sec);
+ 			}
+ 		}
+ 		else if (need_set_time)
+ 		{
+ 			fprintf(stderr,
+ 				"not setting time, time difference is %ld\n",
+-				(long)server_time-now.tv_sec);
++				(long)server_time.tv_sec-now.tv_sec);
+ 			if (atlas_id)
+ 			{
+ 				printf(
+ 	"RESULT %s ongoing %ld httppost not in sync, local %ld, remote %ld\n",
+ 					atlas_id, (long)time(NULL),
+ 					(long)now.tv_sec,
+-					(long)server_time);
++					(long)server_time.tv_sec);
+ 			}
+ 		}
+ 		else if (rtt <= 1)

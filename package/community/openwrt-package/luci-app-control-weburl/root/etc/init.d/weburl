@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2015 OpenWrt-dist
+# Copyright (C) 2016 fw867 <ffkykzs@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=99
+
+CONFIG=weburl
+
+uci_get_by_type() {
+	local index=0
+	if [ -n $4 ]; then
+		index=$4
+	fi
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+is_true() {
+	case $1 in
+		1|on|true|yes|enabled) echo 0;;
+		*) echo 1;;
+	esac
+}
+
+load_config() {
+	ENABLED=$(uci_get_by_type basic enable)
+	return $(is_true $ENABLED)
+}
+
+get_algo_mode(){
+	case "$1" in
+		0)
+			echo "bm"
+		;;
+		1)
+			echo "kmp"
+		;;
+	esac
+}
+
+add_rule(){
+	algos=$(uci_get_by_type basic algos)
+	for i in $(seq 0 100)
+	do
+		enable=$(uci_get_by_type macbind enable '' $i)
+		macaddr=$(uci_get_by_type macbind macaddr '' $i)
+		timeon=$(uci_get_by_type macbind timeon '' $i)
+		timeoff=$(uci_get_by_type macbind timeoff '' $i)
+		keyword=$(uci_get_by_type macbind keyword '' $i)
+		if [ -z $enable ] || [ -z $keyword ]; then
+			break
+		fi
+		
+		if [ -z $timeon ] || [ -z $timeoff ]; then
+			settime=""
+		else
+			settime="-m time --kerneltz --timestart $timeon --timestop $timeoff"
+		fi
+		
+		if [ "$enable" == "1" ]; then
+			if [ -z $macaddr ]; then
+				iptables -t filter -I WEBURL $settime -m string --string "$keyword" --algo $(get_algo_mode $algos) -j DROP
+			else
+				iptables -t filter -I WEBURL $settime -m mac --mac-source $macaddr -m string --string "$keyword" --algo $(get_algo_mode $algos) -j DROP
+				unset "$macaddr"
+			fi
+		fi
+	done
+}
+
+start(){
+	! load_config && exit 0
+	iptables -L FORWARD | grep -c WEBURL 2>/dev/null && [ $? -eq 0 ] && exit 0;
+	iptables -t filter -N WEBURL
+	iptables -t filter -I FORWARD -m comment --comment "Rule For Control" -j WEBURL
+	add_rule
+}
+stop(){
+	iptables -t filter -D FORWARD -m comment --comment "Rule For Control" -j WEBURL
+	iptables -t filter -F WEBURL
+	iptables -t filter -X WEBURL
+}
+

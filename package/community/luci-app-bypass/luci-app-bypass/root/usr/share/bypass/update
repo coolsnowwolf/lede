@@ -1,0 +1,73 @@
+#!/bin/sh
+[ "$1" = --First ] && A=Y || A=N
+# 防止重复启动
+[ -f /var/lock/bypass.lock -a $A = N ] && exit 1
+LOCK=/var/lock/bypass-update.lock
+[ -f $LOCK ] && exit 1
+touch $LOCK
+DIR=/usr/share/bypass
+TMP=/tmp/bypass
+
+log(){
+	[ $A = N ] && echo "$(date +'%Y-%m-%d %H:%M:%S') $*" >> /var/log/bypass.log
+}
+
+C=$(uci -q get bypass.@global[0].run_mode)
+
+if [ "$C" = router ];then
+	if [ $A = Y ];then
+		mkdir -p $TMP
+		while ! B=$(curl -Lfsm 9 https://ispip.clang.cn/all_cn.txt);do
+			sleep 2
+		done
+	else
+		B=$(curl -Lfsm 9 https://ispip.clang.cn/all_cn.txt)
+	fi
+	[ -n "$B" ] && echo "$B" > /tmp/china.txt
+
+	if ! cmp -s /tmp/china.txt $TMP/china.txt;then
+		log "Update China IP List!"
+		cp -f /tmp/china.txt $TMP/china.txt
+		[ $A = N ] && ipset list china_v4 >/dev/null 2>&1 && $DIR/chinaipset
+	else
+		log "China IPv4 List is up to date!"
+	fi
+
+	if [ $A = Y ];then
+		mkdir -p $TMP
+		while ! D=$(curl -Lfsm 9 https://ispip.clang.cn/all_cn_ipv6.txt);do
+			sleep 2
+		done
+	else
+		D=$(curl -Lfsm 9 https://ispip.clang.cn/all_cn_ipv6.txt)
+	fi
+	[ -n "$D" ] && echo "$D" > /tmp/china_v6.txt
+
+	if ! cmp -s /tmp/china_v6.txt $TMP/china_v6.txt;then
+		log "Update China IPv6 List!"
+		cp -f /tmp/china_v6.txt $TMP/china_v6.txt
+		[ $A = N ] && ipset list china_v6 >/dev/null 2>&1 && $DIR/chinaipset v6
+	else
+		log "China IPv6 List is up to date!"
+	fi
+fi
+
+if [ "$C" = gfw -o "$(uci -q get bypass.@global[0].gfw_mode)" = 1 ];then
+	if [ $A = Y ];then
+		while ! curl -Lfsm 5 -o /tmp/gfw.b64 https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt;do
+			sleep 2
+		done
+	else
+		curl -Lfso /tmp/gfw.b64 https://cdn.jsdelivr.net/gh/gfwlist/gfwlist/gfwlist.txt || curl -Lfso /tmp/gfw.b64 https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt
+	fi
+	$DIR/by-gfw
+	if ! cmp -s /tmp/gfwnew.txt $TMP/gfw.list;then
+		cp -f /tmp/gfwnew.txt $TMP/gfw.list
+		log "Update GFW List!"
+		[ $A = N ] && /etc/init.d/bypass restart
+	else
+		log "GFW List is up to date!"
+	fi
+fi
+rm -f $LOCK /tmp/china*.txt /tmp/gfwnew.txt
+[ $A = Y ] && /etc/init.d/bypass start &

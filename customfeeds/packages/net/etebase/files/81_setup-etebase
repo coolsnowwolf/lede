@@ -1,0 +1,54 @@
+#!/bin/sh
+
+cd /usr/share/etebase || exit 1
+
+python3 manage.pyc migrate --noinput || exit 1
+
+# setup minimal ini for collectstatic:
+mkdir -p /var/etc/etebase/ || exit 1
+printf "[global]\nSTATIC_ROOT=/www/etebase/static" >etebase-server.ini || exit 1
+python3 manage.pyc collectstatic --noinput || exit 1
+
+ETEBASE_HAS_USER_PY3CMD="import sqlite3
+c = sqlite3.connect('db.sqlite3').cursor()
+c.execute('select * from myauth_user;')
+if c.fetchone()==None: print('0')
+else: print('1')"
+
+echo
+
+if [ "$(python3 -c "$ETEBASE_HAS_USER_PY3CMD" || exit 1)" = "0" ]
+then
+    echo "===== First, create a superuser of the Webinterface by ====="
+    [ -t 0 ] && python3 manage.pyc createsuperuser ||
+    echo "===== python3 $(pwd)/manage.pyc createsuperuser ====="
+fi
+
+chown -Rh etebase:nogroup . /www/etebase/ || exit 1
+
+[ -x /etc/init.d/nginx ] || exit 1
+
+/etc/init.d/nginx running && /etc/init.d/nginx reload || /etc/init.d/nginx start
+
+router_ip() {
+    local ifstat="$(ifstatus "lan")"
+
+    for ip in $(echo "${ifstat}" | jsonfilter -e '@["ipv4-address"].*.address')
+    do echo "${ip}" && return
+    done
+
+    for ip in $(echo "${ifstat}" | jsonfilter -e '@["ipv6-address"].*.address')
+    do echo "[${ip}]" && return
+    done
+
+    for ip in $(echo "${ifstat}" | \
+        jsonfilter -e '@["ipv6-prefix-assignment"].*["local-address"].address')
+    do echo "[${ip}]" && return
+    done
+
+    echo '$ROUTER'
+}
+
+echo "===== You can add users by https://$(router_ip)/etebase/admin/login ====="
+
+exit 0

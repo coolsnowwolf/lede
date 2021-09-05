@@ -1,0 +1,93 @@
+From 351ee477f713730d1c53cf26b6fb87706d268a5f Mon Sep 17 00:00:00 2001
+From: Chris Leech <cleech@redhat.com>
+Date: Tue, 13 Aug 2013 12:39:07 -0700
+Subject: [PATCH 1/1] idbw_rec_write, pick tpgt from existing record
+
+On a static add (-m node -o new) without a user specified tpgt, looks
+for existing new style records with tpgt before creating an old style
+record without.  If one exists, take the tpgt from it an write an
+updated new style record instead.
+---
+ usr/idbm.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+--- a/usr/idbm.c
++++ b/usr/idbm.c
+@@ -28,6 +28,7 @@
+ #include <dirent.h>
+ #include <limits.h>
+ #include <fcntl.h>
++#include <glob.h>
+ #include <sys/stat.h>
+ #include <sys/file.h>
+ #include <inttypes.h>
+@@ -44,6 +45,10 @@
+ #include "fw_context.h"
+ #include "iscsi_err.h"
+ 
++#ifndef GLOB_ONLYDIR
++#define GLOB_ONLYDIR	0x100
++#endif
++
+ #define IDBM_HIDE	0    /* Hide parameter when print. */
+ #define IDBM_SHOW	1    /* Show parameter when print. */
+ #define IDBM_MASKED	2    /* Show "stars" instead of real value when print */
+@@ -203,6 +208,8 @@ static struct int_list_tbl {
+ 	{ "SHA3-256", AUTH_CHAP_ALG_SHA3_256 },
+ };
+ 
++static int idbm_remove_disc_to_node_link(node_rec_t *rec, char *portal);
++
+ static void
+ idbm_recinfo_discovery(discovery_rec_t *r, recinfo_t *ri)
+ {
+@@ -2207,12 +2214,49 @@ static int idbm_rec_write_old(node_rec_t
+ 	FILE *f;
+ 	char *portal;
+ 	int rc = 0;
++	glob_t globbuf;
++	size_t i;
++	int tpgt = PORTAL_GROUP_TAG_UNKNOWN;
+ 
+ 	portal = malloc(PATH_MAX);
+ 	if (!portal) {
+ 		log_error("Could not alloc portal");
+ 		return ISCSI_ERR_NOMEM;
+ 	}
++
++	/* check for newer portal dir with tpgt */
++	snprintf(portal, PATH_MAX, "%s/%s/%s,%d,*", NODE_CONFIG_DIR,
++		 rec->name, rec->conn[0].address, rec->conn[0].port);
++	rc = glob(portal, GLOB_ONLYDIR, NULL, &globbuf);
++	if (!rc) {
++		if (globbuf.gl_pathc > 1)
++			log_warning("multiple tpg records for portal "
++				    "%s/%s:%d found", rec->name,
++				    rec->conn[0].address, rec->conn[0].port);
++		/* set pattern for sscanf matching of tpgt */
++		snprintf(portal, PATH_MAX, "%s/%s/%s,%d,%%u", NODE_CONFIG_DIR,
++			 rec->name, rec->conn[0].address, rec->conn[0].port);
++		for (i = 0; i < globbuf.gl_pathc; i++) {
++			rc = sscanf(globbuf.gl_pathv[i], portal, &tpgt);
++			if (rc == 1)
++				break;
++		}
++		if (tpgt == PORTAL_GROUP_TAG_UNKNOWN)
++			log_warning("glob match on existing records, "
++				    "but no valid tpgt found");
++	}
++	globfree(&globbuf);
++	rc = 0;
++
++	/* if a tpgt was selected from an old record, write entry in new format */
++	if (tpgt != PORTAL_GROUP_TAG_UNKNOWN) {
++		log_warning("using tpgt %u from existing record", tpgt);
++		rec->tpgt = tpgt;
++		rc = idbm_remove_disc_to_node_link(rec, portal);
++		free(portal);
++		return idbm_rec_write_new(rec);
++	}
++
+ 	snprintf(portal, PATH_MAX, "%s/%s/%s,%d", NODE_CONFIG_DIR,
+ 		 rec->name, rec->conn[0].address, rec->conn[0].port);
+ 

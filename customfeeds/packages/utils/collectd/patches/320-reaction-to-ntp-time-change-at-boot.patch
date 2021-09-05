@@ -1,0 +1,61 @@
+Adjust the reaction to a polling interval timestamp that references
+to a past time.
+
+Past timestamps can happen when ntpd adjusts router's time after network
+connectivity is obtained after boot. Collectd shows warnings for each plugin
+as it tries to enter new values with the same timestamp as the previous one.
+
+This patch adjusts the next polling time to be now+2 seconds for the main
+loop and for the plugin-specific read loops. That avoids the warnings, but
+does not overreact in case there are shorter polling intervals or the time
+gets adjusted for other reasons.
+
+Additionally some debug statements are added, but they are visible only
+when --enable-debug configure option is used in Makefile.
+
+
+--- a/src/daemon/collectd.c
++++ b/src/daemon/collectd.c
+@@ -274,20 +274,23 @@ static int do_loop(void) {
+     update_kstat();
+ #endif
+ 
++    DEBUG("do_loop before plugin_read_all: now = %.3f", CDTIME_T_TO_DOUBLE(cdtime()));
+     /* Issue all plugins */
+     plugin_read_all();
+ 
+     cdtime_t now = cdtime();
++    DEBUG("do_loop after plugin_read_all: now = %.3f, wait_until= %.3f", CDTIME_T_TO_DOUBLE(now), CDTIME_T_TO_DOUBLE(wait_until));
+     if (now >= wait_until) {
+-      WARNING("Not sleeping because the next interval is "
++      WARNING("Sleeping only 2s because the next interval is "
+               "%.3f seconds in the past!",
+               CDTIME_T_TO_DOUBLE(now - wait_until));
+-      wait_until = now + interval;
+-      continue;
++      wait_until = now + DOUBLE_TO_CDTIME_T(2);
++      DEBUG("do_loop: wait_until adjusted to now+2 = %.3f", CDTIME_T_TO_DOUBLE(wait_until));
+     }
+ 
+     struct timespec ts_wait = CDTIME_T_TO_TIMESPEC(wait_until - now);
+     wait_until = wait_until + interval;
++    DEBUG("do_loop ends: wait_until set to %.3f", CDTIME_T_TO_DOUBLE(wait_until));
+ 
+     while ((loop == 0) && (nanosleep(&ts_wait, &ts_wait) != 0)) {
+       if (errno != EINTR) {
+--- a/src/daemon/plugin.c
++++ b/src/daemon/plugin.c
+@@ -585,10 +585,11 @@ static void *plugin_read_thread(void __a
+ 
+     /* Check, if `rf_next_read' is in the past. */
+     if (rf->rf_next_read < now) {
+-      /* `rf_next_read' is in the past. Insert `now'
++      /* `rf_next_read' is in the past. Insert `now'+2s
+        * so this value doesn't trail off into the
+        * past too much. */
+-      rf->rf_next_read = now;
++      rf->rf_next_read = now + DOUBLE_TO_CDTIME_T(2);
++      DEBUG("plugin_read_thread: Next read is in the past. Adjusted to now+2s");
+     }
+ 
+     DEBUG("plugin_read_thread: Next read of the `%s' plugin at %.3f.",

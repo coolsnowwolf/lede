@@ -1,0 +1,254 @@
+<%#
+ Copyright 2010 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%-
+	local ntm = require "luci.model.network".init()
+	local fwm = require "luci.model.firewall".init()
+
+	local net
+	local ifaces = { }
+	local netlist = { }
+	for _, net in ipairs(ntm:get_networks()) do
+		if net:name() ~= "loopback" then
+			local z = fwm:get_zone_by_network(net:name())
+			ifaces[#ifaces+1] = net:name()
+			netlist[#netlist+1] = {
+				net:name(), z and z:name() or "-", z
+			}
+		end
+	end
+
+	table.sort(netlist,
+		function(a, b)
+			if a[2] ~= b[2] then
+				return a[2] < b[2]
+			else
+				return a[1] < b[1]
+			end
+		end)
+-%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js"></script>
+<script type="text/javascript">//<![CDATA[
+	function iface_shutdown(id, reconnect) {
+		if (!reconnect && !confirm(String.format('<%_Really shutdown interface "%s" ?\nYou might lose access to this device if you are connected via this interface.%>', id)))
+			return;
+
+		var d = document.getElementById(id + '-ifc-description');
+		if (d)
+			d.innerHTML = reconnect
+				? '<em><%:Interface is reconnecting...%></em>'
+				: '<em><%:Interface is shutting down...%></em>';
+
+		var s = document.getElementById('ifc-rc-status');
+		if (s)
+		{
+			s.parentNode.style.display = 'block';
+			s.innerHTML = '<%:Waiting for changes to be applied...%>';
+		}
+
+		(new XHR()).post('<%=url('admin/network')%>/iface_' + (reconnect ? 'reconnect' : 'shutdown') + '/' + id, { token: '<%=token%>' },
+			function(x)
+			{
+				if (s)
+				{
+					s.innerHTML = reconnect
+						? '<%:Interface reconnected%>'
+						: '<%:Interface shut down%>';
+
+					window.setTimeout(function() {
+						s.parentNode.style.display = 'none';
+					}, 1000);
+				}
+			}
+		);
+	}
+
+	function iface_delete(id) {
+		if (!confirm('<%:Really delete this interface? The deletion cannot be undone!\nYou might lose access to this device if you are connected via this interface.%>'))
+			return;
+
+		(new XHR()).post('<%=url('admin/network/iface_delete')%>/' + id, { token: '<%=token%>' },
+			function(x) {
+				location.href = '<%=url('admin/network/network')%>';
+			}
+		);
+	}
+
+	var iwxhr = new XHR();
+	var wifidevs = <%=luci.http.write_json(netdevs)%>;
+	var arptable = <%=luci.http.write_json(arpcache)%>;
+
+	XHR.poll(5, '<%=url('admin/network/iface_status', table.concat(ifaces, ","))%>', null,
+		function(x, ifcs)
+		{
+			if (ifcs)
+			{
+				for (var idx = 0; idx < ifcs.length; idx++)
+				{
+					var ifc = ifcs[idx];
+					var html = '';
+
+					var s = document.getElementById(ifc.id + '-ifc-devices');
+					if (s)
+					{
+						var stat = String.format(
+							'<img src="<%=resource%>/icons/%s%s.png" style="width:16px; height:16px; vertical-align:middle" />',
+								ifc.type,
+								ifc.is_up ? '' : '_disabled'
+						);
+
+						if (ifc.subdevices && ifc.subdevices.length)
+						{
+							stat += ' <strong>(';
+
+							for (var j = 0; j < ifc.subdevices.length; j++)
+							{
+								var sif = ifc.subdevices[j];
+
+								stat += String.format(
+									'<img src="<%=resource%>/icons/%s%s.png" style="width:16px; height:16px; vertical-align:middle" title="%h" />',
+										sif.type,
+										sif.is_up ? '' : '_disabled',
+										sif.name
+								);
+							}
+
+							stat += ')</strong>';
+						}
+
+						stat += String.format(
+							'<br /><small>%h</small>',
+								ifc.name
+						);
+
+						s.innerHTML = stat;
+					}
+
+					var d = document.getElementById(ifc.id + '-ifc-description');
+					if (d && ifc.proto && ifc.ifname)
+					{
+						if (ifc.is_up)
+						{
+							html += String.format('<strong><%:Uptime%>:</strong> %t<br />', ifc.uptime);
+						}
+
+						if (ifc.macaddr)
+						{
+							html += String.format('<strong><%:MAC-Address%>:</strong> %s<br />', ifc.macaddr);
+						}
+
+						html += String.format(
+							'<strong><%:RX%></strong>: %.2mB (%d <%:Pkts.%>)<br />' +
+							'<strong><%:TX%></strong>: %.2mB (%d <%:Pkts.%>)<br />',
+								ifc.rx_bytes, ifc.rx_packets,
+								ifc.tx_bytes, ifc.tx_packets
+						);
+
+						if (ifc.ipaddrs && ifc.ipaddrs.length)
+						{
+							for (var i = 0; i < ifc.ipaddrs.length; i++)
+								html += String.format(
+									'<strong><%:IPv4%>:</strong> %s<br />',
+									ifc.ipaddrs[i]
+								);
+						}
+
+						if (ifc.ip6addrs && ifc.ip6addrs.length)
+						{
+							for (var i = 0; i < ifc.ip6addrs.length; i++)
+								html += String.format(
+									'<strong><%:IPv6%>:</strong> %s<br />',
+									ifc.ip6addrs[i]
+								);
+						}
+						
+						if (ifc.ip6prefix)
+						{
+							html += String.format('<strong><%:IPv6-PD%>:</strong> %s<br />', ifc.ip6prefix);
+						}
+
+						d.innerHTML = html;
+					}
+					else if (d && !ifc.proto)
+					{
+						var e = document.getElementById(ifc.id + '-ifc-edit');
+						if (e)
+							e.disabled = true;
+
+						d.innerHTML = String.format(
+							'<em><%:Unsupported protocol type.%></em><br />' +
+							'<a href="%h"><%:Install protocol extensions...%></a>',
+								'<%=url("admin/system/packages")%>?query=luci-proto&display=available'
+						);
+					}
+					else if (d && !ifc.ifname)
+					{
+						d.innerHTML = String.format(
+							'<em><%:Network without interfaces.%></em><br />' +
+							'<a href="<%=url("admin/network/network/%s")%>?tab.network.%s=physical"><%:Assign interfaces...%></a>',
+								ifc.name, ifc.name
+						);
+					}
+					else if (d)
+					{
+						d.innerHTML = '<em><%:Interface not present or not connected yet.%></em>';
+					}
+				}
+			}
+		}
+	);
+//]]></script>
+
+<fieldset class="cbi-section" style="display:none">
+	<legend><%:Reconnecting interface%></legend>
+	<img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" style="vertical-align:middle" />
+	<span id="ifc-rc-status"><%:Waiting for changes to be applied...%></span>
+</fieldset>
+
+<div class="cbi-map">
+	<fieldset class="cbi-section">
+		<legend><%:Interface Overview%></legend>
+
+		<table class="cbi-section-table" style="margin:10px; empty-cells:hide">
+			<tr class="cbi-section-table-titles">
+				<th class="cbi-section-table-cell"><%:Network%></th>
+				<th class="cbi-section-table-cell" style="text-align:left"><%:Status%></th>
+				<th class="cbi-section-table-cell"><%:Actions%></th>
+			</tr>
+			<%
+				for i, net in ipairs(netlist) do
+					local z = net[3]
+					local c = z and z:get_color() or "#EEEEEE"
+					local t = z and translate("Part of zone %q" % z:name()) or translate("No zone assigned")
+			%>
+				<tr class="cbi-section-table-row cbi-rowstyle-<%=i % 2 + 1%>">
+					<td class="cbi-value-field" style="padding:3px">
+						<div class="ifacebox">
+							<div class="ifacebox-head" style="background-color:<%=c%>" title="<%=pcdata(t)%>">
+								<strong><%=net[1]:upper()%></strong>
+							</div>
+							<div class="ifacebox-body" id="<%=net[1]%>-ifc-devices">
+								<img src="<%=resource%>/icons/ethernet_disabled.png" style="width:16px; height:16px" /><br />
+								<small>?</small>
+							</div>
+						</div>
+					</td>
+					<td class="cbi-value-field" style="vertical-align:middle; text-align:left; padding:3px" id="<%=net[1]%>-ifc-description">
+						<em><%:Collecting data...%></em>
+					</td>
+					<td style="width:420px">
+						<input type="button" class="cbi-button cbi-button-reload" style="width:100px" onclick="iface_shutdown('<%=net[1]%>', true)" title="<%:Reconnect this interface%>" value="<%:Connect%>" />
+						<input type="button" class="cbi-button cbi-button-reset" style="width:100px" onclick="iface_shutdown('<%=net[1]%>', false)" title="<%:Shutdown this interface%>" value="<%:Stop%>" />
+						<input type="button" class="cbi-button cbi-button-edit" style="width:100px" onclick="location.href='<%=url("admin/network/network", net[1])%>'" title="<%:Edit this interface%>" value="<%:Edit%>" id="<%=net[1]%>-ifc-edit" />
+						<input type="button" class="cbi-button cbi-button-remove" style="width:100px" onclick="iface_delete('<%=net[1]%>')" value="<%:Delete%>" />
+					</td>
+				</tr>
+			<% end %>
+		</table>
+
+		<input type="button" class="cbi-button cbi-button-add" value="<%:Add new interface...%>" onclick="location.href='<%=url("admin/network/iface_add")%>'" />
+	</fieldset>
+</div>

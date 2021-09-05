@@ -1,0 +1,99 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/upgrade/common.sh
+. /usr/share/libubox/jshn.sh
+
+OWRT_VOLUMES=owrt-volumes
+
+
+get_partition_by_name_gpt() {
+	local dev="$1"
+	local part parts node name
+	json_load "$(sfdisk -J "/dev/$dev" 2>/dev/null)"
+	json_select "partitiontable" || return
+	json_select "partitions" || return
+	json_get_keys parts
+	for part in $parts; do
+		json_select "$part"
+		json_get_vars node name
+		if [ "$2" = "$name" ]; then
+			echo "$node"
+			break
+		fi
+		json_select ..
+	done
+}
+
+part_fixup() {
+	echo "write" | sfdisk --force -q -w never "$1"
+}
+
+get_free_area() {
+	local found=
+	sfdisk -q -F "$1" 2>/dev/null | while read -r start end sectors size; do
+		case $start in
+		*"Unpartitioned"* | *"Units:"* | *"Sector"* | *"Start"* )
+			continue
+			;;
+		[0-9]*)
+			case "$size" in
+				*"M")
+					[ "${size%%M}" -lt 100 ] && continue
+					;;
+				*"G" | *"T")
+					;;
+				*"k" | *"b")
+					continue
+					;;
+			esac
+			[ "$found" ] || echo "start=$start, size=$((end - start))"
+			found=1
+			;;
+		esac
+	done
+}
+
+create_lvm_part() {
+	local disk="$1"
+	local freepart
+
+	freepart="$(get_free_area "$disk")"
+	if [ "$freepart" ]; then
+		echo "$freepart, type=lvm, name=$OWRT_VOLUMES" | sfdisk --force -w never -a "$disk"
+		partx -a "$disk" 1>/dev/null 2>/dev/null || true
+		return 0
+	else
+		return 1
+	fi
+}
+
+lvm_init() {
+	lvm pvcreate -f "$1"
+	lvm vgcreate "$2" "$1"
+	lvm vgs
+}
+
+autopart_init() {
+	local diskdev
+	local lvmpart
+	local diskserial diskhash
+
+	export_bootdevice && export_partdevice diskdev 0
+
+	[ "$diskdev" ] || return
+
+	[ -e "/sys/class/block/$diskdev/device/serial" ] && diskserial="$(cat "/sys/class/block/$diskdev/device/serial")"
+	[ -e "/sys/class/block/$diskdev/device/cid" ] && diskserial="$diskserial$(cat "/sys/class/block/$diskdev/device/cid")"
+	[ "$diskserial" ] || diskserial="$(cat /proc/sys/kernel/random/uuid)"
+	diskhash="$(echo "$diskserial" | sha256sum | cut -d' ' -f1)"
+	part_fixup "/dev/$diskdev"
+	create_lvm_part "/dev/$diskdev" || return
+	lvmpart="$(get_partition_by_name_gpt "$diskdev" "$OWRT_VOLUMES")"
+
+	[ "$lvmpart" ] || return
+	lvm_init "$lvmpart" "${OWRT_VOLUMES}-${diskhash:0:16}"
+}
+
+autopart_init
+exit 0

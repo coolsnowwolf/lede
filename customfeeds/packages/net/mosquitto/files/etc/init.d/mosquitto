@@ -1,0 +1,257 @@
+#!/bin/sh /etc/rc.common
+# Basic init script for mosquitto
+# April 2012, OpenWrt.org
+# Provides support for the luci-app-mosquitto package, if installed
+
+START=80
+USE_PROCD=1
+TCONF=/tmp/mosquitto.generated.conf
+CONF_WATCH=/etc/config/mosquitto
+
+# Usage: append_if cfg uci_name output_name
+# add a config line of the form "output_name <value>"
+# if the "uci_name" was found.
+# output_name defaults to uci_name if not specified.
+append_if() {
+    local cfg="$1"
+    local uci_name="$2"
+    local out_name="$3"
+    if [ -z "$out_name" ]; then
+        out_name=$uci_name
+    fi
+    config_get val $cfg $uci_name
+    if [ -n "$val" ]; then
+        echo "$out_name $val" >> $TCONF
+    fi
+}
+
+# mosquitto uses true/false, uci uses 1/0
+# note that this is not shell truthy, but equality with 1!
+append_bool() {
+    if [ $2 -eq 1 ]; then
+        echo "$1 true" >> $TCONF
+    else
+        echo "$1 false" >> $TCONF
+    fi
+}
+
+# as per append_if, but gets the value as a uci bool, not raw
+append_optional_bool() {
+    local cfg="$1"
+    local uci_name="$2"
+    local out_name="$3"
+    if [ -z "$out_name" ]; then
+        out_name=$uci_name
+    fi
+    config_get val $cfg $uci_name
+    if [ -n "$val" ]; then
+        config_get_bool real $cfg $uci_name
+        append_bool $out_name $real
+    fi
+}
+
+
+convert_mosq_general() {
+	local cfg="$1"
+	config_get destinations "$1" log_dest
+	for dest in $destinations; do
+		echo "log_dest $dest" >> $TCONF
+	done
+
+	config_get_bool no_remote "$1" no_remote_access 0
+	if [ "$no_remote" -eq 1 ]; then
+		echo "bind_address localhost" >> $TCONF
+	fi
+
+	append_if "$1" port
+	append_if "$1" acl_file
+	append_optional_bool "$1" allow_anonymous
+	append_optional_bool "$1" allow_duplicate_messages
+	append_if "$1" clientid_prefixes
+	append_optional_bool "$1" connection_messages
+	append_if "$1" include_dir
+	append_if "$1" log_facility
+	append_optional_bool "$1" log_timestamp
+	config_get log_types "$1" log_types
+	for log_type in $log_types; do
+		echo "log_type $log_type" >> $TCONF
+	done
+	append_if "$1" max_inflight_bytes
+	append_if "$1" max_inflight_messages
+	append_if "$1" max_queued_bytes
+	append_if "$1" max_queued_messages
+	append_if "$1" message_size_limit
+	append_if "$1" password_file
+	append_if "$1" pid_file
+	append_if "$1" psk_file
+	append_optional_bool "$1" queue_qos0_messages
+	append_optional_bool "$1" set_tcp_nodelay
+	append_if "$1" protocol
+	append_if "$1" sys_interval
+	append_if "$1" upgrade_outgoing_qos
+	append_if "$1" user
+	append_optional_bool "$1" per_listener_settings
+}
+
+convert_persistence() {
+	local cfg="$1"
+
+	append_if "$cfg" client_expiration persistent_client_expiration
+	append_if "$cfg" autosave_interval
+	append_optional_bool "$cfg" autosave_on_changes
+	append_optional_bool "$cfg" persistence
+	append_if "$cfg" file persistence_file
+	append_if "$cfg" store_clean_interval
+	config_get loc "$cfg" location
+	if [ -n "$loc" ]; then
+		[ -d "$loc" ] || {
+			mkdir -p "$loc";
+			chown mosquitto "$loc";
+		}
+		echo "persistence_location $loc" >> $TCONF
+	fi
+}
+
+add_listener() {
+    echo "" >> $TCONF
+    config_get port "$1" port
+    if [ -z "$port" ]; then
+        echo "Ignoring listener section without port"
+        return
+    fi
+    config_get_bool no_remote "$1" no_remote_access 0
+    if [ "$no_remote" -eq 1 ]; then
+        echo "listener $port 127.0.0.1" >> $TCONF
+    else
+        echo "listener $port" >> $TCONF
+    fi
+
+    append_if "$1" http_dir
+    append_if "$1" max_connections
+    append_if "$1" mount_point
+    append_if "$1" protocol
+    append_optional_bool "$1" use_username_as_clientid
+    append_if "$1" websockets_log_level
+
+    append_if "$1" cafile
+    append_if "$1" capath
+    append_if "$1" certfile
+    append_if "$1" ciphers
+    append_if "$1" crlfile
+    append_if "$1" keyfile
+    append_optional_bool "$1" require_certificate
+    append_if "$1" tls_version
+    append_optional_bool "$1" use_identity_as_username
+    append_optional_bool "$1" use_subject_as_username
+    append_if "$1" psk_hint
+    append_if "$1" auth_plugin
+
+    # Careful, this relies on internal behaviour of the cfg_load functions!
+    set | grep "CONFIG_$1_auth_opt_" | sed "s/^.*_\(auth_opt_.*\)='\(.*\)'/\1 \2/" >> $TCONF
+}
+
+add_topic() {
+    echo "topic $1" >> $TCONF
+}
+
+add_bridge() {
+    config_get conn "$1" connection
+    config_get addr "$1" address
+    if [ -z "$conn" -o -z "$addr" ]; then
+        echo "Ignoring bridge section with missing connection/address"
+        return
+    fi
+    # Also invalid if no topics are defined, mosquitto will not start!
+    config_get tlen "$1" "topic_LENGTH"
+    if [ -z "$tlen" ]; then
+        echo "Ignoring bridge section with no topics defined"
+        return
+    fi
+
+    echo "" >> $TCONF
+    echo "# Bridge connection from UCI section" >> $TCONF
+    append_if "$1" connection
+    append_if "$1" address
+
+    append_optional_bool "$1" attempt_unsubscribe bridge_attempt_unsubscribe
+    append_if "$1" protocol_version bridge_protocol_version
+    append_optional_bool "$1" cleansession
+    append_if "$1" keepalive_interval
+    append_if "$1" idle_timeout
+    append_if "$1" local_clientid
+    append_if "$1" local_password
+    append_if "$1" local_username
+    append_optional_bool "$1" notifications
+    append_optional_bool "$1" notifications_local_only
+    append_if "$1" notification_topic
+    # Note, deprecated upstream, preserve old uci configs
+    append_if "$1" clientid remote_clientid
+    append_if "$1" remote_clientid
+    # Note, deprecated upstream, preserve old uci configs
+    append_if "$1" password remote_password
+    append_if "$1" remote_password
+    # Note, deprecated upstream, preserve old uci configs
+    append_if "$1" username remote_username
+    append_if "$1" remote_username
+    append_if "$1" restart_timeout
+    append_optional_bool "$1" round_robin
+    append_if "$1" start_type
+    append_if "$1" threshold
+    config_list_foreach "$1" topic add_topic
+    append_optional_bool "$1" try_private
+
+    append_if "$1" cafile bridge_cafile
+    append_if "$1" capath bridge_capath
+    append_if "$1" certfile bridge_certfile
+    append_if "$1" identity bridge_identity
+    append_optional_bool "$1" insecure bridge_insecure
+    append_if "$1" keyfile bridge_keyfile
+    append_if "$1" psk bridge_psk
+    append_if "$1" tls_version bridge_tls_version
+}
+
+
+convert_uci() {
+	rm -rf $TCONF
+	echo "Generating mosquitto config file in $TCONF"
+	echo "# mosquitto.conf file generated from UCI config." >>$TCONF
+	# Don't include a timestamp, it makes md5sum compares fail
+
+	config_load mosquitto
+	config_foreach convert_mosq_general "mosquitto"
+	config_foreach convert_persistence "persistence"
+	config_foreach add_listener "listener"
+	config_foreach add_bridge "bridge"
+}
+
+start_service_real() {
+	local cfg="$1"
+	local use_uci write_pid
+	config_get use_uci "$cfg" use_uci
+	if [ "$use_uci" -eq 1 ]; then
+		CONF=$TCONF
+		convert_uci
+	else
+		CONF=/etc/mosquitto/mosquitto.conf
+		CONF_WATCH=$CONF
+        fi
+	config_get write_pid "$cfg" write_pid 0
+
+	procd_open_instance
+	procd_set_param command mosquitto
+	procd_append_param command -c $CONF
+	# Makes /etc/init.d/mosquitto reload work if you edit the final file.
+	procd_set_param file $CONF_WATCH
+	[ "$write_pid" -eq 1 ] && procd_set_param pidfile /var/run/mosquitto.pid
+	procd_close_instance
+}
+
+start_service() {
+	config_load mosquitto
+	config_foreach start_service_real owrt
+}
+
+service_triggers() {
+	# Makes "reload_config" work
+	procd_add_reload_trigger "mosquitto"
+}

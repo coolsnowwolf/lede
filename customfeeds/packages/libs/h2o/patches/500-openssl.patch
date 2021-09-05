@@ -1,0 +1,96 @@
+--- a/deps/neverbleed/neverbleed.c
++++ b/deps/neverbleed/neverbleed.c
+@@ -36,6 +36,7 @@
+ #include <sys/types.h>
+ #include <sys/uio.h>
+ #include <unistd.h>
++#include <openssl/engine.h>
+ #include <openssl/rand.h>
+ #include <openssl/ssl.h>
+ #include <openssl/rsa.h>
+--- a/deps/picotls/lib/openssl.c
++++ b/deps/picotls/lib/openssl.c
+@@ -36,6 +36,7 @@
+ #include <openssl/evp.h>
+ #include <openssl/objects.h>
+ #include <openssl/rand.h>
++#include <openssl/rsa.h>
+ #include <openssl/x509.h>
+ #include <openssl/x509v3.h>
+ #include <openssl/x509_vfy.h>
+@@ -941,7 +942,7 @@ int ptls_openssl_encrypt_ticket(ptls_buf
+ 
+ Exit:
+     if (cctx != NULL)
+-        EVP_CIPHER_CTX_cleanup(cctx);
++        EVP_CIPHER_CTX_reset(cctx);
+     if (hctx != NULL)
+         HMAC_CTX_free(hctx);
+     return ret;
+@@ -1011,7 +1012,7 @@ int ptls_openssl_decrypt_ticket(ptls_buf
+ 
+ Exit:
+     if (cctx != NULL)
+-        EVP_CIPHER_CTX_cleanup(cctx);
++        EVP_CIPHER_CTX_reset(cctx);
+     if (hctx != NULL)
+         HMAC_CTX_free(hctx);
+     return ret;
+--- a/src/main.c
++++ b/src/main.c
+@@ -45,6 +45,7 @@
+ #include <sys/types.h>
+ #include <sys/un.h>
+ #include <sys/wait.h>
++#include <openssl/dh.h>
+ #include <openssl/crypto.h>
+ #include <openssl/err.h>
+ #include <openssl/ssl.h>
+@@ -1827,7 +1828,7 @@ static h2o_iovec_t on_extra_status(void
+                                           " \"listeners\": %zu,\n"
+                                           " \"worker-threads\": %zu,\n"
+                                           " \"num-sessions\": %lu",
+-                       SSLeay_version(SSLEAY_VERSION), current_time, restart_time, (uint64_t)(now - conf.launch_time), generation,
++                       OpenSSL_version(OPENSSL_VERSION), current_time, restart_time, (uint64_t)(now - conf.launch_time), generation,
+                        num_connections(0), conf.max_connections, conf.num_listeners, conf.num_threads, num_sessions(0));
+     assert(ret.len < BUFSIZE);
+ 
+@@ -2008,7 +2009,7 @@ int main(int argc, char **argv)
+                 break;
+             case 'v':
+                 printf("h2o version " H2O_VERSION "\n");
+-                printf("OpenSSL: %s\n", SSLeay_version(SSLEAY_VERSION));
++                printf("OpenSSL: %s\n", OpenSSL_version(OPENSSL_VERSION));
+ #if H2O_USE_MRUBY
+                 printf(
+                     "mruby: YES\n"); /* TODO determine the way to obtain the version of mruby (that is being linked dynamically) */
+--- a/src/ssl.c
++++ b/src/ssl.c
+@@ -911,6 +911,7 @@ void ssl_setup_session_resumption(SSL_CT
+ #endif
+ }
+ 
++#if OPENSSL_VERSION_NUMBER < 0x1010000fL && !defined(LIBRESSL_VERSION_NUMBER)
+ static pthread_mutex_t *mutexes;
+ 
+ static void lock_callback(int mode, int n, const char *file, int line)
+@@ -937,9 +938,11 @@ static int add_lock_callback(int *num, i
+ 
+     return __sync_add_and_fetch(num, amount);
+ }
++#endif
+ 
+ void init_openssl(void)
+ {
++#if OPENSSL_VERSION_NUMBER < 0x1010000fL && !defined(LIBRESSL_VERSION_NUMBER)
+     int nlocks = CRYPTO_num_locks(), i;
+     mutexes = h2o_mem_alloc(sizeof(*mutexes) * nlocks);
+     for (i = 0; i != nlocks; ++i)
+@@ -953,6 +956,7 @@ void init_openssl(void)
+     SSL_load_error_strings();
+     SSL_library_init();
+     OpenSSL_add_all_algorithms();
++#endif
+ 
+     cache_init_defaults();
+ #if H2O_USE_SESSION_TICKETS

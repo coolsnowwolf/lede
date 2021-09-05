@@ -1,0 +1,132 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2009 OpenWrt.org
+
+NAME='etherwake'
+START=60
+PROGRAM=''
+
+start()
+{
+	local searchlist=''
+	local section=''
+	local value=''
+
+	config_load "${NAME}"
+
+	# check for available program
+	config_get searchlist 'setup' 'pathes'
+	PROGRAM=$(search_program "${searchlist}")
+	[ -z "${PROGRAM}" ] && {
+		echo "${initscript}: No ${NAME} program installed. Check: opkg list | grep ${NAME}"
+		exit 1
+	}
+
+	# sudo
+	config_get_bool value 'setup' 'sudo' '0'
+	[ "${value}" -ne 0 ] && PROGRAM="sudo ${PROGRAM}"
+
+	# interface
+	config_get value 'setup' 'interface'
+	[ -n "${value}" ] && append PROGRAM "-i ${value}"
+
+	# broadcast
+	config_get_bool value 'setup' 'broadcast' '0'
+	[ "${value}" -ne 0 ] && append PROGRAM '-b'
+
+	# wake up targets
+	config_foreach etherwake_start target $*
+}
+
+etherwake_start()
+{
+	local section="$1"
+	shift
+
+	local names="$*"
+
+	local value=''
+	local target=''
+
+	if [ -z "${names}" ]
+	 then
+		# check if boot target
+		config_get_bool value "${section}" 'wakeonboot' '0'
+		[ "${value}" -eq 0 ] && return 0
+
+		# wake up target
+		do_etherwake "${section}"
+		return $?
+	else
+		# name
+		config_get value "${section}" 'name'
+		[ -z "${value}" ] && return 0
+
+		for target in ${names}
+		 do
+			[ "${value}" != "${target}" ] && continue
+
+			# wake up target
+			do_etherwake "${section}"
+			return $?
+		done
+	fi
+}
+
+# execute etherwake command for target
+do_etherwake()
+{
+	local section="$1"
+	local value=''
+	local password=''
+	local args=''
+
+	# password
+	config_get value "${section}" 'password'
+	[ -n "${value}" ] && {
+		password=$(etherwake_password "${value}")
+		append args "-p ${password}"
+	}
+
+	# mac address
+	config_get value "${section}" 'mac'
+	[ -z "${value}" ] && { echo "${initscript}: Target ${section} has no MAC address"; return 1; }
+	append args "${value}"
+
+	# name
+	config_get value "${section}" 'name'
+	[ -z "${value}" ] && value="{section}"
+
+	# execute command
+	echo "${initscript}: Waking up ${value} via ${PROGRAM}${args:+ ${args}}"
+	${PROGRAM} ${args}
+	return $?
+}
+
+
+# find first available program from searchlist
+search_program()
+{
+	local searchlist="$1"
+	local test=''
+	local program=''
+
+	for test in ${searchlist} ; do
+		[ -x "${test}" ] && {
+			program="${test}"
+			break;
+		}
+	done
+
+	[ -n "${program}" ] && echo "${program}"
+
+	return
+}
+
+# prepare hex password
+etherwake_password()
+{
+	local delimiter=':'
+	local password=`echo "$1" | sed "s/../&${delimiter}/g"`
+	echo "${password%${delimiter}}"
+	return
+}

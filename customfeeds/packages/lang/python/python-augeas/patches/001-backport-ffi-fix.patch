@@ -1,0 +1,89 @@
+From 712c2028568df7760bc98d95577e35709078bfea Mon Sep 17 00:00:00 2001
+From: Jeffery To <jeffery.to@gmail.com>
+Date: Sun, 8 Nov 2020 21:51:09 +0800
+Subject: [PATCH] Use CFFI in out-of-line API mode (#49)
+
+Currently, ffi.py is called during setup to generate augeas.py; this
+file would normally be used for out-of-line ABI mode. ffi.py is also
+imported at run-time, instead of the generated augeas.py, and used in
+in-line ABI mode.
+
+This changes usage of CFFI to out-of-line API mode (CFFI's "main mode of
+usage"): ffi.py is called during setup to generate _augeas.abi3.so (a C
+extension module); this generated module is imported at run-time.
+
+With this change, the headers/development files for augeas (i.e.
+libaugeas-dev on Debian, augeas-devel on Fedora, etc.) and the C
+compiler are required for build/setup. (These were not necessary
+previously.)
+
+Closes https://github.com/hercules-team/python-augeas/issues/48.
+---
+ augeas/__init__.py |  2 +-
+ augeas/ffi.py      | 27 ++++++++++++++++++++++-----
+ setup.py           |  1 +
+ 3 files changed, 24 insertions(+), 6 deletions(-)
+
+--- a/augeas/__init__.py
++++ b/augeas/__init__.py
+@@ -32,7 +32,7 @@ format and the transformation into a tre
+ 
+ from sys import version_info as _pyver
+ 
+-from augeas.ffi import ffi, lib
++from _augeas import ffi, lib
+ 
+ __author__ = "Nathaniel McCallum <nathaniel@natemccallum.com>"
+ __credits__ = """Jeff Schroeder <jeffschroeder@computer.org>
+--- a/augeas/ffi.py
++++ b/augeas/ffi.py
+@@ -1,9 +1,28 @@
++import os
++import subprocess
++
+ from cffi import FFI
+ 
++def get_include_dirs():
++    XML2_CONFIG = os.environ.get('XML2_CONFIG', 'xml2-config')
++    PKG_CONFIG = os.environ.get('PKG_CONFIG', 'pkg-config')
++    try:
++        stdout = subprocess.check_output([XML2_CONFIG, '--cflags'])
++    except (OSError, subprocess.CalledProcessError):
++        try:
++            stdout = subprocess.check_output([PKG_CONFIG, '--cflags', 'libxml-2.0'])
++        except (OSError, subprocess.CalledProcessError):
++            stdout = b''
++    cflags = stdout.decode('utf-8').split()
++    return [cflag[2:] for cflag in cflags if cflag.startswith('-I')]
++
+ ffi = FFI()
+-ffi.set_source("augeas",
+-               None,
+-               libraries=['augeas'])
++ffi.set_source("_augeas",
++               """
++               #include <augeas.h>
++               """,
++               libraries=['augeas'],
++               include_dirs=get_include_dirs())
+ 
+ ffi.cdef("""
+ typedef struct augeas augeas;
+@@ -44,7 +63,5 @@ const char *aug_error_details(augeas *au
+ void free(void *);
+ """)
+ 
+-lib = ffi.dlopen("augeas")
+-
+ if __name__ == "__main__":
+     ffi.compile(verbose=True)
+--- a/setup.py
++++ b/setup.py
+@@ -22,6 +22,7 @@ setup(name=name,
+       setup_requires=["cffi>=1.0.0"],
+       cffi_modules=["augeas/ffi.py:ffi"],
+       install_requires=["cffi>=1.0.0"],
++      zip_safe=False,
+       url="http://augeas.net/",
+       classifiers=[
+           "Programming Language :: Python :: 2.7",

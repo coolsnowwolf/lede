@@ -1,0 +1,138 @@
+#!/bin/sh /etc/rc.common
+# Copyright 2017-2020 Stan Grishin (stangri@melmac.net)
+# shellcheck disable=SC2039,SC1091,SC2086
+PKG_VERSION='dev-test'
+
+# shellcheck disable=SC2034
+START=94
+# shellcheck disable=SC2034
+USE_PROCD=1
+
+# shellcheck disable=SC2034
+EXTRA_COMMANDS="version"
+EXTRA_HELP="	version Print version information"
+version() { echo "$PKG_VERSION"; }
+
+readonly __ERROR__='\033[0;31mERROR\033[0m'
+
+# shellcheck disable=SC2034
+serviceEnabled=0
+verbosity=2
+TID='200'
+IPSET='vpnbypass'
+FW_MARK='0x010000'
+FW_MASK='0xff0000'
+wan_if4=''
+wan_gw=''
+
+readonly packageName='vpnbypass'
+readonly serviceName="$packageName $PKG_VERSION"
+readonly sharedMemoryOutput="/dev/shm/$packageName-output"
+
+output() {
+# Can take a single parameter (text) to be output at any verbosity
+# Or target verbosity level and text to be output at specifc verbosity
+	local msg memmsg logmsg
+	if [ $# -ne 1 ]; then
+		if [ $((verbosity & $1)) -gt 0 ] || [ "$verbosity" = "$1" ]; then shift; else return 0; fi
+	fi
+	[ -t 1 ] && printf "%b" "$1"
+	msg="${1//$serviceName /service }";
+	if [ "$(printf "%b" "$msg" | wc -l)" -gt 0 ]; then
+		[ -s "$sharedMemoryOutput" ] && memmsg="$(cat "$sharedMemoryOutput")"
+		logmsg="$(printf "%b" "${memmsg}${msg}" | sed 's/\x1b\[[0-9;]*m//g')"
+		logger -t "${packageName:-service} [$$]" "$(printf "%b" "$logmsg")"
+		rm -f "$sharedMemoryOutput"
+	else
+		printf "%b" "$msg" >> "$sharedMemoryOutput"
+	fi
+}
+load_package_config() {
+	config_load "$packageName"
+	config_get_bool serviceEnabled 'config' 'enabled' 1
+	config_get verbosity           'config' 'verbosity' '2'
+	if [ -z "${verbosity##*[!0-9]*}" ] || [ "$verbosity" -lt 0 ] || [ "$verbosity" -gt 2 ]; then
+		verbosity=1
+	fi
+	. /lib/functions/network.sh
+}
+
+is_enabled() {
+	local sleepCount=1
+	load_package_config
+	while : ; do
+		network_find_wan wan_if4
+		[ "$serviceEnabled" -gt 0 ] || return 1
+		[ -n "$wan_if4" ] && network_get_gateway wan_gw "$wan_if4"
+		if [ $sleepCount -ge 25 ] || [ -n "$wan_gw" ]; then break; fi
+		output "$serviceName waiting for wan gateway...\\n"
+		sleep 2; network_flush_cache; let "sleepCount+=1";
+	done
+	[ -n "$wan_gw" ] && return 0
+	output "$__ERROR__: $serviceName failed to discover WAN gateway.\\n"; return 1;
+}
+
+is_ovpn() { local dev; dev=$(uci -q get network."$1".ifname); if [ "${dev:0:3}" = "tun" ] || [ "${dev:0:3}" = "tap" ] || [ -f "/sys/devices/virtual/net/${dev}/tun_flags" ]; then return 0; else return 1; fi; }
+is_wan() { if [ -n "$wan_if4" ] && [ "$1" = "$wan_if4" ]; then return 0; else return 1; fi; }
+is_supported_interface() { if is_wan "$1" || is_ovpn "$1"; then return 0; else return 1; fi; }
+
+ipt() {
+	local d; 
+	d="${*//-A/-D}"; [ "$d" != "$*" ] && iptables $d >/dev/null 2>&1
+	d="${*//-I/-D}"; [ "$d" != "$*" ] && iptables $d >/dev/null 2>&1
+	d="${*//-N/-F}"; [ "$d" != "$*" ] && iptables $d >/dev/null 2>&1
+	d="${*//-N/-X}"; [ "$d" != "$*" ] && iptables $d >/dev/null 2>&1
+	d="$*"; iptables $d >/dev/null 2>&1 || output "\\n$__ERROR__: iptables $d\\n"
+}
+
+start_service() {
+	local ll lports rports routes ranges
+	is_enabled || return 1
+	config_get lports   'config' 'localport'
+	config_get rports   'config' 'remoteport'
+	config_get routes   'config' 'remotesubnet'
+	config_get ranges   'config' 'localsubnet'
+
+	procd_open_instance "main"
+	procd_set_param command /bin/true
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	ipt -t mangle -D PREROUTING -m mark --mark 0x00/${FW_MASK} -g VPNBYPASS >/dev/null 2>&1
+	{ ipt -t mangle -N VPNBYPASS; ipt -t mangle -A PREROUTING -m mark --mark 0x00/${FW_MASK} -g VPNBYPASS; } >/dev/null 2>&1
+	ipt -t mangle -A VPNBYPASS -m set --match-set $IPSET dst -j MARK --set-mark ${FW_MARK}/${FW_MASK} >/dev/null 2>&1
+	ip rule del fwmark "$FW_MARK" table "$TID" >/dev/null 2>&1; 
+	ipset -q flush "$IPSET"; ipset -q destroy "$IPSET";
+	ip route flush table "$TID"; ip route flush cache;
+	ip route add default via "$wan_gw" table "$TID"; ip route flush cache;
+	ipset -q -exist create "$IPSET" hash:ip; ipset -q flush "$IPSET"
+	ip rule add fwmark "$FW_MARK" table "$TID"
+	{ modprobe xt_set; modprobe ip_set; modprobe ip_set_hash_ip; } >/dev/null 2>&1
+	for ll in ${ranges}; do ipt -t mangle -I VPNBYPASS 1 -j MARK --set-mark ${FW_MARK}/${FW_MASK} -s "$ll"; done
+	for ll in ${lports}; do ipt -t mangle -I VPNBYPASS 1 -j MARK --set-mark ${FW_MARK}/${FW_MASK} -p tcp -m multiport --sport "${ll//-/:}"; done
+	for ll in ${routes}; do ipt -t mangle -I VPNBYPASS 1 -j MARK --set-mark ${FW_MARK}/${FW_MASK} -d "$ll"; done
+	for ll in ${rports}; do ipt -t mangle -I VPNBYPASS 1 -j MARK --set-mark ${FW_MARK}/${FW_MASK} -p tcp -m multiport --dport "${ll//-/:}"; done
+	output "$serviceName started with TID: $TID; FW_MARK: $FW_MARK\\n"
+}
+
+stop_service() {
+	load_package_config
+	ip rule del fwmark "$FW_MARK" table "$TID" >/dev/null 2>&1; 
+	ipset -q flush "$IPSET"; ipset -q destroy "$IPSET";
+	ip route flush table "$TID"; ip route flush cache;
+	ipt -t mangle -D PREROUTING -m mark --mark 0x00/${FW_MASK} -g VPNBYPASS >/dev/null 2>&1
+	{ ipt -t mangle -F VPNBYPASS; ipt -t mangle -X VPNBYPASS; } >/dev/null 2>&1
+	output "$serviceName stopped\\n"
+}
+
+service_triggers_load_interface() { is_supported_interface "$1" && ifaces="${ifaces}${1} "; }
+service_triggers() {
+		local ifaces n
+		config_load network; config_foreach service_triggers_load_interface 'interface';
+		procd_add_reload_trigger 'firewall' 'openvpn' 'vpnbypass'
+		procd_open_trigger
+			for n in $ifaces; do procd_add_reload_interface_trigger "$n"; procd_add_interface_trigger "interface.*" "$n" /etc/init.d/vpnbypass reload; done;
+			output "$serviceName monitoring interfaces: $ifaces\\n"
+		procd_close_trigger
+}

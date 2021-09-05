@@ -1,0 +1,75 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2015 OpenWrt.org
+START=50
+
+PROG=/usr/bin/postmaster
+
+USE_PROCD=1
+
+fix_hosts() {
+	# make sure localhost (without a dot) is in /etc/hosts
+	grep -q 'localhost$' /etc/hosts || echo '127.0.0.1 localhost' >> /etc/hosts
+}
+
+fix_perms() {
+	# for whatever reason, /dev/null gets wrong perms
+	chmod a+w /dev/null
+}
+
+cleanup() {
+	if [ -f "$1/postmaster.pid" ]; then
+		rm "$1/postmaster.pid"
+	fi
+}
+
+start_service() {
+	. /lib/functions/postgresql.sh
+
+	config_load "postgresql"
+	config_get pgdata config PGDATA
+	config_get pgopts config PGOPTS
+
+	user_exists postgres 5432 || user_add postgres 5432
+	group_exists postgres 5432 || group_add postgres 5432
+
+	fix_perms
+	fix_hosts
+
+	if [ ! -d "${pgdata}" ]; then
+		pg_init_data ${pgdata}
+		[ $? -gt 0 ] && return 1
+	fi
+
+	cleanup "${pgdata}"
+
+	procd_open_instance
+	procd_set_param user postgres
+	procd_set_param command $PROG
+	procd_append_param command -D "${pgdata}"
+	[ -n "${pgopts}" ] && procd_append_param command -o "${pgopts}"
+	procd_set_param respawn retry=60
+	procd_close_instance
+
+	procd_open_instance
+	procd_set_param user postgres
+	procd_set_param command /lib/functions/postgresql.sh init "${pgdata}"
+	procd_close_instance
+}
+
+reload_service() {
+	config_load "postgresql"
+	config_get pgdata config PGDATA
+	/usr/bin/pg_ctl reload -U postgres -D "${pgdata}" -s
+}
+
+stop_service() {
+	config_load "postgresql"
+	config_get pgdata config PGDATA
+	/usr/bin/pg_ctl stop -U postgres -D "${pgdata}" -s
+}
+
+status_service() {
+	config_load "postgresql"
+	config_get pgdata config PGDATA
+	/usr/bin/pg_ctl status -U postgres -D "${pgdata}"
+}

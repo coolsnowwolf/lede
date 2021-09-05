@@ -1,0 +1,84 @@
+#!/bin/sh
+# send mail script for banIP notifications
+# written by Dirk Brenken (dev@brenken.org)
+#
+# This is free software, licensed under the GNU General Public License v3.
+#
+# (s)hellcheck exceptions
+# shellcheck disable=1091,2030,2031,2034,2039,2086,2129,2140,2143,2154,2181,2183,2188
+
+export LC_ALL=C
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+set -o pipefail
+
+if [ -r "/lib/functions.sh" ]
+then
+	. "/lib/functions.sh"
+	ban_debug="$(uci_get banip global ban_debug "0")"
+	ban_loglimit="$(uci_get banip global ban_loglimit "100")"
+	ban_mailsender="$(uci_get banip global ban_mailsender "no-reply@banIP")"
+	ban_mailreceiver="$(uci_get banip global ban_mailreceiver)"
+	ban_mailtopic="$(uci_get banip global ban_mailtopic "banIP notification")"
+	ban_mailprofile="$(uci_get banip global ban_mailprofile "ban_notify")"
+fi
+ban_ver="${1}"
+ban_mail="$(command -v msmtp)"
+ban_logger="$(command -v logger)"
+ban_logread="$(command -v logread)"
+ban_rc=1
+
+f_log()
+{
+	local class="${1}" log_msg="${2}"
+
+	if [ -x "${ban_logger}" ]
+	then
+		"${ban_logger}" -p "${class}" -t "banIP-${ban_ver%-*}[${$}]" "${log_msg}"
+	else
+		printf "%s %s %s\n" "${class}" "banIP-${ban_ver%-*}[${$}]" "${log_msg}"
+	fi
+}
+
+if [ -z "${ban_mailreceiver}" ]
+then
+	f_log "err" "please set the mail receiver with the 'ban_mailreceiver' option"
+	exit ${ban_rc}
+fi
+
+if [ "${ban_debug}" = "1" ]
+then
+	msmtp_debug="--debug"
+fi
+
+ban_mailhead="From: ${ban_mailsender}\nTo: ${ban_mailreceiver}\nSubject: ${ban_mailtopic}\nReply-to: ${ban_mailsender}\nMime-Version: 1.0\nContent-Type: text/html;charset=utf-8\nContent-Disposition: inline\n\n"
+
+# info preparation
+#
+sys_info="$(strings /etc/banner 2>/dev/null)"
+ban_info="$(/etc/init.d/banip "status" 2>/dev/null)"
+rep_info="${2}"
+log_info="$("${ban_logread}" -l "${ban_loglimit}" -e "banIP-" 2>/dev/null | awk '{NR=1;max=120;if(length($0)>max+1)while($0){if(NR==1){print substr($0,1,max)}else{print substr($0,1,max)}{$0=substr($0,max+1);NR=NR+1}}else print}')"
+
+# mail body
+#
+ban_mailtext="<html><body><pre style='display:block;font-family:monospace;font-size:1rem;padding:20;background-color:#f3eee5;white-space:pre'>"
+ban_mailtext="${ban_mailtext}\n<strong>++\n++ System Information ++\n++</strong>\n${sys_info}"
+ban_mailtext="${ban_mailtext}\n\n<strong>++\n++ banIP Status ++\n++</strong>\n${ban_info}"
+if [ -n "${rep_info}" ]
+then
+	ban_mailtext="${ban_mailtext}\n\n<strong>++\n++ banIP Report ++\n++</strong>\n${rep_info}"
+fi
+ban_mailtext="${ban_mailtext}\n\n<strong>++\n++ Logfile Information ++\n++</strong>\n${log_info}"
+ban_mailtext="${ban_mailtext}</pre></body></html>"
+
+# send mail
+#
+if [ -x "${ban_mail}" ]
+then
+	printf "%b" "${ban_mailhead}${ban_mailtext}" 2>/dev/null | "${ban_mail}" ${msmtp_debug} -a "${ban_mailprofile}" "${ban_mailreceiver}" >/dev/null 2>&1
+	ban_rc=${?}
+	f_log "info" "mail sent to '${ban_mailreceiver}' with rc '${ban_rc}'"
+else
+	f_log "err" "msmtp mail daemon not found"
+fi
+exit ${ban_rc}

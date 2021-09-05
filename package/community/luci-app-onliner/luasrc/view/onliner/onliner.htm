@@ -1,0 +1,99 @@
+<%#
+ Copyright 2008 Steven Barth <steven@midlink.org>
+ Copyright 2008-2011 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%
+local util = require "luci.util"
+local function online_data()
+	local rv = { }
+	local fd = util.execi('/usr/bin/awk \'BEGIN{while ((getline < "/tmp/dhcp.leases") > 0){a[$2]=$4;}while ((getline < "/proc/net/arp") > 0){if (!a[$4]){a[$4]="\?";}if (match($3,"0x[26]")){"ping -q -c 1 "$1" &";if (b[$4]){b[$4]=b[$4]"/"$1;}else{b[$4]=$1;}c[$4]=$6;}}while (("ip -6 neighbor show | grep -v fe80" | getline) > 0){if (b[$5]) {"ping -q -c 1 "$1" &";b[$5]=b[$5]"/"$1;}}for (mac in b){print(a[mac],b[mac],mac,c[mac]);}}\' ')
+	while true do
+		local ln = fd()
+		if ln == nil then break end
+		local name,ip,mac,dev = ln:match("^(%S+) (%S+) (%S+) (%S+)")
+		if mac and ip and name and dev then
+			rv[#rv+1] = {
+				hostname = name,
+				device  = dev,
+				macaddr  = mac,
+				ipaddr   = ip
+			}
+		end
+	end
+	return rv
+end
+
+
+if luci.http.formvalue("status") == "1" then
+	local rv = {
+		onlines   = online_data()
+	}	
+	luci.http.prepare_content("application/json")
+	luci.http.write_json(rv)
+	return
+end	
+-%>
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-19.271.33176-b099749"></script>
+<script type="text/javascript">//<![CDATA[
+	var npoll = 1;
+
+	XHR.poll(5, '<%=REQUEST_URI%>', { status: 1 },
+		function(x, info)
+		{
+			var ls = document.getElementById('online_status_table');
+			if (ls)
+			{
+				/* clear all rows */
+				while( ls.rows.length > 1 )
+					ls.rows[0].parentNode.deleteRow(1);
+
+				for( var i = 0; i < info.onlines.length; i++ )
+				{
+
+					var tr = ls.rows[0].parentNode.insertRow(-1);
+						tr.className = 'cbi-section-table-row cbi-rowstyle-' + ((i % 2) + 1);
+
+					tr.insertCell(-1).innerHTML = info.onlines[i].hostname ? info.onlines[i].hostname : '?';
+					tr.insertCell(-1).innerHTML = info.onlines[i].ipaddr.split("/").join("<br>");
+					tr.insertCell(-1).innerHTML = info.onlines[i].macaddr;
+					tr.insertCell(-1).innerHTML = info.onlines[i].device;
+				}
+
+				if( ls.rows.length == 1 )
+				{
+					var tr = ls.rows[0].parentNode.insertRow(-1);
+						tr.className = 'cbi-section-table-row';
+
+					var td = tr.insertCell(-1);
+						td.colSpan = 4;
+						td.innerHTML = '<em><br /><%:What? There is no one online.%></em>';
+				}
+			}
+		}
+	);
+//]]></script>
+
+<h2 name="content"><%:Status%></h2>
+
+<fieldset class="cbi-section">
+	<legend><%:user online%></legend>
+
+	<table class="cbi-section-table" id="online_status_table">
+		<tr class="cbi-section-table-titles">
+			<th class="cbi-section-table-cell"><%:Hostname%></th>
+			<th class="cbi-section-table-cell"><%:IPv4-Address%></th>
+			<th class="cbi-section-table-cell"><%:MAC-Address%></th>
+			<th class="cbi-section-table-cell"><%:Interface%></th>
+		</tr>
+		<tr class="cbi-section-table-row">
+			<td colspan="4"><em><br /><%:Collecting data...%></em></td>
+		</tr>
+	</table>
+</fieldset>
+
+<%+footer%>

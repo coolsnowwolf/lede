@@ -1,0 +1,363 @@
+#!/bin/sh /etc/rc.common
+# Copyright © 2012 OpenWrt.org
+#
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
+#
+START=70
+STOP=30
+
+USERS_C=/var/etc/nut/upsd.users
+UPSD_C=/var/etc/nut/upsd.conf
+UPS_C=/var/etc/nut/ups.conf
+
+USE_PROCD=1
+
+get_write_driver_config() {
+	local cfg="$1"
+	local var="$2"
+	local def="$3"
+	local flag="$4"
+	local val
+
+	[ -z "$flag" ] && {
+		config_get val "$cfg" "$var" "$def"
+		[ -n "$val" ] && [ "$val" != "0" ] && echo "$var = $val" >>"$UPS_C"
+	}
+
+	[ -n "$flag" ] && {
+		config_get_bool val "$cfg" "$var" "$def"
+		[ "$val" = 1 ] && echo "$var" >>"$UPS_C"
+	}
+}
+
+upsd_statepath() {
+	local statepath
+
+	config_get statepath upsd statepath /var/run/nut
+	STATEPATH="$statepath"
+}
+
+upsd_runas() {
+	local runas
+
+	[ -n "$RUNAS" ] && return 0
+
+	config_get runas upsd runas nut
+	RUNAS="$runas"
+}
+
+listen_address() {
+    local cfg="$1"
+
+    config_get address "$cfg" address "::1"
+    config_get port "$cfg" port
+    echo "LISTEN $address $port" >>"$UPSD_C"
+}
+
+upsd_config() {
+    local cfg="$1"
+    local maxage maxconn certfile runas statepath
+
+    # Note runas support requires you make sure USB device file is readable by
+    # the runas user
+    config_get runas "$cfg" runas nut
+    RUNAS="$runas"
+
+    config_get statepath "$cfg" statepath /var/run/nut
+    STATEPATH="$statepath"
+
+    config_get maxage "$cfg" maxage
+    [ -n "$maxage" ] && echo "MAXAGE $maxage" >>"$UPSD_C"
+
+    [ -n "$statepath" ] && echo "STATEPATH $statepath" >>"$UPSD_C"
+
+    config_get maxconn "$cfg" maxconn
+    [ -n "$maxconn" ] && echo "MAXCONN $maxconn" >>"$UPSD_C"
+
+    #NOTE: certs only apply to SSL-enabled version
+    config_get certfile "$cfg" certfile
+    [ -n "$certfile" ] && echo "CERTFILE $certfile" >>"$UPSD_C"
+}
+
+nut_user_add() {
+	local cfg="$1"
+	local a
+	local val
+
+	config_get val "$cfg" username "$1"
+	echo "[$val]" >> "$USERS_C"
+
+	config_get val "$cfg" password
+	echo "  password = $val" >> "$USERS_C"
+
+	config_get val "$cfg" actions
+	for a in $val; do
+	    echo "  actions = $a" >> "$USERS_C"
+	done
+
+	instcmd() {
+		local val="$1"
+		echo "  instcmds = $val" >> "$USERS_C"
+	}
+
+	config_list_foreach "$cfg" instcmd instcmd
+
+	config_get val "$cfg" upsmon
+	if [ -n "$val" ]; then
+	    echo "  upsmon $val" >> "$USERS_C"
+	fi
+}
+
+build_server_config() {
+        mkdir -p "$(dirname "$UPSD_C")"
+	chmod 0640 "$UPS_C"
+	rm -f "$USERS_C"
+	rm -f "$UPSD_C"
+	rm -f /var/etc/nut/nut.conf
+
+	echo "# Config file automatically generated from UCI config" > "$USERS_C"
+	echo "# Config file automatically generated from UCI config" > "$UPSD_C"
+
+	config_foreach nut_user_add user
+	config_foreach listen_address listen_address
+	config_foreach upsd_config upsd
+	echo "MODE=netserver" >>/var/etc/nut/nut.conf
+
+	chmod 0640 "$USERS_C"
+	chmod 0640 "$UPSD_C"
+	chmod 0644 /var/etc/nut/nut.conf
+
+	[ -d "${STATEPATH}" ] || {
+		mkdir -p "${STATEPATH}"
+		chmod 0750 "${STATEPATH}"
+	}
+
+	if [ -n "$RUNAS" ]; then
+		chown "$RUNAS":"$(id -gn "$RUNAS")" "${STATEPATH}"
+		chgrp "$(id -gn "$RUNAS")" "$USERS_C"
+		chgrp "$(id -gn "$RUNAS")" "$UPSD_C"
+	fi
+	haveserver=1
+}
+
+build_driver_config() {
+	local cfg="$1"
+
+	echo "[$cfg]" >>"$UPS_C"
+
+	get_write_driver_config "$cfg" bus
+	get_write_driver_config "$cfg" community
+	get_write_driver_config "$cfg" desc
+	get_write_driver_config "$cfg" driver "usbhid-ups"
+	get_write_driver_config "$cfg" ignorelb 0 1
+	get_write_driver_config "$cfg" interruptonly 0 1
+	get_write_driver_config "$cfg" interruptsize
+	get_write_driver_config "$cfg" maxreport
+	get_write_driver_config "$cfg" maxstartdelay
+	get_write_driver_config "$cfg" mfr
+	get_write_driver_config "$cfg" model
+	get_write_driver_config "$cfg" nolock 0 1
+	get_write_driver_config "$cfg" notransferoids 0 1
+	get_write_driver_config "$cfg" offdelay
+	get_write_driver_config "$cfg" ondelay
+	get_write_driver_config "$cfg" pollfreq
+	get_write_driver_config "$cfg" port "auto"
+	get_write_driver_config "$cfg" product
+	get_write_driver_config "$cfg" productid
+	get_write_driver_config "$cfg" retrydelay
+	get_write_driver_config "$cfg" sdorder
+	get_write_driver_config "$cfg" sdtime
+	get_write_driver_config "$cfg" serial
+	get_write_driver_config "$cfg" snmp_version
+	get_write_driver_config "$cfg" snmp_retries
+	get_write_driver_config "$cfg" snmp_timeout
+	get_write_driver_config "$cfg" synchronous
+	get_write_driver_config "$cfg" vendor
+	get_write_driver_config "$cfg" vendorid
+
+	defoverride() {
+		local overvar="$1"
+		local defover="$2"
+		local overtype="$(echo "$overvar" | tr '_' '.')"
+		local overval
+
+		config_get overval "${defover}_${overvar}" value
+		[ -n "$overval" ] && echo "${defover}.${overtype} = $overval" >>"$UPS_C"
+	}
+
+	config_list_foreach "$cfg" override defoverride override
+	config_list_foreach "$cfg" default defoverride default
+
+	other() {
+		local othervar="$1"
+		local othervarflag="$2"
+		local otherval
+
+		if [ "$othervarflag" = "otherflag" ]; then
+			config_get_bool otherval "${othervarflag}_${othervar}" value
+			[ "$otherval" = "1" ] && echo "${othervar}" >>"$UPS_C"
+		else
+			config_get otherval "${othervarflag}_${othervar}" value
+			[ -n "$otherval" ] && echo "${othervar} = $otherval" >>"$UPS_C"
+		fi
+	}
+
+	config_list_foreach "$cfg" other other other
+	config_list_foreach "$cfg" otherflag other otherflag
+	echo "" >>$UPS_C
+	havedriver=1
+}
+
+build_global_driver_config() {
+	local cfg="$1"
+
+	# Global driver config
+	get_write_driver_config "$cfg" chroot
+	get_write_driver_config "$cfg" driverpath
+	get_write_driver_config "$cfg" maxstartdelay
+	get_write_driver_config "$cfg" maxretry
+	get_write_driver_config "$cfg" retrydelay
+	get_write_driver_config "$cfg" pollinterval
+	get_write_driver_config "$cfg" synchronous
+	config_get runas "$cfg" user nut
+	RUNAS="$runas"
+
+	echo "" >>"$UPS_C"
+}
+
+build_config() {
+	local STATEPATH=/var/run/nut
+
+        mkdir -p "$(dirname "$UPS_C")"
+	rm -f "$UPS_C"
+	echo "# Config file automatically generated from UCI config" > "$UPS_C"
+	chmod 0640 "$UPS_C"
+
+	config_load nut_server
+
+	upsd_runas
+	config_foreach build_global_driver_config driver_global
+	config_foreach build_driver_config driver
+	upsd_statepath
+	build_server_config
+	[ -n "$RUNAS" ] && chgrp "$(id -gn "$RUNAS")" "$UPS_C"
+}
+
+start_driver_instance() {
+	local cfg="$1"
+	local requested="$2"
+	local driver
+	local STATEPATH=/var/run/nut
+	local RUNAS=nut
+
+	[ "$havedriver" != 1 ] && return
+
+	# If wanting a specific instance, only start it
+	if [ "$requested" != "$cfg" ] && [ "$request" != "" ]; then
+		return 0
+	fi
+
+	mkdir -p "$(dirname "$UPS_C")"
+	chmod 0755 "$UPS_C"
+
+	upsd_statepath
+	build_config
+
+	# Avoid hotplug inadvertenly restarting driver during
+	# forced shutdown
+	[ -f /var/run/killpower ] && return 0
+	if [ -d /var/run/nut ] && [ -f /var/run/nut/disable-hotplug ]; then
+	       return 0
+	fi
+
+	if [ -n "$RUNAS" ]; then
+		chown "$RUNAS":"$(id -gn "$RUNAS")" "${STATEPATH}"
+		chgrp "$(id -gn "$RUNAS")" "$UPS_C"
+	fi
+
+	config_get driver "$cfg" driver "usbhid-ups"
+	procd_open_instance "$cfg"
+	procd_set_param respawn
+	procd_set_param stderr 0
+	procd_set_param stdout 1
+	procd_set_param command /lib/nut/"${driver}" -D -a "$cfg" ${RUNAS:+-u "$RUNAS"}
+	procd_close_instance
+}
+
+interface_triggers() {
+	local action="$1"
+	local triggerlist trigger
+
+	config_get triggerlist upsd triggerlist
+
+	. /lib/functions/network.sh
+
+	if [ -n "$triggerlist" ]; then
+		for trigger in $triggerlist; do
+			if [ "$action" = "add_trigger" ]; then
+				procd_add_interface_trigger "interface.*" "$trigger" /etc/init.d/nut-server reload
+			else
+				network_is_up "$trigger" && return 0
+			fi
+		done
+	else
+		if [ "$action" = "add_trigger" ]; then
+			procd_add_raw_trigger "interface.*.up" 2000 /etc/init.d/nut-server reload
+		else
+			ubus call network.device status | grep -q '"up": true' && return 0
+		fi
+	fi
+	[ "$action" = "add_trigger" ] || return 1
+}
+
+start_server_instance() {
+	local cfg="$1"
+
+	[ "$haveserver" != 1 ] && return
+	interface_triggers "check_interface_up" || return
+
+	procd_open_instance "$cfg"
+	procd_set_param respawn
+	procd_set_param stderr 0
+	procd_set_param stdout 1
+	procd_set_param command /usr/sbin/upsd -D ${RUNAS:+-u "$RUNAS"}
+	procd_close_instance
+}
+
+start_service() {
+	local STATEPATH=/var/run/nut
+
+	# Avoid hotplug inadvertenly restarting driver during
+	# forced shutdown
+	[ -f /var/run/killpower ] && return 0
+
+	config_load nut_server
+	build_config
+
+	case $@ in
+	"")
+		config_foreach start_driver_instance driver "$@"
+		start_server_instance upsd
+		;;
+	*upsd*)
+		start_server_instance upsd
+		;;
+	*)
+		config_foreach start_driver_instance driver "$@"
+		;;
+	esac
+}
+
+reload_service() {
+	stop_service "$@"
+	sleep 2
+	start_service "$@"
+}
+
+service_triggers() {
+	config_load nut_server
+
+	interface_triggers "add_trigger"
+	procd_add_reload_trigger "nut_server"
+}

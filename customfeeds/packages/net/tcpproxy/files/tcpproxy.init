@@ -1,0 +1,96 @@
+#!/bin/sh /etc/rc.common
+START=50
+
+BIN=tcpproxy
+DAEMON=/usr/bin/$BIN
+DAEMON_ARGS=""
+DESC=$BIN
+RUN_D=/var/run
+CONFIG_DIR=/var/etc
+CONFIG_FILE=$CONFIG_DIR/$BIN.conf
+
+tcpproxy_write_config() {
+  local cfg="$1"
+
+  config_get_bool value "$cfg" disabled 0
+  [ "$value" -ne 0 ] && return
+
+  local local_addr=""
+  local resolv=""
+  local local_port=""
+  local remote_addr=""
+  local remote_resolv=""
+  local remote_port=""
+  local source_addr=""
+
+  config_get local_addr "$cfg" local_addr
+  config_get local_port "$cfg" local_port
+  config_get resolv "$cfg" resolv
+  config_get remote_addr "$cfg" remote_addr
+  config_get remote_port "$cfg" remote_port
+  config_get remote_resolv "$cfg" remote_resolv
+  config_get source_addr "$cfg" source_addr
+
+  if [ -z "$local_addr" ]; then
+    local_addr="*"
+  fi
+
+  echo "listen $local_addr $local_port" >> $CONFIG_FILE
+  echo "{" >> $CONFIG_FILE
+  if [ -n "$resolv" ]; then
+    echo "  resolv: $resolv;" >> $CONFIG_FILE
+  fi
+  echo "  remote: $remote_addr $remote_port;" >> $CONFIG_FILE
+  if [ -n "$remote_resolv" ]; then
+    echo "  remote-resolv: $remote_resolv;" >> $CONFIG_FILE
+  fi
+  if [ -n "$source_addr" ]; then
+    echo "  source: $source_addr;" >> $CONFIG_FILE
+  fi
+  echo "};" >> $CONFIG_FILE
+  echo "" >> $CONFIG_FILE
+}
+
+tcpproxy_generate_args() {
+  local cfg="$1"
+  local option
+  local value
+
+  for option in username groupname chroot log
+  do
+    config_get value "$cfg" "$option"
+    option=`echo $option | tr '_' '-'`
+    if [ -n "$value" ]; then
+      DAEMON_ARGS="$DAEMON_ARGS --$option $value"
+    fi
+  done
+}
+
+tcpproxy_rebuild_config() {
+  mkdir -p $CONFIG_DIR
+  rm -f $CONFIG_FILE
+  touch $CONFIG_FILE
+  config_load $BIN
+  config_foreach tcpproxy_write_config listen
+}
+
+start() {
+  echo -n "Starting $DESC "
+  tcpproxy_rebuild_config
+  config_foreach tcpproxy_generate_args $BIN
+  $DAEMON  $DAEMON_ARGS --config $CONFIG_FILE --write-pid "$RUN_D/$BIN.pid"
+  echo "."
+}
+
+reload() {
+  echo -n "Reloading $DESC "
+  tcpproxy_rebuild_config
+  kill -SIGHUP `cat "$RUN_D/$BIN.pid"`
+  echo "."
+}
+
+stop() {
+  echo -n "Stopping $DESC "
+  kill `cat $RUN_D/$BIN.pid` > /dev/null 2>&1
+  echo "."
+}

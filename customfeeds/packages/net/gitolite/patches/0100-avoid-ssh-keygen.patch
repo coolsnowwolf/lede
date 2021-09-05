@@ -1,0 +1,130 @@
+Author: Daniel F. Dickinson <cshored@thecshore.com>
+Date:   Sun Jan 27 01:04:25 2019 -0500
+
+gitolite: Eliminate the need for ssh-keygen dependency
+
+  Previously gitolite used ssh-keygen to generate fingerprints
+  from OpenSSH keys to ensure non-duplication of keys when
+  processing them to create / manage user ssh access to the
+  git repositories.  This ends up depending on openssl,
+  which is large and unnecessary when we are running on an
+  embedded distro such as OpenWrt.
+
+Signed-off-by: Daniel F. Dickinson <cshored@thecshore.com>
+--- a/src/lib/Gitolite/Common.pm
++++ b/src/lib/Gitolite/Common.pm
+@@ -26,6 +26,8 @@ package Gitolite::Common;
+ use Exporter 'import';
+ use File::Path qw(mkpath);
+ use File::Temp qw(tempfile);
++use MIME::Base64 qw(decode_base64);
++use Digest::SHA qw(sha256_base64);
+ use Carp qw(carp cluck croak confess);
+ 
+ use strict;
+@@ -352,43 +354,82 @@ sub logger_plus_stderr {
+ }
+ 
+ # ----------------------------------------------------------------------
++# Decode OpenSSH key
++# If the key cannot be parsed it will be undef
++# Returns (algorithm_name, algo_data1, algo_data2, ...)
++sub ssh_decode_key($) {
++    my $key = shift;
++    my $keydata = decode_base64($key);
++    my @keyparts = ();
++    my $partlen;
++    my $algorithm;
++    my $data;
++    my $pos = 0;
++    $partlen = unpack('N',  substr $keydata, $pos, 4) or return undef;
++    $algorithm = substr $keydata, $pos + 4, $partlen or return undef;
++    $pos = $pos + 4 + $partlen;
++    while ( $pos <= length($keydata) ) {
++        $partlen = unpack('N',  substr $keydata, $pos, 4) or last;
++        $data = unpack('s>*',  substr $keydata, $pos + 4, 4) or last;
++	$pos = $pos + 4 + $partlen;
++        push @keyparts, $data;
++    }
++    return ( $algorithm, @keyparts );
++}
++
++# ----------------------------------------------------------------------
++# Parse OpenSSH line
++# If the file cannot be parsed it will be undef
++# Returns (restrictions, algorithm, PEMkey, comment)
++sub ssh_parse_line($) {
++   my $ssh_line = shift;
++   my @ssh_parts = split / /, $ssh_line, 5;
++   if (scalar @ssh_parts < 4)  {
++      @ssh_parts = ('', @ssh_parts);
++   }
++   if (scalar @ssh_parts > 4) {
++      @ssh_parts = @ssh_parts[0,3]
++   }
++   if (scalar @ssh_parts < 4) {
++      @ssh_parts = undef;
++   }
++   return ( @ssh_parts );
++}
++
++# ----------------------------------------------------------------------
++# Get the SSH fingerprint of a line of text
++# If the fingerprint cannot be parsed, it will be undef
++# In a scalar context, returns the fingerprint
++# In a list context, returns (fingerprint, output) where output
++# is the parsed input line (less algorithm)
++sub ssh_fingerprint_line($) {
++    my $ssh_line = shift;
++    my @parsed_line = ssh_parse_line($ssh_line) or return undef;
++    my @ssh_parts = ssh_decode_key($parsed_line[2]) or return undef;
++    ( $parsed_line[1] eq $ssh_parts[0] ) or die "algorithm mismatch: $parsed_line[1] vs. $ssh_parts[0]";
++    my $fp = sha256_base64(join(' ', @ssh_parts[1,-1]));
++    return wantarray ? ($fp, join(' ', @ssh_parts[1,-1])) : $fp;
++}
++
++# ----------------------------------------------------------------------
+ # Get the SSH fingerprint of a file
+ # If the fingerprint cannot be parsed, it will be undef
+ # In a scalar context, returns the fingerprint
+ # In a list context, returns (fingerprint, output) where output
+-# is the raw output of the ssh-keygen command
+-sub ssh_fingerprint_file {
++# is the raw input line
++sub ssh_fingerprint_file($) {
+     my $in = shift;
+     -f $in or die "file not found: $in\n";
+     my $fh;
+-    open( $fh, "ssh-keygen -l -f $in |" ) or die "could not fork: $!\n";
++    open( $fh, $in ) or die "could not open $in: $!\n";
+     my $output = <$fh>;
+     chomp $output;
+-    # dbg("fp = $fp");
+     close $fh;
+     # Return a valid fingerprint or undef
+-    my $fp = undef;
+-    if($output =~ /((?:MD5:)?(?:[0-9a-f]{2}:){15}[0-9a-f]{2})/i or
+-       $output =~ m{((?:RIPEMD|SHA)\d+:[A-Za-z0-9+/=]+)}i) {
+-        $fp = $1;
+-    }
++    my $fp = ssh_fingerprint_line($output);
+     return wantarray ? ($fp, $output) : $fp;
+ }
+ 
+-# Get the SSH fingerprint of a line of text
+-# If the fingerprint cannot be parsed, it will be undef
+-# In a scalar context, returns the fingerprint
+-# In a list context, returns (fingerprint, output) where output
+-# is the raw output of the ssh-keygen command
+-sub ssh_fingerprint_line {
+-    my ( $fh, $fn ) = tempfile();
+-    print $fh shift() . "\n";
+-    close $fh;
+-    my ($fp,$output) = ssh_fingerprint_file($fn);
+-    unlink $fn;
+-    return wantarray ? ($fp,$output) : $fp;
+-}
+-
+ # ----------------------------------------------------------------------
+ 
+ # bare-minimum subset of 'Tsh' (see github.com/sitaramc/tsh)

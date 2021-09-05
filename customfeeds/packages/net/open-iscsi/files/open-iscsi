@@ -1,0 +1,93 @@
+#!/bin/sh /etc/rc.common
+
+START=50
+STOP=50
+#USE_PROCD=1
+
+DAEMON=/sbin/iscsid
+ADM=/sbin/iscsiadm
+PIDFILE=/var/run/iscsid.pid
+
+log()
+{
+    logger -t iscsid -s -p daemon.info "$@"
+}
+
+
+#start_service() {
+#        procd_open_instance
+#        procd_set_param command $DAEMON  -f -d 8 -p $PIDFILE
+#        procd_set_param respawn
+#        procd_close_instance
+#}
+
+prepare() {
+    [ ! -f /etc/iscsi/initiatorname.iscsi ] && logger "Generate initator name ..." \
+    && /usr/sbin/iscsi-gen-initiatorname
+    mkdir -p /var/run/lock/iscsi
+}
+
+unmount() {
+    TARGETS="$(iscsiadm -m session -P 3 | grep disk | awk '{print $4}')"
+    for VAL in $TARGETS; do
+	MOUNTED="$(mount | grep $VAL | awk '{print $1}')"
+	for PART in $MOUNTED; do
+	    log "Umount $PART"
+	    $(umount $PART)
+	done
+    done
+    RETVAL=$?
+}
+start() {
+    pgrep -o iscsid && return 1
+    prepare
+    $DAEMON -p $PIDFILE
+    starttargets
+}
+
+starttargets() {
+    log "Setting up iSCSI targets"
+    $ADM -m node -l
+}
+
+stoptargets() {
+    unmount
+    if [ $RETVAL -ne 0 ]; then
+	log "Could not umount all partitions, verify file lock!"
+	return $RETVAL
+    fi
+    log "Disconnecting iSCSI targets"
+    sync
+    $ADM -m node -u
+}
+
+stop() {
+    pgrep -o  iscsid || return 1
+    stoptargets
+    #needs more checks
+    if [ $RETVAL -ne 0 ]; then
+	log "Could not stop all targets, try again later"
+	return $RETVAL
+    fi
+    log "Stopping iSCSI initiator service"
+    $ADM -k 0 2
+    rm -f $PIDFILE
+}
+
+restart() {
+    stop
+    if [ $RETVAL -ne 0 ]; then
+	log "Stopping iSCSI initiator service failed, not starting"
+	return $RETVAL
+    fi
+    start
+}
+
+restarttargets() {
+    stoptargets
+    if [ $RETVAL -ne 0 ]; then
+	log "Could not stop all targets, try again later"
+	return $RETVAL
+    fi
+    starttargets
+}

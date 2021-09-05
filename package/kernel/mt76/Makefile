@@ -357,6 +357,7 @@ define KernelPackage/mt76x2u/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	ln -sf ../mt7662.bin $(1)/lib/firmware/mediatek/mt7662u.bin
 	ln -sf ../mt7662_rom_patch.bin $(1)/lib/firmware/mediatek/mt7662u_rom_patch.bin
+	echo mt76-usb disable_usb_sg=1 > $(1)/etc/modules.d/mt76-usb
 endef
 
 define KernelPackage/mt7603/install

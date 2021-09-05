@@ -1,0 +1,475 @@
+--- /dev/null
++++ b/dcwlinux/uci_configuration_provider.h
+@@ -0,0 +1,104 @@
++#ifndef UCI_CONFIGURATION_PROVIDER_H_INCLUDED
++#define UCI_CONFIGURATION_PROVIDER_H_INCLUDED
++
++#include "./ap_configuration.h"
++
++namespace dcwlinux {
++
++class UciConfigurationProvider : public APConfigurationProvider {
++
++  static const char *SECTION_TYPE_GENERAL;
++  static const char *SECTION_TYPE_CHANNEL_SET;
++  static const char *SECTION_TYPE_DATA_CHANNEL;
++  static const char *SECTION_TYPE_FILTER_SET;
++  static const char *SECTION_TYPE_FILTER;
++  static const char *DEFAULT_FILTER_SET_NAME;
++
++  static const char *OPTION_TMPDIR;
++  static const char *OPTION_ENABLED;
++  static const char *OPTION_SSID;
++  static const char *OPTION_BRIDGE;
++  static const char *OPTION_DATA_CHANNELS;
++  static const char *OPTION_INTERFACES;
++  static const char *OPTION_MAC_ADDRESS;
++  static const char *OPTION_FILTERS;
++  static const char *OPTION_PACKET_SIZE;
++  static const char *OPTION_SOURCE_IP;
++  static const char *OPTION_SOURCE_PORT;
++  static const char *OPTION_PROTOCOL;
++  static const char *OPTION_DEST_PORT;
++
++  static const char *FILTER_FILE_EXTENSION;
++
++  UciConfigurationProvider(const UciConfigurationProvider&); //no copy
++
++  typedef std::map<std::string, std::string>  DataChannelBridgeMap;
++  struct PrimaryChannel {
++    std::string            bridgeName;
++    DataChannelBridgeMap   dataChannels;
++  };
++  typedef std::map<std::string, PrimaryChannel>   PrimaryChannelMap;
++  typedef std::map<dcw::MacAddress, std::string>  StationFilterMap;
++
++  struct uci_context *_uciContext;
++  struct uci_package *_uciPackage;
++  const char *_uciConfig;
++
++  std::string        _filterDirectory;
++  PrimaryChannelMap  _primaryChannels;
++  StationFilterMap   _stationFilters;
++
++public:
++  UciConfigurationProvider(const char * const uciConfig); // the "config" part of UCI commands
++  virtual ~UciConfigurationProvider();
++
++  virtual void InstanciateCFileTrafficFilterProfiles(CFTFPList& output) const;
++  virtual void GetPrimarySsids(SsidSet& output) const;
++  virtual void GetDataSsids(SsidSet& output, const char * const primarySsid) const;
++  virtual const char *GetSsidIfname(const char * const ssid) const;
++  virtual void GetStationTrafficFilterProfiles(StationTFPMap& output) const;
++};
++
++}; //namespace dcwlinux {
++
++#endif //#ifndef UCI_CONFIGURATION_PROVIDER_H_INCLUDED
++#ifndef UCI_CONFIGURATION_PROVIDER_H_INCLUDED
++#define UCI_CONFIGURATION_PROVIDER_H_INCLUDED
++
++#include "./ap_configuration.h"
++
++namespace dcwlinux {
++
++class UciConfigurationProvider : public APConfigurationProvider {
++  UciConfigurationProvider(const UciConfigurationProvider&); //no copy
++
++  typedef std::map<std::string, std::string>  DataChannelBridgeMap;
++  struct PrimaryChannel {
++    std::string            bridgeName;
++    DataChannelBridgeMap   dataChannels;
++  };
++  typedef std::map<std::string, PrimaryChannel>   PrimaryChannelMap;
++  typedef std::map<dcw::MacAddress, std::string>  StationFilterMap;
++
++  struct uci_context *_uciContext;
++  struct uci_package *_uciPackage;
++  const char *_uciConfig;
++
++  PrimaryChannelMap  _primaryChannels;
++  StationFilterMap   _stationFilters;
++  CFTFPList          _defaultFilters;
++
++public:
++  UciConfigurationProvider(const char * const uciConfig); // the "config" part of UCI commands
++  virtual ~UciConfigurationProvider();
++
++  virtual void InstanciateCFileTrafficFilterProfiles(CFTFPList& output) const;
++  virtual void GetPrimarySsids(SsidSet& output) const;
++  virtual void GetDataSsids(SsidSet& output, const char * const primarySsid) const;
++  virtual const char *GetSsidIfname(const char * const ssid) const;
++  virtual void GetStationTrafficFilterProfiles(StationTFPMap& output) const;
++};
++
++}; //namespace dcwlinux {
++
++#endif //#ifndef UCI_CONFIGURATION_PROVIDER_H_INCLUDED
+--- /dev/null
++++ b/dcwlinux/uci_configuration_provider.cxx
+@@ -0,0 +1,365 @@
++
++#include <uci.h>
++#include <string.h>
++
++#include <stdlib.h>
++#include <stdexcept>
++#include <sys/stat.h>
++#include <cerrno>
++#include <iostream>
++#include <fstream>
++
++#include "./uci_configuration_provider.h"
++
++#include "dcwposix/filterdirscanner.h"
++#include "dcw/macaddress.h"
++#include "dcw/dcwlog.h"
++
++using namespace dcwlinux;
++
++  const char *UciConfigurationProvider::SECTION_TYPE_GENERAL = "general";
++  const char *UciConfigurationProvider::SECTION_TYPE_CHANNEL_SET = "channel-set";
++  const char *UciConfigurationProvider::SECTION_TYPE_DATA_CHANNEL = "datachannel";
++  const char *UciConfigurationProvider::SECTION_TYPE_FILTER_SET = "filter-set";
++  const char *UciConfigurationProvider::SECTION_TYPE_FILTER = "filter";
++  const char *UciConfigurationProvider::DEFAULT_FILTER_SET_NAME = "TFP_Default";
++
++  const char *UciConfigurationProvider::OPTION_TMPDIR = "tmpdir";
++  const char *UciConfigurationProvider::OPTION_ENABLED = "enabled";
++  const char *UciConfigurationProvider::OPTION_SSID = "ssid";
++  const char *UciConfigurationProvider::OPTION_BRIDGE = "bridge";
++  const char *UciConfigurationProvider::OPTION_DATA_CHANNELS = "data_channels";
++  const char *UciConfigurationProvider::OPTION_INTERFACES = "interfaces";
++  const char *UciConfigurationProvider::OPTION_MAC_ADDRESS = "mac";
++  const char *UciConfigurationProvider::OPTION_FILTERS = "filters";
++  const char *UciConfigurationProvider::OPTION_PACKET_SIZE = "packet_size";
++  const char *UciConfigurationProvider::OPTION_SOURCE_IP = "source_ip";
++  const char *UciConfigurationProvider::OPTION_SOURCE_PORT = "source_port";
++  const char *UciConfigurationProvider::OPTION_PROTOCOL = "protocol";
++  const char *UciConfigurationProvider::OPTION_DEST_PORT = "dest_port";
++
++  const char *UciConfigurationProvider::FILTER_FILE_EXTENSION = ".tfp";
++
++  UciConfigurationProvider::UciConfigurationProvider(const char * const uciConfig) : _uciConfig(uciConfig) {
++
++    //printf("*** Start UciConfigurationProvider(%s)\n", _uciConfig);
++    //printf("*** About to uci_alloc_context()\n");
++
++    _uciContext = uci_alloc_context();
++
++    //printf("*** uci_alloc_context() complete\n");
++    //printf("*** About to uci_load()\n");
++
++    if (_uciContext == NULL)
++    {
++      std::string err = "Error creating UCI context ";
++      throw std::runtime_error(err);
++    }
++
++    uci_load(_uciContext, _uciConfig, &_uciPackage);
++
++    //printf("*** uci_load complete()\n");
++
++    if (_uciPackage == NULL)
++    {
++      std::string err = "Error loading UCI package " + std::string(_uciConfig);
++      throw std::runtime_error(err);
++    }
++    
++    uci_section *generalSection = uci_lookup_section(_uciContext, _uciPackage, UciConfigurationProvider::SECTION_TYPE_GENERAL);
++    if (generalSection == NULL)
++    {
++      std::string err = "Error: A general section (" + std::string(UciConfigurationProvider::SECTION_TYPE_GENERAL) + ") must be specified!";
++      throw std::runtime_error(err);
++    }
++
++    uci_option *opt_tmpdir = uci_lookup_option(_uciContext, generalSection, UciConfigurationProvider::OPTION_TMPDIR);
++    if (opt_tmpdir == NULL)
++    {
++      std::string err = "Error: A temporary directory (" + std::string(UciConfigurationProvider::OPTION_TMPDIR) + ") must be specified!";
++      throw std::runtime_error(err);
++    }
++    char *tmpdir = opt_tmpdir->v.string;
++    //printf(" *** Set tmpdir: %s\n", tmpdir);
++
++    // make sure that tmpdir exists
++    int status = mkdir(tmpdir, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
++    if ((status != 0) && // failure
++	(errno != EEXIST)) // the failure was not that the directory already existed
++    {
++      std::string err = "Error: Unable to create the temporary directory (tmpdir), error # " + errno;
++      throw std::runtime_error(err);
++    }
++    _filterDirectory = std::string(tmpdir);
++    
++    if (uci_lookup_section(_uciContext, _uciPackage, UciConfigurationProvider::DEFAULT_FILTER_SET_NAME) == NULL)
++    {
++      std::string err = "Error: A default traffic filter profile named " + std::string(UciConfigurationProvider::DEFAULT_FILTER_SET_NAME) + " MUST exist!";
++      throw std::runtime_error(err);
++    }
++
++    // iterate over all of the sections in the package
++    uci_element *elem;
++    uci_foreach_element(&_uciPackage->sections, elem)
++    {
++      //printf("--==-- element.type: %d\n", elem->type);
++      //printf("--==-- element.name: %s\n", elem->name);
++
++      if (elem->type == UCI_TYPE_SECTION)
++      {
++	// look up the section and get it's type
++	
++	uci_section *section = NULL;
++        //printf("*** Looking up section: %s\n", elem->name);
++
++	section = uci_lookup_section(_uciContext, _uciPackage, elem->name);
++
++	if ((section != NULL) && (section->type != NULL))
++	{
++	  //printf(" *** Section type: %s\n", section->type);
++	  if (strcmp(elem->name, UciConfigurationProvider::SECTION_TYPE_GENERAL) == 0)
++	  {
++	    // we already processed the general section for the tmpdir
++	  }
++	  else if (strcmp(section->type, UciConfigurationProvider::SECTION_TYPE_CHANNEL_SET) == 0)
++	  {
++	    // the section is a channel set, populate it with the specified values
++	    
++	    uci_option *enabled = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_ENABLED);
++	    if ((enabled == NULL) || (strcmp(enabled->v.string, "1") != 0))
++	    {
++	      // found a disabled channel set, ignore it
++	      continue;
++	    }
++
++	    uci_option *ssid = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_SSID);
++	    uci_option *bridge = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_BRIDGE);
++	    uci_option *dataChannels = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_DATA_CHANNELS);
++	    
++	    if ((ssid != NULL) && (bridge != NULL) && (dataChannels != NULL))
++	    {
++	      PrimaryChannel &pc = _primaryChannels[ssid->v.string];
++	      pc.bridgeName = bridge->v.string;
++	      
++	      char dataChannels_list[255];
++	      // The dataChannels option is not a list
++	      //if (dataChannels->type == UCI_TYPE_LIST)
++	      if (dataChannels->v.string != NULL)
++	      {
++		strcpy(dataChannels_list, dataChannels->v.string);
++		std::string str_dataChannels = dataChannels->v.string;
++		size_t start_pos = 0;
++		size_t pos = 0;
++		while(start_pos != std::string::npos)
++		{
++		  pos = str_dataChannels.find(" ", start_pos);
++		  //printf("****** start_pos: %u, pos: %u\n", start_pos, pos);
++		  std::string str_dataChannel = str_dataChannels.substr(start_pos,
++									pos == std::string::npos ? pos : pos-start_pos);
++		  //printf("*** dataChannel: %s\n", str_dataChannel.c_str());
++		  
++		  // update the start position for next loop
++		  start_pos = (pos == std::string::npos ? pos : pos+1);
++
++		  uci_section *dcSection = uci_lookup_section(_uciContext, _uciPackage, str_dataChannel.c_str());
++		  if (dcSection != NULL)
++		  {
++		    uci_option *dcSsid = uci_lookup_option(_uciContext, dcSection, UciConfigurationProvider::OPTION_SSID);
++		    uci_option *dcBridge = uci_lookup_option(_uciContext, dcSection, UciConfigurationProvider::OPTION_BRIDGE);
++		    
++		    // TODO: configure dcBridge and dcInterfaces
++		    //uci_option *dcInterfaces = uci_lookup_option(_uciContext, dcSection, UciConfigurationProvider::OPTION_INTERFACES);
++		    
++		    if ((dcSsid != NULL) && (dcBridge != NULL))
++		    {
++		      pc.dataChannels[dcSsid->v.string];
++		      pc.dataChannels[dcSsid->v.string] = dcBridge->v.string;
++		    }
++		  }
++		}
++	      }
++	      
++	      //printf("Section: %s, SSID: %s, Bridge: %s, Data Channels: %s\n", section->e.name, ssid->v.string, bridge->v.string, dataChannels_list);
++	    }
++	  }
++	  else if (strcmp(section->type, UciConfigurationProvider::SECTION_TYPE_DATA_CHANNEL) == 0)
++	  {
++	    // data channels are processed by the channel set
++	  }
++	  else if (strcmp(section->type, UciConfigurationProvider::SECTION_TYPE_FILTER_SET) == 0)
++	  {
++	    // the section is a filter set, populate it with the specified values
++	    //printf("*** filter set: %s\n", elem->name);
++	    
++	    // create a tfp file for the sectionName
++	    std::ofstream tfpFile;
++	    std::string tfpFilePath =
++	      tmpdir + std::string("/") +
++	      std::string(elem->name) +
++	      std::string(UciConfigurationProvider::FILTER_FILE_EXTENSION);
++	    tfpFile.open(tfpFilePath.c_str(), std::ios::out | std::ios::trunc);
++	    if (!tfpFile.is_open())
++	    {
++	      std::string err = "Error: Unable to open the filter file: " + tfpFilePath;
++	      throw std::runtime_error(err);
++	    }
++	    
++	    const char *filterDelimiter = "\n";
++	    char sFilterContents[2048];
++	    sFilterContents[0] = '\0';
++	    
++	    uci_option *filters = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_FILTERS);
++	    // The filters option is not a list
++	    //if ((filters != NULL) && (filters->type == UCI_TYPE_LIST))
++	    if (filters != NULL)
++	    {
++	      //printf("*** %s.filters is a list.\n", elem->name);
++	      //struct uci_element *e;
++	      //uci_foreach_element(&filters->v.list, e)
++ 
++	      std::string str_filters = filters->v.string;
++	      //printf("*** STR_FILTERS: %s\n", str_filters.c_str());
++	      size_t start_pos = 0;
++	      size_t pos = 0;
++	      while(start_pos != std::string::npos)
++	      {
++		pos = str_filters.find(" ", start_pos);
++		//printf("****** start_pos: %u, pos: %u\n", start_pos, pos);
++		std::string str_filter = str_filters.substr(start_pos,
++							    pos == std::string::npos ? pos : pos-start_pos);
++		//printf("*** Looking for filter section named: %s ...\n", str_filter.c_str());
++
++		// update the start position for next loop
++		start_pos = (pos == std::string::npos ? pos : pos+1);
++		
++		uci_section *fSection = uci_lookup_section(_uciContext, _uciPackage, str_filter.c_str());
++		if (fSection != NULL)
++		{
++		  uci_option *fPacketSize = uci_lookup_option(_uciContext, fSection, UciConfigurationProvider::OPTION_PACKET_SIZE);
++		  uci_option *fSourceIp = uci_lookup_option(_uciContext, fSection, UciConfigurationProvider::OPTION_SOURCE_IP);
++		  uci_option *fSourcePort = uci_lookup_option(_uciContext, fSection, UciConfigurationProvider::OPTION_SOURCE_PORT);
++		  uci_option *fProtocol = uci_lookup_option(_uciContext, fSection, UciConfigurationProvider::OPTION_PROTOCOL);
++		  uci_option *fDestPort = uci_lookup_option(_uciContext, fSection, UciConfigurationProvider::OPTION_DEST_PORT);
++
++		  if ((fPacketSize != NULL) &&
++		      (fSourceIp != NULL) &&
++		      (fSourcePort != NULL) &&
++		      (fProtocol != NULL) &&
++		      (fDestPort != NULL))
++		  {
++		    //printf("*** filter: %s  %s:%s:%s:%s:%s\n", e->name,
++		    //      fPacketSize->v.string, fSourceIp->v.string, fSourcePort->v.string,
++		    //      fProtocol->v.string, fDestPort->v.string);
++		    
++		    strcpy(sFilterContents, fPacketSize->v.string);
++		    strcat(sFilterContents, ":");
++		    strcat(sFilterContents, fSourceIp->v.string);
++		    strcat(sFilterContents, ":");
++		    strcat(sFilterContents, fSourcePort->v.string);
++		    strcat(sFilterContents, ":");
++		    strcat(sFilterContents, fProtocol->v.string);
++		    strcat(sFilterContents, ":");
++		    strcat(sFilterContents, fDestPort->v.string);
++		    strcat(sFilterContents, filterDelimiter);
++		    
++		    //printf("*** Writing filter contents to file: %s\n", sFilterContents);
++		    tfpFile << sFilterContents;
++		  }
++		  else
++		  {
++		    std::string err = "Error parsing filter: " + str_filter;
++		    throw std::runtime_error(err);
++		  }
++		}
++	      }
++	    }
++	    tfpFile.close();
++	    
++	    // if there is a MAC address for the filter set, we need to add it to the station filters list
++	    uci_option *mac = uci_lookup_option(_uciContext, section, UciConfigurationProvider::OPTION_MAC_ADDRESS);
++	    if (mac != NULL)
++	    {
++	      // ignore wildcard MAC address
++	      if (strcmp(mac->v.string,"*") != 0)
++	      {
++		//printf(" *** MAC Address: %s\n", mac->v.string);
++		_stationFilters[::dcw::MacAddress(mac->v.string)] = elem->name;
++	      }
++	    }
++	  }
++	  else if (strcmp(section->type, UciConfigurationProvider::SECTION_TYPE_FILTER) == 0)
++	  {
++	    // filters are processed by the filter set
++	  }
++	  else
++	  {
++	    //std::string err = "Error: Unknown UCI section type: " + std::string(section->type);
++	    //throw std::runtime_error(err);
++	    
++	    // Don't throw an exception. It is fine for UCI to contain things that we do not know about
++	    //  that it may use for other purposes, like UI or internal state
++	    dcwlogdbgf("Ignoring UCI section type: %s\n", section->type);
++	  }
++	}
++      }
++    }
++  }
++
++  UciConfigurationProvider::~UciConfigurationProvider() {
++    uci_free_context(_uciContext);
++  }
++
++  void UciConfigurationProvider::InstanciateCFileTrafficFilterProfiles(CFTFPList& output) const {
++    ::dcwposix::FilterdirScanner::FileFilterProfileList ffpl;
++    ::dcwposix::FilterdirScanner dirScanner(_filterDirectory.c_str());
++    dirScanner.Scan(ffpl);
++
++    for (::dcwposix::FilterdirScanner::FileFilterProfileList::const_iterator i = ffpl.begin(); i != ffpl.end(); i++) {
++      output.push_back(new ::dcw::FileTrafficFilterProfile(*i));
++    }
++  }
++
++
++  void UciConfigurationProvider::GetPrimarySsids(SsidSet& output) const {
++    for (PrimaryChannelMap::const_iterator i = _primaryChannels.begin(); i != _primaryChannels.end(); i++) {
++      output.insert(i->first);
++    }
++  }
++
++  void UciConfigurationProvider::GetDataSsids(SsidSet& output, const char * const primarySsid) const {
++    const PrimaryChannelMap::const_iterator pssid = _primaryChannels.find(primarySsid);
++    if (pssid == _primaryChannels.end()) return;
++
++    for (DataChannelBridgeMap::const_iterator i = pssid->second.dataChannels.begin(); i != pssid->second.dataChannels.end(); i++) {
++      output.insert(i->first);
++    }
++  }
++
++  const char *UciConfigurationProvider::GetSsidIfname(const char * const ssid) const {
++    PrimaryChannelMap::const_iterator pssid = _primaryChannels.find(ssid);
++    if (pssid != _primaryChannels.end()) {
++      if (pssid->second.bridgeName.empty()) {
++        return NULL;
++      }
++      return pssid->second.bridgeName.c_str();
++    }
++
++    for (pssid = _primaryChannels.begin(); pssid != _primaryChannels.end(); pssid++) {
++      const DataChannelBridgeMap& dataChannels = pssid->second.dataChannels;
++      const DataChannelBridgeMap::const_iterator dc = dataChannels.find(ssid);
++      if (dc == dataChannels.end()) continue;
++      if (dc->second.empty()) {
++        return NULL;
++      }
++      return dc->second.c_str();
++    }
++
++    return NULL;
++  }
++
++  void UciConfigurationProvider::GetStationTrafficFilterProfiles(StationTFPMap& output) const {
++    for (StationFilterMap::const_iterator i = _stationFilters.begin(); i != _stationFilters.end(); i++) {
++      output[i->first] = i->second;
++    }
++
++  }

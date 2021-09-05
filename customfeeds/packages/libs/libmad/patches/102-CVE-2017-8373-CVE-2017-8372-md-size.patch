@@ -1,0 +1,56 @@
+From: Kurt Roeckx <kurt@roeckx.be>
+Date: Sun, 28 Jan 2018 15:44:08 +0100
+Subject: Check the size of the main data
+
+The main data to decode a frame can come from the current frame and part of the
+previous frame, the so called bit reservoir. si.main_data_begin is the part of
+the previous frame we need for this frame. frame_space is the amount of main
+data that can be in this frame, and next_md_begin is the part of this frame that
+is going to be used for the next frame.
+
+The maximum amount of data from a previous frame that the format allows is 511
+bytes. The maximum frame size for the defined bitrates is at MPEG 2.5 layer 2
+at 320 kbit/s and 8 kHz sample rate which gives 72 * (320000 / 8000) + 1 = 2881.
+So those defines are not large enough:
+ # define MAD_BUFFER_GUARD      8
+ # define MAD_BUFFER_MDLEN      (511 + 2048 + MAD_BUFFER_GUARD)
+
+There is also support for a "free" bitrate which allows you to create any frame
+size, which can be larger than the buffer.
+
+Changing the defines is not an option since it's part of the ABI, so we check
+that the main data fits in the bufer.
+
+The previous frame data is stored in *stream->main_data and contains
+stream->md_len bytes. If stream->md_len is larger than the data we
+need from the previous frame (si.main_data_begin) it still wouldn't fit
+in the buffer, so just keep the data that we need.
+
+--- a/layer3.c
++++ b/layer3.c
+@@ -2688,6 +2688,11 @@ int mad_layer_III(struct mad_stream *str
+     next_md_begin = 0;
+ 
+   md_len = si.main_data_begin + frame_space - next_md_begin;
++  if (md_len + MAD_BUFFER_GUARD > MAD_BUFFER_MDLEN) {
++    stream->error = MAD_ERROR_LOSTSYNC;
++    stream->sync = 0;
++    return -1;
++  }
+ 
+   frame_used = 0;
+ 
+@@ -2705,8 +2710,11 @@ int mad_layer_III(struct mad_stream *str
+       }
+     }
+     else {
+-      mad_bit_init(&ptr,
+-		   *stream->main_data + stream->md_len - si.main_data_begin);
++      memmove(stream->main_data,
++	*stream->main_data + stream->md_len - si.main_data_begin,
++	si.main_data_begin);
++      stream->md_len = si.main_data_begin;
++      mad_bit_init(&ptr, *stream->main_data);
+ 
+       if (md_len > si.main_data_begin) {
+ 	assert(stream->md_len + md_len -

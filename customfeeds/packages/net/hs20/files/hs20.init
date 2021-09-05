@@ -1,0 +1,203 @@
+#!/bin/sh /etc/rc.common
+
+START=49
+
+USE_PROCD=1
+
+setup_ca() {
+	[ -e /etc/hs20/AS/Key/server.pem ] && return 0
+
+	local company friendly_name rootsubject logo_sha1 logo_sha256 logo_url domain osu_client_subject ocsp_server_subject key_passphrase osu_server_name ocsp_uri revoked_subject
+	config_load hs20
+	config_get company ca company
+	config_get friendly_name ca friendly_name
+	config_get rootsubject ca rootsubject
+	config_get logo_sha1 ca logo_sha1
+	config_get logo_sha256 ca logo_sha256
+	config_get logo_url ca logo_url
+	config_get domain ca domain
+	config_get osu_client_subject ca osu_client_subject
+	config_get ocsp_server_subject ca ocsp_server_subject
+	config_get key_passphrase ca key_passphrase
+	config_get osu_server_name ca osu_server_name
+	config_get ocsp_uri ca ocsp_uri
+
+	mkdir -p /etc/hs20/ca
+	(
+	  cd /etc/hs20/ca
+	  /bin/busybox sh /usr/share/hs20/ca/setup.sh -c "$company" -C "$friendly_name" -g "$logo_sha1" -G "$logo_sha256" -l "$logo_url" -m "$domain" -o "$osu_client_subject" -O "$ocsp_server_subject" -p "$key_passphrase" -S "$osu_server_name" -u "$ocsp_uri" -V "$revoked_subject"
+	)
+
+	mkdir -p /etc/hs20/AS/Key
+	cp /etc/hs20/ca/server.* /etc/hs20/ca/ca.pem /etc/hs20/AS/Key
+
+	uci batch <<EOF
+set uhttpd.main.cert='/etc/hs20/ca/server.pem'
+set uhttpd.main.key='/etc/hs20/ca/server.key'
+commit uhttpd
+EOF
+
+	return 0
+}
+
+sql_set() {
+	echo "DELETE FROM osu_config WHERE realm='$1' AND field='$2';"
+	echo "INSERT INTO osu_config(realm,field,value) VALUES('$1','$2','$3');"
+}
+
+setup_dbconf() {
+	local domain spp_http_auth_url trust_root_cert_url
+	config_load hs20
+	config_get realm ca domain
+	config_get spp_http_auth_url server spp_http_auth_url
+	config_get trust_root_cert_url server trust_root_cert_url
+	config_get trust_root_cert_fingerprint server trust_root_cert_fingerprint
+	config_get aaa_trust_root_cert_url server aaa_trust_root_cert_url
+	config_get aaa_trust_root_cert_fingerprint server aaa_trust_root_cert_fingerprint
+	config_get free_account server free_account
+	config_get policy_url server policy_url
+	config_get remediation_url server remediation_url
+	config_get free_remediation_url server free_remediation_url
+	config_get signup_url server signup_url
+	(
+		sql_set $realm spp_http_auth_url "$spp_http_auth_url"
+		sql_set $realm trust_root_cert_url "$trust_root_cert_url"
+		sql_set $realm trust_root_cert_fingerprint "$trust_root_cert_fingerprint"
+		sql_set $realm aaa_trust_root_cert_url "$aaa_trust_root_cert_url"
+		sql_set $realm aaa_trust_root_cert_fingerprint "$aaa_trust_root_cert_fingerprint"
+		sql_set $realm free_account "$free_account"
+		sql_set $realm policy_url "$policy_url"
+		sql_set $realm remediation_url "$remediation_url"
+		sql_set $realm free_remediation_url "$free_remediation_url"
+		sql_set $realm signup_url "$signup_url"
+		echo "DELETE FROM wildcards WHERE identity='';"
+		echo "INSERT INTO wildcards(identity,methods) VALUES('','TTLS,TLS');"
+	) | sqlite3 /etc/hs20/AS/DB/eap_user.db
+
+	return 0
+}
+
+setup_policy() {
+	local update_interval update_method restriction uri
+	config_load hs20
+	config_get update_interval policy update_interval
+	config_get update_method policy update_method
+	config_get restriction policy restriction
+	config_get uri policy uri
+
+	if [ ! -e "/etc/hs20/spp/policy/default.xml" ]; then
+		mkdir -p /etc/hs20/spp/policy
+		ln -s /tmp/run/spp-default-policy.xml /etc/hs20/spp/policy/default.xml
+	fi
+
+	cat > /tmp/run/spp-default-policy.xml <<EOF
+<Policy>
+	<PolicyUpdate>
+		<UpdateInterval>$update_interval</UpdateInterval>
+		<UpdateMethod>$update_method</UpdateMethod>
+		<Restriction>$restriction</Restriction>
+		<URI>$uri</URI>
+	</PolicyUpdate>
+</Policy>
+
+EOF
+	return 0
+}
+
+prepare_config() {
+	local key_passphrase subscr_remediation_url osu_nai as_passphrase radius_passphrase
+	config_load hs20
+	config_get key_passphrase ca key_passphrase
+	config_get subscr_remediation_url policy uri
+	config_get osu_nai server osu_nai
+	config_get as_passphrase server as_passphrase
+	config_get radius_passphrase server radius_passphrase
+
+	cat > /tmp/run/as-sql.conf <<EOF
+driver=none
+radius_server_clients=/etc/hs20/AS/as.radius_clients
+eap_server=1
+eap_user_file=sqlite:/etc/hs20/AS/DB/eap_user.db
+ca_cert=/etc/hs20/AS/Key/ca.pem
+server_cert=/etc/hs20/AS/Key/server.pem
+private_key=/etc/hs20/AS/Key/server.key
+private_key_passwd=$key_passphrase
+eap_sim_db=unix:/tmp/hlr_auc_gw.sock db=/etc/hs20/AS/DB/eap_sim.db
+subscr_remediation_url=$subscr_remediation_url
+EOF
+
+	mkdir -p /var/run/hostapd/hs20-radius
+	cat > /tmp/run/radius-sql.conf <<EOF
+# hostapd-radius config for the radius used by the OSEN AP
+interface=lo
+driver=none
+logger_syslog=-1
+logger_syslog_level=2
+logger_stdout=-1
+logger_stdout_level=2
+ctrl_interface=/var/run/hostapd/hs20-radius
+ctrl_interface_group=0
+eap_server=1
+eap_user_file=/etc/hs20/AS/hostapd-osen.eap_user
+server_id=ben-ota-2-osen
+radius_server_auth_port=1811
+radius_server_clients=/etc/hs20/AS/hostap.radius_clients
+
+ca_cert=/etc/hs20/ca/ca.pem
+server_cert=/etc/hs20/ca/server.pem
+private_key=/etc/hs20/ca/server.key
+private_key_passwd=$key_passphrase
+
+ocsp_stapling_response=/etc/hs20/ca/ocsp-server-cache.der
+EOF
+
+	cat > /etc/hs20/AS/hostapd-osen.eap_user <<EOF
+# For OSEN authentication (Hotspot 2.0 Release 2)
+"$osu_nai"      WFA-UNAUTH-TLS
+EOF
+
+	cat > /etc/hs20/AS/hostap.radius_clients <<EOF
+0.0.0.0/0       $radius_passphrase
+EOF
+
+	cat > /etc/hs20/AS/as.radius_clients <<EOF
+0.0.0.0/0       $as_passphrase
+EOF
+
+	return 0
+}
+
+start_service() {
+	local enabled
+	config_load hs20
+	config_get enabled server enabled
+
+	[ "$enabled" != "1" ] && [ "$enabled" != "true" ] && exit 0
+	echo "starting"
+
+	setup_ca
+	setup_policy
+	setup_dbconf
+	prepare_config
+
+	procd_open_instance ocsp-responder
+	procd_set_param command /usr/bin/openssl ocsp -index /etc/hs20/ca/demoCA/index.txt -port 8888 -nmin 5 -rsigner /etc/hs20/ca/ocsp.pem -rkey /etc/hs20/ca/ocsp.key -CA /etc/hs20/ca/demoCA/cacert.pem -text -ignore_err
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn
+	procd_close_instance
+
+	procd_open_instance hs20-ac
+	procd_set_param command /usr/sbin/hostapd-hs20-radius-server /tmp/run/as-sql.conf
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn
+	procd_close_instance
+
+	procd_open_instance hs20-radius
+	procd_set_param command /usr/sbin/hostapd-hs20-radius-server /tmp/run/radius-sql.conf
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn
+	procd_close_instance
+}

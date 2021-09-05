@@ -1,0 +1,167 @@
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -71,7 +71,7 @@ else
+ libsane_hpaio_la_LDFLAGS = -version-info 1:0:0
+ endif
+ # The following is a interlibrary dependency that must be compiled first.
+-libsane_hpaio_la_LIBADD = libhpip.la libhpmud.la libhpipp.la $(DBUS_LIBS) -lcups -ldl
++libsane_hpaio_la_LIBADD = libhpip.la libhpmud.la libhpipp.la $(DBUS_LIBS) -ldl
+ #libsane_hpaio_la_CFLAGS = -DWITH_NONAMESPACES -DSOAP_DEBUG
+ libsane_hpaio_la_CFLAGS = $(DBUS_CFLAGS) -Iprotocol
+ 
+--- a/scan/sane/hpaio.c
++++ b/scan/sane/hpaio.c
+@@ -34,7 +34,6 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <cups/cups.h>
+ #include "hpmud.h"
+ 
+ #ifdef HAVE_LIBAVAHI
+@@ -150,98 +149,6 @@ static int GetUriLine(char *buf, char *u
+    return i;
+ }
+ 
+-static int AddCupsList(char *uri, char ***printer)
+-{
+-   int i, stat=1;
+-
+-   /* Look for hp network URIs only. */
+-   if (strncasecmp(uri, "hp:/net/", 8) !=0)
+-      goto bugout;
+-
+-   if (*printer == NULL)
+-   {
+-      /* Allocate array of string pointers. */
+-      *printer = malloc(sizeof(char *) * MAX_DEVICE);
+-      memset(*printer, 0, sizeof(char *) * MAX_DEVICE);
+-   }
+-
+-   /* Ignor duplicates (ie: printer queues using the same device). */
+-   for (i=0; (*printer)[i] != NULL && i<MAX_DEVICE; i++)
+-   {
+-      if (strcmp((*printer)[i], uri) == 0)
+-         goto bugout;
+-   }
+-
+-   /* Find empty slot in array of pointers. */
+-   for (i=0; i<MAX_DEVICE; i++)
+-   {
+-      if ((*printer)[i] == NULL)
+-      {
+-         (*printer)[i] = strdup(uri);
+-         break;
+-      }
+-   }
+-
+-   stat = 0;
+-
+-bugout:
+-
+-   return stat;
+-}
+-
+-
+-static int GetCupsPrinters(char ***printer)
+-{
+-   http_t *http=NULL;     /* HTTP object */
+-   ipp_t *request=NULL;  /* IPP request object */
+-   ipp_t *response=NULL; /* IPP response object */
+-   ipp_attribute_t *attr;     /* Current IPP attribute */
+-   int cnt=0;
+-
+-   /* Connect to the HTTP server */
+-   if ((http = httpConnectEncrypt(cupsServer(), ippPort(), cupsEncryption())) == NULL)
+-      goto bugout;
+-
+-   /* Assemble the IPP request */
+-   request = ippNew();
+-
+-   ippSetOperation( request, CUPS_GET_PRINTERS );
+-   ippSetRequestId( request, 1 );
+-
+-   ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_CHARSET, "attributes-charset", NULL, "utf-8");
+-   ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_LANGUAGE, "attributes-natural-language", NULL, "en");
+-   ippAddString(request, IPP_TAG_OPERATION, IPP_TAG_KEYWORD, "requested-attributes", NULL, "device-uri");
+-
+-   /* Send the request and get a response. */
+-   if ((response = cupsDoRequest(http, request, "/")) == NULL)
+-      goto bugout;
+-
+-   for (attr = ippFirstAttribute ( response ); attr != NULL; attr = ippNextAttribute( response ))
+-   {
+-      /* Skip leading attributes until we hit a printer. */
+-      while (attr != NULL && ippGetGroupTag( attr ) != IPP_TAG_PRINTER)
+-         attr = ippNextAttribute( response );
+-
+-      if (attr == NULL)
+-         break;
+-
+-      while (attr != NULL && ippGetGroupTag( attr ) == IPP_TAG_PRINTER)
+-      {
+-         if (strcmp(ippGetName( attr ), "device-uri") == 0 && ippGetValueTag( attr ) == IPP_TAG_URI && AddCupsList(ippGetString( attr, 0, NULL ), printer) == 0)
+-            cnt++;
+-         attr = ippNextAttribute( response );
+-      }
+-
+-      if (attr == NULL)
+-         break;
+-   }
+-
+-   ippDelete(response);
+-
+- bugout:
+-   return cnt;
+-}
+-
+ static int AddDevice(char *uri)
+ {
+     struct hpmud_model_attributes ma;
+@@ -294,7 +201,6 @@ static int DevDiscovery(int localOnly)
+     char uri[HPMUD_LINE_SIZE];
+     char *tail = message;
+     int i, scan_type, cnt=0, total=0, bytes_read;
+-    char **cups_printer=NULL;     /* list of printers */
+     char* token = NULL;
+     enum HPMUD_RESULT stat;
+ 
+@@ -308,38 +214,6 @@ static int DevDiscovery(int localOnly)
+         GetUriLine(tail, uri, &tail);
+         total += AddDevice(uri);
+     }
+-    /* Look for Network Scan devices if localonly flag if FALSE. */
+-    if (!localOnly)
+-    {   
+-        /* Look for all-in-one scan devices for which print queue created */
+-        cnt = GetCupsPrinters(&cups_printer);
+-        for (i=0; i<cnt; i++)
+-        {
+-            total += AddDevice(cups_printer[i]);
+-            free(cups_printer[i]);
+-        }
+-        if (cups_printer)
+-            free(cups_printer);
+-#ifdef HAVE_LIBAVAHI
+-        /* Discover NW scanners using Bonjour*/
+-        if( (avahi_probe_nw_scanners() == AVAHI_STATUS_OK) && (aUriBuf != NULL) )
+-        {           
+-          token = strtok(aUriBuf, ";");
+-          while (token)
+-          {
+-              total += AddDevice(token);
+-              token = strtok(NULL, ";");
+-          }
+-          free(aUriBuf);
+-          aUriBuf = NULL;
+-        }
+-#endif
+-        if(!total)
+-        {          
+-          SendScanEvent("hpaio:/net/HP_Scan_Devices?ip=1.1.1.1", EVENT_ERROR_NO_PROBED_DEVICES_FOUND);
+-        }
+-    }
+-
+ bugout:
+    return total;
+ }

@@ -1,0 +1,76 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=01
+
+EXTRA_COMMANDS="generate_uci_conf"
+EXTRA_HELP="	generate_uci_conf Generate uci config"
+
+TOPDIR=/usr/share/seafile
+INSTALLPATH=$TOPDIR/seafile-server
+
+uci_conf=/var/run/seafile/uci.conf
+default_data_dir=$TOPDIR
+
+seafile_server_latest_symlink=$TOPDIR/seafile-server-latest
+seafile_data_dir_symlink=$TOPDIR/seafile-data
+seahub_avatars_symlink=$INSTALLPATH/seahub/media/avatars
+seahub_custom_media_symlink=$INSTALLPATH/seahub/media/custom
+
+read_uci_section() {
+	local cfg="$1"
+	local data_dir
+	config_get data_dir "$cfg" data_dir "$default_data_dir"
+	uci_data_dir="$data_dir"
+}
+
+generate_uci_conf() {
+	local uci_data_dir="$default_data_dir"
+
+	config_load seafile-server
+	config_foreach read_uci_section seafile-server
+
+	mkdir -p "$uci_data_dir"
+
+	mkdir -p "${uci_conf%/*}"
+	cat <<- EOF > "$uci_conf"
+	export SEAFILE_UCI_CONF_DIR=/etc/seafile
+	export SEAFILE_UCI_DATA_DIR="$uci_data_dir"
+	export SEAFILE_UCI_LOG_DIR=/var/log/seafile
+	export SEAFILE_UCI_PID_DIR=/var/run/seafile
+	export SEAFILE_UCI_SOCKET_DIR=/var/run/seafile
+	EOF
+
+	[ ! -L "$seafile_server_latest_symlink" ] || rm -f "$seafile_server_latest_symlink"
+	[ ! -L "$seafile_data_dir_symlink" ] || rm -f "$seafile_data_dir_symlink"
+
+	[ ! -L "$seahub_avatars_symlink" ] || \
+		[ "$(readlink -f "$seahub_avatars_symlink")" = "$uci_data_dir/seahub-data/avatars" ] || \
+		ln -snf "$uci_data_dir/seahub-data/avatars" "$seahub_avatars_symlink"
+
+	[ ! -L "$seahub_custom_media_symlink" ] || \
+		[ "$(readlink -f "$seahub_custom_media_symlink")" = "$uci_data_dir/seahub-data/custom" ] || \
+		ln -snf "$uci_data_dir/seahub-data/custom" "$seahub_custom_media_symlink"
+}
+
+start() {
+	seafile start || return
+	if ! seahub start; then
+		seafile stop
+		return 1
+	fi
+}
+
+stop() {
+	seahub stop
+	seahub_ret=$?
+	seafile stop
+	seafile_ret=$?
+	[ "$seahub_ret" -eq 0 ] && [ "$seafile_ret" -eq 0 ]
+}
+
+restart() {
+	stop
+	sleep 2
+	start
+}

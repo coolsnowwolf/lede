@@ -1,0 +1,133 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2008-2017 OpenWrt.org
+
+START=99
+
+USE_PROCD=1
+
+CONFIGNAME="bandwidthd"
+CONFIGPHPNAME="bandwidthd-php"
+CONFIGFILE="/tmp/etc/bandwidthd.conf"
+CONFIGPHPFILE="/tmp/etc/bandwidthd-php.conf"
+
+config_cb() {
+	local cfg_type="$1"
+	local cfg_name="$2"
+
+	case "$cfg_type" in
+	        bandwidthd)
+	                append cfgs "$cfg_name"
+	        ;;
+	esac
+}
+
+export_bool() {
+	local option="$1"
+	local section="$2"
+	local _loctmp
+	config_get_bool _loctmp "$section" "$option"
+	if [ -n "$_loctmp" ]; then
+		conffile="${conffile}$option "
+		if [ 1 -eq "$_loctmp" ]; then
+			conffile="${conffile}true"
+		else
+			conffile="${conffile}false"
+		fi
+		conffile="${conffile}\n"
+	fi
+}
+
+export_number() {
+	local option="$1"
+	local section="$2"
+	local _loctmp
+	config_get _loctmp "$section" "$option"
+	if [ -n "$_loctmp" ]; then
+		conffile="${conffile}$option ${_loctmp}\n"
+	fi
+}
+
+export_string() {
+	local option="$1"
+	local section="$2"
+	local _loctmp
+	config_get _loctmp "$section" "$option"
+	if [ -n "$_loctmp" ]; then
+		conffile="${conffile}$option \"${_loctmp}\"\n"
+	fi
+}
+
+set_conf_file() {
+	local subnet conffile="# auto-generated config file from /etc/config/${CONFIGNAME}\n"
+
+	[ -d /tmp/bandwidthd ] || mkdir -p /tmp/bandwidthd && cp /www/legend.gif /www/logo.gif /tmp/bandwidthd/
+	[ -e /htdocs ] || ln -s /tmp/bandwidthd /htdocs
+	[ -e /www/bandwidthd ] || ln -s /tmp/bandwidthd /www/bandwidthd
+	rm -f $CONFIGFILE
+	touch $CONFIGFILE
+	[ -e /etc/bandwidthd.conf ] || ln -s $CONFIGFILE /etc/bandwidthd.conf
+
+	config_load $CONFIGNAME
+	for cfg in $cfgs; do
+		config_get subnets $cfg subnets
+			for subnet in $subnets; do
+				conffile="${conffile}subnet ${subnet}\n"
+			done
+		export_string dev $cfg
+		export_number skip_intervals $cfg
+		export_number graph_cutoff $cfg
+		export_bool promiscuous $cfg
+		export_bool output_cdf $cfg
+		export_bool recover_cdf $cfg
+		export_string filter $cfg
+		export_bool graph $cfg
+		export_number meta_refresh $cfg
+		export_string pgsql_connect_string $cfg
+		export_string sqlite_filename $cfg
+		export_string sensor_id $cfg
+		[ -n "$conffile" ] && echo -e "$conffile" >>$CONFIGFILE
+		unset conffile
+	done
+	cd /
+}
+
+set_php_conf_file() {
+        local subnet conffile="<?php\n// auto-generated config file from /etc/config/${CONFIGPHPNAME}\n"
+
+        rm -f $CONFIGPHPFILE
+        touch $CONFIGPHPFILE
+
+        config_load $CONFIGPHPNAME
+        for cfg in $cfgs; do
+		export_number dflt_width $cfg
+		conffile="${conffile}define(\"DFLT_WIDTH\", ${paramstr:-"900"});\n"
+
+		export_number dflt_height $cfg
+       		conffile="${conffile}define(\"DFLT_HEIGHT\", ${paramstr:-"256"});\n"
+
+		export_string dflt_interval $cfg
+		conffile="${conffile}define(\"DFLT_INTERVAL\", ${paramstr:-"INT_DAILY"});\n\n"'$db_connect_string = "sqlite:'
+
+		export_string sqlite_dbname $cfg
+		conffile="${conffile}${paramstr:-"/www/bandwidthd/stats.db"}"'"'"\n?>"
+		[ -n "$conffile" ] && echo -e "$conffile" >>$CONFIGPHPFILE
+        done
+        cd /
+}
+
+service_triggers() {
+        procd_add_reload_trigger $CONFIGNAME
+        procd_add_reload_trigger $CONFIGPHPNAME
+}
+
+start_service() {
+	set_conf_file
+	set_php_conf_file
+	procd_open_instance
+	procd_set_param command /usr/sbin/bandwidthd
+	procd_close_instance
+}
+
+stop_service() {
+	service_stop /usr/sbin/bandwidthd
+}

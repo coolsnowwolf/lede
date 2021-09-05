@@ -1,0 +1,95 @@
+--- General Information.
+module "nixio.README"
+
+--- General error handling information.
+-- <ul>
+-- <li> Most of the functions available in this library may fail. If any error
+-- occurs the function returns <strong>nil or false</strong>, an error code
+-- (usually errno) and an additional error message text (if avaialable).</li>
+-- <li>At the moment false is only returned when a non-blocking I/O function
+-- fails with EAGAIN, EWOULDBLOCK or WSAEWOULDBLOCK for any others nil is
+-- returned as first parameter. Therefore you can use false to write portable
+-- non-blocking I/O applications.</li>
+-- <li>Note that the function documentation does only mention the return values
+-- in case of a successful operation.</li> 
+-- <li>You can find a table of common error numbers and other useful constants
+-- like signal numbers in <strong>nixio.const</strong> e.g. nixio.const.EINVAL,
+-- nixio.const.SIGTERM, etc. For portability there is a second error constant
+-- table <strong>nixio.const_sock</strong> for socket error codes. This might
+-- be important if you are dealing with Windows applications, on POSIX however
+-- const_sock is just an alias for const.</li>
+-- <li>With some exceptions - which are explicitely stated in the function
+-- documentation - all blocking functions are signal-protected and will not fail
+-- with EINTR.</li>
+-- <li>On POSIX the SIGPIPE signal will be set to ignore upon initialization.
+-- You should restore the default behaviour or set a custom signal handler
+-- in your program after loading nixio if you need this behaviour.</li>
+-- </ul>
+-- @class table
+-- @name Errorhandling
+-- @return !
+
+--- Function conventions.
+-- <br />In general all functions are namend and behave like their POSIX API
+-- counterparts - where applicable - applying the following rules:
+-- <ul>
+-- <li>Functions should be named like the underlying POSIX API function ommiting
+-- prefixes or suffixes - especially when placed in an object-context (
+-- lockf -> File:lock, fsync -> File:sync, dup2 -> dup, ...)</li>
+-- <li>If you are unclear about the behaviour of a function you should consult
+-- your OS API documentation (e.g. the manpages).</li>
+-- <li>If the name is significantly different from the POSIX-function, the
+-- underlying function(s) are stated in the documentation.</li>
+-- <li>Parameters should reflect those of the C-API, buffer length arguments and 
+-- by-reference parameters should be ommitted for pratical purposes.</li>
+-- <li>If a C function accepts a bitfield as parameter, it should be translated
+-- into lower case string flags representing the flags if the bitfield is the 
+-- last parameter and also ommiting prefixes or suffixes. (e.g.  waitpid
+-- (pid, &s, WNOHANG | WUNTRACED) -> waitpid(pid, "nohang", "untraced"), 
+-- getsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) ->
+-- Socket:getopt("socket", "reuseaddr"), etc.) </li>
+-- <li>If it is not applicable to provide a string representation of the
+-- bitfield a bitfield generator helper is provided. It is named FUNCTION_flags.
+-- (open("/tmp/test", O_RDONLY | O_NONBLOCK) -> open("/tmp/test", open_flags(
+-- "rdonly", "nonblock")))</li>  
+-- </ul>
+-- @class table
+-- @name Functions
+-- @return !
+
+--- Platform information.
+-- <ul>
+-- <li>The minimum platform requirements are a decent POSIX 2001 support.
+-- Builds are more or less tested on Linux, Solaris and FreeBSD. Builds for
+-- Windows XP SP1 and later can be compiled with MinGW either from Windows
+-- itself or using the MinGW cross-compiler. Earlier versions of Windows are not
+-- supported.</li>
+-- <li>In general all functions which don't have any remarks 
+-- in their documentation are available on all platforms.</li>
+-- <li>Functions with a (POSIX), (Linux) or similar prefix are only available
+-- on these specific platforms. Same appplies to parameters of functions
+-- with a similar suffix.</li>
+-- <li>Some functions might have limitations on some platforms. This should
+-- be stated in the documentation. Please also consult your OS API 
+-- documentation.</li>   
+-- </ul>
+-- @usage Tes
+-- @class table
+-- @name Platforms
+-- @return !
+
+--- Cryptography and TLS libraries.
+-- <ul>
+-- <li>Currently 3 underlying cryptography libraries are supported: openssl,
+-- cyassl and axTLS. The name of the library in use is written to 
+-- <strong>nixio.tls_provider</strong></li>
+-- <li>You should whenever possible use openssl or cyassl as axTLS has only 
+-- limited support. It does not provide support for non-blocking sockets and
+-- is probably less audited than the other ones.</li>
+-- <li>As the supported Windows versions are not suitable for embedded devices
+-- axTLS is at the moment not supported on Windows.</li>  
+-- </ul>
+-- @usage Tes
+-- @class table
+-- @name TLS-Crypto
+-- @return !

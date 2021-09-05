@@ -1,0 +1,103 @@
+--- a/tirpc/reentrant.h
++++ b/tirpc/reentrant.h
+@@ -36,7 +36,7 @@
+  * These definitions are only guaranteed to be valid on Linux. 
+  */
+ 
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__MACH__)
+ 
+ #include <pthread.h>
+ 
+--- a/tirpc/rpc/rpcent.h
++++ b/tirpc/rpc/rpcent.h
+@@ -50,7 +50,7 @@ extern "C" {
+ 
+ /* These are defined in /usr/include/rpc/netdb.h, unless we are using
+    the C library without RPC support. */
+-#if defined(__UCLIBC__) && !defined(__UCLIBC_HAS_RPC__) || !defined(__GLIBC__)
++#if (defined(__UCLIBC__) && !defined(__UCLIBC_HAS_RPC__) || !defined(__GLIBC__)) && !defined(__MACH__)
+ struct rpcent {
+ 	char	*r_name;	/* name of server for this rpc program */
+ 	char	**r_aliases;	/* alias list */
+--- a/src/rpc_com.h
++++ b/src/rpc_com.h
+@@ -63,6 +63,14 @@ void __xprt_set_raddr(SVCXPRT *, const s
+ 
+ extern int __svc_maxrec;
+ 
++#ifndef SOL_IP
++#define SOL_IP IPPROTO_IP
++#endif
++
++#ifndef SOL_IPV6
++#define SOL_IPV6 IPPROTO_IPV6
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/src/svc_dg.c
++++ b/src/svc_dg.c
+@@ -37,6 +37,11 @@
+  *
+  * Does some caching in the hopes of achieving execute-at-most-once semantics.
+  */
++
++#ifdef __APPLE__
++#define __APPLE_USE_RFC_3542
++#endif
++
+ #include <pthread.h>
+ #include <reentrant.h>
+ #include <sys/types.h>
+--- a/src/svc_raw.c
++++ b/src/svc_raw.c
+@@ -43,6 +43,7 @@
+ #include <sys/types.h>
+ #include <rpc/raw.h>
+ #include <stdlib.h>
++#include <string.h>
+ 
+ #ifndef UDPMSGSIZE
+ #define	UDPMSGSIZE 8800
+--- a/src/getpeereid.c
++++ b/src/getpeereid.c
+@@ -29,12 +29,17 @@
+ #include <sys/socket.h>
+ #include <sys/un.h>
+ 
++#if __APPLE__ || __FreeBSD__
++#include <sys/ucred.h>
++#endif
++
+ #include <errno.h>
+ #include <unistd.h>
+ 
+ int
+ getpeereid(int s, uid_t *euid, gid_t *egid)
+ {
++#if defined(SO_PEERCRED)
+ 	struct ucred uc;
+ 	socklen_t uclen;
+ 	int error;
+@@ -48,4 +53,19 @@ getpeereid(int s, uid_t *euid, gid_t *eg
+ 	*euid = uc.uid;
+ 	*egid = uc.gid;
+ 	return (0);
++#elif defined(LOCAL_PEERCRED)
++	struct xucred uc;
++	socklen_t uclen;
++	int error;
++
++	uclen = sizeof(uc);
++	error = getsockopt(s, SOL_LOCAL, LOCAL_PEERCRED, &uc, &uclen); /*  SCM_CREDENTIALS */
++	if (error != 0)
++		return (error);
++	*euid = uc.cr_uid;
++	*egid = uc.cr_gid;
++	return (0);
++#else
++	return (ENOTSUP);
++#endif
+  }

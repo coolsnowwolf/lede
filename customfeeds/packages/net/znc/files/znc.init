@@ -1,0 +1,214 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010 Openwrt.org
+
+START=60
+
+USE_PROCD=1
+
+ZNC_CONFIG_PATH=/tmp/etc/znc
+PID_FILE=${ZNC_CONFIG_PATH}/znc.pid
+ZNC_CONFIG=${ZNC_CONFIG_PATH}/configs/znc.conf
+
+EXTERNAL_CONFIG=0
+DISABLED=
+
+RUNAS_USER=
+RUNAS_GROUP=
+
+add_param() {
+	echo "$1 = $2" >> $ZNC_CONFIG
+}
+
+add_chan() {
+	chan=${1% *}
+	pass=${1#* }
+	echo "		<Chan $chan>" >> $ZNC_CONFIG
+	[ "$chan" != "$pass" ] && echo "			Key = $pass" >> $ZNC_CONFIG
+	echo "		</Chan>" >> $ZNC_CONFIG
+}
+
+add_network() {
+	local current_user="$1"
+	local network="$2"
+	local user
+	local name
+
+	config_get user "$network" user
+
+	[ "$user" = "$current_user" ] || return 0
+
+	config_get name "$network" name
+	echo "	<Network $name>" >> $ZNC_CONFIG
+	config_list_foreach "$network" server "add_param \"		Server\""
+	config_list_foreach "$network" fingerprint "add_param \"		trustedserverfingerprint\""
+	config_list_foreach "$network" channel "add_chan"
+	echo "	</Network>" >> $ZNC_CONFIG
+}
+
+znc_global() {
+	local znc="$1"
+	local anoniplimit
+	local maxbuffersize
+	local connectdelay
+	local serverthrottle
+	local znc_config_path
+	local znc_pem_file
+
+	config_get_bool DISABLED "$znc" disabled 0
+
+	[ "$DISABLED" -eq 0 ] || return 0
+
+	config_get znc_config_path "$znc" znc_config_path
+
+	config_get RUNAS_USER "$znc" runas_user znc
+	config_get RUNAS_GROUP "$znc" runas_group znc
+
+	if [ "${znc_config_path}" ]
+	then
+		ZNC_CONFIG_PATH=$znc_config_path
+		EXTERNAL_CONFIG=1
+	else
+		mkdir -p $ZNC_CONFIG_PATH/configs/
+		[ ! -f "$ZNC_CONFIG" ] || rm "$ZNC_CONFIG"
+
+		add_param "Version" "1.6"
+
+		config_get anoniplimit "$znc" anoniplimit
+		config_get maxbuffersize "$znc" maxbuffersize
+		config_get connectdelay "$znc" connectdelay
+		config_get serverthrottle "$znc" serverthrottle
+		config_get znc_pem_file "$znc" znc_ssl_cert
+
+		[ -z "$znc_pem_file" ] || ln -sf "$znc_pem_file" $ZNC_CONFIG_PATH/znc.pem
+
+		[ -z $anoniplimit ] || echo "AnonIPLimit = $anoniplimit" >> $ZNC_CONFIG
+		[ -z $maxbuffersize ] || echo "MaxBufferSize = $maxbuffersize" >> $ZNC_CONFIG
+		[ -z $connectdelay ] || echo "ConnectDelay = $connectdelay" >> $ZNC_CONFIG
+		[ -z $serverthrottle ] || echo "ServerThrottle = $anoniplimit" >> $ZNC_CONFIG
+
+		echo "PidFile = $PID_FILE" >> $ZNC_CONFIG
+
+		config_list_foreach "$znc" listener "add_param Listener"
+		config_list_foreach "$znc" module "add_param LoadModule"
+	fi
+}
+
+add_listener() {
+       local listener="$1"
+       local host
+       local port
+       local allowirc
+       local allowweb
+       local ipv4
+       local ipv6
+       local ssl
+
+       config_get host "$listener" host
+       config_get port "$listener" port
+       config_get allowirc "$listener" allowirc
+       config_get allowweb "$listener" allowweb
+       config_get ipv4 "$listener" ipv4
+       config_get ipv6 "$listener" ipv6
+       config_get ssl "$listener" ssl
+
+       echo "<Listener $listener>" >> $ZNC_CONFIG
+
+       [ -z "$host" ] || add_param "  Host" "$host"
+       [ -z "$port" ] || add_param "  Port" "$port"
+       [ -z "$allowirc" ] || add_param "  AllowIRC" "$allowirc"
+       [ -z "$allowweb" ] || add_param "  AllowWeb" "$allowweb"
+       [ -z "$ipv4" ] || add_param "  IPv4" "$ipv4"
+       [ -z "$ipv6" ] || add_param "  IPv6" "$ipv6"
+       [ -z "$ssl" ] || add_param "  SSL" "$ssl"
+
+       echo "</Listener>" >> $ZNC_CONFIG
+}
+
+add_user() {
+	local user="$1"
+	local password
+	local nick
+	local altnick
+	local ident
+	local realname
+	local buffer
+	local quitmsg
+	local chanmodes
+	local vhost
+	local server
+
+	config_get password "$user" password
+	config_get nick "$user" nick
+	config_get altnick "$user" altnick
+	config_get ident "$user" ident
+	config_get realname "$user" realname
+	config_get buffer "$user" buffer
+	config_get quitmsg "$user" quitmsg
+	config_get chanmodes "$user" chanmodes
+	config_get vhost "$user" vhost
+	config_get server "$user" server
+
+	echo "<User $user>" >> $ZNC_CONFIG
+
+	case "$password" in
+	"md5#"* | "sha256#"* | "plain#"*)
+		add_param "	Pass" "$password"
+		;;
+	*)
+		add_param "	Pass" "plain#$password"
+		;;
+	esac
+
+	add_param "	Nick" "$nick"
+	add_param "	AltNick" "${altnick:-$nick"_"}"
+	add_param "	Ident" "${ident:-$nick}"
+	add_param "	RealName" "${realname:-$nick}"
+	[ -z "$vhost" ] || add_param "	VHost" "$vhost"
+	add_param "	Buffer" "${buffer:-50}"
+	add_param "	KeepBuffer" "false"
+	add_param "	ChanModes" "${chanmodes:-"+stn"}"
+	[ -z "$quitmsg" ] || add_param "	QuitMsg" "$quitmsg"
+
+	config_list_foreach "$user" module "add_param \"	LoadModule\""
+
+	# add legacy network
+	if [ "$server" ]; then
+		echo "	<Network Default>" >> $ZNC_CONFIG
+		config_list_foreach "$user" server "add_param \"		Server\""
+		config_list_foreach "$user" fingerprint "add_param \"		trustedserverfingerprint\""
+		config_list_foreach "$user" channel "add_chan"
+		echo "	</Network>" >> $ZNC_CONFIG
+	fi
+
+	config_foreach "add_network \"$user\"" network
+
+	echo "</User>" >> $ZNC_CONFIG
+}
+
+start_service() {
+	config_load znc
+	config_foreach znc_global znc
+
+	[ "$DISABLED" -eq 0 ] || return 0
+
+	if [ "$EXTERNAL_CONFIG" -eq 0 ]
+	then
+		config_foreach add_listener listener
+		config_foreach add_user user
+
+	fi
+
+	chown -hR ${RUNAS_USER}:${RUNAS_GROUP} ${ZNC_CONFIG_PATH} || {
+		logger -s -t ZNC -p daemon.err "Invalid UID/GID. Aborting startup"
+		exit 1
+	}
+
+	procd_open_instance
+	procd_set_param file /etc/config/znc
+	[ "$EXTERNAL_CONFIG" -eq 1 ] && procd_set_param file "${ZNC_CONFIG}/configs/znc.conf"
+	procd_set_param command /usr/bin/znc
+	procd_append_param command -f -d$ZNC_CONFIG_PATH
+	procd_set_param user ${RUNAS_USER}
+	procd_set_param respawn
+	procd_close_instance
+}

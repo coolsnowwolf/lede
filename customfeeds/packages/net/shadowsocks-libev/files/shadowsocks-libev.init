@@ -1,0 +1,298 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2017-2019 Yousong Zhou <yszhou4tech@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+USE_PROCD=1
+START=99
+
+ss_confdir=/var/etc/shadowsocks-libev
+ss_bindir=/usr/bin
+
+ss_mkjson_server_conf() {
+	local cfgserver
+
+	config_get cfgserver "$cfg" server
+	[ -n "$cfgserver" ] || return 1
+	eval "$(validate_server_section "$cfg" ss_validate_mklocal)"
+	validate_server_section "$cfgserver" || return 1
+	[ "$disabled" = 0 ] || return 1
+	ss_mkjson_server_conf_ "$cfgserver"
+}
+
+ss_mkjson_server_conf_() {
+	[ -n "$server_port" ] || return 1
+	[ -z "$server" ] || json_add_string server "$server"
+	json_add_int server_port "$server_port"
+	[ -z "$method" ] || json_add_string method "$method"
+	[ -z "$key" ] || json_add_string key "$key"
+	[ -z "$password" ] || json_add_string password "$password"
+	[ -z "$plugin" ] || json_add_string plugin "$plugin"
+	[ -z "$plugin_opts" ] || json_add_string plugin_opts "$plugin_opts"
+}
+
+ss_mkjson_ss_local_conf() {
+	ss_mkjson_server_conf
+}
+
+ss_mkjson_ss_redir_conf() {
+	ss_mkjson_server_conf
+}
+
+ss_mkjson_ss_server_conf() {
+	ss_mkjson_server_conf_
+}
+
+ss_mkjson_ss_tunnel_conf() {
+	ss_mkjson_server_conf || return 1
+	[ -n "$tunnel_address" ] || return 1
+	json_add_string tunnel_address "$tunnel_address"
+}
+
+ss_xxx() {
+	local cfg="$1"
+	local cfgtype="$2"
+	local bin="$ss_bindir/${cfgtype/_/-}"
+	local confjson="$ss_confdir/$cfgtype.$cfg.json"
+
+	[ -x "$bin" ] || return
+	eval "$("validate_${cfgtype}_section" "$cfg" ss_validate_mklocal)"
+	"validate_${cfgtype}_section" "$cfg" || return
+	[ "$disabled" = 0 ] || return
+
+	json_init
+	ss_mkjson_${cfgtype}_conf || return
+	json_add_boolean use_syslog 1
+	json_add_boolean ipv6_first "$ipv6_first"
+	json_add_boolean fast_open "$fast_open"
+	json_add_boolean reuse_port "$reuse_port"
+	json_add_boolean no_delay "$no_delay"
+	[ -z "$local_address" ] || json_add_string local_address "$local_address"
+	[ -z "$local_port" ] || json_add_int local_port "$local_port"
+	[ -z "$local_ipv4_address" ] || json_add_string local_ipv4_address "$local_ipv4_address"
+	[ -z "$local_ipv6_address" ] || json_add_string local_ipv6_address "$local_ipv6_address"
+	[ -z "$mode" ] || json_add_string mode "$mode"
+	[ -z "$mtu" ] || json_add_int mtu "$mtu"
+	[ -z "$timeout" ] || json_add_int timeout "$timeout"
+	[ -z "$user" ] || json_add_string user "$user"
+	json_dump -i >"$confjson"
+
+	procd_open_instance "$cfgtype.$cfg"
+	procd_set_param command "$bin" -c "$confjson"
+	[ "$verbose" = 0 ] || procd_append_param command -v
+	if [ -n "$bind_address" ]; then
+		echo "$cfgtype $cfg: uci option bind_address deprecated, please switch to local_address" >&2
+		procd_append_param command -b "$bind_address"
+	fi
+	procd_set_param file "$confjson"
+	procd_set_param respawn
+	procd_close_instance
+	ss_rules_cb
+}
+
+ss_rules_cb() {
+	local cfgserver server
+
+	if [ "$cfgtype" = ss_redir ]; then
+		config_get cfgserver "$cfg" server
+		config_get server "$cfgserver" server
+		ss_redir_servers="$ss_redir_servers $server"
+		if [ "$mode" = tcp_only -o "$mode" = "tcp_and_udp" ]; then
+			eval "ss_rules_redir_tcp_$cfg=$local_port"
+		fi
+		if [ "$mode" = udp_only -o "$mode" = "tcp_and_udp" ]; then
+			eval "ss_rules_redir_udp_$cfg=$local_port"
+		fi
+	fi
+}
+
+ss_rules() {
+	local cfg="ss_rules"
+	local bin="$ss_bindir/ss-rules"
+	local cfgtype
+	local local_port_tcp local_port_udp
+	local args
+
+	[ -x "$bin" ] || return 1
+	"$bin" -f
+	"$bin" -6 -f
+
+	config_get cfgtype "$cfg" TYPE
+	[ "$cfgtype" = ss_rules ] || return 1
+
+	eval "$(validate_ss_rules_section "$cfg" ss_validate_mklocal)"
+	validate_ss_rules_section "$cfg" || return 1
+	[ "$disabled" = 0 ] || return 0
+
+	eval local_port_tcp="\$ss_rules_redir_tcp_$redir_tcp"
+	eval local_port_udp="\$ss_rules_redir_udp_$redir_udp"
+	[ -n "$local_port_tcp" -o -n "$local_port_udp" ] || return 1
+	ss_redir_servers="$(echo "$ss_redir_servers" | tr ' ' '\n' | sort -u)"
+	[ "$dst_forward_recentrst" = 0 ] || args="$args --dst-forward-recentrst"
+
+	ss_rules_call
+	ss_rules_call -6
+}
+
+ss_rules_call() {
+	"$bin" "$@" \
+			-s "$ss_redir_servers" \
+			-l "$local_port_tcp" \
+			-L "$local_port_udp" \
+			--src-default "$src_default" \
+			--dst-default "$dst_default" \
+			--local-default "$local_default" \
+			--dst-bypass-file "$dst_ips_bypass_file" \
+			--dst-forward-file "$dst_ips_forward_file" \
+			--dst-bypass "$dst_ips_bypass" \
+			--dst-forward "$dst_ips_forward" \
+			--src-bypass "$src_ips_bypass" \
+			--src-forward "$src_ips_forward" \
+			--src-checkdst "$src_ips_checkdst" \
+			--ifnames "$ifnames" \
+			--ipt-extra "$ipt_args" \
+			$args \
+		|| "$bin" "$@" -f
+}
+
+start_service() {
+	local cfgtype
+
+	mkdir -p "$ss_confdir"
+	config_load shadowsocks-libev
+	for cfgtype in ss_local ss_redir ss_server ss_tunnel; do
+		config_foreach ss_xxx "$cfgtype" "$cfgtype"
+	done
+	ss_rules
+}
+
+stop_service() {
+	local bin="$ss_bindir/ss-rules"
+
+	[ -x "$bin" ] && {
+		"$bin" -f
+		"$bin" -6 -f
+	}
+	rm -rf "$ss_confdir"
+}
+
+service_triggers() {
+	procd_add_reload_interface_trigger wan
+	procd_add_reload_trigger shadowsocks-libev
+	procd_open_validate
+	validate_server_section
+	validate_ss_local_section
+	validate_ss_redir_section
+	validate_ss_rules_section
+	validate_ss_server_section
+	validate_ss_tunnel_section
+	procd_close_validate
+}
+
+ss_validate_mklocal() {
+	local tuple opts
+
+	shift 2
+	for tuple in "$@"; do
+		opts="${tuple%%:*} $opts"
+	done
+	[ -z "$opts" ] || echo "local $opts"
+}
+
+ss_validate() {
+	uci_validate_section shadowsocks-libev "$@"
+}
+
+validate_common_server_options_() {
+	local cfgtype="$1"; shift
+	local cfg="$1"; shift
+	local func="$1"; shift
+	local stream_methods='"table", "rc4", "rc4-md5", "aes-128-cfb", "aes-192-cfb", "aes-256-cfb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr", "bf-cfb", "camellia-128-cfb", "camellia-192-cfb", "camellia-256-cfb", "salsa20", "chacha20", "chacha20-ietf"'
+	local aead_methods='"aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "xchacha20-ietf-poly1305"'
+
+	"${func:-ss_validate}" "$cfgtype" "$cfg" "$@" \
+		'disabled:bool:0' \
+		'server:host' \
+		'server_port:port' \
+		'password:string' \
+		'key:string' \
+		"method:or($stream_methods, $aead_methods)" \
+		'plugin:string' \
+		'plugin_opts:string'
+}
+
+validate_common_client_options_() {
+	validate_common_options_ "$@" \
+		'server:uci("shadowsocks-libev", "@server")' \
+		'local_address:ipaddr:0.0.0.0' \
+		'local_port:port'
+}
+
+validate_common_options_() {
+	local cfgtype="$1"; shift
+	local cfg="$1"; shift
+	local func="$1"; shift
+
+	"${func:-ss_validate}" "$cfgtype" "$cfg" "$@" \
+		'disabled:bool:0' \
+		'fast_open:bool:0' \
+		'ipv6_first:bool:0' \
+		'no_delay:bool:0' \
+		'reuse_port:bool:0' \
+		'verbose:bool:0' \
+		'mode:or("tcp_only", "udp_only", "tcp_and_udp"):tcp_only' \
+		'mtu:uinteger' \
+		'timeout:uinteger' \
+		'user:string'
+}
+
+validate_server_section() {
+	validate_common_server_options_ server "$1" "$2"
+}
+
+validate_ss_local_section() {
+	validate_common_client_options_ ss_local "$1" "$2"
+}
+
+validate_ss_redir_section() {
+	validate_common_client_options_ ss_redir "$1" "$2"
+}
+
+validate_ss_rules_section() {
+	"${2:-ss_validate}" ss_rules "$1" \
+		'disabled:bool:0' \
+		'redir_tcp:uci("shadowsocks-libev", "@ss_redir")' \
+		'redir_udp:uci("shadowsocks-libev", "@ss_redir")' \
+		'src_ips_bypass:or(ipaddr,cidr)' \
+		'src_ips_forward:or(ipaddr,cidr)' \
+		'src_ips_checkdst:or(ipaddr,cidr)' \
+		'dst_ips_bypass_file:file' \
+		'dst_ips_bypass:or(ipaddr,cidr)' \
+		'dst_ips_forward_file:file' \
+		'dst_ips_forward:or(ipaddr,cidr)' \
+		'src_default:or("bypass", "forward", "checkdst"):checkdst' \
+		'dst_default:or("bypass", "forward"):bypass' \
+		'local_default:or("bypass", "forward", "checkdst"):bypass' \
+		'dst_forward_recentrst:bool:0' \
+		'ifnames:maxlength(15)' \
+		'ipt_args:string'
+}
+
+validate_ss_server_section() {
+	validate_common_server_options_ ss_server "$1" \
+		validate_common_options_ \
+		"$2" \
+		'local_address:ipaddr' \
+		'local_ipv4_address:ip4addr' \
+		'local_ipv6_address:ip6addr' \
+		'bind_address:ipaddr'
+}
+
+validate_ss_tunnel_section() {
+	validate_common_client_options_ ss_tunnel "$1" \
+		"$2" \
+		'tunnel_address:regex(".+\:[0-9]+")'
+}

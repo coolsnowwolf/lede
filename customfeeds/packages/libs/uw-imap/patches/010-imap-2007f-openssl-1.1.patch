@@ -1,0 +1,81 @@
+From c3f68d987c00284d91ad6599a013b7111662545b Mon Sep 17 00:00:00 2001
+From: Sebastian Andrzej Siewior <sebastian@breakpoint.cc>
+Date: Fri, 2 Sep 2016 21:33:33 +0000
+Subject: [PATCH] uw-imap: compile against openssl 1.1.0
+
+I *think* I replaced access to cert->name with certificate's subject name. I
+assume that the re-aranged C-code is doing the same thing. A double check
+wouldn't hurt :)
+
+Signed-off-by: Sebastian Andrzej Siewior <sebastian@breakpoint.cc>
+---
+ src/osdep/unix/ssl_unix.c | 28 +++++++++++++++++-----------
+ 1 file changed, 17 insertions(+), 11 deletions(-)
+
+--- a/src/osdep/unix/ssl_unix.c
++++ b/src/osdep/unix/ssl_unix.c
+@@ -59,7 +59,7 @@ typedef struct ssl_stream {
+ static SSLSTREAM *ssl_start(TCPSTREAM *tstream,char *host,unsigned long flags);
+ static char *ssl_start_work (SSLSTREAM *stream,char *host,unsigned long flags);
+ static int ssl_open_verify (int ok,X509_STORE_CTX *ctx);
+-static char *ssl_validate_cert (X509 *cert,char *host);
++static char *ssl_validate_cert (X509 *cert,char *host, char *cert_subj);
+ static long ssl_compare_hostnames (unsigned char *s,unsigned char *pat);
+ static char *ssl_getline_work (SSLSTREAM *stream,unsigned long *size,
+ 			       long *contd);
+@@ -210,6 +210,7 @@ static char *ssl_start_work (SSLSTREAM *
+   BIO *bio;
+   X509 *cert;
+   unsigned long sl,tl;
++  char cert_subj[250];
+   char *s,*t,*err,tmp[MAILTMPLEN];
+   sslcertificatequery_t scq =
+     (sslcertificatequery_t) mail_parameters (NIL,GET_SSLCERTIFICATEQUERY,NIL);
+@@ -266,14 +267,19 @@ static char *ssl_start_work (SSLSTREAM *
+   if (SSL_write (stream->con,"",0) < 0)
+     return ssl_last_error ? ssl_last_error : "SSL negotiation failed";
+ 				/* need to validate host names? */
+-  if (!(flags & NET_NOVALIDATECERT) &&
+-      (err = ssl_validate_cert (cert = SSL_get_peer_certificate (stream->con),
+-				host))) {
+-				/* application callback */
+-    if (scq) return (*scq) (err,host,cert ? cert->name : "???") ? NIL : "";
++  if (!(flags & NET_NOVALIDATECERT)) {
++
++	cert_subj[0] = '\0';
++	cert = SSL_get_peer_certificate(stream->con);
++	if (cert)
++		X509_NAME_oneline(X509_get_subject_name(cert), cert_subj, sizeof(cert_subj));
++	err = ssl_validate_cert (cert, host, cert_subj);
++	if (err)
++		/* application callback */
++		if (scq) return (*scq) (err,host,cert ? cert_subj : "???") ? NIL : "";
+ 				/* error message to return via mm_log() */
+-    sprintf (tmp,"*%.128s: %.255s",err,cert ? cert->name : "???");
+-    return ssl_last_error = cpystr (tmp);
++	sprintf (tmp,"*%.128s: %.255s",err,cert ? cert_subj : "???");
++	return ssl_last_error = cpystr (tmp);
+   }
+   return NIL;
+ }
+@@ -313,7 +319,7 @@ static int ssl_open_verify (int ok,X509_
+  * Returns: NIL if validated, else string of error message
+  */
+ 
+-static char *ssl_validate_cert (X509 *cert,char *host)
++static char *ssl_validate_cert (X509 *cert,char *host, char *cert_subj)
+ {
+   int i,n;
+   char *s,*t,*ret;
+@@ -322,9 +328,9 @@ static char *ssl_validate_cert (X509 *ce
+ 				/* make sure have a certificate */
+   if (!cert) ret = "No certificate from server";
+ 				/* and that it has a name */
+-  else if (!cert->name) ret = "No name in certificate";
++  else if (cert_subj[0] == '\0') ret = "No name in certificate";
+ 				/* locate CN */
+-  else if (s = strstr (cert->name,"/CN=")) {
++  else if (s = strstr (cert_subj,"/CN=")) {
+     if (t = strchr (s += 4,'/')) *t = '\0';
+ 				/* host name matches pattern? */
+     ret = ssl_compare_hostnames (host,s) ? NIL :

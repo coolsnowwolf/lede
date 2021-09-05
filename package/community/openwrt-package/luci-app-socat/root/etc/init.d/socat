@@ -1,0 +1,119 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2020 Lienol <lawlienol@gmail.com>
+
+START=99
+
+CONFIG=socat
+CONFIG_PATH=/var/etc/$CONFIG
+
+add_rule() {
+	iptables -N SOCAT
+	iptables -I INPUT -j SOCAT
+	ip6tables -N SOCAT
+	ip6tables -I INPUT -j SOCAT
+}
+
+del_rule() {
+	iptables -D INPUT -j SOCAT 2>/dev/null
+	iptables -F SOCAT 2>/dev/null
+	iptables -X SOCAT 2>/dev/null
+	ip6tables -D INPUT -j SOCAT 2>/dev/null
+	ip6tables -F SOCAT 2>/dev/null
+	ip6tables -X SOCAT 2>/dev/null
+}
+
+gen_include() {
+	echo '#!/bin/sh' > /var/etc/$CONFIG.include
+	extract_rules() {
+		local _ipt="iptables"
+		[ "$1" == "6" ] && _ipt="ip6tables"
+		
+		echo "*$2"
+		${_ipt}-save -t $2 | grep "SOCAT" | \
+		sed -e "s/^-A \(INPUT\)/-I \1 1/"
+		echo 'COMMIT'
+	}
+	cat <<-EOF >> /var/etc/$CONFIG.include
+		iptables-save -c | grep -v "SOCAT" | iptables-restore -c
+		iptables-restore -n <<-EOT
+		$(extract_rules 4 filter)
+		EOT
+		ip6tables-save -c | grep -v "SOCAT" | ip6tables-restore -c
+		ip6tables-restore -n <<-EOT
+		$(extract_rules 6 filter)
+		EOT
+	EOF
+	return 0
+}
+
+run_service() {
+	config_get enable $1 enable
+	[ "$enable" = "0" ] && return 0
+	config_get remarks $1 remarks
+	config_get protocol $1 protocol
+	config_get family $1 family
+	config_get proto $1 proto
+	config_get listen_port $1 listen_port
+	config_get reuseaddr $1 reuseaddr
+	config_get dest_proto $1 dest_proto
+	config_get dest_ip $1 dest_ip
+	config_get dest_port $1 dest_port
+	config_get firewall_accept $1 firewall_accept
+	ln -s /usr/bin/socat ${CONFIG_PATH}/$1
+	
+	if [ "$reuseaddr" == "1" ]; then
+		reuseaddr=",reuseaddr"
+	else
+		reuseaddr=""
+	fi
+	
+	if [ "$family" == "6" ]; then
+		ipv6only_params=",ipv6-v6only"
+	else
+		ipv6only_params=""
+	fi
+	
+	# 端口转发
+	if [ "$protocol" == "port_forwards" ]; then
+		listen=${proto}${family}
+		[ "$family" == "" ] && listen=${proto}6
+		${CONFIG_PATH}/$1 ${listen}-listen:${listen_port}${ipv6only_params}${reuseaddr},fork ${dest_proto}:${dest_ip}:${dest_port} >/dev/null 2>&1 &
+	fi
+	
+	[ "$firewall_accept" == "1" ] && {
+		if [ -z "$family" ] || [ "$family" == "6" ]; then
+			ip6tables -A SOCAT -p $proto --dport $listen_port -m comment --comment "$remarks" -j ACCEPT
+		fi
+		if [ -z "$family" ] || [ "$family" == "4" ]; then
+			iptables -A SOCAT -p $proto --dport $listen_port -m comment --comment "$remarks" -j ACCEPT
+		fi
+	}
+}
+
+stop_service() {
+	ps -w | grep "$CONFIG_PATH/" | grep -v "grep" | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+	del_rule
+	rm -rf $CONFIG_PATH /var/etc/$CONFIG.include
+}
+
+start() {
+	enable=$(uci -q get $CONFIG.@global[0].enable)
+	if [ "$enable" = "0" ];then
+		stop_service
+	else
+		mkdir -p $CONFIG_PATH
+		add_rule
+		config_load $CONFIG
+		config_foreach run_service "config"
+		gen_include
+	fi
+}
+
+stop() {
+	stop_service
+}
+
+restart() {
+	stop
+	start
+}

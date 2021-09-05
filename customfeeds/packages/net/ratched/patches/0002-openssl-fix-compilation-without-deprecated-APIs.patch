@@ -1,0 +1,86 @@
+From fa8f6fcd33e829cbe3ef3e4a92fa34cba3f20c91 Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Sun, 20 Sep 2020 20:18:18 -0700
+Subject: [PATCH] openssl: fix compilation without deprecated APIs
+
+Added missing headers, removed initialization, and fixed APIs.
+
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ openssl.c       | 8 ++------
+ openssl_certs.c | 9 +++++----
+ openssl_tls.c   | 5 -----
+ 3 files changed, 7 insertions(+), 15 deletions(-)
+
+--- a/openssl.c
++++ b/openssl.c
+@@ -22,21 +22,17 @@
+ **/
+ 
+ #include <openssl/ssl.h>
++#include <openssl/bn.h>
++#include <openssl/rsa.h>
+ #include <openssl/err.h>
+ 
+ #include "openssl.h"
+ #include "errstack.h"
+ 
+ void openssl_init(void) {
+-	SSL_load_error_strings();
+-    OpenSSL_add_ssl_algorithms();
+ }
+ 
+ void openssl_deinit(void) {
+-	EVP_cleanup();
+-	CRYPTO_cleanup_all_ex_data();
+-	SSL_COMP_free_compression_methods();
+-	ERR_free_strings();
+ }
+ 
+ static void errstack_free_X509(struct errstack_element_t *element) {
+--- a/openssl_certs.c
++++ b/openssl_certs.c
+@@ -27,6 +27,7 @@
+ #include <openssl/ssl.h>
+ #include <openssl/err.h>
+ #include <openssl/bn.h>
++#include <openssl/rsa.h>
+ #include <openssl/x509v3.h>
+ 
+ #include "ipfwd.h"
+@@ -280,8 +281,8 @@ X509* openssl_create_certificate(const s
+ 	BN_free(serial);
+ 
+ 	/* Set lifetime */
+-	X509_gmtime_adj(X509_get_notBefore(cert), -spec->validity_predate_seconds);
+-	X509_gmtime_adj(X509_get_notAfter(cert), spec->validity_seconds);
++	X509_gmtime_adj(X509_getm_notBefore(cert), -spec->validity_predate_seconds);
++	X509_gmtime_adj(X509_getm_notAfter(cert), spec->validity_seconds);
+ 
+ 	/* Set public key */
+ 	X509_set_pubkey(cert, spec->subject_pubkey);
+@@ -357,8 +358,8 @@ X509* openssl_create_certificate(const s
+ 	return cert;
+ }
+ 
+-static bool is_certificate_expired(X509 *cert) {
+-	return X509_cmp_current_time(X509_get_notAfter(cert)) <= 0;
++static bool is_certificate_expired(const X509 *cert) {
++	return X509_cmp_current_time(X509_get0_notAfter(cert)) <= 0;
+ }
+ 
+ X509* openssl_load_stored_certificate(const struct certificatespec_t *certspec, const char *filename, bool recreate_when_expired, bool recreate_when_key_mismatch) {
+--- a/openssl_tls.c
++++ b/openssl_tls.c
+@@ -146,11 +146,6 @@ struct tls_connection_t openssl_tls_conn
+ 		SSL_CTX_set_verify(sslctx, SSL_VERIFY_PEER, NULL);
+ 		SSL_CTX_set_cert_verify_callback(sslctx, cert_verify_callback, &result);
+ 	}
+-	if (!SSL_CTX_set_ecdh_auto(sslctx, 1)) {
+-		logmsgext(LLVL_ERROR, FLAG_OPENSSL_ERROR, "openssl_tls %s: SSL_CTX_set_ecdh_auto() failed.", request->is_server ? "server" : "client");
+-		SSL_CTX_free(sslctx);
+-		return result;
+-	}
+ 
+ 	if (request->config && request->config->cert) {
+ 		if (SSL_CTX_use_certificate(sslctx, request->config->cert) != 1) {

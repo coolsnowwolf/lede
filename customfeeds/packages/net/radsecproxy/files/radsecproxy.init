@@ -1,0 +1,142 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2011 OpenWrt.org
+
+START=70
+
+USE_PROCD=1
+PROG=/usr/sbin/radsecproxy
+CONFFILE=/var/etc/radsecproxy.conf
+LIST_SEP="
+"
+append_params() {
+	local param
+	local value
+	local section="$1"
+	shift
+	for param in "$@"; do
+		config_get value "$section" "$param"
+		[ -z "$value" ] && {
+			param=$(echo "$param" | tr 'A-Z' 'a-z')
+			config_get value "$section" "$param"
+		}
+		IFS="$LIST_SEP"
+		for value in $value; do
+			[ -n "$value" ] && echo "    $param '$value'" >> "$CONFFILE"
+		done
+		unset IFS
+	done
+}
+
+append_bools() {
+	local param
+	local value
+	local section="$1"
+	shift
+	for param in "$@"; do
+		config_get_bool value "$section" "$param"
+		[ -z "$value" ] && {
+			param=$(echo "$param" | tr 'A-Z' 'a-z')
+			config_get_bool value "$section" "$param"
+		}
+		[ -n "$value" ] && {
+			[ "$value" -eq 0 ] && echo "    $param off" >> "$CONFFILE"
+			[ "$value" -eq 1 ] && echo "    $param on" >> "$CONFFILE"
+		}
+	done
+}
+
+radsecproxy_options() {
+	local cfg="$1"
+	append_params "$cfg" \
+		Include PidFile LogLevel LogDestination FTicksReporting FTicksMAC FTicksKey \
+		FTicksSyslogFacility ListenUDP ListenTCP ListenTLS ListenDTLS SourceUDP \
+		SourceTCP SourceTLS SourceDTLS TTLAttribute AddTTL
+	append_bools "$cfg" \
+		LoopPrevention IPv4Only IPv6Only
+}
+
+tls_block() {
+	local cfg="$1"
+	local name
+	config_get name "$cfg" name
+	echo "tls '$name' {" >> "$CONFFILE"
+	append_params "$cfg" \
+		Include CACertificateFile CACertificatePath certificateFile certificateKeyFile \
+		certificateKeyPassword cacheExpiry policyOID
+	append_bools "$cfg" \
+		CRLCheck
+	echo "}" >> "$CONFFILE"
+}
+
+rewrite_block() {
+	local cfg="$1"
+	local name
+	config_get name "$cfg" name
+	echo "rewrite '$name' {" >> "$CONFFILE"
+	append_params "$cfg" \
+		Include addAttribute addVendorAttribute removeAttribute removeVendorAttribute \
+		modifyAttribute
+	echo "}" >> "$CONFFILE"
+}
+
+client_block() {
+	local cfg="$1"
+	local name
+	config_get name "$cfg" name
+	echo "client '$name' {" >> "$CONFFILE"
+	append_params "$cfg" \
+		Include host type secret tls matchCertificateAttribute duplicateInterval \
+		AddTTL fticksVISCOUNTRY fticksVISINST rewrite rewriteIn rewriteOut \
+		rewriteAttribute
+	append_bools "$cfg" \
+		IPv4Only IPv6Only certificateNameCheck
+	echo "}" >> "$CONFFILE"
+}
+
+server_block() {
+	local cfg="$1"
+	local name
+	config_get name "$cfg" name
+	echo "server '$name' {" >> "$CONFFILE"
+	append_params "$cfg" \
+		Include host port type secret tls matchCertificateAttribute \
+		AddTTL rewrite rewriteIn rewriteOut retryCount dynamicLookupCommand \
+		retryInterval
+	append_bools "$cfg" \
+		IPv4Only IPv6Only certificateNameCheck statusServer LoopPrevention
+	echo "}" >> "$CONFFILE"
+}
+
+realm_block() {
+	local cfg="$1"
+	local name
+	config_get name "$cfg" name
+	echo "realm '$name' {" >> "$CONFFILE"
+	append_params "$cfg" \
+		Include server accountingServer replyMessage
+	append_bools "$cfg" \
+		accountingResponse
+	echo "}" >> "$CONFFILE"
+}
+
+start_service() {
+	mkdir -p $(dirname $CONFFILE)
+	echo "# auto-generated config file from /etc/config/radsecproxy" > $CONFFILE
+	config_load 'radsecproxy'
+	config_foreach radsecproxy_options options
+	config_foreach tls_block tls
+	config_foreach rewrite_block rewrite
+	config_foreach client_block client
+	config_foreach server_block server
+	config_foreach realm_block realm
+
+	procd_open_instance
+	procd_set_param command $PROG -f -c $CONFFILE
+	procd_set_param file $CONFFILE
+	procd_set_param respawn
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'radsecproxy'
+}

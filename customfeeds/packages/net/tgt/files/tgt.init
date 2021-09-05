@@ -1,0 +1,252 @@
+#!/bin/sh /etc/rc.common
+START=91
+STOP=10
+
+EXTRA_COMMANDS="show"
+EXTRA_HELP="	show Show current configuration of tgtd"
+
+NAME=tgt
+PROG=/usr/sbin/tgtd
+USE_PROCD=1
+
+tgtadm="/usr/sbin/tgtadm --lld iscsi"
+logger="logger -p daemon.err -s -t $NAME"
+
+validate_lun_section() {
+	uci_load_validate tgt lun "$1" "$2" \
+		'device:or(file, device)' \
+		'type:or("disk", "cd", "pt"):disk' \
+		'bstype:or("rdwr", "aio", "sg"):rdwr' \
+		'sync:bool:0' \
+		'direct:bool:0' \
+		'blocksize:uinteger' \
+		'mode_page:string' \
+		'product_id:string' \
+		'product_rev:string' \
+		'readonly:bool:0' \
+		'removable:bool' \
+		'scsi_id:string' \
+		'scsi_sn:string' \
+		'sense_format:range(0, 1)' \
+		'vendor_id:string' \
+		'rotation_rate:uinteger'
+}
+
+handle_lun() {
+	local tgt_lun=$1
+	local my_tgtid=${tgt_lun%_*}
+	local lun=${tgt_lun#*_}
+
+	[ "$my_tgtid" -eq "$tgtid" ] || return 0
+
+	[ "$2" = 0 ] || {
+		$logger "Validation failed for LUN $tgt_lun"
+		return 1
+	}
+	[ "$device" ] || {
+		$logger "Device is required for target $tgt_lun"
+		return 1
+	}
+
+	if [ "$sync" -ne 0 ] || [ "$direct" -ne 0 ]; then
+		local bsoflags
+		[ "$sync" -ne 0 ] && bsoflags="sync"
+		[ "$direct" -ne 0 ] && bsoflags="direct"
+		[ "$sync" -ne 0 ] && [ "$direct" -ne 0 ] && bsoflags="sync:direct"
+		bsoflags="--bsoflags $bsoflags"
+	fi
+
+	blocksize=${blocksize+--blocksize=$blocksize}
+	local params='' i
+	for i in mode_page product_id product_rev readonly removable scsi_id scsi_sn sense_format vendor_id rotation_rate; do
+		eval params=\${$i+$i=\$$i,}\$params
+	done
+
+	local _tgtadm="$tgtadm --mode logicalunit --tid $tgtid --lun $lun"
+	$_tgtadm --op new --backing-store "$device" --device-type "$type" --bstype "$bstype" $bsoflags $blocksize || {
+		$logger "Failed to create lun $tgt_lun"
+		return 1
+	}
+	$_tgtadm --op update --param $params || {
+		$logger "Failed to update lun $tgt_lun"
+		return 1
+	}
+}
+
+validate_account_section () {
+	uci_load_validate tgt account "$1" "$2" \
+		'target:list(uinteger)' \
+		'user:string' \
+		'password:string' \
+		'outgoing:bool:0'
+}
+
+handle_account() {
+	local _tgtadm="$tgtadm --mode account"
+
+	[ "$2" = 0 ] || {
+		$logger "Validation failed for account ${user:-$1}"
+		return 1
+	}
+	[ "$user" ] || {
+		$logger "User is required for account $1. Run 'uci show tgt.$1' and check options"
+		return 1
+	}
+	[ "$target" ] || {
+		$logger "Target is required for account $user"
+		return 1
+	}
+	[ "$password" ] || {
+		$logger "Password is required for account $user"
+		return 1
+	}
+	$_tgtadm --op new --user "$user" --password "$password" || {
+		$logger "Failed to create user $username"
+		return 1
+	}
+}
+
+bind_account_to_target() {
+	local _tgtadm="$tgtadm --mode account"
+
+	[ "$2" = 0 ] || {
+		$logger "Validation failed for account ${user:-$1}"
+		return 1
+	}
+
+	[ "$outgoing" -ne 0 ] && outgoing=--outgoing || outgoing=""
+	local t
+	for t in $target; do
+		[ "$t" -eq "$tgtid" ] && {
+			$_tgtadm --op bind --tid "$tgtid" --user "$user" $outgoing || {
+				$logger "Failed to bind user $username to target $tgtid"
+				return 1
+			}
+		}
+	done
+	return 0
+}
+
+validate_target_section() {
+	uci_load_validate tgt target "$1" "$2" \
+		'name:string:iqn.2012-06.org.openwrt' \
+		'allow_address:list(string):ALL' \
+		'allow_name:list(string)'
+}
+
+handle_target() {
+	local tgtid=$1
+	local _tgtadm="$tgtadm --mode target"
+
+	[ "$tgtid" -ge 0 ] || return 1
+	[ "$2" = 0 ] || {
+		$logger "Validation failed for target $tgtid"
+		return 1
+	}
+	$_tgtadm --op new --tid "$tgtid" --targetname "$name" || {
+		$logger "Failed to create target $tgtid"
+		return 1
+	}
+	local i
+	for i in $allow_address; do
+		$_tgtadm --op bind --tid "$tgtid" --initiator-address "$i" || {
+			$logger "Failed to set allow $i to connect to target $tgtid"
+			return 1
+		}
+	done
+	for i in $allow_name; do
+		$_tgtadm --op bind --tid "$tgtid" --initiator-name "$i" || {
+			$logger "Failed to set allow $i to connect to target $tgtid"
+			return 1
+		}
+	done
+	config_foreach validate_lun_section lun handle_lun || return 1
+	config_foreach validate_account_section account bind_account_to_target || return 1
+}
+
+configure() {
+	config_load $NAME
+	$tgtadm --mode sys --op update --name State -v offline || {
+		$logger "Failed to set system state to Offline"
+		return 1
+	}
+	config_foreach validate_account_section account handle_account || return 1
+	config_foreach validate_target_section target handle_target || return 1
+	$tgtadm --mode sys --op update --name State -v ready || {
+		$logger "Failed to set system state to Ready"
+		return 1
+	}
+	return 0
+}
+
+validate_tgt_section() {
+	uci_load_validate tgt options "$1" "$2" \
+		'iothreads:uinteger' \
+		'portal:list(string)' \
+		'nop_interval:uinteger' \
+		'nop_count:uinteger' \
+		'logging:bool:0'
+}
+
+start_tgt_instance() {
+	local fg_flag=-f
+	[ "$2" = 0 ] || {
+		$logger "Validation failed for tgt options"
+		return 1
+	}
+	procd_open_instance
+	procd_set_param command $PROG
+	[ "$logging" -eq 1 ] && fg_flag=-D
+	procd_append_param command "$fg_flag"
+	[ "$iothreads" ] && procd_append_param command -t "$iothreads"
+	[ "$portal$nop_interval$nop_count" ] && {
+		local iscsi="" i
+		for i in nop_interval nop_count; do
+			eval iscsi=\${$i+$i=\$$i,}\$iscsi
+		done
+		for i in $portal; do
+			iscsi="portal=$i,$iscsi"
+		done
+		procd_append_param command --iscsi "$iscsi"
+	}
+	procd_set_param respawn
+	procd_close_instance
+	logger -p daemon.info -t "$NAME" -s "Configuration will be loaded in seconds"
+	( sleep 5; configure || { stop_service; exit 1; } ) &
+}
+
+start_service() {
+	validate_tgt_section tgt start_tgt_instance
+}
+
+stop_service() {
+	$tgtadm --mode sys --op update --name State -v offline || {
+		$logger "Failed to set system state to Offline"
+		return 1
+	}
+	$tgtadm --mode target --op show \
+		| awk '$1 == "Target" {sub(/:/,"",$2); print $2}' \
+		| xargs -r -n1 $tgtadm --mode target --op delete --force --tid
+	$tgtadm --mode sys --op delete
+	procd_kill tgt
+}
+
+reload_service() {
+	stop_service
+	start_service
+}
+
+service_triggers() {
+	procd_add_reload_trigger "tgt"
+
+	procd_open_validate
+	validate_tgt_section
+	validate_account_section
+	validate_target_section
+	validate_lun_section
+	procd_close_validate
+}
+
+show() {
+	$tgtadm --mode target --op show
+}

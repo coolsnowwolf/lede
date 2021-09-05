@@ -1,0 +1,246 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=30
+EXTRA_COMMANDS="get_key probeid log create_backup load_backup create_key"
+EXTRA_HELP="	get_key	print probe public key (used for probe registration)
+	probeid	print probe id
+	log	print probe status log
+	create_backup 	backup ssh key to tar.gz
+	load_backup 'backup.tar.gz' 	load backup ssh key from tar.gz
+	create_key create probe priv/pub key 
+"
+
+SCRIPTS_DIR="/usr/libexec/atlas-probe-scripts"
+TMP_BASE_DIR="/tmp/ripe_atlas_probe"
+PUB_KEY_FILE="$SCRIPTS_DIR/etc/probe_key.pub"
+PRIV_KEY_FILE="$SCRIPTS_DIR/etc/probe_key"
+PROBE_ID_FILE="$TMP_BASE_DIR/status/reg_init_reply.txt"
+LOG_FILE="/tmp/log/ripe_sw_probe"
+STATE_CONFIG="$SCRIPTS_DIR/state/config.txt"
+
+load_backup() {
+	local backup_arch
+	local tmp_dir
+
+	backup_arch="$1"
+	tmp_dir="$(mktemp -u -p /var/run/atlas)"
+	if [ -f "$backup_arch" ]; then
+		safe_mkdir "$tmp_dir"
+		tar -xzf "$backup_arch" -C "$tmp_dir/"
+		if [ -f "$tmp_dir/probe_key.pub" ] && [ -f "$tmp_dir/probe_key" ]; then
+			mv "$tmp_dir/probe_key.pub" "$PUB_KEY_FILE"
+			mv "$tmp_dir/probe_key" "$PRIV_KEY_FILE"
+			rm -rf "$tmp_dir"
+			print_msg "Info: public and private key loaded from backup"
+		else
+			print_msg "Error: Could not extract probe_key or probe_key form backup archive"
+			rm -rf "$tmp_dir"
+			exit 1
+		fi
+	else
+		print_msg "Error: Provided backup file $backup_arch does not exists"
+		exit 1
+	fi
+}
+
+create_backup() {
+	local back_dir
+
+	back_dir="$(pwd)"
+
+	if [ -f "$PUB_KEY_FILE" -a -f "$PRIV_KEY_FILE" ]; then
+		print_msg "Info: Creating backup arch in $back_dir"
+		tar -czf "$back_dir/atlas-key-backup.tar.gz" -C "$SCRIPTS_DIR/etc" probe_key probe_key.pub
+	else
+		print_msg "Error: private or public key does not exists."
+		exit 1
+	fi
+}
+
+create_key() {
+	local username
+	local probe_key=/etc/atlas/probe_key
+	local probe_pub_key=/etc/atlas/probe_key.pub
+
+	config_load atlas
+
+	config_get username "common" username
+
+	if [ -f "$PRIV_KEY_FILE" ]; then
+		if [ ! -f $probe_key ]; then
+			print_msg "Missing probe_key in /etc/atlas"
+			print_msg "The key will be lost on sysupgrade. Cosider moving the keys in /etc/atlas and create a link in the $SCRIPTS_DIR/etc/ dir."
+		fi
+
+		print_msg "probe_key already present. Exiting..."
+		exit 1
+	fi
+
+	if [ -z "$username" ]; then
+		print_msg "Username not set in atlas config file. Enter your ripe-atlas username."
+		exit 1
+	fi
+
+	if [ -n "$(which ssh-keygen)" ]; then
+		ssh-keygen -t rsa -b 2048 -f $probe_key -N ""
+		sed -i "s/ \S*$/ "$username"/" $probe_pub_key
+	elif [ -n "$(which dropbearkey)" ] && [ -n "$(which dropbearconvert)" ]; then
+		local public_key
+
+		public_key="$(dropbearkey -t rsa -f /etc/atlas/probe_key_dropbear -s 2048 | sed -n 2p)"
+		public_key="$(echo "$public_key" | sed "s/ \S*$/ "$username"/")"
+		echo $public_key > $probe_pub_key
+		dropbearconvert dropbear openssh /etc/atlas/probe_key_dropbear $probe_key
+		rm /etc/atlas/probe_key_dropbear
+	else
+		print_msg "Can't find a way to generate key."
+		exit 1
+	fi
+
+	#Link priv/pub key
+	[ -f $PRIV_KEY_FILE ] || ln -s $probe_key $PRIV_KEY_FILE
+	[ -f $PRIV_KEY_FILE ] || ln -s $probe_pub_key $PUB_KEY_FILE
+
+	#Fix permission
+	chown atlas $probe_key $probe_pub_key
+	chgrp atlas $probe_key $probe_pub_key
+	chmod 644 $probe_key $probe_pub_key
+
+	print_msg "Key generated successfully. Use the get_key command to show the public key and get instruction on how to register your probe."
+}
+
+log() {
+	if [ -f "$LOG_FILE" ];then
+		tail "$LOG_FILE"
+	else
+		print_msg "Error. No log file found. Probe isn't probably running"
+		exit 1
+	fi
+}
+
+get_key() {
+	if [ -f "$PUB_KEY_FILE" ]; then
+		echo "Probe public key (use for registration)"
+		echo "URL with registration form https://atlas.ripe.net/apply/swprobe/"
+		echo "=========================================="
+		cat "$PUB_KEY_FILE"
+	else
+		print_msg "Error! Pub. key not found"
+		exit 1
+	fi
+}
+
+probeid() {
+	local probe_id
+
+	if [ -f "$PROBE_ID_FILE" ]; then
+		probe_id="$(awk '/PROBE_ID/ {print $2}' "$PROBE_ID_FILE")"
+		if [ -z "$probe_id" ]; then
+			print_msg "Probe ID not found SW probe isn't probably registered yet"
+			exit 1
+		else
+			print_msg "Probe ID is $probe_id"
+		fi
+	else
+		print_msg "Probe ID not found. SW probe is not running or probe_key isn't registered yet"
+		exit 1
+	fi
+}
+
+print_msg() {
+	echo "$1" >&2
+	logger -t atlas-sw-probe "$1"
+}
+
+stop_service() {
+	local atlas_pid
+	local tunnel_pid
+	local pid_file
+
+	print_msg "Stopping atlas sw probe"
+	print_msg "Kill all atlas processes"
+
+	for pid_file in "$SCRIPTS_DIR/run/"*.vol; do
+		[ -f "$pid_file" ] || continue
+		# test if proccess is still running
+		atlas_pid="$(cat "$pid_file")"
+		if kill -0 "$atlas_pid" 2>/dev/null; then
+			kill "$atlas_pid"
+		fi
+	done
+
+	if [ -f "$SCRIPTS_DIR/status/con_keep_pid.vol" ]; then
+		print_msg "Kill ssh tunnel"
+		tunnel_pid="$(cat "$SCRIPTS_DIR/status/con_keep_pid.vol")"
+		if kill -0 "$tunnel_pid" 2>/dev/null; then
+			kill "$tunnel_pid"
+		fi
+	fi
+}
+
+safe_mkdir() {
+    local dir="$1"
+    if [ -e "$dir" ] && [ ! -d "$dir" -o -L "$dir" ]; then
+        rm -rf "$dir"
+    fi
+    mkdir -p "$dir"
+    chmod 700 "$dir"
+    chown root:root "$dir"
+}
+
+create_tmp_dirs() {
+	local dirs
+
+	chown -R atlas:atlas "$SCRIPTS_DIR/bin"
+	chmod 755 "$SCRIPTS_DIR/bin"
+	dirs='crons data run status'
+
+	safe_mkdir "$TMP_BASE_DIR"
+	for i in $dirs;	do
+		safe_mkdir "$TMP_BASE_DIR/$i"
+	done
+}
+
+start_service() {
+	local log_stderr
+	local log_stdout
+	local rxtxrpt
+	local test_setting
+	local probe_key=/etc/atlas/probe_key
+	local probe_pub_key=/etc/atlas/probe_key.pub
+
+	# The link is not saved across sysupgrade, recreate if missing
+	if [ ! -f $PRIV_KEY_FILE ]; then
+		[ -f $probe_key ] && ln -s $probe_key $PRIV_KEY_FILE
+		[ -f $probe_pub_key ] && ln -s $probe_pub_key $PUB_KEY_FILE
+	fi
+
+	# With the precheck done, check if the priv key is actually present
+	if [ ! -f $PRIV_KEY_FILE ]; then
+		print_msg "Missing probe_key. To init the key follow instruction in /etc/atlas/atlas.readme"
+		print_msg "Assuming atlas-sw-probe not init. Exiting..."
+		exit 1
+	fi
+
+	create_tmp_dirs
+
+	config_load atlas
+	config_get_bool log_stderr "common" log_stderr "0"
+	config_get_bool log_stdout "common" log_stdout "0"
+	config_get_bool rxtxrpt "common" rxtxrpt "1"
+	test_setting=$(grep "^[ 	]*RXTXRPT=yes" "$STATE_CONFIG")
+
+	# Decide if we should write to permanent storage
+	if [ "$rxtxrpt" == "1" ] &&  [ -z "$test_setting" ]; then
+		echo "RXTXRPT=yes">$STATE_CONFIG
+	elif [ "$rxtxrpt" == "0" ] &&  [ ! -z "$test_setting" ]; then
+		echo "RXTXRPT=no">$STATE_CONFIG
+	fi
+
+	procd_open_instance
+	procd_set_param command "$SCRIPTS_DIR/bin/ATLAS"
+	procd_set_param stdout "$log_stdout"
+	procd_set_param stderr "$log_stderr"
+	procd_close_instance
+}

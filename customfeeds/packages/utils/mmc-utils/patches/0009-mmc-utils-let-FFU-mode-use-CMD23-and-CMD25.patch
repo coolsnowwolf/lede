@@ -1,0 +1,181 @@
+From f54f401085e011e6f9c7b120aa1794b19c32b493 Mon Sep 17 00:00:00 2001
+From: "Shivamurthy Shastri (sshivamurthy)" <sshivamurthy@micron.com>
+Date: Wed, 10 Apr 2019 13:38:08 +0000
+Subject: [PATCH] mmc-utils: let FFU mode use CMD23 and CMD25
+
+As per specification, the host can use either CMD24 or CMD25 in
+closed-ended or open-ended way.
+CMD25 is better option as it can flash the firmware image in one go.
+
+Signed-off-by: Shivamurthy Shastri <sshivamurthy@micron.com>
+Reviewed-by: Avri Altman <avri.altman@wdc.com>
+---
+ mmc.h      |  2 ++
+ mmc_cmds.c | 70 ++++++++++++++++++++++++++++++------------------------
+ 2 files changed, 41 insertions(+), 31 deletions(-)
+
+--- a/mmc.h
++++ b/mmc.h
+@@ -25,10 +25,12 @@
+ /* From kernel linux/mmc/mmc.h */
+ #define MMC_SWITCH		6	/* ac	[31:0] See below	R1b */
+ #define MMC_SEND_EXT_CSD	8	/* adtc				R1  */
++#define MMC_STOP_TRANSMISSION    12   /* ac                      R1b */
+ #define MMC_SEND_STATUS		13	/* ac   [31:16] RCA        R1  */
+ #define R1_SWITCH_ERROR   (1 << 7)  /* sx, c */
+ #define MMC_SWITCH_MODE_WRITE_BYTE	0x03	/* Set target to value */
+ #define MMC_READ_MULTIPLE_BLOCK  18   /* adtc [31:0] data addr   R1  */
++#define MMC_SET_BLOCK_COUNT      23   /* adtc [31:0] data addr   R1  */
+ #define MMC_WRITE_BLOCK		24	/* adtc [31:0] data addr	R1  */
+ #define MMC_WRITE_MULTIPLE_BLOCK 25   /* adtc                    R1  */
+ #define MMC_SET_WRITE_PROT	28    /* ac   [31:0] data addr   R1b */
+--- a/mmc_cmds.c
++++ b/mmc_cmds.c
+@@ -2456,12 +2456,13 @@ int do_ffu(int nargs, char **argv)
+ 	int sect_done = 0, retry = 3, ret = -EINVAL;
+ 	unsigned int sect_size;
+ 	__u8 ext_csd[512];
+-	__u8 *buf;
++	__u8 *buf = NULL;
+ 	__u32 arg;
+ 	off_t fw_size;
+ 	ssize_t chunk_size;
+ 	char *device;
+-	struct mmc_ioc_multi_cmd *multi_cmd;
++	struct mmc_ioc_multi_cmd *multi_cmd = NULL;
++	__u32 blocks = 1;
+ 
+ 	if (nargs != 3) {
+ 		fprintf(stderr, "Usage: ffu <image name> </path/to/mmcblkX> \n");
+@@ -2481,14 +2482,6 @@ int do_ffu(int nargs, char **argv)
+ 		exit(1);
+ 	}
+ 
+-	buf = malloc(512);
+-	multi_cmd = calloc(1, sizeof(struct mmc_ioc_multi_cmd) +
+-				3 * sizeof(struct mmc_ioc_cmd));
+-	if (!buf || !multi_cmd) {
+-		perror("failed to allocate memory");
+-		goto out;
+-	}
+-
+ 	ret = read_extcsd(dev_fd, ext_csd);
+ 	if (ret) {
+ 		fprintf(stderr, "Could not read EXT_CSD from %s\n", device);
+@@ -2513,9 +2506,17 @@ int do_ffu(int nargs, char **argv)
+ 	}
+ 
+ 	fw_size = lseek(img_fd, 0, SEEK_END);
++	if (fw_size > MMC_IOC_MAX_BYTES || fw_size == 0) {
++		fprintf(stderr, "Wrong firmware size");
++		goto out;
++	}
+ 
+-	if (fw_size == 0) {
+-		fprintf(stderr, "Firmware image is empty");
++	/* allocate maximum required */
++	buf = malloc(fw_size);
++	multi_cmd = calloc(1, sizeof(struct mmc_ioc_multi_cmd) +
++				4 * sizeof(struct mmc_ioc_cmd));
++	if (!buf || !multi_cmd) {
++		perror("failed to allocate memory");
+ 		goto out;
+ 	}
+ 
+@@ -2525,14 +2526,19 @@ int do_ffu(int nargs, char **argv)
+ 		goto out;
+ 	}
+ 
++	/* calculate required fw blocks for CMD25 */
++	blocks = fw_size / sect_size;
++
+ 	/* set CMD ARG */
+ 	arg = ext_csd[EXT_CSD_FFU_ARG_0] |
+ 		ext_csd[EXT_CSD_FFU_ARG_1] << 8 |
+ 		ext_csd[EXT_CSD_FFU_ARG_2] << 16 |
+ 		ext_csd[EXT_CSD_FFU_ARG_3] << 24;
+ 
++	/* prepare multi_cmd for FFU based on cmd to be used */
++
+ 	/* prepare multi_cmd to be sent */
+-	multi_cmd->num_of_cmds = 3;
++	multi_cmd->num_of_cmds = 4;
+ 
+ 	/* put device into ffu mode */
+ 	multi_cmd->cmds[0].opcode = MMC_SWITCH;
+@@ -2543,37 +2549,42 @@ int do_ffu(int nargs, char **argv)
+ 	multi_cmd->cmds[0].flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+ 	multi_cmd->cmds[0].write_flag = 1;
+ 
++	/* send block count */
++	multi_cmd->cmds[1].opcode = MMC_SET_BLOCK_COUNT;
++	multi_cmd->cmds[1].arg = blocks;
++	multi_cmd->cmds[1].flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_AC;
++
+ 	/* send image chunk */
+-	multi_cmd->cmds[1].opcode = MMC_WRITE_BLOCK;
+-	multi_cmd->cmds[1].blksz = sect_size;
+-	multi_cmd->cmds[1].blocks = 1;
+-	multi_cmd->cmds[1].arg = arg;
+-	multi_cmd->cmds[1].flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
+-	multi_cmd->cmds[1].write_flag = 1;
+-	mmc_ioc_cmd_set_data(multi_cmd->cmds[1], buf);
++	multi_cmd->cmds[2].opcode = MMC_WRITE_MULTIPLE_BLOCK;
++	multi_cmd->cmds[2].blksz = sect_size;
++	multi_cmd->cmds[2].blocks = blocks;
++	multi_cmd->cmds[2].arg = arg;
++	multi_cmd->cmds[2].flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
++	multi_cmd->cmds[2].write_flag = 1;
++	mmc_ioc_cmd_set_data(multi_cmd->cmds[2], buf);
+ 
+ 	/* return device into normal mode */
+-	multi_cmd->cmds[2].opcode = MMC_SWITCH;
+-	multi_cmd->cmds[2].arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
++	multi_cmd->cmds[3].opcode = MMC_SWITCH;
++	multi_cmd->cmds[3].arg = (MMC_SWITCH_MODE_WRITE_BYTE << 24) |
+ 			(EXT_CSD_MODE_CONFIG << 16) |
+ 			(EXT_CSD_NORMAL_MODE << 8) |
+ 			EXT_CSD_CMD_SET_NORMAL;
+-	multi_cmd->cmds[2].flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
+-	multi_cmd->cmds[2].write_flag = 1;
++	multi_cmd->cmds[3].flags = MMC_RSP_SPI_R1B | MMC_RSP_R1B | MMC_CMD_AC;
++	multi_cmd->cmds[3].write_flag = 1;
+ 
+ do_retry:
+ 	/* read firmware chunk */
+ 	lseek(img_fd, 0, SEEK_SET);
+-	chunk_size = read(img_fd, buf, 512);
++	chunk_size = read(img_fd, buf, fw_size);
+ 
+-	while (chunk_size > 0) {
++	if (chunk_size > 0) {
+ 		/* send ioctl with multi-cmd */
+ 		ret = ioctl(dev_fd, MMC_IOC_MULTI_CMD, multi_cmd);
+ 
+ 		if (ret) {
+ 			perror("Multi-cmd ioctl");
+ 			/* In case multi-cmd ioctl failed before exiting from ffu mode */
+-			ioctl(dev_fd, MMC_IOC_CMD, &multi_cmd->cmds[2]);
++			ioctl(dev_fd, MMC_IOC_CMD, &multi_cmd->cmds[3]);
+ 			goto out;
+ 		}
+ 
+@@ -2600,9 +2611,6 @@ do_retry:
+ 		} else {
+ 			fprintf(stderr, "Programmed %d/%jd bytes\r", sect_done * sect_size, (intmax_t)fw_size);
+ 		}
+-
+-		/* read the next firmware chunk (if any) */
+-		chunk_size = read(img_fd, buf, 512);
+ 	}
+ 
+ 	if ((sect_done * sect_size) == fw_size) {
+@@ -2639,7 +2647,7 @@ do_retry:
+ 		if (ret) {
+ 			perror("Multi-cmd ioctl failed setting install mode");
+ 			/* In case multi-cmd ioctl failed before exiting from ffu mode */
+-			ioctl(dev_fd, MMC_IOC_CMD, &multi_cmd->cmds[2]);
++			ioctl(dev_fd, MMC_IOC_CMD, &multi_cmd->cmds[3]);
+ 			goto out;
+ 		}
+ 

@@ -1,0 +1,265 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2016 OpenWrt.org
+
+START=80
+STOP=10
+
+EXTRA_COMMANDS="export_storage"
+EXTRA_HELP="	export_storage <PATH>
+	- export the storage into the specified folder
+	- <PATH> can be directly used with the default storage backend of Radicale 2.x.x."
+
+CFGDIR=/var/etc/radicale
+SYSCFG=$CFGDIR/config
+LOGCFG=$CFGDIR/logging
+
+DATADIR="/srv/radicale"
+LOGDIR=""
+
+PGREP="ps | grep '[p]ython.*[r]adicale' 2>/dev/null | awk '{print \$1}' "
+
+# we could start with empty configuration file using defaults
+[ -f /etc/config/radicale ] || touch /etc/config/radicale
+
+_uci2radicale() {
+	local _SYSTMP="$SYSCFG.tmp"
+	local _LOGTMP="$LOGCFG.tmp"
+	local _LOPT				# list option name
+	local _LVAL				# list option value
+	local _STYPE				# section type
+	local _SNAME				# section name
+	local _console_level="ERROR"		# logging console level
+	local _file_level="INFO"		# logging file level
+	local _file_path="/var/log/radicale"	# logging file path
+	local _file_maxbytes="8196"		# logging file maxBytes
+	local _file_backupcount="1"		# logging file backupCount
+	local _syslog_level="WARNING"		# logging syslog level
+
+	# write list values to config
+	_write_list() {
+		_write_value "$_LOPT" "$_LVAL"	# there might be spaces in _LVAL
+		_LOPT=""
+		_LVAL=""
+	}
+
+	_write_value() {
+		# $1	option
+		# $2	value
+		local __OPT=$1
+		local __VAL=$2
+		# section "server" ignore option "daemon" and "pid"
+		[ "$_SNAME" = "server" -a "$__OPT" = "daemon" ] && return 0
+		[ "$_SNAME" = "server" -a "$__OPT" = "pid" ] && return 0
+		# section "logging" ignore option "config" (logging config file)
+		[ "$_SNAME" = "logging" -a "$__OPT" = "config" ] && return 0
+		# section "auth" ignore option "htpasswd_filename" (htpasswd file)
+		[ "$_SNAME" = "auth" -a "$__OPT" = "htpasswd_filename" ] && return 0
+		# section "rights" ignore option "file" (reg-based rights file)
+		[ "$_SNAME" = "rights" -a "$__OPT" = "file" ] && return 0
+		# section "headers" replace "_" with "-" in option (UCI problem)
+		[ "$_SNAME" = "headers" ] && __OPT=$(echo "$__OPT" | sed -e "s#_#-#g")
+		# save data driectory
+		[ "$_SNAME" = "storage" -a "$__OPT" = "filesystem_folder" ] && DATADIR="$__VAL"
+		# special handling for well-known, value needs single quotes
+		[ "$_SNAME" = "well-known" -a "${__VAL#*\%\(}" != "$__VAL" ] && __VAL="'$__VAL'"
+		# handling of log settings
+		if [ "$_STYPE" = "logging" -a "$_SNAME" = "logger" ]; then
+			eval "_$__OPT='$__VAL'"	# set to environment for later use
+		else
+			# handle bool
+			[ "$__VAL" = "0" ] && __VAL="False"
+			[ "$__VAL" = "1" ] && __VAL="True"
+			# append data to the corresponding section
+			sed -i "/\[$_SNAME\]/a $__OPT = $__VAL" $_SYSTMP
+		fi
+	}
+
+	# redefined callback for sections when calling config_load
+	config_cb() {
+		# $1	"Type"
+		# $2	"Name"
+		# write out last list option
+		[ -n "$_LOPT" ] && _write_list
+		# mark invalid
+		_STYPE=""
+		_SNAME=""
+		# check section type
+		[ "$1" = "setting" -o "$1" = "logging" ] && {
+			_STYPE="$1"
+			_SNAME="$2"
+		}
+		# translate section name
+		[ "$2" = "well_known" ] && _SNAME="well-known"
+		return 0
+	}
+
+	# redefined callback for lists when calling config_load
+	list_cb() {
+		# $1	name of variable
+		# $2	value
+		# invalid section type then ignore
+		[ -z "$_STYPE" -o -z "$_SNAME" ] && return 0
+		# write out last list option if new list starts
+		[ -n "$_LOPT" -a "$_LOPT" != "$1" ] && _write_list
+		# new list option
+		if [ -z "$_LOPT" ]; then
+			_LOPT="$1"
+			_LVAL="$2"
+		else
+			_LVAL="$_LVAL, $2"
+		fi
+		return 0
+	}
+
+	# redefined callback for options when calling config_load
+	option_cb() {
+		# $1	name of variable
+		# $2	value
+		local __OPT="$1"
+		local __VAL="$2"
+		# invalid section type then ignore
+		[ -z "$_STYPE" -o -z "$_SNAME" ] && return 0
+		# ignore list entrys will be handled by list_cb()
+    		[ "${__OPT#*_ITEM}" != "$__OPT" ]   && return 0	# ignore lists *_ITEM*
+    		[ "${__OPT#*_LENGTH}" != "$__OPT" ] && return 0	# ignore lists *_LENGTH
+		# write out last list option and clear
+		[ -n "$_LOPT" ] && _write_list
+		# write to file
+		_write_value "$__OPT" "$__VAL"	# there might be spaces in __VAL
+		return 0
+	}
+
+	# temporary config file
+	# radicale need read access
+	mkdir -m0755 -p $CFGDIR
+
+	cp /etc/radicale/config.template  $_SYSTMP
+	config_load radicale	# calling above config_cb()/option_cb()/list_cb() and write into $_SYSTMP
+	sed -i "/\[logging\]/a config = /var/etc/radicale/logging" $_SYSTMP	# hard-code logging config
+	sed -i "/\[auth\]/a htpasswd_filename = /etc/radicale/users" $_SYSTMP	# hard-code htpasswd
+	sed -i "/\[rights\]/a file = /etc/radicale/rights" $_SYSTMP		# hard-code regexp-based rights
+
+	# temporary logging config file
+	cp /etc/radicale/logging.template $_LOGTMP
+	LOGDIR="$_file_path"
+	sed -i "/\[handler_console\]/a level = $_console_level" $_LOGTMP
+	sed -i "/\[handler_file\]/a level = $_file_level" $_LOGTMP
+	sed -i "/\[handler_file\]/a args = ('$_file_path/radicale','a',$_file_maxbytes,$_file_backupcount)" $_LOGTMP
+	sed -i "/\[handler_syslog\]/a level = $_syslog_level" $_LOGTMP
+
+	# move tmp to final
+	mv -f $_SYSTMP $SYSCFG
+	mv -f $_LOGTMP $LOGCFG
+}
+
+_set_permission() {
+	# config file permissions (read access for group)
+	chmod 644 $SYSCFG $LOGCFG
+	chgrp -R radicale $CFGDIR
+	# log directory (full access and owner)
+	[ -d $LOGDIR ] || mkdir -m0755 -p $LOGDIR
+	chown -R radicale:radicale $LOGDIR
+	# data directory does not exist
+	[ -d $DATADIR ] || {
+		logger -p user.error -t "radicale[----]" "Data directory '$DATADIR' does not exists. Startup failed !!!"
+		exit 1
+	}
+	chgrp -R radicale $DATADIR
+}
+
+export_storage() {
+	# if already running do nothing
+	local _PID=$(eval "$PGREP")
+	kill -1 $_PID 2>/dev/null && {
+		echo "Export failed !!! - Service running !" >&2
+		logger -p user.error -t "radicale[$_PID]" "Export failed !!! - Service running !"
+		return 1
+	}
+
+	[ $# -ne 1 ] || [ ! -d $1 ] && {
+		echo "Export failed !!! Directory not given or does not exist !" >&2
+		logger -p user.error -t "radicale[----]" "Export failed !!! Directory not given or does not exist !"
+		return 1
+	}
+
+	_uci2radicale
+	_set_permission
+
+	chmod 775 $1
+	chgrp radicale $1
+
+	radicale --config=$SYSCFG --export-storage $1/export
+}
+
+boot() {
+	# wait a given time (default 10 seconds) before startup
+	# to wait for interfaces to come up / not using hotplug events during boot
+	_start() {
+		[ $1 -gt 0 ] && sleep $1
+		start
+	}
+
+	local _DELAY
+	_DELAY=$(uci_get "radicale" "system" "boot_delay" "10")
+	_start $_DELAY &
+	return 0
+}
+
+shutdown() {
+	rm -f /tmp/radicale.hotplug
+	stop
+}
+
+start() {
+	_running() {
+		sleep 2		# give radicale time to completely come up
+		local _PID=$(eval "$PGREP")
+		kill -1 $_PID 2>/dev/null
+		[ $? -eq 0 ] \
+			&& logger -p user.notice -t "radicale[$_PID]" "Service started successfully"\
+			|| logger -p user.warn -t "radicale[----]" "Service failed to start"
+	}
+
+	# if already running do nothing
+	local _PID=$(eval "$PGREP")
+	kill -1 $_PID 2>/dev/null && return 0
+
+	_uci2radicale
+	_set_permission
+
+	radicale --daemon --config=$SYSCFG
+	touch /tmp/radicale.hotplug
+
+	_running &	# check if running and syslog
+
+	return 0
+}
+
+reload() {
+	# reload is also used by luci
+	local _PID=$(eval "$PGREP")
+	kill -1 $_PID 2>/dev/null
+	if [ $? -eq 0 ]; then
+		# only restart if already running
+		restart
+	else
+		# only start if enabled
+		enabled && start
+	fi
+	return 0
+}
+
+stop() {
+	local _PID=$(eval "$PGREP")
+	[ -z "$_PID" ] && return 0	# not running
+	kill -15 $_PID 2>/dev/null
+	sleep 3			# give time to shutdown
+	local _tmp=$(eval "$PGREP")
+	if [ -z "$_tmp" ]; then
+		logger -p user.notice -t "radicale[$_PID]" "Service shutdown successfully"
+	else
+		kill -9 $_tmp	# Normally never come here
+		logger -p user.warn -t "radicale[----]" "Service shutdown FORCED"
+	fi
+	return 0
+}

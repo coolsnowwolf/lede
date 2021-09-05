@@ -1,0 +1,133 @@
+From 6c825349e1994a991f287e398cf0ead5f790a01b Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cote2004-github@yahoo.com>
+Date: Wed, 6 Jun 2018 18:05:33 -0300
+Subject: [PATCH] Remove API deprecated in openssl 1.1
+
+With openssl 1.1, we do not call OpenSSL_add_all_algorithms(), as
+library initialization is done automatically.
+Functions RAND_pseudo_bytes and RSA_generate_key were deprecated as
+well.
+Also, we need to #include <openssl/bn.h> for BN_num_bytes().
+
+Signed-off-by: Eneas U de Queiroz <cote2004-github@yahoo.com>
+---
+ lib/rsa.c                                      | 15 ++++++++++++---
+ net/common/processors/keepalive-proc.c         |  4 ++--
+ net/common/processors/keepalive2-proc.c        |  2 +-
+ net/common/processors/sendsessionkey-proc.c    |  2 +-
+ net/common/processors/sendsessionkey-v2-proc.c |  2 +-
+ net/server/user-mgr.c                          |  4 ++++
+ tools/ccnet-init.c                             |  2 ++
+ 7 files changed, 23 insertions(+), 8 deletions(-)
+
+--- a/lib/rsa.c
++++ b/lib/rsa.c
+@@ -4,6 +4,7 @@
+ #include <openssl/rand.h>
+ #include <openssl/rsa.h>
+ #include <openssl/err.h>
++#include <openssl/bn.h>
+ 
+ #include <string.h>
+ #include <glib.h>
+@@ -207,9 +208,17 @@ RSA *
+ generate_private_key(u_int bits)
+ {
+ 	RSA *private = NULL;
++	BIGNUM *e = NULL;
+ 
+-	private = RSA_generate_key(bits, 35, NULL, NULL);
+-	if (private == NULL)
++	private = RSA_new();
++	e = BN_new();
++	if (private == NULL || e == NULL || !BN_set_word(e, 35) ||
++		!RSA_generate_key_ex(private, bits, e, NULL)) {
++		RSA_free(private);
++		BN_free(e);
+ 		g_error ("rsa_generate_private_key: key generation failed.");
++		return NULL;
++	}
++	BN_free(e);
+ 	return private;
+ }
+--- a/net/common/processors/keepalive-proc.c
++++ b/net/common/processors/keepalive-proc.c
+@@ -401,7 +401,7 @@ static void send_challenge(CcnetProcesso
+     unsigned char *buf;
+     int len;
+ 
+-    RAND_pseudo_bytes (priv->random_buf, 40);
++    RAND_bytes (priv->random_buf, 40);
+     buf = public_key_encrypt (peer->pubkey, priv->random_buf, 40, &len);
+     ccnet_processor_send_update (processor, "311", NULL, (char *)buf, len);
+ 
+@@ -434,7 +434,7 @@ static void send_challenge_user(CcnetPro
+ 
+     ccnet_debug ("[Keepalive] Send user challenge to %.8s\n",
+                  processor->peer->id);
+-    RAND_pseudo_bytes (priv->random_buf, 40);
++    RAND_bytes (priv->random_buf, 40);
+     buf = public_key_encrypt (user->pubkey, priv->random_buf, 40, &len);
+     ccnet_processor_send_update (processor, "321", NULL, (char *)buf, len);
+ 
+--- a/net/common/processors/keepalive2-proc.c
++++ b/net/common/processors/keepalive2-proc.c
+@@ -306,7 +306,7 @@ static void send_challenge(CcnetProcesso
+     unsigned char *buf;
+     int len;
+ 
+-    RAND_pseudo_bytes (priv->random_buf, 40);
++    RAND_bytes (priv->random_buf, 40);
+     buf = public_key_encrypt (peer->pubkey, priv->random_buf, 40, &len);
+     if (len < 0) {
+         ccnet_debug ("[Keepalive] Failed to encrypt challenge "
+--- a/net/common/processors/sendsessionkey-proc.c
++++ b/net/common/processors/sendsessionkey-proc.c
+@@ -124,7 +124,7 @@ generate_session_key (CcnetProcessor *pr
+     unsigned char random_buf[40];
+     SHA_CTX s;
+ 
+-    RAND_pseudo_bytes (random_buf, sizeof(random_buf));
++    RAND_bytes (random_buf, sizeof(random_buf));
+     
+     SHA1_Init (&s);
+     SHA1_Update (&s, random_buf, sizeof(random_buf));
+--- a/net/common/processors/sendsessionkey-v2-proc.c
++++ b/net/common/processors/sendsessionkey-v2-proc.c
+@@ -125,7 +125,7 @@ generate_session_key (CcnetProcessor *pr
+     unsigned char random_buf[40];
+     SHA_CTX s;
+ 
+-    RAND_pseudo_bytes (random_buf, sizeof(random_buf));
++    RAND_bytes (random_buf, sizeof(random_buf));
+     
+     SHA1_Init (&s);
+     SHA1_Update (&s, random_buf, sizeof(random_buf));
+--- a/net/server/user-mgr.c
++++ b/net/server/user-mgr.c
+@@ -816,9 +816,13 @@ hash_password_pbkdf2_sha256 (const char
+     char salt_str[SHA256_DIGEST_LENGTH*2+1];
+ 
+     if (!RAND_bytes (salt, sizeof(salt))) {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L || OPENSSL_API_COMPAT < 0x10100000L
+         ccnet_warning ("Failed to generate salt "
+                        "with RAND_bytes(), use RAND_pseudo_bytes().\n");
+         RAND_pseudo_bytes (salt, sizeof(salt));
++#else
++        ccnet_warning ("Failed to generate salt with RAND_bytes().\n");
++#endif
+     }
+ 
+     PKCS5_PBKDF2_HMAC (passwd, strlen(passwd),
+--- a/tools/ccnet-init.c
++++ b/tools/ccnet-init.c
+@@ -108,7 +108,9 @@ main(int argc, char **argv)
+ 
+     config_dir = ccnet_expand_path (config_dir);
+     /* printf("[conf_dir=%s\n]", config_dir); */
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+     OpenSSL_add_all_algorithms();  
++#endif
+ 
+     if (RAND_status() != 1) {   /* it should be seeded automatically */
+         fprintf(stderr, "PRNG is not seeded\n");

@@ -1,0 +1,258 @@
+From: Matthieu Baerts <matthieu.baerts@tessares.net>
+Subject: [PATCH] ifstat: v1.1-8.1 from Debian
+
+Extracted from:
+
+  http://deb.debian.org/debian/pool/main/i/ifstat/ifstat_1.1-8.1.diff.gz
+
+Author:
+- Goswin von Brederlow <goswin-v-b@web.de>
+
+ChangeLog:
+
+  * snmp.c: fix 2 pointer targets differ in signedness warnings
+  * Adding upport for 64bit /proc/net/dev counters.
+  * Clean up compiler warnings.
+
+Signed-off-by: Matthieu Baerts <matthieu.baerts@tessares.net>
+---
+ data.c                     |  4 +-
+ drivers.c                  | 36 ++++++++--------
+ ifstat.c                   |  5 ++-
+ ifstat.h                   |  6 +--
+ snmp.c                     | 12 +++---
+
+--- a/data.c
++++ b/data.c
+@@ -103,8 +103,8 @@ void ifstat_free_interface(struct ifstat
+ }
+ 
+ void ifstat_set_interface_stats(struct ifstat_data *data,
+-				unsigned long bytesin,
+-				unsigned long bytesout) {
++				unsigned long long bytesin,
++				unsigned long long bytesout) {
+   if (data->bout > bytesout || data->bin > bytesin) {
+     if (!ifstat_quiet)
+       ifstat_error("warning: rollover for interface %s, reinitialising.", data->name);
+--- a/drivers.c
++++ b/drivers.c
+@@ -140,6 +140,7 @@ char *strchr (), *strrchr ();
+ 
+ static void examine_interface(struct ifstat_list *ifs, char *name,
+ 			      int ifflags, int iftype) {
++  (void)iftype;
+ #ifdef IFF_LOOPBACK
+   if ((ifflags & IFF_LOOPBACK) && !(ifs->flags & IFSTAT_LOOPBACK))
+     return;
+@@ -242,6 +243,7 @@ static int ioctl_map_scan(int sd, struct
+ static int ioctl_scan_interfaces(struct ifstat_driver *driver,
+ 				 struct ifstat_list *ifs) {
+   int sd;
++  (void)driver;
+ 
+   if ((sd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+     ifstat_perror("socket");
+@@ -256,7 +258,7 @@ static int ioctl_scan_interfaces(struct
+ #endif
+ 
+ #ifdef USE_KSTAT
+-static int get_kstat_long(kstat_t *ksp, char *name, unsigned long *value) {
++static int get_kstat_long(kstat_t *ksp, char *name, unsigned long long *value) {
+   kstat_named_t *data;
+ 
+   if ((data = kstat_data_lookup(ksp, name)) == NULL)
+@@ -277,7 +279,7 @@ static int get_kstat_long(kstat_t *ksp,
+     *value = data->value.ui64;
+     break;
+ #else
+-  case KSTAT_DATA_LONGLONG:
++  case KSTAT_DATA_LONG LONGLONG:
+     *value = data->value.ll;
+     break;
+   case KSTAT_DATA_ULONGLONG:
+@@ -311,7 +313,7 @@ static int kstat_open_driver(struct ifst
+ 
+ static int kstat_get_stats(struct ifstat_driver *driver,
+ 			   struct ifstat_list *ifs) {
+-  unsigned long bytesin, bytesout;
++  unsigned long long bytesin, bytesout;
+   struct ifstat_data *cur;
+   kstat_ctl_t *kc = driver->data;
+   kstat_t *ksp;
+@@ -802,7 +804,7 @@ static int proc_get_stats(struct ifstat_
+   char buf[1024];
+   FILE *f;
+   char *iface, *stats;
+-  unsigned long bytesin, bytesout;
++  unsigned long long bytesin, bytesout;
+   struct ifstat_data *cur;
+   struct proc_driver_data *data = driver->data;
+   char *file;
+@@ -839,7 +841,7 @@ static int proc_get_stats(struct ifstat_
+       iface++;
+     if (*iface == '\0')
+       continue;
+-    if (sscanf(stats, "%lu %*u %*u %*u %*u %*u %*u %*u %lu %*u", &bytesin, &bytesout) != 2)
++    if (sscanf(stats, "%llu %*u %*u %*u %*u %*u %*u %*u %llu %*u", &bytesin, &bytesout) != 2)
+       continue;
+     
+     if ((cur = ifstat_get_interface(ifs, iface)) != NULL)
+@@ -1326,9 +1328,9 @@ static int win32_get_stats(struct ifstat
+   for (i = 0; i < iftable->dwNumEntries; i++) {
+     if ((cur = ifstat_get_interface(ifs, iftable->table[i].bDescr)) != NULL)
+       ifstat_set_interface_stats(cur,
+-				 (unsigned long)
++				 (unsigned long long)
+ 				 iftable->table[i].dwInOctets,
+-				 (unsigned long)
++				 (unsigned long long)
+ 				 iftable->table[i].dwOutOctets);
+   }
+   return 1;
+@@ -1346,40 +1348,40 @@ void win32_close_driver(struct ifstat_dr
+ static struct ifstat_driver drivers[] = {
+ #ifdef USE_KSTAT  
+   { "kstat", &kstat_open_driver, &ioctl_scan_interfaces, &kstat_get_stats,
+-    &kstat_close_driver },
++    &kstat_close_driver, NULL },
+ #endif
+ #ifdef USE_IFMIB  
+-  { "ifmib", NULL, &ifmib_scan_interfaces, &ifmib_get_stats, NULL },
++  { "ifmib", NULL, &ifmib_scan_interfaces, &ifmib_get_stats, NULL, NULL },
+ #endif
+ #ifdef USE_IFDATA
+   { "ifdata", &ifdata_open_driver, &ifdata_scan_interfaces,
+-    &ifdata_get_stats, &ifdata_close_driver },
++    &ifdata_get_stats, &ifdata_close_driver, NULL },
+ #endif
+ #ifdef USE_ROUTE
+   { "route", &route_open_driver, &route_scan_interfaces,
+-    &route_get_stats, &route_close_driver },
++    &route_get_stats, &route_close_driver, NULL },
+ #endif  
+ #ifdef USE_KVM  
+   { "kvm",  &kvm_open_driver, &kvm_scan_interfaces, &kvm_get_stats,
+-    &kvm_close_driver },
++    &kvm_close_driver, NULL },
+ #endif
+ #ifdef USE_PROC  
+   { "proc", &proc_open_driver, &ioctl_scan_interfaces, &proc_get_stats,
+-    &proc_close_driver },
++    &proc_close_driver, NULL },
+ #endif
+ #ifdef USE_DLPI
+   { "dlpi", &dlpi_open_driver, &dlpi_scan_interfaces, &dlpi_get_stats,
+-    &dlpi_close_driver },
++    &dlpi_close_driver, NULL },
+ #endif
+ #ifdef USE_WIN32
+   { "win32", &win32_open_driver, &win32_scan_interfaces,
+-    &win32_get_stats, &win32_close_driver },
++    &win32_get_stats, &win32_close_driver, NULL },
+ #endif  
+ #ifdef USE_SNMP  
+   { "snmp", &snmp_open_driver, &snmp_scan_interfaces, &snmp_get_stats,
+-    &snmp_close_driver },
++    &snmp_close_driver, NULL },
+ #endif  
+-  { NULL } };
++  { NULL, NULL, NULL, NULL, NULL, NULL } };
+   
+ int ifstat_get_driver(char *name, struct ifstat_driver *driver) {
+   int num = 0;
+--- a/ifstat.c
++++ b/ifstat.c
+@@ -215,7 +215,8 @@ static RETSIGTYPE update_termsize(int si
+ int _sigcont = 0;
+ #ifdef SIGCONT
+ static RETSIGTYPE sigcont(int sig) {
+-  _sigcont = 1;  
++  (void)sig;
++  _sigcont = 1;
+   RESIGNAL(SIGCONT, &sigcont);
+ }
+ #endif
+@@ -234,7 +235,7 @@ static RETSIGTYPE sigcont(int sig) {
+ 
+ #define NUM "12345.12"
+ #define NA  "     n/a"
+-#define WIDTH (sizeof(NUM) - 1) * 2 + (sizeof(SPACE) - 1)
++#define WIDTH ((ssize_t)sizeof(NUM) - 1) * 2 + ((ssize_t)sizeof(SPACE) - 1)
+ 
+ #define LEN(options, namelen) (((options) & OPT_FIXEDWIDTH || (namelen) < WIDTH) ? WIDTH : (namelen))
+ #define FMT(n) (((n) < 1e+5) ? "%8.2f" : (((n) < 1e+6) ? "%.1f" : "%.2e"))
+--- a/ifstat.h
++++ b/ifstat.h
+@@ -35,7 +35,7 @@
+ struct ifstat_data {
+   char *name;
+   int namelen;
+-  unsigned long obout, obin, bout, bin;
++  unsigned long long obout, obin, bout, bin;
+   int flags, index;
+   struct ifstat_data *next;
+ };
+@@ -72,8 +72,8 @@ void ifstat_add_interface(struct ifstat_
+ void ifstat_free_interface(struct ifstat_data *data);
+ 
+ void ifstat_set_interface_stats(struct ifstat_data *data,
+-				unsigned long bytesin,
+-				unsigned long bytesout);
++				unsigned long long bytesin,
++				unsigned long long bytesout);
+ 
+ void ifstat_set_interface_index(struct ifstat_data *data,
+ 				int index);
+--- a/snmp.c
++++ b/snmp.c
+@@ -91,7 +91,7 @@ static int snmp_get_ifcount(struct snmp_
+ 
+ static int snmp_get_nextif(struct snmp_session *ss, int index) {
+   oid ifindex[] = { 1, 3, 6, 1, 2, 1, 2, 2, 1, 1, 0 };
+-  int len = sizeof(ifindex) / sizeof(oid);
++  unsigned int len = sizeof(ifindex) / sizeof(oid);
+   struct snmp_pdu *pdu;
+   struct snmp_pdu *response = NULL;
+   struct variable_list *vars;
+@@ -139,7 +139,7 @@ static int snmp_get_nextif(struct snmp_s
+ 
+ struct ifsnmp {
+   char name[S_IFNAMEMAX];
+-  unsigned long bout, bin;
++  unsigned long long bout, bin;
+   int flags, index;
+ };
+ 
+@@ -248,7 +248,7 @@ static int snmp_get_ifinfos(struct snmp_
+     if (memcmp(ifinfo, vars->name, sizeof(ifinfo) - 2 * sizeof(oid)) != 0)
+       continue;
+     for(i = 0; i < nifaces; i++) {
+-      if (ifsnmp[i].index == vars->name[10])
++	if ((signed long long)ifsnmp[i].index == (signed long long)vars->name[10])
+ 	break;
+     }
+ 
+@@ -258,11 +258,11 @@ static int snmp_get_ifinfos(struct snmp_
+     switch (vars->name[9]) {
+     case ifDescr:
+       if (vars->type == ASN_OCTET_STR) {
+-        int count = vars->val_len;
++        unsigned int count = vars->val_len;
+ 
+         if (count >= sizeof(ifsnmp[i].name))
+           count = sizeof(ifsnmp[i].name) - 1;
+-	strncpy(ifsnmp[i].name, vars->val.string, count);
++	strncpy(ifsnmp[i].name, (char *)vars->val.string, count);
+         ifsnmp[i].name[count] = '\0';
+       }
+       break;
+@@ -361,7 +361,7 @@ int snmp_open_driver(struct ifstat_drive
+   snmp_sess_init(&session);
+   session.peername = host;
+   session.version = SNMP_VERSION_1;
+-  session.community = community;
++  session.community = (unsigned char *)community;
+   session.community_len = strlen(community);
+ 
+   if ((data->session = snmp_open(&session)) == NULL) {

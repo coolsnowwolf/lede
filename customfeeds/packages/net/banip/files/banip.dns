@@ -1,0 +1,122 @@
+#!/bin/sh
+# helper script to resolve domains for adding to banIP-related IPSets
+# written by Dirk Brenken (dev@brenken.org)
+#
+# This is free software, licensed under the GNU General Public License v3.
+#
+# (s)hellcheck exceptions
+# shellcheck disable=1091,2030,2031,2034,2039,2086,2129,2140,2143,2154,2181,2183,2188
+
+export LC_ALL=C
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+set -o pipefail
+
+if [ -r "/lib/functions.sh" ]
+then
+	. "/lib/functions.sh"
+	ban_debug="$(uci_get banip global ban_debug "0")"
+	ban_tmpbase="$(uci_get banip global ban_tmpbase "/tmp")"
+	ban_backupdir="$(uci_get banip global ban_backupdir "${ban_tmpbase}/banIP-Backup")"
+	ban_proto4_enabled="$(uci_get banip global ban_proto4_enabled "0")"
+	ban_proto6_enabled="$(uci_get banip global ban_proto6_enabled "0")"
+else
+	exit 1
+fi
+ban_ver="${1}"
+ban_action="${2}"
+ban_src_name="${3}"
+ban_src_file="${4}"
+ban_ipset_cmd="$(command -v ipset)"
+ban_lookup_cmd="$(command -v nslookup)"
+ban_logger_cmd="$(command -v logger)"
+ban_rc=1
+
+f_log()
+{
+	local class="${1}" log_msg="${2}"
+
+	if [ -n "${log_msg}" ] && { [ "${class}" != "debug" ] || [ "${ban_debug}" = "1" ]; }
+	then
+		if [ -x "${ban_logger_cmd}" ]
+		then
+			"${ban_logger_cmd}" -p "${class}" -t "banIP-${ban_ver%-*}[${$}]" "${log_msg}"
+		else
+			printf "%s %s %s\n" "${class}" "banIP-${ban_ver%-*}[${$}]" "${log_msg}"
+		fi
+	fi
+}
+
+if [ "${ban_action}" = "start" ] || [ "${ban_action}" = "refresh" ]
+then
+	for proto in "4" "6"
+	do
+		if [ -s "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}.gz" ]
+		then
+			gzip -df "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}.gz"
+			if [ "${?}" = "0" ]
+			then
+				ban_rc=0
+			else
+				ban_rc=1
+				break
+			fi
+		fi
+	done
+fi
+
+if [ "${ban_rc}" = "1" ]
+then
+	> "${ban_backupdir}/banIP.${ban_src_name}_addon_4"
+	> "${ban_backupdir}/banIP.${ban_src_name}_addon_6"
+	while read -r domain
+	do
+		update_ips=""
+		result="$("${ban_lookup_cmd}" "${domain}" 2>/dev/null; printf "%s" "${?}")"
+		if [ "$(printf "%s" "${result}" | tail -1)" = "0" ]
+		then
+			ips="$(printf "%s" "${result}" | awk '/^Address[ 0-9]*: /{ORS=" ";print $NF}')"
+			for ip in ${ips}
+			do
+				for proto in "4" "6"
+				do
+					if { [ "${proto}" = "4" ] && [ "${ban_proto4_enabled}" = "1" ] && \
+						[ -n "$("${ban_ipset_cmd}" -q -n list "${ban_src_name}_${proto}")" ] && \
+						[ -n "$(printf "%s" "${ip}" | awk '/^(([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?)([[:space:]]|$)/{print $1}')" ]; } || \
+						{ [ "${proto}" = "6" ] && [ "${ban_proto6_enabled}" = "1" ] && \
+						[ -n "$("${ban_ipset_cmd}" -q -n list "${ban_src_name}_${proto}")" ] && \
+						[ -z "$(printf "%s" "${ip}" | awk '/^(([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?)([[:space:]]|$)/{print $1}')" ]; }
+					then
+						printf "%s\n" "add ${ban_src_name}_${proto} ${ip}" >> "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}"
+						if [ -z "${update_ips}" ]
+						then
+							update_ips="${ip}"
+						else
+							update_ips="${update_ips}, ${ip}"
+						fi
+					fi
+				done
+			done
+			if [ -n "${update_ips}" ]
+			then
+				ban_rc=0
+				f_log "debug" "dns_imp ::: source '${ban_src_name}' supplemented by '${domain}' (${update_ips})"
+			fi
+		fi
+	done < "${ban_src_file}"
+fi
+
+if [ "${ban_rc}" = "0" ]
+then
+	for proto in "4" "6"
+	do
+		if [ -n "$("${ban_ipset_cmd}" -q -n list "${ban_src_name}_${proto}")" ] && [ -s "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}" ]
+		then
+			"${ban_ipset_cmd}" -q -! restore < "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}"
+			gzip -f "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}"
+		fi
+		rm -f "${ban_backupdir}/banIP.${ban_src_name}_addon_${proto}"
+	done
+fi
+f_log "info" "banIP domain import for source '${ban_src_name}' has been finished with rc '${ban_rc}'"
+rm -f "${ban_src_file}"
+exit "${ban_rc}"

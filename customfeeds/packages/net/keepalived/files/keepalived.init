@@ -1,0 +1,548 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2007-2015 OpenWrt.org
+
+START=70
+STOP=01
+
+USE_PROCD=1
+
+KEEPALIVED_CONF=/tmp/keepalived.conf
+
+INDENT_1="\t"
+INDENT_2="${INDENT_1}${INDENT_1}"
+INDENT_3="${INDENT_1}${INDENT_1}${INDENT_1}"
+INDENT_4="${INDENT_1}${INDENT_1}${INDENT_1}${INDENT_1}"
+
+config_section_open() {
+	local tag="$1"
+	local name="$2"
+
+	printf '%s' "$tag" >> "$KEEPALIVED_CONF"
+	[ -n "$name" ] && printf ' %s' "$name" >> "$KEEPALIVED_CONF"
+	printf ' {\n' >> "$KEEPALIVED_CONF"
+}
+
+config_section_close() {
+	printf '}\n\n' >> "$KEEPALIVED_CONF"
+}
+
+config_foreach_wrapper() {
+	local section="$1"
+	local function="$1"
+
+	# Convention is that 'function' and 'section' are the same
+	config_foreach "$function" "$section"
+}
+
+print_elems_indent() {
+	local config="$1"
+	shift
+	local indent="$1"
+	shift
+
+	[ -z "$indent" ] && indent="$INDENT_1"
+	for opt in "$@"; do
+		local "$opt"
+		local optval
+		local no_val=0
+		if [ "${opt:0:7}" = "no_val_" ]; then
+			opt="${opt:7}"
+			no_val=1
+		fi
+		config_get "$opt" "$config" "$opt"
+		eval optval=\$"$opt"
+		[ -z "$optval" ] && continue
+		printf '%b%s' "$indent" "$opt" >> "$KEEPALIVED_CONF"
+		[ "$no_val" = "0" ] && {
+			local words=0
+			words="$(echo "$optval" | wc -w)"
+			if [ "$words" -gt 1 ]; then
+				printf ' "%s"' "$optval" >> "$KEEPALIVED_CONF"
+			else
+				printf ' %s' "$optval" >> "$KEEPALIVED_CONF"
+			fi
+		}
+		printf '\n' >> "$KEEPALIVED_CONF"
+	done
+	unset optval
+}
+
+print_list_indent() {
+	local lst="$1"
+	local indent="$2"
+	local lst_elems
+	[ -z "$indent" ] && indent="$INDENT_1"
+
+	eval lst_elems=\$"$lst"
+	[ -z "$lst_elems" ] && return 0
+
+	printf '%b%s {\n' "$indent" "$lst" >> "$KEEPALIVED_CONF"
+	for e in $lst_elems; do
+		printf '%b%s\n' "${indent}${INDENT_1}" "$e">> "$KEEPALIVED_CONF"
+	done
+	printf '%b}\n' "$indent" >> "$KEEPALIVED_CONF"
+}
+
+print_notify() {
+	local type="$1"
+	shift
+	local name="$1"
+	shift
+	for notify in "$@"; do
+		printf '%b%s' "${INDENT_1}" "$notify">> "$KEEPALIVED_CONF"
+		notify="$(echo "$notify" | tr 'a-z' 'A-Z')"
+		printf ' "/bin/busybox env -i ACTION=%s TYPE=%s NAME=%s /sbin/hotplug-call keepalived"\n' "$notify" "$type" "$name" >> "$KEEPALIVED_CONF"
+	done
+}
+
+globals() {
+	local notification_email
+
+	printf '%bscript_user root\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	printf '%benable_script_security\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+
+	config_get notification_email "$1" notification_email
+	print_list_indent notification_email
+
+	print_elems_indent "$1" "$INDENT_1" \
+		notification_email_from \
+		smtp_server \
+		smtp_connect_timeout \
+		router_id \
+		vrrp_mcast_group4 \
+		vrrp_mcast_group6 \
+		vrrp_startup_delay
+}
+
+print_ipaddress_indent() {
+	local section="$1"
+	local curr_ipaddr="$2"
+	local indent="$3"
+
+	local address device scope name
+	config_get name "$section" name
+	[ "$name" != "$curr_ipaddr" ] && return 0
+
+	config_get address "$section" address
+	config_get device "$section" device
+	config_get scope "$section" scope
+
+	# Default indent
+	[ -z "$indent" ] && indent="$INDENT_1"
+
+	# If no address exit
+	[ -z "$address" ] && return 0
+
+	if [ -z "$device" ]; then
+		printf '%b%s' "$indent" "$address" >> "$KEEPALIVED_CONF"
+	else
+		# Add IP address/netmask and device
+		printf '%b%s dev %s' "$indent" "$address" "$device">> "$KEEPALIVED_CONF"
+		# Add scope
+		[ -n "$scope" ] && printf ' scope %s' "$scope" >> "$KEEPALIVED_CONF"
+	fi
+
+	printf '\n' >> "$KEEPALIVED_CONF"
+}
+
+static_ipaddress() {
+	local address
+	config_get address "$1" address
+	for a in $address; do
+		config_foreach print_ipaddress_indent ipaddress "$a"
+	done
+}
+
+print_route_indent() {
+	local section="$1"
+	local curr_route="$2"
+	local indent="$3"
+
+	local name blackhole address src_addr gateway device scope table
+
+	config_get name "$section" name
+	[ "$name" != "$curr_route" ] && return 0
+
+	config_get_bool blackhole "$section" blackhole 0
+	config_get address "$section" address
+	config_get src_addr "$section" src_addr
+	config_get gateway "$section" gateway
+	config_get device "$section" device
+	config_get table "$section" table
+
+	# If no address exit
+	[ -z "$address" ] && return 0
+
+	# Default indent
+	[ -z "$indent" ] && indent="$INDENT_1"
+
+	[ "$blackhole" -gt 0 ] && {
+		printf '%bblackhole %s\n' "$indent" "$address" >> "$KEEPALIVED_CONF"
+		return 0
+	}
+	# Add src addr or address
+	if [ -n "$src_addr" ]; then
+		printf '%bsrc %s %s' "$indent" "$src_addr" "$address" >> "$KEEPALIVED_CONF"
+	else
+		[ -z "$device" ] && return 0
+		printf '%b%s' "$indent" "$address" >> "$KEEPALIVED_CONF"
+	fi
+	# Add route/gateway
+	[ -n "$gateway" ] && printf ' via %s' "$gateway" >> "$KEEPALIVED_CONF"
+	# Add device
+	printf ' dev %s' "$device" >> "$KEEPALIVED_CONF"
+	# Add scope
+	[ -n "$scope" ] && printf ' scope %s' "$scope" >> "$KEEPALIVED_CONF"
+	# Add table
+	[ -n "$table" ] && printf ' table %s' "$table" >> "$KEEPALIVED_CONF"
+	printf '\n' >> "$KEEPALIVED_CONF"
+
+}
+
+print_track_elem_indent() {
+	local section="$1"
+	local curr_track_elem="$2"
+	local indent="$3"
+
+	local name value
+	config_get name "$section" name
+	[ "$name" != "$curr_track_elem" ] && return 0
+
+	config_get value "$section" value
+	config_get weight "$section" weight
+
+	[ -z "$value" ] && return 0
+
+	printf '%b%s' "$indent" "$value" >> "$KEEPALIVED_CONF"
+	[ -n "$weight" ] && printf ' weight %s' "$weight" >> "$KEEPALIVED_CONF"
+	printf '\n' >> "$KEEPALIVED_CONF"
+}
+
+static_routes() {
+	local route
+	config_get route "$1" route
+	for r in $route; do
+		config_foreach print_route_indent route "$r"
+	done
+}
+
+# Count 'vrrp_instance' with the given name ; called by vrrp_instance_check()
+vrrp_instance_name_count() {
+	local name
+	config_get name "$1" name
+	[ "$name" = "$2" ] && count="$((count + 1))"
+}
+
+# Check if there's a 'vrrp_instance' section with the given name
+vrrp_instance_check() {
+	local count="0"
+	local name="$1"
+	config_foreach vrrp_instance_name_count vrrp_instance "$name"
+	[ $count -gt 0 ] && return 0 || return 1
+}
+
+vrrp_sync_group() {
+	local group name
+	local valid_group
+
+	# No name for group, exit
+	config_get name "$1" name
+	[ -z "$name" ] && return 0
+
+	# No members for group, exit
+	config_get group "$1" group
+	[ -z "$group" ] && return 0
+
+	# Check if we have 'vrrp_instance's defined for 
+	# each member and remove names with not vrrp_instance defined
+	for m in $group; do
+		vrrp_instance_check "$m" && valid_group="$valid_group $m"
+	done
+	[ -z "$valid_group" ] && return 0
+
+	config_section_open "vrrp_sync_group" "$name"
+
+	group="$valid_group"
+	print_list_indent group
+
+	print_elems_indent "$1" "$INDENT_1" no_val_smtp_alert no_val_global_tracking
+
+	print_notify "GROUP" "$name" notify_backup notify_master \
+		notify_fault notify
+
+	config_section_close
+}
+
+vrrp_instance() {
+	local name auth_type auth_pass
+
+	config_get name "$1" name
+	[ -z "$name" ] && return 0
+
+	config_section_open "vrrp_instance" "$name"
+
+	config_get auth_type "$1" auth_type
+	config_get auth_pass "$1" auth_pass
+	[ -n "$auth_type" ] && [ -n "$auth_pass" ] && {
+		printf '%bauthentication {\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+		printf '%bauth_type %s\n' "${INDENT_2}" "$auth_type" >> "$KEEPALIVED_CONF"
+		printf '%bauth_pass %s\n' "${INDENT_2}" "$auth_pass" >> "$KEEPALIVED_CONF"
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	}
+
+	print_elems_indent "$1" "$INDENT_1" state interface \
+		mcast_src_ip unicast_src_ip virtual_router_id version priority \
+		advert_int preempt_delay debug \
+		lvs_sync_daemon_interface garp_master_delay garp_master_refresh \
+		garp_master_repeat garp_master_refresh_repeat \
+		no_val_vmac_xmit_base no_val_native_ipv6 no_val_accept \
+		no_val_dont_track_primary no_val_smtp_alert no_val_nopreempt \
+		no_val_use_vmac
+
+	print_notify "INSTANCE" "$name" notify_backup notify_master \
+		notify_fault notify_stop
+
+	# Handle virtual_ipaddress & virtual_ipaddress_excluded lists
+	for opt in virtual_ipaddress virtual_ipaddress_excluded; do
+		config_get "$opt" "$1" "$opt"
+		eval optval=\$$opt
+		[ -z "$optval" ] && continue
+		printf '%b%s {\n' "${INDENT_1}" "$opt" >> "$KEEPALIVED_CONF"
+		for a in $optval; do
+			config_foreach print_ipaddress_indent ipaddress "$a" "$INDENT_2"
+		done
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	done
+
+	# Handle virtual_routes
+	for opt in virtual_routes; do
+		config_get "$opt" "$1" "$opt"
+		eval optval=\$$opt
+		[ -z "$optval" ] && continue
+		printf '%b%s {\n' "${INDENT_1}" "$opt" >> "$KEEPALIVED_CONF"
+		for r in $optval; do
+			config_foreach print_route_indent route "$r" "$INDENT_2"
+		done
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	done
+
+	# Handle track_script lists
+	for opt in track_script; do
+		config_get "$opt" "$1" "$opt"
+		eval optval=\$$opt
+		[ -z "$optval" ] && continue
+		printf '%b%s {\n' "${INDENT_1}" "$opt" >> "$KEEPALIVED_CONF"
+		for t in $optval; do
+			printf '%b%s\n' "${INDENT_2}" "$optval" >> "$KEEPALIVED_CONF"
+		done
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	done
+
+	# Handle track_interface lists
+	for opt in track_interface; do
+		config_get "$opt" "$1" "$opt"
+		eval optval=\$$opt
+		[ -z "$optval" ] && continue
+		printf '%b%s {\n' "${INDENT_1}" "$opt" >> "$KEEPALIVED_CONF"
+		for t in $optval; do
+			config_foreach print_track_elem_indent track_interface "$t" "$INDENT_2"
+		done
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	done
+
+	# Handle simple lists of strings (with no spaces in between)
+	for opt in unicast_peer; do
+		config_get "$opt" "$1" "$opt"
+		print_list_indent "$opt"
+	done
+	unset optval
+
+	config_section_close
+}
+
+vrrp_script() {
+	local name
+
+	config_get name "$1" name
+	[ -z "$name" ] && return 0
+
+	config_section_open "vrrp_script" "$name"
+
+	print_elems_indent "$1" "$INDENT_1" script interval weight fall rise
+
+	config_section_close
+}
+
+url() {
+	local url="$2"
+
+	local name path digest
+
+	config_get name "$1" name
+	[ "$url" = "$name" ] || return 0
+
+	config_get path "$1" path
+	config_get digest "$1" digest
+
+	[ -n "$digest" ] && [ -n "$path" ] && {
+		printf '%burl {\n' "${INDENT_3}" >> "$KEEPALIVED_CONF"
+		printf '%bpath %s\n' "${INDENT_4}" "$path" >> "$KEEPALIVED_CONF"
+		printf '%bdigest %s\n' "${INDENT_4}" "$digest" >> "$KEEPALIVED_CONF"
+		printf '%b}\n' "${INDENT_3}" >> "$KEEPALIVED_CONF"
+	}
+}
+
+url_list() {
+	config_foreach url url "$1"
+}
+
+real_server() {
+	local server="$2"
+
+	local enabled name weight ipaddr port check
+
+	config_get_bool enabled "$1" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get name "$1" name
+	[ "$server" = "$name" ] || return 0
+
+	config_get weight "$1" weight
+	[ -n "$weight" ] || return 0
+
+	config_get ipaddr "$1" ipaddr
+	config_get port "$1" port
+	config_get check "$1" check
+
+	[ -n "$ipaddr" ] && [ -n "$port" ] && {
+		printf '%breal_server %s %d {\n' "${INDENT_1}" "$ipaddr" "$port" >> "$KEEPALIVED_CONF"
+		printf '%bweight %d\n' "${INDENT_2}" "$weight" >> "$KEEPALIVED_CONF"
+		case "$check" in
+			TCP_CHECK)
+				printf '%b%s {\n' "${INDENT_2}" "$check" >> "$KEEPALIVED_CONF"
+				print_elems_indent "$1" "$INDENT_3" connect_timeout \
+					connect_port
+				printf '%b}\n' "${INDENT_2}" >> "$KEEPALIVED_CONF"
+				;;
+			MISC_CHECK)
+				printf '%b%s {\n' "${INDENT_2}" "$check" >> "$KEEPALIVED_CONF"
+				print_elems_indent "$1" "$INDENT_3" misc_path
+				printf '%b}\n' "${INDENT_2}" >> "$KEEPALIVED_CONF"
+				;;
+			HTTP_GET | SSL_GET)
+				printf '%b%s {\n' "${INDENT_2}" "$check" >> "$KEEPALIVED_CONF"
+				print_elems_indent "$1" "$INDENT_3" connect_timeout \
+					connect_port nb_get_retry delay_before_retry
+				# Handle url list
+				config_list_foreach "$1" url url_list
+				printf '%b}\n' "${INDENT_2}" >> "$KEEPALIVED_CONF"
+				;;
+		esac
+		printf '%b}\n' "${INDENT_1}" >> "$KEEPALIVED_CONF"
+	}
+}
+
+real_server_list() {
+	config_foreach real_server real_server "$1"
+}
+
+virtual_server() {
+	local enabled ipaddr port lb_algo sorry_server_ip sorry_server_port
+
+	config_get_bool enabled "$1" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get ipaddr "$1" ipaddr
+	[ -z "$ipaddr" ] && return 0
+	config_get port "$1" port
+	[ -z "$port" ] && return 0
+
+	config_section_open "virtual_server" "$ipaddr $port"
+
+	print_elems_indent "$1" "$INDENT_1" fwmark delay_loop \
+		lb_kind persistence_timeout persistence_granularity \
+		virtualhost protocol
+
+	config_get lb_algo "$1" lb_algo
+	[ -z "$lb_algo" ] && lb_algo="rr"
+	modprobe ip_vs_${lb_algo} 1>/dev/null 2>&1
+	printf '%blb_algo %s\n' "${INDENT_1}" "${lb_algo}" >> "$KEEPALIVED_CONF"
+
+	config_get sorry_server_ip "$1" sorry_server_ip
+	config_get sorry_server_port "$1" sorry_server_port
+	[ -n "$sorry_server_ip" ] && [ -n "$sorry_server_port" ] && {
+		printf '%bsorry_server %s %s\n' "${INDENT_1}" "$sorry_server_ip" "$sorry_server_port" >> "$KEEPALIVED_CONF"
+	}
+
+	# Handle real_server list
+	config_list_foreach "$1" real_server real_server_list
+
+	config_section_close
+}
+
+process_config() {
+	local alt_config_file linkbeat_use_polling
+
+	rm -f "$KEEPALIVED_CONF"
+
+	# First line
+	printf '! Configuration file for keepalived (autogenerated via init script)\n' > "$KEEPALIVED_CONF"
+	printf '! Written %s\n\n' "$(date +'%c')" >> "$KEEPALIVED_CONF"
+
+	[ -f /etc/config/keepalived ] || return 0
+	config_load 'keepalived'
+	config_get alt_config_file globals alt_config_file
+
+	# If "alt_config_file" specified, use that instead
+	[ -n "$alt_config_file" ] && [ -f "$alt_config_file" ] && {
+		rm -f "$KEEPALIVED_CONF"
+		# Symlink "alt_config_file" since it's a bit easier and safer
+		ln -s "$alt_config_file" "$KEEPALIVED_CONF"
+		return 0
+	}
+
+	config_get_bool linkbeat_use_polling globals linkbeat_use_polling 0
+	[ "$linkbeat_use_polling" -gt 0 ] && printf 'linkbeat_use_polling\n\n' >> "$KEEPALIVED_CONF"
+
+	config_section_open "global_defs"
+	config_foreach_wrapper globals
+	config_section_close
+
+	config_section_open "static_ipaddress"
+	config_foreach_wrapper static_ipaddress
+	config_section_close
+
+	config_section_open "static_routes"
+	config_foreach_wrapper static_routes
+	config_section_close
+
+	config_foreach_wrapper vrrp_script
+	config_foreach_wrapper vrrp_sync_group
+	config_foreach_wrapper vrrp_instance
+	config_foreach_wrapper virtual_server
+	return 0
+}
+
+service_triggers() {
+	procd_add_reload_trigger "keepalived"
+}
+
+reload_service() {
+	process_config
+	#SIGHUP is used by keepalived to do init.d reload
+	procd_send_signal keepalived
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /usr/sbin/keepalived
+	procd_append_param command -n # don't daemonize, procd will handle that for us
+	procd_append_param command -f "$KEEPALIVED_CONF"
+
+	process_config
+
+	# set auto respawn behavior
+	procd_set_param respawn
+	procd_close_instance
+}
+

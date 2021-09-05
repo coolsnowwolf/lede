@@ -1,0 +1,104 @@
+#!/bin/sh /etc/rc.common
+START=50
+
+BIN=uanytun
+DAEMON=/usr/sbin/$BIN
+DESC=$BIN
+RUN_D=/var/run
+
+
+option_cb() {
+  local varname="$1"
+  local value="$2"
+
+  if ! echo "$CONFIG_OPTIONS" | grep " $varname " > /dev/null; then
+    CONFIG_OPTIONS="$CONFIG_OPTIONS $varname "
+  fi
+}
+
+foreach_config_forced() {
+  foreach_config $1 "forced"
+}
+
+foreach_config() {
+  local cfg="$1"
+  local name
+  local option
+  local value
+  local args=""
+  local forced=0
+
+  if [ -n "$2" ] && [ "x$2" == "xforced" ]; then
+    forced=1
+  fi
+
+  config_get name "$cfg" TYPE
+  for option in $CONFIG_OPTIONS
+  do
+    config_get value "$cfg" "$option"
+    if [ "x$option" == "xdisabled" ]; then
+      if [ $forced -eq 0 ] && [ $value -eq 1 ]; then
+        echo -n " $name(disabled)"
+        return
+      fi
+      continue
+    fi
+
+    option=`echo $option | tr '_' '-'`
+    if [ -n "$value" ]; then
+      args="$args --$option $value"
+    fi
+  done
+  echo -n " $name"
+  local status="OK"
+  $DAEMON --write-pid "$RUN_D/$BIN.$name.pid" $args || status="failed"
+  echo -n "($status)"
+}
+
+stop_vpn() {
+  local name=$1
+  local pidfile=$RUN_D/$BIN.$name.pid
+  echo -n " $name"
+  local status="OK"
+  if [ ! -f "$pidfile" ]; then
+    status="tunnel not active"
+  else
+    kill `cat $pidfile` > /dev/null 2>&1 || status="failed"
+    rm -f $pidfile
+  fi
+  echo -n "($status)"
+}
+
+start() {
+  echo -n "Starting $DESC:"
+  config_load $BIN
+  if [ $# -gt 0 ]; then
+    while [ $# -gt 0 ]; do
+      config_foreach foreach_config_forced "$1"
+      shift
+    done
+  else
+    config_foreach foreach_config ""
+  fi
+  echo "."
+}
+
+stop() {
+  echo -n "Stopping $DESC:"
+  local name
+  local pidfile
+
+  if [ $# -gt 0 ]; then
+    while [ $# -gt 0 ]; do
+      stop_vpn $1
+      shift
+    done
+  else
+    for pidfile in `ls $RUN_D/$BIN.*.pid 2> /dev/null`; do
+      name=${pidfile%%.pid}
+      name=${name##$RUN_D/$BIN.}
+      stop_vpn $name
+    done
+  fi
+  echo "."
+}

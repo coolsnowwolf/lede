@@ -1,0 +1,74 @@
+https://bugs.python.org/issue21622
+
+Based on the patch from Alpine Linux
+https://git.alpinelinux.org/aports/tree/main/python2/musl-find_library.patch
+
+--- a/Lib/ctypes/util.py
++++ b/Lib/ctypes/util.py
+@@ -92,6 +92,8 @@ elif sys.platform.startswith("aix"):
+ elif os.name == "posix":
+     # Andreas Degert's find functions, using gcc, /sbin/ldconfig, objdump
+     import re, tempfile
++    from glob import glob
++    musl_ldso = glob('/lib/ld-musl-*.so.1')
+ 
+     def _is_elf(filename):
+         "Return True if the given file is an ELF file"
+@@ -265,6 +267,57 @@ elif os.name == "posix":
+         def find_library(name, is64 = False):
+             return _get_soname(_findLib_crle(name, is64) or _findLib_gcc(name))
+ 
++    elif musl_ldso and os.path.isfile(musl_ldso[0]):
++
++        def _is_elf(filepath):
++            try:
++                with open(filepath, 'rb') as fh:
++                    return fh.read(4) == b'\x7fELF'
++            except:
++                return False
++
++        def find_library(name):
++            # absolute name?
++            if os.path.isabs(name):
++                if _is_elf(name):
++                    return name
++                else:
++                    return None
++
++            # special case for unified standard libs
++            stdlibs = ['libcrypt.so', 'libdl.so', 'libm.so', 'libpthread.so', 'libresolv.so', 'librt.so', 'libutil.so', 'libxnet.so']
++            if name in stdlibs:
++                name = 'libc.so'
++            elif ('lib' + name + '.so') in stdlibs:
++                name = 'c'
++
++            paths = []
++            # read path list from /etc/ld-musl-$(ARCH).path
++            path_list = musl_ldso[0].replace('/lib/', '/etc/').replace('.so.1', '.path')
++            try:
++                with open(path_list, 'r') as fh:
++                    paths = [path for line in fh for path in line.rstrip('\n').split(':') if path]
++            except:
++                paths = []
++            # default path list if /etc/ld-musl-$(ARCH).path is empty or does not exist
++            if not paths:
++                paths = ['/lib', '/usr/local/lib', '/usr/lib']
++
++            # prepend paths from LD_LIBRARY_PATH
++            if 'LD_LIBRARY_PATH' in os.environ:
++                paths = os.environ['LD_LIBRARY_PATH'].split(':') + paths
++
++            for d in paths:
++                f = os.path.join(d, name)
++                if _is_elf(f):
++                    return os.path.basename(f)
++
++                prefix = os.path.join(d, 'lib'+name)
++                for suffix in ['.so', '.so.*']:
++                    for f in glob('{0}{1}'.format(prefix, suffix)):
++                        if _is_elf(f):
++                            return os.path.basename(f)
++
+     else:
+ 
+         def _findSoname_ldconfig(name):

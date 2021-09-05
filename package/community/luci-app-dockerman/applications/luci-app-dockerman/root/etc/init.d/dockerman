@@ -1,0 +1,74 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+# PROCD_DEBUG=1
+config_load 'dockerd'
+# config_get daemon_ea "dockerman" daemon_ea
+
+docker_running(){
+	docker version > /dev/null 2>&1
+	return $?
+}
+
+init_dockerman_chain(){
+	iptables -N DOCKER-MAN >/dev/null 2>&1
+	iptables -F DOCKER-MAN >/dev/null 2>&1
+	iptables -D DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+	iptables -I DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+}
+
+delete_dockerman_chain(){
+	iptables -D DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+	iptables -F DOCKER-MAN >/dev/null 2>&1
+	iptables -X DOCKER-MAN >/dev/null 2>&1
+}
+
+add_allowed_interface(){
+	iptables -A DOCKER-MAN -i $1 -o docker0 -j RETURN
+}
+
+add_allowed_container(){
+	ip=$(docker inspect --format '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${1} 2>/dev/null)
+	[ -n "$ip" ] && iptables -A DOCKER-MAN -d $ip -o docker0 -j ACCEPT
+}
+
+handle_allowed_container(){
+	config_list_foreach "dockerman" "ac_allowed_container" add_allowed_container
+}
+
+handle_allowed_interface(){
+	#config_list_foreach "dockerman" allowed_ip add_allowed_ip
+	config_list_foreach "dockerman" "ac_allowed_interface" add_allowed_interface
+	iptables -A DOCKER-MAN -m conntrack --ctstate ESTABLISHED,RELATED -o docker0 -j RETURN >/dev/null 2>&1
+	iptables -A DOCKER-MAN -m conntrack --ctstate NEW,INVALID -o docker0 -j DROP >/dev/null 2>&1
+	iptables -A DOCKER-MAN -j RETURN >/dev/null 2>&1
+}
+
+start_service(){
+	_DOCKERD=/etc/init.d/dockerd
+	[ -x "$_DOCKERD" ] && $($_DOCKERD enabled) || return 0
+	delete_dockerman_chain
+	$($_DOCKERD running) && docker_running || return 0
+	init_dockerman_chain
+	# handle_allowed_container
+	handle_allowed_interface
+	lua /usr/share/dockerman/dockerd-ac.lua
+}
+
+stop_service(){
+	delete_dockerman_chain
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'dockerd'
+}
+
+reload_service() {
+	start
+}
+
+boot() {
+	sleep 5s
+	start
+}

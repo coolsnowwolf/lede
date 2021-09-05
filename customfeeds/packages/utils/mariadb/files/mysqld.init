@@ -1,0 +1,148 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010-2018 OpenWrt.org
+
+# shellcheck disable=SC2034
+START=95
+# shellcheck disable=SC2034
+STOP=10
+# shellcheck disable=SC2034
+USE_PROCD=1
+
+NAME=mysqld
+my_user="mariadb"
+my_group="mariadb"
+
+LOGGER="/usr/bin/logger -p user.err -s -t $NAME --"
+[ -x "$LOGGER" ] || LOGGER="echo"
+
+MYSQLD="/usr/bin/$NAME"
+
+pidfile=""
+
+# mysqladmin likes to read /root/.my.cnf which could cause issues.
+export HOME="/etc/mysql"
+
+# Safeguard (relative paths, core dumps...)
+cd /
+
+mysqld_get_param() {
+	"$MYSQLD" --help --verbose | sed -n 's|^'"$1"'[[:blank:]]\+||p'
+}
+
+# Send kill signal to MariaDB process
+#
+# Usage: boolean mysqld_kill signal
+mysql_kill() {
+	[ -n "$pidfile" ] || pidfile="$(mysqld_get_param pid-file)"
+	[ -f "$pidfile" ] || return 1
+	pid="$(cat "$pidfile")"
+	[ -n "$pid" ] || return 2
+	kill "$1" "$pid"
+}
+
+# Checks if a server is running and accessible.
+#
+# Supported modes are 'check_alive' and 'check_dead'.
+# Both check for pidfile and whether the specified process is running and is
+# indeed mysqld. We could use mysqladmin for the check, but to be able to do
+# so, mysqladmin requires access to the database, which sounds like overkill
+# and potential security issue.
+#
+# Usage: boolean mysqld_status [check_alive|check_dead]
+mysqld_status() {
+	ps_alive=0
+	pidfile="$(mysqld_get_param pid-file)"
+	if [ -f "$pidfile" ] && mysql_kill -0 2> /dev/null && \
+	   [ "$(readlink "/proc/$(cat "$pidfile")/exe")" = "$MYSQLD" ]; then
+		ps_alive=1
+	fi
+
+	if { [ "$1" = check_alive ] && [ $ps_alive = 1 ]; } || \
+		{ [ "$1" = check_dead ] && [ $ps_alive = 0 ]; }
+	then
+		return 0 # EXIT_SUCCESS
+	else
+		return 1 # EXIT_FAILURE
+	fi
+}
+
+start_service() {
+	conf=/etc/mysql/my.cnf
+	logdir=/var/log/mysql
+	rundir=/var/run/mysqld
+
+	hint="please fix your server configuration in /etc/mysql/"
+ 
+	if [ ! -x "$MYSQLD" ]; then
+		$LOGGER "$MYSQLD is missing"
+		exit 1
+	fi
+
+	if [ ! -r "$conf" ]; then
+		$LOGGER "$conf cannot be read"
+		exit 1
+	fi
+
+	if mysqld_status check_alive; then
+		$LOGGER "server is already running"
+		exit 0
+	fi
+
+	config_load "$NAME"
+
+	config_get_bool enabled general enabled 0
+	# shellcheck disable=SC2154
+	if [ "$enabled" -eq 0 ]; then
+		$LOGGER "service not enabled in /etc/config/$NAME"
+		exit 1
+	fi
+
+	config_get options general options
+
+	datadir="$(mysqld_get_param datadir)"
+	tmpdir="$(mysqld_get_param tmpdir)"
+
+	if [ ! -f "$datadir/mysql/tables_priv.MAD" ]; then
+		args="--force"
+		basedir="$(mysqld_get_param basedir)"
+		[ -n "$basedir" ] && args="$args --basedir=$basedir"
+
+		$LOGGER "Cannot detect privileges table. You might need to run"
+		$LOGGER "'mysql_install_db \"$args\"'"
+		$LOGGER "to initialize the system tables."
+		$LOGGER "Then hand it ower to MariaDB user"
+		$LOGGER "'chown -Rh \"$my_user:$my_group\" \"$datadir\"'"
+		exit 1
+	fi
+
+	for i in "$logdir" "$rundir" "$tmpdir" "$datadir"; do
+		opts="-m 0750"
+		if ! [ -e "$i" ]; then
+			# $rundir needs to be accessible for
+			# clients
+			if [ "$i" = "$rundir" ]; then
+				opts=
+			fi
+			# shellcheck disable=SC2086
+			mkdir -p $opts "$i"
+			[ -d "$i" ] && chown -Rh "$my_user:$my_group" "$i"
+		fi
+	done
+
+	# Start daemon
+	procd_open_instance
+
+	# shellcheck disable=SC2154 disable=SC2086
+	procd_set_param command "$MYSQLD" $options
+	procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
+	# run as user
+	procd_set_param user "$my_user"
+	# forward stderr to logd
+	procd_set_param stderr 1
+	# use HUP to reload
+	procd_set_param reload_signal HUP
+	# terminate using signals
+	procd_set_param term_timeout 60
+
+	procd_close_instance
+}

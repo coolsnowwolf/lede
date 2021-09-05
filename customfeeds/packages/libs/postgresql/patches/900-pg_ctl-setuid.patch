@@ -1,0 +1,107 @@
+--- a/src/bin/pg_ctl/pg_ctl.c
++++ b/src/bin/pg_ctl/pg_ctl.c
+@@ -94,6 +94,7 @@ static char *event_source = NULL;
+ static char *register_servicename = "PostgreSQL";	/* FIXME: + version ID? */
+ static char *register_username = NULL;
+ static char *register_password = NULL;
++static char *username = "";
+ static char *argv0 = NULL;
+ static bool allow_core_files = false;
+ static time_t start_time;
+@@ -2055,6 +2056,9 @@ do_help(void)
+ #endif
+ 	printf(_("  -s, --silent           only print errors, no informational messages\n"));
+ 	printf(_("  -t, --timeout=SECS     seconds to wait when using -w option\n"));
++#if !defined(WIN32) && !defined(__CYGWIN__)
++	printf(_("  -U, --username=NAME    user name of account PostgreSQL server is running as\n"));
++#endif
+ 	printf(_("  -V, --version          output version information, then exit\n"));
+ 	printf(_("  -w, --wait             wait until operation completes (default)\n"));
+ 	printf(_("  -W, --no-wait          do not wait until operation completes\n"));
+@@ -2267,6 +2271,7 @@ main(int argc, char **argv)
+ 		{"options", required_argument, NULL, 'o'},
+ 		{"silent", no_argument, NULL, 's'},
+ 		{"timeout", required_argument, NULL, 't'},
++		{"username", required_argument, NULL, 'U'},
+ 		{"core-files", no_argument, NULL, 'c'},
+ 		{"wait", no_argument, NULL, 'w'},
+ 		{"no-wait", no_argument, NULL, 'W'},
+@@ -2307,20 +2312,6 @@ main(int argc, char **argv)
+ 		}
+ 	}
+ 
+-	/*
+-	 * Disallow running as root, to forestall any possible security holes.
+-	 */
+-#ifndef WIN32
+-	if (geteuid() == 0)
+-	{
+-		write_stderr(_("%s: cannot be run as root\n"
+-					   "Please log in (using, e.g., \"su\") as the "
+-					   "(unprivileged) user that will\n"
+-					   "own the server process.\n"),
+-					 progname);
+-		exit(1);
+-	}
+-#endif
+ 
+ 	env_wait = getenv("PGCTLTIMEOUT");
+ 	if (env_wait != NULL)
+@@ -2407,11 +2398,15 @@ main(int argc, char **argv)
+ 					wait_seconds_arg = true;
+ 					break;
+ 				case 'U':
++#if defined(WIN32) || defined(__CYGWIN__)
+ 					if (strchr(optarg, '\\'))
+ 						register_username = pg_strdup(optarg);
+ 					else
+ 						/* Prepend .\ for local accounts */
+ 						register_username = psprintf(".\\%s", optarg);
++#else
++					username = pg_strdup(optarg);
++#endif
+ 					break;
+ 				case 'w':
+ 					do_wait = true;
+@@ -2493,6 +2488,41 @@ main(int argc, char **argv)
+ 		exit(1);
+ 	}
+ 
++	/*
++	 * Disallow running as root, to forestall any possible security holes.
++	 */
++#if !defined(WIN32) && !defined(__CYGWIN__)
++	if (geteuid() == 0)
++	{
++		struct passwd *p;
++		if (!username || !strlen(username)) {
++			fprintf(stderr,
++					_("%s: when run as root, username needs to be provided\n"),
++					progname);
++			exit(1);
++		}
++		p = getpwnam(username);
++		if (!p) {
++			fprintf(stderr,
++					_("%s: invalid username: %s\n"),
++					progname, username);
++			exit(1);
++		}
++		if (!p->pw_uid) {
++			fprintf(stderr,
++					_("%s: user needs to be non-root\n"),
++					progname);
++			exit(1);
++		}
++		if (setgid(p->pw_gid) || setuid(p->pw_uid)) {
++			fprintf(stderr,
++					_("%s: failed to set user id %d: %d (%s)\n"),
++					progname, p->pw_uid, errno, strerror(errno));
++			exit(1);
++		}
++	}
++#endif
++
+ 	/* Note we put any -D switch into the env var above */
+ 	pg_config = getenv("PGDATA");
+ 	if (pg_config)

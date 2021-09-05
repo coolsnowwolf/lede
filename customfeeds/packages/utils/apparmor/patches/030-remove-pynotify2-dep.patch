@@ -1,0 +1,416 @@
+--- a/utils/aa-notify
++++ b/utils/aa-notify
+@@ -13,17 +13,6 @@
+ #
+ # ----------------------------------------------------------------------
+ #
+-# /etc/apparmor/notify.conf:
+-# # set to 'yes' to enable AppArmor DENIED notifications
+-# show_notifications="yes"
+-#
+-# # only people in use_group can run this script
+-# use_group="admin"
+-#
+-# $HOME/.apparmor/notify.conf can have:
+-# # set to 'yes' to enable AppArmor DENIED notifications
+-# show_notifications="yes"
+-#
+ # In a typical desktop environment one would run as a service the
+ # command:
+ #   /usr/bin/aa-notify -p -w 10
+@@ -35,7 +24,6 @@ import re
+ import sys
+ import time
+ import struct
+-import notify2
+ import psutil
+ import pwd
+ import grp
+@@ -60,56 +48,9 @@ def get_user_login():
+             username = os.getlogin()
+     return username
+ 
+-
+-def get_last_login_timestamp(username):
+-    '''Directly read wtmp and get last login for user as epoch timestamp'''
+-    timestamp = 0
+-    filename = '/var/log/wtmp'
+-    last_login = 0
+-
+-    debug_logger.debug('Username: {}'.format(username))
+-
+-    with open(filename, "rb") as wtmp_file:
+-        offset = 0
+-        wtmp_filesize = os.path.getsize(filename)
+-        debug_logger.debug('WTMP filesize: {}'.format(wtmp_filesize))
+-        while offset < wtmp_filesize:
+-            wtmp_file.seek(offset)
+-            offset += 384  # Increment for next entry
+-
+-            type = struct.unpack("<L", wtmp_file.read(4))[0]
+-            debug_logger.debug('WTMP entry type: {}'.format(type))
+-
+-            # Only parse USER lines
+-            if type == 7:
+-                # Read each item and move pointer forward
+-                pid = struct.unpack("<L", wtmp_file.read(4))[0]
+-                line = wtmp_file.read(32).decode("utf-8", "replace").split('\0', 1)[0]
+-                id = wtmp_file.read(4).decode("utf-8", "replace").split('\0', 1)[0]
+-                user = wtmp_file.read(32).decode("utf-8", "replace").split('\0', 1)[0]
+-                host = wtmp_file.read(256).decode("utf-8", "replace").split('\0', 1)[0]
+-                term = struct.unpack("<H", wtmp_file.read(2))[0]
+-                exit = struct.unpack("<H", wtmp_file.read(2))[0]
+-                session = struct.unpack("<L", wtmp_file.read(4))[0]
+-                timestamp = struct.unpack("<L", wtmp_file.read(4))[0]
+-                usec = struct.unpack("<L", wtmp_file.read(4))[0]
+-                entry = (pid, line, id, user, host, term, exit, session, timestamp, usec)
+-                debug_logger.debug('WTMP entry: {}'.format(entry))
+-
+-                # Store login timestamp for requested user
+-                if user == username:
+-                    last_login = timestamp
+-
+-    # When loop is done, last value should be the latest login timestamp
+-    return last_login
+-
+-
+ def format_event(event, logsource):
+     output = []
+ 
+-    if 'message_body' in config['']:
+-        output += [config['']['message_body']]
+-
+     if event.profile:
+         output += ['Profile: {}'.format(event.profile)]
+     if event.operation:
+@@ -126,7 +67,6 @@ def format_event(event, logsource):
+ 
+     return "\n".join(output)
+ 
+-
+ def notify_about_new_entries(logfile, wait=0):
+     # Kill other instances of aa-notify if already running
+     for process in psutil.process_iter():
+@@ -154,7 +94,6 @@ def notify_about_new_entries(logfile, wa
+         # print("parent: %d, child: %d\n" % pids)
+         os._exit(0)  # Exit child without calling exit handlers etc
+ 
+-
+ def show_entries_since_epoch(logfile, epoch_since):
+     count = 0
+     for event in get_apparmor_events(logfile, epoch_since):
+@@ -172,26 +111,7 @@ def show_entries_since_epoch(logfile, ep
+     )
+ 
+     if args.verbose:
+-        if 'message_footer' in config['']:
+-            print(config['']['message_footer'])
+-        else:
+-            print(_('For more information, please see: {}').format(debug_docs_url))
+-
+-
+-def show_entries_since_last_login(logfile, username=get_user_login()):
+-    # If running as sudo, use username of sudo user instead of root
+-    if 'SUDO_USER' in os.environ.keys():
+-        username = os.environ['SUDO_USER']
+-
+-    if args.verbose:
+-        print(_('Showing entries since {} logged in').format(username))
+-        print() # Newline
+-    epoch_since = get_last_login_timestamp(username)
+-    if epoch_since == 0:
+-        print(_('ERROR: Could not find last login'), file=sys.stderr)
+-        sys.exit(1)
+-    show_entries_since_epoch(logfile, epoch_since)
+-
++        print(_('For more information, please see: {}').format(debug_docs_url))
+ 
+ def show_entries_since_days(logfile, since_days):
+     day_in_seconds = 60*60*24
+@@ -199,7 +119,6 @@ def show_entries_since_days(logfile, sin
+     epoch_since = epoch_now - day_in_seconds * since_days
+     show_entries_since_epoch(logfile, epoch_since)
+ 
+-
+ def follow_apparmor_events(logfile, wait=0):
+     '''Follow AppArmor events and yield relevant entries until process stops'''
+ 
+@@ -247,7 +166,6 @@ def follow_apparmor_events(logfile, wait
+ 
+             time.sleep(1)
+ 
+-
+ def reopen_logfile_if_needed(logfile, logdata, log_inode, log_size):
+     retry = True
+ 
+@@ -279,7 +197,6 @@ def reopen_logfile_if_needed(logfile, lo
+ 
+     return (logdata, log_inode, log_size)
+ 
+-
+ def get_apparmor_events(logfile, since=0):
+     '''Read audit events from log source and yield all relevant events'''
+ 
+@@ -293,7 +210,6 @@ def get_apparmor_events(logfile, since=0
+     except PermissionError:
+         sys.exit(_("ERROR: Cannot read {}. Please check permissions.".format(logfile)))
+ 
+-
+ def parse_logdata(logsource):
+     '''Traverse any iterable log source and extract relevant AppArmor events'''
+ 
+@@ -327,53 +243,6 @@ def parse_logdata(logsource):
+             if event.operation[0:8] != 'profile_':
+                 yield event
+ 
+-
+-def drop_privileges():
+-    '''If running as root, drop privileges to USER if known, or fall-back to nobody_user/group'''
+-
+-    if os.geteuid() == 0:
+-
+-        if 'SUDO_USER' in os.environ.keys():
+-            next_username = os.environ['SUDO_USER']
+-            next_uid = os.environ['SUDO_UID']
+-            next_gid = os.environ['SUDO_GID']
+-        else:
+-            nobody_user_info = pwd.getpwnam(nobody_user)
+-            next_username = nobody_user_info[0]
+-            next_uid = nobody_user_info[2]
+-            next_gid = nobody_user_info[3]
+-
+-        debug_logger.debug('Dropping to user "{}" privileges'.format(next_username))
+-
+-        # @TODO?
+-        # Remove group privileges, including potential 'adm' group that might
+-        # have had log read access but also other accesses.
+-        # os.setgroups([])
+-
+-        # Try setting the new uid/gid
+-        # Set gid first, otherwise the latter step would fail on missing permissions
+-        os.setegid(int(next_gid))
+-        os.seteuid(int(next_uid))
+-
+-def raise_privileges():
+-    '''If was running as user with saved user ID 0, raise back to root privileges'''
+-
+-    if os.geteuid() != 0 and original_effective_user == 0:
+-
+-        debug_logger.debug('Rasing privileges from UID {} back to UID 0 (root)'.format(os.geteuid()))
+-
+-        # os.setgid(int(next_gid))
+-        os.seteuid(original_effective_user)
+-
+-def read_notify_conf(path, shell_config):
+-    try:
+-        shell_config.CONF_DIR = path
+-        conf_dict = shell_config.read_config('notify.conf')
+-        debug_logger.debug('Found configuration file in {}/notify.conf'.format(shell_config.CONF_DIR))
+-        return conf_dict
+-    except FileNotFoundError:
+-        return {}
+-
+ def main():
+     '''
+     Main function of aa-notify that parses command line
+@@ -381,10 +250,9 @@ def main():
+     '''
+ 
+     global _, debug_logger, config, args
+-    global debug_docs_url, nobody_user, original_effective_user, timeformat
++    global debug_docs_url, original_effective_user, timeformat
+ 
+     debug_docs_url = "https://wiki.ubuntu.com/DebuggingApparmor"
+-    nobody_user = "nobody"
+     timeformat = "%c"  # Automatically using locale format
+     original_effective_user = os.geteuid()
+ 
+@@ -403,180 +271,37 @@ def main():
+     debug_logger.debug("Starting aa-notify")
+ 
+     parser = argparse.ArgumentParser(description=_('Display AppArmor notifications or messages for DENIED entries.'))
+-    parser.add_argument('-p', '--poll', action='store_true', help=_('poll AppArmor logs and display notifications'))
+-    parser.add_argument('--display', type=str, help=_('set the DISPLAY environment variable (might be needed if sudo resets $DISPLAY)'))
+-    parser.add_argument('-f', '--file', type=str, help=_('search FILE for AppArmor messages'))
+-    parser.add_argument('-l', '--since-last', action='store_true', help=_('display stats since last login'))
+-    parser.add_argument('-s', '--since-days', type=int, metavar=('NUM'), help=_('show stats for last NUM days (can be used alone or with -p)'))
+-    parser.add_argument('-v', '--verbose', action='store_true', help=_('show messages with stats'))
+-    parser.add_argument('-u', '--user', type=str, help=_('user to drop privileges to when not using sudo'))
+-    parser.add_argument('-w', '--wait', type=int, metavar=('NUM'), help=_('wait NUM seconds before displaying notifications (with -p)'))
+-    parser.add_argument('--debug', action='store_true', help=_('debug mode'))
+-    parser.add_argument('--configdir', type=str, help=argparse.SUPPRESS)
++    parser.add_argument('-f', '--file', type=str, help=_('Logfile to parse for AppArmor messages'))
++    parser.add_argument('-s', '--since-days', type=int, metavar=('NUM'), help=_('Show stats for last NUM days'))
++    parser.add_argument('-v', '--verbose', action='store_true', help=_('Show messages with stats'))
++    parser.add_argument('--debug', action='store_true', help=_('Debug mode'))
+ 
+     # If a TTY then assume running in test mode and fix output width
+     if not sys.stdout.isatty():
+         parser.formatter_class = lambda prog: argparse.HelpFormatter(prog, width=80)
+ 
+     args = parser.parse_args()
++    args.user = 'root'
+ 
+     # Debug mode can be invoked directly with --debug or env LOGPROF_DEBUG=3
+     if args.debug:
+         debug_logger.activateStderr()
+         debug_logger.debug('Logging level: {}'.format(debug_logger.debug_level))
+         debug_logger.debug('Running as uid: {0[0]}, euid: {0[1]}, suid: {0[2]}'.format(os.getresuid()))
+-        if args.poll:
+-            debug_logger.debug('Running with --debug and --poll. Will exit in 100s')
+-    # Sanity checks
+-    user_ids = os.getresuid()
+-    groups_ids = os.getresgid()
+-    if user_ids[1] != user_ids[2]:
+-        sys.exit("ERROR: Cannot be started with suid set!")
+-    if groups_ids[1] != groups_ids[2]:
+-        sys.exit("ERROR: Cannot be started with sgid set!")
+ 
+-    # Define global variables that will be populated by init_aa()
+-    # conf = None
+     logfile = None
+ 
+-    if args.configdir:  # prefer --configdir if given
+-        confdir = args.configdir
+-    else:  # fallback to env variable (or None if not set)
+-        confdir = os.getenv('__AA_CONFDIR')
+-
+-    aa.init_aa(confdir=confdir)
+-
+     # Initialize aa.logfile
+-    aa.set_logfile(args.file)
+-
+-    # Load global config reader
+-    shell_config = aaconfig.Config('shell')
+-
+-    # Load system's notify.conf
+-    # By default aa.CONFDIR is /etc/apparmor on most production systems
+-    system_config = read_notify_conf(aa.CONFDIR, shell_config)
+-    # Set default is no system notify.conf was found
+-    if not system_config:
+-        system_config = {'': {'show_notifications': 'yes'}}
+-
+-    # Load user's notify.conf
+-    if os.path.isfile(os.environ['HOME'] + '/.apparmor/notify.conf'):
+-        # Use legacy path if the conf file is there
+-        user_config = read_notify_conf(os.environ['HOME'] + '/.apparmor', shell_config)
+-    elif 'XDG_CONFIG_HOME' in os.environ and os.path.isfile(os.environ['XDG_CONFIG_HOME'] + '/apparmor/notify.conf'):
+-        # Use XDG_CONFIG_HOME if it is defined
+-        user_config = read_notify_conf(os.environ['XDG_CONFIG_HOME'] + '/apparmor', shell_config)
+-    else:
+-        # Fallback to the default value of XDG_CONFIG_HOME
+-        user_config = read_notify_conf(os.environ['HOME'] + '/.config/apparmor', shell_config)
+-
+-    # Merge the two config dicts in an accurate and idiomatic way (requires Python 3.5)
+-    config = {**system_config, **user_config}
+-
+-    """
+-    Possible configuration options:
+-    - show_notifications
+-    - message_body
+-    - message_footer
+-    - use_group
+-    """
+-
+-    # # Config checks
+-
+-    # Warn about unknown keys in the config
+-    allowed_config_keys = [
+-        'use_group',
+-        'show_notifications',
+-        'message_body',
+-        'message_footer'
+-    ]
+-    found_config_keys = config[''].keys()
+-    unknown_keys = [item for item in found_config_keys if item not in allowed_config_keys]
+-    for item in unknown_keys:
+-        print(_('Warning! Configuration item "{}" is unknown!').format(item))
+-
+-    # Warn if use_group is defined and current group does not match defined
+-    if 'use_group' in config['']:
+-        user = pwd.getpwuid(os.geteuid())[0]
+-        user_groups = [g.gr_name for g in grp.getgrall() if user in g.gr_mem]
+-        gid = pwd.getpwnam(user).pw_gid
+-        user_groups.append(grp.getgrgid(gid).gr_name)
+-
+-        if config['']['use_group'] not in user_groups:
+-            print(
+-                _('ERROR! User {user} not member of {group} group!').format(
+-                    user=user,
+-                    group=config['']['use_group']
+-                ),
+-                file=sys.stderr
+-            )
+-            sys.exit(1)
+-            # @TODO: Extend UI lib to have warning and error functions that
+-            # can be used in an uniform way with both text and JSON output.
+-
+     if args.file:
+         logfile = args.file
+-    elif os.path.isfile('/var/run/auditd.pid') and os.path.isfile('/var/log/audit/audit.log'):
+-        # If auditd is running, look at /var/log/audit/audit.log
+-        logfile = '/var/log/audit/audit.log'
+-    elif os.path.isfile('/var/log/kern.log'):
+-        # For aa-notify, the fallback is kern.log, not syslog from aa.logfile
+-        logfile = '/var/log/kern.log'
++        aa.set_logfile(args.file)
+     else:
+-        # If all above failed, use aa cfg
+-        logfile = aa.logfile
++        logfile = '/var/log/audit/audit.log'
++        aa.set_logfile('/var/log/audit/audit.log')
+ 
+     if args.verbose:
+         print(_('Using log file'), logfile)
+ 
+-    if args.display:
+-        os.environ['DISPLAY'] = args.display
+-
+-    if args.poll:
+-        # Exit immediately if show_notifications is no or any of the options below
+-        if config['']['show_notifications'] in [False, 'no', 'false', '0']:
+-            print(_('Showing notifications forbidden in notify.conf, aborting..'))
+-            sys.exit(0)
+-
+-        # Don't allow usage of aa-notify by root, must be some user. Desktop
+-        # logins as root are not recommended and certainly not a use case for
+-        # aa-notify notifications.
+-        if not args.user and os.getuid() == 0 and 'SUDO_USER' not in os.environ.keys():
+-            sys.exit("ERROR: Cannot be started a real root user. Use --user to define what user to use.")
+-
+-        # At this point this script needs to be able to read 'logfile' but once
+-        # the for loop starts, privileges can be dropped since the file descriptor
+-        # has been opened and access granted. Further reads of the file will not
+-        # trigger any new permission checks.
+-        # @TODO Plan to catch PermissionError here or..?
+-        for message in notify_about_new_entries(logfile, args.wait):
+-
+-            # Notifications should not be run as root, since root probably is
+-            # the wrong desktop user and not the one getting the notifications.
+-            drop_privileges()
+-
+-            # sudo does not preserve DBUS address, so we need to guess it based on UID
+-            if 'DBUS_SESSION_BUS_ADDRESS' not in os.environ:
+-                os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/run/user/{}/bus'.format(os.geteuid())
+-
+-            # Before use, notify2 must be initialized and the DBUS channel
+-            # should be opened using the non-root user. This this step needs to
+-            # be executed after the drop_privileges().
+-            notify2.init('AppArmor')
+-
+-            n = notify2.Notification(
+-                _('AppArmor notification'),
+-                message,
+-                'gtk-dialog-warning'
+-            )
+-            n.show()
+-
+-            # When notification is sent, raise privileged back to root if the
+-            # original effective user id was zero (to be able to read AppArmor logs)
+-            raise_privileges()
+-
+-    elif args.since_last:
+-        show_entries_since_last_login(logfile)
+     elif args.since_days:
+         show_entries_since_days(logfile, args.since_days)
+     else:

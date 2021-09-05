@@ -1,0 +1,143 @@
+From 4a600dabd5e2799bf0c3048859ee4f00808b7d89 Mon Sep 17 00:00:00 2001
+From: Glenn Strauss <gstrauss@gluelogic.com>
+Date: Sat, 6 Feb 2021 08:29:41 -0500
+Subject: [PATCH] [mod_auth] close HTTP/2 connection after bad pass
+
+mitigation slows down brute force password attacks
+
+x-ref:
+  "Possible feature: authentication brute force hardening"
+  https://redmine.lighttpd.net/boards/3/topics/8885
+
+Signed-off-by: Glenn Strauss <gstrauss@gluelogic.com>
+---
+ src/connections.c   | 22 +++++++++++++++++++++-
+ src/mod_accesslog.c |  2 +-
+ src/mod_auth.c      |  6 +++---
+ src/reqpool.c       |  1 +
+ src/request.h       |  2 +-
+ src/response.c      |  4 ++--
+ 6 files changed, 29 insertions(+), 8 deletions(-)
+
+--- a/src/connections.c
++++ b/src/connections.c
+@@ -228,7 +228,7 @@ static void connection_handle_response_e
+ 		}
+ 	}
+ 
+-        if (r->keep_alive) {
++        if (r->keep_alive > 0) {
+ 		request_reset(r);
+ 		config_reset_config(r);
+ 		con->is_readable = 1; /* potentially trigger optimistic read */
+@@ -1265,6 +1265,19 @@ connection_set_fdevent_interest (request
+ }
+ 
+ 
++__attribute_cold__
++static void
++connection_request_end_h2 (request_st * const h2r, connection * const con)
++{
++    if (h2r->keep_alive >= 0) {
++        h2r->keep_alive = -1;
++        h2_send_goaway(con, H2_E_NO_ERROR);
++    }
++    else /*(abort connection upon second request to close h2 connection)*/
++        h2_send_goaway(con, H2_E_ENHANCE_YOUR_CALM);
++}
++
++
+ static void
+ connection_state_machine_h2 (request_st * const h2r, connection * const con)
+ {
+@@ -1359,8 +1372,15 @@ connection_state_machine_h2 (request_st
+                     && !chunkqueue_is_empty(con->read_queue))
+                     resched |= 1;
+                 h2_send_end_stream(r, con);
++                const int alive = r->keep_alive;
+                 h2_retire_stream(r, con);/*r invalidated;removed from h2c->r[]*/
+                 --i;/* adjust loop i; h2c->rused was modified to retire r */
++                /*(special-case: allow *stream* to set r->keep_alive = -1 to
++                 * trigger goaway on h2 connection, e.g. after mod_auth failure
++                 * in attempt to mitigate brute force attacks by forcing a
++                 * reconnect and (somewhat) slowing down retries)*/
++                if (alive < 0)
++                    connection_request_end_h2(h2r, con);
+             }
+         }
+     }
+--- a/src/mod_accesslog.c
++++ b/src/mod_accesslog.c
+@@ -1108,7 +1108,7 @@ static int log_access_record (const requ
+ 				break;
+ 			case FORMAT_CONNECTION_STATUS:
+ 				if (r->state == CON_STATE_RESPONSE_END) {
+-					if (0 == r->keep_alive) {
++					if (r->keep_alive <= 0) {
+ 						buffer_append_string_len(b, CONST_STR_LEN("-"));
+ 					} else {
+ 						buffer_append_string_len(b, CONST_STR_LEN("+"));
+--- a/src/mod_auth.c
++++ b/src/mod_auth.c
+@@ -828,7 +828,7 @@ static handler_t mod_auth_check_basic(re
+ 		log_error(r->conf.errh, __FILE__, __LINE__,
+ 		  "password doesn't match for %s username: %s IP: %s",
+ 		  r->uri.path.ptr, username->ptr, r->con->dst_addr_buf->ptr);
+-		r->keep_alive = 0; /*(disable keep-alive if bad password)*/
++		r->keep_alive = -1; /*(disable keep-alive if bad password)*/
+ 		rc = HANDLER_UNSET;
+ 		break;
+ 	}
+@@ -1461,7 +1461,7 @@ static handler_t mod_auth_check_digest(r
+ 		return HANDLER_FINISHED;
+ 	case HANDLER_ERROR:
+ 	default:
+-		r->keep_alive = 0; /*(disable keep-alive if unknown user)*/
++		r->keep_alive = -1; /*(disable keep-alive if unknown user)*/
+ 		buffer_free(b);
+ 		return mod_auth_send_401_unauthorized_digest(r, require, 0);
+ 	}
+@@ -1482,7 +1482,7 @@ static handler_t mod_auth_check_digest(r
+ 		log_error(r->conf.errh, __FILE__, __LINE__,
+ 		  "digest: auth failed for %s: wrong password, IP: %s",
+ 		  username, r->con->dst_addr_buf->ptr);
+-		r->keep_alive = 0; /*(disable keep-alive if bad password)*/
++		r->keep_alive = -1; /*(disable keep-alive if bad password)*/
+ 
+ 		buffer_free(b);
+ 		return mod_auth_send_401_unauthorized_digest(r, require, 0);
+--- a/src/reqpool.c
++++ b/src/reqpool.c
+@@ -58,6 +58,7 @@ request_reset (request_st * const r)
+     http_response_reset(r);
+ 
+     r->loops_per_request = 0;
++    r->keep_alive = 0;
+ 
+     r->h2state = 0; /* H2_STATE_IDLE */
+     r->h2id = 0;
+--- a/src/request.h
++++ b/src/request.h
+@@ -175,7 +175,7 @@ struct request_st {
+     char resp_header_repeated;
+ 
+     char loops_per_request;  /* catch endless loops in a single request */
+-    char keep_alive; /* only request.c can enable it, all other just disable */
++    int8_t keep_alive; /* only request.c can enable it, all other just disable */
+     char async_callback;
+ 
+     buffer *tmp_buf;                    /* shared; same as srv->tmp_buf */
+--- a/src/response.c
++++ b/src/response.c
+@@ -103,9 +103,9 @@ http_response_write_header (request_st *
+ 	if (light_btst(r->resp_htags, HTTP_HEADER_UPGRADE)
+ 	    && r->http_version == HTTP_VERSION_1_1) {
+ 		http_header_response_set(r, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("upgrade"));
+-	} else if (0 == r->keep_alive) {
++	} else if (r->keep_alive <= 0) {
+ 		http_header_response_set(r, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("close"));
+-	} else if (r->http_version == HTTP_VERSION_1_0) {/*(&& r->keep_alive != 0)*/
++	} else if (r->http_version == HTTP_VERSION_1_0) {/*(&& r->keep_alive > 0)*/
+ 		http_header_response_set(r, HTTP_HEADER_CONNECTION, CONST_STR_LEN("Connection"), CONST_STR_LEN("keep-alive"));
+ 	}
+ 

@@ -1,0 +1,124 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+
+START=97
+STOP=01
+
+append_string() {
+	varname="$1"
+	add="$2"
+	separator="${3:- }"
+	actual
+	eval "actual=\$$varname"
+
+	new="${actual:+$actual$separator}$add"
+	eval "$varname=\$new"
+}
+
+time_to_seconds() {
+	time=$1
+
+	{ [ "$time" -ge 1 ] 2>/dev/null && seconds="$time"; } ||
+		{ [ "${time%s}" -ge 1 ] 2>/dev/null && seconds="${time%s}"; } ||
+		{ [ "${time%m}" -ge 1 ] 2>/dev/null && seconds=$((${time%m} * 60)); } ||
+		{ [ "${time%h}" -ge 1 ] 2>/dev/null && seconds=$((${time%h} * 3600)); } ||
+		{ [ "${time%d}" -ge 1 ] 2>/dev/null && seconds=$((${time%d} * 86400)); }
+
+	echo $seconds
+	unset seconds
+	unset time
+}
+
+config_watchcat() {
+	# Read config
+	config_get period "$1" period "120"
+	config_get mode "$1" mode "ping_reboot"
+	config_get pinghosts "$1" pinghosts "8.8.8.8"
+	config_get pingperiod "$1" pingperiod "60"
+	config_get forcedelay "$1" forcedelay "60"
+	config_get pingsize "$1" pingsize "standard"
+	config_get interface "$1" interface
+	config_get mmifacename "$1" mmifacename
+	config_get_bool unlockbands "$1" unlockbands "0"
+
+	# Fix potential typo in mode and provide backward compatibility.
+	[ "$mode" = "allways" ] && mode="periodic_reboot"
+	[ "$mode" = "always" ] && mode="periodic_reboot"
+	[ "$mode" = "ping" ] && mode="ping_reboot"
+  
+	# Checks for settings common to all operation modes
+	if [ "$mode" != "periodic_reboot" ] && [ "$mode" != "ping_reboot" ] && [ "$mode" != "restart_iface" ]; then
+		append_string "error" "mode must be 'periodic_reboot' or 'ping_reboot' or 'restart_iface'" "; "
+	fi
+
+	period="$(time_to_seconds "$period")"
+	[ "$period" -ge 1 ] ||
+		append_string "error" "period has invalid format. Use time value(ex: '30'; '4m'; '6h'; '2d')" "; "
+
+	# ping_reboot mode and restart_iface mode specific checks
+	if [ "$mode" = "ping_reboot" ] || [ "$mode" = "restart_iface" ]; then
+		if [ -z "$error" ]; then
+			pingperiod_default="$((period / 5))"
+			pingperiod="$(time_to_seconds "$pingperiod")"
+
+			if [ "$pingperiod" -ge 0 ] && [ "$pingperiod" -ge "$period" ]; then
+				pingperiod="$(time_to_seconds "$pingperiod_default")"
+				append_string "warn" "pingperiod cannot be greater than $period. Defaulted to $pingperiod_default seconds (1/5 of period)" "; "
+			fi
+
+			if [ "$pingperiod" -lt 0 ]; then
+				append_string "warn" "pingperiod cannot be a negative value." "; "
+			fi
+
+			if [ "$mmifacename" != "" ] && [ "$period" -lt 30 ]; then
+				append_string "error" "Check interval is less than 30s. For robust operation with ModemManager modem interfaces it is recommended to set the period to at least 30s."
+			fi
+		fi
+	fi
+
+	# ping_reboot mode and periodic_reboot mode specific checks
+	if [ "$mode" = "ping_reboot" ] || [ "$mode" = "periodic_reboot" ]; then
+		forcedelay="$(time_to_seconds "$forcedelay")"
+	fi
+
+	[ -n "$warn" ] && logger -p user.warn -t "watchcat" "$1: $warn"
+	[ -n "$error" ] && {
+		logger -p user.err -t "watchcat" "reboot program $1 not started - $error"
+		return
+	}
+	
+	# Need to conditionally run mode functions because they have different signatures
+	case "$mode" in
+		periodic_reboot)
+			procd_open_instance "watchcat_${1}"
+			procd_set_param command /usr/bin/watchcat.sh "periodic_reboot" "$period" "$forcedelay"
+			procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+			procd_close_instance
+			;;
+		ping_reboot)
+			procd_open_instance "watchcat_${1}"
+			procd_set_param command /usr/bin/watchcat.sh "ping_reboot" "$period" "$forcedelay" "$pinghosts" "$pingperiod" "$pingsize"
+			procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+			procd_close_instance
+			;;
+		restart_iface)
+			procd_open_instance "watchcat_${1}"
+			procd_set_param command /usr/bin/watchcat.sh "restart_iface" "$period" "$pinghosts" "$pingperiod" "$pingsize" "$interface" "$mmifacename"
+			procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+			procd_close_instance
+			;;
+		*)
+			echo "Error starting Watchcat service. Invalid mode selection: $mode"
+			;;
+	esac
+}
+
+start_service() {
+	config_load watchcat
+	config_foreach config_watchcat watchcat
+}
+
+service_triggers() {
+	procd_add_reload_trigger "watchcat"
+}

@@ -1,0 +1,231 @@
+#!/bin/sh /etc/rc.common
+
+START=82
+STOP=28
+USE_PROCD=1
+UPSMON_C=/var/etc/nut/upsmon.conf
+
+nut_upsmon_conf() {
+	local cfg="$1"
+	local RUNAS val optval
+
+	echo "# Config file automatically generated from UCI config" > "$UPSMON_C"
+
+	config_get RUNAS "$cfg" runas "nutmon"
+	[ -n "$RUNAS" ] && echo "RUN_AS_USER $RUNAS" >> "$UPSMON_C"
+	runas="$RUNAS"
+
+	config_get val "$cfg" minsupplies 1
+	echo "MINSUPPLIES $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" shutdowncmd "/usr/sbin/nutshutdown"
+	echo "SHUTDOWNCMD \"$val\"" >> "$UPSMON_C"
+
+	config_get val "$cfg" notifycmd
+	[ -n "$val" ] && echo "NOTIFYCMD \"$val\"" >> "$UPSMON_C"
+
+	config_get val "$cfg" pollfreq 5
+	echo "POLLFREQ $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" pollfreqalert 5
+	echo "POLLFREQALERT $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" hostsync 15
+	echo "HOSTSYNC $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" deadtime 15
+	echo "DEADTIME $val" >> "$UPSMON_C"
+
+	echo "POWERDOWNFLAG /var/run/killpower" >> "$UPSMON_C"
+
+	config_get val "$cfg" onlinemsg
+	[ -n "$val" ] && echo "NOTIFYMSG ONLINE \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" onbattmsg
+	[ -n "$val" ] && echo "NOTIFYMSG ONBATT \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" lowbattmsg
+	[ -n "$val" ] && echo "NOTIFYMSG LOWBATT \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" fsdmsg
+	[ -n "$val" ] && echo "NOTIFYMSG FSD \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" commokmsg
+	[ -n "$val" ] && echo "NOTIFYMSG COMMOK \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" commbadmsg
+	[ -n "$val" ] && echo "NOTIFYMSG COMMBAD \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" shutdownmsg
+	[ -n "$val" ] && echo "NOTIFYMSG SHUTDOWN \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" replbattmsg
+	[ -n "$val" ] && echo "NOTIFYMSG REPLBATT \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" nocommmsg
+	[ -n "$val" ] && echo "NOTIFYMSG NOCOMM \"$val\"" >> "$UPSMON_C"
+	config_get val "$cfg" noparentmsg
+	[ -n "$val" ] && echo "NOTIFYMSG NOPARENT \"$val\"" >> "$UPSMON_C"
+
+	notifylist() {
+		local value="$1"
+		append optval "$value" "+"
+	}
+
+	setnotify() {
+		local cfg="$1"
+		local optname="$2"
+		local optval
+		config_list_foreach "$cfg" "$optname" notifylist
+		if [ -z "$optval" ]; then
+			# If no list fallback to trying option, fallback to default
+			config_get optval "$cfg" "$optname" "$default"
+			if [ -n "$optval" ]; then
+				echo "$optval"
+			else
+				# No default, so do the NUT default
+				echo "SYSLOG"
+			fi
+		else
+			echo "$optval"
+		fi
+        }
+
+	local default optval
+	val=""
+	config_list_foreach "$cfg" defaultnotify notifylist
+	default="$optval"
+	{
+		echo "NOTIFYFLAG ONLINE $(setnotify "$cfg" onlinenotify)" ; \
+		echo "NOTIFYFLAG ONBATT $(setnotify "$cfg" onbattnotify)" ; \
+		echo "NOTIFYFLAG LOWBATT $(setnotify "$cfg" lowbatnotify)" ; \
+		echo "NOTIFYFLAG FSD $(setnotify "$cfg" fsdnotify)" ; \
+		echo "NOTIFYFLAG COMMOK $(setnotify "$cfg" commoknotify)" ; \
+		echo "NOTIFYFLAG COMMBAD $(setnotify "$cfg" commbadnotify)" ; \
+		echo "NOTIFYFLAG SHUTDOWN $(setnotify "$cfg" shutdownnotify)" ; \
+		echo "NOTIFYFLAG REPLBATT $(setnotify "$cfg" repolbattnotify)" ; \
+		echo "NOTIFYFLAG NOCOMM $(setnotify "$cfg" nocommnotify)" ; \
+		echo "NOTIFYFLAG NOPARENT $(setnotify "$cfg" noparentnotify)" ; \
+	} >> "$UPSMON_C"
+
+	config_get val "$cfg" rbwarntime 43200
+	echo "RBWARNTIME $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" nocommwarntime 300
+	echo "NOCOMMWARNTIME $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" finaldelay 5
+	echo "FINALDELAY $val" >> "$UPSMON_C"
+
+	config_get val "$cfg" certpath
+	if [ -n "$val" ]; then echo "CERTPATH $val" >> "$UPSMON_C"; fi
+
+	config_get_bool val "$cfg" certverify 0
+	if [ -n "$val" ]; then echo "CERTVERIFY $val" >> "$UPSMON_C"; fi
+
+	config_get_bool val "$cfg" forcessl 0
+	if [ -n "$val" ]; then echo "FORCESSL $val" >> "$UPSMON_C"; fi
+
+	havemon=1
+}
+
+nut_upsmon_add() {
+	local cfg="$1"
+	local type="$2"
+	local upsname
+	local hostname
+	local port
+	local powervalue
+	local username
+	local password
+	local system
+
+	config_get upsname "$cfg" upsname
+	config_get hostname "$cfg" hostname localhost
+	config_get port "$cfg" port
+	config_get powervalue "$cfg" powervalue 1
+	config_get username "$cfg" username
+	config_get password "$cfg" password
+	system="$upsname@$hostname"
+	if [ -n "$port" ]; then
+	    system="$system:$port";
+	fi
+	echo "MONITOR $system $powervalue $username $password $type" >> "$UPSMON_C"
+
+	havems=1
+}
+
+build_config() {
+	mkdir -m 0750 -p "$(dirname "$UPSMON_C")"
+
+	config_load nut_monitor
+	config_foreach nut_upsmon_conf upsmon
+	config_foreach nut_upsmon_add master master
+	config_foreach nut_upsmon_add slave slave
+
+	[ ! -s /var/etc/nut/nut.conf ] && {
+		echo "MODE=netclient" >>/var/etc/nut/nut.conf
+		chmod 640 /var/etc/nut/nut.conf
+		chgrp "$(id -gn "${runas:-nutmon}")" /var/etc/nut/nut.conf
+	}
+
+	[ -s "$UPSMON_C" ] && chmod 640 "$UPSMON_C"
+	[ -s "$UPSMON_C" ] && chgrp "$(id -gn "${runas:-nutmon}")" "$UPSMON_C"
+}
+
+interface_triggers() {
+	local action="$1"
+	local triggerlist trigger
+
+	config_get triggerlist "upsmon" triggerlist
+
+	. "${IPKG_INSTROOT}"/lib/functions/network.sh
+
+	if [ -n "$triggerlist" ]; then
+		for trigger in $triggerlist; do
+			if [ "$action" = "add_trigger" ]; then
+				procd_add_interface_trigger "interface.*" "$trigger" /etc/init.d/nut-monitor restart
+			else
+				network_is_up "$trigger" && return 0
+			fi
+		done
+	else
+		if [ "$action" = "add_trigger" ]; then
+			procd_add_raw_trigger "interface.*.up" 2000 /etc/init.d/nut-monitor restart
+		else
+			ubus call network.device status | grep -q '"up": true' && return 0
+		fi
+	fi
+	[ "$action" = "add_trigger" ] || return 1
+}
+
+start_service() {
+	local runas=nutmon
+	local havemon havems
+	build_config
+
+	[ "$havemon" != 1 ] && return 1
+	[ "$havems" != 1 ] && return 1
+	interface_triggers "check_interface_up" || return 0
+
+	procd_open_instance "upsmon"
+	procd_set_param respawn 10 20 6
+	procd_set_param stderr 1
+	procd_set_param stdout 0
+	procd_set_param command /usr/sbin/upsmon -D
+	procd_close_instance
+
+	return 0
+}
+
+reload_service() {
+	if pgrep upsmon >/dev/null 2>/dev/null; then
+		local runas=nutmon
+		build_config
+		/usr/sbin/upsmon -c reload
+	else
+		restart
+	fi
+}
+
+stop_service() {
+	upsmon -c stop
+}
+
+service_triggers() {
+	config_load nut_monitor
+	interface_triggers "add_trigger"
+	procd_add_reload_trigger "nut_monitor"
+}

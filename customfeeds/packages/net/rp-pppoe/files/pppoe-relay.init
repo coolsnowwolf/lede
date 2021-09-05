@@ -1,0 +1,79 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2011 OpenWrt.org
+
+START=50
+STOP=50
+USE_PROCD=1
+
+pppoe_triggers() {
+    local cfg="$1"
+    local enabled interface server_interfaces client_interfaces both_interfaces
+    config_get_bool enabled "$cfg" enabled 1
+    [ "$enabled" -gt 0 ] || return 0
+    config_get server_interfaces "$cfg" server_interface
+    config_get client_interfaces "$cfg" client_interface
+    config_get both_interfaces "$cfg" both_interfaces
+    for interface in $server_interfaces $client_interfaces $both_interfaces; do
+	procd_add_reload_interface_trigger $interface
+    done
+}
+
+pppoe_relay_instance() {
+    local cfg="$1"
+    local enabled interface device server_interfaces client_interfaces both_interfaces maxsessions timeout OPTIONS
+    config_get_bool enabled "$cfg" enabled 1
+    [ "$enabled" -gt 0 ] || return 0
+    config_get server_interfaces "$cfg" server_interface
+    config_get client_interfaces "$cfg" client_interface
+    config_get both_interfaces "$cfg" both_interfaces
+    config_get maxsessions "$cfg" maxsessions
+    config_get timeout "$cfg" timeout
+    config_get_bool use_non_uci_config "$cfg" use_non_uci_config 0
+
+    if [ "$use_non_uci_config" -gt 0 ]; then
+	. /etc/default/pppoe-relay
+    else
+	local NEED_INTFS=SC
+	. /lib/functions/network.sh
+	for interface in $server_interfaces; do
+	    if network_get_physdev device $interface; then
+		append OPTIONS "-S $device"
+		NEED_INTFS=${NEED_INTFS/S/}
+	    fi
+	done
+	for interface in $client_interfaces; do
+	    if network_get_physdev device $interface; then
+		append OPTIONS "-C $device"
+		NEED_INTFS=${NEED_INTFS/C/}
+	    fi
+        done
+	for interface in $both_interfaces; do
+	    if network_get_physdev device $interface; then
+		append OPTIONS "-B $device"
+		NEED_INTFS=${NEED_INTFS/?/}
+	    fi
+	done
+	[ -z "${NEED_INTFS}" ] || return 1 # need at least 2 interfaces, one for server(s) and one for client(s)
+	[ -n "$maxsessions" ] && append OPTIONS "-n $maxsessions"
+	[ -n "$timeout" ] && append OPTIONS "-i $timeout"
+    fi
+
+    procd_open_instance
+    procd_set_param command /usr/sbin/pppoe-relay -F $OPTIONS
+    procd_set_param respawn
+    procd_close_instance
+}
+
+start_service() {
+    local use_non_uci_config
+
+    config_load pppoe
+    config_foreach pppoe_relay_instance pppoe_relay
+}
+
+service_triggers() {
+    procd_add_reload_trigger "pppoe"
+
+    config_load pppoe
+    config_foreach pppoe_triggers pppoe_relay
+}

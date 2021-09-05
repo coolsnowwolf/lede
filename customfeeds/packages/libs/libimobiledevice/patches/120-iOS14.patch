@@ -1,0 +1,81 @@
+From 98056a89648f431759c5fa4ed87c6ea6ba0cdd3f Mon Sep 17 00:00:00 2001
+From: Nikias Bassen <nikias@gmx.li>
+Date: Thu, 10 Sep 2020 15:12:21 +0200
+Subject: [PATCH] debugserver: Fix service startup for iOS 14b4+
+
+---
+ include/libimobiledevice/debugserver.h |  1 +
+ include/libimobiledevice/lockdown.h    |  1 +
+ src/debugserver.c                      | 11 +++++++++--
+ src/lockdown.c                         |  5 ++++-
+ 4 files changed, 15 insertions(+), 3 deletions(-)
+
+--- a/include/libimobiledevice/debugserver.h
++++ b/include/libimobiledevice/debugserver.h
+@@ -31,6 +31,7 @@ extern "C" {
+ #include <libimobiledevice/lockdown.h>
+ 
+ #define DEBUGSERVER_SERVICE_NAME "com.apple.debugserver"
++#define DEBUGSERVER_SECURE_SERVICE_NAME DEBUGSERVER_SERVICE_NAME ".DVTSecureSocketProxy"
+ 
+ /** Error Codes */
+ typedef enum {
+--- a/include/libimobiledevice/lockdown.h
++++ b/include/libimobiledevice/lockdown.h
+@@ -96,6 +96,7 @@ typedef struct lockdownd_pair_record *lo
+ struct lockdownd_service_descriptor {
+ 	uint16_t port;
+ 	uint8_t ssl_enabled;
++	char* identifier;
+ };
+ typedef struct lockdownd_service_descriptor *lockdownd_service_descriptor_t;
+ 
+--- a/src/debugserver.c
++++ b/src/debugserver.c
+@@ -80,7 +80,10 @@ LIBIMOBILEDEVICE_API debugserver_error_t
+ 		debug_info("Creating base service client failed. Error: %i", ret);
+ 		return ret;
+ 	}
+-	service_disable_bypass_ssl(parent, 1);
++
++	if (service->identifier && (strcmp(service->identifier, DEBUGSERVER_SECURE_SERVICE_NAME) != 0)) {
++		service_disable_bypass_ssl(parent, 1);
++	}
+ 
+ 	debugserver_client_t client_loc = (debugserver_client_t) malloc(sizeof(struct debugserver_client_private));
+ 	client_loc->parent = parent;
+@@ -95,7 +98,11 @@ LIBIMOBILEDEVICE_API debugserver_error_t
+ LIBIMOBILEDEVICE_API debugserver_error_t debugserver_client_start_service(idevice_t device, debugserver_client_t * client, const char* label)
+ {
+ 	debugserver_error_t err = DEBUGSERVER_E_UNKNOWN_ERROR;
+-	service_client_factory_start_service(device, DEBUGSERVER_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(debugserver_client_new), &err);
++	service_client_factory_start_service(device, DEBUGSERVER_SECURE_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(debugserver_client_new), &err);
++	if (err != DEBUGSERVER_E_SUCCESS) {
++		err = DEBUGSERVER_E_UNKNOWN_ERROR;
++		service_client_factory_start_service(device, DEBUGSERVER_SERVICE_NAME, (void**)client, label, SERVICE_CONSTRUCTOR(debugserver_client_new), &err);
++	}
+ 	return err;
+ }
+ 
+--- a/src/lockdown.c
++++ b/src/lockdown.c
+@@ -1307,6 +1307,7 @@ static lockdownd_error_t lockdownd_do_st
+ 			*service = (lockdownd_service_descriptor_t)malloc(sizeof(struct lockdownd_service_descriptor));
+ 		(*service)->port = 0;
+ 		(*service)->ssl_enabled = 0;
++		(*service)->identifier = strdup(identifier);
+ 
+ 		/* read service port number */
+ 		plist_t node = plist_dict_get_item(dict, "Port");
+@@ -1511,8 +1512,10 @@ LIBIMOBILEDEVICE_API lockdownd_error_t l
+ 
+ LIBIMOBILEDEVICE_API lockdownd_error_t lockdownd_service_descriptor_free(lockdownd_service_descriptor_t service)
+ {
+-	if (service)
++	if (service) {
++		free(service->identifier);
+ 		free(service);
++	}
+ 
+ 	return LOCKDOWN_E_SUCCESS;
+ }

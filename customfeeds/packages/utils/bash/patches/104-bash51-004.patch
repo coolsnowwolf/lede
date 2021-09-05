@@ -1,0 +1,114 @@
+			     BASH PATCH REPORT
+			     =================
+
+Bash-Release:	5.1
+Patch-ID:	bash51-004
+
+Bug-Reported-by:	oguzismailuysal@gmail.com
+Bug-Reference-ID:	<CAH7i3LoHGmwaghDpCWRUfcY04gQmeDTH3RiG=bf2b=KbU=gyhw@mail.gmail.com>
+Bug-Reference-URL:	https://lists.gnu.org/archive/html/bug-bash/2020-12/msg00039.html
+
+Bug-Description:
+
+If a key-value compound array assignment to an associative array is supplied
+as an assignment statement argument to the `declare' command that declares the
+array, the assignment doesn't perform the correct word expansions.
+
+This patch makes key-value assignment and subscript assignment perform the
+same expansions when they're supplied as an argument to `declare'.
+
+Patch (apply with `patch -p0'):
+
+--- a/arrayfunc.c
++++ b/arrayfunc.c
+@@ -597,6 +597,27 @@ assign_assoc_from_kvlist (var, nlist, h,
+ 	free (aval);
+     }
+ }
++
++/* Return non-zero if L appears to be a key-value pair associative array
++   compound assignment. */ 
++int
++kvpair_assignment_p (l)
++     WORD_LIST *l;
++{
++  return (l && (l->word->flags & W_ASSIGNMENT) == 0 && l->word->word[0] != '[');	/*]*/
++}
++
++char *
++expand_and_quote_kvpair_word (w)
++     char *w;
++{
++  char *t, *r;
++
++  t = w ? expand_assignment_string_to_string (w, 0) : 0;
++  r = sh_single_quote (t ? t : "");
++  free (t);
++  return r;
++}
+ #endif
+      
+ /* Callers ensure that VAR is not NULL. Associative array assignments have not
+@@ -640,7 +661,7 @@ assign_compound_array_list (var, nlist,
+   last_ind = (a && (flags & ASS_APPEND)) ? array_max_index (a) + 1 : 0;
+ 
+ #if ASSOC_KVPAIR_ASSIGNMENT
+-  if (assoc_p (var) && nlist && (nlist->word->flags & W_ASSIGNMENT) == 0 && nlist->word->word[0] != '[')	/*]*/
++  if (assoc_p (var) && kvpair_assignment_p (nlist))
+     {
+       iflags = flags & ~ASS_APPEND;
+       assign_assoc_from_kvlist (var, nlist, nhash, iflags);
+--- a/arrayfunc.h
++++ b/arrayfunc.h
+@@ -67,6 +67,9 @@ extern SHELL_VAR *assign_array_var_from_
+ extern char *expand_and_quote_assoc_word PARAMS((char *, int));
+ extern void quote_compound_array_list PARAMS((WORD_LIST *, int));
+ 
++extern int kvpair_assignment_p PARAMS((WORD_LIST *));
++extern char *expand_and_quote_kvpair_word PARAMS((char *));
++
+ extern int unbind_array_element PARAMS((SHELL_VAR *, char *, int));
+ extern int skipsubscript PARAMS((const char *, int, int));
+ 
+--- a/subst.c
++++ b/subst.c
+@@ -11604,6 +11604,7 @@ expand_oneword (value, flags)
+ {
+   WORD_LIST *l, *nl;
+   char *t;
++  int kvpair;
+   
+   if (flags == 0)
+     {
+@@ -11618,11 +11619,21 @@ expand_oneword (value, flags)
+     {
+       /* Associative array */
+       l = parse_string_to_word_list (value, 1, "array assign");
++#if ASSOC_KVPAIR_ASSIGNMENT
++      kvpair = kvpair_assignment_p (l);
++#endif
++
+       /* For associative arrays, with their arbitrary subscripts, we have to
+ 	 expand and quote in one step so we don't have to search for the
+ 	 closing right bracket more than once. */
+       for (nl = l; nl; nl = nl->next)
+ 	{
++#if ASSOC_KVPAIR_ASSIGNMENT
++	  if (kvpair)
++	    /* keys and values undergo the same set of expansions */
++	    t = expand_and_quote_kvpair_word (nl->word->word);
++	  else
++#endif
+ 	  if ((nl->word->flags & W_ASSIGNMENT) == 0)
+ 	    t = sh_single_quote (nl->word->word ? nl->word->word : "");
+ 	  else
+--- a/patchlevel.h
++++ b/patchlevel.h
+@@ -25,6 +25,6 @@
+    regexp `^#define[ 	]*PATCHLEVEL', since that's what support/mkversion.sh
+    looks for to find the patch level (for the sccs version string). */
+ 
+-#define PATCHLEVEL 3
++#define PATCHLEVEL 4
+ 
+ #endif /* _PATCHLEVEL_H_ */

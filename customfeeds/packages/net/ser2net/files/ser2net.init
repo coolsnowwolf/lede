@@ -1,0 +1,192 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2017 Michael Heimpold
+
+START=75
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/sbin/ser2net
+
+STATICCFGFILE="/etc/ser2net.conf"
+DYNAMICCFGFILE="/tmp/ser2net.conf"
+
+list_cb_append() {
+	local var="$2"
+	local value="$1"
+	local sep="${3:- }"
+
+	eval "export ${NO_EXPORT:+-n} -- \"$var=\${$var:+\${$var}\${value:+\$sep}}\$value\""
+}
+
+append_bool() {
+	local var="$1"
+	local key="$2"
+	local val="$3"
+	local uc="$4"
+	local s=""
+
+	[ "$uc" -eq 1 ] && key=`echo "$key" | tr '[a-z]' '[A-Z]'`
+	[ "$val" -eq 0 ] && s="-"
+
+	append "$var" "$s$key"
+}
+
+ser2net_default() {
+	local cfg="$1"
+	local key val
+
+	for key in speed baudrate databits stopbits parity chardelay_scale chardelay_min; do
+		config_get val "$cfg" "$key"
+		[ -n "$val" ] || continue
+
+		case "$key" in
+			baudrate) key="speed" ;;
+			hangup_when_done) ;;
+			telnet_brk_on_sync) ;;
+			deassert_CTS_DCD_DSR_on_connect) ;;
+			*) key=`echo "$key" | tr '_' '-'`
+		esac
+
+		echo "DEFAULT:$key:$val"
+	done
+
+	for key in chardelay deassert_CTS_DCD_DSR_on_connect hangup_when_done kickolduser \
+	           local nobreak remctl rtscts telnet_brk_on_sync xonxoff; do
+		config_get_bool val "$cfg" "$key"
+		[ -n "$val" ] || continue
+		[ "$val" -eq 0 ] && val="false" || val="true"
+		echo "DEFAULT:$key:$val"
+	done
+
+	echo
+}
+
+ser2net_controlport() {
+	local cfg="$1"
+	local enabled host port
+
+	config_get_bool enabled "$cfg" enabled 0
+	[ "$enabled" -eq 0 ] && return 0
+
+	config_get host "$cfg" host
+	config_get port "$cfg" port
+
+	echo -e "CONTROLPORT:${host:+$host,}$port\n"
+}
+
+ser2net_led() {
+	local cfg="$1"
+	local driver device state duration
+
+	config_get driver "$cfg" driver sysfs
+	config_get device "$cfg" device
+	config_get state "$cfg" state 1
+	config_get duration "$cfg" duration 20
+
+	echo -e "LED:$cfg:$driver:device=$device state=$state duration=$duration\n"
+}
+
+ser2net_proxy() {
+	local cfg="$1"
+	local enabled port protocol timeout device baudrate databits parity stopbits
+	local led_tx led_rx key boolval options
+
+	config_get_bool enabled "$cfg" enabled 0
+	[ "$enabled" -eq 0 ] && return 0
+
+	config_get port "$cfg" port
+	[ "$port" -le 0 -o "$port" -gt 65535 ] && return 1
+
+	config_get protocol "$cfg" protocol
+	case "$protocol" in
+		raw|rawlp|telnet|off) ;;
+		*) return 1
+	esac
+
+	config_get timeout "$cfg" timeout 0
+	config_get device "$cfg" device
+	[ -z "$device" ] && return 1
+
+	config_get baudrate "$cfg" baudrate
+	[ -n "$baudrate" ] && append options "$baudrate"
+
+	config_get databits "$cfg" databits
+	if [ -n "$databits" ]; then
+		[ "$databits" -lt 5 -o "$databits" -gt 8 ] && return 1
+		append options "${databits}DATABITS"
+	fi
+
+	config_get parity "$cfg" parity
+	parity=`echo "$parity" | tr '[a-z]' '[A-Z]'`
+	case "$parity" in
+		EVEN|ODD|NONE|MARK|SPACE) append options "$parity" ;;
+		"") ;;
+		*) return 1
+	esac
+
+	config_get stopbits "$cfg" stopbits
+	case "$stopbits" in
+		1) append options "${stopbits}STOPBIT" ;;
+		2) append options "${stopbits}STOPBITS" ;;
+		"") ;;
+		*) return 1
+	esac
+
+	config_get led_tx "$cfg" led_tx
+	[ -n "$led_tx" ] && append options "led-tx=$led_tx"
+
+	config_get led_rx "$cfg" led_rx
+	[ -n "$led_rx" ] && append options "led-rx=$led_rx"
+
+	for key in rtscts local xonxoff nobreak hangup_when_done; do
+		config_get_bool boolval "$cfg" "$key"
+		[ -n "$boolval" ] || continue
+		append_bool options "$key" "$boolval" 1
+	done
+
+	for key in chardelay telnet_brk_on_sync kickolduser remctl; do
+		config_get_bool boolval "$cfg" "$key"
+		[ -n "$boolval" ] || continue
+		append_bool options "$key" "$boolval" 0
+	done
+
+	config_list_foreach "$cfg" options list_cb_append options
+
+	if [ "`echo "$device" | sed 's/://g'`" != "$device" ]; then
+		echo "DEVICE:$cfg:$device"
+		device="$cfg"
+	fi
+
+	echo -e "$port:$protocol:$timeout:$device:$options\n"
+}
+
+start_service() {
+	local enabled
+
+	config_load ser2net
+
+	config_get_bool enabled global enabled 0
+	[ "$enabled" -gt 0 ] || return 0
+
+	cat "$STATICCFGFILE" - 2>/dev/null <<-EOF > "$DYNAMICCFGFILE"
+	
+	#
+	# Following part is auto-generated from UCI settings in /etc/config/ser2net
+	#
+	EOF
+
+	config_foreach ser2net_controlport controlport >> "$DYNAMICCFGFILE"
+	config_foreach ser2net_default default >> "$DYNAMICCFGFILE"
+	config_foreach ser2net_led led >> "$DYNAMICCFGFILE"
+	config_foreach ser2net_proxy proxy >> "$DYNAMICCFGFILE"
+
+	procd_open_instance
+	procd_set_param command "$PROG" -n -c "$DYNAMICCFGFILE"
+	procd_set_param file "$DYNAMICCFGFILE"
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "ser2net"
+}
+

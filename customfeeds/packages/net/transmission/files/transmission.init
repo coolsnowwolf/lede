@@ -1,0 +1,145 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010-2015 OpenWrt.org
+
+START=99
+USE_PROCD=1
+
+LIST_SEP="
+"
+
+append_params() {
+	local p; local v; local s="$1"; shift
+	for p in "$@"; do
+		config_get v "$s" "$p"
+		IFS="$LIST_SEP"
+		for v in $v; do
+			[ -n "$v" ] && (
+				echo "\"$p\": $v," | sed -e 's|_|-|g'
+			) >> "$config_file"
+		done
+		unset IFS
+	done
+}
+
+append_params_quotes() {
+	local p; local v; local s="$1"; shift
+	for p in "$@"; do
+		config_get v "$s" "$p"
+		IFS="$LIST_SEP"
+		for v in $v; do
+			[ -n "$v" ] && (
+				printf "\"%s" "$p" | sed -e 's|/|\\/|g;s|_|-|g'; \
+				echo "\": \"$v\","
+			) >> "$config_file"
+		done
+		unset IFS
+	done
+}
+
+section_enabled() {
+	config_get_bool enabled "$1" enabled 0
+	[ $enabled -gt 0 ]
+}
+
+transmission() {
+	local cfg="$1"
+	local USE
+
+	local user
+	local group
+	local config_overwrite
+	local download_dir config_dir
+	local mem_percentage
+	local nice
+	local web_home
+
+	section_enabled "$section" || return 1
+
+	config_get config_dir "$cfg" 'config_dir' '/var/etc/transmission'
+	config_get user "$cfg" 'user'
+	config_get group "$cfg" 'group'
+	config_get download_dir "$cfg" 'download_dir' '/var/etc/transmission'
+	config_get mem_percentage "$cfg" 'mem_percentage' '50'
+	config_get config_overwrite "$cfg" config_overwrite 1
+	config_get nice "$cfg" nice 0
+	config_get web_home "$cfg" 'web_home'
+
+	local MEM
+
+	MEM=$(sed -ne 's!^MemTotal:[[:space:]]*\([0-9]*\) kB$!\1!p' /proc/meminfo)
+	if test "$MEM" -gt 1;then
+		USE=$((MEM * mem_percentage * 10))
+	fi
+
+	config_file="$config_dir/settings.json"
+	[ -d "$config_dir" ] || {
+		mkdir -p "$config_dir"
+		chmod 0755 "$config_dir"
+		touch "$config_file"
+		[ -z "$user" ] || chown -R "$user:$group" "$config_dir"
+	}
+
+	[ "$config_overwrite" = 0 ] || {
+
+		echo "{" > "$config_file"
+
+		append_params "$cfg" \
+			alt_speed_down alt_speed_enabled alt_speed_time_begin alt_speed_time_day \
+			alt_speed_time_enabled alt_speed_time_end alt_speed_up blocklist_enabled \
+			cache_size_mb download_queue_enabled download_queue_size \
+			dht_enabled encryption idle_seeding_limit idle_seeding_limit_enabled \
+			incomplete_dir_enabled lazy_bitfield_enabled lpd_enabled message_level \
+			peer_limit_global peer_limit_per_torrent peer_port \
+			peer_port_random_high peer_port_random_low peer_port_random_on_start \
+			pex_enabled port_forwarding_enabled preallocation prefetch_enabled \
+			ratio_limit ratio_limit_enabled rename_partial_files rpc_authentication_required \
+			rpc_enabled rpc_port rpc_whitelist_enabled queue_stalled_enabled \
+			queue_stalled_minutes scrape_paused_torrents_enabled script_torrent_done_enabled \
+			seed_queue_enabled seed_queue_size \
+			speed_limit_down speed_limit_down_enabled speed_limit_up \
+			speed_limit_up_enabled start_added_torrents trash_original_torrent_files \
+			umask upload_slots_per_torrent utp_enabled scrape_paused_torrents \
+			watch_dir_enabled rpc_host_whitelist_enabled
+
+		append_params_quotes "$cfg" \
+			blocklist_url bind_address_ipv4 bind_address_ipv6 download_dir incomplete_dir \
+			peer_congestion_algorithm peer_socket_tos rpc_bind_address rpc_password rpc_url \
+			rpc_username rpc_host_whitelist rpc_whitelist script_torrent_done_filename watch_dir
+
+		{
+			echo "\"invalid-key\": false"
+			echo "}"
+		} >> "$config_file"
+	}
+
+	procd_open_instance
+	procd_set_param command "/usr/bin/transmission-daemon"
+	procd_append_param command -f --log-error -g "$config_dir"
+	procd_set_param user "$user"
+	procd_set_param group "$group"
+	procd_set_param nice "$nice"
+	procd_set_param stderr 1
+	procd_set_param respawn
+
+	if [ -z "$USE" ]; then
+		procd_set_param limits core="0 0"
+	else
+		procd_set_param limits core="0 0" as="$USE $USE"
+		logger -t transmission "Starting with $USE virt mem"
+	fi
+
+	if test -d "$web_home"; then
+		procd_set_param env TRANSMISSION_WEB_HOME="$web_home"
+	fi
+
+	procd_add_jail transmission log
+	procd_add_jail_mount "$config_file"
+	procd_add_jail_mount_rw "$download_dir"
+	procd_close_instance
+}
+
+start_service() {
+	config_load 'transmission'
+	config_foreach transmission 'transmission'
+}
+

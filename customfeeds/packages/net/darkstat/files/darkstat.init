@@ -1,0 +1,99 @@
+#!/bin/sh /etc/rc.common 
+# Copyright (C) 2018 Jean-Michel Lacroix
+
+USE_PROCD=1
+
+START=60
+
+APP=darkstat
+RUN_D=/var/darkstat
+PID_F=$RUN_D/$APP.pid
+CONFIGNAME=darkstat
+USER=nobody
+GROUP=nogroup
+
+CONFIGSTR=""
+FILTERSTR=""
+
+export_bool () {
+	local option="$1"
+	local section="$2"
+	local _keystr="$3"
+	local _loctmp
+	config_get_bool _loctmp "$section" "$option"
+	if [ -n "$_loctmp" ]; then
+		if [ 1 -eq "$_loctmp" ]; then
+			CONFIGSTR="$CONFIGSTR${_keystr} "
+		fi
+	fi
+}
+
+set_config_string(){
+	mkdir -p $RUN_D
+	. /lib/functions/network.sh
+	config_load $CONFIGNAME
+	config_foreach build_config_string darkstat
+}
+
+build_config_string() {
+	local cfg="$1"                                 
+	config_get interface $cfg interface
+	network_get_device ifname "$interface"       
+	CONFIGSTR=" -i $ifname "
+	export_bool syslog $cfg "--syslog"
+	export_bool verbose $cfg "--verbose"
+	# We need the --no-daemon parameter as with PROCD the process has to run in the background
+	CONFIGSTR="$CONFIGSTR--no-daemon "
+	export_bool no_promisc $cfg "--no-promisc"
+	export_bool no_dns $cfg "--no-dns"
+	export_bool no_macs $cfg "--no-macs"
+	export_bool no_lastseen $cfg "--no-lastseen"
+	config_get httpaddr $cfg httpaddr
+	CONFIGSTR="$CONFIGSTR${httpaddr:+-b "$httpaddr"} "
+	config_get httpport $cfg httpport
+	CONFIGSTR="$CONFIGSTR${httpport:+-p "$httpport"} "
+	config_get network_netmask $cfg network_netmask
+	CONFIGSTR="$CONFIGSTR${network_netmask:+-l "$network_netmask"} "
+	export_bool local_only $cfg "--local-only"
+	config_get hosts_max $cfg hosts_max
+	CONFIGSTR="$CONFIGSTR${hosts_max:+--hosts-max "$hosts_max"} "
+	config_get hosts_keep $cfg hosts_keep
+	CONFIGSTR="$CONFIGSTR${ports_keep:+--ports-keep "$ports_keep"} "
+	config_get highest_port $cfg highest_port
+	CONFIGSTR="$CONFIGSTR${highest_port:+--highest-port "$highest_port"} "
+	config_get export_file $cfg export_file
+	CONFIGSTR="$CONFIGSTR${export_file:+--export "$export_file"} "
+	config_get import_file $cfg import_file
+	CONFIGSTR="$CONFIGSTR${import_file:+--import "$import_file"} "
+	config_get daylog_file $cfg daylog_file
+	CONFIGSTR="$CONFIGSTR${daylog_file:+--daylog "$daylog_file"} "
+	CONFIGSTR="$CONFIGSTR--chroot $RUN_D --pidfile $PID_F"
+	# Now that we have the configuration string (CONFIGSTR), let us get the filter (FILTERSTR)
+	config_get network_filter $cfg network_filter
+	FILTERSTR="${network_filter:+$network_filter}"
+}
+
+service_triggers() {
+	procd_add_reload_trigger $CONFIGNAME
+}
+
+start_service() {
+	set_config_string
+	procd_open_instance
+	procd_set_param command /usr/sbin/$APP
+	procd_append_param command $CONFIGSTR
+	# Let us check if we have a filter string and apply it if we do
+	if [ "$FILTERSTR" != "" ]; then
+		procd_append_param command "-f" "$FILTERSTR"
+	fi
+	procd_close_instance
+}
+
+stop_service() {
+	rm -f $PID_F
+}
+
+reload_service() {
+	stop
+	start
+}

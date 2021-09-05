@@ -1,0 +1,146 @@
+From c842faae63b562acc7d989a9cdc815def9ee2ed6 Mon Sep 17 00:00:00 2001
+From: Sven-Haegar Koch <haegar@sdinet.de>
+Date: Wed, 2 Nov 2016 23:08:24 +0100
+Subject: [PATCH] OpenSSL 1.1.0 compile fix.
+
+---
+ crypto.c | 53 +++++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 35 insertions(+), 18 deletions(-)
+
+--- a/crypto.c
++++ b/crypto.c
+@@ -46,6 +46,10 @@ openssl dgst \
+ 
+ */
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++#define EVP_PKEY_get0_RSA(a) ((a)->pkey.rsa)
++#endif
++
+ EVP_PKEY *
+ crypto_load_key(const char *key, const bool is_private)
+ {
+@@ -80,7 +84,7 @@ crypto_rsa_verify_signature(struct strin
+ {
+ 	int err;
+ 	bool retval;
+-	EVP_MD_CTX md_ctx;
++	EVP_MD_CTX *md_ctx;
+ 	EVP_PKEY *pkey;
+ 
+ 	/* load public key into openssl structure */
+@@ -89,15 +93,22 @@ crypto_rsa_verify_signature(struct strin
+             log_err("crypto_verify_signature: key loading failed\n");
+             return false;
+         }
+-        
++
++        md_ctx = EVP_MD_CTX_create();
++        if (!md_ctx) {
++            log_err("crypto_verify_signature: md_ctx alloc failed\n");
++            return false;
++        }
++
+         /* Verify the signature */
+-        if (EVP_VerifyInit(&md_ctx, EVP_sha512()) != 1) {
++        if (EVP_VerifyInit(md_ctx, EVP_sha512()) != 1) {
+             log_err("crypto_verify_signature: libcrypto verify init failed\n");
++            EVP_MD_CTX_destroy(md_ctx);
+             EVP_PKEY_free(pkey);
+             return false;
+         }
+-        EVP_VerifyUpdate(&md_ctx, string_get(databuffer), string_length(databuffer));
+-        err = EVP_VerifyFinal(&md_ctx, (unsigned char*)string_get(signature), string_length(signature), pkey);
++        EVP_VerifyUpdate(md_ctx, string_get(databuffer), string_length(databuffer));
++        err = EVP_VerifyFinal(md_ctx, (unsigned char*)string_get(signature), string_length(signature), pkey);
+         EVP_PKEY_free(pkey);
+         
+         if (err != 1) {
+@@ -110,7 +121,7 @@ crypto_rsa_verify_signature(struct strin
+         retval = true;
+ 
+ bailout_ctx_cleanup:
+-        EVP_MD_CTX_cleanup(&md_ctx);
++        EVP_MD_CTX_destroy(md_ctx);
+ 
+         //log_info("Signature Verified Ok.\n");
+ 	return retval;
+@@ -146,7 +157,7 @@ crypto_rsa_decrypt(struct string *cipher
+         len = RSA_private_decrypt(string_length(ciphertext),
+             (unsigned char*)string_get(ciphertext),
+             (unsigned char*)string_get(decrypted),
+-            pkey->pkey.rsa,
++            EVP_PKEY_get0_RSA(pkey),
+             RSA_PKCS1_OAEP_PADDING);
+         if (len >= 0) {
+             /* TODO: need cleaner way: */
+@@ -167,28 +178,33 @@ bool
+ crypto_aes_decrypt(struct string *ciphertext, struct string *aes_key, struct string *aes_iv, struct string *decrypted)
+ {
+     bool retval = false;
+-    EVP_CIPHER_CTX ctx;
++    EVP_CIPHER_CTX *ctx;
+     int decryptspace;
+     int decryptdone;
+ 
+-    EVP_CIPHER_CTX_init(&ctx);
+-    if (!EVP_DecryptInit_ex(&ctx, EVP_aes_256_cbc(), NULL,
++    ctx = EVP_CIPHER_CTX_new();
++    if (!ctx) {
++        log_err("crypto_aes_decrypt: ctx alloc failed\n");
++        goto bail_out;
++    }
++
++    if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL,
+         (unsigned char *)string_get(aes_key),
+         (unsigned char *)string_get(aes_iv))) {
+         log_err("crypto_aes_decrypt: init failed\n");
+         ERR_print_errors_fp(stderr);
+         goto bail_out;
+     }
+-    EVP_CIPHER_CTX_set_padding(&ctx, 1);
++    EVP_CIPHER_CTX_set_padding(ctx, 1);
+     
+-    if (string_length(aes_key) != EVP_CIPHER_CTX_key_length(&ctx)) {
++    if (string_length(aes_key) != EVP_CIPHER_CTX_key_length(ctx)) {
+         log_err("crypto_aes_decrypt: invalid key size (%" PRIuPTR " vs expected %d)\n",
+-                string_length(aes_key), EVP_CIPHER_CTX_key_length(&ctx));
++                string_length(aes_key), EVP_CIPHER_CTX_key_length(ctx));
+         goto bail_out;
+     }
+-    if (string_length(aes_iv) != EVP_CIPHER_CTX_iv_length(&ctx)) {
++    if (string_length(aes_iv) != EVP_CIPHER_CTX_iv_length(ctx)) {
+         log_err("crypto_aes_decrypt: invalid iv size (%" PRIuPTR " vs expected %d)\n",
+-                string_length(aes_iv), EVP_CIPHER_CTX_iv_length(&ctx));
++                string_length(aes_iv), EVP_CIPHER_CTX_iv_length(ctx));
+         goto bail_out;
+     }
+ 
+@@ -201,7 +217,7 @@ crypto_aes_decrypt(struct string *cipher
+         goto bail_out;
+     }
+     
+-    if (EVP_DecryptUpdate(&ctx, (unsigned char*)string_get(decrypted),
++    if (EVP_DecryptUpdate(ctx, (unsigned char*)string_get(decrypted),
+             &decryptdone, (unsigned char*)string_get(ciphertext),
+             string_length(ciphertext))) {
+         /* TODO: need cleaner way: */
+@@ -212,7 +228,7 @@ crypto_aes_decrypt(struct string *cipher
+         goto bail_out;
+     }
+     
+-    if (EVP_DecryptFinal_ex(&ctx,
++    if (EVP_DecryptFinal_ex(ctx,
+             (unsigned char*)string_get(decrypted)+string_length(decrypted),
+             &decryptdone)) {
+         /* TODO: need cleaner way: */
+@@ -226,7 +242,8 @@ crypto_aes_decrypt(struct string *cipher
+     retval = true;
+ 
+ bail_out:
+-    EVP_CIPHER_CTX_cleanup(&ctx);
++    if (ctx)
++        EVP_CIPHER_CTX_free(ctx);
+     return retval;
+ }
+ 

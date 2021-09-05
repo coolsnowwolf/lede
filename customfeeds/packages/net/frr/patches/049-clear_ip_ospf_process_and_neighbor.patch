@@ -1,0 +1,383 @@
+From f91ce319d3cdb465df54ff4e091dbd4aed85b24c Mon Sep 17 00:00:00 2001
+From: Mobashshera Rasool <mrasool@vmware.com>
+Date: Wed, 23 Dec 2020 13:20:22 +0000
+Subject: [PATCH] ospfd: Clear ip ospf process and clear ip ospf neighbor
+
+Implement the below 2 CLIs to clear the current data in the process
+and neighbor data structure.
+1. clear ip ospf process
+2. clear ip ospf neighbor
+
+Signed-off-by: Mobashshera Rasool <mrasool@vmware.com>
+---
+ doc/user/ospfd.rst | 17 ++++++++
+ ospfd/ospf_ase.c   |  1 +
+ ospfd/ospf_lsa.c   | 13 +++++-
+ ospfd/ospf_vty.c   | 72 +++++++++++++++++++++++++++++++--
+ ospfd/ospfd.c      | 99 ++++++++++++++++++++++++++++++++++++----------
+ ospfd/ospfd.h      |  5 +++
+ 6 files changed, 182 insertions(+), 25 deletions(-)
+
+--- a/doc/user/ospfd.rst
++++ b/doc/user/ospfd.rst
+@@ -322,6 +322,23 @@ To start OSPF process you have to specif
+ 
+    This feature is enabled by default.
+ 
++.. index:: clear ip ospf [(1-65535)] process
++.. clicmd:: clear ip ospf [(1-65535)] process
++
++   This command can be used to clear the ospf process data structures. This
++   will clear the ospf neighborship as well and it will get re-established.
++   This will clear the LSDB too. This will be helpful when there is a change
++   in router-id and if user wants the router-id change to take effect, user can
++   use this cli instead of restarting the ospfd daemon.
++
++.. index:: clear ip ospf [(1-65535)] neighbor
++.. clicmd:: clear ip ospf [(1-65535)] neighbor
++
++   This command can be used to clear the ospf neighbor data structures. This
++   will clear the ospf neighborship and it will get re-established. This
++   command can be used when the neighbor state get stuck at some state and
++   this can be used to recover it from that state.
++
+ .. _ospf-area:
+ 
+ Areas
+--- a/ospfd/ospf_ase.c
++++ b/ospfd/ospf_ase.c
+@@ -753,6 +753,7 @@ void ospf_ase_unregister_external_lsa(st
+ 		lst = rn->info;
+ 		listnode_delete(lst, lsa);
+ 		ospf_lsa_unlock(&lsa); /* external_lsas list */
++
+ 		route_unlock_node(rn);
+ 	}
+ }
+--- a/ospfd/ospf_lsa.c
++++ b/ospfd/ospf_lsa.c
+@@ -2735,7 +2735,7 @@ int ospf_check_nbr_status(struct ospf *o
+ static int ospf_maxage_lsa_remover(struct thread *thread)
+ {
+ 	struct ospf *ospf = THREAD_ARG(thread);
+-	struct ospf_lsa *lsa;
++	struct ospf_lsa *lsa, *old;
+ 	struct route_node *rn;
+ 	int reschedule = 0;
+ 
+@@ -2797,6 +2797,17 @@ static int ospf_maxage_lsa_remover(struc
+ 
+ 			/* Remove from lsdb. */
+ 			if (lsa->lsdb) {
++				old = ospf_lsdb_lookup(lsa->lsdb, lsa);
++				/* The max age LSA here must be the same
++				 * as the LSA in LSDB
++				 */
++				if (old != lsa) {
++					flog_err(EC_OSPF_LSA_MISSING,
++					"%s: LSA[Type%d:%s]: LSA not in LSDB",
++					__func__, lsa->data->type,
++					inet_ntoa(lsa->data->id));
++					continue;
++				}
+ 				ospf_discard_from_db(ospf, lsa->lsdb, lsa);
+ 				ospf_lsdb_delete(lsa->lsdb, lsa);
+ 			} else {
+--- a/ospfd/ospf_vty.c
++++ b/ospfd/ospf_vty.c
+@@ -276,7 +276,7 @@ DEFPY (ospf_router_id,
+ 	for (ALL_LIST_ELEMENTS_RO(ospf->areas, node, area))
+ 		if (area->full_nbrs) {
+ 			vty_out(vty,
+-				"For this router-id change to take effect, save config and restart ospfd\n");
++				"For this router-id change to take effect, use “clear ip ospf process” command\n");
+ 			return CMD_SUCCESS;
+ 		}
+ 
+@@ -309,7 +309,7 @@ DEFUN_HIDDEN (ospf_router_id_old,
+ 	for (ALL_LIST_ELEMENTS_RO(ospf->areas, node, area))
+ 		if (area->full_nbrs) {
+ 			vty_out(vty,
+-				"For this router-id change to take effect, save config and restart ospfd\n");
++				"For this router-id change to take effect, use “clear ip ospf process” command\n");
+ 			return CMD_SUCCESS;
+ 		}
+ 
+@@ -342,7 +342,7 @@ DEFPY (no_ospf_router_id,
+ 	for (ALL_LIST_ELEMENTS_RO(ospf->areas, node, area))
+ 		if (area->full_nbrs) {
+ 			vty_out(vty,
+-				"For this router-id change to take effect, save config and restart ospfd\n");
++				"For this router-id change to take effect, use “clear ip ospf process” command\n");
+ 			return CMD_SUCCESS;
+ 		}
+ 
+@@ -9769,6 +9769,70 @@ DEFUN (show_ip_ospf_vrfs,
+ 
+ 	return CMD_SUCCESS;
+ }
++DEFPY (clear_ip_ospf_neighbor,
++       clear_ip_ospf_neighbor_cmd,
++       "clear ip ospf [(1-65535)]$instance neighbor [A.B.C.D$nbr_id]",
++       CLEAR_STR
++       IP_STR
++       "OSPF information\n"
++       "Instance ID\n"
++       "Reset OSPF Neighbor\n"
++       "Neighbor ID\n")
++{
++	struct listnode *node;
++	struct ospf *ospf = NULL;
++
++	/* If user does not specify the arguments,
++	 * instance = 0 and nbr_id = 0.0.0.0
++	 */
++	if (instance != 0) {
++		/* This means clear only the particular ospf process */
++		ospf = ospf_lookup_instance(instance);
++		if (ospf == NULL)
++			return CMD_NOT_MY_INSTANCE;
++	}
++
++	/* Clear all the ospf processes */
++	for (ALL_LIST_ELEMENTS_RO(om->ospf, node, ospf)) {
++		if (!ospf->oi_running)
++			continue;
++
++		ospf_neighbor_reset(ospf, nbr_id, nbr_id_str);
++	}
++
++	return CMD_SUCCESS;
++}
++
++DEFPY (clear_ip_ospf_process,
++       clear_ip_ospf_process_cmd,
++       "clear ip ospf [(1-65535)]$instance process",
++       CLEAR_STR
++       IP_STR
++       "OSPF information\n"
++       "Instance ID\n"
++       "Reset OSPF Process\n")
++{
++	struct listnode *node;
++	struct ospf *ospf = NULL;
++
++	/* Check if instance is not passed as an argument */
++	if (instance != 0) {
++		/* This means clear only the particular ospf process */
++		ospf = ospf_lookup_instance(instance);
++		if (ospf == NULL)
++			return CMD_NOT_MY_INSTANCE;
++	}
++
++	/* Clear all the ospf processes */
++	for (ALL_LIST_ELEMENTS_RO(om->ospf, node, ospf)) {
++		if (!ospf->oi_running)
++			continue;
++
++		ospf_process_reset(ospf);
++	}
++
++	return CMD_SUCCESS;
++}
+ 
+ static const char *const ospf_abr_type_str[] = {
+ 	"unknown", "standard", "ibm", "cisco", "shortcut"
+@@ -10806,6 +10870,8 @@ DEFUN (clear_ip_ospf_interface,
+ void ospf_vty_clear_init(void)
+ {
+ 	install_element(ENABLE_NODE, &clear_ip_ospf_interface_cmd);
++	install_element(ENABLE_NODE, &clear_ip_ospf_process_cmd);
++	install_element(ENABLE_NODE, &clear_ip_ospf_neighbor_cmd);
+ }
+ 
+ 
+--- a/ospfd/ospfd.c
++++ b/ospfd/ospfd.c
+@@ -84,13 +84,15 @@ static void ospf_finish_final(struct osp
+ 
+ #define OSPF_EXTERNAL_LSA_ORIGINATE_DELAY 1
+ 
+-void ospf_router_id_update(struct ospf *ospf)
++void ospf_process_refresh_data(struct ospf *ospf, bool reset)
+ {
+ 	struct vrf *vrf = vrf_lookup_by_id(ospf->vrf_id);
+ 	struct in_addr router_id, router_id_old;
+ 	struct ospf_interface *oi;
+ 	struct interface *ifp;
+-	struct listnode *node;
++	struct listnode *node, *nnode;
++	struct ospf_area *area;
++	bool rid_change = false;
+ 
+ 	if (!ospf->oi_running) {
+ 		if (IS_DEBUG_OSPF_EVENT)
+@@ -123,8 +125,8 @@ void ospf_router_id_update(struct ospf *
+ 		zlog_debug("Router-ID[OLD:%s]: Update to %s",
+ 			   inet_ntoa(ospf->router_id), inet_ntoa(router_id));
+ 
+-	if (!IPV4_ADDR_SAME(&router_id_old, &router_id)) {
+-
++	rid_change = !(IPV4_ADDR_SAME(&router_id_old, &router_id));
++	if (rid_change || (reset)) {
+ 		for (ALL_LIST_ELEMENTS_RO(ospf->oiflist, node, oi)) {
+ 			/* Some nbrs are identified by router_id, these needs
+ 			 * to be rebuilt. Possible optimization would be to do
+@@ -146,16 +148,8 @@ void ospf_router_id_update(struct ospf *
+ 				ospf_if_up(oi);
+ 		}
+ 
+-		/* Flush (inline) all external LSAs based on the OSPF_LSA_SELF
+-		 * flag */
+-		if (ospf->lsdb) {
+-			struct route_node *rn;
+-			struct ospf_lsa *lsa;
+-
+-			LSDB_LOOP (EXTERNAL_LSDB(ospf), rn, lsa)
+-				if (IS_LSA_SELF(lsa))
+-					ospf_lsa_flush_schedule(ospf, lsa);
+-		}
++		/* Flush (inline) all the self originated LSAs */
++		ospf_flush_self_originated_lsas_now(ospf);
+ 
+ 		ospf->router_id = router_id;
+ 		if (IS_DEBUG_OSPF_EVENT)
+@@ -180,24 +174,81 @@ void ospf_router_id_update(struct ospf *
+ 			LSDB_LOOP (EXTERNAL_LSDB(ospf), rn, lsa) {
+ 				/* AdvRouter and Router ID is the same. */
+ 				if (IPV4_ADDR_SAME(&lsa->data->adv_router,
+-						   &ospf->router_id)) {
++					&ospf->router_id) && rid_change) {
+ 					SET_FLAG(lsa->flags,
+ 						 OSPF_LSA_SELF_CHECKED);
+ 					SET_FLAG(lsa->flags, OSPF_LSA_SELF);
+ 					ospf_lsa_flush_schedule(ospf, lsa);
+ 				}
++				/* The above flush will send immediately
++				 * So discard the LSA to originate new
++				 */
++				ospf_discard_from_db(ospf, ospf->lsdb, lsa);
+ 			}
++
++			LSDB_LOOP (OPAQUE_AS_LSDB(ospf), rn, lsa)
++				ospf_discard_from_db(ospf, ospf->lsdb, lsa);
++
++			ospf_lsdb_delete_all(ospf->lsdb);
+ 		}
+ 
++		/* Delete the LSDB */
++		for (ALL_LIST_ELEMENTS(ospf->areas, node, nnode, area))
++			ospf_area_lsdb_discard_delete(area);
++
+ 		/* update router-lsa's for each area */
+ 		ospf_router_lsa_update(ospf);
+ 
+ 		/* update ospf_interface's */
+-		FOR_ALL_INTERFACES (vrf, ifp)
+-			ospf_if_update(ospf, ifp);
++		FOR_ALL_INTERFACES (vrf, ifp) {
++			if (reset)
++				ospf_if_reset(ifp);
++			else
++				ospf_if_update(ospf, ifp);
++		}
+ 
+ 		ospf_external_lsa_rid_change(ospf);
+ 	}
++
++	ospf->inst_shutdown = 0;
++}
++
++void ospf_router_id_update(struct ospf *ospf)
++{
++	ospf_process_refresh_data(ospf, false);
++}
++
++void ospf_process_reset(struct ospf *ospf)
++{
++	ospf_process_refresh_data(ospf, true);
++}
++
++void ospf_neighbor_reset(struct ospf *ospf, struct in_addr nbr_id,
++			const char *nbr_str)
++{
++	struct route_node *rn;
++	struct ospf_neighbor *nbr;
++	struct ospf_interface *oi;
++	struct listnode *node;
++
++	/* Clear only a particular nbr with nbr router id as nbr_id */
++	if (nbr_str != NULL) {
++		for (ALL_LIST_ELEMENTS_RO(ospf->oiflist, node, oi)) {
++			nbr = ospf_nbr_lookup_by_routerid(oi->nbrs, &nbr_id);
++			if (nbr)
++				OSPF_NSM_EVENT_EXECUTE(nbr, NSM_KillNbr);
++		}
++		return;
++	}
++
++	/* send Neighbor event KillNbr to all associated neighbors. */
++	for (ALL_LIST_ELEMENTS_RO(ospf->oiflist, node, oi)) {
++		for (rn = route_top(oi->nbrs); rn; rn = route_next(rn)) {
++			nbr = rn->info;
++			if (nbr && (nbr != oi->nbr_self))
++				OSPF_NSM_EVENT_EXECUTE(nbr, NSM_KillNbr);
++		}
++	}
+ }
+ 
+ /* For OSPF area sort by area id. */
+@@ -839,14 +890,11 @@ static struct ospf_area *ospf_area_new(s
+ 	return new;
+ }
+ 
+-static void ospf_area_free(struct ospf_area *area)
++void ospf_area_lsdb_discard_delete(struct ospf_area *area)
+ {
+ 	struct route_node *rn;
+ 	struct ospf_lsa *lsa;
+ 
+-	ospf_opaque_type10_lsa_term(area);
+-
+-	/* Free LSDBs. */
+ 	LSDB_LOOP (ROUTER_LSDB(area), rn, lsa)
+ 		ospf_discard_from_db(area->ospf, area->lsdb, lsa);
+ 	LSDB_LOOP (NETWORK_LSDB(area), rn, lsa)
+@@ -864,6 +912,15 @@ static void ospf_area_free(struct ospf_a
+ 		ospf_discard_from_db(area->ospf, area->lsdb, lsa);
+ 
+ 	ospf_lsdb_delete_all(area->lsdb);
++}
++
++static void ospf_area_free(struct ospf_area *area)
++{
++	ospf_opaque_type10_lsa_term(area);
++
++	/* Free LSDBs. */
++	ospf_area_lsdb_discard_delete(area);
++
+ 	ospf_lsdb_free(area->lsdb);
+ 
+ 	ospf_lsa_unlock(&area->router_lsa_self);
+--- a/ospfd/ospfd.h
++++ b/ospfd/ospfd.h
+@@ -523,7 +523,11 @@ extern struct ospf *ospf_lookup_by_inst_
+ 					     const char *name);
+ extern struct ospf *ospf_lookup_by_vrf_id(vrf_id_t vrf_id);
+ extern void ospf_finish(struct ospf *);
++extern void ospf_process_refresh_data(struct ospf *ospf, bool reset);
+ extern void ospf_router_id_update(struct ospf *ospf);
++extern void ospf_process_reset(struct ospf *ospf);
++extern void ospf_neighbor_reset(struct ospf *ospf, struct in_addr nbr_id,
++				const char *nbr_str);
+ extern int ospf_network_set(struct ospf *, struct prefix_ipv4 *, struct in_addr,
+ 			    int);
+ extern int ospf_network_unset(struct ospf *, struct prefix_ipv4 *,
+@@ -548,6 +552,7 @@ extern int ospf_area_shortcut_set(struct
+ extern int ospf_area_shortcut_unset(struct ospf *, struct ospf_area *);
+ extern int ospf_timers_refresh_set(struct ospf *, int);
+ extern int ospf_timers_refresh_unset(struct ospf *);
++void ospf_area_lsdb_discard_delete(struct ospf_area *area);
+ extern int ospf_nbr_nbma_set(struct ospf *, struct in_addr);
+ extern int ospf_nbr_nbma_unset(struct ospf *, struct in_addr);
+ extern int ospf_nbr_nbma_priority_set(struct ospf *, struct in_addr, uint8_t);

@@ -1,0 +1,280 @@
+#include "crypto.h"
+
+#include <string.h>
+#include <stdlib.h>
+//#define DEBUG_TEST 
+
+typedef enum {
+    encrypt, decrypt
+} CryptoMode;
+
+void hex_dump(const char* header, const unsigned char* data, const unsigned int data_length)
+{
+    unsigned int byte_count;
+    printf("%s (%d bytes):\n", header, data_length);
+    for(byte_count = 0; byte_count < data_length; ++byte_count)
+    {
+        printf("%02X", data[byte_count]);
+    }
+    printf("\n");
+}
+
+void do_rsa(const CryptoMode crypto_mode,
+            const unsigned char* data, const unsigned int data_length,
+            const unsigned char* modulus, const unsigned int modulus_length,
+            const unsigned char* exponent, const unsigned int exponent_length,
+            unsigned char* result, const unsigned int result_length)
+{
+    RSA_CTX* rsa_context = NULL;
+    BI_CTX *bi_ctx;
+    bigint *plaintext_bi;
+    bigint *enc_data_bi, *dec_data_bi;
+
+#ifdef DEBUG_TEST
+    printf("do_rsa:\n");
+    hex_dump("data", data, data_length);
+    hex_dump("modulus", modulus, modulus_length);
+    hex_dump("exponent", exponent, exponent_length);
+#endif
+
+    RSA_priv_key_new(&rsa_context, modulus, modulus_length, exponent, exponent_length, exponent, exponent_length);
+    memset(result, 0, result_length);
+    bi_ctx = rsa_context->bi_ctx;
+
+    switch(crypto_mode)
+    {
+    case encrypt:
+#ifdef DEBUG_TEST
+        printf("encrypt\n");
+#endif
+        plaintext_bi = bi_import(bi_ctx, data, data_length);
+        enc_data_bi = RSA_public(rsa_context, plaintext_bi);
+        bi_export(bi_ctx, enc_data_bi, result, result_length);
+        break;
+
+    case decrypt:
+
+#ifdef DEBUG_TEST
+        printf("decrypt\n");
+#endif
+        plaintext_bi = bi_import(bi_ctx, data, data_length);
+        dec_data_bi = RSA_private(rsa_context, plaintext_bi);
+        bi_export(bi_ctx, dec_data_bi, result, result_length);
+        break;
+    }
+#ifdef DEBUG_TEST
+    hex_dump("result", result, result_length);
+#endif
+
+    RSA_free(rsa_context);
+}
+
+void test_matching(char* test_description, 
+                   const unsigned char* expected, const unsigned int expected_length,
+                   const unsigned char* result, const unsigned int result_length)
+{
+    int test_result = memcmp(expected, result, expected_length);
+    printf("Testing %s ... ", test_description);
+    if(test_result == 0)
+    {
+        printf("ok.\n");
+    }
+    else
+    {
+        printf("failed!\n");
+        hex_dump("should be", expected, expected_length);
+        hex_dump("but is", result, result_length);
+    }
+}
+
+void encrypt_decrypt_should_yield_original(char* test_description,
+                                           const unsigned char* data, const unsigned int data_length,
+                                           const unsigned char* modulus, const unsigned int modulus_length,
+                                           const unsigned char* private_exponent, const unsigned int private_exponent_length,
+                                           const unsigned char* public_exponent, const unsigned int public_exponent_length,
+                                           const unsigned char* cryptogram, const unsigned int cryptogram_length)
+{
+    const unsigned int calculated_cryptogram_length = modulus_length;
+    unsigned char* calculated_cryptogram = malloc(calculated_cryptogram_length);
+    const unsigned int decrypted_data_length = modulus_length;
+    unsigned char* decrypted_data = malloc(decrypted_data_length);
+
+    printf("\nRunning \"%s\" ...\n", test_description);
+
+#ifdef DEBUG_TEST
+    printf("encrypt_decrypt_should_yield_original:\n");
+    hex_dump("data", data, data_length);
+    hex_dump("modulus", modulus, modulus_length);
+    hex_dump("private_exponent", private_exponent, private_exponent_length);
+    hex_dump("public_exponent", public_exponent, public_exponent_length);
+    hex_dump("cryptogram", cryptogram, cryptogram_length);
+#endif
+
+    do_rsa(encrypt, data, data_length,
+           modulus, modulus_length,
+           private_exponent, private_exponent_length,
+           calculated_cryptogram, calculated_cryptogram_length);
+
+#ifdef DEBUG_TEST
+    hex_dump("calculated_cryptogram", calculated_cryptogram, calculated_cryptogram_length);
+#endif
+
+    if(cryptogram != NULL)
+    {
+        test_matching("cryptogram", cryptogram, cryptogram_length, 
+                                    calculated_cryptogram, calculated_cryptogram_length);
+    }
+
+    do_rsa(decrypt, calculated_cryptogram, calculated_cryptogram_length,
+           modulus, modulus_length,
+           public_exponent, public_exponent_length,
+           decrypted_data, decrypted_data_length);
+
+    test_matching("decrypted plaintext", data, data_length,
+                                         decrypted_data, decrypted_data_length);
+
+    free(calculated_cryptogram);
+    free(decrypted_data);
+}
+
+/* configure without CRT!
+
+   prepare data with: 
+   > echo "<string>" |
+     ruby -ne '$_.gsub!(/ /, "").scan(/../).each_with_index \
+      { |b, i| print "\"\n\"" if i % 16 == 0; print "\\x" + b;}' */
+int main(int argc, char *argv[])
+{
+#if 0
+    unsigned char stuff[] = { 
+        0x22, 0x33, 0x44, 0x81, 
+        0xF1, 0xFF, 0xAA, 0xBB, 
+        0xCC, 0xDD, 0xEE , 0x01,
+        0x45, 0x44, 0xfa, 0x8d,
+        0xfa, 0x20, 0x99, 0xFF,
+        0xab, 0xda, 0xac, 0x40 };
+    unsigned char resA[sizeof(stuff)*2], resB[sizeof(stuff)*2];
+
+    BI_CTX *bi_ctx = bi_initialize();
+    bigint *bi_data1, *bi_data2, *res1, *res2;
+    bi_data1 = bi_import(bi_ctx, stuff, sizeof(stuff));
+    bi_data2 = bi_import(bi_ctx, stuff, sizeof(stuff));
+
+    res1 = bi_multiply(bi_ctx, bi_copy(bi_data1), bi_copy(bi_data2));
+    res2 = bi_multiply(bi_ctx, bi_data1, bi_data2);
+    bi_print("MULTIPLY", res1);
+    bi_print("SQUARE", res2);
+    bi_export(bi_ctx, res1, resA, sizeof(resA));
+    bi_export(bi_ctx, res2, resB, sizeof(resB));
+    if (memcmp(resA, resB, sizeof(resA)))
+        printf("OUCH - difference!\n");
+    bi_terminate(bi_ctx);
+
+    exit(0);
+#endif
+    encrypt_decrypt_should_yield_original("Works only with Montgomery",
+        (const unsigned char*) /* data */
+        "\xBC\xD3\x12\x6C\x93\x13\x14\x4C\x00\x5D\xFD\xBF\xDE\xE4\xD3\x60"
+        "\x29\xB8\xAE\x47\xBE\x0B\xB6\x0A\x39\x88\xB7\x93\x19\x14\xE8\x88"
+        "\x4A\xDE\x00\x46\x89\x5A\x11\x1A\xC4\x8F\xE8\xF7\x27\xAC\x59\x80"
+        "\x03\xC1\x93\x14\x01\x00\x93\x15\x07\x00\x00\x00\x01\x01\x05\x20"
+        "\x93\x16\x0F\x42\x34\x33\x3A\x58\x30\x30\x30\x31\x30\x31\x30\x30"
+        "\x30\x31\x92\x6B\x10\x6C\x69\x62\x65\x6C\x6D\x65\x74\x72\x65\x65"
+        "\x2E\x73\x6F\x2E\x30\x93\x18\x02\xA5\x92\x92\x6C\x03\x96\xE3\x0C"
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xB7\xBE", 128,
+        (const unsigned char*) /* modulus */
+        "\xc4\x5a\xcb\x35\x95\xad\x32\x4a\xcf\x9c\x82\x45\x13\xb7\x42\x35"
+        "\x22\x32\x6d\x2e\x6d\x26\x2e\x6d\x00\x9b\xae\x2d\x9e\x78\x1e\xdd"
+        "\x40\x23\x17\xa8\xbb\xa1\x07\x86\xb4\x3c\xbc\xe8\xd5\xfc\xd9\xeb"
+        "\x3c\xad\x63\x11\xf3\x1d\x64\x81\x96\xf2\xf5\xfe\xca\x5a\xf7\x8a"
+        "\x15\xcb\x90\x81\x68\xae\x59\xb4\xe1\xa4\x41\x99\xcd\xf3\x98\xbd"
+        "\x3c\x48\x37\xdb\xa1\xc3\x1c\x6f\x43\xd1\x89\x23\xe5\x3d\xa3\xa5"
+        "\x92\x7b\x19\x14\x1e\x7a\xf3\x88\x8a\x36\x21\x3e\x16\x40\x3c\xd7"
+        "\xd3\xdb\x13\xaf\xc9\x68\x45\x84\xb3\x39\x8f\x02\xed\x28\x02\x5f", 128,
+        (const unsigned char*) /* private exponent */
+        "\x5d\x19\xb7\xb4\x66\x8d\xc2\x84\xda\x3f\x99\x3c\xeb\x86\x3e\xec"
+        "\x36\x94\xb6\x54\x07\x08\xcd\x86\x7d\x7d\x53\x6e\xe9\xee\x86\xa3"
+        "\xdd\x5f\x46\x3e\x89\x08\x67\x2b\x25\x96\x8e\xf3\xcf\x52\x9e\x78"
+        "\xfd\x42\x30\xf1\x37\xd6\xbd\xea\xfc\x09\xa3\x3d\xf5\xf0\x7f\xe1"
+        "\xb1\xe0\x69\x13\x44\xf9\x8b\x95\x58\x2a\x81\xb3\xa8\x15\xce\x7e"
+        "\xd3\xea\x97\x0a\xa2\x14\xd4\xae\xc7\x75\xbb\x9f\x68\xa5\x53\x0e"
+        "\x85\x29\x88\x48\x6c\xc9\xcc\xde\x72\x40\x3a\x4c\x82\xde\x3c\xfb"
+        "\x08\xf8\x2c\x26\xb5\xd4\xea\xc4\xca\x98\x6e\x43\x3e\x67\x54\xc1", 128,
+        (const unsigned char*) /* public exponent */
+        "\x01\x00\x01", 3,
+        (const unsigned char*) /* precalculated encrypted data */
+        "\x93\xE8\x1F\xF9\x70\xFA\xAA\xED\x54\xFD\x48\x37\xC9\x71\x9A\x11"
+        "\x69\x80\xB4\x22\x0C\xAD\x5A\x95\x65\xCA\x7C\xF7\x70\x56\x92\xCB"
+        "\x45\x6D\x58\x84\x21\x80\x23\x76\x21\x4A\x61\x99\xC1\x11\x9C\x0F"
+        "\x40\xED\x80\x9C\x8F\x3A\x4F\x01\xB5\x72\xC3\x24\xAE\xF3\x6B\x98"
+        "\xA8\x60\xAC\xAF\x95\x98\x9A\xAA\xA4\x28\xF2\x02\x05\xFC\xF3\xDD"
+        "\xB0\x5A\x4E\xDE\x3C\x41\x4B\x1C\x5B\x1F\xF6\x3D\xAF\x93\x43\xCB"
+        "\xD8\xC7\x24\x97\x8F\x49\xE5\x5B\x10\x51\x3B\x1E\xA6\x39\xEA\x4E"
+        "\xA5\xE0\x71\x8C\xCA\x34\x8C\x2F\x6C\x5C\x78\x34\x86\x7C\x54\x6A", 128);
+
+    encrypt_decrypt_should_yield_original("Works only with Barrett",
+        (const unsigned char*) /* data */
+        "\x36\x42\x32\xe4\x1e\x78\x02\x8e\xfb\x64\x5f\x0c\xfc\x5a\xd7\x5c"
+        "\xe4\xb5\x91\x5c\x4b\x00\x87\x28\x87\x9b\xa0\x4b\x09\xc2\x6b\x64"
+        "\xac\x4b\xcf\xa5\xee\x8a\xb7\xc9\xc9\x90\x02\xc1\xa3\x47\x5c\x6b"
+        "\x71\x5d\x5d\x49\x27\xe1\x15\xc6\xcf\x37\x9e\xa7\x0f\xa1\xad\x96"
+        "\x83\xef\x4b\x53\x68\xcd\x77\xfc\x14\x5f\xf5\xb7\x78\xb0\x10\xeb"
+        "\x0d\x61\x94\x01\xf6\xaa\x1b\x19\x23\x39\xa7\xcc\x6c\x42\x4a\x87"
+        "\x79\x27\x04\xc6\xec\x8e\x50\xba\xb9\x26\x89\xd4\x00\x01\x25\xe5"
+        "\xf3\x9e\x98\x0c\x8d\x2e\x43\x1e\xe9\x29\x90\xd2\x75\x61\x85\xe7", 128,
+        (const unsigned char*) /* modulus */
+        "\x37\x0c\x32\xe4\x1e\x78\x02\x8e\xfb\x64\x5f\x0c\xfc\x5a\xd7\x5c"
+        "\xe4\xb5\x91\x5c\x4b\x00\x87\x28\x87\x9b\xa0\x4b\x09\xc2\x6b\x64"
+        "\xac\x4b\xcf\xa5\xee\x8a\xb7\xc9\xc9\x90\x02\xc1\xa3\x47\x5c\x6b"
+        "\x71\x5d\x5d\x49\x27\xe1\x15\xc6\xcf\x37\x9e\xa7\x0f\xa1\xad\x96"
+        "\x83\xef\x4b\x53\x68\xcd\x77\xfc\x14\x5f\xf5\xb7\x78\xb0\x10\xeb"
+        "\x0d\x61\x94\x01\xf6\xaa\x1b\x19\x23\x39\xa7\xcc\x6c\x42\x4a\x87"
+        "\x79\x27\x04\xc6\xec\x8e\x50\xba\xb9\x26\x89\xd4\x00\x01\x25\xe5"
+        "\xf3\x9e\x98\x0c\x8d\x2e\x43\x1e\xe9\x29\x90\xd2\x75\x61\x85\xe7", 128,
+        (const unsigned char*) /* private exponent */
+        "\x16\x3a\x76\xd2\x66\xfb\x4f\x0d\x2d\xb6\x7a\x2b\x64\x3b\xca\x7b"
+        "\x58\x5f\x79\x33\x2b\x96\x2a\xfd\xd2\xc4\xa5\x15\xa7\xfb\x3a\x22"
+        "\x8c\xf0\x90\x09\x11\x2a\x32\xcc\xe8\xf7\x9e\x25\x53\x29\x9d\xc8"
+        "\x45\x1e\xce\x6c\x9c\x0d\xe8\x1d\x3f\xcf\xd5\xe0\xe0\x0f\x09\x69"
+        "\x2d\xe7\xd5\xe6\xe5\x10\xd9\x4e\x20\xdb\xbd\xa1\x04\x6b\xe6\x1d"
+        "\x4c\x79\x28\x47\x30\x11\xde\x14\xb4\x6e\x35\x98\x38\x50\x44\x82"
+        "\xbd\xc4\xfb\x03\xb3\xf6\x5e\x5a\x29\xfa\x29\xaa\xde\xe4\xfd\x15"
+        "\xbe\xed\x4f\x93\x9d\x0d\x29\xe8\xd7\xa3\xf4\x18\xc8\x98\xb1\x01", 128, 
+        (const unsigned char*) /* public exponent */
+        "\x01\x00\x01", 3,
+        NULL, 0);
+
+    encrypt_decrypt_should_yield_original("Works always",
+        (const unsigned char*) /* data */
+        "\xB9\x42\x32\xe4\x1e\x78\x02\x8e\xfb\x64\x5f\x0c\xfc\x5a\xd7\x5c"
+        "\xe4\xb5\x91\x5c\x4b\x00\x87\x28\x87\x9b\xa0\x4b\x09\xc2\x6b\x64"
+        "\xac\x4b\xcf\xa5\xee\x8a\xb7\xc9\xc9\x90\x02\xc1\xa3\x47\x5c\x6b"
+        "\x71\x5d\x5d\x49\x27\xe1\x15\xc6\xcf\x37\x9e\xa7\x0f\xa1\xad\x96"
+        "\x83\xef\x4b\x53\x68\xcd\x77\xfc\x14\x5f\xf5\xb7\x78\xb0\x10\xeb"
+        "\x0d\x61\x94\x01\xf6\xaa\x1b\x19\x23\x39\xa7\xcc\x6c\x42\x4a\x87"
+        "\x79\x27\x04\xc6\xec\x8e\x50\xba\xb9\x26\x89\xd4\x00\x01\x25\xe5"
+        "\xf3\x9e\x98\x0c\x8d\x2e\x43\x1e\xe9\x29\x90\xd2\x75\x61\x85\xe7", 128,
+        (const unsigned char*) /* modulus */
+        "\xB9\x77\xEC\x83\x95\xAF\xB1\xF8\x21\x21\xFF\x05\x5E\x0C\x91\x0C"
+        "\x2E\xD5\xD2\x94\x1C\x38\x5E\xED\x5A\xCF\x84\xD0\x12\x8B\xAA\x4B"
+        "\x3A\x63\x65\x78\x13\xED\x24\x4E\x83\xF2\xF5\x02\x66\x5D\xFC\xC1"
+        "\x80\x5B\x78\x78\xB4\x0B\x45\xE5\x22\xC6\xCD\xEB\xCC\x74\x0B\x0B"
+        "\xD8\x8B\x91\x99\x48\x8E\x74\xA9\xD0\x1A\x39\x94\xC2\xD4\x2E\x9A"
+        "\x8C\x0C\x35\x0D\x97\x8F\xC4\x62\x20\xE9\x78\x40\x97\x05\x98\xE6"
+        "\x22\x48\x3D\x3D\xCA\x6A\x3F\xEF\xB0\x23\x14\x30\xDA\x35\x46\x65"
+        "\x55\xEF\xEB\xA1\xA9\xCF\x83\xE7\xEF\xF2\x83\x6D\x38\xEA\x88\xED", 128,
+        (const unsigned char*) /* private exponent */
+        "\x52\x2A\x68\xE3\x9A\xAA\xED\xA3\x49\xBA\x6F\xEA\x86\xD1\xF6\x68"
+        "\x79\x4F\x4D\x2D\x44\x9B\x4C\xA2\xC6\xBA\x6C\xD2\x69\x84\xEA\x7A"
+        "\xCD\x71\x3F\x80\xC5\x03\x28\x34\x88\x8C\x58\x33\x29\xFA\xB5\x81"
+        "\x5C\x46\x29\xC6\xFF\xAC\x86\xD8\x8E\x61\x98\xD4\xC0\x0D\x20\xDE"
+        "\xEB\x61\x1C\x0C\x3C\x19\xA3\x75\x10\x7D\xDA\xA9\x55\xA7\x64\x5F"
+        "\xE0\xB6\x35\x62\x00\xD9\xD2\xF7\xA4\xDF\x85\xFF\xDF\x86\x75\x29"
+        "\x66\x16\x03\x8C\xC0\xB0\x3F\xAB\xBA\x41\xB3\x3C\x76\x58\xB6\xE2"
+        "\x1F\x36\x47\x5F\x1F\x0E\x4C\xB5\x29\x90\xDC\xA1\xF8\xFA\x58\x19", 128,
+        (const unsigned char*) /* public exponent */
+        "\x01\x00\x01", 3,
+        NULL, 0);
+
+    return 0;
+}

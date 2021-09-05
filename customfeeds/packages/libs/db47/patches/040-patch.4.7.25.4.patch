@@ -1,0 +1,118 @@
+--- a/dbinc/repmgr.h
++++ b/dbinc/repmgr.h
+@@ -374,6 +374,7 @@ typedef struct {
+ #define	SITE_FROM_EID(eid)	(&db_rep->sites[eid])
+ #define	EID_FROM_SITE(s)	((int)((s) - (&db_rep->sites[0])))
+ #define	IS_VALID_EID(e)		((e) >= 0)
++#define	IS_KNOWN_REMOTE_SITE(e)	((e) >= 0 && ((u_int)(e)) < db_rep->site_cnt)
+ #define	SELF_EID		INT_MAX
+ 
+ #define	IS_PEER_POLICY(p) ((p) == DB_REPMGR_ACKS_ALL_PEERS ||		\
+--- a/rep/rep_elect.c
++++ b/rep/rep_elect.c
+@@ -33,7 +33,7 @@ static int __rep_elect_init
+ static int __rep_fire_elected __P((ENV *, REP *, u_int32_t));
+ static void __rep_elect_master __P((ENV *, REP *));
+ static int __rep_tally __P((ENV *, REP *, int, u_int32_t *, u_int32_t, roff_t));
+-static int __rep_wait __P((ENV *, db_timeout_t *, int *, int, u_int32_t));
++static int __rep_wait __P((ENV *, db_timeout_t *, int, u_int32_t));
+ 
+ /*
+  * __rep_elect --
+@@ -55,7 +55,7 @@ __rep_elect(dbenv, given_nsites, nvotes,
+ 	ENV *env;
+ 	LOG *lp;
+ 	REP *rep;
+-	int done, eid, elected, full_elect, locked, in_progress, need_req;
++	int done, elected, full_elect, locked, in_progress, need_req;
+ 	int ret, send_vote, t_ret;
+ 	u_int32_t ack, ctlflags, egen, nsites, orig_tally, priority, realpri;
+ 	u_int32_t tiebreaker;
+@@ -181,8 +181,7 @@ __rep_elect(dbenv, given_nsites, nvotes,
+ 			REP_SYSTEM_UNLOCK(env);
+ 			(void)__rep_send_message(env, DB_EID_BROADCAST,
+ 			    REP_MASTER_REQ, NULL, NULL, 0, 0);
+-			ret = __rep_wait(env, &to, &eid,
+-			    0, REP_F_EPHASE0);
++			ret = __rep_wait(env, &to, 0, REP_F_EPHASE0);
+ 			REP_SYSTEM_LOCK(env);
+ 			F_CLR(rep, REP_F_EPHASE0);
+ 			switch (ret) {
+@@ -286,11 +285,11 @@ restart:
+ 		REP_SYSTEM_LOCK(env);
+ 		goto vote;
+ 	}
+-	ret = __rep_wait(env, &to, &eid, full_elect, REP_F_EPHASE1);
++	ret = __rep_wait(env, &to, full_elect, REP_F_EPHASE1);
+ 	switch (ret) {
+ 		case 0:
+ 			/* Check if election complete or phase complete. */
+-			if (eid != DB_EID_INVALID && !IN_ELECTION(rep)) {
++			if (!IN_ELECTION(rep)) {
+ 				RPRINT(env, DB_VERB_REP_ELECT,
+ 				    (env, "Ended election phase 1"));
+ 				goto edone;
+@@ -398,15 +397,12 @@ phase2:
+ 		REP_SYSTEM_LOCK(env);
+ 		goto i_won;
+ 	}
+-	ret = __rep_wait(env, &to, &eid, full_elect, REP_F_EPHASE2);
++	ret = __rep_wait(env, &to, full_elect, REP_F_EPHASE2);
+ 	RPRINT(env, DB_VERB_REP_ELECT,
+ 	    (env, "Ended election phase 2 %d", ret));
+ 	switch (ret) {
+ 		case 0:
+-			if (eid != DB_EID_INVALID)
+-				goto edone;
+-			ret = DB_REP_UNAVAIL;
+-			break;
++			goto edone;
+ 		case DB_REP_EGENCHG:
+ 			if (to > timeout)
+ 				to = timeout;
+@@ -1050,13 +1046,6 @@ __rep_elect_master(env, rep)
+ 	ENV *env;
+ 	REP *rep;
+ {
+-	/*
+-	 * We often come through here twice, sometimes even more.  We mustn't
+-	 * let the redundant calls affect stats counting.  But rep_elect relies
+-	 * on this first part for setting eidp.
+-	 */
+-	rep->master_id = rep->eid;
+-
+ 	if (F_ISSET(rep, REP_F_MASTERELECT | REP_F_MASTER)) {
+ 		/* We've been through here already; avoid double counting. */
+ 		return;
+@@ -1093,10 +1082,10 @@ __rep_fire_elected(env, rep, egen)
+ 	(timeout > 5000000) ? 500000 : ((timeout >= 10) ? timeout / 10 : 1);
+ 
+ static int
+-__rep_wait(env, timeoutp, eidp, full_elect, flags)
++__rep_wait(env, timeoutp, full_elect, flags)
+ 	ENV *env;
+ 	db_timeout_t *timeoutp;
+-	int *eidp, full_elect;
++	int full_elect;
+ 	u_int32_t flags;
+ {
+ 	DB_REP *db_rep;
+@@ -1174,7 +1163,6 @@ __rep_wait(env, timeoutp, eidp, full_ele
+ 			F_CLR(rep, REP_F_EGENUPDATE);
+ 			ret = DB_REP_EGENCHG;
+ 		} else if (phase_over) {
+-			*eidp = rep->master_id;
+ 			done = 1;
+ 			ret = 0;
+ 		}
+--- a/repmgr/repmgr_net.c
++++ b/repmgr/repmgr_net.c
+@@ -100,6 +100,8 @@ __repmgr_send(dbenv, control, rec, lsnp,
+ 		    control, rec, &nsites_sent, &npeers_sent)) != 0)
+ 			goto out;
+ 	} else {
++		DB_ASSERT(env, IS_KNOWN_REMOTE_SITE(eid));
++
+ 		/*
+ 		 * If this is a request that can be sent anywhere, then see if
+ 		 * we can send it to our peer (to save load on the master), but

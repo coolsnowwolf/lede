@@ -1,0 +1,1149 @@
+#!/bin/sh /etc/rc.common
+# Copyright 2017-2020 Stan Grishin (stangri@melmac.net)
+# shellcheck disable=SC2039,SC1091,SC2016
+PKG_VERSION='dev-test'
+
+# shellcheck disable=SC2034
+START=94
+# shellcheck disable=SC2034
+USE_PROCD=1
+LC_ALL=C
+
+EXTRA_COMMANDS="check dl killcache sizes show version"
+EXTRA_HELP="	check Checks if specified domain is found in current block-list
+dl        Force-downloads all enabled block-list
+killcache Delete all cached files
+sizes     Displays the file-sizes of enabled block-listo
+show      Shows the service last-run status
+version   Show version information"
+
+readonly packageName='simple-adblock'
+readonly serviceName="$packageName $PKG_VERSION"
+readonly addnhostsFile="/var/run/${packageName}.addnhosts"
+readonly addnhostsCache="/var/run/${packageName}.addnhosts.cache"
+readonly addnhostsGzip="/etc/${packageName}.addnhosts.gz"
+readonly addnhostsOutputFilter='s|^|127.0.0.1 |;s|$||'
+readonly addnhostsOutputFilterIPv6='s|^|:: |;s|$||'
+readonly dnsmasqFile="/var/dnsmasq.d/${packageName}"
+readonly dnsmasqCache="/var/run/${packageName}.dnsmasq.cache"
+readonly dnsmasqGzip="/etc/${packageName}.dnsmasq.gz"
+readonly dnsmasqOutputFilter='s|^|local=/|;s|$|/|'
+readonly ipsetFile="/var/dnsmasq.d/${packageName}.ipset"
+readonly ipsetCache="/var/run/${packageName}.ipset.cache"
+readonly ipsetGzip="/etc/${packageName}.ipset.gz"
+readonly ipsetOutputFilter='s|^|ipset=/|;s|$|/adb|'
+readonly serversFile="/var/run/${packageName}.servers"
+readonly serversCache="/var/run/${packageName}.servers.cache"
+readonly serversGzip="/etc/${packageName}.servers.gz"
+readonly serversOutputFilter='s|^|server=/|;s|$|/|'
+readonly unboundFile="/var/lib/unbound/adb_list.${packageName}"
+readonly unboundCache="/var/run/${packageName}.unbound.cache"
+readonly unboundGzip="/etc/${packageName}.unbound.gz"
+readonly unboundOutputFilter='s|^|local-zone: "|;s|$|" static|'
+readonly A_TMP="/var/${packageName}.hosts.a.tmp"
+readonly B_TMP="/var/${packageName}.hosts.b.tmp"
+readonly jsonFile="/var/run/${packageName}.json"
+readonly sharedMemoryError="/dev/shm/$packageName-error"
+readonly sharedMemoryOutput="/dev/shm/$packageName-output"
+readonly hostsFilter='/localhost/d;/^#/d;/^[^0-9]/d;s/^0\.0\.0\.0.//;s/^127\.0\.0\.1.//;s/[[:space:]]*#.*$//;s/[[:cntrl:]]$//;s/[[:space:]]//g;/[`~!@#\$%\^&\*()=+;:"'\'',<>?/\|[{}]/d;/]/d;/\./!d;/^$/d;/[^[:alnum:]_.-]/d;'
+readonly domainsFilter='/^#/d;s/[[:space:]]*#.*$//;s/[[:space:]]*$//;s/[[:cntrl:]]$//;/[[:space:]]/d;/[`~!@#\$%\^&\*()=+;:"'\'',<>?/\|[{}]/d;/]/d;/\./!d;/^$/d;/[^[:alnum:]_.-]/d;'
+readonly _OK_='\033[0;32m\xe2\x9c\x93\033[0m'
+readonly _FAIL_='\033[0;31m\xe2\x9c\x97\033[0m'
+readonly __OK__='\033[0;32m[\xe2\x9c\x93]\033[0m'
+readonly __FAIL__='\033[0;31m[\xe2\x9c\x97]\033[0m'
+readonly _ERROR_='\033[0;31mERROR\033[0m'
+readonly _WARNING_='\033[0;33mWARNING\033[0m'
+
+version() { echo "$PKG_VERSION"; }
+
+getStatusText() {
+	local _ret
+	case "$1" in
+		statusNoInstall) _ret="$serviceName is not installed or not found";;
+		statusStopped) _ret="Stopped";;
+		statusStarting) _ret="Starting";;
+		statusRestarting) _ret="Restarting";;
+		statusForceReloading) _ret="Force Reloading";;
+		statusDownloading) _ret="Downloading";;
+		statusProcessing) _ret="Processing";;
+		statusError) _ret="Error";;
+		statusWarning) _ret="Warning";;
+		statusFail) _ret="Fail";;
+		statusSuccess) _ret="Success";;
+	esac
+	printf "%b" "$_ret"
+}
+getErrorText() {
+	local _ret
+	case "$1" in
+		errorOutputFileCreate) _ret="failed to create $outputFile file";;
+		errorFailDNSReload) _ret="failed to restart/reload DNS resolver";;
+		errorSharedMemory) _ret="failed to access shared memory";;
+		errorSorting) _ret="failed to sort data file";;
+		errorOptimization) _ret="failed to optimize data file";;
+		errorAllowListProcessing) _ret="failed to process allow-list";;
+		errorDataFileFormatting) _ret="failed to format data file";;
+		errorMovingDataFile) _ret="failed to move data file '${A_TMP}' to '${outputFile}'";;
+		errorCreatingCompressedCache) _ret="failed to create compressed cache";;
+		errorRemovingTempFiles) _ret="failed to remove temporary files";;
+		errorRestoreCompressedCache) _ret="failed to unpack compressed cache";;
+		errorRestoreCache) _ret="failed to move '$outputCache' to '$outputFile'";;
+		errorOhSnap) _ret="failed to create block-list or restart DNS resolver";;
+		errorStopping) _ret="failed to stop $serviceName";;
+		errorDNSReload) _ret="failed to reload/restart DNS resolver";;
+		errorDownloadingConfigUpdate) _ret="failed to download Config Update file";;
+		errorDownloadingList) _ret="failed to download";;
+		errorParsingList) _ret="failed to parse";;
+		errorParsingConfigUpdate) _ret="failed to parse Config Update file";;
+	esac
+	printf "%b" "$_ret"
+}
+
+output_ok() { output 1 "$_OK_"; output 2 "$__OK__\\n"; }
+output_okn() { output 1 "$_OK_\\n"; output 2 "$__OK__\\n"; }
+output_fail() { output 1 "$_FAIL_"; output 2 "$__FAIL__\\n"; }
+output_failn() { output 1 "$_FAIL_\\n"; output 2 "$__FAIL__\\n"; }
+str_replace() { printf "%b" "$1" | sed -e "s/$(printf "%b" "$2")/$(printf "%b" "$3")/g"; }
+str_contains() { test "$1" != "$(str_replace "$1" "$2" '')"; }
+compare_values() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
+is_chaos_calmer() { ubus -S call system board | grep -q 'Chaos Calmer'; }
+led_on(){ if [ -n "${1}" ] && [ -e "${1}/trigger" ]; then echo 'default-on' > "${1}/trigger" 2>&1; fi; }
+led_off(){ if [ -n "${1}" ] &&  [ -e "${1}/trigger" ]; then echo 'none' > "${1}/trigger" 2>&1; fi; }
+dnsmasq_hup() { killall -q -HUP dnsmasq; }
+dnsmasq_kill() { killall -q -KILL dnsmasq; }
+dnsmasq_restart() { /etc/init.d/dnsmasq restart >/dev/null 2>&1; }
+unbound_restart() { /etc/init.d/unbound restart >/dev/null 2>&1; }
+is_force_dns_active() { iptables-save | grep -q -w -- '--dport 53'; }
+is_present() { command -v "$1" >/dev/null 2>&1; }
+
+output() {
+# Can take a single parameter (text) to be output at any verbosity
+# Or target verbosity level and text to be output at specifc verbosity
+	local msg memmsg logmsg
+	if [ $# -ne 1 ]; then
+		if [ $((verbosity & $1)) -gt 0 ] || [ "$verbosity" = "$1" ]; then shift; else return 0; fi
+	fi
+	[ -t 1 ] && printf "%b" "$1"
+	msg="${1//$serviceName /service }";
+	if [ "$(printf "%b" "$msg" | wc -l)" -gt 0 ]; then
+		[ -s "$sharedMemoryOutput" ] && memmsg="$(cat "$sharedMemoryOutput")"
+		logmsg="$(printf "%b" "${memmsg}${msg}" | sed 's/\x1b\[[0-9;]*m//g')"
+		logger -t "${packageName:-service} [$$]" "$(printf "%b" "$logmsg")"
+		rm -f "$sharedMemoryOutput"
+	else
+		printf "%b" "$msg" >> "$sharedMemoryOutput"
+	fi
+}
+
+serviceEnabled=''; forceDNS=''; forceDNSPorts=''; parallelDL=''; debug='';
+compressedCache=''; ipv6Enabled=''; configUpdateEnabled=''; configUpdateURL='';
+bootDelay=''; dlTimeout=''; curlRetry=''; verbosity=''; led='';
+targetDNS=''; dnsInstance=''; 
+allowed_domains=''; allowed_domains_urls='';
+blocked_domains=''; blocked_domains_urls=''; blocked_hosts_urls='';
+dl_command=''; dl_flag=''; isSSLSupported=''; allowIDN='';
+outputFilter=''; outputFilterIPv6=''; outputFile=''; outputGzip=''; outputCache='';
+awk='awk';
+
+load_package_config() {
+	config_load "$packageName"
+	config_get_bool serviceEnabled        'config' 'enabled' 1
+	config_get_bool forceDNS              'config' 'force_dns' 1
+	config_get_bool parallelDL            'config' 'parallel_downloads' 1
+	config_get_bool debug                 'config' 'debug' 0
+	config_get_bool compressedCache       'config' 'compressed_cache' 0
+	config_get_bool ipv6Enabled           'config' 'ipv6_enabled' 0
+	config_get_bool configUpdateEnabled   'config' 'config_update_enabled' 0
+	config_get forceDNSPorts              'config' 'force_dns_port' '53 853'
+	config_get bootDelay                  'config' 'boot_delay' '120'
+	config_get dlTimeout                  'config' 'download_timeout' '20'
+	config_get curlRetry                  'config' 'curl_retry' '3'
+	config_get verbosity                  'config' 'verbosity' '2'
+	config_get led                        'config' 'led'
+	config_get targetDNS                  'config' 'dns' 'dnsmasq.servers'
+	config_get dnsInstance                'config' 'dns_instance' '0'
+	config_get allowed_domains            'config' 'allowed_domain'
+	config_get allowed_domains_urls       'config' 'allowed_domains_url'
+	config_get blocked_domains            'config' 'blocked_domain'
+	config_get blocked_domains_urls       'config' 'blocked_domains_url'
+	config_get blocked_hosts_urls         'config' 'blocked_hosts_url'
+	config_get configUpdateURL            'config' 'config_update_url' 'https://cdn.jsdelivr.net/gh/openwrt/packages/net/simple-adblock/files/simple-adblock.conf.update'
+
+	if [ "$targetDNS" != 'dnsmasq.addnhosts' ] && [ "$targetDNS" != 'dnsmasq.conf' ] && \
+		 [ "$targetDNS" != 'dnsmasq.servers' ] && [ "$targetDNS" != 'unbound.adb_list' ] && \
+		 [ "$targetDNS" != 'dnsmasq.ipset' ] ; then
+		targetDNS='dnsmasq.servers'
+	fi
+
+	case "$targetDNS" in
+		dnsmasq.addnhosts)
+			outputFilter="$addnhostsOutputFilter"
+			outputFile="$addnhostsFile"
+			outputCache="$addnhostsCache"
+			outputGzip="$addnhostsGzip"
+			[ "$ipv6Enabled" -gt 0 ] && outputFilterIPv6="$addnhostsOutputFilterIPv6"
+			rm -f "$dnsmasqFile" "$dnsmasqCache" "$dnsmasqGzip"
+			rm -f "$ipsetFile" "$ipsetCache" "$ipsetGzip"
+			rm -f "$serversFile" "$serversCache" "$serversGzip"
+			rm -f "$unboundFile" "$unboundCache" "$unboundGzip"
+			;;
+		dnsmasq.conf)
+			outputFilter="$dnsmasqOutputFilter"
+			outputFile="$dnsmasqFile"
+			outputCache="$dnsmasqCache"
+			outputGzip="$dnsmasqGzip"
+			rm -f "$addnhostsFile" "$addnhostsCache" "$addnhostsGzip"
+			rm -f "$ipsetFile" "$ipsetCache" "$ipsetGzip"
+			rm -f "$serversFile" "$serversCache" "$serversGzip"
+			rm -f "$unboundFile" "$unboundCache" "$unboundGzip"
+			;;
+		dnsmasq.ipset)
+			outputFilter="$ipsetOutputFilter"
+			outputFile="$ipsetFile"
+			outputCache="$ipsetCache"
+			outputGzip="$ipsetGzip"
+			rm -f "$dnsmasqFile" "$dnsmasqCache" "$dnsmasqGzip"
+			rm -f "$addnhostsFile" "$addnhostsCache" "$addnhostsGzip"
+			rm -f "$serversFile" "$serversCache" "$serversGzip"
+			rm -f "$unboundFile" "$unboundCache" "$unboundGzip"
+			;;
+		dnsmasq.servers)
+			outputFilter="$serversOutputFilter"
+			outputFile="$serversFile"
+			outputCache="$serversCache"
+			outputGzip="$serversGzip"
+			rm -f "$dnsmasqFile" "$dnsmasqCache" "$dnsmasqGzip"
+			rm -f "$addnhostsFile" "$addnhostsCache" "$addnhostsGzip"
+			rm -f "$ipsetFile" "$ipsetCache" "$ipsetGzip"
+			rm -f "$unboundFile" "$unboundCache" "$unboundGzip"
+			;;
+		unbound.adb_list)
+			outputFilter="$unboundOutputFilter"
+			outputFile="$unboundFile"
+			outputCache="$unboundCache"
+			outputGzip="$unboundGzip"
+			rm -f "$addnhostsFile" "$addnhostsCache" "$addnhostsGzip"
+			rm -f "$dnsmasqFile" "$dnsmasqCache" "$dnsmasqGzip"
+			rm -f "$ipsetFile" "$ipsetCache" "$ipsetGzip"
+			rm -f "$serversFile" "$serversCache" "$serversGzip"
+			;;
+	esac
+	if [ -z "${verbosity##*[!0-9]*}" ] || [ "$verbosity" -lt 0 ] || [ "$verbosity" -gt 2 ]; then
+		verbosity=1
+	fi
+	. /lib/functions/network.sh
+	. /usr/share/libubox/jshn.sh
+	is_present 'gawk' && awk='gawk'
+	if ! is_present '/usr/libexec/grep-gnu' || ! is_present '/usr/libexec/sed-gnu' || \
+		! is_present '/usr/libexec/sort-coreutils' || ! is_present 'gawk'; then
+			local s="opkg update; opkg --force-overwrite install"
+			is_present 'gawk' || s="$s gawk"
+			is_present '/usr/libexec/grep-gnu' || s="$s grep"
+			is_present '/usr/libexec/sed-gnu' || s="$s sed"
+			is_present '/usr/libexec/sort-coreutils' || s="$s coreutils-sort"
+			output "$_WARNING_: Some recommended packages are missing, install them by running:\\n"
+			output "$s;\\n"
+	fi
+	# Prefer curl because it supports the file:// scheme.
+	if is_present 'curl'; then
+		dl_command="curl --insecure --retry $curlRetry --connect-timeout $dlTimeout --silent"
+		dl_flag="-o"
+	elif is_present '/usr/libexec/wget-ssl'; then
+		dl_command="/usr/libexec/wget-ssl --no-check-certificate --timeout $dlTimeout -q"
+		dl_flag="-O"
+	elif is_present wget && wget --version 2>/dev/null | grep -q "+https"; then
+		dl_command="wget --no-check-certificate --timeout $dlTimeout -q"
+		dl_flag="-O"
+	else
+		dl_command="uclient-fetch --no-check-certificate --timeout $dlTimeout -q"
+		dl_flag="-O"
+	fi
+	led="${led:+/sys/class/leds/$led}"
+	if curl --version 2>/dev/null | grep -q "https" \
+		|| wget --version 2>/dev/null | grep -q "+https" \
+		|| grep -q "libustream-mbedtls" /usr/lib/opkg/status \
+		|| grep -q "libustream-openssl" /usr/lib/opkg/status \
+		|| grep -q "libustream-wolfssl" /usr/lib/opkg/status; then
+		isSSLSupported=1
+	else
+		unset isSSLSupported
+	fi
+}
+
+is_enabled() {
+	wan_if=''; wan_gw='';
+	load_package_config
+
+	if [ "$debug" -ne 0 ]; then
+		exec 1>>/tmp/simple-adblock.log
+		exec 2>&1
+		set -x
+	fi
+
+	if [ "$serviceEnabled" -eq 0 ]; then
+		case "$1" in
+			on_start)
+				output "$packageName is currently disabled.\\n"
+				output "Run the following commands before starting service again:\\n"
+				output "uci set ${packageName}.config.enabled='1'; uci commit $packageName;\\n"
+				;;
+		esac
+		return 1
+	fi
+
+	case $targetDNS in
+		dnsmasq.addnhosts | dnsmasq.conf | dnsmasq.ipset | dnsmasq.servers)
+			if dnsmasq -v 2>/dev/null | grep -q 'no-IDN' || ! dnsmasq -v 2>/dev/null | grep -q -w 'IDN'; then
+				allowIDN=0
+			else
+				allowIDN=1
+			fi
+			;;
+		unbound.adb_list)
+			allowIDN=1;;
+	esac
+
+	case $targetDNS in
+		dnsmasq.ipset)
+			if dnsmasq -v 2>/dev/null | grep -q 'no-ipset' || ! dnsmasq -v 2>/dev/null | grep -q -w 'ipset'; then
+				output "$_ERROR_: DNSMASQ ipset support is enabled in $packageName, but DNSMASQ is either not installed or installed DNSMASQ does not support ipsets!\\n"
+				targetDNS='dnsmasq.servers'
+			fi
+			if ! ipset help hash:net >/dev/null 2>&1; then
+				output "$_ERROR_: DNSMASQ ipset support is enabled in $packageName, but ipset is either not installed or installed ipset does not support 'hash:net' type!\\n"
+				targetDNS='dnsmasq.servers'
+			fi
+			;;
+	esac
+
+	[ ! -d "${outputFile%/*}" ] && mkdir -p "${outputFile%/*}"
+	[ ! -d "${outputCache%/*}" ] && mkdir -p "${outputFile%/*}"
+	[ ! -d "${outputGzip%/*}" ] && mkdir -p "${outputFile%/*}"
+	cacheOps 'testGzip' && return 0
+	network_flush_cache; network_find_wan wan_if; network_get_gateway wan_gw "$wan_if";
+	[ -n "$wan_gw" ] && return 0
+	output "$_ERROR_: $serviceName failed to discover WAN gateway.\\n"; return 1;
+}
+
+dnsmasqOps() {
+	local cfg="$1" param="$2"
+	case "$param" in
+		dnsmasq.addnhosts)
+			if [ "$(uci -q get dhcp."$cfg".serversfile)" = "$serversFile" ]; then
+				uci -q del dhcp."$cfg".serversfile
+			fi
+			if ! uci -q get dhcp."$cfg".addnhosts | grep -q "$addnhostsFile"; then
+				uci add_list dhcp."$cfg".addnhosts="$addnhostsFile"
+			fi
+			;;
+		dnsmasq.conf|dnsmasq.ipset|unbound.adb_list|cleanup)
+			uci -q del_list dhcp."$cfg".addnhosts="$addnhostsFile"
+			if [ "$(uci -q get dhcp."$cfg".serversfile)" = "$serversFile" ]; then
+				uci -q del dhcp."$cfg".serversfile
+			fi
+			;;
+		dnsmasq.servers)
+			uci -q del_list dhcp."$cfg".addnhosts="$addnhostsFile"
+			if [ "$(uci -q get dhcp."$cfg".serversfile)" != "$serversFile" ]; then
+				uci set dhcp."$cfg".serversfile="$serversFile"
+			fi
+			;;
+	esac
+}
+
+dnsOps() {
+	local param output_text i
+	case $1 in
+		on_start)
+			if [ ! -s "$outputFile" ]; then
+				jsonOps set status "statusFail"
+				jsonOps add error "errorOutputFileCreate"
+				output "$_ERROR_: $(getErrorText 'errorOutputFileCreate')!\\n"
+				return 1
+			fi
+
+			config_load 'dhcp'
+			if [ "$dnsInstance" = "*" ]; then
+				config_foreach dnsmasqOps 'dnsmasq' "$targetDNS"
+			elif [ -n "$dnsInstance" ]; then
+				for i in $dnsInstance; do
+					dnsmasqOps "@dnsmasq[$i]" "$targetDNS"
+				done
+			fi
+
+			case "$targetDNS" in
+				dnsmasq.addnhosts|dnsmasq.servers)
+					param=dnsmasq_hup
+					output_text='Reloading DNSMASQ'
+					;;
+				dnsmasq.conf|dnsmasq.ipset)
+					param=dnsmasq_restart
+					output_text='Restarting DNSMASQ'
+					;;
+				unbound.adb_list)
+					param=unbound_restart
+					output_text='Restarting Unbound'
+					;;
+			esac
+
+			if [ -n "$(uci changes dhcp)" ]; then
+				uci commit dhcp
+				if [ "$param" = 'unbound_restart' ]; then
+					param='dnsmasq_restart; unbound_restart;'
+					output_text='Restarting Unbound/DNSMASQ'
+				else
+					param=dnsmasq_restart
+					output_text='Restarting DNSMASQ'
+				fi
+			fi
+			output 1 "$output_text "
+			output 2 "$output_text "
+			jsonOps set message "$output_text"
+			if eval "$param"; then
+				jsonOps set status "statusSuccess"
+				led_on "$led"
+				output_okn
+			else 
+				output_fail
+				jsonOps set status "statusFail"
+				jsonOps add error "errorDNSReload"
+				output "$_ERROR_: $(getErrorText 'errorDNSReload')!\\n"
+				return 1
+			fi
+			;;
+		on_stop)
+			case "$targetDNS" in
+				dnsmasq.addnhosts | dnsmasq.servers)
+					param=dnsmasq_hup
+					;;
+				dnsmasq.conf | dnsmasq.ipset)
+					param=dnsmasq_restart
+					;;
+				unbound.adb_list)
+					param=unbound_restart
+					;;
+			esac
+			if [ -n "$(uci changes dhcp)" ]; then 
+				uci -q commit dhcp
+				if [ "$param" = 'unbound_restart' ]; then
+					param='dnsmasq_restart; unbound_restart;'
+				else
+					param=dnsmasq_restart
+				fi
+			fi
+			eval "$param"
+			return $?
+			;;
+		quiet)
+			case "$targetDNS" in
+				dnsmasq.addnhosts | dnsmasq.conf | dnsmasq.ipset | dnsmasq.servers)
+					param=dnsmasq_restart
+					;;
+				unbound.adb_list)
+					param=unbound_restart
+					;;
+			esac
+			eval "$param"
+			return $?
+			;;
+	esac
+}
+
+jsonOps() {
+# shellcheck disable=SC2034
+	local action="$1" param="$2" value="$3"
+	local status message error stats
+	local reload restart curReload curRestart ret i
+	if [ -s "$jsonFile" ]; then
+		json_load_file "$jsonFile" 2>/dev/null
+		json_select 'data' 2>/dev/null
+		for i in status message error stats reload restart; do
+			json_get_var $i "$i" 2>/dev/null
+		done
+	fi
+	case "$action" in
+		get)
+			case "$param" in
+				triggers)
+					curReload="$parallelDL $debug $dlTimeout $allowed_domains $blocked_domains $allowed_domains_urls $blocked_domains_urls $blocked_hosts_urls $targetDNS $configUpdateEnabled $configUpdateURL"
+					curRestart="$compressedCache $forceDNS $led $forceDNSPorts"
+					if [ ! -s "$jsonFile" ]; then
+						ret='on_boot'
+					elif [ "$curReload" != "$reload" ]; then
+						ret='download'
+					elif [ "$curRestart" != "$restart" ]; then
+						ret='restart'
+					fi
+					printf "%b" "$ret"
+					return;;
+				*)
+					printf "%b" "$(eval echo "\$$param")"; return;;
+			esac
+			;;
+		add)
+			if [ -n "$(eval echo "\$$param")" ]; then
+				value="$(eval echo "\$$param") ${value}"
+			fi
+				eval "$param"='${value}'
+			;;
+		del)
+			case "$param" in
+				all)
+					unset status message error stats;;
+				triggers) 
+					unset reload restart;;
+				*)
+					unset "$param";;
+			esac
+			;;
+		set)
+			case "$param" in
+				triggers) 
+					reload="$parallelDL $debug $dlTimeout $allowed_domains $blocked_domains $allowed_domains_urls $blocked_domains_urls $blocked_hosts_urls $targetDNS $configUpdateEnabled $configUpdateURL"
+					restart="$compressedCache $forceDNS $led $forceDNSPorts"
+					;;
+				*)
+					eval "$param"='$value';;
+			esac
+			;;
+	esac
+	json_init
+	json_add_object 'data'
+	json_add_string version "$PKG_VERSION"
+	json_add_string status "$status"
+	json_add_string message "$message"
+	json_add_string error "$error"
+	json_add_string stats "$stats"
+	json_add_string reload "$reload"
+	json_add_string restart "$restart"
+	json_close_object
+	json_dump > "$jsonFile"
+	sync
+}
+
+cacheOps() {
+	local R_TMP
+	case "$1" in
+		create|backup)
+			[ -s "$outputFile" ] && { mv -f "$outputFile" "$outputCache"; true > "$outputFile"; } >/dev/null 2>/dev/null
+			return $?
+			;;
+		restore|use)
+			[ -s "$outputCache" ] && mv "$outputCache" "$outputFile" >/dev/null 2>/dev/null
+			return $?
+			;;
+		test)
+			[ -s "$outputCache" ]
+			return $?
+			;;
+		testGzip)
+			[ -s "$outputGzip" ] && gzip -t -c "$outputGzip"
+			return $?
+			;;
+		createGzip)
+			R_TMP="$(mktemp -u -q -t ${packageName}_tmp.XXXXXXXX)"
+			if gzip < "$outputFile" > "$R_TMP"; then
+				if mv "$R_TMP" "$outputGzip"; then
+					rm -f "$R_TMP"
+					return 0
+				else
+					rm -f "$R_TMP"
+					return 1
+				fi
+			else
+				return 1
+			fi
+			;;
+		expand|unpack|expandGzip|unpackGzip)
+			[ -s "$outputGzip" ] && gzip -dc < "$outputGzip" > "$outputCache"
+			return $?
+			;;
+	esac
+}
+
+process_url() {
+	local label type D_TMP R_TMP
+	if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then return 1; fi
+	label="${1##*//}"; label="${label%%/*}";
+	if [ "$2" = 'hosts' ]; then
+		label="Hosts:   $label"; filter="$hostsFilter";
+	else
+		label="Domains: $label"; filter="$domainsFilter";
+	fi
+	if [ "$3" = 'blocked' ]; then
+		type='Blocked'; D_TMP="$B_TMP";
+	else
+		type='Allowed'; D_TMP="$A_TMP";
+	fi
+	if [ "${1:0:5}" == "https" ] && [ -z "$isSSLSupported" ]; then
+		output 1 "$_FAIL_"
+		output 2 "[DL] $type $label $__FAIL__\\n"
+		echo "errorNoSSLSupport|${1}" >> "$sharedMemoryError"
+		return 0
+	fi
+	while [ -z "$R_TMP" ] || [ -e "$R_TMP" ]; do
+		R_TMP="$(mktemp -u -q -t ${packageName}_tmp.XXXXXXXX)"
+	done
+	if ! $dl_command "$1" $dl_flag "$R_TMP" 2>/dev/null || [ ! -s "$R_TMP" ]; then
+		output 1 "$_FAIL_"
+		output 2 "[DL] $type $label $__FAIL__\\n"
+		echo "errorDownloadingList|${1}" >> "$sharedMemoryError"
+	else
+		sed -i "$filter" "$R_TMP"
+		if [ ! -s "$R_TMP" ]; then
+			output 1 "$_FAIL_"
+			output 2 "[DL] $type $label $__FAIL__\\n"
+			echo "errorParsingList|${1}" >> "$sharedMemoryError"
+		else
+			cat "${R_TMP}" >> "$D_TMP"
+			output 1 "$_OK_"
+			output 2 "[DL] $type $label $__OK__\\n"
+		fi
+	fi
+	rm -f "$R_TMP"
+	return 0
+}
+
+process_config_update() {
+	local label R_TMP
+	[ "$configUpdateEnabled" -eq 0 ] && return 0
+	label="${1##*//}"; label="${label%%/*}";
+	while [ -z "$R_TMP" ] || [ -e "$R_TMP" ]; do
+		R_TMP="$(mktemp -u -q -t ${packageName}_tmp.XXXXXXXX)"
+	done
+	if ! $dl_command "$1" $dl_flag "$R_TMP" 2>/dev/null || [ ! -s "$R_TMP" ]; then
+		output 1 "$_FAIL_"
+		output 2 "[DL] Config  Update:  $label $__FAIL__\\n"
+		jsonOps add error "errorDownloadingConfigUpdate"
+	else
+		if [ -s "$R_TMP" ] && sed -f "$R_TMP" -i /etc/config/simple-adblock 2>/dev/null; then
+			output 1 "$_OK_"
+			output 2 "[DL] Config  Update:  $label $__OK__\\n"
+		else
+			output 1 "$_FAIL_"
+			output 2 "[DL] Config  Update:  $label $__FAIL__\\n"
+			jsonOps add error "errorParsingConfigUpdate"
+		fi
+	fi
+	rm -f "$R_TMP"
+	return 0
+}
+
+download_lists() {
+	local hf w_filter j=0 R_TMP
+
+	jsonOps set message "$(getStatusText "statusDownloading")..."
+	jsonOps set status "statusDownloading"
+
+	rm -f "$A_TMP" "$B_TMP" "$outputFile" "$outputCache" "$outputGzip"
+	if [ "$($awk '/^MemFree/ {print int($2/1000)}' "/proc/meminfo")" -lt 32 ]; then
+		output 3 'Low free memory, restarting resolver... '
+		if dnsOps 'quiet'; then
+			output_okn
+		else 
+			output_fail
+		fi
+	fi
+	touch $A_TMP; touch $B_TMP;
+	output 1 'Downloading lists '
+	process_config_update "$configUpdateURL"
+	rm -f "$sharedMemoryError"
+	if [ -n "$blocked_hosts_urls" ]; then
+		for hf in ${blocked_hosts_urls}; do
+			if [ "$parallelDL" -gt 0 ]; then
+				process_url "$hf" 'hosts' 'blocked' &
+			else
+				process_url "$hf" 'hosts' 'blocked'
+			fi
+		done
+	fi
+	if [ -n "$blocked_domains_urls" ]; then
+		for hf in ${blocked_domains_urls}; do
+			if [ "$parallelDL" -gt 0 ]; then
+				process_url "$hf" 'domains' 'blocked' &
+			else
+				process_url "$hf" 'domains' 'blocked'
+			fi
+		done
+	fi
+	if [ -n "$allowed_domains_urls" ]; then
+		for hf in ${allowed_domains_urls}; do
+			if [ "$parallelDL" -gt 0 ]; then
+				process_url "$hf" 'domains' 'allowed' &
+			else
+				process_url "$hf" 'domains' 'allowed'
+			fi
+		done
+	fi
+	wait
+	output 1 '\n'
+	if [ -s "$sharedMemoryError" ]; then
+		while IFS= read -r line; do
+			jsonOps add error "$line"
+		done < "$sharedMemoryError"
+		rm -f "$sharedMemoryError"
+	fi
+
+	[ -n "$blocked_domains" ] && for hf in ${blocked_domains}; do echo "$hf" | sed "$domainsFilter" >> $B_TMP; done
+	allowed_domains="${allowed_domains}
+$(cat $A_TMP)"
+	[ -n "$allowed_domains" ] && for hf in ${allowed_domains}; do hf="$(echo "$hf" | sed 's/\./\\./g')"; w_filter="$w_filter/${hf}$/d;"; done
+
+	[ ! -s "$B_TMP" ] && return 1
+
+	output 1 'Processing downloads '
+	output 2 'Sorting combined list '
+	jsonOps set message "$(getStatusText "statusProcessing"): sorting combined list"
+	if [ "$allowIDN" -gt 0 ]; then
+		if sort -u "$B_TMP" > "$A_TMP"; then
+			output_ok
+		else
+			output_failn
+			jsonOps add error "errorSorting"
+		fi
+	else
+		if sort -u "$B_TMP" | grep -E -v '[^a-zA-Z0-9=/.-]' > "$A_TMP"; then
+			output_ok
+		else
+			output_failn
+			jsonOps add error "errorSorting"
+		fi
+	fi
+
+	if [ "$targetDNS" = 'dnsmasq.conf' ] || \
+		 [ "$targetDNS" = 'dnsmasq.ipset' ] || \
+		 [ "$targetDNS" = 'dnsmasq.servers' ] || \
+		 [ "$targetDNS" = 'unbound.adb_list' ]; then
+		# TLD optimization written by Dirk Brenken (dev@brenken.org)
+		output 2 'Optimizing combined list '
+		jsonOps set message "$(getStatusText "statusProcessing"): optimizing combined list"
+# 	sed -E 'G;:t;s/(.*)(\.)(.*)(\n)(.*)/\1\4\5\2\3/;tt;s/(.*)\n(\.)(.*)/\3\2\1/' is actually slower than command below
+		if $awk -F "." '{for(f=NF;f>1;f--)printf "%s.",$f;print $1}' "$A_TMP" > "$B_TMP"; then
+			if sort "$B_TMP" > "$A_TMP"; then
+				if $awk '{if(NR=1){tld=$NF};while(getline){if($NF!~tld"\\."){print tld;tld=$NF}}print tld}' "$A_TMP" > "$B_TMP"; then
+					if $awk -F "." '{for(f=NF;f>1;f--)printf "%s.",$f;print $1}' "$B_TMP" > "$A_TMP"; then
+						if sort -u "$A_TMP" > "$B_TMP"; then
+							output_ok
+						else
+							output_failn
+							jsonOps add error "errorOptimization"
+							mv "$A_TMP" "$B_TMP"
+						fi
+					else
+						output_failn
+						jsonOps add error "errorOptimization"
+					fi
+				else
+					output_failn
+					jsonOps add error "errorOptimization"
+					mv "$A_TMP" "$B_TMP"
+				fi
+			else
+				output_failn
+				jsonOps add error "errorOptimization"
+			fi
+		else
+			output_failn
+			jsonOps add error "errorOptimization"
+			mv "$A_TMP" "$B_TMP"
+		fi
+	else
+		mv "$A_TMP" "$B_TMP"
+	fi
+
+	output 2 'Allowing domains '
+	jsonOps set message "$(getStatusText "statusProcessing"): allowing domains"
+	if sed -i "$w_filter" "$B_TMP"; then
+		output_ok
+	else
+		output_failn
+		jsonOps add error "errorAllowListProcessing"
+	fi
+
+	output 2 'Formatting merged file '
+	jsonOps set message "$(getStatusText "statusProcessing"): formatting merged file"
+	if [ -z "$outputFilterIPv6" ]; then
+		if sed "$outputFilter" "$B_TMP" > "$A_TMP"; then
+			output_ok
+		else
+			output_failn
+			jsonOps add error "errorDataFileFormatting"
+		fi
+	else
+		case "$targetDNS" in
+			dnsmasq.addnhosts)
+				if sed "$outputFilter" "$B_TMP" > "$A_TMP" && \
+					sed "$outputFilterIPv6" "$B_TMP" >> "$A_TMP"; then
+					output_ok
+				else
+					output_failn
+					jsonOps add error "errorDataFileFormatting"
+				fi
+				;;
+		esac
+	fi
+
+	case "$targetDNS" in
+		dnsmasq.addnhosts)
+			output 2 'Creating DNSMASQ addnhosts file '
+			jsonOps set message "$(getStatusText "statusProcessing"): creating DNSMASQ addnhosts file"
+			;;
+		dnsmasq.conf)
+			output 2 'Creating DNSMASQ config file '
+			jsonOps set message "$(getStatusText "statusProcessing"): creating DNSMASQ config file"
+			;;
+		dnsmasq.ipset)
+			output 2 'Creating DNSMASQ ipset file '
+			jsonOps set message "$(getStatusText "statusProcessing"): creating DNSMASQ ipset file"
+			;;
+		dnsmasq.servers)
+			output 2 'Creating DNSMASQ servers file '
+			jsonOps set message "$(getStatusText "statusProcessing"): creating DNSMASQ servers file"
+			;;
+		unbound.adb_list)
+			output 2 'Creating Unbound adb_list file '
+			jsonOps set message "$(getStatusText "statusProcessing"): creating Unbound adb_list file"
+			;;
+	esac
+	if mv "$A_TMP" "$outputFile"; then
+		output_ok
+	else
+		output_failn
+		jsonOps add error "errorMovingDataFile"
+	fi
+	if [ "$compressedCache" -gt 0 ]; then
+		output 2 'Creating compressed cache '
+		jsonOps set message "$(getStatusText "statusProcessing"): creating compressed cache"
+		if cacheOps 'createGzip'; then
+			output_ok
+		else
+			output_failn
+			jsonOps add error "errorCreatingCompressedCache"
+		fi
+	else
+		rm -f "$outputGzip"
+	fi
+	output 2 'Removing temporary files '
+	jsonOps set message "$(getStatusText "statusProcessing"): removing temporary files"
+	rm -f "/tmp/${packageName}_tmp.*" "$A_TMP" "$B_TMP" "$outputCache" || j=1
+	if [ $j -eq 0 ]; then
+		output_ok
+	else
+		output_failn
+		jsonOps add error "errorRemovingTempFiles"
+	fi
+	output 1 '\n'
+}
+
+boot() { 
+	load_package_config
+	sleep "$bootDelay"
+	rc_procd start_service 'on_boot' && rc_procd service_triggers
+}
+
+start_service() {
+	is_enabled 'on_start' || return 1
+	local action status error message stats c
+
+	status="$(jsonOps get status)"
+	error="$(jsonOps get error)"
+	message="$(jsonOps get message)"
+	stats="$(jsonOps get stats)"
+	action="$(jsonOps get triggers)"
+
+	if [ "$action" = 'on_boot' ] || [ "$1" = 'on_boot' ]; then
+		if cacheOps 'testGzip' || cacheOps 'test'; then
+			action='restore'
+		else
+			action='download'
+		fi
+	elif [ "$action" = 'download' ] || [ "$1" = 'download' ] || [ -n "$error" ]; then
+		action='download'
+	elif [ ! -s "$outputFile" ]; then 
+		if cacheOps 'testGzip' || cacheOps 'test'; then
+			action='restore'
+		else
+			action='download'
+		fi
+	elif [ "$action" = 'restart' ] || [ "$1" = 'restart' ]; then
+		action='restart'
+	elif [ -s "$outputFile" ] && [ "$status" = "statusSuccess" ] && [ -z "$error" ]; then
+		showstatus
+		exit 0
+	else
+		action='download'
+	fi
+
+	jsonOps del all
+	jsonOps set triggers
+
+	procd_open_instance 'main'
+	procd_set_param command /bin/true
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_open_data
+	json_add_array firewall
+	if [ "$forceDNS" -ne 0 ]; then
+		for c in $forceDNSPorts; do
+			if netstat -tuln | grep LISTEN | grep ":${c}" >/dev/null 2>&1; then
+				json_add_object ""
+				json_add_string type redirect
+				json_add_string target DNAT
+				json_add_string src lan
+				json_add_string proto "tcp udp"
+				json_add_string src_dport "$c"
+				json_add_string dest_port "$c"
+				json_add_boolean reflection 0
+				json_close_object
+			else
+				json_add_object ""
+				json_add_string type rule
+				json_add_string src lan
+				json_add_string dest "*"
+				json_add_string proto "tcp udp"
+				json_add_string dest_port "$c"
+				json_add_string target REJECT
+				json_close_object
+			fi
+		done
+	fi
+	if [ "$targetDNS" = 'dnsmasq.ipset' ]; then
+		json_add_object ""
+		json_add_string type ipset
+		json_add_string name adb
+		json_add_string match dest_net
+		json_add_string storage hash
+		json_close_object
+		json_add_object ""
+		json_add_string type rule
+		json_add_string ipset adb
+		json_add_string src lan
+		json_add_string dest "*"
+		json_add_string proto "tcp udp"
+		json_add_string target REJECT
+		json_close_object
+	fi
+	json_close_array
+	procd_close_data
+	procd_close_instance
+
+	if [ "$action" = 'restore' ]; then
+		output 0 "Starting $serviceName... "
+		output 3 "Starting $serviceName...\\n"
+		jsonOps set status "statusStarting"
+		if cacheOps 'testGzip' && ! cacheOps 'test' && [ ! -s "$outputFile" ]; then
+			output 3 'Found compressed cache file, unpacking it '
+			jsonOps set message 'found compressed cache file, unpacking it.'
+			if cacheOps 'unpackGzip'; then
+				output_okn
+			else
+				output_fail
+				jsonOps add error "errorRestoreCompressedCache"
+				output "$_ERROR_: $(getErrorText 'errorRestoreCompressedCache')!\\n"
+				action='download'
+			fi
+		fi
+		if cacheOps 'test' && [ ! -s "$outputFile" ]; then
+			output 3 'Found cache file, reusing it '
+			jsonOps set message 'found cache file, reusing it.'
+			if cacheOps 'restore'; then 
+				output_okn
+				dnsOps 'on_start'
+			else
+				output_fail
+				jsonOps add error "errorRestoreCache"
+				output "$_ERROR_: $(getErrorText 'errorRestoreCache')!\\n"
+				action='download'
+			fi
+		fi
+	fi
+	if [ "$action" = 'download' ]; then
+		if [ -s "$outputFile" ] || cacheOps 'test' || cacheOps 'testGzip'; then
+			output 0 "Force-reloading $serviceName... "
+			output 3 "Force-reloading $serviceName...\\n"
+			jsonOps set status "statusForceReloading"
+		else
+			output 0 "Starting $serviceName... "
+			output 3 "Starting $serviceName...\\n"
+			jsonOps set status "statusStarting"
+		fi
+		download_lists
+		dnsOps 'on_start'
+	fi
+	if [ "$action" = 'restart' ]; then
+		output 0 "Restarting $serviceName... "
+		output 3 "Restarting $serviceName...\\n"
+		jsonOps set status "statusRestarting"
+		dnsOps 'on_start'
+	fi
+	if [ "$action" = 'start' ]; then
+		output 0 "Starting $serviceName... "
+		output 3 "Starting $serviceName...\\n"
+		jsonOps set status "statusStarting"
+		dnsOps 'on_start'
+	fi
+	if [ -s "$outputFile" ] && [ "$(jsonOps get status)" != "statusFail" ]; then
+		output 0 "$__OK__\\n";
+		jsonOps del message
+		jsonOps set status "statusSuccess"
+		jsonOps set stats "$serviceName is blocking $(wc -l < "$outputFile") domains (with ${targetDNS})"
+		showstatus
+	else
+		output 0 "$__FAIL__\\n";
+		jsonOps set status "statusFail"
+		jsonOps add error "errorOhSnap"
+		showstatus
+	fi
+}
+
+service_started() { procd_set_config_changed firewall; }
+service_stopped() { procd_set_config_changed firewall; }
+
+restart_service() { rc_procd start_service 'restart'; }
+reload_service() { rc_procd start_service 'restart'; }
+dl() { rc_procd start_service 'download'; }
+
+killcache() {
+	rm -f "$addnhostsCache" "$addnhostsGzip"
+	rm -f "$dnsmasqCache" "$dnsmasqGzip"
+	rm -f "$ipsetCache" "$ipsetGzip"
+	rm -f "$serversCache" "$serversGzip"
+	rm -f "$unboundCache" "$unboundGzip"
+	config_load 'dhcp'
+	config_foreach dnsmasqOps 'dnsmasq' 'cleanup'
+	uci -q commit 'dhcp'
+	return 0
+}
+
+show() { showstatus; }
+status_service() { showstatus; }
+showstatus() {
+	local c url status message error stats
+	status="$(jsonOps get status)"
+	message="$(jsonOps get message)"
+	error="$(jsonOps get error)"
+	stats="$(jsonOps get stats)"
+	if [ "$status" = "statusSuccess" ]; then
+		output "$stats "; output_okn;
+	else
+		[ -n "$status" ] && status="$(getStatusText "$status")"
+		if [ -n "$status" ] && [ -n "$message" ]; then 
+			status="${status}: $message"
+		fi
+		[ -n "$status" ] && output "$serviceName $status\\n"
+	fi
+	if [ -n "$error" ]; then
+		for c in $error; do
+			url="${c##*|}"
+			c="${c%|*}"
+			case "$c" in
+				errorDownloadingList|errorParsingList)
+					output "$_ERROR_: $(getErrorText "$c") $url!\\n";;
+				*)
+					output "$_ERROR_: $(getErrorText "$c")!\\n";;
+			esac
+			let n=n+1
+		done
+	fi
+}
+
+stop_service() {
+	load_package_config
+	if [ -s "$outputFile" ]; then
+		output "Stopping $serviceName... "
+		cacheOps 'create'
+		if dnsOps 'on_stop'; then
+			led_off "$led"
+			output 0 "$__OK__\\n"; output_okn;
+			jsonOps set status "statusStopped"
+			jsonOps del message
+		else 
+			output 0 "$__FAIL__\\n"; output_fail;
+			jsonOps set status "statusFail"
+			jsonOps add error "errorStopping"
+			output "$_ERROR_: $(getErrorText 'errorStopping')!\\n"
+		fi
+	fi
+}
+
+service_triggers() {
+	procd_open_trigger
+	procd_add_config_trigger 'config.change' "${packageName}" /etc/init.d/${packageName} reload
+	procd_add_reload_interface_trigger 'wan'
+	procd_add_interface_trigger 'interface.*.up' 'wan' /etc/init.d/${packageName} reload
+	procd_close_trigger
+}
+
+check() {
+	load_package_config
+	local c string="$1" 
+	c="$(grep -c "$string" "$outputFile")"
+	if [ ! -s "$outputFile" ]; then
+		echo "No block-list ('$outputFile') found."
+	elif [ -z "$string" ]; then
+		echo "Usage: /etc/init.d/${packageName} check string"
+	elif [ "$c" -gt 0 ]; then
+		if [ "$c" -gt 1 ]; then
+			echo "Found $c matches for '$string' in '$outputFile':"
+		else
+			echo "Found 1 match for '$string' in '$outputFile':"
+		fi
+		case "$targetDNS" in
+			dnsmasq.addnhosts)
+				grep "$string" "$outputFile" | sed 's|^127.0.0.1 ||;s|^:: ||;';;
+			dnsmasq.conf)
+				grep "$string" "$outputFile" | sed 's|local=/||;s|/$||;';;
+			dnsmasq.ipset)
+				grep "$string" "$outputFile" | sed 's|ipset=/||;s|/adb$||;';;
+			dnsmasq.servers)
+				grep "$string" "$outputFile" | sed 's|server=/||;s|/$||;';;
+			unbound.adb_list)
+				grep "$string" "$outputFile" | sed 's|^local-zone: "||;s|" static$||;';;
+		esac
+	else
+		echo "The $string is not found in current block-list ('$outputFile')."
+	fi
+}
+
+sizes() {
+	local i
+	load_package_config
+	echo "# $(date)"
+
+	for i in $blocked_domains_urls; do
+		[ "${i//melmac}" != "$i" ] && continue
+		if $dl_command "$i" $dl_flag /tmp/sast 2>/dev/null && [ -s /tmp/sast ]; then
+			echo "# File size: $(du -sh /tmp/sast | $awk '{print $1}')"
+			if compare_values "$(du -sk /tmp/sast)" "500"; then
+				echo "# block-list too big for most routers"
+			elif compare_values "$(du -sk /tmp/sast)" "100"; then
+				echo "# block-list may be too big for some routers"
+			fi
+			rm -rf /tmp/sast
+			echo "  list blocked_domains_url '$i'"
+			echo ""
+		else
+			echo "# site was down on last check"
+			echo "#  list blocked_domains_url '$i'"
+			echo ""
+		fi
+	done
+
+	for i in $blocked_hosts_urls; do
+		if $dl_command "$i" $dl_flag /tmp/sast 2>/dev/null && [ -s /tmp/sast ]; then
+			echo "# File size: $(du -sh /tmp/sast | $awk '{print $1}')"
+			if compare_values "$(du -sk /tmp/sast)" "500"; then
+				echo "# block-list too big for most routers"
+			elif compare_values "$(du -sk /tmp/sast)" "100"; then
+				echo "# block-list may be too big for some routers"
+			fi
+			rm -rf /tmp/sast
+			echo "  list blocked_hosts_url '$i'"
+			echo ""
+		else
+			echo "# site was down on last check"
+			echo "#  list blocked_hosts_url '$i'"
+			echo ""
+		fi
+	done
+}

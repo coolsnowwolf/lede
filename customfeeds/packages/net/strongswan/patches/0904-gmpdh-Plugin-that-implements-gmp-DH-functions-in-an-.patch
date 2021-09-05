@@ -1,0 +1,239 @@
+From 9f60c2ea6394facac55b90ef66466e1b9edef2a9 Mon Sep 17 00:00:00 2001
+From: Noel Kuntze <noel.kuntze@thermi.consulting>
+Date: Mon, 12 Jul 2021 01:34:23 +0200
+Subject: [PATCH 904/904] gmpdh: Plugin that implements gmp DH functions in an
+ extra plugin. Links and uses gmp plugin source and header files. Patch taken
+ verbatim from openwrt package sources.
+
+---
+ configure.ac                                  |   4 +
+ src/libstrongswan/Makefile.am                 |   7 ++
+ src/libstrongswan/plugins/gmpdh/Makefile.am   |  19 ++++
+ .../plugins/gmpdh/gmpdh_plugin.c              | 101 ++++++++++++++++++
+ .../plugins/gmpdh/gmpdh_plugin.h              |  42 ++++++++
+ 5 files changed, 173 insertions(+)
+ create mode 100644 src/libstrongswan/plugins/gmpdh/Makefile.am
+ create mode 100644 src/libstrongswan/plugins/gmpdh/gmpdh_plugin.c
+ create mode 100644 src/libstrongswan/plugins/gmpdh/gmpdh_plugin.h
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -146,6 +146,7 @@ ARG_DISBL_SET([fips-prf],       [disable
+ ARG_ENABL_SET([gcm],            [enables the GCM AEAD wrapper crypto plugin.])
+ ARG_ENABL_SET([gcrypt],         [enables the libgcrypt plugin.])
+ ARG_DISBL_SET([gmp],            [disable GNU MP (libgmp) based crypto implementation plugin.])
++ARG_DISBL_SET([gmpdh],          [disable GNU MP (libgmp) based static-linked crypto DH minimal implementation plugin.])
+ ARG_DISBL_SET([curve25519],     [disable Curve25519 Diffie-Hellman plugin.])
+ ARG_DISBL_SET([hmac],           [disable HMAC crypto implementation plugin.])
+ ARG_ENABL_SET([md4],            [enable MD4 software implementation plugin.])
+@@ -1483,6 +1484,7 @@ ADD_PLUGIN([botan],                [s ch
+ ADD_PLUGIN([af-alg],               [s charon scepclient pki scripts medsrv attest nm cmd aikgen])
+ ADD_PLUGIN([fips-prf],             [s charon nm cmd])
+ ADD_PLUGIN([gmp],                  [s charon scepclient pki scripts manager medsrv attest nm cmd aikgen fuzz])
++ADD_PLUGIN([gmpdh],                [s charon scepclient pki scripts manager medsrv attest nm cmd aikgen])
+ ADD_PLUGIN([curve25519],           [s charon pki scripts nm cmd])
+ ADD_PLUGIN([agent],                [s charon nm cmd])
+ ADD_PLUGIN([keychain],             [s charon cmd])
+@@ -1624,6 +1626,7 @@ AM_CONDITIONAL(USE_SHA3, test x$sha3 = x
+ AM_CONDITIONAL(USE_MGF1, test x$mgf1 = xtrue)
+ AM_CONDITIONAL(USE_FIPS_PRF, test x$fips_prf = xtrue)
+ AM_CONDITIONAL(USE_GMP, test x$gmp = xtrue)
++AM_CONDITIONAL(USE_GMPDH, test x$gmpdh = xtrue)
+ AM_CONDITIONAL(USE_CURVE25519, test x$curve25519 = xtrue)
+ AM_CONDITIONAL(USE_RDRAND, test x$rdrand = xtrue)
+ AM_CONDITIONAL(USE_AESNI, test x$aesni = xtrue)
+@@ -1901,6 +1904,7 @@ AC_CONFIG_FILES([
+ 	src/libstrongswan/plugins/mgf1/Makefile
+ 	src/libstrongswan/plugins/fips_prf/Makefile
+ 	src/libstrongswan/plugins/gmp/Makefile
++	src/libstrongswan/plugins/gmpdh/Makefile
+ 	src/libstrongswan/plugins/curve25519/Makefile
+ 	src/libstrongswan/plugins/rdrand/Makefile
+ 	src/libstrongswan/plugins/aesni/Makefile
+--- a/src/libstrongswan/Makefile.am
++++ b/src/libstrongswan/Makefile.am
+@@ -345,6 +345,13 @@ if MONOLITHIC
+ endif
+ endif
+ 
++if USE_GMPDH
++  SUBDIRS += plugins/gmpdh
++if MONOLITHIC
++  libstrongswan_la_LIBADD += plugins/gmpdh/libstrongswan-gmpdh.la
++endif
++endif
++
+ if USE_CURVE25519
+   SUBDIRS += plugins/curve25519
+ if MONOLITHIC
+--- /dev/null
++++ b/src/libstrongswan/plugins/gmpdh/Makefile.am
+@@ -0,0 +1,19 @@
++AM_CPPFLAGS = \
++	-I$(top_srcdir)/src/libstrongswan
++
++AM_CFLAGS = \
++	$(PLUGIN_CFLAGS)
++
++if MONOLITHIC
++noinst_LTLIBRARIES = libstrongswan-gmpdh.la
++else
++plugin_LTLIBRARIES = libstrongswan-gmpdh.la
++endif
++
++libstrongswan_gmpdh_la_SOURCES = \
++	gmpdh_plugin.h gmpdh_plugin.c \
++	../gmp/gmp_diffie_hellman.c ../gmp/gmp_diffie_hellman.h
++
++
++libstrongswan_gmpdh_la_LDFLAGS = -module -avoid-version -Wl,-Bstatic -Wl,-lgmp -Wl,-Bdynamic -Wl,--as-needed $(FPIC)
++libstrongswan_gmpdh_la_LIBADD  =
+--- /dev/null
++++ b/src/libstrongswan/plugins/gmpdh/gmpdh_plugin.c
+@@ -0,0 +1,101 @@
++/*
++ * Copyright (C) 2008-2009 Martin Willi
++ * Hochschule fuer Technik Rapperswil
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.  See <http://www.fsf.org/copyleft/gpl.txt>.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * for more details.
++ */
++
++#include "gmpdh_plugin.h"
++
++#include <library.h>
++#include "../gmp/gmp_diffie_hellman.h"
++
++typedef struct private_gmpdh_plugin_t private_gmpdh_plugin_t;
++
++/**
++ * private data of gmp_plugin
++ */
++struct private_gmpdh_plugin_t {
++
++	/**
++	 * public functions
++	 */
++	gmpdh_plugin_t public;
++};
++
++METHOD(plugin_t, get_name, char*,
++	private_gmpdh_plugin_t *this)
++{
++	return "gmpdh";
++}
++
++METHOD(plugin_t, get_features, int,
++	private_gmpdh_plugin_t *this, plugin_feature_t *features[])
++{
++	static plugin_feature_t f[] = {
++		/* DH groups */
++		PLUGIN_REGISTER(DH, gmp_diffie_hellman_create),
++			PLUGIN_PROVIDE(DH, MODP_2048_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_2048_224),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_2048_256),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_1536_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_3072_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_4096_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_6144_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_8192_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_1024_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_1024_160),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++			PLUGIN_PROVIDE(DH, MODP_768_BIT),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++		PLUGIN_REGISTER(DH, gmp_diffie_hellman_create_custom),
++			PLUGIN_PROVIDE(DH, MODP_CUSTOM),
++				PLUGIN_DEPENDS(RNG, RNG_STRONG),
++	};
++	*features = f;
++	return countof(f);
++}
++
++METHOD(plugin_t, destroy, void,
++	private_gmpdh_plugin_t *this)
++{
++	free(this);
++}
++
++/*
++ * see header file
++ */
++plugin_t *gmpdh_plugin_create()
++{
++	private_gmpdh_plugin_t *this;
++
++	INIT(this,
++		.public = {
++			.plugin = {
++				.get_name = _get_name,
++				.get_features = _get_features,
++				.destroy = _destroy,
++			},
++		},
++	);
++
++	return &this->public.plugin;
++}
++
+--- /dev/null
++++ b/src/libstrongswan/plugins/gmpdh/gmpdh_plugin.h
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (C) 2008 Martin Willi
++ * Hochschule fuer Technik Rapperswil
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your
++ * option) any later version.  See <http://www.fsf.org/copyleft/gpl.txt>.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * for more details.
++ */
++
++/**
++ * @defgroup gmpdh_p gmpdh
++ * @ingroup plugins
++ *
++ * @defgroup gmpdh_plugin gmpdh_plugin
++ * @{ @ingroup gmpdh_p
++ */
++
++#ifndef GMPDH_PLUGIN_H_
++#define GMPDH_PLUGIN_H_
++
++#include <plugins/plugin.h>
++
++typedef struct gmpdh_plugin_t gmpdh_plugin_t;
++
++/**
++ * Plugin implementing asymmetric crypto algorithms using the GNU MP library.
++ */
++struct gmpdh_plugin_t {
++
++	/**
++	 * implements plugin interface
++	 */
++	plugin_t plugin;
++};
++
++#endif /** GMPDH_PLUGIN_H_ @}*/

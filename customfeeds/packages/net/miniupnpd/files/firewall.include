@@ -1,0 +1,57 @@
+#!/bin/sh
+# miniupnpd integration for firewall3
+
+IP6TABLES=/usr/sbin/ip6tables
+
+iptables -t filter -N MINIUPNPD 2>/dev/null
+iptables -t nat -N MINIUPNPD 2>/dev/null
+iptables -t nat -N MINIUPNPD-POSTROUTING 2>/dev/null
+
+[ -x $IP6TABLES ] && $IP6TABLES -t filter -N MINIUPNPD 2>/dev/null
+
+. /lib/functions/network.sh
+
+ADDED=0
+
+add_extzone_rules() {
+    local ext_zone=$1
+
+    [ -z "$ext_zone" ] && return
+
+    # IPv4 - due to NAT, need to add both to nat and filter table
+    iptables -t filter -I zone_${ext_zone}_forward -j MINIUPNPD
+    iptables -t nat -I zone_${ext_zone}_prerouting -j MINIUPNPD
+    iptables -t nat -I zone_${ext_zone}_postrouting -j MINIUPNPD-POSTROUTING
+
+    # IPv6 if available - filter only
+    [ -x $IP6TABLES ] && {
+        $IP6TABLES -t filter -I zone_${ext_zone}_forward -j MINIUPNPD
+    }
+    ADDED=$(($ADDED + 1))
+}
+
+# By default, user configuration is king.
+
+for ext_iface in $(uci -q get upnpd.config.external_iface); do
+    add_extzone_rules $(fw3 -q network "$ext_iface")
+done
+
+add_extzone_rules $(uci -q get upnpd.config.external_zone)
+
+[ ! $ADDED = 0 ] && exit 0
+
+
+# If really nothing is available, resort to network_find_wan{,6} and
+# assume external interfaces all have same firewall zone.
+
+# (This heuristic may fail horribly, in case of e.g. multihoming, so
+# please set external_zone in that case!)
+
+network_find_wan wan_iface
+network_find_wan6 wan6_iface
+
+for ext_iface in $wan_iface $wan6_iface; do
+    # fw3 -q network fails on sub-interfaces => map to device first
+    network_get_device ext_device $ext_iface
+    add_extzone_rules $(fw3 -q device "$ext_device")
+done

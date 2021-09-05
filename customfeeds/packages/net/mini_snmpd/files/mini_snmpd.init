@@ -1,0 +1,246 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2009-2016 OpenWrt.org
+# Copyright (C) 2016 Luke McKee <hojuruku@gmail.com>
+# Procd init script reference: http://wiki.prplfoundation.org/wiki/Procd_reference
+
+START=98
+USE_PROCD=1
+PROG=/usr/sbin/mini-snmpd
+NAME=mini_snmpd
+
+global_respawn_threshold=
+global_respawn_timeout=
+global_respawn_retry=
+
+_log() {
+	logger -p daemon.info -t mini_snmpd "$@"
+}
+
+_err() {
+	logger -p daemon.err -t mini_snmpd "$@"
+}
+
+
+# mini_snmpd 1.3+ now starts later in the game. Expects filesystems monitored to be already mounted, or wont pass args to mini_snmpd
+# and at least configuration entry for network physical interface defined in /etc/config/network
+# It handles network interfaces not yet present (e.g. ppp) but will statfs() the root/wrong filesystem if device not mounted
+# Tip: complex scripts run faster without in openwrt if you stop busybox forking and searching for applets. Faster bootups
+#	CONFIG_BUSYBOX_CONFIG_FEATURE_SH_NOFORK
+#	CONFIG_BUSYBOX_CONFIG_FEATURE_PREFER_APPLETS
+#	BUSYBOX_CONFIG_ASH_OPTIMIZE_FOR_SIZE [=n]
+#	CONFIG_BUSYBOX_CONFIG_ASH_CMDCMD
+
+mini_snmpd_validation="enabled:bool:0 \
+		ipv6:bool:0 \
+		debug:bool:0 \
+		auth:bool:1 \
+		community:rangelength(1,32):public \
+		contact:maxlength(255) \
+		description:maxlength(255) \
+		location:maxlength(255) \
+		listen_interface:uciname \
+		udp_port:port \
+		tcp_port:port \
+		vendor_oid:string \
+		mib_timeout:and(min(1),uinteger) \
+		disks:list(directory) \
+		interfaces:list(uciname) \
+		respawn_threshold:uinteger respawn_timeout:uinteger respawn_retry:uinteger"
+# busybox ash has no array variable support, when put validations in a string be careful to have no spaces in each validate constraint
+# this makes it very difficult to use the 'or(uciname, "all")' test, so listen_interface '' or undefined now meands bind to "all".
+# this is the sarafice you have to make to avoid typing it all in twice in this script so we can give feedback to user on what's misconfigered
+# in syslog
+
+append_disk() {
+	local disk="$1" disk_count
+	[ -z $disk_count ] && disk_count=0
+	if grep -qF "$disk" /proc/mounts; then
+		# check the fileystem is mountpoint, and directory search permissions available for statfs()
+		# presence as a directory -d test done is already done by uci_validate_section()
+		[ -x "$disk" ] || {
+			_err "$cfg: mountpoint $disk for snmp monitoring EACCES error. Check permissions, ignoring"
+			return 1
+		}
+		if [ $disk_count -lt 4 ]; then
+			append disks_arg "$disk" ','
+			disk_count=$((disk_count++))
+		else
+			_err "$cfg: more than 4 mountpoints defined in uci. Disc $disk ignored."
+		fi
+	else
+		_err "$cfg: mountpoint $disk for snmp monitoring not mounted, ignoring."
+	fi
+}
+
+append_interface() {
+	local name="$1" netdev netdev_count
+	[ -z $netdev_count ] && netdev_count=0
+	# for the purposes of snmp monitoring it doesn't need to be up, it just needs to exist in /proc/net/dev
+	network_get_device netdev "$name"
+	if [ -n "$netdev" ] && grep -qF "$netdev" /proc/net/dev; then
+		[ $netdev_count -ge 8 ] && {
+			_err "$cfg: too many network interfaces configured, ignoring $name"
+			return
+		}
+		netdev_count=$((netdev_count++))
+		if [ -n "$interfaces_arg" ]; then
+			append interfaces_arg "$netdev" ','
+		else
+			append interfaces_arg "$netdev"
+		fi
+	else
+		 _log "$cfg: physical interface for network $name not found in uci or kernel so not monitoring"
+	fi
+}
+
+append_arg() {
+	local var="$2"
+	local opt="$1"
+	[ -n "$var" ] && procd_append_param command $opt "$var"
+}
+
+watch_interfaces() {
+	local cfg="$1"
+	local enabled listen_interface # listen_interface_up
+	config_get_bool enabled "$cfg" "enabled" '1'
+	[ "$enabled" -gt 0 ] || return 0
+	config_get listen_interface "$cfg" listen_interface
+	# If the interface is up & instance is running we'll watch at the instance level and only restart that instance if it's bound interface changes
+	# Regardless of ubus knowing about an interface (in the case it's not yet configured)
+	[ -n "$listen_interface" ] && trigger_interfaces="$listen_interface $trigger_interfaces"
+	# Restart daemon if one of monitored interfaces changes
+	config_get reload_interfaces "$cfg" interfaces
+}
+
+validate_mini_snmpd_section() {
+	# validate a mini_snmpd instance in uci config file mini_snmpd
+	# http://luci.subsignal.org/trac/wiki/Documentation/Datatypes ubox/validate/validate.c
+	uci_load_validate mini_snmpd mini_snmpd "$1" "$2" $mini_snmpd_validation
+}
+
+
+service_triggers() {
+	config_load 'mini_snmpd'
+	procd_open_trigger
+	procd_add_config_trigger "config.change" "mini_snmpd" /etc/init.d/mini_snmpd reload
+	config_foreach watch_interfaces 'mini_snmpd'
+	# this only watches interfaces for which there is no running instance due to interface down / not in ubus
+	# hence start not reload, this trigger will not affect running instances as another start will not change their procd command arguments
+	# or stop the already running process
+	[ -n "$trigger_interfaces" ] && {
+		for n in $trigger_interfaces; do
+			procd_add_interface_trigger "interface.*" $n /etc/init.d/mini_snmpd start
+		done
+	}
+	[ -n "$reload_interfaces" ] && {
+		for n in $reload_interfaces; do
+			procd_add_reload_interface_trigger $n
+		done
+	}
+	procd_close_trigger
+	procd_add_validation validate_mini_snmpd_section
+}
+
+
+start_instance() {
+	local cfg validation_failed validation_err disks_arg interfaces_arg
+	cfg="$1"
+	[ "$2" = 0 ] || validation_failed=1
+	[ "$enabled" == 1 ] || {
+		_log "instance:$cfg disabled not starting"
+		 return 1
+	}
+
+	local listen_interface_json listen_interface_ip listen_interface_device listen_interface_up
+	[ -n "$listen_interface" ] && {
+		if [ "$ipv6" = 1 ]; then
+			network_get_ipaddrs6 listen_interface_ip "$listen_interface"
+		else
+			network_get_ipaddrs listen_interface_ip "$listen_interface"
+		fi
+		network_is_up "$listen_interface" && [ -n "$listen_interface_ip" ] || {
+			_log "$cfg:listen interface $listen_interface not up yet / not configured properly"
+			_log "$cfg:procd will try again when interface state changes"
+			return 1
+		}
+		network_get_physdev listen_interface_device "$listen_interface"
+	}
+
+	[ $validation_failed ] && {
+		_err "validation of $NAME configuration for $cfg instance failed, all tests should be within constraints"
+		_err "please edit the configuration values below using [l]uci "
+		validation_err=`/sbin/validate_data mini_snmpd mini_snmpd "$cfg" $mini_snmpd_validation 2>&1 | sed '/with\ false$/!d;s/validates\ as\ /needs\ to\ be\ /;s/with\ false//' `
+		_err "$validation_err"
+		return 1
+	}
+	config_list_foreach "$cfg" 'disks' append_disk
+	config_list_foreach "$cfg" 'interfaces' append_interface
+	# test if variables are unset or zero length
+	[ -z "${disks_arg:+1}" -a -z "${interfaces_arg:+1}" ] && {
+		_err "$cfg: you haven't sucessfully configured any mountpoints or disks for this instance, not starting"
+		return 1
+	}
+
+	[ -z "$respawn_threshold$respawn_timeout$respawn_retry" ] && {
+		respawn_threshold=$global_respawn_threshold
+		respawn_timeout=$global_respawn_timeout
+		respawn_retry=$global_respawn_retry
+	}
+	[ -z "$global_respawn_threshold$global_respawn_timeout$global_respawn_retry" ] && {
+		global_respawn_threshold=$respawn_threshold
+		global_respawn_timeout=$respawn_timeout
+		global_respawn_retry=$respawn_retry
+	}
+
+	procd_open_instance
+
+	procd_set_param command "$PROG" -n
+	procd_set_param stdout "1"
+	procd_set_param stderr "1"
+	# don't the like default respawn values? you can override through uci.
+	# vars saved as global so you only need to do it in the first mini_snmpd instance
+	procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-10} ${respawn_retry:-1}
+	# this monitors ubus changes
+	[ -n "$listen_interface" ] && {
+		 #procd_open_trigger
+		 #procd_add_interface_trigger "interface.*" $listen_interface /etc/init.d/mini_snmpd reload
+		 #procd_close_trigger
+		 procd_add_reload_interface_trigger $listen_interface #or use shorthand of above
+	}
+	# this re-starts the daemon if a properly configured network interface is changed whilst it is already running
+	# igmpproxy has this as well as "procd_set_param netdev"
+
+	append_arg "-c" "$community"
+	append_arg "-L" "$location"
+	append_arg "-C" "$contact"
+	append_arg "-D" "$description"
+	append_arg "-p" $udp_port
+	append_arg "-P" $tcp_port
+	append_arg "-V" "$vendor_oid"
+	append_arg "-t" $mib_timeout
+
+	[ "$ipv6" = 1 ] && procd_append_param command "-6"
+	[ "$debug" = 1 ] && procd_append_param command "-v"
+	# uci_validate_section() aka /sbin/validate_data can only cast default values not defined in /etc/config/* to string
+	# e.g. ="1" however it sets bools defined in /etc/config/* to =1 / =0
+	[ "$auth" = 1 -o "$auth" = "1" ] && procd_append_param command "-a"
+	[ -n "$disks_arg" ] && procd_append_param command "-d" "$disks_arg"
+	[ -n "$interfaces_arg" ] && {
+		procd_append_param netdev ${interfaces_arg//,/ }
+		procd_append_param command "-i" "$interfaces_arg"
+	}
+	[ -n "$listen_interface_device" ] && {
+		 procd_append_param command "-I" "$listen_interface_device"
+		 # and this monitors the hardware device for changes outside of ubus - just a guess
+		 procd_append_param netdev $listen_interface_device
+	}
+	procd_close_instance
+}
+
+start_service() {
+	. /lib/functions.sh
+	. /lib/functions/network.sh
+
+	config_load 'mini_snmpd'
+	config_foreach validate_mini_snmpd_section 'mini_snmpd' start_instance
+}

@@ -1,0 +1,124 @@
+#!/bin/sh /etc/rc.common
+
+# shellcheck disable=SC2034	# foo appears unused. Verify it or export it.
+
+START=25
+STOP=99
+
+MSTPCTL="/usr/sbin/mstpctl"
+MSTPD="/usr/sbin/mstpd"
+
+USE_PROCD=1
+
+mstpd_get_bridges() {
+	"$MSTPCTL" showbridge | grep -v "^ " | cut -d " " -f 1 2>/dev/null
+}
+
+# mstpd log levels 
+#   LOG_LEVEL_NONE  0
+#   LOG_LEVEL_ERROR 1
+#   LOG_LEVEL_INFO  2
+#   LOG_LEVEL_DEBUG 3
+#   LOG_LEVEL_STATE_MACHINE_TRANSITION 4
+#   LOG_LEVEL_MAX   100
+
+config_bridge_port_mstpd() {
+	local config="$1"
+	local index=$2 # FIXME: maybe remove index later
+	local name=$3
+
+	[ -n "$index" -a -n "$name" ] || return 0
+
+	config_get br_index "$config" br_index
+	[ -n "$br_index" ] || return 0
+	[ "$index" = "$br_index" ] || return 0
+
+	config_get port_name "$config" name
+	[ -n "$port_name" ] || return 0
+
+	for opt in bpduguard; do
+		config_get $opt "$config" $opt
+		eval optval=\$$opt
+		[ -z "$optval" ] || "$MSTPCTL" "set$opt" "$name" "$port_name" "$optval"
+	done
+}
+
+config_bridge_mstpd() {
+	local config="$1"
+	local optval=
+	local name=
+	local enable=
+	local mstid=0 #  for the moment, using only MSTID
+
+	config_get index "$config" index
+	[ -n "$index" ] || return 1
+
+	# Get bridge name
+	config_get name "$config" name
+	[ -n "$name" ] || return 0
+
+	config_get enable "$config" enable
+	if [ "$enable" != "1" ] ; then
+		return 0
+	fi
+
+	list_contains MSTPD_PREINSTALLED_BRIDGES "$name" || \
+		"$MSTPCTL" addbridge "$name"
+	# All options here have 'set$opt' equivalent calls in mstpd,
+	#  hence this trick with the loop
+	for opt in maxage fdelay maxhops hello ageing forcevers txholdcount; do
+		config_get $opt "$config" "$opt"
+		eval optval=\$$opt
+		[ -z "$optval" ] || "$MSTPCTL" set$opt "$name" "$optval"
+	done
+	config_get treeprio "$config" treeprio
+	[ -z "$treeprio" ] || $MSTPCTL settreeprio "$name" "$mstid" "$treeprio"
+	config_foreach config_bridge_port_mstpd bridge_port "$index" "$name"
+	CONFIGURED_BRIDGES="$CONFIGURED_BRIDGES $name"
+	export CONFIGURED_BRIDGES
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param command $MSTPD
+	procd_append_param command -v 2
+	procd_append_param command -d # don't daemonize, procd will handle that for us
+	procd_append_param command -s # print to syslog
+
+	# set auto respawn behavior
+	procd_set_param respawn
+
+	# reload config on respawn
+	procd_open_trigger
+	procd_add_raw_trigger "instance.start" 2000 "/etc/init.d/mstpd" "reload"
+	procd_close_trigger
+
+	procd_close_instance
+}
+
+service_running() {
+	pgrep mstpd >/dev/null 2>&1
+}
+
+reload_service() {
+	if ! running ; then
+		start
+		return
+	fi
+
+	unset CONFIGURED_BRIDGES
+	MSTPD_PREINSTALLED_BRIDGES="$(mstpd_get_bridges)"
+	export MSTPD_PREINSTALLED_BRIDGES
+
+	config_load 'mstpd'
+	config_foreach config_bridge_mstpd bridge
+
+	for bridge in $(mstpd_get_bridges) ; do
+		list_contains CONFIGURED_BRIDGES "$bridge" || \
+			$MSTPCTL delbridge "$bridge"
+	done
+	# return 0 (success) here, otherwise, and endless restart loop will occur from procd
+	# because the last return code may be mstpctl failing
+	return 0
+}
+

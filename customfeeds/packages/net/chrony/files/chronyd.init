@@ -1,0 +1,93 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2015 OpenWrt.org
+
+START=15
+USE_PROCD=1
+PROG=/usr/sbin/chronyd
+CONFIGFILE=/etc/chrony/chrony.conf
+INCLUDEFILE=/var/etc/chrony.d/10-uci.conf
+RTCDEVICE=/dev/rtc0
+
+handle_source() {
+	local cfg=$1 sourcetype=$2 disabled hostname minpoll maxpoll iburst nts
+
+	config_get_bool disabled "$cfg" disabled 0
+	[ "$disabled" = "1" ] && return
+	hostname=$NTP_SOURCE_HOSTNAME
+	[ -z "$hostname" ] && config_get hostname "$cfg" hostname
+	[ -z "$hostname" ] && return
+	config_get minpoll "$cfg" minpoll
+	config_get maxpoll "$cfg" maxpoll
+	config_get_bool iburst "$cfg" iburst 0
+	config_get_bool nts "$cfg" nts 0
+	echo $(
+		echo $sourcetype $hostname
+		[ -n "$minpoll" ] && echo minpoll $minpoll
+		[ -n "$maxpoll" ] && echo maxpoll $maxpoll
+		[ "$iburst" = "1" ] && echo iburst
+		[ "$nts" = "1" ] && echo nts
+	)
+}
+
+handle_allow() {
+	local cfg=$1 iface wan_iface wan6_iface subnet subnets subnets6
+
+	network_find_wan wan_iface true
+	network_find_wan6 wan6_iface true
+	config_get iface "$cfg" interface
+
+	if [ "$wan_iface" = "$iface" ]; then
+		echo allow 0/0
+	elif [ "$wan6_iface" = "$iface" ]; then
+		echo allow ::/0
+	else
+		network_get_subnets subnets $iface
+		network_get_subnets6 subnets6 $iface
+		for subnet in $subnets $subnets6; do
+			echo allow $subnet
+		done
+	fi
+}
+
+handle_makestep() {
+	local cfg=$1 threshold limit
+
+	config_get threshold "$cfg" threshold
+	config_get limit "$cfg" limit
+	[ -z "$threshold" -o -z "$limit" ] && return
+	echo makestep $threshold $limit
+}
+
+handle_nts() {
+	local cfg=$1 threshold limit
+
+	config_get_bool rtccheck "$cfg" rtccheck 0
+	config_get_bool systemcerts "$cfg" systemcerts 1
+	config_get trustedcerts "$cfg" trustedcerts
+	# Disable certificate time checks if no RTC is present
+	[ "$rtccheck" = "1" ] && ! [ -c $RTCDEVICE ] && echo nocerttimecheck 1
+	[ "$systemcerts" = "0" ] && echo nosystemcert
+	[ -n "$trustedcerts" ] && echo ntstrustedcerts "$trustedcerts"
+}
+
+start_service() {
+	. /lib/functions/network.sh
+
+	procd_open_instance
+	procd_set_param command $PROG -n
+	procd_set_param file $CONFIGFILE
+	procd_set_param file $INCLUDEFILE
+	procd_close_instance
+
+	config_load chrony
+	mkdir -p $(dirname $INCLUDEFILE)
+
+	(
+		config_foreach handle_source server server
+		config_foreach handle_source pool pool
+		config_foreach handle_source peer peer
+		config_foreach handle_allow allow
+		config_foreach handle_makestep makestep
+		config_foreach handle_nts nts
+	) > $INCLUDEFILE
+}

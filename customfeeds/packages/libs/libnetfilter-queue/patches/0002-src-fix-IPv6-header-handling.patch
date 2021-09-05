@@ -1,0 +1,52 @@
+From 51f25df304aeaa6c1b02ef7456a61278ee70c102 Mon Sep 17 00:00:00 2001
+From: Etan Kissling <etan_kissling@apple.com>
+Date: Tue, 9 Feb 2021 23:51:33 +0100
+Subject: [PATCH] src: fix IPv6 header handling
+
+This corrects issues in IPv6 header handling that sometimes resulted
+in an endless loop.
+
+Signed-off-by: Etan Kissling <etan_kissling@apple.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ src/extra/ipv6.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+--- a/src/extra/ipv6.c
++++ b/src/extra/ipv6.c
+@@ -67,10 +67,19 @@ int nfq_ip6_set_transport_header(struct
+ 	uint8_t nexthdr = ip6h->ip6_nxt;
+ 	uint8_t *cur = (uint8_t *)ip6h + sizeof(struct ip6_hdr);
+ 
+-	while (nexthdr != target) {
++	while (nexthdr == IPPROTO_HOPOPTS ||
++	       nexthdr == IPPROTO_ROUTING ||
++	       nexthdr == IPPROTO_FRAGMENT ||
++	       nexthdr == IPPROTO_AH ||
++	       nexthdr == IPPROTO_NONE ||
++	       nexthdr == IPPROTO_DSTOPTS) {
+ 		struct ip6_ext *ip6_ext;
+ 		uint32_t hdrlen;
+ 
++		/* Extension header was requested, we're done. */
++		if (nexthdr == target)
++			break;
++
+ 		/* No more extensions, we're done. */
+ 		if (nexthdr == IPPROTO_NONE) {
+ 			cur = NULL;
+@@ -107,11 +116,13 @@ int nfq_ip6_set_transport_header(struct
+ 		} else if (nexthdr == IPPROTO_AH)
+ 			hdrlen = (ip6_ext->ip6e_len + 2) << 2;
+ 		else
+-			hdrlen = ip6_ext->ip6e_len;
++			hdrlen = (ip6_ext->ip6e_len + 1) << 3;
+ 
+ 		nexthdr = ip6_ext->ip6e_nxt;
+ 		cur += hdrlen;
+ 	}
++	if (nexthdr != target)
++		cur = NULL;
+ 	pktb->transport_header = cur;
+ 	return cur ? 1 : 0;
+ }

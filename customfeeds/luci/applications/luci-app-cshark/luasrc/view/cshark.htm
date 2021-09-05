@@ -1,0 +1,291 @@
+<%#
+LuCI - Lua Configuration Interface
+
+Copyright (C) 2014, QA Cafe, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+$Id$
+
+-%>
+
+<fieldset class="cbi-section">
+	<legend><%:Start network capture%></legend>
+	<div class="cbi-section-node">
+		<table class="cbi-section-table">
+			<tr>
+				<th><%:Interface%></th>
+				<th colspan='2'><%:seconds, packets, bytes%></th>
+				<th><%:Filter%></th>
+				<th><%:Actions%></th>
+			</tr>
+			<tr>
+				<td>
+					<select title="<%:Interface%>" style="width:auto" id="s_interfaces">
+					<%
+						local nixio = require "nixio"
+						for k, v in ipairs(nixio.getifaddrs()) do
+							if v.family == "packet" then
+							%>
+								<option value="<%=v.name%>"><%=v.name%> </option>
+							<%
+							end
+						end
+					%>
+						<option value="any"><%:any%></option>
+					</select>
+				</td>
+				<td colspan='2'>
+					<input id="tx_value" type="text" value="0" />
+					<select title="<%:timeout, bytes, seconds%>" id="s_value_type" style="width:auto">
+						<option value="T"><%:seconds%></option>
+						<option value="P"><%:packets%></option>
+						<option value="S"><%:bytes%></option>
+					</select>
+				</td>
+				<td>
+					<input style="margin: 5px 0" type="text" title="<%:Filter%>" placeholder="filter" id="i_filter" />
+				</td>
+				<td>
+					<input type="button" id="bt_action" data-action="start" value="<%:Start capture%>" class="cbi-button" />
+				</td>
+			</tr>
+		</table>
+	</div>
+</fieldset>
+
+<fieldset class="cbi-section">
+	<span id="cshark-rc-output"></span>
+</fieldset>
+
+<hr/>
+
+<fieldset class="cbi-section">
+	<legend><%:Capture links%></legend>
+	<div class="cbi-section-node">
+		<table id="t_link_list" class="cbi-section-table">
+			<tr class="cbi-section-table-titles">
+				<th class="cbi-section-table-cell"><%:Capture URL%></th>
+				<th class="cbi-section-table-cell"><%:Capture time%></th>
+			</tr>
+		</table>
+	</div>
+</fieldset>
+
+<fieldset class="cbi-section">
+  <a href="https://support.cloudshark.org/openwrt/openwrt-cloudshark.html" target="_blank">Visit support.cloudshark.org for help.</a>
+</fieldset>
+
+<hr/>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js"></script>
+<script type="text/javascript">//<![CDATA[
+
+	var capture_running = 0;
+	var pid_file = 0;
+	var bt_action = document.getElementById('bt_action');
+	var a_clear_links = document.getElementById('a_clear_links');
+	var output = document.getElementById('cshark-rc-output');
+	var loader = '<img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" width="16" height="16" style="vertical-align:middle" /> ';
+	var msg = { 'start' : '<%:Waiting for capture to complete...%>', 'stop' : '<%:Waiting for upload to complete...%>' };
+	var status_msg = msg['start'];
+
+	function get_date(timestamp)
+	{
+		function pad_str(str)
+		{
+			return (str < 10) ? "0" + str : str;
+		}
+
+		var current_date = new Date(timestamp * 1000);
+		return current_date.getFullYear() + "-" +
+				pad_str(current_date.getMonth() + 1) + "-" +
+				pad_str(current_date.getDate()) + " " +
+				pad_str(current_date.getHours()) + ":" +
+				pad_str(current_date.getMinutes()) + ":" +
+				pad_str(current_date.getSeconds());
+	}
+
+	bt_action.onclick = function()
+	{
+		var action = this.getAttribute("data-action");
+		var csxhr = new XHR();
+
+		if (action == "stop")
+		{
+			update_status(action);
+
+			bt_action.disabled = true;
+
+			csxhr.get('<%=luci.dispatcher.build_url("admin", "network")%>/cshark_iface_dump_stop', null,
+			function(x)
+			{
+				if (!x || x.responseText.trim() != "0")
+				{
+					update_status("failed", "Invalid response on stop.");
+				}
+			});
+
+		}
+		else if (action == "start")
+		{
+
+			var s_interfaces = document.getElementById('s_interfaces');
+			var s_value_type = document.getElementById('s_value_type');
+			var i_filter = document.getElementById('i_filter');
+
+			var if_n = s_interfaces.selectedIndex;
+			var t_n = s_value_type.selectedIndex;
+			var ifname = s_interfaces.options[if_n].value.trim();
+			var filter_val = i_filter.value.trim();
+			var tx_val = document.getElementById('tx_value').value.trim();
+			var type_val = s_value_type.options[t_n].value.trim();
+
+			if (type_val != 'P' && type_val != 'T' && type_val != 'S') type_val = 'T';
+
+			if (!ifname || !type_val) return;
+
+			if (isNaN(tx_val)) return alert("<%:value for [seconds, packets, bytes] must be Integer%>");
+
+			update_status(action);
+
+			csxhr.get('<%=luci.dispatcher.build_url("admin", "network")%>/cshark_iface_dump_start/' + ifname + '/' + tx_val + '/' + type_val + '/'+ filter_val, null,
+			function(x)
+			{
+				if (!x)
+					update_status("failed", "Invalid response on start.");
+				else
+					update_status("running");
+			});
+		}
+	}
+
+	function update_status(status, message)
+	{
+		switch (status)
+		{
+			case 'start':
+			case 'stop':
+				status_msg = msg[status];
+				output.innerHTML = loader + status_msg;
+			break
+
+			case 'running':
+				if (capture_running) break;;
+
+				output.innerHTML = loader + status_msg;
+
+				bt_action.value = '<%:Stop capture%>';
+				bt_action.setAttribute('data-action', 'stop');
+				capture_running = 1;
+			break;
+
+			case 'completed':
+			case 'failed':
+				if (!capture_running) break;
+
+				if (status == "completed")
+				{
+					link_list_update();
+				}
+
+				output.innerHTML = "<pre>" + message + "</pre>";
+				bt_action.value = '<%:Start capture%>';
+				bt_action.setAttribute('data-action', 'start');
+				bt_action.disabled = false;
+				capture_running = 0;
+			break;
+		}
+	}
+
+
+	function check_status()
+	{
+
+		XHR.poll(3, '<%=luci.dispatcher.build_url("admin", "network")%>/cshark_check_status', null,
+		function(x, data)
+		{
+			if (!x)
+			{
+				if (capture_running)
+					update_status("failed", "Invalid response when fetching status.");
+
+				return;
+			}
+			console.log(data)
+
+			update_status( (data.status == 1) && "running" || "completed", data.msg);
+		})
+	}
+
+	function link_list_clear()
+	{
+		var csxhr_del = new XHR();
+		csxhr_del.get('<%=luci.dispatcher.build_url("admin", "network")%>/cshark_link_list_clear', null,
+		function(x)
+		{
+			if (!x)
+				return false;
+
+			link_list_update();
+		});
+	}
+
+
+	function link_list_update()
+	{
+		var t_link = document.getElementById("t_link_list");
+		if (!t_link) return;
+
+		var row_count = t_link.rows.length;
+		while(--row_count) t_link.deleteRow(row_count);
+
+		var cell = t_link.insertRow(-1).insertCell(0);
+		cell.colSpan = 2;
+		cell.innerHTML = loader;
+
+		var csxhr_link = new XHR();
+		csxhr_link.get('<%=luci.dispatcher.build_url("admin", "network")%>/cshark_link_list_get', null,
+		function(x, entries)
+		{
+			var row = t_link.deleteRow(1);
+
+			if (!x) return;
+
+			if (!entries || !entries.length)
+			{
+				var cell = t_link.insertRow(-1).insertCell(0);
+				cell.colSpan = 2;
+				cell.innerHTML = '<em><br />There are no captures available yet.</em>';
+
+				return;
+			}
+
+			for (var i = 0, len = entries.length; i < len ; i++)
+			{
+				var entry = entries[i][0];
+				if (!entry) continue;
+
+				var data = entry.split(",");
+				var url = data[0];
+				var timestamp = data[1];
+
+				var row = t_link.insertRow(-1);
+				row.insertCell(0).innerHTML = '<a href="'+url+'" target="_blank">'+url+'</a>';
+				row.insertCell(1).innerHTML = get_date(timestamp);
+			}
+
+			var cell = t_link.insertRow(-1).insertCell(0);
+			cell.colSpan = 2;
+			cell.style.textAlign="center";
+			cell.innerHTML = '<input type="button" onclick="link_list_clear()" class="cbi-button" value ="<%:Clear list%>" />';
+		})
+	}
+
+	check_status();
+	link_list_update();
+//]]></script>

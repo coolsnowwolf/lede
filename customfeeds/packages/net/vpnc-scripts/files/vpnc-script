@@ -1,0 +1,222 @@
+#!/bin/sh
+# List of parameters passed through environment
+#* reason                       -- why this script was called, one of: pre-init connect disconnect
+#* VPNGATEWAY                   -- vpn gateway address (always present)
+#* TUNDEV                       -- tunnel device (always present)
+#* INTERNAL_IP4_ADDRESS         -- address (always present)
+#* INTERNAL_IP4_MTU             -- mtu (often unset)
+#* INTERNAL_IP4_NETMASK         -- netmask (often unset)
+#* INTERNAL_IP4_NETMASKLEN      -- netmask length (often unset)
+#* INTERNAL_IP4_NETADDR         -- address of network (only present if netmask is set)
+#* INTERNAL_IP4_DNS             -- list of dns servers
+#* INTERNAL_IP4_NBNS            -- list of wins servers
+#* INTERNAL_IP6_ADDRESS         -- IPv6 address
+#* INTERNAL_IP6_NETMASK         -- IPv6 netmask
+#* INTERNAL_IP6_DNS             -- IPv6 list of dns servers
+#* CISCO_DEF_DOMAIN             -- default domain name
+#* CISCO_BANNER                 -- banner from server
+#* CISCO_SPLIT_INC              -- number of networks in split-network-list
+#* CISCO_SPLIT_INC_%d_ADDR      -- network address
+#* CISCO_SPLIT_INC_%d_MASK      -- subnet mask (for example: 255.255.255.0)
+#* CISCO_SPLIT_INC_%d_MASKLEN   -- subnet masklen (for example: 24)
+#* CISCO_SPLIT_INC_%d_PROTOCOL  -- protocol (often just 0)
+#* CISCO_SPLIT_INC_%d_SPORT     -- source port (often just 0)
+#* CISCO_SPLIT_INC_%d_DPORT     -- destination port (often just 0)
+#* CISCO_IPV6_SPLIT_INC         -- number of networks in IPv6 split-network-list
+#* CISCO_IPV6_SPLIT_INC_%d_ADDR -- IPv6 network address
+#* CISCO_IPV6_SPLIT_INC_$%d_MASKLEN -- IPv6 subnet masklen
+
+HOOKS_DIR=/etc/openconnect
+
+# FIXMEs:
+
+# Section A: route handling
+
+# 1) The 3 values CISCO_SPLIT_INC_%d_PROTOCOL/SPORT/DPORT are currently being ignored
+#   In order to use them, we'll probably need os specific solutions
+#   * Linux: iptables -t mangle -I PREROUTING <conditions> -j ROUTE --oif $TUNDEV
+#       This would be an *alternative* to changing the routes (and thus 2) and 3)
+#       shouldn't be relevant at all)
+# 2) There are two different functions to set routes: generic routes and the
+#   default route. Why isn't the defaultroute handled via the generic route case?
+# 3) In the split tunnel case, all routes but the default route might get replaced
+#   without getting restored later. We should explicitely check and save them just
+#   like the defaultroute
+# 4) Replies to a dhcp-server should never be sent into the tunnel
+
+# Section B: Split DNS handling
+
+# 1) We parse CISCO_SPLIT_DNS and use dnsmasq to set it
+
+do_connect() {
+	if [ -n "$CISCO_BANNER" ]; then
+		logger -t openconnect "Connect Banner:"
+		echo "$CISCO_BANNER" | while read LINE ; do logger -t openconnect "|" "$LINE" ; done
+	fi
+
+	proto_init_update "$TUNDEV" 1
+
+	if [ -n "$INTERNAL_IP4_MTU" ]; then
+		MTU=$INTERNAL_IP4_MTU
+	fi
+
+	if [ -z "$MTU" ]; then
+		MTU=1412
+	fi
+
+	proto_add_ipv4_address "$INTERNAL_IP4_ADDRESS" 32 "" "$INTERNAL_IP4_ADDRESS"
+
+	if [ -n "$INTERNAL_IP4_NETMASKLEN" ]; then
+		proto_add_ipv4_route "$INTERNAL_IP4_NETADDR" "$INTERNAL_IP4_NETMASKLEN"
+	fi
+
+	# If the netmask is provided, it contains the address _and_ netmask
+	if [ -n "$INTERNAL_IP6_ADDRESS" ] && [ -z "$INTERNAL_IP6_NETMASK" ]; then
+	    INTERNAL_IP6_NETMASK="$INTERNAL_IP6_ADDRESS/128"
+	fi
+
+	if [ -n "$INTERNAL_IP6_NETMASK" ]; then
+		addr="${INTERNAL_IP6_NETMASK%%/*}"
+		mask="${INTERNAL_IP6_NETMASK##*/}"
+		[[ "$addr" != "$mask" ]] && proto_add_ipv6_address "$addr" "$mask"
+	fi
+
+	DNSMASQ_FILE="/tmp/dnsmasq.d/openconnect.$TUNDEV"
+	LOCAL_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain)
+	rm -f $DNSMASQ_FILE
+	if [ -n "$CISCO_SPLIT_DNS" ] && [ -d "/tmp/dnsmasq.d/" ];then
+		SDNS=`echo $CISCO_SPLIT_DNS|sed 's/,/\n/g'`
+		echo "$SDNS" | while read i; do
+			if [ "$i" = "$LOCAL_DOMAIN" ];then
+				continue
+			fi
+			if [ -n "$INTERNAL_IP4_DNS" ];then
+				for dns in $INTERNAL_IP4_DNS;do
+					echo "server=/$i/$dns" >> $DNSMASQ_FILE
+				done
+			fi
+			if [ -n "$INTERNAL_IP6_DNS" ];then
+				for dns in $INTERNAL_IP6_DNS;do
+					echo "server=/$i/$dns" >> $DNSMASQ_FILE
+				done
+			fi
+			echo "rebind-domain-ok=$i" >> $DNSMASQ_FILE
+		done
+		/etc/init.d/dnsmasq restart
+	else
+		if [ -n "$INTERNAL_IP4_DNS" ];then
+			for dns in $INTERNAL_IP4_DNS;do
+				proto_add_dns_server "$dns"
+			done
+		fi
+		if [ -n "$INTERNAL_IP6_DNS" ];then
+			for dns in $INTERNAL_IP6_DNS;do
+				proto_add_dns_server "$dns"
+			done
+		fi
+		if [ -n "$CISCO_DEF_DOMAIN" ] && [ "$CISCO_DEF_DOMAIN" != "$LOCAL_DOMAIN" ];then
+			if [ -n "$INTERNAL_IP4_DNS" ];then
+				for dns in $INTERNAL_IP4_DNS;do
+					echo "server=/$CISCO_DEF_DOMAIN/$dns" >> $DNSMASQ_FILE
+				done
+			fi
+			if [ -n "$INTERNAL_IP6_DNS" ];then
+				for dns in $INTERNAL_IP6_DNS;do
+					echo "server=/$CISCO_DEF_DOMAIN/$dns" >> $DNSMASQ_FILE
+				done
+			fi
+			proto_add_dns_search "$CISCO_DEF_DOMAIN"
+		fi
+	fi
+
+	if [ -n "$CISCO_SPLIT_INC" ]; then
+		i=0
+		while [ $i -lt $CISCO_SPLIT_INC ] ; do
+			eval NETWORK="\${CISCO_SPLIT_INC_${i}_ADDR}"
+			eval NETMASK="\${CISCO_SPLIT_INC_${i}_MASK}"
+			eval NETMASKLEN="\${CISCO_SPLIT_INC_${i}_MASKLEN}"
+			if [ $NETWORK != "0.0.0.0" ]; then
+				proto_add_ipv4_route "$NETWORK" "$NETMASKLEN"
+			else
+				proto_add_ipv4_route "0.0.0.0" 0
+			fi
+			i=$(($i + 1))
+		done
+	elif [ -n "$INTERNAL_IP4_ADDRESS" ]; then
+		proto_add_ipv4_route "0.0.0.0" 0
+	fi
+	if [ -n "$CISCO_IPV6_SPLIT_INC" ]; then
+		i=0
+		while [ $i -lt $CISCO_IPV6_SPLIT_INC ] ; do
+			eval NETWORK="\${CISCO_IPV6_SPLIT_INC_${i}_ADDR}"
+			eval NETMASKLEN="\${CISCO_IPV6_SPLIT_INC_${i}_MASKLEN}"
+			if [ $NETMASKLEN -lt 128 ]; then
+				proto_add_ipv6_route "$NETWORK" "$NETMASKLEN"
+			else
+				proto_add_ipv6_route "::0" 0
+			fi
+			i=$(($i + 1))
+		done
+	elif [ -n "$INTERNAL_IP6_NETMASK" -o -n "$INTERNAL_IP6_ADDRESS" ]; then
+		proto_add_ipv6_route "::0" 0
+	fi
+	proto_send_update "$INTERFACE"
+}
+
+do_disconnect() {
+	rm -f "/tmp/dnsmasq.d/openconnect.$TUNDEV"
+	proto_init_update "$TUNDEV" 0
+	proto_send_update "$INTERFACE"
+}
+
+#### Hooks
+run_hooks() {
+	HOOK="$1"
+
+	if [ -d ${HOOKS_DIR}/${HOOK}.d ]; then
+		for script in ${HOOKS_DIR}/${HOOK}.d/* ; do
+			[ -f $script ] && . $script
+		done
+	fi
+}
+
+#### Main
+
+if [ -z "$reason" ]; then
+	logger -t openconnect "this script must be called from vpnc" 1>&2
+	exit 1
+fi
+if [ -z "$INTERFACE" ]; then
+	logger -t openconnect "this script must be called for an active interface"
+	exit 1
+fi
+
+. /lib/netifd/netifd-proto.sh
+
+case "$reason" in
+	pre-init)
+		run_hooks pre-init
+		;;
+	connect)
+		run_hooks connect
+		do_connect
+		run_hooks post-connect
+		;;
+	disconnect)
+		run_hooks disconnect
+		do_disconnect
+		run_hooks post-disconnect
+		;;
+	reconnect)
+		run_hooks reconnect
+		;;
+	attempt-reconnect)
+		run_hooks attempt-reconnect
+		;;
+	*)
+		logger -t openconnect "unknown reason '$reason'. Maybe vpnc-script is out of date" 1>&2
+		exit 1
+		;;
+esac
+
+exit 0

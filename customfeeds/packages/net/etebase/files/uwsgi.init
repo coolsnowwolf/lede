@@ -1,0 +1,137 @@
+#!/bin/sh /etc/rc.common
+
+START=82
+
+USE_PROCD=1
+
+ETEBASE_INI="/var/etc/etebase/server.ini"
+
+
+etebase_print_uci_allow_all_ips_of() {
+    local ifstat="$(ifstatus "$1")"
+
+    for ip in $(echo "${ifstat}" | jsonfilter -e '@["ipv4-address"].*.address')
+    do echo "allowed_host_${ip//[^0-9]/_} = ${ip}"
+    done
+
+    for ip in $(echo "${ifstat}" | jsonfilter -e '@["ipv6-address"].*.address')
+    do echo "allowed_host_${ip//[^0-9A-Fa-f]/_} = [${ip}]"
+    done
+
+    for ip in $(echo "${ifstat}" | \
+        jsonfilter -e '@["ipv6-prefix-assignment"].*["local-address"].address')
+    do echo "allowed_host_${ip//[^0-9A-Fa-f]/_} = [${ip}]"
+    done
+}
+
+
+etebase_validate_global() {
+    cd /usr/share/etebase/ >/dev/null || return
+
+    uci_load_validate etebase django "global" "$1" \
+        'secret_file:file:secret.txt' \
+        'static_url:string:static/' \
+        'language_code:string:en-us' \
+        'time_zone:string:UTC' \
+        'debug:bool:false' \
+        ;
+}
+
+
+etebase_print_global() {
+    printf "\n[global]\n"
+
+    echo "secret_file = ${secret_file}"
+    echo "static_root = /www/etebase/static" #sic!
+    echo "static_url = ${static_url}"
+    echo "language_code = ${language_code}"
+    echo "time_zone = ${time_zone}"
+    echo "debug = ${debug}"
+}
+
+
+etebase_validate_allowed_hosts() {
+    cd /usr/share/etebase/ >/dev/null || return
+
+    uci_load_validate etebase django "allowed_hosts" "$1" \
+        'uci_allow_all_ips_of:network' \
+        'allowed_host:host' \
+        ;
+}
+
+
+etebase_print_allowed_hosts() {
+    printf "\n[allowed_hosts]\n"
+
+    local iface
+    for iface in ${uci_allow_all_ips_of}
+    do etebase_print_uci_allow_all_ips_of "${iface}"
+    done
+
+    local host
+    for host in ${allowed_host}
+    do echo "allowed_host_${host//[^0-9A-Za-z]/_} = ${host}"
+    done
+}
+
+
+etebase_validate_database() {
+    cd /usr/share/etebase/ >/dev/null || return
+
+    uci_load_validate etebase django "database" "$1" \
+        'engine:hostname:django.db.backends.sqlite3' \
+        'name:file:db.sqlite3' \
+        ;
+}
+
+
+etebase_print_database() {
+    printf "\n[database]\n"
+    echo "engine = ${engine}"
+    echo "name = ${name}"
+}
+
+
+etebase_init() { # This must print ONLY configuration lines:
+    echo "; This file is re-created from /etc/config/etebase "
+    etebase_validate_global etebase_print_global
+    etebase_validate_allowed_hosts etebase_print_allowed_hosts
+    etebase_validate_database etebase_print_database
+} >"${ETEBASE_INI}"
+
+
+start_service() {
+    mkdir -p /var/etc/etebase/
+
+    etebase_init
+
+    logger -p 'daemon.info' -t 'etebase_init' 'starting ...'
+    ln -sf /etc/uwsgi/vassals/etebase.available /var/etc/etebase/uwsgi.ini
+}
+
+
+stop_service() {
+    rm -f /var/etc/etebase/uwsgi.ini "${ETEBASE_INI}"
+}
+
+
+reload_service() {
+    etebase_init
+
+    logger -p 'daemon.info' -t 'etebase_init' 'reloading ...'
+    kill -SIGHUP "$(cat "/var/etc/etebase/master.pid")" 2>/dev/null
+    #if the server is in on-demand mode, the ini files are reloaded then, too.
+}
+
+
+service_triggers() {
+    procd_open_validate
+    etebase_validate_global "$@"
+    etebase_validate_allowed_hosts "$@"
+    etebase_validate_database "$@"
+    procd_close_validate
+
+    config_load etebase
+    config_list_foreach "allowed_hosts" "uci_allow_all_ips_of" procd_add_reload_interface_trigger
+    procd_add_reload_trigger etebase
+}

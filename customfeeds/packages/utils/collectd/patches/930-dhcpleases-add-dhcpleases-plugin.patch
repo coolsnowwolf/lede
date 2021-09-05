@@ -1,0 +1,172 @@
+From: Nick Hainke <vincent@systemli.org>
+Date: Mon, 7 Dec 2020 23:07:30 +0100
+Subject: [PATCH] dhcpleases: add dhcpleases plugin
+
+Changelog: dhcpleases: add plugin for counting current dhcp leases
+
+The plugin is useful for the Freifunk Community. Currently, we use
+the exec-plugin. With that dhcpleases plugin we have native collectd
+support to measure this important statistic.
+
+Signed-off-by: Nick Hainke <vincent@systemli.org>
+---
+ Makefile.am          |  6 ++++
+ README               |  3 ++
+ configure.ac         |  2 ++
+ src/collectd.conf.in |  5 +++
+ src/dhcpleases.c     | 83 ++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 99 insertions(+)
+ create mode 100644 src/dhcpleases.c
+
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -963,6 +963,12 @@ df_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+ df_la_LIBADD = libignorelist.la libmount.la
+ endif
+ 
++if BUILD_PLUGIN_DHCPLEASES
++pkglib_LTLIBRARIES += dhcpleases.la
++dhcpleases_la_SOURCES = src/dhcpleases.c
++dhcpleases_la_LDFLAGS = $(PLUGIN_LDFLAGS)
++endif
++
+ if BUILD_PLUGIN_DISK
+ pkglib_LTLIBRARIES += disk.la
+ disk_la_SOURCES = src/disk.c
+--- a/README
++++ b/README
+@@ -106,6 +106,9 @@ Features
+       Disk utilization: Sectors read/written, number of read/write actions,
+       average time an IO-operation took to complete.
+ 
++    - dhcpleases
++      Collect number of current dhcp leases.
++
+     - dns
+       DNS traffic: Query types, response codes, opcodes and traffic/octets
+       transferred.
+--- a/configure.ac
++++ b/configure.ac
+@@ -7063,6 +7063,7 @@ AC_PLUGIN([curl_xml],            [$plugi
+ AC_PLUGIN([dbi],                 [$with_libdbi],              [General database statistics])
+ AC_PLUGIN([dcpmm],               [$with_libpmwapi],           [Intel(R) Optane(TM) DC Persistent Memory performance and health statistics])
+ AC_PLUGIN([df],                  [$plugin_df],                [Filesystem usage statistics])
++AC_PLUGIN([dhcpleases],          [yes],                       [DHCP Leases])
+ AC_PLUGIN([disk],                [$plugin_disk],              [Disk usage statistics])
+ AC_PLUGIN([dns],                 [$with_libpcap],             [DNS traffic analysis])
+ AC_PLUGIN([dpdkevents],          [$plugin_dpdkevents],        [Events from DPDK])
+@@ -7512,6 +7513,7 @@ AC_MSG_RESULT([    curl_xml  . . . . . .
+ AC_MSG_RESULT([    dbi . . . . . . . . . $enable_dbi])
+ AC_MSG_RESULT([    dcpmm  . . . . . .  . $enable_dcpmm])
+ AC_MSG_RESULT([    df  . . . . . . . . . $enable_df])
++AC_MSG_RESULT([    dhcpleases. . . . . . $enable_dhcpleases])
+ AC_MSG_RESULT([    disk  . . . . . . . . $enable_disk])
+ AC_MSG_RESULT([    dns . . . . . . . . . $enable_dns])
+ AC_MSG_RESULT([    dpdkevents. . . . . . $enable_dpdkevents])
+--- a/src/collectd.conf.in
++++ b/src/collectd.conf.in
+@@ -119,6 +119,7 @@
+ #@BUILD_PLUGIN_DBI_TRUE@LoadPlugin dbi
+ #@BUILD_PLUGIN_DCPMM_TRUE@LoadPlugin dcpmm
+ #@BUILD_PLUGIN_DF_TRUE@LoadPlugin df
++#@BUILD_PLUGIN_DHCPLEASES_TRUE@LoadPlugin dhcpleases
+ #@BUILD_PLUGIN_DISK_TRUE@LoadPlugin disk
+ #@BUILD_PLUGIN_DNS_TRUE@LoadPlugin dns
+ #@BUILD_PLUGIN_DPDKEVENTS_TRUE@LoadPlugin dpdkevents
+@@ -690,6 +691,10 @@
+ #	SelectNumericQueryTypes true
+ #</Plugin>
+ 
++#<Plugin dhcpleases>
++#	Path "/tmp/dhcp.leases"
++#</Plugin>
++
+ #<Plugin "dpdkevents">
+ #  <EAL>
+ #    Coremask "0x1"
+--- /dev/null
++++ b/src/dhcpleases.c
+@@ -0,0 +1,83 @@
++#include <errno.h>
++#include <stdio.h>
++
++#include "utils/common/common.h"
++
++#include "configfile.h"
++#include "plugin.h"
++
++static char *dhcp_lease_file;
++
++static const char *config_keys[] = {
++    "Path",
++};
++static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
++
++/* copied from ping.c plugin */
++static int config_set_string(const char *name, /* {{{ */
++                             char **var, const char *value) {
++  char *tmp;
++
++  tmp = strdup(value);
++  if (tmp == NULL) {
++    ERROR("dhcpleases plugin: Setting `%s' to `%s' failed: strdup failed: %s", name,
++          value, STRERRNO);
++    return 1;
++  }
++
++  if (*var != NULL)
++    free(*var);
++  *var = tmp;
++  return 0;
++} /* }}} int config_set_string */
++
++static int dhcpleases_config(const char *key, const char *value) {
++  if (strcasecmp(key, "Path") == 0) {
++    int status = config_set_string(key, &dhcp_lease_file, value);
++    if (status != 0)
++      return status;
++  }
++  return 0;
++}
++
++static void dhcpleases_submit(gauge_t counter) {
++  value_list_t vl = VALUE_LIST_INIT;
++  value_t values[] = {
++      {.gauge = counter},
++  };
++
++  vl.values = values;
++  vl.values_len = STATIC_ARRAY_SIZE(values);
++
++  sstrncpy(vl.plugin, "dhcpleases", sizeof(vl.plugin));
++  sstrncpy(vl.type, "count", sizeof(vl.type));
++
++  plugin_dispatch_values(&vl);
++}
++
++static int dhcp_leases_read(void) {
++
++  FILE *fh;
++  char buffer[1024];
++  gauge_t count = 0;
++
++  if ((fh = fopen(dhcp_lease_file, "r")) == NULL) {
++    WARNING("interface plugin: fopen: %s", STRERRNO);
++    return -1;
++  }
++
++  while (fgets(buffer, 1024, fh) != NULL) {
++    count++;
++  }
++  fclose(fh);
++
++  dhcpleases_submit(count);
++
++  return 0;
++}
++
++void module_register(void) {
++  plugin_register_config("dhcpleases", dhcpleases_config, config_keys,
++                         config_keys_num);
++  plugin_register_read("dhcpleases", dhcp_leases_read);
++}

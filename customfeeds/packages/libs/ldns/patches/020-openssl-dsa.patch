@@ -1,0 +1,316 @@
+From 8a12d9183271b2b16f399c3fe867f149dbf753d7 Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Thu, 20 Feb 2020 18:58:52 -0800
+Subject: [PATCH] Fix compilation without DSA and deprecated APIs
+
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ dnssec.c                    |  2 ++
+ examples/ldns-dane.c        |  2 ++
+ examples/ldns-keygen.c      |  2 ++
+ examples/ldns-signzone.c    | 16 ++++++++++++++++
+ examples/ldns-verify-zone.c |  2 ++
+ host2str.c                  |  8 ++++++++
+ keys.c                      | 10 +++++++---
+ ldns/keys.h                 |  8 ++++++++
+ rr_functions.c              |  4 ++++
+ 9 files changed, 51 insertions(+), 3 deletions(-)
+
+--- a/dnssec.c
++++ b/dnssec.c
+@@ -332,6 +332,7 @@ uint16_t ldns_calc_keytag_raw(const uint
+ }
+ 
+ #ifdef HAVE_SSL
++#ifdef USE_DSA
+ DSA *
+ ldns_key_buf2dsa(const ldns_buffer *key)
+ {
+@@ -407,6 +408,7 @@ ldns_key_buf2dsa_raw(const unsigned char
+ #endif /* OPENSSL_VERSION_NUMBER */
+ 	return dsa;
+ }
++#endif /* USE_DSA */
+ 
+ RSA *
+ ldns_key_buf2rsa(const ldns_buffer *key)
+--- a/examples/ldns-dane.c
++++ b/examples/ldns-dane.c
+@@ -1680,9 +1680,11 @@ main(int argc, char* const* argv)
+ 		assert(0);
+ 	}
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000 || defined(HAVE_LIBRESSL)
+ 	/* ssl inititalize */
+ 	SSL_load_error_strings();
+ 	SSL_library_init();
++#endif
+ 
+ 	/* ssl load validation store */
+ 	if (! assume_pkix_validity || CAfile || CApath) {
+--- a/examples/ldns-keygen.c
++++ b/examples/ldns-keygen.c
+@@ -148,6 +148,7 @@ main(int argc, char *argv[])
+ 			exit(1);
+ 		}
+ 		break;
++#ifdef USE_DSA
+ 	case LDNS_SIGN_DSA:
+ 	case LDNS_SIGN_DSA_NSEC3:
+ 		if (bits < 512 || bits > 1024) {
+@@ -156,6 +157,7 @@ main(int argc, char *argv[])
+ 			exit(1);
+ 		}
+ 		break;
++#endif /* USE_DSA */
+ #ifdef USE_GOST
+ 	case LDNS_SIGN_ECC_GOST:
+ 		if(!ldns_key_EVP_load_gost_id()) {
+--- a/examples/ldns-signzone.c
++++ b/examples/ldns-signzone.c
+@@ -72,10 +72,14 @@ usage(FILE *fp, const char *prog) {
+ 
+ 	fprintf ( fp, "\n " );
+ 	__LIST ( RSAMD5 );
++#ifdef USE_DSA
+ 	__LIST ( DSA );
++#endif
+ 	__LIST ( RSASHA1 );
+ 	fprintf ( fp, "\n " );
++#ifdef USE_DSA
+ 	__LIST ( DSA_NSEC3 );
++#endif
+ 	__LIST ( RSASHA1_NSEC3 );
+ 	__LIST ( RSASHA256 );
+ 	fprintf ( fp, "\n " );
+@@ -350,11 +354,15 @@ parse_algspec ( const char * const p )
+ 
+ 	__MATCH ( RSAMD5 );
+ 	__MATCH ( RSASHA1 );
++#ifdef USE_DSA
+ 	__MATCH ( DSA );
++#endif
+ 	__MATCH ( RSASHA1_NSEC3 );
+ 	__MATCH ( RSASHA256 );
+ 	__MATCH ( RSASHA512 );
++#ifdef USE_DSA
+ 	__MATCH ( DSA_NSEC3 );
++#endif
+ 	__MATCH ( ECC_GOST );
+ 	__MATCH ( ECDSAP256SHA256 );
+ 	__MATCH ( ECDSAP384SHA384 );
+@@ -419,8 +427,10 @@ load_key ( const char * const p, ENGINE
+ 	case LDNS_SIGN_RSASHA1_NSEC3:
+ 	case LDNS_SIGN_RSASHA256:
+ 	case LDNS_SIGN_RSASHA512:
++#ifdef USE_DSA
+ 	case LDNS_SIGN_DSA:
+ 	case LDNS_SIGN_DSA_NSEC3:
++#endif
+ 	case LDNS_SIGN_ECC_GOST:
+ #ifdef USE_ECDSA
+ 	case LDNS_SIGN_ECDSAP256SHA256:
+@@ -995,9 +1005,13 @@ main(int argc, char *argv[])
+ 
+ #ifdef HAVE_SSL
+ 		if (ERR_peek_error()) {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(HAVE_LIBRESSL)
+ 			ERR_load_crypto_strings();
++#endif
+ 			ERR_print_errors_fp(stderr);
++#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(HAVE_LIBRESSL)
+ 			ERR_free_strings();
++#endif
+ 		}
+ #endif
+ 		exit(EXIT_FAILURE);
+@@ -1018,8 +1032,10 @@ main(int argc, char *argv[])
+ #ifndef OPENSSL_NO_ENGINE
+ 	shutdown_openssl ( engine );
+ #else
++#if OPENSSL_VERSION_NUMBER < 0x10100000 || defined(HAVE_LIBRESSL)
+ 	CRYPTO_cleanup_all_ex_data();
+ #endif
++#endif
+ 
+ 	free(prog);
+ 	exit(EXIT_SUCCESS);
+--- a/examples/ldns-verify-zone.c
++++ b/examples/ldns-verify-zone.c
+@@ -113,7 +113,9 @@ print_rr_status_error(FILE* stream, ldns
+ 	if (status != LDNS_STATUS_OK) {
+ 		print_rr_error(stream, rr, ldns_get_errorstr_by_id(status));
+ 		if (verbosity > 0 && status == LDNS_STATUS_SSL_ERR) {
++#if OPENSSL_VERSION_NUMBER < 0x10100000 || defined(HAVE_LIBRESSL)
+ 			ERR_load_crypto_strings();
++#endif
+ 			ERR_print_errors_fp(stream);
+ 		}
+ 	}
+--- a/host2str.c
++++ b/host2str.c
+@@ -49,10 +49,14 @@
+ ldns_lookup_table ldns_algorithms[] = {
+         { LDNS_RSAMD5, "RSAMD5" },
+         { LDNS_DH, "DH" },
++#ifdef USE_DSA
+         { LDNS_DSA, "DSA" },
++#endif /* USE_DSA */
+         { LDNS_ECC, "ECC" },
+         { LDNS_RSASHA1, "RSASHA1" },
++#ifdef USE_DSA
+         { LDNS_DSA_NSEC3, "DSA-NSEC3-SHA1" },
++#endif /* USE_DSA */
+         { LDNS_RSASHA1_NSEC3, "RSASHA1-NSEC3-SHA1" },
+ #ifdef USE_SHA2
+ 	{ LDNS_RSASHA256, "RSASHA256"},
+@@ -2133,7 +2137,9 @@ ldns_key2buffer_str(ldns_buffer *output,
+ 	unsigned char  *bignum;
+ #ifdef HAVE_SSL
+ 	RSA *rsa;
++#ifdef USE_DSA
+ 	DSA *dsa;
++#endif /* USE_DSA */
+ #endif /* HAVE_SSL */
+ 
+ 	if (!k) {
+@@ -2243,6 +2249,7 @@ ldns_key2buffer_str(ldns_buffer *output,
+ 
+ 				RSA_free(rsa);
+ 				break;
++#ifdef USE_DSA
+ 			case LDNS_SIGN_DSA:
+ 			case LDNS_SIGN_DSA_NSEC3:
+ 				dsa = ldns_key_dsa_key(k);
+@@ -2283,6 +2290,7 @@ ldns_key2buffer_str(ldns_buffer *output,
+ 						goto error;
+ 				}
+ 				break;
++#endif /* USE_DSA */
+ 			case LDNS_SIGN_ECC_GOST:
+ 				/* no format defined, use blob */
+ #if defined(HAVE_SSL) && defined(USE_GOST)
+--- a/keys.c
++++ b/keys.c
+@@ -905,6 +905,7 @@ error:
+ 	return NULL;
+ }
+ 
++#ifdef USE_DSA
+ DSA *
+ ldns_key_new_frm_fp_dsa(FILE *f)
+ {
+@@ -1015,6 +1016,7 @@ error:
+ 	BN_free(pub_key);
+ 	return NULL;
+ }
++#endif /* USE_DSA */
+ 
+ unsigned char *
+ ldns_key_new_frm_fp_hmac(FILE *f, size_t *hmac_size)
+@@ -1149,9 +1151,9 @@ ldns_key_new_frm_algorithm(ldns_signing_
+ #endif /* HAVE_EVP_PKEY_KEYGEN */
+ #endif /* HAVE_SSL */
+ 			break;
++#ifdef USE_DSA
+ 		case LDNS_SIGN_DSA:
+ 		case LDNS_SIGN_DSA_NSEC3:
+-#ifdef USE_DSA
+ #ifdef HAVE_SSL
+ # if OPENSSL_VERSION_NUMBER < 0x00908000L
+ 			d = DSA_generate_parameters((int)size, NULL, 0, NULL, NULL, NULL, NULL);
+@@ -1878,10 +1880,10 @@ ldns_key2rr(const ldns_key *k)
+ #endif
+ 			size++;
+ 			break;
++#ifdef USE_DSA
+ 		case LDNS_SIGN_DSA:
+ 			ldns_rr_push_rdf(pubkey,
+ 					ldns_native2rdf_int8(LDNS_RDF_TYPE_ALG, LDNS_DSA));
+-#ifdef USE_DSA
+ #ifdef HAVE_SSL
+ 			dsa = ldns_key_dsa_key(k);
+ 			if (dsa) {
+@@ -1901,10 +1903,10 @@ ldns_key2rr(const ldns_key *k)
+ #endif /* HAVE_SSL */
+ #endif /* USE_DSA */
+ 			break;
++#ifdef USE_DSA
+ 		case LDNS_SIGN_DSA_NSEC3:
+ 			ldns_rr_push_rdf(pubkey,
+ 					ldns_native2rdf_int8(LDNS_RDF_TYPE_ALG, LDNS_DSA_NSEC3));
+-#ifdef USE_DSA
+ #ifdef HAVE_SSL
+ 			dsa = ldns_key_dsa_key(k);
+ 			if (dsa) {
+@@ -2165,7 +2167,9 @@ ldns_signing_algorithm ldns_get_signing_
+         ldns_lookup_table aliases[] = {
+                 /* from bind dnssec-keygen */
+                 {LDNS_SIGN_HMACMD5, "HMAC-MD5"},
++#ifdef USE_DSA
+                 {LDNS_SIGN_DSA_NSEC3, "NSEC3DSA"},
++#endif /* USE_DSA */
+                 {LDNS_SIGN_RSASHA1_NSEC3, "NSEC3RSASHA1"},
+                 /* old ldns usage, now RFC names */
+ #ifdef USE_DSA
+--- a/ldns/keys.h
++++ b/ldns/keys.h
+@@ -45,10 +45,14 @@ enum ldns_enum_algorithm
+ {
+         LDNS_RSAMD5             = 1,   /* RFC 4034,4035 */
+         LDNS_DH                 = 2,
++#ifdef USE_DSA
+         LDNS_DSA                = 3,
++#endif /* USE_DSA */
+         LDNS_ECC                = 4,
+         LDNS_RSASHA1            = 5,
++#ifdef USE_DSA
+         LDNS_DSA_NSEC3          = 6,
++#endif /* USE_DSA */
+         LDNS_RSASHA1_NSEC3      = 7,
+         LDNS_RSASHA256          = 8,   /* RFC 5702 */
+         LDNS_RSASHA512          = 10,  /* RFC 5702 */
+@@ -90,11 +94,15 @@ enum ldns_enum_signing_algorithm
+ {
+ 	LDNS_SIGN_RSAMD5	 = LDNS_RSAMD5,
+ 	LDNS_SIGN_RSASHA1	 = LDNS_RSASHA1,
++#ifdef USE_DSA
+ 	LDNS_SIGN_DSA		 = LDNS_DSA,
++#endif /* USE_DSA */
+ 	LDNS_SIGN_RSASHA1_NSEC3  = LDNS_RSASHA1_NSEC3,
+ 	LDNS_SIGN_RSASHA256	 = LDNS_RSASHA256,
+ 	LDNS_SIGN_RSASHA512	 = LDNS_RSASHA512,
++#ifdef USE_DSA
+ 	LDNS_SIGN_DSA_NSEC3	 = LDNS_DSA_NSEC3,
++#endif /* USE_DSA */
+ 	LDNS_SIGN_ECC_GOST       = LDNS_ECC_GOST,
+         LDNS_SIGN_ECDSAP256SHA256 = LDNS_ECDSAP256SHA256,
+         LDNS_SIGN_ECDSAP384SHA384 = LDNS_ECDSAP384SHA384,
+--- a/rr_functions.c
++++ b/rr_functions.c
+@@ -269,14 +269,17 @@ ldns_rr_dnskey_key_size_raw(const unsign
+                             const size_t len,
+                             const ldns_algorithm alg)
+ {
++#ifdef USE_DSA
+ 	/* for DSA keys */
+ 	uint8_t t;
++#endif /* USE_DSA */
+ 	
+ 	/* for RSA keys */
+ 	uint16_t exp;
+ 	uint16_t int16;
+ 	
+ 	switch ((ldns_signing_algorithm)alg) {
++#ifdef USE_DSA
+ 	case LDNS_SIGN_DSA:
+ 	case LDNS_SIGN_DSA_NSEC3:
+ 		if (len > 0) {
+@@ -286,6 +289,7 @@ ldns_rr_dnskey_key_size_raw(const unsign
+ 			return 0;
+ 		}
+ 		break;
++#endif /* USE_DSA */
+ 	case LDNS_SIGN_RSAMD5:
+ 	case LDNS_SIGN_RSASHA1:
+ 	case LDNS_SIGN_RSASHA1_NSEC3:

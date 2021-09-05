@@ -1,0 +1,552 @@
+--- a/drivers.m4
++++ b/drivers.m4
+@@ -39,7 +39,7 @@ AC_ARG_WITH(
+   [                        Newhaven, Noritake, NULL, Pertelian, PHAnderson,]
+   [                        PICGraphic, picoLCD, picoLCDGraphic, PNG, PPM, RouterBoard,]
+   [                        Sample, SamsungSPF, serdisplib, ShuttleVFD, SimpleLCD, st2205, T6963,]
+-  [                        TeakLCM, Trefon, ULA200, USBHUB, USBLCD, VNC, WincorNixdorf, X11],
++  [                        TeakLCM, TEW673GRU, Trefon, ULA200, USBHUB, USBLCD, VNC, WincorNixdorf, X11],
+   drivers=$withval,
+   drivers=all
+ )
+@@ -107,6 +107,7 @@ for driver in $drivers; do
+ 	 SHUTTLEVFD="yes"
+          SIMPLELCD="yes"
+          T6963="yes"
++         TEW673GRU="yes"
+          TeakLCM="yes"
+          Trefon="yes"
+          ULA200="yes"
+@@ -260,6 +261,9 @@ for driver in $drivers; do
+       TeakLCM)
+          TeakLCM=$val
+          ;;
++      TEW673GRU)
++         TEW673GRU=$val
++         ;;
+       Trefon)
+          Trefon=$val
+          ;;
+@@ -797,6 +801,18 @@ if test "$TeakLCM" = "yes"; then
+    AC_DEFINE(WITH_TEAK_LCM,1,[TeakLCM driver])
+ fi
+ 
++if test "$TEW673GRU" = "yes"; then
++   if test "$has_spidev" = "true"; then
++      GRAPHIC="yes"
++      TEXT="yes"
++      SPIDEV="yes"
++      DRIVERS="$DRIVERS drv_TEW673GRU.o"
++      AC_DEFINE(WITH_TEW673GRU,1,[TEW673GRU driver])
++   else
++      AC_MSG_WARN(linux/spi/spidev.h not found: TEW673GRU driver disabled)
++   fi
++fi
++
+ if test "$Trefon" = "yes"; then
+    if test "$has_usb" = "true"; then
+       TEXT="yes"
+--- a/drv.c
++++ b/drv.c
+@@ -92,6 +92,7 @@ extern DRIVER drv_serdisplib;
+ extern DRIVER drv_ShuttleVFD;
+ extern DRIVER drv_SimpleLCD;
+ extern DRIVER drv_T6963;
++extern DRIVER drv_TEW673GRU;
+ extern DRIVER drv_TeakLCM;
+ extern DRIVER drv_Trefon;
+ extern DRIVER drv_ula200;
+@@ -248,6 +249,9 @@ DRIVER *Driver[] = {
+ #ifdef WITH_TEAK_LCM
+     &drv_TeakLCM,
+ #endif
++#ifdef WITH_TEW673GRU
++    &drv_TEW673GRU,
++#endif
+ #ifdef WITH_TREFON
+     &drv_Trefon,
+ #endif
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -120,6 +120,7 @@ drv_ShuttleVFD.c              \
+ drv_SimpleLCD.c               \
+ drv_T6963.c                   \
+ drv_TeakLCM.c                 \
++drv_TEW673GRU.c               \
+ drv_Trefon.c                  \
+ drv_ula200.c                  \
+ drv_USBHUB.c                  \
+--- /dev/null
++++ b/drv_TEW673GRU.c
+@@ -0,0 +1,457 @@
++/* $Id$
++ * $URL$
++ *
++ * TRENDnet TEW673GRU LCD4linux driver
++ *
++ * Copyright (C) 2012 Gabor Juhos <juhosg@openwrt.org>
++ *
++ * based on the Sample driver which is:
++ * Copyright (C) 2005 Michael Reinelt <michael@reinelt.co.at>
++ * Copyright (C) 2005, 2006, 2007 The LCD4Linux Team <lcd4linux-devel@users.sourceforge.net>
++ *
++ * This file is part of LCD4Linux.
++ *
++ * LCD4Linux is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2, or (at your option)
++ * any later version.
++ *
++ * LCD4Linux is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++ *
++ */
++
++/*
++ * exported fuctions:
++ *
++ * struct DRIVER drv_TEW673GRU
++ */
++
++#include "config.h"
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <unistd.h>
++#include <string.h>
++#include <errno.h>
++
++#include "debug.h"
++#include "cfg.h"
++#include "qprintf.h"
++#include "udelay.h"
++#include "plugin.h"
++#include "widget.h"
++#include "widget_text.h"
++#include "widget_icon.h"
++#include "widget_bar.h"
++#include "drv.h"
++
++#include "drv_generic_text.h"
++#include "drv_generic_graphic.h"
++#include "drv_generic_spidev.h"
++
++#ifdef WITH_DMALLOC
++#include <dmalloc.h>
++#endif
++
++#define TEW673GRU_NUM_COLS	220
++#define TEW673GRU_NUM_ROWS	176
++#define TEW673GRU_BPP		2	/* bytes per pixel */
++
++#define TEW673GRU_CMD_SIZE	9
++#define TEW673GRU_NUM_ROW_BYTES (TEW673GRU_NUM_COLS * TEW673GRU_BPP)
++
++enum {
++	CMD_SHOW_STRING		= 49,
++	CMD_SHOW_IMAGE_DIR	= 52,
++	CMD_SCREEN_COLOR	= 54,
++};
++
++static char Name[] = "TEW673GRU";
++
++static char *drv_TEW673GRU_FB;
++static long FB_SIZE;
++static int MODE;
++
++static unsigned int RGBAto16(RGBA rgb)
++{
++    return (((rgb.R >> 3) << 11) | ((rgb.G >> 2) << 5) | (rgb.B >> 3));
++}
++
++static unsigned char color_msb(unsigned int color)
++{
++    return color >> 8;
++}
++
++static unsigned char color_lsb(unsigned int color)
++{
++    return color & 0xff;
++}
++
++static void drv_TEW673GRU_hw_clear(const unsigned int color)
++{
++    unsigned char cmd[TEW673GRU_CMD_SIZE];
++    struct spi_ioc_transfer tr[1];
++
++    memset(tr, '\0', sizeof(tr));
++    memset(cmd, '\0', sizeof(cmd));
++
++    cmd[0] = CMD_SCREEN_COLOR;
++    cmd[7] = color_msb(color);
++    cmd[8] = color_lsb(color);
++
++    tr[0].tx_buf = (unsigned long) cmd;
++    tr[0].len = sizeof(cmd);
++
++    drv_generic_spidev_transfer(1, tr);
++}
++
++static void drv_TEW673GRU_hw_send_row(const int row, const int col, const char *data, const int width)
++{
++    unsigned char cmd[TEW673GRU_CMD_SIZE];
++    struct spi_ioc_transfer tr[2];
++    int datasize;
++
++    memset(tr, '\0', sizeof(tr));
++    memset(cmd, '\0', sizeof(cmd));
++
++    datasize =  width * TEW673GRU_BPP;
++
++    cmd[0] = CMD_SHOW_IMAGE_DIR;
++    cmd[1] = col;
++    cmd[2] = col + width;
++    cmd[3] = row;
++    cmd[4] = row;
++    cmd[5] = datasize >> 8;
++    cmd[6] = datasize & 0xff;
++
++    tr[0].tx_buf = (unsigned long) cmd;
++    tr[0].len = sizeof(cmd);
++    tr[1].tx_buf = (unsigned long) data;
++    tr[1].len = datasize;
++
++    drv_generic_spidev_transfer(2, tr);
++}
++
++static void drv_TEW673GRU_hw_write_string(const int row, const int col, const char *data, const int datasize)
++{
++    unsigned char cmd[TEW673GRU_CMD_SIZE];
++    struct spi_ioc_transfer tr[2];
++    unsigned char len;
++
++    memset(tr, '\0', sizeof(tr));
++    memset(cmd, '\0', sizeof(cmd));
++
++    len = datasize & 0xff;
++    cmd[0] = CMD_SHOW_STRING;
++    cmd[1] = col;
++    cmd[2] = col + (XRES * len);
++    cmd[3] = row;
++    cmd[4] = row + YRES;
++    cmd[7] = 0;
++    cmd[8] = len;
++
++    tr[0].tx_buf = (unsigned long) cmd;
++    tr[0].len = sizeof(cmd);
++    tr[1].tx_buf = (unsigned long) data;
++    tr[1].len = datasize;
++
++    drv_generic_spidev_transfer(2, tr);
++}
++
++static void drv_TEW673GRU_FB_set_pixel(const int col, const unsigned int color)
++{
++    int pos;
++
++    pos = col * TEW673GRU_BPP;
++    drv_TEW673GRU_FB[pos] = color_msb(color);
++    drv_TEW673GRU_FB[pos + 1] = color_lsb(color);
++}
++
++static void drv_TEW673GRU_blit(const int row, const int col, const int height, const int width)
++{
++    int r, c;
++
++    debug("%s: update area r:%d c:%d w:%d h:%d", Name, row, col, height, width);
++
++    for (r = row; r < row + height; r++) {
++	for (c = col; c < col + width; c++) {
++	    unsigned int color;
++	    RGBA rgb;
++
++	    rgb = drv_generic_graphic_rgb(r, c);
++	    color = RGBAto16(rgb);
++            drv_TEW673GRU_FB_set_pixel(c, color);
++	}
++
++	if (width) {
++	    char *data;
++
++	    data = &drv_TEW673GRU_FB[col * TEW673GRU_BPP];
++	    drv_TEW673GRU_hw_send_row(r, col, data, width);
++	    udelay(100 + width * 50);
++	}
++    }
++}
++
++static void drv_TEW673GRU_clear(RGBA rgba)
++{
++    unsigned int color;
++
++    color = RGBAto16(rgba);
++    drv_TEW673GRU_hw_clear(color);
++}
++
++static void drv_TEW673GRU_write(const int row, const int col, const char *data, const int len)
++{
++    int i;
++
++    for (i = 0; i < len; i++) {
++	drv_TEW673GRU_hw_write_string(row * YRES, (col + i) * XRES, " ", 1);
++	udelay(10000);
++	drv_TEW673GRU_hw_write_string(row * YRES, 2 + (col + i) * XRES, " ", 1);
++	udelay(10000);
++	drv_TEW673GRU_hw_write_string(row * YRES, (col + i) * XRES, &data[i], 1);
++	udelay(10000);
++    }
++}
++
++static int drv_TEW673GRU_open(const char *section)
++{
++    int err;
++
++    err = drv_generic_spidev_open(section, Name);
++    if (err < 0)
++	return err;
++
++    return 0;
++}
++
++static int drv_TEW673GRU_close(void)
++{
++    drv_generic_spidev_close();
++    return 0;
++}
++
++static void drv_TEW673GRU_clear_screen(void)
++{
++    if (MODE) {
++	drv_generic_graphic_clear();
++    } else {
++	memset(drv_TEW673GRU_FB, ' ', FB_SIZE);
++	drv_TEW673GRU_hw_clear(0x0000);
++    }
++}
++
++static int drv_TEW673GRU_init_font(const char *section)
++{
++    char *font;
++    int ret = -1;
++
++    font = cfg_get(section, "Font", "6x8");
++    if (font == NULL) {
++	error("%s: no '%s.Font' entry from %s", Name, section, cfg_source());
++	goto out;
++    }
++
++    if (*font == '\0') {
++	error("%s: invalid '%s.Font' entry in %s", Name, section, cfg_source());
++	goto out_free;
++    }
++
++    XRES = -1;
++    YRES = -1;
++    if (sscanf(font, "%dx%d", &XRES, &YRES) != 2 ||
++	XRES < 1 ||
++	YRES < 1) {
++	error("%s: bad Font '%s' from %s", Name, font, cfg_source());
++	goto out_free;
++    }
++
++    if (XRES != 6 && YRES != 8) {
++	error("%s: bad Font '%s' from %s (only 6x8 at the moment)",
++	      Name, font, cfg_source());
++	goto out_free;
++    }
++
++    error("%s: font '%s' selected", Name, font);
++
++    ret = 0;
++
++out_free:
++    free(font);
++out:
++    return ret;
++}
++
++static int drv_TEW673GRU_start(const char *section)
++{
++    int ret;
++
++    DCOLS = TEW673GRU_NUM_COLS;
++    DROWS = TEW673GRU_NUM_ROWS;
++
++    if (MODE) {
++	ret = drv_TEW673GRU_init_font(section);
++	if (ret)
++	    goto err;
++
++	FB_SIZE = DCOLS * TEW673GRU_BPP;
++    } else {
++	XRES = 10;
++	YRES = 16;
++	DCOLS = DCOLS / XRES;
++	DROWS = DROWS / YRES;
++
++	FB_SIZE = DCOLS * DROWS;
++    }
++
++    if (FB_SIZE) {
++	drv_TEW673GRU_FB = malloc(FB_SIZE);
++	if (drv_TEW673GRU_FB == NULL) {
++	    error("%s: framebuffer could not be allocated", Name);
++	    goto err;
++	}
++    }
++
++    ret = drv_TEW673GRU_open(section);
++    if (ret < 0)
++        goto err_free;
++
++    if (MODE == 0)
++    	drv_TEW673GRU_clear_screen();
++
++    return 0;
++
++ err_free:
++    if (drv_TEW673GRU_FB)
++	free(drv_TEW673GRU_FB);
++ err:
++    return -1;
++}
++
++static int drv_TEW673GRU_greet(const char *msg1, const char *msg2)
++{
++    if (MODE)
++	return drv_generic_graphic_greet(msg1, msg2);
++
++    return drv_generic_text_greet(msg1, msg2);
++}
++
++
++/****************************************/
++/***        widget callbacks          ***/
++/****************************************/
++
++
++/* using drv_generic_text_draw(W) */
++/* using drv_generic_text_icon_draw(W) */
++/* using drv_generic_text_bar_draw(W) */
++/* using drv_generic_gpio_draw(W) */
++
++
++/****************************************/
++/***        exported functions        ***/
++/****************************************/
++
++int drv_TEW673GRU_list(void)
++{
++    printf("TEW673GRU driver");
++    return 0;
++}
++
++int drv_TEW673GRU_init(const char *section, const int quiet)
++{
++    WIDGET_CLASS wc;
++    int ret;
++
++    cfg_number(section, "Mode", 0, 0, 1, &MODE);
++
++    if (MODE) {
++	drv_generic_graphic_real_blit = drv_TEW673GRU_blit;
++	drv_generic_graphic_real_clear = drv_TEW673GRU_clear;
++    } else {
++	drv_generic_text_real_write = drv_TEW673GRU_write;
++    }
++
++    ret = drv_TEW673GRU_start(section);
++    if (ret)
++	return ret;
++
++    if (MODE) {
++	ret = drv_generic_graphic_init(section, Name);
++	if (ret)
++	    return ret;
++    } else {
++	ret = drv_generic_text_init(section, Name);
++	if (ret)
++	    return ret;
++
++	ret = drv_generic_text_icon_init();
++	if (ret != 0)
++	    return ret;
++
++	ret = drv_generic_text_bar_init(1);
++	if (ret != 0)
++	    return ret;
++
++	drv_generic_text_bar_add_segment(0, 0, 255, ' ');
++	drv_generic_text_bar_add_segment(255, 255, 255, '#');
++
++	wc = Widget_Text;
++	wc.draw = drv_generic_text_draw;
++	widget_register(&wc);
++
++	wc = Widget_Icon;
++	wc.draw = drv_generic_text_icon_draw;
++	widget_register(&wc);
++
++	wc = Widget_Bar;
++	wc.draw = drv_generic_text_bar_draw;
++	widget_register(&wc);
++    }
++
++    if (!quiet) {
++	char buffer[40];
++	qprintf(buffer, sizeof(buffer), "%s %dx%d", Name, DCOLS, DROWS);
++	drv_TEW673GRU_greet(buffer, "www.openwrt.org");
++	sleep(3);
++	drv_TEW673GRU_clear_screen();
++    }
++
++    return 0;
++}
++
++int drv_TEW673GRU_quit(const int quiet)
++{
++
++    info("%s: shutting down.", Name);
++
++    drv_TEW673GRU_clear_screen();
++
++    if (!quiet)
++	drv_TEW673GRU_greet("goodbye!", NULL);
++
++    if (MODE)
++	drv_generic_graphic_quit();
++    else
++	drv_generic_text_quit();
++
++    debug("closing connection");
++    drv_TEW673GRU_close();
++
++    return (0);
++}
++
++DRIVER drv_TEW673GRU = {
++    .name = Name,
++    .list = drv_TEW673GRU_list,
++    .init = drv_TEW673GRU_init,
++    .quit = drv_TEW673GRU_quit,
++};
+--- a/lcd4linux.conf.sample
++++ b/lcd4linux.conf.sample
+@@ -581,6 +581,11 @@ Display FutabaVFD {
+     }
+ }
+ 
++Display TEW673GRU {
++    Driver       'TEW673GRU'
++    Font         '6x8'
++    Port         '/dev/spidev1.0'
++}
+ 
+ #Plugin KVV {
+ #    StationID '12_701'

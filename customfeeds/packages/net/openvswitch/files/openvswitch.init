@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2013 Julius Schulz-Zander <julius@net.t-labs.tu-berlin.de>
+# Copyright (C) 2014-2017 OpenWrt.org
+# Copyright (C) 2018 Yousong Zhou <yszhou4tech@gmail.com>
+
+START=15
+
+ovs_ctl="/usr/share/openvswitch/scripts/ovs-ctl"; [ -x "$ovs_ctl" ] || ovs_ctl=:
+ovn_ctl="/usr/share/ovn/scripts/ovn-ctl"; [ -x "$ovn_ctl" ] || ovn_ctl=:
+
+EXTRA_COMMANDS="status"
+EXTRA_HELP="	status Get status information"
+
+start() {
+	ovs_action start "$@"
+}
+
+stop() {
+	ovs_action stop "$@"
+}
+
+restart() {
+	ovs_action restart "$@"
+}
+
+status() {
+	ovs_action status "$@"
+}
+
+ovs_action_cfgs=
+ovs_action() {
+	local action="$1"; shift
+	local cfgtype
+
+	ovs_action_cfgs="$*"
+	config_load openvswitch
+	for cfgtype in ovs ovn_northd ovn_controller; do
+		config_foreach "ovs_xx" "$cfgtype" "$action" "$cfgtype"
+	done
+
+	config_foreach ovs_bridge_init "ovs_bridge"
+}
+
+ovs_xx() {
+	local cfg="$1"
+	local action="$2"
+	local cfgtype="$3"
+	local disabled
+
+	if [ -n "$ovs_action_cfgs" ] && ! list_contains "ovs_action_cfgs" "$cfg"; then
+		return
+	fi
+	case "$action" in
+		status|stop) ;;
+		*)
+			config_get_bool disabled "$cfg" disabled 0
+			[ "$disabled" == "0" ] || return
+			;;
+	esac
+
+	case "$cfgtype" in
+		ovs)
+			"$ovs_ctl" "$action" \
+				--system-id=random
+			;;
+		ovn_*)
+			"$ovn_ctl" "${action}_${cfgtype#ovn_}"
+			;;
+	esac
+}
+
+ovs_bridge_init() {
+	local cfg="$1"
+
+	local disabled
+	local name
+	local controller
+
+	config_get_bool disabled "$cfg" disabled 0
+	[ "$disabled" == "0" ] || return
+
+	config_get name "$cfg" name $cfg
+	ovs-vsctl --may-exist add-br "$name"
+
+	config_get controller "$cfg" controller
+	[ -n "$controller" ] && \
+		ovs-vsctl set-controller "$name" "$controller"
+}

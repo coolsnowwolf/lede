@@ -1,0 +1,337 @@
+From fe7ae129b8be052e5178b07e76e19ede21b13261 Mon Sep 17 00:00:00 2001
+From: Eneas U de Queiroz <cote2004-github@yahoo.com>
+Date: Tue, 22 May 2018 16:40:20 -0300
+Subject: [PATCH] ibrcommon: added openssl 1.1 compatibility
+
+This patch adds compatibility to openssl 1.1.0.
+
+Signed-off-by: Eneas U de Queiroz <cote2004-github@yahoo.com>
+---
+ ibrcommon/ssl/HMacStream.cpp      | 11 ++++----
+ ibrcommon/ssl/HMacStream.h        |  2 +-
+ ibrcommon/ssl/RSASHA256Stream.cpp | 28 +++++++++---------
+ ibrcommon/ssl/RSASHA256Stream.h   |  2 +-
+ ibrcommon/ssl/iostreamBIO.cpp     | 44 ++++++++++++++++++++++-------
+ ibrcommon/ssl/openssl_compat.h    | 38 +++++++++++++++++++++++++
+ 6 files changed, 95 insertions(+), 30 deletions(-)
+ create mode 100644 ibrcommon/ssl/openssl_compat.h
+
+--- a/ibrcommon/ssl/HMacStream.cpp
++++ b/ibrcommon/ssl/HMacStream.cpp
+@@ -20,29 +20,30 @@
+  */
+ 
+ #include "ibrcommon/ssl/HMacStream.h"
++#include "openssl_compat.h"
+ 
+ namespace ibrcommon
+ {
+ 	HMacStream::HMacStream(const unsigned char * const key, const int key_size)
+ 	 : HashStream(EVP_MAX_MD_SIZE, BUFF_SIZE), key_(key), key_size_(key_size)
+ 	{
+-		HMAC_CTX_init(&ctx_);
+-		HMAC_Init_ex(&ctx_, key_, key_size_, EVP_sha1(), NULL);
++		ctx_ = HMAC_CTX_new();
++		HMAC_Init_ex(ctx_, key_, key_size_, EVP_sha1(), NULL);
+ 	}
+ 
+ 	HMacStream::~HMacStream()
+ 	{
+-		HMAC_CTX_cleanup(&ctx_);
++		HMAC_CTX_free(ctx_);
+ 	}
+ 
+ 	void HMacStream::update(char *buf, const size_t size)
+ 	{
+ 		// hashing
+-		HMAC_Update(&ctx_, (unsigned char*)buf, size);
++		HMAC_Update(ctx_, (unsigned char*)buf, size);
+ 	}
+ 
+ 	void HMacStream::finalize(char * hash, unsigned int &size)
+ 	{
+-		HMAC_Final(&ctx_, (unsigned char*)hash, &size);
++		HMAC_Final(ctx_, (unsigned char*)hash, &size);
+ 	}
+ }
+--- a/ibrcommon/ssl/HMacStream.h
++++ b/ibrcommon/ssl/HMacStream.h
+@@ -44,7 +44,7 @@ namespace ibrcommon
+ 		const unsigned char * const key_;
+ 		const int key_size_;
+ 
+-		HMAC_CTX ctx_;
++		HMAC_CTX* ctx_;
+ 	};
+ }
+ 
+--- a/ibrcommon/ssl/RSASHA256Stream.cpp
++++ b/ibrcommon/ssl/RSASHA256Stream.cpp
+@@ -21,6 +21,7 @@
+ 
+ #include "ibrcommon/ssl/RSASHA256Stream.h"
+ #include "ibrcommon/Logger.h"
++#include "openssl_compat.h"
+ #include <openssl/err.h>
+ 
+ namespace ibrcommon
+@@ -30,11 +31,11 @@ namespace ibrcommon
+ 	{
+ 		// Initialize get pointer.  This should be zero so that underflow is called upon first read.
+ 		setp(&out_buf_[0], &out_buf_[BUFF_SIZE - 1]);
+-		EVP_MD_CTX_init(&_ctx);
++		_ctx = EVP_MD_CTX_new();
+ 
+ 		if (!_verify)
+ 		{
+-			if (!EVP_SignInit_ex(&_ctx, EVP_sha256(), NULL))
++			if (!EVP_SignInit_ex(_ctx, EVP_sha256(), NULL))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to initialize the signature function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+@@ -42,7 +43,7 @@ namespace ibrcommon
+ 		}
+ 		else
+ 		{
+-			if (!EVP_VerifyInit_ex(&_ctx, EVP_sha256(), NULL))
++			if (!EVP_VerifyInit_ex(_ctx, EVP_sha256(), NULL))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to initialize the verification function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+@@ -52,18 +53,19 @@ namespace ibrcommon
+ 
+ 	RSASHA256Stream::~RSASHA256Stream()
+ 	{
+-		EVP_MD_CTX_cleanup(&_ctx);
++		EVP_MD_CTX_free(_ctx);
+ 	}
+ 
+ 	void RSASHA256Stream::reset()
+ 	{
+-		EVP_MD_CTX_cleanup(&_ctx);
+-
+-		EVP_MD_CTX_init(&_ctx);
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++		EVP_MD_CTX_cleanup(_ctx);
++#endif
++		EVP_MD_CTX_init(_ctx);
+ 
+ 		if (!_verify)
+ 		{
+-			if (!EVP_SignInit_ex(&_ctx, EVP_sha256(), NULL))
++			if (!EVP_SignInit_ex(_ctx, EVP_sha256(), NULL))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to initialize the signature function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+@@ -71,7 +73,7 @@ namespace ibrcommon
+ 		}
+ 		else
+ 		{
+-			if (!EVP_VerifyInit_ex(&_ctx, EVP_sha256(), NULL))
++			if (!EVP_VerifyInit_ex(_ctx, EVP_sha256(), NULL))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to initialize the verfication function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+@@ -91,7 +93,7 @@ namespace ibrcommon
+ 			std::vector<unsigned char> sign(EVP_PKEY_size(_pkey));
+ 			unsigned int size = EVP_PKEY_size(_pkey);
+ 
+-			_return_code = EVP_SignFinal(&_ctx, &sign[0], &size, _pkey);
++			_return_code = EVP_SignFinal(_ctx, &sign[0], &size, _pkey);
+ 
+ 			_sign = std::string((const char*)&sign[0], size);
+ 
+@@ -107,7 +109,7 @@ namespace ibrcommon
+ 		if (!_sign_valid)
+ 		{
+ 			sync();
+-			_return_code = EVP_VerifyFinal(&_ctx, reinterpret_cast<const unsigned char *>(their_sign.c_str()), static_cast<unsigned int>(their_sign.size()), _pkey);
++			_return_code = EVP_VerifyFinal(_ctx, reinterpret_cast<const unsigned char *>(their_sign.c_str()), static_cast<unsigned int>(their_sign.size()), _pkey);
+ 			_sign_valid = true;
+ 		}
+ 		return _return_code;
+@@ -145,7 +147,7 @@ namespace ibrcommon
+ 		if (!_verify)
+ 			// hashing
+ 		{
+-			if (!EVP_SignUpdate(&_ctx, &out_buf_[0], iend - ibegin))
++			if (!EVP_SignUpdate(_ctx, &out_buf_[0], iend - ibegin))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to feed data into the signature function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+@@ -153,7 +155,7 @@ namespace ibrcommon
+ 		}
+ 		else
+ 		{
+-			if (!EVP_VerifyUpdate(&_ctx, &out_buf_[0], iend - ibegin))
++			if (!EVP_VerifyUpdate(_ctx, &out_buf_[0], iend - ibegin))
+ 			{
+ 				IBRCOMMON_LOGGER_TAG("RSASHA256Stream", critical) << "failed to feed data into the verification function" << IBRCOMMON_LOGGER_ENDL;
+ 				ERR_print_errors_fp(stderr);
+--- a/ibrcommon/ssl/RSASHA256Stream.h
++++ b/ibrcommon/ssl/RSASHA256Stream.h
+@@ -106,7 +106,7 @@ namespace ibrcommon
+ 
+ 		/** the context in which the streamed data will be feed into for
+ 		calculation of the hash/signature */
+-		EVP_MD_CTX _ctx;
++		EVP_MD_CTX * _ctx;
+ 
+ 		/** tells if the context needs to be finalized to get a valid signature or
+ 		verification */
+--- a/ibrcommon/ssl/iostreamBIO.cpp
++++ b/ibrcommon/ssl/iostreamBIO.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "ibrcommon/Logger.h"
+ 
++#include "openssl_compat.h"
+ #include <openssl/err.h>
+ 
+ namespace ibrcommon
+@@ -42,7 +43,20 @@ static int create(BIO *bio);
+ //static int destroy(BIO *bio);
+ //static long (*callback_ctrl)(BIO *, int, bio_info_cb *);
+ 
+-
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L
++BIO_METHOD * BIO_iostream_method()
++{
++	static BIO_METHOD *iostream_method = NULL;
++	if (iostream_method) {
++		iostream_method = BIO_meth_new(iostreamBIO::type, iostreamBIO::name);
++		BIO_meth_set_write(iostream_method, bwrite);
++		BIO_meth_set_read(iostream_method, bread);
++		BIO_meth_set_ctrl(iostream_method, ctrl);
++		BIO_meth_set_create(iostream_method, create);
++	}
++	return iostream_method;
++}
++#else
+ static BIO_METHOD iostream_method =
+ {
+ 		iostreamBIO::type,
+@@ -56,12 +70,17 @@ static BIO_METHOD iostream_method =
+ 		NULL,//destroy,
+ 		NULL//callback_ctrl
+ };
++BIO_METHOD * BIO_iostream_method()
++{
++	return &iostream_method;
++}
++#endif
+ 
+ iostreamBIO::iostreamBIO(iostream *stream)
+ 	:	_stream(stream)
+ {
+ 	/* create BIO */
+-	_bio = BIO_new(&iostream_method);
++	_bio = BIO_new(BIO_iostream_method());
+ 	if(!_bio){
+ 		/* creation failed, throw exception */
+ 		char err_buf[ERR_BUF_SIZE];
+@@ -72,7 +91,7 @@ iostreamBIO::iostreamBIO(iostream *strea
+ 	}
+ 
+ 	/* save the iostream in the bio object */
+-	_bio->ptr = stream;
++	BIO_set_data(_bio, (void *) stream);
+ }
+ 
+ BIO * iostreamBIO::getBIO(){
+@@ -81,10 +100,10 @@ BIO * iostreamBIO::getBIO(){
+ 
+ static int create(BIO *bio)
+ {
+-	bio->ptr = NULL;
+-	/* (from openssl memory bio) */
+-	bio->shutdown=1;
+-	bio->init=1;
++	BIO_set_data(bio, NULL);
++	BIO_set_shutdown(bio, 1);
++	BIO_set_init(bio, 1);
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	/* from bss_mem.c (openssl):
+ 	 * bio->num is used to hold the value to return on 'empty', if it is
+ 	 * 0, should_retry is not set
+@@ -93,6 +112,7 @@ static int create(BIO *bio)
+ 	 * it is set to 0 since the underlying stream is blocking
+ 	 */
+ 	bio->num= 0;
++#endif
+ 
+ 	return 1;
+ }
+@@ -102,7 +122,7 @@ static int create(BIO *bio)
+ static long ctrl(BIO *bio, int cmd, long  num, void *)
+ {
+ 	long ret;
+-	iostream *stream = reinterpret_cast<iostream*>(bio->ptr);
++	iostream *stream = reinterpret_cast<iostream*>(BIO_get_data(bio));
+ 
+ 	IBRCOMMON_LOGGER_DEBUG_TAG("iostreamBIO", 90) << "ctrl called, cmd: " << cmd << ", num: " << num << "." << IBRCOMMON_LOGGER_ENDL;
+ 
+@@ -147,8 +167,12 @@ static long ctrl(BIO *bio, int cmd, long
+ 
+ static int bread(BIO *bio, char *buf, int len)
+ {
+-	iostream *stream = reinterpret_cast<iostream*>(bio->ptr);
++	iostream *stream = reinterpret_cast<iostream*>(BIO_get_data(bio));
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L
++	int num_bytes = 0;
++#else
+ 	int num_bytes = bio->num;
++#endif
+ 
+ 	try{
+ 		/* make sure to read at least 1 byte and then read as much as we can */
+@@ -170,7 +194,7 @@ static int bwrite(BIO *bio, const char *
+ 	if(len == 0){
+ 		return 0;
+ 	}
+-	iostream *stream = reinterpret_cast<iostream*>(bio->ptr);
++	iostream *stream = reinterpret_cast<iostream*>(BIO_get_data(bio));
+ 
+ 	/* write the data */
+ 	try{
+--- /dev/null
++++ b/ibrcommon/ssl/openssl_compat.h
+@@ -0,0 +1,38 @@
++#ifndef OPENSSL_COMPAT_H
++#define OPENSSL_COMPAT_H
++
++#include <openssl/crypto.h>
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
++
++#include <openssl/evp.h>
++#include <openssl/hmac.h>
++
++static inline EVP_MD_CTX * EVP_MD_CTX_new()
++{
++	EVP_MD_CTX *ctx;
++
++	ctx = (EVP_MD_CTX *) OPENSSL_malloc(sizeof(EVP_MD_CTX));
++	EVP_MD_CTX_init(ctx);
++        return ctx;
++}
++#define EVP_MD_CTX_free(c) if (c != NULL) OPENSSL_free(c)
++
++static inline HMAC_CTX * HMAC_CTX_new()
++{
++        HMAC_CTX *ctx;
++
++        ctx = (HMAC_CTX *) OPENSSL_malloc(sizeof(HMAC_CTX));
++        HMAC_CTX_init(ctx);
++        return ctx;
++}
++#define HMAC_CTX_free(c) if (c != NULL) OPENSSL_free(c)
++
++#define BIO_get_data(b) b->ptr
++#define BIO_set_data(b, v) b->ptr=v
++#define BIO_set_shutdown(b, v) b->shutdown=v
++#define BIO_set_init(b, v) b->init=v
++
++#endif /* OPENSSL_VERSION_NUMBER */
++
++#endif /* OPENSSL_COMPAT_H */
++

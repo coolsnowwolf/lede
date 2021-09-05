@@ -1,0 +1,80 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2017 OpenWrt.org
+
+# TODO: 
+# * support start multiple streams with one server
+# * support multiple usernames
+# * support HLS, etc.
+
+START=90
+STOP=10
+
+USE_PROCD=1
+
+SERVICE=v4l2rtspserver
+PROG=/usr/bin/$SERVICE
+
+error() {
+        logger -t "$SERVICE" "$@"
+}
+
+start_instance() {
+	local s="$1"
+
+	config_get_bool enabled "$1" 'enabled' 0
+	[ $enabled -eq 0 ] && return
+
+	# validate device
+	config_get device "$s" 'device'
+	if [ ! -c "$device" ]; then
+		error "device '$device' does not exist"
+		return 1
+	fi
+
+	# get options
+	config_get port "$s" 'port'
+	config_get resolution "$s" 'resolution'
+	config_get fps "$s" 'fps'
+	config_get username "$s" 'username'
+	config_get password "$s" 'password'
+	config_get path "$s" 'path'
+	config_get format "$s" 'format'
+
+	# make sure format is uppercase
+	format="$(echo $format | tr a-z A-Z)"
+
+	# build args
+	local args="-s"
+	args="$args -P $port"
+	args="$args -u ${path}"
+	args="$args -F $fps"
+	args="$args -G ${resolution}"
+        if [ ! -z "$format" ]; then
+                args="$args -f$format"
+        fi
+	args="$args -c" # fixes issue with corrupt frames with H264
+		
+	if [ -n "$username" ]; then
+		args="$args -U ${username}:${password}"
+	fi
+
+	cmd="$PROG $args $device"
+
+	# procd stuff
+	procd_open_instance
+	procd_set_param file /etc/config/$SERVICE
+	procd_set_param command $cmd
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_add_mdns "rtsp" "tcp" "$port" "daemon=$SERVICE" "path=/$path"
+	procd_close_instance
+}
+
+start_service() {
+	config_load "$SERVICE"
+	config_foreach start_instance "$SERVICE"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$SERVICE"
+}

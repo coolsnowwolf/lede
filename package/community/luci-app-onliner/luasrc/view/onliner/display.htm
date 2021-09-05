@@ -1,0 +1,921 @@
+<%#
+ Copyright 2017 Jo-Philipp Wich <jo@mein.io>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<% css = [[
+
+	#chartjs-tooltip {
+		opacity: 0;
+		position: absolute;
+		background: rgba(0, 0, 0, .7);
+		color: white;
+		padding: 3px;
+		border-radius: 3px;
+		-webkit-transition: all .1s ease;
+		transition: all .1s ease;
+		pointer-events: none;
+		-webkit-transform: translate(-50%, 0);
+		transform: translate(-50%, 0);
+		z-index: 200;
+	}
+
+	#chartjs-tooltip.above {
+		-webkit-transform: translate(-50%, -100%);
+		transform: translate(-50%, -100%);
+	}
+
+	#chartjs-tooltip.above:before {
+		border: solid;
+		border-color: #111 transparent;
+		border-color: rgba(0, 0, 0, .8) transparent;
+		border-width: 8px 8px 0 8px;
+		bottom: 1em;
+		content: "";
+		display: block;
+		left: 50%;
+		top: 100%;
+		position: absolute;
+		z-index: 99;
+		-webkit-transform: translate(-50%, 0);
+		transform: translate(-50%, 0);
+	}
+
+	table {
+		border: 1px solid #999;
+		border-collapse: collapse;
+		margin: 0 0 2px !important;
+	}
+
+	th, td, table table td {
+		border: 1px solid #999;
+		text-align: right;
+		padding: 1px 3px !important;
+		white-space: nowrap;
+	}
+
+	tbody td {
+		border-bottom-color: #ccc;
+	}
+	tbody td:nth-last-child(4) {
+		width: 10%;
+	}
+	tbody td:nth-last-child(3) {
+		width: 10%;
+	}
+	tbody td:nth-last-child(2) {
+		width: 10%;
+	}
+	tbody td:nth-last-child(1) {
+		width: 10%;
+	}	
+	tbody td[rowspan] {
+		border-bottom-color: #999;
+	}
+
+	tbody tr:last-child td {
+		border-bottom-color: #999;
+	}
+
+	.kpi {
+		display: inline-block;
+		vertical-align: top;
+	}
+
+	.kpi ul {
+		list-style: none;
+	}
+
+	.kpi li {
+		margin: 10px;
+		display: none;
+	}
+
+	.kpi big {
+		font-weight: bold;
+	}
+
+	#detail-bubble {
+		position: absolute;
+		opacity: 0;
+		visibility: hidden;
+	}
+
+	#detail-bubble.in {
+		opacity: 1;
+		visibility: visible;
+		transition: opacity 0.5s;
+	}
+
+	#detail-bubble > div {
+		border: 1px solid #ccc;
+		border-radius: 2px;
+		padding: 5px;
+		background: #fcfcfc;
+	}
+
+	#detail-bubble .head {
+		text-align: center;
+		white-space: nowrap;
+		position: relative;
+	}
+
+	#detail-bubble .head .dismiss {
+		top: 0;
+		right: 0;
+		width: 20px;
+		line-height: 20px;
+		text-align: center;
+		text-decoration: none;
+		font-weight: bold;
+		color: #000;
+		position: absolute;
+		font-size: 20px;
+	}
+	#detail-bubble .kpi {
+		margin: 40px 5px 5px;
+		font-size: smaller;
+		text-align: left;
+	}
+
+	#detail-bubble .kpi ul {
+		margin: 0;
+	}
+
+	#bubble-arrow {
+		border: 1px solid #ccc;
+		border-width: 1px 0 0 1px;
+		background: #fcfcfc;
+		width: 15px;
+		height: 15px;
+		position: absolute;
+		left: 0;
+		top: -8px;
+		transform: rotate(45deg);
+		margin: 0 0 0 -8px;
+	}
+
+	tr.active > td {
+		border-bottom: 2px solid red;
+	}
+
+	tr.active > td.active {
+		border: 2px solid red;
+		border-bottom: none;
+	}
+
+	td.detail {
+		border: 2px solid red;
+		border-top: none;
+		opacity: 0;
+		transition: opacity 0.5s;
+	}
+
+	td.detail.in {
+		opacity: 1;
+	}
+
+	th.hostname,
+	td.hostname {
+		text-align: left;
+	}
+
+]] -%>
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-19.338.43082-9e87e69"></script>
+<script type="text/javascript" src="<%=resource%>/nlbw.chart.min.js?v=git-19.338.43082-9e87e69"></script>
+<script type="text/javascript">//<![CDATA[
+
+var chartRegistry = {},
+	trafficPeriods = [],
+	trafficData = { columns: [], data: [] },
+	hostNames = {},
+	hostInfo = <%=luci.util.serialize_json(luci.sys.net.host_hints())%>,
+	ouiData = [];
+
+
+function off(elem)
+{
+	var val = [0, 0];
+	do {
+		if (!isNaN(elem.offsetLeft) && !isNaN(elem.offsetTop)) {
+			val[0] += elem.offsetLeft;
+			val[1] += elem.offsetTop;
+		}
+	}
+	while ((elem = elem.offsetParent) != null);
+	return val;
+}
+
+Chart.defaults.global.customTooltips = function(tooltip) {
+	var tooltipEl = document.getElementById('chartjs-tooltip');
+
+	if (!tooltipEl) {
+		tooltipEl = document.createElement('div');
+		tooltipEl.setAttribute('id', 'chartjs-tooltip');
+		document.body.appendChild(tooltipEl);
+	}
+
+	if (!tooltip) {
+		if (tooltipEl.row)
+			tooltipEl.row.style.backgroundColor = '';
+
+		tooltipEl.style.opacity = 0;
+		return;
+	}
+
+	var pos = off(tooltip.chart.canvas);
+
+	tooltipEl.className = tooltip.yAlign;
+	tooltipEl.innerHTML = tooltip.text[0];
+
+	tooltipEl.style.opacity = 1;
+	tooltipEl.style.left = pos[0] + tooltip.x + 'px';
+	tooltipEl.style.top = pos[1] + tooltip.y - tooltip.caretHeight - tooltip.caretPadding + 'px';
+
+	var row = tooltip.text[1],
+	    hue = tooltip.text[2];
+
+	if (row && !isNaN(hue)) {
+		row.style.backgroundColor = 'hsl(%u, 100%%, 80%%)'.format(hue);
+		tooltipEl.row = row;
+	}
+};
+
+Chart.defaults.global.tooltipFontSize = 10;
+Chart.defaults.global.tooltipTemplate = function(tip) {
+	tip.label[0] = tip.label[0].format(tip.value);
+	return tip.label;
+};
+
+function kpi(id, val1, val2, val3)
+{
+	var e = document.getElementById(id);
+
+	if (val1 && val2 && val3)
+		e.innerHTML = '<%:%s, %s and %s%>'.format(val1, val2, val3);
+	else if (val1 && val2)
+		e.innerHTML = '<%:%s and %s%>'.format(val1, val2);
+	else if (val1)
+		e.innerHTML = val1;
+
+	e.parentNode.style.display = val1 ? 'list-item' : '';
+}
+
+function query(filter, group, order)
+{
+	var keys = [], columns = {}, records = {}, result = [];
+
+	if (typeof(group) !== 'function' && typeof(group) !== 'object')
+		group = ['mac'];
+
+	for (var i = 0; i < trafficData.columns.length; i++)
+		columns[trafficData.columns[i]] = i;
+
+	for (var i = 0; i < trafficData.data.length; i++) {
+		var record = trafficData.data[i];
+
+		if (typeof(filter) === 'function' && filter(columns, record) !== true)
+			continue;
+
+		var key;
+
+		if (typeof(group) === 'function') {
+			key = group(columns, record);
+		}
+		else {
+			key = [];
+
+			for (var j = 0; j < group.length; j++)
+				if (columns.hasOwnProperty(group[j]))
+					key.push(record[columns[group[j]]]);
+
+			key = key.join(',');
+		}
+
+		if (!records.hasOwnProperty(key)) {
+			var rec = {};
+
+			for (var col in columns)
+				rec[col] = record[columns[col]];
+
+			records[key] = rec;
+			result.push(rec);
+		}
+		else {
+			records[key].conns    += record[columns.conns];
+			records[key].rx_bytes += record[columns.rx_bytes];
+			records[key].rx_pkts  += record[columns.rx_pkts];
+			records[key].tx_bytes += record[columns.tx_bytes];
+			records[key].tx_pkts  += record[columns.tx_pkts];
+		}
+	}
+
+	if (typeof(order) === 'function')
+		result.sort(order);
+
+	return result;
+}
+
+function oui(mac) {
+	var m, l = 0, r = ouiData.length / 3 - 1;
+	var mac1 = parseInt(mac.replace(/[^a-fA-F0-9]/g, ''), 16);
+
+	while (l <= r) {
+		m = l + Math.floor((r - l) / 2);
+
+		var mask = (0xffffffffffff -
+					(Math.pow(2, 48 - ouiData[m * 3 + 1]) - 1));
+
+		var mac1_hi = ((mac1 / 0x10000) & (mask / 0x10000)) >>> 0;
+		var mac1_lo = ((mac1 &  0xffff) & (mask &  0xffff)) >>> 0;
+
+		var mac2 = parseInt(ouiData[m * 3], 16);
+		var mac2_hi = (mac2 / 0x10000) >>> 0;
+		var mac2_lo = (mac2 &  0xffff) >>> 0;
+
+		if (mac1_hi === mac2_hi && mac1_lo === mac2_lo)
+			return ouiData[m * 3 + 2];
+
+		if (mac2_hi > mac1_hi ||
+			(mac2_hi === mac1_hi && mac2_lo > mac1_lo))
+			r = m - 1;
+		else
+			l = m + 1;
+	}
+
+	return null;
+}
+
+var bakdataold;
+var bakdatanew;
+function fetchData(period)
+{
+	XHR.poll(2,'<%=url("admin/nlbw/data")%>', { period: period, group_by: 'family,mac,ip,layer7' }, function(xhr, res) {
+		if (res !== null && typeof(res) === 'object' && typeof(res.columns) === 'object' && typeof(res.data) === 'object')
+			trafficData = res;
+		trafficData["data"].sort();
+		bakdatanew = JSON.parse(JSON.stringify(trafficData["data"]));
+		if (bakdataold){
+			var j=0;
+			var k=j;
+			var ll=bakdataold.length;
+			for (i=0,l=trafficData["data"].length; i<l ; i++){
+				one=trafficData["data"][i];
+				for (j=k;j<ll;j++){
+					if (one[0]==bakdataold[j][0] && one[1]==bakdataold[j][1] && one[2]==bakdataold[j][2] && one[3]==bakdataold[j][3] && one[4]==bakdataold[j][4] ){
+						one[5]=(one[5]-bakdataold[j][5])/2;
+						one[6]=(one[6]-bakdataold[j][6])/2;
+						one[7]=(one[7]-bakdataold[j][7])/2;
+						one[8]=(one[8]-bakdataold[j][8])/2;
+						one[9]=(one[9]-bakdataold[j][9])/2;
+						k=j+1;
+						break;
+					}
+				}
+			}
+		}
+		bakdataold=bakdatanew;
+		var addrs = query(null, ['ip'], null);
+		var ipAddrs = [];
+
+		for (var i = 0; i < addrs.length; i++)
+			if (ipAddrs.indexOf(addrs[i].ip) < 0)
+				ipAddrs.push(addrs[i].ip);
+		if (hostNames.length == 0){
+			XHR.get('<%=url("admin/nlbw/ptr")%>/' + ipAddrs.join('/'), null, function(xhr, res) {
+				if (res !== null && typeof(res) === 'object')
+					hostNames = res;
+			});
+		}
+		renderHostData();
+		renderLayer7Data();
+		renderIPv6Data();
+	});
+	XHR.poll(5,'<%=url([[admin]], [[status]], [[onliner]], [[setnlbw]])%>', null, function(xhr, res) {
+	});
+}
+
+function switchTab(tab)
+{
+	bubbleDismiss();
+
+	return cbi_t_switch('nlbw', tab);
+}
+
+function renderHostDetail()
+{
+	var key = this.getAttribute('href').substr(1),
+	    col = this.getAttribute('data-col'),
+	    label = this.getAttribute('data-label'),
+	    bubble = document.getElementById('detail-bubble'),
+	    arrow = document.getElementById('bubble-arrow'),
+	    table = document.getElementById('bubble-table');
+
+	bubbleDismiss();
+
+	var detailData = query(
+		function(c, r) {
+			return ((r[c.mac] === key || r[c.ip] === key) &&
+			        (r[c.rx_bytes] > 0 || r[c.tx_bytes] > 0));
+		},
+		[col],
+		function(r1, r2) {
+			return ((r2.rx_bytes + r2.tx_bytes) - (r1.rx_bytes + r1.tx_bytes));
+		}
+	);
+
+	var rxData = [], txData = [];
+
+	table.innerHTML = '<tr>' +
+		'<th>%s</th>'.format(label || col) +
+		'<th><%:Conn.%></th>' +
+		'<th colspan="2"><%:Down. (Bytes / Pkts.)%></th>' +
+		'<th colspan="2"><%:Up. (Bytes / Pkts.)%></th>' +
+	'</tr>';
+
+	for (var i = 0; i < detailData.length; i++) {
+		var rec = detailData[i],
+		    row = table.insertRow(-1);
+
+		row.insertCell(-1).innerHTML = rec[col] || '<%:other%>';
+		row.insertCell(-1).innerHTML = "%1000.2m".format(rec.conns);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.rx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.rx_pkts);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.tx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.tx_pkts);
+
+		rxData.push({
+			label: ['%s: %%1024.2mB'.format(rec[col] || '<%:other%>'), row],
+			value: rec.rx_bytes
+		});
+
+		txData.push({
+			label: ['%s: %%1024.2mB'.format(rec[col] || '<%:other%>'), row],
+			value: rec.tx_bytes
+		});
+	}
+	var mac = key.toUpperCase();
+	var name = hostInfo.hasOwnProperty(mac) ? hostInfo[mac].name : null;
+
+	if (!name)
+		for (var i = 0; i < detailData.length; i++)
+			if ((name = hostNames[detailData[i].ip]) !== undefined)
+				break;
+
+	if (mac !== '00:00:00:00:00:00') {
+		kpi('bubble-hostname', name);
+		kpi('bubble-vendor', oui(mac));
+	}
+	else {
+		kpi('bubble-hostname');
+		kpi('bubble-vendor');
+	}
+
+	var tr = this.parentNode.parentNode,
+	    xy = off(tr),
+	    xy2 = off(this);
+
+	bubble.style.width = tr.offsetWidth + 'px';
+	bubble.style.left = xy[0] + 'px';
+	bubble.style.top = (xy[1] + tr.offsetHeight) + 'px';
+	arrow.style.left = Math.floor(xy2[0] + this.offsetWidth / 2 - xy[0]) + 'px';
+
+	bubble.className = 'in';
+
+	return false;
+}
+
+function formatHostname(dns)
+{
+	if (dns === undefined || dns === null || dns === '')
+		return '-';
+
+	dns = dns.split('.')[0];
+
+	if (dns.length > 12)
+		return '<span title="%q">%q</span>'.format(dns, dns);
+
+	return '%h'.format(dns);
+}
+
+function renderHostData()
+{
+	var trafData = [], connData = [];
+	var rx_total = 0, tx_total = 0, conn_total = 0;
+	var table = document.getElementById('host-data');
+
+	var hostData = query(
+		function(c, r) {
+			return (r[c.rx_bytes] > 0 || r[c.tx_bytes] > 0);
+		},
+		['mac'],
+		//function(c, r) {
+		//	return (r[c.mac] !== '00:00:00:00:00:00') ? r[c.mac] : r[c.ip];
+		//},
+		function(r1, r2) {
+			return ((r2.rx_bytes + r2.tx_bytes) - (r1.rx_bytes + r1.tx_bytes));
+		}
+	);
+
+	while (table.rows.length > 1)
+		table.deleteRow(1);
+
+	for (var i = 0; i < hostData.length; i++) {
+		var row = table.insertRow(-1),
+		    cell = row.insertCell(-1),
+		    rec = hostData[i],
+		    mac = rec.mac.toUpperCase(),
+		    key = (mac !== '00:00:00:00:00:00') ? mac : rec.ip,
+		    dns = hostInfo[mac] ? hostInfo[mac].name : null;
+
+		var link1 = document.createElement('a');
+		    link1.onclick = renderHostDetail;
+		    link1.href = '#' + rec.mac;
+		    link1.setAttribute('data-col', 'ip');
+		    link1.setAttribute('data-label', '<%:Source IP%>');
+		    link1.innerHTML = (mac !== '00:00:00:00:00:00') ? mac : '<%:other%>';
+
+		var link2 = document.createElement('a');
+		    link2.onclick = renderHostDetail;
+		    link2.href = '#' + rec.mac;
+		    link2.setAttribute('data-col', 'layer7');
+		    link2.setAttribute('data-label', '<%:Protocol%>');
+		    link2.innerHTML = "%1000.2m".format(rec.conns);
+
+		cell.innerHTML = formatHostname(dns);
+		cell.className = 'hostname';
+
+		row.insertCell(-1).appendChild(link1);
+		row.insertCell(-1).appendChild(link2);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.rx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.rx_pkts);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.tx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.tx_pkts);
+
+		trafData.push({
+			value: rec.rx_bytes + rec.tx_bytes,
+			label: ["%s: %%.2mB".format(key), row]
+		});
+
+		connData.push({
+			value: rec.conns,
+			label: ["%s: %%.2m".format(key), row]
+		});
+
+		rx_total += rec.rx_bytes;
+		tx_total += rec.tx_bytes;
+		conn_total += rec.conns;
+	}
+
+	if (table.rows.length === 1) {
+		var cell = table.insertRow(-1).insertCell(-1);
+
+		cell.setAttribute('colspan', 6);
+		cell.innerHTML = '<em><%:No data recorded yet.%> <a href="<%=url("admin/nlbw/commit")%>"><%:Force reload…%></a></em>';
+	}
+	kpi('rx-total', '%1024.2mB'.format(rx_total));
+	kpi('tx-total', '%1024.2mB'.format(tx_total));
+	kpi('conn-total', '%1000m'.format(conn_total));
+	kpi('host-total', '%u'.format(hostData.length));
+}
+
+function renderLayer7Data()
+{
+	var rxData = [], txData = [];
+	var topConn = [[0],[0],[0]], topRx = [[0],[0],[0]], topTx = [[0],[0],[0]];
+	var table = document.getElementById('layer7-data');
+
+	var layer7Data = query(
+		null, ['layer7'],
+		function(r1, r2) {
+			return ((r2.rx_bytes + r2.tx_bytes) - (r1.rx_bytes + r1.tx_bytes));
+		}
+	);
+
+	while (table.rows.length > 1)
+		table.deleteRow(1);
+
+	for (var i = 0, c = 0; i < layer7Data.length; i++) {
+		var rec = layer7Data[i],
+		    row = table.insertRow(-1);
+
+		rxData.push({
+			value: rec.rx_bytes,
+			label: ["%s: %%.2mB".format(rec.layer7 || '<%:other%>'), row]
+		});
+
+		txData.push({
+			value: rec.tx_bytes,
+			label: ["%s: %%.2mB".format(rec.layer7 || '<%:other%>'), row]
+		});
+
+		row.insertCell(-1).innerHTML = rec.layer7 || '<%:other%>';
+		row.insertCell(-1).innerHTML = "%1000m".format(rec.conns);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.rx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.rx_pkts);
+		row.insertCell(-1).innerHTML = "%1024.2mB".format(rec.tx_bytes);
+		row.insertCell(-1).innerHTML = "%1000.2mP".format(rec.tx_pkts);
+
+		if (rec.layer7) {
+			topRx.push([rec.rx_bytes, rec.layer7]);
+			topTx.push([rec.tx_bytes, rec.layer7]);
+			topConn.push([rec.conns, rec.layer7]);
+		}
+	}
+
+	if (table.rows.length === 1) {
+		var cell = table.insertRow(-1).insertCell(-1);
+
+		cell.setAttribute('colspan', 6);
+		cell.innerHTML = '<em><%:No data recorded yet.%> <a href="<%=url("admin/nlbw/commit")%>"><%:Force reload…%></a></em>';
+	}
+	topRx.sort(function(a, b) { return b[0] - a[0] });
+	topTx.sort(function(a, b) { return b[0] - a[0] });
+	topConn.sort(function(a, b) { return b[0] - a[0] });
+
+	kpi('layer7-total', layer7Data.length);
+	kpi('layer7-most-rx', topRx[0][1], topRx[1][1], topRx[2][1]);
+	kpi('layer7-most-tx', topTx[0][1], topTx[1][1], topTx[2][1]);
+	kpi('layer7-most-conn', topConn[0][1], topConn[1][1], topConn[2][1]);
+}
+
+function renderIPv6Data()
+{
+	var table     = document.getElementById('ipv6-data'),
+	    col       = { },
+	    rx4_total = 0,
+	    tx4_total = 0,
+	    rx6_total = 0,
+	    tx6_total = 0,
+	    v4_total  = 0,
+	    v6_total  = 0,
+	    ds_total  = 0,
+	    families  = { },
+	    records   = { };
+
+	ipv6Data = query(
+		null, ['family', 'mac'],
+		function(r1, r2) {
+			return ((r2.rx_bytes + r2.tx_bytes) - (r1.rx_bytes + r1.tx_bytes));
+		}
+	);
+
+	for (var i = 0, c = 0; i < ipv6Data.length; i++) {
+		var rec = ipv6Data[i],
+		    mac = rec.mac.toUpperCase(),
+		    ip  = rec.ip,
+		    fam = families[mac] || 0,
+		    recs = records[mac] || {};
+
+		if (rec.family == 4) {
+			rx4_total += rec.rx_bytes;
+			tx4_total += rec.tx_bytes;
+			fam |= 1;
+		}
+		else {
+			rx6_total += rec.rx_bytes;
+			tx6_total += rec.tx_bytes;
+			fam |= 2;
+		}
+
+		recs[rec.family] = rec;
+		records[mac] = recs;
+
+		families[mac] = fam;
+	}
+
+	for (var mac in families) {
+		switch (families[mac])
+		{
+		case 3:
+			ds_total++;
+			break;
+
+		case 2:
+			v6_total++;
+			break;
+
+		case 1:
+			v4_total++;
+			break;
+		}
+	}
+
+	while (table.rows.length > 1)
+		table.deleteRow(1);
+
+	for (var mac in records) {
+		if (mac === '00:00:00:00:00:00')
+			continue;
+
+		var row = table.insertRow(-1),
+		    cell1 = row.insertCell(-1),
+		    cell2 = row.insertCell(-1),
+		    dns = hostInfo[mac] ? hostInfo[mac].name : null,
+		    rec4 = records[mac][4],
+		    rec6 = records[mac][6];
+
+		cell1.setAttribute('rowspan', 2);
+		cell1.innerHTML = formatHostname(dns);
+		cell1.className = 'hostname';
+
+		cell2.setAttribute('rowspan', 2);
+		cell2.innerHTML = mac;
+
+		row.insertCell(-1).innerHTML = 'IPv4';
+		row.insertCell(-1).innerHTML = rec4 ? "%1024.2mB".format(rec4.rx_bytes) : '-';
+		row.insertCell(-1).innerHTML = rec4 ? "%1000.2mP".format(rec4.rx_pkts)  : '-';
+		row.insertCell(-1).innerHTML = rec4 ? "%1024.2mB".format(rec4.tx_bytes) : '-';
+		row.insertCell(-1).innerHTML = rec4 ? "%1000.2mP".format(rec4.tx_pkts)  : '-';
+
+		row = table.insertRow(-1);
+
+		row.insertCell(-1).innerHTML = 'IPv6';
+		row.insertCell(-1).innerHTML = rec6 ? "%1024.2mB".format(rec6.rx_bytes) : '-';
+		row.insertCell(-1).innerHTML = rec6 ? "%1000.2mP".format(rec6.rx_pkts)  : '-';
+		row.insertCell(-1).innerHTML = rec6 ? "%1024.2mB".format(rec6.tx_bytes) : '-';
+		row.insertCell(-1).innerHTML = rec6 ? "%1000.2mP".format(rec6.tx_pkts)  : '-';
+	}
+
+	if (table.rows.length === 1) {
+		var cell = table.insertRow(-1).insertCell(-1);
+
+		cell.setAttribute('colspan', 7);
+		cell.innerHTML = '<em><%:No data recorded yet.%> <a href="<%=url("admin/nlbw/commit")%>"><%:Force reload…%></a></em>';
+	}
+
+	var shareData = [], hostsData = [];
+
+	if (rx4_total > 0 || tx4_total > 0)
+		shareData.push({
+			value: rx4_total + tx4_total,
+			label: ["IPv4: %.2mB"],
+			color: 'hsl(140, 100%, 50%)'
+	        });
+
+	if (rx6_total > 0 || tx6_total > 0)
+		shareData.push({
+			value: rx6_total + tx6_total,
+			label: ["IPv6: %.2mB"],
+			color: 'hsl(180, 100%, 50%)'
+		});
+
+	if (v4_total > 0)
+		hostsData.push({
+			value: v4_total,
+			label: ["<%:%d IPv4-only hosts%>"],
+			color: 'hsl(140, 100%, 50%)'
+		});
+
+	if (v6_total > 0)
+		hostsData.push({
+			value: v6_total,
+			label: ["<%:%d IPv6-only hosts%>"],
+			color: 'hsl(180, 100%, 50%)'
+		});
+
+	if (ds_total > 0)
+		hostsData.push({
+			value: ds_total,
+			label: ["<%:%d dual-stack hosts%>"],
+			color: 'hsl(50, 100%, 50%)'
+		});
+	kpi('ipv6-hosts', '%.2f%%'.format(100 / (ds_total + v4_total + v6_total) * (ds_total + v6_total)));
+	kpi('ipv6-share', '%.2f%%'.format(100 / (rx4_total + rx6_total + tx4_total + tx6_total) * (rx6_total + tx6_total)));
+	kpi('ipv6-rx', '%1024.2mB'.format(rx6_total));
+	kpi('ipv6-tx', '%1024.2mB'.format(tx6_total));
+}
+
+function bubbleDismiss()
+{
+	var bubble = document.getElementById('detail-bubble');
+
+	bubble.className = '';
+	document.body.appendChild(bubble);
+
+	return false;
+}
+
+
+//]]></script>
+
+<h2 name="content"><%:Netlink Bandwidth Monitor%></h2>
+
+<div id="detail-bubble">
+	<span id="bubble-arrow"></span>
+	<div>
+		<div class="head">
+			<a class="dismiss" href="#" onclick="this.blur(); return bubbleDismiss()">×</a>
+			<div class="kpi">
+				<ul>
+					<li><%_Hostname: <big id="bubble-hostname">example.org</big>%></li>
+					<li><%_Vendor: <big id="bubble-vendor">Example Corp.</big>%></li>
+				</ul>
+			</div>
+		</div>
+		<table id="bubble-table"></table>
+	</div>
+</div>
+
+<ul class="cbi-tabmenu">
+	<li id="tab.nlbw.traffic" class="cbi-tab"><a href="#" onclick="return switchTab('traffic')"><%:Traffic Distribution%></a></li>
+	<li id="tab.nlbw.layer7" class="cbi-tab-disabled"><a href="#" onclick="return switchTab('layer7')"><%:Application Protocols%></a></li>
+	<li id="tab.nlbw.ipv6" class="cbi-tab-disabled"><a href="#" onclick="return switchTab('ipv6')"><%:IPv6%></a></li>
+</ul>
+
+<div class="cbi-section" id="container.nlbw.traffic">
+	<div>
+		<div class="kpi">
+			<ul>
+				<li><%_<big id="host-total">0</big> hosts%></li>
+				<li><%_<big id="rx-total">0</big> download%></li>
+				<li><%_<big id="tx-total">0</big> upload%></li>
+				<li><%_<big id="conn-total">0</big> connections%></li>
+			</ul>
+		</div>
+	</div>
+	<table id="host-data">
+		<tr>
+			<th width="20%" class="hostname"><%:Host%></th>
+			<th width="10%"><%:MAC%></th>
+			<th width="10%"><%:Connections%></th>
+			<th width="20%" colspan="2"><%:Download (Bytes / Packets)%></th>
+			<th width="20%" colspan="2"><%:Upload (Bytes / Packets)%></th>
+		</tr>
+	</table>
+</div>
+
+<div class="cbi-section" id="container.nlbw.layer7" style="display:none">
+	<div>
+		<div class="kpi">
+			<ul>
+				<li><%_<big id="layer7-total">0</big> different application protocols%></li>
+				<li><%_<big id="layer7-most-rx">0</big> cause the most download%></li>
+				<li><%_<big id="layer7-most-tx">0</big> cause the most upload%></li>
+				<li><%_<big id="layer7-most-conn">0</big> cause the most connections%></li>
+			</ul>
+		</div>
+	</div>
+	<table id="layer7-data">
+		<tr>
+			<th width="10%"><%:Application%></th>
+			<th width="10%"><%:Connections%></th>
+			<th width="30%" colspan="2"><%:Download (Bytes / Packets)%></th>
+			<th width="30%" colspan="2"><%:Upload (Bytes / Packets)%></th>
+		</tr>
+	</table>
+</div>
+
+<div class="cbi-section" id="container.nlbw.ipv6" style="display:none">
+	<div>
+
+		<div class="kpi">
+			<ul>
+				<li><%_<big id="ipv6-hosts">0%</big> IPv6 support rate among hosts%></li>
+				<li><%_<big id="ipv6-share">0%</big> of the total traffic is IPv6%></li>
+				<li><%_<big id="ipv6-rx">0B</big> total IPv6 download%></li>
+				<li><%_<big id="ipv6-tx">0B</big> total IPv6 upload%></li>
+			</ul>
+		</div>
+	</div>
+	<table id="ipv6-data">
+		<tr>
+			<th width="20%" class="hostname"><%:Host%></th>
+			<th width="10%"><%:MAC%></th>
+			<th width="10%"><%:Family%></th>
+			<th width="20%" colspan="2"><%:Download (Bytes / Packets)%></th>
+			<th width="20%" colspan="2"><%:Upload (Bytes / Packets)%></th>
+		</tr>
+	</table>
+</div>
+
+<script type="text/javascript">//<![CDATA[
+	cbi_t_add('nlbw', 'traffic');
+	cbi_t_add('nlbw', 'layer7');
+	cbi_t_add('nlbw', 'ipv6');
+	cbi_t_add('nlbw', 'export');
+	fetchData('');
+	XHR.get('<%=url("admin/nlbw/list")%>', null, function(xhr, res) {
+
+		xhr.open('GET', 'https://raw.githubusercontent.com/jow-/oui-database/master/oui.json', true);
+		xhr.onreadystatechange = function() {
+			if (xhr.readyState === 4) {
+				try { res = JSON.parse(xhr.responseText); }
+				catch(e) { res = null; }
+
+				if (res !== null && typeof(res) === 'object' && (res.length % 3) === 0)
+					ouiData = res;
+			}
+		};
+		xhr.send(null);
+	});
+	XHR.get('<%=url("admin/nlbw/ptr")%>/' + ipAddrs.join('/'), null, function(xhr, res) {
+			if (res !== null && typeof(res) === 'object')
+				hostNames = res;
+		});
+//]]></script>
+
+<%+footer%>

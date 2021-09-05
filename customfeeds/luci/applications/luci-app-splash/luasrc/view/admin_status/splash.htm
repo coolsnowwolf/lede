@@ -1,0 +1,273 @@
+<%#
+ Copyright 2009 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%-
+
+local utl = require "luci.util"
+local sys = require "luci.sys"
+local ipc = require "luci.ip"
+local ipt = require "luci.sys.iptparser".IptParser()
+local uci = require "luci.model.uci".cursor_state()
+local wat = require "luci.tools.webadmin"
+local ipc = require "luci.ip"
+local fs  = require "nixio.fs"
+
+local clients = { }
+local leasetime = tonumber(uci:get("luci_splash", "general", "leasetime") or 1) * 60 * 60
+
+uci:foreach("luci_splash_leases", "lease",
+	function(s)
+		local m = ipc.checkmac(s.mac)
+		if m and s.start then
+			clients[m] = {
+				start   = tonumber(s.start),
+				limit   = ( tonumber(s.start) + leasetime ),
+				mac     = m,
+				ipaddr  = s.ipaddr,
+				policy  = "normal",
+				packets = 0,
+				bytes   = 0,
+			}
+		end
+	end)
+
+for _, r in ipairs(ipt:find({table="nat", chain="luci_splash_leases"})) do
+	if r.options and #r.options >= 2 and r.options[1] == "MAC" then
+		local m = ipc.checkmac(r.options[2])
+		if m and not clients[m] then
+			clients[m] = {
+				start  = 0,
+				limit  = 0,
+				mac    = m,
+				policy = ( r.target == "RETURN" ) and "whitelist" or "blacklist",
+				packets = 0,
+				bytes   = 0
+			}
+		end
+	end
+end
+
+for mac, client in pairs(clients) do
+	client.bytes_in    = 0
+	client.bytes_out   = 0
+	client.packets_in  = 0
+	client.packets_out = 0
+
+	if client.ipaddr then
+		local rin  = ipt:find({table="mangle", chain="luci_splash_mark_in", destination=client.ipaddr})
+		local rout = ipt:find({table="mangle", chain="luci_splash_mark_out", options={"MAC", client.mac}})
+
+		if rin and #rin > 0 then
+			client.bytes_in   = rin[1].bytes
+			client.packets_in = rin[1].packets
+		end
+
+		if rout and #rout > 0 then
+			client.bytes_out   = rout[1].bytes
+			client.packets_out = rout[1].packets
+		end
+	end
+end
+
+uci:foreach("luci_splash", "whitelist",
+	function(s)
+		local m = ipc.checkmac(s.mac)
+		if m and clients[m] then
+			clients[m].policy="whitelist"
+		end
+	end)
+
+uci:foreach("luci_splash", "blacklist",
+	function(s)
+		local m = ipc.checkmac(s.mac)
+		if m and clients[m] then
+			clients[m].policy=(s.kicked and "kicked" or "blacklist")
+		end
+	end)		
+
+sys.net.host_hints(function(mac, v4, v6, name)
+	local c = mac and clients[mac]
+	if c then
+		c.ip = c.ip or v4
+		c.hostname = c.hostname or name
+	end
+end)
+
+local function showmac(mac)
+	if not is_admin then
+		mac = mac:gsub("(%S%S:%S%S):%S%S:%S%S:(%S%S:%S%S)", "%1:XX:XX:%2")
+	end
+	return mac
+end
+
+if luci.http.formvalue("status") == "1" then
+	local rv = {}
+	for _, c in utl.spairs(clients,
+		function(a,b) if clients[a].policy == clients[b].policy then
+			return (clients[a].start > clients[b].start)
+		else
+			return (clients[a].policy > clients[b].policy)
+		end
+	end)
+	do
+		if c.ip then
+			rv[#rv+1] = {
+				hostname = c.hostname or "?",
+				ip = c.ip or "?",
+				mac = showmac(c.mac) or "?",
+				timeleft = (c.limit >= os.time()) and wat.date_format(c.limit-os.time()) or (c.policy ~= "normal") and "-" or "expired",
+				trafficin = wat.byte_format(c.bytes_in) or "?",
+				trafficout = wat.byte_format(c.bytes_out) or "?",
+				policy = c.policy or "?"
+	                        }
+		end
+	end
+	luci.http.prepare_content("application/json")
+	luci.http.write_json(rv)
+	return
+end
+-%>
+
+
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js"></script>
+<script type="text/javascript">//<![CDATA[
+
+	XHR.poll(10 , '<%=REQUEST_URI%>', { status: 1 },
+		function(x, info)
+		{
+		var tbody = document.getElementById('splash_table');
+			if (tbody)
+			{
+				var s = '';
+				if (info.length == undefined) {
+					s += '<tr class="cbi-section-table-row"><td colspan="7" class="cbi-section-table-cell"><br /><em><%:No clients connected%></em><br /></td></tr>'
+				};
+				for (var idx = 0; idx < info.length; idx++)
+				{
+					var splash = info[idx];
+					s += String.format(
+						'<tr class="cbi-section-table-row cbi-rowstyle-'+(1 + (idx % 2))+'">' +
+						'<td class="cbi-section-table-cell">%s</td>' +
+						'<td class="cbi-section-table-cell">%s</td>' +
+						'<td class="cbi-section-table-cell">%s</td>' +
+						'<td class="cbi-section-table-cell">%s</td>' +
+						'<td class="cbi-section-table-cell">%s/%s</td>' +
+						'<td class="cbi-section-table-cell">',
+						splash.hostname, splash.ip, splash.mac, splash.timeleft, splash.trafficin, splash.trafficout);
+
+				<% if is_admin then %>
+					s += String.format('<select name="policy.%s" style="width:200px">', splash.mac);
+					if (splash.policy == 'whitelist') { 	
+						s += '<option value="whitelist" selected="selected"><%:whitelisted%></option>'
+					} else {
+						s += '<option value="whitelist"><%:whitelisted%></option>'
+					};
+					if (splash.policy == 'normal') {
+						s += '<option value="normal" selected="selected"><%:splashed%></option>';
+						s += '<option value="kicked"><%:temporarily blocked%></option>'
+					} else {
+						s += '<option value="normal"><%:splashed%></option>'
+					};
+					if (splash.policy == 'blacklist') {
+						s+= '<option value="blacklist" selected="selected"><%:blacklisted%></option>'
+					} else {
+						s += '<option value="blacklist"><%:blacklisted%></option>'
+					};
+					s += String.format(
+						'</select>' +
+						'<input type="submit" class="cbi-button cbi-button-save" name="save.%s" value="<%:Save%>" />',
+						splash.mac);
+				<% else %>
+					s += String.format('%s', splash.policy);
+				<% end %>
+					s += '</td></tr>'
+				}
+				tbody.innerHTML = s;
+			}
+		}
+	);
+//]]></script>
+
+
+<div id="cbi-splash-leases" class="cbi-map">
+	<h2 name="content"><%:Client-Splash%></h2>
+	<fieldset id="cbi-table-table" class="cbi-section">
+		<legend><%:Active Clients%></legend>
+		<div class="cbi-section-node">
+			<% if is_admin then %><form action="<%=REQUEST_URI%>" method="post"><input type="hidden" name="token" value="<%=token%>" /><% end %>
+			<table class="cbi-section-table">
+				<thead>
+					<tr class="cbi-section-table-titles">
+						<th class="cbi-section-table-cell"><%:Hostname%></th>
+						<th class="cbi-section-table-cell"><%:IP Address%></th>
+						<th class="cbi-section-table-cell"><%:MAC Address%></th>
+						<th class="cbi-section-table-cell"><%:Time remaining%></th>
+						<th class="cbi-section-table-cell"><%:Traffic in/out%></th>
+						<th class="cbi-section-table-cell"><%:Policy%></th>
+					</tr>
+				</thead>
+				<tbody id="splash_table">
+
+				<%-
+					local count = 0
+					for _, c in utl.spairs(clients,
+						function(a,b)
+							if clients[a].policy == clients[b].policy then
+								return (clients[a].start > clients[b].start)
+							else
+								return (clients[a].policy > clients[b].policy)
+							end
+						end)
+					do
+						if c.ip then
+							count = count + 1
+				-%>
+						<tr class="cbi-section-table-row cbi-rowstyle-<%=2-(count%2)%>">
+						<td class="cbi-section-table-cell"><%=c.hostname or "<em>" .. translate("unknown") .. "</em>"%></td>
+						<td class="cbi-section-table-cell"><%=c.ip or "<em>" .. translate("unknown") .. "</em>"%></td>
+						<td class="cbi-section-table-cell"><%=showmac(c.mac)%></td>
+						<td class="cbi-section-table-cell"><%=
+							(c.limit >= os.time()) and wat.date_format(c.limit-os.time()) or
+								(c.policy ~= "normal") and "-" or "<em>" .. translate("expired") .. "</em>"
+						%></td>
+						<td class="cbi-section-table-cell"><%=wat.byte_format(c.bytes_in)%> / <%=wat.byte_format(c.bytes_out)%></td>
+						<td class="cbi-section-table-cell">
+							<% if is_admin then %>
+							<select name="policy.<%=c.mac:lower()%>" style="width:200px">
+								<option value="whitelist"<%=c.policy=="whitelist" and ' selected="selected"'%>><%:whitelisted%></option>
+								<option value="normal"<%=c.policy=="normal" and not c.kicked and ' selected="selected"'%>><%:splashed%></option>
+								<option value="blacklist"<%=c.policy=="blacklist" and ' selected="selected"'%>><%:blacklisted%></option>
+								<% if c.policy == "normal" then -%>
+									<option value="kicked"><%:temporarily blocked%></option>
+								<%- end %>
+							</select>
+							<input type="submit" class="cbi-button cbi-button-save" name="save.<%=c.mac:lower()%>" value="<%:Save%>" />
+							<% else %>
+							<%=c.policy%>
+							<% end %>
+						</td>
+						</tr>
+						<%- 
+							end
+						end
+						if count == 0 then
+						-%>
+						<tr class="cbi-section-table-row">
+							<td colspan="7" class="cbi-section-table-cell">
+								<br /><em><%:No clients connected%></em><br />
+							</td>
+						</tr>
+				<%- end -%>
+				</tbody>
+			</table>
+			<% if is_admin then %></form><% end %>
+		</div>
+	</fieldset>
+</div>
+
+<%+footer%>

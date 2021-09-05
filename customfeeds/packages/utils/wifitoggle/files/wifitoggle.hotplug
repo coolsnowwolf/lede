@@ -1,0 +1,174 @@
+# /bin/sh
+
+setled() {
+        if [ -z "${led_sysfs}" ]; then
+            return
+        elif [ -e /sys/class/leds/${led_sysfs}/brightness ]
+	then
+                [ $led_default -eq 1 ] && echo 1 >/sys/class/leds/${led_sysfs}/brightness
+                [ $led_default -eq 1 ] || echo 0 >/sys/class/leds/${led_sysfs}/brightness
+
+                echo $led_trigger > /sys/class/leds/${led_sysfs}/trigger
+
+                [ "$led_trigger" == "netdev" -a -n "$led_dev" ] && {
+                        echo $led_dev > /sys/class/leds/${led_sysfs}/device_name
+                        echo $led_mode > /sys/class/leds/${led_sysfs}/mode
+                }
+
+                [ "$led_trigger" == "timer" ] && {
+                        [ -n "$led_delayon" ] && echo $led_delayon > /sys/class/leds/${led_sysfs}/delay_on
+                        [ -n "$led_delayoff" ] && echo $led_delayoff > /sys/class/leds/${led_sysfs}/delay_off
+                }
+        else
+		logger -p user.err -t "wifitoggle" "led: ${led_sysfs} not found"
+	fi
+}
+
+load_wireless() {
+	disabled="$(uci get wireless.${1}.disabled)"
+}
+
+save_wireless() {
+	[ "$device" = "all" -o "$device" = "${1}" ] && {
+		uci set "wireless.${1}.disabled=$disabled"
+	}
+}
+
+setwifi() {
+        setled
+
+        config_load wireless
+        config_foreach save_wireless wifi-device
+
+        if ubus list network.wireless >/dev/null 2>/dev/null; then
+                ubus call network reload
+        else
+                wifi
+        fi
+}
+
+
+save_system() {
+        config_get sysfs $1 sysfs
+        [ "$sysfs" = "$led_sysfs" ] && {
+                uci set "system.${1}.trigger=$led_trigger"
+                uci set "system.${1}.dev=$led_dev"
+                uci set "system.${1}.mode=$led_mode"
+                uci set "system.${1}.default=$led_default"
+                uci set "system.${1}.delayon=$led_delayon"
+                uci set "system.${1}.delayoff=$led_delayoff"
+
+                ledset=1
+        }
+}
+
+commit_changes() {
+        ledset=""
+
+        config_load system
+        config_foreach save_system led
+
+        [ "$ledset" -eq 1 ] || {
+                section=$(uci add system led)
+                uci set "system.${section}.sysfs=$led_sysfs"
+                uci set "system.${section}.trigger=$led_trigger"
+                uci set "system.${section}.dev=$led_dev"
+                uci set "system.${section}.mode=$led_mode"
+                uci set "system.${section}.default=$led_default"
+                uci set "system.${section}.delayon=$led_delayon"
+                uci set "system.${section}.delayoff=$led_delayoff"
+        }
+
+        uci commit
+}
+
+enable() {
+
+	led_trigger="$led_enable_trigger"
+	led_trigger="$led_enable_trigger"
+	led_dev="$led_enable_dev"
+	led_mode="$led_enable_mode"
+	led_default="$led_enable_default"
+	led_delayon="$led_enable_delayon"
+	led_delayoff="$led_enable_delayoff"
+	disabled=0
+	
+	setwifi
+
+	[ "$timer" -le 0 -a "$persistent" -eq 1 ] && commit_changes
+	
+	logger -p user.info -t "wifitoggle" "device($device) enabled"
+
+	[ "$timer" -gt 0 ] && {
+		sleep "$timer" && disable && rm /tmp/run/wirelesstoggle_${1}.pid &
+                echo $! > /tmp/run/wirelesstoggle_${1}.pid
+		logger -p user.info -t "wifitoggle" "auto-disable timer started($timer seconds)"
+	}
+}
+
+disable() {
+
+	led_trigger="$led_disable_trigger"
+	led_trigger="$led_disable_trigger"
+	led_dev="$led_disable_dev"
+	led_mode="$led_disable_mode"
+	led_default="$led_disable_default"
+	led_delayon="$led_disable_delayon"
+	led_delayoff="$led_disable_delayoff"
+	disabled=1
+
+	setwifi
+
+	[ "$timer" -le 0 -a "$persistent" -eq 1 ] && commit_changes
+	
+	logger -p user.info -t "wifitoggle" "device($device) disabled"
+}
+
+
+load_wifitoggle() {
+	config_get device $1 device "all"
+        config_get button $1 button "wps"
+        config_get action $1 action "pressed"
+        config_get_bool persistent $1 persistent "0"
+        config_get timer $1 timer "0"
+
+        config_get led_sysfs $1 led_sysfs
+
+	config_get led_enable_trigger $1 led_enable_trigger "none"
+	config_get led_enable_dev $1 led_enable_dev
+	config_get led_enable_mode $1 led_enable_mode "link"
+	config_get_bool led_enable_default $1 led_enable_default "1"
+	config_get led_enable_delayon $1 led_enable_delayon
+	config_get led_enable_delayoff $1 led_enable_delayoff
+
+	config_get led_disable_trigger $1 led_disable_trigger "none"
+	config_get led_disable_dev $1 led_disable_dev
+	config_get led_disable_mode $1 led_disable_mode "link"
+	config_get_bool led_disable_default $1 led_disable_default "0"
+	config_get led_disable_delayon $1 led_disable_delayon
+	config_get led_disable_delayoff $1 led_disable_delayoff
+
+        [ "$ACTION" = "$action" -a "$BUTTON" = "$button" ] && {
+
+		[ -f /tmp/run/wirelesstoggle_${1}.pid ] && read PID < /tmp/run/wirelesstoggle_${1}.pid && kill $PID && rm /tmp/run/wirelesstoggle_${1}.pid
+
+		if [ "$device" = "all" ]
+		then
+			config_load wireless
+        		config_foreach load_wireless wifi-device
+		else
+			disabled="$(uci get wireless."$device".disabled)"
+		fi
+
+
+		if [ "$disabled" = "1" ] 
+		then
+			enable $1
+		else
+			disable
+		fi
+        }
+}
+
+config_load wifitoggle
+config_foreach load_wifitoggle wifitoggle

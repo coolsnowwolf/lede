@@ -1,0 +1,357 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2016-2017 Hsing-wang Liao <kuoruan@gmail.com>
+# Licensed to the public under the Apache License 2.0.
+
+START=99
+USE_PROCD=1
+
+NAME=aria2
+PROG=/usr/bin/aria2c
+
+_info() {
+	logger -p daemon.info -t "$NAME" "$*"
+}
+
+_err() {
+	logger -p daemon.err -t "$NAME" "$*"
+}
+
+_make_dir() {
+	local d
+	for d in "$@"; do
+		if [ ! -d "$d" ]; then
+			mkdir -p "$d" 2>/dev/null || return 1
+		fi
+	done
+
+	return 0
+}
+
+_create_file() {
+	touch "$@" 2>/dev/null
+}
+
+_change_owner() {
+	local u="$1"; shift
+
+	local d
+	for d in "$@"; do
+		if [ -f "$d" ]; then
+			chown "$u" "$d" 2>/dev/null || return 1
+		elif [ -d "$d" ]; then
+			chown -R "$u" "$d" 2>/dev/null || return 1
+		fi
+	done
+
+	return 0
+}
+
+_change_file_mode() {
+	local mod="$1"; shift
+	chmod "$mod" "$@" 2>/dev/null
+}
+
+_reset_dir_mode() {
+	local d
+	for d in "$@"; do
+		if [ -d "$d" ]; then
+			find "$d" -type d -exec chmod 755 {} \; 2>/dev/null
+			find "$d" -type f -exec chmod 644 {} \; 2>/dev/null
+		fi
+	done
+}
+
+append_options() {
+	local o; local v
+	for o in "$@"; do
+		v="$(eval echo "\$$o")"
+		[ -n "$v" ] && \
+			echo "${o//_/-}=$v" >>"$config_file_tmp"
+	done
+}
+
+append_setting() {
+	local s="$1"
+	[ -n "$s" ] && \
+		echo "$s" >>"$config_file_tmp"
+}
+
+append_header() {
+	local h="$1"
+	[ -n "$h" ] && \
+		echo "header=\"$h\"" >>"$config_file_tmp"
+}
+
+aria2_validate() {
+	uci_load_validate "$NAME" aria2 "$1" "$2" \
+		'enabled:bool:0' \
+		'enable_logging:bool' \
+		'enable_proxy:bool' \
+		'config_dir:string:/var/etc/aria2' \
+		'user:string' \
+		'all_proxy:string' \
+		'all_proxy_passwd:string' \
+		'all_proxy_user:string' \
+		'auto_save_interval:range(0,600)' \
+		'bt_enable_lpd:or("true","false")' \
+		'bt_detach_seed_only:or("true","false")' \
+		'bt_load_saved_metadata:or("true","false")' \
+		'bt_prioritize_piece:string' \
+		'bt_max_open_files:uinteger' \
+		'bt_max_peers:uinteger' \
+		'bt_remove_unselected_file:or("true","false")' \
+		'bt_request_peer_speed_limit:string' \
+		'bt_save_metadata:or("true","false")' \
+		'bt_seed_unverified:or("true","false")' \
+		'bt_stop_timeout:uinteger' \
+		'bt_tracker:list(string)' \
+		'ca_certificate:file' \
+		'certificate:file' \
+		'check_certificate:or("true","false"):true' \
+		'check_integrity:or("true","false")' \
+		'connect_timeout:uinteger' \
+		'dht_listen_port:string' \
+		'dir:string' \
+		'disable_ipv6:or("true","false")' \
+		'disk_cache:string' \
+		'enable_dht:or("true","false"):true' \
+		'enable_dht6:or("true","false")' \
+		'enable_peer_exchange:or("true","false")' \
+		'event_poll:or("epoll","kqueue","port","poll","select")' \
+		'file_allocation:or("none","prealloc","trunc","falloc")' \
+		'follow_torrent:or("true","false","mem")' \
+		'force_save:or("true","false")' \
+		'http_accept_gzip:or("true","false")' \
+		'http_no_cache:or("true","false")' \
+		'listen_port:string' \
+		'log:string' \
+		'log_level:or("debug","info","notice","warn","error")' \
+		'lowest_speed_limit:string' \
+		'max_concurrent_downloads:uinteger' \
+		'max_connection_per_server:uinteger' \
+		'max_download_limit:string' \
+		'max_overall_download_limit:string' \
+		'max_overall_upload_limit:string' \
+		'max_tries:uinteger' \
+		'max_upload_limit:string' \
+		'min_split_size:string' \
+		'pause:or("true","false")' \
+		'pause_metadata:or("true","false")' \
+		'peer_id_prefix:string' \
+		'private_key:file' \
+		'retry_wait:uinteger' \
+		'rpc_auth_method:or("none","user_pass","token")' \
+		'rpc_certificate:file' \
+		'rpc_listen_port:range(1024,65535)' \
+		'rpc_passwd:string' \
+		'rpc_private_key:file' \
+		'rpc_secret:string' \
+		'rpc_secure:or("true","false")' \
+		'rpc_user:string' \
+		'save_session_interval:uinteger' \
+		'seed_ratio:ufloat' \
+		'seed_time:ufloat' \
+		'split:uinteger' \
+		'timeout:uinteger' \
+		'user_agent:string'
+}
+
+aria2_start() {
+	local section="$1"
+	[ "$2" = "0" ] || { _err "Validation failed."; return 1; }
+
+	[ "$enabled" = "1" ] || { _info "Instance \"$section\" disabled."; return 1; }
+	[ -n "$dir" ] || { _err "Please set download dir."; return 1; }
+	[ -d "$dir" ] || { _err "Please create download dir first."; return 1; }
+
+	config_file="$config_dir/$NAME.conf.$section"
+	config_file_tmp="$config_dir/$NAME.conf.tmp"
+	session_file="$config_dir/$NAME.session.$section"
+
+	_make_dir "$config_dir" || {
+		_err "Can't create config dir: $config_dir"
+		return 1
+	}
+
+	_create_file "$session_file" "$config_file" "$config_file_tmp" || {
+		_err "Can't create files: $session_file, $config_file, $config_file_tmp"
+		return 1
+	}
+
+	# create tmp file
+	cat >"$config_file_tmp" <<-EOF
+		# Auto generated file, changes to this file will be lost.
+	EOF
+
+	append_setting "dir=$dir"
+	append_setting "enable-rpc=true"
+	append_setting "rpc-allow-origin-all=true"
+	append_setting "rpc-listen-all=true"
+	append_setting "quiet=true"
+	append_setting "continue=true"
+	append_setting "input-file=$session_file"
+	append_setting "save-session=$session_file"
+
+	if [ -z "$enable_logging" ]; then
+		append_options "log" "log_level"
+	elif [ "$enable_logging" = "1" ]; then
+		log=${log:-"/var/log/aria2.log"}
+
+		local log_dir
+		log_dir="$(dirname "$log")"
+
+		_make_dir "$log_dir" || {
+			_err "Can't create log dir: $log_dir"
+			return 1
+		}
+
+		# create or clear log file
+		echo >"$log"
+
+		append_setting "log=$log"
+		append_options "log_level"
+	fi
+
+	if [ -z "$enable_proxy" ] || [ "$enable_proxy" = "1" ]; then
+		append_options "all_proxy" "all_proxy_user" "all_proxy_passwd"
+	fi
+
+	unset_auth_method() {
+		uci -q batch <<-EOF
+			set $NAME.$section.rpc_auth_method=""
+			commit $NAME
+		EOF
+	}
+
+	if [ -z "$rpc_auth_method" ]; then
+		if [ -n "$rpc_secret" ]; then
+			append_setting "rpc-secret=$rpc_secret"
+		elif [ -n "$rpc_user" ]; then
+			append_setting "rpc-user=$rpc_user"
+			append_setting "rpc-passwd=$rpc_passwd"
+		else
+			_info "It is recommended to set RPC secret."
+		fi
+	elif [ "$rpc_auth_method" = "token" ]; then
+		if [ -n "$rpc_secret" ]; then
+			append_setting "rpc-secret=$rpc_secret"
+		else
+			unset_auth_method
+		fi
+	elif [ "$rpc_auth_method" = "user_pass" ]; then
+		if [ -n "$rpc_user" ]; then
+			append_setting "rpc-user=$rpc_user"
+			append_setting "rpc-passwd=$rpc_passwd"
+		else
+			_info "Please set RPC user."
+			unset_auth_method
+		fi
+	fi
+
+	if [ ."$rpc_secure" = ."true" ] && [ -n "$rpc_certificate" ]; then
+		append_setting "rpc-secure=true"
+		append_options "rpc_certificate" "rpc_private_key"
+	fi
+
+	if [ ."$check_certificate" = ."true" ]; then
+		append_setting "check-certificate=true"
+		append_options "ca_certificate"
+	elif [ ."$check_certificate" = ."false" ]; then
+		append_setting "check-certificate=false"
+	fi
+
+	if [ ."$enable_dht" = ."true" ]; then
+		dht_file="$config_dir/dht.dat.$section"
+		_create_file "$dht_file" || {
+			_err "Can't create DHT file: $dht_file"
+			return 1
+		}
+
+		append_setting "enable-dht=true"
+		append_setting "dht-file-path=$dht_file"
+	fi
+
+	if [ ."$enable_dht6" = ."true" ] && [ ."$disable_ipv6" != ."true" ]; then
+		dht6_file="$config_dir/dht6.dat.$section"
+		_create_file "$dht6_file" || {
+			_err "Can't create DHT6 file: $dht6_file"
+			return 1
+		}
+
+		append_setting "enable-dht6=true"
+		append_setting "dht-file-path6=$dht6_file"
+	fi
+
+	if [ -n "$bt_tracker" ]; then
+		local bt_tracker_list; local t
+		for t in $bt_tracker; do
+			if [ -z "$bt_tracker_list" ]; then
+				bt_tracker_list="$t"
+			else
+				bt_tracker_list="$bt_tracker_list,$t"
+			fi
+		done
+
+		append_setting "bt-tracker=$bt_tracker_list"
+	fi
+
+	append_options "auto_save_interval" "bt_enable_lpd" "bt_max_open_files" "bt_max_peers" \
+		"bt_remove_unselected_file" "bt_request_peer_speed_limit" "bt_prioritize_piece" \
+		"bt_stop_timeout" "bt_detach_seed_only" "bt_save_metadata" "bt_load_saved_metadata" \
+		"bt_seed_unverified" "certificate" "check_integrity" "connect_timeout" "dht_listen_port" \
+		"disable_ipv6" "disk_cache" "enable_peer_exchange" "event_poll" "file_allocation" \
+		"follow_torrent" "force_save" "http_accept_gzip" "http_no_cache" "listen_port" \
+		"lowest_speed_limit" "max_concurrent_downloads" "max_connection_per_server" \
+		"max_download_limit" "max_overall_download_limit" "max_overall_upload_limit" "max_tries" \
+		"max_upload_limit" "min_split_size" "pause" "pause_metadata" "peer_id_prefix" "private_key" \
+		"retry_wait" "rpc_listen_port" "save_session_interval" "seed_ratio" "seed_time" "split" "timeout" \
+		"user_agent"
+
+	config_list_foreach "$section" "header" append_header
+	config_list_foreach "$section" "extra_settings" append_setting
+
+	sed '/^$/d' "$config_file_tmp" >"$config_file"
+	rm -f "$config_file_tmp"
+
+	_reset_dir_mode "$config_dir"
+	_change_file_mode 600 "$config_file"
+
+	if [ -n "$user" ]; then
+		if ( user_exists "$user" && _change_owner "$user" "$config_dir" "$log" ); then
+				_info "Aria2 will run with user '$user'."
+				if [ "$user" != "root" ]; then
+					_info "Please make sure user '$user' has write access to download dir: $dir"
+				fi
+		else
+			_info "Setting run user to '$user' failed, default user will be used."
+			user=
+		fi
+	fi
+
+	procd_open_instance "$NAME.$section"
+	procd_set_param command "$PROG"
+	procd_append_param command --conf-path="$config_file"
+
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+
+	procd_set_param file "$config_file"
+	[ -n "$user" ] && \
+		procd_set_param user "$user"
+
+	procd_add_jail "$NAME.$section" log
+	procd_add_jail_mount "$config_file"
+	procd_add_jail_mount_rw "$dir" "$config_dir" "$log"
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$NAME"
+	procd_add_validation aria2_validate
+}
+
+start_service() {
+	config_load "$NAME"
+	config_foreach aria2_validate "aria2" aria2_start
+}

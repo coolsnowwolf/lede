@@ -1,0 +1,78 @@
+#!/bin/sh
+# Copyright (C) 2006-2014 OpenWrt.org
+
+. /lib/functions.sh
+
+unset SERVER
+unset PORT
+unset INTERVAL
+unset COUNT
+unset INTERFACE_GLOBAL
+
+NTPC=$(command -v ntpclient)
+
+check_server() {
+	local hostname
+	local port
+	local interface
+	[ -n "$SERVER" ] && return
+	config_get hostname $1 hostname
+	config_get port $1 port
+	config_get interface $1 interface
+
+	[ -z "$interface" ] && interface=$INTERFACE_GLOBAL
+
+	[ -n "$interface" ] && {
+		# $INTERFACE is passed from hotplug event
+		[ "$interface" = "$INTERFACE" ] || return
+	}
+
+	[ -z "$hostname" ] && return
+	$NTPC -c 1 -p ${port:-123} -i 2 -h $hostname > /dev/null && { SERVER=$hostname; PORT=${port:-123}; }
+}
+
+set_drift() {
+	config_get freq $1 freq
+	[ -n "$freq" ] && adjtimex -f $freq >/dev/null
+}
+
+start_ntpclient() {
+	config_foreach set_drift ntpdrift
+	config_foreach check_server ntpserver
+	[ -z "$SERVER" ] && exit 0
+	logger starting ntpclient
+	$NTPC ${COUNT:+-c $COUNT} ${INTERVAL:+-i $INTERVAL} -s -l -D -p $PORT -h $SERVER 2> /dev/null
+}
+
+stop_ntpclient() {
+	logger stopping ntpclient
+	killall ntpclient
+}
+
+load_settings() {
+	local interval
+	local count
+	local interface
+
+	config_get interval $1 interval
+	config_get count $1 count
+	config_get interface $1 interface
+
+	[ -n "$count" ] && COUNT=$count
+	[ -n "$interval" ] && INTERVAL=$interval
+	[ -n "$interface" ] && INTERFACE_GLOBAL=$interface
+}
+
+config_load ntpclient
+config_foreach load_settings ntpclient
+
+NTP_RUNNING=$(busybox ps | grep $NTPC | grep -v grep)
+
+case "${ACTION:-ifup}" in
+	ifup)
+		[ -z "$NTP_RUNNING" ] && start_ntpclient
+	;;
+	ifdown)
+		[ -n "$NTP_RUNNING" ] && stop_ntpclient
+	;;
+esac

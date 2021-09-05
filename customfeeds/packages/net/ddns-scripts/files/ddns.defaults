@@ -1,0 +1,201 @@
+#!/bin/sh
+
+g_pslfile=/usr/share/public_suffix_list.dat.gz
+[ -f "$g_pslfile" ] || g_pslfile="$(dirname $0)/public_suffix_list.dat.gz"
+
+g_pslerr=0
+g_cfgfile="ddns"
+
+# modify timer settings from interval and unit to dhms format
+timer2dhms() {
+# $1	Number and
+# $2	Unit of time interval
+	local t=0
+	case $2 in
+		days)		t=$(( $1 * 86400 ));;
+		hours)		t=$(( $1 * 3600 ));;
+		minutes)	t=$(( $1 * 60 ));;
+		*)		t=$1;;
+	esac
+
+	local d=$(( $t / 86400 ))
+	local h=$(( $t % 86400 / 3600 ))
+	local m=$(( $t % 3600 / 60 ))
+	local s=$(( $t % 60 ))
+	if [ $d -gt 0 ]; then printf "%dd %02dh %02dm %02ds" "$d" "$h" "$m" "$s"
+	elif [ $h -gt 0 ]; then printf "%dh %02dm %02ds" "$h" "$m" "$s"
+	elif [ $m -gt 0 ]; then printf "%dm %02ds" "$m" "$s"
+	else printf "%ds" "$s"; fi
+
+	unset d h m s t
+	return 0
+}
+
+# using function to not confuse function calls with existing ones inside /lib/functions.sh
+update_config() {
+	uc_uci="$(which uci) -q"	# ignore errors
+	uc_cfg=""
+	uc_name=""
+	uc_var=""
+	uc_val=""
+	package() { return 0; }
+	config () {
+		uc_cfg="$1"
+		uc_name="$2"
+
+		# Type = ddns	Name = global
+		if [ "$uc_cfg" = "$g_cfgfile" -a "$uc_name" = "global" ]; then
+			option() {
+				uc_var="$1"; shift
+				uc_val="$*"
+				case "$uc_var" in
+					allow_local_ip)	$uc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_privateip";;
+					date_format)	$uc_uci rename $g_cfgfile.$uc_name.$uc_var="ddns_dateformat";;
+					log_lines)	$uc_uci rename $g_cfgfile.$uc_name.$uc_var="ddns_loglines";;
+					log_dir)	$uc_uci rename $g_cfgfile.$uc_name.$uc_var="ddns_logdir";;
+					run_dir)	$uc_uci rename $g_cfgfile.$uc_name.$uc_var="ddns_rundir";;
+					# leave all other options currently unchanged
+					*)	;;
+				esac
+			}
+
+		# Type = service	Name = ???
+		elif [ "$uc_cfg" = "service" ]; then
+			option() {
+				uc_var="$1"; shift
+				uc_val="$*"
+				case "$uc_var" in
+					# fix some option service_name values
+					# and some settings for specific providers
+					service_name|upd_provider)
+						case "$uc_val" in
+							freedns\.afraid\.org|afraid\.org)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="afraid.org-keyauth";;
+							Bind-nsupdate)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="bind-nsupdate";;
+							dyndns\.org|dyndns\.com)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="dyn.com";;
+							free\.editdns\.net)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="editdns.net";;
+							FreeDNS\.42\.pl)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="freedns.42.pl";;
+							domains\.google\.com)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="google.com";;
+							loopia\.com)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="loopia.se";;
+							NoIP\.com|No-IP\.com)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="no-ip.com";;
+							spdns\.de)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="spdyn.de";;
+							strato\.de)
+								$uc_uci set $g_cfgfile.$uc_name.$uc_var="strato.com";;
+							*)
+								# all others leave unchanged
+								;;
+						esac
+						# rename option service_name to option upd_provider
+#						$uc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_provider"
+						;;
+					domain|upd_object)
+						# verify if lookup_host is set
+						$uc_uci get $g_cfgfile.$uc_name.lookup_host >/dev/null 2>&1 || \
+							$uc_uci set $g_cfgfile.$uc_name.lookup_host="$uc_val"
+						if [ -f "$g_pslfile" ]; then
+							# if service_name/upd_provider cloudflare_v1 then change domain/upd_object to new syntax
+							# there is no sort order inside uci data so we need multiple checks
+							uco_provider=$($uc_uci get $g_cfgfile.$uc_name.upd_provider 2>/dev/null) || \
+								uco_provider=$($uc_uci get $g_cfgfile.$uc_name.service_name 2>/dev/null)
+							unset uco_provider
+						fi
+						# rename option domain to option upd_object
+#						$uc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_object"
+						;;
+#					dns_server)
+#						# if bind-nsupdate takeover old "dns_server" value as new "upd_nsupd_server" value
+#						uco_provider=$($uc_uci get $g_cfgfile.$uc_name.upd_provider 2>/dev/null) || \
+#							uco_provider=$($uc_uci get $g_cfgfile.$uc_name.service_name 2>/dev/null)
+#						[ "$uco_provider" = "Bind-nsupdate" -o \
+#						  "$uco_provider" = "bind-nsupdate" ] && \
+#							$uc_uci set $g_cfgfile.$uc_name.upd_nsupd_server="$uc_val"
+#						# rename option dns_server to new option global_dnssvr
+#						$udc_uci rename $g_cfgfile.$uc_name.$uc_var="global_dnssvr"
+#						;;
+#					bind_network)
+#						$udc_uci set $g_cfgfile.$uc_name.upd_url_bindnet="$uc_val"
+#						$udc_uci rename $g_cfgfile.$uc_name.$uc_var="lip_url_bindnet"
+#						;;
+#					proxy)
+#						# proxy value must include protocoll
+#						$udc_uci set $g_cfgfile.$uc_name.$uc_var="http://$uc_val"
+#						$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_url_proxy"
+#						;;
+#					use_ipv6)
+#						$udc_uci set $g_cfgfile.$uc_name.$uc_var="$(( 4 + ( 2 * $uc_val ) ))"
+#						$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_ipversion"
+#				TODO	update_url)
+#				TODO	update_script)
+					# other renames
+#				TODO	lookup_host)	-> rip_host
+#					enabled)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_enabled";;
+#					force_dnstcp)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="rip_host_dnstcp";;
+#					is_glue)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="rip_host_isglue";;
+#					ip_interface)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="lip_iface";;
+#					ip_network)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="lip_net";;
+#					use_https)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_url_secure";;
+#					cacert)		$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_url_cacert";;
+#					username)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_username";;
+#					password)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_password";;
+#					param_opt)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_paramopt";;
+#					param_enc)	$udc_uci rename $g_cfgfile.$uc_name.$uc_var="upd_paramenc";;
+
+					# leave all other options currently unchanged
+					*)	;;
+				esac
+				return 0
+			}
+			return 0
+
+		# ignore unknown
+		else
+			return 0
+		fi
+	}
+
+	# read config file
+	uc_data=$($uc_uci -S -n export "$g_cfgfile")
+	uc_ret="$?"
+	# Error then create config file
+	[ $uc_ret -ne 0 ] && {
+		touch /etc/config/$uc_cfgfile
+		chmod 644 /etc/config/$uc_cfgfile
+	}
+	# No error and uc_data then execute (eval)
+	# this will call functions defined above
+	[ $uc_ret -eq 0 -a -n "$uc_data" ] && eval "$uc_data"
+
+	# add config ddns "global" (ignore error if exists)
+	$uc_uci set ddns.global="$g_cfgfile"
+
+	# write changes to config file
+	$uc_uci commit "$g_cfgfile"
+
+	unset uc_uci uc_cfg uc_name uc_var uc_val uc_ret uc_data
+	return 0
+}
+
+# clear LuCI indexcache
+rm -f /tmp/luci-indexcache >/dev/null 2>&1
+
+# do config update
+update_config
+
+#cleanup
+[ $g_pslerr -ne 0 ] && {
+	unset g_pslfile g_pslerr g_cfgfile
+	return 1
+}
+
+[ -f "$g_pslfile" ] && rm -f "$g_pslfile"
+unset g_pslfile g_pslerr g_cfgfile
+return 0
+

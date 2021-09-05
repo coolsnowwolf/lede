@@ -1,0 +1,124 @@
+#!/bin/sh
+#
+# Copyright (c) 2020 Gregory L. Dietsche <Gregory.Dietsche@cuw.edu>
+# This is free software, licensed under the MIT License
+#
+
+########################
+#Yucky global variables#
+########################
+global_result=0
+
+# A list of adult websites that support both IPv4 and IPv6
+IPv4andIPv6EnabledSiteList="https://xhamster.com https://www.watchmyexgf.net https://gaymaletube.com"
+
+expect_not_safe(){
+  title=$1
+  size=$2
+  web=$3
+
+  actual=$(wget -4 -O - "$web" | wc -l) 2> /dev/null
+  if [ "$actual" -gt "$size" ] ; then
+    echo "$title: IPv4: $size/$actual. NOT SAFE"
+  else
+    echo "$title: IPv4: SAFE. $actual (expected not safe!) ***************"
+    global_result=1
+  fi
+
+  actual=$(wget -6 -O - "$web"  | wc -l) 2> /dev/null
+  if [ "$actual" -gt "$size" ] ; then
+    echo "$title: IPv6: $size/$actual. NOT SAFE"
+  else
+    echo "$title: IPv6: SAFE. $actual (expected not safe!) ***************"
+    global_result=1
+  fi
+  return $global_result
+}
+
+expect_safe(){
+  title=$1
+  size=$2
+  web=$3
+
+  actual=$(wget -4 -O - "$web" | wc -l) 2> /dev/null
+  if [ "$actual" -gt "$size" ] ; then
+    echo "$title: IPv4: $size/$actual. NOT SAFE ******************"
+    global_result=1
+  else
+    echo "$title: IPv4: SAFE. $actual"
+  fi
+
+  actual=$(wget -6 -O - "$web"  | wc -l) 2> /dev/null
+  if [ "$actual" -gt "$size" ] ; then
+    echo "$title: IPv6: $size/$actual. NOT SAFE ******************"
+    global_result=1
+  else
+    echo "$title: IPv6: SAFE. $actual"
+  fi
+}
+
+
+test_not_safe(){
+  uci set family-dns.default.enabled=0
+  uci commit family-dns
+  family-dns-update
+
+  echo "******************************"
+  echo "Testing Without Protection ***"
+  echo "******************************"
+  c=0
+  for site in ${IPv4andIPv6EnabledSiteList}; do
+    expect_not_safe "Site $c" 500 "$site"
+    c=$((c+1))
+  done
+
+  uci set family-dns.default.enabled=1
+  uci commit family-dns
+  family-dns-update
+
+  echo
+}
+
+test_filter(){
+  echo "******************************"
+  echo "Testing With Protection    ***"
+  echo "******************************"
+  echo testing "$1"
+
+  uci set family-dns.default.dns="$1"
+  uci commit family-dns
+  family-dns-update
+
+  c=0
+  for site in ${IPv4andIPv6EnabledSiteList}; do
+    expect_safe "Testing Site $c" 500 "$site"
+    c=$((c+1))
+  done
+
+  echo
+}
+
+#############################################
+## Main Tests                              ##
+#############################################
+test_not_safe
+test_filter cisco-family-shield
+test_filter cloudflare-malware-and-adult-content
+test_filter cleanbrowsing-family-filter
+test_filter cleanbrowsing-adult-filter
+
+# with cleanbrowsing-adult-filter on, run this test on a different device (not the router)
+# the result should be 0 when redirect_dns=1 and the result should be 1 when redirect_dns=0
+#count=$(nslookup -query=A www.sex.com 8.8.8.8 | grep NXDOMAIN | wc -l)
+#if [ $count -eq 1 ]; then
+#  echo Clean Browsing returned NXDOMAIN. This is expected.
+#else
+#  echo Clean Browsing did not return NXDOMAIN. This is NOT expected.
+#fi
+
+
+
+if [ $global_result -ne 0 ]; then
+  echo '************ Test(s) failed! ********************************************************'
+fi
+exit $global_result

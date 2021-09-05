@@ -1,0 +1,110 @@
+#!/bin/sh
+NAME=bypass
+
+uci_get_by_name(){
+	ret=$(uci -q get $NAME.$1.$2)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type(){
+	ret=$(uci -q get $NAME.@$1[0].$2)
+	echo ${ret:=$3}
+}
+
+redir_tcp=$1
+kcp=$2
+redir_udp=$3
+redir_nf=$4
+smartdns=$5
+chinadns=$6
+socks5=$7
+server_count=$8
+server=`cat /tmp/etc/$NAME.include | grep '\-A SS_SPEC_WAN_AC \-d' | grep RETURN | awk '{print$4}' | sed 's/\/.*//'`
+GLOBAL_SERVER=$(uci_get_by_type global global_server)
+kcp_port=$(uci_get_by_name $GLOBAL_SERVER kcp_port)
+server_port=$(uci_get_by_name $GLOBAL_SERVER server_port)
+password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
+kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
+gfw_mode=$(uci_get_by_type global gfw_mode 0)
+LOG=/var/log/bypass.log
+[ "$password" != "" ] && password="--key "${password}
+
+echolog() {
+	local d="$(date "+%Y-%m-%d %H:%M:%S")"
+	echo -e "$d: $*" >>$LOG
+}
+
+while :;do
+	sleep 30
+#redir tcp
+	if [ $redir_tcp -gt 0 ];then
+		t=`ps -w | grep by-retcp | grep -v grep | wc -l`
+		if [ $t -lt $redir_tcp ];then
+			echolog "Redir TCP Error. Restart!"
+			/etc/init.d/bypass restart
+			exit 0
+		fi
+	fi
+#kcptun
+	if [ $kcp = 1 ];then
+		t=`ps -w | grep kcptun-client | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "SSR KCPTUN Error. Restart!"
+			killall -q -9 kcptun-client
+			$(which kcptun-client) -r $server:$kcp_port -l :$server_port $password $kcp_param &
+		fi
+	fi
+#redir udp
+	if [ $redir_udp = 1 ];then
+		t=`ps -w | grep by-reudp | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "Redir UDP Error. Restart!"
+			/etc/init.d/bypass restart
+			exit 0
+		fi
+	fi
+#redir netflix
+	if [ $redir_nf = 1 ];then
+		t=`ps -w | grep by-nf | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "Redir Netflix Error. Restart!"
+			/etc/init.d/bypass restart
+			exit 0
+		fi
+	fi
+#smartdns
+	if [ $smartdns = 1 ];then
+		t=`ps -w | grep smartdns-le | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "SmartDNS Error. Restart!"
+			killall -q -9 smartdns-le
+			$(which smartdns-le) -c /var/etc/smartdns/smartdns.conf
+		fi
+	fi
+#chinadns-ng
+	if [ $chinadns = 1 ];then
+		t=`ps -w | grep chinadns-ng | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "ChinaDNS-NG Error. Restart!"
+			$(which chinadns-ng) -l 5337 -c '127.0.0.1#5336' -t '127.0.0.1#5335' -4 china_v4 -6 china_v6 -f -n $([ $gfw_mode = 1 ] && echo -g /tmp/bypass/gfw.list) >/dev/null 2>&1 &
+		fi
+	fi
+#localsocks
+	if [ $socks5 = 1 ];then
+		t=`ps -w | grep by-socks | grep -v grep | wc -l`
+		if [ $t = 0 ];then
+			echolog "Global Socks Server Error. Restart!"
+			/etc/init.d/bypass restart
+			exit 0
+		fi
+	fi
+#server
+	if [ $server_count -gt 0 ];then
+		t=`ps -w | grep by-server | grep -v grep | wc -l`
+		if [ $t -lt $server_count ];then
+			echolog "SSR Server Error. Restart!"
+			/etc/init.d/bypass restart
+			exit 0
+		fi
+	fi
+done

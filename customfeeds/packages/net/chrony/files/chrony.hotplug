@@ -1,0 +1,45 @@
+#!/bin/sh
+# Set chronyd online/offline status, allow NTP access and add servers from DHCP
+
+SOURCEFILE="/var/run/chrony-dhcp/$INTERFACE.sources"
+
+run_command() {
+	/usr/bin/chronyc -n "$*" > /dev/null 2>&1
+}
+
+run_command onoffline
+
+if [ "$ACTION" = ifdown ] && [ -f "$SOURCEFILE" ]; then
+	rm -f "$SOURCEFILE"
+	run_command reload sources
+fi
+
+[ "$ACTION" = ifup ] || exit 0
+
+. /lib/functions.sh
+. /etc/init.d/chronyd
+
+config_load chrony
+
+config_foreach handle_allow allow | while read command; do
+	run_command "$command"
+done
+
+# Add servers from DHCP only if the config has a dhcp_ntp_server section
+[ -z "$(config_foreach echo dhcp_ntp_server)" ] && exit 0
+
+. /usr/share/libubox/jshn.sh
+
+json_load "$(ifstatus "$INTERFACE")"
+json_select data
+json_get_var dhcp_ntp_servers ntpserver
+
+[ -z "$dhcp_ntp_servers" ] && exit 0
+
+mkdir -p "$(dirname "$SOURCEFILE")"
+
+for NTP_SOURCE_HOSTNAME in $dhcp_ntp_servers; do
+	config_foreach handle_source dhcp_ntp_server server
+done > "$SOURCEFILE"
+
+run_command reload sources

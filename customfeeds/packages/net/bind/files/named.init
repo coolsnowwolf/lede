@@ -1,0 +1,73 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2014 Noah Meyerhans <frodo@morgul.net>
+# Licensed under the terms of the GNU General Public License version 2
+# or (at your discretion) any later later version
+
+USE_PROCD=1
+
+START=22
+
+config_file=/etc/bind/named.conf
+config_dir=$(dirname $config_file)
+named_options_file=/etc/bind/named-rndc.conf
+rndc_conf_file=/etc/bind/rndc.conf
+pid_file=/var/run/named/named.pid
+rndc_temp=$(mktemp /tmp/rndc-confgen.XXXXXX)
+
+logdir=/var/log/named/
+cachedir=/var/cache/bind
+libdir=/var/lib/bind
+dyndir=/tmp/bind
+
+conf_local_file=$dyndir/named.conf.local
+
+
+fix_perms() {
+    for dir in $libdir $logdir $cachedir $dyndir; do
+	test -e "$dir" || {
+            mkdir -p "$dir"
+            chgrp bind "$dir"
+            chmod g+w "$dir"
+	}
+    done
+}
+
+reload_service() {
+    rndc -q reload
+}
+
+start_service() {
+    user_exists bind 57 || user_add bind 57
+    group_exists bind 57 || group_add bind 57
+    fix_perms
+
+    rndc-confgen > $rndc_temp
+
+    sed -r -n \
+	-e '/^# options \{$/,/^\};$/{ s/^/# / }' \
+	-e p \
+	-e '/^# End of rndc\.conf$/q' \
+	< $rndc_temp > $rndc_conf_file
+
+    sed -r -n \
+	-e '1,/^# End of rndc\.conf$/ { b done }' \
+	-e '/^# Use with the following in named.conf/ { p ; b done }' \
+	-e '/^# End of named\.conf$/ { p ; b done }' \
+	-e '/^# key /,$ { s/^# // ; p }' \
+	-e ': done' \
+	< $rndc_temp > $named_options_file
+
+    rm -f $rndc_temp
+
+    touch $conf_local_file
+
+    procd_open_instance
+    procd_set_param command /usr/sbin/named -u bind -f -c $config_file
+    procd_set_param file $config_file \
+			 $config_dir/bind.keys \
+			 $named_options_file \
+			 $conf_local_file \
+			 $config_dir/db.*
+    procd_set_param respawn
+    procd_close_instance
+}

@@ -1,0 +1,71 @@
+#!/bin/sh
+# send mail script for travelmate notifications
+# Copyright (c) 2020 Dirk Brenken (dev@brenken.org)
+# This is free software, licensed under the GNU General Public License v3.
+
+# set (s)hellcheck exceptions
+# shellcheck disable=1091,2016,2039,2059,2086,2143,2181,2188
+
+# Please note: you have to setup the package 'msmtp' before using this script
+
+export LC_ALL=C
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+set -o pipefail
+
+if [ "$(uci_get 2>/dev/null; printf "%u" "${?}")" = "127" ]
+then
+	. "/lib/functions.sh"
+fi
+
+trm_debug="$(uci_get travelmate global trm_debug "0")"
+trm_mailreceiver="$(uci_get travelmate global trm_mailreceiver)"
+trm_mailprofile="$(uci_get travelmate global trm_mailprofile "trm_notify")"
+trm_mailsender="$(uci_get travelmate global trm_mailsender "no-reply@travelmate")"
+trm_rtfile="$(uci_get travelmate global trm_rtfile "/tmp/trm_runtime.json")"
+trm_mailpgm="$(command -v msmtp)"
+trm_logger="$(command -v logger)"
+
+f_log()
+{
+	local class="${1}" log_msg="${2}"
+
+	if [ -x "${trm_logger}" ]
+	then
+		"${trm_logger}" -p "${class}" -t "trm-mail [${$}]" "${log_msg}"
+	else
+		printf "%s %s %s\\n" "${class}" "trm-mail [${$}]" "${log_msg}"
+	fi
+}
+
+if [ -z "${trm_mailreceiver}" ]
+then
+	f_log "err" "please set the mail receiver with the 'trm_mailreceiver' option"
+	exit 1
+fi
+
+if [ "${trm_debug}" = "1" ]
+then
+	debug="--debug"
+fi
+
+# info preparation
+#
+sys_info="$(strings /etc/banner 2>/dev/null; ubus call system board | sed -e 's/\"release\": {//' | sed -e 's/^[ \t]*//' | sed -e 's/[{}\",]//g' | sed -e 's/[ ]/  \t/' | sed '/^$/d' 2>/dev/null)"
+trm_info="$(/etc/init.d/travelmate status 2>/dev/null)"
+sta_info="$(jsonfilter -i "${trm_rtfile}" -l1 -e '@.data.station_id')"
+trm_mailtopic="$(uci_get travelmate global trm_mailtopic "travelmate connection to '${sta_info}'")"
+trm_mailhead="From: ${trm_mailsender}\\nTo: ${trm_mailreceiver}\\nSubject: ${trm_mailtopic}\\nReply-to: ${trm_mailsender}\\nMime-Version: 1.0\\nContent-Type: text/html; charset=UTF-8\\nContent-Disposition: inline\\n\\n"
+
+# mail body
+#
+trm_mailtext="<html><body><pre style='display:block;font-family:monospace;font-size:1rem;padding:20;background-color:#f3eee5;white-space:pre'>"
+trm_mailtext="${trm_mailtext}\\n<strong>++\\n++ System Information ++\\n++</strong>\\n${sys_info}"
+trm_mailtext="${trm_mailtext}\\n\\n<strong>++\\n++ Travelmate Information ++\\n++</strong>\\n${trm_info}"
+trm_mailtext="${trm_mailtext}</pre></body></html>"
+
+# send mail
+#
+printf "%b" "${trm_mailhead}${trm_mailtext}" 2>/dev/null | "${trm_mailpgm}" ${debug} -a "${trm_mailprofile}" "${trm_mailreceiver}" >/dev/null 2>&1
+mail_rc="${?}"
+f_log "info" "mail sent to '${trm_mailreceiver}' with rc '${mail_rc}'"
+exit ${mail_rc}

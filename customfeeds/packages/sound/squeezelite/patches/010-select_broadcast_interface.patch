@@ -1,0 +1,349 @@
+--- a/main.c
++++ b/main.c
+@@ -93,6 +93,7 @@ static void usage(const char *argv0) {
+ #if IR
+ 		   "  -i [<filename>]\tEnable lirc remote control support (lirc config file ~/.lircrc used if filename not specified)\n"
+ #endif
++		   "  -I <interface>\tNetwork interface used to send discovery\n"
+ 		   "  -m <mac addr>\t\tSet mac address, format: ab:cd:ef:12:34:56\n"
+ 		   "  -M <modelname>\tSet the squeezelite player model name sent to the server (default: " MODEL_NAME_STRING ")\n"
+ 		   "  -n <name>\t\tSet the player name\n"
+@@ -285,6 +286,8 @@ int main(int argc, char **argv) {
+ 	extern bool user_rates;
+ 	char *logfile = NULL;
+ 	u8_t mac[6];
++	char *iface = NULL;
++	in_addr_t bcast_addr = 0;
+ 	unsigned stream_buf_size = STREAMBUF_SIZE;
+ 	unsigned output_buf_size = 0; // set later
+ 	unsigned rates[MAX_SUPPORTED_SAMPLERATES] = { 0 };
+@@ -325,6 +328,7 @@ int main(int argc, char **argv) {
+ 
+ 	int maxSampleRate = 0;
+ 
++	memset(mac, 0, sizeof(mac));
+ 	char *optarg = NULL;
+ 	int optind = 1;
+ 	int i;
+@@ -332,8 +336,6 @@ int main(int argc, char **argv) {
+ #define MAXCMDLINE 512
+ 	char cmdline[MAXCMDLINE] = "";
+ 
+-	get_mac(mac);
+-
+ 	for (i = 0; i < argc && (strlen(argv[i]) + strlen(cmdline) + 2 < MAXCMDLINE); i++) {
+ 		strcat(cmdline, argv[i]);
+ 		strcat(cmdline, " ");
+@@ -341,7 +343,7 @@ int main(int argc, char **argv) {
+ 
+ 	while (optind < argc && strlen(argv[optind]) >= 2 && argv[optind][0] == '-') {
+ 		char *opt = argv[optind] + 1;
+-		if (strstr("oabcCdefmMnNpPrs"
++		if (strstr("oabcCdefImMnNpPrs"
+ #if ALSA
+ 				   "UVO"
+ #endif
+@@ -442,6 +444,9 @@ int main(int argc, char **argv) {
+ 		case 'f':
+ 			logfile = optarg;
+ 			break;
++		case 'I':
++			iface = optarg;
++			break;
+ 		case 'm':
+ 			{
+ 				int byte = 0;
+@@ -755,6 +760,11 @@ int main(int argc, char **argv) {
+ 	winsock_init();
+ #endif
+ 
++	if (!(bcast_addr = get_iface_info(log_slimproto, iface, mac))) {
++		fprintf(stderr, "Error binding to network or none given\n");
++		exit(1);
++	}
++
+ 	stream_init(log_stream, stream_buf_size);
+ 
+ 	if (!strcmp(output_device, "-")) {
+@@ -798,7 +808,7 @@ int main(int argc, char **argv) {
+ 		exit(1);
+ 	}
+ 
+-	slimproto(log_slimproto, server, mac, name, namefile, modelname, maxSampleRate);
++	slimproto(log_slimproto, server, bcast_addr, mac, name, namefile, modelname, maxSampleRate);
+ 
+ 	decode_close();
+ 	stream_close();
+--- a/slimproto.c
++++ b/slimproto.c
+@@ -113,7 +113,7 @@ void send_packet(u8_t *packet, size_t le
+ 	}
+ }
+ 
+-static void sendHELO(bool reconnect, const char *fixed_cap, const char *var_cap, u8_t mac[6]) {
++static void sendHELO(bool reconnect, const char *fixed_cap, const char *var_cap, u8_t *mac) {
+ 	#define BASE_CAP "Model=squeezelite,AccuratePlayPoints=1,HasDigitalOut=1,HasPolarityInversion=1,Firmware=" VERSION
+ 	#define SSL_CAP "CanHTTPS=1"
+ 	const char *base_cap;
+@@ -761,7 +761,7 @@ void wake_controller(void) {
+ 	wake_signal(wake_e);
+ }
+ 
+-in_addr_t discover_server(char *default_server) {
++in_addr_t discover_server(char *default_server, in_addr_t bcast_addr) {
+ 	struct sockaddr_in d;
+ 	struct sockaddr_in s;
+ 	char *buf;
+@@ -778,7 +778,7 @@ in_addr_t discover_server(char *default_
+ 	memset(&d, 0, sizeof(d));
+ 	d.sin_family = AF_INET;
+ 	d.sin_port = htons(PORT);
+-	d.sin_addr.s_addr = htonl(INADDR_BROADCAST);
++	d.sin_addr.s_addr = bcast_addr;
+ 
+ 	pollinfo.fd = disc_sock;
+ 	pollinfo.events = POLLIN;
+@@ -813,7 +813,7 @@ in_addr_t discover_server(char *default_
+ #define FIXED_CAP_LEN 256
+ #define VAR_CAP_LEN   128
+ 
+-void slimproto(log_level level, char *server, u8_t mac[6], const char *name, const char *namefile, const char *modelname, int maxSampleRate) {
++void slimproto(log_level level, char *server, in_addr_t bcast_addr, u8_t mac[6], const char *name, const char *namefile, const char *modelname, int maxSampleRate) {
+ 	struct sockaddr_in serv_addr;
+ 	static char fixed_cap[FIXED_CAP_LEN], var_cap[VAR_CAP_LEN] = "";
+ 	bool reconnect = false;
+@@ -834,7 +834,7 @@ void slimproto(log_level level, char *se
+ 	}
+ 
+ 	if (!slimproto_ip) {
+-		slimproto_ip = discover_server(server);
++		slimproto_ip = discover_server(server, bcast_addr);
+ 	}
+ 
+ 	if (!slimproto_port) {
+@@ -915,7 +915,7 @@ void slimproto(log_level level, char *se
+ 
+ 			// rediscover server if it was not set at startup
+ 			if (!server && ++failed_connect > 5) {
+-				slimproto_ip = serv_addr.sin_addr.s_addr = discover_server(NULL);
++				slimproto_ip = serv_addr.sin_addr.s_addr = discover_server(NULL, bcast_addr);
+ 			}
+ 
+ 		} else {
+--- a/squeezelite.h
++++ b/squeezelite.h
+@@ -455,7 +455,7 @@ char* strcasestr(const char *haystack, c
+ 
+ char *next_param(char *src, char c);
+ u32_t gettime_ms(void);
+-void get_mac(u8_t *mac);
++in_addr_t get_iface_info(log_level level, char *iface, u8_t *mac);
+ void set_nonblock(sockfd s);
+ int connect_timeout(sockfd sock, const struct sockaddr *addr, socklen_t addrlen, int timeout);
+ void server_addr(char *server, in_addr_t *ip_ptr, unsigned *port_ptr);
+@@ -511,7 +511,7 @@ void buf_init(struct buffer *buf, size_t
+ void buf_destroy(struct buffer *buf);
+ 
+ // slimproto.c
+-void slimproto(log_level level, char *server, u8_t mac[6], const char *name, const char *namefile, const char *modelname, int maxSampleRate);
++void slimproto(log_level level, char *server, in_addr_t bcast_addr, u8_t mac[6], const char *name, const char *namefile, const char *modelname, int maxSampleRate);
+ void slimproto_stop(void);
+ void wake_controller(void);
+ 
+--- a/utils.c
++++ b/utils.c
+@@ -22,11 +22,11 @@
+ #include "squeezelite.h"
+ 
+ #if LINUX || OSX || FREEBSD
+-#include <sys/ioctl.h>
++#include <sys/types.h>
+ #include <net/if.h>
+-#include <netdb.h>
+-#if FREEBSD
+ #include <ifaddrs.h>
++#include <netdb.h>
++#if FREEBSD || OSX
+ #include <net/if_dl.h>
+ #include <net/if_types.h>
+ #endif
+@@ -49,15 +49,11 @@
+ #include <ctype.h>
+ #endif
+ #endif
+-#if OSX
+-#include <net/if_dl.h>
+-#include <net/if_types.h>
+-#include <ifaddrs.h>
+-#include <netdb.h>
+-#endif
+ 
+ #include <fcntl.h>
+ 
++static log_level loglevel;
++
+ // logging functions
+ const char *logtime(void) {
+ 	static char buf[100];
+@@ -119,58 +115,94 @@ u32_t gettime_ms(void) {
+ #endif
+ }
+ 
+-// mac address
+-#if LINUX && !defined(SUN)
+-// search first 4 interfaces returned by IFCONF
+-void get_mac(u8_t mac[]) {
+-	char *utmac;
+-	struct ifconf ifc;
+-	struct ifreq *ifr, *ifend;
+-	struct ifreq ifreq;
+-	struct ifreq ifs[4];
++// Get broadcast address for interface (given or first available)
++// Return MAC address if none given
++#if LINUX || OSX || FREEBSD
+ 
+-	utmac = getenv("UTMAC");
+-	if (utmac)
+-	{
+-		if ( strlen(utmac) == 17 )
+-		{
+-			if (sscanf(utmac,"%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
+-				&mac[0],&mac[1],&mac[2],&mac[3],&mac[4],&mac[5]) == 6)
+-			{
+-				return;
+-			}
+-		}
++in_addr_t get_iface_info(log_level level, char *iface, u8_t *mac) {
++	struct ifaddrs *addrs, *ifa;
++	struct sockaddr *sdl;
++	char ifname[16];
++	unsigned char *ptr;
++	in_addr_t bcast_addr = 0;
++	int have_mac = 0, have_ifname = 0;
++
++	loglevel = level;
++
++	// Check for non-zero MAC
++	if (mac[0] | mac[1] | mac[2] != 0)
++		have_mac = 1;
++
++	// Copy interface name, if it was provided.
++	if (iface != NULL) {
++		if (strlen(iface) > sizeof(ifname))
++			return -1;
+ 
++		strncpy(ifname, iface, sizeof(ifname) - 1);
++		have_ifname = 1;
+ 	}
+ 
+-	mac[0] = mac[1] = mac[2] = mac[3] = mac[4] = mac[5] = 0;
++	if (getifaddrs(&addrs) == 0) {
++		//iterate to find corresponding ethernet address
++		for (ifa = addrs; ifa; ifa = ifa->ifa_next) {
++			// Skip LOOPBACK interfaces, DOWN interfaces and interfaces that
++			// don't support BROADCAST.
++			if (ifa->ifa_flags & IFF_LOOPBACK
++                                || !ifa->ifa_flags & IFF_UP
++                                || !ifa->ifa_flags & IFF_BROADCAST) {
++				continue;
++			}
+ 
+-	int s = socket(AF_INET, SOCK_DGRAM, 0);
++			if (!have_ifname) {
++				// We have found a valid interface name. Keep it.
++				strncpy(ifname, ifa->ifa_name, sizeof(ifname) - 1);
++				have_ifname = 1;
++			} else {
++				if (strncmp(ifname, ifa->ifa_name, sizeof(ifname)) != 0) {
++					// This is not the interface we're looking for.
++					continue;
++				}
++			}
+ 
+-	ifc.ifc_len = sizeof(ifs);
+-	ifc.ifc_req = ifs;
+ 
+-	if (ioctl(s, SIOCGIFCONF, &ifc) == 0) {
+-		ifend = ifs + (ifc.ifc_len / sizeof(struct ifreq));
++			// Check address family.
++			if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET &&
++			    ((struct sockaddr_in *)ifa->ifa_broadaddr)->sin_addr.s_addr != 0) {
++				// Get broadcast address and MAC address
++				bcast_addr = ((struct sockaddr_in *)ifa->ifa_broadaddr)->sin_addr.s_addr;
++				break;
++			}
++			else {
++				// Address is not IPv4
++				if (iface == NULL)
++					have_ifname = 0;
++			}
++		}
+ 
+-		for (ifr = ifc.ifc_req; ifr < ifend; ifr++) {
+-			if (ifr->ifr_addr.sa_family == AF_INET) {
+-
+-				strncpy(ifreq.ifr_name, ifr->ifr_name, sizeof(ifreq.ifr_name) - 1);
+-				if (ioctl (s, SIOCGIFHWADDR, &ifreq) == 0) {
+-					memcpy(mac, ifreq.ifr_hwaddr.sa_data, 6);
+-					if (mac[0]+mac[1]+mac[2] != 0) {
+-						break;
+-					}
++		// Find MAC address matching interface
++		if (!have_mac && bcast_addr != 0) {
++			for (ifa = addrs; ifa; ifa = ifa->ifa_next) {
++				if (ifa->ifa_addr && ifa->ifa_addr->sa_family == PF_PACKET &&
++				    strncmp(ifname, ifa->ifa_name, sizeof(ifname)) == 0) {
++					sdl = (struct sockaddr *)(ifa->ifa_addr);
++					ptr = (unsigned char *)sdl->sa_data;
++					memcpy(mac, ptr + 10, 6);
++					have_mac = 1;
+ 				}
+ 			}
+ 		}
++
++		freeifaddrs(addrs);
+ 	}
+ 
+-	close(s);
++	LOG_INFO("Interface: %s, broadcast: %08X, macaddr = %02x:%02x:%02x:%02x:%02x:%02x",
++		 ifname, bcast_addr, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
++
++	return bcast_addr;
+ }
+ #endif
+ 
++
+ #if SUN
+ void get_mac(u8_t mac[]) {
+ 	struct  arpreq          parpreq;
+@@ -237,30 +269,6 @@ void get_mac(u8_t mac[]) {
+ }
+ #endif
+ 
+-#if OSX || FREEBSD
+-void get_mac(u8_t mac[]) {
+-	struct ifaddrs *addrs, *ptr;
+-	const struct sockaddr_dl *dlAddr;
+-	const unsigned char *base;
+-	
+-	mac[0] = mac[1] = mac[2] = mac[3] = mac[4] = mac[5] = 0;
+-	
+-	if (getifaddrs(&addrs) == 0) {
+-		ptr = addrs;
+-		while (ptr) {
+-			if (ptr->ifa_addr->sa_family == AF_LINK && ((const struct sockaddr_dl *) ptr->ifa_addr)->sdl_type == IFT_ETHER) {
+-				dlAddr = (const struct sockaddr_dl *)ptr->ifa_addr;
+-				base = (const unsigned char*) &dlAddr->sdl_data[dlAddr->sdl_nlen];
+-				memcpy(mac, base, min(dlAddr->sdl_alen, 6));
+-				break;
+-			}
+-			ptr = ptr->ifa_next;
+-		}
+-		freeifaddrs(addrs);
+-	}
+-}
+-#endif
+-
+ #if WIN
+ #pragma comment(lib, "IPHLPAPI.lib")
+ void get_mac(u8_t mac[]) {

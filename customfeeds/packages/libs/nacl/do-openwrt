@@ -1,0 +1,206 @@
+#!/bin/sh
+set -e
+
+# nacl/do
+# D. J. Bernstein
+# Public domain.
+
+version=`cat version`
+project=nacl
+
+top="`pwd`/build"
+bin="$top/bin"
+lib="$top/lib"
+include="$top/include"
+work="$top/work"
+
+
+# and work around bug in GNU sort
+LANG=C
+export LANG
+
+rm -rf "$top"
+mkdir -p "$top"
+mkdir -p "$bin"
+mkdir -p "$lib"
+mkdir -p "$include"
+
+exec >"$top/log"
+exec 2>&1
+exec 5>"$top/data"
+exec </dev/null
+
+echo "=== `date` === starting"
+
+echo "=== `date` === building inttypes"
+for target in int8 int16 int32 int64 uint8 uint16 uint32 uint64; do
+  (
+    echo "#ifndef crypto_${target}_h"
+    echo "#define crypto_${target}_h"
+    echo ""
+    echo "#include <stdint.h>"
+    echo ""
+    echo "typedef ${target}_t crypto_${target};"
+    echo ""
+    echo "#endif"
+  ) > "$include/crypto_$target.h"
+done
+
+echo "=== `date` === building randombytes"
+rm -rf "$work"
+mkdir -p "$work"
+cp -pr randombytes/* "$work"
+(
+  cd "$work"
+
+  cp devurandom.c randombytes-impl.c
+  cp devurandom.h randombytes-impl.h
+  $CC $CFLAGS -c randombytes-impl.c
+  mkdir -p lib
+  mv randombytes-impl.o lib/randombytes.o
+  mkdir -p include
+  mv randombytes-impl.h include/randombytes.h
+)
+cp -pr "$work"/lib/* "$lib"
+cp -pr "$work"/include/* "$include"
+
+rm -rf "$work"
+mkdir -p "$work"
+echo 'void crypto_'"$project"'_base(void) { ; }' > "$work/${project}_base.c"
+( cd "$work" && $CC $CFLAGS -c ${project}_base.c )
+$AR cr "$lib/lib${project}.a" "$work/${project}_base.o"
+( $RANLIB "$lib/lib${project}.a" || exit 0 )
+
+# loop over operations
+cat OPERATIONS \
+| while read o
+do
+  [ -d "$o" ] || continue
+
+  # for each operation, loop over primitives
+  ls "$o" \
+  | sort \
+  | while read p
+  do
+    [ -d "$o/$p" ] || continue
+    op="${o}_${p}"
+
+    startdate=`date +%Y%m%d`
+
+    echo "=== `date` === $o/$p"
+
+    rm -rf "$work"
+    mkdir -p "$work"
+
+    if [ -d "$o/$p/ref" ]; then
+      implementationdir="$o/$p/ref"
+    else
+      implementationdir="$o/$p/portable"
+    fi
+
+    opi=`echo "$implementationdir" | tr ./- ___`
+
+    echo "=== `date` === $implementationdir"
+
+    cfiles=`ls "$implementationdir" | grep '\.c$' || :`
+    sfiles=`ls "$implementationdir" | grep '\.[sS]$' || :`
+
+    cp -p "$o"/*.c "$work"
+
+    cp -pr "$implementationdir"/* "$work"
+
+    cp -p MACROS "$work/MACROS"
+    cp -p PROTOTYPES.c "$work/PROTOTYPES.c"
+
+    (
+      cd "$work"
+      (
+	echo "#ifndef ${o}_H"
+	echo "#define ${o}_H"
+	echo ""
+	echo "#include \"${op}.h\""
+	echo ""
+	egrep "${o}"'$|'"${o}"'\(|'"${o}"'_' < MACROS \
+	  | sed "s/$o/$op/" | while read mop
+	do
+	  echo "#define ${mop} ${mop}" | sed "s/$op/$o/"
+	done
+	echo "#define ${o}_PRIMITIVE \"${p}\""
+	echo "#define ${o}_IMPLEMENTATION ${op}_IMPLEMENTATION"
+	echo "#define ${o}_VERSION ${op}_VERSION"
+	echo ""
+	echo "#endif"
+      ) > "$o.h"
+      (
+	echo "#ifndef ${op}_H"
+	echo "#define ${op}_H"
+	echo ""
+	sed 's/[ 	]CRYPTO_/ '"${opi}"'_/g' < api.h
+	echo '#ifdef __cplusplus'
+	  #echo '#include <string>'
+	  #egrep "${o}"'$|'"${o}"'\(|'"${o}"'_' < PROTOTYPES.cpp \
+	  #    | sed "s/$o/$opi/"
+	echo 'extern "C" {'
+	echo '#endif'
+	egrep "${o}"'$|'"${o}"'\(|'"${o}"'_' < PROTOTYPES.c \
+	  | sed "s/$o/$opi/"
+	echo '#ifdef __cplusplus'
+	echo '}'
+	echo '#endif'
+	echo ""
+	egrep "${o}"'$|'"${o}"'\(|'"${o}"'_' < MACROS \
+	  | sed "s/$o/$opi/" | while read mopi
+	do
+	    echo "#define ${mopi} ${mopi}" | sed "s/$opi/$op/"
+	done
+	echo "#define ${op}_IMPLEMENTATION \"${implementationdir}\""
+	echo "#ifndef ${opi}_VERSION"
+	echo "#define ${opi}_VERSION \"-\""
+	echo "#endif"
+	echo "#define ${op}_VERSION ${opi}_VERSION"
+	echo ""
+	echo "#endif"
+      ) > "$op.h"
+
+      echo "=== `date` === $implementationdir $CC $CFLAGS"
+      for f in $cfiles $sfiles
+      do
+	ok=1
+	$CC $CFLAGS \
+	    -I. -I"$include" \
+	    -c "$f" >errors 2>&1 || ok=0
+	( if [ `wc -l < errors` -lt 25 ]
+	  then
+	    cat errors
+	  else
+	    head errors
+	    echo ...
+	    tail errors
+	  fi
+	) \
+	| while read err
+	do
+	  echo "$version $startdate $o $p fromcompiler $implementationdir $f $err" >&5
+	done
+
+	[ "$ok" = 1 ]
+      done
+
+      for f in *.o
+      do
+	mv "$f" "${opi}-$f"
+      done
+    )
+
+    echo "=== `date` === $implementationdir $CC $CFLAGS finishing"
+
+    $AR cr "$lib/lib${project}.a" "$work"/*.o \
+    && ( $RANLIB "$lib/lib${project}.a" || exit 0 ) \
+    && cp -p "$work/$op.h" "$include/$op.h" \
+    && [ -f "$o/$p/selected" ] \
+    && cp -p "$work/$o.h" "$include/$o.h" \
+    || :
+  done
+done
+
+echo "=== `date` === finishing"

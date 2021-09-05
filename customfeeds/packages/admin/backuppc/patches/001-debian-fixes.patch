@@ -1,0 +1,99 @@
+--- a/bin/BackupPC_archive
++++ b/bin/BackupPC_archive
+@@ -299,7 +299,7 @@ sub ArchiveCleanup
+     if ( $NeedPostCmd ) {
+         UserCommandRun("ArchivePostUserCmd");
+         if ( $? && $Conf{UserCmdCheckStatus} ) {
+-            $stat{hostError} = "RestorePreUserCmd returned error status $?";
++            $stat{hostError} = "ArchivePostUserCmd returned error status $?";
+             $stat{xferOK} = 0;
+         }
+     }
+--- a/bin/BackupPC_dump
++++ b/bin/BackupPC_dump
+@@ -1067,7 +1067,7 @@ sub catch_signal
+ 	    # Send ALRMs to BackupPC_tarExtract if we are using it
+ 	    #
+ 	    if ( $tarPid > 0 ) {
+-		kill($bpc->sigName2num("ARLM"), $tarPid);
++		kill($bpc->sigName2num("ALRM"), $tarPid);
+ 	    }
+ 
+ 	    #
+--- a/configure.pl
++++ b/configure.pl
+@@ -333,7 +333,10 @@ while ( 1 ) {
+                                  $Conf{BackupPCUser} || "backuppc",
+                                  "backuppc-user");
+     if ( $opts{"set-perms"} ) {
+-        ($name, $passwd, $Uid, $Gid) = getpwnam($Conf{BackupPCUser});
++        #($name, $passwd, $Uid, $Gid) = getpwnam($Conf{BackupPCUser});
++        $name = 'backuppc';
++        $Uid=`id -u`;
++        $Gid=`id -g`;
+         last if ( $name ne "" );
+         print <<EOF;
+ 
+@@ -800,6 +803,7 @@ $Conf{ParPath} = '' if ( $Conf{ParPath}
+ #
+ # Figure out sensible arguments for the ping command
+ #
++$Conf{PingArgs} = '-c 1 $host';
+ if ( defined($Conf{PingArgs}) ) {
+     $Conf{PingCmd} = '$pingPath ' . $Conf{PingArgs};
+ } elsif ( !defined($Conf{PingCmd}) ) {
+--- a/lib/BackupPC/CGI/View.pm
++++ b/lib/BackupPC/CGI/View.pm
+@@ -46,7 +46,7 @@ sub action
+     my $compress = 0;
+     my $fh;
+     my $host = $In{host};
+-    my $num  = $In{num};
++    my $num  = ${EscHTML($In{num})};
+     my $type = $In{type};
+     my $linkHosts = 0;
+     my($file, $comment);
+@@ -136,6 +136,10 @@ sub action
+ 		    }
+ 		    $s =~ s/[\n\r]+//g;
+ 		    if ( $s =~ /smb: \\>/
++			    || $s =~ /^tar:\d+\s/
++			    || $s =~ /^  NTLMSSP_/
++			    || $s =~ /^GENSEC backend /
++			    || $s =~ /^doing parameter /
+ 			    || $s =~ /^\s*(\d+) \(\s*\d+\.\d kb\/s\) (.*)$/
+ 			    || $s =~ /^tar: dumped \d+ files/
+ 			    || $s =~ /^\s*added interface/i
+--- a/lib/BackupPC/Lib.pm
++++ b/lib/BackupPC/Lib.pm
+@@ -512,7 +512,8 @@ sub dirRead
+     }
+     if ( $IODirentOk ) {
+         @entries = sort({ $a->{inode} <=> $b->{inode} } readdirent($fh));
+-        map { $_->{type} = 0 + $_->{type} } @entries;   # make type numeric
++        #map { $_->{type} = 0 + $_->{type} } @entries;   # make type numeric
++        map { $_->{type} = 0 + $_->{type}; $_->{type} = undef if ($_->{type} eq BPC_DT_UNKNOWN); } @entries;   # make type numeric, unset unknown types
+     } else {
+         @entries = map { { name => $_} } readdir($fh);
+     }
+--- a/lib/BackupPC/Xfer/Smb.pm
++++ b/lib/BackupPC/Xfer/Smb.pm
+@@ -219,7 +219,7 @@ sub readOutput
+         #
+         # MAKSYM 14082016: The next regex will never match on Samba-4.3, as
+         # smbclient doesn't produce output required; keeping it for older Sambas
+-        if ( /^\s*(-?\d+) \(\s*\d+[.,]\d kb\/s\) (.*)$/ ) {
++        if ( /^\s*(-?\d+) \(\s*\d+[.,]\d kb\/s\) (.*)$/ || /^tar:(\d+)\s+\+\+\+ (.*)$/ ) {
+             my $sambaFileSize = $1;
+             my $pcFileName    = $2;
+             (my $fileName = $pcFileName) =~ s/\\/\//g;
+@@ -281,6 +281,9 @@ sub readOutput
+         } elsif ( /smb: \\>/
+                 || /^\s*tar:\d+/ # MAKSYM 14082016: ignoring 2 more Samba-4.3 specific lines
+                 || /^\s*WARNING:/i
++                || /^  NTLMSSP_/
++                || /^GENSEC backend /
++                || /^doing parameter /
+                 || /^\s*added interface/i
+                 || /^\s*tarmode is now/i
+                 || /^\s*Total bytes written/i

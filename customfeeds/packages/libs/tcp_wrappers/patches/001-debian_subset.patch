@@ -1,0 +1,940 @@
+--- a/hosts_access.c
++++ b/hosts_access.c
+@@ -240,6 +240,26 @@ struct request_info *request;
+     }
+ }
+ 
++/* hostfile_match - look up host patterns from file */
++
++static int hostfile_match(path, host)
++char   *path;
++struct hosts_info *host;
++{
++    char    tok[BUFSIZ];
++    int     match = NO;
++    FILE   *fp;
++
++    if ((fp = fopen(path, "r")) != 0) {
++        while (fscanf(fp, "%s", tok) == 1 && !(match = host_match(tok, host)))
++            /* void */ ;
++        fclose(fp);
++    } else if (errno != ENOENT) {
++        tcpd_warn("open %s: %m", path);
++    }
++    return (match);
++}
++
+ /* host_match - match host name and/or address against pattern */
+ 
+ static int host_match(tok, host)
+@@ -267,6 +287,8 @@ struct host_info *host;
+ 	tcpd_warn("netgroup support is disabled");	/* not tcpd_jump() */
+ 	return (NO);
+ #endif
++    } else if (tok[0] == '/') {                         /* /file hack */
++        return (hostfile_match(tok, host));
+     } else if (STR_EQ(tok, "KNOWN")) {		/* check address and name */
+ 	char   *name = eval_hostname(host);
+ 	return (STR_NE(eval_hostaddr(host), unknown) && HOSTNAME_KNOWN(name));
+--- a/tcpd.h
++++ b/tcpd.h
+@@ -4,6 +4,27 @@
+   * Author: Wietse Venema, Eindhoven University of Technology, The Netherlands.
+   */
+ 
++#ifndef _TCPWRAPPERS_TCPD_H
++#define _TCPWRAPPERS_TCPD_H
++
++/* someone else may have defined this */
++#undef  __P
++
++/* use prototypes if we have an ANSI C compiler or are using C++ */
++#if defined(__STDC__) || defined(__cplusplus)
++#define __P(args)       args
++#else
++#define __P(args)       ()
++#endif
++
++/* Need definitions of struct sockaddr_in and FILE. */
++#include <netinet/in.h>
++#include <stdio.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
+ /* Structure to describe one communications endpoint. */
+ 
+ #define STRING_LENGTH	128		/* hosts, users, processes */
+@@ -25,10 +46,10 @@ struct request_info {
+     char    pid[10];			/* access via eval_pid(request) */
+     struct host_info client[1];		/* client endpoint info */
+     struct host_info server[1];		/* server endpoint info */
+-    void  (*sink) ();			/* datagram sink function or 0 */
+-    void  (*hostname) ();		/* address to printable hostname */
+-    void  (*hostaddr) ();		/* address to printable address */
+-    void  (*cleanup) ();		/* cleanup function or 0 */
++    void  (*sink) __P((int));		/* datagram sink function or 0 */
++    void  (*hostname) __P((struct host_info *)); /* address to printable hostname */
++    void  (*hostaddr) __P((struct host_info *)); /* address to printable address */
++    void  (*cleanup) __P((struct request_info *)); /* cleanup function or 0 */
+     struct netconfig *config;		/* netdir handle */
+ };
+ 
+@@ -61,25 +82,30 @@ extern char paranoid[];
+ /* Global functions. */
+ 
+ #if defined(TLI) || defined(PTX) || defined(TLI_SEQUENT)
+-extern void fromhost();			/* get/validate client host info */
++extern void fromhost __P((struct request_info *));	/* get/validate client host info */
+ #else
+ #define fromhost sock_host		/* no TLI support needed */
+ #endif
+ 
+-extern int hosts_access();		/* access control */
+-extern void shell_cmd();		/* execute shell command */
+-extern char *percent_x();		/* do %<char> expansion */
+-extern void rfc931();			/* client name from RFC 931 daemon */
+-extern void clean_exit();		/* clean up and exit */
+-extern void refuse();			/* clean up and exit */
+-extern char *xgets();			/* fgets() on steroids */
+-extern char *split_at();		/* strchr() and split */
+-extern unsigned long dot_quad_addr();	/* restricted inet_addr() */
++extern void shell_cmd __P((char *));	/* execute shell command */
++extern char *percent_x __P((char *, int, char *, struct request_info *)); /* do %<char> expansion */
++extern void rfc931 __P((struct sockaddr_in *, struct sockaddr_in *, char *)); /* client name from RFC 931 daemon */
++extern void clean_exit __P((struct request_info *)); /* clean up and exit */
++extern void refuse __P((struct request_info *));	/* clean up and exit */
++extern char *xgets __P((char *, int, FILE *));	/* fgets() on steroids */
++extern char *split_at __P((char *, int));	/* strchr() and split */
++extern unsigned long dot_quad_addr __P((char *)); /* restricted inet_addr() */
+ 
+ /* Global variables. */
+ 
++#ifdef HAVE_WEAKSYMS
++extern int allow_severity __attribute__ ((weak)); /* for connection logging */
++extern int deny_severity __attribute__ ((weak)); /* for connection logging */
++#else
+ extern int allow_severity;		/* for connection logging */
+ extern int deny_severity;		/* for connection logging */
++#endif
++
+ extern char *hosts_allow_table;		/* for verification mode redirection */
+ extern char *hosts_deny_table;		/* for verification mode redirection */
+ extern int hosts_access_verbose;	/* for verbose matching mode */
+@@ -92,9 +118,14 @@ extern int resident;			/* > 0 if residen
+   */
+ 
+ #ifdef __STDC__
++extern int hosts_access(struct request_info *request);
++extern int hosts_ctl(char *daemon, char *client_name, char *client_addr, 
++                     char *client_user);
+ extern struct request_info *request_init(struct request_info *,...);
+ extern struct request_info *request_set(struct request_info *,...);
+ #else
++extern int hosts_access();
++extern int hosts_ctl();
+ extern struct request_info *request_init();	/* initialize request */
+ extern struct request_info *request_set();	/* update request structure */
+ #endif
+@@ -117,27 +148,31 @@ extern struct request_info *request_set(
+   * host_info structures serve as caches for the lookup results.
+   */
+ 
+-extern char *eval_user();		/* client user */
+-extern char *eval_hostname();		/* printable hostname */
+-extern char *eval_hostaddr();		/* printable host address */
+-extern char *eval_hostinfo();		/* host name or address */
+-extern char *eval_client();		/* whatever is available */
+-extern char *eval_server();		/* whatever is available */
++extern char *eval_user __P((struct request_info *));	/* client user */
++extern char *eval_hostname __P((struct host_info *));	/* printable hostname */
++extern char *eval_hostaddr __P((struct host_info *));	/* printable host address */
++extern char *eval_hostinfo __P((struct host_info *));	/* host name or address */
++extern char *eval_client __P((struct request_info *));	/* whatever is available */
++extern char *eval_server __P((struct request_info *));	/* whatever is available */
+ #define eval_daemon(r)	((r)->daemon)	/* daemon process name */
+ #define eval_pid(r)	((r)->pid)	/* process id */
+ 
+ /* Socket-specific methods, including DNS hostname lookups. */
+ 
+-extern void sock_host();		/* look up endpoint addresses */
+-extern void sock_hostname();		/* translate address to hostname */
+-extern void sock_hostaddr();		/* address to printable address */
++/* look up endpoint addresses */
++extern void sock_host __P((struct request_info *));
++/* translate address to hostname */
++extern void sock_hostname __P((struct host_info *));
++/* address to printable address */
++extern void sock_hostaddr __P((struct host_info *));
++
+ #define sock_methods(r) \
+ 	{ (r)->hostname = sock_hostname; (r)->hostaddr = sock_hostaddr; }
+ 
+ /* The System V Transport-Level Interface (TLI) interface. */
+ 
+ #if defined(TLI) || defined(PTX) || defined(TLI_SEQUENT)
+-extern void tli_host();			/* look up endpoint addresses etc. */
++extern void tli_host __P((struct request_info *));	/* look up endpoint addresses etc. */
+ #endif
+ 
+  /*
+@@ -178,7 +213,7 @@ extern struct tcpd_context tcpd_context;
+   * behavior.
+   */
+ 
+-extern void process_options();		/* execute options */
++extern void process_options __P((char *, struct request_info *)); /* execute options */
+ extern int dry_run;			/* verification flag */
+ 
+ /* Bug workarounds. */
+@@ -217,3 +252,9 @@ extern char *fix_strtok();
+ #define strtok	my_strtok
+ extern char *my_strtok();
+ #endif
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* tcpd.h */
+--- a/Makefile
++++ b/Makefile
+@@ -1,5 +1,10 @@
++GLIBC=$(shell grep -s -c __GLIBC__ /usr/include/features.h)
++
+ # @(#) Makefile 1.23 97/03/21 19:27:20
+ 
++# unset the HOSTNAME environment variable
++HOSTNAME =
++
+ what:
+ 	@echo
+ 	@echo "Usage: edit the REAL_DAEMON_DIR definition in the Makefile then:"
+@@ -19,7 +24,7 @@ what:
+ 	@echo "	generic (most bsd-ish systems with sys5 compatibility)"
+ 	@echo "	386bsd aix alpha apollo bsdos convex-ultranet dell-gcc dgux dgux543"
+ 	@echo "	dynix epix esix freebsd hpux irix4 irix5 irix6 isc iunix"
+-	@echo "	linux machten mips(untested) ncrsvr4 netbsd next osf power_unix_211"
++	@echo "	linux gnu machten mips(untested) ncrsvr4 netbsd next osf power_unix_211"
+ 	@echo "	ptx-2.x ptx-generic pyramid sco sco-nis sco-od2 sco-os5 sinix sunos4"
+ 	@echo "	sunos40 sunos5 sysv4 tandem ultrix unicos7 unicos8 unixware1 unixware2"
+ 	@echo "	uts215 uxp"
+@@ -43,8 +48,8 @@ what:
+ # Ultrix 4.x SunOS 4.x ConvexOS 10.x Dynix/ptx
+ #REAL_DAEMON_DIR=/usr/etc
+ #
+-# SysV.4 Solaris 2.x OSF AIX
+-#REAL_DAEMON_DIR=/usr/sbin
++# SysV.4 Solaris 2.x OSF AIX Linux
++REAL_DAEMON_DIR=/usr/sbin
+ #
+ # BSD 4.4
+ #REAL_DAEMON_DIR=/usr/libexec
+@@ -141,10 +146,21 @@ freebsd:
+ 	LIBS= RANLIB=ranlib ARFLAGS=rv AUX_OBJ= NETGROUP= TLI= \
+ 	EXTRA_CFLAGS=-DSYS_ERRLIST_DEFINED VSYSLOG= all
+ 
++ifneq ($(GLIBC),0)
++MYLIB=-lnsl
++endif
++
+ linux:
+ 	@make REAL_DAEMON_DIR=$(REAL_DAEMON_DIR) STYLE=$(STYLE) \
+-	LIBS= RANLIB=ranlib ARFLAGS=rv AUX_OBJ=setenv.o \
+-	NETGROUP= TLI= EXTRA_CFLAGS="-DBROKEN_SO_LINGER" all
++	LIBS=$(MYLIB) RANLIB=ranlib ARFLAGS=rv AUX_OBJ=weak_symbols.o \
++	NETGROUP=-DNETGROUP TLI= VSYSLOG= BUGS= all \
++	EXTRA_CFLAGS="-DSYS_ERRLIST_DEFINED -DHAVE_WEAKSYMS -D_REENTRANT"
++
++gnu:
++	@make REAL_DAEMON_DIR=$(REAL_DAEMON_DIR) STYLE=$(STYLE) \
++	LIBS=$(MYLIB) RANLIB=ranlib ARFLAGS=rv AUX_OBJ=weak_symbols.o \
++	NETGROUP=-DNETGROUP TLI= VSYSLOG= BUGS= all \
++	EXTRA_CFLAGS="-DHAVE_STRERROR -DHAVE_WEAKSYMS -D_REENTRANT"
+ 
+ # This is good for many SYSV+BSD hybrids with NIS, probably also for HP-UX 7.x.
+ hpux hpux8 hpux9 hpux10:
+@@ -391,7 +407,7 @@ AR	= ar
+ # the ones provided with this source distribution. The environ.c module
+ # implements setenv(), getenv(), and putenv().
+ 
+-AUX_OBJ= setenv.o
++#AUX_OBJ= setenv.o
+ #AUX_OBJ= environ.o
+ #AUX_OBJ= environ.o strcasecmp.o
+ 
+@@ -454,7 +470,8 @@ AUX_OBJ= setenv.o
+ # host name aliases. Compile with -DSOLARIS_24_GETHOSTBYNAME_BUG to work
+ # around this. The workaround does no harm on other Solaris versions.
+ 
+-BUGS = -DGETPEERNAME_BUG -DBROKEN_FGETS -DLIBC_CALLS_STRTOK
++BUGS =
++#BUGS = -DGETPEERNAME_BUG -DBROKEN_FGETS -DLIBC_CALLS_STRTOK
+ #BUGS = -DGETPEERNAME_BUG -DBROKEN_FGETS -DINET_ADDR_BUG
+ #BUGS = -DGETPEERNAME_BUG -DBROKEN_FGETS -DSOLARIS_24_GETHOSTBYNAME_BUG
+ 
+@@ -464,7 +481,7 @@ BUGS = -DGETPEERNAME_BUG -DBROKEN_FGETS
+ # If your system supports NIS or YP-style netgroups, enable the following
+ # macro definition. Netgroups are used only for host access control.
+ #
+-#NETGROUP= -DNETGROUP
++NETGROUP= -DNETGROUP
+ 
+ ###############################################################
+ # System dependencies: whether or not your system has vsyslog()
+@@ -491,7 +508,7 @@ VSYSLOG	= -Dvsyslog=myvsyslog
+ # Uncomment the next definition to turn on the language extensions
+ # (examples: allow, deny, banners, twist and spawn).
+ # 
+-#STYLE	= -DPROCESS_OPTIONS	# Enable language extensions.
++STYLE	= -DPROCESS_OPTIONS	# Enable language extensions.
+ 
+ ################################################################
+ # Optional: Changing the default disposition of logfile records
+@@ -514,7 +531,7 @@ VSYSLOG	= -Dvsyslog=myvsyslog
+ #
+ # The LOG_XXX names below are taken from the /usr/include/syslog.h file.
+ 
+-FACILITY= LOG_MAIL	# LOG_MAIL is what most sendmail daemons use
++FACILITY= LOG_DAEMON	# LOG_MAIL is what most sendmail daemons use
+ 
+ # The syslog priority at which successful connections are logged.
+ 
+@@ -610,7 +627,7 @@ TABLES	= -DHOSTS_DENY=\"/etc/hosts.deny\
+ # Paranoid mode implies hostname lookup. In order to disable hostname
+ # lookups altogether, see the next section.
+ 
+-PARANOID= -DPARANOID
++#PARANOID= -DPARANOID
+ 
+ ########################################
+ # Optional: turning off hostname lookups
+@@ -623,7 +640,7 @@ PARANOID= -DPARANOID
+ # In order to perform selective hostname lookups, disable paranoid
+ # mode (see previous section) and comment out the following definition.
+ 
+-HOSTNAME= -DALWAYS_HOSTNAME
++#HOSTNAME= -DALWAYS_HOSTNAME
+ 
+ #############################################
+ # Optional: Turning on host ADDRESS checking
+@@ -649,28 +666,46 @@ HOSTNAME= -DALWAYS_HOSTNAME
+ # source-routed traffic in the kernel. Examples: 4.4BSD derivatives,
+ # Solaris 2.x, and Linux. See your system documentation for details.
+ #
+-# KILL_OPT= -DKILL_IP_OPTIONS
++KILL_OPT= -DKILL_IP_OPTIONS
+ 
+ ## End configuration options
+ ############################
+ 
+ # Protection against weird shells or weird make programs.
+ 
++CC	= gcc
+ SHELL	= /bin/sh
+-.c.o:;	$(CC) $(CFLAGS) -c $*.c
++.c.o:;	$(CC) $(CFLAGS) -o $*.o -c $*.c
++
++SOMAJOR = 0
++SOMINOR = 7.6
++
++LIB	= libwrap.a
++SHLIB	= shared/libwrap.so.$(SOMAJOR).$(SOMINOR)
++SHLIBSOMAJ= shared/libwrap.so.$(SOMAJOR)
++SHLIBSO	= shared/libwrap.so
++SHLIBFLAGS = -Lshared -lwrap
+ 
+-CFLAGS	= -O -DFACILITY=$(FACILITY) $(ACCESS) $(PARANOID) $(NETGROUP) \
++shared/%.o: %.c
++	$(CC) $(CFLAGS) $(SHCFLAGS) -c $< -o $@
++
++CFLAGS	= -O2 -g -DFACILITY=$(FACILITY) $(ACCESS) $(PARANOID) $(NETGROUP) \
+ 	$(BUGS) $(SYSTYPE) $(AUTH) $(UMASK) \
+ 	-DREAL_DAEMON_DIR=\"$(REAL_DAEMON_DIR)\" $(STYLE) $(KILL_OPT) \
+ 	-DSEVERITY=$(SEVERITY) -DRFC931_TIMEOUT=$(RFC931_TIMEOUT) \
+ 	$(UCHAR) $(TABLES) $(STRINGS) $(TLI) $(EXTRA_CFLAGS) $(DOT) \
+ 	$(VSYSLOG) $(HOSTNAME)
+ 
++SHLINKFLAGS = -shared -Xlinker -soname -Xlinker libwrap.so.$(SOMAJOR) -lc $(LIBS)
++SHCFLAGS = -fPIC -shared -D_REENTRANT
++
+ LIB_OBJ= hosts_access.o options.o shell_cmd.o rfc931.o eval.o \
+ 	hosts_ctl.o refuse.o percent_x.o clean_exit.o $(AUX_OBJ) \
+ 	$(FROM_OBJ) fix_options.o socket.o tli.o workarounds.o \
+ 	update.o misc.o diag.o percent_m.o myvsyslog.o
+ 
++SHLIB_OBJ= $(addprefix shared/, $(LIB_OBJ));
++
+ FROM_OBJ= fromhost.o
+ 
+ KIT	= README miscd.c tcpd.c fromhost.c hosts_access.c shell_cmd.c \
+@@ -684,46 +719,78 @@ KIT	= README miscd.c tcpd.c fromhost.c h
+ 	refuse.c tcpdchk.8 setenv.c inetcf.c inetcf.h scaffold.c \
+ 	scaffold.h tcpdmatch.8 README.NIS
+ 
+-LIB	= libwrap.a
+-
+-all other: config-check tcpd tcpdmatch try-from safe_finger tcpdchk
++all other: config-check tcpd tcpdmatch try-from safe_finger tcpdchk $(LIB)
+ 
+ # Invalidate all object files when the compiler options (CFLAGS) have changed.
+ 
+ config-check:
+ 	@set +e; test -n "$(REAL_DAEMON_DIR)" || { make; exit 1; }
+-	@set +e; echo $(CFLAGS) >/tmp/cflags.$$$$ ; \
+-	if cmp cflags /tmp/cflags.$$$$ ; \
+-	then rm /tmp/cflags.$$$$ ; \
+-	else mv /tmp/cflags.$$$$ cflags ; \
++	@set +e; echo $(CFLAGS) >cflags.new ; \
++	if cmp cflags cflags.new ; \
++	then rm cflags.new ; \
++	else mv cflags.new cflags ; \
+ 	fi >/dev/null 2>/dev/null
++	@if [ ! -d shared ]; then mkdir shared; fi
+ 
+ $(LIB):	$(LIB_OBJ)
+ 	rm -f $(LIB)
+ 	$(AR) $(ARFLAGS) $(LIB) $(LIB_OBJ)
+ 	-$(RANLIB) $(LIB)
+ 
+-tcpd:	tcpd.o $(LIB)
+-	$(CC) $(CFLAGS) -o $@ tcpd.o $(LIB) $(LIBS)
++$(SHLIB): $(SHLIB_OBJ)
++	rm -f $(SHLIB)
++	$(CC) -o $(SHLIB) $(SHLINKFLAGS) $(SHLIB_OBJ)
++	ln -s $(notdir $(SHLIB)) $(SHLIBSOMAJ)
++	ln -s $(notdir $(SHLIBSOMAJ)) $(SHLIBSO)
++
++tcpd:	tcpd.o $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ tcpd.o $(SHLIBFLAGS)
+ 
+-miscd:	miscd.o $(LIB)
+-	$(CC) $(CFLAGS) -o $@ miscd.o $(LIB) $(LIBS)
++miscd:	miscd.o $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ miscd.o $(SHLIBFLAGS)
+ 
+-safe_finger: safe_finger.o $(LIB)
+-	$(CC) $(CFLAGS) -o $@ safe_finger.o $(LIB) $(LIBS)
++safe_finger: safe_finger.o $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ safe_finger.o $(SHLIBFLAGS)
+ 
+ TCPDMATCH_OBJ = tcpdmatch.o fakelog.o inetcf.o scaffold.o
+ 
+-tcpdmatch: $(TCPDMATCH_OBJ) $(LIB)
+-	$(CC) $(CFLAGS) -o $@ $(TCPDMATCH_OBJ) $(LIB) $(LIBS)
++tcpdmatch: $(TCPDMATCH_OBJ) $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ $(TCPDMATCH_OBJ) $(SHLIBFLAGS)
+ 
+-try-from: try-from.o fakelog.o $(LIB)
+-	$(CC) $(CFLAGS) -o $@ try-from.o fakelog.o $(LIB) $(LIBS)
++try-from: try-from.o fakelog.o $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ try-from.o fakelog.o $(SHLIBFLAGS)
+ 
+ TCPDCHK_OBJ = tcpdchk.o fakelog.o inetcf.o scaffold.o
+ 
+-tcpdchk: $(TCPDCHK_OBJ) $(LIB)
+-	$(CC) $(CFLAGS) -o $@ $(TCPDCHK_OBJ) $(LIB) $(LIBS)
++tcpdchk: $(TCPDCHK_OBJ) $(SHLIB)
++	$(CC) $(CFLAGS) -o $@ $(TCPDCHK_OBJ) $(SHLIBFLAGS)
++
++install: install-lib install-bin install-dev
++
++install-lib:
++	install -o root -g root -m 0644 $(SHLIB) ${DESTDIR}/lib/
++	ln -s $(notdir $(SHLIB)) ${DESTDIR}/lib/$(notdir $(SHLIBSOMAJ))
++
++install-bin:
++	install -o root -g root -m 0755 tcpd ${DESTDIR}/usr/sbin/
++	install -o root -g root -m 0755 tcpdchk ${DESTDIR}/usr/sbin/
++	install -o root -g root -m 0755 tcpdmatch ${DESTDIR}/usr/sbin/
++	install -o root -g root -m 0755 try-from ${DESTDIR}/usr/sbin/
++	install -o root -g root -m 0755 safe_finger ${DESTDIR}/usr/sbin/
++	install -o root -g root -m 0644 tcpd.8 ${DESTDIR}/usr/share/man/man8/
++	install -o root -g root -m 0644 tcpdchk.8 ${DESTDIR}/usr/share/man/man8/
++	install -o root -g root -m 0644 tcpdmatch.8 ${DESTDIR}/usr/share/man/man8/
++	install -o root -g root -m 0644 hosts_access.5 ${DESTDIR}/usr/share/man/man5/
++	install -o root -g root -m 0644 hosts_options.5 ${DESTDIR}/usr/share/man/man5/
++
++install-dev:
++	ln -s /lib/$(notdir $(SHLIBSOMAJ)) ${DESTDIR}/usr/lib/$(notdir $(SHLIBSO))
++	install -o root -g root -m 0644 hosts_access.3 ${DESTDIR}/usr/share/man/man3/
++	install -o root -g root -m 0644 tcpd.h ${DESTDIR}/usr/include/
++	install -o root -g root -m 0644 $(LIB) ${DESTDIR}/usr/lib/
++	ln -s hosts_access.3 ${DESTDIR}/usr/share/man/man3/hosts_ctl.3
++	ln -s hosts_access.3 ${DESTDIR}/usr/share/man/man3/request_init.3
++	ln -s hosts_access.3 ${DESTDIR}/usr/share/man/man3/request_set.3
+ 
+ shar:	$(KIT)
+ 	@shar $(KIT)
+@@ -739,7 +806,8 @@ archive:
+ 
+ clean:
+ 	rm -f tcpd miscd safe_finger tcpdmatch tcpdchk try-from *.[oa] core \
+-	cflags
++	cflags libwrap*.so*
++	rm -rf shared
+ 
+ tidy:	clean
+ 	chmod -R a+r .
+@@ -885,5 +953,6 @@ update.o: cflags
+ update.o: mystdarg.h
+ update.o: tcpd.h
+ vfprintf.o: cflags
++weak_symbols.o: tcpd.h
+ workarounds.o: cflags
+ workarounds.o: tcpd.h
+--- a/hosts_access.5
++++ b/hosts_access.5
+@@ -8,9 +8,9 @@ name, host name/address) patterns.  Exam
+ impatient reader is encouraged to skip to the EXAMPLES section for a
+ quick introduction.
+ .PP
+-An extended version of the access control language is described in the
+-\fIhosts_options\fR(5) document. The extensions are turned on at
+-program build time by building with -DPROCESS_OPTIONS.
++The extended version of the access control language is described in the
++\fIhosts_options\fR(5) document. \fBNote that this language supersedes
++the meaning of \fIshell_command\fB as documented below.\fR
+ .PP
+ In the following text, \fIdaemon\fR is the the process name of a
+ network daemon process, and \fIclient\fR is the name and/or address of
+@@ -40,7 +40,7 @@ A newline character is ignored when it i
+ character. This permits you to break up long lines so that they are
+ easier to edit.
+ .IP \(bu
+-Blank lines or lines that begin with a `#\' character are ignored.
++Blank lines or lines that begin with a `#' character are ignored.
+ This permits you to insert comments and whitespace so that the tables
+ are easier to read.
+ .IP \(bu
+@@ -69,26 +69,33 @@ checks are case insensitive.
+ .SH PATTERNS
+ The access control language implements the following patterns:
+ .IP \(bu
+-A string that begins with a `.\' character. A host name is matched if
++A string that begins with a `.' character. A host name is matched if
+ the last components of its name match the specified pattern.  For
+-example, the pattern `.tue.nl\' matches the host name
+-`wzv.win.tue.nl\'.
++example, the pattern `.tue.nl' matches the host name
++`wzv.win.tue.nl'.
+ .IP \(bu
+-A string that ends with a `.\' character. A host address is matched if
++A string that ends with a `.' character. A host address is matched if
+ its first numeric fields match the given string.  For example, the
+-pattern `131.155.\' matches the address of (almost) every host on the
++pattern `131.155.' matches the address of (almost) every host on the
+ Eind\%hoven University network (131.155.x.x).
+ .IP \(bu
+-A string that begins with an `@\' character is treated as an NIS
++A string that begins with an `@' character is treated as an NIS
+ (formerly YP) netgroup name. A host name is matched if it is a host
+ member of the specified netgroup. Netgroup matches are not supported
+ for daemon process names or for client user names.
+ .IP \(bu
+-An expression of the form `n.n.n.n/m.m.m.m\' is interpreted as a
+-`net/mask\' pair. A host address is matched if `net\' is equal to the
+-bitwise AND of the address and the `mask\'. For example, the net/mask
+-pattern `131.155.72.0/255.255.254.0\' matches every address in the
+-range `131.155.72.0\' through `131.155.73.255\'.
++An expression of the form `n.n.n.n/m.m.m.m' is interpreted as a
++`net/mask' pair. A host address is matched if `net' is equal to the
++bitwise AND of the address and the `mask'. For example, the net/mask
++pattern `131.155.72.0/255.255.254.0' matches every address in the
++range `131.155.72.0' through `131.155.73.255'.
++.IP \(bu
++A string that begins with a `/' character is treated as a file
++name. A host name or address is matched if it matches any host name
++or address pattern listed in the named file. The file format is
++zero or more lines with zero or more host name or address patterns
++separated by whitespace.  A file name pattern can be used anywhere
++a host name or address pattern can be used.
+ .SH WILDCARDS
+ The access control language supports explicit wildcards:
+ .IP ALL
+@@ -115,19 +122,19 @@ without -DPARANOID when you want more co
+ .ne 6
+ .SH OPERATORS
+ .IP EXCEPT
+-Intended use is of the form: `list_1 EXCEPT list_2\'; this construct
++Intended use is of the form: `list_1 EXCEPT list_2'; this construct
+ matches anything that matches \fIlist_1\fR unless it matches
+ \fIlist_2\fR.  The EXCEPT operator can be used in daemon_lists and in
+ client_lists. The EXCEPT operator can be nested: if the control
+-language would permit the use of parentheses, `a EXCEPT b EXCEPT c\'
+-would parse as `(a EXCEPT (b EXCEPT c))\'.
++language would permit the use of parentheses, `a EXCEPT b EXCEPT c'
++would parse as `(a EXCEPT (b EXCEPT c))'.
+ .br
+ .ne 6
+ .SH SHELL COMMANDS
+ If the first-matched access control rule contains a shell command, that
+ command is subjected to %<letter> substitutions (see next section).
+ The result is executed by a \fI/bin/sh\fR child process with standard
+-input, output and error connected to \fI/dev/null\fR.  Specify an `&\'
++input, output and error connected to \fI/dev/null\fR.  Specify an `&'
+ at the end of the command if you do not want to wait until it has
+ completed.
+ .PP
+@@ -159,7 +166,7 @@ depending on how much information is ava
+ .IP %u
+ The client user name (or "unknown").
+ .IP %%
+-Expands to a single `%\' character.
++Expands to a single `%' character.
+ .PP
+ Characters in % expansions that may confuse the shell are replaced by
+ underscores.
+@@ -243,9 +250,9 @@ A positive IDENT lookup result (the clie
+ less trustworthy. It is possible for an intruder to spoof both the
+ client connection and the IDENT lookup, although doing so is much
+ harder than spoofing just a client connection. It may also be that
+-the client\'s IDENT server is lying.
++the client's IDENT server is lying.
+ .PP
+-Note: IDENT lookups don\'t work with UDP services. 
++Note: IDENT lookups don't work with UDP services. 
+ .SH EXAMPLES
+ The language is flexible enough that different types of access control
+ policy can be expressed with a minimum of fuss. Although the language
+@@ -285,7 +292,7 @@ ALL: LOCAL @some_netgroup
+ .br
+ ALL: .foobar.edu EXCEPT terminalserver.foobar.edu
+ .PP
+-The first rule permits access from hosts in the local domain (no `.\'
++The first rule permits access from hosts in the local domain (no `.'
+ in the host name) and from members of the \fIsome_netgroup\fP
+ netgroup.  The second rule permits access from all hosts in the
+ \fIfoobar.edu\fP domain (notice the leading dot), with the exception of
+@@ -322,8 +329,8 @@ in.tftpd: LOCAL, .my.domain
+ /etc/hosts.deny:
+ .in +3
+ .nf
+-in.tftpd: ALL: (/some/where/safe_finger -l @%h | \\
+-	/usr/ucb/mail -s %d-%h root) &
++in.tftpd: ALL: (/usr/sbin/safe_finger -l @%h | \\
++	/usr/bin/mail -s %d-%h root) &
+ .fi
+ .PP
+ The safe_finger command comes with the tcpd wrapper and should be
+@@ -349,7 +356,7 @@ control rule; when the length of an acce
+ capacity of an internal buffer; when an access control rule is not
+ terminated by a newline character; when the result of %<letter>
+ expansion would overflow an internal buffer; when a system call fails
+-that shouldn\'t.  All problems are reported via the syslog daemon.
++that shouldn't.  All problems are reported via the syslog daemon.
+ .SH FILES
+ .na
+ .nf
+--- a/rfc931.c
++++ b/rfc931.c
+@@ -33,7 +33,7 @@ static char sccsid[] = "@(#) rfc931.c 1.
+ 
+ int     rfc931_timeout = RFC931_TIMEOUT;/* Global so it can be changed */
+ 
+-static jmp_buf timebuf;
++static sigjmp_buf timebuf;
+ 
+ /* fsocket - open stdio stream on top of socket */
+ 
+@@ -62,7 +62,7 @@ int     protocol;
+ static void timeout(sig)
+ int     sig;
+ {
+-    longjmp(timebuf, sig);
++    siglongjmp(timebuf, sig);
+ }
+ 
+ /* rfc931 - return remote user name, given socket structures */
+@@ -99,7 +99,7 @@ char   *dest;
+ 	 * Set up a timer so we won't get stuck while waiting for the server.
+ 	 */
+ 
+-	if (setjmp(timebuf) == 0) {
++	if (sigsetjmp(timebuf,1) == 0) {
+ 	    signal(SIGALRM, timeout);
+ 	    alarm(rfc931_timeout);
+ 
+--- a/tcpd.8
++++ b/tcpd.8
+@@ -94,7 +94,7 @@ configuration files.
+ .PP
+ The example assumes that the network daemons live in /usr/etc. On some
+ systems, network daemons live in /usr/sbin or in /usr/libexec, or have
+-no `in.\' prefix to their name.
++no `in.' prefix to their name.
+ .SH EXAMPLE 2
+ This example applies when \fItcpd\fR expects that the network daemons
+ are left in their original place.
+@@ -110,26 +110,26 @@ finger  stream  tcp  nowait  nobody  /us
+ becomes:
+ .sp
+ .ti +5
+-finger  stream  tcp  nowait  nobody  /some/where/tcpd     in.fingerd
++finger  stream  tcp  nowait  nobody  /usr/sbin/tcpd       in.fingerd
+ .sp
+ .fi
+ .PP
+ The example assumes that the network daemons live in /usr/etc. On some
+ systems, network daemons live in /usr/sbin or in /usr/libexec, the
+-daemons have no `in.\' prefix to their name, or there is no userid
++daemons have no `in.' prefix to their name, or there is no userid
+ field in the inetd configuration file.
+ .PP
+ Similar changes will be needed for the other services that are to be
+-covered by \fItcpd\fR.  Send a `kill -HUP\' to the \fIinetd\fR(8)
++covered by \fItcpd\fR.  Send a `kill -HUP' to the \fIinetd\fR(8)
+ process to make the changes effective. AIX users may also have to
+-execute the `inetimp\' command.
++execute the `inetimp' command.
+ .SH EXAMPLE 3
+ In the case of daemons that do not live in a common directory ("secret"
+ or otherwise), edit the \fIinetd\fR configuration file so that it
+ specifies an absolute path name for the process name field. For example:
+ .nf
+ .sp
+-    ntalk  dgram  udp  wait  root  /some/where/tcpd  /usr/local/lib/ntalkd
++    ntalk  dgram  udp  wait  root  /usr/sbin/tcpd  /usr/sbin/in.ntalkd
+ .sp
+ .fi
+ .PP
+--- a/hosts_access.3
++++ b/hosts_access.3
+@@ -3,7 +3,7 @@
+ hosts_access, hosts_ctl, request_init, request_set \- access control library
+ .SH SYNOPSIS
+ .nf
+-#include "tcpd.h"
++#include <tcpd.h>
+ 
+ extern int allow_severity;
+ extern int deny_severity;
+--- a/options.c
++++ b/options.c
+@@ -473,6 +473,9 @@ static struct syslog_names log_fac[] = {
+ #ifdef LOG_CRON
+     "cron", LOG_CRON,
+ #endif
++#ifdef LOG_FTP
++    "ftp", LOG_FTP,
++#endif
+ #ifdef LOG_LOCAL0
+     "local0", LOG_LOCAL0,
+ #endif
+--- a/fix_options.c
++++ b/fix_options.c
+@@ -35,7 +35,12 @@ struct request_info *request;
+ #ifdef IP_OPTIONS
+     unsigned char optbuf[BUFFER_SIZE / 3], *cp;
+     char    lbuf[BUFFER_SIZE], *lp;
++#if !defined(__GLIBC__)
+     int     optsize = sizeof(optbuf), ipproto;
++#else /* __GLIBC__ */
++    size_t  optsize = sizeof(optbuf);
++    int     ipproto;
++#endif /* __GLIBC__ */
+     struct protoent *ip;
+     int     fd = request->fd;
+     unsigned int opt;
+--- a/workarounds.c
++++ b/workarounds.c
+@@ -163,7 +163,11 @@ int    *fromlen;
+ int     fix_getpeername(sock, sa, len)
+ int     sock;
+ struct sockaddr *sa;
++#if !defined(__GLIBC__)
+ int    *len;
++#else /* __GLIBC__ */
++size_t *len;
++#endif /* __GLIBC__ */
+ {
+     int     ret;
+     struct sockaddr_in *sin = (struct sockaddr_in *) sa;
+--- a/socket.c
++++ b/socket.c
+@@ -76,7 +76,11 @@ struct request_info *request;
+ {
+     static struct sockaddr_in client;
+     static struct sockaddr_in server;
++#if !defined (__GLIBC__)
+     int     len;
++#else /* __GLIBC__ */
++    size_t  len;
++#endif /* __GLIBC__ */
+     char    buf[BUFSIZ];
+     int     fd = request->fd;
+ 
+@@ -224,7 +228,11 @@ int     fd;
+ {
+     char    buf[BUFSIZ];
+     struct sockaddr_in sin;
++#if !defined(__GLIBC__)
+     int     size = sizeof(sin);
++#else /* __GLIBC__ */
++    size_t  size = sizeof(sin);
++#endif /* __GLIBC__ */
+ 
+     /*
+      * Eat up the not-yet received datagram. Some systems insist on a
+--- a/safe_finger.c
++++ b/safe_finger.c
+@@ -26,21 +26,24 @@ static char sccsid[] = "@(#) safe_finger
+ #include <stdio.h>
+ #include <ctype.h>
+ #include <pwd.h>
++#include <syslog.h>
+ 
+ extern void exit();
+ 
+ /* Local stuff */
+ 
+-char    path[] = "PATH=/bin:/usr/bin:/usr/ucb:/usr/bsd:/etc:/usr/etc:/usr/sbin";
++char    path[] = "PATH=/bin:/usr/bin:/sbin:/usr/sbin";
+ 
+ #define	TIME_LIMIT	60		/* Do not keep listinging forever */
+ #define	INPUT_LENGTH	100000		/* Do not keep listinging forever */
+ #define	LINE_LENGTH	128		/* Editors can choke on long lines */
+ #define	FINGER_PROGRAM	"finger"	/* Most, if not all, UNIX systems */
+ #define	UNPRIV_NAME	"nobody"	/* Preferred privilege level */
+-#define	UNPRIV_UGID	32767		/* Default uid and gid */
++#define	UNPRIV_UGID	65534		/* Default uid and gid */
+ 
+ int     finger_pid;
++int	allow_severity = SEVERITY;
++int	deny_severity = LOG_WARNING;
+ 
+ void    cleanup(sig)
+ int     sig;
+--- a/hosts_options.5
++++ b/hosts_options.5
+@@ -58,12 +58,12 @@ Notice the leading dot on the domain nam
+ Execute, in a child process, the specified shell command, after
+ performing the %<letter> expansions described in the hosts_access(5)
+ manual page.  The command is executed with stdin, stdout and stderr
+-connected to the null device, so that it won\'t mess up the
++connected to the null device, so that it won't mess up the
+ conversation with the client host. Example:
+ .sp
+ .nf
+ .ti +3
+-spawn (/some/where/safe_finger -l @%h | /usr/ucb/mail root) &
++spawn (/usr/sbin/safe_finger -l @%h | /usr/bin/mail root) &
+ .fi
+ .sp
+ executes, in a background child process, the shell command "safe_finger
+--- a/tcpdchk.c
++++ b/tcpdchk.c
+@@ -350,6 +350,8 @@ char   *pat;
+ {
+     if (pat[0] == '@') {
+ 	tcpd_warn("%s: daemon name begins with \"@\"", pat);
++    } else if (pat[0] == '/') {
++        tcpd_warn("%s: daemon name begins with \"/\"", pat);
+     } else if (pat[0] == '.') {
+ 	tcpd_warn("%s: daemon name begins with dot", pat);
+     } else if (pat[strlen(pat) - 1] == '.') {
+@@ -382,6 +384,8 @@ char   *pat;
+ {
+     if (pat[0] == '@') {			/* @netgroup */
+ 	tcpd_warn("%s: user name begins with \"@\"", pat);
++    } else if (pat[0] == '/') {
++        tcpd_warn("%s: user name begins with \"/\"", pat);
+     } else if (pat[0] == '.') {
+ 	tcpd_warn("%s: user name begins with dot", pat);
+     } else if (pat[strlen(pat) - 1] == '.') {
+@@ -402,8 +406,13 @@ char   *pat;
+ static int check_host(pat)
+ char   *pat;
+ {
++    char    buf[BUFSIZ];
+     char   *mask;
+     int     addr_count = 1;
++    FILE   *fp;
++    struct tcpd_context saved_context;
++    char   *cp;
++    char   *wsp = " \t\r\n";
+ 
+     if (pat[0] == '@') {			/* @netgroup */
+ #ifdef NO_NETGRENT
+@@ -422,6 +431,21 @@ char   *pat;
+ 	tcpd_warn("netgroup support disabled");
+ #endif
+ #endif
++    } else if (pat[0] == '/') {                 /* /path/name */
++        if ((fp = fopen(pat, "r")) != 0) {
++            saved_context = tcpd_context;
++            tcpd_context.file = pat;
++            tcpd_context.line = 0;
++            while (fgets(buf, sizeof(buf), fp)) {
++                tcpd_context.line++;
++                for (cp = strtok(buf, wsp); cp; cp = strtok((char *) 0, wsp))
++                    check_host(cp);
++            }
++            tcpd_context = saved_context;
++            fclose(fp);
++        } else if (errno != ENOENT) {
++            tcpd_warn("open %s: %m", pat);
++        }
+     } else if (mask = split_at(pat, '/')) {	/* network/netmask */
+ 	if (dot_quad_addr(pat) == INADDR_NONE
+ 	    || dot_quad_addr(mask) == INADDR_NONE)
+--- a/percent_m.c
++++ b/percent_m.c
+@@ -13,7 +13,7 @@ static char sccsid[] = "@(#) percent_m.c
+ #include <string.h>
+ 
+ extern int errno;
+-#ifndef SYS_ERRLIST_DEFINED
++#if !defined(SYS_ERRLIST_DEFINED) && !defined(HAVE_STRERROR)
+ extern char *sys_errlist[];
+ extern int sys_nerr;
+ #endif
+@@ -29,11 +29,15 @@ char   *ibuf;
+ 
+     while (*bp = *cp)
+ 	if (*cp == '%' && cp[1] == 'm') {
++#ifdef HAVE_STRERROR
++            strcpy(bp, strerror(errno));
++#else
+ 	    if (errno < sys_nerr && errno > 0) {
+ 		strcpy(bp, sys_errlist[errno]);
+ 	    } else {
+ 		sprintf(bp, "Unknown error %d", errno);
+ 	    }
++#endif
+ 	    bp += strlen(bp);
+ 	    cp += 2;
+ 	} else {
+--- a/scaffold.c
++++ b/scaffold.c
+@@ -180,10 +180,12 @@ struct request_info *request;
+ 
+ /* ARGSUSED */
+ 
+-void    rfc931(request)
+-struct request_info *request;
++void    rfc931(rmt_sin, our_sin, dest)
++struct sockaddr_in *rmt_sin;
++struct sockaddr_in *our_sin;
++char   *dest;
+ {
+-    strcpy(request->user, unknown);
++    strcpy(dest, unknown);
+ }
+ 
+ /* check_path - examine accessibility */
+--- /dev/null
++++ b/weak_symbols.c
+@@ -0,0 +1,11 @@
++ /*
++  * @(#) weak_symbols.h 1.5 99/12/29 23:50
++  * 
++  * Author: Anthony Towns <ajt@debian.org>
++  */
++
++#ifdef HAVE_WEAKSYMS
++#include <syslog.h>
++int deny_severity = LOG_WARNING;
++int allow_severity = SEVERITY; 
++#endif

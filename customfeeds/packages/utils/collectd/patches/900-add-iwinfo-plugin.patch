@@ -1,0 +1,279 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -713,6 +713,11 @@ AC_CACHE_CHECK([whether clock_boottime a
+   ]
+ )
+ 
++# For the iwinfo plugin
++AC_CHECK_LIB([iwinfo], [iwinfo_backend],
++    [with_iwinfo="yes"],
++    [with_iwinfo="no (libiwinfo not found)"]
++)
+ 
+ #
+ # Checks for typedefs, structures, and compiler characteristics.
+@@ -6619,6 +6624,7 @@ plugin_ipmi="no"
+ plugin_ipstats="no"
+ plugin_ipvs="no"
+ plugin_irq="no"
++plugin_iwinfo="no"
+ plugin_load="no"
+ plugin_log_logstash="no"
+ plugin_mcelog="no"
+@@ -7086,6 +7092,7 @@ AC_PLUGIN([iptables],            [$with_
+ AC_PLUGIN([ipstats],             [$plugin_ipstats],           [IP packet statistics])
+ AC_PLUGIN([ipvs],                [$plugin_ipvs],              [IPVS connection statistics])
+ AC_PLUGIN([irq],                 [$plugin_irq],               [IRQ statistics])
++AC_PLUGIN([iwinfo],              [$with_iwinfo],              [Common iwinfo wireless statistics])
+ AC_PLUGIN([java],                [$with_java],                [Embed the Java Virtual Machine])
+ AC_PLUGIN([load],                [$plugin_load],              [System load])
+ AC_PLUGIN([log_logstash],        [$plugin_log_logstash],      [Logstash json_event compatible logging])
+@@ -7465,6 +7472,7 @@ AC_MSG_RESULT([    libyajl . . . . . . .
+ AC_MSG_RESULT([    oracle  . . . . . . . $with_oracle])
+ AC_MSG_RESULT([    protobuf-c  . . . . . $have_protoc_c])
+ AC_MSG_RESULT([    protoc 3  . . . . . . $have_protoc3])
++AC_MSG_RESULT([    iwinfo  . . . . . . . $with_iwinfo])
+ AC_MSG_RESULT()
+ AC_MSG_RESULT([  Features:])
+ AC_MSG_RESULT([    daemon mode . . . . . $enable_daemon])
+@@ -7533,6 +7541,7 @@ AC_MSG_RESULT([    iptables  . . . . . .
+ AC_MSG_RESULT([    ipstats . . . . . . . $enable_ipstats])
+ AC_MSG_RESULT([    ipvs  . . . . . . . . $enable_ipvs])
+ AC_MSG_RESULT([    irq . . . . . . . . . $enable_irq])
++AC_MSG_RESULT([    iwinfo  . . . . . . . $enable_iwinfo])
+ AC_MSG_RESULT([    java  . . . . . . . . $enable_java])
+ AC_MSG_RESULT([    load  . . . . . . . . $enable_load])
+ AC_MSG_RESULT([    logfile . . . . . . . $enable_logfile])
+--- a/src/collectd.conf.in
++++ b/src/collectd.conf.in
+@@ -147,6 +147,7 @@
+ #@BUILD_PLUGIN_IPTABLES_TRUE@LoadPlugin iptables
+ #@BUILD_PLUGIN_IPVS_TRUE@LoadPlugin ipvs
+ #@BUILD_PLUGIN_IRQ_TRUE@LoadPlugin irq
++#@BUILD_PLUGIN_IWINFO_TRUE@LoadPlugin iwinfo
+ #@BUILD_PLUGIN_JAVA_TRUE@LoadPlugin java
+ @BUILD_PLUGIN_LOAD_TRUE@@BUILD_PLUGIN_LOAD_TRUE@LoadPlugin load
+ #@BUILD_PLUGIN_LPAR_TRUE@LoadPlugin lpar
+@@ -897,6 +898,12 @@
+ #	IgnoreSelected true
+ #</Plugin>
+ 
++#<Plugin iwinfo>
++#   Interface "ath0"
++#   Interface "ra0"
++#   Interface "wlan0"
++#</Plugin>
++
+ #<Plugin java>
+ #	JVMArg "-verbose:jni"
+ #	JVMArg "-Djava.class.path=@prefix@/share/collectd/java/collectd-api.jar"
+--- a/src/collectd.conf.pod
++++ b/src/collectd.conf.pod
+@@ -4343,6 +4343,27 @@ and all other interrupts are collected.
+ 
+ =back
+ 
++=head2 Plugin C<iwinfo>
++
++=over 4
++
++=item B<Interface> I<Interface>
++
++Select this interface. By default all detected wireless interfaces will be
++collected. For a more detailed description see B<IgnoreSelected> below.
++
++=item B<IgnoreSelected> I<true>|I<false>
++
++If no configuration if given, the B<iwinfo>-plugin will collect data from all
++detected wireless interfaces. You can use the B<Interface>-option to pick the
++interfaces you're interested in. Sometimes, however, it's easier/preferred to
++collect all interfaces I<except> a few ones. This option enables you to do
++that: By setting B<IgnoreSelected> to I<true> the effect of B<Interface> is
++inverted: All selected interfaces are ignored and all other interfaces are
++collected.
++
++=back
++
+ =head2 Plugin C<java>
+ 
+ The I<Java> plugin makes it possible to write extensions for collectd in Java.
+--- /dev/null
++++ b/src/iwinfo.c
+@@ -0,0 +1,150 @@
++/**
++ * collectd - src/iwinfo.c
++ * Copyright (C) 2011  Jo-Philipp Wich
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; only version 2 of the License is applicable.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
++ **/
++
++#include "collectd.h"
++#include "plugin.h"
++#include "utils/common/common.h"
++#include "utils/ignorelist/ignorelist.h"
++
++#include <stdint.h>
++#include <iwinfo.h>
++
++#define PROCNETDEV "/proc/net/dev"
++
++static const char *config_keys[] = {
++	"Interface",
++	"IgnoreSelected"
++};
++static int config_keys_num = STATIC_ARRAY_SIZE (config_keys);
++
++static ignorelist_t *ignorelist = NULL;
++
++static int iwinfo_config(const char *key, const char *value)
++{
++	if (ignorelist == NULL)
++		ignorelist = ignorelist_create(1);
++
++	if (ignorelist == NULL)
++		return 1;
++
++	if (strcasecmp(key, "Interface") == 0)
++		ignorelist_add(ignorelist, value);
++	else if (strcasecmp(key, "IgnoreSelected") == 0)
++		ignorelist_set_invert(ignorelist, IS_TRUE(value) ? 0 : 1);
++	else
++		return -1;
++
++	return 0;
++}
++
++static void iwinfo_submit(const char *ifname, const char *type, int value)
++{
++	value_t values[1];
++	value_list_t vl = VALUE_LIST_INIT;
++
++	values[0].gauge = value;
++
++	vl.values = values;
++	vl.values_len = 1;
++
++	sstrncpy(vl.host, hostname_g, sizeof(vl.host));
++	sstrncpy(vl.plugin, "iwinfo", sizeof(vl.plugin));
++	sstrncpy(vl.plugin_instance, ifname, sizeof(vl.plugin_instance));
++	sstrncpy(vl.type, type, sizeof(vl.type));
++	/*sstrncpy(vl.type_instance, "", sizeof(vl.type_instance));*/
++
++	plugin_dispatch_values(&vl);
++}
++
++static void iwinfo_process(const char *ifname)
++{
++	int val;
++	char buf[IWINFO_BUFSIZE];
++	const struct iwinfo_ops *iw = iwinfo_backend(ifname);
++
++	/* does appear to be a wifi iface */
++	if (iw)
++	{
++		if (iw->bitrate(ifname, &val))
++			val = 0;
++		iwinfo_submit(ifname, "bitrate", val * 1000);
++
++		if (iw->signal(ifname, &val))
++			val = 0;
++		iwinfo_submit(ifname, "signal_power", val);
++
++		if (iw->noise(ifname, &val))
++			val = 0;
++		iwinfo_submit(ifname, "signal_noise", val);
++
++		if (iw->quality(ifname, &val))
++			val = 0;
++		iwinfo_submit(ifname, "signal_quality", val);
++
++		if (iw->assoclist(ifname, buf, &val))
++			val = 0;
++		iwinfo_submit(ifname, "stations",
++		              val / sizeof(struct iwinfo_assoclist_entry));
++	}
++
++	iwinfo_finish();
++}
++
++static int iwinfo_read(void)
++{
++	char line[1024];
++	char ifname[128];
++	FILE *f;
++
++	f = fopen(PROCNETDEV, "r");
++	if (f == NULL)
++	{
++		char err[1024];
++		WARNING("iwinfo: Unable to open " PROCNETDEV ": %s",
++		        sstrerror(errno, err, sizeof(err)));
++		return -1;
++	}
++
++	while (fgets(line, sizeof(line), f))
++	{
++		if (!strchr(line, ':'))
++			continue;
++
++		if (!sscanf(line, " %127[^:]", ifname))
++			continue;
++
++		if (ignorelist_match(ignorelist, ifname))
++			continue;
++
++		if (strstr(ifname, "mon.") || strstr(ifname, ".sta") ||
++		    strstr(ifname, "tmp.") || strstr(ifname, "wifi"))
++			continue;
++
++		iwinfo_process(ifname);
++	}
++
++	fclose(f);
++
++	return 0;
++}
++
++void module_register(void)
++{
++	plugin_register_config("iwinfo", iwinfo_config, config_keys, config_keys_num);
++	plugin_register_read("iwinfo", iwinfo_read);
++}
+--- a/src/types.db
++++ b/src/types.db
+@@ -308,6 +308,7 @@ snr                     value:GAUGE:0:U
+ spam_check              value:GAUGE:0:U
+ spam_score              value:GAUGE:U:U
+ spl                     value:GAUGE:U:U
++stations                value:GAUGE:0:256
+ swap                    value:GAUGE:0:1099511627776
+ swap_io                 value:DERIVE:0:U
+ sysevent                value:GAUGE:0:1
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -1246,6 +1246,14 @@ irq_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+ irq_la_LIBADD = libignorelist.la
+ endif
+ 
++if BUILD_PLUGIN_IWINFO
++pkglib_LTLIBRARIES += iwinfo.la
++iwinfo_la_SOURCES = src/iwinfo.c
++#iwinfo_la_LDFLAGS = -module -avoid-version
++iwinfo_la_LDFLAGS = $(PLUGIN_LDFLAGS)
++iwinfo_la_LIBADD = -liwinfo libignorelist.la
++endif
++
+ if BUILD_PLUGIN_JAVA
+ pkglib_LTLIBRARIES += java.la
+ java_la_SOURCES = src/java.c

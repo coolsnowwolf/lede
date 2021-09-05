@@ -1,0 +1,278 @@
+#!/bin/sh /etc/rc.common
+
+START=80
+STOP=10
+
+CFGDIR=/var/etc/radicale2
+SYSCFG=$CFGDIR/config
+USRCFG=$CFGDIR/users
+
+DATADIR="/srv/radicale2/data"
+LOGDIR=""
+USE_PROCD=1
+
+# we could start with empty configuration file using defaults
+[ -f ${IPKG_INSTROOT}/etc/config/radicale2 ] || touch ${IPKG_INSTROOT}/etc/config/radicale2
+
+conf_line() {
+	local cfgfile="$1"
+	local option="$2"
+	local value="$3"
+
+	if [ -n "$value" ]; then
+		eval "echo '$2' = '$value' >>'$cfgfile'"
+	fi
+}
+
+conf_getline() {
+	local cfg="$1"
+	local cfgfile="$2"
+	local option="$3"
+	local defval="$4"
+	local flag="$5"
+	unset value
+
+	if [ "$flag" != "1" ]; then
+		config_get value "$cfg" "$option" "$defval"
+		conf_line "$cfgfile" "$option" "$value"
+	else
+		config_get_bool value "$cfg" "$option" "$defval"
+		[ -z "$defval" ] && defval=1
+		if [ "$value" -ne "$defval" ]; then
+			if [ "$value" -ne 0 ]; then
+				conf_line "$cfgfile" "$option" "True"
+			else
+				conf_line "$cfgfile" "$option" "False"
+			fi
+		fi
+	fi
+}
+
+build_hosts_line() {
+	local val="$1"
+
+	append hostlist "$val" ", "
+}
+
+conf_section() {
+	local cfg="$1"
+	local cfgfile="$2"
+	local hostlist=""
+	local value
+
+	echo "[$cfg]
+" >>$cfgfile
+
+	case $cfg in
+	server)
+		config_list_foreach "$cfg" host build_hosts_line
+		conf_line "$tmpfile" hosts "$hostlist"
+		conf_getline "$cfg" $tmpfile max_connections
+		conf_getline "$cfg" $tmpfile max_conntent_length
+		conf_getline "$cfg" $tmpfile timeout
+
+		conf_getline "$cfg" $tmpfile ssl 0 1
+		if [ "$value" -eq 1 ]; then
+			conf_getline "$cfg" $tmpfile certificate
+			conf_getline "$cfg" $tmpfile key
+			conf_getline "$cfg" $tmpfile certificate_authority
+			conf_getline "$cfg" $tmpfile protocol
+			conf_getline "$cfg" $tmpfile ciphers
+		fi
+
+		conf_getline "$cfg" $tmpfile dns_lookup 1 1
+		conf_getline "$cfg" $tmpfile realm
+		;;
+	encoding)
+		conf_getline "$cfg" $tmpfile request
+		conf_getline "$cfg" $tmpfile stock
+		;;
+	auth)
+		conf_getline "$cfg" $tmpfile "type" htpasswd
+		if [ "$value" = "htpasswd" ]; then
+			conf_getline "$cfg" $tmpfile htpasswd_filename $CFGDIR/users
+			conf_getline "$cfg" "$tmpfile" htpasswd_encryption plain
+		fi
+
+		conf_getline "$cfg" "$tmpfile" delay
+		;;
+	rights)
+		conf_getline "$cfg" "$tmpfile" "type"
+		if [ "$value" = "from_file" ]; then
+			conf_getline "$cfg" "$tmpfile" "file"
+		fi
+		;;
+	storage)
+		conf_getline "$cfg" $tmpfile filesystem_folder "$DATADIR"
+		DATADIR="$value"
+		conf_getline "$cfg" $tmpfile filesystem_locking 1 1
+		conf_getline "$cfg" $tmpfile max_sync_token_age
+		conf_getline "$cfg" $tmpfile filesystem_close_lock_file 0 1
+		conf_getline "$cfg" $tmpfile hook
+		;;
+	web)
+		conf_getline "$cfg" $tmpfile "type"
+		;;
+	logging)
+		conf_getline "$cfg" "$tmpfile" config
+		conf_getline "$cfg" "$tmpfile" debug 0 1
+		conf_getline "$cfg" "$tmpfile" full_environment 0 1
+		conf_getline "$cfg" "$tmpfile" mask_passwords 1 1
+		;;
+	headers)
+		config_get "$cfg" "$tmpfile" cors
+		if [ -n "$cors" ]; then
+			echo "Access-Control-Allow-Origin = $cors" >>$tmpfile
+		fi
+		;;
+	esac
+
+	echo "
+" >>$cfgfile
+}
+
+add_missing_sections() {
+	local cfgfile="$1"
+
+	for section in server encoding auth rights storage web logging headers; do
+		if [ "$section" = "server" ]; then
+			grep -q "\[$section\]" $cfgfile || echo "
+[$section]
+hosts = 0.0.0.0:5232, [::]:5232
+
+" >>$cfgfile
+		elif [ "$section" = "auth" ]; then
+			grep -q "\[$section\]" $cfgfile || echo "
+[$section]
+type = htpasswd
+htpasswd_filename = $CFGDIR/users
+htpasswd_encryption = plain
+
+" >>$cfgfile
+		elif [ "$section" = "storage" ]; then
+			grep -q "\[$section\]" $cfgfile || echo "
+[$section]
+filesystem_folder = $DATADIR
+
+" >>$cfgfile
+		else
+			grep -q "\[$section\]" $cfgfile || echo "
+[$section]
+
+" >>$cfgfile
+		fi
+	done
+}
+
+add_user() {
+	local cfg="$1"
+	local tmpfile="$2"
+	local name password
+
+	config_get name "$cfg" name
+	config_get password "$cfg" password
+
+	[ -n "$name" ] && echo "$name:$password" >>$tmpfile
+}
+
+build_users() {
+	local tmpfile="$1"
+
+	# temporary config file
+	# radicale2 needs read access
+	chmod 0640 $tmpfile
+
+	config_foreach add_user user "$tmpfile"
+}
+
+build_config() {
+	local tmpfile=$(mktemp)
+	local tmpfile2=$(mktemp)
+
+	# temporary config file
+	# radicale2 need read access
+	chmod 0640 $tmpfile
+
+	config_load radicale2
+	config_foreach conf_section section $tmpfile
+	add_missing_sections $tmpfile
+
+	build_users $tmpfile2
+
+	# move tmp to final
+	mkdir -m0750 -p $CFGDIR
+	cat $tmpfile >$SYSCFG
+	rm -f $tmpfile
+	cat $tmpfile2 >$USRCFG
+	rm -f $tmpfile2
+}
+
+set_permission() {
+	# config file permissions (read access for group)
+	chmod 0750 $CFGDIR
+	chmod 0640 $SYSCFG
+	chmod 0640 $USRCFG
+	chgrp -R radicale2 $CFGDIR
+	# data directory does not exist
+	[ -d $DATADIR ] || {
+		logger -p user.error -t "radicale2[----]" "Data directory '$DATADIR' does not exist. Startup failed !!!"
+	}
+}
+
+
+interface_triggers() {
+	local action="$1"
+	local triggerlist trigger
+
+	config_load radicale2
+	config_get triggerlist server triggerlist
+
+	. /lib/functions/network.sh
+
+	if [ -n "$triggerlist" ]; then
+		for trigger in $triggerlist; do
+			if [ "$action" = "add_trigger" ]; then
+				procd_add_interface_trigger "interface.*" "$trigger" /etc/init.d/radicale2 reload
+			else
+				network_is_up "$trigger" && return 0
+			fi
+		done
+	else
+		if [ "$action" = "add_trigger" ]; then
+			procd_add_raw_trigger "interface.*.up" 2000 /etc/init.d/radicale2 reload
+		else
+			ubus call network.device status | grep -q '"up": true' && return 0
+		fi
+	fi
+	[ "$action" = "add_trigger" ] || return 1
+}
+
+start_service() {
+	local haveinterface
+
+	if [ ! -r /etc/radicale2/config ]; then
+		build_config
+		set_permission
+	fi
+
+	interface_triggers "check_interface_up" || return
+
+	procd_open_instance "radicale2"
+	procd_set_param respawn
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	if [ ! -r /etc/radicale2/config ]; then
+		procd_set_param command /usr/bin/radicale2 --config="$SYSCFG"
+	else
+		procd_set_param command /usr/bin/radicale2 --config="/etc/radicale2/config"
+	fi
+	procd_set_param user radicale2
+	procd_close_instance
+
+	return 0
+}
+
+service_triggers() {
+	interface_triggers "add_trigger"
+	procd_add_reload_trigger "radicale2"
+}

@@ -1,0 +1,131 @@
+From c4c8aa5ba0ec6bf4c6d74c4807b66edfbd91be7c Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Mon, 11 Jan 2021 01:51:58 -0800
+Subject: [PATCH] fix compilation without deprecated OpenSSL APIs
+
+(De)initialization is deprecated under OpenSSL 1.0 and above.
+
+[TT: Some simplifications, and additional edits.]
+
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ libfetch/common.c | 12 ++++--------
+ src/apk.c         | 26 +-------------------------
+ src/apk_openssl.h | 27 +++++++++++++++++++++++++++
+ 3 files changed, 32 insertions(+), 33 deletions(-)
+
+--- a/libfetch/common.c
++++ b/libfetch/common.c
+@@ -499,15 +499,11 @@ static int fetch_ssl_setup_client_certif
+ int
+ fetch_ssl(conn_t *conn, const struct url *URL, int verbose)
+ {
+-	/* Init the SSL library and context */
+-	if (!SSL_library_init()){
+-		fprintf(stderr, "SSL library init failed\n");
+-		return (-1);
+-	}
+-
+-	SSL_load_error_strings();
+-
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	conn->ssl_meth = SSLv23_client_method();
++#else
++	conn->ssl_meth = TLS_client_method();
++#endif
+ 	conn->ssl_ctx = SSL_CTX_new(conn->ssl_meth);
+ 	SSL_CTX_set_mode(conn->ssl_ctx, SSL_MODE_AUTO_RETRY);
+ 
+--- a/src/apk.c
++++ b/src/apk.c
+@@ -20,11 +20,6 @@
+ #include <unistd.h>
+ #include <sys/stat.h>
+ 
+-#include <openssl/crypto.h>
+-#ifndef OPENSSL_NO_ENGINE
+-#include <openssl/engine.h>
+-#endif
+-
+ #include <fetch.h>
+ 
+ #include "apk_defines.h"
+@@ -385,25 +380,6 @@ static int parse_options(int argc, char
+ 	return 0;
+ }
+ 
+-static void fini_openssl(void)
+-{
+-	EVP_cleanup();
+-#ifndef OPENSSL_NO_ENGINE
+-	ENGINE_cleanup();
+-#endif
+-	CRYPTO_cleanup_all_ex_data();
+-}
+-
+-static void init_openssl(void)
+-{
+-	atexit(fini_openssl);
+-	OpenSSL_add_all_algorithms();
+-#ifndef OPENSSL_NO_ENGINE
+-	ENGINE_load_builtin_engines();
+-	ENGINE_register_all_complete();
+-#endif
+-}
+-
+ static void on_sigwinch(int s)
+ {
+ 	apk_reset_screen_width();
+@@ -484,7 +460,7 @@ int main(int argc, char **argv)
+ 		apk_force |= applet->forced_force;
+ 	}
+ 
+-	init_openssl();
++	apk_openssl_init();
+ 	setup_automatic_flags();
+ 	fetchConnectionCacheInit(32, 4);
+ 
+--- a/src/apk_openssl.h
++++ b/src/apk_openssl.h
+@@ -11,7 +11,11 @@
+ #define APK_SSL_COMPAT_H
+ 
+ #include <openssl/opensslv.h>
++#include <openssl/crypto.h>
+ #include <openssl/evp.h>
++#ifndef OPENSSL_NO_ENGINE
++#include <openssl/engine.h>
++#endif
+ 
+ #if OPENSSL_VERSION_NUMBER < 0x1010000fL || (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x2070000fL)
+ 
+@@ -25,6 +29,29 @@ static inline void EVP_MD_CTX_free(EVP_M
+ 	return EVP_MD_CTX_destroy(mdctx);
+ }
+ 
++static inline void apk_openssl_cleanup(void)
++{
++	EVP_cleanup();
++#ifndef OPENSSL_NO_ENGINE
++	ENGINE_cleanup();
++#endif
++	CRYPTO_cleanup_all_ex_data();
++}
++
++static inline void apk_openssl_init(void)
++{
++	atexit(apk_openssl_cleanup);
++	OpenSSL_add_all_algorithms();
++#ifndef OPENSSL_NO_ENGINE
++	ENGINE_load_builtin_engines();
++	ENGINE_register_all_complete();
++#endif
++}
++
++#else
++
++static inline void apk_openssl_init(void) {}
++
+ #endif
+ 
+ #endif

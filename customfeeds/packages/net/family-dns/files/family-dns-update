@@ -1,0 +1,95 @@
+#!/bin/sh
+#
+# Copyright (c) 2020 Gregory L. Dietsche <Gregory.Dietsche@cuw.edu>
+# This is free software, licensed under the MIT License
+#
+. /lib/functions.sh
+
+config_load 'family-dns'
+config_get_bool enabled default enabled 0
+config_get_bool redirect_dns default redirect_dns 0
+config_get dns default dns default
+
+#uninstall and disable are designed to be equivalent.
+if [ "$1" = "uninstall" ] ; then
+  enabled=0
+fi
+
+# Set OpenWrt Defaults
+uci -q batch <<-EOT
+  set network.wan.peerdns='1'
+  set network.wan6.peerdns='1'
+  delete network.wan.dns
+  delete network.wan6.dns
+  delete firewall.family_dns_lan
+EOT
+
+if [ "$enabled" -ne 1 ] ; then
+  echo 'Activating Default ISP DNS server(s)'
+else
+  # We don't want to use ISP DNS servers because they don't filter queries
+  uci set network.wan.peerdns='0'
+  uci set network.wan6.peerdns='0'
+
+  # Configure the DNS server(s) that will handle filtering.
+  echo "Activating $dns"
+  case $dns in
+    cleanbrowsing-adult-filter)
+      uci add_list network.wan.dns=185.228.168.10
+      uci add_list network.wan.dns=185.228.169.11
+      uci add_list network.wan6.dns=2a0d:2a00:1::1
+      uci add_list network.wan6.dns=2a0d:2a00:2::1
+      ;;
+    cleanbrowsing-family-filter)
+      uci add_list network.wan.dns=185.228.168.168
+      uci add_list network.wan.dns=185.228.169.168
+      uci add_list network.wan6.dns=2a0d:2a00:1::
+      uci add_list network.wan6.dns=2a0d:2a00:2::
+      ;;
+    cloudflare-malware-and-adult-content)
+      uci add_list network.wan.dns=1.1.1.3
+      uci add_list network.wan.dns=1.0.0.3
+      uci add_list network.wan6.dns=2606:4700:4700::1113
+      uci add_list network.wan6.dns=2606:4700:4700::1003
+      ;;
+    cisco-family-shield)
+      uci add_list network.wan.dns=208.67.222.123
+      uci add_list network.wan.dns=208.67.220.123
+      uci add_list network.wan6.dns=::ffff:d043:de7b
+      uci add_list network.wan6.dns=::ffff:d043:dc7b
+      ;;
+    *)
+      echo "$dns" is not supported.
+      uci revert network
+      redirect_dns=0
+      ;;
+  esac
+
+  if [ "$redirect_dns" -eq 1 ] ; then
+    echo Activating DNS redirect
+    zone=lan
+    ip=$(uci get network.$zone.ipaddr)
+
+    uci -q batch <<-EOT
+    set firewall.family_dns_lan=redirect
+    add_list firewall.family_dns_lan.proto='tcp'
+    add_list firewall.family_dns_lan.proto='udp'
+    set firewall.family_dns_lan.src_dport='53'
+    set firewall.family_dns_lan.dest_ip='$ip'
+    set firewall.family_dns_lan.target='DNAT'
+    set firewall.family_dns_lan.src='$zone'
+    set firewall.family_dns_lan.dest='$zone'
+    set firewall.family_dns_lan.name='family-dns redirect for $zone zone'
+EOT
+  fi
+fi
+
+uci -q batch <<-EOT
+  commit network
+  commit firewall
+EOT
+
+/etc/init.d/network reload
+/etc/init.d/dnsmasq reload
+/etc/init.d/firewall reload 2>/dev/null
+

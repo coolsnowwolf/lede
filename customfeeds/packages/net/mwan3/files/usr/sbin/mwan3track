@@ -1,0 +1,293 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /lib/mwan3/common.sh
+
+LOG="logger -t $(basename "$0")[$$] -p"
+INTERFACE=""
+DEVICE=""
+PING="/bin/ping"
+
+IFDOWN_EVENT=0
+
+clean_up() {
+	$LOG notice "Stopping mwan3track for interface \"${INTERFACE}\""
+	exit 0
+}
+
+if_down() {
+	$LOG info "Detect ifdown event on interface ${INTERFACE} (${DEVICE})"
+	IFDOWN_EVENT=1
+}
+
+validate_track_method() {
+	case "$1" in
+		ping)
+			which ping 1>/dev/null 2>&1 || {
+				$LOG warn "Missing ping. Please install iputils-ping package or enable ping util and recompile busybox."
+				return 1
+			}
+			;;
+		arping)
+			which arping 1>/dev/null 2>&1 || {
+				$LOG warn "Missing arping. Please install iputils-arping package."
+				return 1
+			}
+			;;
+		httping)
+			which httping 1>/dev/null 2>&1 || {
+				$LOG warn "Missing httping. Please install httping package."
+				return 1
+			}
+			[ -n "$2" -a "$2" != "0.0.0.0" -a "$2" != "::" ] || {
+				$LOG warn "Cannot determine source IP for the interface which is required by httping."
+				return 1
+			}
+			;;
+		nping-*)
+			which nping 1>/dev/null 2>&1 || {
+				$LOG warn "Missing nping. Please install nping package."
+				return 1
+			}
+			;;
+		*)
+			$LOG warn "Unsupported tracking method: $track_method"
+			return 2
+			;;
+	esac
+}
+
+main() {
+	local reliability count timeout interval failure_interval
+	local recovery_interval down up size
+	local keep_failure_interval check_quality failure_latency
+	local recovery_latency failure_loss recovery_loss
+	local max_ttl httping_ssl
+
+	[ -z "$5" ] && echo "Error: should not be started manually" && exit 0
+
+	INTERFACE=$1
+	DEVICE=$2
+	STATUS=$3
+	SRC_IP=$4
+	mkdir -p /var/run/mwan3track/$1
+	trap clean_up TERM
+	trap if_down USR1
+
+	config_load mwan3
+	config_get track_method $1 track_method ping
+	config_get_bool httping_ssl $1 httping_ssl 0
+	validate_track_method $track_method $SRC_IP || {
+		track_method=ping
+		if validate_track_method $track_method; then
+			$LOG warn "Using ping to track interface $INTERFACE avaliability"
+		else
+			$LOG err "No track method avaliable"
+			exit 1
+		fi
+	}
+	config_get reliability $1 reliability 1
+	config_get count $1 count 1
+	config_get timeout $1 timeout 4
+	config_get interval $1 interval 10
+	config_get down $1 down 5
+	config_get up $1 up 5
+	config_get size $1 size 56
+	config_get max_ttl $1 max_ttl 60
+	config_get failure_interval $1 failure_interval $interval
+	config_get_bool keep_failure_interval $1 keep_failure_interval 0
+	config_get recovery_interval $1 recovery_interval $interval
+	config_get_bool check_quality $1 check_quality 0
+	config_get failure_latency $1 failure_latency 1000
+	config_get recovery_latency $1 recovery_latency 500
+	config_get failure_loss $1 failure_loss 40
+	config_get recovery_loss $1 recovery_loss 10
+
+	local score=$(($down+$up))
+	local track_ips=$(echo $* | cut -d ' ' -f 5-99)
+	local host_up_count=0
+	local lost=0
+	local sleep_time=0
+	local turn=0
+	local result
+	local ping_protocol=4
+	local ping_result
+	local ping_result_raw
+	local ping_status
+	local loss=0
+	local latency=0
+
+	if [ "$STATUS" = "offline" ]; then
+		echo "offline" > /var/run/mwan3track/$1/STATUS
+		echo "0" > /var/run/mwan3track/$1/ONLINE
+		echo "$(get_uptime)" > /var/run/mwan3track/$1/OFFLINE
+		score=0
+	else
+		echo "online" > /var/run/mwan3track/$1/STATUS
+		echo "0" > /var/run/mwan3track/$1/OFFLINE
+		echo "$(get_uptime)" > /var/run/mwan3track/$1/ONLINE
+		env -i ACTION="connected" INTERFACE="$1" DEVICE="$2" /sbin/hotplug-call iface
+	fi
+	while true; do
+
+		sleep_time=$interval
+
+		for track_ip in $track_ips; do
+			if [ $host_up_count -lt $reliability ]; then
+				case "$track_method" in
+					ping)
+						# pinging IPv6 hosts with an interface is troublesome
+						# https://bugs.openwrt.org/index.php?do=details&task_id=2897
+						# so get the IP address of the interface and use that instead
+						if echo $track_ip | grep -q ':'; then
+						        ADDR=$(ip -6 addr ls dev "$DEVICE" | sed -ne '/\/128/d' -e 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p' | head -n1)
+							[ -z "$ADDR" ] && ADDR=$(ip -6 addr ls dev "$DEVICE" | sed -ne 's/ *inet6 \([^ \/]*\).* scope global.*/\1/p')
+							ping_protocol=6
+						fi
+						if [ $check_quality -eq 0 ]; then
+							$PING -$ping_protocol -I ${ADDR:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip &> /dev/null
+							result=$?
+						else
+							ping_result_raw="$($PING -$ping_protocol -I ${ADDR:-$DEVICE} -c $count -W $timeout -s $size -t $max_ttl -q $track_ip 2>/dev/null)"
+							ping_status=$?
+							ping_result=$(echo "$ping_result_raw" | tail -n2)
+							loss="$(echo "$ping_result" | grep "packet loss" |  cut -d "," -f3 | awk '{print $1}' | sed -e 's/%//')"
+							if [ "$ping_status" -ne 0 ] || [ "$loss" -eq 100 ]; then
+								latency=999999
+								loss=100
+							else
+								latency="$(echo "$ping_result" | grep -E 'rtt|round-trip' | cut -d "=" -f2 | cut -d "/" -f2 | cut -d "." -f1)"
+							fi
+						fi
+					;;
+					arping)
+						arping -I $DEVICE -c $count -w $timeout -q $track_ip &> /dev/null
+						result=$?
+					;;
+					httping)
+						if [ "$httping_ssl" -eq 1 ]; then
+							httping -y $SRC_IP -c $count -t $timeout -q "https://$track_ip" &> /dev/null
+						else
+							httping -y $SRC_IP -c $count -t $timeout -q "http://$track_ip" &> /dev/null
+						fi
+						result=$?
+					;;
+					nping-tcp)
+						result=$(nping -e $DEVICE -c $count $track_ip --tcp | grep Lost | awk '{print $12}')
+					;;
+					nping-udp)
+						result=$(nping -e $DEVICE -c $count $track_ip --udp | grep Lost | awk '{print $12}')
+					;;
+					nping-icmp)
+						result=$(nping -e $DEVICE -c $count $track_ip --icmp | grep Lost | awk '{print $12}')
+					;;
+					nping-arp)
+						result=$(nping -e $DEVICE -c $count $track_ip --arp | grep Lost | awk '{print $12}')
+					;;
+				esac
+				if [ $check_quality -eq 0 ]; then
+					if [ $result -eq 0 ]; then
+						let host_up_count++
+						echo "up" > /var/run/mwan3track/$1/TRACK_${track_ip}
+						if [ $score -le $up ]; then
+							$LOG info "Check ($track_method) success for target \"$track_ip\" on interface $1 ($2)"
+						fi
+					else
+						let lost++
+						echo "down" > /var/run/mwan3track/$1/TRACK_${track_ip}
+						if [ $score -gt $up ]; then
+							$LOG info "Check ($track_method) failed for target \"$track_ip\" on interface $1 ($2)"
+						fi
+					fi
+				else
+					if [ "$loss" -ge "$failure_loss" -o "$latency" -ge "$failure_latency" ]; then
+						let lost++
+						echo "down" > /var/run/mwan3track/$1/TRACK_${track_ip}
+						echo "$latency" > /var/run/mwan3track/$1/LATENCY_${track_ip}
+						echo "$loss" > /var/run/mwan3track/$1/LOSS_${track_ip}
+
+						if [ $score -gt $up ]; then
+							$LOG info "Check (${track_method}: latency=${latency}ms loss=${loss}%) failed for target \"$track_ip\" on interface $1 ($2)"
+						fi
+					elif [ "$loss" -le "$recovery_loss" -a "$latency" -le "$recovery_latency" ]; then
+						let host_up_count++
+						echo "up" > /var/run/mwan3track/$1/TRACK_${track_ip}
+						echo "$latency" > /var/run/mwan3track/$1/LATENCY_${track_ip}
+						echo "$loss" > /var/run/mwan3track/$1/LOSS_${track_ip}
+
+						if [ $score -le $up ]; then
+							$LOG info "Check (${track_method}: latency=${latency}ms loss=${loss}%) success for target \"$track_ip\" on interface $1 ($2)"
+						fi
+					else
+						echo "skipped" > /var/run/mwan3track/$1/TRACK_${track_ip}
+					fi
+				fi
+			else
+				echo "skipped" > /var/run/mwan3track/$1/TRACK_${track_ip}
+			fi
+		done
+
+		if [ $host_up_count -lt $reliability ]; then
+			let score--
+
+			if [ $score -lt $up ]; then
+				score=0
+				[ ${keep_failure_interval} -eq 1 ] && {
+					sleep_time=$failure_interval
+				}
+			else
+				sleep_time=$failure_interval
+			fi
+
+			if [ $score -eq $up ]; then
+				echo "offline" > /var/run/mwan3track/$1/STATUS
+				env -i ACTION=ifdown INTERFACE=$1 DEVICE=$2 /sbin/hotplug-call iface
+				score=0
+			fi
+		else
+			if [ $score -lt $(($down+$up)) ] && [ $lost -gt 0 ]; then
+				$LOG info "Lost $(($lost*$count)) ping(s) on interface $1 ($2)"
+			fi
+
+			let score++
+			lost=0
+
+			if [ $score -gt $up ]; then
+				echo "online" > /var/run/mwan3track/$1/STATUS
+				score=$(($down+$up))
+			elif [ $score -le $up ]; then
+				sleep_time=$recovery_interval
+			fi
+
+			if [ $score -eq $up ]; then
+				$LOG notice "Interface $1 ($2) is online"
+				echo "online" > /var/run/mwan3track/$1/STATUS
+				env -i ACTION=ifup INTERFACE=$1 DEVICE=$2 /sbin/hotplug-call iface
+				exit 0
+			fi
+		fi
+
+		let turn++
+		mkdir -p "/var/run/mwan3track/${1}"
+		echo "${lost}" > /var/run/mwan3track/$1/LOST
+		echo "${score}" > /var/run/mwan3track/$1/SCORE
+		echo "${turn}" > /var/run/mwan3track/$1/TURN
+		echo "$(get_uptime)" > /var/run/mwan3track/$1/TIME
+
+		host_up_count=0
+		sleep "${sleep_time}" &
+		wait
+
+		if [ "${IFDOWN_EVENT}" -eq 1 ]; then
+			echo "offline" > /var/run/mwan3track/$1/STATUS
+			echo "$(get_uptime)" > /var/run/mwan3track/$1/OFFLINE
+			echo "0" > /var/run/mwan3track/$1/ONLINE
+			$LOG notice "Interface $1 ($2) is offline"
+			env -i ACTION="disconnected" INTERFACE="$1" DEVICE="$2" /sbin/hotplug-call iface
+			score=0
+			IFDOWN_EVENT=0
+		fi
+	done
+}
+
+main "$@"

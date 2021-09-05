@@ -1,0 +1,92 @@
+#!/bin/sh
+
+. /lib/config/uci.sh
+
+set -e
+
+CACHE_DOMAINS_SRC="https://api.github.com/repos/uklans/cache-domains/tarball/master"
+CACHE_DOMAINS_DIR="/var/cache-domains"
+CACHE_DOMAINS_HOSTS_DIR="${CACHE_DOMAINS_DIR}/scripts/output/dnsmasq/hosts"
+CONFIG_FILE="/etc/cache-domains.json"
+
+uci_changes() {
+	local PACKAGE="$1"
+	local STATE="$2"
+
+	CHANGES=$(/sbin/uci ${UCI_CONFIG_DIR:+-c ${UCI_CONFIG_DIR}} ${STATE:+-P ${STATE}} -q changes "${PACKAGE}" | wc -l)
+	return "${CHANGES}"
+}
+
+configure() {
+	local INITIAL_DIR
+	local I=0
+
+	mkdir -p "${CACHE_DOMAINS_DIR}"
+	rm -fr "${CACHE_DOMAINS_DIR:?}/"*
+
+	if ! wget -qO - "${CACHE_DOMAINS_SRC}" | tar -xzC "${CACHE_DOMAINS_DIR}"; then
+		rm -fr "${CACHE_DOMAINS_DIR}"
+		echo "ERROR: Could not retrieve ${CACHE_DOMAINS_SRC}"
+		exit 1
+	fi
+
+	# move files out of versioned directory
+	mv "${CACHE_DOMAINS_DIR}/"*"/"* "${CACHE_DOMAINS_DIR}/"
+
+	if [ ! -f "${CONFIG_FILE}" ]; then
+		cp "${CACHE_DOMAINS_DIR}/scripts/config.example.json" "${CONFIG_FILE}"
+		echo "Using example config file ${CONFIG_FILE}"
+	fi
+
+	INITIAL_DIR="$(pwd)"
+	cd "${CACHE_DOMAINS_DIR}/scripts/"
+	cp "${CONFIG_FILE}" "config.json"
+	./create-dnsmasq.sh > /dev/null
+	rm "config.json" "${CACHE_DOMAINS_HOSTS_DIR}/../lancache.conf"
+	cd "${INITIAL_DIR}"
+
+	while uci_get "dhcp" "@dnsmasq[${I}]" > /dev/null; do
+		if uci_changes "dhcp"; then
+			uci_remove_list	"dhcp" "@dnsmasq[${I}]" "addnhosts" "${CACHE_DOMAINS_HOSTS_DIR}"
+			uci_add_list	"dhcp" "@dnsmasq[${I}]" "addnhosts" "${CACHE_DOMAINS_HOSTS_DIR}"
+			uci_commit		"dhcp"
+		else
+			echo "ERROR: Unexpected changes in the dhcp configuration, commit changes and try again"
+			exit 1
+		fi
+
+		I=$((${I} + 1))
+	done
+
+	/etc/init.d/dnsmasq "restart"
+}
+
+cleanup() {
+	local I=0
+
+	while uci_get "dhcp" "@dnsmasq[${I}]" > /dev/null; do
+		if uci_changes "dhcp"; then
+			uci_remove_list	"dhcp" "@dnsmasq[${I}]" "addnhosts" "${CACHE_DOMAINS_HOSTS_DIR}"
+			uci_commit		"dhcp"
+		else
+			echo "ERROR: Unexpected changes in the dhcp configuration, commit changes and try again"
+			exit 1
+		fi
+
+		I=$((${I} + 1))
+	done
+
+	/etc/init.d/dnsmasq "restart"
+}
+
+case ${1} in
+	config*)
+		configure
+		;;
+	clean*)
+		cleanup
+		;;
+	*)
+		echo "${0} <configure|cleanup>"
+		;;
+esac

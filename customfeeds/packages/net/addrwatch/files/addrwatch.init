@@ -1,0 +1,71 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2016 OpenWrt.org
+
+START=50
+USE_PROCD=1
+
+validate_section_addrwatch() {
+	uci_load_validate addrwatch addrwatch "$1" "$2" \
+		'disabled:bool:0' \
+		'interface:list(string):lan' \
+		'syslog:bool:1' \
+		'output:string' \
+		'quiet:bool:0' \
+		'verbose:bool:0' \
+		'ipv4only:bool:0' \
+		'ipv6only:bool:0' \
+		'blacklist:list(or(ip4addr,ip6addr))' \
+		'hashsize:range(1,65536):1024'\
+		'ratelimit:integer:3600'
+}
+
+start_instance() {
+	local cfg="$1"
+	local netdevs=""
+
+	[ "$2" = 0 ] || {
+		echo "validation of config $cfg failed"
+		return 1
+	}
+	[ $disabled -ne 0 ] && return 1
+
+	for iface in $interface; do
+		local netdev
+		network_get_physdev netdev "$iface"
+		append netdevs "$netdev"
+	done
+
+	procd_open_instance
+	procd_set_param command /usr/sbin/addrwatch
+	[ "$syslog" -eq 1 ] && procd_append_param command --syslog
+	[ -n "$output" ] && procd_append_param command --output "$output"
+	[ "$quiet" -eq 1 ] && procd_append_param command --quiet
+	[ "$verbose" -eq 1 ] && procd_append_param command --verbose
+	[ "$ipv4only" -eq 1 ] && procd_append_param command --ipv4only
+	[ "$ipv6only" -eq 1 ] && procd_append_param command --ipv6only
+	[ -n "$hashsize" ] && procd_append_param command --hashsize "$hashsize"
+	[ -n "$ratelimit" ] && procd_append_param command --ratelimit "$ratelimit"
+	for blitem in $blacklist; do
+		procd_append_param command "--blacklist=$blitem"
+	done
+	procd_append_param command $netdevs
+	procd_set_param netdev $netdevs
+	procd_set_param respawn
+	procd_open_trigger
+	for iface in $interface; do
+		procd_add_interface_trigger "interface.*" $iface /etc/init.d/addrwatch reload
+	done
+	procd_close_trigger
+	procd_close_instance
+}
+
+start_service() {
+	. /lib/functions/network.sh
+	config_load 'addrwatch'
+	config_foreach validate_section_addrwatch 'addrwatch' start_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'addrwatch'
+	procd_add_validation validate_section_addrwatch
+}

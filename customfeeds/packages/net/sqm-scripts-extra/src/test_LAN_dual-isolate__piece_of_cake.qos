@@ -1,0 +1,102 @@
+#!/bin/sh
+################################################################################
+# test_LAN_triple-isolate__piece_of_cake.qos (Cero3 Shaper)
+#
+# Abstract:
+# This is a one band cake and ipv6 enabled shaping script for Ethernet
+# gateways. This exists for the purpose of testing cake's different isolation
+# options, specifically the non-directional triple-isolate feature that promises
+# to finally tackle the bit-torrent hole in simple.qos.
+# This specific version is supposed to be used on LAN interfaces:
+# 	the script's ingress direction equals the internet/WAN upload direction
+# 	the script's egress direction equals the internet/WAN download direction
+#
+# NOTE: Shaping on a LAN interface only affects machines connected via that
+#	LAN interface, so typically WIFI/WLAN traffic will not be shaped!
+#
+################################################################################
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+#  Copyright (C) 2012-2016
+#    Michael D. Taht, Toke Høiland-Jørgensen, Sebastian Moeller
+#
+################################################################################
+
+. ${SQM_LIB_DIR}/defaults.sh
+
+################################################################################
+
+
+# this will only work with cake as qdisc...
+QDISC=cake
+
+
+# to keep this as simple as possible we ignore the *_CAKE_OPTS from defaults.sh
+INGRESS_CAKE_OPTS="besteffort dual-srchost"
+EGRESS_CAKE_OPTS="besteffort dual-dsthost"
+
+
+egress() {
+    sqm_debug "egress"
+    $TC qdisc del dev $IFACE root 2>/dev/null
+    $TC qdisc add dev $IFACE root $( get_stab_string ) cake bandwidth ${UPLINK}kbit $( get_cake_lla_string ) ${EGRESS_CAKE_OPTS} ${EQDISC_OPTS}
+}
+
+
+ingress() {
+    sqm_debug "ingress"
+    $TC qdisc del dev $IFACE handle ffff: ingress 2>/dev/null
+    $TC qdisc add dev $IFACE handle ffff: ingress
+    $TC qdisc del dev $DEV root 2>/dev/null
+    $TC qdisc add dev $DEV root $( get_stab_string ) cake bandwidth ${DOWNLINK}kbit $( get_cake_lla_string ) ${INGRESS_CAKE_OPTS} ${IQDISC_OPTS}
+
+    $IP link set dev $DEV up
+
+    # redirect all IP packets arriving in $IFACE to ifb0
+
+    $TC filter add dev $IFACE parent ffff: protocol all prio 10 u32 \
+	match u32 0 0 flowid 1:1 action mirred egress redirect dev $DEV
+}
+
+sqm_start() {
+
+    #sm: flip upload and download bandwith so that the GUI values reflect directionality in regard to the ISP
+    #sm: NOTE this is ugly and should be performed in defaults.sh or functions.sh if at all
+    #sm: but for quick and dirty testing this should do
+    local ORIG_UPLINK=${UPLINK}
+    local ORIG_DOWNLINK=${DOWNLINK}
+    UPLINK=${ORIG_DOWNLINK}
+    DOWNLINK=${ORIG_UPLINK}
+
+
+    [ -n "$IFACE" ] || return 1
+    do_modules
+    verify_qdisc $QDISC "cake" || return 1
+    sqm_debug "Starting ${SCRIPT}"
+
+    [ -z "$DEV" ] && DEV=$( get_ifb_for_if ${IFACE} )
+
+
+    if [ "${UPLINK}" -ne 0 ];
+    then
+        egress
+        sqm_debug "egress shaping activated"
+    else
+        sqm_debug "egress shaping deactivated"
+        $TC qdisc del dev ${IFACE} root 2> /dev/null
+    fi
+    if [ "${DOWNLINK}" -ne 0 ];
+    then
+	verify_qdisc ingress "ingress" || return 1
+        ingress
+        sqm_debug "ingress shaping activated"
+    else
+        sqm_debug "ingress shaping deactivated"
+        $TC qdisc del dev ${DEV} root 2> /dev/null
+        $TC qdisc del dev ${IFACE} ingress 2> /dev/null
+    fi
+    return 0
+}

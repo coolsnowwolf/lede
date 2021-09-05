@@ -1,0 +1,1 @@
+import{j as e}from"./vendor.55942996.js";const{useState:n,useRef:t,useCallback:o,useLayoutEffect:r}=e;function s(){const e=t(null),[s,i]=n(200),u=o((()=>{const{top:n}=e.current.getBoundingClientRect();i(window.innerHeight-n)}),[]);return r((()=>(u(),window.addEventListener("resize",u),()=>{window.removeEventListener("resize",u)})),[u]),[e,s]}export{s as u};

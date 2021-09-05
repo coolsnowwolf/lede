@@ -1,0 +1,477 @@
+#!/bin/sh /etc/rc.common
+
+# Internal uci firewall chains are flushed and recreated on reload, so
+# put custom rules into the root chains e.g. INPUT or FORWARD or into the
+# special user chains, e.g. input_wan_rule or postrouting_lan_rule.
+
+START=25
+USE_PROCD=1
+
+echo_err() {
+	echo "$@" >&2
+}
+
+msg() {
+	local level=$1; shift
+	echo_err "$APPNAME[$level]: $*"
+}
+
+LOGLEVEL=${LOGLEVEL:-2}
+
+die() {
+	local err=$1; shift
+	e "$*"
+	exit $err
+}
+
+APPNAME="trafficshaper"
+IPT_CHAIN=$APPNAME
+
+debug_exec(){
+	local err
+	d "exec: $*"
+	if "$@"; then
+		return 0
+	else
+		err="$?"
+	fi
+	e "exec[err=$err]: $*"
+	return "$err"
+}
+
+IP="debug_exec ip"
+TC="debug_exec tc"
+IP4T="debug_exec iptables -w 5"
+IP6T="debug_exec ip6tables -w 5"
+
+#QDISC="cake autorate_ingress internet ethernet diffserv4 triple-isolate"
+QDISC="cake"
+
+REQ_MODULES="sch_htb sch_cake act_connmark act_mirred em_u32"
+REQ_CMDS="ip tc iptables"
+
+preinit(){
+	[ "$LOGLEVEL" -ge 1 ] && e() { msg ERROR "$@"; } || e() { true; }
+	[ "$LOGLEVEL" -ge 2 ] && v() { msg INFO "$@"; } || v() { true; }
+	[ "$LOGLEVEL" -ge 3 ] && d() { msg DEBUG "$@"; } || d() { true; }
+	[ "$LOGLEVEL" -ge 4 ] && set -x
+	set -e
+}
+
+requires() {
+	for module in $REQ_MODULES; do
+		[ -d /sys/module/$module ] || insert_modules "$module" ||
+			die 2 "cannot load $module. Please install kmod-$module"
+	done
+	for cmd in $REQ_CMDS; do
+		command -v $cmd &>/dev/null ||
+			die 2 "cannot find command $cmd. Please install $cmd"
+	done
+
+	if ! command -v ip6tables &>/dev/null; then
+		v "Disabling IPv6 as ip6tables was not found"
+		IP6T=true
+	fi
+
+	. /lib/functions/network.sh
+
+	config_load $APPNAME
+}
+
+do_stop() {
+	local only_int=$1
+
+	preinit
+	requires
+
+	v "Stopping $APPNAME${only_int:+ for interface $only_int}"
+	if [ -z "$only_int" ]; then
+		d "Cleaning iptables"
+		# Cleaning iptables
+		for IPT in "$IP4T" "$IP6T"; do
+			$IPT -t mangle -D FORWARD -j $IPT_CHAIN &>/dev/null || :
+			$IPT -t mangle -F $IPT_CHAIN &>/dev/null || :
+			$IPT -t mangle -X $IPT_CHAIN &>/dev/null || :
+			$IPT -t mangle -F $IPT_CHAIN-classify &>/dev/null || :
+			$IPT -t mangle -X $IPT_CHAIN-classify &>/dev/null || :
+		done
+	fi
+
+	d "Cleaning tc"
+	local dev_done int dev ifb interfaces
+	if [ "$only_int" ]; then
+		config_get type $only_int TYPE
+		if [ "$type" != "wan" ]; then
+			d "interface $only_int not found in trafficshaper config. Ignoring"
+			return 0
+		fi
+		interfaces="$only_int"
+
+	else
+		interfaces="$(config_foreach echo wan)"
+	fi
+
+	for int in $interfaces; do
+		d "Cleaning tc for interface $int"
+		network_get_physdev dev "$int" ||
+			die 1 "failed to get physical dev of interface $int"
+
+		if echo "$dev_done" | grep -x -F -q "$dev"; then
+			continue
+		fi
+		ifb="ifb_$dev"
+		if [ ${#ifb} -gt 15 ]; then
+			die 1 "ifb name too long: ${ifb}"
+		fi
+
+		$TC qdisc del dev ${ifb} root 2> /dev/null || :
+		$TC qdisc del dev ${dev} root 2> /dev/null || :
+		$TC qdisc del dev ${dev} ingress 2> /dev/null || :
+
+		d "Removing ${ifb}..."
+		$IP link set dev ${ifb} down 2>/dev/null || :
+		$IP link delete dev ${ifb} 2>/dev/null || :
+
+		intdev_done="$(echo "$dev_done"; echo -n $dev)"
+	done
+}
+
+
+calc_bw() {
+	local value=$1 reference=$2
+	case "${value}" in
+		*%) echo "$((${value%\%} * reference / 100 ))";;
+		*) echo ${value};;
+	esac
+}
+
+mask_range() {
+	local mask=$(($1)) n=0 fsb
+	if [ $mask -le 0 ]; then
+		e "mask '$1' must be greater than 0 (have a sequence of set bit)"
+		return 2
+	fi
+	while [ "$((mask & 0x1))" -eq 0 ]; do
+		mask=$((mask >> 1))
+		: $((n++))
+	done
+	fsb="$n"
+	while [ "$((mask & 0x1))" -eq 1 ]; do
+		mask=$((mask >> 1))
+		: $((n++))
+	done
+	if [ $mask -ne 0 ]; then
+		e "mask '$1' must be a continuos sequence of set bit"
+		return 2
+	fi
+	echo $fsb $((n-1))
+	return 0
+}
+
+start_iptables(){
+	d "Creating iptables mangle rules"
+
+	config_get mark_mask globals mark_mask 0xFF
+	mark_mask=$(printf '0x%X\n' $(($mark_mask)))
+
+	local fsb_lst class_id_max class_id_shift
+	fsb_lst=$(mask_range $mark_mask)
+	class_id_max=$(((1<<(${fsb_lst#* } - ${fsb_lst% *} +1))+1))
+	class_id_shift=$((${fsb_lst% *}))
+
+	d "General iptables rules:"
+	for IPT in "$IP4T" "$IP6T"; do
+		$IPT -t mangle -N $IPT_CHAIN
+		$IPT -t mangle -N $IPT_CHAIN-classify
+
+		$IPT -t mangle -A FORWARD	-j $IPT_CHAIN
+		$IPT -t mangle -A $IPT_CHAIN	-j CONNMARK --restore-mark --nfmask $mark_mask --ctmask $mark_mask \
+			-m comment --comment "Get previous class"
+		$IPT -t mangle -A $IPT_CHAIN -m mark --mark 0x0/$mark_mask -j $IPT_CHAIN-classify \
+			-m comment --comment "If no class, try to classify"
+	done
+
+	d "Classes iptables rules:"
+	local class_reserved_uplink class_reserved_downlink class_nets i=2 xi default_class_id
+	for class in $(config_foreach echo class); do
+		config_get class_reserved_uplink   $class reserved_uplink
+		config_get class_reserved_downlink $class reserved_downlink
+		config_get class_nets     $class network
+		if [ "$class" = default ]; then
+			default_class_id=$i
+			if [ -z "$class_reserved_uplink" -a -z "$class_reserved_downlink" ] ; then
+				die 2 "class default must defined either reserved uplink or downlink!"
+			fi
+			if [ "$class_nets" ]; then
+				die 2 "class default must not have any network defined!"
+			fi
+		else
+			if [ "$i" -ge "$class_id_max" ]; then
+				die 1 "Max client classes reached. Please, use less classes or increase option mark_mask '$mark_mask' in globals. Current mask allows only $((class_id_max-2)) classes if default is the last one."
+			fi
+		fi
+
+		xi=$(printf '0x%X\n' $(((i-1)<<class_id_shift)))
+
+		for class_net in $class_nets; do
+			case $class_net in
+				*:*) IPT="$IP6T" ;;
+				*.*) IPT="$IP4T" ;;
+				*) die 2 "Unknown address family of network $class_net in class $class!"
+			esac
+			if [ "$class_reserved_uplink" ]; then
+				$IPT -t mangle -A $IPT_CHAIN-classify -s $class_net -m mark --mark 0x0/$mark_mask -j MARK --set-mark ${xi}/$mark_mask \
+					-m comment --comment "$APPNAME-$class up"
+			fi
+			if [ "$class_reserved_downlink" ]; then
+				$IPT -t mangle -A $IPT_CHAIN-classify -d $class_net -m mark --mark 0x0/$mark_mask -j MARK --set-mark ${xi}/$mark_mask \
+					-m comment --comment "$APPNAME-$class down"
+			fi
+		done
+		: $((i++))
+	done
+	if [ -z "$default_class_id" ]; then
+		die 2 "No default class defined!"
+	fi
+
+	$IP4T -t mangle -A $IPT_CHAIN-classify -j CONNMARK --save-mark --nfmask $mark_mask --ctmask $mark_mask
+	$IP6T -t mangle -A $IPT_CHAIN-classify -j CONNMARK --save-mark --nfmask $mark_mask --ctmask $mark_mask
+}
+
+
+
+start_tc_interface() {
+	local int=$1; shift
+	local dev=$1; shift
+	local default_class_id=$1; shift
+
+	config_get mark_mask globals mark_mask 0xFF
+	local fsb_lst class_id_max class_id_shift
+	fsb_lst=$(mask_range $mark_mask)
+	class_id_max=$(((1<<(${fsb_lst#* } - ${fsb_lst% *} +1))))
+	class_id_shift=$((${fsb_lst% *}))
+
+	local downlink uplink type
+	config_get downlink $int downlink
+	config_get uplink   $int uplink
+
+	d "Creating tc rules for $int ($dev)"
+	local dev_down dev_up
+	if [ "$downlink" ]; then
+		local ifb="ifb_$dev"
+		if [ ${#ifb} -gt 15 ]; then
+			die 1 "ifb name too long: ${ifb}"
+		fi
+
+		d "Creating ${ifb}..."
+		$IP link add name ${ifb} type ifb
+		$IP link set dev $ifb up
+		d "Redirect ingress $dev to $ifb..."
+		$TC qdisc  add dev $dev handle ffff: ingress
+		$TC filter add dev $dev parent ffff: protocol all u32 match u32 0 0 action connmark action mirred egress redirect dev $ifb
+		dev_down=$ifb
+	else
+		dev_down=
+	fi
+	if [ "$uplink" ]; then
+		dev_up="$dev"
+	fi
+
+	# Download/Upload
+	if [ "$dev_down" ]; then
+		tc qdisc add dev $dev_down root handle 1: htb default "$default_class_id"
+		tc class add dev $dev_down parent 1: classid 1:1 htb rate $(calc_bw ${downlink})kbit burst 500k quantum 1500
+	fi
+
+	if [ "$dev_up" ]; then
+		tc qdisc add dev $dev_up   root handle 1: htb default "$default_class_id"
+		tc class add dev $dev_up   parent 1: classid 1:1 htb rate $(calc_bw ${uplink})kbit   burst 500k quantum 1500
+	fi
+
+	v "$int($dev):" \
+		"${downlink:+downlink of ${downlink}kbit}"\
+		"${uplink:+uplink of ${uplink}kbit}"\
+
+	local class class_reserved_downlink class_reserved_uplink class_allowed_downlink class_allowed_uplink class_nets class_net i=2
+	for class in $(config_foreach echo class); do
+		config_get class_reserved_downlink $class reserved_downlink
+		if [ "$class_reserved_downlink" ]; then
+			if [ "$dev_down" ]; then
+				class_reserved_downlink=$(calc_bw $class_reserved_downlink $downlink)
+				config_get class_allowed_downlink $class allowed_downlink "$class_reserved_downlink"
+				class_allowed_downlink=$(calc_bw $class_allowed_downlink $downlink)
+			else
+				e "class $class defines reserved downlink but not wan $int. Downlink shapping will be ignored"
+				class_reserved_downlink=
+			fi
+		elif [ "$dev_down" ]; then
+			e "class $class does not define reserved downlink but wan $int does. Downlink shapping will use default class"
+		fi
+
+		if [ "$class_allowed_downlink" -lt "$class_reserved_downlink" ]; then
+			die 1 "Allowed downlink bandwitdh in class $class must not be smaller than reserved downlink."
+		fi
+
+		config_get class_reserved_uplink $class reserved_uplink
+		if [ "$class_reserved_uplink" ]; then
+			if [ "$dev_up" ]; then
+				class_reserved_uplink=$(calc_bw $class_reserved_uplink $uplink)
+				config_get class_allowed_uplink $class allowed_uplink "$class_reserved_uplink"
+				class_allowed_uplink=$(calc_bw $class_allowed_uplink $uplink)
+			else
+				e "class $class defines reserved uplink but not wan $int. Downlink shapping will be ignored"
+				class_reserved_uplink=
+			fi
+		elif [ "$dev_up" ]; then
+			e "class $class does not define reserved uplink but wan $int does. Downlink shapping will use default class"
+		fi
+
+		if [ -n "$class_allowed_uplink" -a -n "$class_reserved_uplink" ] && [ "$class_allowed_uplink" -lt "$class_reserved_uplink" ]; then
+			die 1 "Allowed uplink bandwitdh in class $class must not be smaller than reserved uplink."
+		fi
+
+		v "$int($dev): $class(class 1:$i) will have" \
+			"${class_reserved_downlink:+download of ${class_reserved_downlink}kbit (up to ${class_allowed_downlink}kbit)}"\
+			"${class_reserved_uplink:+upload of ${class_reserved_uplink}kbit up (up to ${class_allowed_uplink}kbit)}"
+
+		xi=$(printf '0x%X\n' $(((i-1)<<class_id_shift)))
+		if [ "$class_reserved_uplink" ]; then
+			$TC class  add dev $dev_up   parent 1:1  classid  1:$i htb rate ${class_reserved_uplink}kbit ceil ${class_allowed_uplink}kbit   quantum 1500 burst 50k
+			$TC qdisc  add dev $dev_up   parent 1:$i handle   $i:  $QDISC
+			if [ "$class" != default ]; then
+				$TC filter add dev $dev_up   parent 1:   protocol ip prio $i handle ${xi}/$mark_mask fw flowid 1:$i
+			fi
+		fi
+		if [ "$class_reserved_downlink" ]; then
+			$TC class  add dev $dev_down parent 1:1  classid  1:$i htb rate ${class_reserved_downlink}kbit ceil ${class_allowed_downlink}kbit quantum 1500 burst 50k
+			$TC qdisc  add dev $dev_down parent 1:$i handle   $i:  $QDISC
+			if [ "$class" != default ]; then
+				$TC filter add dev $dev_down parent 1:   protocol ip   prio $i handle ${xi}/$mark_mask fw flowid 1:$i
+			fi
+		fi
+		: $((i++))
+	done
+}
+
+start_tc() {
+	d "Creating tc rules"
+	local dev_done int dev interfaces
+	local default_class_id=$1; shift
+	local only_int=$1
+
+	if [ "$only_int" ]; then
+		config_get type $only_int TYPE
+		if [ "$type" != "wan" ]; then
+			d "interface $only_int not found in trafficshaper config. Ignoring"
+			return 0
+		fi
+		interfaces="$only_int"
+
+	else
+		interfaces="$(config_foreach echo wan)"
+	fi
+
+	for int in $interfaces; do
+		network_get_physdev dev "$int" ||
+			die 1 "failed to get physical dev of interface $int"
+
+		if echo "$dev_done" | grep -x -F -q "$dev"; then
+			e "$int uses $dev which was already configured. Only list each WAN once. Skipping..."
+			continue
+		fi
+
+		start_tc_interface $int $dev $ifb "$default_class_id"
+		intdev_done="$(echo "$dev_done"; echo -n $dev)"
+	done
+}
+
+do_start() {
+	local only_int=$1 type
+
+	preinit
+	(LOGLEVEL=0 do_stop "$only_int")
+	requires
+
+	trap "set +e; do_stop $only_int" EXIT
+
+	v "Starting $APPNAME${only_int:+ for interface $only_int}"
+
+	local default_class_id
+	if ! default_class_id=$(i=2 config_foreach 'eval echo $((i++))' class '| grep " default"'); then
+		die 2 "No default class defined!"
+	fi
+	default_class_id=${default_class_id% *}
+
+	[ "$only_int" ] || start_iptables
+	start_tc "$default_class_id" "$only_int"
+
+	trap - EXIT
+}
+
+start_service() {
+	( do_start )
+}
+
+stop_service() {
+	( do_stop )
+}
+
+restart_service() {
+	( do_start )
+}
+
+is_running() {
+	$IP4T -t mangle -L $IPT_CHAIN &>/dev/null
+}
+
+reload_service() {
+	preinit
+	if ! is_running; then
+		d "Not running. Nothing to reload"
+		return 0
+	fi
+	logger -t "$APPNAME" "Reloading $*..."
+	( do_start "$@" )
+}
+
+add_interface_trigger() {
+        procd_add_interface_trigger "interface.update" "$1" /etc/init.d/$APPNAME reload $1
+}
+
+service_triggers() {
+	preinit; set +e
+	requires
+
+	procd_add_reload_trigger "$APPNAME"
+	config_foreach add_interface_trigger wan
+
+	procd_open_validate
+	validate_trafficshaper_global
+	validate_trafficshaper_wan
+	validate_trafficshaper_class
+	procd_close_validate
+}
+
+validate_trafficshaper_global() {
+        uci_validate_section $APPNAME global "${1}" \
+                'mark_mask:uinteger:0xFF'
+}
+
+validate_trafficshaper_wan() {
+	uci_validate_section "$APPNAME" wan "${1}" \
+                'downlink:uinteger' \
+                'uplink:uinteger'
+}
+
+validate_trafficshaper_class() {
+        uci_validate_section "$APPNAME" class "${1}" \
+		'network:cidr' \
+		'reserved_downlink:or(uinteger, string)' \
+		'reserved_uplink:or(uinteger, string)' \
+		'allowed_downlink:or(uinteger, string)' \
+		'allowed_uplink:or(uinteger, string)'
+}
+
+boot() {
+	LOGLEVEL=1 start
+}

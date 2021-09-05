@@ -1,0 +1,144 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2009-2014 OpenWrt.org
+
+START=90
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/bin/mjpg_streamer
+
+error() {
+	echo "${initscript}:" "$@" 1>&2
+}
+
+start_instance() {
+	local s="$1"
+
+	local enabled
+	config_get_bool enabled "$1" 'enabled' 0
+	[ "$enabled" ] || return
+
+	local input
+	config_get input "$s" 'input'
+	[ -z "$input" ] && {
+		error "in section '$s' option input is missing"
+		return 1
+	}
+
+	local output
+	config_get output "$s" 'output'
+	[ -z "$output" ] && {
+		error "in section '$s' option output is missing"
+		return 1
+	}
+
+	local input_arg
+	[ "x$input" = 'xuvc' ] && {
+		input_arg="input_uvc.so"
+
+		local device
+		config_get device "$s" 'device'
+		[ -c "$device" ] || {
+			error "device '$device' does not exist"
+			return 1
+		}
+		input_arg="${input_arg} --device $device"
+
+		local fps
+		config_get fps "$s" 'fps'
+		[ -n "$fps" ] && input_arg="${input_arg} --fps $fps"
+
+		local yuv
+		config_get_bool yuv "$s" 'yuv' 0
+		[ "$yuv" -ne 0 ] && {
+			input_arg="${input_arg} --yuv"
+			local quality
+			config_get quality "$s" 'quality'
+			[ -n "$quality" ] && input_arg="${input_arg} --quality $quality"
+		}
+
+		local resolution
+		config_get resolution "$s" 'resolution'
+		[ -n "$resolution" ] && input_arg="${input_arg} --resolution $resolution"
+
+		local led
+		config_get led "$s" 'led'
+		[ -n "$led" ] && input_arg="${input_arg} --led $led"
+	}
+
+	[ -z "$input_arg" ] && {
+		error "unsuported input option '$input' in section '$s'"
+		return 1
+	}
+
+	local output_arg
+	[ "x$output" = 'xhttp' ] && {
+		output_arg="output_http.so"
+
+		local port
+		config_get port "$s" 'port'
+		[ -n "$port" ] && output_arg="${output_arg} --port $port"
+
+		local listen_ip
+		config_get listen_ip "$s" 'listen_ip'
+		[ -n "$listen_ip" ] && output_arg="${output_arg} --listen $listen_ip"
+
+		local www
+		config_get www "$s" 'www'
+		[ -n "$www" ] && output_arg="${output_arg} --www $www"
+
+		local username
+		config_get username "$s" 'username'
+		local password
+		config_get password "$s" 'password'
+		[ -n "$username" ] && [ -n "$password" ] && output_arg="${output_arg} --credentials $username:$password"
+	}
+
+	[ "x$output" = 'xfile' ] && {
+		output_arg="output_file.so"
+
+		local folder
+		config_get folder "$s" 'folder'
+		[ -n "$folder" ] && output_arg="${output_arg} --folder $folder"
+
+		local delay
+		config_get delay "$s" 'delay'
+		[ -n "$delay" ] && output_arg="${output_arg} --delay $delay"
+
+		local link
+		config_get link "$s" 'link'
+		[ -n "$link" ] && output_arg="${output_arg} --link $link"
+
+		local ringbuffer
+		config_get ringbuffer "$s" 'ringbuffer'
+		[ -n "$ringbuffer" ] && output_arg="${output_arg} --size $ringbuffer"
+
+		local exceed
+		config_get exceed "$s" 'exceed'
+		[ -n "$exceed" ] && output_arg="${output_arg} --exceed $exceed"
+
+		local command
+		config_get command "$s" 'command'
+		[ -n "$command" ] && output_arg="${output_arg} --command $command"
+
+	}
+
+	[ -z "$output_arg" ] && {
+		error "unsuported output option '$output' in section '$s'"
+		return 1
+	}
+
+	procd_open_instance
+	procd_set_param command "$PROG" --input "$input_arg" --output "$output_arg"
+	[ "x$output" = 'xhttp' ] && procd_add_mdns "http" "tcp" "$port" "daemon=mjpg-streamer"
+	procd_close_instance
+}
+
+start_service() {
+	config_load 'mjpg-streamer'
+	config_foreach start_instance 'mjpg-streamer'
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'mjpg-streamer'
+}

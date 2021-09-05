@@ -1,0 +1,206 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2010-2015 OpenWrt.org
+# Copyright (C) 2010 segal.di.ubi.pt
+#
+
+START=99
+STOP=01
+USE_PROCD=1
+
+PROG=/usr/bin/ssh
+
+_log() {
+	logger -p daemon.info -t sshtunnel "$@"
+}
+
+_err() {
+	logger -p daemon.err -t sshtunnel "$@"
+}
+
+append_params() {
+	local p v args
+	for p in "$@"; do
+		eval "v=\$$p"
+		[ -n "$v" ] && args="$args -o $p=$v"
+	done
+
+	ARGS_options="${args# *}"
+}
+
+append_string() {
+	local varname="$1"; local add="$2"; local separator="${3:- }"; local actual new
+	eval "actual=\$$varname"
+
+	new="${actual:+$actual$separator}$add"
+	eval "$varname=\$new"
+}
+
+validate_server_section() {
+	uci_load_validate sshtunnel server "$1" "$2" \
+		'user:string(1)' \
+		'hostname:host' \
+		'port:port' \
+		'retrydelay:min(1):60' \
+		'PKCS11Provider:file' \
+		'CheckHostIP:or("yes", "no")' \
+		'Compression:or("yes", "no")' \
+		'CompressionLevel:range(1,9)' \
+		'IdentityFile:file' \
+		'LogLevel:or("QUIET", "FATAL", "ERROR", "INFO", "VERBOSE", "DEBUG", "DEBUG1", "DEBUG2", "DEBUG3"):INFO' \
+		'ServerAliveCountMax:min(1)' \
+		'ServerAliveInterval:min(0)' \
+		'StrictHostKeyChecking:or("yes", "no", "accept-new")' \
+		'TCPKeepAlive:or("yes", "no")' \
+		'VerifyHostKeyDNS:or("yes", "no")'
+}
+
+validate_tunnelR_section() {
+	uci_load_validate sshtunnel tunnelR "$1" "$2" \
+		'remoteaddress:or(host, "*"):*' \
+		'remoteport:port' \
+		'localaddress:host' \
+		'localport:port'
+}
+
+validate_tunnelL_section() {
+	uci_load_validate sshtunnel tunnelL "$1" "$2" \
+		'remoteaddress:host' \
+		'remoteport:port' \
+		'localaddress:or(host, "*"):*' \
+		'localport:port'
+}
+
+validate_tunnelD_section() {
+	uci_load_validate sshtunnel tunnelD "$1" "$2" \
+		'localaddress:or(host, "*"):*' \
+		'localport:port'
+}
+
+validate_tunnelW_section() {
+	uci_load_validate sshtunnel tunnelW "$1" "$2" \
+		'vpntype:or("ethernet", "point-to-point"):point-to-point' \
+		'localdev:or("any", min(0))' \
+		'remotedev:or("any", min(0))'
+}
+
+load_tunnelR() {
+	config_get section_server "$1" "server"
+
+	# continue to read next section if this is not for the current server
+	[ "$server" = "$section_server" ] || return 0
+
+	# validate and load this remote tunnel config
+	[ "$2" = 0 ] || { _err "tunnelR $1: validation failed"; return 1; }
+
+	[ -n "$remoteport" -a -n "$localport" -a -n "$remoteaddress" ] || { _err "tunnelR $1: missing required options"; return 1; }
+
+	# count nr of valid sections to make sure there are at least one
+	count=$((count+=1))
+
+	_log "tunnelR at $server: -R $remoteaddress:$remoteport:$localaddress:$localport"
+	append_string "ARGS_tunnels" "-R $remoteaddress:$remoteport:$localaddress:$localport"
+}
+
+load_tunnelL() {
+	config_get section_server "$1" "server"
+
+	# continue to read next section if this is not for the current server
+	[ "$server" = "$section_server" ] || return 0
+
+	# validate and load this remote tunnel config
+	[ "$2" = 0 ] || { _err "tunnelL $1: validation failed"; return 1; }
+
+	[ -n "$remoteport" -a -n "$localport" -a -n "$remoteaddress" ] || { _err "tunnelL $1: missing required options"; return 1; }
+
+	# count nr of valid sections to make sure there are at least one
+	count=$((count+=1))
+
+	_log "tunnelL at $server: -L $localaddress:$localport:$remoteaddress:$remoteport"
+	append_string "ARGS_tunnels" "-L $localaddress:$localport:$remoteaddress:$remoteport"
+}
+
+load_tunnelD() {
+	config_get section_server "$1" "server"
+
+	# continue to read next section if this is not for the current server
+	[ "$server" = "$section_server" ] || return 0
+
+	# validate and load this remote tunnel config
+	[ "$2" = 0 ] || { _err "tunnelD $1: validation failed"; return 1; }
+
+	[ -n "$localport" ] || { _err "tunnelD $1: missing localport"; return 1; }
+
+	# count nr of valid sections to make sure there are at least one
+	count=$((count+=1))
+
+	_log "proxy via $server: -D $localaddress:$localport"
+	append_string "ARGS_tunnels" "-D $localaddress:$localport"
+}
+
+load_tunnelW() {
+	config_get section_server "$1" "server"
+
+	# continue to read next section if this is not for the current server
+	[ "$server" = "$section_server" ] || return 0
+
+	# validate and load this remote tunnel config
+	[ "$2" = 0 ] || { _err "tunnelW $1: validation failed"; return 1; }
+
+	[ -n "$vpntype" -a -n "$localdev" -a -n "$remotedev" ] || { _err "tunnelW $1: missing or bad options"; return 1; }
+
+	[ "$user" = "root" ] || { _err "tunnelW $1: root is required for tun"; return 1; }
+
+	# count nr of valid sections to make sure there are at least one
+	count=$((count+=1))
+
+	_log "tunnelW to $server: -o Tunnel=$vpntype -w $localdev:$remotedev"
+	append_string "ARGS_tunnels" "-o Tunnel=$vpntype -w $localdev:$remotedev"
+}
+
+load_server() {
+	local server="$1"
+
+	[ "$2" = 0 ] || { _err "server $server: validation failed"; return 1; }
+
+	local ARGS=""
+	local ARGS_options=""
+	local ARGS_tunnels=""
+	local count=0
+
+	config_foreach validate_tunnelR_section "tunnelR" load_tunnelR
+	config_foreach validate_tunnelL_section "tunnelL" load_tunnelL
+	config_foreach validate_tunnelD_section "tunnelD" load_tunnelD
+	config_foreach validate_tunnelW_section "tunnelW" load_tunnelW
+	[ "$count" -eq 0 ] && { _err "tunnels to $server not started - no tunnels defined"; return 1; }
+
+	append_params CheckHostIP Compression CompressionLevel IdentityFile \
+		LogLevel PKCS11Provider ServerAliveCountMax ServerAliveInterval \
+		StrictHostKeyChecking TCPKeepAlive VerifyHostKeyDNS
+
+	ARGS="$ARGS_options -o ExitOnForwardFailure=yes -o BatchMode=yes -nN $ARGS_tunnels -p $port $user@$hostname"
+
+	procd_open_instance "$server"
+	procd_set_param command "$PROG" $ARGS
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn 0 "$retrydelay" 1
+	procd_close_instance
+}
+
+start_service() {
+	config_load "sshtunnel"
+	config_foreach validate_server_section "server" load_server
+}
+
+service_triggers() {
+	procd_add_reload_trigger "sshtunnel"
+
+	procd_open_validate
+	validate_server_section
+	validate_tunnelR_section
+	validate_tunnelL_section
+	validate_tunnelD_section
+	validate_tunnelW_section
+	procd_close_validate
+}

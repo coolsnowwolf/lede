@@ -1,0 +1,198 @@
+Setting up OpenConnect VPN server
+=================================
+
+The openconnect server expects to be configured using the uci interface.
+
+It is recommended to setup a dynamic DNS address with openwrt prior
+to starting the server. That is because during the first startup
+a certificate file which will contain the dynamic DNS name will be
+created. You can always regenerate the certificate by deleting
+/etc/ocserv/server-key.pem.
+
+There are two approaches to setup the VPN. The proxy-arp approach (1)
+which provides clients with addresses of the LAN, and the "forwarding"
+approach (2) which provides clients with addresses of a separate private
+network. The former is suitable when you have "roadwarrior" type of clients
+connecting to the LAN, and the latter when you may need to connect
+multiple networks with the LAN.
+
+If for the client side you use OpenWRT it is recommended to check you
+have the latest vpnc-scripts and openconnect packages.
+
+
+1. Proxy-ARP Approach
+=====================
+
+[This option is available since ocserv-0.10.9-2 package]
+
+To setup a server the provides access to LAN with network address
+10.100.2.0/255.255.255.0 add the following to /etc/config/ocserv.
+The following setup will assign the upper 62 addresses for VPN use.
+
+```
+----/etc/config/ocserv-------------------------------------------
+config ocserv 'config'
+	option port '443'
+	option dpd '120'
+	option max_clients '8'
+	option max_same '2'
+	option netmask '255.255.255.192'
+	option ipaddr '10.100.2.192'
+	option auth 'plain'
+	option default_domain 'lan'
+	option compression '1'
+	option proxy_arp '1'
+	option ping_leases '1'
+	option enable '1'
+
+config dns
+	option ip '10.100.2.1'
+
+config routes
+	option ip '10.100.2.0'
+	option netmask '255.255.255.0'
+
+config ocservusers
+	option name 'test'
+	option password '$5$unl8uKAGNsdTh9zm$PnUHEGhDc5VHbFE2EfWwW38Bub6Y6EZ5hrFwZE1r2F1'
+
+-----------------------------------------------------------------
+```
+
+This setup re-utilizes the addresses assigned to LAN for the VPN clients.
+To ensure that there are no conflicts with the DHCP server use the following
+commands. These will set the maximum address assigned by DHCP to be 10.100.2.191
+which is below the first VPN assigned address (10.100.2.192).
+
+```
+# uci set dhcp.lan.start=100
+# uci set dhcp.lan.limit=91
+```
+
+For simple networks like that you may also leave the 'netmask' and 'ipaddr'
+fields empty and ocserv on startup will set the necessary values.
+
+
+2. Forwarding Approach
+======================
+
+To setup a server the provides access to LAN with network address
+10.100.2.0/255.255.255.0 using the VPN address range
+10.100.3.0/255.255.255.0 add the following to /etc/config/ocserv:
+
+```
+----/etc/config/ocserv-------------------------------------------
+config ocserv 'config'
+	option port '443'
+	option dpd '120'
+	option max_clients '8'
+	option max_same '2'
+	option netmask '255.255.255.0'
+	option ipaddr '10.100.3.0'
+	option auth 'plain'
+	option default_domain 'lan'
+	option compression '1'
+	option enable '1'
+
+config dns
+	option ip '10.100.2.1'
+
+config routes
+	option ip '10.100.2.0'
+	option netmask '255.255.255.0'
+
+config ocservusers
+	option name 'test'
+	option password '$5$unl8uKAGNsdTh9zm$PnUHEGhDc5VHbFE2EfWwW38Bub6Y6EZ5hrFwZE1r2F1'
+
+-----------------------------------------------------------------
+```
+
+Setting up split-dns
+====================
+
+To allow the clients to resolv with the local domain add the following
+to the ocserv configuration file.
+
+```
+----/etc/config/ocserv-------------------------------------------
+config ocserv 'config'
+	option split_dns '1'
+	option default_domain 'mydomain'
+```
+
+The ```default_domain``` is optional and if not set, it will be autodetected
+from dnsmasq's configuration.
+
+
+Setting up the firewall
+=======================
+
+Since the connected users will be assigned to other interfaces than the LAN
+one, it is required to assign the VPN clients to an interface, and enable
+forwarding for them. That is, you should setup an unmanaged interface (e.g.,
+called vpn), which will have assigned the 'vpns+' interfaces (i.e., all vpns
+interfaces). Then a zone called vpn should be setup to handle interactions
+with lan. An example, which alls all forwarding between LAN and VPN clients,
+follows.
+
+```
+----/etc/config/network------------------------------------------
+config interface 'vpn'
+        option proto 'none'
+        option ifname 'vpns+'
+-----------------------------------------------------------------
+
+----/etc/config/firewall-----------------------------------------
+config zone
+        option input 'ACCEPT'
+        option forward 'ACCEPT'
+        option output 'ACCEPT'
+        option name 'vpn'
+        option device 'vpns+'
+        option network 'vpn'
+
+config forwarding
+        option dest 'lan'
+        option src 'vpn'
+
+config forwarding
+        option dest 'vpn'
+        option src 'lan'
+
+config rule
+        option target 'ACCEPT'
+        option src 'wan'
+        option proto 'tcp'
+        option dest_port '443'
+        option name 'vpn'
+
+config rule
+        option target 'ACCEPT'
+        option src 'wan'
+        option proto 'udp'
+        option dest_port '443'
+        option name 'vpn'
+-----------------------------------------------------------------
+```
+
+Note, that the last two rules, enable connections to port 443 from the
+Internet. That is the port used by OpenConnect VPN.
+
+
+Starting the server
+===================
+
+Note that both configurations above add the user "test" with password "test". The
+password is specified in the crypt(3) format.
+
+The server can be enabled and started using:
+# /etc/init.d/ocserv enable
+# /etc/init.d/ocserv start
+
+For any custom configuration options of ocserv you may add values in
+/etc/ocserv/ocserv.conf.local.
+
+There is a luci plugin to allow configuring the server from
+the web environment; see the package luci-app-ocserv.
+

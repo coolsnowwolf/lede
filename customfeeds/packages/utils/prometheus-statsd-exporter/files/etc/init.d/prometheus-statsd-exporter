@@ -1,0 +1,99 @@
+#!/bin/sh /etc/rc.common
+
+START=60
+
+USE_PROCD=1
+PROG=/usr/bin/statsd_exporter
+CONFFILE=/etc/prometheus-statsd-exporter.yml
+
+. /lib/functions/network.sh
+
+_log() {
+	logger -p daemon.info -t prometheus-statsd-exporter "$@"
+}
+
+start_service() {
+	local web_interface web_port web_ipv6
+	local web_telemetry_path
+	local statsd_udp_interface statsd_udp_port statsd_udp_ipv6
+	local statsd_tcp_interface statsd_tcp_port statsd_tcp_ipv6
+	local statsd_mapping_config
+	local web_ip statsd_udp_ip statsd_tcp_ip
+
+	config_load "prometheus-statsd-exporter"
+	config_get web_interface main web_interface "loopback"
+	config_get web_port main web_port "9102"
+	config_get web_ipv6 main web_ipv6 "0"
+	config_get web_telemetry_path main web_telemetry_path "/metrics"
+	config_get statsd_udp_interface main statsd_udp_interface "loopback"
+	config_get statsd_udp_port main statsd_udp_port "9125"
+	config_get statsd_udp_ipv6 main statsd_udp_ipv6 "0"
+	config_get statsd_tcp_interface main statsd_tcp_interface "loopback"
+	config_get statsd_tcp_port main statsd_tcp_port "9125"
+	config_get statsd_tcp_ipv6 main statsd_tcp_ipv6 "0"
+	config_get statsd_mapping_config main statsd_mapping_config "$CONFFILE"
+
+	if [ "$web_ipv6" = 1 ]; then
+		network_get_ipaddr6 web_ip "$web_interface"
+	else
+		network_get_ipaddr web_ip "$web_interface"
+	fi
+
+	network_is_up "$web_interface" && [ -n "$web_ip" ] || {
+		_log "defering start until web interface $web_interface becomes ready"
+		return 0
+	}
+
+	if [ "$statsd_udp_ipv6" = 1 ]; then
+		network_get_ipaddr6 statsd_udp_ip "$statsd_udp_interface"
+	else
+		network_get_ipaddr statsd_udp_ip "$statsd_udp_interface"
+	fi
+
+	network_is_up "$statsd_udp_interface" && [ -n "$statsd_udp_ip" ] || {
+		_log "defering start until statsd udp interface $statsd_udp_interface becomes ready"
+		return 0
+	}
+
+	if [ "$statsd_tcp_ipv6" = 1 ]; then
+		network_get_ipaddr6 statsd_tcp_ip "$statsd_tcp_interface"
+	else
+		network_get_ipaddr statsd_tcp_ip "$statsd_tcp_interface"
+	fi
+
+	network_is_up "$statsd_tcp_interface" && [ -n "$statsd_tcp_ip" ] || {
+		_log "defering start until statsd tcp interface $statsd_tcp_interface becomes ready"
+		return 0
+	}
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_append_param command --web.listen-address="${web_ip}:${web_port}"
+	procd_append_param command --web.telemetry-path="$web_telemetry_path"
+	procd_append_param command --statsd.listen-udp="${statsd_udp_ip}:${statsd_udp_port}"
+	procd_append_param command --statsd.listen-tcp="${statsd_tcp_ip}:${statsd_tcp_port}"
+	procd_append_param command --statsd.mapping-config="$statsd_mapping_config"
+	procd_append_param command --log.level="warn"
+
+	procd_set_param file "$config_file"
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn
+	procd_close_instance
+}
+
+service_triggers()
+{
+	local web_interface statsd_udp_interface statsd_tcp_interface
+
+	procd_add_reload_trigger "prometheus-statsd-exporter"
+
+	config_load "prometheus-statsd-exporter"
+	config_get web_interface main web_interface "loopback"
+	config_get statsd_udp_interface main statsd_udp_interface "loopback"
+	config_get statsd_tcp_interface main statsd_tcp_interface "loopback"
+
+	procd_add_reload_interface_trigger "$web_interface"
+	procd_add_reload_interface_trigger "$statsd_udp_interface"
+	procd_add_reload_interface_trigger "$statsd_tcp_interface"
+}

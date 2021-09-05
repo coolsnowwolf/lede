@@ -1,0 +1,68 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2020 Lienol <lawlienol@gmail.com>
+
+START=99
+
+CONFIG="pingos"
+
+TEMP_PATH="/var/etc/$CONFIG"
+NGINX_CONFIG="$TEMP_PATH/nginx.conf"
+
+config_t_get() {
+	local index=0
+	[ -n "$4" ] && index=$4
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+gen_nginx_config() {
+	ipv6=$(config_t_get global ipv6 0)
+	http_port=$(config_t_get global http_port)
+	[ "$(config_t_get global https 0)" == "1" ] && {
+		http_port="$http_port ssl"
+		ssl_certificate="ssl_certificate $(config_t_get global certificate);"
+		ssl_certificate_key="ssl_certificate_key $(config_t_get global key);"
+	}
+	rtmp_port=$(config_t_get global rtmp_port)
+	hls=$(config_t_get global hls 0)
+	[ $hls == 1 ] && hls=on || hls=off
+	hls2=$(config_t_get global hls2 0)
+	[ $hls2 == 1 ] && hls2=on || hls2=off
+	ts_record=$(config_t_get global ts_record 0)
+	[ $ts_record == 1 ] && ts_record=on || ts_record=off
+	flv_record=$(config_t_get global flv_record 0)
+	[ $flv_record == 1 ] && flv_record=all || flv_record=off
+	record_path=$(config_t_get global record_path "$TEMP_PATH/record")
+	
+	sed -e "s#|TMP_PATH|#$TEMP_PATH#g" \
+	    -e "s#|HTTP_PORT|#$http_port#g" \
+	    -e "s#|ssl_certificate|#$ssl_certificate#g" \
+	    -e "s#|ssl_certificate_key|#$ssl_certificate_key#g" \
+	    -e "s#|RTMP_PORT|#$rtmp_port#g" \
+	    -e "s#|HLS|#$hls#g" \
+	    -e "s#|HLS2|#$hls2#g" \
+	    -e "s#|TS_RECORD|#$ts_record#g" \
+	    -e "s#|FLV_RECORD|#$flv_record#g" \
+	    -e "s#|RECORD_PATH|#$record_path#g" \
+	    /etc/$CONFIG.template > $1
+		
+	[ "$ipv6" = "0" ] && sed -i '/listen \[::\]:/d' $1
+}
+
+start() {
+	ENABLED=$(config_t_get global enable 0)
+	[ "$ENABLED" = "0" ] && return 0
+	mkdir -p $TEMP_PATH $TEMP_PATH/lib
+	gen_nginx_config $NGINX_CONFIG
+	/usr/sbin/pingos -c $NGINX_CONFIG >/dev/null 2>&1 &
+}
+
+stop() {
+	/usr/sbin/pingos -c $NGINX_CONFIG -s stop >/dev/null 2>&1
+	rm -rf $TEMP_PATH
+}
+
+restart() {
+	stop
+	start
+}

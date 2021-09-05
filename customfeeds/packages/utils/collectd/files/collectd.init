@@ -1,0 +1,378 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2016 OpenWrt.org
+
+START=80
+STOP=10
+
+USE_PROCD=1
+COLLECTD_CONF="/tmp/collectd.conf"
+LOG="logger -t collectd[$$] -p"
+NICEPRIO=5
+
+CONFIG_STRING=""
+
+[ -d /usr/libexec/collectd ] && {
+	find /usr/libexec/collectd ! -perm 0500 -exec chmod 0500 '{}' '+'
+	find /usr/libexec/collectd ! \( -user nobody -a -group nogroup \) -exec chown nobody:nogroup '{}' '+'
+}
+
+process_exec() {
+	printf "<Plugin exec>\n" >> "$COLLECTD_CONF"
+	config_foreach process_exec_sections exec_input "Exec"
+	config_foreach process_exec_sections exec_notify "NotificationExec"
+	printf "</Plugin>\n\n" >> "$COLLECTD_CONF"
+}
+
+process_exec_sections() {
+	local cfg="$1"
+	local section="$2"
+
+	local cmdline cmduser cmdgroup
+
+	config_get cmdline "$cfg" cmdline
+	[ -z "$cmdline" ] && {
+		$LOG notice "No cmdline option in config $cfg defined"
+		return 0
+	}
+
+	config_get cmduser "$cfg" cmduser
+	[ -z "$cmduser" ] && {
+		$LOG notice "No cmduser option in config $cfg defined"
+		return 0
+	}
+
+	config_get cmdgroup "$cfg" cmdgroup
+	if [ -z "$cmdgroup" ]; then
+		printf "\\t%s \"%s\" \"%s\"\n" "${section}" "${cmduser}" "${cmdline}" >> "$COLLECTD_CONF"
+	else
+		printf "\\t%s \"%s:%s\" \"%s\"\n" "${section}" "${cmduser}" "${cmdgroup}" "${cmdline}" >> "$COLLECTD_CONF"
+	fi
+}
+
+process_curl() {
+	printf "<Plugin curl>\n" >> "$COLLECTD_CONF"
+	config_foreach process_curl_page curl_page
+	printf "</Plugin>\n\n" >> "$COLLECTD_CONF"
+}
+
+process_curl_page() {
+	local cfg="$1"
+
+	local name url
+
+	config_get name "$cfg" name
+	[ -z "$name" ] && {
+		$LOG notice "No name option in config $cfg defined"
+		return 0
+	}
+
+	config_get url "$cfg" url
+	[ -z "$url" ] && {
+		$LOG notice "No URL option in config $cfg defined"
+		return 0
+	}
+
+	printf "\\t<Page \"%s\">\n" "${name}" >> "$COLLECTD_CONF"
+	printf "\\t\\tURL \"%s\"\n" "${url}" >> "$COLLECTD_CONF"
+	printf "\\t\\tMeasureResponseTime true\n" >> "$COLLECTD_CONF"
+	printf "\\t</Page>\n" >> "$COLLECTD_CONF"
+}
+
+process_network() {
+	local cfg="$1"
+
+	local TimeToLive Forward CacheFlush
+
+	printf "<Plugin network>\n" >> "$COLLECTD_CONF"
+	config_foreach process_network_sections network_listen "listen"
+	config_foreach process_network_sections network_server "server"
+
+	config_get TimeToLive "$cfg" TimeToLive
+	[ -z "$TimeToLive" ] || {
+		printf "\\tTimeToLive %s\n" "${TimeToLive}" >> "$COLLECTD_CONF"
+	}
+
+	config_get CacheFlush "$cfg" CacheFlush
+	[ -z "$CacheFlush" ] || {
+		printf "\\tCacheFlush %s\n" "${CacheFlush}" >> "$COLLECTD_CONF"
+	}
+
+	config_get_bool Forward "$cfg" Forward
+	if [ "$Forward" = "0" ]; then
+		printf "\\tForward false\n" >> "$COLLECTD_CONF"
+	else
+		printf "\\tForward true\n" >> "$COLLECTD_CONF"
+	fi
+
+	printf "</Plugin>\n\n" >> "$COLLECTD_CONF"
+}
+
+process_network_sections() {
+	local cfg="$1"
+	local section="$2"
+
+	local host port output
+
+	config_get host "$cfg" host
+	[ -z "$host" ] && {
+		$LOG notice "No host option in config $cfg defined"
+		return 0
+	}
+
+	if [ "$section" = "server" ]; then
+		output="Server \"$host\""
+	else
+		output="Listen \"$host\""
+	fi
+
+	config_get port "$cfg" port
+	if [ -z "$port" ]; then
+		printf "\\t%s\n" "${output}" >> "$COLLECTD_CONF"
+	else
+		printf "\\t%s \"%s\"\n" "${output}" "${port}" >> "$COLLECTD_CONF"
+	fi
+}
+
+process_iptables() {
+	local cfg="$1"
+
+	printf "<Plugin iptables>\n" >> "$COLLECTD_CONF"
+	config_foreach process_iptables_sections iptables_match
+	printf "</Plugin>\n\n" >> "$COLLECTD_CONF"
+}
+
+process_iptables_sections() {
+	local cfg="$1"
+
+	local table chain
+
+	config_get table "$cfg" table
+	[ -z "$table" ] && {
+		$LOG notice "No table option in config $cfg defined"
+		return 0
+	}
+
+	config_get chain "$cfg" chain
+	[ -z "$chain" ] && {
+		$LOG notice "No chain option in config $cfg defined"
+		return 0
+	}
+
+	config_get index "$cfg" index
+	[ -z "$index" ] && {
+		$LOG notice "No index option in config $cfg defined"
+		return 0
+	}
+
+	config_get name "$cfg" name
+	if [ -z "$name" ]; then
+		printf "\\tChain %s %s %s\n" "${table}" "${chain}" "${index}" >> "$COLLECTD_CONF"
+	else
+		printf "\\tChain %s %s %s \"%s\"\n" "${table}" "${chain}" "${index}" "${name}">> "$COLLECTD_CONF"
+	fi
+}
+
+CONFIG_LIST=""
+add_list_option() {
+	local value="$1"
+	local option="$2"
+	local indent="$3"
+
+	CONFIG_LIST="${CONFIG_LIST}${indent}${option} \"$value\"\n"
+}
+
+process_generic() {
+	local cfg="$1"
+	local indent="$2"
+	local json="$3"
+
+	local config=""
+
+	. /usr/share/libubox/jshn.sh
+	json_init
+	json_load_file "$json"
+
+	json_select string 1>/dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		json_get_keys keys
+		for key in ${keys}; do
+			json_get_var option "$key"
+			config_get value "$cfg" "$option" ""
+			[ -z "$value" ] || {
+				config="${config}${indent}${option} \"${value}\"\n"
+			}
+		done
+		json_select ..
+	fi
+
+	json_select bool 1>/dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		json_get_keys keys
+		for key in ${keys}; do
+			json_get_var option "$key"
+			config_get_bool value "$cfg" "$option"
+			if [ "$value" = "0" ]; then
+				config="${config}${indent}${option} false\n"
+			fi
+
+			if [ "$value" = "1" ]; then
+				config="${config}${indent}${option} true\n"
+			fi
+		done
+		json_select ..
+	fi
+
+	json_select list 1>/dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		json_get_keys keys
+		for key in ${keys}; do
+			json_get_var option "$key"
+			CONFIG_LIST=""
+			config_list_foreach "$cfg" "$option" add_list_option "$option" "$indent"
+			config="${config}${CONFIG_LIST}"
+		done
+		json_select ..
+	fi
+
+	[ -z "$config" ] || {
+		printf "%s<Plugin %s>\n" "${CONFIG_STRING}" "$cfg" >> "$COLLECTD_CONF"
+		echo -n -e "${config}" >> "$COLLECTD_CONF"
+		printf "%s</Plugin>\n" "${CONFIG_STRING}" >> "$COLLECTD_CONF"
+	}
+}
+
+process_plugins() {
+	local cfg="$1"
+
+	local enable keys key option value
+
+	config_get enable "$cfg" enable 0
+	[ "$enable" = "1" ] || return 0
+
+	[ -f "/usr/lib/collectd/$cfg.so" ] || {
+		$LOG notice "Plugin collectd-mod-$cfg not installed"
+		return 0
+	}
+
+	[ -f "/usr/share/collectd/plugin/$cfg.json" ] || {
+		$LOG notice "Configuration definition file for $cfg not found"
+		return 0
+	}
+
+	printf "LoadPlugin %s\n" "$cfg" >> "$COLLECTD_CONF"
+	case "$cfg" in
+		exec)
+			CONFIG_STRING=""
+			process_exec
+			;;
+		curl)
+			CONFIG_STRING=""
+			process_curl
+			;;
+		network)
+			CONFIG_STRING=""
+			process_network "$cfg"
+			;;
+		iptables)
+			CONFIG_STRING=""
+			process_iptables
+			;;
+		*)
+			CONFIG_STRING=""
+			process_generic "$cfg" "\\t" "/usr/share/collectd/plugin/$cfg.json"
+		;;
+	esac
+}
+
+process_config() {
+	local alt_config_file BaseDir Include PIDFile PluginDir TypesDB
+	local Interval ReadThreads WriteThreads Hostname
+	local WriteQueueLimitHigh WriteQueueLimitLow CollectInternalStats
+
+	rm -f "$COLLECTD_CONF"
+
+	[ -f /etc/config/collectd ] || {
+		$LOG notice "UCI config not found"
+		return 0
+	}
+	config_load collectd
+	config_get alt_config_file globals alt_config_file
+
+	# If "alt_config_file" specified, use that instead
+	[ -n "$alt_config_file" ] && [ -f "$alt_config_file" ] && {
+		rm -f "$COLLECTD_CONF"
+		ln -s "$alt_config_file" "$COLLECTD_CONF"
+		return 0
+	}
+
+	# GOBAL CONFIG
+	config_get BaseDir globals BaseDir "/var/run/collectd"
+	printf "BaseDir \"%s\"\n" "$BaseDir" >> "$COLLECTD_CONF"
+
+	config_get PIDFile globals PIDFile "/var/run/collectd.pid"
+	printf "PIDFile \"%s\"\n" "$PIDFile" >> "$COLLECTD_CONF"
+
+	config_get PluginDir globals PluginDir "/usr/lib/collectd"
+	printf "PluginDir \"%s\"\n" "$PluginDir" >> "$COLLECTD_CONF"
+
+	config_get TypesDB globals TypesDB "/usr/share/collectd/types.db"
+	printf "TypesDB \"%s\"\n" "$TypesDB" >> "$COLLECTD_CONF"
+
+	config_get Interval globals Interval 30
+	printf "Interval %s\n" "$Interval" >> "$COLLECTD_CONF"
+
+	config_get ReadThreads globals ReadThreads 2
+	printf "ReadThreads %s\n" "$ReadThreads" >> "$COLLECTD_CONF"
+
+	config_get WriteThreads globals WriteThreads 2
+	printf "WriteThreads %s\n" "$WriteThreads" >> "$COLLECTD_CONF"
+
+	config_get WriteQueueLimitLow globals WriteQueueLimitLow 0
+	[ "$WriteQueueLimitLow" -ne 0 ] \
+		&& printf "WriteQueueLimitLow %s\n" "$WriteQueueLimitLow" >> "$COLLECTD_CONF"
+
+	config_get WriteQueueLimitHigh globals WriteQueueLimitHigh 0
+	[ "$WriteQueueLimitHigh" -ne 0 ] \
+		&& printf "WriteQueueLimitHigh %s\n" "$WriteQueueLimitHigh" >> "$COLLECTD_CONF"
+
+	config_get_bool CollectInternalStats globals CollectInternalStats 0
+	if [ "$CollectInternalStats" = "0" ]; then
+		printf "CollectInternalStats false\n" >> "$COLLECTD_CONF"
+	else
+		printf "CollectInternalStats true\n" >> "$COLLECTD_CONF"
+	fi
+
+	config_get Hostname globals Hostname "$(uname -n)"
+	printf "Hostname \"%s\"\n" "$Hostname" >> "$COLLECTD_CONF"
+
+	config_get Include globals Include "/tmp/collectd.d"
+	printf "Include \"%s\"\n" "$Include" >> "$COLLECTD_CONF"
+	mkdir -p "$Include"
+
+	printf "\n" >> "$COLLECTD_CONF"
+
+	# PLUGIN CONFIG
+	config_foreach process_plugins plugin
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "collectd"
+}
+
+start_service() {
+	process_config
+
+	procd_open_instance
+	procd_set_param command /usr/sbin/collectd
+	procd_append_param command -C "$COLLECTD_CONF"
+	procd_append_param command -f # don't daemonize
+	procd_set_param nice "$NICEPRIO"
+	procd_set_param stderr 1
+	procd_set_param respawn
+	procd_close_instance
+}
+
+reload_service() {
+	restart "$@"
+}

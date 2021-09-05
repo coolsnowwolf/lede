@@ -1,0 +1,72 @@
+--- a/hosts_access.5
++++ b/hosts_access.5
+@@ -90,6 +90,9 @@ bitwise AND of the address and the `mask
+ pattern `131.155.72.0/255.255.254.0' matches every address in the
+ range `131.155.72.0' through `131.155.73.255'.
+ .IP \(bu
++An expression of the form `n.n.n.n/m\' is interpreted as a
++`net/prefixlen\' pair, as below, for IPv4 addresses.
++.IP \(bu
+ A string that begins with a `/' character is treated as a file
+ name. A host name or address is matched if it matches any host name
+ or address pattern listed in the named file. The file format is
+--- a/tcpd.h
++++ b/tcpd.h
+@@ -95,6 +95,7 @@ extern void refuse __P((struct request_i
+ extern char *xgets __P((char *, int, FILE *));	/* fgets() on steroids */
+ extern char *split_at __P((char *, int));	/* strchr() and split */
+ extern unsigned long dot_quad_addr __P((char *)); /* restricted inet_addr() */
++extern unsigned long prefix_to_netmask __P((char *)); /* 0-32 prefix length */
+ 
+ /* Global variables. */
+ 
+--- a/misc.c
++++ b/misc.c
+@@ -14,6 +14,8 @@ static char sccsic[] = "@(#) misc.c 1.2
+ #include <arpa/inet.h>
+ #include <stdio.h>
+ #include <string.h>
++#include <ctype.h>
++#include <stdlib.h>
+ 
+ #include "tcpd.h"
+ 
+@@ -85,3 +87,22 @@ char   *str;
+     }
+     return (runs == 4 ? inet_addr(str) : INADDR_NONE);
+ }
++
++/* prefix_to_netmask - convert prefix (0-32) to netmask */
++
++unsigned long prefix_to_netmask(str)
++char	*str;
++{
++    unsigned long prefix;
++    char *endptr;
++
++    if (!isdigit(str[0]))
++	return INADDR_NONE;
++
++    prefix = strtoul(str, &endptr, 10);
++    if ((endptr == str) || (*endptr != '\0') || (prefix > 32))
++	return INADDR_NONE;
++
++    return htonl(~0UL << (32 - prefix));
++}
++
+--- a/hosts_access.c
++++ b/hosts_access.c
+@@ -345,7 +345,12 @@ char   *string;
+     if ((addr = dot_quad_addr(string)) == INADDR_NONE)
+ 	return (NO);
+     if ((net = dot_quad_addr(net_tok)) == INADDR_NONE
+-	|| (mask = dot_quad_addr(mask_tok)) == INADDR_NONE) {
++	|| ((mask = dot_quad_addr(mask_tok)) == INADDR_NONE
++	    && strcmp(mask_tok, "255.255.255.255")
++	    && (mask = prefix_to_netmask(mask_tok)) == INADDR_NONE
++	    && strcmp(mask_tok, "32"))) {
++	/* 255.255.255.255 == INADDR_NONE, separate check needed. TJ. */
++	/* 32 == INADDR_NONE, separate check needed. philipp */
+ 	tcpd_warn("bad net/mask expression: %s/%s", net_tok, mask_tok);
+ 	return (NO);				/* not tcpd_jump() */
+     }

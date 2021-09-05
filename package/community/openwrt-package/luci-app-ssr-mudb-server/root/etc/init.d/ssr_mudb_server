@@ -1,0 +1,104 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2018-2020 Lienol <lawlienol@gmail.com>
+
+START=99
+
+CONFIG=ssr_mudb_server
+ssr_path=/usr/share/$CONFIG
+
+config_t_get() {
+	local index=0
+	[ -n "$4" ] && index=$4
+	local ret=$(uci -q get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+add_rule() {
+	iptables -N SSR_MUDB-SERVER
+	iptables -I INPUT -j SSR_MUDB-SERVER
+	lua $ssr_path/firewall.lua
+}
+
+del_rule() {
+	count=$(iptables -n -L INPUT 2>/dev/null | grep -c "SSR_MUDB-SERVER")
+	if [ -n "$count" ]; then
+		until [ "$count" = 0 ]
+		do
+			rules=$(iptables -n -L INPUT --line-num 2>/dev/null | grep "SSR_MUDB-SERVER" | awk '{print $1}')
+			for rule in $rules
+			do
+				iptables -D INPUT $rule 2>/dev/null
+				break
+			done
+			count=$(expr $count - 1)
+		done
+	fi
+	iptables -F SSR_MUDB-SERVER 2>/dev/null && iptables -X SSR_MUDB-SERVER 2>/dev/null
+}
+
+gen_include() {
+	echo '#!/bin/sh' > /var/etc/$CONFIG.include
+	extract_rules() {
+		echo "*$1"
+		iptables-save -t $1 | grep "SSR_MUDB-SERVER" | \
+		sed -e "s/^-A \(INPUT\)/-I \1 1/"
+		echo 'COMMIT'
+	}
+	cat <<-EOF >> /var/etc/$CONFIG.include
+		iptables-save -c | grep -v "SSR_MUDB-SERVER" | iptables-restore -c
+		iptables-restore -n <<-EOT
+		$(extract_rules filter)
+		EOT
+	EOF
+	return 0
+}
+
+set_ssr_python_crontab() {
+	if [ "$1" -eq 1 ];then
+		auto_clear_transfer=$(config_t_get global auto_clear_transfer 0)
+		if [ "$auto_clear_transfer" = "0" ];then
+			sed -i '/clear_traffic_all_users.sh/d' /etc/crontabs/root >/dev/null 2>&1 &
+		else
+			auto_clear_transfer_time=$(config_t_get global auto_clear_transfer_time)
+			[ -n "$auto_clear_transfer_time" ] && auto_clear_transfer_time=$(echo $auto_clear_transfer_time | tr ',' ' ')
+			echo "$auto_clear_transfer_time $ssr_path/clear_traffic_all_users.sh >/dev/null 2>&1" >> /etc/crontabs/root
+		fi
+	else
+		sed -i '/clear_traffic_all_users.sh/d' /etc/crontabs/root >/dev/null 2>&1 &
+	fi
+	/etc/init.d/cron restart
+}
+
+start_ssr_python_server() {
+	/usr/bin/python3 $ssr_path/server.py >> /var/log/$CONFIG.log 2>&1 &
+	set_ssr_python_crontab 1
+	add_rule
+	gen_include
+}
+
+stop_ssr_python_server() {
+	ps -w | grep "$ssr_path/server.py" | grep -v "grep" | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+	set_ssr_python_crontab 0
+	del_rule
+	rm -rf /var/log/$CONFIG.log /var/etc/$CONFIG.include
+}
+
+start() {
+	enable=$(config_t_get global enable 0)
+	if [ "$enable" -eq 1 ];then
+		users_config=$(cat $ssr_path/userapiconfig.py | grep "MUDB_FILE" | cut -d "'" -f 2)
+		[ -n "$users_config" ] && cp -rf $users_config $ssr_path/mudb_backup.json
+		start_ssr_python_server
+	else
+		stop_ssr_python_server
+	fi
+}
+
+stop() {
+	stop_ssr_python_server
+}
+
+restart() {
+	stop
+	start
+}

@@ -1,0 +1,69 @@
+#!/bin/sh /etc/rc.common
+
+START=90
+STOP=10
+
+USE_PROCD=1
+
+PROG=/usr/bin/syncthing
+
+service_triggers()
+{
+  procd_add_reload_trigger "syncthing"
+}
+
+start_service() {
+  local gui_address home enabled nice macprocs user
+  config_load "syncthing"
+
+  # Some of the default values below might not match the defaults
+  #   in /etc/config/syncthing: the reason is to remain backwards
+  #   compatible with the older versions of this service as it
+  #   evolves.
+
+  config_get_bool enabled syncthing enabled 1
+  [ "$enabled" -gt 0 ] || return 0
+
+  config_get user syncthing user 'root'
+  config_get gui_address syncthing gui_address "http://127.0.0.1:8384"
+  config_get home syncthing home "/etc/syncthing"
+
+  # For backwards compatibility
+  IDX_DB=$(readlink -n "$home"/index-v0.14.0.db)
+  if [ ! -z "$IDX_DB" ]; then
+    [ -d "$IDX_DB" ] || mkdir -p "$IDX_DB"
+
+    # A separate step to handle an upgrade use case
+    [ -d "$IDX_DB" ] && chown -R $user:$user "$IDX_DB"
+  fi
+
+  [ -d "$home" ] || mkdir -p "$home"
+  # A separate step to handle an upgrade use case
+  [ -d "$home" ] && chown -R $user:$user "$home"
+
+  # Changes to "niceness"/macprocs are not picked up by "reload_config"
+  #   nor by "restart": the service has to be stopped/started
+  #   for it to take effect
+  config_get nice syncthing nice "0"
+
+  config_get macprocs syncthing macprocs 0
+  if [ $macprocs -le 0 ]; then
+    # Default to the number of cores in this case
+    macprocs=$(grep -c ^processor /proc/cpuinfo)
+  fi
+
+  procd_open_instance
+  procd_set_param command "$PROG"
+  procd_set_param file /etc/config/syncthing
+  procd_set_param env GOMAXPROCS="$macprocs" STNOUPGRADE=1
+  procd_append_param command -gui-address="$gui_address"
+  procd_append_param command -home="$home"
+  procd_append_param command -no-browser
+  procd_set_param nice "$nice"
+  procd_set_param term_timeout 15
+  procd_set_param user "$user"
+  procd_set_param respawn
+  procd_set_param stdout 1
+  procd_set_param stderr 1
+  procd_close_instance
+}

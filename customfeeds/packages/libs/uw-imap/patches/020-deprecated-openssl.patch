@@ -1,0 +1,62 @@
+--- a/src/osdep/unix/ssl_unix.c
++++ b/src/osdep/unix/ssl_unix.c
+@@ -35,6 +35,7 @@
+ #include <bio.h>
+ #include <crypto.h>
+ #include <rand.h>
++#include <rsa.h>
+ #undef crypt
+ 
+ #define SSLBUFLEN 8192
+@@ -90,6 +91,11 @@ static char *start_tls = NIL;	/* non-NIL
+ 
+ static int sslonceonly = 0;
+ 
++#if OPENSSL_API_COMPAT >= 0x10100000L
++#define SSL_CTX_need_tmp_RSA(ctx) 0
++#define SSL_CTX_set_tmp_rsa_callback(ctx, cb)    while(0) (cb)(NULL, 0, 0)
++#endif
++
+ void ssl_onceonlyinit (void)
+ {
+   if (!sslonceonly++) {		/* only need to call it once */
+@@ -114,7 +120,6 @@ void ssl_onceonlyinit (void)
+ 				/* apply runtime linkage */
+     mail_parameters (NIL,SET_SSLDRIVER,(void *) &ssldriver);
+     mail_parameters (NIL,SET_SSLSTART,(void *) ssl_start);
+-    SSL_library_init ();	/* add all algorithms */
+   }
+ }
+ 
+@@ -220,9 +225,7 @@ static char *ssl_start_work (SSLSTREAM *
+     (sslclientkey_t) mail_parameters (NIL,GET_SSLCLIENTKEY,NIL);
+   if (ssl_last_error) fs_give ((void **) &ssl_last_error);
+   ssl_last_host = host;
+-  if (!(stream->context = SSL_CTX_new ((flags & NET_TLSCLIENT) ?
+-				       TLSv1_client_method () :
+-				       SSLv23_client_method ())))
++  if (!(stream->context = SSL_CTX_new (TLS_client_method())))
+     return "SSL context failed";
+   SSL_CTX_set_options (stream->context,0);
+ 				/* disable certificate validation? */
+@@ -695,9 +698,6 @@ void ssl_server_init (char *server)
+   SSLSTREAM *stream = (SSLSTREAM *) memset (fs_get (sizeof (SSLSTREAM)),0,
+ 					    sizeof (SSLSTREAM));
+   ssl_onceonlyinit ();		/* make sure algorithms added */
+-  ERR_load_crypto_strings ();
+-  SSL_load_error_strings ();
+-				/* build specific certificate/key file names */
+   sprintf (cert,"%s/%s-%s.pem",SSL_CERT_DIRECTORY,server,tcp_serveraddr ());
+   sprintf (key,"%s/%s-%s.pem",SSL_KEY_DIRECTORY,server,tcp_serveraddr ());
+ 				/* use non-specific name if no specific cert */
+@@ -708,9 +708,7 @@ void ssl_server_init (char *server)
+     if (stat (key,&sbuf)) strcpy (key,cert);
+   }
+ 				/* create context */
+-  if (!(stream->context = SSL_CTX_new (start_tls ?
+-				       TLSv1_server_method () :
+-				       SSLv23_server_method ())))
++  if (!(stream->context = SSL_CTX_new (TLS_server_method())))
+     syslog (LOG_ALERT,"Unable to create SSL context, host=%.80s",
+ 	    tcp_clienthost ());
+   else {			/* set context options */

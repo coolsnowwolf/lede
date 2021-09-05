@@ -1,0 +1,153 @@
+#!/bin/sh
+# vpn switch for travelmate
+# Copyright (c) 2020 Dirk Brenken (dev@brenken.org)
+# This is free software, licensed under the GNU General Public License v3.
+
+# set (s)hellcheck exceptions
+# shellcheck disable=1091,2016,2039,2059,2086,2143,2181,2188
+
+# Please note: you have to setup the package 'wireguard' or 'openvpn' before using this script
+
+export LC_ALL=C
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+set -o pipefail
+
+if [ "$(uci_get 2>/dev/null; printf "%u" "${?}")" = "127" ]
+then
+	. "/lib/functions.sh"
+fi
+
+vpn_action="${1}"
+trm_vpnservice="$(uci_get travelmate global trm_vpnservice)"
+trm_vpniface="$(uci_get travelmate global trm_vpniface)"
+trm_landevice="$(uci_get travelmate global trm_landevice)"
+trm_maxwait="$(uci_get travelmate global trm_maxwait "30")"
+trm_captiveurl="$(uci_get travelmate global trm_captiveurl "http://captive.apple.com")"
+trm_useragent="$(uci_get travelmate global trm_useragent "Mozilla/5.0 (Linux x86_64; rv:80.0) Gecko/20100101 Firefox/80.0")"
+trm_iptrule_accept="FORWARD -i ${trm_landevice} -p tcp  --match multiport --dports 80,443 -j ACCEPT"
+trm_iptrule_drop="FORWARD -i ${trm_landevice} -j DROP"
+trm_iptables="$(command -v iptables)"
+trm_logger="$(command -v logger)"
+trm_fetch="$(command -v curl)"
+
+f_log()
+{
+	local class="${1}" log_msg="${2}"
+
+	if [ -x "${trm_logger}" ]
+	then
+		"${trm_logger}" -p "${class}" -t "trm-vpn  [${$}]" "${log_msg}"
+	else
+		printf "%s %s %s\\n" "${class}" "trm-vpn  [${$}]" "${log_msg}"
+	fi
+}
+
+f_net()
+{
+	local IFS json_raw json_rc result="net nok"
+
+	json_raw="$(${trm_fetch} --user-agent "${trm_useragent}" --referer "http://www.example.com" --write-out "%{json}" --silent --show-error --connect-timeout $((trm_maxwait/10)) "${trm_captiveurl}" 2>/dev/null)"
+	json_raw="${json_raw#*\{}"
+	if [ -n "${json_raw}" ]
+	then
+		json_rc="$(printf "%s" "{${json_raw}" | jsonfilter -l1 -e '@.response_code' 2>/dev/null)"
+		if [ "${json_rc}" = "200" ] || [ "${json_rc}" = "204" ]
+		then
+			result="net ok"
+		fi
+	fi
+	printf "%s" "${result}"
+}
+
+if [ -n "${trm_vpnservice}" ] && [ -n "${trm_vpniface}" ] && [ -n "${trm_landevice}" ] && [ -f "/tmp/trm_runtime.json" ]
+then
+	status="$(jsonfilter -i "/tmp/trm_runtime.json" -l1 -e '@.data.travelmate_status' 2>/dev/null)"
+	vpn_status="$(ubus -S call network.interface."${trm_vpniface}" status 2>/dev/null | jsonfilter -l1 -e '@.up')"
+	if [ "${vpn_action}" = "disable" ] && [ "${vpn_status}" = "true" ]
+	then
+		if [ -n "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_drop} 2>&1)" ] && \
+			[ -n "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_accept} 2>&1)" ]
+		then
+			"${trm_iptables}" "-w $((trm_maxwait/6))" -I ${trm_iptrule_drop} 2>&1
+			f_log "info" "lan forward blocked for device '${trm_landevice}'"
+		fi
+	fi
+	if [ "${vpn_action}" = "disable" ] && [ "${status%% (net cp *}" = "connected" ]
+	then
+		if [ -n "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_accept} 2>&1)" ] && \
+			[ -z "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_drop} 2>&1)" ]
+		then
+			"${trm_iptables}" "-w $((trm_maxwait/6))" -I ${trm_iptrule_accept} 2>&1
+			f_log "info" "lan forward on ports 80/443 freed for device '${trm_landevice}'"
+		fi
+	fi
+
+	case "${trm_vpnservice}" in
+		"wireguard")
+			if [ "${vpn_action}" = "enable" ] && [ "${vpn_status}" != "true" ]
+			then
+				ubus call network.interface."${trm_vpniface}" up
+			elif [ "${vpn_action}" = "disable" ] && [ "${vpn_status}" = "true" ]
+			then
+				ubus call network.interface."${trm_vpniface}" down
+				f_log "info" "${trm_vpnservice} client connection disabled"
+			fi
+		;;
+		"openvpn")
+			if [ "${vpn_action}" = "enable" ] && [ "${vpn_status}" != "true" ]
+			then
+				ubus call network.interface."${trm_vpniface}" up
+				/etc/init.d/openvpn restart >/dev/null 2>&1
+			elif [ "${vpn_action}" = "disable" ] && [ "${vpn_status}" = "true" ]
+			then
+				ubus call network.interface."${trm_vpniface}" down
+				/etc/init.d/openvpn stop >/dev/null 2>&1
+				f_log "info" "${trm_vpnservice} client connection disabled"
+			fi
+		;;
+	esac
+
+	if [ "${vpn_action}" = "enable" ] && [ "${vpn_status}" != "true" ]
+	then
+		cnt=0
+		while true
+		do
+			vpn_status="$(ubus -S call network.interface."${trm_vpniface}" status 2>/dev/null | jsonfilter -l1 -e '@.up')"
+			if [ "${vpn_status}" = "true" ]
+			then
+				net_status="$(f_net)"
+				if [ "${net_status}" = "net ok" ]
+				then
+					f_log "info" "${trm_vpnservice} client connection enabled"
+					if [ -z "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_drop} 2>&1)" ]
+					then
+						"${trm_iptables}" "-w $((trm_maxwait/6))" -D ${trm_iptrule_drop} 2>&1
+						if [ -z "$("${trm_iptables}" "-w $((trm_maxwait/6))" -C ${trm_iptrule_accept} 2>&1)" ]
+						then
+							"${trm_iptables}" "-w $((trm_maxwait/6))" -D ${trm_iptrule_accept} 2>&1
+						fi
+						f_log "info" "lan forward freed for device '${trm_landevice}'"
+					fi
+					break
+				fi
+			fi
+			if [ "${cnt}" -ge "$((trm_maxwait/6))" ]
+			then
+				f_log "info" "${trm_vpnservice} restart failed, lan forward for device '${trm_landevice}' still blocked"
+				ubus call network.interface."${trm_vpniface}" down
+				exit 2
+			fi
+			sleep 1
+			cnt="$((cnt+1))"
+		done
+	fi
+	if [ "${vpn_action}" = "enable" ] && [ "${vpn_status}" = "true" ]
+	then
+		if [ -f "/etc/init.d/sysntpd" ]
+		then
+			/etc/init.d/sysntpd restart >/dev/null 2>&1
+		fi
+	fi
+	exit 0
+fi
+exit 1

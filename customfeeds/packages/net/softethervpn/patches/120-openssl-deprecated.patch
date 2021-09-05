@@ -1,0 +1,239 @@
+--- a/src/Mayaqua/Encrypt.c
++++ b/src/Mayaqua/Encrypt.c
+@@ -120,6 +120,7 @@
+ #include <openssl/rand.h>
+ #include <openssl/engine.h>
+ #include <openssl/bio.h>
++#include <openssl/bn.h>
+ #include <openssl/x509.h>
+ #include <openssl/pkcs7.h>
+ #include <openssl/pkcs12.h>
+@@ -128,6 +129,7 @@
+ #include <openssl/md4.h>
+ #include <openssl/hmac.h>
+ #include <openssl/sha.h>
++#include <openssl/rsa.h>
+ #include <openssl/des.h>
+ #include <openssl/aes.h>
+ #include <openssl/dh.h>
+@@ -627,7 +629,7 @@ UINT CipherProcess(CIPHER *c, void *iv,
+ 		return 0;
+ 	}
+ 
+-	if (EVP_CipherFinal(c->Ctx, ((UCHAR *)dest) + (UINT)r, &r2) == 0)
++	if (EVP_CipherFinal_ex(c->Ctx, ((UCHAR *)dest) + (UINT)r, &r2) == 0)
+ 	{
+ 		return 0;
+ 	}
+@@ -926,6 +928,7 @@ BUF *BigNumToBuf(const BIGNUM *bn)
+ // Initialization of the lock of OpenSSL
+ void OpenSSL_InitLock()
+ {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	UINT i;
+ 
+ 	// Initialization of the lock object
+@@ -939,11 +942,13 @@ void OpenSSL_InitLock()
+ 	// Setting the lock function
+ 	CRYPTO_set_locking_callback(OpenSSL_Lock);
+ 	CRYPTO_set_id_callback(OpenSSL_Id);
++#endif
+ }
+ 
+ // Release of the lock of OpenSSL
+ void OpenSSL_FreeLock()
+ {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	UINT i;
+ 
+ 	for (i = 0;i < ssl_lock_num;i++)
+@@ -955,11 +960,13 @@ void OpenSSL_FreeLock()
+ 
+ 	CRYPTO_set_locking_callback(NULL);
+ 	CRYPTO_set_id_callback(NULL);
++#endif
+ }
+ 
+ // Lock function for OpenSSL
+ void OpenSSL_Lock(int mode, int n, const char *file, int line)
+ {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	LOCK *lock = ssl_lock_obj[n];
+ 
+ 	if (mode & CRYPTO_LOCK)
+@@ -972,12 +979,15 @@ void OpenSSL_Lock(int mode, int n, const
+ 		// Unlock
+ 		Unlock(lock);
+ 	}
++#endif
+ }
+ 
+ // Return the thread ID
+ unsigned long OpenSSL_Id(void)
+ {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	return (unsigned long)ThreadId();
++#endif
+ }
+ 
+ // Get the display name of the certificate
+@@ -1901,8 +1911,8 @@ X509 *NewX509(K *pub, K *priv, X *ca, NA
+ 	X509_set_version(x509, 2L);
+ 
+ 	// Set the Expiration
+-	t1 = X509_get_notBefore(x509);
+-	t2 = X509_get_notAfter(x509);
++	t1 = X509_getm_notBefore(x509);
++	t2 = X509_getm_notAfter(x509);
+ 	if (!UINT64ToAsn1Time(t1, notBefore))
+ 	{
+ 		FreeX509(x509);
+@@ -2043,8 +2053,8 @@ X509 *NewRootX509(K *pub, K *priv, NAME
+ 	X509_set_version(x509, 2L);
+ 
+ 	// Set the Expiration
+-	t1 = X509_get_notBefore(x509);
+-	t2 = X509_get_notAfter(x509);
++	t1 = X509_getm_notBefore(x509);
++	t2 = X509_getm_notAfter(x509);
+ 	if (!UINT64ToAsn1Time(t1, notBefore))
+ 	{
+ 		FreeX509(x509);
+@@ -2697,6 +2707,43 @@ bool RsaCheckEx()
+ 
+ 	return false;
+ }
++
++// RSA key generation
++static RSA *RsaGenKey(UINT bit, BN_ULONG e)
++{
++	RSA *rsa = NULL;
++	char errbuf[MAX_SIZE];
++	BIGNUM *bne = NULL;
++
++	if ((bne = BN_new()) == NULL)
++	{
++		Debug("BN_new: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
++		return NULL;
++	}
++	if (BN_set_word(bne, e) == 0)
++	{
++		Debug("BN_set_word: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
++		goto fail;
++	}
++	if ((rsa = RSA_new()) == NULL)
++	{
++		Debug("RSA_new: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
++		goto fail;
++	}
++	if (RSA_generate_key_ex(rsa, bit, bne, NULL) == 0)
++	{
++		Debug("RSA_generate_key_ex: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
++		goto fail;
++	}
++	BN_free(bne);
++	return rsa;
++
++fail:
++	RSA_free(rsa);
++	BN_free(bne);
++	return NULL;
++}
++
+ bool RsaCheck()
+ {
+ 	RSA *rsa;
+@@ -2710,12 +2757,11 @@ bool RsaCheck()
+ 	// Key generation
+ 	Lock(openssl_lock);
+ 	{
+-		rsa = RSA_generate_key(bit, RSA_F4, NULL, NULL);
++		rsa = RsaGenKey(bit, RSA_F4);
+ 	}
+ 	Unlock(openssl_lock);
+ 	if (rsa == NULL)
+ 	{
+-		Debug("RSA_generate_key: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
+ 		return false;
+ 	}
+ 
+@@ -2780,12 +2826,11 @@ bool RsaGen(K **priv, K **pub, UINT bit)
+ 	// Key generation
+ 	Lock(openssl_lock);
+ 	{
+-		rsa = RSA_generate_key(bit, RSA_F4, NULL, NULL);
++		rsa = RsaGenKey(bit, RSA_F4);
+ 	}
+ 	Unlock(openssl_lock);
+ 	if (rsa == NULL)
+ 	{
+-		Debug("RSA_generate_key: err=%s\n", ERR_error_string(ERR_get_error(), errbuf));
+ 		return false;
+ 	}
+ 
+@@ -3895,7 +3940,7 @@ X *X509ToX(X509 *x509)
+ 				{
+ 					if (OBJ_obj2nid(ad->method) == NID_ad_ca_issuers && ad->location->type == GEN_URI)
+ 					{
+-						char *uri = (char *)ASN1_STRING_data(ad->location->d.uniformResourceIdentifier);
++						char *uri = (char *)ASN1_STRING_get0_data(ad->location->d.uniformResourceIdentifier);
+ 
+ 						if (IsEmptyStr(uri) == false)
+ 						{
+@@ -4108,7 +4153,9 @@ void Rand(void *buf, UINT size)
+ // Delete a thread-specific information that OpenSSL has holded
+ void FreeOpenSSLThreadState()
+ {
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	ERR_remove_state(0);
++#endif
+ }
+ 
+ // Release the Crypt library
+@@ -4130,12 +4177,14 @@ void InitCryptLibrary()
+ 	CheckIfIntelAesNiSupportedInit();
+ //	RAND_Init_For_SoftEther()
+ 	openssl_lock = NewLock();
++#if OPENSSL_VERSION_NUMBER < 0x10100000L
+ 	SSL_library_init();
+ 	//OpenSSL_add_all_algorithms();
+ 	OpenSSL_add_all_ciphers();
+ 	OpenSSL_add_all_digests();
+ 	ERR_load_crypto_strings();
+ 	SSL_load_error_strings();
++#endif
+ 
+ 	ssl_clientcert_index = SSL_get_ex_new_index(0, "struct SslClientCertInfo *", NULL, NULL, NULL);
+ 
+--- a/src/Mayaqua/Encrypt.h
++++ b/src/Mayaqua/Encrypt.h
+@@ -105,7 +105,7 @@
+ #ifndef	ENCRYPT_H
+ #define	ENCRYPT_H
+ 
+-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
++#if OPENSSL_VERSION_NUMBER >= 0x10100000L && !defined(OPENSSL_NO_CHACHA) && !defined(LIBRESSL_VERSION_NUMBER)
+ #define USE_OPENSSL_AEAD_CHACHA20POLY1305
+ #endif
+ 
+--- a/src/Mayaqua/Network.c
++++ b/src/Mayaqua/Network.c
+@@ -18172,7 +18172,7 @@ struct ssl_ctx_st *NewSSLCtx(bool server
+ 	SSL_CTX_set_ecdh_auto(ctx, 1);
+ #endif	// SSL_CTX_set_ecdh_auto
+ 
+-#if OPENSSL_VERSION_NUMBER >= 0x1010100fL
++#if OPENSSL_VERSION_NUMBER >= 0x1010100fL && !defined(LIBRESSL_VERSION_NUMBER)
+ 	// For compatibility with VPN 3.0 or older
+ 	SSL_CTX_set_security_level(ctx, 0);
+ #endif
+--- a/src/Mayaqua/Secure.c
++++ b/src/Mayaqua/Secure.c
+@@ -127,6 +127,7 @@
+ #include <openssl/pkcs7.h>
+ #include <openssl/pkcs12.h>
+ #include <openssl/rc4.h>
++#include <openssl/rsa.h>
+ #include <openssl/md5.h>
+ #include <openssl/sha.h>
+ #include <Mayaqua/Mayaqua.h>

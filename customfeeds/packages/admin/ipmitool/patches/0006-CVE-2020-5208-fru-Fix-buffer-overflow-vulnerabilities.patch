@@ -1,0 +1,123 @@
+From 960dbb956d9f9cb05b719087faed53c88dc80956 Mon Sep 17 00:00:00 2001
+From: Chrostoper Ertl <chertl@microsoft.com>
+Date: Thu, 28 Nov 2019 16:33:59 +0000
+Subject: [PATCH 06/11] fru: Fix buffer overflow vulnerabilities
+
+Partial fix for CVE-2020-5208, see
+https://github.com/ipmitool/ipmitool/security/advisories/GHSA-g659-9qxw-p7cp
+
+The `read_fru_area_section` function only performs size validation of
+requested read size, and falsely assumes that the IPMI message will not
+respond with more than the requested amount of data; it uses the
+unvalidated response size to copy into `frubuf`. If the response is
+larger than the request, this can result in overflowing the buffer.
+
+The same issue affects the `read_fru_area` function.
+---
+ lib/ipmi_fru.c | 33 +++++++++++++++++++++++++++++++--
+ 1 file changed, 31 insertions(+), 2 deletions(-)
+
+--- a/lib/ipmi_fru.c
++++ b/lib/ipmi_fru.c
+@@ -615,7 +615,10 @@ int
+ read_fru_area(struct ipmi_intf * intf, struct fru_info *fru, uint8_t id,
+ 			uint32_t offset, uint32_t length, uint8_t *frubuf)
+ {
+-	uint32_t off = offset, tmp, finish;
++	uint32_t off = offset;
++	uint32_t tmp;
++	uint32_t finish;
++	uint32_t size_left_in_buffer;
+ 	struct ipmi_rs * rsp;
+ 	struct ipmi_rq req;
+ 	uint8_t msg_data[4];
+@@ -628,10 +631,12 @@ read_fru_area(struct ipmi_intf * intf, s
+ 
+ 	finish = offset + length;
+ 	if (finish > fru->size) {
++		memset(frubuf + fru->size, 0, length - fru->size);
+ 		finish = fru->size;
+ 		lprintf(LOG_NOTICE, "Read FRU Area length %d too large, "
+ 			"Adjusting to %d",
+ 			offset + length, finish - offset);
++		length = finish - offset;
+ 	}
+ 
+ 	memset(&req, 0, sizeof(req));
+@@ -667,6 +672,7 @@ read_fru_area(struct ipmi_intf * intf, s
+ 		}
+ 	}
+ 
++	size_left_in_buffer = length;
+ 	do {
+ 		tmp = fru->access ? off >> 1 : off;
+ 		msg_data[0] = id;
+@@ -707,9 +713,18 @@ read_fru_area(struct ipmi_intf * intf, s
+ 		}
+ 
+ 		tmp = fru->access ? rsp->data[0] << 1 : rsp->data[0];
++		if(rsp->data_len < 1
++		   || tmp > rsp->data_len - 1
++		   || tmp > size_left_in_buffer)
++		{
++			printf(" Not enough buffer size");
++			return -1;
++		}
++
+ 		memcpy(frubuf, rsp->data + 1, tmp);
+ 		off += tmp;
+ 		frubuf += tmp;
++		size_left_in_buffer -= tmp;
+ 		/* sometimes the size returned in the Info command
+ 		* is too large.  return 0 so higher level function
+ 		* still attempts to parse what was returned */
+@@ -742,7 +757,9 @@ read_fru_area_section(struct ipmi_intf *
+ 			uint32_t offset, uint32_t length, uint8_t *frubuf)
+ {
+ 	static uint32_t fru_data_rqst_size = 20;
+-	uint32_t off = offset, tmp, finish;
++	uint32_t off = offset;
++	uint32_t tmp, finish;
++	uint32_t size_left_in_buffer;
+ 	struct ipmi_rs * rsp;
+ 	struct ipmi_rq req;
+ 	uint8_t msg_data[4];
+@@ -755,10 +772,12 @@ read_fru_area_section(struct ipmi_intf *
+ 
+ 	finish = offset + length;
+ 	if (finish > fru->size) {
++		memset(frubuf + fru->size, 0, length - fru->size);
+ 		finish = fru->size;
+ 		lprintf(LOG_NOTICE, "Read FRU Area length %d too large, "
+ 			"Adjusting to %d",
+ 			offset + length, finish - offset);
++		length = finish - offset;
+ 	}
+ 
+ 	memset(&req, 0, sizeof(req));
+@@ -773,6 +792,8 @@ read_fru_area_section(struct ipmi_intf *
+ 	if (fru->access && fru_data_rqst_size > 16)
+ #endif
+ 		fru_data_rqst_size = 16;
++
++	size_left_in_buffer = length;
+ 	do {
+ 		tmp = fru->access ? off >> 1 : off;
+ 		msg_data[0] = id;
+@@ -804,8 +825,16 @@ read_fru_area_section(struct ipmi_intf *
+ 		}
+ 
+ 		tmp = fru->access ? rsp->data[0] << 1 : rsp->data[0];
++		if(rsp->data_len < 1
++		   || tmp > rsp->data_len - 1
++		   || tmp > size_left_in_buffer)
++		{
++			printf(" Not enough buffer size");
++			return -1;
++		}
+ 		memcpy((frubuf + off)-offset, rsp->data + 1, tmp);
+ 		off += tmp;
++		size_left_in_buffer -= tmp;
+ 
+ 		/* sometimes the size returned in the Info command
+ 		* is too large.  return 0 so higher level function

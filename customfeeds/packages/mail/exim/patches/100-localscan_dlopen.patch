@@ -1,0 +1,258 @@
+--- a/src/config.h.defaults
++++ b/src/config.h.defaults
+@@ -33,6 +33,8 @@ Do not put spaces between # and the 'def
+ 
+ #define AUTH_VARS                     3
+ 
++#define DLOPEN_LOCAL_SCAN
++
+ #define BIN_DIRECTORY
+ 
+ #define CONFIGURE_FILE
+--- a/src/EDITME
++++ b/src/EDITME
+@@ -877,6 +877,24 @@ HEADERS_CHARSET="ISO-8859-1"
+ 
+ 
+ #------------------------------------------------------------------------------
++# On systems which support dynamic loading of shared libraries, Exim can
++# load a local_scan function specified in its config file instead of having
++# to be recompiled with the desired local_scan function. For a full
++# description of the API to this function, see the Exim specification.
++
++#DLOPEN_LOCAL_SCAN=yes
++
++# If you set DLOPEN_LOCAL_SCAN, then you need to include -rdynamic in the
++# linker flags.  Without it, the loaded .so won't be able to access any
++# functions from exim.
++
++LFLAGS = -rdynamic
++ifeq ($(OSTYPE),Linux)
++LFLAGS += -ldl
++endif
++
++
++#------------------------------------------------------------------------------
+ # The default distribution of Exim contains only the plain text form of the
+ # documentation. Other forms are available separately. If you want to install
+ # the documentation in "info" format, first fetch the Texinfo documentation
+--- a/src/globals.c
++++ b/src/globals.c
+@@ -42,6 +42,10 @@ int     optionlist_auths_size = nelem(op
+ 
+ uschar *no_aliases             = NULL;
+ 
++#ifdef DLOPEN_LOCAL_SCAN
++uschar *local_scan_path        = NULL;
++#endif
++
+ 
+ /* For comments on these variables, see globals.h. I'm too idle to
+ duplicate them here... */
+--- a/src/globals.h
++++ b/src/globals.h
+@@ -162,6 +162,9 @@ extern int (*receive_feof)(void);
+ extern int (*receive_ferror)(void);
+ extern BOOL (*receive_smtp_buffered)(void);
+ 
++#ifdef DLOPEN_LOCAL_SCAN
++extern uschar *local_scan_path;        /* Path to local_scan() library */
++#endif
+ 
+ /* For clearing, saving, restoring address expansion variables. We have to have
+ the size of this vector set explicitly, because it is referenced from more than
+--- a/src/local_scan.c
++++ b/src/local_scan.c
+@@ -5,61 +5,133 @@
+ /* Copyright (c) University of Cambridge 1995 - 2009 */
+ /* See the file NOTICE for conditions of use and distribution. */
+ 
+-
+-/******************************************************************************
+-This file contains a template local_scan() function that just returns ACCEPT.
+-If you want to implement your own version, you should copy this file to, say
+-Local/local_scan.c, and edit the copy. To use your version instead of the
+-default, you must set
+-
+-HAVE_LOCAL_SCAN=yes
+-LOCAL_SCAN_SOURCE=Local/local_scan.c
+-
+-in your Local/Makefile. This makes it easy to copy your version for use with
+-subsequent Exim releases.
+-
+-For a full description of the API to this function, see the Exim specification.
+-******************************************************************************/
+-
+-
+-/* This is the only Exim header that you should include. The effect of
+-including any other Exim header is not defined, and may change from release to
+-release. Use only the documented interface! */
+-
+ #include "local_scan.h"
+ 
+-
+-/* This is a "do-nothing" version of a local_scan() function. The arguments
+-are:
+-
+-  fd             The file descriptor of the open -D file, which contains the
+-                   body of the message. The file is open for reading and
+-                   writing, but modifying it is dangerous and not recommended.
+-
+-  return_text    A pointer to an unsigned char* variable which you can set in
+-                   order to return a text string. It is initialized to NULL.
+-
+-The return values of this function are:
+-
+-  LOCAL_SCAN_ACCEPT
+-                 The message is to be accepted. The return_text argument is
+-                   saved in $local_scan_data.
+-
+-  LOCAL_SCAN_REJECT
+-                 The message is to be rejected. The returned text is used
+-                   in the rejection message.
+-
+-  LOCAL_SCAN_TEMPREJECT
+-                 This specifies a temporary rejection. The returned text
+-                   is used in the rejection message.
+-*/
++#ifdef DLOPEN_LOCAL_SCAN
++#include <stdlib.h>
++#include <dlfcn.h>
++static int (*local_scan_fn)(int fd, uschar **return_text) = NULL;
++static int load_local_scan_library(void);
++extern uschar *local_scan_path;        /* Path to local_scan() library */
++#endif
+ 
+ int
+ local_scan(int fd, uschar **return_text)
+ {
+ fd = fd;                      /* Keep picky compilers happy */
+ return_text = return_text;
+-return LOCAL_SCAN_ACCEPT;
++#ifdef DLOPEN_LOCAL_SCAN
++/* local_scan_path is defined AND not the empty string */
++if (local_scan_path && *local_scan_path)
++  {
++  if (!local_scan_fn)
++    {
++    if (!load_local_scan_library())
++      {
++        char *base_msg , *error_msg , *final_msg ;
++        int final_length = -1 ;
++
++        base_msg=US"Local configuration error - local_scan() library failure\n";
++        error_msg = dlerror() ;
++
++        final_length = strlen(base_msg) + strlen(error_msg) + 1 ;
++        final_msg = (char*)malloc( final_length*sizeof(char) ) ;
++        *final_msg = '\0' ;
++
++        strcat( final_msg , base_msg ) ;
++        strcat( final_msg , error_msg ) ;
++
++        *return_text = final_msg ;
++      return LOCAL_SCAN_TEMPREJECT;
++      }
++    }
++    return local_scan_fn(fd, return_text);
++  }
++else
++#endif
++  return LOCAL_SCAN_ACCEPT;
+ }
+ 
++#ifdef DLOPEN_LOCAL_SCAN
++
++static int load_local_scan_library(void)
++{
++/* No point in keeping local_scan_lib since we'll never dlclose() anyway */
++void *local_scan_lib = NULL;
++int (*local_scan_version_fn)(void);
++int vers_maj;
++int vers_min;
++
++local_scan_lib = dlopen(local_scan_path, RTLD_NOW);
++if (!local_scan_lib)
++  {
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() library open failed - "
++    "message temporarily rejected");
++  return FALSE;
++  }
++
++local_scan_version_fn = dlsym(local_scan_lib, "local_scan_version_major");
++if (!local_scan_version_fn)
++  {
++  dlclose(local_scan_lib);
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() library doesn't contain "
++    "local_scan_version_major() function - message temporarily rejected");
++  return FALSE;
++  }
++
++/* The major number is increased when the ABI is changed in a non
++   backward compatible way. */
++vers_maj = local_scan_version_fn();
++
++local_scan_version_fn = dlsym(local_scan_lib, "local_scan_version_minor");
++if (!local_scan_version_fn)
++  {
++  dlclose(local_scan_lib);
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() library doesn't contain "
++    "local_scan_version_minor() function - message temporarily rejected");
++  return FALSE;
++  }
++
++/* The minor number is increased each time a new feature is added (in a
++   way that doesn't break backward compatibility) -- Marc */
++vers_min = local_scan_version_fn();
++
++
++if (vers_maj != LOCAL_SCAN_ABI_VERSION_MAJOR)
++  {
++  dlclose(local_scan_lib);
++  local_scan_lib = NULL;
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() has an incompatible major"
++    "version number, you need to recompile your module for this version"
++    "of exim (The module was compiled for version %d.%d and this exim provides"
++    "ABI version %d.%d)", vers_maj, vers_min, LOCAL_SCAN_ABI_VERSION_MAJOR,
++    LOCAL_SCAN_ABI_VERSION_MINOR);
++  return FALSE;
++  }
++else if (vers_min > LOCAL_SCAN_ABI_VERSION_MINOR)
++  {
++  dlclose(local_scan_lib);
++  local_scan_lib = NULL;
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() has an incompatible minor"
++    "version number, you need to recompile your module for this version"
++    "of exim (The module was compiled for version %d.%d and this exim provides"
++    "ABI version %d.%d)", vers_maj, vers_min, LOCAL_SCAN_ABI_VERSION_MAJOR,
++    LOCAL_SCAN_ABI_VERSION_MINOR);
++  return FALSE;
++  }
++
++local_scan_fn = dlsym(local_scan_lib, "local_scan");
++if (!local_scan_fn)
++  {
++  dlclose(local_scan_lib);
++  log_write(0, LOG_MAIN|LOG_REJECT, "local_scan() library doesn't contain "
++    "local_scan() function - message temporarily rejected");
++  return FALSE;
++  }
++
++return TRUE;
++}
++
++#endif /* DLOPEN_LOCAL_SCAN */
++
+ /* End of local_scan.c */
+--- a/src/readconf.c
++++ b/src/readconf.c
+@@ -205,6 +205,9 @@ static optionlist optionlist_config[] =
+   { "local_from_prefix",        opt_stringptr,   {&local_from_prefix} },
+   { "local_from_suffix",        opt_stringptr,   {&local_from_suffix} },
+   { "local_interfaces",         opt_stringptr,   {&local_interfaces} },
++#ifdef DLOPEN_LOCAL_SCAN
++  { "local_scan_path",          opt_stringptr,   {&local_scan_path} },
++#endif
+ #ifdef HAVE_LOCAL_SCAN
+   { "local_scan_timeout",       opt_time,        {&local_scan_timeout} },
+ #endif

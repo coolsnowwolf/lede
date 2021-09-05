@@ -1,0 +1,124 @@
+<%
+-- all lua code provided by https://github.com/jow-/
+-- thank you very much!
+
+    function apply_acls(filename, session)
+        local json = require "luci.jsonc"
+        local util = require "luci.util"
+        local fs   = require "nixio.fs"
+
+        local grants = { }
+
+        local acl = json.parse(fs.readfile(filename))
+        if type(acl) ~= "table" then
+            return
+        end
+
+        local group, perms
+        for group, perms in pairs(acl) do
+            local perm, scopes
+            for perm, scopes in pairs(perms) do
+                if type(scopes) == "table" then
+                    local scope, objects
+                    for scope, objects in pairs(scopes) do
+                        if type(objects) == "table" then
+                            if not grants[scope] then
+                                grants[scope] = { }
+                            end
+
+                            if next(objects) == 1 then
+                                local _, object
+                                for _, object in ipairs(objects) do
+                                    if not grants[scope][object] then
+                                        grants[scope][object] = { }
+                                    end
+                                    table.insert(grants[scope][object], perm)
+                                end
+                            else
+                                local object, funcs
+                                for object, funcs in pairs(objects) do
+                                    if type(funcs) == "table" then
+                                        local _, func
+                                        for _, func in ipairs(funcs) do
+                                            if not grants[scope][object] then
+                                                grants[scope][object] = { }
+                                            end
+                                            table.insert(grants[scope][object], func)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        local _, scope, object, func
+        for scope, _ in pairs(grants) do
+            local objects = { }
+            for object, _ in pairs(_) do
+                for _, func in ipairs(_) do
+                    table.insert(objects, { object, func })
+                end
+            end
+
+            util.ubus("session", "grant", {
+                ubus_rpc_session = session,
+                scope = scope, objects = objects
+            })
+        end
+    end
+
+    apply_acls("/usr/share/rpcd/acl.d/attendedsysupgrade.json", luci.dispatcher.context.authsession)
+%>
+<%+header%>
+<h2 name="content"><%:Attended Sysupgrade%></h2>
+<div class="cbi-map-descr">
+	Easily search and install new releases and package upgrades. Sysupgrade firmware are created on demand based on locally installed packages.
+</div>
+<div style="display: none" id="info_box" class="alert-message info"></div>
+<div style="display: none" id="error_box" class="alert-message danger"></div>
+<div style="display: none" id="packages" class="alert-message success"></div>
+<p>
+<textarea style="display: none; width: 100%;" id="edit_packages" rows="15"></textarea>
+</p>
+<fieldset class="cbi-section">
+	<form method="post" action="">
+		<div class="cbi-selection-node">
+			<div class="cbi-value" id="keep_container" style="display: none">
+				<div class="cbi-section-descr">
+					Check "Keep settings" to retain the current configuration (requires a compatible firmware).
+				</div>
+				<label class="cbi-value-title" for="keep">Keep settings:</label>
+				<div class="cbi-value-field">
+					<input name="keep" id="keep" checked="checked" type="checkbox">
+				</div>
+			</div>
+			<div class="cbi-value" id="edit_button" style="display: none">
+				<div class="cbi-value-field">
+					<input class="cbi-button" value="Edit installed packages" onclick="edit_packages()" type="button">
+				</div>
+			</div>
+			<div class="cbi-value cbi-value" id="server_div" style="display:none">
+				<label class="cbi-value-title" for="server">Server:</label>
+				<div class="cbi-value-field">
+					<input onclick="edit_server()" class="cbi-button cbi-button-edit" value="" type="button" id="server" name="server">
+				</div>
+			</div>
+			<div class="cbi-value cbi-value-last">
+				<div class="cbi-value-field">
+					<input class="cbi-button cbi-button-apply" value="Search for upgrades" style="display: none" onclick="upgrade_check()" type="button" id="upgrade_button">
+				</div>
+			</div>
+		</div>
+	</form>
+</fieldset>
+<script type="text/javascript">
+	data = {};
+	data["ubus_rpc_session"] = "<%=luci.dispatcher.context.authsession%>"
+	origin = document.location.href.replace(location.pathname, "")
+	ubus_url = origin + "/ubus/"
+</script>
+<script type="text/javascript" src="<%=resource%>/attendedsysupgrade.js"></script>
+<%+footer%>

@@ -1,0 +1,1667 @@
+From 5b06d1cad5f6711667038169b7ed759d749334da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan=20Bub=C3=ADk?= <jan.bubik@technodat.cz>
+Date: Wed, 13 May 2020 19:57:47 +0200
+Subject: [PATCH 1/3] arut's e0e278bc7fedd6f7465648d1d20df1a8422d60bf [removed
+ endian-dependent code]
+
+---
+ ngx_rtmp.c            |   4 ++
+ ngx_rtmp.h            |  12 +++--
+ ngx_rtmp_amf.c        |   6 +--
+ ngx_rtmp_flv_module.c |   2 +-
+ ngx_rtmp_handler.c    | 108 +++++++++++++++++++++---------------------
+ 5 files changed, 68 insertions(+), 64 deletions(-)
+
+diff --git a/nginx-rtmp/ngx_rtmp.c b/nginx-rtmp/ngx_rtmp.c
+index ad671d475..011f3ad50 100644
+--- a/ngx_rtmp.c
++++ b/ngx_rtmp.c
+@@ -828,6 +828,7 @@ ngx_rtmp_fire_event(ngx_rtmp_session_t *s, ngx_uint_t evt,
+ void *
+ ngx_rtmp_rmemcpy(void *dst, const void* src, size_t n)
+ {
++#if (NGX_HAVE_LITTLE_ENDIAN)
+     u_char     *d, *s;
+ 
+     d = dst;
+@@ -836,6 +837,9 @@ ngx_rtmp_rmemcpy(void *dst, const void* src, size_t n)
+     while(s >= (u_char*)src) {
+         *d++ = *s--;
+     }
++#else
++    dst = ngx_cpymem(dst, src, n);
++#endif
+ 
+     return dst;
+ }
+diff --git a/nginx-rtmp/ngx_rtmp.h b/nginx-rtmp/ngx_rtmp.h
+index f3a3d6f18..ddc30ea1c 100644
+--- a/ngx_rtmp.h
++++ b/ngx_rtmp.h
+@@ -427,22 +427,26 @@ void * ngx_rtmp_rmemcpy(void *dst, const void* src, size_t n);
+ static ngx_inline uint16_t
+ ngx_rtmp_r16(uint16_t n)
+ {
+-    return (n << 8) | (n >> 8);
++    return ntohs(n);
+ }
+ 
+ 
+ static ngx_inline uint32_t
+ ngx_rtmp_r32(uint32_t n)
+ {
+-    return (n << 24) | ((n << 8) & 0xff0000) | ((n >> 8) & 0xff00) | (n >> 24);
++    return ntohl(n);
+ }
+ 
+ 
+ static ngx_inline uint64_t
+ ngx_rtmp_r64(uint64_t n)
+ {
+-    return (uint64_t) ngx_rtmp_r32((uint32_t) n) << 32 |
+-                      ngx_rtmp_r32((uint32_t) (n >> 32));
++#if (NGX_HAVE_LITTLE_ENDIAN)
++    return (uint64_t) ntohl((uint32_t) n) << 32 |
++                      ntohl((uint32_t) (n >> 32));
++#else
++    return n;
++#endif
+ }
+ 
+ 
+diff --git a/nginx-rtmp/ngx_rtmp_amf.c b/nginx-rtmp/ngx_rtmp_amf.c
+index b904651dc..7c44519da 100644
+--- a/ngx_rtmp_amf.c
++++ b/ngx_rtmp_amf.c
+@@ -14,15 +14,11 @@
+ static ngx_inline void*
+ ngx_rtmp_amf_reverse_copy(void *dst, void* src, size_t len)
+ {
+-    size_t  k;
+-
+     if (dst == NULL || src == NULL) {
+         return NULL;
+     }
+ 
+-    for(k = 0; k < len; ++k) {
+-        ((u_char*)dst)[k] = ((u_char*)src)[len - 1 - k];
+-    }
++    ngx_rtmp_rmemcpy(dst, src, len);
+ 
+     return dst;
+ }
+diff --git a/nginx-rtmp/ngx_rtmp_flv_module.c b/nginx-rtmp/ngx_rtmp_flv_module.c
+index 4776e5419..76ce64752 100644
+--- a/ngx_rtmp_flv_module.c
++++ b/ngx_rtmp_flv_module.c
+@@ -445,7 +445,7 @@ ngx_rtmp_flv_send(ngx_rtmp_session_t *s, ngx_file_t *f, ngx_uint_t *ts)
+     ngx_rtmp_rmemcpy(&size, ngx_rtmp_flv_header + 1, 3);
+     ngx_rtmp_rmemcpy(&h.timestamp, ngx_rtmp_flv_header + 4, 3);
+ 
+-    ((u_char *) &h.timestamp)[3] = ngx_rtmp_flv_header[7];
++    h.timestamp |= ((uint32_t) ngx_rtmp_flv_header[7] << 24);
+ 
+     ctx->offset += (sizeof(ngx_rtmp_flv_header) + size + 4);
+ 
+diff --git a/nginx-rtmp/ngx_rtmp_handler.c b/nginx-rtmp/ngx_rtmp_handler.c
+index c6b43c8bc..5611ec88c 100644
+--- a/ngx_rtmp_handler.c
++++ b/ngx_rtmp_handler.c
+@@ -200,7 +200,7 @@ ngx_rtmp_recv(ngx_event_t *rev)
+     ngx_rtmp_stream_t          *st, *st0;
+     ngx_chain_t                *in, *head;
+     ngx_buf_t                  *b;
+-    u_char                     *p, *pp, *old_pos;
++    u_char                     *p, *old_pos;
+     size_t                      size, fsize, old_size;
+     uint8_t                     fmt, ext;
+     uint32_t                    csid, timestamp;
+@@ -308,14 +308,14 @@ ngx_rtmp_recv(ngx_event_t *rev)
+                 if (b->last - p < 1)
+                     continue;
+                 csid = 64;
+-                csid += *(uint8_t*)p++;
++                csid += *p++;
+ 
+             } else if (csid == 1) {
+                 if (b->last - p < 2)
+                     continue;
+                 csid = 64;
+-                csid += *(uint8_t*)p++;
+-                csid += (uint32_t)256 * (*(uint8_t*)p++);
++                csid += *p++;
++                csid += ((uint32_t) *p++ << 8);
+             }
+ 
+             ngx_log_debug2(NGX_LOG_DEBUG_RTMP, c->log, 0,
+@@ -355,40 +355,37 @@ ngx_rtmp_recv(ngx_event_t *rev)
+             if (fmt <= 2 ) {
+                 if (b->last - p < 3)
+                     continue;
+-                /* timestamp:
+-                 *  big-endian 3b -> little-endian 4b */
+-                pp = (u_char*)&timestamp;
+-                pp[2] = *p++;
+-                pp[1] = *p++;
+-                pp[0] = *p++;
+-                pp[3] = 0;
++
++                /* timestamp: big-endian 3 bytes */
++
++                timestamp = ((uint32_t) *p++ << 16);
++                timestamp |= ((uint32_t) *p++ << 8);
++                timestamp |= *p++;
+ 
+                 ext = (timestamp == 0x00ffffff);
+ 
+                 if (fmt <= 1) {
+                     if (b->last - p < 4)
+                         continue;
+-                    /* size:
+-                     *  big-endian 3b -> little-endian 4b
+-                     * type:
+-                     *  1b -> 1b*/
+-                    pp = (u_char*)&h->mlen;
+-                    pp[2] = *p++;
+-                    pp[1] = *p++;
+-                    pp[0] = *p++;
+-                    pp[3] = 0;
+-                    h->type = *(uint8_t*)p++;
++
++                    /* size: big-endian 3 bytes */
++
++                    h->mlen = ((uint32_t) *p++ << 16);
++                    h->mlen |= ((uint32_t) *p++ << 8);
++                    h->mlen |= *p++;
++
++                    h->type = *p++;
+ 
+                     if (fmt == 0) {
+                         if (b->last - p < 4)
+                             continue;
+-                        /* stream:
+-                         *  little-endian 4b -> little-endian 4b */
+-                        pp = (u_char*)&h->msid;
+-                        pp[0] = *p++;
+-                        pp[1] = *p++;
+-                        pp[2] = *p++;
+-                        pp[3] = *p++;
++
++                        /* stream: little-endian 4 bytes */
++
++                        h->msid = *p++;
++                        h->msid |= ((uint32_t) *p++ << 8);
++                        h->msid |= ((uint32_t) *p++ << 16);
++                        h->msid |= ((uint32_t) *p++ << 24);
+                     }
+                 }
+             }
+@@ -397,13 +394,13 @@ ngx_rtmp_recv(ngx_event_t *rev)
+             if (ext) {
+                 if (b->last - p < 4)
+                     continue;
+-                pp = (u_char*)&timestamp;
+-               /* extented time stamp:
+-                *  big-endian 4b -> little-endian 4b */
+-                pp[3] = *p++;
+-                pp[2] = *p++;
+-                pp[1] = *p++;
+-                pp[0] = *p++;
++
++                /* timestamp: big-endian 4 bytes */
++
++                timestamp = ((uint32_t) *p++ << 24);
++                timestamp |= ((uint32_t) *p++ << 16);
++                timestamp |= ((uint32_t) *p++ << 8);
++                timestamp |= *p++;
+                 ngx_log_debug1(NGX_LOG_DEBUG_RTMP, c->log, 0, "RTMP extended timestamp %uD", (uint32_t)timestamp);
+             }
+ 
+@@ -584,7 +581,7 @@ ngx_rtmp_prepare_message(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+         ngx_rtmp_header_t *lh, ngx_chain_t *out)
+ {
+     ngx_chain_t                *l;
+-    u_char                     *p, *pp;
++    u_char                     *p;
+     ngx_int_t                   hsize, thsize, nbufs;
+     uint32_t                    mlen, timestamp, ext_timestamp;
+     static uint8_t              hdrsize[] = { 12, 8, 4, 1 };
+@@ -677,33 +674,36 @@ ngx_rtmp_prepare_message(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+ 
+     /* message header */
+     if (fmt <= 2) {
+-        pp = (u_char*)&timestamp;
+-        *p++ = pp[2];
+-        *p++ = pp[1];
+-        *p++ = pp[0];
++
++        *p++ = (u_char) (timestamp >> 16);
++        *p++ = (u_char) (timestamp >> 8);
++        *p++ = (u_char) timestamp;
++        
+         if (fmt <= 1) {
+-            pp = (u_char*)&mlen;
+-            *p++ = pp[2];
+-            *p++ = pp[1];
+-            *p++ = pp[0];
++
++            *p++ = (u_char) (mlen >> 16);
++            *p++ = (u_char) (mlen >> 8);
++            *p++ = (u_char) mlen;
++
+             *p++ = h->type;
++
+             if (fmt == 0) {
+-                pp = (u_char*)&h->msid;
+-                *p++ = pp[0];
+-                *p++ = pp[1];
+-                *p++ = pp[2];
+-                *p++ = pp[3];
++
++                *p++ = (u_char) h->msid;
++                *p++ = (u_char) (h->msid >> 8);
++                *p++ = (u_char) (h->msid >> 16);
++                *p++ = (u_char) (h->msid >> 24);
+             }
+         }
+     }
+ 
+     /* extended header */
+     if (ext_timestamp) {
+-        pp = (u_char*)&ext_timestamp;
+-        *p++ = pp[3];
+-        *p++ = pp[2];
+-        *p++ = pp[1];
+-        *p++ = pp[0];
++        
++        *p++ = (u_char) (ext_timestamp >> 24);
++        *p++ = (u_char) (ext_timestamp >> 16);
++        *p++ = (u_char) (ext_timestamp >> 8);
++        *p++ = (u_char) ext_timestamp;
+ 
+         /* This CONTRADICTS the standard
+          * but that's the way flash client
+
+From 7fb255e6700bc11955d276183be9bf01a5227c05 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan=20Bub=C3=ADk?= <jan.bubik@technodat.cz>
+Date: Wed, 13 May 2020 22:41:31 +0200
+Subject: [PATCH 2/3] arut's 205664d8c5e040a61b36ae0b74ddf17bc16d2150 [fixed
+ sending protocol messages]
+
+---
+ ngx_rtmp_send.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/nginx-rtmp/ngx_rtmp_send.c b/nginx-rtmp/ngx_rtmp_send.c
+index 69dfed955..764e9ef6f 100644
+--- a/ngx_rtmp_send.c
++++ b/ngx_rtmp_send.c
+@@ -33,13 +33,13 @@
+     *(__b->last++) = (u_char)(utype);
+ 
+ #define NGX_RTMP_USER_OUT1(v)                                               \
+-    *(__b->last++) = ((u_char*)&v)[0];
++    *(__b->last++) = (u_char) v;
+ 
+ #define NGX_RTMP_USER_OUT4(v)                                               \
+-    *(__b->last++) = ((u_char*)&v)[3];                                      \
+-    *(__b->last++) = ((u_char*)&v)[2];                                      \
+-    *(__b->last++) = ((u_char*)&v)[1];                                      \
+-    *(__b->last++) = ((u_char*)&v)[0];
++    *(__b->last++) = (u_char) (v >> 24);                                    \
++    *(__b->last++) = (u_char) (v >> 16);                                    \
++    *(__b->last++) = (u_char) (v >> 8);                                     \
++    *(__b->last++) = (u_char) v;
+ 
+ #define NGX_RTMP_USER_END(s)                                                \
+     ngx_rtmp_prepare_message(s, &__h, NULL, __l);                           \
+
+From 96ffb76f8d758a9a05580c7d538e2555aeb042af Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan=20Bub=C3=ADk?= <jan.bubik@technodat.cz>
+Date: Fri, 15 May 2020 02:19:24 +0200
+Subject: [PATCH 3/3] More LE/BE compatibility
+
+---
+ hls/ngx_rtmp_hls_module.c |  20 +++-
+ ngx_rtmp.c                |  20 ----
+ ngx_rtmp.h                |  39 +++----
+ ngx_rtmp_amf.c            |  55 +++------
+ ngx_rtmp_bitop.h          |   2 +-
+ ngx_rtmp_eval.c           |   2 +-
+ ngx_rtmp_flv_module.c     |  18 +--
+ ngx_rtmp_handshake.c      |   6 +-
+ ngx_rtmp_mp4_module.c     | 240 +++++++++++++++++++-------------------
+ ngx_rtmp_receive.c        |  37 ++----
+ ngx_rtmp_record_module.c  |  42 ++-----
+ 11 files changed, 201 insertions(+), 280 deletions(-)
+
+diff --git a/nginx-rtmp/hls/ngx_rtmp_hls_module.c b/nginx-rtmp/hls/ngx_rtmp_hls_module.c
+index fbf2bcbf3..ff2b0f7b3 100644
+--- a/hls/ngx_rtmp_hls_module.c
++++ b/hls/ngx_rtmp_hls_module.c
+@@ -296,7 +296,7 @@ static ngx_command_t ngx_rtmp_hls_commands[] = {
+       ngx_conf_set_enum_slot,
+       NGX_RTMP_APP_CONF_OFFSET,
+       offsetof(ngx_rtmp_hls_app_conf_t, allow_client_cache),
+-      &ngx_rtmp_hls_cache },       
++      &ngx_rtmp_hls_cache },
+ 
+     { ngx_string("hls_variant"),
+       NGX_RTMP_MAIN_CONF|NGX_RTMP_SRV_CONF|NGX_RTMP_APP_CONF|NGX_CONF_1MORE,
+@@ -816,7 +816,7 @@ ngx_rtmp_hls_append_sps_pps(ngx_rtmp_session_t *s, ngx_buf_t *out)
+                 return NGX_ERROR;
+             }
+ 
+-            ngx_rtmp_rmemcpy(&len, &rlen, 2);
++            len=ntohs(rlen);
+ 
+             ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "hls: header NAL length: %uz", (size_t) len);
+@@ -2072,7 +2072,21 @@ ngx_rtmp_hls_video(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+         }
+ 
+         len = 0;
+-        ngx_rtmp_rmemcpy(&len, &rlen, nal_bytes);
++
++        switch (nal_bytes) {
++            case 1:
++                len=*(uint8_t*)&rlen;
++                break;
++            case 2:
++                len=ntohs(*(uint16_t*)&rlen);
++                break;
++            case 3:
++                len=n3toh4((u_char*)&rlen);
++                break;
++            case 4:
++                len=ntohl(rlen);
++                 break;
++        };
+ 
+         if (len == 0) {
+             continue;
+diff --git a/nginx-rtmp/ngx_rtmp.c b/nginx-rtmp/ngx_rtmp.c
+index 011f3ad50..e138f1209 100644
+--- a/ngx_rtmp.c
++++ b/ngx_rtmp.c
+@@ -825,26 +825,6 @@ ngx_rtmp_fire_event(ngx_rtmp_session_t *s, ngx_uint_t evt,
+ }
+ 
+ 
+-void *
+-ngx_rtmp_rmemcpy(void *dst, const void* src, size_t n)
+-{
+-#if (NGX_HAVE_LITTLE_ENDIAN)
+-    u_char     *d, *s;
+-
+-    d = dst;
+-    s = (u_char*)src + n - 1;
+-
+-    while(s >= (u_char*)src) {
+-        *d++ = *s--;
+-    }
+-#else
+-    dst = ngx_cpymem(dst, src, n);
+-#endif
+-
+-    return dst;
+-}
+-
+-
+ static ngx_int_t
+ ngx_rtmp_init_process(ngx_cycle_t *cycle)
+ {
+diff --git a/nginx-rtmp/ngx_rtmp.h b/nginx-rtmp/ngx_rtmp.h
+index ddc30ea1c..e88de4380 100644
+--- a/ngx_rtmp.h
++++ b/ngx_rtmp.h
+@@ -417,29 +417,9 @@ ngx_int_t ngx_rtmp_fire_event(ngx_rtmp_session_t *s, ngx_uint_t evt,
+ ngx_int_t ngx_rtmp_set_chunk_size(ngx_rtmp_session_t *s, ngx_uint_t size);
+ 
+ 
+-/* Bit reverse: we need big-endians in many places  */
+-void * ngx_rtmp_rmemcpy(void *dst, const void* src, size_t n);
+-
+-#define ngx_rtmp_rcpymem(dst, src, n) \
+-    (((u_char*)ngx_rtmp_rmemcpy(dst, src, n)) + (n))
+-
+-
+-static ngx_inline uint16_t
+-ngx_rtmp_r16(uint16_t n)
+-{
+-    return ntohs(n);
+-}
+-
+-
+-static ngx_inline uint32_t
+-ngx_rtmp_r32(uint32_t n)
+-{
+-    return ntohl(n);
+-}
+-
+-
++/* Bit agnosticism: we need network to host byte-order conversion in many places  */
+ static ngx_inline uint64_t
+-ngx_rtmp_r64(uint64_t n)
++ntohll(uint64_t n)
+ {
+ #if (NGX_HAVE_LITTLE_ENDIAN)
+     return (uint64_t) ntohl((uint32_t) n) << 32 |
+@@ -449,6 +429,21 @@ ngx_rtmp_r64(uint64_t n)
+ #endif
+ }
+ 
++static ngx_inline uint32_t
++n3toh4(u_char* src)
++{
++    return ((uint32_t)src[0]<<16)|((uint32_t)src[1]<<8)|src[2];
++}
++
++static ngx_inline u_char*
++h4ton3(u_char* dst, uint32_t src)
++{
++    dst[0]=(u_char)(src>>16);
++    dst[1]=(u_char)(src>>8);
++    dst[2]=(u_char)src;
++
++    return dst+3;
++}
+ 
+ /* Receiving messages */
+ ngx_int_t ngx_rtmp_receive_message(ngx_rtmp_session_t *s,
+diff --git a/nginx-rtmp/ngx_rtmp_amf.c b/nginx-rtmp/ngx_rtmp_amf.c
+index 7c44519da..465dc01cb 100644
+--- a/ngx_rtmp_amf.c
++++ b/ngx_rtmp_amf.c
+@@ -10,19 +10,6 @@
+ #include "ngx_rtmp.h"
+ #include <string.h>
+ 
+-
+-static ngx_inline void*
+-ngx_rtmp_amf_reverse_copy(void *dst, void* src, size_t len)
+-{
+-    if (dst == NULL || src == NULL) {
+-        return NULL;
+-    }
+-
+-    ngx_rtmp_rmemcpy(dst, src, len);
+-
+-    return dst;
+-}
+-
+ #define NGX_RTMP_AMF_DEBUG_SIZE 72
+ 
+ #ifdef NGX_DEBUG
+@@ -203,7 +190,7 @@ ngx_rtmp_amf_read_object(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_amf_elt_t *elts,
+             return NGX_ERROR;
+         }
+ 
+-        ngx_rtmp_amf_reverse_copy(&len, buf, 2);
++        len=ntohs(*(uint16_t*)&buf[0]);
+ 
+         if (!len)
+             break;
+@@ -254,7 +241,7 @@ ngx_rtmp_amf_read_array(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_amf_elt_t *elts,
+     if (ngx_rtmp_amf_get(ctx, buf, 4) != NGX_OK)
+         return NGX_ERROR;
+ 
+-    ngx_rtmp_amf_reverse_copy(&len, buf, 4);
++    len=ntohl(*(uint32_t*)&buf[0]);
+ 
+     for (n = 0; n < len; ++n) {
+         if (ngx_rtmp_amf_read(ctx, n < nelts ? &elts[n] : NULL, 1) != NGX_OK)
+@@ -348,10 +335,9 @@ ngx_rtmp_amf_read(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_amf_elt_t *elts,
+ 
+         switch (type) {
+             case NGX_RTMP_AMF_NUMBER:
+-                if (ngx_rtmp_amf_get(ctx, buf, 8) != NGX_OK) {
++                if (ngx_rtmp_amf_get(ctx, data, 8) != NGX_OK) {
+                     return NGX_ERROR;
+                 }
+-                ngx_rtmp_amf_reverse_copy(data, buf, 8);
+                 break;
+ 
+             case NGX_RTMP_AMF_BOOLEAN:
+@@ -364,7 +350,7 @@ ngx_rtmp_amf_read(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_amf_elt_t *elts,
+                 if (ngx_rtmp_amf_get(ctx, buf, 2) != NGX_OK) {
+                     return NGX_ERROR;
+                 }
+-                ngx_rtmp_amf_reverse_copy(&len, buf, 2);
++                len=ntohs(*(uint16_t*)buf);
+ 
+                 if (data == NULL) {
+                     rc = ngx_rtmp_amf_get(ctx, data, len);
+@@ -434,14 +420,14 @@ ngx_rtmp_amf_read(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_amf_elt_t *elts,
+                 if (ngx_rtmp_amf_get(ctx, buf, 2) != NGX_OK) {
+                     return NGX_ERROR;
+                 }
+-                ngx_rtmp_amf_reverse_copy(data, buf, 2);
++                *(uint16_t*)data=ntohs(*(uint16_t*)buf);
+                 break;
+ 
+             case NGX_RTMP_AMF_INT32:
+                 if (ngx_rtmp_amf_get(ctx, buf, 4) != NGX_OK) {
+                     return NGX_ERROR;
+                 }
+-                ngx_rtmp_amf_reverse_copy(data, buf, 4);
++                *(uint32_t*)data=ntohs(*(uint32_t*)buf);
+                 break;
+ 
+             case NGX_RTMP_AMF_END:
+@@ -472,9 +458,8 @@ ngx_rtmp_amf_write_object(ngx_rtmp_amf_ctx_t *ctx,
+ 
+         len = (uint16_t) elts[n].name.len;
+ 
+-        if (ngx_rtmp_amf_put(ctx,
+-                    ngx_rtmp_amf_reverse_copy(buf,
+-                        &len, 2), 2) != NGX_OK)
++        *(uint16_t*)buf = htons(len);
++        if (ngx_rtmp_amf_put(ctx, buf, 2) != NGX_OK)
+         {
+             return NGX_ERROR;
+         }
+@@ -505,9 +490,8 @@ ngx_rtmp_amf_write_array(ngx_rtmp_amf_ctx_t *ctx,
+     u_char                  buf[4];
+ 
+     len = nelts;
+-    if (ngx_rtmp_amf_put(ctx,
+-                ngx_rtmp_amf_reverse_copy(buf,
+-                    &len, 4), 4) != NGX_OK)
++    *(uint32_t*)buf = htonl(len);
++        if (ngx_rtmp_amf_put(ctx, buf, 4) != NGX_OK)
+     {
+         return NGX_ERROR;
+     }
+@@ -550,9 +534,7 @@ ngx_rtmp_amf_write(ngx_rtmp_amf_ctx_t *ctx,
+ 
+         switch(type) {
+             case NGX_RTMP_AMF_NUMBER:
+-                if (ngx_rtmp_amf_put(ctx,
+-                            ngx_rtmp_amf_reverse_copy(buf,
+-                                data, 8), 8) != NGX_OK)
++                if (ngx_rtmp_amf_put(ctx, data, 8) != NGX_OK)
+                 {
+                     return NGX_ERROR;
+                 }
+@@ -569,9 +551,8 @@ ngx_rtmp_amf_write(ngx_rtmp_amf_ctx_t *ctx,
+                     len = (uint16_t) ngx_strlen((u_char*) data);
+                 }
+ 
+-                if (ngx_rtmp_amf_put(ctx,
+-                            ngx_rtmp_amf_reverse_copy(buf,
+-                                &len, 2), 2) != NGX_OK)
++                *(uint16_t*)buf = htons(len);
++                if (ngx_rtmp_amf_put(ctx, buf, 2) != NGX_OK)
+                 {
+                     return NGX_ERROR;
+                 }
+@@ -617,18 +598,16 @@ ngx_rtmp_amf_write(ngx_rtmp_amf_ctx_t *ctx,
+                 break;
+ 
+             case NGX_RTMP_AMF_INT16:
+-                if (ngx_rtmp_amf_put(ctx,
+-                            ngx_rtmp_amf_reverse_copy(buf,
+-                                data, 2), 2) != NGX_OK)
++                *(uint16_t*)buf = htons(*(uint16_t*)data);
++                if (ngx_rtmp_amf_put(ctx, buf, 2) != NGX_OK)
+                 {
+                     return NGX_ERROR;
+                 }
+                 break;
+ 
+             case NGX_RTMP_AMF_INT32:
+-                if (ngx_rtmp_amf_put(ctx,
+-                            ngx_rtmp_amf_reverse_copy(buf,
+-                                data, 4), 4) != NGX_OK)
++                *(uint32_t*)buf = htonl(*(uint32_t*)data);
++                if (ngx_rtmp_amf_put(ctx, buf, 4) != NGX_OK)
+                 {
+                     return NGX_ERROR;
+                 }
+diff --git a/nginx-rtmp/ngx_rtmp_bitop.h b/nginx-rtmp/ngx_rtmp_bitop.h
+index c954a35f3..25133d284 100644
+--- a/ngx_rtmp_bitop.h
++++ b/ngx_rtmp_bitop.h
+@@ -40,7 +40,7 @@ uint64_t ngx_rtmp_bit_read_golomb(ngx_rtmp_bit_reader_t *br);
+     ((uint32_t) ngx_rtmp_bit_read(br, 32))
+ 
+ #define ngx_rtmp_bit_read_64(br)                                              \
+-    ((uint64_t) ngx_rtmp_read(br, 64))
++    ((uint64_t) ngx_rtmp_bit_read(br, 64))
+ 
+ 
+ #endif /* _NGX_RTMP_BITOP_H_INCLUDED_ */
+diff --git a/nginx-rtmp/ngx_rtmp_eval.c b/nginx-rtmp/ngx_rtmp_eval.c
+index 1e5195a90..7ee7c7bac 100644
+--- a/ngx_rtmp_eval.c
++++ b/ngx_rtmp_eval.c
+@@ -166,7 +166,7 @@ ngx_rtmp_eval(void *ctx, ngx_str_t *in, ngx_rtmp_eval_t **e, ngx_str_t *out,
+                         state = ESCAPE;
+                         continue;
+                 }
+-
++                /* fall through */
+             case ESCAPE:
+                 ngx_rtmp_eval_append(&b, &c, 1, log);
+                 state = NORMAL;
+diff --git a/nginx-rtmp/ngx_rtmp_flv_module.c b/nginx-rtmp/ngx_rtmp_flv_module.c
+index 76ce64752..cd5162f7d 100644
+--- a/ngx_rtmp_flv_module.c
++++ b/ngx_rtmp_flv_module.c
+@@ -102,7 +102,7 @@ ngx_rtmp_flv_fill_index(ngx_rtmp_amf_ctx_t *ctx, ngx_rtmp_flv_index_t *idx)
+         return NGX_ERROR;
+     }
+ 
+-    ngx_rtmp_rmemcpy(&nelts, b->pos + ctx->offset, 4);
++    nelts=htonl(*(uint32_t*)(b->pos + ctx->offset));
+ 
+     idx->nelts = nelts;
+     idx->offset = ctx->offset + 4;
+@@ -201,11 +201,7 @@ ngx_rtmp_flv_init_index(ngx_rtmp_session_t *s, ngx_chain_t *in)
+ static double
+ ngx_rtmp_flv_index_value(void *src)
+ {
+-    double      v;
+-
+-    ngx_rtmp_rmemcpy(&v, src, 8);
+-
+-    return v;
++    return *(double*)src;
+ }
+ 
+ 
+@@ -352,8 +348,7 @@ ngx_rtmp_flv_read_meta(ngx_rtmp_session_t *s, ngx_file_t *f)
+     h.msid = NGX_RTMP_MSID;
+     h.csid = NGX_RTMP_CSID_AMF;
+ 
+-    size = 0;
+-    ngx_rtmp_rmemcpy(&size, ngx_rtmp_flv_header + 1, 3);
++    size = n3toh4(ngx_rtmp_flv_header + 1);
+ 
+     ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                   "flv: metadata size=%D", size);
+@@ -440,11 +435,8 @@ ngx_rtmp_flv_send(ngx_rtmp_session_t *s, ngx_file_t *f, ngx_uint_t *ts)
+     h.msid = NGX_RTMP_MSID;
+     h.type = ngx_rtmp_flv_header[0];
+ 
+-    size = 0;
+-
+-    ngx_rtmp_rmemcpy(&size, ngx_rtmp_flv_header + 1, 3);
+-    ngx_rtmp_rmemcpy(&h.timestamp, ngx_rtmp_flv_header + 4, 3);
+-
++    size = n3toh4(ngx_rtmp_flv_header + 1);
++    h.timestamp = n3toh4(ngx_rtmp_flv_header + 4);
+     h.timestamp |= ((uint32_t) ngx_rtmp_flv_header[7] << 24);
+ 
+     ctx->offset += (sizeof(ngx_rtmp_flv_header) + size + 4);
+diff --git a/nginx-rtmp/ngx_rtmp_handshake.c b/nginx-rtmp/ngx_rtmp_handshake.c
+index 409d9a0dd..8590cdcb2 100644
+--- a/ngx_rtmp_handshake.c
++++ b/ngx_rtmp_handshake.c
+@@ -264,7 +264,8 @@ ngx_rtmp_handshake_create_challenge(ngx_rtmp_session_t *s,
+     b = s->hs_buf;
+     b->last = b->pos = b->start;
+     *b->last++ = '\x03';
+-    b->last = ngx_rtmp_rcpymem(b->last, &s->epoch, 4);
++    *(uint32_t*)b->last=htonl(s->epoch);
++    b->last +=4;
+     b->last = ngx_cpymem(b->last, version, 4);
+     ngx_rtmp_fill_random_buffer(b);
+     ++b->pos;
+@@ -292,8 +293,7 @@ ngx_rtmp_handshake_parse_challenge(ngx_rtmp_session_t *s,
+         return NGX_ERROR;
+     }
+     ++b->pos;
+-    s->peer_epoch = 0;
+-    ngx_rtmp_rmemcpy(&s->peer_epoch, b->pos, 4);
++    s->peer_epoch = ntohl(*(uint32_t*)b->pos);
+ 
+     p = b->pos + 4;
+     ngx_log_debug5(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+diff --git a/nginx-rtmp/ngx_rtmp_mp4_module.c b/nginx-rtmp/ngx_rtmp_mp4_module.c
+index 0259ca2f6..e39bb1bdb 100644
+--- a/ngx_rtmp_mp4_module.c
++++ b/ngx_rtmp_mp4_module.c
+@@ -528,9 +528,9 @@ ngx_rtmp_mp4_parse_mdhd(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+             }
+ 
+             pos += 12;
+-            t->time_scale = ngx_rtmp_r32(*(uint32_t *) pos);
++            t->time_scale = ntohl(*(uint32_t *) pos);
+             pos += 4;
+-            t->duration = ngx_rtmp_r32(*(uint32_t *) pos);
++            t->duration = ntohl(*(uint32_t *) pos);
+             break;
+ 
+         case 1:
+@@ -539,9 +539,9 @@ ngx_rtmp_mp4_parse_mdhd(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+             }
+ 
+             pos += 20;
+-            t->time_scale = ngx_rtmp_r32(*(uint32_t *) pos);
++            t->time_scale = ntohl(*(uint32_t *) pos);
+             pos += 4;
+-            t->duration = ngx_rtmp_r64(*(uint64_t *) pos);
++            t->duration = ntohll(*(uint64_t *) pos);
+             break;
+ 
+         default:
+@@ -616,11 +616,11 @@ ngx_rtmp_mp4_parse_video(ngx_rtmp_session_t *s, u_char *pos, u_char *last,
+ 
+     pos += 24;
+ 
+-    ctx->width = ngx_rtmp_r16(*(uint16_t *) pos);
++    ctx->width = ntohs(*(uint16_t *) pos);
+ 
+     pos += 2;
+ 
+-    ctx->height = ngx_rtmp_r16(*(uint16_t *) pos);
++    ctx->height = ntohs(*(uint16_t *) pos);
+ 
+     pos += 52;
+ 
+@@ -660,19 +660,19 @@ ngx_rtmp_mp4_parse_audio(ngx_rtmp_session_t *s, u_char *pos, u_char *last,
+ 
+     pos += 8;
+ 
+-    version = ngx_rtmp_r16(*(uint16_t *) pos);
++    version = ntohs(*(uint16_t *) pos);
+ 
+     pos += 8;
+ 
+-    ctx->nchannels = ngx_rtmp_r16(*(uint16_t *) pos);
++    ctx->nchannels = ntohs(*(uint16_t *) pos);
+ 
+     pos += 2;
+ 
+-    ctx->sample_size = ngx_rtmp_r16(*(uint16_t *) pos);
++    ctx->sample_size = ntohs(*(uint16_t *) pos);
+ 
+     pos += 6;
+ 
+-    ctx->sample_rate = ngx_rtmp_r16(*(uint16_t *) pos);
++    ctx->sample_rate = ntohs(*(uint16_t *) pos);
+ 
+     pos += 4;
+ 
+@@ -862,7 +862,7 @@ ngx_rtmp_mp4_parse_es(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+         return NGX_ERROR;
+     }
+ 
+-    id = ngx_rtmp_r16(*(uint16_t *) pos);
++    id = ntohs(*(uint16_t *) pos);
+     pos += 2;
+ 
+     flags = *(uint8_t *) pos;
+@@ -1018,13 +1018,13 @@ ngx_rtmp_mp4_parse_stsc(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->chunks = (ngx_rtmp_mp4_chunks_t *) pos;
+ 
+-    if (pos + sizeof(*t->chunks) + ngx_rtmp_r32(t->chunks->entry_count) *
++    if (pos + sizeof(*t->chunks) + ntohl(t->chunks->entry_count) *
+                                    sizeof(t->chunks->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: chunks entries=%uD",
+-                       ngx_rtmp_r32(t->chunks->entry_count));
++                       ntohl(t->chunks->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1049,13 +1049,13 @@ ngx_rtmp_mp4_parse_stts(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->times = (ngx_rtmp_mp4_times_t *) pos;
+ 
+-    if (pos + sizeof(*t->times) + ngx_rtmp_r32(t->times->entry_count) *
++    if (pos + sizeof(*t->times) + ntohl(t->times->entry_count) *
+                                   sizeof(t->times->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: times entries=%uD",
+-                       ngx_rtmp_r32(t->times->entry_count));
++                       ntohl(t->times->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1080,13 +1080,13 @@ ngx_rtmp_mp4_parse_ctts(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->delays = (ngx_rtmp_mp4_delays_t *) pos;
+ 
+-    if (pos + sizeof(*t->delays) + ngx_rtmp_r32(t->delays->entry_count) *
++    if (pos + sizeof(*t->delays) + ntohl(t->delays->entry_count) *
+                                    sizeof(t->delays->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: delays entries=%uD",
+-                       ngx_rtmp_r32(t->delays->entry_count));
++                       ntohl(t->delays->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1111,13 +1111,13 @@ ngx_rtmp_mp4_parse_stss(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->keys = (ngx_rtmp_mp4_keys_t *) pos;
+ 
+-    if (pos + sizeof(*t->keys) + ngx_rtmp_r32(t->keys->entry_count) *
++    if (pos + sizeof(*t->keys) + ntohl(t->keys->entry_count) *
+                                   sizeof(t->keys->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: keys entries=%uD",
+-                       ngx_rtmp_r32(t->keys->entry_count));
++                       ntohl(t->keys->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1145,18 +1145,18 @@ ngx_rtmp_mp4_parse_stsz(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+     if (pos + sizeof(*t->sizes) <= last && t->sizes->sample_size) {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: sizes size=%uD",
+-                       ngx_rtmp_r32(t->sizes->sample_size));
++                       ntohl(t->sizes->sample_size));
+         return NGX_OK;
+     }
+ 
+-    if (pos + sizeof(*t->sizes) + ngx_rtmp_r32(t->sizes->sample_count) *
++    if (pos + sizeof(*t->sizes) + ntohl(t->sizes->sample_count) *
+                                   sizeof(t->sizes->entries[0])
+         <= last)
+ 
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: sizes entries=%uD",
+-                       ngx_rtmp_r32(t->sizes->sample_count));
++                       ntohl(t->sizes->sample_count));
+         return NGX_OK;
+     }
+ 
+@@ -1181,14 +1181,14 @@ ngx_rtmp_mp4_parse_stz2(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->sizes2 = (ngx_rtmp_mp4_sizes2_t *) pos;
+ 
+-    if (pos + sizeof(*t->sizes) + ngx_rtmp_r32(t->sizes2->sample_count) *
+-                                  ngx_rtmp_r32(t->sizes2->field_size) / 8
++    if (pos + sizeof(*t->sizes) + ntohl(t->sizes2->sample_count) *
++                                  ntohl(t->sizes2->field_size) / 8
+         <= last)
+     {
+         ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: sizes2 field_size=%uD entries=%uD",
+-                       ngx_rtmp_r32(t->sizes2->field_size),
+-                       ngx_rtmp_r32(t->sizes2->sample_count));
++                       ntohl(t->sizes2->field_size),
++                       ntohl(t->sizes2->sample_count));
+         return NGX_OK;
+     }
+ 
+@@ -1213,13 +1213,13 @@ ngx_rtmp_mp4_parse_stco(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->offsets = (ngx_rtmp_mp4_offsets_t *) pos;
+ 
+-    if (pos + sizeof(*t->offsets) + ngx_rtmp_r32(t->offsets->entry_count) *
++    if (pos + sizeof(*t->offsets) + ntohl(t->offsets->entry_count) *
+                                     sizeof(t->offsets->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: offsets entries=%uD",
+-                       ngx_rtmp_r32(t->offsets->entry_count));
++                       ntohl(t->offsets->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1244,13 +1244,13 @@ ngx_rtmp_mp4_parse_co64(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+ 
+     t->offsets64 = (ngx_rtmp_mp4_offsets64_t *) pos;
+ 
+-    if (pos + sizeof(*t->offsets64) + ngx_rtmp_r32(t->offsets64->entry_count) *
++    if (pos + sizeof(*t->offsets64) + ntohl(t->offsets64->entry_count) *
+                                       sizeof(t->offsets64->entries[0])
+         <= last)
+     {
+         ngx_log_debug1(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: offsets64 entries=%uD",
+-                       ngx_rtmp_r32(t->offsets64->entry_count));
++                       ntohl(t->offsets64->entry_count));
+         return NGX_OK;
+     }
+ 
+@@ -1275,7 +1275,7 @@ ngx_rtmp_mp4_parse(ngx_rtmp_session_t *s, u_char *pos, u_char *last)
+         }
+ 
+         hdr = (uint32_t *) pos;
+-        size = ngx_rtmp_r32(hdr[0]);
++        size = ntohl(hdr[0]);
+         tag  = hdr[1];
+ 
+         if (pos + size > last) {
+@@ -1318,11 +1318,11 @@ ngx_rtmp_mp4_next_time(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+     cr = &t->cursor;
+ 
+-    if (cr->time_pos >= ngx_rtmp_r32(t->times->entry_count)) {
++    if (cr->time_pos >= ntohl(t->times->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui time[%ui/%uD] overflow",
+                        t->id, cr->time_pos,
+-                       ngx_rtmp_r32(t->times->entry_count));
++                       ntohl(t->times->entry_count));
+ 
+         return NGX_ERROR;
+     }
+@@ -1330,22 +1330,22 @@ ngx_rtmp_mp4_next_time(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     te = &t->times->entries[cr->time_pos];
+ 
+     cr->last_timestamp = cr->timestamp;
+-    cr->timestamp += ngx_rtmp_r32(te->sample_delta);
++    cr->timestamp += ntohl(te->sample_delta);
+ 
+     cr->not_first = 1;
+ 
+     ngx_log_debug8(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui time[%ui] [%ui/%uD][%ui/%uD]=%uD t=%uD",
+                    t->id, cr->pos, cr->time_pos,
+-                   ngx_rtmp_r32(t->times->entry_count),
+-                   cr->time_count, ngx_rtmp_r32(te->sample_count),
+-                   ngx_rtmp_r32(te->sample_delta),
++                   ntohl(t->times->entry_count),
++                   cr->time_count, ntohl(te->sample_count),
++                   ntohl(te->sample_delta),
+                    cr->timestamp);
+ 
+     cr->time_count++;
+     cr->pos++;
+ 
+-    if (cr->time_count >= ngx_rtmp_r32(te->sample_count)) {
++    if (cr->time_count >= ntohl(te->sample_count)) {
+         cr->time_pos++;
+         cr->time_count = 0;
+     }
+@@ -1370,8 +1370,8 @@ ngx_rtmp_mp4_seek_time(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t,
+ 
+     te = t->times->entries;
+ 
+-    while (cr->time_pos < ngx_rtmp_r32(t->times->entry_count)) {
+-        dt = ngx_rtmp_r32(te->sample_delta) * ngx_rtmp_r32(te->sample_count);
++    while (cr->time_pos < ntohl(t->times->entry_count)) {
++        dt = ntohl(te->sample_delta) * ntohl(te->sample_count);
+ 
+         if (cr->timestamp + dt >= timestamp) {
+             if (te->sample_delta == 0) {
+@@ -1379,24 +1379,24 @@ ngx_rtmp_mp4_seek_time(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t,
+             }
+ 
+             cr->time_count = (timestamp - cr->timestamp) /
+-                             ngx_rtmp_r32(te->sample_delta);
+-            cr->timestamp += ngx_rtmp_r32(te->sample_delta) * cr->time_count;
++                             ntohl(te->sample_delta);
++            cr->timestamp += ntohl(te->sample_delta) * cr->time_count;
+             cr->pos += cr->time_count;
+ 
+             break;
+         }
+ 
+         cr->timestamp += dt;
+-        cr->pos += ngx_rtmp_r32(te->sample_count);
++        cr->pos += ntohl(te->sample_count);
+         cr->time_pos++;
+         te++;
+     }
+ 
+-    if (cr->time_pos >= ngx_rtmp_r32(t->times->entry_count)) {
++    if (cr->time_pos >= ntohl(t->times->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui seek time[%ui/%uD] overflow",
+                        t->id, cr->time_pos,
+-                       ngx_rtmp_r32(t->times->entry_count));
++                       ntohl(t->times->entry_count));
+ 
+         return  NGX_ERROR;
+     }
+@@ -1405,10 +1405,10 @@ ngx_rtmp_mp4_seek_time(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t,
+                    "mp4: track#%ui seek time[%ui] [%ui/%uD][%ui/%uD]=%uD "
+                    "t=%uD",
+                    t->id, cr->pos, cr->time_pos,
+-                   ngx_rtmp_r32(t->times->entry_count),
++                   ntohl(t->times->entry_count),
+                    cr->time_count,
+-                   ngx_rtmp_r32(te->sample_count),
+-                   ngx_rtmp_r32(te->sample_delta),
++                   ntohl(te->sample_count),
++                   ntohl(te->sample_delta),
+                    cr->timestamp);
+ 
+     return NGX_OK;
+@@ -1433,44 +1433,44 @@ ngx_rtmp_mp4_update_offset(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     chunk = cr->chunk - 1;
+ 
+     if (t->offsets) {
+-        if (chunk >= ngx_rtmp_r32(t->offsets->entry_count)) {
++        if (chunk >= ntohl(t->offsets->entry_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui offset[%ui/%uD] overflow",
+                            t->id, cr->chunk,
+-                           ngx_rtmp_r32(t->offsets->entry_count));
++                           ntohl(t->offsets->entry_count));
+ 
+             return NGX_ERROR;
+         }
+ 
+-        cr->offset = (off_t) ngx_rtmp_r32(t->offsets->entries[chunk]);
++        cr->offset = (off_t) ntohl(t->offsets->entries[chunk]);
+         cr->size = 0;
+ 
+         ngx_log_debug4(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui offset[%ui/%uD]=%O",
+                        t->id, cr->chunk,
+-                       ngx_rtmp_r32(t->offsets->entry_count),
++                       ntohl(t->offsets->entry_count),
+                        cr->offset);
+ 
+         return NGX_OK;
+     }
+ 
+     if (t->offsets64) {
+-        if (chunk >= ngx_rtmp_r32(t->offsets64->entry_count)) {
++        if (chunk >= ntohl(t->offsets64->entry_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui offset64[%ui/%uD] overflow",
+                            t->id, cr->chunk,
+-                           ngx_rtmp_r32(t->offsets->entry_count));
++                           ntohl(t->offsets->entry_count));
+ 
+             return NGX_ERROR;
+         }
+ 
+-        cr->offset = (off_t) ngx_rtmp_r64(t->offsets64->entries[chunk]);
++        cr->offset = (off_t) ntohll(t->offsets64->entries[chunk]);
+         cr->size = 0;
+ 
+         ngx_log_debug4(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui offset64[%ui/%uD]=%O",
+                        t->id, cr->chunk,
+-                       ngx_rtmp_r32(t->offsets->entry_count),
++                       ntohl(t->offsets->entry_count),
+                        cr->offset);
+ 
+         return NGX_OK;
+@@ -1493,11 +1493,11 @@ ngx_rtmp_mp4_next_chunk(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+     cr = &t->cursor;
+ 
+-    if (cr->chunk_pos >= ngx_rtmp_r32(t->chunks->entry_count)) {
++    if (cr->chunk_pos >= ntohl(t->chunks->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui chunk[%ui/%uD] overflow",
+                        t->id, cr->chunk_pos,
+-                       ngx_rtmp_r32(t->chunks->entry_count));
++                       ntohl(t->chunks->entry_count));
+ 
+         return NGX_ERROR;
+     }
+@@ -1506,13 +1506,13 @@ ngx_rtmp_mp4_next_chunk(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+     cr->chunk_count++;
+ 
+-    if (cr->chunk_count >= ngx_rtmp_r32(ce->samples_per_chunk)) {
++    if (cr->chunk_count >= ntohl(ce->samples_per_chunk)) {
+         cr->chunk_count = 0;
+         cr->chunk++;
+ 
+-        if (cr->chunk_pos + 1 < ngx_rtmp_r32(t->chunks->entry_count)) {
++        if (cr->chunk_pos + 1 < ntohl(t->chunks->entry_count)) {
+             nce = ce + 1;
+-            if (cr->chunk >= ngx_rtmp_r32(nce->first_chunk)) {
++            if (cr->chunk >= ntohl(nce->first_chunk)) {
+                 cr->chunk_pos++;
+                 ce = nce;
+             }
+@@ -1527,10 +1527,10 @@ ngx_rtmp_mp4_next_chunk(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     ngx_log_debug7(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui chunk[%ui/%uD][%uD..%ui][%ui/%uD]",
+                    t->id, cr->chunk_pos,
+-                   ngx_rtmp_r32(t->chunks->entry_count),
+-                   ngx_rtmp_r32(ce->first_chunk),
++                   ntohl(t->chunks->entry_count),
++                   ntohl(ce->first_chunk),
+                    cr->chunk, cr->chunk_count,
+-                   ngx_rtmp_r32(ce->samples_per_chunk));
++                   ntohl(ce->samples_per_chunk));
+ 
+ 
+     if (new_chunk) {
+@@ -1558,12 +1558,12 @@ ngx_rtmp_mp4_seek_chunk(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     ce = t->chunks->entries;
+     pos = 0;
+ 
+-    while (cr->chunk_pos + 1 < ngx_rtmp_r32(t->chunks->entry_count)) {
++    while (cr->chunk_pos + 1 < ntohl(t->chunks->entry_count)) {
+         nce = ce + 1;
+ 
+-        dpos = (ngx_rtmp_r32(nce->first_chunk) -
+-                ngx_rtmp_r32(ce->first_chunk)) *
+-                ngx_rtmp_r32(ce->samples_per_chunk);
++        dpos = (ntohl(nce->first_chunk) -
++                ntohl(ce->first_chunk)) *
++                ntohl(ce->samples_per_chunk);
+ 
+         if (pos + dpos > cr->pos) {
+             break;
+@@ -1578,20 +1578,20 @@ ngx_rtmp_mp4_seek_chunk(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         return NGX_ERROR;
+     }
+ 
+-    dchunk = (cr->pos - pos) / ngx_rtmp_r32(ce->samples_per_chunk);
++    dchunk = (cr->pos - pos) / ntohl(ce->samples_per_chunk);
+ 
+-    cr->chunk = ngx_rtmp_r32(ce->first_chunk) + dchunk;
++    cr->chunk = ntohl(ce->first_chunk) + dchunk;
+     cr->chunk_pos = (ngx_uint_t) (ce - t->chunks->entries);
+     cr->chunk_count = (ngx_uint_t) (cr->pos - pos - dchunk *
+-                                    ngx_rtmp_r32(ce->samples_per_chunk));
++                                    ntohl(ce->samples_per_chunk));
+ 
+     ngx_log_debug7(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui seek chunk[%ui/%uD][%uD..%ui][%ui/%uD]",
+                    t->id, cr->chunk_pos,
+-                   ngx_rtmp_r32(t->chunks->entry_count),
+-                   ngx_rtmp_r32(ce->first_chunk),
++                   ntohl(t->chunks->entry_count),
++                   ntohl(ce->first_chunk),
+                    cr->chunk, cr->chunk_count,
+-                   ngx_rtmp_r32(ce->samples_per_chunk));
++                   ntohl(ce->samples_per_chunk));
+ 
+     return ngx_rtmp_mp4_update_offset(s, t);
+ }
+@@ -1608,7 +1608,7 @@ ngx_rtmp_mp4_next_size(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+     if (t->sizes) {
+         if (t->sizes->sample_size) {
+-            cr->size = ngx_rtmp_r32(t->sizes->sample_size);
++            cr->size = ntohl(t->sizes->sample_size);
+ 
+             ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui size fix=%uz",
+@@ -1619,32 +1619,32 @@ ngx_rtmp_mp4_next_size(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+         cr->size_pos++;
+ 
+-        if (cr->size_pos >= ngx_rtmp_r32(t->sizes->sample_count)) {
++        if (cr->size_pos >= ntohl(t->sizes->sample_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui size[%ui/%uD] overflow",
+                            t->id, cr->size_pos,
+-                           ngx_rtmp_r32(t->sizes->sample_count));
++                           ntohl(t->sizes->sample_count));
+ 
+             return NGX_ERROR;
+         }
+ 
+-        cr->size = ngx_rtmp_r32(t->sizes->entries[cr->size_pos]);
++        cr->size = ntohl(t->sizes->entries[cr->size_pos]);
+ 
+         ngx_log_debug4(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui size[%ui/%uD]=%uz",
+                        t->id, cr->size_pos,
+-                       ngx_rtmp_r32(t->sizes->sample_count),
++                       ntohl(t->sizes->sample_count),
+                        cr->size);
+ 
+         return NGX_OK;
+     }
+ 
+     if (t->sizes2) {
+-        if (cr->size_pos >= ngx_rtmp_r32(t->sizes2->sample_count)) {
++        if (cr->size_pos >= ntohl(t->sizes2->sample_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui size[%ui/%uD] overflow",
+                            t->id, cr->size_pos,
+-                           ngx_rtmp_r32(t->sizes2->sample_count));
++                           ntohl(t->sizes2->sample_count));
+ 
+             return NGX_ERROR;
+         }
+@@ -1672,7 +1672,7 @@ ngx_rtmp_mp4_seek_size(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+ 
+     if (t->sizes) {
+         if (t->sizes->sample_size) {
+-            cr->size = ngx_rtmp_r32(t->sizes->sample_size);
++            cr->size = ntohl(t->sizes->sample_size);
+ 
+             cr->offset += cr->size * cr->chunk_count;
+ 
+@@ -1683,37 +1683,37 @@ ngx_rtmp_mp4_seek_size(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+             return NGX_OK;
+         }
+ 
+-        if (cr->pos >= ngx_rtmp_r32(t->sizes->sample_count)) {
++        if (cr->pos >= ntohl(t->sizes->sample_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui seek size[%ui/%uD] overflow",
+                            t->id, cr->pos,
+-                           ngx_rtmp_r32(t->sizes->sample_count));
++                           ntohl(t->sizes->sample_count));
+ 
+             return NGX_ERROR;
+         }
+ 
+         for (pos = 1; pos <= cr->chunk_count; ++pos) {
+-            cr->offset += ngx_rtmp_r32(t->sizes->entries[cr->pos - pos]);
++            cr->offset += ntohl(t->sizes->entries[cr->pos - pos]);
+         }
+ 
+         cr->size_pos = cr->pos;
+-        cr->size = ngx_rtmp_r32(t->sizes->entries[cr->size_pos]);
++        cr->size = ntohl(t->sizes->entries[cr->size_pos]);
+ 
+         ngx_log_debug4(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                        "mp4: track#%ui seek size[%ui/%uD]=%uz",
+                        t->id, cr->size_pos,
+-                       ngx_rtmp_r32(t->sizes->sample_count),
++                       ntohl(t->sizes->sample_count),
+                        cr->size);
+ 
+         return NGX_OK;
+     }
+ 
+     if (t->sizes2) {
+-        if (cr->size_pos >= ngx_rtmp_r32(t->sizes2->sample_count)) {
++        if (cr->size_pos >= ntohl(t->sizes2->sample_count)) {
+             ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                            "mp4: track#%ui seek size2[%ui/%uD] overflow",
+                            t->id, cr->size_pos,
+-                           ngx_rtmp_r32(t->sizes->sample_count));
++                           ntohl(t->sizes->sample_count));
+ 
+             return NGX_ERROR;
+         }
+@@ -1744,11 +1744,11 @@ ngx_rtmp_mp4_next_key(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         cr->key_pos++;
+     }
+ 
+-    if (cr->key_pos >= ngx_rtmp_r32(t->keys->entry_count)) {
++    if (cr->key_pos >= ntohl(t->keys->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                 "mp4: track#%ui key[%ui/%uD] overflow",
+                 t->id, cr->key_pos,
+-                ngx_rtmp_r32(t->keys->entry_count));
++                ntohl(t->keys->entry_count));
+ 
+         cr->key = 0;
+ 
+@@ -1756,13 +1756,13 @@ ngx_rtmp_mp4_next_key(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     }
+ 
+     ke = &t->keys->entries[cr->key_pos];
+-    cr->key = (cr->pos + 1 == ngx_rtmp_r32(*ke));
++    cr->key = (cr->pos + 1 == ntohl(*ke));
+ 
+     ngx_log_debug6(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui key[%ui/%uD][%ui/%uD]=%s",
+                    t->id, cr->key_pos,
+-                   ngx_rtmp_r32(t->keys->entry_count),
+-                   cr->pos, ngx_rtmp_r32(*ke),
++                   ntohl(t->keys->entry_count),
++                   cr->pos, ntohl(*ke),
+                    cr->key ? "match" : "miss");
+ 
+     return NGX_OK;
+@@ -1782,27 +1782,27 @@ ngx_rtmp_mp4_seek_key(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         return NGX_OK;
+     }
+ 
+-    while (cr->key_pos < ngx_rtmp_r32(t->keys->entry_count)) {
+-        if (ngx_rtmp_r32(t->keys->entries[cr->key_pos]) > cr->pos) {
++    while (cr->key_pos < ntohl(t->keys->entry_count)) {
++        if (ntohl(t->keys->entries[cr->key_pos]) > cr->pos) {
+             break;
+         }
+ 
+         cr->key_pos++;
+     }
+ 
+-    if (cr->key_pos >= ngx_rtmp_r32(t->keys->entry_count)) {
++    if (cr->key_pos >= ntohl(t->keys->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                 "mp4: track#%ui seek key[%ui/%uD] overflow",
+                 t->id, cr->key_pos,
+-                ngx_rtmp_r32(t->keys->entry_count));
++                ntohl(t->keys->entry_count));
+         return NGX_OK;
+     }
+ 
+     ke = &t->keys->entries[cr->key_pos];
+-    /*cr->key = (cr->pos + 1 == ngx_rtmp_r32(*ke));*/
++    /*cr->key = (cr->pos + 1 == ntohl(*ke));*/
+ 
+     /* distance to the next keyframe */
+-    dpos = ngx_rtmp_r32(*ke) - cr->pos - 1;
++    dpos = ntohl(*ke) - cr->pos - 1;
+     cr->key = 1;
+ 
+     /* TODO: range version needed */
+@@ -1810,13 +1810,13 @@ ngx_rtmp_mp4_seek_key(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         ngx_rtmp_mp4_next_time(s, t);
+     }
+ 
+-/*    cr->key = (cr->pos + 1 == ngx_rtmp_r32(*ke));*/
++/*    cr->key = (cr->pos + 1 == ntohl(*ke));*/
+ 
+     ngx_log_debug6(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui seek key[%ui/%uD][%ui/%uD]=%s",
+                    t->id, cr->key_pos,
+-                   ngx_rtmp_r32(t->keys->entry_count),
+-                   cr->pos, ngx_rtmp_r32(*ke),
++                   ntohl(t->keys->entry_count),
++                   cr->pos, ntohl(*ke),
+                    cr->key ? "match" : "miss");
+ 
+     return NGX_OK;
+@@ -1835,11 +1835,11 @@ ngx_rtmp_mp4_next_delay(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         return NGX_OK;
+     }
+ 
+-    if (cr->delay_pos >= ngx_rtmp_r32(t->delays->entry_count)) {
++    if (cr->delay_pos >= ntohl(t->delays->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                 "mp4: track#%ui delay[%ui/%uD] overflow",
+                 t->id, cr->delay_pos,
+-                ngx_rtmp_r32(t->delays->entry_count));
++                ntohl(t->delays->entry_count));
+ 
+         return NGX_OK;
+     }
+@@ -1847,29 +1847,29 @@ ngx_rtmp_mp4_next_delay(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     cr->delay_count++;
+     de = &t->delays->entries[cr->delay_pos];
+ 
+-    if (cr->delay_count >= ngx_rtmp_r32(de->sample_count)) {
++    if (cr->delay_count >= ntohl(de->sample_count)) {
+         cr->delay_pos++;
+         de++;
+         cr->delay_count = 0;
+     }
+ 
+-    if (cr->delay_pos >= ngx_rtmp_r32(t->delays->entry_count)) {
++    if (cr->delay_pos >= ntohl(t->delays->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                 "mp4: track#%ui delay[%ui/%uD] overflow",
+                 t->id, cr->delay_pos,
+-                ngx_rtmp_r32(t->delays->entry_count));
++                ntohl(t->delays->entry_count));
+ 
+         return NGX_OK;
+     }
+ 
+-    cr->delay = ngx_rtmp_r32(de->sample_offset);
++    cr->delay = ntohl(de->sample_offset);
+ 
+     ngx_log_debug6(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui delay[%ui/%uD][%ui/%uD]=%ui",
+                    t->id, cr->delay_pos,
+-                   ngx_rtmp_r32(t->delays->entry_count),
++                   ntohl(t->delays->entry_count),
+                    cr->delay_count,
+-                   ngx_rtmp_r32(de->sample_count), cr->delay);
++                   ntohl(de->sample_count), cr->delay);
+ 
+     return NGX_OK;
+ }
+@@ -1891,12 +1891,12 @@ ngx_rtmp_mp4_seek_delay(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     pos = 0;
+     de = t->delays->entries;
+ 
+-    while (cr->delay_pos < ngx_rtmp_r32(t->delays->entry_count)) {
+-        dpos = ngx_rtmp_r32(de->sample_count);
++    while (cr->delay_pos < ntohl(t->delays->entry_count)) {
++        dpos = ntohl(de->sample_count);
+ 
+         if (pos + dpos > cr->pos) {
+             cr->delay_count = cr->pos - pos;
+-            cr->delay = ngx_rtmp_r32(de->sample_offset);
++            cr->delay = ntohl(de->sample_offset);
+             break;
+         }
+ 
+@@ -1905,11 +1905,11 @@ ngx_rtmp_mp4_seek_delay(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+         de++;
+     }
+ 
+-    if (cr->delay_pos >= ngx_rtmp_r32(t->delays->entry_count)) {
++    if (cr->delay_pos >= ntohl(t->delays->entry_count)) {
+         ngx_log_debug3(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                 "mp4: track#%ui seek delay[%ui/%uD] overflow",
+                 t->id, cr->delay_pos,
+-                ngx_rtmp_r32(t->delays->entry_count));
++                ntohl(t->delays->entry_count));
+ 
+         return NGX_OK;
+     }
+@@ -1917,9 +1917,9 @@ ngx_rtmp_mp4_seek_delay(ngx_rtmp_session_t *s, ngx_rtmp_mp4_track_t *t)
+     ngx_log_debug6(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "mp4: track#%ui seek delay[%ui/%uD][%ui/%uD]=%ui",
+                    t->id, cr->delay_pos,
+-                   ngx_rtmp_r32(t->delays->entry_count),
++                   ntohl(t->delays->entry_count),
+                    cr->delay_count,
+-                   ngx_rtmp_r32(de->sample_count), cr->delay);
++                   ntohl(de->sample_count), cr->delay);
+ 
+     return NGX_OK;
+ }
+@@ -2348,7 +2348,7 @@ ngx_rtmp_mp4_init(ngx_rtmp_session_t *s, ngx_file_t *f, ngx_int_t aindex,
+             return NGX_ERROR;
+         }
+ 
+-        size = (size_t) ngx_rtmp_r32(hdr[0]);
++        size = (size_t) ntohl(hdr[0]);
+         shift = sizeof(hdr);
+ 
+         if (size == 1) {
+@@ -2362,7 +2362,7 @@ ngx_rtmp_mp4_init(ngx_rtmp_session_t *s, ngx_file_t *f, ngx_int_t aindex,
+                 return NGX_ERROR;
+             }
+ 
+-            size = (size_t) ngx_rtmp_r64(extended_size);
++            size = (size_t) ntohll(extended_size);
+             shift += sizeof(extended_size);
+ 
+         } else if (size == 0) {
+diff --git a/nginx-rtmp/ngx_rtmp_receive.c b/nginx-rtmp/ngx_rtmp_receive.c
+index 73d617cf2..9c8705691 100644
+--- a/ngx_rtmp_receive.c
++++ b/ngx_rtmp_receive.c
+@@ -17,7 +17,6 @@ ngx_rtmp_protocol_message_handler(ngx_rtmp_session_t *s,
+         ngx_rtmp_header_t *h, ngx_chain_t *in)
+ {
+     ngx_buf_t              *b;
+-    u_char                 *p;
+     uint32_t                val;
+     uint8_t                 limit;
+ 
+@@ -30,11 +29,7 @@ ngx_rtmp_protocol_message_handler(ngx_rtmp_session_t *s,
+         return NGX_OK;
+     }
+ 
+-    p = (u_char*)&val;
+-    p[0] = b->pos[3];
+-    p[1] = b->pos[2];
+-    p[2] = b->pos[1];
+-    p[3] = b->pos[0];
++    val=ntohl(*(uint32_t*)&b->pos[0]);
+ 
+     switch(h->type) {
+         case NGX_RTMP_MSG_CHUNK_SIZE:
+@@ -88,7 +83,6 @@ ngx_rtmp_user_message_handler(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+                               ngx_chain_t *in)
+ {
+     ngx_buf_t              *b;
+-    u_char                 *p;
+     uint16_t                evt;
+     uint32_t                val;
+ 
+@@ -101,21 +95,13 @@ ngx_rtmp_user_message_handler(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+         return NGX_OK;
+     }
+ 
+-    p = (u_char*)&evt;
+-
+-    p[0] = b->pos[1];
+-    p[1] = b->pos[0];
++    evt=ntohs(*(uint16_t*)&b->pos[0]);
+ 
+     ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                    "RTMP recv user evt %s (%i)",
+                    ngx_rtmp_user_message_type(evt), (ngx_int_t) evt);
+ 
+-    p = (u_char *) &val;
+-
+-    p[0] = b->pos[5];
+-    p[1] = b->pos[4];
+-    p[2] = b->pos[3];
+-    p[3] = b->pos[2];
++    val=ntohl(*(uint32_t*)&b->pos[2]);
+ 
+     switch(evt) {
+         case NGX_RTMP_USER_STREAM_BEGIN:
+@@ -164,12 +150,7 @@ ngx_rtmp_user_message_handler(ngx_rtmp_session_t *s, ngx_rtmp_header_t *h,
+                     return NGX_OK;
+                 }
+ 
+-                p = (u_char *) &v.buflen;
+-
+-                p[0] = b->pos[9];
+-                p[1] = b->pos[8];
+-                p[2] = b->pos[7];
+-                p[3] = b->pos[6];
++                v.buflen=ntohl(*(uint32_t*)&b->pos[6]);
+ 
+                 ngx_log_debug2(NGX_LOG_DEBUG_RTMP, s->connection->log, 0,
+                                "receive: set_buflen msid=%uD buflen=%uD",
+@@ -240,18 +221,20 @@ ngx_rtmp_fetch_uint8(ngx_chain_t **in, uint8_t *ret)
+ static ngx_int_t
+ ngx_rtmp_fetch_uint32(ngx_chain_t **in, uint32_t *ret, ngx_int_t n)
+ {
+-    u_char     *r = (u_char *) ret;
++    u_char      b;
++    uint32_t    val=0;
+     ngx_int_t   rc;
+ 
+-    *ret = 0;
+-
+     while (--n >= 0) {
+-        rc = ngx_rtmp_fetch(in, &r[n]);
++        rc = ngx_rtmp_fetch(in, &b);
+         if (rc != NGX_OK) {
++            *ret = 0;
+             return rc;
+         }
++        val = (val<<8)|b;
+     }
+ 
++    *ret=val;
+     return NGX_OK;
+ }
+ 
+diff --git a/nginx-rtmp/ngx_rtmp_record_module.c b/nginx-rtmp/ngx_rtmp_record_module.c
+index c7db8edfa..abba56e15 100644
+--- a/ngx_rtmp_record_module.c
++++ b/ngx_rtmp_record_module.c
+@@ -454,7 +454,7 @@ ngx_rtmp_record_node_open(ngx_rtmp_session_t *s,
+     ngx_err_t                   err;
+     ngx_str_t                   path;
+     ngx_int_t                   mode, create_mode;
+-    u_char                      buf[8], *p;
++    u_char                      buf[8];
+     off_t                       file_size;
+     uint32_t                    tag_size, mlen, timestamp;
+ 
+@@ -551,11 +551,7 @@ ngx_rtmp_record_node_open(ngx_rtmp_session_t *s,
+             goto done;
+         }
+ 
+-        p = (u_char *) &tag_size;
+-        p[0] = buf[3];
+-        p[1] = buf[2];
+-        p[2] = buf[1];
+-        p[3] = buf[0];
++        tag_size=ntohl(*(uint32_t*)&buf[0]);
+ 
+         if (tag_size == 0 || tag_size + 4 > file_size) {
+             file_size = 0;
+@@ -569,11 +565,7 @@ ngx_rtmp_record_node_open(ngx_rtmp_session_t *s,
+             goto done;
+         }
+ 
+-        p = (u_char *) &mlen;
+-        p[0] = buf[3];
+-        p[1] = buf[2];
+-        p[2] = buf[1];
+-        p[3] = 0;
++        mlen=n3toh4(&buf[1]);
+ 
+         if (tag_size != mlen + 11) {
+             ngx_log_error(NGX_LOG_CRIT, s->connection->log, ngx_errno,
+@@ -582,11 +574,7 @@ ngx_rtmp_record_node_open(ngx_rtmp_session_t *s,
+             goto done;
+         }
+ 
+-        p = (u_char *) &timestamp;
+-        p[3] = buf[7];
+-        p[0] = buf[6];
+-        p[1] = buf[5];
+-        p[2] = buf[4];
++        timestamp=n3toh4(&buf[4])|((uint32_t)buf[7]<<24);
+ 
+ done:
+         rctx->file.offset = file_size;
+@@ -891,7 +879,7 @@ ngx_rtmp_record_write_frame(ngx_rtmp_session_t *s,
+                             ngx_rtmp_header_t *h, ngx_chain_t *in,
+                             ngx_int_t inc_nframes)
+ {
+-    u_char                      hdr[11], *p, *ph;
++    u_char                      hdr[11], *ph;
+     uint32_t                    timestamp, tag_size;
+     ngx_rtmp_record_app_conf_t *rracf;
+ 
+@@ -937,16 +925,10 @@ ngx_rtmp_record_write_frame(ngx_rtmp_session_t *s,
+ 
+     *ph++ = (u_char)h->type;
+ 
+-    p = (u_char*)&h->mlen;
+-    *ph++ = p[2];
+-    *ph++ = p[1];
+-    *ph++ = p[0];
++    ph = h4ton3(ph, h->mlen);
+ 
+-    p = (u_char*)&timestamp;
+-    *ph++ = p[2];
+-    *ph++ = p[1];
+-    *ph++ = p[0];
+-    *ph++ = p[3];
++    ph = h4ton3(ph, timestamp);
++    *ph++ = (u_char)(timestamp>>24);
+ 
+     *ph++ = 0;
+     *ph++ = 0;
+@@ -985,12 +967,8 @@ ngx_rtmp_record_write_frame(ngx_rtmp_session_t *s,
+ 
+     /* write tag size */
+     ph = hdr;
+-    p = (u_char*)&tag_size;
+-
+-    *ph++ = p[3];
+-    *ph++ = p[2];
+-    *ph++ = p[1];
+-    *ph++ = p[0];
++    *(uint32_t*)ph = htonl(tag_size);
++    ph += 4;
+ 
+     if (ngx_write_file(&rctx->file, hdr, ph - hdr,
+                        rctx->file.offset)

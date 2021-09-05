@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+
+. /lib/functions.sh
+
+START=95
+STOP=10
+
+USE_PROCD=1
+BACKUPPC_BIN="/usr/share/backuppc/bin/BackupPC"
+BACKUPPC_USER=backuppc
+
+# it would be better if it was possible to do this at install time, but we
+# can't, because in case of an openwrt image bundled with backuppc, all
+# ownerships other than root are lost.
+preconfigure() {
+    # create backuppc group and user if needed
+    if ! group_exists backuppc; then
+        group_add backuppc 864
+    fi
+    if ! user_exists backuppc; then
+        user_add backuppc 864 864 "BackupPC user" /data/backuppc /bin/sh
+    fi
+    # install default config if none exists, yet
+    if [ ! -e /data/backuppc/conf/config.pl ]; then
+        cp /usr/share/backuppc/conf/config.pl /data/backuppc/conf/config.pl
+    fi
+    # ensure proper ownerships and rights
+    chown backuppc:backuppc /data/backuppc /data/backuppc/* \
+                            /www/cgi-bin/BackupPC_Admin
+    chmod 750 /data/backuppc /data/backuppc/*
+    chmod 755 /usr/share/backuppc/bin/BackupPC_Admin_real
+    # The CGI needs to be world-executable, because uhttpd-cgi.c:386 checks
+    # for exactly that. We don't want that, but can't avoid it, currently.
+    chmod 6751 /www/cgi-bin/BackupPC_Admin
+    chown -R :backuppc /data/backuppc/conf
+    chmod 2770 /data/backuppc/conf
+    # protect webinterface with a random password by default
+    if [ -x /usr/sbin/uhttpd ] && ! grep -q backuppc /etc/httpd.conf >/dev/null 2>&1; then
+        PASS=$(perl -e 'print map{("a".."z","A".."Z",0..9)[int(rand(62))]}(1..8)')
+        PASSHASH=$(/usr/sbin/uhttpd -m "${PASS}")
+        echo "/cgi-bin/BackupPC_Admin:backuppc:${PASSHASH}" >> /etc/httpd.conf
+        uci set uhttpd.main.config=/etc/httpd.conf
+        /etc/init.d/uhttpd restart
+        # inform user
+        echo
+        echo "To protect access to the backuppc web interface, HTTP basic authentication in"
+        echo "uhttpd for http://$(/sbin/uci get "system.@system[0].hostname")/cgi-bin/BackupPC_Admin has been configured:"
+        echo "user: backuppc"
+        echo "pass: ${PASS}"
+        echo
+        echo "It is also recommended to follow the steps in"
+        echo "https://openwrt.org/docs/guide-user/services/webserver/uhttpd#securing_uhttpd"
+        echo "to secure access to uhttpd."
+    fi
+}
+
+start_service() {
+    # don't run preconfigure steps if called during image build
+    if [ -z "${IPKG_INSTROOT}" ]; then
+        preconfigure
+    fi
+    procd_open_instance
+    procd_set_param user $BACKUPPC_USER
+    procd_set_param reload_signal 1
+    procd_set_param command $BACKUPPC_BIN
+}

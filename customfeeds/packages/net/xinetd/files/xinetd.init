@@ -1,0 +1,132 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2011 OpenWrt.org
+
+. ${IPKG_INSTROOT}/lib/functions.sh
+
+START=50
+STOP=10
+
+USE_PROCD=1
+
+PROG="/usr/sbin/xinetd"
+
+PIDFILE="/var/run/xinetd.pid"
+
+CONF_FILE="/etc/config/xinetd"
+GENERATED_CONF_FILE="/var/run/xinetd.conf"
+OTHER_CONF_DIR="/tmp/xinetd.d"
+
+ServiceEntry="false"
+ListName=""
+ListValue=""
+
+
+# redefined callback for sections when calling config_load
+config_cb() {
+
+	# write out last list option (from last section) if exist and clear
+	if [ "$ListName" != "" ]; then
+		echo -e "\t$ListName = $ListVals" >> $GENERATED_CONF_FILE
+	fi
+
+	ListName=""
+	ListVals=""
+
+	# "close" last service entry (from last section) if exist
+	if [ "$ServiceEntry" = "true" ]; then				# at least one service section "opened"
+		echo "}" >> $GENERATED_CONF_FILE			# "close" open service section in config
+		ServiceEntry="false"
+	fi
+
+	if [ $# -eq 0 ]; then						# end of config reached
+		return
+	fi
+
+	local type="$1"
+	local name="$2"
+
+	if [ "$type" = "service" ]; then
+
+		if [ "$ServiceEntry" = "true" ]; then
+			echo "}" >> $GENERATED_CONF_FILE		# "close" previous opened service section in config
+		fi
+
+		ServiceEntry="true"
+
+		echo "" >> $GENERATED_CONF_FILE
+		echo "service $name" >> $GENERATED_CONF_FILE
+		echo "{" >> $GENERATED_CONF_FILE
+
+		# redefined callback for options when calling config_load
+		option_cb() {
+			local option="$1"
+			local value="$2"
+
+			[ -n "$value" ] && echo -e "\t$option = $value" >> $GENERATED_CONF_FILE
+		}
+
+		# redefined callback for lists when calling config_load
+		list_cb() {
+			local name="$1"
+			local value="$2"
+
+			# write out last list option if new list starts
+			if [ "$ListName" != "" -a "$ListName" != "$name" ]; then
+
+				echo -e "\t$ListName = $ListVals" >> $GENERATED_CONF_FILE
+
+				ListName=""
+				ListVals=""
+			fi
+
+			# new list option
+			if [ -z "$ListName" ]; then
+
+				ListName="$name"
+				ListVals="$value"
+			else
+				ListVals="$ListVals $value"
+			fi
+		}
+	else								# ignore non 'service' sections
+		return 0
+	fi
+}
+
+generate_config() {
+	echo "# Auto-generated config file from $CONF_FILE" > $GENERATED_CONF_FILE
+	echo "# Do not edit, changes to this file will be lost on upgrades" >> $GENERATED_CONF_FILE
+	echo "" >> $GENERATED_CONF_FILE
+
+	echo "defaults" >> $GENERATED_CONF_FILE
+	echo "{" >> $GENERATED_CONF_FILE
+	echo "" >> $GENERATED_CONF_FILE
+	echo "}" >> $GENERATED_CONF_FILE
+	echo "" >> $GENERATED_CONF_FILE
+	echo "includedir /etc/xinetd.d" >> $GENERATED_CONF_FILE
+	echo "includedir $OTHER_CONF_DIR" >> $GENERATED_CONF_FILE
+
+	config_load xinetd
+}
+
+start_service() {
+	mkdir -p $OTHER_CONF_DIR
+
+	generate_config
+
+	procd_open_instance
+	procd_set_param command $PROG -dontfork -f $GENERATED_CONF_FILE -pidfile $PIDFILE
+	procd_set_param respawn
+	procd_close_instance
+}
+
+reload_service() {
+	procd_running xinetd "instance1" && {
+		procd_send_signal xinetd "*" QUIT
+		start
+	}
+}
+
+service_triggers() {
+	procd_add_reload_trigger "xinetd"
+}

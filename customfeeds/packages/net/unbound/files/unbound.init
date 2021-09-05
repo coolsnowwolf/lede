@@ -1,0 +1,87 @@
+#!/bin/sh /etc/rc.common
+##############################################################################
+#
+# Copyright (C) 2016 Michael Hanselmann, Eric Luehrsen
+#
+##############################################################################
+#
+# This init script is just the entry point for Unbound UCI.
+#
+##############################################################################
+
+# while useful (sh)ellcheck is pedantic and noisy
+# shellcheck disable=1091,2002,2004,2034,2039,2086,2094,2140,2154,2155
+
+START=19
+STOP=50
+USE_PROCD=1
+PROG=/usr/sbin/unbound
+
+##############################################################################
+
+boot() {
+  UB_BOOT=1
+  start "$@"
+}
+
+##############################################################################
+
+start_service() {
+  if [ -n "$UB_BOOT" ] ; then
+    # Load procd triggers (rc) and use event IFUP to really start
+    return 0
+  fi
+
+  # complex UCI work
+  . /usr/lib/unbound/unbound.sh
+  unbound_start
+
+  # standard procd clause
+  procd_open_instance "unbound"
+  procd_set_param command $PROG -d -c $UB_TOTAL_CONF
+  procd_set_param respawn
+  procd_close_instance
+}
+
+##############################################################################
+
+stop_service() {
+  # clean up
+  . /usr/lib/unbound/stopping.sh
+  unbound_stop
+
+  # Wait! on restart Unbound may take time writing closure stats to syslog
+  pidof $PROG && sleep 1
+}
+
+##############################################################################
+
+service_triggers() {
+  local legacy1=$( uci_get unbound.@unbound[0].trigger )
+  local legacy2=$( uci_get unbound.@unbound[0].trigger_interface )
+  local legacy3=$( uci_get unbound.@unbound[0].iface_trig )
+  local triggers="$legacy1 $legacy2 $legacy3"
+
+  . /usr/lib/unbound/defaults.sh
+
+
+  if [ ! -f "$UB_TOTAL_CONF" ] || [ -n "$UB_BOOT" ] ; then
+    # Unbound can be a bit heavy, so wait some on first start. Any interface
+    # up affects the trigger delay and will guarantee start.
+    procd_add_raw_trigger "interface.*.up" 3000 /etc/init.d/unbound restart
+
+  elif [ -n "$triggers" ] ; then
+    for trigger in $triggers ; do
+      # User selected triggers to restart at any other time
+      procd_add_reload_interface_trigger "$trigger"
+    done
+
+    procd_add_reload_trigger "unbound" "dhcp"
+
+  else
+    procd_add_reload_trigger "unbound" "dhcp"
+  fi
+}
+
+##############################################################################
+

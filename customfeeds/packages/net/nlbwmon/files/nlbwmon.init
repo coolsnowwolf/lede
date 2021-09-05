@@ -1,0 +1,108 @@
+#!/bin/sh /etc/rc.common
+
+START=60
+
+USE_PROCD=1
+NAME=nlbwmon
+PROG=/usr/sbin/nlbwmon
+NICEPRIO=19
+
+add_subnet() {
+	local network="$1"
+	local range ranges
+
+	case "$network" in
+		*.*|*:*)
+			procd_append_param command '-s' "$network"
+		;;
+		*)
+			if network_get_subnets ranges "$network"; then
+				for range in $ranges; do
+					procd_append_param command '-s' "$range"
+				done
+			fi
+
+			if network_get_subnets6 ranges "$network"; then
+				for range in $ranges; do
+					procd_append_param command '-s' "$range"
+				done
+			fi
+		;;
+	esac
+}
+
+add_option() {
+	local cfg="$1"
+	local flag="$2"
+	local option="$3"
+	local default="$4"
+	local value
+
+	config_get value "$cfg" "$option" "$default"
+	[ -n "$value" ] && procd_append_param command "$flag" "$value"
+}
+
+add_bool() {
+	local cfg="$1"
+	local flag="$2"
+	local option="$3"
+	local default="$4"
+	local value
+
+	config_get_bool value "$cfg" "$option" "$default"
+	[ $value -eq 1 ] && procd_append_param command "$flag"
+}
+
+parse_config() {
+	. /lib/functions/network.sh
+
+	local cfg="$1"
+	local dir
+
+	config_get dir "$cfg" database_directory /var/lib/nlbwmon
+
+	mkdir -p "$dir"
+	procd_append_param command -o "$dir"
+
+	add_option "$cfg" -b netlink_buffer_size 524288
+	add_option "$cfg" -i commit_interval 24h
+	add_option "$cfg" -r refresh_interval 30s
+	add_option "$cfg" -p protocol_database /usr/share/nlbwmon/protocols
+	add_option "$cfg" -G database_generations 10
+	add_option "$cfg" -I database_interval 1
+	add_option "$cfg" -L database_limit 10000
+
+	add_bool "$cfg" -P database_prealloc 0
+	add_bool "$cfg" -Z database_compress 1
+
+	config_list_foreach "$cfg" local_network add_subnet
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param stderr 1
+	procd_set_param command "$PROG"
+	procd_set_param nice "$NICEPRIO"
+
+	config_load nlbwmon
+	config_foreach parse_config nlbwmon
+
+	procd_close_instance
+}
+
+add_interface_trigger() {
+	local interface ignore
+
+	config_get interface "$1" interface
+	config_get_bool ignore "$1" ignore 0
+
+	[ -n "$interface" -a $ignore -eq 0 ] && procd_add_interface_trigger "interface.*" "$interface" /etc/init.d/nlbwmon reload
+}
+
+service_triggers() {
+	procd_add_reload_trigger "dhcp" "system" "nlbwmon"
+
+	config_load dhcp
+	config_foreach add_interface_trigger dhcp
+}
+

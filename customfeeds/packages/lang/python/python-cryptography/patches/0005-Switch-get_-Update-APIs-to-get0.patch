@@ -1,0 +1,117 @@
+From 339e0ab364ca931435c0ad134dc6047eb6974540 Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Sat, 15 Jun 2019 18:47:46 -0700
+Subject: [PATCH 5/7] Switch get_*Update APIs to get0
+
+Deprecated in 1.1
+---
+ src/_cffi_src/openssl/x509.py                 | 27 ++++++++++++++++---
+ .../hazmat/backends/openssl/backend.py        |  4 +--
+ .../hazmat/backends/openssl/x509.py           |  8 +++---
+ 3 files changed, 29 insertions(+), 10 deletions(-)
+
+--- a/src/_cffi_src/openssl/x509.py
++++ b/src/_cffi_src/openssl/x509.py
+@@ -202,8 +202,10 @@ long X509_get_version(X509 *);
+ 
+ ASN1_TIME *X509_get_notBefore(X509 *);
+ ASN1_TIME *X509_get_notAfter(X509 *);
+-ASN1_TIME *X509_getm_notBefore(X509 *);
+-ASN1_TIME *X509_getm_notAfter(X509 *);
++ASN1_TIME *X509_getm_notBefore(const X509 *);
++ASN1_TIME *X509_getm_notAfter(const X509 *);
++const ASN1_TIME *X509_get0_notBefore(const X509 *);
++const ASN1_TIME *X509_get0_notAfter(const X509 *);
+ 
+ long X509_REQ_get_version(X509_REQ *);
+ X509_NAME *X509_REQ_get_subject_name(X509_REQ *);
+@@ -235,6 +237,8 @@ X509_CRL *sk_X509_CRL_value(Cryptography
+ long X509_CRL_get_version(X509_CRL *);
+ ASN1_TIME *X509_CRL_get_lastUpdate(X509_CRL *);
+ ASN1_TIME *X509_CRL_get_nextUpdate(X509_CRL *);
++const ASN1_TIME *X509_CRL_get0_lastUpdate(const X509_CRL *);
++const ASN1_TIME *X509_CRL_get0_nextUpdate(const X509_CRL *);
+ X509_NAME *X509_CRL_get_issuer(X509_CRL *);
+ Cryptography_STACK_OF_X509_REVOKED *X509_CRL_get_REVOKED(X509_CRL *);
+ 
+@@ -243,8 +247,11 @@ int X509_CRL_set_lastUpdate(X509_CRL *,
+ int X509_CRL_set_nextUpdate(X509_CRL *, ASN1_TIME *);
+ int X509_set_notBefore(X509 *, ASN1_TIME *);
+ int X509_set_notAfter(X509 *, ASN1_TIME *);
+-int X509_set1_notBefore(X509 *, ASN1_TIME *);
+-int X509_set1_notAfter(X509 *, ASN1_TIME *);
++
++int X509_CRL_set1_lastUpdate(X509_CRL *, const ASN1_TIME *);
++int X509_CRL_set1_nextUpdate(X509_CRL *, const ASN1_TIME *);
++int X509_set1_notBefore(X509 *, const ASN1_TIME *);
++int X509_set1_notAfter(X509 *, const ASN1_TIME *);
+ 
+ EC_KEY *d2i_EC_PUBKEY_bio(BIO *, EC_KEY **);
+ int i2d_EC_PUBKEY_bio(BIO *, EC_KEY *);
+@@ -299,4 +306,16 @@ int i2d_re_X509_CRL_tbs(X509_CRL *crl, u
+     return i2d_X509_CRL_INFO(crl->crl, pp);
+ }
+ #endif
++
++#if (OPENSSL_API_COMPAT >= 0x10100000L) && !CRYPTOGRAPHY_IS_LIBRESSL
++#define X509_get_notBefore X509_get0_notBefore
++#define X509_get_notAfter X509_get0_notAfter
++#define X509_set_notBefore X509_set1_notBefore
++#define X509_set_notAfter X509_set1_notAfter
++
++#define X509_CRL_get_lastUpdate X509_CRL_get0_lastUpdate
++#define X509_CRL_get_nextUpdate X509_CRL_get0_nextUpdate
++#define X509_CRL_set_lastUpdate X509_CRL_set1_lastUpdate
++#define X509_CRL_set_nextUpdate X509_CRL_set1_nextUpdate
++#endif
+ """
+--- a/src/cryptography/hazmat/backends/openssl/backend.py
++++ b/src/cryptography/hazmat/backends/openssl/backend.py
+@@ -1128,12 +1128,12 @@ class Backend(object):
+ 
+         # Set the last update time.
+         last_update = self._create_asn1_time(builder._last_update)
+-        res = self._lib.X509_CRL_set_lastUpdate(x509_crl, last_update)
++        res = self._lib.X509_CRL_set1_lastUpdate(x509_crl, last_update)
+         self.openssl_assert(res == 1)
+ 
+         # Set the next update time.
+         next_update = self._create_asn1_time(builder._next_update)
+-        res = self._lib.X509_CRL_set_nextUpdate(x509_crl, next_update)
++        res = self._lib.X509_CRL_set1_nextUpdate(x509_crl, next_update)
+         self.openssl_assert(res == 1)
+ 
+         # Add extensions.
+--- a/src/cryptography/hazmat/backends/openssl/x509.py
++++ b/src/cryptography/hazmat/backends/openssl/x509.py
+@@ -86,12 +86,12 @@ class _Certificate(object):
+ 
+     @property
+     def not_valid_before(self):
+-        asn1_time = self._backend._lib.X509_getm_notBefore(self._x509)
++        asn1_time = self._backend._lib.X509_get0_notBefore(self._x509)
+         return _parse_asn1_time(self._backend, asn1_time)
+ 
+     @property
+     def not_valid_after(self):
+-        asn1_time = self._backend._lib.X509_getm_notAfter(self._x509)
++        asn1_time = self._backend._lib.X509_get0_notAfter(self._x509)
+         return _parse_asn1_time(self._backend, asn1_time)
+ 
+     @property
+@@ -277,13 +277,13 @@ class _CertificateRevocationList(object)
+ 
+     @property
+     def next_update(self):
+-        nu = self._backend._lib.X509_CRL_get_nextUpdate(self._x509_crl)
++        nu = self._backend._lib.X509_CRL_get0_nextUpdate(self._x509_crl)
+         self._backend.openssl_assert(nu != self._backend._ffi.NULL)
+         return _parse_asn1_time(self._backend, nu)
+ 
+     @property
+     def last_update(self):
+-        lu = self._backend._lib.X509_CRL_get_lastUpdate(self._x509_crl)
++        lu = self._backend._lib.X509_CRL_get0_lastUpdate(self._x509_crl)
+         self._backend.openssl_assert(lu != self._backend._ffi.NULL)
+         return _parse_asn1_time(self._backend, lu)
+ 

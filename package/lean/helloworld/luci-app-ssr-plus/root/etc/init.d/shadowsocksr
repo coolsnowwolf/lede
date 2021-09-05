@@ -1,0 +1,926 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2017 openwrt-ssr
+# Copyright (C) 2017 yushi studio <ywb94@qq.com>
+# Copyright (C) 2018 lean <coolsnowwolf@gmail.com>
+# Copyright (C) 2020 Mattraks <mattraks@gmail.com>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=95
+STOP=15
+SERVICE_DAEMONIZE=1
+NAME=shadowsocksr
+LOCK_FILE=/var/lock/ssrplus.lock
+LOG_FILE=/var/log/ssrplus.log
+TMP_PATH=/var/etc/ssrplus
+TMP_BIN_PATH=$TMP_PATH/bin
+TMP_DNSMASQ_PATH=/var/etc/dnsmasq-ssrplus.d
+tcp_config_file=
+udp_config_file=
+shunt_config_file=
+local_config_file=
+shunt_dns_config_file=
+tmp_local_port=
+ARG_UDP=
+dns_port="5335"            #dns port
+tmp_dns_port="300"         #dns2socks temporary port
+tmp_udp_port="301"         #udp temporary port
+tmp_udp_local_port="302"   #udp socks temporary port
+tmp_shunt_port="303"       #shunt temporary port
+tmp_shunt_local_port="304" #shunt socks temporary port
+tmp_shunt_dns_port="305"   #shunt dns2socks temporary port
+server_count=0
+redir_tcp=0
+redir_udp=0
+local_enable=0
+kcp_enable_flag=0
+pdnsd_enable_flag=0
+switch_server=$1
+CRON_FILE=/etc/crontabs/root
+EXTRA_COMMANDS='reset'
+EXTRA_HELP="        reset   Reset to default settings"
+#extra_command "reset" "Reset to default settings"
+PS="/bin/busybox ps"
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_set_by_name() {
+	uci set $NAME.$1.$2=$3 2>/dev/null
+	uci commit $NAME
+}
+
+uci_set_by_type() {
+	uci set $NAME.@$1[0].$2=$3 2>/dev/null
+	uci commit $NAME
+}
+
+uci_get_by_cfgid() {
+	local ret=$(uci show $NAME.@$1[0].$2 | awk -F '.' '{print $2}' 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+get_host_ip() {
+	local host=$(uci_get_by_name $1 server)
+	local ip=$host
+	if [ -z "$(echo $host | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}")" ]; then
+		if [ "$host" == "${host#*:[0-9a-fA-F]}" ]; then
+			ip=$(resolveip -4 -t 3 $host | awk 'NR==1{print}')
+			[ -z "$ip" ] && ip=$(uclient-fetch -q -O- http://119.29.29.29/d?dn=$host | awk -F ';' '{print $1}')
+		fi
+	fi
+	[ -z "$ip" ] || uci_set_by_name $1 ip $ip
+	echo ${ip:="$(uci_get_by_name $1 ip "ERROR")"}
+}
+
+clean_log() {
+	local logsnum=$(cat $LOG_FILE 2>/dev/null | wc -l)
+	[ "$logsnum" -gt 1000 ] && {
+		echo "$(date "+%Y-%m-%d %H:%M:%S") 日志文件过长，清空处理！" >$LOG_FILE
+	}
+}
+
+echolog() {
+	local d="$(date "+%Y-%m-%d %H:%M:%S")"
+	echo -e "$d: $*" >>$LOG_FILE
+}
+
+add_cron() {
+	touch $CRON_FILE
+	sed -i '/ssrplus.log/d' $CRON_FILE
+	[ $(uci_get_by_type server_subscribe auto_update 0) -eq 1 ] && echo "0 $(uci_get_by_type server_subscribe auto_update_time) * * * /usr/share/shadowsocksr/ssrplusupdate.sh >$LOG_FILE" >>$CRON_FILE
+	crontab $CRON_FILE
+}
+
+del_cron() {
+	touch $CRON_FILE
+	sed -i '/ssrplus.log/d' $CRON_FILE
+	crontab $CRON_FILE
+	clean_log
+}
+
+set_lock() {
+	exec 1000>"$LOCK_FILE"
+	flock -xn 1000
+}
+
+unset_lock() {
+	flock -u 1000
+	rm -rf "$LOCK_FILE"
+}
+
+unlock() {
+	failcount=1
+	while [ "$failcount" -le 10 ]; do
+		if [ -f "$LOCK_FILE" ]; then
+			let "failcount++"
+			sleep 1s
+			[ "$failcount" -ge 10 ] && unset_lock
+		else
+			break
+		fi
+	done
+}
+
+_exit() {
+	local rc=$1
+	unset_lock
+	exit ${rc}
+}
+
+first_type() {
+	type -t -p "/bin/${1}" -p "${TMP_BIN_PATH}/${1}" -p "${1}" "$@" | head -n1
+}
+
+ln_start_bin() {
+	local file_func=${1}
+	local ln_name=${2}
+	shift 2
+	if [ "${file_func%%/*}" != "${file_func}" ]; then
+		[ ! -L "${file_func}" ] && {
+			ln -s "${file_func}" "${TMP_BIN_PATH}/${ln_name}" >/dev/null 2>&1
+			file_func="${TMP_BIN_PATH}/${ln_name}"
+		}
+		[ -x "${file_func}" ] || echolog "$(readlink ${file_func}) 没有执行权限，无法启动：${file_func} $*"
+	fi
+	#echo "${file_func} $*" >&2
+	[ -x "${file_func}" ] || {
+		echolog "找不到 ${file_func}，无法启动..."
+		echolog "-----------end------------"
+		_exit 2
+	}
+	${file_func:-echolog "  - ${ln_name}"} "$@" >/dev/null 2>&1 &
+}
+
+start_dns() {
+	local ssrplus_dns="$(uci_get_by_type global pdnsd_enable 0)"
+	local dnsstr="$(uci_get_by_type global tunnel_forward 8.8.4.4:53)"
+	local dnsserver=$(echo "$dnsstr" | awk -F ':' '{print $1}')
+	local dnsport=$(echo "$dnsstr" | awk -F ':' '{print $2}')
+	start_pdnsd() {
+		local usr_dns="$1"
+		local usr_port="$2"
+		if [ ! -f "$TMP_PATH/pdnsd/pdnsd.cache" ]; then
+			mkdir -p $TMP_PATH/pdnsd
+			touch $TMP_PATH/pdnsd/pdnsd.cache
+			chown -R nobody:nogroup $TMP_PATH/pdnsd
+		fi
+		cat <<-EOF >$TMP_PATH/pdnsd.conf
+			global{
+			perm_cache=1024;
+			cache_dir="$TMP_PATH/pdnsd";
+			pid_file="/var/run/pdnsd.pid";
+			run_as="nobody";
+			server_ip=127.0.0.1;
+			server_port=$dns_port;
+			status_ctl=on;
+			query_method=tcp_only;
+			min_ttl=1h;
+			max_ttl=1w;
+			timeout=10;
+			neg_domain_pol=on;
+			proc_limit=2;
+			procq_limit=8;
+			par_queries=1;
+			}
+			server{
+			label="ssr-usrdns";
+			ip=$usr_dns;
+			port=$usr_port;
+			timeout=6;
+			uptest=none;
+			interval=10m;
+			purge_cache=off;
+			}
+		EOF
+		ln_start_bin $(first_type pdnsd) pdnsd -c $TMP_PATH/pdnsd.conf
+	}
+	if [ "$ssrplus_dns" != "0" ]; then
+		case "$(uci_get_by_type global run_mode)" in
+		gfw) ipset add gfwlist $dnsserver 2>/dev/null ;;
+		oversea) ipset add oversea $dnsserver 2>/dev/null ;;
+		*) ipset add ss_spec_wan_ac $dnsserver nomatch 2>/dev/null ;;
+		esac
+		case "$ssrplus_dns" in
+		1)
+			start_pdnsd $dnsserver $dnsport
+			pdnsd_enable_flag=1
+			;;
+		2)
+			ln_start_bin $(first_type microsocks) microsocks -i 127.0.0.1 -p $tmp_dns_port ssrplus-dns
+			ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_dns_port $dnsserver:$dnsport 127.0.0.1:$dns_port -q
+			pdnsd_enable_flag=2
+			;;
+		esac
+	fi
+}
+
+gen_service_file() {
+	if [ $(uci_get_by_name $2 fast_open) == "1" ]; then
+		local fastopen="true"
+	else
+		local fastopen="false"
+	fi
+	if [ $1 == "ssr" ]; then
+		cat <<-EOF >$3
+			{
+			  "server": "0.0.0.0",
+			  "server_ipv6": "::",
+			  "server_port": $(uci_get_by_name $2 server_port),
+			  "mode": "tcp_and_udp",
+			  "password": "$(uci_get_by_name $2 password)",
+			  "timeout": $(uci_get_by_name $2 timeout 60),
+			  "method": "$(uci_get_by_name $2 encrypt_method)",
+			  "protocol": "$(uci_get_by_name $2 protocol)",
+			  "protocol_param": "$(uci_get_by_name $2 protocol_param)",
+			  "obfs": "$(uci_get_by_name $2 obfs)",
+			  "obfs_param": "$(uci_get_by_name $2 obfs_param)",
+			  "fast_open": $fastopen
+			}
+		EOF
+	else
+		cat <<-EOF >$3
+			{
+			  "server": "0.0.0.0",
+			  "server_ipv6": "::",
+			  "server_port": $(uci_get_by_name $2 server_port),
+			  "mode": "tcp_and_udp",
+			  "password": "$(uci_get_by_name $2 password)",
+			  "timeout": $(uci_get_by_name $2 timeout 60),
+			  "method": "$(uci_get_by_name $2 encrypt_method_ss)",
+			  "protocol": "socks",
+			  "fast_open": $fastopen
+			}
+		EOF
+	fi
+}
+
+get_name() {
+	case "$1" in
+	ss) echo "Shadowsocks" ;;
+	ssr) echo "ShadowsocksR" ;;
+	esac
+}
+
+gen_config_file() { #server1 type2 code3 local_port4 socks_port5 threads5
+	case "$3" in
+	1)
+		config_file=$tcp_config_file
+		;;
+	2)
+		config_file=$udp_config_file
+		;;
+	3)
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+		fi
+		config_file=$shunt_config_file
+		;;
+	4)
+		local ss_protocol="socks"
+		config_file=$local_config_file
+		;;
+	esac
+	case "$2" in
+	ss | ssr)
+		lua /usr/share/shadowsocksr/gen_config.lua $1 $mode $4 ${ss_protocol:-redir} >$config_file
+		if [ "$3" == "3" ]; then
+			lua /usr/share/shadowsocksr/gen_config.lua $1 $mode $tmp_port socks >$shunt_dns_config_file
+		fi
+		;;
+	v2ray)
+		lua /usr/share/shadowsocksr/gen_config.lua $1 $mode $4 $5 >$config_file
+		;;
+	trojan)
+		case "$3" in
+		1)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 nat $4 >$config_file
+			;;
+		2)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 client $4 >$config_file
+			;;
+		3)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 nat $4 >$config_file
+			lua /usr/share/shadowsocksr/gen_config.lua $1 client $tmp_port >$shunt_dns_config_file
+			;;
+		4)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 client $4 >$config_file
+			;;
+		esac
+		;;
+	naiveproxy)
+		case "$3" in
+		1)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 redir $4 $5 >$config_file
+			;;
+		3)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 redir $4 $5 >$config_file
+			lua /usr/share/shadowsocksr/gen_config.lua $1 socks $tmp_port >$shunt_dns_config_file
+			;;
+		4)
+			lua /usr/share/shadowsocksr/gen_config.lua $1 socks $4 >$config_file
+			;;
+		esac
+		;;
+	socks5)
+		/usr/share/shadowsocksr/genred2config.sh $config_file $2 $mode $4 \
+			"$(uci_get_by_name $1 server)" \
+			"$(uci_get_by_name $1 server_port)" \
+			"$(uci_get_by_name $1 auth_enable 0)" \
+			"$(uci_get_by_name $1 username)" \
+			"$(uci_get_by_name $1 password)"
+		;;
+	tun)
+		/usr/share/shadowsocksr/genred2config.sh $config_file $2 $(uci_get_by_name $1 iface "br-lan") $4
+		;;
+	esac
+	sed -i 's/\\//g' $TMP_PATH/*-ssr-*.json
+}
+
+start_udp() {
+	local type=$(uci_get_by_name $UDP_RELAY_SERVER type)
+	redir_udp=1
+	case "$type" in
+	ss | ssr)
+		gen_config_file $UDP_RELAY_SERVER $type 2 $tmp_udp_port
+		ss_program="$(first_type ${type}local ${type}-redir)"
+		ln_start_bin $ss_program ${type}-redir -c $udp_config_file
+		echolog "UDP TPROXY Relay:$(get_name $type) Started!"
+		;;
+	v2ray)
+		gen_config_file $UDP_RELAY_SERVER $type 2 $tmp_udp_port
+		ln_start_bin $(first_type xray v2ray) v2ray -config $udp_config_file
+		echolog "UDP TPROXY Relay:$($(first_type "xray" "v2ray") -version | head -1) Started!"
+		;;
+	trojan) #client
+		gen_config_file $UDP_RELAY_SERVER $type 2 $tmp_udp_local_port
+		ln_start_bin $(first_type trojan) $type --config $udp_config_file
+		ln_start_bin $(first_type ipt2socks) ipt2socks -U -b 0.0.0.0 -4 -s 127.0.0.1 -p $tmp_udp_local_port -l $tmp_udp_port
+		echolog "UDP TPROXY Relay:$($(first_type trojan) --version 2>&1 | head -1) Started!"
+		;;
+	naiveproxy)
+		echolog "NaïveProxy UDP TPROXY Relay not supported!"
+		redir_udp=0
+		ARG_UDP=""
+		;;
+	socks5)
+		# if [ "$(uci_get_by_name $UDP_RELAY_SERVER auth_enable 0)" == "1" ]; then
+		# 	local auth="-a $(uci_get_by_name $UDP_RELAY_SERVER username) -k $(uci_get_by_name $UDP_RELAY_SERVER password)"
+		# fi
+		# ln_start_bin $(first_type ipt2socks) ipt2socks $udp_config_file -U -4 -s $(uci_get_by_name $UDP_RELAY_SERVER server) -p $(uci_get_by_name $UDP_RELAY_SERVER server_port) -l $tmp_udp_port $auth
+		gen_config_file $UDP_RELAY_SERVER $type 2 $tmp_udp_port
+		ln_start_bin $(first_type redsocks2) redsocks2 -c $udp_config_file
+		echolog "UDP TPROXY Relay:Socks5 REDIRECT/TPROXY Started!"
+		;;
+	tun)
+		echolog "Network Tunnel UDP TPROXY Relay not supported!"
+		redir_udp=0
+		ARG_UDP=""
+		;;
+	esac
+}
+
+start_shunt() {
+	local type=$(uci_get_by_name $SHUNT_SERVER type)
+	case "$type" in
+	ss | ssr)
+		gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port
+		ss_program="$(first_type ${type}local ${type}-redir)"
+		ln_start_bin $ss_program ${type}-redir -c $shunt_config_file
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+			ln_start_bin $(first_type ${type}local ${type}-local) ${type}-local -c $shunt_dns_config_file
+		fi
+		ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+		echolog "shunt:$(get_name $type) Started!"
+		;;
+	v2ray)
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+			gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port $tmp_port
+			ln_start_bin $(first_type xray v2ray) v2ray -config $shunt_config_file
+		fi
+		ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+		echolog "shunt:$($(first_type xray v2ray) -version | head -1) Started!"
+		;;
+	trojan)
+		gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port
+		ln_start_bin $(first_type trojan) $type --config $shunt_config_file
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+			ln_start_bin $(first_type trojan) $type --config $shunt_dns_config_file
+		fi
+		ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+		echolog "shunt:$($(first_type trojan) --version 2>&1 | head -1) Started!"
+		;;
+	naiveproxy)
+		gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port
+		ln_start_bin $(first_type naive) naive --config $shunt_config_file
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+			ln_start_bin $(first_type naive) naive --config $shunt_dns_config_file
+		fi
+		ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+		echolog "shunt:$($(first_type "naive") --version 2>&1 | head -1) Started!"
+		redir_udp=0
+		;;
+	# socks5)
+	# 	if [ "$(uci_get_by_name $SHUNT_SERVER auth_enable 0)" == "1" ]; then
+	# 		local auth="-a $(uci_get_by_name $SHUNT_SERVER username) -k $(uci_get_by_name $SHUNT_SERVER password)"
+	# 	fi
+	# 	ln_start_bin $(first_type ipt2socks) ipt2socks $shunt_config_file -R -4 -s $(uci_get_by_name $SHUNT_SERVER server) -p $(uci_get_by_name $SHUNT_SERVER server_port) -l $tmp_shunt_port $auth
+	# 	#gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port
+	# 	#ln_start_bin $(first_type redsocks2) redsocks2 -c $shunt_config_file
+	# 	if [ -n "$tmp_local_port" ]; then
+	# 		local tmp_port=$tmp_local_port
+	# 	else
+	# 		local tmp_port=$tmp_shunt_local_port
+	# 		ln_start_bin $(first_type microsocks) microsocks -i 127.0.0.1 -p $tmp_port shunt-dns-ssr-plus
+	# 	fi
+	# 	ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+	# 	echolog "shunt:$type REDIRECT/TPROXY Started!"
+	# 	;;
+	*)
+		gen_config_file $SHUNT_SERVER $type 3 $tmp_shunt_port
+		ln_start_bin $(first_type redsocks2) redsocks2 -c $shunt_config_file
+		if [ -n "$tmp_local_port" ]; then
+			local tmp_port=$tmp_local_port
+		else
+			local tmp_port=$tmp_shunt_local_port
+			ln_start_bin $(first_type microsocks) microsocks -i 127.0.0.1 -p $tmp_port shunt-dns-ssr-plus
+		fi
+		ln_start_bin $(first_type dns2socks) dns2socks 127.0.0.1:$tmp_port 8.8.8.8:53 127.0.0.1:$tmp_shunt_dns_port -q
+		echolog "shunt:$type REDIRECT/TPROXY Started!"
+		;;
+	esac
+	return 0
+}
+
+start_local() {
+	[ "$LOCAL_SERVER" = "nil" ] && return 1
+	local local_port=$(uci_get_by_type socks5_proxy local_port)
+	[ "$LOCAL_SERVER" == "$SHUNT_SERVER" ] && tmp_local_port=$local_port
+	local type=$(uci_get_by_name $LOCAL_SERVER type)
+	case "$type" in
+	ss | ssr)
+		gen_config_file $LOCAL_SERVER $type 4 $local_port
+		ss_program="$(first_type ${type}local ${type}-local)"
+		ln_start_bin $ss_program ${type}-local -c $local_config_file
+		echolog "Global_Socks5:$(get_name $type) Started!"
+		;;
+	v2ray)
+		if [ "$_local" == "2" ]; then
+			gen_config_file $LOCAL_SERVER $type 4 0 $local_port
+			ln_start_bin $(first_type xray v2ray) v2ray -config $local_config_file
+			echolog "Global_Socks5:$($(first_type "xray" "v2ray") -version | head -1) Started!"
+		fi
+		;;
+	trojan) #client
+		gen_config_file $LOCAL_SERVER $type 4 $local_port
+		ln_start_bin $(first_type trojan) $type --config $local_config_file
+		echolog "Global_Socks5:$($(first_type trojan) --version 2>&1 | head -1) Started!"
+		;;
+	naiveproxy)
+		gen_config_file $LOCAL_SERVER $type 4 $local_port
+		ln_start_bin $(first_type naive) naive --config $local_config_file
+		echolog "Global_Socks5:$($(first_type $type) --version | head -1) Started!"
+		;;
+	*)
+		[ -e /proc/sys/net/ipv6 ] && local listenip='-i ::'
+		ln_start_bin $(first_type microsocks) microsocks $listenip -p $local_port tcp-udp-ssr-local
+		echolog "Global_Socks5:$type Started!"
+		;;
+	esac
+	local_enable=1
+	return 0
+}
+
+Start_Run() {
+	if [ "$(uci_get_by_type global threads 0)" == "0" ]; then
+		local threads=$(cat /proc/cpuinfo | grep 'processor' | wc -l)
+	else
+		local threads=$(uci_get_by_type global threads)
+	fi
+	if [ "$(uci_get_by_name $GLOBAL_SERVER kcp_enable 0)" == "1" ]; then
+		[ ! -f "/usr/bin/kcptun-client" ] && return 1
+		local kcp_str=$(/usr/bin/kcptun-client -v | grep kcptun | wc -l)
+		[ "0" == "$kcp_str" ] && return 1
+		local kcp_server=$(uci_get_by_name $GLOBAL_SERVER server)
+		local kcp_port=$(uci_get_by_name $GLOBAL_SERVER kcp_port)
+		local server_port=$(uci_get_by_name $GLOBAL_SERVER server_port)
+		local password=$(uci_get_by_name $GLOBAL_SERVER kcp_password)
+		local kcp_param=$(uci_get_by_name $GLOBAL_SERVER kcp_param)
+		[ "$password" != "" ] && password="--key "$password
+		service_start /usr/bin/kcptun-client -r $kcp_server:$kcp_port -l :$server_port $password $kcp_param
+		kcp_enable_flag=1
+		ARG_UDP=""
+	fi
+	if [ "$_local" == "1" ]; then
+		local socks_port=$(uci_get_by_type socks5_proxy local_port)
+		tcp_config_file=$TMP_PATH/local-ssr-retcp.json
+		[ "$mode" == "tcp,udp" ] && tcp_config_file=$TMP_PATH/local-udp-ssr-retcp.json
+	fi
+	local tcp_port=$(uci_get_by_name $GLOBAL_SERVER local_port)
+	local type=$(uci_get_by_name $GLOBAL_SERVER type)
+	case "$type" in
+	ss | ssr)
+		gen_config_file $GLOBAL_SERVER $type 1 $tcp_port
+		ss_program="$(first_type ${type}local ${type}-redir)"
+		for i in $(seq 1 $threads); do
+			ln_start_bin "$ss_program" ${type}-redir -c $tcp_config_file
+		done
+		echolog "Main node:$(get_name $type) $threads Threads Started!"
+		;;
+	v2ray)
+		gen_config_file $GLOBAL_SERVER $type 1 $tcp_port $socks_port
+		ln_start_bin $(first_type xray v2ray) v2ray -config $tcp_config_file
+		echolog "Main node:$($(first_type xray v2ray) -version | head -1) Started!"
+		;;
+	trojan)
+		gen_config_file $GLOBAL_SERVER $type 1 $tcp_port
+		for i in $(seq 1 $threads); do
+			ln_start_bin $(first_type $type) $type --config $tcp_config_file
+		done
+		echolog "Main node:$($(first_type $type) --version 2>&1 | head -1) , $threads Threads Started!"
+		;;
+	naiveproxy)
+		gen_config_file $GLOBAL_SERVER $type 1 $tcp_port
+		ln_start_bin $(first_type naive) naive $tcp_config_file
+		echolog "Main node:$($(first_type naive) --version 2>&1 | head -1) , $threads Threads Started!"
+		;;
+	socks5)
+		if [ "$(uci_get_by_name $GLOBAL_SERVER auth_enable 0)" == "1" ]; then
+			local auth="-a $(uci_get_by_name $GLOBAL_SERVER username) -k $(uci_get_by_name $GLOBAL_SERVER password)"
+		fi
+		ln_start_bin $(first_type ipt2socks) ipt2socks $tcp_config_file -R -4 -j $threads -s $(uci_get_by_name $GLOBAL_SERVER server) -p $(uci_get_by_name $GLOBAL_SERVER server_port) -l $tcp_port $auth
+		#gen_config_file $GLOBAL_SERVER $type 1 $tcp_port
+		#for i in $(seq 1 $threads); do
+		#	ln_start_bin $(first_type redsocks2) redsocks2 -c $tcp_config_file
+		#done
+		echolog "Main node:Socks5 REDIRECT/TPROXY $threads Threads Started!"
+		;;
+	tun)
+		gen_config_file $GLOBAL_SERVER $type 1 $tcp_port
+		for i in $(seq 1 $threads); do
+			ln_start_bin $(first_type redsocks2) redsocks2 -c $tcp_config_file
+		done
+		echolog "Main node:Network Tunnel REDIRECT $threads Threads Started!"
+		;;
+	esac
+	redir_tcp=1
+	return 0
+}
+
+load_config() {
+	if [ -z "$switch_server" ]; then
+		GLOBAL_SERVER=$(uci_get_by_type global global_server nil)
+	else
+		GLOBAL_SERVER=$switch_server
+	fi
+	LOCAL_SERVER=$(uci_get_by_type socks5_proxy server nil)
+	if [ "$GLOBAL_SERVER" == "nil" ]; then
+		mode="tcp,udp"
+		_local="2"
+		local_config_file=$TMP_PATH/tcp-udp-ssr-local.json
+		start_local
+		return 1
+	fi
+	UDP_RELAY_SERVER=$(uci_get_by_type global udp_relay_server nil)
+	SHUNT_SERVER=$(uci_get_by_type global netflix_server nil)
+	tcp_config_file=$TMP_PATH/tcp-only-ssr-retcp.json
+	case "$UDP_RELAY_SERVER" in
+	nil)
+		mode="tcp"
+		;;
+	$GLOBAL_SERVER | same)
+		mode="tcp,udp"
+		tcp_config_file=$TMP_PATH/tcp-udp-ssr-retcp.json
+		ARG_UDP="-u"
+		UDP_RELAY_SERVER=$GLOBAL_SERVER
+		;;
+	*)
+		mode="udp"
+		udp_config_file=$TMP_PATH/udp-only-ssr-reudp.json
+		ARG_UDP="-U"
+		start_udp
+		mode="tcp"
+		;;
+	esac
+	case "$LOCAL_SERVER" in
+	nil)
+		_local="0"
+		;;
+	$GLOBAL_SERVER | same)
+		_local="1"
+		LOCAL_SERVER=$GLOBAL_SERVER
+		local_config_file=$TMP_PATH/tcp-udp-ssr-local.json
+		start_local
+		local_enable=0
+		;;
+	*)
+		_local="2"
+		local_config_file=$TMP_PATH/tcp-udp-ssr-local.json
+		start_local
+		;;
+	esac
+	case "$SHUNT_SERVER" in
+	nil)
+		shunt="0"
+		;;
+	$GLOBAL_SERVER | same)
+		shunt="1"
+		SHUNT_SERVER=$GLOBAL_SERVER
+		;;
+	*)
+		shunt="$tmp_shunt_port"
+		shunt_config_file=$TMP_PATH/shunt-ssr-retcp.json
+		shunt_dns_config_file=$TMP_PATH/shunt-dns-ssr-plus.json
+		start_shunt
+		;;
+	esac
+	return 0
+}
+
+check_server() {
+	ENABLE_SERVER=$(uci_get_by_type global global_server nil)
+	if [ "$ENABLE_SERVER" == "nil" ]; then
+		return 1
+	else
+		local STYPE=$(uci_get_by_name $ENABLE_SERVER type nil)
+		if [ "$STYPE" == "nil" ]; then
+			local CFGID=$(uci_get_by_cfgid servers type nil)
+			if [ "$CFGID" == "nil" ]; then
+				uci_set_by_type global global_server 'nil'
+			else
+				uci_set_by_type global global_server $CFGID
+			fi
+			/etc/init.d/shadowsocksr restart
+		fi
+	fi
+}
+
+start_server() {
+	[ "$(uci_get_by_type server_global enable_server 0)" == "0" ] && return 0
+	server_service() {
+		[ "$(uci_get_by_name $1 enable 0)" == "0" ] && return 1
+		let server_count=server_count+1
+		if [ "$server_count" == "1" ]; then
+			if ! (iptables-save -t filter | grep SSR-SERVER-RULE >/dev/null); then
+				iptables -N SSR-SERVER-RULE && iptables -t filter -I INPUT -j SSR-SERVER-RULE
+			fi
+		fi
+		local type=$(uci_get_by_name $1 type)
+		case "$type" in
+		ss | ssr)
+			gen_service_file ${type} $1 $TMP_PATH/ssr-server$server_count.json
+			ln_start_bin $(first_type ${type}server ${type}-server) ${type}-server -c $TMP_PATH/ssr-server$server_count.json
+			echolog "Server: $(get_name ${type}) Server$server_count Started!"
+			;;
+		socks5)
+			[ -e /proc/sys/net/ipv6 ] && local listenip='-i ::'
+			ln_start_bin $(first_type microsocks) microsocks $listenip -p $(uci_get_by_name $1 server_port) -1 -u $(uci_get_by_name $1 username) -P $(uci_get_by_name $1 password) ssr-server$server_count
+			echolog "Server:Socks5 Server$server_count Started!"
+			;;
+		esac
+		iptables -t filter -A SSR-SERVER-RULE -p tcp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
+		iptables -t filter -A SSR-SERVER-RULE -p udp --dport $(uci_get_by_name $1 server_port) -j ACCEPT
+		return 0
+	}
+	gen_serv_include() {
+		local FWI=$(uci get firewall.shadowsocksr.path 2>/dev/null)
+		[ -n "$FWI" ] || return 0
+		if [ ! -f $FWI ]; then
+			echo '#!/bin/sh' >$FWI
+		fi
+		extract_rules() {
+			echo "*filter"
+			iptables-save -t filter | grep SSR-SERVER-RULE | sed -e "s/^-A INPUT/-I INPUT/"
+			echo 'COMMIT'
+		}
+		cat <<-EOF >>$FWI
+			iptables-save -c | grep -v "SSR-SERVER" | iptables-restore -c
+			iptables-restore -n <<-EOT
+			$(extract_rules)
+			EOT
+		EOF
+	}
+
+	config_load $NAME
+	config_foreach server_service server_config
+	gen_serv_include
+	return 0
+}
+
+start_switch() {
+	if [ "$(uci_get_by_type global enable_switch 0)" == "1" ]; then
+		if [ -z "$switch_server" ]; then
+			local switch_time=$(uci_get_by_type global switch_time)s
+			local switch_timeout=$(uci_get_by_type global switch_timeout)
+			service_start /usr/bin/ssr-switch start $switch_time $switch_timeout
+		fi
+	fi
+}
+
+start_monitor() {
+	if [ $(uci_get_by_type global monitor_enable 1) == "1" ]; then
+		let total_count=server_count+redir_tcp+redir_udp+kcp_enable_flag+local_enable+pdnsd_enable_flag
+		if [ $total_count -gt 0 ]; then
+			service_start /usr/bin/ssr-monitor $server_count $redir_tcp $redir_udp $kcp_enable_flag $local_enable $pdnsd_enable_flag
+		fi
+	fi
+}
+
+start_rules() {
+	local server=$(get_host_ip $GLOBAL_SERVER)
+	local local_port=$(uci_get_by_name $GLOBAL_SERVER local_port)
+	local lan_ac_ips=$(uci_get_by_type access_control lan_ac_ips)
+	local lan_ac_mode=$(uci_get_by_type access_control lan_ac_mode)
+	if [ "$kcp_enable_flag" == "0" -a "$redir_udp" == "1" ]; then
+		local udp_server=$(get_host_ip $UDP_RELAY_SERVER)
+		local udp_local_port=$tmp_udp_port
+	fi
+	if [ "$shunt" != "0" ]; then
+		local shunt_ip=$(get_host_ip $SHUNT_SERVER)
+	fi
+	if [ -n "$lan_ac_ips" ]; then
+		case "$lan_ac_mode" in
+		w | W | b | B) local ac_ips="$lan_ac_mode$lan_ac_ips" ;;
+		esac
+	fi
+	gfwmode() {
+		case "$(uci_get_by_type global run_mode)" in
+		gfw) echo "-g" ;;
+		router) echo "-r" ;;
+		oversea) echo "-c" ;;
+		all) echo "-z" ;;
+		esac
+	}
+	if [ "$(uci_get_by_type global dports 1)" == "2" ]; then
+		local proxyport="-m multiport --dports 22,53,587,465,995,993,143,80,443,853,9418"
+	fi
+	get_arg_out() {
+		case "$(uci_get_by_type access_control router_proxy 1)" in
+		1) echo "-o" ;;
+		2) echo "-O" ;;
+		esac
+	}
+	/usr/share/shadowsocksr/gfw2ipset.sh
+	/usr/bin/ssr-rules \
+		-s "$server" \
+		-l "$local_port" \
+		-S "$udp_server" \
+		-L "$udp_local_port" \
+		-a "$ac_ips" \
+		-i "/etc/ssrplus/china_ssr.txt" \
+		-b "$(uci_get_by_type access_control wan_bp_ips)" \
+		-w "$(uci_get_by_type access_control wan_fw_ips)" \
+		-B "$(uci_get_by_type access_control lan_bp_ips)" \
+		-p "$(uci_get_by_type access_control lan_fp_ips)" \
+		-G "$(uci_get_by_type access_control lan_gm_ips)" \
+		-m "$(uci_get_by_type access_control Interface)" \
+		-D "$proxyport" \
+		-F "$shunt" \
+		-N "$shunt_ip" \
+		-M "$(uci_get_by_type global netflix_proxy 0)" \
+		-I "/etc/ssrplus/netflixip.list" \
+		$(get_arg_out) $(gfwmode) $ARG_UDP
+	return $?
+}
+
+start() {
+	set_lock
+	echolog "----------start------------"
+	mkdir -p /var/run /var/lock /var/log /var/dnsmasq.d $TMP_BIN_PATH $TMP_DNSMASQ_PATH
+	echo "conf-dir=${TMP_DNSMASQ_PATH}" >"/var/dnsmasq.d/dnsmasq-ssrplus.conf"
+	if load_config; then
+		Start_Run
+		start_rules
+		start_dns
+		add_cron
+		start_switch
+	else
+		echolog "未启动主节点，禁止连接的域名正在加载。"
+		cat /etc/ssrplus/deny.list | sed '/^$/d' | sed '/#/d' | sed "/.*/s/.*/address=\/&\//" >$TMP_DNSMASQ_PATH/denylist.conf
+		echolog "禁止连接的域名加载完毕。"
+		if [ "$(uci_get_by_type global adblock 0)" == "1" ]; then
+			echolog "未启动主节点，广告过滤正在加载。"
+			cp -f /etc/ssrplus/ad.conf $TMP_DNSMASQ_PATH/
+			if [ -f "$TMP_DNSMASQ_PATH/ad.conf" ]; then
+				for line in $(cat /etc/ssrplus/black.list); do sed -i "/$line/d" $TMP_DNSMASQ_PATH/ad.conf; done
+				for line in $(cat /etc/ssrplus/white.list); do sed -i "/$line/d" $TMP_DNSMASQ_PATH/ad.conf; done
+				for line in $(cat /etc/ssrplus/deny.list); do sed -i "/$line/d" $TMP_DNSMASQ_PATH/ad.conf; done
+			fi
+			echolog "广告过滤加载完毕。"
+		fi
+	fi
+	/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	check_server
+	start_server
+	start_monitor
+	clean_log
+	echolog "-----------end------------"
+	unset_lock
+}
+
+boot() {
+	echolog "boot！"
+	mkdir -p /var/run /var/lock /var/log /var/dnsmasq.d $TMP_BIN_PATH $TMP_DNSMASQ_PATH
+	ulimit -n 65535
+	start
+}
+
+stop() {
+	unlock
+	set_lock
+	/usr/bin/ssr-rules -f
+	local srulecount=$(iptables -L | grep SSR-SERVER-RULE | wc -l)
+	if [ $srulecount -gt 0 ]; then
+		iptables -F SSR-SERVER-RULE
+		iptables -t filter -D INPUT -j SSR-SERVER-RULE
+		iptables -X SSR-SERVER-RULE 2>/dev/null
+	fi
+	if [ -z "$switch_server" ]; then
+		$PS -w | grep -v "grep" | grep ssr-switch | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+		rm -f /var/lock/ssr-switch.lock
+		killall -q -9 kcptun-client
+	fi
+	$PS -w | grep -v "grep" | grep ssr-monitor | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+	$PS -w | grep -v "grep" | grep "sleep 0000" | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+	$PS -w | grep -v "grep" | grep "$TMP_PATH" | awk '{print $1}' | xargs kill -9 >/dev/null 2>&1 &
+	killall -q -9 v2ray-plugin obfs-local xray-plugin
+	rm -f /var/lock/ssr-monitor.lock
+	if [ -f "/var/dnsmasq.d/dnsmasq-ssrplus.conf" ]; then
+		rm -rf /var/dnsmasq.d/dnsmasq-ssrplus.conf $TMP_DNSMASQ_PATH $TMP_PATH/*-ssr-*.json $TMP_PATH/ssr-server*.json
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+	fi
+	del_cron
+	unset_lock
+}
+
+reset() {
+	stop
+	set_lock
+	rm -rf /etc/config/shadowsocksr $LOG_FILE
+	touch /etc/config/shadowsocksr $LOG_FILE
+	uci -q batch <<-EOF >/dev/null
+		add shadowsocksr global
+		set shadowsocksr.@global[0].global_server='nil'
+		set shadowsocksr.@global[0].netflix_server='nil'
+		set shadowsocksr.@global[0].netflix_proxy='0'
+		set shadowsocksr.@global[0].threads='0'
+		set shadowsocksr.@global[0].run_mode='router'
+		set shadowsocksr.@global[0].dports='2'
+		set shadowsocksr.@global[0].pdnsd_enable='1'
+		set shadowsocksr.@global[0].tunnel_forward='8.8.4.4:53'
+		set shadowsocksr.@global[0].monitor_enable='1'
+		set shadowsocksr.@global[0].enable_switch='1'
+		set shadowsocksr.@global[0].switch_time='667'
+		set shadowsocksr.@global[0].switch_timeout='5'
+		set shadowsocksr.@global[0].switch_try_count='3'
+		set shadowsocksr.@global[0].gfwlist_url='https://cdn.jsdelivr.net/gh/YW5vbnltb3Vz/domain-list-community@release/gfwlist.txt'
+		set shadowsocksr.@global[0].chnroute_url='https://ispip.clang.cn/all_cn.txt'
+		set shadowsocksr.@global[0].nfip_url='https://cdn.jsdelivr.net/gh/QiuSimons/Netflix_IP/NF_only.txt'
+		set shadowsocksr.@global[0].adblock_url='https://anti-ad.net/anti-ad-for-dnsmasq.conf'
+		add shadowsocksr server_subscribe
+		set shadowsocksr.@server_subscribe[0].proxy='0'
+		set shadowsocksr.@server_subscribe[0].auto_update_time='2'
+		set shadowsocksr.@server_subscribe[0].auto_update='1'
+		set shadowsocksr.@server_subscribe[0].filter_words='过期时间/剩余流量/QQ群/官网/防失联地址/回国'
+		add shadowsocksr access_control
+		set shadowsocksr.@access_control[0].lan_ac_mode='0'
+		set shadowsocksr.@access_control[0].router_proxy='1'
+		add_list shadowsocksr.@access_control[0].wan_fw_ips=149.154.160.0/20
+		add_list shadowsocksr.@access_control[0].wan_fw_ips=67.198.55.0/24
+		add_list shadowsocksr.@access_control[0].wan_fw_ips=91.108.4.0/22
+		add_list shadowsocksr.@access_control[0].wan_fw_ips=91.108.56.0/22
+		add_list shadowsocksr.@access_control[0].wan_fw_ips=109.239.140.0/24
+		add_list shadowsocksr.@access_control[0].Interface='lan'
+		add shadowsocksr socks5_proxy
+		set shadowsocksr.@socks5_proxy[0].server='nil'
+		set shadowsocksr.@socks5_proxy[0].local_port='1080'
+		add shadowsocksr server_global
+		set shadowsocksr.@server_global[0].enable_server='0'
+		commit shadowsocksr
+	EOF
+	unset_lock
+}

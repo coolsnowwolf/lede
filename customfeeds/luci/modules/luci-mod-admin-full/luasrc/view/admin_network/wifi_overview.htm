@@ -1,0 +1,479 @@
+<%#
+ Copyright 2008-2009 Steven Barth <steven@midlink.org>
+ Copyright 2008-2015 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%-
+
+	local ip = require "luci.ip"
+	local fs = require "nixio.fs"
+	local utl = require "luci.util"
+	local uci = require "luci.model.uci".cursor()
+	local ntm = require "luci.model.network"
+
+	local has_iwinfo = pcall(require, "iwinfo")
+
+	ntm.init(uci)
+
+	function guess_wifi_hw(dev)
+		local bands = ""
+		local ifname = dev:name()
+		local name, idx = ifname:match("^([a-z]+)(%d+)")
+		idx = tonumber(idx)
+
+		if has_iwinfo then
+			local bl = dev.iwinfo.hwmodelist
+			if bl and next(bl) then
+				if bl.a then bands = bands .. "a" end
+				if bl.b then bands = bands .. "b" end
+				if bl.g then bands = bands .. "g" end
+				if bl.n then bands = bands .. "n" end
+				if bl.ac then bands = bands .. "ac" end
+				if bl.ax then bands = bands .. "ax" end
+			end
+
+			local hw = dev.iwinfo.hardware_name
+			if hw then
+				return "%s 802.11%s" %{ hw, bands }
+			end
+		end
+
+		-- wl.o
+		if name == "wl" then
+			local name = translatef("Broadcom 802.11%s Wireless Controller", bands)
+			local nm   = 0
+
+			local fd = nixio.open("/proc/bus/pci/devices", "r")
+			if fd then
+				local ln
+				for ln in fd:linesource() do
+					if ln:match("wl$") then
+						if nm == idx then
+							local version = ln:match("^%S+%s+%S%S%S%S([0-9a-f]+)")
+							name = translatef(
+								"Broadcom BCM%04x 802.11 Wireless Controller",
+								tonumber(version, 16)
+							)
+
+							break
+						else
+							nm = nm + 1
+						end
+					end
+				end
+				fd:close()
+			end
+
+			return name
+
+		-- ralink
+		elseif name == "ra" or name == "rai" then
+			return translatef("Ralink/MediaTek 802.11%s Wireless Controller", bands)
+
+		-- hermes
+		elseif name == "eth" then
+			return translate("Hermes 802.11b Wireless Controller")
+
+		elseif fs.access("/etc/modules.d/qtn-pcie2") then
+			return translate("Quantenna 802.11ac Wireless Controller")
+
+		-- hostap
+		elseif name == "wlan" and fs.stat("/proc/net/hostap/" .. ifname, "type") == "dir" then
+			return translate("Prism2/2.5/3 802.11b Wireless Controller")
+
+		-- dunno yet
+		else
+			return translatef("Generic 802.11%s Wireless Controller", bands)
+		end
+	end
+
+	local devices = ntm:get_wifidevs()
+	local netlist = { }
+	local netdevs = { }
+
+	local dev
+	for _, dev in ipairs(devices) do
+		local net
+		for _, net in ipairs(dev:get_wifinets()) do
+			netlist[#netlist+1] = net:id()
+			netdevs[net:id()] = dev:name()
+		end
+	end
+-%>
+
+<%+header%>
+
+<% if not has_iwinfo then %>
+	<div class="errorbox">
+		<strong><%:Package libiwinfo required!%></strong><br />
+		<%_The <em>libiwinfo-lua</em> package is not installed. You must install this component for working wireless configuration!%>
+	</div>
+<% end %>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js?v=git-21.165.14196-d25a9d2"></script>
+<script type="text/javascript">//<![CDATA[
+	var wifidevs = <%=luci.http.write_json(netdevs)%>;
+
+	var is_reconnecting = false;
+
+	function nowrap(s) {
+		return s.replace(/ /g, '&#160;');
+	}
+
+	function wifirate(bss, rx) {
+		var p = rx ? 'rx_' : 'tx_',
+		    s = '%.1f <%:Mbit/s%>, %d<%:MHz%>'
+					.format(bss[p+'rate'] / 1000, bss[p+'mhz']),
+		    ht = bss[p+'ht'], vht = bss[p+'vht'],
+			mhz = bss[p+'mhz'], nss = bss[p+'nss'],
+			mcs = bss[p+'mcs'], sgi = bss[p+'short_gi'],
+			he = bss[p+'he'], he_gi = bss[p+'he_gi'],
+			he_dcm = bss[p+'he_dcm'];
+
+		if (ht || vht) {
+			if (vht) s += ', VHT-MCS %d'.format(mcs);
+			if (nss) s += ', VHT-NSS %d'.format(nss);
+			if (ht)  s += ', MCS %s'.format(mcs);
+			if (sgi) s += ', <%:Short GI%>';
+		}
+
+		if (he) {
+			s += ', HE-MCS %d'.format(mcs);
+			if (nss) s += ', HE-NSS %d'.format(nss);
+			if (he_gi) s += ', HE-GI %d'.format(he_gi);
+			if (he_dcm) s += ', HE-DCM %d'.format(he_dcm);
+		}
+
+		return s;
+	}
+
+	function wifi_shutdown(id, toggle) {
+		var reconnect = (toggle.getAttribute('active') == 'false');
+
+		if (!reconnect && !confirm(String.format('<%:Really shut down network?\nYou might lose access to this device if you are connected via this interface.%>')))
+			return;
+
+		is_reconnecting = true;
+
+		var s = document.getElementById('iw-rc-status');
+		if (s)
+		{
+			s.parentNode.style.display = 'block';
+			s.innerHTML = '<%:Waiting for changes to be applied...%>';
+		}
+
+		for (var net in wifidevs)
+		{
+			var st = document.getElementById(net + '-iw-status');
+			if (st)
+				st.innerHTML = '<em><%:Wireless is restarting...%></em>';
+		}
+
+		(new XHR()).post('<%=url('admin/network')%>/wireless_' + (reconnect ? 'reconnect' : 'shutdown') + '/' + id, { token: '<%=token%>' },
+			function(x)
+			{
+				if (s)
+				{
+					s.innerHTML = reconnect
+						? '<%:Wireless restarted%>'
+						: '<%:Wireless shut down%>';
+
+					window.setTimeout(function() {
+						s.parentNode.style.display = 'none';
+						is_reconnecting = false;
+					}, 1000);
+				}
+			}
+		);
+	}
+
+	function wifi_delete(id) {
+		if (!confirm('<%:Really delete this wireless network? The deletion cannot be undone!\nYou might lose access to this device if you are connected via this network.%>'))
+			return;
+
+		(new XHR()).post('<%=url('admin/network/wireless_delete')%>/' + id, { token: '<%=token%>' },
+			function(x) {
+				location.href = '<%=url('admin/network/wireless')%>';
+			}
+		);
+	}
+
+	var hosts = <%=luci.http.write_json(luci.sys.net.host_hints())%>;
+
+	XHR.poll(5, '<%=url('admin/network/wireless_status', table.concat(netlist, ","))%>', null,
+		function(x, st)
+		{
+			if (st)
+			{
+				var assoctable = document.getElementById('iw-assoclist');
+				if (assoctable)
+					while (assoctable.rows.length > 1)
+						assoctable.rows[1].parentNode.removeChild(assoctable.rows[1]);
+
+				var devup = { };
+				var rowstyle = 1;
+
+				for( var i = 0; i < st.length; i++ )
+				{
+					var iw = st[i];
+					var is_assoc = (iw.bssid && iw.bssid != '00:00:00:00:00:00' && iw.channel && iw.mode != 'Unknown' && !iw.disabled);
+					var p = iw.quality;
+					var q = is_assoc ? p : -1;
+
+					var icon;
+					if (q < 0)
+						icon = "<%=resource%>/icons/signal-none.png";
+					else if (q == 0)
+						icon = "<%=resource%>/icons/signal-0.png";
+					else if (q < 25)
+						icon = "<%=resource%>/icons/signal-0-25.png";
+					else if (q < 50)
+						icon = "<%=resource%>/icons/signal-25-50.png";
+					else if (q < 75)
+						icon = "<%=resource%>/icons/signal-50-75.png";
+					else
+						icon = "<%=resource%>/icons/signal-75-100.png";
+
+					if (!devup[wifidevs[iw.id]])
+						devup[wifidevs[iw.id]] = is_assoc;
+
+					var sig = document.getElementById(iw.id + '-iw-signal');
+					if (sig)
+						sig.innerHTML = String.format(
+							'<span class="ifacebadge" title="<%:Signal%>: %d <%:dBm%> / <%:Noise%>: %d <%:dBm%>"><img src="%s" /> %d%%</span>',
+							iw.signal, iw.noise, icon, p
+						);
+
+					var toggle = document.getElementById(iw.id + '-iw-toggle');
+					if (toggle)
+					{
+						if (!iw.disabled)
+						{
+							toggle.className = 'cbi-button cbi-button-reset';
+							toggle.value = '<%:Disable%>';
+							toggle.title = '<%:Shutdown this network%>';
+						}
+						else
+						{
+							toggle.className = 'cbi-button cbi-button-reload';
+							toggle.value = '<%:Enable%>';
+							toggle.title = '<%:Activate this network%>';
+						}
+
+						toggle.setAttribute('active', !iw.disabled);
+					}
+
+					var info = document.getElementById(iw.id + '-iw-status');
+					if (info)
+					{
+						if (is_assoc)
+							info.innerHTML = String.format(
+								'<strong><%:SSID%>:</strong> %h | ' +
+								'<strong><%:Mode%>:</strong> %s<br />' +
+								'<strong><%:BSSID%>:</strong> %s | ' +
+								'<strong><%:Encryption%>:</strong> %s',
+									iw.ssid, iw.mode, iw.bssid,
+									iw.encryption ? iw.encryption : '<%:None%>'
+							);
+						else
+							info.innerHTML = String.format(
+								'<strong><%:SSID%>:</strong> %h | ' +
+								'<strong><%:Mode%>:</strong> %s<br />' +
+								'<em>%s</em>',
+									iw.ssid || '?', iw.mode,
+									is_reconnecting
+										? '<em><%:Wireless is restarting...%></em>'
+										: '<em><%:Wireless is disabled or not associated%></em>'
+							);
+					}
+
+					var dev = document.getElementById(wifidevs[iw.id] + '-iw-devinfo');
+					if (dev)
+					{
+						if (is_assoc)
+							dev.innerHTML = String.format(
+								'<strong><%:Channel%>:</strong> %s (%s <%:GHz%>) | ' +
+								'<strong><%:Bitrate%>:</strong> %s <%:Mbit/s%>',
+									iw.channel ? iw.channel : '?',
+									iw.frequency ? iw.frequency : '?',
+									iw.bitrate ? iw.bitrate : '?'
+							);
+						else
+							dev.innerHTML = '';
+					}
+
+					if (assoctable)
+					{
+						var assoclist = [ ];
+						for( var bssid in iw.assoclist )
+						{
+							assoclist.push(iw.assoclist[bssid]);
+							assoclist[assoclist.length-1].bssid = bssid;
+						}
+
+						assoclist.sort(function(a, b) { a.bssid < b.bssid });
+
+						for( var j = 0; j < assoclist.length; j++ )
+						{
+							var tr = assoctable.insertRow(-1);
+							    tr.className = 'cbi-section-table-row cbi-rowstyle-' + rowstyle;
+
+							var icon;
+							var q = (-1 * (assoclist[j].noise - assoclist[j].signal)) / 5;
+							if (q < 1)
+								icon = "<%=resource%>/icons/signal-0.png";
+							else if (q < 2)
+								icon = "<%=resource%>/icons/signal-0-25.png";
+							else if (q < 3)
+								icon = "<%=resource%>/icons/signal-25-50.png";
+							else if (q < 4)
+								icon = "<%=resource%>/icons/signal-50-75.png";
+							else
+								icon = "<%=resource%>/icons/signal-75-100.png";
+
+							tr.insertCell(-1).innerHTML = String.format(
+								'<span class="ifacebadge" title="%q"><img src="<%=resource%>/icons/wifi.png" /> %h</span>',
+								iw.device.name, iw.ifname
+							);
+
+							tr.insertCell(-1).innerHTML = nowrap(String.format('%h', iw.ssid ? iw.ssid : '?'));
+							tr.insertCell(-1).innerHTML = assoclist[j].bssid;
+
+							var host = hosts[assoclist[j].bssid];
+							if (host)
+								tr.insertCell(-1).innerHTML = String.format(
+									'<div style="max-width:200px;overflow:hidden;text-overflow:ellipsis">%s</div>',
+									((host.name && (host.ipv4 || host.ipv6))
+										? '%h (%s)'.format(host.name, host.ipv4 || host.ipv6)
+										: '%h'.format(host.name || host.ipv4 || host.ipv6)).nobr()
+								);
+							else
+								tr.insertCell(-1).innerHTML = '?';
+
+							tr.insertCell(-1).innerHTML = String.format(
+								'<span class="ifacebadge" title="<%:Signal%>: %d <%:dBm%> / <%:Noise%>: %d <%:dBm%> / <%:SNR%>: %d"><img src="%s" /> %d / %d <%:dBm%></span>',
+								assoclist[j].signal, assoclist[j].noise, assoclist[j].signal - assoclist[j].noise,
+								icon,
+								assoclist[j].signal, assoclist[j].noise
+							);
+
+							tr.insertCell(-1).innerHTML = nowrap(wifirate(assoclist[j], true)) + '<br />' + nowrap(wifirate(assoclist[j], false));
+
+							rowstyle = (rowstyle == 1) ? 2 : 1;
+						}
+					}
+				}
+
+				if (assoctable && assoctable.rows.length == 1)
+				{
+					var tr = assoctable.insertRow(-1);
+					    tr.className = 'cbi-section-table-row';
+
+					var td = tr.insertCell(-1);
+					    td.colSpan = 8;
+					    td.innerHTML = '<br /><em><%:No information available%></em>';
+				}
+
+				for (var dev in devup)
+				{
+					var img = document.getElementById(dev + '-iw-upstate');
+					if (img)
+						img.src = '<%=resource%>/icons/wifi_big' + (devup[dev] ? '' : '_disabled') + '.png';
+				}
+			}
+		}
+	);
+//]]></script>
+
+<h2 name="content"><%:Wireless Overview%></h2>
+
+<fieldset class="cbi-section" style="display:none">
+	<legend><%:Reconnecting interface%></legend>
+	<img src="<%=resource%>/icons/loading.gif" alt="<%:Loading%>" style="vertical-align:middle" />
+	<span id="iw-rc-status"><%:Waiting for changes to be applied...%></span>
+</fieldset>
+
+<div class="cbi-map">
+
+	<% for _, dev in ipairs(devices) do local nets = dev:get_wifinets() %>
+	<!-- device <%=dev:name()%> -->
+	<fieldset class="cbi-section">
+		<table class="cbi-section-table" style="margin:10px; empty-cells:hide">
+			<!-- physical device -->
+			<tr>
+				<td style="width:34px"><img src="<%=resource%>/icons/wifi_big_disabled.png" style="float:left; margin-right:10px" id="<%=dev:name()%>-iw-upstate" /></td>
+				<td colspan="2" style="text-align:left">
+					<big><strong><%=guess_wifi_hw(dev)%> (<%=dev:name()%>)</strong></big><br />
+					<span id="<%=dev:name()%>-iw-devinfo"></span>
+				</td>
+				<td style="width:310px;text-align:right">
+					<form action="<%=url('admin/network/wireless_join')%>" method="post" class="inline">
+						<input type="hidden" name="device" value="<%=dev:name()%>" />
+						<input type="hidden" name="token" value="<%=token%>" />
+						<input type="submit" class="cbi-button cbi-button-find" style="width:100px" title="<%:Find and join network%>" value="<%:Scan%>" />
+					</form>
+					<form action="<%=url('admin/network/wireless_add')%>" method="post" class="inline">
+						<input type="hidden" name="device" value="<%=dev:name()%>" />
+						<input type="hidden" name="token" value="<%=token%>" />
+						<input type="submit" class="cbi-button cbi-button-add" style="width:100px" title="<%:Provide new network%>" value="<%:Add%>" />
+					</form>
+				</td>
+			</tr>
+			<!-- /physical device -->
+
+			<!-- network list -->
+			<% if #nets > 0 then %>
+				<% for i, net in ipairs(nets) do %>
+				<tr class="cbi-section-table-row cbi-rowstyle-<%=1 + ((i-1) % 2)%>">
+					<td></td>
+					<td class="cbi-value-field" style="vertical-align:middle; padding:3px" id="<%=net:id()%>-iw-signal">
+						<span class="ifacebadge" title="<%:Not associated%>"><img src="<%=resource%>/icons/signal-none.png" /> 0%</span>
+					</td>
+					<td class="cbi-value-field" style="vertical-align:middle; text-align:left; padding:3px" id="<%=net:id()%>-iw-status">
+						<em><%:Collecting data...%></em>
+					</td>
+					<td class="cbi-value-field" style="width:310px;text-align:right">
+						<input id="<%=net:id()%>-iw-toggle" type="button" class="cbi-button cbi-button-reload" style="width:100px" onclick="wifi_shutdown('<%=net:id()%>', this)" title="<%:Delete this network%>" value="<%:Enable%>" />
+						<input type="button" class="cbi-button cbi-button-edit" style="width:100px" onclick="location.href='<%=net:adminlink()%>'" title="<%:Edit this network%>" value="<%:Edit%>" />
+						<input type="button" class="cbi-button cbi-button-remove" style="width:100px" onclick="wifi_delete('<%=net:id()%>')" title="<%:Delete this network%>" value="<%:Remove%>" />
+					</td>
+				</tr>
+				<% end %>
+			<% else %>
+				<tr class="cbi-section-table-row cbi-rowstyle-2">
+					<td></td>
+					<td colspan="3" class="cbi-value-field" style="vertical-align:middle; text-align:left; padding:3px">
+						<em><%:No network configured on this device%></em>
+					</td>
+				</tr>
+			<% end %>
+			<!-- /network list -->
+		</table>
+	</fieldset>
+	<!-- /device <%=dev:name()%> -->
+	<% end %>
+
+
+	<h2><%:Associated Stations%></h2>
+
+	<fieldset class="cbi-section">
+		<table class="cbi-section-table valign-middle" style="margin:10px" id="iw-assoclist">
+			<tr class="cbi-section-table-titles">
+				<th class="cbi-section-table-cell"></th>
+				<th class="cbi-section-table-cell"><%:SSID%></th>
+				<th class="cbi-section-table-cell"><%:MAC-Address%></th>
+				<th class="cbi-section-table-cell"><%:Host%></th>
+				<th class="cbi-section-table-cell"><%:Signal%> / <%:Noise%></th>
+				<th class="cbi-section-table-cell"><%:RX Rate%> / <%:TX Rate%></th>
+			</tr>
+			<tr class="cbi-section-table-row cbi-rowstyle-2">
+				<td class="cbi-value-field" colspan="6">
+					<em><%:Collecting data...%></em>
+				</td>
+			</tr>
+		</table>
+	</fieldset>
+</div>
+
+<%+footer%>

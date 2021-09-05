@@ -1,0 +1,109 @@
+Return-Path: <rosenp@gmail.com>
+Received: from localhost.localdomain (76-14-106-55.rk.wavecable.com. [76.14.106.55])
+        by smtp.gmail.com with ESMTPSA id f19sm148509170pfk.180.2019.08.09.13.01.06
+        for <flac-dev@xiph.org>
+        (version=TLS1_3 cipher=AEAD-AES256-GCM-SHA384 bits=256/256);
+        Fri, 09 Aug 2019 13:01:06 -0700 (PDT)
+From: Rosen Penev <rosenp@gmail.com>
+To: flac-dev@xiph.org
+Subject: [PATCH] Switch to utimensat for newer POSIX versions
+Date: Fri,  9 Aug 2019 13:01:05 -0700
+Message-Id: <20190809200105.1443-1-rosenp@gmail.com>
+X-Mailer: git-send-email 2.17.1
+
+Some libcs like uClibc-ng can optionally disable deprecated functions.
+utime is one of them. When done so, both the header and the function go
+missing.
+
+This fixes flac_utime to work in such a situation.
+---
+ include/share/compat.h           | 10 +++++++++-
+ src/libFLAC/metadata_iterators.c |  9 +++++++--
+ src/share/grabbag/file.c         |  9 +++++++--
+ 3 files changed, 23 insertions(+), 5 deletions(-)
+
+--- a/include/share/compat.h
++++ b/include/share/compat.h
+@@ -112,9 +112,13 @@
+ #include <sys/utime.h> /* for utime() */
+ #endif
+ #else
++#if _POSIX_C_SOURCE >= 200809L
++#include <fcntl.h>
++#else
+ #include <sys/types.h> /* some flavors of BSD (like OS X) require this to get time_t */
+ #include <utime.h> /* for utime() */
+ #endif
++#endif
+ 
+ #if defined _MSC_VER
+ #  if _MSC_VER >= 1800
+@@ -160,11 +164,15 @@
+ 
+ #define flac_fopen fopen
+ #define flac_chmod chmod
+-#define flac_utime utime
+ #define flac_unlink unlink
+ #define flac_rename rename
+ #define flac_stat stat
+ 
++#if _POSIX_C_SOURCE >= 200809L
++#define flac_utime(a, b) utimensat (AT_FDCWD, a, *b, 0)
++#else
++#define flac_utime utime
++#endif
+ #endif
+ 
+ #ifdef _WIN32
+--- a/src/libFLAC/metadata_iterators.c
++++ b/src/libFLAC/metadata_iterators.c
+@@ -3422,13 +3422,18 @@ FLAC__bool get_file_stats_(const char *f
+ 
+ void set_file_stats_(const char *filename, struct flac_stat_s *stats)
+ {
+-	struct utimbuf srctime;
+-
+ 	FLAC__ASSERT(0 != filename);
+ 	FLAC__ASSERT(0 != stats);
+ 
++#if _POSIX_C_SOURCE >= 200809L
++	struct timespec srctime[2] = {};
++	srctime[0].tv_sec = stats->st_atime;
++	srctime[1].tv_sec = stats->st_mtime;
++#else
++	struct utimbuf srctime;
+ 	srctime.actime = stats->st_atime;
+ 	srctime.modtime = stats->st_mtime;
++#endif
+ 	(void)flac_chmod(filename, stats->st_mode);
+ 	(void)flac_utime(filename, &srctime);
+ #if !defined _MSC_VER && !defined __BORLANDC__ && !defined __MINGW32__
+--- a/src/share/grabbag/file.c
++++ b/src/share/grabbag/file.c
+@@ -27,7 +27,6 @@
+ #include <fcntl.h> /* for _O_BINARY */
+ #else
+ #include <sys/types.h> /* some flavors of BSD (like OS X) require this to get time_t */
+-#include <utime.h> /* for utime() */
+ #endif
+ #if defined __EMX__
+ #include <io.h> /* for setmode(), O_BINARY */
+@@ -53,11 +52,17 @@
+ void grabbag__file_copy_metadata(const char *srcpath, const char *destpath)
+ {
+ 	struct flac_stat_s srcstat;
+-	struct utimbuf srctime;
+ 
+ 	if(0 == flac_stat(srcpath, &srcstat)) {
++#if _POSIX_C_SOURCE >= 200809L
++		struct timespec srctime[2] = {};
++		srctime[0].tv_sec = srcstat.st_atime;
++		srctime[1].tv_sec = srcstat.st_mtime;
++#else
++		struct utimbuf srctime;
+ 		srctime.actime = srcstat.st_atime;
+ 		srctime.modtime = srcstat.st_mtime;
++#endif
+ 		(void)flac_chmod(destpath, srcstat.st_mode);
+ 		(void)flac_utime(destpath, &srctime);
+ 	}

@@ -1,0 +1,86 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2008-2011 OpenWrt.org
+
+START=99
+
+USE_PROCD=1
+
+vnstat_option() {
+	sed -ne "s/^[[:space:]]*$1[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" \
+		/etc/vnstat.conf
+}
+
+start_service() {
+	local lib="$(vnstat_option DatabaseDir)"
+
+	[ -n "$lib" ] || {
+		echo "Error: No DatabaseDir set in vnstat.conf" >&2
+		exit 1
+	}
+
+	mkdir -p "$lib"
+
+	init_ifaces() {
+		local cfg="$1"
+		local url lnk
+
+		init_iface() {
+			local ifn="$1"
+
+			if [ -n "$url" ]; then
+				local try=0
+				local max=3
+				local hostname="$(cat /proc/sys/kernel/hostname)"
+
+				while [ $((++try)) -le $max ]; do
+					if wget -q -O "$lib/$ifn" "$url/${hostname}_$ifn" 2>/dev/null && [ -e "$lib/$ifn" ]; then
+						logger -t "vnstat" "Downloaded backup for database $ifn"
+						break
+					else
+						logger -t "vnstat" "Download try $try/$max for database $ifn failed"
+						sleep 30
+					fi
+				done
+			elif [ -n "$backup_dir" ]; then
+				if cp -f "$backup_dir/$ifn" "$lib/" &>/dev/null; then
+					logger -t "vnstat" "Restored backup for database $ifn"
+				else
+					logger -t "vnstat" "Restore of backup for database $ifn failed"
+				fi
+			fi
+
+			/usr/bin/vnstat -u -i "$ifn" >/dev/null
+
+			[ -n "$lnk" ] && {
+				mkdir -p "$lnk"
+				[ -L "$lnk/$ifn" ] || ln -s "$lib/$ifn" "$lnk/$ifn"
+			}
+		}
+
+		config_get url "$cfg" remote
+		config_get lnk "$cfg" symlink
+		config_get backup_dir "$cfg" backup_dir
+		config_list_foreach "$cfg" interface init_iface
+
+		return 1
+	}
+
+	config_load vnstat
+	config_foreach init_ifaces vnstat
+
+	procd_open_instance
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param command /usr/sbin/vnstatd --nodaemon
+	procd_set_param file /etc/vnstat.conf
+	procd_set_param respawn
+	procd_close_instance
+}
+
+reload_service() {
+	procd_send_signal vnstat
+}
+
+service_triggers() {
+	procd_add_reload_trigger vnstat
+}

@@ -1,0 +1,155 @@
+#!/bin/sh
+# shellcheck disable=SC2039,SC1091
+#  https://www.shellcheck.net/wiki/SC2039 -- In POSIX sh, SC2039: In POSIX sh, string replacement is undefined.
+#  https://www.shellcheck.net/wiki/SC2039 -- In POSIX sh, string indexing is undefined.
+#  https://www.shellcheck.net/wiki/SC1091 -- Not following: /lib/functions.sh:...
+# Copyright (C) 2018-2020 Luiz Angelo Daros de Luca <luizluca@gmail.com>
+#
+# Pools switch for port changes
+#
+
+[ -n "$NICED" ] && NICED=1 exec nice -n 19 "$0" "$@"
+
+. /usr/share/libubox/jshn.sh
+. /lib/functions.sh
+
+cpu_ports=""
+
+json_init
+json_load "$(cat /etc/board.json)"
+
+switches=
+json_get_keys switches switch
+json_select switch
+for switch in $switches; do
+	echo Loading $switch >&2
+	json_select "$switch"
+	if json_is_a ports array; then
+		ports=
+		json_get_keys ports ports
+		json_select ports
+
+		for port in $ports; do
+			echo Checking port "$port" in "$switch" >&2
+			json_select "$port"
+			num=
+			json_get_vars num device
+			if [ -n "$device" ]; then
+				echo "Port ${switch}_$num is CPU port as $device" >&2
+				cpu_ports="$cpu_ports ${switch}_$num=$device"
+			fi
+			json_select ..
+		done
+		json_select ..
+	fi
+	json_select ..
+done
+
+each_switch_vlan() {
+	switch=
+	vlan=
+	ports=
+	config_get switch "$1" device
+	config_get vlan "$1" vlan
+	config_get ports "$1" ports
+
+	[ -n "$vlan" ] || { echo "No vlan for '$1'" >&2; return 1; }
+	[ -n "$switch" ] || { echo "No device for '$1'" >&2; return 1; }
+
+	vlan_ifnames=""
+	vlan_non_cpu_ports=""
+	echo Checking vlan "$vlan" in $switch >&2
+	for port in $ports; do
+		case $port in
+		*t) tagged=1; port=${port:0:-1} ;;
+		*)  tagged= ;;
+		esac
+		echo "Checking port $port in $switch used by vlan $vlan" >&2
+
+		cpu_port_ifname=""
+		for cpu_port in $cpu_ports; do
+			device=${cpu_port#*=}
+			cpu_switchport=${cpu_port%=*}
+			[ "${cpu_switchport}" = "${switch}_${port}" ] || continue
+			echo "Port $port in $switch used by $vlan is a CPU port at $device" >&2
+
+			for device_tagged in $device_tagged; do
+				[ "${tagged}" = 1 ] && not_tagged=0 || not_tagged=1
+				if [ "$device_tagged" = "$device=${not_tagged}" ]; then
+					echo "Cannot control CPU port ${cpu_switchport} when it is used both as tagged and not tagged"
+					exit 1
+				fi
+			done
+			device_tagged="${device_tagged} ${device}=${tagged:-0}"
+			cpu_port_ifname=${device}${tagged+.$vlan}
+		done
+
+		if [ -n "$cpu_port_ifname" ]; then
+			vlan_ifnames="$vlan_ifnames $cpu_port_ifname"
+			continue
+		fi
+		vlan_non_cpu_ports="$vlan_non_cpu_ports ${port}"
+	done
+	vlan_non_cpu_switch_ports="${vlan_non_cpu_ports// /:${switch}_}"
+	vlan_non_cpu_switch_ports="${vlan_non_cpu_switch_ports:1}"
+	vlan_non_cpu_ports="${vlan_non_cpu_ports:1}"
+	for vlan_ifname in $vlan_ifnames; do
+		devices2ports="$devices2ports $vlan_ifname=${vlan_non_cpu_switch_ports}"
+		echo "Monitoring $switch (ports ${vlan_non_cpu_ports// /,}) for $vlan_ifname"
+	done
+}
+
+device_tagged=""
+devices2ports=""
+config_load network
+config_foreach each_switch_vlan switch_vlan
+
+cleanup() {
+	for device2ports in $devices2ports; do
+		device=${device2ports%=*}
+		echo "Bringing up $device on exit..."
+		ip link set dev ${device} up >/dev/null 2>&1;
+	done
+	echo "Stopped poller"
+	exit
+}
+trap cleanup INT TERM
+echo "Starting poller"
+while true; do (
+for device2ports in $devices2ports; do
+		device=${device2ports%=*}
+		switch_ports=${device2ports#*=}
+		switch_ports=${switch_ports//:/ }
+		should_be_up=false
+		for switch_port in $switch_ports; do
+			state=$(eval echo \$${switch_port})
+			if [ -z "${state}" ]; then
+				switch=${switch_port%_*}
+				port=${switch_port#*_}
+				echo "Polling $switch_port..." >&2
+				swconfig dev $switch port $port get link | grep -q 'link:up' &&
+					state=up || state=down
+				eval "$switch_port=$state"
+				echo "State of $switch_port, used by $device, is $state" >&2
+			else
+				echo "State of $switch_port, used by $device, is $state (cached)" >&2
+			fi
+			[ $state = up ] && should_be_up=true
+		done
+
+		if ip link show dev ${device} | grep -q "DOWN"; then
+			current_up=false
+		else
+			current_up=true
+		fi
+
+		if $should_be_up && ! $current_up; then
+			echo "Bringing up $device..."
+			ip link set dev ${device} up >/dev/null 2>&1;
+		elif ! $should_be_up && $current_up; then
+			echo "Bringing down $device..."
+			ip link set dev ${device} down >/dev/null 2>&1;
+		fi
+done )
+sleep 3
+done

@@ -1,0 +1,81 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2015 OpenWrt.org
+
+START=60
+USE_PROCD=1
+
+BIN=/usr/sbin/pptpd
+CONFIG=/var/etc/pptpd.conf
+CHAP_SECRETS=/var/etc/chap-secrets
+OPTIONS_PPTP=/var/etc/options.pptpd
+
+validate_login_section() {
+	uci_load_validate pptpd login "$1" "$2" \
+		'username:string' \
+		'password:string' \
+		'remoteip:string'
+}
+
+validate_pptpd_section() {
+	uci_load_validate pptpd service "$1" "$2" \
+		'enabled:uinteger' \
+		'localip:string' \
+		'remoteip:string' \
+		'mppe:list(string):required no40 no56 stateless' \
+		'logwtmp:uinteger'
+}
+
+setup_login() {
+	[ "$2" = 0 ] || {
+		echo "validation failed"
+		return 1
+	}
+
+	[ -n "$username" ] || return 0
+	[ -n "$password" ] || return 0
+	[ -n "$remoteip" ] || remoteip=*
+
+	echo "$username pptp-server $password $remoteip" >> $CHAP_SECRETS
+}
+
+setup_config() {
+	[ "$2" = 0 ] || {
+		echo "validation failed"
+		return 1
+	}
+
+	[ "$enabled" -eq 0 ] && return 1
+
+	mkdir -p /var/etc
+	cp /etc/pptpd.conf $CONFIG
+	cp /etc/ppp/options.pptpd $OPTIONS_PPTP
+
+	[ -n "$localip" ] && echo "localip  $localip" >> $CONFIG
+	[ -n "$remoteip" ] && echo "remoteip  $remoteip" >> $CONFIG
+	[ "$logwtmp" -eq 1 ] && echo "logwtmp" >> $CONFIG
+
+	echo "mppe $(echo $mppe | sed -e 's/\s/,/g')" >> $OPTIONS_PPTP
+
+	return 0
+}
+
+start_service() {
+	config_load pptpd
+	validate_pptpd_section pptpd setup_config || return
+	config_foreach validate_login_section login setup_login
+
+	ln -sfn $CHAP_SECRETS /etc/ppp/chap-secrets
+
+	procd_open_instance
+	procd_set_param command $BIN -c $CONFIG --fg -o $OPTIONS_PPTP
+	procd_close_instance
+}
+
+service_triggers () {
+	procd_add_reload_trigger "pptpd"
+
+	procd_open_validate
+	validate_pptpd_section
+	validate_login_section
+	procd_close_validate
+}

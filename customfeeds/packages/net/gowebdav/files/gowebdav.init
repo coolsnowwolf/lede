@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2021 ImmortalWrt
+
+START=99
+STOP=10
+
+init_conf() {
+	config_load "gowebdav"
+	config_get "enable" "config" "enable" "0"
+	config_get "listen_port" "config" "listen_port" "6086"
+	config_get "username" "config" "username"
+	config_get "password" "config" "password"
+	config_get "root_dir" "config" "root_dir" "/mnt"
+	config_get "read_only" "config" "read_only" "0"
+	config_get "allow_wan" "config" "allow_wan" "0"
+	config_get "use_https" "config" "use_https" "0"
+	config_get "cert_cer" "config" "cert_cer"
+	config_get "cert_key" "config" "cert_key"
+
+	config_load "network"
+	config_get "lan_addr" "lan" "ipaddr" "192.168.1.1"
+}
+
+set_firewall() {
+	if [ "${set_type}" = "start" ]; then
+		mkdir -p "/var/etc/"
+		iptables -I INPUT -p tcp --dport "${listen_port}" -j ACCEPT
+		echo "iptables -I INPUT -p tcp --dport "${listen_port}" -j ACCEPT" > "/var/etc/gowebdav.include"
+	elif [ "${set_type}" = "stop" ]; then
+		iptables -D INPUT -p tcp --dport "${listen_port}" -j ACCEPT
+		echo "" > "/var/etc/gowebdav.include"
+	fi
+}
+
+start() {
+	init_conf
+
+	stop
+
+	[ "${enable}" -ne "1" ] && exit 0
+
+	mkdir -p "${root_dir}"
+
+	[ "${allow_wan}" -ne "1" ] && listen_addr="${lan_addr}" || { listen_addr="0.0.0.0"; set_type="start" && set_firewall 2>"/dev/null"; }
+	{ [ -n "${username}" ] && [ -n "${password}" ]; } && auth_arg="-user ${username} -password ${password}"
+	[ "${read_only}" -eq "1" ] && readonly_arg="-read-only"
+	{ [ "${use_https}" -eq "1" ] && [ -e "${cert_cer}" ] && [ -e "${cert_key}" ]; } && https_arg="-https-mode -https-cert-file ${cert_cer} -https-key-file ${cert_key}"
+	/usr/bin/gowebdav -dir "${root_dir}" -http "${listen_addr}:${listen_port}" ${auth_arg} ${readonly_arg} ${https_arg} &
+}
+
+stop() {
+	init_conf
+
+	set_type="stop" && set_firewall 2>"/dev/null"
+	killall "gowebdav" 2>"/dev/null"
+}

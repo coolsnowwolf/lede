@@ -1,0 +1,209 @@
+<%#
+ Copyright 2016-2017 Dan Luedtke <mail@danrl.com>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%
+  local data = { }
+  local last_device = ""
+
+  local wg_dump = io.popen("wg show all dump")
+  if wg_dump then
+    local line
+    for line in wg_dump:lines() do
+      local line = string.split(line, "\t")
+      if not (last_device == line[1]) then
+        last_device = line[1]
+        data[line[1]] = {
+          name                 = line[1],
+          public_key           = line[3],
+          listen_port          = line[4],
+          fwmark               = line[5],
+          peers                = { }
+        }
+      else
+        local peer = {
+          public_key           = line[2],
+          endpoint             = line[4],
+          allowed_ips          = { },
+          latest_handshake     = line[6],
+          transfer_rx          = line[7],
+          transfer_tx          = line[8],
+          persistent_keepalive = line[9]
+        }
+        if not (line[4] == '(none)') then
+          for ipkey, ipvalue in pairs(string.split(line[5], ",")) do
+            if #ipvalue > 0 then
+              table.insert(peer['allowed_ips'], ipvalue)
+            end
+          end
+        end
+        table.insert(data[line[1]].peers, peer)
+      end
+    end
+  end
+
+  if luci.http.formvalue("status") == "1" then
+    luci.http.prepare_content("application/json")
+    luci.http.write_json(data)
+    return
+  end
+-%>
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js"></script>
+<script type="text/javascript">//<![CDATA[
+
+  function bytes_to_str(bytes) {
+    bytes = parseFloat(bytes);
+    if (bytes < 1) { return "0 B"; }
+    var sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+    var i = parseInt(Math.floor(Math.log(bytes) / Math.log(1024)));
+    return Math.round(bytes / Math.pow(1024, i), 2) + ' ' + sizes[i];
+  };
+
+  function timestamp_to_str(timestamp) {
+    if (timestamp < 1) {
+      return '<%:Never%>';
+    }
+    var now = new Date();
+    var seconds = (now.getTime() / 1000) - timestamp;
+    var ago = "";
+    if (seconds < 60) {
+      ago = parseInt(seconds) + '<%:s ago%>';
+    } else if (seconds < 3600) {
+      ago = parseInt(seconds / 60) + '<%:m ago%>';
+    } else if (seconds < 86401) {
+      ago = parseInt(seconds / 3600) + '<%:h ago%>';
+    } else {
+      ago = '<%:over a day ago%>';
+    }
+    var t = new Date(timestamp * 1000);
+    return t.toUTCString() + ' (' + ago + ')';
+  }
+
+  XHR.poll(5, '<%=REQUEST_URI%>', { status: 1 },
+   function(x, data) {
+    for (var key in data) {
+      if (!data.hasOwnProperty(key)) { continue; }
+      var ifname = key;
+      var iface = data[key];
+      var s = "";
+      if (iface.public_key == '(none)') {
+        s += '<em><%:Interface does not have a public key!%></em>';
+      } else {
+        s += String.format(
+          '<strong><%:Public Key%>: </strong>%s',
+          iface.public_key
+        );
+      }
+      if (iface.listen_port > 0) {
+        s += String.format(
+          '<br /><strong><%:Listen Port%>: </strong>%s',
+          iface.listen_port
+        );
+      }
+      if (iface.fwmark != 'off') {
+        s += String.format(
+          '<br /><strong><%:Firewall Mark%>: </strong>%s',
+          iface.fwmark
+        );
+      }
+      document.getElementById(ifname + "_info").innerHTML = s;
+      for (var i = 0, ilen = iface.peers.length; i < ilen; i++) {
+        var peer = iface.peers[i];
+        var s = String.format(
+          '<strong><%:Public Key%>: </strong>%s',
+          peer.public_key
+        );
+        if (peer.endpoint != '(none)') {
+          s += String.format(
+            '<br /><strong><%:Endpoint%>: </strong>%s',
+            peer.endpoint
+          );
+        }
+        if (peer.allowed_ips.length > 0) {
+          s += '<br /><strong><%:Allowed IPs%>:</strong>';
+          for (var k = 0, klen = peer.allowed_ips.length; k < klen; k++) {
+            s += '<br />&nbsp;&nbsp;&bull;&nbsp;' + peer.allowed_ips[k];
+          }
+        }
+        if (peer.persistent_keepalive != 'off') {
+          s += String.format(
+            '<br /><strong><%:Persistent Keepalive%>: </strong>%ss',
+            peer.persistent_keepalive
+          );
+        }
+        var icon = '<img src="<%=resource%>/icons/tunnel_disabled.png" />';
+        var now = new Date();
+        if (((now.getTime() / 1000) - peer.latest_handshake) < 140) {
+          icon = '<img src="<%=resource%>/icons/tunnel.png" />';
+        }
+        s += String.format(
+          '<br /><strong><%:Latest Handshake%>: </strong>%s',
+          timestamp_to_str(peer.latest_handshake)
+        );
+        s += String.format(
+          '<br /><strong><%:Data Received%>: </strong>%s' +
+          '<br /><strong><%:Data Transmitted%>: </strong>%s',
+          bytes_to_str(peer.transfer_rx),
+          bytes_to_str(peer.transfer_tx)
+        );
+        document.getElementById(ifname + "_" + peer.public_key + "_icon").innerHTML = icon;
+        document.getElementById(ifname + "_" + peer.public_key + "_info").innerHTML = s;
+      }
+    }
+  });
+//]]></script>
+
+<h2>WireGuard Status</h2>
+
+<fieldset class="cbi-section">
+<%-
+for ikey, iface in pairs(data) do
+  -%>
+  <legend><%:Interface%> <%=ikey%></legend>
+  <table width="100%" cellspacing="10">
+    <tr>
+      <td width="33%" style="vertical-align:top"><%:Configuration%></td>
+      <td>
+        <table>
+          <tr>
+            <td id="<%=ikey%>_icon" style="width:16px; text-align:center; padding:3px">
+              &nbsp;
+            </td>
+            <td id="<%=ikey%>_info" style="vertical-align:middle; padding: 3px">
+              <em><%:Collecting data...%></em>
+            </td>
+        </tr></table>
+      </td>
+    </tr>
+  <%-
+  for pkey, peer in pairs(iface.peers) do
+    -%>
+    <tr>
+      <td width="33%" style="vertical-align:top"><%:Peer%></td>
+      <td>
+        <table>
+          <tr>
+            <td id="<%=ikey%>_<%=peer.public_key%>_icon" style="width:16px; text-align:center; padding:3px">
+              <img src="<%=resource%>/icons/tunnel_disabled.png" /><br />
+              <small>?</small>
+            </td>
+            <td id="<%=ikey%>_<%=peer.public_key%>_info" style="vertical-align:middle; padding: 3px">
+              <em><%:Collecting data...%></em>
+            </td>
+        </tr></table>
+      </td>
+    </tr>
+    <%-
+  end
+  -%>
+  </table>
+  <%-
+end
+-%>
+</fieldset>
+
+<%+footer%>

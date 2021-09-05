@@ -1,0 +1,156 @@
+--- a/m4/ogg.m4
++++ b/m4/ogg.m4
+@@ -29,7 +29,7 @@ XIPH_GCC_WARNING([-I$ogg_prefix/include]
+       ])
+ AC_CACHE_CHECK([for libogg], xt_cv_lib_ogg,
+ [dnl
+-OGG_LIBS="-logg"
++OGG_LIBS="-lvorbisidec"
+ 
+ #
+ # check if the installed Ogg is sufficiently new.
+--- a/m4/vorbis.m4
++++ b/m4/vorbis.m4
+@@ -38,9 +38,9 @@ if test "x$vorbis_prefix" != "x$ogg_pref
+             ])
+ fi
+ 
+-VORBIS_LIBS="-lvorbis"
+-VORBISFILE_LIBS="-lvorbisfile"
+-VORBISENC_LIBS="-lvorbisenc"
++VORBIS_LIBS="-lvorbisidec"
++VORBISFILE_LIBS="-lvorbisidec"
++VORBISENC_LIBS="-lvorbisidec"
+ 
+ xt_save_LIBS="$LIBS"
+ xt_save_LDFLAGS="$LDFLAGS"
+@@ -58,18 +58,6 @@ AC_TRY_LINK_FUNC(ogg_stream_init, [xt_li
+             )
+         ])
+ 
+-if test "x$xt_lib_vorbis" = "xok"; then
+-#
+-# Now check if the installed Vorbis is sufficiently new.
+-#
+-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([
+-#include <vorbis/codec.h>
+-#include <vorbis/vorbisenc.h>
+-        ], [
+-struct ovectl_ratemanage_arg a;
+-])],,[xt_lib_vorbis="old version found"])
+-AC_MSG_RESULT([$xt_lib_vorbis])
+-fi
+ CPPFLAGS="$xt_save_CPPFLAGS"
+ LIBS="$xt_save_LIBS"
+ LDFLAGS="$xt_save_LDFLAGS"
+--- a/src/format_vorbis.c
++++ b/src/format_vorbis.c
+@@ -19,7 +19,7 @@
+ 
+ #include <stdlib.h>
+ #include <ogg/ogg.h>
+-#include <vorbis/codec.h>
++#include <tremor/ivorbiscodec.h>
+ #include <memory.h>
+ #include <string.h>
+ 
+@@ -34,6 +34,7 @@
+ #define CATMODULE "format-vorbis"
+ #include "logging.h"
+ 
++int vorbis_commentheader_out(vorbis_comment *vc, ogg_packet *op);
+ 
+ typedef struct vorbis_codec_tag
+ {
+@@ -583,3 +584,91 @@ static refbuf_t *process_vorbis_page (og
+     return NULL;
+ }
+ 
++/* Some additional functions from vorbis missing from tremor */
++
++static void _v_writestring(oggpack_buffer *o,char *s, int bytes)
++{
++
++  while(bytes--){
++    oggpack_write(o,*s++,8);
++  }
++}
++
++static int _vorbis_pack_comment(oggpack_buffer *opb,vorbis_comment *vc)
++{
++  char temp[]="Xiph.Org libVorbis I 20150104";
++  int bytes = strlen(temp);
++
++  /* preamble */
++  oggpack_write(opb,0x03,8);
++  _v_writestring(opb,"vorbis", 6);
++
++  /* vendor */
++  oggpack_write(opb,bytes,32);
++  _v_writestring(opb,temp, bytes);
++
++  /* comments */
++
++  oggpack_write(opb,vc->comments,32);
++  if(vc->comments){
++    int i;
++    for(i=0;i<vc->comments;i++){
++      if(vc->user_comments[i]){
++	oggpack_write(opb,vc->comment_lengths[i],32);
++	_v_writestring(opb,vc->user_comments[i], vc->comment_lengths[i]);
++      }else{
++	oggpack_write(opb,0,32);
++      }
++    }
++  }
++  oggpack_write(opb,1,1);
++
++  return(0);
++}
++
++void vorbis_comment_add(vorbis_comment *vc,char *comment)
++{
++  vc->user_comments=_ogg_realloc(vc->user_comments,
++			    (vc->comments+2)*sizeof(*vc->user_comments));
++  vc->comment_lengths=_ogg_realloc(vc->comment_lengths,
++      			    (vc->comments+2)*sizeof(*vc->comment_lengths));
++  vc->comment_lengths[vc->comments]=strlen(comment);
++  vc->user_comments[vc->comments]=_ogg_malloc(vc->comment_lengths[vc->comments]+1);
++  strcpy(vc->user_comments[vc->comments], comment);
++  vc->comments++;
++  vc->user_comments[vc->comments]=NULL;
++}
++
++void vorbis_comment_add_tag(vorbis_comment *vc, char *tag, char *contents)
++{
++  char *comment=alloca(strlen(tag)+strlen(contents)+2); /* +2 for = and \0 */
++  strcpy(comment, tag);
++  strcat(comment, "=");
++  strcat(comment, contents);
++  vorbis_comment_add(vc, comment);
++
++  return;
++}
++
++int vorbis_commentheader_out(vorbis_comment *vc, ogg_packet *op)
++{
++  oggpack_buffer opb;
++
++  oggpack_writeinit(&opb);
++  if(_vorbis_pack_comment(&opb,vc)){
++    oggpack_writeclear(&opb);
++    return OV_EIMPL;
++  }
++
++  op->packet = _ogg_malloc(oggpack_bytes(&opb));
++  memcpy(op->packet, opb.buffer, oggpack_bytes(&opb));
++
++  op->bytes=oggpack_bytes(&opb);
++  op->b_o_s=0;
++  op->e_o_s=0;
++  op->granulepos=0;
++  op->packetno=1;
++
++  oggpack_writeclear(&opb);
++  return 0;
++}

@@ -1,0 +1,132 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2015 OpenWrt.org
+
+START=99
+STOP=1
+
+USE_PROCD=1
+PROG=/usr/bin/squeezelite
+
+# Check if a codec is disabled in the configuration (ie "decode_<codec> 0")
+checkcodec() {
+	local codec
+	config_get_bool codec options "$1" 1
+
+	if [ "$codec" -eq 0 ] ; then
+		if [ -z "$3" ] ; then
+			echo "-e $2"
+		else
+			echo "$3,$2"
+	        fi
+	else
+		echo "$3"
+	fi
+}
+
+make_cmdline() {
+	cmdline=""
+
+	local name
+	config_get name options name "SqueezeWrt"
+	cmdline="$cmdline -n $name"
+
+	local model_name
+	config_get model_name options model_name "SqueezeLite"
+	cmdline="$cmdline -M $model_name"
+
+	local interface
+	config_get interface options interface ""
+	[ -n "$interface" ] && cmdline="$cmdline -I $interface"
+
+	local device
+	config_get device options device ""
+	[ -n "$device" ] && cmdline="$cmdline -o $device"
+
+	local alsa_buffer
+	config_get alsa_buffer options alsa_buffer 200
+	[ "$alsa_buffer" -eq 0 ] && alsa_buffer="200"
+
+	local alsa_period
+	config_get alsa_period options alsa_period 4
+	[ "$alsa_period" -eq 0 ] && alsa_period="4"
+
+	local alsa_format
+	config_get alsa_format options alsa_format 16
+	[ "$alsa_format" = "0" ] && alsa_format="16"
+
+	local alsa_mmap
+	config_get alsa_mmap options alsa_mmap 0
+	cmdline="$cmdline -a $alsa_buffer:$alsa_period:$alsa_format:$alsa_mmap"
+
+	local stream_bufsiz
+	local out_bufsiz
+	config_get stream_bufsiz options stream_bufsiz 2048
+	config_get out_bufsiz options out_bufsiz 3763
+	cmdline="$cmdline -b $stream_bufsiz:$out_bufsiz"
+
+	local max_sr
+	config_get max_sr options max_sr 0
+	[ "$max_sr" -ne 0 ] && {
+		max_sr="-r $max_sr"
+
+		local sr_delay
+		config_get sr_delay options sr_delay 0
+		[ "$sr_delay" -ne 0 ] && max_sr="$max_sr:$sr_delay"
+		cmdline="$cmdline $max_sr"
+	}
+
+	local close_delay
+	config_get close_delay options close_delay 0
+	[ "$close_delay" -ne 0 ] && cmdline="$cmdline -C $close_delay"
+
+	local server_addr
+	config_get server_addr options server_addr ""
+	[ -n "$server_addr" ] && {
+		local server_port
+		config_get server_port options server_port 3483
+		cmdline="$cmdline -s $server_addr:$server_port"
+	}
+
+	local priority
+	config_get priority options priority 0
+	[ "$priority" -ne 0 ] && cmdline="$cmdline -p $priority"
+
+	local excl_codecs=""
+	excl_codecs=$(checkcodec decode_flac flac "$excl_codecs")
+	excl_codecs=$(checkcodec decode_mp3 mp3 "$excl_codecs")
+	excl_codecs=$(checkcodec decode_aac aac "$excl_codecs")
+	excl_codecs=$(checkcodec decode_ogg ogg "$excl_codecs")
+	excl_codecs=$(checkcodec decode_wma_alac wma,alac "$excl_codecs")
+	cmdline="$cmdline $excl_codecs"
+
+	local dop
+	config_get dop options dsd_over_pcm 0
+	[ "$dop" -eq 1 ] && cmdline="$cmdline -D"
+}
+
+start_service() {
+	config_load squeezelite
+
+	local enabled
+	config_get_bool enabled options 'enabled' 0
+	[ "$enabled" -eq 0 ] && return
+
+	# Build command params
+	make_cmdline
+
+	procd_open_instance
+	logger -t 'squeezelite' "$cmdline"
+	procd_set_param command "$PROG" $cmdline
+	procd_close_instance
+}
+
+# Wait for service to exit and release sockets
+reload_service() {
+	stop
+	sleep 2
+	start
+}
+
+restart() {
+	reload_service
+}

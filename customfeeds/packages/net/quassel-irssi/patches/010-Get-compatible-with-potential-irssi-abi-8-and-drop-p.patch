@@ -1,0 +1,111 @@
+From 19e810405789a35b92026b56ea49d01a3f544b07 Mon Sep 17 00:00:00 2001
+From: Pierre-Hugues Husson <phh@phh.me>
+Date: Tue, 17 Jan 2017 23:09:24 +0100
+Subject: [PATCH] Get compatible with potential irssi abi 8, and drop polling
+
+---
+ core/Makefile      |  1 -
+ core/quassel-net.c | 64 ++++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 53 insertions(+), 10 deletions(-)
+
+--- a/core/Makefile
++++ b/core/Makefile
+@@ -16,7 +16,6 @@ SSL_CFLAGS=$(shell pkg-config --cflags o
+ SSL_LDLAGS=$(shell pkg-config --libs openssl)
+ OBJECTS:=quasselc-connector.o quassel-core.o
+ OBJECTS+=quassel-net.o quassel-msgs.o quassel-cmds.o
+-OBJECTS+=irssi/network-openssl.o
+ OBJECTS+=quassel-fe-window.o quassel-fe-level.o quassel-cfg.o
+ 
+ LDFLAGS ?=
+--- a/core/quassel-net.c
++++ b/core/quassel-net.c
+@@ -132,10 +132,10 @@ static SERVER_REC* quassel_server_init_c
+ 	ret->got = 0;
+ 	server_connect_ref(SERVER_CONNECT(conn));
+ 
+-	if(conn->use_ssl) {
++	if(conn->use_tls) {
+ 		ret->ssl = 1;
+ 	}
+-	ret->connrec->use_ssl = 0;
++	ret->connrec->use_tls = 0;
+ 
+ 	ret->channels_join = quassel_irssi_channels_join;
+ 	ret->send_message = quassel_irssi_send_message;
+@@ -161,12 +161,59 @@ void quassel_net_init(CHAT_PROTOCOL_REC*
+ 	signal_add_first("server connected", (SIGNAL_FUNC) sig_connected);
+ }
+ 
+-GIOChannel *irssi_ssl_get_iochannel(GIOChannel *handle, int port, SERVER_REC *server);
++static void quassel_net_final_setup(SERVER_REC* server, GIOChannel *handle) {
++	quassel_login(handle, server->connrec->nick, server->connrec->password);
++	server->handle->handle = handle;
++
++	server->readtag =
++		g_input_add(handle,
++			    G_INPUT_READ,
++			    (GInputFunction) quassel_parse_incoming, server);
++}
++
++static void quassel_net_ssl_callback(SERVER_REC *server, GIOChannel *handle) {
++	int error;
++
++	g_return_if_fail(IS_SERVER(server));
++
++	error = irssi_ssl_handshake(handle);
++	if (error == -1) {
++		server->connection_lost = TRUE;
++		server_connect_failed(server, NULL);
++		return;
++	}
++	if (error & 1) {
++		if (server->connect_tag != -1)
++			g_source_remove(server->connect_tag);
++		server->connect_tag = g_input_add(handle, error == 1 ? G_INPUT_READ : G_INPUT_WRITE,
++						  (GInputFunction)
++						  quassel_net_ssl_callback,
++						  server);
++		return;
++	}
++
++	if (server->connect_tag != -1) {
++		g_source_remove(server->connect_tag);
++		server->connect_tag = -1;
++	}
++
++	quassel_net_final_setup(server, handle);
++}
++
+ void quassel_irssi_init_ack(void *arg) {
+ 	Quassel_SERVER_REC *server = (Quassel_SERVER_REC*)arg;
+-	if(!server->ssl)
+-		goto login;
+-	GIOChannel* ssl_handle = irssi_ssl_get_iochannel(server->handle->handle, 1337, SERVER(server));
++	GIOChannel* ssl_handle = net_start_ssl((SERVER_REC*)server);
++
++	if(server->readtag != -1) {
++		g_source_remove(server->readtag);
++		server->readtag = -1;
++	}
++
++	if(!server->ssl) {
++		quassel_net_final_setup((SERVER_REC*)server, server->handle->handle);
++		return;
++	}
++
+ 	int error;
+ 	//That's polling, and that's really bad...
+ 	while( (error=irssi_ssl_handshake(ssl_handle)) & 1) {
+@@ -175,10 +222,7 @@ void quassel_irssi_init_ack(void *arg) {
+ 			return;
+ 		}
+ 	}
+-	server->handle->handle = ssl_handle;
+-
+-login:
+-	quassel_login(server->handle->handle, server->connrec->nick, server->connrec->password);
++	quassel_net_ssl_callback((SERVER_REC*)server, ssl_handle);
+ }
+ 
+ void quassel_irssi_init_nack(void *arg) {

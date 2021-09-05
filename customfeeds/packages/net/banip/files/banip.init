@@ -1,0 +1,345 @@
+#!/bin/sh /etc/rc.common
+# written by Dirk Brenken (dev@brenken.org)
+#
+# This is free software, licensed under the GNU General Public License v3.
+#
+# (s)hellcheck exceptions
+# shellcheck disable=1091,2030,2031,2034,2039,2086,2129,2140,2143,2154,2181,2183,2188
+
+START=30
+USE_PROCD=1
+
+if [ -n "$(type -t extra_command)" ]
+then
+	extra_command "refresh" "Refresh ipsets without new list downloads"
+	extra_command "suspend" "Suspend banIP processing"
+	extra_command "resume" "Resume banIP processing"
+	extra_command "query" "<IP> Query active banIP IPSets for a specific IP address"
+	extra_command "report" "[<cli>|<mail>|<gen>|<json>] Print banIP related IPset statistics"
+	extra_command "list" "[<add>|<add_asn>|<add_country>|<remove>|<remove_asn>|<remove_country>] <source(s)> List/Edit available sources"
+	extra_command "timer" "[<add> <tasks> <hour> [<minute>] [<weekday>]]|[<remove> <line no.>] List/Edit cron update intervals"
+	extra_command "version" "Print version information"
+else
+	EXTRA_COMMANDS="status refresh suspend resume query report list timer version"
+	EXTRA_HELP="	status	Service status
+	refresh	Refresh ipsets without new list downloads
+	suspend	Suspend banIP processing
+	resume	Resume banIP processing
+	query	<IP> Query active banIP IPSets for a specific IP address
+	report	[<cli>|<mail>|<gen>|<json>] Print banIP related IPset statistics
+	list	[<add>|<add_asn>|<add_country>|<remove>|<remove_asn>|<remove_country>] <source(s)> List/Edit available sources
+	timer	[<add> <tasks> <hour> [<minute>] [<weekday>]]|[<remove> <line no.>] List/Edit cron update intervals
+	version	Print version information"
+fi
+
+ban_init="/etc/init.d/banip"
+ban_script="/usr/bin/banip.sh"
+ban_pidfile="/var/run/banip.pid"
+
+if [ -s "${ban_pidfile}" ] && { [ "${action}" = "start" ] || [ "${action}" = "stop" ] || \
+	[ "${action}" = "restart" ] || [ "${action}" = "reload" ] || [ "${action}" = "refresh" ] || \
+	[ "${action}" = "suspend" ] || [ "${action}" = "resume" ] || [ "${action}" = "query" ] || \
+	{ [ "${action}" = "list" ] && [ -n "${1}" ]; } || { [ "${action}" = "report" ] && [ "${1}" != "json" ]; }; }
+then
+	exit 0
+fi
+
+boot()
+{
+	> "${ban_pidfile}"
+	rc_procd start_service
+}
+
+start_service()
+{
+	if [ "$("${ban_init}" enabled; printf "%u" ${?})" = "0" ]
+	then
+		if [ "${action}" = "boot" ]
+		then
+			return 0
+		fi
+		procd_open_instance "banip"
+		procd_set_param command "${ban_script}" "${@}"
+		procd_set_param pidfile "${ban_pidfile}"
+		procd_set_param nice "$(uci_get banip global ban_nice "0")"
+		procd_set_param stdout 1
+		procd_set_param stderr 1
+		procd_close_instance
+	fi
+}
+
+version()
+{
+	rc_procd "${ban_script}" version
+}
+
+refresh()
+{
+	rc_procd start_service refresh
+}
+
+reload_service()
+{
+	rc_procd start_service reload
+}
+
+stop_service()
+{
+	rc_procd "${ban_script}" stop
+}
+
+restart()
+{
+	rc_procd start_service restart
+}
+
+suspend()
+{
+	rc_procd start_service suspend
+}
+
+resume()
+{
+	rc_procd start_service resume
+}
+
+query()
+{
+	rc_procd "${ban_script}" query "${1}"
+}
+
+list()
+{
+	local src_archive src_file src_enabled key name enabled focus url_4 rule_4 url_6 rule_6 action="${1}"
+
+	if [ "${action%_*}" = "add" ] || [ "${action%_*}" = "remove" ]
+	then
+		shift
+		for name in "${@}"
+		do
+			case "${action}" in
+				"add")
+					if [ -z "$(uci_get banip global ban_sources | grep -Fo "${name}")" ]
+					then
+						uci_add_list banip global ban_sources "${name}"
+						printf "%s\n" "::: banIP source '${name}' added to config"
+					fi
+				;;
+				"remove")
+					if [ -n "$(uci_get banip global ban_sources | grep -Fo "${name}")" ]
+					then
+						uci_remove_list banip global ban_sources "${name}"
+						printf "%s\n" "::: banIP source '${name}' removed from config"
+					fi
+				;;
+				"add_asn")
+					if [ -z "$(uci_get banip global ban_asns | grep -Fo "${name}")" ]
+					then
+						uci_add_list banip global ban_asns "${name}"
+						printf "%s\n" "::: banIP asn '${name}' added to config"
+					fi
+				;;
+				"remove_asn")
+					if [ -n "$(uci_get banip global ban_asns | grep -Fo "${name}")" ]
+					then
+						uci_remove_list banip global ban_asns "${name}"
+						printf "%s\n" "::: banIP asn '${name}' removed from config"
+					fi
+				;;
+				"add_country")
+					if [ -z "$(uci_get banip global ban_countries | grep -Fo "${name}")" ]
+					then
+						uci_add_list banip global ban_countries "${name}"
+						printf "%s\n" "::: banIP country '${name}' added to config"
+					fi
+				;;
+				"remove_country")
+					if [ -n "$(uci_get banip global ban_countries | grep -Fo "${name}")" ]
+					then
+						uci_remove_list banip global ban_countries "${name}"
+						printf "%s\n" "::: banIP country '${name}' removed from config"
+					fi
+				;;
+			esac
+		done
+		if [ -n "$(uci -q changes banip)" ]
+		then
+			uci_commit banip
+			"${ban_init}" start
+		fi
+	else
+		src_archive="$(uci_get banip global ban_srcarc "/etc/banip/banip.sources.gz")"
+		src_file="$(uci_get banip global ban_srcfile "/tmp/ban_sources.json")"
+		src_enabled="$(uci -q show banip.global.ban_sources)"
+		if [ -r "${src_archive}" ]
+		then
+			zcat "${src_archive}" > "${src_file}"
+		else
+			printf "%s\n" "::: banIP source archive '${src_archive}' not found"
+		fi
+		if [ -r "${src_file}" ]
+		then
+			src_enabled="${src_enabled#*=}"
+			src_enabled="${src_enabled//\'}"
+			printf "%s\n" "::: Available banIP sources"
+			printf "%s\n" ":::"
+			printf "%-25s%-10s%-36s%s\n" "    Name" "Enabled" "Focus" "Info URL"
+			printf "%s\n" "    ---------------------------------------------------------------------------"
+			json_load_file "${src_file}"
+			json_get_keys keylist
+			for key in ${keylist}
+			do
+				json_select "${key}"
+				json_get_var focus "focus"
+				json_get_var descurl "descurl"
+				json_get_var url_4 "url_4"
+				json_get_var rule_4 "rule_4"
+				json_get_var url_6 "url_6"
+				json_get_var rule_6 "rule_6"
+				if { [ -n "${url_4}" ] && [ -n "${rule_4}" ]; } || { [ -n "${url_6}" ] && [ -n "${rule_6}" ]; }
+				then
+					if [ -n "$(printf "%s" "${src_enabled}" | grep -Fo "${key}")" ]
+					then
+						enabled="x"
+					else
+						enabled=" "
+					fi
+					src_enabled="${src_enabled/${key}}"
+					printf "  + %-21s%-10s%-36s%s\n" "${key:0:20}" "${enabled}" "${focus:0:35}" "${descurl:0:50}"
+				else
+					src_enabled="${src_enabled} ${key}"
+				fi
+				json_select ..
+			done
+			asn_list="$(uci_get banip global ban_asns "-")"
+			country_list="$(uci_get banip global ban_countries "-")"
+			printf "%s\n" "    ---------------------------------------------------------------------------"
+			printf "  * %s\n" "Configured ASNs: ${asn_list// /, }"
+			printf "  * %s\n" "Configured Countries: ${country_list// /, }"
+
+			if [ -n "${src_enabled// }" ]
+			then
+				printf "%s\n" "    ---------------------------------------------------------------------------"
+				printf "%s\n" "    Sources without valid configuration"
+				printf "%s\n" "    ---------------------------------------------------------------------------"
+				for key in ${src_enabled}
+				do
+					printf "  - %s\n" "${key:0:20}"
+				done
+			fi
+		else
+			printf "%s\n" "::: banIP source file '${src_file}' not found"
+		fi
+	fi
+}
+
+status()
+{
+	status_service
+}
+
+status_service()
+{
+	local key keylist value index_value values rtfile
+
+	rtfile="$(uci_get banip global ban_rtfile "/tmp/ban_runtime.json")"
+
+	json_load_file "${rtfile}" >/dev/null 2>&1
+	json_get_keys keylist
+	if [ -n "${keylist}" ]
+	then
+		printf "%s\n" "::: banIP runtime information"
+		for key in ${keylist}
+		do
+			json_get_var value "${key}" >/dev/null 2>&1
+			if [ "${key%_*}" = "active" ]
+			then
+				printf "  + %-15s : " "${key}"
+				json_select "${key}" >/dev/null 2>&1
+				values=""
+				index=1
+				while json_get_type type "${index}" && [ "${type}" = "object" ]
+				do
+					json_get_values index_value "${index}" >/dev/null 2>&1
+					if [ "${index}" = "1" ]
+					then
+						values="${index_value}"
+					else
+						values="${values}, ${index_value}"
+					fi
+					index=$((index+1))
+				done
+				values="$(printf "%s" "${values}" | awk '{NR=1;max=98;if(length($0)>max+1)while($0){if(NR==1){print substr($0,1,max)}else{printf"%-22s%s\n","",substr($0,1,max)}{$0=substr($0,max+1);NR=NR+1}}else print}')"
+				printf "%s\n" "${values:-"-"}"
+				json_select ".."
+			else
+				printf "  + %-15s : %s\n" "${key}" "${value:-"-"}"
+			fi
+		done
+	else
+		printf "%s\n" "::: no banIP runtime information available"
+	fi
+}
+
+report()
+{
+	rc_procd "${ban_script}" report "${1:-"cli"}"
+}
+
+timer()
+{
+	local cron_file cron_content cron_lineno action="${1:-"list"}" cron_tasks="${2}" hour="${3}" minute="${4:-0}" weekday="${5:-"*"}"
+
+	cron_file="/etc/crontabs/root"
+
+	if [ -s "${cron_file}" ] && [ "${action}" = "list" ]
+	then
+		awk '{print NR ">  " $0}' "${cron_file}"
+	elif [ "${action}" = "add" ]
+	then
+		hour="${hour//[[:alpha:]]/}"
+		minute="${minute//[[:alpha:]]/}"
+		if [ -n "${cron_tasks}" ] && [ -n "${hour}" ] && [ -n "${minute}" ] && [ -n "${weekday}" ] && \
+			[ "${hour}" -ge 0 ] && [ "${hour}" -le 23 ] && \
+			[ "${minute}" -ge 0 ] && [ "${minute}" -le 59 ]
+		then
+			printf "%02d %02d %s\n" "${minute}" "${hour}" "* * ${weekday} ${ban_init} ${cron_tasks}" >> "${cron_file}"
+			/etc/init.d/cron restart
+		fi
+	elif [ -s "${cron_file}" ] && [ "${action}" = "remove" ]
+	then
+		cron_tasks="${cron_tasks//[[:alpha:]]/}"
+		cron_lineno="$(awk 'END{print NR}' "${cron_file}")"
+		cron_content="$(awk '{print $0}' "${cron_file}")"
+		if [ "${cron_tasks:-"0"}" -le "${cron_lineno:-"1"}" ] && [ -n "${cron_content}" ]
+		then
+			printf "%s\n" "${cron_content}" | awk "NR!~/^${cron_tasks}$/" > "${cron_file}"
+			/etc/init.d/cron restart
+		fi
+	fi
+}
+
+service_triggers()
+{
+	local iface delay
+
+	iface="$(uci_get banip global ban_trigger)"
+	delay="$(uci_get banip global ban_triggerdelay "5")"
+	PROCD_RELOAD_DELAY=$((delay*1000))
+
+	if [ -z "${iface}" ]
+	then
+		. "/lib/functions/network.sh"
+		network_find_wan iface
+		if [ -n "${iface}" ]
+		then
+			uci_set banip global ban_trigger "${iface}"
+			uci_commit "banip"
+		fi
+	fi
+	if [ -n "${iface}" ]
+	then
+		procd_add_interface_trigger "interface.*.up" "${iface}" "${ban_init}" "start"
+	fi
+	procd_add_reload_trigger "banip"
+}

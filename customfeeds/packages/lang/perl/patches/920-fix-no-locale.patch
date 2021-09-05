@@ -1,0 +1,383 @@
+commit d36adde059ed1c4f7af210b4f9fc3a7bd2d7d343
+Author: Karl Williamson <khw@cpan.org>
+Date:   Wed May 23 15:32:47 2018 -0600
+
+    Fix to compile under -DNO_LOCALE
+    
+    Several problems with this compile option were not caught before 5.28
+    was frozen.
+
+--- a/embed.fnc
++++ b/embed.fnc
+@@ -2793,9 +2793,11 @@ s	|bool	|isa_lookup	|NN HV *stash|NN con
+ #endif
+ 
+ #if defined(PERL_IN_LOCALE_C)
++#  ifdef USE_LOCALE
+ sn	|const char*|category_name |const int category
+ s	|const char*|switch_category_locale_to_template|const int switch_category|const int template_category|NULLOK const char * template_locale
+ s	|void	|restore_switched_locale|const int category|NULLOK const char * const original_locale
++#  endif
+ #  ifdef HAS_NL_LANGINFO
+ sn	|const char*|my_nl_langinfo|const nl_item item|bool toggle
+ #  else
+--- a/embed.h
++++ b/embed.h
+@@ -1796,16 +1796,16 @@
+ #define unshare_hek_or_pvn(a,b,c,d)	S_unshare_hek_or_pvn(aTHX_ a,b,c,d)
+ #  endif
+ #  if defined(PERL_IN_LOCALE_C)
+-#define category_name		S_category_name
+-#define restore_switched_locale(a,b)	S_restore_switched_locale(aTHX_ a,b)
+ #define save_to_buffer		S_save_to_buffer
+-#define switch_category_locale_to_template(a,b,c)	S_switch_category_locale_to_template(aTHX_ a,b,c)
+ #    if defined(USE_LOCALE)
++#define category_name		S_category_name
+ #define new_collate(a)		S_new_collate(aTHX_ a)
+ #define new_ctype(a)		S_new_ctype(aTHX_ a)
+ #define new_numeric(a)		S_new_numeric(aTHX_ a)
++#define restore_switched_locale(a,b)	S_restore_switched_locale(aTHX_ a,b)
+ #define set_numeric_radix(a)	S_set_numeric_radix(aTHX_ a)
+ #define stdize_locale(a)	S_stdize_locale(aTHX_ a)
++#define switch_category_locale_to_template(a,b,c)	S_switch_category_locale_to_template(aTHX_ a,b,c)
+ #      if defined(USE_POSIX_2008_LOCALE)
+ #define emulate_setlocale	S_emulate_setlocale
+ #      endif
+--- a/locale.c
++++ b/locale.c
+@@ -1264,6 +1264,7 @@ S_locking_setlocale(pTHX_
+ }
+ 
+ #endif
++#ifdef USE_LOCALE
+ 
+ STATIC void
+ S_set_numeric_radix(pTHX_ const bool use_locale)
+@@ -1299,6 +1300,10 @@ S_set_numeric_radix(pTHX_ const bool use
+     }
+ 
+ #  endif
++#else
++
++    PERL_UNUSED_ARG(use_locale);
++
+ #endif /* USE_LOCALE_NUMERIC and can find the radix char */
+ 
+ }
+@@ -1481,7 +1486,6 @@ S_new_ctype(pTHX_ const char *newctype)
+ 
+ #ifndef USE_LOCALE_CTYPE
+ 
+-    PERL_ARGS_ASSERT_NEW_CTYPE;
+     PERL_UNUSED_ARG(newctype);
+     PERL_UNUSED_CONTEXT;
+ 
+@@ -1994,6 +1998,8 @@ S_new_collate(pTHX_ const char *newcoll)
+ 
+ }
+ 
++#endif
++
+ #ifdef WIN32
+ 
+ STATIC char *
+@@ -2139,11 +2145,20 @@ Perl_setlocale(const int category, const
+ {
+     /* This wraps POSIX::setlocale() */
+ 
++#ifdef NO_LOCALE
++
++    PERL_UNUSED_ARG(category);
++    PERL_UNUSED_ARG(locale);
++
++    return "C";
++
++#else
++
+     const char * retval;
+     const char * newlocale;
+     dSAVEDERRNO;
+-    DECLARATION_FOR_LC_NUMERIC_MANIPULATION;
+     dTHX;
++    DECLARATION_FOR_LC_NUMERIC_MANIPULATION;
+ 
+ #ifdef USE_LOCALE_NUMERIC
+ 
+@@ -2262,6 +2277,8 @@ Perl_setlocale(const int category, const
+ 
+     return retval;
+ 
++#endif
++
+ }
+ 
+ PERL_STATIC_INLINE const char *
+@@ -2414,13 +2431,16 @@ S_my_nl_langinfo(const int item, bool to
+     dTHX;
+     const char * retval;
+ 
++#ifdef USE_LOCALE_NUMERIC
++
+     /* We only need to toggle into the underlying LC_NUMERIC locale for these
+      * two items, and only if not already there */
+     if (toggle && ((   item != RADIXCHAR && item != THOUSEP)
+                     || PL_numeric_underlying))
+-    {
++
++#endif  /* No toggling needed if not using LC_NUMERIC */
++
+         toggle = FALSE;
+-    }
+ 
+ #if defined(HAS_NL_LANGINFO) /* nl_langinfo() is available.  */
+ #  if   ! defined(HAS_THREAD_SAFE_NL_LANGINFO_L)      \
+@@ -2468,6 +2488,8 @@ S_my_nl_langinfo(const int item, bool to
+             do_free = TRUE;
+         }
+ 
++#    ifdef USE_LOCALE_NUMERIC
++
+         if (toggle) {
+             if (PL_underlying_numeric_obj) {
+                 cur = PL_underlying_numeric_obj;
+@@ -2478,6 +2500,8 @@ S_my_nl_langinfo(const int item, bool to
+             }
+         }
+ 
++#    endif
++
+         /* We have to save it to a buffer, because the freelocale() just below
+          * can invalidate the internal one */
+         retval = save_to_buffer(nl_langinfo_l(item, cur),
+@@ -5169,9 +5193,7 @@ Perl_my_strerror(pTHX_ const int errnum)
+     LOCALE_UNLOCK;
+ 
+ #  endif /* End of doesn't have strerror_l */
+-#endif   /* End of does have locale messages */
+-
+-#ifdef DEBUGGING
++#  ifdef DEBUGGING
+ 
+     if (DEBUG_Lv_TEST) {
+         PerlIO_printf(Perl_debug_log, "Strerror returned; saving a copy: '");
+@@ -5179,7 +5201,8 @@ Perl_my_strerror(pTHX_ const int errnum)
+         PerlIO_printf(Perl_debug_log, "'\n");
+     }
+ 
+-#endif
++#  endif
++#endif   /* End of does have locale messages */
+ 
+     SAVEFREEPV(errstr);
+     return errstr;
+@@ -5301,10 +5324,17 @@ L<C<Perl_switch_to_global_locale>|perlap
+ bool
+ Perl_sync_locale()
+ {
++
++#ifndef USE_LOCALE
++
++    return TRUE;
++
++#else
++
+     const char * newlocale;
+     dTHX;
+ 
+-#ifdef USE_POSIX_2008_LOCALE
++#  ifdef USE_POSIX_2008_LOCALE
+ 
+     bool was_in_global_locale = FALSE;
+     locale_t cur_obj = uselocale((locale_t) 0);
+@@ -5316,11 +5346,11 @@ Perl_sync_locale()
+      * will affect the */
+     if (cur_obj == LC_GLOBAL_LOCALE) {
+ 
+-#  ifdef HAS_QUERY_LOCALE
++#    ifdef HAS_QUERY_LOCALE
+ 
+         do_setlocale_c(LC_ALL, setlocale(LC_ALL, NULL));
+ 
+-#  else
++#    else
+ 
+         unsigned int i;
+ 
+@@ -5330,17 +5360,17 @@ Perl_sync_locale()
+             do_setlocale_r(categories[i], setlocale(categories[i], NULL));
+         }
+ 
+-#  endif
++#    endif
+ 
+         was_in_global_locale = TRUE;
+     }
+ 
+-#else
++#  else
+ 
+     bool was_in_global_locale = TRUE;
+ 
+-#endif
+-#ifdef USE_LOCALE_CTYPE
++#  endif
++#  ifdef USE_LOCALE_CTYPE
+ 
+     newlocale = savepv(do_setlocale_c(LC_CTYPE, NULL));
+     DEBUG_Lv(PerlIO_printf(Perl_debug_log,
+@@ -5349,8 +5379,8 @@ Perl_sync_locale()
+     new_ctype(newlocale);
+     Safefree(newlocale);
+ 
+-#endif /* USE_LOCALE_CTYPE */
+-#ifdef USE_LOCALE_COLLATE
++#  endif /* USE_LOCALE_CTYPE */
++#  ifdef USE_LOCALE_COLLATE
+ 
+     newlocale = savepv(do_setlocale_c(LC_COLLATE, NULL));
+     DEBUG_Lv(PerlIO_printf(Perl_debug_log,
+@@ -5359,8 +5389,8 @@ Perl_sync_locale()
+     new_collate(newlocale);
+     Safefree(newlocale);
+ 
+-#endif
+-#ifdef USE_LOCALE_NUMERIC
++#  endif
++#  ifdef USE_LOCALE_NUMERIC
+ 
+     newlocale = savepv(do_setlocale_c(LC_NUMERIC, NULL));
+     DEBUG_Lv(PerlIO_printf(Perl_debug_log,
+@@ -5369,9 +5399,12 @@ Perl_sync_locale()
+     new_numeric(newlocale);
+     Safefree(newlocale);
+ 
+-#endif /* USE_LOCALE_NUMERIC */
++#  endif /* USE_LOCALE_NUMERIC */
+ 
+     return was_in_global_locale;
++
++#endif
++
+ }
+ 
+ #if defined(DEBUGGING) && defined(USE_LOCALE)
+--- a/makedef.pl
++++ b/makedef.pl
+@@ -574,6 +574,9 @@ unless ($define{USE_LOCALE_COLLATE}) {
+ 		    PL_collxfrm_mult
+ 		    Perl_sv_collxfrm
+ 		    Perl_sv_collxfrm_flags
++                    PL_strxfrm_NUL_replacement
++                    PL_strxfrm_is_behaved
++                    PL_strxfrm_max_cp
+ 			 );
+ }
+ 
+@@ -583,6 +586,9 @@ unless ($define{USE_LOCALE_NUMERIC}) {
+ 		    PL_numeric_name
+ 		    PL_numeric_radix_sv
+ 		    PL_numeric_standard
++                    PL_numeric_underlying
++                    PL_numeric_underlying_is_standard
++                    PL_underlying_numeric_obj
+ 			 );
+ }
+ 
+--- a/perl.h
++++ b/perl.h
+@@ -5656,6 +5656,9 @@ typedef struct am_table_short AMTS;
+ #  define IN_LC_COMPILETIME(category)      0
+ #  define IN_LC_RUNTIME(category)          0
+ #  define IN_LC(category)                  0
++#  define _CHECK_AND_WARN_PROBLEMATIC_LOCALE
++#  define _CHECK_AND_OUTPUT_WIDE_LOCALE_UTF8_MSG(s, send)
++#  define _CHECK_AND_OUTPUT_WIDE_LOCALE_CP_MSG(c)
+ #endif
+ 
+ 
+--- a/proto.h
++++ b/proto.h
+@@ -4886,8 +4886,6 @@ PERL_CALLCONV SV*	Perl_hfree_next_entry(
+ 	assert(hv); assert(indexp)
+ #endif
+ #if defined(PERL_IN_LOCALE_C)
+-STATIC const char*	S_category_name(const int category);
+-STATIC void	S_restore_switched_locale(pTHX_ const int category, const char * const original_locale);
+ #ifndef PERL_NO_INLINE_FUNCTIONS
+ PERL_STATIC_INLINE const char *	S_save_to_buffer(const char * string, char **buf, Size_t *buf_size, const Size_t offset)
+ 			__attribute__warn_unused_result__;
+@@ -4895,17 +4893,19 @@ PERL_STATIC_INLINE const char *	S_save_t
+ 	assert(buf_size)
+ #endif
+ 
+-STATIC const char*	S_switch_category_locale_to_template(pTHX_ const int switch_category, const int template_category, const char * template_locale);
+ #  if defined(USE_LOCALE)
++STATIC const char*	S_category_name(const int category);
+ STATIC void	S_new_collate(pTHX_ const char* newcoll);
+ STATIC void	S_new_ctype(pTHX_ const char* newctype);
+ #define PERL_ARGS_ASSERT_NEW_CTYPE	\
+ 	assert(newctype)
+ STATIC void	S_new_numeric(pTHX_ const char* newnum);
++STATIC void	S_restore_switched_locale(pTHX_ const int category, const char * const original_locale);
+ STATIC void	S_set_numeric_radix(pTHX_ const bool use_locale);
+ STATIC char*	S_stdize_locale(pTHX_ char* locs);
+ #define PERL_ARGS_ASSERT_STDIZE_LOCALE	\
+ 	assert(locs)
++STATIC const char*	S_switch_category_locale_to_template(pTHX_ const int switch_category, const int template_category, const char * template_locale);
+ #    if defined(USE_POSIX_2008_LOCALE)
+ STATIC const char*	S_emulate_setlocale(const int category, const char* locale, unsigned int index, const bool is_index_valid);
+ #    endif
+--- a/sv.c
++++ b/sv.c
+@@ -13330,10 +13330,15 @@ Perl_sv_vcatpvfn_flags(pTHX_ SV *const s
+ 
+     SvTAINT(sv);
+ 
++#ifdef USE_LOCALE_NUMERIC
++
+     if (lc_numeric_set) {
+         RESTORE_LC_NUMERIC();   /* Done outside loop, so don't have to
+                                    save/restore each iteration. */
+     }
++
++#endif
++
+ }
+ 
+ /* =========================================================================
+--- a/t/lib/warnings/regexec
++++ b/t/lib/warnings/regexec
+@@ -215,6 +215,10 @@ Use of \b{} or \B{} for non-UTF-8 locale
+ Use of \b{} or \B{} for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 17.
+ ########
+ # NAME (?[ ]) in non-UTF-8 locale
++require '../loc_tools.pl';
++unless (locales_enabled()) {
++    print("SKIPPED\n# locales not available\n"),exit;
++}
+ eval { require POSIX; POSIX->import("locale_h") };
+ if ($@) {
+     print("SKIPPED\n# no POSIX\n"),exit;
+@@ -229,14 +233,14 @@ setlocale(&POSIX::LC_CTYPE, "C");
+ ":" =~ /(?[ \: ])/;
+ no warnings 'locale';
+ EXPECT
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 9.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 9.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 10.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 10.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 11.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 11.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 12.
+-Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 12.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 13.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 13.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 14.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 14.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 15.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 15.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 16.
++Use of (?[ ]) for non-UTF-8 locale is wrong.  Assuming a UTF-8 locale at - line 16.
+ ########
+ # NAME (?[ ]) in UTF-8 locale
+ require '../loc_tools.pl';

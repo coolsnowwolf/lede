@@ -1,0 +1,202 @@
+This patch has been tested with OpenSSL 1.0.2q, 1.1.0j and 1.1.1a
+with and without support for deprecated OpenSSL APIs.
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -860,26 +860,10 @@ then
+ 	AC_SEARCH_LIBS([ERR_peek_error], [crypto], ,
+ 	               AC_MSG_ERROR([libcrypto not found]))
+ 
+-	AC_SEARCH_LIBS([SSL_library_init], [ssl], ,
+-		[
+-			if test x"$enable_shared" = x"yes"
+-			then
+-				AC_MSG_ERROR([Cannot build shared opendkim
+-				              against static openssl libraries.
+-				              Configure with --disable-shared
+-				              to get this working or obtain a
+-				              shared libssl library for
+-				              opendkim to use.])
+-			fi
+-
+-			# avoid caching issue - last result of SSL_library_init
+-			# shouldn't be cached for this next check
+-			unset ac_cv_search_SSL_library_init
+-			LIBCRYPTO_LIBS="$LIBCRYPTO_LIBS -ldl"
+-			AC_SEARCH_LIBS([SSL_library_init], [ssl], ,
+-			               AC_MSG_ERROR([libssl not found]), [-ldl])
+-		]
+-	)
++	od_have_ossl="no"
++	AC_CHECK_LIB(ssl, OPENSSL_init_ssl, [od_have_ossl="yes"])
++	AC_CHECK_LIB(ssl, SSL_library_init, [od_have_ossl="yes"])
++	AS_IF([test "x$od_have_ossl" = xno], [AC_MSG_ERROR([libssl not found])])
+ 
+ 	AC_CHECK_DECL([SHA256_DIGEST_LENGTH],
+                       AC_DEFINE([HAVE_SHA256], 1,
+--- a/opendkim/opendkim-crypto.c
++++ b/opendkim/opendkim-crypto.c
+@@ -139,6 +139,7 @@ static unsigned int nmutexes = 0;
+ static unsigned long threadid = 0L;
+ static pthread_mutex_t *mutexes = NULL;
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ /*
+ **  DKIMF_CRYPTO_LOCK_CALLBACK -- locking callback for libcrypto
+ **
+@@ -166,6 +167,7 @@ dkimf_crypto_lock_callback(int mode, int
+ 
+ 	assert(status == 0);
+ }
++#endif
+ 
+ /*
+ **  DKIMF_CRYPTO_GET_ID -- generate/retrieve thread ID
+@@ -208,21 +210,15 @@ dkimf_crypto_get_id(void)
+ static void
+ dkimf_crypto_free_id(void *ptr)
+ {
+-	/*
+-	**  Trick dkimf_crypto_get_id(); the thread-specific pointer has
+-	**  already been cleared at this point, but dkimf_crypto_get_id()
+-	**  may be called by ERR_remove_state() which will then allocate a
+-	**  new thread pointer if the thread-specific pointer is NULL.  This
+-	**  means a memory leak of thread IDs and, on Solaris, an infinite loop
+-	**  because the destructor (indirectly) re-sets the thread-specific
+-	**  pointer to something not NULL.  See pthread_key_create(3).
+-	*/
+-
+ 	if (ptr != NULL)
+ 	{
+ 		assert(pthread_setspecific(id_key, ptr) == 0);
+ 
+-		ERR_remove_state(0);
++#if OPENSSL_VERSION_NUMBER >= 0x10100000
++		OPENSSL_thread_stop();
++#else
++		ERR_remove_thread_state(NULL);
++#endif
+ 
+ 		free(ptr);
+ 
+@@ -300,6 +296,7 @@ dkimf_crypto_dyn_destroy(struct CRYPTO_d
+ **  	None.
+ */
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ static void
+ dkimf_crypto_dyn_lock(int mode, struct CRYPTO_dynlock_value *lock,
+                       /* UNUSED */ const char *file,
+@@ -316,6 +313,7 @@ dkimf_crypto_dyn_lock(int mode, struct C
+ 
+ 	assert(status == 0);
+ }
++#endif
+ 
+ /*
+ **  DKIMF_CRYPTO_INIT -- set up openssl dependencies
+@@ -335,7 +333,12 @@ dkimf_crypto_init(void)
+ 	int n;
+ 	int status;
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 	n = CRYPTO_num_locks();
++#else
++	// see openssl/crypto.h for more details
++	n = 1;
++#endif
+ 	mutexes = (pthread_mutex_t *) malloc(n * sizeof(pthread_mutex_t));
+ 	if (mutexes == NULL)
+ 		return errno;
+@@ -357,15 +360,22 @@ dkimf_crypto_init(void)
+ 	if (status != 0)
+ 		return status;
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 	SSL_load_error_strings();
+ 	SSL_library_init();
+ 	ERR_load_crypto_strings();
++#else
++	OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
++	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
++#endif
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10000000
+ 	CRYPTO_set_id_callback(&dkimf_crypto_get_id);
+ 	CRYPTO_set_locking_callback(&dkimf_crypto_lock_callback);
+ 	CRYPTO_set_dynlock_create_callback(&dkimf_crypto_dyn_create);
+ 	CRYPTO_set_dynlock_lock_callback(&dkimf_crypto_dyn_lock);
+ 	CRYPTO_set_dynlock_destroy_callback(&dkimf_crypto_dyn_destroy);
++#endif
+ 
+ #ifdef USE_OPENSSL_ENGINE
+ 	if (!SSL_set_engine(NULL))
+@@ -392,11 +402,15 @@ dkimf_crypto_free(void)
+ {
+ 	if (crypto_init_done)
+ 	{
++#if OPENSSL_VERSION_NUMBER >= 0x10100000
++		OPENSSL_thread_stop();
++#else
+ 		CRYPTO_cleanup_all_ex_data();
+ 		CONF_modules_free();
+ 		EVP_cleanup();
+ 		ERR_free_strings();
+-		ERR_remove_state(0);
++		ERR_remove_thread_state(NULL);
++#endif
+ 
+ 		if (nmutexes > 0)
+ 		{
+--- a/libopendkim/dkim.c
++++ b/libopendkim/dkim.c
+@@ -4195,8 +4195,10 @@ dkim_init_openssl(void)
+ {
+ 	pthread_mutex_lock(&openssl_lock);
+ 
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 	if (openssl_refcount == 0)
+ 		OpenSSL_add_all_algorithms();
++#endif
+ 	openssl_refcount++;
+ 
+ 	pthread_mutex_unlock(&openssl_lock);
+@@ -4220,8 +4222,10 @@ dkim_close_openssl(void)
+ 	pthread_mutex_lock(&openssl_lock);
+ 
+ 	openssl_refcount--;
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 	if (openssl_refcount == 0)
+ 		EVP_cleanup();
++#endif
+ 
+ 	pthread_mutex_unlock(&openssl_lock);
+ }
+--- a/opendkim/opendkim-testkey.c
++++ b/opendkim/opendkim-testkey.c
+@@ -452,7 +452,11 @@ main(int argc, char **argv)
+ 	memset(err, '\0', sizeof err);
+ 
+ #ifndef USE_GNUTLS
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 	ERR_load_crypto_strings();
++#else
++	OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
++#endif
+ #endif /* ! USE_GNUTLS */
+ 
+ 	/* process a KeyTable if specified and not overridden */
+--- a/opendkim/opendkim.c
++++ b/opendkim/opendkim.c
+@@ -15540,7 +15540,11 @@ main(int argc, char **argv)
+ 			printf("\tCompiled with GnuTLS %s\n", GNUTLS_VERSION);
+ #else /* USE_GNUTLS */
+ 			printf("\tCompiled with %s\n",
++#if OPENSSL_VERSION_NUMBER < 0x10100000
+ 			       SSLeay_version(SSLEAY_VERSION));
++#else
++			       OpenSSL_version(OPENSSL_VERSION));
++#endif
+ #endif /* USE_GNUTLS */
+ 			printf("\tSMFI_VERSION 0x%x\n", SMFI_VERSION);
+ #ifdef HAVE_SMFI_VERSION

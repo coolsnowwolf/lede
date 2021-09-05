@@ -1,0 +1,160 @@
+--- /dev/null
++++ b/src/ipstatistics.c
+@@ -0,0 +1,104 @@
++/*
++  This Plugin is based opn the interface.c Plugin.
++*/
++#include <errno.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <sys/types.h>
++
++#include "plugin.h"
++#include "utils/cmds/putval.h"
++#include "utils/common/common.h"
++
++/* Copied from interface.c */
++static void ipstatistics_submit(const char *type, derive_t ip4rx,
++                         derive_t ip4tx, derive_t ip6rx, derive_t ip6tx) {
++  value_list_t vl = VALUE_LIST_INIT;
++  value_t values[] = {
++      {.derive = ip4rx},
++      {.derive = ip4tx},
++      {.derive = ip6rx},
++      {.derive = ip6tx}
++  };
++
++  vl.values = values;
++  vl.values_len = STATIC_ARRAY_SIZE(values);
++  sstrncpy(vl.plugin, "ipstatistics", sizeof(vl.plugin));
++  sstrncpy(vl.plugin_instance, "all", sizeof(vl.plugin_instance));
++  sstrncpy(vl.type, type, sizeof(vl.type));
++
++  plugin_dispatch_values(&vl);
++} /* void if_submit */
++
++int ipstatistics_read() {
++  FILE *fh;
++  char buffer[1024];
++  char *fields[19];
++  int numfields;
++
++  derive_t ip4_in = 0;
++  derive_t ip4_out = 0;
++  derive_t ip6_in = 0;
++  derive_t ip6_out = 0;
++
++  if ((fh = fopen("/proc/net/snmp6", "r")) == NULL) {
++    WARNING("ipstatistics plugin: try opening %s : fopen: %s", "/proc/net/snmp6",
++            STRERRNO);
++    return -1;
++  }
++
++  while (fgets(buffer, 1024, fh) != NULL) {
++    numfields = strsplit(buffer, fields, 2);
++
++    if (numfields < 2)
++      return -1;
++
++    if (strcasecmp(fields[0], "Ip6OutOctets") == 0) {
++      ip6_out = atoll(fields[1]);
++    }
++
++    if (strcasecmp(fields[0], "Ip6InOctets") == 0) {
++      ip6_in = atoll(fields[1]);
++    }
++  }
++
++  fclose(fh);
++
++  if ((fh = fopen("/proc/net/netstat", "r")) == NULL) {
++    WARNING("ipstatistics plugin: try opening %s : fopen: %s", "/proc/net/netstat",
++            STRERRNO);
++    return -1;
++  }
++
++  int count_ipext = 0;
++  while (fgets(buffer, 1024, fh) != NULL) {
++    numfields = strsplit(buffer, fields, 19);
++
++    if (numfields < 8)
++      return -1;
++
++    if (strcasecmp(fields[0], "IpExt:") == 0) {
++      count_ipext++;
++      if (count_ipext == 2) {
++        ip4_in = atoll(fields[7]);
++        ip4_out = atoll(fields[8]);
++      }
++    }
++  }
++
++  fclose(fh);
++
++  ipstatistics_submit("ip_stats_octets", ip4_in, ip4_out, ip6_in, ip6_out);
++  return 0;
++}
++
++void module_register(void) {
++  plugin_register_read("ipstatistics", ipstatistics_read);
++} /* void module_register */
++
+--- a/src/types.db
++++ b/src/types.db
+@@ -148,6 +148,7 @@ invocations             value:DERIVE:0:U
+ io_octets               rx:DERIVE:0:U, tx:DERIVE:0:U
+ io_ops                  read:DERIVE:0:U, write:DERIVE:0:U
+ io_packets              rx:DERIVE:0:U, tx:DERIVE:0:U
++ip_stats_octets         ip4rx:DERIVE:0:U, ip4tx:DERIVE:0:U, ip6rx:DERIVE:0:U, ip6tx:DERIVE:0:U
+ ipc                     value:GAUGE:0:U
+ ipt_bytes               value:DERIVE:0:U
+ ipt_packets             value:DERIVE:0:U
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -1239,6 +1239,12 @@ ipstats_la_SOURCES = src/ipstats.c
+ ipstats_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+ endif
+ 
++if BUILD_PLUGIN_IPSTATISTICS
++pkglib_LTLIBRARIES += ipstatistics.la
++ipstatistics_la_SOURCES = src/ipstatistics.c
++ipstatistics_la_LDFLAGS = $(PLUGIN_LDFLAGS)
++endif
++
+ if BUILD_PLUGIN_IPVS
+ pkglib_LTLIBRARIES += ipvs.la
+ ipvs_la_SOURCES = src/ipvs.c
+--- a/configure.ac
++++ b/configure.ac
+@@ -7091,6 +7091,7 @@ AC_PLUGIN([ipc],                 [$plugi
+ AC_PLUGIN([ipmi],                [$plugin_ipmi],              [IPMI sensor statistics])
+ AC_PLUGIN([iptables],            [$with_libiptc],             [IPTables rule counters])
+ AC_PLUGIN([ipstats],             [$plugin_ipstats],           [IP packet statistics])
++AC_PLUGIN([ipstatistics],        [yes],                       [IP4 and IP6 statistics])
+ AC_PLUGIN([ipvs],                [$plugin_ipvs],              [IPVS connection statistics])
+ AC_PLUGIN([irq],                 [$plugin_irq],               [IRQ statistics])
+ AC_PLUGIN([iwinfo],              [$with_iwinfo],              [Common iwinfo wireless statistics])
+@@ -7542,6 +7543,7 @@ AC_MSG_RESULT([    ipc . . . . . . . . .
+ AC_MSG_RESULT([    ipmi  . . . . . . . . $enable_ipmi])
+ AC_MSG_RESULT([    iptables  . . . . . . $enable_iptables])
+ AC_MSG_RESULT([    ipstats . . . . . . . $enable_ipstats])
++AC_MSG_RESULT([    ipstatistics  . . . . $enable_ipstatistics])
+ AC_MSG_RESULT([    ipvs  . . . . . . . . $enable_ipvs])
+ AC_MSG_RESULT([    irq . . . . . . . . . $enable_irq])
+ AC_MSG_RESULT([    iwinfo  . . . . . . . $enable_iwinfo])
+--- a/src/collectd.conf.in
++++ b/src/collectd.conf.in
+@@ -145,6 +145,7 @@
+ #@BUILD_PLUGIN_IPC_TRUE@LoadPlugin ipc
+ #@BUILD_PLUGIN_IPMI_TRUE@LoadPlugin ipmi
+ #@BUILD_PLUGIN_IPSTATS_TRUE@LoadPlugin ipstats
++#@BUILD_PLUGIN_IPSTATISTICS_TRUE@LoadPlugin ipstatistics
+ #@BUILD_PLUGIN_IPTABLES_TRUE@LoadPlugin iptables
+ #@BUILD_PLUGIN_IPVS_TRUE@LoadPlugin ipvs
+ #@BUILD_PLUGIN_IRQ_TRUE@LoadPlugin irq

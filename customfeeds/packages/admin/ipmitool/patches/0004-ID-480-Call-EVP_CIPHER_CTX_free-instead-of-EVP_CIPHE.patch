@@ -1,0 +1,139 @@
+From 1664902525a1c3771b4d8b3ccab7ea1ba6b2bdd1 Mon Sep 17 00:00:00 2001
+From: Holger Liebig <holger.liebig@ts.fujitsu.com>
+Date: Tue, 4 Apr 2017 20:43:05 +0200
+Subject: [PATCH 4/4] ID:480 - Call EVP_CIPHER_CTX_free() instead of
+ EVP_CIPHER_CTX_cleanup()
+
+Call EVP_CIPHER_CTX_free() instead of EVP_CIPHER_CTX_cleanup() to fix memory
+leak.
+---
+ src/plugins/lanplus/lanplus_crypt_impl.c | 44 +++++++++++++++++---------------
+ 1 file changed, 23 insertions(+), 21 deletions(-)
+
+--- a/src/plugins/lanplus/lanplus_crypt_impl.c
++++ b/src/plugins/lanplus/lanplus_crypt_impl.c
+@@ -165,13 +165,6 @@ lanplus_encrypt_aes_cbc_128(const uint8_
+ 							uint32_t        * bytes_written)
+ {
+ 	EVP_CIPHER_CTX *ctx = NULL;
+-	ctx = EVP_CIPHER_CTX_new();
+-	if (ctx == NULL) {
+-		*bytes_written = 0;
+-		return;
+-	}
+-	EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv);
+-	EVP_CIPHER_CTX_set_padding(ctx, 0);
+ 
+ 	*bytes_written = 0;
+ 
+@@ -185,6 +178,14 @@ lanplus_encrypt_aes_cbc_128(const uint8_
+ 		printbuf(input, input_length, "encrypting this data");
+ 	}
+ 
++	ctx = EVP_CIPHER_CTX_new();
++	if (ctx == NULL) {
++		lprintf(LOG_DEBUG, "ERROR: EVP_CIPHER_CTX_new() failed");
++		return;
++	}
++	EVP_CIPHER_CTX_init(ctx);
++	EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv);
++	EVP_CIPHER_CTX_set_padding(ctx, 0);
+ 
+ 	/*
+ 	 * The default implementation adds a whole block of padding if the input
+@@ -198,7 +199,6 @@ lanplus_encrypt_aes_cbc_128(const uint8_
+ 	{
+ 		/* Error */
+ 		*bytes_written = 0;
+-		return;
+ 	}
+ 	else
+ 	{
+@@ -206,16 +206,17 @@ lanplus_encrypt_aes_cbc_128(const uint8_
+ 
+ 		if(!EVP_EncryptFinal_ex(ctx, output + *bytes_written, (int *)&tmplen))
+ 		{
++			/* Error */
+ 			*bytes_written = 0;
+-			return; /* Error */
+ 		}
+ 		else
+ 		{
+ 			/* Success */
+ 			*bytes_written += tmplen;
+-			EVP_CIPHER_CTX_cleanup(ctx);
+ 		}
+ 	}
++	/* performs cleanup and free */
++	EVP_CIPHER_CTX_free(ctx);
+ }
+ 
+ 
+@@ -243,13 +244,6 @@ lanplus_decrypt_aes_cbc_128(const uint8_
+ 							uint32_t        * bytes_written)
+ {
+ 	EVP_CIPHER_CTX *ctx = NULL;
+-	ctx = EVP_CIPHER_CTX_new();
+-	if (ctx == NULL) {
+-		*bytes_written = 0;
+-		return;
+-	}
+-	EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv);
+-	EVP_CIPHER_CTX_set_padding(ctx, 0);
+ 
+ 	if (verbose >= 5)
+ 	{
+@@ -258,12 +252,20 @@ lanplus_decrypt_aes_cbc_128(const uint8_
+ 		printbuf(input, input_length, "decrypting this data");
+ 	}
+ 
+-
+ 	*bytes_written = 0;
+ 
+ 	if (input_length == 0)
+ 		return;
+ 
++	ctx = EVP_CIPHER_CTX_new();
++	if (ctx == NULL) {
++		lprintf(LOG_DEBUG, "ERROR: EVP_CIPHER_CTX_new() failed");
++		return;
++	}
++	EVP_CIPHER_CTX_init(ctx);
++	EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv);
++	EVP_CIPHER_CTX_set_padding(ctx, 0);
++
+ 	/*
+ 	 * The default implementation adds a whole block of padding if the input
+ 	 * data is perfectly aligned.  We would like to keep that from happening.
+@@ -277,7 +279,6 @@ lanplus_decrypt_aes_cbc_128(const uint8_
+ 		/* Error */
+ 		lprintf(LOG_DEBUG, "ERROR: decrypt update failed");
+ 		*bytes_written = 0;
+-		return;
+ 	}
+ 	else
+ 	{
+@@ -285,20 +286,21 @@ lanplus_decrypt_aes_cbc_128(const uint8_
+ 
+ 		if (!EVP_DecryptFinal_ex(ctx, output + *bytes_written, (int *)&tmplen))
+ 		{
++			/* Error */
+ 			char buffer[1000];
+ 			ERR_error_string(ERR_get_error(), buffer);
+ 			lprintf(LOG_DEBUG, "the ERR error %s", buffer);
+ 			lprintf(LOG_DEBUG, "ERROR: decrypt final failed");
+ 			*bytes_written = 0;
+-			return; /* Error */
+ 		}
+ 		else
+ 		{
+ 			/* Success */
+ 			*bytes_written += tmplen;
+-			EVP_CIPHER_CTX_cleanup(ctx);
+ 		}
+ 	}
++	/* performs cleanup and free */
++	EVP_CIPHER_CTX_free(ctx);
+ 
+ 	if (verbose >= 5)
+ 	{

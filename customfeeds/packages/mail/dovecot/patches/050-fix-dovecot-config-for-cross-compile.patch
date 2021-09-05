@@ -1,0 +1,56 @@
+pigeonhole: Fix managesieve-login needs libdovecot-login
+
+When trying to use managesieve my MUA complained sieve wasn't supported.
+On investigation dovecot logs the following could be seen:
+
+    Aug 16 00:28:44 managesieve-login: Fatal: master:
+      service(managesieve-login): child 1430 returned error 127
+    Aug 16 00:31:32 managesieve-login: Error: Error loading shared
+      library libdovecot-login.so.0: No such file or directory
+      (needed by /usr/lib/dovecot/managesieve-login)
+    Aug 16 00:31:32 managesieve-login: Error: Error loading
+      shared library libdovecot.so.0: No such file or directory
+      (needed by /usr/lib/dovecot/managesieve-login)
+    Aug 16 00:31:32 managesieve-login: Error: Error relocating
+      /usr/lib/dovecot/managesieve-login: net_ip2addr: symbol not found
+
+The issue (verified with readelf on non-working build and build with my fix)
+is that there is no RPATH information in the pigeonhole binaries (like
+managesieve-login).
+
+The dovecot-config that is 'installed' in the staging dir
+assumes that plugins will be built on the same host as the installed files.
+The 'installed' dovecot-config (partial) looks like:
+
+LIBDOVECOT='-L/usr/lib/dovecot -ldovecot'
+LIBDOVECOT_LOGIN='-ldovecot-login -L/home/user/Build/openwrt/openwrt-ath79/staging_dir/target-mips_24kc_musl/usr/lib -lssl -lcrypto'
+LIBDOVECOT_SQL=-ldovecot-sql
+LIBDOVECOT_COMPRESS=-ldovecot-compression
+LIBDOVECOT_LDA=-ldovecot-lda
+LIBDOVECOT_STORAGE='-ldovecot-storage '
+LIBDOVECOT_DSYNC=-ldovecot-dsync
+LIBDOVECOT_LIBFTS=-ldovecot-fts
+
+This patch modifed dovecot-config that gets installed on the assumption
+that users of libdovecot will also be cross-compiled (a safe bet).
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -73,7 +73,7 @@ install-exec-hook:
+ 	grep -v '^LIBDOVECOT_.*_INCLUDE' dovecot-config | \
+ 	grep -v '^LIBDOVECOT.*_DEPS' | sed \
+ 	-e "s|^\(DOVECOT_INSTALLED\)=.*$$|\1=yes|" \
+-	-e "s|^\(LIBDOVECOT\)=.*$$|\1='-L$(pkglibdir) -ldovecot'|" \
++	-e "s|^\(LIBDOVECOT\)=.*$$|\1='-L$(STAGING_DIR)$(pkglibdir) -ldovecot'|" \
+ 	-e "s|^\(LIBDOVECOT_LOGIN\)=.*$$|\1='-ldovecot-login $(SSL_LIBS)'|" \
+ 	-e "s|^\(LIBDOVECOT_SQL\)=.*$$|\1=-ldovecot-sql|" \
+ 	-e "s|^\(LIBDOVECOT_COMPRESS\)=.*$$|\1=-ldovecot-compression|" \
+@@ -81,7 +81,8 @@ install-exec-hook:
+ 	-e "s|^\(LIBDOVECOT_LDA\)=.*$$|\1=-ldovecot-lda|" \
+ 	-e "s|^\(LIBDOVECOT_LIBFTS\)=.*$$|\1=-ldovecot-fts|" \
+ 	-e "s|^\(LIBDOVECOT_STORAGE\)=.*$$|\1='-ldovecot-storage $(LINKED_STORAGE_LDADD)'|" \
+-	-e "s|^\(LIBDOVECOT_INCLUDE\)=.*$$|\1=-I$(pkgincludedir)|" \
++	-e "s|^\(LIBDOVECOT_INCLUDE\)=.*$$|\1=-I$(STAGING_DIR)$(pkgincludedir)|" \
++	-e "s|^\(DOVECOT_BINARY_LDFLAGS=\".*\)\"$$|\1 -Wl,-rpath -Wl,$(pkglibdir)\"|" \
+ 	> $(DESTDIR)$(pkglibdir)/dovecot-config
+ 
+ uninstall-hook:

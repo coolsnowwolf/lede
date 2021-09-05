@@ -1,0 +1,385 @@
+From fef2ed139d140f551cdfcbb21c5a023dea2e02cb Mon Sep 17 00:00:00 2001
+From: Philippe Guibert <philippe.guibert@6wind.com>
+Date: Thu, 26 Mar 2020 17:33:53 +0100
+Subject: [PATCH] nhrpd: cache config may disappear if iface not present at
+ startup
+
+When interface not present at config time, store separately the list of
+config parameters. Then, when interface is ready and an address has been configured, the nbma setting is done. Reversely, when interface disappears,
+there is no need to keep the maps present, then keep only the configuration.
+
+Signed-off-by: Philippe Guibert <philippe.guibert@6wind.com>
+---
+ nhrpd/nhrp_cache.c     | 86 ++++++++++++++++++++++++++++++++++++++++++
+ nhrpd/nhrp_interface.c | 63 ++++++++++++++++++++++++++++++-
+ nhrpd/nhrp_vty.c       | 49 ++++++++++++++++--------
+ nhrpd/nhrpd.h          | 14 +++++++
+ 4 files changed, 195 insertions(+), 17 deletions(-)
+
+--- a/nhrpd/nhrp_cache.c
++++ b/nhrpd/nhrp_cache.c
+@@ -16,6 +16,7 @@
+ #include "netlink.h"
+ 
+ DEFINE_MTYPE_STATIC(NHRPD, NHRP_CACHE, "NHRP cache entry")
++DEFINE_MTYPE_STATIC(NHRPD, NHRP_CACHE_CONFIG, "NHRP cache config entry")
+ 
+ unsigned long nhrp_cache_counts[NHRP_CACHE_NUM_TYPES];
+ 
+@@ -77,6 +78,68 @@ static void nhrp_cache_free(struct nhrp_
+ 	XFREE(MTYPE_NHRP_CACHE, c);
+ }
+ 
++static unsigned int nhrp_cache_config_protocol_key(const void *peer_data)
++{
++	const struct nhrp_cache_config *p = peer_data;
++	return sockunion_hash(&p->remote_addr);
++}
++
++static bool nhrp_cache_config_protocol_cmp(const void *cache_data,
++					   const void *key_data)
++{
++	const struct nhrp_cache_config *a = cache_data;
++	const struct nhrp_cache_config *b = key_data;
++
++	if (!sockunion_same(&a->remote_addr, &b->remote_addr))
++		return false;
++	if (a->ifp != b->ifp)
++		return false;
++	return true;
++}
++
++static void *nhrp_cache_config_alloc(void *data)
++{
++	struct nhrp_cache_config *p, *key = data;
++
++	p = XCALLOC(MTYPE_NHRP_CACHE_CONFIG, sizeof(struct nhrp_cache_config));
++
++	*p = (struct nhrp_cache_config){
++		.remote_addr = key->remote_addr,
++		.ifp = key->ifp,
++	};
++	return p;
++}
++
++void nhrp_cache_config_free(struct nhrp_cache_config *c)
++{
++	struct nhrp_interface *nifp = c->ifp->info;
++
++	hash_release(nifp->cache_config_hash, c);
++	XFREE(MTYPE_NHRP_CACHE_CONFIG, c);
++}
++
++struct nhrp_cache_config *nhrp_cache_config_get(struct interface *ifp,
++						union sockunion *remote_addr,
++						int create)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_cache_config key;
++
++	if (!nifp->cache_config_hash) {
++		nifp->cache_config_hash =
++			hash_create(nhrp_cache_config_protocol_key,
++				    nhrp_cache_config_protocol_cmp,
++				    "NHRP Config Cache");
++		if (!nifp->cache_config_hash)
++			return NULL;
++	}
++	key.remote_addr = *remote_addr;
++	key.ifp = ifp;
++
++	return hash_get(nifp->cache_config_hash, &key,
++			create ? nhrp_cache_config_alloc : NULL);
++}
++
+ struct nhrp_cache *nhrp_cache_get(struct interface *ifp,
+ 				  union sockunion *remote_addr, int create)
+ {
+@@ -423,12 +486,23 @@ struct nhrp_cache_iterator_ctx {
+ 	void *ctx;
+ };
+ 
++struct nhrp_cache_config_iterator_ctx {
++	void (*cb)(struct nhrp_cache_config *, void *);
++	void *ctx;
++};
++
+ static void nhrp_cache_iterator(struct hash_bucket *b, void *ctx)
+ {
+ 	struct nhrp_cache_iterator_ctx *ic = ctx;
+ 	ic->cb(b->data, ic->ctx);
+ }
+ 
++static void nhrp_cache_config_iterator(struct hash_bucket *b, void *ctx)
++{
++	struct nhrp_cache_config_iterator_ctx *ic = ctx;
++	ic->cb(b->data, ic->ctx);
++}
++
+ void nhrp_cache_foreach(struct interface *ifp,
+ 			void (*cb)(struct nhrp_cache *, void *), void *ctx)
+ {
+@@ -441,6 +515,18 @@ void nhrp_cache_foreach(struct interface
+ 		hash_iterate(nifp->cache_hash, nhrp_cache_iterator, &ic);
+ }
+ 
++void nhrp_cache_config_foreach(struct interface *ifp,
++			       void (*cb)(struct nhrp_cache_config *, void *), void *ctx)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_cache_config_iterator_ctx ic = {
++		.cb = cb, .ctx = ctx,
++	};
++
++	if (nifp->cache_config_hash)
++		hash_iterate(nifp->cache_config_hash, nhrp_cache_config_iterator, &ic);
++}
++
+ void nhrp_cache_notify_add(struct nhrp_cache *c, struct notifier_block *n,
+ 			   notifier_fn_t fn)
+ {
+--- a/nhrpd/nhrp_interface.c
++++ b/nhrpd/nhrp_interface.c
+@@ -23,6 +23,10 @@
+ 
+ DEFINE_MTYPE_STATIC(NHRPD, NHRP_IF, "NHRP interface")
+ 
++static void nhrp_interface_update_cache_config(struct interface *ifp,
++					       bool available,
++					       uint8_t family);
++
+ static int nhrp_if_new_hook(struct interface *ifp)
+ {
+ 	struct nhrp_interface *nifp;
+@@ -311,11 +315,68 @@ int nhrp_ifp_destroy(struct interface *i
+ {
+ 	debugf(NHRP_DEBUG_IF, "if-delete: %s", ifp->name);
+ 
++	nhrp_interface_update_cache_config(ifp, false, AF_INET);
++	nhrp_interface_update_cache_config(ifp, false, AF_INET6);
+ 	nhrp_interface_update(ifp);
+ 
+ 	return 0;
+ }
+ 
++struct map_ctx {
++	int family;
++	bool enabled;
++};
++
++static void interface_config_update_nhrp_map(struct nhrp_cache_config *cc, void *data)
++{
++	struct map_ctx *ctx = data;
++	struct interface *ifp = cc->ifp;
++	struct nhrp_cache *c;
++	union sockunion nbma_addr;
++
++	if (sockunion_family(&cc->remote_addr) != ctx->family)
++		return;
++
++	/* gre layer not ready */
++	if (ifp->vrf_id == VRF_UNKNOWN)
++		return;
++
++	c = nhrp_cache_get(ifp, &cc->remote_addr, ctx->enabled ? 1 : 0);
++	if (!c && !ctx->enabled)
++		return;
++	/* suppress */
++	if (!ctx->enabled) {
++		if (c && c->map) {
++			nhrp_cache_update_binding(c, c->cur.type, -1,
++						  nhrp_peer_get(ifp, &nbma_addr), 0, NULL);
++		}
++		return;
++	}
++	/* create */
++	c->map = 1;
++	if (cc->type == NHRP_CACHE_LOCAL)
++		nhrp_cache_update_binding(c, NHRP_CACHE_LOCAL, 0, NULL, 0,
++					  NULL);
++	else {
++		nhrp_cache_update_binding(c, NHRP_CACHE_STATIC, 0,
++					  nhrp_peer_get(ifp, &cc->nbma), 0,
++					  NULL);
++	}
++}
++
++static void nhrp_interface_update_cache_config(struct interface *ifp, bool available, uint8_t family)
++{
++	struct map_ctx mapctx;
++
++	mapctx = (struct map_ctx){
++		.family = family,
++		.enabled = available
++	};
++	nhrp_cache_config_foreach(ifp, interface_config_update_nhrp_map,
++				  &mapctx);
++
++}
++
+ int nhrp_ifp_up(struct interface *ifp)
+ {
+ 	debugf(NHRP_DEBUG_IF, "if-up: %s", ifp->name);
+@@ -346,7 +407,7 @@ int nhrp_interface_address_add(ZAPI_CALL
+ 
+ 	nhrp_interface_update_address(
+ 		ifc->ifp, family2afi(PREFIX_FAMILY(ifc->address)), 0);
+-
++	nhrp_interface_update_cache_config(ifc->ifp, true, PREFIX_FAMILY(ifc->address));
+ 	return 0;
+ }
+ 
+--- a/nhrpd/nhrp_vty.c
++++ b/nhrpd/nhrp_vty.c
+@@ -494,28 +494,42 @@ DEFUN(if_nhrp_map, if_nhrp_map_cmd,
+ 	VTY_DECLVAR_CONTEXT(interface, ifp);
+ 	afi_t afi = cmd_to_afi(argv[0]);
+ 	union sockunion proto_addr, nbma_addr;
++	struct nhrp_cache_config *cc;
+ 	struct nhrp_cache *c;
++	enum nhrp_cache_type type;
+ 
+ 	if (str2sockunion(argv[3]->arg, &proto_addr) < 0
+ 	    || afi2family(afi) != sockunion_family(&proto_addr))
+ 		return nhrp_vty_return(vty, NHRP_ERR_PROTOCOL_ADDRESS_MISMATCH);
+ 
++	if (strmatch(argv[4]->text, "local"))
++		type = NHRP_CACHE_LOCAL;
++	else {
++		if (str2sockunion(argv[4]->arg, &nbma_addr) < 0)
++			return nhrp_vty_return(vty, NHRP_ERR_FAIL);
++		type = NHRP_CACHE_STATIC;
++	}
++	cc = nhrp_cache_config_get(ifp, &proto_addr, 1);
++	if (!cc)
++		return nhrp_vty_return(vty, NHRP_ERR_FAIL);
++	cc->nbma = nbma_addr;
++	cc->type = type;
++	/* gre layer not ready */
++	if (ifp->ifindex == IFINDEX_INTERNAL)
++		return CMD_SUCCESS;
++
+ 	c = nhrp_cache_get(ifp, &proto_addr, 1);
+ 	if (!c)
+ 		return nhrp_vty_return(vty, NHRP_ERR_FAIL);
+ 
+ 	c->map = 1;
+-	if (strmatch(argv[4]->text, "local")) {
++	if (type == NHRP_CACHE_LOCAL)
+ 		nhrp_cache_update_binding(c, NHRP_CACHE_LOCAL, 0, NULL, 0,
+ 					  NULL);
+-	} else {
+-		if (str2sockunion(argv[4]->arg, &nbma_addr) < 0)
+-			return nhrp_vty_return(vty, NHRP_ERR_FAIL);
++	else
+ 		nhrp_cache_update_binding(c, NHRP_CACHE_STATIC, 0,
+ 					  nhrp_peer_get(ifp, &nbma_addr), 0,
+ 					  NULL);
+-	}
+-
+ 	return CMD_SUCCESS;
+ }
+ 
+@@ -533,15 +547,22 @@ DEFUN(if_no_nhrp_map, if_no_nhrp_map_cmd
+ 	VTY_DECLVAR_CONTEXT(interface, ifp);
+ 	afi_t afi = cmd_to_afi(argv[1]);
+ 	union sockunion proto_addr, nbma_addr;
++	struct nhrp_cache_config *cc;
+ 	struct nhrp_cache *c;
+ 
+ 	if (str2sockunion(argv[4]->arg, &proto_addr) < 0
+ 	    || afi2family(afi) != sockunion_family(&proto_addr))
+ 		return nhrp_vty_return(vty, NHRP_ERR_PROTOCOL_ADDRESS_MISMATCH);
+ 
++	cc = nhrp_cache_config_get(ifp, &proto_addr, 0);
++	if (!cc)
++		return nhrp_vty_return(vty, NHRP_ERR_FAIL);
++	nhrp_cache_config_free(cc);
++
+ 	c = nhrp_cache_get(ifp, &proto_addr, 0);
++	/* silently return */
+ 	if (!c || !c->map)
+-		return nhrp_vty_return(vty, NHRP_ERR_ENTRY_NOT_FOUND);
++		return CMD_SUCCESS;
+ 
+ 	nhrp_cache_update_binding(c, c->cur.type, -1,
+ 				  nhrp_peer_get(ifp, &nbma_addr), 0, NULL);
+@@ -997,23 +1018,19 @@ struct write_map_ctx {
+ 	const char *aficmd;
+ };
+ 
+-static void interface_config_write_nhrp_map(struct nhrp_cache *c, void *data)
++static void interface_config_write_nhrp_map(struct nhrp_cache_config *c, void *data)
+ {
+ 	struct write_map_ctx *ctx = data;
+ 	struct vty *vty = ctx->vty;
+ 	char buf[2][SU_ADDRSTRLEN];
+ 
+-	if (!c->map)
+-		return;
+ 	if (sockunion_family(&c->remote_addr) != ctx->family)
+ 		return;
+ 
+ 	vty_out(vty, " %s nhrp map %s %s\n", ctx->aficmd,
+ 		sockunion2str(&c->remote_addr, buf[0], sizeof(buf[0])),
+-		c->cur.type == NHRP_CACHE_LOCAL
+-			? "local"
+-			: sockunion2str(&c->cur.peer->vc->remote.nbma, buf[1],
+-					sizeof(buf[1])));
++		c->type == NHRP_CACHE_LOCAL
++		? "local" : sockunion2str(&c->nbma, buf[1], sizeof(buf[1])));
+ }
+ 
+ static int interface_config_write(struct vty *vty)
+@@ -1076,8 +1093,8 @@ static int interface_config_write(struct
+ 				.family = afi2family(afi),
+ 				.aficmd = aficmd,
+ 			};
+-			nhrp_cache_foreach(ifp, interface_config_write_nhrp_map,
+-					   &mapctx);
++			nhrp_cache_config_foreach(ifp, interface_config_write_nhrp_map,
++						  &mapctx);
+ 
+ 			list_for_each_entry(nhs, &ad->nhslist_head,
+ 					    nhslist_entry)
+--- a/nhrpd/nhrpd.h
++++ b/nhrpd/nhrpd.h
+@@ -197,6 +197,13 @@ enum nhrp_cache_type {
+ extern const char *const nhrp_cache_type_str[];
+ extern unsigned long nhrp_cache_counts[NHRP_CACHE_NUM_TYPES];
+ 
++struct nhrp_cache_config {
++	struct interface *ifp;
++	union sockunion remote_addr;
++	enum nhrp_cache_type type;
++	union sockunion nbma;
++};
++
+ struct nhrp_cache {
+ 	struct interface *ifp;
+ 	union sockunion remote_addr;
+@@ -280,6 +287,7 @@ struct nhrp_interface {
+ 	uint32_t grekey;
+ 
+ 	struct hash *peer_hash;
++	struct hash *cache_config_hash;
+ 	struct hash *cache_hash;
+ 
+ 	struct notifier_list notifier_list;
+@@ -358,10 +366,16 @@ void nhrp_shortcut_foreach(afi_t afi,
+ void nhrp_shortcut_purge(struct nhrp_shortcut *s, int force);
+ void nhrp_shortcut_prefix_change(const struct prefix *p, int deleted);
+ 
++void nhrp_cache_config_free(struct nhrp_cache_config *c);
++struct nhrp_cache_config *nhrp_cache_config_get(struct interface *ifp,
++						union sockunion *remote_addr,
++						int create);
+ struct nhrp_cache *nhrp_cache_get(struct interface *ifp,
+ 				  union sockunion *remote_addr, int create);
+ void nhrp_cache_foreach(struct interface *ifp,
+ 			void (*cb)(struct nhrp_cache *, void *), void *ctx);
++void nhrp_cache_config_foreach(struct interface *ifp,
++			       void (*cb)(struct nhrp_cache_config *, void *), void *ctx);
+ void nhrp_cache_set_used(struct nhrp_cache *, int);
+ int nhrp_cache_update_binding(struct nhrp_cache *, enum nhrp_cache_type type,
+ 			      int holding_time, struct nhrp_peer *p,

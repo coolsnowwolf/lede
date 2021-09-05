@@ -1,0 +1,964 @@
+From 6ea5d99456b14db5e82abc2461228bb37aa7556d Mon Sep 17 00:00:00 2001
+From: Amol Lad <amol.lad@4rf.com>
+Date: Wed, 17 Feb 2021 13:47:32 +1300
+Subject: [PATCH 01/14] nhrpd: Add support for forwarding multicast packets
+
+Forwarding multicast is a pre-requisite for allowing multicast based routing
+protocols such as OSPF to work with DMVPN
+
+This code relies on externally adding iptables rule. For example:
+iptables -A OUTPUT -d 224.0.0.0/24 -o gre1 -j NFLOG --nflog-group 224
+
+Signed-off-by: Reuben Dowle <reuben.dowle@4rf.com>
+---
+ nhrpd/linux.c          |  11 +-
+ nhrpd/nhrp_interface.c |   2 +
+ nhrpd/nhrp_multicast.c | 307 +++++++++++++++++++++++++++++++++++++++++
+ nhrpd/nhrp_peer.c      |   3 +-
+ nhrpd/nhrp_vty.c       |  63 +++++++++
+ nhrpd/nhrpd.h          |  16 +++
+ nhrpd/os.h             |   2 +-
+ nhrpd/subdir.am        |   1 +
+ 8 files changed, 398 insertions(+), 7 deletions(-)
+ create mode 100755 nhrpd/nhrp_multicast.c
+
+--- a/nhrpd/linux.c
++++ b/nhrpd/linux.c
+@@ -15,6 +15,7 @@
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <string.h>
++#include <errno.h>
+ #include <sys/ioctl.h>
+ #include <sys/socket.h>
+ #include <sys/types.h>
+@@ -31,6 +32,11 @@
+ #include "os.h"
+ #include "netlink.h"
+ 
++#ifndef HAVE_STRLCPY
++size_t strlcpy(char *__restrict dest,
++               const char *__restrict src, size_t destsize);
++#endif
++
+ static int nhrp_socket_fd = -1;
+ 
+ int os_socket(void)
+@@ -42,7 +48,7 @@ int os_socket(void)
+ }
+ 
+ int os_sendmsg(const uint8_t *buf, size_t len, int ifindex, const uint8_t *addr,
+-	       size_t addrlen)
++	       size_t addrlen, uint16_t protocol)
+ {
+ 	struct sockaddr_ll lladdr;
+ 	struct iovec iov = {
+@@ -61,16 +67,16 @@ int os_sendmsg(const uint8_t *buf, size_
+ 
+ 	memset(&lladdr, 0, sizeof(lladdr));
+ 	lladdr.sll_family = AF_PACKET;
+-	lladdr.sll_protocol = htons(ETH_P_NHRP);
++	lladdr.sll_protocol = htons(protocol);
+ 	lladdr.sll_ifindex = ifindex;
+ 	lladdr.sll_halen = addrlen;
+ 	memcpy(lladdr.sll_addr, addr, addrlen);
+ 
+-	status = sendmsg(nhrp_socket_fd, &msg, 0);
++	status = sendmsg(os_socket(), &msg, 0);
+ 	if (status < 0)
+-		return -1;
++		return -errno;
+ 
+-	return 0;
++	return status;
+ }
+ 
+ int os_recvmsg(uint8_t *buf, size_t *len, int *ifindex, uint8_t *addr,
+@@ -111,7 +117,7 @@ static int linux_configure_arp(const cha
+ {
+ 	struct ifreq ifr;
+ 
+-	strncpy(ifr.ifr_name, iface, IFNAMSIZ - 1);
++	strlcpy(ifr.ifr_name, iface, IFNAMSIZ);
+ 	if (ioctl(nhrp_socket_fd, SIOCGIFFLAGS, &ifr))
+ 		return -1;
+ 
+--- a/nhrpd/nhrp_interface.c
++++ b/nhrpd/nhrp_interface.c
+@@ -42,6 +42,7 @@ static int nhrp_if_new_hook(struct inter
+ 		struct nhrp_afi_data *ad = &nifp->afi[afi];
+ 		ad->holdtime = NHRPD_DEFAULT_HOLDTIME;
+ 		list_init(&ad->nhslist_head);
++		list_init(&ad->mcastlist_head);
+ 	}
+ 
+ 	return 0;
+@@ -55,6 +56,7 @@ static int nhrp_if_delete_hook(struct in
+ 
+ 	nhrp_cache_interface_del(ifp);
+ 	nhrp_nhs_interface_del(ifp);
++	nhrp_multicast_interface_del(ifp);
+ 	nhrp_peer_interface_del(ifp);
+ 
+ 	if (nifp->ipsec_profile)
+--- /dev/null
++++ b/nhrpd/nhrp_multicast.c
+@@ -0,0 +1,309 @@
++/* NHRP Multicast Support
++ * Copyright (c) 2020-2021 4RF Limited
++ *
++ * This file is free software: you may copy, redistribute and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifdef HAVE_CONFIG_H
++#include "config.h"
++#endif
++
++#include <fcntl.h>
++#include <net/if.h>
++#include <net/ethernet.h>
++#include <netinet/if_ether.h>
++#include <linux/netlink.h>
++#include <linux/neighbour.h>
++#include <linux/netfilter/nfnetlink_log.h>
++#include <linux/if_packet.h>
++#include <sys/types.h>
++#include <sys/socket.h>
++
++#include "thread.h"
++#include "nhrpd.h"
++#include "netlink.h"
++#include "znl.h"
++#include "os.h"
++
++DEFINE_MTYPE_STATIC(NHRPD, NHRP_MULTICAST, "NHRP Multicast")
++
++int netlink_mcast_nflog_group;
++static int netlink_mcast_log_fd = -1;
++static struct thread *netlink_mcast_log_thread;
++
++struct mcast_ctx {
++	struct interface *ifp;
++	struct zbuf *pkt;
++};
++
++static void nhrp_multicast_send(struct nhrp_peer *p, struct zbuf *zb)
++{
++	char buf[2][256];
++	size_t addrlen;
++	int ret;
++
++	addrlen = sockunion_get_addrlen(&p->vc->remote.nbma);
++	ret = os_sendmsg(zb->head, zbuf_used(zb), p->ifp->ifindex,
++			 sockunion_get_addr(&p->vc->remote.nbma), addrlen,
++			 addrlen == 4 ? ETH_P_IP : ETH_P_IPV6);
++
++	debugf(NHRP_DEBUG_COMMON,
++	       "Multicast Packet: %s -> %s, ret = %d, size = %zu, addrlen = %zu",
++	       sockunion2str(&p->vc->local.nbma, buf[0], sizeof(buf[0])),
++	       sockunion2str(&p->vc->remote.nbma, buf[1], sizeof(buf[1])), ret,
++	       zbuf_used(zb), addrlen);
++}
++
++static void nhrp_multicast_forward_nbma(union sockunion *nbma_addr,
++					struct interface *ifp, struct zbuf *pkt)
++{
++	struct nhrp_peer *p = nhrp_peer_get(ifp, nbma_addr);
++
++	if (p && p->online) {
++		/* Send packet */
++		nhrp_multicast_send(p, pkt);
++	}
++	nhrp_peer_unref(p);
++}
++
++static void nhrp_multicast_forward_cache(struct nhrp_cache *c, void *pctx)
++{
++	struct mcast_ctx *ctx = (struct mcast_ctx *)pctx;
++
++	if (c->cur.type == NHRP_CACHE_DYNAMIC && c->cur.peer)
++		nhrp_multicast_forward_nbma(&c->cur.peer->vc->remote.nbma,
++					    ctx->ifp, ctx->pkt);
++}
++
++static void nhrp_multicast_forward(struct nhrp_multicast *mcast, void *pctx)
++{
++	struct mcast_ctx *ctx = (struct mcast_ctx *)pctx;
++	struct nhrp_interface *nifp = ctx->ifp->info;
++
++	if (!nifp->enabled)
++		return;
++
++	/* dynamic */
++	if (sockunion_family(&mcast->nbma_addr) == AF_UNSPEC) {
++		nhrp_cache_foreach(ctx->ifp, nhrp_multicast_forward_cache,
++				   pctx);
++		return;
++	}
++
++	/* Fixed IP Address */
++	nhrp_multicast_forward_nbma(&mcast->nbma_addr, ctx->ifp, ctx->pkt);
++}
++
++static void netlink_mcast_log_handler(struct nlmsghdr *msg, struct zbuf *zb)
++{
++	struct nfgenmsg *nf;
++	struct rtattr *rta;
++	struct zbuf rtapl;
++	uint32_t *out_ndx = NULL;
++	afi_t afi;
++	struct mcast_ctx ctx;
++
++	nf = znl_pull(zb, sizeof(*nf));
++	if (!nf)
++		return;
++
++	ctx.pkt = NULL;
++	while ((rta = znl_rta_pull(zb, &rtapl)) != NULL) {
++		switch (rta->rta_type) {
++		case NFULA_IFINDEX_OUTDEV:
++			out_ndx = znl_pull(&rtapl, sizeof(*out_ndx));
++			break;
++		case NFULA_PAYLOAD:
++			ctx.pkt = &rtapl;
++			break;
++			/* NFULA_HWHDR exists and is supposed to contain source
++			 * hardware address. However, for ip_gre it seems to be
++			 * the nexthop destination address if the packet matches
++			 * route.
++			 */
++		}
++	}
++
++	if (!out_ndx || !ctx.pkt)
++		return;
++
++	ctx.ifp = if_lookup_by_index(htonl(*out_ndx), VRF_DEFAULT);
++	if (!ctx.ifp)
++		return;
++
++	debugf(NHRP_DEBUG_COMMON, "Received multicast packet on %s len %zu\n",
++		   ctx.ifp->name, zbuf_used(ctx.pkt));
++
++	for (afi = 0; afi < AFI_MAX; afi++) {
++		nhrp_multicast_foreach(ctx.ifp, afi, nhrp_multicast_forward,
++				       (void *)&ctx);
++	}
++}
++
++static int netlink_mcast_log_recv(struct thread *t)
++{
++	uint8_t buf[65535]; /* Max OSPF Packet size */
++	int fd = THREAD_FD(t);
++	struct zbuf payload, zb;
++	struct nlmsghdr *n;
++
++	netlink_mcast_log_thread = NULL;
++
++	zbuf_init(&zb, buf, sizeof(buf), 0);
++	while (zbuf_recv(&zb, fd) > 0) {
++		while ((n = znl_nlmsg_pull(&zb, &payload)) != NULL) {
++			debugf(NHRP_DEBUG_COMMON,
++			       "Netlink-mcast-log: Received msg_type %u, msg_flags %u",
++			       n->nlmsg_type, n->nlmsg_flags);
++			switch (n->nlmsg_type) {
++			case (NFNL_SUBSYS_ULOG << 8) | NFULNL_MSG_PACKET:
++				netlink_mcast_log_handler(n, &payload);
++				break;
++			}
++		}
++	}
++
++	thread_add_read(master, netlink_mcast_log_recv, 0, netlink_mcast_log_fd,
++			&netlink_mcast_log_thread);
++
++	return 0;
++}
++
++static void netlink_mcast_log_register(int fd, int group)
++{
++	struct nlmsghdr *n;
++	struct nfgenmsg *nf;
++	struct nfulnl_msg_config_cmd cmd;
++	struct zbuf *zb = zbuf_alloc(512);
++
++	n = znl_nlmsg_push(zb, (NFNL_SUBSYS_ULOG << 8) | NFULNL_MSG_CONFIG,
++			   NLM_F_REQUEST | NLM_F_ACK);
++	nf = znl_push(zb, sizeof(*nf));
++	*nf = (struct nfgenmsg){
++		.nfgen_family = AF_UNSPEC,
++		.version = NFNETLINK_V0,
++		.res_id = htons(group),
++	};
++	cmd.command = NFULNL_CFG_CMD_BIND;
++	znl_rta_push(zb, NFULA_CFG_CMD, &cmd, sizeof(cmd));
++	znl_nlmsg_complete(zb, n);
++
++	zbuf_send(zb, fd);
++	zbuf_free(zb);
++}
++
++void netlink_mcast_set_nflog_group(int nlgroup)
++{
++	if (netlink_mcast_log_fd >= 0) {
++		THREAD_OFF(netlink_mcast_log_thread);
++		close(netlink_mcast_log_fd);
++		netlink_mcast_log_fd = -1;
++		debugf(NHRP_DEBUG_COMMON, "De-register nflog group");
++	}
++	netlink_mcast_nflog_group = nlgroup;
++	if (nlgroup) {
++		netlink_mcast_log_fd = znl_open(NETLINK_NETFILTER, 0);
++		if (netlink_mcast_log_fd < 0)
++			return;
++
++		netlink_mcast_log_register(netlink_mcast_log_fd, nlgroup);
++		thread_add_read(master, netlink_mcast_log_recv, 0,
++				netlink_mcast_log_fd,
++				&netlink_mcast_log_thread);
++		debugf(NHRP_DEBUG_COMMON, "Register nflog group: %d",
++		       netlink_mcast_nflog_group);
++	}
++}
++
++static int nhrp_multicast_free(struct interface *ifp,
++			       struct nhrp_multicast *mcast)
++{
++	list_del(&mcast->list_entry);
++	XFREE(MTYPE_NHRP_MULTICAST, mcast);
++	return 0;
++}
++
++int nhrp_multicast_add(struct interface *ifp, afi_t afi,
++		       union sockunion *nbma_addr)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_multicast *mcast;
++	char buf[SU_ADDRSTRLEN];
++
++	list_for_each_entry(mcast, &nifp->afi[afi].mcastlist_head, list_entry)
++	{
++		if (sockunion_same(&mcast->nbma_addr, nbma_addr))
++			return NHRP_ERR_ENTRY_EXISTS;
++	}
++
++	mcast = XMALLOC(MTYPE_NHRP_MULTICAST, sizeof(struct nhrp_multicast));
++
++	*mcast = (struct nhrp_multicast){
++		.afi = afi, .ifp = ifp, .nbma_addr = *nbma_addr,
++	};
++	list_add_tail(&mcast->list_entry, &nifp->afi[afi].mcastlist_head);
++
++	sockunion2str(nbma_addr, buf, sizeof(buf));
++	debugf(NHRP_DEBUG_COMMON, "Adding multicast entry (%s)", buf);
++
++	return NHRP_OK;
++}
++
++int nhrp_multicast_del(struct interface *ifp, afi_t afi,
++		       union sockunion *nbma_addr)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_multicast *mcast, *tmp;
++	char buf[SU_ADDRSTRLEN];
++
++	list_for_each_entry_safe(mcast, tmp, &nifp->afi[afi].mcastlist_head,
++				 list_entry)
++	{
++		if (!sockunion_same(&mcast->nbma_addr, nbma_addr))
++			continue;
++
++		sockunion2str(nbma_addr, buf, sizeof(buf));
++		debugf(NHRP_DEBUG_COMMON, "Deleting multicast entry (%s)", buf);
++
++		nhrp_multicast_free(ifp, mcast);
++
++		return NHRP_OK;
++	}
++
++	return NHRP_ERR_ENTRY_NOT_FOUND;
++}
++
++void nhrp_multicast_interface_del(struct interface *ifp)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_multicast *mcast, *tmp;
++	afi_t afi;
++
++	for (afi = 0; afi < AFI_MAX; afi++) {
++		debugf(NHRP_DEBUG_COMMON,
++		       "Cleaning up multicast entries (%d)",
++		       !list_empty(&nifp->afi[afi].mcastlist_head));
++
++		list_for_each_entry_safe(
++			mcast, tmp, &nifp->afi[afi].mcastlist_head, list_entry)
++		{
++			nhrp_multicast_free(ifp, mcast);
++		}
++	}
++}
++
++void nhrp_multicast_foreach(struct interface *ifp, afi_t afi,
++			    void (*cb)(struct nhrp_multicast *, void *),
++			    void *ctx)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_multicast *mcast;
++
++	list_for_each_entry(mcast, &nifp->afi[afi].mcastlist_head, list_entry)
++	{
++		cb(mcast, ctx);
++	}
++}
+--- a/nhrpd/nhrp_peer.c
++++ b/nhrpd/nhrp_peer.c
+@@ -337,7 +337,7 @@ void nhrp_peer_send(struct nhrp_peer *p,
+ 
+ 	os_sendmsg(zb->head, zbuf_used(zb), p->ifp->ifindex,
+ 		   sockunion_get_addr(&p->vc->remote.nbma),
+-		   sockunion_get_addrlen(&p->vc->remote.nbma));
++		   sockunion_get_addrlen(&p->vc->remote.nbma), ETH_P_NHRP);
+ 	zbuf_reset(zb);
+ }
+ 
+--- a/nhrpd/nhrp_vty.c
++++ b/nhrpd/nhrp_vty.c
+@@ -187,6 +187,9 @@ static int nhrp_config_write(struct vty
+ 	if (netlink_nflog_group) {
+ 		vty_out(vty, "nhrp nflog-group %d\n", netlink_nflog_group);
+ 	}
++	if (netlink_mcast_nflog_group)
++		vty_out(vty, "nhrp multicast-nflog-group %d\n",
++			netlink_mcast_nflog_group);
+ 
+ 	return 0;
+ }
+@@ -257,6 +260,31 @@ DEFUN(no_nhrp_nflog_group, no_nhrp_nflog
+ 	return CMD_SUCCESS;
+ }
+ 
++DEFUN(nhrp_multicast_nflog_group, nhrp_multicast_nflog_group_cmd,
++	"nhrp multicast-nflog-group (1-65535)",
++	NHRP_STR
++	"Specify NFLOG group number for Multicast Packets\n"
++	"NFLOG group number\n")
++{
++	uint32_t nfgroup;
++
++	nfgroup = strtoul(argv[2]->arg, NULL, 10);
++	netlink_mcast_set_nflog_group(nfgroup);
++
++	return CMD_SUCCESS;
++}
++
++DEFUN(no_nhrp_multicast_nflog_group, no_nhrp_multicast_nflog_group_cmd,
++	"no nhrp multicast-nflog-group [(1-65535)]",
++	NO_STR
++	NHRP_STR
++	"Specify NFLOG group number\n"
++	"NFLOG group number\n")
++{
++	netlink_mcast_set_nflog_group(0);
++	return CMD_SUCCESS;
++}
++
+ DEFUN(tunnel_protection, tunnel_protection_cmd,
+ 	"tunnel protection vici profile PROFILE [fallback-profile FALLBACK]",
+ 	"NHRP/GRE integration\n"
+@@ -569,6 +597,53 @@ DEFUN(if_no_nhrp_map, if_no_nhrp_map_cmd
+ 	return CMD_SUCCESS;
+ }
+ 
++DEFUN(if_nhrp_map_multicast, if_nhrp_map_multicast_cmd,
++	AFI_CMD " nhrp map multicast <A.B.C.D|X:X::X:X|dynamic>",
++	AFI_STR
++	NHRP_STR
++	"Multicast NBMA Configuration\n"
++	"Use this NBMA mapping for multicasts\n"
++	"IPv4 NBMA address\n"
++	"IPv6 NBMA address\n"
++	"Dynamically learn destinations from client registrations on hub\n")
++{
++	VTY_DECLVAR_CONTEXT(interface, ifp);
++	afi_t afi = cmd_to_afi(argv[0]);
++	union sockunion nbma_addr;
++	int ret;
++
++	if (str2sockunion(argv[4]->arg, &nbma_addr) < 0)
++		sockunion_family(&nbma_addr) = AF_UNSPEC;
++
++	ret = nhrp_multicast_add(ifp, afi, &nbma_addr);
++
++	return nhrp_vty_return(vty, ret);
++}
++
++DEFUN(if_no_nhrp_map_multicast, if_no_nhrp_map_multicast_cmd,
++	"no " AFI_CMD " nhrp map multicast <A.B.C.D|X:X::X:X|dynamic>",
++	NO_STR
++	AFI_STR
++	NHRP_STR
++	"Multicast NBMA Configuration\n"
++	"Use this NBMA mapping for multicasts\n"
++	"IPv4 NBMA address\n"
++	"IPv6 NBMA address\n"
++	"Dynamically learn destinations from client registrations on hub\n")
++{
++	VTY_DECLVAR_CONTEXT(interface, ifp);
++	afi_t afi = cmd_to_afi(argv[1]);
++	union sockunion nbma_addr;
++	int ret;
++
++	if (str2sockunion(argv[5]->arg, &nbma_addr) < 0)
++		sockunion_family(&nbma_addr) = AF_UNSPEC;
++
++	ret = nhrp_multicast_del(ifp, afi, &nbma_addr);
++
++	return nhrp_vty_return(vty, ret);
++}
++
+ DEFUN(if_nhrp_nhs, if_nhrp_nhs_cmd,
+ 	AFI_CMD " nhrp nhs <A.B.C.D|X:X::X:X|dynamic> nbma <A.B.C.D|FQDN>",
+ 	AFI_STR
+@@ -644,8 +719,8 @@ static void show_ip_nhrp_cache(struct nh
+ 
+ 	sockunion2str(&c->remote_addr, buf[0], sizeof(buf[0]));
+ 	if (c->cur.peer)
+-		sockunion2str(&c->cur.peer->vc->remote.nbma,
+-			      buf[1], sizeof(buf[1]));
++		sockunion2str(&c->cur.peer->vc->remote.nbma, buf[1],
++			      sizeof(buf[1]));
+ 	else
+ 		snprintf(buf[1], sizeof(buf[1]), "-");
+ 
+@@ -704,8 +779,8 @@ static void show_ip_nhrp_nhs(struct nhrp
+ 	ctx->count++;
+ 
+ 	if (reg && reg->peer)
+-		sockunion2str(&reg->peer->vc->remote.nbma,
+-			      buf[0], sizeof(buf[0]));
++		sockunion2str(&reg->peer->vc->remote.nbma, buf[0],
++			      sizeof(buf[0]));
+ 	else
+ 		snprintf(buf[0], sizeof(buf[0]), "-");
+ 	sockunion2str(reg ? &reg->proto_addr : &n->proto_addr, buf[1],
+@@ -1018,7 +1093,8 @@ struct write_map_ctx {
+ 	const char *aficmd;
+ };
+ 
+-static void interface_config_write_nhrp_map(struct nhrp_cache_config *c, void *data)
++static void interface_config_write_nhrp_map(struct nhrp_cache_config *c,
++					    void *data)
+ {
+ 	struct write_map_ctx *ctx = data;
+ 	struct vty *vty = ctx->vty;
+@@ -1030,7 +1106,8 @@ static void interface_config_write_nhrp_
+ 	vty_out(vty, " %s nhrp map %s %s\n", ctx->aficmd,
+ 		sockunion2str(&c->remote_addr, buf[0], sizeof(buf[0])),
+ 		c->type == NHRP_CACHE_LOCAL
+-		? "local" : sockunion2str(&c->nbma, buf[1], sizeof(buf[1])));
++			? "local"
++			: sockunion2str(&c->nbma, buf[1], sizeof(buf[1])));
+ }
+ 
+ static int interface_config_write(struct vty *vty)
+@@ -1040,6 +1117,7 @@ static int interface_config_write(struct
+ 	struct interface *ifp;
+ 	struct nhrp_interface *nifp;
+ 	struct nhrp_nhs *nhs;
++	struct nhrp_multicast *mcast;
+ 	const char *aficmd;
+ 	afi_t afi;
+ 	char buf[SU_ADDRSTRLEN];
+@@ -1093,8 +1171,8 @@ static int interface_config_write(struct
+ 				.family = afi2family(afi),
+ 				.aficmd = aficmd,
+ 			};
+-			nhrp_cache_config_foreach(ifp, interface_config_write_nhrp_map,
+-						  &mapctx);
++			nhrp_cache_config_foreach(
++				ifp, interface_config_write_nhrp_map, &mapctx);
+ 
+ 			list_for_each_entry(nhs, &ad->nhslist_head,
+ 					    nhslist_entry)
+@@ -1109,6 +1187,19 @@ static int interface_config_write(struct
+ 							  sizeof(buf)),
+ 					nhs->nbma_fqdn);
+ 			}
++
++			list_for_each_entry(mcast, &ad->mcastlist_head,
++					    list_entry)
++			{
++				vty_out(vty, " %s nhrp map multicast %s\n",
++					aficmd,
++					sockunion_family(&mcast->nbma_addr)
++							== AF_UNSPEC
++						? "dynamic"
++						: sockunion2str(
++							  &mcast->nbma_addr,
++							  buf, sizeof(buf)));
++			}
+ 		}
+ 
+ 		vty_endframe(vty, "!\n");
+@@ -1142,6 +1233,8 @@ void nhrp_config_init(void)
+ 	install_element(CONFIG_NODE, &no_nhrp_event_socket_cmd);
+ 	install_element(CONFIG_NODE, &nhrp_nflog_group_cmd);
+ 	install_element(CONFIG_NODE, &no_nhrp_nflog_group_cmd);
++	install_element(CONFIG_NODE, &nhrp_multicast_nflog_group_cmd);
++	install_element(CONFIG_NODE, &no_nhrp_multicast_nflog_group_cmd);
+ 
+ 	/* interface specific commands */
+ 	install_node(&nhrp_interface_node);
+@@ -1163,6 +1256,8 @@ void nhrp_config_init(void)
+ 	install_element(INTERFACE_NODE, &if_no_nhrp_reg_flags_cmd);
+ 	install_element(INTERFACE_NODE, &if_nhrp_map_cmd);
+ 	install_element(INTERFACE_NODE, &if_no_nhrp_map_cmd);
++	install_element(INTERFACE_NODE, &if_nhrp_map_multicast_cmd);
++	install_element(INTERFACE_NODE, &if_no_nhrp_map_multicast_cmd);
+ 	install_element(INTERFACE_NODE, &if_nhrp_nhs_cmd);
+ 	install_element(INTERFACE_NODE, &if_no_nhrp_nhs_cmd);
+ }
+--- a/nhrpd/nhrpd.h
++++ b/nhrpd/nhrpd.h
+@@ -259,6 +259,13 @@ struct nhrp_nhs {
+ 	struct list_head reglist_head;
+ };
+ 
++struct nhrp_multicast {
++	struct interface *ifp;
++	struct list_head list_entry;
++	afi_t afi;
++	union sockunion nbma_addr; /* IP-address */
++};
++
+ struct nhrp_registration {
+ 	struct list_head reglist_entry;
+ 	struct thread *t_register;
+@@ -304,6 +311,7 @@ struct nhrp_interface {
+ 		unsigned short mtu;
+ 		unsigned int holdtime;
+ 		struct list_head nhslist_head;
++		struct list_head mcastlist_head;
+ 	} afi[AFI_MAX];
+ };
+ 
+@@ -345,6 +353,16 @@ void nhrp_nhs_foreach(struct interface *
+ 		      void *ctx);
+ void nhrp_nhs_interface_del(struct interface *ifp);
+ 
++int nhrp_multicast_add(struct interface *ifp, afi_t afi,
++		       union sockunion *nbma_addr);
++int nhrp_multicast_del(struct interface *ifp, afi_t afi,
++		       union sockunion *nbma_addr);
++void nhrp_multicast_interface_del(struct interface *ifp);
++void nhrp_multicast_foreach(struct interface *ifp, afi_t afi,
++			    void (*cb)(struct nhrp_multicast *, void *),
++			    void *ctx);
++void netlink_mcast_set_nflog_group(int nlgroup);
++
+ void nhrp_route_update_nhrp(const struct prefix *p, struct interface *ifp);
+ void nhrp_route_announce(int add, enum nhrp_cache_type type,
+ 			 const struct prefix *p, struct interface *ifp,
+--- a/nhrpd/os.h
++++ b/nhrpd/os.h
+@@ -1,7 +1,7 @@
+ 
+ int os_socket(void);
+ int os_sendmsg(const uint8_t *buf, size_t len, int ifindex, const uint8_t *addr,
+-	       size_t addrlen);
++	       size_t addrlen, uint16_t protocol);
+ int os_recvmsg(uint8_t *buf, size_t *len, int *ifindex, uint8_t *addr,
+ 	       size_t *addrlen);
+ int os_configure_dmvpn(unsigned int ifindex, const char *ifname, int af);
+--- a/nhrpd/subdir.am
++++ b/nhrpd/subdir.am
+@@ -21,6 +21,7 @@ nhrpd_nhrpd_SOURCES = \
+ 	nhrpd/nhrp_nhs.c \
+ 	nhrpd/nhrp_packet.c \
+ 	nhrpd/nhrp_peer.c \
++	nhrpd/nhrp_multicast.c \
+ 	nhrpd/nhrp_route.c \
+ 	nhrpd/nhrp_shortcut.c \
+ 	nhrpd/nhrp_vc.c \
+--- a/ospfd/ospf_interface.c
++++ b/ospfd/ospf_interface.c
+@@ -534,6 +534,8 @@ static struct ospf_if_params *ospf_new_i
+ 	oip->network_lsa_seqnum = htonl(OSPF_INITIAL_SEQUENCE_NUMBER);
+ 	oip->is_v_wait_set = false;
+ 
++	oip->ptp_dmvpn = 0;
++
+ 	return oip;
+ }
+ 
+--- a/ospfd/ospf_interface.h
++++ b/ospfd/ospf_interface.h
+@@ -105,6 +105,9 @@ struct ospf_if_params {
+ 
+ 	/* BFD configuration */
+ 	struct bfd_info *bfd_info;
++
++	/* point-to-point DMVPN configuration */
++	uint8_t ptp_dmvpn;
+ };
+ 
+ enum { MEMBER_ALLROUTERS = 0,
+@@ -167,6 +170,9 @@ struct ospf_interface {
+ 	/* OSPF Network Type. */
+ 	uint8_t type;
+ 
++	/* point-to-point DMVPN configuration */
++	uint8_t ptp_dmvpn;
++
+ 	/* State of Interface State Machine. */
+ 	uint8_t state;
+ 
+--- a/ospfd/ospf_lsa.c
++++ b/ospfd/ospf_lsa.c
+@@ -469,6 +469,12 @@ static char link_info_set(struct stream
+ }
+ 
+ /* Describe Point-to-Point link (Section 12.4.1.1). */
++
++/* Note: If the interface is configured as point-to-point dmvpn then the other
++ * end of link is dmvpn hub with point-to-multipoint ospf network type. The
++ * hub then expects this router to populate the stub network and also Link Data
++ * Field set to IP Address and not MIB-II ifIndex
++ */
+ static int lsa_link_ptop_set(struct stream **s, struct ospf_interface *oi)
+ {
+ 	int links = 0;
+@@ -482,7 +488,8 @@ static int lsa_link_ptop_set(struct stre
+ 	if ((nbr = ospf_nbr_lookup_ptop(oi)))
+ 		if (nbr->state == NSM_Full) {
+ 			if (CHECK_FLAG(oi->connected->flags,
+-				       ZEBRA_IFA_UNNUMBERED)) {
++				       ZEBRA_IFA_UNNUMBERED)
++			    && !oi->ptp_dmvpn) {
+ 				/* For unnumbered point-to-point networks, the
+ 				   Link Data field
+ 				   should specify the interface's MIB-II ifIndex
+@@ -500,7 +507,8 @@ static int lsa_link_ptop_set(struct stre
+ 		}
+ 
+ 	/* no need for a stub link for unnumbered interfaces */
+-	if (!CHECK_FLAG(oi->connected->flags, ZEBRA_IFA_UNNUMBERED)) {
++	if (oi->ptp_dmvpn
++	    || !CHECK_FLAG(oi->connected->flags, ZEBRA_IFA_UNNUMBERED)) {
+ 		/* Regardless of the state of the neighboring router, we must
+ 		   add a Type 3 link (stub network).
+ 		   N.B. Options 1 & 2 share basically the same logic. */
+--- a/ospfd/ospf_vty.c
++++ b/ospfd/ospf_vty.c
+@@ -7560,20 +7560,21 @@ DEFUN_HIDDEN (no_ospf_hello_interval,
+ 	return no_ip_ospf_hello_interval(self, vty, argc, argv);
+ }
+ 
+-DEFUN (ip_ospf_network,
+-       ip_ospf_network_cmd,
+-       "ip ospf network <broadcast|non-broadcast|point-to-multipoint|point-to-point>",
+-       "IP Information\n"
+-       "OSPF interface commands\n"
+-       "Network type\n"
+-       "Specify OSPF broadcast multi-access network\n"
+-       "Specify OSPF NBMA network\n"
+-       "Specify OSPF point-to-multipoint network\n"
+-       "Specify OSPF point-to-point network\n")
++DEFUN(ip_ospf_network, ip_ospf_network_cmd,
++      "ip ospf network <broadcast|non-broadcast|point-to-multipoint|point-to-point [dmvpn]>",
++      "IP Information\n"
++      "OSPF interface commands\n"
++      "Network type\n"
++      "Specify OSPF broadcast multi-access network\n"
++      "Specify OSPF NBMA network\n"
++      "Specify OSPF point-to-multipoint network\n"
++      "Specify OSPF point-to-point network\n"
++      "Specify OSPF point-to-point DMVPN network\n")
+ {
+ 	VTY_DECLVAR_CONTEXT(interface, ifp);
+ 	int idx = 0;
+ 	int old_type = IF_DEF_PARAMS(ifp)->type;
++	uint8_t old_ptp_dmvpn = IF_DEF_PARAMS(ifp)->ptp_dmvpn;
+ 	struct route_node *rn;
+ 
+ 	if (old_type == OSPF_IFTYPE_LOOPBACK) {
+@@ -7582,16 +7583,22 @@ DEFUN (ip_ospf_network,
+ 		return CMD_WARNING_CONFIG_FAILED;
+ 	}
+ 
++	IF_DEF_PARAMS(ifp)->ptp_dmvpn = 0;
++
+ 	if (argv_find(argv, argc, "broadcast", &idx))
+ 		IF_DEF_PARAMS(ifp)->type = OSPF_IFTYPE_BROADCAST;
+ 	else if (argv_find(argv, argc, "non-broadcast", &idx))
+ 		IF_DEF_PARAMS(ifp)->type = OSPF_IFTYPE_NBMA;
+ 	else if (argv_find(argv, argc, "point-to-multipoint", &idx))
+ 		IF_DEF_PARAMS(ifp)->type = OSPF_IFTYPE_POINTOMULTIPOINT;
+-	else if (argv_find(argv, argc, "point-to-point", &idx))
++	else if (argv_find(argv, argc, "point-to-point", &idx)) {
+ 		IF_DEF_PARAMS(ifp)->type = OSPF_IFTYPE_POINTOPOINT;
++		if (argv_find(argv, argc, "dmvpn", &idx))
++			IF_DEF_PARAMS(ifp)->ptp_dmvpn = 1;
++	}
+ 
+-	if (IF_DEF_PARAMS(ifp)->type == old_type)
++	if (IF_DEF_PARAMS(ifp)->type == old_type
++	    && IF_DEF_PARAMS(ifp)->ptp_dmvpn == old_ptp_dmvpn)
+ 		return CMD_SUCCESS;
+ 
+ 	SET_IF_PARAM(IF_DEF_PARAMS(ifp), type);
+@@ -7603,6 +7610,7 @@ DEFUN (ip_ospf_network,
+ 			continue;
+ 
+ 		oi->type = IF_DEF_PARAMS(ifp)->type;
++		oi->ptp_dmvpn = IF_DEF_PARAMS(ifp)->ptp_dmvpn;
+ 
+ 		if (oi->state > ISM_Down) {
+ 			OSPF_ISM_EVENT_EXECUTE(oi, ISM_InterfaceDown);
+@@ -7643,6 +7651,7 @@ DEFUN (no_ip_ospf_network,
+ 	struct route_node *rn;
+ 
+ 	IF_DEF_PARAMS(ifp)->type = ospf_default_iftype(ifp);
++	IF_DEF_PARAMS(ifp)->ptp_dmvpn = 0;
+ 
+ 	if (IF_DEF_PARAMS(ifp)->type == old_type)
+ 		return CMD_SUCCESS;
+@@ -9888,6 +9897,10 @@ static int config_write_interface_one(st
+ 					vty_out(vty, " ip ospf network %s",
+ 						ospf_int_type_str
+ 							[params->type]);
++					if (params->type
++						    == OSPF_IFTYPE_POINTOPOINT
++					    && params->ptp_dmvpn)
++						vty_out(vty, " dmvpn");
+ 					if (params != IF_DEF_PARAMS(ifp) && rn)
+ 						vty_out(vty, " %s",
+ 							inet_ntoa(
+--- a/ospfd/ospfd.c
++++ b/ospfd/ospfd.c
+@@ -1017,6 +1017,7 @@ static void add_ospf_interface(struct co
+ 	/* If network type is specified previously,
+ 	   skip network type setting. */
+ 	oi->type = IF_DEF_PARAMS(co->ifp)->type;
++	oi->ptp_dmvpn = IF_DEF_PARAMS(co->ifp)->ptp_dmvpn;
+ 
+ 	/* Add pseudo neighbor. */
+ 	ospf_nbr_self_reset(oi, oi->ospf->router_id);
+--- a/doc/user/nhrpd.rst
++++ b/doc/user/nhrpd.rst
+@@ -189,6 +189,37 @@ and
+ https://git.alpinelinux.org/user/tteras/strongswan/log/?h=tteras
+ git repositories for the patches.
+ 
++.. _multicast-functionality:
++
++Multicast Functionality
++=======================
++
++nhrpd can be configured to forward multicast packets, allowing routing
++protocols that use multicast (such as OSPF) to be supported in the DMVPN
++network.
++
++This support requires an iptables NFLOG rule to allow nhrpd to intercept
++multicast packets. A second iptables rule is also usually used to drop the
++original multicast packet.
++
++ .. code-block:: shell
++
++   iptables -A OUTPUT -d 224.0.0.0/24 -o gre1 -j NFLOG --nflog-group 2
++   iptables -A OUTPUT -d 224.0.0.0/24 -o gre1 -j DROP
++
++.. index::  nhrp multicast-nflog-group (1-65535)
++.. clicmd:: nhrp multicast-nflog-group (1-65535)
++
++   Sets the nflog group that nhrpd will listen on for multicast packets. This
++   value must match the nflog-group value set in the iptables rule.
++
++.. index::  ip nhrp map multicast A.B.C.D|X:X::X:X A.B.C.D|dynamic
++.. clicmd:: ip nhrp map multicast A.B.C.D|X:X::X:X A.B.C.D|dynamic
++
++   Sends multicast packets to the specified NBMA address. If dynamic is
++   specified then destination NBMA address (or addresses) are learnt
++   dynamically.
++
+ .. _nhrp-events:
+ 
+ NHRP Events
+--- a/doc/user/ospfd.rst
++++ b/doc/user/ospfd.rst
+@@ -687,8 +687,8 @@ Interfaces
+    :clicmd:`ip ospf dead-interval minimal hello-multiplier (2-20)` is also
+    specified for the interface.
+ 
+-.. index:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point)
+-.. clicmd:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point)
++.. index:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point [dmvpn])
++.. clicmd:: ip ospf network (broadcast|non-broadcast|point-to-multipoint|point-to-point [dmvpn])
+ 
+    When configuring a point-to-point network on an interface and the interface
+    has a /32 address associated with then OSPF will treat the interface
+@@ -870,6 +870,9 @@ Redistribution
+ .. index:: no router zebra
+ .. clicmd:: no router zebra
+ 
++   When used in a DMVPN network at a spoke, this OSPF will be configured in
++   point-to-point, but the HUB will be a point-to-multipoint. To make this
++   topology work, specify the optional 'dmvpn' parameter at the spoke.
+ 
+ .. _showing-ospf-information:
+ 
+--- a/nhrpd/netlink.h
++++ b/nhrpd/netlink.h
+@@ -13,6 +13,7 @@ union sockunion;
+ struct interface;
+ 
+ extern int netlink_nflog_group;
++extern int netlink_mcast_nflog_group;
+ extern int netlink_req_fd;
+ 
+ void netlink_init(void);
+--- a/ospfd/ospf_packet.c
++++ b/ospfd/ospf_packet.c
+@@ -802,7 +802,13 @@ static int ospf_write(struct thread *thr
+ 				inet_ntoa(iph.ip_dst), iph.ip_id, iph.ip_off,
+ 				iph.ip_len, oi->ifp->name, oi->ifp->mtu);
+ 
+-		if (ret < 0)
++		/* sendmsg will return EPERM if firewall is blocking sending.
++		 * This is a normal situation when 'ip nhrp map multicast xxx'
++		 * is being used to send multicast packets to DMVPN peers. In
++		 * that case the original message is blocked with iptables rule
++		 * causing the EPERM result
++		 */
++		if (ret < 0 && errno != EPERM)
+ 			flog_err(
+ 				EC_LIB_SOCKET,
+ 				"*** sendmsg in ospf_write failed to %s, id %d, off %d, len %d, interface %s, mtu %u: %s",
+@@ -910,8 +916,11 @@ static void ospf_hello(struct ip *iph, s
+ 
+ 	/* Compare network mask. */
+ 	/* Checking is ignored for Point-to-Point and Virtual link. */
++	/* Checking is also ignored for Point-to-Multipoint with /32 prefix */
+ 	if (oi->type != OSPF_IFTYPE_POINTOPOINT
+-	    && oi->type != OSPF_IFTYPE_VIRTUALLINK)
++	    && oi->type != OSPF_IFTYPE_VIRTUALLINK
++	    && !(oi->type == OSPF_IFTYPE_POINTOMULTIPOINT
++		 && oi->address->prefixlen == IPV4_MAX_BITLEN))
+ 		if (oi->address->prefixlen != p.prefixlen) {
+ 			flog_warn(
+ 				EC_OSPF_PACKET,
+@@ -2439,6 +2448,11 @@ static int ospf_check_network_mask(struc
+ 	    || oi->type == OSPF_IFTYPE_VIRTUALLINK)
+ 		return 1;
+ 
++	/* Ignore mask check for max prefix length (32) */
++	if (oi->type == OSPF_IFTYPE_POINTOMULTIPOINT
++	    && oi->address->prefixlen == IPV4_MAX_BITLEN)
++		return 1;
++
+ 	masklen2ip(oi->address->prefixlen, &mask);
+ 
+ 	me.s_addr = oi->address->u.prefix4.s_addr & mask.s_addr;

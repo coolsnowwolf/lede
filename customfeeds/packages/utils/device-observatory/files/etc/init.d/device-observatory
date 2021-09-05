@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+
+START=90
+USE_PROCD=1
+PROG=/usr/bin/device-observatory
+OPTS=""
+
+
+boot() {
+	local dev="$(uci get -q device-observatory.@setup[0].dev | cut -d ' ' -f 1)"
+
+	# Wait for interface to be up
+	ubus -t 15 wait_for network.interface network.${dev:-localhost} 2>/dev/null
+	rc_procd start_service
+}
+
+xappend() {
+	local name="$2" value="$1"
+	OPTS="$OPTS --${name//_/-} ${value//'/\\'}"
+}
+
+append_opts() {
+	local name value cfg="$1"; shift
+	for name in $*; do
+		config_get value "$cfg" "$name"
+		[ -n "$value" ] && xappend "$value" "$name"
+	done
+}
+
+append_opts_list() {
+	local name cfg="$1"; shift
+	for name in $*; do
+		config_list_foreach "$cfg" "$name" xappend "$name"
+	done
+}
+
+create_monitor_interface() {
+	local ifce="$1" n=$(echo -n "$1" | tail -c 1)
+
+	if [ ! -d "/sys/class/net/$ifce/" ]; then
+		iw phy "phy$n" interface add "$ifce" type monitor
+		ip link set dev "$ifce" up
+	fi
+}
+
+start_instance() {
+	local cfg="$1"
+
+	OPTS=""
+
+	config_list_foreach "$cfg" "create_monitor" create_monitor_interface "create_monitor"
+
+	append_opts_list "$cfg" dev mdev
+	append_opts "$cfg" mac_db port_db json_output device_timeout webserver_port webserver_path track_localhost
+
+	procd_open_instance
+	procd_set_param command $PROG $OPTS
+	procd_set_param stderr 1
+	procd_set_param stdout 0
+	procd_close_instance
+}
+
+start_service() {
+	config_load 'device-observatory'
+	config_foreach start_instance 'setup'
+}

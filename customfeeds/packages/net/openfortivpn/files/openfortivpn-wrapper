@@ -1,0 +1,43 @@
+#!/bin/sh
+
+# This script wraps openfortivpn in order to obtain the password
+# file from cmd and to daemonize
+
+# $1 password file
+# $2 is the config name
+# $3... are passed to openconnect
+
+test -z "$1" && exit 1
+
+pwfile=$1; shift
+config=$1; shift
+killed=0
+
+trap_with_arg() {
+	func="$1" ; shift
+	for sig ; do
+		trap "$func $sig" "$sig"
+	done
+}
+
+func_trap() {
+	logger "openfortivpn-wrapper[$$]" "$config: sending signal ${1}"
+	killed=1
+	kill "-${1}" "$child" 2>/dev/null
+}
+
+trap_with_arg func_trap INT TERM KILL
+
+
+start_time=$(date '+%s')
+/usr/sbin/openfortivpn "$@" < "$pwfile" 2>/dev/null &
+child=$!
+wait $child || {
+	[ "$killed" = 1 ] && exit 0
+	current_time=$(date '+%s')
+	elapsed=$((current_time-start_time))
+	. /lib/netifd/netifd-proto.sh
+	proto_notify_error "$config" "Failed to connect after $elapsed seconds."
+	proto_block_restart "$config"
+	exit 1
+}

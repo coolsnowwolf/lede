@@ -1,0 +1,809 @@
+From: Kurt Roeckx <kurt@roeckx.be>
+Date: Sun, 28 Jan 2018 19:26:36 +0100
+Subject: Check the size before reading with mad_bit_read
+
+There are various cases where it attemps to read past the end of the buffer
+using mad_bit_read(). Most functions didn't even know the size of the buffer
+they were reading from.
+
+--- a/bit.c
++++ b/bit.c
+@@ -138,6 +138,9 @@ unsigned long mad_bit_read(struct mad_bi
+ {
+   register unsigned long value;
+ 
++  if (len == 0)
++    return 0;
++
+   if (bitptr->left == CHAR_BIT)
+     bitptr->cache = *bitptr->byte;
+ 
+--- a/frame.c
++++ b/frame.c
+@@ -120,11 +120,18 @@ static
+ int decode_header(struct mad_header *header, struct mad_stream *stream)
+ {
+   unsigned int index;
++  struct mad_bitptr bufend_ptr;
+ 
+   header->flags        = 0;
+   header->private_bits = 0;
+ 
++  mad_bit_init(&bufend_ptr, stream->bufend);
++
+   /* header() */
++  if (mad_bit_length(&stream->ptr, &bufend_ptr) < 32) {
++    stream->error = MAD_ERROR_BUFLEN;
++    return -1;
++  }
+ 
+   /* syncword */
+   mad_bit_skip(&stream->ptr, 11);
+@@ -225,8 +232,13 @@ int decode_header(struct mad_header *hea
+   /* error_check() */
+ 
+   /* crc_check */
+-  if (header->flags & MAD_FLAG_PROTECTION)
++  if (header->flags & MAD_FLAG_PROTECTION) {
++    if (mad_bit_length(&stream->ptr, &bufend_ptr) < 16) {
++      stream->error = MAD_ERROR_BUFLEN;
++      return -1;
++    }
+     header->crc_target = mad_bit_read(&stream->ptr, 16);
++  }
+ 
+   return 0;
+ }
+@@ -338,7 +350,7 @@ int mad_header_decode(struct mad_header
+       stream->error = MAD_ERROR_BUFLEN;
+       goto fail;
+     }
+-    else if (!(ptr[0] == 0xff && (ptr[1] & 0xe0) == 0xe0)) {
++    else if ((end - ptr >= 2) && !(ptr[0] == 0xff && (ptr[1] & 0xe0) == 0xe0)) {
+       /* mark point where frame sync word was expected */
+       stream->this_frame = ptr;
+       stream->next_frame = ptr + 1;
+@@ -361,6 +373,8 @@ int mad_header_decode(struct mad_header
+     ptr = mad_bit_nextbyte(&stream->ptr);
+   }
+ 
++  stream->error = MAD_ERROR_NONE;
++
+   /* begin processing */
+   stream->this_frame = ptr;
+   stream->next_frame = ptr + 1;  /* possibly bogus sync word */
+@@ -413,7 +427,7 @@ int mad_header_decode(struct mad_header
+     /* check that a valid frame header follows this frame */
+ 
+     ptr = stream->next_frame;
+-    if (!(ptr[0] == 0xff && (ptr[1] & 0xe0) == 0xe0)) {
++    if ((end - ptr >= 2) && !(ptr[0] == 0xff && (ptr[1] & 0xe0) == 0xe0)) {
+       ptr = stream->next_frame = stream->this_frame + 1;
+       goto sync;
+     }
+--- a/layer12.c
++++ b/layer12.c
+@@ -72,10 +72,18 @@ mad_fixed_t const linear_table[14] = {
+  * DESCRIPTION:	decode one requantized Layer I sample from a bitstream
+  */
+ static
+-mad_fixed_t I_sample(struct mad_bitptr *ptr, unsigned int nb)
++mad_fixed_t I_sample(struct mad_bitptr *ptr, unsigned int nb, struct mad_stream *stream)
+ {
+   mad_fixed_t sample;
++  struct mad_bitptr frameend_ptr;
+ 
++  mad_bit_init(&frameend_ptr, stream->next_frame);
++
++  if (mad_bit_length(ptr, &frameend_ptr) < nb) {
++    stream->error = MAD_ERROR_LOSTSYNC;
++    stream->sync = 0;
++    return 0;
++  }
+   sample = mad_bit_read(ptr, nb);
+ 
+   /* invert most significant bit, extend sign, then scale to fixed format */
+@@ -106,6 +114,10 @@ int mad_layer_I(struct mad_stream *strea
+   struct mad_header *header = &frame->header;
+   unsigned int nch, bound, ch, s, sb, nb;
+   unsigned char allocation[2][32], scalefactor[2][32];
++  struct mad_bitptr bufend_ptr, frameend_ptr;
++
++  mad_bit_init(&bufend_ptr, stream->bufend);
++  mad_bit_init(&frameend_ptr, stream->next_frame);
+ 
+   nch = MAD_NCHANNELS(header);
+ 
+@@ -118,6 +130,11 @@ int mad_layer_I(struct mad_stream *strea
+   /* check CRC word */
+ 
+   if (header->flags & MAD_FLAG_PROTECTION) {
++    if (mad_bit_length(&stream->ptr, &bufend_ptr)
++		< 4 * (bound * nch + (32 - bound))) {
++      stream->error = MAD_ERROR_BADCRC;
++      return -1;
++    }
+     header->crc_check =
+       mad_bit_crc(stream->ptr, 4 * (bound * nch + (32 - bound)),
+ 		  header->crc_check);
+@@ -133,6 +150,11 @@ int mad_layer_I(struct mad_stream *strea
+ 
+   for (sb = 0; sb < bound; ++sb) {
+     for (ch = 0; ch < nch; ++ch) {
++      if (mad_bit_length(&stream->ptr, &frameend_ptr) < 4) {
++	stream->error = MAD_ERROR_LOSTSYNC;
++	stream->sync = 0;
++	return -1;
++      }
+       nb = mad_bit_read(&stream->ptr, 4);
+ 
+       if (nb == 15) {
+@@ -145,6 +167,11 @@ int mad_layer_I(struct mad_stream *strea
+   }
+ 
+   for (sb = bound; sb < 32; ++sb) {
++    if (mad_bit_length(&stream->ptr, &frameend_ptr) < 4) {
++      stream->error = MAD_ERROR_LOSTSYNC;
++      stream->sync = 0;
++      return -1;
++    }
+     nb = mad_bit_read(&stream->ptr, 4);
+ 
+     if (nb == 15) {
+@@ -161,6 +188,11 @@ int mad_layer_I(struct mad_stream *strea
+   for (sb = 0; sb < 32; ++sb) {
+     for (ch = 0; ch < nch; ++ch) {
+       if (allocation[ch][sb]) {
++        if (mad_bit_length(&stream->ptr, &frameend_ptr) < 6) {
++	  stream->error = MAD_ERROR_LOSTSYNC;
++	  stream->sync = 0;
++	  return -1;
++	}
+ 	scalefactor[ch][sb] = mad_bit_read(&stream->ptr, 6);
+ 
+ # if defined(OPT_STRICT)
+@@ -185,8 +217,10 @@ int mad_layer_I(struct mad_stream *strea
+       for (ch = 0; ch < nch; ++ch) {
+ 	nb = allocation[ch][sb];
+ 	frame->sbsample[ch][s][sb] = nb ?
+-	  mad_f_mul(I_sample(&stream->ptr, nb),
++	  mad_f_mul(I_sample(&stream->ptr, nb, stream),
+ 		    sf_table[scalefactor[ch][sb]]) : 0;
++	if (stream->error != 0)
++	  return -1;
+       }
+     }
+ 
+@@ -194,7 +228,14 @@ int mad_layer_I(struct mad_stream *strea
+       if ((nb = allocation[0][sb])) {
+ 	mad_fixed_t sample;
+ 
+-	sample = I_sample(&stream->ptr, nb);
++	if (mad_bit_length(&stream->ptr, &frameend_ptr) < nb) {
++	  stream->error = MAD_ERROR_LOSTSYNC;
++	  stream->sync = 0;
++          return -1;
++	}
++	sample = I_sample(&stream->ptr, nb, stream);
++        if (stream->error != 0)
++	  return -1;
+ 
+ 	for (ch = 0; ch < nch; ++ch) {
+ 	  frame->sbsample[ch][s][sb] =
+@@ -280,13 +321,21 @@ struct quantclass {
+ static
+ void II_samples(struct mad_bitptr *ptr,
+ 		struct quantclass const *quantclass,
+-		mad_fixed_t output[3])
++		mad_fixed_t output[3], struct mad_stream *stream)
+ {
+   unsigned int nb, s, sample[3];
++  struct mad_bitptr frameend_ptr;
++
++  mad_bit_init(&frameend_ptr, stream->next_frame);
+ 
+   if ((nb = quantclass->group)) {
+     unsigned int c, nlevels;
+ 
++    if (mad_bit_length(ptr, &frameend_ptr) < quantclass->bits) {
++      stream->error = MAD_ERROR_LOSTSYNC;
++      stream->sync = 0;
++      return;
++    }
+     /* degrouping */
+     c = mad_bit_read(ptr, quantclass->bits);
+     nlevels = quantclass->nlevels;
+@@ -299,8 +348,14 @@ void II_samples(struct mad_bitptr *ptr,
+   else {
+     nb = quantclass->bits;
+ 
+-    for (s = 0; s < 3; ++s)
++    for (s = 0; s < 3; ++s) {
++      if (mad_bit_length(ptr, &frameend_ptr) < nb) {
++	stream->error = MAD_ERROR_LOSTSYNC;
++	stream->sync = 0;
++	return;
++      }
+       sample[s] = mad_bit_read(ptr, nb);
++    }
+   }
+ 
+   for (s = 0; s < 3; ++s) {
+@@ -336,6 +391,9 @@ int mad_layer_II(struct mad_stream *stre
+   unsigned char const *offsets;
+   unsigned char allocation[2][32], scfsi[2][32], scalefactor[2][32][3];
+   mad_fixed_t samples[3];
++  struct mad_bitptr frameend_ptr;
++
++  mad_bit_init(&frameend_ptr, stream->next_frame);
+ 
+   nch = MAD_NCHANNELS(header);
+ 
+@@ -402,13 +460,24 @@ int mad_layer_II(struct mad_stream *stre
+   for (sb = 0; sb < bound; ++sb) {
+     nbal = bitalloc_table[offsets[sb]].nbal;
+ 
+-    for (ch = 0; ch < nch; ++ch)
++    for (ch = 0; ch < nch; ++ch) {
++      if (mad_bit_length(&stream->ptr, &frameend_ptr) < nbal) {
++	stream->error = MAD_ERROR_LOSTSYNC;
++	stream->sync = 0;
++	return -1;
++      }
+       allocation[ch][sb] = mad_bit_read(&stream->ptr, nbal);
++    }
+   }
+ 
+   for (sb = bound; sb < sblimit; ++sb) {
+     nbal = bitalloc_table[offsets[sb]].nbal;
+ 
++    if (mad_bit_length(&stream->ptr, &frameend_ptr) < nbal) {
++      stream->error = MAD_ERROR_LOSTSYNC;
++      stream->sync = 0;
++      return -1;
++    }
+     allocation[0][sb] =
+     allocation[1][sb] = mad_bit_read(&stream->ptr, nbal);
+   }
+@@ -417,8 +486,14 @@ int mad_layer_II(struct mad_stream *stre
+ 
+   for (sb = 0; sb < sblimit; ++sb) {
+     for (ch = 0; ch < nch; ++ch) {
+-      if (allocation[ch][sb])
++      if (allocation[ch][sb]) {
++	if (mad_bit_length(&stream->ptr, &frameend_ptr) < 2) {
++	  stream->error = MAD_ERROR_LOSTSYNC;
++	  stream->sync = 0;
++	  return -1;
++	}
+ 	scfsi[ch][sb] = mad_bit_read(&stream->ptr, 2);
++      }
+     }
+   }
+ 
+@@ -441,6 +516,11 @@ int mad_layer_II(struct mad_stream *stre
+   for (sb = 0; sb < sblimit; ++sb) {
+     for (ch = 0; ch < nch; ++ch) {
+       if (allocation[ch][sb]) {
++	if (mad_bit_length(&stream->ptr, &frameend_ptr) < 6) {
++	  stream->error = MAD_ERROR_LOSTSYNC;
++	  stream->sync = 0;
++	  return -1;
++	}
+ 	scalefactor[ch][sb][0] = mad_bit_read(&stream->ptr, 6);
+ 
+ 	switch (scfsi[ch][sb]) {
+@@ -451,11 +531,21 @@ int mad_layer_II(struct mad_stream *stre
+ 	  break;
+ 
+ 	case 0:
++	  if (mad_bit_length(&stream->ptr, &frameend_ptr) < 6) {
++	    stream->error = MAD_ERROR_LOSTSYNC;
++	    stream->sync = 0;
++	    return -1;
++	  }
+ 	  scalefactor[ch][sb][1] = mad_bit_read(&stream->ptr, 6);
+ 	  /* fall through */
+ 
+ 	case 1:
+ 	case 3:
++	  if (mad_bit_length(&stream->ptr, &frameend_ptr) < 6) {
++	    stream->error = MAD_ERROR_LOSTSYNC;
++	    stream->sync = 0;
++	    return -1;
++	  }
+ 	  scalefactor[ch][sb][2] = mad_bit_read(&stream->ptr, 6);
+ 	}
+ 
+@@ -487,7 +577,9 @@ int mad_layer_II(struct mad_stream *stre
+ 	if ((index = allocation[ch][sb])) {
+ 	  index = offset_table[bitalloc_table[offsets[sb]].offset][index - 1];
+ 
+-	  II_samples(&stream->ptr, &qc_table[index], samples);
++	  II_samples(&stream->ptr, &qc_table[index], samples, stream);
++	  if (stream->error != 0)
++            return -1;
+ 
+ 	  for (s = 0; s < 3; ++s) {
+ 	    frame->sbsample[ch][3 * gr + s][sb] =
+@@ -505,7 +597,9 @@ int mad_layer_II(struct mad_stream *stre
+       if ((index = allocation[0][sb])) {
+ 	index = offset_table[bitalloc_table[offsets[sb]].offset][index - 1];
+ 
+-	II_samples(&stream->ptr, &qc_table[index], samples);
++	II_samples(&stream->ptr, &qc_table[index], samples, stream);
++	if (stream->error != 0)
++          return -1;
+ 
+ 	for (ch = 0; ch < nch; ++ch) {
+ 	  for (s = 0; s < 3; ++s) {
+--- a/layer3.c
++++ b/layer3.c
+@@ -598,7 +598,8 @@ enum mad_error III_sideinfo(struct mad_b
+ static
+ unsigned int III_scalefactors_lsf(struct mad_bitptr *ptr,
+ 				  struct channel *channel,
+-				  struct channel *gr1ch, int mode_extension)
++				  struct channel *gr1ch, int mode_extension,
++				  unsigned int bits_left, unsigned int *part2_length)
+ {
+   struct mad_bitptr start;
+   unsigned int scalefac_compress, index, slen[4], part, n, i;
+@@ -644,8 +645,12 @@ unsigned int III_scalefactors_lsf(struct
+ 
+     n = 0;
+     for (part = 0; part < 4; ++part) {
+-      for (i = 0; i < nsfb[part]; ++i)
++      for (i = 0; i < nsfb[part]; ++i) {
++	if (bits_left < slen[part])
++	  return MAD_ERROR_BADSCFSI;
+ 	channel->scalefac[n++] = mad_bit_read(ptr, slen[part]);
++	bits_left -= slen[part];
++      }
+     }
+ 
+     while (n < 39)
+@@ -690,7 +695,10 @@ unsigned int III_scalefactors_lsf(struct
+       max = (1 << slen[part]) - 1;
+ 
+       for (i = 0; i < nsfb[part]; ++i) {
++	if (bits_left < slen[part])
++	  return MAD_ERROR_BADSCFSI;
+ 	is_pos = mad_bit_read(ptr, slen[part]);
++	bits_left -= slen[part];
+ 
+ 	channel->scalefac[n] = is_pos;
+ 	gr1ch->scalefac[n++] = (is_pos == max);
+@@ -703,7 +711,8 @@ unsigned int III_scalefactors_lsf(struct
+     }
+   }
+ 
+-  return mad_bit_length(&start, ptr);
++  *part2_length = mad_bit_length(&start, ptr);
++  return MAD_ERROR_NONE;
+ }
+ 
+ /*
+@@ -712,7 +721,8 @@ unsigned int III_scalefactors_lsf(struct
+  */
+ static
+ unsigned int III_scalefactors(struct mad_bitptr *ptr, struct channel *channel,
+-			      struct channel const *gr0ch, unsigned int scfsi)
++			      struct channel const *gr0ch, unsigned int scfsi,
++			      unsigned int bits_left, unsigned int *part2_length)
+ {
+   struct mad_bitptr start;
+   unsigned int slen1, slen2, sfbi;
+@@ -728,12 +738,20 @@ unsigned int III_scalefactors(struct mad
+     sfbi = 0;
+ 
+     nsfb = (channel->flags & mixed_block_flag) ? 8 + 3 * 3 : 6 * 3;
+-    while (nsfb--)
++    while (nsfb--) {
++      if (bits_left < slen1)
++	return MAD_ERROR_BADSCFSI;
+       channel->scalefac[sfbi++] = mad_bit_read(ptr, slen1);
++      bits_left -= slen1;
++    }
+ 
+     nsfb = 6 * 3;
+-    while (nsfb--)
++    while (nsfb--) {
++      if (bits_left < slen2)
++	return MAD_ERROR_BADSCFSI;
+       channel->scalefac[sfbi++] = mad_bit_read(ptr, slen2);
++      bits_left -= slen2;
++    }
+ 
+     nsfb = 1 * 3;
+     while (nsfb--)
+@@ -745,8 +763,12 @@ unsigned int III_scalefactors(struct mad
+ 	channel->scalefac[sfbi] = gr0ch->scalefac[sfbi];
+     }
+     else {
+-      for (sfbi = 0; sfbi < 6; ++sfbi)
++      for (sfbi = 0; sfbi < 6; ++sfbi) {
++	if (bits_left < slen1)
++	  return MAD_ERROR_BADSCFSI;
+ 	channel->scalefac[sfbi] = mad_bit_read(ptr, slen1);
++	bits_left -= slen1;
++      }
+     }
+ 
+     if (scfsi & 0x4) {
+@@ -754,8 +776,12 @@ unsigned int III_scalefactors(struct mad
+ 	channel->scalefac[sfbi] = gr0ch->scalefac[sfbi];
+     }
+     else {
+-      for (sfbi = 6; sfbi < 11; ++sfbi)
++      for (sfbi = 6; sfbi < 11; ++sfbi) {
++	if (bits_left < slen1)
++	  return MAD_ERROR_BADSCFSI;
+ 	channel->scalefac[sfbi] = mad_bit_read(ptr, slen1);
++	bits_left -= slen1;
++      }
+     }
+ 
+     if (scfsi & 0x2) {
+@@ -763,8 +789,12 @@ unsigned int III_scalefactors(struct mad
+ 	channel->scalefac[sfbi] = gr0ch->scalefac[sfbi];
+     }
+     else {
+-      for (sfbi = 11; sfbi < 16; ++sfbi)
++      for (sfbi = 11; sfbi < 16; ++sfbi) {
++	if (bits_left < slen2)
++	  return MAD_ERROR_BADSCFSI;
+ 	channel->scalefac[sfbi] = mad_bit_read(ptr, slen2);
++	bits_left -= slen2;
++      }
+     }
+ 
+     if (scfsi & 0x1) {
+@@ -772,14 +802,19 @@ unsigned int III_scalefactors(struct mad
+ 	channel->scalefac[sfbi] = gr0ch->scalefac[sfbi];
+     }
+     else {
+-      for (sfbi = 16; sfbi < 21; ++sfbi)
++      for (sfbi = 16; sfbi < 21; ++sfbi) {
++	if (bits_left < slen2)
++	  return MAD_ERROR_BADSCFSI;
+ 	channel->scalefac[sfbi] = mad_bit_read(ptr, slen2);
++	bits_left -= slen2;
++      }
+     }
+ 
+     channel->scalefac[21] = 0;
+   }
+ 
+-  return mad_bit_length(&start, ptr);
++  *part2_length = mad_bit_length(&start, ptr);
++  return MAD_ERROR_NONE;
+ }
+ 
+ /*
+@@ -933,19 +968,17 @@ static
+ enum mad_error III_huffdecode(struct mad_bitptr *ptr, mad_fixed_t xr[576],
+ 			      struct channel *channel,
+ 			      unsigned char const *sfbwidth,
+-			      unsigned int part2_length)
++			      signed int part3_length)
+ {
+   signed int exponents[39], exp;
+   signed int const *expptr;
+   struct mad_bitptr peek;
+-  signed int bits_left, cachesz;
++  signed int bits_left, cachesz, fakebits;
+   register mad_fixed_t *xrptr;
+   mad_fixed_t const *sfbound;
+   register unsigned long bitcache;
+ 
+-  bits_left = (signed) channel->part2_3_length - (signed) part2_length;
+-  if (bits_left < 0)
+-    return MAD_ERROR_BADPART3LEN;
++  bits_left = part3_length;
+ 
+   III_exponents(channel, sfbwidth, exponents);
+ 
+@@ -956,8 +989,12 @@ enum mad_error III_huffdecode(struct mad
+   cachesz  = mad_bit_bitsleft(&peek);
+   cachesz += ((32 - 1 - 24) + (24 - cachesz)) & ~7;
+ 
++  if (bits_left < cachesz) {
++    cachesz = bits_left;
++  }
+   bitcache   = mad_bit_read(&peek, cachesz);
+   bits_left -= cachesz;
++  fakebits = 0;
+ 
+   xrptr = &xr[0];
+ 
+@@ -986,7 +1023,7 @@ enum mad_error III_huffdecode(struct mad
+ 
+     big_values = channel->big_values;
+ 
+-    while (big_values-- && cachesz + bits_left > 0) {
++    while (big_values-- && cachesz + bits_left - fakebits > 0) {
+       union huffpair const *pair;
+       unsigned int clumpsz, value;
+       register mad_fixed_t requantized;
+@@ -1023,10 +1060,19 @@ enum mad_error III_huffdecode(struct mad
+ 	unsigned int bits;
+ 
+ 	bits       = ((32 - 1 - 21) + (21 - cachesz)) & ~7;
++	if (bits_left < bits) {
++	  bits = bits_left;
++	}
+ 	bitcache   = (bitcache << bits) | mad_bit_read(&peek, bits);
+ 	cachesz   += bits;
+ 	bits_left -= bits;
+       }
++      if (cachesz < 21) {
++	unsigned int bits = 21 - cachesz;
++	bitcache <<= bits;
++	cachesz += bits;
++	fakebits += bits;
++      }
+ 
+       /* hcod (0..19) */
+ 
+@@ -1041,6 +1087,8 @@ enum mad_error III_huffdecode(struct mad
+       }
+ 
+       cachesz -= pair->value.hlen;
++      if (cachesz < fakebits)
++	return MAD_ERROR_BADHUFFDATA;
+ 
+       if (linbits) {
+ 	/* x (0..14) */
+@@ -1054,10 +1102,15 @@ enum mad_error III_huffdecode(struct mad
+ 
+ 	case 15:
+ 	  if (cachesz < linbits + 2) {
+-	    bitcache   = (bitcache << 16) | mad_bit_read(&peek, 16);
+-	    cachesz   += 16;
+-	    bits_left -= 16;
++	    unsigned int bits = 16;
++	    if (bits_left < 16)
++	      bits = bits_left;
++	    bitcache   = (bitcache << bits) | mad_bit_read(&peek, bits);
++	    cachesz   += bits;
++	    bits_left -= bits;
+ 	  }
++	  if (cachesz - fakebits < linbits)
++	    return MAD_ERROR_BADHUFFDATA;
+ 
+ 	  value += MASK(bitcache, cachesz, linbits);
+ 	  cachesz -= linbits;
+@@ -1074,6 +1127,8 @@ enum mad_error III_huffdecode(struct mad
+ 	  }
+ 
+ 	x_final:
++	  if (cachesz - fakebits < 1)
++	    return MAD_ERROR_BADHUFFDATA;
+ 	  xrptr[0] = MASK1BIT(bitcache, cachesz--) ?
+ 	    -requantized : requantized;
+ 	}
+@@ -1089,10 +1144,15 @@ enum mad_error III_huffdecode(struct mad
+ 
+ 	case 15:
+ 	  if (cachesz < linbits + 1) {
+-	    bitcache   = (bitcache << 16) | mad_bit_read(&peek, 16);
+-	    cachesz   += 16;
+-	    bits_left -= 16;
++	    unsigned int bits = 16;
++	    if (bits_left < 16)
++	      bits = bits_left;
++	    bitcache   = (bitcache << bits) | mad_bit_read(&peek, bits);
++	    cachesz   += bits;
++	    bits_left -= bits;
+ 	  }
++	  if (cachesz - fakebits < linbits)
++	    return MAD_ERROR_BADHUFFDATA;
+ 
+ 	  value += MASK(bitcache, cachesz, linbits);
+ 	  cachesz -= linbits;
+@@ -1109,6 +1169,8 @@ enum mad_error III_huffdecode(struct mad
+ 	  }
+ 
+ 	y_final:
++	  if (cachesz - fakebits < 1)
++	    return MAD_ERROR_BADHUFFDATA;
+ 	  xrptr[1] = MASK1BIT(bitcache, cachesz--) ?
+ 	    -requantized : requantized;
+ 	}
+@@ -1128,6 +1190,8 @@ enum mad_error III_huffdecode(struct mad
+ 	    requantized = reqcache[value] = III_requantize(value, exp);
+ 	  }
+ 
++	  if (cachesz - fakebits < 1)
++	    return MAD_ERROR_BADHUFFDATA;
+ 	  xrptr[0] = MASK1BIT(bitcache, cachesz--) ?
+ 	    -requantized : requantized;
+ 	}
+@@ -1146,6 +1210,8 @@ enum mad_error III_huffdecode(struct mad
+ 	    requantized = reqcache[value] = III_requantize(value, exp);
+ 	  }
+ 
++	  if (cachesz - fakebits < 1)
++	    return MAD_ERROR_BADHUFFDATA;
+ 	  xrptr[1] = MASK1BIT(bitcache, cachesz--) ?
+ 	    -requantized : requantized;
+ 	}
+@@ -1155,9 +1221,6 @@ enum mad_error III_huffdecode(struct mad
+     }
+   }
+ 
+-  if (cachesz + bits_left < 0)
+-    return MAD_ERROR_BADHUFFDATA;  /* big_values overrun */
+-
+   /* count1 */
+   {
+     union huffquad const *table;
+@@ -1167,15 +1230,24 @@ enum mad_error III_huffdecode(struct mad
+ 
+     requantized = III_requantize(1, exp);
+ 
+-    while (cachesz + bits_left > 0 && xrptr <= &xr[572]) {
++    while (cachesz + bits_left - fakebits > 0 && xrptr <= &xr[572]) {
+       union huffquad const *quad;
+ 
+       /* hcod (1..6) */
+ 
+       if (cachesz < 10) {
+-	bitcache   = (bitcache << 16) | mad_bit_read(&peek, 16);
+-	cachesz   += 16;
+-	bits_left -= 16;
++	unsigned int bits = 16;
++	if (bits_left < 16)
++	  bits = bits_left;
++	bitcache   = (bitcache << bits) | mad_bit_read(&peek, bits);
++	cachesz   += bits;
++	bits_left -= bits;
++      }
++      if (cachesz < 10) {
++	unsigned int bits = 10 - cachesz;
++	bitcache <<= bits;
++	cachesz += bits;
++	fakebits += bits;
+       }
+ 
+       quad = &table[MASK(bitcache, cachesz, 4)];
+@@ -1188,6 +1260,11 @@ enum mad_error III_huffdecode(struct mad
+ 		      MASK(bitcache, cachesz, quad->ptr.bits)];
+       }
+ 
++      if (cachesz - fakebits < quad->value.hlen + quad->value.v
++        + quad->value.w + quad->value.x + quad->value.y)
++	/* We don't have enough bits to read one more entry, consider them
++	 * stuffing bits. */
++	break;
+       cachesz -= quad->value.hlen;
+ 
+       if (xrptr == sfbound) {
+@@ -1236,22 +1313,8 @@ enum mad_error III_huffdecode(struct mad
+ 
+       xrptr += 2;
+     }
+-
+-    if (cachesz + bits_left < 0) {
+-# if 0 && defined(DEBUG)
+-      fprintf(stderr, "huffman count1 overrun (%d bits)\n",
+-	      -(cachesz + bits_left));
+-# endif
+-
+-      /* technically the bitstream is misformatted, but apparently
+-	 some encoders are just a bit sloppy with stuffing bits */
+-
+-      xrptr -= 4;
+-    }
+   }
+ 
+-  assert(-bits_left <= MAD_BUFFER_GUARD * CHAR_BIT);
+-
+ # if 0 && defined(DEBUG)
+   if (bits_left < 0)
+     fprintf(stderr, "read %d bits too many\n", -bits_left);
+@@ -2348,10 +2411,11 @@ void III_freqinver(mad_fixed_t sample[18
+  */
+ static
+ enum mad_error III_decode(struct mad_bitptr *ptr, struct mad_frame *frame,
+-			  struct sideinfo *si, unsigned int nch)
++			  struct sideinfo *si, unsigned int nch, unsigned int md_len)
+ {
+   struct mad_header *header = &frame->header;
+   unsigned int sfreqi, ngr, gr;
++  int bits_left = md_len * CHAR_BIT;
+ 
+   {
+     unsigned int sfreq;
+@@ -2383,6 +2447,7 @@ enum mad_error III_decode(struct mad_bit
+     for (ch = 0; ch < nch; ++ch) {
+       struct channel *channel = &granule->ch[ch];
+       unsigned int part2_length;
++      unsigned int part3_length;
+ 
+       sfbwidth[ch] = sfbwidth_table[sfreqi].l;
+       if (channel->block_type == 2) {
+@@ -2391,18 +2456,30 @@ enum mad_error III_decode(struct mad_bit
+       }
+ 
+       if (header->flags & MAD_FLAG_LSF_EXT) {
+-	part2_length = III_scalefactors_lsf(ptr, channel,
++	error = III_scalefactors_lsf(ptr, channel,
+ 					    ch == 0 ? 0 : &si->gr[1].ch[1],
+-					    header->mode_extension);
++					    header->mode_extension, bits_left, &part2_length);
+       }
+       else {
+-	part2_length = III_scalefactors(ptr, channel, &si->gr[0].ch[ch],
+-					gr == 0 ? 0 : si->scfsi[ch]);
++	error = III_scalefactors(ptr, channel, &si->gr[0].ch[ch],
++					gr == 0 ? 0 : si->scfsi[ch], bits_left, &part2_length);
+       }
++      if (error)
++        return error;
++
++      bits_left -= part2_length;
+ 
+-      error = III_huffdecode(ptr, xr[ch], channel, sfbwidth[ch], part2_length);
++      if (part2_length > channel->part2_3_length)
++        return MAD_ERROR_BADPART3LEN;
++
++      part3_length = channel->part2_3_length - part2_length;
++      if (part3_length > bits_left)
++        return MAD_ERROR_BADPART3LEN;
++
++      error = III_huffdecode(ptr, xr[ch], channel, sfbwidth[ch], part3_length);
+       if (error)
+ 	return error;
++      bits_left -= part3_length;
+     }
+ 
+     /* joint stereo processing */
+@@ -2519,11 +2596,13 @@ int mad_layer_III(struct mad_stream *str
+   unsigned int nch, priv_bitlen, next_md_begin = 0;
+   unsigned int si_len, data_bitlen, md_len;
+   unsigned int frame_space, frame_used, frame_free;
+-  struct mad_bitptr ptr;
++  struct mad_bitptr ptr, bufend_ptr;
+   struct sideinfo si;
+   enum mad_error error;
+   int result = 0;
+ 
++  mad_bit_init(&bufend_ptr, stream->bufend);
++
+   /* allocate Layer III dynamic structures */
+ 
+   if (stream->main_data == 0) {
+@@ -2587,14 +2666,15 @@ int mad_layer_III(struct mad_stream *str
+     unsigned long header;
+ 
+     mad_bit_init(&peek, stream->next_frame);
++    if (mad_bit_length(&peek, &bufend_ptr) >= 57) {
++      header = mad_bit_read(&peek, 32);
++      if ((header & 0xffe60000L) /* syncword | layer */ == 0xffe20000L) {
++        if (!(header & 0x00010000L))  /* protection_bit */
++	  mad_bit_skip(&peek, 16);  /* crc_check */
+ 
+-    header = mad_bit_read(&peek, 32);
+-    if ((header & 0xffe60000L) /* syncword | layer */ == 0xffe20000L) {
+-      if (!(header & 0x00010000L))  /* protection_bit */
+-	mad_bit_skip(&peek, 16);  /* crc_check */
+-
+-      next_md_begin =
+-	mad_bit_read(&peek, (header & 0x00080000L) /* ID */ ? 9 : 8);
++        next_md_begin =
++	  mad_bit_read(&peek, (header & 0x00080000L) /* ID */ ? 9 : 8);
++      }
+     }
+ 
+     mad_bit_finish(&peek);
+@@ -2645,7 +2725,7 @@ int mad_layer_III(struct mad_stream *str
+   /* decode main_data */
+ 
+   if (result == 0) {
+-    error = III_decode(&ptr, frame, &si, nch);
++    error = III_decode(&ptr, frame, &si, nch, md_len);
+     if (error) {
+       stream->error = error;
+       result = -1;

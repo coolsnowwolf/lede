@@ -1,0 +1,421 @@
+From cc919f7013d2d76c8bef0b9c562c1faf98a095a3 Mon Sep 17 00:00:00 2001
+From: Ander Juaristi <a@juaristi.eus>
+Date: Fri, 26 Apr 2019 09:58:07 +0200
+Subject: IPFIX: Introduce template record support
+
+This commit adds the ability to send template records
+to the remote collector.
+
+In addition, it also introduces a new
+configuration parameter 'send_template', which tells when template
+records should be sent. It accepts the following string values:
+
+ - "once": Send the template record only the first time (might be coalesced
+    with data records).
+ - "always": Send the template record always, with every data record that is sent
+    to the collector (multiple data records might be sent together).
+ - "never": Assume the collector knows the schema already. Do not send template records.
+
+If omitted, the default value for 'send_template' is "once".
+
+Signed-off-by: Ander Juaristi <a@juaristi.eus>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ include/ulogd/ipfix_protocol.h    |  1 +
+ output/ipfix/ipfix.c              | 97 +++++++++++++++++++++++++++++++++++++--
+ output/ipfix/ipfix.h              | 22 ++++-----
+ output/ipfix/ulogd_output_IPFIX.c | 56 ++++++++++++----------
+ 4 files changed, 139 insertions(+), 37 deletions(-)
+
+--- a/include/ulogd/ipfix_protocol.h
++++ b/include/ulogd/ipfix_protocol.h
+@@ -129,6 +129,7 @@ enum {
+ 	/* reserved */
+ 	IPFIX_fragmentOffsetIPv4	= 88,
+ 	/* reserved */
++	IPFIX_applicationId		= 95,
+ 	IPFIX_bgpNextAdjacentAsNumber	= 128,
+ 	IPFIX_bgpPrevAdjacentAsNumber	= 129,
+ 	IPFIX_exporterIPv4Address	= 130,
+--- a/output/ipfix/ipfix.c
++++ b/output/ipfix/ipfix.c
+@@ -2,6 +2,7 @@
+  * ipfix.c
+  *
+  * Holger Eitzenberger, 2009.
++ * Ander Juaristi, 2019
+  */
+ 
+ /* These forward declarations are needed since ulogd.h doesn't like to be the first */
+@@ -13,25 +14,107 @@
+ 
+ #include <ulogd/ulogd.h>
+ #include <ulogd/common.h>
++#include <ulogd/ipfix_protocol.h>
+ 
+-struct ipfix_msg *ipfix_msg_alloc(size_t len, uint32_t oid)
++struct ipfix_templ_elem {
++	uint16_t id;
++	uint16_t len;
++};
++
++struct ipfix_templ {
++	unsigned int num_templ_elements;
++	struct ipfix_templ_elem templ_elements[];
++};
++
++/* Template fields modeled after vy_ipfix_data */
++static const struct ipfix_templ template = {
++	.num_templ_elements = 10,
++	.templ_elements = {
++		{
++			.id = IPFIX_sourceIPv4Address,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_destinationIPv4Address,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_packetTotalCount,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_octetTotalCount,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_flowStartSeconds,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_flowEndSeconds,
++			.len = sizeof(uint32_t)
++		},
++		{
++			.id = IPFIX_sourceTransportPort,
++			.len = sizeof(uint16_t)
++		},
++		{
++			.id = IPFIX_destinationTransportPort,
++			.len = sizeof(uint16_t)
++		},
++		{
++			.id = IPFIX_protocolIdentifier,
++			.len = sizeof(uint8_t)
++		},
++		{
++			.id = IPFIX_applicationId,
++			.len = sizeof(uint32_t)
++		}
++	}
++};
++
++struct ipfix_msg *ipfix_msg_alloc(size_t len, uint32_t oid, int tid)
+ {
+ 	struct ipfix_msg *msg;
+ 	struct ipfix_hdr *hdr;
++	struct ipfix_templ_hdr *templ_hdr;
++	struct ipfix_templ_elem *elem;
++	unsigned int i = 0;
+ 
+-	if (len < IPFIX_HDRLEN + IPFIX_SET_HDRLEN)
++	if ((tid > 0 && len < IPFIX_HDRLEN + IPFIX_TEMPL_HDRLEN(template.num_templ_elements) + IPFIX_SET_HDRLEN) ||
++	    (len < IPFIX_HDRLEN + IPFIX_SET_HDRLEN))
+ 		return NULL;
+ 
+ 	msg = malloc(sizeof(struct ipfix_msg) + len);
+ 	memset(msg, 0, sizeof(struct ipfix_msg));
+-	msg->tail = msg->data + IPFIX_HDRLEN;
++	msg->tid = tid;
+ 	msg->end = msg->data + len;
++	msg->tail = msg->data + IPFIX_HDRLEN;
++	if (tid > 0)
++		msg->tail += IPFIX_TEMPL_HDRLEN(template.num_templ_elements);
+ 
++	/* Initialize message header */
+ 	hdr = ipfix_msg_hdr(msg);
+ 	memset(hdr, 0, IPFIX_HDRLEN);
+ 	hdr->version = htons(IPFIX_VERSION);
+ 	hdr->oid = htonl(oid);
+ 
++	if (tid > 0) {
++		/* Initialize template record header */
++		templ_hdr = ipfix_msg_templ_hdr(msg);
++		templ_hdr->sid = htons(2);
++		templ_hdr->tid = htons(tid);
++		templ_hdr->len = htons(IPFIX_TEMPL_HDRLEN(template.num_templ_elements));
++		templ_hdr->cnt = htons(template.num_templ_elements);
++
++		while (i < template.num_templ_elements) {
++			elem = (struct ipfix_templ_elem *) &templ_hdr->data[i * 4];
++			elem->id = htons(template.templ_elements[i].id);
++			elem->len = htons(template.templ_elements[i].len);
++			i++;
++		}
++	}
++
+ 	return msg;
+ }
+ 
+@@ -47,6 +130,14 @@ void ipfix_msg_free(struct ipfix_msg *ms
+ 	free(msg);
+ }
+ 
++struct ipfix_templ_hdr *ipfix_msg_templ_hdr(const struct ipfix_msg *msg)
++{
++	if (msg->tid > 0)
++		return (struct ipfix_templ_hdr *) (msg->data + IPFIX_HDRLEN);
++
++	return NULL;
++}
++
+ struct ipfix_hdr *ipfix_msg_hdr(const struct ipfix_msg *msg)
+ {
+ 	return (struct ipfix_hdr *)msg->data;
+--- a/output/ipfix/ipfix.h
++++ b/output/ipfix/ipfix.h
+@@ -2,6 +2,7 @@
+  * ipfix.h
+  *
+  * Holger Eitzenberger <holger@eitzenberger.org>, 2009.
++ * Ander Juaristi <a@juaristi.eus>, 2019
+  */
+ #ifndef IPFIX_H
+ #define IPFIX_H
+@@ -20,17 +21,21 @@ struct ipfix_hdr {
+ 	uint8_t data[];
+ } __packed;
+ 
+-#define IPFIX_HDRLEN	sizeof(struct ipfix_hdr)
++#define IPFIX_HDRLEN		sizeof(struct ipfix_hdr)
+ 
+ /*
+  * IDs 0-255 are reserved for Template Sets.  IDs of Data Sets are > 255.
+  */
+ struct ipfix_templ_hdr {
+-	uint16_t id;
++	uint16_t sid;
++	uint16_t len;
++	uint16_t tid;
+ 	uint16_t cnt;
+ 	uint8_t data[];
+ } __packed;
+ 
++#define IPFIX_TEMPL_HDRLEN(nfields)	sizeof(struct ipfix_templ_hdr) + (sizeof(uint16_t) * 2 * nfields)
++
+ struct ipfix_set_hdr {
+ #define IPFIX_SET_TEMPL			2
+ #define IPFIX_SET_OPT_TEMPL		3
+@@ -46,6 +51,7 @@ struct ipfix_msg {
+ 	uint8_t *tail;
+ 	uint8_t *end;
+ 	unsigned nrecs;
++	int tid;
+ 	struct ipfix_set_hdr *last_set;
+ 	uint8_t data[];
+ };
+@@ -53,18 +59,14 @@ struct ipfix_msg {
+ struct vy_ipfix_data {
+ 	struct in_addr saddr;
+ 	struct in_addr daddr;
+-	uint16_t ifi_in;
+-	uint16_t ifi_out;
+ 	uint32_t packets;
+ 	uint32_t bytes;
+ 	uint32_t start;				/* Unix time */
+ 	uint32_t end;				/* Unix time */
+ 	uint16_t sport;
+ 	uint16_t dport;
+-	uint32_t aid;				/* Application ID */
+ 	uint8_t l4_proto;
+-	uint8_t dscp;
+-	uint16_t __padding;
++	uint32_t aid;				/* Application ID */
+ } __packed;
+ 
+ #define VY_IPFIX_SID		256
+@@ -73,13 +75,11 @@ struct vy_ipfix_data {
+ #define VY_IPFIX_PKT_LEN	(IPFIX_HDRLEN + IPFIX_SET_HDRLEN \
+ 							 + VY_IPFIX_FLOWS * sizeof(struct vy_ipfix_data))
+ 
+-/* template management */
+-size_t ipfix_rec_len(uint16_t);
+-
+ /* message handling */
+-struct ipfix_msg *ipfix_msg_alloc(size_t, uint32_t);
++struct ipfix_msg *ipfix_msg_alloc(size_t, uint32_t, int);
+ void ipfix_msg_free(struct ipfix_msg *);
+ struct ipfix_hdr *ipfix_msg_hdr(const struct ipfix_msg *);
++struct ipfix_templ_hdr *ipfix_msg_templ_hdr(const struct ipfix_msg *);
+ size_t ipfix_msg_len(const struct ipfix_msg *);
+ void *ipfix_msg_data(struct ipfix_msg *);
+ struct ipfix_set_hdr *ipfix_msg_add_set(struct ipfix_msg *, uint16_t);
+--- a/output/ipfix/ulogd_output_IPFIX.c
++++ b/output/ipfix/ulogd_output_IPFIX.c
+@@ -3,6 +3,9 @@
+  *
+  * ulogd IPFIX Exporter plugin.
+  *
++ * (C) 2009 by Holger Eitzenberger <holger@eitzenberger.org>, Astaro AG
++ * (C) 2019 by Ander Juaristi <a@juaristi.eus>
++ *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+@@ -11,8 +14,6 @@
+  * You should have received a copy of the GNU General Public License
+  * along with this program; if not, write to the Free Software
+  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+- *
+- * Holger Eitzenberger <holger@eitzenberger.org>  Astaro AG 2009
+  */
+ #include <unistd.h>
+ #include <time.h>
+@@ -28,6 +29,7 @@
+ #define DEFAULT_MTU		512 /* RFC 5101, 10.3.3 */
+ #define DEFAULT_PORT		4739 /* RFC 5101, 10.3.4 */
+ #define DEFAULT_SPORT		4740
++#define DEFAULT_SEND_TEMPLATE	"once"
+ 
+ enum {
+ 	OID_CE = 0,
+@@ -35,16 +37,18 @@ enum {
+ 	PORT_CE,
+ 	PROTO_CE,
+ 	MTU_CE,
++	SEND_TEMPLATE_CE
+ };
+ 
+-#define oid_ce(x)	(x->ces[OID_CE])
+-#define host_ce(x)	(x->ces[HOST_CE])
+-#define port_ce(x)	(x->ces[PORT_CE])
+-#define proto_ce(x)	(x->ces[PROTO_CE])
+-#define mtu_ce(x)	(x->ces[MTU_CE])
++#define oid_ce(x)		(x->ces[OID_CE])
++#define host_ce(x)		(x->ces[HOST_CE])
++#define port_ce(x)		(x->ces[PORT_CE])
++#define proto_ce(x)		(x->ces[PROTO_CE])
++#define mtu_ce(x)		(x->ces[MTU_CE])
++#define send_template_ce(x)	(x->ces[SEND_TEMPLATE_CE])
+ 
+ static const struct config_keyset ipfix_kset = {
+-	.num_ces = 5,
++	.num_ces = 6,
+ 	.ces = {
+ 		{
+ 			.key = "oid",
+@@ -70,20 +74,21 @@ static const struct config_keyset ipfix_
+ 			.key = "mtu",
+ 			.type = CONFIG_TYPE_INT,
+ 			.u.value = DEFAULT_MTU
++		},
++		{
++			.key = "send_template",
++			.type = CONFIG_TYPE_STRING,
++			.u.string = DEFAULT_SEND_TEMPLATE
+ 		}
+ 	}
+ };
+ 
+-struct ipfix_templ {
+-	struct ipfix_templ *next;
+-};
+-
+ struct ipfix_priv {
+ 	struct ulogd_fd ufd;
+ 	uint32_t seqno;
+ 	struct ipfix_msg *msg;		/* current message */
+ 	struct llist_head list;
+-	struct ipfix_templ *templates;
++	int tid;
+ 	int proto;
+ 	struct ulogd_timer timer;
+ 	struct sockaddr_in sa;
+@@ -258,8 +263,8 @@ static void ipfix_timer_cb(struct ulogd_
+ static int ipfix_configure(struct ulogd_pluginstance *pi, struct ulogd_pluginstance_stack *stack)
+ {
+ 	struct ipfix_priv *priv = (struct ipfix_priv *) &pi->private;
++	char *host, *proto, *send_template;
+ 	int oid, port, mtu, ret;
+-	char *host, *proto;
+ 	char addr[16];
+ 
+ 	ret = config_parse_file(pi->id, pi->config_kset);
+@@ -271,6 +276,7 @@ static int ipfix_configure(struct ulogd_
+ 	port = port_ce(pi->config_kset).u.value;
+ 	proto = proto_ce(pi->config_kset).u.string;
+ 	mtu = mtu_ce(pi->config_kset).u.value;
++	send_template = send_template_ce(pi->config_kset).u.string;
+ 
+ 	if (!oid) {
+ 		ulogd_log(ULOGD_FATAL, "invalid Observation ID\n");
+@@ -303,6 +309,8 @@ static int ipfix_configure(struct ulogd_
+ 
+ 	ulogd_init_timer(&priv->timer, pi, ipfix_timer_cb);
+ 
++	priv->tid = (strcmp(send_template, "never") ? VY_IPFIX_SID : -1);
++
+ 	ulogd_log(ULOGD_INFO, "using IPFIX Collector at %s:%d (MTU %d)\n",
+ 		  inet_ntop(AF_INET, &priv->sa.sin_addr, addr, sizeof(addr)),
+ 		  port, mtu);
+@@ -410,25 +418,30 @@ static int ipfix_stop(struct ulogd_plugi
+ static int ipfix_interp(struct ulogd_pluginstance *pi)
+ {
+ 	struct ipfix_priv *priv = (struct ipfix_priv *) &pi->private;
++	char saddr[16], daddr[16], *send_template;
+ 	struct vy_ipfix_data *data;
+ 	int oid, mtu, ret;
+-	char addr[16];
+ 
+ 	if (!(GET_FLAGS(pi->input.keys, InIpSaddr) & ULOGD_RETF_VALID))
+ 		return ULOGD_IRET_OK;
+ 
+ 	oid = oid_ce(pi->config_kset).u.value;
+ 	mtu = mtu_ce(pi->config_kset).u.value;
++	send_template = send_template_ce(pi->config_kset).u.string;
+ 
+ again:
+ 	if (!priv->msg) {
+-		priv->msg = ipfix_msg_alloc(mtu, oid);
++		priv->msg = ipfix_msg_alloc(mtu, oid, priv->tid);
+ 		if (!priv->msg) {
+ 			/* just drop this flow */
+ 			ulogd_log(ULOGD_ERROR, "out of memory, dropping flow\n");
+ 			return ULOGD_IRET_OK;
+ 		}
+ 		ipfix_msg_add_set(priv->msg, VY_IPFIX_SID);
++
++		/* template sent - do not send it again the next time */
++		if (priv->tid == VY_IPFIX_SID && strcmp(send_template, "once") == 0)
++			priv->tid = -1;
+ 	}
+ 
+ 	data = ipfix_msg_add_data(priv->msg, sizeof(struct vy_ipfix_data));
+@@ -439,8 +452,6 @@ again:
+ 		goto again;
+ 	}
+ 
+-	data->ifi_in = data->ifi_out = 0;
+-
+ 	data->saddr.s_addr = ikey_get_u32(&pi->input.keys[InIpSaddr]);
+ 	data->daddr.s_addr = ikey_get_u32(&pi->input.keys[InIpDaddr]);
+ 
+@@ -462,13 +473,12 @@ again:
+ 		data->aid = htonl(ikey_get_u32(&pi->input.keys[InCtMark]));
+ 
+ 	data->l4_proto = ikey_get_u8(&pi->input.keys[InIpProto]);
+-	data->__padding = 0;
+ 
+ 	ulogd_log(ULOGD_DEBUG, "Got new packet (packets = %u, bytes = %u, flow = (%u, %u), saddr = %s, daddr = %s, sport = %u, dport = %u)\n",
+-			ntohl(data->packets), ntohl(data->bytes), ntohl(data->start), ntohl(data->end),
+-			inet_ntop(AF_INET, &data->saddr.s_addr, addr, sizeof(addr)),
+-			inet_ntop(AF_INET, &data->daddr.s_addr, addr, sizeof(addr)),
+-			ntohs(data->sport), ntohs(data->dport));
++		  ntohl(data->packets), ntohl(data->bytes), ntohl(data->start), ntohl(data->end),
++		  inet_ntop(AF_INET, &data->saddr.s_addr, saddr, sizeof(saddr)),
++		  inet_ntop(AF_INET, &data->daddr.s_addr, daddr, sizeof(daddr)),
++		  ntohs(data->sport), ntohs(data->dport));
+ 
+ 	if ((ret = send_msgs(pi)) < 0)
+ 		return ret;

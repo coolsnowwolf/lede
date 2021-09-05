@@ -1,0 +1,74 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2015 OpenWrt.org
+
+START=90
+STOP=10
+
+USE_PROCD=1
+PROG=/usr/sbin/squid
+CONFIGFILE="/tmp/squid/squid.conf"
+MIMETABLE="/tmp/squid/mime.conf"
+
+validate_squid_section() {
+	uci_load_validate squid squid "$1" "$2" \
+		'config_file:string' \
+		'http_port:port:3128' \
+		'http_port_options:string' \
+		'ssldb:string' \
+		'ssldb_options:string' \
+		'coredump_dir:string' \
+		'visible_hostname:string:OpenWrt' \
+		'pinger_enable:string:off' \
+		'mime_table:string:/etc/squid/mime.conf'
+}
+
+create_squid_user() {
+	user_exists squid || user_add squid $USERID
+	group_exists squid || group_add squid $USERID && group_add_user squid squid
+}
+
+start_squid_instance() {
+	local config_dir
+
+	[ "$2" = 0 ] || {
+		echo "validation failed"
+		return 1
+	}
+
+	config_dir=$(dirname $CONFIGFILE)
+	[ -d $config_dir ] || mkdir -p $config_dir && chown nobody:nogroup $config_dir
+	[ -d $coredump_dir ] || mkdir -p $coredump_dir && chown nobody:nogroup $coredump_dir
+	[ "$ssldb" ] && ( [ -f "$ssldb"/size ] || /usr/lib/squid/security_file_certgen -c -s $ssldb $ssldb_options && chown -R nobody:nogroup $ssldb )
+
+	cat $config_file > $CONFIGFILE
+	echo http_port $http_port $http_port_options >> $CONFIGFILE
+	echo coredump_dir $coredump_dir >> $CONFIGFILE
+	echo visible_hostname $visible_hostname >> $CONFIGFILE
+	echo pinger_enable $pinger_enable >> $CONFIGFILE
+	cat $mime_table > $MIMETABLE
+	echo mime_table $MIMETABLE >> $CONFIGFILE
+	[ "$ssldb" ] && echo sslcrtd_program /usr/lib/squid/security_file_certgen -s $ssldb $ssldb_options >> $CONFIGFILE
+	$PROG -s -f $CONFIGFILE -N -z 2>/dev/null
+
+	procd_open_instance
+	procd_set_param command $PROG -s -f $CONFIGFILE -N
+	procd_set_param file $CONFIGFILE
+	procd_set_param respawn
+	procd_close_instance
+}
+
+start_service()
+{
+	validate_squid_section squid start_squid_instance
+}
+
+stop_service()
+{
+	$PROG -f $CONFIGFILE -N -k shutdown 2>/dev/null
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "squid"
+	procd_add_validation validate_squid_section
+}

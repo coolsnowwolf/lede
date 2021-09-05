@@ -1,0 +1,73 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2016 Chen RuiWei <crwbak@gmail.com>
+
+START=99
+STOP=10
+
+CONFIG=softethervpn
+
+add_rule() {
+	openvpnport=$(cat /usr/libexec/softethervpn/vpn_server.config 2>/dev/null | grep OpenVPN_UdpPortList | awk -F " " '{print $3}')
+	[ -z "$openvpnport" ] && openvpnport=1194
+
+	iptables -N SOFTETHER_VPN-SERVER
+	iptables -I INPUT -j SOFTETHER_VPN-SERVER
+	
+	iptables -A SOFTETHER_VPN-SERVER -p udp -m multiport --dports 500,1701,4500 -m comment --comment "L2TP-IPSec" -j ACCEPT
+	iptables -A SOFTETHER_VPN-SERVER -p udp --dport $openvpnport -m comment --comment "OpenVPN" -j ACCEPT
+	iptables -A SOFTETHER_VPN-SERVER -p tcp --dport $openvpnport -m comment --comment "OpenVPN" -j ACCEPT
+	iptables -A SOFTETHER_VPN-SERVER -p tcp --dport 5555 -j ACCEPT
+	iptables -A SOFTETHER_VPN-SERVER -p tcp --dport 8888 -j ACCEPT
+	iptables -A SOFTETHER_VPN-SERVER -p tcp --dport 992 -j ACCEPT
+	iptables -t mangle -I OUTPUT -p udp -m multiport --sports 500,1701,4500 -m comment --comment "SOFTETHER_VPN-SERVER-L2TP-IPSec" -j RETURN
+	iptables -t mangle -I OUTPUT -p udp --sport $openvpnport -m comment --comment "SOFTETHER_VPN-SERVER-OPENVPN" -j RETURN
+	iptables -t mangle -I OUTPUT -p tcp --sport $openvpnport -m comment --comment "SOFTETHER_VPN-SERVER-OPENVPN" -j RETURN
+}
+
+del_rule() {
+	ipt_del() {
+		for i in $(seq 1 $($1 -nL $2 | grep -c "SOFTETHER_VPN-SERVER")); do
+			local index=$($1 --line-number -nL $2 | grep "SOFTETHER_VPN-SERVER" | head -1 | awk '{print $1}')
+			$1 -w -D $2 $index 2>/dev/null
+		done
+	}
+	
+	ipt_del "iptables -t mangle" "OUTPUT"
+	ipt_del "iptables" "INPUT"
+
+	iptables -F SOFTETHER_VPN-SERVER 2>/dev/null
+	iptables -X SOFTETHER_VPN-SERVER 2>/dev/null
+}
+
+gen_include() {
+	echo '#!/bin/sh' > /var/etc/$CONFIG.include
+	extract_rules() {
+		echo "*$1"
+		iptables-save -t $1 | grep "SOFTETHER_VPN-SERVER" | \
+		sed -e "s/^-A \(INPUT\)/-I \1 1/"
+		echo 'COMMIT'
+	}
+	cat <<-EOF >> /var/etc/$CONFIG.include
+		iptables-save -c | grep -v "SOFTETHER_VPN-SERVER" | iptables-restore -c
+		iptables-restore -n <<-EOT
+		$(extract_rules filter)
+		EOT
+	EOF
+	return 0
+}
+
+start()
+{
+	enable=$(uci -q get $CONFIG.@softether[0].enable)
+	[ $enable -ne 1 ] && exit 0
+	/usr/bin/env LANG=en_US.UTF-8 /usr/libexec/softethervpn/vpnserver start > /dev/null 2>&1
+	add_rule
+	gen_include
+}
+
+stop()
+{
+	/usr/bin/env LANG=en_US.UTF-8 /usr/libexec/softethervpn/vpnserver stop > /dev/null 2>&1
+	del_rule
+	rm -rf /var/etc/$CONFIG.include
+}

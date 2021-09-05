@@ -1,0 +1,71 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+PROG=/usr/bin/domoticz
+PIDFILE=/var/run/domoticz.pid
+
+start_domoticz() {
+	local section="$1"
+	local loglevel sslcert sslpass sslwww syslog userdata
+
+	config_get loglevel "$section" "loglevel"
+	config_get sslcert "$section" "sslcert"
+	config_get sslkey "$section" "sslkey"
+	config_get sslpass "$section" "sslpass"
+	config_get ssldhparam "$section" "ssldhparam"
+	config_get sslwww "$section" "sslwww"
+	config_get syslog "$section" "syslog"
+	config_get userdata "$section" "userdata" userdata /var/lib/domoticz
+
+	[ -n "$loglevel" ] && procd_append_param command -loglevel "$loglevel"
+	[ -n "$syslog" ] && procd_append_param command -syslog "$syslog"
+
+	[ -d "${userdata}" ] || {
+		mkdir -p "${userdata}"
+		chmod 0770 "$userdata"
+		chown domoticz:domoticz "$userdata"
+	}
+
+	# By default, ${userdata}/scripts is a symlink to /etc/domoticz/scripts
+	# and the two dzVents directories under there which Domoticz will actually
+	# write to at runtime are symlinked back to /var/lib again.
+	[ -d "${userdata}/plugins" ] || ln -sf /etc/domoticz/plugins "${userdata}/plugins"
+	[ -d "${userdata}/scripts" ] || ln -sf /etc/domoticz/scripts "${userdata}/scripts"
+	for DIR in data generated_scripts; do
+		[ -d /var/lib/domoticz/dzVents/$DIR ] || {
+			mkdir -p /var/lib/domoticz/dzVents/$DIR
+			chown domoticz.domoticz /var/lib/domoticz/dzVents/$DIR
+		}
+	done
+	procd_append_param command -userdata "$userdata"
+
+	[ -n "$sslcert" -a "${sslwww:-0}" -gt 0 ] && {
+		procd_append_param command -sslcert "$sslcert"
+		procd_append_param command -sslwww "$sslwww"
+		[ -n "$sslkey" ] && procd_append_param command -sslkey "$sslkey"
+		[ -n "$sslpass" ] && procd_append_param command -sslpass "$sslpass"
+		[ -n "$ssldhparam" ] && procd_append_param command -ssldhparam "$ssldhparam"
+	} || procd_append_param command -sslwww 0
+}
+
+start_service() {
+	procd_open_instance
+
+	procd_set_param command "$PROG"
+	procd_append_param command -noupdates
+	procd_append_param command -approot /usr/share/domoticz/
+
+	config_load "domoticz"
+	config_get_bool disabled "$section" "disabled" 0
+	[ "$disabled" -gt 0 ] && return 1
+	config_foreach start_domoticz domoticz
+
+	procd_set_param pidfile "$PIDFILE"
+	procd_set_param respawn
+	procd_set_param stdout 0
+	procd_set_param term_timeout 10
+	procd_set_param user "domoticz"
+
+	procd_close_instance
+}

@@ -1,0 +1,213 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+. /lib/functions/network.sh
+. /lib/mwan3/mwan3.sh
+
+help()
+{
+	cat <<EOF
+Syntax: mwan3 [command]
+
+Available commands:
+	start           Load iptables rules, ip rules and ip routes
+	stop            Unload iptables rules, ip rules and ip routes
+	restart         Reload iptables rules, ip rules and ip routes
+	ifup <iface>    Load rules and routes for specific interface
+	ifdown <iface>  Unload rules and routes for specific interface
+	interfaces      Show interfaces status
+	policies        Show currently active policy
+	connected       Show directly connected networks
+	rules           Show active rules
+	status          Show all status
+
+EOF
+}
+
+ifdown()
+{
+	if [ -z "$1" ]; then
+		echo "Error: Expecting interface. Usage: mwan3 ifdown <interface>" && exit 0
+	fi
+
+	if [ -n "$2" ]; then
+		echo "Error: Too many arguments. Usage: mwan3 ifdown <interface>" && exit 0
+	fi
+
+	ACTION=ifdown INTERFACE=$1 /sbin/hotplug-call iface
+
+	kill $(pgrep -f "mwan3track $1 $2") &> /dev/null
+	mwan3_track_clean $1
+}
+
+ifup()
+{
+	local device enabled up l3_device status
+
+	config_load mwan3
+	config_get_bool enabled globals 'enabled' 0
+	[ ${enabled} -gt 0 ] || {
+		echo "The service mwan3 is global disabled."
+		echo "Please execute \"/etc/init.d/mwan3 start\" first."
+		exit 1
+	}
+
+	if [ -z "$1" ]; then
+		echo "Expecting interface. Usage: mwan3 ifup <interface>" && exit 0
+	fi
+
+	if [ -n "$2" ]; then
+		echo "Too many arguments. Usage: mwan3 ifup <interface>" && exit 0
+	fi
+
+	status=$(ubus -S call network.interface.$1 status)
+	[ -n "$status" ] && {
+		json_load "$status"
+		json_get_vars up l3_device 
+	}
+
+	config_get enabled "$1" enabled 0
+
+	if [ "$up" = "1" ] \
+		&& [ -n "$l3_device" ] \
+		&& [ "$enabled" = "1" ]; then
+		ACTION=ifup INTERFACE=$1 DEVICE=$l3_device /sbin/hotplug-call iface
+	fi
+}
+
+interfaces()
+{
+	config_load mwan3
+
+	echo "Interface status:"
+	config_foreach mwan3_report_iface_status interface
+	echo -e
+}
+
+policies()
+{
+	echo "Current ipv4 policies:"
+	mwan3_report_policies_v4
+	echo -e
+	echo "Current ipv6 policies:"
+	mwan3_report_policies_v6
+	echo -e
+}
+
+connected()
+{
+	echo "Directly connected ipv4 networks:"
+	mwan3_report_connected_v4
+	echo -e
+	echo "Directly connected ipv6 networks:"
+	mwan3_report_connected_v6
+	echo -e
+}
+
+rules()
+{
+	echo "Active ipv4 user rules:"
+	mwan3_report_rules_v4
+	echo -e
+	echo "Active ipv6 user rules:"
+	mwan3_report_rules_v6
+	echo -e
+}
+
+status()
+{
+	interfaces
+	policies
+	connected
+	rules
+}
+
+start()
+{
+	local enabled
+
+	uci_toggle_state mwan3 globals enabled "1"
+
+	config_load mwan3
+	config_foreach ifup interface
+}
+
+stop()
+{
+	local ipset route rule table IP IPT pid
+
+	mwan3_lock "command" "mwan3"
+
+	for pid in $(pgrep -f "mwan3rtmon"); do
+		kill -TERM "$pid" > /dev/null 2>&1
+		sleep 1
+		kill -KILL "$pid" > /dev/null 2>&1
+	done
+
+	for pid in $(pgrep -f "mwan3track"); do
+		kill -TERM "$pid" > /dev/null 2>&1
+		sleep 1
+		kill -KILL "$pid" > /dev/null 2>&1
+	done
+
+	config_load mwan3
+	config_foreach mwan3_track_clean interface
+
+	for IP in "$IP4" "$IP6"; do
+
+		for route in $(seq 1 $MWAN3_INTERFACE_MAX); do
+			$IP route flush table $route &> /dev/null
+		done
+
+		for rule in $($IP rule list | egrep '^[1-2][0-9]{3}\:' | cut -d ':' -f 1); do
+			$IP rule del pref $rule &> /dev/null
+		done
+	done
+
+	for IPT in "$IPT4" "$IPT6"; do
+
+		$IPT -D PREROUTING -j mwan3_hook &> /dev/null
+		$IPT -D OUTPUT -j mwan3_hook &> /dev/null
+
+		for table in $($IPT -S | awk '{print $2}' | grep mwan3 | sort -u); do
+			$IPT -F $table &> /dev/null
+		done
+
+		for table in $($IPT -S | awk '{print $2}' | grep mwan3 | sort -u); do
+			$IPT -X $table &> /dev/null
+		done
+	done
+
+	for ipset in $($IPS -n list | grep mwan3_); do
+		$IPS -q destroy $ipset
+	done
+
+	for ipset in $($IPS -n list | grep mwan3 | grep -E '_v4|_v6'); do
+		$IPS -q destroy $ipset
+	done
+
+	mwan3_unlock "command" "mwan3"
+
+	mwan3_lock_clean
+	rm -rf $MWAN3_STATUS_DIR $MWAN3TRACK_STATUS_DIR
+
+	uci_toggle_state mwan3 globals enabled "0"
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+	ifup|ifdown|interfaces|policies|connected|rules|status|start|stop|restart)
+		mwan3_init
+		$*
+	;;
+	*)
+		help
+	;;
+esac
+
+exit 0

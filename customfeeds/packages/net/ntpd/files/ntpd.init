@@ -1,0 +1,112 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2011 OpenWrt.org
+
+START=65
+STOP=65
+
+USE_PROCD=1
+PROG=/sbin/ntpd
+HOTPLUG_HELPER=/usr/sbin/ntpd.hotplug-helper
+
+config_file=/var/etc/ntpd.conf
+
+trunc() {
+	echo -n "" > $config_file
+}
+
+emit() {
+	echo -e "$@" >> $config_file
+}
+
+validate_ntp_section() {
+	uci_load_validate system timeserver "$1" "$2" \
+		'server:list(host)' 'enabled:bool:1' 'enable_server:bool:0' \
+		'interface:list(string)'
+}
+
+start_ntpd_instance() {
+	local intf i
+
+	[ "$2" = 0 ] || {
+		echo "validation failed"
+		return 1
+	}
+
+	[ "$enabled" = 0 ] && return
+
+	[ -z "$server" -a "$enable_server" = 0 ] && return
+
+	# not sure that the interfaces enumerated should be validated,
+	# since some of them might be dynamic interfaces (like IPsec
+	# tunnels) which aren't known by ubus.
+
+	mkdir -p "$(dirname "$config_file")"
+
+	trunc
+	emit "driftfile /var/lib/ntp/ntp.drift\n"
+
+	if [ "$enable_server" != 0 ]; then
+		emit "restrict default limited kod nomodify notrap nopeer"
+		emit "restrict -6 default limited kod nomodify notrap nopeer"
+	else
+		emit "restrict -4 default noserve"
+		emit "restrict -6 default noserve"
+	fi
+	emit "restrict source noquery"
+
+	emit "\n# No limits for local monitoring"
+	emit "restrict 127.0.0.1"
+	emit "restrict -6 ::1\n"
+
+	if [ -n "$interface" ]; then
+		local loopback=$(ubus call network.interface dump | jsonfilter -e "@.interface[@.interface='loopback']['device']")
+
+		local saw_lo=
+		for intf in $interface; do
+			emit "interface listen $intf"
+			[ "$intf" = "$loopback" ] && saw_lo=1
+		done
+		[ -z "$saw_lo" ] && emit "interface listen $loopback"
+		emit ""
+	fi
+
+	for i in $server
+	do
+		emit "server $i iburst"
+	done
+
+	if [ -d "/etc/ntpd.d" ]; then
+		local entry
+		for entry in "/etc/ntpd.d"/*.conf; do
+			emit "includefile ${entry}\n"
+		done
+	fi
+
+	if [ -d "/tmp/ntpd.d" ]; then
+		local entry
+		for entry in "/tmp/ntpd.d"/*.conf; do
+			emit "includefile ${entry}\n"
+		done
+	fi
+
+	mkdir -p /var/lib/ntp
+	chown -R ntp:ntp /var/lib/ntp
+
+	procd_open_instance
+	procd_set_param command $PROG -g -u ntp:ntp -p /var/run/ntpd.pid -n \
+		-c $config_file
+	procd_close_instance
+
+	procd_open_instance
+	procd_set_param command $HOTPLUG_HELPER
+	procd_close_instance
+}
+
+start_service() {
+	validate_ntp_section ntp start_ntpd_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger "system"
+	procd_add_validation validate_ntp_section
+}

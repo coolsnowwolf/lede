@@ -1,0 +1,376 @@
+<%#
+ Copyright 2010 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%+header%>
+
+<script type="text/javascript" src="<%=resource%>/cbi.js"></script>
+<script type="text/javascript">//<![CDATA[
+	var bwxhr = new XHR();
+
+	var G;
+	var TIME  = 0;
+	var UDP   = 1;
+	var TCP   = 2;
+	var OTHER = 3;
+
+	var width  = 760;
+	var height = 300;
+	var step   = 5;
+
+	var data_wanted = Math.floor(width / step);
+	var data_fill   = 0;
+	var data_stamp  = 0;
+
+	var data_udp = [ ];
+	var data_tcp = [ ];
+	var data_otr = [ ];
+
+	var line_udp;
+	var line_tcp;
+
+	var label_25;
+	var label_50;
+	var label_75;
+
+	var label_udp_cur;
+	var label_udp_avg;
+	var label_udp_peak;
+
+	var label_tcp_cur;
+	var label_tcp_avg;
+	var label_tcp_peak;
+
+	var label_otr_cur;
+	var label_otr_avg;
+	var label_otr_peak;
+
+	var label_scale;
+
+	var conn_table;
+
+	var dns_cache = { };
+
+
+	/* wait for SVG */
+	window.setTimeout(
+		function() {
+			var svg = document.getElementById('bwsvg');
+
+			try {
+				G = svg.getSVGDocument
+					? svg.getSVGDocument() : svg.contentDocument;
+			}
+			catch(e) {
+				G = document.embeds['bwsvg'].getSVGDocument();
+			}
+
+			if (!G)
+			{
+				window.setTimeout(arguments.callee, 1000);
+			}
+			else
+			{
+				/* find sizes */
+				width       = svg.offsetWidth  - 2;
+				height      = svg.offsetHeight - 2;
+				data_wanted = Math.ceil(width / step);
+
+				/* prefill datasets */
+				for (var i = 0; i < data_wanted; i++)
+				{
+					data_udp[i] = 0;
+					data_tcp[i] = 0;
+					data_otr[i] = 0;
+				}
+
+				/* find svg elements */
+				line_udp = G.getElementById('udp');
+				line_tcp = G.getElementById('tcp');
+				line_otr = G.getElementById('other');
+
+				label_25 = G.getElementById('label_25');
+				label_50 = G.getElementById('label_50');
+				label_75 = G.getElementById('label_75');
+
+				label_udp_cur  = document.getElementById('lb_udp_cur');
+				label_udp_avg  = document.getElementById('lb_udp_avg');
+				label_udp_peak = document.getElementById('lb_udp_peak');
+
+				label_tcp_cur  = document.getElementById('lb_tcp_cur');
+				label_tcp_avg  = document.getElementById('lb_tcp_avg');
+				label_tcp_peak = document.getElementById('lb_tcp_peak');
+
+				label_otr_cur  = document.getElementById('lb_otr_cur');
+				label_otr_avg  = document.getElementById('lb_otr_avg');
+				label_otr_peak = document.getElementById('lb_otr_peak');
+
+				label_scale    = document.getElementById('scale');
+
+				conn_table     = document.getElementById('connections');
+
+
+				/* plot horizontal time interval lines */
+				for (var i = width % (step * 60); i < width; i += step * 60)
+				{
+					var line = G.createElementNS('http://www.w3.org/2000/svg', 'line');
+						line.setAttribute('x1', i);
+						line.setAttribute('y1', 0);
+						line.setAttribute('x2', i);
+						line.setAttribute('y2', '100%');
+						line.setAttribute('style', 'stroke:black;stroke-width:0.1');
+
+					var text = G.createElementNS('http://www.w3.org/2000/svg', 'text');
+						text.setAttribute('x', i + 5);
+						text.setAttribute('y', 15);
+						text.setAttribute('style', 'fill:#999999; font-size:9pt');
+						text.appendChild(G.createTextNode(Math.round((width - i) / step / 60) + 'm'));
+
+					label_25.parentNode.appendChild(line);
+					label_25.parentNode.appendChild(text);
+				}
+
+				label_scale.innerHTML = String.format('<%:(%d minute window, %d second interval)%>', data_wanted / 60, 3);
+
+				/* render datasets, start update interval */
+				XHR.poll(3, '<%=build_url("admin/status/realtime/connections_status")%>', null,
+					function(x, json)
+					{
+						var conn = json.connections;
+
+						while (conn_table.rows.length > 1)
+							conn_table.rows[0].parentNode.deleteRow(-1);
+
+
+						var lookup_queue = [ ];
+
+						conn.sort(function(a, b) {
+							return b.bytes - a.bytes;
+						});
+
+						for (var i = 0; i < conn.length; i++)
+						{
+							var c  = conn[i];
+
+							if ((c.src == '127.0.0.1' && c.dst == '127.0.0.1')
+							|| (c.src == '::1' && c.dst == '::1'))
+								continue;
+
+							var tr = conn_table.rows[0].parentNode.insertRow(-1);
+							    tr.className = 'cbi-section-table-row cbi-rowstyle-' + (1 + (i % 2));
+
+							if (!dns_cache[c.src])
+								lookup_queue.push(c.src);
+
+							if (!dns_cache[c.dst])
+								lookup_queue.push(c.dst);
+
+							var src = dns_cache[c.src] || (c.layer3 == 'ipv6' ? '[' + c.src + ']' : c.src);
+							var dst = dns_cache[c.dst] || (c.layer3 == 'ipv6' ? '[' + c.dst + ']' : c.dst);
+
+							tr.insertCell(-1).innerHTML = c.layer3.toUpperCase();
+							tr.insertCell(-1).innerHTML = c.layer4.toUpperCase();
+							tr.insertCell(-1).innerHTML = String.format('%s:%d', src, c.sport);
+							tr.insertCell(-1).innerHTML = String.format('%s:%d', dst, c.dport);
+
+							var traf = tr.insertCell(-1);
+							    traf.style.whiteSpace = 'nowrap';
+							    traf.innerHTML = String.format('%1024.2mB (%d <%:Pkts.%>)', c.bytes, c.packets);
+						}
+
+						if (lookup_queue.length > 0)
+							XHR.get('<%=build_url("admin/status/nameinfo")%>/' + lookup_queue.slice(0, 100).join('/'), null,
+								function(x, json)
+								{
+									for (var addr in json)
+										dns_cache[addr] = json[addr];
+								}
+							);
+
+
+						var data = json.statistics;
+
+						var data_max   = 0;
+						var data_scale = 0;
+
+						var data_udp_avg = 0;
+						var data_tcp_avg = 0;
+						var data_otr_avg = 0;
+
+						var data_udp_peak = 0;
+						var data_tcp_peak = 0;
+						var data_otr_peak = 0;
+
+						for (var i = data_stamp ? 0 : 1; i < data.length; i++)
+						{
+							/* skip overlapping entries */
+							if (data[i][TIME] <= data_stamp)
+								continue;
+
+							data_udp.push(data[i][UDP]);
+							data_tcp.push(data[i][TCP]);
+							data_otr.push(data[i][OTHER]);
+						}
+
+						/* cut off outdated entries */
+						data_udp = data_udp.slice(data_udp.length - data_wanted, data_udp.length);
+						data_tcp = data_tcp.slice(data_tcp.length - data_wanted, data_tcp.length);
+						data_otr = data_otr.slice(data_otr.length - data_wanted, data_otr.length);
+
+						/* find peak */
+						for (var i = 0; i < data_udp.length; i++)
+						{
+							data_max = Math.max(data_max, data_udp[i]);
+							data_max = Math.max(data_max, data_tcp[i]);
+							data_max = Math.max(data_max, data_otr[i]);
+
+							data_udp_peak = Math.max(data_udp_peak, data_udp[i]);
+							data_tcp_peak = Math.max(data_tcp_peak, data_tcp[i]);
+							data_otr_peak = Math.max(data_otr_peak, data_otr[i]);
+
+							if (i > 0)
+							{
+								data_udp_avg = (data_udp_avg + data_udp[i]) / 2;
+								data_tcp_avg = (data_tcp_avg + data_tcp[i]) / 2;
+								data_otr_avg = (data_otr_avg + data_otr[i]) / 2;
+							}
+							else
+							{
+								data_udp_avg = data_udp[i];
+								data_tcp_avg = data_tcp[i];
+								data_otr_avg = data_otr[i];
+							}
+						}
+
+						/* remember current timestamp, calculate horizontal scale */
+						data_stamp = data[data.length-1][TIME];
+						data_scale = height / (data_max * 1.1);
+
+
+						/* plot data */
+						var pt_udp = '0,' + height;
+						var pt_tcp = '0,' + height;
+						var pt_otr = '0,' + height;
+
+						var y_udp = 0;
+						var y_tcp = 0;
+						var y_otr = 0;
+
+						for (var i = 0; i < data_udp.length; i++)
+						{
+							var x = i * step;
+
+							y_udp = height - Math.floor(data_udp[i] * data_scale);
+							y_tcp = height - Math.floor(data_tcp[i] * data_scale);
+							y_otr = height - Math.floor(data_otr[i] * data_scale);
+
+							pt_udp += ' ' + x + ',' + y_udp;
+							pt_tcp += ' ' + x + ',' + y_tcp;
+							pt_otr += ' ' + x + ',' + y_otr;
+						}
+
+						pt_udp += ' ' + width + ',' + y_udp + ' ' + width + ',' + height;
+						pt_tcp += ' ' + width + ',' + y_tcp + ' ' + width + ',' + height;
+						pt_otr += ' ' + width + ',' + y_otr + ' ' + width + ',' + height;
+
+
+						var order = [
+							[ line_udp, data_udp[data_udp.length-1] ],
+							[ line_tcp, data_tcp[data_tcp.length-1] ],
+							[ line_otr, data_otr[data_otr.length-1] ]
+						];
+
+						order.sort(function(a, b) { return b[1] - a[1] });
+
+						for (var i = 0; i < order.length; i++)
+							order[i][0].parentNode.appendChild(order[i][0]);
+
+
+						line_udp.setAttribute('points', pt_udp);
+						line_tcp.setAttribute('points', pt_tcp);
+						line_otr.setAttribute('points', pt_otr);
+
+						label_25.firstChild.data = Math.floor(1.1 * 0.25 * data_max);
+						label_50.firstChild.data = Math.floor(1.1 * 0.50 * data_max);
+						label_75.firstChild.data = Math.floor(1.1 * 0.75 * data_max);
+
+						label_udp_cur.innerHTML = Math.floor(data_udp[data_udp.length-1]);
+						label_tcp_cur.innerHTML = Math.floor(data_tcp[data_tcp.length-1]);
+						label_otr_cur.innerHTML = Math.floor(data_otr[data_otr.length-1]);
+
+						label_udp_avg.innerHTML = Math.floor(data_udp_avg);
+						label_tcp_avg.innerHTML = Math.floor(data_tcp_avg);
+						label_otr_avg.innerHTML = Math.floor(data_otr_avg);
+
+						label_udp_peak.innerHTML = Math.floor(data_udp_peak);
+						label_tcp_peak.innerHTML = Math.floor(data_tcp_peak);
+						label_otr_peak.innerHTML = Math.floor(data_otr_peak);
+					}
+				);
+			}
+		}, 1000
+	);
+//]]></script>
+
+<h2 name="content"><%:Realtime Connections%></h2>
+
+<div class="cbi-map-descr"><%:This page gives an overview over currently active network connections.%></div>
+
+<fieldset class="cbi-section" id="cbi-table-table">
+	<legend><%:Active Connections%></legend>
+
+	<embed id="bwsvg" style="width:100%; height:300px; border:1px solid #000000; background-color:#FFFFFF" src="<%=resource%>/connections.svg" />
+	<div style="text-align:right"><small id="scale">-</small></div>
+	<br />
+
+	<table style="width:100%; table-layout:fixed" cellspacing="5">
+		<tr>
+			<td style="text-align:right; vertical-align:top"><strong style="border-bottom:2px solid blue"><%:UDP:%></strong></td>
+			<td id="lb_udp_cur">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Average:%></strong></td>
+			<td id="lb_udp_avg">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Peak:%></strong></td>
+			<td id="lb_udp_peak">0</td>
+		</tr>
+		<tr>
+			<td style="text-align:right; vertical-align:top"><strong style="border-bottom:2px solid green"><%:TCP:%></strong></td>
+			<td id="lb_tcp_cur">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Average:%></strong></td>
+			<td id="lb_tcp_avg">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Peak:%></strong></td>
+			<td id="lb_tcp_peak">0</td>
+		</tr>
+		<tr>
+			<td style="text-align:right; vertical-align:top"><strong style="border-bottom:2px solid red"><%:Other:%></strong></td>
+			<td id="lb_otr_cur">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Average:%></strong></td>
+			<td id="lb_otr_avg">0</td>
+
+			<td style="text-align:right; vertical-align:top"><strong><%:Peak:%></strong></td>
+			<td id="lb_otr_peak">0</td>
+		</tr>
+	</table>
+	<br />
+
+	<div class="cbi-section-node">
+		<table class="cbi-section-table" id="connections">
+			<tr class="cbi-section-table-titles">
+				<th class="cbi-section-table-cell"><%:Network%></th>
+				<th class="cbi-section-table-cell"><%:Protocol%></th>
+				<th class="cbi-section-table-cell"><%:Source%></th>
+				<th class="cbi-section-table-cell"><%:Destination%></th>
+				<th class="cbi-section-table-cell"><%:Transfer%></th>
+			</tr>
+
+			<tr><td colspan="5"><em><%:Collecting data...%></em></td></tr>
+		</table>
+	</div>
+</fieldset>
+
+<%+footer%>

@@ -1,0 +1,226 @@
+From ee72f0a0eb93038ef6dfd01fed9f32e24c5de2a1 Mon Sep 17 00:00:00 2001
+From: Reuben Dowle <reuben.dowle@4rf.com>
+Date: Mon, 7 Dec 2020 16:35:13 +1300
+Subject: [PATCH] nhrpd: Cleanup resources when interface is deleted
+
+Currently when an interface is deleted from configuration, associated
+resources are not freed. This causes memory leaks and crashes.
+
+To reproduce this issue:
+* Connect to a DMVPN hub
+* Outside of frr, delete the underlying GRE interface
+* Use 'no interface xxx' to delete the interface containing nhrp configurations
+
+Signed-off-by: Reuben Dowle <reuben.dowle@4rf.com>
+---
+ nhrpd/nhrp_cache.c     | 42 ++++++++++++++++++++++++++++++++++++++++--
+ nhrpd/nhrp_interface.c | 15 +++++++++++++++
+ nhrpd/nhrp_nhs.c       | 18 ++++++++++++++++++
+ nhrpd/nhrp_peer.c      | 27 +++++++++++++++++++++++++++
+ nhrpd/nhrpd.h          |  3 +++
+ 5 files changed, 103 insertions(+), 2 deletions(-)
+ mode change 100644 => 100755 nhrpd/nhrp_cache.c
+ mode change 100644 => 100755 nhrpd/nhrp_interface.c
+ mode change 100644 => 100755 nhrpd/nhrpd.h
+
+--- a/nhrpd/nhrp_cache.c
++++ b/nhrpd/nhrp_cache.c
+@@ -69,12 +69,13 @@ static void nhrp_cache_free(struct nhrp_
+ {
+ 	struct nhrp_interface *nifp = c->ifp->info;
+ 
+-	zassert(c->cur.type == NHRP_CACHE_INVALID && c->cur.peer == NULL);
+-	zassert(c->new.type == NHRP_CACHE_INVALID && c->new.peer == NULL);
++	debugf(NHRP_DEBUG_COMMON, "Deleting cache entry");
+ 	nhrp_cache_counts[c->cur.type]--;
+ 	notifier_call(&c->notifier_list, NOTIFY_CACHE_DELETE);
+ 	zassert(!notifier_active(&c->notifier_list));
+ 	hash_release(nifp->cache_hash, c);
++	THREAD_OFF(c->t_timeout);
++	THREAD_OFF(c->t_auth);
+ 	XFREE(MTYPE_NHRP_CACHE, c);
+ }
+ 
+@@ -140,6 +141,41 @@ struct nhrp_cache_config *nhrp_cache_con
+ 			create ? nhrp_cache_config_alloc : NULL);
+ }
+ 
++static void do_nhrp_cache_free(struct hash_bucket *hb,
++			       void *arg __attribute__((__unused__)))
++{
++	struct nhrp_cache *c = hb->data;
++
++	nhrp_cache_free(c);
++}
++
++static void do_nhrp_cache_config_free(struct hash_bucket *hb,
++				      void *arg __attribute__((__unused__)))
++{
++	struct nhrp_cache_config *cc = hb->data;
++
++	nhrp_cache_config_free(cc);
++}
++
++void nhrp_cache_interface_del(struct interface *ifp)
++{
++	struct nhrp_interface *nifp = ifp->info;
++
++	debugf(NHRP_DEBUG_COMMON, "Cleaning up undeleted cache entries (%lu)",
++	       nifp->cache_hash ? nifp->cache_hash->count : 0);
++
++	if (nifp->cache_hash) {
++		hash_iterate(nifp->cache_hash, do_nhrp_cache_free, NULL);
++		hash_free(nifp->cache_hash);
++	}
++
++	if (nifp->cache_config_hash) {
++		hash_iterate(nifp->cache_config_hash, do_nhrp_cache_config_free,
++			     NULL);
++		hash_free(nifp->cache_config_hash);
++	}
++}
++
+ struct nhrp_cache *nhrp_cache_get(struct interface *ifp,
+ 				  union sockunion *remote_addr, int create)
+ {
+@@ -164,6 +200,7 @@ struct nhrp_cache *nhrp_cache_get(struct
+ static int nhrp_cache_do_free(struct thread *t)
+ {
+ 	struct nhrp_cache *c = THREAD_ARG(t);
++
+ 	c->t_timeout = NULL;
+ 	nhrp_cache_free(c);
+ 	return 0;
+@@ -172,6 +209,7 @@ static int nhrp_cache_do_free(struct thr
+ static int nhrp_cache_do_timeout(struct thread *t)
+ {
+ 	struct nhrp_cache *c = THREAD_ARG(t);
++
+ 	c->t_timeout = NULL;
+ 	if (c->cur.type != NHRP_CACHE_INVALID)
+ 		nhrp_cache_update_binding(c, c->cur.type, -1, NULL, 0, NULL);
+--- a/nhrpd/nhrp_interface.c
++++ b/nhrpd/nhrp_interface.c
+@@ -49,6 +49,21 @@ static int nhrp_if_new_hook(struct inter
+ 
+ static int nhrp_if_delete_hook(struct interface *ifp)
+ {
++	struct nhrp_interface *nifp = ifp->info;
++
++	debugf(NHRP_DEBUG_IF, "Deleted interface (%s)", ifp->name);
++
++	nhrp_cache_interface_del(ifp);
++	nhrp_nhs_interface_del(ifp);
++	nhrp_peer_interface_del(ifp);
++
++	if (nifp->ipsec_profile)
++		free(nifp->ipsec_profile);
++	if (nifp->ipsec_fallback_profile)
++		free(nifp->ipsec_fallback_profile);
++	if (nifp->source)
++		free(nifp->source);
++
+ 	XFREE(MTYPE_NHRP_IF, ifp->info);
+ 	return 0;
+ }
+--- a/nhrpd/nhrp_nhs.c
++++ b/nhrpd/nhrp_nhs.c
+@@ -378,6 +378,24 @@ int nhrp_nhs_free(struct nhrp_nhs *nhs)
+ 	return 0;
+ }
+ 
++void nhrp_nhs_interface_del(struct interface *ifp)
++{
++	struct nhrp_interface *nifp = ifp->info;
++	struct nhrp_nhs *nhs, *tmp;
++	afi_t afi;
++
++	for (afi = 0; afi < AFI_MAX; afi++) {
++		debugf(NHRP_DEBUG_COMMON, "Cleaning up nhs entries (%d)",
++		       !list_empty(&nifp->afi[afi].nhslist_head));
++
++		list_for_each_entry_safe(nhs, tmp, &nifp->afi[afi].nhslist_head,
++					 nhslist_entry)
++		{
++			nhrp_nhs_free(nhs);
++		}
++	}
++}
++
+ void nhrp_nhs_terminate(void)
+ {
+ 	struct vrf *vrf = vrf_lookup_by_id(VRF_DEFAULT);
+--- a/nhrpd/nhrp_peer.c
++++ b/nhrpd/nhrp_peer.c
+@@ -38,11 +38,17 @@ static void nhrp_packet_debug(struct zbu
+ 
+ static void nhrp_peer_check_delete(struct nhrp_peer *p)
+ {
++	char buf[2][256];
+ 	struct nhrp_interface *nifp = p->ifp->info;
+ 
+ 	if (p->ref || notifier_active(&p->notifier_list))
+ 		return;
+ 
++	debugf(NHRP_DEBUG_COMMON, "Deleting peer ref:%d remote:%s local:%s",
++	       p->ref,
++	       sockunion2str(&p->vc->remote.nbma, buf[0], sizeof(buf[0])),
++	       sockunion2str(&p->vc->local.nbma, buf[1], sizeof(buf[1])));
++
+ 	THREAD_OFF(p->t_fallback);
+ 	hash_release(nifp->peer_hash, p);
+ 	nhrp_interface_notify_del(p->ifp, &p->ifp_notifier);
+@@ -185,6 +191,27 @@ static void *nhrp_peer_create(void *data
+ 	return p;
+ }
+ 
++static void do_peer_hash_free(struct hash_bucket *hb,
++			      void *arg __attribute__((__unused__)))
++{
++	struct nhrp_peer *p = hb->data;
++	nhrp_peer_check_delete(p);
++}
++
++void nhrp_peer_interface_del(struct interface *ifp)
++{
++	struct nhrp_interface *nifp = ifp->info;
++
++	debugf(NHRP_DEBUG_COMMON, "Cleaning up undeleted peer entries (%lu)",
++	       nifp->peer_hash ? nifp->peer_hash->count : 0);
++
++	if (nifp->peer_hash) {
++		hash_iterate(nifp->peer_hash, do_peer_hash_free, NULL);
++		assert(nifp->peer_hash->count == 0);
++		hash_free(nifp->peer_hash);
++	}
++}
++
+ struct nhrp_peer *nhrp_peer_get(struct interface *ifp,
+ 				const union sockunion *remote_nbma)
+ {
+--- a/nhrpd/nhrpd.h
++++ b/nhrpd/nhrpd.h
+@@ -343,6 +343,7 @@ void nhrp_nhs_foreach(struct interface *
+ 		      void (*cb)(struct nhrp_nhs *, struct nhrp_registration *,
+ 				 void *),
+ 		      void *ctx);
++void nhrp_nhs_interface_del(struct interface *ifp);
+ 
+ void nhrp_route_update_nhrp(const struct prefix *p, struct interface *ifp);
+ void nhrp_route_announce(int add, enum nhrp_cache_type type,
+@@ -366,6 +367,7 @@ void nhrp_shortcut_foreach(afi_t afi,
+ void nhrp_shortcut_purge(struct nhrp_shortcut *s, int force);
+ void nhrp_shortcut_prefix_change(const struct prefix *p, int deleted);
+ 
++void nhrp_cache_interface_del(struct interface *ifp);
+ void nhrp_cache_config_free(struct nhrp_cache_config *c);
+ struct nhrp_cache_config *nhrp_cache_config_get(struct interface *ifp,
+ 						union sockunion *remote_addr,
+@@ -446,6 +448,7 @@ struct nhrp_reqid *nhrp_reqid_lookup(str
+ 
+ int nhrp_packet_init(void);
+ 
++void nhrp_peer_interface_del(struct interface *ifp);
+ struct nhrp_peer *nhrp_peer_get(struct interface *ifp,
+ 				const union sockunion *remote_nbma);
+ struct nhrp_peer *nhrp_peer_ref(struct nhrp_peer *p);

@@ -1,0 +1,152 @@
+<%#
+ Copyright 2009-2015 Jo-Philipp Wich <jow@openwrt.org>
+ Licensed to the public under the Apache License 2.0.
+-%>
+
+<%-
+
+	local sys = require "luci.sys"
+	local utl = require "luci.util"
+
+	function guess_wifi_signal(info)
+		local scale = (100 / (info.quality_max or 100) * (info.quality or 0))
+		local icon
+
+		if not info.bssid or info.bssid == "00:00:00:00:00:00" then
+			icon = resource .. "/icons/signal-none.png"
+		elseif scale < 15 then
+			icon = resource .. "/icons/signal-0.png"
+		elseif scale < 35 then
+			icon = resource .. "/icons/signal-0-25.png"
+		elseif scale < 55 then
+			icon = resource .. "/icons/signal-25-50.png"
+		elseif scale < 75 then
+			icon = resource .. "/icons/signal-50-75.png"
+		else
+			icon = resource .. "/icons/signal-75-100.png"
+		end
+
+		return icon
+	end
+
+	function percent_wifi_signal(info)
+		local qc = info.quality or 0
+		local qm = info.quality_max or 0
+
+		if info.bssid and qc > 0 and qm > 0 then
+			return math.floor((100 / qm) * qc)
+		else
+			return 0
+		end
+	end
+
+	function format_wifi_encryption(info)
+		if info.wep == true then
+			return "WEP"
+		elseif info.wpa > 0 then
+			return translatef("<abbr title='Pairwise: %s / Group: %s'>%s - %s</abbr>",
+				table.concat(info.pair_ciphers, ", "),
+				table.concat(info.group_ciphers, ", "),
+				(info.wpa == 3) and translate("mixed WPA/WPA2")
+					or (info.wpa == 2 and "WPA2" or "WPA"),
+				table.concat(info.auth_suites, ", ")
+			)
+		elseif info.enabled then
+			return "<em>%s</em>" % translate("unknown")
+		else
+			return "<em>%s</em>" % translate("open")
+		end
+	end
+
+	local dev = luci.http.formvalue("device")
+	local iw = luci.sys.wifi.getiwinfo(dev)
+
+	if not iw then
+		luci.http.redirect(luci.dispatcher.build_url("admin/network/wireless"))
+		return
+	end
+
+
+	function scanlist(times)
+		local i, k, v
+		local l = { }
+		local s = { }
+
+		for i = 1, times do
+			for k, v in ipairs(iw.scanlist or { }) do
+				if not s[v.bssid] then
+					l[#l+1] = v
+					s[v.bssid] = true
+				end
+			end
+		end
+
+		table.sort(l,
+			function(a, b) return a.signal > b.signal end)
+
+		return l
+	end
+-%>
+
+<%+header%>
+
+<h2 name="content"><%:Join Network: Wireless Scan%></h2>
+
+<div class="cbi-map">
+	<fieldset class="cbi-section">
+		<table class="cbi-section-table" style="empty-cells:hide">
+			<!-- scan list -->
+			<% for i, net in ipairs(scanlist(1)) do net.encryption = net.encryption or { } %>
+			<tr class="cbi-section-table-row cbi-rowstyle-<%=1 + ((i-1) % 2)%>">
+				<td class="cbi-value-field" style="width:16px; padding:3px">
+					<abbr title="<%:Signal%>: <%=net.signal%> <%:dB%> / <%:Quality%>: <%=net.quality%>/<%=net.quality_max%>">
+						<img src="<%=guess_wifi_signal(net)%>" /><br />
+						<small><%=percent_wifi_signal(net)%>%</small>
+					</abbr>
+				</td>
+				<td class="cbi-value-field" style="vertical-align:middle; text-align:left; padding:3px">
+					<big><strong><%=net.ssid and utl.pcdata(net.ssid) or "<em>%s</em>" % translate("hidden")%></strong></big><br />
+					<strong>Channel:</strong> <%=net.channel%> |
+					<strong>Mode:</strong> <%=net.mode%> |
+					<strong>BSSID:</strong> <%=net.bssid%> |
+					<strong>Encryption:</strong> <%=format_wifi_encryption(net.encryption)%>
+				</td>
+				<td class="cbi-value-field" style="width:40px">
+					<form action="<%=url('admin/network/wireless_join')%>" method="post">
+						<input type="hidden" name="token" value="<%=token%>" />
+						<input type="hidden" name="device" value="<%=utl.pcdata(dev)%>" />
+						<input type="hidden" name="join" value="<%=utl.pcdata(net.ssid)%>" />
+						<input type="hidden" name="mode" value="<%=net.mode%>" />
+						<input type="hidden" name="bssid" value="<%=net.bssid%>" />
+						<input type="hidden" name="channel" value="<%=net.channel%>" />
+						<input type="hidden" name="wep" value="<%=net.encryption.wep and 1 or 0%>" />
+						<% if net.encryption.wpa then %>
+						<input type="hidden" name="wpa_version" value="<%=net.encryption.wpa%>" />
+						<% for _, v in ipairs(net.encryption.auth_suites) do %><input type="hidden" name="wpa_suites" value="<%=v%>" />
+						<% end; for _, v in ipairs(net.encryption.group_ciphers) do %><input type="hidden" name="wpa_group" value="<%=v%>" />
+						<% end; for _, v in ipairs(net.encryption.pair_ciphers) do %><input type="hidden" name="wpa_pairwise" value="<%=v%>" />
+						<% end; end %>
+
+						<input type="hidden" name="clbridge" value="<%=iw.type == "wl" and 1 or 0%>" />
+
+						<input class="cbi-button cbi-button-apply" type="submit" value="<%:Join Network%>" />
+					</form>
+				</td>
+			</tr>
+			<% end %>
+			<!-- /scan list -->
+		</table>
+	</fieldset>
+</div>
+<div class="cbi-page-actions right">
+	<form class="inline" action="<%=url("admin/network/wireless")%>" method="get">
+		<input class="cbi-button cbi-button-reset" type="submit" value="<%:Back to overview%>" />
+	</form>
+	<form class="inline" action="<%=url('admin/network/wireless_join')%>" method="post">
+		<input type="hidden" name="token" value="<%=token%>" />
+		<input type="hidden" name="device" value="<%=utl.pcdata(dev)%>" />
+		<input class="cbi-button cbi-input-find" type="submit" value="<%:Repeat scan%>" />
+	</form>
+</div>
+
+<%+footer%>

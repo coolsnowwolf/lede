@@ -1,0 +1,476 @@
+#!/usr/bin/lua
+
+--[[
+
+Luci statistics - collectd configuration generator
+(c) 2008 Freifunk Leipzig / Jo-Philipp Wich <jow@openwrt.org>
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+		http://www.apache.org/licenses/LICENSE-2.0
+
+$Id$
+
+]]--
+
+
+require("luci.model.uci")
+require("luci.sys.iptparser")
+require("luci.util")
+
+local ipt = luci.sys.iptparser.IptParser()
+local uci = luci.model.uci.cursor()
+local sections = uci:get_all( "luci_statistics" )
+
+
+function print(...)
+	nixio.stdout:write(...)
+	nixio.stdout:write("\n")
+end
+
+function section( plugin )
+
+	local config = sections[ "collectd_" .. plugin ] or sections["collectd"]
+
+	if type(config) == "table" and ( plugin == "collectd" or config.enable == "1" ) then
+
+		local params = ""
+
+		if type( plugins[plugin] ) == "function" then
+			params = plugins[plugin]( config )
+		else
+			params = config_generic( config, plugins[plugin][1], plugins[plugin][2], plugins[plugin][3], plugin == "collectd" )
+		end
+
+
+		if plugin ~= "collectd" then
+			print( "LoadPlugin " .. plugin )
+
+			if params:len() > 0 then
+				print( "<Plugin " .. plugin .. ">\n" .. params .. "</Plugin>\n" )
+			else
+				print( "" )
+			end
+		else
+			print( params .. "\n" )
+		end
+	end
+end
+
+function config_generic( c, singles, bools, lists, nopad )
+	local str = ""
+
+	if type(c) == "table" then
+
+		if type(singles) == "table" then
+			for i, key in ipairs( singles ) do
+				if preprocess[key] then
+					c[key] = preprocess[key](c[key])
+				end
+
+				str = str .. _string( c[key], key, nopad )
+			end
+		end
+
+		if type(bools) == "table" then
+			for i, key in ipairs( bools ) do
+				if preprocess[key] then
+					c[key] = preprocess[key](c[key])
+				end
+
+				str = str .. _bool( c[key], key, nopad )
+			end
+		end
+
+		if type(lists) == "table" then
+			str = str .. _list_expand( c, lists, nopad )
+		end
+	end
+
+	return str
+end
+
+function config_exec( c )
+	local str = ""
+
+	for s in pairs(sections) do
+		for key, type in pairs({ Exec="collectd_exec_input", NotificationExec="collectd_exec_notify" }) do
+			if sections[s][".type"] == type then
+
+				cmd = sections[s].cmdline
+
+				if cmd then
+					cmd   = cmd:gsub("^%s+", ""):gsub("%s+$", "")
+					user  = sections[s].cmduser  or "nobody"
+					group = sections[s].cmdgroup
+
+					str = str .. "\t" .. key .. ' "' ..
+						user .. ( group and ":" .. group or "" ) .. '" "' ..
+						cmd:gsub('%s+', '" "') .. '"\n'
+				end
+			end
+		end
+	end
+
+	return str
+end
+
+function config_iptables( c )
+	local str = ""
+
+	for s in pairs(sections) do
+		if sections[s][".type"] == "collectd_iptables_match" then
+
+			search = { }
+
+			for i, k in ipairs( {
+				"table", "chain", "target", "protocol", "source", "destination",
+				"inputif", "outputif", "options"
+			} ) do
+				v = sections[s][k]
+
+				if type(v) == "string" then
+					if k == "options" then v = luci.util.split( v, "%s+", nil, true ) end
+					search[k] = v
+				end
+			end
+
+			for i, rule in ipairs( ipt:find( search ) ) do
+
+				name = sections[s].name:gsub( "%s+", "_" )
+				if i > 1 then name = name .. "_(" .. i .. ")" end
+
+				str = str .. "\tChain " .. rule.table .. " " .. rule.chain .. " " .. rule.index .. ' "' .. name .. "\"\n"
+			end
+		end
+	end
+
+	return str
+end
+
+function config_network( c )
+	local str = ""
+
+	for s in pairs(sections) do
+		for key, type in pairs({ Listen="collectd_network_listen", Server="collectd_network_server" }) do
+			if sections[s][".type"] == type then
+
+				host = sections[s].host
+				port = sections[s].port
+
+				if host then
+					if port then
+						str = str .. "\t" .. key .. " \"" .. host .. "\" \"" .. port .. "\"\n"
+					else
+						str = str .. "\t" .. key .. " \"" .. host .. "\"\n"
+					end
+				end
+						end
+				end
+		end
+
+	return str .. _string( c["TimeToLive"], "TimeToLive" )
+		   .. _string( c["CacheFlush"], "CacheFlush" )
+		   .. _bool(   c["Forward"],    "Forward"    )
+end
+
+
+function _list_expand( c, l, nopad )
+	local str = ""
+
+	for i, n in ipairs(l) do
+		if c[n] then
+			if preprocess[n] then
+				c[n] = preprocess[n](c[n])
+			end
+
+			if n:find("(%w+)ses") then
+				k = n:gsub("(%w+)ses$", "%1s")
+			else
+				k = n:gsub("(%w+)s$", "%1")
+			end
+
+			str = str .. _expand( c[n], k, nopad )
+		end
+	end
+
+	return str
+end
+
+function _expand( s, n, nopad )
+	local str = ""
+
+	if type(s) == "string" then
+		for i, v in ipairs( luci.util.split( s, "%s+", nil, true ) ) do
+			str = str .. _string( v, n, nopad )
+		end
+	elseif type(s) == "table" then
+		for i, v in ipairs(s) do
+			str = str .. _string( v, n, nopad )
+		end
+	end
+
+	return str
+end
+
+function _bool( s, n, nopad )
+
+	local str = ""
+	local pad = ""
+	if not nopad then pad = "\t" end
+
+	if s and s == "1" then
+		str = pad .. n .. " true"
+	else
+		str = pad .. n .. " false"
+	end
+
+	return str .. "\n"
+end
+
+function _string( s, n, nopad )
+
+	local str = ""
+	local pad = ""
+	if not nopad then pad = "\t" end
+
+	if s then
+		if s:find("[^%d]") or n == "Port" then
+			if not s:find("[^%w]") and n ~= "Port" then
+				str = pad .. n .. " " .. luci.util.trim(s)
+			else
+				str = pad .. n .. ' "' .. luci.util.trim(s) .. '"'
+			end
+		else
+			str = pad .. n .. " " .. luci.util.trim(s)
+		end
+
+		str = str .. "\n"
+	end
+
+	return str
+end
+
+
+plugins = {
+	apcups = {
+		{ "Host", "Port" },
+		{ },
+		{ }
+	},
+
+	collectd = {
+		{ "BaseDir", "Include", "PIDFile", "PluginDir", "TypesDB", "Interval", "ReadThreads", "Hostname" },
+		{ },
+		{ }
+	},
+
+	conntrack = {
+		{ },
+		{ },
+		{ }
+	},
+
+	cpu	= {
+		{ },
+		{ },
+		{ }
+	},
+
+	cpufreq	= {
+		{ },
+		{ },
+		{ }
+	},
+
+        contextswitch = {
+                { },
+                { },
+                { }
+        },
+
+	csv	= {
+		{ "DataDir" },
+		{ "StoreRates" },
+		{ }
+	},
+
+	df	= {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Devices", "MountPoints", "FSTypes" }
+	},
+
+	disk	= {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Disks" }
+	},
+
+	dns	= {
+		{ },
+		{ },
+		{ "Interfaces", "IgnoreSources" }
+	},
+
+	email	= {
+		{ "SocketFile", "SocketGroup", "SocketPerms", "MaxConns" },
+		{ },
+		{ }
+	},
+
+	entropy = {
+		{ },
+		{ },
+		{ }
+	},
+
+	exec	= config_exec,
+
+	interface = {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Interfaces" }
+	},
+
+	iptables = config_iptables,
+
+	irq	= {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Irqs" }
+	},
+
+	iwinfo = {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Interfaces" }
+	},
+
+	load	= {
+		{ },
+		{ },
+		{ }
+	},
+
+	logfile	= {
+		{ "LogLevel", "File" },
+		{ "Timestamp" },
+		{ }
+	},
+
+	memory = { 
+		{ },
+		{ },
+		{ }
+	},
+
+	netlink	= {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Interfaces", "VerboseInterfaces", "QDiscs", "Classes", "Filters" }
+	},
+
+	network	= config_network,
+
+	nut = {
+		{ "UPS" },
+		{ },
+		{ }
+	},
+
+	olsrd = {
+		{ "Host", "Port", "CollectLinks","CollectRoutes","CollectTopology"},
+		{ },
+		{ }
+	},
+
+	openvpn = {
+		{ },
+		{ "CollectIndividualUsers", "CollectUserCount", "CollectCompression", "ImprovedNamingSchema" },
+		{ "StatusFile" }
+	},
+
+	ping	= {
+		{ "TTL", "Interval" },
+		{ },
+		{ "Hosts" }
+	},
+
+	processes = {
+		{ },
+		{ },
+		{ "Processes" }
+	},
+
+	rrdtool	= {
+		{ "DataDir", "StepSize", "HeartBeat", "RRARows", "XFF", "CacheFlush", "CacheTimeout" },
+		{ "RRASingle" },
+		{ "RRATimespans" }
+	},
+
+	sensors = {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Sensor" }
+	},
+
+        splash_leases = {
+          { },
+          { },
+          { }
+        },
+
+	tcpconns = {
+		{ },
+		{ "ListeningPorts" },
+		{ "LocalPorts", "RemotePorts" }
+	},
+
+	thermal	= {
+		{ },
+		{ "IgnoreSelected" },
+		{ "Device" }
+	},
+
+	unixsock = {
+		{ "SocketFile", "SocketGroup", "SocketPerms" },
+		{ },
+		{ }
+	},
+
+	uptime = {
+		{ },
+		{ },
+		{ }
+	},
+
+	wireless = {
+		{ },
+		{ },
+		{ }
+	},
+}
+
+preprocess = {
+	RRATimespans = function(val)
+		local rv = { }
+		for time in val:gmatch("[^%s]+") do
+			table.insert( rv, luci.util.parse_units(time) )
+		end
+		return table.concat(rv, " ")
+	end
+}
+
+
+section("collectd")
+
+section("logfile")
+
+for plugin in pairs(plugins) do
+	if (plugin ~= "collectd") and (plugin ~= "logfile") then
+		section( plugin )
+	end
+end

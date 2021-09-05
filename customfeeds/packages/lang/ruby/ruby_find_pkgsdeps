@@ -1,0 +1,279 @@
+#!/usr/bin/ruby -Eutf-8
+# encoding: utf-8
+#
+# Find dependencies between ruby packages
+#
+# Must run inside a openwrt with all *ruby* packages installed
+#
+
+RUBY_SIMPLE_VERSION = RUBY_VERSION.split(".")[0..1].join(".")
+failed = false
+
+puts "Loading all installed gems (unstable after external gems are instaled/update)"
+require 'rubygems'
+Gem::Specification.collect{ |g| g.name.downcase }.uniq.each {|g| gem g }
+
+puts "Looking for installed ruby packages..."
+packages=`opkg list-installed '*ruby*' | cut -d' ' -f 1`.split("\n")
+
+puts "Looking for packages files..."
+package_files=Hash.new { |h,k| h[k]=[] }
+packages.each do
+	|pkg|
+	files=`opkg files "#{pkg}" | sed -e 1d`.split("\n")
+	package_files[pkg]=files if files
+end
+
+require_regex=/^require ["']([^"']+)["'].*/
+require_regex_ignore=/^require ([a-zA-Z\$]|["']$|.*\/$)/
+require_ignore=%w{foo rubygems/defaults/operating_system win32console java Win32API
+                  builder/xchar json/pure simplecov win32/sspi rdoc/markdown/literals_1_8 enumerator win32/resolv rbtree
+                  xmlscan/parser xmlscan/scanner xmltreebuilder xml/parser xmlparser xml/encoding-ja xmlencoding-ja
+                  iconv uconv win32ole gettext/po_parser gettext/mo libxml psych.jar psych_jars jar-dependencies thread minitest/proveit
+		bundler pry bcrypt net/http/pipeline capistrano/version rubygems/builder rubygems/format diff/lcs graphviz
+		win32api racc/cparse-jruby.jar profile profiler sorted_set jruby coverage/helpers stackprof webrick/https webrick
+	}
+
+builtin_enc=[
+	Encoding.find("ASCII-8BIT"),
+	Encoding.find("UTF-8"),
+	Encoding.find("UTF-7"),
+	Encoding.find("US-ASCII"),
+]
+
+puts "Looking for requires in files..."
+files_requires=Hash.new { |h,k| h[k]=[] }
+packages.each do
+        |pkg|
+	package_files[pkg].each do
+		|file|
+		next if not File.file?(file)
+
+		if not file =~ /.rb$/
+			if File.executable?(file)
+				magic=`head -c50 '#{file}' | head -1`
+				begin
+					if not magic =~ /ruby/
+						next
+					end
+				rescue
+					next
+				end
+			else
+				next
+			end
+		end
+		#puts "Checking #{file}..."
+		File.open(file, "r") do
+			|f|
+			lineno=0
+			while line=f.gets() do
+				lineno+=1; encs=[]; requires=[]; need_encdb=false
+
+				line=line.chomp.gsub!(/^[[:blank:]]*/,"")
+
+				case line
+				when /^#.*coding *:/
+					if lineno <= 2
+						enc=line.sub(/.*coding *: */,"").sub(/ .*/,"")
+						encs << Encoding.find(enc)
+					end
+				end
+				line.gsub!(/#.*/,"")
+				case line
+				when "__END__"
+					break
+				when /^require /
+					#puts "#{file}:#{line}"
+					if require_regex_ignore =~ line
+						#puts "Ignoring #{line} at #{file}:#{lineno} (REGEX)..."
+						next
+					end
+					if not require_regex =~ line
+						puts "Unknown require: '#{line}' at file #{file}:#{lineno}"
+						failed=true
+					end
+					require=line.gsub(require_regex,"\\1")
+					require.gsub!(/\.(so|rb)$/,"")
+
+					if require_ignore.include?(require)
+						#puts "Ignoring #{line} at #{file}:#{lineno} (STR)..."
+						next
+					end
+
+					files_requires[file] += [require]
+
+				when /Encoding::/
+					encs=line.scan(/Encoding::[[:alnum:]_]+/).collect {|enc| eval(enc) }.select {|enc| enc.kind_of? Encoding }
+					need_encdb=true
+				end
+
+				next if encs.empty?
+				required_encs = (encs - builtin_enc).collect {|enc| "enc/#{enc.name.downcase.gsub("-","_")}" }
+				required_encs << "enc/encdb" if need_encdb
+
+				files_requires[file] += required_encs
+			end
+		end
+	end
+end
+exit(1) if failed
+
+# From ruby source: grep -E 'rb_require' -R . | grep -E '\.c:.*rb_require.*'
+# Add dependencies of ruby files from ruby lib.so
+package_files.each do |(pkg,files)| files.each do |file|
+	case file
+	when /\/nkf\.so$/    ; files_requires[file]=files_requires[file] + ["enc/encdb"]
+	when /\/objspace\.so$/; files_requires[file]=files_requires[file] + ["tempfile"] 	# dump_output from ext/objspace/objspace_dump.c
+	when /\/openssl\.so$/; files_requires[file]=files_requires[file] + ["digest"] 		# Init_ossl_digest from ext/openssl/ossl_digest.c
+	end
+end; end
+
+puts "Grouping package requirements per package"
+package_requires_files = Hash.new{|h,k| h[k] = Hash.new { |h2,k2| h2[k2] = [] } }
+package_files.each do |(pkg,files)|
+	package_requires_files[pkg]
+	files.each do |file|
+		files_requires[file].each do |requires|
+			package_requires_files[pkg][requires] << file
+		end
+	end
+end
+
+weak_dependency=Hash.new { |h,k| h[k]=[] }
+weak_dependency.merge!({
+"ruby-misc"=>["ruby-openssl","ruby-fiddle"],			#securerandom.rb
+"ruby-debuglib"=>["ruby-readline"],				#debug.rb
+"ruby-drb"=>["ruby-openssl"],				 	#drb/ssl.rb
+"ruby-irb"=>["ruby-rdoc", "ruby-readline"],		 	#irb/cmd/help.rb
+"ruby-gems"=>["ruby-openssl","ruby-io-console",  		#rubygems/commands/cert_command.rb rubygems/user_interaction.rb
+		"ruby-bundler", "ruby-erb", "ruby-rdoc"],	#rubygems.rb rubygems/server.rb
+"ruby-net"=>["ruby-openssl","ruby-io-console","ruby-zlib"], 	#net/*.rb
+"ruby-optparse"=>["ruby-uri","ruby-datetime"],			#optparse/date.rb optparse/uri.rb
+"ruby-racc"=>["ruby-gems"],					#/usr/bin/racc*
+"ruby-rake"=>["ruby-net","ruby-gems"],				#rake/contrib/ftptools.rb /usr/bin/rake
+"ruby-rdoc"=>["ruby-gems","ruby-readline",			#/usr/bin/rdoc and others
+	       "ruby-io-console"],				#rdoc/stats/normal.rb
+"ruby-testunit"=>["ruby-io-console"],			 	#gems/test-unit-3.1.5/lib/test/unit/ui/console/testrunner.rb
+"ruby-net-http"=>["ruby-open-uri"]				#net/http/status.rb
+})
+
+puts "Looking for package dependencies..."
+package_provides = {}
+package_dependencies = Hash.new { |h,k| h[k]=[] }
+package_requires_files.each do
+	|(pkg,requires_files)|
+
+	requires_files.each do
+		|(require,files)|
+		if package_provides.include?(require)
+			found = package_provides[require]
+		else
+			found = package_files.detect {|(pkg,files)| files.detect {|file| $:.detect {|path| "#{path}/#{require}" == file.gsub(/\.(so|rb)$/,"") } } }
+			if not found
+				$stderr.puts "#{pkg}: Nothing provides #{require} for #{files.collect {|file| file.sub("/usr/lib/ruby/","") }.join(",")}"
+				failed = true
+				next
+			end
+			found = found.first
+			package_provides[require] = found
+		end
+		if weak_dependency[pkg].include?(found)
+			puts "#{pkg}: #{found} provides #{require} (weak depedendency ignored)"
+		else
+			puts "#{pkg}: #{found} provides #{require} for #{files.collect {|file| file.sub("/usr/lib/ruby/","") }.join(",")}"
+			package_dependencies[pkg] += [found]
+		end
+	end
+end
+if failed
+	puts "There is some missing requirements not mapped to files in packages."
+	puts "Please, fix the missing files or ignore them on require_ignore var"
+	exit(1)
+end
+# Remove self dependency
+package_dependencies = Hash[package_dependencies.collect {|(pkg,deps)| [pkg,package_dependencies[pkg]=deps.uniq.sort - [pkg]]}]
+package_dependencies.default = []
+
+puts "Expanding dependencies..."
+begin
+	changed=false
+	package_dependencies.each do
+		|(pkg,deps)|
+		next if deps.empty?
+		deps.each {|dep| puts "#{pkg}: #{dep} also depends on #{pkg}" if package_dependencies[dep].include?(pkg) }
+		deps_new = deps.collect {|dep| [dep] + package_dependencies[dep] }.inject([],:+).uniq.sort
+		if not deps == deps_new
+			puts "#{pkg}: #{deps.join(",")}"
+			puts "#{pkg}: #{deps_new.join(",")}"
+			package_dependencies[pkg]=deps_new
+
+			if deps_new.include?(pkg)
+				$stderr.puts "#{pkg}: Circular dependency detected (#1)!"
+				exit 1
+			end
+			changed=true
+		end
+	end
+end if not changed
+
+puts "Removing redundant dependencies..."
+package_dependencies.each do
+	|(pkg,deps)|
+	package_dependencies[pkg]=deps.uniq - [pkg]
+end
+
+puts "Checking for mutual dependencies..."
+package_dependencies.each do
+	|(pkg,deps)|
+	if deps.include? pkg
+		$stderr.puts "#{pkg}: Circular dependency detected (#2)!"
+		failed = true
+	end
+end
+exit(1) if failed
+
+
+package_dependencies2=package_dependencies.dup
+package_dependencies.each do
+	|(pkg,deps)|
+
+	# Ignore dependencies that are already required by another dependency
+	deps_clean = deps.reject {|dep_suspect| deps.detect {|dep_provider|
+			if package_dependencies[dep_provider].include?(dep_suspect)
+				puts "#{pkg}: #{dep_suspect} is already required by #{dep_provider}"
+				true
+			end
+		 } }
+
+	if not deps==deps_clean
+		puts "before: #{deps.join(",")}"
+		puts "after: #{deps_clean.join(",")}"
+		package_dependencies2[pkg]=deps_clean
+	end
+end
+package_dependencies=package_dependencies2
+
+puts "Checking current packages dependencies..."
+ok=true
+package_dependencies.each do
+	|(pkg,deps)|
+	current_deps=`opkg depends #{pkg} | sed -r -e '1d;s/^[[:blank:]]*//'`.split("\n")
+	current_deps.reject!{|dep| dep =~ /^lib/ }
+	current_deps -= ["ruby"]
+
+	extra_dep = current_deps - deps
+	$stderr.puts "Package #{pkg} does not need to depend on #{extra_dep.join(" ")} " if not extra_dep.empty?
+	missing_dep = deps - current_deps
+	$stderr.puts "Package #{pkg} needs to depend on #{missing_dep.join(" ")} " if not missing_dep.empty?
+
+	if not extra_dep.empty? or not missing_dep.empty?
+		$stderr.puts "define Package/#{pkg}"
+		$stderr.puts "  DEPENDS:=ruby#{([""] +deps).join(" +")}"
+		ok=false
+	end
+end
+
+puts "All dependencies are OK." if ok
+
+__END__
