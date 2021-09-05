@@ -18,6 +18,10 @@ HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
 
+ifeq ($(HOST_OS),Darwin)
+	HOST_CFLAGS +=-D__nonnull\\(params\\)=
+endif
+
 HOST_CONFIGURE_ARGS += \
 	--enable-threads=pth \
 	--disable-rpath \
