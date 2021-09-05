@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=autoconf-archive
-PKG_VERSION:=2019.01.06
+PKG_VERSION:=2021.02.19
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/autoconf-archive
