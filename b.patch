@@ -1,0 +1,354 @@
+diff --git a/package/lean/luci-app-turboacc/Makefile b/package/lean/luci-app-turboacc/Makefile
+index 7e848d68c..cca850d7b 100644
+--- a/package/lean/luci-app-turboacc/Makefile
++++ b/package/lean/luci-app-turboacc/Makefile
+@@ -17,7 +17,8 @@ LUCI_DEPENDS:=+pdnsd-alt \
+ 	+PACKAGE_TURBOACC_INCLUDE_DNSFORWARDER:dnsforwarder \
+ 	+PACKAGE_TURBOACC_INCLUDE_DNSPROXY:dnsproxy \
+ 	+PACKAGE_TURBOACC_INCLUDE_OFFLOADING:kmod-ipt-offload \
+-	+PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE:kmod-fast-classifier
++	+PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE:kmod-shortcut-fe-cm \
++	+PACKAGE_TURBOACC_INCLUDE_ECM_SFE:kmod-shortcut-fe-drv
+ LUCI_PKGARCH:=all
+ 
+ define Package/luci-app-turboacc/config
+@@ -41,6 +42,11 @@ config PACKAGE_TURBOACC_INCLUDE_DNSFORWARDER
+ config PACKAGE_TURBOACC_INCLUDE_DNSPROXY
+ 	bool "Include DNSProxy"
+ 	default n
++
++config PACKAGE_TURBOACC_INCLUDE_ECM_SFE
++	bool "Include Shortcut-FE with ECM"
++	depends on (TARGET_ipq806x||TARGET_ipq807x)
++	default y if (CONFIG_PACKAGE_kmod-qca-nss-ecm-noload||CONFIG_PACKAGE_kmod-qca-nss-ecm-premium||CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload||CONFIG_PACKAGE_kmod-qca-nss-ecm-standard)
+ endef
+ 
+ PKG_CONFIG_DEPENDS:= \
+@@ -48,7 +54,8 @@ PKG_CONFIG_DEPENDS:= \
+ 	CONFIG_PACKAGE_TURBOACC_INCLUDE_DNSFORWARDER \
+ 	CONFIG_PACKAGE_TURBOACC_INCLUDE_DNSPROXY \
+ 	CONFIG_PACKAGE_TURBOACC_INCLUDE_OFFLOADING \
+-	CONFIG_PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE
++	CONFIG_PACKAGE_TURBOACC_INCLUDE_SHORTCUT_FE \
++	CONFIG_PACKAGE_PACKAGE_TURBOACC_INCLUDE_ECM_SFE
+ 
+ include $(TOPDIR)/feeds/luci/luci.mk
+ 
+diff --git a/package/lean/luci-app-turboacc/luasrc/model/cbi/turboacc.lua b/package/lean/luci-app-turboacc/luasrc/model/cbi/turboacc.lua
+index a1a26196f..4d2e4571d 100644
+--- a/package/lean/luci-app-turboacc/luasrc/model/cbi/turboacc.lua
++++ b/package/lean/luci-app-turboacc/luasrc/model/cbi/turboacc.lua
+@@ -24,25 +24,13 @@ hw_flow.description = translate("Requires hardware NAT support. Implemented at l
+ hw_flow:depends("sw_flow", 1)
+ end
+ 
+-if nixio.fs.access("/lib/modules/" .. kernel_version .. "/fast-classifier.ko") then
++if nixio.fs.access("/lib/modules/" .. kernel_version .. "/shortcut-fe-cm.ko") then
+ sfe_flow = s:option(Flag, "sfe_flow", translate("Shortcut-FE flow offloading"))
+ sfe_flow.default = 0
+ sfe_flow.description = translate("Shortcut-FE based offloading for routing/NAT")
+ sfe_flow:depends("sw_flow", 0)
+ end
+ 
+-sfe_bridge = s:option(Flag, "sfe_bridge", translate("Bridge Acceleration"))
+-sfe_bridge.default = 0
+-sfe_bridge.description = translate("Enable Bridge Acceleration (may be functional conflict with bridge-mode VPN server)")
+-sfe_bridge:depends("sfe_flow", 1)
+-
+-if nixio.fs.access("/proc/sys/net/ipv6") then
+-sfe_ipv6 = s:option(Flag, "sfe_ipv6", translate("IPv6 Acceleration"))
+-sfe_ipv6.default = 0
+-sfe_ipv6.description = translate("Enable IPv6 Acceleration")
+-sfe_ipv6:depends("sfe_flow", 1)
+-end
+-
+ if nixio.fs.access("/lib/modules/" .. kernel_version .. "/tcp_bbr.ko") then
+ bbr_cca = s:option(Flag, "bbr_cca", translate("BBR CCA"))
+ bbr_cca.default = 0
+diff --git a/package/lean/luci-app-turboacc/root/etc/config/turboacc b/package/lean/luci-app-turboacc/root/etc/config/turboacc
+index 71135e188..a2d4c0bdf 100644
+--- a/package/lean/luci-app-turboacc/root/etc/config/turboacc
++++ b/package/lean/luci-app-turboacc/root/etc/config/turboacc
+@@ -3,8 +3,6 @@ config turboacc 'config'
+ 	option sw_flow '1'
+ 	option hw_flow '1'
+ 	option sfe_flow '1'
+-	option sfe_bridge '1'
+-	option sfe_ipv6 '0'
+ 	option fullcone_nat '1'
+ 	option bbr_cca '0'
+ 	option dns_caching '0'
+diff --git a/package/lean/luci-app-turboacc/root/etc/init.d/turboacc b/package/lean/luci-app-turboacc/root/etc/init.d/turboacc
+index 0d595568a..10eed3a77 100755
+--- a/package/lean/luci-app-turboacc/root/etc/init.d/turboacc
++++ b/package/lean/luci-app-turboacc/root/etc/init.d/turboacc
+@@ -15,8 +15,6 @@ inital_conf(){
+ 	config_get "sw_flow" "config" "sw_flow" "0"
+ 	config_get "hw_flow" "config" "hw_flow" "0"
+ 	config_get "sfe_flow" "config" "sfe_flow" "0"
+-	config_get "sfe_bridge" "config" "sfe_bridge" "0"
+-	config_get "sfe_ipv6" "config" "sfe_ipv6" "0"
+ 	config_get "bbr_cca" "config" "bbr_cca" "0"
+ 	config_get "fullcone_nat" "config" "fullcone_nat" "0"
+ 	config_get "dns_caching" "config" "dns_caching" "0"
+@@ -24,7 +22,7 @@ inital_conf(){
+ 	config_get "dns_caching_dns" "config" "dns_caching_dns"
+ 
+ 	[ ! -e "/lib/modules/$(uname -r)/xt_FLOWOFFLOAD.ko" ] && { sw_flow="0"; hw_flow="0"; }
+-	[ ! -e "/lib/modules/$(uname -r)/fast-classifier.ko" ] && { sfe_flow="0"; sfe_bridge="0"; sfe_ipv6="0"; }
++	[ ! -e "/lib/modules/$(uname -r)/shortcut-fe-cm.ko" ] && sfe_flow="0"
+ 	[ ! -e "/lib/modules/$(uname -r)/tcp_bbr.ko" ] && bbr_cca="0"
+ 	[ ! -e "/lib/modules/$(uname -r)/xt_FULLCONENAT.ko" ] && fullcone_nat="0"
+ }
+@@ -233,13 +231,8 @@ start(){
+ 	uci commit firewall
+ 
+ 	[ "${sw_flow}" -ne "1" ] && [ "${sfe_flow}" -eq "1" ] && {
+-		lsmod | grep -q fast_classifier || modprobe fast_classifier 2>"/dev/null"
+-		echo "${sfe_bridge}" > "/sys/fast_classifier/skip_to_bridge_ingress" 2>"/dev/null"
+-		if [ "${sfe_ipv6}" -eq "1" ]; then
+-			[ ! -e "/dev/sfe_ipv6" ] && mknod "/dev/sfe_ipv6" "c" "$(cat "/sys/sfe_ipv6/debug_dev")" "0"
+-		else
+-			rm -f "/dev/sfe_ipv6"
+-		fi
++		[ "$(have_ecm_init)" = "1" ] && /etc/init.d/qca-nss-ecm turboacc_start
++		[ "$(have_ecm_init)" = "0" ] && /etc/init.d/shortcut-fe turboacc_start
+ 	}
+ 
+ 	if [ "${bbr_cca}" -eq "1" ];  then
+@@ -283,9 +276,8 @@ stop(){
+ 	uci commit firewall
+ 
+ 	[ "${sfe_flow}" -ne "1" ] && {
+-		echo "0" > "/sys/fast_classifier/skip_to_bridge_ingress" 2>"/dev/null"
+-		rm -f "/dev/sfe_ipv6"
+-		rmmod "fast_classifier" 2>"/dev/null"
++		[ "$(have_ecm_init)" = "1" ] && /etc/init.d/qca-nss-ecm stop 2>"/dev/null"
++		/etc/init.d/shortcut-fe stop 2>"/dev/null"
+ 	}
+ 
+ 	stop_dnscache
+@@ -305,6 +297,10 @@ restart(){
+ 	/etc/init.d/firewall restart >"/dev/null" 2>&1
+ }
+ 
++have_ecm_init() {
++	[ -d "/etc/init.d/qca-nss-ecm" ] && echo 1 && return
++	echo 0
++}
+ 
+ check_status(){
+ 	case "$1" in
+@@ -315,7 +311,7 @@ check_status(){
+ 		elif lsmod | grep -q "ecm"; then
+ 			echo -n "QCA-NSS-ECM"
+ 			exit 0
+-		elif lsmod | grep -q "fast_classifier"; then
++		elif lsmod | grep -q "shortcut_fe_cm"; then
+ 			echo -n "Shortcut-FE"
+ 			exit 0
+ 		else
+diff --git a/package/lean/shortcut-fe/fast-classifier/Makefile b/package/lean/shortcut-fe/fast-classifier/Makefile
+index 8e3a689b6..260a63eaa 100644
+--- a/package/lean/shortcut-fe/fast-classifier/Makefile
++++ b/package/lean/shortcut-fe/fast-classifier/Makefile
+@@ -69,16 +69,13 @@ endef
+ 
+ SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=$(if $(CONFIG_IPV6),y,n)
+ 
+-ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard),)
+-	EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y"
+-endif
+-
+ define Build/Compile/kmod
+ 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(SFE_MAKE_OPTS) \
+ 		$(KERNEL_MAKE_FLAGS) \
+ 		$(PKG_MAKE_FLAGS) \
+ 		M="$(PKG_BUILD_DIR)" \
+ 		CONFIG_FAST_CLASSIFIER=m \
++		$(if ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard)),EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y",) \
+ 		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+ 		modules
+ endef
+diff --git a/package/lean/shortcut-fe/shortcut-fe/Makefile b/package/lean/shortcut-fe/shortcut-fe/Makefile
+index 111b368b4..33887e959 100644
+--- a/package/lean/shortcut-fe/shortcut-fe/Makefile
++++ b/package/lean/shortcut-fe/shortcut-fe/Makefile
+@@ -61,16 +61,13 @@ define KernelPackage/shortcut-fe-cm/Description
+ Simple connection manager for the Shortcut forwarding engine.
+ endef
+ 
+-ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard),)
+-	EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y"
+-endif
+-
+ define Build/Compile
+ 	$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
+ 		$(KERNEL_MAKE_FLAGS) \
+ 		$(PKG_MAKE_FLAGS) \
+ 		M="$(PKG_BUILD_DIR)" \
+ 		$(if $(CONFIG_IPV6),EXTRA_CFLAGS+="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y,) \
++		$(if ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard)),EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y",) \
+ 		modules
+ endef
+ 
+diff --git a/package/lean/shortcut-fe/shortcut-fe/files/etc/init.d/shortcut-fe b/package/lean/shortcut-fe/shortcut-fe/files/etc/init.d/shortcut-fe
+index baa562595..749dddb09 100755
+--- a/package/lean/shortcut-fe/shortcut-fe/files/etc/init.d/shortcut-fe
++++ b/package/lean/shortcut-fe/shortcut-fe/files/etc/init.d/shortcut-fe
+@@ -17,6 +17,12 @@
+ #to detect the existence of connection manager with higher priority
+ START=72
+ 
++have_turboacc() {
++	[ -d "/etc/init.d/turboacc" ] && echo 1 && return
++
++	echo 0
++}
++
+ have_cm() {
+ 	[ -d "/sys/kernel/debug/ecm" ] && echo 1 && return
+ 
+@@ -24,8 +30,8 @@ have_cm() {
+ }
+ 
+ load_sfe() {
+-        [ -d /sys/module/shortcut_fe ] || insmod shortcut-fe
+-        [ -d /sys/module/shortcut_fe_ipv6 ] || insmod shortcut-fe-ipv6
++        [ -d "/sys/module/shortcut_fe" ] || insmod shortcut-fe
++        [ -d "/sys/module/shortcut_fe_ipv6" ] || insmod shortcut-fe-ipv6
+ }
+ 
+ #load shortcut-fe connection manager
+@@ -44,13 +50,18 @@ load_sfe_cm() {
+ 	}
+ }
+ 
++turboacc_start() {
++	load_sfe && load_sfe_cm
++}
++
+ start() {
+-	[ "$(have_cm)" = "0" ] && load_sfe && load_sfe_cm
++	[ "$(have_turboacc)" = "0" ] && [ "$(have_cm)" = "0" ] && turboacc_start
+ }
+ 
+-stop() {	
+-	[ -d /sys/module/shortcut_fe_cm ] && rmmod shortcut_fe_cm
+-	[ -d /sys/module/fast_classifier ] && rmmod fast_classifier
+-	[ -d /sys/module/shortcut_fe ] && rmmod shortcut-fe
+-	[ -d /sys/module/shortcut_fe_ipv6 ] && rmmod shortcut-fe-ipv6
++stop() {
++	[ -d "/sys/module/shortcut_fe_drv" ] && rmmod shortcut_fe_drv
++	[ -d "/sys/module/shortcut_fe_cm" ] && rmmod shortcut_fe_cm
++	[ -d "/sys/module/fast_classifier" ] && rmmod fast_classifier
++	[ -d "/sys/module/shortcut_fe_ipv6" ] && rmmod shortcut-fe-ipv6
++	[ -d "/sys/module/shortcut_fe" ] && rmmod shortcut-fe
+ }
+diff --git a/package/qca/nss/qca-nss-ecm-64/files/qca-nss-ecm.init b/package/qca/nss/qca-nss-ecm-64/files/qca-nss-ecm.init
+index 7afb679f1..fd1c9c2cf 100644
+--- a/package/qca/nss/qca-nss-ecm-64/files/qca-nss-ecm.init
++++ b/package/qca/nss/qca-nss-ecm-64/files/qca-nss-ecm.init
+@@ -57,6 +57,10 @@ load_sfe() {
+ 		[ -d /sys/module/shortcut_fe_ipv6 ] || insmod shortcut-fe-ipv6
+ 	}
+ 
++	[ -e "/lib/modules/$kernel_version/shortcut-fe-cm.ko" ] && {
++		[ -d /sys/module/shortcut_fe_cm ] || insmod shortcut-fe-cm
++	}
++
+ 	[ -e "/lib/modules/$kernel_version/shortcut-fe-drv.ko" ] && {
+ 		[ -d /sys/module/shortcut_fe_drv ] || insmod shortcut-fe-drv
+ 	}
+@@ -96,14 +100,7 @@ unload_ecm() {
+ 	fi
+ }
+ 
+-start() {
+-	# If SFE CM is loaded, return.
+-	if [ -d /sys/module/shortcut_fe_cm ]; then
+-		echo "shortcut_fe CM is loaded, unload it first"
+-		echo "cmd: /etc/init.d/shortcut_fe stop"
+-		return
+-	fi
+-
++turboacc_start() {
+ 	load_ecm
+ 
+ 	# If the acceleration engine is NSS, enable wifi redirect.
+@@ -120,6 +117,10 @@ start() {
+ 
+ }
+ 
++start() {
++	[ "$(have_turboacc)" = "0" ] && turboacc_start
++}
++
+ stop() {
+ 	# If ECM is already not loaded, just return.
+ 	if [ ! -d /sys/module/ecm ]; then
+diff --git a/package/qca/nss/qca-nss-ecm/files/qca-nss-ecm.init b/package/qca/nss/qca-nss-ecm/files/qca-nss-ecm.init
+index 9b43fdb09..28efee758 100644
+--- a/package/qca/nss/qca-nss-ecm/files/qca-nss-ecm.init
++++ b/package/qca/nss/qca-nss-ecm/files/qca-nss-ecm.init
+@@ -20,6 +20,12 @@
+ 
+ START=19
+ 
++have_turboacc() {
++	[ -d "/etc/init.d/turboacc" ] && echo 1 && return
++
++	echo 0
++}
++
+ get_front_end_mode() {
+ 	config_load "ecm"
+ 	config_get front_end global acceleration_engine "auto"
+@@ -47,9 +53,24 @@ support_bridge() {
+ }
+ 
+ load_sfe() {
+-	[ -d /sys/module/shortcut_fe ] || insmod shortcut-fe
+-	[ -d /sys/module/shortcut_fe_ipv6 ] || insmod shortcut-fe-ipv6
+-	[ -d /sys/module/shortcut_fe_drv ] || insmod shortcut-fe-drv
++	local kernel_version=$(uname -r)
++
++	[ -e "/lib/modules/$kernel_version/shortcut-fe.ko" ] && {
++		[ -d /sys/module/shortcut_fe ] || insmod shortcut-fe
++	}
++
++	[ -e "/lib/modules/$kernel_version/shortcut-fe-ipv6.ko" ] && {
++		[ -d /sys/module/shortcut_fe_ipv6 ] || insmod shortcut-fe-ipv6
++	}
++
++	[ -e "/lib/modules/$kernel_version/shortcut-fe-cm.ko" ] && {
++		[ -d /sys/module/shortcut_fe_cm ] || insmod shortcut-fe-cm
++	}
++
++	[ -e "/lib/modules/$kernel_version/shortcut-fe-drv.ko" ] && {
++		[ -d /sys/module/shortcut_fe_drv ] || insmod shortcut-fe-drv
++	}
++	
+ }
+ 
+ load_ecm() {
+@@ -86,7 +107,7 @@ unload_ecm() {
+ 	fi
+ }
+ 
+-start() {
++turboacc_start() {
+ 	load_ecm
+ 
+ 	# If the acceleration engine is NSS, enable wifi redirect.
+@@ -103,6 +124,10 @@ start() {
+ 
+ }
+ 
++start() {
++	[ "$(have_turboacc)" = "0" ] && turboacc_start
++}
++
+ stop() {
+ 	# If the acceleration engine is NSS, disable wifi redirect.
+ 	[ -d /sys/kernel/debug/ecm/ecm_nss_ipv4 ] && sysctl -w dev.nss.general.redirect=0
