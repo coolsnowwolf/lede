@@ -69,16 +69,13 @@ endef
 
 SFE_MAKE_OPTS:=SFE_SUPPORT_IPV6=$(if $(CONFIG_IPV6),y,n)
 
-ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard),)
-	EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y"
-endif
-
 define Build/Compile/kmod
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" $(SFE_MAKE_OPTS) \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
 		CONFIG_FAST_CLASSIFIER=m \
+		$(if ($(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard)),EXTRA_CFLAGS+="-DCONFIG_SFE_ECM=y",) \
 		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 		modules
 endef
