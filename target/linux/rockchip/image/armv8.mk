@@ -52,3 +52,13 @@ define Device/xunlong_orangepi-r1-plus
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
 TARGET_DEVICES += xunlong_orangepi-r1-plus
+
+define Device/embedfire_doornet1
+  DEVICE_VENDOR := EmbedFire
+  DEVICE_MODEL := DoorNet1
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := doornet1-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 
+endef
+TARGET_DEVICES += embedfire_doornet1
