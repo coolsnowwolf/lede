@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2015 The Linux Foundation. All rights reserved.
+# Copyright (c) 2015,2016 The Linux Foundation. All rights reserved.
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
 # above copyright notice and this permission notice appear in all copies.
@@ -17,10 +17,12 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=shortcut-fe-simulated-driver
 PKG_RELEASE:=1
+PKG_CONFIG_DEPENDS := CONFIG_IPV6
 
 PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/shortcut-fe
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=c7dd8173b178affc9d8da22f51610243be994e1c
+PKG_SOURCE_DATE:=2021-03-17
+PKG_SOURCE_VERSION:=697977d8d0ccf0ab596e5692d08608a75dd7f33d
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -29,22 +31,22 @@ define KernelPackage/shortcut-fe-drv
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   DEPENDS:=@TARGET_ipq806x||TARGET_ipq807x +kmod-shortcut-fe
+  KCONFIG:=CONFIG_NET_CLS_ACT=y \
+   	    CONFIG_XFRM=y
   TITLE:=Simulated sfe driver for ECM
   FILES:=$(PKG_BUILD_DIR)/simulated-driver/shortcut-fe-drv.ko
-  AUTOLOAD:=$(call AutoLoad,10,shortcut-fe-drv)
 endef
 
 define KernelPackage/shortcut-fe-drv/Description
 Simulated sfe driver which act as an adapter to convert message between a connection manager and the SFE core engine.
 endef
 
-EXTRA_CFLAGS+=-DSFE_SUPPORT_IPV6
-
 define Build/Compile
 	$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)/simulated-driver" \
+		$(if $(CONFIG_IPV6),EXTRA_CFLAGS+="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y,) \
 		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 		modules
 endef

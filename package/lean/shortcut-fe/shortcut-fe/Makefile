@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2014 The Linux Foundation. All rights reserved.
+# Copyright (c) 2013-2018, 2020 The Linux Foundation. All rights reserved.
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
 # above copyright notice and this permission notice appear in all copies.
@@ -31,7 +31,7 @@ define KernelPackage/shortcut-fe
 	   CONFIG_NF_CONNTRACK_TIMEOUT=y \
 	   CONFIG_SHORTCUT_FE=y \
 	   CONFIG_XFRM=y
-  AUTOLOAD:=$(call AutoLoad,09,shortcut-fe shortcut-fe-ipv6)
+  PROVIDES:=$(PKG_NAME)
 endef
 
 define KernelPackage/shortcut-fe/Description
@@ -39,9 +39,13 @@ Shortcut is an in-Linux-kernel IP packet forwarding engine.
 endef
 
 define KernelPackage/shortcut-fe/install
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/etc/init.d/shortcut-fe $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/sfe_dump $(1)/usr/bin
 endef
+
+HAVE_ECM:=$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-premium-noload)$(CONFIG_PACKAGE_kmod-qca-nss-ecm-standard)
 
 define KernelPackage/shortcut-fe-cm
   SECTION:=kernel
@@ -50,7 +54,10 @@ define KernelPackage/shortcut-fe-cm
   DEPENDS:=+kmod-ipt-conntrack +kmod-shortcut-fe
   TITLE:=Kernel driver for SFE
   FILES:=$(PKG_BUILD_DIR)/shortcut-fe-cm.ko
-  KCONFIG:=CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y
+  KCONFIG:=CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y \
+  	   CONFIG_NF_CONNTRACK_EVENTS=y \
+  	   CONFIG_XFRM=y
+  CONFLICTS:=kmod-shortcut-fe-drv
 endef
 
 define KernelPackage/shortcut-fe-cm/Description
@@ -58,12 +65,13 @@ Simple connection manager for the Shortcut forwarding engine.
 endef
 
 define Build/Compile
-	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
+	$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
-		modules \
-		$(if $(CONFIG_IPV6),EXTRA_CFLAGS="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y,)
+		$(if $(CONFIG_IPV6),EXTRA_CFLAGS+="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y,) \
+		$(if $(HAVE_ECM),EXTRA_CFLAGS+="-DCONFIG_SFE_ECM" CONFIG_SFE_ECM=y,) \
+		modules
 endef
 
 ifneq ($(CONFIG_PACKAGE_kmod-shortcut-fe)$(CONFIG_PACKAGE_kmod-shortcut-fe-cm),)
