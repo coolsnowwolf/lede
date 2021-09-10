@@ -77,6 +77,7 @@ struct bcm4908img_tail {
  * 4. padding  ├─ firmware
  * 5. rootfs  ─┘
  * 6. BCM4908 tail
+ * 7. (Optional) vendor tail
  */
 struct bcm4908img_info {
 	size_t cferom_offset;
@@ -249,6 +250,16 @@ struct chk_header {
 	char board_id[0];
 };
 
+struct linksys_tail {
+	char magic[9];
+	uint8_t version[8];
+	char model[15];
+	uint32_t crc32;
+	uint8_t padding[9];
+	uint8_t signature[16];
+	uint8_t reserved[192];
+};
+
 static bool bcm4908img_is_all_ff(const void *buf, size_t length)
 {
 	const uint8_t *in = buf;
@@ -264,6 +275,7 @@ static bool bcm4908img_is_all_ff(const void *buf, size_t length)
 
 static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 	struct bcm4908img_tail *tail = &info->tail;
+	struct linksys_tail *linksys;
 	struct chk_header *chk;
 	struct stat st;
 	uint8_t buf[1024];
@@ -296,6 +308,16 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 	chk = (void *)buf;
 	if (be32_to_cpu(chk->magic) == 0x2a23245e)
 		info->cferom_offset = be32_to_cpu(chk->header_len);
+
+	fseek(fp, -sizeof(buf), SEEK_END);
+	if (fread(buf, 1, sizeof(buf), fp) != sizeof(buf)) {
+		fprintf(stderr, "Failed to read file header\n");
+		return -EIO;
+	}
+	linksys = (void *)(buf + sizeof(buf) - sizeof(*linksys));
+	if (!memcmp(linksys->magic, ".LINKSYS.", sizeof(linksys->magic))) {
+		info->tail_offset -= sizeof(*linksys);
+	}
 
 	/* Offsets */
 
