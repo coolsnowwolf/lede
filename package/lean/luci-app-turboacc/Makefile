@@ -32,7 +32,7 @@ LUCI_DEPENDS:=+pdnsd-alt \
 define Package/$(PKG_NAME)/config
 config PACKAGE_$(PKG_NAME)_INCLUDE_OFFLOADING
 	bool "Include Flow Offload"
-	depends on PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE=n
+	depends on (PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE=n && PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV=n)
 	default y if i386||x86_64||TARGET_ramips
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV
