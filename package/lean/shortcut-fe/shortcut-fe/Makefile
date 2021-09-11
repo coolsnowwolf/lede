@@ -16,7 +16,6 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=shortcut-fe
 PKG_RELEASE:=2
-PKG_CONFIG_DEPENDS := CONFIG_IPV6
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -24,7 +23,7 @@ define KernelPackage/shortcut-fe
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
-  DEPENDS:=
+  DEPENDS:=@IPV6
   TITLE:=Kernel driver for SFE
   FILES:=$(PKG_BUILD_DIR)/shortcut-fe.ko $(if $(CONFIG_IPV6),$(PKG_BUILD_DIR)/shortcut-fe-ipv6.ko,)
   KCONFIG:=CONFIG_NF_CONNTRACK_EVENTS=y \
