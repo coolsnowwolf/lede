@@ -9,19 +9,44 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for Rclone
-LUCI_DEPENDS:=+rclone \
-              +PACKAGE_luci-app-rclone_INCLUDE_rclone-webui:rclone-webui-react \
-              +PACKAGE_luci-app-rclone_INCLUDE_rclone-ng:rclone-ng \
-              +PACKAGE_luci-app-rclone_INCLUDE_fuse-utils:fuse-utils
-LUCI_PKGARCH:=all
 PKG_NAME:=luci-app-rclone
 PKG_VERSION:=1.4.1
 PKG_RELEASE:=1
 PKG_LICENSE:=GPLv3.0+
+
 PKG_MAINTAINER:=ElonH <elonhhuang@gmail.com>
 
-define Package/luci-app-rclone/description
+PKG_CONFIG_DEPENDS:= \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_rclone-webui \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_rclone-ng \
+	CONFIG_PACKAGE_$(PKG_NAME)_INCLUDE_fuse-utils
+	
+LUCI_TITLE:=LuCI support for Rclone
+LUCI_PKGARCH:=all
+LUCI_DEPENDS:=+rclone \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_rclone-webui:rclone-webui-react \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_rclone-ng:rclone-ng \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_fuse-utils:fuse-utils
+
+define Package/$(PKG_NAME)/config
+config PACKAGE_$(PKG_NAME)_INCLUDE_rclone-webui
+	bool "Include rclone-webui"
+	default y
+
+config PACKAGE_$(PKG_NAME)_INCLUDE_rclone-ng
+	bool "Include rclone-ng (another webui)"
+	default y
+
+config PACKAGE_$(PKG_NAME)_INCLUDE_fuse-utils
+	bool "Include fuse-utils (mount cloud storage)"
+	default y
+endef
+
+define Package/$(PKG_NAME)/conffiles
+/etc/config/rclone
+endef
+
+define Package/$(PKG_NAME)/description
 	LuCI support for Rclone. 
 	Rclone ("rsync for cloud storage") is a command line program to sync root/usr/bin and directories to and from different cloud storage providers.
 	Cloud storage providers:
@@ -33,24 +58,6 @@ define Package/luci-app-rclone/description
 		Oracle Cloud Storage, ownCloud, pCloud, premiumize.me, put.io, QingStor, 
 		Rackspace Cloud root/usr/bin, rsync.net, Scaleway, SFTP, Wasabi, WebDAV, 
 		Yandex Disk, The local root/usr/binystem.
-endef
-
-define Package/luci-app-rclone/conffiles
-/etc/config/rclone
-endef
-
-define Package/luci-app-rclone/config
-config PACKAGE_luci-app-rclone_INCLUDE_rclone-webui
-	bool "Include rclone-webui"
-	default y
-
-config PACKAGE_luci-app-rclone_INCLUDE_rclone-ng
-	bool "Include rclone-ng (another webui)"
-	default y
-
-config PACKAGE_luci-app-rclone_INCLUDE_fuse-utils
-	bool "Include fuse-utils (mount cloud storage)"
-	default y
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk

@@ -20,7 +20,7 @@ define KernelPackage/qca-rfs
   TITLE:=Kernel module for QCA Receiving Flow Steering
   FILES:=$(PKG_BUILD_DIR)/qrfs.ko
   KCONFIG:=\
-  	CONFIG_NF_CONNTRACK_EVENTS=y \
+	CONFIG_NF_CONNTRACK_EVENTS=y \
 	CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y
   AUTOLOAD:=$(call AutoLoad,29,qrfs)
 endef

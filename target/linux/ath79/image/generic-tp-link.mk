@@ -588,6 +588,18 @@ define Device/tplink_tl-wdr7500-v3
 endef
 TARGET_DEVICES += tplink_tl-wdr7500-v3
 
+define Device/tplink_tl-wdr7500-v3-16MB
+  $(Device/tplink-16mlzma)
+  SOC := qca9558
+  DEVICE_MODEL := TL-WDR7500
+  DEVICE_VARIANT := v3(16MB)
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
+	ath10k-firmware-qca988x-ct
+  TPLINK_HWID := 0x75000003
+  SUPPORTED_DEVICES += archer-c7
+endef
+TARGET_DEVICES += tplink_tl-wdr7500-v3-16MB
+
 define Device/tplink_tl-wdr6500-v2
   $(Device/tplink-8mlzma)
   SOC := qca9561

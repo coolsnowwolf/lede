@@ -8,11 +8,9 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=default-settings
 PKG_VERSION:=2
-PKG_RELEASE:=16
+PKG_RELEASE:=18
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
-
-PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -26,9 +24,6 @@ endef
 
 define Package/default-settings/description
 	Language Support Packages.
-endef
-
-define Build/Configure
 endef
 
 define Build/Compile
