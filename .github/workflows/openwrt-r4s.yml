@@ -1,1 +1,291 @@
+#=================================================
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
+# Lisence: MIT
+# Author: P3TERX
+# Blog: https://p3terx.com
+#=================================================
 
+name: Build NanoPi R2S/R4S OpenWrt
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 18 * * *
+#  watch:
+#    types: started
+
+env:
+  TOOLCHAIN_TAG: coolsnowwolf-lede-master
+  TOOLCHAIN_NAME: toolchain-image-coolsnowwolf-lede-master-rockchip-armv8.img
+  CONFIG_FILE: config/rockchip/rockchip-lean-openwrt.config
+  DIY_SH: scripts/lean-openwrt.sh
+  WEBROOT: /data/dnmp/www/openwrt.cc
+  UPLOAD_RCLONE: true
+  UPLOAD_WETRANSFER: true
+  TZ: Asia/Shanghai
+
+jobs:
+  Build:
+    runs-on: ubuntu-18.04
+
+    outputs:
+      OPENWRTROOT: ${{ steps.prepare.outputs.OPENWRTROOT }}
+      PLATFORM: ${{ steps.compile.outputs.PLATFORM }}
+      TARGET: ${{ steps.compile.outputs.TARGET }}
+      SUBTARGET: ${{ steps.compile.outputs.SUBTARGET }}
+      FIRMWARE: ${{ steps.compile.outputs.FIRMWARE }}
+      GENERATE_STATUS: ${{ steps.generate.outputs.GENERATE_STATUS }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-1804) rdate
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+      - name: Prepare Toolchain Image
+        id: prepare
+        run: |
+          df -hT $PWD
+          sudo swapoff -a
+          sudo chown -R runner:runner /mnt
+          sudo rm -f /mnt/swapfile
+          wget -q https://github.com/SuLingGG/OpenWrt-Toolchain/releases/download/$TOOLCHAIN_TAG/$TOOLCHAIN_NAME -O /mnt/toolchain-image.img
+          mkdir /mnt/openwrt-ro openwrt workdir overlay
+          sudo mount -o loop /mnt/toolchain-image.img /mnt/openwrt-ro
+          sudo mount -t overlay overlay -o lowerdir=/mnt/openwrt-ro,upperdir=overlay,workdir=workdir openwrt
+          cd openwrt
+          echo "OPENWRTROOT=$PWD" >> $GITHUB_ENV
+          echo "::set-output name=OPENWRTROOT::$(echo $PWD)"
+          git pull
+
+      - name: Update Feeds
+        id: update
+        run: |
+          cd $OPENWRTROOT
+          mkdir customfeeds
+          git clone --depth=1 https://github.com/coolsnowwolf/packages customfeeds/packages
+          git clone --depth=1 https://github.com/coolsnowwolf/luci customfeeds/luci
+          chmod +x ../scripts/*.sh
+          ../scripts/hook-feeds.sh
+
+      - name: Install Feeds
+        run: |
+          cd $OPENWRTROOT
+          ./scripts/feeds install -a
+
+      - name: Load Custom Configuration
+        run: |
+          [ -e files ] && mv files $OPENWRTROOT/files
+          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRTROOT/.config
+          cd $OPENWRTROOT
+          ../$DIY_SH
+          ../scripts/preset-clash-core.sh armv8
+          ../scripts/preset-terminal-tools.sh
+
+      - name: Download Package
+        id: package
+        run: |
+          cd $OPENWRTROOT
+          make defconfig
+          make download -j16 && make download -j16
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile Packages
+        id: compile
+        run: |
+          cd $OPENWRTROOT
+          echo -e "$(nproc) thread compile"
+          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+          make target/compile -j$(nproc) || make target/compile -j1 V=s IGNORE_ERRORS=1
+          make diffconfig
+          make package/compile -j$(nproc) IGNORE_ERRORS=1 || make package/compile -j1 V=s IGNORE_ERRORS=1
+          make package/index
+          cd $OPENWRTROOT/bin/packages/*
+          PLATFORM=$(basename `pwd`)
+          echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
+          echo "::set-output name=PLATFORM::$(echo $PLATFORM)"
+          cd $OPENWRTROOT/bin/targets/*
+          TARGET=$(basename `pwd`)
+          echo "TARGET=$TARGET" >> $GITHUB_ENV
+          echo "::set-output name=TARGET::$(echo $TARGET)"
+          cd *
+          SUBTARGET=$(basename `pwd`)
+          echo "SUBTARGET=$SUBTARGET" >> $GITHUB_ENV
+          echo "::set-output name=SUBTARGET::$(echo $SUBTARGET)"
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "::set-output name=FIRMWARE::$(echo $PWD)"
+          echo "::set-output name=COMPILE_STATUS::success"
+
+      - name: Generate Firmware
+        if: steps.compile.outputs.COMPILE_STATUS == 'success'
+        id: generate
+        run: |
+          cd data/opkg
+          sed -i "s/subtarget/$SUBTARGET/g" distfeeds*.conf
+          sed -i "s/target\//$TARGET\//g" distfeeds*.conf
+          sed -i "s/platform/$PLATFORM/g" distfeeds*.conf
+          cd $OPENWRTROOT
+          mkdir -p files/etc/uci-defaults/
+          cp ../scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
+          mkdir -p files/etc/opkg
+          cp ../data/opkg/distfeeds.conf.mirror files/etc/opkg
+          mkdir -p files/www/snapshots
+          cp -r bin/targets files/www/snapshots
+          cp ../data/opkg/distfeeds.conf files/etc/opkg
+          mkdir -p files/www/ipv6-modules
+          cp bin/packages/$PLATFORM/luci/luci-proto-ipv6* files/www/ipv6-modules
+          cp bin/packages/$PLATFORM/base/{ipv6helper*,odhcpd-ipv6only*,odhcp6c*,6in4*} "files/www/ipv6-modules"
+          cp bin/targets/$TARGET/$SUBTARGET/packages/{ip6tables*,kmod-nf-nat6*,kmod-ipt-nat6*,kmod-sit*,kmod-ip6tables-extra*} "files/www/ipv6-modules"
+          mkdir -p files/bin
+          cp ../scripts/ipv6-helper.sh files/bin/ipv6-helper
+          make package/install -j$(nproc) || make package/install -j1 V=s
+          make target/install -j$(nproc) || make target/install -j1 V=s
+          make checksum
+          echo "::set-output name=GENERATE_STATUS::success"
+
+      - name: Upload Bin Folder
+        uses: actions/upload-artifact@main
+        if: steps.generate.outputs.GENERATE_STATUS == 'success'
+        with:
+          name: bin-archive
+          path: openwrt/bin
+
+  Upload:
+    needs: [Build]
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Restore Variables
+        run: |
+          echo "OPENWRTROOT=$(echo '${{needs.Build.outputs.OPENWRTROOT}}')" >> $GITHUB_ENV
+          echo "PLATFORM=$(echo '${{needs.Build.outputs.PLATFORM}}')" >> $GITHUB_ENV
+          echo "TARGET=$(echo '${{needs.Build.outputs.TARGET}}')" >> $GITHUB_ENV
+          echo "SUBTARGET=$(echo '${{needs.Build.outputs.SUBTARGET}}')" >> $GITHUB_ENV
+          echo "FIRMWARE=$(echo '${{needs.Build.outputs.FIRMWARE}}')" >> $GITHUB_ENV
+          echo "GENERATE_STATUS=$(echo '${{needs.Build.outputs.GENERATE_STATUS}}')" >> $GITHUB_ENV
+
+      - name: Download Bin Folder
+        uses: actions/download-artifact@v2
+        if: env.GENERATE_STATUS == 'success'
+        with:
+          name: bin-archive
+          path: openwrt/bin
+
+      - name: Deploy Packages-Server
+        if: env.GENERATE_STATUS == 'success'
+        run: |
+          sudo ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+          mkdir -p server/web/snapshots/targets/$TARGET/$SUBTARGET
+          cp -r $OPENWRTROOT/bin/packages server/web/snapshots
+          cp -r $OPENWRTROOT/bin/targets/$TARGET/$SUBTARGET/packages server/web/snapshots/targets/$TARGET/$SUBTARGET
+          mv server packages-server
+          zip -qrm packages-server.zip packages-server
+          mv packages-server.zip $OPENWRTROOT/bin/targets/$TARGET/$SUBTARGET
+
+      - name: Rclone Upload
+        env:
+          RCLONE_PACKAGE: ${{ secrets.RCLONE_PACKAGE }}
+          RCLONE_FIRMWARE: ${{ secrets.RCLONE_FIRMWARE }}
+        if: env.GENERATE_STATUS == 'success' && env.UPLOAD_RCLONE == 'true' && env.RCLONE_PACKAGE != ''
+        run: |
+          cd $OPENWRTROOT
+          curl https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone/
+          cat << EOF > ~/.config/rclone/rclone.conf
+          ${{ secrets.RCLONE_CONFIG }}
+          EOF
+          rclone copy bin $RCLONE_PACKAGE:$(date +"%Y-%m-%d")/lean --filter-from ../data/rclone/upload-rule.txt
+          rclone copy bin/targets $RCLONE_FIRMWARE:$(date +"%Y-%m-%d")/lean --exclude "packages/"
+          echo "::warning file=Firmware-GoogleDrive::Download Link: https://drive.google.com/drive/folders/1_P2RoPbguY99qJxmCU4SKUgP8Kg0Xr03"
+
+      - name: Deploy Files To HostHatch Node
+        id: hosthatch
+        env:
+          HOST: "${{ secrets.REMOTE_USER }}@${{ secrets.HOSTHATCH_IP }}"
+          SOURCE_TARGETS: "openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
+          DEST_TARGETS: "${{ env.WEBROOT }}/releases/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
+          REMOTE_PRIVATEKEY: "${{secrets.HOSTHATCH_PRIVATEKEY}}"
+        if: env.REMOTE_PRIVATEKEY != null
+        run: |
+          mkdir -p ~/.ssh/
+          install -m 600 /dev/null ~/.ssh/id_rsa
+          echo "${{secrets.HOSTHATCH_PRIVATEKEY}}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh -q -t -i ~/.ssh/id_rsa -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $HOST \
+          bash -c "'mkdir -p $WEBROOT/releases/targets/$TARGET/$SUBTARGET'"
+          rsync -chavP --delete -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no' $SOURCE_TARGETS $HOST:$DEST_TARGETS
+
+      - name: Deploy Files To PacificRack Node
+        id: pacificrack
+        env:
+          HOST: "${{ secrets.REMOTE_USER }}@${{ secrets.PACIFICRACK_IP }}"
+          SOURCE_TARGETS: "openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
+          DEST_TARGETS: "${{ env.WEBROOT }}/releases/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
+          REMOTE_PRIVATEKEY: "${{secrets.PACIFICRACK_PRIVATEKEY}}"
+        if: env.REMOTE_PRIVATEKEY != null
+        run: |
+          mkdir -p ~/.ssh/
+          install -m 600 /dev/null ~/.ssh/id_rsa
+          echo "${{secrets.PACIFICRACK_PRIVATEKEY}}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh -q -t -i ~/.ssh/id_rsa -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no $HOST \
+          bash -c "'mkdir -p $WEBROOT/releases/targets/$TARGET/$SUBTARGET'"
+          rsync -chavP --delete -e 'ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no' $SOURCE_TARGETS $HOST:$DEST_TARGETS
+
+      - name: Organize Files
+        id: organize
+        if: env.GENERATE_STATUS == 'success'
+        run: |
+          cd ${FIRMWARE}
+          rm -rf packages
+          cd $OPENWRTROOT/bin/targets/$TARGET/
+          curl -sL https://git.io/file-transfer | bash -s beta
+          sudo mv transfer /usr/bin
+          sudo chmod +x /usr/bin/transfer
+          df -hT $PWD
+          echo "::set-output name=ORGANIZE_STATUS::success"
+
+      - name: Upload Firmware To WeTransfer
+        if: steps.organize.outputs.ORGANIZE_STATUS == 'success' && env.UPLOAD_WETRANSFER == 'true'
+        run: |
+          transfer wet -s -p 16 --no-progress $FIRMWARE/*nanopi* 2>&1 | tee wetransfer-firmware.log
+          rm -rf *nanopi*
+          echo "::warning file=Firmware-Wetransfer.com::$(cat wetransfer-firmware.log | grep https)"
+
+      - name: Upload Other Files To WeTransfer
+        if: steps.organize.outputs.ORGANIZE_STATUS == 'success' && env.UPLOAD_WETRANSFER == 'true'
+        run: |
+          transfer wet -s -p 16 --no-progress $FIRMWARE 2>&1 | tee wetransfer-other.log
+          echo "::warning file=Firmware-Wetransfer.com::$(cat wetransfer-other.log | grep https)"
+
+      - name: Deploy Files To OneDrive
+        env:
+          RCLONE_NAME: ${{ secrets.ONEDRIVE_NAME }}
+          SOURCE_TARGETS: "openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}"
+          SOURCE_PACKAGES: "openwrt/bin/packages/${{ env.PLATFORM }}/"
+          DEST_TARGETS: "/releases/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}"
+          DEST_PACKAGES: "/releases/packages/${{ env.PLATFORM }}/"
+        if: env.RCLONE_NAME != null
+        run: |
+          rclone -v copy $SOURCE_TARGETS ${{ secrets.RCLONE_NAME }}:$DEST_TARGETS
+          rclone -v copy $SOURCE_PACKAGES ${{ secrets.RCLONE_NAME }}:$DEST_PACKAGES
+
+      - name: Delete Artifacts
+        uses: geekyeggo/delete-artifact@v1
+        with:
+          name: |
+            bin-archive
