@@ -29,49 +29,40 @@ a.default=0
 a.rmempty = true
 
 --精简模式
-a=s:taboption("basic", Flag,"lite_enable",translate("精简模式"))
-a.default=0
-a.rmempty = true
+a = s:taboption("basic", MultiValue, "lite_enable", translate("精简模式"))
+a:value("device", translate("精简当前设备列表"))
+a:value("nowtime", translate("精简当前时间"))
+a:value("content", translate("只推送标题"))
+a.widget = "checkbox"
+a.default = nil
+a.optional = true
 
-a= s:taboption("basic", Flag, "content_current_device", "精简当前设备列表")
-a.default = 0
+--推送模式
+a=s:taboption("basic", ListValue,"jsonpath",translate("推送模式"))
+a.default="/usr/bin/pushbot/api/dingding.json"
 a.rmempty = true
-a:depends({lite_enable="1"})
-
-a= s:taboption("basic", Flag, "content_nowtime", "精简当前时间")
-a.default = 0
-a.rmempty = true
-a:depends({lite_enable="1"})
-
-a= s:taboption("basic", Flag, "content_content", "只推送标题")
-a.default = 0
-a.rmempty = true
-a:depends({lite_enable="1"})
-
-a=s:taboption("basic", ListValue,"send_we",translate("推送模式"))
-a.default=""
-a.rmempty = true
-a:value("",translate("钉钉"))
-a:value("1",translate("企业微信"))
-a:value("3",translate("飞书"))
-a:value("4",translate("Bark"))
-a:value("2",translate("PushPlus"))
+a:value("/usr/bin/pushbot/api/dingding.json",translate("钉钉"))
+a:value("/usr/bin/pushbot/api/ent_wechat.json",translate("企业微信"))
+a:value("/usr/bin/pushbot/api/feishu.json",translate("飞书"))
+a:value("/usr/bin/pushbot/api/bark.json",translate("Bark"))
+a:value("/usr/bin/pushbot/api/pushplus.json",translate("PushPlus"))
+a:value("/usr/bin/pushbot/api/diy.json",translate("自定义推送"))
 
 a=s:taboption("basic", Value,"dd_webhook",translate('Webhook'), translate("钉钉机器人 Webhook").."<br>调用代码获取<a href='https://developers.dingtalk.com/document/robots/custom-robot-access' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
-a:depends("send_we","")
+a:depends("jsonpath","/usr/bin/pushbot/api/dingding.json")
 
 a=s:taboption("basic", Value, "we_webhook", translate("Webhook"),translate("企业微信机器人 Webhook").."<br>调用代码获取<a href='https://work.weixin.qq.com/api/doc/90000/90136/91770' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
-a:depends("send_we","1")
+a:depends("jsonpath","/usr/bin/pushbot/api/ent_wechat.json")
 
 a=s:taboption("basic", Value,"pp_token",translate('PushPlus Token'), translate("PushPlus Token").."<br>调用代码获取<a href='http://pushplus.plus/doc/' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
-a:depends("send_we","2")
+a:depends("jsonpath","/usr/bin/pushbot/api/pushplus.json")
 
 a=s:taboption("basic", ListValue,"pp_channel",translate('PushPlus Channel'))
 a.rmempty = true
-a:depends("send_we","2")
+a:depends("jsonpath","/usr/bin/pushbot/api/pushplus.json")
 a:value("wechat",translate("wechat：PushPlus微信公众号"))
 a:value("cp",translate("cp：企业微信应用"))
 a:value("webhook",translate("webhook：第三方webhook"))
@@ -95,20 +86,40 @@ a:depends("pp_topic_enable","1")
 
 a=s:taboption("basic", Value,"fs_webhook",translate('WebHook'), translate("飞书 WebHook").."<br>调用代码获取<a href='https://www.feishu.cn/hc/zh-CN/articles/360024984973' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
-a:depends("send_we","3")
+a:depends("jsonpath","/usr/bin/pushbot/api/feishu.json")
 
 a=s:taboption("basic", Value,"bark_token",translate('Bark Token'), translate("Bark Token").."<br>调用代码获取<a href='https://github.com/Finb/Bark' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
-a:depends("send_we","4")
+a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
 
 a=s:taboption("basic", Flag,"bark_srv_enable",translate("自建 Bark 服务器"))
 a.default=0
 a.rmempty = true
-a:depends("send_we","4")
+a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
 
 a=s:taboption("basic", Value,"bark_srv",translate('Bark Server'), translate("Bark 自建服务器地址").."<br>如https://your.domain:port<br>具体自建服务器设定参见：<a href='https://github.com/Finb/Bark' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("bark_srv_enable","1")
+
+a=s:taboption("basic", TextValue, "diy_json", translate("自定义推送"))
+a.optional = false
+a.rows = 28
+a.wrap = "soft"
+a.cfgvalue = function(self, section)
+    return fs.readfile("/usr/bin/pushbot/api/diy.json")
+end
+a.write = function(self, section, value)
+    fs.writefile("/usr/bin/pushbot/api/diy.json", value:gsub("\r\n", "\n"))
+end
+a:depends("jsonpath","/usr/bin/pushbot/api/diy.json")
+
+a=s:taboption("basic", Button,"__add",translate("发送测试"))
+a.inputtitle=translate("发送")
+a.inputstyle = "apply"
+function a.write(self, section)
+	luci.sys.call("cbi.apply")
+	luci.sys.call("/usr/bin/pushbot/pushbot test &")
+end
 
 a=s:taboption("basic", Value,"device_name",translate('本设备名称'))
 a.rmempty = true
@@ -118,6 +129,7 @@ a=s:taboption("basic", Value,"sleeptime",translate('检测时间间隔'))
 a.rmempty = true
 a.optional = false
 a.default = "60"
+a.datatype = "and(uinteger,min(10))"
 a.description = translate("越短的时间时间响应越及时，但会占用更多的系统资源")
 
 a=s:taboption("basic", ListValue,"oui_data",translate("MAC设备信息数据库"))
@@ -146,7 +158,7 @@ a.rmempty = true
 a.description = translate("<br/> 请输入设备 MAC 和设备别名，用“-”隔开，如：<br/> XX:XX:XX:XX:XX:XX-我的手机")
 
 --设备状态
-a=s:taboption("content", ListValue,"pushbot_ipv4",translate("ipv4 变动通知"))
+a=s:taboption("content", ListValue,"pushbot_ipv4",translate("IPv4 变更通知"))
 a.rmempty = true
 a.default=""
 a:value("",translate("关闭"))
@@ -169,13 +181,20 @@ for _, iface in ipairs(ifaces) do
 end
 a.description = translate("<br/>一般选择 wan 接口，多拨环境请自行选择")
 
-a= s:taboption("content", DynamicList, "ipv4_URL", "URL 地址")
-a.rmempty = true
-
+a=s:taboption("content", TextValue, "ipv4_list", translate("IPv4 API列表"))
+a.optional = false
+a.rows = 8
+a.wrap = "soft"
+a.cfgvalue = function(self, section)
+    return fs.readfile("/usr/bin/pushbot/api/ipv4.list")
+end
+a.write = function(self, section, value)
+    fs.writefile("/usr/bin/pushbot/api/ipv4.list", value:gsub("\r\n", "\n"))
+end
+a.description = translate("<br/>会因服务器稳定性、连接频繁等原因导致获取失败<br/>如接口可以正常获取 IP，不推荐使用<br/>从以上列表中随机地址访问")
 a:depends({pushbot_ipv4="2"})
-a.description = translate("<br/>会因服务器稳定性、连接频繁等原因导致获取失败<br/>从以上列表中随机一个地址，留空使用默认地址")
 
-a=s:taboption("content", ListValue,"pushbot_ipv6",translate("ipv6 变动通知"))
+a=s:taboption("content", ListValue,"pushbot_ipv6",translate("IPv6 变更通知"))
 a.rmempty = true
 a.default="disable"
 a:value("0",translate("关闭"))
@@ -198,11 +217,18 @@ for _, iface in ipairs(ifaces) do
 end
 a.description = translate("<br/>一般选择 wan 接口，多拨环境请自行选择")
 
-a= s:taboption("content", DynamicList, "ipv6_URL", "URL 地址")
-a.rmempty = true
-
+a=s:taboption("content", TextValue, "ipv6_list", translate("IPv6 API列表"))
+a.optional = false
+a.rows = 8
+a.wrap = "soft"
+a.cfgvalue = function(self, section)
+    return fs.readfile("/usr/bin/pushbot/api/ipv6.list")
+end
+a.write = function(self, section, value)
+    fs.writefile("/usr/bin/pushbot/api/ipv6.list", value:gsub("\r\n", "\n"))
+end
+a.description = translate("<br/>会因服务器稳定性、连接频繁等原因导致获取失败<br/>如接口可以正常获取 IP，不推荐使用<br/>从以上列表中随机地址访问")
 a:depends({pushbot_ipv6="2"})
-a.description = translate("<br/>会因服务器稳定性、连接频繁等原因导致获取失败<br/>从以上列表中随机一个地址，留空使用默认地址")
 
 a=s:taboption("content", Flag,"pushbot_up",translate("设备上线通知"))
 a.default=1
@@ -254,8 +280,71 @@ a.rmempty = true
 a:depends({client_usage_disturb="1"})
 a.description = translate("请输入设备 MAC")
 
+--LoginNoti
+a=s:taboption("content", Flag,"web_logged",translate("Web 登录提醒"))
+a.default=0
+a.rmempty = true
+
+a=s:taboption("content", Flag,"ssh_logged",translate("SSH 登录提醒"))
+a.default=0
+a.rmempty = true
+
+a=s:taboption("content", Flag,"web_login_failed",translate("Web 错误尝试提醒"))
+a.default=0
+a.rmempty = true
+
+a=s:taboption("content", Flag,"ssh_login_failed",translate("SSH 错误尝试提醒"))
+a.default=0
+a.rmempty = true
+
+a= s:taboption("content", Value, "login_max_num", "错误尝试次数")
+a.default = "3"
+a.datatype="and(uinteger,min(1))"
+a:depends("web_login_failed","1")
+a:depends("ssh_login_failed","1")
+a.description = translate("超过次数后推送提醒")
+
+a=s:taboption("content", Flag,"web_login_black",translate("自动拉黑"))
+a.default=0
+a.rmempty = true
+a:depends("web_login_failed","1")
+a:depends("ssh_login_failed","1")
+a.description = translate("直到重启前都不会重置次数，请先添加白名单")
+
+a= s:taboption("content", Value, "ip_black_timeout", "拉黑时间(秒)")
+a.default = "86400"
+a.datatype="and(uinteger,min(0))"
+a:depends("web_login_black","1")
+a.description = translate("0 为永久拉黑，慎用<br>如不幸误操作，请更改设备 IP 进入 LUCI 界面清空规则")
+
+a=s:taboption("content", DynamicList, "ip_white_list", translate("白名单 IP 列表"))
+a.datatype = "ipaddr"
+a.rmempty = true
+luci.ip.neighbors({family = 4}, function(entry)
+	if entry.reachable then
+		a:value(entry.dest:string())
+	end
+end)
+a:depends("web_logged","1")
+a:depends("ssh_logged","1")
+a:depends("web_login_failed","1")
+a:depends("ssh_login_failed","1")
+a.description = translate("忽略白名单登陆提醒和拉黑操作，暂不支持掩码位表示")
+
+a=s:taboption("content", TextValue, "ip_black_list", translate("IP 黑名单列表"))
+a.optional = false
+a.rows = 8
+a.wrap = "soft"
+a.cfgvalue = function(self, section)
+    return fs.readfile("/usr/bin/pushbot/api/ip_blacklist")
+end
+a.write = function(self, section, value)
+    fs.writefile("/usr/bin/pushbot/api/ip_blacklist", value:gsub("\r\n", "\n"))
+end
+a:depends("web_login_black","1")
+
 --定时推送
-a=s:taboption("crontab", ListValue,"send_mode",translate("定时任务设定"))
+a=s:taboption("crontab", ListValue,"crontab",translate("定时任务设定"))
 a.rmempty = true
 a.default=""
 a:value("",translate("关闭"))
@@ -269,7 +358,7 @@ a:value(t,translate("每天"..t.."点"))
 end	
 a.default=8	
 a.datatype=uinteger
-a:depends("send_mode","1")
+a:depends("crontab","1")
 
 a=s:taboption("crontab", ListValue,"regular_time_2",translate("发送时间"))
 a.rmempty = true
@@ -279,7 +368,7 @@ a:value(t,translate("每天"..t.."点"))
 end	
 a.default="关闭"
 a.datatype=uinteger
-a:depends("send_mode","1")
+a:depends("crontab","1")
 
 a=s:taboption("crontab", ListValue,"regular_time_3",translate("发送时间"))
 a.rmempty = true
@@ -290,7 +379,7 @@ a:value(t,translate("每天"..t.."点"))
 end	
 a.default="关闭"
 a.datatype=uinteger
-a:depends("send_mode","1")
+a:depends("crontab","1")
 
 a=s:taboption("crontab", ListValue,"interval_time",translate("发送间隔"))
 a.rmempty = true
@@ -299,39 +388,39 @@ a:value(t,translate(t.."小时"))
 end
 a.default=6
 a.datatype=uinteger
-a:depends("send_mode","2")
+a:depends("crontab","2")
 a.description = translate("<br/>从 00:00 开始，每 * 小时发送一次")
 
 a= s:taboption("crontab", Value, "send_title", translate("推送标题"))
-a:depends("send_mode","1")
-a:depends("send_mode","2")
+a:depends("crontab","1")
+a:depends("crontab","2")
 a.placeholder = "OpenWrt By tty228 路由状态："
 a.description = translate("<br/>使用特殊符号可能会造成发送失败")
 
 a=s:taboption("crontab", Flag,"router_status",translate("系统运行情况"))
 a.default=1
-a:depends("send_mode","1")
-a:depends("send_mode","2")
+a:depends("crontab","1")
+a:depends("crontab","2")
 
 a=s:taboption("crontab", Flag,"router_temp",translate("设备温度"))
 a.default=1
-a:depends("send_mode","1")
-a:depends("send_mode","2")
+a:depends("crontab","1")
+a:depends("crontab","2")
  
 a=s:taboption("crontab", Flag,"router_wan",translate("WAN信息"))
 a.default=1
-a:depends("send_mode","1")
-a:depends("send_mode","2")
+a:depends("crontab","1")
+a:depends("crontab","2")
 
 a=s:taboption("crontab", Flag,"client_list",translate("客户端列表"))
 a.default=1
-a:depends("send_mode","1")
-a:depends("send_mode","2") 
+a:depends("crontab","1")
+a:depends("crontab","2") 
 
 e=s:taboption("crontab", Button,"_add",translate("手动发送"))
 e.inputtitle=translate("发送")
-e:depends("send_mode","1")
-e:depends("send_mode","2")
+e:depends("crontab","1")
+e:depends("crontab","2")
 e.inputstyle = "apply"
 function e.write(self, section)
 luci.sys.call("cbi.apply")
@@ -379,11 +468,13 @@ a = s:taboption("disturb", DynamicList, "pushbot_whitelist", translate("忽略�
 nt.mac_hints(function(mac, name) a :value(mac, "%s (%s)" %{ mac, name }) end)
 a.rmempty = true
 a:depends({macmechanism="allow"})
+a.description = translate("AA:AA:AA:AA:AA:AA\\|BB:BB:BB:BB:BB:B 可以将多个 MAC 视为同一用户<br/>任一设备在线后不再推送，设备全部离线时才会推送，避免双 wifi 频繁推送")
 
 a = s:taboption("disturb", DynamicList, "pushbot_blacklist", translate("关注列表"))
 nt.mac_hints(function(mac, name) a:value(mac, "%s (%s)" %{ mac, name }) end)
 a.rmempty = true
 a:depends({macmechanism="block"})
+a.description = translate("AA:AA:AA:AA:AA:AA\\|BB:BB:BB:BB:BB:B 可以将多个 MAC 视为同一用户<br/>任一设备在线后不再推送，设备全部离线时才会推送，避免双 wifi 频繁推送")
 
 a = s:taboption("disturb", ListValue, "pushbot_interface", translate("接口名称"))
 a:depends({macmechanism="interface"})
@@ -400,5 +491,21 @@ for _, iface in ipairs(ifaces) do
 		a:value(iface, ((#nets > 0) and "%s (%s)" % {iface, nets} or iface))
 	end
 end
+
+a=s:taboption("disturb", ListValue,"macmechanism2",translate("MAC过滤2"))
+a:value("",translate("disable"))
+a:value("MAC_online",translate("列表内任意设备在线时免打扰"))
+a:value("MAC_offline",translate("列表内设备都离线后免打扰"))
+a.rmempty = true
+
+a = s:taboption("disturb", DynamicList, "MAC_online_list", translate("在线免打扰列表"))
+nt.mac_hints(function(mac, name) a:value(mac, "%s (%s)" %{ mac, name }) end)
+a.rmempty = true
+a:depends({macmechanism2="MAC_online"})
+
+a = s:taboption("disturb", DynamicList, "MAC_offline_list", translate("任意离线免打扰列表"))
+nt.mac_hints(function(mac, name) a:value(mac, "%s (%s)" %{ mac, name }) end)
+a.rmempty = true
+a:depends({macmechanism2="MAC_offline"})
 
 return m

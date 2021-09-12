@@ -31,7 +31,6 @@ a.datatype="uinteger"
 a=s:option(Value, "soc_code", "自定义温度读取命令")
 a.rmempty = true 
 a:value("",translate("默认"))
-a:value("sensors",translate("sensors命令"))
 a.description = translate("请尽量避免使用特殊符号，如双引号、$、!等，执行结果需为数字，用于温度对比")
 
 a=s:option(Button,"soc",translate("测试温度命令"))
