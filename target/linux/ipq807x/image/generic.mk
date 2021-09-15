@@ -73,14 +73,14 @@ endef
 TARGET_DEVICES += xiaomi_ax9000
 
 define Device/zte_mf269
-        $(call Device/FitImage)
-        $(call Device/UbiFit)
-        DEVICE_VENDOR := ZTE
-        DEVICE_MODEL := MF269
-        BLOCKSIZE := 128k
-        PAGESIZE := 2048
-        DEVICE_DTS_CONFIG := config@ac04
-        SOC := ipq8071
-        DEVICE_PACKAGES := ipq-wifi-zte_mf269 uboot-envtools
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZTE
+	DEVICE_MODEL := MF269
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@ac04
+	SOC := ipq8071
+	DEVICE_PACKAGES := ipq-wifi-zte_mf269 uboot-envtools
 endef
 TARGET_DEVICES += zte_mf269
