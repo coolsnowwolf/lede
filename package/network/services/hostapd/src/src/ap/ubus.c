@@ -1741,9 +1741,6 @@ void hostapd_ubus_notify_radar_detected(struct hostapd_iface *iface, int frequen
 	struct hostapd_data *hapd;
 	int i;
 
-	if (!hapd->ubus.obj.has_subscribers)
-		return;
-
 	blob_buf_init(&b, 0);
 	blobmsg_add_u16(&b, "frequency", frequency);
 	blobmsg_add_u16(&b, "width", chan_width);

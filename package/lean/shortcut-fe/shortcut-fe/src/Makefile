@@ -21,3 +21,4 @@ endif
 shortcut-fe-cm-objs := \
 	sfe_cm.o
 
+ccflags-y += -Werror -Wall

@@ -101,18 +101,42 @@ define Device/ZyXELImage
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$$(BLOCKSIZE) | sysupgrade-tar rootfs=$$$$@ | append-metadata
 endef
 
-define Device/askey_rt4230w-rev6
+define Device/arris_rac2v1a
 	$(call Device/LegacyImage)
-	DEVICE_VENDOR := Askey
-	DEVICE_MODEL := RT4230W
-	DEVICE_VARIANT := REV6
+	DEVICE_VENDOR := Arris
+	DEVICE_MODEL := RAC2V1A
+	DEVICE_ALT0_VENDOR := Arris
+	DEVICE_ALT0_MODEL := TR4400-AC
 	SOC := qcom-ipq8065
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
-	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct
 	KERNEL_IN_UBI := 1
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct ath10k-firmware-qca99x0-ct
+endef
+TARGET_DEVICES += arris_rac2v1a
+
+define Device/askey_rt4230w
+	$(call Device/LegacyImage)
+	DEVICE_VENDOR := Askey
+	DEVICE_MODEL := RT4230W
+	SOC := qcom-ipq8065
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	KERNEL_IN_UBI := 1
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct
+endef
+
+define Device/askey_rt4230w-rev6
+	$(call Device/askey_rt4230w)
+	DEVICE_VARIANT := REV6
 endef
 TARGET_DEVICES += askey_rt4230w-rev6
+
+define Device/askey_rt4230w-rev9.3
+	$(call Device/askey_rt4230w)
+	DEVICE_VARIANT := REV9.3
+endef
+TARGET_DEVICES += askey_rt4230w-rev9.3
 
 define Device/asrock_g10
 	$(call Device/FitImage)
