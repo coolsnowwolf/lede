@@ -1,0 +1,67 @@
+From c8a76985213abda828a2098c3d6ce8a49b5f9766 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 5 Feb 2021 14:07:12 +0000
+Subject: [PATCH] drm/vc4: Add connector check to trigger mode_change
+ when hdr metadata changes
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 40 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -223,6 +223,45 @@ static int vc4_hdmi_connector_get_modes(
+ 	return ret;
+ }
+ 
++static bool hdr_metadata_equal(const struct drm_connector_state *old_state,
++			       const struct drm_connector_state *new_state)
++{
++	struct drm_property_blob *old_blob = old_state->hdr_output_metadata;
++	struct drm_property_blob *new_blob = new_state->hdr_output_metadata;
++
++	if (!old_blob || !new_blob)
++		return old_blob == new_blob;
++
++	if (old_blob->length != new_blob->length)
++		return false;
++
++	return !memcmp(old_blob->data, new_blob->data, old_blob->length);
++}
++
++static int vc4_hdmi_connector_atomic_check(struct drm_connector *connector,
++					  struct drm_atomic_state *state)
++{
++	struct drm_connector_state *old_state =
++		drm_atomic_get_old_connector_state(state, connector);
++	struct drm_connector_state *new_state =
++		drm_atomic_get_new_connector_state(state, connector);
++	struct drm_crtc *crtc = new_state->crtc;
++	struct drm_crtc_state *crtc_state;
++
++	if (!crtc)
++		return 0;
++
++	if (!hdr_metadata_equal(old_state, new_state)) {
++		crtc_state = drm_atomic_get_crtc_state(state, crtc);
++		if (IS_ERR(crtc_state))
++			return PTR_ERR(crtc_state);
++
++		crtc_state->mode_changed = true;
++	}
++
++	return 0;
++}
++
+ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+ {
+ 	struct vc4_hdmi_connector_state *old_state =
+@@ -272,6 +311,7 @@ static const struct drm_connector_funcs
+ 
+ static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs = {
+ 	.get_modes = vc4_hdmi_connector_get_modes,
++	.atomic_check = vc4_hdmi_connector_atomic_check,
+ };
+ 
+ static int vc4_hdmi_connector_init(struct drm_device *dev,
