@@ -1,0 +1,56 @@
+From 80a9aa25edc6144c3d6d3aaf9f731240d8868714 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 23 Jun 2020 14:32:51 +0100
+Subject: [PATCH] media: bcm2835-unicam: Add support for
+ get_mbus_config to set num lanes
+
+Use the get_mbus_config pad subdev call to allow a source to use
+fewer than the number of CSI2 lanes defined in device tree.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 31 ++++++++++++++++---
+ 1 file changed, 27 insertions(+), 4 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -1639,12 +1639,35 @@ static int unicam_start_streaming(struct
+ 		goto err_streaming;
+ 	}
+ 
+-	/*
+-	 * TODO: Retrieve the number of active data lanes from the connected
+-	 * subdevice.
+-	 */
+ 	dev->active_data_lanes = dev->max_data_lanes;
+ 
++	if (dev->bus_type == V4L2_MBUS_CSI2_DPHY) {
++		struct v4l2_mbus_config mbus_config = { 0 };
++
++		ret = v4l2_subdev_call(dev->sensor, pad, get_mbus_config,
++				       0, &mbus_config);
++		if (ret < 0 && ret != -ENOIOCTLCMD) {
++			unicam_dbg(3, dev, "g_mbus_config failed\n");
++			goto err_pm_put;
++		}
++
++		dev->active_data_lanes =
++			(mbus_config.flags & V4L2_MBUS_CSI2_LANE_MASK) >>
++					__ffs(V4L2_MBUS_CSI2_LANE_MASK);
++		if (!dev->active_data_lanes)
++			dev->active_data_lanes = dev->max_data_lanes;
++		if (dev->active_data_lanes > dev->max_data_lanes) {
++			unicam_err(dev, "Device has requested %u data lanes, which is >%u configured in DT\n",
++				   dev->active_data_lanes,
++				   dev->max_data_lanes);
++			ret = -EINVAL;
++			goto err_pm_put;
++		}
++	}
++
++	unicam_dbg(1, dev, "Running with %u data lanes\n",
++		   dev->active_data_lanes);
++
+ 	ret = clk_set_rate(dev->clock, 100 * 1000 * 1000);
+ 	if (ret) {
+ 		unicam_err(dev, "failed to set up clock\n");
