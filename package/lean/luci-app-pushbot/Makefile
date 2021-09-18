@@ -1,34 +1,22 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-pushbot
-PKG_VERSION:=3.12
-PKG_RELEASE:=10
+PKG_VERSION:=3.55
+PKG_RELEASE:=16
 
-PKG_MAINTAINER:=tty228  zzsj0928
+PKG_MAINTAINER:=tty228 <tty228@yeah.net>  zzsj0928
 
-include $(INCLUDE_DIR)/package.mk
-
-define Package/$(PKG_NAME)
-	SECTION:=luci
-	CATEGORY:=LuCI
-	SUBMENU:=3. Applications
-	DEPENDS:=+iputils-arping +curl
-	TITLE:=LuCI support for Pushbot
-	PKGARCH:=all
-endef
-
-define Build/Compile
-endef
+LUCI_TITLE:=LuCI support for Pushbot
+LUCI_PKGARCH:=all
+LUCI_DEPENDS:=+iputils-arping +curl +jq
 
 define Package/$(PKG_NAME)/conffiles
-	/etc/config/pushbot
+/etc/config/pushbot
+/usr/bin/pushbot/api/diy.json
+/usr/bin/pushbot/api/ipv4.list
+/usr/bin/pushbot/api/ipv6.list
 endef
 
-define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci
-	cp -pR ./luasrc/* $(1)/usr/lib/lua/luci
-	$(INSTALL_DIR) $(1)/
-	cp -pR ./root/* $(1)/
-endef
+include $(TOPDIR)/feeds/luci/luci.mk
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+# call BuildPackage - OpenWrt buildroot signature
