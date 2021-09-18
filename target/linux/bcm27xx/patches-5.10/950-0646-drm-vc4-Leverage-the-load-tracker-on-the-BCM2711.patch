@@ -1,0 +1,121 @@
+From e404d30f2b14a83f223aab6c92da2a52d1c91f61 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 21 Jun 2021 17:19:22 +0200
+Subject: [PATCH] drm/vc4: Leverage the load tracker on the BCM2711
+
+The load tracker was initially designed to report and warn about a load
+too high for the HVS. To do so, it computes for each plane the impact
+it's going to have on the HVS, and will warn (if it's enabled) if we go
+over what the hardware can process.
+
+While the limits being used are a bit irrelevant to the BCM2711, the
+algorithm to compute the HVS load will be one component used in order to
+compute the core clock rate on the BCM2711.
+
+Let's remove the hooks to prevent the load tracker to do its
+computation, but since we don't have the same limits, don't check them
+against them, and prevent the debugfs file to enable it from being
+created.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_debugfs.c |  7 +++++--
+ drivers/gpu/drm/vc4/vc4_drv.h     |  3 ---
+ drivers/gpu/drm/vc4/vc4_kms.c     | 16 +++++-----------
+ drivers/gpu/drm/vc4/vc4_plane.c   |  3 ---
+ 4 files changed, 10 insertions(+), 19 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_debugfs.c
++++ b/drivers/gpu/drm/vc4/vc4_debugfs.c
+@@ -7,6 +7,7 @@
+ #include <linux/circ_buf.h>
+ #include <linux/ctype.h>
+ #include <linux/debugfs.h>
++#include <linux/platform_device.h>
+ 
+ #include "vc4_drv.h"
+ #include "vc4_regs.h"
+@@ -26,8 +27,10 @@ vc4_debugfs_init(struct drm_minor *minor
+ 	struct vc4_dev *vc4 = to_vc4_dev(minor->dev);
+ 	struct vc4_debugfs_info_entry *entry;
+ 
+-	debugfs_create_bool("hvs_load_tracker", S_IRUGO | S_IWUSR,
+-			    minor->debugfs_root, &vc4->load_tracker_enabled);
++	if (!of_device_is_compatible(vc4->hvs->pdev->dev.of_node,
++				     "brcm,bcm2711-vc5"))
++		debugfs_create_bool("hvs_load_tracker", S_IRUGO | S_IWUSR,
++				    minor->debugfs_root, &vc4->load_tracker_enabled);
+ 
+ 	list_for_each_entry(entry, &vc4->debugfs_list, link) {
+ 		drm_debugfs_create_files(&entry->info, 1,
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -205,9 +205,6 @@ struct vc4_dev {
+ 
+ 	int power_refcount;
+ 
+-	/* Set to true when the load tracker is supported. */
+-	bool load_tracker_available;
+-
+ 	/* Set to true when the load tracker is active. */
+ 	bool load_tracker_enabled;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -598,9 +598,6 @@ static int vc4_load_tracker_atomic_check
+ 	struct drm_plane *plane;
+ 	int i;
+ 
+-	if (!vc4->load_tracker_available)
+-		return 0;
+-
+ 	priv_state = drm_atomic_get_private_obj_state(state,
+ 						      &vc4->load_tracker);
+ 	if (IS_ERR(priv_state))
+@@ -675,9 +672,6 @@ static void vc4_load_tracker_obj_fini(st
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
+-	if (!vc4->load_tracker_available)
+-		return;
+-
+ 	drm_atomic_private_obj_fini(&vc4->load_tracker);
+ }
+ 
+@@ -685,9 +679,6 @@ static int vc4_load_tracker_obj_init(str
+ {
+ 	struct vc4_load_tracker_state *load_state;
+ 
+-	if (!vc4->load_tracker_available)
+-		return 0;
+-
+ 	load_state = kzalloc(sizeof(*load_state), GFP_KERNEL);
+ 	if (!load_state)
+ 		return -ENOMEM;
+@@ -891,9 +882,12 @@ int vc4_kms_load(struct drm_device *dev)
+ 					      "brcm,bcm2711-vc5");
+ 	int ret;
+ 
++	/*
++	 * The limits enforced by the load tracker aren't relevant for
++	 * the BCM2711, but the load tracker computations are used for
++	 * the core clock rate calculation.
++	 */
+ 	if (!is_vc5) {
+-		vc4->load_tracker_available = true;
+-
+ 		/* Start with the load tracker enabled. Can be
+ 		 * disabled through the debugfs load_tracker file.
+ 		 */
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -534,9 +534,6 @@ static void vc4_plane_calc_load(struct d
+ 	struct vc4_dev *vc4;
+ 
+ 	vc4 = to_vc4_dev(state->plane->dev);
+-	if (!vc4->load_tracker_available)
+-		return;
+-
+ 	vc4_state = to_vc4_plane_state(state);
+ 	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
+ 							state->crtc);

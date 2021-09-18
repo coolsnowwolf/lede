@@ -1,0 +1,94 @@
+From 739b9c6a80058d1aaeb66fdfe2910662f7f411ad Mon Sep 17 00:00:00 2001
+From: Ezequiel Garcia <ezequiel@collabora.com>
+Date: Sun, 21 Mar 2021 16:38:54 -0300
+Subject: [PATCH] RFC: media: Add media_request_{pin,unpin} API
+
+This is probably not the API we will want to add, but it
+should show what semantics are needed by drivers.
+
+The goal is to allow the OUTPUT (aka source) buffer and the
+controls associated to a request to be released from the request,
+and in particular return the OUTPUT buffer back to userspace,
+without signalling the media request fd.
+
+This is useful for devices that are able to pre-process
+the OUTPUT buffer, therefore able to release it before
+the decoding is finished. These drivers should signal
+the media request fd only after the CAPTURE buffer is done.
+
+Tested-by: John Cox <jc@kynesim.co.uk>
+Signed-off-by: Ezequiel Garcia <ezequiel@collabora.com>
+---
+ drivers/media/mc/mc-request.c | 35 +++++++++++++++++++++++++++++++++++
+ include/media/media-request.h | 12 ++++++++++++
+ 2 files changed, 47 insertions(+)
+
+--- a/drivers/media/mc/mc-request.c
++++ b/drivers/media/mc/mc-request.c
+@@ -504,3 +504,38 @@ unlock:
+ 		media_request_put(req);
+ }
+ EXPORT_SYMBOL_GPL(media_request_object_complete);
++
++void media_request_pin(struct media_request *req)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&req->lock, flags);
++	if (WARN_ON(req->state != MEDIA_REQUEST_STATE_QUEUED))
++		goto unlock;
++	req->num_incomplete_objects++;
++unlock:
++	spin_unlock_irqrestore(&req->lock, flags);
++}
++EXPORT_SYMBOL_GPL(media_request_pin);
++
++void media_request_unpin(struct media_request *req)
++{
++	unsigned long flags;
++	bool completed = false;
++
++	spin_lock_irqsave(&req->lock, flags);
++	if (WARN_ON(!req->num_incomplete_objects) ||
++	    WARN_ON(req->state != MEDIA_REQUEST_STATE_QUEUED))
++		goto unlock;
++
++	if (!--req->num_incomplete_objects) {
++		req->state = MEDIA_REQUEST_STATE_COMPLETE;
++		wake_up_interruptible_all(&req->poll_wait);
++		completed = true;
++	}
++unlock:
++	spin_unlock_irqrestore(&req->lock, flags);
++	if (completed)
++		media_request_put(req);
++}
++EXPORT_SYMBOL_GPL(media_request_unpin);
+--- a/include/media/media-request.h
++++ b/include/media/media-request.h
+@@ -189,6 +189,10 @@ static inline void media_request_get(str
+  */
+ void media_request_put(struct media_request *req);
+ 
++void media_request_pin(struct media_request *req);
++
++void media_request_unpin(struct media_request *req);
++
+ /**
+  * media_request_get_by_fd - Get a media request by fd
+  *
+@@ -228,6 +232,14 @@ static inline void media_request_put(str
+ {
+ }
+ 
++static inline void media_request_pin(struct media_request *req)
++{
++}
++
++static inline void media_request_unpin(struct media_request *req)
++{
++}
++
+ static inline struct media_request *
+ media_request_get_by_fd(struct media_device *mdev, int request_fd)
+ {

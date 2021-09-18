@@ -1,0 +1,277 @@
+From 0c212ccaa2e790de8eb43b2766767f2713f93915 Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.com>
+Date: Wed, 29 Jan 2020 15:31:23 +0000
+Subject: [PATCH] media: ov5647: Add V4L2 controls for analogue gain,
+ exposure and AWB
+
+Added basic v4l2_ctrl_handler infrastructure (there was none
+previously).
+
+Added controls to let AWB/AEC/AGC run in the sensor's auto mode or
+manually. Also controls to set exposure (in lines) and analogue gain
+(as a register code) from user code.
+
+Also delete registers (just the one) from the VGA mode register set
+that are now controlled by the new V4L2 controls.
+
+Signed-off-by: David Plowman <david.plowman@raspberrypi.com>
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 175 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 174 insertions(+), 1 deletion(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -29,11 +29,13 @@
+ #include <linux/of_graph.h>
+ #include <linux/slab.h>
+ #include <linux/videodev2.h>
++#include <media/v4l2-ctrls.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-image-sizes.h>
+ #include <media/v4l2-mediabus.h>
+ 
++
+ #define SENSOR_NAME "ov5647"
+ 
+ /*
+@@ -53,9 +55,16 @@
+ #define OV5647_REG_CHIPID_H		0x300A
+ #define OV5647_REG_CHIPID_L		0x300B
+ #define OV5640_REG_PAD_OUT		0x300D
++#define OV5647_REG_EXP_HI		0x3500
++#define OV5647_REG_EXP_MID		0x3501
++#define OV5647_REG_EXP_LO		0x3502
++#define OV5647_REG_AEC_AGC		0x3503
++#define OV5647_REG_GAIN_HI		0x350A
++#define OV5647_REG_GAIN_LO		0x350B
+ #define OV5647_REG_FRAME_OFF_NUMBER	0x4202
+ #define OV5647_REG_MIPI_CTRL00		0x4800
+ #define OV5647_REG_MIPI_CTRL14		0x4814
++#define OV5647_REG_AWB			0x5001
+ 
+ #define REG_TERM 0xfffe
+ #define VAL_TERM 0xfe
+@@ -101,6 +110,7 @@ struct ov5647 {
+ 	struct clk			*xclk;
+ 	struct gpio_desc		*pwdn;
+ 	unsigned int			flags;
++	struct v4l2_ctrl_handler	ctrls;
+ };
+ 
+ static inline struct ov5647 *to_state(struct v4l2_subdev *sd)
+@@ -135,7 +145,6 @@ static struct regval_list ov5647_640x480
+ 	{0x3612, 0x59},
+ 	{0x3618, 0x00},
+ 	{0x5000, 0x06},
+-	{0x5001, 0x01},
+ 	{0x5002, 0x41},
+ 	{0x5003, 0x08},
+ 	{0x5a00, 0x08},
+@@ -372,6 +381,11 @@ static int ov5647_stream_on(struct v4l2_
+ 		return ret;
+ 	}
+ 
++	/* Apply customized values from user when stream starts */
++	ret =  __v4l2_ctrl_handler_setup(sd->ctrl_handler);
++	if (ret)
++		return ret;
++
+ 	if (ov5647->flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)
+ 		val |= MIPI_CTRL00_CLOCK_LANE_GATE |
+ 		       MIPI_CTRL00_LINE_SYNC_ENABLE;
+@@ -753,6 +767,120 @@ static int ov5647_parse_dt(struct device
+ 	return ret;
+ }
+ 
++static int ov5647_s_auto_white_balance(struct v4l2_subdev *sd, u32 val)
++{
++	/* non-zero turns on AWB */
++	return ov5647_write(sd, OV5647_REG_AWB, val ? 1 : 0);
++}
++
++static int ov5647_s_autogain(struct v4l2_subdev *sd, u32 val)
++{
++	int ret;
++	u8 reg;
++
++	/* non-zero turns on AGC by clearing bit 1 */
++	ret = ov5647_read(sd, OV5647_REG_AEC_AGC, &reg);
++	if (ret == 0)
++		ret = ov5647_write(sd, OV5647_REG_AEC_AGC,
++				   val ? reg & ~2 : reg | 2);
++
++	return ret;
++}
++
++static int ov5647_s_exposure_auto(struct v4l2_subdev *sd, u32 val)
++{
++	int ret;
++	u8 reg;
++
++	/* Everything except V4L2_EXPOSURE_MANUAL turns on AEC by
++	 * clearing bit 0
++	 */
++	ret = ov5647_read(sd, OV5647_REG_AEC_AGC, &reg);
++	if (ret == 0)
++		ret = ov5647_write(sd, OV5647_REG_AEC_AGC,
++				   val == V4L2_EXPOSURE_MANUAL ?
++				   reg | 1 : reg & ~1);
++
++	return ret;
++}
++
++static int ov5647_s_analogue_gain(struct v4l2_subdev *sd, u32 val)
++{
++	int ret;
++
++	/* 10 bits of gain, 2 in the high register */
++	ret = ov5647_write(sd, OV5647_REG_GAIN_HI, (val >> 8) & 3);
++	if (ret == 0)
++		ret = ov5647_write(sd, OV5647_REG_GAIN_LO, val & 0xff);
++
++	return ret;
++}
++
++static int ov5647_s_exposure(struct v4l2_subdev *sd, u32 val)
++{
++	int ret;
++
++	/* Sensor has 20 bits, but the bottom 4 bits are fractions of a line
++	 * which we leave as zero (and don't receive in "val").
++	 */
++	ret = ov5647_write(sd, OV5647_REG_EXP_HI, (val >> 12) & 0xf);
++	if (ret == 0)
++		ov5647_write(sd, OV5647_REG_EXP_MID, (val >> 4) & 0xff);
++	if (ret == 0)
++		ov5647_write(sd, OV5647_REG_EXP_LO, (val & 0xf) << 4);
++
++	return ret;
++}
++
++static int ov5647_s_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct ov5647 *state = container_of(ctrl->handler,
++					     struct ov5647, ctrls);
++	struct v4l2_subdev *sd = &state->sd;
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
++	int ret = 0;
++
++	/* v4l2_ctrl_lock() locks our own mutex */
++
++	/*
++	 * If the device is not powered up by the host driver do
++	 * not apply any controls to H/W at this time. Instead
++	 * the controls will be restored right after power-up.
++	 */
++	if (state->power_count == 0)
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_AUTO_WHITE_BALANCE:
++		ret = ov5647_s_auto_white_balance(sd, ctrl->val);
++		break;
++	case V4L2_CID_AUTOGAIN:
++		ret = ov5647_s_autogain(sd, ctrl->val);
++		break;
++	case V4L2_CID_EXPOSURE_AUTO:
++		ret = ov5647_s_exposure_auto(sd, ctrl->val);
++		break;
++	case V4L2_CID_ANALOGUE_GAIN:
++		ret = ov5647_s_analogue_gain(sd, ctrl->val);
++		break;
++	case V4L2_CID_EXPOSURE:
++		ret = ov5647_s_exposure(sd, ctrl->val);
++		break;
++	default:
++		dev_info(&client->dev,
++			 "ctrl(id:0x%x,val:0x%x) is not handled\n",
++			 ctrl->id, ctrl->val);
++		ret = -EINVAL;
++		break;
++	}
++
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops ov5647_ctrl_ops = {
++	.s_ctrl = ov5647_s_ctrl,
++};
++
+ static int ov5647_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
+@@ -761,6 +889,7 @@ static int ov5647_probe(struct i2c_clien
+ 	struct v4l2_subdev *sd;
+ 	struct device_node *np = client->dev.of_node;
+ 	u32 xclk_freq;
++	struct v4l2_ctrl *ctrl;
+ 
+ 	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
+ 	if (!sensor)
+@@ -793,6 +922,48 @@ static int ov5647_probe(struct i2c_clien
+ 
+ 	mutex_init(&sensor->lock);
+ 
++	/* Initialise controls. */
++	v4l2_ctrl_handler_init(&sensor->ctrls, 3);
++	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++			  V4L2_CID_AUTOGAIN,
++			  0,  /* min */
++			  1,  /* max */
++			  1,  /* step */
++			  1); /* default */
++	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++			  V4L2_CID_AUTO_WHITE_BALANCE,
++			  0,  /* min */
++			  1,  /* max */
++			  1,  /* step */
++			  1); /* default */
++	v4l2_ctrl_new_std_menu(&sensor->ctrls, &ov5647_ctrl_ops,
++			       V4L2_CID_EXPOSURE_AUTO,
++			       V4L2_EXPOSURE_MANUAL,  /* max */
++			       0,                     /* skip_mask */
++			       V4L2_EXPOSURE_AUTO);   /* default */
++	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++				 V4L2_CID_EXPOSURE,
++				 4,     /* min lines */
++				 65535, /* max lines (4+8+4 bits)*/
++				 1,     /* step */
++				 1000); /* default number of lines */
++	ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
++	ctrl = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++				 V4L2_CID_ANALOGUE_GAIN,
++				 16,   /* min, 16 = 1.0x */
++				 1023, /* max (10 bits) */
++				 1,    /* step */
++				 32);  /* default, 32 = 2.0x */
++	ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
++
++	if (sensor->ctrls.error) {
++		ret = sensor->ctrls.error;
++		dev_err(&client->dev, "%s control init failed (%d)\n",
++			__func__, ret);
++		goto error;
++	}
++	sensor->sd.ctrl_handler = &sensor->ctrls;
++
+ 	/* Set the default mode before we init the subdev */
+ 	sensor->mode = OV5647_DEFAULT_MODE;
+ 
+@@ -828,6 +999,7 @@ static int ov5647_probe(struct i2c_clien
+ error:
+ 	media_entity_cleanup(&sd->entity);
+ mutex_remove:
++	v4l2_ctrl_handler_free(&sensor->ctrls);
+ 	mutex_destroy(&sensor->lock);
+ 	return ret;
+ }
+@@ -839,6 +1011,7 @@ static int ov5647_remove(struct i2c_clie
+ 
+ 	v4l2_async_unregister_subdev(&ov5647->sd);
+ 	media_entity_cleanup(&ov5647->sd.entity);
++	v4l2_ctrl_handler_free(&ov5647->ctrls);
+ 	v4l2_device_unregister_subdev(sd);
+ 	mutex_destroy(&ov5647->lock);
+ 
