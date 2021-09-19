@@ -6,7 +6,9 @@ define KernelPackage/camera-bcm2835
   TITLE:=BCM2835 Camera
   KCONFIG:= \
     CONFIG_VIDEO_BCM2835 \
-    CONFIG_VIDEO_BCM2835_MMAL
+    CONFIG_VIDEO_BCM2835_MMAL \
+    CONFIG_VIDEO_BCM2835_UNICAM=n \
+    CONFIG_VIDEO_ISP_BCM2835=n
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko
   AUTOLOAD:=$(call AutoLoad,65,bcm2835-v4l2)
@@ -31,12 +33,14 @@ define KernelPackage/drm-vc4
   KCONFIG:= \
     CONFIG_DRM_VC4 \
     CONFIG_DRM_VC4_HDMI_CEC=y \
+    CONFIG_DRM_GUD=n \
     CONFIG_DRM_V3D=n \
     CONFIG_DRM_TVE200=n
   FILES:= \
     $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
     $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko \
-    $(LINUX_DIR)/drivers/media/cec/cec.ko
+    $(LINUX_DIR)/drivers/media/cec/cec.ko@lt5.10 \
+    $(LINUX_DIR)/drivers/media/cec/core/cec.ko@ge5.10
   AUTOLOAD:=$(call AutoProbe,vc4)
 endef
 

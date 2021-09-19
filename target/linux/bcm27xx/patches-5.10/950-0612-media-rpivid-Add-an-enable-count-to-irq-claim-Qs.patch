@@ -1,0 +1,234 @@
+From 8b6aa431b277cc3c49c0c8be2b49b395d29325cf Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Thu, 11 Mar 2021 18:43:15 +0000
+Subject: [PATCH] media: rpivid: Add an enable count to irq claim Qs
+
+Add an enable count to the irq Q structures to allow the irq logic to
+block further callbacks if resources associated with the irq are not
+yet available.
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/staging/media/rpivid/rpivid.h    |   2 +
+ drivers/staging/media/rpivid/rpivid_hw.c | 118 +++++++++++++++--------
+ drivers/staging/media/rpivid/rpivid_hw.h |   3 +
+ 3 files changed, 85 insertions(+), 38 deletions(-)
+
+--- a/drivers/staging/media/rpivid/rpivid.h
++++ b/drivers/staging/media/rpivid/rpivid.h
+@@ -151,6 +151,8 @@ struct rpivid_hw_irq_ctrl {
+ 	struct rpivid_hw_irq_ent *irq;
+ 	/* Non-zero => do not start a new job - outer layer sched pending */
+ 	int no_sched;
++	/* Enable count. -1 always OK, 0 do not sched, +ve shed & count down */
++	int enable;
+ 	/* Thread CB requested */
+ 	bool thread_reqed;
+ };
+--- a/drivers/staging/media/rpivid/rpivid_hw.c
++++ b/drivers/staging/media/rpivid/rpivid_hw.c
+@@ -42,35 +42,62 @@ static void pre_irq(struct rpivid_dev *d
+ 	ient->cb = cb;
+ 	ient->v = v;
+ 
+-	// Not sure this lock is actually required
+ 	spin_lock_irqsave(&ictl->lock, flags);
+ 	ictl->irq = ient;
++	ictl->no_sched++;
+ 	spin_unlock_irqrestore(&ictl->lock, flags);
+ }
+ 
+-static void sched_claim(struct rpivid_dev * const dev,
+-			struct rpivid_hw_irq_ctrl * const ictl)
++/* Should be called from inside ictl->lock */
++static inline bool sched_enabled(const struct rpivid_hw_irq_ctrl * const ictl)
+ {
+-	for (;;) {
+-		struct rpivid_hw_irq_ent *ient = NULL;
+-		unsigned long flags;
++	return ictl->no_sched <= 0 && ictl->enable;
++}
+ 
+-		spin_lock_irqsave(&ictl->lock, flags);
++/* Should be called from inside ictl->lock & after checking sched_enabled() */
++static inline void set_claimed(struct rpivid_hw_irq_ctrl * const ictl)
++{
++	if (ictl->enable > 0)
++		--ictl->enable;
++	ictl->no_sched = 1;
++}
+ 
+-		if (--ictl->no_sched <= 0) {
+-			ient = ictl->claim;
+-			if (!ictl->irq && ient) {
+-				ictl->claim = ient->next;
+-				ictl->no_sched = 1;
+-			}
+-		}
++/* Should be called from inside ictl->lock */
++static struct rpivid_hw_irq_ent *get_sched(struct rpivid_hw_irq_ctrl * const ictl)
++{
++	struct rpivid_hw_irq_ent *ient;
+ 
+-		spin_unlock_irqrestore(&ictl->lock, flags);
++	if (!sched_enabled(ictl))
++		return NULL;
++
++	ient = ictl->claim;
++	if (!ient)
++		return NULL;
++	ictl->claim = ient->next;
++
++	set_claimed(ictl);
++	return ient;
++}
+ 
+-		if (!ient)
+-			break;
++/* Run a callback & check to see if there is anything else to run */
++static void sched_cb(struct rpivid_dev * const dev,
++		     struct rpivid_hw_irq_ctrl * const ictl,
++		     struct rpivid_hw_irq_ent *ient)
++{
++	while (ient) {
++		unsigned long flags;
+ 
+ 		ient->cb(dev, ient->v);
++
++		spin_lock_irqsave(&ictl->lock, flags);
++
++		/* Always dec no_sched after cb exec - must have been set
++		 * on entry to cb
++		 */
++		--ictl->no_sched;
++		ient = get_sched(ictl);
++
++		spin_unlock_irqrestore(&ictl->lock, flags);
+ 	}
+ }
+ 
+@@ -84,7 +111,7 @@ static void pre_thread(struct rpivid_dev
+ 	ient->v = v;
+ 	ictl->irq = ient;
+ 	ictl->thread_reqed = true;
+-	ictl->no_sched++;
++	ictl->no_sched++;	/* This is unwound in do_thread */
+ }
+ 
+ // Called in irq context
+@@ -96,17 +123,10 @@ static void do_irq(struct rpivid_dev * c
+ 
+ 	spin_lock_irqsave(&ictl->lock, flags);
+ 	ient = ictl->irq;
+-	if (ient) {
+-		ictl->no_sched++;
+-		ictl->irq = NULL;
+-	}
++	ictl->irq = NULL;
+ 	spin_unlock_irqrestore(&ictl->lock, flags);
+ 
+-	if (ient) {
+-		ient->cb(dev, ient->v);
+-
+-		sched_claim(dev, ictl);
+-	}
++	sched_cb(dev, ictl, ient);
+ }
+ 
+ static void do_claim(struct rpivid_dev * const dev,
+@@ -127,7 +147,7 @@ static void do_claim(struct rpivid_dev *
+ 		ictl->tail->next = ient;
+ 		ictl->tail = ient;
+ 		ient = NULL;
+-	} else if (ictl->no_sched || ictl->irq) {
++	} else if (!sched_enabled(ictl)) {
+ 		// Empty Q but other activity in progress so Q
+ 		ictl->claim = ient;
+ 		ictl->tail = ient;
+@@ -135,16 +155,34 @@ static void do_claim(struct rpivid_dev *
+ 	} else {
+ 		// Nothing else going on - schedule immediately and
+ 		// prevent anything else scheduling claims
+-		ictl->no_sched = 1;
++		set_claimed(ictl);
+ 	}
+ 
+ 	spin_unlock_irqrestore(&ictl->lock, flags);
+ 
+-	if (ient) {
+-		ient->cb(dev, ient->v);
++	sched_cb(dev, ictl, ient);
++}
+ 
+-		sched_claim(dev, ictl);
+-	}
++/* Enable n claims.
++ * n < 0   set to unlimited (default on init)
++ * n = 0   if previously unlimited then disable otherwise nop
++ * n > 0   if previously unlimited then set to n enables
++ *         otherwise add n enables
++ * The enable count is automatically decremented every time a claim is run
++ */
++static void do_enable_claim(struct rpivid_dev * const dev,
++			    int n,
++			    struct rpivid_hw_irq_ctrl * const ictl)
++{
++	unsigned long flags;
++	struct rpivid_hw_irq_ent *ient;
++
++	spin_lock_irqsave(&ictl->lock, flags);
++	ictl->enable = n < 0 ? -1 : ictl->enable <= 0 ? n : ictl->enable + n;
++	ient = get_sched(ictl);
++	spin_unlock_irqrestore(&ictl->lock, flags);
++
++	sched_cb(dev, ictl, ient);
+ }
+ 
+ static void ictl_init(struct rpivid_hw_irq_ctrl * const ictl)
+@@ -154,6 +192,8 @@ static void ictl_init(struct rpivid_hw_i
+ 	ictl->tail = NULL;
+ 	ictl->irq = NULL;
+ 	ictl->no_sched = 0;
++	ictl->enable = -1;
++	ictl->thread_reqed = false;
+ }
+ 
+ static void ictl_uninit(struct rpivid_hw_irq_ctrl * const ictl)
+@@ -203,11 +243,7 @@ static void do_thread(struct rpivid_dev
+ 
+ 	spin_unlock_irqrestore(&ictl->lock, flags);
+ 
+-	if (ient) {
+-		ient->cb(dev, ient->v);
+-
+-		sched_claim(dev, ictl);
+-	}
++	sched_cb(dev, ictl, ient);
+ }
+ 
+ static irqreturn_t rpivid_irq_thread(int irq, void *data)
+@@ -231,6 +267,12 @@ void rpivid_hw_irq_active1_thread(struct
+ 	pre_thread(dev, ient, thread_cb, ctx, &dev->ic_active1);
+ }
+ 
++void rpivid_hw_irq_active1_enable_claim(struct rpivid_dev *dev,
++					int n)
++{
++	do_enable_claim(dev, n, &dev->ic_active1);
++}
++
+ void rpivid_hw_irq_active1_claim(struct rpivid_dev *dev,
+ 				 struct rpivid_hw_irq_ent *ient,
+ 				 rpivid_irq_callback ready_cb, void *ctx)
+--- a/drivers/staging/media/rpivid/rpivid_hw.h
++++ b/drivers/staging/media/rpivid/rpivid_hw.h
+@@ -272,6 +272,9 @@ static inline void apb_write_vc_len(cons
+ 		ARG_IC_ICTRL_ACTIVE1_INT_SET    |\
+ 		ARG_IC_ICTRL_ACTIVE2_INT_SET)
+ 
++/* Regulate claim Q */
++void rpivid_hw_irq_active1_enable_claim(struct rpivid_dev *dev,
++					int n);
+ /* Auto release once all CBs called */
+ void rpivid_hw_irq_active1_claim(struct rpivid_dev *dev,
+ 				 struct rpivid_hw_irq_ent *ient,

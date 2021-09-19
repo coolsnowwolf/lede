@@ -1,0 +1,70 @@
+From 287fbc1b38d530aef3bc66420db7591808ff9969 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 13 May 2020 20:10:15 +0100
+Subject: [PATCH] sc16is7xx: Fix for hardware flow control
+
+The SC16IS7XX hardware flow control is mishandled by the driver in
+a number of ways:
+
+  1. The set_baud method accidentally clears it when setting EFR bit.
+  2. Even though hardware flow control is enabled, it isn't indicated
+     back to the serial framework.
+  3. Applying the flow control clears the EFR bit.
+  4. The CTS support is not indicated in the return from
+     sc16is7xx_get_mctrl.
+
+Address all of those issues using a mixture of patches found on the
+linked pages.
+
+See: https://github.com/raspberrypi/linux/issues/2542
+See: https://www.spinics.net/lists/linux-serial/msg21794.html
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/tty/serial/sc16is7xx.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+--- a/drivers/tty/serial/sc16is7xx.c
++++ b/drivers/tty/serial/sc16is7xx.c
+@@ -523,8 +523,9 @@ static int sc16is7xx_set_baud(struct uar
+ 
+ 	/* Enable enhanced features */
+ 	regcache_cache_bypass(s->regmap, true);
+-	sc16is7xx_port_write(port, SC16IS7XX_EFR_REG,
+-			     SC16IS7XX_EFR_ENABLE_BIT);
++	sc16is7xx_port_update(port, SC16IS7XX_EFR_REG,
++			      SC16IS7XX_EFR_ENABLE_BIT,
++			      SC16IS7XX_EFR_ENABLE_BIT);
+ 	regcache_cache_bypass(s->regmap, false);
+ 
+ 	/* Put LCR back to the normal mode */
+@@ -839,7 +840,7 @@ static unsigned int sc16is7xx_get_mctrl(
+ 	/* DCD and DSR are not wired and CTS/RTS is handled automatically
+ 	 * so just indicate DSR and CAR asserted
+ 	 */
+-	return TIOCM_DSR | TIOCM_CAR;
++	return TIOCM_DSR | TIOCM_CAR | TIOCM_RI | TIOCM_CTS;
+ }
+ 
+ static void sc16is7xx_set_mctrl(struct uart_port *port, unsigned int mctrl)
+@@ -926,14 +927,19 @@ static void sc16is7xx_set_termios(struct
+ 	regcache_cache_bypass(s->regmap, true);
+ 	sc16is7xx_port_write(port, SC16IS7XX_XON1_REG, termios->c_cc[VSTART]);
+ 	sc16is7xx_port_write(port, SC16IS7XX_XOFF1_REG, termios->c_cc[VSTOP]);
+-	if (termios->c_cflag & CRTSCTS)
++	if (termios->c_cflag & CRTSCTS) {
+ 		flow |= SC16IS7XX_EFR_AUTOCTS_BIT |
+ 			SC16IS7XX_EFR_AUTORTS_BIT;
++		port->status |= UPSTAT_AUTOCTS;
++	};
+ 	if (termios->c_iflag & IXON)
+ 		flow |= SC16IS7XX_EFR_SWFLOW3_BIT;
+ 	if (termios->c_iflag & IXOFF)
+ 		flow |= SC16IS7XX_EFR_SWFLOW1_BIT;
+ 
++	/* Always set enable enhanced */
++	flow |= SC16IS7XX_EFR_ENABLE_BIT;
++
+ 	sc16is7xx_port_write(port, SC16IS7XX_EFR_REG, flow);
+ 	regcache_cache_bypass(s->regmap, false);
+ 

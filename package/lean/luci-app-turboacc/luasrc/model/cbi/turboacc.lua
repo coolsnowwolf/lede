@@ -24,23 +24,11 @@ hw_flow.description = translate("Requires hardware NAT support. Implemented at l
 hw_flow:depends("sw_flow", 1)
 end
 
-if nixio.fs.access("/lib/modules/" .. kernel_version .. "/fast-classifier.ko") then
+if nixio.fs.access("/lib/modules/" .. kernel_version .. "/shortcut-fe-cm.ko") then
 sfe_flow = s:option(Flag, "sfe_flow", translate("Shortcut-FE flow offloading"))
 sfe_flow.default = 0
 sfe_flow.description = translate("Shortcut-FE based offloading for routing/NAT")
 sfe_flow:depends("sw_flow", 0)
-end
-
-sfe_bridge = s:option(Flag, "sfe_bridge", translate("Bridge Acceleration"))
-sfe_bridge.default = 0
-sfe_bridge.description = translate("Enable Bridge Acceleration (may be functional conflict with bridge-mode VPN server)")
-sfe_bridge:depends("sfe_flow", 1)
-
-if nixio.fs.access("/proc/sys/net/ipv6") then
-sfe_ipv6 = s:option(Flag, "sfe_ipv6", translate("IPv6 Acceleration"))
-sfe_ipv6.default = 0
-sfe_ipv6.description = translate("Enable IPv6 Acceleration")
-sfe_ipv6:depends("sfe_flow", 1)
 end
 
 if nixio.fs.access("/lib/modules/" .. kernel_version .. "/tcp_bbr.ko") then
