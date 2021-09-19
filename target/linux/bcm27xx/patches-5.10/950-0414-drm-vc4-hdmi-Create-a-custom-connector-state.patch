@@ -1,0 +1,88 @@
+From e072b2d845ff91716d630f4d2a105bf63698cfe1 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 15 Dec 2020 16:42:39 +0100
+Subject: [PATCH] drm/vc4: hdmi: Create a custom connector state
+
+When run with a higher bpc than 8, the clock of the HDMI controller needs
+to be adjusted. Let's create a connector state that will be used at
+atomic_check and atomic_enable to compute and store the clock rate
+associated to the state.
+
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 33 ++++++++++++++++++++++++++++++---
+ drivers/gpu/drm/vc4/vc4_hdmi.h | 10 ++++++++++
+ 2 files changed, 40 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -214,10 +214,37 @@ static int vc4_hdmi_connector_get_modes(
+ 
+ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+ {
+-	drm_atomic_helper_connector_reset(connector);
++	struct vc4_hdmi_connector_state *old_state =
++		conn_state_to_vc4_hdmi_conn_state(connector->state);
++	struct vc4_hdmi_connector_state *new_state =
++		kzalloc(sizeof(*new_state), GFP_KERNEL);
+ 
+ 	if (connector->state)
+-		drm_atomic_helper_connector_tv_reset(connector);
++		__drm_atomic_helper_connector_destroy_state(connector->state);
++
++	kfree(old_state);
++	__drm_atomic_helper_connector_reset(connector, &new_state->base);
++
++	if (!new_state)
++		return;
++
++	drm_atomic_helper_connector_tv_reset(connector);
++}
++
++static struct drm_connector_state *
++vc4_hdmi_connector_duplicate_state(struct drm_connector *connector)
++{
++	struct drm_connector_state *conn_state = connector->state;
++	struct vc4_hdmi_connector_state *vc4_state = conn_state_to_vc4_hdmi_conn_state(conn_state);
++	struct vc4_hdmi_connector_state *new_state;
++
++	new_state = kzalloc(sizeof(*new_state), GFP_KERNEL);
++	if (!new_state)
++		return NULL;
++
++	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
++
++	return &new_state->base;
+ }
+ 
+ static const struct drm_connector_funcs vc4_hdmi_connector_funcs = {
+@@ -225,7 +252,7 @@ static const struct drm_connector_funcs
+ 	.fill_modes = drm_helper_probe_single_connector_modes,
+ 	.destroy = vc4_hdmi_connector_destroy,
+ 	.reset = vc4_hdmi_connector_reset,
+-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_duplicate_state = vc4_hdmi_connector_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+ };
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -187,6 +187,16 @@ encoder_to_vc4_hdmi(struct drm_encoder *
+ 	return container_of(_encoder, struct vc4_hdmi, encoder);
+ }
+ 
++struct vc4_hdmi_connector_state {
++	struct drm_connector_state	base;
++};
++
++static inline struct vc4_hdmi_connector_state *
++conn_state_to_vc4_hdmi_conn_state(struct drm_connector_state *conn_state)
++{
++	return container_of(conn_state, struct vc4_hdmi_connector_state, base);
++}
++
+ void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
+ 		       struct drm_display_mode *mode);
+ void vc4_hdmi_phy_disable(struct vc4_hdmi *vc4_hdmi);
