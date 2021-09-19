@@ -33,7 +33,7 @@ define Package/$(PKG_NAME)/config
 config PACKAGE_$(PKG_NAME)_INCLUDE_OFFLOADING
 	bool "Include Flow Offload"
 	depends on (PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE=n && PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV=n)
-	default y if i386||x86_64||TARGET_ramips
+	default y if i386||x86_64||TARGET_ramips||TARGET_bcm53xx
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV
 	bool "Include Shortcut-FE for ECM"
@@ -42,7 +42,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE
 	bool "Include Shortcut-FE"
-	default y if !(TARGET_ipq806x||TARGET_ipq807x||TARGET_ramips)
+	default y if !(TARGET_ipq806x||TARGET_ipq807x||TARGET_ramips||TARGET_bcm53xx)
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_BBR_CCA
 	bool "Include BBR CCA"
