@@ -1,0 +1,141 @@
+From 423173ed6e873ec9a6ae0e62d55bd4c746f0f982 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 11 Jan 2021 15:23:03 +0100
+Subject: [PATCH] drm/vc4: hdmi: Split the interrupt handlers
+
+The BCM2711 has two different interrupt sources to transmit and receive
+CEC messages, provided through an external interrupt chip shared between
+the two HDMI interrupt controllers.
+
+The rest of the CEC controller is identical though so we need to change
+a bit the code organisation to share the code as much as possible, yet
+still allowing to register independant handlers.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 86 +++++++++++++++++++++++++---------
+ 1 file changed, 65 insertions(+), 21 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1571,15 +1571,22 @@ static int vc4_hdmi_audio_init(struct vc
+ }
+ 
+ #ifdef CONFIG_DRM_VC4_HDMI_CEC
+-static irqreturn_t vc4_cec_irq_handler_thread(int irq, void *priv)
++static irqreturn_t vc4_cec_irq_handler_rx_thread(int irq, void *priv)
++{
++	struct vc4_hdmi *vc4_hdmi = priv;
++
++	if (vc4_hdmi->cec_rx_msg.len)
++		cec_received_msg(vc4_hdmi->cec_adap,
++				 &vc4_hdmi->cec_rx_msg);
++
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t vc4_cec_irq_handler_tx_thread(int irq, void *priv)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = priv;
+ 
+-	if (vc4_hdmi->cec_irq_was_rx) {
+-		if (vc4_hdmi->cec_rx_msg.len)
+-			cec_received_msg(vc4_hdmi->cec_adap,
+-					 &vc4_hdmi->cec_rx_msg);
+-	} else if (vc4_hdmi->cec_tx_ok) {
++	if (vc4_hdmi->cec_tx_ok) {
+ 		cec_transmit_done(vc4_hdmi->cec_adap, CEC_TX_STATUS_OK,
+ 				  0, 0, 0, 0);
+ 	} else {
+@@ -1593,6 +1600,19 @@ static irqreturn_t vc4_cec_irq_handler_t
+ 	return IRQ_HANDLED;
+ }
+ 
++static irqreturn_t vc4_cec_irq_handler_thread(int irq, void *priv)
++{
++	struct vc4_hdmi *vc4_hdmi = priv;
++	irqreturn_t ret;
++
++	if (vc4_hdmi->cec_irq_was_rx)
++		ret = vc4_cec_irq_handler_rx_thread(irq, priv);
++	else
++		ret = vc4_cec_irq_handler_tx_thread(irq, priv);
++
++	return ret;
++}
++
+ static void vc4_cec_read_msg(struct vc4_hdmi *vc4_hdmi, u32 cntrl1)
+ {
+ 	struct drm_device *dev = vc4_hdmi->connector.dev;
+@@ -1617,31 +1637,55 @@ static void vc4_cec_read_msg(struct vc4_
+ 	}
+ }
+ 
++static irqreturn_t vc4_cec_irq_handler_tx_bare(int irq, void *priv)
++{
++	struct vc4_hdmi *vc4_hdmi = priv;
++	u32 cntrl1;
++
++	cntrl1 = HDMI_READ(HDMI_CEC_CNTRL_1);
++	vc4_hdmi->cec_tx_ok = cntrl1 & VC4_HDMI_CEC_TX_STATUS_GOOD;
++	cntrl1 &= ~VC4_HDMI_CEC_START_XMIT_BEGIN;
++	HDMI_WRITE(HDMI_CEC_CNTRL_1, cntrl1);
++
++	return IRQ_WAKE_THREAD;
++}
++
++static irqreturn_t vc4_cec_irq_handler_rx_bare(int irq, void *priv)
++{
++	struct vc4_hdmi *vc4_hdmi = priv;
++	u32 cntrl1;
++
++	vc4_hdmi->cec_rx_msg.len = 0;
++	cntrl1 = HDMI_READ(HDMI_CEC_CNTRL_1);
++	vc4_cec_read_msg(vc4_hdmi, cntrl1);
++	cntrl1 |= VC4_HDMI_CEC_CLEAR_RECEIVE_OFF;
++	HDMI_WRITE(HDMI_CEC_CNTRL_1, cntrl1);
++	cntrl1 &= ~VC4_HDMI_CEC_CLEAR_RECEIVE_OFF;
++
++	HDMI_WRITE(HDMI_CEC_CNTRL_1, cntrl1);
++
++	return IRQ_WAKE_THREAD;
++}
++
+ static irqreturn_t vc4_cec_irq_handler(int irq, void *priv)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = priv;
+ 	u32 stat = HDMI_READ(HDMI_CEC_CPU_STATUS);
+-	u32 cntrl1, cntrl5;
++	irqreturn_t ret;
++	u32 cntrl5;
+ 
+ 	if (!(stat & VC4_HDMI_CPU_CEC))
+ 		return IRQ_NONE;
+-	vc4_hdmi->cec_rx_msg.len = 0;
+-	cntrl1 = HDMI_READ(HDMI_CEC_CNTRL_1);
++
+ 	cntrl5 = HDMI_READ(HDMI_CEC_CNTRL_5);
+ 	vc4_hdmi->cec_irq_was_rx = cntrl5 & VC4_HDMI_CEC_RX_CEC_INT;
+-	if (vc4_hdmi->cec_irq_was_rx) {
+-		vc4_cec_read_msg(vc4_hdmi, cntrl1);
+-		cntrl1 |= VC4_HDMI_CEC_CLEAR_RECEIVE_OFF;
+-		HDMI_WRITE(HDMI_CEC_CNTRL_1, cntrl1);
+-		cntrl1 &= ~VC4_HDMI_CEC_CLEAR_RECEIVE_OFF;
+-	} else {
+-		vc4_hdmi->cec_tx_ok = cntrl1 & VC4_HDMI_CEC_TX_STATUS_GOOD;
+-		cntrl1 &= ~VC4_HDMI_CEC_START_XMIT_BEGIN;
+-	}
+-	HDMI_WRITE(HDMI_CEC_CNTRL_1, cntrl1);
+-	HDMI_WRITE(HDMI_CEC_CPU_CLEAR, VC4_HDMI_CPU_CEC);
++	if (vc4_hdmi->cec_irq_was_rx)
++		ret = vc4_cec_irq_handler_rx_bare(irq, priv);
++	else
++		ret = vc4_cec_irq_handler_tx_bare(irq, priv);
+ 
+-	return IRQ_WAKE_THREAD;
++	HDMI_WRITE(HDMI_CEC_CPU_CLEAR, VC4_HDMI_CPU_CEC);
++	return ret;
+ }
+ 
+ static int vc4_hdmi_cec_adap_enable(struct cec_adapter *adap, bool enable)

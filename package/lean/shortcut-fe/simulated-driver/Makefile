@@ -23,6 +23,7 @@ PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/shortcut-fe
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2021-03-17
 PKG_SOURCE_VERSION:=697977d8d0ccf0ab596e5692d08608a75dd7f33d
+PKG_MIRROR_HASH:=659fa82a431e15af797a6c7069faeee02810453ad8b576c51c29f95a1761a045
 
 include $(INCLUDE_DIR)/package.mk
 

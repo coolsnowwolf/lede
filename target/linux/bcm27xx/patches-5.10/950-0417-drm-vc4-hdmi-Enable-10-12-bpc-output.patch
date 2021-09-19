@@ -1,0 +1,203 @@
+From 72a998c1462527c2d61c2f9a38525c99da442fb4 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 15 Dec 2020 16:42:43 +0100
+Subject: [PATCH] drm/vc4: hdmi: Enable 10/12 bpc output
+
+The BCM2711 supports higher bpc count than just 8, so let's support it in
+our driver.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c      | 70 ++++++++++++++++++++++++++++-
+ drivers/gpu/drm/vc4/vc4_hdmi.h      |  1 +
+ drivers/gpu/drm/vc4/vc4_hdmi_regs.h |  9 ++++
+ 3 files changed, 79 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -77,6 +77,17 @@
+ #define VC5_HDMI_VERTB_VSPO_SHIFT		16
+ #define VC5_HDMI_VERTB_VSPO_MASK		VC4_MASK(29, 16)
+ 
++#define VC5_HDMI_DEEP_COLOR_CONFIG_1_INIT_PACK_PHASE_SHIFT	8
++#define VC5_HDMI_DEEP_COLOR_CONFIG_1_INIT_PACK_PHASE_MASK	VC4_MASK(10, 8)
++
++#define VC5_HDMI_DEEP_COLOR_CONFIG_1_COLOR_DEPTH_SHIFT		0
++#define VC5_HDMI_DEEP_COLOR_CONFIG_1_COLOR_DEPTH_MASK		VC4_MASK(3, 0)
++
++#define VC5_HDMI_GCP_CONFIG_GCP_ENABLE		BIT(31)
++
++#define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_SHIFT	8
++#define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_MASK	VC4_MASK(15, 8)
++
+ # define VC4_HD_M_SW_RST			BIT(2)
+ # define VC4_HD_M_ENABLE			BIT(0)
+ 
+@@ -228,6 +239,8 @@ static void vc4_hdmi_connector_reset(str
+ 	if (!new_state)
+ 		return;
+ 
++	new_state->base.max_bpc = 8;
++	new_state->base.max_requested_bpc = 8;
+ 	drm_atomic_helper_connector_tv_reset(connector);
+ }
+ 
+@@ -274,12 +287,20 @@ static int vc4_hdmi_connector_init(struc
+ 				    vc4_hdmi->ddc);
+ 	drm_connector_helper_add(connector, &vc4_hdmi_connector_helper_funcs);
+ 
++	/*
++	 * Some of the properties below require access to state, like bpc.
++	 * Allocate some default initial connector state with our reset helper.
++	 */
++	if (connector->funcs->reset)
++		connector->funcs->reset(connector);
++
+ 	/* Create and attach TV margin props to this connector. */
+ 	ret = drm_mode_create_tv_margin_properties(dev);
+ 	if (ret)
+ 		return ret;
+ 
+ 	drm_connector_attach_tv_margin_properties(connector);
++	drm_connector_attach_max_bpc_property(connector, 8, 12);
+ 
+ 	connector->polled = (DRM_CONNECTOR_POLL_CONNECT |
+ 			     DRM_CONNECTOR_POLL_DISCONNECT);
+@@ -554,6 +575,7 @@ static void vc5_hdmi_csc_setup(struct vc
+ }
+ 
+ static void vc4_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
++				 struct drm_connector_state *state,
+ 				 struct drm_display_mode *mode)
+ {
+ 	bool hsync_pos = mode->flags & DRM_MODE_FLAG_PHSYNC;
+@@ -597,7 +619,9 @@ static void vc4_hdmi_set_timings(struct
+ 	HDMI_WRITE(HDMI_VERTB0, vertb_even);
+ 	HDMI_WRITE(HDMI_VERTB1, vertb);
+ }
++
+ static void vc5_hdmi_set_timings(struct vc4_hdmi *vc4_hdmi,
++				 struct drm_connector_state *state,
+ 				 struct drm_display_mode *mode)
+ {
+ 	bool hsync_pos = mode->flags & DRM_MODE_FLAG_PHSYNC;
+@@ -617,6 +641,9 @@ static void vc5_hdmi_set_timings(struct
+ 					mode->crtc_vsync_end -
+ 					interlaced,
+ 					VC4_HDMI_VERTB_VBP));
++	unsigned char gcp;
++	bool gcp_en;
++	u32 reg;
+ 
+ 	HDMI_WRITE(HDMI_VEC_INTERFACE_XBAR, 0x354021);
+ 	HDMI_WRITE(HDMI_HORZA,
+@@ -642,6 +669,39 @@ static void vc5_hdmi_set_timings(struct
+ 	HDMI_WRITE(HDMI_VERTB0, vertb_even);
+ 	HDMI_WRITE(HDMI_VERTB1, vertb);
+ 
++	switch (state->max_bpc) {
++	case 12:
++		gcp = 6;
++		gcp_en = true;
++		break;
++	case 10:
++		gcp = 5;
++		gcp_en = true;
++		break;
++	case 8:
++	default:
++		gcp = 4;
++		gcp_en = false;
++		break;
++	}
++
++	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
++	reg &= ~(VC5_HDMI_DEEP_COLOR_CONFIG_1_INIT_PACK_PHASE_MASK |
++		 VC5_HDMI_DEEP_COLOR_CONFIG_1_COLOR_DEPTH_MASK);
++	reg |= VC4_SET_FIELD(2, VC5_HDMI_DEEP_COLOR_CONFIG_1_INIT_PACK_PHASE) |
++	       VC4_SET_FIELD(gcp, VC5_HDMI_DEEP_COLOR_CONFIG_1_COLOR_DEPTH);
++	HDMI_WRITE(HDMI_DEEP_COLOR_CONFIG_1, reg);
++
++	reg = HDMI_READ(HDMI_GCP_WORD_1);
++	reg &= ~VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_MASK;
++	reg |= VC4_SET_FIELD(gcp, VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1);
++	HDMI_WRITE(HDMI_GCP_WORD_1, reg);
++
++	reg = HDMI_READ(HDMI_GCP_CONFIG);
++	reg &= ~VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
++	reg |= gcp_en ? VC5_HDMI_GCP_CONFIG_GCP_ENABLE : 0;
++	HDMI_WRITE(HDMI_GCP_CONFIG, reg);
++
+ 	HDMI_WRITE(HDMI_CLOCK_STOP, 0);
+ }
+ 
+@@ -769,7 +829,7 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 		   VC4_HDMI_SCHEDULER_CONTROL_IGNORE_VSYNC_PREDICTS);
+ 
+ 	if (vc4_hdmi->variant->set_timings)
+-		vc4_hdmi->variant->set_timings(vc4_hdmi, mode);
++		vc4_hdmi->variant->set_timings(vc4_hdmi, conn_state, mode);
+ }
+ 
+ static void vc4_hdmi_encoder_pre_crtc_enable(struct drm_encoder *encoder,
+@@ -890,6 +950,14 @@ static int vc4_hdmi_encoder_atomic_check
+ 		pixel_rate = mode->clock * 1000;
+ 	}
+ 
++	if (conn_state->max_bpc == 12) {
++		pixel_rate = pixel_rate * 150;
++		do_div(pixel_rate, 100);
++	} else if (conn_state->max_bpc == 10) {
++		pixel_rate = pixel_rate * 125;
++		do_div(pixel_rate, 100);
++	}
++
+ 	if (mode->flags & DRM_MODE_FLAG_DBLCLK)
+ 		pixel_rate = pixel_rate * 2;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -74,6 +74,7 @@ struct vc4_hdmi_variant {
+ 
+ 	/* Callback to configure the video timings in the HDMI block */
+ 	void (*set_timings)(struct vc4_hdmi *vc4_hdmi,
++			    struct drm_connector_state *state,
+ 			    struct drm_display_mode *mode);
+ 
+ 	/* Callback to initialize the PHY according to the connector state */
+--- a/drivers/gpu/drm/vc4/vc4_hdmi_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi_regs.h
+@@ -60,9 +60,12 @@ enum vc4_hdmi_field {
+ 	 */
+ 	HDMI_CTS_0,
+ 	HDMI_CTS_1,
++	HDMI_DEEP_COLOR_CONFIG_1,
+ 	HDMI_DVP_CTL,
+ 	HDMI_FIFO_CTL,
+ 	HDMI_FRAME_COUNT,
++	HDMI_GCP_CONFIG,
++	HDMI_GCP_WORD_1,
+ 	HDMI_HORZA,
+ 	HDMI_HORZB,
+ 	HDMI_HOTPLUG,
+@@ -231,6 +234,9 @@ static const struct vc4_hdmi_register vc
+ 	VC4_HDMI_REG(HDMI_VERTB1, 0x0f8),
+ 	VC4_HDMI_REG(HDMI_MAI_CHANNEL_MAP, 0x09c),
+ 	VC4_HDMI_REG(HDMI_MAI_CONFIG, 0x0a0),
++	VC4_HDMI_REG(HDMI_DEEP_COLOR_CONFIG_1, 0x170),
++	VC4_HDMI_REG(HDMI_GCP_CONFIG, 0x178),
++	VC4_HDMI_REG(HDMI_GCP_WORD_1, 0x17c),
+ 	VC4_HDMI_REG(HDMI_HOTPLUG, 0x1a8),
+ 
+ 	VC5_DVP_REG(HDMI_CLOCK_STOP, 0x0bc),
+@@ -307,6 +313,9 @@ static const struct vc4_hdmi_register vc
+ 	VC4_HDMI_REG(HDMI_VERTB1, 0x0f8),
+ 	VC4_HDMI_REG(HDMI_MAI_CHANNEL_MAP, 0x09c),
+ 	VC4_HDMI_REG(HDMI_MAI_CONFIG, 0x0a0),
++	VC4_HDMI_REG(HDMI_DEEP_COLOR_CONFIG_1, 0x170),
++	VC4_HDMI_REG(HDMI_GCP_CONFIG, 0x178),
++	VC4_HDMI_REG(HDMI_GCP_WORD_1, 0x17c),
+ 	VC4_HDMI_REG(HDMI_HOTPLUG, 0x1a8),
+ 
+ 	VC5_DVP_REG(HDMI_CLOCK_STOP, 0x0bc),

@@ -1,0 +1,144 @@
+From 4951e0d22b58566678a16d53bf06851e1b63eeff Mon Sep 17 00:00:00 2001
+From: David Knell <david.knell@gmail.com>
+Date: Mon, 8 Feb 2021 03:35:15 +0000
+Subject: [PATCH] Added PiFi-Mini to rpi-simple-soundcard.c
+
+Signed-off-by: David Knell <david.knell@gmail.com>
+---
+ sound/soc/bcm/rpi-simple-soundcard.c | 94 +++++++++++++++++++++++++---
+ 1 file changed, 87 insertions(+), 7 deletions(-)
+
+--- a/sound/soc/bcm/rpi-simple-soundcard.c
++++ b/sound/soc/bcm/rpi-simple-soundcard.c
+@@ -32,6 +32,7 @@
+ 
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
++#include <linux/gpio/consumer.h>
+ 
+ #include <sound/core.h>
+ #include <sound/pcm.h>
+@@ -45,6 +46,13 @@ struct snd_rpi_simple_drvdata {
+ 	unsigned int fixed_bclk_ratio;
+ };
+ 
++static struct snd_soc_card snd_rpi_simple = {
++	.driver_name  = "RPi-simple",
++	.owner        = THIS_MODULE,
++	.dai_link     = NULL,
++	.num_links    = 1, /* Only a single DAI supported at the moment */
++};
++
+ static int snd_rpi_simple_init(struct snd_soc_pcm_runtime *rtd)
+ {
+ 	struct snd_rpi_simple_drvdata *drvdata =
+@@ -58,6 +66,60 @@ static int snd_rpi_simple_init(struct sn
+ 	return 0;
+ }
+ 
++static int pifi_mini_210_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_component *dac;
++	struct gpio_desc *pdn_gpio, *rst_gpio;
++	struct snd_soc_dai *codec_dai;
++	int ret;
++
++	snd_rpi_simple_init(rtd);
++	codec_dai = asoc_rtd_to_codec(rtd, 0);
++
++	dac = codec_dai[0].component;
++
++	pdn_gpio = devm_gpiod_get_optional(snd_rpi_simple.dev, "pdn",
++						GPIOD_OUT_LOW);
++	if (IS_ERR(pdn_gpio)) {
++		ret = PTR_ERR(pdn_gpio);
++		dev_err(snd_rpi_simple.dev, "failed to get pdn gpio: %d\n", ret);
++		return ret;
++	}
++
++	rst_gpio = devm_gpiod_get_optional(snd_rpi_simple.dev, "rst",
++						GPIOD_OUT_LOW);
++	if (IS_ERR(rst_gpio)) {
++		ret = PTR_ERR(rst_gpio);
++		dev_err(snd_rpi_simple.dev, "failed to get rst gpio: %d\n", ret);
++		return ret;
++	}
++
++	// Set up cards - pulse power down and reset first, then
++	// set up according to datasheet
++	gpiod_set_value_cansleep(pdn_gpio, 1);
++	gpiod_set_value_cansleep(rst_gpio, 1);
++	usleep_range(1000, 10000);
++	gpiod_set_value_cansleep(pdn_gpio, 0);
++	usleep_range(20000, 30000);
++	gpiod_set_value_cansleep(rst_gpio, 0);
++	usleep_range(20000, 30000);
++
++	// Oscillator trim
++	snd_soc_component_write(dac, 0x1b, 0);
++	usleep_range(60000, 80000);
++
++	// MCLK at 64fs, sample rate 44.1 or 48kHz
++	snd_soc_component_write(dac, 0x00, 0x60);
++
++	// Set up for BTL - AD/BD mode - AD is 0x00107772, BD is 0x00987772
++	snd_soc_component_write(dac, 0x20, 0x00107772);
++
++	// End mute
++	snd_soc_component_write(dac, 0x05, 0x00);
++
++	return 0;
++}
++
+ static int snd_rpi_simple_hw_params(struct snd_pcm_substream *substream,
+ 		struct snd_pcm_hw_params *params)
+ {
+@@ -255,6 +317,29 @@ static struct snd_rpi_simple_drvdata drv
+ 	.fixed_bclk_ratio = 64,
+ };
+ 
++SND_SOC_DAILINK_DEFS(pifi_mini_210,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC("tas571x.1-001a", "tas571x-hifi")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static struct snd_soc_dai_link snd_pifi_mini_210_dai[] = {
++	{
++		.name           = "PiFi Mini 210",
++		.stream_name    = "PiFi Mini 210 HiFi",
++		.init			= pifi_mini_210_init,
++		.dai_fmt        = SND_SOC_DAIFMT_I2S |
++					SND_SOC_DAIFMT_NB_NF |
++					SND_SOC_DAIFMT_CBS_CFS,
++		SND_SOC_DAILINK_REG(pifi_mini_210),
++	},
++};
++
++static struct snd_rpi_simple_drvdata drvdata_pifi_mini_210 = {
++	.card_name        = "snd_pifi_mini_210",
++	.dai              = snd_pifi_mini_210_dai,
++	.fixed_bclk_ratio = 64,
++};
++
+ static const struct of_device_id snd_rpi_simple_of_match[] = {
+ 	{ .compatible = "adi,adau1977-adc",
+ 		.data = (void *) &drvdata_adau1977 },
+@@ -269,16 +354,11 @@ static const struct of_device_id snd_rpi
+ 	{ .compatible = "rpi,rpi-dac", &drvdata_rpi_dac},
+ 	{ .compatible = "merus,merus-amp",
+ 		.data = (void *) &drvdata_merus_amp },
++	{ .compatible = "pifi,pifi-mini-210",
++		.data = (void *) &drvdata_pifi_mini_210 },
+ 	{},
+ };
+ 
+-static struct snd_soc_card snd_rpi_simple = {
+-	.driver_name  = "RPi-simple",
+-	.owner        = THIS_MODULE,
+-	.dai_link     = NULL,
+-	.num_links    = 1, /* Only a single DAI supported at the moment */
+-};
+-
+ static int snd_rpi_simple_probe(struct platform_device *pdev)
+ {
+ 	int ret = 0;
