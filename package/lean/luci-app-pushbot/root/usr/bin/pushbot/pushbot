@@ -16,7 +16,7 @@ function read_config(){
 	"client_usage" "client_usage_max" "client_usage_disturb" "client_usage_whitelist" \
 	"web_logged" "ssh_logged" "web_login_failed" "ssh_login_failed" "login_max_num" "web_login_black" "ip_white_list" "ip_black_timeout" \
 	"pushbot_sheep" "starttime" "endtime" "pushbot_whitelist" "pushbot_blacklist" "pushbot_interface" "MAC_online_list" "MAC_offline_list" \
-	"up_timeout" "down_timeout" "timeout_retry_count" "thread_num" "soc_code" \
+	"up_timeout" "down_timeout" "timeout_retry_count" "thread_num" "soc_code" "pve_host" "pve_port"\
 	"err_enable" "err_sheep_enable" "err_device_aliases" "network_err_event" "system_time_event" "autoreboot_time" "network_restart_time" "public_ip_event" "public_ip_retry_count" \
 	"jsonpath" "dd_webhook" "we_webhook" "pp_token" "pp_channel" "pp_webhook" "pp_topic_enable" "pp_topic" "fs_webhook" "bark_srv_enable" "bark_srv" "bark_token"
 	
@@ -264,8 +264,9 @@ function getcpu(){
 function soc_temp(){
 	[ -z "$soc_code" ] && local soctemp=`sensors 2>/dev/null|grep °C|sed -nr 's#^.*:.*\+(.*)°C .*#\1#gp'|sort -nr|head -n1`
 	[ -z "$soc_code" ] && [ -z "$soctemp" ] && local soctemp=`cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null|sort -nr|head -n1|cut -c-2`
+	[ "$soc_code" == "pve" ] && [ ! -z "$pve_host" ] && local soctemp=`ssh -i ~/.ssh/id_rsa root@${pve_host} -p ${pve_port} sensors 2>/dev/null|grep °C|sed -nr 's#^.*:.*\+(.*)°C .*#\1#gp'|sort -nr|head -n1`
 	[ ! -z "$soctemp" ] && echo "$soctemp" && return
-	[ ! -z "$soc_code" ] && echo "$soc_code"|awk '{run=$0;system(run)}' 2>/dev/null
+	[ ! -z "$soc_code" ] && eval `echo "$soc_code"` 2>/dev/null
 }
 
 # 流量数据
@@ -898,7 +899,7 @@ function cpu_load(){
 		local cpu_wendu=`soc_temp`;
 		[ -z "$cpu_wendu" ] && echo "`date "+%Y-%m-%d %H:%M:%S"`  【！！！】无法读取设备温度，请检查命令" >> ${logfile}
 
-		if [ "$cpu_wendu" -gt "$temperature" ]; then
+		if [ `expr $cpu_wendu \> $temperature` -eq "1" ]; then
 			echo "`date "+%Y-%m-%d %H:%M:%S"` 【！！警报！！】 CPU 温度过高: ${cpu_wendu}" >> ${logfile}
 		else
 			temperature_time=`date +%s`
@@ -1118,11 +1119,18 @@ function send(){
 		local systemload=`cat /proc/loadavg|awk '{print $1" "$2" "$3}'`
 		local cpuload=`getcpu`
 		local ramload=`free -m|sed -n '2p'|awk '{printf "%.2f%%\n",($3/$2)*100}'`
+		local Qwai=`curl -o /dev/null --connect-timeout 5 -s -w %{http_code} www.google.com`
+		if [[ "$Qwai" -eq "200" ]] || [[ "$Qwai" -eq "301" ]] || [[ "$Qwai" -eq "302" ]]; then
+			local Qwai_status="已连通！"
+		else
+			local Qwai_status="已断开！"
+		fi
 		local systemstatustime=`cat /proc/uptime|awk -F. '{run_days=$1 / 86400;run_hour=($1 % 86400)/3600;run_minute=($1 % 3600)/60;run_second=$1 % 60;printf("运行时间：%d天%d时%d分%d秒",run_days,run_hour,run_minute,run_second)}'`;unset run_days run_hour run_minute run_second
 		local send_content="${send_content}${str_splitline}${str_title_start}${font_blue} 系统运行状态${font_end}${str_title_end}"
 		local send_content="${send_content}${str_linefeed}${str_tab}平均负载：${systemload}"
 		local send_content="${send_content}${str_linefeed}${str_tab}CPU占用：${cpuload}${percentsym}"
 		local send_content="${send_content}${str_linefeed}${str_tab}内存占用：${ramload}${percentsym}"
+		local send_content="${send_content}${str_linefeed}${str_tab}全球互联：${Qwai_status}"
 		local send_content="${send_content}${str_linefeed}${str_tab}${systemstatustime}"
 	fi
 

@@ -31,7 +31,20 @@ a.datatype="uinteger"
 a=s:option(Value, "soc_code", "自定义温度读取命令")
 a.rmempty = true 
 a:value("",translate("默认"))
+a:value("pve",translate("PVE 虚拟机"))
 a.description = translate("请尽量避免使用特殊符号，如双引号、$、!等，执行结果需为数字，用于温度对比")
+
+a=s:option(Value,"pve_host",translate("宿主机地址"))
+a.rmempty=true
+a.default="10.0.0.2"
+a.description = translate("请确认已经设置好密钥登陆，否则会引起脚本无法运行等错误！<br/>PVE 安装 sensors 命令自行百度<br/>密钥登陆例：<br/>opkg update #更新列表<br/>opkg install openssh-client openssh-keygen #安装openssh客户端<br/>ssh-keygen -t rsa # 生成密钥文件（自行设定密码等信息）<br/>ssh root@10.0.0.2 \"tee -a ~/.ssh/id_rsa.pub\" < ~/.ssh/id_rsa.pub # 传送公钥到 PVE<br/>ssh root@10.0.0.2 \"cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys\" # 写入公钥到 PVE<br/>ssh -i ~/.ssh/id_rsa root@10.0.0.2 sensors # 测试温度命令")
+a:depends({soc_code="pve"})
+
+a=s:option(Value,"pve_port",translate("SSH端口"))
+a.rmempty=true
+a.default="22"
+a.description = translate("默认为22，如有自定义，请填写自定义SSH端口")
+a:depends({soc_code="pve"})
 
 a=s:option(Button,"soc",translate("测试温度命令"))
 a.inputtitle = translate("输出信息")
