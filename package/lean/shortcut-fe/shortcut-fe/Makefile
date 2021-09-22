@@ -31,6 +31,7 @@ define KernelPackage/shortcut-fe
 	   CONFIG_SHORTCUT_FE=y \
 	   CONFIG_XFRM=y
   PROVIDES:=$(PKG_NAME)
+  AUTOLOAD:=$(call AutoLoad,09,shortcut-fe shortcut-fe-ipv6)
 endef
 
 define KernelPackage/shortcut-fe/Description
