@@ -1,0 +1,1586 @@
+From a013e78cd135c415124496edd439b1031102c33c Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Mon, 28 Nov 2016 16:50:04 +0000
+Subject: [PATCH] Improve __copy_to_user and __copy_from_user
+ performance
+
+Provide a __copy_from_user that uses memcpy. On BCM2708, use
+optimised memcpy/memmove/memcmp/memset implementations.
+
+arch/arm: Add mmiocpy/set aliases for memcpy/set
+
+See: https://github.com/raspberrypi/linux/issues/1082
+
+copy_from_user: CPU_SW_DOMAIN_PAN compatibility
+
+The downstream copy_from_user acceleration must also play nice with
+CONFIG_CPU_SW_DOMAIN_PAN.
+
+See: https://github.com/raspberrypi/linux/issues/1381
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+
+Fix copy_from_user if BCM2835_FAST_MEMCPY=n
+
+The change which introduced CONFIG_BCM2835_FAST_MEMCPY unconditionally
+changed the behaviour of arm_copy_from_user. The page pinning code
+is not safe on ARMv7 if LPAE & high memory is enabled and causes
+crashes which look like PTE corruption.
+
+Make __copy_from_user_memcpy conditional on CONFIG_2835_FAST_MEMCPY=y
+which is really an ARMv6 / Pi1 optimization and not necessary on newer
+ARM processors.
+
+arm: fix mmap unlocks in uaccess_with_memcpy.c
+
+This is a regression that was added with the commit 192a4e923ef092924dd013e7326f2ec520ee4783 as of rpi-5.8.y, since that is when the move to the mmap locking API was introduced - d8ed45c5dcd455fc5848d47f86883a1b872ac0d0
+
+The issue is that when the patch to improve performance for the __copy_to_user and __copy_from_user functions were added for the Raspberry Pi, some of the mmaps were incorrectly mapped to write instead of read. This would cause a verity of issues, and in my case, prevent the booting of a squashfs filesystem on rpi-5.8-y and above. An example of the panic you would see from this can be seen at https://pastebin.com/raw/jBz5xCzL
+
+Signed-off-by: Christian Lamparter <chunkeey@gmail.com>
+Signed-off-by: Christopher Blake <chrisrblake93@gmail.com>
+---
+ arch/arm/include/asm/string.h      |   5 +
+ arch/arm/include/asm/uaccess.h     |   3 +
+ arch/arm/lib/Makefile              |  14 +-
+ arch/arm/lib/arm-mem.h             | 159 +++++++++
+ arch/arm/lib/copy_from_user.S      |   4 +-
+ arch/arm/lib/exports_rpi.c         |  37 +++
+ arch/arm/lib/memcmp_rpi.S          | 285 ++++++++++++++++
+ arch/arm/lib/memcpy_rpi.S          |  61 ++++
+ arch/arm/lib/memcpymove.h          | 506 +++++++++++++++++++++++++++++
+ arch/arm/lib/memmove_rpi.S         |  61 ++++
+ arch/arm/lib/memset_rpi.S          | 128 ++++++++
+ arch/arm/lib/uaccess_with_memcpy.c | 130 +++++++-
+ arch/arm/mach-bcm/Kconfig          |   7 +
+ 13 files changed, 1394 insertions(+), 6 deletions(-)
+ create mode 100644 arch/arm/lib/arm-mem.h
+ create mode 100644 arch/arm/lib/exports_rpi.c
+ create mode 100644 arch/arm/lib/memcmp_rpi.S
+ create mode 100644 arch/arm/lib/memcpy_rpi.S
+ create mode 100644 arch/arm/lib/memcpymove.h
+ create mode 100644 arch/arm/lib/memmove_rpi.S
+ create mode 100644 arch/arm/lib/memset_rpi.S
+
+--- a/arch/arm/include/asm/string.h
++++ b/arch/arm/include/asm/string.h
+@@ -39,4 +39,9 @@ static inline void *memset64(uint64_t *p
+ 	return __memset64(p, v, n * 8, v >> 32);
+ }
+ 
++#ifdef CONFIG_BCM2835_FAST_MEMCPY
++#define __HAVE_ARCH_MEMCMP
++extern int memcmp(const void *, const void *, size_t);
++#endif
++
+ #endif
+--- a/arch/arm/include/asm/uaccess.h
++++ b/arch/arm/include/asm/uaccess.h
+@@ -516,6 +516,9 @@ do {									\
+ extern unsigned long __must_check
+ arm_copy_from_user(void *to, const void __user *from, unsigned long n);
+ 
++extern unsigned long __must_check
++__copy_from_user_std(void *to, const void __user *from, unsigned long n);
++
+ static inline unsigned long __must_check
+ raw_copy_from_user(void *to, const void __user *from, unsigned long n)
+ {
+--- a/arch/arm/lib/Makefile
++++ b/arch/arm/lib/Makefile
+@@ -7,8 +7,8 @@
+ 
+ lib-y		:= changebit.o csumipv6.o csumpartial.o               \
+ 		   csumpartialcopy.o csumpartialcopyuser.o clearbit.o \
+-		   delay.o delay-loop.o findbit.o memchr.o memcpy.o   \
+-		   memmove.o memset.o setbit.o                        \
++		   delay.o delay-loop.o findbit.o memchr.o            \
++		   setbit.o                                           \
+ 		   strchr.o strrchr.o                                 \
+ 		   testchangebit.o testclearbit.o testsetbit.o        \
+ 		   ashldi3.o ashrdi3.o lshrdi3.o muldi3.o             \
+@@ -25,6 +25,16 @@ else
+   lib-y	+= backtrace.o
+ endif
+ 
++# Choose optimised implementations for Raspberry Pi
++ifeq ($(CONFIG_BCM2835_FAST_MEMCPY),y)
++  CFLAGS_uaccess_with_memcpy.o += -DCOPY_FROM_USER_THRESHOLD=1600
++  CFLAGS_uaccess_with_memcpy.o += -DCOPY_TO_USER_THRESHOLD=672
++  obj-$(CONFIG_MODULES) += exports_rpi.o
++  lib-y        += memcpy_rpi.o memmove_rpi.o memset_rpi.o memcmp_rpi.o
++else
++  lib-y        += memcpy.o memmove.o memset.o
++endif
++
+ # using lib_ here won't override already available weak symbols
+ obj-$(CONFIG_UACCESS_WITH_MEMCPY) += uaccess_with_memcpy.o
+ 
+--- /dev/null
++++ b/arch/arm/lib/arm-mem.h
+@@ -0,0 +1,159 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++.macro myfunc fname
++ .func fname
++ .global fname
++fname:
++.endm
++
++.macro preload_leading_step1  backwards, ptr, base
++/* If the destination is already 16-byte aligned, then we need to preload
++ * between 0 and prefetch_distance (inclusive) cache lines ahead so there
++ * are no gaps when the inner loop starts.
++ */
++ .if backwards
++        sub     ptr, base, #1
++        bic     ptr, ptr, #31
++ .else
++        bic     ptr, base, #31
++ .endif
++ .set OFFSET, 0
++ .rept prefetch_distance+1
++        pld     [ptr, #OFFSET]
++  .if backwards
++   .set OFFSET, OFFSET-32
++  .else
++   .set OFFSET, OFFSET+32
++  .endif
++ .endr
++.endm
++
++.macro preload_leading_step2  backwards, ptr, base, leading_bytes, tmp
++/* However, if the destination is not 16-byte aligned, we may need to
++ * preload one more cache line than that. The question we need to ask is:
++ * are the leading bytes more than the amount by which the source
++ * pointer will be rounded down for preloading, and if so, by how many
++ * cache lines?
++ */
++ .if backwards
++/* Here we compare against how many bytes we are into the
++ * cache line, counting down from the highest such address.
++ * Effectively, we want to calculate
++ *     leading_bytes = dst&15
++ *     cacheline_offset = 31-((src-leading_bytes-1)&31)
++ *     extra_needed = leading_bytes - cacheline_offset
++ * and test if extra_needed is <= 0, or rearranging:
++ *     leading_bytes + (src-leading_bytes-1)&31 <= 31
++ */
++        mov     tmp, base, lsl #32-5
++        sbc     tmp, tmp, leading_bytes, lsl #32-5
++        adds    tmp, tmp, leading_bytes, lsl #32-5
++        bcc     61f
++        pld     [ptr, #-32*(prefetch_distance+1)]
++ .else
++/* Effectively, we want to calculate
++ *     leading_bytes = (-dst)&15
++ *     cacheline_offset = (src+leading_bytes)&31
++ *     extra_needed = leading_bytes - cacheline_offset
++ * and test if extra_needed is <= 0.
++ */
++        mov     tmp, base, lsl #32-5
++        add     tmp, tmp, leading_bytes, lsl #32-5
++        rsbs    tmp, tmp, leading_bytes, lsl #32-5
++        bls     61f
++        pld     [ptr, #32*(prefetch_distance+1)]
++ .endif
++61:
++.endm
++
++.macro preload_trailing  backwards, base, remain, tmp
++        /* We need either 0, 1 or 2 extra preloads */
++ .if backwards
++        rsb     tmp, base, #0
++        mov     tmp, tmp, lsl #32-5
++ .else
++        mov     tmp, base, lsl #32-5
++ .endif
++        adds    tmp, tmp, remain, lsl #32-5
++        adceqs  tmp, tmp, #0
++        /* The instruction above has two effects: ensures Z is only
++         * set if C was clear (so Z indicates that both shifted quantities
++         * were 0), and clears C if Z was set (so C indicates that the sum
++         * of the shifted quantities was greater and not equal to 32) */
++        beq     82f
++ .if backwards
++        sub     tmp, base, #1
++        bic     tmp, tmp, #31
++ .else
++        bic     tmp, base, #31
++ .endif
++        bcc     81f
++ .if backwards
++        pld     [tmp, #-32*(prefetch_distance+1)]
++81:
++        pld     [tmp, #-32*prefetch_distance]
++ .else
++        pld     [tmp, #32*(prefetch_distance+2)]
++81:
++        pld     [tmp, #32*(prefetch_distance+1)]
++ .endif
++82:
++.endm
++
++.macro preload_all    backwards, narrow_case, shift, base, remain, tmp0, tmp1
++ .if backwards
++        sub     tmp0, base, #1
++        bic     tmp0, tmp0, #31
++        pld     [tmp0]
++        sub     tmp1, base, remain, lsl #shift
++ .else
++        bic     tmp0, base, #31
++        pld     [tmp0]
++        add     tmp1, base, remain, lsl #shift
++        sub     tmp1, tmp1, #1
++ .endif
++        bic     tmp1, tmp1, #31
++        cmp     tmp1, tmp0
++        beq     92f
++ .if narrow_case
++        /* In this case, all the data fits in either 1 or 2 cache lines */
++        pld     [tmp1]
++ .else
++91:
++  .if backwards
++        sub     tmp0, tmp0, #32
++  .else
++        add     tmp0, tmp0, #32
++  .endif
++        cmp     tmp0, tmp1
++        pld     [tmp0]
++        bne     91b
++ .endif
++92:
++.endm
+--- a/arch/arm/lib/copy_from_user.S
++++ b/arch/arm/lib/copy_from_user.S
+@@ -107,7 +107,8 @@
+ 
+ 	.text
+ 
+-ENTRY(arm_copy_from_user)
++ENTRY(__copy_from_user_std)
++WEAK(arm_copy_from_user)
+ #ifdef CONFIG_CPU_SPECTRE
+ 	get_thread_info r3
+ 	ldr	r3, [r3, #TI_ADDR_LIMIT]
+@@ -117,6 +118,7 @@ ENTRY(arm_copy_from_user)
+ #include "copy_template.S"
+ 
+ ENDPROC(arm_copy_from_user)
++ENDPROC(__copy_from_user_std)
+ 
+ 	.pushsection .text.fixup,"ax"
+ 	.align 0
+--- /dev/null
++++ b/arch/arm/lib/exports_rpi.c
+@@ -0,0 +1,37 @@
++/**
++ * Copyright (c) 2014, Raspberry Pi (Trading) Ltd.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions, and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. The names of the above-listed copyright holders may not be used
++ *    to endorse or promote products derived from this software without
++ *    specific prior written permission.
++ *
++ * ALTERNATIVELY, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2, as published by the Free
++ * Software Foundation.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
++ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
++ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
++ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
++ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++
++EXPORT_SYMBOL(memcmp);
+--- /dev/null
++++ b/arch/arm/lib/memcmp_rpi.S
+@@ -0,0 +1,285 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++#include <linux/linkage.h>
++#include "arm-mem.h"
++
++/* Prevent the stack from becoming executable */
++#if defined(__linux__) && defined(__ELF__)
++.section .note.GNU-stack,"",%progbits
++#endif
++
++    .text
++    .arch armv6
++    .object_arch armv4
++    .arm
++    .altmacro
++    .p2align 2
++
++.macro memcmp_process_head  unaligned
++ .if unaligned
++        ldr     DAT0, [S_1], #4
++        ldr     DAT1, [S_1], #4
++        ldr     DAT2, [S_1], #4
++        ldr     DAT3, [S_1], #4
++ .else
++        ldmia   S_1!, {DAT0, DAT1, DAT2, DAT3}
++ .endif
++        ldmia   S_2!, {DAT4, DAT5, DAT6, DAT7}
++.endm
++
++.macro memcmp_process_tail
++        cmp     DAT0, DAT4
++        cmpeq   DAT1, DAT5
++        cmpeq   DAT2, DAT6
++        cmpeq   DAT3, DAT7
++        bne     200f
++.endm
++
++.macro memcmp_leading_31bytes
++        movs    DAT0, OFF, lsl #31
++        ldrmib  DAT0, [S_1], #1
++        ldrcsh  DAT1, [S_1], #2
++        ldrmib  DAT4, [S_2], #1
++        ldrcsh  DAT5, [S_2], #2
++        movpl   DAT0, #0
++        movcc   DAT1, #0
++        movpl   DAT4, #0
++        movcc   DAT5, #0
++        submi   N, N, #1
++        subcs   N, N, #2
++        cmp     DAT0, DAT4
++        cmpeq   DAT1, DAT5
++        bne     200f
++        movs    DAT0, OFF, lsl #29
++        ldrmi   DAT0, [S_1], #4
++        ldrcs   DAT1, [S_1], #4
++        ldrcs   DAT2, [S_1], #4
++        ldrmi   DAT4, [S_2], #4
++        ldmcsia S_2!, {DAT5, DAT6}
++        movpl   DAT0, #0
++        movcc   DAT1, #0
++        movcc   DAT2, #0
++        movpl   DAT4, #0
++        movcc   DAT5, #0
++        movcc   DAT6, #0
++        submi   N, N, #4
++        subcs   N, N, #8
++        cmp     DAT0, DAT4
++        cmpeq   DAT1, DAT5
++        cmpeq   DAT2, DAT6
++        bne     200f
++        tst     OFF, #16
++        beq     105f
++        memcmp_process_head  1
++        sub     N, N, #16
++        memcmp_process_tail
++105:
++.endm
++
++.macro memcmp_trailing_15bytes  unaligned
++        movs    N, N, lsl #29
++ .if unaligned
++        ldrcs   DAT0, [S_1], #4
++        ldrcs   DAT1, [S_1], #4
++ .else
++        ldmcsia S_1!, {DAT0, DAT1}
++ .endif
++        ldrmi   DAT2, [S_1], #4
++        ldmcsia S_2!, {DAT4, DAT5}
++        ldrmi   DAT6, [S_2], #4
++        movcc   DAT0, #0
++        movcc   DAT1, #0
++        movpl   DAT2, #0
++        movcc   DAT4, #0
++        movcc   DAT5, #0
++        movpl   DAT6, #0
++        cmp     DAT0, DAT4
++        cmpeq   DAT1, DAT5
++        cmpeq   DAT2, DAT6
++        bne     200f
++        movs    N, N, lsl #2
++        ldrcsh  DAT0, [S_1], #2
++        ldrmib  DAT1, [S_1]
++        ldrcsh  DAT4, [S_2], #2
++        ldrmib  DAT5, [S_2]
++        movcc   DAT0, #0
++        movpl   DAT1, #0
++        movcc   DAT4, #0
++        movpl   DAT5, #0
++        cmp     DAT0, DAT4
++        cmpeq   DAT1, DAT5
++        bne     200f
++.endm
++
++.macro memcmp_long_inner_loop  unaligned
++110:
++        memcmp_process_head  unaligned
++        pld     [S_2, #prefetch_distance*32 + 16]
++        memcmp_process_tail
++        memcmp_process_head  unaligned
++        pld     [S_1, OFF]
++        memcmp_process_tail
++        subs    N, N, #32
++        bhs     110b
++        /* Just before the final (prefetch_distance+1) 32-byte blocks,
++         * deal with final preloads */
++        preload_trailing  0, S_1, N, DAT0
++        preload_trailing  0, S_2, N, DAT0
++        add     N, N, #(prefetch_distance+2)*32 - 16
++120:
++        memcmp_process_head  unaligned
++        memcmp_process_tail
++        subs    N, N, #16
++        bhs     120b
++        /* Trailing words and bytes */
++        tst     N, #15
++        beq     199f
++        memcmp_trailing_15bytes  unaligned
++199:    /* Reached end without detecting a difference */
++        mov     a1, #0
++        setend  le
++        pop     {DAT1-DAT6, pc}
++.endm
++
++.macro memcmp_short_inner_loop  unaligned
++        subs    N, N, #16     /* simplifies inner loop termination */
++        blo     122f
++120:
++        memcmp_process_head  unaligned
++        memcmp_process_tail
++        subs    N, N, #16
++        bhs     120b
++122:    /* Trailing words and bytes */
++        tst     N, #15
++        beq     199f
++        memcmp_trailing_15bytes  unaligned
++199:    /* Reached end without detecting a difference */
++        mov     a1, #0
++        setend  le
++        pop     {DAT1-DAT6, pc}
++.endm
++
++/*
++ * int memcmp(const void *s1, const void *s2, size_t n);
++ * On entry:
++ * a1 = pointer to buffer 1
++ * a2 = pointer to buffer 2
++ * a3 = number of bytes to compare (as unsigned chars)
++ * On exit:
++ * a1 = >0/=0/<0 if s1 >/=/< s2
++ */
++
++.set prefetch_distance, 2
++
++ENTRY(memcmp)
++        S_1     .req    a1
++        S_2     .req    a2
++        N       .req    a3
++        DAT0    .req    a4
++        DAT1    .req    v1
++        DAT2    .req    v2
++        DAT3    .req    v3
++        DAT4    .req    v4
++        DAT5    .req    v5
++        DAT6    .req    v6
++        DAT7    .req    ip
++        OFF     .req    lr
++
++        push    {DAT1-DAT6, lr}
++        setend  be /* lowest-addressed bytes are most significant */
++
++        /* To preload ahead as we go, we need at least (prefetch_distance+2) 32-byte blocks */
++        cmp     N, #(prefetch_distance+3)*32 - 1
++        blo     170f
++
++        /* Long case */
++        /* Adjust N so that the decrement instruction can also test for
++         * inner loop termination. We want it to stop when there are
++         * (prefetch_distance+1) complete blocks to go. */
++        sub     N, N, #(prefetch_distance+2)*32
++        preload_leading_step1  0, DAT0, S_1
++        preload_leading_step1  0, DAT1, S_2
++        tst     S_2, #31
++        beq     154f
++        rsb     OFF, S_2, #0 /* no need to AND with 15 here */
++        preload_leading_step2  0, DAT0, S_1, OFF, DAT2
++        preload_leading_step2  0, DAT1, S_2, OFF, DAT2
++        memcmp_leading_31bytes
++154:    /* Second source now cacheline (32-byte) aligned; we have at
++         * least one prefetch to go. */
++        /* Prefetch offset is best selected such that it lies in the
++         * first 8 of each 32 bytes - but it's just as easy to aim for
++         * the first one */
++        and     OFF, S_1, #31
++        rsb     OFF, OFF, #32*prefetch_distance
++        tst     S_1, #3
++        bne     140f
++        memcmp_long_inner_loop  0
++140:    memcmp_long_inner_loop  1
++
++170:    /* Short case */
++        teq     N, #0
++        beq     199f
++        preload_all 0, 0, 0, S_1, N, DAT0, DAT1
++        preload_all 0, 0, 0, S_2, N, DAT0, DAT1
++        tst     S_2, #3
++        beq     174f
++172:    subs    N, N, #1
++        blo     199f
++        ldrb    DAT0, [S_1], #1
++        ldrb    DAT4, [S_2], #1
++        cmp     DAT0, DAT4
++        bne     200f
++        tst     S_2, #3
++        bne     172b
++174:    /* Second source now 4-byte aligned; we have 0 or more bytes to go */
++        tst     S_1, #3
++        bne     140f
++        memcmp_short_inner_loop  0
++140:    memcmp_short_inner_loop  1
++
++200:    /* Difference found: determine sign. */
++        movhi   a1, #1
++        movlo   a1, #-1
++        setend  le
++        pop     {DAT1-DAT6, pc}
++
++        .unreq  S_1
++        .unreq  S_2
++        .unreq  N
++        .unreq  DAT0
++        .unreq  DAT1
++        .unreq  DAT2
++        .unreq  DAT3
++        .unreq  DAT4
++        .unreq  DAT5
++        .unreq  DAT6
++        .unreq  DAT7
++        .unreq  OFF
++ENDPROC(memcmp)
+--- /dev/null
++++ b/arch/arm/lib/memcpy_rpi.S
+@@ -0,0 +1,61 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++#include <linux/linkage.h>
++#include "arm-mem.h"
++#include "memcpymove.h"
++
++/* Prevent the stack from becoming executable */
++#if defined(__linux__) && defined(__ELF__)
++.section .note.GNU-stack,"",%progbits
++#endif
++
++    .text
++    .arch armv6
++    .object_arch armv4
++    .arm
++    .altmacro
++    .p2align 2
++
++/*
++ * void *memcpy(void * restrict s1, const void * restrict s2, size_t n);
++ * On entry:
++ * a1 = pointer to destination
++ * a2 = pointer to source
++ * a3 = number of bytes to copy
++ * On exit:
++ * a1 preserved
++ */
++
++.set prefetch_distance, 3
++
++ENTRY(mmiocpy)
++ENTRY(memcpy)
++        memcpy  0
++ENDPROC(memcpy)
++ENDPROC(mmiocpy)
+--- /dev/null
++++ b/arch/arm/lib/memcpymove.h
+@@ -0,0 +1,506 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++.macro unaligned_words  backwards, align, use_pld, words, r0, r1, r2, r3, r4, r5, r6, r7, r8
++ .if words == 1
++  .if backwards
++        mov     r1, r0, lsl #32-align*8
++        ldr     r0, [S, #-4]!
++        orr     r1, r1, r0, lsr #align*8
++        str     r1, [D, #-4]!
++  .else
++        mov     r0, r1, lsr #align*8
++        ldr     r1, [S, #4]!
++        orr     r0, r0, r1, lsl #32-align*8
++        str     r0, [D], #4
++  .endif
++ .elseif words == 2
++  .if backwards
++        ldr     r1, [S, #-4]!
++        mov     r2, r0, lsl #32-align*8
++        ldr     r0, [S, #-4]!
++        orr     r2, r2, r1, lsr #align*8
++        mov     r1, r1, lsl #32-align*8
++        orr     r1, r1, r0, lsr #align*8
++        stmdb   D!, {r1, r2}
++  .else
++        ldr     r1, [S, #4]!
++        mov     r0, r2, lsr #align*8
++        ldr     r2, [S, #4]!
++        orr     r0, r0, r1, lsl #32-align*8
++        mov     r1, r1, lsr #align*8
++        orr     r1, r1, r2, lsl #32-align*8
++        stmia   D!, {r0, r1}
++  .endif
++ .elseif words == 4
++  .if backwards
++        ldmdb   S!, {r2, r3}
++        mov     r4, r0, lsl #32-align*8
++        ldmdb   S!, {r0, r1}
++        orr     r4, r4, r3, lsr #align*8
++        mov     r3, r3, lsl #32-align*8
++        orr     r3, r3, r2, lsr #align*8
++        mov     r2, r2, lsl #32-align*8
++        orr     r2, r2, r1, lsr #align*8
++        mov     r1, r1, lsl #32-align*8
++        orr     r1, r1, r0, lsr #align*8
++        stmdb   D!, {r1, r2, r3, r4}
++  .else
++        ldmib   S!, {r1, r2}
++        mov     r0, r4, lsr #align*8
++        ldmib   S!, {r3, r4}
++        orr     r0, r0, r1, lsl #32-align*8
++        mov     r1, r1, lsr #align*8
++        orr     r1, r1, r2, lsl #32-align*8
++        mov     r2, r2, lsr #align*8
++        orr     r2, r2, r3, lsl #32-align*8
++        mov     r3, r3, lsr #align*8
++        orr     r3, r3, r4, lsl #32-align*8
++        stmia   D!, {r0, r1, r2, r3}
++  .endif
++ .elseif words == 8
++  .if backwards
++        ldmdb   S!, {r4, r5, r6, r7}
++        mov     r8, r0, lsl #32-align*8
++        ldmdb   S!, {r0, r1, r2, r3}
++   .if use_pld
++        pld     [S, OFF]
++   .endif
++        orr     r8, r8, r7, lsr #align*8
++        mov     r7, r7, lsl #32-align*8
++        orr     r7, r7, r6, lsr #align*8
++        mov     r6, r6, lsl #32-align*8
++        orr     r6, r6, r5, lsr #align*8
++        mov     r5, r5, lsl #32-align*8
++        orr     r5, r5, r4, lsr #align*8
++        mov     r4, r4, lsl #32-align*8
++        orr     r4, r4, r3, lsr #align*8
++        mov     r3, r3, lsl #32-align*8
++        orr     r3, r3, r2, lsr #align*8
++        mov     r2, r2, lsl #32-align*8
++        orr     r2, r2, r1, lsr #align*8
++        mov     r1, r1, lsl #32-align*8
++        orr     r1, r1, r0, lsr #align*8
++        stmdb   D!, {r5, r6, r7, r8}
++        stmdb   D!, {r1, r2, r3, r4}
++  .else
++        ldmib   S!, {r1, r2, r3, r4}
++        mov     r0, r8, lsr #align*8
++        ldmib   S!, {r5, r6, r7, r8}
++   .if use_pld
++        pld     [S, OFF]
++   .endif
++        orr     r0, r0, r1, lsl #32-align*8
++        mov     r1, r1, lsr #align*8
++        orr     r1, r1, r2, lsl #32-align*8
++        mov     r2, r2, lsr #align*8
++        orr     r2, r2, r3, lsl #32-align*8
++        mov     r3, r3, lsr #align*8
++        orr     r3, r3, r4, lsl #32-align*8
++        mov     r4, r4, lsr #align*8
++        orr     r4, r4, r5, lsl #32-align*8
++        mov     r5, r5, lsr #align*8
++        orr     r5, r5, r6, lsl #32-align*8
++        mov     r6, r6, lsr #align*8
++        orr     r6, r6, r7, lsl #32-align*8
++        mov     r7, r7, lsr #align*8
++        orr     r7, r7, r8, lsl #32-align*8
++        stmia   D!, {r0, r1, r2, r3}
++        stmia   D!, {r4, r5, r6, r7}
++  .endif
++ .endif
++.endm
++
++.macro memcpy_leading_15bytes  backwards, align
++        movs    DAT1, DAT2, lsl #31
++        sub     N, N, DAT2
++ .if backwards
++        ldrmib  DAT0, [S, #-1]!
++        ldrcsh  DAT1, [S, #-2]!
++        strmib  DAT0, [D, #-1]!
++        strcsh  DAT1, [D, #-2]!
++ .else
++        ldrmib  DAT0, [S], #1
++        ldrcsh  DAT1, [S], #2
++        strmib  DAT0, [D], #1
++        strcsh  DAT1, [D], #2
++ .endif
++        movs    DAT1, DAT2, lsl #29
++ .if backwards
++        ldrmi   DAT0, [S, #-4]!
++  .if align == 0
++        ldmcsdb S!, {DAT1, DAT2}
++  .else
++        ldrcs   DAT2, [S, #-4]!
++        ldrcs   DAT1, [S, #-4]!
++  .endif
++        strmi   DAT0, [D, #-4]!
++        stmcsdb D!, {DAT1, DAT2}
++ .else
++        ldrmi   DAT0, [S], #4
++  .if align == 0
++        ldmcsia S!, {DAT1, DAT2}
++  .else
++        ldrcs   DAT1, [S], #4
++        ldrcs   DAT2, [S], #4
++  .endif
++        strmi   DAT0, [D], #4
++        stmcsia D!, {DAT1, DAT2}
++ .endif
++.endm
++
++.macro memcpy_trailing_15bytes  backwards, align
++        movs    N, N, lsl #29
++ .if backwards
++  .if align == 0
++        ldmcsdb S!, {DAT0, DAT1}
++  .else
++        ldrcs   DAT1, [S, #-4]!
++        ldrcs   DAT0, [S, #-4]!
++  .endif
++        ldrmi   DAT2, [S, #-4]!
++        stmcsdb D!, {DAT0, DAT1}
++        strmi   DAT2, [D, #-4]!
++ .else
++  .if align == 0
++        ldmcsia S!, {DAT0, DAT1}
++  .else
++        ldrcs   DAT0, [S], #4
++        ldrcs   DAT1, [S], #4
++  .endif
++        ldrmi   DAT2, [S], #4
++        stmcsia D!, {DAT0, DAT1}
++        strmi   DAT2, [D], #4
++ .endif
++        movs    N, N, lsl #2
++ .if backwards
++        ldrcsh  DAT0, [S, #-2]!
++        ldrmib  DAT1, [S, #-1]
++        strcsh  DAT0, [D, #-2]!
++        strmib  DAT1, [D, #-1]
++ .else
++        ldrcsh  DAT0, [S], #2
++        ldrmib  DAT1, [S]
++        strcsh  DAT0, [D], #2
++        strmib  DAT1, [D]
++ .endif
++.endm
++
++.macro memcpy_long_inner_loop  backwards, align
++ .if align != 0
++  .if backwards
++        ldr     DAT0, [S, #-align]!
++  .else
++        ldr     LAST, [S, #-align]!
++  .endif
++ .endif
++110:
++ .if align == 0
++  .if backwards
++        ldmdb   S!, {DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, LAST}
++        pld     [S, OFF]
++        stmdb   D!, {DAT4, DAT5, DAT6, LAST}
++        stmdb   D!, {DAT0, DAT1, DAT2, DAT3}
++  .else
++        ldmia   S!, {DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, LAST}
++        pld     [S, OFF]
++        stmia   D!, {DAT0, DAT1, DAT2, DAT3}
++        stmia   D!, {DAT4, DAT5, DAT6, LAST}
++  .endif
++ .else
++        unaligned_words  backwards, align, 1, 8, DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, DAT7, LAST
++ .endif
++        subs    N, N, #32
++        bhs     110b
++        /* Just before the final (prefetch_distance+1) 32-byte blocks, deal with final preloads */
++        preload_trailing  backwards, S, N, OFF
++        add     N, N, #(prefetch_distance+2)*32 - 32
++120:
++ .if align == 0
++  .if backwards
++        ldmdb   S!, {DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, LAST}
++        stmdb   D!, {DAT4, DAT5, DAT6, LAST}
++        stmdb   D!, {DAT0, DAT1, DAT2, DAT3}
++  .else
++        ldmia   S!, {DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, LAST}
++        stmia   D!, {DAT0, DAT1, DAT2, DAT3}
++        stmia   D!, {DAT4, DAT5, DAT6, LAST}
++  .endif
++ .else
++        unaligned_words  backwards, align, 0, 8, DAT0, DAT1, DAT2, DAT3, DAT4, DAT5, DAT6, DAT7, LAST
++ .endif
++        subs    N, N, #32
++        bhs     120b
++        tst     N, #16
++ .if align == 0
++  .if backwards
++        ldmnedb S!, {DAT0, DAT1, DAT2, LAST}
++        stmnedb D!, {DAT0, DAT1, DAT2, LAST}
++  .else
++        ldmneia S!, {DAT0, DAT1, DAT2, LAST}
++        stmneia D!, {DAT0, DAT1, DAT2, LAST}
++  .endif
++ .else
++        beq     130f
++        unaligned_words  backwards, align, 0, 4, DAT0, DAT1, DAT2, DAT3, LAST
++130:
++ .endif
++        /* Trailing words and bytes */
++        tst      N, #15
++        beq      199f
++ .if align != 0
++        add     S, S, #align
++ .endif
++        memcpy_trailing_15bytes  backwards, align
++199:
++        pop     {DAT3, DAT4, DAT5, DAT6, DAT7}
++        pop     {D, DAT1, DAT2, pc}
++.endm
++
++.macro memcpy_medium_inner_loop  backwards, align
++120:
++ .if backwards
++  .if align == 0
++        ldmdb   S!, {DAT0, DAT1, DAT2, LAST}
++  .else
++        ldr     LAST, [S, #-4]!
++        ldr     DAT2, [S, #-4]!
++        ldr     DAT1, [S, #-4]!
++        ldr     DAT0, [S, #-4]!
++  .endif
++        stmdb   D!, {DAT0, DAT1, DAT2, LAST}
++ .else
++  .if align == 0
++        ldmia   S!, {DAT0, DAT1, DAT2, LAST}
++  .else
++        ldr     DAT0, [S], #4
++        ldr     DAT1, [S], #4
++        ldr     DAT2, [S], #4
++        ldr     LAST, [S], #4
++  .endif
++        stmia   D!, {DAT0, DAT1, DAT2, LAST}
++ .endif
++        subs     N, N, #16
++        bhs      120b
++        /* Trailing words and bytes */
++        tst      N, #15
++        beq      199f
++        memcpy_trailing_15bytes  backwards, align
++199:
++        pop     {D, DAT1, DAT2, pc}
++.endm
++
++.macro memcpy_short_inner_loop  backwards, align
++        tst     N, #16
++ .if backwards
++  .if align == 0
++        ldmnedb S!, {DAT0, DAT1, DAT2, LAST}
++  .else
++        ldrne   LAST, [S, #-4]!
++        ldrne   DAT2, [S, #-4]!
++        ldrne   DAT1, [S, #-4]!
++        ldrne   DAT0, [S, #-4]!
++  .endif
++        stmnedb D!, {DAT0, DAT1, DAT2, LAST}
++ .else
++  .if align == 0
++        ldmneia S!, {DAT0, DAT1, DAT2, LAST}
++  .else
++        ldrne   DAT0, [S], #4
++        ldrne   DAT1, [S], #4
++        ldrne   DAT2, [S], #4
++        ldrne   LAST, [S], #4
++  .endif
++        stmneia D!, {DAT0, DAT1, DAT2, LAST}
++ .endif
++        memcpy_trailing_15bytes  backwards, align
++199:
++        pop     {D, DAT1, DAT2, pc}
++.endm
++
++.macro memcpy backwards
++        D       .req    a1
++        S       .req    a2
++        N       .req    a3
++        DAT0    .req    a4
++        DAT1    .req    v1
++        DAT2    .req    v2
++        DAT3    .req    v3
++        DAT4    .req    v4
++        DAT5    .req    v5
++        DAT6    .req    v6
++        DAT7    .req    sl
++        LAST    .req    ip
++        OFF     .req    lr
++
++        .cfi_startproc
++
++        push    {D, DAT1, DAT2, lr}
++
++        .cfi_def_cfa_offset 16
++        .cfi_rel_offset D, 0
++        .cfi_undefined  S
++        .cfi_undefined  N
++        .cfi_undefined  DAT0
++        .cfi_rel_offset DAT1, 4
++        .cfi_rel_offset DAT2, 8
++        .cfi_undefined  LAST
++        .cfi_rel_offset lr, 12
++
++ .if backwards
++        add     D, D, N
++        add     S, S, N
++ .endif
++
++        /* See if we're guaranteed to have at least one 16-byte aligned 16-byte write */
++        cmp     N, #31
++        blo     170f
++        /* To preload ahead as we go, we need at least (prefetch_distance+2) 32-byte blocks */
++        cmp     N, #(prefetch_distance+3)*32 - 1
++        blo     160f
++
++        /* Long case */
++        push    {DAT3, DAT4, DAT5, DAT6, DAT7}
++
++        .cfi_def_cfa_offset 36
++        .cfi_rel_offset D, 20
++        .cfi_rel_offset DAT1, 24
++        .cfi_rel_offset DAT2, 28
++        .cfi_rel_offset DAT3, 0
++        .cfi_rel_offset DAT4, 4
++        .cfi_rel_offset DAT5, 8
++        .cfi_rel_offset DAT6, 12
++        .cfi_rel_offset DAT7, 16
++        .cfi_rel_offset lr, 32
++
++        /* Adjust N so that the decrement instruction can also test for
++         * inner loop termination. We want it to stop when there are
++         * (prefetch_distance+1) complete blocks to go. */
++        sub     N, N, #(prefetch_distance+2)*32
++        preload_leading_step1  backwards, DAT0, S
++ .if backwards
++        /* Bug in GAS: it accepts, but mis-assembles the instruction
++         * ands    DAT2, D, #60, 2
++         * which sets DAT2 to the number of leading bytes until destination is aligned and also clears C (sets borrow)
++         */
++        .word   0xE210513C
++        beq     154f
++ .else
++        ands    DAT2, D, #15
++        beq     154f
++        rsb     DAT2, DAT2, #16 /* number of leading bytes until destination aligned */
++ .endif
++        preload_leading_step2  backwards, DAT0, S, DAT2, OFF
++        memcpy_leading_15bytes backwards, 1
++154:    /* Destination now 16-byte aligned; we have at least one prefetch as well as at least one 16-byte output block */
++        /* Prefetch offset is best selected such that it lies in the first 8 of each 32 bytes - but it's just as easy to aim for the first one */
++ .if backwards
++        rsb     OFF, S, #3
++        and     OFF, OFF, #28
++        sub     OFF, OFF, #32*(prefetch_distance+1)
++ .else
++        and     OFF, S, #28
++        rsb     OFF, OFF, #32*prefetch_distance
++ .endif
++        movs    DAT0, S, lsl #31
++        bhi     157f
++        bcs     156f
++        bmi     155f
++        memcpy_long_inner_loop  backwards, 0
++155:    memcpy_long_inner_loop  backwards, 1
++156:    memcpy_long_inner_loop  backwards, 2
++157:    memcpy_long_inner_loop  backwards, 3
++
++        .cfi_def_cfa_offset 16
++        .cfi_rel_offset D, 0
++        .cfi_rel_offset DAT1, 4
++        .cfi_rel_offset DAT2, 8
++        .cfi_same_value DAT3
++        .cfi_same_value DAT4
++        .cfi_same_value DAT5
++        .cfi_same_value DAT6
++        .cfi_same_value DAT7
++        .cfi_rel_offset lr, 12
++
++160:    /* Medium case */
++        preload_all  backwards, 0, 0, S, N, DAT2, OFF
++        sub     N, N, #16     /* simplifies inner loop termination */
++ .if backwards
++        ands    DAT2, D, #15
++        beq     164f
++ .else
++        ands    DAT2, D, #15
++        beq     164f
++        rsb     DAT2, DAT2, #16
++ .endif
++        memcpy_leading_15bytes backwards, align
++164:    /* Destination now 16-byte aligned; we have at least one 16-byte output block */
++        tst     S, #3
++        bne     140f
++        memcpy_medium_inner_loop  backwards, 0
++140:    memcpy_medium_inner_loop  backwards, 1
++
++170:    /* Short case, less than 31 bytes, so no guarantee of at least one 16-byte block */
++        teq     N, #0
++        beq     199f
++        preload_all  backwards, 1, 0, S, N, DAT2, LAST
++        tst     D, #3
++        beq     174f
++172:    subs    N, N, #1
++        blo     199f
++ .if backwards
++        ldrb    DAT0, [S, #-1]!
++        strb    DAT0, [D, #-1]!
++ .else
++        ldrb    DAT0, [S], #1
++        strb    DAT0, [D], #1
++ .endif
++        tst     D, #3
++        bne     172b
++174:    /* Destination now 4-byte aligned; we have 0 or more output bytes to go */
++        tst     S, #3
++        bne     140f
++        memcpy_short_inner_loop  backwards, 0
++140:    memcpy_short_inner_loop  backwards, 1
++
++        .cfi_endproc
++
++        .unreq  D
++        .unreq  S
++        .unreq  N
++        .unreq  DAT0
++        .unreq  DAT1
++        .unreq  DAT2
++        .unreq  DAT3
++        .unreq  DAT4
++        .unreq  DAT5
++        .unreq  DAT6
++        .unreq  DAT7
++        .unreq  LAST
++        .unreq  OFF
++.endm
+--- /dev/null
++++ b/arch/arm/lib/memmove_rpi.S
+@@ -0,0 +1,61 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++#include <linux/linkage.h>
++#include "arm-mem.h"
++#include "memcpymove.h"
++
++/* Prevent the stack from becoming executable */
++#if defined(__linux__) && defined(__ELF__)
++.section .note.GNU-stack,"",%progbits
++#endif
++
++    .text
++    .arch armv6
++    .object_arch armv4
++    .arm
++    .altmacro
++    .p2align 2
++
++/*
++ * void *memmove(void *s1, const void *s2, size_t n);
++ * On entry:
++ * a1 = pointer to destination
++ * a2 = pointer to source
++ * a3 = number of bytes to copy
++ * On exit:
++ * a1 preserved
++ */
++
++.set prefetch_distance, 3
++
++ENTRY(memmove)
++        cmp     a2, a1
++        bpl     memcpy  /* pl works even over -1 - 0 and 0x7fffffff - 0x80000000 boundaries */
++        memcpy  1
++ENDPROC(memmove)
+--- /dev/null
++++ b/arch/arm/lib/memset_rpi.S
+@@ -0,0 +1,128 @@
++/*
++Copyright (c) 2013, Raspberry Pi Foundation
++Copyright (c) 2013, RISC OS Open Ltd
++All rights reserved.
++
++Redistribution and use in source and binary forms, with or without
++modification, are permitted provided that the following conditions are met:
++    * Redistributions of source code must retain the above copyright
++      notice, this list of conditions and the following disclaimer.
++    * Redistributions in binary form must reproduce the above copyright
++      notice, this list of conditions and the following disclaimer in the
++      documentation and/or other materials provided with the distribution.
++    * Neither the name of the copyright holder nor the
++      names of its contributors may be used to endorse or promote products
++      derived from this software without specific prior written permission.
++
++THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
++ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
++WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
++DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY
++DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
++(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
++ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
++SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++*/
++
++#include <linux/linkage.h>
++#include "arm-mem.h"
++
++/* Prevent the stack from becoming executable */
++#if defined(__linux__) && defined(__ELF__)
++.section .note.GNU-stack,"",%progbits
++#endif
++
++    .text
++    .arch armv6
++    .object_arch armv4
++    .arm
++    .altmacro
++    .p2align 2
++
++/*
++ *  void *memset(void *s, int c, size_t n);
++ *  On entry:
++ *  a1 = pointer to buffer to fill
++ *  a2 = byte pattern to fill with (caller-narrowed)
++ *  a3 = number of bytes to fill
++ *  On exit:
++ *  a1 preserved
++ */
++ENTRY(mmioset)
++ENTRY(memset)
++ENTRY(__memset32)
++ENTRY(__memset64)
++
++        S       .req    a1
++        DAT0    .req    a2
++        N       .req    a3
++        DAT1    .req    a4
++        DAT2    .req    ip
++        DAT3    .req    lr
++
++        orr     DAT0, DAT0, DAT0, lsl #8
++        push    {S, lr}
++        orr     DAT0, DAT0, DAT0, lsl #16
++        mov     DAT1, DAT0
++
++        /* See if we're guaranteed to have at least one 16-byte aligned 16-byte write */
++        cmp     N, #31
++        blo     170f
++
++161:    sub     N, N, #16     /* simplifies inner loop termination */
++        /* Leading words and bytes */
++        tst     S, #15
++        beq     164f
++        rsb     DAT3, S, #0   /* bits 0-3 = number of leading bytes until aligned */
++        movs    DAT2, DAT3, lsl #31
++        submi   N, N, #1
++        strmib  DAT0, [S], #1
++        subcs   N, N, #2
++        strcsh  DAT0, [S], #2
++        movs    DAT2, DAT3, lsl #29
++        submi   N, N, #4
++        strmi   DAT0, [S], #4
++        subcs   N, N, #8
++        stmcsia S!, {DAT0, DAT1}
++164:    /* Delayed set up of DAT2 and DAT3 so we could use them as scratch registers above */
++        mov     DAT2, DAT0
++        mov     DAT3, DAT0
++        /* Now the inner loop of 16-byte stores */
++165:    stmia   S!, {DAT0, DAT1, DAT2, DAT3}
++        subs    N, N, #16
++        bhs     165b
++166:    /* Trailing words and bytes */
++        movs    N, N, lsl #29
++        stmcsia S!, {DAT0, DAT1}
++        strmi   DAT0, [S], #4
++        movs    N, N, lsl #2
++        strcsh  DAT0, [S], #2
++        strmib  DAT0, [S]
++199:    pop     {S, pc}
++
++170:    /* Short case */
++        mov     DAT2, DAT0
++        mov     DAT3, DAT0
++        tst     S, #3
++        beq     174f
++172:    subs    N, N, #1
++        blo     199b
++        strb    DAT0, [S], #1
++        tst     S, #3
++        bne     172b
++174:    tst     N, #16
++        stmneia S!, {DAT0, DAT1, DAT2, DAT3}
++        b       166b
++
++        .unreq  S
++        .unreq  DAT0
++        .unreq  N
++        .unreq  DAT1
++        .unreq  DAT2
++        .unreq  DAT3
++ENDPROC(__memset64)
++ENDPROC(__memset32)
++ENDPROC(memset)
++ENDPROC(mmioset)
+--- a/arch/arm/lib/uaccess_with_memcpy.c
++++ b/arch/arm/lib/uaccess_with_memcpy.c
+@@ -19,6 +19,14 @@
+ #include <asm/current.h>
+ #include <asm/page.h>
+ 
++#ifndef COPY_FROM_USER_THRESHOLD
++#define COPY_FROM_USER_THRESHOLD 64
++#endif
++
++#ifndef COPY_TO_USER_THRESHOLD
++#define COPY_TO_USER_THRESHOLD 64
++#endif
++
+ static int
+ pin_page_for_write(const void __user *_addr, pte_t **ptep, spinlock_t **ptlp)
+ {
+@@ -43,7 +51,7 @@ pin_page_for_write(const void __user *_a
+ 		return 0;
+ 
+ 	pmd = pmd_offset(pud, addr);
+-	if (unlikely(pmd_none(*pmd)))
++	if (unlikely(pmd_none(*pmd) || pmd_bad(*pmd)))
+ 		return 0;
+ 
+ 	/*
+@@ -86,7 +94,46 @@ pin_page_for_write(const void __user *_a
+ 	return 1;
+ }
+ 
+-static unsigned long noinline
++static int
++pin_page_for_read(const void __user *_addr, pte_t **ptep, spinlock_t **ptlp)
++{
++	unsigned long addr = (unsigned long)_addr;
++	pgd_t *pgd;
++	p4d_t *p4d;
++	pmd_t *pmd;
++	pte_t *pte;
++	pud_t *pud;
++	spinlock_t *ptl;
++
++	pgd = pgd_offset(current->mm, addr);
++	if (unlikely(pgd_none(*pgd) || pgd_bad(*pgd)))
++		return 0;
++
++	p4d = p4d_offset(pgd, addr);
++	if (unlikely(p4d_none(*p4d) || p4d_bad(*p4d)))
++		return 0;
++
++	pud = pud_offset(p4d, addr);
++	if (unlikely(pud_none(*pud) || pud_bad(*pud)))
++		return 0;
++
++	pmd = pmd_offset(pud, addr);
++	if (unlikely(pmd_none(*pmd) || pmd_bad(*pmd)))
++		return 0;
++
++	pte = pte_offset_map_lock(current->mm, pmd, addr, &ptl);
++	if (unlikely(!pte_present(*pte) || !pte_young(*pte))) {
++		pte_unmap_unlock(pte, ptl);
++		return 0;
++	}
++
++	*ptep = pte;
++	*ptlp = ptl;
++
++	return 1;
++}
++
++unsigned long noinline
+ __copy_to_user_memcpy(void __user *to, const void *from, unsigned long n)
+ {
+ 	unsigned long ua_flags;
+@@ -139,6 +186,57 @@ out:
+ 	return n;
+ }
+ 
++unsigned long noinline
++__copy_from_user_memcpy(void *to, const void __user *from, unsigned long n)
++{
++	unsigned long ua_flags;
++	int atomic;
++
++	if (unlikely(uaccess_kernel())) {
++		memcpy(to, (const void *)from, n);
++		return 0;
++	}
++
++	/* the mmap semaphore is taken only if not in an atomic context */
++	atomic = in_atomic();
++
++	if (!atomic)
++		mmap_read_lock(current->mm);
++	while (n) {
++		pte_t *pte;
++		spinlock_t *ptl;
++		int tocopy;
++
++		while (!pin_page_for_read(from, &pte, &ptl)) {
++			char temp;
++			if (!atomic)
++				mmap_read_unlock(current->mm);
++			if (__get_user(temp, (char __user *)from))
++				goto out;
++			if (!atomic)
++				mmap_read_lock(current->mm);
++		}
++
++		tocopy = (~(unsigned long)from & ~PAGE_MASK) + 1;
++		if (tocopy > n)
++			tocopy = n;
++
++		ua_flags = uaccess_save_and_enable();
++		memcpy(to, (const void *)from, tocopy);
++		uaccess_restore(ua_flags);
++		to += tocopy;
++		from += tocopy;
++		n -= tocopy;
++
++		pte_unmap_unlock(pte, ptl);
++	}
++	if (!atomic)
++		mmap_read_unlock(current->mm);
++
++out:
++	return n;
++}
++
+ unsigned long
+ arm_copy_to_user(void __user *to, const void *from, unsigned long n)
+ {
+@@ -149,7 +247,7 @@ arm_copy_to_user(void __user *to, const
+ 	 * With frame pointer disabled, tail call optimization kicks in
+ 	 * as well making this test almost invisible.
+ 	 */
+-	if (n < 64) {
++	if (n < COPY_TO_USER_THRESHOLD) {
+ 		unsigned long ua_flags = uaccess_save_and_enable();
+ 		n = __copy_to_user_std(to, from, n);
+ 		uaccess_restore(ua_flags);
+@@ -159,6 +257,32 @@ arm_copy_to_user(void __user *to, const
+ 	}
+ 	return n;
+ }
++
++unsigned long __must_check
++arm_copy_from_user(void *to, const void __user *from, unsigned long n)
++{
++#ifdef CONFIG_BCM2835_FAST_MEMCPY
++	/*
++	 * This test is stubbed out of the main function above to keep
++	 * the overhead for small copies low by avoiding a large
++	 * register dump on the stack just to reload them right away.
++	 * With frame pointer disabled, tail call optimization kicks in
++	 * as well making this test almost invisible.
++	 */
++	if (n < COPY_TO_USER_THRESHOLD) {
++		unsigned long ua_flags = uaccess_save_and_enable();
++		n = __copy_from_user_std(to, from, n);
++		uaccess_restore(ua_flags);
++	} else {
++		n = __copy_from_user_memcpy(to, from, n);
++	}
++#else
++	unsigned long ua_flags = uaccess_save_and_enable();
++	n = __copy_from_user_std(to, from, n);
++	uaccess_restore(ua_flags);
++#endif
++	return n;
++}
+ 	
+ static unsigned long noinline
+ __clear_user_memset(void __user *addr, unsigned long n)
+--- a/arch/arm/mach-bcm/Kconfig
++++ b/arch/arm/mach-bcm/Kconfig
+@@ -184,6 +184,13 @@ config ARCH_BCM_53573
+ 	  The base chip is BCM53573 and there are some packaging modifications
+ 	  like BCM47189 and BCM47452.
+ 
++config BCM2835_FAST_MEMCPY
++	bool "Enable optimized __copy_to_user and __copy_from_user"
++	depends on ARCH_BCM2835 && ARCH_MULTI_V6
++	default y
++	help
++	  Optimized versions of __copy_to_user and __copy_from_user for Pi1.
++
+ config ARCH_BCM_63XX
+ 	bool "Broadcom BCM63xx DSL SoC"
+ 	depends on ARCH_MULTI_V7
