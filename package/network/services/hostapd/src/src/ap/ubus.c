@@ -1291,7 +1291,8 @@ hostapd_rrm_beacon_req(struct ubus_context *ctx, struct ubus_object *obj,
 
 static int
 hostapd_bss_tr_send(struct hostapd_data *hapd, u8 *addr, bool disassoc_imminent, bool abridged,
-		    u16 disassoc_timer, u8 validity_period, struct blob_attr *neighbors)
+		    u16 disassoc_timer, u8 validity_period, u8 dialog_token,
+		    struct blob_attr *neighbors)
 {
 	struct blob_attr *cur;
 	struct sta_info *sta;
@@ -1351,7 +1352,7 @@ hostapd_bss_tr_send(struct hostapd_data *hapd, u8 *addr, bool disassoc_imminent,
 		req_mode |= WNM_BSS_TM_REQ_DISASSOC_IMMINENT;
 
 	if (wnm_send_bss_tm_req(hapd, sta, req_mode, disassoc_timer, validity_period, NULL,
-				NULL, nr, nr_len, NULL, 0))
+				dialog_token, NULL, nr, nr_len, NULL, 0))
 		return UBUS_STATUS_UNKNOWN_ERROR;
 
 	return 0;
@@ -1364,6 +1365,7 @@ enum {
 	BSS_TR_VALID_PERIOD,
 	BSS_TR_NEIGHBORS,
 	BSS_TR_ABRIDGED,
+	BSS_TR_DIALOG_TOKEN,
 	__BSS_TR_DISASSOC_MAX
 };
 
@@ -1374,6 +1376,7 @@ static const struct blobmsg_policy bss_tr_policy[__BSS_TR_DISASSOC_MAX] = {
 	[BSS_TR_VALID_PERIOD] = { "validity_period", BLOBMSG_TYPE_INT32 },
 	[BSS_TR_NEIGHBORS] = { "neighbors", BLOBMSG_TYPE_ARRAY },
 	[BSS_TR_ABRIDGED] = { "abridged", BLOBMSG_TYPE_BOOL },
+	[BSS_TR_DIALOG_TOKEN] = { "dialog_token", BLOBMSG_TYPE_INT32 },
 };
 
 static int
@@ -1387,6 +1390,7 @@ hostapd_bss_transition_request(struct ubus_context *ctx, struct ubus_object *obj
 	u32 da_timer = 0;
 	u32 valid_period = 0;
 	u8 addr[ETH_ALEN];
+	u32 dialog_token = 1;
 	bool abridged;
 	bool da_imminent;
 
@@ -1404,11 +1408,14 @@ hostapd_bss_transition_request(struct ubus_context *ctx, struct ubus_object *obj
 	if (tb[BSS_TR_VALID_PERIOD])
 		valid_period = blobmsg_get_u32(tb[BSS_TR_VALID_PERIOD]);
 
+	if (tb[BSS_TR_DIALOG_TOKEN])
+		dialog_token = blobmsg_get_u32(tb[BSS_TR_DIALOG_TOKEN]);
+
 	da_imminent = !!(tb[BSS_TR_DA_IMMINENT] && blobmsg_get_bool(tb[BSS_TR_DA_IMMINENT]));
 	abridged = !!(tb[BSS_TR_ABRIDGED] && blobmsg_get_bool(tb[BSS_TR_ABRIDGED]));
 
 	return hostapd_bss_tr_send(hapd, addr, da_imminent, abridged, da_timer, valid_period,
-				   tb[BSS_TR_NEIGHBORS]);
+				   dialog_token, tb[BSS_TR_NEIGHBORS]);
 }
 
 enum {
@@ -1452,7 +1459,7 @@ hostapd_wnm_disassoc_imminent(struct ubus_context *ctx, struct ubus_object *obj,
 	abridged = !!(tb[WNM_DISASSOC_ABRIDGED] && blobmsg_get_bool(tb[WNM_DISASSOC_ABRIDGED]));
 
 	return hostapd_bss_tr_send(hapd, addr, true, abridged, duration, duration,
-				   tb[WNM_DISASSOC_NEIGHBORS]);
+				   1, tb[WNM_DISASSOC_NEIGHBORS]);
 }
 #endif
 
