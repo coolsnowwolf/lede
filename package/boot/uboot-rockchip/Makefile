@@ -24,6 +24,19 @@ endef
 
 # RK3328 boards
 
+ 
+define U-Boot/nanopi-r2c-rk3328
+  BUILD_SUBTARGET:=armv8
+  NAME:=NanoPi R2C
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r2c
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r2c-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
+  OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
+endef
+
 define U-Boot/nanopi-r2s-rk3328
   BUILD_SUBTARGET:=armv8
   NAME:=NanoPi R2S
@@ -96,6 +109,7 @@ UBOOT_TARGETS := \
   nanopi-r4s-rk3399 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
+  nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
   doornet1-rk3328
