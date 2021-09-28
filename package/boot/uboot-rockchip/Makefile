@@ -5,10 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2021.04
+PKG_VERSION:=2021.07
 PKG_RELEASE:=1
 
-PKG_HASH:=0d438b1bb5cceb57a18ea2de4a0d51f7be5b05b98717df05938636e0aadfe11a
+PKG_HASH:=312b7eeae44581d1362c3a3f02c28d806647756c82ba8c72241c7cdbe68ba77e
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -24,7 +24,6 @@ endef
 
 # RK3328 boards
 
- 
 define U-Boot/nanopi-r2c-rk3328
   BUILD_SUBTARGET:=armv8
   NAME:=NanoPi R2C
@@ -43,7 +42,7 @@ define U-Boot/nanopi-r2s-rk3328
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r2s
   DEPENDS:=+PACKAGE_u-boot-nanopi-r2s-rk3328:arm-trusted-firmware-rk3328
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
   OF_PLATDATA:=$(1)
   USE_RKBIN:=1
@@ -55,7 +54,7 @@ define U-Boot/orangepi-r1-plus-rk3328
   BUILD_DEVICES:= \
     xunlong_orangepi-r1-plus
   DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-rk3328:arm-trusted-firmware-rk3328
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
   OF_PLATDATA:=$(1)
   USE_RKBIN:=1
@@ -67,7 +66,7 @@ define U-Boot/doornet1-rk3328
   BUILD_DEVICES:= \
     embedfire_doornet1
   DEPENDS:=+PACKAGE_u-boot-doornet1-rk3328:arm-trusted-firmware-rk3328
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
   OF_PLATDATA:=$(1)
   USE_RKBIN:=1
@@ -80,9 +79,10 @@ define U-Boot/nanopi-r4s-rk3399
   NAME:=NanoPi R4S
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r4s
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
-  ATF:=rk3399_bl31.elf
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
 endef
 
 define U-Boot/rock-pi-4-rk3399
@@ -128,6 +128,7 @@ ifneq ($(OF_PLATDATA),)
 
 	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-plat.c $(PKG_BUILD_DIR)/tpl/dts/dt-plat.c
 	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-structs-gen.h $(PKG_BUILD_DIR)/include/generated/dt-structs-gen.h
+	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-decl.h $(PKG_BUILD_DIR)/include/generated/dt-decl.h
 endif
 
 	$(SED) 's#CONFIG_MKIMAGE_DTC_PATH=.*#CONFIG_MKIMAGE_DTC_PATH="$(PKG_BUILD_DIR)/scripts/dtc/dtc"#g' $(PKG_BUILD_DIR)/.config
@@ -139,8 +140,6 @@ define Build/InstallDev
 ifneq ($(USE_RKBIN),)
 	$(STAGING_DIR_IMAGE)/loaderimage --pack --uboot $(PKG_BUILD_DIR)/u-boot-dtb.bin $(PKG_BUILD_DIR)/uboot.img 0x200000
 	$(CP) $(PKG_BUILD_DIR)/uboot.img $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-uboot.img
-	$(CP) $(STAGING_DIR_IMAGE)/idbloader.bin $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-idbloader.bin
-	$(CP) $(STAGING_DIR_IMAGE)/trust.bin $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-trust.bin
 else
 	$(CP) $(PKG_BUILD_DIR)/idbloader.img $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-idbloader.img
 	$(CP) $(PKG_BUILD_DIR)/u-boot.itb $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-u-boot.itb
