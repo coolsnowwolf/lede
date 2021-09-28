@@ -1,36 +1,29 @@
+# Copyright (C) 2021 ImmortalWrt
+# <https://immortalwrt.org>
 #
-# Copyright (C) 2007-2009 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
+# This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
 #
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=aMule
-PKG_VERSION:=2.3.2
-PKG_RELEASE:=3
-PKG_REV=4b87b20
+PKG_NAME:=amule
+PKG_VERSION:=2.3.3
+PKG_RELEASE:=1
 
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/amule-project/amule/tar.gz/$(PKG_VERSION)?
+PKG_HASH:=934f79d4dab41c2d1caea31d6c6e10337c409ba5bb8bd6fac6c63e924e82c9b8
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION)-r$(PKG_REV).tar.bz2
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_VERSION:=$(PKG_REV)
-PKG_SOURCE_URL:=https://github.com/amule-project/amule.git
-PKG_MIRROR_HASH:=1575d31d68f9df881100c9e30f18fc7dec8493a8ae20787f41b6ef23604a78ff
+PKG_CONFIG_DEPEDS:= CONFIG_AMULE_CRYPTOPP_STATIC_LINKING
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_BUILD_DEPENDS:=libgd libcryptopp
+PKG_FIXUP:=autoreconf
+PKG_BUILD_DEPENDS:=libcryptopp libgd
+PKG_BUILD_PARALLEL:=1
+PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/nls.mk
-
-define Package/amule/config
-config AMULE_CRYPTOPP_STATIC_LINKING
-	bool "Link libcryptopp statically"
-	default n
-endef
 
 define Package/amule
   SUBMENU:=P2P
@@ -42,10 +35,17 @@ define Package/amule
 	$(ICONV_DEPENDS) $(INTL_DEPENDS) +!AMULE_CRYPTOPP_STATIC_LINKING:libcryptopp
 endef
 
+define Package/amule/config
+config AMULE_CRYPTOPP_STATIC_LINKING
+	bool "Link libcryptopp statically"
+	default n
+endef
+
+TARGET_LDFLAGS+= -liconv
+
 CONFIGURE_ARGS+= \
 	--disable-static \
 	--disable-rpath \
-	--with-gnu-ld \
 	--disable-ccache \
 	--disable-optimize \
 	--disable-profile \
@@ -59,11 +59,13 @@ CONFIGURE_ARGS+= \
 	--disable-ed2k \
 	--disable-alc \
 	--disable-alcc \
+	--disable-debug \
 	--disable-fileview \
 	--disable-plasmamule \
 	--without-wxdebug \
 	--enable-dlp \
 	--enable-upnp \
+	--with-gnu-ld \
 	--with-zlib="$(STAGING_DIR)/usr" \
 	--with-gdlib-prefix="$(STAGING_DIR)/usr" \
 	--with-libpng-prefix="$(STAGING_DIR)/usr" \
@@ -72,39 +74,27 @@ CONFIGURE_ARGS+= \
 	--with-libiconv-prefix="$(ICONV_PREFIX)" \
 	--with-libintl-prefix="$(INTL_PREFIX)" \
 	--with-libupnp-prefix="$(STAGING_DIR)/usr" \
-	--without-x \
-	--disable-debug 
+	--without-x
 
-TARGET_LDFLAGS += -liconv 
-
+MAKE_FLAGS += HOSTCC="$(HOSTCC)"
 
 define Build/Configure
-	cd $(PKG_BUILD_DIR) && sh ./autogen.sh
+	cd $(PKG_BUILD_DIR); $(SHELL) autogen.sh
 	$(call Build/Configure/Default)
-endef
-
 ifeq ($(CONFIG_AMULE_CRYPTOPP_STATIC_LINKING),y)
-	SED_CMD:=sed
-else
-	SED_CMD:=true
-endif
-
-define Build/Compile
-	$(SED_CMD) -i 's;^CRYPTOPP_LIBS.*;CRYPTOPP_LIBS \= "$(STAGING_DIR)/usr/lib/libcryptopp.a";g' \
+	$(SED) 's;^CRYPTOPP_LIBS.*;CRYPTOPP_LIBS \= "$(STAGING_DIR)/usr/lib/libcryptopp.a";g' \
 		$(PKG_BUILD_DIR)/src/Makefile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		HOSTCC="$(HOSTCC)" \
-		DESTDIR="$(PKG_INSTALL_DIR)" \
-		all
+endif
 endef
 
 define Package/amule/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_DIR) $(1)/usr/share/amule/webserver
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/amule{cmd,d} $(1)/usr/bin/
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/webserver/src/amuleweb $(1)/usr/bin/
-	$(CP) $(PKG_BUILD_DIR)/src/webserver/default $(1)/usr/share/amule/webserver
-	
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/amulecmd $(1)/usr/bin/amulecmd
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/amuled $(1)/usr/bin/amuled
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/amuleweb $(1)/usr/bin/amuleweb
+
+	$(INSTALL_DIR) $(1)/usr/share
+	$(CP) $(PKG_INSTALL_DIR)/usr/share/amule $(1)/usr/share/
 endef
 
 $(eval $(call BuildPackage,amule))
