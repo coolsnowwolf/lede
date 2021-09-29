@@ -60,9 +60,9 @@ define Build/pine64-bin
 		32768
 
 	# Copy the idbloader, uboot and trust image to the image at sector 0x40, 0x4000 and 0x6000
-	dd if="$(STAGING_DIR_IMAGE)"/$(UBOOT_DEVICE_NAME)-idbloader.bin of="$@" seek=64 conv=notrunc
+	dd if="$(STAGING_DIR_IMAGE)"/$(SOC)-idbloader.bin of="$@" seek=64 conv=notrunc
 	dd if="$(STAGING_DIR_IMAGE)"/$(UBOOT_DEVICE_NAME)-uboot.img of="$@" seek=16384 conv=notrunc
-	dd if="$(STAGING_DIR_IMAGE)"/$(UBOOT_DEVICE_NAME)-trust.bin of="$@" seek=24576 conv=notrunc
+	dd if="$(STAGING_DIR_IMAGE)"/$(SOC)-trust.bin of="$@" seek=24576 conv=notrunc
 endef
 
 ### Devices ###
