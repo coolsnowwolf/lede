@@ -2,6 +2,16 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
+define Device/friendlyarm_nanopi-r2c
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2c-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c
+
 define Device/friendlyarm_nanopi-r2s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2S

@@ -1498,6 +1498,11 @@ void hostapd_ubus_free_bss(struct hostapd_data *hapd)
 	struct ubus_object *obj = &hapd->ubus.obj;
 	char *name = (char *) obj->name;
 
+#ifdef CONFIG_MESH
+	if (hapd->conf->mesh & MESH_ENABLED)
+		return;
+#endif
+
 	if (!ctx)
 		return;
 
