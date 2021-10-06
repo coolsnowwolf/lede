@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Mon, 29 Jun 2020 19:06:18 -0600
+Subject: [PATCH] net: ip_tunnel: add header_ops for layer 3 devices
+
+commit 2606aff916854b61234bf85001be9777bab2d5f8 upstream.
+
+Some devices that take straight up layer 3 packets benefit from having a
+shared header_ops so that AF_PACKET sockets can inject packets that are
+recognized. This shared infrastructure will be used by other drivers
+that currently can't inject packets using AF_PACKET. It also exposes the
+parser function, as it is useful in standalone form too.
+
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Acked-by: Willem de Bruijn <willemb@google.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ include/net/ip_tunnels.h  |  3 +++
+ net/ipv4/ip_tunnel_core.c | 18 ++++++++++++++++++
+ 2 files changed, 21 insertions(+)
+
+--- a/include/net/ip_tunnels.h
++++ b/include/net/ip_tunnels.h
+@@ -289,6 +289,9 @@ int ip_tunnel_newlink(struct net_device
+ 		      struct ip_tunnel_parm *p, __u32 fwmark);
+ void ip_tunnel_setup(struct net_device *dev, unsigned int net_id);
+ 
++extern const struct header_ops ip_tunnel_header_ops;
++__be16 ip_tunnel_parse_protocol(const struct sk_buff *skb);
++
+ struct ip_tunnel_encap_ops {
+ 	size_t (*encap_hlen)(struct ip_tunnel_encap *e);
+ 	int (*build_header)(struct sk_buff *skb, struct ip_tunnel_encap *e,
+--- a/net/ipv4/ip_tunnel_core.c
++++ b/net/ipv4/ip_tunnel_core.c
+@@ -446,3 +446,21 @@ void ip_tunnel_unneed_metadata(void)
+ 	static_branch_dec(&ip_tunnel_metadata_cnt);
+ }
+ EXPORT_SYMBOL_GPL(ip_tunnel_unneed_metadata);
++
++/* Returns either the correct skb->protocol value, or 0 if invalid. */
++__be16 ip_tunnel_parse_protocol(const struct sk_buff *skb)
++{
++	if (skb_network_header(skb) >= skb->head &&
++	    (skb_network_header(skb) + sizeof(struct iphdr)) <= skb_tail_pointer(skb) &&
++	    ip_hdr(skb)->version == 4)
++		return htons(ETH_P_IP);
++	if (skb_network_header(skb) >= skb->head &&
++	    (skb_network_header(skb) + sizeof(struct ipv6hdr)) <= skb_tail_pointer(skb) &&
++	    ipv6_hdr(skb)->version == 6)
++		return htons(ETH_P_IPV6);
++	return 0;
++}
++EXPORT_SYMBOL(ip_tunnel_parse_protocol);
++
++const struct header_ops ip_tunnel_header_ops = { .parse_protocol = ip_tunnel_parse_protocol };
++EXPORT_SYMBOL(ip_tunnel_header_ops);

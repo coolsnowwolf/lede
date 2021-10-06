@@ -13,6 +13,14 @@ define Build/mkubntimage
 		-k $(IMAGE_KERNEL) -r $@ -o $@
 endef
 
+define Build/mkubntimage2
+	-$(STAGING_DIR_HOST)/bin/mkfwimage2 -f 0x9f000000 \
+		-v $(UBNT_TYPE).$(UBNT_CHIP).v6.0.0-$(VERSION_DIST)-$(REVISION) \
+		-p jffs2:0x50000:0xf60000:0:0:$@ \
+		-o $@.new
+	@mv $@.new $@
+endef
+
 # all UBNT XM/WA devices expect the kernel image to have 1024k while flash, when
 # booting the image, the size doesn't matter.
 define Build/mkubntimage-split
@@ -59,6 +67,16 @@ define Device/ubnt-sw
   KERNEL := kernel-bin | append-dtb | relocate-kernel | lzma | uImage lzma
 endef
 
+define Device/ubnt-2wa
+  $(Device/ubnt)
+  SOC := ar9342
+  IMAGE_SIZE := 15744k
+  UBNT_BOARD := WA
+  UBNT_CHIP := ar934x
+  UBNT_TYPE := 2WA
+  UBNT_VERSION := 8.5.3
+endef
+
 define Device/ubnt-wa
   $(Device/ubnt)
   SOC := ar9342
@@ -102,17 +120,43 @@ define Device/ubnt-xw
   UBNT_VERSION := 6.0.4
 endef
 
-define Device/ubnt_acb-isp
+define Device/ubnt-unifi-jffs2
   $(Device/ubnt)
-  SOC := qca9533
-  DEVICE_MODEL := airCube ISP
+  KERNEL_SIZE := 3072k
   IMAGE_SIZE := 15744k
-  UBNT_BOARD := ACB-ISP
-  UBNT_CHIP := qca9533
+  UBNT_TYPE := BZ
+  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma | jffs2 kernel0
+  IMAGES := sysupgrade.bin factory.bin
+  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-rootfs |\
+	pad-rootfs | check-size | append-metadata
+  IMAGE/factory.bin := $$(IMAGE/sysupgrade.bin) | mkubntimage2
+endef
+
+define Device/ubnt-acb
+  $(Device/ubnt)
+  IMAGE_SIZE := 15744k
+  UBNT_BOARD := ACB
   UBNT_TYPE := ACB
   UBNT_VERSION := 2.5.0
 endef
-TARGET_DEVICES += ubnt_acb-isp
+
+define Device/ubnt_aircube-ac
+  $(Device/ubnt-acb)
+  SOC := ar9342
+  DEVICE_MODEL := airCube AC
+  UBNT_CHIP := ar9342
+  DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += ubnt_aircube-ac
+
+define Device/ubnt_aircube-isp
+  $(Device/ubnt-acb)
+  SOC := qca9533
+  DEVICE_MODEL := airCube ISP
+  UBNT_CHIP := qca9533
+  SUPPORTED_DEVICES += ubnt,acb-isp
+endef
+TARGET_DEVICES += ubnt_aircube-isp
 
 define Device/ubnt_airrouter
   $(Device/ubnt-xm)
@@ -122,10 +166,17 @@ define Device/ubnt_airrouter
 endef
 TARGET_DEVICES += ubnt_airrouter
 
+define Device/ubnt_bullet-ac
+  $(Device/ubnt-2wa)
+  DEVICE_MODEL := Bullet AC
+  DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct rssileds
+endef
+TARGET_DEVICES += ubnt_bullet-ac
+
 define Device/ubnt_bullet-m-ar7240
   $(Device/ubnt-xm)
   SOC := ar7240
-  DEVICE_MODEL := Bullet-M
+  DEVICE_MODEL := Bullet M
   DEVICE_VARIANT := XM (AR7240)
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m
@@ -135,7 +186,7 @@ TARGET_DEVICES += ubnt_bullet-m-ar7240
 define Device/ubnt_bullet-m-ar7241
   $(Device/ubnt-xm)
   SOC := ar7241
-  DEVICE_MODEL := Bullet-M
+  DEVICE_MODEL := Bullet M
   DEVICE_VARIANT := XM (AR7241)
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m ubnt,bullet-m
@@ -144,7 +195,7 @@ TARGET_DEVICES += ubnt_bullet-m-ar7241
 
 define Device/ubnt_bullet-m-xw
   $(Device/ubnt-xw)
-  DEVICE_MODEL := Bullet-M
+  DEVICE_MODEL := Bullet M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += bullet-m-xw
 endef
@@ -165,8 +216,7 @@ TARGET_DEVICES += ubnt_edgeswitch-8xp
 
 define Device/ubnt_lap-120
   $(Device/ubnt-wa)
-  DEVICE_MODEL := LiteAP ac
-  DEVICE_VARIANT := LAP-120
+  DEVICE_MODEL := LiteAP ac (LAP-120)
   DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
 endef
 TARGET_DEVICES += ubnt_lap-120
@@ -182,9 +232,18 @@ TARGET_DEVICES += ubnt_litebeam-ac-gen2
 define Device/ubnt_nanobeam-ac
   $(Device/ubnt-wa)
   DEVICE_MODEL := NanoBeam AC
+  DEVICE_VARIANT := Gen1
   DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct rssileds
 endef
 TARGET_DEVICES += ubnt_nanobeam-ac
+
+define Device/ubnt_nanobeam-ac-gen2
+  $(Device/ubnt-wa)
+  DEVICE_MODEL := NanoBeam AC
+  DEVICE_VARIANT := Gen2
+  DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct rssileds
+endef
+TARGET_DEVICES += ubnt_nanobeam-ac-gen2
 
 define Device/ubnt_nanobridge-m
   $(Device/ubnt-xm)
@@ -269,24 +328,52 @@ define Device/ubnt_powerbeam-5ac-gen2
 endef
 TARGET_DEVICES += ubnt_powerbeam-5ac-gen2
 
+define Device/ubnt_powerbeam-m-xw
+  $(Device/ubnt-xw)
+  DEVICE_MODEL := PowerBeam M
+  DEVICE_PACKAGES += rssileds
+  SUPPORTED_DEVICES += loco-m-xw
+endef
+TARGET_DEVICES += ubnt_powerbeam-m-xw
+
+define Device/ubnt_powerbridge-m
+  $(Device/ubnt-xm)
+  SOC := ar7241
+  DEVICE_MODEL := PowerBridge M
+  DEVICE_PACKAGES += rssileds
+  SUPPORTED_DEVICES += bullet-m
+endef
+TARGET_DEVICES += ubnt_powerbridge-m
+
+define Device/ubnt_rocket-5ac-lite
+  $(Device/ubnt-xc)
+  SOC := qca9558
+  DEVICE_MODEL := Rocket 5AC
+  DEVICE_VARIANT := Lite
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += ubnt_rocket-5ac-lite
+
 define Device/ubnt_rocket-m
   $(Device/ubnt-xm)
   SOC := ar7241
-  DEVICE_MODEL := Rocket-M
+  DEVICE_MODEL := Rocket M
   DEVICE_PACKAGES += rssileds
   SUPPORTED_DEVICES += rocket-m
 endef
 TARGET_DEVICES += ubnt_rocket-m
 
 define Device/ubnt_routerstation_common
-  DEVICE_PACKAGES := -kmod-ath9k -wpad-mini -uboot-envtools kmod-usb-ohci \
+  DEVICE_PACKAGES := -kmod-ath9k -wpad-basic-wolfssl -uboot-envtools kmod-usb-ohci \
 	kmod-usb2 fconfig
   DEVICE_VENDOR := Ubiquiti
   SOC := ar7161
   IMAGE_SIZE := 16128k
-  IMAGES := factory.bin
+  IMAGES += factory.bin
   IMAGE/factory.bin := append-rootfs | pad-rootfs | mkubntimage | \
 	check-size
+  IMAGE/sysupgrade.bin := append-rootfs | pad-rootfs | combined-image | \
+	check-size | append-metadata
   KERNEL := kernel-bin | append-dtb | lzma | pad-to $$(BLOCKSIZE)
   KERNEL_INITRAMFS := kernel-bin | append-dtb
 endef
@@ -328,36 +415,53 @@ endef
 
 define Device/ubnt_unifiac-lite
   $(Device/ubnt_unifiac)
-  DEVICE_MODEL := UniFi AC-Lite
+  DEVICE_MODEL := UniFi AC Lite
   SUPPORTED_DEVICES += unifiac-lite
 endef
 TARGET_DEVICES += ubnt_unifiac-lite
 
 define Device/ubnt_unifiac-lr
   $(Device/ubnt_unifiac)
-  DEVICE_MODEL := UniFi AC-LR
+  DEVICE_MODEL := UniFi AC LR
   SUPPORTED_DEVICES += unifiac-lite ubnt,unifiac-lite
 endef
 TARGET_DEVICES += ubnt_unifiac-lr
 
 define Device/ubnt_unifiac-mesh
   $(Device/ubnt_unifiac)
-  DEVICE_MODEL := UniFi AC-Mesh
+  DEVICE_MODEL := UniFi AC Mesh
   SUPPORTED_DEVICES += unifiac-lite
 endef
 TARGET_DEVICES += ubnt_unifiac-mesh
 
 define Device/ubnt_unifiac-mesh-pro
   $(Device/ubnt_unifiac)
-  DEVICE_MODEL := UniFi AC-Mesh Pro
+  DEVICE_MODEL := UniFi AC Mesh Pro
   SUPPORTED_DEVICES += unifiac-pro
 endef
 TARGET_DEVICES += ubnt_unifiac-mesh-pro
 
 define Device/ubnt_unifiac-pro
   $(Device/ubnt_unifiac)
-  DEVICE_MODEL := UniFi AC-Pro
+  DEVICE_MODEL := UniFi AC Pro
   DEVICE_PACKAGES += kmod-usb2
   SUPPORTED_DEVICES += unifiac-pro
 endef
 TARGET_DEVICES += ubnt_unifiac-pro
+
+define Device/ubnt_unifi-ap-outdoor-plus
+  $(Device/ubnt-bz)
+  $(Device/ubnt-unifi-jffs2)
+  DEVICE_MODEL := UniFi AP Outdoor+
+  SUPPORTED_DEVICES += unifi-outdoor-plus
+endef
+TARGET_DEVICES += ubnt_unifi-ap-outdoor-plus
+
+define Device/ubnt_unifi-ap-pro
+  $(Device/ubnt-unifi-jffs2)
+  SOC := ar9344
+  DEVICE_MODEL := UniFi AP Pro
+  UBNT_CHIP := ar934x
+  SUPPORTED_DEVICES += uap-pro
+endef
+TARGET_DEVICES += ubnt_unifi-ap-pro

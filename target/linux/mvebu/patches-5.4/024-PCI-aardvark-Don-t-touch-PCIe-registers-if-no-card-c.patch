@@ -1,0 +1,50 @@
+From 70e380250c3621c55ff218cbaf2272830d9dbb1d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
+Date: Thu, 2 Jul 2020 10:30:36 +0200
+Subject: [PATCH] PCI: aardvark: Don't touch PCIe registers if no card
+ connected
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When there is no PCIe card connected and advk_pcie_rd_conf() or
+advk_pcie_wr_conf() is called for PCI bus which doesn't belong to emulated
+root bridge, the aardvark driver throws the following error message:
+
+  advk-pcie d0070000.pcie: config read/write timed out
+
+Obviously accessing PCIe registers of disconnected card is not possible.
+
+Extend check in advk_pcie_valid_device() function for validating
+availability of PCIe bus. If PCIe link is down, then the device is marked
+as Not Found and the driver does not try to access these registers.
+
+This is just an optimization to prevent accessing PCIe registers when card
+is disconnected. Trying to access PCIe registers of disconnected card does
+not cause any crash, kernel just needs to wait for a timeout. So if card
+disappear immediately after checking for PCIe link (before accessing PCIe
+registers), it does not cause any problems.
+
+Link: https://lore.kernel.org/r/20200702083036.12230-1-pali@kernel.org
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Signed-off-by: Lorenzo Pieralisi <lorenzo.pieralisi@arm.com>
+---
+ drivers/pci/controller/pci-aardvark.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -725,6 +725,13 @@ static bool advk_pcie_valid_device(struc
+ 	if ((bus->number == pcie->root_bus_nr) && PCI_SLOT(devfn) != 0)
+ 		return false;
+ 
++	/*
++	 * If the link goes down after we check for link-up, nothing bad
++	 * happens but the config access times out.
++	 */
++	if (bus->number != pcie->root_bus_nr && !advk_pcie_link_up(pcie))
++		return false;
++
+ 	return true;
+ }
+ 

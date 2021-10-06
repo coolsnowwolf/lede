@@ -1,0 +1,145 @@
+--- a/libfakeroot.c
++++ b/libfakeroot.c
+@@ -90,6 +90,16 @@
+ #define SEND_GET_XATTR64(a,b,c) send_get_xattr64(a,b)
+ #endif
+ 
++#ifndef _STAT_VER
++ #if defined (__aarch64__)
++  #define _STAT_VER 0
++ #elif defined (__x86_64__)
++  #define _STAT_VER 1
++ #else
++  #define _STAT_VER 3
++ #endif
++#endif
++
+ /*
+    These INT_* (which stands for internal) macros should always be used when
+    the fakeroot library owns the storage of the stat variable.
+@@ -1358,6 +1368,54 @@ int renameat(int olddir_fd, const char *
+ #endif /* HAVE_FSTATAT */
+ 
+ 
++#if defined(__GLIBC__) && __GLIBC_PREREQ(2,33)
++/* Glibc 2.33 exports symbols for these functions in the shared lib */
++  int lstat(const char *file_name, struct stat *statbuf) {
++     return WRAP_LSTAT LSTAT_ARG(_STAT_VER, file_name, statbuf);
++  }
++  int stat(const char *file_name, struct stat *st) {
++     return WRAP_STAT STAT_ARG(_STAT_VER, file_name, st);
++  }
++  int fstat(int fd, struct stat *st) {
++     return WRAP_FSTAT FSTAT_ARG(_STAT_VER, fd, st);
++  }
++
++  #ifdef HAVE_FSTATAT
++    int fstatat(int dir_fd, const char *path, struct stat *st, int flags) {
++       return WRAP_FSTATAT FSTATAT_ARG(_STAT_VER, dir_fd, path, st, flags);
++    }
++  #endif
++
++  #ifdef STAT64_SUPPORT
++    int lstat64(const char *file_name, struct stat64 *st) {
++       return WRAP_LSTAT64 LSTAT64_ARG(_STAT_VER, file_name, st);
++    }
++    int stat64(const char *file_name, struct stat64 *st) {
++       return WRAP_STAT64 STAT64_ARG(_STAT_VER, file_name, st);
++    }
++    int fstat64(int fd, struct stat64 *st) {
++       return WRAP_FSTAT64 FSTAT64_ARG(_STAT_VER, fd, st);
++    }
++
++    #ifdef HAVE_FSTATAT
++      int fstatat64(int dir_fd, const char *path, struct stat64 *st, int flags) {
++	 return WRAP_FSTATAT64 FSTATAT64_ARG(_STAT_VER, dir_fd, path, st, flags);
++      }
++    #endif
++  #endif
++
++  int mknod(const char *pathname, mode_t mode, dev_t dev) {
++     return WRAP_MKNOD MKNOD_ARG(_STAT_VER, pathname, mode, &dev);
++  }
++
++  #if defined(HAVE_FSTATAT) && defined(HAVE_MKNODAT)
++    int mknodat(int dir_fd, const char *pathname, mode_t mode, dev_t dev) {
++       return WRAP_MKNODAT MKNODAT_ARG(_STAT_VER, dir_fd, pathname, mode, &dev);
++    }
++  #endif
++#endif /* GLIBC_PREREQ */
++
++
+ #ifdef FAKEROOT_FAKENET
+ pid_t fork(void)
+ {
+@@ -2024,11 +2082,7 @@ FTSENT *fts_read(FTS *ftsp) {
+             || r->fts_info == FTS_NS || r->fts_info == FTS_NSOK))
+     r->fts_statp = NULL;  /* Otherwise fts_statp may be a random pointer */
+   if(r && r->fts_statp) {  /* Should we bother checking fts_info here? */
+-# if defined(STAT64_SUPPORT) && !defined(__APPLE__)
+-    SEND_GET_STAT64(r->fts_statp, _STAT_VER);
+-# else
+     SEND_GET_STAT(r->fts_statp, _STAT_VER);
+-# endif
+   }
+ 
+   return r;
+@@ -2047,11 +2101,7 @@ FTSENT *fts_children(FTS *ftsp, int opti
+   first=next_fts_children(ftsp, options);
+   for(r = first; r; r = r->fts_link) {
+     if(r && r->fts_statp) {  /* Should we bother checking fts_info here? */
+-# if defined(STAT64_SUPPORT) && !defined(__APPLE__)
+-      SEND_GET_STAT64(r->fts_statp, _STAT_VER);
+-# else
+       SEND_GET_STAT(r->fts_statp, _STAT_VER);
+-# endif
+     }
+   }
+ 
+@@ -2483,7 +2533,7 @@ int statx (int dirfd, const char *path,
+ 
+ #ifdef LIBFAKEROOT_DEBUGGING
+   if (fakeroot_debug) {
+-    fprintf(stderr, "statx fd %d\n", fd);
++    fprintf(stderr, "statx fd %d\n", dirfd);
+   }
+ #endif /* LIBFAKEROOT_DEBUGGING */
+   r=INT_NEXT_FSTATAT(dirfd, path, &st, flags);
+--- a/configure.ac
++++ b/configure.ac
+@@ -184,13 +184,13 @@ AC_MSG_CHECKING([for type of arg of __xm
+   ]], [[
+        int __xmknod  ( int ver,
+                        const char *pathname ,
+-                       mode_t  mode ,  dev_t dev);
++                       mode_t  mode ,  dev_t *dev);
+   ]])],[
+-   AC_DEFINE(XMKNOD_FRTH_ARG,)
+-   AC_MSG_RESULT([no extra *])
+-  ],[
+    AC_DEFINE(XMKNOD_FRTH_ARG,[*])
+    AC_MSG_RESULT([needs *])
++  ],[
++   AC_DEFINE(XMKNOD_FRTH_ARG,)
++   AC_MSG_RESULT([no extra *])
+ 
+   ])
+ 
+@@ -211,13 +211,13 @@ AC_MSG_CHECKING([for type of arg of __xm
+        int __xmknodat  ( int ver,
+                          int dirfd,
+                          const char *pathname ,
+-                         mode_t  mode ,  dev_t dev);
++                         mode_t  mode ,  dev_t *dev);
+   ]])],[
+-   AC_DEFINE(XMKNODAT_FIFTH_ARG,)
+-   AC_MSG_RESULT([no extra *])
+-  ],[
+    AC_DEFINE(XMKNODAT_FIFTH_ARG,[*])
+    AC_MSG_RESULT([needs *])
++  ],[
++   AC_DEFINE(XMKNODAT_FIFTH_ARG,)
++   AC_MSG_RESULT([no extra *])
+ 
+   ])
+ 

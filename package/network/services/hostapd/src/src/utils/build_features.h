@@ -23,10 +23,6 @@ static inline int has_feature(const char *feat)
 	if (!strcmp(feat, "11r"))
 		return 1;
 #endif
-#ifdef CONFIG_IEEE80211W
-	if (!strcmp(feat, "11w"))
-		return 1;
-#endif
 #ifdef CONFIG_ACS
 	if (!strcmp(feat, "acs"))
 		return 1;
@@ -45,6 +41,14 @@ static inline int has_feature(const char *feat)
 #endif
 #ifdef CONFIG_WEP
 	if (!strcmp(feat, "wep"))
+		return 1;
+#endif
+#ifdef CONFIG_HS20
+	if (!strcmp(feat, "hs20"))
+		return 1;
+#endif
+#ifdef CONFIG_WPS
+	if (!strcmp(feat, "wps"))
 		return 1;
 #endif
 	return 0;

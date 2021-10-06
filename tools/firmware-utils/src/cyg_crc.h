@@ -74,34 +74,34 @@ typedef uint16_t cyg_uint16;
 // Compute a CRC, using the POSIX 1003 definition
 
 __externC cyg_uint32
-cyg_posix_crc32(unsigned char *s, int len);
+cyg_posix_crc32(void *s, int len);
 
 // Gary S. Brown's 32 bit CRC
 
 __externC cyg_uint32
-cyg_crc32(unsigned char *s, int len);
+cyg_crc32(void *s, int len);
 
 // Gary S. Brown's 32 bit CRC, but accumulate the result from a
 // previous CRC calculation
 
 __externC cyg_uint32
-cyg_crc32_accumulate(cyg_uint32 crc, unsigned char *s, int len);
+cyg_crc32_accumulate(cyg_uint32 crc, void *s, int len);
 
 // Ethernet FCS Algorithm
 
 __externC cyg_uint32
-cyg_ether_crc32(unsigned char *s, int len);
+cyg_ether_crc32(void *s, int len);
 
 // Ethernet FCS algorithm, but accumulate the result from a previous
 // CRC calculation.
 
 __externC cyg_uint32
-cyg_ether_crc32_accumulate(cyg_uint32 crc, unsigned char *s, int len);
+cyg_ether_crc32_accumulate(cyg_uint32 crc, void *s, int len);
 
 // 16 bit CRC with polynomial x^16+x^12+x^5+1
 
 __externC cyg_uint16
-cyg_crc16(unsigned char *s, int len);
+cyg_crc16(void *s, int len);
 
 #endif // _SERVICES_CRC_CRC_H_
 

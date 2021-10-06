@@ -6,15 +6,15 @@ define Device/Default
   KERNEL_INSTALL := 1
   FILESYSTEMS := squashfs ext4
   PROFILES := Default
+  DEVICE_DTS := ox810se-$(subst _,-,$(1))
   IMAGES := sysupgrade.tar
   IMAGE/sysupgrade.tar := sysupgrade-tar | append-metadata
 endef
 
-define Device/wd-mbwe
-  DEVICE_DTS := ox810se-wd-mbwe
+define Device/wd_mbwe
   DEVICE_VENDOR := Western Digital
   DEVICE_MODEL := My Book
   DEVICE_VARIANT := World Edition
   KERNEL := kernel-bin | append-dtb | uImage none
 endef
-TARGET_DEVICES += wd-mbwe
+TARGET_DEVICES += wd_mbwe

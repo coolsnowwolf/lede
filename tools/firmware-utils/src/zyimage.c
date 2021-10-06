@@ -7,8 +7,6 @@
  *
  */
 
-#define _POSIX_SOURCE
-#define _POSIX_C_SOURCE 199309L /* getopt */
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>

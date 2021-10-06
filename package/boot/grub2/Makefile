@@ -10,12 +10,12 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=grub
 PKG_CPE_ID:=cpe:/a:gnu:grub2
-PKG_VERSION:=2.04
-PKG_RELEASE:=3
+PKG_VERSION:=2.06
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/grub
-PKG_HASH:=e5292496995ad42dabe843a0192cf2a2c502e7ffcc7479398232b10a472df77d
+PKG_HASH:=b79ea44af91b93d17cd3fe80bdae6ed43770678a9a5ae192ccea803ebb657ee1
 
 HOST_BUILD_PARALLEL:=1
 PKG_BUILD_DEPENDS:=grub2/host
@@ -65,6 +65,7 @@ CONFIGURE_ARGS += \
 	--disable-nls \
 	--disable-device-mapper \
 	--disable-libzfs \
+	--disable-liblzma \
 	--disable-grub-mkfont \
 	--with-platform=$(BUILD_VARIANT)
 
@@ -84,7 +85,7 @@ HOST_MAKE_FLAGS += \
 	TARGET_RANLIB=$(TARGET_RANLIB) \
 	LIBLZMA=$(STAGING_DIR_HOST)/lib/liblzma.a
 
-TARGET_CFLAGS := $(filter-out -fno-plt,$(TARGET_CFLAGS))
+TARGET_CFLAGS := $(filter-out -O2 -O3 -fno-plt,$(TARGET_CFLAGS))
 
 define Host/Configure
 	$(SED) 's,(RANLIB),(TARGET_RANLIB),' $(HOST_BUILD_DIR)/grub-core/Makefile.in

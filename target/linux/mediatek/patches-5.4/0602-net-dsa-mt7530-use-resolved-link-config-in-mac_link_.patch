@@ -1,0 +1,145 @@
+From: =?UTF-8?q?Ren=C3=A9=20van=20Dorst?= <opensource@vdorst.com>
+Date: Fri, 27 Mar 2020 15:44:12 +0100
+Subject: [PATCH] net: dsa: mt7530: use resolved link config in mac_link_up()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Convert the mt7530 switch driver to use the finalised link
+parameters in mac_link_up() rather than the parameters in mac_config().
+
+Signed-off-by: René van Dorst <opensource@vdorst.com>
+Tested-by: Sean Wang <sean.wang@mediatek.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -489,17 +489,6 @@ mt7530_mib_reset(struct dsa_switch *ds)
+ 	mt7530_write(priv, MT7530_MIB_CCR, CCR_MIB_ACTIVATE);
+ }
+ 
+-static void
+-mt7530_port_set_status(struct mt7530_priv *priv, int port, int enable)
+-{
+-	u32 mask = PMCR_TX_EN | PMCR_RX_EN | PMCR_FORCE_LNK;
+-
+-	if (enable)
+-		mt7530_set(priv, MT7530_PMCR_P(port), mask);
+-	else
+-		mt7530_clear(priv, MT7530_PMCR_P(port), mask);
+-}
+-
+ static int mt7530_phy_read(struct dsa_switch *ds, int port, int regnum)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+@@ -673,7 +662,7 @@ mt7530_port_enable(struct dsa_switch *ds
+ 	priv->ports[port].enable = true;
+ 	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+ 		   priv->ports[port].pm);
+-	mt7530_port_set_status(priv, port, 0);
++	mt7530_clear(priv, MT7530_PMCR_P(port), PMCR_LINK_SETTINGS_MASK);
+ 
+ 	mutex_unlock(&priv->reg_mutex);
+ 
+@@ -696,7 +685,7 @@ mt7530_port_disable(struct dsa_switch *d
+ 	priv->ports[port].enable = false;
+ 	mt7530_rmw(priv, MT7530_PCR_P(port), PCR_MATRIX_MASK,
+ 		   PCR_MATRIX_CLR);
+-	mt7530_port_set_status(priv, port, 0);
++	mt7530_clear(priv, MT7530_PMCR_P(port), PMCR_LINK_SETTINGS_MASK);
+ 
+ 	mutex_unlock(&priv->reg_mutex);
+ }
+@@ -1395,8 +1384,7 @@ static void mt7530_phylink_mac_config(st
+ 
+ 	mcr_cur = mt7530_read(priv, MT7530_PMCR_P(port));
+ 	mcr_new = mcr_cur;
+-	mcr_new &= ~(PMCR_FORCE_SPEED_1000 | PMCR_FORCE_SPEED_100 |
+-		     PMCR_FORCE_FDX | PMCR_TX_FC_EN | PMCR_RX_FC_EN);
++	mcr_new &= ~PMCR_LINK_SETTINGS_MASK;
+ 	mcr_new |= PMCR_IFG_XMIT(1) | PMCR_MAC_MODE | PMCR_BACKOFF_EN |
+ 		   PMCR_BACKPR_EN | PMCR_FORCE_MODE;
+ 
+@@ -1404,26 +1392,6 @@ static void mt7530_phylink_mac_config(st
+ 	if (port == 5 && dsa_is_user_port(ds, 5))
+ 		mcr_new |= PMCR_EXT_PHY;
+ 
+-	switch (state->speed) {
+-	case SPEED_1000:
+-		mcr_new |= PMCR_FORCE_SPEED_1000;
+-		if (priv->eee_enable & BIT(port))
+-			mcr_new |= PMCR_FORCE_EEE1G;
+-		break;
+-	case SPEED_100:
+-		mcr_new |= PMCR_FORCE_SPEED_100;
+-		if (priv->eee_enable & BIT(port))
+-			mcr_new |= PMCR_FORCE_EEE100;
+-		break;
+-	}
+-	if (state->duplex == DUPLEX_FULL) {
+-		mcr_new |= PMCR_FORCE_FDX;
+-		if (state->pause & MLO_PAUSE_TX)
+-			mcr_new |= PMCR_TX_FC_EN;
+-		if (state->pause & MLO_PAUSE_RX)
+-			mcr_new |= PMCR_RX_FC_EN;
+-	}
+-
+ 	if (mcr_new != mcr_cur)
+ 		mt7530_write(priv, MT7530_PMCR_P(port), mcr_new);
+ }
+@@ -1434,7 +1402,7 @@ static void mt7530_phylink_mac_link_down
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+ 
+-	mt7530_port_set_status(priv, port, 0);
++	mt7530_clear(priv, MT7530_PMCR_P(port), PMCR_LINK_SETTINGS_MASK);
+ }
+ 
+ static void mt7530_phylink_mac_link_up(struct dsa_switch *ds, int port,
+@@ -1445,8 +1413,31 @@ static void mt7530_phylink_mac_link_up(s
+ 				       bool tx_pause, bool rx_pause)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
++	u32 mcr;
++
++	mcr = PMCR_RX_EN | PMCR_TX_EN | PMCR_FORCE_LNK;
++
++	switch (speed) {
++	case SPEED_1000:
++		mcr |= PMCR_FORCE_SPEED_1000;
++		if (priv->eee_enable & BIT(port))
++			mcr_new |= PMCR_FORCE_EEE1G;
++		break;
++	case SPEED_100:
++		mcr |= PMCR_FORCE_SPEED_100;
++		if (priv->eee_enable & BIT(port))
++			mcr_new |= PMCR_FORCE_EEE100;
++		break;
++	}
++	if (duplex == DUPLEX_FULL) {
++		mcr |= PMCR_FORCE_FDX;
++		if (tx_pause)
++			mcr |= PMCR_TX_FC_EN;
++		if (rx_pause)
++			mcr |= PMCR_RX_FC_EN;
++	}
+ 
+-	mt7530_port_set_status(priv, port, 1);
++	mt7530_set(priv, MT7530_PMCR_P(port), mcr);
+ }
+ 
+ static void mt7530_phylink_validate(struct dsa_switch *ds, int port,
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -222,6 +222,10 @@ enum mt7530_vlan_port_attr {
+ #define  PMCR_FORCE_LNK			BIT(0)
+ #define  PMCR_SPEED_MASK		(PMCR_FORCE_SPEED_100 | \
+ 					 PMCR_FORCE_SPEED_1000)
++#define  PMCR_LINK_SETTINGS_MASK	(PMCR_TX_EN | PMCR_FORCE_SPEED_1000 | \
++					 PMCR_RX_EN | PMCR_FORCE_SPEED_100 | \
++					 PMCR_TX_FC_EN | PMCR_RX_FC_EN | \
++					 PMCR_FORCE_FDX | PMCR_FORCE_LNK)
+ 
+ #define MT7530_PMSR_P(x)		(0x3008 + (x) * 0x100)
+ #define  PMSR_EEE1G			BIT(7)

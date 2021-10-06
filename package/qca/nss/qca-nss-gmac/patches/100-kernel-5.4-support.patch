@@ -1,0 +1,279 @@
+--- a/ipq806x/nss_gmac_ctrl.c
++++ b/ipq806x/nss_gmac_ctrl.c
+@@ -322,16 +322,15 @@ void nss_gmac_tx_rx_desc_init(struct nss
+  * (for example "ifconfig eth0").
+  * @param[in] pointer to net_device structure.
+  * @param[in] pointer to net_device_stats64 structure.
+- * @return Returns pointer to net_device_stats64 structure.
+  */
+-struct rtnl_link_stats64 *nss_gmac_get_stats64(struct net_device *netdev,
++void nss_gmac_get_stats64(struct net_device *netdev,
+ 						struct rtnl_link_stats64 *stats)
+ {
+ 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+ 	BUG_ON(gmacdev == NULL);
+ 
+ 	if (!gmacdev->data_plane_ops)
+-		return stats;
++		return;
+ 
+ 	spin_lock_bh(&gmacdev->stats_lock);
+ 	gmacdev->data_plane_ops->get_stats(gmacdev->data_plane_ctx, &gmacdev->nss_stats);
+@@ -354,8 +353,6 @@ struct rtnl_link_stats64 *nss_gmac_get_s
+ 	stats->tx_fifo_errors = gmacdev->nss_stats.tx_underflow_errors;
+ 	stats->tx_window_errors = gmacdev->nss_stats.tx_late_collision_errors;
+ 	spin_unlock_bh(&gmacdev->stats_lock);
+-
+-	return stats;
+ }
+ 
+ 
+@@ -439,7 +436,7 @@ static int nss_gmac_mtnp_show(struct dev
+ static int nss_gmac_tstamp_show(struct device *dev, struct device_attribute *attr, char *buf)
+ {
+ 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(to_net_dev(dev));
+-	struct timeval tv;
++	struct timespec64 ts64;
+ 	uint32_t ret, timeout;
+ 	uint32_t ts_hi, ts_lo;
+ 
+@@ -459,11 +456,12 @@ static int nss_gmac_tstamp_show(struct d
+ 		return -1;
+ 	}
+ 
+-	do_gettimeofday(&tv);
++	ktime_get_real_ts64(&ts64);
+ 
+ 	ret = snprintf(
+ 		buf, PAGE_SIZE,
+-		"sec:%u nsec:%u time-of-day: %12d.%06d \n", ts_hi, ts_lo, (int)tv.tv_sec, (int)tv.tv_usec);
++		"sec:%u nsec:%u time-of-day: %12d.%06d \n", \
++		ts_hi, ts_lo, (int)ts64.tv_sec, (int)(ts64.tv_nsec / NSEC_PER_USEC));
+ 
+ 	return ret;
+ }
+@@ -951,7 +949,7 @@ static const struct net_device_ops nss_g
+  * @param[in] pointer to advertised features
+  * @return void
+  */
+-static void nss_gmac_update_features(uint32_t *supp, uint32_t *adv)
++static void nss_gmac_update_features(long unsigned int *supp, long unsigned int *adv)
+ {
+ 	*supp |= NSS_GMAC_SUPPORTED_FEATURES;
+ 	*adv |= NSS_GMAC_ADVERTISED_FEATURES;
+@@ -1409,8 +1407,8 @@ static int32_t nss_gmac_probe(struct pla
+ 			goto nss_gmac_phy_attach_fail;
+ 		}
+ 
+-		nss_gmac_update_features(&(gmacdev->phydev->supported),
+-					&(gmacdev->phydev->advertising));
++		nss_gmac_update_features(gmacdev->phydev->supported,
++					 gmacdev->phydev->advertising);
+ 		gmacdev->phydev->irq = PHY_POLL;
+ 		netdev_dbg(netdev, "PHY %s attach OK\n", phy_id);
+ 
+@@ -1440,6 +1438,8 @@ static int32_t nss_gmac_probe(struct pla
+ 		netdev_dbg(netdev, "%s MII_PHYSID2 - 0x%04x\n", netdev->name,
+ 		      nss_gmac_mii_rd_reg(gmacdev, gmacdev->phy_base, MII_PHYSID2));
+ 	} else if (gmacdev->phy_base != NSS_GMAC_NO_MDIO_PHY) {
++		SET_NETDEV_DEV(netdev, gmacdev->miibus->parent);
++
+ 		/*
+ 		 * Issue a phy_attach for the interface connected to a switch
+ 		 */
+--- a/ipq806x/nss_gmac_ethtool.c
++++ b/ipq806x/nss_gmac_ethtool.c
+@@ -143,9 +143,9 @@ static const struct nss_gmac_ethtool_sta
+ /**
+  * @brief Array of strings describing private flag names
+  */
+-static const char *gmac_strings_priv_flags[] = {
+-	"linkpoll",
+-	"tstamp",
++static const char *gmac_strings_priv_flags[][ETH_GSTRING_LEN] = {
++	{"linkpoll"},
++	{"tstamp"},
+ };
+ 
+ #define NSS_GMAC_STATS_LEN	ARRAY_SIZE(gmac_gstrings_stats)
+@@ -292,6 +292,7 @@ static int nss_gmac_set_pauseparam(struc
+ {
+ 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+ 	struct phy_device *phydev;
++	long unsigned int *advertising;
+ 
+ 	BUG_ON(gmacdev == NULL);
+ 	BUG_ON(gmacdev->netdev != netdev);
+@@ -327,14 +328,15 @@ static int nss_gmac_set_pauseparam(struc
+ 	phydev = gmacdev->phydev;
+ 
+ 	/* Update flow control advertisment */
+-	phydev->advertising &= ~(ADVERTISED_Pause | ADVERTISED_Asym_Pause);
++	advertising = phydev->advertising;
++	*advertising &= ~(ADVERTISED_Pause | ADVERTISED_Asym_Pause);
+ 
+ 	if (gmacdev->pause & FLOW_CTRL_RX)
+-		phydev->advertising |=
++		*advertising |=
+ 				(ADVERTISED_Pause | ADVERTISED_Asym_Pause);
+ 
+ 	if (gmacdev->pause & FLOW_CTRL_TX)
+-		phydev->advertising |= ADVERTISED_Asym_Pause;
++		*advertising |= ADVERTISED_Asym_Pause;
+ 
+ 	genphy_config_aneg(gmacdev->phydev);
+ 
+@@ -396,12 +398,13 @@ static uint32_t nss_gmac_get_msglevel(st
+  * @param[in] pointer to struct net_device.
+  * @param[in] pointer to struct ethtool_cmd.
+  */
+-static int32_t nss_gmac_get_settings(struct net_device *netdev,
+-			      struct ethtool_cmd *ecmd)
++static int nss_gmac_get_settings(struct net_device *netdev,
++				 struct ethtool_link_ksettings *elk)
+ {
+ 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+ 	struct phy_device *phydev = NULL;
+ 	uint16_t phyreg;
++	u32 lp_advertising = 0;
+ 
+ 	BUG_ON(gmacdev == NULL);
+ 
+@@ -413,10 +416,10 @@ static int32_t nss_gmac_get_settings(str
+ 	 */
+ 	if (!test_bit(__NSS_GMAC_LINKPOLL, &gmacdev->flags)) {
+ 		if (gmacdev->forced_speed != SPEED_UNKNOWN) {
+-			ethtool_cmd_speed_set(ecmd, gmacdev->forced_speed);
+-			ecmd->duplex = gmacdev->forced_duplex;
+-			ecmd->mdio_support = 0;
+-			ecmd->lp_advertising = 0;
++			elk->base.speed = gmacdev->forced_speed;
++			elk->base.duplex = gmacdev->forced_duplex;
++			elk->base.mdio_support = 0;
++			ethtool_convert_legacy_u32_to_link_mode(elk->link_modes.lp_advertising, 0);
+ 			return 0;
+ 		} else {
+ 			/* Non-link polled interfaced must have a forced
+@@ -429,63 +429,59 @@ static int32_t nss_gmac_get_settings(struct net_device *netdev,
+ 
+ 	/* update PHY status */
+ 	if (phydev->is_c45 == true) {
+-		ecmd->mdio_support = ETH_MDIO_SUPPORTS_C45;
++		elk->base.mdio_support = ETH_MDIO_SUPPORTS_C45;
+ 	} else {
+ 		if (genphy_read_status(phydev) != 0) {
+ 			return -EIO;
+ 		}
+-		ecmd->mdio_support = ETH_MDIO_SUPPORTS_C22;
++		elk->base.mdio_support = ETH_MDIO_SUPPORTS_C22;
+ 	}
+ 
+ 	/* Populate capabilities advertised by self */
+-	ecmd->advertising = phydev->advertising;
++	bitmap_copy(elk->link_modes.advertising, phydev->advertising, __ETHTOOL_LINK_MODE_MASK_NBITS);
+ 
+-	ecmd->autoneg = phydev->autoneg;
+-
+-	if (gmacdev->link_state == LINKDOWN) {
+-		ethtool_cmd_speed_set(ecmd, SPEED_UNKNOWN);
+-		ecmd->duplex = DUPLEX_UNKNOWN;
+-	} else {
+-		ethtool_cmd_speed_set(ecmd, phydev->speed);
+-		ecmd->duplex = phydev->duplex;
+-	}
+-
+-	ecmd->port = PORT_TP;
+-	ecmd->phy_address = gmacdev->phy_base;
+-	ecmd->transceiver = XCVR_EXTERNAL;
++	elk->base.autoneg = phydev->autoneg;
++	elk->base.speed = phydev->speed;
++	elk->base.duplex = phydev->duplex;
++	elk->base.port = PORT_TP;
++	elk->base.phy_address = gmacdev->phy_base;
++	elk->base.transceiver = XCVR_EXTERNAL;
+ 
+ 	/* Populate supported capabilities */
+-	ecmd->supported = phydev->supported;
++	bitmap_copy(elk->link_modes.supported, phydev->supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
+ 
+ 	if (phydev->is_c45 == true)
+ 		return 0;
+ 
+ 	/* Populate capabilities advertised by link partner */
++	ethtool_convert_link_mode_to_legacy_u32(&lp_advertising, elk->link_modes.lp_advertising);
+ 	phyreg = nss_gmac_mii_rd_reg(gmacdev, gmacdev->phy_base, MII_LPA);
+ 	if (phyreg & LPA_10HALF)
+-		ecmd->lp_advertising |= ADVERTISED_10baseT_Half;
++		lp_advertising |= ADVERTISED_10baseT_Half;
+ 
+ 	if (phyreg & LPA_10FULL)
+-		ecmd->lp_advertising |= ADVERTISED_10baseT_Full;
++		lp_advertising |= ADVERTISED_10baseT_Full;
+ 
+ 	if (phyreg & LPA_100HALF)
+-		ecmd->lp_advertising |= ADVERTISED_100baseT_Half;
++		lp_advertising |= ADVERTISED_100baseT_Half;
+ 
+ 	if (phyreg & LPA_100FULL)
+-		ecmd->lp_advertising |= ADVERTISED_100baseT_Full;
++		lp_advertising |= ADVERTISED_100baseT_Full;
+ 
+ 	if (phyreg & LPA_PAUSE_CAP)
+-		ecmd->lp_advertising |= ADVERTISED_Pause;
++		lp_advertising |= ADVERTISED_Pause;
+ 
+ 	if (phyreg & LPA_PAUSE_ASYM)
+-		ecmd->lp_advertising |= ADVERTISED_Asym_Pause;
++		lp_advertising |= ADVERTISED_Asym_Pause;
+ 
+ 	phyreg = nss_gmac_mii_rd_reg(gmacdev, gmacdev->phy_base, MII_STAT1000);
+ 	if (phyreg & LPA_1000HALF)
+-		ecmd->lp_advertising |= ADVERTISED_1000baseT_Half;
++		lp_advertising |= ADVERTISED_1000baseT_Half;
+ 
+ 	if (phyreg & LPA_1000FULL)
+-		ecmd->lp_advertising |= ADVERTISED_1000baseT_Full;
++		lp_advertising |= ADVERTISED_1000baseT_Full;
++
++	ethtool_convert_legacy_u32_to_link_mode(elk->link_modes.lp_advertising, lp_advertising);
+ 
+ 	return 0;
+ }
+@@ -489,8 +495,8 @@ static int32_t nss_gmac_get_settings(str
+  * @param[in] pointer to struct net_device.
+  * @param[in] pointer to struct ethtool_cmd.
+  */
+-static int32_t nss_gmac_set_settings(struct net_device *netdev,
+-			      struct ethtool_cmd *ecmd)
++static int nss_gmac_set_settings(struct net_device *netdev,
++				 const struct ethtool_link_ksettings *elk)
+ {
+ 	struct nss_gmac_dev *gmacdev = (struct nss_gmac_dev *)netdev_priv(netdev);
+ 	struct phy_device *phydev = NULL;
+@@ -512,13 +518,13 @@ static int32_t nss_gmac_set_settings(str
+ 		return -EPERM;
+ 	}
+ 
+-	if (ecmd->autoneg == AUTONEG_ENABLE) {
++	if (elk->base.autoneg == AUTONEG_ENABLE) {
+ 		set_bit(__NSS_GMAC_AUTONEG, &gmacdev->flags);
+ 	} else {
+ 		clear_bit(__NSS_GMAC_AUTONEG, &gmacdev->flags);
+ 	}
+ 
+-	return phy_ethtool_sset(phydev, ecmd);
++	return phy_ethtool_ksettings_set(phydev, elk);
+ }
+ 
+ /**
+@@ -580,8 +586,8 @@ struct ethtool_ops nss_gmac_ethtool_ops
+ 	.set_pauseparam = &nss_gmac_set_pauseparam,
+ 	.nway_reset = &nss_gmac_nway_reset,
+ 	.get_wol = &nss_gmac_get_wol,
+-	.get_settings = &nss_gmac_get_settings,
+-	.set_settings = &nss_gmac_set_settings,
++	.get_link_ksettings = &nss_gmac_get_settings,
++	.set_link_ksettings = &nss_gmac_set_settings,
+ 	.get_strings = &nss_gmac_get_strings,
+ 	.get_sset_count = &nss_gmac_get_strset_count,
+ 	.get_ethtool_stats = &nss_gmac_get_ethtool_stats,

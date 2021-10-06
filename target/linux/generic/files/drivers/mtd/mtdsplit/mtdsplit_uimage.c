@@ -19,22 +19,9 @@
 #include <linux/version.h>
 #include <linux/byteorder/generic.h>
 #include <linux/of.h>
+#include <dt-bindings/mtd/partitions/uimage.h>
 
 #include "mtdsplit.h"
-
-/*
- * uimage_header itself is only 64B, but it may be prepended with another data.
- * Currently the biggest size is for Fon(Foxconn) devices: 64B + 32B
- */
-#define MAX_HEADER_LEN		96
-
-#define IH_MAGIC	0x27051956	/* Image Magic Number		*/
-#define IH_NMLEN		32	/* Image Name Length		*/
-
-#define IH_OS_LINUX		5	/* Linux	*/
-
-#define IH_TYPE_KERNEL		2	/* OS Kernel Image		*/
-#define IH_TYPE_FILESYSTEM	7	/* Filesystem Image		*/
 
 /*
  * Legacy format image header,
@@ -76,6 +63,53 @@ read_uimage_header(struct mtd_info *mtd, size_t offset, u_char *buf,
 	return 0;
 }
 
+static void uimage_parse_dt(struct mtd_info *master, int *extralen,
+			    u32 *ih_magic, u32 *ih_type,
+			    u32 *header_offset, u32 *part_magic)
+{
+	struct device_node *np = mtd_get_of_node(master);
+
+	if (!np || !of_device_is_compatible(np, "openwrt,uimage"))
+		return;
+
+	if (!of_property_read_u32(np, "openwrt,padding", extralen))
+		pr_debug("got openwrt,padding=%d from device-tree\n", *extralen);
+	if (!of_property_read_u32(np, "openwrt,ih-magic", ih_magic))
+		pr_debug("got openwrt,ih-magic=%08x from device-tree\n", *ih_magic);
+	if (!of_property_read_u32(np, "openwrt,ih-type", ih_type))
+		pr_debug("got openwrt,ih-type=%08x from device-tree\n", *ih_type);
+	if (!of_property_read_u32(np, "openwrt,offset", header_offset))
+		pr_debug("got ih-start=%u from device-tree\n", *header_offset);
+	if (!of_property_read_u32(np, "openwrt,partition-magic", part_magic))
+		pr_debug("got openwrt,partition-magic=%08x from device-tree\n", *part_magic);
+}
+
+static ssize_t uimage_verify_default(u_char *buf, u32 ih_magic, u32 ih_type)
+{
+	struct uimage_header *header = (struct uimage_header *)buf;
+
+	/* default sanity checks */
+	if (be32_to_cpu(header->ih_magic) != ih_magic) {
+		pr_debug("invalid uImage magic: %08x != %08x\n",
+			 be32_to_cpu(header->ih_magic), ih_magic);
+		return -EINVAL;
+	}
+
+	if (header->ih_os != IH_OS_LINUX) {
+		pr_debug("invalid uImage OS: %08x != %08x\n",
+			 be32_to_cpu(header->ih_os), IH_OS_LINUX);
+		return -EINVAL;
+	}
+
+	if (header->ih_type != ih_type) {
+		pr_debug("invalid uImage type: %08x != %08x\n",
+			 be32_to_cpu(header->ih_type), ih_type);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 /**
  * __mtdsplit_parse_uimage - scan partition and create kernel + rootfs parts
  *
@@ -83,9 +117,8 @@ read_uimage_header(struct mtd_info *mtd, size_t offset, u_char *buf,
  *      and tail padding length of a valid uImage header if found
  */
 static int __mtdsplit_parse_uimage(struct mtd_info *master,
-		   const struct mtd_partition **pparts,
-		   struct mtd_part_parser_data *data,
-		   ssize_t (*find_header)(u_char *buf, size_t len, int *extralen))
+				   const struct mtd_partition **pparts,
+				   struct mtd_part_parser_data *data)
 {
 	struct mtd_partition *parts;
 	u_char *buf;
@@ -95,9 +128,14 @@ static int __mtdsplit_parse_uimage(struct mtd_info *master,
 	size_t uimage_size = 0;
 	size_t rootfs_offset;
 	size_t rootfs_size = 0;
+	size_t buflen;
 	int uimage_part, rf_part;
 	int ret;
-	int extralen;
+	int extralen = 0;
+	u32 ih_magic = IH_MAGIC;
+	u32 ih_type = IH_TYPE_KERNEL;
+	u32 header_offset = 0;
+	u32 part_magic = 0;
 	enum mtdsplit_part_type type;
 
 	nr_parts = 2;
@@ -105,7 +143,9 @@ static int __mtdsplit_parse_uimage(struct mtd_info *master,
 	if (!parts)
 		return -ENOMEM;
 
-	buf = vmalloc(MAX_HEADER_LEN);
+	uimage_parse_dt(master, &extralen, &ih_magic, &ih_type, &header_offset, &part_magic);
+	buflen = sizeof(struct uimage_header) + header_offset;
+	buf = vmalloc(buflen);
 	if (!buf) {
 		ret = -ENOMEM;
 		goto err_free_parts;
@@ -117,21 +157,25 @@ static int __mtdsplit_parse_uimage(struct mtd_info *master,
 
 		uimage_size = 0;
 
-		ret = read_uimage_header(master, offset, buf, MAX_HEADER_LEN);
+		ret = read_uimage_header(master, offset, buf, buflen);
 		if (ret)
 			continue;
 
-		extralen = 0;
-		ret = find_header(buf, MAX_HEADER_LEN, &extralen);
+		/* verify optional partition magic before uimage header */
+		if (header_offset && part_magic && (be32_to_cpu(*(u32 *)buf) != part_magic))
+			continue;
+
+		ret = uimage_verify_default(buf + header_offset, ih_magic, ih_type);
 		if (ret < 0) {
 			pr_debug("no valid uImage found in \"%s\" at offset %llx\n",
 				 master->name, (unsigned long long) offset);
 			continue;
 		}
-		header = (struct uimage_header *)(buf + ret);
+
+		header = (struct uimage_header *)(buf + header_offset);
 
 		uimage_size = sizeof(*header) +
-				be32_to_cpu(header->ih_size) + ret + extralen;
+				be32_to_cpu(header->ih_size) + header_offset + extralen;
 
 		if ((offset + uimage_size) > master->size) {
 			pr_debug("uImage exceeds MTD device \"%s\"\n",
@@ -210,43 +254,9 @@ err_free_parts:
 	return ret;
 }
 
-static ssize_t uimage_verify_default(u_char *buf, size_t len, int *extralen)
-{
-	struct uimage_header *header = (struct uimage_header *)buf;
-
-	/* default sanity checks */
-	if (be32_to_cpu(header->ih_magic) != IH_MAGIC) {
-		pr_debug("invalid uImage magic: %08x\n",
-			 be32_to_cpu(header->ih_magic));
-		return -EINVAL;
-	}
-
-	if (header->ih_os != IH_OS_LINUX) {
-		pr_debug("invalid uImage OS: %08x\n",
-			 be32_to_cpu(header->ih_os));
-		return -EINVAL;
-	}
-
-	if (header->ih_type != IH_TYPE_KERNEL) {
-		pr_debug("invalid uImage type: %08x\n",
-			 be32_to_cpu(header->ih_type));
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int
-mtdsplit_uimage_parse_generic(struct mtd_info *master,
-			      const struct mtd_partition **pparts,
-			      struct mtd_part_parser_data *data)
-{
-	return __mtdsplit_parse_uimage(master, pparts, data,
-				      uimage_verify_default);
-}
-
 static const struct of_device_id mtdsplit_uimage_of_match_table[] = {
 	{ .compatible = "denx,uimage" },
+	{ .compatible = "openwrt,uimage" },
 	{},
 };
 
@@ -254,210 +264,8 @@ static struct mtd_part_parser uimage_generic_parser = {
 	.owner = THIS_MODULE,
 	.name = "uimage-fw",
 	.of_match_table = mtdsplit_uimage_of_match_table,
-	.parse_fn = mtdsplit_uimage_parse_generic,
+	.parse_fn = __mtdsplit_parse_uimage,
 	.type = MTD_PARSER_TYPE_FIRMWARE,
-};
-
-#define FW_MAGIC_WNR2000V1	0x32303031
-#define FW_MAGIC_WNR2000V3	0x32303033
-#define FW_MAGIC_WNR2000V4	0x32303034
-#define FW_MAGIC_WNR2200	0x32323030
-#define FW_MAGIC_WNR612V2	0x32303631
-#define FW_MAGIC_WNR1000V2	0x31303031
-#define FW_MAGIC_WNR1000V2_VC	0x31303030
-#define FW_MAGIC_WNDR3700	0x33373030
-#define FW_MAGIC_WNDR3700V2	0x33373031
-#define FW_MAGIC_WPN824N	0x31313030
-
-static ssize_t uimage_verify_wndr3700(u_char *buf, size_t len, int *extralen)
-{
-	struct uimage_header *header = (struct uimage_header *)buf;
-	uint8_t expected_type = IH_TYPE_FILESYSTEM;
-
-	switch (be32_to_cpu(header->ih_magic)) {
-	case FW_MAGIC_WNR612V2:
-	case FW_MAGIC_WNR1000V2:
-	case FW_MAGIC_WNR1000V2_VC:
-	case FW_MAGIC_WNR2000V1:
-	case FW_MAGIC_WNR2000V3:
-	case FW_MAGIC_WNR2200:
-	case FW_MAGIC_WNDR3700:
-	case FW_MAGIC_WNDR3700V2:
-	case FW_MAGIC_WPN824N:
-		break;
-	case FW_MAGIC_WNR2000V4:
-		expected_type = IH_TYPE_KERNEL;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (header->ih_os != IH_OS_LINUX ||
-	    header->ih_type != expected_type)
-		return -EINVAL;
-
-	return 0;
-}
-
-static int
-mtdsplit_uimage_parse_netgear(struct mtd_info *master,
-			      const struct mtd_partition **pparts,
-			      struct mtd_part_parser_data *data)
-{
-	return __mtdsplit_parse_uimage(master, pparts, data,
-				      uimage_verify_wndr3700);
-}
-
-static const struct of_device_id mtdsplit_uimage_netgear_of_match_table[] = {
-	{ .compatible = "netgear,uimage" },
-	{},
-};
-
-static struct mtd_part_parser uimage_netgear_parser = {
-	.owner = THIS_MODULE,
-	.name = "netgear-fw",
-	.of_match_table = mtdsplit_uimage_netgear_of_match_table,
-	.parse_fn = mtdsplit_uimage_parse_netgear,
-	.type = MTD_PARSER_TYPE_FIRMWARE,
-};
-
-/**************************************************
- * Edimax
- **************************************************/
-
-#define FW_EDIMAX_OFFSET	20
-#define FW_MAGIC_EDIMAX		0x43535953
-
-static ssize_t uimage_find_edimax(u_char *buf, size_t len, int *extralen)
-{
-	u32 *magic;
-
-	if (len < FW_EDIMAX_OFFSET + sizeof(struct uimage_header)) {
-		pr_err("Buffer too small for checking Edimax header\n");
-		return -ENOSPC;
-	}
-
-	magic = (u32 *)buf;
-	if (be32_to_cpu(*magic) != FW_MAGIC_EDIMAX)
-		return -EINVAL;
-
-	if (!uimage_verify_default(buf + FW_EDIMAX_OFFSET, len, extralen))
-		return FW_EDIMAX_OFFSET;
-
-	return -EINVAL;
-}
-
-static int
-mtdsplit_uimage_parse_edimax(struct mtd_info *master,
-			      const struct mtd_partition **pparts,
-			      struct mtd_part_parser_data *data)
-{
-	return __mtdsplit_parse_uimage(master, pparts, data,
-				       uimage_find_edimax);
-}
-
-static const struct of_device_id mtdsplit_uimage_edimax_of_match_table[] = {
-	{ .compatible = "edimax,uimage" },
-	{},
-};
-
-static struct mtd_part_parser uimage_edimax_parser = {
-	.owner = THIS_MODULE,
-	.name = "edimax-fw",
-	.of_match_table = mtdsplit_uimage_edimax_of_match_table,
-	.parse_fn = mtdsplit_uimage_parse_edimax,
-	.type = MTD_PARSER_TYPE_FIRMWARE,
-};
-
-
-/**************************************************
- * Fon(Foxconn)
- **************************************************/
-
-#define FONFXC_PAD_LEN		32
-
-static ssize_t uimage_find_fonfxc(u_char *buf, size_t len, int *extralen)
-{
-	if (uimage_verify_default(buf, len, extralen) < 0)
-		return -EINVAL;
-
-	*extralen = FONFXC_PAD_LEN;
-
-	return 0;
-}
-
-static int
-mtdsplit_uimage_parse_fonfxc(struct mtd_info *master,
-			      const struct mtd_partition **pparts,
-			      struct mtd_part_parser_data *data)
-{
-	return __mtdsplit_parse_uimage(master, pparts, data,
-				       uimage_find_fonfxc);
-}
-
-static const struct of_device_id mtdsplit_uimage_fonfxc_of_match_table[] = {
-	{ .compatible = "fonfxc,uimage" },
-	{},
-};
-
-static struct mtd_part_parser uimage_fonfxc_parser = {
-	.owner = THIS_MODULE,
-	.name = "fonfxc-fw",
-	.of_match_table = mtdsplit_uimage_fonfxc_of_match_table,
-	.parse_fn = mtdsplit_uimage_parse_fonfxc,
-};
-
-/**************************************************
- * OKLI (OpenWrt Kernel Loader Image)
- **************************************************/
-
-#define IH_MAGIC_OKLI	0x4f4b4c49
-
-static ssize_t uimage_verify_okli(u_char *buf, size_t len, int *extralen)
-{
-	struct uimage_header *header = (struct uimage_header *)buf;
-
-	/* default sanity checks */
-	if (be32_to_cpu(header->ih_magic) != IH_MAGIC_OKLI) {
-		pr_debug("invalid uImage magic: %08x\n",
-			 be32_to_cpu(header->ih_magic));
-		return -EINVAL;
-	}
-
-	if (header->ih_os != IH_OS_LINUX) {
-		pr_debug("invalid uImage OS: %08x\n",
-			 be32_to_cpu(header->ih_os));
-		return -EINVAL;
-	}
-
-	if (header->ih_type != IH_TYPE_KERNEL) {
-		pr_debug("invalid uImage type: %08x\n",
-			 be32_to_cpu(header->ih_type));
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static int
-mtdsplit_uimage_parse_okli(struct mtd_info *master,
-			      const struct mtd_partition **pparts,
-			      struct mtd_part_parser_data *data)
-{
-	return __mtdsplit_parse_uimage(master, pparts, data,
-				      uimage_verify_okli);
-}
-
-static const struct of_device_id mtdsplit_uimage_okli_of_match_table[] = {
-	{ .compatible = "openwrt,okli" },
-	{},
-};
-
-static struct mtd_part_parser uimage_okli_parser = {
-	.owner = THIS_MODULE,
-	.name = "okli-fw",
-	.of_match_table = mtdsplit_uimage_okli_of_match_table,
-	.parse_fn = mtdsplit_uimage_parse_okli,
 };
 
 /**************************************************
@@ -467,10 +275,6 @@ static struct mtd_part_parser uimage_okli_parser = {
 static int __init mtdsplit_uimage_init(void)
 {
 	register_mtd_parser(&uimage_generic_parser);
-	register_mtd_parser(&uimage_netgear_parser);
-	register_mtd_parser(&uimage_edimax_parser);
-	register_mtd_parser(&uimage_fonfxc_parser);
-	register_mtd_parser(&uimage_okli_parser);
 
 	return 0;
 }

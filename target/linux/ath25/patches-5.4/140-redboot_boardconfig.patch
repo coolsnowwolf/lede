@@ -1,0 +1,60 @@
+--- a/drivers/mtd/parsers/redboot.c
++++ b/drivers/mtd/parsers/redboot.c
+@@ -16,6 +16,8 @@
+ #include <linux/mtd/partitions.h>
+ #include <linux/module.h>
+ 
++#define BOARD_CONFIG_PART		"boardconfig"
++
+ struct fis_image_desc {
+     unsigned char name[16];      // Null terminated name
+     uint32_t	  flash_base;    // Address within FLASH of image
+@@ -72,6 +74,7 @@ static int parse_redboot_partitions(stru
+ 				    const struct mtd_partition **pparts,
+ 				    struct mtd_part_parser_data *data)
+ {
++	unsigned long max_offset = 0;
+ 	int nrparts = 0;
+ 	struct fis_image_desc *buf;
+ 	struct mtd_partition *parts;
+@@ -239,14 +242,15 @@ static int parse_redboot_partitions(stru
+ 		}
+ 	}
+ #endif
+-	parts = kzalloc(sizeof(*parts)*nrparts + nulllen + namelen, GFP_KERNEL);
++	parts = kzalloc(sizeof(*parts) * (nrparts + 1) + nulllen + namelen +
++			sizeof(BOARD_CONFIG_PART), GFP_KERNEL);
+ 
+ 	if (!parts) {
+ 		ret = -ENOMEM;
+ 		goto out;
+ 	}
+ 
+-	nullname = (char *)&parts[nrparts];
++	nullname = (char *)&parts[nrparts + 1];
+ #ifdef CONFIG_MTD_REDBOOT_PARTS_UNALLOCATED
+ 	if (nulllen > 0) {
+ 		strcpy(nullname, nullstring);
+@@ -265,6 +269,8 @@ static int parse_redboot_partitions(stru
+ 	}
+ #endif
+ 	for ( ; i<nrparts; i++) {
++		if (max_offset < buf[i].flash_base + buf[i].size)
++			max_offset = buf[i].flash_base + buf[i].size;
+ 		parts[i].size = fl->img->size;
+ 		parts[i].offset = fl->img->flash_base;
+ 		parts[i].name = names;
+@@ -298,6 +304,13 @@ static int parse_redboot_partitions(stru
+ 		fl = fl->next;
+ 		kfree(tmp_fl);
+ 	}
++	if (master->size - max_offset >= master->erasesize) {
++		parts[nrparts].size = master->size - max_offset;
++		parts[nrparts].offset = max_offset;
++		parts[nrparts].name = names;
++		strcpy(names, BOARD_CONFIG_PART);
++		nrparts++;
++	}
+ 	ret = nrparts;
+ 	*pparts = parts;
+  out:

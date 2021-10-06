@@ -1,4 +1,3 @@
-#!/bin/sh
 # Shell script compatibility wrappers for /sbin/uci
 #
 # Copyright (C) 2008-2010  OpenWrt.org

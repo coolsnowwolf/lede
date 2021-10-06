@@ -65,7 +65,6 @@ typedef struct image_info {
 } image_info_t;
 
 static image_info_t im;
-static int debug = 0;
 static int zero_part_baseaddr = 0;
 
 static void write_header(void* mem, const char* version)

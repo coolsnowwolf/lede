@@ -88,7 +88,7 @@ static int mt7621_gsw_config(struct fe_priv *priv)
 	return 0;
 }
 
-static void mt7621_fe_reset(void)
+static void mt7621_fe_reset(struct fe_priv *priv)
 {
 	fe_reset(MT7621_RESET_FE);
 }
@@ -143,8 +143,7 @@ static void mt7621_init_data(struct fe_soc_data *data,
 
 	netdev->hw_features = NETIF_F_IP_CSUM | NETIF_F_RXCSUM |
 		NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_HW_VLAN_CTAG_RX |
-		NETIF_F_SG | NETIF_F_TSO |
-		NETIF_F_TSO6 | NETIF_F_IPV6_CSUM |
+		NETIF_F_SG | NETIF_F_IPV6_CSUM |
 		NETIF_F_TSO_MANGLEID;
 }
 

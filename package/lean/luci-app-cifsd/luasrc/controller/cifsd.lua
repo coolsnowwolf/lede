@@ -7,11 +7,6 @@ function index()
 		return
 	end
 	
-	entry({"admin","nas"},firstchild(),"NAS",44).dependent=false
-
-	local page
-
-	page = entry({"admin", "nas", "cifsd"}, cbi("cifsd"), _("Network Shares"))
-	page.dependent = true
+	entry({"admin", "nas"}, firstchild(),"NAS", 44).dependent = false
+	entry({"admin", "nas", "cifsd"}, cbi("cifsd"), _("Network Shares")).dependent = true
 end
-

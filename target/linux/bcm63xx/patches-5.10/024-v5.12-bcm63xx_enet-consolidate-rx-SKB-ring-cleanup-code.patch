@@ -1,0 +1,142 @@
+From 3d0b72654b0c8304424503e7560ee8635dd56340 Mon Sep 17 00:00:00 2001
+From: Sieng Piaw Liew <liew.s.piaw@gmail.com>
+Date: Wed, 6 Jan 2021 22:42:06 +0800
+Subject: [PATCH 5/7] bcm63xx_enet: consolidate rx SKB ring cleanup code
+
+The rx SKB ring use the same code for cleanup at various points.
+Combine them into a function to reduce lines of code.
+
+Signed-off-by: Sieng Piaw Liew <liew.s.piaw@gmail.com>
+Acked-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/broadcom/bcm63xx_enet.c | 72 ++++++--------------
+ 1 file changed, 22 insertions(+), 50 deletions(-)
+
+--- a/drivers/net/ethernet/broadcom/bcm63xx_enet.c
++++ b/drivers/net/ethernet/broadcom/bcm63xx_enet.c
+@@ -860,6 +860,24 @@ static void bcm_enet_adjust_link(struct
+ 		priv->pause_tx ? "tx" : "off");
+ }
+ 
++static void bcm_enet_free_rx_skb_ring(struct device *kdev, struct bcm_enet_priv *priv)
++{
++	int i;
++
++	for (i = 0; i < priv->rx_ring_size; i++) {
++		struct bcm_enet_desc *desc;
++
++		if (!priv->rx_skb[i])
++			continue;
++
++		desc = &priv->rx_desc_cpu[i];
++		dma_unmap_single(kdev, desc->address, priv->rx_skb_size,
++				 DMA_FROM_DEVICE);
++		kfree_skb(priv->rx_skb[i]);
++	}
++	kfree(priv->rx_skb);
++}
++
+ /*
+  * open callback, allocate dma rings & buffers and start rx operation
+  */
+@@ -1084,18 +1102,7 @@ static int bcm_enet_open(struct net_devi
+ 	return 0;
+ 
+ out:
+-	for (i = 0; i < priv->rx_ring_size; i++) {
+-		struct bcm_enet_desc *desc;
+-
+-		if (!priv->rx_skb[i])
+-			continue;
+-
+-		desc = &priv->rx_desc_cpu[i];
+-		dma_unmap_single(kdev, desc->address, priv->rx_skb_size,
+-				 DMA_FROM_DEVICE);
+-		kfree_skb(priv->rx_skb[i]);
+-	}
+-	kfree(priv->rx_skb);
++	bcm_enet_free_rx_skb_ring(kdev, priv);
+ 
+ out_free_tx_skb:
+ 	kfree(priv->tx_skb);
+@@ -1174,7 +1181,6 @@ static int bcm_enet_stop(struct net_devi
+ {
+ 	struct bcm_enet_priv *priv;
+ 	struct device *kdev;
+-	int i;
+ 
+ 	priv = netdev_priv(dev);
+ 	kdev = &priv->pdev->dev;
+@@ -1203,20 +1209,9 @@ static int bcm_enet_stop(struct net_devi
+ 	bcm_enet_tx_reclaim(dev, 1);
+ 
+ 	/* free the rx skb ring */
+-	for (i = 0; i < priv->rx_ring_size; i++) {
+-		struct bcm_enet_desc *desc;
+-
+-		if (!priv->rx_skb[i])
+-			continue;
+-
+-		desc = &priv->rx_desc_cpu[i];
+-		dma_unmap_single(kdev, desc->address, priv->rx_skb_size,
+-				 DMA_FROM_DEVICE);
+-		kfree_skb(priv->rx_skb[i]);
+-	}
++	bcm_enet_free_rx_skb_ring(kdev, priv);
+ 
+ 	/* free remaining allocated memory */
+-	kfree(priv->rx_skb);
+ 	kfree(priv->tx_skb);
+ 	dma_free_coherent(kdev, priv->rx_desc_alloc_size,
+ 			  priv->rx_desc_cpu, priv->rx_desc_dma);
+@@ -2303,18 +2298,7 @@ static int bcm_enetsw_open(struct net_de
+ 	return 0;
+ 
+ out:
+-	for (i = 0; i < priv->rx_ring_size; i++) {
+-		struct bcm_enet_desc *desc;
+-
+-		if (!priv->rx_skb[i])
+-			continue;
+-
+-		desc = &priv->rx_desc_cpu[i];
+-		dma_unmap_single(kdev, desc->address, priv->rx_skb_size,
+-				 DMA_FROM_DEVICE);
+-		kfree_skb(priv->rx_skb[i]);
+-	}
+-	kfree(priv->rx_skb);
++	bcm_enet_free_rx_skb_ring(kdev, priv);
+ 
+ out_free_tx_skb:
+ 	kfree(priv->tx_skb);
+@@ -2343,7 +2327,6 @@ static int bcm_enetsw_stop(struct net_de
+ {
+ 	struct bcm_enet_priv *priv;
+ 	struct device *kdev;
+-	int i;
+ 
+ 	priv = netdev_priv(dev);
+ 	kdev = &priv->pdev->dev;
+@@ -2366,20 +2349,9 @@ static int bcm_enetsw_stop(struct net_de
+ 	bcm_enet_tx_reclaim(dev, 1);
+ 
+ 	/* free the rx skb ring */
+-	for (i = 0; i < priv->rx_ring_size; i++) {
+-		struct bcm_enet_desc *desc;
+-
+-		if (!priv->rx_skb[i])
+-			continue;
+-
+-		desc = &priv->rx_desc_cpu[i];
+-		dma_unmap_single(kdev, desc->address, priv->rx_skb_size,
+-				 DMA_FROM_DEVICE);
+-		kfree_skb(priv->rx_skb[i]);
+-	}
++	bcm_enet_free_rx_skb_ring(kdev, priv);
+ 
+ 	/* free remaining allocated memory */
+-	kfree(priv->rx_skb);
+ 	kfree(priv->tx_skb);
+ 	dma_free_coherent(kdev, priv->rx_desc_alloc_size,
+ 			  priv->rx_desc_cpu, priv->rx_desc_dma);

@@ -65,7 +65,7 @@ define KernelPackage/ata-ahci-platform
     $(LINUX_DIR)/drivers/ata/ahci_platform.ko \
     $(LINUX_DIR)/drivers/ata/libahci_platform.ko
   AUTOLOAD:=$(call AutoLoad,40,libahci libahci_platform ahci_platform,1)
-  $(call AddDepends/ata,@TARGET_ipq806x||TARGET_sunxi)
+  $(call AddDepends/ata,@TARGET_ipq806x||TARGET_layerscape||TARGET_sunxi)
 endef
 
 define KernelPackage/ata-ahci-platform/description
@@ -218,7 +218,7 @@ $(eval $(call KernelPackage,dax))
 define KernelPackage/dm
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Device Mapper
-  DEPENDS:=+kmod-crypto-manager +kmod-dax
+  DEPENDS:=+kmod-crypto-manager +kmod-dax +KERNEL_KEYS:kmod-keys-encrypted
   # All the "=n" are unnecessary, they're only there
   # to stop the config from asking the question.
   # MIRROR is M because I've needed it for pvmove.
@@ -268,6 +268,32 @@ define KernelPackage/dm-raid/description
 endef
 
 $(eval $(call KernelPackage,dm-raid))
+
+
+define KernelPackage/iscsi-initiator
+  SUBMENU:=$(BLOCK_MENU)
+  TITLE:=iSCSI Initiator over TCP/IP
+  DEPENDS:=+kmod-scsi-core +kmod-crypto-hash
+  KCONFIG:= \
+	CONFIG_INET \
+	CONFIG_SCSI_LOWLEVEL=y \
+	CONFIG_ISCSI_TCP \
+	CONFIG_SCSI_ISCSI_ATTRS=y
+  FILES:= \
+	$(LINUX_DIR)/drivers/scsi/iscsi_tcp.ko \
+	$(LINUX_DIR)/drivers/scsi/libiscsi.ko \
+	$(LINUX_DIR)/drivers/scsi/libiscsi_tcp.ko \
+	$(LINUX_DIR)/drivers/scsi/scsi_transport_iscsi.ko
+  AUTOLOAD:=$(call AutoProbe,libiscsi libiscsi_tcp scsi_transport_iscsi iscsi_tcp)
+endef
+
+define KernelPackage/iscsi-initiator/description
+The iSCSI Driver provides a host with the ability to access storage through an
+IP network. The driver uses the iSCSI protocol to transport SCSI requests and
+responses over a TCP/IP network between the host (the "initiator") and "targets".
+endef
+
+$(eval $(call KernelPackage,iscsi-initiator))
 
 
 define KernelPackage/md-mod
@@ -511,16 +537,24 @@ endef
 $(eval $(call KernelPackage,scsi-generic))
 
 
+define KernelPackage/cdrom
+  TITLE:=Kernel library module for CD / DVD drives
+  KCONFIG:=CONFIG_CDROM
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/cdrom/cdrom.ko
+endef
+
+$(eval $(call KernelPackage,cdrom))
+
+
 define KernelPackage/scsi-cdrom
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Kernel support for CD / DVD drives
-  DEPENDS:=+kmod-scsi-core
+  DEPENDS:=+kmod-scsi-core +kmod-cdrom
   KCONFIG:= \
     CONFIG_BLK_DEV_SR \
     CONFIG_BLK_DEV_SR_VENDOR=n
-  FILES:= \
-    $(LINUX_DIR)/drivers/cdrom/cdrom.ko \
-    $(LINUX_DIR)/drivers/scsi/sr_mod.ko
+  FILES:=$(LINUX_DIR)/drivers/scsi/sr_mod.ko
   AUTOLOAD:=$(call AutoLoad,45,sr_mod)
 endef
 
@@ -539,3 +573,17 @@ define KernelPackage/scsi-tape
 endef
 
 $(eval $(call KernelPackage,scsi-tape))
+
+define KernelPackage/iosched-bfq
+  SUBMENU:=$(BLOCK_MENU)
+  TITLE:=Kernel support for BFQ I/O scheduler
+  KCONFIG:= \
+    CONFIG_IOSCHED_BFQ \
+    CONFIG_BFQ_GROUP_IOSCHED=y \
+    CONFIG_BFQ_CGROUP_DEBUG=n
+  FILES:= \
+    $(LINUX_DIR)/block/bfq.ko
+  AUTOLOAD:=$(call AutoLoad,10,bfq)
+endef
+
+$(eval $(call KernelPackage,iosched-bfq))

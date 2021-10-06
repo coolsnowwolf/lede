@@ -1,26 +1,29 @@
+#
+# Copyright (C) 2021 ImmortalWrt
+# <https://immortalwrt.org>
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=dns2socks
 PKG_VERSION:=2.1
-PKG_RELEASE:=20200218
+PKG_RELEASE:=2
 
 PKG_SOURCE:=SourceCode.zip
-PKG_SOURCE_SUBDIR:=DNS2SOCKS
 PKG_SOURCE_URL:=@SF/dns2socks
-PKG_MD5SUM:=ec82de936ad004cc940502cd2a1bff5b
+PKG_SOURCE_DATE:=2020-02-18
+PKG_HASH:=406b5003523577d39da66767adfe54f7af9b701374363729386f32f6a3a995f4
 
 PKG_MAINTAINER:=ghostmaker
 PKG_LICENSE:=BSD-3-Clause
-
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
-
-PKG_INSTALL:=1
-PKG_USE_MIPS16:=0
-PKG_BUILD_PARALLEL:=1
+PKG_LICENSE_FILE:=LICENSE
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/dns2socks/Default
+define Package/dns2socks
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=IP Addresses and Names
@@ -30,35 +33,25 @@ define Package/dns2socks/Default
   DEPENDS:=+libpthread
 endef
 
-define Package/dns2socks
-	$(call Package/dns2socks/Default)
-endef
-
 define Package/dns2socks/description
   This is a utility to resolve DNS requests via a SOCKS5 tunnel and caches the answers.
 endef
 
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	unzip $(DL_DIR)/$(PKG_SOURCE) -d $(PKG_BUILD_DIR)
-endef
+UNZIP_CMD:=unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_SOURCE)
 
 define Build/Compile
 	$(TARGET_CC) \
 	$(TARGET_CFLAGS) \
 	$(TARGET_CPPFLAGS) \
 	$(FPIC) \
-	-o $(PKG_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)/$(PKG_NAME) \
-	$(PKG_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)/DNS2SOCKS.c \
+	-o $(PKG_BUILD_DIR)/DNS2SOCKS/dns2socks \
+	$(PKG_BUILD_DIR)/DNS2SOCKS/DNS2SOCKS.c \
 	$(TARGET_LDFLAGS) -pthread
-endef
-
-define Build/Install
 endef
 
 define Package/dns2socks/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(PKG_SOURCE_SUBDIR)/$(PKG_NAME) $(1)/usr/bin/dns2socks
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/DNS2SOCKS/dns2socks $(1)/usr/bin/dns2socks
 endef
 
 $(eval $(call BuildPackage,dns2socks))

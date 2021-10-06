@@ -255,6 +255,6 @@ enum mtk_foe_cpu_reason {
 #define MTK_PPE_TBL_SZ			\
 			(MTK_PPE_ENTRY_CNT * sizeof(struct mtk_foe_entry))
 
-int mtk_ppe_debugfs_init(struct mtk_eth *eth);
+int ra_ppe_debugfs_init(struct mtk_eth *eth);
 
 

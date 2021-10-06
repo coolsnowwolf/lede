@@ -5,9 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2020.07
+PKG_VERSION:=2021.07
+PKG_RELEASE:=1
 
-PKG_HASH:=c1f5bf9ee6bb6e648edbf19ce2ca9452f614b08a9f886f1a566aa42e8cf05f6a
+PKG_HASH:=312b7eeae44581d1362c3a3f02c28d806647756c82ba8c72241c7cdbe68ba77e
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -23,19 +24,76 @@ endef
 
 # RK3328 boards
 
+define U-Boot/nanopi-r2c-rk3328
+  BUILD_SUBTARGET:=armv8
+  NAME:=NanoPi R2C
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r2c
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r2c-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
+  OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
+endef
+
 define U-Boot/nanopi-r2s-rk3328
   BUILD_SUBTARGET:=armv8
   NAME:=NanoPi R2S
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r2s
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r2s-rk3328:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
-  ATF:=rk3328_bl31.elf
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r2s-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
   OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
 endef
 
+define U-Boot/orangepi-r1-plus-rk3328
+  BUILD_SUBTARGET:=armv8
+  NAME:=Orange Pi R1 Plus
+  BUILD_DEVICES:= \
+    xunlong_orangepi-r1-plus
+  DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
+  OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
+endef
+
+define U-Boot/doornet1-rk3328
+  BUILD_SUBTARGET:=armv8
+  NAME:=DoorNet1
+  BUILD_DEVICES:= \
+    embedfire_doornet1
+  DEPENDS:=+PACKAGE_u-boot-doornet1-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
+  OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
+endef
 
 # RK3399 boards
+
+define U-Boot/nanopi-r4s-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=NanoPi R4S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r4s
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r4s-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
+
+define U-Boot/rock-pi-4-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=Rock Pi 4
+  BUILD_DEVICES:= \
+    radxa_rock-pi-4
+  DEPENDS:=+PACKAGE_u-boot-rock-pi-4-rk3399:arm-trusted-firmware-rockchip
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
+  ATF:=rk3399_bl31.elf
+endef
 
 define U-Boot/rockpro64-rk3399
   BUILD_SUBTARGET:=armv8
@@ -48,8 +106,13 @@ define U-Boot/rockpro64-rk3399
 endef
 
 UBOOT_TARGETS := \
+  nanopi-r4s-rk3399 \
+  rock-pi-4-rk3399 \
   rockpro64-rk3399 \
-  nanopi-r2s-rk3328
+  nanopi-r2c-rk3328 \
+  nanopi-r2s-rk3328 \
+  orangepi-r1-plus-rk3328 \
+  doornet1-rk3328
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
@@ -63,8 +126,9 @@ ifneq ($(OF_PLATDATA),)
 	mkdir -p $(PKG_BUILD_DIR)/tpl/dts
 	mkdir -p $(PKG_BUILD_DIR)/include/generated
 
-	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-platdata.c $(PKG_BUILD_DIR)/tpl/dts/dt-platdata.c
+	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-plat.c $(PKG_BUILD_DIR)/tpl/dts/dt-plat.c
 	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-structs-gen.h $(PKG_BUILD_DIR)/include/generated/dt-structs-gen.h
+	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-decl.h $(PKG_BUILD_DIR)/include/generated/dt-decl.h
 endif
 
 	$(SED) 's#CONFIG_MKIMAGE_DTC_PATH=.*#CONFIG_MKIMAGE_DTC_PATH="$(PKG_BUILD_DIR)/scripts/dtc/dtc"#g' $(PKG_BUILD_DIR)/.config
@@ -73,8 +137,13 @@ endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
+ifneq ($(USE_RKBIN),)
+	$(STAGING_DIR_IMAGE)/loaderimage --pack --uboot $(PKG_BUILD_DIR)/u-boot-dtb.bin $(PKG_BUILD_DIR)/uboot.img 0x200000
+	$(CP) $(PKG_BUILD_DIR)/uboot.img $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-uboot.img
+else
 	$(CP) $(PKG_BUILD_DIR)/idbloader.img $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-idbloader.img
 	$(CP) $(PKG_BUILD_DIR)/u-boot.itb $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-u-boot.itb
+endif
 endef
 
 define Package/u-boot/install/default

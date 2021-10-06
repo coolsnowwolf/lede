@@ -1,0 +1,273 @@
+--- a/drivers/clk/clk-oxnas.c
++++ b/drivers/clk/clk-oxnas.c
+@@ -5,19 +5,42 @@
+  * Copyright (C) 2016 Neil Armstrong <narmstrong@baylibre.com>
+  */
+ 
++#include <linux/clk.h>
++#include <linux/clkdev.h>
+ #include <linux/clk-provider.h>
+ #include <linux/kernel.h>
+ #include <linux/init.h>
++#include <linux/delay.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/stringify.h>
+ #include <linux/regmap.h>
+ #include <linux/mfd/syscon.h>
++#include <linux/reset.h>
+ 
+ #include <dt-bindings/clock/oxsemi,ox810se.h>
+ #include <dt-bindings/clock/oxsemi,ox820.h>
+ 
++#define REF300_DIV_INT_SHIFT		8
++#define REF300_DIV_FRAC_SHIFT		0
++#define REF300_DIV_INT(val)		((val) << REF300_DIV_INT_SHIFT)
++#define REF300_DIV_FRAC(val)		((val) << REF300_DIV_FRAC_SHIFT)
++
++#define PLLB_BYPASS			1
++#define PLLB_ENSAT			3
++#define PLLB_OUTDIV			4
++#define PLLB_REFDIV			8
++#define PLLB_DIV_INT_SHIFT		8
++#define PLLB_DIV_FRAC_SHIFT		0
++#define PLLB_DIV_INT(val)		((val) << PLLB_DIV_INT_SHIFT)
++#define PLLB_DIV_FRAC(val)		((val) << PLLB_DIV_FRAC_SHIFT)
++
++#define PLLA_REFDIV_MASK		0x3F
++#define PLLA_REFDIV_SHIFT		8
++#define PLLA_OUTDIV_MASK		0x7
++#define PLLA_OUTDIV_SHIFT		4
++
+ /* Standard regmap gate clocks */
+ struct clk_oxnas_gate {
+ 	struct clk_hw hw;
+@@ -36,6 +59,135 @@ struct oxnas_stdclk_data {
+ #define CLK_SET_REGOFFSET	0x2c
+ #define CLK_CLR_REGOFFSET	0x30
+ 
++#define PLLA_CTRL0_REGOFFSET	0x1f0
++#define PLLA_CTRL1_REGOFFSET	0x1f4
++#define PLLB_CTRL0_REGOFFSET	0x1001f0
++#define MHZ (1000 * 1000)
++
++struct clk_oxnas_pll {
++	struct clk_hw hw;
++	struct device_node *devnode;
++	struct reset_control *rstc;
++	struct regmap *syscon;
++};
++
++#define to_clk_oxnas_pll(_hw) container_of(_hw, struct clk_oxnas_pll, hw)
++
++static unsigned long plla_clk_recalc_rate(struct clk_hw *hw,
++	unsigned long parent_rate)
++{
++	struct clk_oxnas_pll *plla = to_clk_oxnas_pll(hw);
++	unsigned long fin = parent_rate;
++	unsigned long refdiv, outdiv;
++	unsigned int pll0, fbdiv;
++
++	BUG_ON(regmap_read(plla->syscon, PLLA_CTRL0_REGOFFSET, &pll0));
++
++	refdiv = (pll0 >> PLLA_REFDIV_SHIFT) & PLLA_REFDIV_MASK;
++	refdiv += 1;
++	outdiv = (pll0 >> PLLA_OUTDIV_SHIFT) & PLLA_OUTDIV_MASK;
++	outdiv += 1;
++
++	BUG_ON(regmap_read(plla->syscon, PLLA_CTRL1_REGOFFSET, &fbdiv));
++	/* seems we will not be here when pll is bypassed, so ignore this
++	 * case */
++
++	return fin / MHZ * fbdiv / (refdiv * outdiv) / 32768 * MHZ;
++}
++
++static const char *pll_clk_parents[] = {
++	"oscillator",
++};
++
++static struct clk_ops plla_ops = {
++	.recalc_rate = plla_clk_recalc_rate,
++};
++
++static struct clk_init_data clk_plla_init = {
++	.name = "plla",
++	.ops = &plla_ops,
++	.parent_names = pll_clk_parents,
++	.num_parents = ARRAY_SIZE(pll_clk_parents),
++};
++
++static int pllb_clk_is_prepared(struct clk_hw *hw)
++{
++	struct clk_oxnas_pll *pllb = to_clk_oxnas_pll(hw);
++
++	return !!pllb->rstc;
++}
++
++static int pllb_clk_prepare(struct clk_hw *hw)
++{
++	struct clk_oxnas_pll *pllb = to_clk_oxnas_pll(hw);
++
++	pllb->rstc = of_reset_control_get(pllb->devnode, NULL);
++
++	return IS_ERR(pllb->rstc) ? PTR_ERR(pllb->rstc) : 0;
++}
++
++static void pllb_clk_unprepare(struct clk_hw *hw)
++{
++	struct clk_oxnas_pll *pllb = to_clk_oxnas_pll(hw);
++
++	BUG_ON(IS_ERR(pllb->rstc));
++
++	reset_control_put(pllb->rstc);
++	pllb->rstc = NULL;
++}
++
++static int pllb_clk_enable(struct clk_hw *hw)
++{
++	struct clk_oxnas_pll *pllb = to_clk_oxnas_pll(hw);
++
++	BUG_ON(IS_ERR(pllb->rstc));
++
++	/* put PLL into bypass */
++	regmap_update_bits(pllb->syscon, PLLB_CTRL0_REGOFFSET, BIT(PLLB_BYPASS), BIT(PLLB_BYPASS));
++	wmb();
++	udelay(10);
++	reset_control_assert(pllb->rstc);
++	udelay(10);
++	/* set PLL B control information */
++	regmap_write_bits(pllb->syscon, PLLB_CTRL0_REGOFFSET, 0xffff,
++			  (1 << PLLB_ENSAT) | (1 << PLLB_OUTDIV) | (2 << PLLB_REFDIV));
++	reset_control_deassert(pllb->rstc);
++	udelay(100);
++	regmap_update_bits(pllb->syscon, PLLB_CTRL0_REGOFFSET, BIT(PLLB_BYPASS), 0);
++
++	return 0;
++}
++
++static void pllb_clk_disable(struct clk_hw *hw)
++{
++	struct clk_oxnas_pll *pllb = to_clk_oxnas_pll(hw);
++
++	BUG_ON(IS_ERR(pllb->rstc));
++
++	/* put PLL into bypass */
++	regmap_update_bits(pllb->syscon, PLLB_CTRL0_REGOFFSET, BIT(PLLB_BYPASS), BIT(PLLB_BYPASS));
++
++	wmb();
++	udelay(10);
++
++	reset_control_assert(pllb->rstc);
++}
++
++static struct clk_ops pllb_ops = {
++	.prepare = pllb_clk_prepare,
++	.unprepare = pllb_clk_unprepare,
++	.is_prepared = pllb_clk_is_prepared,
++	.enable = pllb_clk_enable,
++	.disable = pllb_clk_disable,
++};
++
++static struct clk_init_data clk_pllb_init = {
++	.name = "pllb",
++	.ops = &pllb_ops,
++	.parent_names = pll_clk_parents,
++	.num_parents = ARRAY_SIZE(pll_clk_parents),
++};
++
+ static inline struct clk_oxnas_gate *to_clk_oxnas_gate(struct clk_hw *hw)
+ {
+ 	return container_of(hw, struct clk_oxnas_gate, hw);
+@@ -249,3 +401,42 @@ static struct platform_driver oxnas_stdc
+ 	},
+ };
+ builtin_platform_driver(oxnas_stdclk_driver);
++
++void __init oxnas_init_plla(struct device_node *np)
++{
++	struct clk *clk;
++	struct clk_oxnas_pll *plla;
++
++	plla = kmalloc(sizeof(*plla), GFP_KERNEL);
++	BUG_ON(!plla);
++
++	plla->syscon = syscon_node_to_regmap(of_get_parent(np));
++	plla->hw.init = &clk_plla_init;
++	plla->devnode = np;
++	plla->rstc = NULL;
++	clk = clk_register(NULL, &plla->hw);
++	BUG_ON(IS_ERR(clk));
++	/* mark it as enabled */
++	clk_prepare_enable(clk);
++	of_clk_add_provider(np, of_clk_src_simple_get, clk);
++}
++CLK_OF_DECLARE(oxnas_plla, "plxtech,nas782x-plla", oxnas_init_plla);
++
++void __init oxnas_init_pllb(struct device_node *np)
++{
++	struct clk *clk;
++	struct clk_oxnas_pll *pllb;
++
++	pllb = kmalloc(sizeof(*pllb), GFP_KERNEL);
++	BUG_ON(!pllb);
++
++	pllb->syscon = syscon_node_to_regmap(of_get_parent(np));
++	pllb->hw.init = &clk_pllb_init;
++	pllb->devnode = np;
++	pllb->rstc = NULL;
++
++	clk = clk_register(NULL, &pllb->hw);
++	BUG_ON(IS_ERR(clk));
++	of_clk_add_provider(np, of_clk_src_simple_get, clk);
++}
++CLK_OF_DECLARE(oxnas_pllb, "plxtech,nas782x-pllb", oxnas_init_pllb);
+--- a/arch/arm/boot/dts/ox820.dtsi
++++ b/arch/arm/boot/dts/ox820.dtsi
+@@ -61,12 +61,6 @@
+ 			clocks = <&osc>;
+ 		};
+ 
+-		plla: plla {
+-			compatible = "fixed-clock";
+-			#clock-cells = <0>;
+-			clock-frequency = <850000000>;
+-		};
+-
+ 		armclk: armclk {
+ 			compatible = "fixed-factor-clock";
+ 			#clock-cells = <0>;
+@@ -266,6 +260,19 @@
+ 					compatible = "oxsemi,ox820-stdclk", "oxsemi,ox810se-stdclk";
+ 					#clock-cells = <1>;
+ 				};
++
++				plla: plla {
++					compatible = "plxtech,nas782x-plla";
++					#clock-cells = <0>;
++					clocks = <&osc>;
++				};
++
++				pllb: pllb {
++					compatible = "plxtech,nas782x-pllb";
++					#clock-cells = <0>;
++					clocks = <&osc>;
++					resets = <&reset RESET_PLLB>;
++				};
+ 			};
+ 		};
+ 
+@@ -287,6 +294,13 @@
+ 				clocks = <&armclk>;
+ 			};
+ 
++			watchdog@620 {
++				compatible = "mpcore_wdt";
++				reg = <0x620 0x20>;
++				interrupts = <GIC_PPI 14 (GIC_CPU_MASK_RAW(3)|IRQ_TYPE_LEVEL_HIGH)>;
++				clocks = <&armclk>;
++			};
++
+ 			gic: gic@1000 {
+ 				compatible = "arm,arm11mp-gic";
+ 				interrupt-controller;

@@ -1,13 +1,10 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2016 LEDE project
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 define Profile/Default
   NAME:=Default Profile
-  PACKAGES:=kmod-b43 wpad-basic
+  PACKAGES:=kmod-b43 wpad-basic-wolfssl
   PRIORITY:=1
 endef
 

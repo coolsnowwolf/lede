@@ -161,8 +161,8 @@ zyxel_do_upgrade() {
 
 	tar Oxf $tar_file ${board_dir}/kernel | mtd write - kernel
 
-	if [ -n "$UPGRADE_BACKUP" ]; then
-		tar Oxf $tar_file ${board_dir}/root | mtd -j "$UPGRADE_BACKUP" write - rootfs
+	if [ "$SAVE_CONFIG" -eq 1 ]; then
+		tar Oxf $tar_file ${board_dir}/root | mtd -j "$CONF_TAR" write - rootfs
 	else
 		tar Oxf $tar_file ${board_dir}/root | mtd write - rootfs
 	fi
@@ -177,8 +177,10 @@ platform_do_upgrade() {
 	avm,fritzbox-7530 |\
 	avm,fritzrepeater-1200 |\
 	avm,fritzrepeater-3000 |\
+	buffalo,wtr-m2133hp |\
+	century,wr142ac-nand |\
 	cilab,meshpoint-one |\
-	engenius,eap2200 |\
+	hiwifi,c526a |\
 	mobipromo,cm520-79f |\
 	qxwlan,e2600ac-c2)
 		nand_do_upgrade "$1"
@@ -215,8 +217,8 @@ platform_do_upgrade() {
 		askey_do_upgrade "$1"
 		;;
 	compex,wpj419|\
-	p2w,r619ac-128m|\
-	p2w,r619ac)
+	p2w,r619ac|\
+	p2w,r619ac-128m)
 		nand_do_upgrade "$1"
 		;;
 	linksys,ea6350v3 |\
@@ -237,6 +239,14 @@ platform_do_upgrade() {
 		;;
 	*)
 		default_do_upgrade "$1"
+		;;
+	esac
+}
+
+platform_nand_pre_upgrade() {
+	case "$(board_name)" in
+	meraki,mr33)
+		CI_KERNPART="part.safe"
 		;;
 	esac
 }

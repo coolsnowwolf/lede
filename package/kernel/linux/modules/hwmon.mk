@@ -122,6 +122,22 @@ endef
 $(eval $(call KernelPackage,hwmon-drivetemp))
 
 
+define KernelPackage/hwmon-emc2305
+  TITLE:=SMSC EMC2305 fan support
+  KCONFIG:=CONFIG_SENSORS_EMC2305
+  FILES:= \
+  $(LINUX_DIR)/drivers/hwmon/emc2305.ko
+  AUTOLOAD:=$(call AutoProbe,emc2305)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
+endef
+
+define KernelPackage/hwmon-emc2305/description
+ SMSC SMSC EMC2301/2/3/5 fan controllers support
+endef
+
+$(eval $(call KernelPackage,hwmon-emc2305))
+
+
 define KernelPackage/hwmon-gpiofan
   TITLE:=Generic GPIO FAN support
   KCONFIG:=CONFIG_SENSORS_GPIO_FAN
@@ -409,7 +425,9 @@ $(eval $(call KernelPackage,hwmon-pwmfan))
 
 define KernelPackage/hwmon-sch5627
   TITLE:=SMSC SCH5627 monitoring support
-  KCONFIG:=CONFIG_SENSORS_SCH5627
+  KCONFIG:= \
+	CONFIG_SENSORS_SCH5627 \
+	CONFIG_WATCHDOG_CORE=y
   FILES:= \
 	$(LINUX_DIR)/drivers/hwmon/sch5627.ko \
 	$(LINUX_DIR)/drivers/hwmon/sch56xx-common.ko

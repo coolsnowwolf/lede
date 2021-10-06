@@ -1,0 +1,281 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 26 Aug 2020 17:02:30 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: implement dynamic interrupt
+ moderation
+
+Reduces the number of interrupts under load
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/Kconfig
++++ b/drivers/net/ethernet/mediatek/Kconfig
+@@ -10,6 +10,7 @@ if NET_VENDOR_MEDIATEK
+ config NET_MEDIATEK_SOC
+ 	tristate "MediaTek SoC Gigabit Ethernet support"
+ 	select PHYLINK
++	select DIMLIB
+ 	---help---
+ 	  This driver supports the gigabit ethernet MACs in the
+ 	  MediaTek SoC family.
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1249,12 +1249,13 @@ static void mtk_update_rx_cpu_idx(struct
+ static int mtk_poll_rx(struct napi_struct *napi, int budget,
+ 		       struct mtk_eth *eth)
+ {
++	struct dim_sample dim_sample = {};
+ 	struct mtk_rx_ring *ring;
+ 	int idx;
+ 	struct sk_buff *skb;
+ 	u8 *data, *new_data;
+ 	struct mtk_rx_dma *rxd, trxd;
+-	int done = 0;
++	int done = 0, bytes = 0;
+ 
+ 	while (done < budget) {
+ 		struct net_device *netdev;
+@@ -1328,6 +1329,7 @@ static int mtk_poll_rx(struct napi_struc
+ 		else
+ 			skb_checksum_none_assert(skb);
+ 		skb->protocol = eth_type_trans(skb, netdev);
++		bytes += pktlen;
+ 
+ 		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX &&
+ 		    (trxd.rxd2 & RX_DMA_VTAG))
+@@ -1359,6 +1361,12 @@ rx_done:
+ 		mtk_update_rx_cpu_idx(eth);
+ 	}
+ 
++	eth->rx_packets += done;
++	eth->rx_bytes += bytes;
++	dim_update_sample(eth->rx_events, eth->rx_packets, eth->rx_bytes,
++			  &dim_sample);
++	net_dim(&eth->rx_dim, dim_sample);
++
+ 	return done;
+ }
+ 
+@@ -1451,6 +1459,7 @@ static int mtk_poll_tx_pdma(struct mtk_e
+ static int mtk_poll_tx(struct mtk_eth *eth, int budget)
+ {
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
++	struct dim_sample dim_sample = {};
+ 	unsigned int done[MTK_MAX_DEVS];
+ 	unsigned int bytes[MTK_MAX_DEVS];
+ 	int total = 0, i;
+@@ -1468,8 +1477,14 @@ static int mtk_poll_tx(struct mtk_eth *e
+ 			continue;
+ 		netdev_completed_queue(eth->netdev[i], done[i], bytes[i]);
+ 		total += done[i];
++		eth->tx_packets += done[i];
++		eth->tx_bytes += bytes[i];
+ 	}
+ 
++	dim_update_sample(eth->tx_events, eth->tx_packets, eth->tx_bytes,
++			  &dim_sample);
++	net_dim(&eth->tx_dim, dim_sample);
++
+ 	if (mtk_queue_stopped(eth) &&
+ 	    (atomic_read(&ring->free_count) > ring->thresh))
+ 		mtk_wake_queue(eth);
+@@ -2144,6 +2159,7 @@ static irqreturn_t mtk_handle_irq_rx(int
+ {
+ 	struct mtk_eth *eth = _eth;
+ 
++	eth->rx_events++;
+ 	if (likely(napi_schedule_prep(&eth->rx_napi))) {
+ 		__napi_schedule(&eth->rx_napi);
+ 		mtk_rx_irq_disable(eth, MTK_RX_DONE_INT);
+@@ -2156,6 +2172,7 @@ static irqreturn_t mtk_handle_irq_tx(int
+ {
+ 	struct mtk_eth *eth = _eth;
+ 
++	eth->tx_events++;
+ 	if (likely(napi_schedule_prep(&eth->tx_napi))) {
+ 		__napi_schedule(&eth->tx_napi);
+ 		mtk_tx_irq_disable(eth, MTK_TX_DONE_INT);
+@@ -2332,6 +2349,9 @@ static int mtk_stop(struct net_device *d
+ 	napi_disable(&eth->tx_napi);
+ 	napi_disable(&eth->rx_napi);
+ 
++	cancel_work_sync(&eth->rx_dim.work);
++	cancel_work_sync(&eth->tx_dim.work);
++
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+ 		mtk_stop_dma(eth, MTK_QDMA_GLO_CFG);
+ 	mtk_stop_dma(eth, MTK_PDMA_GLO_CFG);
+@@ -2381,6 +2401,64 @@ err_disable_clks:
+ 	return ret;
+ }
+ 
++static void mtk_dim_rx(struct work_struct *work)
++{
++	struct dim *dim = container_of(work, struct dim, work);
++	struct mtk_eth *eth = container_of(dim, struct mtk_eth, rx_dim);
++	struct dim_cq_moder cur_profile;
++	u32 val, cur;
++
++	cur_profile = net_dim_get_rx_moderation(eth->rx_dim.mode,
++						dim->profile_ix);
++	spin_lock_bh(&eth->dim_lock);
++
++	val = mtk_r32(eth, MTK_PDMA_DELAY_INT);
++	val &= MTK_PDMA_DELAY_TX_MASK;
++	val |= MTK_PDMA_DELAY_RX_EN;
++
++	cur = min_t(u32, DIV_ROUND_UP(cur_profile.usec, 20), MTK_PDMA_DELAY_PTIME_MASK);
++	val |= cur << MTK_PDMA_DELAY_RX_PTIME_SHIFT;
++
++	cur = min_t(u32, cur_profile.pkts, MTK_PDMA_DELAY_PINT_MASK);
++	val |= cur << MTK_PDMA_DELAY_RX_PINT_SHIFT;
++
++	mtk_w32(eth, val, MTK_PDMA_DELAY_INT);
++	mtk_w32(eth, val, MTK_QDMA_DELAY_INT);
++
++	spin_unlock_bh(&eth->dim_lock);
++
++	dim->state = DIM_START_MEASURE;
++}
++
++static void mtk_dim_tx(struct work_struct *work)
++{
++	struct dim *dim = container_of(work, struct dim, work);
++	struct mtk_eth *eth = container_of(dim, struct mtk_eth, tx_dim);
++	struct dim_cq_moder cur_profile;
++	u32 val, cur;
++
++	cur_profile = net_dim_get_tx_moderation(eth->tx_dim.mode,
++						dim->profile_ix);
++	spin_lock_bh(&eth->dim_lock);
++
++	val = mtk_r32(eth, MTK_PDMA_DELAY_INT);
++	val &= MTK_PDMA_DELAY_RX_MASK;
++	val |= MTK_PDMA_DELAY_TX_EN;
++
++	cur = min_t(u32, DIV_ROUND_UP(cur_profile.usec, 20), MTK_PDMA_DELAY_PTIME_MASK);
++	val |= cur << MTK_PDMA_DELAY_TX_PTIME_SHIFT;
++
++	cur = min_t(u32, cur_profile.pkts, MTK_PDMA_DELAY_PINT_MASK);
++	val |= cur << MTK_PDMA_DELAY_TX_PINT_SHIFT;
++
++	mtk_w32(eth, val, MTK_PDMA_DELAY_INT);
++	mtk_w32(eth, val, MTK_QDMA_DELAY_INT);
++
++	spin_unlock_bh(&eth->dim_lock);
++
++	dim->state = DIM_START_MEASURE;
++}
++
+ static int mtk_hw_init(struct mtk_eth *eth)
+ {
+ 	int i, val, ret;
+@@ -2402,9 +2480,6 @@ static int mtk_hw_init(struct mtk_eth *e
+ 			goto err_disable_pm;
+ 		}
+ 
+-		/* enable interrupt delay for RX */
+-		mtk_w32(eth, MTK_PDMA_DELAY_RX_DELAY, MTK_PDMA_DELAY_INT);
+-
+ 		/* disable delay and normal interrupt */
+ 		mtk_tx_irq_disable(eth, ~0);
+ 		mtk_rx_irq_disable(eth, ~0);
+@@ -2443,11 +2518,10 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	/* Enable RX VLan Offloading */
+ 	mtk_w32(eth, 1, MTK_CDMP_EG_CTRL);
+ 
+-	/* enable interrupt delay for RX */
+-	mtk_w32(eth, MTK_PDMA_DELAY_RX_DELAY, MTK_PDMA_DELAY_INT);
++	mtk_dim_rx(&eth->rx_dim.work);
++	mtk_dim_tx(&eth->tx_dim.work);
+ 
+ 	/* disable delay and normal interrupt */
+-	mtk_w32(eth, 0, MTK_QDMA_DELAY_INT);
+ 	mtk_tx_irq_disable(eth, ~0);
+ 	mtk_rx_irq_disable(eth, ~0);
+ 
+@@ -2951,6 +3025,13 @@ static int mtk_probe(struct platform_dev
+ 	spin_lock_init(&eth->page_lock);
+ 	spin_lock_init(&eth->tx_irq_lock);
+ 	spin_lock_init(&eth->rx_irq_lock);
++	spin_lock_init(&eth->dim_lock);
++
++	eth->rx_dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
++	INIT_WORK(&eth->rx_dim.work, mtk_dim_rx);
++
++	eth->tx_dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_EQE;
++	INIT_WORK(&eth->tx_dim.work, mtk_dim_tx);
+ 
+ 	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628)) {
+ 		eth->ethsys = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -15,6 +15,7 @@
+ #include <linux/u64_stats_sync.h>
+ #include <linux/refcount.h>
+ #include <linux/phylink.h>
++#include <linux/dim.h>
+ 
+ #define MTK_QDMA_PAGE_SIZE	2048
+ #define	MTK_MAX_RX_LENGTH	1536
+@@ -131,13 +132,18 @@
+ 
+ /* PDMA Delay Interrupt Register */
+ #define MTK_PDMA_DELAY_INT		0xa0c
++#define MTK_PDMA_DELAY_RX_MASK		GENMASK(15, 0)
+ #define MTK_PDMA_DELAY_RX_EN		BIT(15)
+-#define MTK_PDMA_DELAY_RX_PINT		4
+ #define MTK_PDMA_DELAY_RX_PINT_SHIFT	8
+-#define MTK_PDMA_DELAY_RX_PTIME		4
+-#define MTK_PDMA_DELAY_RX_DELAY		\
+-	(MTK_PDMA_DELAY_RX_EN | MTK_PDMA_DELAY_RX_PTIME | \
+-	(MTK_PDMA_DELAY_RX_PINT << MTK_PDMA_DELAY_RX_PINT_SHIFT))
++#define MTK_PDMA_DELAY_RX_PTIME_SHIFT	0
++
++#define MTK_PDMA_DELAY_TX_MASK		GENMASK(31, 16)
++#define MTK_PDMA_DELAY_TX_EN		BIT(31)
++#define MTK_PDMA_DELAY_TX_PINT_SHIFT	24
++#define MTK_PDMA_DELAY_TX_PTIME_SHIFT	16
++
++#define MTK_PDMA_DELAY_PINT_MASK	0x7f
++#define MTK_PDMA_DELAY_PTIME_MASK	0xff
+ 
+ /* PDMA Interrupt Status Register */
+ #define MTK_PDMA_INT_STATUS	0xa20
+@@ -219,6 +225,7 @@
+ /* QDMA Interrupt Status Register */
+ #define MTK_QDMA_INT_STATUS	0x1A18
+ #define MTK_RX_DONE_DLY		BIT(30)
++#define MTK_TX_DONE_DLY		BIT(28)
+ #define MTK_RX_DONE_INT3	BIT(19)
+ #define MTK_RX_DONE_INT2	BIT(18)
+ #define MTK_RX_DONE_INT1	BIT(17)
+@@ -228,8 +235,7 @@
+ #define MTK_TX_DONE_INT1	BIT(1)
+ #define MTK_TX_DONE_INT0	BIT(0)
+ #define MTK_RX_DONE_INT		MTK_RX_DONE_DLY
+-#define MTK_TX_DONE_INT		(MTK_TX_DONE_INT0 | MTK_TX_DONE_INT1 | \
+-				 MTK_TX_DONE_INT2 | MTK_TX_DONE_INT3)
++#define MTK_TX_DONE_INT		MTK_TX_DONE_DLY
+ 
+ /* QDMA Interrupt grouping registers */
+ #define MTK_QDMA_INT_GRP1	0x1a20
+@@ -912,6 +918,18 @@ struct mtk_eth {
+ 
+ 	const struct mtk_soc_data	*soc;
+ 
++	spinlock_t			dim_lock;
++
++	u32				rx_events;
++	u32				rx_packets;
++	u32				rx_bytes;
++	struct dim			rx_dim;
++
++	u32				tx_events;
++	u32				tx_packets;
++	u32				tx_bytes;
++	struct dim			tx_dim;
++
+ 	u32				tx_int_mask_reg;
+ 	u32				tx_int_status_reg;
+ 	u32				rx_dma_l4_valid;

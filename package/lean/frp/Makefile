@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=frp
-PKG_VERSION:=0.33.0
+PKG_VERSION:=0.37.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/fatedier/frp/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=9c773ab4bbd208705c795599c5e69302a379734921c90489ed8ae331c24836cb
+PKG_HASH:=e2c1f93d504ae3bbe3407aaec43efa5c5f09b6d1a35306b58808c4f36b53f396
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -55,7 +55,7 @@ define frp/templates
 	$$(INSTALL_DIR) $$(1)/usr/bin
 	$$(INSTALL_BIN) $$(PKG_INSTALL_DIR)/usr/bin/$(1) $$(1)/usr/bin/
 	
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $$(1)/usr/bin/$(1)
+	$(STAGING_DIR_HOST)/bin/upx --lzma --best $$(1)/usr/bin/$(1) || true
   endef
 endef
 

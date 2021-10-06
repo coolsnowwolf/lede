@@ -1,0 +1,96 @@
+From 1decb017f990ea61ab421e316bf1af3a5199b73a Mon Sep 17 00:00:00 2001
+From: Jernej Skrabec <jernej.skrabec@siol.net>
+Date: Fri, 11 Oct 2019 06:32:43 -0300
+Subject: [PATCH] media: v4l2-mem2mem: add stateless_(try_)decoder_cmd
+ ioctl helpers
+
+Commit bef41d93aac64b54c3008ca6170bec54f85784f5 upstream.
+
+These helpers are used by stateless codecs when they support multiple
+slices per frame and hold capture buffer flag is set. It's expected that
+all such codecs will use this code.
+
+Signed-off-by: Jernej Skrabec <jernej.skrabec@siol.net>
+Co-developed-by: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+Signed-off-by: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+Signed-off-by: Mauro Carvalho Chehab <mchehab+samsung@kernel.org>
+---
+ drivers/media/v4l2-core/v4l2-mem2mem.c | 53 ++++++++++++++++++++++++++
+ include/media/v4l2-mem2mem.h           |  4 ++
+ 2 files changed, 57 insertions(+)
+
+--- a/drivers/media/v4l2-core/v4l2-mem2mem.c
++++ b/drivers/media/v4l2-core/v4l2-mem2mem.c
+@@ -1216,6 +1216,59 @@ int v4l2_m2m_ioctl_try_decoder_cmd(struc
+ }
+ EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_try_decoder_cmd);
+ 
++int v4l2_m2m_ioctl_stateless_try_decoder_cmd(struct file *file, void *fh,
++					     struct v4l2_decoder_cmd *dc)
++{
++	if (dc->cmd != V4L2_DEC_CMD_FLUSH)
++		return -EINVAL;
++
++	dc->flags = 0;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_stateless_try_decoder_cmd);
++
++int v4l2_m2m_ioctl_stateless_decoder_cmd(struct file *file, void *priv,
++					 struct v4l2_decoder_cmd *dc)
++{
++	struct v4l2_fh *fh = file->private_data;
++	struct vb2_v4l2_buffer *out_vb, *cap_vb;
++	struct v4l2_m2m_dev *m2m_dev = fh->m2m_ctx->m2m_dev;
++	unsigned long flags;
++	int ret;
++
++	ret = v4l2_m2m_ioctl_stateless_try_decoder_cmd(file, priv, dc);
++	if (ret < 0)
++		return ret;
++
++	spin_lock_irqsave(&m2m_dev->job_spinlock, flags);
++	out_vb = v4l2_m2m_last_src_buf(fh->m2m_ctx);
++	cap_vb = v4l2_m2m_last_dst_buf(fh->m2m_ctx);
++
++	/*
++	 * If there is an out buffer pending, then clear any HOLD flag.
++	 *
++	 * By clearing this flag we ensure that when this output
++	 * buffer is processed any held capture buffer will be released.
++	 */
++	if (out_vb) {
++		out_vb->flags &= ~V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
++	} else if (cap_vb && cap_vb->is_held) {
++		/*
++		 * If there were no output buffers, but there is a
++		 * capture buffer that is held, then release that
++		 * buffer.
++		 */
++		cap_vb->is_held = false;
++		v4l2_m2m_dst_buf_remove(fh->m2m_ctx);
++		v4l2_m2m_buf_done(cap_vb, VB2_BUF_STATE_DONE);
++	}
++	spin_unlock_irqrestore(&m2m_dev->job_spinlock, flags);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(v4l2_m2m_ioctl_stateless_decoder_cmd);
++
+ /*
+  * v4l2_file_operations helpers. It is assumed here same lock is used
+  * for the output and the capture buffer queue.
+--- a/include/media/v4l2-mem2mem.h
++++ b/include/media/v4l2-mem2mem.h
+@@ -701,6 +701,10 @@ int v4l2_m2m_ioctl_try_encoder_cmd(struc
+ 				   struct v4l2_encoder_cmd *ec);
+ int v4l2_m2m_ioctl_try_decoder_cmd(struct file *file, void *fh,
+ 				   struct v4l2_decoder_cmd *dc);
++int v4l2_m2m_ioctl_stateless_try_decoder_cmd(struct file *file, void *fh,
++					     struct v4l2_decoder_cmd *dc);
++int v4l2_m2m_ioctl_stateless_decoder_cmd(struct file *file, void *priv,
++					 struct v4l2_decoder_cmd *dc);
+ int v4l2_m2m_fop_mmap(struct file *file, struct vm_area_struct *vma);
+ __poll_t v4l2_m2m_fop_poll(struct file *file, poll_table *wait);
+ 

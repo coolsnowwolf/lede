@@ -1,0 +1,118 @@
+From ffbb1b37a3e1ce1a5c574a6bd4f5aede8bc468ac Mon Sep 17 00:00:00 2001
+From: Ilya Lipnitskiy <ilya.lipnitskiy@gmail.com>
+Date: Sat, 27 Feb 2021 20:20:07 -0800
+Subject: [PATCH] Revert "net: phy: simplify phy_link_change arguments"
+
+This reverts commit a307593a644443db12888f45eed0dafb5869e2cc.
+
+This brings back the do_carrier flags used by the (hacky) next patch,
+still required by target/linux/ramips/files/drivers/net/ethernet/ralink/mdio.c
+---
+ drivers/net/phy/phy.c        | 12 ++++++------
+ drivers/net/phy/phy_device.c | 12 +++++++-----
+ drivers/net/phy/phylink.c    |  3 ++-
+ include/linux/phy.h          |  2 +-
+ 4 files changed, 16 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -58,13 +58,13 @@ static const char *phy_state_to_str(enum
+ 
+ static void phy_link_up(struct phy_device *phydev)
+ {
+-	phydev->phy_link_change(phydev, true);
++	phydev->phy_link_change(phydev, true, true);
+ 	phy_led_trigger_change_speed(phydev);
+ }
+ 
+-static void phy_link_down(struct phy_device *phydev)
++static void phy_link_down(struct phy_device *phydev, bool do_carrier)
+ {
+-	phydev->phy_link_change(phydev, false);
++	phydev->phy_link_change(phydev, false, do_carrier);
+ 	phy_led_trigger_change_speed(phydev);
+ }
+ 
+@@ -618,7 +618,7 @@ int phy_start_cable_test(struct phy_devi
+ 		goto out;
+ 
+ 	/* Mark the carrier down until the test is complete */
+-	phy_link_down(phydev);
++	phy_link_down(phydev, true);
+ 
+ 	netif_testing_on(dev);
+ 	err = phydev->drv->cable_test_start(phydev);
+@@ -689,7 +689,7 @@ int phy_start_cable_test_tdr(struct phy_
+ 		goto out;
+ 
+ 	/* Mark the carrier down until the test is complete */
+-	phy_link_down(phydev);
++	phy_link_down(phydev, true);
+ 
+ 	netif_testing_on(dev);
+ 	err = phydev->drv->cable_test_tdr_start(phydev, config);
+@@ -760,7 +760,7 @@ static int phy_check_link_status(struct
+ 		phy_link_up(phydev);
+ 	} else if (!phydev->link && phydev->state != PHY_NOLINK) {
+ 		phydev->state = PHY_NOLINK;
+-		phy_link_down(phydev);
++		phy_link_down(phydev, true);
+ 	}
+ 
+ 	return 0;
+@@ -1164,7 +1164,7 @@ void phy_state_machine(struct work_struc
+ 	case PHY_HALTED:
+ 		if (phydev->link) {
+ 			phydev->link = 0;
+-			phy_link_down(phydev);
++			phy_link_down(phydev, true);
+ 		}
+ 		do_suspend = true;
+ 		break;
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -936,14 +936,16 @@ struct phy_device *phy_find_first(struct
+ }
+ EXPORT_SYMBOL(phy_find_first);
+ 
+-static void phy_link_change(struct phy_device *phydev, bool up)
++static void phy_link_change(struct phy_device *phydev, bool up, bool do_carrier)
+ {
+ 	struct net_device *netdev = phydev->attached_dev;
+ 
+-	if (up)
+-		netif_carrier_on(netdev);
+-	else
+-		netif_carrier_off(netdev);
++	if (do_carrier) {
++		if (up)
++			netif_carrier_on(netdev);
++		else
++			netif_carrier_off(netdev);
++	}
+ 	phydev->adjust_link(netdev);
+ 	if (phydev->mii_ts && phydev->mii_ts->link_state)
+ 		phydev->mii_ts->link_state(phydev->mii_ts, phydev);
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -907,7 +907,8 @@ void phylink_destroy(struct phylink *pl)
+ }
+ EXPORT_SYMBOL_GPL(phylink_destroy);
+ 
+-static void phylink_phy_change(struct phy_device *phydev, bool up)
++static void phylink_phy_change(struct phy_device *phydev, bool up,
++			       bool do_carrier)
+ {
+ 	struct phylink *pl = phydev->phylink;
+ 	bool tx_pause, rx_pause;
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -638,7 +638,7 @@ struct phy_device {
+ 	u8 mdix;
+ 	u8 mdix_ctrl;
+ 
+-	void (*phy_link_change)(struct phy_device *phydev, bool up);
++	void (*phy_link_change)(struct phy_device *, bool up, bool do_carrier);
+ 	void (*adjust_link)(struct net_device *dev);
+ 
+ #if IS_ENABLED(CONFIG_MACSEC)

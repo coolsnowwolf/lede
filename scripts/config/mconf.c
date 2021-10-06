@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2002 Roman Zippel <zippel@linux-m68k.org>
  *
@@ -23,11 +23,14 @@
 #include "lxdialog/dialog.h"
 
 static const char mconf_readme[] =
+"OpenWrt config is based on Kernel kconfig\n"
+"so ipkg packages are referred here as modules.\n"
+"\n"
 "Overview\n"
 "--------\n"
-"Some OpenWrt features may be built directly into the image.\n"
-"Some may be made into installable ipkg packages (referred here as\n"
-"modules). Some features may be completely removed altogether.\n"
+"This interface lets you select features and parameters for the build.\n"
+"Features can either be built-in, modularized, or ignored. Parameters\n"
+"must be entered in as decimal or hexadecimal numbers or text.\n"
 "\n"
 "Menu items beginning with following braces represent features that\n"
 "  [ ] can be built in or removed\n"

@@ -124,16 +124,18 @@ $(eval $(call KernelPackage,lib-lzo))
 define KernelPackage/lib-zstd
   SUBMENU:=$(LIB_MENU)
   TITLE:=ZSTD support
+  DEPENDS:=+kmod-crypto-acompress
   KCONFIG:= \
+	CONFIG_CRYPTO_ZSTD \
 	CONFIG_ZSTD_COMPRESS \
 	CONFIG_ZSTD_DECOMPRESS \
 	CONFIG_XXHASH
-  HIDDEN:=1
   FILES:= \
+	$(LINUX_DIR)/crypto/zstd.ko \
 	$(LINUX_DIR)/lib/xxhash.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_compress.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_decompress.ko
-  AUTOLOAD:=$(call AutoProbe,xxhash zstd_compress zstd_decompress)
+  AUTOLOAD:=$(call AutoProbe,xxhash zstd zstd_compress zstd_decompress)
 endef
 
 define KernelPackage/lib-zstd/description
@@ -147,7 +149,6 @@ define KernelPackage/lib-lz4
   SUBMENU:=$(LIB_MENU)
   TITLE:=LZ4 support
   DEPENDS:=+kmod-crypto-acompress
-  HIDDEN:=1
   KCONFIG:= \
 	CONFIG_CRYPTO_LZ4 \
 	CONFIG_LZ4_COMPRESS \
@@ -251,8 +252,7 @@ define KernelPackage/lib-cordic
   SUBMENU:=$(LIB_MENU)
   TITLE:=Cordic function support
   KCONFIG:=CONFIG_CORDIC
-  FILES:=$(LINUX_DIR)/lib/cordic.ko@lt5.2 \
-	  $(LINUX_DIR)/lib/math/cordic.ko@ge5.2
+  FILES:=$(LINUX_DIR)/lib/math/cordic.ko
   AUTOLOAD:=$(call AutoProbe,cordic)
 endef
 
