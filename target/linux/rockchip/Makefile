@@ -17,8 +17,7 @@ endef
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += uboot-envtools partx-utils e2fsprogs mkf2fs kmod-gpio-button-hotplug \
-		    automount autocore-arm fdisk e2fsprogs ethtool haveged htop lm-sensors \
-		    openssh-sftp-server luci-app-zerotier
+		    automount autocore-arm fdisk e2fsprogs
 
 KERNELNAME:=Image dtbs
 

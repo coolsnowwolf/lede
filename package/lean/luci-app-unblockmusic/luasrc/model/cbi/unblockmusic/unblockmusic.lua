@@ -37,9 +37,8 @@ speedtype:depends("apptype", "nodejs")
 speedtype:depends("apptype", "go")
 
 cloudserver = s:option(Value, "cloudserver", translate("服务器位置"))
-cloudserver:value("cdn-shanghai.service.project-openwrt.eu.org:30000:30001", translate("[CTCGFW] 腾讯云上海（高音质）"))
 cloudserver.description = translate("自定义服务器格式为 IP[域名]:HTTP端口:HTTPS端口<br />如果服务器为LAN内网IP，需要将这个服务器IP放入例外客户端 (不代理HTTP和HTTPS)")
-cloudserver.default = "cdn-shanghai.service.project-openwrt.eu.org:30000:30001"
+cloudserver.default = ""
 cloudserver.rmempty = true
 cloudserver:depends("apptype", "cloud")
 
@@ -69,7 +68,7 @@ o.description = translate("每天自动检测并更新到最新版本")
 o:depends("apptype", "nodejs")
 
 download_certificate=s:option(DummyValue,"opennewwindow",translate("HTTPS 证书"))
-download_certificate.description = translate("<input type=\"button\" class=\"btn cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/1715173329/UnblockNeteaseMusic/enhanced/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数")
+download_certificate.description = translate("<input type=\"button\" class=\"btn cbi-button cbi-button-apply\" value=\"下载CA根证书\" onclick=\"window.open('https://raw.githubusercontent.com/UnblockNeteaseMusic/server/enhanced/ca.crt')\" /><br />Mac/iOS客户端需要安装 CA根证书并信任<br />iOS系统需要在“设置 -> 通用 -> 关于本机 -> 证书信任设置”中，信任 UnblockNeteaseMusic Root CA <br />Linux 设备请在启用时加入 --ignore-certificate-errors 参数")
 
 local ver = fs.readfile("/usr/share/UnblockNeteaseMusic/core_ver") or "0.00"
 

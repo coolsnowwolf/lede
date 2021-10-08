@@ -142,37 +142,38 @@ define Package/base-files/install
 
 	$(VERSION_SED_SCRIPT) \
 		$(1)/etc/banner \
+		$(1)/etc/device_info \
+		$(1)/etc/openwrt_release \
 		$(1)/etc/openwrt_version \
 		$(1)/usr/lib/os-release
 
-	$(VERSION_SED_SCRIPT) \
-		$(1)/etc/openwrt_release \
-		$(1)/etc/device_info \
-		$(1)/usr/lib/os-release
 
 	$(SED) "s#%PATH%#$(TARGET_INIT_PATH)#g" \
 		$(1)/sbin/hotplug-call \
 		$(1)/etc/preinit \
 		$(1)/etc/profile
 
-	mkdir -p $(1)/CONTROL
-	mkdir -p $(1)/dev
-	mkdir -p $(1)/etc/config
-	mkdir -p $(1)/etc/crontabs
-	mkdir -p $(1)/etc/rc.d
-	mkdir -p $(1)/overlay
-	mkdir -p $(1)/lib/firmware
-	$(if $(LIB_SUFFIX),-$(LN) lib $(1)/lib$(LIB_SUFFIX))
-	mkdir -p $(1)/mnt
-	mkdir -p $(1)/proc
-	mkdir -p $(1)/tmp
-	mkdir -p $(1)/usr/lib
-	$(if $(LIB_SUFFIX),-$(LN) lib $(1)/usr/lib$(LIB_SUFFIX))
-	mkdir -p $(1)/usr/bin
-	mkdir -p $(1)/sys
-	mkdir -p $(1)/www
-	mkdir -p $(1)/root
+	mkdir -p \
+		$(1)/CONTROL \
+		$(1)/dev \
+		$(1)/etc/config \
+		$(1)/etc/crontabs \
+		$(1)/etc/rc.d \
+		$(1)/overlay \
+		$(1)/lib/firmware \
+		$(1)/mnt \
+		$(1)/proc \
+		$(1)/tmp \
+		$(1)/usr/lib \
+		$(1)/usr/bin \
+		$(1)/sys \
+		$(1)/www \
+		$(1)/root
+
 	$(LN) /proc/mounts $(1)/etc/mtab
+	$(if $(LIB_SUFFIX),-$(LN) lib $(1)/lib$(LIB_SUFFIX))
+	$(if $(LIB_SUFFIX),-$(LN) lib $(1)/usr/lib$(LIB_SUFFIX))
+
 ifneq ($(CONFIG_TARGET_ROOTFS_PERSIST_VAR),y)
 	rm -f $(1)/var
 	$(LN) tmp $(1)/var
@@ -180,7 +181,6 @@ else
 	mkdir -p $(1)/var
 	$(LN) /tmp/run $(1)/var/run
 endif
-	mkdir -p $(1)/etc
 	$(LN) /tmp/resolv.conf /tmp/TZ /tmp/localtime $(1)/etc/
 
 	chmod 0600 $(1)/etc/shadow

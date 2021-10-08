@@ -1,8 +1,7 @@
-#Download realtek r8152 linux driver from official site [https://www.realtek.com/en/component/zoo/category/network-interface-controllers-10-100-1000m-gigabit-ethernet-usb-3-0-software]
-#Unpack source file
-#Replace orginal Makefile with this file
-#Put this source to 'package' folder of OpenWRT/LEDE SDK
-#Build(make menuconfig, make defconfig, make)
+#
+# Download realtek r8152 linux driver from official site:
+# [https://www.realtek.com/en/component/zoo/category/network-interface-controllers-10-100-1000m-gigabit-ethernet-usb-3-0-software]
+#
 
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
@@ -17,9 +16,9 @@ PKG_HASH:=dc8a06ed6ff397029c396a7e83476f1bf9541c4f927a4dbac8810c6ce014f8ca
 
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/realtek-$(PKG_NAME)-linux-$(PKG_VERSION)
 
-PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
-
 PKG_BUILD_PARALLEL:=1
+
+PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -27,7 +26,7 @@ define KernelPackage/usb-net-rtl8152-vendor
   TITLE:=Kernel module for USB-to-Ethernet Realtek convertors
   SUBMENU:=USB Support
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
-  DEPENDS:=+kmod-usb-net
+  DEPENDS:=@TARGET_x86 +kmod-usb-net
   CONFLICTS:=kmod-usb-net-rtl8152
   FILES:= $(PKG_BUILD_DIR)/r8152.ko
   AUTOLOAD:=$(call AutoProbe,r8152)
