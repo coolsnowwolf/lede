@@ -42,7 +42,7 @@ define Package/rclone
   SUBMENU:=File Transfer
   TITLE:=rsync for cloud storage
   URL:=https://rclone.org
-  DEPENDS:=$(GO_ARCH_DEPENDS)
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +fuse-utils
 endef
 
 define Package/rclone/description
