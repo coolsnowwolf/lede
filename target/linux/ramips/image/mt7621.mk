@@ -1556,8 +1556,8 @@ define Device/xiaomi_mi-router-3-pro
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
 	check-size
-  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware kmod-usb3 \
-	kmod-usb-ledtrig-usbport uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7615d luci-app-mtwifi -wpad-openssl \
+  kmod-usb3 kmod-usb-ledtrig-usbport uboot-envtools
   SUPPORTED_DEVICES += xiaomi,mir3p
 endef
 TARGET_DEVICES += xiaomi_mi-router-3-pro
