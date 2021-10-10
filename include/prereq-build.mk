@@ -162,7 +162,7 @@ $(eval $(call SetupHostCommand,python,Please install Python >= 3.6, \
 	python3.8 -V 2>&1 | grep 'Python 3', \
 	python3.7 -V 2>&1 | grep 'Python 3', \
 	python3.6 -V 2>&1 | grep 'Python 3', \
-	python3 -V 2>&1 | grep -E 'Python 3\.[6-9]\.?'))
+	python3 -V 2>&1 | grep -E 'Python 3\.([6-9]|10)\.?'))
 
 $(eval $(call SetupHostCommand,python3,Please install Python >= 3.6, \
 	python3.10 -V 2>&1 | grep 'Python 3', \
@@ -170,7 +170,7 @@ $(eval $(call SetupHostCommand,python3,Please install Python >= 3.6, \
 	python3.8 -V 2>&1 | grep 'Python 3', \
 	python3.7 -V 2>&1 | grep 'Python 3', \
 	python3.6 -V 2>&1 | grep 'Python 3', \
-	python3 -V 2>&1 | grep -E 'Python 3\.[6-9]\.?'))
+	python3 -V 2>&1 | grep -E 'Python 3\.([6-9]|10)\.?'))
 
 $(eval $(call TestHostCommand,python3-distutils, \
 	Please install the Python3 distutils module, \
