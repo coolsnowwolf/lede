@@ -42,7 +42,7 @@ define Package/rclone
   SUBMENU:=File Transfer
   TITLE:=rsync for cloud storage
   URL:=https://rclone.org
-  DEPENDS:=$(GO_ARCH_DEPENDS)
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +fuse-utils
 endef
 
 define Package/rclone/description
@@ -65,6 +65,10 @@ ifeq ($(CONFIG_RCLONE_COMPRESS_GOPROXY),y)
 	export GOPROXY=https://goproxy.baidu.com
 endif
 
+define Package/rclone/conffiles
+/etc/config/rclone
+endef
+
 # Disable CGO due to ld linker issue
 GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=%,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 
@@ -73,6 +77,15 @@ define Build/Compile
 ifeq ($(CONFIG_RCLONE_COMPRESS_UPX),y)
 	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/rclone
 endif
+endef
+
+define Package/rclone/install
+	$(call GoPackage/Package/Install/Bin,$(1))
+
+	$(INSTALL_DIR) $(1)/etc/config/
+	$(INSTALL_CONF) $(CURDIR)/files/rclone.config $(1)/etc/config/rclone
+	$(INSTALL_DIR) $(1)/etc/init.d/
+	$(INSTALL_BIN) $(CURDIR)/files/rclone.init $(1)/etc/init.d/rclone
 endef
 
 $(eval $(call GoBinPackage,rclone))
