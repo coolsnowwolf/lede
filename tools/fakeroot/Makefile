@@ -19,7 +19,8 @@ include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CONFIGURE_VARS += \
 	ac_cv_header_sys_capability_h=no \
-	ac_cv_func_capset=no
+	ac_cv_func_capset=no \
+	CPP="$(HOSTCC) -E"
 
 HOST_CONFIGURE_ARGS += \
 	--with-ipc=tcp
