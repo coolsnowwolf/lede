@@ -71,4 +71,5 @@ define Device/embedfire_doornet1
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-rtl8152 
 endef
-TARGET_DEVICES += embedfire_doornet1
+TARGET_DEVICES += embedfire_doornet1 
+
