@@ -1498,6 +1498,11 @@ void hostapd_ubus_free_bss(struct hostapd_data *hapd)
 	struct ubus_object *obj = &hapd->ubus.obj;
 	char *name = (char *) obj->name;
 
+#ifdef CONFIG_MESH
+	if (hapd->conf->mesh & MESH_ENABLED)
+		return;
+#endif
+
 	if (!ctx)
 		return;
 
@@ -1740,9 +1745,6 @@ void hostapd_ubus_notify_radar_detected(struct hostapd_iface *iface, int frequen
 {
 	struct hostapd_data *hapd;
 	int i;
-
-	if (!hapd->ubus.obj.has_subscribers)
-		return;
 
 	blob_buf_init(&b, 0);
 	blobmsg_add_u16(&b, "frequency", frequency);

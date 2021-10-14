@@ -1,0 +1,45 @@
+From a242ba451fd64f0b9f07605ff0d8f6981aa6e955 Mon Sep 17 00:00:00 2001
+From: Joshua Emele <jemele@acm.org>
+Date: Wed, 7 Nov 2018 16:07:40 -0800
+Subject: [PATCH] lan78xx: Debounce link events to minimize poll storm
+
+The bInterval is set to 4 (i.e. 8 microframes => 1ms) and the only bit
+that the driver pays attention to is "link was reset". If there's a
+flapping status bit in that endpoint data, (such as if PHY negotiation
+needs a few tries to get a stable link) then polling at a slower rate
+would act as a de-bounce.
+
+See: https://github.com/raspberrypi/linux/issues/2447
+---
+ drivers/net/usb/lan78xx.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/usb/lan78xx.c
++++ b/drivers/net/usb/lan78xx.c
+@@ -434,6 +434,11 @@ static bool enable_tso;
+ module_param(enable_tso, bool, 0644);
+ MODULE_PARM_DESC(enable_tso, "Enables TCP segmentation offload");
+ 
++#define INT_URB_MICROFRAMES_PER_MS	8
++static int int_urb_interval_ms = 8;
++module_param(int_urb_interval_ms, int, 0);
++MODULE_PARM_DESC(int_urb_interval_ms, "Override usb interrupt urb interval");
++
+ static int lan78xx_read_reg(struct lan78xx_net *dev, u32 index, u32 *data)
+ {
+ 	u32 *buf = kmalloc(sizeof(u32), GFP_KERNEL);
+@@ -3768,7 +3773,13 @@ static int lan78xx_probe(struct usb_inte
+ 	netdev->max_mtu = MAX_SINGLE_PACKET_SIZE;
+ 	netif_set_gso_max_size(netdev, MAX_SINGLE_PACKET_SIZE - MAX_HEADER);
+ 
+-	period = ep_intr->desc.bInterval;
++	if (int_urb_interval_ms <= 0)
++		period = ep_intr->desc.bInterval;
++	else
++		period = int_urb_interval_ms * INT_URB_MICROFRAMES_PER_MS;
++
++	netif_notice(dev, probe, netdev, "int urb period %d\n", period);
++
+ 	maxp = usb_maxpacket(dev->udev, dev->pipe_intr, 0);
+ 	buf = kmalloc(maxp, GFP_KERNEL);
+ 	if (buf) {

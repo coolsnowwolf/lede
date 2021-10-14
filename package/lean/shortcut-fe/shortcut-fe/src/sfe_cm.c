@@ -2,7 +2,7 @@
  * sfe-cm.c
  *	Shortcut forwarding engine connection manager.
  *
- * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2018, 2020 The Linux Foundation. All rights reserved.
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
  * above copyright notice and this permission notice appear in all copies.
@@ -199,13 +199,22 @@ int sfe_cm_recv(struct sk_buff *skb)
  * structure, obtain the hardware address.  This means this function also
  * works if the neighbours are routers too.
  */
-static bool sfe_cm_find_dev_and_mac_addr(sfe_ip_addr_t *addr, struct net_device **dev, u8 *mac_addr, int is_v4)
+static bool sfe_cm_find_dev_and_mac_addr(struct sk_buff *skb, sfe_ip_addr_t *addr, struct net_device **dev, u8 *mac_addr, int is_v4)
 {
 	struct neighbour *neigh;
 	struct rtable *rt;
 	struct rt6_info *rt6;
 	struct dst_entry *dst;
 	struct net_device *mac_dev;
+
+	/*
+	 * If we have skb provided, use it as the original code is unable
+	 * to lookup routes that are policy routed.
+	*/
+	if (unlikely(skb)) {
+		dst = skb_dst(skb);
+		goto skip_dst_lookup;
+	}
 
 	/*
 	 * Look up the rtable entry for the IP address then get the hardware
@@ -220,11 +229,11 @@ static bool sfe_cm_find_dev_and_mac_addr(sfe_ip_addr_t *addr, struct net_device 
 
 		dst = (struct dst_entry *)rt;
 	} else {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0))
-		rt6 = rt6_lookup(&init_net, (struct in6_addr *)addr->ip6, 0, 0, NULL, 0);
-#else
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0))
 		rt6 = rt6_lookup(&init_net, (struct in6_addr *)addr->ip6, 0, 0, 0);
-#endif /*KERNEL_VERSION(4, 17, 0)*/
+#else
+		rt6 = rt6_lookup(&init_net, (struct in6_addr *)addr->ip6, 0, 0, NULL, 0);
+#endif
 		if (!rt6) {
 			goto ret_fail;
 		}
@@ -232,18 +241,21 @@ static bool sfe_cm_find_dev_and_mac_addr(sfe_ip_addr_t *addr, struct net_device 
 		dst = (struct dst_entry *)rt6;
 	}
 
+skip_dst_lookup:
 	rcu_read_lock();
 	neigh = sfe_dst_get_neighbour(dst, addr);
 	if (unlikely(!neigh)) {
 		rcu_read_unlock();
-		dst_release(dst);
+		if (likely(!skb))
+			dst_release(dst);
 		goto ret_fail;
 	}
 
 	if (unlikely(!(neigh->nud_state & NUD_VALID))) {
 		rcu_read_unlock();
 		neigh_release(neigh);
-		dst_release(dst);
+		if (likely(!skb))
+			dst_release(dst);
 		goto ret_fail;
 	}
 
@@ -251,7 +263,8 @@ static bool sfe_cm_find_dev_and_mac_addr(sfe_ip_addr_t *addr, struct net_device 
 	if (!mac_dev) {
 		rcu_read_unlock();
 		neigh_release(neigh);
-		dst_release(dst);
+		if (likely(!skb))
+			dst_release(dst);
 		goto ret_fail;
 	}
 
@@ -261,7 +274,8 @@ static bool sfe_cm_find_dev_and_mac_addr(sfe_ip_addr_t *addr, struct net_device 
 	*dev = mac_dev;
 	rcu_read_unlock();
 	neigh_release(neigh);
-	dst_release(dst);
+	if (likely(!skb))
+		dst_release(dst);
 
 	return true;
 
@@ -291,6 +305,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	struct net_device *dest_dev;
 	struct net_device *src_dev_tmp;
 	struct net_device *dest_dev_tmp;
+	struct sk_buff *tmp_skb = NULL;
 	struct net_device *src_br_dev = NULL;
 	struct net_device *dest_br_dev = NULL;
 	struct nf_conntrack_tuple orig_tuple;
@@ -352,16 +367,18 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		return NF_ACCEPT;
 	}
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0))
 	/*
 	 * Don't process untracked connections.
 	 */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0))
 	if (unlikely(nf_ct_is_untracked(ct))) {
+#else
+	if (unlikely(ctinfo == IP_CT_UNTRACKED)) {
+#endif
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_CT_NO_TRACK);
 		DEBUG_TRACE("untracked connection\n");
 		return NF_ACCEPT;
 	}
-#endif /*KERNEL_VERSION(4, 12, 0)*/
 
 	/*
 	 * Unconfirmed connection may be dropped by Linux at the final step,
@@ -510,6 +527,21 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			return NF_ACCEPT;
 		}
 		spin_unlock_bh(&ct->lock);
+		
+		/*
+		 * Somehow, SFE is not playing nice with IPSec traffic.
+		 * Do not accelerate for now.
+		 */
+		if (ntohs(sic.dest_port) == 4500 || ntohs(sic.dest_port) == 500) {
+			if (likely(is_v4))
+				DEBUG_TRACE("IPsec bypass: %pI4:%d(%pI4:%d) to %pI4:%d(%pI4:%d)\n",
+					&sic.src_ip.ip, ntohs(sic.src_port), &sic.src_ip_xlate.ip, ntohs(sic.src_port_xlate),
+					&sic.dest_ip.ip, ntohs(sic.dest_port), &sic.dest_ip_xlate.ip, ntohs(sic.dest_port_xlate));
+			else
+				DEBUG_TRACE("IPsec bypass: %pI6:%d to %pI6:%d\n",
+					&sic.src_ip.ip6, ntohs(sic.src_port), &sic.dest_ip.ip6, ntohs(sic.dest_port));
+			return NF_ACCEPT;
+		}
 		break;
 
 	case IPPROTO_UDP:
@@ -533,10 +565,10 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	 * For packets de-capsulated from xfrm, we still can accelerate it
 	 * on the direction we just received the packet.
 	 */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
-	if (unlikely(skb_ext_exist(skb, SKB_EXT_SEC_PATH))) {
-#else
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
 	if (unlikely(skb->sp)) {
+#else
+	if (unlikely(secpath_exists(skb))) {
 #endif
 		if (sic.protocol == IPPROTO_TCP &&
 		    !(sic.flags & SFE_CREATE_FLAG_NO_SEQ_CHECK)) {
@@ -564,25 +596,27 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	 * Get the net device and MAC addresses that correspond to the various source and
 	 * destination host addresses.
 	 */
-	if (!sfe_cm_find_dev_and_mac_addr(&sic.src_ip, &src_dev_tmp, sic.src_mac, is_v4)) {
+	if (!sfe_cm_find_dev_and_mac_addr(NULL, &sic.src_ip, &src_dev_tmp, sic.src_mac, is_v4)) {
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_SRC_DEV);
 		return NF_ACCEPT;
 	}
 	src_dev = src_dev_tmp;
 
-	if (!sfe_cm_find_dev_and_mac_addr(&sic.src_ip_xlate, &dev, sic.src_mac_xlate, is_v4)) {
+	if (!sfe_cm_find_dev_and_mac_addr(NULL, &sic.src_ip_xlate, &dev, sic.src_mac_xlate, is_v4)) {
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_SRC_XLATE_DEV);
 		goto done1;
 	}
 	dev_put(dev);
-
-	if (!sfe_cm_find_dev_and_mac_addr(&sic.dest_ip, &dev, sic.dest_mac, is_v4)) {
+	/* Somehow, for IPv6, we need this workaround as well */
+	if (unlikely(!is_v4))
+		tmp_skb = skb;
+	if (!sfe_cm_find_dev_and_mac_addr(tmp_skb, &sic.dest_ip, &dev, sic.dest_mac, is_v4)) {
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_DEST_DEV);
 		goto done1;
 	}
 	dev_put(dev);
 
-	if (!sfe_cm_find_dev_and_mac_addr(&sic.dest_ip_xlate, &dest_dev_tmp, sic.dest_mac_xlate, is_v4)) {
+	if (!sfe_cm_find_dev_and_mac_addr(skb, &sic.dest_ip_xlate, &dest_dev_tmp, sic.dest_mac_xlate, is_v4)) {
 		sfe_cm_incr_exceptions(SFE_CM_EXCEPTION_NO_DEST_XLATE_DEV);
 		goto done1;
 	}
@@ -688,14 +722,11 @@ static int sfe_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 	}
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0))
-	/*
-	 * If this is an untracked connection then we can't have any state either.
-	 */
 	if (unlikely(nf_ct_is_untracked(ct))) {
 		DEBUG_TRACE("ignoring untracked conn\n");
 		return NOTIFY_DONE;
 	}
-#endif /*KERNEL_VERSION(4, 12, 0)*/
+#endif
 
 	/*
 	 * We're only interested in destroy events.
@@ -825,18 +856,17 @@ static void sfe_cm_sync_rule(struct sfe_connection_sync *sis)
 	ct = nf_ct_tuplehash_to_ctrack(h);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0))
 	NF_CT_ASSERT(ct->timeout.data == (unsigned long)ct);
-#endif /*KERNEL_VERSION(4, 9, 0)*/
-
+#endif
 	/*
 	 * Only update if this is not a fixed timeout
 	 */
 	if (!test_bit(IPS_FIXED_TIMEOUT_BIT, &ct->status)) {
 		spin_lock_bh(&ct->lock);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0))
-		ct->timeout += sis->delta_jiffies;
-#else
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0))
 		ct->timeout.expires += sis->delta_jiffies;
-#endif /*KERNEL_VERSION(4, 9, 0)*/
+#else
+		ct->timeout += sis->delta_jiffies;
+#endif
 		spin_unlock_bh(&ct->lock);
 	}
 
@@ -891,26 +921,26 @@ static void sfe_cm_sync_rule(struct sfe_connection_sync *sis)
 
 			if (reply_pkts != 0) {
 				unsigned int *timeouts;
-
+				struct nf_conntrack_l4proto *l4proto __maybe_unused;
 				set_bit(IPS_SEEN_REPLY_BIT, &ct->status);
 				set_bit(IPS_ASSURED_BIT, &ct->status);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
-				timeouts = nf_ct_timeout_lookup(ct);
-#else
-				struct nf_conntrack_l4proto *l4proto;
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0))
 				l4proto = __nf_ct_l4proto_find((sis->is_v6 ? AF_INET6 : AF_INET), IPPROTO_UDP);
 				timeouts = nf_ct_timeout_lookup(&init_net, ct, l4proto);
-#endif /*KERNEL_VERSION(4, 19, 0)*/
+				spin_lock_bh(&ct->lock);
+				ct->timeout.expires = jiffies + timeouts[UDP_CT_REPLIED];
+				spin_unlock_bh(&ct->lock);
+#else
+				timeouts = nf_ct_timeout_lookup(ct);
+				if (!timeouts) {
+					timeouts = udp_get_timeouts(nf_ct_net(ct));
+				}
 
 				spin_lock_bh(&ct->lock);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0))
 				ct->timeout = jiffies + timeouts[UDP_CT_REPLIED];
-#else
-				ct->timeout.expires = jiffies + timeouts[UDP_CT_REPLIED];
-#endif /*KERNEL_VERSION(4, 9, 0)*/
 				spin_unlock_bh(&ct->lock);
+#endif
 			}
 		}
 		break;
@@ -1001,6 +1031,9 @@ static int __init sfe_cm_init(void)
 {
 	struct sfe_cm *sc = &__sc;
 	int result = -1;
+#ifdef CONFIG_SFE_ECM
+	int (*fast_recv)(struct sk_buff *skb);
+#endif
 
 	DEBUG_INFO("SFE CM init\n");
 
@@ -1036,7 +1069,11 @@ static int __init sfe_cm_init(void)
 	/*
 	 * Register our netfilter hooks.
 	 */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
+	result = nf_register_hooks(sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#else
 	result = nf_register_net_hooks(&init_net, sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#endif
 	if (result < 0) {
 		DEBUG_ERROR("can't register nf post routing hook: %d\n", result);
 		goto exit3;
@@ -1049,22 +1086,30 @@ static int __init sfe_cm_init(void)
 	 */
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
 #ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
-	(void)nf_conntrack_register_chain_notifier(&init_net, &sfe_cm_conntrack_notifier);
+	result = nf_conntrack_register_chain_notifier(&init_net, &sfe_cm_conntrack_notifier);
 #else
 	result = nf_conntrack_register_notifier(&init_net, &sfe_cm_conntrack_notifier);
+#endif
 	if (result < 0) {
 		DEBUG_ERROR("can't register nf notifier hook: %d\n", result);
 		goto exit4;
 	}
 #endif
-#endif
-
 	spin_lock_init(&sc->lock);
 
 	/*
 	 * Hook the receive path in the network stack.
 	 */
+#ifdef CONFIG_SFE_ECM
+	rcu_read_lock();
+	fast_recv = rcu_dereference(athrs_fast_nat_recv);
+	rcu_read_unlock();
+	if (!fast_recv) {
+		BUG_ON(athrs_fast_nat_recv);
+	}
+#else
 	BUG_ON(athrs_fast_nat_recv);
+#endif
 	RCU_INIT_POINTER(athrs_fast_nat_recv, sfe_cm_recv);
 
 	/*
@@ -1075,9 +1120,14 @@ static int __init sfe_cm_init(void)
 	return 0;
 
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
-#ifndef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
 exit4:
+#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
+	nf_unregister_hooks(sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#else
 	nf_unregister_net_hooks(&init_net, sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#endif
+
 #endif
 #endif
 exit3:
@@ -1129,8 +1179,12 @@ static void __exit sfe_cm_exit(void)
 	nf_conntrack_unregister_notifier(&init_net, &sfe_cm_conntrack_notifier);
 #endif
 #endif
-	nf_unregister_net_hooks(&init_net, sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
+	nf_unregister_hooks(sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#else
+	nf_unregister_net_hooks(&init_net, sfe_cm_ops_post_routing, ARRAY_SIZE(sfe_cm_ops_post_routing));
+#endif
 	unregister_inet6addr_notifier(&sc->inet6_notifier);
 	unregister_inetaddr_notifier(&sc->inet_notifier);
 	unregister_netdevice_notifier(&sc->dev_notifier);
