@@ -336,9 +336,6 @@ int rtl8125_get_rxfh(struct net_device *dev, u32 *indir, u8 *key,
         return 0;
 }
 
-#define RSS_KEY_8125 0x4600
-#define RSS_INDIRECTION_TBL_8125_V2 0x4700
-
 static u32 rtl8125_rss_key_reg(struct rtl8125_private *tp)
 {
         return RSS_KEY_8125;

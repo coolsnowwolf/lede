@@ -38,6 +38,9 @@
 #include <linux/netdevice.h>
 #include <linux/types.h>
 
+#define RTL8125_RSS_KEY_SIZE     40  /* size of RSS Hash Key in bytes */
+#define RTL8125_MAX_INDIRECTION_TABLE_ENTRIES 128
+
 enum rtl8125_rss_flag {
         RTL_8125_RSS_FLAG_HASH_UDP_IPV4  = (1 << 0),
         RTL_8125_RSS_FLAG_HASH_UDP_IPV6  = (1 << 1),
