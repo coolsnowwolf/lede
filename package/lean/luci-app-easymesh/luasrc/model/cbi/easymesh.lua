@@ -67,4 +67,49 @@ o = s:option(Value, "key", translate("Key"))
 o.default = "easymesh"
 o:depends("encryption", 1)
 
+---- kvr
+enable = s:option(Flag, "kvr", translate("K/V/R"), translate(""))
+enable.default = 1
+enable.rmempty = false
+
+o = s:option(Value, "mobility_domain", translate("Mobility Domain"), translate("4-character hexadecimal ID"))
+o.default = "4f57"
+o.datatype = "and(hexstring,rangelength(4,4))"
+o:depends("kvr", 1)
+
+o = s:option(Value, "rssi_val", translate("Threshold for an good RSSI"))
+o.default = "-60"
+o.atatype = "range(-20,-120)"
+o:depends("kvr", 1)
+
+o = s:option(Value, "low_rssi_val", translate("Threshold for an bad RSSI"))
+o.default = "-88"
+o.atatype = "range(-20,-120)"
+o:depends("kvr", 1)
+
+---- ap_mode
+enable = s:option(Flag, "ap_mode", translate("AP MODE Enable"), translate("Enable or disable AP MODE"))
+enable.default = 0
+enable.rmempty = false
+
+o = s:option(Value, "ipaddr", translate("IPv4-Address"))
+o.default = "192.168.1.10"
+o.datatype = "ip4addr"
+o:depends("ap_mode", 1)
+
+o = s:option(Value, "netmask", translate("IPv4 netmask"))
+o.default = "255.255.255.0"
+o.datatype = "ip4addr"
+o:depends("ap_mode", 1)
+
+o = s:option(Value, "gateway", translate("IPv4 gateway"))
+o.default = "192.168.1.1"
+o.datatype = "ip4addr"
+o:depends("ap_mode", 1)
+
+o = s:option(Value, "dns", translate("Use custom DNS servers"))
+o.default = "192.168.1.1"
+o.datatype = "ip4addr"
+o:depends("ap_mode", 1)
+
 return m
