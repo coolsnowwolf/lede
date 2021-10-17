@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ncurses
 PKG_VERSION:=6.2
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
@@ -128,6 +128,8 @@ ifneq ($(HOST_OS),FreeBSD)
 		r/rxvt-unicode \
 		s/screen \
 		s/screen-256color \
+		t/tmux \
+		t/tmux-256color \
 		v/vt100 \
 		v/vt102 \
 		x/xterm \
