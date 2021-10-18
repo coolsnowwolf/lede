@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=aliyundrive-webdav
-PKG_VERSION:=0.4.0
+PKG_VERSION:=0.4.7
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -22,7 +22,7 @@ ifeq ($(ARCH),i386)
   PKG_ARCH:=i686
 endif
 
-PKG_SOURCE:=aliyundrive-webdav-$(PKG_ARCH)-unknown-linux-$(PKG_LIBC).tar.gz
+PKG_SOURCE:=aliyundrive-webdav-v$(PKG_VERSION).$(PKG_ARCH)-unknown-linux-$(PKG_LIBC).tar.gz
 PKG_SOURCE_URL:=https://github.com/messense/aliyundrive-webdav/releases/download/v$(PKG_VERSION)/
 PKG_HASH:=skip
 
