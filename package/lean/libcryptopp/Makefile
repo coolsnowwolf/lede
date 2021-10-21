@@ -27,11 +27,11 @@ define Package/libcryptopp
   SECTION:=libs
   CATEGORY:=Libraries
   DEPENDS:=+libpthread +libstdcpp
-  TITLE:=Crypto++ is library for creating C++ programs which use cryptographic algorithms
+  TITLE:=Free C++ class library of cryptographic schemes
   URL:=http://packages.debian.org/sid/libcrypto++-dev
 endef
 
-define Package/package/libcryptopp
+define Package/libcryptopp/description
   Crypto++ is library for creating C++ programs which use cryptographic algorithms.
   The library uses a Pipes & Filters architecture with heavy use of templates and
   abstract base classes.
@@ -43,15 +43,18 @@ endef
 
 #TARGET_LDFLAGS += \
 #	-lpthread
+
 CMAKE_OPTIONS += -DCMAKE_CXX_FLAGS="$(FPIC)"
 CMAKE_OPTIONS += -DBUILD_STATIC=ON
 CMAKE_OPTIONS += -DBUILD_SHARED=ON
 
 UNPACK_CMD=cd $(PKG_BUILD_DIR) && unzip "$(DL_DIR)/$(PKG_SOURCE)"
+
 define Build/Prepare
 	$(Build/Prepare/Default)
-	cd $(PKG_BUILD_DIR) && rm -f GNUmakefile GNUmakefile-cross 
+	cd $(PKG_BUILD_DIR) && rm -f GNUmakefile GNUmakefile-cross
 endef
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/cryptopp
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/cryptopp/* $(1)/usr/include/cryptopp/
