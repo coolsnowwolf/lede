@@ -55,6 +55,10 @@ void hostapd_ubus_notify_beacon_report(struct hostapd_data *hapd,
 void hostapd_ubus_notify_radar_detected(struct hostapd_iface *iface, int frequency,
 					int chan_width, int cf1, int cf2);
 
+void hostapd_ubus_notify_bss_transition_response(
+	struct hostapd_data *hapd, const u8 *addr, u8 dialog_token, u8 status_code,
+	u8 bss_termination_delay, const u8 *target_bssid,
+	const u8 *candidate_list, u16 candidate_list_len);
 void hostapd_ubus_add(struct hapd_interfaces *interfaces);
 void hostapd_ubus_free(struct hapd_interfaces *interfaces);
 
@@ -104,6 +108,13 @@ static inline void hostapd_ubus_notify_beacon_report(struct hostapd_data *hapd,
 }
 static inline void hostapd_ubus_notify_radar_detected(struct hostapd_iface *iface, int frequency,
 						      int chan_width, int cf1, int cf2)
+{
+}
+
+static inline void hostapd_ubus_notify_bss_transition_response(
+	struct hostapd_data *hapd, const u8 *addr, u8 dialog_token, u8 status_code,
+	u8 bss_termination_delay, const u8 *target_bssid,
+	const u8 *candidate_list, u16 candidate_list_len)
 {
 }
 
