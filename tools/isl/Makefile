@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=isl
 PKG_VERSION:=0.24
 
-PKG_SOURCE_URL:=http://isl.gforge.inria.fr
+PKG_SOURCE_URL:=https://libisl.sourceforge.io/
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_HASH:=043105cc544f416b48736fff8caf077fb0663a717d06b1113f16e391ac99ebad
 
