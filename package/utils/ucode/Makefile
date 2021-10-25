@@ -12,9 +12,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/jow-/ucode.git
-PKG_SOURCE_DATE:=2021-07-30
-PKG_SOURCE_VERSION:=929c8627cf077c3e348fb12b02553d4a444c5e48
-PKG_MIRROR_HASH:=
+PKG_SOURCE_DATE:=2021-10-25
+PKG_SOURCE_VERSION:=a7976c2802a9da737f62bec496c7115211c442a7
+PKG_MIRROR_HASH:=6bc3ddeef41d68fd96894957356472e576c625fcf7277cbb36aa464b8d3c274d
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=ISC
 
@@ -76,6 +76,39 @@ define Package/ucode-mod-math/description
 endef
 
 
+define Package/ucode-mod-nl80211
+  $(Package/ucode/default)
+  TITLE+= (nl80211 module)
+  DEPENDS:=ucode +libnl-tiny
+endef
+
+define Package/ucode-mod-nl80211/description
+ The nl80211 plugin provides access to the Linux wireless 802.11 netlink API.
+endef
+
+
+define Package/ucode-mod-resolv
+  $(Package/ucode/default)
+  TITLE+= (resolv module)
+  DEPENDS:=ucode
+endef
+
+define Package/ucode-mod-resolv/description
+ The resolv plugin implements simple DNS resolving.
+endef
+
+
+define Package/ucode-mod-rtnl
+  $(Package/ucode/default)
+  TITLE+= (rtnl module)
+  DEPENDS:=ucode +libnl-tiny
+endef
+
+define Package/ucode-mod-rtnl/description
+ The rtnl plugin provides access to the Linux routing netlink API.
+endef
+
+
 define Package/ucode-mod-ubus
   $(Package/ucode/default)
   TITLE+= (ubus module)
@@ -126,6 +159,21 @@ define Package/ucode-mod-math/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/ucode/math.so $(1)/usr/lib/ucode/
 endef
 
+define Package/ucode-mod-nl80211/install
+	$(INSTALL_DIR) $(1)/usr/lib/ucode
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/ucode/nl80211.so $(1)/usr/lib/ucode/
+endef
+
+define Package/ucode-mod-resolv/install
+	$(INSTALL_DIR) $(1)/usr/lib/ucode
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/ucode/resolv.so $(1)/usr/lib/ucode/
+endef
+
+define Package/ucode-mod-rtnl/install
+	$(INSTALL_DIR) $(1)/usr/lib/ucode
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/ucode/rtnl.so $(1)/usr/lib/ucode/
+endef
+
 define Package/ucode-mod-ubus/install
 	$(INSTALL_DIR) $(1)/usr/lib/ucode
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/ucode/ubus.so $(1)/usr/lib/ucode/
@@ -141,5 +189,8 @@ $(eval $(call BuildPackage,ucode))
 $(eval $(call BuildPackage,libucode))
 $(eval $(call BuildPackage,ucode-mod-fs))
 $(eval $(call BuildPackage,ucode-mod-math))
+$(eval $(call BuildPackage,ucode-mod-nl80211))
+$(eval $(call BuildPackage,ucode-mod-resolv))
+$(eval $(call BuildPackage,ucode-mod-rtnl))
 $(eval $(call BuildPackage,ucode-mod-ubus))
 $(eval $(call BuildPackage,ucode-mod-uci))
