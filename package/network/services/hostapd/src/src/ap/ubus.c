@@ -425,6 +425,7 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 
 	blobmsg_add_u32(&b, "freq", hapd->iface->freq);
 	blobmsg_add_u32(&b, "channel", ieee80211_frequency_to_channel(hapd->iface->freq));
+	blobmsg_add_u32(&b, "beacon_interval", hapd->iconf->beacon_int);
 
 	snprintf(phy_name, 17, "%s", hapd->iface->phy);
 	blobmsg_add_string(&b, "phy", phy_name);
