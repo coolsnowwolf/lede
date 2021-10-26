@@ -294,12 +294,18 @@ sub parse_package_metadata($) {
 			my @ugspecs = split /\s+/, $1;
 
 			for my $ugspec (@ugspecs) {
-				my @ugspec = split /:/, $ugspec, 2;
+				my @ugspec = split /:/, $ugspec, 3;
 				if ($ugspec[0]) {
 					parse_package_metadata_usergroup($src->{makefile}, "user", \%usernames, \%userids, $ugspec[0]) or return 0;
 				}
 				if ($ugspec[1]) {
 					parse_package_metadata_usergroup($src->{makefile}, "group", \%groupnames, \%groupids, $ugspec[1]) or return 0;
+				}
+				if ($ugspec[2]) {
+					my @addngroups = split /,/, $ugspec[2];
+					for my $addngroup (@addngroups) {
+						parse_package_metadata_usergroup($src->{makefile}, "group", \%groupnames, \%groupids, $addngroup) or return 0;
+					}
 				}
 			}
 		};
