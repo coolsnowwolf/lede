@@ -755,7 +755,7 @@ hostapd_set_bss_options() {
 	}
 
 	append bss_conf "ssid=$ssid" "$N"
-	[ -n "$network_bridge" ] && append bss_conf "bridge=$network_bridge" "$N"
+	[ -n "$network_bridge" ] && append bss_conf "bridge=$network_bridge${N}wds_bridge=" "$N"
 	[ -n "$network_ifname" ] && append bss_conf "snoop_iface=$network_ifname" "$N"
 	[ -n "$iapp_interface" ] && {
 		local ifname

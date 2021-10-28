@@ -32,12 +32,18 @@ a=s:option(Value, "soc_code", "自定义温度读取命令")
 a.rmempty = true 
 a:value("",translate("默认"))
 a:value("pve",translate("PVE 虚拟机"))
-a.description = translate("请尽量避免使用特殊符号，如双引号、$、!等，执行结果需为数字，用于温度对比")
+a.description = translate("自定义命令如需使用特殊符号，如引号、$、!等，则需要自行转义，并在保存后查看 /etc/config/serverchan 文件 soc_code 设置项是否保存正确<br/>可以使用 eval `echo $(uci get serverchan.serverchan.soc_code)` 命令查看命令输出及错误信息<br/>执行结果需为纯数字（可带小数），用于温度对比")
 
 a=s:option(Value,"server_host",translate("宿主机地址"))
 a.rmempty=true
 a.default="10.0.0.2"
-a.description = translate("请确认已经设置好密钥登陆，否则会引起脚本无法运行等错误！<br/>PVE 安装 sensors 命令自行百度<br/>密钥登陆例：<br/>opkg update #更新列表<br/>opkg install openssh-client openssh-keygen #安装openssh客户端<br/>ssh-keygen -t rsa # 生成密钥文件（自行设定密码等信息）<br/>ssh root@10.0.0.2 \"tee -a ~/.ssh/id_rsa.pub\" < ~/.ssh/id_rsa.pub # 传送公钥到 PVE<br/>ssh root@10.0.0.2 \"cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys\" # 写入公钥到 PVE<br/>ssh -i ~/.ssh/id_rsa root@10.0.0.2 sensors # 测试温度命令")
+a.description = translate("")
+a:depends({soc_code="pve"})
+
+a=s:option(Value,"server_port",translate("宿主机 SSH 端口"))
+a.rmempty=true
+a.default="22"
+a.description = translate("SSH 端口默认为 22，如有自定义，请填写自定义 SSH 端口<br/>请确认已经设置好密钥登陆，否则会引起脚本无法运行等错误！<br/>PVE 安装 sensors 命令自行百度<br/>密钥登陆例（自行修改地址与端口号）：<br/>opkg update #更新列表<br/>opkg install openssh-client openssh-keygen #安装openssh客户端<br/>ssh-keygen -t rsa # 生成密钥文件（自行设定密码等信息）<br/>ssh root@10.0.0.2 -p 22 \"tee -a ~/.ssh/id_rsa.pub\" < ~/.ssh/id_rsa.pub # 传送公钥到 PVE<br/>ssh root@10.0.0.2 -p 22 \"cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys\" # 写入公钥到 PVE<br/>ssh -i /root/.ssh/id_rsa root@10.0.0.2 -p 22 sensors # 使用私钥连接 PVE 测试温度命令")
 a:depends({soc_code="pve"})
 
 a=s:option(Button,"soc",translate("测试温度命令"))
