@@ -1,0 +1,191 @@
+From 095bad7f310809a951735d03be9d06938524a6bc Mon Sep 17 00:00:00 2001
+From: Assaf Gordon <assafgordon@gmail.com>
+Date: Fri, 12 Mar 2021 00:13:07 -0700
+Subject: [PATCH] overlays: gpio-led: new overlay
+
+Add generic connection between the kernel's LED framework and
+RPI's GPIO pins.
+
+Signed-off-by: Assaf Gordon <assafgordon@gmail.com>
+---
+ arch/arm/boot/dts/overlays/Makefile           |  1 +
+ arch/arm/boot/dts/overlays/README             | 56 +++++++++++
+ .../boot/dts/overlays/gpio-led-overlay.dts    | 97 +++++++++++++++++++
+ 3 files changed, 154 insertions(+)
+ create mode 100755 arch/arm/boot/dts/overlays/gpio-led-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -54,6 +54,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	gpio-ir.dtbo \
+ 	gpio-ir-tx.dtbo \
+ 	gpio-key.dtbo \
++	gpio-led.dtbo \
+ 	gpio-no-bank0-irq.dtbo \
+ 	gpio-no-irq.dtbo \
+ 	gpio-poweroff.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -914,6 +914,62 @@ Params: gpio                    GPIO pin
+         keycode                 Set the key code for the button
+ 
+ 
++
++Name:   gpio-led
++Info:   This is a generic overlay for activating LEDs (or any other component)
++        by a GPIO pin. Multiple LEDs can be set up using multiple calls to the
++        overlay. While there are many existing methods to activate LEDs on the
++        RPi, this method offers some advantages:
++        1) Does not require any userspace programs.
++        2) LEDs can be connected to the kernel's led-trigger framework,
++           and drive the LED based on triggers such as cpu load, heartbeat,
++           kernel panic, key input, timers and others.
++        3) LED can be tied to the input state of another GPIO pin.
++        4) The LED is setup early during the kernel boot process (useful
++           for cpu/heartbeat/panic triggers).
++
++        Typical electrical connection is:
++           RPI-GPIO.19  ->  LED  -> 300ohm resister  -> RPI-GND
++        The GPIO pin number can be changed with the 'gpio=' parameter.
++
++        To control an LED from userspace, write a 0 or 1 value:
++           echo 1 > /sys/class/leds/myled1/brightness
++        The 'myled1' name can be changed with the 'label=' parameter.
++
++        To connect the LED to a kernel trigger from userspace:
++           echo cpu > /sys/class/leds/myled1/trigger
++           echo heartbeat > /sys/class/leds/myled1/trigger
++           echo none > /sys/class/leds/myled1/trigger
++        To connect the LED to GPIO.26 pin (physical pin 37):
++           echo gpio > /sys/class/leds/myled1/trigger
++           echo 26 > /sys/class/leds/myled1/gpio
++        Available triggers:
++           cat /sys/class/leds/myled1/trigger
++
++        More information about the Linux kernel LED/Trigger system:
++           https://www.kernel.org/doc/Documentation/leds/leds-class.rst
++           https://www.kernel.org/doc/Documentation/leds/ledtrig-oneshot.rst
++Load:   dtoverlay=gpio-led,<param>=<val>
++Params: gpio                    GPIO pin connected to the LED (default 19)
++        label                   The label for this LED. It will appear under
++                                /sys/class/leds/<label> . Default 'myled1'.
++        trigger                 Set the led-trigger to connect to this LED.
++                                default 'none' (LED is user-controlled).
++                                Some possible triggers:
++                                 cpu - CPU load (all CPUs)
++                                 cpu0 - CPU load of first CPU.
++                                 mmc - disk activity (all disks)
++                                 panic - turn on on kernel panic
++                                 heartbeat - indicate system health
++                                 gpio - connect to a GPIO input pin (note:
++                                        currently the GPIO PIN can not be set
++                                        using overlay parameters, must be
++                                        done in userspace, see examples above.
++        active_low              Set to 1 to turn invert the LED control
++                                (writing 0 to /sys/class/leds/XXX/brightness
++                                will turn on the GPIO/LED). Default '0'.
++
++
+ Name:   gpio-no-bank0-irq
+ Info:   Use this overlay to disable GPIO interrupts for GPIOs in bank 0 (0-27),
+         which can be useful for UIO drivers.
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/gpio-led-overlay.dts
+@@ -0,0 +1,97 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * gpio-led - generic connection of kernel's LED framework to the RPI's GPIO.
++ * Copyright (C) 2021 House Gordon Software Company Ltd. <assafgordon@gmail.com>
++ *
++ * Based on information from:
++ *   https://mjoldfield.com/atelier/2017/03/rpi-devicetree.html
++ *   https://www.raspberrypi.org/documentation/configuration/device-tree.md
++ *   https://www.kernel.org/doc/html/latest/leds/index.html
++ *
++ * compile with:
++ *   dtc -@ -Hepapr -I dts -O dtb -o gpio-led.dtbo gpio-led-overlay.dts
++ *
++ * There will be some warnings (can be ignored):
++ *  Warning (label_is_string): /__overrides__:label: property is not a string
++ *  Warning (unit_address_vs_reg): /fragment@0/__overlay__/led_pins@0:
++ *                                 node has a unit name, but no reg property
++ *  Warning (unit_address_vs_reg): /fragment@1/__overlay__/leds@0:
++ *                                 node has a unit name, but no reg property
++ *  Warning (gpios_property): /__overrides__: Missing property
++ *                 '#gpio-cells' in node /fragment@1/__overlay__/leds@0/led
++ *                  or bad phandle (referred from gpio[0])
++ *
++ * Typical electrical connection is:
++ *    RPI-GPIO.19  ->  LED  -> 300ohm resister  -> RPI-GND
++ *    The GPIO pin number can be changed with the 'gpio=' parameter.
++ *
++ * Test from user-space with:
++ *   # if nothing is shown, the overlay file isn't found in /boot/overlays
++ *   dtoverlay -a | grep gpio-led
++ *
++ *   # Load the overlay
++ *   dtoverlay gpio-led label=moo gpio=19
++ *
++ *   # if nothing is shown, the overlay wasn't loaded successfully
++ *   dtoverlay -l | grep gpio-led
++ *
++ *   echo 1 > /sys/class/leds/moo/brightness
++ *   echo 0 > /sys/class/leds/moo/brightness
++ *   echo cpu > /sys/class/leds/moo/trigger
++ *   echo heartbeat > /sys/class/leds/moo/trigger
++ *
++ *   # unload the overlay
++ *   dtoverlay -r gpio-led
++ *
++ * To load in /boot/config.txt add lines such as:
++ *   dtoverlay=gpio-led,gpio=19,label=heart,trigger=heartbeat
++ *   dtoverlay=gpio-led,gpio=26,label=brain,trigger=cpu
++ */
++
++/dts-v1/;
++/plugin/;
++
++/ {
++	compatible = "brcm,bcm2835";
++
++	fragment@0 {
++		// Configure the gpio pin controller
++		target = <&gpio>;
++		__overlay__ {
++			led_pin: led_pins@19 {
++				brcm,pins = <19>; // gpio number
++				brcm,function = <1>; // 0 = input, 1 = output
++				brcm,pull = <0>; // 0 = none, 1 = pull down, 2 = pull up
++			};
++		};
++	};
++	fragment@1 {
++		target-path = "/";
++		__overlay__ {
++			leds: leds@0 {
++				compatible = "gpio-leds";
++				pinctrl-names = "default";
++				pinctrl-0 = <&led_pin>;
++				status = "okay";
++
++				led: led {
++			                label = "myled1";
++					gpios = <&gpio 19 0>;
++			                linux,default-trigger = "none";
++				};
++			};
++		};
++	};
++
++	__overrides__ {
++		gpio =       <&led>,"gpios:4",
++		             <&leds>,"reg:0",
++		             <&led_pin>,"brcm,pins:0",
++		             <&led_pin>,"reg:0";
++		label =      <&led>,"label";
++		active_low = <&led>,"gpios:8";
++		trigger =    <&led>,"linux,default-trigger";
++	};
++
++};
++

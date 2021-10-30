@@ -11,12 +11,12 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=wireguard-tools
 
-PKG_VERSION:=1.0.20210424
+PKG_VERSION:=1.0.20210914
 PKG_RELEASE:=2
 
 PKG_SOURCE:=wireguard-tools-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://git.zx2c4.com/wireguard-tools/snapshot/
-PKG_HASH:=b288b0c43871d919629d7e77846ef0b47f8eeaa9ebc9cedeee8233fc6cc376ad
+PKG_HASH:=97ff31489217bb265b7ae850d3d0f335ab07d2652ba1feec88b734bc96bd05ac
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=COPYING
