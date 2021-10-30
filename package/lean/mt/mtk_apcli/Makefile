@@ -1,28 +1,16 @@
-
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mtk_apcli
 PKG_RELEASE:=2
 
-PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/mtk_apcli
-	SECTION:=net
+  SECTION:=net
   CATEGORY:=Network
-	TITLE:=apcli for MTK
-	DEPENDS:=+libiwinfo
-endef
-
-define Package/mtk_apcli/description
-	apcli for MTK
-endef
-
-
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./src/* $(PKG_BUILD_DIR)/
+  SUBMENU:=Wireless
+  TITLE:=apcli for MTK
+  DEPENDS:=@TARGET_ramips +libiwinfo
 endef
 
 define Package/mtk_apcli/install
