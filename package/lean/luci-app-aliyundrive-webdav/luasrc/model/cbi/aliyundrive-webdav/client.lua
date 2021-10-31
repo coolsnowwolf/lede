@@ -1,8 +1,9 @@
 local uci = luci.model.uci.cursor()
 local m, e
 
-m = Map("aliyundrive-webdav", translate("AliyunDrive WebDAV"),
-        translate("<a href=\"https://github.com/messense/aliyundrive-webdav\" target=\"_blank\">Project GitHub URL</a>"))
+m = Map("aliyundrive-webdav")
+m.title = translate("AliyunDrive WebDAV")
+m.description = translate("<a href=\"https://github.com/messense/aliyundrive-webdav\" target=\"_blank\">Project GitHub URL</a>")
 
 m:section(SimpleSection).template = "aliyundrive-webdav/aliyundrive-webdav_status"
 
@@ -12,11 +13,11 @@ e.anonymous = true
 enable = e:option(Flag, "enable", translate("Enable"))
 enable.rmempty = false
 
-refresh_token = e:option(Value, "refresh_token", translate("Refresh Token"),
-        translate("<a href=\"https://github.com/messense/aliyundrive-webdav#%E8%8E%B7%E5%8F%96-refresh_token\" target=\"_blank\">How to get refresh token</a>"))
+refresh_token = e:option(Value, "refresh_token", translate("Refresh Token"))
+refresh_token.description = translate("<a href=\"https://github.com/messense/aliyundrive-webdav#%E8%8E%B7%E5%8F%96-refresh_token\" target=\"_blank\">How to get refresh token</a>")
 
-root = e:option(Value, "root", translate("Root Directory"),
-        translate("Restrict access to a folder of aliyundrive, defaults to / which means no restrictions"))
+root = e:option(Value, "root", translate("Root Directory"))
+root.description = translate("Restrict access to a folder of aliyundrive, defaults to / which means no restrictions")
 root.default = "/"
 
 host = e:option(Value, "host", translate("Host"))
@@ -45,6 +46,9 @@ cache_ttl.datatype = "uinteger"
 
 no_trash = e:option(Flag, "no_trash", translate("Delete file permanently instead of trashing"))
 no_trash.rmempty = false
+
+domain_id = e:option(Value, "domain_id", translate("Domain ID"))
+domain_id.description = translate("Input domain_id option will use <a href=\"https://www.aliyun.com/product/storage/pds\" target=\"_blank\">Aliyun PDS</a> instead of <a href=\"https://www.aliyundrive.com\" target=\"_blank\">AliyunDrive</a>")
 
 debug = e:option(Flag, "debug", translate("Debug Mode"))
 debug.rmempty = false
