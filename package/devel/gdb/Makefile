@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gdb
-PKG_VERSION:=10.2
+PKG_VERSION:=11.1
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gdb
-PKG_HASH:=aaa1223d534c9b700a8bec952d9748ee1977513f178727e1bee520ee000b4f29
+PKG_HASH:=cccfcc407b20d343fb320d4a9a2110776dd3165118ffd41f4b1b162340333f94
 
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
@@ -26,7 +26,7 @@ include $(INCLUDE_DIR)/nls.mk
 define Package/gdb/Default
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:=+!USE_MUSL:libthread-db $(ICONV_DEPENDS) $(INTL_DEPENDS)
+  DEPENDS:=+!USE_MUSL:libthread-db $(ICONV_DEPENDS) $(INTL_DEPENDS) +libgmp
   URL:=https://www.gnu.org/software/gdb/
 endef
 
