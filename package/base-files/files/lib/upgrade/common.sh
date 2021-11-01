@@ -228,15 +228,6 @@ hex_le32_to_cpu() {
 	echo "$@"
 }
 
-get_partition_by_name() {
-	for partname in /sys/class/block/$1/*/name; do
-		[ "$(cat ${partname})" = "$2" ] && {
-			basename ${partname%%/name}
-			break
-		}
-	done
-}
-
 get_partitions() { # <device> <filename>
 	local disk="$1"
 	local filename="$2"
