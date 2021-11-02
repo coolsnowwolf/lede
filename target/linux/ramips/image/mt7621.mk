@@ -251,37 +251,6 @@ define Device/asus_rt-n56u-b1
 endef
 TARGET_DEVICES += asus_rt-n56u-b1
 
-define Device/beeline_smartbox-giga
-  $(Device/dsa-migration)
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  IMAGE_SIZE := 24576k
-  KERNEL_SIZE := 6144k
-  UBINIZE_OPTS := -E 5
-  LOADER_TYPE := bin
-  KERNEL_LOADADDR := 0x81001000
-  LZMA_TEXT_START := 0x82800000
-  KERNEL := kernel-bin | append-dtb | lzma | loader-kernel | lzma | \
-	uImage lzma | sercomm-kernel
-  KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | loader-kernel | \
-	lzma | uImage lzma
-  IMAGES += kernel0.bin rootfs0.bin factory.img
-  IMAGE/kernel0.bin := append-kernel
-  IMAGE/rootfs0.bin := append-ubi | check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  IMAGE/factory.img := append-ubi | beeline-sbgiga-factory kernel rootfs
-  SERCOMM_KERNEL_OFFSET := 0x400100
-  SERCOMM_ROOTFS_OFFSET := 0x1000000
-  SERCOMM_HWID=444245
-  SERCOMM_HWVER=00010100
-  SERCOMM_SWVER=1001
-  DEVICE_VENDOR := Beeline
-  DEVICE_MODEL := SmartBox GIGA
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap \
-	kmod-usb3 uboot-envtools
-endef
-TARGET_DEVICES += beeline_smartbox-giga
-
 define Device/beeline_smartbox-turbo-plus
   $(Device/dsa-migration)
   BLOCKSIZE := 128k
@@ -298,9 +267,7 @@ define Device/beeline_smartbox-turbo-plus
   KERNEL_INITRAMFS := kernel-bin | append-dtb | lzma | loader-kernel | \
   lzma | uImage lzma
   LOADER_TYPE := bin
-  IMAGES += kernel.bin rootfs.bin factory.img
-  IMAGE/kernel.bin := append-kernel
-  IMAGE/rootfs.bin := append-ubi | check-size
+  IMAGES += factory.img
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   SERCOMM_HWID := 435152
   SERCOMM_HWVER := 0001
@@ -308,8 +275,8 @@ define Device/beeline_smartbox-turbo-plus
   IMAGE/factory.img := append-ubi | sercomm-tag-factory
   DEVICE_VENDOR := Beeline
   DEVICE_MODEL := SmartBox TURBO+
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e kmod-mt7615-firmware kmod-usb3 \
-  uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
+	-wpad-openssl kmod-usb3 uboot-envtools
 endef
 TARGET_DEVICES += beeline_smartbox-turbo-plus
 
