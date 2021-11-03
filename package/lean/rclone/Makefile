@@ -6,12 +6,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=rclone
-PKG_VERSION:=1.56.2
+PKG_VERSION:=1.57.0
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/rclone/rclone/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=a5b0b7dfe17d9ec74e3a33415eec4331c61d800d8823621e61c6164e8f88c567
+PKG_HASH:=294f7a6b0874509997d3a9ffae7c74f0c45b687df0ac7d7742f284ad3814fe55
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILE:=LICENSE
@@ -80,9 +80,6 @@ endif
 define Package/rclone-config/conffiles
 /etc/config/rclone
 endef
-
-# Disable CGO due to ld linker issue
-GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=%,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 
 define Build/Compile
 	$(call GoPackage/Build/Compile)
