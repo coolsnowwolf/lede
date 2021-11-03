@@ -1,12 +1,13 @@
 #!/bin/sh /etc/rc.common
-# Copyright (C) 2019 ElonH <elonhhuang@gmail.com>
+# Copyright (C) 2019 Elon Huang <elonhhuang@gmail.com>
 
 USE_PROCD=1
+
 START=95
 STOP=10
 
-APP=rclone
-CONFIGURATION=rclone
+APP="rclone"
+CONFIGURATION="rclone"
 
 _info() {
 	logger -p daemon.info -t "$APP" "$*"
@@ -16,86 +17,82 @@ _err() {
 	logger -p daemon.err -t "$APP" "$*"
 }
 
-init_config() {
+start_service() {
 	config_load "${CONFIGURATION}"
-	# Create rclone dirs
-	local config_path
-	local config_dir
-	local log_path
-	local log_dir
+
+	local enabled
+	config_get_bool enabled global enabled
+	if [ "$enabled" -ne "1" ]; then
+		_info 'Instance "rclone" is disabled.'
+		return 1
+	else
+		_info 'Instance "rclone" is starting.'
+	fi
+
+	local config_path log_path
+	local addr addr_type port
+	local username password
+	local proxy_enable proxy_addr
 
 	config_get config_path config config_path
 	config_get log_path log path
 
-	config_dir=${config_path%/*}
-	[ -d "$config_dir" ] || mkdir -p "$config_dir" 2>/dev/null
-
-	[ -f "$config_path" ] || touch "$config_path"
-
-	[ -d "/lib/upgrade/keep.d" ] || mkdir -p /lib/upgrade/keep.d/luci-app-rclone 2>/dev/null
-	echo "$config_path" > /lib/upgrade/keep.d/luci-app-rclone
-
-	log_dir=${log_path%/*}
-	[ -d "$log_dir" ] || mkdir -p "$log_dir" 2>/dev/null && echo /dev/null > "$log_path"
-
-
-}
-
-start_service() {
-	init_config
-
-	local enabled
-	local config_path
-	local addr_type
-	local port
-	local username
-	local password
-	local proxy_enable
-	local proxy_addr
-	local log_path
-
-	config_get enabled global enabled
-
-	config_get config_path config config_path
 	config_get addr_type config addr_type
 	config_get port config port
+
 	config_get username config username
 	config_get password config password
 
-	config_get proxy_enable proxy enabled
+	config_get_bool proxy_enable proxy enabled
 	config_get proxy_addr proxy proxy_addr
 
-	config_get log_path log path
-
-	if [[ "${addr_type}" == "local" ]]; then
+	if [ "${addr_type}" = "local" ]; then
 		addr="$(uci get network.loopback.ipaddr)"
-	elif [[ "${addr_type}" == "lan" ]]; then
+	elif [ "${addr_type}" = "lan" ]; then
 		addr="$(uci get network.lan.ipaddr)"
-	elif [[ "${addr_type}" == "all" ]]; then
+	else
 		addr=""
 	fi
-	[ "$enabled" == "1" ] || { _info "Instance \"rclone\" disabled."; return 1; }
-	_info "Instance \"rclone\" start."
+
+	local config_dir="${config_path%/*}"
+	[ -d "$config_dir" ] || mkdir -p "$config_dir"
+	touch "${config_path}"
+	chown rclone "${config_path}"
+
+	[ -d "/lib/upgrade/keep.d" ] || mkdir -p "/lib/upgrade/keep.d/"
+	echo "$config_path" > "/lib/upgrade/keep.d/luci-app-rclone"
+
+	local log_dir="${log_path%/*}"
+	[ -d "$log_dir" ] || mkdir -p "$log_dir"
+	chown -R rclone:rclone "$log_dir"
+
 	procd_open_instance
+
 	procd_set_param command /usr/bin/$APP rcd -vv
 	procd_append_param command "--rc-addr=$addr:$port"
 	procd_append_param command "--rc-user=$username" "--rc-pass=$password"
 	procd_append_param command "--config=$config_path"
 	procd_append_param command "--rc-allow-origin=*"
 	procd_append_param command "--log-file=${log_path}"
-	if [[ "${proxy_enable}" == "1" ]]; then
+	if [ "${proxy_enable}" -eq "1" ]; then
 		procd_set_param    env all_proxy="$proxy_addr" https_proxy="$proxy_addr" http_proxy="$proxy_addr"
 		procd_append_param env ALL_PROXY="$proxy_addr" HTTPS_PROXY="$proxy_addr" HTTP_PROXY="$proxy_addr"
 	fi
+
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	procd_set_param file /etc/config/rclone
 	# procd_set_param pidfile /var/run/rclone.pid
+	procd_set_param respawn
+
 	procd_set_param user rclone
 	procd_set_param group rclone
-	procd_set_param respawn retry=60
-	procd_close_instance
 
+	procd_close_instance
+}
+
+reload_service() {
+	stop
+	start
 }
 
 service_triggers() {

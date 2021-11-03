@@ -51,7 +51,7 @@ function update()
     luci.http.write_json(e)
 end
 
-local User_Agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.111 Safari/537.36'
+local User_Agent='Mozilla/5.0 (iPad; CPU OS 12_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1'
 local Host='Host: plogin.m.jd.com'
 local Accept='Accept: application/json, text/plain, */*'
 local Accept_Language='Accept-Language: zh-cn'
