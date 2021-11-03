@@ -5,7 +5,9 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "vlmcsd"}, cbi("vlmcsd"), _("KMS Server"), 100).dependent = true
+	entry({"admin", "services", "vlmcsd"}, alias("admin", "services", "vlmcsd", "basic"), _("KMS Server"), 100).dependent = true
+	entry({"admin", "services", "vlmcsd", "basic"}, cbi("vlmcsd/basic"), _("Basic Setting"), 1).leaf = true
+	entry({"admin", "services", "vlmcsd", "config"}, cbi("vlmcsd/config"), _("Config File"), 2).leaf = true
 	entry({"admin", "services", "vlmcsd", "status"}, call("act_status")).leaf = true
 end
 

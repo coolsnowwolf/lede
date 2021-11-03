@@ -29,7 +29,7 @@ define Package/qtn-utils
   SECTION:=firmware
   CATEGORY:=Firmware
   TITLE:=Quantenna QV840 (QTS1000) Utilities
-  DEPENDS:=+libtirpc +tc +kmod-sched-act-vlan
+  DEPENDS:=+kmod-sched-act-vlan +libtirpc +tc
 endef
 
 define Package/qtn-utils/description
@@ -87,7 +87,6 @@ define Package/qtn-proto
 endef
 
 define Package/qtn-proto/install
-	echo "######################################### QTN-PROTO INSTALL #####################################"
 	$(INSTALL_DIR) $(1)/lib/wifi
 	$(INSTALL_DIR) $(1)/lib/netifd
 	$(INSTALL_DIR) $(1)/lib/netifd/wireless
@@ -100,7 +99,7 @@ define KernelPackage/qtn-pcie2
 	SECTION:=kernel
 	SUBMENU:=Wireless Drivers
 	TITLE:=Quantenna QV840 (QTS1000) pcie2 driver
-	DEPENDS:=+qtn-utils
+	DEPENDS:=@TARGET_ipq806x +qtn-utils
 	FILES:=$(PKG_BUILD_DIR)/drivers/pcie2/host/arm/qdpc-host.ko
 	AUTOLOAD:=$(call AutoProbe,qdpc-host)
 endef
@@ -110,17 +109,15 @@ define KernelPackage/qtn-pcie2/description
 endef
 
 define Build/Compile/qtn-pcie2
-	echo "######################################### PCIE2 DRIVER BUILD #####################################"
 	cd $(PKG_BUILD_DIR)/drivers/pcie2/host/arm
 	+$(MAKE) $(CT_MAKEDEFS) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-	$(KERNEL_MAKE_FLAGS) \
-	M="$(PKG_BUILD_DIR)/drivers/pcie2/host/arm" \
-	NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
-	modules
+		$(KERNEL_MAKE_FLAGS) \
+		M="$(PKG_BUILD_DIR)/drivers/pcie2/host/arm" \
+		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
+		modules
 endef
 
 $(eval $(call BuildPackage,qtn-utils))
 $(eval $(call BuildPackage,qtn-firmware))
 $(eval $(call BuildPackage,qtn-proto))
 $(eval $(call KernelPackage,qtn-pcie2))
-
