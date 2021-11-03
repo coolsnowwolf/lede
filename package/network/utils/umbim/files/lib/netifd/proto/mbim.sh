@@ -193,8 +193,9 @@ _proto_mbim_setup() {
 		mtu=$(awk '$1=="ipv6mtu:" {print $2}' "$config")
 		[ "$mtu" ] && ip -6 link set "$ifname" mtu "$mtu"
 
-		proto_add_ipv6_address "$ip" "$mask"
+		proto_add_ipv6_address "$ip" "128"
 		proto_add_ipv6_prefix "$ip_6"
+		proto_add_ipv6_route "$gateway" "128"
 		[ "$defaultroute" = 0 ] || proto_add_ipv6_route "::" 0 "$gateway" "$metric" "" "$ip_6"
 		[ "$peerdns" = 0 ] || {
 			dns_servers=$(awk '$1=="ipv6dnsserver:" {printf "%s ",$2}' "$config")
