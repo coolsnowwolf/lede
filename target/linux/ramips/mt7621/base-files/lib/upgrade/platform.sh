@@ -53,6 +53,8 @@ platform_do_upgrade() {
 	ampedwireless,ally-r1900k|\
 	asus,rt-ac65p|\
 	asus,rt-ac85p|\
+	beeline,smartbox-giga|\
+	beeline,smartbox-turbo-plus|\
 	dlink,dir-1960-a1|\
 	dlink,dir-2640-a1|\
 	dlink,dir-2660-a1|\
