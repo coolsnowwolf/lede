@@ -212,6 +212,10 @@ platform_do_upgrade() {
 			asus_nand_upgrade_tar 20951040 "$1"
 		fi
 		;;
+	zte,mf263)
+		PART_NAME=rootfs
+		nand_do_upgrade "$1"
+		;;
 	cellc,rtl30vw)
 		CI_UBIPART="ubifs"
 		askey_do_upgrade "$1"
