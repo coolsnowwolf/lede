@@ -26,14 +26,14 @@ include $(INCLUDE_DIR)/nls.mk
 define Package/gdb/Default
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:=+!USE_MUSL:libthread-db $(ICONV_DEPENDS) $(INTL_DEPENDS) +libgmp
+  DEPENDS:=+!USE_MUSL:libthread-db $(ICONV_DEPENDS) $(INTL_DEPENDS)
   URL:=https://www.gnu.org/software/gdb/
 endef
 
 define Package/gdb
 $(call Package/gdb/Default)
   TITLE:=GNU Debugger
-  DEPENDS+=+libreadline +libncurses +zlib
+  DEPENDS+=+libreadline +libncurses +zlib +libgmp
 endef
 
 define Package/gdb/description
