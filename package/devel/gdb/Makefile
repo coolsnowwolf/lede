@@ -62,7 +62,11 @@ CONFIGURE_ARGS+= \
 	--disable-ubsan \
 	--disable-sim \
 	--disable-werror \
-	--disable-source-highlight
+	--disable-source-highlight \
+	--without-mpc \
+	--without-mpfr \
+	--without-isl \
+	--with-libgmp-prefix=$(STAGING_DIR)/usr
 
 CONFIGURE_VARS+= \
 	ac_cv_search_tgetent="$(TARGET_LDFLAGS) -lncurses -lreadline"
