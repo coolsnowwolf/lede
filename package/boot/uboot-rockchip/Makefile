@@ -74,6 +74,16 @@ endef
 
 # RK3399 boards
 
+define U-Boot/guangmiao-g4c-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=GuangMiao G4C
+  BUILD_DEVICES:= \
+    huake-cloud_guangmiao-g4c
+  DEPENDS:=+PACKAGE_u-boot-guangmiao-g4c-rk3399:arm-trusted-firmware-rockchip
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
+  ATF:=rk3399_bl31.elf
+endef
+
 define U-Boot/nanopi-r4s-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=NanoPi R4S
@@ -106,6 +116,7 @@ define U-Boot/rockpro64-rk3399
 endef
 
 UBOOT_TARGETS := \
+  guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \

@@ -32,6 +32,16 @@ define Device/friendlyarm_nanopi-r4s
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4s
 
+define Device/huake-cloud_guangmiao-g4c
+  DEVICE_VENDOR := HuaKe Cloud
+  DEVICE_MODEL := GuangMiao G4C
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := guangmiao-g4c-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += huake-cloud_guangmiao-g4c
+
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
   DEVICE_MODEL := RockPro64
