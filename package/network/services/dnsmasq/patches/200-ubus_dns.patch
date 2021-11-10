@@ -1,0 +1,270 @@
+--- a/src/dnsmasq.h
++++ b/src/dnsmasq.h
+@@ -1564,14 +1564,26 @@ void emit_dbus_signal(int action, struct
+ 
+ /* ubus.c */
+ #ifdef HAVE_UBUS
++struct blob_attr;
++typedef void (*ubus_dns_notify_cb)(struct blob_attr *msg, void *priv);
++
+ char *ubus_init(void);
+ void set_ubus_listeners(void);
+ void check_ubus_listeners(void);
++void drop_ubus_listeners(void);
++struct blob_buf *ubus_dns_notify_prepare(void);
++int ubus_dns_notify(const char *type, ubus_dns_notify_cb cb, void *priv);
+ void ubus_event_bcast(const char *type, const char *mac, const char *ip, const char *name, const char *interface);
+ #  ifdef HAVE_CONNTRACK
+ void ubus_event_bcast_connmark_allowlist_refused(u32 mark, const char *name);
+ void ubus_event_bcast_connmark_allowlist_resolved(u32 mark, const char *pattern, const char *ip, u32 ttl);
+ #  endif
++#else
++struct blob_buf;
++static inline struct blob_buf *ubus_dns_notify_prepare(void)
++{
++	return NULL;
++}
+ #endif
+ 
+ /* ipset.c */
+--- a/src/rfc1035.c
++++ b/src/rfc1035.c
+@@ -13,8 +13,10 @@
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+-
+ #include "dnsmasq.h"
++#ifdef HAVE_UBUS
++#include <libubox/blobmsg.h>
++#endif
+ 
+ int extract_name(struct dns_header *header, size_t plen, unsigned char **pp, 
+ 		 char *name, int isExtract, int extrabytes)
+@@ -394,9 +396,64 @@ static int private_net6(struct in6_addr
+     ((u32 *)a)[0] == htonl(0x20010db8); /* RFC 6303 4.6 */
+ }
+ 
++#ifdef HAVE_UBUS
++static void ubus_dns_doctor_cb(struct blob_attr *msg, void *priv)
++{
++	static const struct blobmsg_policy policy = {
++		.name = "address",
++		.type = BLOBMSG_TYPE_STRING,
++	};
++	struct blob_attr *val;
++	char **dest = priv;
++
++	blobmsg_parse(&policy, 1, &val, blobmsg_data(msg), blobmsg_data_len(msg));
++	if (val)
++		*dest = blobmsg_get_string(val);
++}
++
++static bool ubus_dns_doctor(const char *name, int ttl, void *p, int af)
++{
++	struct blob_buf *b;
++	char *addr;
++
++	if (!name)
++		return false;
++
++	b = ubus_dns_notify_prepare();
++	if (!b)
++		return false;
++
++	blobmsg_add_string(b, "name", name);
++
++	blobmsg_add_u32(b, "ttl", ttl);
++
++	blobmsg_add_string(b, "type", af == AF_INET6 ? "AAAA" : "A");
++
++	addr = blobmsg_alloc_string_buffer(b, "address", INET6_ADDRSTRLEN);
++	if (!addr)
++		return false;
++
++	inet_ntop(af, p, addr, INET6_ADDRSTRLEN);
++	blobmsg_add_string_buffer(b);
++
++	addr = NULL;
++	ubus_dns_notify("dns_result", ubus_dns_doctor_cb, &addr);
++
++	if (!addr)
++		return false;
++
++	return inet_pton(af, addr, p) == 1;
++}
++#else
++static bool ubus_dns_doctor(const char *name, int ttl, void *p, int af)
++{
++	return false;
++}
++#endif
++
+ static unsigned char *do_doctor(unsigned char *p, int count, struct dns_header *header, size_t qlen, int *doctored)
+ {
+-  int i, qtype, qclass, rdlen;
++  int i, qtype, qclass, rdlen, ttl;
+ 
+   for (i = count; i != 0; i--)
+     {
+@@ -405,7 +462,7 @@ static unsigned char *do_doctor(unsigned
+       
+       GETSHORT(qtype, p); 
+       GETSHORT(qclass, p);
+-      p += 4; /* ttl */
++      GETLONG(ttl, p); /* ttl */
+       GETSHORT(rdlen, p);
+       
+       if (qclass == C_IN && qtype == T_A)
+@@ -416,6 +473,9 @@ static unsigned char *do_doctor(unsigned
+ 	  if (!CHECK_LEN(header, p, qlen, INADDRSZ))
+ 	    return 0;
+ 	  
++	  if (ubus_dns_doctor(daemon->namebuff, ttl, p, AF_INET))
++	    *doctored = 1;
++
+ 	  /* alignment */
+ 	  memcpy(&addr, p, INADDRSZ);
+ 	  
+@@ -433,13 +493,22 @@ static unsigned char *do_doctor(unsigned
+ 	      addr.s_addr &= ~doctor->mask.s_addr;
+ 	      addr.s_addr |= (doctor->out.s_addr & doctor->mask.s_addr);
+ 	      /* Since we munged the data, the server it came from is no longer authoritative */
+-	      header->hb3 &= ~HB3_AA;
+ 	      *doctored = 1;
+ 	      memcpy(p, &addr, INADDRSZ);
+ 	      break;
+ 	    }
+ 	}
+-      
++      else if (qclass == C_IN && qtype == T_AAAA)
++        {
++	  if (!CHECK_LEN(header, p, qlen, IN6ADDRSZ))
++	    return 0;
++
++	  if (ubus_dns_doctor(daemon->namebuff, ttl, p, AF_INET6))
++	    *doctored = 1;
++	}
++
++      if (*doctored)
++        header->hb3 &= ~HB3_AA;
+       if (!ADD_RDLEN(header, p, qlen, rdlen))
+ 	 return 0; /* bad packet */
+     }
+@@ -563,7 +632,7 @@ int extract_addresses(struct dns_header
+   cache_start_insert();
+ 
+   /* find_soa is needed for dns_doctor side effects, so don't call it lazily if there are any. */
+-  if (daemon->doctors || option_bool(OPT_DNSSEC_VALID))
++  if (daemon->doctors || option_bool(OPT_DNSSEC_VALID) || ubus_dns_notify_prepare())
+     {
+       searched_soa = 1;
+       ttl = find_soa(header, qlen, doctored);
+--- a/src/ubus.c
++++ b/src/ubus.c
+@@ -72,6 +72,14 @@ static struct ubus_object ubus_object =
+   .subscribe_cb = ubus_subscribe_cb,
+ };
+ 
++static struct ubus_object_type ubus_dns_object_type =
++   { .name = "dnsmasq.dns" };
++
++static struct ubus_object ubus_dns_object = {
++	.name = "dnsmasq.dns",
++	.type = &ubus_dns_object_type,
++};
++
+ static void ubus_subscribe_cb(struct ubus_context *ctx, struct ubus_object *obj)
+ {
+   (void)ctx;
+@@ -112,6 +120,8 @@ char *ubus_init()
+   
+   ubus_object.name = daemon->ubus_name;
+   ret = ubus_add_object(ubus, &ubus_object);
++  if (!ret)
++    ret = ubus_add_object(ubus, &ubus_dns_object);
+   if (ret)
+     {
+       ubus_destroy(ubus);
+@@ -181,6 +191,17 @@ void check_ubus_listeners()
+       } \
+   } while (0)
+ 
++void drop_ubus_listeners()
++{
++  struct ubus_context *ubus = (struct ubus_context *)daemon->ubus;
++
++  if (!ubus)
++    return;
++
++  ubus_free(ubus);
++  ubus = NULL;
++}
++
+ static int ubus_handle_metrics(struct ubus_context *ctx, struct ubus_object *obj,
+ 			       struct ubus_request_data *req, const char *method,
+ 			       struct blob_attr *msg)
+@@ -328,6 +349,50 @@ fail:
+       } \
+   } while (0)
+ 
++struct blob_buf *ubus_dns_notify_prepare(void)
++{
++  struct ubus_context *ubus = (struct ubus_context *)daemon->ubus;
++
++	if (!ubus || !ubus_dns_object.has_subscribers)
++		return NULL;
++
++	blob_buf_init(&b, 0);
++	return &b;
++}
++
++struct ubus_dns_notify_req {
++	struct ubus_notify_request req;
++	ubus_dns_notify_cb cb;
++	void *priv;
++};
++
++static void dns_notify_cb(struct ubus_notify_request *req, int type, struct blob_attr *msg)
++{
++	struct ubus_dns_notify_req *dreq = container_of(req, struct ubus_dns_notify_req, req);
++
++	dreq->cb(msg, dreq->priv);
++}
++
++int ubus_dns_notify(const char *type, ubus_dns_notify_cb cb, void *priv)
++{
++	struct ubus_context *ubus = (struct ubus_context *)daemon->ubus;
++	struct ubus_dns_notify_req dreq;
++	int ret;
++
++	if (!ubus || !ubus_dns_object.has_subscribers)
++		return 0;
++
++	ret = ubus_notify_async(ubus, &ubus_dns_object, type, b.head, &dreq.req);
++	if (ret)
++		return ret;
++
++	dreq.req.data_cb = dns_notify_cb;
++	dreq.cb = cb;
++	dreq.priv = priv;
++
++	return ubus_complete_request(ubus, &dreq.req.req, 100);
++}
++
+ void ubus_event_bcast(const char *type, const char *mac, const char *ip, const char *name, const char *interface)
+ {
+   struct ubus_context *ubus = (struct ubus_context *)daemon->ubus;
+--- a/src/dnsmasq.c
++++ b/src/dnsmasq.c
+@@ -1972,6 +1972,10 @@ static void check_dns_listeners(time_t n
+ 		  daemon->pipe_to_parent = pipefd[1];
+ 		}
+ 
++#ifdef HAVE_UBUS
++	      drop_ubus_listeners();
++#endif
++
+ 	      /* start with no upstream connections. */
+ 	      for (s = daemon->servers; s; s = s->next)
+ 		 s->tcpfd = -1; 
