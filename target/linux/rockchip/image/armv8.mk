@@ -2,6 +2,26 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
+define Device/embedfire_doornet1
+  DEVICE_VENDOR := EmbedFire
+  DEVICE_MODEL := DoorNet1
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := doornet1-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-rtl8821cu
+endef
+TARGET_DEVICES += embedfire_doornet1 
+
+define Device/embedfire_doornet2
+  DEVICE_VENDOR := EmbedFire
+  DEVICE_MODEL := DoorNet2
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := doornet2-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 kmod-rtl8821cu -urngd 
+endef
+TARGET_DEVICES += embedfire_doornet2
+
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2C
@@ -72,14 +92,3 @@ define Device/xunlong_orangepi-r1-plus
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
 TARGET_DEVICES += xunlong_orangepi-r1-plus
-
-define Device/embedfire_doornet1
-  DEVICE_VENDOR := EmbedFire
-  DEVICE_MODEL := DoorNet1
-  SOC := rk3328
-  UBOOT_DEVICE_NAME := doornet1-rk3328
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-usb-net-rtl8152 
-endef
-TARGET_DEVICES += embedfire_doornet1 
-

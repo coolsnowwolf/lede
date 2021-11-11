@@ -1,4 +1,9 @@
-m = Map("log")
-m.title = translate("Detailed Log (In Development)")
+log = SimpleForm("logview")
+log.submit = false
+log.reset = false
 
-return m
+t = log:field(DummyValue, '', '')
+t.rawhtml = true
+t.template = 'go-aliyundrive-webdav/go-aliyundrive-webdav_log'
+
+return log

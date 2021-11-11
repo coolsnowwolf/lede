@@ -74,6 +74,17 @@ endef
 
 # RK3399 boards
 
+define U-Boot/doornet2-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=DoorNet2
+  BUILD_DEVICES:= \
+    embedfire_doornet2
+  DEPENDS:=+PACKAGE_u-boot-doornet2-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
+
 define U-Boot/guangmiao-g4c-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=GuangMiao G4C
@@ -116,6 +127,7 @@ define U-Boot/rockpro64-rk3399
 endef
 
 UBOOT_TARGETS := \
+  doornet2-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   rock-pi-4-rk3399 \
