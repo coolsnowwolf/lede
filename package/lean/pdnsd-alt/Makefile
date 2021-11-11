@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
 #
-# Copyright (C) 2021 ImmortalWrt
-# <https://immortalwrt.org>
-#
-# This is free software, licensed under the GNU General Public License v3.
-# See /LICENSE for more information.
+# Copyright (C) 2021 ImmortalWrt.org
 
 include $(TOPDIR)/rules.mk
 
@@ -25,9 +22,9 @@ include $(INCLUDE_DIR)/package.mk
 define Package/pdnsd-alt
   SECTION:=net
   CATEGORY:=Network
-  SUBMENU:=Web Servers/Proxies
-  DEPENDS:=+libpthread
+  SUBMENU:=IP Addresses and Names
   TITLE:=Proxy DNS Server
+  DEPENDS:=+libpthread
 endef
 
 define Package/pdnsd-alt/description
