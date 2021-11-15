@@ -59,8 +59,8 @@ ALLWIFIBOARDS:= \
 	redmi_ax6 \
 	xiaomi_ax3600 \
 	xiaomi_ax9000 \
-	zte_mf269 \
-	zte_mf263
+	zte_mf263 \
+	zte_mf269
 
 ALLWIFIPACKAGES:=$(foreach BOARD,$(ALLWIFIBOARDS),ipq-wifi-$(BOARD))
 
@@ -164,7 +164,7 @@ $(eval $(call generate-ipq-wifi-package,qxwlan_e2600ac,Qxwlan E2600AC))
 $(eval $(call generate-ipq-wifi-package,redmi_ax6,Redmi AX6))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
-$(eval $(call generate-ipq-wifi-package,zte_mf269,ZTE MF269))
 $(eval $(call generate-ipq-wifi-package,zte_mf263,ZTE MF263))
+$(eval $(call generate-ipq-wifi-package,zte_mf269,ZTE MF269))
 
 $(foreach PACKAGE,$(ALLWIFIPACKAGES),$(eval $(call BuildPackage,$(PACKAGE))))
