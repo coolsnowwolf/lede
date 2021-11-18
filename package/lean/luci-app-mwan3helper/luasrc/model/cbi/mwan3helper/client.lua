@@ -1,5 +1,3 @@
-
-
 m = Map("mwan3helper")
 m.title	= translate("MWAN3 Helper")
 m.description = translate("MWAN3 Helper generate IPSets")

@@ -1,8 +1,8 @@
-
-mp = Map("pptpd", translate("PPTP VPN Server"))
+mp = Map("pptpd")
+mp.title = translate("PPTP VPN Server")
 mp.description = translate("PPTP VPN Server connectivity using the native built-in VPN Client on Windows/Linux or Andriod")
 
-mp:section(SimpleSection).template  = "pptp/pptp_status"
+mp:section(SimpleSection).template = "pptp-server/pptp-server_status"
 
 s = mp:section(NamedSection, "pptpd", "service")
 s.anonymouse = true
@@ -15,8 +15,8 @@ localip = s:option(Value, "localip", translate("Local IP"))
 localip.datatype = "ip4addr"
 
 clientip = s:option(Value, "remoteip", translate("Client IP"))
-clientip.datatype = "string"
 clientip.description = translate("LAN DHCP reserved start-to-end IP addresses with the same subnet mask")
+clientip.datatype = "string"
 
 remotedns = s:option(Value, "remotedns", translate("Remote Client DNS"))
 remotedns.datatype = "ip4addr"

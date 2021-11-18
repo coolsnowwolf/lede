@@ -1,8 +1,8 @@
-
-mp = Map("ipsec", translate("IPSec VPN Server"))
+mp = Map("ipsec")
+mp.title = translate("IPSec VPN Server")
 mp.description = translate("IPSec VPN connectivity using the native built-in VPN Client on iOS or Andriod (IKEv1 with PSK and Xauth)")
 
-mp:section(SimpleSection).template  = "ipsec/ipsec_status"
+mp:section(SimpleSection).template = "ipsec/ipsec_status"
 
 s = mp:section(NamedSection, "ipsec", "service")
 s.anonymouse = true

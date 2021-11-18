@@ -1,4 +1,5 @@
 module("luci.controller.dnsforwarder", package.seeall)
+
 function index()
 	if not nixio.fs.access("/etc/config/dnsforwarder") then
 		return

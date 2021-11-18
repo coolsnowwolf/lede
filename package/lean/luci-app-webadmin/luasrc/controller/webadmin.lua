@@ -10,4 +10,3 @@ function index()
 
 	entry({"admin", "system", "webadmin"}, cbi("webadmin"), _("Web Admin"), 1).leaf = true
 end
-
