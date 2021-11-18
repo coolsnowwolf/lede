@@ -5,12 +5,15 @@
 
 include $(TOPDIR)/rules.mk
 
-
 PKG_NAME:=luci-app-qbittorrent
 PKG_VERSION=1.0
-PKG_RELEASE:=22
+PKG_RELEASE:=23
 
-include $(INCLUDE_DIR)/package.mk
+LUCI_TITLE:=LuCI support for qBittorrent
+LUCI_PKGARCH:=all
+LUCI_DEPENDS:= \
+	+PACKAGE_luci-app-qbittorrent_static:qBittorrent-static \
+	+PACKAGE_luci-app-qbittorrent_dynamic:qbittorrent
 
 define Package/$(PKG_NAME)/config
 	choice
@@ -27,10 +30,6 @@ define Package/$(PKG_NAME)/config
 			
 	endchoice
 endef
-
-LUCI_TITLE:=LuCI support for qBittorrent
-LUCI_DEPENDS:=+PACKAGE_luci-app-qbittorrent_static:qBittorrent-static +PACKAGE_luci-app-qbittorrent_dynamic:qbittorrent
-LUCI_PKGARCH:=all
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
