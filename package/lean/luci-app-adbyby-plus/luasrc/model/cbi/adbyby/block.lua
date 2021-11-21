@@ -21,4 +21,3 @@ function f.handle(self, state, data)
 end
 
 return f
-

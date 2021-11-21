@@ -1,11 +1,13 @@
-local jd = 'jd-dailybonus'
 local uci = luci.model.uci.cursor()
 local sys = require 'luci.sys'
 
-m = Map(jd)
+m = Map('jd-dailybonus')
+m.title = translate('京东签到服务')
+m.description = translate('<a href=\"https://github.com/jerrykuku/luci-app-jd-dailybonus\" target=\"_blank\"> GitHub 项目地址 </a>')
+
 -- [[ 基本设置 ]]--
 
-s = m:section(TypedSection, 'global', translate('基本设置'))
+s = m:section(TypedSection, 'global')
 s.anonymous = true
 
 o = s:option(DynamicList, "Cookies", translate("账号 Cookie 列表"))
@@ -34,6 +36,7 @@ o.datatype = integer
 o.description = translate('接口超时退出,单位毫秒 用于可能发生的网络不稳定, 0则关闭.')
 
 -- server chan
+
 o = s:option(ListValue, 'serverurl', translate('Server酱的推送接口地址'))
 o:value('scu', translate('SCU'))
 o:value('sct', translate('SCT'))

@@ -12,7 +12,8 @@ You may obtain a copy of the License at
 $Id$
 ]]--
 
-m = Map("vsftpd", translate("FTP Server - Log Settings"))
+m = Map("vsftpd")
+m.title = translate("FTP Server - Log Settings")
 
 sl = m:section(NamedSection, "log", "log", translate("Log Settings"))
 
@@ -24,6 +25,5 @@ o.default = true
 
 o = sl:option(Value, "file", translate("Log file"))
 o.default = "/var/log/vsftpd.log"
-
 
 return m

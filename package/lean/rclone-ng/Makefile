@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Copyright (C) 2020 ElonH <elonhhuang@gmail.com>
+# Copyright (C) 2020 Elon Huang <elonhhuang@gmail.com>
+# Copyright (C) 2021 ImmortalWrt.org
 
 include $(TOPDIR)/rules.mk
 
@@ -14,7 +15,8 @@ PKG_HASH:=0b4916ddd0bacb5b358dc8d36b64c30f4182c0ace3eb06cda94b6578c419dcd9
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILE:=LICENSE
-PKG_MAINTAINER:=ElonH <elonhhuang@gmail.com>
+PKG_MAINTAINER:=Elon Huang <elonhhuang@gmail.com> \
+		Tianling Shen <cnsztl@immortalwrt.org>
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -26,7 +28,7 @@ define Package/rclone-ng
   SUBMENU:=Cloud Manager
   TITLE:=An angular web application for rclone
   URL:=https://github.com/ElonH/RcloneNg
-  DEPENDS:=+rclone
+  DEPENDS:=+rclone-config
   PKGARCH:=all
 endef
 

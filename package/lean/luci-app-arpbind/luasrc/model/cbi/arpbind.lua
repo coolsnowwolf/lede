@@ -3,8 +3,9 @@
 local sys = require "luci.sys"
 local ifaces = sys.net:devices()
 
-m = Map("arpbind", translate("IP/MAC Binding"),
-        translatef("ARP is used to convert a network address (e.g. an IPv4 address) to a physical address such as a MAC address.Here you can add some static ARP binding rules."))
+m = Map("arpbind")
+m.title = translate("IP/MAC Binding")
+m.description = translatef("ARP is used to convert a network address (e.g. an IPv4 address) to a physical address such as a MAC address.Here you can add some static ARP binding rules.")
 
 s = m:section(TypedSection, "arpbind", translate("Rules"))
 s.template = "cbi/tblsection"
@@ -39,5 +40,3 @@ a.default = "br-lan"
 a.rmempty = false
 
 return m
-
-

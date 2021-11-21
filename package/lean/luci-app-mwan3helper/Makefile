@@ -14,5 +14,3 @@ PKG_RELEASE:=3
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-
-

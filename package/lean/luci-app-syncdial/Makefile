@@ -14,4 +14,3 @@ PKG_RELEASE:=25
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-#Makefile for syncdial
