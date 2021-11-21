@@ -16,8 +16,8 @@ h = s:taboption("general", Flag, "homes", translate("Share home-directories"),
                 "network shares"))
 h.rmempty = false
 
-macos = s:taboption("general", Flag, "macos", translate("Enable macOS compatible shares"),
-	translate("Enables Apple's AAPL extension globally and adds macOS compatibility options to all shares."))
+macos = s:taboption("general", Flag, "macos", translate("Enable macOS compatible shares"))
+macos.description = translate("Enables Apple's AAPL extension globally and adds macOS compatibility options to all shares.")
 macos.rmempty = false
 
 if nixio.fs.access("/usr/sbin/nmbd") then
