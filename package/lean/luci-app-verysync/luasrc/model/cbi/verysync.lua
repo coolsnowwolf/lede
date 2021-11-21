@@ -6,7 +6,7 @@ m = Map("verysync")
 m.title	= translate("Verysync")
 m.description = translate("Simple and easy-to-use multi-platform file synchronization software, astonishing transmission speed is different from the greatest advantage of other products. Micro-force synchronization of intelligent P2P technology to accelerate synchronization, will split the file into several KB-only data synchronization, and the file will be AES encryption processing.")
 
-m:section(SimpleSection).template  = "verysync/verysync_status"
+m:section(SimpleSection).template = "verysync/verysync_status"
 
 s = m:section(TypedSection, "verysync")
 s.addremove = false

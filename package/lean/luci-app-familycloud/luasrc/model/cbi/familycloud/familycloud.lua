@@ -1,12 +1,12 @@
-
-mp = Map("familycloud", translate("天翼家庭云/天翼云盘提速"))
+mp = Map("familycloud")
+mp.title = translate("天翼家庭云/天翼云盘提速")
 mp.description = translate("天翼家庭云/天翼云盘提速 (最高可达500Mbps)")
 
-mp:section(SimpleSection).template  = "familycloud/familycloud_status"
+mp:section(SimpleSection).template = "familycloud/familycloud_status"
 
 s = mp:section(TypedSection, "familycloud")
-s.anonymous=true
-s.addremove=false
+s.anonymous = true
+s.addremove = false
 
 enabled = s:option(Flag, "enabled", translate("启用提速"))
 enabled.default = 0

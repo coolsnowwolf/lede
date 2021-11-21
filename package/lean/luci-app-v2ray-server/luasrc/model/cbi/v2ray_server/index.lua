@@ -1,11 +1,12 @@
 local ds = require "luci.dispatcher"
-local o = "v2ray_server"
 
-m = Map(o, translate("V2ray Server"))
+m = Map("v2ray_server")
+m.title = translate("V2ray Server")
 
 t = m:section(TypedSection, "global", translate("Global Settings"))
 t.anonymous = true
 t.addremove = false
+
 e = t:option(Flag, "enable", translate("Enable"))
 e.rmempty = false
 t:append(Template("v2ray_server/v2ray"))
@@ -14,17 +15,17 @@ t = m:section(TypedSection, "user", translate("Users Manager"))
 t.anonymous = true
 t.addremove = true
 t.template = "cbi/tblsection"
-t.extedit = ds.build_url("admin", "services", o, "config", "%s")
+t.extedit = ds.build_url("admin", "services", "v2ray_server", "config", "%s")
 function t.create(t, e)
     local uuid = luci.sys.exec("echo -n $(cat /proc/sys/kernel/random/uuid)") or ""
     uuid = string.gsub(uuid, "-", "")
     local e = TypedSection.create(t, uuid)
-    luci.http.redirect(ds.build_url("admin", "services", o, "config", uuid))
+    luci.http.redirect(ds.build_url("admin", "services", "v2ray_server", "config", uuid))
 end
 function t.remove(t, a)
     t.map.proceed = true
     t.map:del(a)
-    luci.http.redirect(ds.build_url("admin", "services", o))
+    luci.http.redirect(ds.build_url("admin", "services", "v2ray_server"))
 end
 
 e = t:option(Flag, "enable", translate("Enable"))
@@ -53,5 +54,5 @@ end
 m:append(Template("v2ray_server/log"))
 
 m:append(Template("v2ray_server/users_list_status"))
-return m
 
+return m

@@ -5,7 +5,7 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "nps"}, cbi("nps"), _("Nps"), 100).dependent = true
+	entry({"admin", "services", "nps"}, cbi("nps"), _("Nps Penetrate"), 100).dependent = true
 	entry({"admin", "services", "nps", "status"}, call("act_status")).leaf = true
 end
 

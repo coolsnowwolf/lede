@@ -1,5 +1,5 @@
 m = Map("nps")
-m.title = translate("Nps")
+m.title = translate("Nps Penetrate")
 m.description = translate("Nps is a fast reverse proxy to help you expose a local server behind a NAT or firewall to the internet.")
 
 m:section(SimpleSection).template = "nps/nps_status"
@@ -43,12 +43,12 @@ crypt.description = translate("Encrypted the communication between Npc and Nps, 
 crypt.default = "1"
 crypt.rmempty = false
 
-log_level = s:option(ListValue,"log_level",translate("Log Level"))
-log_level:value(0,"Emergency", translate("Emergency"))
-log_level:value(2,"Critical", translate("Critical"))
-log_level:value(3,"Error", translate("Error"))
-log_level:value(4,"Warning", translate("Warning"))
-log_level:value(7,"Debug", translate("Debug"))
+log_level = s:option(ListValue, "log_level", translate("Log Level"))
+log_level:value("0", "Emergency")
+log_level:value("2", "Critical")
+log_level:value("3", "Error")
+log_level:value("4", "Warning")
+log_level:value("7", "Debug")
 log_level.default = "3"
 
 return m
