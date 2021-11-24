@@ -1,5 +1,3 @@
-
-
 local sys = require "luci.sys"
 local ifaces = sys.net:devices()
 
@@ -32,8 +30,8 @@ end)
 
 a = s:option(ListValue, "ifname", translate("Interface"))
 for _, iface in ipairs(ifaces) do
-	if iface ~= "lo" then 
-		a:value(iface) 
+	if iface ~= "lo" then
+		a:value(iface)
 	end
 end
 a.default = "br-lan"
