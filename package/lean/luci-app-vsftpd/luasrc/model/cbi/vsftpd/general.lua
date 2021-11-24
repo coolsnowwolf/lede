@@ -12,7 +12,8 @@ You may obtain a copy of the License at
 $Id$
 ]]--
 
-m = Map("vsftpd", translate("FTP Server - General Settings"))
+m = Map("vsftpd")
+m.description = translate("FTP Server - General Settings")
 
 sl = m:section(NamedSection, "listen", "listen", translate("Listening Settings"))
 
@@ -50,26 +51,32 @@ o.default = "51000"
 
 sg = m:section(NamedSection, "global", "global", translate("Global Settings"))
 
-o = sg:option(Flag, "write", translate("Enable write"), translate("When disabled, all write request will give permission denied."));
+o = sg:option(Flag, "write", translate("Enable write"))
+o.description = translate("When disabled, all write request will give permission denied.")
 o.default = true
 
-o = sg:option(Flag, "download", translate("Enable download"), translate("When disabled, all download request will give permission denied."));
+o = sg:option(Flag, "download", translate("Enable download"))
+o.description = translate("When disabled, all download request will give permission denied.")
 o.default = true
 
-o = sg:option(Flag, "dirlist", translate("Enable directory list"), translate("When disabled, list commands will give permission denied."))
+o = sg:option(Flag, "dirlist", translate("Enable directory list"))
+o.description = translate("When disabled, list commands will give permission denied.")
 o.default = true
 
 o = sg:option(Flag, "lsrecurse", translate("Allow directory recursely list"))
 
-o = sg:option(Flag, "dotfile", translate("Show dot files"), translate(". and .. are excluded."));
+o = sg:option(Flag, "dotfile", translate("Show dot files"))
+o.description = translate(". and .. are excluded.")
 o.default = true
 
-o = sg:option(Value, "umask", translate("File mode umask"), translate("Uploaded file mode will be 666 - &lt;umask&gt;; directory mode will be 777 - &lt;umask&gt;."))
+o = sg:option(Value, "umask", translate("File mode umask"))
+o.description = translate("Uploaded file mode will be 666 - &lt;umask&gt;; directory mode will be 777 - &lt;umask&gt;.")
 o.default = "022"
 
 o = sg:option(Value, "banner", translate("FTP Banner"))
 
-o = sg:option(Flag, "dirmessage", translate("Enable directory message"), translate("A message will be displayed when entering a directory."))
+o = sg:option(Flag, "dirmessage", translate("Enable directory message"))
+o.description = translate("A message will be displayed when entering a directory.")
 
 o = sg:option(Value, "dirmsgfile", translate("Directory message filename"))
 o.default = ".message"
@@ -80,7 +87,8 @@ sl = m:section(NamedSection, "local", "local", translate("Local Users"))
 o = sl:option(Flag, "enabled", translate("Enable local user"))
 o.rmempty = false
 
-o = sl:option(Value, "root", translate("Root directory"), translate("Leave empty will use user's home directory"))
+o = sl:option(Value, "root", translate("Root directory"))
+o.description = translate("Leave empty will use user's home directory")
 o.default = ""
 
 
@@ -96,27 +104,39 @@ o:value("upload", translate("Upload only"))
 o:value("both", translate("Both download and upload"))
 o.default = "both"
 
-o = sc:option(Value, "idletimeout", translate("Idle session timeout"), translate("in seconds"))
+o = sc:option(Value, "idletimeout", translate("Idle session timeout"))
+o.description = translate("in seconds")
 o.datatype = "uinteger"
 o.default = "1800"
-o = sc:option(Value, "conntimeout", translate("Connection timeout"), translate("in seconds"))
+
+o = sc:option(Value, "conntimeout", translate("Connection timeout"))
+o.description = translate("in seconds")
 o.datatype = "uinteger"
 o.default = "120"
-o = sc:option(Value, "dataconntimeout", translate("Data connection timeout"), translate("in seconds"))
+
+o = sc:option(Value, "dataconntimeout", translate("Data connection timeout"))
+o.description = translate("in seconds")
 o.datatype = "uinteger"
 o.default = "120"
-o = sc:option(Value, "maxclient", translate("Max clients"), translate("0 means no limitation"))
+
+o = sc:option(Value, "maxclient", translate("Max clients"))
+o.description = translate("0 means no limitation")
 o.datatype = "uinteger"
 o.default = "0"
-o = sc:option(Value, "maxperip", translate("Max clients per IP"), translate("0 means no limitation"))
+
+o = sc:option(Value, "maxperip", translate("Max clients per IP"))
+o.description = translate("0 means no limitation")
 o.datatype = "uinteger"
 o.default = "0"
-o = sc:option(Value, "maxrate", translate("Max transmit rate"), translate("in KB/s, 0 means no limitation"))
+
+o = sc:option(Value, "maxrate", translate("Max transmit rate"))
+o.description = translate("in KB/s, 0 means no limitation")
 o.datatype = "uinteger"
 o.default = "0"
-o = sc:option(Value, "maxretry", translate("Max login fail count"), translate("Can not be zero, default is 3"))
+
+o = sc:option(Value, "maxretry", translate("Max login fail count"))
+o.description = translate("Can not be zero, default is 3")
 o.datatype = "uinteger"
 o.default = "3"
-
 
 return m

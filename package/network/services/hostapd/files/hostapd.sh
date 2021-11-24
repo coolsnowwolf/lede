@@ -755,7 +755,7 @@ hostapd_set_bss_options() {
 	}
 
 	append bss_conf "ssid=$ssid" "$N"
-	[ -n "$network_bridge" ] && append bss_conf "bridge=$network_bridge" "$N"
+	[ -n "$network_bridge" ] && append bss_conf "bridge=$network_bridge${N}wds_bridge=" "$N"
 	[ -n "$network_ifname" ] && append bss_conf "snoop_iface=$network_ifname" "$N"
 	[ -n "$iapp_interface" ] && {
 		local ifname
@@ -1169,7 +1169,7 @@ wpa_supplicant_set_fixed_freq() {
 	case "$htmode" in
 		NOHT) append network_data "disable_ht=1" "$N$T";;
 		HE20|HT20|VHT20) append network_data "disable_ht40=1" "$N$T";;
-		HT40*|VHT40*|VHT80*|VHT160*) append network_data "ht40=1" "$N$T";;
+		HT40*|VHT40|VHT80|VHT160|HE40|HE80|HE160) append network_data "ht40=1" "$N$T";;
 	esac
 	case "$htmode" in
 		VHT*) append network_data "vht=1" "$N$T";;

@@ -38,6 +38,10 @@ platform_do_upgrade() {
 
 		nand_do_upgrade "$1"
 		;;
+	zte,mf269)
+		CI_UBIPART="rootfs"
+		nand_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;

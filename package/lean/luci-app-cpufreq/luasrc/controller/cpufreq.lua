@@ -1,4 +1,3 @@
-
 module("luci.controller.cpufreq", package.seeall)
 
 function index()

@@ -1,0 +1,371 @@
+From 05d10aebe62239b014098c8e517dd96848f9a495 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 18 Nov 2020 10:47:58 +0100
+Subject: [PATCH] drm: Pass the full state to connectors atomic
+ functions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The current atomic helpers have either their object state being passed as
+an argument or the full atomic state.
+
+The former is the pattern that was done at first, before switching to the
+latter for new hooks or when it was needed.
+
+Now that the CRTCs have been converted, let's move forward with the
+connectors to provide a consistent interface.
+
+The conversion was done using the coccinelle script below, and built tested
+on all the drivers.
+
+@@
+identifier connector, connector_state;
+@@
+
+ struct drm_connector_helper_funcs {
+	...
+	struct drm_encoder* (*atomic_best_encoder)(struct drm_connector *connector,
+-						   struct drm_connector_state *connector_state);
++						   struct drm_atomic_state *state);
+	...
+}
+
+@@
+identifier connector, connector_state;
+@@
+
+ struct drm_connector_helper_funcs {
+	...
+	void (*atomic_commit)(struct drm_connector *connector,
+-			      struct drm_connector_state *connector_state);
++			      struct drm_atomic_state *state);
+	...
+}
+
+@@
+struct drm_connector_helper_funcs *FUNCS;
+identifier state;
+identifier connector, connector_state;
+identifier f;
+@@
+
+ f(..., struct drm_atomic_state *state, ...)
+ {
+	<+...
+-	FUNCS->atomic_commit(connector, connector_state);
++	FUNCS->atomic_commit(connector, state);
+	...+>
+ }
+
+@@
+struct drm_connector_helper_funcs *FUNCS;
+identifier state;
+identifier connector, connector_state;
+identifier var, f;
+@@
+
+ f(struct drm_atomic_state *state, ...)
+ {
+	<+...
+-	var = FUNCS->atomic_best_encoder(connector, connector_state);
++	var = FUNCS->atomic_best_encoder(connector, state);
+	...+>
+ }
+
+@ connector_atomic_func @
+identifier helpers;
+identifier func;
+@@
+
+(
+static struct drm_connector_helper_funcs helpers = {
+	...,
+	.atomic_best_encoder = func,
+	...,
+};
+|
+static struct drm_connector_helper_funcs helpers = {
+	...,
+	.atomic_commit = func,
+	...,
+};
+)
+
+@@
+identifier connector_atomic_func.func;
+identifier connector;
+symbol state;
+@@
+
+ func(struct drm_connector *connector,
+-      struct drm_connector_state *state
++      struct drm_connector_state *connector_state
+      )
+ {
+	...
+-	state
++	connector_state
+ 	...
+ }
+
+@ ignores_state @
+identifier connector_atomic_func.func;
+identifier connector, connector_state;
+@@
+
+ func(struct drm_connector *connector,
+      struct drm_connector_state *connector_state)
+{
+	... when != connector_state
+}
+
+@ adds_state depends on connector_atomic_func && !ignores_state @
+identifier connector_atomic_func.func;
+identifier connector, connector_state;
+@@
+
+ func(struct drm_connector *connector, struct drm_connector_state *connector_state)
+ {
++	struct drm_connector_state *connector_state = drm_atomic_get_new_connector_state(state, connector);
+	...
+ }
+
+@ depends on connector_atomic_func @
+identifier connector_atomic_func.func;
+identifier connector_state;
+identifier connector;
+@@
+
+ func(struct drm_connector *connector,
+-     struct drm_connector_state *connector_state
++     struct drm_atomic_state *state
+	   )
+ { ... }
+
+@ include depends on adds_state @
+@@
+
+ #include <drm/drm_atomic.h>
+
+@ no_include depends on !include && adds_state @
+@@
+
++ #include <drm/drm_atomic.h>
+  #include <drm/...>
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Reviewed-by: Rodrigo Siqueira <rodrigosiqueiramelo@gmail.com>
+Reviewed-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Acked-by: Harry Wentland <harry.wentland@amd.com>
+Cc: Leo Li <sunpeng.li@amd.com>
+Cc: Alex Deucher <alexander.deucher@amd.com>
+Cc: "Christian König" <christian.koenig@amd.com>
+Cc: Jani Nikula <jani.nikula@linux.intel.com>
+Cc: Joonas Lahtinen <joonas.lahtinen@linux.intel.com>
+Cc: Rodrigo Vivi <rodrigo.vivi@intel.com>
+Cc: Ben Skeggs <bskeggs@redhat.com>
+Cc: Rodrigo Siqueira <rodrigosiqueiramelo@gmail.com>
+Cc: Melissa Wen <melissa.srw@gmail.com>
+Cc: Haneen Mohammed <hamohammed.sa@gmail.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20201118094758.506730-1-maxime@cerno.tech
+---
+ .../drm/amd/display/amdgpu_dm/amdgpu_dm_mst_types.c |  5 ++++-
+ drivers/gpu/drm/drm_atomic_helper.c                 |  8 ++++----
+ drivers/gpu/drm/i915/display/intel_dp_mst.c         |  7 +++++--
+ drivers/gpu/drm/nouveau/dispnv50/disp.c             |  5 ++++-
+ drivers/gpu/drm/vc4/vc4_txp.c                       |  4 +++-
+ drivers/gpu/drm/vkms/vkms_writeback.c               |  8 ++++++--
+ include/drm/drm_modeset_helper_vtables.h            | 13 ++++++-------
+ 7 files changed, 32 insertions(+), 18 deletions(-)
+
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_mst_types.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_mst_types.c
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include <linux/version.h>
++#include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_dp_mst_helper.h>
+ #include <drm/drm_dp_helper.h>
+@@ -252,8 +253,10 @@ static int dm_dp_mst_get_modes(struct dr
+ 
+ static struct drm_encoder *
+ dm_mst_atomic_best_encoder(struct drm_connector *connector,
+-			   struct drm_connector_state *connector_state)
++			   struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *connector_state = drm_atomic_get_new_connector_state(state,
++											 connector);
+ 	struct drm_device *dev = connector->dev;
+ 	struct amdgpu_device *adev = drm_to_adev(dev);
+ 	struct amdgpu_crtc *acrtc = to_amdgpu_crtc(connector_state->crtc);
+--- a/drivers/gpu/drm/drm_atomic_helper.c
++++ b/drivers/gpu/drm/drm_atomic_helper.c
+@@ -122,7 +122,8 @@ static int handle_conflicting_encoders(s
+ 			continue;
+ 
+ 		if (funcs->atomic_best_encoder)
+-			new_encoder = funcs->atomic_best_encoder(connector, new_conn_state);
++			new_encoder = funcs->atomic_best_encoder(connector,
++								 state);
+ 		else if (funcs->best_encoder)
+ 			new_encoder = funcs->best_encoder(connector);
+ 		else
+@@ -345,8 +346,7 @@ update_connector_routing(struct drm_atom
+ 	funcs = connector->helper_private;
+ 
+ 	if (funcs->atomic_best_encoder)
+-		new_encoder = funcs->atomic_best_encoder(connector,
+-							 new_connector_state);
++		new_encoder = funcs->atomic_best_encoder(connector, state);
+ 	else if (funcs->best_encoder)
+ 		new_encoder = funcs->best_encoder(connector);
+ 	else
+@@ -1318,7 +1318,7 @@ static void drm_atomic_helper_commit_wri
+ 
+ 		if (new_conn_state->writeback_job && new_conn_state->writeback_job->fb) {
+ 			WARN_ON(connector->connector_type != DRM_MODE_CONNECTOR_WRITEBACK);
+-			funcs->atomic_commit(connector, new_conn_state);
++			funcs->atomic_commit(connector, old_state);
+ 		}
+ 	}
+ }
+--- a/drivers/gpu/drm/i915/display/intel_dp_mst.c
++++ b/drivers/gpu/drm/i915/display/intel_dp_mst.c
+@@ -23,6 +23,7 @@
+  *
+  */
+ 
++#include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_edid.h>
+ #include <drm/drm_probe_helper.h>
+@@ -708,11 +709,13 @@ intel_dp_mst_mode_valid_ctx(struct drm_c
+ }
+ 
+ static struct drm_encoder *intel_mst_atomic_best_encoder(struct drm_connector *connector,
+-							 struct drm_connector_state *state)
++							 struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *connector_state = drm_atomic_get_new_connector_state(state,
++											 connector);
+ 	struct intel_connector *intel_connector = to_intel_connector(connector);
+ 	struct intel_dp *intel_dp = intel_connector->mst_port;
+-	struct intel_crtc *crtc = to_intel_crtc(state->crtc);
++	struct intel_crtc *crtc = to_intel_crtc(connector_state->crtc);
+ 
+ 	return &intel_dp->mst_encoders[crtc->pipe]->base.base;
+ }
+--- a/drivers/gpu/drm/nouveau/dispnv50/disp.c
++++ b/drivers/gpu/drm/nouveau/dispnv50/disp.c
+@@ -32,6 +32,7 @@
+ #include <linux/hdmi.h>
+ #include <linux/component.h>
+ 
++#include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_dp_helper.h>
+ #include <drm/drm_edid.h>
+@@ -1161,8 +1162,10 @@ nv50_msto_new(struct drm_device *dev, st
+ 
+ static struct drm_encoder *
+ nv50_mstc_atomic_best_encoder(struct drm_connector *connector,
+-			      struct drm_connector_state *connector_state)
++			      struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *connector_state = drm_atomic_get_new_connector_state(state,
++											 connector);
+ 	struct nv50_mstc *mstc = nv50_mstc(connector);
+ 	struct drm_crtc *crtc = connector_state->crtc;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_txp.c
++++ b/drivers/gpu/drm/vc4/vc4_txp.c
+@@ -273,8 +273,10 @@ static int vc4_txp_connector_atomic_chec
+ }
+ 
+ static void vc4_txp_connector_atomic_commit(struct drm_connector *conn,
+-					struct drm_connector_state *conn_state)
++					struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *conn_state = drm_atomic_get_new_connector_state(state,
++										    conn);
+ 	struct vc4_txp *txp = connector_to_vc4_txp(conn);
+ 	struct drm_gem_cma_object *gem;
+ 	struct drm_display_mode *mode;
+--- a/drivers/gpu/drm/vkms/vkms_writeback.c
++++ b/drivers/gpu/drm/vkms/vkms_writeback.c
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ 
+ #include "vkms_drv.h"
++
++#include <drm/drm_atomic.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_writeback.h>
+ #include <drm/drm_probe_helper.h>
+@@ -100,8 +102,10 @@ static void vkms_wb_cleanup_job(struct d
+ }
+ 
+ static void vkms_wb_atomic_commit(struct drm_connector *conn,
+-				  struct drm_connector_state *state)
++				  struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *connector_state = drm_atomic_get_new_connector_state(state,
++											 conn);
+ 	struct vkms_device *vkmsdev = drm_device_to_vkms_device(conn->dev);
+ 	struct vkms_output *output = &vkmsdev->output;
+ 	struct drm_writeback_connector *wb_conn = &output->wb_connector;
+@@ -117,7 +121,7 @@ static void vkms_wb_atomic_commit(struct
+ 	crtc_state->active_writeback = conn_state->writeback_job->priv;
+ 	crtc_state->wb_pending = true;
+ 	spin_unlock_irq(&output->composer_lock);
+-	drm_writeback_queue_job(wb_conn, state);
++	drm_writeback_queue_job(wb_conn, connector_state);
+ }
+ 
+ static const struct drm_connector_helper_funcs vkms_wb_conn_helper_funcs = {
+--- a/include/drm/drm_modeset_helper_vtables.h
++++ b/include/drm/drm_modeset_helper_vtables.h
+@@ -1044,9 +1044,8 @@ struct drm_connector_helper_funcs {
+ 	 * NOTE:
+ 	 *
+ 	 * This function is called in the check phase of an atomic update. The
+-	 * driver is not allowed to change anything outside of the free-standing
+-	 * state objects passed-in or assembled in the overall &drm_atomic_state
+-	 * update tracking structure.
++	 * driver is not allowed to change anything outside of the
++	 * &drm_atomic_state update tracking structure passed in.
+ 	 *
+ 	 * RETURNS:
+ 	 *
+@@ -1056,7 +1055,7 @@ struct drm_connector_helper_funcs {
+ 	 * for this.
+ 	 */
+ 	struct drm_encoder *(*atomic_best_encoder)(struct drm_connector *connector,
+-						   struct drm_connector_state *connector_state);
++						   struct drm_atomic_state *state);
+ 
+ 	/**
+ 	 * @atomic_check:
+@@ -1097,15 +1096,15 @@ struct drm_connector_helper_funcs {
+ 	 *
+ 	 * This hook is to be used by drivers implementing writeback connectors
+ 	 * that need a point when to commit the writeback job to the hardware.
+-	 * The writeback_job to commit is available in
+-	 * &drm_connector_state.writeback_job.
++	 * The writeback_job to commit is available in the new connector state,
++	 * in &drm_connector_state.writeback_job.
+ 	 *
+ 	 * This hook is optional.
+ 	 *
+ 	 * This callback is used by the atomic modeset helpers.
+ 	 */
+ 	void (*atomic_commit)(struct drm_connector *connector,
+-			      struct drm_connector_state *state);
++			      struct drm_atomic_state *state);
+ 
+ 	/**
+ 	 * @prepare_writeback_job:

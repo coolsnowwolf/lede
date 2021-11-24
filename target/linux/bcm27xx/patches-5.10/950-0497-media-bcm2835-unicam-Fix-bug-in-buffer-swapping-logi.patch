@@ -1,0 +1,75 @@
+From 8740c5d8ab750b3e12f7f081082e2ae8c22ab6db Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 5 Mar 2021 15:40:45 +0000
+Subject: [PATCH] media: bcm2835-unicam: Fix bug in buffer swapping
+ logic
+
+If multiple sets of interrupts occur simultaneously, it may be unsafe
+to swap buffers, as the hardware may already be re-using the current
+buffers. In such cases, avoid swapping buffers, and wait for the next
+opportunity at the Frame End interrupt to signal completion.
+
+Additionally, check the packet compare status when watching for frame
+end for buffers swaps, as this could also signify a frame end event.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 21 ++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -798,6 +798,7 @@ static irqreturn_t unicam_isr(int irq, v
+ 	unsigned int sequence = unicam->sequence;
+ 	unsigned int i;
+ 	u32 ista, sta;
++	bool fe;
+ 	u64 ts;
+ 
+ 	sta = reg_read(unicam, UNICAM_STA);
+@@ -815,12 +816,18 @@ static irqreturn_t unicam_isr(int irq, v
+ 		return IRQ_HANDLED;
+ 
+ 	/*
++	 * Look for either the Frame End interrupt or the Packet Capture status
++	 * to signal a frame end.
++	 */
++	fe = (ista & UNICAM_FEI || sta & UNICAM_PI0);
++
++	/*
+ 	 * We must run the frame end handler first. If we have a valid next_frm
+ 	 * and we get a simultaneout FE + FS interrupt, running the FS handler
+ 	 * first would null out the next_frm ptr and we would have lost the
+ 	 * buffer forever.
+ 	 */
+-	if (ista & UNICAM_FEI || sta & UNICAM_PI0) {
++	if (fe) {
+ 		/*
+ 		 * Ensure we have swapped buffers already as we can't
+ 		 * stop the peripheral. If no buffer is available, use a
+@@ -831,7 +838,15 @@ static irqreturn_t unicam_isr(int irq, v
+ 			if (!unicam->node[i].streaming)
+ 				continue;
+ 
+-			if (unicam->node[i].cur_frm)
++			/*
++			 * If cur_frm == next_frm, it means we have not had
++			 * a chance to swap buffers, likely due to having
++			 * multiple interrupts occurring simultaneously (like FE
++			 * + FS + LS). In this case, we cannot signal the buffer
++			 * as complete, as the HW will reuse that buffer.
++			 */
++			if (unicam->node[i].cur_frm &&
++			    unicam->node[i].cur_frm != unicam->node[i].next_frm)
+ 				unicam_process_buffer_complete(&unicam->node[i],
+ 							       sequence);
+ 			unicam->node[i].cur_frm = unicam->node[i].next_frm;
+@@ -868,7 +883,7 @@ static irqreturn_t unicam_isr(int irq, v
+ 	 * where the HW does not actually swap it if the new frame has
+ 	 * already started.
+ 	 */
+-	if (ista & (UNICAM_FSI | UNICAM_LCI) && !(ista & UNICAM_FEI)) {
++	if (ista & (UNICAM_FSI | UNICAM_LCI) && !fe) {
+ 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
+ 			if (!unicam->node[i].streaming)
+ 				continue;

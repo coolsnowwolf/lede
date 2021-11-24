@@ -223,6 +223,11 @@ static int enable_ptp_master_mode = 1;
 #else
 static int enable_ptp_master_mode = 0;
 #endif
+#ifdef DISABLE_PM_SUPPORT
+static int disable_pm_support = 1;
+#else
+static int disable_pm_support = 0;
+#endif
 
 MODULE_AUTHOR("Realtek and the Linux r8125 crew <netdev@vger.kernel.org>");
 MODULE_DESCRIPTION("Realtek RTL8125 2.5Gigabit Ethernet driver");
@@ -272,6 +277,9 @@ MODULE_PARM_DESC(tx_no_close_enable, "Enable TX No Close.");
 module_param(enable_ptp_master_mode, int, 0);
 MODULE_PARM_DESC(enable_ptp_master_mode, "Enable PTP Master Mode.");
 
+module_param(disable_pm_support, int, 0);
+MODULE_PARM_DESC(disable_pm_support, "Disable PM support.");
+
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
 module_param_named(debug, debug.msg_enable, int, 0);
 MODULE_PARM_DESC(debug, "Debug verbosity level (0=none, ..., 16=all)");
@@ -285,11 +293,13 @@ MODULE_FIRMWARE(FIRMWARE_8125B_2);
 
 MODULE_VERSION(RTL8125_VERSION);
 
+/*
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 static void rtl8125_esd_timer(unsigned long __opaque);
 #else
 static void rtl8125_esd_timer(struct timer_list *t);
 #endif
+*/
 /*
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 static void rtl8125_link_timer(unsigned long __opaque);
@@ -342,9 +352,18 @@ static int rtl8125_poll(napi_ptr napi, napi_budget budget);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 static void rtl8125_reset_task(void *_data);
+static void rtl8125_esd_task(void *_data);
+static void rtl8125_linkchg_task(void *_data);
 #else
 static void rtl8125_reset_task(struct work_struct *work);
+static void rtl8125_esd_task(struct work_struct *work);
+static void rtl8125_linkchg_task(struct work_struct *work);
 #endif
+static void rtl8125_schedule_reset_work(struct rtl8125_private *tp);
+static void rtl8125_schedule_esd_work(struct rtl8125_private *tp);
+static void rtl8125_schedule_linkchg_work(struct rtl8125_private *tp);
+static void rtl8125_init_all_schedule_work(struct rtl8125_private *tp);
+static void rtl8125_cancel_all_schedule_work(struct rtl8125_private *tp);
 
 static inline struct device *tp_to_dev(struct rtl8125_private *tp)
 {
@@ -620,22 +639,6 @@ static inline struct mii_ioctl_data *if_mii(struct ifreq *rq)
 }
 #endif  //LINUX_VERSION_CODE < KERNEL_VERSION(2,6,7)
 
-struct rtl8125_counters {
-        u64 tx_packets;
-        u64 rx_packets;
-        u64 tx_errors;
-        u32 rx_errors;
-        u16 rx_missed;
-        u16 align_errors;
-        u32 tx_one_collision;
-        u32 tx_multi_collision;
-        u64 rx_unicast;
-        u64 rx_broadcast;
-        u32 rx_multicast;
-        u16 tx_aborted;
-        u16 tx_underun;
-};
-
 static u32 rtl8125_read_thermal_sensor(struct rtl8125_private *tp)
 {
         u16 ts_digout;
@@ -654,6 +657,32 @@ static u32 rtl8125_read_thermal_sensor(struct rtl8125_private *tp)
         return ts_digout;
 }
 
+int rtl8125_dump_tally_counter(struct rtl8125_private *tp, dma_addr_t paddr)
+{
+        u32 cmd;
+        u32 WaitCnt;
+        int retval = -1;
+
+        RTL_W32(tp, CounterAddrHigh, (u64)paddr >> 32);
+        cmd = (u64)paddr & DMA_BIT_MASK(32);
+        RTL_W32(tp, CounterAddrLow, cmd);
+        RTL_W32(tp, CounterAddrLow, cmd | CounterDump);
+
+        WaitCnt = 0;
+        while (RTL_R32(tp, CounterAddrLow) & CounterDump) {
+                udelay(10);
+
+                WaitCnt++;
+                if (WaitCnt > 20)
+                        break;
+        }
+
+        if (WaitCnt <= 20)
+                retval = 0;
+
+        return retval;
+}
+
 #ifdef ENABLE_R8125_PROCFS
 /****************************************************************************
 *   -----------------------------PROCFS STUFF-------------------------
@@ -668,11 +697,11 @@ static int proc_get_driver_variable(struct seq_file *m, void *v)
 {
         struct net_device *dev = m->private;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         seq_puts(m, "\nDump Driver Variable\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         seq_puts(m, "Variable\tValue\n----------\t-----\n");
         seq_printf(m, "MODULENAME\t%s\n", MODULENAME);
         seq_printf(m, "driver version\t%s\n", RTL8125_VERSION);
@@ -789,7 +818,8 @@ static int proc_get_driver_variable(struct seq_file *m, void *v)
         seq_printf(m, "perm_addr\t%pM\n", dev->perm_addr);
 #endif
         seq_printf(m, "dev_addr\t%pM\n", dev->dev_addr);
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -801,52 +831,67 @@ static int proc_get_tally_counter(struct seq_file *m, void *v)
         struct rtl8125_private *tp = netdev_priv(dev);
         struct rtl8125_counters *counters;
         dma_addr_t paddr;
-        u32 cmd;
-        u32 WaitCnt;
-        unsigned long flags;
 
         seq_puts(m, "\nDump Tally Counter\n");
 
-        //ASSERT_RTNL();
+        rtnl_lock();
 
         counters = tp->tally_vaddr;
         paddr = tp->tally_paddr;
         if (!counters) {
                 seq_puts(m, "\nDump Tally Counter Fail\n");
-                return 0;
+                goto out_unlock;
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
-        RTL_W32(tp, CounterAddrHigh, (u64)paddr >> 32);
-        cmd = (u64)paddr & DMA_BIT_MASK(32);
-        RTL_W32(tp, CounterAddrLow, cmd);
-        RTL_W32(tp, CounterAddrLow, cmd | CounterDump);
-
-        WaitCnt = 0;
-        while (RTL_R32(tp, CounterAddrLow) & CounterDump) {
-                udelay(10);
-
-                WaitCnt++;
-                if (WaitCnt > 20)
-                        break;
-        }
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtl8125_dump_tally_counter(tp, paddr);
 
         seq_puts(m, "Statistics\tValue\n----------\t-----\n");
         seq_printf(m, "tx_packets\t%lld\n", le64_to_cpu(counters->tx_packets));
         seq_printf(m, "rx_packets\t%lld\n", le64_to_cpu(counters->rx_packets));
         seq_printf(m, "tx_errors\t%lld\n", le64_to_cpu(counters->tx_errors));
-        seq_printf(m, "rx_missed\t%lld\n", le64_to_cpu(counters->rx_missed));
-        seq_printf(m, "align_errors\t%lld\n", le64_to_cpu(counters->align_errors));
-        seq_printf(m, "tx_one_collision\t%lld\n", le64_to_cpu(counters->tx_one_collision));
-        seq_printf(m, "tx_multi_collision\t%lld\n", le64_to_cpu(counters->tx_multi_collision));
+        seq_printf(m, "rx_errors\t%d\n", le32_to_cpu(counters->rx_errors));
+        seq_printf(m, "rx_missed\t%d\n", le16_to_cpu(counters->rx_missed));
+        seq_printf(m, "align_errors\t%d\n", le16_to_cpu(counters->align_errors));
+        seq_printf(m, "tx_one_collision\t%d\n", le32_to_cpu(counters->tx_one_collision));
+        seq_printf(m, "tx_multi_collision\t%d\n", le32_to_cpu(counters->tx_multi_collision));
         seq_printf(m, "rx_unicast\t%lld\n", le64_to_cpu(counters->rx_unicast));
         seq_printf(m, "rx_broadcast\t%lld\n", le64_to_cpu(counters->rx_broadcast));
-        seq_printf(m, "rx_multicast\t%lld\n", le64_to_cpu(counters->rx_multicast));
-        seq_printf(m, "tx_aborted\t%lld\n", le64_to_cpu(counters->tx_aborted));
-        seq_printf(m, "tx_underun\t%lld\n", le64_to_cpu(counters->tx_underun));
+        seq_printf(m, "rx_multicast\t%d\n", le32_to_cpu(counters->rx_multicast));
+        seq_printf(m, "tx_aborted\t%d\n", le16_to_cpu(counters->tx_aborted));
+        seq_printf(m, "tx_underrun\t%d\n", le16_to_cpu(counters->tx_underrun));
+
+        seq_printf(m, "tx_octets\t%lld\n", le64_to_cpu(counters->tx_octets));
+        seq_printf(m, "rx_octets\t%lld\n", le64_to_cpu(counters->rx_octets));
+        seq_printf(m, "rx_multicast64\t%lld\n", le64_to_cpu(counters->rx_multicast64));
+        seq_printf(m, "tx_unicast64\t%lld\n", le64_to_cpu(counters->tx_unicast64));
+        seq_printf(m, "tx_broadcast64\t%lld\n", le64_to_cpu(counters->tx_broadcast64));
+        seq_printf(m, "tx_multicast64\t%lld\n", le64_to_cpu(counters->tx_multicast64));
+        seq_printf(m, "tx_pause_on\t%d\n", le32_to_cpu(counters->tx_pause_on));
+        seq_printf(m, "tx_pause_off\t%d\n", le32_to_cpu(counters->tx_pause_off));
+        seq_printf(m, "tx_pause_all\t%d\n", le32_to_cpu(counters->tx_pause_all));
+        seq_printf(m, "tx_deferred\t%d\n", le32_to_cpu(counters->tx_deferred));
+        seq_printf(m, "tx_late_collision\t%d\n", le32_to_cpu(counters->tx_late_collision));
+        seq_printf(m, "tx_all_collision\t%d\n", le32_to_cpu(counters->tx_all_collision));
+        seq_printf(m, "tx_aborted32\t%d\n", le32_to_cpu(counters->tx_aborted32));
+        seq_printf(m, "align_errors32\t%d\n", le32_to_cpu(counters->align_errors32));
+        seq_printf(m, "rx_frame_too_long\t%d\n", le32_to_cpu(counters->rx_frame_too_long));
+        seq_printf(m, "rx_runt\t%d\n", le32_to_cpu(counters->rx_runt));
+        seq_printf(m, "rx_pause_on\t%d\n", le32_to_cpu(counters->rx_pause_on));
+        seq_printf(m, "rx_pause_off\t%d\n", le32_to_cpu(counters->rx_pause_off));
+        seq_printf(m, "rx_pause_all\t%d\n", le32_to_cpu(counters->rx_pause_all));
+        seq_printf(m, "rx_unknown_opcode\t%d\n", le32_to_cpu(counters->rx_unknown_opcode));
+        seq_printf(m, "rx_mac_error\t%d\n", le32_to_cpu(counters->rx_mac_error));
+        seq_printf(m, "tx_underrun32\t%d\n", le32_to_cpu(counters->tx_underrun32));
+        seq_printf(m, "rx_mac_missed\t%d\n", le32_to_cpu(counters->rx_mac_missed));
+        seq_printf(m, "rx_tcam_dropped\t%d\n", le32_to_cpu(counters->rx_tcam_dropped));
+        seq_printf(m, "tdu\t%d\n", le32_to_cpu(counters->tdu));
+        seq_printf(m, "rdu\t%d\n", le32_to_cpu(counters->rdu));
 
         seq_putc(m, '\n');
+
+out_unlock:
+        rtnl_unlock();
+
         return 0;
 }
 
@@ -857,12 +902,12 @@ static int proc_get_registers(struct seq_file *m, void *v)
         u8 byte_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
         void __iomem *ioaddr = tp->mmio_addr;
-        unsigned long flags;
 
         seq_puts(m, "\nDump MAC Registers\n");
         seq_puts(m, "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 seq_printf(m, "\n0x%02x:\t", n);
 
@@ -871,7 +916,8 @@ static int proc_get_registers(struct seq_file *m, void *v)
                         seq_printf(m, "%02x ", byte_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -883,12 +929,12 @@ static int proc_get_pcie_phy(struct seq_file *m, void *v)
         int i, n, max = R8125_EPHY_REGS_SIZE/2;
         u16 word_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         seq_puts(m, "\nDump PCIE PHY\n");
         seq_puts(m, "\nOffset\tValue\n------\t-----\n ");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 seq_printf(m, "\n0x%02x:\t", n);
 
@@ -897,7 +943,8 @@ static int proc_get_pcie_phy(struct seq_file *m, void *v)
                         seq_printf(m, "%04x ", word_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -909,12 +956,12 @@ static int proc_get_eth_phy(struct seq_file *m, void *v)
         int i, n, max = R8125_PHY_REGS_SIZE/2;
         u16 word_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         seq_puts(m, "\nDump Ethernet PHY\n");
         seq_puts(m, "\nOffset\tValue\n------\t-----\n ");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         seq_puts(m, "\n####################page 0##################\n ");
         rtl8125_mdio_write(tp, 0x1f, 0x0000);
         for (n = 0; n < max;) {
@@ -925,7 +972,8 @@ static int proc_get_eth_phy(struct seq_file *m, void *v)
                         seq_printf(m, "%04x ", word_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -937,12 +985,12 @@ static int proc_get_extended_registers(struct seq_file *m, void *v)
         int i, n, max = R8125_ERI_REGS_SIZE;
         u32 dword_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         seq_puts(m, "\nDump Extended Registers\n");
         seq_puts(m, "\nOffset\tValue\n------\t-----\n ");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 seq_printf(m, "\n0x%02x:\t", n);
 
@@ -951,7 +999,8 @@ static int proc_get_extended_registers(struct seq_file *m, void *v)
                         seq_printf(m, "%08x ", dword_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -963,12 +1012,12 @@ static int proc_get_pci_registers(struct seq_file *m, void *v)
         int i, n, max = R8125_PCI_REGS_SIZE;
         u32 dword_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         seq_puts(m, "\nDump PCI Registers\n");
         seq_puts(m, "\nOffset\tValue\n------\t-----\n ");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 seq_printf(m, "\n0x%03x:\t", n);
 
@@ -985,7 +1034,7 @@ static int proc_get_pci_registers(struct seq_file *m, void *v)
         pci_read_config_dword(tp->pci_dev, n, &dword_rd);
         seq_printf(m, "\n0x%03x:\t%08x ", n, dword_rd);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtnl_unlock();
 
         seq_putc(m, '\n');
         return 0;
@@ -996,7 +1045,6 @@ static int proc_get_temperature(struct seq_file *m, void *v)
         struct net_device *dev = m->private;
         struct rtl8125_private *tp = netdev_priv(dev);
         u16 ts_digout, tj, fah;
-        unsigned long flags;
 
         switch (tp->mcfg) {
         case CFG_METHOD_4:
@@ -1008,9 +1056,9 @@ static int proc_get_temperature(struct seq_file *m, void *v)
                 break;
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
         ts_digout = rtl8125_read_thermal_sensor(tp);
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtnl_unlock();
 
         tj = ts_digout / 2;
         if (ts_digout <= 512) {
@@ -1036,13 +1084,13 @@ static int proc_get_driver_variable(char *page, char **start,
 {
         struct net_device *dev = data;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump Driver Driver\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         len += snprintf(page + len, count - len,
                         "Variable\tValue\n----------\t-----\n");
 
@@ -1278,7 +1326,8 @@ static int proc_get_driver_variable(char *page, char **start,
 #endif
                         dev->dev_addr
                        );
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
 
@@ -1294,39 +1343,22 @@ static int proc_get_tally_counter(char *page, char **start,
         struct rtl8125_private *tp = netdev_priv(dev);
         struct rtl8125_counters *counters;
         dma_addr_t paddr;
-        u32 cmd;
-        u32 WaitCnt;
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump Tally Counter\n");
 
-        //ASSERT_RTNL();
+        rtnl_lock();
 
         counters = tp->tally_vaddr;
         paddr = tp->tally_paddr;
         if (!counters) {
                 len += snprintf(page + len, count - len,
                                 "\nDump Tally Counter Fail\n");
-                goto out;
+                goto out_unlock;
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
-        RTL_W32(tp, CounterAddrHigh, (u64)paddr >> 32);
-        cmd = (u64)paddr & DMA_BIT_MASK(32);
-        RTL_W32(tp, CounterAddrLow, cmd);
-        RTL_W32(tp, CounterAddrLow, cmd | CounterDump);
-
-        WaitCnt = 0;
-        while (RTL_R32(tp, CounterAddrLow) & CounterDump) {
-                udelay(10);
-
-                WaitCnt++;
-                if (WaitCnt > 20)
-                        break;
-        }
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtl8125_dump_tally_counter(tp, paddr);
 
         len += snprintf(page + len, count - len,
                         "Statistics\tValue\n----------\t-----\n");
@@ -1335,31 +1367,89 @@ static int proc_get_tally_counter(char *page, char **start,
                         "tx_packets\t%lld\n"
                         "rx_packets\t%lld\n"
                         "tx_errors\t%lld\n"
-                        "rx_missed\t%lld\n"
-                        "align_errors\t%lld\n"
-                        "tx_one_collision\t%lld\n"
-                        "tx_multi_collision\t%lld\n"
+                        "rx_errors\t%d\n"
+                        "rx_missed\t%d\n"
+                        "align_errors\t%d\n"
+                        "tx_one_collision\t%d\n"
+                        "tx_multi_collision\t%d\n"
                         "rx_unicast\t%lld\n"
                         "rx_broadcast\t%lld\n"
-                        "rx_multicast\t%lld\n"
-                        "tx_aborted\t%lld\n"
-                        "tx_underun\t%lld\n",
+                        "rx_multicast\t%d\n"
+                        "tx_aborted\t%d\n"
+                        "tx_underrun\t%d\n",
+
+                        "tx_octets\t%lld\n",
+                        "rx_octets\t%lld\n",
+                        "rx_multicast64\t%lld\n",
+                        "tx_unicast64\t%lld\n",
+                        "tx_broadcast64\t%lld\n",
+                        "tx_multicast64\t%lld\n",
+                        "tx_pause_on\t%d\n",
+                        "tx_pause_off\t%d\n",
+                        "tx_pause_all\t%d\n",
+                        "tx_deferred\t%d\n",
+                        "tx_late_collision\t%d\n",
+                        "tx_all_collision\t%d\n",
+                        "tx_aborted32\t%d\n",
+                        "align_errors32\t%d\n",
+                        "rx_frame_too_long\t%d\n",
+                        "rx_runt\t%d\n",
+                        "rx_pause_on\t%d\n",
+                        "rx_pause_off\t%d\n",
+                        "rx_pause_all\t%d\n",
+                        "rx_unknown_opcode\t%d\n",
+                        "rx_mac_error\t%d\n",
+                        "tx_underrun32\t%d\n",
+                        "rx_mac_missed\t%d\n",
+                        "rx_tcam_dropped\t%d\n",
+                        "tdu\t%d\n",
+                        "rdu\t%d\n",
                         le64_to_cpu(counters->tx_packets),
                         le64_to_cpu(counters->rx_packets),
                         le64_to_cpu(counters->tx_errors),
-                        le64_to_cpu(counters->rx_missed),
-                        le64_to_cpu(counters->align_errors),
-                        le64_to_cpu(counters->tx_one_collision),
-                        le64_to_cpu(counters->tx_multi_collision),
+                        le32_to_cpu(counters->rx_errors),
+                        le16_to_cpu(counters->rx_missed),
+                        le16_to_cpu(counters->align_errors),
+                        le32_to_cpu(counters->tx_one_collision),
+                        le32_to_cpu(counters->tx_multi_collision),
                         le64_to_cpu(counters->rx_unicast),
                         le64_to_cpu(counters->rx_broadcast),
-                        le64_to_cpu(counters->rx_multicast),
-                        le64_to_cpu(counters->tx_aborted),
-                        le64_to_cpu(counters->tx_underun)
+                        le32_to_cpu(counters->rx_multicast),
+                        le16_to_cpu(counters->tx_aborted),
+                        le16_to_cpu(counters->tx_underrun),
+
+                        le64_to_cpu(counters->tx_octets),
+                        le64_to_cpu(counters->rx_octets),
+                        le64_to_cpu(counters->rx_multicast64),
+                        le64_to_cpu(counters->tx_unicast64),
+                        le64_to_cpu(counters->tx_broadcast64),
+                        le64_to_cpu(counters->tx_multicast64),
+                        le32_to_cpu(counters->tx_pause_on),
+                        le32_to_cpu(counters->tx_pause_off),
+                        le32_to_cpu(counters->tx_pause_all),
+                        le32_to_cpu(counters->tx_deferred),
+                        le32_to_cpu(counters->tx_late_collision),
+                        le32_to_cpu(counters->tx_all_collision),
+                        le32_to_cpu(counters->tx_aborted32),
+                        le32_to_cpu(counters->align_errors32),
+                        le32_to_cpu(counters->rx_frame_too_long),
+                        le32_to_cpu(counters->rx_runt),
+                        le32_to_cpu(counters->rx_pause_on),
+                        le32_to_cpu(counters->rx_pause_off),
+                        le32_to_cpu(counters->rx_pause_all),
+                        le32_to_cpu(counters->rx_unknown_opcode),
+                        le32_to_cpu(counters->rx_mac_error),
+                        le32_to_cpu(counters->tx_underrun32),
+                        le32_to_cpu(counters->rx_mac_missed),
+                        le32_to_cpu(counters->rx_tcam_dropped),
+                        le32_to_cpu(counters->tdu),
+                        le32_to_cpu(counters->rdu),
                        );
 
         len += snprintf(page + len, count - len, "\n");
-out:
+out_unlock:
+        rtnl_unlock();
+
         *eof = 1;
         return len;
 }
@@ -1373,14 +1463,14 @@ static int proc_get_registers(char *page, char **start,
         u8 byte_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
         void __iomem *ioaddr = tp->mmio_addr;
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump MAC Registers\n"
                         "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 len += snprintf(page + len, count - len,
                                 "\n0x%02x:\t",
@@ -1393,7 +1483,8 @@ static int proc_get_registers(char *page, char **start,
                                         byte_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
 
@@ -1409,14 +1500,14 @@ static int proc_get_pcie_phy(char *page, char **start,
         int i, n, max = R8125_EPHY_REGS_SIZE/2;
         u16 word_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump PCIE PHY\n"
                         "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 len += snprintf(page + len, count - len,
                                 "\n0x%02x:\t",
@@ -1429,7 +1520,8 @@ static int proc_get_pcie_phy(char *page, char **start,
                                         word_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
 
@@ -1445,14 +1537,14 @@ static int proc_get_eth_phy(char *page, char **start,
         int i, n, max = R8125_PHY_REGS_SIZE/2;
         u16 word_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump Ethernet PHY\n"
                         "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         len += snprintf(page + len, count - len,
                         "\n####################page 0##################\n");
         rtl8125_mdio_write(tp, 0x1f, 0x0000);
@@ -1468,7 +1560,8 @@ static int proc_get_eth_phy(char *page, char **start,
                                         word_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
 
@@ -1484,14 +1577,14 @@ static int proc_get_extended_registers(char *page, char **start,
         int i, n, max = R8125_ERI_REGS_SIZE;
         u32 dword_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump Extended Registers\n"
                         "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 len += snprintf(page + len, count - len,
                                 "\n0x%02x:\t",
@@ -1504,10 +1597,11 @@ static int proc_get_extended_registers(char *page, char **start,
                                         dword_rd);
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
-out:
+
         *eof = 1;
         return len;
 }
@@ -1520,14 +1614,14 @@ static int proc_get_pci_registers(char *page, char **start,
         int i, n, max = R8125_PCI_REGS_SIZE;
         u32 dword_rd;
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int len = 0;
 
         len += snprintf(page + len, count - len,
                         "\nDump PCI Registers\n"
                         "Offset\tValue\n------\t-----\n");
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
+
         for (n = 0; n < max;) {
                 len += snprintf(page + len, count - len,
                                 "\n0x%03x:\t",
@@ -1553,7 +1647,8 @@ static int proc_get_pci_registers(char *page, char **start,
                         "\n0x%03x:\t%08x ",
                         n,
                         dword_rd);
-        spin_unlock_irqrestore(&tp->lock, flags);
+
+        rtnl_unlock();
 
         len += snprintf(page + len, count - len, "\n");
 
@@ -1568,7 +1663,6 @@ static int proc_get_temperature(char *page, char **start,
         struct net_device *dev = data;
         struct rtl8125_private *tp = netdev_priv(dev);
         u16 ts_digout, tj, fah;
-        unsigned long flags;
         int len = 0;
 
         switch (tp->mcfg) {
@@ -1583,9 +1677,9 @@ static int proc_get_temperature(char *page, char **start,
                 break;
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
+        rtnl_lock();
         ts_digout = rtl8125_read_thermal_sensor(tp);
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtnl_unlock();
 
         tj = ts_digout / 2;
         if (ts_digout <= 512) {
@@ -2774,11 +2868,42 @@ rtl8125_is_in_phy_disable_mode(struct net_device *dev)
         return in_phy_disable_mode;
 }
 
+static bool
+rtl8125_stop_all_request(struct net_device *dev)
+{
+        struct rtl8125_private *tp = netdev_priv(dev);
+        int i;
+
+        RTL_W8(tp, ChipCmd, RTL_R8(tp, ChipCmd) | StopReq);
+
+        switch (tp->mcfg) {
+        case CFG_METHOD_2:
+        case CFG_METHOD_3:
+                for (i = 0; i < 20; i++) {
+                        udelay(10);
+                        if (!(RTL_R8(tp, ChipCmd) & StopReq)) break;
+                }
+
+                if (i == 20)
+                        return 0;
+                break;
+        }
+
+        return 1;
+}
+
 void
 rtl8125_wait_txrx_fifo_empty(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         int i;
+
+        switch (tp->mcfg) {
+        case CFG_METHOD_4:
+        case CFG_METHOD_5:
+                rtl8125_stop_all_request(dev);
+                break;
+        }
 
         switch (tp->mcfg) {
         case CFG_METHOD_2:
@@ -2789,7 +2914,6 @@ rtl8125_wait_txrx_fifo_empty(struct net_device *dev)
                         udelay(50);
                         if ((RTL_R8(tp, MCUCmd_reg) & (Txfifo_empty | Rxfifo_empty)) == (Txfifo_empty | Rxfifo_empty))
                                 break;
-
                 }
                 break;
         }
@@ -2801,7 +2925,6 @@ rtl8125_wait_txrx_fifo_empty(struct net_device *dev)
                         udelay(50);
                         if ((RTL_R16(tp, IntrMitigate) & (BIT_0 | BIT_1 | BIT_8)) == (BIT_0 | BIT_1 | BIT_8))
                                 break;
-
                 }
                 break;
         }
@@ -2838,7 +2961,7 @@ rtl8125_enable_hw_linkchg_interrupt(struct rtl8125_private *tp)
                 RTL_W32(tp, IMR_V2_SET_REG_8125, ISRIMR_V2_LINKCHG);
                 break;
         case 1:
-                RTL_W32(tp, tp->imr_reg[0], LinkChg);
+                RTL_W32(tp, tp->imr_reg[0], LinkChg | RTL_R32(tp, tp->imr_reg[0]));
                 break;
         }
 
@@ -2966,17 +3089,11 @@ rtl8125_nic_reset(struct net_device *dev)
 
         rtl8125_enable_rxdvgate(dev);
 
+        rtl8125_stop_all_request(dev);
+
         rtl8125_wait_txrx_fifo_empty(dev);
 
-        switch (tp->mcfg) {
-        case CFG_METHOD_2:
-        case CFG_METHOD_3:
-        case CFG_METHOD_4:
-        case CFG_METHOD_5:
-        default:
-                mdelay(2);
-                break;
-        }
+        mdelay(2);
 
         /* Soft reset the chip. */
         RTL_W8(tp, ChipCmd, CmdReset);
@@ -3148,7 +3265,7 @@ rtl8125_init_ring_indexes(struct rtl8125_private *tp)
 {
         int i;
 
-        for (i = 0; i < tp->num_tx_rings; i++) {
+        for (i = 0; i < tp->HwSuppNumTxQueues; i++) {
                 struct rtl8125_tx_ring *ring = &tp->tx_ring[i];
                 ring->dirty_tx = ring->cur_tx = 0;
                 ring->NextHwDesCloPtr = 0;
@@ -3157,7 +3274,7 @@ rtl8125_init_ring_indexes(struct rtl8125_private *tp)
                 ring->priv = tp;
         }
 
-        for (i = 0; i < tp->num_rx_rings; i++) {
+        for (i = 0; i < tp->HwSuppNumRxQueues; i++) {
                 struct rtl8125_rx_ring *ring = &tp->rx_ring[i];
                 ring->dirty_rx = ring->cur_rx = 0;
                 ring->index = i;
@@ -3255,26 +3372,6 @@ static int rtl8125_disable_eee_plus(struct rtl8125_private *tp)
 }
 
 static void
-rtl8125_wakeup_all_tx_queue(struct net_device *dev)
-{
-        struct rtl8125_private *tp = netdev_priv(dev);
-        int i;
-
-        for (i=0; i<tp->num_tx_rings; i++)
-                netif_start_subqueue(dev, i);
-}
-
-static void
-rtl8125_stop_all_tx_queue(struct net_device *dev)
-{
-        struct rtl8125_private *tp = netdev_priv(dev);
-        int i;
-
-        for (i=0; i<tp->num_tx_rings; i++)
-                netif_stop_subqueue(dev, i);
-}
-
-static void
 rtl8125_link_on_patch(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
@@ -3300,7 +3397,12 @@ rtl8125_link_on_patch(struct net_device *dev)
 
         netif_carrier_on(dev);
 
-        rtl8125_wakeup_all_tx_queue(dev);
+        netif_tx_wake_all_queues(dev);
+
+        tp->phy_reg_aner = rtl8125_mdio_read(tp, MII_EXPANSION);
+        tp->phy_reg_anlpar = rtl8125_mdio_read(tp, MII_LPA);
+        tp->phy_reg_gbsr = rtl8125_mdio_read(tp, MII_STAT1000);
+        tp->phy_reg_status_2500 = mdio_direct_read_phy_ocp(tp, 0xA5D6);
 }
 
 static void
@@ -3308,13 +3410,18 @@ rtl8125_link_down_patch(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
 
+        tp->phy_reg_aner = 0;
+        tp->phy_reg_anlpar = 0;
+        tp->phy_reg_gbsr = 0;
+        tp->phy_reg_status_2500 = 0;
+
         if (tp->mcfg == CFG_METHOD_2 ||
             tp->mcfg == CFG_METHOD_3 ||
             tp->mcfg == CFG_METHOD_4 ||
             tp->mcfg == CFG_METHOD_5)
                 rtl8125_disable_eee_plus(tp);
 
-        rtl8125_stop_all_tx_queue(dev);
+        netif_tx_stop_all_queues(dev);
 
         netif_carrier_off(dev);
 
@@ -3496,9 +3603,9 @@ rtl8125_enable_pci_offset_99(struct rtl8125_private *tp)
         case CFG_METHOD_5:
                 csi_tmp = rtl8125_mac_ocp_read(tp, 0xE032);
                 csi_tmp &= ~(BIT_0 | BIT_1);
-                if (!(tp->org_pci_offset_99 & (BIT_5 | BIT_6)))
+                if (tp->org_pci_offset_99 & (BIT_5 | BIT_6))
                         csi_tmp |= BIT_1;
-                if (!(tp->org_pci_offset_99 & BIT_2))
+                if (tp->org_pci_offset_99 & BIT_2)
                         csi_tmp |= BIT_0;
                 rtl8125_mac_ocp_write(tp, 0xE032, csi_tmp);
                 break;
@@ -3657,6 +3764,26 @@ rtl8125_disable_exit_l1_mask(struct rtl8125_private *tp)
 }
 
 static void
+rtl8125_enable_extend_tally_couter(struct rtl8125_private *tp)
+{
+        switch (tp->HwSuppExtendTallyCounterVer) {
+        case 1:
+                SetMcuAccessRegBit(tp, 0xEA84, (BIT_1 | BIT_0));
+                break;
+        }
+}
+
+static void
+rtl8125_disable_extend_tally_couter(struct rtl8125_private *tp)
+{
+        switch (tp->HwSuppExtendTallyCounterVer) {
+        case 1:
+                ClearMcuAccessRegBit(tp, 0xEA84, (BIT_1 | BIT_0));
+                break;
+        }
+}
+
+static void
 rtl8125_hw_d3_para(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
@@ -3701,6 +3828,8 @@ rtl8125_hw_d3_para(struct net_device *dev)
                 rtl8125_disable_ocp_phy_power_saving(dev);
 
         rtl8125_disable_rxdvgate(dev);
+
+        rtl8125_disable_extend_tally_couter(tp);
 }
 
 static void
@@ -3760,6 +3889,9 @@ rtl8125_get_hw_wol(struct rtl8125_private *tp)
         u8 options;
         u32 csi_tmp;
         u32 wol_opts = 0;
+
+        if (disable_pm_support)
+                goto out;
 
         options = RTL_R8(tp, Config1);
         if (!(options & PMEnable))
@@ -3942,12 +4074,10 @@ rtl8125_set_wol_link_speed(struct net_device *dev)
         u16 status_2500;
         u16 aner;
 
-        if (!tp->link_ok(dev) || tp->autoneg != AUTONEG_ENABLE)
+        if (tp->autoneg != AUTONEG_ENABLE)
                 goto exit;
 
         rtl8125_mdio_write(tp, 0x1F, 0x0000);
-        aner = rtl8125_mdio_read(tp, MII_EXPANSION);
-        if (!(aner & EXPANSION_NWAY)) goto exit;
 
         auto_nego = rtl8125_mdio_read(tp, MII_ADVERTISE);
         auto_nego &= ~(ADVERTISE_10HALF | ADVERTISE_10FULL
@@ -3959,9 +4089,39 @@ rtl8125_set_wol_link_speed(struct net_device *dev)
         ctrl_2500 = mdio_direct_read_phy_ocp(tp, 0xA5D4);
         ctrl_2500 &= ~(RTK_ADVERTISE_2500FULL);
 
-        anlpar = rtl8125_mdio_read(tp, MII_LPA);
-        gbsr = rtl8125_mdio_read(tp, MII_STAT1000);
-        status_2500 = mdio_direct_read_phy_ocp(tp, 0xA5D6);
+        aner = anlpar = gbsr = status_2500 = 0;
+        if (tp->link_ok(dev)) {
+                aner = rtl8125_mdio_read(tp, MII_EXPANSION);
+                anlpar = rtl8125_mdio_read(tp, MII_LPA);
+                gbsr = rtl8125_mdio_read(tp, MII_STAT1000);
+                status_2500 = mdio_direct_read_phy_ocp(tp, 0xA5D6);
+        } else {
+                if (netif_running(dev)) {
+                        aner = tp->phy_reg_aner;
+                        anlpar = tp->phy_reg_anlpar;
+                        gbsr = tp->phy_reg_gbsr;
+                        status_2500 = tp->phy_reg_status_2500;
+                }
+        }
+
+        if ((aner | anlpar | gbsr | status_2500) == 0) {
+                int auto_nego_tmp = 0;
+                adv = tp->advertising;
+                if ((adv & ADVERTISED_10baseT_Half) && (anlpar & LPA_10HALF))
+                        auto_nego_tmp |= ADVERTISE_10HALF;
+                if ((adv & ADVERTISED_10baseT_Full) && (anlpar & LPA_10FULL))
+                        auto_nego_tmp |= ADVERTISE_10FULL;
+                if ((adv & ADVERTISED_100baseT_Half) && (anlpar & LPA_100HALF))
+                        auto_nego_tmp |= ADVERTISE_100HALF;
+                if ((adv & ADVERTISED_100baseT_Full) && (anlpar & LPA_100FULL))
+                        auto_nego_tmp |= ADVERTISE_100FULL;
+
+                if (auto_nego_tmp == 0)	goto exit;
+
+                auto_nego |= auto_nego_tmp;
+                goto skip_check_lpa;
+        }
+        if (!(aner & EXPANSION_NWAY)) goto exit;
 
         adv = tp->advertising;
         if ((adv & ADVERTISED_10baseT_Half) && (anlpar & LPA_10HALF))
@@ -3981,6 +4141,7 @@ rtl8125_set_wol_link_speed(struct net_device *dev)
         else
                 goto exit;
 
+skip_check_lpa:
         if (tp->DASH)
                 auto_nego |= (ADVERTISE_100FULL | ADVERTISE_100HALF | ADVERTISE_10HALF | ADVERTISE_10FULL);
 
@@ -4098,27 +4259,21 @@ rtl8125_get_wol(struct net_device *dev,
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         u8 options;
-        unsigned long flags;
 
         wol->wolopts = 0;
 
-        if (tp->mcfg == CFG_METHOD_DEFAULT) {
+        if (tp->mcfg == CFG_METHOD_DEFAULT || disable_pm_support) {
                 wol->supported = 0;
                 return;
         } else {
                 wol->supported = WAKE_ANY;
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         options = RTL_R8(tp, Config1);
         if (!(options & PMEnable))
-                goto out_unlock;
+                return;
 
         wol->wolopts = tp->wol_opts;
-
-out_unlock:
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 static int
@@ -4126,18 +4281,13 @@ rtl8125_set_wol(struct net_device *dev,
                 struct ethtool_wolinfo *wol)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
-        if (tp->mcfg == CFG_METHOD_DEFAULT)
+        if (tp->mcfg == CFG_METHOD_DEFAULT || disable_pm_support)
                 return -EOPNOTSUPP;
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         tp->wol_opts = wol->wolopts;
 
         tp->wol_enabled = (tp->wol_opts) ? WOL_ENABLED : WOL_DISABLED;
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         device_set_wakeup_enable(tp_to_dev(tp), wol->wolopts);
 
@@ -4297,9 +4447,7 @@ rtl8125_set_settings(struct net_device *dev,
 #endif
                     )
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
         int ret;
-        unsigned long flags;
         u8 autoneg;
         u32 speed;
         u8 duplex;
@@ -4320,13 +4468,17 @@ rtl8125_set_settings(struct net_device *dev,
                                                 cmd->link_modes.supported);
         ethtool_convert_link_mode_to_legacy_u32(&advertising,
                                                 cmd->link_modes.advertising);
+        if (test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                     cmd->link_modes.supported))
+                supported |= ADVERTISED_2500baseX_Full;
+        if (test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                     cmd->link_modes.advertising))
+                advertising |= ADVERTISED_2500baseX_Full;
 #endif
         if (advertising & ~supported)
                 return -EINVAL;
 
-        spin_lock_irqsave(&tp->lock, flags);
         ret = rtl8125_set_speed(dev, autoneg, speed, duplex, advertising);
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return ret;
 }
@@ -4337,15 +4489,12 @@ rtl8125_get_tx_csum(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         u32 ret;
-        unsigned long flags;
 
-        spin_lock_irqsave(&tp->lock, flags);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
         ret = ((dev->features & NETIF_F_IP_CSUM) != 0);
 #else
         ret = ((dev->features & (NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM)) != 0);
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return ret;
 }
@@ -4355,11 +4504,8 @@ rtl8125_get_rx_csum(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         u32 ret;
-        unsigned long flags;
 
-        spin_lock_irqsave(&tp->lock, flags);
         ret = tp->cp_cmd & RxChkSum;
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return ret;
 }
@@ -4369,12 +4515,9 @@ rtl8125_set_tx_csum(struct net_device *dev,
                     u32 data)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         if (tp->mcfg == CFG_METHOD_DEFAULT)
                 return -EOPNOTSUPP;
-
-        spin_lock_irqsave(&tp->lock, flags);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
         if (data)
@@ -4388,8 +4531,6 @@ rtl8125_set_tx_csum(struct net_device *dev,
                 dev->features &= ~(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM);
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)
 
-        spin_unlock_irqrestore(&tp->lock, flags);
-
         return 0;
 }
 
@@ -4398,12 +4539,9 @@ rtl8125_set_rx_csum(struct net_device *dev,
                     u32 data)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         if (tp->mcfg == CFG_METHOD_DEFAULT)
                 return -EOPNOTSUPP;
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         if (data)
                 tp->cp_cmd |= RxChkSum;
@@ -4411,8 +4549,6 @@ rtl8125_set_rx_csum(struct net_device *dev,
                 tp->cp_cmd &= ~RxChkSum;
 
         RTL_W16(tp, CPlusCmd, tp->cp_cmd);
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return 0;
 }
@@ -4476,9 +4612,7 @@ rtl8125_vlan_rx_register(struct net_device *dev,
                          struct vlan_group *grp)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
-        spin_lock_irqsave(&tp->lock, flags);
         tp->vlgrp = grp;
         if (tp->mcfg == CFG_METHOD_2 ||
             tp->mcfg == CFG_METHOD_3 ||
@@ -4492,7 +4626,6 @@ rtl8125_vlan_rx_register(struct net_device *dev,
                         RTL_W32(tp, RxConfig, RTL_R32(tp, RxConfig) & ~(EnableInnerVlan | EnableOuterVlan))
                 }
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 #endif
@@ -4503,16 +4636,13 @@ rtl8125_vlan_rx_kill_vid(struct net_device *dev,
                          unsigned short vid)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
-        spin_lock_irqsave(&tp->lock, flags);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
         if (tp->vlgrp)
                 tp->vlgrp->vlan_devices[vid] = NULL;
 #else
         vlan_group_set_device(tp->vlgrp, vid, NULL);
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
 
@@ -4566,10 +4696,6 @@ rtl8125_rx_vlan_skb(struct rtl8125_private *tp,
 static netdev_features_t rtl8125_fix_features(struct net_device *dev,
                 netdev_features_t features)
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
-
-        spin_lock_irqsave(&tp->lock, flags);
         if (dev->mtu > MSS_MAX)
                 features &= ~NETIF_F_ALL_TSO;
         if (dev->mtu > ETH_DATA_LEN) {
@@ -4579,7 +4705,6 @@ static netdev_features_t rtl8125_fix_features(struct net_device *dev,
 #ifndef CONFIG_R8125_VLAN
         features &= ~NETIF_F_ALL_CSUM;
 #endif
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return features;
 }
@@ -4591,15 +4716,21 @@ static int rtl8125_hw_set_features(struct net_device *dev,
         u32 rx_config;
 
         rx_config = RTL_R32(tp, RxConfig);
-        if (features & NETIF_F_RXALL)
+        if (features & NETIF_F_RXALL) {
+                tp->rtl8125_rx_config |= (AcceptErr | AcceptRunt);
                 rx_config |= (AcceptErr | AcceptRunt);
-        else
+        } else {
+                tp->rtl8125_rx_config &= ~(AcceptErr | AcceptRunt);
                 rx_config &= ~(AcceptErr | AcceptRunt);
+        }
 
-        if (features & NETIF_F_HW_VLAN_RX)
+        if (features & NETIF_F_HW_VLAN_RX) {
+                tp->rtl8125_rx_config |= (EnableInnerVlan | EnableOuterVlan);
                 rx_config |= (EnableInnerVlan | EnableOuterVlan);
-        else
+        } else {
+                tp->rtl8125_rx_config &= ~(EnableInnerVlan | EnableOuterVlan);
                 rx_config &= ~(EnableInnerVlan | EnableOuterVlan);
+        }
 
         RTL_W32(tp, RxConfig, rx_config);
 
@@ -4617,15 +4748,9 @@ static int rtl8125_hw_set_features(struct net_device *dev,
 static int rtl8125_set_features(struct net_device *dev,
                                 netdev_features_t features)
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
-
         features &= NETIF_F_RXALL | NETIF_F_RXCSUM | NETIF_F_HW_VLAN_RX;
 
-        spin_lock_irqsave(&tp->lock, flags);
-        if (features ^ dev->features)
-                rtl8125_hw_set_features(dev, features);
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtl8125_hw_set_features(dev, features);
 
         return 0;
 }
@@ -4641,12 +4766,17 @@ static void rtl8125_gset_xmii(struct net_device *dev,
                              )
 {
         struct rtl8125_private *tp = netdev_priv(dev);
+        u16 aner = tp->phy_reg_aner;
+        u16 anlpar = tp->phy_reg_anlpar;
+        u16 gbsr = tp->phy_reg_gbsr;
+        u16 status_2500 = tp->phy_reg_status_2500;
+        u32 lpa_adv = 0;
         u16 status;
         u8 autoneg, duplex;
         u32 speed = 0;
         u16 bmcr;
         u32 supported, advertising;
-        unsigned long flags;
+        u8 report_lpa = 0;
 
         supported = SUPPORTED_10baseT_Half |
                     SUPPORTED_10baseT_Full |
@@ -4661,10 +4791,8 @@ static void rtl8125_gset_xmii(struct net_device *dev,
 
         advertising = ADVERTISED_TP;
 
-        spin_lock_irqsave(&tp->lock, flags);
         rtl8125_mdio_write(tp, 0x1F, 0x0000);
         bmcr = rtl8125_mdio_read(tp, MII_BMCR);
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         if (bmcr & BMCR_ANENABLE) {
                 advertising |= ADVERTISED_Autoneg;
@@ -4687,8 +4815,10 @@ static void rtl8125_gset_xmii(struct net_device *dev,
         }
 
         status = RTL_R16(tp, PHYstatus);
+        if (netif_running(dev) && (status & LinkStatus))
+                report_lpa = 1;
 
-        if (status & LinkStatus) {
+        if (report_lpa) {
                 /*link on*/
                 if (status & _2500bpsF)
                         speed = SPEED_2500;
@@ -4707,10 +4837,33 @@ static void rtl8125_gset_xmii(struct net_device *dev,
 
                 duplex = ((status & (_1000bpsF | _2500bpsF)) || (status & FullDup)) ?
                          DUPLEX_FULL : DUPLEX_HALF;
+
+                /*link partner*/
+                if (aner & EXPANSION_NWAY)
+                        lpa_adv |= ADVERTISED_Autoneg;
+                if (anlpar & LPA_10HALF)
+                        lpa_adv |= ADVERTISED_10baseT_Half;
+                if (anlpar & LPA_10FULL)
+                        lpa_adv |= ADVERTISED_10baseT_Full;
+                if (anlpar & LPA_100HALF)
+                        lpa_adv |= ADVERTISED_100baseT_Half;
+                if (anlpar & LPA_100FULL)
+                        lpa_adv |= ADVERTISED_100baseT_Full;
+                if (anlpar & LPA_PAUSE_CAP)
+                        lpa_adv |= ADVERTISED_Pause;
+                if (anlpar & LPA_PAUSE_ASYM)
+                        lpa_adv |= ADVERTISED_Asym_Pause;
+                if (gbsr & LPA_1000HALF)
+                        lpa_adv |= ADVERTISED_1000baseT_Half;
+                if (gbsr & LPA_1000FULL)
+                        lpa_adv |= ADVERTISED_1000baseT_Full;
+                if (status_2500 & RTK_LPA_ADVERTISE_2500FULL)
+                        lpa_adv |= ADVERTISED_2500baseX_Full;
         } else {
                 /*link down*/
                 speed = SPEED_UNKNOWN;
                 duplex = DUPLEX_UNKNOWN;
+                lpa_adv = 0;
         }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,6,0)
@@ -4720,11 +4873,42 @@ static void rtl8125_gset_xmii(struct net_device *dev,
         cmd->speed = speed;
         cmd->duplex = duplex;
         cmd->port = PORT_TP;
+        cmd->lp_advertising = lpa_adv;
 #else
         ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
                                                 supported);
         ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
                                                 advertising);
+        ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.lp_advertising,
+                                                lpa_adv);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
+        if (supported & SUPPORTED_2500baseX_Full) {
+                linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseX_Full_BIT,
+                                 cmd->link_modes.supported, 0);
+                linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                                 cmd->link_modes.supported, 1);
+        }
+        if (advertising & ADVERTISED_2500baseX_Full) {
+                linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseX_Full_BIT,
+                                 cmd->link_modes.advertising, 0);
+                linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                                 cmd->link_modes.advertising, 1);
+        }
+        if (report_lpa) {
+                if (lpa_adv & ADVERTISED_2500baseX_Full) {
+                        linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseX_Full_BIT,
+                                         cmd->link_modes.lp_advertising, 0);
+                        linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+                                         cmd->link_modes.lp_advertising, 1);
+                }
+                if (status_2500 & RTK_LPA_ADVERTISE_5000FULL)
+                        linkmode_mod_bit(ETHTOOL_LINK_MODE_5000baseT_Full_BIT,
+                                         cmd->link_modes.lp_advertising, 1);
+                if (status_2500 & RTK_LPA_ADVERTISE_10000FULL)
+                        linkmode_mod_bit(ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+                                         cmd->link_modes.lp_advertising, 1);
+        }
+#endif
         cmd->base.autoneg = autoneg;
         cmd->base.speed = speed;
         cmd->base.duplex = duplex;
@@ -4756,14 +4940,12 @@ static void rtl8125_get_regs(struct net_device *dev, struct ethtool_regs *regs,
         void __iomem *ioaddr = tp->mmio_addr;
         unsigned int i;
         u8 *data = p;
-        unsigned long flags;
 
         if (regs->len < R8125_REGS_DUMP_SIZE)
                 return /* -EINVAL */;
 
         memset(p, 0, regs->len);
 
-        spin_lock_irqsave(&tp->lock, flags);
         for (i = 0; i < R8125_MAC_REGS_SIZE; i++)
                 *data++ = readb(ioaddr + i);
         data = (u8*)p + 256;
@@ -4793,16 +4975,12 @@ static void rtl8125_get_regs(struct net_device *dev, struct ethtool_regs *regs,
                 }
                 break;
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 static void rtl8125_get_pauseparam(struct net_device *dev,
                                    struct ethtool_pauseparam *pause)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         pause->autoneg = (tp->autoneg ? AUTONEG_ENABLE : AUTONEG_DISABLE);
         if (tp->fcpause == rtl8125_fc_rx_pause)
@@ -4813,8 +4991,6 @@ static void rtl8125_get_pauseparam(struct net_device *dev,
                 pause->rx_pause = 1;
                 pause->tx_pause = 1;
         }
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 static int rtl8125_set_pauseparam(struct net_device *dev,
@@ -4822,22 +4998,17 @@ static int rtl8125_set_pauseparam(struct net_device *dev,
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         enum rtl8125_fc_mode newfc;
-        unsigned long flags;
 
         if (pause->tx_pause || pause->rx_pause)
                 newfc = rtl8125_fc_full;
         else
                 newfc = rtl8125_fc_none;
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         if (tp->fcpause != newfc) {
                 tp->fcpause = newfc;
 
                 rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
         }
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return 0;
 
@@ -4861,6 +5032,7 @@ rtl8125_set_msglevel(struct net_device *dev,
 }
 
 static const char rtl8125_gstrings[][ETH_GSTRING_LEN] = {
+        /* legacy */
         "tx_packets",
         "rx_packets",
         "tx_errors",
@@ -4874,6 +5046,34 @@ static const char rtl8125_gstrings[][ETH_GSTRING_LEN] = {
         "multicast",
         "tx_aborted",
         "tx_underrun",
+
+        /* extended */
+        "tx_octets",
+        "rx_octets",
+        "rx_multicast64",
+        "tx_unicast64",
+        "tx_broadcast64",
+        "tx_multicast64",
+        "tx_pause_on",
+        "tx_pause_off",
+        "tx_pause_all",
+        "tx_deferred",
+        "tx_late_collision",
+        "tx_all_collision",
+        "tx_aborted32",
+        "align_errors32",
+        "rx_frame_too_long",
+        "rx_runt",
+        "rx_pause_on",
+        "rx_pause_off",
+        "rx_pause_all",
+        "rx_unknown_opcode",
+        "rx_mac_error",
+        "tx_underrun32",
+        "rx_mac_missed",
+        "rx_tcam_dropped",
+        "tdu",
+        "rdu",
 };
 #endif //#LINUX_VERSION_CODE > KERNEL_VERSION(2,4,22)
 
@@ -4905,9 +5105,6 @@ rtl8125_get_ethtool_stats(struct net_device *dev,
         struct rtl8125_private *tp = netdev_priv(dev);
         struct rtl8125_counters *counters;
         dma_addr_t paddr;
-        u32 cmd;
-        u32 WaitCnt;
-        unsigned long flags;
 
         ASSERT_RTNL();
 
@@ -4916,21 +5113,7 @@ rtl8125_get_ethtool_stats(struct net_device *dev,
         if (!counters)
                 return;
 
-        spin_lock_irqsave(&tp->lock, flags);
-        RTL_W32(tp, CounterAddrHigh, (u64)paddr >> 32);
-        cmd = (u64)paddr & DMA_BIT_MASK(32);
-        RTL_W32(tp, CounterAddrLow, cmd);
-        RTL_W32(tp, CounterAddrLow, cmd | CounterDump);
-
-        WaitCnt = 0;
-        while (RTL_R32(tp, CounterAddrLow) & CounterDump) {
-                udelay(10);
-
-                WaitCnt++;
-                if (WaitCnt > 20)
-                        break;
-        }
-        spin_unlock_irqrestore(&tp->lock, flags);
+        rtl8125_dump_tally_counter(tp, paddr);
 
         data[0] = le64_to_cpu(counters->tx_packets);
         data[1] = le64_to_cpu(counters->rx_packets);
@@ -4944,7 +5127,34 @@ rtl8125_get_ethtool_stats(struct net_device *dev,
         data[9] = le64_to_cpu(counters->rx_broadcast);
         data[10] = le32_to_cpu(counters->rx_multicast);
         data[11] = le16_to_cpu(counters->tx_aborted);
-        data[12] = le16_to_cpu(counters->tx_underun);
+        data[12] = le16_to_cpu(counters->tx_underrun);
+
+        data[13] = le64_to_cpu(counters->tx_octets);
+        data[14] = le64_to_cpu(counters->rx_octets);
+        data[15] = le64_to_cpu(counters->rx_multicast64);
+        data[16] = le64_to_cpu(counters->tx_unicast64);
+        data[17] = le64_to_cpu(counters->tx_broadcast64);
+        data[18] = le64_to_cpu(counters->tx_multicast64);
+        data[19] = le32_to_cpu(counters->tx_pause_on);
+        data[20] = le32_to_cpu(counters->tx_pause_off);
+        data[21] = le32_to_cpu(counters->tx_pause_all);
+        data[22] = le32_to_cpu(counters->tx_deferred);
+        data[23] = le32_to_cpu(counters->tx_late_collision);
+        data[24] = le32_to_cpu(counters->tx_all_collision);
+        data[25] = le32_to_cpu(counters->tx_aborted32);
+        data[26] = le32_to_cpu(counters->align_errors32);
+        data[27] = le32_to_cpu(counters->rx_frame_too_long);
+        data[28] = le32_to_cpu(counters->rx_runt);
+        data[29] = le32_to_cpu(counters->rx_pause_on);
+        data[30] = le32_to_cpu(counters->rx_pause_off);
+        data[31] = le32_to_cpu(counters->rx_pause_all);
+        data[32] = le32_to_cpu(counters->rx_unknown_opcode);
+        data[33] = le32_to_cpu(counters->rx_mac_error);
+        data[34] = le32_to_cpu(counters->tx_underrun32);
+        data[35] = le32_to_cpu(counters->rx_mac_missed);
+        data[36] = le32_to_cpu(counters->rx_tcam_dropped);
+        data[37] = le32_to_cpu(counters->tdu);
+        data[38] = le32_to_cpu(counters->rdu);
 }
 
 static void
@@ -5188,15 +5398,10 @@ static int rtl8125_disable_eee(struct rtl8125_private *tp)
 static int rtl_nway_reset(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int ret, bmcr;
 
-        spin_lock_irqsave(&tp->lock, flags);
-
-        if (unlikely(tp->rtk_enable_diag)) {
-                spin_unlock_irqrestore(&tp->lock, flags);
+        if (unlikely(tp->rtk_enable_diag))
                 return -EBUSY;
-        }
 
         /* if autoneg is off, it's an error */
         rtl8125_mdio_write(tp, 0x1F, 0x0000);
@@ -5209,8 +5414,6 @@ static int rtl_nway_reset(struct net_device *dev)
         } else {
                 ret = -EINVAL;
         }
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return ret;
 }
@@ -5247,15 +5450,10 @@ rtl_ethtool_get_eee(struct net_device *net, struct ethtool_eee *edata)
         struct rtl8125_private *tp = netdev_priv(net);
         struct ethtool_eee *eee = &tp->eee;
         u32 lp, adv, tx_lpi_timer, supported = 0;
-        unsigned long flags;
         u16 val;
 
-        spin_lock_irqsave(&tp->lock, flags);
-
-        if (unlikely(tp->rtk_enable_diag)) {
-                spin_unlock_irqrestore(&tp->lock, flags);
+        if (unlikely(tp->rtk_enable_diag))
                 return -EBUSY;
-        }
 
         /* Get Supported EEE */
         //val = mdio_direct_read_phy_ocp(tp, 0xA5C4);
@@ -5276,8 +5474,6 @@ rtl_ethtool_get_eee(struct net_device *net, struct ethtool_eee *edata)
         val = rtl8125_mac_ocp_read(tp, 0xE040);
         val &= BIT_1 | BIT_0;
 
-        spin_unlock_irqrestore(&tp->lock, flags);
-
         edata->eee_enabled = !!val;
         edata->eee_active = !!(supported & adv & lp);
         edata->supported = supported;
@@ -5295,25 +5491,22 @@ rtl_ethtool_set_eee(struct net_device *net, struct ethtool_eee *edata)
         struct rtl8125_private *tp = netdev_priv(net);
         struct ethtool_eee *eee = &tp->eee;
         u32 advertising;
-        unsigned long flags;
         int rc = 0;
 
         if (!HW_HAS_WRITE_PHY_MCU_RAM_CODE(tp) ||
             tp->DASH)
                 return -EOPNOTSUPP;
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         if (unlikely(tp->rtk_enable_diag)) {
                 dev_printk(KERN_WARNING, tp_to_dev(tp), "Diag Enabled\n");
                 rc = -EBUSY;
-                goto exit_unlock;
+                goto out;
         }
 
         if (tp->autoneg != AUTONEG_ENABLE) {
                 dev_printk(KERN_WARNING, tp_to_dev(tp), "EEE requires autoneg\n");
                 rc = -EINVAL;
-                goto exit_unlock;
+                goto out;
         }
 
         if (edata->tx_lpi_enabled) {
@@ -5322,7 +5515,7 @@ rtl_ethtool_set_eee(struct net_device *net, struct ethtool_eee *edata)
                         dev_printk(KERN_WARNING, tp_to_dev(tp), "Valid LPI timer range is %d to %d. \n",
                                    ETH_MIN_MTU, tp->max_jumbo_frame_size);
                         rc = -EINVAL;
-                        goto exit_unlock;
+                        goto out;
                 }
         }
 
@@ -5333,14 +5526,14 @@ rtl_ethtool_set_eee(struct net_device *net, struct ethtool_eee *edata)
                 dev_printk(KERN_WARNING, tp_to_dev(tp), "EEE advertised %x must be a subset of autoneg advertised speeds %x\n",
                            edata->advertised, advertising);
                 rc = -EINVAL;
-                goto exit_unlock;
+                goto out;
         }
 
         if (edata->advertised & ~eee->supported) {
                 dev_printk(KERN_WARNING, tp_to_dev(tp), "EEE advertised %x must be a subset of support %x\n",
                            edata->advertised, eee->supported);
                 rc = -EINVAL;
-                goto exit_unlock;
+                goto out;
         }
 
         //tp->eee.eee_enabled = edata->eee_enabled;
@@ -5359,15 +5552,11 @@ rtl_ethtool_set_eee(struct net_device *net, struct ethtool_eee *edata)
         else
                 rtl8125_disable_eee(tp);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
-
         rtl_nway_reset(net);
 
         return rc;
 
-exit_unlock:
-
-        spin_unlock_irqrestore(&tp->lock, flags);
+out:
 
         return rc;
 }
@@ -5449,7 +5638,6 @@ static const struct ethtool_ops rtl8125_ethtool_ops = {
 static int rtl8125_enable_green_feature(struct rtl8125_private *tp)
 {
         u16 gphy_val;
-        unsigned long flags;
 
         switch (tp->mcfg) {
         case CFG_METHOD_2:
@@ -5471,7 +5659,6 @@ static int rtl8125_enable_green_feature(struct rtl8125_private *tp)
 static int rtl8125_disable_green_feature(struct rtl8125_private *tp)
 {
         u16 gphy_val;
-        unsigned long flags;
 
         switch (tp->mcfg) {
         case CFG_METHOD_2:
@@ -5838,17 +6025,21 @@ rtl8125_set_mac_mcu_8125b_2(struct net_device *dev)
         struct rtl8125_private *tp = netdev_priv(dev);
         u16 i;
         static const u16 mcu_patch_code_8125b_2[] =  {
-                0xE008, 0xE013, 0xE01E, 0xE02F, 0xE035, 0xE04F, 0xE053, 0xE055, 0x740A,
-                0x4846, 0x4847, 0x9C0A, 0xC607, 0x74C0, 0x48C6, 0x9CC0, 0xC602, 0xBE00,
-                0x13F0, 0xE054, 0x72CA, 0x4826, 0x4827, 0x9ACA, 0xC607, 0x72C0, 0x48A6,
-                0x9AC0, 0xC602, 0xBE00, 0x081C, 0xE054, 0xC60F, 0x74C4, 0x49CC, 0xF109,
-                0xC60C, 0x74CA, 0x48C7, 0x9CCA, 0xC609, 0x74C0, 0x4846, 0x9CC0, 0xC602,
-                0xBE00, 0x2494, 0xE092, 0xE0C0, 0xE054, 0x7420, 0x48C0, 0x9C20, 0x7444,
-                0xC602, 0xBE00, 0x12DC, 0x733A, 0x21B5, 0x25BC, 0x1304, 0xF111, 0x1B12,
-                0x1D2A, 0x3168, 0x3ADA, 0x31AB, 0x1A00, 0x9AC0, 0x1300, 0xF1FB, 0x7620,
-                0x236E, 0x276F, 0x1A3C, 0x22A1, 0x41B5, 0x9EE2, 0x76E4, 0x486F, 0x9EE4,
-                0xC602, 0xBE00, 0x4A26, 0x733A, 0x49BB, 0xC602, 0xBE00, 0x47A2, 0xC602,
-                0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000
+                0xE010, 0xE01B, 0xE026, 0xE037, 0xE03D, 0xE057, 0xE05B, 0xE05F, 0xE061,
+                0xE063, 0xE065, 0xE067, 0xE069, 0xE06B, 0xE06D, 0xE06F, 0x740A, 0x4846,
+                0x4847, 0x9C0A, 0xC607, 0x74C0, 0x48C6, 0x9CC0, 0xC602, 0xBE00, 0x13F0,
+                0xE054, 0x72CA, 0x4826, 0x4827, 0x9ACA, 0xC607, 0x72C0, 0x48A6, 0x9AC0,
+                0xC602, 0xBE00, 0x081C, 0xE054, 0xC60F, 0x74C4, 0x49CC, 0xF109, 0xC60C,
+                0x74CA, 0x48C7, 0x9CCA, 0xC609, 0x74C0, 0x4846, 0x9CC0, 0xC602, 0xBE00,
+                0x2494, 0xE092, 0xE0C0, 0xE054, 0x7420, 0x48C0, 0x9C20, 0x7444, 0xC602,
+                0xBE00, 0x12DC, 0x733A, 0x21B5, 0x25BC, 0x1304, 0xF111, 0x1B12, 0x1D2A,
+                0x3168, 0x3ADA, 0x31AB, 0x1A00, 0x9AC0, 0x1300, 0xF1FB, 0x7620, 0x236E,
+                0x276F, 0x1A3C, 0x22A1, 0x41B5, 0x9EE2, 0x76E4, 0x486F, 0x9EE4, 0xC602,
+                0xBE00, 0x4A26, 0x733A, 0x49BB, 0xC602, 0xBE00, 0x47A2, 0x48C1, 0x48C2,
+                0xC5C3, 0xBD00, 0x0A52, 0xC602, 0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000,
+                0xC602, 0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000,
+                0xC602, 0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000, 0xC602, 0xBE00, 0x0000,
+                0xC602, 0xBE00, 0x0000
         };
 
         rtl8125_hw_disable_mac_mcu_bps(dev);
@@ -5865,8 +6056,9 @@ rtl8125_set_mac_mcu_8125b_2(struct net_device *dev)
         rtl8125_mac_ocp_write(tp, 0xFC2E, 0x12DA);
         rtl8125_mac_ocp_write(tp, 0xFC30, 0x4A20);
         rtl8125_mac_ocp_write(tp, 0xFC32, 0x47A0);
+        rtl8125_mac_ocp_write(tp, 0xFC34, 0x0A46);
 
-        rtl8125_mac_ocp_write(tp, 0xFC48, 0x003F);
+        rtl8125_mac_ocp_write(tp, 0xFC48, 0x007F);
 }
 
 static void
@@ -6133,43 +6325,52 @@ rtl8125_check_hw_phy_mcu_code_ver(struct net_device *dev)
         return ram_code_ver_match;
 }
 
-static bool
-rtl8125_wait_phy_mcu_patch_request_ready(struct rtl8125_private *tp)
+bool
+rtl8125_set_phy_mcu_patch_request(struct rtl8125_private *tp)
 {
         u16 gphy_val;
         u16 WaitCount;
         bool bSuccess = TRUE;
 
+        SetEthPhyOcpBit(tp, 0xB820, BIT_4);
+
         WaitCount = 0;
         do {
                 gphy_val = mdio_direct_read_phy_ocp(tp, 0xB800);
-                gphy_val &= BIT_6;
                 udelay(100);
                 WaitCount++;
-        } while(gphy_val != BIT_6 && WaitCount < 1000);
+        } while (!(gphy_val & BIT_6) && (WaitCount < 1000));
 
-        if (gphy_val != BIT_6 && WaitCount == 1000) bSuccess = FALSE;
+        if (!(gphy_val & BIT_6) && (WaitCount == 1000)) bSuccess = FALSE;
 
         if (!bSuccess)
-                dprintk("rtl8125_wait_phy_mcu_patch_request_ready fail.\n");
+                dprintk("rtl8125_set_phy_mcu_patch_request fail.\n");
 
         return bSuccess;
 }
 
 bool
-rtl8125_set_phy_mcu_patch_request(struct rtl8125_private *tp)
-{
-        SetEthPhyOcpBit(tp, 0xB820, BIT_4);
-
-        return rtl8125_wait_phy_mcu_patch_request_ready(tp);
-}
-
-bool
 rtl8125_clear_phy_mcu_patch_request(struct rtl8125_private *tp)
 {
+        u16 gphy_val;
+        u16 WaitCount;
+        bool bSuccess = TRUE;
+
         ClearEthPhyOcpBit(tp, 0xB820, BIT_4);
 
-        return rtl8125_wait_phy_mcu_patch_request_ready(tp);
+        WaitCount = 0;
+        do {
+                gphy_val = mdio_direct_read_phy_ocp(tp, 0xB800);
+                udelay(100);
+                WaitCount++;
+        } while ((gphy_val & BIT_6) && (WaitCount < 1000));
+
+        if ((gphy_val & BIT_6) && (WaitCount == 1000)) bSuccess = FALSE;
+
+        if (!bSuccess)
+                dprintk("rtl8125_clear_phy_mcu_patch_request fail.\n");
+
+        return bSuccess;
 }
 
 #ifndef ENABLE_USE_FIRMWARE_FILE
@@ -9660,6 +9861,7 @@ rtl8125_up(struct net_device *dev)
         rtl8125_hw_config(dev);
 }
 
+/*
 static inline void rtl8125_delete_esd_timer(struct net_device *dev, struct timer_list *timer)
 {
         del_timer_sync(timer);
@@ -9676,6 +9878,7 @@ static inline void rtl8125_request_esd_timer(struct net_device *dev)
 #endif
         mod_timer(timer, jiffies + RTL8125_ESD_TIMEOUT);
 }
+*/
 
 /*
 static inline void rtl8125_delete_link_timer(struct net_device *dev, struct timer_list *timer)
@@ -9765,28 +9968,28 @@ rtl8125_setup_mqs_reg(struct rtl8125_private *tp)
         //tx
         tp->tx_ring[0].tdsar_reg = TxDescStartAddrLow;
         for (i = 1; i < R8125_MAX_TX_QUEUES; i++) {
-                tp->tx_ring[i].tdsar_reg =  (u16)(TNPDS_Q1_LOW_8125 + (i - 1) * 8);
+                tp->tx_ring[i].tdsar_reg = (u16)(TNPDS_Q1_LOW_8125 + (i - 1) * 8);
         }
 
         for (i = 0; i < R8125_MAX_TX_QUEUES; i++) {
-                tp->tx_ring[i].hw_clo_ptr_reg =  (u16)(HW_CLO_PTR0_8125 + i * 4);
-                tp->tx_ring[i].sw_tail_ptr_reg =  (u16)(SW_TAIL_PTR0_8125 + i * 4);
+                tp->tx_ring[i].hw_clo_ptr_reg = (u16)(HW_CLO_PTR0_8125 + i * 4);
+                tp->tx_ring[i].sw_tail_ptr_reg = (u16)(SW_TAIL_PTR0_8125 + i * 4);
         }
 
         //rx
         tp->rx_ring[0].rdsar_reg = RxDescAddrLow;
         for (i = 1; i < R8125_MAX_RX_QUEUES; i++) {
-                tp->rx_ring[i].rdsar_reg =  (u16)(RDSAR_Q1_LOW_8125 + (i - 1) * 8);
+                tp->rx_ring[i].rdsar_reg = (u16)(RDSAR_Q1_LOW_8125 + (i - 1) * 8);
         }
 
         tp->isr_reg[0] = ISR0_8125;
         for (i = 1; i < R8125_MAX_QUEUES; i++) {
-                tp->isr_reg[i] =  (u16)(ISR1_8125 + (i - 1) * 4);
+                tp->isr_reg[i] = (u16)(ISR1_8125 + (i - 1) * 4);
         }
 
         tp->imr_reg[0] = IMR0_8125;
         for (i = 1; i < R8125_MAX_QUEUES; i++) {
-                tp->imr_reg[i] =  (u16)(IMR1_8125 + (i - 1) * 4);
+                tp->imr_reg[i] = (u16)(IMR1_8125 + (i - 1) * 4);
         }
 }
 
@@ -10103,8 +10306,11 @@ rtl8125_init_software_variable(struct net_device *dev)
         }
 
         tp->HwCurrIsrVer = tp->HwSuppIsrVer;
-        if (tp->HwSuppIsrVer == 2 && !(tp->features & RTL_FEATURE_MSIX))
-                tp->HwCurrIsrVer = 1;
+        if (tp->HwSuppIsrVer == 2) {
+                if (!(tp->features & RTL_FEATURE_MSIX) ||
+                    tp->irq_nvecs < R8125_MIN_MSIX_VEC_8125B)
+                        tp->HwCurrIsrVer = 1;
+        }
 
         if (tp->HwCurrIsrVer < 2 || tp->irq_nvecs < 19)
                 tp->num_tx_rings = 1;
@@ -10140,6 +10346,15 @@ rtl8125_init_software_variable(struct net_device *dev)
         case CFG_METHOD_4:
         case CFG_METHOD_5:
                 tp->HwSuppIntMitiVer = 4;
+                break;
+        }
+
+        switch (tp->mcfg) {
+        case CFG_METHOD_2:
+        case CFG_METHOD_3:
+        case CFG_METHOD_4:
+        case CFG_METHOD_5:
+                tp->HwSuppExtendTallyCounterVer = 1;
                 break;
         }
 
@@ -10268,18 +10483,13 @@ rtl8125_set_mac_address(struct net_device *dev,
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         struct sockaddr *addr = p;
-        unsigned long flags;
 
         if (!is_valid_ether_addr(addr->sa_data))
                 return -EADDRNOTAVAIL;
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 
         rtl8125_rar_set(tp, dev->dev_addr);
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         return 0;
 }
@@ -10980,7 +11190,6 @@ rtl8125_do_ioctl(struct net_device *dev,
         struct rtl8125_private *tp = netdev_priv(dev);
         struct mii_ioctl_data *data = if_mii(ifr);
         int ret;
-        unsigned long flags;
 
         ret = 0;
         switch (cmd) {
@@ -10989,19 +11198,15 @@ rtl8125_do_ioctl(struct net_device *dev,
                 break;
 
         case SIOCGMIIREG:
-                spin_lock_irqsave(&tp->lock, flags);
                 rtl8125_mdio_write(tp, 0x1F, 0x0000);
                 data->val_out = rtl8125_mdio_read(tp, data->reg_num);
-                spin_unlock_irqrestore(&tp->lock, flags);
                 break;
 
         case SIOCSMIIREG:
                 if (!capable(CAP_NET_ADMIN))
                         return -EPERM;
-                spin_lock_irqsave(&tp->lock, flags);
                 rtl8125_mdio_write(tp, 0x1F, 0x0000);
                 rtl8125_mdio_write(tp, data->reg_num, data->val_in);
-                spin_unlock_irqrestore(&tp->lock, flags);
                 break;
 
 #ifdef ETHTOOL_OPS_COMPAT
@@ -11257,24 +11462,10 @@ err_out:
 }
 
 static void
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
-rtl8125_esd_timer(unsigned long __opaque)
-#else
-rtl8125_esd_timer(struct timer_list *t)
-#endif
+rtl8125_esd_checker(struct rtl8125_private *tp)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
-        struct net_device *dev = (struct net_device *)__opaque;
-        struct rtl8125_private *tp = netdev_priv(dev);
-        struct timer_list *timer = &tp->esd_timer;
-#else
-        struct rtl8125_private *tp = from_timer(tp, t, esd_timer);
         struct net_device *dev = tp->dev;
-        struct timer_list *timer = t;
-#endif
         struct pci_dev *pdev = tp->pci_dev;
-        unsigned long timeout = RTL8125_ESD_TIMEOUT;
-        unsigned long flags;
         u8 cmd;
         u16 io_base_l;
         u16 mem_base_l;
@@ -11290,8 +11481,6 @@ rtl8125_esd_timer(struct timer_list *t)
         u16 resv_0x2c_l;
         u32 pci_sn_l;
         u32 pci_sn_h;
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         tp->esd_flag = 0;
 
@@ -11404,7 +11593,7 @@ rtl8125_esd_timer(struct timer_list *t)
 
         if (tp->esd_flag != 0) {
                 printk(KERN_ERR "%s: esd_flag = 0x%04x\n.\n", dev->name, tp->esd_flag);
-                rtl8125_stop_all_tx_queue(dev);
+                netif_tx_stop_all_queues(dev);
                 netif_carrier_off(dev);
                 rtl8125_hw_reset(dev);
                 rtl8125_tx_clear(tp);
@@ -11415,10 +11604,29 @@ rtl8125_esd_timer(struct timer_list *t)
                 rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
                 tp->esd_flag = 0;
         }
-        spin_unlock_irqrestore(&tp->lock, flags);
+}
+/*
+static void
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+rtl8125_esd_timer(unsigned long __opaque)
+#else
+rtl8125_esd_timer(struct timer_list *t)
+#endif
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+        struct net_device *dev = (struct net_device *)__opaque;
+        struct rtl8125_private *tp = netdev_priv(dev);
+        struct timer_list *timer = &tp->esd_timer;
+#else
+        struct rtl8125_private *tp = from_timer(tp, t, esd_timer);
+        //struct net_device *dev = tp->dev;
+        struct timer_list *timer = t;
+#endif
+        rtl8125_esd_checker(tp);
 
         mod_timer(timer, jiffies + timeout);
 }
+*/
 
 /*
 static void
@@ -11437,11 +11645,7 @@ rtl8125_link_timer(struct timer_list *t)
         struct net_device *dev = tp->dev;
         struct timer_list *timer = t;
 #endif
-        unsigned long flags;
-
-        spin_lock_irqsave(&tp->lock, flags);
         rtl8125_check_link_status(dev);
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         mod_timer(timer, jiffies + RTL8125_LINK_TIMEOUT);
 }
@@ -11503,17 +11707,17 @@ static int rtl8125_try_msi(struct rtl8125_private *tp)
         unsigned msi = 0;
         int nvecs = 1;
 
+        tp->max_irq_nvecs = 1;
+        tp->min_irq_nvecs = 1;
+#ifndef DISABLE_MULTI_MSIX_VECTOR
         switch (tp->mcfg) {
         case CFG_METHOD_4:
         case CFG_METHOD_5:
                 tp->max_irq_nvecs = R8125_MAX_MSIX_VEC_8125B;
                 tp->min_irq_nvecs = R8125_MIN_MSIX_VEC_8125B;
                 break;
-        default:
-                tp->max_irq_nvecs = 1;
-                tp->min_irq_nvecs = 1;
-                break;
         }
+#endif
 
 #if defined(RTL_USE_NEW_INTR_API)
         if ((nvecs = pci_alloc_irq_vectors(pdev, tp->min_irq_nvecs, tp->max_irq_nvecs, PCI_IRQ_MSIX)) > 0)
@@ -11602,28 +11806,20 @@ static int rtl8125_poll(napi_ptr napi, napi_budget budget)
         RTL_GET_NETDEV(tp)
         unsigned int work_to_do = RTL_NAPI_QUOTA(budget, dev);
         unsigned int work_done = 0;
-        //unsigned long flags;
         int i;
 
         for (i = 0; i < tp->num_rx_rings; i++)
                 work_done += rtl8125_rx_interrupt(dev, tp, &tp->rx_ring[i], budget);
 
-        //spin_lock_irqsave(&tp->lock, flags);
         for (i = 0; i < tp->num_tx_rings; i++)
                 rtl8125_tx_interrupt(&tp->tx_ring[i], budget);
-        //spin_unlock_irqrestore(&tp->lock, flags);
 
         RTL_NAPI_QUOTA_UPDATE(dev, work_done, budget);
 
         if (work_done < work_to_do) {
 #ifdef ENABLE_DASH_SUPPORT
-                if (tp->DASH) {
-                        struct net_device *dev = tp->dev;
-
-                        spin_lock_irqsave(&tp->lock, flags);
-                        HandleDashInterrupt(dev);
-                        spin_unlock_irqrestore(&tp->lock, flags);
-                }
+                if (tp->DASH)
+                        HandleDashInterrupt(tp->dev);
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
@@ -11653,26 +11849,18 @@ static int rtl8125_poll_msix_ring(napi_ptr napi, napi_budget budget)
         RTL_GET_NETDEV(tp)
         unsigned int work_to_do = RTL_NAPI_QUOTA(budget, dev);
         unsigned int work_done = 0;
-        unsigned long flags;
         const int message_id = r8125napi->index;
 
         work_done += rtl8125_rx_interrupt(dev, tp, &tp->rx_ring[message_id], budget);
 
-        //spin_lock_irqsave(&tp->lock, flags);
         rtl8125_tx_interrupt_with_vector(tp, message_id, budget);
-        //spin_unlock_irqrestore(&tp->lock, flags);
 
         RTL_NAPI_QUOTA_UPDATE(dev, work_done, budget);
 
         if (work_done < work_to_do) {
 #ifdef ENABLE_DASH_SUPPORT
-                if (tp->DASH && message_id == 0) {
-                        struct net_device *dev = tp->dev;
-
-                        spin_lock_irqsave(&tp->lock, flags);
-                        HandleDashInterrupt(dev);
-                        spin_unlock_irqrestore(&tp->lock, flags);
-                }
+                if (tp->DASH && message_id == 0)
+                        HandleDashInterrupt(tp->dev);
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
@@ -11702,15 +11890,12 @@ static int rtl8125_poll_msix_tx(napi_ptr napi, napi_budget budget)
         RTL_GET_NETDEV(tp)
         unsigned int work_to_do = RTL_NAPI_QUOTA(budget, dev);
         unsigned int work_done = 0;
-        //unsigned long flags;
         const int message_id = r8125napi->index;
 
         //suppress unused variable
         (void)(dev);
 
-        //spin_lock_irqsave(&tp->lock, flags);
         rtl8125_tx_interrupt_with_vector(tp, message_id, budget);
-        //spin_unlock_irqrestore(&tp->lock, flags);
 
         RTL_NAPI_QUOTA_UPDATE(dev, work_done, budget);
 
@@ -11849,6 +12034,23 @@ static void rtl8125_init_napi(struct rtl8125_private *tp)
         }
 }
 
+static int
+rtl8125_set_real_num_queue(struct rtl8125_private *tp)
+{
+        int retval = 0;
+
+        retval = netif_set_real_num_tx_queues(tp->dev, tp->num_tx_rings);
+        if (retval < 0)
+                goto exit;
+
+        retval = netif_set_real_num_rx_queues(tp->dev, tp->num_rx_rings);
+        if (retval < 0)
+                goto exit;
+
+exit:
+        return retval;
+}
+
 static int __devinit
 rtl8125_init_one(struct pci_dev *pdev,
                  const struct pci_device_id *ent)
@@ -11887,8 +12089,6 @@ rtl8125_init_one(struct pci_dev *pdev,
                 dev_err(&pdev->dev, "Can't allocate interrupt\n");
                 goto err_out_1;
         }
-
-        spin_lock_init(&tp->lock);
 
         rtl8125_init_software_variable(dev);
 
@@ -11964,6 +12164,11 @@ rtl8125_init_one(struct pci_dev *pdev,
 #ifdef ENABLE_LIB_SUPPORT
         ATOMIC_INIT_NOTIFIER_HEAD(&tp->lib_nh);
 #endif
+        rtl8125_init_all_schedule_work(tp);
+
+        rc = rtl8125_set_real_num_queue(tp);
+        if (rc < 0)
+                goto err_out;
 
         rtl8125_exit_oob(dev);
 
@@ -12037,6 +12242,10 @@ rtl8125_remove_one(struct pci_dev *pdev)
 
         assert(dev != NULL);
         assert(tp != NULL);
+
+        set_bit(R8125_FLAG_DOWN, tp->task_flags);
+
+        rtl8125_cancel_all_schedule_work(tp);
 
 #ifdef  CONFIG_R8125_NAPI
         rtl8125_del_napi(tp);
@@ -12233,22 +12442,6 @@ static void rtl8125_free_alloc_resources(struct rtl8125_private *tp)
         rtl8125_free_tx_desc(tp);
 }
 
-int rtl8125_set_real_num_queue(struct rtl8125_private *tp)
-{
-        int retval = 0;
-
-        retval = netif_set_real_num_tx_queues(tp->dev, tp->num_tx_rings);
-        if (retval < 0)
-                goto exit;
-
-        retval = netif_set_real_num_rx_queues(tp->dev, tp->num_rx_rings);
-        if (retval < 0)
-                goto exit;
-
-exit:
-        return retval;
-}
-
 #ifdef ENABLE_USE_FIRMWARE_FILE
 static void rtl8125_request_firmware(struct rtl8125_private *tp)
 {
@@ -12279,7 +12472,6 @@ static void rtl8125_request_firmware(struct rtl8125_private *tp)
 int rtl8125_open(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
         int retval;
 
         retval = -ENOMEM;
@@ -12296,10 +12488,6 @@ int rtl8125_open(struct net_device *dev)
                 goto err_free_all_allocated_mem;
 
         retval = rtl8125_init_ring(dev);
-        if (retval < 0)
-                goto err_free_all_allocated_mem;
-
-        retval = rtl8125_set_real_num_queue(tp);
         if (retval < 0)
                 goto err_free_all_allocated_mem;
 
@@ -12321,20 +12509,11 @@ int rtl8125_open(struct net_device *dev)
 #ifdef ENABLE_USE_FIRMWARE_FILE
         rtl8125_request_firmware(tp);
 #endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-        INIT_WORK(&tp->task, rtl8125_reset_task, dev);
-#else
-        INIT_DELAYED_WORK(&tp->task, rtl8125_reset_task);
-#endif
-
         pci_set_master(tp->pci_dev);
 
 #ifdef  CONFIG_R8125_NAPI
         rtl8125_enable_napi(tp);
 #endif
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         rtl8125_exit_oob(dev);
 
@@ -12344,16 +12523,18 @@ int rtl8125_open(struct net_device *dev)
         if (tp->EnablePtp)
                 rtl8125_ptp_init(tp);
 #endif
+        clear_bit(R8125_FLAG_DOWN, tp->task_flags);
 
         if (tp->resume_not_chg_speed)
                 rtl8125_check_link_status(dev);
         else
                 rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
+        if (tp->esd_flag == 0) {
+                //rtl8125_request_esd_timer(dev);
 
-        if (tp->esd_flag == 0)
-                rtl8125_request_esd_timer(dev);
+                rtl8125_schedule_esd_work(tp);
+        }
 
         //rtl8125_request_link_timer(dev);
 
@@ -12464,14 +12645,7 @@ rtl8125_hw_set_rx_packet_filter(struct net_device *dev)
 static void
 rtl8125_set_rx_mode(struct net_device *dev)
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
-
-        spin_lock_irqsave(&tp->lock, flags);
-
         rtl8125_hw_set_rx_packet_filter(dev);
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 void
@@ -12560,6 +12734,8 @@ rtl8125_hw_config(struct net_device *dev)
         }
 
         rtl8125_tally_counter_addr_fill(tp);
+
+        rtl8125_enable_extend_tally_couter(tp);
 
         rtl8125_desc_addr_fill(tp);
 
@@ -12671,7 +12847,7 @@ rtl8125_hw_config(struct net_device *dev)
                         RTL_W8(tp, 0xD0, (RTL_R8(tp, 0xD0) & ~BIT_6) | BIT_7);
 
                 if (tp->mcfg == CFG_METHOD_2 || tp->mcfg == CFG_METHOD_3)
-                        RTL_W8(tp, 0xD3, RTL_R8(tp, 0xD3) | BIT_0);
+                        RTL_W8(tp, MCUCmd_reg, RTL_R8(tp, MCUCmd_reg) | BIT_0);
 
                 rtl8125_disable_eee_plus(tp);
 
@@ -12839,7 +13015,6 @@ rtl8125_change_mtu(struct net_device *dev,
 {
         struct rtl8125_private *tp = netdev_priv(dev);
         int ret = 0;
-        unsigned long flags;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
         if (new_mtu < ETH_MIN_MTU)
@@ -12848,40 +13023,32 @@ rtl8125_change_mtu(struct net_device *dev,
                 new_mtu = tp->max_jumbo_frame_size;
 #endif //LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0)
 
-        spin_lock_irqsave(&tp->lock, flags);
         dev->mtu = new_mtu;
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         if (!netif_running(dev))
                 goto out;
 
         rtl8125_down(dev);
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         rtl8125_set_rxbufsize(tp, dev);
 
         ret = rtl8125_init_ring(dev);
 
-        if (ret < 0) {
-                spin_unlock_irqrestore(&tp->lock, flags);
+        if (ret < 0)
                 goto err_out;
-        }
 
 #ifdef CONFIG_R8125_NAPI
         rtl8125_enable_napi(tp);
 #endif//CONFIG_R8125_NAPI
 
-        //rtl8125_stop_all_tx_queue(dev);
+        //netif_tx_stop_all_queues(dev);
         //netif_carrier_off(dev);
         rtl8125_hw_config(dev);
         rtl8125_enable_hw_linkchg_interrupt(tp);
 
         rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
-
-        mod_timer(&tp->esd_timer, jiffies + RTL8125_ESD_TIMEOUT);
+        //mod_timer(&tp->esd_timer, jiffies + RTL8125_ESD_TIMEOUT);
         //mod_timer(&tp->link_timer, jiffies + RTL8125_LINK_TIMEOUT);
 out:
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
@@ -13197,37 +13364,100 @@ rtl8125_tx_clear(struct rtl8125_private *tp)
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-static void rtl8125_schedule_work(struct net_device *dev, void (*task)(void *))
+static void rtl8125_schedule_reset_work(struct rtl8125_private *tp)
 {
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
-        struct rtl8125_private *tp = netdev_priv(dev);
-
-        INIT_WORK(&tp->task, task, dev);
-        schedule_delayed_work(&tp->task, 4);
+        set_bit(R8125_FLAG_TASK_RESET_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->reset_task, 4);
 #endif //LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
 }
 
-#define rtl8125_cancel_schedule_work(a)
-
-#else
-static void rtl8125_schedule_work(struct net_device *dev, work_func_t task)
+static void rtl8125_schedule_esd_work(struct rtl8125_private *tp)
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
-
-        INIT_DELAYED_WORK(&tp->task, task);
-        schedule_delayed_work(&tp->task, 4);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
+        set_bit(R8125_FLAG_TASK_ESD_CHECK_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->esd_task, RTL8125_ESD_TIMEOUT);
+#endif //LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
 }
 
-static void rtl8125_cancel_schedule_work(struct net_device *dev)
+static void rtl8125_schedule_linkchg_work(struct rtl8125_private *tp)
 {
-        struct rtl8125_private *tp = netdev_priv(dev);
-        struct work_struct *work = &tp->task.work;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
+        set_bit(R8125_FLAG_TASK_LINKCHG_CHECK_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->linkchg_task, 4);
+#endif //LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0)
+}
+
+#define rtl8125_cancel_schedule_reset_work(a)
+#define rtl8125_cancel_schedule_esd_work(a)
+#define rtl8125_cancel_schedule_linkchg_work(a)
+
+#else
+static void rtl8125_schedule_reset_work(struct rtl8125_private *tp)
+{
+        set_bit(R8125_FLAG_TASK_RESET_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->reset_task, 4);
+}
+
+static void rtl8125_cancel_schedule_reset_work(struct rtl8125_private *tp)
+{
+        struct work_struct *work = &tp->reset_task.work;
 
         if (!work->func) return;
 
-        cancel_delayed_work_sync(&tp->task);
+        cancel_delayed_work_sync(&tp->reset_task);
+}
+
+static void rtl8125_schedule_esd_work(struct rtl8125_private *tp)
+{
+        set_bit(R8125_FLAG_TASK_ESD_CHECK_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->esd_task, RTL8125_ESD_TIMEOUT);
+}
+
+static void rtl8125_cancel_schedule_esd_work(struct rtl8125_private *tp)
+{
+        struct work_struct *work = &tp->esd_task.work;
+
+        if (!work->func) return;
+
+        cancel_delayed_work_sync(&tp->esd_task);
+}
+
+static void rtl8125_schedule_linkchg_work(struct rtl8125_private *tp)
+{
+        set_bit(R8125_FLAG_TASK_LINKCHG_CHECK_PENDING, tp->task_flags);
+        schedule_delayed_work(&tp->linkchg_task, RTL8125_ESD_TIMEOUT);
+}
+
+static void rtl8125_cancel_schedule_linkchg_work(struct rtl8125_private *tp)
+{
+        struct work_struct *work = &tp->linkchg_task.work;
+
+        if (!work->func) return;
+
+        cancel_delayed_work_sync(&tp->linkchg_task);
 }
 #endif
+
+static void rtl8125_init_all_schedule_work(struct rtl8125_private *tp)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+        INIT_WORK(&tp->reset_task, rtl8125_reset_task, dev);
+        INIT_WORK(&tp->esd_task, rtl8125_esd_task, dev);
+        INIT_WORK(&tp->linkchg_task, rtl8125_linkchg_task, dev);
+#else
+        INIT_DELAYED_WORK(&tp->reset_task, rtl8125_reset_task);
+        INIT_DELAYED_WORK(&tp->esd_task, rtl8125_esd_task);
+        INIT_DELAYED_WORK(&tp->linkchg_task, rtl8125_linkchg_task);
+#endif
+}
+
+static void rtl8125_cancel_all_schedule_work(struct rtl8125_private *tp)
+{
+        rtl8125_cancel_schedule_reset_work(tp);
+        rtl8125_cancel_schedule_esd_work(tp);
+        rtl8125_cancel_schedule_linkchg_work(tp);
+}
 
 static void
 rtl8125_wait_for_irq_complete(struct rtl8125_private *tp)
@@ -13245,7 +13475,6 @@ static void
 _rtl8125_wait_for_quiescence(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         /* Wait for any pending NAPI task to complete */
 #ifdef CONFIG_R8125_NAPI
@@ -13256,11 +13485,8 @@ _rtl8125_wait_for_quiescence(struct net_device *dev)
         /* Give a racing hard_start_xmit a few cycles to complete. */
         synchronize_net();
 #endif
-        spin_lock_irqsave(&tp->lock, flags);
 
         rtl8125_irq_mask_and_ack(tp);
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         rtl8125_wait_for_irq_complete(tp);
 }
@@ -13280,43 +13506,6 @@ rtl8125_wait_for_quiescence(struct net_device *dev)
 #endif//CONFIG_R8125_NAPI
 }
 
-#if 0
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-static void rtl8125_reinit_task(void *_data)
-#else
-static void rtl8125_reinit_task(struct work_struct *work)
-#endif
-{
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
-        struct net_device *dev = _data;
-#else
-        struct rtl8125_private *tp =
-                container_of(work, struct rtl8125_private, task.work);
-        struct net_device *dev = tp->dev;
-#endif
-        int ret;
-
-        if (netif_running(dev)) {
-                rtl8125_wait_for_quiescence(dev);
-                rtl8125_close(dev);
-        }
-
-        ret = rtl8125_open(dev);
-        if (unlikely(ret < 0)) {
-                if (unlikely(net_ratelimit())) {
-                        struct rtl8125_private *tp = netdev_priv(dev);
-
-                        if (netif_msg_drv(tp)) {
-                                printk(PFX KERN_ERR
-                                       "%s: reinit failure (status = %d)."
-                                       " Rescheduling.\n", dev->name, ret);
-                        }
-                }
-                rtl8125_schedule_work(dev, rtl8125_reinit_task);
-        }
-}
-#endif
-
 static int rtl8125_rx_nostuck(struct rtl8125_private *tp)
 {
         int i, ret = 1;
@@ -13334,15 +13523,18 @@ static void rtl8125_reset_task(void *_data)
 static void rtl8125_reset_task(struct work_struct *work)
 {
         struct rtl8125_private *tp =
-                container_of(work, struct rtl8125_private, task.work);
+                container_of(work, struct rtl8125_private, reset_task.work);
         struct net_device *dev = tp->dev;
 #endif
         u32 budget = ~(u32)0;
-        unsigned long flags;
         int i;
 
-        if (!netif_running(dev))
-                return;
+        rtnl_lock();
+
+        if (!netif_running(dev) ||
+            test_bit(R8125_FLAG_DOWN, tp->task_flags) ||
+            !test_and_clear_bit(R8125_FLAG_TASK_RESET_PENDING, tp->task_flags))
+                goto out_unlock;
 
         rtl8125_wait_for_quiescence(dev);
 
@@ -13354,7 +13546,9 @@ static void rtl8125_reset_task(struct work_struct *work)
 #endif	//LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
         }
 
-        spin_lock_irqsave(&tp->lock, flags);
+        netif_tx_stop_all_queues(dev);
+        netif_carrier_off(dev);
+        rtl8125_hw_reset(dev);
 
         rtl8125_tx_clear(tp);
 
@@ -13364,12 +13558,16 @@ static void rtl8125_reset_task(struct work_struct *work)
 #ifdef ENABLE_PTP_SUPPORT
                 rtl8125_ptp_reset(tp);
 #endif
-                rtl8125_enable_hw_linkchg_interrupt(tp);
+                if (tp->resume_not_chg_speed) {
+                        _rtl8125_check_link_status(dev);
 
-                rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
-                spin_unlock_irqrestore(&tp->lock, flags);
+                        tp->resume_not_chg_speed = 0;
+                } else {
+                        rtl8125_enable_hw_linkchg_interrupt(tp);
+
+                        rtl8125_set_speed(dev, tp->autoneg, tp->speed, tp->duplex, tp->advertising);
+                }
         } else {
-                spin_unlock_irqrestore(&tp->lock, flags);
                 if (unlikely(net_ratelimit())) {
                         struct rtl8125_private *tp = netdev_priv(dev);
 
@@ -13378,9 +13576,65 @@ static void rtl8125_reset_task(struct work_struct *work)
                                        "%s: Rx buffers shortage\n", dev->name);
                         }
                 }
-                rtl8125_schedule_work(dev, rtl8125_reset_task);
+                rtl8125_schedule_reset_work(tp);
         }
+
+out_unlock:
+        rtnl_unlock();
 }
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+static void rtl8125_esd_task(void *_data)
+{
+        struct net_device *dev = _data;
+        struct rtl8125_private *tp = netdev_priv(dev);
+#else
+static void rtl8125_esd_task(struct work_struct *work)
+{
+        struct rtl8125_private *tp =
+                container_of(work, struct rtl8125_private, esd_task.work);
+        struct net_device *dev = tp->dev;
+#endif
+        rtnl_lock();
+
+        if (!netif_running(dev) ||
+            test_bit(R8125_FLAG_DOWN, tp->task_flags) ||
+            !test_and_clear_bit(R8125_FLAG_TASK_ESD_CHECK_PENDING, tp->task_flags))
+                goto out_unlock;
+
+        rtl8125_esd_checker(tp);
+
+        rtl8125_schedule_esd_work(tp);
+
+out_unlock:
+        rtnl_unlock();
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+static void rtl8125_linkchg_task(void *_data)
+{
+        struct net_device *dev = _data;
+        //struct rtl8125_private *tp = netdev_priv(dev);
+#else
+static void rtl8125_linkchg_task(struct work_struct *work)
+{
+        struct rtl8125_private *tp =
+                container_of(work, struct rtl8125_private, linkchg_task.work);
+        struct net_device *dev = tp->dev;
+#endif
+        rtnl_lock();
+
+        if (!netif_running(dev) ||
+            test_bit(R8125_FLAG_DOWN, tp->task_flags) ||
+            !test_and_clear_bit(R8125_FLAG_TASK_LINKCHG_CHECK_PENDING, tp->task_flags))
+                goto out_unlock;
+
+        rtl8125_check_link_status(dev);
+
+out_unlock:
+        rtnl_unlock();
+}
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
 static void
 rtl8125_tx_timeout(struct net_device *dev, unsigned int txqueue)
@@ -13390,16 +13644,9 @@ rtl8125_tx_timeout(struct net_device *dev)
 #endif
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
-
-        spin_lock_irqsave(&tp->lock, flags);
-        rtl8125_stop_all_tx_queue(dev);
-        netif_carrier_off(dev);
-        rtl8125_hw_reset(dev);
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         /* Let's wait a bit while any (async) irq lands on */
-        rtl8125_schedule_work(dev, rtl8125_reset_task);
+        rtl8125_schedule_reset_work(tp);
 }
 
 static u32
@@ -13821,7 +14068,6 @@ rtl8125_start_xmit(struct sk_buff *skb,
         u32 len;
         u32 opts[2];
         netdev_tx_t ret = NETDEV_TX_OK;
-        //unsigned long flags;
         int frags;
         u8 EnableTxNoClose = tp->EnableTxNoClose;
         const u16 queue_mapping = skb_get_queue_mapping(skb);
@@ -13831,8 +14077,6 @@ rtl8125_start_xmit(struct sk_buff *skb,
         assert(queue_mapping < tp->num_tx_queues);
 
         ring = &tp->tx_ring[queue_mapping];
-
-        //spin_lock_irqsave(&tp->lock, flags);
 
         if (unlikely(!rtl8125_tx_slots_avail(tp, ring))) {
                 if (netif_msg_drv(tp)) {
@@ -13943,8 +14187,6 @@ rtl8125_start_xmit(struct sk_buff *skb,
                 if (rtl8125_tx_slots_avail(tp, ring))
                         netif_start_subqueue(dev, queue_mapping);
         }
-
-        //spin_unlock_irqrestore(&tp->lock, flags);
 out:
         return ret;
 err_dma_1:
@@ -13952,7 +14194,6 @@ err_dma_1:
         rtl8125_tx_clear_range(tp, ring, ring->cur_tx + 1, frags);
 err_dma_0:
         RTLDEV->stats.tx_dropped++;
-        //spin_unlock_irqrestore(&tp->lock, flags);
         dev_kfree_skb_any(skb);
         ret = NETDEV_TX_OK;
         goto out;
@@ -13960,8 +14201,6 @@ err_stop:
         netif_stop_subqueue(dev, queue_mapping);
         ret = NETDEV_TX_BUSY;
         RTLDEV->stats.tx_dropped++;
-
-        //spin_unlock_irqrestore(&tp->lock, flags);
         goto out;
 }
 
@@ -13981,15 +14220,16 @@ rtl8125_tx_interrupt(struct rtl8125_tx_ring *ring, int budget)
         u8 EnableTxNoClose = tp->EnableTxNoClose;
 
         dirty_tx = ring->dirty_tx;
+        smp_rmb();
+        tx_left = READ_ONCE(ring->cur_tx) - dirty_tx;
         if (EnableTxNoClose) {
+                unsigned int tx_desc_closed;
                 u32 NextHwDesCloPtr = RTL_R16(tp, ring->hw_clo_ptr_reg);
                 ring->NextHwDesCloPtr = NextHwDesCloPtr;
                 smp_rmb();
-                tx_left = rtl8125_fast_mod(NextHwDesCloPtr - ring->BeginHwDesCloPtr, MAX_TX_NO_CLOSE_DESC_PTR_V2);
+                tx_desc_closed = rtl8125_fast_mod(NextHwDesCloPtr - ring->BeginHwDesCloPtr, MAX_TX_NO_CLOSE_DESC_PTR_V2);
+                if(tx_left > tx_desc_closed) tx_left = tx_desc_closed;
                 ring->BeginHwDesCloPtr = NextHwDesCloPtr;
-        } else {
-                smp_rmb();
-                tx_left = READ_ONCE(ring->cur_tx) - dirty_tx;
         }
 
         while (tx_left > 0) {
@@ -14038,10 +14278,13 @@ rtl8125_tx_interrupt_with_vector(struct rtl8125_private *tp,
                                  int budget)
 {
         int count = 0;
+
         if (message_id == 16)
                 count += rtl8125_tx_interrupt(&tp->tx_ring[0], budget);
+#ifdef ENABLE_MULTIPLE_TX_QUEUE
         else if (message_id == 18)
                 count += rtl8125_tx_interrupt(&tp->tx_ring[1], budget);
+#endif
 
         return count;
 }
@@ -14291,7 +14534,7 @@ process_pkt:
                                         else
                                                 WARN_ON(1);
 
-                                        rx_buf_phy_addr = le64_to_cpu(ring->RxDescPhyAddr[entry_next]);
+                                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry_next];
                                         dma_unmap_single(tp_to_dev(tp), rx_buf_phy_addr,
                                                          tp->rx_buf_sz, DMA_FROM_DEVICE);
                                         skb_next = ring->Rx_skbuff[entry_next];
@@ -14301,7 +14544,7 @@ process_pkt:
                                         WARN_ON(desc_type != RXDESC_TYPE_NORMAL);
                         }
 #endif
-                        rx_buf_phy_addr = le64_to_cpu(ring->RxDescPhyAddr[entry]);
+                        rx_buf_phy_addr = ring->RxDescPhyAddr[entry];
                         dma_sync_single_for_cpu(tp_to_dev(tp),
                                                 rx_buf_phy_addr, tp->rx_buf_sz,
                                                 DMA_FROM_DEVICE);
@@ -14421,7 +14664,7 @@ static irqreturn_t rtl8125_interrupt(int irq, void *dev_instance)
                 RTL_W32(tp, tp->isr_reg[0], status&~RxFIFOOver);
 
                 if (rtl8125_linkchg_interrupt(tp, status))
-                        rtl8125_check_link_status(dev);
+                        rtl8125_schedule_linkchg_work(tp);
 
 #ifdef ENABLE_DASH_SUPPORT
                 if (tp->DASH) {
@@ -14521,7 +14764,7 @@ static irqreturn_t rtl8125_interrupt_msix(int irq, void *dev_instance)
 
                 //link change
                 if (message_id == 21) {
-                        rtl8125_check_link_status(dev);
+                        rtl8125_schedule_linkchg_work(tp);
                         break;
                 }
 
@@ -14540,9 +14783,7 @@ static irqreturn_t rtl8125_interrupt_msix(int irq, void *dev_instance)
 #endif	//LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
                 }
 
-                //spin_lock_irqsave(&tp->lock, flags);
                 rtl8125_tx_interrupt_with_vector(tp, message_id, ~(u32)0);
-                //spin_unlock_irqrestore(&tp->lock, flags);
 
                 rtl8125_enable_hw_interrupt_v2(tp, message_id);
 #endif
@@ -14555,17 +14796,14 @@ static irqreturn_t rtl8125_interrupt_msix(int irq, void *dev_instance)
 static void rtl8125_down(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
-        rtl8125_delete_esd_timer(dev, &tp->esd_timer);
+        //rtl8125_delete_esd_timer(dev, &tp->esd_timer);
 
         //rtl8125_delete_link_timer(dev, &tp->link_timer);
 
-        rtl8125_stop_all_tx_queue(dev);
+        netif_tx_disable(dev);
 
         _rtl8125_wait_for_quiescence(dev);
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         netif_carrier_off(dev);
 
@@ -14574,8 +14812,6 @@ static void rtl8125_down(struct net_device *dev)
         rtl8125_tx_clear(tp);
 
         rtl8125_rx_clear(tp);
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 }
 
 static int rtl8125_resource_freed(struct rtl8125_private *tp)
@@ -14594,16 +14830,14 @@ static int rtl8125_resource_freed(struct rtl8125_private *tp)
 int rtl8125_close(struct net_device *dev)
 {
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 
         if (!rtl8125_resource_freed(tp)) {
-                rtl8125_cancel_schedule_work(dev);
+                set_bit(R8125_FLAG_DOWN, tp->task_flags);
 
                 rtl8125_down(dev);
 
                 pci_clear_master(tp->pci_dev);
 
-                spin_lock_irqsave(&tp->lock, flags);
 #ifdef ENABLE_PTP_SUPPORT
                 rtl8125_ptp_stop(tp);
 #endif
@@ -14611,19 +14845,13 @@ int rtl8125_close(struct net_device *dev)
 
                 rtl8125_powerdown_pll(dev, 0);
 
-                spin_unlock_irqrestore(&tp->lock, flags);
-
                 rtl8125_free_irq(tp);
 
                 rtl8125_free_alloc_resources(tp);
         } else {
-                spin_lock_irqsave(&tp->lock, flags);
-
                 rtl8125_hw_d3_para(dev);
 
                 rtl8125_powerdown_pll(dev, 0);
-
-                spin_unlock_irqrestore(&tp->lock, flags);
         }
 
         return 0;
@@ -14634,6 +14862,8 @@ static void rtl8125_shutdown(struct pci_dev *pdev)
 {
         struct net_device *dev = pci_get_drvdata(pdev);
         struct rtl8125_private *tp = netdev_priv(dev);
+
+        rtnl_lock();
 
         if (tp->DASH)
                 rtl8125_driver_stop(tp);
@@ -14647,6 +14877,8 @@ static void rtl8125_shutdown(struct pci_dev *pdev)
 
         rtl8125_close(dev);
         rtl8125_disable_msi(pdev, tp);
+
+        rtnl_unlock();
 
         if (system_state == SYSTEM_POWER_OFF) {
                 pci_clear_master(tp->pci_dev);
@@ -14668,11 +14900,6 @@ net_device_stats *rtl8125_get_stats(struct net_device *dev)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
         struct rtl8125_private *tp = netdev_priv(dev);
 #endif
-        if (netif_running(dev)) {
-//      spin_lock_irqsave(&tp->lock, flags);
-//      spin_unlock_irqrestore(&tp->lock, flags);
-        }
-
         return &RTLDEV->stats;
 }
 
@@ -14699,24 +14926,24 @@ rtl8125_suspend(struct pci_dev *pdev, pm_message_t state)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
         u32 pci_pm_state = pci_choose_state(pdev, state);
 #endif
-        unsigned long flags;
-
         if (!netif_running(dev))
                 goto out;
 
-        rtl8125_cancel_schedule_work(dev);
+        //rtl8125_cancel_all_schedule_work(tp);
 
-        rtl8125_delete_esd_timer(dev, &tp->esd_timer);
+        //rtl8125_delete_esd_timer(dev, &tp->esd_timer);
 
         //rtl8125_delete_link_timer(dev, &tp->link_timer);
 
-        rtl8125_stop_all_tx_queue(dev);
+        rtnl_lock();
+
+        set_bit(R8125_FLAG_DOWN, tp->task_flags);
+
+        netif_tx_disable(dev);
 
         netif_carrier_off(dev);
 
         netif_device_detach(dev);
-
-        spin_lock_irqsave(&tp->lock, flags);
 
 #ifdef ENABLE_PTP_SUPPORT
         rtl8125_ptp_suspend(tp);
@@ -14729,10 +14956,10 @@ rtl8125_suspend(struct pci_dev *pdev, pm_message_t state)
 
         rtl8125_powerdown_pll(dev, 1);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
-
         if (tp->DASH)
                 rtl8125_driver_stop(tp);
+
+        rtnl_unlock();
 out:
 
         pci_disable_device(pdev);
@@ -14757,6 +14984,21 @@ rtl8125_hw_d3_not_power_off(struct net_device *dev)
         return rtl8125_check_hw_phy_mcu_code_ver(dev);
 }
 
+static int rtl8125_wait_phy_nway_complete_sleep(struct rtl8125_private *tp)
+{
+        int i, val;
+
+        for (i = 0; i < 30; i++) {
+                val = rtl8125_mdio_read(tp, MII_BMSR) & BMSR_ANEGCOMPLETE;
+                if (val)
+                        return 0;
+
+                msleep(100);
+        }
+
+        return -1;
+}
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,29)
 static int
 rtl8125_resume(struct pci_dev *pdev)
@@ -14772,16 +15014,17 @@ rtl8125_resume(struct device *device)
         struct net_device *dev = pci_get_drvdata(pdev);
 #endif
         struct rtl8125_private *tp = netdev_priv(dev);
-        unsigned long flags;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
         u32 pci_pm_state = PCI_D0;
 #endif
         u32 err;
 
+        rtnl_lock();
+
         err = pci_enable_device(pdev);
         if (err) {
                 dev_err(&pdev->dev, "Cannot enable PCI device from suspend\n");
-                return err;
+                goto out_unlock;
         }
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
         pci_restore_state(pdev, &pci_pm_state);
@@ -14790,48 +15033,39 @@ rtl8125_resume(struct device *device)
 #endif
         pci_enable_wake(pdev, PCI_D0, 0);
 
-        spin_lock_irqsave(&tp->lock, flags);
-
         /* restore last modified mac address */
         rtl8125_rar_set(tp, dev->dev_addr);
 
+        tp->resume_not_chg_speed = 0;
         if (tp->check_keep_link_speed &&
             //tp->link_ok(dev) &&
-            rtl8125_hw_d3_not_power_off(dev))
+            rtl8125_hw_d3_not_power_off(dev) &&
+            rtl8125_wait_phy_nway_complete_sleep(tp) == 0)
                 tp->resume_not_chg_speed = 1;
-        else
-                tp->resume_not_chg_speed = 0;
-
-        spin_unlock_irqrestore(&tp->lock, flags);
 
         if (!netif_running(dev))
-                goto out;
+                goto out_unlock;
 
         pci_set_master(pdev);
-
-        spin_lock_irqsave(&tp->lock, flags);
 
         rtl8125_exit_oob(dev);
 
         rtl8125_up(dev);
 
-        spin_unlock_irqrestore(&tp->lock, flags);
+        clear_bit(R8125_FLAG_DOWN, tp->task_flags);
 
+        rtl8125_schedule_reset_work(tp);
+
+        rtl8125_schedule_esd_work(tp);
+
+        //mod_timer(&tp->esd_timer, jiffies + RTL8125_ESD_TIMEOUT);
+        //mod_timer(&tp->link_timer, jiffies + RTL8125_LINK_TIMEOUT);
+out_unlock:
         netif_device_attach(dev);
 
-        if (tp->resume_not_chg_speed) {
-                spin_lock_irqsave(&tp->lock, flags);
+        rtnl_unlock();
 
-                _rtl8125_check_link_status(dev);
-
-                spin_unlock_irqrestore(&tp->lock, flags);
-        } else
-                rtl8125_schedule_work(dev, rtl8125_reset_task);
-
-        mod_timer(&tp->esd_timer, jiffies + RTL8125_ESD_TIMEOUT);
-        //mod_timer(&tp->link_timer, jiffies + RTL8125_LINK_TIMEOUT);
-out:
-        return 0;
+        return err;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)

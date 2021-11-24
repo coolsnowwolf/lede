@@ -19,6 +19,10 @@ for i, v in pairs( uci:get('jd-dailybonus', '@global[0]', 'Cookies') or {} ) do
     table.insert(data.CookiesJD, {["cookie"]=v})
 end
 
+for i, v in pairs( uci:get('jd-dailybonus', '@global[0]', 'jrBody') or {} ) do
+    data.CookiesJD[i]["jrBody"]=v
+end
+
 data.CookiesJD = json.stringify( data.CookiesJD )
 
 write_json('/usr/share/jd-dailybonus/CookieSet.json', data)

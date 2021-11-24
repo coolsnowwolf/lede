@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qBittorrent-static
-PKG_VERSION:=4.3.7_v1.2.14
+PKG_VERSION:=4.3.9_v1.2.14
 PKG_RELEASE=1
 
 STRIP:=true
@@ -25,13 +25,7 @@ ifeq ($(ARCH),aarch64)
 endif
 
 ifeq ($(ARCH),arm)
-ifeq ($(BOARD),bcm53xx)
 	PKG_ARCH:=armv7
-else ifeq ($(BOARD),kirkwood)
-	PKG_ARCH:=armv7
-else
-	PKG_ARCH:=armhf
-endif
 endif
 
 include $(INCLUDE_DIR)/package.mk

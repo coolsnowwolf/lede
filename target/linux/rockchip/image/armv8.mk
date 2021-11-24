@@ -2,6 +2,36 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
+define Device/embedfire_doornet1
+  DEVICE_VENDOR := EmbedFire
+  DEVICE_MODEL := DoorNet1
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := doornet1-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-rtl8821cu
+endef
+TARGET_DEVICES += embedfire_doornet1
+
+define Device/embedfire_doornet2
+  DEVICE_VENDOR := EmbedFire
+  DEVICE_MODEL := DoorNet2
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := doornet2-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 kmod-rtl8821cu -urngd
+endef
+TARGET_DEVICES += embedfire_doornet2
+
+define Device/friendlyarm_nanopi-r2c
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2c-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c
+
 define Device/friendlyarm_nanopi-r2s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2S
@@ -17,7 +47,7 @@ define Device/friendlyarm_nanopi-r4s
   DEVICE_MODEL := NanoPi R4S
   SOC := rk3399
   UBOOT_DEVICE_NAME := nanopi-r4s-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-img | gzip | append-metadata
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8169 -urngd
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4s
@@ -42,6 +72,16 @@ define Device/radxa_rock-pi-4
   DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += radxa_rock-pi-4
+
+define Device/sharevdi_guangmiao-g4c
+  DEVICE_VENDOR := SHAREVDI
+  DEVICE_MODEL := GuangMiao G4C
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := guangmiao-g4c-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += sharevdi_guangmiao-g4c
 
 define Device/xunlong_orangepi-r1-plus
   DEVICE_VENDOR := Xunlong

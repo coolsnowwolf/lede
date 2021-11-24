@@ -1,0 +1,407 @@
+From c3535af52b9f641565db400aab050298b786fcf3 Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.com>
+Date: Wed, 29 Jan 2020 15:30:53 +0000
+Subject: [PATCH] media: ov5647: Add basic support for multiple sensor
+ modes.
+
+Specifically:
+
+Added a structure ov5647_mode and a list of supported_modes (though no
+actual new modes as yet). The state object points to the "current mode".
+
+ov5647_enum_mbus_code, ov5647_enum_frame_size, ov5647_set_fmt and
+ov5647_get_fmt all needed upgrading to cope with multiple modes.
+
+__sensor_init (which writes all the registers) is now called by
+ov5647_stream_on (once the mode is known) rather than by
+ov5647_sensor_power.
+
+Signed-off-by: David Plowman <david.plowman@raspberrypi.com>
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 268 ++++++++++++++++++++++++++++---------
+ 1 file changed, 202 insertions(+), 66 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -86,13 +86,17 @@ struct regval_list {
+ 	u8 data;
+ };
+ 
++struct ov5647_mode {
++	struct v4l2_mbus_framefmt	format;
++	struct regval_list		*reg_list;
++	unsigned int			num_regs;
++};
++
+ struct ov5647 {
+ 	struct v4l2_subdev		sd;
+ 	struct media_pad		pad;
+ 	struct mutex			lock;
+-	struct v4l2_mbus_framefmt	format;
+-	unsigned int			width;
+-	unsigned int			height;
++	const struct ov5647_mode	*mode;
+ 	int				power_count;
+ 	struct clk			*xclk;
+ 	struct gpio_desc		*pwdn;
+@@ -207,6 +211,32 @@ static struct regval_list ov5647_640x480
+ 	{0x0100, 0x01},
+ };
+ 
++static struct ov5647_mode supported_modes_8bit[] = {
++	/*
++	 * Original 8-bit VGA mode
++	 * Uncentred crop (top left quarter) from 2x2 binned 1296x972 image.
++	 */
++	{
++		{
++			.code = MEDIA_BUS_FMT_SBGGR8_1X8,
++			.colorspace = V4L2_COLORSPACE_SRGB,
++			.field = V4L2_FIELD_NONE,
++			.width = 640,
++			.height = 480
++		},
++		ov5647_640x480,
++		ARRAY_SIZE(ov5647_640x480)
++	},
++	/* more modes below here... */
++};
++
++static struct ov5647_mode supported_modes_10bit[] = {
++	/* no 10-bit modes yet */
++};
++
++/* Use original 8-bit VGA mode as default. */
++#define OV5647_DEFAULT_MODE (&supported_modes_8bit[0])
++
+ static int ov5647_write(struct v4l2_subdev *sd, u16 reg, u8 val)
+ {
+ 	int ret;
+@@ -293,12 +323,55 @@ static int ov5647_set_virtual_channel(st
+ 	return ov5647_write(sd, OV5647_REG_MIPI_CTRL14, channel_id | (channel << 6));
+ }
+ 
++static int __sensor_init(struct v4l2_subdev *sd)
++{
++	int ret;
++	u8 resetval, rdval;
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
++	struct ov5647 *state = to_state(sd);
++
++	ret = ov5647_read(sd, OV5647_SW_STANDBY, &rdval);
++	if (ret < 0)
++		return ret;
++
++	ret = ov5647_write_array(sd, state->mode->reg_list,
++				 state->mode->num_regs);
++	if (ret < 0) {
++		dev_err(&client->dev, "write sensor default regs error\n");
++		return ret;
++	}
++
++	ret = ov5647_set_virtual_channel(sd, 0);
++	if (ret < 0)
++		return ret;
++
++	ret = ov5647_read(sd, OV5647_SW_STANDBY, &resetval);
++	if (ret < 0)
++		return ret;
++
++	if (!(resetval & 0x01)) {
++		dev_err(&client->dev, "Device was in SW standby");
++		ret = ov5647_write(sd, OV5647_SW_STANDBY, 0x01);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static int ov5647_stream_on(struct v4l2_subdev *sd)
+ {
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
+ 	struct ov5647 *ov5647 = to_state(sd);
+ 	u8 val = MIPI_CTRL00_BUS_IDLE;
+ 	int ret;
+ 
++	ret = __sensor_init(sd);
++	if (ret < 0) {
++		dev_err(&client->dev, "sensor_init failed\n");
++		return ret;
++	}
++
+ 	if (ov5647->flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)
+ 		val |= MIPI_CTRL00_CLOCK_LANE_GATE |
+ 		       MIPI_CTRL00_LINE_SYNC_ENABLE;
+@@ -347,44 +420,6 @@ static int set_sw_standby(struct v4l2_su
+ 	return ov5647_write(sd, OV5647_SW_STANDBY, rdval);
+ }
+ 
+-static int __sensor_init(struct v4l2_subdev *sd)
+-{
+-	int ret;
+-	u8 resetval, rdval;
+-	struct i2c_client *client = v4l2_get_subdevdata(sd);
+-
+-	ret = ov5647_read(sd, OV5647_SW_STANDBY, &rdval);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = ov5647_write_array(sd, ov5647_640x480,
+-					ARRAY_SIZE(ov5647_640x480));
+-	if (ret < 0) {
+-		dev_err(&client->dev, "write sensor default regs error\n");
+-		return ret;
+-	}
+-
+-	ret = ov5647_set_virtual_channel(sd, 0);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = ov5647_read(sd, OV5647_SW_STANDBY, &resetval);
+-	if (ret < 0)
+-		return ret;
+-
+-	if (!(resetval & 0x01)) {
+-		dev_err(&client->dev, "Device was in SW standby");
+-		ret = ov5647_write(sd, OV5647_SW_STANDBY, 0x01);
+-		if (ret < 0)
+-			return ret;
+-	}
+-
+-	/*
+-	 * stream off to make the clock lane into LP-11 state.
+-	 */
+-	return ov5647_stream_off(sd);
+-}
+-
+ static int ov5647_sensor_power(struct v4l2_subdev *sd, int on)
+ {
+ 	int ret = 0;
+@@ -408,7 +443,7 @@ static int ov5647_sensor_power(struct v4
+ 		}
+ 
+ 		ret = ov5647_write_array(sd, sensor_oe_enable_regs,
+-				ARRAY_SIZE(sensor_oe_enable_regs));
++					 ARRAY_SIZE(sensor_oe_enable_regs));
+ 		if (ret < 0) {
+ 			clk_disable_unprepare(ov5647->xclk);
+ 			dev_err(&client->dev,
+@@ -416,7 +451,10 @@ static int ov5647_sensor_power(struct v4
+ 			goto out;
+ 		}
+ 
+-		ret = __sensor_init(sd);
++		/*
++		 * Ensure streaming off to make clock lane go into LP-11 state.
++		 */
++		ret = ov5647_stream_off(sd);
+ 		if (ret < 0) {
+ 			clk_disable_unprepare(ov5647->xclk);
+ 			dev_err(&client->dev,
+@@ -427,7 +465,7 @@ static int ov5647_sensor_power(struct v4
+ 		dev_dbg(&client->dev, "OV5647 power off\n");
+ 
+ 		ret = ov5647_write_array(sd, sensor_oe_disable_regs,
+-				ARRAY_SIZE(sensor_oe_disable_regs));
++					 ARRAY_SIZE(sensor_oe_disable_regs));
+ 
+ 		if (ret < 0)
+ 			dev_dbg(&client->dev, "disable oe failed\n");
+@@ -489,10 +527,19 @@ static const struct v4l2_subdev_core_ops
+ 
+ static int ov5647_s_stream(struct v4l2_subdev *sd, int enable)
+ {
++	struct ov5647 *state = to_state(sd);
++	int ret = 0;
++
++	mutex_lock(&state->lock);
++
+ 	if (enable)
+-		return ov5647_stream_on(sd);
++		ret = ov5647_stream_on(sd);
+ 	else
+-		return ov5647_stream_off(sd);
++		ret = ov5647_stream_off(sd);
++
++	mutex_unlock(&state->lock);
++
++	return ret;
+ }
+ 
+ static const struct v4l2_subdev_video_ops ov5647_subdev_video_ops = {
+@@ -503,38 +550,127 @@ static int ov5647_enum_mbus_code(struct
+ 				struct v4l2_subdev_pad_config *cfg,
+ 				struct v4l2_subdev_mbus_code_enum *code)
+ {
+-	if (code->index > 0)
++	if (code->index == 0 && ARRAY_SIZE(supported_modes_8bit))
++		code->code = MEDIA_BUS_FMT_SBGGR8_1X8;
++	else if (code->index == 0 && ARRAY_SIZE(supported_modes_8bit) == 0 &&
++		 ARRAY_SIZE(supported_modes_10bit))
++		code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	else if (code->index == 1 && ARRAY_SIZE(supported_modes_8bit) &&
++		 ARRAY_SIZE(supported_modes_10bit))
++		code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	else
+ 		return -EINVAL;
+ 
+-	code->code = MEDIA_BUS_FMT_SBGGR8_1X8;
++	return 0;
++}
++
++static int ov5647_enum_frame_size(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_pad_config *cfg,
++				  struct v4l2_subdev_frame_size_enum *fse)
++{
++	struct ov5647_mode *mode = NULL;
++
++	if (fse->code == MEDIA_BUS_FMT_SBGGR8_1X8) {
++		if (fse->index >= ARRAY_SIZE(supported_modes_8bit))
++			return -EINVAL;
++		mode = &supported_modes_8bit[fse->index];
++	} else if (fse->code == MEDIA_BUS_FMT_SBGGR10_1X10) {
++		if (fse->index >= ARRAY_SIZE(supported_modes_10bit))
++			return -EINVAL;
++		mode = &supported_modes_10bit[fse->index];
++	} else {
++		return -EINVAL;
++	}
++
++	fse->min_width = mode->format.width;
++	fse->max_width = fse->min_width;
++	fse->min_height = mode->format.height;
++	fse->max_height = fse->min_height;
++
++	return 0;
++}
++
++static int ov5647_set_fmt(struct v4l2_subdev *sd,
++			  struct v4l2_subdev_pad_config *cfg,
++			  struct v4l2_subdev_format *format)
++{
++	struct v4l2_mbus_framefmt *fmt = &format->format;
++	struct ov5647 *state = to_state(sd);
++	struct v4l2_mbus_framefmt *framefmt;
++	const struct ov5647_mode *mode_8bit, *mode_10bit, *mode = NULL;
++
++	if (format->pad != 0)
++		return -EINVAL;
++
++	mutex_lock(&state->lock);
++
++	/*
++	 * Try to respect any given pixel format, otherwise try for a 10-bit
++	 * mode.
++	 */
++	mode_8bit = v4l2_find_nearest_size(supported_modes_8bit,
++					   ARRAY_SIZE(supported_modes_8bit),
++					   format.width, format.height,
++					   format->format.width,
++					   format->format.height);
++	mode_10bit = v4l2_find_nearest_size(supported_modes_10bit,
++					    ARRAY_SIZE(supported_modes_10bit),
++					    format.width, format.height,
++					    format->format.width,
++					    format->format.height);
++	if (format->format.code == MEDIA_BUS_FMT_SBGGR8_1X8 && mode_8bit)
++		mode = mode_8bit;
++	else if (format->format.code == MEDIA_BUS_FMT_SBGGR10_1X10 &&
++		 mode_10bit)
++		mode = mode_10bit;
++	else if (mode_10bit)
++		mode = mode_10bit;
++	else
++		mode = mode_8bit;
++
++	if (!mode)
++		return -EINVAL;
++
++	*fmt = mode->format;
++	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
++		framefmt = v4l2_subdev_get_try_format(sd, cfg, format->pad);
++		*framefmt = format->format;
++	} else {
++		state->mode = mode;
++	}
++
++	mutex_unlock(&state->lock);
+ 
+ 	return 0;
+ }
+ 
+-static int ov5647_set_get_fmt(struct v4l2_subdev *sd,
+-			      struct v4l2_subdev_pad_config *cfg,
+-			      struct v4l2_subdev_format *format)
++static int ov5647_get_fmt(struct v4l2_subdev *sd,
++			  struct v4l2_subdev_pad_config *cfg,
++			  struct v4l2_subdev_format *format)
+ {
+ 	struct v4l2_mbus_framefmt *fmt = &format->format;
++	struct ov5647 *state = to_state(sd);
+ 
+ 	if (format->pad != 0)
+ 		return -EINVAL;
+ 
+-	/* Only one format is supported, so return that */
+-	memset(fmt, 0, sizeof(*fmt));
+-	fmt->code = MEDIA_BUS_FMT_SBGGR8_1X8;
+-	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+-	fmt->field = V4L2_FIELD_NONE;
+-	fmt->width = 640;
+-	fmt->height = 480;
++	mutex_lock(&state->lock);
++
++	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
++		*fmt = *v4l2_subdev_get_try_format(sd, cfg, format->pad);
++	else
++		*fmt = state->mode->format;
++
++	mutex_unlock(&state->lock);
+ 
+ 	return 0;
+ }
+ 
+ static const struct v4l2_subdev_pad_ops ov5647_subdev_pad_ops = {
+ 	.enum_mbus_code = ov5647_enum_mbus_code,
+-	.set_fmt =	  ov5647_set_get_fmt,
+-	.get_fmt =	  ov5647_set_get_fmt,
++	.set_fmt =	  ov5647_set_fmt,
++	.get_fmt =	  ov5647_get_fmt,
++	.enum_frame_size = ov5647_enum_frame_size,
+ };
+ 
+ static const struct v4l2_subdev_ops ov5647_subdev_ops = {
+@@ -580,18 +716,15 @@ static int ov5647_open(struct v4l2_subde
+ 				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+ 	struct v4l2_rect *crop =
+ 				v4l2_subdev_get_try_crop(sd, fh->pad, 0);
++	struct ov5647 *state = to_state(sd);
+ 
+ 	crop->left = OV5647_COLUMN_START_DEF;
+ 	crop->top = OV5647_ROW_START_DEF;
+ 	crop->width = OV5647_WINDOW_WIDTH_DEF;
+ 	crop->height = OV5647_WINDOW_HEIGHT_DEF;
+ 
+-	format->code = MEDIA_BUS_FMT_SBGGR8_1X8;
+-
+-	format->width = OV5647_WINDOW_WIDTH_DEF;
+-	format->height = OV5647_WINDOW_HEIGHT_DEF;
+-	format->field = V4L2_FIELD_NONE;
+-	format->colorspace = V4L2_COLORSPACE_SRGB;
++	/* Set the default format to the same as the sensor. */
++	*format = state->mode->format;
+ 
+ 	return 0;
+ }
+@@ -660,6 +793,9 @@ static int ov5647_probe(struct i2c_clien
+ 
+ 	mutex_init(&sensor->lock);
+ 
++	/* Set the default mode before we init the subdev */
++	sensor->mode = OV5647_DEFAULT_MODE;
++
+ 	sd = &sensor->sd;
+ 	v4l2_i2c_subdev_init(sd, client, &ov5647_subdev_ops);
+ 	sensor->sd.internal_ops = &ov5647_subdev_internal_ops;

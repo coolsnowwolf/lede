@@ -51,7 +51,7 @@ function mtkwifi.__handleSpecialChars(s)
 end
 
 -- if order function given, sort by it by passing the table and keys a, b,
--- otherwise just sort the keys 
+-- otherwise just sort the keys
 function mtkwifi.__spairs(t, order)
     -- collect the keys
     local keys = {}
@@ -242,6 +242,8 @@ local WirelessModeList = {
     -- [13] = "G/GN/A/AN/AC mixed", -- no B mode
     [14] = "A/AC/AN mixed",
     [15] = "AC/AN mixed", --but no A mode
+    [16] = "AX/B/G/GN mode",
+    [17] = "AX/AC/AN mixed",
 }
 
 local DevicePropertyMap = {
@@ -255,7 +257,7 @@ local DevicePropertyMap = {
     {device="MT7612", band={"2", "8", "11", "14", "15"}},
     {device="MT7662", band={"2", "8", "11", "14", "15"}},
     -- Mix
-    {device="MT7615", band={"0", "1", "4", "9", "2", "8", "14", "15"}}
+    {device="MT7615", band={"0", "1", "4", "9", "2", "8", "14", "15","16","17"}}
 }
 
 mtkwifi.CountryRegionList_5G_All = {
@@ -429,7 +431,8 @@ function mtkwifi.band(mode)
     or i == 4
     or i == 6
     or i == 7
-    or i == 9 then
+    or i == 9
+    or i == 16 then
         return "2.4G"
     else
         return "5G"
@@ -653,10 +656,10 @@ function mtkwifi.__setup_apcli(cfgs, devname, mainidx, subidx)
         local flags = tonumber(mtkwifi.read_pipe("cat /sys/class/net/"..apcli_name.."/flags 2>/dev/null")) or 0
         apcli.state = flags%2 == 1 and "up" or "down"
         if not ssid or ssid == "" then
-            apcli.status = "Disconnected"
+            apcli.status = "未连接"
         else
             apcli.ssid = ssid
-            apcli.status = "Connected"
+            apcli.status = "已连接"
         end
         apcli.devname = apcli_name
         apcli.bssid = mtkwifi.read_pipe("cat /sys/class/net/"..apcli_name.."/address 2>/dev/null") or "?"
@@ -825,8 +828,10 @@ end
 
 
 function mtkwifi.scan_ap(vifname)
+    os.execute("ifconfig "..vifname.." down")
+    os.execute("ifconfig "..vifname.." up")
     os.execute("iwpriv "..vifname.." set SiteSurvey=0")
-    os.execute("sleep 10") -- depends on your env
+    os.execute("sleep 4") -- depends on your env
     local scan_result = mtkwifi.read_pipe("iwpriv "..vifname.." get_site_survey 2>/dev/null")
 
     local aplist = {}
@@ -840,7 +845,6 @@ function mtkwifi.scan_ap(vifname)
             xx.Signal = {string.find(line, "Sig%a%al"),4}
             xx.Mode = {string.find(line, "W-Mode"),5}
             xx.ExtCh = {string.find(line, "ExtCH"),6}
-            xx.WPS = {string.find(line, "WPS"),3}
             xx.NT = {string.find(line, "NT"),2}
         end
 
@@ -851,18 +855,11 @@ function mtkwifi.scan_ap(vifname)
             tmp.ssid = mtkwifi.__trim(string.sub(line, xx.SSID[1], xx.SSID[1]+xx.SSID[2]))
             tmp.bssid = string.upper(mtkwifi.__trim(string.sub(line, xx.BSSID[1], xx.BSSID[1]+xx.BSSID[2])))
             tmp.security = mtkwifi.__trim(string.sub(line, xx.Security[1], xx.Security[1]+xx.Security[2]))
-            tmp.security = string.gsub(tmp.security, "WPA1PSKWPA2PSK", "WPAPSKWPA2PSK")
-            if (string.find(tmp.security, "/") == nil) then
-                tmp.security = "OPEN" .. "/" .. tmp.security
-            end
             tmp.authmode = mtkwifi.__trim(string.split(tmp.security, "/")[1])
             tmp.encrypttype = mtkwifi.__trim(string.split(tmp.security, "/")[2] or "NONE")
             tmp.rssi = mtkwifi.__trim(string.sub(line, xx.Signal[1], xx.Signal[1]+xx.Signal[2]))
             tmp.extch = mtkwifi.__trim(string.sub(line, xx.ExtCh[1], xx.ExtCh[1]+xx.ExtCh[2]))
             tmp.mode = mtkwifi.__trim(string.sub(line, xx.Mode[1], xx.Mode[1]+xx.Mode[2]))
-            if (xx.WPS[1] ~= nil and xx.WPS[2] ~= nil) then
-                tmp.wps = mtkwifi.__trim(string.sub(line, xx.WPS[1], xx.WPS[1]+xx.WPS[2]))
-            end
             tmp.nt = mtkwifi.__trim(string.sub(line, xx.NT[1], xx.NT[1]+xx.NT[2]))
             table.insert(aplist, tmp)
         end
