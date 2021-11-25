@@ -9,6 +9,6 @@ t.rows = 15
 function t.cfgvalue()
 	return fs.readfile(conffile) or ""
 end
-t.readonly="readonly"
+t.readonly = "readonly"
 
 return f
