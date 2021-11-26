@@ -2,7 +2,7 @@ m = Map("kodexplorer")
 m.title = translate("KodExplorer")
 m.description = translate("KodExplorer is a fast and efficient private cloud and online document management system that provides secure, controllable, easy-to-use and highly customizable private cloud products for personal websites, enterprise private cloud deployment, network storage, online document management, and online office. With Windows style interface and operation habits, it can be used quickly without adaptation. It supports online preview of hundreds of common file formats and is extensible and easy to customize.")
 
-m:section(SimpleSection).template = "kodexplorer/kodexplorer_status"
+m:append(Template("kodexplorer/status"))
 
 s = m:section(TypedSection, "global", translate("Global Settings"))
 s.anonymous = true
@@ -41,11 +41,11 @@ o.description = translate("It is recommended to insert a usb flash drive or hard
 o.default = "/mnt/sda1/kodexplorer"
 o.rmempty = false
 
-s:section(SimpleSection).template = "kodexplorer/kodexplorer_version"
+s:append(Template("kodexplorer/version"))
 
 o = s:option(Button, "_download", translate("Manually update"))
 o.description = translate("Make sure you have enough space.<br /><font style='color:red'>Be sure to fill out the device path and store path for the first run, and then save the application. Then manually download, otherwise can not use!</font>")
-o.template = "kodexplorer/kodexplorer_download"
+o.template = "kodexplorer/download"
 o.inputstyle = "apply"
 o.btnclick = "downloadClick(this);"
 o.id = "download_btn"
