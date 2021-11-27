@@ -46,6 +46,7 @@ o:value("error",translate("Error"))
 o.default = "Warn"
 
 o = s:taboption("general", ListValue, "log_max_days", translate("Log max days"))
+o.description = translate("Maximum number of days to keep log files is 3 day.")
 o:depends("enable_logging", "1")
 o.datatype = "uinteger"
 o:value("1", translate("1"))
