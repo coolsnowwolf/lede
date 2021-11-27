@@ -704,6 +704,20 @@ define Device/p2w_r619ac-128m
 endef
 TARGET_DEVICES += p2w_r619ac-128m
 
+define Device/zte_mf263
+	$(call Device/FitzImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZTE
+	DEVICE_MODEL := MF263
+	DEVICE_DTS := qcom-ipq4019-zte-mf263
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
+	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+	DEVICE_PACKAGES := -kmod-ath10k-ct -ath10k-firmware-qca4019-ct kmod-ath10k ath10k-firmware-qca4019 ipq-wifi-zte_mf263
+endef
+TARGET_DEVICES += zte_mf263
+
 define Device/qcom_ap-dk01.1-c1
 	DEVICE_VENDOR := Qualcomm Atheros
 	DEVICE_MODEL := AP-DK01.1

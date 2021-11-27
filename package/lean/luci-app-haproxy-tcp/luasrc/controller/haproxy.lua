@@ -1,4 +1,5 @@
 module("luci.controller.haproxy", package.seeall)
+
 function index()
     if not nixio.fs.access("/etc/config/haproxy") then
 		return

@@ -62,6 +62,9 @@ platform_do_upgrade() {
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$1"
 		;;
+	norton,core-518)
+		norton_do_upgrade "$1"
+		;;
 	ruijie,rg-mtfi-m520)
 		ruijie_do_upgrade "$1"
 		;;

@@ -25,13 +25,7 @@ ifeq ($(ARCH),aarch64)
 endif
 
 ifeq ($(ARCH),arm)
-ifeq ($(BOARD),bcm53xx)
 	PKG_ARCH:=armv7
-else ifeq ($(BOARD),kirkwood)
-	PKG_ARCH:=armv7
-else
-	PKG_ARCH:=armhf
-endif
 endif
 
 include $(INCLUDE_DIR)/package.mk

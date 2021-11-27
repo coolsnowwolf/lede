@@ -11,13 +11,13 @@ function index()
 	end
 	
 	entry({"admin", "vpn"}, firstchild(), "VPN", 45).dependent = false
-	entry({"admin", "vpn", "n2n_v2", "status"}, call("n2n_status")).leaf = true
+	entry({"admin", "vpn", "n2n_v2", "status"}, call("act_status")).leaf = true
 	entry({"admin", "vpn", "n2n_v2"}, cbi("n2n_v2"), _("N2N v2 VPN"), 45).dependent = true
 end
 
-function n2n_status()
-	local status = {}
-	status.running = luci.sys.call("pgrep edge >/dev/null")==0
+function act_status()
+	local e = {}
+	e.running = luci.sys.call("pgrep edge >/dev/null") == 0
 	luci.http.prepare_content("application/json")
-	luci.http.write_json(status)
+	luci.http.write_json(e)
 end
