@@ -1,11 +1,11 @@
 -- Copyright 2020 lwz322 <lwz322@qq.com>
 -- Licensed to the public under the MIT License.
 
-local dsp = require "luci.dispatcher"
-
 local m, s, o
 
-m = Map("frps", "%s - %s" % { translate("Frps"), translate("FRPS Server setting") })
+m = Map("frps")
+m.title = translate("Frps - Server Settings")
+m.description = translate("FRPS Server Settings")
 
 s = m:section(NamedSection, "main", "frps")
 s.anonymous = true
