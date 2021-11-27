@@ -24,7 +24,7 @@ o.default = "/usr/bin/frps"
 o.rmempty = false
 
 o = s:taboption("general", ListValue, "run_user", translate("Run daemon as user"))
-o:value("", translate("-- default --"))
+o:value("", translate("root"))
 local user
 for user in luci.util.execi("cat /etc/passwd | cut -d':' -f1") do
 	o:value(user)
@@ -34,23 +34,29 @@ o = s:taboption("general", Flag, "enable_logging", translate("Enable logging"))
 
 o = s:taboption("general", Value, "log_file", translate("Log file"))
 o:depends("enable_logging", "1")
-o.placeholder = "/var/log/frps.log"
+o.default = "/var/log/frps.log"
 
 o = s:taboption("general", ListValue, "log_level", translate("Log level"))
 o:depends("enable_logging", "1")
-o:value("trace", "Trace")
-o:value("debug", "Debug")
-o:value("info", "Info")
-o:value("warn", "Warn")
-o:value("error", "Error")
-o.default = "warn"
+o:value("trace",translate("Trace"))
+o:value("debug",translate("Debug"))
+o:value("info",translate("Info"))
+o:value("warn",translate("Warning"))
+o:value("error",translate("Error"))
+o.default = "Warn"
 
-o = s:taboption("general", Value, "log_max_days", translate("Log max days"))
+o = s:taboption("general", ListValue, "log_max_days", translate("Log max days"))
+o.description = translate("Maximum number of days to keep log files is 3 day.")
 o:depends("enable_logging", "1")
 o.datatype = "uinteger"
-o.placeholder = '3'
+o:value("1", translate("1"))
+o:value("2", translate("2"))
+o:value("3", translate("3"))
+o.default = "3"
+o.rmempty = false
+o.optional = false
 
-o = s:taboption("general", Value, "disable_log_color", translate("Disable log color"))
+o = s:taboption("general", Flag, "disable_log_color", translate("Disable log color"))
 o:depends("enable_logging", "1")
 o.enabled = "true"
 o.disabled = "false"
@@ -71,10 +77,12 @@ o.datatype = "host"
 
 o = s:taboption("dashboard", Value, "dashboard_addr", translate("Dashboard addr"))
 o.description = translatef("dashboard addr's default value is same with bind_addr")
+o.default = "0.0.0.0"
 o.datatype = "host"
 
 o = s:taboption("dashboard", Value, "dashboard_port", translate("Dashboard port"))
 o.description = translatef("dashboard is available only if dashboard_port is set")
+o.default = "7500"
 o.datatype = "port"
 
 o = s:taboption("dashboard", Value, "dashboard_user", translate("Dashboard user"))
