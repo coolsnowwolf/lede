@@ -24,7 +24,7 @@ o.default = "/usr/bin/frps"
 o.rmempty = false
 
 o = s:taboption("general", ListValue, "run_user", translate("Run daemon as user"))
-o:value("", translate("-- default --"))
+user:value("", translate("root"))
 local user
 for user in luci.util.execi("cat /etc/passwd | cut -d':' -f1") do
 	o:value(user)
