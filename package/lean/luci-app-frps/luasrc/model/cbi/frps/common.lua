@@ -71,6 +71,7 @@ o.datatype = "host"
 
 o = s:taboption("dashboard", Value, "dashboard_addr", translate("Dashboard addr"))
 o.description = translatef("dashboard addr's default value is same with bind_addr")
+o.default = "0.0.0.0"
 o.datatype = "host"
 
 o = s:taboption("dashboard", Value, "dashboard_port", translate("Dashboard port"))
