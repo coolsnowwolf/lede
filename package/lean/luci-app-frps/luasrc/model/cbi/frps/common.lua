@@ -81,6 +81,7 @@ o.datatype = "host"
 
 o = s:taboption("dashboard", Value, "dashboard_port", translate("Dashboard port"))
 o.description = translatef("dashboard is available only if dashboard_port is set")
+o.default = "7500"
 o.datatype = "port"
 
 o = s:taboption("dashboard", Value, "dashboard_user", translate("Dashboard user"))
