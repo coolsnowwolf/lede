@@ -406,7 +406,7 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 		       struct blob_attr *msg)
 {
 	struct hostapd_data *hapd = container_of(obj, struct hostapd_data, ubus.obj);
-	void *airtime_table, *dfs_table;
+	void *airtime_table, *dfs_table, *rrm_table, *wnm_table;
 	struct os_reltime now;
 	char ssid[SSID_MAX_LEN + 1];
 	char phy_name[17];
@@ -429,6 +429,18 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 
 	snprintf(phy_name, 17, "%s", hapd->iface->phy);
 	blobmsg_add_string(&b, "phy", phy_name);
+
+	/* RRM */
+	rrm_table = blobmsg_open_table(&b, "rrm");
+	blobmsg_add_u64(&b, "neighbor_report_tx", hapd->iface->openwrt_stats.rrm.neighbor_report_tx);
+	blobmsg_close_table(&b, rrm_table);
+
+	/* WNM */
+	wnm_table = blobmsg_open_table(&b, "wnm");
+	blobmsg_add_u64(&b, "bss_transition_query_rx", hapd->iface->openwrt_stats.wnm.bss_transition_query_rx);
+	blobmsg_add_u64(&b, "bss_transition_request_tx", hapd->iface->openwrt_stats.wnm.bss_transition_request_tx);
+	blobmsg_add_u64(&b, "bss_transition_response_rx", hapd->iface->openwrt_stats.wnm.bss_transition_response_rx);
+	blobmsg_close_table(&b, rrm_table);
 
 	/* Airtime */
 	airtime_table = blobmsg_open_table(&b, "airtime");
