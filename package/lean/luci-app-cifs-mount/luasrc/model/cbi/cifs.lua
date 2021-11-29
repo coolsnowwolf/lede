@@ -28,7 +28,7 @@ name.size = 8
 
 pth = s:option(Value, "natpath", translate("Mount Path"))
 if nixio.fs.access("/etc/config/fstab") then
-        pth.titleref = luci.dispatcher.build_url("admin", "system", "fstab")
+        pth.titleref = luci.dispatcher.build_url("admin", "system", "mounts")
 end
 pth.rmempty = false
 pth.size = 10
