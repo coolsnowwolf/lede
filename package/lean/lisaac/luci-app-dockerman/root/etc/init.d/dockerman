@@ -1,0 +1,131 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+# PROCD_DEBUG=1
+config_load 'dockerd'
+# config_get daemon_ea "dockerman" daemon_ea
+_DOCKERD=/etc/init.d/dockerd
+
+docker_running(){
+	docker version > /dev/null 2>&1
+	return $?
+}
+
+add_ports() {
+	[ $# -eq 0 ] && return
+	$($_DOCKERD running) && docker_running || return 1
+	ids=$@
+	for id in $ids; do
+		id=$(docker ps --filter "ID=$id" --quiet)
+		[ -z "$id" ] && {
+			 echo "Docker containner not running"; 
+			 return 1;
+		}
+		ports=$(docker ps --filter "ID=$id" --format "{{.Ports}}")
+		# echo "$ports"
+		for port in $ports; do
+				echo "$port" | grep -qE "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}:.*$" || continue;
+				[ "${port: -1}" == "," ] && port="${port:0:-1}"
+				local protocol=""
+				[ "${port%tcp}" != "$port" ] && protocol="/tcp"
+				[ "${port%udp}" != "$port" ] && protocol="/udp"
+				[ "$protocol" == "" ] && continue
+				port="${port%%->*}"
+				port="${port##*:}"
+				uci_add_list dockerd dockerman ac_allowed_ports "${port}${protocol}"
+		done
+	done
+	uci_commit dockerd
+}
+
+
+convert() {
+	_convert() {
+		_id=$1
+		_id=$(docker ps --all --filter "ID=$_id" --quiet)
+		if [ -z "$_id" ]; then
+			uci_remove_list dockerd dockerman ac_allowed_container "$1"
+			return
+		fi
+		if /etc/init.d/dockerman add_ports "$_id"; then
+			uci_remove_list dockerd dockerman ac_allowed_container "$_id"
+		fi
+	}
+	config_list_foreach dockerman ac_allowed_container _convert
+	uci_commit dockerd
+}
+
+iptables_append(){
+	# Wait for a maximum of 10 second per command, retrying every millisecond
+	local iptables_wait_args="--wait 10 --wait-interval 1000"
+	if ! iptables ${iptables_wait_args} --check $@ 2>/dev/null; then
+		iptables ${iptables_wait_args} -A $@ 2>/dev/null
+	fi
+}
+
+init_dockerman_chain(){
+	iptables -N DOCKER-MAN >/dev/null 2>&1
+	iptables -F DOCKER-MAN >/dev/null 2>&1
+	iptables -D DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+	iptables -I DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+}
+
+delete_dockerman_chain(){
+	iptables -D DOCKER-USER -j DOCKER-MAN >/dev/null 2>&1
+	iptables -F DOCKER-MAN >/dev/null 2>&1
+	iptables -X DOCKER-MAN >/dev/null 2>&1
+}
+
+add_allowed_interface(){
+	iptables_append DOCKER-MAN -i $1 -o docker0 -j RETURN
+}
+
+add_allowed_ports(){
+	port=$1
+	if [ "${port%/tcp}" != "$port" ]; then
+		iptables_append DOCKER-MAN -p tcp -m conntrack --ctorigdstport ${port%/tcp} --ctdir ORIGINAL -j RETURN
+	elif [ "${port%/udp}" != "$port" ]; then
+		iptables_append DOCKER-MAN -p udp -m conntrack --ctorigdstport ${port%/udp} --ctdir ORIGINAL -j RETURN
+	fi
+}
+
+handle_allowed_ports(){
+	config_list_foreach "dockerman" "ac_allowed_ports" add_allowed_ports
+}
+
+handle_allowed_interface(){
+	config_list_foreach "dockerman" "ac_allowed_interface" add_allowed_interface
+	iptables_append DOCKER-MAN -m conntrack --ctstate ESTABLISHED,RELATED -o docker0 -j RETURN >/dev/null 2>&1
+	iptables_append DOCKER-MAN -m conntrack --ctstate NEW,INVALID -o docker0 -j DROP >/dev/null 2>&1
+	iptables_append DOCKER-MAN -j RETURN >/dev/null 2>&1
+}
+
+start_service(){
+	[ -x "$_DOCKERD" ] && $($_DOCKERD enabled) || return 0
+	delete_dockerman_chain
+	$($_DOCKERD running) && docker_running || return 0
+	init_dockerman_chain
+	handle_allowed_ports
+	handle_allowed_interface
+}
+
+stop_service(){
+	delete_dockerman_chain
+}
+
+service_triggers() {
+	procd_add_reload_trigger 'dockerd'
+}
+
+reload_service() {
+	start
+}
+
+boot() {
+	sleep 5s
+	start
+}
+
+extra_command "add_ports" "Add allowed ports based on the container ID(s)"
+extra_command "convert" "Convert Ac allowed container to AC allowed ports"

@@ -1,0 +1,332 @@
+<link rel="stylesheet" href="/luci-static/resources/dockerman/file-manager.css?v=@ver">
+<fieldset class="cbi-section fb-container">
+	<input id="current-path" type="text" class="current-path cbi-input-text" value="/" />
+	<div class="panel-container">
+		<input type="file" name="upload_archive" accept="*/*"
+			style="visibility:hidden; position: absolute;top: 0px; left: 0px;" multiple="multiple" id="upload_archive" />
+		<button id="upload-file" class="upload-toggle cbi-button cbi-button-edit"><%:Upload%></button>
+	</div>
+	<div id="list-content"></div>
+</fieldset>
+<script type="text/javascript" src="<%=resource%>/dockerman/tar.min.js"></script>
+<script>
+	String.prototype.replaceAll = function (search, replacement) {
+		var target = this;
+		return target.replace(new RegExp(search, 'g'), replacement);
+	};
+	(function () {
+		var iwxhr = new XHR();
+		var listElem = document.getElementById("list-content");
+		listElem.onclick = handleClick;
+		var currentPath;
+		var pathElem = document.getElementById("current-path");
+		pathElem.onblur = function () {
+			update_list(this.value.trim());
+		};
+		pathElem.onkeydown = function (evt) {
+			if (evt.keyCode == 13) {
+				this.blur()
+				evt.preventDefault()
+			}
+		};
+		function removePath(filename, isdir) {
+			var c = confirm('!!!<%:DELETING%> ' + filename + ' ... <%:PLEASE CONFIRM%>!!!');
+			if (c) {
+				iwxhr.get('<%=luci.dispatcher.build_url("admin/docker/container_remove_file")%>/<%=self.container%>',
+					{
+						path: concatPath(currentPath, filename),
+						isdir: isdir
+					},
+					function (x, res) {
+						if (res.ec === 0) {
+							refresh_list(res.data, currentPath);
+						}
+					});
+			}
+		}
+
+		function renamePath(filename) {
+			var newname = prompt('%:Please input new filename%>: ', filename);
+			if (newname) {
+				newname = newname.trim();
+				if (newname != filename) {
+					var newpath = concatPath(currentPath, newname);
+					iwxhr.get('<%=luci.dispatcher.build_url("admin/docker/container_rename_file")%>/<%=self.container%>',
+						{
+							filepath: concatPath(currentPath, filename),
+							newpath: newpath
+						},
+						function (x, res) {
+							if (res.ec === 0) {
+								refresh_list(res.data, currentPath);
+							}
+						}
+					);
+				}
+			}
+		}
+
+		function openpath(filename, dirname) {
+			dirname = dirname || currentPath;
+			window.open('<%=luci.dispatcher.build_url("admin/docker/container_get_archive")%>?id=<%=self.container%>&path='
+				+ encodeURIComponent(dirname + '/' + filename) + '&filename='
+				+ encodeURIComponent(filename))
+		}
+
+		function getFileElem(elem) {
+			if (elem.className.indexOf('-icon') > -1) {
+				return elem;
+			}
+			else if (elem.parentNode.className.indexOf('-icon') > -1) {
+				return elem.parentNode;
+			}
+		}
+
+		function concatPath(path, filename) {
+			if (path === '/') {
+				return path + filename;
+			}
+			else {
+				return path.replace(/\/$/, '') + '/' + filename;
+			}
+		}
+
+		function handleClick(evt) {
+			// evt.preventDefault();
+			var targetElem = evt.target;
+			var infoElem;
+			if (targetElem.className.indexOf('cbi-button-remove') > -1) {
+				infoElem = targetElem.parentNode.parentNode;
+				removePath(infoElem.dataset['filename'], infoElem.dataset['isdir'])
+				evt.preventDefault();
+				location.reload()
+			}
+			else if (targetElem.className.indexOf('cbi-button-download') > -1) {
+				infoElem = targetElem.parentNode.parentNode;
+				openpath(targetElem.parentNode.parentNode.dataset['filename']);
+				evt.preventDefault();
+			}
+			else if (targetElem.className.indexOf('cbi-button-rename') > -1) {
+				renamePath(targetElem.parentNode.parentNode.dataset['filename']);
+				evt.preventDefault();
+				location.reload()
+			}
+			else if (targetElem = getFileElem(targetElem)) {
+				if (targetElem.className.indexOf('parent-icon') > -1) {
+					update_list(currentPath.replace(/\/[^/]+($|\/$)/, ''));
+				}
+				else if (targetElem.className.indexOf('file-icon') > -1) {
+					openpath(targetElem.parentNode.dataset['filename']);
+				}
+				else if (targetElem.className.indexOf('link-icon') > -1) {
+					infoElem = targetElem.parentNode;
+					var filepath = infoElem.dataset['linktarget'];
+					if (filepath) {
+						if (infoElem.dataset['isdir'] === "1") {
+							update_list(filepath);
+						}
+						else {
+							var lastSlash = filepath.lastIndexOf('/')
+							openpath(filepath.substring(lastSlash + 1), filepath.substring(0, lastSlash));
+						}
+					}
+				}
+				else if (targetElem.className.indexOf('folder-icon') > -1) {
+					update_list(concatPath(currentPath, targetElem.parentNode.dataset['filename']))
+				}
+			}
+		}
+		function refresh_list(filenames, path) {
+			var listHtml = '<table class="cbi-section-table"><tbody>';
+			if (path !== '/') {
+				listHtml += '<tr class="cbi-section-table-row cbi-rowstyle-2"><td class="parent-icon" colspan="6"><strong>..</strong></td></tr>';
+			}
+			if (filenames) {
+				for (var i = 0; i < filenames.length; i++) {
+					var line = filenames[i]
+					if (line) {
+						var f = line.match(/(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+([\S\s]+)/);
+						var isLink = f[1][0] === 'z' || f[1][0] === 'l' || f[1][0] === 'x';
+						var o = {
+							displayname: f[9],
+							filename: isLink ? f[9].split(' -> ')[0] : f[9],
+							perms: f[1],
+							date: f[7] + ' ' + f[6] + ' ' + f[8],
+							size: f[5],
+							owner: f[3],
+							icon: (f[1][0] === 'd') ? "folder-icon" : (isLink ? "link-icon" : "file-icon")
+						};
+						listHtml += '<tr class="cbi-section-table-row cbi-rowstyle-' + (1 + i % 2)
+							+ '" data-filename="' + o.filename + '" data-isdir="' + Number(f[1][0] === 'd' || f[1][0] === 'z') + '"'
+							+ ((f[1][0] === 'z' || f[1][0] === 'l') ? (' data-linktarget="' + f[9].split(' -> ')[1]) : '')
+							+ '">'
+							+ '<td class="cbi-value-field ' + o.icon + '">'
+							+ '<strong>' + o.displayname + '</strong>'
+							+ '</td>'
+							+ '<td class="cbi-value-field cbi-value-owner">' + o.owner + '</td>'
+							+ '<td class="cbi-value-field cbi-value-date">' + o.date + '</td>'
+							+ '<td class="cbi-value-field cbi-value-size">' + o.size + '</td>'
+							+ '<td class="cbi-value-field cbi-value-perm">' + o.perms + '</td>'
+							+ '<td class="cbi-section-table-cell">\
+								<button class="btn cbi-button cbi-button-rename cbi-button-edit">'+ "<%:Rename%>" + '</button>\
+								<button class="btn cbi-button cbi-button-download cbi-button-add">'+ "<%:Download%>" + '</button>\
+								<button class="btn cbi-button cbi-button-remove">'+ "<%:Remove%>" + '</button>\
+							</td>'
+							+ '</tr>';
+					}
+				}
+			}
+			listHtml += "</table>";
+			listElem.innerHTML = listHtml;
+		}
+		function update_list(path, opt) {
+			opt = opt || {};
+			path = concatPath(path, '');
+			if (currentPath != path) {
+				iwxhr.get('<%=luci.dispatcher.build_url("admin/docker/container_list_file")%>/<%=self.container%>',
+					{ path: path },
+					function (x, res) {
+						if (res.ec === 0) {
+							refresh_list(res.data, path);
+						}
+						else {
+							refresh_list([], path);
+						}
+					}
+				);
+				if (!opt.popState) {
+					history.pushState({ path: path }, null, '?path=' + path);
+				}
+				currentPath = path;
+				pathElem.value = currentPath;
+			}
+		};
+
+		async function file2Tar(tarFile, fileToLoad) {
+			if (! fileToLoad) return
+			function file2Byte(file) {
+				return new Promise((resolve, reject) => {
+					var fileReader = new FileReader();
+					fileReader.onerror = () => {
+						fileReader.abort();
+						reject(new DOMException("Problem parsing input file."));
+					};
+					fileReader.onload = (fileLoadedEvent) => {
+						resolve(ByteHelper.stringUTF8ToBytes(fileLoadedEvent.target.result));
+					}
+					fileReader.readAsBinaryString(file);
+				})
+			}
+			const x = await file2Byte(fileToLoad)
+			return fileByte2Tar(tarFile, fileToLoad.name, x).downloadAs(fileToLoad.name + ".tar")
+		}
+
+		function fileByte2Tar(tarFile, fileName, fileBytes) {
+			if (!tarFile) tarFile = TarFile.create(fileName)
+			var tarHeader = TarFileEntryHeader.default();
+			var tarFileEntryHeader = new TarFileEntryHeader
+				(
+					// ByteHelper.bytesToStringUTF8(fileName),
+					fileName,
+					tarHeader.fileMode,
+					tarHeader.userIDOfOwner,
+					tarHeader.userIDOfGroup,
+					fileBytes.length, // fileSizeInBytes,
+					tarHeader.timeModifiedInUnixFormat, // todo
+					0, // checksum,
+					TarFileTypeFlag.Instances().Normal,
+					tarHeader.nameOfLinkedFile,
+					tarHeader.uStarIndicator,
+					tarHeader.uStarVersion,
+					tarHeader.userNameOfOwner,
+					tarHeader.groupNameOfOwner,
+					tarHeader.deviceNumberMajor,
+					tarHeader.deviceNumberMinor,
+					tarHeader.filenamePrefix
+				);
+
+			tarFileEntryHeader.checksumCalculate();
+			var entryForFileToAdd = new TarFileEntry
+				(
+					tarFileEntryHeader,
+					fileBytes
+				);
+
+			tarFile.entries.push(entryForFileToAdd);
+			return tarFile
+		}
+
+		var btnUpload = document.getElementById('upload-file');
+
+		btnUpload.onclick = function (e) {
+			document.getElementById("upload_archive").click()
+			e.preventDefault()
+		}
+
+		let fileLoad = document.getElementById('upload_archive')
+		fileLoad.onchange = async function (e) {
+			let uploadArchive = document.getElementById('upload_archive')
+			// let uploadPath = document.getElementById('path').value
+			if (!uploadArchive.value) {
+				docker_status_message('warning', "<%:Please input the PATH and select the file !%>")
+				document.getElementById('docker_apply_overlay').addEventListener("click", (e) => {
+					docker_status_message()
+				})
+				return
+			}
+			docker_status_message('notice',
+				'<img src="<%=resource%>/icons/loading.gif" style="vertical-align:middle" /> <span style="white-space:pre-line; word-break:break-all; font-family: \'Courier New\', Courier, monospace;">' +
+				'Uploading...' + '</span>');
+			Globals.Instance.tarFile = TarFile.create("Archive.tar")
+			let bytesToWriteAsBlob
+			for (let i = 0; i < uploadArchive.files.length; i++) {
+				let fileName = uploadArchive.files[i].name
+				bytesToWriteAsBlob = await file2Tar(Globals.Instance.tarFile, uploadArchive.files[i])
+			}
+			let formData = new FormData()
+			formData.append('upload-filename', "Archive.tar")
+			formData.append('upload-path', concatPath(currentPath, ''))
+			formData.append('upload-archive', bytesToWriteAsBlob)
+			let xhr = new XMLHttpRequest()
+			xhr.open("POST", '<%=luci.dispatcher.build_url("admin/docker/container_put_archive")%>/<%=self.container%>', true)
+			xhr.onload = function () {
+				if (xhr.status == 200) {
+					uploadArchive.value = ''
+					docker_status_message('notice', "<%:Upload Success%>")
+					function sleep(time) {
+						return new Promise((resolve) => setTimeout(resolve, time))
+					}
+					sleep(800).then(() => {
+						location.reload()
+					})
+				}
+				else {
+					// docker_status_message('warning', "<%:Upload Error%>:" + xhr.statusText)
+					docker_status_message('warning', "<%:Upload Error%>:" + '<span style="white-space:pre-line; word-break:break-all; font-family: \'Courier New\', Courier, monospace;">' +
+						JSON.parse(xhr.response).message + '</span>')
+				}
+				document.getElementById('docker_apply_overlay').addEventListener("click", (e) => {
+					docker_status_message()
+				})
+			}
+			xhr.send(formData)
+		}
+
+		document.addEventListener('DOMContentLoaded', function (evt) {
+			var initPath = '/';
+			if (/path=([/\w\.\-\_]+)/.test(location.search)) {
+				initPath = RegExp.$1;
+			}
+			update_list(initPath, { popState: true });
+		});
+		window.addEventListener('popstate', function (evt) {
+			var path = '/';
+			if (evt.state && evt.state.path) {
+				path = evt.state.path;
+			}
+			update_list(path, { popState: true });
+		});
+
+	})();
+
+</script>
