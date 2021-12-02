@@ -843,6 +843,12 @@ define Device/jcg_q20
 endef
 TARGET_DEVICES += jcg_q20
 
+define Device/jcg_q20-ubootmod
+  $(Device/jcg_q20)
+  DEVICE_VARIANT := U-Boot mod
+endef
+TARGET_DEVICES += jcg_q20-ubootmod
+
 define Device/jcg_y2
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
