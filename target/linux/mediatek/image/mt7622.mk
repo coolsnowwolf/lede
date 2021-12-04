@@ -202,6 +202,16 @@ define Device/mediatek_mt7622-rfb1-ubi
 endef
 TARGET_DEVICES += mediatek_mt7622-rfb1-ubi
 
+define Device/totolink_a8000ru
+  DEVICE_VENDOR := TOTOLINK
+  DEVICE_MODEL := A8000RU
+  DEVICE_DTS := mt7622-totolink-a8000ru
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := swconfig
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += totolink_a8000ru
+
 define Device/ubnt_unifi-6-lr
   DEVICE_VENDOR := Ubiquiti
   DEVICE_MODEL := UniFi 6 LR
@@ -229,3 +239,18 @@ define Device/ubnt_unifi-6-lr-ubootmod
   ARTIFACT/bl31-uboot.fip := bl31-uboot ubnt_unifi-6-lr
 endef
 TARGET_DEVICES += ubnt_unifi-6-lr-ubootmod
+
+define Device/xiaomi_redmi-router-ax6s
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Redmi Router AX6S
+  DEVICE_ALT0_VENDOR := Xiaomi
+  DEVICE_ALT0_MODEL := Router AX3200
+  DEVICE_DTS := mt7622-xiaomi-redmi-router-ax6s
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e
+  KERNEL := kernel-bin | lzma
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
+endef
+TARGET_DEVICES += xiaomi_redmi-router-ax6s

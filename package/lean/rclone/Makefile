@@ -53,6 +53,7 @@ define Package/rclone
 endef
 
 define Package/rclone-config
+  $(call Package/rclone/Default)
   TITLE+= (Config Scripts)
   DEPENDS:=+rclone
 endef
