@@ -826,6 +826,24 @@ define Device/jcg_jhr-ac945m
 endef
 TARGET_DEVICES += jcg_jhr-ac945m
 
+define Device/jcg_q10
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  KERNEL_SIZE := 4096k
+  IMAGE_SIZE := 128512k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := Q10 PRO (for cr660x pb-boot, use swconfig instead of DSA)
+  DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += jcg_q10
+
 define Device/jcg_q20
   $(Device/dsa-migration)
   BLOCKSIZE := 128k
