@@ -23,6 +23,7 @@ sub target_config_features(@) {
 		/^pwm$/ and $ret .= "\select PWM_SUPPORT\n";
 		/^rtc$/ and $ret .= "\tselect RTC_SUPPORT\n";
 		/^squashfs$/ and $ret .= "\tselect USES_SQUASHFS\n";
+		/^emmc$/ and $ret .= "\tselect EMMC_SUPPORT\n";
 		/^jffs2$/ and $ret .= "\tselect USES_JFFS2\n";
 		/^jffs2_nand$/ and $ret .= "\tselect USES_JFFS2_NAND\n";
 		/^ext4$/ and $ret .= "\tselect USES_EXT4\n";
