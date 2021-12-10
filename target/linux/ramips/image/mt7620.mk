@@ -472,6 +472,17 @@ define Device/hiwifi_hc5761
 endef
 TARGET_DEVICES += hiwifi_hc5761
 
+define Device/hiwifi_hc5761-32m
+  SOC := mt7620a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HiWiFi
+  DEVICE_MODEL := HC5761-32M
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+	kmod-usb-ledtrig-usbport
+  SUPPORTED_DEVICES += hc5761-32m
+endef
+TARGET_DEVICES += hiwifi_hc5761-32m
+
 define Device/hiwifi_hc5861
   SOC := mt7620a
   IMAGE_SIZE := 15808k
@@ -482,6 +493,17 @@ define Device/hiwifi_hc5861
   SUPPORTED_DEVICES += hc5861
 endef
 TARGET_DEVICES += hiwifi_hc5861
+
+define Device/hiwifi_hc5861-32m
+  SOC := mt7620a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HiWiFi
+  DEVICE_MODEL := HC5861-32M
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+	kmod-usb-ledtrig-usbport
+  SUPPORTED_DEVICES += hc5861-32m
+endef
+TARGET_DEVICES += hiwifi_hc5861-32m
 
 define Device/hnet_c108
   SOC := mt7620a
@@ -836,6 +858,28 @@ define Device/phicomm_psg1218a
   SUPPORTED_DEVICES += psg1218 psg1218a
 endef
 TARGET_DEVICES += phicomm_psg1218a
+
+define Device/phicomm_psg1218a-16m
+  SOC := mt7620a
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := Phicomm
+  DEVICE_MODEL := PSG1218-16M
+  DEVICE_VARIANT:= Ax
+  DEVICE_PACKAGES := kmod-mt76x2
+  SUPPORTED_DEVICES += psg1218 psg1218a-16m
+endef
+TARGET_DEVICES += phicomm_psg1218a-16m
+
+define Device/phicomm_psg1218a-32m
+  SOC := mt7620a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := Phicomm
+  DEVICE_MODEL := PSG1218-32M
+  DEVICE_VARIANT:= Ax
+  DEVICE_PACKAGES := kmod-mt76x2
+  SUPPORTED_DEVICES += psg1218 psg1218a-32m
+endef
+TARGET_DEVICES += phicomm_psg1218a-32m
 
 define Device/phicomm_psg1218b
   SOC := mt7620a
