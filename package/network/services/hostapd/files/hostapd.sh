@@ -372,6 +372,7 @@ hostapd_common_add_bss_config() {
 	config_add_string eap_user_file ca_cert server_cert private_key private_key_passwd server_id
 
 	config_add_boolean fils
+	config_add_string fils_dhcp
 }
 
 hostapd_set_vlan_file() {
@@ -672,7 +673,7 @@ hostapd_set_bss_options() {
 				ownip radius_client_addr \
 				eap_reauth_period request_cui \
 				erp_domain mobility_domain \
-				fils_realm
+				fils_realm fils_dhcp
 
 			# radius can provide VLAN ID for clients
 			vlan_possible=1
@@ -691,6 +692,19 @@ hostapd_set_bss_options() {
 				append bss_conf "erp_domain=$erp_domain" "$N"
 				append bss_conf "fils_realm=$fils_realm" "$N"
 				append bss_conf "fils_cache_id=$(echo "$fils_realm" | md5sum | head -c 4)" "$N"
+
+				[ "$fils_dhcp" = "*" ] && {
+					json_get_values network network
+					fils_dhcp=
+					for net in $network; do
+						fils_dhcp="$(ifstatus "$net" | jsonfilter -e '@.data.dhcpserver')"
+						[ -n "$fils_dhcp" ] && break
+					done
+
+					[ -z "$fils_dhcp" -a -n "$network_bridge" -a -n "$network_ifname" ] && \
+						fils_dhcp="$(udhcpc -B -n -q -s /lib/netifd/dhcp-get-server.sh -t 1 -i "$network_ifname" 2>/dev/null)"
+				}
+				[ -n "$fils_dhcp" ] && append bss_conf "dhcp_server=$fils_dhcp" "$N"
 			}
 
 			set_default auth_port 1812
