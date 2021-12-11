@@ -4,29 +4,23 @@ STOP=10
 
 enable=$(uci get easymesh.config.enabled 2>/dev/null)
 mesh_bat0=$(uci get network.bat0 2>/dev/null)
-mesh_nwi_mesh0=$(uci get network.nwi_mesh0 2>/dev/null)
-mesh_mesh0=$(uci get wireless.mesh0 2>/dev/null)
 ap_mode=$(uci get easymesh.config.ap_mode 2>/dev/null)
-lan=$(uci get network.lan.ifname 2>/dev/null)
 ipaddr=$(uci get easymesh.config.ipaddr 2>/dev/null)
 netmask=$(uci get easymesh.config.netmask 2>/dev/null)
 gateway=$(uci get easymesh.config.gateway 2>/dev/null)
-ap_gateway=$(uci get network.lan.gateway 2>/dev/null)
-ap_gateway1=$(cat /etc/easymesh | sed -n '1p' 2>/dev/null)
-dns1=$(cat /etc/easymesh | sed -n '2p' 2>/dev/null)
 dns=$(uci get easymesh.config.dns 2>/dev/null)
-mesh_id=$(uci get easymesh.config.mesh_id 2>/dev/null)
+ap_ipaddr=$(uci get network.lan.ipaddr 2>/dev/null)
+ap_ipaddr1=$(cat /etc/easymesh | sed -n '1p' 2>/dev/null)
 apRadio=$(uci get easymesh.config.apRadio 2>/dev/null)
-mesh0_apRadio=$(uci get wireless.mesh0.device 2>/dev/null)
-encryption=$(uci get easymesh.config.encryption 2>/dev/null)
-key=$(uci get easymesh.config.key 2>/dev/null)
 kvr=$(uci get easymesh.config.kvr 2>/dev/null)
-mobility_domain=$(uci get easymesh.config.mobility_domain 2>/dev/null)
-rssi_val=$(uci get easymesh.config.rssi_val 2>/dev/null)
-low_rssi_val=$(uci get easymesh.config.low_rssi_val 2>/dev/null)
+brlan=$(uci get network.@device[0].name 2>/dev/null)
+role=$(uci get easymesh.config.role 2>/dev/null)
 
 ap_mode_stop(){
-	if [ "$ap_gateway" = "$ap_gateway1" ]; then
+	ap_ipaddr=$(uci get network.lan.ipaddr 2>/dev/null)
+	ap_ipaddr1=$(cat /etc/easymesh | sed -n '1p' 2>/dev/null)
+	dns1=$(cat /etc/easymesh | sed -n '2p' 2>/dev/null)
+	if [ "$ap_ipaddr" = "$ap_ipaddr1" ]; then
 		uci delete network.lan.gateway
 		uci del_list network.lan.dns=$dns1
 		uci commit network
@@ -42,17 +36,92 @@ ap_mode_stop(){
 	fi
 }
 
-kvr_stop(){
-			for wifiiface in $(uci -X show wireless | grep wifi-iface | awk -F'[=]' '{print $1}'); do
-				if [ "${wifiiface}" != "wireless.mesh0" ]; then
-					uci delete ${wifiiface}.ieee80211k
-					uci delete ${wifiiface}.ieee80211v
-					uci delete ${wifiiface}.ieee80211r
-					uci commit network
-				fi
-			done
-			/etc/init.d/dawn stop && /etc/init.d/dawn disable
+add_wifi_mesh(){
+	mesh_nwi_mesh=$(uci get network.nwi_mesh_${apall} 2>/dev/null)
+	mesh_apRadio=$(uci get wireless.mesh_${apall}.device 2>/dev/null)
+	mesh_mesh=$(uci get wireless.mesh_${apall} 2>/dev/null)
+	mesh_id=$(uci get easymesh.config.mesh_id 2>/dev/null)
+	mobility_domain=$(uci get easymesh.config.mobility_domain 2>/dev/null)
+	key=$(uci get easymesh.config.key 2>/dev/null)
+	encryption=$(uci get easymesh.config.encryption 2>/dev/null)
 
+	if [ "$mesh_nwi_mesh" != "interface" ]; then
+		uci set network.nwi_mesh_$apall=interface
+		uci set network.nwi_mesh_$apall.proto='batadv_hardif'
+		uci set network.nwi_mesh_$apall.master='bat0'
+		uci set network.nwi_mesh_$apall.mtu='1536'
+		uci commit network
+	fi
+
+	if [ "$mesh_mesh" != "wifi-iface" ]; then
+		uci set wireless.mesh_$apall=wifi-iface
+		uci set wireless.mesh_$apall.device=$apall
+		uci set wireless.mesh_$apall.ifname=mesh_${apall}
+		uci set wireless.mesh_$apall.network=nwi_mesh_${apall}
+		uci set wireless.mesh_$apall.mode='mesh'
+		uci set wireless.mesh_$apall.mesh_id=$mesh_id
+		uci set wireless.mesh_$apall.mesh_fwding='0'
+		uci set wireless.mesh_$apall.mesh_ttl='1'
+		uci set wireless.mesh_$apall.mcast_rate='24000'
+		uci set wireless.mesh_$apall.disabled='0'
+		uci commit wireless
+	fi
+
+	if [ "$mesh_mesh" = "wifi-iface" ]; then
+		if [ "$mesh_apRadio" != "$apall" ]; then
+			uci set wireless.mesh_$apall.device=$apall
+			uci commit wireless
+		fi
+	fi
+	
+	if [ "$encryption" != 1 ]; then
+		uci set wireless.mesh_$apall.encryption='none'
+		uci commit wireless
+	else
+		uci set wireless.mesh_$apall.encryption='sae'
+		uci set wireless.mesh_$apall.key=$key
+		uci commit wireless
+	fi
+}
+
+add_kvr(){
+	kvr=$(uci get easymesh.config.kvr 2>/dev/null)
+	mobility_domain=$(uci get easymesh.config.mobility_domain 2>/dev/null)
+	for apall in $(uci -X show wireless | grep wifi-device | awk -F'[.=]' '{print $2}'); do
+		if [ "$kvr" = 1 ]; then
+			uci set wireless.default_$apall.ieee80211k='1'
+			uci set wireless.default_$apall.rrm_neighbor_report='1'
+			uci set wireless.default_$apall.rrm_beacon_report='1'
+			uci set wireless.default_$apall.ieee80211v='1'
+			uci set wireless.default_$apall.bss_transition='1'
+			uci set wireless.default_$apall.ieee80211r='1'
+			uci set wireless.default_$apall.encryption='psk2+ccmp'
+			uci set wireless.default_$apall.mobility_domain=$mobility_domain
+			uci set wireless.default_$apall.ft_over_ds='1'
+			uci set wireless.default_$apall.ft_psk_generate_local='1'
+			uci commit wireless
+		else
+			uci delete wireless.default_$apall.ieee80211k
+			uci delete wireless.default_$apall.ieee80211v
+			uci delete wireless.default_$apall.ieee80211r
+			uci commit wireless
+		fi
+	done
+}
+
+add_dawn(){
+	kvr=$(uci get easymesh.config.kvr 2>/dev/null)
+	rssi_val=$(uci get easymesh.config.rssi_val 2>/dev/null)
+	low_rssi_val=$(uci get easymesh.config.low_rssi_val 2>/dev/null)
+
+	if [ "$kvr" = 1 ]; then
+		uci set dawn.@metric[0].rssi_val=$rssi_val
+		uci set dawn.@metric[0].low_rssi_val=$low_rssi_val
+		uci commit dawn 
+		/etc/init.d/dawn enable && /etc/init.d/dawn start
+	else
+		/etc/init.d/dawn stop && /etc/init.d/dawn disable
+	fi
 }
 
 start(){	
@@ -62,87 +131,51 @@ start(){
 			uci set network.bat0.proto='batadv'
 			uci set network.bat0.routing_algo='BATMAN_IV'
 			uci set network.bat0.aggregated_ogms='1'
-			#uci set network.bat0.gw_bandwidth='10000/2000'
 			uci set network.bat0.ap_isolation='0'
 			uci set network.bat0.bonding='0'
-			uci set network.bat0.fragmentation='1'
-			uci set network.bat0.gw_mode='off'
-			#uci set network.bat0.gw_sel_class='20'
-			uci set network.bat0.log_level='0'
-			uci set network.bat0.orig_interval='1000'
 			uci set network.bat0.bridge_loop_avoidance='1'
 			uci set network.bat0.distributed_arp_table='1'
-			uci set network.bat0.multicast_mode='1'
-			uci set network.bat0.network_coding='0'
+			uci set network.bat0.fragmentation='1'
+			#uci set network.bat0.gw_bandwidth='10000/2000'
+			#uci set network.bat0.gw_sel_class='20'
 			uci set network.bat0.hop_penalty='30'
 			uci set network.bat0.isolation_mark='0x00000000/0x00000000'
+			uci set network.bat0.log_level='0'
+			uci set network.bat0.multicast_fanout='16'
+			uci set network.bat0.multicast_mode='1'
+			uci set network.bat0.network_coding='0'
+			uci set network.bat0.orig_interval='1000'
 
-			uci set network.lan.ifname="${lan} bat0"
-			uci commit network
-		fi
-
-		if [ "$mesh_nwi_mesh0" != "interface" ]; then
-			uci set network.nwi_mesh0=interface
-			uci set network.nwi_mesh0.proto='batadv_hardif'
-			uci set network.nwi_mesh0.mtu='2304'
-			uci set network.nwi_mesh0.master='bat0'
-			uci commit network
-		fi
-
-		if [ "$mesh_mesh0" != "wifi-iface" ]; then
-			uci set wireless.mesh0=wifi-iface
-			uci set wireless.mesh0.device=$apRadio
-			uci set wireless.mesh0.ifname='mesh0'
-			uci set wireless.mesh0.network='nwi_mesh0'
-			uci set wireless.mesh0.mode='mesh'
-			uci set wireless.mesh0.mesh_fwding='0'
-			uci set wireless.mesh0.mesh_id=$mesh_id
-			uci commit wireless
-		fi
-
-		if [ "$mesh_mesh0" = "wifi-iface" ]; then
-			if [ "$mesh0_apRadio" != "$apRadio" ]; then
-				uci set wireless.mesh0.device=$apRadio
-				uci commit wireless
+			if [ "$role" = "server" ]; then
+				uci set network.bat0.gw_mode='server'
+			elif [ "$role" = "client" ]; then
+				uci set network.bat0.gw_mode='client'
+			else
+				uci set network.bat0.gw_mode='off'
 			fi
-		fi
-
-		if [ "$encryption" != 1 ]; then
-			uci set wireless.mesh0.encryption='none'
-			uci commit wireless
-		else
-			uci set wireless.mesh0.encryption='sae'
-			uci set wireless.mesh0.key=$key
-			uci commit wireless
-		fi
 		
-		if [ "$kvr" = 1 ]; then
-			for wifiiface in $(uci -X show wireless | grep wifi-iface | awk -F'[=]' '{print $1}'); do
-				if [ "${wifiiface}" != "wireless.mesh0" ]; then
-					uci set ${wifiiface}.ieee80211k='1'
-					uci set ${wifiiface}.rrm_neighbor_report='1'
-					uci set ${wifiiface}.rrm_beacon_report='1'
-					uci set ${wifiiface}.ieee80211v='1'
-					uci set ${wifiiface}.bss_transition='1'
-					uci set ${wifiiface}.ieee80211r='1'
-					uci set ${wifiiface}.encryption='psk-mixed'
-					uci set ${wifiiface}.mobility_domain=$mobility_domain
-					uci set ${wifiiface}.ft_over_ds='1'
-					uci set ${wifiiface}.ft_psk_generate_local='1'
-					uci commit network
-				fi
-			done
-
-			uci set dawn.@metric[0].rssi_val=$rssi_val
-			uci set dawn.@metric[0].low_rssi_val=$low_rssi_val
-			uci commit dawn 
-			/etc/init.d/dawn enable && /etc/init.d/dawn start
-		else
-			kvr_stop
+			if [ "$brlan" = "br-lan" ]; then
+				uci add_list network.@device[0].ports='bat0'
+			else
+				uci set network.lan.ifname="${lan} bat0"
+			fi
+			uci commit network
 		fi
+
+		if [ "$apRadio" = "all" ]; then
+			for apall in $(uci -X show wireless | grep wifi-device | awk -F'[.=]' '{print $2}'); do
+				add_wifi_mesh
+			done
+		else
+			apall=$apRadio
+			add_wifi_mesh
+		fi
+
+		add_kvr
+		add_dawn
 
 		if [ "$ap_mode" == 1 ]; then
-			if [ "$ap_gateway" != "$gateway" ]; then
+			if [ "$ap_ipaddr" != "$ipaddr" ]; then
 				uci set network.lan.ipaddr=$ipaddr
 				uci set network.lan.netmask=$netmask
 				uci set network.lan.gateway=$gateway
@@ -150,7 +183,7 @@ start(){
 				uci commit network
 
 				echo "" > /etc/easymesh
-				echo "$gateway" > /etc/easymesh
+				echo "$ipaddr" > /etc/easymesh
 				echo "$dns" >> /etc/easymesh
 
 				uci set dhcp.lan.dynamicdhcp='0'
@@ -177,21 +210,31 @@ stop(){
 	if [ "$enable" != 1 ]; then
 		if [ "$mesh_bat0" = "interface" ]; then
 			uci delete network.bat0
+			if [ "$brlan" = "br-lan" ]; then
+				uci del_list network.@device[0].ports='bat0'
+			else
+				sed -i 's/ bat0//' /etc/config/network
+			fi
 			uci commit network
-			sed -i 's/ bat0//' /etc/config/network
 		fi
 
-		if [ "$mesh_nwi_mesh0" = "interface" ]; then
-			uci delete network.nwi_mesh0
-			uci commit network
-		fi
+		for apall in $(uci -X show wireless | grep wifi-device | awk -F'[.=]' '{print $2}'); do
+			mesh_nwi_mesh=$(uci get network.nwi_mesh_${apall} 2>/dev/null)
+			mesh_mesh=$(uci get wireless.mesh_${apall} 2>/dev/null)
+			
+			if [ "$mesh_nwi_mesh" = "interface" ]; then
+				uci delete network.nwi_mesh_$apall
+				uci commit network
+			fi
 
-		if [ "$mesh_mesh0" = "wifi-iface" ]; then
-			uci delete wireless.mesh0
-			uci commit wireless
+			if [ "$mesh_mesh" = "wifi-iface" ]; then
+				uci delete wireless.mesh_$apall
+				uci commit wireless
+			fi
+		done
 
-			kvr_stop
-		fi
+		add_kvr
+		add_dawn
 
 		if [ "$ap_mode" == 1 ]; then
 			ap_mode_stop

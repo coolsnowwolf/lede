@@ -23,16 +23,31 @@ define Device/UbiFit
 	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
-define Device/wf_hr6001
+define Device/glinet_gl-ax1800
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
-	DEVICE_VENDOR := WF
-	DEVICE_MODEL := HR6001
-	KERNEL_LOADADDR := 0x41000000
+	DEVICE_VENDOR := GL.iNet
+	DEVICE_MODEL := GL-AX1800
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
-	DEVICE_DTS_CONFIG := config@cp01-c1
-	SOC := ipq6018
-	DEVICE_PACKAGES :=  uboot-envtools
+	DEVICE_DTS := qcom-ipq6018-gl-ax1800
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	BOARD_NAME := ap-cp03-c1
+	IMAGES += stock-factory.bin
+	IMAGE/stock-factory.bin := append-ubi | qsdk-ipq-factory-nand
 endef
-TARGET_DEVICES += wf_hr6001
+TARGET_DEVICES += glinet_gl-ax1800
+
+#define Device/wf_hr6001
+#	$(call Device/FitImage)
+#	$(call Device/UbiFit)
+#	DEVICE_VENDOR := WF
+#	DEVICE_MODEL := HR6001
+#	KERNEL_LOADADDR := 0x41000000
+#	BLOCKSIZE := 128k
+#	PAGESIZE := 2048
+#	DEVICE_DTS_CONFIG := config@cp01-c1
+#	SOC := ipq6018
+#	DEVICE_PACKAGES :=  uboot-envtools
+#endef
+#TARGET_DEVICES += wf_hr6001
