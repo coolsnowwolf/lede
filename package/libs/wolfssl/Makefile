@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=4.7.0-stable
-PKG_RELEASE:=2
+PKG_VERSION:=4.8.1-stable
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=b0e740b31d4d877d540ad50cc539a8873fc41af02bd3091c4357b403f7106e31
+PKG_HASH:=50db45f348f47e00c93dd244c24108220120cb3cc9d01434789229c32937c444
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
@@ -59,11 +59,18 @@ define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
 endef
 
-TARGET_CFLAGS += $(FPIC) -DFP_MAX_BITS=8192 -fomit-frame-pointer -flto
+TARGET_CFLAGS += \
+	$(FPIC) \
+	-fomit-frame-pointer \
+	-flto \
+	-DFP_MAX_BITS=8192 \
+	-DWOLFSSL_ALT_CERT_CHAINS
+
 TARGET_LDFLAGS += -flto
 
 # --enable-stunnel needed for OpenSSL API compatibility bits
 CONFIGURE_ARGS += \
+	--enable-reproducible-build \
 	--enable-lighty \
 	--enable-opensslall \
 	--enable-opensslextra \
@@ -97,7 +104,7 @@ endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_WPAS),y)
 CONFIGURE_ARGS += \
-	--enable-wpas --enable-sha512 --enable-fortress --enable-fastmath
+	--enable-wpas --enable-fortress --enable-fastmath
 endif
 
 define Build/InstallDev

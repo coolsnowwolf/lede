@@ -1,5 +1,6 @@
 
 REQUIRE_IMAGE_METADATA=1
+RAMFS_COPY_BIN='fwtool'
 
 # Full system upgrade including preloader for MediaTek SoCs on eMMC or SD
 mtk_mmc_full_upgrade() {
@@ -83,7 +84,11 @@ platform_do_upgrade() {
 
 	case "$board" in
 	bananapi,bpi-r2)
-		mtk_mmc_full_upgrade "$1"
+		export_bootdevice
+		export_partdevice fitpart 3
+		[ "$fitpart" ] || return 1
+		EMMC_KERN_DEV="/dev/$fitpart"
+		emmc_do_upgrade "$1"
 		;;
 
 	unielec,u7623-02-emmc-512m)
@@ -126,32 +131,10 @@ platform_check_image() {
 
 	case "$board" in
 	bananapi,bpi-r2)
-		[ "$magic" != "53444d4d" ] && {
+		[ "$magic" != "d00dfeed" ] && {
 			echo "Invalid image type."
 			return 1
 		}
-		export_bootdevice && export_partdevice diskdev 0 || {
-			echo "Unable to determine upgrade device"
-			return 1
-		    }
-
-		get_partitions "/dev/$diskdev" bootdisk
-
-		#extract the boot sector from the image
-		get_image "$@" | dd of=/tmp/image.bs count=1 bs=512b 2>/dev/null
-
-		get_partitions /tmp/image.bs image
-
-		#compare tables
-		diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
-
-		rm -f /tmp/image.bs /tmp/partmap.bootdisk /tmp/partmap.image
-
-		if [ -n "$diff" ]; then
-			echo "Partition layout has changed. Full image will be written."
-			ask_bool 0 "Abort" && exit 1
-			return 0
-		fi
 		;;
 	unielec,u7623-02-emmc-512m)
 		# Can always upgrade to the new-style full image
@@ -182,7 +165,9 @@ platform_check_image() {
 
 platform_copy_config() {
 	case "$(board_name)" in
-	bananapi,bpi-r2|\
+	bananapi,bpi-r2)
+		emmc_copy_config
+		;;
 	unielec,u7623-02-emmc-512m)
 		# platform_do_upgrade() will have set $recoverydev
 		if [ -n "$recoverydev" ]; then
