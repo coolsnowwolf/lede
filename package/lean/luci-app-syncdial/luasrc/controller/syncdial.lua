@@ -1,4 +1,5 @@
 module("luci.controller.syncdial",package.seeall)
+
 function index()
 	if not nixio.fs.access("/etc/config/syncdial") then
 		return

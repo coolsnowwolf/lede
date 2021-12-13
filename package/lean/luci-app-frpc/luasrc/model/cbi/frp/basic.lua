@@ -1,10 +1,10 @@
-local o=require"luci.dispatcher"
-local e=require("luci.model.ipkg")
-local s=require"nixio.fs"
-local e=luci.model.uci.cursor()
-local i="frp"
+local o = require"luci.dispatcher"
+local e = require("luci.model.ipkg")
+local s = require"nixio.fs"
+local e = luci.model.uci.cursor()
+local i = "frp"
 local a,t,e
-local n={}
+local n = {}
 
 a = Map("frp")
 a.title = translate("Frp Setting")
@@ -195,14 +195,14 @@ end
 e = t:option(DummyValue,"remote_port",translate("Remote Port"))
 e.width = "10%"
 e.cfgvalue = function(t,b)
-local t=a.uci:get(i,b,"type")or""
+local t = a.uci:get(i,b,"type")or""
 if t==""or b==""then return""end
 if t=="http" then
-local b=a.uci:get(i,"common","vhost_http_port")or"" return b end
+local b = a.uci:get(i,"common","vhost_http_port")or"" return b end
 if t=="https" then
-local b=a.uci:get(i,"common","vhost_https_port")or"" return b end
+local b = a.uci:get(i,"common","vhost_https_port")or"" return b end
 if t=="tcp" or t=="udp" then
-local b=a.uci:get(i,b,"remote_port")or"" return b end
+local b = a.uci:get(i,b,"remote_port")or"" return b end
 end
 
 e = t:option(DummyValue, "local_ip", translate("Local Host Address"))
@@ -225,7 +225,7 @@ end
 
 e = t:option(DummyValue, "use_compression", translate("Use Compression"))
 e.width = "15%"
-e.cfgvalue=function(t,n)
+e.cfgvalue = function(t,n)
 local t = a.uci:get(i,n,"use_compression")or""
 local b
 if t==""or b==""then return""end

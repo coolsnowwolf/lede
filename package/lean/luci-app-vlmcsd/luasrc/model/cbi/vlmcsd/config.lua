@@ -4,10 +4,10 @@ s = m:section(TypedSection, "vlmcsd")
 s.addremove = false
 s.anonymous = true
 
-config = s:option(Value, "config", translate("Config File"))
+config = s:option(TextValue, "config")
 config.description = translate("This file is /etc/vlmcsd/vlmcsd.ini.")
 config.template = "cbi/tvalue"
-config.rows = 30
+config.rows = 25
 config.wrap = "off"
 
 function config.cfgvalue(self, section)

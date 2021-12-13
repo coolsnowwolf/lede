@@ -363,7 +363,7 @@ do { \
 #define RSS_SUFFIX ""
 #endif
 
-#define RTL8125_VERSION "9.006.04" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
+#define RTL8125_VERSION "9.007.01" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
 #define MODULENAME "r8125"
 #define PFX MODULENAME ": "
 
@@ -556,6 +556,8 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define D0_SPEED_UP_SPEED_DISABLE    0
 #define D0_SPEED_UP_SPEED_1000       1
 #define D0_SPEED_UP_SPEED_2500       2
+
+#define RTL8125_MAC_MCU_PAGE_SIZE 256 //256 words
 
 #ifndef WRITE_ONCE
 #define WRITE_ONCE(var, val) (*((volatile typeof(val) *)(&(var))) = (val))
@@ -2010,7 +2012,9 @@ struct rtl8125_private {
         unsigned int min_irq_nvecs;
         //struct msix_entry msix_entries[R8125_MAX_MSIX_VEC];
         struct net_device_stats stats;  /* statistics of net device */
+#ifdef ENABLE_PTP_SUPPORT
         spinlock_t lock;        /* spin lock flag */
+#endif
         u32 msg_enable;
         u32 tx_tcp_csum_cmd;
         u32 tx_udp_csum_cmd;
@@ -2301,6 +2305,9 @@ struct rtl8125_private {
         u8 rss_indir_tbl[RTL8125_MAX_INDIRECTION_TABLE_ENTRIES];
         u32 rss_options;
 #endif
+
+        u8 HwSuppMacMcuVer;
+        u16 MacMcuPageSize;
 };
 
 #ifdef ENABLE_LIB_SUPPORT
@@ -2366,6 +2373,8 @@ enum mcfg {
         CFG_METHOD_3,
         CFG_METHOD_4,
         CFG_METHOD_5,
+        CFG_METHOD_6,
+        CFG_METHOD_7,
         CFG_METHOD_DEFAULT,
         CFG_METHOD_MAX
 };
@@ -2497,6 +2506,7 @@ static inline void rtl8125_lib_reset_complete(struct rtl8125_private *tp) { }
 #define HW_SUPPORT_CHECK_PHY_DISABLE_MODE(_M)        ((_M)->HwSuppCheckPhyDisableModeVer > 0 )
 #define HW_HAS_WRITE_PHY_MCU_RAM_CODE(_M)        (((_M)->HwHasWrRamCodeToMicroP == TRUE) ? 1 : 0)
 #define HW_SUPPORT_D0_SPEED_UP(_M)        ((_M)->HwSuppD0SpeedUpVer > 0)
+#define HW_SUPPORT_MAC_MCU(_M)        ((_M)->HwSuppMacMcuVer > 0)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34)
 #define netdev_mc_count(dev) ((dev)->mc_count)
