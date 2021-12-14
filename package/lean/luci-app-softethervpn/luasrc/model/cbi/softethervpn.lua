@@ -13,6 +13,6 @@ s.anonymous = true
 o = s:option(Flag, "enable", translate("Enabled"))
 o.rmempty = false
 
-o = s:option(DummyValue, "moreinfo", translate("<strong>控制台下载：<a onclick=\"window.open('https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.38-9760-rtm/softether-vpnclient-v4.38-9760-rtm-2021.08.17-windows-x86_x64-intel.exe')\"><br/>Windows-x86_x64-intel.exe</a><a  onclick=\"window.open('https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.38-9760-rtm/softether-vpnclient-v4.38-9760-rtm-2021.08.17-macos-x86-32bit.tar.gz')\"><br/>macos-x86-32bit.pkg</a></strong>"))
+o = s:option(DummyValue, "moreinfo", translate("<strong>控制台下载：<a onclick=\"window.open('https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.38-9760-rtm/softether-vpnserver_vpnbridge-v4.38-9760-rtm-2021.08.17-windows-x86_x64-intel.exe')\"><br/>Windows-x86_x64-intel.exe</a><a  onclick=\"window.open('https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.38-9760-rtm/softether-vpnserver_vpnbridge-v4.38-9760-rtm-2021.08.17-macos-x86-32bit.tar.gz')\"><br/>macos-x86-32bit.pkg</a></strong>"))
 
 return m
