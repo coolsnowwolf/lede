@@ -75,6 +75,7 @@ static uint32_t blocksize;
 static int mtdfd;
 static uint32_t num_sectors;
 static uint8_t *sectors;
+static uint32_t *sector_ids;
 
 static inline void sector_mark_bad(int num)
 {
@@ -135,6 +136,8 @@ static int read_sector(off_t pos)
 		return -1;
 	}
 
+	sector_ids[pos / TFFS_SECTOR_SIZE] = read_uint32(readbuf, 0x00);
+
 	return 0;
 }
 
@@ -178,6 +181,17 @@ static int find_entry(uint32_t id, struct tffs_entry *entry)
 				block_end = 0;
 			}
 		} else if (sector_get_good(sector)) {
+			if (sector_ids[sector]) {
+				if (sector_ids[sector] == TFFS_ID_END) {
+					/* no more entries in this block */
+					block_end = 1;
+					continue;
+				}
+
+				if (sector_ids[sector] != id)
+					continue;
+			}
+
 			if (read_sectoroob(pos) || read_sector(pos)) {
 				fprintf(stderr, "ERROR: sector isn't readable, but has been previously!\n");
 				exit(EXIT_FAILURE);
@@ -415,7 +429,8 @@ static int scan_mtd(void)
 
 	num_sectors = info.size / TFFS_SECTOR_SIZE;
 	sectors = malloc((num_sectors + 7) / 8);
-	if (sectors == NULL) {
+	sector_ids = calloc(num_sectors, sizeof(uint32_t));
+	if (!sectors || !sector_ids) {
 		fprintf(stderr, "ERROR: memory allocation failed!\n");
 		exit(EXIT_FAILURE);
 	}
@@ -563,6 +578,7 @@ int main(int argc, char *argv[])
 out_free_entry:
 	free(name_table.val);
 out_free_sectors:
+	free(sector_ids);
 	free(sectors);
 out_close:
 	close(mtdfd);
