@@ -73,21 +73,17 @@ static uint8_t readbuf[TFFS_SECTOR_SIZE];
 static uint8_t oobbuf[TFFS_SECTOR_OOB_SIZE];
 static uint32_t blocksize;
 static int mtdfd;
-struct tffs_sectors *sectors;
-
-struct tffs_sectors {
-	uint32_t num_sectors;
-	uint8_t sectors[0];
-};
+static uint32_t num_sectors;
+static uint8_t *sectors;
 
 static inline void sector_mark_bad(int num)
 {
-	sectors->sectors[num / 8] &= ~(0x80 >> (num % 8));
+	sectors[num / 8] &= ~(0x80 >> (num % 8));
 };
 
 static inline uint8_t sector_get_good(int num)
 {
-	return sectors->sectors[num / 8] & 0x80 >> (num % 8);
+	return sectors[num / 8] & 0x80 >> (num % 8);
 };
 
 struct tffs_entry_segment {
@@ -176,7 +172,7 @@ static int find_entry(uint32_t id, struct tffs_entry *entry)
 
 	off_t pos = 0;
 	uint8_t block_end = 0;
-	for (uint32_t sector = 0; sector < sectors->num_sectors; sector++, pos += TFFS_SECTOR_SIZE) {
+	for (uint32_t sector = 0; sector < num_sectors; sector++, pos += TFFS_SECTOR_SIZE) {
 		if (block_end) {
 			if (pos % blocksize == 0) {
 				block_end = 0;
@@ -417,13 +413,13 @@ static int scan_mtd(void)
 
 	blocksize = info.erasesize;
 
-	sectors = malloc(sizeof(*sectors) + (info.size / TFFS_SECTOR_SIZE + 7) / 8);
+	num_sectors = info.size / TFFS_SECTOR_SIZE;
+	sectors = malloc((num_sectors + 7) / 8);
 	if (sectors == NULL) {
 		fprintf(stderr, "ERROR: memory allocation failed!\n");
 		exit(EXIT_FAILURE);
 	}
-	sectors->num_sectors = info.size / TFFS_SECTOR_SIZE;
-	memset(sectors->sectors, 0xff, (info.size / TFFS_SECTOR_SIZE + 7) / 8);
+	memset(sectors, 0xff, (num_sectors + 7) / 8);
 
 	uint32_t sector = 0, valid_blocks = 0;
 	uint8_t block_ok = 0;
