@@ -186,15 +186,18 @@ static int find_entry(uint32_t id, struct tffs_entry *entry)
 				fprintf(stderr, "ERROR: sector isn't readable, but has been previously!\n");
 				exit(EXIT_FAILURE);
 			}
-			uint32_t oob_id = read_uint32(oobbuf, 0x02);
-			uint32_t oob_len = read_uint32(oobbuf, 0x06);
-			uint32_t oob_rev = read_uint32(oobbuf, 0x0a);
 			uint32_t read_id = read_uint32(readbuf, 0x00);
 			uint32_t read_len = read_uint32(readbuf, 0x04);
 			uint32_t read_rev = read_uint32(readbuf, 0x0c);
-			if (read_oob_sector_health && (oob_id != read_id || oob_len != read_len || oob_rev != read_rev)) {
-				fprintf(stderr, "Warning: sector has inconsistent metadata\n");
-				continue;
+			if (read_oob_sector_health) {
+				uint32_t oob_id = read_uint32(oobbuf, 0x02);
+				uint32_t oob_len = read_uint32(oobbuf, 0x06);
+				uint32_t oob_rev = read_uint32(oobbuf, 0x0a);
+
+				if (oob_id != read_id || oob_len != read_len || oob_rev != read_rev) {
+					fprintf(stderr, "Warning: sector has inconsistent metadata\n");
+					continue;
+				}
 			}
 			if (read_id == TFFS_ID_END) {
 				/* no more entries in this block */
