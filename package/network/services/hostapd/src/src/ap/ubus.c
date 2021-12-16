@@ -440,7 +440,7 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_u64(&b, "bss_transition_query_rx", hapd->iface->openwrt_stats.wnm.bss_transition_query_rx);
 	blobmsg_add_u64(&b, "bss_transition_request_tx", hapd->iface->openwrt_stats.wnm.bss_transition_request_tx);
 	blobmsg_add_u64(&b, "bss_transition_response_rx", hapd->iface->openwrt_stats.wnm.bss_transition_response_rx);
-	blobmsg_close_table(&b, rrm_table);
+	blobmsg_close_table(&b, wnm_table);
 
 	/* Airtime */
 	airtime_table = blobmsg_open_table(&b, "airtime");
