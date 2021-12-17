@@ -428,6 +428,25 @@ define Device/ruijie_rg-mtfi-m520
 endef
 TARGET_DEVICES += ruijie_rg-mtfi-m520
 
+define Device/norton_core-518
+	DEVICE_TITLE := Norton Core 518
+	BOARD_NAME := core-518
+	SOC := qcom-ipq8065
+	DEVICE_DTS := qcom-ipq8065-core-518
+	BLOCKSIZE := 64k
+	KERNEL_SIZE := 4096k
+	KERNEL_SUFFIX := -uImage
+	KERNEL = kernel-bin | append-dtb | uImage none | pad-to $${KERNEL_SIZE}
+	KERNEL_NAME := zImage
+	SUPPORTED_DEVICES += core-518
+	DEVICE_PACKAGES := ath10k-firmware-qca9984-ct e2fsprogs kmod-fs-ext4 losetup f2fs-tools
+	IMAGES := mmcblk0p10-rootfs.bin mmcblk0p9-kernel.bin sysupgrade.bin
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to $$$${BLOCKSIZE} | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	IMAGE/mmcblk0p9-kernel.bin := pad-extra 40 | append-kernel | pad-to $$$${KERNEL_SIZE}
+	IMAGE/mmcblk0p10-rootfs.bin := append-rootfs | pad-rootfs
+endef
+TARGET_DEVICES += norton_core-518
+
 define Device/tplink_ad7200
 	$(call Device/TpSafeImage)
 	DEVICE_VENDOR := TP-Link

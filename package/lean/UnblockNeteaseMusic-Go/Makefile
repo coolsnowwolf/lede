@@ -1,82 +1,76 @@
-# SPDX-Identifier-License: GPL-3.0-only
-#
-# Copyright (C) 2021 ImmortalWrt.org
-
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=UnblockNeteaseMusic-Go
 PKG_VERSION:=0.2.13
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=5
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/cnsilvan/UnblockNeteaseMusic/tar.gz/$(PKG_VERSION)?
-PKG_HASH:=92201b7f04ab1015c806c672b98a29b97d0f137d9b60e6d35d279c2064ed86a4
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/cnsilvan/UnblockNeteaseMusic.git
+PKG_SOURCE_VERSION:=2479ad75f8fbfe7cfdd7d86ebe330013dcb6a372
+PKG_HASH:=72b28cc22bfdfb1810e50c307ce00cbc124d55a7d10fe7c510227dfe1efa76bc
+PKG_MAINTAINER:=Silvan <cnsilvan@gmail.com>
 
-PKG_LICENSE:=GPL-3.0
-PKG_LICENSE_FILE:=LICENSE
-PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
+PKG_SOURCE_SUBDIR:=$(PKG_NAME)
+PKG_SOURCE:=$(PKG_SOURCE_SUBDIR)-$(PKG_VERSION)-$(PKG_SOURCE_VERSION).tar.gz
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_SOURCE_SUBDIR)
 
-PKG_CONFIG_DEPENDS:= \
-	CONFIG_UNBLOCKNETEASEMUSIC_GO_COMPRESS_GOPROXY \
-	CONFIG_UNBLOCKNETEASEMUSIC_GO_COMPRESS_UPX
-
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(firstword $(subst -, ,$(PKG_NAME)))-$(PKG_VERSION)
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
 PKG_USE_MIPS16:=0
 
 GO_PKG:=github.com/cnsilvan/UnblockNeteaseMusic
-GO_PKG_BUILD_PKG:=$$(GO_PKG)
 GO_PKG_LDFLAGS:=-s -w
-COMPILE_TIME:= $(shell TZ=UTC-8 date '+%Y-%m-%d %H:%M:%S')
-GO_PKG_LDFLAGS+= \
-	-X '$(GO_PKG)/version.Version=$(PKG_VERSION)' \
-	-X '$(GO_PKG)/version.BuildTime=$(COMPILE_TIME)' \
-	-X '$(GO_PKG)/version.ExGoVersionInfo=$(GO_ARM) $(GO_MIPS)$(GO_MIPS64)'
+GO_PKG_LDFLAGS_X:= \
+	$(GO_PKG)/version.Version=$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/UnblockNeteaseMusic-Go/config
-config UNBLOCKNETEASEMUSIC_GO_COMPRESS_GOPROXY
+define Package/$(PKG_NAME)/config
+config $(PKG_NAME)_INCLUDE_GOPROXY
 	bool "Compiling with GOPROXY proxy"
-	default n
-
-config UNBLOCKNETEASEMUSIC_GO_COMPRESS_UPX
-	bool "Compress executable files with UPX"
 	default y
+
 endef
 
-ifeq ($(CONFIG_UNBLOCKNETEASEMUSIC_GO_COMPRESS_GOPROXY),y)
-	export GO111MODULE=on
-	export GOPROXY=https://goproxy.io
+ifeq ($(CONFIG_$(PKG_NAME)_INCLUDE_GOPROXY),y)
+export GO111MODULE=on
+export GOPROXY=https://goproxy.io
+#export GOPROXY=https://mirrors.aliyun.com/goproxy/
 endif
 
-define Package/UnblockNeteaseMusic-Go
-  SECTION:=multimedia
-  CATEGORY:=Multimedia
-  TITLE:=Revive Netease Cloud Music (Golang)
-  URL:=https://github.com/cnsilvan/UnblockNeteaseMusic
-  DEPENDS:=$(GO_ARCH_DEPENDS)
+define Package/$(PKG_NAME)
+	SECTION:=net
+	CATEGORY:=Network
+	TITLE:=Revive Netease Cloud Music (Golang)
+	DEPENDS:=$(GO_ARCH_DEPENDS)
+	URL:=https://github.com/cnsilvan/UnblockNeteaseMusic
+	SUBMENU:=NeteaseMusic
+endef
+
+define Package/$(PKG_NAME)/description
+Revive Netease Cloud Music (Golang)
+endef
+
+define Build/Prepare
+	tar -zxvf $(DL_DIR)/$(PKG_SOURCE) -C $(BUILD_DIR)/$(PKG_NAME) --strip-components 1
+endef
+
+define Build/Configure
+  
 endef
 
 define Build/Compile
+	$(eval GO_PKG_BUILD_PKG:=$(GO_PKG))
+	$(call GoPackage/Build/Configure)
 	$(call GoPackage/Build/Compile)
-ifeq ($(CONFIG_GOST_COMPRESS_UPX),y)
-	$(STAGING_DIR_HOST)/bin/upx --lzma --best $(GO_PKG_BUILD_BIN_DIR)/UnblockNeteaseMusic
-endif
 endef
 
-define Package/UnblockNeteaseMusic-Go/install
-	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
-
+define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/UnblockNeteaseMusic $(1)/usr/bin/UnblockNeteaseMusic
-
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/UnblockNeteaseMusic $(1)/usr/bin/UnblockNeteaseMusic
 	$(INSTALL_DIR) $(1)/usr/share/UnblockNeteaseMusicGo
 	$(CP) ./files/* $(1)/usr/share/UnblockNeteaseMusicGo/
-	
 endef
-
-$(eval $(call GoBinPackage,UnblockNeteaseMusic-Go))
-$(eval $(call BuildPackage,UnblockNeteaseMusic-Go))
+$(eval $(call GoBinPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,$(PKG_NAME)))

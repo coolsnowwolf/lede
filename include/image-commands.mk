@@ -360,7 +360,7 @@ define Build/patch-cmdline
 endef
 
 # Convert a raw image into a $1 type image.
-# E.g. | qemu-image vdi
+# E.g. | qemu-image vdi <optional extra arguments to qemu-img binary>
 define Build/qemu-image
 	if command -v qemu-img; then \
 		qemu-img convert -f raw -O $1 $@ $@.new; \

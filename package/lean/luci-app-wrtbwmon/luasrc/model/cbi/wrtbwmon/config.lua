@@ -1,9 +1,10 @@
-local m = Map("wrtbwmon", translate("Details"))
+m = Map("wrtbwmon")
+m.title = translate("Details")
 
-local s = m:section(NamedSection, "general", "wrtbwmon", translate("General settings"))
+s = m:section(NamedSection, "general", "wrtbwmon", translate("General settings"))
 
-local o = s:option(Flag, "persist", translate("Persist database"),
-    translate("Check this to persist the database file"))
+o = s:option(Flag, "persist", translate("Persist database"))
+o.description = translate("Check this to persist the database file")
 o.rmempty = false
 
 function o.write(self, section, value)

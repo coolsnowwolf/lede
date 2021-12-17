@@ -56,4 +56,3 @@ function v2ray_update()
 
 	http_write_json(json)
 end
-

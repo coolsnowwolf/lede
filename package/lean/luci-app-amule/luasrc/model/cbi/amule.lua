@@ -27,7 +27,7 @@ end
 
 m = Map("amule", translate("aMule"), translate("aMule is a ED2K/KAD client for all platforms.") .. "<br/><a href=\"https://github.com/maz-1\">luci interface by maz-1</a>")
 
-m:section(SimpleSection).template  = "amule/overview_status"
+m:section(SimpleSection).template = "amule/overview_status"
 
 s = m:section(TypedSection, "amule", translate("aMule Settings"))
 s.addremove = false
