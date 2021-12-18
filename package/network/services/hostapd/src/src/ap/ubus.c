@@ -432,14 +432,14 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 
 	/* RRM */
 	rrm_table = blobmsg_open_table(&b, "rrm");
-	blobmsg_add_u64(&b, "neighbor_report_tx", hapd->iface->openwrt_stats.rrm.neighbor_report_tx);
+	blobmsg_add_u64(&b, "neighbor_report_tx", hapd->openwrt_stats.rrm.neighbor_report_tx);
 	blobmsg_close_table(&b, rrm_table);
 
 	/* WNM */
 	wnm_table = blobmsg_open_table(&b, "wnm");
-	blobmsg_add_u64(&b, "bss_transition_query_rx", hapd->iface->openwrt_stats.wnm.bss_transition_query_rx);
-	blobmsg_add_u64(&b, "bss_transition_request_tx", hapd->iface->openwrt_stats.wnm.bss_transition_request_tx);
-	blobmsg_add_u64(&b, "bss_transition_response_rx", hapd->iface->openwrt_stats.wnm.bss_transition_response_rx);
+	blobmsg_add_u64(&b, "bss_transition_query_rx", hapd->openwrt_stats.wnm.bss_transition_query_rx);
+	blobmsg_add_u64(&b, "bss_transition_request_tx", hapd->openwrt_stats.wnm.bss_transition_request_tx);
+	blobmsg_add_u64(&b, "bss_transition_response_rx", hapd->openwrt_stats.wnm.bss_transition_response_rx);
 	blobmsg_close_table(&b, wnm_table);
 
 	/* Airtime */
