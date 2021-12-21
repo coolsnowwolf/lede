@@ -46,11 +46,18 @@ o = s:option(Flag, "enabled", translate("Enable"), translate("Enable or disable 
 o.default = 0
 o.rmempty = false
 
+o = s:option(ListValue, "role", translate("role"))
+o:value("off", translate("off"))
+o:value("server", translate("host MESH"))
+o:value("client", translate("son MESH"))
+o.rmempty = false
+
 apRadio = s:option(ListValue, "apRadio", translate("MESH Radio device"), translate("The radio device which MESH use"))
 uci:foreach("wireless", "wifi-device",
 							function(s)
 								apRadio:value(s['.name'])
 							end)
+apRadio:value("all", translate("ALL"))
 o.default = "radio0"
 o.rmempty = false
 
@@ -79,12 +86,12 @@ o:depends("kvr", 1)
 
 o = s:option(Value, "rssi_val", translate("Threshold for an good RSSI"))
 o.default = "-60"
-o.atatype = "range(-20,-120)"
+o.atatype = "range(-1,-120)"
 o:depends("kvr", 1)
 
 o = s:option(Value, "low_rssi_val", translate("Threshold for an bad RSSI"))
 o.default = "-88"
-o.atatype = "range(-20,-120)"
+o.atatype = "range(-1,-120)"
 o:depends("kvr", 1)
 
 ---- ap_mode

@@ -61,6 +61,7 @@ platform_do_upgrade() {
 	dlink,dir-853-a3|\
 	hiwifi,hc5962|\
 	jcg,q20|\
+	jcg,q20-ubootmod|\
 	linksys,e5600|\
 	linksys,ea7300-v1|\
 	linksys,ea7300-v2|\
