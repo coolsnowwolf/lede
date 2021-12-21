@@ -60,6 +60,18 @@ define U-Boot/orangepi-r1-plus-rk3328
   USE_RKBIN:=1
 endef
 
+define U-Boot/orangepi-r1-plus-lts-rk3328
+  BUILD_SUBTARGET:=armv8
+  NAME:=Orange Pi R1 Plus LTS
+  BUILD_DEVICES:= \
+    xunlong_orangepi-r1-plus-lts
+  DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-lts-rk3328:arm-trusted-firmware-rk3328
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk322xh_bl31_v1.46.elf
+  OF_PLATDATA:=$(1)
+  USE_RKBIN:=1
+endef
+
 define U-Boot/doornet1-rk3328
   BUILD_SUBTARGET:=armv8
   NAME:=DoorNet1
@@ -135,7 +147,8 @@ UBOOT_TARGETS := \
   doornet1-rk3328 \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
-  orangepi-r1-plus-rk3328
+  orangepi-r1-plus-rk3328 \
+  orangepi-r1-plus-lts-rk3328
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
