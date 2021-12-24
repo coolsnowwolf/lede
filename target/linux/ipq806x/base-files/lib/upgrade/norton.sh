@@ -104,5 +104,7 @@ norton_do_upgrade() {
 
 	norton_do_flash $tar_file $kernel $rootfs
 
+	nand_do_upgrade "$1"
+
 	return 0
 }
