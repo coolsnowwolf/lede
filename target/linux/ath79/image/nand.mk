@@ -59,25 +59,6 @@ define Device/aerohive_hiveap-121
 endef
 TARGET_DEVICES += aerohive_hiveap-121
 
-define Device/arris_sbr-ac1750
-  SOC := qca9558
-  DEVICE_VENDOR := Arris
-  DEVICE_MODEL := SBR-AC1750
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct ath10k-firmware-qca988x-ct
-  KERNEL_SIZE := 4096k
-  BLOCKSIZE := 128k
-  IMAGE_SIZE := 32m
-  PAGESIZE := 2048
-  KERNEL := kernel-bin | append-dtb | gzip | uImage gzip
-  KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage none
-  IMAGES += kernel1.bin rootfs1.bin
-  IMAGE/kernel1.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
-  IMAGE/rootfs1.bin := append-ubi | check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  UBINIZE_OPTS := -E 5
-endef
-TARGET_DEVICES += arris_sbr-ac1750
-
 define Device/domywifi_dw33d
   SOC := qca9558
   DEVICE_VENDOR := DomyWifi
@@ -96,54 +77,158 @@ define Device/domywifi_dw33d
 endef
 TARGET_DEVICES += domywifi_dw33d
 
-define Device/domywifi_dw33d-nor
-  $(Device/domywifi_dw33d)
-  DEVICE_VARIANT := NOR
-  IMAGE_SIZE := 14464k
-  BLOCKSIZE := 64k
-  LOADER_TYPE := bin
-  LOADER_FLASH_OFFS := 0x60000
-  COMPILE := loader-$(1).bin loader-$(1).uImage
-  COMPILE/loader-$(1).bin := loader-okli-compile
-  COMPILE/loader-$(1).uImage := append-loader-okli $(1) | pad-to 64k | lzma | uImage lzma
-  KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x4f4b4c49
-  IMAGES := sysupgrade.bin breed-factory.bin
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | \
-			  append-metadata | check-size
-  IMAGE/breed-factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | \
-			     prepad-okli-kernel $(1) | pad-to 14528k | append-okli-kernel $(1)
+define Device/glinet_gl-ar150
+  SOC := ar9330
+  DEVICE_TITLE := GL.iNet GL-AR150
+  DEVICE_PACKAGES := kmod-usb2  block-mount
+  IMAGE_SIZE := 16000k
+  SUPPORTED_DEVICES += gl-ar150 glinet,gl-ar150
 endef
-TARGET_DEVICES += domywifi_dw33d-nor
+TARGET_DEVICES += glinet_gl-ar150
 
-define Device/glinet_gl-ar300m-common-nand
+define Device/glinet_gl-usb150
+  SOC := ar9330
+  DEVICE_TITLE := GL.iNet GL-USB150
+  DEVICE_PACKAGES := kmod-usb2  block-mount
+  IMAGE_SIZE := 16000k
+  SUPPORTED_DEVICES += gl-usb150 glinet,gl-usb150
+endef
+TARGET_DEVICES += glinet_gl-usb150
+
+define Device/glinet_gl-x300b-common
+  SOC := qca9531
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-X300B
+  DEVICE_PACKAGES := kmod-usb2 block-mount
+  SUPPORTED_DEVICES += gl-x300b glinet,gl-x300b
+endef
+
+define Device/glinet_gl-x300b-nor
+  $(Device/glinet_gl-x300b-common)
+  DEVICE_VARIANT := NOR
+  IMAGE_SIZE := 16000k
+endef
+TARGET_DEVICES += glinet_gl-x300b-nor
+
+define Device/glinet_gl-x300b-nor-nand
+  $(Device/glinet_gl-x300b-common)
+  DEVICE_VARIANT := NOR/NAND
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar-compat-1806 | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
+endef
+TARGET_DEVICES += glinet_gl-x300b-nor-nand
+
+define Device/glinet_gl-ar300m-common
   SOC := qca9531
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-AR300M
-  DEVICE_PACKAGES := kmod-usb2
-  KERNEL_SIZE := 4096k
-  IMAGE_SIZE := 16000k
-  PAGESIZE := 2048
-  VID_HDR_OFFSET := 2048
+  DEVICE_PACKAGES := kmod-usb-core kmod-usb2 block-mount kmod-usb-storage kmod-usb-ledtrig-usbport
+  SUPPORTED_DEVICES += gl-ar300m glinet,gl-ar300m
 endef
 
 define Device/glinet_gl-ar300m-nand
-  $(Device/glinet_gl-ar300m-common-nand)
+  $(Device/glinet_gl-ar300m-common)
   DEVICE_VARIANT := NAND
+  KERNEL_SIZE := 4096k
   BLOCKSIZE := 128k
-  IMAGES += factory.img
-  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  SUPPORTED_DEVICES += glinet,gl-ar300m-nor
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar-compat-1806 | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
 endef
 TARGET_DEVICES += glinet_gl-ar300m-nand
 
 define Device/glinet_gl-ar300m-nor
-  $(Device/glinet_gl-ar300m-common-nand)
+  $(Device/glinet_gl-ar300m-common)
   DEVICE_VARIANT := NOR
-  BLOCKSIZE := 64k
-  SUPPORTED_DEVICES += glinet,gl-ar300m-nand gl-ar300m
+  IMAGE_SIZE := 16000k
 endef
 TARGET_DEVICES += glinet_gl-ar300m-nor
+
+define Device/glinet_gl-mifi
+  SOC := ar9331
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-MIFI
+  DEVICE_PACKAGES := kmod-usb-chipidea2
+  IMAGE_SIZE := 16000k
+  SUPPORTED_DEVICES += gl-mifi glinet,gl-mifi
+endef
+TARGET_DEVICES += glinet_gl-mifi
+
+define Device/glinet_gl-xe300-common
+  SOC := qca9531
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-XE300
+  DEVICE_PACKAGES := kmod-usb2 block-mount  kmod-usb-serial-ch341
+  SUPPORTED_DEVICES += gl-xe300 glinet,gl-xe300
+endef
+
+define Device/glinet_gl-xe300-nor
+  $(Device/glinet_gl-xe300-common)
+  DEVICE_VARIANT := NOR
+  IMAGE_SIZE := 16000k
+endef
+TARGET_DEVICES += glinet_gl-xe300-nor
+
+define Device/glinet_gl-xe300-nor-nand
+  $(Device/glinet_gl-xe300-common)
+  DEVICE_VARIANT := NOR/NAND
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar-compat-1806 | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
+endef
+TARGET_DEVICES += glinet_gl-xe300-nor-nand
+
+define Device/glinet_gl-xe300-iot
+  $(Device/glinet_gl-xe300-common)
+  DEVICE_VARIANT := NOR/NAND IOT
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar-compat-1806 | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
+endef
+TARGET_DEVICES += glinet_gl-xe300-iot
+
+define Device/glinet_gl-x750-common
+  SOC := qca9531
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-X750
+  DEVICE_PACKAGES := kmod-usb2 kmod-ath10k ath10k-firmware-qca9887 block-mount PCI_SUPPORT kmod-usb-storage
+  SUPPORTED_DEVICES += gl-x750 glinet,gl-x750
+endef
+
+define Device/glinet_gl-x750-nor
+  $(Device/glinet_gl-x750-common)
+  DEVICE_VARIANT := NOR
+  IMAGE_SIZE := 16000k
+endef
+TARGET_DEVICES += glinet_gl-x750-nor
+
+define Device/glinet_gl-x750-nor-nand
+  $(Device/glinet_gl-x750-common)
+  DEVICE_VARIANT := NOR/NAND
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
+endef
+TARGET_DEVICES += glinet_gl-x750-nor-nand
 
 define Device/glinet_gl-ar750s-common
   SOC := qca9563
@@ -158,7 +243,12 @@ define Device/glinet_gl-ar750s-nor-nand
   $(Device/glinet_gl-ar750s-common)
   DEVICE_VARIANT := NOR/NAND
   KERNEL_SIZE := 4096k
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
   SUPPORTED_DEVICES += glinet,gl-ar750s-nor
 endef
 TARGET_DEVICES += glinet_gl-ar750s-nor-nand
@@ -170,6 +260,38 @@ define Device/glinet_gl-ar750s-nor
   SUPPORTED_DEVICES += gl-ar750s glinet,gl-ar750s glinet,gl-ar750s-nor-nand
 endef
 TARGET_DEVICES += glinet_gl-ar750s-nor
+
+#========================================================
+define Device/glinet_gl-x1200-common
+  SOC := qca9563
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-X1200
+  DEVICE_PACKAGES := kmod-usb2 kmod-ath10k-ct ath10k-firmware-qca9887-ct-htt block-mount PCI_SUPPORT
+  IMAGE_SIZE := 16000k
+endef
+
+define Device/glinet_gl-x1200-nor-nand
+  $(Device/glinet_gl-x1200-common)
+  DEVICE_VARIANT := NOR/NAND
+  KERNEL_SIZE := 4096k
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  IMAGES := factory.img sysupgrade.tar
+  IMAGE/sysupgrade.tar := sysupgrade-tar-compat-1806 | append-gl-metadata
+#  IMAGE/sysupgrade.tar := sysupgrade-tar | append-gl-metadata
+  IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | append-gl-metadata
+  SUPPORTED_DEVICES += glinet,gl-x1200-nor
+endef
+TARGET_DEVICES += glinet_gl-x1200-nor-nand
+
+define Device/glinet_gl-x1200-nor
+  $(Device/glinet_gl-x1200-common)
+  DEVICE_VARIANT := NOR
+  BLOCKSIZE := 64k
+  SUPPORTED_DEVICES += gl-x1200 glinet,gl-x1200 glinet,gl-x1200-nor-nand
+endef
+TARGET_DEVICES += glinet_gl-x1200-nor
 
 define Device/glinet_gl-e750
   SOC := qca9531
@@ -204,7 +326,8 @@ define Device/netgear_ath79_nand
   IMAGES := sysupgrade.bin factory.img
   IMAGE/factory.img := append-kernel | append-ubi | netgear-dni | \
 	check-size
-  IMAGE/sysupgrade.bin := sysupgrade-tar | check-size | append-metadata
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata | \
+	check-size
   UBINIZE_OPTS := -E 5
 endef
 
@@ -293,6 +416,5 @@ define Device/zyxel_nbg6716
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | \
 	zyxel-factory
   UBINIZE_OPTS := -E 5
-  DEFAULT := n
 endef
 TARGET_DEVICES += zyxel_nbg6716
