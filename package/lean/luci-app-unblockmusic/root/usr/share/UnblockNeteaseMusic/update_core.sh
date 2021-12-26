@@ -19,7 +19,6 @@ function check_latest_version(){
 	else
 		if [ "$(cat /usr/share/UnblockNeteaseMusic/local_ver)" != "${latest_ver}" ]; then
 			clean_log
-			echo -e "Local version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}." >>/tmp/unblockmusic_update.log
 			update_core
 		else
 			echo -e "\nLocal version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}." >>/tmp/unblockmusic_update.log
@@ -39,9 +38,9 @@ function update_core(){
 	uclient-fetch --no-check-certificate -T 10 -O  /tmp/unblockneteasemusic/core/core.tar.gz "https://github.com/UnblockNeteaseMusic/server/archive/enhanced.tar.gz"  >/dev/null 2>&1
 	tar -zxf "/tmp/unblockneteasemusic/core/core.tar.gz" -C "/tmp/unblockneteasemusic/core/" >/dev/null 2>&1
 	if [ -e "/usr/share/UnblockNeteaseMusic/ca.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.crt" ] && [ -e "/usr/share/UnblockNeteaseMusic/server.key" ] ; then
-		rm -f /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/ca.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/server.crt /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/server.key
+		rm -f /tmp/unblockneteasemusic/core/server-enhanced/ca.crt /tmp/unblockneteasemusic/core/server-enhanced/server.crt /tmp/unblockneteasemusic/core/server-enhanced/server.key
 	fi
-	cp -a /tmp/unblockneteasemusic/core/UnblockNeteaseMusic-enhanced/* "/usr/share/UnblockNeteaseMusic/"
+	cp -a /tmp/unblockneteasemusic/core/server-enhanced/* "/usr/share/UnblockNeteaseMusic/"
 	rm -rf "/tmp/unblockneteasemusic" >/dev/null 2>&1
 
 	if [ ! -e "/usr/share/UnblockNeteaseMusic/app.js" ]; then
@@ -52,7 +51,7 @@ function update_core(){
 		cat /usr/share/UnblockNeteaseMusic/package.json | grep version |awk -F ':' '{print $2}' | sed -r 's/.*"(.+)".*/\1/' > /usr/share/UnblockNeteaseMusic/core_ver
 	fi
 
-	echo -e "Succeeded in updating core." >/tmp/unblockmusic_update.log
+	echo -e "Succeeded in updating core." >>/tmp/unblockmusic_update.log
 	echo -e "Local version: $(cat /usr/share/UnblockNeteaseMusic/local_ver 2>/dev/null), cloud version: ${latest_ver}.\n" >>/tmp/unblockmusic_update.log
 	
 	/etc/init.d/unblockmusic restart
