@@ -30,7 +30,7 @@ define KernelPackage/fs-ntfs3-oot
   DEPENDS:=@!LINUX_5_15 +kmod-nls-utf8
 endef
 
-define KernelPackage/ntfs3-oot/description
+define KernelPackage/fs-ntfs3-oot/description
   This package provides the kernel module for ntfs3.
 endef
 
