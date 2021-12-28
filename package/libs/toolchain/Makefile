@@ -519,10 +519,9 @@ ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)
 	$(INSTALL_DIR) $(1)/lib
 	$(CP) \
 		$(TOOLCHAIN_DIR)/lib/ld*.so.* \
-		$(TOOLCHAIN_DIR)/lib/ld-$(LIBC_SO_VERSION).so \
 		$(1)/lib/
 	for file in libanl libc libcidn libcrypt libdl libm libnsl libnss_dns libnss_files libresolv libutil; do \
-		for file in $(TOOLCHAIN_DIR)/lib/$$$$file.so.* $(TOOLCHAIN_DIR)/lib/$$$$file-$(LIBC_SO_VERSION).so; do \
+		for file in $(TOOLCHAIN_DIR)/lib/$$$$file.so.*; do \
 			if [ -e "$$$$file" ]; then \
 				$(CP) $$$$file $(1)/lib/; \
 			fi; \
@@ -561,7 +560,6 @@ ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)
   ifneq ($(CONFIG_USE_MUSL),y)
 	$(CP) \
 		$(TOOLCHAIN_DIR)/lib/libpthread.so.* \
-		$(TOOLCHAIN_DIR)/lib/libpthread-$(LIBC_SO_VERSION).so \
 		$(1)/lib/
   endif
   endef
@@ -581,7 +579,6 @@ ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)
   ifneq ($(CONFIG_USE_MUSL),y)
 	$(CP) \
 		$(TOOLCHAIN_DIR)/lib/librt.so.* \
-		$(TOOLCHAIN_DIR)/lib/librt-$(LIBC_SO_VERSION).so \
 		$(1)/lib/
   endif
   endef
