@@ -1087,7 +1087,7 @@ define KernelPackage/nft-bridge
   FILES:=$(foreach mod,$(NFT_BRIDGE-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_BRIDGE-m)))
   KCONFIG:= \
-	CONFIG_NF_LOG_BRIDGE=n \
+	CONFIG_NF_LOG_BRIDGE=n@lt5.13 \
 	$(KCONFIG_NFT_BRIDGE)
 endef
 

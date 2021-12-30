@@ -141,7 +141,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=@LINUX_5_10 +kmod-libphy PACKAGE_kmod-of-mdio:kmod-of-mdio
+  DEPENDS:=@(LINUX_5_10||LINUX_5_15) +kmod-libphy PACKAGE_kmod-of-mdio:kmod-of-mdio
   KCONFIG:=CONFIG_MDIO_DEVRES
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
@@ -562,7 +562,7 @@ $(eval $(call KernelPackage,8139cp))
 define KernelPackage/r8169
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=RealTek RTL-8169 PCI Gigabit Ethernet Adapter kernel support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +LINUX_5_10:kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +(LINUX_5_10||LINUX_5_15):kmod-mdio-devres
   KCONFIG:= \
     CONFIG_R8169 \
     CONFIG_R8169_NAPI=y \
@@ -657,7 +657,7 @@ define KernelPackage/igb
     CONFIG_IGB_HWMON=y \
     CONFIG_IGB_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igb/igb.ko
-  AUTOLOAD:=$(call AutoLoad,35,igb)
+  AUTOLOAD:=$(call AutoLoad,35,igb,1)
 endef
 
 define KernelPackage/igb/description
@@ -688,7 +688,7 @@ $(eval $(call KernelPackage,igbvf))
 define KernelPackage/ixgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +LINUX_5_10:kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +(LINUX_5_10||LINUX_5_15):kmod-mdio-devres
   KCONFIG:=CONFIG_IXGBE \
     CONFIG_IXGBE_VXLAN=n \
     CONFIG_IXGBE_HWMON=y \
@@ -1120,28 +1120,6 @@ endef
 
 $(eval $(call KernelPackage,bnx2x))
 
-
-define KernelPackage/bnxt-en
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=BCM 574xx/575xx 10/25/50-Gigabit ethernet adapter driver
-  DEPENDS:=@PCI_SUPPORT  +kmod-lib-crc32c +kmod-mdio +kmod-ptp +kmod-lib-zlib-inflate
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/bnxt/bnxt_en.ko
-  KCONFIG:= \
-	CONFIG_BNXT \
-	CONFIG_BNXT_SRIOV=y \
-  	CONFIG_BNXT_FLOWER_OFFLOAD=y \
-  	CONFIG_BNXT_DCB=n \
-  	CONFIG_BNXT_HWMON=y
-  AUTOLOAD:=$(call AutoProbe,bnxt_en)
-endef
-
-define KernelPackage/bnxt-en/description
-  Broadcom 573xx/574xx/575xx 10/25/40/50-Gigabit ethernet adapter Driver
-endef
-
-$(eval $(call KernelPackage,bnxt-en))
-
-
 define KernelPackage/be2net
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Broadcom Emulex OneConnect 10Gbps NIC
@@ -1221,7 +1199,8 @@ define KernelPackage/qlcnic
   TITLE:=QLogic QLE8240 and QLE8242 device support
   KCONFIG:= \
 	CONFIG_QLCNIC \
-	CONFIG_QLCNIC_HWMON=y
+	CONFIG_QLCNIC_HWMON=y \
+	CONFIG_QLCNIC_SRIOV=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/qlogic/qlcnic/qlcnic.ko
   AUTOLOAD:=$(call AutoProbe,qlcnic)
 endef
