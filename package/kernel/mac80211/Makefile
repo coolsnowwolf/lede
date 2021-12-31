@@ -443,9 +443,15 @@ config-$(call config_package,rsi91x-sdio) += RSI_SDIO
 
 config-$(CONFIG_LEDS_TRIGGERS) += MAC80211_LEDS
 
+C_DEFINES=
+
+ifeq ($(BUILD_VARIANT),smallbuffers)
+	C_DEFINES+= -DCONFIG_ATH10K_SMALLBUFFERS
+endif
+
 MAKE_OPTS:= -C "$(PKG_BUILD_DIR)" \
 	$(KERNEL_MAKE_FLAGS) \
-	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) \
+	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) $(C_DEFINES) \
 		      -I$(STAGING_DIR)/usr/include/qca-nss-drv" \
 	KLIB_BUILD="$(LINUX_DIR)" \
 	MODPROBE=true \

@@ -225,12 +225,12 @@ define KernelPackage/sound-soc-imx
 	$(LINUX_DIR)/sound/soc/fsl/snd-soc-fsl-ssi.ko \
 	$(LINUX_DIR)/sound/soc/fsl/imx-pcm-dma.ko
   AUTOLOAD:=$(call AutoLoad,56,snd-soc-imx-audmux snd-soc-fsl-ssi snd-soc-imx-pcm)
-  DEPENDS:=@TARGET_imx6 +kmod-sound-soc-core
+  DEPENDS:=@TARGET_imx +kmod-sound-soc-core
   $(call AddDepends/sound)
 endef
 
 define KernelPackage/sound-soc-imx/description
- Support for i.MX6 Platform sound (ssi/audmux/pcm)
+ Support for i.MX Platform sound (ssi/audmux/pcm)
 endef
 
 $(eval $(call KernelPackage,sound-soc-imx))
@@ -243,12 +243,12 @@ define KernelPackage/sound-soc-imx-sgtl5000
 	$(LINUX_DIR)/sound/soc/codecs/snd-soc-sgtl5000.ko \
 	$(LINUX_DIR)/sound/soc/fsl/snd-soc-imx-sgtl5000.ko
   AUTOLOAD:=$(call AutoLoad,57,snd-soc-sgtl5000 snd-soc-imx-sgtl5000)
-  DEPENDS:=@TARGET_imx6 +kmod-sound-soc-imx
+  DEPENDS:=@TARGET_imx +kmod-sound-soc-imx +kmod-regmap-i2c
   $(call AddDepends/sound)
 endef
 
 define KernelPackage/sound-soc-imx-sgtl5000/description
- Support for i.MX6 Platform sound SGTL5000 codec
+ Support for i.MX Platform sound SGTL5000 codec
 endef
 
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
