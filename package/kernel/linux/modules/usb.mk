@@ -1142,7 +1142,7 @@ define KernelPackage/usb-net-asix
   KCONFIG:=CONFIG_USB_NET_AX8817X
   FILES:= \
 	$(LINUX_DIR)/drivers/$(USBNET_DIR)/asix.ko \
-	$(LINUX_DIR)/net/core/selftests.ko
+	$(LINUX_DIR)/net/core/selftests.ko@ge5.13
   AUTOLOAD:=$(call AutoProbe,asix)
   $(call AddDepends/usb-net)
 endef
