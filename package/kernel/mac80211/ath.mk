@@ -1,5 +1,5 @@
 PKG_DRIVERS += \
-	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k \
+	ath ath5k ath6kl ath6kl-sdio ath6kl-usb ath9k ath9k-common ath9k-htc ath10k ath10k-smallbuffers \
 	ath11k ath11k-ahb ath11k-pci carl9170 owl-loader ar5523 wil6210
 
 PKG_CONFIG_DEPENDS += \
@@ -59,6 +59,7 @@ config-$(CONFIG_ATH11K_MEM_PROFILE_512M) += ATH11K_MEM_PROFILE_512M
 
 config-$(call config_package,ath9k-htc) += ATH9K_HTC
 config-$(call config_package,ath10k) += ATH10K ATH10K_PCI
+config-$(call config_package,ath10k-smallbuffers) += ATH10K ATH10K_PCI ATH10K_SMALLBUFFERS
 config-$(call config_package,ath11k) += ATH11K
 config-$(call config_package,ath11k-ahb) += ATH11K_AHB
 config-$(call config_package,ath11k-pci) += ATH11K_PCI
@@ -267,6 +268,7 @@ define KernelPackage/ath10k
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_core.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_pci.ko
   AUTOLOAD:=$(call AutoProbe,ath10k_pci)
+  VARIANT:=regular
 endef
 
 define KernelPackage/ath10k/description
@@ -280,13 +282,19 @@ define KernelPackage/ath10k/config
        config ATH10K_LEDS
                bool "Enable LED support"
                default y
-               depends on PACKAGE_kmod-ath10k
+               depends on PACKAGE_kmod-ath10k || PACKAGE_kmod-ath10k-smallbuffers
 
        config ATH10K_THERMAL
                bool "Enable thermal sensors and throttling support"
                default y
-               depends on PACKAGE_kmod-ath10k
+               depends on PACKAGE_kmod-ath10k || PACKAGE_kmod-ath10k-smallbuffers
 
+endef
+
+define KernelPackage/ath10k-smallbuffers
+  $(call KernelPackage/ath10k)
+  TITLE+= (small buffers for low-RAM devices)
+  VARIANT:=smallbuffers
 endef
 
 define KernelPackage/ath11k
