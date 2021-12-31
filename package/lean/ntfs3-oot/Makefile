@@ -6,7 +6,7 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=ntfs3
+PKG_NAME:=ntfs3-oot
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
@@ -20,7 +20,7 @@ PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk
 
-define KernelPackage/fs-ntfs3
+define KernelPackage/fs-ntfs3-oot
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Filesystems
@@ -30,7 +30,7 @@ define KernelPackage/fs-ntfs3
   DEPENDS:=+kmod-nls-utf8
 endef
 
-define KernelPackage/ntfs3/description
+define KernelPackage/ntfs3-oot/description
   This package provides the kernel module for ntfs3.
 endef
 
@@ -42,4 +42,4 @@ define Build/Compile
 	modules
 endef
 
-$(eval $(call KernelPackage,fs-ntfs3))
+$(eval $(call KernelPackage,fs-ntfs3-oot))

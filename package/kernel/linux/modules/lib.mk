@@ -276,7 +276,7 @@ $(eval $(call KernelPackage,asn1-decoder))
 define KernelPackage/asn1-encoder
   SUBMENU:=$(LIB_MENU)
   TITLE:=Simple ASN1 encoder
-  KCONFIG:= CONFIG_ASN1_ENCODER@ge5.13
+  KCONFIG:= CONFIG_ASN1
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/lib/asn1_encoder.ko
 endef
