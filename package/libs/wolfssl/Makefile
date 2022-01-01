@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=4.8.1-stable
+PKG_VERSION:=5.1.1-stable
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=50db45f348f47e00c93dd244c24108220120cb3cc9d01434789229c32937c444
+PKG_HASH:=d3e0544dbe7e9587c0f6538cdc671b6492663bb7a4281819538abe6c99cdbd92
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
@@ -64,7 +64,6 @@ TARGET_CFLAGS += \
 	-fomit-frame-pointer \
 	-flto \
 	-DFP_MAX_BITS=8192 \
-	-DWOLFSSL_ALT_CERT_CHAINS \
 	$(if $(CONFIG_WOLFSSL_ALT_NAMES),-DWOLFSSL_ALT_NAMES)
 
 TARGET_LDFLAGS += -flto
@@ -77,6 +76,7 @@ CONFIGURE_ARGS += \
 	--enable-opensslextra \
 	--enable-sni \
 	--enable-stunnel \
+	--enable-altcertchains \
 	--disable-crypttests \
 	--disable-examples \
 	--disable-jobserver \
