@@ -8,7 +8,7 @@ define Profile/Default
 endef
 
 define Profile/Default/Description
- Package set compatible with most NXP i.MX 6 based boards.
+ Package set compatible with most NXP i.MX based boards.
 endef
 
 $(eval $(call Profile,Default))

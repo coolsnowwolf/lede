@@ -1,14 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-only
-#
-# Copyright (C) 2013 OpenWrt.org
-
-include $(TOPDIR)/rules.mk
-include $(INCLUDE_DIR)/image.mk
-
-#################################################
-# Images
-#################################################
-
 DEVICE_VARS += MKUBIFS_OPTS UBOOT
 
 define Build/boot-overlay
@@ -104,19 +93,15 @@ define Build/apalis-emmc
 	$(Build/imx6-combined-image-clean)
 endef
 
-#################################################
-# Devices
-#################################################
-
-KERNEL_LOADADDR=0x10008000
 
 define Device/Default
-  PROFILES := Generic
+  PROFILES := Default
   FILESYSTEMS := squashfs ext4
   KERNEL_INSTALL := 1
   KERNEL_SUFFIX := -uImage
   KERNEL_NAME := zImage
   KERNEL := kernel-bin | uImage none
+  KERNEL_LOADADDR := 0x10008000
   IMAGES :=
 endef
 
@@ -124,7 +109,7 @@ define Device/gateworks_ventana
   DEVICE_VENDOR := Gateworks
   DEVICE_MODEL := Ventana family
   DEVICE_VARIANT := normal NAND flash
-  DEVICE_NAME := gateworks_ventana
+  DEVICE_NAME := ventana
   DEVICE_DTS:= \
 	imx6dl-gw51xx \
 	imx6dl-gw52xx \
@@ -223,5 +208,3 @@ define Device/wandboard_dual
   DEVICE_DTS := imx6dl-wandboard
 endef
 TARGET_DEVICES += wandboard_dual
-
-$(eval $(call BuildImage))
