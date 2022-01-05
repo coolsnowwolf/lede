@@ -1,0 +1,936 @@
+From cd8c0fb90885e3733d0502375873a74e35eed2ec Mon Sep 17 00:00:00 2001
+From: Marty Jones <mj8263788@gmail.com>
+Date: Mon, 29 Nov 2021 13:30:11 -0500
+Subject: [PATCH] fixup fw3
+
+Signed-off-by: Marty Jones <mj8263788@gmail.com>
+---
+ include/linux/netfilter/x_tables.h     |  6 +-
+ net/ipv4/netfilter/arptable_filter.c   | 23 +++---
+ net/ipv4/netfilter/iptable_filter.c    | 24 +++----
+ net/ipv4/netfilter/iptable_mangle.c    | 11 ++-
+ net/ipv4/netfilter/iptable_nat.c       | 20 +++---
+ net/ipv4/netfilter/iptable_raw.c       | 21 +++---
+ net/ipv4/netfilter/iptable_security.c  | 23 +++---
+ net/ipv6/netfilter/ip6table_filter.c   | 23 +++---
+ net/ipv6/netfilter/ip6table_mangle.c   | 22 +++---
+ net/ipv6/netfilter/ip6table_nat.c      | 16 ++---
+ net/ipv6/netfilter/ip6table_raw.c      | 24 ++++---
+ net/ipv6/netfilter/ip6table_security.c | 22 +++---
+ net/netfilter/x_tables.c               | 98 +++++---------------------
+ 13 files changed, 129 insertions(+), 204 deletions(-)
+
+--- a/include/linux/netfilter/x_tables.h
++++ b/include/linux/netfilter/x_tables.h
+@@ -238,6 +238,9 @@ struct xt_table {
+ 	u_int8_t af;		/* address/protocol family */
+ 	int priority;		/* hook order */
+ 
++	/* called when table is needed in the given netns */
++	int (*table_init)(struct net *net);
++
+ 	/* A unique name... */
+ 	const char name[XT_TABLE_MAXNAMELEN];
+ };
+@@ -449,9 +452,6 @@ xt_get_per_cpu_counter(struct xt_counter
+ 
+ struct nf_hook_ops *xt_hook_ops_alloc(const struct xt_table *, nf_hookfn *);
+ 
+-int xt_register_template(const struct xt_table *t, int(*table_init)(struct net *net));
+-void xt_unregister_template(const struct xt_table *t);
+-
+ #ifdef CONFIG_NETFILTER_XTABLES_COMPAT
+ #include <net/compat.h>
+ 
+--- a/net/ipv4/netfilter/arptable_filter.c
++++ b/net/ipv4/netfilter/arptable_filter.c
+@@ -18,12 +18,15 @@ MODULE_DESCRIPTION("arptables filter tab
+ #define FILTER_VALID_HOOKS ((1 << NF_ARP_IN) | (1 << NF_ARP_OUT) | \
+ 			   (1 << NF_ARP_FORWARD))
+ 
++static int __net_init arptable_filter_table_init(struct net *net);
++
+ static const struct xt_table packet_filter = {
+ 	.name		= "filter",
+ 	.valid_hooks	= FILTER_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_ARP,
+ 	.priority	= NF_IP_PRI_FILTER,
++	.table_init	= arptable_filter_table_init,
+ };
+ 
+ /* The work comes in here from netfilter.c */
+@@ -36,7 +39,7 @@ arptable_filter_hook(void *priv, struct
+ 
+ static struct nf_hook_ops *arpfilter_ops __read_mostly;
+ 
+-static int arptable_filter_table_init(struct net *net)
++static int __net_init arptable_filter_table_init(struct net *net)
+ {
+ 	struct arpt_replace *repl;
+ 	int err;
+@@ -66,32 +69,30 @@ static struct pernet_operations arptable
+ 
+ static int __init arptable_filter_init(void)
+ {
+-	int ret = xt_register_template(&packet_filter,
+-				       arptable_filter_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	arpfilter_ops = xt_hook_ops_alloc(&packet_filter, arptable_filter_hook);
+-	if (IS_ERR(arpfilter_ops)) {
+-		xt_unregister_template(&packet_filter);
++	if (IS_ERR(arpfilter_ops))
+ 		return PTR_ERR(arpfilter_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&arptable_filter_net_ops);
+ 	if (ret < 0) {
+-		xt_unregister_template(&packet_filter);
+ 		kfree(arpfilter_ops);
+ 		return ret;
+ 	}
+ 
++	ret = arptable_filter_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&arptable_filter_net_ops);
++		kfree(arpfilter_ops);
++	}
++
+ 	return ret;
+ }
+ 
+ static void __exit arptable_filter_fini(void)
+ {
+ 	unregister_pernet_subsys(&arptable_filter_net_ops);
+-	xt_unregister_template(&packet_filter);
+ 	kfree(arpfilter_ops);
+ }
+ 
+--- a/net/ipv4/netfilter/iptable_filter.c
++++ b/net/ipv4/netfilter/iptable_filter.c
+@@ -19,6 +19,7 @@ MODULE_DESCRIPTION("iptables filter tabl
+ #define FILTER_VALID_HOOKS ((1 << NF_INET_LOCAL_IN) | \
+ 			    (1 << NF_INET_FORWARD) | \
+ 			    (1 << NF_INET_LOCAL_OUT))
++static int __net_init iptable_filter_table_init(struct net *net);
+ 
+ static const struct xt_table packet_filter = {
+ 	.name		= "filter",
+@@ -26,6 +27,7 @@ static const struct xt_table packet_filt
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV4,
+ 	.priority	= NF_IP_PRI_FILTER,
++	.table_init	= iptable_filter_table_init,
+ };
+ 
+ static unsigned int
+@@ -41,7 +43,7 @@ static struct nf_hook_ops *filter_ops __
+ static bool forward __read_mostly = true;
+ module_param(forward, bool, 0000);
+ 
+-static int iptable_filter_table_init(struct net *net)
++static int __net_init iptable_filter_table_init(struct net *net)
+ {
+ 	struct ipt_replace *repl;
+ 	int err;
+@@ -60,7 +62,7 @@ static int iptable_filter_table_init(str
+ 
+ static int __net_init iptable_filter_net_init(struct net *net)
+ {
+-	if (!forward)
++	if (net == &init_net || !forward)
+ 		return iptable_filter_table_init(net);
+ 
+ 	return 0;
+@@ -84,32 +86,22 @@ static struct pernet_operations iptable_
+ 
+ static int __init iptable_filter_init(void)
+ {
+-	int ret = xt_register_template(&packet_filter,
+-				       iptable_filter_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	filter_ops = xt_hook_ops_alloc(&packet_filter, iptable_filter_hook);
+-	if (IS_ERR(filter_ops)) {
+-		xt_unregister_template(&packet_filter);
++	if (IS_ERR(filter_ops))
+ 		return PTR_ERR(filter_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&iptable_filter_net_ops);
+-	if (ret < 0) {
+-		xt_unregister_template(&packet_filter);
++	if (ret < 0)
+ 		kfree(filter_ops);
+-		return ret;
+-	}
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static void __exit iptable_filter_fini(void)
+ {
+ 	unregister_pernet_subsys(&iptable_filter_net_ops);
+-	xt_unregister_template(&packet_filter);
+ 	kfree(filter_ops);
+ }
+ 
+--- a/net/ipv4/netfilter/iptable_mangle.c
++++ b/net/ipv4/netfilter/iptable_mangle.c
+@@ -25,12 +25,15 @@ MODULE_DESCRIPTION("iptables mangle tabl
+ 			    (1 << NF_INET_LOCAL_OUT) | \
+ 			    (1 << NF_INET_POST_ROUTING))
+ 
++static int __net_init iptable_mangle_table_init(struct net *net);
++
+ static const struct xt_table packet_mangler = {
+ 	.name		= "mangle",
+ 	.valid_hooks	= MANGLE_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV4,
+ 	.priority	= NF_IP_PRI_MANGLE,
++	.table_init	= iptable_mangle_table_init
+ };
+ 
+ static unsigned int
+@@ -80,7 +83,7 @@ iptable_mangle_hook(void *priv,
+ }
+ 
+ static struct nf_hook_ops *mangle_ops __read_mostly;
+-static int iptable_mangle_table_init(struct net *net)
++static int __net_init iptable_mangle_table_init(struct net *net)
+ {
+ 	struct ipt_replace *repl;
+ 	int ret;
+@@ -110,21 +113,18 @@ static struct pernet_operations iptable_
+ 
+ static int __init iptable_mangle_init(void)
+ {
+-	int ret = xt_register_template(&packet_mangler,
+-				       iptable_mangle_table_init);
++	int ret;
+ 	if (ret < 0)
+ 		return ret;
+ 
+ 	mangle_ops = xt_hook_ops_alloc(&packet_mangler, iptable_mangle_hook);
+ 	if (IS_ERR(mangle_ops)) {
+-		xt_unregister_template(&packet_mangler);
+ 		ret = PTR_ERR(mangle_ops);
+ 		return ret;
+ 	}
+ 
+ 	ret = register_pernet_subsys(&iptable_mangle_net_ops);
+ 	if (ret < 0) {
+-		xt_unregister_template(&packet_mangler);
+ 		kfree(mangle_ops);
+ 		return ret;
+ 	}
+@@ -135,7 +135,6 @@ static int __init iptable_mangle_init(vo
+ static void __exit iptable_mangle_fini(void)
+ {
+ 	unregister_pernet_subsys(&iptable_mangle_net_ops);
+-	xt_unregister_template(&packet_mangler);
+ 	kfree(mangle_ops);
+ }
+ 
+--- a/net/ipv4/netfilter/iptable_nat.c
++++ b/net/ipv4/netfilter/iptable_nat.c
+@@ -17,6 +17,8 @@ struct iptable_nat_pernet {
+ 	struct nf_hook_ops *nf_nat_ops;
+ };
+ 
++static int __net_init iptable_nat_table_init(struct net *net);
++
+ static unsigned int iptable_nat_net_id __read_mostly;
+ 
+ static const struct xt_table nf_nat_ipv4_table = {
+@@ -27,6 +29,7 @@ static const struct xt_table nf_nat_ipv4
+ 			  (1 << NF_INET_LOCAL_IN),
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV4,
++	.table_init	= iptable_nat_table_init,
+ };
+ 
+ static unsigned int iptable_nat_do_chain(void *priv,
+@@ -110,7 +113,7 @@ static void ipt_nat_unregister_lookups(s
+ 	kfree(ops);
+ }
+ 
+-static int iptable_nat_table_init(struct net *net)
++static int __net_init iptable_nat_table_init(struct net *net)
+ {
+ 	struct ipt_replace *repl;
+ 	int ret;
+@@ -152,25 +155,20 @@ static struct pernet_operations iptable_
+ 
+ static int __init iptable_nat_init(void)
+ {
+-	int ret = xt_register_template(&nf_nat_ipv4_table,
+-				       iptable_nat_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret = register_pernet_subsys(&iptable_nat_net_ops);
+ 
+-	ret = register_pernet_subsys(&iptable_nat_net_ops);
+-	if (ret < 0) {
+-		xt_unregister_template(&nf_nat_ipv4_table);
++	if (ret)
+ 		return ret;
+-	}
+ 
++	ret = iptable_nat_table_init(&init_net);
++	if (ret)
++		unregister_pernet_subsys(&iptable_nat_net_ops);
+ 	return ret;
+ }
+ 
+ static void __exit iptable_nat_exit(void)
+ {
+ 	unregister_pernet_subsys(&iptable_nat_net_ops);
+-	xt_unregister_template(&nf_nat_ipv4_table);
+ }
+ 
+ module_init(iptable_nat_init);
+--- a/net/ipv4/netfilter/iptable_raw.c
++++ b/net/ipv4/netfilter/iptable_raw.c
+@@ -12,6 +12,8 @@
+ 
+ #define RAW_VALID_HOOKS ((1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_LOCAL_OUT))
+ 
++static int __net_init iptable_raw_table_init(struct net *net);
++
+ static bool raw_before_defrag __read_mostly;
+ MODULE_PARM_DESC(raw_before_defrag, "Enable raw table before defrag");
+ module_param(raw_before_defrag, bool, 0000);
+@@ -22,6 +24,7 @@ static const struct xt_table packet_raw
+ 	.me = THIS_MODULE,
+ 	.af = NFPROTO_IPV4,
+ 	.priority = NF_IP_PRI_RAW,
++	.table_init = iptable_raw_table_init,
+ };
+ 
+ static const struct xt_table packet_raw_before_defrag = {
+@@ -30,6 +33,7 @@ static const struct xt_table packet_raw_
+ 	.me = THIS_MODULE,
+ 	.af = NFPROTO_IPV4,
+ 	.priority = NF_IP_PRI_RAW_BEFORE_DEFRAG,
++	.table_init = iptable_raw_table_init,
+ };
+ 
+ /* The work comes in here from netfilter.c. */
+@@ -85,24 +89,22 @@ static int __init iptable_raw_init(void)
+ 		pr_info("Enabling raw table before defrag\n");
+ 	}
+ 
+-	ret = xt_register_template(table,
+-				   iptable_raw_table_init);
+-	if (ret < 0)
+-		return ret;
+-
+ 	rawtable_ops = xt_hook_ops_alloc(table, iptable_raw_hook);
+-	if (IS_ERR(rawtable_ops)) {
+-		xt_unregister_template(table);
++	if (IS_ERR(rawtable_ops))
+ 		return PTR_ERR(rawtable_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&iptable_raw_net_ops);
+ 	if (ret < 0) {
+-		xt_unregister_template(table);
+ 		kfree(rawtable_ops);
+ 		return ret;
+ 	}
+ 
++	ret = iptable_raw_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&iptable_raw_net_ops);
++		kfree(rawtable_ops);
++	}
++
+ 	return ret;
+ }
+ 
+@@ -110,7 +112,6 @@ static void __exit iptable_raw_fini(void
+ {
+ 	unregister_pernet_subsys(&iptable_raw_net_ops);
+ 	kfree(rawtable_ops);
+-	xt_unregister_template(&packet_raw);
+ }
+ 
+ module_init(iptable_raw_init);
+--- a/net/ipv4/netfilter/iptable_security.c
++++ b/net/ipv4/netfilter/iptable_security.c
+@@ -25,12 +25,15 @@ MODULE_DESCRIPTION("iptables security ta
+ 				(1 << NF_INET_FORWARD) | \
+ 				(1 << NF_INET_LOCAL_OUT)
+ 
++static int __net_init iptable_security_table_init(struct net *net);
++
+ static const struct xt_table security_table = {
+ 	.name		= "security",
+ 	.valid_hooks	= SECURITY_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV4,
+ 	.priority	= NF_IP_PRI_SECURITY,
++	.table_init	= iptable_security_table_init,
+ };
+ 
+ static unsigned int
+@@ -42,7 +45,7 @@ iptable_security_hook(void *priv, struct
+ 
+ static struct nf_hook_ops *sectbl_ops __read_mostly;
+ 
+-static int iptable_security_table_init(struct net *net)
++static int __net_init iptable_security_table_init(struct net *net)
+ {
+ 	struct ipt_replace *repl;
+ 	int ret;
+@@ -72,25 +75,24 @@ static struct pernet_operations iptable_
+ 
+ static int __init iptable_security_init(void)
+ {
+-	int ret = xt_register_template(&security_table,
+-				       iptable_security_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	sectbl_ops = xt_hook_ops_alloc(&security_table, iptable_security_hook);
+-	if (IS_ERR(sectbl_ops)) {
+-		xt_unregister_template(&security_table);
++	if (IS_ERR(sectbl_ops))
+ 		return PTR_ERR(sectbl_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&iptable_security_net_ops);
+ 	if (ret < 0) {
+-		xt_unregister_template(&security_table);
+ 		kfree(sectbl_ops);
+ 		return ret;
+ 	}
+ 
++	ret = iptable_security_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&iptable_security_net_ops);
++		kfree(sectbl_ops);
++	}
++
+ 	return ret;
+ }
+ 
+@@ -98,7 +100,6 @@ static void __exit iptable_security_fini
+ {
+ 	unregister_pernet_subsys(&iptable_security_net_ops);
+ 	kfree(sectbl_ops);
+-	xt_unregister_template(&security_table);
+ }
+ 
+ module_init(iptable_security_init);
+--- a/net/ipv6/netfilter/ip6table_filter.c
++++ b/net/ipv6/netfilter/ip6table_filter.c
+@@ -19,12 +19,15 @@ MODULE_DESCRIPTION("ip6tables filter tab
+ 			    (1 << NF_INET_FORWARD) | \
+ 			    (1 << NF_INET_LOCAL_OUT))
+ 
++static int __net_init ip6table_filter_table_init(struct net *net);
++
+ static const struct xt_table packet_filter = {
+ 	.name		= "filter",
+ 	.valid_hooks	= FILTER_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV6,
+ 	.priority	= NF_IP6_PRI_FILTER,
++	.table_init	= ip6table_filter_table_init,
+ };
+ 
+ /* The work comes in here from netfilter.c. */
+@@ -41,7 +44,7 @@ static struct nf_hook_ops *filter_ops __
+ static bool forward = true;
+ module_param(forward, bool, 0000);
+ 
+-static int ip6table_filter_table_init(struct net *net)
++static int __net_init ip6table_filter_table_init(struct net *net)
+ {
+ 	struct ip6t_replace *repl;
+ 	int err;
+@@ -60,7 +63,7 @@ static int ip6table_filter_table_init(st
+ 
+ static int __net_init ip6table_filter_net_init(struct net *net)
+ {
+-	if (!forward)
++	if (net == &init_net || !forward)
+ 		return ip6table_filter_table_init(net);
+ 
+ 	return 0;
+@@ -84,24 +87,15 @@ static struct pernet_operations ip6table
+ 
+ static int __init ip6table_filter_init(void)
+ {
+-	int ret = xt_register_template(&packet_filter,
+-					ip6table_filter_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	filter_ops = xt_hook_ops_alloc(&packet_filter, ip6table_filter_hook);
+-	if (IS_ERR(filter_ops)) {
+-		xt_unregister_template(&packet_filter);
++	if (IS_ERR(filter_ops))
+ 		return PTR_ERR(filter_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&ip6table_filter_net_ops);
+-	if (ret < 0) {
+-		xt_unregister_template(&packet_filter);
++	if (ret < 0)
+ 		kfree(filter_ops);
+-		return ret;
+-	}
+ 
+ 	return ret;
+ }
+@@ -109,7 +103,6 @@ static int __init ip6table_filter_init(v
+ static void __exit ip6table_filter_fini(void)
+ {
+ 	unregister_pernet_subsys(&ip6table_filter_net_ops);
+-	xt_unregister_template(&packet_filter);
+ 	kfree(filter_ops);
+ }
+ 
+--- a/net/ipv6/netfilter/ip6table_mangle.c
++++ b/net/ipv6/netfilter/ip6table_mangle.c
+@@ -20,12 +20,15 @@ MODULE_DESCRIPTION("ip6tables mangle tab
+ 			    (1 << NF_INET_LOCAL_OUT) | \
+ 			    (1 << NF_INET_POST_ROUTING))
+ 
++static int __net_init ip6table_mangle_table_init(struct net *net);
++
+ static const struct xt_table packet_mangler = {
+ 	.name		= "mangle",
+ 	.valid_hooks	= MANGLE_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV6,
+ 	.priority	= NF_IP6_PRI_MANGLE,
++	.table_init	= ip6table_mangle_table_init,
+ };
+ 
+ static unsigned int
+@@ -73,7 +76,7 @@ ip6table_mangle_hook(void *priv, struct
+ }
+ 
+ static struct nf_hook_ops *mangle_ops __read_mostly;
+-static int ip6table_mangle_table_init(struct net *net)
++static int __net_init ip6table_mangle_table_init(struct net *net)
+ {
+ 	struct ip6t_replace *repl;
+ 	int ret;
+@@ -103,32 +106,29 @@ static struct pernet_operations ip6table
+ 
+ static int __init ip6table_mangle_init(void)
+ {
+-	int ret = xt_register_template(&packet_mangler,
+-				       ip6table_mangle_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	mangle_ops = xt_hook_ops_alloc(&packet_mangler, ip6table_mangle_hook);
+-	if (IS_ERR(mangle_ops)) {
+-		xt_unregister_template(&packet_mangler);
++	if (IS_ERR(mangle_ops))
+ 		return PTR_ERR(mangle_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&ip6table_mangle_net_ops);
+ 	if (ret < 0) {
+-		xt_unregister_template(&packet_mangler);
+ 		kfree(mangle_ops);
+ 		return ret;
+ 	}
+ 
++	ret = ip6table_mangle_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&ip6table_mangle_net_ops);
++		kfree(mangle_ops);
++	}
+ 	return ret;
+ }
+ 
+ static void __exit ip6table_mangle_fini(void)
+ {
+ 	unregister_pernet_subsys(&ip6table_mangle_net_ops);
+-	xt_unregister_template(&packet_mangler);
+ 	kfree(mangle_ops);
+ }
+ 
+--- a/net/ipv6/netfilter/ip6table_nat.c
++++ b/net/ipv6/netfilter/ip6table_nat.c
+@@ -19,6 +19,8 @@ struct ip6table_nat_pernet {
+ 	struct nf_hook_ops *nf_nat_ops;
+ };
+ 
++static int __net_init ip6table_nat_table_init(struct net *net);
++
+ static unsigned int ip6table_nat_net_id __read_mostly;
+ 
+ static const struct xt_table nf_nat_ipv6_table = {
+@@ -29,6 +31,7 @@ static const struct xt_table nf_nat_ipv6
+ 			  (1 << NF_INET_LOCAL_IN),
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV6,
++	.table_init	= ip6table_nat_table_init,
+ };
+ 
+ static unsigned int ip6table_nat_do_chain(void *priv,
+@@ -112,7 +115,7 @@ static void ip6t_nat_unregister_lookups(
+ 	kfree(ops);
+ }
+ 
+-static int ip6table_nat_table_init(struct net *net)
++static int __net_init ip6table_nat_table_init(struct net *net)
+ {
+ 	struct ip6t_replace *repl;
+ 	int ret;
+@@ -154,23 +157,20 @@ static struct pernet_operations ip6table
+ 
+ static int __init ip6table_nat_init(void)
+ {
+-	int ret = xt_register_template(&nf_nat_ipv6_table,
+-				       ip6table_nat_table_init);
++	int ret = register_pernet_subsys(&ip6table_nat_net_ops);
+ 
+-	if (ret < 0)
++	if (ret)
+ 		return ret;
+ 
+-	ret = register_pernet_subsys(&ip6table_nat_net_ops);
++	ret = ip6table_nat_table_init(&init_net);
+ 	if (ret)
+-		xt_unregister_template(&nf_nat_ipv6_table);
+-
++		unregister_pernet_subsys(&ip6table_nat_net_ops);
+ 	return ret;
+ }
+ 
+ static void __exit ip6table_nat_exit(void)
+ {
+ 	unregister_pernet_subsys(&ip6table_nat_net_ops);
+-	xt_unregister_template(&nf_nat_ipv6_table);
+ }
+ 
+ module_init(ip6table_nat_init);
+--- a/net/ipv6/netfilter/ip6table_raw.c
++++ b/net/ipv6/netfilter/ip6table_raw.c
+@@ -11,6 +11,8 @@
+ 
+ #define RAW_VALID_HOOKS ((1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_LOCAL_OUT))
+ 
++static int __net_init ip6table_raw_table_init(struct net *net);
++
+ static bool raw_before_defrag __read_mostly;
+ MODULE_PARM_DESC(raw_before_defrag, "Enable raw table before defrag");
+ module_param(raw_before_defrag, bool, 0000);
+@@ -21,6 +23,7 @@ static const struct xt_table packet_raw
+ 	.me = THIS_MODULE,
+ 	.af = NFPROTO_IPV6,
+ 	.priority = NF_IP6_PRI_RAW,
++	.table_init = ip6table_raw_table_init,
+ };
+ 
+ static const struct xt_table packet_raw_before_defrag = {
+@@ -29,6 +32,7 @@ static const struct xt_table packet_raw_
+ 	.me = THIS_MODULE,
+ 	.af = NFPROTO_IPV6,
+ 	.priority = NF_IP6_PRI_RAW_BEFORE_DEFRAG,
++	.table_init = ip6table_raw_table_init,
+ };
+ 
+ /* The work comes in here from netfilter.c. */
+@@ -41,7 +45,7 @@ ip6table_raw_hook(void *priv, struct sk_
+ 
+ static struct nf_hook_ops *rawtable_ops __read_mostly;
+ 
+-static int ip6table_raw_table_init(struct net *net)
++static int __net_init ip6table_raw_table_init(struct net *net)
+ {
+ 	struct ip6t_replace *repl;
+ 	const struct xt_table *table = &packet_raw;
+@@ -75,39 +79,37 @@ static struct pernet_operations ip6table
+ 
+ static int __init ip6table_raw_init(void)
+ {
+-	const struct xt_table *table = &packet_raw;
+ 	int ret;
++	const struct xt_table *table = &packet_raw;
+ 
+ 	if (raw_before_defrag) {
+ 		table = &packet_raw_before_defrag;
++
+ 		pr_info("Enabling raw table before defrag\n");
+ 	}
+ 
+-	ret = xt_register_template(table, ip6table_raw_table_init);
+-	if (ret < 0)
+-		return ret;
+-
+ 	/* Register hooks */
+ 	rawtable_ops = xt_hook_ops_alloc(table, ip6table_raw_hook);
+-	if (IS_ERR(rawtable_ops)) {
+-		xt_unregister_template(table);
++	if (IS_ERR(rawtable_ops))
+ 		return PTR_ERR(rawtable_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&ip6table_raw_net_ops);
+ 	if (ret < 0) {
+ 		kfree(rawtable_ops);
+-		xt_unregister_template(table);
+ 		return ret;
+ 	}
+ 
++	ret = ip6table_raw_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&ip6table_raw_net_ops);
++		kfree(rawtable_ops);
++	}
+ 	return ret;
+ }
+ 
+ static void __exit ip6table_raw_fini(void)
+ {
+ 	unregister_pernet_subsys(&ip6table_raw_net_ops);
+-	xt_unregister_template(&packet_raw);
+ 	kfree(rawtable_ops);
+ }
+ 
+--- a/net/ipv6/netfilter/ip6table_security.c
++++ b/net/ipv6/netfilter/ip6table_security.c
+@@ -24,12 +24,15 @@ MODULE_DESCRIPTION("ip6tables security t
+ 				(1 << NF_INET_FORWARD) | \
+ 				(1 << NF_INET_LOCAL_OUT)
+ 
++static int __net_init ip6table_security_table_init(struct net *net);
++
+ static const struct xt_table security_table = {
+ 	.name		= "security",
+ 	.valid_hooks	= SECURITY_VALID_HOOKS,
+ 	.me		= THIS_MODULE,
+ 	.af		= NFPROTO_IPV6,
+ 	.priority	= NF_IP6_PRI_SECURITY,
++	.table_init     = ip6table_security_table_init,
+ };
+ 
+ static unsigned int
+@@ -41,7 +44,7 @@ ip6table_security_hook(void *priv, struc
+ 
+ static struct nf_hook_ops *sectbl_ops __read_mostly;
+ 
+-static int ip6table_security_table_init(struct net *net)
++static int __net_init ip6table_security_table_init(struct net *net)
+ {
+ 	struct ip6t_replace *repl;
+ 	int ret;
+@@ -71,32 +74,29 @@ static struct pernet_operations ip6table
+ 
+ static int __init ip6table_security_init(void)
+ {
+-	int ret = xt_register_template(&security_table,
+-				       ip6table_security_table_init);
+-
+-	if (ret < 0)
+-		return ret;
++	int ret;
+ 
+ 	sectbl_ops = xt_hook_ops_alloc(&security_table, ip6table_security_hook);
+-	if (IS_ERR(sectbl_ops)) {
+-		xt_unregister_template(&security_table);
++	if (IS_ERR(sectbl_ops))
+ 		return PTR_ERR(sectbl_ops);
+-	}
+ 
+ 	ret = register_pernet_subsys(&ip6table_security_net_ops);
+ 	if (ret < 0) {
+ 		kfree(sectbl_ops);
+-		xt_unregister_template(&security_table);
+ 		return ret;
+ 	}
+ 
++	ret = ip6table_security_table_init(&init_net);
++	if (ret) {
++		unregister_pernet_subsys(&ip6table_security_net_ops);
++		kfree(sectbl_ops);
++	}
+ 	return ret;
+ }
+ 
+ static void __exit ip6table_security_fini(void)
+ {
+ 	unregister_pernet_subsys(&ip6table_security_net_ops);
+-	xt_unregister_template(&security_table);
+ 	kfree(sectbl_ops);
+ }
+ 
+--- a/net/netfilter/x_tables.c
++++ b/net/netfilter/x_tables.c
+@@ -39,20 +39,6 @@ MODULE_DESCRIPTION("{ip,ip6,arp,eb}_tabl
+ #define XT_PCPU_BLOCK_SIZE 4096
+ #define XT_MAX_TABLE_SIZE	(512 * 1024 * 1024)
+ 
+-struct xt_template {
+-	struct list_head list;
+-
+-	/* called when table is needed in the given netns */
+-	int (*table_init)(struct net *net);
+-
+-	struct module *me;
+-
+-	/* A unique name... */
+-	char name[XT_TABLE_MAXNAMELEN];
+-};
+-
+-static struct list_head xt_templates[NFPROTO_NUMPROTO];
+-
+ struct xt_pernet {
+ 	struct list_head tables[NFPROTO_NUMPROTO];
+ };
+@@ -1235,43 +1221,48 @@ struct xt_table *xt_find_table_lock(stru
+ 				    const char *name)
+ {
+ 	struct xt_pernet *xt_net = net_generic(net, xt_pernet_id);
+-	struct module *owner = NULL;
+-	struct xt_template *tmpl;
+-	struct xt_table *t;
++	struct xt_table *t, *found = NULL;
+ 
+ 	mutex_lock(&xt[af].mutex);
+ 	list_for_each_entry(t, &xt_net->tables[af], list)
+ 		if (strcmp(t->name, name) == 0 && try_module_get(t->me))
+ 			return t;
+ 
+-	/* Table doesn't exist in this netns, check larval list */
+-	list_for_each_entry(tmpl, &xt_templates[af], list) {
++	if (net == &init_net)
++		goto out;
++
++	/* Table doesn't exist in this netns, re-try init */
++	xt_net = net_generic(&init_net, xt_pernet_id);
++	list_for_each_entry(t, &xt_net->tables[af], list) {
+ 		int err;
+ 
+-		if (strcmp(tmpl->name, name))
++		if (strcmp(t->name, name))
+ 			continue;
+-		if (!try_module_get(tmpl->me))
++		if (!try_module_get(t->me))
+ 			goto out;
+-
+-		owner = tmpl->me;
+-
+ 		mutex_unlock(&xt[af].mutex);
+-		err = tmpl->table_init(net);
++		err = t->table_init(net);
+ 		if (err < 0) {
+-			module_put(owner);
++			module_put(t->me);
+ 			return ERR_PTR(err);
+ 		}
+ 
++		found = t;
++
+ 		mutex_lock(&xt[af].mutex);
+ 		break;
+ 	}
+ 
++	if (!found)
++		goto out;
++
++	xt_net = net_generic(net, xt_pernet_id);
+ 	/* and once again: */
+ 	list_for_each_entry(t, &xt_net->tables[af], list)
+ 		if (strcmp(t->name, name) == 0)
+ 			return t;
+ 
+-	module_put(owner);
++	module_put(found->me);
+  out:
+ 	mutex_unlock(&xt[af].mutex);
+ 	return ERR_PTR(-ENOENT);
+@@ -1758,58 +1749,6 @@ xt_hook_ops_alloc(const struct xt_table
+ }
+ EXPORT_SYMBOL_GPL(xt_hook_ops_alloc);
+ 
+-int xt_register_template(const struct xt_table *table,
+-			 int (*table_init)(struct net *net))
+-{
+-	int ret = -EEXIST, af = table->af;
+-	struct xt_template *t;
+-
+-	mutex_lock(&xt[af].mutex);
+-
+-	list_for_each_entry(t, &xt_templates[af], list) {
+-		if (WARN_ON_ONCE(strcmp(table->name, t->name) == 0))
+-			goto out_unlock;
+-	}
+-
+-	ret = -ENOMEM;
+-	t = kzalloc(sizeof(*t), GFP_KERNEL);
+-	if (!t)
+-		goto out_unlock;
+-
+-	BUILD_BUG_ON(sizeof(t->name) != sizeof(table->name));
+-
+-	strscpy(t->name, table->name, sizeof(t->name));
+-	t->table_init = table_init;
+-	t->me = table->me;
+-	list_add(&t->list, &xt_templates[af]);
+-	ret = 0;
+-out_unlock:
+-	mutex_unlock(&xt[af].mutex);
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(xt_register_template);
+-
+-void xt_unregister_template(const struct xt_table *table)
+-{
+-	struct xt_template *t;
+-	int af = table->af;
+-
+-	mutex_lock(&xt[af].mutex);
+-	list_for_each_entry(t, &xt_templates[af], list) {
+-		if (strcmp(table->name, t->name))
+-			continue;
+-
+-		list_del(&t->list);
+-		mutex_unlock(&xt[af].mutex);
+-		kfree(t);
+-		return;
+-	}
+-
+-	mutex_unlock(&xt[af].mutex);
+-	WARN_ON_ONCE(1);
+-}
+-EXPORT_SYMBOL_GPL(xt_unregister_template);
+-
+ int xt_proto_init(struct net *net, u_int8_t af)
+ {
+ #ifdef CONFIG_PROC_FS
+@@ -1998,7 +1937,6 @@ static int __init xt_init(void)
+ #endif
+ 		INIT_LIST_HEAD(&xt[i].target);
+ 		INIT_LIST_HEAD(&xt[i].match);
+-		INIT_LIST_HEAD(&xt_templates[i]);
+ 	}
+ 	rv = register_pernet_subsys(&xt_net_ops);
+ 	if (rv < 0)
