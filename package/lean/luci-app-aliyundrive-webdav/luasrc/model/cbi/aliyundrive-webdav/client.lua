@@ -47,6 +47,10 @@ cache_ttl.datatype = "uinteger"
 no_trash = e:option(Flag, "no_trash", translate("Delete file permanently instead of trashing"))
 no_trash.rmempty = false
 
+read_only = e:option(Flag, "read_only", translate("Enable read only mode"))
+read_only.description = translate("Disallow upload, modify and delete file operations")
+read_only.rmempty = false
+
 domain_id = e:option(Value, "domain_id", translate("Domain ID"))
 domain_id.description = translate("Input domain_id option will use <a href=\"https://www.aliyun.com/product/storage/pds\" target=\"_blank\">Aliyun PDS</a> instead of <a href=\"https://www.aliyundrive.com\" target=\"_blank\">AliyunDrive</a>")
 

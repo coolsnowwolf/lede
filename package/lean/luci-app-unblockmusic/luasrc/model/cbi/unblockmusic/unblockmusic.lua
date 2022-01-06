@@ -55,11 +55,21 @@ flac.rmempty = false
 flac:depends("apptype", "nodejs")
 flac:depends("apptype", "go")
 
-force = s:option(Flag, "force_enabled", translate("强制替换为高音质歌曲"))
-force.description = translate("如果歌曲音质在 320Kbps 以内，则尝试强制替换为高音质版本")
-force.default = "1"
-force.rmempty = false
-force:depends("apptype", "nodejs")
+replace_music_source = s:option(ListValue, "replace_music_source", translate("强制音乐音源替换"))
+replace_music_source:value("0", translate("不强制替换音乐音源"))
+replace_music_source:value("192000", translate("当音质低于 192 Kbps（中）时"))
+replace_music_source:value("320000", translate("当音质低于 320 Kbps（高）时"))
+replace_music_source:value("600000", translate("当音质低于 999 Kbps（无损）时"))
+replace_music_source.description = translate("当音乐音质低于指定数值时，尝试强制使用其他平台的高音质版本进行替换")
+replace_music_source.default = "0"
+replace_music_source.rmempty = false
+replace_music_source:depends("apptype", "nodejs")
+
+local_vip = s:option(Flag, "local_vip", translate("启用本地 VIP"))
+local_vip.description = translate("启用后，可以使用去广告、个性换肤、鲸云音效等本地功能")
+local_vip.default = 0
+local_vip.rmempty = false
+local_vip:depends("apptype", "nodejs")
 
 autoupdate = s:option(Flag, "autoupdate", translate("自动检查更新主程序"))
 autoupdate.description = translate("每天自动检测并更新到最新版本")
