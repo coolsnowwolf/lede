@@ -51,23 +51,10 @@ define Package/mt7623n-preloader/description
   Preloader image for mt7623n based boards like Banana Pi R2.
 endef
 
-define Package/mt7622-preloader
-  SECTION:=boot
-  CATEGORY:=Boot Loaders
-  DEPENDS:=@TARGET_mediatek_mt7622
-  TITLE:=mt7622-preloader
-  DEFAULT:=y if TARGET_mediatek
-endef
-
-define Package/mt7622-preloader/description
-  Preloader image for mt7622 based boards like Banana Pi R64.
-endef
-
 define Build/Prepare
 	rm -rf $(PKG_BUILD_DIR)
 	mkdir -p $(PKG_BUILD_DIR)
 	cp $(DL_DIR)/$(BPI_PRELOADER_PREFIX)-BPI-R2-preloader-DDR1600-20191024-2k.img.gz $(PKG_BUILD_DIR)/mt7623n_bpir2-preloader.bin.gz
-	cp $(DL_DIR)/$(BPI_PRELOADER_PREFIX)-BPI-R64-preloader-2k.img.gz $(PKG_BUILD_DIR)/mt7622_bpir64-preloader.bin.gz
 endef
 
 define Build/Compile
@@ -80,4 +67,3 @@ define Build/InstallDev
 endef
 
 $(eval $(call BuildPackage,mt7623n-preloader))
-$(eval $(call BuildPackage,mt7622-preloader))

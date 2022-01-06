@@ -12,15 +12,15 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uugamebooster
-PKG_VERSION:=v2.10.0
-PKG_RELEASE:=8
+PKG_VERSION:=v2.18.2
+PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
-	DEPENDS:=@(aarch64||arm||mips||mipsel||x86_64) +kmod-tun
+	DEPENDS:=@(aarch64||arm||mipsel||x86_64) +kmod-tun
 	TITLE:=NetEase UU Game Booster
 	URL:=https://uu.163.com
 endef
@@ -29,32 +29,27 @@ define Package/$(PKG_NAME)/description
 NetEase's UU Game Booster Accelerates Triple-A Gameplay and Market
 endef
 
-ifeq ($(ARCH),x86_64)
-	UU_ARCH:=x86_64
-	PKG_MD5SUM:=a856aebe19b9c663bdc08b257a591b40
-endif
-
-ifeq ($(ARCH),mipsel)
-	UU_ARCH:=mipsel
-	PKG_MD5SUM:=90e895012e5a03391a0c0f4759a4422c
-endif
-
-ifeq ($(ARCH),mips)
-	UU_ARCH:=mipsel
-	PKG_MD5SUM:=90e895012e5a03391a0c0f4759a4422c
-endif
-
 ifeq ($(ARCH),arm)
 	UU_ARCH:=arm
-	PKG_MD5SUM:=acc7e564b1718009cd2d94335ace1bcd
+	PKG_MD5SUM:=c5b71d076a0901ab9a81496c916480f2
 endif
 
 ifeq ($(ARCH),aarch64)
 	UU_ARCH:=aarch64
-	PKG_MD5SUM:=262cc28ba07d7cf84a3f487ff4fd146c
+	PKG_MD5SUM:=36a66e4e33d7d1fa729c731e31d8219a
 endif
 
-PKG_SOURCE_URL:=http://uu.gdl.netease.com/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
+ifeq ($(ARCH),mipsel)
+	UU_ARCH:=mipsel
+	PKG_MD5SUM:=06abb6adbabd87a264fae6ce9ec1875c
+endif
+
+ifeq ($(ARCH),x86_64)
+	UU_ARCH:=x86_64
+	PKG_MD5SUM:=a0cbc202f512034b3162244398a2ddc7
+endif
+
+PKG_SOURCE_URL:=https://uu.gdl.netease.com/uuplugin/openwrt-$(UU_ARCH)/$(PKG_VERSION)/uu.tar.gz?
 PKG_SOURCE:=$(PKG_NAME)-$(UU_ARCH)-$(PKG_VERSION).tar.gz
 
 STRIP:=true
@@ -67,6 +62,10 @@ define Build/Prepare
 endef
 
 define Build/Compile
+endef
+
+define Package/$(PKG_NAME)/conffiles
+/root/.uuplugin_uuid
 endef
 
 define Package/$(PKG_NAME)/install

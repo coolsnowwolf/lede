@@ -6,13 +6,13 @@ function index()
 	end
 	
 	entry({"admin", "vpn"}, firstchild(), "VPN", 45).dependent = false
-	entry({"admin", "vpn", "softethervpn"}, cbi("softethervpn"), _("SoftEther VPN"), 50).dependent = true
-	entry({"admin", "vpn", "softethervpn", "status"}, call("status")).leaf = true
+	entry({"admin", "vpn", "softethervpn"}, cbi("softethervpn"), _("SoftEther VPN Service"), 50).dependent = true
+	entry({"admin", "vpn", "softethervpn", "status"}, call("act_status")).leaf = true
 end
 
-function status()
-	local e={}
-	e.status=luci.sys.call("pidof %s >/dev/null"%"vpnserver")==0
+function act_status()
+	local e = {}
+	e.running = luci.sys.call("pidof vpnserver >/dev/null") == 0
 	luci.http.prepare_content("application/json")
 	luci.http.write_json(e)
 end

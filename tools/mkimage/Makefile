@@ -7,14 +7,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mkimage
-PKG_VERSION:=2020.04
+PKG_VERSION:=2021.10
 
 PKG_SOURCE:=u-boot-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:= \
 	https://mirror.cyberbits.eu/u-boot \
 	https://ftp.denx.de/pub/u-boot \
 	ftp://ftp.denx.de/pub/u-boot
-PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
+PKG_HASH:=cde723e19262e646f2670d25e5ec4b1b368490de950d4e26275a988c36df0bd4
 
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/u-boot-$(PKG_VERSION)
 
@@ -24,6 +24,8 @@ define Host/Prepare
 	$(Host/Prepare/Default)
 	mkdir -p $(HOST_BUILD_DIR)/include/config
 	touch $(HOST_BUILD_DIR)/include/config/auto.conf
+	mkdir -p $(HOST_BUILD_DIR)/include/generated/
+	touch $(HOST_BUILD_DIR)/include/generated/autoconf.h
 endef
 
 define Host/Compile
@@ -35,6 +37,7 @@ define Host/Compile
 		CONFIG_FIT=y \
 		CONFIG_FIT_SIGNATURE=y \
 		CONFIG_FIT_SIGNATURE_MAX_SIZE=0x10000000 \
+		CONFIG_TOOLS_LIBCRYPTO=y \
 		tools-only
 endef
 

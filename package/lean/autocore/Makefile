@@ -9,16 +9,15 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=autocore
 PKG_VERSION:=1
-PKG_RELEASE:=36
+PKG_RELEASE:=42
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/autocore-arm
   TITLE:=Arm auto core loadbalance script.
   MAINTAINER:=CN_SZTL
-  DEPENDS:=@(TARGET_bcm27xx||TARGET_bcm53xx||TARGET_ipq40xx||TARGET_ipq806x||TARGET_mvebu||TARGET_rockchip) \
-    +TARGET_bcm27xx:bcm27xx-userland +TARGET_bcm53xx:nvram \
-    +(TARGET_ipq40xx||TARGET_ipq806x):lm-sensors
+  DEPENDS:=@(TARGET_bcm27xx||TARGET_bcm53xx||TARGET_ipq40xx||TARGET_ipq806x||TARGET_ipq807x||TARGET_mvebu||TARGET_rockchip) \
+    +TARGET_bcm27xx:bcm27xx-userland +TARGET_bcm53xx:nvram +ethtool
   VARIANT:=arm
 endef
 
@@ -47,6 +46,7 @@ define Package/autocore-arm/install
 	$(INSTALL_BIN) ./files/arm/090-cover-index_htm $(1)/etc/uci-defaults/090-cover-index_htm
 	$(INSTALL_DIR) $(1)/sbin
 	$(INSTALL_BIN) ./files/arm/sbin/cpuinfo $(1)/sbin/cpuinfo
+	$(INSTALL_BIN) ./files/arm/sbin/ethinfo $(1)/sbin/ethinfo
 endef
 
 define Package/autocore-x86/install

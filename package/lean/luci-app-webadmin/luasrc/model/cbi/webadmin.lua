@@ -3,14 +3,16 @@
 
 local fs = require("nixio.fs")
 
-local m = Map("uhttpd", translate("Web Admin Settings"),
-	      translate("Web Admin Settings Page"))
+m = Map("uhttpd")
+m.title = translate("Web Admin Settings")
+m.description = translate("Web Admin Settings Page")
 
-local ucs = m:section(TypedSection, "uhttpd")
+ucs = m:section(TypedSection, "uhttpd")
 ucs.addremove = false
 ucs.anonymous = true
 
-lhttp = ucs:option(DynamicList, "listen_http", translate("HTTP listeners (address:port)"), translate("Bind to specific interface:port (by specifying interface address"))
+lhttp = ucs:option(DynamicList, "listen_http", translate("HTTP listeners (address:port)"))
+lhttp.description = translate("Bind to specific interface:port (by specifying interface address")
 lhttp.datatype = "list(ipaddrport(1))"
 
 function lhttp.validate(self, value, section)
@@ -39,11 +41,12 @@ function lhttp.validate(self, value, section)
 end
 
 o = ucs:option(Flag, "redirect_https", translate("Redirect all HTTP to HTTPS"))
+o.description = translate("Redirect all HTTP to HTTPS when SSl cert was installed")
 o.default = o.enabled
 o.rmempty = false
-o.description = translate("Redirect all HTTP to HTTPS when SSl cert was installed")
 
-o = ucs:option(Flag, "rfc1918_filter", translate("Ignore private IPs on public interface"), translate("Prevent access from private (RFC1918) IPs on an interface if it has an public IP address"))
+o = ucs:option(Flag, "rfc1918_filter", translate("Ignore private IPs on public interface"))
+o.description = translate("Prevent access from private (RFC1918) IPs on an interface if it has an public IP address")
 o.default = o.enabled
 o.rmempty = false
 

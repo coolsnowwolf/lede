@@ -141,6 +141,17 @@ void fe_reset(u32 reset_bits)
 	usleep_range(10, 20);
 }
 
+void fe_reset_fe(struct fe_priv *priv)
+{
+	if (!priv->rst_fe)
+		return;
+
+	reset_control_assert(priv->rst_fe);
+	usleep_range(60, 120);
+	reset_control_deassert(priv->rst_fe);
+	usleep_range(60, 120);
+}
+
 static inline void fe_int_disable(u32 mask)
 {
 	fe_reg_w32(fe_reg_r32(FE_REG_FE_INT_ENABLE) & ~mask,
@@ -715,19 +726,11 @@ next_frag:
 	/* TX SG offload */
 	nr_frags = skb_shinfo(skb)->nr_frags;
 	for (i = 0; i < nr_frags; i++) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-		struct skb_frag_struct *frag;
-#else
 		skb_frag_t *frag;
-#endif
 
 		frag = &skb_shinfo(skb)->frags[i];
 		if (fe_tx_dma_map_page(ring, &st, skb_frag_page(frag),
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-				       frag->page_offset, skb_frag_size(frag)))
-#else
 				       skb_frag_off(frag), skb_frag_size(frag)))
-#endif
 			goto err_dma;
 	}
 
@@ -762,11 +765,7 @@ next_frag:
 			netif_wake_queue(dev);
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
-	if (netif_xmit_stopped(netdev_get_tx_queue(dev, 0)) || !head->xmit_more)
-#else
 	if (netif_xmit_stopped(netdev_get_tx_queue(dev, 0)) || !netdev_xmit_more())
-#endif
 		fe_reg_w32(ring->tx_next_idx, FE_REG_TX_CTX_IDX0);
 
 	return 0;
@@ -825,22 +824,14 @@ static inline int fe_cal_txd_req(struct sk_buff *skb)
 {
 	struct sk_buff *head = skb;
 	int i, nfrags = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-	struct skb_frag_struct *frag;
-#else
 	skb_frag_t *frag;
-#endif
 
 next_frag:
 	nfrags++;
 	if (skb_is_gso(skb)) {
 		for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 			frag = &skb_shinfo(skb)->frags[i];
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-			nfrags += DIV_ROUND_UP(frag->size, TX_DMA_BUF_LEN);
-#else
 			nfrags += DIV_ROUND_UP(skb_frag_size(frag), TX_DMA_BUF_LEN);
-#endif
 		}
 	} else {
 		nfrags += skb_shinfo(skb)->nr_frags;
@@ -897,6 +888,8 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 	u8 *data, *new_data;
 	struct fe_rx_dma *rxd, trxd;
 	int done = 0, pad;
+
+	fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
 
 	if (netdev->features & NETIF_F_RXCSUM)
 		checksum_bit = soc->checksum_bit;
@@ -990,9 +983,6 @@ release_desc:
 		done++;
 	}
 
-	if (done < budget)
-		fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
-
 	return done;
 }
 
@@ -1006,6 +996,8 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	int done = 0;
 	u32 idx, hwidx;
 	struct fe_tx_ring *ring = &priv->tx_ring;
+
+	fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
 
 	idx = ring->tx_free_idx;
 	hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
@@ -1030,9 +1022,7 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	if (idx == hwidx) {
 		/* read hw index again make sure no new tx packet */
 		hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
-		if (idx == hwidx)
-			fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
-		else
+		if (idx != hwidx)
 			*tx_again = 1;
 	} else {
 		*tx_again = 1;
@@ -1112,7 +1102,11 @@ poll_again:
 	return rx_done;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 static void fe_tx_timeout(struct net_device *dev)
+#else
+static void fe_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#endif
 {
 	struct fe_priv *priv = netdev_priv(dev);
 	struct fe_tx_ring *ring = &priv->tx_ring;
@@ -1390,13 +1384,21 @@ static int __init fe_init(struct net_device *dev)
 	const char *mac_addr;
 	int err;
 
-	priv->soc->reset_fe();
+	if (priv->soc->reset_fe)
+		priv->soc->reset_fe(priv);
+	else
+		fe_reset_fe(priv);
 
-	if (priv->soc->switch_init)
-		if (priv->soc->switch_init(priv)) {
+	if (priv->soc->switch_init) {
+		err = priv->soc->switch_init(priv);
+		if (err) {
+			if (err == -EPROBE_DEFER)
+				return err;
+
 			netdev_err(dev, "failed to initialize switch core\n");
 			return -ENODEV;
 		}
+	}
 
 	fe_reset_phy(priv);
 
@@ -1629,6 +1631,12 @@ static int fe_probe(struct platform_device *pdev)
 		goto err_free_dev;
 	}
 
+	priv = netdev_priv(netdev);
+	spin_lock_init(&priv->page_lock);
+	priv->rst_fe = devm_reset_control_get(&pdev->dev, "fe");
+	if (IS_ERR(priv->rst_fe))
+		priv->rst_fe = NULL;
+
 	if (soc->init_data)
 		soc->init_data(soc, netdev);
 	netdev->vlan_features = netdev->hw_features &
@@ -1643,8 +1651,6 @@ static int fe_probe(struct platform_device *pdev)
 	if (fe_reg_table[FE_REG_FE_DMA_VID_BASE])
 		netdev->features |= NETIF_F_HW_VLAN_CTAG_FILTER;
 
-	priv = netdev_priv(netdev);
-	spin_lock_init(&priv->page_lock);
 	if (fe_reg_table[FE_REG_FE_COUNTER_BASE]) {
 		priv->hw_stats = kzalloc(sizeof(*priv->hw_stats), GFP_KERNEL);
 		if (!priv->hw_stats) {

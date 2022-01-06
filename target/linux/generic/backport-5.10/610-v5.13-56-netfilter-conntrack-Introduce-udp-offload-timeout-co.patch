@@ -1,0 +1,92 @@
+From: Oz Shlomo <ozsh@nvidia.com>
+Date: Thu, 3 Jun 2021 15:12:34 +0300
+Subject: [PATCH] netfilter: conntrack: Introduce udp offload timeout
+ configuration
+
+UDP connections may be offloaded from nf conntrack to nf flow table.
+Offloaded connections are aged after 30 seconds of inactivity.
+Once aged, ownership is returned to conntrack with a hard coded pickup
+time of 30 seconds, after which the connection may be deleted.
+eted. The current aging intervals may be too aggressive for some users.
+
+Provide users with the ability to control the nf flow table offload
+aging and pickup time intervals via sysctl parameter as a pre-step for
+configuring the nf flow table GC timeout intervals.
+
+Signed-off-by: Oz Shlomo <ozsh@nvidia.com>
+Reviewed-by: Paul Blakey <paulb@nvidia.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/net/netns/conntrack.h
++++ b/include/net/netns/conntrack.h
+@@ -41,6 +41,10 @@ enum udp_conntrack {
+ 
+ struct nf_udp_net {
+ 	unsigned int timeouts[UDP_CT_MAX];
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	unsigned int offload_timeout;
++	unsigned int offload_pickup;
++#endif
+ };
+ 
+ struct nf_icmp_net {
+--- a/net/netfilter/nf_conntrack_proto_udp.c
++++ b/net/netfilter/nf_conntrack_proto_udp.c
+@@ -273,6 +273,11 @@ void nf_conntrack_udp_init_net(struct ne
+ 
+ 	for (i = 0; i < UDP_CT_MAX; i++)
+ 		un->timeouts[i] = udp_timeouts[i];
++
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	un->offload_timeout = 30 * HZ;
++	un->offload_pickup = 30 * HZ;
++#endif
+ }
+ 
+ const struct nf_conntrack_l4proto nf_conntrack_l4proto_udp =
+--- a/net/netfilter/nf_conntrack_standalone.c
++++ b/net/netfilter/nf_conntrack_standalone.c
+@@ -576,6 +576,10 @@ enum nf_ct_sysctl_index {
+ 	NF_SYSCTL_CT_PROTO_TCP_MAX_RETRANS,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_UDP,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_STREAM,
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD,
++	NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD_PICKUP,
++#endif
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_ICMP,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_ICMPV6,
+ #ifdef CONFIG_NF_CT_PROTO_SCTP
+@@ -810,6 +814,20 @@ static struct ctl_table nf_ct_sysctl_tab
+ 		.mode		= 0644,
+ 		.proc_handler	= proc_dointvec_jiffies,
+ 	},
++#if IS_ENABLED(CONFIG_NFT_FLOW_OFFLOAD)
++	[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD] = {
++		.procname	= "nf_flowtable_udp_timeout",
++		.maxlen		= sizeof(unsigned int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_jiffies,
++	},
++	[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD_PICKUP] = {
++		.procname	= "nf_flowtable_udp_pickup",
++		.maxlen		= sizeof(unsigned int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_jiffies,
++	},
++#endif
+ 	[NF_SYSCTL_CT_PROTO_TIMEOUT_ICMP] = {
+ 		.procname	= "nf_conntrack_icmp_timeout",
+ 		.maxlen		= sizeof(unsigned int),
+@@ -1078,6 +1096,10 @@ static int nf_conntrack_standalone_init_
+ 	table[NF_SYSCTL_CT_PROTO_TIMEOUT_ICMPV6].data = &nf_icmpv6_pernet(net)->timeout;
+ 	table[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP].data = &un->timeouts[UDP_CT_UNREPLIED];
+ 	table[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_STREAM].data = &un->timeouts[UDP_CT_REPLIED];
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	table[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD].data = &un->offload_timeout;
++	table[NF_SYSCTL_CT_PROTO_TIMEOUT_UDP_OFFLOAD_PICKUP].data = &un->offload_pickup;
++#endif
+ 
+ 	nf_conntrack_standalone_init_tcp_sysctl(net, table);
+ 	nf_conntrack_standalone_init_sctp_sysctl(net, table);

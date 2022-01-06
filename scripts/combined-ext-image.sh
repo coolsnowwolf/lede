@@ -63,7 +63,7 @@ while [ "$#" -gt 1 ]
 
       [ ! -f "$file" ] && echo "$ME: Not a valid file: $file" && usage
       FILES="$FILES $file"
-      md5=$(mkhash md5 "$file")
+      md5=$($MKHASH md5 "$file")
       printf "%-32s%08x%32s" "$filename" $(stat -c "%s" "$file") "${md5%% *}" >> "${IMG_TMP_OUT}"
       shift 2
    done

@@ -1,0 +1,72 @@
+From 32cf73d8c6485b7b97aca7e377a68436d09b7022 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Sun, 14 Mar 2021 20:03:44 +0100
+Subject: [PATCH] net: dsa: b53: add support for BCM63xx RGMIIs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+---
+ drivers/net/dsa/b53/b53_common.c | 37 ++++++++++++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1148,6 +1148,36 @@ static void b53_force_port_config(struct
+ 	b53_write8(dev, B53_CTRL_PAGE, off, reg);
+ }
+ 
++static void b53_adjust_63xx_rgmii(struct dsa_switch *ds, int port,
++				  phy_interface_t interface)
++{
++	struct b53_device *dev = ds->priv;
++	u8 rgmii_ctrl = 0, off;
++
++	if (port == 8)
++		off = B53_RGMII_CTRL_IMP;
++	else
++		off = B53_RGMII_CTRL_P(port);
++
++	b53_read8(dev, B53_CTRL_PAGE, off, &rgmii_ctrl);
++
++	rgmii_ctrl &= ~(RGMII_CTRL_DLL_RXC | RGMII_CTRL_DLL_TXC);
++	if (interface == PHY_INTERFACE_MODE_RGMII_ID)
++		rgmii_ctrl |= (RGMII_CTRL_DLL_RXC | RGMII_CTRL_DLL_TXC);
++	else if (interface == PHY_INTERFACE_MODE_RGMII_RXID)
++		rgmii_ctrl |= RGMII_CTRL_DLL_RXC;
++	else if (interface == PHY_INTERFACE_MODE_RGMII_TXID)
++		rgmii_ctrl |= RGMII_CTRL_DLL_TXC;
++
++	if (port != B53_CPU_PORT)
++		rgmii_ctrl |= RGMII_CTRL_ENABLE_GMII;
++
++	b53_write8(dev, B53_CTRL_PAGE, off, rgmii_ctrl);
++
++	dev_info(ds->dev, "Configured port %d for %s\n", port,
++		 phy_modes(interface));
++}
++
+ static void b53_adjust_link(struct dsa_switch *ds, int port,
+ 			    struct phy_device *phydev)
+ {
+@@ -1174,6 +1204,9 @@ static void b53_adjust_link(struct dsa_s
+ 			      tx_pause, rx_pause);
+ 	b53_force_link(dev, port, phydev->link);
+ 
++	if (is63xx(dev))
++		b53_adjust_63xx_rgmii(ds, port, phydev->interface);
++
+ 	if (is531x5(dev) && phy_interface_is_rgmii(phydev)) {
+ 		if (port == dev->imp_port)
+ 			off = B53_RGMII_CTRL_IMP;
+@@ -1366,6 +1399,9 @@ void b53_phylink_mac_link_up(struct dsa_
+ {
+ 	struct b53_device *dev = ds->priv;
+ 
++	if (is63xx(dev) && port >= 4)
++		b53_adjust_63xx_rgmii(ds, port, interface);
++
+ 	if (mode == MLO_AN_PHY)
+ 		return;
+ 

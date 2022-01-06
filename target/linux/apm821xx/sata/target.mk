@@ -1,6 +1,6 @@
 BOARDNAME := Devices which boot from SATA (NAS)
 DEVICE_TYPE := nas
-FEATURES += ext4 usb ramdisk squashfs rootfs-part boot-part
+FEATURES += boot-part ext4 rootfs-part
 DEFAULT_PACKAGES += badblocks block-mount e2fsprogs kmod-hwmon-drivetemp \
 		    kmod-dm kmod-md-mod partx-utils mkf2fs f2fsck
 

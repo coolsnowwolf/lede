@@ -19,6 +19,7 @@ BASEDHCPSTAMPFILE="/var/run/dnsmasq"
 DHCPBOGUSHOSTNAMEFILE="/usr/share/dnsmasq/dhcpbogushostname.conf"
 RFC6761FILE="/usr/share/dnsmasq/rfc6761.conf"
 DHCPSCRIPT="/usr/lib/dnsmasq/dhcp-script.sh"
+DHCPSCRIPT_DEPENDS="/usr/share/libubox/jshn.sh /usr/bin/jshn /bin/ubus"
 
 DNSMASQ_DHCP_VER=4
 
@@ -161,7 +162,7 @@ append_server() {
 }
 
 append_rev_server() {
-        xappend "--rev-server=$1"
+	xappend "--rev-server=$1"
 }
 
 append_address() {
@@ -170,6 +171,10 @@ append_address() {
 
 append_ipset() {
 	xappend "--ipset=$1"
+}
+
+append_connmark_allowlist() {
+	xappend "--connmark-allowlist=$1"
 }
 
 append_interface() {
@@ -186,7 +191,22 @@ append_notinterface() {
 	xappend "--except-interface=$ifname"
 }
 
+ismounted() {
+	local filename="$1"
+	local dirname
+	for dirname in $EXTRA_MOUNT ; do
+		case "$filename" in
+			"${dirname}/"* | "${dirname}" )
+				return 0
+				;;
+		esac
+	done
+
+	return 1
+}
+
 append_addnhosts() {
+	ismounted "$1" || append EXTRA_MOUNT "$1"
 	xappend "--addn-hosts=$1"
 }
 
@@ -221,7 +241,7 @@ dhcp_subscrid_add() {
 	config_get subscriberid "$cfg" subscriberid
 	[ -n "$subscriberid" ] || return 0
 
-	xappend "--dhcp-subscrid=$networkid,$subscriberid"
+	xappend "--dhcp-subscrid=set:$networkid,$subscriberid"
 
 	config_get_bool force "$cfg" force 0
 
@@ -237,7 +257,7 @@ dhcp_remoteid_add() {
 	config_get remoteid "$cfg" remoteid
 	[ -n "$remoteid" ] || return 0
 
-	xappend "--dhcp-remoteid=$networkid,$remoteid"
+	xappend "--dhcp-remoteid=set:$networkid,$remoteid"
 
 	config_get_bool force "$cfg" force 0
 
@@ -254,7 +274,7 @@ dhcp_circuitid_add() {
 	config_get circuitid "$cfg" circuitid
 	[ -n "$circuitid" ] || return 0
 
-	xappend "--dhcp-circuitid=$networkid,$circuitid"
+	xappend "--dhcp-circuitid=set:$networkid,$circuitid"
 
 	config_get_bool force "$cfg" force 0
 
@@ -270,7 +290,7 @@ dhcp_userclass_add() {
 	config_get userclass "$cfg" userclass
 	[ -n "$userclass" ] || return 0
 
-	xappend "--dhcp-userclass=$networkid,$userclass"
+	xappend "--dhcp-userclass=set:$networkid,$userclass"
 
 	config_get_bool force "$cfg" force 0
 
@@ -287,7 +307,7 @@ dhcp_vendorclass_add() {
 	config_get vendorclass "$cfg" vendorclass
 	[ -n "$vendorclass" ] || return 0
 
-	xappend "--dhcp-vendorclass=$networkid,$vendorclass"
+	xappend "--dhcp-vendorclass=set:$networkid,$vendorclass"
 
 	config_get_bool force "$cfg" force 0
 
@@ -303,7 +323,7 @@ dhcp_match_add() {
 	config_get match "$cfg" match
 	[ -n "$match" ] || return 0
 
-	xappend "--dhcp-match=$networkid,$match"
+	xappend "--dhcp-match=set:$networkid,$match"
 
 	config_get_bool force "$cfg" force 0
 
@@ -312,7 +332,7 @@ dhcp_match_add() {
 
 dhcp_host_add() {
 	local cfg="$1"
-	local hosttag nametime addrs duids macs tags
+	local hosttag nametime addrs duids macs tags mtags
 
 	config_get_bool force "$cfg" force 0
 
@@ -336,6 +356,11 @@ dhcp_host_add() {
 	config_get mac "$cfg" mac
 	config_get duid "$cfg" duid
 	config_get tag "$cfg" tag
+
+	add_tag() {
+		mtags="${mtags}tag:$1,"
+	}
+	config_list_foreach "$cfg" match_tag add_tag
 
 	if [ -n "$mac" ]; then
 		# --dhcp-host=00:20:e0:3b:13:af,192.168.0.199,lap
@@ -374,9 +399,9 @@ dhcp_host_add() {
 
 	if [ $DNSMASQ_DHCP_VER -eq 6 ]; then
 		addrs="${ip:+,$ip}${hostid:+,[::$hostid]}"
-		xappend "--dhcp-host=$macs${duids:+,$duids}$hosttag$addrs$nametime"
+		xappend "--dhcp-host=$mtags$macs${duids:+,$duids}$hosttag$addrs$nametime"
 	else
-		xappend "--dhcp-host=$macs$hosttag${ip:+,$ip}$nametime"
+		xappend "--dhcp-host=$mtags$macs$hosttag${ip:+,$ip}$nametime"
 	fi
 }
 
@@ -801,19 +826,22 @@ dnsmasq_start()
 	config_get_bool disabled "$cfg" disabled 0
 	[ "$disabled" -gt 0 ] && return 0
 
-	# reset list of DOMAINS and DNS servers (for each dnsmasq instance)
+	# reset list of DOMAINS, DNS servers and EXTRA mounts (for each dnsmasq instance)
 	DNS_SERVERS=""
 	DOMAIN=""
+	EXTRA_MOUNT=""
 	CONFIGFILE="${BASECONFIGFILE}.${cfg}"
 	CONFIGFILE_TMP="${CONFIGFILE}.$$"
 	HOSTFILE="${BASEHOSTFILE}.${cfg}"
 	HOSTFILE_TMP="${HOSTFILE}.$$"
+	HOSTFILE_DIR="$(dirname "$HOSTFILE")"
 	BASEDHCPSTAMPFILE_CFG="${BASEDHCPSTAMPFILE}.${cfg}"
 
 	# before we can call xappend
+	umask u=rwx,g=rx,o=rx
 	mkdir -p /var/run/dnsmasq/
 	mkdir -p $(dirname $CONFIGFILE)
-	mkdir -p $(dirname $HOSTFILE)
+	mkdir -p "$HOSTFILE_DIR"
 	mkdir -p /var/lib/misc
 	chown dnsmasq:dnsmasq /var/run/dnsmasq
 
@@ -878,8 +906,16 @@ dnsmasq_start()
 	append_bool "$cfg" noresolv "--no-resolv"
 	append_bool "$cfg" localise_queries "--localise-queries"
 	append_bool "$cfg" readethers "--read-ethers"
-	append_bool "$cfg" dbus "--enable-dbus"
-	append_bool "$cfg" ubus "--enable-ubus"	1
+
+	local instance_name="dnsmasq.$cfg"
+	if [ "$cfg" = "$DEFAULT_INSTANCE" ]; then
+		instance_name="dnsmasq"
+	fi
+	config_get_bool dbus "$cfg" "dbus" 0
+	[ $dbus -gt 0 ] && xappend "--enable-dbus=uk.org.thekelleys.$instance_name"
+	config_get_bool ubus "$cfg" "ubus" 1
+	[ $ubus -gt 0 ] && xappend "--enable-ubus=$instance_name"
+
 	append_bool "$cfg" expandhosts "--expand-hosts"
 	config_get tftp_root "$cfg" "tftp_root"
 	[ -n "$tftp_root" ] && mkdir -p "$tftp_root" && append_bool "$cfg" enable_tftp "--enable-tftp"
@@ -895,10 +931,12 @@ dnsmasq_start()
 	append_bool "$cfg" noping "--no-ping"
 	append_bool "$cfg" rapidcommit "--dhcp-rapid-commit"
 	append_bool "$cfg" scriptarp "--script-arp"
-
+	
 	append_bool "$cfg" filter_aaaa "--filter-aaaa"
 
 	append_parm "$cfg" logfacility "--log-facility"
+	
+	append_parm "$cfg" mini_ttl "--min-ttl"
 
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
@@ -909,16 +947,32 @@ dnsmasq_start()
 	append_parm "$cfg" "minport" "--min-port"
 	append_parm "$cfg" "maxport" "--max-port"
 	append_parm "$cfg" "domain" "--domain"
-	append_parm "$cfg" "local" "--server"
+	append_parm "$cfg" "local" "--local"
 	config_list_foreach "$cfg" "listen_address" append_listenaddress
 	config_list_foreach "$cfg" "server" append_server
 	config_list_foreach "$cfg" "rev_server" append_rev_server
 	config_list_foreach "$cfg" "address" append_address
 	config_list_foreach "$cfg" "ipset" append_ipset
+
+	local connmark_allowlist_enable
+	config_get connmark_allowlist_enable "$cfg" connmark_allowlist_enable 0
+	[ "$connmark_allowlist_enable" -gt 0 ] && {
+		append_parm "$cfg" "connmark_allowlist_enable" "--connmark-allowlist-enable"
+		config_list_foreach "$cfg" "connmark_allowlist" append_connmark_allowlist
+	}
+
 	[ -n "$BOOT" ] || {
 		config_list_foreach "$cfg" "interface" append_interface
 		config_list_foreach "$cfg" "notinterface" append_notinterface
 	}
+	config_get_bool ignore_hosts_dir "$cfg" ignore_hosts_dir 0
+	if [ "$ignore_hosts_dir" = "1" ]; then
+		xappend "--addn-hosts=$HOSTFILE"
+		append EXTRA_MOUNT "$HOSTFILE"
+	else
+		xappend "--addn-hosts=$HOSTFILE_DIR"
+		append EXTRA_MOUNT "$HOSTFILE_DIR"
+	fi
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
@@ -1014,7 +1068,6 @@ dnsmasq_start()
 
 	xappend "--dhcp-broadcast=tag:needs-broadcast"
 
-	xappend "--addn-hosts=$(dirname $HOSTFILE)"
 
 	config_get dnsmasqconfdir "$cfg" confdir "/tmp/dnsmasq.d"
 	xappend "--conf-dir=$dnsmasqconfdir"
@@ -1108,7 +1161,10 @@ dnsmasq_start()
 	procd_set_param respawn
 
 	procd_add_jail dnsmasq ubus log
-	procd_add_jail_mount $CONFIGFILE $TRUSTANCHORSFILE $HOSTFILE $RFC6761FILE $DHCPBOGUSHOSTNAMEFILE /etc/passwd /etc/group /etc/TZ /dev/null /dev/urandom $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript /etc/hosts /etc/ethers /sbin/hotplug-call $EXTRA_MOUNT $DHCPSCRIPT
+	procd_add_jail_mount $CONFIGFILE $DHCPBOGUSHOSTNAMEFILE $DHCPSCRIPT $DHCPSCRIPT_DEPENDS
+	procd_add_jail_mount $EXTRA_MOUNT $RFC6761FILE $TRUSTANCHORSFILE
+	procd_add_jail_mount $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript
+	procd_add_jail_mount /etc/passwd /etc/group /etc/TZ /etc/hosts /etc/ethers
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
 
 	procd_close_instance
@@ -1157,6 +1213,7 @@ boot()
 start_service() {
 	local instance="$1"
 	local instance_found=0
+	local first_instance=""
 
 	. /lib/functions/network.sh
 
@@ -1167,10 +1224,27 @@ start_service() {
 			if [ -n "$instance" ] && [ "$instance" = "$name" ]; then
 				instance_found=1
 			fi
+			if [ -z "$DEFAULT_INSTANCE" ]; then
+				local disabled
+				config_get_bool disabled "$name" disabled 0
+				if [ "$disabled" -eq 0 ]; then
+					# First enabled section will be assigned default instance name.
+					# Unnamed sections get precedence over named sections.
+					if expr "$cfg" : 'cfg[0-9a-f]*$' >/dev/null = "9"; then # See uci_fixup_section.
+						DEFAULT_INSTANCE="$name" # Unnamed config section.
+					elif [ -z "$first_instance" ]; then
+						first_instance="$name"
+					fi
+				fi
+			fi
 		fi
 	}
 
+	DEFAULT_INSTANCE=""
 	config_load dhcp
+	if [ -z "$DEFAULT_INSTANCE" ]; then
+		DEFAULT_INSTANCE="$first_instance" # No unnamed config section was found.
+	fi
 
 	if [ -n "$instance" ]; then
 		[ "$instance_found" -gt 0 ] || return

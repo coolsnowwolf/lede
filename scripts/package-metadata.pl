@@ -532,21 +532,6 @@ sub gen_package_auxiliary() {
 		if ($pkg->{name} && $pkg->{repository}) {
 			print "Package/$name/subdir = $pkg->{repository}\n";
 		}
-		if ($pkg->{name} && defined($pkg->{abiversion}) && length($pkg->{abiversion})) {
-			my $abiv;
-
-			if ($pkg->{abiversion} =~ m!^(\d{4})-(\d{2})-(\d{2})-[0-9a-f]{7,40}$!) {
-				print STDERR "WARNING: Reducing ABI version '$pkg->{abiversion}' of package '$name' to '$1$2$3'\n";
-				$abiv = "$1$2$3";
-			}
-			else {
-				$abiv = $pkg->{abiversion};
-			}
-
-			foreach my $n (@{$pkg->{provides}}) {
-				print "Package/$n/abiversion = $abiv\n";
-			}
-		}
 		my %depends;
 		foreach my $dep (@{$pkg->{depends} || []}) {
 			if ($dep =~ m!^\+?(?:[^:]+:)?([^@]+)$!) {

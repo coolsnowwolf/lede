@@ -21,16 +21,16 @@ function index()
 end
 
 function act_status()
-	local e={}
-	e.running=luci.sys.call("pgrep adbyby >/dev/null")==0
+	local e = {}
+	e.running = luci.sys.call("pgrep adbyby >/dev/null") == 0
 	luci.http.prepare_content("application/json")
 	luci.http.write_json(e)
 end
 
 
 function refresh_data()
-	local set =luci.http.formvalue("set")
-	local icount =0
+	local set = luci.http.formvalue("set")
+	local icount = 0
 
 if set == "rule_data" then
 luci.sys.exec("/usr/share/adbyby/rule-update")
@@ -38,7 +38,7 @@ luci.sys.exec("/usr/share/adbyby/rule-update")
   
   if tonumber(icount)>0 then
     if nixio.fs.access("/usr/share/adbyby/rules/") then
-      oldcount=luci.sys.exec("/usr/share/adbyby/rule-count '/usr/share/adbyby/rules/'")
+      oldcount = luci.sys.exec("/usr/share/adbyby/rule-count '/usr/share/adbyby/rules/'")
     else
       oldcount=0
     end
@@ -54,14 +54,14 @@ luci.sys.exec("/usr/share/adbyby/rule-update")
 		retstring ="0"
 	end
 else
-refresh_cmd="wget-ssl -q --no-check-certificate -O - 'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt' > /tmp/adnew.conf"
-sret=luci.sys.call(refresh_cmd .. " 2>/dev/null")
+refresh_cmd = "uclient-fetch -q --no-check-certificate -O - 'https://easylist-downloads.adblockplus.org/easylistchina+easylist.txt' > /tmp/adnew.conf"
+sret = luci.sys.call(refresh_cmd .. " 2>/dev/null")
 if sret== 0 then
 	luci.sys.call("/usr/share/adbyby/ad-update")
 	icount = luci.sys.exec("cat /tmp/ad.conf | wc -l")
 	if tonumber(icount)>0 then
 	if nixio.fs.access("/usr/share/adbyby/dnsmasq.adblock") then
-		oldcount=luci.sys.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
+		oldcount = luci.sys.exec("cat /usr/share/adbyby/dnsmasq.adblock | wc -l")
 	else
 		oldcount=0
 	end

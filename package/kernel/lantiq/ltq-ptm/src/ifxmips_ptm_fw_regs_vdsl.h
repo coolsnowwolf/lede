@@ -79,7 +79,18 @@ struct wan_tx_mib_table {
 
 #if defined(__BIG_ENDIAN)
 
-  struct fw_ver_id {
+  struct fw_ver_id_new {    //  @2000
+    /*  0 - 3h  */
+    unsigned int family         :4;
+    unsigned int package        :4;
+    unsigned int major          :8;
+    unsigned int middle         :8;
+    unsigned int minor          :8;
+    /*  4 - 7h  */
+    unsigned int features       :32;
+  };
+
+  struct fw_ver_id {        //  @2001
     unsigned int family         :4;
     unsigned int fwtype         :4;
     unsigned int interface      :4;

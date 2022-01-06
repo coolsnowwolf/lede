@@ -11,8 +11,8 @@ function index()
 end
 
 function act_status()
-	local e={}
-	e.running=luci.sys.call("ps | grep ps3netsrv |grep -v grep >/dev/null") == 0
+	local e = {}
+	e.running = luci.sys.call("ps | grep ps3netsrv |grep -v grep >/dev/null") == 0
 	luci.http.prepare_content("application/json")
 	luci.http.write_json(e)
 end

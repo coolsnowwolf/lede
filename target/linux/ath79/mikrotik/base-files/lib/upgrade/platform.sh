@@ -32,6 +32,7 @@ platform_do_upgrade() {
 
 	case "$board" in
 	mikrotik,routerboard-493g|\
+	mikrotik,routerboard-912uag-2hpnd|\
 	mikrotik,routerboard-921gs-5hpacd-15s|\
 	mikrotik,routerboard-922uags-5hpacd|\
 	mikrotik,routerboard-sxt-5nd-r2)
@@ -39,7 +40,7 @@ platform_do_upgrade() {
 		;;
 	*)
 		# NOR devices: erase firmware if booted from initramfs
-		[ -z "$(rootfs_type)" ] && mtd erase firmware
+		[ "$(rootfs_type)" = "tmpfs" ] && mtd erase firmware
 
 		default_do_upgrade "$1"
 		;;

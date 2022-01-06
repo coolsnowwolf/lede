@@ -18,6 +18,8 @@ PKG_SOURCE_URL:=https://github.com/openwrt/cypress-nvram.git
 
 PKG_MAINTAINER:=Álvaro Fernández Rojas <noltari@gmail.com>
 
+PKG_FLAGS:=nonshared
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/cypress-nvram-default
@@ -98,6 +100,8 @@ define Package/cypress-nvram-43455-sdio-rpi-4b/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
+	$(LN) brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
+		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-compute-module.txt
 endef
 
 $(eval $(call BuildPackage,cypress-nvram-43455-sdio-rpi-4b))

@@ -89,5 +89,5 @@ define Package/libiw/install
 	$(CP) $(PKG_BUILD_DIR)/libiw.so.* $(1)/usr/lib/
 endef
 
-$(eval $(call BuildPackage,wireless-tools))
 $(eval $(call BuildPackage,libiw))
+$(eval $(call BuildPackage,wireless-tools))

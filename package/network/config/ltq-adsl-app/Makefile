@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=dsl_cpe_control_danube
 PKG_VERSION:=3.24.4.4
-PKG_RELEASE:=7
+PKG_RELEASE:=10
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_BUILD_DIR:=$(BUILD_DIR)/dsl_cpe_control-$(PKG_VERSION)
-PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+PKG_SOURCE_URL:=@OPENWRT
 PKG_HASH:=af0bdf45cc7a62e2b38d39aad4924dd83c24fae170ae5bbd8190c2a3d9106257
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 PKG_LICENSE:=BSD-3-Clause
@@ -35,7 +35,7 @@ define Package/ltq-adsl-app
   CATEGORY:=Network
   TITLE:=Lantiq DSL userland tool
   URL:=http://www.lantiq.com/
-  DEPENDS:=@(TARGET_lantiq_xway||TARGET_lantiq_xway_legacy||TARGET_lantiq_ase) +libpthread
+  DEPENDS:=@(TARGET_lantiq_xway||TARGET_lantiq_xway_legacy||TARGET_lantiq_ase) +libpthread +ltq-dsl-base +libubox +libubus
   MENU:=1
 endef
 
@@ -74,6 +74,11 @@ CONFIGURE_ARGS += \
 	--enable-dsl-pm-optional-parameters
 
 TARGET_CFLAGS += -I$(LINUX_DIR)/include
+
+define Build/Prepare
+	$(call Build/Prepare/Default)
+	$(CP) ../ltq-vdsl-app/src/src/dsl_cpe_ubus.c $(PKG_BUILD_DIR)/src/
+endef
 
 define Package/ltq-adsl-app/install
 	$(INSTALL_DIR) $(1)/etc/init.d $(1)/sbin $(1)/etc/hotplug.d/dsl

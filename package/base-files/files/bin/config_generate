@@ -7,6 +7,35 @@ CFG=/etc/board.json
 [ -s $CFG ] || /bin/board_detect || exit 1
 [ -s /etc/config/network -a -s /etc/config/system ] && exit 0
 
+generate_bridge() {
+	local name=$1
+	local macaddr=$2
+	uci -q batch <<-EOF
+		set network.$name=device
+		set network.$name.name=$name
+		set network.$name.type=bridge
+	EOF
+	if [ -n "$macaddr" ]; then
+		uci -q batch <<-EOF
+			set network.$name.macaddr=$macaddr
+		EOF
+	fi
+}
+
+bridge_vlan_id=0
+generate_bridge_vlan() {
+	local name=$1_vlan
+	local device=$2
+	local ports="$3"
+	local vlan="$4"
+	uci -q batch <<-EOF
+		set network.$name=bridge-vlan
+		set network.$name.device='$device'
+		set network.$name.vlan='$vlan'
+		set network.$name.ports='$ports'
+	EOF
+}
+
 generate_static_network() {
 	uci -q batch <<-EOF
 		delete network.loopback
@@ -62,20 +91,38 @@ generate_static_network() {
 
 addr_offset=2
 generate_network() {
-	local ifname macaddr protocol type ipaddr netmask
+	local ports ifname macaddr protocol type ipaddr netmask vlan
+	local bridge=$2
 
 	json_select network
 		json_select "$1"
-			json_get_vars ifname macaddr protocol ipaddr netmask
+			json_get_values ports ports
+			json_get_vars ifname macaddr protocol ipaddr netmask vlan
 		json_select ..
 	json_select ..
 
-	[ -n "$ifname" ] || return
+	[ -n "$ifname" -o -n "$ports" ] || return
 
-	# force bridge for multi-interface devices (and lan)
-	case "$1:$ifname" in
-		*\ * | lan:*) type="bridge" ;;
-	esac
+	# Force bridge for "lan" as it may have other devices (e.g. wireless)
+	# bridged
+	[ "$1" = "lan" -a -z "$ports" ] && {
+		ports="$ifname"
+	}
+
+	[ -n "$ports" ] && {
+		type="bridge"
+		ifname="$ports"
+	}
+
+	[ -n "$bridge" ] && {
+		if [ -z "$vlan" ]; then
+			bridge_vlan_id=$((bridge_vlan_id + 1))
+			vlan=$bridge_vlan_id
+		fi
+		generate_bridge_vlan $1 $bridge "$ifname" $vlan
+		ifname=$bridge.$vlan
+		type=""
+	}
 
 	uci -q batch <<-EOF
 		delete network.$1
@@ -236,7 +283,6 @@ generate_switch() {
 	json_select ..
 }
 
-
 generate_static_system() {
 	uci -q batch <<-EOF
 		delete system.@system[0]
@@ -251,7 +297,7 @@ generate_static_system() {
 		set system.ntp='timeserver'
 		set system.ntp.enabled='1'
 		set system.ntp.enable_server='0'
-		add_list system.ntp.server='ntp1.aliyun.com'
+		add_list system.ntp.server='ntp.aliyun.com'
 		add_list system.ntp.server='time1.cloud.tencent.com'
 		add_list system.ntp.server='time.ustc.edu.cn'
 		add_list system.ntp.server='cn.pool.ntp.org'
@@ -262,6 +308,13 @@ generate_static_system() {
 			local hostname
 			if json_get_var hostname hostname; then
 				uci -q set "system.@system[-1].hostname=$hostname"
+			fi
+
+			local compat_version
+			if json_get_var compat_version compat_version; then
+				uci -q set "system.@system[-1].compat_version=$compat_version"
+			else
+				uci -q set "system.@system[-1].compat_version=1.0"
 			fi
 
 			if json_is_a ntpserver array; then
@@ -429,11 +482,21 @@ json_load "$(cat ${CFG})"
 umask 077
 
 if [ ! -s /etc/config/network ]; then
+	bridge_name=""
 	touch /etc/config/network
 	generate_static_network
 
+	json_get_vars bridge
+	[ -n "$bridge" ] && {
+		json_select bridge
+		json_get_vars name macaddr
+		generate_bridge "$name" "$macaddr"
+		json_select ..
+		bridge_name=$name
+	}
+
 	json_get_keys keys network
-	for key in $keys; do generate_network $key; done
+	for key in $keys; do generate_network $key $bridge_name; done
 
 	json_get_keys keys switch
 	for key in $keys; do generate_switch $key; done

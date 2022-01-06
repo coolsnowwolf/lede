@@ -218,7 +218,7 @@ $(eval $(call KernelPackage,dax))
 define KernelPackage/dm
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Device Mapper
-  DEPENDS:=+kmod-crypto-manager +kmod-dax
+  DEPENDS:=+kmod-crypto-manager +kmod-dax +KERNEL_KEYS:kmod-keys-encrypted
   # All the "=n" are unnecessary, they're only there
   # to stop the config from asking the question.
   # MIRROR is M because I've needed it for pvmove.
@@ -513,11 +513,13 @@ define KernelPackage/scsi-core
   TITLE:=SCSI device support
   KCONFIG:= \
 	CONFIG_SCSI \
+  CONFIG_SCSI_COMMON@ge5.15 \
 	CONFIG_BLK_DEV_SD
   FILES:= \
 	$(LINUX_DIR)/drivers/scsi/scsi_mod.ko \
+	$(LINUX_DIR)/drivers/scsi/scsi_common.ko@ge5.15 \
 	$(LINUX_DIR)/drivers/scsi/sd_mod.ko
-  AUTOLOAD:=$(call AutoLoad,40,scsi_mod sd_mod,1)
+  AUTOLOAD:=$(call AutoLoad,40,scsi_mod scsi_common@ge5.15 sd_mod,1)
 endef
 
 $(eval $(call KernelPackage,scsi-core))
@@ -537,16 +539,24 @@ endef
 $(eval $(call KernelPackage,scsi-generic))
 
 
+define KernelPackage/cdrom
+  TITLE:=Kernel library module for CD / DVD drives
+  KCONFIG:=CONFIG_CDROM
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/cdrom/cdrom.ko
+endef
+
+$(eval $(call KernelPackage,cdrom))
+
+
 define KernelPackage/scsi-cdrom
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=Kernel support for CD / DVD drives
-  DEPENDS:=+kmod-scsi-core
+  DEPENDS:=+kmod-scsi-core +kmod-cdrom
   KCONFIG:= \
     CONFIG_BLK_DEV_SR \
     CONFIG_BLK_DEV_SR_VENDOR=n
-  FILES:= \
-    $(LINUX_DIR)/drivers/cdrom/cdrom.ko \
-    $(LINUX_DIR)/drivers/scsi/sr_mod.ko
+  FILES:=$(LINUX_DIR)/drivers/scsi/sr_mod.ko
   AUTOLOAD:=$(call AutoLoad,45,sr_mod)
 endef
 
