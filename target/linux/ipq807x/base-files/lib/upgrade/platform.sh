@@ -10,6 +10,11 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	qnap,301w)
+		kernelname="0:HLOS"
+		rootfsname="rootfs"
+		mmc_do_upgrade "$1"
+		;;
 	redmi,ax6|\
 	xiaomi,ax3600|\
 	xiaomi,ax9000)
