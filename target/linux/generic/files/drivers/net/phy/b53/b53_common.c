@@ -529,7 +529,7 @@ static int b53_configure_ports_of(struct b53_device *dev)
 						po |= PORT_OVERRIDE_SPEED_2000M;
 					else
 						po |= GMII_PO_SPEED_2000M;
-					/* fall through */
+					__attribute__((__fallthrough__));
 				case 1000:
 					po |= GMII_PO_SPEED_1000M;
 					break;
