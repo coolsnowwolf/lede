@@ -44,7 +44,7 @@ endef
 
 define Package/libdw
   $(call Package/elfutils/Default)
-  DEPENDS:=+libelf +libbz2
+  DEPENDS:=+libelf +libbz2 +USE_MUSL:musl-fts
   TITLE+= (libdw)
 endef
 
