@@ -411,9 +411,15 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 	char ssid[SSID_MAX_LEN + 1];
 	char phy_name[17];
 	size_t ssid_len = SSID_MAX_LEN;
+	u8 channel = 0, op_class = 0;
 
 	if (hapd->conf->ssid.ssid_len < SSID_MAX_LEN)
 		ssid_len = hapd->conf->ssid.ssid_len;
+	
+	ieee80211_freq_to_channel_ext(hapd->iface->freq,
+				      hapd->iconf->secondary_channel,
+				      hostapd_get_oper_chwidth(hapd->iconf),
+				      &op_class, &channel);
 
 	blob_buf_init(&b, 0);
 	blobmsg_add_string(&b, "status", hostapd_state_text(hapd->iface->state));
@@ -424,7 +430,8 @@ hostapd_bss_get_status(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_string(&b, "ssid", ssid);
 
 	blobmsg_add_u32(&b, "freq", hapd->iface->freq);
-	blobmsg_add_u32(&b, "channel", ieee80211_frequency_to_channel(hapd->iface->freq));
+	blobmsg_add_u32(&b, "channel", channel);
+	blobmsg_add_u32(&b, "op_class", op_class);
 	blobmsg_add_u32(&b, "beacon_interval", hapd->iconf->beacon_int);
 
 	snprintf(phy_name, 17, "%s", hapd->iface->phy);
