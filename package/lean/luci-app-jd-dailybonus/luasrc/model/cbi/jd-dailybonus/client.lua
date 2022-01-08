@@ -54,6 +54,12 @@ o = s:option(Value, 'dd_token', translate('Dingding Bot Token'))
 o.rmempty = true
 o.description = translate('创建一个群机器人并获取API Token，设置安全关键字为:京东')
 
+-- pushplus
+
+o = s:option(Value, 'pp_token', translate('pushplus Token'))
+o.rmempty = true
+o.description = translate('微信推送，基于pushplus服务，请自行登录 https://www.pushplus.plus/ 绑定并获取 Token。')
+
 -- telegram
 
 o = s:option(Value, 'tg_token', translate('Telegram Bot Token'))
