@@ -48,6 +48,7 @@ define KernelPackage/bonding
   KCONFIG:=CONFIG_BONDING
   FILES:=$(LINUX_DIR)/drivers/net/bonding/bonding.ko
   AUTOLOAD:=$(call AutoLoad,40,bonding)
+  MODPARAMS.bonding:=max_bonds=0
 endef
 
 define KernelPackage/bonding/description
@@ -375,7 +376,7 @@ $(eval $(call KernelPackage,ip6-vti))
 define KernelPackage/xfrm-interface
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=IPsec XFRM Interface
-  DEPENDS:=+kmod-ipsec4 +IPV6:kmod-ipsec6
+  DEPENDS:=@IPV6 +kmod-ipsec4 +kmod-ipsec6
   KCONFIG:=CONFIG_XFRM_INTERFACE
   FILES:=$(LINUX_DIR)/net/xfrm/xfrm_interface.ko
   AUTOLOAD:=$(call AutoProbe,xfrm_interface)
@@ -1075,7 +1076,8 @@ define KernelPackage/sctp
      CONFIG_SCTP_DEFAULT_COOKIE_HMAC_MD5=y
   FILES:= $(LINUX_DIR)/net/sctp/sctp.ko
   AUTOLOAD:= $(call AutoLoad,32,sctp)
-  DEPENDS:=+kmod-lib-crc32c +kmod-crypto-md5 +kmod-crypto-hmac
+  DEPENDS:=+kmod-lib-crc32c +kmod-crypto-md5 +kmod-crypto-hmac \
+    +LINUX_5_15:kmod-udptunnel4 +LINUX_5_15:kmod-udptunnel6
 endef
 
 define KernelPackage/sctp/description
@@ -1285,3 +1287,67 @@ define KernelPackage/wireguard/description
 endef
 
 $(eval $(call KernelPackage,wireguard))
+
+
+define KernelPackage/qrtr
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Qualcomm IPC Router support
+  HIDDEN:=1
+  DEPENDS:=@LINUX_5_15
+  KCONFIG:=CONFIG_QRTR
+  FILES:= \
+  $(LINUX_DIR)/net/qrtr/qrtr.ko \
+  $(LINUX_DIR)/net/qrtr/ns.ko
+  AUTOLOAD:=$(call AutoProbe,qrtr)
+endef
+
+define KernelPackage/qrtr/description
+ Qualcomm IPC Router support
+endef
+
+$(eval $(call KernelPackage,qrtr))
+
+define KernelPackage/qrtr-tun
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=TUN device for Qualcomm IPC Router
+  DEPENDS:=+kmod-qrtr
+  KCONFIG:=CONFIG_QRTR_TUN
+  FILES:= $(LINUX_DIR)/net/qrtr/qrtr-tun.ko
+  AUTOLOAD:=$(call AutoProbe,qrtr-tun)
+endef
+
+define KernelPackage/qrtr-tun/description
+ TUN device for Qualcomm IPC Router
+endef
+
+$(eval $(call KernelPackage,qrtr-tun))
+
+define KernelPackage/qrtr-smd
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=SMD IPC Router channels
+  DEPENDS:=+kmod-qrtr @TARGET_ipq807x
+  KCONFIG:=CONFIG_QRTR_SMD
+  FILES:= $(LINUX_DIR)/net/qrtr/qrtr-smd.ko
+  AUTOLOAD:=$(call AutoProbe,qrtr-smd)
+endef
+
+define KernelPackage/qrtr-smd/description
+ SMD IPC Router channels
+endef
+
+$(eval $(call KernelPackage,qrtr-smd))
+
+define KernelPackage/qrtr-mhi
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=MHI IPC Router channels
+  DEPENDS:=+kmod-mhi +kmod-qrtr
+  KCONFIG:=CONFIG_QRTR_MHI
+  FILES:= $(LINUX_DIR)/net/qrtr/qrtr-mhi.ko
+  AUTOLOAD:=$(call AutoProbe,qrtr-mhi)
+endef
+
+define KernelPackage/qrtr-mhi/description
+ MHI IPC Router channels
+endef
+
+$(eval $(call KernelPackage,qrtr-mhi))
