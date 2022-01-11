@@ -233,7 +233,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		strlcat(state->pp_buf, tmp, PAGE_SIZE);
 
 		state->parts[*slot].has_info = true;
-
+		state->parts[*slot].flags |= ADDPART_FLAG_READONLY;
 		if (config_loadables && !strcmp(image_name, config_loadables)) {
 			printk(KERN_DEBUG "FIT: selecting configured loadable \"%s\" to be root filesystem\n", image_name);
 			state->parts[*slot].flags |= ADDPART_FLAG_ROOTDEV;
