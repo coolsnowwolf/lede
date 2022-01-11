@@ -1,17 +1,188 @@
 <%
-local api = require "luci.model.cbi.kodexplorer.api"
-local app_version = api.get_version()
+local app_version = require "luci.model.cbi.kodexplorer.api".get_version()
 -%>
 
 <% if app_version and app_version ~= "" then %>
-<div class="cbi-value">
-	<label class="cbi-value-title">
-		<%:Version%>
-	</label>
-	<div class="cbi-value-field">
-		<div class="cbi-value-description">
-			<span>【 <%=app_version%> 】</span>
+	<div class="cbi-value">
+		<label class="cbi-value-title">
+			<%:Version%>
+		</label>
+		<div class="cbi-value-field">
+			<div class="cbi-value-description">
+				<span>【 <%=app_version%> 】</span>
+			</div>
 		</div>
 	</div>
-</div>
+<% else %>
+	<div class="cbi-value">
+		<label class="cbi-value-title">
+			<%:Manually update%>
+		</label>
+		<div class="cbi-value-field">
+			<input class="cbi-button cbi-input-apply" type="button" id="download_btn" value="<%:Manually update%>" onclick="downloadClick(this);">
+			<span id="download-detail"></span>
+			<div class="cbi-value-description">
+				<%:Make sure you have enough space.%>
+				<br />
+				<font style='color:red'>
+					<%:Be sure to fill out the device path and store path for the first run, and then save the application. Then manually download, otherwise can not use!%>
+				</font>
+			</div>
+		</div>
+	</div>
 <% end %>
+
+<script type="text/javascript">
+	//<![CDATA[
+	var msgInfo;
+
+	var tokenStr = '<%=token%>';
+	var clickToDownloadText = '<%:Click to update%>';
+	var inProgressText = '<%:Updating...%>';
+	var downloadInProgressNotice = '<%:Updating, are you sure to close?%>';
+	var downloadSuccessText = '<%:Update successful%>';
+	var unexpectedErrorText = '<%:Unexpected error%>';
+	var downloadingText = '<%:Downloading...%>';
+	var decompressioningText = '<%:Unpacking...%>';
+	var movingText = '<%:Moving...%>';
+	var latestVersionText = '<%:The latest version:%>';
+
+	function addPageNotice() {
+		window.onbeforeunload = function (e) {
+			e.returnValue = downloadInProgressNotice;
+			return downloadInProgressNotice;
+		};
+	}
+
+	function removePageNotice() {
+		window.onbeforeunload = undefined;
+	}
+
+	function onRequestError(btn, errorMessage) {
+		btn.disabled = false;
+		btn.value = '<%:Manually update%>';
+
+		if (errorMessage) {
+			alert(errorMessage);
+		}
+	}
+
+	function doAjaxGet(url, data, onResult) {
+		new XHR().get(url, data, function (_, json) {
+			var resultJson = json || {
+				'code': 1,
+				'error': unexpectedErrorText
+			};
+
+			if (typeof onResult === 'function') {
+				onResult(resultJson);
+			}
+		})
+	}
+
+	function downloadClick(btn) {
+		if (msgInfo === undefined) {
+			checkUpdate(btn);
+		} else {
+			doDownload(btn);
+		}
+	}
+
+	function checkUpdate(btn) {
+		var text = btn.value;
+		btn.disabled = true;
+		btn.value = inProgressText;
+
+		addPageNotice();
+
+		var ckeckDetailElm = document.getElementById('download-detail');
+
+		doAjaxGet('<%=url([[admin]], [[nas]], [[kodexplorer]], [[check]])%>', {
+			token: tokenStr
+		}, function (json) {
+			removePageNotice();
+			if (json.code && json.data.server) {
+				var server = json.data.server;
+				eval('Info = json');
+				btn.disabled = false;
+				btn.value = clickToDownloadText;
+				btn.placeholder = clickToDownloadText;
+				if (ckeckDetailElm) {
+					var urlNode = '';
+					if (server.version) {
+						urlNode = '<em style="color:red;">' + latestVersionText + server.version + '</em>';
+						var html_url = 'https://kodcloud.com/download/';
+						if (html_url) {
+							urlNode = '<a href="' + html_url + '" target="_blank">' + urlNode + '</a>';
+						}
+					}
+					ckeckDetailElm.innerHTML = urlNode;
+				}
+				msgInfo = server;
+			} else {
+				removePageNotice();
+				btn.disabled = false;
+				btn.value = text;
+				onRequestError(btn, unexpectedErrorText);
+			}
+		});
+	}
+
+	function doDownload(btn) {
+		btn.disabled = true;
+		btn.value = downloadingText;
+
+		addPageNotice();
+
+		var UpdateUrl = '<%=url([[admin]], [[nas]], [[kodexplorer]], [[download]])%>';
+		// Download file
+		doAjaxGet(UpdateUrl, {
+			token: tokenStr,
+			url: msgInfo ? msgInfo.link : ''
+		}, function (json) {
+			if (json.code) {
+				removePageNotice();
+				onRequestError(btn, json.error);
+			} else {
+				btn.value = decompressioningText;
+
+				// Extract file
+				doAjaxGet(UpdateUrl, {
+					token: tokenStr,
+					task: 'extract',
+					file: json.file
+				}, function (json) {
+					if (json.code) {
+						removePageNotice();
+						onRequestError(btn, json.error);
+					} else {
+						btn.value = movingText;
+
+						// Move file to target dir
+						doAjaxGet(UpdateUrl, {
+							token: tokenStr,
+							task: 'move',
+							file: json.file
+						}, function (json) {
+							removePageNotice();
+							if (json.code) {
+								onRequestError(btn, json.error);
+							} else {
+								alert(downloadSuccessText);
+								if (btn) {
+									btn.value = downloadSuccessText;
+									btn.placeholder = downloadSuccessText;
+									btn.disabled = true;
+								}
+								window.setTimeout(function () {
+									window.location.reload();
+								}, 1000);
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+	//]]>
+</script>
