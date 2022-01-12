@@ -86,6 +86,13 @@ notify() {
     	uclient-fetch -q --post-file=/tmp/jd-djson.json "https://oapi.dingtalk.com/robot/send?access_token=${dtoken}"
     fi
 
+    #pushplus
+    ptoken=$(uci_get_by_type global pp_token)
+    POST_URL="http://www.pushplus.plus/send"
+    if [ ! -z $ptoken ]; then
+        curl -s -d "{\"token\":\"$ptoken\",\"title\":\"$title\",\"content\":\"$desc\"}" -H 'Content-Type: application/json' $POST_URL
+    fi
+
     #telegram
     TG_BOT_TOKEN=$(uci_get_by_type global tg_token)
     TG_USER_ID=$(uci_get_by_type global tg_userid)
