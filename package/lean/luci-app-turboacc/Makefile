@@ -42,7 +42,7 @@ config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE_DRV
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_SHORTCUT_FE
 	bool "Include Shortcut-FE"
-	default y if !(TARGET_ipq806x||TARGET_ipq807x||TARGET_ramips)
+	default y if !(TARGET_ipq806x||TARGET_ipq807x||TARGET_ramips||i386||x86_64)
 
 config PACKAGE_$(PKG_NAME)_INCLUDE_BBR_CCA
 	bool "Include BBR CCA"
