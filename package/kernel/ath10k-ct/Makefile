@@ -10,7 +10,7 @@ PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2021-11-01
 PKG_SOURCE_VERSION:=3d3450c55b983c22753a0f7ff197ec1525140348
-PKG_MIRROR_HASH:=skip
+PKG_MIRROR_HASH:=d0e49951cc861805580109497c5654c52be5af559b1a0e05715edd991e53be35
 
 # Build the 5.10 ath10k-ct driver version.
 # Probably this should match as closely as
