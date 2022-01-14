@@ -305,11 +305,11 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	struct net_device *dest_dev;
 	struct net_device *src_dev_tmp;
 	struct net_device *dest_dev_tmp;
-	struct sk_buff *tmp_skb = NULL;
 	struct net_device *src_br_dev = NULL;
 	struct net_device *dest_br_dev = NULL;
 	struct nf_conntrack_tuple orig_tuple;
 	struct nf_conntrack_tuple reply_tuple;
+	struct sk_buff *tmp_skb = NULL;
 	SFE_NF_CONN_ACCT(acct);
 
 	/*
@@ -527,7 +527,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 			return NF_ACCEPT;
 		}
 		spin_unlock_bh(&ct->lock);
-		
+
 		/*
 		 * Somehow, SFE is not playing nice with IPSec traffic.
 		 * Do not accelerate for now.
@@ -934,7 +934,7 @@ static void sfe_cm_sync_rule(struct sfe_connection_sync *sis)
 #else
 				timeouts = nf_ct_timeout_lookup(ct);
 				if (!timeouts) {
-					timeouts = udp_get_timeouts(nf_ct_net(ct));
+					timeouts = nf_udp_pernet(nf_ct_net(ct))->timeouts;
 				}
 
 				spin_lock_bh(&ct->lock);
