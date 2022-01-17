@@ -51,6 +51,10 @@ static inline int has_feature(const char *feat)
 	if (!strcmp(feat, "wps"))
 		return 1;
 #endif
+#ifdef CONFIG_FILS
+	if (!strcmp(feat, "fils"))
+		return 1;
+#endif
 	return 0;
 }
 
