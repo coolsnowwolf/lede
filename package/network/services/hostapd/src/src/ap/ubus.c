@@ -1229,7 +1229,7 @@ hostapd_rrm_nr_set(struct ubus_context *ctx, struct ubus_object *obj,
 			memcpy(&ssid, s, ssid.ssid_len);
 		}
 
-		hostapd_neighbor_set(hapd, bssid, &ssid, data, NULL, NULL, 0);
+		hostapd_neighbor_set(hapd, bssid, &ssid, data, NULL, NULL, 0, 0);
 		wpabuf_free(data);
 		continue;
 
