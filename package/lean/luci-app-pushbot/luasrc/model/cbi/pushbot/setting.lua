@@ -1,4 +1,4 @@
-  
+
 local nt = require "luci.sys".net
 local fs=require"nixio.fs"
 local e=luci.model.uci.cursor()
@@ -48,11 +48,11 @@ a:value("/usr/bin/pushbot/api/bark.json",translate("Bark"))
 a:value("/usr/bin/pushbot/api/pushplus.json",translate("PushPlus"))
 a:value("/usr/bin/pushbot/api/diy.json",translate("自定义推送"))
 
-a=s:taboption("basic", Value,"dd_webhook",translate('Webhook'), translate("钉钉机器人 Webhook").."只输入aaccess_token=后面的即可<br>调用代码获取<a href='https://developers.dingtalk.com/document/robots/custom-robot-access' target='_blank'>点击这里</a><br><br>")
+a=s:taboption("basic", Value,"dd_webhook",translate('Webhook'), translate("钉钉机器人 Webhook").."，只输入access_token=后面的即可<br>调用代码获取<a href='https://developers.dingtalk.com/document/robots/custom-robot-access' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("jsonpath","/usr/bin/pushbot/api/dingding.json")
 
-a=s:taboption("basic", Value, "we_webhook", translate("Webhook"),translate("企业微信机器人 Webhook").."<br>调用代码获取<a href='https://work.weixin.qq.com/api/doc/90000/90136/91770' target='_blank'>点击这里</a><br><br>")
+a=s:taboption("basic", Value, "we_webhook", translate("Webhook"),translate("企业微信机器人 Webhook").."，只输入key=后面的即可<br>调用代码获取<a href='https://work.weixin.qq.com/api/doc/90000/90136/91770' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("jsonpath","/usr/bin/pushbot/api/ent_wechat.json")
 
@@ -100,6 +100,26 @@ a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
 a=s:taboption("basic", Value,"bark_srv",translate('Bark Server'), translate("Bark 自建服务器地址").."<br>如https://your.domain:port<br>具体自建服务器设定参见：<a href='https://github.com/Finb/Bark' target='_blank'>点击这里</a><br><br>")
 a.rmempty = true
 a:depends("bark_srv_enable","1")
+
+a=s:taboption("basic", Value,"bark_sound",translate('Bark Sound'), translate("Bark 通知声音").."<br>如silence.caf<br>具体设定参见：<a href='https://github.com/Finb/Bark/tree/master/Sounds' target='_blank'>点击这里</a><br><br>")
+a.rmempty = true
+a.default = "silence.caf"
+a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
+
+a=s:taboption("basic", Flag,"bark_icon_enable",translate(" Bark 通知图标"))
+a.default=0
+a.rmempty = true
+a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
+
+a=s:taboption("basic", Value,"bark_icon",translate('Bark Icon'), translate("Bark 通知图标").."(仅 iOS15 或以上支持)<br>如http://day.app/assets/images/avatar.jpg<br>具体设定参见：<a href='https://github.com/Finb/Bark#%E5%85%B6%E4%BB%96%E5%8F%82%E6%95%B0' target='_blank'>点击这里</a><br><br>")
+a.rmempty = true
+a.default = "http://day.app/assets/images/avatar.jpg"
+a:depends("bark_icon_enable","1")
+
+a=s:taboption("basic", Value,"bark_level",translate('Bark Level'), translate("Bark 时效性通知").."<br>可选参数值：<br/>active：不设置时的默认值，系统会立即亮屏显示通知。<br/>timeSensitive：时效性通知，可在专注状态下显示通知。<br/>passive：仅将通知添加到通知列表，不会亮屏提醒。")
+a.rmempty = true
+a.default = "active"
+a:depends("jsonpath","/usr/bin/pushbot/api/bark.json")
 
 a=s:taboption("basic", TextValue, "diy_json", translate("自定义推送"))
 a.optional = false
@@ -355,8 +375,8 @@ a=s:taboption("crontab", ListValue,"regular_time",translate("发送时间"))
 a.rmempty = true
 for t=0,23 do
 a:value(t,translate("每天"..t.."点"))
-end	
-a.default=8	
+end
+a.default=8
 a.datatype=uinteger
 a:depends("crontab","1")
 
@@ -365,7 +385,7 @@ a.rmempty = true
 a:value("",translate("关闭"))
 for t=0,23 do
 a:value(t,translate("每天"..t.."点"))
-end	
+end
 a.default="关闭"
 a.datatype=uinteger
 a:depends("crontab","1")
@@ -376,7 +396,7 @@ a.rmempty = true
 a:value("",translate("关闭"))
 for t=0,23 do
 a:value(t,translate("每天"..t.."点"))
-end	
+end
 a.default="关闭"
 a.datatype=uinteger
 a:depends("crontab","1")
@@ -406,7 +426,7 @@ a=s:taboption("crontab", Flag,"router_temp",translate("设备温度"))
 a.default=1
 a:depends("crontab","1")
 a:depends("crontab","2")
- 
+
 a=s:taboption("crontab", Flag,"router_wan",translate("WAN信息"))
 a.default=1
 a:depends("crontab","1")
@@ -415,7 +435,14 @@ a:depends("crontab","2")
 a=s:taboption("crontab", Flag,"client_list",translate("客户端列表"))
 a.default=1
 a:depends("crontab","1")
-a:depends("crontab","2") 
+a:depends("crontab","2")
+
+a=s:taboption("crontab", Value,"google_check_timeout",translate("全球互联检测超时时间"))
+a.rmempty = true
+a.optional = false
+a.default = "10"
+a.datatype = "and(uinteger,min(3))"
+a.description = translate("过短的时间可能导致检测不准确")
 
 e=s:taboption("crontab", Button,"_add",translate("手动发送"))
 e.inputtitle=translate("发送")

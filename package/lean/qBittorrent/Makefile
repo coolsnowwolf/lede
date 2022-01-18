@@ -7,12 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qbittorrent
-PKG_VERSION:=4.3.9
+PKG_VERSION:=4.4.0
 PKG_RELEASE=1
 
 PKG_SOURCE:=qBittorrent-release-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/qbittorrent/qBittorrent/tar.gz/release-$(PKG_VERSION)?
-PKG_HASH:=6ff801cfe2beeb9fca24d4565e863e06f46bb8fc56c0eb833293ff31b3bfe83a
+PKG_HASH:=da240744c6cc5953d7c4d298a02a0cf36d2c8897931819f1e6459bd5270a7c5c
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/qBittorrent-release-$(PKG_VERSION)
 
@@ -37,6 +37,7 @@ define Package/qbittorrent
 		+libopenssl \
 		+qt5-core \
 		+qt5-network \
+		+qt5-sql \
 		+qt5-xml \
 		+zlib
 	TITLE:=bittorrent client programmed in C++ / Qt
