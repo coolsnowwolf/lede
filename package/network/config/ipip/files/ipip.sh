@@ -12,7 +12,7 @@ proto_ipip_setup() {
 	local remoteip
 
 	local df ipaddr peeraddr tunlink ttl tos zone mtu
-	json_get_vars df ipaddr peeraddr tunlink ttl tos zone mtu
+	json_get_vars df ipaddr peeraddr tunlink ttl tos zone mtu nohostroute
 
 	[ -z "$peeraddr" ] && {
 		proto_notify_error "$cfg" "MISSING_PEER_ADDRESS"
@@ -32,7 +32,9 @@ proto_ipip_setup() {
 		break
 	done
 
-	( proto_add_host_dependency "$cfg" "$peeraddr" "$tunlink" )
+	if [ "${nohostroute}" != "1" ]; then
+		( proto_add_host_dependency "$cfg" "$peeraddr" "$tunlink" )
+	fi
 
 	[ -z "$ipaddr" ] && {
 		local wanif="$tunlink"
@@ -84,6 +86,7 @@ proto_ipip_init_config() {
 	proto_config_add_string "ipaddr"
 	proto_config_add_string "peeraddr"
 	proto_config_add_boolean "df"
+	proto_config_add_boolean "nohostroute"
 }
 
 [ -n "$INCLUDE_ONLY" ] || {
