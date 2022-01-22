@@ -1,0 +1,22 @@
+#!/bin/sh
+# Copyright (C) 2012-2015 OpenWrt.org
+
+move_config() {
+	local partdev
+
+	. /lib/upgrade/common.sh
+
+	if export_bootdevice && export_partdevice partdev 1; then
+		mkdir -p /boot
+		if mount -t ext4 -o ro,noatime "/dev/$partdev" /boot; then
+			if [ -f /boot/sysupgrade.tgz ]; then
+				mount /boot -o remount,rw,noatime
+				mv -f /boot/sysupgrade.tgz /
+				mount /boot -o remount,ro,noatime
+			fi
+		fi
+	fi
+}
+
+boot_hook_add preinit_mount_root move_config
+
