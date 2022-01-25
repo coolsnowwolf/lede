@@ -317,6 +317,16 @@ define Package/lscpu/description
  lscpu displays information about the CPU architecture
 endef
 
+define Package/lslocks
+$(call Package/util-linux/Default)
+  TITLE:=list local system locks
+  DEPENDS:= +libmount +libsmartcols
+endef
+
+define Package/lslocks/description
+ lslocks lists information about all the currently held file locks in a Linux system
+endef
+
 define Package/more
 $(call Package/util-linux/Default)
   TITLE:=filter for paging through text one screenful at a time
@@ -704,6 +714,11 @@ define Package/lscpu/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lscpu $(1)/usr/bin/
 endef
 
+define Package/lslocks/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lslocks $(1)/usr/bin/
+endef
+
 define Package/more/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/more $(1)/usr/bin/
@@ -831,6 +846,7 @@ $(eval $(call BuildPackage,look))
 $(eval $(call BuildPackage,losetup))
 $(eval $(call BuildPackage,lsblk))
 $(eval $(call BuildPackage,lscpu))
+$(eval $(call BuildPackage,lslocks))
 $(eval $(call BuildPackage,more))
 $(eval $(call BuildPackage,mcookie))
 $(eval $(call BuildPackage,mount-utils))
