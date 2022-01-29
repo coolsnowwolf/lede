@@ -447,6 +447,18 @@ define Device/norton_core-518
 endef
 TARGET_DEVICES += norton_core-518
 
+define Device/surf_g-nat200
+	$(call Device/LegacyImage)
+	DEVICE_VENDOR := SURF
+	DEVICE_MODEL := G-NAT200
+	SOC := qcom-ipq8064
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 26624k
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+endef
+TARGET_DEVICES += surf_g-nat200
+
 define Device/tplink_ad7200
 	$(call Device/TpSafeImage)
 	DEVICE_VENDOR := TP-Link
