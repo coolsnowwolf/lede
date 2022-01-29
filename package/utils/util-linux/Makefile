@@ -542,6 +542,7 @@ CONFIGURE_ARGS += \
 	--disable-lslogins		\
 	--disable-runuser		\
 	--disable-chfn-chsh		\
+	--disable-raw			\
 	--without-python		\
 	--without-udev			\
 	--without-readline		\
