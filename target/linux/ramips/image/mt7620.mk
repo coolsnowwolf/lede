@@ -456,7 +456,7 @@ define Device/hiwifi_hc5661
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5661
-  DEVICE_PACKAGES := kmod-sdhci-mt7620
+  DEVICE_PACKAGES := kmod-sdhci-mt7620 kmod-sdhci 
   SUPPORTED_DEVICES += hc5661
 endef
 TARGET_DEVICES += hiwifi_hc5661
@@ -466,7 +466,7 @@ define Device/hiwifi_hc5761
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5761
-  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += hc5761
 endef
@@ -477,7 +477,7 @@ define Device/hiwifi_hc5761-32m
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5761-32M
-  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += hc5761-32m
 endef
@@ -488,7 +488,7 @@ define Device/hiwifi_hc5861
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5861
-  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += hc5861
 endef
@@ -499,7 +499,7 @@ define Device/hiwifi_hc5861-32m
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5861-32M
-  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci kmod-sdhci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += hc5861-32m
 endef
