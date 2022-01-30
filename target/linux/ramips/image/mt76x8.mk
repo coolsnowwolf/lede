@@ -175,6 +175,7 @@ define Device/hiwifi_hc5611
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
   DEVICE_MODEL := HC5611
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += hc5611
 endef
 TARGET_DEVICES += hiwifi_hc5611
