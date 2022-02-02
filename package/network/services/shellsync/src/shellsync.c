@@ -4,20 +4,23 @@
 	> Mail: gch981213@gmail.com
 	> Created Time: 2014年11月06日 星期四 19时15分30秒
  ************************************************************************/
-#include<stdio.h>
-#include<semaphore.h>
-#include<fcntl.h>
-#include<stdlib.h>
-#include<time.h>
-#include<errno.h>
+#include <stdio.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <time.h>
+#include <errno.h>
+
 #define SEM_BLOCK_NAME  "SYNCSHELL_block"
 #define SEM_COUNT_NAME  "SYNCSHELL_count"
+
 int wait_timeout;
+
 int sync_wait(int nproc)
 {
     int flags;
     int value;
-    sem_t *block; 
+    sem_t *block;
     sem_t *count;
     struct timespec ts;
 
@@ -31,7 +34,6 @@ int sync_wait(int nproc)
         return -1;
     }
     ts.tv_sec += wait_timeout;
-
 
     flags = O_RDWR | O_CREAT;
     block = sem_open(SEM_BLOCK_NAME, flags, 0644, 0);
@@ -50,6 +52,7 @@ int sync_wait(int nproc)
         return -1;
     }
     printf("%d processes have arrived, waiting for the left %d\n", value, nproc-value);
+
     if (value >= nproc) {
         while (nproc-1 > 0) {
             if (sem_post(block) < 0) {
@@ -67,7 +70,6 @@ int sync_wait(int nproc)
             }
             return -1;
         }
-
     }
 
     sem_close(count);
