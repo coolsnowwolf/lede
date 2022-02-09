@@ -123,20 +123,17 @@ e.rmempty=false
 e = t:taboption("other", Value, "admin_port", translate("Admin Web Port"))
 e.datatype = "port"
 e.default = 7400
-e.rmempty = false
 e:depends("admin_enable",1)
 
 e = t:taboption("other", Value, "admin_user", translate("Admin Web UserName"))
 e.optional = false
 e.default = "admin"
-e.rmempty=false
 e:depends("admin_enable",1)
 
 e = t:taboption("other", Value, "admin_pwd", translate("Admin Web PassWord"))
 e.optional = false
 e.default = "admin"
 e.password = true
-e.rmempty = false
 e:depends("admin_enable",1)
 
 e = t:taboption("log", TextValue,"log")
