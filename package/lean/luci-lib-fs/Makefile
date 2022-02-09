@@ -11,7 +11,7 @@ PKG_NAME:=luci-lib-fs
 PKG_VERSION:=1.0
 PKG_RELEASE:=1
 
-PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
+PKG_BUILD_DIR:= $(BUILD_DIR)/$(PKG_NAME)
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -22,8 +22,8 @@ define Package/luci-lib-fs
   CATEGORY:=Languages
   TITLE:=luci-lib-fs
   PKGARCH:=all
-  URL:=https://github.com/lbthomsen/openwrt-luci
-  DEPENDS:=+luci +luci-lib-nixio
+  URL:=https://github.com/openwrt/luci
+  DEPENDS:=+luci-lib-nixio
 endef
 
 define Package/luci-lib-fs/description
