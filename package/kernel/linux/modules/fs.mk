@@ -409,7 +409,7 @@ $(eval $(call KernelPackage,fs-nfs-ssc))
 define KernelPackage/fs-nfs-common
   SUBMENU:=$(FS_MENU)
   TITLE:=Common NFS filesystem modules
-  DEPENDS:=+!LINUX_5_4:kmod-fs-nfs-ssc
+  DEPENDS:=+kmod-oid-registry
   KCONFIG:= \
 	CONFIG_LOCKD \
 	CONFIG_SUNRPC \
