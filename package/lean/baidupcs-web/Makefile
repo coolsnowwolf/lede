@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=baidupcs-web
-PKG_VERSION:=3.7.4
-PKG_RELEASE:=1
+PKG_VERSION:=3.7.4-nnew
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/Erope/BaiduPCS-Go.git
-PKG_SOURCE_VERSION:=5649b562ef4d5390fa18a996042f5f7d27b2ef8d
-PKG_MIRROR_HASH:=5cdff81544f52cbadc8eb0eb7a855a41ad8f751edd702e9da5f3a05041baf81d
+PKG_SOURCE_VERSION:=cffd49d0709f9c7d3dd6ae5c9625f68bfd446166
+PKG_MIRROR_HASH:=2cb9c9e27613cf4126234c969f1928e392108ad4f1580b3eac92339c42a2ab0a
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -35,26 +35,28 @@ GO_PKG_LDFLAGS_X:=main.Version=v$(PKG_VERSION)
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	TITLE:=BaiduPCS-Web is a web controller for BaiduPCS-Go
-	URL:=https://github.com/Erope/BaiduPCS-Go
-	DEPENDS:=$(GO_ARCH_DEPENDS)
+define Package/baidupcs-web
+  TITLE:=BaiduPCS-Web is a web controller for BaiduPCS-Go
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Web Servers/Proxies
+  URL:=https://github.com/Erope/BaiduPCS-Go
+  DEPENDS:=$(GO_ARCH_DEPENDS)
 endef
 
-define Package/$(PKG_NAME)/description
+define Package/baidupcs-web/description
 BaiduPCS-Web is a web controller for BaiduPCS-Go
 endef
 
-define Package/$(PKG_NAME)/config
+define Package/baidupcs-web/config
 config BAIDUPCS_WEB_COMPRESS_GOPROXY
 	bool "Compiling with GOPROXY proxy"
 	default n
 
 config BAIDUPCS_WEB_COMPRESS_UPX
 	bool "Compress executable files with UPX"
-	default y
+	depends on !mips64
+	default n
 endef
 
 ifeq ($(CONFIG_BAIDUPCS_WEB_COMPRESS_GOPROXY),y)
@@ -74,11 +76,11 @@ ifeq ($(CONFIG_BAIDUPCS_WEB_COMPRESS_UPX),y)
 endif
 endef
 
-define Package/$(PKG_NAME)/install
+define Package/baidupcs-web/install
 	$(call GoPackage/Package/Install/Bin,$(PKG_INSTALL_DIR))
 	$(INSTALL_DIR) $(1)/usr/bin
-	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/BaiduPCS-Go $(1)/usr/bin/$(PKG_NAME)
+	$(INSTALL_BIN) $(GO_PKG_BUILD_BIN_DIR)/BaiduPCS-Go $(1)/usr/bin/baidupcs-web
 endef
 
-$(eval $(call GoBinPackage,$(PKG_NAME)))
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(eval $(call GoBinPackage,baidupcs-web))
+$(eval $(call BuildPackage,baidupcs-web))
