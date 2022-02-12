@@ -406,6 +406,27 @@ endef
 
 $(eval $(call KernelPackage,drm-radeon))
 
+define KernelPackage/drm-nouveau
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=nouveau DRM support
+  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_NOUVEAU \
+	NOUVEAU_DEBUG=5 \
+	NOUVEAU_DEBUG_DEFAULT=3 \
+	NOUVEAU_DEBUG_MMU=n \
+	DRM_NOUVEAU_BACKLIGHT=y
+  FILES:=\
+	$(LINUX_DIR)/drivers/gpu/drm/nouveau/nouveau.ko \
+	$(LINUX_DIR)/drivers/platform/x86/wmi.ko
+  AUTOLOAD:=$(call AutoProbe,nouveau)
+endef
+
+define KernelPackage/drm-nouveau/description
+  Direct Rendering Manager (DRM) support for NVIDIA Cuda Video Cards
+endef
+
+$(eval $(call KernelPackage,drm-nouveau))
+
 #
 # Video Capture
 #
