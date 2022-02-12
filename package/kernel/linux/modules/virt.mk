@@ -72,3 +72,64 @@ define KernelPackage/kvm-amd/description
 endef
 
 $(eval $(call KernelPackage,kvm-amd))
+
+define KernelPackage/vfio-mdev
+  SUBMENU:=Virtualization
+  TITLE:=VFIO driver support to to virtualize devices
+  DEPENDS:=@TARGET_x86_64
+  KCONFIG:=	\
+	  CONFIG_IOMMU_API=y	\
+	  CONFIG_MMU=y	\
+	  CONFIG_VFIO=y	\
+	  CONFIG_VFIO_NOIOMMU=y	\
+	  CONFIG_VFIO_PCI=y	\
+	  CONFIG_VFIO_PCI_IGD=y	\
+	  CONFIG_VFIO_MDEV	\
+	  CONFIG_VFIO_MDEV_DEVICE
+  FILES:=	\
+	  $(LINUX_DIR)/drivers/vfio/mdev/mdev.ko	\
+          $(LINUX_DIR)/drivers/vfio/mdev/vfio_mdev.ko
+  AUTOLOAD:=$(call AutoProbe,mdev vfio_mdev)
+endef
+
+define KernelPackage/vfio-mdev/description
+  Provides a framework to virtualize devices.
+endef
+
+$(eval $(call KernelPackage,vfio-mdev))
+
+define KernelPackage/i915-gvt
+  SUBMENU:=Virtualization
+  TITLE:=Enable KVM/VFIO support for Intel GVT-g
+  DEPENDS:=@TARGET_x86_64 +kmod-kvm-intel +kmod-drm-i915 +kmod-vfio-mdev
+  KCONFIG:=    \
+	  CONFIG_DRM_I915_GVT_KVMGT=m
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/i915/gvt/kvmgt.ko
+  AUTOLOAD:=$(call AutoProbe,kvmgt)
+endef
+
+define KernelPackage/i915-gvt/description
+  Intel GVT-g is a technology that provides mediated device
+  passthrough for Intel GPUs (Broadwell and newer). It can
+  be used to virtualize the GPU for multiple guest virtual
+  machines, effectively providing near-native graphics performance
+  in the virtual machine and still letting your host use the
+  virtualized GPU normally.
+
+  Choose this option if you want to enable Intel GVT-g graphics
+  virtualization technology host support with integrated graphics.
+  With GVT-g, it's possible to have one integrated graphics
+  device shared by multiple VMs under different hypervisors.
+
+  Note that at least one hypervisor like Xen or KVM is required for
+  this driver to work, and it only supports newer device from
+  Broadwell+. For further information and setup guide, you can
+  visit: http://01.org/igvt-g.
+
+  Now it's just a stub to support the modifications of i915 for
+  GVT device model. It requires at least one MPT modules for Xen/KVM
+  and other components of GVT device model to work. Use it under
+  you own risk.
+endef
+
+$(eval $(call KernelPackage,i915-gvt))
