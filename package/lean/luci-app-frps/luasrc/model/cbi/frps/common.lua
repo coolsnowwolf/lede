@@ -53,7 +53,6 @@ o:value("1", translate("1"))
 o:value("2", translate("2"))
 o:value("3", translate("3"))
 o.default = "3"
-o.rmempty = false
 o.optional = false
 
 o = s:taboption("general", Flag, "disable_log_color", translate("Disable log color"))
