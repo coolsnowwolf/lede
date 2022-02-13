@@ -12,15 +12,15 @@ PKG_RELEASE:=20200315
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	TITLE:=Powerful adblock module to block ad.
-	DEPENDS:=@(i386||x86_64||arm||mipsel||mips||aarch64)
-	URL:=http://www.adbyby.com/
+define Package/adbyby
+  SECTION:=net
+  CATEGORY:=Network
+  TITLE:=Powerful adblock module to block ad.
+  DEPENDS:=@(i386||x86_64||arm||mipsel||mips||aarch64)
+  URL:=http://www.adbyby.com/
 endef
 
-define Package/$(PKG_NAME)/description
+define Package/adbyby/description
 Adbyby is a powerful adblock module to block ad,just like adblock.
 endef
 
@@ -58,7 +58,7 @@ endef
 define Build/Compile
 endef
 
-define Package/$(PKG_NAME)/install
+define Package/adbyby/install
 	$(INSTALL_DIR) $(1)/usr/share/adbyby
 	$(INSTALL_BIN) ./files/adbyby.sh $(1)/usr/share/adbyby/
 	$(INSTALL_CONF) ./files/adhook.ini $(1)/usr/share/adbyby/
@@ -73,4 +73,4 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./files/$(ADBYBY_DIR)/adbyby $(1)/usr/share/adbyby/adbyby
 endef
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,adbyby))
