@@ -30,16 +30,16 @@ endif
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	DEPENDS:=@(arm||aarch64||x86_64)
-	SUBMENU:=BitTorrent
-	TITLE:=bittorrent client programmed in C++ / Qt
-	URL:=https://www.qbittorrent.org/
+define Package/qBittorrent-static
+  SECTION:=net
+  CATEGORY:=Network
+  DEPENDS:=@(arm||aarch64||x86_64)
+  SUBMENU:=BitTorrent
+  TITLE:=bittorrent client programmed in C++ / Qt
+  URL:=https://www.qbittorrent.org/
 endef
 
-define Package/$(PKG_NAME)/description
+define Package/qBittorrent-static/description
   qBittorrent is a bittorrent client programmed in C++ / Qt that uses
   libtorrent (sometimes called libtorrent-rasterbar) by Arvid Norberg.
   It aims to be a good alternative to all other bittorrent clients out
@@ -57,10 +57,10 @@ endef
 define Build/Compile
 endef
 
-define Package/$(PKG_NAME)/install
+define Package/qBittorrent-static/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(DL_DIR)/qbittorrent-nox $(1)/usr/bin
 endef
 
 $(eval $(call Download,qbittorrent))
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,qBittorrent-static))

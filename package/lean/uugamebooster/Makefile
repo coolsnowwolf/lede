@@ -17,16 +17,16 @@ PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/$(PKG_NAME)
-	SECTION:=net
-	CATEGORY:=Network
-	DEPENDS:=@(aarch64||arm||mipsel||x86_64) +kmod-tun
-	TITLE:=NetEase UU Game Booster
-	URL:=https://uu.163.com
+define Package/uugamebooster
+  SECTION:=net
+  CATEGORY:=Network
+  DEPENDS:=@(aarch64||arm||mipsel||x86_64) +kmod-tun
+  TITLE:=NetEase UU Game Booster
+  URL:=https://uu.163.com
 endef
 
-define Package/$(PKG_NAME)/description
-NetEase's UU Game Booster Accelerates Triple-A Gameplay and Market
+define Package/uugamebooster/description
+  NetEase's UU Game Booster Accelerates Triple-A Gameplay and Market
 endef
 
 ifeq ($(ARCH),arm)
@@ -64,22 +64,22 @@ endef
 define Build/Compile
 endef
 
-define Package/$(PKG_NAME)/conffiles
+define Package/uugamebooster/conffiles
 /root/.uuplugin_uuid
 endef
 
-define Package/$(PKG_NAME)/install
+define Package/uugamebooster/install
 	# $(INSTALL_DIR) $(1)/etc/init.d
 	# $(INSTALL_BIN) ./files/uugamebooster.init $(1)/etc/init.d/uuplugin
 
-	$(INSTALL_DIR) $(1)/usr/share/$(PKG_NAME)
-	$(INSTALL_BIN) $(UNTAR_DIR)/uuplugin $(1)/usr/share/$(PKG_NAME)/uuplugin
-	$(INSTALL_CONF) $(UNTAR_DIR)/uu.conf $(1)/usr/share/$(PKG_NAME)/uu.conf
+	$(INSTALL_DIR) $(1)/usr/share/uugamebooster
+	$(INSTALL_BIN) $(UNTAR_DIR)/uuplugin $(1)/usr/share/uugamebooster/uuplugin
+	$(INSTALL_CONF) $(UNTAR_DIR)/uu.conf $(1)/usr/share/uugamebooster/uu.conf
 
 	# not finish yet:
 	# $(INSTALL_DIR) $(1)/usr/bin
-	# $(INSTALL_BIN) ./files/uugamebooster-update $(1)/usr/bin/$(PKG_NAME)
-	# $(LN) $(1)/usr/bin/$(PKG_NAME)/uugamebooster-update $(1)/usr/bin/uugamebooster-update
+	# $(INSTALL_BIN) ./files/uugamebooster-update $(1)/usr/bin/uugamebooster
+	# $(LN) $(1)/usr/bin/uugamebooster/uugamebooster-update $(1)/usr/bin/uugamebooster-update
 endef
 
-$(eval $(call BuildPackage,$(PKG_NAME)))
+$(eval $(call BuildPackage,uugamebooster))

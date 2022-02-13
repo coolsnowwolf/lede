@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=aliyundrive-webdav
-PKG_VERSION:=1.2.1
-PKG_RELEASE:=$(AUTORELESE)
+PKG_VERSION:=1.2.3
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=messense <messense@icloud.com>
@@ -29,14 +29,14 @@ PKG_HASH:=skip
 include $(INCLUDE_DIR)/package.mk
 
 define Package/aliyundrive-webdav
-	SECTION:=multimedia
-	CATEGORY:=Multimedia
-	TITLE:=WebDAV server for AliyunDrive
-	URL:=https://github.com/messense/aliyundrive-webdav
+  SECTION:=multimedia
+  CATEGORY:=Multimedia
+  TITLE:=WebDAV server for AliyunDrive
+  URL:=https://github.com/messense/aliyundrive-webdav
 endef
 
 define Package/aliyundrive-webdav/description
-WebDAV server for AliyunDrive.
+ WebDAV server for AliyunDrive.
 endef
 
 define Package/aliyundrive-webdav/conffiles
