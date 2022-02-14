@@ -251,7 +251,8 @@ define KernelPackage/drm
 	CONFIG_DRM_FBDEV_OVERALLOC=100 \
 	CONFIG_HDMI
   FILES:= \
-	$(LINUX_DIR)/drivers/gpu/drm/drm.ko
+	$(LINUX_DIR)/drivers/gpu/drm/drm.ko \
+	$(LINUX_DIR)/drivers/gpu/drm/drm_panel_orientation_quirks.ko
   AUTOLOAD:=$(call AutoLoad,05,drm)
 endef
 
