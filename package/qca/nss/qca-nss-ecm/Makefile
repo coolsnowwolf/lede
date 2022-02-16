@@ -218,6 +218,10 @@ ECM_MAKE_OPTS+=ECM_INTERFACE_OVS_BRIDGE_ENABLE=y \
 EXTRA_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-ovsmgr
 endif
 
+ifneq ($(CONFIG_PACKAGE_kmod-macvlan),)
+ECM_MAKE_OPTS+=ECM_INTERFACE_MACVLAN_ENABLE=y
+endif
+
 # Keeping default as ipq806x for branches that does not have subtarget framework
 ifeq ($(CONFIG_TARGET_ipq),y)
 subtarget:=$(SUBTARGET)
