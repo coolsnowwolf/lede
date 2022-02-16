@@ -88,7 +88,7 @@ define KernelPackage/vfio-mdev
 	  CONFIG_VFIO_MDEV_DEVICE
   FILES:=	\
 	  $(LINUX_DIR)/drivers/vfio/mdev/mdev.ko	\
-          $(LINUX_DIR)/drivers/vfio/mdev/vfio_mdev.ko
+          $(LINUX_DIR)/drivers/vfio/mdev/vfio_mdev.ko@lt5.10
   AUTOLOAD:=$(call AutoProbe,mdev vfio_mdev)
 endef
 
