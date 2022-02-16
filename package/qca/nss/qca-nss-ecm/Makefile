@@ -80,6 +80,7 @@ endef
 define KernelPackage/qca-nss-ecm-standard
   $(call KernelPackage/qca-nss-ecm/Default)
   VARIANT:=standard
+  DEPENDS+=+PACKAGE_kmod-qca-mcs:kmod-qca-mcs
 endef
 
 define KernelPackage/qca-nss-ecm-standard/Description
