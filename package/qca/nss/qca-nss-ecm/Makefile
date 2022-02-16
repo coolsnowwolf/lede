@@ -200,6 +200,10 @@ endif
 # ECM_MAKE_OPTS+=ECM_INTERFACE_MAP_T_ENABLE=y
 # endif
 
+ifneq ($(CONFIG_PACKAGE_kmod-qca-mcs),)
+ECM_MAKE_OPTS+=ECM_MULTICAST_ENABLE=y
+endif
+
 ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-drv-ovpn-link),)
 ECM_MAKE_OPTS+=ECM_INTERFACE_OVPN_ENABLE=y
 endif
