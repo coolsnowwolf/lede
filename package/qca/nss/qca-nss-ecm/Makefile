@@ -80,6 +80,7 @@ endef
 define KernelPackage/qca-nss-ecm-standard
   $(call KernelPackage/qca-nss-ecm/Default)
   VARIANT:=standard
+  DEPENDS+=+PACKAGE_kmod-qca-mcs:kmod-qca-mcs
 endef
 
 define KernelPackage/qca-nss-ecm-standard/Description
@@ -199,6 +200,10 @@ endif
 # ifneq ($(CONFIG_PACKAGE_kmod-nat46),)
 # ECM_MAKE_OPTS+=ECM_INTERFACE_MAP_T_ENABLE=y
 # endif
+
+ifneq ($(CONFIG_PACKAGE_kmod-qca-mcs),)
+ECM_MAKE_OPTS+=ECM_MULTICAST_ENABLE=y
+endif
 
 ifneq ($(CONFIG_PACKAGE_kmod-qca-nss-drv-ovpn-link),)
 ECM_MAKE_OPTS+=ECM_INTERFACE_OVPN_ENABLE=y
