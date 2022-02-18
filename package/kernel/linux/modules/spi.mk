@@ -15,7 +15,7 @@ define KernelPackage/mmc-spi
           CONFIG_SPI=y \
           CONFIG_SPI_MASTER=y
   FILES:=\
-	$(if $(CONFIG_OF),$(LINUX_DIR)/drivers/mmc/host/of_mmc_spi.ko) \
+	$(if $(CONFIG_LINUX_5_15),$(LINUX_DIR)/drivers/mmc/host/of_mmc_spi.ko,$(if $(CONFIG_OF),$(LINUX_DIR)/drivers/mmc/host/of_mmc_spi.ko)) \
 	$(LINUX_DIR)/drivers/mmc/host/mmc_spi.ko
   AUTOLOAD:=$(call AutoProbe,$(if $(CONFIG_OF),of_mmc_spi) mmc_spi)
 endef
