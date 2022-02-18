@@ -6,7 +6,7 @@ define KernelPackage/camera-bcm2835
   TITLE:=BCM2835 Camera
   KCONFIG:= \
     CONFIG_VIDEO_BCM2835 \
-    CONFIG_VIDEO_BCM2835_MMAL \
+    CONFIG_VIDEO_BCM2835_MMAL \
     CONFIG_VIDEO_BCM2835_UNICAM=n \
     CONFIG_VIDEO_ISP_BCM2835=n
   FILES:= \
@@ -21,36 +21,6 @@ define KernelPackage/camera-bcm2835/description
 endef
 
 $(eval $(call KernelPackage,camera-bcm2835))
-
-
-define KernelPackage/drm-vc4
-  SUBMENU:=$(VIDEO_MENU)
-  TITLE:=Broadcom VC4 Graphics
-  DEPENDS:= \
-    @TARGET_bcm27xx +kmod-drm \
-    +kmod-sound-core \
-    +kmod-sound-soc-core
-  KCONFIG:= \
-    CONFIG_DRM_VC4 \
-    CONFIG_DRM_VC4_HDMI_CEC=y \
-    CONFIG_DRM_GUD=n \
-    CONFIG_DRM_V3D=n \
-    CONFIG_DRM_TVE200=n
-  FILES:= \
-    $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko \
-    $(LINUX_DIR)/drivers/media/cec/cec.ko@lt5.10 \
-    $(LINUX_DIR)/drivers/media/cec/core/cec.ko@ge5.10
-  AUTOLOAD:=$(call AutoProbe,vc4)
-endef
-
-define KernelPackage/drm-vc4/description
-  Direct Rendering Manager (DRM) support for Broadcom VideoCore IV GPU
-  used in BCM2835, BCM2836 and BCM2837 SoCs (e.g. Raspberry Pi).
-endef
-
-$(eval $(call KernelPackage,drm-vc4))
-
 
 define KernelPackage/vc-sm-cma
   TITLE:=VideoCore Shared Memory (CMA) driver
@@ -85,3 +55,31 @@ define KernelPackage/vchiq-mmal-bcm2835/description
 endef
 
 $(eval $(call KernelPackage,vchiq-mmal-bcm2835))
+
+define KernelPackage/drm-vc4
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Broadcom VC4 Graphics
+  DEPENDS:= \
+    @TARGET_bcm27xx +kmod-drm \
+    +kmod-sound-core \
+    +kmod-sound-soc-core \
+    +kmod-drm-kms-helper 
+  KCONFIG:= \
+    CONFIG_DRM_VC4 \
+    CONFIG_DRM_VC4_HDMI_CEC=y \
+    CONFIG_DRM_GUD=n \
+    CONFIG_DRM_V3D=n \
+    CONFIG_DRM_TVE200=n
+  FILES:= \
+    $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
+    $(LINUX_DIR)/drivers/media/cec/cec.ko@lt5.10 \
+    $(LINUX_DIR)/drivers/media/cec/core/cec.ko@ge5.10
+  AUTOLOAD:=$(call AutoProbe,vc4)
+endef
+
+define KernelPackage/drm-vc4/description
+  Direct Rendering Manager (DRM) support for Broadcom VideoCore IV GPU
+  used in BCM2835, BCM2836 and BCM2837 SoCs (e.g. Raspberry Pi).
+endef
+
+$(eval $(call KernelPackage,drm-vc4))
