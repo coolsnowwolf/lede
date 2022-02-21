@@ -23,60 +23,24 @@ define Package/openssl/add-engine
 
   define Package/$$(OSSL_ENG_PKG)/postinst :=
 #!/bin/sh
-# $$$$1 == non-empty: suggest reinstall
-error_out() {
-    [ "$1" ] && cat <<- EOF
-	Reinstalling the libopenssl-conf package may fix this:
+OPENSSL_UCI="$$$${IPKG_INSTROOT}/etc/config/openssl"
 
-	    opkg install --force-reinstall libopenssl-conf
-	EOF
-    cat <<- EOF
+[ -z "$$$${IPKG_INSTROOT}" ] && uci -q get openssl.$(1) >/dev/null && exit 0
 
-	Then, you will have to reinstall this package, and any other engine package you have
-	you have previously installed to ensure they are enabled:
+cat << EOF >> "$$$${OPENSSL_UCI}"
 
-	    opkg install --force-reinstall $$(OSSL_ENG_PKG) [OTHER_ENGINE_PKG]...
+config engine '$(1)'
+	option enabled '1'
+EOF
 
-	EOF
-    exit 1
-}
-ENGINES_CNF="$$$${IPKG_INSTROOT}/etc/ssl/engines.cnf.d/engines.cnf"
-OPENSSL_CNF="$$$${IPKG_INSTROOT}/etc/ssl/openssl.cnf"
-if [ ! -f "$$$${OPENSSL_CNF}" ]; then
-    echo -e "ERROR: File $$$${OPENSSL_CNF} not found."
-    error_out reinstall
-fi
-if ! grep -q "^.include /etc/ssl/engines.cnf.d" "$$$${OPENSSL_CNF}"; then
-    cat <<- EOF
-	Your /etc/ssl/openssl.cnf file is not loading engine configuration files from
-	/etc/ssl/engines.cnf.d.  You should consider start with a fresh, updated OpenSSL config by
-	running:
-
-	    opkg install --force-reinstall --force-maintainer libopenssl-conf
-
-	The above command will overwrite any changes you may have made to both /etc/ssl/openssl.cnf
-	and /etc/ssl/engines.cnf.d/engines.cnf files, so back them up first!
-	EOF
-    error_out
-fi
-if [ ! -f "$$$${ENGINES_CNF}" ]; then
-    echo "Can't configure $$(OSSL_ENG_PKG): File $$$${ENGINES_CNF} not found."
-    error_out reinstall
-fi
-if grep -q "$(1)=$(1)" "$$$${ENGINES_CNF}"; then
-    echo "$$(OSSL_ENG_PKG): $(1) engine was already configured.  Nothing to be done."
-else
-    echo "$(1)=$(1)" >> "$$$${ENGINES_CNF}"
-    echo "$$(OSSL_ENG_PKG): $(1) engine enabled.  All done!"
-fi
+[ -n "$$$${IPKG_INSTROOT}" ] || /etc/init.d/openssl reload
   endef
 
-  define Package/$$(OSSL_ENG_PKG)/prerm :=
+  define Package/$$(OSSL_ENG_PKG)/postrm :=
 #!/bin/sh
-ENGINES_CNF="$$$${IPKG_INSTROOT}/etc/ssl/engines.cnf.d/engines.cnf"
-[ -f "$$$${ENGINES_CNF}" ] || exit 0
-sed -e '/$(1)=$(1)/d' -i "$$$${ENGINES_CNF}"
+[ -n "$$$${IPKG_INSTROOT}" ] && exit 0
+uci delete openssl.$(1)
+uci commit openssl
+/etc/init.d/openssl reload
   endef
 endef
-
-

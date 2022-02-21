@@ -11,7 +11,7 @@ PKG_NAME:=openssl
 PKG_BASE:=1.1.1
 PKG_BUGFIX:=m
 PKG_VERSION:=$(PKG_BASE)$(PKG_BUGFIX)
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_USE_MIPS16:=0
 
 PKG_BUILD_PARALLEL:=1
@@ -130,7 +130,6 @@ endef
 
 define Package/libopenssl-conf/conffiles
 /etc/ssl/openssl.cnf
-/etc/ssl/engines.cnf.d/engines.cnf
 $(if CONFIG_OPENSSL_ENGINE_BUILTIN_DEVCRYPTO,/etc/ssl/engines.cnf.d/devcrypto.cnf)
 $(if CONFIG_OPENSSL_ENGINE_BUILTIN_PADLOCK,/etc/ssl/engines.cnf.d/padlock.cnf)
 endef
@@ -380,15 +379,17 @@ define Package/libopenssl/install
 endef
 
 define Package/libopenssl-conf/install
-	$(INSTALL_DIR) $(1)/etc/ssl/engines.cnf.d
+	$(INSTALL_DIR) $(1)/etc/ssl/engines.cnf.d $(1)/etc/config $(1)/etc/init.d
 	$(CP) $(PKG_INSTALL_DIR)/etc/ssl/openssl.cnf $(1)/etc/ssl/
-	$(CP) ./files/engines.cnf $(1)/etc/ssl/engines.cnf.d/
+	$(INSTALL_BIN) ./files/openssl.init $(1)/etc/init.d/openssl
+	$(SED) 's!%ENGINES_DIR%!/usr/lib/$(ENGINES_DIR)!' $(1)/etc/init.d/openssl
+	touch $(1)/etc/config/openssl
 	$(if $(CONFIG_OPENSSL_ENGINE_BUILTIN_DEVCRYPTO),
 		$(CP) ./files/devcrypto.cnf $(1)/etc/ssl/engines.cnf.d/
-		echo devcrypto=devcrypto >> $(1)/etc/ssl/engines.cnf.d/engines.cnf)
+		echo -e "config engine 'devcrypto'\n\toption enabled '1'" >> $(1)/etc/config/openssl)
 	$(if $(CONFIG_OPENSSL_ENGINE_BUILTIN_PADLOCK),
 		$(CP) ./files/padlock.cnf $(1)/etc/ssl/engines.cnf.d/
-		echo padlock=padlock >> $(1)/etc/ssl/engines.cnf.d/engines.cnf)
+		echo -e "\nconfig engine 'padlock'\n\toption enabled '1'" >> $(1)/etc/config/openssl)
 endef
 
 define Package/openssl-util/install
