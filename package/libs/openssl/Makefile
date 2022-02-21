@@ -148,7 +148,7 @@ endef
 define Package/libopenssl-afalg/description
 This package adds an engine that enables hardware acceleration
 through the AF_ALG kernel interface.
-To use it, you need to configure the engine in /etc/ssl/openssl.cnf
+To use it, you need to enable the engine in /etc/ssl/engines.cnf.d/engines.cnf.
 See https://www.openssl.org/docs/man1.1.1/man5/config.html#Engine-Configuration-Module
 and https://openwrt.org/docs/techref/hardware/cryptographic.hardware.accelerators
 The engine_id is "afalg"
@@ -165,7 +165,8 @@ endef
 define Package/libopenssl-devcrypto/description
 This package adds an engine that enables hardware acceleration
 through the /dev/crypto kernel interface.
-To use it, you need to configure the engine in /etc/ssl/openssl.cnf
+To use it, you need to enable the engine in /etc/ssl/engines.cnf.d/engines.cnf.  You may
+configure the engine by editing /etc/ssl/engines.cnf.d/devcrypto.cnf.
 See https://www.openssl.org/docs/man1.1.1/man5/config.html#Engine-Configuration-Module
 and https://openwrt.org/docs/techref/hardware/cryptographic.hardware.accelerators
 The engine_id is "devcrypto"
@@ -181,7 +182,7 @@ endef
 
 define Package/libopenssl-padlock/description
 This package adds an engine that enables VIA Padlock hardware acceleration.
-To use it, you need to configure it in /etc/ssl/openssl.cnf.
+To use it, you need to enable the engine in /etc/ssl/engines.cnf.d/engines.cnf.
 See https://www.openssl.org/docs/man1.1.1/man5/config.html#Engine-Configuration-Module
 and https://openwrt.org/docs/techref/hardware/cryptographic.hardware.accelerators
 The engine_id is "padlock"
@@ -378,8 +379,9 @@ define Package/libopenssl/install
 endef
 
 define Package/libopenssl-conf/install
-	$(INSTALL_DIR) $(1)/etc/ssl
+	$(INSTALL_DIR) $(1)/etc/ssl/engines.cnf.d
 	$(CP) $(PKG_INSTALL_DIR)/etc/ssl/openssl.cnf $(1)/etc/ssl/
+	$(CP) ./files/engines.cnf $(1)/etc/ssl/engines.cnf.d/
 endef
 
 define Package/openssl-util/install
@@ -388,18 +390,24 @@ define Package/openssl-util/install
 endef
 
 define Package/libopenssl-afalg/install
-	$(INSTALL_DIR) $(1)/usr/lib/$(ENGINES_DIR)
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/afalg.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DIR)	$(1)/etc/ssl/engines.cnf.d \
+			$(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_BIN)	$(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/afalg.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DATA)	./files/afalg.cnf $(1)/etc/ssl/engines.cnf.d/
 endef
 
 define Package/libopenssl-devcrypto/install
-	$(INSTALL_DIR) $(1)/usr/lib/$(ENGINES_DIR)
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/devcrypto.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DIR)	$(1)/etc/ssl/engines.cnf.d \
+			$(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_BIN)	$(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/devcrypto.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DATA)	./files/devcrypto.cnf $(1)/etc/ssl/engines.cnf.d/
 endef
 
 define Package/libopenssl-padlock/install
-	$(INSTALL_DIR) $(1)/usr/lib/$(ENGINES_DIR)
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/*padlock.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DIR)	$(1)/etc/ssl/engines.cnf.d \
+			$(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_BIN)	$(PKG_INSTALL_DIR)/usr/lib/$(ENGINES_DIR)/*padlock.so $(1)/usr/lib/$(ENGINES_DIR)
+	$(INSTALL_DATA)	./files/padlock.cnf $(1)/etc/ssl/engines.cnf.d/
 endef
 
 $(eval $(call BuildPackage,libopenssl))
