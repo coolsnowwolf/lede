@@ -101,4 +101,4 @@ define Device/xunlong_orangepi-r1-plus-lts
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
-TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
+#TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
