@@ -1238,8 +1238,9 @@ define KernelPackage/qede
   DEPENDS:=@PCI_SUPPORT +kmod-ptp
   TITLE:=QLogic FastLinQ 10/25/40/100Gb Ethernet NIC device support
   KCONFIG:= \
-	CONFIG_QLCNIC \
+	CONFIG_NET_VENDOR_QLOGIC \
 	CONFIG_QED=y \
+	CONFIG_QED_SRIOV=y \
 	CONFIG_QEDE=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/qlogic/qede/qede.ko
   AUTOLOAD:=$(call AutoProbe,qede)
