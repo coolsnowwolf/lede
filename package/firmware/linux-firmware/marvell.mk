@@ -70,3 +70,11 @@ define Package/libertas-spi-firmware/install
 endef
 $(eval $(call BuildPackage,libertas-spi-firmware))
 
+Package/qed-firmware = $(call Package/firmware-default,=QLogic FastLinQ 41xxx firmware)
+define Package/qed-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/qed
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/qed/* \
+		$(1)/lib/firmware/qed/
+endef
+$(eval $(call BuildPackage,qed-firmware))
