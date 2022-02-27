@@ -25,11 +25,25 @@ HOST_CONFIGURE_VARS += \
 	CC="$(HOSTCC_NOCACHE)" \
 	CXX="$(HOSTCXX_NOCACHE)" \
 	MAKEFLAGS="$(HOST_JOBS)" \
-	CXXFLAGS="$(HOST_CFLAGS)"
+	CXXFLAGS="$(HOST_CFLAGS)" \
+	MAKE="$(STAGING_DIR_HOST)/bin/ninja"
 
 HOST_CONFIGURE_ARGS := \
 	$(if $(MAKE_JOBSERVER),--parallel="$(MAKE_JOBSERVER)") \
-	--prefix=$(STAGING_DIR_HOST)
+	--prefix="$(STAGING_DIR_HOST)" \
+	--generator=Ninja
+
+define Host/Compile/Default
+	+$(NINJA) -C $(HOST_BUILD_DIR) $(1)
+endef
+
+define Host/Install/Default
+	+$(NINJA) -C $(HOST_BUILD_DIR) install
+endef
+
+define Host/Uninstall/Default
+	+$(NINJA) -C $(HOST_BUILD_DIR) uninstall
+endef
 
 ifneq ($(findstring c,$(OPENWRT_VERBOSE)),)
   HOST_MAKE_FLAGS += VERBOSE=1
