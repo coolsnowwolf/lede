@@ -10,7 +10,7 @@ define Device/embedfire_doornet1
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-rtl8821cu
 endef
-TARGET_DEVICES += embedfire_doornet1
+#TARGET_DEVICES += embedfire_doornet1
 
 define Device/embedfire_doornet2
   DEVICE_VENDOR := EmbedFire
@@ -20,7 +20,16 @@ define Device/embedfire_doornet2
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8168 kmod-rtl8821cu -urngd
 endef
-TARGET_DEVICES += embedfire_doornet2
+#TARGET_DEVICES += embedfire_doornet2
+
+define Device/friendlyarm_nanopi-neo3
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi NEO3
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2s-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+endef
+TARGET_DEVICES += friendlyarm_nanopi-neo3
 
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
@@ -31,15 +40,6 @@ define Device/friendlyarm_nanopi-r2c
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r2c
-
-define Device/friendlyarm_nanopi-neo3
-  DEVICE_VENDOR := FriendlyARM
-  DEVICE_MODEL := NanoPi NEO3
-  SOC := rk3328
-  UBOOT_DEVICE_NAME := nanopi-r2s-rk3328
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
-endef
-TARGET_DEVICES += friendlyarm_nanopi-neo3
 
 define Device/friendlyarm_nanopi-r2s
   DEVICE_VENDOR := FriendlyARM
@@ -110,4 +110,4 @@ define Device/xunlong_orangepi-r1-plus-lts
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
-#TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
+TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
