@@ -142,7 +142,6 @@ define Device/linksys_ea7500-v1
 	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
 		append-ubi | pad-to $$$$(PAGESIZE)
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
-	DEFAULT := n
 endef
 TARGET_DEVICES += linksys_ea7500-v1
 
@@ -163,7 +162,6 @@ define Device/linksys_ea8500
 	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
 		append-ubi
 	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
-	DEFAULT := n
 endef
 TARGET_DEVICES += linksys_ea8500
 

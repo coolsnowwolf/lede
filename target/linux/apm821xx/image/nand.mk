@@ -42,9 +42,7 @@ TARGET_DEVICES += meraki_mr24
 
 define Device/meraki_mx60
   DEVICE_VENDOR := Cisco Meraki
-  DEVICE_MODEL := MX60
-  DEVICE_ALT0_VENDOR := Cisco Meraki
-  DEVICE_ALT0_MODEL := MX60W
+  DEVICE_MODEL := MX60/MX60W
   DEVICE_PACKAGES := kmod-spi-gpio kmod-usb-ledtrig-usbport kmod-usb-dwc2 \
 		     kmod-usb-storage block-mount
   BLOCKSIZE := 128k
@@ -93,9 +91,7 @@ TARGET_DEVICES += netgear_wndap660
 
 define Device/netgear_wndr4700
   DEVICE_VENDOR := NETGEAR
-  DEVICE_MODEL := Centria N900 WNDR4700
-  DEVICE_ALT0_VENDOR := NETGEAR
-  DEVICE_ALT0_MODEL := Centria N900 WNDR4720
+  DEVICE_MODEL := Centria N900 WNDR4700/WNDR4720
   DEVICE_PACKAGES := badblocks block-mount e2fsprogs kmod-hwmon-drivetemp \
 	kmod-dm kmod-fs-ext4 kmod-fs-vfat kmod-usb-ledtrig-usbport \
 	kmod-md-mod kmod-nls-cp437 kmod-nls-iso8859-1 kmod-nls-iso8859-15 \
