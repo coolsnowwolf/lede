@@ -339,6 +339,16 @@ define Package/lslocks/description
  lslocks lists information about all the currently held file locks in a Linux system
 endef
 
+define Package/lsns
+$(call Package/util-linux/Default)
+  TITLE:=list system namespaces
+  DEPENDS:= +libblkid +libmount +libsmartcols
+endef
+
+define Package/lsns/description
+ lsns lists information about all namespaces and their processes
+endef
+
 define Package/more
 $(call Package/util-linux/Default)
   TITLE:=filter for paging through text one screenful at a time
@@ -737,6 +747,11 @@ define Package/lslocks/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lslocks $(1)/usr/bin/
 endef
 
+define Package/lsns/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lsns $(1)/usr/bin/
+endef
+
 define Package/more/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/more $(1)/usr/bin/
@@ -866,6 +881,7 @@ $(eval $(call BuildPackage,losetup))
 $(eval $(call BuildPackage,lsblk))
 $(eval $(call BuildPackage,lscpu))
 $(eval $(call BuildPackage,lslocks))
+$(eval $(call BuildPackage,lsns))
 $(eval $(call BuildPackage,more))
 $(eval $(call BuildPackage,mcookie))
 $(eval $(call BuildPackage,mount-utils))
