@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=restool
-PKG_VERSION:=LSDK-20.04
-PKG_RELEASE:=2
+PKG_VERSION:=LSDK-21.08
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://source.codeaurora.org/external/qoriq/qoriq-components/restool
-PKG_SOURCE_VERSION:=f0cec094e4c6d1c975b377203a3bf994ba9325a9
-PKG_MIRROR_HASH:=1863acfaef319e6b277671fead51df0a31bdddb59022080d86b7d81da0bc8490
+PKG_SOURCE_VERSION:=LSDK-21.08
+PKG_MIRROR_HASH:=d793defa2e4cf907bebe7761d88feb2ac94e0ecdaabdb3bbc9dda83a82046bc5
 
 PKG_FLAGS:=nonshared
 

@@ -167,7 +167,6 @@ static int ath9k_fixup_probe(struct platform_device *pdev)
 	struct device_node *node = dev->of_node;
 	struct ath9k_fixup *priv;
 	struct resource *res;
-	const void *mac;
 	int ret;
 
 	if (ath9k_num_fixups >= ATH9K_MAX_FIXUPS)
@@ -200,9 +199,8 @@ static int ath9k_fixup_probe(struct platform_device *pdev)
 	priv->pdata.led_active_high = of_property_read_bool(node,
 		"ath,led-active-high");
 
-	mac = of_get_mac_address(node);
-	if (!IS_ERR_OR_NULL(mac)) {
-		memcpy(priv->mac, mac, ETH_ALEN);
+	of_get_mac_address(node, priv->mac);
+	if (is_valid_ether_addr(priv->mac)) {
 		dev_info(dev, "mtd mac %pM\n", priv->mac);
 	} else {
 		random_ether_addr(priv->mac);

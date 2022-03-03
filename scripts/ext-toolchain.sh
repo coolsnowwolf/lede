@@ -569,7 +569,7 @@ while [ -n "$1" ]; do
 			echo -e "  Most commands also take a --cflags parameter which " >&2
 			echo -e "  is used to specify C flags to be passed to the "     >&2
 			echo -e "  cross compiler when performing tests."               >&2
-			echo -e "  This paremter may be repeated multiple times."       >&2
+			echo -e "  This parameter may be repeated multiple times."      >&2
 			exit 1
 		;;
 

@@ -26,13 +26,9 @@ define Build/senao-tar-gz
 endef
 
 define Device/senao_loader_okli
+  $(Device/loader-okli-uimage)
   KERNEL := kernel-bin | append-dtb | lzma | uImage lzma -M 0x73714f4b
   LOADER_KERNEL_MAGIC := 0x73714f4b
-  LOADER_TYPE := bin
-  COMPILE := loader-$(1).bin loader-$(1).uImage
-  COMPILE/loader-$(1).bin := loader-okli-compile
-  COMPILE/loader-$(1).uImage := append-loader-okli $(1) | pad-to 64k | lzma | \
-	uImage lzma
   IMAGES += factory.bin
   IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | append-rootfs | pad-rootfs | \
 	check-size | senao-tar-gz $$$$(SENAO_IMGNAME)

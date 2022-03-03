@@ -183,7 +183,7 @@ TARGET_DEVICES += audiocodes_mp-252
 
 define Device/bt_homehub-v2b
   $(Device/NAND)
-  DEVICE_VENDOR := British Telecom
+  DEVICE_VENDOR := British Telecom (BT)
   DEVICE_MODEL := Home Hub 2
   DEVICE_VARIANT := Type B
   BOARD_NAME := BTHOMEHUBV2B
@@ -192,8 +192,7 @@ define Device/bt_homehub-v2b
   DEVICE_PACKAGES := kmod-usb-dwc2 \
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
-	kmod-ltq-deu-danube \
-	ltq-adsl-app ppp-mod-pppoa \
+	kmod-ltq-deu-danube ltq-adsl-app ppp-mod-pppoa \
 	kmod-ath9k kmod-owl-loader wpad-basic-wolfssl
   SUPPORTED_DEVICES += BTHOMEHUBV2B
   DEFAULT := n

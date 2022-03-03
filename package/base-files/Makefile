@@ -23,6 +23,7 @@ PKG_LICENSE:=GPL-2.0
 PKG_CONFIG_DEPENDS += \
 	CONFIG_SIGNED_PACKAGES CONFIG_TARGET_INIT_PATH CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE \
 	CONFIG_NAND_SUPPORT \
+	CONFIG_LEGACY_SDCARD_SUPPORT \
 	CONFIG_EMMC_SUPPORT \
 	CONFIG_CLEAN_IPKG \
 	CONFIG_PER_FEED_REPO \
@@ -48,7 +49,6 @@ define Package/base-files/conffiles
 /etc/config/
 /etc/config/network
 /etc/config/system
-/etc/crontabs/
 /etc/dropbear/
 /etc/ethers
 /etc/group
@@ -131,10 +131,18 @@ ifeq ($(CONFIG_EMMC_SUPPORT),)
   endef
 endif
 
+ifeq ($(CONFIG_LEGACY_SDCARD_SUPPORT),)
+  define Package/base-files/legacy-sdcard-support
+	rm -f $(1)/lib/upgrade/legacy-sdcard.sh
+  endef
+endif
+
+
 define Package/base-files/install
 	$(CP) ./files/* $(1)/
 	$(Package/base-files/install-key)
 	$(Package/base-files/nand-support)
+	$(Package/base-files/legacy-sdcard-support)
 	$(Package/base-files/emmc-support)
 	if [ -d $(GENERIC_PLATFORM_DIR)/base-files/. ]; then \
 		$(CP) $(GENERIC_PLATFORM_DIR)/base-files/* $(1)/; \

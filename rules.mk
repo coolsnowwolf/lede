@@ -138,11 +138,7 @@ else
 endif
 
 ifeq ($(or $(CONFIG_EXTERNAL_TOOLCHAIN),$(CONFIG_TARGET_uml)),)
-  ifeq ($(CONFIG_GCC_USE_IREMAP),y)
-    iremap = -iremap$(1):$(2)
-  else
-    iremap = -f$(if $(CONFIG_REPRODUCIBLE_DEBUG_INFO),file,macro)-prefix-map=$(1)=$(2)
-  endif
+  iremap = -f$(if $(CONFIG_REPRODUCIBLE_DEBUG_INFO),file,macro)-prefix-map=$(1)=$(2)
 endif
 
 PACKAGE_DIR:=$(BIN_DIR)/packages
@@ -244,6 +240,7 @@ export PKG_CONFIG
 HOSTCC:=gcc
 HOSTCXX:=g++
 HOST_CPPFLAGS:=-I$(STAGING_DIR_HOST)/include $(if $(IS_PACKAGE_BUILD),-I$(STAGING_DIR_HOSTPKG)/include -I$(STAGING_DIR)/host/include)
+HOST_CXXFLAGS:=
 HOST_CFLAGS:=-O2 $(HOST_CPPFLAGS)
 HOST_LDFLAGS:=-L$(STAGING_DIR_HOST)/lib $(if $(IS_PACKAGE_BUILD),-L$(STAGING_DIR_HOSTPKG)/lib -L$(STAGING_DIR)/host/lib)
 
@@ -277,7 +274,7 @@ BASH:=bash
 TAR:=tar
 FIND:=find
 PATCH:=patch
-PYTHON:=python
+PYTHON:=python3
 
 INSTALL_BIN:=install -m0755
 INSTALL_SUID:=install -m4755

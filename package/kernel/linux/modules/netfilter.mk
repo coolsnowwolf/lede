@@ -542,7 +542,7 @@ define KernelPackage/nf-nathelper-extra
   KCONFIG:=$(KCONFIG_NF_NATHELPER_EXTRA)
   FILES:=$(foreach mod,$(NF_NATHELPER_EXTRA-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_NATHELPER_EXTRA-m)))
-  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-ipt-raw +kmod-asn1-decoder
+  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-asn1-decoder
 endef
 
 define KernelPackage/nf-nathelper-extra/description
@@ -1004,7 +1004,7 @@ define KernelPackage/nf-conntrack-netlink
   FILES:=$(LINUX_DIR)/net/netfilter/nf_conntrack_netlink.ko
   KCONFIG:=CONFIG_NF_CT_NETLINK CONFIG_NF_CONNTRACK_EVENTS=y CONFIG_NETFILTER_NETLINK_GLUE_CT=y
   AUTOLOAD:=$(call AutoProbe,nf_conntrack_netlink)
-  $(call AddDepends/nfnetlink,+kmod-ipt-conntrack)
+  $(call AddDepends/nfnetlink,+kmod-nf-conntrack)
 endef
 
 define KernelPackage/nf-conntrack-netlink/description
@@ -1087,7 +1087,7 @@ define KernelPackage/nft-bridge
   FILES:=$(foreach mod,$(NFT_BRIDGE-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_BRIDGE-m)))
   KCONFIG:= \
-	CONFIG_NF_LOG_BRIDGE=n@lt5.13 \
+	CONFIG_NF_LOG_BRIDGE=n \
 	$(KCONFIG_NFT_BRIDGE)
 endef
 
@@ -1179,3 +1179,14 @@ define KernelPackage/nft-queue
 endef
 
 $(eval $(call KernelPackage,nft-queue))
+
+define KernelPackage/nft-compat
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter nf_tables compat support
+  DEPENDS:=+kmod-nft-core +kmod-nf-ipt
+  FILES:=$(foreach mod,$(NFT_COMPAT-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_COMPAT-m)))
+  KCONFIG:=$(KCONFIG_NFT_COMPAT)
+endef
+
+$(eval $(call KernelPackage,nft-compat))

@@ -16,11 +16,11 @@ define Build/at91-sdcard
 	::$(DEVICE_NAME)-fit.itb
 
   mcopy -i $@.boot \
-	$(BIN_DIR)/u-boot-at91sam9x5ek_mmc/u-boot.bin \
+	$(BIN_DIR)/u-boot-$(if $(findstring sam9x60,$@),$(DEVICE_DTS:at91-%=%),at91sam9x5ek)_mmc/u-boot.bin \
 	::u-boot.bin
 
   mcopy -i $@.boot \
-	$(BIN_DIR)/at91bootstrap-at91sam9x5eksd_uboot/at91bootstrap.bin \
+	$(BIN_DIR)/at91bootstrap-$(if $(findstring sam9x60,$@),$(DEVICE_DTS:at91-%=%),at91sam9x5ek)sd_uboot/at91bootstrap.bin \
 	::BOOT.bin
 
   $(CP) uboot-env.txt $@-uboot-env.txt
@@ -112,6 +112,15 @@ define Device/atmel_at91sam9x35ek
 endef
 TARGET_DEVICES += atmel_at91sam9x35ek
 
+define Device/microchip_sam9x60ek
+  $(Device/evaluation-dtb)
+  DEVICE_VENDOR := Microchip
+  DEVICE_MODEL := SAM9X60-EK
+  DEVICE_DTS := at91-sam9x60ek
+  $(Device/evaluation-sdimage)
+endef
+TARGET_DEVICES += microchip_sam9x60ek
+
 define Device/calamp_lmu5000
   $(Device/production)
   DEVICE_VENDOR := CalAmp
@@ -194,6 +203,7 @@ define Device/laird_wb45n
   $(Device/evaluation-fit)
   DEVICE_VENDOR := Laird
   DEVICE_MODEL := WB45N
+  DEVICE_DTS := at91-wb45n
   DEVICE_PACKAGES := \
 	kmod-mmc-at91 kmod-ath6kl-sdio ath6k-firmware \
 	kmod-usb-storage kmod-fs-vfat kmod-fs-msdos \

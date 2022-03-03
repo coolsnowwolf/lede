@@ -1,0 +1,62 @@
+From d9527989b2d63749d6c6678fa3a1b658eb26c225 Mon Sep 17 00:00:00 2001
+From: Mathias Kresin <dev@kresin.me>
+Date: Tue, 2 Nov 2021 21:24:29 +0100
+Subject: [PATCH] dma: lantiq: fix out of bounds cache invalidate
+
+With gcc10 the variables are placed more tightly to each other, which
+uncovers a long existing bug in the lantiq DMA code. It can be observed
+when using tftpboot with the filename parameter, which gets reset during
+the tftpboot execution.
+
+NetRxPackets[] points to cache line size aligned addresses. In
+ltq_eth_rx_packet_align() the address NetRxPackets[] points to is
+increased by LTQ_ETH_IP_ALIGN and the resulting not cache aligned
+address is used further on. While doing so, the length/size is never
+updated.
+
+The "not cache aligned address" + len/size for a cache aligned address
+is passed to invalidate_dcache_range(). Hence, invalidate_dcache_range()
+invalidates the next 32 bit as well, which flashes the BootFile variable
+as well.
+
+   variable BootFile is at address: 0x83ffe12c
+   NetRxPackets[] points to 0x83ffdb20 (len is 0x600)
+   data points to: 0x83ffdb22 (len is 0x600)
+
+   ltq_dma_dcache_inv: 0x83ffdb22 (for len 0x600)
+   invalidate_dcache_range: 0x83ffdb20 to 0x83ffe120 (size: 32)
+   invalidate_dcache_range: 0x83ffdb20 to 0x83ffdb40 (Bootfile: a.bin)
+   ...
+   invalidate_dcache_range: 0x83ffe100 to 0x83ffe120 (Bootfile: a.bin)
+   invalidate_dcache_range: 0x83ffe120 to 0x83ffe140 (Bootfile: )
+
+In ltq_dma_tx_map() and ltq_dma_rx_map() the start address passed to
+ltq_dma_dcache_wb_inv() is incorrect. By considering the offset, the
+start address passed to flush_dcache_range() is always aligned to 32, 64
+or 128 bytes dependent on configured DMA burst size.
+
+Signed-off-by: Mathias Kresin <dev@kresin.me>
+---
+ drivers/dma/lantiq_dma.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/drivers/dma/lantiq_dma.c
++++ b/drivers/dma/lantiq_dma.c
+@@ -280,7 +280,7 @@ int ltq_dma_rx_map(struct ltq_dma_device
+ 
+ 	offset = dma_addr % ltq_dma_burst_align(dev->rx_burst_len);
+ 
+-	ltq_dma_dcache_inv(data, len);
++	ltq_dma_dcache_inv(data - offset, len);
+ 
+ #if 0
+ 	printf("%s: index %d, data %p, dma_addr %08x, offset %u, len %d\n",
+@@ -355,7 +355,7 @@ int ltq_dma_tx_map(struct ltq_dma_device
+ 		__func__, index, desc, data, dma_addr, offset, len);
+ #endif
+ 
+-	ltq_dma_dcache_wb_inv(data, len);
++	ltq_dma_dcache_wb_inv(data - offset, len);
+ 
+ 	desc->addr = dma_addr - offset;
+ 	desc->ctl = DMA_DESC_OWN | DMA_DESC_SOP | DMA_DESC_EOP |

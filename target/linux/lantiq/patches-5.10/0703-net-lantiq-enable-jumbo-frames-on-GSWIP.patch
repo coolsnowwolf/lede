@@ -1,0 +1,101 @@
+From 24a43ae2ac0ea06c474b1c80dc75651294d49321 Mon Sep 17 00:00:00 2001
+From: Thomas Nixon <tom@tomn.co.uk>
+Date: Sat, 2 Oct 2021 00:48:05 +0100
+Subject: [PATCH 2/2] net: lantiq: enable jumbo frames on GSWIP
+
+This enables non-standard MTUs on a per-port basis, with the overall
+frame size set based on the CPU port.
+
+When the MTU is not changed, this should have no effect.
+
+Long packets crash the switch with MTUs of greater than 2526, so the
+maximum is limited for now.
+
+Signed-off-by: Thomas Nixon <tom@tomn.co.uk>
+---
+ drivers/net/dsa/lantiq_gswip.c | 46 +++++++++++++++++++++++++++++++---
+ 1 file changed, 42 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/dsa/lantiq_gswip.c
++++ b/drivers/net/dsa/lantiq_gswip.c
+@@ -238,6 +238,11 @@
+ 
+ #define XRX200_GPHY_FW_ALIGN	(16 * 1024)
+ 
++/* maximum packet size supported by the switch; in theory this should be 9600,
++ * but long packets currently cause lock-ups with an MTU of over 2526
++ */
++#define GSWIP_MAX_PACKET_LENGTH	2556
++
+ struct gswip_hw_info {
+ 	int max_ports;
+ 	int cpu_port;
+@@ -851,10 +856,6 @@ static int gswip_setup(struct dsa_switch
+ 	gswip_switch_mask(priv, 0, GSWIP_PCE_PCTRL_0_INGRESS,
+ 			  GSWIP_PCE_PCTRL_0p(cpu_port));
+ 
+-	gswip_switch_mask(priv, 0, GSWIP_MAC_CTRL_2_MLEN,
+-			  GSWIP_MAC_CTRL_2p(cpu_port));
+-	gswip_switch_w(priv, VLAN_ETH_FRAME_LEN + 8 + ETH_FCS_LEN,
+-		       GSWIP_MAC_FLEN);
+ 	gswip_switch_mask(priv, 0, GSWIP_BM_QUEUE_GCTRL_GL_MOD,
+ 			  GSWIP_BM_QUEUE_GCTRL);
+ 
+@@ -871,6 +872,8 @@ static int gswip_setup(struct dsa_switch
+ 		return err;
+ 	}
+ 
++	ds->mtu_enforcement_ingress = true;
++
+ 	gswip_port_enable(ds, cpu_port, NULL);
+ 	return 0;
+ }
+@@ -1433,6 +1436,39 @@ static int gswip_port_fdb_dump(struct ds
+ 	return 0;
+ }
+ 
++static int gswip_port_max_mtu(struct dsa_switch *ds, int port)
++{
++	/* includes 8 bytes for special header */
++	return GSWIP_MAX_PACKET_LENGTH - VLAN_ETH_HLEN - ETH_FCS_LEN;
++}
++
++static int gswip_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
++{
++	struct gswip_priv *priv = ds->priv;
++	int cpu_port = priv->hw_info->cpu_port;
++
++	/* cpu port always has maximum mtu of user ports, so use it to set
++	 * switch frame size, including 8 byte special header
++	 */
++	if (port == cpu_port) {
++		new_mtu += 8;
++		gswip_switch_w(priv, VLAN_ETH_HLEN + new_mtu + ETH_FCS_LEN,
++			       GSWIP_MAC_FLEN);
++	}
++
++	/* enable MLEN for ports with non-standard MTUs, including the special
++	 * header on the CPU port added above
++	 */
++	if (new_mtu != ETH_DATA_LEN)
++		gswip_switch_mask(priv, 0, GSWIP_MAC_CTRL_2_MLEN,
++				  GSWIP_MAC_CTRL_2p(port));
++	else
++		gswip_switch_mask(priv, GSWIP_MAC_CTRL_2_MLEN, 0,
++				  GSWIP_MAC_CTRL_2p(port));
++
++	return 0;
++}
++
+ static void gswip_phylink_validate(struct dsa_switch *ds, int port,
+ 				   unsigned long *supported,
+ 				   struct phylink_link_state *state)
+@@ -1776,6 +1812,8 @@ static const struct dsa_switch_ops gswip
+ 	.port_fdb_add		= gswip_port_fdb_add,
+ 	.port_fdb_del		= gswip_port_fdb_del,
+ 	.port_fdb_dump		= gswip_port_fdb_dump,
++	.port_change_mtu	= gswip_port_change_mtu,
++	.port_max_mtu		= gswip_port_max_mtu,
+ 	.phylink_validate	= gswip_phylink_validate,
+ 	.phylink_mac_config	= gswip_phylink_mac_config,
+ 	.phylink_mac_link_down	= gswip_phylink_mac_link_down,

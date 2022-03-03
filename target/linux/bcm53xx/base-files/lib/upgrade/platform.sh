@@ -2,6 +2,12 @@ RAMFS_COPY_BIN='osafeloader oseama otrx truncate'
 
 PART_NAME=firmware
 
+BCM53XX_FW_FORMAT=
+BCM53XX_FW_BOARD_ID=
+BCM53XX_FW_INT_IMG_FORMAT=
+BCM53XX_FW_INT_IMG_TRX_OFFSET=
+BCM53XX_FW_INT_IMG_EXTRACT_CMD=
+
 LXL_FLAGS_VENDOR_LUXUL=0x00000001
 
 # $(1): file to read magic from
@@ -30,7 +36,7 @@ platform_expected_image() {
 	local machine=$(board_name)
 
 	case "$machine" in
-		"dlink,dir-885l")	echo "seama wrgac42_dlink.2015_dir885l"; return;;
+		"dlink,dir-885l")	echo "seamaseal wrgac42_dlink.2015_dir885l"; return;;
 		"luxul,abr-4500-v1")	echo "lxl ABR-4500"; return;;
 		"luxul,xap-810-v1")	echo "lxl XAP-810"; return;;
 		"luxul,xap-1410v1")	echo "lxl XAP-1410"; return;;
@@ -59,169 +65,128 @@ platform_identify() {
 	magic=$(get_magic_long "$1")
 	case "$magic" in
 		"48445230")
-			echo "trx"
+			BCM53XX_FW_FORMAT="trx"
 			return
 			;;
 		"2a23245e")
-			echo "chk"
+			local header_len=$((0x$(get_magic_long_at "$1" 4)))
+			local board_id_len=$(($header_len - 40))
+
+			BCM53XX_FW_FORMAT="chk"
+			BCM53XX_FW_BOARD_ID=$(dd if="$1" skip=40 bs=1 count=$board_id_len 2>/dev/null | hexdump -v -e '1/1 "%c"')
+			BCM53XX_FW_INT_IMG_FORMAT="trx"
+			BCM53XX_FW_INT_IMG_TRX_OFFSET="$header_len"
+			BCM53XX_FW_INT_IMG_EXTRACT_CMD="dd skip=$header_len iflag=skip_bytes"
 			return
 			;;
 		"4c584c23")
-			echo "lxl"
+			local hdr_len=$(get_le_long_at "$1" 8)
+			local flags=$(get_le_long_at "$1" 12)
+
+			[ $((flags & LXL_FLAGS_VENDOR_LUXUL)) -gt 0 ] && notify_firmware_no_backup
+
+			BCM53XX_FW_FORMAT="lxl"
+			BCM53XX_FW_BOARD_ID=$(dd if="$1" skip=16 bs=1 count=16 2>/dev/null | hexdump -v -e '1/1 "%c"')
+			BCM53XX_FW_INT_IMG_FORMAT="trx"
+			BCM53XX_FW_INT_IMG_TRX_OFFSET="$hdr_len"
+			BCM53XX_FW_INT_IMG_EXTRACT_CMD="dd skip=$hdr_len iflag=skip_bytes"
+
 			return
 			;;
 		"5ea3a417")
-			echo "seama"
+			BCM53XX_FW_FORMAT="seamaseal"
+			BCM53XX_FW_BOARD_ID=$(oseama info "$1" | grep "Meta entry:.*signature=" | sed "s/.*=//")
+			BCM53XX_FW_INT_IMG_EXTRACT_CMD="oseama extract - -e 0"
 			return
 			;;
 	esac
 
 	magic=$(get_magic_long_at "$1" 14)
 	[ "$magic" = "55324e44" ] && {
-		echo "cybertan"
+		BCM53XX_FW_FORMAT="cybertan"
+		BCM53XX_FW_BOARD_ID=$(dd if="$1" bs=1 count=4 2>/dev/null | hexdump -v -e '1/1 "%c"')
+		BCM53XX_FW_INT_IMG_FORMAT="trx"
+		BCM53XX_FW_INT_IMG_TRX_OFFSET="32"
+		BCM53XX_FW_INT_IMG_EXTRACT_CMD="dd skip=32 iflag=skip_bytes"
 		return
 	}
 
 	magic=$(get_magic_long_at "$1" 60)
 	[ "$magic" = "4c584c23" ] && {
-		echo "lxlold"
+		notify_firmware_no_backup
+
+		BCM53XX_FW_FORMAT="lxlold"
+		BCM53XX_FW_BOARD_ID=$(dd if="$1" skip=48 bs=1 count=12 2>/dev/null | hexdump -v -e '1/1 "%c"')
+		BCM53XX_FW_INT_IMG_FORMAT="trx"
+		BCM53XX_FW_INT_IMG_TRX_OFFSET="64"
+		BCM53XX_FW_INT_IMG_EXTRACT_CMD="dd skip=64 iflag=skip_bytes"
 		return
 	}
 
 	if osafeloader info "$1" > /dev/null 2>&1; then
-		echo "safeloader"
+		BCM53XX_FW_FORMAT="safeloader"
 		return
 	fi
-
-	echo "unknown"
 }
 
 platform_other_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
-	local file_type=$(platform_identify "$1")
-	local magic
 	local error=0
 
-	case "$file_type" in
-		"chk")
-			local header_len=$((0x$(get_magic_long_at "$1" 4)))
-			local board_id_len=$(($header_len - 40))
-			local board_id=$(dd if="$1" skip=40 bs=1 count=$board_id_len 2>/dev/null | hexdump -v -e '1/1 "%c"')
-			local dev_board_id=$(platform_expected_image)
-			echo "Found CHK image with device board_id $board_id"
+	platform_identify "$1"
+	[ -z "$BCM53XX_FW_FORMAT" ] && {
+		echo "Invalid image type. Please use firmware specific for this device."
+		notify_firmware_broken
+		return 1
+	}
+	echo "Found $BCM53XX_FW_FORMAT firmware for device $BCM53XX_FW_BOARD_ID"
 
-			[ -n "$dev_board_id" -a "chk $board_id" != "$dev_board_id" ] && {
-				echo "Firmware board_id doesn't match device board_id ($dev_board_id)"
-				error=1
-			}
+	local expected_image="$(platform_expected_image)"
+	local tmp_format=$BCM53XX_FW_FORMAT
+	[ "$tmp_format" = "lxlold" ] && tmp_format="lxl"
+	[ -n "$expected_image" -a -n "$BCM53XX_FW_BOARD_ID" -a "$expected_image" != "$tmp_format $BCM53XX_FW_BOARD_ID" ] && {
+		echo "Firmware doesn't match device ($expected_image)"
+		error=1
+	}
 
-			if ! otrx check "$1" -o "$header_len"; then
-				echo "No valid TRX firmware in the CHK image"
-				notify_firmware_test_result "trx_valid" 0
-				error=1
-			else
-				notify_firmware_test_result "trx_valid" 1
-			fi
-		;;
-		"cybertan")
-			local pattern=$(dd if="$1" bs=1 count=4 2>/dev/null | hexdump -v -e '1/1 "%c"')
-			local dev_pattern=$(platform_expected_image)
-			echo "Found CyberTAN image with device pattern: $pattern"
-
-			[ -n "$dev_pattern" -a "cybertan $pattern" != "$dev_pattern" ] && {
-				echo "Firmware pattern doesn't match device pattern ($dev_pattern)"
-				error=1
-			}
-
-			if ! otrx check "$1" -o 32; then
-				echo "No valid TRX firmware in the CyberTAN image"
-				notify_firmware_test_result "trx_valid" 0
-				error=1
-			else
-				notify_firmware_test_result "trx_valid" 1
-			fi
-		;;
-		"lxl")
-			local hdr_len=$(get_le_long_at "$1" 8)
-			local flags=$(get_le_long_at "$1" 12)
-			local board=$(dd if="$1" skip=16 bs=1 count=16 2>/dev/null | hexdump -v -e '1/1 "%c"')
-			local dev_board=$(platform_expected_image)
-			echo "Found LXL image for board $board"
-
-			[ -n "$dev_board" -a "lxl $board" != "$dev_board" ] && {
-				echo "Firmware ($board) doesn't match device ($dev_board)"
-				error=1
-			}
-
-			[ $((flags & LXL_FLAGS_VENDOR_LUXUL)) -gt 0 ] && notify_firmware_no_backup
-
-			if ! otrx check "$1" -o "$hdr_len"; then
-				echo "No valid TRX firmware in the LXL image"
-				notify_firmware_test_result "trx_valid" 0
-				error=1
-			else
-				notify_firmware_test_result "trx_valid" 1
-			fi
-		;;
-		"lxlold")
-			local board_id=$(dd if="$1" skip=48 bs=1 count=12 2>/dev/null | hexdump -v -e '1/1 "%c"')
-			local dev_board_id=$(platform_expected_image)
-			echo "Found LXL image with device board_id $board_id"
-
-			[ -n "$dev_board_id" -a "lxl $board_id" != "$dev_board_id" ] && {
-				echo "Firmware board_id doesn't match device board_id ($dev_board_id)"
-				error=1
-			}
-
-			notify_firmware_no_backup
-
-			if ! otrx check "$1" -o 64; then
-				echo "No valid TRX firmware in the Luxul image"
-				notify_firmware_test_result "trx_valid" 0
-				error=1
-			else
-				notify_firmware_test_result "trx_valid" 1
-			fi
-		;;
-		"safeloader")
-		;;
-		"seama")
-			local img_signature=$(oseama info "$1" | grep "Meta entry:.*signature=" | sed "s/.*=//")
-			local dev_signature=$(platform_expected_image)
-			echo "Found Seama image with device signature: $img_signature"
-
-			[ -n "$dev_signature" -a "seama $img_signature" != "$dev_signature" ] && {
-				echo "Firmware signature doesn't match device signature ($dev_signature)"
-				error=1
-			}
-
+	case "$BCM53XX_FW_FORMAT" in
+		"seamaseal")
 			$(oseama info "$1" -e 0 | grep -q "Meta entry:.*type=firmware") || {
-				echo "Seama container doesn't have firmware entity"
+				echo "Seama seal doesn't contain firmware entity"
 				error=1
 			}
-		;;
+			;;
 		"trx")
-			local expected=$(platform_expected_image)
+			if ! otrx check "$1"; then
+				echo "Failed to find a valid TRX in firmware"
+				notify_firmware_test_result "trx_valid" 0
+				error=1
+			else
+				notify_firmware_test_result "trx_valid" 1
+			fi
 
-			[ "$expected" == "safeloader" ] && {
+			[ "$expected_image" == "safeloader" ] && {
 				echo "This device expects SafeLoader format and may not work with TRX"
 				error=1
 			}
-
-			if ! otrx check "$1"; then
-				echo "Invalid (corrupted?) TRX firmware"
-				notify_firmware_test_result "trx_valid" 0
-				error=1
-			else
-				notify_firmware_test_result "trx_valid" 1
-			fi
-		;;
+			;;
 		*)
-			echo "Invalid image type. Please use firmware specific for this device."
-			notify_firmware_broken
-			error=1
-		;;
+			case "$BCM53XX_FW_INT_IMG_FORMAT" in
+				"trx")
+					# Make sure that both ways of extracting TRX work.
+					# platform_do_upgrade() may use any of them.
+					if ! otrx check "$1" -o "$BCM53XX_FW_INT_IMG_TRX_OFFSET" || \
+					   ! $BCM53XX_FW_INT_IMG_EXTRACT_CMD < $1 | otrx check -; then
+						echo "Invalid (corrupted?) TRX firmware"
+						notify_firmware_test_result "trx_valid" 0
+						error=1
+					else
+						notify_firmware_test_result "trx_valid" 1
+					fi
+					;;
+			esac
+			;;
 	esac
 
 	return $error
@@ -246,8 +211,8 @@ platform_check_image() {
 }
 
 
-# $(1): image for upgrade (with possible extra header)
-# $(2): offset of trx in image
+# $(1): TRX image or firmware containing TRX
+# $(2): offset of TRX in firmware (optional)
 platform_do_upgrade_nand_trx() {
 	local dir="/tmp/sysupgrade-bcm53xx"
 	local trx="$1"
@@ -311,15 +276,15 @@ platform_do_upgrade_nand_trx() {
 	nand_do_upgrade $dir/root
 }
 
-platform_do_upgrade_nand_seama() {
+platform_do_upgrade_nand_seamaseal() {
 	local dir="/tmp/sysupgrade-bcm53xx"
-	local seama="$1"
+	local seamaseal="$1"
 	local tmp
 
 	# Extract Seama entity from Seama seal
 	rm -fR $dir
 	mkdir -p $dir
-	oseama extract "$seama" \
+	oseama extract "$seamaseal" \
 		-e 0 \
 		-o $dir/seama.entity
 	[ $? -ne 0 ] && {
@@ -358,26 +323,6 @@ platform_do_upgrade_nand_seama() {
 	nand_do_upgrade $dir/root.ubi
 }
 
-platform_trx_from_chk_cmd() {
-	local header_len=$((0x$(get_magic_long_at "$1" 4)))
-
-	echo -n dd skip=$header_len iflag=skip_bytes
-}
-
-platform_trx_from_cybertan_cmd() {
-	echo -n dd skip=32 iflag=skip_bytes
-}
-
-platform_trx_from_lxl_cmd() {
-	local hdr_len=$(get_le_long_at "$1" 8)
-
-	echo -n dd skip=$hdr_len iflag=skip_bytes
-}
-
-platform_trx_from_lxlold_cmd() {
-	echo -n dd bs=64 skip=1
-}
-
 platform_img_from_safeloader() {
 	local dir="/tmp/sysupgrade-bcm53xx"
 
@@ -396,35 +341,28 @@ platform_img_from_safeloader() {
 	echo -n $dir/os-image
 }
 
-platform_img_from_seama() {
-	local dir="/tmp/sysupgrade-bcm53xx"
-	local offset=$(oseama info "$1" -e 0 | grep "Entity offset:" | sed "s/.*:\s*//")
-	local size=$(oseama info "$1" -e 0 | grep "Entity size:" | sed "s/.*:\s*//")
-
-	# Busybox doesn't support required iflag-s
-	# echo -n dd iflag=skip_bytes,count_bytes skip=$offset count=$size
-
-	rm -fR $dir
-	mkdir -p $dir
-	dd if="$1" of=$dir/image-noheader.bin bs=$offset skip=1
-	dd if=$dir/image-noheader.bin of=$dir/image-entity.bin bs=$size count=1
-
-	echo -n $dir/image-entity.bin
-}
-
 platform_other_do_upgrade() {
-	local file_type=$(platform_identify "$1")
-	local trx="$1"
-	local cmd=
+	platform_identify "$1"
 
 	[ "$(platform_flash_type)" == "nand" ] && {
-		case "$file_type" in
-			"chk")		platform_do_upgrade_nand_trx "$1" $((0x$(get_magic_long_at "$1" 4)));;
-			"cybertan")	platform_do_upgrade_nand_trx "$1" 32;;
-			"lxl")		platform_do_upgrade_nand_trx "$1" $(get_le_long_at "$1" 8);;
-			"lxlold")	platform_do_upgrade_nand_trx "$1" 64;;
-			"seama")	platform_do_upgrade_nand_seama "$1";;
-			"trx")		platform_do_upgrade_nand_trx "$1";;
+		# Try NAND-aware upgrade
+		case "$BCM53XX_FW_FORMAT" in
+			"seamaseal")
+				platform_do_upgrade_nand_seamaseal "$1"
+				;;
+			"trx")
+				platform_do_upgrade_nand_trx "$1"
+				;;
+			*)
+				case "$BCM53XX_FW_INT_IMG_FORMAT" in
+					"trx")
+						platform_do_upgrade_nand_trx "$1" "$BCM53XX_FW_INT_IMG_TRX_OFFSET"
+						;;
+					*)
+						echo "NAND aware sysupgrade is unsupported for $BCM53XX_FW_FORMAT format"
+						;;
+				esac
+				;;
 		esac
 
 		# Above calls exit on success.
@@ -432,16 +370,26 @@ platform_other_do_upgrade() {
 		echo "Writing whole image to NAND flash. All erase counters will be lost."
 	}
 
-	case "$file_type" in
-		"chk")		cmd=$(platform_trx_from_chk_cmd "$trx");;
-		"cybertan")	cmd=$(platform_trx_from_cybertan_cmd "$trx");;
-		"lxl")		cmd=$(platform_trx_from_lxl_cmd "$trx");;
-		"lxlold")	cmd=$(platform_trx_from_lxlold_cmd "$trx");;
-		"safeloader")	trx=$(platform_img_from_safeloader "$trx"); PART_NAME=os-image;;
-		"seama")	trx=$(platform_img_from_seama "$trx");;
+	case "$BCM53XX_FW_FORMAT" in
+		"safeloader")
+			PART_NAME=os-image
+			img=$(platform_img_from_safeloader "$1")
+			default_do_upgrade "$img"
+			;;
+		"seamaseal")
+			default_do_upgrade "$1" "$BCM53XX_FW_INT_IMG_EXTRACT_CMD"
+			;;
+		"trx")
+			default_do_upgrade "$1"
+			;;
+		*)
+			case "$BCM53XX_FW_INT_IMG_FORMAT" in
+				"trx")
+					default_do_upgrade "$1" "$BCM53XX_FW_INT_IMG_EXTRACT_CMD"
+					;;
+			esac
+			;;
 	esac
-
-	default_do_upgrade "$trx" "$cmd"
 }
 
 platform_do_upgrade() {

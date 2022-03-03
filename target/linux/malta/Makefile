@@ -10,8 +10,7 @@ SUBTARGETS:=le be le64 be64
 INITRAMFS_EXTRA_FILES:=
 FEATURES:=cpiogz ext4 ramdisk squashfs targz
 
-KERNEL_PATCHVER:=5.4
-KERNEL_TESTING_PATCHVER:=5.10
+KERNEL_PATCHVER:=5.10
 
 include $(INCLUDE_DIR)/target.mk
 

@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2021.04
-PKG_HASH:=0d438b1bb5cceb57a18ea2de4a0d51f7be5b05b98717df05938636e0aadfe11a
+PKG_VERSION:=2022.01
+PKG_HASH:=81b4543227db228c03f8a1bf5ddbc813b0bb8f6555ce46064ef721a6fc680413
 PKG_BUILD_DEPENDS:=arm-trusted-firmware-tools/host
 
 include $(INCLUDE_DIR)/u-boot.mk
@@ -78,14 +78,14 @@ endef
 
 define U-Boot/mt7623a_unielec_u7623
   NAME:=UniElec U7623 (mt7623)
-  BUILD_DEVICES:=unielec_u7623-emmc unielec_u7623-02-emmc-512m-legacy
+  BUILD_DEVICES:=unielec_u7623-02
   BUILD_SUBTARGET:=mt7623
   UBOOT_CONFIG:=mt7623a_unielec_u7623_02
 endef
 
 define U-Boot/mt7623n_bpir2
   NAME:=Banana Pi R2 (mt7623)
-  BUILD_DEVICES:=bpi_bananapi-r2
+  BUILD_DEVICES:=bananapi_bpi-r2
   BUILD_SUBTARGET:=mt7623
   UBOOT_IMAGE:=u-boot.bin
   UBOOT_CONFIG:=mt7623n_bpir2
@@ -111,13 +111,16 @@ UBOOT_TARGETS := \
 
 UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE:.fip=.bin)
 
-Build/Exports:=$(Host/Exports)
-
 define Build/fip-image
 	$(STAGING_DIR_HOST)/bin/fiptool create \
 		--soc-fw $(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-$(BL2_BOOTDEV)-$(BL2_DDRBLOB)ddr-bl31.bin \
 		--nt-fw $(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/u-boot.fip
+endef
+
+define Build/Configure
+	$(call Build/Configure/U-Boot)
+	sed -i 's/CONFIG_TOOLS_LIBCRYPTO=y/# CONFIG_TOOLS_LIBCRYPTO is not set/' $(PKG_BUILD_DIR)/.config
 endef
 
 define Build/Compile

@@ -1,0 +1,52 @@
+From 3fe0073d116d9902df08761c1cf0d733dd4c38fc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
+Date: Wed, 8 Dec 2021 06:03:50 +0100
+Subject: [PATCH] PCI: aardvark: Optimize writing PCI_EXP_RTCTL_PMEIE and
+ PCI_EXP_RTSTA_PME on emulated bridge
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+To optimize advk_pci_bridge_emul_pcie_conf_write() code, touch
+PCIE_ISR0_REG and PCIE_ISR0_MASK_REG registers only when it is really
+needed, when processing PCI_EXP_RTCTL_PMEIE and PCI_EXP_RTSTA_PME bits.
+
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ drivers/pci/controller/pci-aardvark.c | 20 +++++++++++---------
+ 1 file changed, 11 insertions(+), 9 deletions(-)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -932,19 +932,21 @@ advk_pci_bridge_emul_pcie_conf_write(str
+ 			advk_pcie_wait_for_retrain(pcie);
+ 		break;
+ 
+-	case PCI_EXP_RTCTL: {
++	case PCI_EXP_RTCTL:
+ 		/* Only mask/unmask PME interrupt */
+-		u32 val = advk_readl(pcie, PCIE_ISR0_MASK_REG) &
+-			~PCIE_MSG_PM_PME_MASK;
+-		if ((new & PCI_EXP_RTCTL_PMEIE) == 0)
+-			val |= PCIE_MSG_PM_PME_MASK;
+-		advk_writel(pcie, val, PCIE_ISR0_MASK_REG);
++		if (mask & PCI_EXP_RTCTL_PMEIE) {
++			u32 val = advk_readl(pcie, PCIE_ISR0_MASK_REG);
++			if (new & PCI_EXP_RTCTL_PMEIE)
++				val &= ~PCIE_MSG_PM_PME_MASK;
++			else
++				val |= PCIE_MSG_PM_PME_MASK;
++			advk_writel(pcie, val, PCIE_ISR0_MASK_REG);
++		}
+ 		break;
+-	}
+ 
+ 	case PCI_EXP_RTSTA:
+-		new = (new & PCI_EXP_RTSTA_PME) >> 9;
+-		advk_writel(pcie, new, PCIE_ISR0_REG);
++		if (new & PCI_EXP_RTSTA_PME)
++			advk_writel(pcie, PCIE_MSG_PM_PME_MASK, PCIE_ISR0_REG);
+ 		break;
+ 
+ 	case PCI_EXP_DEVCTL:

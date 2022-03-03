@@ -1,0 +1,840 @@
+From 5d84f16b0036b33487b94abef15ad3c224c81ee9 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 3 Feb 2022 16:38:50 +0000
+Subject: [PATCH] net: mdio: support hardware-assisted indirect access
+
+MDIO controllers found in Switch-SoCs can offload some MDIO operations
+to the hardware:
+ * MMD register access via Clause-22
+   Instead of using multiple operations to access MMD registers via
+   MII register MII_MMD_CTRL and MII_MMD_DATA some controllers
+   allow transparent access to MMD PHY registers.
+
+ * paged MII register access
+   Some PHYs (namely RealTek and Vitesse) use vendor-defined MII
+   register 0x1f for paged access. Some MDIO host controllers support
+   transparent paged access when used with such PHYs.
+
+ * add convenience accessors to fully support paged access also on
+   multi-PHY packages (like the embedded PHYs in RTL83xx):
+   phy_package_read_paged and phy_package_write_paged
+   phy_package_port_read and phy_package_port_write
+   phy_package_port_read_paged and phy_package_port_write_paged
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/phy/mdio_bus.c | 335 ++++++++++++++++++++++++++++++++++++-
+ drivers/net/phy/phy-core.c |  66 +++++++-
+ include/linux/mdio.h       |  59 +++++++
+ include/linux/phy.h        | 129 ++++++++++++++
+ include/uapi/linux/mii.h   |   1 +
+ 5 files changed, 580 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -734,6 +734,32 @@ out:
+ }
+ 
+ /**
++ * __mdiobus_select_page - Unlocked version of the mdiobus_select_page function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: register page to select
++ *
++ * Selects a MDIO bus register page. Caller must hold the mdio bus lock.
++ *
++ * NOTE: MUST NOT be called from interrupt context.
++ */
++int __mdiobus_select_page(struct mii_bus *bus, int addr, u16 page)
++{
++	lockdep_assert_held_once(&bus->mdio_lock);
++
++	if (bus->selected_page[addr] == page)
++		return 0;
++
++	bus->selected_page[addr] = page;
++	if (bus->read_paged)
++		return 0;
++
++	return bus->write(bus, addr, MII_MAINPAGE, page);
++
++}
++EXPORT_SYMBOL(__mdiobus_select_page);
++
++/**
+  * __mdiobus_read - Unlocked version of the mdiobus_read function
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -749,7 +775,10 @@ int __mdiobus_read(struct mii_bus *bus,
+ 
+ 	WARN_ON_ONCE(!mutex_is_locked(&bus->mdio_lock));
+ 
+-	retval = bus->read(bus, addr, regnum);
++	if (bus->read_paged)
++		retval = bus->read_paged(bus, addr, bus->selected_page[addr], regnum);
++	else
++		retval = bus->read(bus, addr, regnum);
+ 
+ 	trace_mdio_access(bus, 1, addr, regnum, retval, retval);
+ 	mdiobus_stats_acct(&bus->stats[addr], true, retval);
+@@ -759,6 +788,40 @@ int __mdiobus_read(struct mii_bus *bus,
+ EXPORT_SYMBOL(__mdiobus_read);
+ 
+ /**
++ * __mdiobus_read_paged - Unlocked version of the mdiobus_read_paged function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to read
++ *
++ * Read a MDIO bus register. Caller must hold the mdio bus lock.
++ *
++ * NOTE: MUST NOT be called from interrupt context.
++ */
++int __mdiobus_read_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum)
++{
++	int retval;
++	int oldpage;
++
++	lockdep_assert_held_once(&bus->mdio_lock);
++
++	if (bus->read_paged) {
++		retval = bus->read_paged(bus, addr, page, regnum);
++	} else {
++		oldpage = bus->selected_page[addr];
++		__mdiobus_select_page(bus, addr, page);
++		retval = bus->read(bus, addr, regnum);
++		__mdiobus_select_page(bus, addr, oldpage);
++	}
++
++	trace_mdio_access(bus, 1, addr, regnum, retval, retval);
++	mdiobus_stats_acct(&bus->stats[addr], true, retval);
++
++	return retval;
++}
++EXPORT_SYMBOL(__mdiobus_read_paged);
++
++/**
+  * __mdiobus_write - Unlocked version of the mdiobus_write function
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -775,7 +838,10 @@ int __mdiobus_write(struct mii_bus *bus,
+ 
+ 	WARN_ON_ONCE(!mutex_is_locked(&bus->mdio_lock));
+ 
+-	err = bus->write(bus, addr, regnum, val);
++	if (bus->write_paged)
++		err = bus->write_paged(bus, addr, bus->selected_page[addr], regnum, val);
++	else
++		err = bus->write(bus, addr, regnum, val);
+ 
+ 	trace_mdio_access(bus, 0, addr, regnum, val, err);
+ 	mdiobus_stats_acct(&bus->stats[addr], false, err);
+@@ -785,6 +851,39 @@ int __mdiobus_write(struct mii_bus *bus,
+ EXPORT_SYMBOL(__mdiobus_write);
+ 
+ /**
++ * __mdiobus_write_paged - Unlocked version of the mdiobus_write_paged function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to write
++ * @val: value to write to @regnum
++ *
++ * Write a MDIO bus register. Caller must hold the mdio bus lock.
++ *
++ * NOTE: MUST NOT be called from interrupt context.
++ */
++int __mdiobus_write_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val)
++{
++	int err, oldpage;
++
++	lockdep_assert_held_once(&bus->mdio_lock);
++
++	if (bus->write_paged) {
++		err = bus->write_paged(bus, addr, page, regnum, val);
++	} else {
++		oldpage = bus->selected_page[addr];
++		__mdiobus_select_page(bus, addr, page);
++		err = bus->write(bus, addr, regnum, val);
++		__mdiobus_select_page(bus, addr, oldpage);
++	}
++	trace_mdio_access(bus, 0, addr, regnum, val, err);
++	mdiobus_stats_acct(&bus->stats[addr], false, err);
++	return err;
++}
++EXPORT_SYMBOL(__mdiobus_write_paged);
++
++
++/**
+  * __mdiobus_modify_changed - Unlocked version of the mdiobus_modify function
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -817,6 +916,43 @@ int __mdiobus_modify_changed(struct mii_
+ EXPORT_SYMBOL_GPL(__mdiobus_modify_changed);
+ 
+ /**
++ * __mdiobus_modify_changed_paged - Unlocked version of the mdiobus_modify_paged function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @regnum: register number to modify
++ * @mask: bit mask of bits to clear
++ * @set: bit mask of bits to set
++ *
++ * Read, modify, and if any change, write the register value back to the
++ * device. Any error returns a negative number.
++ *
++ * NOTE: MUST NOT be called from interrupt context.
++ */
++int __mdiobus_modify_changed_paged(struct mii_bus *bus, int addr, u32 regnum, u16 page,
++				   u16 mask, u16 set)
++{
++	int new, ret, oldpage;
++
++	oldpage = bus->selected_page[addr];
++	__mdiobus_select_page(bus, addr, page);
++
++	ret = __mdiobus_read_paged(bus, addr, page, regnum);
++	if (ret < 0)
++		return ret;
++
++	new = (ret & ~mask) | set;
++	if (new == ret)
++		return 0;
++
++	ret = __mdiobus_write_paged(bus, addr, page, regnum, new);
++
++	__mdiobus_select_page(bus, addr, oldpage);
++
++	return ret < 0 ? ret : 1;
++}
++EXPORT_SYMBOL_GPL(__mdiobus_modify_changed_paged);
++
++/**
+  * mdiobus_read_nested - Nested version of the mdiobus_read function
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -842,6 +978,79 @@ int mdiobus_read_nested(struct mii_bus *
+ EXPORT_SYMBOL(mdiobus_read_nested);
+ 
+ /**
++ * mdiobus_select_page_nested - Nested version of the mdiobus_select_page function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: register page to access
++ *
++ * In case of nested MDIO bus access avoid lockdep false positives by
++ * using mutex_lock_nested().
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_select_page_nested(struct mii_bus *bus, int addr, u16 page)
++{
++	int retval;
++
++	mutex_lock_nested(&bus->mdio_lock, MDIO_MUTEX_NESTED);
++	retval = __mdiobus_select_page(bus, addr, page);
++	mutex_unlock(&bus->mdio_lock);
++
++	return retval;
++}
++EXPORT_SYMBOL(mdiobus_select_page_nested);
++
++/**
++ * mdiobus_read_paged_nested - Nested version of the mdiobus_read_paged function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: register page to access
++ * @regnum: register number to read
++ *
++ * In case of nested MDIO bus access avoid lockdep false positives by
++ * using mutex_lock_nested().
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_read_paged_nested(struct mii_bus *bus, int addr, u16 page, u32 regnum)
++{
++	int retval;
++
++	mutex_lock_nested(&bus->mdio_lock, MDIO_MUTEX_NESTED);
++	retval = __mdiobus_read_paged(bus, addr, page, regnum);
++	mutex_unlock(&bus->mdio_lock);
++
++	return retval;
++}
++EXPORT_SYMBOL(mdiobus_read_paged_nested);
++
++/**
++ * mdiobus_select_page - Convenience function for setting the MII register page
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to set
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_select_page(struct mii_bus *bus, int addr, u16 page)
++{
++	int retval;
++
++	mutex_lock(&bus->mdio_lock);
++	retval = __mdiobus_select_page(bus, addr, page);
++	mutex_unlock(&bus->mdio_lock);
++
++	return retval;
++}
++EXPORT_SYMBOL(mdiobus_select_page);
++
++/**
+  * mdiobus_read - Convenience function for reading a given MII mgmt register
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -864,6 +1073,29 @@ int mdiobus_read(struct mii_bus *bus, in
+ EXPORT_SYMBOL(mdiobus_read);
+ 
+ /**
++ * mdiobus_read_paged - Convenience function for reading a given paged MII mgmt register
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: register page to access
++ * @regnum: register number to read
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_read_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum)
++{
++	int retval;
++
++	mutex_lock(&bus->mdio_lock);
++	retval = __mdiobus_read_paged(bus, addr, page, regnum);
++	mutex_unlock(&bus->mdio_lock);
++
++	return retval;
++}
++EXPORT_SYMBOL(mdiobus_read_paged);
++
++/**
+  * mdiobus_write_nested - Nested version of the mdiobus_write function
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -890,6 +1122,33 @@ int mdiobus_write_nested(struct mii_bus
+ EXPORT_SYMBOL(mdiobus_write_nested);
+ 
+ /**
++ * mdiobus_write_paged_nested - Nested version of the mdiobus_write_aged function
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to write
++ * @val: value to write to @regnum
++ *
++ * In case of nested MDIO bus access avoid lockdep false positives by
++ * using mutex_lock_nested().
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_write_paged_nested(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val)
++{
++	int err;
++
++	mutex_lock_nested(&bus->mdio_lock, MDIO_MUTEX_NESTED);
++	err = __mdiobus_write_paged(bus, addr, page, regnum, val);
++	mutex_unlock(&bus->mdio_lock);
++
++	return err;
++}
++EXPORT_SYMBOL(mdiobus_write_paged_nested);
++
++/**
+  * mdiobus_write - Convenience function for writing a given MII mgmt register
+  * @bus: the mii_bus struct
+  * @addr: the phy address
+@@ -913,6 +1172,30 @@ int mdiobus_write(struct mii_bus *bus, i
+ EXPORT_SYMBOL(mdiobus_write);
+ 
+ /**
++ * mdiobus_write_paged - Convenience function for writing a given paged MII mgmt register
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to write
++ * @val: value to write to @regnum
++ *
++ * NOTE: MUST NOT be called from interrupt context,
++ * because the bus read/write functions may wait for an interrupt
++ * to conclude the operation.
++ */
++int mdiobus_write_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val)
++{
++	int err;
++
++	mutex_lock(&bus->mdio_lock);
++	err = __mdiobus_write_paged(bus, addr, page, regnum, val);
++	mutex_unlock(&bus->mdio_lock);
++
++	return err;
++}
++EXPORT_SYMBOL(mdiobus_write_paged);
++
++/**
+  * mdiobus_modify - Convenience function for modifying a given mdio device
+  *	register
+  * @bus: the mii_bus struct
+@@ -934,6 +1217,51 @@ int mdiobus_modify(struct mii_bus *bus,
+ EXPORT_SYMBOL_GPL(mdiobus_modify);
+ 
+ /**
++ * mdiobus_modify_paged - Convenience function for modifying a given mdio device
++ *	register
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to write
++ * @mask: bit mask of bits to clear
++ * @set: bit mask of bits to set
++ */
++int mdiobus_modify_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 mask, u16 set)
++{
++	int err;
++
++	mutex_lock(&bus->mdio_lock);
++	err = __mdiobus_modify_changed_paged(bus, addr, page, regnum, mask, set);
++	mutex_unlock(&bus->mdio_lock);
++
++	return err < 0 ? err : 0;
++}
++EXPORT_SYMBOL_GPL(mdiobus_modify_paged);
++
++/**
++ * mdiobus_modify_changed_paged - Convenience function for modifying a given paged
++ * mdio device register and returning if it changed
++ * @bus: the mii_bus struct
++ * @addr: the phy address
++ * @page: the register page to access
++ * @regnum: register number to write
++ * @mask: bit mask of bits to clear
++ * @set: bit mask of bits to set
++ */
++int mdiobus_modify_changed_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum,
++				 u16 mask, u16 set)
++{
++	int err;
++
++	mutex_lock(&bus->mdio_lock);
++	err = __mdiobus_modify_changed_paged(bus, addr, page, regnum, mask, set);
++	mutex_unlock(&bus->mdio_lock);
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(mdiobus_modify_changed_paged);
++
++/**
+  * mdio_bus_match - determine if given MDIO driver supports the given
+  *		    MDIO device
+  * @dev: target MDIO device
+--- a/drivers/net/phy/phy-core.c
++++ b/drivers/net/phy/phy-core.c
+@@ -481,10 +481,16 @@ int __phy_read_mmd(struct phy_device *ph
+ 		struct mii_bus *bus = phydev->mdio.bus;
+ 		int phy_addr = phydev->mdio.addr;
+ 
+-		mmd_phy_indirect(bus, phy_addr, devad, regnum);
+-
+-		/* Read the content of the MMD's selected register */
+-		val = __mdiobus_read(bus, phy_addr, MII_MMD_DATA);
++		if (bus->access_capabilities & MDIOBUS_ACCESS_C22_MMD) {
++			val = __mdiobus_c22_mmd_read(phydev->mdio.bus,
++						     phydev->mdio.addr,
++						     devad, regnum);
++		} else {
++			mmd_phy_indirect(bus, phy_addr, devad, regnum);
++
++			/* Read the content of the MMD's selected register */
++			val = __mdiobus_read(bus, phy_addr, MII_MMD_DATA);
++		}
+ 	}
+ 	return val;
+ }
+@@ -537,12 +543,18 @@ int __phy_write_mmd(struct phy_device *p
+ 		struct mii_bus *bus = phydev->mdio.bus;
+ 		int phy_addr = phydev->mdio.addr;
+ 
+-		mmd_phy_indirect(bus, phy_addr, devad, regnum);
++		if (bus->access_capabilities & MDIOBUS_ACCESS_C22_MMD) {
++			ret = __mdiobus_c22_mmd_write(phydev->mdio.bus,
++						      phydev->mdio.addr,
++						      devad, regnum, val);
++		} else {
++			mmd_phy_indirect(bus, phy_addr, devad, regnum);
+ 
+-		/* Write the data into MMD's selected register */
+-		__mdiobus_write(bus, phy_addr, MII_MMD_DATA, val);
++			/* Write the data into MMD's selected register */
++			__mdiobus_write(bus, phy_addr, MII_MMD_DATA, val);
+ 
+-		ret = 0;
++			ret = 0;
++		}
+ 	}
+ 	return ret;
+ }
+@@ -748,6 +760,13 @@ EXPORT_SYMBOL_GPL(phy_modify_mmd);
+ 
+ static int __phy_read_page(struct phy_device *phydev)
+ {
++	if (phydev->drv && phydev->drv->flags & PHY_HAS_REALTEK_PAGES) {
++		struct mii_bus *bus = phydev->mdio.bus;
++		int phy_addr = phydev->mdio.addr;
++
++		return bus->selected_page[phy_addr];
++	}
++
+ 	if (WARN_ONCE(!phydev->drv->read_page, "read_page callback not available, PHY driver not loaded?\n"))
+ 		return -EOPNOTSUPP;
+ 
+@@ -756,6 +775,13 @@ static int __phy_read_page(struct phy_de
+ 
+ static int __phy_write_page(struct phy_device *phydev, int page)
+ {
++	if (phydev->drv && phydev->drv->flags & PHY_HAS_REALTEK_PAGES) {
++		struct mii_bus *bus = phydev->mdio.bus;
++		int phy_addr = phydev->mdio.addr;
++
++		return __mdiobus_select_page(bus, phy_addr, page);
++	}
++
+ 	if (WARN_ONCE(!phydev->drv->write_page, "write_page callback not available, PHY driver not loaded?\n"))
+ 		return -EOPNOTSUPP;
+ 
+@@ -857,6 +883,18 @@ int phy_read_paged(struct phy_device *ph
+ {
+ 	int ret = 0, oldpage;
+ 
++	if (phydev->drv && phydev->drv->flags & PHY_HAS_REALTEK_PAGES) {
++		struct mii_bus *bus = phydev->mdio.bus;
++		int phy_addr = phydev->mdio.addr;
++
++		if (bus->read_paged) {
++			phy_lock_mdio_bus(phydev);
++			ret = bus->read_paged(bus, phy_addr, page, regnum);
++			phy_unlock_mdio_bus(phydev);
++			return ret;
++		}
++	}
++
+ 	oldpage = phy_select_page(phydev, page);
+ 	if (oldpage >= 0)
+ 		ret = __phy_read(phydev, regnum);
+@@ -878,6 +916,18 @@ int phy_write_paged(struct phy_device *p
+ {
+ 	int ret = 0, oldpage;
+ 
++	if (phydev->drv && phydev->drv->flags & PHY_HAS_REALTEK_PAGES) {
++		struct mii_bus *bus = phydev->mdio.bus;
++		int phy_addr = phydev->mdio.addr;
++
++		if (bus->write_paged) {
++			phy_lock_mdio_bus(phydev);
++			ret = bus->write_paged(bus, phy_addr, page, regnum, val);
++			phy_unlock_mdio_bus(phydev);
++			return ret;
++		}
++	}
++
+ 	oldpage = phy_select_page(phydev, page);
+ 	if (oldpage >= 0)
+ 		ret = __phy_write(phydev, regnum, val);
+--- a/include/linux/mdio.h
++++ b/include/linux/mdio.h
+@@ -14,6 +14,7 @@
+  * IEEE 802.3ae clause 45 addressing mode used by 10GIGE phy chips.
+  */
+ #define MII_ADDR_C45		(1<<30)
++#define MII_ADDR_C22_MMD	(1<<29)
+ #define MII_DEVADDR_C45_SHIFT	16
+ #define MII_DEVADDR_C45_MASK	GENMASK(20, 16)
+ #define MII_REGADDR_C45_MASK	GENMASK(15, 0)
+@@ -327,11 +328,19 @@ static inline void mii_10gbt_stat_mod_li
+ 			 advertising, lpa & MDIO_AN_10GBT_STAT_LP10G);
+ }
+ 
++int __mdiobus_select_page(struct mii_bus *bus, int addr, u16 page);
+ int __mdiobus_read(struct mii_bus *bus, int addr, u32 regnum);
+ int __mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val);
+ int __mdiobus_modify_changed(struct mii_bus *bus, int addr, u32 regnum,
+ 			     u16 mask, u16 set);
+ 
++int __mdiobus_read_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum);
++int __mdiobus_write_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val);
++int __mdiobus_modify_changed_paged(struct mii_bus *bus, int addr, u32 regnum, u16 page,
++				   u16 mask, u16 set);
++
++int mdiobus_select_page(struct mii_bus *bus, int addr, u16 page);
++int mdiobus_select_page_nested(struct mii_bus *bus, int addr, u16 page);
+ int mdiobus_read(struct mii_bus *bus, int addr, u32 regnum);
+ int mdiobus_read_nested(struct mii_bus *bus, int addr, u32 regnum);
+ int mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val);
+@@ -339,11 +348,51 @@ int mdiobus_write_nested(struct mii_bus
+ int mdiobus_modify(struct mii_bus *bus, int addr, u32 regnum, u16 mask,
+ 		   u16 set);
+ 
++int mdiobus_read_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum);
++int mdiobus_read_nested_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum);
++int mdiobus_write_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val);
++int mdiobus_write_nested_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 val);
++int mdiobus_modify_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum, u16 mask,
++			 u16 set);
++int mdiobus_modify_changed_paged(struct mii_bus *bus, int addr, u16 page, u32 regnum,
++				 u16 mask, u16 set);
++
++static inline int mdiodev_read_paged(struct mdio_device *mdiodev, u16 page,
++				     u32 regnum)
++{
++	return mdiobus_read_paged(mdiodev->bus, mdiodev->addr, page, regnum);
++}
++
++static inline int mdiodev_write_paged(struct mdio_device *mdiodev, u16 page,
++				      u32 regnum, u16 val)
++{
++	return mdiobus_write_paged(mdiodev->bus, mdiodev->addr, page, regnum, val);
++}
++
++static inline int mdiodev_modify_paged(struct mdio_device *mdiodev, u16 page,
++				       u32 regnum, u16 mask, u16 set)
++{
++	return mdiobus_modify_paged(mdiodev->bus, mdiodev->addr, page, regnum,
++				    mask, set);
++}
++
++static inline int mdiodev_modify_changed_paged(struct mdio_device *mdiodev, u16 page,
++					       u32 regnum, u16 mask, u16 set)
++{
++	return mdiobus_modify_changed_paged(mdiodev->bus, mdiodev->addr, page, regnum,
++					    mask, set);
++}
++
+ static inline u32 mdiobus_c45_addr(int devad, u16 regnum)
+ {
+ 	return MII_ADDR_C45 | devad << MII_DEVADDR_C45_SHIFT | regnum;
+ }
+ 
++static inline u32 mdiobus_c22_mmd_addr(int devad, u16 regnum)
++{
++	return MII_ADDR_C22_MMD | devad << MII_DEVADDR_C45_SHIFT | regnum;
++}
++
+ static inline u16 mdiobus_c45_regad(u32 regnum)
+ {
+ 	return FIELD_GET(MII_REGADDR_C45_MASK, regnum);
+@@ -367,6 +416,19 @@ static inline int __mdiobus_c45_write(st
+ 			       val);
+ }
+ 
++static inline int __mdiobus_c22_mmd_read(struct mii_bus *bus, int prtad,
++					 int devad, u16 regnum)
++{
++	return __mdiobus_read(bus, prtad, mdiobus_c22_mmd_addr(devad, regnum));
++}
++
++static inline int __mdiobus_c22_mmd_write(struct mii_bus *bus, int prtad,
++					  int devad, u16 regnum, u16 val)
++{
++	return __mdiobus_write(bus, prtad, mdiobus_c22_mmd_addr(devad, regnum),
++			       val);
++}
++
+ static inline int mdiobus_c45_read(struct mii_bus *bus, int prtad, int devad,
+ 				   u16 regnum)
+ {
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -80,6 +80,7 @@ extern const int phy_10gbit_features_arr
+ #define PHY_IS_INTERNAL		0x00000001
+ #define PHY_RST_AFTER_CLK_EN	0x00000002
+ #define PHY_POLL_CABLE_TEST	0x00000004
++#define PHY_HAS_REALTEK_PAGES	0x00000010
+ #define MDIO_DEVICE_IS_PHY	0x80000000
+ 
+ /**
+@@ -374,6 +375,22 @@ struct mii_bus {
+ 
+ 	/** @shared: shared state across different PHYs */
+ 	struct phy_package_shared *shared[PHY_MAX_ADDR];
++
++	/** @access_capabilities: hardware-assisted access capabilties */
++	enum {
++		MDIOBUS_ACCESS_SOFTWARE_ONLY = 0,
++		MDIOBUS_ACCESS_C22_MMD = 0x1,
++	} access_capabilities;
++
++	/** @read: Perform a read transfer on the bus, offloading page access */
++	int (*read_paged)(struct mii_bus *bus, int addr, u16 page, int regnum);
++	/** @write: Perform a write transfer on the bus, offloading page access */
++	int (*write_paged)(struct mii_bus *bus, int addr, u16 page, int regnum, u16 val);
++	/** currently selected page when page access is offloaded
++	 * array should be PHY_MAX_ADDR+1size, but current design of the MDIO driver
++	 * uses port addresses as phy addresses and they are up to 6 bit.
++	 */
++	u16 selected_page[64];
+ };
+ #define to_mii_bus(d) container_of(d, struct mii_bus, dev)
+ 
+@@ -1651,6 +1668,66 @@ static inline int __phy_package_read(str
+ 	return __mdiobus_read(phydev->mdio.bus, shared->addr, regnum);
+ }
+ 
++static inline int phy_package_read_port(struct phy_device *phydev, u16 port, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_read(phydev->mdio.bus, shared->addr + port, regnum);
++}
++
++static inline int __phy_package_read_port(struct phy_device *phydev, u16 port, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_read(phydev->mdio.bus, shared->addr + port, regnum);
++}
++
++static inline int phy_package_read_paged(struct phy_device *phydev, u16 page, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_read_paged(phydev->mdio.bus, shared->addr, page, regnum);
++}
++
++static inline int __phy_package_read_paged(struct phy_device *phydev, u16 page, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_read_paged(phydev->mdio.bus, shared->addr, page, regnum);
++}
++
++static inline int phy_package_port_read_paged(struct phy_device *phydev, u16 port, u16 page, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_read_paged(phydev->mdio.bus, shared->addr + port, page, regnum);
++}
++
++static inline int __phy_package_port_read_paged(struct phy_device *phydev, u16 port, u16 page, u32 regnum)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_read_paged(phydev->mdio.bus, shared->addr + port, page, regnum);
++}
++
+ static inline int phy_package_write(struct phy_device *phydev,
+ 				    u32 regnum, u16 val)
+ {
+@@ -1673,6 +1750,72 @@ static inline int __phy_package_write(st
+ 	return __mdiobus_write(phydev->mdio.bus, shared->addr, regnum, val);
+ }
+ 
++static inline int phy_package_port_write(struct phy_device *phydev,
++				         u16 port, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_write(phydev->mdio.bus, shared->addr + port, regnum, val);
++}
++
++static inline int __phy_package_port_write(struct phy_device *phydev,
++				      u16 port, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_write(phydev->mdio.bus, shared->addr + port, regnum, val);
++}
++
++static inline int phy_package_port_write_paged(struct phy_device *phydev,
++					u16 port, u16 page, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_write_paged(phydev->mdio.bus, shared->addr + port, page, regnum, val);
++}
++
++static inline int __phy_package_port_write_paged(struct phy_device *phydev,
++					u16 port, u16 page, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_write_paged(phydev->mdio.bus, shared->addr + port, page, regnum, val);
++}
++
++static inline int phy_package_write_paged(struct phy_device *phydev,
++					  u16 page, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return mdiobus_write_paged(phydev->mdio.bus, shared->addr, page, regnum, val);
++}
++
++static inline int __phy_package_write_paged(struct phy_device *phydev,
++					  u16 page, u32 regnum, u16 val)
++{
++	struct phy_package_shared *shared = phydev->shared;
++
++	if (!shared)
++		return -EIO;
++
++	return __mdiobus_write_paged(phydev->mdio.bus, shared->addr, page, regnum, val);
++}
++
+ static inline bool __phy_package_set_once(struct phy_device *phydev,
+ 					  unsigned int b)
+ {
+--- a/include/uapi/linux/mii.h
++++ b/include/uapi/linux/mii.h
+@@ -36,6 +36,7 @@
+ #define MII_RESV2		0x1a	/* Reserved...                 */
+ #define MII_TPISTATUS		0x1b	/* TPI status for 10mbps       */
+ #define MII_NCONFIG		0x1c	/* Network interface config    */
++#define MII_MAINPAGE		0x1f	/* Page register               */
+ 
+ /* Basic mode control register. */
+ #define BMCR_RESV		0x003f	/* Unused...                   */

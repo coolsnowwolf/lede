@@ -12,23 +12,35 @@ DEVICE_TYPE?=router
 # Default packages - the really basic set
 DEFAULT_PACKAGES:=\
 	base-files \
+	ca-bundle \
 	dropbear \
 	fstools \
 	libc \
 	libgcc \
-	libustream-openssl \
+	libustream-wolfssl \
 	logd \
 	mtd \
 	netifd \
 	opkg \
 	uci \
 	uclient-fetch \
-	urandom-seed
+	urandom-seed \
+	urngd
 
 ifneq ($(CONFIG_SELINUX),)
 DEFAULT_PACKAGES+=busybox-selinux procd-selinux
 else
 DEFAULT_PACKAGES+=busybox procd
+endif
+
+# include ujail on systems with enough storage
+ifeq ($(CONFIG_SMALL_FLASH),)
+DEFAULT_PACKAGES+=procd-ujail
+endif
+
+# include seccomp ld-preload hooks if kernel supports it
+ifneq ($(CONFIG_SECCOMP),)
+DEFAULT_PACKAGES+=procd-seccomp
 endif
 
 # For the basic set
@@ -41,12 +53,14 @@ DEFAULT_PACKAGES.nas:=\
 	mdadm
 # For router targets
 DEFAULT_PACKAGES.router:=\
-	dnsmasq-full \
-	firewall \
-	iptables \
+	dnsmasq \
+	firewall4 \
+	nftables \
+	kmod-nft-offload \
+	odhcp6c \
+	odhcpd-ipv6only \
 	ppp \
-	ppp-mod-pppoe \
-	luci luci-compat luci-app-ssr-plus v2ray-core
+	ppp-mod-pppoe
 
 ifneq ($(DUMP),)
   all: dumpinfo
@@ -219,6 +233,7 @@ ifeq ($(DUMP),1)
   endif
   ifeq ($(ARCH),powerpc64)
     CPU_TYPE ?= powerpc64
+    CPU_CFLAGS_e5500:=-mcpu=e5500
     CPU_CFLAGS_powerpc64:=-mcpu=powerpc64
   endif
   ifeq ($(ARCH),sparc)

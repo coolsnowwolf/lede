@@ -24,8 +24,8 @@ PKG_CPE_ID:=cpe:/a:gnu:gettext
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 PKG_BUILD_DEPENDS:=gettext-full/host
-PKG_BUILD_PARALLEL:=1
-HOST_BUILD_PARALLEL:=1
+PKG_BUILD_PARALLEL:=0
+HOST_BUILD_PARALLEL:=0
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk

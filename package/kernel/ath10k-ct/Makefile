@@ -1,21 +1,21 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-ct
-PKG_RELEASE=$(AUTORELEASE)
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-06-03
-PKG_SOURCE_VERSION:=b44cd7b2e7b0df5995ece18f358d4dfc40834ba1
-PKG_MIRROR_HASH:=59f961ad425eb1a48fa9c391a325cc0f23845daec9d12673445d3077f9756cf0
+PKG_SOURCE_DATE:=2021-11-28
+PKG_SOURCE_VERSION:=dc350bbf41d987c5b2db54405bcc9ef3cd66d5db
+PKG_MIRROR_HASH:=92422485c7b92be840a40bf8d157bb6731d14d3811907b6cb4e4cfab0777b60d
 
-# Build the 5.10 ath10k-ct driver version.
+# Build the 5.15 ath10k-ct driver version.
 # Probably this should match as closely as
 # possible to whatever mac80211 backports version is being used.
-CT_KVER="-5.10"
+CT_KVER="-5.15"
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1

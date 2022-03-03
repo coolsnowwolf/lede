@@ -7,7 +7,7 @@ from sys import argv
 import json
 
 if len(argv) != 2:
-    print("JSON info files script requires ouput file as argument")
+    print("JSON info files script requires output file as argument")
     exit(1)
 
 output_path = Path(argv[1])
@@ -42,7 +42,7 @@ for json_file in work_dir.glob("*.json"):
         output["profiles"][device_id]["images"].extend(profile["images"])
 
 # make image lists unique by name, keep last/latest
-for device_id, profile in output["profiles"].items():
+for device_id, profile in output.get("profiles", {}).items():
     profile["images"] = list({e["name"]: e for e in profile["images"]}.values())
 
 

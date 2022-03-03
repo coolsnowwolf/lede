@@ -1,0 +1,171 @@
+From 1f11a07a33bc26997c18b633d63f088bf75d11f2 Mon Sep 17 00:00:00 2001
+From: DENG Qingfang <dqfext@gmail.com>
+Date: Tue, 24 Aug 2021 11:37:50 +0800
+Subject: [PATCH] net: dsa: mt7530: support MDB operations
+
+This is a partial backport of commit 5a30833b9a16f8d1aa15de06636f9317ca51f9df
+("net: dsa: mt7530: support MDB and bridge flag operations") upstream.
+
+Signed-off-by: DENG Qingfang <dqfext@gmail.com>
+---
+ drivers/net/dsa/mt7530.c | 78 ++++++++++++++++++++++++++++++++++++++--
+ net/dsa/tag_mtk.c        | 14 +-------
+ 2 files changed, 76 insertions(+), 16 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1000,9 +1000,6 @@ mt753x_cpu_port_enable(struct dsa_switch
+ 	mt7530_write(priv, MT7530_PVC_P(port),
+ 		     PORT_SPEC_TAG);
+ 
+-	/* Unknown multicast frame forwarding to the cpu port */
+-	mt7530_rmw(priv, MT7530_MFC, UNM_FFP_MASK, UNM_FFP(BIT(port)));
+-
+ 	/* Set CPU port number */
+ 	if (priv->id == ID_MT7621)
+ 		mt7530_rmw(priv, MT7530_MFC, CPU_MASK, CPU_EN | CPU_PORT(port));
+@@ -1138,6 +1135,20 @@ mt7530_stp_state_set(struct dsa_switch *
+ }
+ 
+ static int
++mt7530_port_egress_floods(struct dsa_switch *ds, int port,
++			  bool unicast, bool multicast)
++{
++	struct mt7530_priv *priv = ds->priv;
++
++	mt7530_rmw(priv, MT7530_MFC,
++		   UNU_FFP(BIT(port)) | UNM_FFP(BIT(port)),
++		   (unicast ? UNU_FFP(BIT(port)) : 0) |
++		   (multicast ? UNM_FFP(BIT(port)) : 0));
++
++	return 0;
++}
++
++static int
+ mt7530_port_bridge_join(struct dsa_switch *ds, int port,
+ 			struct net_device *bridge)
+ {
+@@ -1357,6 +1368,63 @@ err:
+ }
+ 
+ static int
++mt7530_port_mdb_prepare(struct dsa_switch *ds, int port,
++			const struct switchdev_obj_port_mdb *mdb)
++{
++	return 0;
++}
++
++static void
++mt7530_port_mdb_add(struct dsa_switch *ds, int port,
++		    const struct switchdev_obj_port_mdb *mdb)
++{
++	struct mt7530_priv *priv = ds->priv;
++	const u8 *addr = mdb->addr;
++	u16 vid = mdb->vid;
++	u8 port_mask = 0;
++
++	mutex_lock(&priv->reg_mutex);
++
++	mt7530_fdb_write(priv, vid, 0, addr, 0, STATIC_EMP);
++	if (!mt7530_fdb_cmd(priv, MT7530_FDB_READ, NULL))
++		port_mask = (mt7530_read(priv, MT7530_ATRD) >> PORT_MAP)
++			    & PORT_MAP_MASK;
++
++	port_mask |= BIT(port);
++	mt7530_fdb_write(priv, vid, port_mask, addr, -1, STATIC_ENT);
++	mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, NULL);
++
++	mutex_unlock(&priv->reg_mutex);
++}
++
++static int
++mt7530_port_mdb_del(struct dsa_switch *ds, int port,
++		    const struct switchdev_obj_port_mdb *mdb)
++{
++	struct mt7530_priv *priv = ds->priv;
++	const u8 *addr = mdb->addr;
++	u16 vid = mdb->vid;
++	u8 port_mask = 0;
++	int ret;
++
++	mutex_lock(&priv->reg_mutex);
++
++	mt7530_fdb_write(priv, vid, 0, addr, 0, STATIC_EMP);
++	if (!mt7530_fdb_cmd(priv, MT7530_FDB_READ, NULL))
++		port_mask = (mt7530_read(priv, MT7530_ATRD) >> PORT_MAP)
++			    & PORT_MAP_MASK;
++
++	port_mask &= ~BIT(port);
++	mt7530_fdb_write(priv, vid, port_mask, addr, -1,
++			 port_mask ? STATIC_ENT : STATIC_EMP);
++	ret = mt7530_fdb_cmd(priv, MT7530_FDB_WRITE, NULL);
++
++	mutex_unlock(&priv->reg_mutex);
++
++	return ret;
++}
++
++static int
+ mt7530_vlan_cmd(struct mt7530_priv *priv, enum mt7530_vlan_cmd cmd, u16 vid)
+ {
+ 	struct mt7530_dummy_poll p;
+@@ -2794,11 +2862,15 @@ static const struct dsa_switch_ops mt753
+ 	.port_change_mtu	= mt7530_port_change_mtu,
+ 	.port_max_mtu		= mt7530_port_max_mtu,
+ 	.port_stp_state_set	= mt7530_stp_state_set,
++	.port_egress_floods	= mt7530_port_egress_floods,
+ 	.port_bridge_join	= mt7530_port_bridge_join,
+ 	.port_bridge_leave	= mt7530_port_bridge_leave,
+ 	.port_fdb_add		= mt7530_port_fdb_add,
+ 	.port_fdb_del		= mt7530_port_fdb_del,
+ 	.port_fdb_dump		= mt7530_port_fdb_dump,
++	.port_mdb_prepare	= mt7530_port_mdb_prepare,
++	.port_mdb_add		= mt7530_port_mdb_add,
++	.port_mdb_del		= mt7530_port_mdb_del,
+ 	.port_vlan_filtering	= mt7530_port_vlan_filtering,
+ 	.port_vlan_prepare	= mt7530_port_vlan_prepare,
+ 	.port_vlan_add		= mt7530_port_vlan_add,
+--- a/net/dsa/tag_mtk.c
++++ b/net/dsa/tag_mtk.c
+@@ -24,9 +24,6 @@ static struct sk_buff *mtk_tag_xmit(stru
+ 	struct dsa_port *dp = dsa_slave_to_port(dev);
+ 	u8 xmit_tpid;
+ 	u8 *mtk_tag;
+-	unsigned char *dest = eth_hdr(skb)->h_dest;
+-	bool is_multicast_skb = is_multicast_ether_addr(dest) &&
+-				!is_broadcast_ether_addr(dest);
+ 
+ 	/* Build the special tag after the MAC Source Address. If VLAN header
+ 	 * is present, it's required that VLAN header and special tag is
+@@ -55,10 +52,6 @@ static struct sk_buff *mtk_tag_xmit(stru
+ 	mtk_tag[0] = xmit_tpid;
+ 	mtk_tag[1] = (1 << dp->index) & MTK_HDR_XMIT_DP_BIT_MASK;
+ 
+-	/* Disable SA learning for multicast frames */
+-	if (unlikely(is_multicast_skb))
+-		mtk_tag[1] |= MTK_HDR_XMIT_SA_DIS;
+-
+ 	/* Tag control information is kept for 802.1Q */
+ 	if (xmit_tpid == MTK_HDR_XMIT_UNTAGGED) {
+ 		mtk_tag[2] = 0;
+@@ -74,9 +67,6 @@ static struct sk_buff *mtk_tag_rcv(struc
+ 	u16 hdr;
+ 	int port;
+ 	__be16 *phdr;
+-	unsigned char *dest = eth_hdr(skb)->h_dest;
+-	bool is_multicast_skb = is_multicast_ether_addr(dest) &&
+-				!is_broadcast_ether_addr(dest);
+ 
+ 	if (unlikely(!pskb_may_pull(skb, MTK_HDR_LEN)))
+ 		return NULL;
+@@ -102,9 +92,7 @@ static struct sk_buff *mtk_tag_rcv(struc
+ 	if (!skb->dev)
+ 		return NULL;
+ 
+-	/* Only unicast or broadcast frames are offloaded */
+-	if (likely(!is_multicast_skb))
+-		dsa_default_offload_fwd_mark(skb);
++	dsa_default_offload_fwd_mark(skb);
+ 
+ 	return skb;
+ }

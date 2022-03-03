@@ -79,6 +79,32 @@ define Device/buffalo_wcr-1166ds
 endef
 TARGET_DEVICES += buffalo_wcr-1166ds
 
+define Device/comfast_cf-wr758ac
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := COMFAST
+  DEVICE_MODEL := CF-WR758AC
+  DEVICE_ALT0_VENDOR := Joowin
+  DEVICE_ALT0_MODEL := JW-WR758AC
+endef
+
+define Device/comfast_cf-wr758ac-v1
+  $(Device/comfast_cf-wr758ac)
+  DEVICE_PACKAGES := kmod-mt76x2
+  DEVICE_VARIANT := V1
+  DEVICE_ALT0_VARIANT := V1
+  SUPPORTED_DEVICES += joowin,jw-wr758ac-v1
+endef
+TARGET_DEVICES += comfast_cf-wr758ac-v1
+
+define Device/comfast_cf-wr758ac-v2
+  $(Device/comfast_cf-wr758ac)
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap
+  DEVICE_VARIANT := V2
+  DEVICE_ALT0_VARIANT := V2
+  SUPPORTED_DEVICES += joowin,jw-wr758ac-v2
+endef
+TARGET_DEVICES += comfast_cf-wr758ac-v2
+
 define Device/cudy_wr1000
   IMAGE_SIZE := 7872k
   IMAGES += factory.bin
@@ -99,6 +125,13 @@ define Device/d-team_pbr-d1
   SUPPORTED_DEVICES += pbr-d1
 endef
 TARGET_DEVICES += d-team_pbr-d1
+
+define Device/dlink_dap-1325-a1
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DAP-1325 A1
+endef
+TARGET_DEVICES += dlink_dap-1325-a1
 
 define Device/duzun_dm06
   IMAGE_SIZE := 7872k
@@ -277,6 +310,14 @@ define Device/minew_g1-c
   SUPPORTED_DEVICES += minew-g1c
 endef
 TARGET_DEVICES += minew_g1-c
+
+define Device/motorola_mwr03
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Motorola
+  DEVICE_MODEL := MWR03
+  DEVICE_PACKAGES := kmod-mt76x2
+endef
+TARGET_DEVICES += motorola_mwr03
 
 define Device/netgear_r6020
   $(Device/netgear_sercomm_nor)
@@ -496,6 +537,16 @@ define Device/tplink_re305-v1
   TPLINK_BOARD_ID := RE305-V1
 endef
 TARGET_DEVICES += tplink_re305-v1
+
+define Device/tplink_re305-v3
+  $(Device/tplink-safeloader)
+  IMAGE_SIZE := 7808k
+  DEVICE_MODEL := RE305
+  DEVICE_VARIANT := v3
+  DEVICE_PACKAGES := kmod-mt76x2
+  TPLINK_BOARD_ID := RE305-V3
+endef
+TARGET_DEVICES += tplink_re305-v3
 
 define Device/tplink_tl-mr3020-v3
   $(Device/tplink-v2)
@@ -733,6 +784,16 @@ define Device/wavlink_wl-wn575a3
 endef
 TARGET_DEVICES += wavlink_wl-wn575a3
 
+define Device/wavlink_wl-wn576a2
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Wavlink
+  DEVICE_MODEL := WL-WN576A2
+  DEVICE_ALT0_VENDOR := Silvercrest
+  DEVICE_ALT0_MODEL := SWV 733 B1
+  DEVICE_PACKAGES := kmod-mt76x0e
+endef
+TARGET_DEVICES += wavlink_wl-wn576a2
+
 define Device/wavlink_wl-wn577a2
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Wavlink
@@ -815,6 +876,14 @@ define Device/xiaomi_mi-router-4c
   DEVICE_PACKAGES := uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-4c
+
+define Device/xiaomi_miwifi-3c
+  IMAGE_SIZE := 15104k
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := MiWiFi 3C
+  DEVICE_PACKAGES := uboot-envtools
+endef
+TARGET_DEVICES += xiaomi_miwifi-3c
 
 define Device/xiaomi_miwifi-nano
   IMAGE_SIZE := 16064k

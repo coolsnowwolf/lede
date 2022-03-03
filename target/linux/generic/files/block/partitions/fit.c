@@ -92,8 +92,11 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		return -ERANGE;
 
 	page = read_mapping_page(mapping, fit_start_sector >> (PAGE_SHIFT - SECTOR_SHIFT), NULL);
-	if (!page)
-		return -ENOMEM;
+	if (IS_ERR(page))
+		return -EFAULT;
+
+	if (PageError(page))
+		return -EFAULT;
 
 	init_fit = page_address(page);
 
@@ -189,8 +192,8 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 		image_description = fdt_getprop(fit, node, FIT_DESC_PROP, &image_description_len);
 
-		printk(KERN_DEBUG "FIT: %16s sub-image 0x%08x - 0x%08x \"%s\" %s%s%s\n",
-			image_type, image_pos, image_pos + image_len, image_name,
+		printk(KERN_DEBUG "FIT: %16s sub-image 0x%08x..0x%08x \"%s\" %s%s%s\n",
+			image_type, image_pos, image_pos + image_len - 1, image_name,
 			image_description?"(":"", image_description?:"", image_description?") ":"");
 
 		if (strcmp(image_type, FIT_FILESYSTEM_PROP))
@@ -227,7 +230,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		strlcat(state->pp_buf, tmp, PAGE_SIZE);
 
 		state->parts[*slot].has_info = true;
-
+		state->parts[*slot].flags |= ADDPART_FLAG_READONLY;
 		if (config_loadables && !strcmp(image_name, config_loadables)) {
 			printk(KERN_DEBUG "FIT: selecting configured loadable \"%s\" to be root filesystem\n", image_name);
 			state->parts[*slot].flags |= ADDPART_FLAG_ROOTDEV;

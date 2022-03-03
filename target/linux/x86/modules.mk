@@ -22,7 +22,7 @@ $(eval $(call KernelPackage,amazon-ena))
 define KernelPackage/amd-xgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=AMD Ethernet on SoC support
-  DEPENDS:=@PCI_SUPPORT @TARGET_x86_64 +kmod-lib-crc32c +kmod-ptp +kmod-libphy +(LINUX_5_10||LINUX_5_15):kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT @TARGET_x86_64 +kmod-lib-crc32c +kmod-ptp +kmod-libphy +LINUX_5_10:kmod-mdio-devres
   KCONFIG:=CONFIG_AMD_XGBE
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/amd/xgbe/amd-xgbe.ko
   AUTOLOAD:=$(call AutoLoad,35,amd-xgbe)
@@ -82,3 +82,23 @@ define KernelPackage/pcengines-apuv2/description
 endef
 
 $(eval $(call KernelPackage,pcengines-apuv2))
+
+
+define KernelPackage/meraki-mx100
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Cisco Meraki MX100 Platform Driver
+  DEPENDS:=@TARGET_x86 @!LINUX_5_4 +kmod-tg3 +kmod-gpio-button-hotplug +kmod-leds-gpio \
+    +kmod-usb-ledtrig-usbport +kmod-itco-wdt
+  KCONFIG:=CONFIG_MERAKI_MX100
+  FILES:=$(LINUX_DIR)/drivers/platform/x86/meraki-mx100.ko
+  AUTOLOAD:=$(call AutoLoad,60,meraki-mx100,1)
+endef
+
+define KernelPackage/meraki-mx100/description
+  This driver provides support for the front button and LEDs on
+  the Cisco Meraki MX100 (Tinkerbell) 1U appliance. Note this also
+  selects the gpio-cdev nu801 userspace driver to support the Status
+  LED, as well as other required platform drivers.
+endef
+
+$(eval $(call KernelPackage,meraki-mx100))

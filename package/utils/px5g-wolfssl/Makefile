@@ -12,6 +12,8 @@ PKG_USE_MIPS16:=0
 
 PKG_MAINTAINER:=Paul Spooren <mail@aparcar.org>
 
+PKG_CONFIG_DEPENDS:=CONFIG_WOLFSSL_ALT_NAMES
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/px5g-wolfssl

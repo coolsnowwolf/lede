@@ -32,6 +32,7 @@ define Host/Compile
 	$(MAKE) -C $(HOST_BUILD_DIR) \
 		HOSTCFLAGS="$(HOST_CFLAGS)" \
 		HOSTLDFLAGS="$(HOST_LDFLAGS)" \
+		PKG_CONFIG_EXTRAARGS="--static" \
 		no-dot-config-targets=tools-only \
 		CONFIG_MKIMAGE_DTC_PATH=dtc \
 		CONFIG_FIT=y \

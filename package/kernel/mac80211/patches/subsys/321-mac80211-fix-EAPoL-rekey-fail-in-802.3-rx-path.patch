@@ -1,0 +1,43 @@
+From: Deren Wu <deren.wu@mediatek.com>
+Date: Sun, 13 Feb 2022 00:20:15 +0800
+Subject: [PATCH] mac80211: fix EAPoL rekey fail in 802.3 rx path
+
+mac80211 set capability NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211
+to upper layer by default. That means we should pass EAPoL packets through
+nl80211 path only, and should not send the EAPoL skb to netdevice diretly.
+At the meanwhile, wpa_supplicant would not regist sock to listen EAPoL skb
+on the netdevice.
+
+However, there is no contorl_port_protocol handler in mac80211 for 802.3 RX
+packets, mac80211 driver would pass up the EAPoL rekey frame to netdevice
+and wpa_supplicant would be never interactive with this kind of packets,
+if SUPPORTS_RX_DECAP_OFFLOAD is enabled. This causes STA always rekey fail
+if EAPoL frame go through 802.3 path.
+
+To avoid this problem, align the same process as 802.11 type to handle
+this frame before put it into network stack.
+
+Fixes: 80a915ec4427 ("mac80211: add rx decapsulation offload support")
+Signed-off-by: Deren Wu <deren.wu@mediatek.com>
+---
+
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -4523,16 +4523,7 @@ static void ieee80211_rx_8023(struct iee
+ 
+ 	/* deliver to local stack */
+ 	skb->protocol = eth_type_trans(skb, fast_rx->dev);
+-	memset(skb->cb, 0, sizeof(skb->cb));
+-	if (rx->list)
+-#if LINUX_VERSION_IS_GEQ(4,19,0)
+-		list_add_tail(&skb->list, rx->list);
+-#else
+-		__skb_queue_tail(rx->list, skb);
+-#endif
+-	else
+-		netif_receive_skb(skb);
+-
++	ieee80211_deliver_skb_to_local_stack(skb, rx);
+ }
+ 
+ static bool ieee80211_invoke_fast_rx(struct ieee80211_rx_data *rx,

@@ -9,7 +9,7 @@ BOARD:=octeontx
 BOARDNAME:=Octeon-TX
 FEATURES:=targz pcie gpio rtc usb fpu
 
-KERNEL_PATCHVER:=5.4
+KERNEL_PATCHVER:=5.10
 
 define Target/Description
 	Build images for Octeon-TX CN80XX/CN81XX based boards

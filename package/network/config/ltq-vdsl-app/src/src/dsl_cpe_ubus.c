@@ -477,32 +477,40 @@ static void g997_xtu_system_enabling(int fd, standard_t *standard) {
 		m_str("standard", str);
 }
 
-static vector_t get_vector_status() {
+static void get_vector_status(int fd, vector_t *status) {
+	*status = VECTOR_UNKNOWN;
+
 #ifdef INCLUDE_DSL_CPE_API_VRX
-	int fd = open(DSL_CPE_DSL_LOW_DEV "/0", O_RDWR, 0644);
 	if (fd < 0)
-		return VECTOR_UNKNOWN;
+		return;
 
-	IOCTL_MEI_dsmStatus_t out;
-	memset(&out, 0, sizeof(IOCTL_MEI_dsmStatus_t));
-	int ret = ioctl(fd, FIO_MEI_DSM_STATUS_GET, &out);
-	close(fd);
-
-	if (ret)
-		return VECTOR_UNKNOWN;
+	IOCTL(IOCTL_MEI_dsmStatus_t, FIO_MEI_DSM_STATUS_GET);
 
 	switch (out.eVectorStatus) {
 	case e_MEI_VECTOR_STAT_OFF:
-		return VECTOR_OFF;
+		*status = VECTOR_OFF;
+		break;
 	case e_MEI_VECTOR_STAT_ON_DS:
-		return VECTOR_ON_DS;
+		*status = VECTOR_ON_DS;
+		break;
 	case e_MEI_VECTOR_STAT_ON_DS_US:
-		return VECTOR_ON_DS_US;
+		*status = VECTOR_ON_DS_US;
+		break;
 	default:
-		return VECTOR_UNKNOWN;
+		break;
 	};
-#else
-	return VECTOR_UNKNOWN;
+#endif
+}
+
+static void vector_erb(int fd) {
+#ifdef INCLUDE_DSL_CPE_API_VRX
+	if (fd < 0)
+		return;
+
+	IOCTL(IOCTL_MEI_dsmStatistics_t, FIO_MEI_DSM_STATISTICS_GET);
+
+	m_u32("sent", out.n_processed);
+	m_u32("discarded", out.n_fw_dropped_size + out.n_mei_dropped_size + out.n_mei_dropped_no_pp_cb + out.n_pp_dropped);
 #endif
 }
 
@@ -720,19 +728,25 @@ static int metrics(struct ubus_context *ctx, struct ubus_object *obj,
 		   struct ubus_request_data *req, const char *method,
 		   struct blob_attr *msg)
 {
-	int fd;
+	int fd, fd_mei;
 	void *c, *c2;
 	standard_t standard = STD_UNKNOWN;
 	profile_t profile = PROFILE_UNKNOWN;
 	vector_t vector = VECTOR_UNKNOWN;
 
 #ifndef INCLUDE_DSL_CPE_API_DANUBE
-	fd = open(DSL_CPE_DEVICE_NAME "0", O_RDWR, 0644);
+	fd = open(DSL_CPE_DEVICE_NAME "/0", O_RDWR, 0644);
 #else
 	fd = open(DSL_CPE_DEVICE_NAME, O_RDWR, 0644);
 #endif
 	if (fd < 0)
 		return UBUS_STATUS_UNKNOWN_ERROR;
+
+#ifdef INCLUDE_DSL_CPE_API_VRX
+	fd_mei = open(DSL_CPE_DSL_LOW_DEV "/0", O_RDWR, 0644);
+#else
+	fd_mei = -1;
+#endif
 
 	blob_buf_init(&b, 0);
 
@@ -749,7 +763,7 @@ static int metrics(struct ubus_context *ctx, struct ubus_object *obj,
 
 	if (standard == STD_G_993_2) {
 		band_plan_status(fd, &profile);
-		vector = get_vector_status();
+		get_vector_status(fd_mei, &vector);
 	}
 
 	describe_mode(standard, profile, vector);
@@ -801,8 +815,21 @@ static int metrics(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_close_table(&b, c2);
 	blobmsg_close_table(&b, c);
 
+	switch (vector) {
+	case VECTOR_ON_DS:
+	case VECTOR_ON_DS_US:
+		c = blobmsg_open_table(&b, "erb");
+		vector_erb(fd_mei);
+		blobmsg_close_table(&b, c);
+		break;
+	default:
+		break;
+	};
+
 	ubus_send_reply(ctx, req, b.head);
 
+	if (fd_mei >= 0)
+		close(fd_mei);
 	close(fd);
 
 	return 0;

@@ -1,0 +1,99 @@
+From 3cb0bde365d913c484d20224367a54a0eac780a7 Mon Sep 17 00:00:00 2001
+From: Antoine Tenart <antoine.tenart@bootlin.com>
+Date: Fri, 21 Feb 2020 11:55:29 +0100
+Subject: [PATCH 3/3] net: phy: sfp: add support for SMBus
+
+Signed-off-by: Antoine Tenart <antoine.tenart@bootlin.com>
+---
+ drivers/net/phy/sfp.c | 68 ++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 54 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -412,32 +412,72 @@ static int sfp_i2c_write(struct sfp *sfp
+ 	return ret == ARRAY_SIZE(msgs) ? len : 0;
+ }
+ 
++static int sfp_smbus_read(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
++			  size_t len)
++{
++	u8 bus_addr = a2 ? 0x51 : 0x50, *val = buf;
++
++	bus_addr -= 0x40;
++
++	while (len > 0) {
++		*val = sfp->i2c_mii->read(sfp->i2c_mii, bus_addr, dev_addr);
++
++		val++;
++		dev_addr++;
++		len--;
++	}
++
++	return val - (u8 *)buf;
++}
++
++static int sfp_smbus_write(struct sfp *sfp, bool a2, u8 dev_addr, void *buf,
++			   size_t len)
++{
++	u8 bus_addr = a2 ? 0x51 : 0x50;
++	u16 val;
++
++	memcpy(&val, buf, len);
++
++	return sfp->i2c_mii->write(sfp->i2c_mii, bus_addr, dev_addr, val);
++}
++
+ static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
+ {
+-	struct mii_bus *i2c_mii;
++	struct mii_bus *mii;
+ 	int ret;
+ 
+-	if (!i2c_check_functionality(i2c, I2C_FUNC_I2C))
+-		return -EINVAL;
+-
+ 	sfp->i2c = i2c;
+-	sfp->read = sfp_i2c_read;
+-	sfp->write = sfp_i2c_write;
+ 
+-	i2c_mii = mdio_i2c_alloc(sfp->dev, i2c);
+-	if (IS_ERR(i2c_mii))
+-		return PTR_ERR(i2c_mii);
++	if (i2c_check_functionality(i2c, I2C_FUNC_I2C)) {
++		sfp->read = sfp_i2c_read;
++		sfp->write = sfp_i2c_write;
++
++		mii = mdio_i2c_alloc(sfp->dev, i2c);
++		if (IS_ERR(mii))
++			return PTR_ERR(mii);
++
++		mii->name = "SFP I2C Bus";
++	} else if (i2c_check_functionality(i2c, I2C_FUNC_SMBUS_BYTE_DATA)) {
++		sfp->read = sfp_smbus_read;
++		sfp->write = sfp_smbus_write;
++
++		mii = mdio_smbus_alloc(sfp->dev, i2c);
++		if (IS_ERR(mii))
++			return PTR_ERR(mii);
+ 
+-	i2c_mii->name = "SFP I2C Bus";
+-	i2c_mii->phy_mask = ~0;
++		mii->name = "SFP SMBus";
++	} else {
++		return -EINVAL;
++	}
+ 
+-	ret = mdiobus_register(i2c_mii);
++	mii->phy_mask = ~0;
++	ret = mdiobus_register(mii);
+ 	if (ret < 0) {
+-		mdiobus_free(i2c_mii);
++		mdiobus_free(mii);
+ 		return ret;
+ 	}
+ 
+-	sfp->i2c_mii = i2c_mii;
++	sfp->i2c_mii = mii;
+ 
+ 	return 0;
+ }

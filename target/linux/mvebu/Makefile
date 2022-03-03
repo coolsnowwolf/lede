@@ -6,11 +6,10 @@ include $(TOPDIR)/rules.mk
 
 BOARD:=mvebu
 BOARDNAME:=Marvell EBU Armada
-FEATURES:=fpu usb pci pcie gpio nand squashfs ramdisk boot-part rootfs-part
+FEATURES:=fpu usb pci pcie gpio nand squashfs ramdisk boot-part rootfs-part legacy-sdcard
 SUBTARGETS:=cortexa9 cortexa53 cortexa72
 
 KERNEL_PATCHVER:=5.10
-KERNEL_TESTING_PATCHVER:=5.10
 
 include $(INCLUDE_DIR)/target.mk
 

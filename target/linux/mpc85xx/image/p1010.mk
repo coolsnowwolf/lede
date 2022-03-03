@@ -20,6 +20,7 @@ define Device/tplink_tl-wdr4900-v1
   IMAGES := factory.bin sysupgrade.bin
   IMAGE/sysupgrade.bin := tplink-v1-image sysupgrade | append-metadata
   IMAGE/factory.bin := tplink-v1-image factory
+  DEFAULT := n
 endef
 TARGET_DEVICES += tplink_tl-wdr4900-v1
 

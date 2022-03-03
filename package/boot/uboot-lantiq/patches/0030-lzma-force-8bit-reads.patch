@@ -1,0 +1,57 @@
+From a40a6e16ed76e5e26a0f60226b64c311d4a62c9f Mon Sep 17 00:00:00 2001
+From: Mathias Kresin <dev@kresin.me>
+Date: Sun, 31 Oct 2021 23:04:54 +0100
+Subject: [PATCH] lzma: force 8bit reads
+
+At least since gcc 7.3.0 (OpenWrt 18.06) lwr/lwl are used in the
+assembly of LzmaProps_Decode. While the decission made by the compiler
+looks perfect fine, it triggers some obscure hang on lantiq danube-s
+v1.5 with MX29LV640EB NOR flash chips.
+
+Only if the offset 1 is used, the hang can be observed. Using any other
+offset works fine:
+
+  lwl s0,0(a1) - s0 == 0x6d000080
+  lwl s0,1(a1) - hangs
+  lwl s0,2(a1) - s0 == 0x0080xxxx
+  lwl s0,3(a1) - s0 == 0x80xxxxxx
+
+It isn't clear whether it is a limitation of the flash chip, the EBU or
+something else.
+
+Force 8bit reads to prevent gcc optimizing the read with lwr/lwl
+instructions.
+
+Signed-off-by: Mathias Kresin <dev@kresin.me>
+---
+ lib/lzma/LzmaDec.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/lib/lzma/LzmaDec.c
++++ b/lib/lzma/LzmaDec.c
+@@ -7,6 +7,7 @@
+ #include "LzmaDec.h"
+ 
+ #include <linux/string.h>
++#include <asm/io.h>
+ 
+ #define kNumTopBits 24
+ #define kTopValue ((UInt32)1 << kNumTopBits)
+@@ -703,7 +704,7 @@ static ELzmaDummy LzmaDec_TryDummy(const
+ 
+ static void LzmaDec_InitRc(CLzmaDec *p, const Byte *data)
+ {
+-  p->code = ((UInt32)data[1] << 24) | ((UInt32)data[2] << 16) | ((UInt32)data[3] << 8) | ((UInt32)data[4]);
++  p->code = ((UInt32)readb(&data[1]) << 24) | ((UInt32)readb(&data[2]) << 16) | ((UInt32)readb(&data[3]) << 8) | ((UInt32)readb(&data[4]));
+   p->range = 0xFFFFFFFF;
+   p->needFlush = 0;
+ }
+@@ -929,7 +930,7 @@ SRes LzmaProps_Decode(CLzmaProps *p, con
+   if (size < LZMA_PROPS_SIZE)
+     return SZ_ERROR_UNSUPPORTED;
+   else
+-    dicSize = data[1] | ((UInt32)data[2] << 8) | ((UInt32)data[3] << 16) | ((UInt32)data[4] << 24);
++    dicSize = readb(&data[1]) | ((UInt32)readb(&data[2]) << 8) | ((UInt32)readb(&data[3]) << 16) | ((UInt32)readb(&data[4]) << 24);
+ 
+   if (dicSize < LZMA_DIC_MIN)
+     dicSize = LZMA_DIC_MIN;

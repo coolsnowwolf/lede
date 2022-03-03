@@ -28,10 +28,6 @@ define Build/boot-script
 		$@.scr
 endef
 
-define Build/copy-file
-	cat "$(1)" > "$@"
-endef
-
 define Build/dtb
 	$(call Image/BuildDTB,../dts/$(DEVICE_DTS).dts,$@.dtb,,--space $(DTB_SIZE))
 endef

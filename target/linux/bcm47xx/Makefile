@@ -10,8 +10,7 @@ BOARDNAME:=Broadcom BCM47xx/53xx (MIPS)
 FEATURES:=squashfs usb
 SUBTARGETS:=generic mips74k legacy
 
-KERNEL_PATCHVER:=5.4
-KERNEL_TESTING_PATCHVER:=5.4
+KERNEL_PATCHVER:=5.10
 
 define Target/Description
 	Build firmware images for Broadcom based BCM47xx/53xx routers with MIPS CPU, *not* ARM.

@@ -127,8 +127,11 @@ endef
 
 define Kernel/CompileModules/Default
 	rm -f $(LINUX_DIR)/vmlinux $(LINUX_DIR)/System.map
-	+$(KERNEL_MAKE) olddefconfig
 	+$(KERNEL_MAKE) $(if $(KERNELNAME),$(KERNELNAME),all) modules
+	# If .config did not change, use the previous timestamp to avoid package rebuilds
+	cmp -s $(LINUX_DIR)/.config $(LINUX_DIR)/.config.modules.save && \
+		mv $(LINUX_DIR)/.config.modules.save $(LINUX_DIR)/.config; \
+	$(CP) $(LINUX_DIR)/.config $(LINUX_DIR)/.config.modules.save
 endef
 
 OBJCOPY_STRIP = -R .reginfo -R .notes -R .note -R .comment -R .mdebug -R .note.gnu.build-id
@@ -168,7 +171,7 @@ define Kernel/CompileImage/Initramfs
 	$(if $(SOURCE_DATE_EPOCH),touch -hcd "@$(SOURCE_DATE_EPOCH)" $(TARGET_DIR)/init)
 	rm -rf $(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION)/usr/initramfs_data.cpio*
 ifeq ($(CONFIG_TARGET_ROOTFS_INITRAMFS_SEPARATE),y)
-ifeq ($(CONFIG_EXTERNAL_CPIO),y)
+ifneq ($(qstrip $(CONFIG_EXTERNAL_CPIO)),)
 	$(CP) $(CONFIG_EXTERNAL_CPIO) $(KERNEL_BUILD_DIR)/initrd.cpio
 else
 	( cd $(TARGET_DIR); find . | $(STAGING_DIR_HOST)/bin/cpio -o -H newc -R 0:0 > $(KERNEL_BUILD_DIR)/initrd.cpio )

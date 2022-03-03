@@ -46,12 +46,16 @@ ifeq ($(CONFIG_IB_STANDALONE),)
 	$(VERSION_SED_SCRIPT) $(PKG_BUILD_DIR)/repositories.conf
 endif
 
-ifeq ($(CONFIG_BUILDBOT),)
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)/packages
+	# create an empty package index so `opkg` doesn't report an error
+	touch $(PKG_BUILD_DIR)/packages/Packages
+	$(INSTALL_DATA) ./files/README.md $(PKG_BUILD_DIR)/packages/
+
 	echo ''                                                        >> $(PKG_BUILD_DIR)/repositories.conf
 	echo '## This is the local package repository, do not remove!' >> $(PKG_BUILD_DIR)/repositories.conf
 	echo 'src imagebuilder file:packages'                          >> $(PKG_BUILD_DIR)/repositories.conf
 
+ifeq ($(CONFIG_BUILDBOT),)
   ifeq ($(CONFIG_IB_STANDALONE),)
 	$(FIND) $(call FeedPackageDir,libc) -type f \
 		\( -name 'libc_*.ipk' -or -name 'kernel_*.ipk' -or -name 'kmod-*.ipk' \) \

@@ -1,0 +1,116 @@
+From 3fc92a215b69ad448c151489228eb340df9a8703 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marek=20Beh=C3=BAn?= <marek.behun@nic.cz>
+Date: Wed, 12 Jan 2022 17:06:59 +0100
+Subject: [PATCH] ddr: marvell: a38x: fix SPLIT_OUT_MIX state decision
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This is a cleaned up and fixed version of a patch
+  mv_ddr: a380: fix SPLIT_OUT_MIX state decision
+
+  in each pattern cycle the bus state can be changed
+  in order to avoide it, need to back to the same bus state on each
+  pattern cycle
+by
+  Moti Boskula <motib@marvell.com>
+
+The original patch is not in Marvell's mv-ddr-marvell repository. It was
+gives to us by Marvell to fix an issues with DDR training on some
+boards, but it cannot be applied as is to mv-ddr-marvell, because it is
+a very dirty draft patch that would certainly break other things, mainly
+DDR4 training code in mv-ddr-marvell, since it changes common functions.
+
+I have cleaned up the patch and removed stuff that seemed unnecessary
+(when removed, it still fixed things). Note that I don't understand
+completely what the code does exactly, since I haven't studied the DDR
+training code extensively (and I suspect that no one besides some few
+people in Marvell understand the code completely).
+
+Anyway after the cleanup the patch still fixes isssues with DDR training
+on the failing boards.
+
+There was also a problem with the original patch on some of the Allied
+Telesis' x530 boards, reported by Chris Packham. I have asked Chris to
+send me some logs, and managed to fix it:
+- if you look at the change, you'll notice that it introduces
+  subtraction of cur_start_win[] and cur_end_win[] members, depending on
+  a bit set in the current_byte_status variable
+- the original patch subtracted cur_start_win[] if either
+  BYTE_SPLIT_OUT_MIX or BYTE_HOMOGENEOUS_SPLIT_OUT bits were set, but
+  subtracted cur_end_win[] only if the first one (BYTE_SPLIT_OUT_MIX)
+  was set
+- from Chris Packham logs I discovered that the x530 board where the
+  original patch introduced DDR training failure, only the
+  BYTE_HOMOGENEOUS_SPLIT_OUT bit was set, and on our boards where the
+  patch is needed only the BYTE_SPLIT_OUT_MIX is set in the
+  current_byte_status variable
+- this led me to the hypothesis that both cur_start_win[] and
+  cur_end_win[] should be subtracted only if BYTE_SPLIT_OUT_MIX bit is
+  set, the BYTE_HOMOGENEOUS_SPLIT_OUT bit shouldn't be considered at all
+- this hypothesis also gains credibility when considering the commit
+  title ("fix SPLIT_OUT_MIX state decision")
+
+Hopefully this will fix things without breaking anything else.
+
+Signed-off-by: Marek Behún <marek.behun@nic.cz>
+Reviewed-by: Stefan Roese <sr@denx.de>
+Tested-by: Chris Packham <judge.packham@gmail.com>
+---
+ .../a38x/ddr3_training_centralization.c       | 26 +++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+--- a/drivers/ddr/marvell/a38x/ddr3_training_centralization.c
++++ b/drivers/ddr/marvell/a38x/ddr3_training_centralization.c
+@@ -55,6 +55,7 @@ static int ddr3_tip_centralization(u32 d
+ 	enum hws_training_ip_stat training_result[MAX_INTERFACE_NUM];
+ 	u32 if_id, pattern_id, bit_id;
+ 	u8 bus_id;
++	u8 current_byte_status;
+ 	u8 cur_start_win[BUS_WIDTH_IN_BITS];
+ 	u8 centralization_result[MAX_INTERFACE_NUM][BUS_WIDTH_IN_BITS];
+ 	u8 cur_end_win[BUS_WIDTH_IN_BITS];
+@@ -166,6 +167,10 @@ static int ddr3_tip_centralization(u32 d
+ 						  result[search_dir_id][7]));
+ 				}
+ 
++				current_byte_status =
++					mv_ddr_tip_sub_phy_byte_status_get(if_id,
++									   bus_id);
++
+ 				for (bit_id = 0; bit_id < BUS_WIDTH_IN_BITS;
+ 				     bit_id++) {
+ 					/* check if this code is valid for 2 edge, probably not :( */
+@@ -174,11 +179,32 @@ static int ddr3_tip_centralization(u32 d
+ 							       [HWS_LOW2HIGH]
+ 							       [bit_id],
+ 							       EDGE_1);
++					if (current_byte_status &
++					    BYTE_SPLIT_OUT_MIX) {
++						if (cur_start_win[bit_id] >= 64)
++							cur_start_win[bit_id] -= 64;
++						else
++							cur_start_win[bit_id] = 0;
++						DEBUG_CENTRALIZATION_ENGINE
++							(DEBUG_LEVEL_INFO,
++							 ("pattern %d IF %d pup %d bit %d subtract 64 adll from start\n",
++							  pattern_id, if_id, bus_id, bit_id));
++					}
+ 					cur_end_win[bit_id] =
+ 						GET_TAP_RESULT(result
+ 							       [HWS_HIGH2LOW]
+ 							       [bit_id],
+ 							       EDGE_1);
++					if (cur_end_win[bit_id] >= 64 &&
++					    (current_byte_status &
++					     BYTE_SPLIT_OUT_MIX)) {
++						cur_end_win[bit_id] -= 64;
++						DEBUG_CENTRALIZATION_ENGINE
++							(DEBUG_LEVEL_INFO,
++							 ("pattern %d IF %d pup %d bit %d subtract 64 adll from end\n",
++							  pattern_id, if_id, bus_id, bit_id));
++					}
++
+ 					/* window length */
+ 					current_window[bit_id] =
+ 						cur_end_win[bit_id] -

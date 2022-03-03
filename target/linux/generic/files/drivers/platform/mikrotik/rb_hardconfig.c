@@ -39,7 +39,7 @@
 
 #include "routerboot.h"
 
-#define RB_HARDCONFIG_VER		"0.06"
+#define RB_HARDCONFIG_VER		"0.07"
 #define RB_HC_PR_PFX			"[rb_hardconfig] "
 
 /* ID values for hardware settings */
@@ -676,10 +676,9 @@ static ssize_t hc_wlan_data_bin_read(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-int __init rb_hardconfig_init(struct kobject *rb_kobj)
+int rb_hardconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd)
 {
 	struct kobject *hc_wlan_kobj;
-	struct mtd_info *mtd;
 	size_t bytes_read, buflen, outlen;
 	const u8 *buf;
 	void *outbuf;
@@ -690,20 +689,19 @@ int __init rb_hardconfig_init(struct kobject *rb_kobj)
 	hc_kobj = NULL;
 	hc_wlan_kobj = NULL;
 
-	// TODO allow override
-	mtd = get_mtd_device_nm(RB_MTD_HARD_CONFIG);
-	if (IS_ERR(mtd))
+	ret = __get_mtd_device(mtd);
+	if (ret)
 		return -ENODEV;
 
 	hc_buflen = mtd->size;
 	hc_buf = kmalloc(hc_buflen, GFP_KERNEL);
 	if (!hc_buf) {
-		put_mtd_device(mtd);
+		__put_mtd_device(mtd);
 		return -ENOMEM;
 	}
 
 	ret = mtd_read(mtd, 0, hc_buflen, &bytes_read, hc_buf);
-	put_mtd_device(mtd);
+	__put_mtd_device(mtd);
 
 	if (ret)
 		goto fail;
@@ -818,8 +816,10 @@ fail:
 	return ret;
 }
 
-void __exit rb_hardconfig_exit(void)
+void rb_hardconfig_exit(void)
 {
 	kobject_put(hc_kobj);
+	hc_kobj = NULL;
 	kfree(hc_buf);
+	hc_buf = NULL;
 }

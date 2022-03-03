@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2020.04
+PKG_VERSION:=2021.07
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_HASH:=fe732aaf037d9cc3c0909bad8362af366ae964bbdac6913a34081ff4ad565372
+PKG_HASH:=312b7eeae44581d1362c3a3f02c28d806647756c82ba8c72241c7cdbe68ba77e
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -31,16 +31,12 @@ define U-Boot/am335x_evm
   BUILD_DEVICES:=ti_am335x-evm ti_am335x-bone-black
 endef
 
-define U-Boot/omap3_overo
-  NAME:=Gumstix Overo
-endef
-
 define U-Boot/omap3_beagle
   NAME:=BeagleBoard
   BUILD_DEVICES:=ti_omap3-beagle
 endef
 
-UBOOT_TARGETS:=omap4_panda am335x_evm omap3_overo omap3_beagle
+UBOOT_TARGETS:=omap4_panda am335x_evm omap3_beagle
 
 define Build/InstallDev
 	$(foreach device,$(BUILD_DEVICES), \

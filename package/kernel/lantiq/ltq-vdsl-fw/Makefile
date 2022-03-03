@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ltq-vdsl-fw
 PKG_VERSION:=6.8.6
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 

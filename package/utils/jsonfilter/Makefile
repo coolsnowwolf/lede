@@ -21,7 +21,7 @@ define Package/jsonfilter
   CATEGORY:=Base system
   DEPENDS:=+libubox +libjson-c
   TITLE:=OpenWrt JSON filter utility
-  URL:=$(PKG_SOURCE_URL)
+  URL:=http://git.openwrt.org/?p=project/jsonpath.git
 endef
 
 define Package/jsonfilter/install

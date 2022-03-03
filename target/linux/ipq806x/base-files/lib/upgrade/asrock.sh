@@ -2,8 +2,6 @@
 
 asrock_bootconfig_mangle() {
 	local mtdnum="$(find_mtd_index 0:bootconfig)"
-	# XXX: drop upper case after kernel v5.4 is gone (qcom-smem)
-	[ -n "$mtdnum" ] || mtdnum="$(find_mtd_index 0:BOOTCONFIG)"
 
 	if [ -z "$mtdnum" ]; then
 		echo "cannot find bootconfig mtd partition"

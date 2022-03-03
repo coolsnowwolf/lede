@@ -12,10 +12,10 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/rpcd.git
-PKG_SOURCE_DATE:=2021-07-13
-PKG_SOURCE_VERSION:=1fa35765ddf64976aa48950cac53d501fb71dda0
+PKG_MIRROR_HASH:=186a7246c610fecc282b0966213350ff4508b0db88739345e7c79792db0423ce
+PKG_SOURCE_DATE:=2022-02-07
+PKG_SOURCE_VERSION:=909f2a04763dbc745488384b24281eca180452d6
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
-PKG_MIRROR_HASH:=be116e2616b3ae1b5fb9c4c338d6908f8cc9e5de239a2c83aa21b7a69b5c1c93
 
 PKG_LICENSE:=ISC
 PKG_LICENSE_FILES:=
@@ -72,7 +72,7 @@ endef
 # 3: plugin title/description
 define BuildPlugin
 
-  PKG_CONFIG_DEPENDS += CONFIG_PACKAGE_luci-rpc-mod-$(1)
+  PKG_CONFIG_DEPENDS += CONFIG_PACKAGE_rpcd-mod-$(1)
 
   define Package/rpcd-mod-$(1)
     $(Package/rpcd/default)
@@ -82,6 +82,11 @@ define BuildPlugin
 
   define Package/rpcd-mod-$(1)/description
     $(3)
+  endef
+
+  define Package/rpcd-mod-$(1)/postinst
+#!/bin/sh
+[ -n "$$$${IPKG_INSTROOT}" ] || /etc/init.d/rpcd reload
   endef
 
   define Package/rpcd-mod-$(1)/install
@@ -97,3 +102,4 @@ $(eval $(call BuildPackage,rpcd))
 $(eval $(call BuildPlugin,file,,Provides ubus calls for file and directory operations.))
 $(eval $(call BuildPlugin,rpcsys,,Provides ubus calls for sysupgrade and password changing.))
 $(eval $(call BuildPlugin,iwinfo,+libiwinfo,Provides ubus calls for accessing iwinfo data.))
+$(eval $(call BuildPlugin,ucode,+libucode,Allows implementing plugins using ucode scripts.))

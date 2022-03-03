@@ -346,7 +346,7 @@ TARGET_DEVICES += brcm_bcm963269bhr
 ### BT ###
 define Device/bt_home-hub-2-a
   $(Device/bcm63xx-legacy)
-  DEVICE_VENDOR := BT
+  DEVICE_VENDOR := British Telecom (BT)
   DEVICE_MODEL := Home Hub 2.0
   DEVICE_VARIANT := A
   CFE_BOARD_ID := HOMEHUB2A
@@ -358,7 +358,7 @@ TARGET_DEVICES += bt_home-hub-2-a
 
 define Device/bt_voyager-2110
   $(Device/bcm63xx-legacy)
-  DEVICE_VENDOR := BT
+  DEVICE_VENDOR := British Telecom (BT)
   DEVICE_MODEL := Voyager 2110
   CFE_BOARD_ID := V2110
   CHIP_ID := 6348
@@ -370,7 +370,7 @@ TARGET_DEVICES += bt_voyager-2110
 
 define Device/bt_voyager-2500v-bb
   $(Device/bcm63xx-legacy)
-  DEVICE_VENDOR := BT
+  DEVICE_VENDOR := British Telecom (BT)
   DEVICE_MODEL := Voyager 2500V
   CFE_BOARD_ID := V2500V_BB
   CHIP_ID := 6348

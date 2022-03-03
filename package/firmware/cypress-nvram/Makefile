@@ -100,7 +100,8 @@ define Package/cypress-nvram-43455-sdio-rpi-4b/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
-	$(LN) brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-compute-module.txt
 endef
 

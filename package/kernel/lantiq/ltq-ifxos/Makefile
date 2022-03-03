@@ -6,13 +6,17 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_NAME:=lib_ifxos
-PKG_VERSION:=1.5.19
-PKG_RELEASE:=4
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_URL:=https://github.com/xdarklight/$(PKG_NAME)/archive/v$(PKG_VERSION)
-PKG_HASH:=ed7fe39311d7a4a13d23ed0ae2445c0d825b472b5a98da9b72bcaabcf5ed2d5f
+PKG_NAME:=ifxos
+PKG_VERSION:=1.7.1
+PKG_RELEASE:=$(AUTORELEASE)
+
+UGW_VERSION=8.5.2.10
+UGW_BASENAME=$(PKG_NAME)-ugw_$(UGW_VERSION)
+
+PKG_SOURCE:=$(UGW_BASENAME).tar.bz2
+PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(UGW_BASENAME)
+PKG_SOURCE_URL:=https://gitlab.com/prpl-foundation/intel/$(PKG_NAME)/-/archive/ugw_$(UGW_VERSION)/
+PKG_HASH:=055a1f5eab0abfaac34ac7b1613b93ec341fe9ae8462cb11c36c2b0989ce0ca7
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 PKG_LICENSE:=GPL-2.0 BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE
@@ -45,7 +49,7 @@ ifdef CONFIG_TARGET_lantiq
 	$(INSTALL_DIR) $(1)/usr/{lib,include/ifxos}
 	$(CP) $(PKG_BUILD_DIR)/src/include/* $(1)/usr/include/ifxos
 	mkdir -p $(1)/usr/lib
-	$(CP) $(PKG_BUILD_DIR)/src/libifxos.a $(1)/usr/lib/libifxos.a
+	$(CP) $(PKG_BUILD_DIR)/src/.libs/libifxos.a $(1)/usr/lib/libifxos.a
   endef
 endif
 

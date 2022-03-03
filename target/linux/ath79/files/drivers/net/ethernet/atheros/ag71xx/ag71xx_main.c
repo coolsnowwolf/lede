@@ -1198,11 +1198,7 @@ static void ag71xx_oom_timer_handler(struct timer_list *t)
 	napi_schedule(&ag->napi);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
 static void ag71xx_tx_timeout(struct net_device *dev, unsigned int txqueue)
-#else
-static void ag71xx_tx_timeout(struct net_device *dev)
-#endif
 {
 	struct ag71xx *ag = netdev_priv(dev);
 
@@ -1519,7 +1515,6 @@ static int ag71xx_probe(struct platform_device *pdev)
 	struct net_device *dev;
 	struct resource *res;
 	struct ag71xx *ag;
-	const void *mac_addr;
 	u32 max_frame_len;
 	int tx_size, err;
 
@@ -1601,6 +1596,12 @@ static int ag71xx_probe(struct platform_device *pdev)
 			return -ENOMEM;
 	}
 
+	/* ensure that HW is in manual polling mode before interrupts are
+	 * activated. Otherwise ag71xx_interrupt might call napi_schedule
+	 * before it is initialized by netif_napi_add.
+	 */
+	ag71xx_int_disable(ag, AG71XX_INT_POLL);
+
 	dev->irq = platform_get_irq(pdev, 0);
 	err = devm_request_irq(&pdev->dev, dev->irq, ag71xx_interrupt,
 			       0x0, dev_name(&pdev->dev), dev);
@@ -1668,21 +1669,14 @@ static int ag71xx_probe(struct platform_device *pdev)
 	ag->stop_desc->ctrl = 0;
 	ag->stop_desc->next = (u32) ag->stop_desc_dma;
 
-	mac_addr = of_get_mac_address(np);
-	if (IS_ERR_OR_NULL(mac_addr) || !is_valid_ether_addr(mac_addr)) {
+	of_get_mac_address(np, dev->dev_addr);
+	if (!is_valid_ether_addr(dev->dev_addr)) {
 		dev_err(&pdev->dev, "invalid MAC address, using random address\n");
 		eth_random_addr(dev->dev_addr);
-	} else {
-		memcpy(dev->dev_addr, mac_addr, ETH_ALEN);
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
 	err = of_get_phy_mode(np, &ag->phy_if_mode);
 	if (err < 0) {
-#else
-	ag->phy_if_mode = of_get_phy_mode(np);
-	if (ag->phy_if_mode < 0) {
-#endif
 		dev_err(&pdev->dev, "missing phy-mode property in DT\n");
 		return ag->phy_if_mode;
 	}

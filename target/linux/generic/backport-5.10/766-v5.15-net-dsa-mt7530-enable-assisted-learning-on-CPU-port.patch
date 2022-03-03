@@ -1,0 +1,102 @@
+From 59c8adbc8e2c7f6b46385f36962eadaad3ea2daa Mon Sep 17 00:00:00 2001
+From: DENG Qingfang <dqfext@gmail.com>
+Date: Wed, 4 Aug 2021 00:04:01 +0800
+Subject: [PATCH] net: dsa: mt7530: enable assisted learning on CPU port
+
+Consider the following bridge configuration, where bond0 is not
+offloaded:
+
+         +-- br0 --+
+        / /   |     \
+       / /    |      \
+      /  |    |     bond0
+     /   |    |     /   \
+   swp0 swp1 swp2 swp3 swp4
+     .        .       .
+     .        .       .
+     A        B       C
+
+Address learning is enabled on offloaded ports (swp0~2) and the CPU
+port, so when client A sends a packet to C, the following will happen:
+
+1. The switch learns that client A can be reached at swp0.
+2. The switch probably already knows that client C can be reached at the
+   CPU port, so it forwards the packet to the CPU.
+3. The bridge core knows client C can be reached at bond0, so it
+   forwards the packet back to the switch.
+4. The switch learns that client A can be reached at the CPU port.
+5. The switch forwards the packet to either swp3 or swp4, according to
+   the packet's tag.
+
+That makes client A's MAC address flap between swp0 and the CPU port. If
+client B sends a packet to A, it is possible that the packet is
+forwarded to the CPU. With offload_fwd_mark = 1, the bridge core won't
+forward it back to the switch, resulting in packet loss.
+
+As we have the assisted_learning_on_cpu_port in DSA core now, enable
+that and disable hardware learning on the CPU port.
+
+Signed-off-by: DENG Qingfang <dqfext@gmail.com>
+Reviewed-by: Vladimir Oltean <oltean@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/mt7530.c | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1747,6 +1747,7 @@ mt7530_setup(struct dsa_switch *ds)
+ 	 */
+ 	dn = dsa_to_port(ds, MT7530_CPU_PORT)->master->dev.of_node->parent;
+ 	ds->configure_vlan_while_not_filtering = true;
++	ds->assisted_learning_on_cpu_port = true;
+ 	ds->mtu_enforcement_ingress = true;
+ 
+ 	if (priv->id == ID_MT7530) {
+@@ -1817,15 +1818,15 @@ mt7530_setup(struct dsa_switch *ds)
+ 		mt7530_rmw(priv, MT7530_PCR_P(i), PCR_MATRIX_MASK,
+ 			   PCR_MATRIX_CLR);
+ 
++		/* Disable learning by default on all ports */
++		mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
++
+ 		if (dsa_is_cpu_port(ds, i)) {
+ 			ret = mt753x_cpu_port_enable(ds, i);
+ 			if (ret)
+ 				return ret;
+ 		} else {
+ 			mt7530_port_disable(ds, i);
+-
+-			/* Disable learning by default on all user ports */
+-			mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
+ 		}
+ 
+ 		/* Enable consistent egress tag */
+@@ -1981,6 +1982,9 @@ mt7531_setup(struct dsa_switch *ds)
+ 		mt7530_rmw(priv, MT7530_PCR_P(i), PCR_MATRIX_MASK,
+ 			   PCR_MATRIX_CLR);
+ 
++		/* Disable learning by default on all ports */
++		mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
++
+ 		mt7530_set(priv, MT7531_DBG_CNT(i), MT7531_DIS_CLR);
+ 
+ 		if (dsa_is_cpu_port(ds, i)) {
+@@ -1989,9 +1993,6 @@ mt7531_setup(struct dsa_switch *ds)
+ 				return ret;
+ 		} else {
+ 			mt7530_port_disable(ds, i);
+-
+-			/* Disable learning by default on all user ports */
+-			mt7530_set(priv, MT7530_PSC_P(i), SA_DIS);
+ 		}
+ 
+ 		/* Enable consistent egress tag */
+@@ -2000,6 +2001,7 @@ mt7531_setup(struct dsa_switch *ds)
+ 	}
+ 
+ 	ds->configure_vlan_while_not_filtering = true;
++	ds->assisted_learning_on_cpu_port = true;
+ 	ds->mtu_enforcement_ingress = true;
+ 
+ 	/* Flush the FDB table */

@@ -9,7 +9,7 @@ linksys_get_target_firmware() {
 	cur_boot_part=$(/usr/sbin/fw_printenv -n boot_part)
 	if [ -z "${cur_boot_part}" ] ; then
 		mtd_ubi0=$(cat /sys/devices/virtual/ubi/ubi0/mtd_num)
-		case $(egrep ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
+		case $(grep -E ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
 		kernel1|rootfs1)
 			cur_boot_part=1
 			;;
@@ -42,10 +42,6 @@ linksys_get_target_firmware() {
 		return
 		;;
 	esac
-}
-
-linksys_get_root_magic() {
-	(get_image "$@" | dd skip=786432 bs=4 count=1 | hexdump -v -n 4 -e '1/1 "%02x"') 2>/dev/null
 }
 
 platform_do_upgrade_linksys() {
@@ -101,18 +97,6 @@ platform_do_upgrade_linksys() {
 		nand_upgrade_tar "$1"
 	}
 	[ "$magic_long" = "27051956" ] && {
-		# check firmwares' rootfs types
-		local oldroot="$(linksys_get_root_magic $target_mtd)"
-		local newroot="$(linksys_get_root_magic "$1")"
-
-		if [ "$newroot" = "55424923" -a "$oldroot" = "55424923" ]
-		# we're upgrading from a firmware with UBI to one with UBI
-		then
-			# erase everything to be safe
-			mtd erase $part_label
-			get_image "$1" | mtd -n write - $part_label
-		else
-			get_image "$1" | mtd write - $part_label
-		fi
+		get_image "$1" | mtd write - $part_label
 	}
 }

@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=f2fs-tools
 PKG_VERSION:=1.14.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs-tools.git/snapshot/
@@ -85,6 +85,7 @@ define Package/libf2fs
   DEPENDS:=+libuuid
   ABI_VERSION:=6
   CONFLICTS:=libf2fs-selinux
+  VARIANT:=default
 endef
 
 define Package/libf2fs-selinux
@@ -93,6 +94,7 @@ define Package/libf2fs-selinux
   TITLE:=Library for Flash-Friendly File System (F2FS) tools with SELinux support
   DEPENDS:=+libuuid +libselinux
   ABI_VERSION:=6
+  VARIANT:=selinux
 endef
 
 CONFIGURE_ARGS += \

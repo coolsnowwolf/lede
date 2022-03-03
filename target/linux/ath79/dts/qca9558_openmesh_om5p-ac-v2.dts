@@ -7,26 +7,34 @@
 
 / {
 	compatible = "openmesh,om5p-ac-v2", "qca,qca9558";
-	model = "OpenMesh OM5P-AC V2";
+	model = "OpenMesh OM5P-AC v2";
 
-	extosc: ref {
-		compatible = "fixed-clock";
-		#clock-cells = <0>;
-		clock-output-names = "ref";
-		clock-frequency = <40000000>;
+	chosen {
+		/delete-property/ bootargs;
+	};
+
+	aliases {
+		serial0 = &uart;
+		led-boot = &led_power_blue;
+		led-failsafe = &led_power_blue;
+		led-running = &led_power_blue;
+		led-upgrade = &led_power_blue;
+		label-mac-device = &eth0;
 	};
 
 	leds {
 		compatible = "gpio-leds";
 
-		power {
-			label = "blue:power";
-			gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
-		};
-
 		wifi_green {
 			label = "green:wifi";
 			gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "phy0tpt";
+		};
+
+		led_power_blue: power_blue {
+			label = "blue:power";
+			gpios = <&gpio 14 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 		};
 
 		wifi_yellow {
@@ -50,6 +58,32 @@
 		};
 	};
 
+	i2c {
+		compatible = "i2c-gpio";
+		gpios = <&gpio 19 GPIO_ACTIVE_HIGH /* sda */
+			 &gpio 18 GPIO_ACTIVE_HIGH /* scl */
+			>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		i2c-gpio,scl-open-drain;
+		i2c-gpio,sda-open-drain;
+
+		tmp423a@4e {
+			compatible = "ti,tmp423";
+			reg = <0x4e>;
+		};
+	};
+
+	watchdog {
+		compatible = "linux,wdt-gpio";
+		gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+		hw_algo = "toggle";
+		/* hw_margin_ms is actually 300s but driver limits it to 60s */
+		hw_margin_ms = <60000>;
+		always-running;
+	};
+
 	gpio-export {
 		compatible = "gpio-export";
 		#size-cells = <0>;
@@ -69,20 +103,16 @@
 
 &pinmux {
 	pinmux_pa_dcdc_pins {
-		pinctrl-single,bits = <0x0 0xff00 0x0>;
+		pinctrl-single,bits = <0x0 0x0 0xff0000>;
 	};
 
 	pinmux_pa_high_pins {
-		pinctrl-single,bits = <0x10 0xff 0x0>;
+		pinctrl-single,bits = <0x10 0x0 0xff>;
 	};
 };
 
 &pcie0 {
 	status = "okay";
-};
-
-&pll {
-	clocks = <&extosc>;
 };
 
 &spi {
@@ -93,6 +123,7 @@
 		reg = <0>;
 		spi-max-frequency = <25000000>;
 
+		/* partitions are passed via bootloader */
 		partitions {
 			compatible = "fixed-partitions";
 			#address-cells = <1>;
@@ -104,19 +135,29 @@
 				read-only;
 			};
 
-			partition@1 {
+			partition@40000 {
 				label = "u-boot-env";
 				reg = <0x040000 0x010000>;
 			};
 
-			partition@2 {
-				compatible = "denx,uimage";
-				label = "firmware";
+			partition@50000 {
+				label = "custom";
+				reg = <0x050000 0x060000>;
+				read-only;
+			};
+
+			partition@b0000 {
+				label = "inactive";
+				reg = <0x0b0000 0x7a0000>;
+			};
+
+			partition@850000 {
+				label = "inactive2";
 				reg = <0x850000 0x7a0000>;
 			};
 
-			partition@3 {
-				label = "art";
+			art: partition@ff0000 {
+				label = "ART";
 				reg = <0xff0000 0x010000>;
 				read-only;
 			};
@@ -127,18 +168,25 @@
 &mdio0 {
 	status = "okay";
 
+	phy-mask = <0x10>;
+
 	phy4: ethernet-phy@4 {
 		reg = <4>;
-		phy-mode = "rgmii-id";
+		eee-broken-100tx;
+		eee-broken-1000t;
 	};
 };
 
 &mdio1 {
 	status = "okay";
 
+	phy-mask = <0x2>;
+
 	phy1: ethernet-phy@1 {
 		reg = <1>;
-		phy-mode = "sgmii";
+		eee-broken-100tx;
+		eee-broken-1000t;
+		at803x-override-sgmii-link-check;
 	};
 };
 
@@ -147,7 +195,20 @@
 
 	pll-data = <0x82000101 0x80000101 0x80001313>;
 
+	nvmem-cells = <&macaddr_art_0>;
+	nvmem-cell-names = "mac-address";
+
+	phy-mode = "rgmii-id";
 	phy-handle = <&phy4>;
+
+	gmac-config {
+		device = <&gmac>;
+		rgmii-enabled = <1>;
+		rxd-delay = <2>;
+		rxdv-delay = <2>;
+		txd-delay = <0>;
+		txen-delay = <0>;
+	};
 };
 
 &eth1 {
@@ -155,5 +216,33 @@
 
 	pll-data = <0x03000101 0x80000101 0x80001313>;
 
+	nvmem-cells = <&macaddr_art_6>;
+	nvmem-cell-names = "mac-address";
+
+	qca955x-sgmii-fixup;
+
 	phy-handle = <&phy1>;
+};
+
+&wmac {
+	status = "okay";
+
+	mtd-cal-data = <&art 0x1000>;
+	nvmem-cells = <&macaddr_art_0>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <2>;
+};
+
+&art {
+	compatible = "nvmem-cells";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	macaddr_art_0: macaddr@0 {
+		reg = <0x0 0x6>;
+	};
+
+	macaddr_art_6: macaddr@6 {
+		reg = <0x6 0x6>;
+	};
 };

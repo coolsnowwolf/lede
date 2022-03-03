@@ -60,6 +60,4 @@ endef
 define Package/u-boot/install/default
 endef
 
-Build/Exports:=$(Host/Exports)
-
 $(eval $(call BuildPackage/U-Boot))
