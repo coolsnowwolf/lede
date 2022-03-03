@@ -1,0 +1,88 @@
+From 25139116756cc285a3a5534834cc276ef1b7baaa Mon Sep 17 00:00:00 2001
+From: Stefan Metzmacher <metze@samba.org>
+Date: Wed, 30 Sep 2015 21:17:02 +0200
+Subject: [PATCH 1/2] CVE-2015-5296: s3:libsmb: force signing when requiring
+ encryption in do_connect()
+
+BUG: https://bugzilla.samba.org/show_bug.cgi?id=11536
+
+Signed-off-by: Stefan Metzmacher <metze@samba.org>
+Reviewed-by: Jeremy Allison <jra@samba.org>
+---
+ source3/libsmb/clidfs.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+--- a/source3/libsmb/clidfs.c
++++ b/source3/libsmb/clidfs.c
+@@ -98,6 +98,11 @@ static struct cli_state *do_connect(TALL
+ 	const char *username;
+ 	const char *password;
+ 	NTSTATUS status;
++	int signing_state = get_cmdline_auth_info_signing_state(auth_info);
++
++	if (force_encrypt) {
++		signing_state = Required;
++	}
+ 
+ 	/* make a copy so we don't modify the global string 'service' */
+ 	servicename = talloc_strdup(ctx,share);
+@@ -132,7 +137,7 @@ static struct cli_state *do_connect(TALL
+ 	zero_sockaddr(&ss);
+ 
+ 	/* have to open a new connection */
+-	c = cli_initialise_ex(get_cmdline_auth_info_signing_state(auth_info));
++	c = cli_initialise_ex(signing_state);
+ 	if (c == NULL) {
+ 		d_printf("Connection to %s failed\n", server_n);
+ 		return NULL;
+--- a/source3/libsmb/libsmb_server.c
++++ b/source3/libsmb/libsmb_server.c
+@@ -258,6 +258,7 @@ SMBC_server_internal(TALLOC_CTX *ctx,
+         const char *username_used;
+  	NTSTATUS status;
+ 	char *newserver, *newshare;
++	int signing_state = Undefined;
+ 
+ 	zero_sockaddr(&ss);
+ 	ZERO_STRUCT(c);
+@@ -404,8 +405,12 @@ again:
+ 
+ 	zero_sockaddr(&ss);
+ 
++	if (context->internal->smb_encryption_level != SMBC_ENCRYPTLEVEL_NONE) {
++		signing_state = Required;
++	}
++
+ 	/* have to open a new connection */
+-	if ((c = cli_initialise()) == NULL) {
++	if ((c = cli_initialise_ex(signing_state)) == NULL) {
+ 		errno = ENOMEM;
+ 		return NULL;
+ 	}
+@@ -750,6 +755,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
+         ipc_srv = SMBC_find_server(ctx, context, server, "*IPC$",
+                                    pp_workgroup, pp_username, pp_password);
+         if (!ipc_srv) {
++		int signing_state = Undefined;
+ 
+                 /* We didn't find a cached connection.  Get the password */
+ 		if (!*pp_password || (*pp_password)[0] == '\0') {
+@@ -771,6 +777,9 @@ SMBC_attr_server(TALLOC_CTX *ctx,
+                 if (smbc_getOptionUseCCache(context)) {
+                         flags |= CLI_FULL_CONNECTION_USE_CCACHE;
+                 }
++		if (context->internal->smb_encryption_level != SMBC_ENCRYPTLEVEL_NONE) {
++			signing_state = Required;
++		}
+ 
+                 zero_sockaddr(&ss);
+                 nt_status = cli_full_connection(&ipc_cli,
+@@ -780,7 +789,7 @@ SMBC_attr_server(TALLOC_CTX *ctx,
+ 						*pp_workgroup,
+ 						*pp_password,
+ 						flags,
+-						Undefined);
++						signing_state);
+                 if (! NT_STATUS_IS_OK(nt_status)) {
+                         DEBUG(1,("cli_full_connection failed! (%s)\n",
+                                  nt_errstr(nt_status)));

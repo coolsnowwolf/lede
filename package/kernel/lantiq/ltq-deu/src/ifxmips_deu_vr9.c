@@ -107,7 +107,7 @@ void aes_chip_init (void)
 
     // start crypto engine with write to ILR
     aes->controlr.SM = 1;
-    aes->controlr.NDC = 1;
+    aes->controlr.NDC = 0;
     asm("sync");
     aes->controlr.ENDI = 1;
     asm("sync");

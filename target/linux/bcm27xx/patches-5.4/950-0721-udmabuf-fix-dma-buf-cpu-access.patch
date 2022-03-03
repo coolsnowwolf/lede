@@ -1,0 +1,60 @@
+From 153f1e1def226f87cc4c307d2806b000a820f64b Mon Sep 17 00:00:00 2001
+From: Gurchetan Singh <gurchetansingh@chromium.org>
+Date: Tue, 17 Dec 2019 15:02:28 -0800
+Subject: [PATCH] udmabuf: fix dma-buf cpu access
+
+Commit 1ffe09590121fbb3786d6c860acdd200f7ab095c upstream.
+
+I'm just going to put Chia's review comment here since it sums
+the issue rather nicely:
+
+"(1) Semantically, a dma-buf is in DMA domain.  CPU access from the
+importer must be surrounded by {begin,end}_cpu_access.  This gives the
+exporter a chance to move the buffer to the CPU domain temporarily.
+
+(2) When the exporter itself has other means to do CPU access, it is
+only reasonable for the exporter to move the buffer to the CPU domain
+before access, and to the DMA domain after access.  The exporter can
+potentially reuse {begin,end}_cpu_access for that purpose.
+
+Because of (1), udmabuf does need to implement the
+{begin,end}_cpu_access hooks.  But "begin" should mean
+dma_sync_sg_for_cpu and "end" should mean dma_sync_sg_for_device.
+
+Because of (2), if userspace wants to continuing accessing through the
+memfd mapping, it should call udmabuf's {begin,end}_cpu_access to
+avoid cache issues."
+
+Reported-by: Chia-I Wu <olvaffe@gmail.com>
+Suggested-by: Chia-I Wu <olvaffe@gmail.com>
+Fixes: 284562e1f348 ("udmabuf: implement begin_cpu_access/end_cpu_access hooks")
+Signed-off-by: Gurchetan Singh <gurchetansingh@chromium.org>
+Link: http://patchwork.freedesktop.org/patch/msgid/20191217230228.453-1-gurchetansingh@chromium.org
+Signed-off-by: Gerd Hoffmann <kraxel@redhat.com>
+---
+ drivers/dma-buf/udmabuf.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+--- a/drivers/dma-buf/udmabuf.c
++++ b/drivers/dma-buf/udmabuf.c
+@@ -122,9 +122,8 @@ static int begin_cpu_udmabuf(struct dma_
+ 		if (IS_ERR(ubuf->sg))
+ 			return PTR_ERR(ubuf->sg);
+ 	} else {
+-		dma_sync_sg_for_device(dev, ubuf->sg->sgl,
+-				       ubuf->sg->nents,
+-				       direction);
++		dma_sync_sg_for_cpu(dev, ubuf->sg->sgl, ubuf->sg->nents,
++				    direction);
+ 	}
+ 
+ 	return 0;
+@@ -139,7 +138,7 @@ static int end_cpu_udmabuf(struct dma_bu
+ 	if (!ubuf->sg)
+ 		return -EINVAL;
+ 
+-	dma_sync_sg_for_cpu(dev, ubuf->sg->sgl, ubuf->sg->nents, direction);
++	dma_sync_sg_for_device(dev, ubuf->sg->sgl, ubuf->sg->nents, direction);
+ 	return 0;
+ }
+ 

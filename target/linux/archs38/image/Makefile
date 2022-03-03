@@ -27,14 +27,14 @@ define Device/nsim_hs
 	DEVICE_VENDOR := Synopsys
 	DEVICE_MODEL := nSIM HS
 	DEVICE_PROFILE := nsim_hs
-	DEVICE_DTS := haps_hs
+	DEVICE_DTS := nsim_hs_idu
 endef
 TARGET_DEVICES += nsim_hs
 endif
 
 # Root FS on SD-card
 KERNEL_LOADADDR := 0x90000000
-DEVICE_DTS_LIST:= axs103_idu haps_hs hsdk
+DEVICE_DTS_LIST:= axs103_idu nsim_hs_idu hsdk
 FAT32_BLOCK_SIZE=1024
 FAT32_BLOCKS=$(shell echo $$(($(CONFIG_AXS10X_SD_BOOT_PARTSIZE)*1024*1024/$(FAT32_BLOCK_SIZE))))
 

@@ -1,0 +1,218 @@
+From ce6d3614888e6358466f0e84e248177a6bca5258 Mon Sep 17 00:00:00 2001
+From: Tang Yun ping <typ@rock-chips.com>
+Date: Thu, 4 May 2017 20:49:58 +0800
+Subject: [PATCH] clk: rockchip: support setting ddr clock via SIP Version 2
+ APIs
+
+commit 764e893ee82321938fc6f4349e9e7caf06a04410 rockchip.
+
+Signed-off-by: Tang Yun ping <typ@rock-chips.com>
+Signed-off-by: hmz007 <hmz007@gmail.com>
+---
+ drivers/clk/rockchip/clk-ddr.c      | 130 ++++++++++++++++++++++++++++
+ drivers/clk/rockchip/clk-rk3328.c   |   7 +-
+ drivers/clk/rockchip/clk.h          |   3 +-
+ include/soc/rockchip/rockchip_sip.h |  11 +++
+ 4 files changed, 147 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/clk/rockchip/clk-ddr.c b/drivers/clk/rockchip/clk-ddr.c
+index 9273bce4d7b6..555aaf4e758d 100644
+--- a/drivers/clk/rockchip/clk-ddr.c
++++ b/drivers/clk/rockchip/clk-ddr.c
+@@ -87,6 +87,133 @@ static const struct clk_ops rockchip_ddrclk_sip_ops = {
+ 	.get_parent = rockchip_ddrclk_get_parent,
+ };
+ 
++/* See v4.4/include/dt-bindings/display/rk_fb.h */
++#define SCREEN_NULL			0
++#define SCREEN_HDMI			6
++
++static inline int rk_drm_get_lcdc_type(void)
++{
++	return SCREEN_NULL;
++}
++
++struct share_params {
++	u32 hz;
++	u32 lcdc_type;
++	u32 vop;
++	u32 vop_dclk_mode;
++	u32 sr_idle_en;
++	u32 addr_mcu_el3;
++	/*
++	 * 1: need to wait flag1
++	 * 0: never wait flag1
++	 */
++	u32 wait_flag1;
++	/*
++	 * 1: need to wait flag1
++	 * 0: never wait flag1
++	 */
++	u32 wait_flag0;
++	u32 complt_hwirq;
++	 /* if need, add parameter after */
++};
++
++struct rockchip_ddrclk_data {
++	u32 inited_flag;
++	void __iomem *share_memory;
++};
++
++static struct rockchip_ddrclk_data ddr_data;
++
++static void rockchip_ddrclk_data_init(void)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_smc(ROCKCHIP_SIP_SHARE_MEM,
++		      1, SHARE_PAGE_TYPE_DDR, 0,
++		      0, 0, 0, 0, &res);
++
++	if (!res.a0) {
++		ddr_data.share_memory = (void __iomem *)ioremap(res.a1, 1<<12);
++		ddr_data.inited_flag = 1;
++	}
++}
++
++static int rockchip_ddrclk_sip_set_rate_v2(struct clk_hw *hw,
++					   unsigned long drate,
++					   unsigned long prate)
++{
++	struct share_params *p;
++	struct arm_smccc_res res;
++
++	if (!ddr_data.inited_flag)
++		rockchip_ddrclk_data_init();
++
++	p = (struct share_params *)ddr_data.share_memory;
++
++	p->hz = drate;
++	p->lcdc_type = rk_drm_get_lcdc_type();
++	p->wait_flag1 = 1;
++	p->wait_flag0 = 1;
++
++	arm_smccc_smc(ROCKCHIP_SIP_DRAM_FREQ,
++		      SHARE_PAGE_TYPE_DDR, 0,
++		      ROCKCHIP_SIP_CONFIG_DRAM_SET_RATE,
++		      0, 0, 0, 0, &res);
++
++	if ((int)res.a1 == -6) {
++		pr_err("%s: timeout, drate = %lumhz\n", __func__, drate/1000000);
++		/* TODO: rockchip_dmcfreq_wait_complete(); */
++	}
++
++	return res.a0;
++}
++
++static unsigned long rockchip_ddrclk_sip_recalc_rate_v2
++			(struct clk_hw *hw, unsigned long parent_rate)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_smc(ROCKCHIP_SIP_DRAM_FREQ,
++		      SHARE_PAGE_TYPE_DDR, 0,
++		      ROCKCHIP_SIP_CONFIG_DRAM_GET_RATE,
++		      0, 0, 0, 0, &res);
++	if (!res.a0)
++		return res.a1;
++	else
++		return 0;
++}
++
++static long rockchip_ddrclk_sip_round_rate_v2(struct clk_hw *hw,
++					      unsigned long rate,
++					      unsigned long *prate)
++{
++	struct share_params *p;
++	struct arm_smccc_res res;
++
++	if (!ddr_data.inited_flag)
++		rockchip_ddrclk_data_init();
++
++	p = (struct share_params *)ddr_data.share_memory;
++
++	p->hz = rate;
++
++	arm_smccc_smc(ROCKCHIP_SIP_DRAM_FREQ,
++		      SHARE_PAGE_TYPE_DDR, 0,
++		      ROCKCHIP_SIP_CONFIG_DRAM_ROUND_RATE,
++		      0, 0, 0, 0, &res);
++	if (!res.a0)
++		return res.a1;
++	else
++		return 0;
++}
++
++static const struct clk_ops rockchip_ddrclk_sip_ops_v2 = {
++	.recalc_rate = rockchip_ddrclk_sip_recalc_rate_v2,
++	.set_rate = rockchip_ddrclk_sip_set_rate_v2,
++	.round_rate = rockchip_ddrclk_sip_round_rate_v2,
++	.get_parent = rockchip_ddrclk_get_parent,
++};
++
+ struct clk *rockchip_clk_register_ddrclk(const char *name, int flags,
+ 					 const char *const *parent_names,
+ 					 u8 num_parents, int mux_offset,
+@@ -114,6 +241,9 @@ struct clk *rockchip_clk_register_ddrclk(const char *name, int flags,
+ 	case ROCKCHIP_DDRCLK_SIP:
+ 		init.ops = &rockchip_ddrclk_sip_ops;
+ 		break;
++	case ROCKCHIP_DDRCLK_SIP_V2:
++		init.ops = &rockchip_ddrclk_sip_ops_v2;
++		break;
+ 	default:
+ 		pr_err("%s: unsupported ddrclk type %d\n", __func__, ddr_flag);
+ 		kfree(ddrclk);
+diff --git a/drivers/clk/rockchip/clk-rk3328.c b/drivers/clk/rockchip/clk-rk3328.c
+index c186a1985bf4..ac6e6163a232 100644
+--- a/drivers/clk/rockchip/clk-rk3328.c
++++ b/drivers/clk/rockchip/clk-rk3328.c
+@@ -314,9 +314,10 @@ static struct rockchip_clk_branch rk3328_clk_branches[] __initdata = {
+ 			RK3328_CLKGATE_CON(14), 1, GFLAGS),
+ 
+ 	/* PD_DDR */
+-	COMPOSITE(0, "clk_ddr", mux_ddrphy_p, CLK_IGNORE_UNUSED,
+-			RK3328_CLKSEL_CON(3), 8, 2, MFLAGS, 0, 3, DFLAGS | CLK_DIVIDER_POWER_OF_TWO,
+-			RK3328_CLKGATE_CON(0), 4, GFLAGS),
++	COMPOSITE_DDRCLK(SCLK_DDRCLK, "sclk_ddrc", mux_ddrphy_p, 0,
++			RK3328_CLKSEL_CON(3), 8, 2, 0, 3,
++			ROCKCHIP_DDRCLK_SIP_V2),
++
+ 	GATE(0, "clk_ddrmsch", "clk_ddr", CLK_IGNORE_UNUSED,
+ 			RK3328_CLKGATE_CON(18), 6, GFLAGS),
+ 	GATE(0, "clk_ddrupctl", "clk_ddr", CLK_IGNORE_UNUSED,
+diff --git a/drivers/clk/rockchip/clk.h b/drivers/clk/rockchip/clk.h
+index 2271a84124b0..7405aaf965ec 100644
+--- a/drivers/clk/rockchip/clk.h
++++ b/drivers/clk/rockchip/clk.h
+@@ -362,7 +362,8 @@ struct clk *rockchip_clk_register_mmc(const char *name,
+  * DDRCLK flags, including method of setting the rate
+  * ROCKCHIP_DDRCLK_SIP: use SIP call to bl31 to change ddrclk rate.
+  */
+-#define ROCKCHIP_DDRCLK_SIP		BIT(0)
++#define ROCKCHIP_DDRCLK_SIP		0x01
++#define ROCKCHIP_DDRCLK_SIP_V2		0x03
+ 
+ struct clk *rockchip_clk_register_ddrclk(const char *name, int flags,
+ 					 const char *const *parent_names,
+diff --git a/include/soc/rockchip/rockchip_sip.h b/include/soc/rockchip/rockchip_sip.h
+index c46a9ae2a2ab..fa7e0a2d72cc 100644
+--- a/include/soc/rockchip/rockchip_sip.h
++++ b/include/soc/rockchip/rockchip_sip.h
+@@ -16,5 +16,16 @@
+ #define ROCKCHIP_SIP_CONFIG_DRAM_CLR_IRQ	0x06
+ #define ROCKCHIP_SIP_CONFIG_DRAM_SET_PARAM	0x07
+ #define ROCKCHIP_SIP_CONFIG_DRAM_SET_ODT_PD	0x08
++#define ROCKCHIP_SIP_CONFIG_DRAM_GET_VERSION	0x08
++
++#define ROCKCHIP_SIP_SHARE_MEM			0x82000009
++
++/* Share mem page types */
++typedef enum {
++    SHARE_PAGE_TYPE_INVALID = 0,
++    SHARE_PAGE_TYPE_UARTDBG,
++    SHARE_PAGE_TYPE_DDR,
++    SHARE_PAGE_TYPE_MAX,
++} share_page_type_t;
+ 
+ #endif

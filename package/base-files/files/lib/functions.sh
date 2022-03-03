@@ -209,10 +209,10 @@ add_group_and_user() {
 	if [ -n "$rusers" ]; then
 		local tuple oIFS="$IFS"
 		for tuple in $rusers; do
-			local uid gid uname gname addngroups addngroup addngname addngid
+			local uid gid uname gname
 
 			IFS=":"
-			set -- $tuple; uname="$1"; gname="$2"; addngroups="$3"
+			set -- $tuple; uname="$1"; gname="$2"
 			IFS="="
 			set -- $uname; uname="$1"; uid="$2"
 			set -- $gname; gname="$1"; gid="$2"
@@ -232,24 +232,7 @@ add_group_and_user() {
 				group_add_user "$gname" "$uname"
 			fi
 
-			if [ -n "$uname" ] &&  [ -n "$addngroups" ]; then
-				oIFS="$IFS"
-				IFS=","
-				for addngroup in $addngroups ; do
-					IFS="="
-					set -- $addngroup; addngname="$1"; addngid="$2"
-					if [ -n "$addngid" ]; then
-						group_exists "$addngname" || group_add "$addngname" "$addngid"
-					else
-						group_add_next "$addngname"
-					fi
-
-					group_add_user "$addngname" "$uname"
-				done
-				IFS="$oIFS"
-			fi
-
-			unset uid gid uname gname addngroups addngroup addngname addngid
+			unset uid gid uname gname
 		done
 	fi
 }

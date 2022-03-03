@@ -203,23 +203,8 @@ int selfsigned(WC_RNG *rng, char **arg) {
             strncpy(newCert.subject.org, val, CTC_NAME_SIZE);
           else if (!strcmp(key, "OU"))
             strncpy(newCert.subject.unit, val, CTC_NAME_SIZE);
-          else if (!strcmp(key, "CN")) {
+          else if (!strcmp(key, "CN"))
             strncpy(newCert.subject.commonName, val, CTC_NAME_SIZE);
-
-#ifdef WOLFSSL_ALT_NAMES
-            if(strlen(val) + 2 > 256) {
-              fprintf(stderr, "error: CN is too long: %s\n", val);
-              return 1;
-            }
-
-            newCert.altNames[0] = 0x30; //Sequence with one element
-            newCert.altNames[1] = strlen(val) + 2; // Length of entire sequence
-            newCert.altNames[2] = 0x82; //8 - String, 2 - DNS Name
-            newCert.altNames[3] = strlen(val); //DNS Name length
-            memcpy(newCert.altNames + 4, val, strlen(val)); //DNS Name
-            newCert.altNamesSz = strlen(val) + 4;
-#endif
-          }
           else if (!strcmp(key, "EMAIL"))
             strncpy(newCert.subject.email, val, CTC_NAME_SIZE);
           else
@@ -230,9 +215,6 @@ int selfsigned(WC_RNG *rng, char **arg) {
     arg++;
   }
   newCert.daysValid = days;
-
-  newCert.keyUsage = KEYUSE_DIGITAL_SIG | KEYUSE_CONTENT_COMMIT | KEYUSE_KEY_ENCIPHER;
-  newCert.extKeyUsage = EXTKEYUSE_SERVER_AUTH;
 
   gen_key(rng, &ecKey, &rsaKey, type, keySz, exp, curve);
   write_key(&ecKey, &rsaKey, type, keySz, keypath, pem);

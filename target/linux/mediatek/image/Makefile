@@ -6,7 +6,17 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
-# default all platform image(fit) build
+define Build/sysupgrade-emmc
+	rm -f $@.recovery
+	mkfs.fat -C $@.recovery 3070
+
+	./gen_$(SUBTARGET)_emmc_img.sh $@ \
+		$(IMAGE_KERNEL) \
+		$@.recovery \
+		$(IMAGE_ROOTFS)
+endef
+
+# default all platform image(fit) build 
 define Device/Default
   PROFILES = Default $$(DEVICE_NAME)
   KERNEL_NAME := Image

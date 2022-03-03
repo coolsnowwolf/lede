@@ -15,7 +15,6 @@ define Device/Default
   KERNEL_SUFFIX := -kernel.itb
   KERNEL_INSTALL := 1
   KERNEL_IN_UBI := 1
-  DEVICE_DTS_CONFIG := config@1
   IMAGES := factory.ubi sysupgrade.tar
   IMAGE/factory.ubi := append-ubi
   IMAGE/sysupgrade.tar := sysupgrade-tar

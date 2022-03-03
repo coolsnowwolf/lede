@@ -1,0 +1,126 @@
+From e23eabd570eabde1d1fc803127a97fd101642467 Mon Sep 17 00:00:00 2001
+From: Varsha Mishra <varsham@codeaurora.org>
+Date: Fri, 12 Jun 2020 01:06:58 +0530
+Subject: [qca-nss-ecm] Allow egress on same port when bridge hairpin is
+ enabled.
+
+When bridge hairpin is enabled, allow egress on same port. Wi-Fi intrabss
+frames are getting exceptioned to stack. Bridge gets to make the decision
+whether these frames need to be forwarded or dropped.
+
+Signed-off-by: Varsha Mishra <varsham@codeaurora.org>
+Change-Id: Ibdd72264d8887330ba0297ed12cbcfc390065bff
+---
+ frontends/nss/ecm_nss_ipv4.c | 28 ++++++++++++++++++++++------
+ frontends/nss/ecm_nss_ipv6.c | 28 ++++++++++++++++++++++------
+ 2 files changed, 44 insertions(+), 12 deletions(-)
+
+diff --git a/frontends/nss/ecm_nss_ipv4.c b/frontends/nss/ecm_nss_ipv4.c
+index 60f799b..51c9ebf 100644
+--- a/frontends/nss/ecm_nss_ipv4.c
++++ b/frontends/nss/ecm_nss_ipv4.c
+@@ -1756,7 +1756,9 @@ static unsigned int ecm_nss_ipv4_bridge_post_routing_hook(void *priv,
+ 	 * Case 2:
+ 	 *	For routed packets the skb will have the src mac matching the bridge mac.
+ 	 * Case 3:
+-	 *	If the packet was not local (case 1) or routed (case 2) then we process.
++	 *	If the packet was not local (case 1) or routed (case 2) then
++	 *	we process. There is an exception to case 2: when hairpin mode
++	 *	is enabled, we process.
+ 	 */
+ 
+ 	/*
+@@ -1768,14 +1770,28 @@ static unsigned int ecm_nss_ipv4_bridge_post_routing_hook(void *priv,
+ 		dev_put(bridge);
+ 		return NF_ACCEPT;
+ 	}
++
++	/*
++	 * This flag needs to be checked in slave port(eth0/ath0)
++	 * and not on master interface(br-lan). Hairpin flag can be
++	 * enabled/disabled for ports individually.
++	 */
+ 	if (in == out) {
+-		DEBUG_TRACE("skb: %p, bridge: %p (%s), port bounce on %p (%s)\n", skb, bridge, bridge->name, out, out->name);
+-		dev_put(in);
+-		dev_put(bridge);
+-		return NF_ACCEPT;
++		if (!br_is_hairpin_enabled(in)) {
++			DEBUG_TRACE("skb: %p, bridge: %p (%s), ignoring"
++					"the packet, hairpin not enabled"
++					"on port %p (%s)\n", skb, bridge,
++					bridge->name, out, out->name);
++			dev_put(in);
++			dev_put(bridge);
++			return NF_ACCEPT;
++		}
++		DEBUG_TRACE("skb: %p, bridge: %p (%s), hairpin enabled on port"
++				"%p (%s)\n", skb, bridge, bridge->name, out, out->name);
+ 	}
++
++	/*
++	 * Case 2: Routed trafffic would be handled by the INET post routing.
++	 */
+ 	if (!ecm_mac_addr_equal(skb_eth_hdr->h_source, bridge->dev_addr)) {
+-		/*
+-		 * Case 2: Routed trafffic would be handled by the INET post routing.
+-		 */
+ 		DEBUG_TRACE("skb: %p, Ignoring routed packet to bridge: %p (%s)\n", skb, bridge, bridge->name);
+ 		goto skip_ipv4_bridge_flow;
+ 	}
+diff --git a/frontends/nss/ecm_nss_ipv6.c b/frontends/nss/ecm_nss_ipv6.c
+index 6ad425e..160c94c 100644
+--- a/frontends/nss/ecm_nss_ipv6.c
++++ b/frontends/nss/ecm_nss_ipv6.c
+@@ -1498,7 +1498,9 @@ static unsigned int ecm_nss_ipv6_bridge_post_routing_hook(void *priv,
+ 	 * Case 2:
+ 	 *	For routed packets the skb will have the src mac matching the bridge mac.
+ 	 * Case 3:
+-	 *	If the packet was not local (case 1) or routed (case 2) then we process.
++	 *	If the packet was not local (case 1) or routed (case 2) then
++	 *	we process. There is an exception to case 2: when hairpin mode
++	 *	is enabled, we process.
+ 	 */
+ 
+ 	/*
+@@ -1510,14 +1512,28 @@ static unsigned int ecm_nss_ipv6_bridge_post_routing_hook(void *priv,
+ 		dev_put(bridge);
+ 		return NF_ACCEPT;
+ 	}
++
++	/*
++	 * This flag needs to be checked in slave port(eth0/ath0)
++	 * and not on master interface(br-lan). Hairpin flag can be
++	 * enabled/disabled for ports individually.
++	 */
+ 	if (in == out) {
+-		DEBUG_TRACE("skb: %p, bridge: %p (%s), port bounce on %p (%s)\n", skb, bridge, bridge->name, out, out->name);
+-		dev_put(in);
+-		dev_put(bridge);
+-		return NF_ACCEPT;
++		if (!br_is_hairpin_enabled(in)) {
++			DEBUG_TRACE("skb: %p, bridge: %p (%s), ignoring"
++					"the packet, hairpin not enabled"
++					"on port %p (%s)\n", skb, bridge,
++					bridge->name, out, out->name);
++			dev_put(in);
++			dev_put(bridge);
++			return NF_ACCEPT;
++		}
++		DEBUG_TRACE("skb: %p, bridge: %p (%s), hairpin enabled on port"
++				"%p (%s)\n", skb, bridge, bridge->name, out, out->name);
+ 	}
++
++	/*
++	 * Case 2: Routed trafffic would be handled by the INET post routing.
++	 */
+ 	if (!ecm_mac_addr_equal(skb_eth_hdr->h_source, bridge->dev_addr)) {
+-		/*
+-		 * Case 2: Routed trafffic would be handled by the INET post routing.
+-		 */
+ 		DEBUG_TRACE("skb: %p, Ignoring routed packet to bridge: %p (%s)\n", skb, bridge, bridge->name);
+ 		goto skip_ipv6_bridge_flow;
+ 	}
+-- 
+cgit v1.1
+

@@ -62,7 +62,7 @@ gpio_latch_get(struct gpio_chip *gc, unsigned offset)
 	int ret;
 
 	gpio_latch_lock(glc, false);
-	ret = gpiod_get_raw_value_cansleep(glc->gpios[offset]);
+	ret = gpiod_get_value(glc->gpios[offset]);
 	gpio_latch_unlock(glc, false);
 
 	return ret;
@@ -81,7 +81,7 @@ gpio_latch_set(struct gpio_chip *gc, unsigned offset, int value)
 	}
 
 	gpio_latch_lock(glc, enable_latch);
-	gpiod_set_raw_value_cansleep(glc->gpios[offset], value);
+	gpiod_set_raw_value(glc->gpios[offset], value);
 	gpio_latch_unlock(glc, disable_latch);
 }
 
@@ -133,10 +133,8 @@ static int gpio_latch_probe(struct platform_device *pdev)
 		glc->gpios[i] = devm_gpiod_get_index_optional(dev, NULL, i,
 			GPIOD_OUT_LOW);
 		if (IS_ERR(glc->gpios[i])) {
-			if (PTR_ERR(glc->gpios[i]) != -EPROBE_DEFER) {
-				dev_err(dev, "failed to get gpio %d: %d\n", i,
-					PTR_ERR(glc->gpios[i]));
-			}
+			dev_err(dev, "failed to get gpio %d: %d\n", i,
+				PTR_ERR(glc->gpios[i]));
 			return PTR_ERR(glc->gpios[i]);
 		}
 	}

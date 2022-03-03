@@ -49,7 +49,7 @@ endef
 
 define RequireCommand
   define Require/$(1)
-    command -v $(1)
+    which $(1)
   endef
 
   $$(eval $$(call Require,$(1),$(2)))
@@ -103,7 +103,7 @@ define SetupHostCommand
 	           $(call QuoteHostCommand,$(11)) $(call QuoteHostCommand,$(12)); do \
 		if [ -n "$$$$$$$$cmd" ]; then \
 			bin="$$$$$$$$(PATH="$(subst $(space),:,$(filter-out $(STAGING_DIR_HOST)/%,$(subst :,$(space),$(PATH))))" \
-				command -v "$$$$$$$${cmd%% *}")"; \
+				which "$$$$$$$${cmd%% *}")"; \
 			if [ -x "$$$$$$$$bin" ] && eval "$$$$$$$$cmd" >/dev/null 2>/dev/null; then \
 				mkdir -p "$(STAGING_DIR_HOST)/bin"; \
 				ln -sf "$$$$$$$$bin" "$(STAGING_DIR_HOST)/bin/$(strip $(1))"; \

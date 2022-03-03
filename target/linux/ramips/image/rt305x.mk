@@ -433,7 +433,6 @@ endef
 TARGET_DEVICES += dlink_dir-615-d
 
 define Device/dlink_dir-615-h1
-  $(Device/uimage-lzma-loader)
   SOC := rt3352
   BLOCKSIZE := 4k
   IMAGES += factory.bin
@@ -990,6 +989,7 @@ define Device/teltonika_rut5xx
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Teltonika
   DEVICE_MODEL := RUT5XX
+  DEVICE_PACKAGES := om-watchdog
   SUPPORTED_DEVICES += rut5xx
 endef
 TARGET_DEVICES += teltonika_rut5xx

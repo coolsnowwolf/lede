@@ -17,7 +17,7 @@ define Target/Description
 	Build firmware image for Zynq 7000 SoC devices.
 endef
 
-KERNEL_PATCHVER:=5.10
+KERNEL_PATCHVER:=5.4
 
 include $(INCLUDE_DIR)/target.mk
 

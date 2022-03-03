@@ -104,14 +104,6 @@
         hash->controlr.INIT = 1;  \
     } while(0)
 
-#define MD5_HASH_INIT                  \
-    do {                               \
-        volatile struct deu_hash_t *hash = (struct deu_hash_t *) HASH_START; \
-        hash->controlr.SM = 1;    \
-        hash->controlr.ALGO = 1;  \
-        hash->controlr.INIT = 1;  \
-    } while(0)
-
 /* DEU STRUCTURES */
 
 struct clc_controlr_t {

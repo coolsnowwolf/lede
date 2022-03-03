@@ -38,13 +38,14 @@
   \brief ifx deu sha1 functions
 */
 
+
 /* Project header */
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/crypto.h>
+#include <linux/cryptohash.h>
 #include <crypto/sha.h>
-#include <crypto/hash.h>
 #include <crypto/internal/hash.h>
 #include <linux/types.h>
 #include <linux/scatterlist.h>
@@ -63,6 +64,11 @@
 #define SHA1_DIGEST_SIZE    20
 #define SHA1_HMAC_BLOCK_SIZE    64
 #define HASH_START   IFX_HASH_CON
+
+static spinlock_t lock;
+#define CRTCL_SECT_INIT        spin_lock_init(&lock)
+#define CRTCL_SECT_START       spin_lock_irqsave(&lock, flag)
+#define CRTCL_SECT_END         spin_unlock_irqrestore(&lock, flag)
 
 //#define CRYPTO_DEBUG
 #ifdef CRYPTO_DEBUG
@@ -85,21 +91,20 @@ struct sha1_ctx {
 
 extern int disable_deudma;
 
-/*! \fn static void sha1_transform1 (u32 *state, const u32 *in)
+
+/*! \fn static void sha1_transform (u32 *state, const u32 *in)
  *  \ingroup IFX_SHA1_FUNCTIONS
  *  \brief main interface to sha1 hardware   
  *  \param state current state 
  *  \param in 64-byte block of input  
 */                                 
-static void sha1_transform1 (struct sha1_ctx *sctx, u32 *state, const u32 *in)
+static void sha1_transform (struct sha1_ctx *sctx, u32 *state, const u32 *in)
 {
     int i = 0;
     volatile struct deu_hash_t *hashs = (struct deu_hash_t *) HASH_START;
     unsigned long flag;
 
-    CRTCL_SECT_HASH_START;
-
-    SHA_HASH_INIT;
+    CRTCL_SECT_START;
 
     /* For context switching purposes, the previous hash output
      * is loaded back into the output register 
@@ -132,18 +137,20 @@ static void sha1_transform1 (struct sha1_ctx *sctx, u32 *state, const u32 *in)
 
     sctx->started = 1;
 
-    CRTCL_SECT_HASH_END;
+    CRTCL_SECT_END;
 }
 
-/*! \fn static void sha1_init1(struct crypto_tfm *tfm)
+/*! \fn static void sha1_init(struct crypto_tfm *tfm)
  *  \ingroup IFX_SHA1_FUNCTIONS
  *  \brief initialize sha1 hardware   
  *  \param tfm linux crypto algo transform  
 */                                 
-static int sha1_init1(struct shash_desc *desc)
+static int sha1_init(struct shash_desc *desc)
 {
     struct sha1_ctx *sctx = shash_desc_ctx(desc);
     
+    SHA_HASH_INIT;
+
     sctx->started = 0;
     sctx->count = 0;
     return 0;
@@ -167,9 +174,9 @@ static int sha1_update(struct shash_desc * desc, const u8 *data,
 
     if ((j + len) > 63) {
         memcpy (&sctx->buffer[j], data, (i = 64 - j));
-        sha1_transform1 (sctx, sctx->state, (const u32 *)sctx->buffer);
+        sha1_transform (sctx, sctx->state, (const u32 *)sctx->buffer);
         for (; i + 63 < len; i += 64) {
-            sha1_transform1 (sctx, sctx->state, (const u32 *)&data[i]);
+            sha1_transform (sctx, sctx->state, (const u32 *)&data[i]);
         }
 
         j = 0;
@@ -222,7 +229,15 @@ static int sha1_final(struct shash_desc *desc, u8 *out)
     /* Append length */
     sha1_update (desc, bits, sizeof bits);
 
-    memcpy(out, sctx->hash, SHA1_DIGEST_SIZE);
+    CRTCL_SECT_START;
+
+    *((u32 *) out + 0) = hashs->D1R;
+    *((u32 *) out + 1) = hashs->D2R;
+    *((u32 *) out + 2) = hashs->D3R;
+    *((u32 *) out + 3) = hashs->D4R;
+    *((u32 *) out + 4) = hashs->D5R;
+
+    CRTCL_SECT_END;
 
     // Wipe context
     memset (sctx, 0, sizeof *sctx);
@@ -235,7 +250,7 @@ static int sha1_final(struct shash_desc *desc, u8 *out)
 */
 static struct shash_alg ifxdeu_sha1_alg = {
         .digestsize     =       SHA1_DIGEST_SIZE,
-        .init           =       sha1_init1,
+        .init           =       sha1_init,
         .update         =       sha1_update,
         .final          =       sha1_final,
         .descsize       =       sizeof(struct sha1_ctx),
@@ -244,7 +259,7 @@ static struct shash_alg ifxdeu_sha1_alg = {
                 .cra_name       =       "sha1",
                 .cra_driver_name=       "ifxdeu-sha1",
                 .cra_priority   =       300,
-                .cra_flags      =       CRYPTO_ALG_TYPE_HASH | CRYPTO_ALG_KERN_DRIVER_ONLY,
+                .cra_flags      =       CRYPTO_ALG_TYPE_HASH,
                 .cra_blocksize  =       SHA1_HMAC_BLOCK_SIZE,
                 .cra_module     =       THIS_MODULE,
         }
@@ -262,6 +277,8 @@ int ifxdeu_init_sha1 (void)
 
     if ((ret = crypto_register_shash(&ifxdeu_sha1_alg)))
         goto sha1_err;
+
+    CRTCL_SECT_INIT;
 
     printk (KERN_NOTICE "IFX DEU SHA1 initialized%s.\n", disable_deudma ? "" : " (DMA)");
     return ret;
@@ -281,3 +298,5 @@ void ifxdeu_fini_sha1 (void)
 
 
 }
+
+

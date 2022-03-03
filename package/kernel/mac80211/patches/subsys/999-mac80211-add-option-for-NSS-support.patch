@@ -1,0 +1,261 @@
+--- a/net/mac80211/Kconfig	2019-01-03 21:03:17.839001000 +0800
++++ b/net/mac80211/Kconfig	2019-01-03 21:04:43.931001000 +0800
+@@ -16,6 +16,13 @@
+ 
+ if MAC80211 != n
+ 
++config MAC80211_NSS_SUPPORT
++	bool "Enable NSS support for IPQ platform"
++	default n
++	---help---
++	This option enables support for NSS in boards
++	like AP148.
++
+ config MAC80211_HAS_RC
+ 	bool
+ 
+--- a/local-symbols	2019-01-03 21:24:00.087001000 +0800
++++ b/local-symbols	2019-01-03 21:24:56.535001000 +0800
+@@ -47,6 +47,7 @@ LIB80211_CRYPT_CCMP=
+ LIB80211_CRYPT_TKIP=
+ LIB80211_DEBUG=
+ MAC80211=
++MAC80211_NSS_SUPPORT=
+ MAC80211_HAS_RC=
+ MAC80211_RC_MINSTREL=
+ MAC80211_RC_DEFAULT_MINSTREL=
+--- a/net/mac80211/ieee80211_i.h	2019-01-03 21:04:57.527001000 +0800
++++ b/net/mac80211/ieee80211_i.h	2019-01-03 21:05:44.827001000 +0800
+@@ -35,6 +35,10 @@
+ 
+ extern const struct cfg80211_ops mac80211_config_ops;
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++#include <nss_api_if.h>
++#endif
++
+ struct ieee80211_local;
+ 
+ /* Maximum number of broadcast/multicast frames to buffer when some of the
+@@ -988,6 +992,14 @@ struct ieee80211_sub_if_data {
+ 
+ 	bool hw_80211_encap;
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++	struct nss_virt_if_handle *nssctx;
++
++	struct tasklet_struct ieee80211_nss_rq_tasklet;
++	struct sk_buff_head rq_for_nss;
++	int nss_rq_tasklet_pending;
++#endif
++
+ 	/* must be last, dynamically sized area in this! */
+ 	struct ieee80211_vif vif;
+ };
+--- a/net/mac80211/iface.c	2019-01-03 21:06:00.007001000 +0800
++++ b/net/mac80211/iface.c	2019-01-03 21:08:49.535001000 +0800
+@@ -15,6 +15,7 @@
+ #include <linux/if_arp.h>
+ #include <linux/netdevice.h>
+ #include <linux/rtnetlink.h>
++#include <linux/module.h>
+ #include <net/mac80211.h>
+ #include <net/ieee80211_radiotap.h>
+ #include "ieee80211_i.h"
+@@ -26,6 +27,12 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++bool is_nss_enable = true;
++module_param(is_nss_enable, bool, 0644);
++MODULE_PARM_DESC(is_nss_enable, "NSS enable module param");
++#endif
++
+ /**
+  * DOC: Interface list locking
+  *
+@@ -695,6 +702,96 @@
+ 	ieee80211_teardown_sdata(IEEE80211_DEV_TO_SUB_IF(dev));
+ }
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++#define case_rtn_string(val) case val: return #val
++
++static const char *nss_tx_status_str(nss_tx_status_t status)
++{
++	switch (status) {
++		case_rtn_string(NSS_TX_SUCCESS);
++		case_rtn_string(NSS_TX_FAILURE);
++		case_rtn_string(NSS_TX_FAILURE_QUEUE);
++		case_rtn_string(NSS_TX_FAILURE_NOT_READY);
++		case_rtn_string(NSS_TX_FAILURE_TOO_LARGE);
++		case_rtn_string(NSS_TX_FAILURE_TOO_SHORT);
++		case_rtn_string(NSS_TX_FAILURE_NOT_SUPPORTED);
++		case_rtn_string(NSS_TX_FAILURE_BAD_PARAM);
++		case_rtn_string(NSS_TX_FAILURE_NOT_ENABLED);
++		case_rtn_string(NSS_TX_FAILURE_SYNC_BAD_PARAM);
++		case_rtn_string(NSS_TX_FAILURE_SYNC_TIMEOUT);
++		case_rtn_string(NSS_TX_FAILURE_SYNC_FW_ERR);
++	default:
++		return "Unknown NSS TX status";
++	}
++}
++
++static void ieee80211_nss_rq_tasklet(unsigned long _txp)
++{
++	struct ieee80211_sub_if_data *sdata = (struct ieee80211_sub_if_data *)_txp;
++	struct sk_buff *skb;
++	int ret;
++
++	while ((skb = __skb_dequeue(&sdata->rq_for_nss)) != NULL) {
++		skb_push(skb, ETH_HLEN);
++
++		ret = nss_virt_if_tx_buf(sdata->nssctx, skb);
++		if (unlikely(ret)) {
++			sdata_err(sdata, "NSS TX failed with error[%d]: %s\n", ret,
++				  nss_tx_status_str(ret));
++
++			skb_pull(skb, ETH_HLEN);
++			netif_receive_skb(skb);
++		}
++	}
++
++	skb = skb_peek(&sdata->rq_for_nss);
++	if (!skb) {
++		sdata->nss_rq_tasklet_pending = 0;
++	}
++	else {
++		sdata->nss_rq_tasklet_pending = 1;
++		tasklet_schedule(&sdata->ieee80211_nss_rq_tasklet);
++	}
++}
++
++static int ieee80211_init_nss(struct net_device *dev)
++{
++	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++
++	sdata->nssctx = nss_virt_if_create_sync(dev);
++	if (sdata->nssctx) {
++		sdata_info(sdata, "Created a NSS virtual interface.\n");
++
++		__skb_queue_head_init(&sdata->rq_for_nss);
++		tasklet_init(&sdata->ieee80211_nss_rq_tasklet, ieee80211_nss_rq_tasklet,
++			(unsigned long)sdata);
++		sdata_info(sdata, "RX-Q and tasklet initialized.\n");
++	}
++	else {
++		sdata->nssctx = NULL;
++		sdata_err(sdata, "Failed to create a NSS virtual interface\n");
++	}
++
++	return 0;
++}
++
++static void ieee80211_uninit_nss(struct net_device *dev)
++{
++	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
++
++	ieee80211_uninit(dev);
++
++	if (sdata->nssctx) {
++		nss_virt_if_destroy_sync(sdata->nssctx);
++		sdata_info(sdata, "Destroyed NSS virtual interface\n");
++
++		tasklet_kill(&sdata->ieee80211_nss_rq_tasklet);
++		__skb_queue_purge(&sdata->rq_for_nss);
++		sdata_info(sdata, "RX-Q purged.\n");
++	}
++}
++#endif
++
+ #if LINUX_VERSION_IS_GEQ(5,2,0)
+ static u16 ieee80211_netdev_select_queue(struct net_device *dev,
+ 					 struct sk_buff *skb,
+@@ -742,7 +839,12 @@
+ static const struct net_device_ops ieee80211_dataif_ops = {
+ 	.ndo_open		= ieee80211_open,
+ 	.ndo_stop		= ieee80211_stop,
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++	.ndo_init		= ieee80211_init_nss,
++	.ndo_uninit		= ieee80211_uninit_nss,
++#else
+ 	.ndo_uninit		= ieee80211_uninit,
++#endif
+ 	.ndo_start_xmit		= ieee80211_subif_start_xmit,
+ 	.ndo_set_rx_mode	= ieee80211_set_multicast_list,
+ 	.ndo_set_mac_address 	= ieee80211_change_mac,
+--- a/net/mac80211/rx.c	2019-01-03 21:09:29.503001000 +0800
++++ b/net/mac80211/rx.c	2019-01-03 21:17:42.463001000 +0800
+@@ -32,6 +32,10 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++extern bool is_nss_enable;
++#endif
++
+ static inline void ieee80211_rx_stats(struct net_device *dev, u32 len)
+ {
+ 	struct pcpu_sw_netstats *tstats = this_cpu_ptr(netdev_tstats(dev));
+@@ -2604,6 +2608,21 @@
+ 			ether_addr_copy(ehdr->h_dest, sdata->vif.addr);
+ 
+ 		/* deliver to local stack */
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++		if (likely(is_nss_enable && sdata->nssctx)) {
++			__skb_queue_tail(&sdata->rq_for_nss, skb);
++			if(!sdata->nss_rq_tasklet_pending) {
++				sdata->nss_rq_tasklet_pending = 1;
++				tasklet_schedule(&sdata->ieee80211_nss_rq_tasklet);
++			}
++		}
++		else {
++			if (rx->list)
++				list_add_tail(&skb->list, rx->list);
++			else
++				netif_receive_skb(skb);
++		}
++#else
+ 		if (rx->list)
+ #if LINUX_VERSION_IS_GEQ(4,19,0)
+ 			list_add_tail(&skb->list, rx->list);
+@@ -2612,6 +2631,7 @@
+ #endif
+ 		else
+ 			netif_receive_skb(skb);
++#endif
+ 	}
+ }
+ 
+@@ -4461,6 +4481,21 @@
+ 	/* deliver to local stack */
+ 	skb->protocol = eth_type_trans(skb, fast_rx->dev);
+ 	memset(skb->cb, 0, sizeof(skb->cb));
++#ifdef CPTCFG_MAC80211_NSS_SUPPORT
++	if (likely(is_nss_enable && rx->sdata->nssctx)) {
++		__skb_queue_tail(&rx->sdata->rq_for_nss, skb);
++		if(!rx->sdata->nss_rq_tasklet_pending) {
++			rx->sdata->nss_rq_tasklet_pending = 1;
++			tasklet_schedule(&rx->sdata->ieee80211_nss_rq_tasklet);
++		}
++	}
++	else {
++		if (rx->list)
++			list_add_tail(&skb->list, rx->list);
++		else
++			netif_receive_skb(skb);
++	}
++#else
+ 	if (rx->list)
+ #if LINUX_VERSION_IS_GEQ(4,19,0)
+ 		list_add_tail(&skb->list, rx->list);
+@@ -4469,7 +4504,7 @@
+ #endif
+ 	else
+ 		netif_receive_skb(skb);
+-
++#endif
+ }
+ 
+ static bool ieee80211_invoke_fast_rx(struct ieee80211_rx_data *rx,

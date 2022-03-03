@@ -1,2 +1,0 @@
-BOARDNAME:=Generic
-FEATURES+=emmc

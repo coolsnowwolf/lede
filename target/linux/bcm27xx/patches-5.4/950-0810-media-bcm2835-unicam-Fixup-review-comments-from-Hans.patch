@@ -1,0 +1,242 @@
+From 30351afb528e439a48960443c028b6b9c236c55a Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 23 Jun 2020 15:14:05 +0100
+Subject: [PATCH] media: bcm2835-unicam: Fixup review comments from
+ Hans.
+
+Updates the driver based on the upstream review comments from
+Hans Verkuil at https://patchwork.linuxtv.org/patch/63531/
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/platform/bcm2835/Kconfig        | 12 ++--
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 70 ++++++++-----------
+ 2 files changed, 39 insertions(+), 43 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/Kconfig
++++ b/drivers/media/platform/bcm2835/Kconfig
+@@ -1,15 +1,19 @@
+ # Broadcom VideoCore4 V4L2 camera support
+ 
+ config VIDEO_BCM2835_UNICAM
+-	tristate "Broadcom BCM2835 Unicam video capture driver"
++	tristate "Broadcom BCM283x/BCM271x Unicam video capture driver"
+ 	depends on VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API && MEDIA_CONTROLLER
+ 	depends on ARCH_BCM2835 || COMPILE_TEST
+ 	select VIDEOBUF2_DMA_CONTIG
+ 	select V4L2_FWNODE
+ 	help
+-	  Say Y here to enable support for the BCM2835 CSI-2 receiver. This is a
+-	  V4L2 driver that controls the CSI-2 receiver directly, independently
+-	  from the VC4 firmware.
++	  Say Y here to enable support for the BCM283x/BCM271x CSI-2 receiver.
++	  This is a V4L2 driver that controls the CSI-2 receiver directly,
++	  independently from the VC4 firmware.
++	  This driver is mutually exclusive with the use of bcm2835-camera. The
++	  firmware will disable all access to the peripheral from within the
++	  firmware if it finds a DT node using it, and bcm2835-camera will
++	  therefore fail to probe.
+ 
+ 	  To compile this driver as a module, choose M here. The module will be
+ 	  called bcm2835-unicam.
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -1,6 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ /*
+- * BCM2835 Unicam Capture Driver
++ * BCM283x / BCM271x Unicam Capture Driver
+  *
+  * Copyright (C) 2017-2020 - Raspberry Pi (Trading) Ltd.
+  *
+@@ -554,9 +554,8 @@ static const struct unicam_fmt *find_for
+ 	return NULL;
+ }
+ 
+-static inline unsigned int bytes_per_line(u32 width,
+-					  const struct unicam_fmt *fmt,
+-					  u32 v4l2_fourcc)
++static unsigned int bytes_per_line(u32 width, const struct unicam_fmt *fmt,
++				   u32 v4l2_fourcc)
+ {
+ 	if (v4l2_fourcc == fmt->repacked_fourcc)
+ 		/* Repacking always goes to 16bpp */
+@@ -708,7 +707,7 @@ static void unicam_wr_dma_addr(struct un
+ 	}
+ }
+ 
+-static inline unsigned int unicam_get_lines_done(struct unicam_device *dev)
++static unsigned int unicam_get_lines_done(struct unicam_device *dev)
+ {
+ 	dma_addr_t start_addr, cur_addr;
+ 	unsigned int stride = dev->node[IMAGE_PAD].v_fmt.fmt.pix.bytesperline;
+@@ -722,7 +721,7 @@ static inline unsigned int unicam_get_li
+ 	return (unsigned int)(cur_addr - start_addr) / stride;
+ }
+ 
+-static inline void unicam_schedule_next_buffer(struct unicam_node *node)
++static void unicam_schedule_next_buffer(struct unicam_node *node)
+ {
+ 	struct unicam_device *dev = node->dev;
+ 	struct unicam_buffer *buf;
+@@ -741,7 +740,7 @@ static inline void unicam_schedule_next_
+ 	unicam_wr_dma_addr(dev, addr, size, node->pad_id);
+ }
+ 
+-static inline void unicam_schedule_dummy_buffer(struct unicam_node *node)
++static void unicam_schedule_dummy_buffer(struct unicam_node *node)
+ {
+ 	struct unicam_device *dev = node->dev;
+ 
+@@ -753,8 +752,8 @@ static inline void unicam_schedule_dummy
+ 	node->next_frm = NULL;
+ }
+ 
+-static inline void unicam_process_buffer_complete(struct unicam_node *node,
+-						  unsigned int sequence)
++static void unicam_process_buffer_complete(struct unicam_node *node,
++					   unsigned int sequence)
+ {
+ 	node->cur_frm->vb.field = node->m_fmt.field;
+ 	node->cur_frm->vb.sequence = sequence;
+@@ -762,16 +761,6 @@ static inline void unicam_process_buffer
+ 	vb2_buffer_done(&node->cur_frm->vb.vb2_buf, VB2_BUF_STATE_DONE);
+ }
+ 
+-static bool unicam_all_nodes_streaming(struct unicam_device *dev)
+-{
+-	bool ret;
+-
+-	ret = dev->node[IMAGE_PAD].open && dev->node[IMAGE_PAD].streaming;
+-	ret &= !dev->node[METADATA_PAD].open ||
+-	       dev->node[METADATA_PAD].streaming;
+-	return ret;
+-}
+-
+ static void unicam_queue_event_sof(struct unicam_device *unicam)
+ {
+ 	struct v4l2_event event = {
+@@ -894,8 +883,8 @@ static int unicam_querycap(struct file *
+ 	struct unicam_node *node = video_drvdata(file);
+ 	struct unicam_device *dev = node->dev;
+ 
+-	strlcpy(cap->driver, UNICAM_MODULE_NAME, sizeof(cap->driver));
+-	strlcpy(cap->card, UNICAM_MODULE_NAME, sizeof(cap->card));
++	strscpy(cap->driver, UNICAM_MODULE_NAME, sizeof(cap->driver));
++	strscpy(cap->card, UNICAM_MODULE_NAME, sizeof(cap->card));
+ 
+ 	snprintf(cap->bus_info, sizeof(cap->bus_info),
+ 		 "platform:%s", dev_name(&dev->pdev->dev));
+@@ -988,8 +977,8 @@ static int unicam_g_fmt_vid_cap(struct f
+ 	return 0;
+ }
+ 
+-static
+-const struct unicam_fmt *get_first_supported_format(struct unicam_device *dev)
++static const struct unicam_fmt *
++get_first_supported_format(struct unicam_device *dev)
+ {
+ 	struct v4l2_subdev_mbus_code_enum mbus_code;
+ 	const struct unicam_fmt *fmt = NULL;
+@@ -1579,7 +1568,8 @@ static void unicam_disable(struct unicam
+ 	clk_write(dev, 0);
+ }
+ 
+-static void unicam_return_buffers(struct unicam_node *node)
++static void unicam_return_buffers(struct unicam_node *node,
++				  enum vb2_buffer_state state)
+ {
+ 	struct unicam_buffer *buf, *tmp;
+ 	unsigned long flags;
+@@ -1587,15 +1577,15 @@ static void unicam_return_buffers(struct
+ 	spin_lock_irqsave(&node->dma_queue_lock, flags);
+ 	list_for_each_entry_safe(buf, tmp, &node->dma_queue, list) {
+ 		list_del(&buf->list);
+-		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
++		vb2_buffer_done(&buf->vb.vb2_buf, state);
+ 	}
+ 
+ 	if (node->cur_frm)
+ 		vb2_buffer_done(&node->cur_frm->vb.vb2_buf,
+-				VB2_BUF_STATE_ERROR);
++				state);
+ 	if (node->next_frm && node->cur_frm != node->next_frm)
+ 		vb2_buffer_done(&node->next_frm->vb.vb2_buf,
+-				VB2_BUF_STATE_ERROR);
++				state);
+ 
+ 	node->cur_frm = NULL;
+ 	node->next_frm = NULL;
+@@ -1612,7 +1602,13 @@ static int unicam_start_streaming(struct
+ 	int ret;
+ 
+ 	node->streaming = true;
+-	if (!unicam_all_nodes_streaming(dev)) {
++	if (!(dev->node[IMAGE_PAD].open && dev->node[IMAGE_PAD].streaming &&
++	      (!dev->node[METADATA_PAD].open ||
++	       dev->node[METADATA_PAD].streaming))) {
++		/*
++		 * Metadata pad must be enabled before image pad if it is
++		 * wanted.
++		 */
+ 		unicam_dbg(3, dev, "Not all nodes are streaming yet.");
+ 		return 0;
+ 	}
+@@ -1699,7 +1695,7 @@ err_disable_unicam:
+ err_pm_put:
+ 	unicam_runtime_put(dev);
+ err_streaming:
+-	unicam_return_buffers(node);
++	unicam_return_buffers(node, VB2_BUF_STATE_QUEUED);
+ 	node->streaming = false;
+ 
+ 	return ret;
+@@ -1736,7 +1732,7 @@ static void unicam_stop_streaming(struct
+ 	}
+ 
+ 	/* Clear all queued buffers for the node */
+-	unicam_return_buffers(node);
++	unicam_return_buffers(node, VB2_BUF_STATE_ERROR);
+ }
+ 
+ static int unicam_enum_input(struct file *file, void *priv,
+@@ -1754,14 +1750,13 @@ static int unicam_enum_input(struct file
+ 		inp->std = 0;
+ 	} else if (v4l2_subdev_has_op(dev->sensor, video, s_std)) {
+ 		inp->capabilities = V4L2_IN_CAP_STD;
+-		if (v4l2_subdev_call(dev->sensor, video, g_tvnorms, &inp->std)
+-					< 0)
++		if (v4l2_subdev_call(dev->sensor, video, g_tvnorms, &inp->std) < 0)
+ 			inp->std = V4L2_STD_ALL;
+ 	} else {
+ 		inp->capabilities = 0;
+ 		inp->std = 0;
+ 	}
+-	sprintf(inp->name, "Camera 0");
++	snprintf(inp->name, sizeof(inp->name), "Camera 0");
+ 	return 0;
+ }
+ 
+@@ -1984,6 +1979,9 @@ static int unicam_s_dv_timings(struct fi
+ 	ret = v4l2_subdev_call(dev->sensor, video, g_dv_timings,
+ 			       &current_timings);
+ 
++	if (ret < 0)
++		return ret;
++
+ 	if (v4l2_match_dv_timings(timings, &current_timings, 0, false))
+ 		return 0;
+ 
+@@ -2414,12 +2412,6 @@ static int register_node(struct unicam_d
+ 		unicam_err(unicam, "Unable to allocate dummy buffer.\n");
+ 		return -ENOMEM;
+ 	}
+-
+-	if (pad_id == METADATA_PAD) {
+-		v4l2_disable_ioctl(vdev, VIDIOC_DQEVENT);
+-		v4l2_disable_ioctl(vdev, VIDIOC_SUBSCRIBE_EVENT);
+-		v4l2_disable_ioctl(vdev, VIDIOC_UNSUBSCRIBE_EVENT);
+-	}
+ 	if (pad_id == METADATA_PAD ||
+ 	    !v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
+ 		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_STD);

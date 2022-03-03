@@ -24,6 +24,11 @@ config KERNEL_PRINTK
 	bool "Enable support for printk"
 	default y
 
+config KERNEL_CRASHLOG
+	bool "Crash logging"
+	depends on !(arm || powerpc || sparc || TARGET_uml || i386 || x86_64)
+	default y
+
 config KERNEL_SWAP
 	bool "Support for paging of anonymous memory (swap)"
 	default y if !SMALL_FLASH
@@ -43,7 +48,8 @@ config KERNEL_DEBUG_FS
 
 config KERNEL_MIPS_FP_SUPPORT
 	bool
-	default y if TARGET_pistachio
+	default y
+	depends on (mips || mipsel || mips64 || mips64el)
 
 config KERNEL_ARM_PMU
 	bool
@@ -109,35 +115,12 @@ config KERNEL_UBSAN_ALIGNMENT
 	  Enabling this option on architectures that support unaligned
 	  accesses may produce a lot of false positives.
 
-config KERNEL_UBSAN_BOUNDS
-	bool "Perform array index bounds checking"
-	depends on KERNEL_UBSAN
-	help
-	  This option enables detection of directly indexed out of bounds array
-	  accesses, where the array size is known at compile time. Note that
-	  this does not protect array overflows via bad calls to the
-	  {str,mem}*cpy() family of functions (that is addressed by
-	  FORTIFY_SOURCE).
-
 config KERNEL_UBSAN_NULL
 	bool "Enable checking of null pointers"
 	depends on KERNEL_UBSAN
 	help
 	  This option enables detection of memory accesses via a
 	  null pointer.
-
-config KERNEL_UBSAN_TRAP
-	bool "On Sanitizer warnings, abort the running kernel code"
-	depends on KERNEL_UBSAN
-	help
-	  Building kernels with Sanitizer features enabled tends to grow the
-	  kernel size by around 5%, due to adding all the debugging text on
-	  failure paths. To avoid this, Sanitizer instrumentation can just
-	  issue a trap. This reduces the kernel size overhead but turns all
-	  warnings (including potentially harmless conditions) into full
-	  exceptions that abort the running kernel code (regardless of context,
-	  locks held, etc), which may destabilize the system. For some system
-	  builders this is an acceptable trade-off.
 
 config KERNEL_KASAN
 	bool "Compile the kernel with KASan: runtime memory debugger"
@@ -165,30 +148,6 @@ config KERNEL_KASAN_EXTRA
 	  compile time.
 	  https://gcc.gnu.org/bugzilla/show_bug.cgi?id=81715 has more
 
-config KERNEL_KASAN_VMALLOC
-	bool "Back mappings in vmalloc space with real shadow memory"
-	depends on KERNEL_KASAN
-	help
-	  By default, the shadow region for vmalloc space is the read-only
-	  zero page. This means that KASAN cannot detect errors involving
-	  vmalloc space.
-
-	  Enabling this option will hook in to vmap/vmalloc and back those
-	  mappings with real shadow memory allocated on demand. This allows
-	  for KASAN to detect more sorts of errors (and to support vmapped
-	  stacks), but at the cost of higher memory usage.
-
-	  This option depends on HAVE_ARCH_KASAN_VMALLOC, but we can't
-	  depend on that in here, so it is possible that enabling this
-	  will have no effect.
-
-if KERNEL_KASAN
-	config KERNEL_KASAN_GENERIC
-	def_bool y
-
-	config KERNEL_KASAN_SW_TAGS
-	def_bool n
-endif
 
 choice
 	prompt "Instrumentation type"
@@ -344,19 +303,6 @@ config KERNEL_PREEMPT_TRACER
 	  enabled. This option and the irqs-off timing option can be
 	  used together or separately.)
 
-config KERNEL_HIST_TRIGGERS
-	bool "Histogram triggers"
-	depends on KERNEL_FTRACE
-	help
-	  Hist triggers allow one or more arbitrary trace event fields to be
-	  aggregated into hash tables and dumped to stdout by reading a
-	  debugfs/tracefs file. They're useful for gathering quick and dirty
-	  (though precise) summaries of event activity as an initial guide for
-	  further investigation using more advanced tools.
-
-	  Inter-event tracing of quantities such as latencies is also
-	  supported using hist triggers under this option.
-
 config KERNEL_DEBUG_KERNEL
 	bool
 	default n
@@ -491,22 +437,34 @@ config KERNEL_PROVE_LOCKING
 	select KERNEL_DEBUG_KERNEL
 	default n
 
-config KERNEL_SOFTLOCKUP_DETECTOR
-	bool "Compile the kernel with detect Soft Lockups"
+config KERNEL_LOCKUP_DETECTOR
+	bool "Compile the kernel with detect Hard and Soft Lockups"
 	depends on KERNEL_DEBUG_KERNEL
 	help
 	  Say Y here to enable the kernel to act as a watchdog to detect
-	  soft lockups.
+	  hard and soft lockups.
 
 	  Softlockups are bugs that cause the kernel to loop in kernel
 	  mode for more than 20 seconds, without giving other tasks a
 	  chance to run.  The current stack trace is displayed upon
 	  detection and the system will stay locked up.
 
+	  Hardlockups are bugs that cause the CPU to loop in kernel mode
+	  for more than 10 seconds, without letting other interrupts have a
+	  chance to run.  The current stack trace is displayed upon detection
+	  and the system will stay locked up.
+
+	  The overhead should be minimal.  A periodic hrtimer runs to
+	  generate interrupts and kick the watchdog task every 4 seconds.
+	  An NMI is generated every 10 seconds or so to check for hardlockups.
+
+	  The frequency of hrtimer and NMI events and the soft and hard lockup
+	  thresholds can be controlled through the sysctl watchdog_thresh.
+
 config KERNEL_DETECT_HUNG_TASK
 	bool "Compile the kernel with detect Hung Tasks"
 	depends on KERNEL_DEBUG_KERNEL
-	default KERNEL_SOFTLOCKUP_DETECTOR
+	default KERNEL_LOCKUP_DETECTOR
 	help
 	  Say Y here to enable the kernel to detect "hung tasks",
 	  which are bugs that cause the task to be stuck in
@@ -986,19 +944,6 @@ config KERNEL_IP_MROUTE
 	  Multicast routing requires a multicast routing daemon in
 	  addition to kernel support.
 
-if KERNEL_IP_MROUTE
-
-	config KERNEL_IP_MROUTE_MULTIPLE_TABLES
-		def_bool y
-
-	config KERNEL_IP_PIMSM_V1
-		def_bool y
-
-	config KERNEL_IP_PIMSM_V2
-		def_bool y
-
-endif
-
 #
 # IPv6 configuration
 #
@@ -1021,15 +966,8 @@ if KERNEL_IPV6
 		  Multicast routing requires a multicast routing daemon in
 		  addition to kernel support.
 
-	if KERNEL_IPV6_MROUTE
-
-		config KERNEL_IPV6_MROUTE_MULTIPLE_TABLES
-			def_bool y
-
-		config KERNEL_IPV6_PIMSM_V2
-			def_bool y
-
-	endif
+	config KERNEL_IPV6_PIMSM_V2
+		def_bool n
 
 	config KERNEL_IPV6_SEG6_LWTUNNEL
 		bool "Enable support for lightweight tunnels"
@@ -1041,16 +979,6 @@ if KERNEL_IPV6
 		def_bool n
 
 endif
-
-#
-# Miscellaneous network configuration
-#
-
-config KERNEL_NET_L3_MASTER_DEV
-	bool "L3 Master device support"
-	help
-	  This module provides glue between core networking code and device
-	  drivers to support L3 master devices like VRF.
 
 #
 # NFS related symbols
@@ -1197,7 +1125,7 @@ config KERNEL_SQUASHFS_XATTR
 	bool "Squashfs XATTR support"
 
 #
-# compile optimization setting
+# compile optimiziation setting
 #
 choice
 	prompt "Compiler optimization level"

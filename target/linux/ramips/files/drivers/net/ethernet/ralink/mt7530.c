@@ -37,7 +37,11 @@
 
 #define MT7530_CPU_PORT		6
 #define MT7530_NUM_PORTS	8
+#ifdef CONFIG_SOC_MT7621
+#define MT7530_NUM_VLANS	4095
+#else
 #define MT7530_NUM_VLANS	16
+#endif
 #define MT7530_MAX_VID		4095
 #define MT7530_MIN_VID		0
 #define MT7530_NUM_ARL_RECORDS 2048
@@ -45,6 +49,9 @@
 
 #define MT7530_PORT_MIB_TXB_ID	2	/* TxGOC */
 #define MT7530_PORT_MIB_RXB_ID	6	/* RxGOC */
+
+#define MT7621_PORT_MIB_TXB_ID	18	/* TxByte */
+#define MT7621_PORT_MIB_RXB_ID	37	/* RxByte */
 
 /* registers */
 #define REG_ESW_WT_MAC_MFC		0x10
@@ -152,6 +159,50 @@ static const struct mt7xxx_mib_desc mt7620_port_mibs[] = {
 	MIB_DESC(1, MT7620_MIB_STATS_PORT_REPC2N, "RxEPC2")
 };
 
+static const struct mt7xxx_mib_desc mt7621_mibs[] = {
+	MIB_DESC(1, MT7621_STATS_TDPC, "TxDrop"),
+	MIB_DESC(1, MT7621_STATS_TCRC, "TxCRC"),
+	MIB_DESC(1, MT7621_STATS_TUPC, "TxUni"),
+	MIB_DESC(1, MT7621_STATS_TMPC, "TxMulti"),
+	MIB_DESC(1, MT7621_STATS_TBPC, "TxBroad"),
+	MIB_DESC(1, MT7621_STATS_TCEC, "TxCollision"),
+	MIB_DESC(1, MT7621_STATS_TSCEC, "TxSingleCol"),
+	MIB_DESC(1, MT7621_STATS_TMCEC, "TxMultiCol"),
+	MIB_DESC(1, MT7621_STATS_TDEC, "TxDefer"),
+	MIB_DESC(1, MT7621_STATS_TLCEC, "TxLateCol"),
+	MIB_DESC(1, MT7621_STATS_TXCEC, "TxExcCol"),
+	MIB_DESC(1, MT7621_STATS_TPPC, "TxPause"),
+	MIB_DESC(1, MT7621_STATS_TL64PC, "Tx64Byte"),
+	MIB_DESC(1, MT7621_STATS_TL65PC, "Tx65Byte"),
+	MIB_DESC(1, MT7621_STATS_TL128PC, "Tx128Byte"),
+	MIB_DESC(1, MT7621_STATS_TL256PC, "Tx256Byte"),
+	MIB_DESC(1, MT7621_STATS_TL512PC, "Tx512Byte"),
+	MIB_DESC(1, MT7621_STATS_TL1024PC, "Tx1024Byte"),
+	MIB_DESC(2, MT7621_STATS_TOC, "TxByte"),
+	MIB_DESC(1, MT7621_STATS_RDPC, "RxDrop"),
+	MIB_DESC(1, MT7621_STATS_RFPC, "RxFiltered"),
+	MIB_DESC(1, MT7621_STATS_RUPC, "RxUni"),
+	MIB_DESC(1, MT7621_STATS_RMPC, "RxMulti"),
+	MIB_DESC(1, MT7621_STATS_RBPC, "RxBroad"),
+	MIB_DESC(1, MT7621_STATS_RAEPC, "RxAlignErr"),
+	MIB_DESC(1, MT7621_STATS_RCEPC, "RxCRC"),
+	MIB_DESC(1, MT7621_STATS_RUSPC, "RxUnderSize"),
+	MIB_DESC(1, MT7621_STATS_RFEPC, "RxFragment"),
+	MIB_DESC(1, MT7621_STATS_ROSPC, "RxOverSize"),
+	MIB_DESC(1, MT7621_STATS_RJEPC, "RxJabber"),
+	MIB_DESC(1, MT7621_STATS_RPPC, "RxPause"),
+	MIB_DESC(1, MT7621_STATS_RL64PC, "Rx64Byte"),
+	MIB_DESC(1, MT7621_STATS_RL65PC, "Rx65Byte"),
+	MIB_DESC(1, MT7621_STATS_RL128PC, "Rx128Byte"),
+	MIB_DESC(1, MT7621_STATS_RL256PC, "Rx256Byte"),
+	MIB_DESC(1, MT7621_STATS_RL512PC, "Rx512Byte"),
+	MIB_DESC(1, MT7621_STATS_RL1024PC, "Rx1024Byte"),
+	MIB_DESC(2, MT7621_STATS_ROC, "RxByte"),
+	MIB_DESC(1, MT7621_STATS_RDPC_CTRL, "RxCtrlDrop"),
+	MIB_DESC(1, MT7621_STATS_RDPC_ING, "RxIngDrop"),
+	MIB_DESC(1, MT7621_STATS_RDPC_ARL, "RxARLDrop")
+};
+
 enum {
 	/* Global attributes. */
 	MT7530_ATTR_ENABLE_VLAN,
@@ -173,6 +224,9 @@ struct mt7530_priv {
 	void __iomem		*base;
 	struct mii_bus		*bus;
 	struct switch_dev	swdev;
+
+	/* protect among processes for registers access*/
+	struct mutex reg_mutex;
 
 	u8			mirror_dest_port;
 	bool			global_vlan_enable;
@@ -348,8 +402,12 @@ mt7530_get_port_pvid(struct switch_dev *dev, int port, int *val)
 	if (port >= MT7530_NUM_PORTS)
 		return -EINVAL;
 
+	mutex_lock(&priv->reg_mutex);
+
 	*val = mt7530_r32(priv, REG_ESW_PORT_PPBV1(port));
 	*val &= 0xfff;
+
+	mutex_unlock(&priv->reg_mutex);
 
 	return 0;
 }
@@ -383,6 +441,8 @@ mt7530_get_vlan_ports(struct switch_dev *dev, struct switch_val *val)
 	if (val->port_vlan < 0 || val->port_vlan >= MT7530_NUM_VLANS)
 		return -EINVAL;
 
+	mutex_lock(&priv->reg_mutex);
+
 	mt7530_vtcr(priv, 0, val->port_vlan);
 
 	member = mt7530_r32(priv, REG_ESW_VLAN_VAWD1);
@@ -409,6 +469,8 @@ mt7530_get_vlan_ports(struct switch_dev *dev, struct switch_val *val)
 			printk("vlan %d port %d egress tag control neither untag nor tag: %d.\n",
 					val->port_vlan, i, etag);
 	}
+
+	mutex_unlock(&priv->reg_mutex);
 
 	return 0;
 }
@@ -464,12 +526,22 @@ mt7530_set_vid(struct switch_dev *dev, const struct switch_attr *attr,
 }
 
 static int
+mt7621_get_vid(struct switch_dev *dev, const struct switch_attr *attr,
+		struct switch_val *val)
+{
+	val->value.i = val->port_vlan;
+	return 0;
+}
+
+static int
 mt7530_get_vid(struct switch_dev *dev, const struct switch_attr *attr,
 		struct switch_val *val)
 {
 	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
 	u32 vid;
 	int vlan;
+
+	mutex_lock(&priv->reg_mutex);
 
 	vlan = val->port_vlan;
 
@@ -479,6 +551,9 @@ mt7530_get_vid(struct switch_dev *dev, const struct switch_attr *attr,
 	vid &= 0xfff;
 
 	val->value.i = vid;
+
+	mutex_unlock(&priv->reg_mutex);
+
 	return 0;
 }
 
@@ -555,6 +630,7 @@ mt7530_write_vlan_entry(struct mt7530_priv *priv, int vlan, u16 vid,
 	int port;
 	u32 val;
 
+#ifndef CONFIG_SOC_MT7621
 	/* vid of vlan */
 	val = mt7530_r32(priv, REG_ESW_VLAN_VTIM(vlan));
 	if (vlan % 2 == 0) {
@@ -565,6 +641,7 @@ mt7530_write_vlan_entry(struct mt7530_priv *priv, int vlan, u16 vid,
 		val |= (vid << 12);
 	}
 	mt7530_w32(priv, REG_ESW_VLAN_VTIM(vlan), val);
+#endif
 
 	/* vlan port membership */
 	if (ports)
@@ -585,7 +662,11 @@ mt7530_write_vlan_entry(struct mt7530_priv *priv, int vlan, u16 vid,
 	mt7530_w32(priv, REG_ESW_VLAN_VAWD2, val);
 
 	/* write to vlan table */
+#ifdef CONFIG_SOC_MT7621
+	mt7530_vtcr(priv, 1, vid);
+#else
 	mt7530_vtcr(priv, 1, vlan);
+#endif
 }
 
 static int
@@ -597,6 +678,8 @@ mt7530_apply_config(struct switch_dev *dev)
 	u8 untag_ports;
 	bool is_mirror = false;
 
+	mutex_lock(&priv->reg_mutex);
+
 	if (!priv->global_vlan_enable) {
 		for (i = 0; i < MT7530_NUM_PORTS; i++)
 			mt7530_w32(priv, REG_ESW_PORT_PCR(i), 0x00400000);
@@ -606,6 +689,7 @@ mt7530_apply_config(struct switch_dev *dev)
 		for (i = 0; i < MT7530_NUM_PORTS; i++)
 			mt7530_w32(priv, REG_ESW_PORT_PVC(i), 0x810000c0);
 
+		mutex_unlock(&priv->reg_mutex);
 		return 0;
 	}
 
@@ -700,6 +784,8 @@ mt7530_apply_config(struct switch_dev *dev)
 		mt7530_w32(priv, REG_ESW_WT_MAC_MFC, val);
 	}
 
+	mutex_unlock(&priv->reg_mutex);
+
 	return 0;
 }
 
@@ -712,6 +798,8 @@ mt7530_get_port_link(struct switch_dev *dev,  int port,
 
 	if (port < 0 || port >= MT7530_NUM_PORTS)
 		return -EINVAL;
+
+	mutex_lock(&priv->reg_mutex);
 
 	pmsr = mt7530_r32(priv, 0x3008 + (0x100 * port));
 
@@ -734,6 +822,60 @@ mt7530_get_port_link(struct switch_dev *dev,  int port,
 		link->speed = SWITCH_PORT_SPEED_UNKNOWN;
 		break;
 	}
+
+	mutex_unlock(&priv->reg_mutex);
+
+	return 0;
+}
+
+static u64 get_mib_counter(struct mt7530_priv *priv, int i, int port)
+{
+	unsigned int port_base;
+	u64 lo;
+
+	port_base = MT7621_MIB_COUNTER_BASE +
+		    MT7621_MIB_COUNTER_PORT_OFFSET * port;
+
+	lo = mt7530_r32(priv, port_base + mt7621_mibs[i].offset);
+	if (mt7621_mibs[i].size == 2) {
+		u64 hi;
+
+		hi = mt7530_r32(priv, port_base + mt7621_mibs[i].offset + 4);
+		lo |= hi << 32;
+	}
+
+	return lo;
+}
+
+static int mt7621_sw_get_port_mib(struct switch_dev *dev,
+				  const struct switch_attr *attr,
+				  struct switch_val *val)
+{
+	static char buf[4096];
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+	int i, len = 0;
+
+	if (val->port_vlan >= MT7530_NUM_PORTS)
+		return -EINVAL;
+
+	mutex_lock(&priv->reg_mutex);
+
+	len += snprintf(buf + len, sizeof(buf) - len,
+			"Port %d MIB counters\n", val->port_vlan);
+
+	for (i = 0; i < ARRAY_SIZE(mt7621_mibs); ++i) {
+		u64 counter;
+		len += snprintf(buf + len, sizeof(buf) - len,
+				"%-11s: ", mt7621_mibs[i].name);
+		counter = get_mib_counter(priv, i, val->port_vlan);
+		len += snprintf(buf + len, sizeof(buf) - len, "%llu\n",
+				counter);
+	}
+
+	val->value.s = buf;
+	val->len = len;
+
+	mutex_unlock(&priv->reg_mutex);
 
 	return 0;
 }
@@ -759,6 +901,8 @@ static int mt7530_sw_get_mib(struct switch_dev *dev,
 	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
 	int i, len = 0;
 
+	mutex_lock(&priv->reg_mutex);
+
 	len += snprintf(buf + len, sizeof(buf) - len, "Switch MIB counters\n");
 
 	for (i = 0; i < ARRAY_SIZE(mt7620_mibs); ++i) {
@@ -772,6 +916,9 @@ static int mt7530_sw_get_mib(struct switch_dev *dev,
 
 	val->value.s = buf;
 	val->len = len;
+
+	mutex_unlock(&priv->reg_mutex);
+
 	return 0;
 }
 
@@ -820,6 +967,8 @@ static int mt7530_get_arl_table(struct switch_dev *dev,
 	int ret;
 	u32 atc;
 
+	mutex_lock(&priv->reg_mutex);
+
 	ret = snprintf(buf, size, "address resolution table\n");
 	if (ret >= size || ret <= 0) {
 		priv->arl_buf[0] = 0;
@@ -866,6 +1015,8 @@ out:
 	val->value.s = priv->arl_buf;
 	val->len = strlen(priv->arl_buf);
 
+	mutex_unlock(&priv->reg_mutex);
+
 	return 0;
 }
 
@@ -879,6 +1030,8 @@ static int mt7530_sw_get_port_mib(struct switch_dev *dev,
 
 	if (val->port_vlan >= MT7530_NUM_PORTS)
 		return -EINVAL;
+
+	mutex_lock(&priv->reg_mutex);
 
 	len += snprintf(buf + len, sizeof(buf) - len,
 			"Port %d MIB counters\n", val->port_vlan);
@@ -894,6 +1047,9 @@ static int mt7530_sw_get_port_mib(struct switch_dev *dev,
 
 	val->value.s = buf;
 	val->len = len;
+
+	mutex_unlock(&priv->reg_mutex);
+
 	return 0;
 }
 
@@ -905,8 +1061,30 @@ static int mt7530_get_port_stats(struct switch_dev *dev, int port,
 	if (port < 0 || port >= MT7530_NUM_PORTS)
 		return -EINVAL;
 
+	mutex_lock(&priv->reg_mutex);
+
 	stats->tx_bytes = get_mib_counter_port_7620(priv, MT7530_PORT_MIB_TXB_ID, port);
 	stats->rx_bytes = get_mib_counter_port_7620(priv, MT7530_PORT_MIB_RXB_ID, port);
+
+	mutex_unlock(&priv->reg_mutex);
+
+	return 0;
+}
+
+static int mt7621_get_port_stats(struct switch_dev *dev, int port,
+					struct switch_port_stats *stats)
+{
+	struct mt7530_priv *priv = container_of(dev, struct mt7530_priv, swdev);
+
+	if (port < 0 || port >= MT7530_NUM_PORTS)
+		return -EINVAL;
+
+	mutex_lock(&priv->reg_mutex);
+
+	stats->tx_bytes = get_mib_counter(priv, MT7621_PORT_MIB_TXB_ID, port);
+	stats->rx_bytes = get_mib_counter(priv, MT7621_PORT_MIB_RXB_ID, port);
+
+	mutex_unlock(&priv->reg_mutex);
 
 	return 0;
 }
@@ -943,6 +1121,41 @@ static const struct switch_attr mt7530_global[] = {
 	},
 };
 
+static const struct switch_attr mt7621_port[] = {
+	{
+		.type = SWITCH_TYPE_STRING,
+		.name = "mib",
+		.description = "Get MIB counters for port",
+		.get = mt7621_sw_get_port_mib,
+		.set = NULL,
+	}, {
+		.type = SWITCH_TYPE_INT,
+		.name = "enable_mirror_rx",
+		.description = "Enable mirroring of RX packets",
+		.set = mt7530_set_port_mirror_rx,
+		.get = mt7530_get_port_mirror_rx,
+		.max = 1,
+	}, {
+		.type = SWITCH_TYPE_INT,
+		.name = "enable_mirror_tx",
+		.description = "Enable mirroring of TX packets",
+		.set = mt7530_set_port_mirror_tx,
+		.get = mt7530_get_port_mirror_tx,
+		.max = 1,
+	},
+};
+
+static const struct switch_attr mt7621_vlan[] = {
+	{
+		.type = SWITCH_TYPE_INT,
+		.name = "vid",
+		.description = "VLAN ID (0-4094)",
+		.set = mt7530_set_vid,
+		.get = mt7621_get_vid,
+		.max = 4094,
+	},
+};
+
 static const struct switch_attr mt7530_port[] = {
 	{
 		.type = SWITCH_TYPE_STRING,
@@ -976,6 +1189,29 @@ static const struct switch_attr mt7530_vlan[] = {
 		.get = mt7530_get_vid,
 		.max = 4094,
 	},
+};
+
+static const struct switch_dev_ops mt7621_ops = {
+	.attr_global = {
+		.attr = mt7530_global,
+		.n_attr = ARRAY_SIZE(mt7530_global),
+	},
+	.attr_port = {
+		.attr = mt7621_port,
+		.n_attr = ARRAY_SIZE(mt7621_port),
+	},
+	.attr_vlan = {
+		.attr = mt7621_vlan,
+		.n_attr = ARRAY_SIZE(mt7621_vlan),
+	},
+	.get_vlan_ports = mt7530_get_vlan_ports,
+	.set_vlan_ports = mt7530_set_vlan_ports,
+	.get_port_pvid = mt7530_get_port_pvid,
+	.set_port_pvid = mt7530_set_port_pvid,
+	.get_port_link = mt7530_get_port_link,
+	.get_port_stats = mt7621_get_port_stats,
+	.apply_config = mt7530_apply_config,
+	.reset_switch = mt7530_reset_switch,
 };
 
 static const struct switch_dev_ops mt7530_ops = {
@@ -1017,10 +1253,15 @@ mt7530_probe(struct device *dev, void __iomem *base, struct mii_bus *bus, int vl
 	mt7530->bus = bus;
 	mt7530->global_vlan_enable = vlan;
 
+	mutex_init(&mt7530->reg_mutex);
+
 	swdev = &mt7530->swdev;
 	if (bus) {
 		swdev->alias = "mt7530";
 		swdev->name = "mt7530";
+	} else if (IS_ENABLED(CONFIG_SOC_MT7621)) {
+		swdev->alias = "mt7621";
+		swdev->name = "mt7621";
 	} else {
 		swdev->alias = "mt7620";
 		swdev->name = "mt7620";
@@ -1028,14 +1269,17 @@ mt7530_probe(struct device *dev, void __iomem *base, struct mii_bus *bus, int vl
 	swdev->cpu_port = MT7530_CPU_PORT;
 	swdev->ports = MT7530_NUM_PORTS;
 	swdev->vlans = MT7530_NUM_VLANS;
-	swdev->ops = &mt7530_ops;
+	if (IS_ENABLED(CONFIG_SOC_MT7621))
+		swdev->ops = &mt7621_ops;
+	else
+		swdev->ops = &mt7530_ops;
 
 	ret = register_switch(swdev, NULL);
 	if (ret) {
 		dev_err(dev, "failed to register mt7530\n");
+		mutex_destroy(&mt7530->reg_mutex);
 		return ret;
 	}
-
 
 	map = mt7530_find_mapping(dev->of_node);
 	if (map)
@@ -1043,7 +1287,7 @@ mt7530_probe(struct device *dev, void __iomem *base, struct mii_bus *bus, int vl
 	mt7530_apply_config(swdev);
 
 	/* magic vodoo */
-	if (bus && mt7530_r32(mt7530, REG_HWTRAP) !=  0x1117edf) {
+	if (!IS_ENABLED(CONFIG_SOC_MT7621) && bus && mt7530_r32(mt7530, REG_HWTRAP) !=  0x1117edf) {
 		dev_info(dev, "fixing up MHWTRAP register - bootloader probably played with it\n");
 		mt7530_w32(mt7530, REG_HWTRAP, 0x1117edf);
 	}

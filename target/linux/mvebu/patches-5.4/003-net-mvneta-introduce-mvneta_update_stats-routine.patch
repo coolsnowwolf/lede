@@ -1,0 +1,95 @@
+From ff519e2acd463bff6c5bb4e8d7ed350c9bae885b Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 19 Oct 2019 10:13:21 +0200
+Subject: [PATCH 1/7] net: mvneta: introduce mvneta_update_stats routine
+
+Introduce mvneta_update_stats routine to collect {rx/tx} statistics
+(packets and bytes). This is a preliminary patch to add XDP support to
+mvneta driver
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/marvell/mvneta.c | 43 ++++++++++++++-------------
+ 1 file changed, 22 insertions(+), 21 deletions(-)
+
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -1913,6 +1913,23 @@ static void mvneta_rxq_drop_pkts(struct
+ 	}
+ }
+ 
++static void
++mvneta_update_stats(struct mvneta_port *pp, u32 pkts,
++		    u32 len, bool tx)
++{
++	struct mvneta_pcpu_stats *stats = this_cpu_ptr(pp->stats);
++
++	u64_stats_update_begin(&stats->syncp);
++	if (tx) {
++		stats->tx_packets += pkts;
++		stats->tx_bytes += len;
++	} else {
++		stats->rx_packets += pkts;
++		stats->rx_bytes += len;
++	}
++	u64_stats_update_end(&stats->syncp);
++}
++
+ static inline
+ int mvneta_rx_refill_queue(struct mvneta_port *pp, struct mvneta_rx_queue *rxq)
+ {
+@@ -2093,14 +2110,8 @@ static int mvneta_rx_swbm(struct napi_st
+ 		rxq->left_size = 0;
+ 	}
+ 
+-	if (rcvd_pkts) {
+-		struct mvneta_pcpu_stats *stats = this_cpu_ptr(pp->stats);
+-
+-		u64_stats_update_begin(&stats->syncp);
+-		stats->rx_packets += rcvd_pkts;
+-		stats->rx_bytes   += rcvd_bytes;
+-		u64_stats_update_end(&stats->syncp);
+-	}
++	if (rcvd_pkts)
++		mvneta_update_stats(pp, rcvd_pkts, rcvd_bytes, false);
+ 
+ 	/* return some buffers to hardware queue, one at a time is too slow */
+ 	refill = mvneta_rx_refill_queue(pp, rxq);
+@@ -2223,14 +2234,8 @@ err_drop_frame:
+ 		napi_gro_receive(napi, skb);
+ 	}
+ 
+-	if (rcvd_pkts) {
+-		struct mvneta_pcpu_stats *stats = this_cpu_ptr(pp->stats);
+-
+-		u64_stats_update_begin(&stats->syncp);
+-		stats->rx_packets += rcvd_pkts;
+-		stats->rx_bytes   += rcvd_bytes;
+-		u64_stats_update_end(&stats->syncp);
+-	}
++	if (rcvd_pkts)
++		mvneta_update_stats(pp, rcvd_pkts, rcvd_bytes, false);
+ 
+ 	/* Update rxq management counters */
+ 	mvneta_rxq_desc_num_update(pp, rxq, rx_done, rx_done);
+@@ -2476,7 +2481,6 @@ static netdev_tx_t mvneta_tx(struct sk_b
+ 
+ out:
+ 	if (frags > 0) {
+-		struct mvneta_pcpu_stats *stats = this_cpu_ptr(pp->stats);
+ 		struct netdev_queue *nq = netdev_get_tx_queue(dev, txq_id);
+ 
+ 		netdev_tx_sent_queue(nq, len);
+@@ -2491,10 +2495,7 @@ out:
+ 		else
+ 			txq->pending += frags;
+ 
+-		u64_stats_update_begin(&stats->syncp);
+-		stats->tx_packets++;
+-		stats->tx_bytes  += len;
+-		u64_stats_update_end(&stats->syncp);
++		mvneta_update_stats(pp, 1, len, true);
+ 	} else {
+ 		dev->stats.tx_dropped++;
+ 		dev_kfree_skb_any(skb);

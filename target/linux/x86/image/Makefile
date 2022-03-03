@@ -107,6 +107,7 @@ define Device/Default
   ARTIFACT/image.iso := grub-config iso | iso
   IMAGE/combined.img := grub-config pc | combined | grub-install | append-metadata
   IMAGE/combined.img.gz := grub-config pc | combined | grub-install | gzip | append-metadata
+  IMAGE/combined.qcow2 := grub-config pc | combined | grub-install | qemu-image qcow2
   IMAGE/combined.vdi := grub-config pc | combined | grub-install | qemu-image vdi
   IMAGE/combined.vmdk := grub-config pc | combined | grub-install | qemu-image vmdk
   IMAGE/combined.vhdx := grub-config pc | combined | grub-install | qemu-image vhdx -o subformat=dynamic
@@ -115,6 +116,7 @@ define Device/Default
   ARTIFACT/image-efi.iso := grub-config iso | iso efi
   IMAGE/combined-efi.img := grub-config efi | combined efi | grub-install efi | append-metadata
   IMAGE/combined-efi.img.gz := grub-config efi | combined efi | grub-install efi | gzip | append-metadata
+  IMAGE/combined-efi.qcow2 := grub-config efi | combined efi | grub-install efi | qemu-image qcow2
   IMAGE/combined-efi.vdi := grub-config efi | combined efi | grub-install efi | qemu-image vdi
   IMAGE/combined-efi.vmdk := grub-config efi | combined efi | grub-install efi | qemu-image vmdk
   IMAGE/combined-efi.vhdx := grub-config efi | combined efi | grub-install efi | qemu-image vhdx -o subformat=dynamic
@@ -133,6 +135,10 @@ define Device/Default
   ifeq ($(CONFIG_ISO_IMAGES),y)
     ARTIFACTS-$$(CONFIG_GRUB_IMAGES) += image.iso
     ARTIFACTS-$$(CONFIG_GRUB_EFI_IMAGES) += image-efi.iso
+  endif
+  ifeq ($(CONFIG_QCOW2_IMAGES),y)
+    IMAGES-$$(CONFIG_GRUB_IMAGES) += combined.qcow2
+    IMAGES-$$(CONFIG_GRUB_EFI_IMAGES) += combined-efi.qcow2
   endif
   ifeq ($(CONFIG_VDI_IMAGES),y)
     IMAGES-$$(CONFIG_GRUB_IMAGES) += combined.vdi

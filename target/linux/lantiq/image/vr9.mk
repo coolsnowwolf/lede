@@ -1,12 +1,6 @@
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_HW_ID
 
-define Device/dsa-migration
-  DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA
-endef
-
 define Device/alphanetworks_asl56026
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Alpha
   DEVICE_MODEL := ASL56026
   DEVICE_ALT0_VENDOR := BT Openreach
@@ -16,7 +10,6 @@ endef
 TARGET_DEVICES += alphanetworks_asl56026
 
 define Device/arcadyan_arv7519rw22
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Arcadyan
   DEVICE_MODEL := ARV7519RW22
   DEVICE_ALT0_VENDOR := Orange
@@ -33,7 +26,6 @@ endef
 TARGET_DEVICES += arcadyan_arv7519rw22
 
 define Device/arcadyan_vg3503j
-  $(Device/dsa-migration)
   DEVICE_VENDOR := BT Openreach
   DEVICE_MODEL := ECI VDSL Modem V-2FUb/R
   IMAGE_SIZE := 8000k
@@ -42,7 +34,6 @@ endef
 TARGET_DEVICES += arcadyan_vg3503j
 
 define Device/arcadyan_vgv7510kw22-brn
-  $(Device/dsa-migration)
   $(Device/lantiqBrnImage)
   DEVICE_VENDOR := Arcadyan
   DEVICE_MODEL := VGV7510KW22
@@ -60,7 +51,6 @@ endef
 TARGET_DEVICES += arcadyan_vgv7510kw22-brn
 
 define Device/arcadyan_vgv7510kw22-nor
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Arcadyan
   DEVICE_MODEL := VGV7510KW22
   DEVICE_VARIANT := NOR
@@ -74,7 +64,6 @@ endef
 TARGET_DEVICES += arcadyan_vgv7510kw22-nor
 
 define Device/arcadyan_vgv7519-brn
-  $(Device/dsa-migration)
   $(Device/lantiqBrnImage)
   DEVICE_VENDOR := Arcadyan
   DEVICE_MODEL := VGV7519
@@ -92,7 +81,6 @@ endef
 TARGET_DEVICES += arcadyan_vgv7519-brn
 
 define Device/arcadyan_vgv7519-nor
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Arcadyan
   DEVICE_MODEL := VGV7519
   DEVICE_VARIANT := NOR
@@ -106,7 +94,6 @@ endef
 TARGET_DEVICES += arcadyan_vgv7519-nor
 
 define Device/avm_fritz3370
-  $(Device/dsa-migration)
   $(Device/AVM)
   $(Device/NAND)
   DEVICE_MODEL := FRITZ!Box 3370
@@ -120,7 +107,6 @@ define Device/avm_fritz3370
 endef
 
 define Device/avm_fritz3370-rev2-hynix
-  $(Device/dsa-migration)
   $(Device/avm_fritz3370)
   DEVICE_MODEL := FRITZ!Box 3370
   DEVICE_VARIANT := Rev. 2 (Hynix NAND)
@@ -128,7 +114,6 @@ endef
 TARGET_DEVICES += avm_fritz3370-rev2-hynix
 
 define Device/avm_fritz3370-rev2-micron
-  $(Device/dsa-migration)
   $(Device/avm_fritz3370)
   DEVICE_MODEL := FRITZ!Box 3370
   DEVICE_VARIANT := Rev. 2 (Micron NAND)
@@ -136,7 +121,6 @@ endef
 TARGET_DEVICES += avm_fritz3370-rev2-micron
 
 define Device/avm_fritz3390
-  $(Device/dsa-migration)
   $(Device/AVM)
   $(Device/NAND)
   DEVICE_MODEL := FRITZ!Box 3390
@@ -148,7 +132,6 @@ endef
 TARGET_DEVICES += avm_fritz3390
 
 define Device/avm_fritz7360sl
-  $(Device/dsa-migration)
   $(Device/AVM)
   DEVICE_MODEL := FRITZ!Box 7360 SL
   IMAGE_SIZE := 15744k
@@ -158,7 +141,6 @@ endef
 TARGET_DEVICES += avm_fritz7360sl
 
 define Device/avm_fritz7360-v2
-  $(Device/dsa-migration)
   $(Device/AVM)
   DEVICE_MODEL := FRITZ!Box 7360
   DEVICE_VARIANT := v2
@@ -168,7 +150,6 @@ endef
 TARGET_DEVICES += avm_fritz7360-v2
 
 define Device/avm_fritz7362sl
-  $(Device/dsa-migration)
   $(Device/AVM)
   $(Device/NAND)
   DEVICE_MODEL := FRITZ!Box 7362 SL
@@ -179,7 +160,6 @@ endef
 TARGET_DEVICES += avm_fritz7362sl
 
 define Device/avm_fritz7412
-  $(Device/dsa-migration)
   $(Device/AVM)
   $(Device/NAND)
   DEVICE_MODEL := FRITZ!Box 7412
@@ -191,7 +171,6 @@ endef
 TARGET_DEVICES += avm_fritz7412
 
 define Device/avm_fritz7430
-  $(Device/dsa-migration)
   $(Device/AVM)
   $(Device/NAND)
   DEVICE_MODEL := FRITZ!Box 7430
@@ -202,9 +181,8 @@ endef
 TARGET_DEVICES += avm_fritz7430
 
 define Device/bt_homehub-v5a
-  $(Device/dsa-migration)
   $(Device/NAND)
-  DEVICE_VENDOR := British Telecom (BT)
+  DEVICE_VENDOR := British Telecom
   DEVICE_MODEL := Home Hub 5
   DEVICE_VARIANT := Type A
   BOARD_NAME := BTHOMEHUBV5A
@@ -215,7 +193,6 @@ endef
 TARGET_DEVICES += bt_homehub-v5a
 
 define Device/buffalo_wbmr-300hpd
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Buffalo
   DEVICE_MODEL := WBMR-300HPD
   IMAGE_SIZE := 15616k
@@ -225,7 +202,6 @@ endef
 TARGET_DEVICES += buffalo_wbmr-300hpd
 
 define Device/lantiq_easy80920-nand
-  $(Device/dsa-migration)
   $(Device/lantiqFullImage)
   DEVICE_VENDOR := Lantiq
   DEVICE_MODEL := VR9 EASY80920
@@ -236,7 +212,6 @@ endef
 TARGET_DEVICES += lantiq_easy80920-nand
 
 define Device/lantiq_easy80920-nor
-  $(Device/dsa-migration)
   DEVICE_VENDOR := Lantiq
   DEVICE_MODEL := VR9 EASY80920
   DEVICE_VARIANT := NOR
@@ -246,14 +221,13 @@ endef
 TARGET_DEVICES += lantiq_easy80920-nor
 
 define Device/netgear_dm200
-  $(Device/dsa-migration)
   DEVICE_VENDOR := NETGEAR
   DEVICE_MODEL := DM200
   IMAGES := sysupgrade.bin factory.img
   IMAGE/sysupgrade.bin := append-kernel | \
 	pad-offset 64k 64 | append-uImage-fakehdr filesystem | \
 	pad-offset 64k 64 | append-uImage-fakehdr filesystem | \
-	append-rootfs | pad-rootfs | check-size | append-metadata
+	append-rootfs | pad-rootfs | append-metadata | check-size
   IMAGE/factory.img := $$(IMAGE/sysupgrade.bin) | netgear-dni
   IMAGE_SIZE := 7872k
   NETGEAR_BOARD_ID := DM200
@@ -262,7 +236,6 @@ endef
 TARGET_DEVICES += netgear_dm200
 
 define Device/zyxel_p-2812hnu-f1
-  $(Device/dsa-migration)
   $(Device/NAND)
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := P-2812HNU
@@ -275,15 +248,12 @@ endef
 TARGET_DEVICES += zyxel_p-2812hnu-f1
 
 define Device/zyxel_p-2812hnu-f3
-  $(Device/dsa-migration)
   $(Device/NAND)
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := P-2812HNU
   DEVICE_VARIANT := F3
   BOARD_NAME := P2812HNUF3
   DEVICE_PACKAGES := kmod-rt2800-pci wpad-basic-wolfssl kmod-usb-dwc2
-  KERNEL_SIZE := 2048k
   SUPPORTED_DEVICES += P2812HNUF3
-  DEFAULT := n
 endef
 TARGET_DEVICES += zyxel_p-2812hnu-f3

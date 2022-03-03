@@ -1,11 +1,14 @@
-# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2013-2021 OpenWrt.org
+# Copyright (C) 2013 OpenWrt.org
+#
+# This is free software, licensed under the GNU General Public License v2.
+# See /LICENSE for more information.
+#
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=zram-swap
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=8
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
 

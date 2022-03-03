@@ -18,8 +18,8 @@
 #
 
 TEXT_START	:= 0x80001000
-BZ_TEXT_START	:= 0x80700000
-BZ_STACK_START	:= 0x80800000
+BZ_TEXT_START	:= 0x80600000
+BZ_STACK_START	:= 0x80700000
 
 OBJCOPY		:= $(CROSS_COMPILE)objcopy -O binary -R .reginfo -R .note -R .comment -R .mdebug -S
 

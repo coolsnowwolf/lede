@@ -31,24 +31,6 @@ define Device/buffalo_ls421de
 endef
 TARGET_DEVICES += buffalo_ls421de
 
-define Device/ctera_c200-v2
-  PAGESIZE := 2048
-  SUBPAGESIZE := 512
-  BLOCKSIZE := 128k
-  DEVICE_VENDOR := Ctera
-  DEVICE_MODEL := C200
-  DEVICE_VARIANT := V2
-  SOC := armada-370
-  KERNEL := kernel-bin | append-dtb | uImage none | ctera-firmware
-  KERNEL_IN_UBI :=
-  KERNEL_SUFFIX := -factory.firm
-  DEVICE_PACKAGES :=  \
-    kmod-gpio-button-hotplug kmod-hwmon-drivetemp kmod-hwmon-nct7802 \
-    kmod-rtc-s35390a kmod-usb3 kmod-usb-ledtrig-usbport
-  IMAGES := sysupgrade.bin
-endef
-TARGET_DEVICES += ctera_c200-v2
-
 define Device/cznic_turris-omnia
   DEVICE_VENDOR := CZ.NIC
   DEVICE_MODEL := Turris Omnia
@@ -78,20 +60,6 @@ define Device/globalscale_mirabox
 endef
 TARGET_DEVICES += globalscale_mirabox
 
-define Device/iptime_nas1dual
-  DEVICE_VENDOR := ipTIME
-  DEVICE_MODEL := NAS1dual
-  DEVICE_PACKAGES := kmod-hwmon-drivetemp kmod-hwmon-gpiofan kmod-usb3
-  SOC := armada-385
-  KERNEL := kernel-bin | append-dtb | iptime-naspkg nas1dual
-  KERNEL_SIZE := 6144k
-  IMAGES := sysupgrade.bin
-  IMAGE_SIZE := 64256k
-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$(KERNEL_SIZE) | \
-	append-rootfs | pad-rootfs | check-size | append-metadata
-endef
-TARGET_DEVICES += iptime_nas1dual
-
 define Device/kobol_helios4
   DEVICE_VENDOR := Kobol
   DEVICE_MODEL := Helios4
@@ -109,7 +77,7 @@ TARGET_DEVICES += kobol_helios4
 define Device/linksys
   $(Device/NAND-128K)
   DEVICE_VENDOR := Linksys
-  DEVICE_PACKAGES := kmod-mwlwifi wpad-basic-wolfssl
+  DEVICE_PACKAGES := kmod-mwlwifi wpad-openssl luci-app-advanced-reboot automount autosamba
   IMAGES += factory.img
   IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | \
 	append-ubi | pad-to $$$$(PAGESIZE)

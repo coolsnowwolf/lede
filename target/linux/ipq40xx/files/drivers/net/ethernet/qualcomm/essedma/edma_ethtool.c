@@ -16,7 +16,6 @@
 #include <linux/ethtool.h>
 #include <linux/netdevice.h>
 #include <linux/string.h>
-#include <linux/version.h>
 #include "edma.h"
 
 struct edma_ethtool_stats {
@@ -309,9 +308,6 @@ static void edma_get_ringparam(struct net_device *netdev,
 /* Ethtool operations
  */
 static const struct ethtool_ops edma_ethtool_ops = {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
-	.supported_coalesce_params = ETHTOOL_COALESCE_USECS,
-#endif
 	.get_drvinfo = &edma_get_drvinfo,
 	.get_link = &ethtool_op_get_link,
 	.get_msglevel = &edma_get_msglevel,

@@ -186,9 +186,7 @@ $(eval $(call SetupHostCommand,rsync,Please install 'rsync', \
 	rsync --version </dev/null))
 
 $(eval $(call SetupHostCommand,which,Please install 'which', \
-	/usr/bin/which which, \
-	/bin/which which, \
-	which which))
+	which which | grep which))
 
 $(STAGING_DIR_HOST)/bin/mkhash: $(SCRIPT_DIR)/mkhash.c
 	mkdir -p $(dir $@)
@@ -198,4 +196,5 @@ prereq: $(STAGING_DIR_HOST)/bin/mkhash
 
 # Install ldconfig stub
 $(eval $(call TestHostCommand,ldconfig-stub,Failed to install stub, \
-	$(LN) /bin/true $(STAGING_DIR_HOST)/bin/ldconfig))
+	touch $(STAGING_DIR_HOST)/bin/ldconfig && \
+	chmod +x $(STAGING_DIR_HOST)/bin/ldconfig))

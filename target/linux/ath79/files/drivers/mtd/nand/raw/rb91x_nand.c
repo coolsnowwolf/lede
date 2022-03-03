@@ -40,7 +40,6 @@ enum rb91x_nand_gpios {
 	RB91X_NAND_ALE, /* Address Latch Enable */
 	RB91X_NAND_NRW, /* Read/Write. Active low */
 	RB91X_NAND_NLE, /* Latch Enable. Active low */
-	RB91X_NAND_PDIS, /* Reset Key Poll Disable. Active high */
 
 	RB91X_NAND_GPIOS,
 };
@@ -56,12 +55,6 @@ static inline void rb91x_nand_latch_lock(struct rb91x_nand_drvdata *drvdata,
 					 int lock)
 {
 	gpiod_set_value_cansleep(drvdata->gpio[RB91X_NAND_NLE], lock);
-}
-
-static inline void rb91x_nand_rst_key_poll_disable(struct rb91x_nand_drvdata *drvdata,
-						   int disable)
-{
-	gpiod_set_value_cansleep(drvdata->gpio[RB91X_NAND_PDIS], disable);
 }
 
 static int rb91x_ooblayout_ecc(struct mtd_info *mtd, int section,
@@ -122,7 +115,6 @@ static void rb91x_nand_write(struct rb91x_nand_drvdata *drvdata,
 	unsigned i;
 
 	rb91x_nand_latch_lock(drvdata, 1);
-	rb91x_nand_rst_key_poll_disable(drvdata, 1);
 
 	oe_reg = __raw_readl(base + AR71XX_GPIO_REG_OE);
 	out_reg = __raw_readl(base + AR71XX_GPIO_REG_OUT);
@@ -154,7 +146,6 @@ static void rb91x_nand_write(struct rb91x_nand_drvdata *drvdata,
 	/* Flush write */
 	__raw_readl(base + AR71XX_GPIO_REG_OUT);
 
-	rb91x_nand_rst_key_poll_disable(drvdata, 0);
 	rb91x_nand_latch_lock(drvdata, 0);
 }
 
@@ -171,7 +162,6 @@ static void rb91x_nand_read(struct rb91x_nand_drvdata *drvdata,
 	gpiod_set_value_cansleep(drvdata->gpio[RB91X_NAND_READ], 1);
 
 	rb91x_nand_latch_lock(drvdata, 1);
-	rb91x_nand_rst_key_poll_disable(drvdata, 1);
 
 	/* Save registers */
 	oe_reg = __raw_readl(base + AR71XX_GPIO_REG_OE);
@@ -209,7 +199,6 @@ static void rb91x_nand_read(struct rb91x_nand_drvdata *drvdata,
 	/* Flush write */
 	__raw_readl(base + AR71XX_GPIO_REG_OUT);
 
-	rb91x_nand_rst_key_poll_disable(drvdata, 0);
 	rb91x_nand_latch_lock(drvdata, 0);
 
 	/* Disable read mode */
@@ -265,8 +254,12 @@ static void rb91x_nand_write_buf(struct nand_chip *chip, const u8 *buf, int len)
 
 static void rb91x_nand_release(struct rb91x_nand_drvdata *drvdata)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
 	mtd_device_unregister(nand_to_mtd(&drvdata->chip));
 	nand_cleanup(&drvdata->chip);
+#else
+	nand_release(&drvdata->chip);
+#endif
 }
 
 static int rb91x_nand_probe(struct platform_device *pdev)
@@ -285,11 +278,8 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 
 	gpios = gpiod_get_array(dev, NULL, GPIOD_OUT_LOW);
 	if (IS_ERR(gpios)) {
-		if (PTR_ERR(gpios) != -EPROBE_DEFER) {
-			dev_err(dev, "failed to get gpios: %d\n",
-				PTR_ERR(gpios));
-		}
-		return PTR_ERR(gpios);
+		dev_err(dev, "failed to get gpios: %d\n", (int)gpios);
+		return -EINVAL;
 	}
 
 	if (gpios->ndescs != RB91X_NAND_GPIOS) {
@@ -314,8 +304,13 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	drvdata->chip.legacy.read_buf = rb91x_nand_read_buf;
 
 	drvdata->chip.legacy.chip_delay = 25;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0)
 	drvdata->chip.ecc.engine_type      = NAND_ECC_ENGINE_TYPE_SOFT;
 	drvdata->chip.ecc.algo             = NAND_ECC_ALGO_HAMMING;
+#else
+	drvdata->chip.ecc.mode             = NAND_ECC_SOFT;
+	drvdata->chip.ecc.algo             = NAND_ECC_HAMMING;
+#endif
 	drvdata->chip.options = NAND_NO_SUBPAGE_WRITE;
 
 	r = nand_scan(&drvdata->chip, 1);

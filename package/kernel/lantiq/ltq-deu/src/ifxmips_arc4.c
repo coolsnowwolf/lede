@@ -47,7 +47,6 @@
 #include <linux/errno.h>
 #include <linux/crypto.h>
 #include <crypto/algapi.h>
-#include <crypto/internal/skcipher.h>
 #include <linux/interrupt.h>
 #include <asm/byteorder.h>
 #include <linux/delay.h>
@@ -88,6 +87,7 @@ struct arc4_ctx {
 
 extern int disable_deudma;
 extern int disable_multiblock;
+
 
 /*! \fn static void _deu_arc4 (void *ctx_arg, u8 *out_arg, const u8 *in_arg, u8 *iv_arg, u32 nbytes, int encdec, int mode)
     \ingroup IFX_ARC4_FUNCTIONS
@@ -203,19 +203,6 @@ static int arc4_set_key(struct crypto_tfm *tfm, const u8 *inkey,
         return 0;
 }
 
-/*! \fn static int arc4_set_key_skcipher(struct crypto_skcipher *tfm, const u8 *in_key, unsigned int key_len)
-    \ingroup IFX_ARC4_FUNCTIONS
-    \brief sets ARC4 key
-    \param tfm linux crypto skcipher
-    \param in_key input key
-    \param key_len key lengths less than or equal to 16 bytes supported
-*/
-static int arc4_set_key_skcipher(struct crypto_skcipher *tfm, const u8 *inkey,
-                       unsigned int key_len)
-{
-        return arc4_set_key(crypto_skcipher_ctx(tfm), inkey, key_len);
-}
-
 /*! \fn static void _deu_arc4_ecb(void *ctx, uint8_t *dst, const uint8_t *src, uint8_t *iv, size_t nbytes, int encdec, int inplace)
     \ingroup IFX_ARC4_FUNCTIONS
     \brief sets ARC4 hardware to ECB mode   
@@ -256,7 +243,7 @@ static struct crypto_alg ifxdeu_arc4_alg = {
         .cra_name               =       "arc4",
         .cra_driver_name        =       "ifxdeu-arc4",
         .cra_priority           =       300,
-        .cra_flags              =       CRYPTO_ALG_TYPE_CIPHER | CRYPTO_ALG_KERN_DRIVER_ONLY,
+        .cra_flags              =       CRYPTO_ALG_TYPE_CIPHER,
         .cra_blocksize          =       ARC4_BLOCK_SIZE,
         .cra_ctxsize            =       sizeof(struct arc4_ctx),
         .cra_module             =       THIS_MODULE,
@@ -272,51 +259,61 @@ static struct crypto_alg ifxdeu_arc4_alg = {
         }
 };
 
-/*! \fn static int ecb_arc4_encrypt(struct skcipher_request *req)
+/*! \fn static int ecb_arc4_encrypt(struct blkcipher_desc *desc, struct scatterlist *dst, struct scatterlist *src, unsigned int nbytes)
     \ingroup IFX_ARC4_FUNCTIONS
-    \brief ECB ARC4 encrypt using linux crypto skcipher
-    \param req skcipher_request
-*/
-static int ecb_arc4_encrypt(struct skcipher_request *req)
+    \brief ECB ARC4 encrypt using linux crypto blkcipher    
+    \param desc blkcipher descriptor  
+    \param dst output scatterlist  
+    \param src input scatterlist  
+    \param nbytes data size in bytes  
+*/                                     
+static int ecb_arc4_encrypt(struct blkcipher_desc *desc,
+                           struct scatterlist *dst, struct scatterlist *src,
+                           unsigned int nbytes)
 {
-        struct arc4_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
-        struct skcipher_walk walk;
-        unsigned int nbytes;
+        struct arc4_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
+        struct blkcipher_walk walk;
         int err;
 
         DPRINTF(1, "\n");
-        err = skcipher_walk_virt(&walk, req, false);
+        blkcipher_walk_init(&walk, dst, src, nbytes);
+        err = blkcipher_walk_virt(desc, &walk);
 
         while ((nbytes = walk.nbytes)) {
                 _deu_arc4_ecb(ctx, walk.dst.virt.addr, walk.src.virt.addr, 
                                NULL, nbytes, CRYPTO_DIR_ENCRYPT, 0);
                 nbytes &= ARC4_BLOCK_SIZE - 1;
-                err = skcipher_walk_done(&walk, nbytes);
+                err = blkcipher_walk_done(desc, &walk, nbytes);
         }
 
         return err;
 }
 
-/*! \fn static int ecb_arc4_decrypt(struct skcipher_request *req)
+/*! \fn static int ecb_arc4_decrypt(struct blkcipher_desc *desc, struct scatterlist *dst, struct scatterlist *src, unsigned int nbytes)
     \ingroup IFX_ARC4_FUNCTIONS
-    \brief ECB ARC4 decrypt using linux crypto skcipher
-    \param desc skcipher_request
-*/
-static int ecb_arc4_decrypt(struct skcipher_request *req)
+    \brief ECB ARC4 decrypt using linux crypto blkcipher    
+    \param desc blkcipher descriptor  
+    \param dst output scatterlist  
+    \param src input scatterlist  
+    \param nbytes data size in bytes  
+*/                                     
+static int ecb_arc4_decrypt(struct blkcipher_desc *desc,
+                           struct scatterlist *dst, struct scatterlist *src,
+                           unsigned int nbytes)
 {
-        struct arc4_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
-        struct skcipher_walk walk;
-        unsigned int nbytes;
+        struct arc4_ctx *ctx = crypto_blkcipher_ctx(desc->tfm);
+        struct blkcipher_walk walk;
         int err;
 
         DPRINTF(1, "\n");
-        err = skcipher_walk_virt(&walk, req, false);
+        blkcipher_walk_init(&walk, dst, src, nbytes);
+        err = blkcipher_walk_virt(desc, &walk);
 
         while ((nbytes = walk.nbytes)) {
                 _deu_arc4_ecb(ctx, walk.dst.virt.addr, walk.src.virt.addr, 
                                NULL, nbytes, CRYPTO_DIR_DECRYPT, 0);
                 nbytes &= ARC4_BLOCK_SIZE - 1;
-                err = skcipher_walk_done(&walk, nbytes);
+                err = blkcipher_walk_done(desc, &walk, nbytes);
         }
 
         return err;
@@ -325,20 +322,25 @@ static int ecb_arc4_decrypt(struct skcipher_request *req)
 /*
  * \brief ARC4 function mappings
 */
-static struct skcipher_alg ifxdeu_ecb_arc4_alg = {
-        .base.cra_name          =       "ecb(arc4)",
-        .base.cra_driver_name   =       "ifxdeu-ecb(arc4)",
-        .base.cra_priority      =       400,
-        .base.cra_flags         =       CRYPTO_ALG_TYPE_SKCIPHER | CRYPTO_ALG_KERN_DRIVER_ONLY,
-        .base.cra_blocksize     =       ARC4_BLOCK_SIZE,
-        .base.cra_ctxsize       =       sizeof(struct arc4_ctx),
-        .base.cra_module        =       THIS_MODULE,
-        .base.cra_list          =       LIST_HEAD_INIT(ifxdeu_ecb_arc4_alg.base.cra_list),
-        .min_keysize            =       ARC4_MIN_KEY_SIZE,
-        .max_keysize            =       ARC4_MAX_KEY_SIZE,
-        .setkey                 =       arc4_set_key_skcipher,
-        .encrypt                =       ecb_arc4_encrypt,
-        .decrypt                =       ecb_arc4_decrypt,
+static struct crypto_alg ifxdeu_ecb_arc4_alg = {
+        .cra_name               =       "ecb(arc4)",
+        .cra_driver_name        =       "ifxdeu-ecb(arc4)",
+        .cra_priority           =       400,
+        .cra_flags              =       CRYPTO_ALG_TYPE_BLKCIPHER,
+        .cra_blocksize          =       ARC4_BLOCK_SIZE,
+        .cra_ctxsize            =       sizeof(struct arc4_ctx),
+        .cra_type               =       &crypto_blkcipher_type,
+        .cra_module             =       THIS_MODULE,
+        .cra_list               =       LIST_HEAD_INIT(ifxdeu_ecb_arc4_alg.cra_list),
+        .cra_u                  =       {
+                .blkcipher = {
+                        .min_keysize            =       ARC4_MIN_KEY_SIZE,
+                        .max_keysize            =       ARC4_MAX_KEY_SIZE,
+                        .setkey                 =       arc4_set_key,
+                        .encrypt                =       ecb_arc4_encrypt,
+                        .decrypt                =       ecb_arc4_decrypt,
+                }
+        }
 };
 
 /*! \fn int ifxdeu_init_arc4(void)
@@ -353,7 +355,7 @@ int ifxdeu_init_arc4(void)
         if ((ret = crypto_register_alg(&ifxdeu_arc4_alg)))
                 goto arc4_err;
 
-        if ((ret = crypto_register_skcipher(&ifxdeu_ecb_arc4_alg)))
+        if ((ret = crypto_register_alg(&ifxdeu_ecb_arc4_alg)))
                 goto ecb_arc4_err;
 
         arc4_chip_init ();
@@ -368,7 +370,7 @@ arc4_err:
         printk(KERN_ERR "IFX arc4 initialization failed!\n");
         return ret;
 ecb_arc4_err:
-        crypto_unregister_skcipher(&ifxdeu_ecb_arc4_alg);
+        crypto_unregister_alg(&ifxdeu_ecb_arc4_alg);
         printk (KERN_ERR "IFX ecb_arc4 initialization failed!\n");
         return ret;
 
@@ -381,7 +383,9 @@ ecb_arc4_err:
 void ifxdeu_fini_arc4(void)
 {
         crypto_unregister_alg (&ifxdeu_arc4_alg);
-        crypto_unregister_skcipher (&ifxdeu_ecb_arc4_alg);
+        crypto_unregister_alg (&ifxdeu_ecb_arc4_alg);
 
 
 }
+
+

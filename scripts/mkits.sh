@@ -32,14 +32,12 @@ usage() {
 	printf "\n\t-d ==> include Device Tree Blob 'dtb'"
 	printf "\n\t-r ==> include RootFS blob 'rootfs'"
 	printf "\n\t-H ==> specify hash algo instead of SHA1"
-	printf "\n\t-l ==> legacy mode character (@ etc otherwise -)"
 	printf "\n\t-o ==> create output file 'its_file'"
 	printf "\n\t-O ==> create config with dt overlay 'name:dtb'"
 	printf "\n\t\t(can be specified more than once)\n"
 	exit 1
 }
 
-REFERENCE_CHAR='-'
 FDTNUM=1
 ROOTFSNUM=1
 INITRDNUM=1
@@ -48,7 +46,7 @@ LOADABLES=
 DTOVERLAY=
 DTADDR=
 
-while getopts ":A:a:c:C:D:d:e:f:i:k:l:n:o:O:v:r:H:" OPTION
+while getopts ":A:a:c:C:D:d:e:f:i:k:n:o:O:v:r:H:" OPTION
 do
 	case $OPTION in
 		A ) ARCH=$OPTARG;;
@@ -61,7 +59,6 @@ do
 		f ) COMPATIBLE=$OPTARG;;
 		i ) INITRD=$OPTARG;;
 		k ) KERNEL=$OPTARG;;
-		l ) REFERENCE_CHAR=$OPTARG;;
 		n ) FDTNUM=$OPTARG;;
 		o ) OUTPUT=$OPTARG;;
 		O ) DTOVERLAY="$DTOVERLAY ${OPTARG}";;
@@ -94,7 +91,7 @@ fi
 # Conditionally create fdt information
 if [ -n "${DTB}" ]; then
 	FDT_NODE="
-		fdt${REFERENCE_CHAR}$FDTNUM {
+		fdt-$FDTNUM {
 			description = \"${ARCH_UPPER} OpenWrt ${DEVICE} device tree blob\";
 			${COMPATIBLE_PROP}
 			data = /incbin/(\"${DTB}\");
@@ -110,12 +107,12 @@ if [ -n "${DTB}" ]; then
 			};
 		};
 "
-	FDT_PROP="fdt = \"fdt${REFERENCE_CHAR}$FDTNUM\";"
+	FDT_PROP="fdt = \"fdt-$FDTNUM\";"
 fi
 
 if [ -n "${INITRD}" ]; then
 	INITRD_NODE="
-		initrd${REFERENCE_CHAR}$INITRDNUM {
+		initrd-$INITRDNUM {
 			description = \"${ARCH_UPPER} OpenWrt ${DEVICE} initrd\";
 			${COMPATIBLE_PROP}
 			data = /incbin/(\"${INITRD}\");
@@ -130,7 +127,7 @@ if [ -n "${INITRD}" ]; then
 			};
 		};
 "
-	INITRD_PROP="ramdisk=\"initrd${REFERENCE_CHAR}${INITRDNUM}\";"
+	INITRD_PROP="ramdisk=\"initrd-${INITRDNUM}\";"
 fi
 
 
@@ -152,7 +149,7 @@ if [ -n "${ROOTFS}" ]; then
 			};
 		};
 "
-	LOADABLES="${LOADABLES:+$LOADABLES, }\"rootfs${REFERENCE_CHAR}${ROOTFSNUM}\""
+	LOADABLES="${LOADABLES:+$LOADABLES, }\"rootfs-${ROOTFSNUM}\""
 fi
 
 # add DT overlay blobs
@@ -187,8 +184,8 @@ OVCONFIGS=""
 
 		config-$ovname {
 			description = \"OpenWrt ${DEVICE} with $ovname\";
-			kernel = \"kernel${REFERENCE_CHAR}1\";
-			fdt = \"fdt${REFERENCE_CHAR}$FDTNUM\", \"$ovnode\";
+			kernel = \"kernel-1\";
+			fdt = \"fdt-$FDTNUM\", \"$ovnode\";
 			${LOADABLES:+loadables = ${LOADABLES};}
 			${COMPATIBLE_PROP}
 			${INITRD_PROP}
@@ -204,7 +201,7 @@ DATA="/dts-v1/;
 	#address-cells = <1>;
 
 	images {
-		kernel${REFERENCE_CHAR}1 {
+		kernel-1 {
 			description = \"${ARCH_UPPER} OpenWrt Linux-${VERSION}\";
 			data = /incbin/(\"${KERNEL}\");
 			type = \"kernel\";
@@ -230,7 +227,7 @@ ${ROOTFS_NODE}
 		default = \"${CONFIG}\";
 		${CONFIG} {
 			description = \"OpenWrt ${DEVICE}\";
-			kernel = \"kernel${REFERENCE_CHAR}1\";
+			kernel = \"kernel-1\";
 			${FDT_PROP}
 			${LOADABLES:+loadables = ${LOADABLES};}
 			${COMPATIBLE_PROP}

@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sysfs.h>
-#include <linux/mtd/mtd.h>
 
 #include "routerboot.h"
 
@@ -161,57 +160,25 @@ fail:
 	return ret;
 }
 
-static void routerboot_mtd_notifier_add(struct mtd_info *mtd)
-{
-	/* Currently routerboot is only known to live on NOR flash */
-	if (mtd->type != MTD_NORFLASH)
-		return;
-
-	/*
-	 * We ignore the following return values and always register.
-	 * These init() routines are designed so that their failed state is
-	 * always manageable by the corresponding exit() calls.
-	 * Notifier is called with MTD mutex held: use __get/__put variants.
-	 * TODO: allow partition names override
-	 */
-	if (!strcmp(mtd->name, RB_MTD_HARD_CONFIG))
-		rb_hardconfig_init(rb_kobj, mtd);
-	else if (!strcmp(mtd->name, RB_MTD_SOFT_CONFIG))
-		rb_softconfig_init(rb_kobj, mtd);
-}
-
-static void routerboot_mtd_notifier_remove(struct mtd_info *mtd)
-{
-	if (mtd->type != MTD_NORFLASH)
-		return;
-
-	if (!strcmp(mtd->name, RB_MTD_HARD_CONFIG))
-		rb_hardconfig_exit();
-	else if (!strcmp(mtd->name, RB_MTD_SOFT_CONFIG))
-		rb_softconfig_exit();
-}
-
-/* Note: using a notifier prevents qualifying init()/exit() functions with __init/__exit */
-static struct mtd_notifier routerboot_mtd_notifier = {
-	.add = routerboot_mtd_notifier_add,
-	.remove = routerboot_mtd_notifier_remove,
-};
-
 static int __init routerboot_init(void)
 {
 	rb_kobj = kobject_create_and_add("mikrotik", firmware_kobj);
 	if (!rb_kobj)
 		return -ENOMEM;
 
-	register_mtd_user(&routerboot_mtd_notifier);
+	/*
+	 * We ignore the following return values and always register.
+	 * These init() routines are designed so that their failed state is
+	 * always manageable by the corresponding exit() calls.
+	 */
+	rb_hardconfig_init(rb_kobj);
+	rb_softconfig_init(rb_kobj);
 
 	return 0;
 }
 
 static void __exit routerboot_exit(void)
 {
-	unregister_mtd_user(&routerboot_mtd_notifier);
-	/* Exit routines are idempotent */
 	rb_softconfig_exit();
 	rb_hardconfig_exit();
 	kobject_put(rb_kobj);	// recursive afaict

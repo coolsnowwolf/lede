@@ -65,9 +65,16 @@ _v() {
 	[ -n "$VERBOSE" ] && [ "$VERBOSE" -ge 1 ] && echo "$*" >&2
 }
 
+_vn() {
+	[ -n "$VERBOSE" ] && [ "$VERBOSE" -ge 1 ] && echo -n "$*" >&2
+}
+
 v() {
 	_v "$(date) upgrade: $@"
-	logger -p info -t upgrade "$@"
+}
+
+vn() {
+	_vn "$(date) upgrade: $@"
 }
 
 json_string() {
@@ -88,7 +95,8 @@ get_image() { # <source> [ <command> ]
 	if [ -z "$cmd" ]; then
 		local magic="$(dd if="$from" bs=2 count=1 2>/dev/null | hexdump -n 2 -e '1/1 "%02x"')"
 		case "$magic" in
-			1f8b) cmd="busybox zcat";;
+			1f8b) cmd="zcat";;
+			425a) cmd="bzcat";;
 			*) cmd="cat";;
 		esac
 	fi
@@ -218,6 +226,15 @@ hex_le32_to_cpu() {
 		return
 	}
 	echo "$@"
+}
+
+get_partition_by_name() {
+	for partname in /sys/class/block/$1/*/name; do
+		[ "$(cat ${partname})" = "$2" ] && {
+			basename ${partname%%/name}
+			break
+		}
+	done
 }
 
 get_partitions() { # <device> <filename>

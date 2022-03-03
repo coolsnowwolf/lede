@@ -1,0 +1,50 @@
+From f4c7d053d7f77cd5c1a1ba7c7ce085ddba13d1d7 Mon Sep 17 00:00:00 2001
+From: Remi Pommarel <repk@triplefau.lt>
+Date: Wed, 22 May 2019 23:33:50 +0200
+Subject: [PATCH] PCI: aardvark: Wait for endpoint to be ready before training
+ link
+
+When configuring pcie reset pin from gpio (e.g. initially set by
+u-boot) to pcie function this pin goes low for a brief moment
+asserting the PERST# signal. Thus connected device enters fundamental
+reset process and link configuration can only begin after a minimal
+100ms delay (see [1]).
+
+Because the pin configuration comes from the "default" pinctrl it is
+implicitly configured before the probe callback is called:
+
+driver_probe_device()
+  really_probe()
+    ...
+    pinctrl_bind_pins() /* Here pin goes from gpio to PCIE reset
+                           function and PERST# is asserted */
+    ...
+    drv->probe()
+
+[1] "PCI Express Base Specification", REV. 4.0
+    PCI Express, February 19 2014, 6.6.1 Conventional Reset
+
+Signed-off-by: Remi Pommarel <repk@triplefau.lt>
+Signed-off-by: Lorenzo Pieralisi <lorenzo.pieralisi@arm.com>
+Acked-by: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+---
+ drivers/pci/controller/pci-aardvark.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -353,6 +353,14 @@ static void advk_pcie_setup_hw(struct ad
+ 	reg |= PIO_CTRL_ADDR_WIN_DISABLE;
+ 	advk_writel(pcie, reg, PIO_CTRL);
+ 
++	/*
++	 * PERST# signal could have been asserted by pinctrl subsystem before
++	 * probe() callback has been called, making the endpoint going into
++	 * fundamental reset. As required by PCI Express spec a delay for at
++	 * least 100ms after such a reset before link training is needed.
++	 */
++	msleep(PCI_PM_D3COLD_WAIT);
++
+ 	/* Start link training */
+ 	reg = advk_readl(pcie, PCIE_CORE_LINK_CTRL_STAT_REG);
+ 	reg |= PCIE_CORE_LINK_TRAINING;

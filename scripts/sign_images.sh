@@ -3,12 +3,12 @@
 # directory where search for images
 TOP_DIR="${TOP_DIR:-./bin/targets}"
 # key to sign images
-BUILD_KEY="${BUILD_KEY:-key-build}" # TODO unify naming?
+BUILD_KEY="${BUILD_KEY:-key-build}" # TODO unifiy naming?
 # remove other signatures (added e.g.  by buildbot)
 REMOVE_OTER_SIGNATURES="${REMOVE_OTER_SIGNATURES:-1}"
 
 # find all sysupgrade images in TOP_DIR
-# factory images don't need signatures as non OpenWrt system doesn't check them anyway
+# factory images don't need signatures as non OpenWrt system doen't check them anyway
 for image in $(find $TOP_DIR -type f -name "*-sysupgrade.bin"); do
 	# check if image actually support metadata
 	if fwtool -i /dev/null "$image"; then

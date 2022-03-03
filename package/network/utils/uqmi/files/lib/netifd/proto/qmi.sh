@@ -94,8 +94,7 @@ proto_qmi_setup() {
 		fi
 	done
 
-	if uqmi -s -d "$device" --uim-get-sim-state | grep -q '"Not supported"\|"Invalid QMI command"' &&
-	   uqmi -s -d "$device" --get-pin-status | grep -q '"Not supported"\|"Invalid QMI command"' ; then
+	if uqmi -s -d "$device" --get-pin-status | grep '"Not supported"\|"Invalid QMI command"' > /dev/null; then
 		[ -n "$pincode" ] && {
 			uqmi -s -d "$device" --verify-pin1 "$pincode" > /dev/null || uqmi -s -d "$device" --uim-verify-pin1 "$pincode" > /dev/null || {
 				echo "Unable to verify PIN"
@@ -106,8 +105,7 @@ proto_qmi_setup() {
 		}
 	else
 		. /usr/share/libubox/jshn.sh
-		json_load "$(uqmi -s -d "$device" --get-pin-status)" 2>&1 | grep -q Failed &&
-			json_load "$(uqmi -s -d "$device" --uim-get-sim-state)"
+		json_load "$(uqmi -s -d "$device" --get-pin-status)"
 		json_get_var pin1_status pin1_status
 		json_get_var pin1_verify_tries pin1_verify_tries
 
@@ -146,7 +144,7 @@ proto_qmi_setup() {
 				echo "PIN already verified"
 				;;
 			*)
-				echo "PIN status failed (${pin1_status:-sim_not_present})"
+				echo "PIN status failed ($pin1_status)"
 				proto_notify_error "$interface" PIN_STATUS_FAILED
 				proto_block_restart "$interface"
 				return 1

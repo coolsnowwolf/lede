@@ -48,10 +48,10 @@ define Build/mt7622-gpt
 				-N recovery	-r	-p 32M@6M \
 		$(if $(findstring sdmmc,$1), \
 				-N install	-r	-p 7M@38M \
-			-t 0x2e -N production		-p $(CONFIG_TARGET_ROOTFS_PARTSIZE)M@45M \
+			-t 0x2e -N production		-p 211M@45M \
 		) \
 		$(if $(findstring emmc,$1), \
-			-t 0x2e -N production		-p $(CONFIG_TARGET_ROOTFS_PARTSIZE)M@40M \
+			-t 0x2e -N production		-p 980M@40M \
 		)
 	cat $@.tmp >> $@
 	rm $@.tmp
@@ -190,7 +190,6 @@ define Device/mediatek_mt7622-rfb1-ubi
   DEVICE_DTS := mt7622-rfb1-ubi
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-ata-ahci-mtk kmod-btmtkuart kmod-usb3
-  BOARD_NAME := mediatek,mt7622-rfb1-ubi
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -240,3 +239,18 @@ define Device/ubnt_unifi-6-lr-ubootmod
   ARTIFACT/bl31-uboot.fip := bl31-uboot ubnt_unifi-6-lr
 endef
 TARGET_DEVICES += ubnt_unifi-6-lr-ubootmod
+
+define Device/xiaomi_redmi-router-ax6s
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Redmi Router AX6S
+  DEVICE_ALT0_VENDOR := Xiaomi
+  DEVICE_ALT0_MODEL := Router AX3200
+  DEVICE_DTS := mt7622-xiaomi-redmi-router-ax6s
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e
+  KERNEL := kernel-bin | lzma
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
+endef
+TARGET_DEVICES += xiaomi_redmi-router-ax6s

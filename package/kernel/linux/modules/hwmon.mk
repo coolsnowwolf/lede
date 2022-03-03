@@ -138,21 +138,6 @@ endef
 $(eval $(call KernelPackage,hwmon-f71882fg))
 
 
-define KernelPackage/hwmon-g762
-  TITLE:=G762/G763 fan speed PWM controller support
-  KCONFIG:=CONFIG_SENSORS_G762
-  FILES:=$(LINUX_DIR)/drivers/hwmon/g762.ko
-  AUTOLOAD:=$(call AutoProbe,g762)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
-endef
-
-define KernelPackage/hwmon-g762/description
- Kernel module for Global Mixed-mode Technology Inc G762 and G763 fan speed PWM controller chips.
-endef
-
-$(eval $(call KernelPackage,hwmon-g762))
-
-
 define KernelPackage/hwmon-ina209
   TITLE:=INA209 monitoring support
   KCONFIG:=CONFIG_SENSORS_INA209
@@ -346,21 +331,6 @@ define KernelPackage/hwmon-nct6775/description
 endef
 
 $(eval $(call KernelPackage,hwmon-nct6775))
-
-
-define KernelPackage/hwmon-nct7802
-  TITLE:=NCT7802Y and compatibles monitoring support
-  KCONFIG:=CONFIG_SENSORS_NCT7802
-  FILES:=$(LINUX_DIR)/drivers/hwmon/nct7802.ko
-  AUTOLOAD:=$(call AutoProbe,nct7802)
-  $(call AddDepends/hwmon,+kmod-regmap-i2c)
-endef
-
-define KernelPackage/hwmon-nct7802/description
- Kernel module for NCT7802Y thermal monitor chip
-endef
-
-$(eval $(call KernelPackage,hwmon-nct7802))
 
 
 define KernelPackage/hwmon-pc87360

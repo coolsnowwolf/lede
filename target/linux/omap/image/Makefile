@@ -38,7 +38,7 @@ define Device/Default
   IMAGE/sdcard.img.gz := omap-sdcard | append-metadata | gzip
 endef
 
-#uboot-omap-am335x_evm uboot-omap-omap3_beagle uboot-omap-omap4_panda
+#uboot-omap-am335x_evm uboot-omap-omap3_beagle uboot-omap-omap3_overo uboot-omap-omap4_panda
 
 define Device/ti_am335x-evm
   DEVICE_VENDOR := Texas Instruments

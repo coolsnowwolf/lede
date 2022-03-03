@@ -56,12 +56,23 @@
 
 #include "routerboot.h"
 
-#define RB_SOFTCONFIG_VER		"0.05"
+#define RB_SOFTCONFIG_VER		"0.03"
 #define RB_SC_PR_PFX			"[rb_softconfig] "
 
-#define RB_SC_HAS_WRITE_SUPPORT	true
-#define RB_SC_WMODE			S_IWUSR
-#define RB_SC_RMODE			S_IRUSR
+/*
+ * mtd operations before 4.17 are asynchronous, not handled by this code
+ * Also make the driver act read-only if 4K_SECTORS are not enabled, since they
+ * are require to handle partial erasing of the small soft_config partition.
+ */
+#if defined(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
+ #define RB_SC_HAS_WRITE_SUPPORT	true
+ #define RB_SC_WMODE			S_IWUSR
+ #define RB_SC_RMODE			S_IRUSR
+#else
+ #define RB_SC_HAS_WRITE_SUPPORT	false
+ #define RB_SC_WMODE			0
+ #define RB_SC_RMODE			S_IRUSR
+#endif
 
 /* ID values for software settings */
 #define RB_SCID_UART_SPEED		0x01	// u32*1
@@ -694,8 +705,9 @@ mtdfail:
 
 static struct kobj_attribute sc_kattrcommit = __ATTR(commit, RB_SC_RMODE|RB_SC_WMODE, sc_commit_show, sc_commit_store);
 
-int rb_softconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd)
+int __init rb_softconfig_init(struct kobject *rb_kobj)
 {
+	struct mtd_info *mtd;
 	size_t bytes_read, buflen;
 	const u8 *buf;
 	int i, ret;
@@ -704,19 +716,20 @@ int rb_softconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd)
 	sc_buf = NULL;
 	sc_kobj = NULL;
 
-	ret = __get_mtd_device(mtd);
-	if (ret)
+	// TODO allow override
+	mtd = get_mtd_device_nm(RB_MTD_SOFT_CONFIG);
+	if (IS_ERR(mtd))
 		return -ENODEV;
 
 	sc_buflen = mtd->size;
 	sc_buf = kmalloc(sc_buflen, GFP_KERNEL);
 	if (!sc_buf) {
-		__put_mtd_device(mtd);
+		put_mtd_device(mtd);
 		return -ENOMEM;
 	}
 
 	ret = mtd_read(mtd, 0, sc_buflen, &bytes_read, sc_buf);
-	__put_mtd_device(mtd);
+	put_mtd_device(mtd);
 
 	if (ret)
 		goto fail;
@@ -786,10 +799,8 @@ fail:
 	return ret;
 }
 
-void rb_softconfig_exit(void)
+void __exit rb_softconfig_exit(void)
 {
 	kobject_put(sc_kobj);
-	sc_kobj = NULL;
 	kfree(sc_buf);
-	sc_buf = NULL;
 }

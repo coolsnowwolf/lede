@@ -1,0 +1,119 @@
+--- a/source3/Makefile.in
++++ b/source3/Makefile.in
+@@ -73,22 +73,22 @@ LDAP_LIBS=@LDAP_LIBS@
+ NSCD_LIBS=@NSCD_LIBS@
+ UUID_LIBS=@UUID_LIBS@
+ LIBWBCLIENT=@LIBWBCLIENT_STATIC@ @LIBWBCLIENT_SHARED@
+-LIBWBCLIENT_LIBS=@LIBWBCLIENT_LIBS@
++LIBWBCLIENT_LIBS=@LIBWBCLIENT_STATIC@
+ PTHREAD_LDFLAGS=@PTHREAD_LDFLAGS@
+ PTHREAD_CFLAGS=@PTHREAD_CFLAGS@
+ DNSSD_LIBS=@DNSSD_LIBS@
+ AVAHI_LIBS=@AVAHI_LIBS@
+ POPT_LIBS=@POPTLIBS@
+ LIBTALLOC=@LIBTALLOC_STATIC@ @LIBTALLOC_SHARED@
+-LIBTALLOC_LIBS=@LIBTALLOC_LIBS@
++LIBTALLOC_LIBS=@LIBTALLOC_STATIC@
+ LIBTEVENT=@LIBTEVENT_STATIC@ @LIBTEVENT_SHARED@
+ LIBTEVENT_LIBS=@LIBTEVENT_LIBS@
+ LIBREPLACE_LIBS=@LIBREPLACE_LIBS@
+ LIBTDB=@LIBTDB_STATIC@ @LIBTDB_SHARED@
+-LIBTDB_LIBS=@LIBTDB_LIBS@
++LIBTDB_LIBS=@LIBTDB_STATIC@
+ TDB_DEPS=@TDB_DEPS@
+ LIBNETAPI=@LIBNETAPI_STATIC@ @LIBNETAPI_SHARED@
+-LIBNETAPI_LIBS=@LIBNETAPI_LIBS@
++LIBNETAPI_LIBS=@LIBNETAPI_STATIC@
+ LIBSMBCLIENT_LIBS=@LIBSMBCLIENT_LIBS@
+ LIBSMBSHAREMODES_LIBS=@LIBSMBSHAREMODES_LIBS@
+ 
+@@ -216,7 +216,7 @@ PATH_FLAGS = -DSMB_PASSWD_FILE=\"$(SMB_P
+ 
+ # Note that all executable programs now provide for an optional executable suffix.
+ 
+-SBIN_PROGS = bin/smbd@EXEEXT@ bin/nmbd@EXEEXT@ @SWAT_SBIN_TARGETS@ @EXTRA_SBIN_PROGS@
++SBIN_PROGS = bin/samba_multicall@EXEEXT@ bin/smbd@EXEEXT@ bin/nmbd@EXEEXT@ @SWAT_SBIN_TARGETS@ @EXTRA_SBIN_PROGS@
+ 
+ BIN_PROGS1 = bin/smbclient@EXEEXT@ bin/net@EXEEXT@ bin/smbspool@EXEEXT@ \
+ 	bin/testparm@EXEEXT@ bin/smbstatus@EXEEXT@ bin/smbget@EXEEXT@ \
+@@ -1799,6 +1799,42 @@ bin/.dummy:
+ 	  dir=bin $(MAKEDIR); fi
+ 	@: >> $@ || : > $@ # what a fancy emoticon!
+ 
++smbd/server_multicall.o: smbd/server.c smbd/server.o
++	@echo Compiling $<.c
++	@$(COMPILE_CC_PATH) -Dmain=smbd_main && exit 0;\
++		echo "The following command failed:" 1>&2;\
++		echo "$(COMPILE_CC_PATH)" 1>&2;\
++		$(COMPILE_CC_PATH) >/dev/null 2>&1
++
++nmbd/nmbd_multicall.o: nmbd/nmbd.c nmbd/nmbd.o
++	@echo Compiling $<.c
++	@$(COMPILE_CC_PATH) -Dmain=nmbd_main && exit 0;\
++		echo "The following command failed:" 1>&2;\
++		echo "$(COMPILE_CC_PATH)" 1>&2;\
++		$(COMPILE_CC_PATH) >/dev/null 2>&1
++
++utils/smbpasswd_multicall.o: utils/smbpasswd.c utils/smbpasswd.o
++	@echo Compiling $<.c
++	@$(COMPILE_CC_PATH) -Dmain=smbpasswd_main && exit 0;\
++		echo "The following command failed:" 1>&2;\
++		echo "$(COMPILE_CC_PATH)" 1>&2;\
++		$(COMPILE_CC_PATH) >/dev/null 2>&1
++
++SMBD_MULTI_O = $(patsubst smbd/server.o,smbd/server_multicall.o,$(SMBD_OBJ))
++NMBD_MULTI_O = $(patsubst nmbd/nmbd.o,nmbd/nmbd_multicall.o,$(filter-out $(LIB_DUMMY_OBJ),$(NMBD_OBJ)))
++SMBPASSWD_MULTI_O = $(patsubst utils/smbpasswd.o,utils/smbpasswd_multicall.o,$(filter-out $(LIB_DUMMY_OBJ),$(SMBPASSWD_OBJ)))
++MULTI_O = multi.o
++
++MULTICALL_O = $(sort $(SMBD_MULTI_O) $(NMBD_MULTI_O) $(SMBPASSWD_MULTI_O) $(MULTI_O))
++
++bin/samba_multicall@EXEEXT@: $(BINARY_PREREQS) $(MULTICALL_O) $(LIBTALLOC) $(LIBTDB) $(LIBWBCLIENT) @BUILD_POPT@
++	@echo Linking $@
++	@$(CC) -o $@ $(MULTICALL_O) $(LDFLAGS) $(LDAP_LIBS) @SMBD_FAM_LIBS@ \
++		$(KRB5LIBS) $(DYNEXP) $(PRINT_LIBS) $(AUTH_LIBS) \
++		$(ACL_LIBS) $(PASSDB_LIBS) $(LIBS) $(DNSSD_LIBS) $(AVAHI_LIBS) \
++		$(POPT_LIBS) @SMBD_LIBS@ $(LIBTALLOC_LIBS) $(LIBTEVENT_LIBS) $(LIBTDB_LIBS) \
++		$(LIBWBCLIENT_LIBS) $(ZLIB_LIBS)
++
+ bin/smbd@EXEEXT@: $(BINARY_PREREQS) $(SMBD_OBJ) $(LIBTALLOC) $(LIBTEVENT) $(LIBTDB) $(LIBWBCLIENT) @BUILD_POPT@
+ 	@echo Linking $@
+ 	@$(CC) -o $@ $(SMBD_OBJ) $(LDFLAGS) $(LDAP_LIBS) @SMBD_FAM_LIBS@ \
+--- /dev/null
++++ b/source3/multi.c
+@@ -0,0 +1,35 @@
++#include <stdio.h>
++#include <string.h>
++
++extern int smbd_main(int argc, char **argv);
++extern int nmbd_main(int argc, char **argv);
++extern int smbpasswd_main(int argc, char **argv);
++
++static struct {
++	const char *name;
++	int (*func)(int argc, char **argv);
++} multicall[] = {
++	{ "smbd", smbd_main },
++	{ "nmbd", nmbd_main },
++	{ "smbpasswd", smbpasswd_main },
++};
++
++#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
++
++int main(int argc, char **argv)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(multicall); i++) {
++		if (strstr(argv[0], multicall[i].name))
++			return multicall[i].func(argc, argv);
++	}
++
++	fprintf(stderr, "Invalid multicall command, available commands:");
++	for (i = 0; i < ARRAY_SIZE(multicall); i++)
++		fprintf(stderr, " %s", multicall[i].name);
++
++	fprintf(stderr, "\n");
++
++	return 1;
++}

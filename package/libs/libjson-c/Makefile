@@ -20,6 +20,8 @@ PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
 PKG_CPE_ID:=cpe:/a:json-c_project:json-c
 
+PKG_FLAGS := nonshared
+PKG_BUILD_PARALLEL:=1
 HOST_BUILD_PREFIX:=$(STAGING_DIR_HOST)
 
 include $(INCLUDE_DIR)/package.mk
@@ -27,7 +29,9 @@ include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/cmake.mk
 
 CMAKE_HOST_OPTIONS += \
-	-DBUILD_SHARED_LIBS=FALSE
+	-DCMAKE_SKIP_RPATH=FALSE \
+	-DCMAKE_MACOSX_RPATH=1 \
+	-DCMAKE_INSTALL_RPATH="${STAGING_DIR_HOST}/lib"
 
 define Package/libjson-c
   SECTION:=libs

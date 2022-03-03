@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2022.01
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=2021.01
+PKG_RELEASE:=1
 
-PKG_HASH:=81b4543227db228c03f8a1bf5ddbc813b0bb8f6555ce46064ef721a6fc680413
+PKG_HASH:=b407e1510a74e863b8b5cb42a24625344f0e0c2fc7582d8c866bd899367d0454
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -36,14 +36,6 @@ define U-Boot/helios4
   UBOOT_IMAGE:=u-boot-spl.kwb
 endef
 
-define U-Boot/omnia
-  NAME:=Turris Omnia
-  BUILD_DEVICES:=cznic_turris-omnia
-  BUILD_SUBTARGET:=cortexa9
-  UBOOT_CONFIG:=turris_omnia
-  UBOOT_IMAGE:=u-boot-spl.kwb
-endef
-
 define U-Boot/espressobin
   NAME:=Marvell ESPRESSObin
   BUILD_SUBTARGET:=cortexa53
@@ -58,9 +50,10 @@ endef
 UBOOT_TARGETS:= \
 	clearfog \
 	helios4 \
-	omnia \
 	espressobin \
 	uDPU
+
+Build/Exports:=$(Host/Exports)
 
 define Build/Configure
 	# enable additional options beyond <device>_defconfig

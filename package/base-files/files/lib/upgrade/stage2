@@ -39,13 +39,13 @@ switch_to_ramfs() {
 	for binary in \
 		/bin/busybox /bin/ash /bin/sh /bin/mount /bin/umount	\
 		pivot_root mount_root reboot sync kill sleep		\
-		md5sum hexdump cat zcat dd tar				\
+		md5sum hexdump cat zcat bzcat dd tar			\
 		ls basename find cp mv rm mkdir rmdir mknod touch chmod \
 		'[' printf wc grep awk sed cut				\
 		mtd partx losetup mkfs.ext4 nandwrite flash_erase	\
 		ubiupdatevol ubiattach ubiblock ubiformat		\
 		ubidetach ubirsvol ubirmvol ubimkvol			\
-		snapshot snapshot_tool date logger			\
+		snapshot snapshot_tool date				\
 		$RAMFS_COPY_LOSETUP $RAMFS_COPY_LVM			\
 		$RAMFS_COPY_BIN
 	do
@@ -63,10 +63,6 @@ switch_to_ramfs() {
 
 	/bin/mount -o remount,ro /mnt
 	/bin/umount -l /mnt
-
-	grep -e "^/dev/dm-.*" -e "^/dev/loop.*" /proc/mounts | while read bdev mp _r; do
-		umount $mp
-	done
 
 	[ "$RAMFS_COPY_LOSETUP" ] && losetup -D
 	[ "$RAMFS_COPY_LVM" ] && {
@@ -89,7 +85,7 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 	local stat
 	local proc_ppid=$(cut -d' ' -f4  /proc/$$/stat)
 
-	v "Sending $sig to remaining processes ..."
+	vn "Sending $sig to remaining processes ..."
 
 	while $run; do
 		run=false
@@ -97,14 +93,11 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 			[ -f "$stat" ] || continue
 
 			local pid name state ppid rest
-			read pid rest < $stat
-			name="${rest#\(}" ; rest="${name##*\) }" ; name="${name%\)*}"
-			set -- $rest ; state="$1" ; ppid="$2"
+			read pid name state ppid rest < $stat
+			name="${name#(}"; name="${name%)}"
 
 			# Skip PID1, our parent, ourself and our children
 			[ $pid -ne 1 -a $pid -ne $proc_ppid -a $pid -ne $$ -a $ppid -ne $$ ] || continue
-
-			[ -f "/proc/$pid/cmdline" ] || continue
 
 			local cmdline
 			read cmdline < /proc/$pid/cmdline
@@ -112,7 +105,7 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 			# Skip kernel threads
 			[ -n "$cmdline" ] || continue
 
-			v "Sending signal $sig to $name ($pid)"
+			_vn " $name"
 			kill -$sig $pid 2>/dev/null
 
 			[ $loop -eq 1 ] && run=true
@@ -120,39 +113,25 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 
 		let loop_limit--
 		[ $loop_limit -eq 0 ] && {
+			_v
 			v "Failed to kill all processes."
 			exit 1
 		}
 	done
+	_v
 }
 
 indicate_upgrade
 
-while read -r a b c; do
-	case "$a" in
-		MemT*) mem="$b" ;; esac
-done < /proc/meminfo
-
-[ "$mem" -gt 32768 ] && \
-	skip_services="dnsmasq log network"
-for service in /etc/init.d/*; do
-	service=${service##*/}
-
-	case " $skip_services " in
-		*" $service "*) continue ;; esac
-
-	ubus call service delete '{ "name": "'"$service"'" }' 2>/dev/null
-done
-
-killall -9 telnetd 2>/dev/null
-killall -9 dropbear 2>/dev/null
-killall -9 ash 2>/dev/null
+killall -9 telnetd
+killall -9 dropbear
+killall -9 ash
 
 kill_remaining TERM
-sleep 4
+sleep 3
 kill_remaining KILL 1
 
-sleep 6
+sleep 1
 
 echo 3 > /proc/sys/vm/drop_caches
 

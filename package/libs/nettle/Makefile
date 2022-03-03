@@ -44,8 +44,7 @@ CONFIGURE_ARGS += \
 	--enable-fat \
 	--disable-openssl \
 	--disable-documentation \
-	--enable-static \
-	$(if $(CONFIG_powerpc64), $(if $(CONFIG_USE_MUSL),--disable-assembler))
+	--enable-static
 
 ifeq ($(CONFIG_LIBNETTLE_MINI),y)
 CONFIGURE_ARGS += --enable-mini-gmp

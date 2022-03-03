@@ -181,7 +181,6 @@ define Device/storlink-reference
 	COMPILE := copy-kernel-$(1).bin
 	COMPILE/copy-kernel-$(1).bin := copy-kernel.bin
 	IMAGES := factory.bin
-	FILESYSTEMS := squashfs
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 6144k | \
 		storlink-default-images $(1)
 	DEVICE_PACKAGES := $(GEMINI_NAS_PACKAGES)

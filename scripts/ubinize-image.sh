@@ -66,22 +66,20 @@ ubilayout() {
 		vol_id=$(( $vol_id + 1 ))
 	fi
 
-	if [ "$2" ]; then
-		case "$rootfs_type" in
-		"ubifs")
-			autoresize=1
-			;;
-		"squashfs")
-			# squashfs uses 1k block size, ensure we do not
-			# violate that
-			rootsize="$( round_up "$( stat -c%s "$2" )" 1024 )"
-			;;
-		esac
-		ubivol $vol_id rootfs "$2" "$autoresize" "$rootsize"
+	case "$rootfs_type" in
+	"ubifs")
+		autoresize=1
+		;;
+	"squashfs")
+		# squashfs uses 1k block size, ensure we do not
+		# violate that
+		rootsize="$( round_up "$( stat -c%s "$2" )" 1024 )"
+		;;
+	esac
+	ubivol $vol_id rootfs "$2" "$autoresize" "$rootsize"
 
-		vol_id=$(( $vol_id + 1 ))
-		[ "$rootfs_type" = "ubifs" ] || ubivol $vol_id rootfs_data "" 1
-	fi
+	vol_id=$(( $vol_id + 1 ))
+	[ "$rootfs_type" = "ubifs" ] || ubivol $vol_id rootfs_data "" 1
 }
 
 set_ubinize_seq() {
@@ -103,12 +101,6 @@ while [ "$1" ]; do
 		shift
 		continue
 		;;
-	"--rootfs")
-		rootfs="$2"
-		shift
-		shift
-		continue
-		;;
 	"--part")
 		parts="$parts $2"
 		shift
@@ -120,6 +112,11 @@ while [ "$1" ]; do
 		break
 		;;
 	*)
+		if [ ! "$rootfs" ]; then
+			rootfs=$1
+			shift
+			continue
+		fi
 		if [ ! "$outfile" ]; then
 			outfile=$1
 			shift
@@ -129,12 +126,12 @@ while [ "$1" ]; do
 	esac
 done
 
-if [ ! -r "$rootfs" -a ! -r "$kernel" -a ! "$outfile" ]; then
-	echo "syntax: $0 [--uboot-env] [--part <name>=<file>] [--kernel kernelimage] [--rootfs rootfsimage] out [ubinize opts]"
+if [ ! -r "$rootfs" -o ! -r "$kernel" -a ! "$outfile" ]; then
+	echo "syntax: $0 [--uboot-env] [--part <name>=<file>] [--kernel kernelimage] rootfs out [ubinize opts]"
 	exit 1
 fi
 
-ubinize="$( command -v ubinize )"
+ubinize="$( which ubinize )"
 if [ ! -x "$ubinize" ]; then
 	echo "ubinize tool not found or not usable"
 	exit 1

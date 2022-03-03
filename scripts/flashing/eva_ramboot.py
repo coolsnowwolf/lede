@@ -3,6 +3,7 @@
 import argparse
 
 from ftplib import FTP
+from sys import argv
 from os import stat
 
 parser = argparse.ArgumentParser(description='Tool to boot AVM EVA ramdisk images.')

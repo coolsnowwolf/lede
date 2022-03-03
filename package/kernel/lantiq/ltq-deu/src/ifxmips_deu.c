@@ -69,8 +69,6 @@
 #endif /* CONFIG_xxxx */
 
 int disable_deudma = 1;
-spinlock_t ltq_deu_hash_lock;
-EXPORT_SYMBOL_GPL(ltq_deu_hash_lock);
 
 void chip_version(void);
 
@@ -86,7 +84,6 @@ static int ltq_deu_probe(struct platform_device *pdev)
 
 
     START_DEU_POWER;
-    CRTCL_SECT_HASH_INIT;
     
 #define IFX_DEU_DRV_VERSION         "2.0.0"
          printk(KERN_INFO "Infineon Technologies DEU driver version %s \n", IFX_DEU_DRV_VERSION);

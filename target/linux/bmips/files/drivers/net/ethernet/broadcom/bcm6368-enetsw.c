@@ -864,6 +864,7 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	struct device_node *node = dev->of_node;
 	struct net_device *ndev;
 	struct resource *res;
+	const void *mac;
 	unsigned i;
 	int ret;
 
@@ -952,8 +953,9 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	priv->dma_chan_int_mask = DMAC_IR_PKTDONE_MASK;
 	priv->dma_chan_width = DMA_CHAN_WIDTH;
 
-	of_get_mac_address(node, ndev->dev_addr);
-	if (is_valid_ether_addr(ndev->dev_addr)) {
+	mac = of_get_mac_address(node);
+	if (!IS_ERR_OR_NULL(mac)) {
+		memcpy(ndev->dev_addr, mac, ETH_ALEN);
 		dev_info(dev, "mtd mac %pM\n", ndev->dev_addr);
 	} else {
 		random_ether_addr(ndev->dev_addr);

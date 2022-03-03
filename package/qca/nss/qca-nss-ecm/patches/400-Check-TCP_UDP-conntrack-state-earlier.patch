@@ -1,0 +1,236 @@
+From 90cace88a342e77ee8ca1e961cf7b7a7930d4c89 Mon Sep 17 00:00:00 2001
+From: Murat Sezgin <msezgin@codeaurora.org>
+Date: Mon, 9 Mar 2020 12:51:03 -0700
+Subject: [qca-nss-ecm] Check TCP/UDP conntrack state earlier
+
+Check the conntrack state before processing the flow
+and adding it to the database. The unconfirmed
+connections can be changed after the confirmation.
+
+Changed the TCP tracker connection state matrix to set the
+state of the connection as ESTABLISHED when any of the src or
+dest side is set as ESTABLISHED. With this change ECM will not
+handle the SYN and SYN-ACK packets of the TCP handshake. Only the
+ACK and FIN flaged packets will be used during the creation and
+closing the connection respectively.
+
+Signed-off-by: Murat Sezgin <msezgin@codeaurora.org>
+Change-Id: I3e0a58d604df4c6a85478ca9c05f24d50cd8c894
+---
+ ecm_classifier_default.c            | 36 ++++++++----------------------------
+ ecm_tracker_tcp.c                   |  4 ++--
+ frontends/nss/ecm_nss_ported_ipv4.c | 17 +++++++++++++++++
+ frontends/nss/ecm_nss_ported_ipv6.c | 17 +++++++++++++++++
+ frontends/sfe/ecm_sfe_ported_ipv4.c | 17 +++++++++++++++++
+ frontends/sfe/ecm_sfe_ported_ipv6.c | 17 +++++++++++++++++
+ 6 files changed, 78 insertions(+), 30 deletions(-)
+
+diff --git a/ecm_classifier_default.c b/ecm_classifier_default.c
+index 22c4bec..d04cdfa 100644
+--- a/ecm_classifier_default.c
++++ b/ecm_classifier_default.c
+@@ -1,6 +1,6 @@
+ /*
+  **************************************************************************
+- * Copyright (c) 2014-2016, The Linux Foundation.  All rights reserved.
++ * Copyright (c) 2014-2016, 2020, The Linux Foundation.  All rights reserved.
+  * Permission to use, copy, modify, and/or distribute this software for
+  * any purpose with or without fee is hereby granted, provided that the
+  * above copyright notice and this permission notice appear in all copies.
+@@ -285,12 +285,12 @@ static void ecm_classifier_default_process(struct ecm_classifier_instance *aci,
+ 	}
+ 
+ 	/*
+-	 * Check the TCP connection state.
++	 * Check the TCP connection state, when the ct is NULL.
++	 * ct valid case was already checked in the ecm_nss{sfe}_ported_ipv4{6}_process functions.
+ 	 * If we are not established then we deny acceleration.
+-	 * Take lead from conntrack if exists.
+ 	 */
+ 	ct = nf_ct_get(skb, &ctinfo);
+-	if (ct == NULL) {
++	if (!ct) {
+ 		DEBUG_TRACE("%p: No Conntrack found for packet, using ECM tracker state\n", cdii);
+ 		if (unlikely(prevailing_state != ECM_TRACKER_CONNECTION_STATE_ESTABLISHED)) {
+ 			cdii->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
+@@ -298,29 +298,10 @@ static void ecm_classifier_default_process(struct ecm_classifier_instance *aci,
+ 		}
+ 	} else {
+ 		/*
+-		 * Unconfirmed connection may be dropped by Linux at the final step,
+-		 * So we don't allow acceleration for the unconfirmed connections.
+-		 */
+-		if (!nf_ct_is_confirmed(ct)) {
+-			DEBUG_TRACE("%p: Unconfirmed connection\n", ct);
+-			cdii->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
+-			goto return_response;
+-		}
+-
+-		/*
+-		 * Don't try to manage a non-established connection.
+-		 */
+-		if (!test_bit(IPS_ASSURED_BIT, &ct->status)) {
+-			DEBUG_TRACE("%p: Non-established connection\n", ct);
+-			cdii->process_response.accel_mode = ECM_CLASSIFIER_ACCELERATION_MODE_NO;
+-			goto return_response;
+-		}
+-
+-		/*
+-		 * If the connection is shutting down do not manage it.
+-		 * state can not be SYN_SENT, SYN_RECV because connection is assured
+-		 * Not managed states: FIN_WAIT, CLOSE_WAIT, LAST_ACK, TIME_WAIT, CLOSE.
+-		 */
++		* If the connection is shutting down do not manage it.
++		* state can not be SYN_SENT, SYN_RECV because connection is assured
++		* Not managed states: FIN_WAIT, CLOSE_WAIT, LAST_ACK, TIME_WAIT, CLOSE.
++		*/
+ 		spin_lock_bh(&ct->lock);
+ 		if (ct->proto.tcp.state != TCP_CONNTRACK_ESTABLISHED) {
+ 			spin_unlock_bh(&ct->lock);
+@@ -333,7 +314,6 @@ static void ecm_classifier_default_process(struct ecm_classifier_instance *aci,
+ 
+ return_response:
+ 	;
+-
+ 	/*
+ 	 * Return the process response
+ 	 */
+diff --git a/ecm_tracker_tcp.c b/ecm_tracker_tcp.c
+index f073c36..e5b327a 100644
+--- a/ecm_tracker_tcp.c
++++ b/ecm_tracker_tcp.c
+@@ -257,9 +257,9 @@ static  DEFINE_SPINLOCK(ecm_tracker_tcp_lock);	/* Global lock for the tracker gl
+  */
+ static ecm_tracker_connection_state_t ecm_tracker_tcp_connection_state_matrix[ECM_TRACKER_SENDER_STATE_MAX][ECM_TRACKER_SENDER_STATE_MAX] =
+ {	/* 			Unknown						Establishing					Established					Closing					Closed					Fault */
+-	/* Unknown */		{ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT},
++	/* Unknown */		{ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHED,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT},
+ 	/* Establishing */	{ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT},
+-	/* Established */	{ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHED,	ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_FAULT},
++	/* Established */	{ECM_TRACKER_CONNECTION_STATE_ESTABLISHED,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHING,	ECM_TRACKER_CONNECTION_STATE_ESTABLISHED,	ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_FAULT},
+ 	/* Closing */		{ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_CLOSING,		ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_FAULT},
+ 	/* Closed */		{ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_CLOSING,		ECM_TRACKER_CONNECTION_STATE_CLOSING,	ECM_TRACKER_CONNECTION_STATE_CLOSED, 	ECM_TRACKER_CONNECTION_STATE_FAULT},
+ 	/* Fault */		{ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_FAULT,		ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT,	ECM_TRACKER_CONNECTION_STATE_FAULT},
+diff --git a/frontends/nss/ecm_nss_ported_ipv4.c b/frontends/nss/ecm_nss_ported_ipv4.c
+index 1435ec0..34c056f 100644
+--- a/frontends/nss/ecm_nss_ported_ipv4.c
++++ b/frontends/nss/ecm_nss_ported_ipv4.c
+@@ -2002,8 +2002,25 @@ unsigned int ecm_nss_ported_ipv4_process(struct net_device *out_dev, struct net_
+ 	int protocol = (int)orig_tuple->dst.protonum;
+ 	__be16 *layer4hdr = NULL;
+ 
++	/*
++	 * Unconfirmed connection may be dropped by Linux at the final step,
++	 * So we don't allow acceleration for the unconfirmed connections.
++	 */
++	if (likely(ct) && !nf_ct_is_confirmed(ct)) {
++		DEBUG_WARN("%p: Unconfirmed connection\n", ct);
++		return NF_ACCEPT;
++	}
++
+ 	if (protocol == IPPROTO_TCP) {
+ 		/*
++		 * Don't try to manage a non-established connection.
++		 */
++		if (likely(ct) && !test_bit(IPS_ASSURED_BIT, &ct->status)) {
++			DEBUG_WARN("%p: Non-established TCP connection\n", ct);
++			return NF_ACCEPT;
++		}
++
++		/*
+ 		 * Extract TCP header to obtain port information
+ 		 */
+ 		tcp_hdr = ecm_tracker_tcp_check_header_and_read(skb, iph, &tcp_hdr_buff);
+diff --git a/frontends/nss/ecm_nss_ported_ipv6.c b/frontends/nss/ecm_nss_ported_ipv6.c
+index 4c154a6..bd6349b 100644
+--- a/frontends/nss/ecm_nss_ported_ipv6.c
++++ b/frontends/nss/ecm_nss_ported_ipv6.c
+@@ -1914,8 +1914,25 @@ unsigned int ecm_nss_ported_ipv6_process(struct net_device *out_dev,
+ 	int protocol = (int)orig_tuple->dst.protonum;
+ 	__be16 *layer4hdr = NULL;
+ 
++	/*
++	 * Unconfirmed connection may be dropped by Linux at the final step,
++	 * So we don't allow acceleration for the unconfirmed connections.
++	 */
++	if (likely(ct) && !nf_ct_is_confirmed(ct)) {
++		DEBUG_WARN("%p: Unconfirmed connection\n", ct);
++		return NF_ACCEPT;
++	}
++
+ 	if (protocol == IPPROTO_TCP) {
+ 		/*
++		 * Don't try to manage a non-established connection.
++		 */
++		if (likely(ct) && !test_bit(IPS_ASSURED_BIT, &ct->status)) {
++			DEBUG_WARN("%p: Non-established TCP connection\n", ct);
++			return NF_ACCEPT;
++		}
++
++		/*
+ 		 * Extract TCP header to obtain port information
+ 		 */
+ 		tcp_hdr = ecm_tracker_tcp_check_header_and_read(skb, iph, &tcp_hdr_buff);
+diff --git a/frontends/sfe/ecm_sfe_ported_ipv4.c b/frontends/sfe/ecm_sfe_ported_ipv4.c
+index e034cde..df1ce57 100644
+--- a/frontends/sfe/ecm_sfe_ported_ipv4.c
++++ b/frontends/sfe/ecm_sfe_ported_ipv4.c
+@@ -1805,8 +1805,25 @@ unsigned int ecm_sfe_ported_ipv4_process(struct net_device *out_dev, struct net_
+ 	int protocol = (int)orig_tuple->dst.protonum;
+ 	__be16 *layer4hdr = NULL;
+ 
++	/*
++	 * Unconfirmed connection may be dropped by Linux at the final step,
++	 * So we don't allow acceleration for the unconfirmed connections.
++	 */
++	if (likely(ct) && !nf_ct_is_confirmed(ct)) {
++		DEBUG_WARN("%p: Unconfirmed connection\n", ct);
++		return NF_ACCEPT;
++	}
++
+ 	if (protocol == IPPROTO_TCP) {
+ 		/*
++		 * Don't try to manage a non-established connection.
++		 */
++		if (likely(ct) && !test_bit(IPS_ASSURED_BIT, &ct->status)) {
++			DEBUG_WARN("%p: Non-established TCP connection\n", ct);
++			return NF_ACCEPT;
++		}
++
++		/*
+ 		 * Extract TCP header to obtain port information
+ 		 */
+ 		tcp_hdr = ecm_tracker_tcp_check_header_and_read(skb, iph, &tcp_hdr_buff);
+diff --git a/frontends/sfe/ecm_sfe_ported_ipv6.c b/frontends/sfe/ecm_sfe_ported_ipv6.c
+index 6ac05ad..657a1c7 100644
+--- a/frontends/sfe/ecm_sfe_ported_ipv6.c
++++ b/frontends/sfe/ecm_sfe_ported_ipv6.c
+@@ -1746,8 +1746,25 @@ unsigned int ecm_sfe_ported_ipv6_process(struct net_device *out_dev,
+ 	int protocol = (int)orig_tuple->dst.protonum;
+ 	__be16 *layer4hdr = NULL;
+ 
++	/*
++	 * Unconfirmed connection may be dropped by Linux at the final step,
++	 * So we don't allow acceleration for the unconfirmed connections.
++	 */
++	if (likely(ct) && !nf_ct_is_confirmed(ct)) {
++		DEBUG_WARN("%p: Unconfirmed connection\n", ct);
++		return NF_ACCEPT;
++	}
++
+ 	if (protocol == IPPROTO_TCP) {
+ 		/*
++		 * Don't try to manage a non-established connection.
++		 */
++		if (likely(ct) && !test_bit(IPS_ASSURED_BIT, &ct->status)) {
++			DEBUG_WARN("%p: Non-established TCP connection\n", ct);
++			return NF_ACCEPT;
++		}
++
++		/*
+ 		 * Extract TCP header to obtain port information
+ 		 */
+ 		tcp_hdr = ecm_tracker_tcp_check_header_and_read(skb, iph, &tcp_hdr_buff);
+-- 
+cgit v1.1
+

@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libunwind
 PKG_VERSION:=1.5.0
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SAVANNAH/$(PKG_NAME)
@@ -32,7 +32,7 @@ define Package/libunwind
   CATEGORY:=Libraries
   TITLE:=The libunwind project
   URL:=http://www.nongnu.org/libunwind/
-  DEPENDS:=@((mips||mipsel||mips64||powerpc64||x86_64||arm||aarch64)||(USE_GLIBC&&(powerpc||i386))) +zlib
+  DEPENDS:=@((mips||mipsel||mips64||x86_64||arm||aarch64)||(USE_GLIBC&&(powerpc||i386))) +zlib
   ABI_VERSION:=8
 endef
 
