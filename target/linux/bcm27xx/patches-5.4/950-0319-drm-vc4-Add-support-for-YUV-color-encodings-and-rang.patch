@@ -1,0 +1,138 @@
+From fb76c3ded8c771e8b9287d62b5e13666037f890e Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 17 Sep 2019 18:28:17 +0100
+Subject: [PATCH] drm/vc4: Add support for YUV color encodings and
+ ranges
+
+The BT601/BT709 color encoding and limited vs full
+range properties were not being exposed, defaulting
+always to BT601 limited range.
+
+Expose the parameters and set the registers appropriately.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 72 +++++++++++++++++++++++++++++++--
+ drivers/gpu/drm/vc4/vc4_regs.h  |  3 ++
+ 2 files changed, 72 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -585,6 +585,53 @@ static int vc4_plane_allocate_lbm(struct
+ 	return 0;
+ }
+ 
++/* The colorspace conversion matrices are held in 3 entries in the dlist.
++ * Create an array of them, with entries for each full and limited mode, and
++ * each supported colorspace.
++ */
++#define VC4_LIMITED_RANGE	0
++#define VC4_FULL_RANGE		1
++
++static const u32 colorspace_coeffs[2][DRM_COLOR_ENCODING_MAX][3] = {
++	{
++		/* Limited range */
++		{
++			/* BT601 */
++			SCALER_CSC0_ITR_R_601_5,
++			SCALER_CSC1_ITR_R_601_5,
++			SCALER_CSC2_ITR_R_601_5,
++		}, {
++			/* BT709 */
++			SCALER_CSC0_ITR_R_709_3,
++			SCALER_CSC1_ITR_R_709_3,
++			SCALER_CSC2_ITR_R_709_3,
++		}, {
++			/* BT2020. Not supported yet - copy 601 */
++			SCALER_CSC0_ITR_R_601_5,
++			SCALER_CSC1_ITR_R_601_5,
++			SCALER_CSC2_ITR_R_601_5,
++		}
++	}, {
++		/* Full range */
++		{
++			/* JFIF */
++			SCALER_CSC0_JPEG_JFIF,
++			SCALER_CSC1_JPEG_JFIF,
++			SCALER_CSC2_JPEG_JFIF,
++		}, {
++			/* BT709 */
++			SCALER_CSC0_ITR_R_709_3_FR,
++			SCALER_CSC1_ITR_R_709_3_FR,
++			SCALER_CSC2_ITR_R_709_3_FR,
++		}, {
++			/* BT2020. Not supported yet - copy JFIF */
++			SCALER_CSC0_JPEG_JFIF,
++			SCALER_CSC1_JPEG_JFIF,
++			SCALER_CSC2_JPEG_JFIF,
++		}
++	}
++};
++
+ /* Writes out a full display list for an active plane to the plane's
+  * private dlist state.
+  */
+@@ -864,9 +911,20 @@ static int vc4_plane_mode_set(struct drm
+ 
+ 	/* Colorspace conversion words */
+ 	if (vc4_state->is_yuv) {
+-		vc4_dlist_write(vc4_state, SCALER_CSC0_ITR_R_601_5);
+-		vc4_dlist_write(vc4_state, SCALER_CSC1_ITR_R_601_5);
+-		vc4_dlist_write(vc4_state, SCALER_CSC2_ITR_R_601_5);
++		enum drm_color_encoding color_encoding = state->color_encoding;
++		enum drm_color_range color_range = state->color_range;
++		const u32 *ccm;
++
++		if (color_encoding >= DRM_COLOR_ENCODING_MAX)
++			color_encoding = DRM_COLOR_YCBCR_BT601;
++		if (color_range >= DRM_COLOR_RANGE_MAX)
++			color_range = DRM_COLOR_YCBCR_LIMITED_RANGE;
++
++		ccm = colorspace_coeffs[color_range][color_encoding];
++
++		vc4_dlist_write(vc4_state, ccm[0]);
++		vc4_dlist_write(vc4_state, ccm[1]);
++		vc4_dlist_write(vc4_state, ccm[2]);
+ 	}
+ 
+ 	vc4_state->lbm_offset = 0;
+@@ -1275,5 +1333,13 @@ struct drm_plane *vc4_plane_init(struct
+ 					   DRM_MODE_REFLECT_X |
+ 					   DRM_MODE_REFLECT_Y);
+ 
++	drm_plane_create_color_properties(plane,
++					  BIT(DRM_COLOR_YCBCR_BT601) |
++					  BIT(DRM_COLOR_YCBCR_BT709),
++					  BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) |
++					  BIT(DRM_COLOR_YCBCR_FULL_RANGE),
++					  DRM_COLOR_YCBCR_BT709,
++					  DRM_COLOR_YCBCR_LIMITED_RANGE);
++
+ 	return plane;
+ }
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -950,6 +950,7 @@ enum hvs_pixel_format {
+ #define SCALER_CSC0_ITR_R_601_5			0x00f00000
+ #define SCALER_CSC0_ITR_R_709_3			0x00f00000
+ #define SCALER_CSC0_JPEG_JFIF			0x00000000
++#define SCALER_CSC0_ITR_R_709_3_FR		0x00000000
+ 
+ /* S2.8 contribution of Cb to Green */
+ #define SCALER_CSC1_COEF_CB_GRN_MASK		VC4_MASK(31, 22)
+@@ -966,6 +967,7 @@ enum hvs_pixel_format {
+ #define SCALER_CSC1_ITR_R_601_5			0xe73304a8
+ #define SCALER_CSC1_ITR_R_709_3			0xf2b784a8
+ #define SCALER_CSC1_JPEG_JFIF			0xea34a400
++#define SCALER_CSC1_ITR_R_709_3_FR		0xe23d0400
+ 
+ /* S2.8 contribution of Cb to Red */
+ #define SCALER_CSC2_COEF_CB_RED_MASK		VC4_MASK(29, 20)
+@@ -979,6 +981,7 @@ enum hvs_pixel_format {
+ #define SCALER_CSC2_ITR_R_601_5			0x00066204
+ #define SCALER_CSC2_ITR_R_709_3			0x00072a1c
+ #define SCALER_CSC2_JPEG_JFIF			0x000599c5
++#define SCALER_CSC2_ITR_R_709_3_FR		0x00064ddb
+ 
+ #define SCALER_TPZ0_VERT_RECALC			BIT(31)
+ #define SCALER_TPZ0_SCALE_MASK			VC4_MASK(28, 8)

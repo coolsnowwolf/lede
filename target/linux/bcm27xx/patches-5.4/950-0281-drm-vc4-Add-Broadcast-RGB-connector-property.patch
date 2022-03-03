@@ -1,0 +1,302 @@
+From 661cefed28f420f7ca6e52882d83a7a321d60256 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Fri, 14 Jun 2019 10:12:07 +0100
+Subject: [PATCH] drm/vc4: Add "Broadcast RGB" connector property
+
+Some HDMI monitors do not abide by the full or limited
+(16-235) range RGB flags in the AVI infoframe. This can
+result in images looking washed out (if given limited and
+interpreting as full), or detail disappearing at the extremes
+(given full and interpreting as limited).
+
+Copy the Intel i915 driver's approach of adding an override
+property ("Broadcast RGB") to force one mode or the other.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 190 +++++++++++++++++++++++--
+ 1 file changed, 177 insertions(+), 13 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -287,6 +287,13 @@ to_vc4_fkms_encoder(struct drm_encoder *
+ 	return container_of(encoder, struct vc4_fkms_encoder, base);
+ }
+ 
++/* "Broadcast RGB" property.
++ * Allows overriding of HDMI full or limited range RGB
++ */
++#define VC4_BROADCAST_RGB_AUTO 0
++#define VC4_BROADCAST_RGB_FULL 1
++#define VC4_BROADCAST_RGB_LIMITED 2
++
+ /* VC4 FKMS connector KMS struct */
+ struct vc4_fkms_connector {
+ 	struct drm_connector base;
+@@ -299,6 +306,8 @@ struct vc4_fkms_connector {
+ 	struct vc4_dev *vc4_dev;
+ 	u32 display_number;
+ 	u32 display_type;
++
++	struct drm_property *broadcast_rgb_property;
+ };
+ 
+ static inline struct vc4_fkms_connector *
+@@ -307,6 +316,16 @@ to_vc4_fkms_connector(struct drm_connect
+ 	return container_of(connector, struct vc4_fkms_connector, base);
+ }
+ 
++/* VC4 FKMS connector state */
++struct vc4_fkms_connector_state {
++	struct drm_connector_state base;
++
++	int broadcast_rgb;
++};
++
++#define to_vc4_fkms_connector_state(x) \
++			container_of(x, struct vc4_fkms_connector_state, base)
++
+ static u32 vc4_get_display_type(u32 display_number)
+ {
+ 	const u32 display_types[] = {
+@@ -863,8 +882,6 @@ static void vc4_crtc_mode_set_nofb(struc
+ 		      mode->picture_aspect_ratio, mode->flags);
+ 	mb.timings.display = vc4_crtc->display_number;
+ 
+-	mb.timings.video_id_code = frame.avi.video_code;
+-
+ 	mb.timings.clock = mode->clock;
+ 	mb.timings.hdisplay = mode->hdisplay;
+ 	mb.timings.hsync_start = mode->hsync_start;
+@@ -902,11 +919,30 @@ static void vc4_crtc_mode_set_nofb(struc
+ 		break;
+ 	}
+ 
+-	if (!vc4_encoder->hdmi_monitor)
++	if (!vc4_encoder->hdmi_monitor) {
+ 		mb.timings.flags |= TIMINGS_FLAGS_DVI;
+-	else if (drm_default_rgb_quant_range(mode) ==
++		mb.timings.video_id_code = frame.avi.video_code;
++	} else {
++		struct vc4_fkms_connector_state *conn_state =
++			to_vc4_fkms_connector_state(vc4_crtc->connector->state);
++
++		/* Do not provide a VIC as the HDMI spec requires that we do not
++		 * signal the opposite of the defined range in the AVI
++		 * infoframe.
++		 */
++		mb.timings.video_id_code = 0;
++
++		if (conn_state->broadcast_rgb == VC4_BROADCAST_RGB_AUTO) {
++			/* See CEA-861-E - 5.1 Default Encoding Parameters */
++			if (drm_default_rgb_quant_range(mode) ==
+ 					HDMI_QUANTIZATION_RANGE_LIMITED)
+-		mb.timings.flags |= TIMINGS_FLAGS_RGB_LIMITED;
++				mb.timings.flags |= TIMINGS_FLAGS_RGB_LIMITED;
++		} else {
++			if (conn_state->broadcast_rgb ==
++						VC4_BROADCAST_RGB_LIMITED)
++				mb.timings.flags |= TIMINGS_FLAGS_RGB_LIMITED;
++		}
++	}
+ 
+ 	/*
+ 	FIXME: To implement
+@@ -1364,13 +1400,95 @@ static void vc4_fkms_connector_destroy(s
+ 	drm_connector_cleanup(connector);
+ }
+ 
++/**
++ * vc4_connector_duplicate_state - duplicate connector state
++ * @connector: digital connector
++ *
++ * Allocates and returns a copy of the connector state (both common and
++ * digital connector specific) for the specified connector.
++ *
++ * Returns: The newly allocated connector state, or NULL on failure.
++ */
++struct drm_connector_state *
++vc4_connector_duplicate_state(struct drm_connector *connector)
++{
++	struct vc4_fkms_connector_state *state;
++
++	state = kmemdup(connector->state, sizeof(*state), GFP_KERNEL);
++	if (!state)
++		return NULL;
++
++	__drm_atomic_helper_connector_duplicate_state(connector, &state->base);
++	return &state->base;
++}
++
++/**
++ * vc4_connector_atomic_get_property - hook for connector->atomic_get_property.
++ * @connector: Connector to get the property for.
++ * @state: Connector state to retrieve the property from.
++ * @property: Property to retrieve.
++ * @val: Return value for the property.
++ *
++ * Returns the atomic property value for a digital connector.
++ */
++int vc4_connector_atomic_get_property(struct drm_connector *connector,
++				      const struct drm_connector_state *state,
++				      struct drm_property *property,
++				      uint64_t *val)
++{
++	struct vc4_fkms_connector *fkms_connector =
++					to_vc4_fkms_connector(connector);
++	struct vc4_fkms_connector_state *vc4_conn_state =
++					to_vc4_fkms_connector_state(state);
++
++	if (property == fkms_connector->broadcast_rgb_property) {
++		*val = vc4_conn_state->broadcast_rgb;
++	} else {
++		DRM_DEBUG_ATOMIC("Unknown property [PROP:%d:%s]\n",
++				 property->base.id, property->name);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++/**
++ * vc4_connector_atomic_set_property - hook for connector->atomic_set_property.
++ * @connector: Connector to set the property for.
++ * @state: Connector state to set the property on.
++ * @property: Property to set.
++ * @val: New value for the property.
++ *
++ * Sets the atomic property value for a digital connector.
++ */
++int vc4_connector_atomic_set_property(struct drm_connector *connector,
++				      struct drm_connector_state *state,
++				      struct drm_property *property,
++				      uint64_t val)
++{
++	struct vc4_fkms_connector *fkms_connector =
++					to_vc4_fkms_connector(connector);
++	struct vc4_fkms_connector_state *vc4_conn_state =
++					to_vc4_fkms_connector_state(state);
++
++	if (property == fkms_connector->broadcast_rgb_property) {
++		vc4_conn_state->broadcast_rgb = val;
++		return 0;
++	}
++
++	DRM_DEBUG_ATOMIC("Unknown property [PROP:%d:%s]\n",
++			 property->base.id, property->name);
++	return -EINVAL;
++}
++
+ static const struct drm_connector_funcs vc4_fkms_connector_funcs = {
+ 	.detect = vc4_fkms_connector_detect,
+ 	.fill_modes = drm_helper_probe_single_connector_modes,
+ 	.destroy = vc4_fkms_connector_destroy,
+-	.reset = drm_atomic_helper_connector_reset,
+-	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_duplicate_state = vc4_connector_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++	.atomic_get_property = vc4_connector_atomic_get_property,
++	.atomic_set_property = vc4_connector_atomic_set_property,
+ };
+ 
+ static const struct drm_connector_helper_funcs vc4_fkms_connector_helper_funcs = {
+@@ -1383,12 +1501,40 @@ static const struct drm_connector_helper
+ 	.best_encoder = vc4_fkms_connector_best_encoder,
+ };
+ 
++static const struct drm_prop_enum_list broadcast_rgb_names[] = {
++	{ VC4_BROADCAST_RGB_AUTO, "Automatic" },
++	{ VC4_BROADCAST_RGB_FULL, "Full" },
++	{ VC4_BROADCAST_RGB_LIMITED, "Limited 16:235" },
++};
++
++static void
++vc4_attach_broadcast_rgb_property(struct vc4_fkms_connector *fkms_connector)
++{
++	struct drm_device *dev = fkms_connector->base.dev;
++	struct drm_property *prop;
++
++	prop = fkms_connector->broadcast_rgb_property;
++	if (!prop) {
++		prop = drm_property_create_enum(dev, DRM_MODE_PROP_ENUM,
++						"Broadcast RGB",
++						broadcast_rgb_names,
++						ARRAY_SIZE(broadcast_rgb_names));
++		if (!prop)
++			return;
++
++		fkms_connector->broadcast_rgb_property = prop;
++	}
++
++	drm_object_attach_property(&fkms_connector->base.base, prop, 0);
++}
++
+ static struct drm_connector *
+ vc4_fkms_connector_init(struct drm_device *dev, struct drm_encoder *encoder,
+ 			u32 display_num)
+ {
+ 	struct drm_connector *connector = NULL;
+ 	struct vc4_fkms_connector *fkms_connector;
++	struct vc4_fkms_connector_state *conn_state = NULL;
+ 	struct vc4_dev *vc4_dev = to_vc4_dev(dev);
+ 	int ret = 0;
+ 
+@@ -1397,9 +1543,18 @@ vc4_fkms_connector_init(struct drm_devic
+ 	fkms_connector = devm_kzalloc(dev->dev, sizeof(*fkms_connector),
+ 				      GFP_KERNEL);
+ 	if (!fkms_connector) {
+-		ret = -ENOMEM;
+-		goto fail;
++		return ERR_PTR(-ENOMEM);
++	}
++
++	/*
++	 * Allocate enough memory to hold vc4_fkms_connector_state,
++	 */
++	conn_state = kzalloc(sizeof(*conn_state), GFP_KERNEL);
++	if (!conn_state) {
++		kfree(fkms_connector);
++		return ERR_PTR(-ENOMEM);
+ 	}
++
+ 	connector = &fkms_connector->base;
+ 
+ 	fkms_connector->encoder = encoder;
+@@ -1407,6 +1562,9 @@ vc4_fkms_connector_init(struct drm_devic
+ 	fkms_connector->display_type = vc4_get_display_type(display_num);
+ 	fkms_connector->vc4_dev = vc4_dev;
+ 
++	__drm_atomic_helper_connector_reset(connector,
++					    &conn_state->base);
++
+ 	if (fkms_connector->display_type == DRM_MODE_ENCODER_DSI) {
+ 		drm_connector_init(dev, connector, &vc4_fkms_connector_funcs,
+ 				   DRM_MODE_CONNECTOR_DSI);
+@@ -1427,10 +1585,14 @@ vc4_fkms_connector_init(struct drm_devic
+ 		connector->interlace_allowed = 0;
+ 	}
+ 
+-	/* Create and attach TV margin props to this connector. */
+-	ret = drm_mode_create_tv_margin_properties(dev);
+-	if (ret)
+-		return ERR_PTR(ret);
++	/* Create and attach TV margin props to this connector.
++	 * Already done for SDTV outputs.
++	 */
++	if (fkms_connector->display_type != DRM_MODE_ENCODER_TVDAC) {
++		ret = drm_mode_create_tv_margin_properties(dev);
++		if (ret)
++			goto fail;
++	}
+ 
+ 	drm_connector_attach_tv_margin_properties(connector);
+ 
+@@ -1439,6 +1601,8 @@ vc4_fkms_connector_init(struct drm_devic
+ 
+ 	connector->doublescan_allowed = 0;
+ 
++	vc4_attach_broadcast_rgb_property(fkms_connector);
++
+ 	drm_connector_attach_encoder(connector, encoder);
+ 
+ 	return connector;

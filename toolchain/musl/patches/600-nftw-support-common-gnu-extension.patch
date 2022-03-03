@@ -1,0 +1,95 @@
+From 6f1143425a3afc4eb5086e9c90e7efb3affd7cb7 Mon Sep 17 00:00:00 2001
+From: Tony Ambardar <Tony.Ambardar@gmail.com>
+Date: Sat, 11 Jul 2020 06:35:46 -0700
+Subject: [PATCH 2/2] nftw: support common gnu extension
+
+Signed-off-by: Tony Ambardar <Tony.Ambardar@gmail.com>
+---
+ include/ftw.h   |  8 ++++++++
+ src/misc/nftw.c | 35 ++++++++++++++++++++++++++++++-----
+ 2 files changed, 38 insertions(+), 5 deletions(-)
+
+--- a/include/ftw.h
++++ b/include/ftw.h
+@@ -21,6 +21,14 @@ extern "C" {
+ #define FTW_CHDIR 4
+ #define FTW_DEPTH 8
+ 
++#ifdef _GNU_SOURCE
++#define FTW_ACTIONRETVAL 16
++#define FTW_CONTINUE 0
++#define FTW_STOP 1
++#define FTW_SKIP_SUBTREE 2
++#define FTW_SKIP_SIBLINGS 3
++#endif
++
+ struct FTW {
+ 	int base;
+ 	int level;
+--- a/src/misc/nftw.c
++++ b/src/misc/nftw.c
+@@ -1,3 +1,4 @@
++#define _GNU_SOURCE
+ #include <ftw.h>
+ #include <dirent.h>
+ #include <fcntl.h>
+@@ -72,8 +73,20 @@ static int do_nftw(char *path, int (*fn)
+ 		if (!fd_limit) close(dfd);
+ 	}
+ 
+-	if (!(flags & FTW_DEPTH) && (r=fn(path, &st, type, &lev)))
+-		return r;
++	if (!(flags & FTW_DEPTH) && (r=fn(path, &st, type, &lev))) {
++		if (flags & FTW_ACTIONRETVAL)
++			switch (r) {
++			case FTW_SKIP_SUBTREE:
++				h = NULL;
++			case FTW_CONTINUE:
++				break;
++			case FTW_SKIP_SIBLINGS:
++			case FTW_STOP:
++				return r;
++			}
++		else
++			return r;
++	}
+ 
+ 	for (; h; h = h->chain)
+ 		if (h->dev == st.st_dev && h->ino == st.st_ino)
+@@ -101,7 +114,10 @@ static int do_nftw(char *path, int (*fn)
+ 				strcpy(path+j+1, de->d_name);
+ 				if ((r=do_nftw(path, fn, fd_limit-1, flags, &new))) {
+ 					closedir(d);
+-					return r;
++					if ((flags & FTW_ACTIONRETVAL) && r == FTW_SKIP_SIBLINGS)
++						break;
++					else
++						return r;
+ 				}
+ 			}
+ 			closedir(d);
+@@ -112,8 +128,16 @@ static int do_nftw(char *path, int (*fn)
+ 	}
+ 
+ 	path[l] = 0;
+-	if ((flags & FTW_DEPTH) && (r=fn(path, &st, type, &lev)))
+-		return r;
++	if ((flags & FTW_DEPTH) && (r=fn(path, &st, type, &lev))) {
++		if (flags & FTW_ACTIONRETVAL)
++			switch (r) {
++				case FTW_SKIP_SIBLINGS:
++				case FTW_STOP:
++					return r;
++			}
++		else
++			return r;
++	}
+ 
+ 	return 0;
+ }
+@@ -139,4 +163,5 @@ int nftw(const char *path, int (*fn)(con
+ 	return r;
+ }
+ 
++#undef nftw64
+ weak_alias(nftw, nftw64);

@@ -1,0 +1,1018 @@
+From 0dd369ae91c3c4d2db2aa292935d12db5a0d97e1 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 28 Oct 2020 13:32:22 +0100
+Subject: [PATCH] drm/atomic: Pass the full state to CRTC atomic begin
+ and flush
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit f6ebe9f9c9233a6114eb922aba9a0c9ccc2d2e14 upstream.
+
+The current atomic helpers have either their object state being passed as
+an argument or the full atomic state.
+
+The former is the pattern that was done at first, before switching to the
+latter for new hooks or when it was needed.
+
+Let's start convert all the remaining helpers to provide a consistent
+interface, starting with the CRTC's atomic_begin and atomic_flush.
+
+The conversion was done using the coccinelle script below, built tested on
+all the drivers and actually tested on vc4.
+
+virtual report
+
+@@
+struct drm_crtc_helper_funcs *FUNCS;
+identifier old_crtc_state, old_state;
+identifier crtc;
+identifier f;
+@@
+
+ f(struct drm_crtc_state *old_crtc_state)
+ {
+	...
+ 	struct drm_atomic_state *old_state = old_crtc_state->state;
+	<...
+-	FUNCS->atomic_begin(crtc, old_crtc_state);
++	FUNCS->atomic_begin(crtc, old_state);
+	...>
+ }
+
+@@
+struct drm_crtc_helper_funcs *FUNCS;
+identifier old_crtc_state, old_state;
+identifier crtc;
+identifier f;
+@@
+
+ f(struct drm_crtc_state *old_crtc_state)
+ {
+	...
+ 	struct drm_atomic_state *old_state = old_crtc_state->state;
+	<...
+-	FUNCS->atomic_flush(crtc, old_crtc_state);
++	FUNCS->atomic_flush(crtc, old_state);
+	...>
+ }
+
+@@
+struct drm_crtc_helper_funcs *FUNCS;
+struct drm_crtc *crtc;
+struct drm_crtc_state *crtc_state;
+identifier dev, state;
+identifier f;
+@@
+
+ f(struct drm_device *dev, struct drm_atomic_state *state, ...)
+ {
+	<...
+-	FUNCS->atomic_begin(crtc, crtc_state);
++	FUNCS->atomic_begin(crtc, state);
+	...>
+ }
+
+@@
+struct drm_crtc_helper_funcs *FUNCS;
+struct drm_crtc *crtc;
+struct drm_crtc_state *crtc_state;
+identifier dev, state;
+identifier f;
+@@
+
+ f(struct drm_device *dev, struct drm_atomic_state *state, ...)
+ {
+	<...
+-	FUNCS->atomic_flush(crtc, crtc_state);
++	FUNCS->atomic_flush(crtc, state);
+	...>
+ }
+
+@@
+identifier crtc, old_state;
+@@
+
+ struct drm_crtc_helper_funcs {
+	...
+-	void (*atomic_begin)(struct drm_crtc *crtc, struct drm_crtc_state *old_state);
++	void (*atomic_begin)(struct drm_crtc *crtc, struct drm_atomic_state *state);
+	...
+-	void (*atomic_flush)(struct drm_crtc *crtc, struct drm_crtc_state *old_state);
++	void (*atomic_flush)(struct drm_crtc *crtc, struct drm_atomic_state *state);
+	...
+}
+
+@ crtc_atomic_func @
+identifier helpers;
+identifier func;
+@@
+
+(
+static struct drm_crtc_helper_funcs helpers = {
+	...,
+	.atomic_begin = func,
+	...,
+};
+|
+static struct drm_crtc_helper_funcs helpers = {
+	...,
+	.atomic_flush = func,
+	...,
+};
+)
+
+@ ignores_old_state @
+identifier crtc_atomic_func.func;
+identifier crtc, old_state;
+@@
+
+void func(struct drm_crtc *crtc,
+		struct drm_crtc_state *old_state)
+{
+	... when != old_state
+}
+
+@ adds_old_state depends on crtc_atomic_func && !ignores_old_state @
+identifier crtc_atomic_func.func;
+identifier crtc, old_state;
+@@
+
+void func(struct drm_crtc *crtc, struct drm_crtc_state *old_state)
+{
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state, crtc);
+	...
+}
+
+@ depends on crtc_atomic_func @
+identifier crtc_atomic_func.func;
+expression E;
+type T;
+@@
+
+void func(...)
+{
+	...
+-	T state = E;
++	T crtc_state = E;
+	<+...
+-	state
++	crtc_state
+	...+>
+
+}
+
+@ depends on crtc_atomic_func @
+identifier crtc_atomic_func.func;
+type T;
+@@
+
+void func(...)
+{
+	...
+-	T state;
++	T crtc_state;
+	<+...
+-	state
++	crtc_state
+	...+>
+
+}
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   )
+{
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state, crtc);
+	...
+}
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   );
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   )
+{
+	...
+}
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   );
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   )
+{
+	...
+}
+
+@@
+identifier old_state;
+identifier crtc;
+@@
+
+ void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
+-			   struct drm_crtc_state *old_state
++			   struct drm_atomic_state *state
+			   );
+
+@ depends on crtc_atomic_func @
+identifier crtc_atomic_func.func;
+identifier old_state;
+identifier crtc;
+@@
+
+void func(struct drm_crtc *crtc,
+-	       struct drm_crtc_state *old_state
++	       struct drm_atomic_state *state
+	       )
+		{ ... }
+
+@ include depends on adds_old_state @
+@@
+
+ #include <drm/drm_atomic.h>
+
+@ no_include depends on !include && adds_old_state @
+@@
+
++ #include <drm/drm_atomic.h>
+  #include <drm/...>
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Reviewed-by: Ville Syrjälä <ville.syrjala@linux.intel.com>
+Acked-by: Daniel Vetter <daniel.vetter@ffwll.ch>
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20201028123222.1732139-2-maxime@cerno.tech
+---
+ drivers/gpu/drm/arm/display/komeda/komeda_crtc.c |  4 +++-
+ drivers/gpu/drm/arm/hdlcd_crtc.c                 |  2 +-
+ drivers/gpu/drm/armada/armada_crtc.c             |  4 ++--
+ drivers/gpu/drm/atmel-hlcdc/atmel_hlcdc_crtc.c   |  4 ++--
+ drivers/gpu/drm/drm_atomic_helper.c              |  8 ++++----
+ drivers/gpu/drm/exynos/exynos_drm_crtc.c         |  4 ++--
+ drivers/gpu/drm/fsl-dcu/fsl_dcu_drm_crtc.c       |  2 +-
+ drivers/gpu/drm/hisilicon/hibmc/hibmc_drm_de.c   |  4 ++--
+ drivers/gpu/drm/hisilicon/kirin/kirin_drm_ade.c  |  4 ++--
+ drivers/gpu/drm/imx/dcss/dcss-crtc.c             |  4 ++--
+ drivers/gpu/drm/imx/ipuv3-crtc.c                 |  4 ++--
+ drivers/gpu/drm/ingenic/ingenic-drm-drv.c        | 14 +++++++-------
+ drivers/gpu/drm/mediatek/mtk_drm_crtc.c          | 16 ++++++++--------
+ drivers/gpu/drm/meson/meson_crtc.c               |  4 ++--
+ drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c         |  4 ++--
+ drivers/gpu/drm/msm/disp/mdp4/mdp4_crtc.c        |  4 ++--
+ drivers/gpu/drm/msm/disp/mdp5/mdp5_crtc.c        |  4 ++--
+ drivers/gpu/drm/mxsfb/mxsfb_kms.c                |  2 +-
+ drivers/gpu/drm/omapdrm/omap_crtc.c              |  4 ++--
+ drivers/gpu/drm/qxl/qxl_display.c                |  2 +-
+ drivers/gpu/drm/rcar-du/rcar_du_crtc.c           |  4 ++--
+ drivers/gpu/drm/rockchip/rockchip_drm_vop.c      |  8 ++++++--
+ drivers/gpu/drm/sti/sti_crtc.c                   |  2 +-
+ drivers/gpu/drm/stm/ltdc.c                       |  2 +-
+ drivers/gpu/drm/sun4i/sun4i_crtc.c               |  6 ++++--
+ drivers/gpu/drm/tegra/dc.c                       | 10 +++++-----
+ drivers/gpu/drm/tidss/tidss_crtc.c               |  4 +++-
+ drivers/gpu/drm/tilcdc/tilcdc_crtc.c             |  2 +-
+ drivers/gpu/drm/vboxvideo/vbox_mode.c            |  2 +-
+ drivers/gpu/drm/vc4/vc4_drv.h                    |  3 ++-
+ drivers/gpu/drm/vc4/vc4_hvs.c                    |  4 +++-
+ drivers/gpu/drm/virtio/virtgpu_display.c         |  2 +-
+ drivers/gpu/drm/vkms/vkms_crtc.c                 |  4 ++--
+ drivers/gpu/drm/vmwgfx/vmwgfx_kms.c              |  4 ++--
+ drivers/gpu/drm/vmwgfx/vmwgfx_kms.h              |  4 ++--
+ drivers/gpu/drm/xlnx/zynqmp_disp.c               |  4 ++--
+ drivers/gpu/drm/zte/zx_vou.c                     |  2 +-
+ include/drm/drm_modeset_helper_vtables.h         |  4 ++--
+ 38 files changed, 91 insertions(+), 78 deletions(-)
+
+--- a/drivers/gpu/drm/arm/display/komeda/komeda_crtc.c
++++ b/drivers/gpu/drm/arm/display/komeda/komeda_crtc.c
+@@ -385,8 +385,10 @@ komeda_crtc_atomic_disable(struct drm_cr
+ 
+ static void
+ komeda_crtc_atomic_flush(struct drm_crtc *crtc,
+-			 struct drm_crtc_state *old)
++			 struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old = drm_atomic_get_old_crtc_state(state,
++								   crtc);
+ 	/* commit with modeset will be handled in enable/disable */
+ 	if (drm_atomic_crtc_needs_modeset(crtc->state))
+ 		return;
+--- a/drivers/gpu/drm/arm/hdlcd_crtc.c
++++ b/drivers/gpu/drm/arm/hdlcd_crtc.c
+@@ -205,7 +205,7 @@ static enum drm_mode_status hdlcd_crtc_m
+ }
+ 
+ static void hdlcd_crtc_atomic_begin(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *state)
++				    struct drm_atomic_state *state)
+ {
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+ 
+--- a/drivers/gpu/drm/armada/armada_crtc.c
++++ b/drivers/gpu/drm/armada/armada_crtc.c
+@@ -429,7 +429,7 @@ static int armada_drm_crtc_atomic_check(
+ }
+ 
+ static void armada_drm_crtc_atomic_begin(struct drm_crtc *crtc,
+-					 struct drm_crtc_state *old_crtc_state)
++					 struct drm_atomic_state *state)
+ {
+ 	struct armada_crtc *dcrtc = drm_to_armada_crtc(crtc);
+ 
+@@ -443,7 +443,7 @@ static void armada_drm_crtc_atomic_begin
+ }
+ 
+ static void armada_drm_crtc_atomic_flush(struct drm_crtc *crtc,
+-					 struct drm_crtc_state *old_crtc_state)
++					 struct drm_atomic_state *state)
+ {
+ 	struct armada_crtc *dcrtc = drm_to_armada_crtc(crtc);
+ 
+--- a/drivers/gpu/drm/atmel-hlcdc/atmel_hlcdc_crtc.c
++++ b/drivers/gpu/drm/atmel-hlcdc/atmel_hlcdc_crtc.c
+@@ -342,7 +342,7 @@ static int atmel_hlcdc_crtc_atomic_check
+ }
+ 
+ static void atmel_hlcdc_crtc_atomic_begin(struct drm_crtc *c,
+-					  struct drm_crtc_state *old_s)
++					  struct drm_atomic_state *state)
+ {
+ 	struct atmel_hlcdc_crtc *crtc = drm_crtc_to_atmel_hlcdc_crtc(c);
+ 
+@@ -357,7 +357,7 @@ static void atmel_hlcdc_crtc_atomic_begi
+ }
+ 
+ static void atmel_hlcdc_crtc_atomic_flush(struct drm_crtc *crtc,
+-					  struct drm_crtc_state *old_s)
++					  struct drm_atomic_state *state)
+ {
+ 	/* TODO: write common plane control register if available */
+ }
+--- a/drivers/gpu/drm/drm_atomic_helper.c
++++ b/drivers/gpu/drm/drm_atomic_helper.c
+@@ -2507,7 +2507,7 @@ void drm_atomic_helper_commit_planes(str
+ 		if (active_only && !new_crtc_state->active)
+ 			continue;
+ 
+-		funcs->atomic_begin(crtc, old_crtc_state);
++		funcs->atomic_begin(crtc, old_state);
+ 	}
+ 
+ 	for_each_oldnew_plane_in_state(old_state, plane, old_plane_state, new_plane_state, i) {
+@@ -2565,7 +2565,7 @@ void drm_atomic_helper_commit_planes(str
+ 		if (active_only && !new_crtc_state->active)
+ 			continue;
+ 
+-		funcs->atomic_flush(crtc, old_crtc_state);
++		funcs->atomic_flush(crtc, old_state);
+ 	}
+ }
+ EXPORT_SYMBOL(drm_atomic_helper_commit_planes);
+@@ -2603,7 +2603,7 @@ drm_atomic_helper_commit_planes_on_crtc(
+ 
+ 	crtc_funcs = crtc->helper_private;
+ 	if (crtc_funcs && crtc_funcs->atomic_begin)
+-		crtc_funcs->atomic_begin(crtc, old_crtc_state);
++		crtc_funcs->atomic_begin(crtc, old_state);
+ 
+ 	drm_for_each_plane_mask(plane, crtc->dev, plane_mask) {
+ 		struct drm_plane_state *old_plane_state =
+@@ -2629,7 +2629,7 @@ drm_atomic_helper_commit_planes_on_crtc(
+ 	}
+ 
+ 	if (crtc_funcs && crtc_funcs->atomic_flush)
+-		crtc_funcs->atomic_flush(crtc, old_crtc_state);
++		crtc_funcs->atomic_flush(crtc, old_state);
+ }
+ EXPORT_SYMBOL(drm_atomic_helper_commit_planes_on_crtc);
+ 
+--- a/drivers/gpu/drm/exynos/exynos_drm_crtc.c
++++ b/drivers/gpu/drm/exynos/exynos_drm_crtc.c
+@@ -65,7 +65,7 @@ static int exynos_crtc_atomic_check(stru
+ }
+ 
+ static void exynos_crtc_atomic_begin(struct drm_crtc *crtc,
+-				     struct drm_crtc_state *old_crtc_state)
++				     struct drm_atomic_state *state)
+ {
+ 	struct exynos_drm_crtc *exynos_crtc = to_exynos_crtc(crtc);
+ 
+@@ -74,7 +74,7 @@ static void exynos_crtc_atomic_begin(str
+ }
+ 
+ static void exynos_crtc_atomic_flush(struct drm_crtc *crtc,
+-				     struct drm_crtc_state *old_crtc_state)
++				     struct drm_atomic_state *state)
+ {
+ 	struct exynos_drm_crtc *exynos_crtc = to_exynos_crtc(crtc);
+ 
+--- a/drivers/gpu/drm/fsl-dcu/fsl_dcu_drm_crtc.c
++++ b/drivers/gpu/drm/fsl-dcu/fsl_dcu_drm_crtc.c
+@@ -21,7 +21,7 @@
+ #include "fsl_dcu_drm_plane.h"
+ 
+ static void fsl_dcu_drm_crtc_atomic_flush(struct drm_crtc *crtc,
+-					  struct drm_crtc_state *old_crtc_state)
++					  struct drm_atomic_state *state)
+ {
+ 	struct drm_device *dev = crtc->dev;
+ 	struct fsl_dcu_drm_device *fsl_dev = dev->dev_private;
+--- a/drivers/gpu/drm/hisilicon/hibmc/hibmc_drm_de.c
++++ b/drivers/gpu/drm/hisilicon/hibmc/hibmc_drm_de.c
+@@ -393,7 +393,7 @@ static void hibmc_crtc_mode_set_nofb(str
+ }
+ 
+ static void hibmc_crtc_atomic_begin(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_state)
++				    struct drm_atomic_state *state)
+ {
+ 	unsigned int reg;
+ 	struct drm_device *dev = crtc->dev;
+@@ -413,7 +413,7 @@ static void hibmc_crtc_atomic_begin(stru
+ }
+ 
+ static void hibmc_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_state)
++				    struct drm_atomic_state *state)
+ 
+ {
+ 	unsigned long flags;
+--- a/drivers/gpu/drm/hisilicon/kirin/kirin_drm_ade.c
++++ b/drivers/gpu/drm/hisilicon/kirin/kirin_drm_ade.c
+@@ -485,7 +485,7 @@ static void ade_crtc_mode_set_nofb(struc
+ }
+ 
+ static void ade_crtc_atomic_begin(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_state)
++				  struct drm_atomic_state *state)
+ {
+ 	struct kirin_crtc *kcrtc = to_kirin_crtc(crtc);
+ 	struct ade_hw_ctx *ctx = kcrtc->hw_ctx;
+@@ -498,7 +498,7 @@ static void ade_crtc_atomic_begin(struct
+ }
+ 
+ static void ade_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_state)
++				  struct drm_atomic_state *state)
+ 
+ {
+ 	struct kirin_crtc *kcrtc = to_kirin_crtc(crtc);
+--- a/drivers/gpu/drm/imx/dcss/dcss-crtc.c
++++ b/drivers/gpu/drm/imx/dcss/dcss-crtc.c
+@@ -53,13 +53,13 @@ static const struct drm_crtc_funcs dcss_
+ };
+ 
+ static void dcss_crtc_atomic_begin(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	drm_crtc_vblank_on(crtc);
+ }
+ 
+ static void dcss_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct dcss_crtc *dcss_crtc = container_of(crtc, struct dcss_crtc,
+ 						   base);
+--- a/drivers/gpu/drm/imx/ipuv3-crtc.c
++++ b/drivers/gpu/drm/imx/ipuv3-crtc.c
+@@ -240,13 +240,13 @@ static int ipu_crtc_atomic_check(struct
+ }
+ 
+ static void ipu_crtc_atomic_begin(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
+ 	drm_crtc_vblank_on(crtc);
+ }
+ 
+ static void ipu_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
+ 	spin_lock_irq(&crtc->dev->event_lock);
+ 	if (crtc->state->event) {
+--- a/drivers/gpu/drm/ingenic/ingenic-drm-drv.c
++++ b/drivers/gpu/drm/ingenic/ingenic-drm-drv.c
+@@ -253,7 +253,7 @@ ingenic_drm_crtc_mode_valid(struct drm_c
+ }
+ 
+ static void ingenic_drm_crtc_atomic_begin(struct drm_crtc *crtc,
+-					  struct drm_crtc_state *oldstate)
++					  struct drm_atomic_state *state)
+ {
+ 	struct ingenic_drm *priv = drm_crtc_get_priv(crtc);
+ 	u32 ctrl = 0;
+@@ -273,20 +273,20 @@ static void ingenic_drm_crtc_atomic_begi
+ }
+ 
+ static void ingenic_drm_crtc_atomic_flush(struct drm_crtc *crtc,
+-					  struct drm_crtc_state *oldstate)
++					  struct drm_atomic_state *state)
+ {
+ 	struct ingenic_drm *priv = drm_crtc_get_priv(crtc);
+-	struct drm_crtc_state *state = crtc->state;
+-	struct drm_pending_vblank_event *event = state->event;
++	struct drm_crtc_state *crtc_state = crtc->state;
++	struct drm_pending_vblank_event *event = crtc_state->event;
+ 
+-	if (drm_atomic_crtc_needs_modeset(state)) {
+-		ingenic_drm_crtc_update_timings(priv, &state->mode);
++	if (drm_atomic_crtc_needs_modeset(crtc_state)) {
++		ingenic_drm_crtc_update_timings(priv, &crtc_state->mode);
+ 
+ 		clk_set_rate(priv->pix_clk, state->adjusted_mode.clock * 1000);
+ 	}
+ 
+ 	if (event) {
+-		state->event = NULL;
++		crtc_state->event = NULL;
+ 
+ 		spin_lock_irq(&crtc->dev->event_lock);
+ 		if (drm_crtc_vblank_get(crtc) == 0)
+--- a/drivers/gpu/drm/mediatek/mtk_drm_crtc.c
++++ b/drivers/gpu/drm/mediatek/mtk_drm_crtc.c
+@@ -575,24 +575,24 @@ static void mtk_drm_crtc_atomic_disable(
+ }
+ 
+ static void mtk_drm_crtc_atomic_begin(struct drm_crtc *crtc,
+-				      struct drm_crtc_state *old_crtc_state)
++				      struct drm_atomic_state *state)
+ {
+-	struct mtk_crtc_state *state = to_mtk_crtc_state(crtc->state);
++	struct mtk_crtc_state *crtc_state = to_mtk_crtc_state(crtc->state);
+ 	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
+ 
+-	if (mtk_crtc->event && state->base.event)
++	if (mtk_crtc->event && crtc_state->base.event)
+ 		DRM_ERROR("new event while there is still a pending event\n");
+ 
+-	if (state->base.event) {
+-		state->base.event->pipe = drm_crtc_index(crtc);
++	if (crtc_state->base.event) {
++		crtc_state->base.event->pipe = drm_crtc_index(crtc);
+ 		WARN_ON(drm_crtc_vblank_get(crtc) != 0);
+-		mtk_crtc->event = state->base.event;
+-		state->base.event = NULL;
++		mtk_crtc->event = crtc_state->base.event;
++		crtc_state->base.event = NULL;
+ 	}
+ }
+ 
+ static void mtk_drm_crtc_atomic_flush(struct drm_crtc *crtc,
+-				      struct drm_crtc_state *old_crtc_state)
++				      struct drm_atomic_state *state)
+ {
+ 	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
+ 	int i;
+--- a/drivers/gpu/drm/meson/meson_crtc.c
++++ b/drivers/gpu/drm/meson/meson_crtc.c
+@@ -201,7 +201,7 @@ static void meson_crtc_atomic_disable(st
+ }
+ 
+ static void meson_crtc_atomic_begin(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *state)
++				    struct drm_atomic_state *state)
+ {
+ 	struct meson_crtc *meson_crtc = to_meson_crtc(crtc);
+ 	unsigned long flags;
+@@ -217,7 +217,7 @@ static void meson_crtc_atomic_begin(stru
+ }
+ 
+ static void meson_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_crtc_state)
++				    struct drm_atomic_state *state)
+ {
+ 	struct meson_crtc *meson_crtc = to_meson_crtc(crtc);
+ 	struct meson_drm *priv = meson_crtc->priv;
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_crtc.c
+@@ -486,7 +486,7 @@ static void _dpu_crtc_setup_cp_blocks(st
+ }
+ 
+ static void dpu_crtc_atomic_begin(struct drm_crtc *crtc,
+-		struct drm_crtc_state *old_state)
++		struct drm_atomic_state *state)
+ {
+ 	struct dpu_crtc_state *cstate = to_dpu_crtc_state(crtc->state);
+ 	struct drm_encoder *encoder;
+@@ -527,7 +527,7 @@ static void dpu_crtc_atomic_begin(struct
+ }
+ 
+ static void dpu_crtc_atomic_flush(struct drm_crtc *crtc,
+-		struct drm_crtc_state *old_crtc_state)
++		struct drm_atomic_state *state)
+ {
+ 	struct dpu_crtc *dpu_crtc;
+ 	struct drm_device *dev;
+--- a/drivers/gpu/drm/msm/disp/mdp4/mdp4_crtc.c
++++ b/drivers/gpu/drm/msm/disp/mdp4/mdp4_crtc.c
+@@ -316,14 +316,14 @@ static int mdp4_crtc_atomic_check(struct
+ }
+ 
+ static void mdp4_crtc_atomic_begin(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
+ 	DBG("%s: begin", mdp4_crtc->name);
+ }
+ 
+ static void mdp4_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct mdp4_crtc *mdp4_crtc = to_mdp4_crtc(crtc);
+ 	struct drm_device *dev = crtc->dev;
+--- a/drivers/gpu/drm/msm/disp/mdp5/mdp5_crtc.c
++++ b/drivers/gpu/drm/msm/disp/mdp5/mdp5_crtc.c
+@@ -772,13 +772,13 @@ static int mdp5_crtc_atomic_check(struct
+ }
+ 
+ static void mdp5_crtc_atomic_begin(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	DBG("%s: begin", crtc->name);
+ }
+ 
+ static void mdp5_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct mdp5_crtc *mdp5_crtc = to_mdp5_crtc(crtc);
+ 	struct mdp5_crtc_state *mdp5_cstate = to_mdp5_crtc_state(crtc->state);
+--- a/drivers/gpu/drm/mxsfb/mxsfb_kms.c
++++ b/drivers/gpu/drm/mxsfb/mxsfb_kms.c
+@@ -326,7 +326,7 @@ static int mxsfb_crtc_atomic_check(struc
+ }
+ 
+ static void mxsfb_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_state)
++				    struct drm_atomic_state *state)
+ {
+ 	struct drm_pending_vblank_event *event;
+ 
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c
+@@ -601,12 +601,12 @@ static int omap_crtc_atomic_check(struct
+ }
+ 
+ static void omap_crtc_atomic_begin(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ }
+ 
+ static void omap_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct omap_drm_private *priv = crtc->dev->dev_private;
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
+--- a/drivers/gpu/drm/qxl/qxl_display.c
++++ b/drivers/gpu/drm/qxl/qxl_display.c
+@@ -373,7 +373,7 @@ static void qxl_crtc_update_monitors_con
+ }
+ 
+ static void qxl_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
+ 	qxl_crtc_update_monitors_config(crtc, "flush");
+ }
+--- a/drivers/gpu/drm/rcar-du/rcar_du_crtc.c
++++ b/drivers/gpu/drm/rcar-du/rcar_du_crtc.c
+@@ -785,7 +785,7 @@ static void rcar_du_crtc_atomic_disable(
+ }
+ 
+ static void rcar_du_crtc_atomic_begin(struct drm_crtc *crtc,
+-				      struct drm_crtc_state *old_crtc_state)
++				      struct drm_atomic_state *state)
+ {
+ 	struct rcar_du_crtc *rcrtc = to_rcar_crtc(crtc);
+ 
+@@ -814,7 +814,7 @@ static void rcar_du_crtc_atomic_begin(st
+ }
+ 
+ static void rcar_du_crtc_atomic_flush(struct drm_crtc *crtc,
+-				      struct drm_crtc_state *old_crtc_state)
++				      struct drm_atomic_state *state)
+ {
+ 	struct rcar_du_crtc *rcrtc = to_rcar_crtc(crtc);
+ 	struct drm_device *dev = rcrtc->crtc.dev;
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
+@@ -1247,8 +1247,10 @@ static void vop_crtc_gamma_set(struct vo
+ }
+ 
+ static void vop_crtc_atomic_begin(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
++									      crtc);
+ 	struct vop *vop = to_vop(crtc);
+ 
+ 	/*
+@@ -1463,8 +1465,10 @@ static int vop_crtc_atomic_check(struct
+ }
+ 
+ static void vop_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
++									      crtc);
+ 	struct drm_atomic_state *old_state = old_crtc_state->state;
+ 	struct drm_plane_state *old_plane_state, *new_plane_state;
+ 	struct vop *vop = to_vop(crtc);
+--- a/drivers/gpu/drm/sti/sti_crtc.c
++++ b/drivers/gpu/drm/sti/sti_crtc.c
+@@ -133,7 +133,7 @@ sti_crtc_mode_set_nofb(struct drm_crtc *
+ }
+ 
+ static void sti_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_crtc_state)
++				  struct drm_atomic_state *state)
+ {
+ 	struct drm_device *drm_dev = crtc->dev;
+ 	struct sti_mixer *mixer = to_sti_mixer(crtc);
+--- a/drivers/gpu/drm/stm/ltdc.c
++++ b/drivers/gpu/drm/stm/ltdc.c
+@@ -625,7 +625,7 @@ static void ltdc_crtc_mode_set_nofb(stru
+ }
+ 
+ static void ltdc_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct ltdc_device *ldev = crtc_to_ltdc(crtc);
+ 	struct drm_device *ddev = crtc->dev;
+--- a/drivers/gpu/drm/sun4i/sun4i_crtc.c
++++ b/drivers/gpu/drm/sun4i/sun4i_crtc.c
+@@ -61,8 +61,10 @@ static int sun4i_crtc_atomic_check(struc
+ }
+ 
+ static void sun4i_crtc_atomic_begin(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_state)
++				    struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
++									 crtc);
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
+ 	struct drm_device *dev = crtc->dev;
+ 	struct sunxi_engine *engine = scrtc->engine;
+@@ -82,7 +84,7 @@ static void sun4i_crtc_atomic_begin(stru
+ }
+ 
+ static void sun4i_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_state)
++				    struct drm_atomic_state *state)
+ {
+ 	struct sun4i_crtc *scrtc = drm_crtc_to_sun4i_crtc(crtc);
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+--- a/drivers/gpu/drm/tegra/dc.c
++++ b/drivers/gpu/drm/tegra/dc.c
+@@ -1924,7 +1924,7 @@ static void tegra_crtc_atomic_enable(str
+ }
+ 
+ static void tegra_crtc_atomic_begin(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_crtc_state)
++				    struct drm_atomic_state *state)
+ {
+ 	unsigned long flags;
+ 
+@@ -1943,17 +1943,17 @@ static void tegra_crtc_atomic_begin(stru
+ }
+ 
+ static void tegra_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_crtc_state)
++				    struct drm_atomic_state *state)
+ {
+-	struct tegra_dc_state *state = to_dc_state(crtc->state);
++	struct tegra_dc_state *crtc_state = to_dc_state(crtc->state);
+ 	struct tegra_dc *dc = to_tegra_dc(crtc);
+ 	u32 value;
+ 
+-	value = state->planes << 8 | GENERAL_UPDATE;
++	value = crtc_state->planes << 8 | GENERAL_UPDATE;
+ 	tegra_dc_writel(dc, value, DC_CMD_STATE_CONTROL);
+ 	value = tegra_dc_readl(dc, DC_CMD_STATE_CONTROL);
+ 
+-	value = state->planes | GENERAL_ACT_REQ;
++	value = crtc_state->planes | GENERAL_ACT_REQ;
+ 	tegra_dc_writel(dc, value, DC_CMD_STATE_CONTROL);
+ 	value = tegra_dc_readl(dc, DC_CMD_STATE_CONTROL);
+ }
+--- a/drivers/gpu/drm/tidss/tidss_crtc.c
++++ b/drivers/gpu/drm/tidss/tidss_crtc.c
+@@ -163,8 +163,10 @@ static void tidss_crtc_position_planes(s
+ }
+ 
+ static void tidss_crtc_atomic_flush(struct drm_crtc *crtc,
+-				    struct drm_crtc_state *old_crtc_state)
++				    struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state,
++									      crtc);
+ 	struct tidss_crtc *tcrtc = to_tidss_crtc(crtc);
+ 	struct drm_device *ddev = crtc->dev;
+ 	struct tidss_device *tidss = to_tidss(ddev);
+--- a/drivers/gpu/drm/tilcdc/tilcdc_crtc.c
++++ b/drivers/gpu/drm/tilcdc/tilcdc_crtc.c
+@@ -547,7 +547,7 @@ static void tilcdc_crtc_atomic_disable(s
+ }
+ 
+ static void tilcdc_crtc_atomic_flush(struct drm_crtc *crtc,
+-				     struct drm_crtc_state *old_state)
++				     struct drm_atomic_state *state)
+ {
+ 	if (!crtc->state->event)
+ 		return;
+--- a/drivers/gpu/drm/vboxvideo/vbox_mode.c
++++ b/drivers/gpu/drm/vboxvideo/vbox_mode.c
+@@ -223,7 +223,7 @@ static void vbox_crtc_atomic_disable(str
+ }
+ 
+ static void vbox_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ }
+ 
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -928,7 +928,8 @@ int vc4_hvs_get_fifo_from_output(struct
+ int vc4_hvs_atomic_check(struct drm_crtc *crtc, struct drm_crtc_state *state);
+ void vc4_hvs_atomic_enable(struct drm_crtc *crtc, struct drm_crtc_state *old_state);
+ void vc4_hvs_atomic_disable(struct drm_crtc *crtc, struct drm_crtc_state *old_state);
+-void vc4_hvs_atomic_flush(struct drm_crtc *crtc, struct drm_crtc_state *state);
++void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
++			  struct drm_atomic_state *state);
+ void vc4_hvs_dump_state(struct drm_device *dev);
+ void vc4_hvs_unmask_underrun(struct drm_device *dev, int channel);
+ void vc4_hvs_mask_underrun(struct drm_device *dev, int channel);
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -453,8 +453,10 @@ void vc4_hvs_atomic_disable(struct drm_c
+ }
+ 
+ void vc4_hvs_atomic_flush(struct drm_crtc *crtc,
+-			  struct drm_crtc_state *old_state)
++			  struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *old_state = drm_atomic_get_old_crtc_state(state,
++									 crtc);
+ 	struct drm_device *dev = crtc->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -117,7 +117,7 @@ static int virtio_gpu_crtc_atomic_check(
+ }
+ 
+ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+-					 struct drm_crtc_state *old_state)
++					 struct drm_atomic_state *state)
+ {
+ 	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
+ 
+--- a/drivers/gpu/drm/vkms/vkms_crtc.c
++++ b/drivers/gpu/drm/vkms/vkms_crtc.c
+@@ -229,7 +229,7 @@ static void vkms_crtc_atomic_disable(str
+ }
+ 
+ static void vkms_crtc_atomic_begin(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct vkms_output *vkms_output = drm_crtc_to_vkms_output(crtc);
+ 
+@@ -240,7 +240,7 @@ static void vkms_crtc_atomic_begin(struc
+ }
+ 
+ static void vkms_crtc_atomic_flush(struct drm_crtc *crtc,
+-				   struct drm_crtc_state *old_crtc_state)
++				   struct drm_atomic_state *state)
+ {
+ 	struct vkms_output *vkms_output = drm_crtc_to_vkms_output(crtc);
+ 
+--- a/drivers/gpu/drm/vmwgfx/vmwgfx_kms.c
++++ b/drivers/gpu/drm/vmwgfx/vmwgfx_kms.c
+@@ -554,13 +554,13 @@ int vmw_du_crtc_atomic_check(struct drm_
+ 
+ 
+ void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state)
++			      struct drm_atomic_state *state)
+ {
+ }
+ 
+ 
+ void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state)
++			      struct drm_atomic_state *state)
+ {
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+ 
+--- a/drivers/gpu/drm/vmwgfx/vmwgfx_kms.h
++++ b/drivers/gpu/drm/vmwgfx/vmwgfx_kms.h
+@@ -475,9 +475,9 @@ void vmw_du_plane_unpin_surf(struct vmw_
+ int vmw_du_crtc_atomic_check(struct drm_crtc *crtc,
+ 			     struct drm_atomic_state *state);
+ void vmw_du_crtc_atomic_begin(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state);
++			      struct drm_atomic_state *state);
+ void vmw_du_crtc_atomic_flush(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state);
++			      struct drm_atomic_state *state);
+ void vmw_du_crtc_reset(struct drm_crtc *crtc);
+ struct drm_crtc_state *vmw_du_crtc_duplicate_state(struct drm_crtc *crtc);
+ void vmw_du_crtc_destroy_state(struct drm_crtc *crtc,
+--- a/drivers/gpu/drm/xlnx/zynqmp_disp.c
++++ b/drivers/gpu/drm/xlnx/zynqmp_disp.c
+@@ -1515,14 +1515,14 @@ static int zynqmp_disp_crtc_atomic_check
+ 
+ static void
+ zynqmp_disp_crtc_atomic_begin(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state)
++			      struct drm_atomic_state *state)
+ {
+ 	drm_crtc_vblank_on(crtc);
+ }
+ 
+ static void
+ zynqmp_disp_crtc_atomic_flush(struct drm_crtc *crtc,
+-			      struct drm_crtc_state *old_crtc_state)
++			      struct drm_atomic_state *state)
+ {
+ 	if (crtc->state->event) {
+ 		struct drm_pending_vblank_event *event;
+--- a/drivers/gpu/drm/zte/zx_vou.c
++++ b/drivers/gpu/drm/zte/zx_vou.c
+@@ -473,7 +473,7 @@ static void zx_crtc_atomic_disable(struc
+ }
+ 
+ static void zx_crtc_atomic_flush(struct drm_crtc *crtc,
+-				  struct drm_crtc_state *old_state)
++				  struct drm_atomic_state *state)
+ {
+ 	struct drm_pending_vblank_event *event = crtc->state->event;
+ 
+--- a/include/drm/drm_modeset_helper_vtables.h
++++ b/include/drm/drm_modeset_helper_vtables.h
+@@ -373,7 +373,7 @@ struct drm_crtc_helper_funcs {
+ 	 * transitional plane helpers, but it is optional.
+ 	 */
+ 	void (*atomic_begin)(struct drm_crtc *crtc,
+-			     struct drm_crtc_state *old_crtc_state);
++			     struct drm_atomic_state *state);
+ 	/**
+ 	 * @atomic_flush:
+ 	 *
+@@ -397,7 +397,7 @@ struct drm_crtc_helper_funcs {
+ 	 * transitional plane helpers, but it is optional.
+ 	 */
+ 	void (*atomic_flush)(struct drm_crtc *crtc,
+-			     struct drm_crtc_state *old_crtc_state);
++			     struct drm_atomic_state *state);
+ 
+ 	/**
+ 	 * @atomic_enable:

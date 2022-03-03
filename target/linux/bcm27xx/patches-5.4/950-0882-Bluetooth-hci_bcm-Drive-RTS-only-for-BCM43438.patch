@@ -1,0 +1,92 @@
+From b2e19dbff471eb6b9b39ff8f21c8d38e4fac8fe6 Mon Sep 17 00:00:00 2001
+From: Stefan Wahren <wahrenst@gmx.net>
+Date: Wed, 1 Jan 2020 15:01:34 +0100
+Subject: [PATCH] Bluetooth: hci_bcm: Drive RTS only for BCM43438
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit e601daed271e9eb1b923972a0a1af65f8c7bb77b upstream.
+
+The commit 3347a80965b3 ("Bluetooth: hci_bcm: Fix RTS handling during
+startup") is causing at least a regression for AP6256 on Orange Pi 3.
+So do the RTS line handing during startup only on the necessary platform.
+
+Fixes: 3347a80965b3 ("Bluetooth: hci_bcm: Fix RTS handling during startup")
+Reported-by: Ondřej Jirman <megous@megous.com>
+Signed-off-by: Stefan Wahren <wahrenst@gmx.net>
+Signed-off-by: Marcel Holtmann <marcel@holtmann.org>
+---
+ drivers/bluetooth/hci_bcm.c | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -53,6 +53,7 @@
+  */
+ struct bcm_device_data {
+ 	bool	no_early_set_baudrate;
++	bool	drive_rts_on_open;
+ };
+ 
+ /**
+@@ -123,6 +124,7 @@ struct bcm_device {
+ 	bool			is_suspended;
+ #endif
+ 	bool			no_early_set_baudrate;
++	bool			drive_rts_on_open;
+ 	u8			pcm_int_params[5];
+ };
+ 
+@@ -459,7 +461,9 @@ static int bcm_open(struct hci_uart *hu)
+ 
+ out:
+ 	if (bcm->dev) {
+-		hci_uart_set_flow_control(hu, true);
++		if (bcm->dev->drive_rts_on_open)
++			hci_uart_set_flow_control(hu, true);
++
+ 		hu->init_speed = bcm->dev->init_speed;
+ 
+ 		/* If oper_speed is set, ldisc/serdev will set the baudrate
+@@ -469,7 +473,10 @@ out:
+ 			hu->oper_speed = bcm->dev->oper_speed;
+ 
+ 		err = bcm_gpio_set_power(bcm->dev, true);
+-		hci_uart_set_flow_control(hu, false);
++
++		if (bcm->dev->drive_rts_on_open)
++			hci_uart_set_flow_control(hu, false);
++
+ 		if (err)
+ 			goto err_unset_hu;
+ 	}
+@@ -1450,8 +1457,10 @@ static int bcm_serdev_probe(struct serde
+ 		dev_err(&serdev->dev, "Failed to power down\n");
+ 
+ 	data = device_get_match_data(bcmdev->dev);
+-	if (data)
++	if (data) {
+ 		bcmdev->no_early_set_baudrate = data->no_early_set_baudrate;
++		bcmdev->drive_rts_on_open = data->drive_rts_on_open;
++	}
+ 
+ 	return hci_uart_register_device(&bcmdev->serdev_hu, &bcm_proto);
+ }
+@@ -1468,11 +1477,15 @@ static struct bcm_device_data bcm4354_de
+ 	.no_early_set_baudrate = true,
+ };
+ 
++static struct bcm_device_data bcm43438_device_data = {
++	.drive_rts_on_open = true,
++};
++
+ static const struct of_device_id bcm_bluetooth_of_match[] = {
+ 	{ .compatible = "brcm,bcm20702a1" },
+ 	{ .compatible = "brcm,bcm4345c5" },
+ 	{ .compatible = "brcm,bcm4330-bt" },
+-	{ .compatible = "brcm,bcm43438-bt" },
++	{ .compatible = "brcm,bcm43438-bt", .data = &bcm43438_device_data },
+ 	{ .compatible = "brcm,bcm43540-bt", .data = &bcm4354_device_data },
+ 	{ .compatible = "brcm,bcm4335a0" },
+ 	{ },

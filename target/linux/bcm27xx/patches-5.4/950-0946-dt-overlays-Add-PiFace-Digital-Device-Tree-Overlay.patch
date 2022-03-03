@@ -1,0 +1,199 @@
+From 296cff78df285c99a52760cbcd896abc37820e06 Mon Sep 17 00:00:00 2001
+From: Thomas Preston <thomas.preston@codethink.co.uk>
+Date: Thu, 13 Aug 2020 01:38:35 +0100
+Subject: [PATCH] dt/overlays: Add PiFace Digital Device Tree Overlay
+
+The PiFace Digital is a convenient breakout board for the Microchip
+mcp23s17 SPI GPIO port expander.
+
+The first eight GPIOs 0..7 (bank A) are connected to eight output
+terminals and LEDs, plus two relays on the first two outputs. These
+output loads are active-high.
+
+The next eight GPIOs 8..15 (bank B) are connected to eight input
+terminals with four on-board switches connecting them to ground. Inputs
+devices are therefore expected to bridge terminals to ground, so the
+mcp23s17 pullups are activated for GPIO bank B.
+
+Signed-off-by: Thomas Preston <thomas.preston@codethink.co.uk>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |   8 +
+ .../dts/overlays/pifacedigital-overlay.dts    | 144 ++++++++++++++++++
+ 3 files changed, 153 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/pifacedigital-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -121,6 +121,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	papirus.dtbo \
+ 	pca953x.dtbo \
+ 	pibell.dtbo \
++	pifacedigital.dtbo \
+ 	piglow.dtbo \
+ 	piscreen.dtbo \
+ 	piscreen2r.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -1949,6 +1949,14 @@ Params: alsaname                Set the
+                                 "PiBell")
+ 
+ 
++Name:   pifacedigital
++Info:   Configures the PiFace Digital mcp23s17 GPIO port expander.
++Load:   dtoverlay=pifacedigital,<param>=<val>
++Params: spi-present-mask        8-bit integer, bitmap indicating MCP23S17 SPI0
++                                CS0 address. PiFace Digital supports addresses
++                                0-3, which can be configured with JP1 and JP2.
++
++
+ Name:   piglow
+ Info:   Configures the PiGlow by pimoroni.com
+ Load:   dtoverlay=piglow
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/pifacedigital-overlay.dts
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PiFace Digital, Device Tree Overlay.
++ * Copyright (C) 2020 Thomas Preston <thomas.preston@codethink.co.uk>
++ *
++ * The PiFace Digital is a convenient breakout board for the Microchip mcp23s17
++ * SPI GPIO port expander.
++ *
++ * The first eight GPIOs 0..7 (bank A) are connected to eight output terminals
++ * and LEDs, plus two relays on the first two outputs. These output loads are
++ * active-high.
++ *
++ * The next eight GPIOs 8..15 (bank B) are connected to eight input terminals
++ * with four on-board switches connecting them to ground. Inputs devices are
++ * therefore expected to bridge terminals to ground, so the mcp23s17 pullups are
++ * activated for GPIO bank B.
++ *
++ * On PiFace Digital, the mcp23s17 is connected to the Raspberry Pi's SPI0 CS0
++ * bus. Each SPI bus supports up to eight addressable child devices. The PiFace
++ * Digital only supports addresses 0-4, which can be configured by jumpers JP1
++ * and JP2.
++ *
++ * You can tell the driver about these jumper configurations with the
++ * spi-present-mask bitmask:
++ *
++ *     | JP1 | JP2 | dtoverlay line in /boot/config.txt         |
++ *     | --- | --- | ------------------------------------------ |
++ *     |  0  |  0  | dtoverlay=pifacedigital                    |
++ *     |  0  |  0  | dtoverlay=pifacedigital:spi-present-mask=1 |
++ *     |  0  |  1  | dtoverlay=pifacedigital:spi-present-mask=2 |
++ *     |  1  |  0  | dtoverlay=pifacedigital:spi-present-mask=4 |
++ *     |  1  |  1  | dtoverlay=pifacedigital:spi-present-mask=8 |
++ *
++ * # Example
++ * Set the dtoverlay config in /boot/config.txt and power off the Raspberry Pi:
++ *
++ *     $ grep pifacedigital /boot/config.txt
++ *     dtoverlay=pifacedigital
++ *     $ sudo systemctl poweroff
++ *
++ * Attach the PiFace Digital and power on the Raspberry Pi.
++ * Then use the libgpiod tools to query the device:
++ *
++ *     $ sudo apt install gpiod
++ *     $ gpiodetect | grep mcp23s17
++ *     gpiochip2 [mcp23s17.0] (16 lines)
++ *
++ * Set GPIO outputs 0, 2 and 5:
++ *
++ *     $ gpioset gpiochip2 0=1 2=1 5=1
++ *
++ * Get GPIO status (input GPIO 8..15 are high, because they are active-low):
++ *
++ *     $ gpioget gpiochip2 {8..15}
++ *     1 1 1 1 1 1 1 1
++ *
++ * And even monitor interrupts:
++ *
++ *     $ gpiomon gpiochip2 {8..15}
++ *     event: FALLING EDGE offset: 11 timestamp: [1597361662.926741667]
++ *     event:  RISING EDGE offset: 11 timestamp: [1597361663.062555051]
++ *
++ */
++
++/dts-v1/;
++/plugin/;
++
++/ {
++	compatible = "brcm,bcm2835";
++
++	/* Disable exposing /dev/spidev0.0 */
++	fragment@0 {
++		target = <&spidev0>;
++		__overlay__ {
++			status = "disabled";
++		};
++	};
++
++	/* Add the PiFace Digital device node to the spi0.0 device. */
++	fragment@1 {
++		target = <&spi0>;
++		__overlay__ {
++			status = "okay";
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			pfdigital: pifacedigital@0 {
++				compatible = "microchip,mcp23s17";
++				reg = <0>;
++
++				/* Set devices present with 8-bit mask. */
++				microchip,spi-present-mask = <0x01>;
++				spi-max-frequency = <500000>;
++
++				gpio-controller;
++				#gpio-cells = <2>;
++
++				/* This device can pass through interrupts. */
++				interrupt-controller;
++				#interrupt-cells = <2>;
++
++				/* INTB is connected to GPIO 25.
++				 * 0x8 active-low level-sensitive
++				 */
++				interrupts = <25 0x8>;
++				interrupt-parent = <&gpio>;
++
++				/* Configure pull-ups on bank B GPIOs */
++				pinctrl-0 = <&pfdigital_irq &pfdigital_pullups>;
++				pinctrl-names = "default";
++				pfdigital_pullups: pinmux {
++					pins =
++						"gpio8",
++						"gpio9",
++						"gpio10",
++						"gpio11",
++						"gpio12",
++						"gpio13",
++						"gpio14",
++						"gpio15";
++					bias-pull-up;
++				};
++			};
++		};
++	};
++
++	/* PiFace Digital mcp23s17 INTB pin is connected to GPIO 25. The INTB
++	 * pin is configured active-low (0 on interrupt), so expect to see
++	 * FALLING_EDGE when inputs are bridged to ground (switch is pressed).
++	 */
++	fragment@3 {
++		target = <&gpio>;
++		__overlay__ {
++			pfdigital_irq: pifacedigital_irq {
++				brcm,pins = <25>;
++				brcm,function = <0>; /* input */
++			};
++		};
++	};
++
++	__overrides__ {
++		spi-present-mask = <&pfdigital>, "microchip,spi-present-mask:0";
++	};
++};
