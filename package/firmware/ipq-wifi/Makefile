@@ -57,9 +57,6 @@ ALLWIFIBOARDS:= \
 	p2w_r619ac \
 	qnap_301w \
 	qxwlan_e2600ac \
-	redmi_ax6 \
-	xiaomi_ax3600 \
-	xiaomi_ax9000 \
 	zte_mf263 \
 	zte_mf269
 
@@ -163,9 +160,6 @@ $(eval $(call generate-ipq-wifi-package,plasmacloud_pa2200,Plasma Cloud PA2200))
 $(eval $(call generate-ipq-wifi-package,p2w_r619ac,P&W R619AC))
 $(eval $(call generate-ipq-wifi-package,qnap_301w,QNAP 301w))
 $(eval $(call generate-ipq-wifi-package,qxwlan_e2600ac,Qxwlan E2600AC))
-$(eval $(call generate-ipq-wifi-package,redmi_ax6,Redmi AX6))
-$(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
-$(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
 $(eval $(call generate-ipq-wifi-package,zte_mf263,ZTE MF263))
 $(eval $(call generate-ipq-wifi-package,zte_mf269,ZTE MF269))
 
