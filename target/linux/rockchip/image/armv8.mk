@@ -18,9 +18,18 @@ define Device/embedfire_doornet2
   SOC := rk3399
   UBOOT_DEVICE_NAME := doornet2-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 kmod-rtl8821cu -urngd
+  DEVICE_PACKAGES := kmod-r8169 kmod-rtl8821cu -urngd
 endef
 TARGET_DEVICES += embedfire_doornet2
+
+define Device/friendlyarm_nanopi-neo3
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi NEO3
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2s-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
+endef
+TARGET_DEVICES += friendlyarm_nanopi-neo3
 
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
@@ -48,7 +57,7 @@ define Device/friendlyarm_nanopi-r4s
   SOC := rk3399
   UBOOT_DEVICE_NAME := nanopi-r4s-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8169 -urngd
+  DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4s
 

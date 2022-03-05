@@ -26,6 +26,7 @@ define KernelPackage/r8168
   TITLE:=Driver for Realtek r8168 chipsets
   SUBMENU:=Network Devices
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
+  DEPENDS:=
   FILES:= $(PKG_BUILD_DIR)/src/r8168.ko
   AUTOLOAD:=$(call AutoProbe,r8168)
   CONFLICTS:=kmod-r8169
