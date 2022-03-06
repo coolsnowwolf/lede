@@ -10,8 +10,8 @@ BOARDNAME:=x86
 FEATURES:=squashfs vdi vmdk vhdx pcmcia fpu boot-part rootfs-part
 SUBTARGETS:=64 generic legacy geode 
 
-KERNEL_PATCHVER:=5.10
-KERNEL_TESTING_PATCHVER:=5.15
+KERNEL_PATCHVER:=5.15
+KERNEL_TESTING_PATCHVER:=5.4
 
 KERNELNAME:=bzImage
 
@@ -22,7 +22,7 @@ kmod-alx kmod-e1000e kmod-igb kmod-igc kmod-igbvf kmod-iavf kmod-bnx2x kmod-pcne
 htop lm-sensors autocore-x86 automount autosamba luci-app-adbyby-plus luci-app-ipsec-vpnd luci-proto-bonding \
 luci-app-unblockmusic luci-app-zerotier luci-app-xlnetacc ddns-scripts_aliyun ddns-scripts_dnspod ca-bundle luci-app-wireguard luci-app-ttyd \
 kmod-sound-hda-core kmod-sound-hda-codec-realtek kmod-sound-hda-codec-via kmod-sound-via82xx kmod-sound-hda-intel kmod-sound-hda-codec-hdmi kmod-sound-i8x0 kmod-usb-audio \
-kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-mlx4-core kmod-mlx5-core
+kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 kmod-usb-net-rtl8152-vendor kmod-mlx4-core kmod-mlx5-core kmod-drm-i915
 
 $(eval $(call BuildTarget))
 
