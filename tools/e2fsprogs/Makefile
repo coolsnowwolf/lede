@@ -9,8 +9,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=e2fsprogs
 PKG_CPE_ID:=cpe:/a:e2fsprogs_project:e2fsprogs
-PKG_VERSION:=1.45.6
-PKG_HASH:=ffa7ae6954395abdc50d0f8605d8be84736465afc53b8938ef473fcf7ff44256
+PKG_VERSION:=1.46.4
+PKG_HASH:=b11042533c1b1dcf17512f0da48e05b0c573dada1dd8b762864d10f4dc399713
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
@@ -23,7 +23,7 @@ include $(INCLUDE_DIR)/host-build.mk
 ifneq ($(shell $(HOSTCC) --version | grep clang),)
   HOST_CFLAGS += -D__GNUC_PREREQ\(...\)=0 -Dloff_t=off_t
 endif
-HOST_CFLAGS += $(FPIC)
+HOST_CFLAGS += $(HOST_FPIC)
 
 HOST_CONFIGURE_ARGS += \
 	--disable-elf-shlibs \
