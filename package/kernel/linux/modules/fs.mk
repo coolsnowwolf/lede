@@ -615,6 +615,22 @@ endef
 $(eval $(call KernelPackage,fs-vfat))
 
 
+define KernelPackage/fs-virtiofs
+  SUBMENU:=$(FS_MENU)
+  TITLE:=Virtiofs filesystem support
+  DEPENDS:=+kmod-fuse
+  KCONFIG:=CONFIG_VIRTIO_FS
+  FILES:=$(LINUX_DIR)/fs/fuse/virtiofs.ko
+  AUTOLOAD:=$(call AutoLoad,30,virtiofs)
+endef
+
+define KernelPackage/fs-virtiofs/description
+  Kernel module for Virtiofs filesystem support
+endef
+
+$(eval $(call KernelPackage,fs-virtiofs))
+
+
 define KernelPackage/fs-xfs
   SUBMENU:=$(FS_MENU)
   TITLE:=XFS filesystem support
