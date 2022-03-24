@@ -3,6 +3,11 @@
 
 [English](./README_EN.md)
 
+-
+QCA IPQ6000 (GL.iNet GL-AX1800)系列固件仓库地址：
+[https://github.com/coolsnowwolf/openwrt-gl-ax1800](https://github.com/coolsnowwolf/openwrt-gl-ax1800)
+-
+
 如何编译自己需要的 OpenWrt 固件
 -
 注意：
