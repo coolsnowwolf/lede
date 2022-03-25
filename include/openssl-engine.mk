@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Copyright (C) 2022 Enéas Ulir de Queiroz
+
 ENGINES_DIR=engines-1.1
 
 define Package/openssl/engine/Default
