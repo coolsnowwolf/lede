@@ -311,6 +311,10 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 	struct nf_conntrack_tuple reply_tuple;
 	struct sk_buff *tmp_skb = NULL;
 	SFE_NF_CONN_ACCT(acct);
+	
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
+    struct net *net=NULL;
+	#endif
 
 	/*
 	 * Don't process broadcast or multicast packets.
@@ -496,8 +500,12 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 		sic.dest_td_max_window = ct->proto.tcp.seen[1].td_maxwin;
 		sic.dest_td_end = ct->proto.tcp.seen[1].td_end;
 		sic.dest_td_max_end = ct->proto.tcp.seen[1].td_maxend;
-
-		if (nf_ct_tcp_no_window_check
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) 
+	net = nf_ct_net(ct);
+	if ((net&&net->ct.sysctl_no_window_check)
+#else
+	if (nf_ct_tcp_no_window_check
+#endif
 		    || (ct->proto.tcp.seen[0].flags & IP_CT_TCP_FLAG_BE_LIBERAL)
 		    || (ct->proto.tcp.seen[1].flags & IP_CT_TCP_FLAG_BE_LIBERAL)) {
 			sic.flags |= SFE_CREATE_FLAG_NO_SEQ_CHECK;

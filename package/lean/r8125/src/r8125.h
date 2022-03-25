@@ -5,7 +5,7 @@
 # r8125 is the Linux device driver released for Realtek 2.5Gigabit Ethernet
 # controllers with PCI-Express interface.
 #
-# Copyright(c) 2021 Realtek Semiconductor Corp. All rights reserved.
+# Copyright(c) 2022 Realtek Semiconductor Corp. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
@@ -363,12 +363,12 @@ do { \
 #define RSS_SUFFIX ""
 #endif
 
-#define RTL8125_VERSION "9.007.01" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
+#define RTL8125_VERSION "9.008.00" NAPI_SUFFIX DASH_SUFFIX REALWOW_SUFFIX PTP_SUFFIX RSS_SUFFIX
 #define MODULENAME "r8125"
 #define PFX MODULENAME ": "
 
 #define GPL_CLAIM "\
-r8125  Copyright (C) 2021  Realtek NIC software team <nicfae@realtek.com> \n \
+r8125  Copyright (C) 2022 Realtek NIC software team <nicfae@realtek.com> \n \
 This program comes with ABSOLUTELY NO WARRANTY; for details, please see <http://www.gnu.org/licenses/>. \n \
 This is free software, and you are welcome to redistribute it under certain conditions; see <http://www.gnu.org/licenses/>. \n"
 
@@ -413,7 +413,7 @@ This is free software, and you are welcome to redistribute it under certain cond
 #endif
 
 #define Reserved2_data  7
-#define RX_DMA_BURST    7   /* Maximum PCI burst, '6' is 1024 */
+#define RX_DMA_BURST    7   /* Maximum PCI burst, '7' is unlimited */
 #define TX_DMA_BURST_unlimited  7
 #define TX_DMA_BURST_1024   6
 #define TX_DMA_BURST_512    5
@@ -456,12 +456,17 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define RTL8125_LINK_TIMEOUT    (1 * HZ)
 #define RTL8125_ESD_TIMEOUT (2 * HZ)
 
-#define NUM_TX_DESC 1024    /* Number of Tx descriptor registers */
-#define NUM_RX_DESC 1024    /* Number of Rx descriptor registers */
+#define MAX_NUM_TX_DESC 1024    /* Maximum number of Tx descriptor registers */
+#define MAX_NUM_RX_DESC 1024    /* Maximum number of Rx descriptor registers */
+
+#define MIN_NUM_TX_DESC 256    /* Minimum number of Tx descriptor registers */
+#define MIN_NUM_RX_DESC 256    /* Minimum number of Rx descriptor registers */
+
+#define NUM_TX_DESC MAX_NUM_TX_DESC    /* Number of Tx descriptor registers */
+#define NUM_RX_DESC MAX_NUM_RX_DESC    /* Number of Rx descriptor registers */
 
 #define RX_BUF_SIZE 0x05F3  /* 0x05F3 = 1522bye + 1 */
-#define R8125_TX_RING_BYTES (NUM_TX_DESC * sizeof(struct TxDesc))
-#define R8125_RX_RING_BYTES (NUM_RX_DESC * sizeof(struct RxDesc))
+
 #define R8125_MAX_TX_QUEUES (2)
 #define R8125_MAX_RX_QUEUES (4)
 #define R8125_MAX_QUEUES R8125_MAX_RX_QUEUES
@@ -544,6 +549,9 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define RTK_LPA_ADVERTISE_2500FULL  0x20
 #define RTK_LPA_ADVERTISE_5000FULL  0x40
 #define RTK_LPA_ADVERTISE_10000FULL  0x800
+
+#define RTK_EEE_ADVERTISE_2500FULL  0x01
+#define RTK_LPA_EEE_ADVERTISE_2500FULL  0x01
 
 /* Tx NO CLOSE */
 #define MAX_TX_NO_CLOSE_DESC_PTR_V2 0x10000
@@ -1745,9 +1753,10 @@ struct rtl8125_tx_ring {
         u32 index;
         u32 cur_tx; /* Index into the Tx descriptor buffer of next Rx pkt. */
         u32 dirty_tx;
+        u32 num_tx_desc; /* Number of Tx descriptor registers */
         struct TxDesc *TxDescArray; /* 256-aligned Tx descriptor ring */
         dma_addr_t TxPhyAddr;
-        struct ring_info tx_skb[NUM_TX_DESC]; /* Tx data buffers */
+        struct ring_info tx_skb[MAX_NUM_TX_DESC]; /* Tx data buffers */
 
         u32 NextHwDesCloPtr;
         u32 BeginHwDesCloPtr;
@@ -1763,10 +1772,11 @@ struct rtl8125_rx_ring {
         u32 index;
         u32 cur_rx; /* Index into the Rx descriptor buffer of next Rx pkt. */
         u32 dirty_rx;
+        u32 num_rx_desc; /* Number of Rx descriptor registers */
         struct RxDesc *RxDescArray; /* 256-aligned Rx descriptor ring */
-        u64 RxDescPhyAddr[NUM_RX_DESC]; /* Rx desc physical address*/
+        u64 RxDescPhyAddr[MAX_NUM_RX_DESC]; /* Rx desc physical address*/
         dma_addr_t RxPhyAddr;
-        struct sk_buff *Rx_skbuff[NUM_RX_DESC]; /* Rx data buffers */
+        struct sk_buff *Rx_skbuff[MAX_NUM_RX_DESC]; /* Rx data buffers */
 
         u16 rdsar_reg; /* Receive Descriptor Start Address */
 };
@@ -2031,8 +2041,8 @@ struct rtl8125_private {
         //struct RxDesc *RxDescArray; /* 256-aligned Rx descriptor ring */
         //dma_addr_t TxPhyAddr;
         //dma_addr_t RxPhyAddr;
-        //struct sk_buff *Rx_skbuff[NUM_RX_DESC]; /* Rx data buffers */
-        //struct ring_info tx_skb[NUM_TX_DESC];   /* Tx data buffers */
+        //struct sk_buff *Rx_skbuff[MAX_NUM_RX_DESC]; /* Rx data buffers */
+        //struct ring_info tx_skb[MAX_NUM_TX_DESC];   /* Tx data buffers */
         unsigned rx_buf_sz;
         u16 HwSuppNumTxQueues;
         u16 HwSuppNumRxQueues;
@@ -2118,11 +2128,16 @@ struct rtl8125_private {
         u16 sw_ram_code_ver;
         u16 hw_ram_code_ver;
 
+        u8 RequireRduNonStopPatch;
+
         u8 rtk_enable_diag;
 
         u8 ShortPacketSwChecksum;
 
         u8 UseSwPaddingShortPkt;
+
+        void *ShortPacketEmptyBuffer;
+        dma_addr_t ShortPacketEmptyBufferPhy;
 
         u8 RequireAdcBiasPatch;
         u16 AdcBiasPatchIoffset;
@@ -2278,7 +2293,6 @@ struct rtl8125_private {
 #endif
         u8 InitRxDescType;
         u16 RxDescLength; //V1 16 Byte V2 32 Bytes
-        u32 RxDescRingLength;
 
         u8 HwSuppPtpVer;
         u8 EnablePtp;

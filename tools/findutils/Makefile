@@ -8,15 +8,19 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=findutils
 PKG_CPE_ID:=cpe:/a:gnu:findutils
-PKG_VERSION:=4.7.0
+PKG_VERSION:=4.9.0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=c5fefbdf9858f7e4feb86f036e1247a54c79fc2d8e4b7064d5aaa1f47dfa789a
+PKG_HASH:=a2bfb8c09d436770edc59f50fa483e785b161a3b7b9d547573cb08065fd462fe
 
 HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
+
+ifeq ($(HOST_OS),Darwin)
+	HOST_CFLAGS +=-D__nonnull\\(params\\)=
+endif
 
 HOST_CONFIGURE_ARGS += \
 	--enable-threads=pth \

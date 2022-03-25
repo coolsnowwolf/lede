@@ -1,4 +1,5 @@
 #!/bin/sh
+make ./scripts/config/conf >/dev/null || { make ./scripts/config/conf; exit 1; }
 grep \^CONFIG_TARGET_ .config | head -n3 > tmp/.diffconfig.head
 grep \^CONFIG_TARGET_DEVICE_ .config >> tmp/.diffconfig.head
 grep '^CONFIG_ALL=y' .config >> tmp/.diffconfig.head
