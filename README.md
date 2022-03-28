@@ -86,7 +86,7 @@ macOS 原生系统进行编译：
 3. 使用 Homebrew 安装工具链、依赖与基础软件包:
 ```bash
 brew unlink awk
-brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep wget quilt xz
+brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep make wget quilt xz
 brew install gcc@11
 ```
 
