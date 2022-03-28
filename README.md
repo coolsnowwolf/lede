@@ -3,7 +3,6 @@
 
 [English](./README_EN.md)
 
--
 QCA IPQ6000 (GL.iNet GL-AX1800)系列固件仓库地址：
 [https://github.com/coolsnowwolf/openwrt-gl-ax1800](https://github.com/coolsnowwolf/openwrt-gl-ax1800)
 -
@@ -74,6 +73,33 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin make -j1 V=s
 ```bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin make -j$(($(nproc) + 1)) V=s
 ```
+------
+macOS 原生系统进行编译：
+------
+1.在 AppStore 中安装 Xcode
+
+2. 安装 Homebrew：
+/usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+
+3. 使用 Homebrew 安装工具链、依赖与基础软件包:
+brew unlink awk
+brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep wget quilt xz
+brew install gcc@11
+
+4.然后输入以下命令，添加到系统环境变量中：
+echo 'export PATH="/usr/local/opt/coreutils/libexec/gnubin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/findutils/libexec/gnubin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/gnu-getopt/bin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
+
+4.重新加载一下 shell 启动文件
+source ~/.bashrc
+
+然后就可以和 Linux 一样正常编译了
+
+------
 
 特别提示：
 ------
