@@ -84,6 +84,9 @@ ifneq ($(HOST_OS),Linux)
 endif
 ifeq ($(HOST_OS),Darwin)
   tools-y += bash
+else
+  $(curdir)/elfutils/compile := $(curdir)/zlib/compile
+  tools-y += elfutils
 endif
 
 ifneq ($(CONFIG_CCACHE)$(CONFIG_SDK),)
