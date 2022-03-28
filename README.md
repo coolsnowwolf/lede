@@ -98,6 +98,7 @@ echo 'export PATH="/usr/local/opt/gnu-getopt/bin:$PATH"' >> ~/.bashrc
 echo 'export PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH"' >> ~/.bashrc
 echo 'export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"' >> ~/.bashrc
 echo 'export PATH="/usr/local/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
+echo 'export PATH="/usr/local/opt/make/libexec/gnubin:$PATH"' >> ~/.bashrc
 ```
 
 4.重新加载一下 shell 启动文件
@@ -105,7 +106,7 @@ echo 'export PATH="/usr/local/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-然后就可以和 Linux 一样正常编译了
+然后输入 bash 命令，进入bash shell，就可以和 Linux 一样正常编译了
 
 ------
 
