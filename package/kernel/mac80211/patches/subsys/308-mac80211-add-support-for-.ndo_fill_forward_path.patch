@@ -1,0 +1,178 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 12 Nov 2021 12:22:23 +0100
+Subject: [PATCH] mac80211: add support for .ndo_fill_forward_path
+
+This allows drivers to provide a destination device + info for flow offload
+Only supported in combination with 802.3 encap offload
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Tested-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/20211112112223.1209-1-nbd@nbd.name
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -3937,6 +3937,8 @@ struct ieee80211_prep_tx_info {
+  *	twt structure.
+  * @twt_teardown_request: Update the hw with TWT teardown request received
+  *	from the peer.
++ * @net_fill_forward_path: Called from .ndo_fill_forward_path in order to
++ *	resolve a path for hardware flow offloading
+  */
+ struct ieee80211_ops {
+ 	void (*tx)(struct ieee80211_hw *hw,
+@@ -4265,6 +4267,13 @@ struct ieee80211_ops {
+ 			      struct ieee80211_twt_setup *twt);
+ 	void (*twt_teardown_request)(struct ieee80211_hw *hw,
+ 				     struct ieee80211_sta *sta, u8 flowid);
++#if LINUX_VERSION_IS_GEQ(5,10,0)
++	int (*net_fill_forward_path)(struct ieee80211_hw *hw,
++				     struct ieee80211_vif *vif,
++				     struct ieee80211_sta *sta,
++				     struct net_device_path_ctx *ctx,
++				     struct net_device_path *path);
++#endif
+ };
+ 
+ /**
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -1483,4 +1483,28 @@ static inline void drv_twt_teardown_requ
+ 	trace_drv_return_void(local);
+ }
+
++#if LINUX_VERSION_IS_GEQ(5,10,0)
++static inline int drv_net_fill_forward_path(struct ieee80211_local *local,
++					    struct ieee80211_sub_if_data *sdata,
++					    struct ieee80211_sta *sta,
++					    struct net_device_path_ctx *ctx,
++					    struct net_device_path *path)
++{
++	int ret = -EOPNOTSUPP;
++
++	sdata = get_bss_sdata(sdata);
++	if (!check_sdata_in_driver(sdata))
++		return -EIO;
++
++	trace_drv_net_fill_forward_path(local, sdata, sta);
++	if (local->ops->net_fill_forward_path)
++		ret = local->ops->net_fill_forward_path(&local->hw,
++							&sdata->vif, sta,
++							ctx, path);
++	trace_drv_return_int(local, ret);
++
++	return ret;
++}
++#endif
++
+ #endif /* __MAC80211_DRIVER_OPS */
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -1465,7 +1465,7 @@ struct ieee80211_local {
+ };
+ 
+ static inline struct ieee80211_sub_if_data *
+-IEEE80211_DEV_TO_SUB_IF(struct net_device *dev)
++IEEE80211_DEV_TO_SUB_IF(const struct net_device *dev)
+ {
+ 	return netdev_priv(dev);
+ }
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -822,6 +822,66 @@ static const struct net_device_ops ieee8
+ 
+ };
+ 
++#if LINUX_VERSION_IS_GEQ(5,10,0)
++static int ieee80211_netdev_fill_forward_path(struct net_device_path_ctx *ctx,
++					      struct net_device_path *path)
++{
++	struct ieee80211_sub_if_data *sdata;
++	struct ieee80211_local *local;
++	struct sta_info *sta;
++	int ret = -ENOENT;
++
++	sdata = IEEE80211_DEV_TO_SUB_IF(ctx->dev);
++	local = sdata->local;
++
++	if (!local->ops->net_fill_forward_path)
++		return -EOPNOTSUPP;
++
++	rcu_read_lock();
++	switch (sdata->vif.type) {
++	case NL80211_IFTYPE_AP_VLAN:
++		sta = rcu_dereference(sdata->u.vlan.sta);
++		if (sta)
++			break;
++		if (sdata->wdev.use_4addr)
++			goto out;
++		if (is_multicast_ether_addr(ctx->daddr))
++			goto out;
++		sta = sta_info_get_bss(sdata, ctx->daddr);
++		break;
++	case NL80211_IFTYPE_AP:
++		if (is_multicast_ether_addr(ctx->daddr))
++			goto out;
++		sta = sta_info_get(sdata, ctx->daddr);
++		break;
++	case NL80211_IFTYPE_STATION:
++		if (sdata->wdev.wiphy->flags & WIPHY_FLAG_SUPPORTS_TDLS) {
++			sta = sta_info_get(sdata, ctx->daddr);
++			if (sta && test_sta_flag(sta, WLAN_STA_TDLS_PEER)) {
++				if (!test_sta_flag(sta, WLAN_STA_TDLS_PEER_AUTH))
++					goto out;
++
++				break;
++			}
++		}
++
++		sta = sta_info_get(sdata, sdata->u.mgd.bssid);
++		break;
++	default:
++		goto out;
++	}
++
++	if (!sta)
++		goto out;
++
++	ret = drv_net_fill_forward_path(local, sdata, &sta->sta, ctx, path);
++out:
++	rcu_read_unlock();
++
++	return ret;
++}
++#endif
++
+ static const struct net_device_ops ieee80211_dataif_8023_ops = {
+ #if LINUX_VERSION_IS_LESS(4,10,0)
+ 	.ndo_change_mtu = __change_mtu,
+@@ -839,7 +901,9 @@ static const struct net_device_ops ieee8
+ #else
+ 	.ndo_get_stats64 = bp_ieee80211_get_stats64,
+ #endif
+-
++#if LINUX_VERSION_IS_GEQ(5,10,0)
++	.ndo_fill_forward_path = ieee80211_netdev_fill_forward_path,
++#endif
+ };
+ 
+ static bool ieee80211_iftype_supports_hdr_offload(enum nl80211_iftype iftype)
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -2892,6 +2892,15 @@ TRACE_EVENT(drv_twt_teardown_request,
+ 	)
+ );
+
++#if LINUX_VERSION_IS_GEQ(5,10,0)
++DEFINE_EVENT(sta_event, drv_net_fill_forward_path,
++	TP_PROTO(struct ieee80211_local *local,
++		 struct ieee80211_sub_if_data *sdata,
++		 struct ieee80211_sta *sta),
++	TP_ARGS(local, sdata, sta)
++);
++#endif
++
+ #endif /* !__MAC80211_DRIVER_TRACE || TRACE_HEADER_MULTI_READ */
+ 
+ #undef TRACE_INCLUDE_PATH
