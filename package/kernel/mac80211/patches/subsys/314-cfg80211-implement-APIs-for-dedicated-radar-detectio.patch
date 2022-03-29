@@ -1,0 +1,378 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 23 Oct 2021 11:10:50 +0200
+Subject: [PATCH] cfg80211: implement APIs for dedicated radar detection HW
+
+If a dedicated (off-channel) radar detection hardware (chain)
+is available in the hardware/driver, allow this to be used by
+calling the NL80211_CMD_RADAR_DETECT command with a new flag
+attribute requesting off-channel radar detection is used.
+
+Offchannel CAC (channel availability check) avoids the CAC
+downtime when switching to a radar channel or when turning on
+the AP.
+
+Drivers advertise support for this using the new feature flag
+NL80211_EXT_FEATURE_RADAR_OFFCHAN.
+
+Tested-by: Evelyn Tsai <evelyn.tsai@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/7468e291ef5d05d692c1738d25b8f778d8ea5c3f.1634979655.git.lorenzo@kernel.org
+Link: https://lore.kernel.org/r/1e60e60fef00e14401adae81c3d49f3e5f307537.1634979655.git.lorenzo@kernel.org
+Link: https://lore.kernel.org/r/85fa50f57fc3adb2934c8d9ca0be30394de6b7e8.1634979655.git.lorenzo@kernel.org
+Link: https://lore.kernel.org/r/4b6c08671ad59aae0ac46fc94c02f31b1610eb72.1634979655.git.lorenzo@kernel.org
+Link: https://lore.kernel.org/r/241849ccaf2c228873c6f8495bf87b19159ba458.1634979655.git.lorenzo@kernel.org
+[remove offchan_mutex, fix cfg80211_stop_offchan_radar_detection(),
+ remove gfp_t argument, fix documentation, fix tracing]
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -4057,6 +4057,15 @@ struct mgmt_frame_regs {
+  * @set_sar_specs: Update the SAR (TX power) settings.
+  *
+  * @color_change: Initiate a color change.
++ *
++ * @set_radar_offchan: Configure dedicated offchannel chain available for
++ *	radar/CAC detection on some hw. This chain can't be used to transmit
++ *	or receive frames and it is bounded to a running wdev.
++ *	Offchannel radar/CAC detection allows to avoid the CAC downtime
++ *	switching to a different channel during CAC detection on the selected
++ *	radar channel.
++ *	The caller is expected to set chandef pointer to NULL in order to
++ *	disable offchannel CAC/radar detection.
+  */
+ struct cfg80211_ops {
+ 	int	(*suspend)(struct wiphy *wiphy, struct cfg80211_wowlan *wow);
+@@ -4387,6 +4396,8 @@ struct cfg80211_ops {
+ 	int	(*color_change)(struct wiphy *wiphy,
+ 				struct net_device *dev,
+ 				struct cfg80211_color_change_settings *params);
++	int	(*set_radar_offchan)(struct wiphy *wiphy,
++				     struct cfg80211_chan_def *chandef);
+ };
+ 
+ /*
+@@ -7608,6 +7619,20 @@ void cfg80211_cac_event(struct net_devic
+ 			const struct cfg80211_chan_def *chandef,
+ 			enum nl80211_radar_event event, gfp_t gfp);
+ 
++/**
++ * cfg80211_offchan_cac_event - Channel Availability Check (CAC) offchan event
++ * @wiphy: the wiphy
++ * @chandef: chandef for the current channel
++ * @event: type of event
++ *
++ * This function is called when a Channel Availability Check (CAC) is finished,
++ * started or aborted by a offchannel dedicated chain.
++ *
++ * Note that this acquires the wiphy lock.
++ */
++void cfg80211_offchan_cac_event(struct wiphy *wiphy,
++				const struct cfg80211_chan_def *chandef,
++				enum nl80211_radar_event event);
+ 
+ /**
+  * cfg80211_gtk_rekey_notify - notify userspace about driver rekeying
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -2608,6 +2608,13 @@ enum nl80211_commands {
+  *	Mandatory parameter for the transmitting interface to enable MBSSID.
+  *	Optional for the non-transmitting interfaces.
+  *
++ * @NL80211_ATTR_RADAR_OFFCHAN: Configure dedicated offchannel chain available for
++ *	radar/CAC detection on some hw. This chain can't be used to transmit
++ *	or receive frames and it is bounded to a running wdev.
++ *	Offchannel radar/CAC detection allows to avoid the CAC downtime
++ *	switching on a different channel during CAC detection on the selected
++ *	radar channel.
++ *
+  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
+  * @NL80211_ATTR_MAX: highest attribute number currently defined
+  * @__NL80211_ATTR_AFTER_LAST: internal use
+@@ -3114,6 +3121,8 @@ enum nl80211_attrs {
+ 	NL80211_ATTR_MBSSID_CONFIG,
+ 	NL80211_ATTR_MBSSID_ELEMS,
+ 
++	NL80211_ATTR_RADAR_OFFCHAN,
++
+ 	/* add attributes here, update the policy in nl80211.c */
+ 
+ 	__NL80211_ATTR_AFTER_LAST,
+@@ -6013,6 +6022,9 @@ enum nl80211_feature_flags {
+  * @NL80211_EXT_FEATURE_BSS_COLOR: The driver supports BSS color collision
+  *	detection and change announcemnts.
+  *
++ * @NL80211_EXT_FEATURE_RADAR_OFFCHAN: Device supports offchannel radar/CAC
++ *	detection.
++ *
+  * @NUM_NL80211_EXT_FEATURES: number of extended features.
+  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
+  */
+@@ -6078,6 +6090,7 @@ enum nl80211_ext_feature_index {
+ 	NL80211_EXT_FEATURE_SECURE_RTT,
+ 	NL80211_EXT_FEATURE_PROT_RANGE_NEGO_AND_MEASURE,
+ 	NL80211_EXT_FEATURE_BSS_COLOR,
++	NL80211_EXT_FEATURE_RADAR_OFFCHAN,
+ 
+ 	/* add new features before the definition below */
+ 	NUM_NL80211_EXT_FEATURES,
+--- a/net/wireless/core.c
++++ b/net/wireless/core.c
+@@ -552,6 +552,7 @@ use_default_name:
+ 	INIT_WORK(&rdev->rfkill_block, cfg80211_rfkill_block_work);
+ 	INIT_WORK(&rdev->conn_work, cfg80211_conn_work);
+ 	INIT_WORK(&rdev->event_work, cfg80211_event_work);
++	INIT_DELAYED_WORK(&rdev->offchan_cac_work, cfg80211_offchan_cac_work);
+ 
+ 	init_waitqueue_head(&rdev->dev_wait);
+ 
+@@ -1214,6 +1215,8 @@ void __cfg80211_leave(struct cfg80211_re
+ 
+ 	cfg80211_pmsr_wdev_down(wdev);
+ 
++	cfg80211_stop_offchan_radar_detection(wdev);
++
+ 	switch (wdev->iftype) {
+ 	case NL80211_IFTYPE_ADHOC:
+ 		__cfg80211_leave_ibss(rdev, dev, true);
+--- a/net/wireless/core.h
++++ b/net/wireless/core.h
+@@ -84,6 +84,10 @@ struct cfg80211_registered_device {
+ 
+ 	struct delayed_work dfs_update_channels_wk;
+ 
++	struct wireless_dev *offchan_radar_wdev;
++	struct cfg80211_chan_def offchan_radar_chandef;
++	struct delayed_work offchan_cac_work;
++
+ 	/* netlink port which started critical protocol (0 means not started) */
+ 	u32 crit_proto_nlportid;
+ 
+@@ -491,6 +495,15 @@ cfg80211_chandef_dfs_cac_time(struct wip
+ 
+ void cfg80211_sched_dfs_chan_update(struct cfg80211_registered_device *rdev);
+ 
++int
++cfg80211_start_offchan_radar_detection(struct cfg80211_registered_device *rdev,
++				       struct wireless_dev *wdev,
++				       struct cfg80211_chan_def *chandef);
++
++void cfg80211_stop_offchan_radar_detection(struct wireless_dev *wdev);
++
++void cfg80211_offchan_cac_work(struct work_struct *work);
++
+ bool cfg80211_any_wiphy_oper_chan(struct wiphy *wiphy,
+ 				  struct ieee80211_channel *chan);
+ 
+--- a/net/wireless/mlme.c
++++ b/net/wireless/mlme.c
+@@ -970,3 +970,116 @@ void cfg80211_cac_event(struct net_devic
+ 	nl80211_radar_notify(rdev, chandef, event, netdev, gfp);
+ }
+ EXPORT_SYMBOL(cfg80211_cac_event);
++
++void cfg80211_offchan_cac_work(struct work_struct *work)
++{
++	struct delayed_work *delayed_work = to_delayed_work(work);
++	struct cfg80211_registered_device *rdev;
++
++	rdev = container_of(delayed_work, struct cfg80211_registered_device,
++			    offchan_cac_work);
++	cfg80211_offchan_cac_event(&rdev->wiphy, &rdev->offchan_radar_chandef,
++				   NL80211_RADAR_CAC_FINISHED);
++}
++
++static void
++__cfg80211_offchan_cac_event(struct cfg80211_registered_device *rdev,
++			     struct wireless_dev *wdev,
++			     const struct cfg80211_chan_def *chandef,
++			     enum nl80211_radar_event event)
++{
++	struct wiphy *wiphy = &rdev->wiphy;
++	struct net_device *netdev;
++
++	lockdep_assert_wiphy(&rdev->wiphy);
++
++	if (event != NL80211_RADAR_CAC_STARTED && !rdev->offchan_radar_wdev)
++		return;
++
++	switch (event) {
++	case NL80211_RADAR_CAC_FINISHED:
++		cfg80211_set_dfs_state(wiphy, chandef, NL80211_DFS_AVAILABLE);
++		memcpy(&rdev->cac_done_chandef, chandef, sizeof(*chandef));
++		queue_work(cfg80211_wq, &rdev->propagate_cac_done_wk);
++		cfg80211_sched_dfs_chan_update(rdev);
++		wdev = rdev->offchan_radar_wdev;
++		rdev->offchan_radar_wdev = NULL;
++		break;
++	case NL80211_RADAR_CAC_ABORTED:
++		cancel_delayed_work(&rdev->offchan_cac_work);
++		wdev = rdev->offchan_radar_wdev;
++		rdev->offchan_radar_wdev = NULL;
++		break;
++	case NL80211_RADAR_CAC_STARTED:
++		WARN_ON(!wdev);
++		rdev->offchan_radar_wdev = wdev;
++		break;
++	default:
++		return;
++	}
++
++	netdev = wdev ? wdev->netdev : NULL;
++	nl80211_radar_notify(rdev, chandef, event, netdev, GFP_KERNEL);
++}
++
++void cfg80211_offchan_cac_event(struct wiphy *wiphy,
++				const struct cfg80211_chan_def *chandef,
++				enum nl80211_radar_event event)
++{
++	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
++
++	wiphy_lock(wiphy);
++	__cfg80211_offchan_cac_event(rdev, NULL, chandef, event);
++	wiphy_unlock(wiphy);
++}
++EXPORT_SYMBOL(cfg80211_offchan_cac_event);
++
++int
++cfg80211_start_offchan_radar_detection(struct cfg80211_registered_device *rdev,
++				       struct wireless_dev *wdev,
++				       struct cfg80211_chan_def *chandef)
++{
++	unsigned int cac_time_ms;
++	int err;
++
++	lockdep_assert_wiphy(&rdev->wiphy);
++
++	if (!wiphy_ext_feature_isset(&rdev->wiphy,
++				     NL80211_EXT_FEATURE_RADAR_OFFCHAN))
++		return -EOPNOTSUPP;
++
++	if (rdev->offchan_radar_wdev)
++		return -EBUSY;
++
++	err = rdev_set_radar_offchan(rdev, chandef);
++	if (err)
++		return err;
++
++	cac_time_ms = cfg80211_chandef_dfs_cac_time(&rdev->wiphy, chandef);
++	if (!cac_time_ms)
++		cac_time_ms = IEEE80211_DFS_MIN_CAC_TIME_MS;
++
++	rdev->offchan_radar_chandef = *chandef;
++	__cfg80211_offchan_cac_event(rdev, wdev, chandef,
++				     NL80211_RADAR_CAC_STARTED);
++	queue_delayed_work(cfg80211_wq, &rdev->offchan_cac_work,
++			   msecs_to_jiffies(cac_time_ms));
++
++	return 0;
++}
++
++void cfg80211_stop_offchan_radar_detection(struct wireless_dev *wdev)
++{
++	struct wiphy *wiphy = wdev->wiphy;
++	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
++
++	lockdep_assert_wiphy(wiphy);
++
++	if (wdev != rdev->offchan_radar_wdev)
++		return;
++
++	rdev_set_radar_offchan(rdev, NULL);
++
++	__cfg80211_offchan_cac_event(rdev, NULL, NULL,
++				     NL80211_RADAR_CAC_ABORTED);
++}
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -793,6 +793,7 @@ static const struct nla_policy nl80211_p
+ 	[NL80211_ATTR_MBSSID_CONFIG] =
+ 			NLA_POLICY_NESTED(nl80211_mbssid_config_policy),
+ 	[NL80211_ATTR_MBSSID_ELEMS] = { .type = NLA_NESTED },
++	[NL80211_ATTR_RADAR_OFFCHAN] = { .type = NLA_FLAG },
+ };
+ 
+ /* policy for the key attributes */
+@@ -9269,12 +9270,6 @@ static int nl80211_start_radar_detection
+ 	if (err)
+ 		return err;
+ 
+-	if (netif_carrier_ok(dev))
+-		return -EBUSY;
+-
+-	if (wdev->cac_started)
+-		return -EBUSY;
+-
+ 	err = cfg80211_chandef_dfs_required(wiphy, &chandef, wdev->iftype);
+ 	if (err < 0)
+ 		return err;
+@@ -9285,6 +9280,16 @@ static int nl80211_start_radar_detection
+ 	if (!cfg80211_chandef_dfs_usable(wiphy, &chandef))
+ 		return -EINVAL;
+ 
++	if (nla_get_flag(info->attrs[NL80211_ATTR_RADAR_OFFCHAN]))
++		return cfg80211_start_offchan_radar_detection(rdev, wdev,
++							      &chandef);
++
++	if (netif_carrier_ok(dev))
++		return -EBUSY;
++
++	if (wdev->cac_started)
++		return -EBUSY;
++
+ 	/* CAC start is offloaded to HW and can't be started manually */
+ 	if (wiphy_ext_feature_isset(wiphy, NL80211_EXT_FEATURE_DFS_OFFLOAD))
+ 		return -EOPNOTSUPP;
+--- a/net/wireless/rdev-ops.h
++++ b/net/wireless/rdev-ops.h
+@@ -1381,4 +1381,21 @@ static inline int rdev_color_change(stru
+ 	return ret;
+ }
+ 
++static inline int
++rdev_set_radar_offchan(struct cfg80211_registered_device *rdev,
++		       struct cfg80211_chan_def *chandef)
++{
++	struct wiphy *wiphy = &rdev->wiphy;
++	int ret;
++
++	if (!rdev->ops->set_radar_offchan)
++		return -EOPNOTSUPP;
++
++	trace_rdev_set_radar_offchan(wiphy, chandef);
++	ret = rdev->ops->set_radar_offchan(wiphy, chandef);
++	trace_rdev_return_int(wiphy, ret);
++
++	return ret;
++}
++
+ #endif /* __CFG80211_RDEV_OPS */
+--- a/net/wireless/trace.h
++++ b/net/wireless/trace.h
+@@ -3643,6 +3643,25 @@ TRACE_EVENT(cfg80211_bss_color_notify,
+ 		  __entry->color_bitmap)
+ );
+ 
++TRACE_EVENT(rdev_set_radar_offchan,
++	TP_PROTO(struct wiphy *wiphy, struct cfg80211_chan_def *chandef),
++
++	TP_ARGS(wiphy, chandef),
++
++	TP_STRUCT__entry(
++		WIPHY_ENTRY
++		CHAN_DEF_ENTRY
++	),
++
++	TP_fast_assign(
++		WIPHY_ASSIGN;
++		CHAN_DEF_ASSIGN(chandef)
++	),
++
++	TP_printk(WIPHY_PR_FMT ", " CHAN_DEF_PR_FMT,
++		  WIPHY_PR_ARG, CHAN_DEF_PR_ARG)
++);
++
+ #endif /* !__RDEV_OPS_TRACE || TRACE_HEADER_MULTI_READ */
+ 
+ #undef TRACE_INCLUDE_PATH
