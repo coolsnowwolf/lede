@@ -1,0 +1,760 @@
+From 534bcc4a0bb5b24600891ce793f0295a142e9dae Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Mon, 5 Apr 2021 04:17:41 -0600
+Subject: [PATCH 05/10] mm: multigenerational lru: mm_struct list
+
+To scan PTEs for accessed pages, a mm_struct list is maintained for
+each memcg. When multiple threads traverse the same memcg->mm_list,
+each of them gets a unique mm_struct and therefore they can run
+walk_page_range() concurrently to reach page tables of all processes
+of this memcg.
+
+This infrastructure also provides the following optimizations:
+  1) it allows walkers to skip processes that have been sleeping since
+  the last walk by tracking the usage of mm_struct between context
+  switches.
+  2) it allows walkers to add interesting items they find during a
+  walk to a Bloom filter so that they can skip uninteresting items
+  during the next walk by testing whether an item is in this Bloom
+  filter.
+
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Tested-by: Konstantin Kharlamov <Hi-Angel@yandex.ru>
+Change-Id: I25d9eda8c6bdc7c3653b9f210a159d6c247c81e8
+---
+ fs/exec.c                  |   2 +
+ include/linux/memcontrol.h |   4 +
+ include/linux/mm_inline.h  |   6 +
+ include/linux/mm_types.h   |  75 +++++++++
+ include/linux/mmzone.h     |  63 +++++++
+ kernel/exit.c              |   1 +
+ kernel/fork.c              |   9 +
+ kernel/sched/core.c        |   1 +
+ mm/memcontrol.c            |  25 +++
+ mm/vmscan.c                | 331 +++++++++++++++++++++++++++++++++++++
+ 10 files changed, 517 insertions(+)
+
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1013,6 +1013,7 @@ static int exec_mmap(struct mm_struct *m
+ 	active_mm = tsk->active_mm;
+ 	tsk->active_mm = mm;
+ 	tsk->mm = mm;
++	lru_gen_add_mm(mm);
+ 	/*
+ 	 * This prevents preemption while active_mm is being loaded and
+ 	 * it and mm are being updated, which could cause problems for
+@@ -1023,6 +1024,7 @@ static int exec_mmap(struct mm_struct *m
+ 	if (!IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
+ 		local_irq_enable();
+ 	activate_mm(active_mm, mm);
++	lru_gen_activate_mm(mm);
+ 	if (IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
+ 		local_irq_enable();
+ 	tsk->mm->vmacache_seqnum = 0;
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -348,6 +348,10 @@ struct mem_cgroup {
+ 	struct deferred_split deferred_split_queue;
+ #endif
+ 
++#ifdef CONFIG_LRU_GEN
++	struct lru_gen_mm_list mm_list;
++#endif
++
+ 	struct mem_cgroup_per_node *nodeinfo[];
+ };
+ 
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -100,6 +100,12 @@ static inline int lru_gen_from_seq(unsig
+ 	return seq % MAX_NR_GENS;
+ }
+ 
++/* Return a proper index regardless whether we keep stats for historical generations. */
++static inline int lru_hist_from_seq(unsigned long seq)
++{
++	return seq % NR_HIST_GENS;
++}
++
+ /* The youngest and the second youngest generations are counted as active. */
+ static inline bool lru_gen_is_active(struct lruvec *lruvec, int gen)
+ {
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -3,6 +3,7 @@
+ #define _LINUX_MM_TYPES_H
+ 
+ #include <linux/mm_types_task.h>
++#include <linux/sched.h>
+ 
+ #include <linux/auxvec.h>
+ #include <linux/list.h>
+@@ -15,6 +16,8 @@
+ #include <linux/page-flags-layout.h>
+ #include <linux/workqueue.h>
+ #include <linux/seqlock.h>
++#include <linux/nodemask.h>
++#include <linux/mmdebug.h>
+ 
+ #include <asm/mmu.h>
+ 
+@@ -580,6 +583,18 @@ struct mm_struct {
+ #ifdef CONFIG_IOMMU_SUPPORT
+ 		u32 pasid;
+ #endif
++#ifdef CONFIG_LRU_GEN
++		struct {
++			/* the node of a global or per-memcg mm_struct list */
++			struct list_head list;
++#ifdef CONFIG_MEMCG
++			/* points to the memcg of the owner task above */
++			struct mem_cgroup *memcg;
++#endif
++			/* whether this mm_struct has been used since the last walk */
++			nodemask_t nodes;
++		} lrugen;
++#endif /* CONFIG_LRU_GEN */
+ 	} __randomize_layout;
+ 
+ 	/*
+@@ -606,6 +621,66 @@ static inline cpumask_t *mm_cpumask(stru
+ 	return (struct cpumask *)&mm->cpu_bitmap;
+ }
+ 
++#ifdef CONFIG_LRU_GEN
++
++struct lru_gen_mm_list {
++	/* a global or per-memcg mm_struct list */
++	struct list_head fifo;
++	/* protects the list above */
++	spinlock_t lock;
++};
++
++void lru_gen_add_mm(struct mm_struct *mm);
++void lru_gen_del_mm(struct mm_struct *mm);
++#ifdef CONFIG_MEMCG
++void lru_gen_migrate_mm(struct mm_struct *mm);
++#endif
++
++static inline void lru_gen_init_mm(struct mm_struct *mm)
++{
++	INIT_LIST_HEAD(&mm->lrugen.list);
++#ifdef CONFIG_MEMCG
++	mm->lrugen.memcg = NULL;
++#endif
++	nodes_clear(mm->lrugen.nodes);
++}
++
++/* Track the usage of each mm_struct so that we can skip inactive ones. */
++static inline void lru_gen_activate_mm(struct mm_struct *mm)
++{
++	/* unlikely but not a bug when racing with lru_gen_migrate_mm() */
++	VM_WARN_ON(list_empty(&mm->lrugen.list));
++
++	if (!(current->flags & PF_KTHREAD) && !nodes_full(mm->lrugen.nodes))
++		nodes_setall(mm->lrugen.nodes);
++}
++
++#else /* !CONFIG_LRU_GEN */
++
++static inline void lru_gen_add_mm(struct mm_struct *mm)
++{
++}
++
++static inline void lru_gen_del_mm(struct mm_struct *mm)
++{
++}
++
++#ifdef CONFIG_MEMCG
++static inline void lru_gen_migrate_mm(struct mm_struct *mm)
++{
++}
++#endif
++
++static inline void lru_gen_init_mm(struct mm_struct *mm)
++{
++}
++
++static inline void lru_gen_activate_mm(struct mm_struct *mm)
++{
++}
++
++#endif /* CONFIG_LRU_GEN */
++
+ struct mmu_gather;
+ extern void tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm);
+ extern void tlb_gather_mmu_fullmm(struct mmu_gather *tlb, struct mm_struct *mm);
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -318,6 +318,13 @@ struct lruvec;
+ #define MIN_NR_GENS		2
+ #define MAX_NR_GENS		((unsigned int)CONFIG_NR_LRU_GENS)
+ 
++/* Whether to keep stats for historical generations. */
++#ifdef CONFIG_LRU_GEN_STATS
++#define NR_HIST_GENS		((unsigned int)CONFIG_NR_LRU_GENS)
++#else
++#define NR_HIST_GENS		1U
++#endif
++
+ struct lrugen {
+ 	/* the aging increments the max generation number */
+ 	unsigned long max_seq;
+@@ -333,13 +340,63 @@ struct lrugen {
+ 	bool enabled[ANON_AND_FILE];
+ };
+ 
++enum {
++	MM_LEAF_TOTAL,		/* total leaf entries */
++	MM_LEAF_OLD,		/* old leaf entries */
++	MM_LEAF_YOUNG,		/* young leaf entries */
++	MM_NONLEAF_TOTAL,	/* total non-leaf entries */
++	MM_NONLEAF_PREV,	/* previously worthy non-leaf entries */
++	MM_NONLEAF_CUR,		/* currently worthy non-leaf entries */
++	NR_MM_STATS
++};
++
++/* mnemonic codes for the stats above */
++#define MM_STAT_CODES		"toydpc"
++
++/* double buffering bloom filters */
++#define NR_BLOOM_FILTERS	2
++
++struct lru_gen_mm_walk {
++	/* set to max_seq after each round of walk */
++	unsigned long seq;
++	/* the next mm_struct on the list to walk */
++	struct list_head *head;
++	/* the first mm_struct never walked before */
++	struct list_head *tail;
++	/* to wait for the last walker to finish */
++	struct wait_queue_head wait;
++	/* bloom filters flip after each round of walk */
++	unsigned long *filters[NR_BLOOM_FILTERS];
++	/* page table stats for debugging */
++	unsigned long stats[NR_HIST_GENS][NR_MM_STATS];
++	/* the number of concurrent walkers */
++	int nr_walkers;
++};
++
++#define MIN_BATCH_SIZE		64
+ #define MAX_BATCH_SIZE		8192
+ 
++struct mm_walk_args {
++	struct mem_cgroup *memcg;
++	unsigned long max_seq;
++	unsigned long start_pfn;
++	unsigned long end_pfn;
++	unsigned long next_addr;
++	unsigned long bitmap[BITS_TO_LONGS(MIN_BATCH_SIZE)];
++	int node_id;
++	int swappiness;
++	int batch_size;
++	int nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
++	int mm_stats[NR_MM_STATS];
++	bool use_filter;
++};
++
+ void lru_gen_init_state(struct mem_cgroup *memcg, struct lruvec *lruvec);
+ void lru_gen_change_state(bool enable, bool main, bool swap);
+ 
+ #ifdef CONFIG_MEMCG
+ void lru_gen_init_memcg(struct mem_cgroup *memcg);
++void lru_gen_free_memcg(struct mem_cgroup *memcg);
+ #endif
+ 
+ #else /* !CONFIG_LRU_GEN */
+@@ -356,6 +413,10 @@ static inline void lru_gen_change_state(
+ static inline void lru_gen_init_memcg(struct mem_cgroup *memcg)
+ {
+ }
++
++static inline void lru_gen_free_memcg(struct mem_cgroup *memcg)
++{
++}
+ #endif
+ 
+ #endif /* CONFIG_LRU_GEN */
+@@ -380,6 +441,8 @@ struct lruvec {
+ #ifdef CONFIG_LRU_GEN
+ 	/* unevictable pages are on LRU_UNEVICTABLE */
+ 	struct lrugen			evictable;
++	/* state for mm list and page table walks */
++	struct lru_gen_mm_walk		mm_walk;
+ #endif
+ #ifdef CONFIG_MEMCG
+ 	struct pglist_data *pgdat;
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -422,6 +422,7 @@ assign_new_owner:
+ 		goto retry;
+ 	}
+ 	WRITE_ONCE(mm->owner, c);
++	lru_gen_migrate_mm(mm);
+ 	task_unlock(c);
+ 	put_task_struct(c);
+ }
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1080,6 +1080,7 @@ static struct mm_struct *mm_init(struct
+ 		goto fail_nocontext;
+ 
+ 	mm->user_ns = get_user_ns(user_ns);
++	lru_gen_init_mm(mm);
+ 	return mm;
+ 
+ fail_nocontext:
+@@ -1122,6 +1123,7 @@ static inline void __mmput(struct mm_str
+ 	}
+ 	if (mm->binfmt)
+ 		module_put(mm->binfmt->module);
++	lru_gen_del_mm(mm);
+ 	mmdrop(mm);
+ }
+ 
+@@ -2616,6 +2618,13 @@ pid_t kernel_clone(struct kernel_clone_a
+ 		get_task_struct(p);
+ 	}
+ 
++	if (IS_ENABLED(CONFIG_LRU_GEN) && !(clone_flags & CLONE_VM)) {
++		/* lock the task to synchronize with memcg migration */
++		task_lock(p);
++		lru_gen_add_mm(p->mm);
++		task_unlock(p);
++	}
++
+ 	wake_up_new_task(p);
+ 
+ 	/* forking complete and child started to run, tell ptracer */
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -4978,6 +4978,7 @@ context_switch(struct rq *rq, struct tas
+ 		 * finish_task_switch()'s mmdrop().
+ 		 */
+ 		switch_mm_irqs_off(prev->active_mm, next->mm, next);
++		lru_gen_activate_mm(next->mm);
+ 
+ 		if (!prev->mm) {                        // from kernel
+ 			/* will mmdrop() in finish_task_switch(). */
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -5163,6 +5163,7 @@ static void __mem_cgroup_free(struct mem
+ 
+ static void mem_cgroup_free(struct mem_cgroup *memcg)
+ {
++	lru_gen_free_memcg(memcg);
+ 	memcg_wb_domain_exit(memcg);
+ 	__mem_cgroup_free(memcg);
+ }
+@@ -6195,6 +6196,29 @@ static void mem_cgroup_move_task(void)
+ }
+ #endif
+ 
++#ifdef CONFIG_LRU_GEN
++static void mem_cgroup_attach(struct cgroup_taskset *tset)
++{
++	struct cgroup_subsys_state *css;
++	struct task_struct *task = NULL;
++
++	cgroup_taskset_for_each_leader(task, css, tset)
++		break;
++
++	if (!task)
++		return;
++
++	task_lock(task);
++	if (task->mm && task->mm->owner == task)
++		lru_gen_migrate_mm(task->mm);
++	task_unlock(task);
++}
++#else
++static void mem_cgroup_attach(struct cgroup_taskset *tset)
++{
++}
++#endif /* CONFIG_LRU_GEN */
++
+ static int seq_puts_memcg_tunable(struct seq_file *m, unsigned long value)
+ {
+ 	if (value == PAGE_COUNTER_MAX)
+@@ -6538,6 +6562,7 @@ struct cgroup_subsys memory_cgrp_subsys
+ 	.css_reset = mem_cgroup_css_reset,
+ 	.css_rstat_flush = mem_cgroup_css_rstat_flush,
+ 	.can_attach = mem_cgroup_can_attach,
++	.attach = mem_cgroup_attach,
+ 	.cancel_attach = mem_cgroup_cancel_attach,
+ 	.post_attach = mem_cgroup_move_task,
+ 	.dfl_cftypes = memory_files,
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2929,6 +2929,306 @@ static bool __maybe_unused seq_is_valid(
+ }
+ 
+ /******************************************************************************
++ *                          mm_struct list
++ ******************************************************************************/
++
++static struct lru_gen_mm_list *get_mm_list(struct mem_cgroup *memcg)
++{
++	static struct lru_gen_mm_list mm_list = {
++		.fifo = LIST_HEAD_INIT(mm_list.fifo),
++		.lock = __SPIN_LOCK_UNLOCKED(mm_list.lock),
++	};
++
++#ifdef CONFIG_MEMCG
++	if (memcg)
++		return &memcg->mm_list;
++#endif
++	return &mm_list;
++}
++
++void lru_gen_add_mm(struct mm_struct *mm)
++{
++	int nid;
++	struct mem_cgroup *memcg = get_mem_cgroup_from_mm(mm);
++	struct lru_gen_mm_list *mm_list = get_mm_list(memcg);
++
++	VM_BUG_ON_MM(!list_empty(&mm->lrugen.list), mm);
++#ifdef CONFIG_MEMCG
++	VM_BUG_ON_MM(mm->lrugen.memcg, mm);
++	mm->lrugen.memcg = memcg;
++#endif
++	spin_lock(&mm_list->lock);
++
++	list_add_tail(&mm->lrugen.list, &mm_list->fifo);
++
++	for_each_node(nid) {
++		struct lruvec *lruvec = get_lruvec(nid, memcg);
++
++		if (!lruvec)
++			continue;
++
++		if (lruvec->mm_walk.tail == &mm_list->fifo)
++			lruvec->mm_walk.tail = lruvec->mm_walk.tail->prev;
++	}
++
++	spin_unlock(&mm_list->lock);
++}
++
++void lru_gen_del_mm(struct mm_struct *mm)
++{
++	int nid;
++	struct lru_gen_mm_list *mm_list;
++	struct mem_cgroup *memcg = NULL;
++
++	if (list_empty(&mm->lrugen.list))
++		return;
++
++#ifdef CONFIG_MEMCG
++	memcg = mm->lrugen.memcg;
++#endif
++	mm_list = get_mm_list(memcg);
++
++	spin_lock(&mm_list->lock);
++
++	for_each_node(nid) {
++		struct lruvec *lruvec = get_lruvec(nid, memcg);
++
++		if (!lruvec)
++			continue;
++
++		if (lruvec->mm_walk.tail == &mm->lrugen.list)
++			lruvec->mm_walk.tail = lruvec->mm_walk.tail->next;
++
++		if (lruvec->mm_walk.head != &mm->lrugen.list)
++			continue;
++
++		lruvec->mm_walk.head = lruvec->mm_walk.head->next;
++		if (lruvec->mm_walk.head == &mm_list->fifo)
++			WRITE_ONCE(lruvec->mm_walk.seq, lruvec->mm_walk.seq + 1);
++	}
++
++	list_del_init(&mm->lrugen.list);
++
++	spin_unlock(&mm_list->lock);
++
++#ifdef CONFIG_MEMCG
++	mem_cgroup_put(mm->lrugen.memcg);
++	mm->lrugen.memcg = NULL;
++#endif
++}
++
++#ifdef CONFIG_MEMCG
++void lru_gen_migrate_mm(struct mm_struct *mm)
++{
++	struct mem_cgroup *memcg;
++
++	lockdep_assert_held(&mm->owner->alloc_lock);
++
++	if (mem_cgroup_disabled())
++		return;
++
++	rcu_read_lock();
++	memcg = mem_cgroup_from_task(mm->owner);
++	rcu_read_unlock();
++	if (memcg == mm->lrugen.memcg)
++		return;
++
++	VM_BUG_ON_MM(!mm->lrugen.memcg, mm);
++	VM_BUG_ON_MM(list_empty(&mm->lrugen.list), mm);
++
++	lru_gen_del_mm(mm);
++	lru_gen_add_mm(mm);
++}
++#endif
++
++#define BLOOM_FILTER_SHIFT	15
++
++static inline int filter_gen_from_seq(unsigned long seq)
++{
++	return seq % NR_BLOOM_FILTERS;
++}
++
++static void get_item_key(void *item, int *key)
++{
++	u32 hash = hash_ptr(item, BLOOM_FILTER_SHIFT * 2);
++
++	BUILD_BUG_ON(BLOOM_FILTER_SHIFT * 2 > BITS_PER_TYPE(u32));
++
++	key[0] = hash & (BIT(BLOOM_FILTER_SHIFT) - 1);
++	key[1] = hash >> BLOOM_FILTER_SHIFT;
++}
++
++static void clear_bloom_filter(struct lruvec *lruvec, unsigned long seq)
++{
++	unsigned long *filter;
++	int gen = filter_gen_from_seq(seq);
++
++	lockdep_assert_held(&get_mm_list(lruvec_memcg(lruvec))->lock);
++
++	filter = lruvec->mm_walk.filters[gen];
++	if (filter) {
++		bitmap_clear(filter, 0, BIT(BLOOM_FILTER_SHIFT));
++		return;
++	}
++
++	filter = bitmap_zalloc(BIT(BLOOM_FILTER_SHIFT), GFP_ATOMIC);
++	WRITE_ONCE(lruvec->mm_walk.filters[gen], filter);
++}
++
++static void set_bloom_filter(struct lruvec *lruvec, unsigned long seq, void *item)
++{
++	int key[2];
++	unsigned long *filter;
++	int gen = filter_gen_from_seq(seq);
++
++	filter = READ_ONCE(lruvec->mm_walk.filters[gen]);
++	if (!filter)
++		return;
++
++	get_item_key(item, key);
++
++	if (!test_bit(key[0], filter))
++		set_bit(key[0], filter);
++	if (!test_bit(key[1], filter))
++		set_bit(key[1], filter);
++}
++
++static bool test_bloom_filter(struct lruvec *lruvec, unsigned long seq, void *item)
++{
++	int key[2];
++	unsigned long *filter;
++	int gen = filter_gen_from_seq(seq);
++
++	filter = READ_ONCE(lruvec->mm_walk.filters[gen]);
++	if (!filter)
++		return false;
++
++	get_item_key(item, key);
++
++	return test_bit(key[0], filter) && test_bit(key[1], filter);
++}
++
++static void reset_mm_stats(struct lruvec *lruvec, bool last, struct mm_walk_args *args)
++{
++	int i;
++	int hist = lru_hist_from_seq(args->max_seq);
++
++	lockdep_assert_held(&get_mm_list(lruvec_memcg(lruvec))->lock);
++
++	for (i = 0; i < NR_MM_STATS; i++) {
++		WRITE_ONCE(lruvec->mm_walk.stats[hist][i],
++			   lruvec->mm_walk.stats[hist][i] + args->mm_stats[i]);
++		args->mm_stats[i] = 0;
++	}
++
++	if (!last || NR_HIST_GENS == 1)
++		return;
++
++	hist = lru_hist_from_seq(args->max_seq + 1);
++	for (i = 0; i < NR_MM_STATS; i++)
++		WRITE_ONCE(lruvec->mm_walk.stats[hist][i], 0);
++}
++
++static bool should_skip_mm(struct mm_struct *mm, struct mm_walk_args *args)
++{
++	int type;
++	unsigned long size = 0;
++
++	if (cpumask_empty(mm_cpumask(mm)) && !node_isset(args->node_id, mm->lrugen.nodes))
++		return true;
++
++	if (mm_is_oom_victim(mm))
++		return true;
++
++	for (type = !args->swappiness; type < ANON_AND_FILE; type++) {
++		size += type ? get_mm_counter(mm, MM_FILEPAGES) :
++			       get_mm_counter(mm, MM_ANONPAGES) +
++			       get_mm_counter(mm, MM_SHMEMPAGES);
++	}
++
++	if (size < MIN_BATCH_SIZE)
++		return true;
++
++	if (!mmget_not_zero(mm))
++		return true;
++
++	node_clear(args->node_id, mm->lrugen.nodes);
++
++	return false;
++}
++
++/* To support multiple walkers that concurrently walk an mm_struct list. */
++static bool get_next_mm(struct lruvec *lruvec, struct mm_walk_args *args,
++			struct mm_struct **iter)
++{
++	bool first = false;
++	bool last = true;
++	struct mm_struct *mm = NULL;
++	struct lru_gen_mm_walk *mm_walk = &lruvec->mm_walk;
++	struct lru_gen_mm_list *mm_list = get_mm_list(args->memcg);
++
++	if (*iter)
++		mmput_async(*iter);
++	else if (args->max_seq <= READ_ONCE(mm_walk->seq))
++		return false;
++
++	spin_lock(&mm_list->lock);
++
++	VM_BUG_ON(args->max_seq > mm_walk->seq + 1);
++	VM_BUG_ON(*iter && args->max_seq < mm_walk->seq);
++	VM_BUG_ON(*iter && !mm_walk->nr_walkers);
++
++	if (args->max_seq <= mm_walk->seq) {
++		if (!*iter)
++			last = false;
++		goto done;
++	}
++
++	if (mm_walk->head == &mm_list->fifo) {
++		VM_BUG_ON(mm_walk->nr_walkers);
++		mm_walk->head = mm_walk->head->next;
++		first = true;
++	}
++
++	while (!mm && mm_walk->head != &mm_list->fifo) {
++		mm = list_entry(mm_walk->head, struct mm_struct, lrugen.list);
++
++		mm_walk->head = mm_walk->head->next;
++
++		if (mm_walk->tail == &mm->lrugen.list) {
++			mm_walk->tail = mm_walk->tail->next;
++			args->use_filter = false;
++		}
++
++		if (should_skip_mm(mm, args))
++			mm = NULL;
++	}
++
++	if (mm_walk->head == &mm_list->fifo)
++		WRITE_ONCE(mm_walk->seq, mm_walk->seq + 1);
++done:
++	if (*iter && !mm)
++		mm_walk->nr_walkers--;
++	if (!*iter && mm)
++		mm_walk->nr_walkers++;
++
++	if (mm_walk->nr_walkers)
++		last = false;
++
++	if (mm && first)
++		clear_bloom_filter(lruvec, args->max_seq + 1);
++
++	if (*iter || last)
++		reset_mm_stats(lruvec, last, args);
++
++	spin_unlock(&mm_list->lock);
++
++	*iter = mm;
++
++	return last;
++}
++
++/******************************************************************************
+  *                          state change
+  ******************************************************************************/
+ 
+@@ -3112,6 +3412,7 @@ void lru_gen_init_state(struct mem_cgrou
+ 	int i;
+ 	int gen, type, zone;
+ 	struct lrugen *lrugen = &lruvec->evictable;
++	struct lru_gen_mm_list *mm_list = get_mm_list(memcg);
+ 
+ 	lrugen->max_seq = MIN_NR_GENS + 1;
+ 	lrugen->enabled[0] = lru_gen_enabled() && lru_gen_nr_swapfiles;
+@@ -3122,6 +3423,17 @@ void lru_gen_init_state(struct mem_cgrou
+ 
+ 	for_each_gen_type_zone(gen, type, zone)
+ 		INIT_LIST_HEAD(&lrugen->lists[gen][type][zone]);
++
++	if (IS_ENABLED(CONFIG_MEMORY_HOTPLUG) && !memcg)
++		spin_lock(&mm_list->lock);
++
++	lruvec->mm_walk.seq = MIN_NR_GENS;
++	lruvec->mm_walk.head = &mm_list->fifo;
++	lruvec->mm_walk.tail = &mm_list->fifo;
++	init_waitqueue_head(&lruvec->mm_walk.wait);
++
++	if (IS_ENABLED(CONFIG_MEMORY_HOTPLUG) && !memcg)
++		spin_unlock(&mm_list->lock);
+ }
+ 
+ #ifdef CONFIG_MEMCG
+@@ -3129,18 +3441,37 @@ void lru_gen_init_memcg(struct mem_cgrou
+ {
+ 	int nid;
+ 
++	INIT_LIST_HEAD(&memcg->mm_list.fifo);
++	spin_lock_init(&memcg->mm_list.lock);
++
+ 	for_each_node(nid) {
+ 		struct lruvec *lruvec = get_lruvec(nid, memcg);
+ 
+ 		lru_gen_init_state(memcg, lruvec);
+ 	}
+ }
++
++void lru_gen_free_memcg(struct mem_cgroup *memcg)
++{
++	int nid;
++
++	for_each_node(nid) {
++		int i;
++		struct lruvec *lruvec = get_lruvec(nid, memcg);
++
++		for (i = 0; i < NR_BLOOM_FILTERS; i++) {
++			bitmap_free(lruvec->mm_walk.filters[i]);
++			lruvec->mm_walk.filters[i] = NULL;
++		}
++	}
++}
+ #endif
+ 
+ static int __init init_lru_gen(void)
+ {
+ 	BUILD_BUG_ON(MIN_NR_GENS + 1 >= MAX_NR_GENS);
+ 	BUILD_BUG_ON(BIT(LRU_GEN_WIDTH) <= MAX_NR_GENS);
++	BUILD_BUG_ON(sizeof(MM_STAT_CODES) != NR_MM_STATS + 1);
+ 
+ 	return 0;
+ };
