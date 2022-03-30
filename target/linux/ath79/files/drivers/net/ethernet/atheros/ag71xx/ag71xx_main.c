@@ -1519,7 +1519,6 @@ static int ag71xx_probe(struct platform_device *pdev)
 	struct net_device *dev;
 	struct resource *res;
 	struct ag71xx *ag;
-	const void *mac_addr;
 	u32 max_frame_len;
 	int tx_size, err;
 
@@ -1668,12 +1667,10 @@ static int ag71xx_probe(struct platform_device *pdev)
 	ag->stop_desc->ctrl = 0;
 	ag->stop_desc->next = (u32) ag->stop_desc_dma;
 
-	mac_addr = of_get_mac_address(np);
-	if (IS_ERR_OR_NULL(mac_addr) || !is_valid_ether_addr(mac_addr)) {
+	of_get_mac_address(np, dev->dev_addr);
+	if (!is_valid_ether_addr(dev->dev_addr)) {
 		dev_err(&pdev->dev, "invalid MAC address, using random address\n");
 		eth_random_addr(dev->dev_addr);
-	} else {
-		memcpy(dev->dev_addr, mac_addr, ETH_ALEN);
 	}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
