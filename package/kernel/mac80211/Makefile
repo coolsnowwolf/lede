@@ -10,10 +10,10 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=5.10.42-1
-PKG_RELEASE:=3
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.10.42/
-PKG_HASH:=6876520105240844fdb32d1dcdf2bfdea291a37a96f16c892fda3776ba714fcb
+PKG_VERSION:=5.15.8-1
+PKG_RELEASE:=2
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.15.8/
+PKG_HASH:=9f71b659c034f19d156532ec780fcb606cee3c4ccc42e2f8ef18dd3e9f1b6820
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -23,7 +23,6 @@ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
 PKG_DRIVERS = \
 	adm8211 \
-	airo \
 	hermes hermes-pci hermes-pcmcia hermes-plx\
 	lib80211 \
 	mac80211-hwsim \
@@ -84,7 +83,6 @@ config-$(CONFIG_PACKAGE_CFG80211_TESTMODE) += NL80211_TESTMODE
 
 config-$(call config_package,mac80211) += MAC80211
 config-$(CONFIG_PACKAGE_MAC80211_MESH) += MAC80211_MESH
-config-$(CONFIG_PACKAGE_MAC80211_NSS_SUPPORT) += MAC80211_NSS_SUPPORT
 
 include ath.mk
 include broadcom.mk
@@ -99,7 +97,7 @@ PKG_CONFIG_DEPENDS += \
 define KernelPackage/cfg80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=cfg80211 - wireless configuration API
-  DEPENDS+= +iw +iwinfo +wireless-regdb
+  DEPENDS+= +iw +iwinfo +wireless-regdb +USE_RFKILL:kmod-rfkill
   ABI_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
   FILES:= \
 	$(PKG_BUILD_DIR)/compat/compat.ko \
@@ -128,7 +126,7 @@ define KernelPackage/mac80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=Linux 802.11 Wireless Networking Stack
   # +kmod-crypto-cmac is a runtime only dependency of net/mac80211/aes_cmac.c
-  DEPENDS+= +kmod-cfg80211 +kmod-crypto-cmac +kmod-crypto-ccm +kmod-crypto-gcm +hostapd-common +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv +PACKAGE_kmod-qca-nss-drv-64:kmod-qca-nss-drv-64
+  DEPENDS+= +kmod-cfg80211 +kmod-crypto-cmac +kmod-crypto-ccm +kmod-crypto-gcm +hostapd-common
   KCONFIG:=\
 	CONFIG_AVERAGE=y
   FILES:= $(PKG_BUILD_DIR)/net/mac80211/mac80211.ko
@@ -138,14 +136,6 @@ endef
 
 define KernelPackage/mac80211/config
   if PACKAGE_kmod-mac80211
-  
-	if PACKAGE_kmod-qca-nss-drv||PACKAGE_kmod-qca-nss-drv-64
-		config PACKAGE_MAC80211_NSS_SUPPORT
-			bool "Enable NSS support for IPQ platform"
-			default y
-			help
-			  This option enables support for NSS in boards.
-	endif
 
 	config PACKAGE_MAC80211_DEBUGFS
 		bool "Export mac80211 internals in DebugFS"
@@ -181,18 +171,6 @@ define KernelPackage/adm8211
   DEPENDS+=@PCI_SUPPORT +kmod-mac80211 +kmod-eeprom-93cx6
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/admtek/adm8211.ko
   AUTOLOAD:=$(call AutoProbe,adm8211)
-endef
-
-define KernelPackage/airo
-  $(call KernelPackage/mac80211/Default)
-  TITLE:=Cisco Aironet driver
-  DEPENDS+=@PCI_SUPPORT +@DRIVER_WEXT_SUPPORT +kmod-cfg80211 @TARGET_x86 @BROKEN
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/cisco/airo.ko
-  AUTOLOAD:=$(call AutoProbe,airo)
-endef
-
-define KernelPackage/airo/description
- Kernel support for Cisco Aironet cards
 endef
 
 define KernelPackage/hermes
@@ -415,8 +393,6 @@ endif
 
 config-$(call config_package,lib80211) += LIB80211 LIB80211_CRYPT_WEP LIB80211_CRYPT_CCMP LIB80211_CRYPT_TKIP
 
-config-$(call config_package,airo) += AIRO
-
 config-$(call config_package,mac80211-hwsim) += MAC80211_HWSIM
 config-$(call config_package,mt7601u) += MT7601U
 config-y += WL_MEDIATEK
@@ -451,8 +427,7 @@ endif
 
 MAKE_OPTS:= -C "$(PKG_BUILD_DIR)" \
 	$(KERNEL_MAKE_FLAGS) \
-	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) $(C_DEFINES) \
-		      -I$(STAGING_DIR)/usr/include/qca-nss-drv" \
+	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) $(C_DEFINES)" \
 	KLIB_BUILD="$(LINUX_DIR)" \
 	MODPROBE=true \
 	KLIB=$(TARGET_MODULES_DIR) \

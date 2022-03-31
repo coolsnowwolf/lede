@@ -35,13 +35,14 @@ generate_keys() {
 	local cfg="$1"
 	local key="$2"
 	local crt="$3"
-	local days bits country state location commonname
+	local days bits country state location organization commonname
 
 	config_get days       "$cfg" days
 	config_get bits       "$cfg" bits
 	config_get country    "$cfg" country
 	config_get state      "$cfg" state
 	config_get location   "$cfg" location
+	config_get organization "$cfg" organization
 	config_get commonname "$cfg" commonname
 	config_get key_type   "$cfg" key_type
 	config_get ec_curve   "$cfg" ec_curve
@@ -56,7 +57,7 @@ generate_keys() {
 	[ -n "$GENKEY_CMD" ] && {
 		$GENKEY_CMD \
 			-days ${days:-730} -newkey ${KEY_OPTS} -keyout "${UHTTPD_KEY}.new" -out "${UHTTPD_CERT}.new" \
-			-subj /C="${country:-ZZ}"/ST="${state:-Somewhere}"/L="${location:-Unknown}"/O="${commonname:-OpenWrt}$UNIQUEID"/CN="${commonname:-OpenWrt}"
+			-subj /C="${country:-ZZ}"/ST="${state:-Somewhere}"/L="${location:-Unknown}"/O="${organization:-OpenWrt$UNIQUEID}"/CN="${commonname:-OpenWrt}"
 		sync
 		mv "${UHTTPD_KEY}.new" "${UHTTPD_KEY}"
 		mv "${UHTTPD_CERT}.new" "${UHTTPD_CERT}"
@@ -87,6 +88,18 @@ append_lua_prefix() {
 		procd_append_param command -l "$prefix" -L "$handler"
 	else
 		echo "Skipping invalid Lua prefix \"$v\"" >&2
+	fi
+}
+
+append_ucode_prefix() {
+	local v="$1"
+	local prefix="${v%%=*}"
+	local handler="${v#*=}"
+
+	if [ "$prefix" != "$handler" ] && [ -n "$prefix" ] && [ -f "$handler" ]; then
+		procd_append_param command -o "$prefix" -O "$handler"
+	else
+		echo "Skipping invalid ucode prefix \"$v\"" >&2
 	fi
 }
 
@@ -140,6 +153,9 @@ start_instance()
 		append_arg "$cfg" ubus_prefix "-u"
 		append_arg "$cfg" ubus_socket "-U"
 		append_bool "$cfg" ubus_cors "-X" 0
+	}
+	[ -f /usr/lib/uhttpd_ucode.so ] && {
+		config_list_foreach "$cfg" ucode_prefix append_ucode_prefix
 	}
 	append_arg "$cfg" script_timeout "-t"
 	append_arg "$cfg" network_timeout "-T"
@@ -195,7 +211,8 @@ start_instance()
 		append_bool "$cfg" redirect_https "-q" 0
 	}
 
-	for file in /etc/uhttpd/*.json; do
+	config_get json_script "$cfg" json_script
+	for file in $json_script; do
 		[ -s "$file" ] && procd_append_param command -H "$file"
 	done
 

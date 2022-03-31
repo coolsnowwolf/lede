@@ -52,7 +52,7 @@ TARGET_CFLAGS += \
 
 TARGET_LDFLAGS += -Wl,--gc-sections
 
-MAKE_VARS += CHECK_RUN_DIR=0
+MAKE_FLAGS += CHECK_RUN_DIR=0
 
 define Build/Compile
 	$(call Build/Compile/Default,mdadm)

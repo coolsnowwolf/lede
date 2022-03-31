@@ -12,15 +12,15 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uhttpd.git
-PKG_SOURCE_DATE:=2021-03-21
-PKG_SOURCE_VERSION:=15346de8d3ba422002496526ee24c62a3601ab8c
-PKG_MIRROR_HASH:=819424d071ed7c8888f9ca66f679907831becc59a67dd4a5ec521d5fba0a3171
+PKG_SOURCE_DATE:=2022-02-07
+PKG_SOURCE_VERSION:=2f8b1360df25bab375ec60bbba2dce8dd796161c
+PKG_MIRROR_HASH:=fe9c57492e4da493e9955994d1af6cf0086305633fa8febef7ab6df10c4798fa
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=ISC
 
 PKG_ASLR_PIE_REGULAR:=1
 PKG_BUILD_DEPENDS = ustream-ssl
-PKG_CONFIG_DEPENDS:= CONFIG_uhttpd_lua
+PKG_CONFIG_DEPENDS:= CONFIG_uhttpd_lua CONFIG_uhttpd_ucode
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
@@ -49,7 +49,19 @@ define Package/uhttpd/config
     depends on PACKAGE_uhttpd-mod-lua
     bool "Enable Integrated Lua interpreter"
 	default y
+
+  config uhttpd_ucode
+    depends on PACKAGE_uhttpd-mod-ucode
+    bool "Enable Integrated ucode interpreter"
+	default y
 endef
+
+define Package/uhttpd/conffiles
+/etc/config/uhttpd
+/etc/uhttpd.crt
+/etc/uhttpd.key
+endef
+
 
 define Package/uhttpd-mod-lua
   $(Package/uhttpd/default)
@@ -73,11 +85,17 @@ define Package/uhttpd-mod-ubus/description
  session.* namespace and procedures.
 endef
 
-define Package/uhttpd/conffiles
-/etc/config/uhttpd
-/etc/uhttpd.crt
-/etc/uhttpd.key
+
+define Package/uhttpd-mod-ucode
+  $(Package/uhttpd/default)
+  TITLE+= (ucode plugin)
+  DEPENDS:=uhttpd +libucode
 endef
+
+define Package/uhttpd-mod-ucode/description
+ The ucode plugin adds a CGI-like ucode runtime interface to uHTTPd.
+endef
+
 
 ifneq ($(CONFIG_USE_GLIBC),)
   TARGET_CFLAGS += -D_DEFAULT_SOURCE
@@ -108,7 +126,13 @@ define Package/uhttpd-mod-ubus/install
 	$(INSTALL_DATA) ./files/ubus.default $(1)/etc/uci-defaults/00_uhttpd_ubus
 endef
 
+define Package/uhttpd-mod-ucode/install
+	$(INSTALL_DIR) $(1)/usr/lib
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uhttpd_ucode.so $(1)/usr/lib/
+endef
+
 
 $(eval $(call BuildPackage,uhttpd))
 $(eval $(call BuildPackage,uhttpd-mod-lua))
 $(eval $(call BuildPackage,uhttpd-mod-ubus))
+$(eval $(call BuildPackage,uhttpd-mod-ucode))
