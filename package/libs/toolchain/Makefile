@@ -7,7 +7,7 @@
 
 include $(TOPDIR)/rules.mk
 PKG_NAME:=toolchain
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-3.0-with-GCC-exception
@@ -490,6 +490,7 @@ ifeq ($(CONFIG_EXTERNAL_TOOLCHAIN),)
   define Package/libstdcpp/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(TOOLCHAIN_DIR)/lib/libstdc++.so.* $(1)/usr/lib/
+	rm -rf $(1)/usr/lib/*-gdb.py
   endef
 
   define Package/libasan/install
