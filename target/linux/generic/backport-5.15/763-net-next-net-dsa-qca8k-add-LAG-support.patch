@@ -1,0 +1,288 @@
+From def975307c01191b6f0170048c3724b0ed3348af Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Tue, 23 Nov 2021 03:59:11 +0100
+Subject: net: dsa: qca8k: add LAG support
+
+Add LAG support to this switch. In Documentation this is described as
+trunk mode. A max of 4 LAGs are supported and each can support up to 4
+port. The current tx mode supported is Hash mode with both L2 and L2+3
+mode.
+When no port are present in the trunk, the trunk is disabled in the
+switch.
+When a port is disconnected, the traffic is redirected to the other
+available port.
+The hash mode is global and each LAG require to have the same hash mode
+set. To change the hash mode when multiple LAG are configured, it's
+required to remove each LAG and set the desired hash mode to the last.
+An error is printed when it's asked to set a not supported hadh mode.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca8k.c | 177 ++++++++++++++++++++++++++++++++++++++++++++++++
+ drivers/net/dsa/qca8k.h |  33 +++++++++
+ 2 files changed, 210 insertions(+)
+
+--- a/drivers/net/dsa/qca8k.c
++++ b/drivers/net/dsa/qca8k.c
+@@ -1340,6 +1340,9 @@ qca8k_setup(struct dsa_switch *ds)
+ 	ds->ageing_time_min = 7000;
+ 	ds->ageing_time_max = 458745000;
+ 
++	/* Set max number of LAGs supported */
++	ds->num_lag_ids = QCA8K_NUM_LAGS;
++
+ 	return 0;
+ }
+ 
+@@ -2207,6 +2210,178 @@ qca8k_get_tag_protocol(struct dsa_switch
+ 	return DSA_TAG_PROTO_QCA;
+ }
+ 
++static bool
++qca8k_lag_can_offload(struct dsa_switch *ds,
++		      struct net_device *lag,
++		      struct netdev_lag_upper_info *info)
++{
++	struct dsa_port *dp;
++	int id, members = 0;
++
++	id = dsa_lag_id(ds->dst, lag);
++	if (id < 0 || id >= ds->num_lag_ids)
++		return false;
++
++	dsa_lag_foreach_port(dp, ds->dst, lag)
++		/* Includes the port joining the LAG */
++		members++;
++
++	if (members > QCA8K_NUM_PORTS_FOR_LAG)
++		return false;
++
++	if (info->tx_type != NETDEV_LAG_TX_TYPE_HASH)
++		return false;
++
++	if (info->hash_type != NETDEV_LAG_HASH_L2 ||
++	    info->hash_type != NETDEV_LAG_HASH_L23)
++		return false;
++
++	return true;
++}
++
++static int
++qca8k_lag_setup_hash(struct dsa_switch *ds,
++		     struct net_device *lag,
++		     struct netdev_lag_upper_info *info)
++{
++	struct qca8k_priv *priv = ds->priv;
++	bool unique_lag = true;
++	int i, id;
++	u32 hash;
++
++	id = dsa_lag_id(ds->dst, lag);
++
++	switch (info->hash_type) {
++	case NETDEV_LAG_HASH_L23:
++		hash |= QCA8K_TRUNK_HASH_SIP_EN;
++		hash |= QCA8K_TRUNK_HASH_DIP_EN;
++		fallthrough;
++	case NETDEV_LAG_HASH_L2:
++		hash |= QCA8K_TRUNK_HASH_SA_EN;
++		hash |= QCA8K_TRUNK_HASH_DA_EN;
++		break;
++	default: /* We should NEVER reach this */
++		return -EOPNOTSUPP;
++	}
++
++	/* Check if we are the unique configured LAG */
++	dsa_lags_foreach_id(i, ds->dst)
++		if (i != id && dsa_lag_dev(ds->dst, i)) {
++			unique_lag = false;
++			break;
++		}
++
++	/* Hash Mode is global. Make sure the same Hash Mode
++	 * is set to all the 4 possible lag.
++	 * If we are the unique LAG we can set whatever hash
++	 * mode we want.
++	 * To change hash mode it's needed to remove all LAG
++	 * and change the mode with the latest.
++	 */
++	if (unique_lag) {
++		priv->lag_hash_mode = hash;
++	} else if (priv->lag_hash_mode != hash) {
++		netdev_err(lag, "Error: Mismateched Hash Mode across different lag is not supported\n");
++		return -EOPNOTSUPP;
++	}
++
++	return regmap_update_bits(priv->regmap, QCA8K_TRUNK_HASH_EN_CTRL,
++				  QCA8K_TRUNK_HASH_MASK, hash);
++}
++
++static int
++qca8k_lag_refresh_portmap(struct dsa_switch *ds, int port,
++			  struct net_device *lag, bool delete)
++{
++	struct qca8k_priv *priv = ds->priv;
++	int ret, id, i;
++	u32 val;
++
++	id = dsa_lag_id(ds->dst, lag);
++
++	/* Read current port member */
++	ret = regmap_read(priv->regmap, QCA8K_REG_GOL_TRUNK_CTRL0, &val);
++	if (ret)
++		return ret;
++
++	/* Shift val to the correct trunk */
++	val >>= QCA8K_REG_GOL_TRUNK_SHIFT(id);
++	val &= QCA8K_REG_GOL_TRUNK_MEMBER_MASK;
++	if (delete)
++		val &= ~BIT(port);
++	else
++		val |= BIT(port);
++
++	/* Update port member. With empty portmap disable trunk */
++	ret = regmap_update_bits(priv->regmap, QCA8K_REG_GOL_TRUNK_CTRL0,
++				 QCA8K_REG_GOL_TRUNK_MEMBER(id) |
++				 QCA8K_REG_GOL_TRUNK_EN(id),
++				 !val << QCA8K_REG_GOL_TRUNK_SHIFT(id) |
++				 val << QCA8K_REG_GOL_TRUNK_SHIFT(id));
++
++	/* Search empty member if adding or port on deleting */
++	for (i = 0; i < QCA8K_NUM_PORTS_FOR_LAG; i++) {
++		ret = regmap_read(priv->regmap, QCA8K_REG_GOL_TRUNK_CTRL(id), &val);
++		if (ret)
++			return ret;
++
++		val >>= QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(id, i);
++		val &= QCA8K_REG_GOL_TRUNK_ID_MEM_ID_MASK;
++
++		if (delete) {
++			/* If port flagged to be disabled assume this member is
++			 * empty
++			 */
++			if (val != QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN_MASK)
++				continue;
++
++			val &= QCA8K_REG_GOL_TRUNK_ID_MEM_ID_PORT_MASK;
++			if (val != port)
++				continue;
++		} else {
++			/* If port flagged to be enabled assume this member is
++			 * already set
++			 */
++			if (val == QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN_MASK)
++				continue;
++		}
++
++		/* We have found the member to add/remove */
++		break;
++	}
++
++	/* Set port in the correct port mask or disable port if in delete mode */
++	return regmap_update_bits(priv->regmap, QCA8K_REG_GOL_TRUNK_CTRL(id),
++				  QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN(id, i) |
++				  QCA8K_REG_GOL_TRUNK_ID_MEM_ID_PORT(id, i),
++				  !delete << QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(id, i) |
++				  port << QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(id, i));
++}
++
++static int
++qca8k_port_lag_join(struct dsa_switch *ds, int port,
++		    struct net_device *lag,
++		    struct netdev_lag_upper_info *info)
++{
++	int ret;
++
++	if (!qca8k_lag_can_offload(ds, lag, info))
++		return -EOPNOTSUPP;
++
++	ret = qca8k_lag_setup_hash(ds, lag, info);
++	if (ret)
++		return ret;
++
++	return qca8k_lag_refresh_portmap(ds, port, lag, false);
++}
++
++static int
++qca8k_port_lag_leave(struct dsa_switch *ds, int port,
++		     struct net_device *lag)
++{
++	return qca8k_lag_refresh_portmap(ds, port, lag, true);
++}
++
+ static const struct dsa_switch_ops qca8k_switch_ops = {
+ 	.get_tag_protocol	= qca8k_get_tag_protocol,
+ 	.setup			= qca8k_setup,
+@@ -2240,6 +2415,8 @@ static const struct dsa_switch_ops qca8k
+ 	.phylink_mac_link_down	= qca8k_phylink_mac_link_down,
+ 	.phylink_mac_link_up	= qca8k_phylink_mac_link_up,
+ 	.get_phy_flags		= qca8k_get_phy_flags,
++	.port_lag_join		= qca8k_port_lag_join,
++	.port_lag_leave		= qca8k_port_lag_leave,
+ };
+ 
+ static int qca8k_read_switch_id(struct qca8k_priv *priv)
+--- a/drivers/net/dsa/qca8k.h
++++ b/drivers/net/dsa/qca8k.h
+@@ -15,6 +15,8 @@
+ #define QCA8K_NUM_PORTS					7
+ #define QCA8K_NUM_CPU_PORTS				2
+ #define QCA8K_MAX_MTU					9000
++#define QCA8K_NUM_LAGS					4
++#define QCA8K_NUM_PORTS_FOR_LAG				4
+ 
+ #define PHY_ID_QCA8327					0x004dd034
+ #define QCA8K_ID_QCA8327				0x12
+@@ -122,6 +124,14 @@
+ #define QCA8K_REG_EEE_CTRL				0x100
+ #define  QCA8K_REG_EEE_CTRL_LPI_EN(_i)			((_i + 1) * 2)
+ 
++/* TRUNK_HASH_EN registers */
++#define QCA8K_TRUNK_HASH_EN_CTRL			0x270
++#define   QCA8K_TRUNK_HASH_SIP_EN			BIT(3)
++#define   QCA8K_TRUNK_HASH_DIP_EN			BIT(2)
++#define   QCA8K_TRUNK_HASH_SA_EN			BIT(1)
++#define   QCA8K_TRUNK_HASH_DA_EN			BIT(0)
++#define   QCA8K_TRUNK_HASH_MASK				GENMASK(3, 0)
++
+ /* ACL registers */
+ #define QCA8K_REG_PORT_VLAN_CTRL0(_i)			(0x420 + (_i * 8))
+ #define   QCA8K_PORT_VLAN_CVID_MASK			GENMASK(27, 16)
+@@ -204,6 +214,28 @@
+ #define   QCA8K_PORT_LOOKUP_LEARN			BIT(20)
+ #define   QCA8K_PORT_LOOKUP_ING_MIRROR_EN		BIT(25)
+ 
++#define QCA8K_REG_GOL_TRUNK_CTRL0			0x700
++/* 4 max trunk first
++ * first 6 bit for member bitmap
++ * 7th bit is to enable trunk port
++ */
++#define QCA8K_REG_GOL_TRUNK_SHIFT(_i)			((_i) * 8)
++#define QCA8K_REG_GOL_TRUNK_EN_MASK			BIT(7)
++#define QCA8K_REG_GOL_TRUNK_EN(_i)			(QCA8K_REG_GOL_TRUNK_EN_MASK << QCA8K_REG_GOL_TRUNK_SHIFT(_i))
++#define QCA8K_REG_GOL_TRUNK_MEMBER_MASK			GENMASK(6, 0)
++#define QCA8K_REG_GOL_TRUNK_MEMBER(_i)			(QCA8K_REG_GOL_TRUNK_MEMBER_MASK << QCA8K_REG_GOL_TRUNK_SHIFT(_i))
++/* 0x704 for TRUNK 0-1 --- 0x708 for TRUNK 2-3 */
++#define QCA8K_REG_GOL_TRUNK_CTRL(_i)			(0x704 + (((_i) / 2) * 4))
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_MASK		GENMASK(3, 0)
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN_MASK		BIT(3)
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_PORT_MASK		GENMASK(2, 0)
++#define QCA8K_REG_GOL_TRUNK_ID_SHIFT(_i)		(((_i) / 2) * 16)
++#define QCA8K_REG_GOL_MEM_ID_SHIFT(_i)			((_i) * 4)
++/* Complex shift: FIRST shift for port THEN shift for trunk */
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(_i, _j)	(QCA8K_REG_GOL_MEM_ID_SHIFT(_j) + QCA8K_REG_GOL_TRUNK_ID_SHIFT(_i))
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN(_i, _j)	(QCA8K_REG_GOL_TRUNK_ID_MEM_ID_EN_MASK << QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(_i, _j))
++#define QCA8K_REG_GOL_TRUNK_ID_MEM_ID_PORT(_i, _j)	(QCA8K_REG_GOL_TRUNK_ID_MEM_ID_PORT_MASK << QCA8K_REG_GOL_TRUNK_ID_MEM_ID_SHIFT(_i, _j))
++
+ #define QCA8K_REG_GLOBAL_FC_THRESH			0x800
+ #define   QCA8K_GLOBAL_FC_GOL_XON_THRES_MASK		GENMASK(24, 16)
+ #define   QCA8K_GLOBAL_FC_GOL_XON_THRES(x)		FIELD_PREP(QCA8K_GLOBAL_FC_GOL_XON_THRES_MASK, x)
+@@ -309,6 +341,7 @@ struct qca8k_priv {
+ 	u8 switch_revision;
+ 	u8 mirror_rx;
+ 	u8 mirror_tx;
++	u8 lag_hash_mode;
+ 	bool legacy_phy_port_mapping;
+ 	struct qca8k_ports_config ports_config;
+ 	struct regmap *regmap;
