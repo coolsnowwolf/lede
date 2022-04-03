@@ -205,7 +205,7 @@ define Device/linksys_ea7500-v1
 	UBINIZE_OPTS := -E 5
 	IMAGES := factory.bin sysupgrade.bin
 	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi | pad-to $$$$(PAGESIZE)
-	DEVICE_PACKAGES := -kmod-ath10k-ct kmod-ath10k-smallbuffers ath10k-firmware-qca99x0 luci-app-advanced-reboot
+	DEVICE_PACKAGES := -kmod-ath10k-ct kmod-ath10k-ct-smallbuffers ath10k-firmware-qca99x0-ct luci-app-advanced-reboot
 endef
 TARGET_DEVICES += linksys_ea7500-v1
 
