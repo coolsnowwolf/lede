@@ -188,13 +188,8 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 	if (mtd->writesize == 512)
 		mtd_set_ooblayout(mtd, &rb4xx_nand_ecclayout_ops);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,9,0)
 	nand->chip.ecc.engine_type	= NAND_ECC_ENGINE_TYPE_SOFT;
 	nand->chip.ecc.algo		= NAND_ECC_ALGO_HAMMING;
-#else
-	nand->chip.ecc.mode		= NAND_ECC_SOFT;
-	nand->chip.ecc.algo		= NAND_ECC_HAMMING;
-#endif
 	nand->chip.options		= NAND_NO_SUBPAGE_WRITE;
 	nand->chip.priv			= nand;
 
@@ -211,12 +206,8 @@ static int rb4xx_nand_probe(struct platform_device *pdev)
 
 	ret = mtd_device_register(mtd, NULL, 0);
 	if (ret) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
 		mtd_device_unregister(nand_to_mtd(&nand->chip));
 		nand_cleanup(&nand->chip);
-#else
-		nand_release(&nand->chip);
-#endif
 		return ret;
 	}
 
@@ -227,12 +218,8 @@ static int rb4xx_nand_remove(struct platform_device *pdev)
 {
 	struct rb4xx_nand *nand = platform_get_drvdata(pdev);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0)
-		mtd_device_unregister(nand_to_mtd(&nand->chip));
-		nand_cleanup(&nand->chip);
-#else
-		nand_release(&nand->chip);
-#endif
+	mtd_device_unregister(nand_to_mtd(&nand->chip));
+	nand_cleanup(&nand->chip);
 
 	return 0;
 }
