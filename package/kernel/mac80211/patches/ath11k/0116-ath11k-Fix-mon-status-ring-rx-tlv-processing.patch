@@ -1,0 +1,65 @@
+From 09f16f7390f302937409738d6cb6ce99b265f455 Mon Sep 17 00:00:00 2001
+From: Anilkumar Kolli <akolli@codeaurora.org>
+Date: Mon, 22 Nov 2021 13:13:58 +0200
+Subject: [PATCH 116/120] ath11k: Fix mon status ring rx tlv processing
+
+In HE monitor capture, HAL_TLV_STATUS_PPDU_DONE is received
+on processing multiple skb. Do not clear the ppdu_info
+till the HAL_TLV_STATUS_PPDU_DONE is received.
+
+This fixes below warning and packet drops in monitor mode.
+ "Rate marked as an HE rate but data is invalid: MCS: 6, NSS: 0"
+ WARNING: at
+ PC is at ieee80211_rx_napi+0x624/0x840 [mac80211]
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.4.0.1-01693-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Anilkumar Kolli <akolli@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/1637249433-10316-1-git-send-email-akolli@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -3061,10 +3061,10 @@ int ath11k_dp_rx_process_mon_status(stru
+ 	if (!num_buffs_reaped)
+ 		goto exit;
+ 
+-	while ((skb = __skb_dequeue(&skb_list))) {
+-		memset(&ppdu_info, 0, sizeof(ppdu_info));
+-		ppdu_info.peer_id = HAL_INVALID_PEERID;
++	memset(&ppdu_info, 0, sizeof(ppdu_info));
++	ppdu_info.peer_id = HAL_INVALID_PEERID;
+ 
++	while ((skb = __skb_dequeue(&skb_list))) {
+ 		if (ath11k_debugfs_is_pktlog_lite_mode_enabled(ar)) {
+ 			log_type = ATH11K_PKTLOG_TYPE_LITE_RX;
+ 			rx_buf_sz = DP_RX_BUFFER_SIZE_LITE;
+@@ -3092,10 +3092,7 @@ int ath11k_dp_rx_process_mon_status(stru
+ 			ath11k_dbg(ab, ATH11K_DBG_DATA,
+ 				   "failed to find the peer with peer_id %d\n",
+ 				   ppdu_info.peer_id);
+-			spin_unlock_bh(&ab->base_lock);
+-			rcu_read_unlock();
+-			dev_kfree_skb_any(skb);
+-			continue;
++			goto next_skb;
+ 		}
+ 
+ 		arsta = (struct ath11k_sta *)peer->sta->drv_priv;
+@@ -3104,10 +3101,13 @@ int ath11k_dp_rx_process_mon_status(stru
+ 		if (ath11k_debugfs_is_pktlog_peer_valid(ar, peer->addr))
+ 			trace_ath11k_htt_rxdesc(ar, skb->data, log_type, rx_buf_sz);
+ 
++next_skb:
+ 		spin_unlock_bh(&ab->base_lock);
+ 		rcu_read_unlock();
+ 
+ 		dev_kfree_skb_any(skb);
++		memset(&ppdu_info, 0, sizeof(ppdu_info));
++		ppdu_info.peer_id = HAL_INVALID_PEERID;
+ 	}
+ exit:
+ 	return num_buffs_reaped;
