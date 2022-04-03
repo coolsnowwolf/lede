@@ -1,0 +1,77 @@
+From 87b4072d7ef818e368b0f4162a1af2fb4727f51c Mon Sep 17 00:00:00 2001
+From: Carl Huang <cjhuang@codeaurora.org>
+Date: Fri, 19 Nov 2021 15:36:26 +0200
+Subject: [PATCH 104/120] ath11k: get msi_data again after request_irq is
+ called
+
+The reservation mode of interrupts in kernel assigns a dummy vector
+when the interrupt is allocated and assigns a real vector when the
+request_irq is called. The reservation mode helps to ease vector
+pressure when devices with a large amount of queues/interrupts
+are initialized, but only a minimal subset of those queues/interrupts
+is actually used.
+
+So on reservation mode, the msi_data may change after request_irq
+is called, so ath11k reads msi_data again after request_irq is called,
+and then the correct msi_data is programmed into QCA6390 hardware
+components. Without this change, spurious interrupt occurs in case of
+one MSI vector. When VT-d in BIOS is enabled and ath11k can get 32 MSI
+vectors, ath11k always get the same msi_data before and after request_irq,
+that's why this change is only required when one MSI vector is to be
+supported.
+
+Tested-on: QCA6390 hw2.0 PCI WLAN.HST.1.0.1-01740-QCAHSTSWPLZ_V2_TO_X86-1
+
+Signed-off-by: Carl Huang <cjhuang@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20211026041636.5008-1-bqiang@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/pci.c | 30 +++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -933,6 +933,25 @@ static void ath11k_pci_free_msi(struct a
+ 	pci_free_irq_vectors(ab_pci->pdev);
+ }
+ 
++static int ath11k_pci_config_msi_data(struct ath11k_pci *ab_pci)
++{
++	struct msi_desc *msi_desc;
++
++	msi_desc = irq_get_msi_desc(ab_pci->pdev->irq);
++	if (!msi_desc) {
++		ath11k_err(ab_pci->ab, "msi_desc is NULL!\n");
++		pci_free_irq_vectors(ab_pci->pdev);
++		return -EINVAL;
++	}
++
++	ab_pci->msi_ep_base_data = msi_desc->msg.data;
++
++	ath11k_dbg(ab_pci->ab, ATH11K_DBG_PCI, "pci after request_irq msi_ep_base_data %d\n",
++		   ab_pci->msi_ep_base_data);
++
++	return 0;
++}
++
+ static int ath11k_pci_claim(struct ath11k_pci *ab_pci, struct pci_dev *pdev)
+ {
+ 	struct ath11k_base *ab = ab_pci->ab;
+@@ -1342,6 +1361,17 @@ static int ath11k_pci_probe(struct pci_d
+ 		goto err_ce_free;
+ 	}
+ 
++	/* kernel may allocate a dummy vector before request_irq and
++	 * then allocate a real vector when request_irq is called.
++	 * So get msi_data here again to avoid spurious interrupt
++	 * as msi_data will configured to srngs.
++	 */
++	ret = ath11k_pci_config_msi_data(ab_pci);
++	if (ret) {
++		ath11k_err(ab, "failed to config msi_data: %d\n", ret);
++		goto err_free_irq;
++	}
++
+ 	ret = ath11k_core_init(ab);
+ 	if (ret) {
+ 		ath11k_err(ab, "failed to init core: %d\n", ret);

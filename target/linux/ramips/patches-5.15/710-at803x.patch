@@ -1,0 +1,184 @@
+From 924453aa9d2324e5611f8e2b71df746d8f0c79f1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ren=C3=A9=20van=20Dorst?= <opensource@vdorst.com>
+Date: Fri, 13 Nov 2020 16:11:32 +0100
+Subject: [PATCH] net: phy: at803x: add support for SFP module in
+ RGMII-to-x-base mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: René van Dorst <opensource@vdorst.com>
+---
+ drivers/net/phy/at803x.c | 91 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -20,6 +20,8 @@
+ #include <linux/regulator/driver.h>
+ #include <linux/regulator/consumer.h>
+ #include <dt-bindings/net/qca-ar803x.h>
++#include <linux/sfp.h>
++#include <linux/phylink.h>
+ 
+ #define AT803X_SPECIFIC_FUNCTION_CONTROL	0x10
+ #define AT803X_SFC_ASSERT_CRS			BIT(11)
+@@ -82,9 +84,18 @@
+ 
+ #define AT803X_MODE_CFG_MASK			0x0F
+ #define AT803X_MODE_CFG_SGMII			0x01
++#define AT803X_MODE_CFG_BX1000_RGMII_50		0x02
++#define AT803X_MODE_CFG_BX1000_RGMII_75		0x03
++#define AT803X_MODE_FIBER			0x01
++#define AT803X_MODE_COPPER			0x00
+ 
+ #define AT803X_PSSR				0x11	/*PHY-Specific Status Register*/
+ #define AT803X_PSSR_MR_AN_COMPLETE		0x0200
++#define	 PSSR_LINK			BIT(10)
++#define	 PSSR_SYNC_STATUS		BIT(8)
++#define	 PSSR_DUPLEX			BIT(13)
++#define	 PSSR_SPEED_1000		BIT(15)
++#define	 PSSR_SPEED_100			BIT(14)
+ 
+ #define AT803X_DEBUG_ANALOG_TEST_CTRL		0x00
+ #define QCA8327_DEBUG_MANU_CTRL_EN		BIT(2)
+@@ -652,12 +663,75 @@ static int at803x_parse_dt(struct phy_de
+ 	return 0;
+ }
+ 
++static int at803x_mode(struct phy_device *phydev)
++{
++	int mode;
++
++	mode = phy_read(phydev, AT803X_REG_CHIP_CONFIG) & AT803X_MODE_CFG_MASK;
++
++	if (mode == AT803X_MODE_CFG_BX1000_RGMII_50 ||
++	    mode == AT803X_MODE_CFG_BX1000_RGMII_75)
++		return AT803X_MODE_FIBER;
++	return AT803X_MODE_COPPER;
++}
++
++static int at803x_sfp_insert(void *upstream, const struct sfp_eeprom_id *id)
++{
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(at803x_support) = { 0, };
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(support) = { 0, };
++	struct phy_device *phydev = upstream;
++	phy_interface_t iface;
++
++	phylink_set(at803x_support, 1000baseX_Full);
++	/* AT803x only support 1000baseX but SGMII works fine when module runs
++	 * at 1Gbit.
++	 */
++	phylink_set(at803x_support, 1000baseT_Full);
++
++	sfp_parse_support(phydev->sfp_bus, id, support);
++
++	// Limit to interfaces that both sides support
++	linkmode_and(support, support, at803x_support);
++
++	if (linkmode_empty(support))
++		goto unsupported_mode;
++
++	iface = sfp_select_interface(phydev->sfp_bus, support);
++
++	if (iface != PHY_INTERFACE_MODE_SGMII &&
++	    iface != PHY_INTERFACE_MODE_1000BASEX)
++		goto unsupported_mode;
++
++	dev_info(&phydev->mdio.dev, "SFP interface %s", phy_modes(iface));
++
++	return 0;
++
++unsupported_mode:
++	dev_info(&phydev->mdio.dev, "incompatible SFP module inserted;"
++		 "Only SGMII at 1Gbit/1000BASEX are supported!\n");
++	return -EINVAL;
++}
++
++static const struct sfp_upstream_ops at803x_sfp_ops = {
++	.attach = phy_sfp_attach,
++	.detach = phy_sfp_detach,
++	.module_insert = at803x_sfp_insert,
++};
++
++
+ static int at803x_probe(struct phy_device *phydev)
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct at803x_priv *priv;
+ 	int ret;
+ 
++
++	if (at803x_mode(phydev) == AT803X_MODE_FIBER) {
++		ret = phy_sfp_probe(phydev, &at803x_sfp_ops);
++		if (ret < 0)
++			return ret;
++	}
++
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+ 		return -ENOMEM;
+@@ -674,6 +748,7 @@ static int at803x_probe(struct phy_devic
+ 			return ret;
+ 	}
+ 
++#if 0
+ 	/* Some bootloaders leave the fiber page selected.
+ 	 * Switch to the copper page, as otherwise we read
+ 	 * the PHY capabilities from the fiber side.
+@@ -685,6 +760,7 @@ static int at803x_probe(struct phy_devic
+ 		if (ret)
+ 			goto err;
+ 	}
++#endif
+ 
+ 	return 0;
+ 
+@@ -711,6 +787,7 @@ static int at803x_get_features(struct ph
+ 	if (err)
+ 		return err;
+ 
++#if 0
+ 	if (phydev->drv->phy_id != ATH8031_PHY_ID)
+ 		return 0;
+ 
+@@ -728,6 +805,7 @@ static int at803x_get_features(struct ph
+ 	 */
+ 	linkmode_clear_bit(ETHTOOL_LINK_MODE_1000baseX_Full_BIT,
+ 			   phydev->supported);
++#endif
+ 	return 0;
+ }
+ 
+@@ -933,6 +1011,10 @@ static int at803x_read_status(struct phy
+ {
+ 	int ss, err, old_link = phydev->link;
+ 
++	/* Handle (Fiber) SGMII to RGMII mode */
++	if (at803x_mode(phydev) == AT803X_MODE_FIBER)
++		return genphy_c37_read_status(phydev);
++
+ 	/* Update the link, but return if there was an error */
+ 	err = genphy_update_link(phydev);
+ 	if (err)
+@@ -1033,6 +1115,12 @@ static int at803x_config_aneg(struct phy
+ {
+ 	int ret;
+ 
++	/* Handle (Fiber) SerDes to RGMII mode */
++	if (at803x_mode(phydev) == AT803X_MODE_FIBER) {
++		pr_warn("%s: fiber\n", __func__);
++		return genphy_c37_config_aneg(phydev);
++	}
++
+ 	ret = at803x_config_mdix(phydev, phydev->mdix_ctrl);
+ 	if (ret < 0)
+ 		return ret;
+@@ -1445,6 +1533,7 @@ static struct phy_driver at803x_driver[]
+ 	/* Qualcomm Atheros AR8031/AR8033 */
+ 	PHY_ID_MATCH_EXACT(ATH8031_PHY_ID),
+ 	.name			= "Qualcomm Atheros AR8031/AR8033",
++	.config_aneg		= at803x_config_aneg,
+ 	.flags			= PHY_POLL_CABLE_TEST,
+ 	.probe			= at803x_probe,
+ 	.remove			= at803x_remove,

@@ -1,0 +1,91 @@
+From bd77f6b1d7104cf6451399a7c67d08afecb9a7c7 Mon Sep 17 00:00:00 2001
+From: Rameshkumar Sundaram <quic_ramess@quicinc.com>
+Date: Tue, 2 Nov 2021 11:11:33 +0530
+Subject: [PATCH 095/120] ath11k: use cache line aligned buffers for dbring
+
+The DMA buffers of dbring which is used for spectral/cfr
+starts at certain offset from original kmalloc() returned buffer.
+This is not cache line aligned.
+And also driver tries to access the data that is immediately before
+this offset address (i.e. buff->paddr) after doing dma map.
+This will cause cache line sharing issues and data corruption,
+if CPU happen to write back cache after HW has dma'ed the data.
+
+Fix this by mapping a cache line aligned buffer to dma.
+
+Tested on: IPQ8074 hw2.0 AHB WLAN.HK.2.5.0.1-01100-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Rameshkumar Sundaram <quic_ramess@quicinc.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/1635831693-15962-1-git-send-email-quic_ramess@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/dbring.c | 16 ++++++++++++----
+ drivers/net/wireless/ath/ath11k/dbring.h |  2 +-
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dbring.c
++++ b/drivers/net/wireless/ath/ath11k/dbring.c
+@@ -87,17 +87,23 @@ static int ath11k_dbring_fill_bufs(struc
+ 	req_entries = min(num_free, ring->bufs_max);
+ 	num_remain = req_entries;
+ 	align = ring->buf_align;
+-	size = sizeof(*buff) + ring->buf_sz + align - 1;
++	size = ring->buf_sz + align - 1;
+ 
+ 	while (num_remain > 0) {
+-		buff = kzalloc(size, GFP_ATOMIC);
++		buff = kzalloc(sizeof(*buff), GFP_ATOMIC);
+ 		if (!buff)
+ 			break;
+ 
++		buff->payload = kzalloc(size, GFP_ATOMIC);
++		if (!buff->payload) {
++			kfree(buff);
++			break;
++		}
+ 		ret = ath11k_dbring_bufs_replenish(ar, ring, buff);
+ 		if (ret) {
+ 			ath11k_warn(ar->ab, "failed to replenish db ring num_remain %d req_ent %d\n",
+ 				    num_remain, req_entries);
++			kfree(buff->payload);
+ 			kfree(buff);
+ 			break;
+ 		}
+@@ -282,7 +288,7 @@ int ath11k_dbring_buffer_release_event(s
+ 
+ 	srng = &ab->hal.srng_list[ring->refill_srng.ring_id];
+ 	num_entry = ev->fixed.num_buf_release_entry;
+-	size = sizeof(*buff) + ring->buf_sz + ring->buf_align - 1;
++	size = ring->buf_sz + ring->buf_align - 1;
+ 	num_buff_reaped = 0;
+ 
+ 	spin_lock_bh(&srng->lock);
+@@ -319,7 +325,8 @@ int ath11k_dbring_buffer_release_event(s
+ 			ring->handler(ar, &handler_data);
+ 		}
+ 
+-		memset(buff, 0, size);
++		buff->paddr = 0;
++		memset(buff->payload, 0, size);
+ 		ath11k_dbring_bufs_replenish(ar, ring, buff);
+ 	}
+ 
+@@ -346,6 +353,7 @@ void ath11k_dbring_buf_cleanup(struct at
+ 		idr_remove(&ring->bufs_idr, buf_id);
+ 		dma_unmap_single(ar->ab->dev, buff->paddr,
+ 				 ring->buf_sz, DMA_FROM_DEVICE);
++		kfree(buff->payload);
+ 		kfree(buff);
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath11k/dbring.h
++++ b/drivers/net/wireless/ath/ath11k/dbring.h
+@@ -13,7 +13,7 @@
+ 
+ struct ath11k_dbring_element {
+ 	dma_addr_t paddr;
+-	u8 payload[0];
++	u8 *payload;
+ };
+ 
+ struct ath11k_dbring_data {
