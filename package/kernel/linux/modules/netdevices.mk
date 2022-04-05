@@ -1486,6 +1486,22 @@ endef
 
 $(eval $(call KernelPackage,mhi-net))
 
+define KernelPackage/mhi-wwan-ctrl
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI WWAN Control
+  DEPENDS:=@LINUX_5_15 @PCI_SUPPORT +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_WWAN_CTRL
+  FILES:=$(LINUX_DIR)/drivers/net/mhi_wwan_ctrl.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_wwan_ctrl)
+endef
+
+define KernelPackage/mhi-wwan-ctrl/description
+ Driver for MHI WWAN Control
+ This exposes all modem control ports like AT, MBIM, QMI, DIAG, ..
+endef
+
+$(eval $(call KernelPackage,mhi-wwan-ctrl))
+
 define KernelPackage/atlantic
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aquantia AQtion 10Gbps Ethernet NIC
