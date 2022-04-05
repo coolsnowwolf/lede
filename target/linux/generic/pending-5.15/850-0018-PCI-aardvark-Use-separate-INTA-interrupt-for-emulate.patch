@@ -1,0 +1,161 @@
+From db305233136f5aa2444a8287a279384e8458c458 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
+Date: Thu, 1 Apr 2021 20:12:48 +0200
+Subject: [PATCH] PCI: aardvark: Use separate INTA interrupt for emulated root
+ bridge
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Emulated root bridge currently provides only one Legacy INTA interrupt
+which is used for reporting PCIe PME and ERR events and handled by kernel
+PCIe PME and AER drivers.
+
+Aardvark HW reports these PME and ERR events separately, so there is no
+need to mix real INTA interrupt and emulated INTA interrupt for PCIe PME
+and AER drivers.
+
+Register a new advk-RP (as in Root Port) irq chip and a new irq domain
+for emulated root bridge and use this new separate irq domain for
+providing INTA interrupt from emulated root bridge for PME and ERR events.
+
+The real INTA interrupt from real devices is now separate.
+
+A custom map_irq callback function on PCI host bridge structure is used to
+allocate IRQ mapping for emulated root bridge from new irq domain. Original
+callback of_irq_parse_and_map_pci() is used for all other devices as before.
+
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ drivers/pci/controller/pci-aardvark.c | 69 ++++++++++++++++++++++++++-
+ 1 file changed, 67 insertions(+), 2 deletions(-)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -273,6 +273,7 @@ struct advk_pcie {
+ 	} wins[OB_WIN_COUNT];
+ 	u8 wins_count;
+ 	int irq;
++	struct irq_domain *rp_irq_domain;
+ 	struct irq_domain *irq_domain;
+ 	struct irq_chip irq_chip;
+ 	raw_spinlock_t irq_lock;
+@@ -1436,6 +1437,44 @@ static void advk_pcie_remove_irq_domain(
+ 	irq_domain_remove(pcie->irq_domain);
+ }
+ 
++static struct irq_chip advk_rp_irq_chip = {
++	.name = "advk-RP",
++};
++
++static int advk_pcie_rp_irq_map(struct irq_domain *h,
++				unsigned int virq, irq_hw_number_t hwirq)
++{
++	struct advk_pcie *pcie = h->host_data;
++
++	irq_set_chip_and_handler(virq, &advk_rp_irq_chip, handle_simple_irq);
++	irq_set_chip_data(virq, pcie);
++
++	return 0;
++}
++
++static const struct irq_domain_ops advk_pcie_rp_irq_domain_ops = {
++	.map = advk_pcie_rp_irq_map,
++	.xlate = irq_domain_xlate_onecell,
++};
++
++static int advk_pcie_init_rp_irq_domain(struct advk_pcie *pcie)
++{
++	pcie->rp_irq_domain = irq_domain_add_linear(NULL, 1,
++						    &advk_pcie_rp_irq_domain_ops,
++						    pcie);
++	if (!pcie->rp_irq_domain) {
++		dev_err(&pcie->pdev->dev, "Failed to add Root Port IRQ domain\n");
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static void advk_pcie_remove_rp_irq_domain(struct advk_pcie *pcie)
++{
++	irq_domain_remove(pcie->rp_irq_domain);
++}
++
+ static void advk_pcie_handle_pme(struct advk_pcie *pcie)
+ {
+ 	u32 requester = advk_readl(pcie, PCIE_MSG_LOG_REG) >> 16;
+@@ -1458,7 +1497,7 @@ static void advk_pcie_handle_pme(struct
+ 		if (!(le16_to_cpu(pcie->bridge.pcie_conf.rootctl) & PCI_EXP_RTCTL_PMEIE))
+ 			return;
+ 
+-		virq = irq_find_mapping(pcie->irq_domain, 0);
++		virq = irq_find_mapping(pcie->rp_irq_domain, 0);
+ 		if (generic_handle_irq(virq) == -EINVAL)
+ 			dev_err_ratelimited(&pcie->pdev->dev, "unhandled PME IRQ\n");
+ 	}
+@@ -1515,7 +1554,7 @@ static void advk_pcie_handle_int(struct
+ 		 * Aardvark HW returns zero for PCI_ERR_ROOT_AER_IRQ, so use
+ 		 * PCIe interrupt 0
+ 		 */
+-		virq = irq_find_mapping(pcie->irq_domain, 0);
++		virq = irq_find_mapping(pcie->rp_irq_domain, 0);
+ 		if (generic_handle_irq(virq) == -EINVAL)
+ 			dev_err_ratelimited(&pcie->pdev->dev, "unhandled ERR IRQ\n");
+ 	}
+@@ -1560,6 +1599,21 @@ static void advk_pcie_irq_handler(struct
+ 	chained_irq_exit(chip, desc);
+ }
+ 
++static int advk_pcie_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
++{
++	struct advk_pcie *pcie = dev->bus->sysdata;
++
++	/*
++	 * Emulated root bridge has its own emulated irq chip and irq domain.
++	 * Argument pin is the INTx pin (1=INTA, 2=INTB, 3=INTC, 4=INTD) and
++	 * hwirq for irq_create_mapping() is indexed from zero.
++	 */
++	if (pci_is_root_bus(dev->bus))
++		return irq_create_mapping(pcie->rp_irq_domain, pin - 1);
++	else
++		return of_irq_parse_and_map_pci(dev, slot, pin);
++}
++
+ static void __maybe_unused advk_pcie_disable_phy(struct advk_pcie *pcie)
+ {
+ 	phy_power_off(pcie->phy);
+@@ -1761,14 +1815,24 @@ static int advk_pcie_probe(struct platfo
+ 		return ret;
+ 	}
+ 
++	ret = advk_pcie_init_rp_irq_domain(pcie);
++	if (ret) {
++		dev_err(dev, "Failed to initialize irq\n");
++		advk_pcie_remove_msi_irq_domain(pcie);
++		advk_pcie_remove_irq_domain(pcie);
++		return ret;
++	}
++
+ 	irq_set_chained_handler_and_data(pcie->irq, advk_pcie_irq_handler, pcie);
+ 
+ 	bridge->sysdata = pcie;
+ 	bridge->ops = &advk_pcie_ops;
++	bridge->map_irq = advk_pcie_map_irq;
+ 
+ 	ret = pci_host_probe(bridge);
+ 	if (ret < 0) {
+ 		irq_set_chained_handler_and_data(pcie->irq, NULL, NULL);
++		advk_pcie_remove_rp_irq_domain(pcie);
+ 		advk_pcie_remove_msi_irq_domain(pcie);
+ 		advk_pcie_remove_irq_domain(pcie);
+ 		return ret;
+@@ -1820,6 +1884,7 @@ static int advk_pcie_remove(struct platf
+ 	irq_set_chained_handler_and_data(pcie->irq, NULL, NULL);
+ 
+ 	/* Remove IRQ domains */
++	advk_pcie_remove_rp_irq_domain(pcie);
+ 	advk_pcie_remove_msi_irq_domain(pcie);
+ 	advk_pcie_remove_irq_domain(pcie);
+ 

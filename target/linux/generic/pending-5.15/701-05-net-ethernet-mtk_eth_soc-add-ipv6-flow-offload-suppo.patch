@@ -1,0 +1,79 @@
+From: David Bentham <db260179@gmail.com>
+Date: Mon, 21 Feb 2022 15:36:16 +0100
+Subject: [PATCH] net: ethernet: mtk_eth_soc: add ipv6 flow offload
+ support
+
+Add the missing IPv6 flow offloading support for routing only.
+Hardware flow offloading is done by the packet processing engine (PPE)
+of the Ethernet MAC and as it doesn't support mangling of IPv6 packets,
+IPv6 NAT cannot be supported.
+
+Signed-off-by: David Bentham <db260179@gmail.com>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -6,6 +6,7 @@
+ #include <linux/if_ether.h>
+ #include <linux/rhashtable.h>
+ #include <linux/ip.h>
++#include <linux/ipv6.h>
+ #include <net/flow_offload.h>
+ #include <net/pkt_cls.h>
+ #include <net/dsa.h>
+@@ -20,6 +21,11 @@ struct mtk_flow_data {
+ 			__be32 src_addr;
+ 			__be32 dst_addr;
+ 		} v4;
++
++		struct {
++			struct in6_addr src_addr;
++			struct in6_addr dst_addr;
++		} v6;
+ 	};
+ 
+ 	__be16 src_port;
+@@ -65,6 +71,14 @@ mtk_flow_set_ipv4_addr(struct mtk_foe_en
+ 					    data->v4.dst_addr, data->dst_port);
+ }
+ 
++static int
++mtk_flow_set_ipv6_addr(struct mtk_foe_entry *foe, struct mtk_flow_data *data)
++{
++	return mtk_foe_entry_set_ipv6_tuple(foe,
++					    data->v6.src_addr.s6_addr32, data->src_port,
++					    data->v6.dst_addr.s6_addr32, data->dst_port);
++}
++
+ static void
+ mtk_flow_offload_mangle_eth(const struct flow_action_entry *act, void *eth)
+ {
+@@ -299,6 +313,9 @@ mtk_flow_offload_replace(struct mtk_eth
+ 	case FLOW_DISSECTOR_KEY_IPV4_ADDRS:
+ 		offload_type = MTK_PPE_PKT_TYPE_IPV4_HNAPT;
+ 		break;
++	case FLOW_DISSECTOR_KEY_IPV6_ADDRS:
++		offload_type = MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T;
++		break;
+ 	default:
+ 		return -EOPNOTSUPP;
+ 	}
+@@ -334,6 +351,17 @@ mtk_flow_offload_replace(struct mtk_eth
+ 		mtk_flow_set_ipv4_addr(&foe, &data, false);
+ 	}
+ 
++	if (addr_type == FLOW_DISSECTOR_KEY_IPV6_ADDRS) {
++		struct flow_match_ipv6_addrs addrs;
++
++		flow_rule_match_ipv6_addrs(rule, &addrs);
++
++		data.v6.src_addr = addrs.key->src;
++		data.v6.dst_addr = addrs.key->dst;
++
++		mtk_flow_set_ipv6_addr(&foe, &data);
++	}
++
+ 	flow_action_for_each(i, act, &rule->action) {
+ 		if (act->id != FLOW_ACTION_MANGLE)
+ 			continue;

@@ -1,0 +1,192 @@
+From b2beffa7d9a67b59b085616a27f1d10b1e80784f Mon Sep 17 00:00:00 2001
+From: Carl Huang <cjhuang@codeaurora.org>
+Date: Mon, 8 Nov 2021 14:38:26 +0200
+Subject: [PATCH 065/120] ath11k: enable 802.11 power save mode in station mode
+
+To reduce power consumption enable 802.11 power save mode in station mode. This
+allows both radio and CPU to sleep more.
+
+Only enable the mode on QCA6390 and WCN6855, it's unknown how other hardware
+families support this feature.
+
+To test that power save mode is running run "iw dev wls1 set power_save off",
+check there is no NULL Data frame seen by a sniffer. And run "iw dev wls1 set power_save
+on" and check there is a NULL Data frame in sniffer.
+
+Tested-on: QCA6390 hw2.0 PCI WLAN.HST.1.0.1-01740-QCAHSTSWPLZ_V2_TO_X86-1
+
+Signed-off-by: Carl Huang <cjhuang@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20211108123826.8463-2-kvalo@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.c |  5 ++
+ drivers/net/wireless/ath/ath11k/core.h |  1 +
+ drivers/net/wireless/ath/ath11k/hw.h   |  1 +
+ drivers/net/wireless/ath/ath11k/mac.c  | 87 ++++++++++++++++++++++++++
+ 4 files changed, 94 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -76,6 +76,7 @@ static const struct ath11k_hw_params ath
+ 		.supports_monitor = true,
+ 		.supports_shadow_regs = false,
+ 		.idle_ps = false,
++		.supports_sta_ps = false,
+ 		.cold_boot_calib = true,
+ 		.supports_suspend = false,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
+@@ -126,6 +127,7 @@ static const struct ath11k_hw_params ath
+ 		.supports_monitor = true,
+ 		.supports_shadow_regs = false,
+ 		.idle_ps = false,
++		.supports_sta_ps = false,
+ 		.cold_boot_calib = true,
+ 		.supports_suspend = false,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
+@@ -175,6 +177,7 @@ static const struct ath11k_hw_params ath
+ 		.supports_monitor = false,
+ 		.supports_shadow_regs = true,
+ 		.idle_ps = true,
++		.supports_sta_ps = true,
+ 		.cold_boot_calib = false,
+ 		.supports_suspend = true,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_ipq8074),
+@@ -224,6 +227,7 @@ static const struct ath11k_hw_params ath
+ 		.supports_monitor = true,
+ 		.supports_shadow_regs = false,
+ 		.idle_ps = false,
++		.supports_sta_ps = false,
+ 		.cold_boot_calib = false,
+ 		.supports_suspend = false,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_qcn9074),
+@@ -273,6 +277,7 @@ static const struct ath11k_hw_params ath
+ 		.supports_monitor = false,
+ 		.supports_shadow_regs = true,
+ 		.idle_ps = true,
++		.supports_sta_ps = true,
+ 		.cold_boot_calib = false,
+ 		.supports_suspend = true,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_wcn6855),
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -240,6 +240,7 @@ struct ath11k_vif {
+ 	bool is_started;
+ 	bool is_up;
+ 	bool spectral_enabled;
++	bool ps;
+ 	u32 aid;
+ 	u8 bssid[ETH_ALEN];
+ 	struct cfg80211_bitrate_mask bitrate_mask;
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -170,6 +170,7 @@ struct ath11k_hw_params {
+ 	bool supports_monitor;
+ 	bool supports_shadow_regs;
+ 	bool idle_ps;
++	bool supports_sta_ps;
+ 	bool cold_boot_calib;
+ 	bool supports_suspend;
+ 	u32 hal_desc_sz;
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -1049,6 +1049,83 @@ static int ath11k_mac_monitor_stop(struc
+ 	return 0;
+ }
+ 
++static int ath11k_mac_vif_setup_ps(struct ath11k_vif *arvif)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ieee80211_vif *vif = arvif->vif;
++	struct ieee80211_conf *conf = &ar->hw->conf;
++	enum wmi_sta_powersave_param param;
++	enum wmi_sta_ps_mode psmode;
++	int ret;
++	int timeout;
++	bool enable_ps;
++
++	lockdep_assert_held(&arvif->ar->conf_mutex);
++
++	if (arvif->vif->type != NL80211_IFTYPE_STATION)
++		return 0;
++
++	enable_ps = arvif->ps;
++
++	if (!arvif->is_started) {
++		/* mac80211 can update vif powersave state while disconnected.
++		 * Firmware doesn't behave nicely and consumes more power than
++		 * necessary if PS is disabled on a non-started vdev. Hence
++		 * force-enable PS for non-running vdevs.
++		 */
++		psmode = WMI_STA_PS_MODE_ENABLED;
++	} else if (enable_ps) {
++		psmode = WMI_STA_PS_MODE_ENABLED;
++		param = WMI_STA_PS_PARAM_INACTIVITY_TIME;
++
++		timeout = conf->dynamic_ps_timeout;
++		if (timeout == 0) {
++			/* firmware doesn't like 0 */
++			timeout = ieee80211_tu_to_usec(vif->bss_conf.beacon_int) / 1000;
++		}
++
++		ret = ath11k_wmi_set_sta_ps_param(ar, arvif->vdev_id, param,
++						  timeout);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to set inactivity time for vdev %d: %i\n",
++				    arvif->vdev_id, ret);
++			return ret;
++		}
++	} else {
++		psmode = WMI_STA_PS_MODE_DISABLED;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "mac vdev %d psmode %s\n",
++		   arvif->vdev_id, psmode ? "enable" : "disable");
++
++	ret = ath11k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, psmode);
++	if (ret) {
++		ath11k_warn(ar->ab, "failed to set sta power save mode %d for vdev %d: %d\n",
++			    psmode, arvif->vdev_id, ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int ath11k_mac_config_ps(struct ath11k *ar)
++{
++	struct ath11k_vif *arvif;
++	int ret = 0;
++
++	lockdep_assert_held(&ar->conf_mutex);
++
++	list_for_each_entry(arvif, &ar->arvifs, list) {
++		ret = ath11k_mac_vif_setup_ps(arvif);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to setup powersave: %d\n", ret);
++			break;
++		}
++	}
++
++	return ret;
++}
++
+ static int ath11k_mac_op_config(struct ieee80211_hw *hw, u32 changed)
+ {
+ 	struct ath11k *ar = hw->priv;
+@@ -2942,6 +3019,16 @@ static void ath11k_mac_op_bss_info_chang
+ 		ath11k_mac_txpower_recalc(ar);
+ 	}
+ 
++	if (changed & BSS_CHANGED_PS &&
++	    ar->ab->hw_params.supports_sta_ps) {
++		arvif->ps = vif->bss_conf.ps;
++
++		ret = ath11k_mac_config_ps(ar);
++		if (ret)
++			ath11k_warn(ar->ab, "failed to setup ps on vdev %i: %d\n",
++				    arvif->vdev_id, ret);
++	}
++
+ 	if (changed & BSS_CHANGED_MCAST_RATE &&
+ 	    !ath11k_mac_vif_chan(arvif->vif, &def)) {
+ 		band = def.chan->band;

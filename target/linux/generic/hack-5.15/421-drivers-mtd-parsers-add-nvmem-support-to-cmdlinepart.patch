@@ -1,0 +1,120 @@
+From 6fa9e3678eb002246df1280322b6a024853950a5 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Mon, 11 Oct 2021 00:53:14 +0200
+Subject: [PATCH] drivers: mtd: parsers: add nvmem support to cmdlinepart
+
+Assuming cmdlinepart is only one level deep partition scheme and that
+static partition are also defined in DTS, we can assign an of_node for
+partition declared from bootargs. cmdlinepart have priority than
+fiexed-partition parser so in this specific case the parser doesn't
+assign an of_node. Fix this by searching a defined of_node using a
+similar fixed_partition parser and if a partition is found with the same
+label, check that it has the same offset and size and return the DT
+of_node to correctly use NVMEM cells.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+---
+ drivers/mtd/parsers/cmdlinepart.c | 71 +++++++++++++++++++++++++++++++
+ 1 file changed, 71 insertions(+)
+
+--- a/drivers/mtd/parsers/cmdlinepart.c
++++ b/drivers/mtd/parsers/cmdlinepart.c
+@@ -43,6 +43,7 @@
+ #include <linux/mtd/partitions.h>
+ #include <linux/module.h>
+ #include <linux/err.h>
++#include <linux/of.h>
+ 
+ /* debug macro */
+ #if 0
+@@ -323,6 +324,68 @@ static int mtdpart_setup_real(char *s)
+ 	return 0;
+ }
+ 
++static int search_fixed_partition(struct mtd_info *master,
++				  struct mtd_partition *target_part,
++				  struct mtd_partition *fixed_part)
++{
++	struct device_node *mtd_node;
++	struct device_node *ofpart_node;
++	struct device_node *pp;
++	struct mtd_partition part;
++	const char *partname;
++
++	mtd_node = mtd_get_of_node(master);
++	if (!mtd_node)
++		return -EINVAL;
++
++	ofpart_node = of_get_child_by_name(mtd_node, "partitions");
++
++	for_each_child_of_node(ofpart_node,  pp) {
++		const __be32 *reg;
++		int len;
++		int a_cells, s_cells;
++
++		reg = of_get_property(pp, "reg", &len);
++		if (!reg) {
++			pr_debug("%s: ofpart partition %pOF (%pOF) missing reg property.\n",
++				 master->name, pp,
++				 mtd_node);
++			continue;
++		}
++
++		a_cells = of_n_addr_cells(pp);
++		s_cells = of_n_size_cells(pp);
++		if (len / 4 != a_cells + s_cells) {
++			pr_debug("%s: ofpart partition %pOF (%pOF) error parsing reg property.\n",
++				 master->name, pp,
++				 mtd_node);
++			continue;
++		}
++
++		part.offset = of_read_number(reg, a_cells);
++		part.size = of_read_number(reg + a_cells, s_cells);
++		part.of_node = pp;
++
++		partname = of_get_property(pp, "label", &len);
++		if (!partname)
++			partname = of_get_property(pp, "name", &len);
++		part.name = partname;
++
++		if (!strncmp(target_part->name, part.name, len)) {
++			if (part.offset != target_part->offset)
++				return -EINVAL;
++
++			if (part.size != target_part->size)
++				return -EINVAL;
++
++			memcpy(fixed_part, &part, sizeof(struct mtd_partition));
++			return 0;
++		}
++	}
++
++	return -EINVAL;
++}
++
+ /*
+  * Main function to be called from the MTD mapping driver/device to
+  * obtain the partitioning information. At this point the command line
+@@ -338,6 +401,7 @@ static int parse_cmdline_partitions(stru
+ 	int i, err;
+ 	struct cmdline_mtd_partition *part;
+ 	const char *mtd_id = master->name;
++	struct mtd_partition fixed_part;
+ 
+ 	/* parse command line */
+ 	if (!cmdline_parsed) {
+@@ -382,6 +446,13 @@ static int parse_cmdline_partitions(stru
+ 				sizeof(*part->parts) * (part->num_parts - i));
+ 			i--;
+ 		}
++
++		err = search_fixed_partition(master, &part->parts[i], &fixed_part);
++		if (!err) {
++			part->parts[i].of_node = fixed_part.of_node;
++			pr_info("Found partition defined in DT for %s. Assigning OF node to support nvmem.",
++				part->parts[i].name);
++		}
+ 	}
+ 
+ 	*pparts = kmemdup(part->parts, sizeof(*part->parts) * part->num_parts,

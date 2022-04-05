@@ -9,9 +9,9 @@ PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-05-22
-PKG_SOURCE_VERSION:=b102f19bcc53c7f7db3951424d4d46709b4f1986
-PKG_MIRROR_HASH:=cb3cb968883042fc582752be1607586696c18e6ecf9808c9a8ac50e204584367
+PKG_SOURCE_DATE:=2022-01-16
+PKG_SOURCE_VERSION:=cff80b4f7d3c0a47c052e8187d671710f48939e4
+PKG_MIRROR_HASH:=712965bfa11a2e601d3e1c9a51a2cf3cffc6db89abafb3df3eb0cfd83c64705b
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
@@ -143,6 +143,7 @@ define Package/hostapd/Default
   TITLE:=IEEE 802.1x Authenticator
   URL:=http://hostap.epitest.fi/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   PROVIDES:=hostapd
   CONFLICTS:=$(HOSTAPD_PROVIDERS)
@@ -227,6 +228,7 @@ define Package/wpad/Default
   SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Auth/Supplicant
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   URL:=http://hostap.epitest.fi/
   PROVIDES:=hostapd wpa-supplicant
@@ -342,6 +344,7 @@ define Package/wpa-supplicant/Default
   TITLE:=WPA Supplicant
   URL:=http://hostap.epitest.fi/wpa_supplicant/
   DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   PROVIDES:=wpa-supplicant
   CONFLICTS:=$(SUPPLICANT_PROVIDERS)
@@ -426,6 +429,7 @@ define Package/hostapd-utils
   TITLE:=IEEE 802.1x Authenticator (utils)
   URL:=http://hostap.epitest.fi/
   DEPENDS:=@$(subst $(space),||,$(foreach pkg,$(HOSTAPD_PROVIDERS),PACKAGE_$(pkg)))
+  VARIANT:=*
 endef
 
 define Package/hostapd-utils/description
@@ -439,6 +443,7 @@ define Package/wpa-cli
   SUBMENU:=WirelessAPD
   DEPENDS:=@$(subst $(space),||,$(foreach pkg,$(SUPPLICANT_PROVIDERS),PACKAGE_$(pkg)))
   TITLE:=WPA Supplicant command line control utility
+  VARIANT:=*
 endef
 
 define Package/eapol-test/Default
@@ -596,6 +601,7 @@ endef
 
 define Package/hostapd-common/install
 	$(INSTALL_DIR) $(1)/etc/capabilities $(1)/etc/rc.button $(1)/etc/hotplug.d/ieee80211 $(1)/etc/init.d $(1)/lib/netifd  $(1)/usr/share/acl.d
+	$(INSTALL_BIN) ./files/dhcp-get-server.sh $(1)/lib/netifd/dhcp-get-server.sh
 	$(INSTALL_DATA) ./files/hostapd.sh $(1)/lib/netifd/hostapd.sh
 	$(INSTALL_BIN) ./files/wpad.init $(1)/etc/init.d/wpad
 	$(INSTALL_BIN) ./files/wps-hotplug.sh $(1)/etc/rc.button/wps

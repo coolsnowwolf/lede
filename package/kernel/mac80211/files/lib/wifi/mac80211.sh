@@ -176,7 +176,7 @@ detect_mac80211() {
 			set wireless.radio${devidx}.htmode=$htmode
 			set wireless.radio${devidx}.disabled=0
 			set wireless.radio${devidx}.country=US
-			
+
 			set wireless.default_radio${devidx}=wifi-iface
 			set wireless.default_radio${devidx}.device=radio${devidx}
 			set wireless.default_radio${devidx}.network=lan
