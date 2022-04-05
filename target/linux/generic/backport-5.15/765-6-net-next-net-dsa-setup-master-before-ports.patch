@@ -1,0 +1,115 @@
+From 11fd667dac315ea3f2469961f6d2869271a46cae Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Thu, 6 Jan 2022 01:11:17 +0200
+Subject: [PATCH 6/6] net: dsa: setup master before ports
+
+It is said that as soon as a network interface is registered, all its
+resources should have already been prepared, so that it is available for
+sending and receiving traffic. One of the resources needed by a DSA
+slave interface is the master.
+
+dsa_tree_setup
+-> dsa_tree_setup_ports
+   -> dsa_port_setup
+      -> dsa_slave_create
+         -> register_netdevice
+-> dsa_tree_setup_master
+   -> dsa_master_setup
+      -> sets up master->dsa_ptr, which enables reception
+
+Therefore, there is a short period of time after register_netdevice()
+during which the master isn't prepared to pass traffic to the DSA layer
+(master->dsa_ptr is checked by eth_type_trans). Same thing during
+unregistration, there is a time frame in which packets might be missed.
+
+Note that this change opens us to another race: dsa_master_find_slave()
+will get invoked potentially earlier than the slave creation, and later
+than the slave deletion. Since dp->slave starts off as a NULL pointer,
+the earlier calls aren't a problem, but the later calls are. To avoid
+use-after-free, we should zeroize dp->slave before calling
+dsa_slave_destroy().
+
+In practice I cannot really test real life improvements brought by this
+change, since in my systems, netdevice creation races with PHY autoneg
+which takes a few seconds to complete, and that masks quite a few races.
+Effects might be noticeable in a setup with fixed links all the way to
+an external system.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/dsa/dsa2.c | 23 +++++++++++++----------
+ 1 file changed, 13 insertions(+), 10 deletions(-)
+
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -545,6 +545,7 @@ static void dsa_port_teardown(struct dsa
+ 	struct devlink_port *dlp = &dp->devlink_port;
+ 	struct dsa_switch *ds = dp->ds;
+ 	struct dsa_mac_addr *a, *tmp;
++	struct net_device *slave;
+ 
+ 	if (!dp->setup)
+ 		return;
+@@ -566,9 +567,11 @@ static void dsa_port_teardown(struct dsa
+ 		dsa_port_link_unregister_of(dp);
+ 		break;
+ 	case DSA_PORT_TYPE_USER:
+-		if (dp->slave) {
+-			dsa_slave_destroy(dp->slave);
++		slave = dp->slave;
++
++		if (slave) {
+ 			dp->slave = NULL;
++			dsa_slave_destroy(slave);
+ 		}
+ 		break;
+ 	}
+@@ -1130,17 +1133,17 @@ static int dsa_tree_setup(struct dsa_swi
+ 	if (err)
+ 		goto teardown_cpu_ports;
+ 
+-	err = dsa_tree_setup_ports(dst);
++	err = dsa_tree_setup_master(dst);
+ 	if (err)
+ 		goto teardown_switches;
+ 
+-	err = dsa_tree_setup_master(dst);
++	err = dsa_tree_setup_ports(dst);
+ 	if (err)
+-		goto teardown_ports;
++		goto teardown_master;
+ 
+ 	err = dsa_tree_setup_lags(dst);
+ 	if (err)
+-		goto teardown_master;
++		goto teardown_ports;
+ 
+ 	dst->setup = true;
+ 
+@@ -1148,10 +1151,10 @@ static int dsa_tree_setup(struct dsa_swi
+ 
+ 	return 0;
+ 
+-teardown_master:
+-	dsa_tree_teardown_master(dst);
+ teardown_ports:
+ 	dsa_tree_teardown_ports(dst);
++teardown_master:
++	dsa_tree_teardown_master(dst);
+ teardown_switches:
+ 	dsa_tree_teardown_switches(dst);
+ teardown_cpu_ports:
+@@ -1169,10 +1172,10 @@ static void dsa_tree_teardown(struct dsa
+ 
+ 	dsa_tree_teardown_lags(dst);
+ 
+-	dsa_tree_teardown_master(dst);
+-
+ 	dsa_tree_teardown_ports(dst);
+ 
++	dsa_tree_teardown_master(dst);
++
+ 	dsa_tree_teardown_switches(dst);
+ 
+ 	dsa_tree_teardown_cpu_ports(dst);

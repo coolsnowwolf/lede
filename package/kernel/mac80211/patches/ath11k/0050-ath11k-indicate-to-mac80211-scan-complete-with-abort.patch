@@ -1,0 +1,71 @@
+From 62db14ea95b1017c53ebb8f724119ea4d90ecc07 Mon Sep 17 00:00:00 2001
+From: Wen Gong <wgong@codeaurora.org>
+Date: Tue, 28 Sep 2021 14:00:45 +0300
+Subject: [PATCH 050/120] ath11k: indicate to mac80211 scan complete with
+ aborted flag for ATH11K_SCAN_STARTING state
+
+Scan failure can not be recovered from when running a loop of the
+following steps:
+1. run scan: "iw wlan scan".
+2. run command: echo assert > /sys/kernel/debug/ath11k/qca6490\ hw2.0/simulate_fw_crash
+   immediately after step 1.
+
+result:
+scan failed and can not recover even when wlan recovery succeeds:
+command failed: Device or resource busy (-16)
+
+reason:
+When scan arrives, WMI_START_SCAN_CMDID is sent to the firmware and
+function ath11k_mac_op_hw_scan() returns, then simulate_fw_crash arrives
+and the scan started event does not arrive, and then it starts to do
+recovery of wlan. __ath11k_mac_scan_finish() which is called from
+ath11k_core_halt() is one step of recovery, it will not call
+ieee80211_scan_completed() by logic currently because the scan state is
+ATH11K_SCAN_STARTING. Thus it leads the scan not being completed in
+mac80211, and leads all consecutive scans failing with -EBUSY in
+nl80211_trigger_scan even after wlan recovery success.
+
+Indicate scan complete with aborted flag to mac80211 for
+ATH11K_SCAN_STARTING to allow recovery from scan failed with "Device or
+resource busy (-16)" after wlan recovery.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-01720.1-QCAHSPSWPL_V1_V2_SILICONZ_LITE-1
+
+Signed-off-by: Wen Gong <wgong@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20210914164226.38843-3-jouni@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/mac.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -2982,18 +2982,21 @@ void __ath11k_mac_scan_finish(struct ath
+ 		break;
+ 	case ATH11K_SCAN_RUNNING:
+ 	case ATH11K_SCAN_ABORTING:
++		if (ar->scan.is_roc && ar->scan.roc_notify)
++			ieee80211_remain_on_channel_expired(ar->hw);
++		fallthrough;
++	case ATH11K_SCAN_STARTING:
+ 		if (!ar->scan.is_roc) {
+ 			struct cfg80211_scan_info info = {
+-				.aborted = (ar->scan.state ==
+-					    ATH11K_SCAN_ABORTING),
++				.aborted = ((ar->scan.state ==
++					    ATH11K_SCAN_ABORTING) ||
++					    (ar->scan.state ==
++					    ATH11K_SCAN_STARTING)),
+ 			};
+ 
+ 			ieee80211_scan_completed(ar->hw, &info);
+-		} else if (ar->scan.roc_notify) {
+-			ieee80211_remain_on_channel_expired(ar->hw);
+ 		}
+-		fallthrough;
+-	case ATH11K_SCAN_STARTING:
++
+ 		ar->scan.state = ATH11K_SCAN_IDLE;
+ 		ar->scan_channel = NULL;
+ 		ar->scan.roc_freq = 0;

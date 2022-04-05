@@ -1,0 +1,130 @@
+From fc95d10ac41d75c14a81afcc8722333d8b2cf80f Mon Sep 17 00:00:00 2001
+From: Wen Gong <quic_wgong@quicinc.com>
+Date: Mon, 15 Nov 2021 11:29:55 +0200
+Subject: [PATCH 099/120] ath11k: add string type to search board data in
+ board-2.bin for WCN6855
+
+Currently ath11k only support string type with bus, chip id and board id
+such as "bus=ahb,qmi-chip-id=1,qmi-board-id=4" for ahb bus chip and
+"bus=pci,qmi-chip-id=0,qmi-board-id=255" for PCIe bus chip in
+board-2.bin. For WCN6855, it is not enough to distinguish all different
+chips.
+
+This is to add a new string type which include bus, chip id, board id,
+vendor, device, subsystem-vendor and subsystem-device for WCN6855.
+
+ath11k will first load board-2.bin and search in it for the board data
+with the above parameters, if matched one board data, then download it
+to firmware, if not matched any one, then ath11k will download the file
+board.bin to firmware.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-01720.1-QCAHSPSWPL_V1_V2_SILICONZ_LITE-1
+
+Signed-off-by: Wen Gong <quic_wgong@quicinc.com>
+Signed-off-by: Jouni Malinen <quic_jouni@quicinc.com>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20211111065340.20187-1-quic_wgong@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c | 27 ++++++++++++++++++++------
+ drivers/net/wireless/ath/ath11k/core.h | 13 +++++++++++++
+ drivers/net/wireless/ath/ath11k/pci.c  | 10 ++++++++++
+ 3 files changed, 44 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -412,11 +412,26 @@ static int ath11k_core_create_board_name
+ 		scnprintf(variant, sizeof(variant), ",variant=%s",
+ 			  ab->qmi.target.bdf_ext);
+ 
+-	scnprintf(name, name_len,
+-		  "bus=%s,qmi-chip-id=%d,qmi-board-id=%d%s",
+-		  ath11k_bus_str(ab->hif.bus),
+-		  ab->qmi.target.chip_id,
+-		  ab->qmi.target.board_id, variant);
++	switch (ab->id.bdf_search) {
++	case ATH11K_BDF_SEARCH_BUS_AND_BOARD:
++		scnprintf(name, name_len,
++			  "bus=%s,vendor=%04x,device=%04x,subsystem-vendor=%04x,subsystem-device=%04x,qmi-chip-id=%d,qmi-board-id=%d%s",
++			  ath11k_bus_str(ab->hif.bus),
++			  ab->id.vendor, ab->id.device,
++			  ab->id.subsystem_vendor,
++			  ab->id.subsystem_device,
++			  ab->qmi.target.chip_id,
++			  ab->qmi.target.board_id,
++			  variant);
++		break;
++	default:
++		scnprintf(name, name_len,
++			  "bus=%s,qmi-chip-id=%d,qmi-board-id=%d%s",
++			  ath11k_bus_str(ab->hif.bus),
++			  ab->qmi.target.chip_id,
++			  ab->qmi.target.board_id, variant);
++		break;
++	}
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_BOOT, "boot using board name '%s'\n", name);
+ 
+@@ -653,7 +668,7 @@ static int ath11k_core_fetch_board_data_
+ 	return 0;
+ }
+ 
+-#define BOARD_NAME_SIZE 100
++#define BOARD_NAME_SIZE 200
+ int ath11k_core_fetch_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd)
+ {
+ 	char boardname[BOARD_NAME_SIZE];
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -47,6 +47,11 @@ enum ath11k_supported_bw {
+ 	ATH11K_BW_160	= 3,
+ };
+ 
++enum ath11k_bdf_search {
++	ATH11K_BDF_SEARCH_DEFAULT,
++	ATH11K_BDF_SEARCH_BUS_AND_BOARD,
++};
++
+ enum wme_ac {
+ 	WME_AC_BE,
+ 	WME_AC_BK,
+@@ -760,6 +765,14 @@ struct ath11k_base {
+ 
+ 	struct completion htc_suspend;
+ 
++	struct {
++		enum ath11k_bdf_search bdf_search;
++		u32 vendor;
++		u32 device;
++		u32 subsystem_vendor;
++		u32 subsystem_device;
++	} id;
++
+ 	/* must be last */
+ 	u8 drv_priv[0] __aligned(sizeof(void *));
+ };
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -1251,6 +1251,15 @@ static int ath11k_pci_probe(struct pci_d
+ 		goto err_free_core;
+ 	}
+ 
++	ath11k_dbg(ab, ATH11K_DBG_BOOT, "pci probe %04x:%04x %04x:%04x\n",
++		   pdev->vendor, pdev->device,
++		   pdev->subsystem_vendor, pdev->subsystem_device);
++
++	ab->id.vendor = pdev->vendor;
++	ab->id.device = pdev->device;
++	ab->id.subsystem_vendor = pdev->subsystem_vendor;
++	ab->id.subsystem_device = pdev->subsystem_device;
++
+ 	switch (pci_dev->device) {
+ 	case QCA6390_DEVICE_ID:
+ 		ath11k_pci_read_hw_version(ab, &soc_hw_version_major,
+@@ -1273,6 +1282,7 @@ static int ath11k_pci_probe(struct pci_d
+ 		ab->hw_rev = ATH11K_HW_QCN9074_HW10;
+ 		break;
+ 	case WCN6855_DEVICE_ID:
++		ab->id.bdf_search = ATH11K_BDF_SEARCH_BUS_AND_BOARD;
+ 		ath11k_pci_read_hw_version(ab, &soc_hw_version_major,
+ 					   &soc_hw_version_minor);
+ 		switch (soc_hw_version_major) {

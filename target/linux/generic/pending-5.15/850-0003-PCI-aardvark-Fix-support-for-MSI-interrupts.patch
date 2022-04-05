@@ -1,0 +1,72 @@
+From bb03b126ea6c9e57177b537dd022246fa5dbef16 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
+Date: Fri, 12 Feb 2021 16:24:07 +0100
+Subject: [PATCH] PCI: aardvark: Fix support for MSI interrupts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Aardvark hardware supports Multi-MSI and MSI_FLAG_MULTI_PCI_MSI is already
+set for the MSI chip. But when allocating MSI interrupt numbers for
+Multi-MSI, the numbers need to be properly aligned, otherwise endpoint
+devices send MSI interrupt with incorrect numbers.
+
+Fix this issue by using function bitmap_find_free_region() instead of
+bitmap_find_next_zero_area().
+
+To ensure that aligned MSI interrupt numbers are used by endpoint devices,
+we cannot use Linux virtual irq numbers (as they are random and not
+properly aligned). Instead we need to use the aligned hwirq numbers.
+
+This change fixes receiving MSI interrupts on Armada 3720 boards and
+allows using NVMe disks which use Multi-MSI feature with 3 interrupts.
+
+Without this NVMe disks freeze booting as linux nvme-core.c is waiting
+60s for an interrupt.
+
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ drivers/pci/controller/pci-aardvark.c | 16 ++++++----------
+ 1 file changed, 6 insertions(+), 10 deletions(-)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -1182,7 +1182,7 @@ static void advk_msi_irq_compose_msi_msg
+ 
+ 	msg->address_lo = lower_32_bits(msi_msg);
+ 	msg->address_hi = upper_32_bits(msi_msg);
+-	msg->data = data->irq;
++	msg->data = data->hwirq;
+ }
+ 
+ static int advk_msi_set_affinity(struct irq_data *irq_data,
+@@ -1199,15 +1199,11 @@ static int advk_msi_irq_domain_alloc(str
+ 	int hwirq, i;
+ 
+ 	mutex_lock(&pcie->msi_used_lock);
+-	hwirq = bitmap_find_next_zero_area(pcie->msi_used, MSI_IRQ_NUM,
+-					   0, nr_irqs, 0);
+-	if (hwirq >= MSI_IRQ_NUM) {
+-		mutex_unlock(&pcie->msi_used_lock);
+-		return -ENOSPC;
+-	}
+-
+-	bitmap_set(pcie->msi_used, hwirq, nr_irqs);
++	hwirq = bitmap_find_free_region(pcie->msi_used, MSI_IRQ_NUM,
++					order_base_2(nr_irqs));
+ 	mutex_unlock(&pcie->msi_used_lock);
++	if (hwirq < 0)
++		return -ENOSPC;
+ 
+ 	for (i = 0; i < nr_irqs; i++)
+ 		irq_domain_set_info(domain, virq + i, hwirq + i,
+@@ -1225,7 +1221,7 @@ static void advk_msi_irq_domain_free(str
+ 	struct advk_pcie *pcie = domain->host_data;
+ 
+ 	mutex_lock(&pcie->msi_used_lock);
+-	bitmap_clear(pcie->msi_used, d->hwirq, nr_irqs);
++	bitmap_release_region(pcie->msi_used, d->hwirq, order_base_2(nr_irqs));
+ 	mutex_unlock(&pcie->msi_used_lock);
+ }
+ 
