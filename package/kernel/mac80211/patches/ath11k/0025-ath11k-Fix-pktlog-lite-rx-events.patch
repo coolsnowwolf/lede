@@ -1,0 +1,186 @@
+From ab18e3bc1c138f2b4358c6905a45afb7289d5086 Mon Sep 17 00:00:00 2001
+From: Anilkumar Kolli <akolli@codeaurora.org>
+Date: Tue, 28 Sep 2021 12:05:40 +0300
+Subject: [PATCH 025/120] ath11k: Fix pktlog lite rx events
+
+Fix sending rx_buf_sz to ath11k_dp_tx_htt_rx_filter_setup()
+to enable pktlog full or lite mode. Depending on mode update the
+trace buffer with log type full/lite.
+
+Pktlog lite is a lighter version of pktlog. This can be used to capture
+PPDU stats. These are useful for firmware performance debugging.
+
+pktlog lite dumps are enabled using,
+  echo "0x0 1" > ath11k/IPQ8074 hw2.0/mac0/pktlog_filter
+
+Tested On: IPQ8074 hw2.0 AHB WLAN.HK.2.1.0.1-01233-QCAHKSWPL_SILICONZ-1 v2
+
+Signed-off-by: Anilkumar Kolli <akolli@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20210721212029.142388-1-jouni@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/debugfs.c | 25 +++++++++++++++++++----
+ drivers/net/wireless/ath/ath11k/dp.h      |  1 +
+ drivers/net/wireless/ath/ath11k/dp_rx.c   | 16 ++++++++++++---
+ drivers/net/wireless/ath/ath11k/trace.h   | 11 ++++++----
+ 4 files changed, 42 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -902,7 +902,7 @@ static ssize_t ath11k_write_pktlog_filte
+ 	struct htt_rx_ring_tlv_filter tlv_filter = {0};
+ 	u32 rx_filter = 0, ring_id, filter, mode;
+ 	u8 buf[128] = {0};
+-	int i, ret;
++	int i, ret, rx_buf_sz = 0;
+ 	ssize_t rc;
+ 
+ 	mutex_lock(&ar->conf_mutex);
+@@ -940,6 +940,17 @@ static ssize_t ath11k_write_pktlog_filte
+ 		}
+ 	}
+ 
++	/* Clear rx filter set for monitor mode and rx status */
++	for (i = 0; i < ab->hw_params.num_rxmda_per_pdev; i++) {
++		ring_id = ar->dp.rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
++		ret = ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id, ar->dp.mac_id,
++						       HAL_RXDMA_MONITOR_STATUS,
++						       rx_buf_sz, &tlv_filter);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to set rx filter for monitor status ring\n");
++			goto out;
++		}
++	}
+ #define HTT_RX_FILTER_TLV_LITE_MODE \
+ 			(HTT_RX_FILTER_TLV_FLAGS_PPDU_START | \
+ 			HTT_RX_FILTER_TLV_FLAGS_PPDU_END | \
+@@ -955,6 +966,7 @@ static ssize_t ath11k_write_pktlog_filte
+ 			    HTT_RX_FILTER_TLV_FLAGS_MPDU_END |
+ 			    HTT_RX_FILTER_TLV_FLAGS_PACKET_HEADER |
+ 			    HTT_RX_FILTER_TLV_FLAGS_ATTENTION;
++		rx_buf_sz = DP_RX_BUFFER_SIZE;
+ 	} else if (mode == ATH11K_PKTLOG_MODE_LITE) {
+ 		ret = ath11k_dp_tx_htt_h2t_ppdu_stats_req(ar,
+ 							  HTT_PPDU_STATS_TAG_PKTLOG);
+@@ -964,7 +976,12 @@ static ssize_t ath11k_write_pktlog_filte
+ 		}
+ 
+ 		rx_filter = HTT_RX_FILTER_TLV_LITE_MODE;
++		rx_buf_sz = DP_RX_BUFFER_SIZE_LITE;
+ 	} else {
++		rx_buf_sz = DP_RX_BUFFER_SIZE;
++		tlv_filter = ath11k_mac_mon_status_filter_default;
++		rx_filter = tlv_filter.rx_filter;
++
+ 		ret = ath11k_dp_tx_htt_h2t_ppdu_stats_req(ar,
+ 							  HTT_PPDU_STATS_TAG_DEFAULT);
+ 		if (ret) {
+@@ -988,7 +1005,7 @@ static ssize_t ath11k_write_pktlog_filte
+ 		ret = ath11k_dp_tx_htt_rx_filter_setup(ab, ring_id,
+ 						       ar->dp.mac_id + i,
+ 						       HAL_RXDMA_MONITOR_STATUS,
+-						       DP_RX_BUFFER_SIZE, &tlv_filter);
++						       rx_buf_sz, &tlv_filter);
+ 
+ 		if (ret) {
+ 			ath11k_warn(ab, "failed to set rx filter for monitor status ring\n");
+@@ -996,8 +1013,8 @@ static ssize_t ath11k_write_pktlog_filte
+ 		}
+ 	}
+ 
+-	ath11k_dbg(ab, ATH11K_DBG_WMI, "pktlog filter %d mode %s\n",
+-		   filter, ((mode == ATH11K_PKTLOG_MODE_FULL) ? "full" : "lite"));
++	ath11k_info(ab, "pktlog mode %s\n",
++		    ((mode == ATH11K_PKTLOG_MODE_FULL) ? "full" : "lite"));
+ 
+ 	ar->debug.pktlog_filter = filter;
+ 	ar->debug.pktlog_mode = mode;
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -195,6 +195,7 @@ struct ath11k_pdev_dp {
+ #define DP_RXDMA_MONITOR_DESC_RING_SIZE	4096
+ 
+ #define DP_RX_BUFFER_SIZE	2048
++#define	DP_RX_BUFFER_SIZE_LITE  1024
+ #define DP_RX_BUFFER_ALIGN_SIZE	128
+ 
+ #define DP_RXDMA_BUF_COOKIE_BUF_ID	GENMASK(17, 0)
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -3033,6 +3033,8 @@ int ath11k_dp_rx_process_mon_status(stru
+ 	struct ath11k_peer *peer;
+ 	struct ath11k_sta *arsta;
+ 	int num_buffs_reaped = 0;
++	u32 rx_buf_sz;
++	u16 log_type = 0;
+ 
+ 	__skb_queue_head_init(&skb_list);
+ 
+@@ -3045,8 +3047,16 @@ int ath11k_dp_rx_process_mon_status(stru
+ 		memset(&ppdu_info, 0, sizeof(ppdu_info));
+ 		ppdu_info.peer_id = HAL_INVALID_PEERID;
+ 
+-		if (ath11k_debugfs_is_pktlog_rx_stats_enabled(ar))
+-			trace_ath11k_htt_rxdesc(ar, skb->data, DP_RX_BUFFER_SIZE);
++		if (ath11k_debugfs_is_pktlog_lite_mode_enabled(ar)) {
++			log_type = ATH11K_PKTLOG_TYPE_LITE_RX;
++			rx_buf_sz = DP_RX_BUFFER_SIZE_LITE;
++		} else if (ath11k_debugfs_is_pktlog_rx_stats_enabled(ar)) {
++			log_type = ATH11K_PKTLOG_TYPE_RX_STATBUF;
++			rx_buf_sz = DP_RX_BUFFER_SIZE;
++		}
++
++		if (log_type)
++			trace_ath11k_htt_rxdesc(ar, skb->data, log_type, rx_buf_sz);
+ 
+ 		hal_status = ath11k_hal_rx_parse_mon_status(ab, &ppdu_info, skb);
+ 
+@@ -3074,7 +3084,7 @@ int ath11k_dp_rx_process_mon_status(stru
+ 		ath11k_dp_rx_update_peer_stats(arsta, &ppdu_info);
+ 
+ 		if (ath11k_debugfs_is_pktlog_peer_valid(ar, peer->addr))
+-			trace_ath11k_htt_rxdesc(ar, skb->data, DP_RX_BUFFER_SIZE);
++			trace_ath11k_htt_rxdesc(ar, skb->data, log_type, rx_buf_sz);
+ 
+ 		spin_unlock_bh(&ab->base_lock);
+ 		rcu_read_unlock();
+--- a/drivers/net/wireless/ath/ath11k/trace.h
++++ b/drivers/net/wireless/ath/ath11k/trace.h
+@@ -79,14 +79,15 @@ TRACE_EVENT(ath11k_htt_ppdu_stats,
+ );
+ 
+ TRACE_EVENT(ath11k_htt_rxdesc,
+-	    TP_PROTO(struct ath11k *ar, const void *data, size_t len),
++	    TP_PROTO(struct ath11k *ar, const void *data, size_t log_type, size_t len),
+ 
+-	TP_ARGS(ar, data, len),
++	TP_ARGS(ar, data, log_type, len),
+ 
+ 	TP_STRUCT__entry(
+ 		__string(device, dev_name(ar->ab->dev))
+ 		__string(driver, dev_driver_string(ar->ab->dev))
+ 		__field(u16, len)
++		__field(u16, log_type)
+ 		__dynamic_array(u8, rxdesc, len)
+ 	),
+ 
+@@ -94,14 +95,16 @@ TRACE_EVENT(ath11k_htt_rxdesc,
+ 		__assign_str(device, dev_name(ar->ab->dev));
+ 		__assign_str(driver, dev_driver_string(ar->ab->dev));
+ 		__entry->len = len;
++		__entry->log_type = log_type;
+ 		memcpy(__get_dynamic_array(rxdesc), data, len);
+ 	),
+ 
+ 	TP_printk(
+-		"%s %s rxdesc len %d",
++		"%s %s rxdesc len %d type %d",
+ 		__get_str(driver),
+ 		__get_str(device),
+-		__entry->len
++		__entry->len,
++		__entry->log_type
+ 	 )
+ );
+ 

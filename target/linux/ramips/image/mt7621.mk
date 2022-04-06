@@ -672,6 +672,14 @@ define Device/gnubee_gb-pc2
 endef
 TARGET_DEVICES += gnubee_gb-pc2
 
+define Device/hilink_hlk-7621a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HiLink
+  DEVICE_MODEL := HLK-7621A
+  DEVICE_PACKAGES := kmod-usb3
+endef
+TARGET_DEVICES += hilink_hlk-7621a
+
 define Device/hiwifi_hc5962
   $(Device/dsa-migration)
   BLOCKSIZE := 128k
