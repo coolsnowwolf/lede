@@ -1,0 +1,128 @@
+From eda80b249df7bbc7b3dd13907343a3e59bfc57fd Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 4 Jan 2022 12:06:22 +0000
+Subject: [PATCH 1/3] net: ethernet: mtk_eth_soc: fix return values and
+ refactor MDIO ops
+
+Instead of returning -1 (-EPERM) when MDIO bus is stuck busy
+while writing or 0xffff if it happens while reading, return the
+appropriate -ETIMEDOUT. Also fix return type to int instead of u32.
+Refactor functions to use bitfield helpers instead of having various
+masking and shifting constants in the code, which also results in the
+register definitions in the header file being more obviously related
+to what is stated in the MediaTek's Reference Manual.
+
+Fixes: 656e705243fd0 ("net-next: mediatek: add support for MT7623 ethernet")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 53 ++++++++++++---------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h | 16 +++++--
+ 2 files changed, 41 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -94,46 +94,53 @@ static int mtk_mdio_busy_wait(struct mtk
+ 	}
+ 
+ 	dev_err(eth->dev, "mdio: MDIO timeout\n");
+-	return -1;
++	return -ETIMEDOUT;
+ }
+ 
+-static u32 _mtk_mdio_write(struct mtk_eth *eth, u32 phy_addr,
+-			   u32 phy_register, u32 write_data)
++static int _mtk_mdio_write(struct mtk_eth *eth, u32 phy_addr, u32 phy_reg,
++			   u32 write_data)
+ {
+-	if (mtk_mdio_busy_wait(eth))
+-		return -1;
++	int ret;
+ 
+-	write_data &= 0xffff;
+-
+-	mtk_w32(eth, PHY_IAC_ACCESS | PHY_IAC_START | PHY_IAC_WRITE |
+-		(phy_register << PHY_IAC_REG_SHIFT) |
+-		(phy_addr << PHY_IAC_ADDR_SHIFT) | write_data,
++	ret = mtk_mdio_busy_wait(eth);
++	if (ret < 0)
++		return ret;
++
++	mtk_w32(eth, PHY_IAC_ACCESS |
++		     PHY_IAC_START_C22 |
++		     PHY_IAC_CMD_WRITE |
++		     PHY_IAC_REG(phy_reg) |
++		     PHY_IAC_ADDR(phy_addr) |
++		     PHY_IAC_DATA(write_data),
+ 		MTK_PHY_IAC);
+ 
+-	if (mtk_mdio_busy_wait(eth))
+-		return -1;
++	ret = mtk_mdio_busy_wait(eth);
++	if (ret < 0)
++		return ret;
+ 
+ 	return 0;
+ }
+ 
+-static u32 _mtk_mdio_read(struct mtk_eth *eth, int phy_addr, int phy_reg)
++static int _mtk_mdio_read(struct mtk_eth *eth, u32 phy_addr, u32 phy_reg)
+ {
+-	u32 d;
+-
+-	if (mtk_mdio_busy_wait(eth))
+-		return 0xffff;
++	int ret;
+ 
+-	mtk_w32(eth, PHY_IAC_ACCESS | PHY_IAC_START | PHY_IAC_READ |
+-		(phy_reg << PHY_IAC_REG_SHIFT) |
+-		(phy_addr << PHY_IAC_ADDR_SHIFT),
++	ret = mtk_mdio_busy_wait(eth);
++	if (ret < 0)
++		return ret;
++
++	mtk_w32(eth, PHY_IAC_ACCESS |
++		     PHY_IAC_START_C22 |
++		     PHY_IAC_CMD_C22_READ |
++		     PHY_IAC_REG(phy_reg) |
++		     PHY_IAC_ADDR(phy_addr),
+ 		MTK_PHY_IAC);
+ 
+-	if (mtk_mdio_busy_wait(eth))
+-		return 0xffff;
+-
+-	d = mtk_r32(eth, MTK_PHY_IAC) & 0xffff;
++	ret = mtk_mdio_busy_wait(eth);
++	if (ret < 0)
++		return ret;
+ 
+-	return d;
++	return mtk_r32(eth, MTK_PHY_IAC) & PHY_IAC_DATA_MASK;
+ }
+ 
+ static int mtk_mdio_write(struct mii_bus *bus, int phy_addr,
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -344,11 +344,17 @@
+ /* PHY Indirect Access Control registers */
+ #define MTK_PHY_IAC		0x10004
+ #define PHY_IAC_ACCESS		BIT(31)
+-#define PHY_IAC_READ		BIT(19)
+-#define PHY_IAC_WRITE		BIT(18)
+-#define PHY_IAC_START		BIT(16)
+-#define PHY_IAC_ADDR_SHIFT	20
+-#define PHY_IAC_REG_SHIFT	25
++#define PHY_IAC_REG_MASK	GENMASK(29, 25)
++#define PHY_IAC_REG(x)		FIELD_PREP(PHY_IAC_REG_MASK, (x))
++#define PHY_IAC_ADDR_MASK	GENMASK(24, 20)
++#define PHY_IAC_ADDR(x)		FIELD_PREP(PHY_IAC_ADDR_MASK, (x))
++#define PHY_IAC_CMD_MASK	GENMASK(19, 18)
++#define PHY_IAC_CMD_WRITE	FIELD_PREP(PHY_IAC_CMD_MASK, 1)
++#define PHY_IAC_CMD_C22_READ	FIELD_PREP(PHY_IAC_CMD_MASK, 2)
++#define PHY_IAC_START_MASK	GENMASK(17, 16)
++#define PHY_IAC_START_C22	FIELD_PREP(PHY_IAC_START_MASK, 1)
++#define PHY_IAC_DATA_MASK	GENMASK(15, 0)
++#define PHY_IAC_DATA(x)		FIELD_PREP(PHY_IAC_DATA_MASK, (x))
+ #define PHY_IAC_TIMEOUT		HZ
+ 
+ #define MTK_MAC_MISC		0x1000c

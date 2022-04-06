@@ -1,0 +1,110 @@
+From c2ee8181fddb293d296477f60b3eb4fa3ce4e1a6 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Wed, 2 Feb 2022 01:03:25 +0100
+Subject: [PATCH 06/16] net: dsa: tag_qca: add define for handling mgmt
+ Ethernet packet
+
+Add all the required define to prepare support for mgmt read/write in
+Ethernet packet. Any packet of this type has to be dropped as the only
+use of these special packet is receive ack for an mgmt write request or
+receive data for an mgmt read request.
+A struct is used that emulates the Ethernet header but is used for a
+different purpose.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/linux/dsa/tag_qca.h | 44 +++++++++++++++++++++++++++++++++++++
+ net/dsa/tag_qca.c           | 15 ++++++++++---
+ 2 files changed, 56 insertions(+), 3 deletions(-)
+
+--- a/include/linux/dsa/tag_qca.h
++++ b/include/linux/dsa/tag_qca.h
+@@ -12,10 +12,54 @@
+ #define QCA_HDR_RECV_FRAME_IS_TAGGED	BIT(3)
+ #define QCA_HDR_RECV_SOURCE_PORT	GENMASK(2, 0)
+ 
++/* Packet type for recv */
++#define QCA_HDR_RECV_TYPE_NORMAL	0x0
++#define QCA_HDR_RECV_TYPE_MIB		0x1
++#define QCA_HDR_RECV_TYPE_RW_REG_ACK	0x2
++
+ #define QCA_HDR_XMIT_VERSION		GENMASK(15, 14)
+ #define QCA_HDR_XMIT_PRIORITY		GENMASK(13, 11)
+ #define QCA_HDR_XMIT_CONTROL		GENMASK(10, 8)
+ #define QCA_HDR_XMIT_FROM_CPU		BIT(7)
+ #define QCA_HDR_XMIT_DP_BIT		GENMASK(6, 0)
+ 
++/* Packet type for xmit */
++#define QCA_HDR_XMIT_TYPE_NORMAL	0x0
++#define QCA_HDR_XMIT_TYPE_RW_REG	0x1
++
++/* Check code for a valid mgmt packet. Switch will ignore the packet
++ * with this wrong.
++ */
++#define QCA_HDR_MGMT_CHECK_CODE_VAL	0x5
++
++/* Specific define for in-band MDIO read/write with Ethernet packet */
++#define QCA_HDR_MGMT_SEQ_LEN		4 /* 4 byte for the seq */
++#define QCA_HDR_MGMT_COMMAND_LEN	4 /* 4 byte for the command */
++#define QCA_HDR_MGMT_DATA1_LEN		4 /* First 4 byte for the mdio data */
++#define QCA_HDR_MGMT_HEADER_LEN		(QCA_HDR_MGMT_SEQ_LEN + \
++					QCA_HDR_MGMT_COMMAND_LEN + \
++					QCA_HDR_MGMT_DATA1_LEN)
++
++#define QCA_HDR_MGMT_DATA2_LEN		12 /* Other 12 byte for the mdio data */
++#define QCA_HDR_MGMT_PADDING_LEN	34 /* Padding to reach the min Ethernet packet */
++
++#define QCA_HDR_MGMT_PKT_LEN		(QCA_HDR_MGMT_HEADER_LEN + \
++					QCA_HDR_LEN + \
++					QCA_HDR_MGMT_DATA2_LEN + \
++					QCA_HDR_MGMT_PADDING_LEN)
++
++#define QCA_HDR_MGMT_SEQ_NUM		GENMASK(31, 0)  /* 63, 32 */
++#define QCA_HDR_MGMT_CHECK_CODE		GENMASK(31, 29) /* 31, 29 */
++#define QCA_HDR_MGMT_CMD		BIT(28)		/* 28 */
++#define QCA_HDR_MGMT_LENGTH		GENMASK(23, 20) /* 23, 20 */
++#define QCA_HDR_MGMT_ADDR		GENMASK(18, 0)  /* 18, 0 */
++
++/* Special struct emulating a Ethernet header */
++struct qca_mgmt_ethhdr {
++	u32 command;		/* command bit 31:0 */
++	u32 seq;		/* seq 63:32 */
++	u32 mdio_data;		/* first 4byte mdio */
++	__be16 hdr;		/* qca hdr */
++} __packed;
++
+ #endif /* __TAG_QCA_H */
+--- a/net/dsa/tag_qca.c
++++ b/net/dsa/tag_qca.c
+@@ -32,10 +32,12 @@ static struct sk_buff *qca_tag_xmit(stru
+ 
+ static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev)
+ {
+-	u8 ver;
+-	u16  hdr;
+-	int port;
++	u8 ver, pk_type;
+ 	__be16 *phdr;
++	int port;
++	u16 hdr;
++
++	BUILD_BUG_ON(sizeof(struct qca_mgmt_ethhdr) != QCA_HDR_MGMT_HEADER_LEN + QCA_HDR_LEN);
+ 
+ 	if (unlikely(!pskb_may_pull(skb, QCA_HDR_LEN)))
+ 		return NULL;
+@@ -48,6 +50,13 @@ static struct sk_buff *qca_tag_rcv(struc
+ 	if (unlikely(ver != QCA_HDR_VERSION))
+ 		return NULL;
+ 
++	/* Get pk type */
++	pk_type = FIELD_GET(QCA_HDR_RECV_TYPE, hdr);
++
++	/* Ethernet MDIO read/write packet */
++	if (pk_type == QCA_HDR_RECV_TYPE_RW_REG_ACK)
++		return NULL;
++
+ 	/* Remove QCA tag and recalculate checksum */
+ 	skb_pull_rcsum(skb, QCA_HDR_LEN);
+ 	dsa_strip_etype_header(skb, QCA_HDR_LEN);
