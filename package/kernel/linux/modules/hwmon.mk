@@ -43,20 +43,6 @@ endef
 
 $(eval $(call KernelPackage,hwmon-ad7418))
 
-define KernelPackage/hwmon-ads1015
-  TITLE:=Texas Instruments ADS1015
-  KCONFIG:= CONFIG_SENSORS_ADS1015
-  FILES:= $(LINUX_DIR)/drivers/hwmon/ads1015.ko
-  AUTOLOAD:=$(call AutoLoad,60,ads1015)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
-endef
-
-define KernelPackage/hwmon-ads1015/description
- Kernel module for Texas Instruments ADS1015 Analog-to-Digital converter
-endef
-
-$(eval $(call KernelPackage,hwmon-ads1015))
-
 define KernelPackage/hwmon-adt7410
   TITLE:=ADT7410 monitoring support
   KCONFIG:= \
@@ -120,22 +106,6 @@ define KernelPackage/hwmon-drivetemp/description
 endef
 
 $(eval $(call KernelPackage,hwmon-drivetemp))
-
-
-define KernelPackage/hwmon-emc2305
-  TITLE:=SMSC EMC2305 fan support
-  KCONFIG:=CONFIG_SENSORS_EMC2305
-  FILES:= \
-  $(LINUX_DIR)/drivers/hwmon/emc2305.ko
-  AUTOLOAD:=$(call AutoProbe,emc2305)
-  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
-endef
-
-define KernelPackage/hwmon-emc2305/description
- SMSC SMSC EMC2301/2/3/5 fan controllers support
-endef
-
-$(eval $(call KernelPackage,hwmon-emc2305))
 
 
 define KernelPackage/hwmon-gpiofan

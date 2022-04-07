@@ -1,0 +1,71 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sat, 4 Nov 2017 07:40:23 +0100
+Subject: [PATCH] mtd: spi-nor: support limiting 4K sectors support based on
+ flash size
+
+Some devices need 4K sectors to be able to deal with small flash chips.
+For instance, w25x05 is 64 KiB in size, and without 4K sectors, the
+entire chip is just one erase block.
+On bigger flash chip sizes, using 4K sectors can significantly slow down
+many operations, including using a writable filesystem. There are several
+platforms where it makes sense to use a single kernel on both kinds of
+devices.
+
+To support this properly, allow configuring an upper flash chip size
+limit for 4K sectors support.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/mtd/spi-nor/Kconfig
++++ b/drivers/mtd/spi-nor/Kconfig
+@@ -78,6 +78,17 @@ config MTD_SPI_NOR_SWP_KEEP
+ 
+ endchoice
+ 
++config MTD_SPI_NOR_USE_4K_SECTORS_LIMIT
++	int "Maximum flash chip size to use 4K sectors on (in KiB)"
++	depends on MTD_SPI_NOR_USE_4K_SECTORS
++	default "4096"
++	help
++	  There are many flash chips that support 4K sectors, but are so large
++	  that using them significantly slows down writing large amounts of
++	  data or using a writable filesystem.
++	  Any flash chip larger than the size specified in this option will
++	  not use 4K sectors.
++
+ source "drivers/mtd/spi-nor/controllers/Kconfig"
+ 
+ endif # MTD_SPI_NOR
+--- a/drivers/mtd/spi-nor/core.c
++++ b/drivers/mtd/spi-nor/core.c
+@@ -2631,6 +2631,21 @@ static void spi_nor_info_init_params(str
+ 	 */
+ 	erase_mask = 0;
+ 	i = 0;
++#ifdef CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
++	if ((info->flags & SECT_4K_PMC) && (params->size <=
++		   CONFIG_MTD_SPI_NOR_USE_4K_SECTORS_LIMIT * 1024)) {
++		erase_mask |= BIT(i);
++		spi_nor_set_erase_type(&map->erase_type[i], 4096u,
++				       SPINOR_OP_BE_4K_PMC);
++		i++;
++	} else if ((info->flags & SECT_4K) && (params->size <=
++	    CONFIG_MTD_SPI_NOR_USE_4K_SECTORS_LIMIT * 1024)) {
++		erase_mask |= BIT(i);
++		spi_nor_set_erase_type(&map->erase_type[i], 4096u,
++				       SPINOR_OP_BE_4K);
++		i++;
++	}
++#else
+ 	if (info->flags & SECT_4K_PMC) {
+ 		erase_mask |= BIT(i);
+ 		spi_nor_set_erase_type(&map->erase_type[i], 4096u,
+@@ -2642,6 +2657,7 @@ static void spi_nor_info_init_params(str
+ 				       SPINOR_OP_BE_4K);
+ 		i++;
+ 	}
++#endif
+ 	erase_mask |= BIT(i);
+ 	spi_nor_set_erase_type(&map->erase_type[i], info->sector_size,
+ 			       SPINOR_OP_SE);

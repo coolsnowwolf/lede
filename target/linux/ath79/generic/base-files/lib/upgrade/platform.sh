@@ -48,6 +48,9 @@ platform_do_upgrade() {
 		redboot_fis_do_upgrade "$1" vmlinux_2
 		;;
 	allnet,all-wap02860ac|\
+	araknis,an-300-ap-i-n|\
+	araknis,an-500-ap-i-ac|\
+	araknis,an-700-ap-i-ac|\
 	engenius,eap1200h|\
 	engenius,eap300-v2|\
 	engenius,eap600|\
@@ -73,6 +76,7 @@ platform_do_upgrade() {
 	openmesh,mr900-v2|\
 	openmesh,mr1750-v1|\
 	openmesh,mr1750-v2|\
+	openmesh,om2p-v1|\
 	openmesh,om2p-v2|\
 	openmesh,om2p-v4|\
 	openmesh,om2p-hs-v1|\
@@ -80,7 +84,10 @@ platform_do_upgrade() {
 	openmesh,om2p-hs-v3|\
 	openmesh,om2p-hs-v4|\
 	openmesh,om2p-lc|\
-	openmesh,om5p)
+	openmesh,om5p|\
+	openmesh,om5p-ac-v1|\
+	openmesh,om5p-ac-v2|\
+	openmesh,om5p-an)
 		PART_NAME="inactive"
 		platform_do_upgrade_openmesh "$1"
 		;;

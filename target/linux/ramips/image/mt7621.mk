@@ -672,6 +672,14 @@ define Device/gnubee_gb-pc2
 endef
 TARGET_DEVICES += gnubee_gb-pc2
 
+define Device/hilink_hlk-7621a
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := HiLink
+  DEVICE_MODEL := HLK-7621A
+  DEVICE_PACKAGES := kmod-usb3
+endef
+TARGET_DEVICES += hilink_hlk-7621a
+
 define Device/hiwifi_hc5962
   $(Device/dsa-migration)
   BLOCKSIZE := 128k
@@ -1220,6 +1228,16 @@ define Device/netis_wf2881
   DEVICE_PACKAGES := kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += netis_wf2881
+
+define Device/oraybox_x3a
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 15360k
+  DEVICE_VENDOR := OrayBox
+  DEVICE_MODEL := X3A
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7615-firmware
+endef
+TARGET_DEVICES += oraybox_x3a
 
 define Device/phicomm_k2p
   IMAGE_SIZE := 15744k

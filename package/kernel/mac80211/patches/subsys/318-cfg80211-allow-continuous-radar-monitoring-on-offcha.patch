@@ -1,0 +1,220 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 16 Nov 2021 15:03:36 +0100
+Subject: [PATCH] cfg80211: allow continuous radar monitoring on offchannel
+ chain
+
+Allow continuous radar detection on the offchannel chain in order
+to switch to the monitored channel whenever the underlying driver
+reports a radar pattern on the main channel.
+
+Tested-by: Owen Peng <owen.peng@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/d46217310a49b14ff0e9c002f0a6e0547d70fd2c.1637071350.git.lorenzo@kernel.org
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/wireless/chan.c
++++ b/net/wireless/chan.c
+@@ -712,6 +712,19 @@ static bool cfg80211_is_wiphy_oper_chan(
+ 	return false;
+ }
+ 
++static bool
++cfg80211_offchan_chain_is_active(struct cfg80211_registered_device *rdev,
++				 struct ieee80211_channel *channel)
++{
++	if (!rdev->offchan_radar_wdev)
++		return false;
++
++	if (!cfg80211_chandef_valid(&rdev->offchan_radar_chandef))
++		return false;
++
++	return cfg80211_is_sub_chan(&rdev->offchan_radar_chandef, channel);
++}
++
+ bool cfg80211_any_wiphy_oper_chan(struct wiphy *wiphy,
+ 				  struct ieee80211_channel *chan)
+ {
+@@ -728,6 +741,9 @@ bool cfg80211_any_wiphy_oper_chan(struct
+ 
+ 		if (cfg80211_is_wiphy_oper_chan(&rdev->wiphy, chan))
+ 			return true;
++
++		if (cfg80211_offchan_chain_is_active(rdev, chan))
++			return true;
+ 	}
+ 
+ 	return false;
+--- a/net/wireless/mlme.c
++++ b/net/wireless/mlme.c
+@@ -988,7 +988,7 @@ __cfg80211_offchan_cac_event(struct cfg8
+ 	if (!cfg80211_chandef_valid(chandef))
+ 		return;
+ 
+-	if (event != NL80211_RADAR_CAC_STARTED && !rdev->offchan_radar_wdev)
++	if (!rdev->offchan_radar_wdev)
+ 		return;
+ 
+ 	switch (event) {
+@@ -998,17 +998,13 @@ __cfg80211_offchan_cac_event(struct cfg8
+ 		queue_work(cfg80211_wq, &rdev->propagate_cac_done_wk);
+ 		cfg80211_sched_dfs_chan_update(rdev);
+ 		wdev = rdev->offchan_radar_wdev;
+-		rdev->offchan_radar_wdev = NULL;
+ 		break;
+ 	case NL80211_RADAR_CAC_ABORTED:
+ 		if (!cancel_delayed_work(&rdev->offchan_cac_done_wk))
+ 			return;
+ 		wdev = rdev->offchan_radar_wdev;
+-		rdev->offchan_radar_wdev = NULL;
+ 		break;
+ 	case NL80211_RADAR_CAC_STARTED:
+-		WARN_ON(!wdev);
+-		rdev->offchan_radar_wdev = wdev;
+ 		break;
+ 	default:
+ 		return;
+@@ -1024,7 +1020,8 @@ cfg80211_offchan_cac_event(struct cfg802
+ 			   enum nl80211_radar_event event)
+ {
+ 	wiphy_lock(&rdev->wiphy);
+-	__cfg80211_offchan_cac_event(rdev, NULL, chandef, event);
++	__cfg80211_offchan_cac_event(rdev, rdev->offchan_radar_wdev,
++				     chandef, event);
+ 	wiphy_unlock(&rdev->wiphy);
+ }
+ 
+@@ -1071,7 +1068,13 @@ cfg80211_start_offchan_radar_detection(s
+ 				     NL80211_EXT_FEATURE_RADAR_OFFCHAN))
+ 		return -EOPNOTSUPP;
+ 
+-	if (rdev->offchan_radar_wdev)
++	/* Offchannel chain already locked by another wdev */
++	if (rdev->offchan_radar_wdev && rdev->offchan_radar_wdev != wdev)
++		return -EBUSY;
++
++	/* CAC already in progress on the offchannel chain */
++	if (rdev->offchan_radar_wdev == wdev &&
++	    delayed_work_pending(&rdev->offchan_cac_done_wk))
+ 		return -EBUSY;
+ 
+ 	err = rdev_set_radar_offchan(rdev, chandef);
+@@ -1083,6 +1086,8 @@ cfg80211_start_offchan_radar_detection(s
+ 		cac_time_ms = IEEE80211_DFS_MIN_CAC_TIME_MS;
+ 
+ 	rdev->offchan_radar_chandef = *chandef;
++	rdev->offchan_radar_wdev = wdev; /* Get offchain ownership */
++
+ 	__cfg80211_offchan_cac_event(rdev, wdev, chandef,
+ 				     NL80211_RADAR_CAC_STARTED);
+ 	queue_delayed_work(cfg80211_wq, &rdev->offchan_cac_done_wk,
+@@ -1102,6 +1107,7 @@ void cfg80211_stop_offchan_radar_detecti
+ 		return;
+ 
+ 	rdev_set_radar_offchan(rdev, NULL);
++	rdev->offchan_radar_wdev = NULL; /* Release offchain ownership */
+ 
+ 	__cfg80211_offchan_cac_event(rdev, wdev, &rdev->offchan_radar_chandef,
+ 				     NL80211_RADAR_CAC_ABORTED);
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -9260,42 +9260,60 @@ static int nl80211_start_radar_detection
+ 	struct cfg80211_chan_def chandef;
+ 	enum nl80211_dfs_regions dfs_region;
+ 	unsigned int cac_time_ms;
+-	int err;
++	int err = -EINVAL;
++
++	flush_delayed_work(&rdev->dfs_update_channels_wk);
++
++	wiphy_lock(wiphy);
+ 
+ 	dfs_region = reg_get_dfs_region(wiphy);
+ 	if (dfs_region == NL80211_DFS_UNSET)
+-		return -EINVAL;
++		goto unlock;
+ 
+ 	err = nl80211_parse_chandef(rdev, info, &chandef);
+ 	if (err)
+-		return err;
++		goto unlock;
+ 
+ 	err = cfg80211_chandef_dfs_required(wiphy, &chandef, wdev->iftype);
+ 	if (err < 0)
+-		return err;
++		goto unlock;
+ 
+-	if (err == 0)
+-		return -EINVAL;
++	if (err == 0) {
++		err = -EINVAL;
++		goto unlock;
++	}
+ 
+-	if (!cfg80211_chandef_dfs_usable(wiphy, &chandef))
+-		return -EINVAL;
++	if (!cfg80211_chandef_dfs_usable(wiphy, &chandef)) {
++		err = -EINVAL;
++		goto unlock;
++	}
+ 
+-	if (nla_get_flag(info->attrs[NL80211_ATTR_RADAR_OFFCHAN]))
+-		return cfg80211_start_offchan_radar_detection(rdev, wdev,
+-							      &chandef);
++	if (nla_get_flag(info->attrs[NL80211_ATTR_RADAR_OFFCHAN])) {
++		err = cfg80211_start_offchan_radar_detection(rdev, wdev,
++							     &chandef);
++		goto unlock;
++	}
+ 
+-	if (netif_carrier_ok(dev))
+-		return -EBUSY;
++	if (netif_carrier_ok(dev)) {
++		err = -EBUSY;
++		goto unlock;
++	}
+ 
+-	if (wdev->cac_started)
+-		return -EBUSY;
++	if (wdev->cac_started) {
++		err = -EBUSY;
++		goto unlock;
++	}
+ 
+ 	/* CAC start is offloaded to HW and can't be started manually */
+-	if (wiphy_ext_feature_isset(wiphy, NL80211_EXT_FEATURE_DFS_OFFLOAD))
+-		return -EOPNOTSUPP;
++	if (wiphy_ext_feature_isset(wiphy, NL80211_EXT_FEATURE_DFS_OFFLOAD)) {
++		err = -EOPNOTSUPP;
++		goto unlock;
++	}
+ 
+-	if (!rdev->ops->start_radar_detection)
+-		return -EOPNOTSUPP;
++	if (!rdev->ops->start_radar_detection) {
++		err = -EOPNOTSUPP;
++		goto unlock;
++	}
+ 
+ 	cac_time_ms = cfg80211_chandef_dfs_cac_time(&rdev->wiphy, &chandef);
+ 	if (WARN_ON(!cac_time_ms))
+@@ -9308,6 +9326,9 @@ static int nl80211_start_radar_detection
+ 		wdev->cac_start_time = jiffies;
+ 		wdev->cac_time_ms = cac_time_ms;
+ 	}
++unlock:
++	wiphy_unlock(wiphy);
++
+ 	return err;
+ }
+ 
+@@ -15926,7 +15947,8 @@ static const struct genl_small_ops nl802
+ 		.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+ 		.doit = nl80211_start_radar_detection,
+ 		.flags = GENL_UNS_ADMIN_PERM,
+-		.internal_flags = NL80211_FLAG_NEED_NETDEV_UP,
++		.internal_flags = NL80211_FLAG_NEED_NETDEV_UP |
++				  NL80211_FLAG_NO_WIPHY_MTX,
+ 	},
+ 	{
+ 		.cmd = NL80211_CMD_GET_PROTOCOL_FEATURES,

@@ -9,13 +9,13 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=3
+PKG_RELEASE:=6
 
-PKG_SOURCE_DATE:=2019-10-21
+PKG_SOURCE_DATE:=2022-02-13
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/Chion82/netfilter-full-cone-nat.git
-PKG_SOURCE_VERSION:=0cf3b48fd7d2fa81d0297d1fff12bbd0580fc435
-PKG_MIRROR_HASH:=e7bb77d9916d190b3c02975faf62d1794557d4a4a774cd0cf1f3a6ddb7403e3e
+PKG_SOURCE_URL:=https://github.com/llccd/netfilter-full-cone-nat.git
+PKG_SOURCE_VERSION:=108a36cbdca17e68c9e6e7fd5e26156a88f738e8
+PKG_MIRROR_HASH:=00d749235271dee194dcd23c22e6e85207ea90192a62a110b2af0b4e4de1971f
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -41,7 +41,9 @@ define KernelPackage/ipt-fullconenat
   TITLE:=FULLCONENAT netfilter module
   DEPENDS:=+kmod-nf-ipt +kmod-nf-nat
   MAINTAINER:=Chion Tang <tech@chionlab.moe>
-  KCONFIG:=CONFIG_NF_CONNTRACK_EVENTS=y CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y
+  KCONFIG:=  \
+	CONFIG_NF_CONNTRACK_EVENTS=y \
+	CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y
   FILES:=$(PKG_BUILD_DIR)/xt_FULLCONENAT.ko
 endef
 

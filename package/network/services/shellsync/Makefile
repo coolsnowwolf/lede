@@ -8,7 +8,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/shellsync
   CATEGORY:=Utilities
-  TITLE:=shellsync
+  TITLE:=Sync shell scripts
   DEPENDS:=+libpthread +kmod-macvlan
 endef
 
@@ -18,7 +18,8 @@ define Build/Prepare
 endef
 
 define Package/shellsync/description
-A tool to sync different shell scripts.Based on syncppp patch by morfast.
+A tool to sync different shell scripts.
+Based on syncppp patch by morfast.
 endef
 
 define Build/Compile
@@ -29,6 +30,5 @@ define Package/shellsync/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/shellsync $(1)/usr/bin
 endef
-
 
 $(eval $(call BuildPackage,shellsync))

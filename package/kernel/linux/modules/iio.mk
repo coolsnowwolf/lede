@@ -78,6 +78,21 @@ endef
 
 $(eval $(call KernelPackage,iio-ad799x))
 
+define KernelPackage/iio-ads1015
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c +kmod-industrialio-triggered-buffer
+  TITLE:=Texas Instruments ADS1015 ADC driver
+  KCONFIG:= CONFIG_TI_ADS1015
+  FILES:=$(LINUX_DIR)/drivers/iio/adc/ti-ads1015.ko
+  AUTOLOAD:=$(call AutoLoad,56,ti-ads1015)
+endef
+
+define KernelPackage/iio-ads1015/description
+ This driver adds support for Texas Instruments ADS1015 and ADS1115 ADCs.
+endef
+
+$(eval $(call KernelPackage,iio-ads1015))
+
 define KernelPackage/iio-hmc5843
   SUBMENU:=$(IIO_MENU)
   DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c +kmod-industrialio-triggered-buffer

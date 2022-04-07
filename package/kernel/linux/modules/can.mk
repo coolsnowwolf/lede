@@ -121,7 +121,7 @@ define KernelPackage/can-flexcan
   KCONFIG:=CONFIG_CAN_FLEXCAN
   FILES:=$(LINUX_DIR)/drivers/net/can/flexcan.ko
   AUTOLOAD:=$(call AutoProbe,flexcan)
-  $(call AddDepends/can,@TARGET_imx6)
+  $(call AddDepends/can,@TARGET_imx)
 endef
 
 define KernelPackage/can-flexcan/description

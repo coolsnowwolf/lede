@@ -1,0 +1,279 @@
+From dc452a471dbae8aca8257c565174212620880093 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Fri, 10 Dec 2021 01:34:37 +0200
+Subject: net: dsa: introduce tagger-owned storage for private and shared data
+
+Ansuel is working on register access over Ethernet for the qca8k switch
+family. This requires the qca8k tagging protocol driver to receive
+frames which aren't intended for the network stack, but instead for the
+qca8k switch driver itself.
+
+The dp->priv is currently the prevailing method for passing data back
+and forth between the tagging protocol driver and the switch driver.
+However, this method is riddled with caveats.
+
+The DSA design allows in principle for any switch driver to return any
+protocol it desires in ->get_tag_protocol(). The dsa_loop driver can be
+modified to do just that. But in the current design, the memory behind
+dp->priv has to be allocated by the switch driver, so if the tagging
+protocol is paired to an unexpected switch driver, we may end up in NULL
+pointer dereferences inside the kernel, or worse (a switch driver may
+allocate dp->priv according to the expectations of a different tagger).
+
+The latter possibility is even more plausible considering that DSA
+switches can dynamically change tagging protocols in certain cases
+(dsa <-> edsa, ocelot <-> ocelot-8021q), and the current design lends
+itself to mistakes that are all too easy to make.
+
+This patch proposes that the tagging protocol driver should manage its
+own memory, instead of relying on the switch driver to do so.
+After analyzing the different in-tree needs, it can be observed that the
+required tagger storage is per switch, therefore a ds->tagger_data
+pointer is introduced. In principle, per-port storage could also be
+introduced, although there is no need for it at the moment. Future
+changes will replace the current usage of dp->priv with ds->tagger_data.
+
+We define a "binding" event between the DSA switch tree and the tagging
+protocol. During this binding event, the tagging protocol's ->connect()
+method is called first, and this may allocate some memory for each
+switch of the tree. Then a cross-chip notifier is emitted for the
+switches within that tree, and they are given the opportunity to fix up
+the tagger's memory (for example, they might set up some function
+pointers that represent virtual methods for consuming packets).
+Because the memory is owned by the tagger, there exists a ->disconnect()
+method for the tagger (which is the place to free the resources), but
+there doesn't exist a ->disconnect() method for the switch driver.
+This is part of the design. The switch driver should make minimal use of
+the public part of the tagger data, and only after type-checking it
+using the supplied "proto" argument.
+
+In the code there are in fact two binding events, one is the initial
+event in dsa_switch_setup_tag_protocol(). At this stage, the cross chip
+notifier chains aren't initialized, so we call each switch's connect()
+method by hand. Then there is dsa_tree_bind_tag_proto() during
+dsa_tree_change_tag_proto(), and here we have an old protocol and a new
+one. We first connect to the new one before disconnecting from the old
+one, to simplify error handling a bit and to ensure we remain in a valid
+state at all times.
+
+Co-developed-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/net/dsa.h  | 12 +++++++++
+ net/dsa/dsa2.c     | 73 +++++++++++++++++++++++++++++++++++++++++++++++++++---
+ net/dsa/dsa_priv.h |  1 +
+ net/dsa/switch.c   | 14 +++++++++++
+ 4 files changed, 96 insertions(+), 4 deletions(-)
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -80,12 +80,15 @@ enum dsa_tag_protocol {
+ };
+ 
+ struct dsa_switch;
++struct dsa_switch_tree;
+ 
+ struct dsa_device_ops {
+ 	struct sk_buff *(*xmit)(struct sk_buff *skb, struct net_device *dev);
+ 	struct sk_buff *(*rcv)(struct sk_buff *skb, struct net_device *dev);
+ 	void (*flow_dissect)(const struct sk_buff *skb, __be16 *proto,
+ 			     int *offset);
++	int (*connect)(struct dsa_switch_tree *dst);
++	void (*disconnect)(struct dsa_switch_tree *dst);
+ 	unsigned int needed_headroom;
+ 	unsigned int needed_tailroom;
+ 	const char *name;
+@@ -329,6 +332,8 @@ struct dsa_switch {
+ 	 */
+ 	void *priv;
+ 
++	void *tagger_data;
++
+ 	/*
+ 	 * Configuration data for this switch.
+ 	 */
+@@ -584,6 +589,13 @@ struct dsa_switch_ops {
+ 						  enum dsa_tag_protocol mprot);
+ 	int	(*change_tag_protocol)(struct dsa_switch *ds, int port,
+ 				       enum dsa_tag_protocol proto);
++	/*
++	 * Method for switch drivers to connect to the tagging protocol driver
++	 * in current use. The switch driver can provide handlers for certain
++	 * types of packets for switch management.
++	 */
++	int	(*connect_tag_protocol)(struct dsa_switch *ds,
++					enum dsa_tag_protocol proto);
+ 
+ 	/* Optional switch-wide initialization and destruction methods */
+ 	int	(*setup)(struct dsa_switch *ds);
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -230,8 +230,12 @@ static struct dsa_switch_tree *dsa_tree_
+ 
+ static void dsa_tree_free(struct dsa_switch_tree *dst)
+ {
+-	if (dst->tag_ops)
++	if (dst->tag_ops) {
++		if (dst->tag_ops->disconnect)
++			dst->tag_ops->disconnect(dst);
++
+ 		dsa_tag_driver_put(dst->tag_ops);
++	}
+ 	list_del(&dst->list);
+ 	kfree(dst);
+ }
+@@ -805,7 +809,7 @@ static int dsa_switch_setup_tag_protocol
+ 	int port, err;
+ 
+ 	if (tag_ops->proto == dst->default_proto)
+-		return 0;
++		goto connect;
+ 
+ 	for (port = 0; port < ds->num_ports; port++) {
+ 		if (!dsa_is_cpu_port(ds, port))
+@@ -821,6 +825,17 @@ static int dsa_switch_setup_tag_protocol
+ 		}
+ 	}
+ 
++connect:
++	if (ds->ops->connect_tag_protocol) {
++		err = ds->ops->connect_tag_protocol(ds, tag_ops->proto);
++		if (err) {
++			dev_err(ds->dev,
++				"Unable to connect to tag protocol \"%s\": %pe\n",
++				tag_ops->name, ERR_PTR(err));
++			return err;
++		}
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1132,6 +1147,46 @@ static void dsa_tree_teardown(struct dsa
+ 	dst->setup = false;
+ }
+ 
++static int dsa_tree_bind_tag_proto(struct dsa_switch_tree *dst,
++				   const struct dsa_device_ops *tag_ops)
++{
++	const struct dsa_device_ops *old_tag_ops = dst->tag_ops;
++	struct dsa_notifier_tag_proto_info info;
++	int err;
++
++	dst->tag_ops = tag_ops;
++
++	/* Notify the new tagger about the connection to this tree */
++	if (tag_ops->connect) {
++		err = tag_ops->connect(dst);
++		if (err)
++			goto out_revert;
++	}
++
++	/* Notify the switches from this tree about the connection
++	 * to the new tagger
++	 */
++	info.tag_ops = tag_ops;
++	err = dsa_tree_notify(dst, DSA_NOTIFIER_TAG_PROTO_CONNECT, &info);
++	if (err && err != -EOPNOTSUPP)
++		goto out_disconnect;
++
++	/* Notify the old tagger about the disconnection from this tree */
++	if (old_tag_ops->disconnect)
++		old_tag_ops->disconnect(dst);
++
++	return 0;
++
++out_disconnect:
++	/* Revert the new tagger's connection to this tree */
++	if (tag_ops->disconnect)
++		tag_ops->disconnect(dst);
++out_revert:
++	dst->tag_ops = old_tag_ops;
++
++	return err;
++}
++
+ /* Since the dsa/tagging sysfs device attribute is per master, the assumption
+  * is that all DSA switches within a tree share the same tagger, otherwise
+  * they would have formed disjoint trees (different "dsa,member" values).
+@@ -1164,12 +1219,15 @@ int dsa_tree_change_tag_proto(struct dsa
+ 			goto out_unlock;
+ 	}
+ 
++	/* Notify the tag protocol change */
+ 	info.tag_ops = tag_ops;
+ 	err = dsa_tree_notify(dst, DSA_NOTIFIER_TAG_PROTO, &info);
+ 	if (err)
+-		goto out_unwind_tagger;
++		return err;
+ 
+-	dst->tag_ops = tag_ops;
++	err = dsa_tree_bind_tag_proto(dst, tag_ops);
++	if (err)
++		goto out_unwind_tagger;
+ 
+ 	rtnl_unlock();
+ 
+@@ -1257,6 +1315,7 @@ static int dsa_port_parse_cpu(struct dsa
+ 	struct dsa_switch_tree *dst = ds->dst;
+ 	const struct dsa_device_ops *tag_ops;
+ 	enum dsa_tag_protocol default_proto;
++	int err;
+ 
+ 	/* Find out which protocol the switch would prefer. */
+ 	default_proto = dsa_get_tag_protocol(dp, master);
+@@ -1304,6 +1363,12 @@ static int dsa_port_parse_cpu(struct dsa
+ 		 */
+ 		dsa_tag_driver_put(tag_ops);
+ 	} else {
++		if (tag_ops->connect) {
++			err = tag_ops->connect(dst);
++			if (err)
++				return err;
++		}
++
+ 		dst->tag_ops = tag_ops;
+ 	}
+ 
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -37,6 +37,7 @@ enum {
+ 	DSA_NOTIFIER_VLAN_DEL,
+ 	DSA_NOTIFIER_MTU,
+ 	DSA_NOTIFIER_TAG_PROTO,
++	DSA_NOTIFIER_TAG_PROTO_CONNECT,
+ 	DSA_NOTIFIER_MRP_ADD,
+ 	DSA_NOTIFIER_MRP_DEL,
+ 	DSA_NOTIFIER_MRP_ADD_RING_ROLE,
+--- a/net/dsa/switch.c
++++ b/net/dsa/switch.c
+@@ -616,6 +616,17 @@ static int dsa_switch_change_tag_proto(s
+ 	return 0;
+ }
+ 
++static int dsa_switch_connect_tag_proto(struct dsa_switch *ds,
++					struct dsa_notifier_tag_proto_info *info)
++{
++	const struct dsa_device_ops *tag_ops = info->tag_ops;
++
++	if (!ds->ops->connect_tag_protocol)
++		return -EOPNOTSUPP;
++
++	return ds->ops->connect_tag_protocol(ds, tag_ops->proto);
++}
++
+ static int dsa_switch_mrp_add(struct dsa_switch *ds,
+ 			      struct dsa_notifier_mrp_info *info)
+ {
+@@ -735,6 +746,9 @@ static int dsa_switch_event(struct notif
+ 	case DSA_NOTIFIER_TAG_PROTO:
+ 		err = dsa_switch_change_tag_proto(ds, info);
+ 		break;
++	case DSA_NOTIFIER_TAG_PROTO_CONNECT:
++		err = dsa_switch_connect_tag_proto(ds, info);
++		break;
+ 	case DSA_NOTIFIER_MRP_ADD:
+ 		err = dsa_switch_mrp_add(ds, info);
+ 		break;

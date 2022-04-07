@@ -1,0 +1,119 @@
+From: Sergio Paracuellos <sergio.paracuellos@gmail.com>
+Date: Tue, 7 Dec 2021 11:49:21 +0100
+Subject: [PATCH] PCI: mt7621: Move MIPS setup to pcibios_root_bridge_prepare()
+
+On the MIPS ralink mt7621 platform, we need to set up I/O coherency units
+based on the host bridge apertures.
+
+To remove this arch dependency from the driver itself, move the coherency
+setup from the driver to pcibios_root_bridge_prepare().
+
+[bhelgaas: squash add/remove into one patch, commit log]
+Link: https://lore.kernel.org/r/20211207104924.21327-3-sergio.paracuellos@gmail.com
+Link: https://lore.kernel.org/r/20211207104924.21327-4-sergio.paracuellos@gmail.com
+Signed-off-by: Sergio Paracuellos <sergio.paracuellos@gmail.com>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Reviewed-by: Guenter Roeck <linux@roeck-us.net>             # arch/mips
+Acked-by: Thomas Bogendoerfer <tsbogend@alpha.franken.de>   # arch/mips
+---
+
+--- a/arch/mips/ralink/mt7621.c
++++ b/arch/mips/ralink/mt7621.c
+@@ -10,6 +10,8 @@
+ #include <linux/slab.h>
+ #include <linux/sys_soc.h>
+ #include <linux/memblock.h>
++#include <linux/pci.h>
++#include <linux/bug.h>
+ 
+ #include <asm/bootinfo.h>
+ #include <asm/mipsregs.h>
+@@ -24,6 +26,35 @@
+ 
+ static u32 detect_magic __initdata;
+ 
++int pcibios_root_bridge_prepare(struct pci_host_bridge *bridge)
++{
++	struct resource_entry *entry;
++	resource_size_t mask;
++
++	entry = resource_list_first_type(&bridge->windows, IORESOURCE_MEM);
++	if (!entry) {
++		pr_err("Cannot get memory resource\n");
++		return -EINVAL;
++	}
++
++	if (mips_cps_numiocu(0)) {
++		/*
++		 * Hardware doesn't accept mask values with 1s after
++		 * 0s (e.g. 0xffef), so warn if that's happen
++		 */
++		mask = ~(entry->res->end - entry->res->start) & CM_GCR_REGn_MASK_ADDRMASK;
++		WARN_ON(mask && BIT(ffz(~mask)) - 1 != ~mask);
++
++		write_gcr_reg1_base(entry->res->start);
++		write_gcr_reg1_mask(mask | CM_GCR_REGn_MASK_CMTGT_IOCU0);
++		pr_info("PCI coherence region base: 0x%08llx, mask/settings: 0x%08llx\n",
++			(unsigned long long)read_gcr_reg1_base(),
++			(unsigned long long)read_gcr_reg1_mask());
++	}
++
++	return 0;
++}
++
+ phys_addr_t mips_cpc_default_phys_base(void)
+ {
+ 	panic("Cannot detect cpc address");
+--- a/drivers/pci/controller/pcie-mt7621.c
++++ b/drivers/pci/controller/pcie-mt7621.c
+@@ -208,37 +208,6 @@ static inline void mt7621_control_deasse
+ 		reset_control_assert(port->pcie_rst);
+ }
+ 
+-static int setup_cm_memory_region(struct pci_host_bridge *host)
+-{
+-	struct mt7621_pcie *pcie = pci_host_bridge_priv(host);
+-	struct device *dev = pcie->dev;
+-	struct resource_entry *entry;
+-	resource_size_t mask;
+-
+-	entry = resource_list_first_type(&host->windows, IORESOURCE_MEM);
+-	if (!entry) {
+-		dev_err(dev, "cannot get memory resource\n");
+-		return -EINVAL;
+-	}
+-
+-	if (mips_cps_numiocu(0)) {
+-		/*
+-		 * FIXME: hardware doesn't accept mask values with 1s after
+-		 * 0s (e.g. 0xffef), so it would be great to warn if that's
+-		 * about to happen
+-		 */
+-		mask = ~(entry->res->end - entry->res->start);
+-
+-		write_gcr_reg1_base(entry->res->start);
+-		write_gcr_reg1_mask(mask | CM_GCR_REGn_MASK_CMTGT_IOCU0);
+-		dev_info(dev, "PCI coherence region base: 0x%08llx, mask/settings: 0x%08llx\n",
+-			 (unsigned long long)read_gcr_reg1_base(),
+-			 (unsigned long long)read_gcr_reg1_mask());
+-	}
+-
+-	return 0;
+-}
+-
+ static int mt7621_pcie_parse_port(struct mt7621_pcie *pcie,
+ 				  struct device_node *node,
+ 				  int slot)
+@@ -557,12 +526,6 @@ static int mt7621_pcie_probe(struct plat
+ 		goto remove_resets;
+ 	}
+ 
+-	err = setup_cm_memory_region(bridge);
+-	if (err) {
+-		dev_err(dev, "error setting up iocu mem regions\n");
+-		goto remove_resets;
+-	}
+-
+ 	return mt7621_pcie_register_host(bridge);
+ 
+ remove_resets:

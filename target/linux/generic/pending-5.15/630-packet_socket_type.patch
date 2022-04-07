@@ -1,0 +1,138 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: net: add an optimization for dealing with raw sockets
+
+lede-commit: 4898039703d7315f0f3431c860123338ec3be0f6
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/uapi/linux/if_packet.h |  3 +++
+ net/packet/af_packet.c         | 34 +++++++++++++++++++++++++++-------
+ net/packet/internal.h          |  1 +
+ 3 files changed, 31 insertions(+), 7 deletions(-)
+
+--- a/include/uapi/linux/if_packet.h
++++ b/include/uapi/linux/if_packet.h
+@@ -33,6 +33,8 @@ struct sockaddr_ll {
+ #define PACKET_KERNEL		7		/* To kernel space	*/
+ /* Unused, PACKET_FASTROUTE and PACKET_LOOPBACK are invisible to user space */
+ #define PACKET_FASTROUTE	6		/* Fastrouted frame	*/
++#define PACKET_MASK_ANY		0xffffffff	/* mask for packet type bits */
++
+ 
+ /* Packet socket options */
+ 
+@@ -59,6 +61,7 @@ struct sockaddr_ll {
+ #define PACKET_ROLLOVER_STATS		21
+ #define PACKET_FANOUT_DATA		22
+ #define PACKET_IGNORE_OUTGOING		23
++#define PACKET_RECV_TYPE		24
+ 
+ #define PACKET_FANOUT_HASH		0
+ #define PACKET_FANOUT_LB		1
+--- a/net/packet/af_packet.c
++++ b/net/packet/af_packet.c
+@@ -1825,6 +1825,7 @@ static int packet_rcv_spkt(struct sk_buf
+ {
+ 	struct sock *sk;
+ 	struct sockaddr_pkt *spkt;
++	struct packet_sock *po;
+ 
+ 	/*
+ 	 *	When we registered the protocol we saved the socket in the data
+@@ -1832,6 +1833,7 @@ static int packet_rcv_spkt(struct sk_buf
+ 	 */
+ 
+ 	sk = pt->af_packet_priv;
++	po = pkt_sk(sk);
+ 
+ 	/*
+ 	 *	Yank back the headers [hope the device set this
+@@ -1844,7 +1846,7 @@ static int packet_rcv_spkt(struct sk_buf
+ 	 *	so that this procedure is noop.
+ 	 */
+ 
+-	if (skb->pkt_type == PACKET_LOOPBACK)
++	if (!(po->pkt_type & (1 << skb->pkt_type)))
+ 		goto out;
+ 
+ 	if (!net_eq(dev_net(dev), sock_net(sk)))
+@@ -2082,12 +2084,12 @@ static int packet_rcv(struct sk_buff *sk
+ 	unsigned int snaplen, res;
+ 	bool is_drop_n_account = false;
+ 
+-	if (skb->pkt_type == PACKET_LOOPBACK)
+-		goto drop;
+-
+ 	sk = pt->af_packet_priv;
+ 	po = pkt_sk(sk);
+ 
++	if (!(po->pkt_type & (1 << skb->pkt_type)))
++		goto drop;
++
+ 	if (!net_eq(dev_net(dev), sock_net(sk)))
+ 		goto drop;
+ 
+@@ -2213,12 +2215,12 @@ static int tpacket_rcv(struct sk_buff *s
+ 	BUILD_BUG_ON(TPACKET_ALIGN(sizeof(*h.h2)) != 32);
+ 	BUILD_BUG_ON(TPACKET_ALIGN(sizeof(*h.h3)) != 48);
+ 
+-	if (skb->pkt_type == PACKET_LOOPBACK)
+-		goto drop;
+-
+ 	sk = pt->af_packet_priv;
+ 	po = pkt_sk(sk);
+ 
++	if (!(po->pkt_type & (1 << skb->pkt_type)))
++		goto drop;
++
+ 	if (!net_eq(dev_net(dev), sock_net(sk)))
+ 		goto drop;
+ 
+@@ -3325,6 +3327,7 @@ static int packet_create(struct net *net
+ 	mutex_init(&po->pg_vec_lock);
+ 	po->rollover = NULL;
+ 	po->prot_hook.func = packet_rcv;
++	po->pkt_type = PACKET_MASK_ANY & ~(1 << PACKET_LOOPBACK);
+ 
+ 	if (sock->type == SOCK_PACKET)
+ 		po->prot_hook.func = packet_rcv_spkt;
+@@ -3966,6 +3969,16 @@ packet_setsockopt(struct socket *sock, i
+ 		po->xmit = val ? packet_direct_xmit : dev_queue_xmit;
+ 		return 0;
+ 	}
++	case PACKET_RECV_TYPE:
++	{
++		unsigned int val;
++		if (optlen != sizeof(val))
++			return -EINVAL;
++		if (copy_from_sockptr(&val, optval, sizeof(val)))
++			return -EFAULT;
++		po->pkt_type = val & ~BIT(PACKET_LOOPBACK);
++		return 0;
++	}
+ 	default:
+ 		return -ENOPROTOOPT;
+ 	}
+@@ -4022,6 +4035,13 @@ static int packet_getsockopt(struct sock
+ 	case PACKET_VNET_HDR:
+ 		val = po->has_vnet_hdr;
+ 		break;
++	case PACKET_RECV_TYPE:
++		if (len > sizeof(unsigned int))
++			len = sizeof(unsigned int);
++		val = po->pkt_type;
++
++		data = &val;
++		break;
+ 	case PACKET_VERSION:
+ 		val = po->tp_version;
+ 		break;
+--- a/net/packet/internal.h
++++ b/net/packet/internal.h
+@@ -137,6 +137,7 @@ struct packet_sock {
+ 	int			(*xmit)(struct sk_buff *skb);
+ 	struct packet_type	prot_hook ____cacheline_aligned_in_smp;
+ 	atomic_t		tp_drops ____cacheline_aligned_in_smp;
++	unsigned int		pkt_type;
+ };
+ 
+ static inline struct packet_sock *pkt_sk(struct sock *sk)

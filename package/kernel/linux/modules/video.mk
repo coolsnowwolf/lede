@@ -65,6 +65,7 @@ define KernelPackage/fb
 	CONFIG_FRAMEBUFFER_CONSOLE=y \
 	CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y \
 	CONFIG_FRAMEBUFFER_CONSOLE_ROTATION=y \
+	CONFIG_FRAMEBUFFER_CONSOLE_LEGACY_ACCELERATION=y \
 	CONFIG_FONTS=y \
 	CONFIG_FONT_8x8=y \
 	CONFIG_FONT_8x16=y \
@@ -223,6 +224,7 @@ $(eval $(call KernelPackage,fb-tft-ili9486))
 define KernelPackage/multimedia-input
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Multimedia input support
+  DEPENDS:=+kmod-input-core
   KCONFIG:=CONFIG_RC_CORE \
 	CONFIG_LIRC=y \
 	CONFIG_RC_DECODERS=y \
@@ -241,8 +243,13 @@ define KernelPackage/drm
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Direct Rendering Manager (DRM) support
   HIDDEN:=1
-  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +PACKAGE_kmod-backlight:kmod-backlight
-  KCONFIG:=CONFIG_DRM
+  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit  +PACKAGE_kmod-backlight:kmod-backlight
+  KCONFIG:=	\
+	CONFIG_DRM	\
+	CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y	\
+	CONFIG_DRM_FBDEV_EMULATION=y \
+	CONFIG_DRM_FBDEV_OVERALLOC=100 \
+	CONFIG_HDMI
   FILES:= \
 	$(LINUX_DIR)/drivers/gpu/drm/drm.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/drm_panel_orientation_quirks.ko
@@ -314,10 +321,8 @@ $(eval $(call KernelPackage,drm-amdgpu))
 define KernelPackage/drm-imx
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Freescale i.MX DRM support
-  DEPENDS:=@TARGET_imx6 +kmod-drm-kms-helper
+  DEPENDS:=@TARGET_imx +kmod-drm-kms-helper
   KCONFIG:=CONFIG_DRM_IMX \
-	CONFIG_DRM_FBDEV_EMULATION=y \
-	CONFIG_DRM_FBDEV_OVERALLOC=100 \
 	CONFIG_IMX_IPUV3_CORE \
 	CONFIG_RESET_CONTROLLER=y \
 	CONFIG_DRM_IMX_IPUV3 \
@@ -402,6 +407,27 @@ endef
 
 $(eval $(call KernelPackage,drm-radeon))
 
+define KernelPackage/drm-nouveau
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=nouveau DRM support
+  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_NOUVEAU \
+	NOUVEAU_DEBUG=5 \
+	NOUVEAU_DEBUG_DEFAULT=3 \
+	NOUVEAU_DEBUG_MMU=n \
+	DRM_NOUVEAU_BACKLIGHT=y
+  FILES:=\
+	$(LINUX_DIR)/drivers/gpu/drm/nouveau/nouveau.ko \
+	$(LINUX_DIR)/drivers/platform/x86/wmi.ko
+  AUTOLOAD:=$(call AutoProbe,nouveau)
+endef
+
+define KernelPackage/drm-nouveau/description
+  Direct Rendering Manager (DRM) support for NVIDIA Cuda Video Cards
+endef
+
+$(eval $(call KernelPackage,drm-nouveau))
+
 #
 # Video Capture
 #
@@ -409,18 +435,12 @@ $(eval $(call KernelPackage,drm-radeon))
 define KernelPackage/video-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Video4Linux support
-  DEPENDS:=@PCI_SUPPORT||USB_SUPPORT +PACKAGE_kmod-i2c-core:kmod-i2c-core
+  DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core
   KCONFIG:= \
 	CONFIG_MEDIA_SUPPORT \
 	CONFIG_MEDIA_CAMERA_SUPPORT=y \
 	CONFIG_VIDEO_DEV \
-	CONFIG_VIDEO_V4L1=y \
-	CONFIG_VIDEO_ALLOW_V4L1=y \
-	CONFIG_VIDEO_CAPTURE_DRIVERS=y \
-	CONFIG_V4L_USB_DRIVERS=y \
-	CONFIG_V4L_PCI_DRIVERS=y \
-	CONFIG_V4L_PLATFORM_DRIVERS=y \
-	CONFIG_V4L_ISA_PARPORT_DRIVERS=y
+	CONFIG_V4L_PLATFORM_DRIVERS=y
   FILES:= \
 	$(LINUX_DIR)/drivers/media/$(V4L2_DIR)/videodev.ko
   AUTOLOAD:=$(call AutoLoad,60, videodev v4l2-common)
@@ -872,6 +892,21 @@ endef
 $(eval $(call KernelPackage,video-gspca-sq905c))
 
 
+define KernelPackage/video-gspca-sq930x
+  TITLE:=sq930x webcam support
+  KCONFIG:=CONFIG_USB_GSPCA_SQ930X
+  FILES:=$(LINUX_DIR)/drivers/media/$(V4L2_USB_DIR)/gspca/gspca_sq930x.ko
+  AUTOLOAD:=$(call AutoProbe,gspca_sq930x)
+  $(call AddDepends/camera-gspca)
+endef
+
+define KernelPackage/video-gspca-sq930x/description
+ The SQ Technologies SQ930X based USB Camera Driver (sq930x) kernel module
+endef
+
+$(eval $(call KernelPackage,video-gspca-sq930x))
+
+
 define KernelPackage/video-gspca-stk014
   TITLE:=stk014 webcam support
   KCONFIG:=CONFIG_USB_GSPCA_STK014
@@ -1035,3 +1070,38 @@ define KernelPackage/video-gspca-konica/description
 endef
 
 $(eval $(call KernelPackage,video-gspca-konica))
+
+define KernelPackage/drm-i915
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Intel GPU drm support
+  DEPENDS:=@TARGET_x86 +kmod-drm-ttm +kmod-drm-kms-helper +i915-firmware
+  KCONFIG:=	\
+          CONFIG_INTEL_GTT=y			\
+          CONFIG_DRM_I915=m			\
+          CONFIG_DRM_I915_CAPTURE_ERROR=y	\
+          CONFIG_DRM_I915_COMPRESS_ERROR=y	\
+          CONFIG_DRM_I915_USERPTR=y		\
+          CONFIG_DRM_I915_GVT=y			\
+          CONFIG_DRM_I915_WERROR=n		\
+          CONFIG_DRM_I915_DEBUG=n		\
+          CONFIG_DRM_I915_DEBUG_MMIO=n		\
+          CONFIG_DRM_I915_SW_FENCE_DEBUG_OBJECTS=n	\
+          CONFIG_DRM_I915_SW_FENCE_CHECK_DAG=n	\
+          CONFIG_DRM_I915_DEBUG_GUC=n		\
+          CONFIG_DRM_I915_SELFTEST=n		\
+          CONFIG_DRM_I915_LOW_LEVEL_TRACEPOINTS=n	\
+          CONFIG_DRM_I915_DEBUG_VBLANK_EVADE=n	\
+          CONFIG_DRM_I915_DEBUG_RUNTIME_PM=n
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko
+  AUTOLOAD:=$(call AutoProbe,i915)
+endef
+
+define KernelPackage/drm-i915/description
+  Direct Rendering Manager (DRM) support for "Intel Graphics
+  Media Accelerator" or "HD Graphics" integrated graphics,
+  including 830M, 845G, 852GM, 855GM, 865G, 915G, 945G, 965G,
+  G35, G41, G43, G45 chipsets and Celeron, Pentium, Core i3,
+  Core i5, Core i7 as well as Atom CPUs with integrated graphics.
+endef
+
+$(eval $(call KernelPackage,drm-i915))
