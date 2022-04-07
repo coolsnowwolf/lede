@@ -1,0 +1,89 @@
+diff --git a/drivers/bus/mhi/core/pm.c b/drivers/bus/mhi/core/pm.c
+index fb99e3727155..547e6e769546 100644
+--- a/drivers/bus/mhi/core/pm.c
++++ b/drivers/bus/mhi/core/pm.c
+@@ -881,7 +881,7 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+ }
+ EXPORT_SYMBOL_GPL(mhi_pm_suspend);
+ 
+-int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
++static int __mhi_pm_resume(struct mhi_controller *mhi_cntrl, bool force)
+ {
+ 	struct mhi_chan *itr, *tmp;
+ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
+@@ -783,6 +783,13 @@
+ 
+ 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+ 		return -EIO;
++		
++	if (mhi_get_mhi_state(mhi_cntrl) != MHI_STATE_M3) {
++		dev_warn(dev, "Resuming from non M3 state (%s)\n",
++			 TO_MHI_STATE_STR(mhi_get_mhi_state(mhi_cntrl)));
++		if (!force)
++			return -EINVAL;
++	}
+ 
+ 	/* Notify clients about exiting LPM */
+ 	list_for_each_entry_safe(itr, tmp, &mhi_cntrl->lpm_chans, node) {
+@@ -940,8 +944,19 @@ int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
+ 
+ 	return 0;
+ }
++
++int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
++{
++	return __mhi_pm_resume(mhi_cntrl, false);
++}
+ EXPORT_SYMBOL_GPL(mhi_pm_resume);
+ 
++int mhi_pm_resume_force(struct mhi_controller *mhi_cntrl)
++{
++	return __mhi_pm_resume(mhi_cntrl, true);
++}
++EXPORT_SYMBOL_GPL(mhi_pm_resume_force);
++
+ int __mhi_device_get_sync(struct mhi_controller *mhi_cntrl)
+ {
+ 	int ret;
+diff --git a/drivers/net/wireless/ath/ath11k/mhi.c b/drivers/net/wireless/ath/ath11k/mhi.c
+index 26c7ae242db6..49c0b1ad40a0 100644
+--- a/drivers/net/wireless/ath/ath11k/mhi.c
++++ b/drivers/net/wireless/ath/ath11k/mhi.c
+@@ -415,6 +415,11 @@
+ 	case ATH11K_MHI_SUSPEND:
+ 		break;
+ 	case ATH11K_MHI_RESUME:
++		/* Do force MHI resume as some devices like QCA6390, WCN6855
++		 * are not in M3 state but they are functional. So just ignore
++		 * the MHI state while resuming.
++		 */
++		ret = mhi_pm_resume_force(ab_pci->mhi_ctrl);
+ 		break;
+ 	case ATH11K_MHI_TRIGGER_RDDM:
+ 		ret = mhi_force_rddm_mode(ab_pci->mhi_ctrl);
+diff --git a/include/linux/mhi.h b/include/linux/mhi.h
+index 723985879035..a5cc4cdf9cc8 100644
+--- a/include/linux/mhi.h
++++ b/include/linux/mhi.h
+@@ -663,6 +663,19 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl);
+  */
+ int mhi_pm_resume(struct mhi_controller *mhi_cntrl);
+ 
++/**
++ * mhi_pm_resume_force - Force resume MHI from suspended state
++ * @mhi_cntrl: MHI controller
++ *
++ * Resume the device irrespective of its MHI state. As per the MHI spec, devices
++ * has to be in M3 state during resume. But some devices seem to be in a
++ * different MHI state other than M3 but they continue working fine if allowed.
++ * This API is intented to be used for such devices.
++ *
++ * Return: 0 if the resume succeeds, a negative error code otherwise
++ */
++int mhi_pm_resume_force(struct mhi_controller *mhi_cntrl);
++
+ /**
+  * mhi_download_rddm_image - Download ramdump image from device for
+  *                           debugging purpose.
+-- 
+2.25.1
