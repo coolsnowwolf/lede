@@ -18,6 +18,9 @@ platform_do_upgrade() {
 	zte,mf269)
 		nand_do_upgrade "$1"
 		;;
+	tplink,xtr10890)
+		nand_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;
