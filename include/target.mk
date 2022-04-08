@@ -47,10 +47,7 @@ DEFAULT_PACKAGES.router:=\
 	ppp \
 	ppp-mod-pppoe \
 	luci-newapi block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw \
-	default-settings luci luci-app-upnp luci-app-autoreboot \
-	luci-app-filetransfer luci-app-ssr-plus luci-app-arpbind \
-	luci-app-ramfree \
-	luci-app-turboacc luci-app-nlbwmon
+	default-settings luci luci-app-ramfree
 
 ifneq ($(DUMP),)
   all: dumpinfo
