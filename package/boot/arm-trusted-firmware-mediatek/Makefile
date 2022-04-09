@@ -92,10 +92,6 @@ TFA_MAKE_FLAGS += \
 	$(if $(DDR3_FLYBY),DDR3_FLYBY=1) \
 	all
 
-define Build/Configure
-	$(call Build/Configure/Default)
-endef
-
 define Package/trusted-firmware-a/install
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/build/mt7622/release/bl2.img $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-bl2.img
