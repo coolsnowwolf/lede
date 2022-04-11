@@ -19,34 +19,23 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -1655,6 +1655,10 @@ enum netdev_priv_flags {
- 	IFF_TX_SKB_NO_LINEAR		= 1<<31,
+@@ -1625,6 +1625,7 @@ enum netdev_priv_flags {
+ 	IFF_FAILOVER_SLAVE		= 1<<28,
+ 	IFF_L3MDEV_RX_HANDLER		= 1<<29,
+ 	IFF_LIVE_RENAME_OK		= 1<<30,
++	IFF_NO_IP_ALIGN			= 1<<31,
  };
  
-+enum netdev_extra_priv_flags {
-+	IFF_NO_IP_ALIGN			= 1<<0,
-+};
-+
  #define IFF_802_1Q_VLAN			IFF_802_1Q_VLAN
- #define IFF_EBRIDGE			IFF_EBRIDGE
- #define IFF_BONDING			IFF_BONDING
-@@ -1687,6 +1691,7 @@ enum netdev_priv_flags {
+@@ -1657,6 +1658,7 @@ enum netdev_priv_flags {
+ #define IFF_FAILOVER_SLAVE		IFF_FAILOVER_SLAVE
  #define IFF_L3MDEV_RX_HANDLER		IFF_L3MDEV_RX_HANDLER
  #define IFF_LIVE_RENAME_OK		IFF_LIVE_RENAME_OK
- #define IFF_TX_SKB_NO_LINEAR		IFF_TX_SKB_NO_LINEAR
 +#define IFF_NO_IP_ALIGN			IFF_NO_IP_ALIGN
  
  /* Specifies the type of the struct net_device::ml_priv pointer */
  enum netdev_ml_priv_type {
-@@ -1988,6 +1993,7 @@ struct net_device {
- 	/* Read-mostly cache-line for fast-path access */
- 	unsigned int		flags;
- 	unsigned int		priv_flags;
-+	unsigned int		extra_priv_flags;
- 	const struct net_device_ops *netdev_ops;
- 	int			ifindex;
- 	unsigned short		gflags;
-@@ -2048,6 +2054,11 @@ struct net_device {
+@@ -1997,6 +1999,11 @@ struct net_device {
  	const struct tlsdev_ops *tlsdev_ops;
  #endif
  
@@ -57,9 +46,9 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +
  	const struct header_ops *header_ops;
  
- 	unsigned char		operstate;
-@@ -2122,6 +2133,10 @@ struct net_device {
- 	struct mctp_dev __rcu	*mctp_ptr;
+ 	unsigned int		flags;
+@@ -2087,6 +2094,10 @@ struct net_device {
+ 	struct mpls_dev __rcu	*mpls_ptr;
  #endif
  
 +#ifdef CONFIG_ETHERNET_PACKET_MANGLE
@@ -71,7 +60,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
   */
 --- a/include/linux/skbuff.h
 +++ b/include/linux/skbuff.h
-@@ -2771,6 +2771,10 @@ static inline int pskb_trim(struct sk_bu
+@@ -2710,6 +2710,10 @@ static inline int pskb_trim(struct sk_bu
  	return (len < skb->len) ? __pskb_trim(skb, len) : 0;
  }
  
@@ -82,7 +71,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  /**
   *	pskb_trim_unique - remove end from a paged unique (not cloned) buffer
   *	@skb: buffer to alter
-@@ -2921,16 +2925,6 @@ static inline struct sk_buff *dev_alloc_
+@@ -2841,16 +2845,6 @@ static inline struct sk_buff *dev_alloc_
  }
  
  
@@ -116,7 +105,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	help
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
-@@ -3582,6 +3582,11 @@ static int xmit_one(struct sk_buff *skb,
+@@ -3650,6 +3650,11 @@ static int xmit_one(struct sk_buff *skb,
  	if (dev_nit_active(dev))
  		dev_queue_xmit_nit(skb, dev);
  
@@ -130,15 +119,15 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	trace_net_dev_start_xmit(skb, dev);
 --- a/net/core/skbuff.c
 +++ b/net/core/skbuff.c
-@@ -61,6 +61,7 @@
+@@ -60,6 +60,7 @@
+ #include <linux/prefetch.h>
  #include <linux/if_vlan.h>
  #include <linux/mpls.h>
- #include <linux/kcov.h>
 +#include <linux/if.h>
  
  #include <net/protocol.h>
  #include <net/dst.h>
-@@ -602,6 +603,22 @@ skb_fail:
+@@ -553,6 +554,22 @@ skb_fail:
  }
  EXPORT_SYMBOL(__napi_alloc_skb);
  
@@ -148,7 +137,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	struct sk_buff *skb = __netdev_alloc_skb(dev, length + NET_IP_ALIGN, gfp);
 +
 +#ifdef CONFIG_ETHERNET_PACKET_MANGLE
-+	if (dev && (dev->extra_priv_flags & IFF_NO_IP_ALIGN))
++	if (dev && (dev->priv_flags & IFF_NO_IP_ALIGN))
 +		return skb;
 +#endif
 +
@@ -163,7 +152,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  {
 --- a/net/ethernet/eth.c
 +++ b/net/ethernet/eth.c
-@@ -170,6 +170,12 @@ __be16 eth_type_trans(struct sk_buff *sk
+@@ -171,6 +171,12 @@ __be16 eth_type_trans(struct sk_buff *sk
  	const struct ethhdr *eth;
  
  	skb->dev = dev;
