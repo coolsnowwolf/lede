@@ -378,7 +378,7 @@ $(eval $(call KernelPackage,fs-msdos))
 define KernelPackage/fs-nfs
   SUBMENU:=$(FS_MENU)
   TITLE:=NFS filesystem client support
-  DEPENDS:=+kmod-fs-nfs-common +kmod-dnsresolver
+  DEPENDS:=+kmod-fs-nfs-common +kmod-dnsresolver +!LINUX_5_4:kmod-fs-nfs-ssc
   KCONFIG:= \
 	CONFIG_NFS_FS \
 	CONFIG_NFS_USE_LEGACY_DNS=n \
