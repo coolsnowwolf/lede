@@ -1,0 +1,159 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 21 Feb 2022 15:38:20 +0100
+Subject: [PATCH] net: ethernet: mtk_eth_soc: allocate struct mtk_ppe
+ separately
+
+Preparation for adding more data to it, which will increase its size.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2305,7 +2305,7 @@ static int mtk_open(struct net_device *d
+ 		if (err)
+ 			return err;
+ 
+-		if (eth->soc->offload_version && mtk_ppe_start(&eth->ppe) == 0)
++		if (eth->soc->offload_version && mtk_ppe_start(eth->ppe) == 0)
+ 			gdm_config = MTK_GDMA_TO_PPE;
+ 
+ 		mtk_gdm_config(eth, gdm_config);
+@@ -2379,7 +2379,7 @@ static int mtk_stop(struct net_device *d
+ 	mtk_dma_free(eth);
+ 
+ 	if (eth->soc->offload_version)
+-		mtk_ppe_stop(&eth->ppe);
++		mtk_ppe_stop(eth->ppe);
+ 
+ 	return 0;
+ }
+@@ -3265,10 +3265,11 @@ static int mtk_probe(struct platform_dev
+ 	}
+ 
+ 	if (eth->soc->offload_version) {
+-		err = mtk_ppe_init(&eth->ppe, eth->dev,
+-				   eth->base + MTK_ETH_PPE_BASE, 2);
+-		if (err)
++		eth->ppe = mtk_ppe_init(eth->dev, eth->base + MTK_ETH_PPE_BASE, 2);
++		if (!eth->ppe) {
++			err = -ENOMEM;
+ 			goto err_free_dev;
++		}
+ 
+ 		err = mtk_eth_offload_init(eth);
+ 		if (err)
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -976,7 +976,7 @@ struct mtk_eth {
+ 	u32				rx_dma_l4_valid;
+ 	int				ip_align;
+ 
+-	struct mtk_ppe			ppe;
++	struct mtk_ppe			*ppe;
+ 	struct rhashtable		flow_table;
+ };
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -384,10 +384,15 @@ int mtk_foe_entry_commit(struct mtk_ppe
+ 	return hash;
+ }
+ 
+-int mtk_ppe_init(struct mtk_ppe *ppe, struct device *dev, void __iomem *base,
++struct mtk_ppe *mtk_ppe_init(struct device *dev, void __iomem *base,
+ 		 int version)
+ {
+ 	struct mtk_foe_entry *foe;
++	struct mtk_ppe *ppe;
++
++	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
++	if (!ppe)
++		return NULL;
+ 
+ 	/* need to allocate a separate device, since it PPE DMA access is
+ 	 * not coherent.
+@@ -399,13 +404,13 @@ int mtk_ppe_init(struct mtk_ppe *ppe, st
+ 	foe = dmam_alloc_coherent(ppe->dev, MTK_PPE_ENTRIES * sizeof(*foe),
+ 				  &ppe->foe_phys, GFP_KERNEL);
+ 	if (!foe)
+-		return -ENOMEM;
++		return NULL;
+ 
+ 	ppe->foe_table = foe;
+ 
+ 	mtk_ppe_debugfs_init(ppe);
+ 
+-	return 0;
++	return ppe;
+ }
+ 
+ static void mtk_ppe_init_foe_table(struct mtk_ppe *ppe)
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -246,8 +246,7 @@ struct mtk_ppe {
+ 	void *acct_table;
+ };
+ 
+-int mtk_ppe_init(struct mtk_ppe *ppe, struct device *dev, void __iomem *base,
+-		 int version);
++struct mtk_ppe *mtk_ppe_init(struct device *dev, void __iomem *base, int version);
+ int mtk_ppe_start(struct mtk_ppe *ppe);
+ int mtk_ppe_stop(struct mtk_ppe *ppe);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -412,7 +412,7 @@ mtk_flow_offload_replace(struct mtk_eth
+ 
+ 	entry->cookie = f->cookie;
+ 	timestamp = mtk_eth_timestamp(eth);
+-	hash = mtk_foe_entry_commit(&eth->ppe, &foe, timestamp);
++	hash = mtk_foe_entry_commit(eth->ppe, &foe, timestamp);
+ 	if (hash < 0) {
+ 		err = hash;
+ 		goto free;
+@@ -427,7 +427,7 @@ mtk_flow_offload_replace(struct mtk_eth
+ 
+ 	return 0;
+ clear_flow:
+-	mtk_foe_entry_clear(&eth->ppe, hash);
++	mtk_foe_entry_clear(eth->ppe, hash);
+ free:
+ 	kfree(entry);
+ 	if (wed_index >= 0)
+@@ -445,7 +445,7 @@ mtk_flow_offload_destroy(struct mtk_eth
+ 	if (!entry)
+ 		return -ENOENT;
+ 
+-	mtk_foe_entry_clear(&eth->ppe, entry->hash);
++	mtk_foe_entry_clear(eth->ppe, entry->hash);
+ 	rhashtable_remove_fast(&eth->flow_table, &entry->node,
+ 			       mtk_flow_ht_params);
+ 	if (entry->wed_index >= 0)
+@@ -467,7 +467,7 @@ mtk_flow_offload_stats(struct mtk_eth *e
+ 	if (!entry)
+ 		return -ENOENT;
+ 
+-	timestamp = mtk_foe_entry_timestamp(&eth->ppe, entry->hash);
++	timestamp = mtk_foe_entry_timestamp(eth->ppe, entry->hash);
+ 	if (timestamp < 0)
+ 		return -ETIMEDOUT;
+ 
+@@ -523,7 +523,7 @@ mtk_eth_setup_tc_block(struct net_device
+ 	struct flow_block_cb *block_cb;
+ 	flow_setup_cb_t *cb;
+ 
+-	if (!eth->ppe.foe_table)
++	if (!eth->ppe || !eth->ppe->foe_table)
+ 		return -EOPNOTSUPP;
+ 
+ 	if (f->binder_type != FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
+@@ -575,7 +575,7 @@ int mtk_eth_setup_tc(struct net_device *
+ 
+ int mtk_eth_offload_init(struct mtk_eth *eth)
+ {
+-	if (!eth->ppe.foe_table)
++	if (!eth->ppe || !eth->ppe->foe_table)
+ 		return 0;
+ 
+ 	return rhashtable_init(&eth->flow_table, &mtk_flow_ht_params);
