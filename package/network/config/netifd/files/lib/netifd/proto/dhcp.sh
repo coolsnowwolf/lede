@@ -1,6 +1,6 @@
 #!/bin/sh
 
-[ -L /sbin/udhcpc ] || exit 0
+[ -x /sbin/udhcpc ] || exit 0
 
 . /lib/functions.sh
 . ../netifd-proto.sh
