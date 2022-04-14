@@ -1,10 +1,11 @@
 --- a/block/blk.h
 +++ b/block/blk.h
-@@ -354,6 +354,7 @@ void blk_free_ext_minor(unsigned int min
+@@ -354,6 +354,8 @@ void blk_free_ext_minor(unsigned int min
  #define ADDPART_FLAG_NONE	0
  #define ADDPART_FLAG_RAID	1
  #define ADDPART_FLAG_WHOLEDISK	2
-+#define ADDPART_FLAG_ROOTDEV	4
++#define ADDPART_FLAG_READONLY	4
++#define ADDPART_FLAG_ROOTDEV	8
  int bdev_add_partition(struct gendisk *disk, int partno, sector_t start,
  		sector_t length);
  int bdev_del_partition(struct gendisk *disk, int partno);
@@ -73,13 +74,25 @@
  #ifdef CONFIG_SGI_PARTITION
  	sgi_partition,
  #endif
-@@ -598,6 +605,11 @@ static bool blk_add_partition(struct gen
+@@ -408,6 +415,11 @@ static struct block_device *add_partitio
+ 			goto out_del;
+ 	}
+ 
++#ifdef CONFIG_FIT_PARTITION
++	if (flags & ADDPART_FLAG_READONLY)
++		bdev->bd_read_only = true;
++#endif
++
+ 	/* everything is up and running, commence */
+ 	err = xa_insert(&disk->part_tbl, partno, bdev, GFP_KERNEL);
+ 	if (err)
+@@ -598,6 +610,11 @@ static bool blk_add_partition(struct gen
  	    (state->parts[p].flags & ADDPART_FLAG_RAID))
  		md_autodetect_dev(part->bd_dev);
  
 +#ifdef CONFIG_FIT_PARTITION
 +	if ((state->parts[p].flags & ADDPART_FLAG_ROOTDEV) && ROOT_DEV == 0)
-+		ROOT_DEV = part_to_dev(part)->devt;
++		ROOT_DEV = part->bd_dev;
 +#endif
 +
  	return true;
@@ -87,19 +100,7 @@
  
 --- a/drivers/mtd/ubi/block.c
 +++ b/drivers/mtd/ubi/block.c
-@@ -419,7 +419,11 @@ int ubiblock_create(struct ubi_volume_in
- 
- 	gd->fops = &ubiblock_ops;
- 	gd->major = ubiblock_major;
-+#ifdef CONFIG_FIT_PARTITION
-+	gd->minors = 0;
-+#else
- 	gd->minors = 1;
-+#endif
- 	gd->first_minor = idr_alloc(&ubiblock_minor_idr, dev, 0, 0, GFP_KERNEL);
- 	if (gd->first_minor < 0) {
- 		dev_err(disk_to_dev(gd),
-@@ -428,6 +432,9 @@ int ubiblock_create(struct ubi_volume_in
+@@ -428,6 +428,9 @@ int ubiblock_create(struct ubi_volume_in
  		goto out_cleanup_disk;
  	}
  	gd->private_data = dev;
@@ -109,6 +110,18 @@
  	sprintf(gd->disk_name, "ubiblock%d_%d", dev->ubi_num, dev->vol_id);
  	set_capacity(gd, disk_capacity);
  	dev->gd = gd;
+--- a/drivers/mtd/mtd_blkdevs.c
++++ b/drivers/mtd/mtd_blkdevs.c
+@@ -345,6 +345,9 @@ int add_mtd_blktrans_dev(struct mtd_blkt
+ 	gd->first_minor = (new->devnum) << tr->part_bits;
+ 	gd->minors = 1 << tr->part_bits;
+ 	gd->fops = &mtd_block_ops;
++#ifdef CONFIG_FIT_PARTITION
++	gd->flags |= GENHD_FL_EXT_DEVT;
++#endif
+ 
+ 	if (tr->part_bits)
+ 		if (new->devnum < 26)
 --- a/block/partitions/efi.c
 +++ b/block/partitions/efi.c
 @@ -716,6 +716,9 @@ int efi_partition(struct parsed_partitio
@@ -145,43 +158,6 @@
  
  typedef struct _gpt_header {
  	__le64 signature;
---- a/drivers/mtd/mtdblock.c
-+++ b/drivers/mtd/mtdblock.c
-@@ -338,7 +338,11 @@ static void mtdblock_remove_dev(struct m
- static struct mtd_blktrans_ops mtdblock_tr = {
- 	.name		= "mtdblock",
- 	.major		= MTD_BLOCK_MAJOR,
-+#ifdef CONFIG_FIT_PARTITION
-+	.part_bits	= 1,
-+#else
- 	.part_bits	= 0,
-+#endif
- 	.blksize 	= 512,
- 	.open		= mtdblock_open,
- 	.flush		= mtdblock_flush,
---- a/drivers/mtd/mtd_blkdevs.c
-+++ b/drivers/mtd/mtd_blkdevs.c
-@@ -346,18 +346,8 @@ int add_mtd_blktrans_dev(struct mtd_blkt
- 	gd->minors = 1 << tr->part_bits;
- 	gd->fops = &mtd_block_ops;
- 
--	if (tr->part_bits)
--		if (new->devnum < 26)
--			snprintf(gd->disk_name, sizeof(gd->disk_name),
--				 "%s%c", tr->name, 'a' + new->devnum);
--		else
--			snprintf(gd->disk_name, sizeof(gd->disk_name),
--				 "%s%c%c", tr->name,
--				 'a' - 1 + new->devnum / 26,
--				 'a' + new->devnum % 26);
--	else
--		snprintf(gd->disk_name, sizeof(gd->disk_name),
--			 "%s%d", tr->name, new->devnum);
-+	snprintf(gd->disk_name, sizeof(gd->disk_name),
-+		 "%s%d", tr->name, new->devnum);
- 
- 	set_capacity(gd, ((u64)new->size * tr->blksize) >> 9);
- 
 --- a/block/partitions/msdos.c
 +++ b/block/partitions/msdos.c
 @@ -564,6 +564,15 @@ static void parse_minix(struct parsed_pa

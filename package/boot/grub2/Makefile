@@ -9,13 +9,15 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=grub
-PKG_CPE_ID:=cpe:/a:gnu:grub2
 PKG_VERSION:=2.06
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/grub
 PKG_HASH:=b79ea44af91b93d17cd3fe80bdae6ed43770678a9a5ae192ccea803ebb657ee1
+
+PKG_LICENSE:=GPL-3.0-or-later
+PKG_CPE_ID:=cpe:/a:gnu:grub2
 
 HOST_BUILD_PARALLEL:=1
 PKG_BUILD_DEPENDS:=grub2/host
