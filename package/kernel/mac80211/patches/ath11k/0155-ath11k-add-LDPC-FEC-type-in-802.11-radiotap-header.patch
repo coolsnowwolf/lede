@@ -1,0 +1,126 @@
+From b3febdccde3eb086b892485c923cd6b73b2ce9d7 Mon Sep 17 00:00:00 2001
+From: P Praneesh <quic_ppranees@quicinc.com>
+Date: Tue, 11 Jan 2022 16:42:52 +0200
+Subject: [PATCH 155/156] ath11k: add LDPC FEC type in 802.11 radiotap header
+
+LDPC is one the FEC type advertised in msdu_start info2 for HT packet
+type. Hence, add hardware specific callback for fetching LDPC
+support from msdu start and enable RX_ENC_FLAG_LDPC flag while passing
+rx status to mac80211.
+
+Tested-on: IPQ8074 WLAN.HK.2.4.0.1-01467-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: P Praneesh <quic_ppranees@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/1638294648-844-3-git-send-email-quic_ppranees@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 12 +++++++++++-
+ drivers/net/wireless/ath/ath11k/hw.c    | 16 ++++++++++++++++
+ drivers/net/wireless/ath/ath11k/hw.h    |  1 +
+ 3 files changed, 28 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -43,6 +43,13 @@ static inline u8 ath11k_dp_rx_h_msdu_sta
+ }
+ 
+ static inline
++bool ath11k_dp_rx_h_msdu_start_ldpc_support(struct ath11k_base *ab,
++					    struct hal_rx_desc *desc)
++{
++	return ab->hw_params.hw_ops->rx_desc_get_ldpc_support(desc);
++}
++
++static inline
+ u8 ath11k_dp_rx_h_msdu_start_mesh_ctl_present(struct ath11k_base *ab,
+ 					      struct hal_rx_desc *desc)
+ {
+@@ -2313,7 +2320,7 @@ static void ath11k_dp_rx_h_rate(struct a
+ 	u8 bw;
+ 	u8 rate_mcs, nss;
+ 	u8 sgi;
+-	bool is_cck;
++	bool is_cck, is_ldpc;
+ 
+ 	pkt_type = ath11k_dp_rx_h_msdu_start_pkt_type(ar->ab, rx_desc);
+ 	bw = ath11k_dp_rx_h_msdu_start_rx_bw(ar->ab, rx_desc);
+@@ -2355,6 +2362,9 @@ static void ath11k_dp_rx_h_rate(struct a
+ 		if (sgi)
+ 			rx_status->enc_flags |= RX_ENC_FLAG_SHORT_GI;
+ 		rx_status->bw = ath11k_mac_bw_to_mac80211_bw(bw);
++		is_ldpc = ath11k_dp_rx_h_msdu_start_ldpc_support(ar->ab, rx_desc);
++		if (is_ldpc)
++			rx_status->enc_flags |= RX_ENC_FLAG_LDPC;
+ 		break;
+ 	case RX_MSDU_START_PKT_TYPE_11AX:
+ 		rx_status->rate_idx = rate_mcs;
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -273,6 +273,12 @@ static u8 ath11k_hw_ipq8074_rx_desc_get_
+ 			 __le32_to_cpu(desc->u.ipq8074.msdu_start.info2));
+ }
+ 
++static bool ath11k_hw_ipq8074_rx_desc_get_ldpc_support(struct hal_rx_desc *desc)
++{
++	return FIELD_GET(RX_MSDU_START_INFO2_LDPC,
++			 __le32_to_cpu(desc->u.ipq8074.msdu_start.info2));
++}
++
+ static bool ath11k_hw_ipq8074_rx_desc_get_mpdu_seq_ctl_vld(struct hal_rx_desc *desc)
+ {
+ 	return !!FIELD_GET(RX_MPDU_START_INFO1_MPDU_SEQ_CTRL_VALID,
+@@ -444,6 +450,12 @@ static u8 ath11k_hw_qcn9074_rx_desc_get_
+ 			 __le32_to_cpu(desc->u.qcn9074.msdu_start.info2));
+ }
+ 
++static bool ath11k_hw_qcn9074_rx_desc_get_ldpc_support(struct hal_rx_desc *desc)
++{
++	return FIELD_GET(RX_MSDU_START_INFO2_LDPC,
++			 __le32_to_cpu(desc->u.qcn9074.msdu_start.info2));
++}
++
+ static bool ath11k_hw_qcn9074_rx_desc_get_mpdu_seq_ctl_vld(struct hal_rx_desc *desc)
+ {
+ 	return !!FIELD_GET(RX_MPDU_START_INFO11_MPDU_SEQ_CTRL_VALID,
+@@ -815,6 +827,7 @@ const struct ath11k_hw_ops ipq8074_ops =
+ 	.rx_desc_get_encrypt_type = ath11k_hw_ipq8074_rx_desc_get_encrypt_type,
+ 	.rx_desc_get_decap_type = ath11k_hw_ipq8074_rx_desc_get_decap_type,
+ 	.rx_desc_get_mesh_ctl = ath11k_hw_ipq8074_rx_desc_get_mesh_ctl,
++	.rx_desc_get_ldpc_support = ath11k_hw_ipq8074_rx_desc_get_ldpc_support,
+ 	.rx_desc_get_mpdu_seq_ctl_vld = ath11k_hw_ipq8074_rx_desc_get_mpdu_seq_ctl_vld,
+ 	.rx_desc_get_mpdu_fc_valid = ath11k_hw_ipq8074_rx_desc_get_mpdu_fc_valid,
+ 	.rx_desc_get_mpdu_start_seq_no = ath11k_hw_ipq8074_rx_desc_get_mpdu_start_seq_no,
+@@ -853,6 +866,7 @@ const struct ath11k_hw_ops ipq6018_ops =
+ 	.rx_desc_get_encrypt_type = ath11k_hw_ipq8074_rx_desc_get_encrypt_type,
+ 	.rx_desc_get_decap_type = ath11k_hw_ipq8074_rx_desc_get_decap_type,
+ 	.rx_desc_get_mesh_ctl = ath11k_hw_ipq8074_rx_desc_get_mesh_ctl,
++	.rx_desc_get_ldpc_support = ath11k_hw_ipq8074_rx_desc_get_ldpc_support,
+ 	.rx_desc_get_mpdu_seq_ctl_vld = ath11k_hw_ipq8074_rx_desc_get_mpdu_seq_ctl_vld,
+ 	.rx_desc_get_mpdu_fc_valid = ath11k_hw_ipq8074_rx_desc_get_mpdu_fc_valid,
+ 	.rx_desc_get_mpdu_start_seq_no = ath11k_hw_ipq8074_rx_desc_get_mpdu_start_seq_no,
+@@ -891,6 +905,7 @@ const struct ath11k_hw_ops qca6390_ops =
+ 	.rx_desc_get_encrypt_type = ath11k_hw_ipq8074_rx_desc_get_encrypt_type,
+ 	.rx_desc_get_decap_type = ath11k_hw_ipq8074_rx_desc_get_decap_type,
+ 	.rx_desc_get_mesh_ctl = ath11k_hw_ipq8074_rx_desc_get_mesh_ctl,
++	.rx_desc_get_ldpc_support = ath11k_hw_ipq8074_rx_desc_get_ldpc_support,
+ 	.rx_desc_get_mpdu_seq_ctl_vld = ath11k_hw_ipq8074_rx_desc_get_mpdu_seq_ctl_vld,
+ 	.rx_desc_get_mpdu_fc_valid = ath11k_hw_ipq8074_rx_desc_get_mpdu_fc_valid,
+ 	.rx_desc_get_mpdu_start_seq_no = ath11k_hw_ipq8074_rx_desc_get_mpdu_start_seq_no,
+@@ -929,6 +944,7 @@ const struct ath11k_hw_ops qcn9074_ops =
+ 	.rx_desc_get_encrypt_type = ath11k_hw_qcn9074_rx_desc_get_encrypt_type,
+ 	.rx_desc_get_decap_type = ath11k_hw_qcn9074_rx_desc_get_decap_type,
+ 	.rx_desc_get_mesh_ctl = ath11k_hw_qcn9074_rx_desc_get_mesh_ctl,
++	.rx_desc_get_ldpc_support = ath11k_hw_qcn9074_rx_desc_get_ldpc_support,
+ 	.rx_desc_get_mpdu_seq_ctl_vld = ath11k_hw_qcn9074_rx_desc_get_mpdu_seq_ctl_vld,
+ 	.rx_desc_get_mpdu_fc_valid = ath11k_hw_qcn9074_rx_desc_get_mpdu_fc_valid,
+ 	.rx_desc_get_mpdu_start_seq_no = ath11k_hw_qcn9074_rx_desc_get_mpdu_start_seq_no,
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -210,6 +210,7 @@ struct ath11k_hw_ops {
+ 	u32 (*rx_desc_get_encrypt_type)(struct hal_rx_desc *desc);
+ 	u8 (*rx_desc_get_decap_type)(struct hal_rx_desc *desc);
+ 	u8 (*rx_desc_get_mesh_ctl)(struct hal_rx_desc *desc);
++	bool (*rx_desc_get_ldpc_support)(struct hal_rx_desc *desc);
+ 	bool (*rx_desc_get_mpdu_seq_ctl_vld)(struct hal_rx_desc *desc);
+ 	bool (*rx_desc_get_mpdu_fc_valid)(struct hal_rx_desc *desc);
+ 	u16 (*rx_desc_get_mpdu_start_seq_no)(struct hal_rx_desc *desc);
