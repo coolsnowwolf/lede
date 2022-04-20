@@ -38,12 +38,17 @@ PKG_ABI_VERSION=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(ca
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/libwolfssl
+define Package/libwolfssl/Default
   SECTION:=libs
   SUBMENU:=SSL
   CATEGORY:=Libraries
-  TITLE:=wolfSSL library
   URL:=http://www.wolfssl.com/
+endef
+
+define Package/libwolfssl
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL library
+  PKGFLAGS:=nonshared
   MENU:=1
   PROVIDES:=libcyassl
   DEPENDS:=+WOLFSSL_HAS_DEVCRYPTO:kmod-cryptodev +WOLFSSL_HAS_AFALG:kmod-crypto-user
@@ -57,6 +62,16 @@ endef
 
 define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
+endef
+
+define Package/libwolfssl-benchmark
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL Benchmark Utility
+  DEPENDS:=libwolfssl
+endef
+
+define Package/libwolfssl-benchmark/description
+This is the wolfssl benchmark utility.
 endef
 
 TARGET_CFLAGS += \
@@ -77,7 +92,7 @@ CONFIGURE_ARGS += \
 	--enable-sni \
 	--enable-stunnel \
 	--enable-altcertchains \
-	--disable-crypttests \
+	--$(if $(CONFIG_PACKAGE_libwolfssl-benchmark),enable,disable)-crypttests \
 	--disable-examples \
 	--disable-jobserver \
 	--$(if $(CONFIG_IPV6),enable,disable)-ipv6 \
@@ -108,6 +123,16 @@ CONFIGURE_ARGS += \
 	--enable-wpas --enable-fortress --enable-fastmath
 endif
 
+WOLFSSL_AARCH64_NO_CRYPTO = \
+	$(CONFIG_TARGET_bcm27xx)
+
+ifneq ($(CONFIG_aarch64),$(strip $(WOLFSSL_AARCH64_NO_CRYPTO)))
+	CONFIGURE_ARGS += --enable-armasm
+	TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
+else ifeq ($(CONFIG_TARGET_x86_64),y)
+	CONFIGURE_ARGS += --enable-intelasm
+endif
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include $(1)/usr/lib/pkgconfig
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/
@@ -125,4 +150,10 @@ define Package/libwolfssl/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so.* $(1)/usr/lib/
 endef
 
+define Package/libwolfssl-benchmark/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(CP) $(PKG_BUILD_DIR)/wolfcrypt/benchmark/.libs/benchmark $(1)/usr/bin/wolfssl-benchmark
+endef
+
 $(eval $(call BuildPackage,libwolfssl))
+$(eval $(call BuildPackage,libwolfssl-benchmark))
