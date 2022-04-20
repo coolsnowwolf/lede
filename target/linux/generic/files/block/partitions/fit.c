@@ -145,7 +145,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 	np = of_find_node_by_path("/chosen");
 	if (np)
-		bootconf = of_get_property(np, "bootconf", NULL);
+		bootconf = of_get_property(np, "u-boot,bootconf", NULL);
 	else
 		bootconf = NULL;
 
