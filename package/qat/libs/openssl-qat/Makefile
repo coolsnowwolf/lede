@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openssl-qat
-PKG_VERSION:=0.6.4
+PKG_VERSION:=0.6.12
 PKG_RELEASE:=1
 
 PKG_SOURCE:=v${PKG_VERSION}.tar.gz
