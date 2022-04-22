@@ -9,11 +9,11 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=quickassist-c3xxx
 
 PKG_VERSION:=1.7
-PKG_MINOR_VERSION:=L.4.13.0-00009
+PKG_MINOR_VERSION:=L.4.17.0-00002
 PKG_RELEASE:=1
 
-PKG_SOURCE:=QAT$(PKG_VERSION).$(PKG_MINOR_VERSION).tar.gz
-PKG_SOURCE_URL:=https://downloadmirror.intel.com/30178/eng/
+PKG_SOURCE:=QAT.$(PKG_MINOR_VERSION).tar.gz
+PKG_SOURCE_URL:=https://downloadmirror.intel.com/727448/
 PKG_HASH:=skip
 
 PKG_LICENSE:=GPL v3
