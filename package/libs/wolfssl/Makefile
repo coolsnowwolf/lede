@@ -129,6 +129,7 @@ WOLFSSL_AARCH64_NO_CRYPTO = \
 ifneq ($(CONFIG_aarch64),$(strip $(WOLFSSL_AARCH64_NO_CRYPTO)))
 	CONFIGURE_ARGS += --enable-armasm
 	TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
+	STAMP_CONFIGURED:=$(STAMP_CONFIGURED)_armasm
 else ifeq ($(CONFIG_TARGET_x86_64),y)
 	CONFIGURE_ARGS += --enable-intelasm
 endif
