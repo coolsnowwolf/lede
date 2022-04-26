@@ -395,7 +395,7 @@ define KernelPackage/switch-rtl8366rb
   DEPENDS:=+kmod-switch-rtl8366-smi
   KCONFIG:=CONFIG_RTL8366RB_PHY
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366rb.ko
-  AUTOLOAD:=$(call AutoLoad,43,rtl8366rb)
+  AUTOLOAD:=$(call AutoLoad,43,rtl8366rb,1)
 endef
 
 define KernelPackage/switch-rtl8366rb/description
