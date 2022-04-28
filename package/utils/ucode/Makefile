@@ -201,8 +201,8 @@ define Package/ucode-mod-uci/install
 endef
 
 
-$(eval $(call BuildPackage,ucode))
 $(eval $(call BuildPackage,libucode))
+$(eval $(call BuildPackage,ucode))
 $(eval $(call BuildPackage,ucode-mod-fs))
 $(eval $(call BuildPackage,ucode-mod-math))
 $(eval $(call BuildPackage,ucode-mod-nl80211))
