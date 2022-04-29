@@ -2091,10 +2091,9 @@ static int __init rtl838x_eth_probe(struct platform_device *pdev)
 	 * 1) from device tree data
 	 * 2) from internal registers set by bootloader
 	 */
-	mac = of_get_mac_address(pdev->dev.of_node);
-	if (!IS_ERR(mac)) {
-		memcpy(dev->dev_addr, mac, ETH_ALEN);
-		rtl838x_set_mac_hw(dev, (u8 *)mac);
+	of_get_mac_address(pdev->dev.of_node, dev->dev_addr);
+	if (is_valid_ether_addr(dev->dev_addr)) {
+		rtl838x_set_mac_hw(dev, (u8 *)dev->dev_addr);
 	} else {
 		dev->dev_addr[0] = (sw_r32(priv->r->mac) >> 8) & 0xff;
 		dev->dev_addr[1] = sw_r32(priv->r->mac) & 0xff;
