@@ -49,6 +49,17 @@ define Package/kexec/description
  The kexec utility allows to load and boot another kernel.
 endef
 
+define Package/kdump
+  $(call Package/kexec-tools/Default)
+  TITLE:=Kernel crash analysis
+  DEPENDS:=+kexec @(i386||x86_64||arm) @KERNEL_CRASH_DUMP
+endef
+
+define Package/kdump/description
+ The kdump package allows to automatically boot into a
+ special kernel for analyzing kernel crashes using kdump.
+endef
+
 define Package/kexec/config
 	source "$(SOURCE)/Config.in"
 endef
@@ -95,5 +106,28 @@ define Package/kexec/install
 	$(LN) ../usr/sbin/kexec $(1)/sbin/kexec
 endef
 
+define Package/kdump/install
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/vmcore-dmesg $(1)/usr/sbin
+	$(INSTALL_BIN) ./files/kdump.init $(1)/etc/init.d/kdump
+	$(INSTALL_BIN) ./files/kdump.defaults $(1)/etc/uci-defaults/kdump
+	$(INSTALL_CONF) ./files/kdump.config $(1)/etc/config/kdump
+endef
+
+define Package/kdump/prerm
+#!/bin/sh
+
+case $$(uname -m) in
+	i?86|x86_64)
+		if grep -q " crashkernel=" /boot/grub/grub.cfg; then
+			mount /boot -o remount,rw
+			sed -i 's/ crashkernel=[^ ]*//' /boot/grub/grub.cfg
+			mount /boot -o remount,ro
+		fi
+		;;
+esac
+endef
+
 $(eval $(call BuildPackage,kexec-tools))
 $(eval $(call BuildPackage,kexec))
+$(eval $(call BuildPackage,kdump))
