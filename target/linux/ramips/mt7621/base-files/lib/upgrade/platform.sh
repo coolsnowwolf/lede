@@ -84,7 +84,8 @@ platform_do_upgrade() {
 	xiaomi,mi-router-4|\
 	xiaomi,mi-router-ac2100|\
 	xiaomi,mi-router-cr660x|\
-	xiaomi,redmi-router-ac2100)
+	xiaomi,redmi-router-ac2100|\
+	zte,e8820s)
 		nand_do_upgrade "$1"
 		;;
 	iodata,wn-ax1167gr2|\
