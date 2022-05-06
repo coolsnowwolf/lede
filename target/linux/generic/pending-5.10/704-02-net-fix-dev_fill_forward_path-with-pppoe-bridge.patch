@@ -1,0 +1,66 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 6 May 2022 13:54:44 +0200
+Subject: [PATCH] net: fix dev_fill_forward_path with pppoe + bridge
+
+When calling dev_fill_forward_path on a pppoe device, the provided destination
+address is invalid. In order for the bridge fdb lookup to succeed, the pppoe
+code needs to update ctx->daddr to the correct value.
+Fix this by storing the address inside struct net_device_path_ctx
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -91,7 +91,6 @@ mtk_flow_get_wdma_info(struct net_device
+ {
+ 	struct net_device_path_ctx ctx = {
+ 		.dev = dev,
+-		.daddr = addr,
+ 	};
+ 	struct net_device_path path = {};
+ 
+@@ -101,6 +100,7 @@ mtk_flow_get_wdma_info(struct net_device
+ 	if (!dev->netdev_ops->ndo_fill_forward_path)
+ 		return -1;
+ 
++	memcpy(ctx.daddr, addr, sizeof(ctx.daddr));
+ 	if (dev->netdev_ops->ndo_fill_forward_path(&ctx, &path))
+ 		return -1;
+ 
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -988,6 +988,7 @@ static int pppoe_fill_forward_path(struc
+ 	path->encap.proto = htons(ETH_P_PPP_SES);
+ 	path->encap.id = be16_to_cpu(po->num);
+ 	memcpy(path->encap.h_dest, po->pppoe_pa.remote, ETH_ALEN);
++	memcpy(ctx->daddr, po->pppoe_pa.remote, ETH_ALEN);
+ 	path->dev = ctx->dev;
+ 	ctx->dev = dev;
+ 
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -878,7 +878,7 @@ struct net_device_path_stack {
+ 
+ struct net_device_path_ctx {
+ 	const struct net_device *dev;
+-	const u8		*daddr;
++	u8			daddr[ETH_ALEN];
+ 
+ 	int			num_vlans;
+ 	struct {
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -863,11 +863,11 @@ int dev_fill_forward_path(const struct n
+ 	const struct net_device *last_dev;
+ 	struct net_device_path_ctx ctx = {
+ 		.dev	= dev,
+-		.daddr	= daddr,
+ 	};
+ 	struct net_device_path *path;
+ 	int ret = 0;
+ 
++	memcpy(ctx.daddr, daddr, sizeof(ctx.daddr));
+ 	stack->num_paths = 0;
+ 	while (ctx.dev && ctx.dev->netdev_ops->ndo_fill_forward_path) {
+ 		last_dev = ctx.dev;
