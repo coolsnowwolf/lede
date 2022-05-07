@@ -47,10 +47,10 @@ DEFAULT_PACKAGES.router:=\
 	ppp \
 	ppp-mod-pppoe \
 	luci-newapi block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw \
-	kmod-tun kmod-inet-diag iptables-mod-tproxy iptables-mod-extra \
-	default-settings luci luci-app-ddns luci-app-upnp luci-app-autoreboot \
+	kmod-tun kmod-inet-diag iptables-mod-tproxy iptables-mod-extra ipset ip-full libcap libcap-bin \
+	default-settings luci luci-app-ddns luci-app-upnp luci-app-autoreboot ruby ruby-yaml \
 	luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus luci-app-unblockmusic luci-app-arpbind \
-	luci-app-vlmcsd luci-app-wol luci-app-ramfree \
+	luci-app-vlmcsd luci-app-wol luci-app-ramfree coreutils coreutils-nohup bash curl ca-certificates \
 	luci-app-turboacc luci-app-nlbwmon luci-app-accesscontrol ddns-scripts_aliyun ddns-scripts_dnspod
 
 ifneq ($(DUMP),)
@@ -234,6 +234,7 @@ ifeq ($(DUMP),1)
     CPU_TYPE ?= generic
     CPU_CFLAGS_generic = -mcpu=generic
     CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53
+    CPU_CFLAGS_cortex-a55 = -mcpu=cortex-a55
   endif
   ifeq ($(ARCH),arc)
     CPU_TYPE ?= arc700
