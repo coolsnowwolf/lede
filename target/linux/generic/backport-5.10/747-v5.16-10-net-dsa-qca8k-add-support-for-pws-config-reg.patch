@@ -1,0 +1,92 @@
+From 362bb238d8bf1470424214a8a5968d9c6cce68fa Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Thu, 14 Oct 2021 00:39:15 +0200
+Subject: net: dsa: qca8k: add support for pws config reg
+
+Some qca8327 switch require to force the ignore of power on sel
+strapping. Some switch require to set the led open drain mode in regs
+instead of using strapping. While most of the device implements this
+using the correct way using pin strapping, there are still some broken
+device that require to be set using sw regs.
+Introduce a new binding and support these special configuration.
+As led open drain require to ignore pin strapping to work, the probe
+fails with EINVAL error with incorrect configuration.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca8k.c | 39 +++++++++++++++++++++++++++++++++++++++
+ drivers/net/dsa/qca8k.h |  6 ++++++
+ 2 files changed, 45 insertions(+)
+
+--- a/drivers/net/dsa/qca8k.c
++++ b/drivers/net/dsa/qca8k.c
+@@ -932,6 +932,41 @@ static int qca8k_find_cpu_port(struct ds
+ }
+ 
+ static int
++qca8k_setup_of_pws_reg(struct qca8k_priv *priv)
++{
++	struct device_node *node = priv->dev->of_node;
++	u32 val = 0;
++	int ret;
++
++	/* QCA8327 require to set to the correct mode.
++	 * His bigger brother QCA8328 have the 172 pin layout.
++	 * Should be applied by default but we set this just to make sure.
++	 */
++	if (priv->switch_id == QCA8K_ID_QCA8327) {
++		ret = qca8k_rmw(priv, QCA8K_REG_PWS, QCA8327_PWS_PACKAGE148_EN,
++				QCA8327_PWS_PACKAGE148_EN);
++		if (ret)
++			return ret;
++	}
++
++	if (of_property_read_bool(node, "qca,ignore-power-on-sel"))
++		val |= QCA8K_PWS_POWER_ON_SEL;
++
++	if (of_property_read_bool(node, "qca,led-open-drain")) {
++		if (!(val & QCA8K_PWS_POWER_ON_SEL)) {
++			dev_err(priv->dev, "qca,led-open-drain require qca,ignore-power-on-sel to be set.");
++			return -EINVAL;
++		}
++
++		val |= QCA8K_PWS_LED_OPEN_EN_CSR;
++	}
++
++	return qca8k_rmw(priv, QCA8K_REG_PWS,
++			QCA8K_PWS_LED_OPEN_EN_CSR | QCA8K_PWS_POWER_ON_SEL,
++			val);
++}
++
++static int
+ qca8k_parse_port_config(struct qca8k_priv *priv)
+ {
+ 	int port, cpu_port_index = 0, ret;
+@@ -1053,6 +1088,10 @@ qca8k_setup(struct dsa_switch *ds)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = qca8k_setup_of_pws_reg(priv);
++	if (ret)
++		return ret;
++
+ 	ret = qca8k_setup_mac_pwr_sel(priv);
+ 	if (ret)
+ 		return ret;
+--- a/drivers/net/dsa/qca8k.h
++++ b/drivers/net/dsa/qca8k.h
+@@ -46,6 +46,12 @@
+ #define   QCA8K_MAX_DELAY				3
+ #define   QCA8K_PORT_PAD_SGMII_EN			BIT(7)
+ #define QCA8K_REG_PWS					0x010
++#define   QCA8K_PWS_POWER_ON_SEL			BIT(31)
++/* This reg is only valid for QCA832x and toggle the package
++ * type from 176 pin (by default) to 148 pin used on QCA8327
++ */
++#define   QCA8327_PWS_PACKAGE148_EN			BIT(30)
++#define   QCA8K_PWS_LED_OPEN_EN_CSR			BIT(24)
+ #define   QCA8K_PWS_SERDES_AEN_DIS			BIT(7)
+ #define QCA8K_REG_MODULE_EN				0x030
+ #define   QCA8K_MODULE_EN_MIB				BIT(0)

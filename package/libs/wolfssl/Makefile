@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=4.8.1-stable
+PKG_VERSION:=5.2.0-stable
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=50db45f348f47e00c93dd244c24108220120cb3cc9d01434789229c32937c444
+PKG_HASH:=409b4646c5f54f642de0e9f3544c3b83de7238134f5b1ff93fb44527bf119d05
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
@@ -32,18 +32,23 @@ PKG_CONFIG_DEPENDS:=\
 	CONFIG_WOLFSSL_HAS_ECC25519 CONFIG_WOLFSSL_HAS_OCSP \
 	CONFIG_WOLFSSL_HAS_SESSION_TICKET CONFIG_WOLFSSL_HAS_TLSV10 \
 	CONFIG_WOLFSSL_HAS_TLSV13 CONFIG_WOLFSSL_HAS_WPAS CONFIG_WOLFSSL_HAS_CERTGEN \
-	CONFIG_WOLFSSL_HAS_OPENVPN
+	CONFIG_WOLFSSL_HAS_OPENVPN CONFIG_WOLFSSL_ALT_NAMES
 
 PKG_ABI_VERSION=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(call confvar,$(PKG_CONFIG_DEPENDS)))
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/libwolfssl
+define Package/libwolfssl/Default
   SECTION:=libs
   SUBMENU:=SSL
   CATEGORY:=Libraries
-  TITLE:=wolfSSL library
   URL:=http://www.wolfssl.com/
+endef
+
+define Package/libwolfssl
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL library
+  PKGFLAGS:=nonshared
   MENU:=1
   PROVIDES:=libcyassl
   DEPENDS:=+WOLFSSL_HAS_DEVCRYPTO:kmod-cryptodev +WOLFSSL_HAS_AFALG:kmod-crypto-user
@@ -59,12 +64,22 @@ define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
 endef
 
+define Package/libwolfssl-benchmark
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL Benchmark Utility
+  DEPENDS:=libwolfssl
+endef
+
+define Package/libwolfssl-benchmark/description
+This is the wolfssl benchmark utility.
+endef
+
 TARGET_CFLAGS += \
 	$(FPIC) \
 	-fomit-frame-pointer \
 	-flto \
 	-DFP_MAX_BITS=8192 \
-	-DWOLFSSL_ALT_CERT_CHAINS
+	$(if $(CONFIG_WOLFSSL_ALT_NAMES),-DWOLFSSL_ALT_NAMES)
 
 TARGET_LDFLAGS += -flto
 
@@ -76,7 +91,8 @@ CONFIGURE_ARGS += \
 	--enable-opensslextra \
 	--enable-sni \
 	--enable-stunnel \
-	--disable-crypttests \
+	--enable-altcertchains \
+	--$(if $(CONFIG_PACKAGE_libwolfssl-benchmark),enable,disable)-crypttests \
 	--disable-examples \
 	--disable-jobserver \
 	--$(if $(CONFIG_IPV6),enable,disable)-ipv6 \
@@ -107,6 +123,17 @@ CONFIGURE_ARGS += \
 	--enable-wpas --enable-fortress --enable-fastmath
 endif
 
+WOLFSSL_AARCH64_NO_CRYPTO = \
+	$(CONFIG_TARGET_bcm27xx)
+
+ifneq ($(CONFIG_aarch64),$(strip $(WOLFSSL_AARCH64_NO_CRYPTO)))
+	CONFIGURE_ARGS += --enable-armasm
+	TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
+	STAMP_CONFIGURED:=$(STAMP_CONFIGURED)_armasm
+else ifeq ($(CONFIG_TARGET_x86_64),y)
+	CONFIGURE_ARGS += --enable-intelasm
+endif
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include $(1)/usr/lib/pkgconfig
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/
@@ -124,4 +151,10 @@ define Package/libwolfssl/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so.* $(1)/usr/lib/
 endef
 
+define Package/libwolfssl-benchmark/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(CP) $(PKG_BUILD_DIR)/wolfcrypt/benchmark/.libs/benchmark $(1)/usr/bin/wolfssl-benchmark
+endef
+
 $(eval $(call BuildPackage,libwolfssl))
+$(eval $(call BuildPackage,libwolfssl-benchmark))
