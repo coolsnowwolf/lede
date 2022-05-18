@@ -29,4 +29,7 @@ HOST_CONFIGURE_ARGS += \
 	--without-lzma \
 	--without-zstd
 
+HOST_MAKE_FLAGS += \
+	SUBDIRS="lib libelf libcpu backends libebl libdwelf libdwfl libdw"
+
 $(eval $(call HostBuild))
