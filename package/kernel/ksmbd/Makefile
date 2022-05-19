@@ -5,7 +5,7 @@ PKG_VERSION:=3.5.4
 PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/cifsd-team/cifsd/tar.gz/$(PKG_VERSION)?
+PKG_SOURCE_URL:=https://codeload.github.com/cifsd-team/ksmbd/tar.gz/$(PKG_VERSION)?
 PKG_HASH:=ad49d8e893240b831adffecc41c69e2b0baaa92105849b40dc32030512b96521
 
 PKG_LICENSE:=GPL-2.0-or-later
@@ -14,12 +14,12 @@ PKG_LICENSE_FILES:=COPYING
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
-define KernelPackage/fs-ksmbd
+define KernelPackage/fs-cifsd
 	SUBMENU:=Filesystems
 	TITLE:=SMB kernel server support
-	URL:=https://github.com/cifsd-team/cifsd
+	URL:=https://github.com/cifsd-team/ksmbd
 	FILES:=$(PKG_BUILD_DIR)/ksmbd.ko
-	DEPENDS:= \
+	DEPENDS:=@(LINUX_5_4||LINUX_5_10) \
 		+kmod-nls-base \
 		+kmod-nls-utf8 \
 		+kmod-crypto-md4 \
@@ -40,15 +40,15 @@ endef
 # The last two DEPENDS are hacks in order to get CONFIG_ASN1 and CONFIG_OID_REGISTRY
 # which it seems can't be selected independently. Some bug in either base or upstream.
 
-define KernelPackage/fs-ksmbd/description
+define KernelPackage/fs-cifsd/description
   Ksmbd is an In-kernel SMBv(1)2/3 fileserver.
   It's an implementation of the SMB protocol in kernel space for sharing files and IPC services over network.
 endef
 
-define KernelPackage/fs-ksmbd/config
+define KernelPackage/fs-cifsd/config
 config KSMBD_SMB_INSECURE_SERVER
 	bool "Support for insecure SMB1/CIFS and SMB2.0 protocols"
-	depends on PACKAGE_kmod-fs-ksmbd
+	depends on PACKAGE_kmod-fs-cifsd
 	help
 		This enables deprecated insecure protocols dialects: SMB1/CIFS and SMB2.0.
 	default y
@@ -67,4 +67,4 @@ define Build/Compile
 	modules
 endef
 
-$(eval $(call KernelPackage,fs-ksmbd))
+$(eval $(call KernelPackage,fs-cifsd))
