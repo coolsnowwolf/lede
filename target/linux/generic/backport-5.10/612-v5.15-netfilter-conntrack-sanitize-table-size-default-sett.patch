@@ -1,0 +1,100 @@
+From d532bcd0b2699d84d71a0c71d37157ac6eb3be25 Mon Sep 17 00:00:00 2001
+Message-Id: <d532bcd0b2699d84d71a0c71d37157ac6eb3be25.1645246598.git.plr.vincent@gmail.com>
+From: Florian Westphal <fw@strlen.de>
+Date: Thu, 26 Aug 2021 15:54:19 +0200
+Subject: [PATCH] netfilter: conntrack: sanitize table size default settings
+
+conntrack has two distinct table size settings:
+nf_conntrack_max and nf_conntrack_buckets.
+
+The former limits how many conntrack objects are allowed to exist
+in each namespace.
+
+The second sets the size of the hashtable.
+
+As all entries are inserted twice (once for original direction, once for
+reply), there should be at least twice as many buckets in the table than
+the maximum number of conntrack objects that can exist at the same time.
+
+Change the default multiplier to 1 and increase the chosen bucket sizes.
+This results in the same nf_conntrack_max settings as before but reduces
+the average bucket list length.
+
+Signed-off-by: Florian Westphal <fw@strlen.de>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ .../networking/nf_conntrack-sysctl.rst        | 13 ++++----
+ net/netfilter/nf_conntrack_core.c             | 30 +++++++++----------
+ 2 files changed, 22 insertions(+), 21 deletions(-)
+
+--- a/Documentation/networking/nf_conntrack-sysctl.rst
++++ b/Documentation/networking/nf_conntrack-sysctl.rst
+@@ -17,9 +17,8 @@ nf_conntrack_acct - BOOLEAN
+ nf_conntrack_buckets - INTEGER
+ 	Size of hash table. If not specified as parameter during module
+ 	loading, the default size is calculated by dividing total memory
+-	by 16384 to determine the number of buckets but the hash table will
+-	never have fewer than 32 and limited to 16384 buckets. For systems
+-	with more than 4GB of memory it will be 65536 buckets.
++	by 16384 to determine the number of buckets. The hash table will
++	never have fewer than 1024 and never more than 262144 buckets.
+ 	This sysctl is only writeable in the initial net namespace.
+ 
+ nf_conntrack_checksum - BOOLEAN
+@@ -100,8 +99,12 @@ nf_conntrack_log_invalid - INTEGER
+ 	Log invalid packets of a type specified by value.
+ 
+ nf_conntrack_max - INTEGER
+-	Size of connection tracking table.  Default value is
+-	nf_conntrack_buckets value * 4.
++        Maximum number of allowed connection tracking entries. This value is set
++        to nf_conntrack_buckets by default.
++        Note that connection tracking entries are added to the table twice -- once
++        for the original direction and once for the reply direction (i.e., with
++        the reversed address). This means that with default settings a maxed-out
++        table will have a average hash chain length of 2, not 1.
+ 
+ nf_conntrack_tcp_be_liberal - BOOLEAN
+ 	- 0 - disabled (default)
+--- a/net/netfilter/nf_conntrack_core.c
++++ b/net/netfilter/nf_conntrack_core.c
+@@ -2575,26 +2575,24 @@ int nf_conntrack_init_start(void)
+ 		spin_lock_init(&nf_conntrack_locks[i]);
+ 
+ 	if (!nf_conntrack_htable_size) {
+-		/* Idea from tcp.c: use 1/16384 of memory.
+-		 * On i386: 32MB machine has 512 buckets.
+-		 * >= 1GB machines have 16384 buckets.
+-		 * >= 4GB machines have 65536 buckets.
+-		 */
+ 		nf_conntrack_htable_size
+ 			= (((nr_pages << PAGE_SHIFT) / 16384)
+ 			   / sizeof(struct hlist_head));
+-		if (nr_pages > (4 * (1024 * 1024 * 1024 / PAGE_SIZE)))
+-			nf_conntrack_htable_size = 65536;
++		if (BITS_PER_LONG >= 64 &&
++		    nr_pages > (4 * (1024 * 1024 * 1024 / PAGE_SIZE)))
++			nf_conntrack_htable_size = 262144;
+ 		else if (nr_pages > (1024 * 1024 * 1024 / PAGE_SIZE))
+-			nf_conntrack_htable_size = 16384;
+-		if (nf_conntrack_htable_size < 32)
+-			nf_conntrack_htable_size = 32;
++			nf_conntrack_htable_size = 65536;
+ 
+-		/* Use a max. factor of four by default to get the same max as
+-		 * with the old struct list_heads. When a table size is given
+-		 * we use the old value of 8 to avoid reducing the max.
+-		 * entries. */
+-		max_factor = 4;
++		if (nf_conntrack_htable_size < 1024)
++			nf_conntrack_htable_size = 1024;
++		/* Use a max. factor of one by default to keep the average
++		 * hash chain length at 2 entries.  Each entry has to be added
++		 * twice (once for original direction, once for reply).
++		 * When a table size is given we use the old value of 8 to
++		 * avoid implicit reduction of the max entries setting.
++		 */
++		max_factor = 1;
+ 	}
+ 
+ 	nf_conntrack_hash = nf_ct_alloc_hashtable(&nf_conntrack_htable_size, 1);
