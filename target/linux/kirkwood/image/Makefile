@@ -20,6 +20,7 @@ define Device/Default
   KERNEL_NAME := zImage
   KERNEL_SUFFIX  := -uImage
   KERNEL_IN_UBI := 1
+  KERNEL_INSTALL := 1
 
   PAGESIZE := 2048
   SUBPAGESIZE := 512
