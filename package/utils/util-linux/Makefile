@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=util-linux
-PKG_VERSION:=2.37.3
+PKG_VERSION:=2.38
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.37
-PKG_HASH:=590c592e58cd6bf38519cb467af05ce6a1ab18040e3e3418f24bcfb2f55f9776
+PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.38
+PKG_HASH:=6d111cbe4d55b336db2f1fbeffbc65b89908704c01136371d32aa9bec373eb64
 PKG_CPE_ID:=cpe:/a:kernel:util-linux
 
 PKG_LICENSE:=GPL-2.0-only
@@ -337,6 +337,16 @@ endef
 
 define Package/lslocks/description
  lslocks lists information about all the currently held file locks in a Linux system
+endef
+
+define Package/lsns
+$(call Package/util-linux/Default)
+  TITLE:=list system namespaces
+  DEPENDS:= +libblkid +libmount +libsmartcols
+endef
+
+define Package/lsns/description
+ lsns lists information about all namespaces and their processes
 endef
 
 define Package/more
@@ -737,6 +747,11 @@ define Package/lslocks/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lslocks $(1)/usr/bin/
 endef
 
+define Package/lsns/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/lsns $(1)/usr/bin/
+endef
+
 define Package/more/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/more $(1)/usr/bin/
@@ -866,6 +881,7 @@ $(eval $(call BuildPackage,losetup))
 $(eval $(call BuildPackage,lsblk))
 $(eval $(call BuildPackage,lscpu))
 $(eval $(call BuildPackage,lslocks))
+$(eval $(call BuildPackage,lsns))
 $(eval $(call BuildPackage,more))
 $(eval $(call BuildPackage,mcookie))
 $(eval $(call BuildPackage,mount-utils))
