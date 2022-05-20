@@ -1,0 +1,225 @@
+From 675992be6f7b603b8cfda4678f173e1021fc1ab6 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Thu, 7 Oct 2021 19:47:10 +0300
+Subject: [PATCH] net: dsa: mv88e6xxx: keep the pvid at 0 when VLAN-unaware
+
+The VLAN support in mv88e6xxx has a loaded history. Commit 2ea7a679ca2a
+("net: dsa: Don't add vlans when vlan filtering is disabled") noticed
+some issues with VLAN and decided the best way to deal with them was to
+make the DSA core ignore VLANs added by the bridge while VLAN awareness
+is turned off. Those issues were never explained, just presented as
+"at least one corner case".
+
+That approach had problems of its own, presented by
+commit 54a0ed0df496 ("net: dsa: provide an option for drivers to always
+receive bridge VLANs") for the DSA core, followed by
+commit 1fb74191988f ("net: dsa: mv88e6xxx: fix vlan setup") which
+applied ds->configure_vlan_while_not_filtering = true for mv88e6xxx in
+particular.
+
+We still don't know what corner case Andrew saw when he wrote
+commit 2ea7a679ca2a ("net: dsa: Don't add vlans when vlan filtering is
+disabled"), but Tobias now reports that when we use TX forwarding
+offload, pinging an external station from the bridge device is broken if
+the front-facing DSA user port has flooding turned off. The full
+description is in the link below, but for short, when a mv88e6xxx port
+is under a VLAN-unaware bridge, it inherits that bridge's pvid.
+So packets ingressing a user port will be classified to e.g. VID 1
+(assuming that value for the bridge_default_pvid), whereas when
+tag_dsa.c xmits towards a user port, it always sends packets using a VID
+of 0 if that port is standalone or under a VLAN-unaware bridge - or at
+least it did so prior to commit d82f8ab0d874 ("net: dsa: tag_dsa:
+offload the bridge forwarding process").
+
+In any case, when there is a conversation between the CPU and a station
+connected to a user port, the station's MAC address is learned in VID 1
+but the CPU tries to transmit through VID 0. The packets reach the
+intended station, but via flooding and not by virtue of matching the
+existing ATU entry.
+
+DSA has established (and enforced in other drivers: sja1105, felix,
+mt7530) that a VLAN-unaware port should use a private pvid, and not
+inherit the one from the bridge. The bridge's pvid should only be
+inherited when that bridge is VLAN-aware, so all state transitions need
+to be handled. On the other hand, all bridge VLANs should sit in the VTU
+starting with the moment when the bridge offloads them via switchdev,
+they are just not used.
+
+This solves the problem that Tobias sees because packets ingressing on
+VLAN-unaware user ports now get classified to VID 0, which is also the
+VID used by tag_dsa.c on xmit.
+
+Fixes: d82f8ab0d874 ("net: dsa: tag_dsa: offload the bridge forwarding process")
+Link: https://patchwork.kernel.org/project/netdevbpf/patch/20211003222312.284175-2-vladimir.oltean@nxp.com/#24491503
+Reported-by: Tobias Waldekranz <tobias@waldekranz.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mv88e6xxx/chip.c | 56 +++++++++++++++++++++++++++++---
+ drivers/net/dsa/mv88e6xxx/chip.h |  6 ++++
+ drivers/net/dsa/mv88e6xxx/port.c | 21 ++++++++++++
+ drivers/net/dsa/mv88e6xxx/port.h |  2 ++
+ 4 files changed, 81 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/dsa/mv88e6xxx/chip.c
++++ b/drivers/net/dsa/mv88e6xxx/chip.c
+@@ -1586,6 +1586,26 @@ static int mv88e6xxx_port_check_hw_vlan(
+ 	return 0;
+ }
+ 
++static int mv88e6xxx_port_commit_pvid(struct mv88e6xxx_chip *chip, int port)
++{
++	struct dsa_port *dp = dsa_to_port(chip->ds, port);
++	struct mv88e6xxx_port *p = &chip->ports[port];
++	bool drop_untagged = false;
++	u16 pvid = 0;
++	int err;
++
++	if (dp->bridge_dev && br_vlan_enabled(dp->bridge_dev)) {
++		pvid = p->bridge_pvid.vid;
++		drop_untagged = !p->bridge_pvid.valid;
++	}
++
++	err = mv88e6xxx_port_set_pvid(chip, port, pvid);
++	if (err)
++		return err;
++
++	return mv88e6xxx_port_drop_untagged(chip, port, drop_untagged);
++}
++
+ static int mv88e6xxx_port_vlan_filtering(struct dsa_switch *ds, int port,
+ 					 bool vlan_filtering,
+ 					 struct switchdev_trans *trans)
+@@ -1599,7 +1619,16 @@ static int mv88e6xxx_port_vlan_filtering
+ 		return chip->info->max_vid ? 0 : -EOPNOTSUPP;
+ 
+ 	mv88e6xxx_reg_lock(chip);
++
+ 	err = mv88e6xxx_port_set_8021q_mode(chip, port, mode);
++	if (err)
++		goto unlock;
++
++	err = mv88e6xxx_port_commit_pvid(chip, port);
++	if (err)
++		goto unlock;
++
++unlock:
+ 	mv88e6xxx_reg_unlock(chip);
+ 
+ 	return err;
+@@ -1982,8 +2011,10 @@ static void mv88e6xxx_port_vlan_add(stru
+ 	struct mv88e6xxx_chip *chip = ds->priv;
+ 	bool untagged = vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED;
+ 	bool pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
++	struct mv88e6xxx_port *p = &chip->ports[port];
+ 	bool warn;
+ 	u8 member;
++	int err;
+ 	u16 vid;
+ 
+ 	if (!chip->info->max_vid)
+@@ -2008,9 +2039,23 @@ static void mv88e6xxx_port_vlan_add(stru
+ 			dev_err(ds->dev, "p%d: failed to add VLAN %d%c\n", port,
+ 				vid, untagged ? 'u' : 't');
+ 
+-	if (pvid && mv88e6xxx_port_set_pvid(chip, port, vlan->vid_end))
+-		dev_err(ds->dev, "p%d: failed to set PVID %d\n", port,
+-			vlan->vid_end);
++	if (pvid) {
++		p->bridge_pvid.vid = vlan->vid_end;
++		p->bridge_pvid.valid = true;
++
++		err = mv88e6xxx_port_commit_pvid(chip, port);
++		if (err)
++			dev_err(ds->dev, "p%d: failed to set PVID %d", port,
++				vlan->vid_end);
++	} else if (vlan->vid_end && p->bridge_pvid.vid == vlan->vid_end) {
++		/* The old pvid was reinstalled as a non-pvid VLAN */
++		p->bridge_pvid.valid = false;
++
++		err = mv88e6xxx_port_commit_pvid(chip, port);
++		if (err)
++			dev_err(ds->dev, "p%d: failed to unset PVID %d", port,
++				vlan->vid_end);
++	}
+ 
+ 	mv88e6xxx_reg_unlock(chip);
+ }
+@@ -2061,6 +2106,7 @@ static int mv88e6xxx_port_vlan_del(struc
+ 				   const struct switchdev_obj_port_vlan *vlan)
+ {
+ 	struct mv88e6xxx_chip *chip = ds->priv;
++	struct mv88e6xxx_port *p = &chip->ports[port];
+ 	u16 pvid, vid;
+ 	int err = 0;
+ 
+@@ -2079,7 +2125,9 @@ static int mv88e6xxx_port_vlan_del(struc
+ 			goto unlock;
+ 
+ 		if (vid == pvid) {
+-			err = mv88e6xxx_port_set_pvid(chip, port, 0);
++			p->bridge_pvid.valid = false;
++
++			err = mv88e6xxx_port_commit_pvid(chip, port);
+ 			if (err)
+ 				goto unlock;
+ 		}
+--- a/drivers/net/dsa/mv88e6xxx/chip.h
++++ b/drivers/net/dsa/mv88e6xxx/chip.h
+@@ -224,9 +224,15 @@ struct mv88e6xxx_policy {
+ 	u16 vid;
+ };
+ 
++struct mv88e6xxx_vlan {
++	u16	vid;
++	bool	valid;
++};
++
+ struct mv88e6xxx_port {
+ 	struct mv88e6xxx_chip *chip;
+ 	int port;
++	struct mv88e6xxx_vlan bridge_pvid;
+ 	u64 serdes_stats[2];
+ 	u64 atu_member_violation;
+ 	u64 atu_miss_violation;
+--- a/drivers/net/dsa/mv88e6xxx/port.c
++++ b/drivers/net/dsa/mv88e6xxx/port.c
+@@ -1062,6 +1062,27 @@ int mv88e6xxx_port_set_8021q_mode(struct
+ 	return 0;
+ }
+ 
++int mv88e6xxx_port_drop_untagged(struct mv88e6xxx_chip *chip, int port,
++				 bool drop_untagged)
++{
++	u16 old, new;
++	int err;
++
++	err = mv88e6xxx_port_read(chip, port, MV88E6XXX_PORT_CTL2, &old);
++	if (err)
++		return err;
++
++	if (drop_untagged)
++		new = old | MV88E6XXX_PORT_CTL2_DISCARD_UNTAGGED;
++	else
++		new = old & ~MV88E6XXX_PORT_CTL2_DISCARD_UNTAGGED;
++
++	if (new == old)
++		return 0;
++
++	return mv88e6xxx_port_write(chip, port, MV88E6XXX_PORT_CTL2, new);
++}
++
+ int mv88e6xxx_port_set_map_da(struct mv88e6xxx_chip *chip, int port)
+ {
+ 	u16 reg;
+--- a/drivers/net/dsa/mv88e6xxx/port.h
++++ b/drivers/net/dsa/mv88e6xxx/port.h
+@@ -364,6 +364,8 @@ int mv88e6390x_port_set_cmode(struct mv8
+ 			      phy_interface_t mode);
+ int mv88e6185_port_get_cmode(struct mv88e6xxx_chip *chip, int port, u8 *cmode);
+ int mv88e6352_port_get_cmode(struct mv88e6xxx_chip *chip, int port, u8 *cmode);
++int mv88e6xxx_port_drop_untagged(struct mv88e6xxx_chip *chip, int port,
++				 bool drop_untagged);
+ int mv88e6xxx_port_set_map_da(struct mv88e6xxx_chip *chip, int port);
+ int mv88e6095_port_set_upstream_port(struct mv88e6xxx_chip *chip, int port,
+ 				     int upstream_port);

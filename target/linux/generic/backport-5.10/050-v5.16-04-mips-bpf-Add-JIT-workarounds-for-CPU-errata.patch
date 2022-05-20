@@ -1,0 +1,120 @@
+From: Johan Almbladh <johan.almbladh@anyfinetworks.com>
+Date: Tue, 5 Oct 2021 18:54:06 +0200
+Subject: [PATCH] mips: bpf: Add JIT workarounds for CPU errata
+
+This patch adds workarounds for the following CPU errata to the MIPS
+eBPF JIT, if enabled in the kernel configuration.
+
+  - R10000 ll/sc weak ordering
+  - Loongson-3 ll/sc weak ordering
+  - Loongson-2F jump hang
+
+The Loongson-2F nop errata is implemented in uasm, which the JIT uses,
+so no additional mitigations are needed for that.
+
+Signed-off-by: Johan Almbladh <johan.almbladh@anyfinetworks.com>
+Reviewed-by: Jiaxun Yang <jiaxun.yang@flygoat.com>
+---
+
+--- a/arch/mips/net/bpf_jit_comp.c
++++ b/arch/mips/net/bpf_jit_comp.c
+@@ -404,6 +404,7 @@ void emit_alu_r(struct jit_context *ctx,
+ /* Atomic read-modify-write (32-bit) */
+ void emit_atomic_r(struct jit_context *ctx, u8 dst, u8 src, s16 off, u8 code)
+ {
++	LLSC_sync(ctx);
+ 	emit(ctx, ll, MIPS_R_T9, off, dst);
+ 	switch (code) {
+ 	case BPF_ADD:
+@@ -420,18 +421,19 @@ void emit_atomic_r(struct jit_context *c
+ 		break;
+ 	}
+ 	emit(ctx, sc, MIPS_R_T8, off, dst);
+-	emit(ctx, beqz, MIPS_R_T8, -16);
++	emit(ctx, LLSC_beqz, MIPS_R_T8, -16 - LLSC_offset);
+ 	emit(ctx, nop); /* Delay slot */
+ }
+ 
+ /* Atomic compare-and-exchange (32-bit) */
+ void emit_cmpxchg_r(struct jit_context *ctx, u8 dst, u8 src, u8 res, s16 off)
+ {
++	LLSC_sync(ctx);
+ 	emit(ctx, ll, MIPS_R_T9, off, dst);
+ 	emit(ctx, bne, MIPS_R_T9, res, 12);
+ 	emit(ctx, move, MIPS_R_T8, src);     /* Delay slot */
+ 	emit(ctx, sc, MIPS_R_T8, off, dst);
+-	emit(ctx, beqz, MIPS_R_T8, -20);
++	emit(ctx, LLSC_beqz, MIPS_R_T8, -20 - LLSC_offset);
+ 	emit(ctx, move, res, MIPS_R_T9);     /* Delay slot */
+ 	clobber_reg(ctx, res);
+ }
+--- a/arch/mips/net/bpf_jit_comp.h
++++ b/arch/mips/net/bpf_jit_comp.h
+@@ -87,7 +87,7 @@ struct jit_context {
+ };
+ 
+ /* Emit the instruction if the JIT memory space has been allocated */
+-#define emit(ctx, func, ...)					\
++#define __emit(ctx, func, ...)					\
+ do {								\
+ 	if ((ctx)->target != NULL) {				\
+ 		u32 *p = &(ctx)->target[ctx->jit_index];	\
+@@ -95,6 +95,30 @@ do {								\
+ 	}							\
+ 	(ctx)->jit_index++;					\
+ } while (0)
++#define emit(...) __emit(__VA_ARGS__)
++
++/* Workaround for R10000 ll/sc errata */
++#ifdef CONFIG_WAR_R10000
++#define LLSC_beqz	beqzl
++#else
++#define LLSC_beqz	beqz
++#endif
++
++/* Workaround for Loongson-3 ll/sc errata */
++#ifdef CONFIG_CPU_LOONGSON3_WORKAROUNDS
++#define LLSC_sync(ctx)	emit(ctx, sync, 0)
++#define LLSC_offset	4
++#else
++#define LLSC_sync(ctx)
++#define LLSC_offset	0
++#endif
++
++/* Workaround for Loongson-2F jump errata */
++#ifdef CONFIG_CPU_JUMP_WORKAROUNDS
++#define JALR_MASK	0xffffffffcfffffffULL
++#else
++#define JALR_MASK	(~0ULL)
++#endif
+ 
+ /*
+  * Mark a BPF register as accessed, it needs to be
+--- a/arch/mips/net/bpf_jit_comp64.c
++++ b/arch/mips/net/bpf_jit_comp64.c
+@@ -375,6 +375,7 @@ static void emit_atomic_r64(struct jit_c
+ 	u8 t1 = MIPS_R_T6;
+ 	u8 t2 = MIPS_R_T7;
+ 
++	LLSC_sync(ctx);
+ 	emit(ctx, lld, t1, off, dst);
+ 	switch (code) {
+ 	case BPF_ADD:
+@@ -391,7 +392,7 @@ static void emit_atomic_r64(struct jit_c
+ 		break;
+ 	}
+ 	emit(ctx, scd, t2, off, dst);
+-	emit(ctx, beqz, t2, -16);
++	emit(ctx, LLSC_beqz, t2, -16 - LLSC_offset);
+ 	emit(ctx, nop); /* Delay slot */
+ }
+ 
+@@ -414,7 +415,7 @@ static int emit_call(struct jit_context
+ 	push_regs(ctx, ctx->clobbered & JIT_CALLER_REGS, 0, 0);
+ 
+ 	/* Emit function call */
+-	emit_mov_i64(ctx, tmp, addr);
++	emit_mov_i64(ctx, tmp, addr & JALR_MASK);
+ 	emit(ctx, jalr, MIPS_R_RA, tmp);
+ 	emit(ctx, nop); /* Delay slot */
+ 
