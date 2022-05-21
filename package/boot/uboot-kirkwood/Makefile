@@ -64,11 +64,6 @@ define U-Boot/nas220
   BUILD_DEVICES:=seagate_blackarmor-nas220
 endef
 
-define U-Boot/net110
-  NAME:=Surfilter Net110
-  BUILD_DEVICES:=surfilter_net110
-endef
-
 define U-Boot/nsa310
   NAME:=Zyxel NSA310
   BUILD_DEVICES:=zyxel_nsa310b
@@ -111,7 +106,6 @@ UBOOT_TARGETS := \
 	iconnect iconnect_second_stage \
 	l-50 \
 	nas220 \
-	net110 \
 	nsa310 \
 	nsa310s \
 	nsa325 \
