@@ -20,7 +20,6 @@ define Device/Default
   KERNEL_NAME := zImage
   KERNEL_SUFFIX  := -uImage
   KERNEL_IN_UBI := 1
-  KERNEL_INSTALL := 1
 
   PAGESIZE := 2048
   SUBPAGESIZE := 512
@@ -187,8 +186,9 @@ TARGET_DEVICES += seagate_goflexhome
 define Device/surfilter_net110
   DEVICE_VENDOR := Surfilter
   DEVICE_MODEL := Net110-88F6281
-  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mvsw61xx kmod-ata-core \
-	  kmod-mmc kmod-mvsdio kmod-rt2800-pci kmod-usb2
+  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mv88e6xxx kmod-ata-core \
+	  kmod-mmc kmod-mvsdio kmod-rt2800-pci kmod-usb2 kmod-usb-ledtrig-usbport kmod-gpio-button-hotplug
+  KERNEL_INSTALL := 1
   SUPPORTED_DEVICES += net110-88F6281
 endef
 TARGET_DEVICES += surfilter_net110
