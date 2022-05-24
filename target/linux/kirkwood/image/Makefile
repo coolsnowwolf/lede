@@ -183,6 +183,16 @@ define Device/seagate_goflexhome
 endef
 TARGET_DEVICES += seagate_goflexhome
 
+define Device/surfilter_net110
+  DEVICE_VENDOR := Surfilter
+  DEVICE_MODEL := Net110-88F6281
+  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mv88e6xxx kmod-ata-core \
+	  kmod-mmc kmod-mvsdio kmod-rt2800-pci kmod-usb2 kmod-usb-ledtrig-usbport kmod-gpio-button-hotplug
+  KERNEL_INSTALL := 1
+  SUPPORTED_DEVICES += net110-88F6281
+endef
+TARGET_DEVICES += surfilter_net110
+
 define Device/zyxel_nsa310b
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := NSA310b
