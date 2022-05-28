@@ -596,9 +596,9 @@ struct foe_entry {
 /* If user wants to change default FOE entry number, both DEF_ETRY_NUM and
  * DEF_ETRY_NUM_CFG need to be modified.
  */
-#define DEF_ETRY_NUM		8192
+#define DEF_ETRY_NUM		16384
 /* feasible values : 32768, 16384, 8192, 4096, 2048, 1024 */
-#define DEF_ETRY_NUM_CFG	TABLE_8K
+#define DEF_ETRY_NUM_CFG	TABLE_16K
 /* corresponding values : TABLE_32K, TABLE_16K, TABLE_8K, TABLE_4K, TABLE_2K,
  * TABLE_1K
  */
@@ -740,6 +740,7 @@ enum FoeIpAct {
 #define BIT_FUC_FOE BIT(2)
 #define BIT_FMC_FOE BIT(1)
 #define BIT_FBC_FOE BIT(0)
+#define BIT_TCP_IP4F_NAT_EN BIT(6) 
 #define BIT_UDP_IP4F_NAT_EN BIT(7) /*Enable IPv4 fragment + UDP packet NAT*/
 #define BIT_IPV6_3T_ROUTE_EN BIT(8)
 #define BIT_IPV6_5T_ROUTE_EN BIT(9)

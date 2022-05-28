@@ -393,9 +393,7 @@ unsigned int do_hnat_ext_to_ge(struct sk_buff *skb, const struct net_device *in,
 		}
 
 		/*set where we come from*/
-		skb->vlan_proto = htons(ETH_P_8021Q);
-		skb->vlan_tci =
-			(VLAN_CFI_MASK | (in->ifindex & VLAN_VID_MASK));
+		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), in->ifindex & VLAN_VID_MASK);
 		trace_printk(
 			"%s: vlan_prot=0x%x, vlan_tci=%x, in->name=%s, skb->dev->name=%s\n",
 			__func__, ntohs(skb->vlan_proto), skb->vlan_tci,
@@ -426,6 +424,7 @@ unsigned int do_hnat_ext_to_ge2(struct sk_buff *skb, const char *func)
 		skb->dev = dev;
 		skb->vlan_proto = 0;
 		skb->vlan_tci = 0;
+		__vlan_hwaccel_clear_tag(skb);
 
 		if (ntohs(eth->h_proto) == ETH_P_8021Q) {
 			skb = skb_vlan_untag(skb);
@@ -456,6 +455,7 @@ unsigned int do_hnat_ext_to_ge2(struct sk_buff *skb, const char *func)
 				set_from_mape(skb);
 				skb->vlan_proto = 0;
 				skb->vlan_tci = 0;
+				__vlan_hwaccel_clear_tag(skb);
 				fix_skb_packet_type(skb, skb->dev, eth_hdr(skb));
 				entry = &hnat_priv->foe_table_cpu[skb_hnat_ppe(skb)][skb_hnat_entry(skb)];
 				entry->bfib1.pkt_type = IPV4_HNAPT;
@@ -650,9 +650,7 @@ unsigned int do_hnat_mape_w2l_fast(struct sk_buff *skb, const struct net_device 
 		eth->h_proto = htons(ETH_P_IP);
 		set_to_ppe(skb);
 
-		skb->vlan_proto = htons(ETH_P_8021Q);
-		skb->vlan_tci =
-		(VLAN_CFI_MASK | (in->ifindex & VLAN_VID_MASK));
+		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), in->ifindex & VLAN_VID_MASK);
 
 		if (!hnat_priv->g_ppdev)
 			hnat_priv->g_ppdev = dev_get_by_name(&init_net, hnat_priv->ppd);
@@ -744,7 +742,7 @@ static unsigned int is_ppe_support_type(struct sk_buff *skb)
 	struct iphdr _iphdr;
 
 	eth = eth_hdr(skb);
-	if (!is_magic_tag_valid(skb) || !IS_SPACE_AVAILABLE_HEAD(skb) ||
+	if (!IS_SPACE_AVAILABLE_HEAD(skb) ||
 	    is_broadcast_ether_addr(eth->h_dest))
 		return 0;
 
@@ -802,6 +800,8 @@ mtk_hnat_ipv6_nf_pre_routing(void *priv, struct sk_buff *skb,
 
 	/* packets from external devices -> xxx ,step 1 , learning stage & bound stage*/
 	if (do_ext2ge_fast_try(state->in, skb)) {
+		if (unlikely(IS_BR(state->in)))
+			return NF_ACCEPT;
 		if (!do_hnat_ext_to_ge(skb, state->in, __func__))
 			return NF_STOLEN;
 		if (!skb)
@@ -861,6 +861,8 @@ mtk_hnat_ipv4_nf_pre_routing(void *priv, struct sk_buff *skb,
 
 	/* packets from external devices -> xxx ,step 1 , learning stage & bound stage*/
 	if (do_ext2ge_fast_try(state->in, skb)) {
+		if (unlikely(IS_BR(state->in)))
+			return NF_ACCEPT;
 		if (!do_hnat_ext_to_ge(skb, state->in, __func__))
 			return NF_STOLEN;
 		if (!skb)
@@ -922,6 +924,8 @@ mtk_hnat_br_nf_local_in(void *priv, struct sk_buff *skb,
 	/* packets from external devices -> xxx ,step 1 , learning stage & bound stage*/
 	if ((skb_hnat_iface(skb) == FOE_MAGIC_EXT) && !is_from_extge(skb) &&
 	    !is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
+		if (unlikely(IS_BR(state->in)))
+			return NF_ACCEPT;
 		if (!hnat_priv->g_ppdev)
 			hnat_priv->g_ppdev = dev_get_by_name(&init_net, hnat_priv->ppd);
 
@@ -1999,7 +2003,8 @@ static unsigned int mtk_hnat_nf_post_routing(
 {
 	struct foe_entry *entry;
 	struct flow_offload_hw_path hw_path = { .dev = (struct net_device*)out,
-						.virt_dev = (struct net_device*)out };
+						.virt_dev = (struct net_device*)out,
+						.flags = FLOW_OFFLOAD_PATH_ETHERNET };
 	const struct net_device *arp_dev = out;
 
 	if (skb_hnat_alg(skb) || unlikely(!is_magic_tag_valid(skb) ||

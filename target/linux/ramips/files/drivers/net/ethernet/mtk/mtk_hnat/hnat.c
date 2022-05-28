@@ -308,7 +308,7 @@ static int hnat_hw_init(u32 ppe_id)
 
 	/* enable FOE */
 	cr_set_bits(hnat_priv->ppe_base[ppe_id] + PPE_FLOW_CFG,
-		    BIT_IPV4_NAT_EN | BIT_IPV4_NAPT_EN |
+		    BIT_TCP_IP4F_NAT_EN | BIT_IPV4_NAT_EN | BIT_IPV4_NAPT_EN |
 		    BIT_IPV4_NAT_FRAG_EN | BIT_IPV4_HASH_GREK |
 		    BIT_IPV4_DSL_EN | BIT_IPV6_6RD_EN |
 		    BIT_IPV6_3T_ROUTE_EN | BIT_IPV6_5T_ROUTE_EN);
@@ -855,7 +855,7 @@ static int hnat_remove(struct platform_device *pdev)
 
 static const struct mtk_hnat_data hnat_data_v1 = {
 	.num_of_sch = 2,
-	.whnat = false,
+	.whnat = true,
 	.per_flow_accounting = false,
 	.mcast = false,
 	.version = MTK_HNAT_V1,
