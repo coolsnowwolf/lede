@@ -6,7 +6,6 @@
 #
 
 include $(TOPDIR)/rules.mk
-include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=fullconenat
 PKG_RELEASE:=6
@@ -19,7 +18,9 @@ PKG_MIRROR_HASH:=00d749235271dee194dcd23c22e6e85207ea90192a62a110b2af0b4e4de1971
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=Chion Tang <tech@chionlab.moe>
 
+include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
 define Package/iptables-mod-fullconenat
@@ -28,7 +29,6 @@ define Package/iptables-mod-fullconenat
   CATEGORY:=Network
   TITLE:=FULLCONENAT iptables extension
   DEPENDS:=+iptables +kmod-ipt-fullconenat
-  MAINTAINER:=Chion Tang <tech@chionlab.moe>
 endef
 
 define Package/iptables-mod-fullconenat/install
@@ -40,7 +40,6 @@ define KernelPackage/ipt-fullconenat
   SUBMENU:=Netfilter Extensions
   TITLE:=FULLCONENAT netfilter module
   DEPENDS:=+kmod-nf-ipt +kmod-nf-nat
-  MAINTAINER:=Chion Tang <tech@chionlab.moe>
   KCONFIG:=  \
 	CONFIG_NF_CONNTRACK_EVENTS=y \
 	CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y
@@ -49,20 +48,15 @@ endef
 
 include $(INCLUDE_DIR)/kernel-defaults.mk
 
-define Build/Prepare
-	$(call Build/Prepare/Default)
-	$(CP) ./files/Makefile $(PKG_BUILD_DIR)/
-endef
-
 define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-        CROSS_COMPILE="$(TARGET_CROSS)" \
-        ARCH="$(LINUX_KARCH)" \
-        M="$(PKG_BUILD_DIR)" \
-        EXTRA_CFLAGS="$(BUILDFLAGS)" \
-        modules
+		CROSS_COMPILE="$(TARGET_CROSS)" \
+		ARCH="$(LINUX_KARCH)" \
+		M="$(PKG_BUILD_DIR)" \
+		EXTRA_CFLAGS="$(BUILDFLAGS)" \
+		modules
 	$(call Build/Compile/Default)
 endef
 
-$(eval $(call BuildPackage,iptables-mod-fullconenat))
 $(eval $(call KernelPackage,ipt-fullconenat))
+$(eval $(call BuildPackage,iptables-mod-fullconenat))
