@@ -1,0 +1,75 @@
+From f1bbbb260a8016373adf239c716d2da90e6ced0b Mon Sep 17 00:00:00 2001
+From: Hayes Wang <hayeswang@realtek.com>
+Date: Fri, 16 Apr 2021 16:04:32 +0800
+Subject: [PATCH] r8152: set inter fram gap time depending on speed
+
+commit 5133bcc7481528e36fff0a3b056601efb704fb32 upstream.
+
+Set the maximum inter frame gap time (144ns) for speed 10M/half and
+100M/half. It improves the performance for those speeds. And, there
+is no effect for the other speeds.
+
+For 10M/half and 100M/half, the fast inter frame gap time let the
+device couldn't use the feature of the aggregation effectively,
+because the transfer would be completed fastly. Therefore, use the
+maximum value to improve the effect of the aggregation. However, you
+may not feel the improvement for fast CPUs, because they compensate
+for the effect of the aggregation.
+
+Signed-off-by: Hayes Wang <hayeswang@realtek.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/usb/r8152.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+--- a/drivers/net/usb/r8152.c
++++ b/drivers/net/usb/r8152.c
+@@ -249,6 +249,9 @@
+ 
+ /* PLA_TCR1 */
+ #define VERSION_MASK		0x7cf0
++#define IFG_MASK		(BIT(3) | BIT(9) | BIT(8))
++#define IFG_144NS		BIT(9)
++#define IFG_96NS		(BIT(9) | BIT(8))
+ 
+ /* PLA_MTPS */
+ #define MTPS_JUMBO		(12 * 1024 / 64)
+@@ -2747,6 +2750,29 @@ static int rtl_stop_rx(struct r8152 *tp)
+ 	return 0;
+ }
+ 
++static void rtl_set_ifg(struct r8152 *tp, u16 speed)
++{
++	u32 ocp_data;
++
++	ocp_data = ocp_read_word(tp, MCU_TYPE_PLA, PLA_TCR1);
++	ocp_data &= ~IFG_MASK;
++	if ((speed & (_10bps | _100bps)) && !(speed & FULL_DUP)) {
++		ocp_data |= IFG_144NS;
++		ocp_write_word(tp, MCU_TYPE_PLA, PLA_TCR1, ocp_data);
++
++		ocp_data = ocp_read_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4);
++		ocp_data &= ~TX10MIDLE_EN;
++		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4, ocp_data);
++	} else {
++		ocp_data |= IFG_96NS;
++		ocp_write_word(tp, MCU_TYPE_PLA, PLA_TCR1, ocp_data);
++
++		ocp_data = ocp_read_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4);
++		ocp_data |= TX10MIDLE_EN;
++		ocp_write_word(tp, MCU_TYPE_PLA, PLA_MAC_PWR_CTRL4, ocp_data);
++	}
++}
++
+ static inline void r8153b_rx_agg_chg_indicate(struct r8152 *tp)
+ {
+ 	ocp_write_byte(tp, MCU_TYPE_USB, USB_UPT_RXDMA_OWN,
+@@ -2850,6 +2876,8 @@ static int rtl8153_enable(struct r8152 *
+ 	r8153_set_rx_early_timeout(tp);
+ 	r8153_set_rx_early_size(tp);
+ 
++	rtl_set_ifg(tp, rtl8152_get_speed(tp));
++
+ 	if (tp->version == RTL_VER_09) {
+ 		u32 ocp_data;
+ 

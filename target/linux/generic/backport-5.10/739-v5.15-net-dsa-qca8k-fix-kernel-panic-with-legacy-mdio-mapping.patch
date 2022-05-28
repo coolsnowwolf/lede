@@ -1,0 +1,80 @@
+From ce062a0adbfe933b1932235fdfd874c4c91d1bb0 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Sat, 11 Sep 2021 17:50:09 +0200
+Subject: net: dsa: qca8k: fix kernel panic with legacy mdio mapping
+
+When the mdio legacy mapping is used the mii_bus priv registered by DSA
+refer to the dsa switch struct instead of the qca8k_priv struct and
+causes a kernel panic. Create dedicated function when the internal
+dedicated mdio driver is used to properly handle the 2 different
+implementation.
+
+Fixes: 759bafb8a322 ("net: dsa: qca8k: add support for internal phy and internal mdio")
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca8k.c | 30 ++++++++++++++++++++++--------
+ 1 file changed, 22 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/dsa/qca8k.c
++++ b/drivers/net/dsa/qca8k.c
+@@ -643,10 +643,8 @@ qca8k_mdio_busy_wait(struct mii_bus *bus
+ }
+ 
+ static int
+-qca8k_mdio_write(struct mii_bus *salve_bus, int phy, int regnum, u16 data)
++qca8k_mdio_write(struct mii_bus *bus, int phy, int regnum, u16 data)
+ {
+-	struct qca8k_priv *priv = salve_bus->priv;
+-	struct mii_bus *bus = priv->bus;
+ 	u16 r1, r2, page;
+ 	u32 val;
+ 	int ret;
+@@ -682,10 +680,8 @@ exit:
+ }
+ 
+ static int
+-qca8k_mdio_read(struct mii_bus *salve_bus, int phy, int regnum)
++qca8k_mdio_read(struct mii_bus *bus, int phy, int regnum)
+ {
+-	struct qca8k_priv *priv = salve_bus->priv;
+-	struct mii_bus *bus = priv->bus;
+ 	u16 r1, r2, page;
+ 	u32 val;
+ 	int ret;
+@@ -727,6 +723,24 @@ exit:
+ }
+ 
+ static int
++qca8k_internal_mdio_write(struct mii_bus *slave_bus, int phy, int regnum, u16 data)
++{
++	struct qca8k_priv *priv = slave_bus->priv;
++	struct mii_bus *bus = priv->bus;
++
++	return qca8k_mdio_write(bus, phy, regnum, data);
++}
++
++static int
++qca8k_internal_mdio_read(struct mii_bus *slave_bus, int phy, int regnum)
++{
++	struct qca8k_priv *priv = slave_bus->priv;
++	struct mii_bus *bus = priv->bus;
++
++	return qca8k_mdio_read(bus, phy, regnum);
++}
++
++static int
+ qca8k_phy_write(struct dsa_switch *ds, int port, int regnum, u16 data)
+ {
+ 	struct qca8k_priv *priv = ds->priv;
+@@ -775,8 +789,8 @@ qca8k_mdio_register(struct qca8k_priv *p
+ 
+ 	bus->priv = (void *)priv;
+ 	bus->name = "qca8k slave mii";
+-	bus->read = qca8k_mdio_read;
+-	bus->write = qca8k_mdio_write;
++	bus->read = qca8k_internal_mdio_read;
++	bus->write = qca8k_internal_mdio_write;
+ 	snprintf(bus->id, MII_BUS_ID_SIZE, "qca8k-%d",
+ 		 ds->index);
+ 

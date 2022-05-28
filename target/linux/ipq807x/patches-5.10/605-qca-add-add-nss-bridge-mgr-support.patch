@@ -1,0 +1,104 @@
+From bcb4b67add833322a1361eea26f185deecd15ff1 Mon Sep 17 00:00:00 2001
+From: Simon Casey <simon501098c@gmail.com>
+Date: Fri, 22 Oct 2021 14:43:11 +0200
+Subject: [PATCH] bridge: Add NSS bridge-mgr support for ipq807x
+
+Add necessary functionality for enabling the NSS bridge-mgr module.
+
+Signed-off-by: Simon Casey <simon501098c@gmail.com>
+---
+ include/linux/if_bridge.h |  4 ++++
+ net/bridge/br_fdb.c       | 25 +++++++++++++++++++++----
+ 2 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/include/linux/if_bridge.h b/include/linux/if_bridge.h
+index 3d3509ab7..6261e545f 100644
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -196,4 +196,8 @@ typedef struct net_bridge_port *br_get_dst_hook_t(
+ extern br_get_dst_hook_t __rcu *br_get_dst_hook;
+ /* QCA NSS ECM support - End */
+ 
++/* QCA NSS bridge-mgr support - Start */
++extern struct net_device *br_fdb_bridge_dev_get_and_hold(struct net_bridge *br);
++/* QCA NSS bridge-mgr support - End */
++
+ #endif
+diff --git a/net/bridge/br_fdb.c b/net/bridge/br_fdb.c
+index 26ff431b8..56a695fe4 100644
+--- a/net/bridge/br_fdb.c
++++ b/net/bridge/br_fdb.c
+@@ -66,6 +66,15 @@ void br_fdb_update_unregister_notify(struct notifier_block *nb)
+ EXPORT_SYMBOL_GPL(br_fdb_update_unregister_notify);
+ /* QCA NSS ECM support - End */
+ 
++/* QCA NSS bridge-mgr support - Start */
++struct net_device *br_fdb_bridge_dev_get_and_hold(struct net_bridge *br)
++{
++	dev_hold(br->dev);
++	return br->dev;
++}
++EXPORT_SYMBOL_GPL(br_fdb_bridge_dev_get_and_hold);
++/* QCA NSS bridge-mgr support - End */
++
+ int __init br_fdb_init(void)
+ {
+ 	br_fdb_cache = kmem_cache_create("bridge_fdb_cache",
+@@ -371,7 +380,7 @@ void br_fdb_cleanup(struct work_struct *work)
+ 	unsigned long delay = hold_time(br);
+ 	unsigned long work_delay = delay;
+ 	unsigned long now = jiffies;
+-	u8 mac_addr[6]; /* QCA NSS ECM support */
++	struct br_fdb_event fdb_event; /* QCA NSS bridge-mgr support */
+ 
+ 	/* this part is tricky, in order to avoid blocking learning and
+ 	 * consequently forwarding, we rely on rcu to delete objects with
+@@ -399,12 +408,13 @@ void br_fdb_cleanup(struct work_struct *work)
+ 		} else {
+ 			spin_lock_bh(&br->hash_lock);
+ 			if (!hlist_unhashed(&f->fdb_node)) {
+-				ether_addr_copy(mac_addr, f->key.addr.addr);
++				memset(&fdb_event, 0, sizeof(fdb_event));
++				ether_addr_copy(fdb_event.addr, f->key.addr.addr);
+ 				fdb_delete(br, f, true);
+ 				/* QCA NSS ECM support - Start */
+ 				atomic_notifier_call_chain(
+ 					&br_fdb_update_notifier_list, 0,
+-					(void *)mac_addr);
++					(void *)&fdb_event);
+ 				/* QCA NSS ECM support - End */
+ 			}
+ 			spin_unlock_bh(&br->hash_lock);
+@@ -615,6 +625,7 @@ void br_fdb_update(struct net_bridge *br, struct net_bridge_port *source,
+ 		   const unsigned char *addr, u16 vid, unsigned long flags)
+ {
+ 	struct net_bridge_fdb_entry *fdb;
++	struct br_fdb_event fdb_event; /* QCA NSS bridge-mgr support */
+ 
+ 	/* some users want to always flood. */
+ 	if (hold_time(br) == 0)
+@@ -640,6 +651,12 @@ void br_fdb_update(struct net_bridge *br, struct net_bridge_port *source,
+ 			if (unlikely(source != fdb->dst &&
+ 				     !test_bit(BR_FDB_STICKY, &fdb->flags))) {
+ 				br_switchdev_fdb_notify(br, fdb, RTM_DELNEIGH);
++				/* QCA NSS bridge-mgr support - Start */
++				ether_addr_copy(fdb_event.addr, addr);
++				fdb_event.br = br;
++				fdb_event.orig_dev = fdb->dst->dev;
++				fdb_event.dev = source->dev;
++				/* QCA NSS bridge-mgr support - End */
+ 				fdb->dst = source;
+ 				fdb_modified = true;
+ 				/* Take over HW learned entry */
+@@ -651,7 +668,7 @@ void br_fdb_update(struct net_bridge *br, struct net_bridge_port *source,
+ 				/* QCA NSS ECM support - Start */
+ 				atomic_notifier_call_chain(
+ 					&br_fdb_update_notifier_list,
+-					0, (void *)addr);
++					0, (void *)&fdb_event);
+ 				/* QCA NSS ECM support - End */
+ 			}
+ 
+-- 
+2.25.1
+
