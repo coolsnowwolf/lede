@@ -26,11 +26,10 @@
    ```
 
 3. 下载源代码，更新 feeds 并选择配置
-
+   科学 [https://github.com/kenzok8/openwrt-packages](https://github.com/kenzok8/openwrt-packages)
    ```bash
    git clone https://github.com/coolsnowwolf/lede
    cd lede
-   #科学 [https://github.com/kenzok8/openwrt-packages](https://github.com/kenzok8/openwrt-packages)
    ./scripts/feeds update -a
    ./scripts/feeds install -a
    make menuconfig
