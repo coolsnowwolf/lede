@@ -10,13 +10,13 @@
 
 ## 编译命令
 
-1. 首先装好 Linux 系统，推荐 Debian 11 或 Ubuntu LTS
+1. 首先装好 Linux 系统，推荐 Debian 11 或 Ubuntu LTS(使用20.04 无桌面版编译成功)
 
-2. 安装编译依赖
+2. 安装编译依赖(有修改)
 
    ```bash
-   sudo apt update -y
-   sudo apt full-upgrade -y
+   sudo apt update
+   sudo apt upgrade
    sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
@@ -30,6 +30,9 @@
    ```bash
    git clone https://github.com/coolsnowwolf/lede
    cd lede
+   #添加科学上网插件
+   sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
+   sed -i '$a src-git small https://github.com/kenzok8/small' feeds.conf.default
    ./scripts/feeds update -a
    ./scripts/feeds install -a
    make menuconfig
