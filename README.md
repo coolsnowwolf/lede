@@ -30,7 +30,7 @@
    ```bash
    git clone https://github.com/coolsnowwolf/lede
    cd lede
-   #科学 https://github.com/kenzok8/openwrt-packages
+   #科学 https://github.com/kenzok8/openwrt-packages(https://github.com/kenzok8/openwrt-packages)
    ./scripts/feeds update -a
    ./scripts/feeds install -a
    make menuconfig
