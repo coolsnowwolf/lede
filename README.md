@@ -30,9 +30,7 @@
    ```bash
    git clone https://github.com/coolsnowwolf/lede
    cd lede
-   #添加科学上网插件
-   sed -i '$a src-git kenzo https://github.com/kenzok8/openwrt-packages' feeds.conf.default
-   sed -i '$a src-git small https://github.com/kenzok8/small' feeds.conf.default
+   #科学 https://github.com/kenzok8/openwrt-packages
    ./scripts/feeds update -a
    ./scripts/feeds install -a
    make menuconfig
