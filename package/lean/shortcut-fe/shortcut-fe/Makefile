@@ -16,7 +16,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=shortcut-fe
-PKG_RELEASE:=3
+PKG_RELEASE:=5
 
 include $(INCLUDE_DIR)/package.mk
 
