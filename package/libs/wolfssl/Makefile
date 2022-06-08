@@ -48,6 +48,15 @@ PKG_CONFIG_DEPENDS+=\
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC \
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL
 
+#
+# libwolfssl-benchmark should NOT be compiled as nonshared but
+# currently there is a bug where on buildbot stage2 the package
+# is recompiled to build libwolfssl-benchmark and the dependency
+# change to the new libwolfssl version. While this gets
+# investigated, set the nonshared flag global
+#
+PKGFLAGS:=nonshared
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/libwolfssl/Default
@@ -60,7 +69,6 @@ endef
 define Package/libwolfssl
 $(call Package/libwolfssl/Default)
   TITLE:=wolfSSL library
-  PKGFLAGS:=nonshared
   MENU:=1
   PROVIDES:=libcyassl
   DEPENDS:=+WOLFSSL_HAS_DEVCRYPTO:kmod-cryptodev +WOLFSSL_HAS_AFALG:kmod-crypto-user
