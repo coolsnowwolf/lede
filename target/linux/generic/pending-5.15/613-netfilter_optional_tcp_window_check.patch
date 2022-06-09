@@ -2,6 +2,7 @@ From: Felix Fietkau <nbd@nbd.name>
 Subject: netfilter: optional tcp window check
 
 Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Christian 'Ansuel' Marangi <ansuelsmth@gmail.com>
 ---
  net/netfilter/nf_conntrack_proto_tcp.c | 13 +++++++++++++
  1 file changed, 13 insertions(+)
@@ -12,7 +13,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	s32 receiver_offset;
  	bool res, in_recv_win;
  
-+	if (net->ct.sysctl_no_window_check)
++	if (tn->tcp_no_window_check)
 +		return true;
 +
  	/*
@@ -23,57 +24,60 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  		 timeouts[new_state] > timeouts[TCP_CONNTRACK_UNACK])
  		timeout = timeouts[TCP_CONNTRACK_UNACK];
 -	else if (ct->proto.tcp.last_win == 0 &&
-+	else if (!net->ct.sysctl_no_window_check && ct->proto.tcp.last_win == 0 &&
++	else if (!tn->tcp_no_window_check && ct->proto.tcp.last_win == 0 &&
  		 timeouts[new_state] > timeouts[TCP_CONNTRACK_RETRANS])
  		timeout = timeouts[TCP_CONNTRACK_RETRANS];
  	else
+@@ -1476,6 +1479,9 @@ void nf_conntrack_tcp_init_net(struct ne
+ 	 */
+ 	tn->tcp_be_liberal = 0;
+ 
++	/* Skip Windows Check */
++	tn->tcp_no_window_check = 0;
++
+ 	/* If it's non-zero, we turn off RST sequence number check */
+ 	tn->tcp_ignore_invalid_rst = 0;
+ 
 --- a/net/netfilter/nf_conntrack_standalone.c
 +++ b/net/netfilter/nf_conntrack_standalone.c
-@@ -671,6 +671,7 @@ enum nf_ct_sysctl_index {
- 	NF_SYSCTL_CT_LWTUNNEL,
+@@ -633,6 +633,7 @@ enum nf_ct_sysctl_index {
  #endif
- 
+ 	NF_SYSCTL_CT_PROTO_TCP_LOOSE,
+ 	NF_SYSCTL_CT_PROTO_TCP_LIBERAL,
 +	NF_SYSCTL_CT_PROTO_TCP_NO_WINDOW_CHECK,
- 	__NF_SYSCTL_CT_LAST_SYSCTL,
- };
- 
-@@ -1026,6 +1027,13 @@ static struct ctl_table nf_ct_sysctl_tab
- 		.proc_handler	= nf_hooks_lwtunnel_sysctl_handler,
+ 	NF_SYSCTL_CT_PROTO_TCP_IGNORE_INVALID_RST,
+ 	NF_SYSCTL_CT_PROTO_TCP_MAX_RETRANS,
+ 	NF_SYSCTL_CT_PROTO_TIMEOUT_UDP,
+@@ -849,6 +850,14 @@ static struct ctl_table nf_ct_sysctl_tab
+ 		.extra1 	= SYSCTL_ZERO,
+ 		.extra2 	= SYSCTL_ONE,
  	},
- #endif
 +	[NF_SYSCTL_CT_PROTO_TCP_NO_WINDOW_CHECK] = {
 +		.procname       = "nf_conntrack_tcp_no_window_check",
-+		.data           = &init_net.ct.sysctl_no_window_check,
-+		.maxlen         = sizeof(unsigned int),
++		.maxlen         = sizeof(u8),
 +		.mode           = 0644,
-+		.proc_handler   = proc_dointvec,
++		.proc_handler	= proc_dou8vec_minmax,
++		.extra1 	= SYSCTL_ZERO,
++		.extra2 	= SYSCTL_ONE,
 +	},
- 	{}
- };
+ 	[NF_SYSCTL_CT_PROTO_TCP_IGNORE_INVALID_RST] = {
+ 		.procname	= "nf_conntrack_tcp_ignore_invalid_rst",
+ 		.maxlen		= sizeof(u8),
+@@ -1065,6 +1074,7 @@ static void nf_conntrack_standalone_init
  
-@@ -1153,6 +1161,7 @@ static int nf_conntrack_standalone_init_
- #ifdef CONFIG_NF_CONNTRACK_EVENTS
- 	table[NF_SYSCTL_CT_EVENTS].data = &net->ct.sysctl_events;
- #endif
-+	table[NF_SYSCTL_CT_PROTO_TCP_NO_WINDOW_CHECK].data = &net->ct.sysctl_no_window_check;
- #ifdef CONFIG_NF_CONNTRACK_TIMESTAMP
- 	table[NF_SYSCTL_CT_TIMESTAMP].data = &net->ct.sysctl_tstamp;
- #endif
-@@ -1222,6 +1231,7 @@ static int nf_conntrack_pernet_init(stru
- 	int ret;
- 
- 	net->ct.sysctl_checksum = 1;
-+	net->ct.sysctl_no_window_check = 1;
- 
- 	ret = nf_conntrack_standalone_init_sysctl(net);
- 	if (ret < 0)
+ 	XASSIGN(LOOSE, &tn->tcp_loose);
+ 	XASSIGN(LIBERAL, &tn->tcp_be_liberal);
++	XASSIGN(NO_WINDOW_CHECK, &tn->tcp_no_window_check);
+ 	XASSIGN(MAX_RETRANS, &tn->tcp_max_retrans);
+ 	XASSIGN(IGNORE_INVALID_RST, &tn->tcp_ignore_invalid_rst);
+ #undef XASSIGN
 --- a/include/net/netns/conntrack.h
 +++ b/include/net/netns/conntrack.h
-@@ -109,6 +109,7 @@ struct netns_ct {
- 	u8			sysctl_auto_assign_helper;
- 	u8			sysctl_tstamp;
- 	u8			sysctl_checksum;
-+	u8			sysctl_no_window_check;
- 
- 	struct ct_pcpu __percpu *pcpu_lists;
- 	struct ip_conntrack_stat __percpu *stat;
+@@ -26,6 +26,7 @@ struct nf_tcp_net {
+ 	unsigned int timeouts[TCP_CONNTRACK_TIMEOUT_MAX];
+ 	u8 tcp_loose;
+ 	u8 tcp_be_liberal;
++	u8 tcp_no_window_check;
+ 	u8 tcp_max_retrans;
+ 	u8 tcp_ignore_invalid_rst;
+ #if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
