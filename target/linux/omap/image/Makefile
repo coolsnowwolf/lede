@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2012-2014 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -38,7 +36,6 @@ define Device/Default
   DEVICE_DTS = $(lastword $(subst _, ,$(1)))
   IMAGES := sdcard.img.gz
   IMAGE/sdcard.img.gz := omap-sdcard | append-metadata | gzip
-  SUPPORTED_DEVICES = $(subst _,$(comma),$(1))
 endef
 
 #uboot-omap-am335x_evm uboot-omap-omap3_beagle uboot-omap-omap3_overo uboot-omap-omap4_panda

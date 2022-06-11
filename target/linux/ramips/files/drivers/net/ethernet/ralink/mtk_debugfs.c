@@ -33,7 +33,7 @@ static const char *mtk_foe_packet_type_str[] = {
 #define IPV4_HNAPT                      0
 #define IPV4_HNAT                       1
 #define IS_IPV4_HNAPT(x)	(((x)->bfib1.pkt_type == IPV4_HNAPT) ? 1: 0)
-struct mtk_eth *_eth;
+static struct mtk_eth *_eth;
 #define es(entry)		(mtk_foe_entry_state_str[entry->bfib1.state])
 //#define ei(entry, end)		(MTK_PPE_TBL_SZ - (int)(end - entry))
 #define ei(entry, end)		(MTK_PPE_ENTRY_CNT - (int)(end - entry))
@@ -99,7 +99,7 @@ static const struct file_operations mtk_ppe_debugfs_foe_fops = {
 	.release = single_release,
 };
 
-int mtk_ppe_debugfs_init(struct mtk_eth *eth)
+int ra_ppe_debugfs_init(struct mtk_eth *eth)
 {
 	struct dentry *root;
 

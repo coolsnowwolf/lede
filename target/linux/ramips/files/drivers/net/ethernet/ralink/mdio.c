@@ -64,7 +64,11 @@ int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node, int 
 {
 	const __be32 *_phy_addr = NULL;
 	struct phy_device *phydev;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	int phy_mode;
+#else
+	phy_interface_t phy_mode = PHY_INTERFACE_MODE_NA;
+#endif
 
 	_phy_addr = of_get_property(phy_node, "reg", NULL);
 
@@ -73,8 +77,13 @@ int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node, int 
 		return -EINVAL;
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	phy_mode = of_get_phy_mode(phy_node);
 	if (phy_mode < 0) {
+#else
+	of_get_phy_mode(phy_node, &phy_mode);
+	if (phy_mode == PHY_INTERFACE_MODE_NA) {
+#endif
 		dev_err(priv->dev, "incorrect phy-mode %d\n", phy_mode);
 		priv->phy->phy_node[port] = NULL;
 		return -EINVAL;
@@ -88,13 +97,8 @@ int fe_connect_phy_node(struct fe_priv *priv, struct device_node *phy_node, int 
 		return -ENODEV;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-	phydev->supported &= PHY_GBIT_FEATURES;
-	phydev->advertising = phydev->supported;
-#else
 	phy_set_max_speed(phydev, SPEED_1000);
 	linkmode_copy(phydev->advertising, phydev->supported);
-#endif
 	phydev->no_auto_carrier_off = 1;
 
 	dev_info(priv->dev,
@@ -116,17 +120,11 @@ static void phy_init(struct fe_priv *priv, struct phy_device *phy)
 	phy->speed = 0;
 	phy->duplex = 0;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
-	phy->supported &= IS_ENABLED(CONFIG_NET_RALINK_MDIO_MT7620) ?
-			PHY_GBIT_FEATURES : PHY_BASIC_FEATURES;
-	phy->advertising = phy->supported | ADVERTISED_Autoneg;
-#else
 	phy_set_max_speed(phy, IS_ENABLED(CONFIG_NET_RALINK_MDIO_MT7620) ?
 				       SPEED_1000 :
 				       SPEED_100);
 	linkmode_copy(phy->advertising, phy->supported);
 	linkmode_set_bit(ETHTOOL_LINK_MODE_Autoneg_BIT, phy->advertising);
-#endif
 
 	phy_start_aneg(phy);
 }
@@ -234,7 +232,8 @@ int fe_mdio_init(struct fe_priv *priv)
 	mii_np = of_get_child_by_name(priv->dev->of_node, "mdio-bus");
 	if (!mii_np) {
 		dev_err(priv->dev, "no %s child node found", "mdio-bus");
-		return -ENODEV;
+		err = 0;
+		goto err_no_bus;
 	}
 
 	if (!of_device_is_available(mii_np)) {
@@ -266,6 +265,8 @@ err_free_bus:
 	kfree(priv->mii_bus);
 err_put_node:
 	of_node_put(mii_np);
+err_no_bus:
+	dev_err(priv->dev, "%s disabled", "mdio-bus");
 	priv->mii_bus = NULL;
 	return err;
 }

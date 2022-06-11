@@ -35,7 +35,6 @@
 #include "mtd.h"
 #include "crc32.h"
 
-#define TRX_MAGIC       0x30524448      /* "HDR0" */
 #define TRX_CRC32_DATA_OFFSET	12	/* First 12 bytes are not covered by CRC32 */
 #define TRX_CRC32_DATA_SIZE	16
 struct trx_header {
@@ -92,7 +91,7 @@ trx_fixup(int fd, const char *name)
 	}
 
 	trx = ptr;
-	if (trx->magic != TRX_MAGIC) {
+	if (ntohl(trx->magic) != opt_trxmagic) {
 		fprintf(stderr, "TRX header not found\n");
 		goto err;
 	}
@@ -110,7 +109,6 @@ err:
 	return -1;
 }
 
-#ifndef target_ar71xx
 int
 trx_check(int imagefd, const char *mtd, char *buf, int *len)
 {
@@ -128,7 +126,8 @@ trx_check(int imagefd, const char *mtd, char *buf, int *len)
 		}
 	}
 
-	if (trx->magic != TRX_MAGIC || trx->len < sizeof(struct trx_header)) {
+	if (ntohl(trx->magic) != opt_trxmagic ||
+	    trx->len < sizeof(struct trx_header)) {
 		if (quiet < 2) {
 			fprintf(stderr, "Bad trx header\n");
 			fprintf(stderr, "This is not the correct file format; refusing to flash.\n"
@@ -153,7 +152,6 @@ trx_check(int imagefd, const char *mtd, char *buf, int *len)
 	close(fd);
 	return 1;
 }
-#endif
 
 int
 mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
@@ -202,7 +200,7 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 	}
 
 	trx = (struct trx_header *)(first_block + offset);
-	if (trx->magic != STORE32_LE(0x30524448)) {
+	if (ntohl(trx->magic) != opt_trxmagic) {
 		fprintf(stderr, "No trx magic found\n");
 		exit(1);
 	}

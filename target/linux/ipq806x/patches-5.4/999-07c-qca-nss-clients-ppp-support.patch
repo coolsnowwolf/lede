@@ -1,0 +1,132 @@
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -64,6 +64,7 @@
+ #include <net/slhc_vj.h>
+ #include <linux/atomic.h>
+ #include <linux/refcount.h>
++#include <linux/if_pppox.h>
+ 
+ #include <linux/nsproxy.h>
+ #include <net/net_namespace.h>
+@@ -3239,6 +3240,10 @@ ppp_connect_channel(struct channel *pch,
+ 	struct ppp_net *pn;
+ 	int ret = -ENXIO;
+ 	int hdrlen;
++	/* QCA NSS ECM Support - Start */
++	int ppp_proto;
++	int version;
++	/* QCA NSS ECM Support - End */
+ 
+ 	pn = ppp_pernet(pch->chan_net);
+ 
+@@ -3270,6 +3275,26 @@ ppp_connect_channel(struct channel *pch,
+ 	++ppp->n_channels;
+ 	pch->ppp = ppp;
+ 	refcount_inc(&ppp->file.refcnt);
++
++	/* QCA NSS ECM support - Start */
++	/* Set the netdev priv flag if the prototype
++	 * is L2TP or PPTP. Return success in all cases
++	 */
++	if (!pch->chan)
++		goto out2;
++
++	ppp_proto = ppp_channel_get_protocol(pch->chan);
++	if (ppp_proto == PX_PROTO_PPTP) {
++		ppp->dev->priv_flags_qca_ecm |= IFF_QCA_ECM_PPP_PPTP;
++	} else if (ppp_proto == PX_PROTO_OL2TP) {
++		version = ppp_channel_get_proto_version(pch->chan);
++		if (version == 2)
++			ppp->dev->priv_flags_qca_ecm |= IFF_QCA_ECM_PPP_L2TPV2;
++		else if (version == 3)
++			ppp->dev->priv_flags_qca_ecm |= IFF_QCA_ECM_PPP_L2TPV3;
++	}
++	/* QCA NSS ECM support - End */
++ out2:
+ 	ppp_unlock(ppp);
+ 	ret = 0;
+ 
+@@ -3555,6 +3580,56 @@
+ }
+ EXPORT_SYMBOL(ppp_release_channels);
+ 
++/* Return the PPP net device index */
++int ppp_dev_index(struct ppp_channel *chan)
++{
++	struct channel *pch = chan->ppp;
++	int ifindex = 0;
++
++	if (pch) {
++		read_lock_bh(&pch->upl);
++		if (pch->ppp && pch->ppp->dev)
++			ifindex = pch->ppp->dev->ifindex;
++		read_unlock_bh(&pch->upl);
++	}
++	return ifindex;
++}
++EXPORT_SYMBOL(ppp_dev_index);
++
++/* ppp_channel_get_proto_version()
++ *	Call this to get channel protocol version
++ */
++int ppp_channel_get_proto_version(struct ppp_channel *chan)
++{
++	if (!chan->ops->get_channel_protocol_ver)
++		return -1;
++
++	return chan->ops->get_channel_protocol_ver(chan);
++}
++EXPORT_SYMBOL(ppp_channel_get_proto_version);
++
++/* Check if ppp xmit lock is on hold */
++bool ppp_is_xmit_locked(struct net_device *dev)
++{
++	struct ppp *ppp;
++
++	if (!dev)
++		return false;
++
++	if (dev->type != ARPHRD_PPP)
++		return false;
++
++	ppp = netdev_priv(dev);
++	if (!ppp)
++		return false;
++
++	if (spin_is_locked(&(ppp)->wlock))
++		return true;
++
++	return false;
++}
++EXPORT_SYMBOL(ppp_is_xmit_locked);
++
+ /* Module/initialization stuff */
+ 
+ module_init(ppp_init);
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -36,6 +36,8 @@ struct ppp_channel_ops {
+ 	 * the channel subtype
+ 	 */
+ 	int (*get_channel_protocol)(struct ppp_channel *);
++	/* Get channel protocol version */
++	int (*get_channel_protocol_ver)(struct ppp_channel *);
+ 	/* Hold the channel from being destroyed */
+ 	void (*hold)(struct ppp_channel *);
+ 	/* Release hold on the channel */
+@@ -69,6 +71,15 @@
+ extern void ppp_release_channels(struct ppp_channel *channels[],
+ 				 unsigned int chan_sz);
+ 
++/* Test if ppp xmit lock is locked */
++extern bool ppp_is_xmit_locked(struct net_device *dev);
++
++/* Call this get protocol version */
++extern int ppp_channel_get_proto_version(struct ppp_channel *);
++
++/* Get the device index  associated with a channel, or 0, if none */
++extern int ppp_dev_index(struct ppp_channel *);
++
+ /* Hold PPP channels for the PPP device */
+ extern int ppp_hold_channels(struct net_device *dev,
+ 			     struct ppp_channel *channels[],

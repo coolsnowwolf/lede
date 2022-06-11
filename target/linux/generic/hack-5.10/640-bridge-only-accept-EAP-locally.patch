@@ -1,0 +1,82 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 7 Jul 2017 17:18:54 +0200
+Subject: bridge: only accept EAP locally
+
+When bridging, do not forward EAP frames to other ports, only deliver
+them locally, regardless of the state.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+[add disable_eap_hack sysfs attribute]
+Signed-off-by: Etienne Champetier <champetier.etienne@gmail.com>
+---
+
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -107,10 +107,14 @@ int br_handle_frame_finish(struct net *n
+ 		}
+ 	}
+ 
++	BR_INPUT_SKB_CB(skb)->brdev = br->dev;
++
++	if (skb->protocol == htons(ETH_P_PAE) && !br->disable_eap_hack)
++		return br_pass_frame_up(skb);
++
+ 	if (state == BR_STATE_LEARNING)
+ 		goto drop;
+ 
+-	BR_INPUT_SKB_CB(skb)->brdev = br->dev;
+ 	BR_INPUT_SKB_CB(skb)->src_port_isolated = !!(p->flags & BR_ISOLATED);
+ 
+ 	if (IS_ENABLED(CONFIG_INET) &&
+--- a/net/bridge/br_private.h
++++ b/net/bridge/br_private.h
+@@ -404,6 +404,8 @@ struct net_bridge {
+ 	u16				group_fwd_mask;
+ 	u16				group_fwd_mask_required;
+ 
++	bool				disable_eap_hack;
++
+ 	/* STP */
+ 	bridge_id			designated_root;
+ 	bridge_id			bridge_id;
+--- a/net/bridge/br_sysfs_br.c
++++ b/net/bridge/br_sysfs_br.c
+@@ -164,6 +164,30 @@ static ssize_t group_fwd_mask_store(stru
+ }
+ static DEVICE_ATTR_RW(group_fwd_mask);
+ 
++static ssize_t disable_eap_hack_show(struct device *d,
++				   struct device_attribute *attr,
++				   char *buf)
++{
++	struct net_bridge *br = to_bridge(d);
++	return sprintf(buf, "%u\n", br->disable_eap_hack);
++}
++
++static int set_disable_eap_hack(struct net_bridge *br, unsigned long val)
++{
++	br->disable_eap_hack = !!val;
++
++	return 0;
++}
++
++static ssize_t disable_eap_hack_store(struct device *d,
++				    struct device_attribute *attr,
++				    const char *buf,
++				    size_t len)
++{
++	return store_bridge_parm(d, buf, len, set_disable_eap_hack);
++}
++static DEVICE_ATTR_RW(disable_eap_hack);
++
+ static ssize_t priority_show(struct device *d, struct device_attribute *attr,
+ 			     char *buf)
+ {
+@@ -849,6 +873,7 @@ static struct attribute *bridge_attrs[]
+ 	&dev_attr_ageing_time.attr,
+ 	&dev_attr_stp_state.attr,
+ 	&dev_attr_group_fwd_mask.attr,
++	&dev_attr_disable_eap_hack.attr,
+ 	&dev_attr_priority.attr,
+ 	&dev_attr_bridge_id.attr,
+ 	&dev_attr_root_id.attr,

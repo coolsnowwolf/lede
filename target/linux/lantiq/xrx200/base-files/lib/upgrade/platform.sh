@@ -11,8 +11,10 @@ platform_do_upgrade() {
 	case "$board" in
 	avm,fritz3370-rev2-hynix|\
 	avm,fritz3370-rev2-micron|\
+	avm,fritz3390|\
 	avm,fritz7362sl|\
 	avm,fritz7412|\
+	avm,fritz7430|\
 	bt,homehub-v5a|\
 	zyxel,p-2812hnu-f1|\
 	zyxel,p-2812hnu-f3)

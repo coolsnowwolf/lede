@@ -169,6 +169,11 @@ def main(argv):
 		usage()
 		return 1
 	directory = args[0]
+
+	if not os.path.exists(directory):
+		print("Can't find dl path", directory)
+		return 1
+
 	for (o, v) in opts:
 		if o in ("-h", "--help"):
 			usage()

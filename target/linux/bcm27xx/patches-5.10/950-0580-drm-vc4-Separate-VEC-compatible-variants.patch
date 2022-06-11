@@ -1,0 +1,106 @@
+From 8d75ba91d48ee9fd39284bf44ca5e729e134e18c Mon Sep 17 00:00:00 2001
+From: kFYatek <4499762+kFYatek@users.noreply.github.com>
+Date: Sat, 27 Mar 2021 21:43:40 +0100
+Subject: [PATCH] drm/vc4: Separate VEC compatible variants
+
+The VEC's DAC on BCM2711 is slightly different compared to the one on
+BCM283x and needs different configuration. In particular, bit 3
+(mask 0x8) switches the BCM2711 DAC input to "self-test input data",
+which makes the output unusable. Separating two compatible variants in
+devicetrees and the DRM driver was therefore necessary.
+
+The configurations used for both variants have been borrowed from
+Raspberry Pi (model 3B for BCM283x, 4B for BCM2711) firmware defaults.
+
+Signed-off-by: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+---
+ .../bindings/display/brcm,bcm2835-vec.yaml    |  4 ++-
+ arch/arm/boot/dts/bcm2711.dtsi                |  2 +-
+ drivers/gpu/drm/vc4/vc4_vec.c                 | 27 +++++++++++++++----
+ 3 files changed, 26 insertions(+), 7 deletions(-)
+
+--- a/Documentation/devicetree/bindings/display/brcm,bcm2835-vec.yaml
++++ b/Documentation/devicetree/bindings/display/brcm,bcm2835-vec.yaml
+@@ -11,7 +11,9 @@ maintainers:
+ 
+ properties:
+   compatible:
+-    const: brcm,bcm2835-vec
++    enum:
++      - brcm,bcm2835-vec
++      - brcm,bcm2711-vec
+ 
+   reg:
+     maxItems: 1
+--- a/arch/arm/boot/dts/bcm2711.dtsi
++++ b/arch/arm/boot/dts/bcm2711.dtsi
+@@ -302,7 +302,7 @@
+ 		};
+ 
+ 		vec: vec@7ec13000 {
+-			compatible = "brcm,bcm2835-vec";
++			compatible = "brcm,bcm2711-vec";
+ 			reg = <0x7ec13000 0x1000>;
+ 			clocks = <&clocks BCM2835_CLOCK_VEC>;
+ 			interrupts = <2 27>;
+--- a/drivers/gpu/drm/vc4/vc4_vec.c
++++ b/drivers/gpu/drm/vc4/vc4_vec.c
+@@ -154,9 +154,14 @@
+ #define VEC_DAC_MISC_DAC_RST_N		BIT(0)
+ 
+ 
++struct vc4_vec_variant {
++	u32 dac_config;
++};
++
+ /* General VEC hardware state. */
+ struct vc4_vec {
+ 	struct platform_device *pdev;
++	const struct vc4_vec_variant *variant;
+ 
+ 	struct drm_encoder *encoder;
+ 	struct drm_connector *connector;
+@@ -451,10 +456,7 @@ static void vc4_vec_encoder_enable(struc
+ 	VEC_WRITE(VEC_CONFIG2,
+ 		  VEC_CONFIG2_UV_DIG_DIS | VEC_CONFIG2_RGB_DIG_DIS);
+ 	VEC_WRITE(VEC_CONFIG3, VEC_CONFIG3_HORIZ_LEN_STD);
+-	VEC_WRITE(VEC_DAC_CONFIG,
+-		  VEC_DAC_CONFIG_DAC_CTRL(0xc) |
+-		  VEC_DAC_CONFIG_DRIVER_CTRL(0xc) |
+-		  VEC_DAC_CONFIG_LDO_BIAS_CTRL(0x46));
++	VEC_WRITE(VEC_DAC_CONFIG, vec->variant->dac_config);
+ 
+ 	/* Mask all interrupts. */
+ 	VEC_WRITE(VEC_MASK0, 0);
+@@ -507,8 +509,21 @@ static const struct drm_encoder_helper_f
+ 	.atomic_mode_set = vc4_vec_encoder_atomic_mode_set,
+ };
+ 
++static const struct vc4_vec_variant bcm2835_vec_variant = {
++	.dac_config = VEC_DAC_CONFIG_DAC_CTRL(0xc) |
++		      VEC_DAC_CONFIG_DRIVER_CTRL(0xc) |
++		      VEC_DAC_CONFIG_LDO_BIAS_CTRL(0x46)
++};
++
++static const struct vc4_vec_variant bcm2711_vec_variant = {
++	.dac_config = VEC_DAC_CONFIG_DAC_CTRL(0x0) |
++		      VEC_DAC_CONFIG_DRIVER_CTRL(0x80) |
++		      VEC_DAC_CONFIG_LDO_BIAS_CTRL(0x61)
++};
++
+ static const struct of_device_id vc4_vec_dt_match[] = {
+-	{ .compatible = "brcm,bcm2835-vec", .data = NULL },
++	{ .compatible = "brcm,bcm2835-vec", .data = &bcm2835_vec_variant },
++	{ .compatible = "brcm,bcm2711-vec", .data = &bcm2711_vec_variant },
+ 	{ /* sentinel */ },
+ };
+ 
+@@ -546,6 +561,8 @@ static int vc4_vec_bind(struct device *d
+ 	vec->encoder = &vc4_vec_encoder->base.base;
+ 
+ 	vec->pdev = pdev;
++	vec->variant = (const struct vc4_vec_variant *)
++		of_device_get_match_data(dev);
+ 	vec->regs = vc4_ioremap_regs(pdev, 0);
+ 	if (IS_ERR(vec->regs))
+ 		return PTR_ERR(vec->regs);

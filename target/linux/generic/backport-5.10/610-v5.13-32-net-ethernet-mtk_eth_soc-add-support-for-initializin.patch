@@ -1,0 +1,1308 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 24 Mar 2021 02:30:53 +0100
+Subject: [PATCH] net: ethernet: mtk_eth_soc: add support for
+ initializing the PPE
+
+The PPE (packet processing engine) is used to offload NAT/routed or even
+bridged flows. This patch brings up the PPE and uses it to get a packet
+hash. It also contains some functionality that will be used to bring up
+flow offloading.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_ppe.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_ppe.h
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_ppe_regs.h
+
+--- a/drivers/net/ethernet/mediatek/Makefile
++++ b/drivers/net/ethernet/mediatek/Makefile
+@@ -4,5 +4,5 @@
+ #
+ 
+ obj-$(CONFIG_NET_MEDIATEK_SOC) += mtk_eth.o
+-mtk_eth-y := mtk_eth_soc.o mtk_sgmii.o mtk_eth_path.o
++mtk_eth-y := mtk_eth_soc.o mtk_sgmii.o mtk_eth_path.o mtk_ppe.o mtk_ppe_debugfs.o
+ obj-$(CONFIG_NET_MEDIATEK_STAR_EMAC) += mtk_star_emac.o
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2279,12 +2279,17 @@ static int mtk_open(struct net_device *d
+ 
+ 	/* we run 2 netdevs on the same dma ring so we only bring it up once */
+ 	if (!refcount_read(&eth->dma_refcnt)) {
+-		int err = mtk_start_dma(eth);
++		u32 gdm_config = MTK_GDMA_TO_PDMA;
++		int err;
+ 
++		err = mtk_start_dma(eth);
+ 		if (err)
+ 			return err;
+ 
+-		mtk_gdm_config(eth, MTK_GDMA_TO_PDMA);
++		if (eth->soc->offload_version && mtk_ppe_start(&eth->ppe) == 0)
++			gdm_config = MTK_GDMA_TO_PPE;
++
++		mtk_gdm_config(eth, gdm_config);
+ 
+ 		napi_enable(&eth->tx_napi);
+ 		napi_enable(&eth->rx_napi);
+@@ -2351,6 +2356,9 @@ static int mtk_stop(struct net_device *d
+ 
+ 	mtk_dma_free(eth);
+ 
++	if (eth->soc->offload_version)
++		mtk_ppe_stop(&eth->ppe);
++
+ 	return 0;
+ }
+ 
+@@ -3079,6 +3087,13 @@ static int mtk_probe(struct platform_dev
+ 			goto err_free_dev;
+ 	}
+ 
++	if (eth->soc->offload_version) {
++		err = mtk_ppe_init(&eth->ppe, eth->dev,
++				   eth->base + MTK_ETH_PPE_BASE, 2);
++		if (err)
++			goto err_free_dev;
++	}
++
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+@@ -3153,6 +3168,7 @@ static const struct mtk_soc_data mt7621_
+ 	.hw_features = MTK_HW_FEATURES,
+ 	.required_clks = MT7621_CLKS_BITMAP,
+ 	.required_pctl = false,
++	.offload_version = 2,
+ };
+ 
+ static const struct mtk_soc_data mt7622_data = {
+@@ -3161,6 +3177,7 @@ static const struct mtk_soc_data mt7622_
+ 	.hw_features = MTK_HW_FEATURES,
+ 	.required_clks = MT7622_CLKS_BITMAP,
+ 	.required_pctl = false,
++	.offload_version = 2,
+ };
+ 
+ static const struct mtk_soc_data mt7623_data = {
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -15,6 +15,7 @@
+ #include <linux/u64_stats_sync.h>
+ #include <linux/refcount.h>
+ #include <linux/phylink.h>
++#include "mtk_ppe.h"
+ 
+ #define MTK_QDMA_PAGE_SIZE	2048
+ #define	MTK_MAX_RX_LENGTH	1536
+@@ -86,6 +87,7 @@
+ #define MTK_GDMA_TCS_EN		BIT(21)
+ #define MTK_GDMA_UCS_EN		BIT(20)
+ #define MTK_GDMA_TO_PDMA	0x0
++#define MTK_GDMA_TO_PPE		0x4444
+ #define MTK_GDMA_DROP_ALL       0x7777
+ 
+ /* Unicast Filter MAC Address Register - Low */
+@@ -315,6 +317,12 @@
+ #define RX_DMA_VID(_x)		((_x) & 0xfff)
+ 
+ /* QDMA descriptor rxd4 */
++#define MTK_RXD4_FOE_ENTRY	GENMASK(13, 0)
++#define MTK_RXD4_PPE_CPU_REASON	GENMASK(18, 14)
++#define MTK_RXD4_SRC_PORT	GENMASK(21, 19)
++#define MTK_RXD4_ALG		GENMASK(31, 22)
++
++/* QDMA descriptor rxd4 */
+ #define RX_DMA_L4_VALID		BIT(24)
+ #define RX_DMA_L4_VALID_PDMA	BIT(30)		/* when PDMA is used */
+ #define RX_DMA_FPORT_SHIFT	19
+@@ -819,6 +827,7 @@ struct mtk_soc_data {
+ 	u32		caps;
+ 	u32		required_clks;
+ 	bool		required_pctl;
++	u8		offload_version;
+ 	netdev_features_t hw_features;
+ };
+ 
+@@ -918,6 +927,8 @@ struct mtk_eth {
+ 	u32				tx_int_status_reg;
+ 	u32				rx_dma_l4_valid;
+ 	int				ip_align;
++
++	struct mtk_ppe			ppe;
+ };
+ 
+ /* struct mtk_mac -	the structure that holds the info about the MACs of the
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -0,0 +1,511 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (C) 2020 Felix Fietkau <nbd@nbd.name> */
++
++#include <linux/kernel.h>
++#include <linux/jiffies.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/etherdevice.h>
++#include <linux/platform_device.h>
++#include "mtk_ppe.h"
++#include "mtk_ppe_regs.h"
++
++static void ppe_w32(struct mtk_ppe *ppe, u32 reg, u32 val)
++{
++	writel(val, ppe->base + reg);
++}
++
++static u32 ppe_r32(struct mtk_ppe *ppe, u32 reg)
++{
++	return readl(ppe->base + reg);
++}
++
++static u32 ppe_m32(struct mtk_ppe *ppe, u32 reg, u32 mask, u32 set)
++{
++	u32 val;
++
++	val = ppe_r32(ppe, reg);
++	val &= ~mask;
++	val |= set;
++	ppe_w32(ppe, reg, val);
++
++	return val;
++}
++
++static u32 ppe_set(struct mtk_ppe *ppe, u32 reg, u32 val)
++{
++	return ppe_m32(ppe, reg, 0, val);
++}
++
++static u32 ppe_clear(struct mtk_ppe *ppe, u32 reg, u32 val)
++{
++	return ppe_m32(ppe, reg, val, 0);
++}
++
++static int mtk_ppe_wait_busy(struct mtk_ppe *ppe)
++{
++	unsigned long timeout = jiffies + HZ;
++
++	while (time_is_before_jiffies(timeout)) {
++		if (!(ppe_r32(ppe, MTK_PPE_GLO_CFG) & MTK_PPE_GLO_CFG_BUSY))
++			return 0;
++
++		usleep_range(10, 20);
++	}
++
++	dev_err(ppe->dev, "PPE table busy");
++
++	return -ETIMEDOUT;
++}
++
++static void mtk_ppe_cache_clear(struct mtk_ppe *ppe)
++{
++	ppe_set(ppe, MTK_PPE_CACHE_CTL, MTK_PPE_CACHE_CTL_CLEAR);
++	ppe_clear(ppe, MTK_PPE_CACHE_CTL, MTK_PPE_CACHE_CTL_CLEAR);
++}
++
++static void mtk_ppe_cache_enable(struct mtk_ppe *ppe, bool enable)
++{
++	mtk_ppe_cache_clear(ppe);
++
++	ppe_m32(ppe, MTK_PPE_CACHE_CTL, MTK_PPE_CACHE_CTL_EN,
++		enable * MTK_PPE_CACHE_CTL_EN);
++}
++
++static u32 mtk_ppe_hash_entry(struct mtk_foe_entry *e)
++{
++	u32 hv1, hv2, hv3;
++	u32 hash;
++
++	switch (FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, e->ib1)) {
++		case MTK_PPE_PKT_TYPE_BRIDGE:
++			hv1 = e->bridge.src_mac_lo;
++			hv1 ^= ((e->bridge.src_mac_hi & 0xffff) << 16);
++			hv2 = e->bridge.src_mac_hi >> 16;
++			hv2 ^= e->bridge.dest_mac_lo;
++			hv3 = e->bridge.dest_mac_hi;
++			break;
++		case MTK_PPE_PKT_TYPE_IPV4_ROUTE:
++		case MTK_PPE_PKT_TYPE_IPV4_HNAPT:
++			hv1 = e->ipv4.orig.ports;
++			hv2 = e->ipv4.orig.dest_ip;
++			hv3 = e->ipv4.orig.src_ip;
++			break;
++		case MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T:
++		case MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T:
++			hv1 = e->ipv6.src_ip[3] ^ e->ipv6.dest_ip[3];
++			hv1 ^= e->ipv6.ports;
++
++			hv2 = e->ipv6.src_ip[2] ^ e->ipv6.dest_ip[2];
++			hv2 ^= e->ipv6.dest_ip[0];
++
++			hv3 = e->ipv6.src_ip[1] ^ e->ipv6.dest_ip[1];
++			hv3 ^= e->ipv6.src_ip[0];
++			break;
++		case MTK_PPE_PKT_TYPE_IPV4_DSLITE:
++		case MTK_PPE_PKT_TYPE_IPV6_6RD:
++		default:
++			WARN_ON_ONCE(1);
++			return MTK_PPE_HASH_MASK;
++	}
++
++	hash = (hv1 & hv2) | ((~hv1) & hv3);
++	hash = (hash >> 24) | ((hash & 0xffffff) << 8);
++	hash ^= hv1 ^ hv2 ^ hv3;
++	hash ^= hash >> 16;
++	hash <<= 1;
++	hash &= MTK_PPE_ENTRIES - 1;
++
++	return hash;
++}
++
++static inline struct mtk_foe_mac_info *
++mtk_foe_entry_l2(struct mtk_foe_entry *entry)
++{
++	int type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
++
++	if (type >= MTK_PPE_PKT_TYPE_IPV4_DSLITE)
++		return &entry->ipv6.l2;
++
++	return &entry->ipv4.l2;
++}
++
++static inline u32 *
++mtk_foe_entry_ib2(struct mtk_foe_entry *entry)
++{
++	int type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
++
++	if (type >= MTK_PPE_PKT_TYPE_IPV4_DSLITE)
++		return &entry->ipv6.ib2;
++
++	return &entry->ipv4.ib2;
++}
++
++int mtk_foe_entry_prepare(struct mtk_foe_entry *entry, int type, int l4proto,
++			  u8 pse_port, u8 *src_mac, u8 *dest_mac)
++{
++	struct mtk_foe_mac_info *l2;
++	u32 ports_pad, val;
++
++	memset(entry, 0, sizeof(*entry));
++
++	val = FIELD_PREP(MTK_FOE_IB1_STATE, MTK_FOE_STATE_BIND) |
++	      FIELD_PREP(MTK_FOE_IB1_PACKET_TYPE, type) |
++	      FIELD_PREP(MTK_FOE_IB1_UDP, l4proto == IPPROTO_UDP) |
++	      MTK_FOE_IB1_BIND_TTL |
++	      MTK_FOE_IB1_BIND_CACHE;
++	entry->ib1 = val;
++
++	val = FIELD_PREP(MTK_FOE_IB2_PORT_MG, 0x3f) |
++	      FIELD_PREP(MTK_FOE_IB2_PORT_AG, 0x1f) |
++	      FIELD_PREP(MTK_FOE_IB2_DEST_PORT, pse_port);
++
++	if (is_multicast_ether_addr(dest_mac))
++		val |= MTK_FOE_IB2_MULTICAST;
++
++	ports_pad = 0xa5a5a500 | (l4proto & 0xff);
++	if (type == MTK_PPE_PKT_TYPE_IPV4_ROUTE)
++		entry->ipv4.orig.ports = ports_pad;
++	if (type == MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T)
++		entry->ipv6.ports = ports_pad;
++
++	if (type >= MTK_PPE_PKT_TYPE_IPV4_DSLITE) {
++		entry->ipv6.ib2 = val;
++		l2 = &entry->ipv6.l2;
++	} else {
++		entry->ipv4.ib2 = val;
++		l2 = &entry->ipv4.l2;
++	}
++
++	l2->dest_mac_hi = get_unaligned_be32(dest_mac);
++	l2->dest_mac_lo = get_unaligned_be16(dest_mac + 4);
++	l2->src_mac_hi = get_unaligned_be32(src_mac);
++	l2->src_mac_lo = get_unaligned_be16(src_mac + 4);
++
++	if (type >= MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T)
++		l2->etype = ETH_P_IPV6;
++	else
++		l2->etype = ETH_P_IP;
++
++	return 0;
++}
++
++int mtk_foe_entry_set_pse_port(struct mtk_foe_entry *entry, u8 port)
++{
++	u32 *ib2 = mtk_foe_entry_ib2(entry);
++	u32 val;
++
++	val = *ib2;
++	val &= ~MTK_FOE_IB2_DEST_PORT;
++	val |= FIELD_PREP(MTK_FOE_IB2_DEST_PORT, port);
++	*ib2 = val;
++
++	return 0;
++}
++
++int mtk_foe_entry_set_ipv4_tuple(struct mtk_foe_entry *entry, bool egress,
++				 __be32 src_addr, __be16 src_port,
++				 __be32 dest_addr, __be16 dest_port)
++{
++	int type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
++	struct mtk_ipv4_tuple *t;
++
++	switch (type) {
++	case MTK_PPE_PKT_TYPE_IPV4_HNAPT:
++		if (egress) {
++			t = &entry->ipv4.new;
++			break;
++		}
++		fallthrough;
++	case MTK_PPE_PKT_TYPE_IPV4_DSLITE:
++	case MTK_PPE_PKT_TYPE_IPV4_ROUTE:
++		t = &entry->ipv4.orig;
++		break;
++	case MTK_PPE_PKT_TYPE_IPV6_6RD:
++		entry->ipv6_6rd.tunnel_src_ip = be32_to_cpu(src_addr);
++		entry->ipv6_6rd.tunnel_dest_ip = be32_to_cpu(dest_addr);
++		return 0;
++	default:
++		WARN_ON_ONCE(1);
++		return -EINVAL;
++	}
++
++	t->src_ip = be32_to_cpu(src_addr);
++	t->dest_ip = be32_to_cpu(dest_addr);
++
++	if (type == MTK_PPE_PKT_TYPE_IPV4_ROUTE)
++		return 0;
++
++	t->src_port = be16_to_cpu(src_port);
++	t->dest_port = be16_to_cpu(dest_port);
++
++	return 0;
++}
++
++int mtk_foe_entry_set_ipv6_tuple(struct mtk_foe_entry *entry,
++				 __be32 *src_addr, __be16 src_port,
++				 __be32 *dest_addr, __be16 dest_port)
++{
++	int type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
++	u32 *src, *dest;
++	int i;
++
++	switch (type) {
++	case MTK_PPE_PKT_TYPE_IPV4_DSLITE:
++		src = entry->dslite.tunnel_src_ip;
++		dest = entry->dslite.tunnel_dest_ip;
++		break;
++	case MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T:
++	case MTK_PPE_PKT_TYPE_IPV6_6RD:
++		entry->ipv6.src_port = be16_to_cpu(src_port);
++		entry->ipv6.dest_port = be16_to_cpu(dest_port);
++		fallthrough;
++	case MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T:
++		src = entry->ipv6.src_ip;
++		dest = entry->ipv6.dest_ip;
++		break;
++	default:
++		WARN_ON_ONCE(1);
++		return -EINVAL;
++	};
++
++	for (i = 0; i < 4; i++)
++		src[i] = be32_to_cpu(src_addr[i]);
++	for (i = 0; i < 4; i++)
++		dest[i] = be32_to_cpu(dest_addr[i]);
++
++	return 0;
++}
++
++int mtk_foe_entry_set_dsa(struct mtk_foe_entry *entry, int port)
++{
++	struct mtk_foe_mac_info *l2 = mtk_foe_entry_l2(entry);
++
++	l2->etype = BIT(port);
++
++	if (!(entry->ib1 & MTK_FOE_IB1_BIND_VLAN_LAYER))
++		entry->ib1 |= FIELD_PREP(MTK_FOE_IB1_BIND_VLAN_LAYER, 1);
++	else
++		l2->etype |= BIT(8);
++
++	entry->ib1 &= ~MTK_FOE_IB1_BIND_VLAN_TAG;
++
++	return 0;
++}
++
++int mtk_foe_entry_set_vlan(struct mtk_foe_entry *entry, int vid)
++{
++	struct mtk_foe_mac_info *l2 = mtk_foe_entry_l2(entry);
++
++	switch (FIELD_GET(MTK_FOE_IB1_BIND_VLAN_LAYER, entry->ib1)) {
++	case 0:
++		entry->ib1 |= MTK_FOE_IB1_BIND_VLAN_TAG |
++			      FIELD_PREP(MTK_FOE_IB1_BIND_VLAN_LAYER, 1);
++		l2->vlan1 = vid;
++		return 0;
++	case 1:
++		if (!(entry->ib1 & MTK_FOE_IB1_BIND_VLAN_TAG)) {
++			l2->vlan1 = vid;
++			l2->etype |= BIT(8);
++		} else {
++			l2->vlan2 = vid;
++			entry->ib1 += FIELD_PREP(MTK_FOE_IB1_BIND_VLAN_LAYER, 1);
++		}
++		return 0;
++	default:
++		return -ENOSPC;
++	}
++}
++
++int mtk_foe_entry_set_pppoe(struct mtk_foe_entry *entry, int sid)
++{
++	struct mtk_foe_mac_info *l2 = mtk_foe_entry_l2(entry);
++
++	if (!(entry->ib1 & MTK_FOE_IB1_BIND_VLAN_LAYER) ||
++	    (entry->ib1 & MTK_FOE_IB1_BIND_VLAN_TAG))
++		l2->etype = ETH_P_PPP_SES;
++
++	entry->ib1 |= MTK_FOE_IB1_BIND_PPPOE;
++	l2->pppoe_id = sid;
++
++	return 0;
++}
++
++static inline bool mtk_foe_entry_usable(struct mtk_foe_entry *entry)
++{
++	return !(entry->ib1 & MTK_FOE_IB1_STATIC) &&
++	       FIELD_GET(MTK_FOE_IB1_STATE, entry->ib1) != MTK_FOE_STATE_BIND;
++}
++
++int mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_foe_entry *entry,
++			 u16 timestamp)
++{
++	struct mtk_foe_entry *hwe;
++	u32 hash;
++
++	timestamp &= MTK_FOE_IB1_BIND_TIMESTAMP;
++	entry->ib1 &= ~MTK_FOE_IB1_BIND_TIMESTAMP;
++	entry->ib1 |= FIELD_PREP(MTK_FOE_IB1_BIND_TIMESTAMP, timestamp);
++
++	hash = mtk_ppe_hash_entry(entry);
++	hwe = &ppe->foe_table[hash];
++	if (!mtk_foe_entry_usable(hwe)) {
++		hwe++;
++		hash++;
++
++		if (!mtk_foe_entry_usable(hwe))
++			return -ENOSPC;
++	}
++
++	memcpy(&hwe->data, &entry->data, sizeof(hwe->data));
++	wmb();
++	hwe->ib1 = entry->ib1;
++
++	dma_wmb();
++
++	mtk_ppe_cache_clear(ppe);
++
++	return hash;
++}
++
++int mtk_ppe_init(struct mtk_ppe *ppe, struct device *dev, void __iomem *base,
++		 int version)
++{
++	struct mtk_foe_entry *foe;
++
++	/* need to allocate a separate device, since it PPE DMA access is
++	 * not coherent.
++	 */
++	ppe->base = base;
++	ppe->dev = dev;
++	ppe->version = version;
++
++	foe = dmam_alloc_coherent(ppe->dev, MTK_PPE_ENTRIES * sizeof(*foe),
++				  &ppe->foe_phys, GFP_KERNEL);
++	if (!foe)
++		return -ENOMEM;
++
++	ppe->foe_table = foe;
++
++	mtk_ppe_debugfs_init(ppe);
++
++	return 0;
++}
++
++static void mtk_ppe_init_foe_table(struct mtk_ppe *ppe)
++{
++	static const u8 skip[] = { 12, 25, 38, 51, 76, 89, 102 };
++	int i, k;
++
++	memset(ppe->foe_table, 0, MTK_PPE_ENTRIES * sizeof(ppe->foe_table));
++
++	if (!IS_ENABLED(CONFIG_SOC_MT7621))
++		return;
++
++	/* skip all entries that cross the 1024 byte boundary */
++	for (i = 0; i < MTK_PPE_ENTRIES; i += 128)
++		for (k = 0; k < ARRAY_SIZE(skip); k++)
++			ppe->foe_table[i + skip[k]].ib1 |= MTK_FOE_IB1_STATIC;
++}
++
++int mtk_ppe_start(struct mtk_ppe *ppe)
++{
++	u32 val;
++
++	mtk_ppe_init_foe_table(ppe);
++	ppe_w32(ppe, MTK_PPE_TB_BASE, ppe->foe_phys);
++
++	val = MTK_PPE_TB_CFG_ENTRY_80B |
++	      MTK_PPE_TB_CFG_AGE_NON_L4 |
++	      MTK_PPE_TB_CFG_AGE_UNBIND |
++	      MTK_PPE_TB_CFG_AGE_TCP |
++	      MTK_PPE_TB_CFG_AGE_UDP |
++	      MTK_PPE_TB_CFG_AGE_TCP_FIN |
++	      FIELD_PREP(MTK_PPE_TB_CFG_SEARCH_MISS,
++			 MTK_PPE_SEARCH_MISS_ACTION_FORWARD_BUILD) |
++	      FIELD_PREP(MTK_PPE_TB_CFG_KEEPALIVE,
++			 MTK_PPE_KEEPALIVE_DISABLE) |
++	      FIELD_PREP(MTK_PPE_TB_CFG_HASH_MODE, 1) |
++	      FIELD_PREP(MTK_PPE_TB_CFG_SCAN_MODE,
++			 MTK_PPE_SCAN_MODE_KEEPALIVE_AGE) |
++	      FIELD_PREP(MTK_PPE_TB_CFG_ENTRY_NUM,
++			 MTK_PPE_ENTRIES_SHIFT);
++	ppe_w32(ppe, MTK_PPE_TB_CFG, val);
++
++	ppe_w32(ppe, MTK_PPE_IP_PROTO_CHK,
++		MTK_PPE_IP_PROTO_CHK_IPV4 | MTK_PPE_IP_PROTO_CHK_IPV6);
++
++	mtk_ppe_cache_enable(ppe, true);
++
++	val = MTK_PPE_FLOW_CFG_IP4_TCP_FRAG |
++	      MTK_PPE_FLOW_CFG_IP4_UDP_FRAG |
++	      MTK_PPE_FLOW_CFG_IP6_3T_ROUTE |
++	      MTK_PPE_FLOW_CFG_IP6_5T_ROUTE |
++	      MTK_PPE_FLOW_CFG_IP6_6RD |
++	      MTK_PPE_FLOW_CFG_IP4_NAT |
++	      MTK_PPE_FLOW_CFG_IP4_NAPT |
++	      MTK_PPE_FLOW_CFG_IP4_DSLITE |
++	      MTK_PPE_FLOW_CFG_L2_BRIDGE |
++	      MTK_PPE_FLOW_CFG_IP4_NAT_FRAG;
++	ppe_w32(ppe, MTK_PPE_FLOW_CFG, val);
++
++	val = FIELD_PREP(MTK_PPE_UNBIND_AGE_MIN_PACKETS, 1000) |
++	      FIELD_PREP(MTK_PPE_UNBIND_AGE_DELTA, 3);
++	ppe_w32(ppe, MTK_PPE_UNBIND_AGE, val);
++
++	val = FIELD_PREP(MTK_PPE_BIND_AGE0_DELTA_UDP, 12) |
++	      FIELD_PREP(MTK_PPE_BIND_AGE0_DELTA_NON_L4, 1);
++	ppe_w32(ppe, MTK_PPE_BIND_AGE0, val);
++
++	val = FIELD_PREP(MTK_PPE_BIND_AGE1_DELTA_TCP_FIN, 1) |
++	      FIELD_PREP(MTK_PPE_BIND_AGE1_DELTA_TCP, 7);
++	ppe_w32(ppe, MTK_PPE_BIND_AGE1, val);
++
++	val = MTK_PPE_BIND_LIMIT0_QUARTER | MTK_PPE_BIND_LIMIT0_HALF;
++	ppe_w32(ppe, MTK_PPE_BIND_LIMIT0, val);
++
++	val = MTK_PPE_BIND_LIMIT1_FULL |
++	      FIELD_PREP(MTK_PPE_BIND_LIMIT1_NON_L4, 1);
++	ppe_w32(ppe, MTK_PPE_BIND_LIMIT1, val);
++
++	val = FIELD_PREP(MTK_PPE_BIND_RATE_BIND, 30) |
++	      FIELD_PREP(MTK_PPE_BIND_RATE_PREBIND, 1);
++	ppe_w32(ppe, MTK_PPE_BIND_RATE, val);
++
++	/* enable PPE */
++	val = MTK_PPE_GLO_CFG_EN |
++	      MTK_PPE_GLO_CFG_IP4_L4_CS_DROP |
++	      MTK_PPE_GLO_CFG_IP4_CS_DROP |
++	      MTK_PPE_GLO_CFG_FLOW_DROP_UPDATE;
++	ppe_w32(ppe, MTK_PPE_GLO_CFG, val);
++
++	ppe_w32(ppe, MTK_PPE_DEFAULT_CPU_PORT, 0);
++
++	return 0;
++}
++
++int mtk_ppe_stop(struct mtk_ppe *ppe)
++{
++	u32 val;
++	int i;
++
++	for (i = 0; i < MTK_PPE_ENTRIES; i++)
++		ppe->foe_table[i].ib1 = FIELD_PREP(MTK_FOE_IB1_STATE,
++						   MTK_FOE_STATE_INVALID);
++
++	mtk_ppe_cache_enable(ppe, false);
++
++	/* disable offload engine */
++	ppe_clear(ppe, MTK_PPE_GLO_CFG, MTK_PPE_GLO_CFG_EN);
++	ppe_w32(ppe, MTK_PPE_FLOW_CFG, 0);
++
++	/* disable aging */
++	val = MTK_PPE_TB_CFG_AGE_NON_L4 |
++	      MTK_PPE_TB_CFG_AGE_UNBIND |
++	      MTK_PPE_TB_CFG_AGE_TCP |
++	      MTK_PPE_TB_CFG_AGE_UDP |
++	      MTK_PPE_TB_CFG_AGE_TCP_FIN;
++	ppe_clear(ppe, MTK_PPE_TB_CFG, val);
++
++	return mtk_ppe_wait_busy(ppe);
++}
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -0,0 +1,287 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (C) 2020 Felix Fietkau <nbd@nbd.name> */
++
++#ifndef __MTK_PPE_H
++#define __MTK_PPE_H
++
++#include <linux/kernel.h>
++#include <linux/bitfield.h>
++
++#define MTK_ETH_PPE_BASE		0xc00
++
++#define MTK_PPE_ENTRIES_SHIFT		3
++#define MTK_PPE_ENTRIES			(1024 << MTK_PPE_ENTRIES_SHIFT)
++#define MTK_PPE_HASH_MASK		(MTK_PPE_ENTRIES - 1)
++
++#define MTK_FOE_IB1_UNBIND_TIMESTAMP	GENMASK(7, 0)
++#define MTK_FOE_IB1_UNBIND_PACKETS	GENMASK(23, 8)
++#define MTK_FOE_IB1_UNBIND_PREBIND	BIT(24)
++
++#define MTK_FOE_IB1_BIND_TIMESTAMP	GENMASK(14, 0)
++#define MTK_FOE_IB1_BIND_KEEPALIVE	BIT(15)
++#define MTK_FOE_IB1_BIND_VLAN_LAYER	GENMASK(18, 16)
++#define MTK_FOE_IB1_BIND_PPPOE		BIT(19)
++#define MTK_FOE_IB1_BIND_VLAN_TAG	BIT(20)
++#define MTK_FOE_IB1_BIND_PKT_SAMPLE	BIT(21)
++#define MTK_FOE_IB1_BIND_CACHE		BIT(22)
++#define MTK_FOE_IB1_BIND_TUNNEL_DECAP	BIT(23)
++#define MTK_FOE_IB1_BIND_TTL		BIT(24)
++
++#define MTK_FOE_IB1_PACKET_TYPE		GENMASK(27, 25)
++#define MTK_FOE_IB1_STATE		GENMASK(29, 28)
++#define MTK_FOE_IB1_UDP			BIT(30)
++#define MTK_FOE_IB1_STATIC		BIT(31)
++
++enum {
++	MTK_PPE_PKT_TYPE_IPV4_HNAPT = 0,
++	MTK_PPE_PKT_TYPE_IPV4_ROUTE = 1,
++	MTK_PPE_PKT_TYPE_BRIDGE = 2,
++	MTK_PPE_PKT_TYPE_IPV4_DSLITE = 3,
++	MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T = 4,
++	MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T = 5,
++	MTK_PPE_PKT_TYPE_IPV6_6RD = 7,
++};
++
++#define MTK_FOE_IB2_QID			GENMASK(3, 0)
++#define MTK_FOE_IB2_PSE_QOS		BIT(4)
++#define MTK_FOE_IB2_DEST_PORT		GENMASK(7, 5)
++#define MTK_FOE_IB2_MULTICAST		BIT(8)
++
++#define MTK_FOE_IB2_WHNAT_QID2		GENMASK(13, 12)
++#define MTK_FOE_IB2_WHNAT_DEVIDX	BIT(16)
++#define MTK_FOE_IB2_WHNAT_NAT		BIT(17)
++
++#define MTK_FOE_IB2_PORT_MG		GENMASK(17, 12)
++
++#define MTK_FOE_IB2_PORT_AG		GENMASK(23, 18)
++
++#define MTK_FOE_IB2_DSCP		GENMASK(31, 24)
++
++#define MTK_FOE_VLAN2_WHNAT_BSS		GEMMASK(5, 0)
++#define MTK_FOE_VLAN2_WHNAT_WCID	GENMASK(13, 6)
++#define MTK_FOE_VLAN2_WHNAT_RING	GENMASK(15, 14)
++
++enum {
++	MTK_FOE_STATE_INVALID,
++	MTK_FOE_STATE_UNBIND,
++	MTK_FOE_STATE_BIND,
++	MTK_FOE_STATE_FIN
++};
++
++struct mtk_foe_mac_info {
++	u16 vlan1;
++	u16 etype;
++
++	u32 dest_mac_hi;
++
++	u16 vlan2;
++	u16 dest_mac_lo;
++
++	u32 src_mac_hi;
++
++	u16 pppoe_id;
++	u16 src_mac_lo;
++};
++
++struct mtk_foe_bridge {
++	u32 dest_mac_hi;
++
++	u16 src_mac_lo;
++	u16 dest_mac_lo;
++
++	u32 src_mac_hi;
++
++	u32 ib2;
++
++	u32 _rsv[5];
++
++	u32 udf_tsid;
++	struct mtk_foe_mac_info l2;
++};
++
++struct mtk_ipv4_tuple {
++	u32 src_ip;
++	u32 dest_ip;
++	union {
++		struct {
++			u16 dest_port;
++			u16 src_port;
++		};
++		struct {
++			u8 protocol;
++			u8 _pad[3]; /* fill with 0xa5a5a5 */
++		};
++		u32 ports;
++	};
++};
++
++struct mtk_foe_ipv4 {
++	struct mtk_ipv4_tuple orig;
++
++	u32 ib2;
++
++	struct mtk_ipv4_tuple new;
++
++	u16 timestamp;
++	u16 _rsv0[3];
++
++	u32 udf_tsid;
++
++	struct mtk_foe_mac_info l2;
++};
++
++struct mtk_foe_ipv4_dslite {
++	struct mtk_ipv4_tuple ip4;
++
++	u32 tunnel_src_ip[4];
++	u32 tunnel_dest_ip[4];
++
++	u8 flow_label[3];
++	u8 priority;
++
++	u32 udf_tsid;
++
++	u32 ib2;
++
++	struct mtk_foe_mac_info l2;
++};
++
++struct mtk_foe_ipv6 {
++	u32 src_ip[4];
++	u32 dest_ip[4];
++
++	union {
++		struct {
++			u8 protocol;
++			u8 _pad[3]; /* fill with 0xa5a5a5 */
++		}; /* 3-tuple */
++		struct {
++			u16 dest_port;
++			u16 src_port;
++		}; /* 5-tuple */
++		u32 ports;
++	};
++
++	u32 _rsv[3];
++
++	u32 udf;
++
++	u32 ib2;
++	struct mtk_foe_mac_info l2;
++};
++
++struct mtk_foe_ipv6_6rd {
++	u32 src_ip[4];
++	u32 dest_ip[4];
++	u16 dest_port;
++	u16 src_port;
++
++	u32 tunnel_src_ip;
++	u32 tunnel_dest_ip;
++
++	u16 hdr_csum;
++	u8 dscp;
++	u8 ttl;
++
++	u8 flag;
++	u8 pad;
++	u8 per_flow_6rd_id;
++	u8 pad2;
++
++	u32 ib2;
++	struct mtk_foe_mac_info l2;
++};
++
++struct mtk_foe_entry {
++	u32 ib1;
++
++	union {
++		struct mtk_foe_bridge bridge;
++		struct mtk_foe_ipv4 ipv4;
++		struct mtk_foe_ipv4_dslite dslite;
++		struct mtk_foe_ipv6 ipv6;
++		struct mtk_foe_ipv6_6rd ipv6_6rd;
++		u32 data[19];
++	};
++};
++
++enum {
++	MTK_PPE_CPU_REASON_TTL_EXCEEDED			= 0x02,
++	MTK_PPE_CPU_REASON_OPTION_HEADER		= 0x03,
++	MTK_PPE_CPU_REASON_NO_FLOW			= 0x07,
++	MTK_PPE_CPU_REASON_IPV4_FRAG			= 0x08,
++	MTK_PPE_CPU_REASON_IPV4_DSLITE_FRAG		= 0x09,
++	MTK_PPE_CPU_REASON_IPV4_DSLITE_NO_TCP_UDP	= 0x0a,
++	MTK_PPE_CPU_REASON_IPV6_6RD_NO_TCP_UDP		= 0x0b,
++	MTK_PPE_CPU_REASON_TCP_FIN_SYN_RST		= 0x0c,
++	MTK_PPE_CPU_REASON_UN_HIT			= 0x0d,
++	MTK_PPE_CPU_REASON_HIT_UNBIND			= 0x0e,
++	MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED	= 0x0f,
++	MTK_PPE_CPU_REASON_HIT_BIND_TCP_FIN		= 0x10,
++	MTK_PPE_CPU_REASON_HIT_TTL_1			= 0x11,
++	MTK_PPE_CPU_REASON_HIT_BIND_VLAN_VIOLATION	= 0x12,
++	MTK_PPE_CPU_REASON_KEEPALIVE_UC_OLD_HDR		= 0x13,
++	MTK_PPE_CPU_REASON_KEEPALIVE_MC_NEW_HDR		= 0x14,
++	MTK_PPE_CPU_REASON_KEEPALIVE_DUP_OLD_HDR	= 0x15,
++	MTK_PPE_CPU_REASON_HIT_BIND_FORCE_CPU		= 0x16,
++	MTK_PPE_CPU_REASON_TUNNEL_OPTION_HEADER		= 0x17,
++	MTK_PPE_CPU_REASON_MULTICAST_TO_CPU		= 0x18,
++	MTK_PPE_CPU_REASON_MULTICAST_TO_GMAC1_CPU	= 0x19,
++	MTK_PPE_CPU_REASON_HIT_PRE_BIND			= 0x1a,
++	MTK_PPE_CPU_REASON_PACKET_SAMPLING		= 0x1b,
++	MTK_PPE_CPU_REASON_EXCEED_MTU			= 0x1c,
++	MTK_PPE_CPU_REASON_PPE_BYPASS			= 0x1e,
++	MTK_PPE_CPU_REASON_INVALID			= 0x1f,
++};
++
++struct mtk_ppe {
++	struct device *dev;
++	void __iomem *base;
++	int version;
++
++	struct mtk_foe_entry *foe_table;
++	dma_addr_t foe_phys;
++
++	void *acct_table;
++};
++
++int mtk_ppe_init(struct mtk_ppe *ppe, struct device *dev, void __iomem *base,
++		 int version);
++int mtk_ppe_start(struct mtk_ppe *ppe);
++int mtk_ppe_stop(struct mtk_ppe *ppe);
++
++static inline void
++mtk_foe_entry_clear(struct mtk_ppe *ppe, u16 hash)
++{
++	ppe->foe_table[hash].ib1 = 0;
++	dma_wmb();
++}
++
++static inline int
++mtk_foe_entry_timestamp(struct mtk_ppe *ppe, u16 hash)
++{
++	u32 ib1 = READ_ONCE(ppe->foe_table[hash].ib1);
++
++	if (FIELD_GET(MTK_FOE_IB1_STATE, ib1) != MTK_FOE_STATE_BIND)
++		return -1;
++
++	return FIELD_GET(MTK_FOE_IB1_BIND_TIMESTAMP, ib1);
++}
++
++int mtk_foe_entry_prepare(struct mtk_foe_entry *entry, int type, int l4proto,
++			  u8 pse_port, u8 *src_mac, u8 *dest_mac);
++int mtk_foe_entry_set_pse_port(struct mtk_foe_entry *entry, u8 port);
++int mtk_foe_entry_set_ipv4_tuple(struct mtk_foe_entry *entry, bool orig,
++				 __be32 src_addr, __be16 src_port,
++				 __be32 dest_addr, __be16 dest_port);
++int mtk_foe_entry_set_ipv6_tuple(struct mtk_foe_entry *entry,
++				 __be32 *src_addr, __be16 src_port,
++				 __be32 *dest_addr, __be16 dest_port);
++int mtk_foe_entry_set_dsa(struct mtk_foe_entry *entry, int port);
++int mtk_foe_entry_set_vlan(struct mtk_foe_entry *entry, int vid);
++int mtk_foe_entry_set_pppoe(struct mtk_foe_entry *entry, int sid);
++int mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_foe_entry *entry,
++			 u16 timestamp);
++int mtk_ppe_debugfs_init(struct mtk_ppe *ppe);
++
++#endif
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+@@ -0,0 +1,217 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (C) 2020 Felix Fietkau <nbd@nbd.name> */
++
++#include <linux/kernel.h>
++#include <linux/debugfs.h>
++#include "mtk_eth_soc.h"
++
++struct mtk_flow_addr_info
++{
++	void *src, *dest;
++	u16 *src_port, *dest_port;
++	bool ipv6;
++};
++
++static const char *mtk_foe_entry_state_str(int state)
++{
++	static const char * const state_str[] = {
++		[MTK_FOE_STATE_INVALID] = "INV",
++		[MTK_FOE_STATE_UNBIND] = "UNB",
++		[MTK_FOE_STATE_BIND] = "BND",
++		[MTK_FOE_STATE_FIN] = "FIN",
++	};
++
++	if (state >= ARRAY_SIZE(state_str) || !state_str[state])
++		return "UNK";
++
++	return state_str[state];
++}
++
++static const char *mtk_foe_pkt_type_str(int type)
++{
++	static const char * const type_str[] = {
++		[MTK_PPE_PKT_TYPE_IPV4_HNAPT] = "IPv4 5T",
++		[MTK_PPE_PKT_TYPE_IPV4_ROUTE] = "IPv4 3T",
++		[MTK_PPE_PKT_TYPE_BRIDGE] = "L2",
++		[MTK_PPE_PKT_TYPE_IPV4_DSLITE] = "DS-LITE",
++		[MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T] = "IPv6 3T",
++		[MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T] = "IPv6 5T",
++		[MTK_PPE_PKT_TYPE_IPV6_6RD] = "6RD",
++	};
++
++	if (type >= ARRAY_SIZE(type_str) || !type_str[type])
++		return "UNKNOWN";
++
++	return type_str[type];
++}
++
++static void
++mtk_print_addr(struct seq_file *m, u32 *addr, bool ipv6)
++{
++	u32 n_addr[4];
++	int i;
++
++	if (!ipv6) {
++		seq_printf(m, "%pI4h", addr);
++		return;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(n_addr); i++)
++		n_addr[i] = htonl(addr[i]);
++	seq_printf(m, "%pI6", n_addr);
++}
++
++static void
++mtk_print_addr_info(struct seq_file *m, struct mtk_flow_addr_info *ai)
++{
++	mtk_print_addr(m, ai->src, ai->ipv6);
++	if (ai->src_port)
++		seq_printf(m, ":%d", *ai->src_port);
++	seq_printf(m, "->");
++	mtk_print_addr(m, ai->dest, ai->ipv6);
++	if (ai->dest_port)
++		seq_printf(m, ":%d", *ai->dest_port);
++}
++
++static int
++mtk_ppe_debugfs_foe_show(struct seq_file *m, void *private, bool bind)
++{
++	struct mtk_ppe *ppe = m->private;
++	int i, count;
++
++	for (i = 0, count = 0; i < MTK_PPE_ENTRIES; i++) {
++		struct mtk_foe_entry *entry = &ppe->foe_table[i];
++		struct mtk_foe_mac_info *l2;
++		struct mtk_flow_addr_info ai = {};
++		unsigned char h_source[ETH_ALEN];
++		unsigned char h_dest[ETH_ALEN];
++		int type, state;
++		u32 ib2;
++
++
++		state = FIELD_GET(MTK_FOE_IB1_STATE, entry->ib1);
++		if (!state)
++			continue;
++
++		if (bind && state != MTK_FOE_STATE_BIND)
++			continue;
++
++		type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
++		seq_printf(m, "%05x %s %7s", i,
++			   mtk_foe_entry_state_str(state),
++			   mtk_foe_pkt_type_str(type));
++
++		switch (type) {
++		case MTK_PPE_PKT_TYPE_IPV4_HNAPT:
++		case MTK_PPE_PKT_TYPE_IPV4_DSLITE:
++			ai.src_port = &entry->ipv4.orig.src_port;
++			ai.dest_port = &entry->ipv4.orig.dest_port;
++			fallthrough;
++		case MTK_PPE_PKT_TYPE_IPV4_ROUTE:
++			ai.src = &entry->ipv4.orig.src_ip;
++			ai.dest = &entry->ipv4.orig.dest_ip;
++			break;
++		case MTK_PPE_PKT_TYPE_IPV6_ROUTE_5T:
++			ai.src_port = &entry->ipv6.src_port;
++			ai.dest_port = &entry->ipv6.dest_port;
++			fallthrough;
++		case MTK_PPE_PKT_TYPE_IPV6_ROUTE_3T:
++		case MTK_PPE_PKT_TYPE_IPV6_6RD:
++			ai.src = &entry->ipv6.src_ip;
++			ai.dest = &entry->ipv6.dest_ip;
++			ai.ipv6 = true;
++			break;
++		}
++
++		seq_printf(m, " orig=");
++		mtk_print_addr_info(m, &ai);
++
++		switch (type) {
++		case MTK_PPE_PKT_TYPE_IPV4_HNAPT:
++		case MTK_PPE_PKT_TYPE_IPV4_DSLITE:
++			ai.src_port = &entry->ipv4.new.src_port;
++			ai.dest_port = &entry->ipv4.new.dest_port;
++			fallthrough;
++		case MTK_PPE_PKT_TYPE_IPV4_ROUTE:
++			ai.src = &entry->ipv4.new.src_ip;
++			ai.dest = &entry->ipv4.new.dest_ip;
++			seq_printf(m, " new=");
++			mtk_print_addr_info(m, &ai);
++			break;
++		}
++
++		if (type >= MTK_PPE_PKT_TYPE_IPV4_DSLITE) {
++			l2 = &entry->ipv6.l2;
++			ib2 = entry->ipv6.ib2;
++		} else {
++			l2 = &entry->ipv4.l2;
++			ib2 = entry->ipv4.ib2;
++		}
++
++		*((__be32 *)h_source) = htonl(l2->src_mac_hi);
++		*((__be16 *)&h_source[4]) = htons(l2->src_mac_lo);
++		*((__be32 *)h_dest) = htonl(l2->dest_mac_hi);
++		*((__be16 *)&h_dest[4]) = htons(l2->dest_mac_lo);
++
++		seq_printf(m, " eth=%pM->%pM etype=%04x"
++			      " vlan=%d,%d ib1=%08x ib2=%08x\n",
++			   h_source, h_dest, ntohs(l2->etype),
++			   l2->vlan1, l2->vlan2, entry->ib1, ib2);
++	}
++
++	return 0;
++}
++
++static int
++mtk_ppe_debugfs_foe_show_all(struct seq_file *m, void *private)
++{
++	return mtk_ppe_debugfs_foe_show(m, private, false);
++}
++
++static int
++mtk_ppe_debugfs_foe_show_bind(struct seq_file *m, void *private)
++{
++	return mtk_ppe_debugfs_foe_show(m, private, true);
++}
++
++static int
++mtk_ppe_debugfs_foe_open_all(struct inode *inode, struct file *file)
++{
++	return single_open(file, mtk_ppe_debugfs_foe_show_all,
++			   inode->i_private);
++}
++
++static int
++mtk_ppe_debugfs_foe_open_bind(struct inode *inode, struct file *file)
++{
++	return single_open(file, mtk_ppe_debugfs_foe_show_bind,
++			   inode->i_private);
++}
++
++int mtk_ppe_debugfs_init(struct mtk_ppe *ppe)
++{
++	static const struct file_operations fops_all = {
++		.open = mtk_ppe_debugfs_foe_open_all,
++		.read = seq_read,
++		.llseek = seq_lseek,
++		.release = single_release,
++	};
++
++	static const struct file_operations fops_bind = {
++		.open = mtk_ppe_debugfs_foe_open_bind,
++		.read = seq_read,
++		.llseek = seq_lseek,
++		.release = single_release,
++	};
++
++	struct dentry *root;
++
++	root = debugfs_create_dir("mtk_ppe", NULL);
++	if (!root)
++		return -ENOMEM;
++
++	debugfs_create_file("entries", S_IRUGO, root, ppe, &fops_all);
++	debugfs_create_file("bind", S_IRUGO, root, ppe, &fops_bind);
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_regs.h
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (C) 2020 Felix Fietkau <nbd@nbd.name> */
++
++#ifndef __MTK_PPE_REGS_H
++#define __MTK_PPE_REGS_H
++
++#define MTK_PPE_GLO_CFG				0x200
++#define MTK_PPE_GLO_CFG_EN			BIT(0)
++#define MTK_PPE_GLO_CFG_TSID_EN			BIT(1)
++#define MTK_PPE_GLO_CFG_IP4_L4_CS_DROP		BIT(2)
++#define MTK_PPE_GLO_CFG_IP4_CS_DROP		BIT(3)
++#define MTK_PPE_GLO_CFG_TTL0_DROP		BIT(4)
++#define MTK_PPE_GLO_CFG_PPE_BSWAP		BIT(5)
++#define MTK_PPE_GLO_CFG_PSE_HASH_OFS		BIT(6)
++#define MTK_PPE_GLO_CFG_MCAST_TB_EN		BIT(7)
++#define MTK_PPE_GLO_CFG_FLOW_DROP_KA		BIT(8)
++#define MTK_PPE_GLO_CFG_FLOW_DROP_UPDATE	BIT(9)
++#define MTK_PPE_GLO_CFG_UDP_LITE_EN		BIT(10)
++#define MTK_PPE_GLO_CFG_UDP_LEN_DROP		BIT(11)
++#define MTK_PPE_GLO_CFG_MCAST_ENTRIES		GNEMASK(13, 12)
++#define MTK_PPE_GLO_CFG_BUSY			BIT(31)
++
++#define MTK_PPE_FLOW_CFG			0x204
++#define MTK_PPE_FLOW_CFG_IP4_TCP_FRAG		BIT(6)
++#define MTK_PPE_FLOW_CFG_IP4_UDP_FRAG		BIT(7)
++#define MTK_PPE_FLOW_CFG_IP6_3T_ROUTE		BIT(8)
++#define MTK_PPE_FLOW_CFG_IP6_5T_ROUTE		BIT(9)
++#define MTK_PPE_FLOW_CFG_IP6_6RD		BIT(10)
++#define MTK_PPE_FLOW_CFG_IP4_NAT		BIT(12)
++#define MTK_PPE_FLOW_CFG_IP4_NAPT		BIT(13)
++#define MTK_PPE_FLOW_CFG_IP4_DSLITE		BIT(14)
++#define MTK_PPE_FLOW_CFG_L2_BRIDGE		BIT(15)
++#define MTK_PPE_FLOW_CFG_IP_PROTO_BLACKLIST	BIT(16)
++#define MTK_PPE_FLOW_CFG_IP4_NAT_FRAG		BIT(17)
++#define MTK_PPE_FLOW_CFG_IP4_HASH_FLOW_LABEL	BIT(18)
++#define MTK_PPE_FLOW_CFG_IP4_HASH_GRE_KEY	BIT(19)
++#define MTK_PPE_FLOW_CFG_IP6_HASH_GRE_KEY	BIT(20)
++
++#define MTK_PPE_IP_PROTO_CHK			0x208
++#define MTK_PPE_IP_PROTO_CHK_IPV4		GENMASK(15, 0)
++#define MTK_PPE_IP_PROTO_CHK_IPV6		GENMASK(31, 16)
++
++#define MTK_PPE_TB_CFG				0x21c
++#define MTK_PPE_TB_CFG_ENTRY_NUM		GENMASK(2, 0)
++#define MTK_PPE_TB_CFG_ENTRY_80B		BIT(3)
++#define MTK_PPE_TB_CFG_SEARCH_MISS		GENMASK(5, 4)
++#define MTK_PPE_TB_CFG_AGE_PREBIND		BIT(6)
++#define MTK_PPE_TB_CFG_AGE_NON_L4		BIT(7)
++#define MTK_PPE_TB_CFG_AGE_UNBIND		BIT(8)
++#define MTK_PPE_TB_CFG_AGE_TCP			BIT(9)
++#define MTK_PPE_TB_CFG_AGE_UDP			BIT(10)
++#define MTK_PPE_TB_CFG_AGE_TCP_FIN		BIT(11)
++#define MTK_PPE_TB_CFG_KEEPALIVE		GENMASK(13, 12)
++#define MTK_PPE_TB_CFG_HASH_MODE		GENMASK(15, 14)
++#define MTK_PPE_TB_CFG_SCAN_MODE		GENMASK(17, 16)
++#define MTK_PPE_TB_CFG_HASH_DEBUG		GENMASK(19, 18)
++
++enum {
++	MTK_PPE_SCAN_MODE_DISABLED,
++	MTK_PPE_SCAN_MODE_CHECK_AGE,
++	MTK_PPE_SCAN_MODE_KEEPALIVE_AGE,
++};
++
++enum {
++	MTK_PPE_KEEPALIVE_DISABLE,
++	MTK_PPE_KEEPALIVE_UNICAST_CPU,
++	MTK_PPE_KEEPALIVE_DUP_CPU = 3,
++};
++
++enum {
++	MTK_PPE_SEARCH_MISS_ACTION_DROP,
++	MTK_PPE_SEARCH_MISS_ACTION_FORWARD = 2,
++	MTK_PPE_SEARCH_MISS_ACTION_FORWARD_BUILD = 3,
++};
++
++#define MTK_PPE_TB_BASE				0x220
++
++#define MTK_PPE_TB_USED				0x224
++#define MTK_PPE_TB_USED_NUM			GENMASK(13, 0)
++
++#define MTK_PPE_BIND_RATE			0x228
++#define MTK_PPE_BIND_RATE_BIND			GENMASK(15, 0)
++#define MTK_PPE_BIND_RATE_PREBIND		GENMASK(31, 16)
++
++#define MTK_PPE_BIND_LIMIT0			0x22c
++#define MTK_PPE_BIND_LIMIT0_QUARTER		GENMASK(13, 0)
++#define MTK_PPE_BIND_LIMIT0_HALF		GENMASK(29, 16)
++
++#define MTK_PPE_BIND_LIMIT1			0x230
++#define MTK_PPE_BIND_LIMIT1_FULL		GENMASK(13, 0)
++#define MTK_PPE_BIND_LIMIT1_NON_L4		GENMASK(23, 16)
++
++#define MTK_PPE_KEEPALIVE			0x234
++#define MTK_PPE_KEEPALIVE_TIME			GENMASK(15, 0)
++#define MTK_PPE_KEEPALIVE_TIME_TCP		GENMASK(23, 16)
++#define MTK_PPE_KEEPALIVE_TIME_UDP		GENMASK(31, 24)
++
++#define MTK_PPE_UNBIND_AGE			0x238
++#define MTK_PPE_UNBIND_AGE_MIN_PACKETS		GENMASK(31, 16)
++#define MTK_PPE_UNBIND_AGE_DELTA		GENMASK(7, 0)
++
++#define MTK_PPE_BIND_AGE0			0x23c
++#define MTK_PPE_BIND_AGE0_DELTA_NON_L4		GENMASK(30, 16)
++#define MTK_PPE_BIND_AGE0_DELTA_UDP		GENMASK(14, 0)
++
++#define MTK_PPE_BIND_AGE1			0x240
++#define MTK_PPE_BIND_AGE1_DELTA_TCP_FIN		GENMASK(30, 16)
++#define MTK_PPE_BIND_AGE1_DELTA_TCP		GENMASK(14, 0)
++
++#define MTK_PPE_HASH_SEED			0x244
++
++#define MTK_PPE_DEFAULT_CPU_PORT		0x248
++#define MTK_PPE_DEFAULT_CPU_PORT_MASK(_n)	(GENMASK(2, 0) << ((_n) * 4))
++
++#define MTK_PPE_MTU_DROP			0x308
++
++#define MTK_PPE_VLAN_MTU0			0x30c
++#define MTK_PPE_VLAN_MTU0_NONE			GENMASK(13, 0)
++#define MTK_PPE_VLAN_MTU0_1TAG			GENMASK(29, 16)
++
++#define MTK_PPE_VLAN_MTU1			0x310
++#define MTK_PPE_VLAN_MTU1_2TAG			GENMASK(13, 0)
++#define MTK_PPE_VLAN_MTU1_3TAG			GENMASK(29, 16)
++
++#define MTK_PPE_VPM_TPID			0x318
++
++#define MTK_PPE_CACHE_CTL			0x320
++#define MTK_PPE_CACHE_CTL_EN			BIT(0)
++#define MTK_PPE_CACHE_CTL_LOCK_CLR		BIT(4)
++#define MTK_PPE_CACHE_CTL_REQ			BIT(8)
++#define MTK_PPE_CACHE_CTL_CLEAR			BIT(9)
++#define MTK_PPE_CACHE_CTL_CMD			GENMASK(13, 12)
++
++#define MTK_PPE_MIB_CFG				0x334
++#define MTK_PPE_MIB_CFG_EN			BIT(0)
++#define MTK_PPE_MIB_CFG_RD_CLR			BIT(1)
++
++#define MTK_PPE_MIB_TB_BASE			0x338
++
++#define MTK_PPE_MIB_CACHE_CTL			0x350
++#define MTK_PPE_MIB_CACHE_CTL_EN		BIT(0)
++#define MTK_PPE_MIB_CACHE_CTL_FLUSH		BIT(2)
++
++#endif

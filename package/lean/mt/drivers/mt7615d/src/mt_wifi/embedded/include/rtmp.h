@@ -5288,6 +5288,7 @@ typedef struct _CFG80211_CONTROL {
 	/* MainDevice Info. */
 	CFG80211_VIF_DEV cfg80211MainDev;
 #if defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
+	BOOLEAN bP2pCliPmEnable;
 	/* For add_virtual_intf */
 	CFG80211_VIF_DEV_SET Cfg80211VifDevSet;
 #endif /* RT_CFG80211_P2P_CONCURRENT_DEVICE || CFG80211_MULTI_STA */

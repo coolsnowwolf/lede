@@ -1,0 +1,104 @@
+From 1a000636c1828eecdcec5360a51623ef4ffbff04 Mon Sep 17 00:00:00 2001
+From: Beniamin Sandu <beniaminsandu@gmail.com>
+Date: Mon, 30 Nov 2020 14:27:55 +0200
+Subject: trace-cmd: make it build against musl C library
+
+* add some missing headers and macros
+* set pthread affinity using pthread_setaffinity_np after creating the thread
+instead of pthread_attr_setaffinity_np (which seems to not be implemented
+in musl)
+
+Tested using https://musl.cc/x86_64-linux-musl-native.tgz
+
+Link: https://lore.kernel.org/linux-trace-devel/20201130122755.31000-1-beniaminsandu@gmail.com
+
+Reviewed-by: Tzvetomir Stoyanov (VMware) <tz.stoyanov@gmail.com>
+Signed-off-by: Beniamin Sandu <beniaminsandu@gmail.com>
+[ Fixed a whitespace issue ]
+Signed-off-by: Steven Rostedt (VMware) <rostedt@goodmis.org>
+---
+ include/trace-cmd/trace-cmd.h                     |  1 +
+ lib/trace-cmd/include/trace-cmd-local.h           |  1 +
+ lib/tracefs/tracefs-events.c                      |  1 +
+ tracecmd/include/trace-local.h                    |  1 +
+ tracecmd/trace-tsync.c                            | 16 +++++++++++-----
+ 5 files changed, 20 insertions(+), 5 deletions(-)
+
+--- a/include/trace-cmd/trace-cmd.h
++++ b/include/trace-cmd/trace-cmd.h
+@@ -6,6 +6,7 @@
+ #ifndef _TRACE_CMD_H
+ #define _TRACE_CMD_H
+ 
++#include <pthread.h>
+ #include "traceevent/event-parse.h"
+ 
+ #define TRACECMD_MAGIC { 23, 8, 68 }
+--- a/lib/trace-cmd/include/trace-cmd-local.h
++++ b/lib/trace-cmd/include/trace-cmd-local.h
+@@ -26,5 +26,6 @@ void warning(const char *fmt, ...);
+ #endif
+ #endif
+ 
++#include <byteswap.h>
+ 
+ #endif /* _TRACE_CMD_LOCAL_H */
+--- a/lib/tracefs/tracefs-events.c
++++ b/lib/tracefs/tracefs-events.c
+@@ -13,6 +13,7 @@
+ #include <errno.h>
+ #include <sys/stat.h>
+ #include <fcntl.h>
++#include <limits.h>
+ 
+ #include "kbuffer.h"
+ #include "tracefs.h"
+--- a/tracecmd/include/trace-local.h
++++ b/tracecmd/include/trace-local.h
+@@ -8,6 +8,7 @@
+ 
+ #include <sys/types.h>
+ #include <dirent.h>	/* for DIR */
++#include <limits.h>
+ 
+ #include "trace-cmd.h"
+ #include "event-utils.h"
+--- a/tracecmd/trace-tsync.c
++++ b/tracecmd/trace-tsync.c
+@@ -104,13 +104,16 @@ int tracecmd_host_tsync(struct buffer_in
+ 
+ 	pthread_attr_init(&attrib);
+ 	pthread_attr_setdetachstate(&attrib, PTHREAD_CREATE_JOINABLE);
+-	if (!get_first_cpu(&pin_mask, &mask_size))
+-		pthread_attr_setaffinity_np(&attrib, mask_size, pin_mask);
+ 
+ 	ret = pthread_create(&instance->tsync_thread, &attrib,
+ 			     tsync_host_thread, &instance->tsync);
+-	if (!ret)
++
++	if (!ret) {
++		if (!get_first_cpu(&pin_mask, &mask_size))
++			pthread_setaffinity_np(instance->tsync_thread, mask_size, pin_mask);
+ 		instance->tsync_thread_running = true;
++	}
++
+ 	if (pin_mask)
+ 		CPU_FREE(pin_mask);
+ 	pthread_attr_destroy(&attrib);
+@@ -243,11 +246,14 @@ unsigned int tracecmd_guest_tsync(char *
+ 	pthread_attr_init(&attrib);
+ 	tsync->sync_proto = proto;
+ 	pthread_attr_setdetachstate(&attrib, PTHREAD_CREATE_JOINABLE);
+-	if (!get_first_cpu(&pin_mask, &mask_size))
+-		pthread_attr_setaffinity_np(&attrib, mask_size, pin_mask);
+ 
+ 	ret = pthread_create(thr_id, &attrib, tsync_agent_thread, tsync);
+ 
++	if (!ret) {
++		if (!get_first_cpu(&pin_mask, &mask_size))
++			pthread_setaffinity_np(*thr_id, mask_size, pin_mask);
++	}
++
+ 	if (pin_mask)
+ 		CPU_FREE(pin_mask);
+ 	pthread_attr_destroy(&attrib);

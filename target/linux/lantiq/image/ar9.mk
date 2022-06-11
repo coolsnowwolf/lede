@@ -34,6 +34,7 @@ define Device/bt_homehub-v3a
   DEVICE_VARIANT := Type A
   BOARD_NAME := BTHOMEHUBV3A
   SOC := ar9
+  KERNEL_SIZE := 2048k
   DEVICE_PACKAGES := kmod-usb-dwc2 \
 	kmod-ltq-adsl-ar9-mei kmod-ltq-adsl-ar9 \
 	kmod-ltq-adsl-ar9-fw-a kmod-ltq-atm-ar9 \
@@ -42,6 +43,7 @@ define Device/bt_homehub-v3a
 	kmod-ath9k kmod-owl-loader wpad-basic-wolfssl \
 	uboot-envtools
   SUPPORTED_DEVICES += BTHOMEHUBV3A
+  DEFAULT := n
 endef
 TARGET_DEVICES += bt_homehub-v3a
 

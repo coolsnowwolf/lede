@@ -1,0 +1,42 @@
+From 5fb4a451a87d8ed3363d28b63a3295399373d6c4 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Wed, 6 Jan 2021 11:51:34 +0200
+Subject: [PATCH] net: dsa: exit early in dsa_slave_switchdev_event if we can't
+ program the FDB
+
+Right now, the following would happen for a switch driver that does not
+implement .port_fdb_add or .port_fdb_del.
+
+dsa_slave_switchdev_event returns NOTIFY_OK and schedules:
+-> dsa_slave_switchdev_event_work
+   -> dsa_port_fdb_add
+      -> dsa_port_notify(DSA_NOTIFIER_FDB_ADD)
+         -> dsa_switch_fdb_add
+            -> if (!ds->ops->port_fdb_add) return -EOPNOTSUPP;
+   -> an error is printed with dev_dbg, and
+      dsa_fdb_offload_notify(switchdev_work) is not called.
+
+We can avoid scheduling the worker for nothing and say NOTIFY_DONE.
+Because we don't call dsa_fdb_offload_notify, the static FDB entry will
+remain just in the software bridge.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ net/dsa/slave.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/net/dsa/slave.c
++++ b/net/dsa/slave.c
+@@ -2172,6 +2172,9 @@ static int dsa_slave_switchdev_event(str
+ 
+ 		dp = dsa_slave_to_port(dev);
+ 
++		if (!dp->ds->ops->port_fdb_add || !dp->ds->ops->port_fdb_del)
++			return NOTIFY_DONE;
++
+ 		switchdev_work = kzalloc(sizeof(*switchdev_work), GFP_ATOMIC);
+ 		if (!switchdev_work)
+ 			return NOTIFY_BAD;

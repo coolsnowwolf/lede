@@ -413,7 +413,6 @@ define Device/dlink_dir-610-a1
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DIR-610
   DEVICE_VARIANT := A1
-  DEVICE_PACKAGES := kmod-ledtrig-netdev kmod-ledtrig-timer
   SUPPORTED_DEVICES += dir-610-a1
   DEFAULT := n
 endef
@@ -473,8 +472,8 @@ define Device/dlink_dwr-512-b
   DEVICE_VENDOR := D-Link
   DEVICE_MODEL := DWR-512
   DEVICE_VARIANT := B
-  DEVICE_PACKAGES := jboot-tools kmod-usb2 kmod-spi-dev kmod-usb-serial \
-	kmod-usb-serial-option kmod-usb-net kmod-usb-net-cdc-ether comgt-ncm
+  DEVICE_PACKAGES := jboot-tools kmod-usb2 kmod-spi-dev \
+	kmod-usb-serial-option kmod-usb-net-cdc-ether comgt-ncm
   DLINK_ROM_ID := DLK6E2412001
   DLINK_FAMILY_MEMBER := 0x6E24
   DLINK_FIRMWARE_SIZE := 0x7E0000
@@ -501,7 +500,7 @@ define Device/edimax_3g-6200n
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200n
   SUPPORTED_DEVICES += 3g-6200n
@@ -514,7 +513,7 @@ define Device/edimax_3g-6200nl
   IMAGE_SIZE := 3648k
   IMAGE/sysupgrade.bin := append-kernel | append-rootfs | \
 	edimax-header -s CSYS -m 3G62 -f 0x50000 -S 0x01100000 | pad-rootfs | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := Edimax
   DEVICE_MODEL := 3g-6200nl
   SUPPORTED_DEVICES += 3g-6200nl
@@ -554,7 +553,7 @@ define Device/hame_mpr-a1
   DEVICE_VENDOR := HAME
   DEVICE_MODEL := MPR
   DEVICE_VARIANT := A1
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-ledtrig-netdev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += mpr-a1
   DEFAULT := n
 endef
@@ -567,7 +566,7 @@ define Device/hame_mpr-a2
   DEVICE_VENDOR := HAME
   DEVICE_MODEL := MPR
   DEVICE_VARIANT := A2
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-ledtrig-netdev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += mpr-a2
 endef
 TARGET_DEVICES += hame_mpr-a2
@@ -602,6 +601,7 @@ define Device/hootoo_ht-tm02
   DEVICE_MODEL := HT-TM02
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += ht-tm02
+  DEFAULT := n
 endef
 TARGET_DEVICES += hootoo_ht-tm02
 
@@ -631,8 +631,8 @@ define Device/intenso_memory2move
   UIMAGE_NAME:= Linux Kernel Image
   DEVICE_VENDOR := Intenso
   DEVICE_MODEL := Memory 2 Move
-  DEVICE_PACKAGES := kmod-ledtrig-netdev kmod-ledtrig-timer kmod-usb2 \
-	kmod-usb-storage kmod-scsi-core kmod-fs-ext4 kmod-fs-vfat block-mount
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-storage kmod-scsi-core kmod-fs-ext4 \
+	kmod-fs-vfat block-mount
   SUPPORTED_DEVICES += m2m
 endef
 TARGET_DEVICES += intenso_memory2move
@@ -767,6 +767,7 @@ endef
 TARGET_DEVICES += nixcore_x1-8m
 
 define Device/olimex_rt5350f-olinuxino
+  $(Device/uimage-lzma-loader)
   SOC := rt5350
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := OLIMEX
@@ -777,6 +778,7 @@ endef
 TARGET_DEVICES += olimex_rt5350f-olinuxino
 
 define Device/olimex_rt5350f-olinuxino-evb
+  $(Device/uimage-lzma-loader)
   SOC := rt5350
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := OLIMEX
@@ -866,7 +868,7 @@ define Device/poray_m3
 	poray-header -B M3 -F 4M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M3
-  DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
+  DEVICE_PACKAGES := kmod-usb2
   SUPPORTED_DEVICES += m3
   DEFAULT := n
 endef
@@ -881,7 +883,7 @@ define Device/poray_m4-4m
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M4
   DEVICE_VARIANT := 4M
-  DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
+  DEVICE_PACKAGES := kmod-usb2
   SUPPORTED_DEVICES += m4-4M
   DEFAULT := n
 endef
@@ -896,7 +898,7 @@ define Device/poray_m4-8m
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := M4
   DEVICE_VARIANT := 8M
-  DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
+  DEVICE_PACKAGES := kmod-usb2
   SUPPORTED_DEVICES += m4-8M
 endef
 TARGET_DEVICES += poray_m4-8m
@@ -909,7 +911,7 @@ define Device/poray_x5
 	poray-header -B X5 -F 8M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := X5/X6
-  DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
+  DEVICE_PACKAGES := kmod-usb2
   SUPPORTED_DEVICES += x5
 endef
 TARGET_DEVICES += poray_x5
@@ -922,7 +924,7 @@ define Device/poray_x8
 	poray-header -B X8 -F 8M
   DEVICE_VENDOR := Poray
   DEVICE_MODEL := X8
-  DEVICE_PACKAGES := kmod-usb2 kmod-ledtrig-netdev kmod-ledtrig-timer
+  DEVICE_PACKAGES := kmod-usb2
   SUPPORTED_DEVICES += x8
 endef
 TARGET_DEVICES += poray_x8
@@ -1045,7 +1047,7 @@ define Device/trendnet_tew-638apb-v2
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
   IMAGE/sysupgrade.bin := $$(sysupgrade_bin) | umedia-header 0x026382 | \
-	append-metadata | check-size
+	check-size | append-metadata
   DEVICE_VENDOR := TRENDnet
   DEVICE_MODEL := TEW-638APB
   DEVICE_VARIANT := v2
@@ -1069,7 +1071,7 @@ define Device/unbranded_a5-v11
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B A5-V11 -F 4M
-  DEVICE_VENDOR := 
+  DEVICE_VENDOR :=
   DEVICE_MODEL := A5-V11
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += a5-v11
@@ -1177,9 +1179,20 @@ define Device/zorlik_zl5900v2
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Zorlik
   DEVICE_MODEL := ZL5900V2
-  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-ledtrig-netdev
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
 endef
 TARGET_DEVICES += zorlik_zl5900v2
+
+define Device/zte_mf283plus
+  $(Device/uimage-lzma-loader)
+  SOC := rt3352
+  IMAGE_SIZE := 15872k
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := MF283+
+  DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2 kmod-usb-net-qmi-wwan uqmi \
+	kmod-usb-serial kmod-usb-serial-option
+endef
+TARGET_DEVICES += zte_mf283plus
 
 define Device/zyxel_keenetic
   SOC := rt3052
@@ -1192,6 +1205,16 @@ define Device/zyxel_keenetic
   SUPPORTED_DEVICES += kn
 endef
 TARGET_DEVICES += zyxel_keenetic
+
+define Device/zyxel_keenetic-lite-b
+  $(Device/uimage-lzma-loader)
+  SOC := rt5350
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := ZyXEL
+  DEVICE_MODEL := Keenetic Lite
+  DEVICE_VARIANT := B
+endef
+TARGET_DEVICES += zyxel_keenetic-lite-b
 
 define Device/zyxel_keenetic-start
   SOC := rt5350

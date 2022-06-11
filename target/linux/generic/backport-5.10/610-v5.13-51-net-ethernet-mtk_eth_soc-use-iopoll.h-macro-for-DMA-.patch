@@ -1,0 +1,71 @@
+From 3bc8e0aff23be0526af0dbc7973a8866a08d73f1 Mon Sep 17 00:00:00 2001
+From: Ilya Lipnitskiy <ilya.lipnitskiy@gmail.com>
+Date: Thu, 22 Apr 2021 22:21:08 -0700
+Subject: [PATCH] net: ethernet: mtk_eth_soc: use iopoll.h macro for DMA init
+
+Replace a tight busy-wait loop without a pause with a standard
+readx_poll_timeout_atomic routine with a 5 us poll period.
+
+Tested by booting a MT7621 device to ensure the driver initializes
+properly.
+
+Signed-off-by: Ilya Lipnitskiy <ilya.lipnitskiy@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 29 +++++++++------------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  2 +-
+ 2 files changed, 14 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2054,25 +2054,22 @@ static int mtk_set_features(struct net_d
+ /* wait for DMA to finish whatever it is doing before we start using it again */
+ static int mtk_dma_busy_wait(struct mtk_eth *eth)
+ {
+-	unsigned long t_start = jiffies;
++	unsigned int reg;
++	int ret;
++	u32 val;
+ 
+-	while (1) {
+-		if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
+-			if (!(mtk_r32(eth, MTK_QDMA_GLO_CFG) &
+-			      (MTK_RX_DMA_BUSY | MTK_TX_DMA_BUSY)))
+-				return 0;
+-		} else {
+-			if (!(mtk_r32(eth, MTK_PDMA_GLO_CFG) &
+-			      (MTK_RX_DMA_BUSY | MTK_TX_DMA_BUSY)))
+-				return 0;
+-		}
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
++		reg = MTK_QDMA_GLO_CFG;
++	else
++		reg = MTK_PDMA_GLO_CFG;
+ 
+-		if (time_after(jiffies, t_start + MTK_DMA_BUSY_TIMEOUT))
+-			break;
+-	}
++	ret = readx_poll_timeout_atomic(__raw_readl, eth->base + reg, val,
++					!(val & (MTK_RX_DMA_BUSY | MTK_TX_DMA_BUSY)),
++					5, MTK_DMA_BUSY_TIMEOUT_US);
++	if (ret)
++		dev_err(eth->dev, "DMA init timeout\n");
+ 
+-	dev_err(eth->dev, "DMA init timeout\n");
+-	return -1;
++	return ret;
+ }
+ 
+ static int mtk_dma_init(struct mtk_eth *eth)
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -213,7 +213,7 @@
+ #define MTK_TX_DMA_BUSY		BIT(1)
+ #define MTK_RX_DMA_EN		BIT(2)
+ #define MTK_TX_DMA_EN		BIT(0)
+-#define MTK_DMA_BUSY_TIMEOUT	HZ
++#define MTK_DMA_BUSY_TIMEOUT_US	1000000
+ 
+ /* QDMA Reset Index Register */
+ #define MTK_QDMA_RST_IDX	0x1A08

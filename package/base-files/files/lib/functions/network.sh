@@ -255,7 +255,7 @@ network_find_wan() { __network_wan "$1" "0.0.0.0" "$2"; }
 
 # find the logical interface which holds the current IPv6 default route
 # 1: destination variable
-# 2: consider inactive dafault routes if "true" (optional)
+# 2: consider inactive default routes if "true" (optional)
 network_find_wan6() { __network_wan "$1" "::" "$2"; }
 
 # test whether the given logical interface is running

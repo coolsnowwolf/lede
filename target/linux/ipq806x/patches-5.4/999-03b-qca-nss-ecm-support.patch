@@ -1,0 +1,141 @@
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -54,6 +54,7 @@ extern void br_fdb_update_unregister_notify(struct notifier_block *nb);
+ 
+ extern void br_dev_update_stats(struct net_device *dev,
+ 				struct rtnl_link_stats64 *nlstats);
++extern bool br_is_hairpin_enabled(struct net_device *dev);
+ 
+ #if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_BRIDGE_IGMP_SNOOPING)
+ int br_multicast_list_adjacent(struct net_device *dev,
+@@ -174,6 +175,8 @@ struct br_fdb_event {
+ 	struct net_device *dev;
+ 	unsigned char      addr[6];
+ 	unsigned char      is_local;
++	struct net_bridge *br;
++	struct net_device *orig_dev;
+ };
+ extern void br_fdb_register_notify(struct notifier_block *nb);
+ extern void br_fdb_unregister_notify(struct notifier_block *nb);
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1596,12 +1596,18 @@ enum netdev_priv_qca_ecm_flags {
+ 	IFF_QCA_ECM_PPP_L2TPV2		= 1<<1,
+ 	IFF_QCA_ECM_PPP_L2TPV3		= 1<<2,
+ 	IFF_QCA_ECM_PPP_PPTP		= 1<<3,
++	IFF_QCA_ECM_GRE_V4_TAP		= 1<<4,
++	IFF_QCA_ECM_GRE_V6_TAP		= 1<<5,
++	IFF_QCA_ECM_IFB			= 1<<6,
+ };
+ 
+ #define IFF_QCA_ECM_TUN_TAP		IFF_QCA_ECM_TUN_TAP
+ #define IFF_QCA_ECM_PPP_L2TPV2		IFF_QCA_ECM_PPP_L2TPV2
+ #define IFF_QCA_ECM_PPP_L2TPV3		IFF_QCA_ECM_PPP_L2TPV3
+ #define IFF_QCA_ECM_PPP_PPTP		IFF_QCA_ECM_PPP_PPTP
++#define IFF_QCA_ECM_GRE_V4_TAP		IFF_QCA_ECM_GRE_V4_TAP
++#define	IFF_QCA_ECM_GRE_V6_TAP		IFF_QCA_ECM_GRE_V6_TAP
++#define	IFF_QCA_ECM_IFB			IFF_QCA_ECM_IFB
+ /* QCA NSS ECM support - End */
+ 
+ /**
+--- a/include/linux/netfilter/nf_conntrack_proto_gre.h
++++ b/include/linux/netfilter/nf_conntrack_proto_gre.h
+@@ -31,4 +31,35 @@ void nf_ct_gre_keymap_destroy(struct nf_
+ 
+ bool gre_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
+ 		      struct net *net, struct nf_conntrack_tuple *tuple);
++
++/* QCA NSS ECM Support - Start */
++/* GRE is a mess: Four different standards */
++struct gre_hdr {
++#if defined(__LITTLE_ENDIAN_BITFIELD)
++	__u16	rec:3,
++		srr:1,
++		seq:1,
++		key:1,
++		routing:1,
++		csum:1,
++		version:3,
++		reserved:4,
++		ack:1;
++#elif defined(__BIG_ENDIAN_BITFIELD)
++	__u16	csum:1,
++		routing:1,
++		key:1,
++		seq:1,
++		srr:1,
++		rec:3,
++		ack:1,
++		reserved:4,
++		version:3;
++#else
++#error "Adjust your <asm/byteorder.h> defines"
++#endif
++	__be16	protocol;
++};
++/* QCA NSS ECM Support - End */
++
+ #endif /* _CONNTRACK_PROTO_GRE_H */
+--- a/include/net/addrconf.h
++++ b/include/net/addrconf.h
+@@ -497,4 +497,9 @@ int if6_proc_init(void);
+ void if6_proc_exit(void);
+ #endif
+ 
++/* QCA NSS ECM support - Start */
++struct net_device *ipv6_dev_find(struct net *net, struct in6_addr *addr,
++				 int strict);
++/* QCA NSS ECM support - End */
++
+ #endif
+--- a/drivers/net/tun.c
++++ b/drivers/net/tun.c
+@@ -2861,6 +2861,8 @@ static int tun_set_iff(struct net *net,
+ 				     ~(NETIF_F_HW_VLAN_CTAG_TX |
+ 				       NETIF_F_HW_VLAN_STAG_TX);
+ 
++		dev->priv_flags_qca_ecm |= IFF_QCA_ECM_TUN_TAP; /* QCA NSS ECM Support */
++
+ 		tun->flags = (tun->flags & ~TUN_FEATURES) |
+ 			      (ifr->ifr_flags & TUN_FEATURES);
+ 
+--- a/net/ipv4/ip_gre.c
++++ b/net/ipv4/ip_gre.c
+@@ -1298,6 +1298,7 @@ static void ipgre_tap_setup(struct net_d
+ 	dev->netdev_ops	= &gre_tap_netdev_ops;
+ 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
+ 	dev->priv_flags	|= IFF_LIVE_ADDR_CHANGE;
++	dev->priv_flags_qca_ecm |= IFF_QCA_ECM_GRE_V4_TAP; /* QCA NSS ECM Support */
+ 	ip_tunnel_setup(dev, gre_tap_net_id);
+ }
+ 
+--- a/net/ipv6/ip6_gre.c
++++ b/net/ipv6/ip6_gre.c
+@@ -1912,6 +1912,7 @@ static void ip6gre_tap_setup(struct net_
+ 
+ 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
+ 	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
++	dev->priv_flags_qca_ecm |= IFF_QCA_ECM_GRE_V6_TAP; /* QCA NSS ECM Support */
+ 	netif_keep_dst(dev);
+ }
+ 
+--- a/net/bridge/br_if.c
++++ b/net/bridge/br_if.c
+@@ -796,6 +796,17 @@ void br_dev_update_stats(struct net_device *dev,
+ EXPORT_SYMBOL_GPL(br_dev_update_stats);
+ 
+ /* QCA NSS ECM support - Start */
++/* API to know if hairpin feature is enabled/disabled on this bridge port */
++bool br_is_hairpin_enabled(struct net_device *dev)
++{
++	struct net_bridge_port *port = br_port_get_check_rcu(dev);
++
++	if (likely(port))
++		return port->flags & BR_HAIRPIN_MODE;
++	return false;
++}
++EXPORT_SYMBOL_GPL(br_is_hairpin_enabled);
++
+ /* br_port_dev_get()
+  *      If a skb is provided, and the br_port_dev_get_hook_t hook exists,
+  *      use that to try and determine the egress port for that skb.

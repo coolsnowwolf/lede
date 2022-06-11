@@ -125,6 +125,23 @@ _patch_glibc() {
 	fi
 }
 
+should_be_patched() {
+	local bin="$1"
+
+	[ -x "$bin" ] || return 1
+
+	case "$bin" in
+		*.so|*.so.[0-9]*)
+			return 1
+		;;
+		*)
+			file "$bin" | grep -sqE "ELF.*(executable|interpreter)" && return 0
+		;;
+	esac
+
+	return 1
+}
+
 for LDD in ${PATH//://ldd }/ldd; do
 	"$LDD" --version >/dev/null 2>/dev/null && break
 	LDD=""
@@ -150,7 +167,7 @@ for BIN in "$@"; do
 
 	LDSO=""
 
-	[ -n "$LDD" ] && [ -x "$BIN" ] && file "$BIN" | grep -sqE "ELF.*(executable|interpreter)" && {
+	[ -n "$LDD" ] && should_be_patched "$BIN" && {
 		for token in $("$LDD" "$BIN" 2>/dev/null); do
 			case "$token" in */*.so*)
 				dest="$DIR/lib/${token##*/}"
@@ -186,7 +203,7 @@ for BIN in "$@"; do
 			#!/usr/bin/env bash
 			dir="\$(dirname "\$0")"
 			export RUNAS_ARG0="\$0"
-			export LD_PRELOAD="\$dir/${REL:+$REL/}runas.so"
+			export LD_PRELOAD="\${LD_PRELOAD:+\$LD_PRELOAD:}\$dir/${REL:+$REL/}runas.so"
 			exec "\$dir/${REL:+$REL/}$LDSO" --library-path "\$dir/${REL:+$REL/}" "\$dir/.${BIN##*/}.bin" "\$@"
 		EOF
 

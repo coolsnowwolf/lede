@@ -1,0 +1,403 @@
+--- a/drivers/net/wireless/ath/ath9k/channel.c
++++ b/drivers/net/wireless/ath/ath9k/channel.c
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "ath9k.h"
++#include "hsr.h"
+ 
+ /* Set/change channels.  If the channel is really being changed, it's done
+  * by reseting the chip.  To accomplish this we must first cleanup any pending
+@@ -22,6 +23,7 @@
+  */
+ static int ath_set_channel(struct ath_softc *sc)
+ {
++	struct device_node *np = sc->dev->of_node;
+ 	struct ath_hw *ah = sc->sc_ah;
+ 	struct ath_common *common = ath9k_hw_common(ah);
+ 	struct ieee80211_hw *hw = sc->hw;
+@@ -42,6 +44,11 @@ static int ath_set_channel(struct ath_so
+ 	ath_dbg(common, CONFIG, "Set channel: %d MHz width: %d\n",
+ 		chan->center_freq, chandef->width);
+ 
++	if (of_property_read_bool(np, "ubnt,hsr")) {
++		ath9k_hsr_enable(ah, chandef->width, chan->center_freq);
++		ath9k_hsr_status(ah);
++	}
++
+ 	/* update survey stats for the old channel before switching */
+ 	spin_lock_irqsave(&common->cc_lock, flags);
+ 	ath_update_survey_stats(sc);
+--- /dev/null
++++ b/drivers/net/wireless/ath/ath9k/hsr.c
+@@ -0,0 +1,247 @@
++/*
++ *
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015 Kirill Berezin
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ *
++ */
++
++#include <linux/io.h>
++#include <linux/slab.h>
++#include <linux/module.h>
++#include <linux/time.h>
++#include <linux/bitops.h>
++#include <linux/etherdevice.h>
++#include <linux/rtnetlink.h>
++#include <asm/unaligned.h>
++
++#include "hw.h"
++#include "ath9k.h"
++
++#define HSR_GPIO_CSN 8
++#define HSR_GPIO_CLK 6
++#define HSR_GPIO_DOUT 7
++#define HSR_GPIO_DIN 5
++
++/* delays are in useconds */
++#define HSR_DELAY_HALF_TICK 100
++#define HSR_DELAY_PRE_WRITE 75
++#define HSR_DELAY_FINAL 20000
++#define HSR_DELAY_TRAILING 200
++
++void ath9k_hsr_init(struct ath_hw *ah)
++{
++	ath9k_hw_gpio_request_in(ah, HSR_GPIO_DIN, NULL);
++	ath9k_hw_gpio_request_out(ah, HSR_GPIO_CSN, NULL,
++				  AR_GPIO_OUTPUT_MUX_AS_OUTPUT);
++	ath9k_hw_gpio_request_out(ah, HSR_GPIO_CLK, NULL,
++				  AR_GPIO_OUTPUT_MUX_AS_OUTPUT);
++	ath9k_hw_gpio_request_out(ah, HSR_GPIO_DOUT, NULL,
++				  AR_GPIO_OUTPUT_MUX_AS_OUTPUT);
++
++	ath9k_hw_set_gpio(ah, HSR_GPIO_CSN, 1);
++	ath9k_hw_set_gpio(ah, HSR_GPIO_CLK, 0);
++	ath9k_hw_set_gpio(ah, HSR_GPIO_DOUT, 0);
++
++	udelay(HSR_DELAY_TRAILING);
++}
++
++static u32 ath9k_hsr_write_byte(struct ath_hw *ah, int delay, u32 value)
++{
++	struct ath_common *common = ath9k_hw_common(ah);
++	int i;
++	u32 rval = 0;
++
++	udelay(delay);
++
++	ath9k_hw_set_gpio(ah, HSR_GPIO_CLK, 0);
++	udelay(HSR_DELAY_HALF_TICK);
++
++	ath9k_hw_set_gpio(ah, HSR_GPIO_CSN, 0);
++	udelay(HSR_DELAY_HALF_TICK);
++
++	for (i = 0; i < 8; ++i) {
++		rval = rval << 1;
++
++		/* pattern is left to right, that is 7-th bit runs first */
++		ath9k_hw_set_gpio(ah, HSR_GPIO_DOUT, (value >> (7 - i)) & 0x1);
++		udelay(HSR_DELAY_HALF_TICK);
++
++		ath9k_hw_set_gpio(ah, HSR_GPIO_CLK, 1);
++		udelay(HSR_DELAY_HALF_TICK);
++
++		rval |= ath9k_hw_gpio_get(ah, HSR_GPIO_DIN);
++
++		ath9k_hw_set_gpio(ah, HSR_GPIO_CLK, 0);
++		udelay(HSR_DELAY_HALF_TICK);
++	}
++
++	ath9k_hw_set_gpio(ah, HSR_GPIO_CSN, 1);
++	udelay(HSR_DELAY_HALF_TICK);
++
++	ath_dbg(common, CONFIG, "ath9k_hsr_write_byte: write byte %d return value is %d %c\n",
++		value, rval, rval > 32 ? rval : '-');
++
++	return rval & 0xff;
++}
++
++static int ath9k_hsr_write_a_chain(struct ath_hw *ah, char *chain, int items)
++{
++	int status = 0;
++	int i = 0;
++	int err;
++
++	/* a preamble */
++	ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, 0);
++	status = ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, 0);
++
++	/* clear HSR's reply buffer */
++	if (status) {
++		int loop = 0;
++
++		for (loop = 0; (loop < 42) && status; ++loop)
++			status = ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE,
++						      0);
++
++		if (loop >= 42) {
++			ATH_DBG_WARN(1,
++				     "ath9k_hsr_write_a_chain: can't clear an output buffer after a 42 cycles.\n");
++			return -1;
++		}
++	}
++
++	for (i = 0; (i < items) && (chain[i] != 0); ++i)
++		ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, (u32)chain[i]);
++
++	ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, 0);
++	mdelay(HSR_DELAY_FINAL / 1000);
++
++	/* reply */
++	memset(chain, 0, items);
++
++	ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, 0);
++	udelay(HSR_DELAY_TRAILING);
++
++	for (i = 0; i < (items - 1); ++i) {
++		u32 ret;
++
++		ret = ath9k_hsr_write_byte(ah, HSR_DELAY_PRE_WRITE, 0);
++		if (ret != 0)
++			chain[i] = (char)ret;
++		else
++			break;
++
++		udelay(HSR_DELAY_TRAILING);
++	}
++
++	if (i <= 1)
++		return 0;
++
++	err = kstrtoint(chain + 1, 10, &i);
++	if (err)
++		return err;
++
++	return i;
++}
++
++int ath9k_hsr_disable(struct ath_hw *ah)
++{
++	char cmd[10] = {'b', '4', '0', 0, 0, 0, 0, 0, 0, 0};
++	int ret;
++
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if ((ret > 0) && (*cmd == 'B'))
++		return 0;
++
++	return -1;
++}
++
++int ath9k_hsr_enable(struct ath_hw *ah, int bw, int fq)
++{
++	char cmd[10];
++	int ret;
++
++	/* Bandwidth argument is 0 sometimes. Assume default 802.11bgn
++	 * 20MHz on invalid values
++	 */
++	if ((bw != 5) && (bw != 10) && (bw != 20) && (bw != 40))
++		bw = 20;
++
++	memset(cmd, 0, sizeof(cmd));
++	*cmd = 'b';
++	snprintf(cmd + 1, 3, "%02d", bw);
++
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if ((*cmd != 'B') || (ret != bw)) {
++		ATH_DBG_WARN(1,
++			     "ath9k_hsr_enable: failed changing bandwidth -> set (%d,%d) reply (%d, %d)\n",
++			     'b', bw, *cmd, ret);
++		return -1;
++	}
++
++	memset(cmd, 0, sizeof(cmd));
++	*cmd = 'x';
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if (*cmd != 'X') {
++		ATH_DBG_WARN(1,
++			     "ath9k_hsr_enable: failed 'x' command -> reply (%d, %d)\n",
++			     *cmd, ret);
++		return -1;
++	}
++
++	memset(cmd, 0, sizeof(cmd));
++	*cmd = 'm';
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if (*cmd != 'M') {
++		ATH_DBG_WARN(1,
++			     "ath9k_hsr_enable: failed 'm' command -> reply (%d, %d)\n",
++			     *cmd, ret);
++		return  -1;
++	}
++
++	memset(cmd, 0, sizeof(cmd));
++	*cmd = 'f';
++	snprintf(cmd + 1, 6, "%05d", fq);
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if ((*cmd != 'F') && (ret != fq)) {
++		ATH_DBG_WARN(1,
++			     "ath9k_hsr_enable: failed set frequency -> reply (%d, %d)\n",
++			     *cmd, ret);
++		return -1;
++	}
++
++	return 0;
++}
++
++int ath9k_hsr_status(struct ath_hw *ah)
++{
++	char cmd[10] = {'s', 0, 0, 0, 0, 0, 0, 0, 0, 0};
++	int ret;
++
++	ret = ath9k_hsr_write_a_chain(ah, cmd, sizeof(cmd));
++	if (*cmd != 'S') {
++		ATH_DBG_WARN(1, "ath9k_hsr_status: returned %d,%d\n", *cmd,
++			     ret);
++		return -1;
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/wireless/ath/ath9k/hsr.h
+@@ -0,0 +1,48 @@
++/*
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2015 Kirill Berezin
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#ifndef HSR_H
++#define HSR_H
++
++#ifdef CPTCFG_ATH9K_UBNTHSR
++
++void ath9k_hsr_init(struct ath_hw *ah);
++int ath9k_hsr_disable(struct ath_hw *ah);
++int ath9k_hsr_enable(struct ath_hw *ah, int bw, int fq);
++int ath9k_hsr_status(struct ath_hw *ah);
++
++#else
++static inline void ath9k_hsr_init(struct ath_hw *ah) {}
++
++static inline int ath9k_hsr_enable(struct ath_hw *ah, int bw, int fq)
++{
++	return 0;
++}
++
++static inline int ath9k_hsr_disable(struct ath_hw *ah) { return 0; }
++static inline int ath9k_hsr_status(struct ath_hw *ah) { return 0; }
++
++#endif
++
++#endif /* HSR_H */
+--- a/drivers/net/wireless/ath/ath9k/main.c
++++ b/drivers/net/wireless/ath/ath9k/main.c
+@@ -18,6 +18,7 @@
+ #include <linux/delay.h>
+ #include "ath9k.h"
+ #include "btcoex.h"
++#include "hsr.h"
+ 
+ static void ath9k_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			u32 queues, bool drop);
+@@ -659,6 +660,7 @@ void ath_reset_work(struct work_struct *
+ static int ath9k_start(struct ieee80211_hw *hw)
+ {
+ 	struct ath_softc *sc = hw->priv;
++	struct device_node *np = sc->dev->of_node;
+ 	struct ath_hw *ah = sc->sc_ah;
+ 	struct ath_common *common = ath9k_hw_common(ah);
+ 	struct ieee80211_channel *curchan = sc->cur_chan->chandef.chan;
+@@ -737,6 +739,11 @@ static int ath9k_start(struct ieee80211_
+ 					  AR_GPIO_OUTPUT_MUX_AS_OUTPUT);
+ 	}
+ 
++	if (of_property_read_bool(np, "ubnt,hsr")) {
++		ath9k_hsr_init(ah);
++		ath9k_hsr_disable(ah);
++	}
++
+ 	/*
+ 	 * Reset key cache to sane defaults (all entries cleared) instead of
+ 	 * semi-random values after suspend/resume.
+--- a/drivers/net/wireless/ath/ath9k/Makefile
++++ b/drivers/net/wireless/ath/ath9k/Makefile
+@@ -17,6 +17,7 @@ ath9k-$(CPTCFG_ATH9K_DFS_CERTIFIED) += d
+ ath9k-$(CPTCFG_ATH9K_TX99) += tx99.o
+ ath9k-$(CPTCFG_ATH9K_WOW) += wow.o
+ ath9k-$(CPTCFG_ATH9K_HWRNG) += rng.o
++ath9k-$(CPTCFG_ATH9K_UBNTHSR) += hsr.o
+ 
+ ath9k-$(CPTCFG_ATH9K_DEBUGFS) += debug.o
+ 
+--- a/local-symbols
++++ b/local-symbols
+@@ -103,6 +103,7 @@ ATH9K_WOW=
+ ATH9K_RFKILL=
+ ATH9K_CHANNEL_CONTEXT=
+ ATH9K_PCOEM=
++ATH9K_UBNTHSR=
+ ATH9K_PCI_NO_EEPROM=
+ ATH9K_HTC=
+ ATH9K_HTC_DEBUGFS=
+--- a/drivers/net/wireless/ath/ath9k/Kconfig
++++ b/drivers/net/wireless/ath/ath9k/Kconfig
+@@ -58,6 +58,19 @@ config ATH9K_AHB
+ 	  Say Y, if you have a SoC with a compatible built-in
+ 	  wireless MAC. Say N if unsure.
+ 
++config ATH9K_UBNTHSR
++	bool "Ubiquiti UniFi Outdoor Plus HSR support"
++	depends on ATH9K
++	---help---
++	  This options enables code to control the HSR RF
++	  filter in the receive path of the Ubiquiti UniFi
++	  Outdoor Plus access point.
++
++	  Say Y if you want to use the access point. The
++	  code will only be used if the device is detected,
++	  so it does not harm other setup other than occupying
++	  a bit of memory.
++
+ config ATH9K_DEBUGFS
+ 	bool "Atheros ath9k debugging"
+ 	depends on ATH9K && DEBUG_FS

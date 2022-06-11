@@ -1,0 +1,102 @@
+From 6d15419acb9914041e90bc88044d87bbcdcfec00 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 15 Dec 2020 16:42:41 +0100
+Subject: [PATCH] drm/vc4: hdmi: Use the connector state pixel rate for
+ the PHY
+
+The PHY initialisation parameters are not based on the pixel clock but
+the TMDS clock rate which can be the pixel clock in the standard case,
+but could be adjusted based on some parameters like the bits per color.
+
+Since the TMDS clock rate is stored in our custom connector state
+already, let's reuse it from there instead of computing it again.
+
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c     |  2 +-
+ drivers/gpu/drm/vc4/vc4_hdmi.h     | 11 +++++------
+ drivers/gpu/drm/vc4/vc4_hdmi_phy.c |  8 +++++---
+ 3 files changed, 11 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -762,7 +762,7 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 	}
+ 
+ 	if (vc4_hdmi->variant->phy_init)
+-		vc4_hdmi->variant->phy_init(vc4_hdmi, mode);
++		vc4_hdmi->variant->phy_init(vc4_hdmi, vc4_conn_state);
+ 
+ 	HDMI_WRITE(HDMI_SCHEDULER_CONTROL,
+ 		   HDMI_READ(HDMI_SCHEDULER_CONTROL) |
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -21,10 +21,9 @@ to_vc4_hdmi_encoder(struct drm_encoder *
+ 	return container_of(encoder, struct vc4_hdmi_encoder, base.base);
+ }
+ 
+-struct drm_display_mode;
+-
+ struct vc4_hdmi;
+ struct vc4_hdmi_register;
++struct vc4_hdmi_connector_state;
+ 
+ enum vc4_hdmi_phy_channel {
+ 	PHY_LANE_0 = 0,
+@@ -77,9 +76,9 @@ struct vc4_hdmi_variant {
+ 	void (*set_timings)(struct vc4_hdmi *vc4_hdmi,
+ 			    struct drm_display_mode *mode);
+ 
+-	/* Callback to initialize the PHY according to the mode */
++	/* Callback to initialize the PHY according to the connector state */
+ 	void (*phy_init)(struct vc4_hdmi *vc4_hdmi,
+-			 struct drm_display_mode *mode);
++			 struct vc4_hdmi_connector_state *vc4_conn_state);
+ 
+ 	/* Callback to disable the PHY */
+ 	void (*phy_disable)(struct vc4_hdmi *vc4_hdmi);
+@@ -199,13 +198,13 @@ conn_state_to_vc4_hdmi_conn_state(struct
+ }
+ 
+ void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
+-		       struct drm_display_mode *mode);
++		       struct vc4_hdmi_connector_state *vc4_conn_state);
+ void vc4_hdmi_phy_disable(struct vc4_hdmi *vc4_hdmi);
+ void vc4_hdmi_phy_rng_enable(struct vc4_hdmi *vc4_hdmi);
+ void vc4_hdmi_phy_rng_disable(struct vc4_hdmi *vc4_hdmi);
+ 
+ void vc5_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
+-		       struct drm_display_mode *mode);
++		       struct vc4_hdmi_connector_state *vc4_conn_state);
+ void vc5_hdmi_phy_disable(struct vc4_hdmi *vc4_hdmi);
+ void vc5_hdmi_phy_rng_enable(struct vc4_hdmi *vc4_hdmi);
+ void vc5_hdmi_phy_rng_disable(struct vc4_hdmi *vc4_hdmi);
+--- a/drivers/gpu/drm/vc4/vc4_hdmi_phy.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi_phy.c
+@@ -127,7 +127,8 @@
+ 
+ #define OSCILLATOR_FREQUENCY	54000000
+ 
+-void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi, struct drm_display_mode *mode)
++void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
++		       struct vc4_hdmi_connector_state *conn_state)
+ {
+ 	/* PHY should be in reset, like
+ 	 * vc4_hdmi_encoder_disable() does.
+@@ -339,11 +340,12 @@ static void vc5_hdmi_reset_phy(struct vc
+ 	HDMI_WRITE(HDMI_TX_PHY_POWERDOWN_CTL, BIT(10));
+ }
+ 
+-void vc5_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi, struct drm_display_mode *mode)
++void vc5_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
++		       struct vc4_hdmi_connector_state *conn_state)
+ {
+ 	const struct phy_lane_settings *chan0_settings, *chan1_settings, *chan2_settings, *clock_settings;
+ 	const struct vc4_hdmi_variant *variant = vc4_hdmi->variant;
+-	unsigned long long pixel_freq = mode->clock * 1000;
++	unsigned long long pixel_freq = conn_state->pixel_rate;
+ 	unsigned long long vco_freq;
+ 	unsigned char word_sel;
+ 	u8 vco_sel, vco_div;

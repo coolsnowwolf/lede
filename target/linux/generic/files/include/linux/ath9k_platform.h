@@ -53,8 +53,6 @@ struct ath9k_platform_data {
 	unsigned num_btns;
 	const struct gpio_keys_button *btns;
 	unsigned btn_poll_interval;
-
-	bool ubnt_hsr;
 };
 
 #endif /* _LINUX_ATH9K_PLATFORM_H */

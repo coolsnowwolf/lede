@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Wed, 6 May 2020 15:33:04 -0600
+Subject: [PATCH] wireguard: send/receive: cond_resched() when processing
+ worker ringbuffers
+
+commit 4005f5c3c9d006157ba716594e0d70c88a235c5e upstream.
+
+Users with pathological hardware reported CPU stalls on CONFIG_
+PREEMPT_VOLUNTARY=y, because the ringbuffers would stay full, meaning
+these workers would never terminate. That turned out not to be okay on
+systems without forced preemption, which Sultan observed. This commit
+adds a cond_resched() to the bottom of each loop iteration, so that
+these workers don't hog the core. Note that we don't need this on the
+napi poll worker, since that terminates after its budget is expended.
+
+Suggested-by: Sultan Alsawaf <sultan@kerneltoast.com>
+Reported-by: Wang Jian <larkwang@gmail.com>
+Fixes: e7096c131e51 ("net: WireGuard secure network tunnel")
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/net/wireguard/receive.c | 2 ++
+ drivers/net/wireguard/send.c    | 4 ++++
+ 2 files changed, 6 insertions(+)
+
+--- a/drivers/net/wireguard/receive.c
++++ b/drivers/net/wireguard/receive.c
+@@ -516,6 +516,8 @@ void wg_packet_decrypt_worker(struct wor
+ 				&PACKET_CB(skb)->keypair->receiving)) ?
+ 				PACKET_STATE_CRYPTED : PACKET_STATE_DEAD;
+ 		wg_queue_enqueue_per_peer_napi(skb, state);
++		if (need_resched())
++			cond_resched();
+ 	}
+ }
+ 
+--- a/drivers/net/wireguard/send.c
++++ b/drivers/net/wireguard/send.c
+@@ -281,6 +281,8 @@ void wg_packet_tx_worker(struct work_str
+ 
+ 		wg_noise_keypair_put(keypair, false);
+ 		wg_peer_put(peer);
++		if (need_resched())
++			cond_resched();
+ 	}
+ }
+ 
+@@ -304,6 +306,8 @@ void wg_packet_encrypt_worker(struct wor
+ 		}
+ 		wg_queue_enqueue_per_peer(&PACKET_PEER(first)->tx_queue, first,
+ 					  state);
++		if (need_resched())
++			cond_resched();
+ 	}
+ }
+ 

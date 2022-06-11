@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <linux/mtd/mtd.h>
+#include <linux/mtd/nand.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/platform_device.h>
@@ -631,19 +632,11 @@ static void ar934x_nfc_read_status(struct ar934x_nfc *nfc)
 		nfc->buf[0] = status;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static void ar934x_nfc_cmdfunc(struct mtd_info *mtd, unsigned int command,
-			       int column, int page_addr)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-	struct nand_chip *nand = &nfc->nand_chip;
-#else
 static void ar934x_nfc_cmdfunc(struct nand_chip *nand, unsigned int command,
 			       int column, int page_addr)
 {
 	struct mtd_info *mtd = nand_to_mtd(nand);
 	struct ar934x_nfc *nfc = nand->priv;
-#endif
 
 	nfc->read_id = false;
 	if (command != NAND_CMD_PAGEPROG)
@@ -727,7 +720,7 @@ static void ar934x_nfc_cmdfunc(struct nand_chip *nand, unsigned int command,
 		break;
 
 	case NAND_CMD_PAGEPROG:
-		if (nand->ecc.mode == NAND_ECC_HW) {
+		if (nand->ecc.engine_type == NAND_ECC_ENGINE_TYPE_ON_HOST) {
 			/* the data is already written */
 			break;
 		}
@@ -748,28 +741,16 @@ static void ar934x_nfc_cmdfunc(struct nand_chip *nand, unsigned int command,
 	}
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_dev_ready(struct mtd_info *mtd)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_dev_ready(struct nand_chip *chip)
 {
 	struct ar934x_nfc *nfc = chip->priv;
-#endif
 
 	return __ar934x_nfc_dev_ready(nfc);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static u8 ar934x_nfc_read_byte(struct mtd_info *mtd)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static u8 ar934x_nfc_read_byte(struct nand_chip *chip)
 {
 	struct ar934x_nfc *nfc = chip->priv;
-#endif
 	u8 data;
 
 	WARN_ON(nfc->buf_index >= nfc->buf_size);
@@ -784,15 +765,9 @@ static u8 ar934x_nfc_read_byte(struct nand_chip *chip)
 	return data;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static void ar934x_nfc_write_buf(struct mtd_info *mtd, const u8 *buf, int len)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static void ar934x_nfc_write_buf(struct nand_chip *chip, const u8 *buf, int len)
 {
 	struct ar934x_nfc *nfc = chip->priv;
-#endif
 	int i;
 
 	WARN_ON(nfc->buf_index + len > nfc->buf_size);
@@ -810,15 +785,9 @@ static void ar934x_nfc_write_buf(struct nand_chip *chip, const u8 *buf, int len)
 	}
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static void ar934x_nfc_read_buf(struct mtd_info *mtd, u8 *buf, int len)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static void ar934x_nfc_read_buf(struct nand_chip *chip, u8 *buf, int len)
 {
 	struct ar934x_nfc *nfc = chip->priv;
-#endif
 	int buf_index;
 	int i;
 
@@ -853,18 +822,11 @@ static inline void ar934x_nfc_disable_hwecc(struct ar934x_nfc *nfc)
 	nfc->ctrl_reg |= AR934X_NFC_CTRL_CUSTOM_SIZE_EN;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_read_oob(struct mtd_info *mtd, struct nand_chip *chip,
-			       int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_read_oob(struct nand_chip *chip,
 			       int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	int err;
 
 	nfc_dbg(nfc, "read_oob: page:%d\n", page);
@@ -879,18 +841,11 @@ static int ar934x_nfc_read_oob(struct nand_chip *chip,
 	return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_write_oob(struct mtd_info *mtd, struct nand_chip *chip,
-				int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_write_oob(struct nand_chip *chip,
 				int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	nfc_dbg(nfc, "write_oob: page:%d\n", page);
 
 	memcpy(nfc->buf, chip->oob_poi, mtd->oobsize);
@@ -899,20 +854,12 @@ static int ar934x_nfc_write_oob(struct nand_chip *chip,
 				     page, mtd->oobsize);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_read_page_raw(struct mtd_info *mtd,
-				    struct nand_chip *chip, u8 *buf,
-				    int oob_required, int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_read_page_raw(
 				    struct nand_chip *chip, u8 *buf,
 				    int oob_required, int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	int len;
 	int err;
 
@@ -934,18 +881,11 @@ static int ar934x_nfc_read_page_raw(
 	return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_read_page(struct mtd_info *mtd, struct nand_chip *chip,
-				u8 *buf, int oob_required, int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_read_page(struct nand_chip *chip,
 				u8 *buf, int oob_required, int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	u32 ecc_ctrl;
 	int max_bitflips = 0;
 	bool ecc_failed;
@@ -1014,20 +954,12 @@ static int ar934x_nfc_read_page(struct nand_chip *chip,
 	return max_bitflips;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_write_page_raw(struct mtd_info *mtd,
-				     struct nand_chip *chip, const u8 *buf,
-				     int oob_required, int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_write_page_raw(
 				     struct nand_chip *chip, const u8 *buf,
 				     int oob_required, int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	int len;
 
 	nfc_dbg(nfc, "write_page_raw: page:%d oob:%d\n", page, oob_required);
@@ -1043,18 +975,11 @@ static int ar934x_nfc_write_page_raw(
 	return ar934x_nfc_send_write(nfc, NAND_CMD_PAGEPROG, 0, page, len);
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static int ar934x_nfc_write_page(struct mtd_info *mtd, struct nand_chip *chip,
-				 const u8 *buf, int oob_required, int page)
-{
-	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
-#else
 static int ar934x_nfc_write_page(struct nand_chip *chip,
 				 const u8 *buf, int oob_required, int page)
 {
 	struct ar934x_nfc *nfc = chip->priv;
 	struct mtd_info *mtd = ar934x_nfc_to_mtd(nfc);
-#endif
 	int err;
 
 	nfc_dbg(nfc, "write_page: page:%d oob:%d\n", page, oob_required);
@@ -1062,11 +987,7 @@ static int ar934x_nfc_write_page(struct nand_chip *chip,
 	/* write OOB first */
 	if (oob_required &&
 	    !is_all_ff(chip->oob_poi, mtd->oobsize)) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-		err = ar934x_nfc_write_oob(mtd, chip, page);
-#else
 		err = ar934x_nfc_write_oob(chip, page);
-#endif
 		if (err)
 			return err;
 	}
@@ -1176,11 +1097,7 @@ static int ar934x_nfc_init_tail(struct mtd_info *mtd)
 {
 	struct ar934x_nfc *nfc = mtd_to_ar934x_nfc(mtd);
 	struct nand_chip *chip = &nfc->nand_chip;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
-	u64 chipsize = chip->chipsize;
-#else
 	u64 chipsize = nanddev_target_size(&chip->base);
-#endif
 	u32 ctrl;
 	u32 t;
 	int err;
@@ -1350,7 +1267,6 @@ static int ar934x_nfc_setup_hwecc(struct ar934x_nfc *nfc)
 		 * Writing a subpage separately is not supported, because
 		 * the controller only does ECC on full-page accesses.
 		 */
-		nand->options = NAND_NO_SUBPAGE_WRITE;
 
 		nand->ecc.size = 512;
 		nand->ecc.bytes = 7;
@@ -1409,15 +1325,18 @@ static int ar934x_nfc_attach_chip(struct nand_chip *nand)
 	if (ret)
 		return ret;
 
-	if (nand->ecc.mode == NAND_ECC_HW) {
+	if (mtd->writesize == 2048)
+		nand->options |= NAND_NO_SUBPAGE_WRITE;
+
+	if (nand->ecc.engine_type == NAND_ECC_ENGINE_TYPE_ON_HOST) {
 		ret = ar934x_nfc_setup_hwecc(nfc);
 		if (ret)
 			return ret;
-	} else if (nand->ecc.mode != NAND_ECC_SOFT) {
-		dev_err(dev, "unknown ECC mode %d\n", nand->ecc.mode);
+	} else if (nand->ecc.engine_type != NAND_ECC_ENGINE_TYPE_SOFT) {
+		dev_err(dev, "unknown ECC mode %d\n", nand->ecc.engine_type);
 		return -EINVAL;
-	} else if ((nand->ecc.algo != NAND_ECC_BCH) &&
-		   (nand->ecc.algo != NAND_ECC_HAMMING)) {
+	} else if ((nand->ecc.algo != NAND_ECC_ALGO_BCH) &&
+		   (nand->ecc.algo != NAND_ECC_ALGO_HAMMING)) {
 		dev_err(dev, "unknown software ECC algo %d\n", nand->ecc.algo);
 		return -EINVAL;
 	}
@@ -1427,13 +1346,8 @@ static int ar934x_nfc_attach_chip(struct nand_chip *nand)
 
 static u64 ar934x_nfc_dma_mask = DMA_BIT_MASK(32);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-static void ar934x_nfc_cmd_ctrl(struct mtd_info *mtd, int dat,
-				unsigned int ctrl)
-#else
 static void ar934x_nfc_cmd_ctrl(struct nand_chip *chip, int dat,
 				unsigned int ctrl)
-#endif
 {
 	WARN_ON(dat != NAND_CMD_NONE);
 }
@@ -1504,15 +1418,6 @@ static int ar934x_nfc_probe(struct platform_device *pdev)
 
 	nand_set_controller_data(nand, nfc);
 	nand_set_flash_node(nand, pdev->dev.of_node);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-	nand->chip_delay = 25;
-	nand->dev_ready = ar934x_nfc_dev_ready;
-	nand->cmdfunc = ar934x_nfc_cmdfunc;
-	nand->cmd_ctrl = ar934x_nfc_cmd_ctrl;	/* dummy */
-	nand->read_byte = ar934x_nfc_read_byte;
-	nand->write_buf = ar934x_nfc_write_buf;
-	nand->read_buf = ar934x_nfc_read_buf;
-#else
 	nand->legacy.chip_delay = 25;
 	nand->legacy.dev_ready = ar934x_nfc_dev_ready;
 	nand->legacy.cmdfunc = ar934x_nfc_cmdfunc;
@@ -1520,8 +1425,7 @@ static int ar934x_nfc_probe(struct platform_device *pdev)
 	nand->legacy.read_byte = ar934x_nfc_read_byte;
 	nand->legacy.write_buf = ar934x_nfc_write_buf;
 	nand->legacy.read_buf = ar934x_nfc_read_buf;
-#endif
-	nand->ecc.mode = NAND_ECC_HW;	/* default */
+	nand->ecc.engine_type = NAND_ECC_ENGINE_TYPE_ON_HOST;	/* default */
 	nand->priv = nfc;
 	platform_set_drvdata(pdev, nfc);
 
@@ -1535,16 +1439,8 @@ static int ar934x_nfc_probe(struct platform_device *pdev)
 		goto err_free_buf;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 130)
-	nand->dummy_controller.ops = &ar934x_nfc_controller_ops;
-	ret = nand_scan(mtd, 1);
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-	nand->dummy_controller.ops = &ar934x_nfc_controller_ops;
-	ret = nand_scan(nand, 1);
-#else
 	nand->legacy.dummy_controller.ops = &ar934x_nfc_controller_ops;
 	ret = nand_scan(nand, 1);
-#endif
 	if (ret) {
 		dev_err(&pdev->dev, "nand_scan failed, err:%d\n", ret);
 		goto err_free_buf;
@@ -1566,13 +1462,11 @@ err_free_buf:
 static int ar934x_nfc_remove(struct platform_device *pdev)
 {
 	struct ar934x_nfc *nfc;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 20, 0)
-	struct mtd_info *mtd;
-#endif
 
 	nfc = platform_get_drvdata(pdev);
 	if (nfc) {
-		nand_release(&nfc->nand_chip);
+		mtd_device_unregister(nand_to_mtd(&nfc->nand_chip));
+		nand_cleanup(&nfc->nand_chip);
 		ar934x_nfc_free_buf(nfc);
 	}
 

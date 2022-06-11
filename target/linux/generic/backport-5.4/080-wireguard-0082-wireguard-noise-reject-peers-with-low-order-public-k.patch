@@ -1,0 +1,233 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Tue, 4 Feb 2020 22:17:26 +0100
+Subject: [PATCH] wireguard: noise: reject peers with low order public keys
+
+commit ec31c2676a10e064878927b243fada8c2fb0c03c upstream.
+
+Our static-static calculation returns a failure if the public key is of
+low order. We check for this when peers are added, and don't allow them
+to be added if they're low order, except in the case where we haven't
+yet been given a private key. In that case, we would defer the removal
+of the peer until we're given a private key, since at that point we're
+doing new static-static calculations which incur failures we can act on.
+This meant, however, that we wound up removing peers rather late in the
+configuration flow.
+
+Syzkaller points out that peer_remove calls flush_workqueue, which in
+turn might then wait for sending a handshake initiation to complete.
+Since handshake initiation needs the static identity lock, holding the
+static identity lock while calling peer_remove can result in a rare
+deadlock. We have precisely this case in this situation of late-stage
+peer removal based on an invalid public key. We can't drop the lock when
+removing, because then incoming handshakes might interact with a bogus
+static-static calculation.
+
+While the band-aid patch for this would involve breaking up the peer
+removal into two steps like wg_peer_remove_all does, in order to solve
+the locking issue, there's actually a much more elegant way of fixing
+this:
+
+If the static-static calculation succeeds with one private key, it
+*must* succeed with all others, because all 32-byte strings map to valid
+private keys, thanks to clamping. That means we can get rid of this
+silly dance and locking headaches of removing peers late in the
+configuration flow, and instead just reject them early on, regardless of
+whether the device has yet been assigned a private key. For the case
+where the device doesn't yet have a private key, we safely use zeros
+just for the purposes of checking for low order points by way of
+checking the output of the calculation.
+
+The following PoC will trigger the deadlock:
+
+ip link add wg0 type wireguard
+ip addr add 10.0.0.1/24 dev wg0
+ip link set wg0 up
+ping -f 10.0.0.2 &
+while true; do
+        wg set wg0 private-key /dev/null peer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= allowed-ips 10.0.0.0/24 endpoint 10.0.0.3:1234
+        wg set wg0 private-key <(echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=)
+done
+
+[    0.949105] ======================================================
+[    0.949550] WARNING: possible circular locking dependency detected
+[    0.950143] 5.5.0-debug+ #18 Not tainted
+[    0.950431] ------------------------------------------------------
+[    0.950959] wg/89 is trying to acquire lock:
+[    0.951252] ffff8880333e2128 ((wq_completion)wg-kex-wg0){+.+.}, at: flush_workqueue+0xe3/0x12f0
+[    0.951865]
+[    0.951865] but task is already holding lock:
+[    0.952280] ffff888032819bc0 (&wg->static_identity.lock){++++}, at: wg_set_device+0x95d/0xcc0
+[    0.953011]
+[    0.953011] which lock already depends on the new lock.
+[    0.953011]
+[    0.953651]
+[    0.953651] the existing dependency chain (in reverse order) is:
+[    0.954292]
+[    0.954292] -> #2 (&wg->static_identity.lock){++++}:
+[    0.954804]        lock_acquire+0x127/0x350
+[    0.955133]        down_read+0x83/0x410
+[    0.955428]        wg_noise_handshake_create_initiation+0x97/0x700
+[    0.955885]        wg_packet_send_handshake_initiation+0x13a/0x280
+[    0.956401]        wg_packet_handshake_send_worker+0x10/0x20
+[    0.956841]        process_one_work+0x806/0x1500
+[    0.957167]        worker_thread+0x8c/0xcb0
+[    0.957549]        kthread+0x2ee/0x3b0
+[    0.957792]        ret_from_fork+0x24/0x30
+[    0.958234]
+[    0.958234] -> #1 ((work_completion)(&peer->transmit_handshake_work)){+.+.}:
+[    0.958808]        lock_acquire+0x127/0x350
+[    0.959075]        process_one_work+0x7ab/0x1500
+[    0.959369]        worker_thread+0x8c/0xcb0
+[    0.959639]        kthread+0x2ee/0x3b0
+[    0.959896]        ret_from_fork+0x24/0x30
+[    0.960346]
+[    0.960346] -> #0 ((wq_completion)wg-kex-wg0){+.+.}:
+[    0.960945]        check_prev_add+0x167/0x1e20
+[    0.961351]        __lock_acquire+0x2012/0x3170
+[    0.961725]        lock_acquire+0x127/0x350
+[    0.961990]        flush_workqueue+0x106/0x12f0
+[    0.962280]        peer_remove_after_dead+0x160/0x220
+[    0.962600]        wg_set_device+0xa24/0xcc0
+[    0.962994]        genl_rcv_msg+0x52f/0xe90
+[    0.963298]        netlink_rcv_skb+0x111/0x320
+[    0.963618]        genl_rcv+0x1f/0x30
+[    0.963853]        netlink_unicast+0x3f6/0x610
+[    0.964245]        netlink_sendmsg+0x700/0xb80
+[    0.964586]        __sys_sendto+0x1dd/0x2c0
+[    0.964854]        __x64_sys_sendto+0xd8/0x1b0
+[    0.965141]        do_syscall_64+0x90/0xd9a
+[    0.965408]        entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[    0.965769]
+[    0.965769] other info that might help us debug this:
+[    0.965769]
+[    0.966337] Chain exists of:
+[    0.966337]   (wq_completion)wg-kex-wg0 --> (work_completion)(&peer->transmit_handshake_work) --> &wg->static_identity.lock
+[    0.966337]
+[    0.967417]  Possible unsafe locking scenario:
+[    0.967417]
+[    0.967836]        CPU0                    CPU1
+[    0.968155]        ----                    ----
+[    0.968497]   lock(&wg->static_identity.lock);
+[    0.968779]                                lock((work_completion)(&peer->transmit_handshake_work));
+[    0.969345]                                lock(&wg->static_identity.lock);
+[    0.969809]   lock((wq_completion)wg-kex-wg0);
+[    0.970146]
+[    0.970146]  *** DEADLOCK ***
+[    0.970146]
+[    0.970531] 5 locks held by wg/89:
+[    0.970908]  #0: ffffffff827433c8 (cb_lock){++++}, at: genl_rcv+0x10/0x30
+[    0.971400]  #1: ffffffff82743480 (genl_mutex){+.+.}, at: genl_rcv_msg+0x642/0xe90
+[    0.971924]  #2: ffffffff827160c0 (rtnl_mutex){+.+.}, at: wg_set_device+0x9f/0xcc0
+[    0.972488]  #3: ffff888032819de0 (&wg->device_update_lock){+.+.}, at: wg_set_device+0xb0/0xcc0
+[    0.973095]  #4: ffff888032819bc0 (&wg->static_identity.lock){++++}, at: wg_set_device+0x95d/0xcc0
+[    0.973653]
+[    0.973653] stack backtrace:
+[    0.973932] CPU: 1 PID: 89 Comm: wg Not tainted 5.5.0-debug+ #18
+[    0.974476] Call Trace:
+[    0.974638]  dump_stack+0x97/0xe0
+[    0.974869]  check_noncircular+0x312/0x3e0
+[    0.975132]  ? print_circular_bug+0x1f0/0x1f0
+[    0.975410]  ? __kernel_text_address+0x9/0x30
+[    0.975727]  ? unwind_get_return_address+0x51/0x90
+[    0.976024]  check_prev_add+0x167/0x1e20
+[    0.976367]  ? graph_lock+0x70/0x160
+[    0.976682]  __lock_acquire+0x2012/0x3170
+[    0.976998]  ? register_lock_class+0x1140/0x1140
+[    0.977323]  lock_acquire+0x127/0x350
+[    0.977627]  ? flush_workqueue+0xe3/0x12f0
+[    0.977890]  flush_workqueue+0x106/0x12f0
+[    0.978147]  ? flush_workqueue+0xe3/0x12f0
+[    0.978410]  ? find_held_lock+0x2c/0x110
+[    0.978662]  ? lock_downgrade+0x6e0/0x6e0
+[    0.978919]  ? queue_rcu_work+0x60/0x60
+[    0.979166]  ? netif_napi_del+0x151/0x3b0
+[    0.979501]  ? peer_remove_after_dead+0x160/0x220
+[    0.979871]  peer_remove_after_dead+0x160/0x220
+[    0.980232]  wg_set_device+0xa24/0xcc0
+[    0.980516]  ? deref_stack_reg+0x8e/0xc0
+[    0.980801]  ? set_peer+0xe10/0xe10
+[    0.981040]  ? __ww_mutex_check_waiters+0x150/0x150
+[    0.981430]  ? __nla_validate_parse+0x163/0x270
+[    0.981719]  ? genl_family_rcv_msg_attrs_parse+0x13f/0x310
+[    0.982078]  genl_rcv_msg+0x52f/0xe90
+[    0.982348]  ? genl_family_rcv_msg_attrs_parse+0x310/0x310
+[    0.982690]  ? register_lock_class+0x1140/0x1140
+[    0.983049]  netlink_rcv_skb+0x111/0x320
+[    0.983298]  ? genl_family_rcv_msg_attrs_parse+0x310/0x310
+[    0.983645]  ? netlink_ack+0x880/0x880
+[    0.983888]  genl_rcv+0x1f/0x30
+[    0.984168]  netlink_unicast+0x3f6/0x610
+[    0.984443]  ? netlink_detachskb+0x60/0x60
+[    0.984729]  ? find_held_lock+0x2c/0x110
+[    0.984976]  netlink_sendmsg+0x700/0xb80
+[    0.985220]  ? netlink_broadcast_filtered+0xa60/0xa60
+[    0.985533]  __sys_sendto+0x1dd/0x2c0
+[    0.985763]  ? __x64_sys_getpeername+0xb0/0xb0
+[    0.986039]  ? sockfd_lookup_light+0x17/0x160
+[    0.986397]  ? __sys_recvmsg+0x8c/0xf0
+[    0.986711]  ? __sys_recvmsg_sock+0xd0/0xd0
+[    0.987018]  __x64_sys_sendto+0xd8/0x1b0
+[    0.987283]  ? lockdep_hardirqs_on+0x39b/0x5a0
+[    0.987666]  do_syscall_64+0x90/0xd9a
+[    0.987903]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[    0.988223] RIP: 0033:0x7fe77c12003e
+[    0.988508] Code: c3 8b 07 85 c0 75 24 49 89 fb 48 89 f0 48 89 d7 48 89 ce 4c 89 c2 4d 89 ca 4c 8b 44 24 08 4c 8b 4c 24 10 4c 4
+[    0.989666] RSP: 002b:00007fffada2ed58 EFLAGS: 00000246 ORIG_RAX: 000000000000002c
+[    0.990137] RAX: ffffffffffffffda RBX: 00007fe77c159d48 RCX: 00007fe77c12003e
+[    0.990583] RDX: 0000000000000040 RSI: 000055fd1d38e020 RDI: 0000000000000004
+[    0.991091] RBP: 000055fd1d38e020 R08: 000055fd1cb63358 R09: 000000000000000c
+[    0.991568] R10: 0000000000000000 R11: 0000000000000246 R12: 000000000000002c
+[    0.992014] R13: 0000000000000004 R14: 000055fd1d38e020 R15: 0000000000000001
+
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Reported-by: syzbot <syzkaller@googlegroups.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/net/wireguard/netlink.c |  6 ++----
+ drivers/net/wireguard/noise.c   | 10 +++++++---
+ 2 files changed, 9 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireguard/netlink.c
++++ b/drivers/net/wireguard/netlink.c
+@@ -575,10 +575,8 @@ static int wg_set_device(struct sk_buff
+ 							 private_key);
+ 		list_for_each_entry_safe(peer, temp, &wg->peer_list,
+ 					 peer_list) {
+-			if (wg_noise_precompute_static_static(peer))
+-				wg_noise_expire_current_peer_keypairs(peer);
+-			else
+-				wg_peer_remove(peer);
++			BUG_ON(!wg_noise_precompute_static_static(peer));
++			wg_noise_expire_current_peer_keypairs(peer);
+ 		}
+ 		wg_cookie_checker_precompute_device_keys(&wg->cookie_checker);
+ 		up_write(&wg->static_identity.lock);
+--- a/drivers/net/wireguard/noise.c
++++ b/drivers/net/wireguard/noise.c
+@@ -46,17 +46,21 @@ void __init wg_noise_init(void)
+ /* Must hold peer->handshake.static_identity->lock */
+ bool wg_noise_precompute_static_static(struct wg_peer *peer)
+ {
+-	bool ret = true;
++	bool ret;
+ 
+ 	down_write(&peer->handshake.lock);
+-	if (peer->handshake.static_identity->has_identity)
++	if (peer->handshake.static_identity->has_identity) {
+ 		ret = curve25519(
+ 			peer->handshake.precomputed_static_static,
+ 			peer->handshake.static_identity->static_private,
+ 			peer->handshake.remote_static);
+-	else
++	} else {
++		u8 empty[NOISE_PUBLIC_KEY_LEN] = { 0 };
++
++		ret = curve25519(empty, empty, peer->handshake.remote_static);
+ 		memset(peer->handshake.precomputed_static_static, 0,
+ 		       NOISE_PUBLIC_KEY_LEN);
++	}
+ 	up_write(&peer->handshake.lock);
+ 	return ret;
+ }

@@ -1,5 +1,5 @@
 BOARDNAME:=Devices with NAND flash (Routers)
-FEATURES += nand pcie ramdisk squashfs usb
+FEATURES += nand pcie
 
 DEFAULT_PACKAGES += kmod-ath9k swconfig wpad-basic-wolfssl
 

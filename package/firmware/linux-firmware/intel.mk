@@ -168,6 +168,21 @@ define Package/iwlwifi-firmware-iwl9260/install
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-iwl9260))
 
+Package/iwlwifi-firmware-ax200 = $(call Package/firmware-default,Intel AX200 firmware)
+define Package/iwlwifi-firmware-ax200/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-cc-a0-66.ucode $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-ax200))
+
+Package/iwlwifi-firmware-ax210 = $(call Package/firmware-default,Intel AX210 firmware)
+define Package/iwlwifi-firmware-ax210/install
+	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-ty-a0-gf-a0-66.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-ty-a0-gf-a0.pnvm $(1)/lib/firmware
+endef
+$(eval $(call BuildPackage,iwlwifi-firmware-ax210))
+
 Package/e100-firmware = $(call Package/firmware-default,Intel e100)
 define Package/e100-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/e100
@@ -176,3 +191,95 @@ define Package/e100-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/e100/d102e_ucode.bin $(1)/lib/firmware/e100/
 endef
 $(eval $(call BuildPackage,e100-firmware))
+
+Package/i915-firmware = $(call Package/firmware-default,Intel GPU firmware)
+define Package/i915-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/i915
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_dmc_ver1_09.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_09.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_10.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_12.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_guc_62.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adls_dmc_ver2_01.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_dmc_ver1_07.bin $(1)/lib/firmware/i915/
+	ln -s /lib/firmware/i915/bxt_dmc_ver1_07.bin $(1)/lib/firmware/i915/bxt_dmc_ver1.bin
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_32.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_ver8_7.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_guc_ver9_29.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_huc_2.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_huc_ver01_07_1398.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_huc_ver01_8_2893.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cml_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cml_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cml_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cml_huc_4.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cnl_dmc_ver1_06.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/cnl_dmc_ver1_07.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/dg1_dmc_ver2_02.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/dg1_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/dg1_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/dg1_huc_7.7.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/dg1_huc_7.9.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/ehl_guc_33.0.4.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/ehl_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/ehl_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/ehl_huc_9.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_dmc_ver1_04.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_32.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_4.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_ver03_01_2893.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_dmc_ver1_07.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_dmc_ver1_09.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_guc_32.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_huc_9.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_huc_ver8_4_3238.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_dmc_ver1_01.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_dmc_ver1_04.bin $(1)/lib/firmware/i915/
+	ln -s /lib/firmware/i915/kbl_dmc_ver1_04.bin $(1)/lib/firmware/i915/kbl_dmc_ver1.bin
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_32.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_ver9_14.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_guc_ver9_39.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_huc_4.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/kbl_huc_ver02_00_1810.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/rkl_dmc_ver2_02.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/rkl_dmc_ver2_03.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_dmc_ver1_23.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_dmc_ver1_26.bin $(1)/lib/firmware/i915/
+	ln -s /lib/firmware/i915/skl_dmc_ver1_26.bin $(1)/lib/firmware/i915/skl_dmc_ver1.bin
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_dmc_ver1_27.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_32.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_33.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_ver1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_ver4.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_ver6_1.bin $(1)/lib/firmware/i915/
+	ln -s /lib/firmware/i915/skl_guc_ver6_1.bin $(1)/lib/firmware/i915/skl_guc_ver6.bin
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_guc_ver9_33.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_huc_2.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/skl_huc_ver01_07_1398.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_dmc_ver2_04.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_dmc_ver2_06.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_dmc_ver2_08.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_dmc_ver2_12.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_35.2.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_49.0.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.0.12.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.5.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.9.3.bin $(1)/lib/firmware/i915/
+endef
+$(eval $(call BuildPackage,i915-firmware))

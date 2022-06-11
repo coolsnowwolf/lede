@@ -326,7 +326,7 @@ start_interface() {
 			append cstr "$classnr:$prio:$avgrate:$pktsize:$pktdelay:$maxrate:$qdisc:$filter" "$N"
 		done
 		append ${prefix}q "$(tcrules)" "$N"
-		export dev_${dir}="ifconfig $dev up >&- 2>&-
+		export dev_${dir}="ip link set $dev up >&- 2>&-
 tc qdisc del dev $dev root >&- 2>&-
 tc qdisc add dev $dev root handle 1: hfsc default ${class_default}0
 tc class add dev $dev parent 1: classid 1:1 hfsc sc rate ${rate}kbit ul rate ${rate}kbit"

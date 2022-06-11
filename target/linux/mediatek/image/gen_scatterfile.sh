@@ -1,9 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright © 2020 David Woodhouse <dwmw2@infradead.org>
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
 #
 # Generate as "scatter file" for use with the MediaTek SP Flash tool for
 # writing images to MediaTek boards. This can be used to write images

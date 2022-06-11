@@ -1,10 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2012 OpenWrt.org
 # Copyright (C) 2016 LEDE project
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 PROJECT_GIT = https://git.openwrt.org
 
@@ -12,9 +9,11 @@ OPENWRT_GIT = $(PROJECT_GIT)
 LEDE_GIT = $(PROJECT_GIT)
 
 ifdef PKG_SOURCE_VERSION
-PKG_VERSION ?= $(if $(PKG_SOURCE_DATE),$(PKG_SOURCE_DATE)-)$(call version_abbrev,$(PKG_SOURCE_VERSION))
-PKG_SOURCE_SUBDIR ?= $(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE ?= $(PKG_SOURCE_SUBDIR).tar.xz
+  ifndef PKG_VERSION
+    PKG_VERSION := $(if $(PKG_SOURCE_DATE),$(PKG_SOURCE_DATE)-)$(call version_abbrev,$(PKG_SOURCE_VERSION))
+  endif
+  PKG_SOURCE_SUBDIR ?= $(PKG_NAME)-$(PKG_VERSION)
+  PKG_SOURCE ?= $(PKG_SOURCE_SUBDIR).tar.xz
 endif
 
 DOWNLOAD_RDEP=$(STAMP_PREPARED) $(HOST_STAMP_PREPARED)
@@ -28,7 +27,7 @@ define dl_method
 $(strip \
   $(if $(filter git,$(2)),$(call dl_method_git,$(1),$(2)),
     $(if $(2),$(2), \
-      $(if $(filter @APACHE/% @GITHUB/% @GNOME/% @GNU/% @KERNEL/% @SF/% @SAVANNAH/% ftp://% http://% https://% file://%,$(1)),default, \
+      $(if $(filter @OPENWRT @APACHE/% @DEBIAN/% @GITHUB/% @GNOME/% @GNU/% @KERNEL/% @SF/% @SAVANNAH/% ftp://% http://% https://% file://%,$(1)),default, \
         $(if $(filter git://%,$(1)),$(call dl_method_git,$(1),$(2)), \
           $(if $(filter svn://%,$(1)),svn, \
             $(if $(filter cvs://%,$(1)),cvs, \
@@ -75,7 +74,7 @@ else
   check_warn = $(if $(filter-out undefined,$(origin F_$(1))),$(filter ,$(shell $(call F_$(1),$(2),$(3),$(4)) >&2)),$(check_warn_nofix))
 endif
 
-gen_sha256sum = $(shell mkhash sha256 $(DL_DIR)/$(1))
+gen_sha256sum = $(shell $(MKHASH) sha256 $(DL_DIR)/$(1))
 
 ifdef FIXUP
 F_hash_deprecated = $(SCRIPT_DIR)/fixup-makefile.pl $(CURDIR)/Makefile fix-hash $(3) $(call gen_sha256sum,$(1)) $(2)

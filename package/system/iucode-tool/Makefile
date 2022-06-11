@@ -20,6 +20,8 @@ PKG_BUILD_DEPENDS:=USE_UCLIBC:argp-standalone USE_MUSL:argp-standalone
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 PKG_LICENSE:=GPL-2.0
 
+PKG_FLAGS:=nonshared
+
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk

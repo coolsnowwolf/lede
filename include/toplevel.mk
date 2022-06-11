@@ -1,14 +1,10 @@
-# Makefile for OpenWrt
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2007-2012 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2007-2020 OpenWrt.org
 
 PREP_MK= OPENWRT_BUILD= QUIET=0
 
-export IS_TTY=$(shell tty -s && echo 1 || echo 0)
+export IS_TTY=$(if $(MAKE_TERMOUT),1,0)
 
 include $(TOPDIR)/include/verbose.mk
 
@@ -19,7 +15,6 @@ else
   SOURCE_DATE_EPOCH:=$(shell $(TOPDIR)/scripts/get_source_date_epoch.sh)
 endif
 
-HOSTCC ?= $(CC)
 export REVISION
 export SOURCE_DATE_EPOCH
 export GIT_CONFIG_PARAMETERS='core.autocrlf=false'
@@ -28,6 +23,12 @@ export MAKE_JOBSERVER=$(filter --jobserver%,$(MAKEFLAGS))
 export GNU_HOST_NAME:=$(shell $(TOPDIR)/scripts/config.guess)
 export HOST_OS:=$(shell uname)
 export HOST_ARCH:=$(shell uname -m)
+
+ifeq ($(HOST_OS),Darwin)
+  ifneq ($(filter /Applications/Xcode.app/% /Library/Developer/%,$(MAKE)),)
+    $(error Please use a newer version of GNU make. The version shipped by Apple is not supported)
+  endif
+endif
 
 # prevent perforce from messing with the patch utility
 unexport P4PORT P4USER P4CONFIG P4CLIENT
@@ -52,13 +53,6 @@ path:=$(subst $(space),:,$(path))
 export PATH:=$(path)
 
 unexport TAR_OPTIONS
-
-ifneq ($(shell $(HOSTCC) 2>&1 | grep clang),)
-  export HOSTCC_REAL?=$(HOSTCC)
-  export HOSTCC_WRAPPER:=$(TOPDIR)/scripts/clang-gcc-wrapper
-else
-  export HOSTCC_WRAPPER:=$(HOSTCC)
-endif
 
 ifeq ($(FORCE),)
   .config scripts/config/conf scripts/config/mconf: staging_dir/host/.prereq-build
@@ -91,6 +85,7 @@ prepare-tmpinfo: FORCE
 	[ tmp/.config-feeds.in -nt tmp/.packageauxvars ] || ./scripts/feeds feed_config > tmp/.config-feeds.in
 	./scripts/package-metadata.pl mk tmp/.packageinfo > tmp/.packagedeps || { rm -f tmp/.packagedeps; false; }
 	./scripts/package-metadata.pl pkgaux tmp/.packageinfo > tmp/.packageauxvars || { rm -f tmp/.packageauxvars; false; }
+	./scripts/package-metadata.pl usergroup tmp/.packageinfo > tmp/.packageusergroup || { rm -f tmp/.packageusergroup; false; }
 	touch $(TOPDIR)/tmp/.build
 
 .config: ./scripts/config/conf $(if $(CONFIG_HAVE_DOT_CONFIG),,prepare-tmpinfo)
@@ -108,7 +103,7 @@ endif
 scripts/config/%onf: CFLAGS+= -O2
 scripts/config/%onf:
 	@$(_SINGLE)$(SUBMAKE) $(if $(findstring s,$(OPENWRT_VERBOSE)),,-s) \
-		-C scripts/config $(notdir $@) CC="$(HOSTCC_WRAPPER)"
+		-C scripts/config $(notdir $@)
 
 $(eval $(call rdep,scripts/config,scripts/config/mconf))
 
@@ -141,6 +136,13 @@ menuconfig: scripts/config/mconf prepare-tmpinfo FORCE
 	[ -L .config ] && export KCONFIG_OVERWRITECONFIG=1; \
 		$< Config.in
 
+nconfig: scripts/config/nconf prepare-tmpinfo FORCE
+	if [ \! -e .config -a -e $(HOME)/.openwrt/defconfig ]; then \
+		cp $(HOME)/.openwrt/defconfig .config; \
+	fi
+	[ -L .config ] && export KCONFIG_OVERWRITECONFIG=1; \
+		$< Config.in
+
 xconfig: scripts/config/qconf prepare-tmpinfo FORCE
 	if [ \! -e .config -a -e $(HOME)/.openwrt/defconfig ]; then \
 		cp $(HOME)/.openwrt/defconfig .config; \
@@ -162,12 +164,16 @@ kernel_oldconfig: prepare_kernel_conf
 ifneq ($(DISTRO_PKG_CONFIG),)
 kernel_menuconfig: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
 kernel_nconfig: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
+kernel_xconfig: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
 endif
 kernel_menuconfig: prepare_kernel_conf
 	$(_SINGLE)$(NO_TRACE_MAKE) -C target/linux menuconfig
 
 kernel_nconfig: prepare_kernel_conf
 	$(_SINGLE)$(NO_TRACE_MAKE) -C target/linux nconfig
+
+kernel_xconfig: prepare_kernel_conf
+	$(_SINGLE)$(NO_TRACE_MAKE) -C target/linux xconfig
 
 staging_dir/host/.prereq-build: include/prereq-build.mk
 	mkdir -p tmp
@@ -249,10 +255,10 @@ package/symlinks-clean:
 	./scripts/feeds uninstall -a
 
 help:
-	cat README
+	cat README.md
 
 distclean:
-	rm -rf bin build_dir .config* dl feeds key-build* logs package/feeds package/openwrt-packages staging_dir tmp
+	rm -rf bin build_dir .ccache .config* dl feeds key-build* logs package/feeds staging_dir tmp
 	@$(_SINGLE)$(SUBMAKE) -C scripts/config clean
 
 ifeq ($(findstring v,$(DEBUG)),)

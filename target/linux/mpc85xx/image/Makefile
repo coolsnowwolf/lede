@@ -1,7 +1,5 @@
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# SPDX-License-Identifier: GPL-2.0-only
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -16,7 +14,6 @@ define Device/Default
   KERNEL_ENTRY := 0x00000000
   KERNEL_LOADADDR := 0x00000000
   KERNEL := kernel-bin
-  SUPPORTED_DEVICES := $(subst _,$(comma),$(1))
 endef
 
 include $(SUBTARGET).mk

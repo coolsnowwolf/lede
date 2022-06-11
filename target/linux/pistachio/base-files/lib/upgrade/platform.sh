@@ -1,9 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2017 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 RAMFS_COPY_BIN='fw_printenv fw_setenv dmesg'
 RAMFS_COPY_DATA="/etc/fw_env.config"

@@ -1,10 +1,6 @@
-# Makefile for OpenWrt
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2007 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
 
 TOPDIR:=${CURDIR}
 LC_ALL:=C
@@ -61,6 +57,11 @@ dirclean: clean
 	rm -rf $(STAGING_DIR_HOST) $(STAGING_DIR_HOSTPKG) $(TOOLCHAIN_DIR) $(BUILD_DIR_BASE)/host $(BUILD_DIR_BASE)/hostpkg $(BUILD_DIR_TOOLCHAIN)
 	rm -rf $(TMP_DIR)
 	$(MAKE) -C $(TOPDIR)/scripts/config clean
+
+cacheclean:
+ifneq ($(CONFIG_CCACHE),)
+	$(STAGING_DIR_HOST)/bin/ccache -C
+endif
 
 ifndef DUMP_TARGET_DB
 $(BUILD_DIR)/.prepared: Makefile
@@ -119,6 +120,9 @@ world: prepare $(target/stamp-compile) $(package/stamp-compile) $(package/stamp-
 	$(_SINGLE)$(SUBMAKE) -r package/index
 	$(_SINGLE)$(SUBMAKE) -r json_overview_image_info
 	$(_SINGLE)$(SUBMAKE) -r checksum
+ifneq ($(CONFIG_CCACHE),)
+	$(STAGING_DIR_HOST)/bin/ccache -s
+endif
 
 .PHONY: clean dirclean prereq prepare world package/symlinks package/symlinks-install package/symlinks-clean
 

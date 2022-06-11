@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Herbert Xu <herbert@gondor.apana.org.au>
+Date: Wed, 8 Jan 2020 12:37:35 +0800
+Subject: [PATCH] crypto: curve25519 - Fix selftest build error
+
+commit a8bdf2c42ee4d1ee42af1f3601f85de94e70a421 upstream.
+
+If CRYPTO_CURVE25519 is y, CRYPTO_LIB_CURVE25519_GENERIC will be
+y, but CRYPTO_LIB_CURVE25519 may be set to m, this causes build
+errors:
+
+lib/crypto/curve25519-selftest.o: In function `curve25519':
+curve25519-selftest.c:(.text.unlikely+0xc): undefined reference to `curve25519_arch'
+lib/crypto/curve25519-selftest.o: In function `curve25519_selftest':
+curve25519-selftest.c:(.init.text+0x17e): undefined reference to `curve25519_base_arch'
+
+This is because the curve25519 self-test code is being controlled
+by the GENERIC option rather than the overall CURVE25519 option,
+as is the case with blake2s.  To recap, the GENERIC and ARCH options
+for CURVE25519 are internal only and selected by users such as
+the Crypto API, or the externally visible CURVE25519 option which
+in turn is selected by wireguard.  The self-test is specific to the
+the external CURVE25519 option and should not be enabled by the
+Crypto API.
+
+This patch fixes this by splitting the GENERIC module from the
+CURVE25519 module with the latter now containing just the self-test.
+
+Reported-by: Hulk Robot <hulkci@huawei.com>
+Fixes: aa127963f1ca ("crypto: lib/curve25519 - re-add selftests")
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Reviewed-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ lib/crypto/Makefile             |  9 ++++++---
+ lib/crypto/curve25519-generic.c | 24 ++++++++++++++++++++++++
+ lib/crypto/curve25519.c         |  7 -------
+ 3 files changed, 30 insertions(+), 10 deletions(-)
+ create mode 100644 lib/crypto/curve25519-generic.c
+
+--- a/lib/crypto/Makefile
++++ b/lib/crypto/Makefile
+@@ -19,9 +19,12 @@ libblake2s-y					+= blake2s.o
+ obj-$(CONFIG_CRYPTO_LIB_CHACHA20POLY1305)	+= libchacha20poly1305.o
+ libchacha20poly1305-y				+= chacha20poly1305.o
+ 
+-obj-$(CONFIG_CRYPTO_LIB_CURVE25519_GENERIC)	+= libcurve25519.o
+-libcurve25519-y					:= curve25519-fiat32.o
+-libcurve25519-$(CONFIG_ARCH_SUPPORTS_INT128)	:= curve25519-hacl64.o
++obj-$(CONFIG_CRYPTO_LIB_CURVE25519_GENERIC)	+= libcurve25519-generic.o
++libcurve25519-generic-y				:= curve25519-fiat32.o
++libcurve25519-generic-$(CONFIG_ARCH_SUPPORTS_INT128)	:= curve25519-hacl64.o
++libcurve25519-generic-y				+= curve25519-generic.o
++
++obj-$(CONFIG_CRYPTO_LIB_CURVE25519)		+= libcurve25519.o
+ libcurve25519-y					+= curve25519.o
+ 
+ obj-$(CONFIG_CRYPTO_LIB_DES)			+= libdes.o
+--- /dev/null
++++ b/lib/crypto/curve25519-generic.c
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++/*
++ * Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
++ *
++ * This is an implementation of the Curve25519 ECDH algorithm, using either
++ * a 32-bit implementation or a 64-bit implementation with 128-bit integers,
++ * depending on what is supported by the target compiler.
++ *
++ * Information: https://cr.yp.to/ecdh.html
++ */
++
++#include <crypto/curve25519.h>
++#include <linux/module.h>
++
++const u8 curve25519_null_point[CURVE25519_KEY_SIZE] __aligned(32) = { 0 };
++const u8 curve25519_base_point[CURVE25519_KEY_SIZE] __aligned(32) = { 9 };
++
++EXPORT_SYMBOL(curve25519_null_point);
++EXPORT_SYMBOL(curve25519_base_point);
++EXPORT_SYMBOL(curve25519_generic);
++
++MODULE_LICENSE("GPL v2");
++MODULE_DESCRIPTION("Curve25519 scalar multiplication");
++MODULE_AUTHOR("Jason A. Donenfeld <Jason@zx2c4.com>");
+--- a/lib/crypto/curve25519.c
++++ b/lib/crypto/curve25519.c
+@@ -15,13 +15,6 @@
+ 
+ bool curve25519_selftest(void);
+ 
+-const u8 curve25519_null_point[CURVE25519_KEY_SIZE] __aligned(32) = { 0 };
+-const u8 curve25519_base_point[CURVE25519_KEY_SIZE] __aligned(32) = { 9 };
+-
+-EXPORT_SYMBOL(curve25519_null_point);
+-EXPORT_SYMBOL(curve25519_base_point);
+-EXPORT_SYMBOL(curve25519_generic);
+-
+ static int __init mod_init(void)
+ {
+ 	if (!IS_ENABLED(CONFIG_CRYPTO_MANAGER_DISABLE_TESTS) &&

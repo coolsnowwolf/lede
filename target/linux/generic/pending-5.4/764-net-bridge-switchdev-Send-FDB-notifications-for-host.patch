@@ -1,0 +1,94 @@
+From 2e50fd9322047253c327550b4485cf8761035a8c Mon Sep 17 00:00:00 2001
+From: Tobias Waldekranz <tobias@waldekranz.com>
+Date: Sat, 16 Jan 2021 02:25:11 +0100
+Subject: [PATCH] net: bridge: switchdev: Send FDB notifications for host
+ addresses
+
+Treat addresses added to the bridge itself in the same way as regular
+ports and send out a notification so that drivers may sync it down to
+the hardware FDB.
+
+Signed-off-by: Tobias Waldekranz <tobias@waldekranz.com>
+---
+ net/bridge/br_fdb.c       |  4 ++--
+ net/bridge/br_private.h   |  7 ++++---
+ net/bridge/br_switchdev.c | 11 +++++------
+ 3 files changed, 11 insertions(+), 11 deletions(-)
+
+--- a/net/bridge/br_fdb.c
++++ b/net/bridge/br_fdb.c
+@@ -581,7 +581,7 @@ void br_fdb_update(struct net_bridge *br
+ 
+ 			/* fastpath: update of existing entry */
+ 			if (unlikely(source != fdb->dst && !fdb->is_sticky)) {
+-				br_switchdev_fdb_notify(fdb, RTM_DELNEIGH);
++				br_switchdev_fdb_notify(br, fdb, RTM_DELNEIGH);
+ 				fdb->dst = source;
+ 				fdb_modified = true;
+ 				/* Take over HW learned entry */
+@@ -697,7 +697,7 @@ static void fdb_notify(struct net_bridge
+ 	int err = -ENOBUFS;
+ 
+ 	if (swdev_notify)
+-		br_switchdev_fdb_notify(fdb, type);
++		br_switchdev_fdb_notify(br, fdb, type);
+ 
+ 	skb = nlmsg_new(fdb_nlmsg_size(), GFP_ATOMIC);
+ 	if (skb == NULL)
+--- a/net/bridge/br_private.h
++++ b/net/bridge/br_private.h
+@@ -1203,8 +1203,8 @@ bool nbp_switchdev_allowed_egress(const
+ int br_switchdev_set_port_flag(struct net_bridge_port *p,
+ 			       unsigned long flags,
+ 			       unsigned long mask);
+-void br_switchdev_fdb_notify(const struct net_bridge_fdb_entry *fdb,
+-			     int type);
++void br_switchdev_fdb_notify(struct net_bridge *br,
++			     const struct net_bridge_fdb_entry *fdb, int type);
+ int br_switchdev_port_vlan_add(struct net_device *dev, u16 vid, u16 flags,
+ 			       struct netlink_ext_ack *extack);
+ int br_switchdev_port_vlan_del(struct net_device *dev, u16 vid);
+@@ -1250,7 +1250,8 @@ static inline int br_switchdev_port_vlan
+ }
+ 
+ static inline void
+-br_switchdev_fdb_notify(const struct net_bridge_fdb_entry *fdb, int type)
++br_switchdev_fdb_notify(struct net_bridge *br,
++			const struct net_bridge_fdb_entry *fdb, int type)
+ {
+ }
+ 
+--- a/net/bridge/br_switchdev.c
++++ b/net/bridge/br_switchdev.c
+@@ -103,7 +103,8 @@ int br_switchdev_set_port_flag(struct ne
+ }
+ 
+ void
+-br_switchdev_fdb_notify(const struct net_bridge_fdb_entry *fdb, int type)
++br_switchdev_fdb_notify(struct net_bridge *br,
++			const struct net_bridge_fdb_entry *fdb, int type)
+ {
+ 	struct switchdev_notifier_fdb_info info = {
+ 		.addr = fdb->key.addr.addr,
+@@ -112,18 +113,16 @@ br_switchdev_fdb_notify(const struct net
+ 		.local = fdb->is_local,
+ 		.offloaded = fdb->offloaded,
+ 	};
+-
+-	if (!fdb->dst)
+-		return;
++	struct net_device *dev = fdb->dst ? fdb->dst->dev : br->dev;
+ 
+ 	switch (type) {
+ 	case RTM_DELNEIGH:
+ 		call_switchdev_notifiers(SWITCHDEV_FDB_DEL_TO_DEVICE,
+-					 fdb->dst->dev, &info.info, NULL);
++					 dev, &info.info, NULL);
+ 		break;
+ 	case RTM_NEWNEIGH:
+ 		call_switchdev_notifiers(SWITCHDEV_FDB_ADD_TO_DEVICE,
+-					 fdb->dst->dev, &info.info, NULL);
++					 dev, &info.info, NULL);
+ 		break;
+ 	}
+ }

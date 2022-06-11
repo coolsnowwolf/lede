@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2007 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+# Copyright (C) 2007-2020 OpenWrt.org
+
 # define a dependency on a subtree
 # parameters:
 #	1: directories/files
@@ -13,7 +11,7 @@
 
 DEP_FINDPARAMS := -x "*/.svn*" -x ".*" -x "*:*" -x "*\!*" -x "* *" -x "*\\\#*" -x "*/.*_check" -x "*/.*.swp" -x "*/.pkgdir*"
 
-find_md5=find $(wildcard $(1)) -type f $(patsubst -x,-and -not -path,$(DEP_FINDPARAMS) $(2)) | mkhash md5
+find_md5=find $(wildcard $(1)) -type f $(patsubst -x,-and -not -path,$(DEP_FINDPARAMS) $(2)) -printf "%p%T@\n" | sort | $(MKHASH) md5
 
 define rdep
   .PRECIOUS: $(2)

@@ -8,8 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gre
-PKG_VERSION:=1
-PKG_RELEASE:=12
+PKG_RELEASE:=13
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk

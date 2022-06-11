@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2019 OpenWrt.org
+# Copyright (C) 2021 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -17,7 +17,7 @@ HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/$(PKG_NAME)-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/host-build.mk
 
-HOSTCC :=gcc
+HOST_CFLAGS +=-std=gnu89 -std=c90 -fPIC -Wno-error=implicit-function-declaration
 HOST_CFLAGS +=-std=gnu89
 
 define Host/Prepare
@@ -43,8 +43,6 @@ define Host/Install
 endef
 
 define Host/Clean
-	$(MAKE) -C $(HOST_BUILD_DIR) uninstall
-	rm -rf $(HOST_BUILD_DIR)
 	rm -rf $(STAGING_DIR_HOST)/include/ucl
 endef
 

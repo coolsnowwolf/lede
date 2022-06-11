@@ -17,7 +17,7 @@ define Device/tplink_tl-wdr4900-v1
   SUPPORTED_DEVICES += tl-wdr4900-v1
   ARTIFACTS := fdt.bin
   ARTIFACT/fdt.bin := append-dtb
-  IMAGES := fdt.bin factory.bin sysupgrade.bin
+  IMAGES := factory.bin sysupgrade.bin
   IMAGE/sysupgrade.bin := tplink-v1-image sysupgrade | append-metadata
   IMAGE/factory.bin := tplink-v1-image factory
 endef

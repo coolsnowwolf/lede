@@ -1,0 +1,185 @@
+From 550fc1298f6a4726e3944944561a047b3e04b134 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 25 Jun 2020 17:03:11 +0100
+Subject: [PATCH] media : i2c: imx290: Add support for the mono sensor
+ variant.
+
+The IMX290 module is available as either mono or colour (Bayer).
+
+Update the driver so that it can advertise the correct mono
+formats instead of the colour ones.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx290.c | 58 +++++++++++++++++++++++++++-----------
+ 1 file changed, 41 insertions(+), 17 deletions(-)
+
+--- a/drivers/media/i2c/imx290.c
++++ b/drivers/media/i2c/imx290.c
+@@ -1,10 +1,12 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * Sony IMX290/327 CMOS Image Sensor Driver
++ * Sony IMX290 & IMX327 CMOS Image Sensor Driver
+  *
+  * The IMX290 and IMX327 are very similar 1920x1080 1/2.8 CMOS image sensors.
+- * IMX327 can support up to 60fps, whilst IMX290 support up to 120fps (only
+- * 10bit and when connected over 4 CSI-2 lanes).
++ * IMX327 can support up to 60fps, whilst IMX290 can support up to 120fps, but
++ * only 10bit and when connected over 4 CSI-2 lanes.
++ * The modules don't appear to have a mechanism to identify whether the mono or
++ * colour variant is connected, therefore it is done via compatible string.
+  *
+  * Copyright (C) 2019 FRAMOS GmbH.
+  *
+@@ -17,6 +19,7 @@
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
++#include <linux/of_device.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
+@@ -95,6 +98,8 @@ struct imx290 {
+ 	u8 bpp;
+ 	u16 hmax_min;
+ 
++	const struct imx290_pixfmt *formats;
++
+ 	struct v4l2_subdev sd;
+ 	struct media_pad pad;
+ 	struct v4l2_mbus_framefmt current_format;
+@@ -120,11 +125,18 @@ struct imx290_pixfmt {
+ 	u8 bpp;
+ };
+ 
+-static const struct imx290_pixfmt imx290_formats[] = {
++#define IMX290_NUM_FORMATS 2
++
++static const struct imx290_pixfmt imx290_colour_formats[IMX290_NUM_FORMATS] = {
+ 	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10 },
+ 	{ MEDIA_BUS_FMT_SRGGB12_1X12, 12 },
+ };
+ 
++static const struct imx290_pixfmt imx290_mono_formats[IMX290_NUM_FORMATS] = {
++	{ MEDIA_BUS_FMT_Y10_1X10, 10 },
++	{ MEDIA_BUS_FMT_Y12_1X12, 12 },
++};
++
+ static const struct regmap_config imx290_regmap_config = {
+ 	.reg_bits = 16,
+ 	.val_bits = 8,
+@@ -671,10 +683,12 @@ static int imx290_enum_mbus_code(struct
+ 				 struct v4l2_subdev_pad_config *cfg,
+ 				 struct v4l2_subdev_mbus_code_enum *code)
+ {
+-	if (code->index >= ARRAY_SIZE(imx290_formats))
++	const struct imx290 *imx290 = to_imx290(sd);
++
++	if (code->index >= IMX290_NUM_FORMATS)
+ 		return -EINVAL;
+ 
+-	code->code = imx290_formats[code->index].code;
++	code->code = imx290->formats[code->index].code;
+ 
+ 	return 0;
+ }
+@@ -686,8 +700,8 @@ static int imx290_enum_frame_size(struct
+ 	const struct imx290 *imx290 = to_imx290(sd);
+ 	const struct imx290_mode *imx290_modes = imx290_modes_ptr(imx290);
+ 
+-	if ((fse->code != imx290_formats[0].code) &&
+-	    (fse->code != imx290_formats[1].code))
++	if (fse->code != imx290->formats[0].code &&
++	    fse->code != imx290->formats[1].code)
+ 		return -EINVAL;
+ 
+ 	if (fse->index >= imx290_modes_num(imx290))
+@@ -765,14 +779,14 @@ static int imx290_set_fmt(struct v4l2_su
+ 	fmt->format.width = mode->width;
+ 	fmt->format.height = mode->height;
+ 
+-	for (i = 0; i < ARRAY_SIZE(imx290_formats); i++)
+-		if (imx290_formats[i].code == fmt->format.code)
++	for (i = 0; i < IMX290_NUM_FORMATS; i++)
++		if (imx290->formats[i].code == fmt->format.code)
+ 			break;
+ 
+-	if (i >= ARRAY_SIZE(imx290_formats))
++	if (i >= IMX290_NUM_FORMATS)
+ 		i = 0;
+ 
+-	fmt->format.code = imx290_formats[i].code;
++	fmt->format.code = imx290->formats[i].code;
+ 	fmt->format.field = V4L2_FIELD_NONE;
+ 
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+@@ -780,7 +794,7 @@ static int imx290_set_fmt(struct v4l2_su
+ 	} else {
+ 		format = &imx290->current_format;
+ 		imx290->current_mode = mode;
+-		imx290->bpp = imx290_formats[i].bpp;
++		imx290->bpp = imx290->formats[i].bpp;
+ 
+ 		if (imx290->link_freq)
+ 			__v4l2_ctrl_s_ctrl(imx290->link_freq,
+@@ -835,6 +849,7 @@ static int imx290_write_current_format(s
+ 
+ 	switch (imx290->current_format.code) {
+ 	case MEDIA_BUS_FMT_SRGGB10_1X10:
++	case MEDIA_BUS_FMT_Y10_1X10:
+ 		ret = imx290_set_register_array(imx290, imx290_10bit_settings,
+ 						ARRAY_SIZE(
+ 							imx290_10bit_settings));
+@@ -844,6 +859,7 @@ static int imx290_write_current_format(s
+ 		}
+ 		break;
+ 	case MEDIA_BUS_FMT_SRGGB12_1X12:
++	case MEDIA_BUS_FMT_Y12_1X12:
+ 		ret = imx290_set_register_array(imx290, imx290_12bit_settings,
+ 						ARRAY_SIZE(
+ 							imx290_12bit_settings));
+@@ -1091,6 +1107,12 @@ static s64 imx290_check_link_freqs(const
+ 	return 0;
+ }
+ 
++static const struct of_device_id imx290_of_match[] = {
++	{ .compatible = "sony,imx290", .data = imx290_colour_formats },
++	{ .compatible = "sony,imx290-mono", .data = imx290_mono_formats },
++	{ /* sentinel */ }
++};
++
+ static int imx290_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
+@@ -1099,6 +1121,7 @@ static int imx290_probe(struct i2c_clien
+ 	struct v4l2_fwnode_endpoint ep = {
+ 		.bus_type = V4L2_MBUS_CSI2_DPHY
+ 	};
++	const struct of_device_id *match;
+ 	const struct imx290_mode *mode;
+ 	struct imx290 *imx290;
+ 	s64 fq;
+@@ -1115,6 +1138,11 @@ static int imx290_probe(struct i2c_clien
+ 		return -ENODEV;
+ 	}
+ 
++	match = of_match_device(imx290_of_match, dev);
++	if (!match)
++		return -ENODEV;
++	imx290->formats = (const struct imx290_pixfmt *)match->data;
++
+ 	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
+ 	if (!endpoint) {
+ 		dev_err(dev, "Endpoint node not found\n");
+@@ -1333,10 +1361,6 @@ static int imx290_remove(struct i2c_clie
+ 	return 0;
+ }
+ 
+-static const struct of_device_id imx290_of_match[] = {
+-	{ .compatible = "sony,imx290" },
+-	{ /* sentinel */ }
+-};
+ MODULE_DEVICE_TABLE(of, imx290_of_match);
+ 
+ static struct i2c_driver imx290_i2c_driver = {

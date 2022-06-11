@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2006-2016 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
@@ -139,7 +137,7 @@ DEVICE_VARS += BIN_TAIL
 
 define Device/Default
 	KERNEL := kernel-bin
-	IMAGE_NAME = $$(IMAGE_PREFIX)-$$(1).$$(2)
+	DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(1).$$(2)
 	KERNEL_NAME = vmlinux.lzma
 	KERNEL_INITRAMFS_NAME = vmlinux-initramfs.lzma
 	FILESYSTEMS := $(FS_64K)
@@ -148,17 +146,20 @@ define Device/Default
 endef
 
 define Device/standard
-  DEVICE_TITLE := Image with LZMA loader and LZMA compressed kernel
+  DEVICE_VENDOR := Generic
+  DEVICE_MODEL := Image with LZMA loader and LZMA compressed kernel
 endef
 
 define Device/standard-noloader-gz
-  DEVICE_TITLE := Image with gzipped kernel
+  DEVICE_VENDOR := Generic
+  DEVICE_MODEL := Image with gzipped kernel
   KERNEL_NAME = vmlinux.gz
   IMAGE/trx := append-rootfs | trx-without-loader
 endef
 
 define Device/standard-noloader-nodictionarylzma
-  DEVICE_TITLE := Image with LZMA compressed kernel matching CFE decompressor
+  DEVICE_VENDOR := Generic
+  DEVICE_MODEL := Image with LZMA compressed kernel matching CFE decompressor
   KERNEL_NAME = vmlinux-nodictionary.lzma
   IMAGE/trx := append-rootfs | trx-without-loader
 endef

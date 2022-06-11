@@ -55,6 +55,14 @@ ifeq ($(CONFIG_USE_MUSL),y)
 SSP_LIB=-lssp_nonshared
 endif
 
+ifeq (${V}, s)
+MAKE_VARS+= \
+	V=1
+else ifeq (${V}, sc)
+MAKE_VARS+= \
+	V=2
+endif
+
 MAKE_FLAGS:= \
 	$(TARGET_CONFIGURE_OPTS) \
 	CPU_CFLAGS="$(TARGET_CFLAGS)" \

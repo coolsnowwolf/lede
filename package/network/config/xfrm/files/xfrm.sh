@@ -11,8 +11,8 @@ proto_xfrm_setup() {
 	local cfg="$1"
 	local mode="xfrm"
 
-	local tunlink ifid mtu zone
-	json_get_vars tunlink ifid mtu zone
+	local tunlink ifid mtu zone multicast
+	json_get_vars tunlink ifid mtu zone multicast
 
 	[ -z "$tunlink" ] && {
 		proto_notify_error "$cfg" NO_TUNLINK
@@ -35,6 +35,8 @@ proto_xfrm_setup() {
 	json_add_int mtu "${mtu:-1280}"
 
 	json_add_string link "$tunlink"
+
+	json_add_boolean multicast "${multicast:-1}"
 
 	json_add_object 'data'
 	[ -n "$ifid" ] && json_add_int ifid "$ifid"
@@ -61,9 +63,10 @@ proto_xfrm_init_config() {
 	proto_config_add_string "tunlink"
 	proto_config_add_string "zone"
 	proto_config_add_int "ifid"
+	proto_config_add_boolean "multicast"
 }
 
 
 [ -n "$INCLUDE_ONLY" ] || {
-	[ -f /lib/modules/$(uname -r)/xfrm_interface.ko -o -d /sys/module/xfrm_interface ] && add_protocol xfrm
+	[ -d /sys/module/xfrm_interface ] && add_protocol xfrm
 }

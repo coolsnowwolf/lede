@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Thu, 29 Oct 2020 03:56:05 +0100
+Subject: [PATCH] wireguard: selftests: check that route_me_harder packets use
+ the right sk
+
+commit af8afcf1fdd5f365f70e2386c2d8c7a1abd853d7 upstream.
+
+If netfilter changes the packet mark, the packet is rerouted. The
+ip_route_me_harder family of functions fails to use the right sk, opting
+to instead use skb->sk, resulting in a routing loop when used with
+tunnels. With the next change fixing this issue in netfilter, test for
+the relevant condition inside our test suite, since wireguard was where
+the bug was discovered.
+
+Reported-by: Chen Minqiang <ptpt52@gmail.com>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ tools/testing/selftests/wireguard/netns.sh           | 8 ++++++++
+ tools/testing/selftests/wireguard/qemu/kernel.config | 2 ++
+ 2 files changed, 10 insertions(+)
+
+--- a/tools/testing/selftests/wireguard/netns.sh
++++ b/tools/testing/selftests/wireguard/netns.sh
+@@ -316,6 +316,14 @@ pp sleep 3
+ n2 ping -W 1 -c 1 192.168.241.1
+ n1 wg set wg0 peer "$pub2" persistent-keepalive 0
+ 
++# Test that sk_bound_dev_if works
++n1 ping -I wg0 -c 1 -W 1 192.168.241.2
++# What about when the mark changes and the packet must be rerouted?
++n1 iptables -t mangle -I OUTPUT -j MARK --set-xmark 1
++n1 ping -c 1 -W 1 192.168.241.2 # First the boring case
++n1 ping -I wg0 -c 1 -W 1 192.168.241.2 # Then the sk_bound_dev_if case
++n1 iptables -t mangle -D OUTPUT -j MARK --set-xmark 1
++
+ # Test that onion routing works, even when it loops
+ n1 wg set wg0 peer "$pub3" allowed-ips 192.168.242.2/32 endpoint 192.168.241.2:5
+ ip1 addr add 192.168.242.1/24 dev wg0
+--- a/tools/testing/selftests/wireguard/qemu/kernel.config
++++ b/tools/testing/selftests/wireguard/qemu/kernel.config
+@@ -18,10 +18,12 @@ CONFIG_NF_NAT=y
+ CONFIG_NETFILTER_XTABLES=y
+ CONFIG_NETFILTER_XT_NAT=y
+ CONFIG_NETFILTER_XT_MATCH_LENGTH=y
++CONFIG_NETFILTER_XT_MARK=y
+ CONFIG_NF_CONNTRACK_IPV4=y
+ CONFIG_NF_NAT_IPV4=y
+ CONFIG_IP_NF_IPTABLES=y
+ CONFIG_IP_NF_FILTER=y
++CONFIG_IP_NF_MANGLE=y
+ CONFIG_IP_NF_NAT=y
+ CONFIG_IP_ADVANCED_ROUTER=y
+ CONFIG_IP_MULTIPLE_TABLES=y

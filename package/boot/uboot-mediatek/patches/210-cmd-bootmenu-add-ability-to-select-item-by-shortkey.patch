@@ -1,0 +1,192 @@
+From 26d4e2e58bf0007db74b47c783785c3305ea1fa0 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Tue, 19 Jan 2021 10:58:48 +0800
+Subject: [PATCH 17/23] cmd: bootmenu: add ability to select item by shortkey
+
+Add ability to use shortkey to select item for bootmenu command
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ cmd/bootmenu.c | 77 +++++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 70 insertions(+), 7 deletions(-)
+
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -11,6 +11,7 @@
+ #include <menu.h>
+ #include <watchdog.h>
+ #include <malloc.h>
++#include <linux/ctype.h>
+ #include <linux/delay.h>
+ #include <linux/string.h>
+ 
+@@ -38,6 +39,7 @@ struct bootmenu_data {
+ 	int active;			/* active menu entry */
+ 	int count;			/* total count of menu entries */
+ 	struct bootmenu_entry *first;	/* first menu entry */
++	bool last_choiced;
+ };
+ 
+ enum bootmenu_key {
+@@ -46,8 +48,27 @@ enum bootmenu_key {
+ 	KEY_DOWN,
+ 	KEY_SELECT,
+ 	KEY_QUIT,
++	KEY_CHOICE,
+ };
+ 
++static const char choice_chars[] = {
++	'1', '2', '3', '4', '5', '6', '7', '8', '9',
++	'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
++	'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
++	'u', 'v', 'w', 'x', 'y', 'z'
++};
++
++static int find_choice(char choice)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(choice_chars); i++)
++		if (tolower(choice) == choice_chars[i])
++			return i;
++
++	return -1;
++}
++
+ static char *bootmenu_getoption(unsigned short int n)
+ {
+ 	char name[MAX_ENV_SIZE];
+@@ -82,7 +103,7 @@ static void bootmenu_print_entry(void *d
+ }
+ 
+ static void bootmenu_autoboot_loop(struct bootmenu_data *menu,
+-				enum bootmenu_key *key, int *esc)
++				enum bootmenu_key *key, int *esc, int *choice)
+ {
+ 	int i, c;
+ 
+@@ -115,6 +136,19 @@ static void bootmenu_autoboot_loop(struc
+ 				break;
+ 			default:
+ 				*key = KEY_NONE;
++				if (*esc)
++					break;
++
++				*choice = find_choice(c);
++				if ((*choice >= 0 &&
++				     *choice < menu->count - 1)) {
++					*key = KEY_CHOICE;
++				} else if (c == '0') {
++					*choice = menu->count - 1;
++					*key = KEY_CHOICE;
++				} else {
++					*key = KEY_NONE;
++				}
+ 				break;
+ 			}
+ 
+@@ -136,10 +170,16 @@ static void bootmenu_autoboot_loop(struc
+ }
+ 
+ static void bootmenu_loop(struct bootmenu_data *menu,
+-		enum bootmenu_key *key, int *esc)
++		enum bootmenu_key *key, int *esc, int *choice)
+ {
+ 	int c;
+ 
++	if (menu->last_choiced) {
++		menu->last_choiced = false;
++		*key = KEY_SELECT;
++		return;
++	}
++
+ 	if (*esc == 1) {
+ 		if (tstc()) {
+ 			c = getchar();
+@@ -165,6 +205,14 @@ static void bootmenu_loop(struct bootmen
+ 		if (c == '\e') {
+ 			*esc = 1;
+ 			*key = KEY_NONE;
++		} else {
++			*choice = find_choice(c);
++			if ((*choice >= 0 && *choice < menu->count - 1)) {
++				*key = KEY_CHOICE;
++			} else if (c == '0') {
++				*choice = menu->count - 1;
++				*key = KEY_CHOICE;
++			}
+ 		}
+ 		break;
+ 	case 1:
+@@ -216,16 +264,17 @@ static char *bootmenu_choice_entry(void
+ 	struct bootmenu_data *menu = data;
+ 	struct bootmenu_entry *iter;
+ 	enum bootmenu_key key = KEY_NONE;
++	int choice = -1;
+ 	int esc = 0;
+ 	int i;
+ 
+ 	while (1) {
+ 		if (menu->delay >= 0) {
+ 			/* Autoboot was not stopped */
+-			bootmenu_autoboot_loop(menu, &key, &esc);
++			bootmenu_autoboot_loop(menu, &key, &esc, &choice);
+ 		} else {
+ 			/* Some key was pressed, so autoboot was stopped */
+-			bootmenu_loop(menu, &key, &esc);
++			bootmenu_loop(menu, &key, &esc, &choice);
+ 		}
+ 
+ 		switch (key) {
+@@ -239,6 +288,12 @@ static char *bootmenu_choice_entry(void
+ 				++menu->active;
+ 			/* no menu key selected, regenerate menu */
+ 			return NULL;
++		case KEY_CHOICE:
++			menu->active = choice;
++			if (!menu->last_choiced) {
++				menu->last_choiced = true;
++				return NULL;
++			}
+ 		case KEY_SELECT:
+ 			iter = menu->first;
+ 			for (i = 0; i < menu->active; ++i)
+@@ -294,6 +349,7 @@ static struct bootmenu_data *bootmenu_cr
+ 	menu->delay = delay;
+ 	menu->active = 0;
+ 	menu->first = NULL;
++	menu->last_choiced = false;
+ 
+ 	default_str = env_get("bootmenu_default");
+ 	if (default_str)
+@@ -311,12 +367,19 @@ static struct bootmenu_data *bootmenu_cr
+ 			goto cleanup;
+ 
+ 		len = sep-option;
+-		entry->title = malloc(len + 1);
++		entry->title = malloc(len + 4);
+ 		if (!entry->title) {
+ 			free(entry);
+ 			goto cleanup;
+ 		}
+-		memcpy(entry->title, option, len);
++
++		if (i < ARRAY_SIZE(choice_chars)) {
++			len = sprintf(entry->title, "%c. %.*s", choice_chars[i],
++				      len, option);
++		} else {
++			len = sprintf(entry->title, "   %.*s", len, option);
++		}
++
+ 		entry->title[len] = 0;
+ 
+ 		len = strlen(sep + 1);
+@@ -353,7 +416,7 @@ static struct bootmenu_data *bootmenu_cr
+ 		if (!entry)
+ 			goto cleanup;
+ 
+-		entry->title = strdup("U-Boot console");
++		entry->title = strdup("0. U-Boot console");
+ 		if (!entry->title) {
+ 			free(entry);
+ 			goto cleanup;

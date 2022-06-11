@@ -7,8 +7,7 @@ BOARDNAME:=MT76x8 based boards
 FEATURES+=usb ramdisk
 CPU_TYPE:=24kc
 
-DEFAULT_PACKAGES += kmod-mt7603 wpad-basic swconfig
-KERNEL_PATCHVER:=5.4
+DEFAULT_PACKAGES += kmod-mt7603 wpad-openssl swconfig
 
 define Target/Description
 	Build firmware images for Ralink MT76x8 based boards.

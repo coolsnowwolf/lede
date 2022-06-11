@@ -3,8 +3,8 @@
 START=15
 
 EXTRA_COMMANDS="compact status"
-EXTRA_HELP="        compact trigger compaction for all Z-RAM swap dev's
-        status  print out status information & statistics about Z-RAM swap devices"
+EXTRA_HELP="	compact Trigger compaction for all Z-RAM swap dev's
+status Print out information & statistics about Z-RAM swap devices"
 
 ram_getsize()
 {
@@ -35,18 +35,18 @@ zram_applicable()
 		return 1
 	}
 
-	command -v mkswap >/dev/null || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'mkswap' not installed"
+	[ -x /sbin/mkswap ] || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox mkswap' not installed"
 		return 1
 	}
 
-	command -v swapon >/dev/null || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'swapon' not installed"
+	[ -x /sbin/swapon ] || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox swapon' not installed"
 		return 1
 	}
 
-	command -v swapoff >/dev/null || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'swapoff' not installed"
+	[ -x /sbin/swapoff ] || {
+		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox swapoff' not installed"
 		return 1
 	}
 }
@@ -85,8 +85,9 @@ zram_comp_algo()
 	local dev="$1"
 	local zram_comp_algo="$( uci -q get system.@system[0].zram_comp_algo )"
 
-	if [ -z "$zram_comp_algo" ] || [ ! -e /sys/block/$( basename $dev )/comp_algorithm ]; then
-		return 0
+	if [ -z "$zram_comp_algo" ]; then
+		# lzo-rle fails on small RAM devices, default to lzo, which is always available
+		zram_comp_algo="lzo"
 	fi
 
 	if [ $(grep -c "$zram_comp_algo" /sys/block/$( basename $dev )/comp_algorithm) -ne 0 ]; then
@@ -94,19 +95,6 @@ zram_comp_algo()
 		echo $zram_comp_algo > "/sys/block/$( basename $dev )/comp_algorithm"
 	else
 		logger -s -t zram_comp_algo -p daemon.debug "Compression algorithm '$zram_comp_algo' is not supported for '$dev'"
-	fi
-}
-
-zram_comp_streams()
-{
-	local dev="$1"
-	local logical_cpus=$( grep -ci "^processor" /proc/cpuinfo )
-	[ $logical_cpus -gt 1 ] || return 1
-	local zram_comp_streams="$( uci -q get system.@system[0].zram_comp_streams )"
-	[ -n "$zram_comp_streams" ] && [ "$zram_comp_streams" -le "$logical_cpus" ] || zram_comp_streams=$logical_cpus
-	if [ -e /sys/block/$( basename $dev )/max_comp_streams ]; then
-		logger -s -t zram_comp_streams -p daemon.debug "Set max compression streams to '$zram_comp_streams' for zram '$dev'"
-		echo $zram_comp_streams > /sys/block/$( basename $dev )/max_comp_streams
 	fi
 }
 
@@ -121,7 +109,6 @@ zram_stats()
 	printf "%-25s - %s\n" "Block device" $zdev
 	awk '{ printf "%-25s - %d MiB\n", "Device size", $1/1024/1024 }' <$zdev/disksize
 	printf "%-25s - %s\n" "Compression algo" "$(cat $zdev/comp_algorithm)"
-	printf "%-25s - %s\n" "Compression streams" "$( cat $zdev/max_comp_streams)"
 
 	awk 'BEGIN { fmt = "%-25s - %.2f %s\n"
 		fmt2 = "%-25s - %d\n"
@@ -164,6 +151,11 @@ zram_compact()
 
 start()
 {
+	[ -e /proc/swaps ] || {
+		logger -s -t zram_start -p daemon.crit "kernel doesn't support swap"
+		return 1
+	}
+
 	if [ $( grep -cs zram /proc/swaps ) -ne 0 ]; then
 		logger -s -t zram_start -p daemon.notice "[OK] zram swap is already mounted"
 		return 1
@@ -179,10 +171,9 @@ start()
 
 	zram_reset "$zram_dev" "enforcing defaults"
 	zram_comp_algo "$zram_dev"
-	zram_comp_streams "$zram_dev"
 	echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename "$zram_dev" )/disksize"
-	mkswap "$zram_dev"
-	swapon -d $zram_priority "$zram_dev"
+	/sbin/mkswap "$zram_dev"
+	/sbin/swapon -d $zram_priority "$zram_dev"
 }
 
 stop()
@@ -191,7 +182,7 @@ stop()
 
 	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
 		logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
-		swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
+		/sbin/swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
 		local dev_index="$( echo $zram_dev | grep -o "[0-9]*$" )"
 		if [ $dev_index -ne 0 ]; then
 			logger -s -t zram_stop -p daemon.debug "removing zram $zram_dev"

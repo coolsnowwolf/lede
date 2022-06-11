@@ -1,0 +1,53 @@
+From: Paolo Abeni <pabeni@redhat.com>
+Date: Fri, 9 Apr 2021 17:24:17 +0200
+Subject: [PATCH] net: fix hangup on napi_disable for threaded napi
+
+napi_disable() is subject to an hangup, when the threaded
+mode is enabled and the napi is under heavy traffic.
+
+If the relevant napi has been scheduled and the napi_disable()
+kicks in before the next napi_threaded_wait() completes - so
+that the latter quits due to the napi_disable_pending() condition,
+the existing code leaves the NAPI_STATE_SCHED bit set and the
+napi_disable() loop waiting for such bit will hang.
+
+This patch addresses the issue by dropping the NAPI_STATE_DISABLE
+bit test in napi_thread_wait(). The later napi_threaded_poll()
+iteration will take care of clearing the NAPI_STATE_SCHED.
+
+This also addresses a related problem reported by Jakub:
+before this patch a napi_disable()/napi_enable() pair killed
+the napi thread, effectively disabling the threaded mode.
+On the patched kernel napi_disable() simply stops scheduling
+the relevant thread.
+
+v1 -> v2:
+  - let the main napi_thread_poll() loop clear the SCHED bit
+
+Reported-by: Jakub Kicinski <kuba@kernel.org>
+Fixes: 29863d41bb6e ("net: implement threaded-able napi poll loop support")
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+Reviewed-by: Eric Dumazet <edumazet@google.com>
+Link: https://lore.kernel.org/r/883923fa22745a9589e8610962b7dc59df09fb1f.1617981844.git.pabeni@redhat.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -7003,7 +7003,7 @@ static int napi_thread_wait(struct napi_
+ 
+ 	set_current_state(TASK_INTERRUPTIBLE);
+ 
+-	while (!kthread_should_stop() && !napi_disable_pending(napi)) {
++	while (!kthread_should_stop()) {
+ 		/* Testing SCHED_THREADED bit here to make sure the current
+ 		 * kthread owns this napi and could poll on this napi.
+ 		 * Testing SCHED bit is not enough because SCHED bit might be
+@@ -7021,6 +7021,7 @@ static int napi_thread_wait(struct napi_
+ 		set_current_state(TASK_INTERRUPTIBLE);
+ 	}
+ 	__set_current_state(TASK_RUNNING);
++
+ 	return -1;
+ }
+ 

@@ -31,6 +31,7 @@
 /*
  *  Host-PPE Communication Data Address Mapping
  */
+#define FW_VER_ID_NEW                           ((volatile struct fw_ver_id_new *)          SB_BUFFER(0x2000))
 #define FW_VER_ID                               ((volatile struct fw_ver_id *)              SB_BUFFER(0x2001))
 #define CFG_STD_DATA_LEN                        ((volatile struct cfg_std_data_len *)       SB_BUFFER(0x2011))
 #define TX_QOS_CFG                              ((volatile struct tx_qos_cfg *)             SB_BUFFER(0x2012))

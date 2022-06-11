@@ -2,6 +2,7 @@
 #define __mtd_h
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #if defined(target_bcm47xx) || defined(target_bcm53xx)
 #define target_brcm 1
@@ -12,6 +13,7 @@
 extern int quiet;
 extern int mtdsize;
 extern int erasesize;
+extern uint32_t opt_trxmagic;
 
 extern int mtd_open(const char *mtd, bool block);
 extern int mtd_check_open(const char *mtd);

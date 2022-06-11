@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017-2019 Tomasz Maciej Nowak <tomek_n@o2.pl>
+# Copyright (c) 2017-2019 Tomasz Maciej Nowak <tmn505@gmail.com>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.

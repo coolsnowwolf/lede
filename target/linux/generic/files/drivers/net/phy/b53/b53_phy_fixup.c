@@ -24,7 +24,7 @@
 
 #define B53_BRCM_OUI_1	0x0143bc00
 #define B53_BRCM_OUI_2	0x03625c00
-#define B53_BRCM_OUI_3	0x00406000
+#define B53_BRCM_OUI_3	0x00406300
 
 static int b53_phy_fixup(struct phy_device *dev)
 {
@@ -40,7 +40,7 @@ static int b53_phy_fixup(struct phy_device *dev)
 
 	if ((phy_id & 0xfffffc00) == B53_BRCM_OUI_1 ||
 	    (phy_id & 0xfffffc00) == B53_BRCM_OUI_2 ||
-	    (phy_id & 0xfffffc00) == B53_BRCM_OUI_3) {
+	    (phy_id & 0xffffff00) == B53_BRCM_OUI_3) {
 		dev->phy_id = phy_id;
 	}
 

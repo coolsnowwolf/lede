@@ -1,0 +1,3698 @@
+From f22a055a9f589f1ec614045eba3cb0c5fd887feb Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Tue, 2 Mar 2021 16:58:01 +0800
+Subject: [PATCH 14/21] drivers: mtd: add support for MediaTek SPI-NAND flash
+ controller
+
+Add mtd driver for MediaTek SPI-NAND flash controller
+
+This driver is written from scratch, and uses standard mtd framework, not
+the nand framework which only applies for raw parallel nand flashes so that
+this driver can have a smaller size in binary.
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/mtd/Kconfig                   |    2 +
+ drivers/mtd/Makefile                  |    2 +
+ drivers/mtd/mtk-snand/Kconfig         |   21 +
+ drivers/mtd/mtk-snand/Makefile        |   11 +
+ drivers/mtd/mtk-snand/mtk-snand-def.h |  266 ++++
+ drivers/mtd/mtk-snand/mtk-snand-ecc.c |  264 ++++
+ drivers/mtd/mtk-snand/mtk-snand-ids.c |  511 +++++++
+ drivers/mtd/mtk-snand/mtk-snand-mtd.c |  526 ++++++++
+ drivers/mtd/mtk-snand/mtk-snand-os.c  |   39 +
+ drivers/mtd/mtk-snand/mtk-snand-os.h  |  120 ++
+ drivers/mtd/mtk-snand/mtk-snand.c     | 1776 +++++++++++++++++++++++++
+ drivers/mtd/mtk-snand/mtk-snand.h     |   77 ++
+ 12 files changed, 3615 insertions(+)
+ create mode 100644 drivers/mtd/mtk-snand/Kconfig
+ create mode 100644 drivers/mtd/mtk-snand/Makefile
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-def.h
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-ecc.c
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-ids.c
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-mtd.c
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-os.c
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand-os.h
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand.c
+ create mode 100644 drivers/mtd/mtk-snand/mtk-snand.h
+
+--- a/drivers/mtd/Kconfig
++++ b/drivers/mtd/Kconfig
+@@ -108,6 +108,8 @@ config HBMC_AM654
+ 	 This is the driver for HyperBus controller on TI's AM65x and
+ 	 other SoCs
+ 
++source "drivers/mtd/mtk-snand/Kconfig"
++
+ source "drivers/mtd/nand/Kconfig"
+ 
+ source "drivers/mtd/spi/Kconfig"
+--- a/drivers/mtd/Makefile
++++ b/drivers/mtd/Makefile
+@@ -40,3 +40,5 @@ obj-$(CONFIG_$(SPL_TPL_)SPI_FLASH_SUPPOR
+ obj-$(CONFIG_SPL_UBI) += ubispl/
+ 
+ endif
++
++obj-$(CONFIG_MTK_SPI_NAND) += mtk-snand/
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/Kconfig
+@@ -0,0 +1,21 @@
++#
++# Copyright (C) 2020 MediaTek Inc. All rights reserved.
++# Author: Weijie Gao <weijie.gao@mediatek.com>
++#
++# SPDX-License-Identifier: GPL-2.0
++#
++
++config MTK_SPI_NAND
++	tristate "MediaTek SPI NAND flash controller driver"
++	depends on !MTD_SPI_NAND
++	help
++	  This option enables access to SPI-NAND flashes through the
++	  MediaTek SPI NAND Flash Controller
++
++config MTK_SPI_NAND_MTD
++	tristate "MTD support for MediaTek SPI NAND flash controller"
++	depends on DM_MTD
++	depends on MTK_SPI_NAND
++	help
++	  This option enables access to SPI-NAND flashes through the
++	  MTD interface of MediaTek SPI NAND Flash Controller
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/Makefile
+@@ -0,0 +1,11 @@
++#
++# Copyright (C) 2020 MediaTek Inc. All rights reserved.
++# Author: Weijie Gao <weijie.gao@mediatek.com>
++#
++# SPDX-License-Identifier: GPL-2.0
++#
++
++obj-y += mtk-snand.o mtk-snand-ecc.o mtk-snand-ids.o mtk-snand-os.o
++obj-$(CONFIG_MTK_SPI_NAND_MTD) += mtk-snand-mtd.o
++
++ccflags-y += -DPRIVATE_MTK_SNAND_HEADER
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-def.h
+@@ -0,0 +1,266 @@
++/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#ifndef _MTK_SNAND_DEF_H_
++#define _MTK_SNAND_DEF_H_
++
++#include "mtk-snand-os.h"
++
++#ifdef PRIVATE_MTK_SNAND_HEADER
++#include "mtk-snand.h"
++#else
++#include <mtk-snand.h>
++#endif
++
++struct mtk_snand_plat_dev;
++
++enum snand_flash_io {
++	SNAND_IO_1_1_1,
++	SNAND_IO_1_1_2,
++	SNAND_IO_1_2_2,
++	SNAND_IO_1_1_4,
++	SNAND_IO_1_4_4,
++
++	__SNAND_IO_MAX
++};
++
++#define SPI_IO_1_1_1			BIT(SNAND_IO_1_1_1)
++#define SPI_IO_1_1_2			BIT(SNAND_IO_1_1_2)
++#define SPI_IO_1_2_2			BIT(SNAND_IO_1_2_2)
++#define SPI_IO_1_1_4			BIT(SNAND_IO_1_1_4)
++#define SPI_IO_1_4_4			BIT(SNAND_IO_1_4_4)
++
++struct snand_opcode {
++	uint8_t opcode;
++	uint8_t dummy;
++};
++
++struct snand_io_cap {
++	uint8_t caps;
++	struct snand_opcode opcodes[__SNAND_IO_MAX];
++};
++
++#define SNAND_OP(_io, _opcode, _dummy) [_io] = { .opcode = (_opcode), \
++						 .dummy = (_dummy) }
++
++#define SNAND_IO_CAP(_name, _caps, ...) \
++	struct snand_io_cap _name = { .caps = (_caps), \
++				      .opcodes = { __VA_ARGS__ } }
++
++#define SNAND_MAX_ID_LEN		4
++
++enum snand_id_type {
++	SNAND_ID_DYMMY,
++	SNAND_ID_ADDR = SNAND_ID_DYMMY,
++	SNAND_ID_DIRECT,
++
++	__SNAND_ID_TYPE_MAX
++};
++
++struct snand_id {
++	uint8_t type;	/* enum snand_id_type */
++	uint8_t len;
++	uint8_t id[SNAND_MAX_ID_LEN];
++};
++
++#define SNAND_ID(_type, ...) \
++	{ .type = (_type), .id = { __VA_ARGS__ }, \
++	  .len = sizeof((uint8_t[]) { __VA_ARGS__ }) }
++
++struct snand_mem_org {
++	uint16_t pagesize;
++	uint16_t sparesize;
++	uint16_t pages_per_block;
++	uint16_t blocks_per_die;
++	uint16_t planes_per_die;
++	uint16_t ndies;
++};
++
++#define SNAND_MEMORG(_ps, _ss, _ppb, _bpd, _ppd, _nd) \
++	{ .pagesize = (_ps), .sparesize = (_ss), .pages_per_block = (_ppb), \
++	  .blocks_per_die = (_bpd), .planes_per_die = (_ppd), .ndies = (_nd) }
++
++typedef int (*snand_select_die_t)(struct mtk_snand *snf, uint32_t dieidx);
++
++struct snand_flash_info {
++	const char *model;
++	struct snand_id id;
++	const struct snand_mem_org memorg;
++	const struct snand_io_cap *cap_rd;
++	const struct snand_io_cap *cap_pl;
++	snand_select_die_t select_die;
++};
++
++#define SNAND_INFO(_model, _id, _memorg, _cap_rd, _cap_pl, ...) \
++	{ .model = (_model), .id = _id, .memorg = _memorg, \
++	  .cap_rd = (_cap_rd), .cap_pl = (_cap_pl), __VA_ARGS__ }
++
++const struct snand_flash_info *snand_flash_id_lookup(enum snand_id_type type,
++						     const uint8_t *id);
++
++struct mtk_snand_soc_data {
++	uint16_t sector_size;
++	uint16_t max_sectors;
++	uint16_t fdm_size;
++	uint16_t fdm_ecc_size;
++	uint16_t fifo_size;
++
++	bool bbm_swap;
++	bool empty_page_check;
++	uint32_t mastersta_mask;
++
++	const uint8_t *spare_sizes;
++	uint32_t num_spare_size;
++};
++
++enum mtk_ecc_regs {
++	ECC_DECDONE,
++};
++
++struct mtk_ecc_soc_data {
++	const uint8_t *ecc_caps;
++	uint32_t num_ecc_cap;
++	const uint32_t *regs;
++	uint16_t mode_shift;
++	uint8_t errnum_bits;
++	uint8_t errnum_shift;
++};
++
++struct mtk_snand {
++	struct mtk_snand_plat_dev *pdev;
++
++	void __iomem *nfi_base;
++	void __iomem *ecc_base;
++
++	enum mtk_snand_soc soc;
++	const struct mtk_snand_soc_data *nfi_soc;
++	const struct mtk_ecc_soc_data *ecc_soc;
++	bool snfi_quad_spi;
++	bool quad_spi_op;
++
++	const char *model;
++	uint64_t size;
++	uint64_t die_size;
++	uint32_t erasesize;
++	uint32_t writesize;
++	uint32_t oobsize;
++
++	uint32_t num_dies;
++	snand_select_die_t select_die;
++
++	uint8_t opcode_rfc;
++	uint8_t opcode_pl;
++	uint8_t dummy_rfc;
++	uint8_t mode_rfc;
++	uint8_t mode_pl;
++
++	uint32_t writesize_mask;
++	uint32_t writesize_shift;
++	uint32_t erasesize_mask;
++	uint32_t erasesize_shift;
++	uint64_t die_mask;
++	uint32_t die_shift;
++
++	uint32_t spare_per_sector;
++	uint32_t raw_sector_size;
++	uint32_t ecc_strength;
++	uint32_t ecc_steps;
++	uint32_t ecc_bytes;
++	uint32_t ecc_parity_bits;
++
++	uint8_t *page_cache;	/* Used by read/write page */
++	uint8_t *buf_cache;	/* Used by block bad/markbad & auto_oob */
++};
++
++enum mtk_snand_log_category {
++	SNAND_LOG_NFI,
++	SNAND_LOG_SNFI,
++	SNAND_LOG_ECC,
++	SNAND_LOG_CHIP,
++
++	__SNAND_LOG_CAT_MAX
++};
++
++int mtk_ecc_setup(struct mtk_snand *snf, void *fmdaddr, uint32_t max_ecc_bytes,
++		  uint32_t msg_size);
++int mtk_snand_ecc_encoder_start(struct mtk_snand *snf);
++void mtk_snand_ecc_encoder_stop(struct mtk_snand *snf);
++int mtk_snand_ecc_decoder_start(struct mtk_snand *snf);
++void mtk_snand_ecc_decoder_stop(struct mtk_snand *snf);
++int mtk_ecc_wait_decoder_done(struct mtk_snand *snf);
++int mtk_ecc_check_decode_error(struct mtk_snand *snf, uint32_t page);
++
++int mtk_snand_mac_io(struct mtk_snand *snf, const uint8_t *out, uint32_t outlen,
++		     uint8_t *in, uint32_t inlen);
++int mtk_snand_set_feature(struct mtk_snand *snf, uint32_t addr, uint32_t val);
++
++int mtk_snand_log(struct mtk_snand_plat_dev *pdev,
++		  enum mtk_snand_log_category cat, const char *fmt, ...);
++
++#define snand_log_nfi(pdev, fmt, ...) \
++	mtk_snand_log(pdev, SNAND_LOG_NFI, fmt, ##__VA_ARGS__)
++
++#define snand_log_snfi(pdev, fmt, ...) \
++	mtk_snand_log(pdev, SNAND_LOG_SNFI, fmt, ##__VA_ARGS__)
++
++#define snand_log_ecc(pdev, fmt, ...) \
++	mtk_snand_log(pdev, SNAND_LOG_ECC, fmt, ##__VA_ARGS__)
++
++#define snand_log_chip(pdev, fmt, ...) \
++	mtk_snand_log(pdev, SNAND_LOG_CHIP, fmt, ##__VA_ARGS__)
++
++/* ffs64 */
++static inline int mtk_snand_ffs64(uint64_t x)
++{
++	if (!x)
++		return 0;
++
++	if (!(x & 0xffffffff))
++		return ffs((uint32_t)(x >> 32)) + 32;
++
++	return ffs((uint32_t)(x & 0xffffffff));
++}
++
++/* NFI dummy commands */
++#define NFI_CMD_DUMMY_READ		0x00
++#define NFI_CMD_DUMMY_WRITE		0x80
++
++/* SPI-NAND opcodes */
++#define SNAND_CMD_RESET			0xff
++#define SNAND_CMD_BLOCK_ERASE		0xd8
++#define SNAND_CMD_READ_FROM_CACHE_QUAD	0xeb
++#define SNAND_CMD_WINBOND_SELECT_DIE	0xc2
++#define SNAND_CMD_READ_FROM_CACHE_DUAL	0xbb
++#define SNAND_CMD_READID		0x9f
++#define SNAND_CMD_READ_FROM_CACHE_X4	0x6b
++#define SNAND_CMD_READ_FROM_CACHE_X2	0x3b
++#define SNAND_CMD_PROGRAM_LOAD_X4	0x32
++#define SNAND_CMD_SET_FEATURE		0x1f
++#define SNAND_CMD_READ_TO_CACHE		0x13
++#define SNAND_CMD_PROGRAM_EXECUTE	0x10
++#define SNAND_CMD_GET_FEATURE		0x0f
++#define SNAND_CMD_READ_FROM_CACHE	0x0b
++#define SNAND_CMD_WRITE_ENABLE		0x06
++#define SNAND_CMD_PROGRAM_LOAD		0x02
++
++/* SPI-NAND feature addresses */
++#define SNAND_FEATURE_MICRON_DIE_ADDR	0xd0
++#define SNAND_MICRON_DIE_SEL_1		BIT(6)
++
++#define SNAND_FEATURE_STATUS_ADDR	0xc0
++#define SNAND_STATUS_OIP		BIT(0)
++#define SNAND_STATUS_WEL		BIT(1)
++#define SNAND_STATUS_ERASE_FAIL		BIT(2)
++#define SNAND_STATUS_PROGRAM_FAIL	BIT(3)
++
++#define SNAND_FEATURE_CONFIG_ADDR	0xb0
++#define SNAND_FEATURE_QUAD_ENABLE	BIT(0)
++#define SNAND_FEATURE_ECC_EN		BIT(4)
++
++#define SNAND_FEATURE_PROTECT_ADDR	0xa0
++
++#endif /* _MTK_SNAND_DEF_H_ */
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-ecc.c
+@@ -0,0 +1,264 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include "mtk-snand-def.h"
++
++/* ECC registers */
++#define ECC_ENCCON			0x000
++#define ENC_EN				BIT(0)
++
++#define ECC_ENCCNFG			0x004
++#define ENC_MS_S			16
++#define ENC_BURST_EN			BIT(8)
++#define ENC_TNUM_S			0
++
++#define ECC_ENCIDLE			0x00c
++#define ENC_IDLE			BIT(0)
++
++#define ECC_DECCON			0x100
++#define DEC_EN				BIT(0)
++
++#define ECC_DECCNFG			0x104
++#define DEC_EMPTY_EN			BIT(31)
++#define DEC_CS_S			16
++#define DEC_CON_S			12
++#define   DEC_CON_CORRECT		3
++#define DEC_BURST_EN			BIT(8)
++#define DEC_TNUM_S			0
++
++#define ECC_DECIDLE			0x10c
++#define DEC_IDLE			BIT(0)
++
++#define ECC_DECENUM0			0x114
++#define ECC_DECENUM(n)			(ECC_DECENUM0 + (n) * 4)
++
++/* ECC_ENCIDLE & ECC_DECIDLE */
++#define ECC_IDLE			BIT(0)
++
++/* ENC_MODE & DEC_MODE */
++#define ECC_MODE_NFI			1
++
++#define ECC_TIMEOUT			500000
++
++static const uint8_t mt7622_ecc_caps[] = { 4, 6, 8, 10, 12 };
++
++static const uint8_t mt7986_ecc_caps[] = {
++	4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24
++};
++
++static const uint32_t mt7622_ecc_regs[] = {
++	[ECC_DECDONE] = 0x11c,
++};
++
++static const uint32_t mt7986_ecc_regs[] = {
++	[ECC_DECDONE] = 0x124,
++};
++
++static const struct mtk_ecc_soc_data mtk_ecc_socs[__SNAND_SOC_MAX] = {
++	[SNAND_SOC_MT7622] = {
++		.ecc_caps = mt7622_ecc_caps,
++		.num_ecc_cap = ARRAY_SIZE(mt7622_ecc_caps),
++		.regs = mt7622_ecc_regs,
++		.mode_shift = 4,
++		.errnum_bits = 5,
++		.errnum_shift = 5,
++	},
++	[SNAND_SOC_MT7629] = {
++		.ecc_caps = mt7622_ecc_caps,
++		.num_ecc_cap = ARRAY_SIZE(mt7622_ecc_caps),
++		.regs = mt7622_ecc_regs,
++		.mode_shift = 4,
++		.errnum_bits = 5,
++		.errnum_shift = 5,
++	},
++	[SNAND_SOC_MT7986] = {
++		.ecc_caps = mt7986_ecc_caps,
++		.num_ecc_cap = ARRAY_SIZE(mt7986_ecc_caps),
++		.regs = mt7986_ecc_regs,
++		.mode_shift = 5,
++		.errnum_bits = 5,
++		.errnum_shift = 8,
++	},
++};
++
++static inline uint32_t ecc_read32(struct mtk_snand *snf, uint32_t reg)
++{
++	return readl(snf->ecc_base + reg);
++}
++
++static inline void ecc_write32(struct mtk_snand *snf, uint32_t reg,
++			       uint32_t val)
++{
++	writel(val, snf->ecc_base + reg);
++}
++
++static inline void ecc_write16(struct mtk_snand *snf, uint32_t reg,
++			       uint16_t val)
++{
++	writew(val, snf->ecc_base + reg);
++}
++
++static int mtk_ecc_poll(struct mtk_snand *snf, uint32_t reg, uint32_t bits)
++{
++	uint32_t val;
++
++	return read16_poll_timeout(snf->ecc_base + reg, val, (val & bits), 0,
++				   ECC_TIMEOUT);
++}
++
++static int mtk_ecc_wait_idle(struct mtk_snand *snf, uint32_t reg)
++{
++	int ret;
++
++	ret = mtk_ecc_poll(snf, reg, ECC_IDLE);
++	if (ret) {
++		snand_log_ecc(snf->pdev, "ECC engine is busy\n");
++		return -EBUSY;
++	}
++
++	return 0;
++}
++
++int mtk_ecc_setup(struct mtk_snand *snf, void *fmdaddr, uint32_t max_ecc_bytes,
++		  uint32_t msg_size)
++{
++	uint32_t i, val, ecc_msg_bits, ecc_strength;
++	int ret;
++
++	snf->ecc_soc = &mtk_ecc_socs[snf->soc];
++
++	snf->ecc_parity_bits = fls(1 + 8 * msg_size);
++	ecc_strength = max_ecc_bytes * 8 / snf->ecc_parity_bits;
++
++	for (i = snf->ecc_soc->num_ecc_cap - 1; i >= 0; i--) {
++		if (snf->ecc_soc->ecc_caps[i] <= ecc_strength)
++			break;
++	}
++
++	if (unlikely(i < 0)) {
++		snand_log_ecc(snf->pdev, "Page size %u+%u is not supported\n",
++			      snf->writesize, snf->oobsize);
++		return -ENOTSUPP;
++	}
++
++	snf->ecc_strength = snf->ecc_soc->ecc_caps[i];
++	snf->ecc_bytes = DIV_ROUND_UP(snf->ecc_strength * snf->ecc_parity_bits,
++				      8);
++
++	/* Encoder config */
++	ecc_write16(snf, ECC_ENCCON, 0);
++	ret = mtk_ecc_wait_idle(snf, ECC_ENCIDLE);
++	if (ret)
++		return ret;
++
++	ecc_msg_bits = msg_size * 8;
++	val = (ecc_msg_bits << ENC_MS_S) |
++	      (ECC_MODE_NFI << snf->ecc_soc->mode_shift) | i;
++	ecc_write32(snf, ECC_ENCCNFG, val);
++
++	/* Decoder config */
++	ecc_write16(snf, ECC_DECCON, 0);
++	ret = mtk_ecc_wait_idle(snf, ECC_DECIDLE);
++	if (ret)
++		return ret;
++
++	ecc_msg_bits += snf->ecc_strength * snf->ecc_parity_bits;
++	val = DEC_EMPTY_EN | (ecc_msg_bits << DEC_CS_S) |
++	      (DEC_CON_CORRECT << DEC_CON_S) |
++	      (ECC_MODE_NFI << snf->ecc_soc->mode_shift) | i;
++	ecc_write32(snf, ECC_DECCNFG, val);
++
++	return 0;
++}
++
++int mtk_snand_ecc_encoder_start(struct mtk_snand *snf)
++{
++	int ret;
++
++	ret = mtk_ecc_wait_idle(snf, ECC_ENCIDLE);
++	if (ret) {
++		ecc_write16(snf, ECC_ENCCON, 0);
++		mtk_ecc_wait_idle(snf, ECC_ENCIDLE);
++	}
++
++	ecc_write16(snf, ECC_ENCCON, ENC_EN);
++
++	return 0;
++}
++
++void mtk_snand_ecc_encoder_stop(struct mtk_snand *snf)
++{
++	mtk_ecc_wait_idle(snf, ECC_ENCIDLE);
++	ecc_write16(snf, ECC_ENCCON, 0);
++}
++
++int mtk_snand_ecc_decoder_start(struct mtk_snand *snf)
++{
++	int ret;
++
++	ret = mtk_ecc_wait_idle(snf, ECC_DECIDLE);
++	if (ret) {
++		ecc_write16(snf, ECC_DECCON, 0);
++		mtk_ecc_wait_idle(snf, ECC_DECIDLE);
++	}
++
++	ecc_write16(snf, ECC_DECCON, DEC_EN);
++
++	return 0;
++}
++
++void mtk_snand_ecc_decoder_stop(struct mtk_snand *snf)
++{
++	mtk_ecc_wait_idle(snf, ECC_DECIDLE);
++	ecc_write16(snf, ECC_DECCON, 0);
++}
++
++int mtk_ecc_wait_decoder_done(struct mtk_snand *snf)
++{
++	uint16_t val, step_mask = (1 << snf->ecc_steps) - 1;
++	uint32_t reg = snf->ecc_soc->regs[ECC_DECDONE];
++	int ret;
++
++	ret = read16_poll_timeout(snf->ecc_base + reg, val,
++				  (val & step_mask) == step_mask, 0,
++				  ECC_TIMEOUT);
++	if (ret)
++		snand_log_ecc(snf->pdev, "ECC decoder is busy\n");
++
++	return ret;
++}
++
++int mtk_ecc_check_decode_error(struct mtk_snand *snf, uint32_t page)
++{
++	uint32_t i, regi, fi, errnum;
++	uint32_t errnum_shift = snf->ecc_soc->errnum_shift;
++	uint32_t errnum_mask = (1 << snf->ecc_soc->errnum_bits) - 1;
++	int ret = 0;
++
++	for (i = 0; i < snf->ecc_steps; i++) {
++		regi = i / 4;
++		fi = i % 4;
++
++		errnum = ecc_read32(snf, ECC_DECENUM(regi));
++		errnum = (errnum >> (fi * errnum_shift)) & errnum_mask;
++		if (!errnum)
++			continue;
++
++		if (errnum <= snf->ecc_strength) {
++			if (ret >= 0)
++				ret += errnum;
++			continue;
++		}
++
++		snand_log_ecc(snf->pdev,
++			      "Uncorrectable bitflips in page %u sect %u\n",
++			      page, i);
++		ret = -EBADMSG;
++	}
++
++	return ret;
++}
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-ids.c
+@@ -0,0 +1,511 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include "mtk-snand-def.h"
++
++static int mtk_snand_winbond_select_die(struct mtk_snand *snf, uint32_t dieidx);
++static int mtk_snand_micron_select_die(struct mtk_snand *snf, uint32_t dieidx);
++
++#define SNAND_MEMORG_512M_2K_64		SNAND_MEMORG(2048, 64, 64, 512, 1, 1)
++#define SNAND_MEMORG_1G_2K_64		SNAND_MEMORG(2048, 64, 64, 1024, 1, 1)
++#define SNAND_MEMORG_2G_2K_64		SNAND_MEMORG(2048, 64, 64, 2048, 1, 1)
++#define SNAND_MEMORG_2G_2K_120		SNAND_MEMORG(2048, 120, 64, 2048, 1, 1)
++#define SNAND_MEMORG_4G_2K_64		SNAND_MEMORG(2048, 64, 64, 4096, 1, 1)
++#define SNAND_MEMORG_1G_2K_120		SNAND_MEMORG(2048, 120, 64, 1024, 1, 1)
++#define SNAND_MEMORG_1G_2K_128		SNAND_MEMORG(2048, 128, 64, 1024, 1, 1)
++#define SNAND_MEMORG_2G_2K_128		SNAND_MEMORG(2048, 128, 64, 2048, 1, 1)
++#define SNAND_MEMORG_4G_2K_128		SNAND_MEMORG(2048, 128, 64, 4096, 1, 1)
++#define SNAND_MEMORG_4G_4K_240		SNAND_MEMORG(4096, 240, 64, 2048, 1, 1)
++#define SNAND_MEMORG_4G_4K_256		SNAND_MEMORG(4096, 256, 64, 2048, 1, 1)
++#define SNAND_MEMORG_8G_4K_256		SNAND_MEMORG(4096, 256, 64, 4096, 1, 1)
++#define SNAND_MEMORG_2G_2K_64_2P	SNAND_MEMORG(2048, 64, 64, 2048, 2, 1)
++#define SNAND_MEMORG_2G_2K_64_2D	SNAND_MEMORG(2048, 64, 64, 1024, 1, 2)
++#define SNAND_MEMORG_2G_2K_128_2P	SNAND_MEMORG(2048, 128, 64, 2048, 2, 1)
++#define SNAND_MEMORG_4G_2K_64_2P	SNAND_MEMORG(2048, 64, 64, 4096, 2, 1)
++#define SNAND_MEMORG_4G_2K_128_2P_2D	SNAND_MEMORG(2048, 128, 64, 2048, 2, 2)
++#define SNAND_MEMORG_8G_4K_256_2D	SNAND_MEMORG(4096, 256, 64, 2048, 1, 2)
++
++static const SNAND_IO_CAP(snand_cap_read_from_cache_quad,
++	SPI_IO_1_1_1 | SPI_IO_1_1_2 | SPI_IO_1_2_2 | SPI_IO_1_1_4 |
++	SPI_IO_1_4_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_READ_FROM_CACHE, 8),
++	SNAND_OP(SNAND_IO_1_1_2, SNAND_CMD_READ_FROM_CACHE_X2, 8),
++	SNAND_OP(SNAND_IO_1_2_2, SNAND_CMD_READ_FROM_CACHE_DUAL, 4),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_READ_FROM_CACHE_X4, 8),
++	SNAND_OP(SNAND_IO_1_4_4, SNAND_CMD_READ_FROM_CACHE_QUAD, 4));
++
++static const SNAND_IO_CAP(snand_cap_read_from_cache_quad_q2d,
++	SPI_IO_1_1_1 | SPI_IO_1_1_2 | SPI_IO_1_2_2 | SPI_IO_1_1_4 |
++	SPI_IO_1_4_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_READ_FROM_CACHE, 8),
++	SNAND_OP(SNAND_IO_1_1_2, SNAND_CMD_READ_FROM_CACHE_X2, 8),
++	SNAND_OP(SNAND_IO_1_2_2, SNAND_CMD_READ_FROM_CACHE_DUAL, 4),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_READ_FROM_CACHE_X4, 8),
++	SNAND_OP(SNAND_IO_1_4_4, SNAND_CMD_READ_FROM_CACHE_QUAD, 2));
++
++static const SNAND_IO_CAP(snand_cap_read_from_cache_quad_a8d,
++	SPI_IO_1_1_1 | SPI_IO_1_1_2 | SPI_IO_1_2_2 | SPI_IO_1_1_4 |
++	SPI_IO_1_4_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_READ_FROM_CACHE, 8),
++	SNAND_OP(SNAND_IO_1_1_2, SNAND_CMD_READ_FROM_CACHE_X2, 8),
++	SNAND_OP(SNAND_IO_1_2_2, SNAND_CMD_READ_FROM_CACHE_DUAL, 8),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_READ_FROM_CACHE_X4, 8),
++	SNAND_OP(SNAND_IO_1_4_4, SNAND_CMD_READ_FROM_CACHE_QUAD, 8));
++
++static const SNAND_IO_CAP(snand_cap_read_from_cache_x4,
++	SPI_IO_1_1_1 | SPI_IO_1_1_2 | SPI_IO_1_1_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_READ_FROM_CACHE, 8),
++	SNAND_OP(SNAND_IO_1_1_2, SNAND_CMD_READ_FROM_CACHE_X2, 8),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_READ_FROM_CACHE_X4, 8));
++
++static const SNAND_IO_CAP(snand_cap_read_from_cache_x4_only,
++	SPI_IO_1_1_1 | SPI_IO_1_1_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_READ_FROM_CACHE, 8),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_READ_FROM_CACHE_X4, 8));
++
++static const SNAND_IO_CAP(snand_cap_program_load_x1,
++	SPI_IO_1_1_1,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_PROGRAM_LOAD, 0));
++
++static const SNAND_IO_CAP(snand_cap_program_load_x4,
++	SPI_IO_1_1_1 | SPI_IO_1_1_4,
++	SNAND_OP(SNAND_IO_1_1_1, SNAND_CMD_PROGRAM_LOAD, 0),
++	SNAND_OP(SNAND_IO_1_1_4, SNAND_CMD_PROGRAM_LOAD_X4, 0));
++
++static const struct snand_flash_info snand_flash_ids[] = {
++	SNAND_INFO("W25N512GV", SNAND_ID(SNAND_ID_DYMMY, 0xef, 0xaa, 0x20),
++		   SNAND_MEMORG_512M_2K_64,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("W25N01GV", SNAND_ID(SNAND_ID_DYMMY, 0xef, 0xaa, 0x21),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("W25M02GV", SNAND_ID(SNAND_ID_DYMMY, 0xef, 0xab, 0x21),
++		   SNAND_MEMORG_2G_2K_64_2D,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4,
++		   mtk_snand_winbond_select_die),
++	SNAND_INFO("W25N02KV", SNAND_ID(SNAND_ID_DYMMY, 0xef, 0xaa, 0x22),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("GD5F1GQ4UAWxx", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0x10),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F1GQ4UExIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xd1),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F1GQ4UExxH", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xd9),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F1GQ4xAYIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xf1),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F2GQ4UExIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xd2),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F2GQ5UExxH", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0x32),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_a8d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F2GQ4xAYIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xf2),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F4GQ4UBxIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xd4),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F4GQ4xAYIG", SNAND_ID(SNAND_ID_ADDR, 0xc8, 0xf4),
++		   SNAND_MEMORG_4G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F2GQ5UExxG", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x52),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("GD5F4GQ4UCxIG", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0xb4),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("MX35LF1GE4AB", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x12),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF1G24AD", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x14),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX31LF1GE4BC", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x1e),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF2GE4AB", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x22),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF2G24AD", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x24),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF2GE4AD", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x26),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF2G14AC", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x20),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF4G24AD", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x35),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MX35LF4GE4AD", SNAND_ID(SNAND_ID_DYMMY, 0xc2, 0x37),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("MT29F1G01AAADD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x12),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("MT29F1G01ABAFD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x14),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MT29F2G01AAAED", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x9f),
++		   SNAND_MEMORG_2G_2K_64_2P,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("MT29F2G01ABAGD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x24),
++		   SNAND_MEMORG_2G_2K_128_2P,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MT29F4G01AAADD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x32),
++		   SNAND_MEMORG_4G_2K_64_2P,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("MT29F4G01ABAFD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x34),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("MT29F4G01ADAGD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x36),
++		   SNAND_MEMORG_4G_2K_128_2P_2D,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4,
++		   mtk_snand_micron_select_die),
++	SNAND_INFO("MT29F8G01ADAFD", SNAND_ID(SNAND_ID_DYMMY, 0x2c, 0x46),
++		   SNAND_MEMORG_8G_4K_256_2D,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4,
++		   mtk_snand_micron_select_die),
++
++	SNAND_INFO("TC58CVG0S3HRAIG", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xc2),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("TC58CVG1S3HRAIG", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xcb),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("TC58CVG2S0HRAIG", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xcd),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x1),
++	SNAND_INFO("TC58CVG0S3HRAIJ", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xe2),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("TC58CVG1S3HRAIJ", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xeb),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("TC58CVG2S0HRAIJ", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xed),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("TH58CVG3S0HRAIJ", SNAND_ID(SNAND_ID_DYMMY, 0x98, 0xe4),
++		   SNAND_MEMORG_8G_4K_256,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("F50L512M41A", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x20),
++		   SNAND_MEMORG_512M_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("F50L1G41A", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x21),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("F50L1G41LB", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x01),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("F50L2G41LB", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x0a),
++		   SNAND_MEMORG_2G_2K_64_2D,
++		   &snand_cap_read_from_cache_quad,
++		   &snand_cap_program_load_x4,
++		   mtk_snand_winbond_select_die),
++
++	SNAND_INFO("CS11G0T0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x00),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G0G0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x10),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G0S0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x20),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G1T0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x01),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G1S0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x21),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G2T0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x02),
++		   SNAND_MEMORG_4G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("CS11G2S0A0AA", SNAND_ID(SNAND_ID_DYMMY, 0x6b, 0x22),
++		   SNAND_MEMORG_4G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("EM73B044VCA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x01),
++		   SNAND_MEMORG_512M_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SNB", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x11),
++		   SNAND_MEMORG_1G_2K_120,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SNF", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x09),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044VCA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x18),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SNA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x19),
++		   SNAND_MEMORG(2048, 64, 128, 512, 1, 1),
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044VCD", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1c),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SND", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1d),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SND", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1e),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044VCC", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x22),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044VCF", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x25),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SNC", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x31),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SNC", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x0a),
++		   SNAND_MEMORG_2G_2K_120,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SNA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x12),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SNF", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x10),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x13),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCB", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x14),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCD", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x17),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCH", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1b),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SND", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1d),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCG", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x1f),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCE", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x20),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCL", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x2e),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044SNB", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x32),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044SNA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x03),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044SND", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x0b),
++		   SNAND_MEMORG_4G_4K_240,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044SNB", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x23),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044VCA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x2c),
++		   SNAND_MEMORG_4G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044VCB", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x2f),
++		   SNAND_MEMORG_4G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73F044SNA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x24),
++		   SNAND_MEMORG_8G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73F044VCA", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x2d),
++		   SNAND_MEMORG_8G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73E044SNE", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x0e),
++		   SNAND_MEMORG_8G_4K_256,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73C044SNG", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x0c),
++		   SNAND_MEMORG_1G_2K_120,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("EM73D044VCN", SNAND_ID(SNAND_ID_DYMMY, 0xd5, 0x0f),
++		   SNAND_MEMORG_2G_2K_64,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("FM35Q1GA", SNAND_ID(SNAND_ID_DYMMY, 0xe5, 0x71),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("PN26G01A", SNAND_ID(SNAND_ID_DYMMY, 0xa1, 0xe1),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("PN26G02A", SNAND_ID(SNAND_ID_DYMMY, 0xa1, 0xe2),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("IS37SML01G1", SNAND_ID(SNAND_ID_DYMMY, 0xc8, 0x21),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("ATO25D1GA", SNAND_ID(SNAND_ID_DYMMY, 0x9b, 0x12),
++		   SNAND_MEMORG_1G_2K_64,
++		   &snand_cap_read_from_cache_x4_only,
++		   &snand_cap_program_load_x4),
++
++	SNAND_INFO("HYF1GQ4U", SNAND_ID(SNAND_ID_DYMMY, 0xc9, 0x51),
++		   SNAND_MEMORG_1G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++	SNAND_INFO("HYF2GQ4U", SNAND_ID(SNAND_ID_DYMMY, 0xc9, 0x52),
++		   SNAND_MEMORG_2G_2K_128,
++		   &snand_cap_read_from_cache_quad_q2d,
++		   &snand_cap_program_load_x4),
++};
++
++static int mtk_snand_winbond_select_die(struct mtk_snand *snf, uint32_t dieidx)
++{
++	uint8_t op[2];
++
++	if (dieidx > 1) {
++		snand_log_chip(snf->pdev, "Invalid die index %u\n", dieidx);
++		return -EINVAL;
++	}
++
++	op[0] = SNAND_CMD_WINBOND_SELECT_DIE;
++	op[1] = (uint8_t)dieidx;
++
++	return mtk_snand_mac_io(snf, op, sizeof(op), NULL, 0);
++}
++
++static int mtk_snand_micron_select_die(struct mtk_snand *snf, uint32_t dieidx)
++{
++	int ret;
++
++	if (dieidx > 1) {
++		snand_log_chip(snf->pdev, "Invalid die index %u\n", dieidx);
++		return -EINVAL;
++	}
++
++	ret = mtk_snand_set_feature(snf, SNAND_FEATURE_MICRON_DIE_ADDR,
++				    SNAND_MICRON_DIE_SEL_1);
++	if (ret) {
++		snand_log_chip(snf->pdev,
++			       "Failed to set die selection feature\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++const struct snand_flash_info *snand_flash_id_lookup(enum snand_id_type type,
++						     const uint8_t *id)
++{
++	const struct snand_id *fid;
++	uint32_t i;
++
++	for (i = 0; i < ARRAY_SIZE(snand_flash_ids); i++) {
++		if (snand_flash_ids[i].id.type != type)
++			continue;
++
++		fid = &snand_flash_ids[i].id;
++		if (memcmp(fid->id, id, fid->len))
++			continue;
++
++		return &snand_flash_ids[i];
++	}
++
++	return NULL;
++}
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-mtd.c
+@@ -0,0 +1,526 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <malloc.h>
++#include <mapmem.h>
++#include <linux/mtd/mtd.h>
++#include <watchdog.h>
++
++#include "mtk-snand.h"
++
++struct mtk_snand_mtd {
++	struct udevice *dev;
++	struct mtk_snand *snf;
++	struct mtk_snand_chip_info cinfo;
++	uint8_t *page_cache;
++};
++
++static const char snand_mtd_name_prefix[] = "spi-nand";
++
++static u32 snandidx;
++
++static inline struct mtk_snand_mtd *mtd_to_msm(struct mtd_info *mtd)
++{
++	return mtd->priv;
++}
++
++static int mtk_snand_mtd_erase(struct mtd_info *mtd, struct erase_info *instr)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++	u64 start_addr, end_addr;
++	int ret;
++
++	/* Do not allow write past end of device */
++	if ((instr->addr + instr->len) > mtd->size) {
++		pr_debug("%s: attempt to erase beyond end of device\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	start_addr = instr->addr & (~mtd->erasesize_mask);
++	end_addr = instr->addr + instr->len;
++	if (end_addr & mtd->erasesize_mask) {
++		end_addr = (end_addr + mtd->erasesize_mask) &
++			   (~mtd->erasesize_mask);
++	}
++
++	instr->state = MTD_ERASING;
++
++	while (start_addr < end_addr) {
++		WATCHDOG_RESET();
++
++		if (mtk_snand_block_isbad(msm->snf, start_addr)) {
++			if (!instr->scrub) {
++				instr->fail_addr = start_addr;
++				ret = -EIO;
++				break;
++			}
++		}
++
++		ret = mtk_snand_erase_block(msm->snf, start_addr);
++		if (ret) {
++			instr->fail_addr = start_addr;
++			break;
++		}
++
++		start_addr += mtd->erasesize;
++	}
++
++	if (ret)
++		instr->state = MTD_ERASE_FAILED;
++	else
++		instr->state = MTD_ERASE_DONE;
++
++	if (!ret)
++		mtd_erase_callback(instr);
++	else
++		ret = -EIO;
++
++	return ret;
++}
++
++static int mtk_snand_mtd_read_data(struct mtk_snand_mtd *msm, uint64_t addr,
++				   struct mtd_oob_ops *ops)
++{
++	struct mtd_info *mtd = dev_get_uclass_priv(msm->dev);
++	size_t len, ooblen, maxooblen, chklen;
++	uint32_t col, ooboffs;
++	uint8_t *datcache, *oobcache;
++	bool raw = ops->mode == MTD_OPS_RAW ? true : false;
++	int ret;
++
++	col = addr & mtd->writesize_mask;
++	addr &= ~mtd->writesize_mask;
++	maxooblen = mtd_oobavail(mtd, ops);
++	ooboffs = ops->ooboffs;
++	ooblen = ops->ooblen;
++	len = ops->len;
++
++	datcache = len ? msm->page_cache : NULL;
++	oobcache = ooblen ? msm->page_cache + mtd->writesize : NULL;
++
++	ops->oobretlen = 0;
++	ops->retlen = 0;
++
++	while (len || ooblen) {
++		WATCHDOG_RESET();
++
++		if (ops->mode == MTD_OPS_AUTO_OOB)
++			ret = mtk_snand_read_page_auto_oob(msm->snf, addr,
++				datcache, oobcache, maxooblen, NULL, raw);
++		else
++			ret = mtk_snand_read_page(msm->snf, addr, datcache,
++				oobcache, raw);
++
++		if (ret < 0)
++			return ret;
++
++		if (len) {
++			/* Move data */
++			chklen = mtd->writesize - col;
++			if (chklen > len)
++				chklen = len;
++
++			memcpy(ops->datbuf + ops->retlen, datcache + col,
++			       chklen);
++			len -= chklen;
++			col = 0; /* (col + chklen) %  */
++			ops->retlen += chklen;
++		}
++
++		if (ooblen) {
++			/* Move oob */
++			chklen = maxooblen - ooboffs;
++			if (chklen > ooblen)
++				chklen = ooblen;
++
++			memcpy(ops->oobbuf + ops->oobretlen, oobcache + ooboffs,
++			       chklen);
++			ooblen -= chklen;
++			ooboffs = 0; /* (ooboffs + chklen) % maxooblen; */
++			ops->oobretlen += chklen;
++		}
++
++		addr += mtd->writesize;
++	}
++
++	return 0;
++}
++
++static int mtk_snand_mtd_read_oob(struct mtd_info *mtd, loff_t from,
++				  struct mtd_oob_ops *ops)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++	uint32_t maxooblen;
++
++	if (!ops->oobbuf && !ops->datbuf) {
++		if (ops->ooblen || ops->len)
++			return -EINVAL;
++
++		return 0;
++	}
++
++	switch (ops->mode) {
++	case MTD_OPS_PLACE_OOB:
++	case MTD_OPS_AUTO_OOB:
++	case MTD_OPS_RAW:
++		break;
++	default:
++		pr_debug("%s: unsupported oob mode: %u\n", __func__, ops->mode);
++		return -EINVAL;
++	}
++
++	maxooblen = mtd_oobavail(mtd, ops);
++
++	/* Do not allow read past end of device */
++	if (ops->datbuf && (from + ops->len) > mtd->size) {
++		pr_debug("%s: attempt to read beyond end of device\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	if (unlikely(ops->ooboffs >= maxooblen)) {
++		pr_debug("%s: attempt to start read outside oob\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	if (unlikely(from >= mtd->size ||
++	    ops->ooboffs + ops->ooblen > ((mtd->size >> mtd->writesize_shift) -
++	    (from >> mtd->writesize_shift)) * maxooblen)) {
++		pr_debug("%s: attempt to read beyond end of device\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	return mtk_snand_mtd_read_data(msm, from, ops);
++}
++
++static int mtk_snand_mtd_write_data(struct mtk_snand_mtd *msm, uint64_t addr,
++				    struct mtd_oob_ops *ops)
++{
++	struct mtd_info *mtd = dev_get_uclass_priv(msm->dev);
++	size_t len, ooblen, maxooblen, chklen, oobwrlen;
++	uint32_t col, ooboffs;
++	uint8_t *datcache, *oobcache;
++	bool raw = ops->mode == MTD_OPS_RAW ? true : false;
++	int ret;
++
++	col = addr & mtd->writesize_mask;
++	addr &= ~mtd->writesize_mask;
++	maxooblen = mtd_oobavail(mtd, ops);
++	ooboffs = ops->ooboffs;
++	ooblen = ops->ooblen;
++	len = ops->len;
++
++	datcache = len ? msm->page_cache : NULL;
++	oobcache = ooblen ? msm->page_cache + mtd->writesize : NULL;
++
++	ops->oobretlen = 0;
++	ops->retlen = 0;
++
++	while (len || ooblen) {
++		WATCHDOG_RESET();
++
++		if (len) {
++			/* Move data */
++			chklen = mtd->writesize - col;
++			if (chklen > len)
++				chklen = len;
++
++			memset(datcache, 0xff, col);
++			memcpy(datcache + col, ops->datbuf + ops->retlen,
++			       chklen);
++			memset(datcache + col + chklen, 0xff,
++			       mtd->writesize - col - chklen);
++			len -= chklen;
++			col = 0; /* (col + chklen) %  */
++			ops->retlen += chklen;
++		}
++
++		oobwrlen = 0;
++		if (ooblen) {
++			/* Move oob */
++			chklen = maxooblen - ooboffs;
++			if (chklen > ooblen)
++				chklen = ooblen;
++
++			memset(oobcache, 0xff, ooboffs);
++			memcpy(oobcache + ooboffs,
++			       ops->oobbuf + ops->oobretlen, chklen);
++			memset(oobcache + ooboffs + chklen, 0xff,
++			       mtd->oobsize - ooboffs - chklen);
++			oobwrlen = chklen + ooboffs;
++			ooblen -= chklen;
++			ooboffs = 0; /* (ooboffs + chklen) % maxooblen; */
++			ops->oobretlen += chklen;
++		}
++
++		if (ops->mode == MTD_OPS_AUTO_OOB)
++			ret = mtk_snand_write_page_auto_oob(msm->snf, addr,
++				datcache, oobcache, oobwrlen, NULL, raw);
++		else
++			ret = mtk_snand_write_page(msm->snf, addr, datcache,
++				oobcache, raw);
++
++		if (ret)
++			return ret;
++
++		addr += mtd->writesize;
++	}
++
++	return 0;
++}
++
++static int mtk_snand_mtd_write_oob(struct mtd_info *mtd, loff_t to,
++				   struct mtd_oob_ops *ops)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++	uint32_t maxooblen;
++
++	if (!ops->oobbuf && !ops->datbuf) {
++		if (ops->ooblen || ops->len)
++			return -EINVAL;
++
++		return 0;
++	}
++
++	switch (ops->mode) {
++	case MTD_OPS_PLACE_OOB:
++	case MTD_OPS_AUTO_OOB:
++	case MTD_OPS_RAW:
++		break;
++	default:
++		pr_debug("%s: unsupported oob mode: %u\n", __func__, ops->mode);
++		return -EINVAL;
++	}
++
++	maxooblen = mtd_oobavail(mtd, ops);
++
++	/* Do not allow write past end of device */
++	if (ops->datbuf && (to + ops->len) > mtd->size) {
++		pr_debug("%s: attempt to write beyond end of device\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	if (unlikely(ops->ooboffs >= maxooblen)) {
++		pr_debug("%s: attempt to start write outside oob\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	if (unlikely(to >= mtd->size ||
++	    ops->ooboffs + ops->ooblen > ((mtd->size >> mtd->writesize_shift) -
++	    (to >> mtd->writesize_shift)) * maxooblen)) {
++		pr_debug("%s: attempt to write beyond end of device\n",
++			 __func__);
++		return -EINVAL;
++	}
++
++	return mtk_snand_mtd_write_data(msm, to, ops);
++}
++
++static int mtk_snand_mtd_read(struct mtd_info *mtd, loff_t from, size_t len,
++			      size_t *retlen, u_char *buf)
++{
++	struct mtd_oob_ops ops = {
++		.mode = MTD_OPS_PLACE_OOB,
++		.datbuf = buf,
++		.len = len,
++	};
++	int ret;
++
++	ret = mtk_snand_mtd_read_oob(mtd, from, &ops);
++
++	if (retlen)
++		*retlen = ops.retlen;
++
++	return ret;
++}
++
++static int mtk_snand_mtd_write(struct mtd_info *mtd, loff_t to, size_t len,
++			       size_t *retlen, const u_char *buf)
++{
++	struct mtd_oob_ops ops = {
++		.mode = MTD_OPS_PLACE_OOB,
++		.datbuf = (void *)buf,
++		.len = len,
++	};
++	int ret;
++
++	ret = mtk_snand_mtd_write_oob(mtd, to, &ops);
++
++	if (retlen)
++		*retlen = ops.retlen;
++
++	return ret;
++}
++
++static int mtk_snand_mtd_block_isbad(struct mtd_info *mtd, loff_t offs)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++
++	return mtk_snand_block_isbad(msm->snf, offs);
++}
++
++static int mtk_snand_mtd_block_markbad(struct mtd_info *mtd, loff_t offs)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++
++	return mtk_snand_block_markbad(msm->snf, offs);
++}
++
++static int mtk_snand_ooblayout_ecc(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *oobecc)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++
++	if (section)
++		return -ERANGE;
++
++	oobecc->offset = msm->cinfo.fdm_size * msm->cinfo.num_sectors;
++	oobecc->length = mtd->oobsize - oobecc->offset;
++
++	return 0;
++}
++
++static int mtk_snand_ooblayout_free(struct mtd_info *mtd, int section,
++				    struct mtd_oob_region *oobfree)
++{
++	struct mtk_snand_mtd *msm = mtd_to_msm(mtd);
++
++	if (section >= msm->cinfo.num_sectors)
++		return -ERANGE;
++
++	oobfree->length = msm->cinfo.fdm_size - 1;
++	oobfree->offset = section * msm->cinfo.fdm_size + 1;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops mtk_snand_ooblayout = {
++	.ecc = mtk_snand_ooblayout_ecc,
++	.rfree = mtk_snand_ooblayout_free,
++};
++
++static int mtk_snand_mtd_probe(struct udevice *dev)
++{
++	struct mtk_snand_mtd *msm = dev_get_priv(dev);
++	struct mtd_info *mtd = dev_get_uclass_priv(dev);
++	struct mtk_snand_platdata mtk_snand_pdata = {};
++	size_t namelen;
++	fdt_addr_t base;
++	int ret;
++
++	base = dev_read_addr_name(dev, "nfi");
++	if (base == FDT_ADDR_T_NONE)
++		return -EINVAL;
++	mtk_snand_pdata.nfi_base = map_sysmem(base, 0);
++
++	base = dev_read_addr_name(dev, "ecc");
++	if (base == FDT_ADDR_T_NONE)
++		return -EINVAL;
++	mtk_snand_pdata.ecc_base = map_sysmem(base, 0);
++
++	mtk_snand_pdata.soc = dev_get_driver_data(dev);
++	mtk_snand_pdata.quad_spi = dev_read_bool(dev, "quad-spi");
++
++	ret = mtk_snand_init(NULL, &mtk_snand_pdata, &msm->snf);
++	if (ret)
++		return ret;
++
++	mtk_snand_get_chip_info(msm->snf, &msm->cinfo);
++
++	msm->page_cache = malloc(msm->cinfo.pagesize + msm->cinfo.sparesize);
++	if (!msm->page_cache) {
++		printf("%s: failed to allocate memory for page cache\n",
++		       __func__);
++		ret = -ENOMEM;
++		goto errout1;
++	}
++
++	namelen = sizeof(snand_mtd_name_prefix) + 12;
++
++	mtd->name = malloc(namelen);
++	if (!mtd->name) {
++		printf("%s: failed to allocate memory for MTD name\n",
++		       __func__);
++		ret = -ENOMEM;
++		goto errout2;
++	}
++
++	msm->dev = dev;
++
++	snprintf(mtd->name, namelen, "%s%u", snand_mtd_name_prefix, snandidx++);
++
++	mtd->priv = msm;
++	mtd->dev = dev;
++	mtd->type = MTD_NANDFLASH;
++	mtd->flags = MTD_CAP_NANDFLASH;
++
++	mtd->size = msm->cinfo.chipsize;
++	mtd->erasesize = msm->cinfo.blocksize;
++	mtd->writesize = msm->cinfo.pagesize;
++	mtd->writebufsize = mtd->writesize;
++	mtd->oobsize = msm->cinfo.sparesize;
++	mtd->oobavail = msm->cinfo.num_sectors * (msm->cinfo.fdm_size - 1);
++
++	mtd->ooblayout = &mtk_snand_ooblayout;
++
++	mtd->ecc_strength = msm->cinfo.ecc_strength * msm->cinfo.num_sectors;
++	mtd->bitflip_threshold = (mtd->ecc_strength * 3) / 4;
++	mtd->ecc_step_size = msm->cinfo.sector_size;
++
++	mtd->_read = mtk_snand_mtd_read;
++	mtd->_write = mtk_snand_mtd_write;
++	mtd->_erase = mtk_snand_mtd_erase;
++	mtd->_read_oob = mtk_snand_mtd_read_oob;
++	mtd->_write_oob = mtk_snand_mtd_write_oob;
++	mtd->_block_isbad = mtk_snand_mtd_block_isbad;
++	mtd->_block_markbad = mtk_snand_mtd_block_markbad;
++
++	ret = add_mtd_device(mtd);
++	if (ret) {
++		printf("%s: failed to add SPI-NAND MTD device\n", __func__);
++		ret = -ENODEV;
++		goto errout3;
++	}
++
++	printf("SPI-NAND: %s (%lluMB)\n", msm->cinfo.model,
++	       msm->cinfo.chipsize >> 20);
++
++	return 0;
++
++errout3:
++	free(mtd->name);
++
++errout2:
++	free(msm->page_cache);
++
++errout1:
++	mtk_snand_cleanup(msm->snf);
++
++	return ret;
++}
++
++static const struct udevice_id mtk_snand_ids[] = {
++	{ .compatible = "mediatek,mt7622-snand", .data = SNAND_SOC_MT7622 },
++	{ .compatible = "mediatek,mt7629-snand", .data = SNAND_SOC_MT7629 },
++	{ .compatible = "mediatek,mt7986-snand", .data = SNAND_SOC_MT7986 },
++	{ /* sentinel */ },
++};
++
++U_BOOT_DRIVER(spinand) = {
++	.name = "mtk-snand",
++	.id = UCLASS_MTD,
++	.of_match = mtk_snand_ids,
++	.priv_auto = sizeof(struct mtk_snand_mtd),
++	.probe = mtk_snand_mtd_probe,
++};
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-os.c
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include "mtk-snand-def.h"
++
++int mtk_snand_log(struct mtk_snand_plat_dev *pdev,
++		  enum mtk_snand_log_category cat, const char *fmt, ...)
++{
++	const char *catname = "";
++	va_list ap;
++	int ret;
++
++	switch (cat) {
++	case SNAND_LOG_NFI:
++		catname = "NFI: ";
++		break;
++	case SNAND_LOG_SNFI:
++		catname = "SNFI: ";
++		break;
++	case SNAND_LOG_ECC:
++		catname = "ECC: ";
++		break;
++	default:
++		break;
++	}
++
++	puts("SPI-NAND: ");
++	puts(catname);
++
++	va_start(ap, fmt);
++	ret = vprintf(fmt, ap);
++	va_end(ap);
++
++	return ret;
++}
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand-os.h
+@@ -0,0 +1,120 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#ifndef _MTK_SNAND_OS_H_
++#define _MTK_SNAND_OS_H_
++
++#include <common.h>
++#include <cpu_func.h>
++#include <errno.h>
++#include <div64.h>
++#include <malloc.h>
++#include <stdbool.h>
++#include <stdarg.h>
++#include <linux/types.h>
++#include <asm/io.h>
++#include <linux/bitops.h>
++#include <linux/sizes.h>
++#include <linux/iopoll.h>
++
++#ifndef ARCH_DMA_MINALIGN
++#define ARCH_DMA_MINALIGN		64
++#endif
++
++struct mtk_snand_plat_dev {
++	ulong unused;
++};
++
++/* Polling helpers */
++#define read16_poll_timeout(addr, val, cond, sleep_us, timeout_us) \
++	readw_poll_timeout((addr), (val), (cond), (timeout_us))
++
++#define read32_poll_timeout(addr, val, cond, sleep_us, timeout_us) \
++	readl_poll_timeout((addr), (val), (cond), (timeout_us))
++
++/* Timer helpers */
++typedef uint64_t mtk_snand_time_t;
++
++static inline mtk_snand_time_t timer_get_ticks(void)
++{
++	return get_ticks();
++}
++
++static inline mtk_snand_time_t timer_time_to_tick(uint32_t timeout_us)
++{
++	return usec_to_tick(timeout_us);
++}
++
++static inline bool timer_is_timeout(mtk_snand_time_t start_tick,
++				    mtk_snand_time_t timeout_tick)
++{
++	return get_ticks() - start_tick > timeout_tick;
++}
++
++/* Memory helpers */
++static inline void *generic_mem_alloc(struct mtk_snand_plat_dev *pdev,
++				      size_t size)
++{
++	return calloc(1, size);
++}
++
++static inline void generic_mem_free(struct mtk_snand_plat_dev *pdev, void *ptr)
++{
++	free(ptr);
++}
++
++static inline void *dma_mem_alloc(struct mtk_snand_plat_dev *pdev, size_t size)
++{
++	return memalign(ARCH_DMA_MINALIGN, size);
++}
++
++static inline void dma_mem_free(struct mtk_snand_plat_dev *pdev, void *ptr)
++{
++	free(ptr);
++}
++
++static inline int dma_mem_map(struct mtk_snand_plat_dev *pdev, void *vaddr,
++			      uintptr_t *dma_addr, size_t size, bool to_device)
++{
++	size_t cachelen = roundup(size, ARCH_DMA_MINALIGN);
++	uintptr_t endaddr = (uintptr_t)vaddr + cachelen;
++
++	if (to_device)
++		flush_dcache_range((uintptr_t)vaddr, endaddr);
++	else
++		invalidate_dcache_range((uintptr_t)vaddr, endaddr);
++
++	*dma_addr = (uintptr_t)vaddr;
++
++	return 0;
++}
++
++static inline void dma_mem_unmap(struct mtk_snand_plat_dev *pdev,
++				 uintptr_t dma_addr, size_t size,
++				 bool to_device)
++{
++}
++
++/* Interrupt helpers */
++static inline void irq_completion_done(struct mtk_snand_plat_dev *pdev)
++{
++}
++
++static inline void irq_completion_init(struct mtk_snand_plat_dev *pdev)
++{
++}
++
++static inline int irq_completion_wait(struct mtk_snand_plat_dev *pdev,
++				      void __iomem *reg, uint32_t bit,
++				      uint32_t timeout_us)
++{
++	uint32_t val;
++
++	return read32_poll_timeout(reg, val, val & bit, 0, timeout_us);
++}
++
++#endif /* _MTK_SNAND_OS_H_ */
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand.c
+@@ -0,0 +1,1776 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include "mtk-snand-def.h"
++
++/* NFI registers */
++#define NFI_CNFG			0x000
++#define CNFG_OP_MODE_S			12
++#define   CNFG_OP_MODE_CUST		6
++#define   CNFG_OP_MODE_PROGRAM		3
++#define CNFG_AUTO_FMT_EN		BIT(9)
++#define CNFG_HW_ECC_EN			BIT(8)
++#define CNFG_DMA_BURST_EN		BIT(2)
++#define CNFG_READ_MODE			BIT(1)
++#define CNFG_DMA_MODE			BIT(0)
++
++#define NFI_PAGEFMT			0x0004
++#define NFI_SPARE_SIZE_LS_S		16
++#define NFI_FDM_ECC_NUM_S		12
++#define NFI_FDM_NUM_S			8
++#define NFI_SPARE_SIZE_S		4
++#define NFI_SEC_SEL_512			BIT(2)
++#define NFI_PAGE_SIZE_S			0
++#define   NFI_PAGE_SIZE_512_2K		0
++#define   NFI_PAGE_SIZE_2K_4K		1
++#define   NFI_PAGE_SIZE_4K_8K		2
++#define   NFI_PAGE_SIZE_8K_16K		3
++
++#define NFI_CON				0x008
++#define CON_SEC_NUM_S			12
++#define CON_BWR				BIT(9)
++#define CON_BRD				BIT(8)
++#define CON_NFI_RST			BIT(1)
++#define CON_FIFO_FLUSH			BIT(0)
++
++#define NFI_INTR_EN			0x010
++#define NFI_INTR_STA			0x014
++#define NFI_IRQ_INTR_EN			BIT(31)
++#define NFI_IRQ_CUS_READ		BIT(8)
++#define NFI_IRQ_CUS_PG			BIT(7)
++
++#define NFI_CMD				0x020
++
++#define NFI_STRDATA			0x040
++#define STR_DATA			BIT(0)
++
++#define NFI_STA				0x060
++#define NFI_NAND_FSM			GENMASK(28, 24)
++#define NFI_FSM				GENMASK(19, 16)
++#define READ_EMPTY			BIT(12)
++
++#define NFI_FIFOSTA			0x064
++#define FIFO_WR_REMAIN_S		8
++#define FIFO_RD_REMAIN_S		0
++
++#define NFI_STRADDR			0x080
++
++#define NFI_FDM0L			0x0a0
++#define NFI_FDM0M			0x0a4
++#define NFI_FDML(n)			(NFI_FDM0L + (n) * 8)
++#define NFI_FDMM(n)			(NFI_FDM0M + (n) * 8)
++
++#define NFI_DEBUG_CON1			0x220
++#define WBUF_EN				BIT(2)
++
++#define NFI_MASTERSTA			0x224
++#define MAS_ADDR			GENMASK(11, 9)
++#define MAS_RD				GENMASK(8, 6)
++#define MAS_WR				GENMASK(5, 3)
++#define MAS_RDDLY			GENMASK(2, 0)
++#define NFI_MASTERSTA_MASK_7622		(MAS_ADDR | MAS_RD | MAS_WR | MAS_RDDLY)
++#define AHB_BUS_BUSY			BIT(1)
++#define BUS_BUSY			BIT(0)
++#define NFI_MASTERSTA_MASK_7986		(AHB_BUS_BUSY | BUS_BUSY)
++
++/* SNFI registers */
++#define SNF_MAC_CTL			0x500
++#define MAC_XIO_SEL			BIT(4)
++#define SF_MAC_EN			BIT(3)
++#define SF_TRIG				BIT(2)
++#define WIP_READY			BIT(1)
++#define WIP				BIT(0)
++
++#define SNF_MAC_OUTL			0x504
++#define SNF_MAC_INL			0x508
++
++#define SNF_RD_CTL2			0x510
++#define DATA_READ_DUMMY_S		8
++#define DATA_READ_CMD_S			0
++
++#define SNF_RD_CTL3			0x514
++
++#define SNF_PG_CTL1			0x524
++#define PG_LOAD_CMD_S			8
++
++#define SNF_PG_CTL2			0x528
++
++#define SNF_MISC_CTL			0x538
++#define SW_RST				BIT(28)
++#define FIFO_RD_LTC_S			25
++#define PG_LOAD_X4_EN			BIT(20)
++#define DATA_READ_MODE_S		16
++#define DATA_READ_MODE			GENMASK(18, 16)
++#define   DATA_READ_MODE_X1		0
++#define   DATA_READ_MODE_X2		1
++#define   DATA_READ_MODE_X4		2
++#define   DATA_READ_MODE_DUAL		5
++#define   DATA_READ_MODE_QUAD		6
++#define PG_LOAD_CUSTOM_EN		BIT(7)
++#define DATARD_CUSTOM_EN		BIT(6)
++#define CS_DESELECT_CYC_S		0
++
++#define SNF_MISC_CTL2			0x53c
++#define PROGRAM_LOAD_BYTE_NUM_S		16
++#define READ_DATA_BYTE_NUM_S		11
++
++#define SNF_DLY_CTL3			0x548
++#define SFCK_SAM_DLY_S			0
++
++#define SNF_STA_CTL1			0x550
++#define CUS_PG_DONE			BIT(28)
++#define CUS_READ_DONE			BIT(27)
++#define SPI_STATE_S			0
++#define SPI_STATE			GENMASK(3, 0)
++
++#define SNF_CFG				0x55c
++#define SPI_MODE			BIT(0)
++
++#define SNF_GPRAM			0x800
++#define SNF_GPRAM_SIZE			0xa0
++
++#define SNFI_POLL_INTERVAL		1000000
++
++static const uint8_t mt7622_spare_sizes[] = { 16, 26, 27, 28 };
++
++static const uint8_t mt7986_spare_sizes[] = {
++	16, 26, 27, 28, 32, 36, 40, 44, 48, 49, 50, 51, 52, 62, 61, 63, 64,
++	67, 74
++};
++
++static const struct mtk_snand_soc_data mtk_snand_socs[__SNAND_SOC_MAX] = {
++	[SNAND_SOC_MT7622] = {
++		.sector_size = 512,
++		.max_sectors = 8,
++		.fdm_size = 8,
++		.fdm_ecc_size = 1,
++		.fifo_size = 32,
++		.bbm_swap = false,
++		.empty_page_check = false,
++		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
++		.spare_sizes = mt7622_spare_sizes,
++		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
++	},
++	[SNAND_SOC_MT7629] = {
++		.sector_size = 512,
++		.max_sectors = 8,
++		.fdm_size = 8,
++		.fdm_ecc_size = 1,
++		.fifo_size = 32,
++		.bbm_swap = true,
++		.empty_page_check = false,
++		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
++		.spare_sizes = mt7622_spare_sizes,
++		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
++	},
++	[SNAND_SOC_MT7986] = {
++		.sector_size = 1024,
++		.max_sectors = 16,
++		.fdm_size = 8,
++		.fdm_ecc_size = 1,
++		.fifo_size = 64,
++		.bbm_swap = true,
++		.empty_page_check = true,
++		.mastersta_mask = NFI_MASTERSTA_MASK_7986,
++		.spare_sizes = mt7986_spare_sizes,
++		.num_spare_size = ARRAY_SIZE(mt7986_spare_sizes)
++	},
++};
++
++static inline uint32_t nfi_read32(struct mtk_snand *snf, uint32_t reg)
++{
++	return readl(snf->nfi_base + reg);
++}
++
++static inline void nfi_write32(struct mtk_snand *snf, uint32_t reg,
++			       uint32_t val)
++{
++	writel(val, snf->nfi_base + reg);
++}
++
++static inline void nfi_write16(struct mtk_snand *snf, uint32_t reg,
++			       uint16_t val)
++{
++	writew(val, snf->nfi_base + reg);
++}
++
++static inline void nfi_rmw32(struct mtk_snand *snf, uint32_t reg, uint32_t clr,
++			     uint32_t set)
++{
++	uint32_t val;
++
++	val = readl(snf->nfi_base + reg);
++	val &= ~clr;
++	val |= set;
++	writel(val, snf->nfi_base + reg);
++}
++
++static void nfi_write_data(struct mtk_snand *snf, uint32_t reg,
++			   const uint8_t *data, uint32_t len)
++{
++	uint32_t i, val = 0, es = sizeof(uint32_t);
++
++	for (i = reg; i < reg + len; i++) {
++		val |= ((uint32_t)*data++) << (8 * (i % es));
++
++		if (i % es == es - 1 || i == reg + len - 1) {
++			nfi_write32(snf, i & ~(es - 1), val);
++			val = 0;
++		}
++	}
++}
++
++static void nfi_read_data(struct mtk_snand *snf, uint32_t reg, uint8_t *data,
++			  uint32_t len)
++{
++	uint32_t i, val = 0, es = sizeof(uint32_t);
++
++	for (i = reg; i < reg + len; i++) {
++		if (i == reg || i % es == 0)
++			val = nfi_read32(snf, i & ~(es - 1));
++
++		*data++ = (uint8_t)(val >> (8 * (i % es)));
++	}
++}
++
++static inline void do_bm_swap(uint8_t *bm1, uint8_t *bm2)
++{
++	uint8_t tmp = *bm1;
++	*bm1 = *bm2;
++	*bm2 = tmp;
++}
++
++static void mtk_snand_bm_swap_raw(struct mtk_snand *snf)
++{
++	uint32_t fdm_bbm_pos;
++
++	if (!snf->nfi_soc->bbm_swap || snf->ecc_steps == 1)
++		return;
++
++	fdm_bbm_pos = (snf->ecc_steps - 1) * snf->raw_sector_size +
++		      snf->nfi_soc->sector_size;
++	do_bm_swap(&snf->page_cache[fdm_bbm_pos],
++		   &snf->page_cache[snf->writesize]);
++}
++
++static void mtk_snand_bm_swap(struct mtk_snand *snf)
++{
++	uint32_t buf_bbm_pos, fdm_bbm_pos;
++
++	if (!snf->nfi_soc->bbm_swap || snf->ecc_steps == 1)
++		return;
++
++	buf_bbm_pos = snf->writesize -
++		      (snf->ecc_steps - 1) * snf->spare_per_sector;
++	fdm_bbm_pos = snf->writesize +
++		      (snf->ecc_steps - 1) * snf->nfi_soc->fdm_size;
++	do_bm_swap(&snf->page_cache[fdm_bbm_pos],
++		   &snf->page_cache[buf_bbm_pos]);
++}
++
++static void mtk_snand_fdm_bm_swap_raw(struct mtk_snand *snf)
++{
++	uint32_t fdm_bbm_pos1, fdm_bbm_pos2;
++
++	if (!snf->nfi_soc->bbm_swap || snf->ecc_steps == 1)
++		return;
++
++	fdm_bbm_pos1 = snf->nfi_soc->sector_size;
++	fdm_bbm_pos2 = (snf->ecc_steps - 1) * snf->raw_sector_size +
++		       snf->nfi_soc->sector_size;
++	do_bm_swap(&snf->page_cache[fdm_bbm_pos1],
++		   &snf->page_cache[fdm_bbm_pos2]);
++}
++
++static void mtk_snand_fdm_bm_swap(struct mtk_snand *snf)
++{
++	uint32_t fdm_bbm_pos1, fdm_bbm_pos2;
++
++	if (!snf->nfi_soc->bbm_swap || snf->ecc_steps == 1)
++		return;
++
++	fdm_bbm_pos1 = snf->writesize;
++	fdm_bbm_pos2 = snf->writesize +
++		       (snf->ecc_steps - 1) * snf->nfi_soc->fdm_size;
++	do_bm_swap(&snf->page_cache[fdm_bbm_pos1],
++		   &snf->page_cache[fdm_bbm_pos2]);
++}
++
++static int mtk_nfi_reset(struct mtk_snand *snf)
++{
++	uint32_t val, fifo_mask;
++	int ret;
++
++	nfi_write32(snf, NFI_CON, CON_FIFO_FLUSH | CON_NFI_RST);
++
++	ret = read16_poll_timeout(snf->nfi_base + NFI_MASTERSTA, val,
++				  !(val & snf->nfi_soc->mastersta_mask), 0,
++				  SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "NFI master is still busy after reset\n");
++		return ret;
++	}
++
++	ret = read32_poll_timeout(snf->nfi_base + NFI_STA, val,
++				  !(val & (NFI_FSM | NFI_NAND_FSM)), 0,
++				  SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev, "Failed to reset NFI\n");
++		return ret;
++	}
++
++	fifo_mask = ((snf->nfi_soc->fifo_size - 1) << FIFO_RD_REMAIN_S) |
++		    ((snf->nfi_soc->fifo_size - 1) << FIFO_WR_REMAIN_S);
++	ret = read16_poll_timeout(snf->nfi_base + NFI_FIFOSTA, val,
++				  !(val & fifo_mask), 0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev, "NFI FIFOs are not empty\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++static int mtk_snand_mac_reset(struct mtk_snand *snf)
++{
++	int ret;
++	uint32_t val;
++
++	nfi_rmw32(snf, SNF_MISC_CTL, 0, SW_RST);
++
++	ret = read32_poll_timeout(snf->nfi_base + SNF_STA_CTL1, val,
++				  !(val & SPI_STATE), 0, SNFI_POLL_INTERVAL);
++	if (ret)
++		snand_log_snfi(snf->pdev, "Failed to reset SNFI MAC\n");
++
++	nfi_write32(snf, SNF_MISC_CTL, (2 << FIFO_RD_LTC_S) |
++		    (10 << CS_DESELECT_CYC_S));
++
++	return ret;
++}
++
++static int mtk_snand_mac_trigger(struct mtk_snand *snf, uint32_t outlen,
++				 uint32_t inlen)
++{
++	int ret;
++	uint32_t val;
++
++	nfi_write32(snf, SNF_MAC_CTL, SF_MAC_EN);
++	nfi_write32(snf, SNF_MAC_OUTL, outlen);
++	nfi_write32(snf, SNF_MAC_INL, inlen);
++
++	nfi_write32(snf, SNF_MAC_CTL, SF_MAC_EN | SF_TRIG);
++
++	ret = read32_poll_timeout(snf->nfi_base + SNF_MAC_CTL, val,
++				  val & WIP_READY, 0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_snfi(snf->pdev, "Timed out waiting for WIP_READY\n");
++		goto cleanup;
++	}
++
++	ret = read32_poll_timeout(snf->nfi_base + SNF_MAC_CTL, val,
++				  !(val & WIP), 0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_snfi(snf->pdev,
++			       "Timed out waiting for WIP cleared\n");
++	}
++
++cleanup:
++	nfi_write32(snf, SNF_MAC_CTL, 0);
++
++	return ret;
++}
++
++int mtk_snand_mac_io(struct mtk_snand *snf, const uint8_t *out, uint32_t outlen,
++		     uint8_t *in, uint32_t inlen)
++{
++	int ret;
++
++	if (outlen + inlen > SNF_GPRAM_SIZE)
++		return -EINVAL;
++
++	mtk_snand_mac_reset(snf);
++
++	nfi_write_data(snf, SNF_GPRAM, out, outlen);
++
++	ret = mtk_snand_mac_trigger(snf, outlen, inlen);
++	if (ret)
++		return ret;
++
++	if (!inlen)
++		return 0;
++
++	nfi_read_data(snf, SNF_GPRAM + outlen, in, inlen);
++
++	return 0;
++}
++
++static int mtk_snand_get_feature(struct mtk_snand *snf, uint32_t addr)
++{
++	uint8_t op[2], val;
++	int ret;
++
++	op[0] = SNAND_CMD_GET_FEATURE;
++	op[1] = (uint8_t)addr;
++
++	ret = mtk_snand_mac_io(snf, op, sizeof(op), &val, 1);
++	if (ret)
++		return ret;
++
++	return val;
++}
++
++int mtk_snand_set_feature(struct mtk_snand *snf, uint32_t addr, uint32_t val)
++{
++	uint8_t op[3];
++
++	op[0] = SNAND_CMD_SET_FEATURE;
++	op[1] = (uint8_t)addr;
++	op[2] = (uint8_t)val;
++
++	return mtk_snand_mac_io(snf, op, sizeof(op), NULL, 0);
++}
++
++static int mtk_snand_poll_status(struct mtk_snand *snf, uint32_t wait_us)
++{
++	int val;
++	mtk_snand_time_t time_start, tmo;
++
++	time_start = timer_get_ticks();
++	tmo = timer_time_to_tick(wait_us);
++
++	do {
++		val = mtk_snand_get_feature(snf, SNAND_FEATURE_STATUS_ADDR);
++		if (!(val & SNAND_STATUS_OIP))
++			return val & (SNAND_STATUS_ERASE_FAIL |
++				      SNAND_STATUS_PROGRAM_FAIL);
++	} while (!timer_is_timeout(time_start, tmo));
++
++	return -ETIMEDOUT;
++}
++
++int mtk_snand_chip_reset(struct mtk_snand *snf)
++{
++	uint8_t op = SNAND_CMD_RESET;
++	int ret;
++
++	ret = mtk_snand_mac_io(snf, &op, 1, NULL, 0);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_poll_status(snf, SNFI_POLL_INTERVAL);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static int mtk_snand_config_feature(struct mtk_snand *snf, uint8_t clr,
++				    uint8_t set)
++{
++	int val, newval;
++	int ret;
++
++	val = mtk_snand_get_feature(snf, SNAND_FEATURE_CONFIG_ADDR);
++	if (val < 0) {
++		snand_log_chip(snf->pdev,
++			       "Failed to get configuration feature\n");
++		return val;
++	}
++
++	newval = (val & (~clr)) | set;
++
++	if (newval == val)
++		return 0;
++
++	ret = mtk_snand_set_feature(snf, SNAND_FEATURE_CONFIG_ADDR,
++				    (uint8_t)newval);
++	if (val < 0) {
++		snand_log_chip(snf->pdev,
++			       "Failed to set configuration feature\n");
++		return ret;
++	}
++
++	val = mtk_snand_get_feature(snf, SNAND_FEATURE_CONFIG_ADDR);
++	if (val < 0) {
++		snand_log_chip(snf->pdev,
++			       "Failed to get configuration feature\n");
++		return val;
++	}
++
++	if (newval != val)
++		return -ENOTSUPP;
++
++	return 0;
++}
++
++static int mtk_snand_ondie_ecc_control(struct mtk_snand *snf, bool enable)
++{
++	int ret;
++
++	if (enable)
++		ret = mtk_snand_config_feature(snf, 0, SNAND_FEATURE_ECC_EN);
++	else
++		ret = mtk_snand_config_feature(snf, SNAND_FEATURE_ECC_EN, 0);
++
++	if (ret) {
++		snand_log_chip(snf->pdev, "Failed to %s On-Die ECC engine\n",
++			       enable ? "enable" : "disable");
++	}
++
++	return ret;
++}
++
++static int mtk_snand_qspi_control(struct mtk_snand *snf, bool enable)
++{
++	int ret;
++
++	if (enable) {
++		ret = mtk_snand_config_feature(snf, 0,
++					       SNAND_FEATURE_QUAD_ENABLE);
++	} else {
++		ret = mtk_snand_config_feature(snf,
++					       SNAND_FEATURE_QUAD_ENABLE, 0);
++	}
++
++	if (ret) {
++		snand_log_chip(snf->pdev, "Failed to %s quad spi\n",
++			       enable ? "enable" : "disable");
++	}
++
++	return ret;
++}
++
++static int mtk_snand_unlock(struct mtk_snand *snf)
++{
++	int ret;
++
++	ret = mtk_snand_set_feature(snf, SNAND_FEATURE_PROTECT_ADDR, 0);
++	if (ret) {
++		snand_log_chip(snf->pdev, "Failed to set protection feature\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++static int mtk_snand_write_enable(struct mtk_snand *snf)
++{
++	uint8_t op = SNAND_CMD_WRITE_ENABLE;
++	int ret, val;
++
++	ret = mtk_snand_mac_io(snf, &op, 1, NULL, 0);
++	if (ret)
++		return ret;
++
++	val = mtk_snand_get_feature(snf, SNAND_FEATURE_STATUS_ADDR);
++	if (val < 0)
++		return ret;
++
++	if (val & SNAND_STATUS_WEL)
++		return 0;
++
++	snand_log_chip(snf->pdev, "Failed to send write-enable command\n");
++
++	return -ENOTSUPP;
++}
++
++static int mtk_snand_select_die(struct mtk_snand *snf, uint32_t dieidx)
++{
++	if (!snf->select_die)
++		return 0;
++
++	return snf->select_die(snf, dieidx);
++}
++
++static uint64_t mtk_snand_select_die_address(struct mtk_snand *snf,
++					     uint64_t addr)
++{
++	uint32_t dieidx;
++
++	if (!snf->select_die)
++		return addr;
++
++	dieidx = addr >> snf->die_shift;
++
++	mtk_snand_select_die(snf, dieidx);
++
++	return addr & snf->die_mask;
++}
++
++static uint32_t mtk_snand_get_plane_address(struct mtk_snand *snf,
++					    uint32_t page)
++{
++	uint32_t pages_per_block;
++
++	pages_per_block = 1 << (snf->erasesize_shift - snf->writesize_shift);
++
++	if (page & pages_per_block)
++		return 1 << (snf->writesize_shift + 1);
++
++	return 0;
++}
++
++static int mtk_snand_page_op(struct mtk_snand *snf, uint32_t page, uint8_t cmd)
++{
++	uint8_t op[4];
++
++	op[0] = cmd;
++	op[1] = (page >> 16) & 0xff;
++	op[2] = (page >> 8) & 0xff;
++	op[3] = page & 0xff;
++
++	return mtk_snand_mac_io(snf, op, sizeof(op), NULL, 0);
++}
++
++static void mtk_snand_read_fdm(struct mtk_snand *snf, uint8_t *buf)
++{
++	uint32_t vall, valm;
++	uint8_t *oobptr = buf;
++	int i, j;
++
++	for (i = 0; i < snf->ecc_steps; i++) {
++		vall = nfi_read32(snf, NFI_FDML(i));
++		valm = nfi_read32(snf, NFI_FDMM(i));
++
++		for (j = 0; j < snf->nfi_soc->fdm_size; j++)
++			oobptr[j] = (j >= 4 ? valm : vall) >> ((j % 4) * 8);
++
++		oobptr += snf->nfi_soc->fdm_size;
++	}
++}
++
++static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
++{
++	uint32_t coladdr, rwbytes, mode, len;
++	uintptr_t dma_addr;
++	int ret;
++
++	/* Column address with plane bit */
++	coladdr = mtk_snand_get_plane_address(snf, page);
++
++	mtk_snand_mac_reset(snf);
++	mtk_nfi_reset(snf);
++
++	/* Command and dummy cycles */
++	nfi_write32(snf, SNF_RD_CTL2,
++		    ((uint32_t)snf->dummy_rfc << DATA_READ_DUMMY_S) |
++		    (snf->opcode_rfc << DATA_READ_CMD_S));
++
++	/* Column address */
++	nfi_write32(snf, SNF_RD_CTL3, coladdr);
++
++	/* Set read mode */
++	mode = (uint32_t)snf->mode_rfc << DATA_READ_MODE_S;
++	nfi_rmw32(snf, SNF_MISC_CTL, DATA_READ_MODE, mode | DATARD_CUSTOM_EN);
++
++	/* Set bytes to read */
++	rwbytes = snf->ecc_steps * snf->raw_sector_size;
++	nfi_write32(snf, SNF_MISC_CTL2, (rwbytes << PROGRAM_LOAD_BYTE_NUM_S) |
++		    rwbytes);
++
++	/* NFI read prepare */
++	mode = raw ? 0 : CNFG_HW_ECC_EN | CNFG_AUTO_FMT_EN;
++	nfi_write16(snf, NFI_CNFG, (CNFG_OP_MODE_CUST << CNFG_OP_MODE_S) |
++		    CNFG_DMA_BURST_EN | CNFG_READ_MODE | CNFG_DMA_MODE | mode);
++
++	nfi_write32(snf, NFI_CON, (snf->ecc_steps << CON_SEC_NUM_S));
++
++	/* Prepare for DMA read */
++	len = snf->writesize + snf->oobsize;
++	ret = dma_mem_map(snf->pdev, snf->page_cache, &dma_addr, len, false);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "DMA map from device failed with %d\n", ret);
++		return ret;
++	}
++
++	nfi_write32(snf, NFI_STRADDR, (uint32_t)dma_addr);
++
++	if (!raw)
++		mtk_snand_ecc_decoder_start(snf);
++
++	/* Prepare for custom read interrupt */
++	nfi_write32(snf, NFI_INTR_EN, NFI_IRQ_INTR_EN | NFI_IRQ_CUS_READ);
++	irq_completion_init(snf->pdev);
++
++	/* Trigger NFI into custom mode */
++	nfi_write16(snf, NFI_CMD, NFI_CMD_DUMMY_READ);
++
++	/* Start DMA read */
++	nfi_rmw32(snf, NFI_CON, 0, CON_BRD);
++	nfi_write16(snf, NFI_STRDATA, STR_DATA);
++
++	/* Wait for operation finished */
++	ret = irq_completion_wait(snf->pdev, snf->nfi_base + SNF_STA_CTL1,
++				  CUS_READ_DONE, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "DMA timed out for reading from cache\n");
++		goto cleanup;
++	}
++
++	if (!raw) {
++		ret = mtk_ecc_wait_decoder_done(snf);
++		if (ret)
++			goto cleanup;
++
++		mtk_snand_read_fdm(snf, snf->page_cache + snf->writesize);
++
++		/*
++		 * For new IPs, ecc error may occur on empty pages.
++		 * Use an specific indication bit to check empty page.
++		 */
++		if (snf->nfi_soc->empty_page_check &&
++		    (nfi_read32(snf, NFI_STA) & READ_EMPTY))
++			ret = 0;
++		else
++			ret = mtk_ecc_check_decode_error(snf, page);
++
++		mtk_snand_ecc_decoder_stop(snf);
++	}
++
++cleanup:
++	/* DMA cleanup */
++	dma_mem_unmap(snf->pdev, dma_addr, len, false);
++
++	/* Stop read */
++	nfi_write32(snf, NFI_CON, 0);
++
++	/* Clear SNF done flag */
++	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_READ_DONE);
++	nfi_write32(snf, SNF_STA_CTL1, 0);
++
++	/* Disable interrupt */
++	nfi_read32(snf, NFI_INTR_STA);
++	nfi_write32(snf, NFI_INTR_EN, 0);
++
++	nfi_rmw32(snf, SNF_MISC_CTL, DATARD_CUSTOM_EN, 0);
++
++	return ret;
++}
++
++static void mtk_snand_from_raw_page(struct mtk_snand *snf, void *buf, void *oob)
++{
++	uint32_t i, ecc_bytes = snf->spare_per_sector - snf->nfi_soc->fdm_size;
++	uint8_t *eccptr = oob + snf->ecc_steps * snf->nfi_soc->fdm_size;
++	uint8_t *bufptr = buf, *oobptr = oob, *raw_sector;
++
++	for (i = 0; i < snf->ecc_steps; i++) {
++		raw_sector = snf->page_cache + i * snf->raw_sector_size;
++
++		if (buf) {
++			memcpy(bufptr, raw_sector, snf->nfi_soc->sector_size);
++			bufptr += snf->nfi_soc->sector_size;
++		}
++
++		raw_sector += snf->nfi_soc->sector_size;
++
++		if (oob) {
++			memcpy(oobptr, raw_sector, snf->nfi_soc->fdm_size);
++			oobptr += snf->nfi_soc->fdm_size;
++			raw_sector += snf->nfi_soc->fdm_size;
++
++			memcpy(eccptr, raw_sector, ecc_bytes);
++			eccptr += ecc_bytes;
++		}
++	}
++}
++
++static int mtk_snand_do_read_page(struct mtk_snand *snf, uint64_t addr,
++				  void *buf, void *oob, bool raw, bool format)
++{
++	uint64_t die_addr;
++	uint32_t page;
++	int ret;
++
++	die_addr = mtk_snand_select_die_address(snf, addr);
++	page = die_addr >> snf->writesize_shift;
++
++	ret = mtk_snand_page_op(snf, page, SNAND_CMD_READ_TO_CACHE);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_poll_status(snf, SNFI_POLL_INTERVAL);
++	if (ret < 0) {
++		snand_log_chip(snf->pdev, "Read to cache command timed out\n");
++		return ret;
++	}
++
++	ret = mtk_snand_read_cache(snf, page, raw);
++	if (ret < 0 && ret != -EBADMSG)
++		return ret;
++
++	if (raw) {
++		if (format) {
++			mtk_snand_bm_swap_raw(snf);
++			mtk_snand_fdm_bm_swap_raw(snf);
++			mtk_snand_from_raw_page(snf, buf, oob);
++		} else {
++			if (buf)
++				memcpy(buf, snf->page_cache, snf->writesize);
++
++			if (oob) {
++				memset(oob, 0xff, snf->oobsize);
++				memcpy(oob, snf->page_cache + snf->writesize,
++				       snf->ecc_steps * snf->spare_per_sector);
++			}
++		}
++	} else {
++		mtk_snand_bm_swap(snf);
++		mtk_snand_fdm_bm_swap(snf);
++
++		if (buf)
++			memcpy(buf, snf->page_cache, snf->writesize);
++
++		if (oob) {
++			memset(oob, 0xff, snf->oobsize);
++			memcpy(oob, snf->page_cache + snf->writesize,
++			       snf->ecc_steps * snf->nfi_soc->fdm_size);
++		}
++	}
++
++	return ret;
++}
++
++int mtk_snand_read_page(struct mtk_snand *snf, uint64_t addr, void *buf,
++			void *oob, bool raw)
++{
++	if (!snf || (!buf && !oob))
++		return -EINVAL;
++
++	if (addr >= snf->size)
++		return -EINVAL;
++
++	return mtk_snand_do_read_page(snf, addr, buf, oob, raw, true);
++}
++
++static void mtk_snand_write_fdm(struct mtk_snand *snf, const uint8_t *buf)
++{
++	uint32_t vall, valm, fdm_size = snf->nfi_soc->fdm_size;
++	const uint8_t *oobptr = buf;
++	int i, j;
++
++	for (i = 0; i < snf->ecc_steps; i++) {
++		vall = 0;
++		valm = 0;
++
++		for (j = 0; j < 8; j++) {
++			if (j < 4)
++				vall |= (j < fdm_size ? oobptr[j] : 0xff)
++						<< (j * 8);
++			else
++				valm |= (j < fdm_size ? oobptr[j] : 0xff)
++						<< ((j - 4) * 8);
++		}
++
++		nfi_write32(snf, NFI_FDML(i), vall);
++		nfi_write32(snf, NFI_FDMM(i), valm);
++
++		oobptr += fdm_size;
++	}
++}
++
++static int mtk_snand_program_load(struct mtk_snand *snf, uint32_t page,
++				  bool raw)
++{
++	uint32_t coladdr, rwbytes, mode, len;
++	uintptr_t dma_addr;
++	int ret;
++
++	/* Column address with plane bit */
++	coladdr = mtk_snand_get_plane_address(snf, page);
++
++	mtk_snand_mac_reset(snf);
++	mtk_nfi_reset(snf);
++
++	/* Write FDM registers if necessary */
++	if (!raw)
++		mtk_snand_write_fdm(snf, snf->page_cache + snf->writesize);
++
++	/* Command */
++	nfi_write32(snf, SNF_PG_CTL1, (snf->opcode_pl << PG_LOAD_CMD_S));
++
++	/* Column address */
++	nfi_write32(snf, SNF_PG_CTL2, coladdr);
++
++	/* Set write mode */
++	mode = snf->mode_pl ? PG_LOAD_X4_EN : 0;
++	nfi_rmw32(snf, SNF_MISC_CTL, PG_LOAD_X4_EN, mode | PG_LOAD_CUSTOM_EN);
++
++	/* Set bytes to write */
++	rwbytes = snf->ecc_steps * snf->raw_sector_size;
++	nfi_write32(snf, SNF_MISC_CTL2, (rwbytes << PROGRAM_LOAD_BYTE_NUM_S) |
++		    rwbytes);
++
++	/* NFI write prepare */
++	mode = raw ? 0 : CNFG_HW_ECC_EN | CNFG_AUTO_FMT_EN;
++	nfi_write16(snf, NFI_CNFG, (CNFG_OP_MODE_PROGRAM << CNFG_OP_MODE_S) |
++		    CNFG_DMA_BURST_EN | CNFG_DMA_MODE | mode);
++
++	nfi_write32(snf, NFI_CON, (snf->ecc_steps << CON_SEC_NUM_S));
++
++	/* Prepare for DMA write */
++	len = snf->writesize + snf->oobsize;
++	ret = dma_mem_map(snf->pdev, snf->page_cache, &dma_addr, len, true);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "DMA map to device failed with %d\n", ret);
++		return ret;
++	}
++
++	nfi_write32(snf, NFI_STRADDR, (uint32_t)dma_addr);
++
++	if (!raw)
++		mtk_snand_ecc_encoder_start(snf);
++
++	/* Prepare for custom write interrupt */
++	nfi_write32(snf, NFI_INTR_EN, NFI_IRQ_INTR_EN | NFI_IRQ_CUS_PG);
++	irq_completion_init(snf->pdev);
++
++	/* Trigger NFI into custom mode */
++	nfi_write16(snf, NFI_CMD, NFI_CMD_DUMMY_WRITE);
++
++	/* Start DMA write */
++	nfi_rmw32(snf, NFI_CON, 0, CON_BWR);
++	nfi_write16(snf, NFI_STRDATA, STR_DATA);
++
++	/* Wait for operation finished */
++	ret = irq_completion_wait(snf->pdev, snf->nfi_base + SNF_STA_CTL1,
++				  CUS_PG_DONE, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "DMA timed out for program load\n");
++		goto cleanup;
++	}
++
++	if (!raw)
++		mtk_snand_ecc_encoder_stop(snf);
++
++cleanup:
++	/* DMA cleanup */
++	dma_mem_unmap(snf->pdev, dma_addr, len, true);
++
++	/* Stop write */
++	nfi_write16(snf, NFI_CON, 0);
++
++	/* Clear SNF done flag */
++	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_PG_DONE);
++	nfi_write32(snf, SNF_STA_CTL1, 0);
++
++	/* Disable interrupt */
++	nfi_read32(snf, NFI_INTR_STA);
++	nfi_write32(snf, NFI_INTR_EN, 0);
++
++	nfi_rmw32(snf, SNF_MISC_CTL, PG_LOAD_CUSTOM_EN, 0);
++
++	return ret;
++}
++
++static void mtk_snand_to_raw_page(struct mtk_snand *snf,
++				  const void *buf, const void *oob,
++				  bool empty_ecc)
++{
++	uint32_t i, ecc_bytes = snf->spare_per_sector - snf->nfi_soc->fdm_size;
++	const uint8_t *eccptr = oob + snf->ecc_steps * snf->nfi_soc->fdm_size;
++	const uint8_t *bufptr = buf, *oobptr = oob;
++	uint8_t *raw_sector;
++
++	memset(snf->page_cache, 0xff, snf->writesize + snf->oobsize);
++	for (i = 0; i < snf->ecc_steps; i++) {
++		raw_sector = snf->page_cache + i * snf->raw_sector_size;
++
++		if (buf) {
++			memcpy(raw_sector, bufptr, snf->nfi_soc->sector_size);
++			bufptr += snf->nfi_soc->sector_size;
++		}
++
++		raw_sector += snf->nfi_soc->sector_size;
++
++		if (oob) {
++			memcpy(raw_sector, oobptr, snf->nfi_soc->fdm_size);
++			oobptr += snf->nfi_soc->fdm_size;
++			raw_sector += snf->nfi_soc->fdm_size;
++
++			if (empty_ecc)
++				memset(raw_sector, 0xff, ecc_bytes);
++			else
++				memcpy(raw_sector, eccptr, ecc_bytes);
++			eccptr += ecc_bytes;
++		}
++	}
++}
++
++static bool mtk_snand_is_empty_page(struct mtk_snand *snf, const void *buf,
++				    const void *oob)
++{
++	const uint8_t *p = buf;
++	uint32_t i, j;
++
++	if (buf) {
++		for (i = 0; i < snf->writesize; i++) {
++			if (p[i] != 0xff)
++				return false;
++		}
++	}
++
++	if (oob) {
++		for (j = 0; j < snf->ecc_steps; j++) {
++			p = oob + j * snf->nfi_soc->fdm_size;
++
++			for (i = 0; i < snf->nfi_soc->fdm_ecc_size; i++) {
++				if (p[i] != 0xff)
++					return false;
++			}
++		}
++	}
++
++	return true;
++}
++
++static int mtk_snand_do_write_page(struct mtk_snand *snf, uint64_t addr,
++				   const void *buf, const void *oob,
++				   bool raw, bool format)
++{
++	uint64_t die_addr;
++	bool empty_ecc = false;
++	uint32_t page;
++	int ret;
++
++	die_addr = mtk_snand_select_die_address(snf, addr);
++	page = die_addr >> snf->writesize_shift;
++
++	if (!raw && mtk_snand_is_empty_page(snf, buf, oob)) {
++		/*
++		 * If the data in the page to be ecc-ed is full 0xff,
++		 * change to raw write mode
++		 */
++		raw = true;
++		format = true;
++
++		/* fill ecc parity code region with 0xff */
++		empty_ecc = true;
++	}
++
++	if (raw) {
++		if (format) {
++			mtk_snand_to_raw_page(snf, buf, oob, empty_ecc);
++			mtk_snand_fdm_bm_swap_raw(snf);
++			mtk_snand_bm_swap_raw(snf);
++		} else {
++			memset(snf->page_cache, 0xff,
++			       snf->writesize + snf->oobsize);
++
++			if (buf)
++				memcpy(snf->page_cache, buf, snf->writesize);
++
++			if (oob) {
++				memcpy(snf->page_cache + snf->writesize, oob,
++				       snf->ecc_steps * snf->spare_per_sector);
++			}
++		}
++	} else {
++		memset(snf->page_cache, 0xff, snf->writesize + snf->oobsize);
++		if (buf)
++			memcpy(snf->page_cache, buf, snf->writesize);
++
++		if (oob) {
++			memcpy(snf->page_cache + snf->writesize, oob,
++			       snf->ecc_steps * snf->nfi_soc->fdm_size);
++		}
++
++		mtk_snand_fdm_bm_swap(snf);
++		mtk_snand_bm_swap(snf);
++	}
++
++	ret = mtk_snand_write_enable(snf);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_program_load(snf, page, raw);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_page_op(snf, page, SNAND_CMD_PROGRAM_EXECUTE);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_poll_status(snf, SNFI_POLL_INTERVAL);
++	if (ret < 0) {
++		snand_log_chip(snf->pdev,
++			       "Page program command timed out on page %u\n",
++			       page);
++		return ret;
++	}
++
++	if (ret & SNAND_STATUS_PROGRAM_FAIL) {
++		snand_log_chip(snf->pdev,
++			       "Page program failed on page %u\n", page);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++int mtk_snand_write_page(struct mtk_snand *snf, uint64_t addr, const void *buf,
++			 const void *oob, bool raw)
++{
++	if (!snf || (!buf && !oob))
++		return -EINVAL;
++
++	if (addr >= snf->size)
++		return -EINVAL;
++
++	return mtk_snand_do_write_page(snf, addr, buf, oob, raw, true);
++}
++
++int mtk_snand_erase_block(struct mtk_snand *snf, uint64_t addr)
++{
++	uint64_t die_addr;
++	uint32_t page, block;
++	int ret;
++
++	if (!snf)
++		return -EINVAL;
++
++	if (addr >= snf->size)
++		return -EINVAL;
++
++	die_addr = mtk_snand_select_die_address(snf, addr);
++	block = die_addr >> snf->erasesize_shift;
++	page = block << (snf->erasesize_shift - snf->writesize_shift);
++
++	ret = mtk_snand_write_enable(snf);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_page_op(snf, page, SNAND_CMD_BLOCK_ERASE);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_poll_status(snf, SNFI_POLL_INTERVAL);
++	if (ret < 0) {
++		snand_log_chip(snf->pdev,
++			       "Block erase command timed out on block %u\n",
++			       block);
++		return ret;
++	}
++
++	if (ret & SNAND_STATUS_ERASE_FAIL) {
++		snand_log_chip(snf->pdev,
++			       "Block erase failed on block %u\n", block);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int mtk_snand_block_isbad_std(struct mtk_snand *snf, uint64_t addr)
++{
++	int ret;
++
++	ret = mtk_snand_do_read_page(snf, addr, NULL, snf->buf_cache, true,
++				     false);
++	if (ret && ret != -EBADMSG)
++		return ret;
++
++	return snf->buf_cache[0] != 0xff;
++}
++
++static int mtk_snand_block_isbad_mtk(struct mtk_snand *snf, uint64_t addr)
++{
++	int ret;
++
++	ret = mtk_snand_do_read_page(snf, addr, NULL, snf->buf_cache, true,
++				     true);
++	if (ret && ret != -EBADMSG)
++		return ret;
++
++	return snf->buf_cache[0] != 0xff;
++}
++
++int mtk_snand_block_isbad(struct mtk_snand *snf, uint64_t addr)
++{
++	if (!snf)
++		return -EINVAL;
++
++	if (addr >= snf->size)
++		return -EINVAL;
++
++	addr &= ~snf->erasesize_mask;
++
++	if (snf->nfi_soc->bbm_swap)
++		return mtk_snand_block_isbad_std(snf, addr);
++
++	return mtk_snand_block_isbad_mtk(snf, addr);
++}
++
++static int mtk_snand_block_markbad_std(struct mtk_snand *snf, uint64_t addr)
++{
++	/* Standard BBM position */
++	memset(snf->buf_cache, 0xff, snf->oobsize);
++	snf->buf_cache[0] = 0;
++
++	return mtk_snand_do_write_page(snf, addr, NULL, snf->buf_cache, true,
++				       false);
++}
++
++static int mtk_snand_block_markbad_mtk(struct mtk_snand *snf, uint64_t addr)
++{
++	/* Write the whole page with zeros */
++	memset(snf->buf_cache, 0, snf->writesize + snf->oobsize);
++
++	return mtk_snand_do_write_page(snf, addr, snf->buf_cache,
++				       snf->buf_cache + snf->writesize, true,
++				       true);
++}
++
++int mtk_snand_block_markbad(struct mtk_snand *snf, uint64_t addr)
++{
++	if (!snf)
++		return -EINVAL;
++
++	if (addr >= snf->size)
++		return -EINVAL;
++
++	addr &= ~snf->erasesize_mask;
++
++	if (snf->nfi_soc->bbm_swap)
++		return mtk_snand_block_markbad_std(snf, addr);
++
++	return mtk_snand_block_markbad_mtk(snf, addr);
++}
++
++int mtk_snand_fill_oob(struct mtk_snand *snf, uint8_t *oobraw,
++		       const uint8_t *oobbuf, size_t ooblen)
++{
++	size_t len = ooblen, sect_fdm_len;
++	const uint8_t *oob = oobbuf;
++	uint32_t step = 0;
++
++	if (!snf || !oobraw || !oob)
++		return -EINVAL;
++
++	while (len && step < snf->ecc_steps) {
++		sect_fdm_len = snf->nfi_soc->fdm_size - 1;
++		if (sect_fdm_len > len)
++			sect_fdm_len = len;
++
++		memcpy(oobraw + step * snf->nfi_soc->fdm_size + 1, oob,
++		       sect_fdm_len);
++
++		len -= sect_fdm_len;
++		oob += sect_fdm_len;
++		step++;
++	}
++
++	return len;
++}
++
++int mtk_snand_transfer_oob(struct mtk_snand *snf, uint8_t *oobbuf,
++			   size_t ooblen, const uint8_t *oobraw)
++{
++	size_t len = ooblen, sect_fdm_len;
++	uint8_t *oob = oobbuf;
++	uint32_t step = 0;
++
++	if (!snf || !oobraw || !oob)
++		return -EINVAL;
++
++	while (len && step < snf->ecc_steps) {
++		sect_fdm_len = snf->nfi_soc->fdm_size - 1;
++		if (sect_fdm_len > len)
++			sect_fdm_len = len;
++
++		memcpy(oob, oobraw + step * snf->nfi_soc->fdm_size + 1,
++		       sect_fdm_len);
++
++		len -= sect_fdm_len;
++		oob += sect_fdm_len;
++		step++;
++	}
++
++	return len;
++}
++
++int mtk_snand_read_page_auto_oob(struct mtk_snand *snf, uint64_t addr,
++				 void *buf, void *oob, size_t ooblen,
++				 size_t *actualooblen, bool raw)
++{
++	int ret, oobremain;
++
++	if (!snf)
++		return -EINVAL;
++
++	if (!oob)
++		return mtk_snand_read_page(snf, addr, buf, NULL, raw);
++
++	ret = mtk_snand_read_page(snf, addr, buf, snf->buf_cache, raw);
++	if (ret && ret != -EBADMSG) {
++		if (actualooblen)
++			*actualooblen = 0;
++		return ret;
++	}
++
++	oobremain = mtk_snand_transfer_oob(snf, oob, ooblen, snf->buf_cache);
++	if (actualooblen)
++		*actualooblen = ooblen - oobremain;
++
++	return ret;
++}
++
++int mtk_snand_write_page_auto_oob(struct mtk_snand *snf, uint64_t addr,
++				  const void *buf, const void *oob,
++				  size_t ooblen, size_t *actualooblen, bool raw)
++{
++	int oobremain;
++
++	if (!snf)
++		return -EINVAL;
++
++	if (!oob)
++		return mtk_snand_write_page(snf, addr, buf, NULL, raw);
++
++	memset(snf->buf_cache, 0xff, snf->oobsize);
++	oobremain = mtk_snand_fill_oob(snf, snf->buf_cache, oob, ooblen);
++	if (actualooblen)
++		*actualooblen = ooblen - oobremain;
++
++	return mtk_snand_write_page(snf, addr, buf, snf->buf_cache, raw);
++}
++
++int mtk_snand_get_chip_info(struct mtk_snand *snf,
++			    struct mtk_snand_chip_info *info)
++{
++	if (!snf || !info)
++		return -EINVAL;
++
++	info->model = snf->model;
++	info->chipsize = snf->size;
++	info->blocksize = snf->erasesize;
++	info->pagesize = snf->writesize;
++	info->sparesize = snf->oobsize;
++	info->spare_per_sector = snf->spare_per_sector;
++	info->fdm_size = snf->nfi_soc->fdm_size;
++	info->fdm_ecc_size = snf->nfi_soc->fdm_ecc_size;
++	info->num_sectors = snf->ecc_steps;
++	info->sector_size = snf->nfi_soc->sector_size;
++	info->ecc_strength = snf->ecc_strength;
++	info->ecc_bytes = snf->ecc_bytes;
++
++	return 0;
++}
++
++int mtk_snand_irq_process(struct mtk_snand *snf)
++{
++	uint32_t sta, ien;
++
++	if (!snf)
++		return -EINVAL;
++
++	sta = nfi_read32(snf, NFI_INTR_STA);
++	ien = nfi_read32(snf, NFI_INTR_EN);
++
++	if (!(sta & ien))
++		return 0;
++
++	nfi_write32(snf, NFI_INTR_EN, 0);
++	irq_completion_done(snf->pdev);
++
++	return 1;
++}
++
++static int mtk_snand_select_spare_per_sector(struct mtk_snand *snf)
++{
++	uint32_t spare_per_step = snf->oobsize / snf->ecc_steps;
++	int i, mul = 1;
++
++	/*
++	 * If we're using the 1KB sector size, HW will automatically
++	 * double the spare size. So we should only use half of the value.
++	 */
++	if (snf->nfi_soc->sector_size == 1024)
++		mul = 2;
++
++	spare_per_step /= mul;
++
++	for (i = snf->nfi_soc->num_spare_size - 1; i >= 0; i--) {
++		if (snf->nfi_soc->spare_sizes[i] <= spare_per_step) {
++			snf->spare_per_sector = snf->nfi_soc->spare_sizes[i];
++			snf->spare_per_sector *= mul;
++			return i;
++		}
++	}
++
++	snand_log_nfi(snf->pdev,
++		      "Page size %u+%u is not supported\n", snf->writesize,
++		      snf->oobsize);
++
++	return -1;
++}
++
++static int mtk_snand_pagefmt_setup(struct mtk_snand *snf)
++{
++	uint32_t spare_size_idx, spare_size_shift, pagesize_idx;
++	uint32_t sector_size_512;
++
++	if (snf->nfi_soc->sector_size == 512) {
++		sector_size_512 = NFI_SEC_SEL_512;
++		spare_size_shift = NFI_SPARE_SIZE_S;
++	} else {
++		sector_size_512 = 0;
++		spare_size_shift = NFI_SPARE_SIZE_LS_S;
++	}
++
++	switch (snf->writesize) {
++	case SZ_512:
++		pagesize_idx = NFI_PAGE_SIZE_512_2K;
++		break;
++	case SZ_2K:
++		if (snf->nfi_soc->sector_size == 512)
++			pagesize_idx = NFI_PAGE_SIZE_2K_4K;
++		else
++			pagesize_idx = NFI_PAGE_SIZE_512_2K;
++		break;
++	case SZ_4K:
++		if (snf->nfi_soc->sector_size == 512)
++			pagesize_idx = NFI_PAGE_SIZE_4K_8K;
++		else
++			pagesize_idx = NFI_PAGE_SIZE_2K_4K;
++		break;
++	case SZ_8K:
++		if (snf->nfi_soc->sector_size == 512)
++			pagesize_idx = NFI_PAGE_SIZE_8K_16K;
++		else
++			pagesize_idx = NFI_PAGE_SIZE_4K_8K;
++		break;
++	case SZ_16K:
++		pagesize_idx = NFI_PAGE_SIZE_8K_16K;
++		break;
++	default:
++		snand_log_nfi(snf->pdev, "Page size %u is not supported\n",
++			      snf->writesize);
++		return -ENOTSUPP;
++	}
++
++	spare_size_idx = mtk_snand_select_spare_per_sector(snf);
++	if (unlikely(spare_size_idx < 0))
++		return -ENOTSUPP;
++
++	snf->raw_sector_size = snf->nfi_soc->sector_size +
++			       snf->spare_per_sector;
++
++	/* Setup page format */
++	nfi_write32(snf, NFI_PAGEFMT,
++		    (snf->nfi_soc->fdm_ecc_size << NFI_FDM_ECC_NUM_S) |
++		    (snf->nfi_soc->fdm_size << NFI_FDM_NUM_S) |
++		    (spare_size_idx << spare_size_shift) |
++		    (pagesize_idx << NFI_PAGE_SIZE_S) |
++		    sector_size_512);
++
++	return 0;
++}
++
++static enum snand_flash_io mtk_snand_select_opcode(struct mtk_snand *snf,
++				   uint32_t snfi_caps, uint8_t *opcode,
++				   uint8_t *dummy,
++				   const struct snand_io_cap *op_cap)
++{
++	uint32_t i, caps;
++
++	caps = snfi_caps & op_cap->caps;
++
++	i = fls(caps);
++	if (i > 0) {
++		*opcode = op_cap->opcodes[i - 1].opcode;
++		if (dummy)
++			*dummy = op_cap->opcodes[i - 1].dummy;
++		return i - 1;
++	}
++
++	return __SNAND_IO_MAX;
++}
++
++static int mtk_snand_select_opcode_rfc(struct mtk_snand *snf,
++				       uint32_t snfi_caps,
++				       const struct snand_io_cap *op_cap)
++{
++	enum snand_flash_io idx;
++
++	static const uint8_t rfc_modes[__SNAND_IO_MAX] = {
++		[SNAND_IO_1_1_1] = DATA_READ_MODE_X1,
++		[SNAND_IO_1_1_2] = DATA_READ_MODE_X2,
++		[SNAND_IO_1_2_2] = DATA_READ_MODE_DUAL,
++		[SNAND_IO_1_1_4] = DATA_READ_MODE_X4,
++		[SNAND_IO_1_4_4] = DATA_READ_MODE_QUAD,
++	};
++
++	idx = mtk_snand_select_opcode(snf, snfi_caps, &snf->opcode_rfc,
++				      &snf->dummy_rfc, op_cap);
++	if (idx >= __SNAND_IO_MAX) {
++		snand_log_snfi(snf->pdev,
++			       "No capable opcode for read from cache\n");
++		return -ENOTSUPP;
++	}
++
++	snf->mode_rfc = rfc_modes[idx];
++
++	if (idx == SNAND_IO_1_1_4 || idx == SNAND_IO_1_4_4)
++		snf->quad_spi_op = true;
++
++	return 0;
++}
++
++static int mtk_snand_select_opcode_pl(struct mtk_snand *snf, uint32_t snfi_caps,
++				      const struct snand_io_cap *op_cap)
++{
++	enum snand_flash_io idx;
++
++	static const uint8_t pl_modes[__SNAND_IO_MAX] = {
++		[SNAND_IO_1_1_1] = 0,
++		[SNAND_IO_1_1_4] = 1,
++	};
++
++	idx = mtk_snand_select_opcode(snf, snfi_caps, &snf->opcode_pl,
++				      NULL, op_cap);
++	if (idx >= __SNAND_IO_MAX) {
++		snand_log_snfi(snf->pdev,
++			       "No capable opcode for program load\n");
++		return -ENOTSUPP;
++	}
++
++	snf->mode_pl = pl_modes[idx];
++
++	if (idx == SNAND_IO_1_1_4)
++		snf->quad_spi_op = true;
++
++	return 0;
++}
++
++static int mtk_snand_setup(struct mtk_snand *snf,
++			   const struct snand_flash_info *snand_info)
++{
++	const struct snand_mem_org *memorg = &snand_info->memorg;
++	uint32_t i, msg_size, snfi_caps;
++	int ret;
++
++	/* Calculate flash memory organization */
++	snf->model = snand_info->model;
++	snf->writesize = memorg->pagesize;
++	snf->oobsize = memorg->sparesize;
++	snf->erasesize = snf->writesize * memorg->pages_per_block;
++	snf->die_size = (uint64_t)snf->erasesize * memorg->blocks_per_die;
++	snf->size = snf->die_size * memorg->ndies;
++	snf->num_dies = memorg->ndies;
++
++	snf->writesize_mask = snf->writesize - 1;
++	snf->erasesize_mask = snf->erasesize - 1;
++	snf->die_mask = snf->die_size - 1;
++
++	snf->writesize_shift = ffs(snf->writesize) - 1;
++	snf->erasesize_shift = ffs(snf->erasesize) - 1;
++	snf->die_shift = mtk_snand_ffs64(snf->die_size) - 1;
++
++	snf->select_die = snand_info->select_die;
++
++	/* Determine opcodes for read from cache/program load */
++	snfi_caps = SPI_IO_1_1_1 | SPI_IO_1_1_2 | SPI_IO_1_2_2;
++	if (snf->snfi_quad_spi)
++		snfi_caps |= SPI_IO_1_1_4 | SPI_IO_1_4_4;
++
++	ret = mtk_snand_select_opcode_rfc(snf, snfi_caps, snand_info->cap_rd);
++	if (ret)
++		return ret;
++
++	ret = mtk_snand_select_opcode_pl(snf, snfi_caps, snand_info->cap_pl);
++	if (ret)
++		return ret;
++
++	/* ECC and page format */
++	snf->ecc_steps = snf->writesize / snf->nfi_soc->sector_size;
++	if (snf->ecc_steps > snf->nfi_soc->max_sectors) {
++		snand_log_nfi(snf->pdev, "Page size %u is not supported\n",
++			      snf->writesize);
++		return -ENOTSUPP;
++	}
++
++	ret = mtk_snand_pagefmt_setup(snf);
++	if (ret)
++		return ret;
++
++	msg_size = snf->nfi_soc->sector_size + snf->nfi_soc->fdm_ecc_size;
++	ret = mtk_ecc_setup(snf, snf->nfi_base + NFI_FDM0L,
++			    snf->spare_per_sector - snf->nfi_soc->fdm_size,
++			    msg_size);
++	if (ret)
++		return ret;
++
++	nfi_write16(snf, NFI_CNFG, 0);
++
++	/* Tuning options */
++	nfi_write16(snf, NFI_DEBUG_CON1, WBUF_EN);
++	nfi_write32(snf, SNF_DLY_CTL3, (40 << SFCK_SAM_DLY_S));
++
++	/* Interrupts */
++	nfi_read32(snf, NFI_INTR_STA);
++	nfi_write32(snf, NFI_INTR_EN, 0);
++
++	/* Clear SNF done flag */
++	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_READ_DONE | CUS_PG_DONE);
++	nfi_write32(snf, SNF_STA_CTL1, 0);
++
++	/* Initialization on all dies */
++	for (i = 0; i < snf->num_dies; i++) {
++		mtk_snand_select_die(snf, i);
++
++		/* Disable On-Die ECC engine */
++		ret = mtk_snand_ondie_ecc_control(snf, false);
++		if (ret)
++			return ret;
++
++		/* Disable block protection */
++		mtk_snand_unlock(snf);
++
++		/* Enable/disable quad-spi */
++		mtk_snand_qspi_control(snf, snf->quad_spi_op);
++	}
++
++	mtk_snand_select_die(snf, 0);
++
++	return 0;
++}
++
++static int mtk_snand_id_probe(struct mtk_snand *snf,
++			      const struct snand_flash_info **snand_info)
++{
++	uint8_t id[4], op[2];
++	int ret;
++
++	/* Read SPI-NAND JEDEC ID, OP + dummy/addr + ID */
++	op[0] = SNAND_CMD_READID;
++	op[1] = 0;
++	ret = mtk_snand_mac_io(snf, op, 2, id, sizeof(id));
++	if (ret)
++		return ret;
++
++	*snand_info = snand_flash_id_lookup(SNAND_ID_DYMMY, id);
++	if (*snand_info)
++		return 0;
++
++	/* Read SPI-NAND JEDEC ID, OP + ID */
++	op[0] = SNAND_CMD_READID;
++	ret = mtk_snand_mac_io(snf, op, 1, id, sizeof(id));
++	if (ret)
++		return ret;
++
++	*snand_info = snand_flash_id_lookup(SNAND_ID_DYMMY, id);
++	if (*snand_info)
++		return 0;
++
++	snand_log_chip(snf->pdev,
++		       "Unrecognized SPI-NAND ID: %02x %02x %02x %02x\n",
++		       id[0], id[1], id[2], id[3]);
++
++	return -EINVAL;
++}
++
++int mtk_snand_init(void *dev, const struct mtk_snand_platdata *pdata,
++		   struct mtk_snand **psnf)
++{
++	const struct snand_flash_info *snand_info;
++	struct mtk_snand tmpsnf, *snf;
++	uint32_t rawpage_size;
++	int ret;
++
++	if (!pdata || !psnf)
++		return -EINVAL;
++
++	if (pdata->soc >= __SNAND_SOC_MAX) {
++		snand_log_chip(dev, "Invalid SOC %u for MTK-SNAND\n",
++			       pdata->soc);
++		return -EINVAL;
++	}
++
++	/* Dummy instance only for initial reset and id probe */
++	tmpsnf.nfi_base = pdata->nfi_base;
++	tmpsnf.ecc_base = pdata->ecc_base;
++	tmpsnf.soc = pdata->soc;
++	tmpsnf.nfi_soc = &mtk_snand_socs[pdata->soc];
++	tmpsnf.pdev = dev;
++
++	/* Switch to SNFI mode */
++	writel(SPI_MODE, tmpsnf.nfi_base + SNF_CFG);
++
++	/* Reset SNFI & NFI */
++	mtk_snand_mac_reset(&tmpsnf);
++	mtk_nfi_reset(&tmpsnf);
++
++	/* Reset SPI-NAND chip */
++	ret = mtk_snand_chip_reset(&tmpsnf);
++	if (ret) {
++		snand_log_chip(dev, "Failed to reset SPI-NAND chip\n");
++		return ret;
++	}
++
++	/* Probe SPI-NAND flash by JEDEC ID */
++	ret = mtk_snand_id_probe(&tmpsnf, &snand_info);
++	if (ret)
++		return ret;
++
++	rawpage_size = snand_info->memorg.pagesize +
++		       snand_info->memorg.sparesize;
++
++	/* Allocate memory for instance and cache */
++	snf = generic_mem_alloc(dev, sizeof(*snf) + rawpage_size);
++	if (!snf) {
++		snand_log_chip(dev, "Failed to allocate memory for instance\n");
++		return -ENOMEM;
++	}
++
++	snf->buf_cache = (uint8_t *)((uintptr_t)snf + sizeof(*snf));
++
++	/* Allocate memory for DMA buffer */
++	snf->page_cache = dma_mem_alloc(dev, rawpage_size);
++	if (!snf->page_cache) {
++		generic_mem_free(dev, snf);
++		snand_log_chip(dev,
++			       "Failed to allocate memory for DMA buffer\n");
++		return -ENOMEM;
++	}
++
++	/* Fill up instance */
++	snf->pdev = dev;
++	snf->nfi_base = pdata->nfi_base;
++	snf->ecc_base = pdata->ecc_base;
++	snf->soc = pdata->soc;
++	snf->nfi_soc = &mtk_snand_socs[pdata->soc];
++	snf->snfi_quad_spi = pdata->quad_spi;
++
++	/* Initialize SNFI & ECC engine */
++	ret = mtk_snand_setup(snf, snand_info);
++	if (ret) {
++		dma_mem_free(dev, snf->page_cache);
++		generic_mem_free(dev, snf);
++		return ret;
++	}
++
++	*psnf = snf;
++
++	return 0;
++}
++
++int mtk_snand_cleanup(struct mtk_snand *snf)
++{
++	if (!snf)
++		return 0;
++
++	dma_mem_free(snf->pdev, snf->page_cache);
++	generic_mem_free(snf->pdev, snf);
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/mtd/mtk-snand/mtk-snand.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#ifndef _MTK_SNAND_H_
++#define _MTK_SNAND_H_
++
++#ifndef PRIVATE_MTK_SNAND_HEADER
++#include <stddef.h>
++#include <stdint.h>
++#include <stdbool.h>
++#endif
++
++enum mtk_snand_soc {
++	SNAND_SOC_MT7622,
++	SNAND_SOC_MT7629,
++	SNAND_SOC_MT7986,
++
++	__SNAND_SOC_MAX
++};
++
++struct mtk_snand_platdata {
++	void *nfi_base;
++	void *ecc_base;
++	enum mtk_snand_soc soc;
++	bool quad_spi;
++};
++
++struct mtk_snand_chip_info {
++	const char *model;
++	uint64_t chipsize;
++	uint32_t blocksize;
++	uint32_t pagesize;
++	uint32_t sparesize;
++	uint32_t spare_per_sector;
++	uint32_t fdm_size;
++	uint32_t fdm_ecc_size;
++	uint32_t num_sectors;
++	uint32_t sector_size;
++	uint32_t ecc_strength;
++	uint32_t ecc_bytes;
++};
++
++struct mtk_snand;
++struct snand_flash_info;
++
++int mtk_snand_init(void *dev, const struct mtk_snand_platdata *pdata,
++		   struct mtk_snand **psnf);
++int mtk_snand_cleanup(struct mtk_snand *snf);
++
++int mtk_snand_chip_reset(struct mtk_snand *snf);
++int mtk_snand_read_page(struct mtk_snand *snf, uint64_t addr, void *buf,
++			void *oob, bool raw);
++int mtk_snand_write_page(struct mtk_snand *snf, uint64_t addr, const void *buf,
++			 const void *oob, bool raw);
++int mtk_snand_erase_block(struct mtk_snand *snf, uint64_t addr);
++int mtk_snand_block_isbad(struct mtk_snand *snf, uint64_t addr);
++int mtk_snand_block_markbad(struct mtk_snand *snf, uint64_t addr);
++int mtk_snand_fill_oob(struct mtk_snand *snf, uint8_t *oobraw,
++		       const uint8_t *oobbuf, size_t ooblen);
++int mtk_snand_transfer_oob(struct mtk_snand *snf, uint8_t *oobbuf,
++			   size_t ooblen, const uint8_t *oobraw);
++int mtk_snand_read_page_auto_oob(struct mtk_snand *snf, uint64_t addr,
++				 void *buf, void *oob, size_t ooblen,
++				 size_t *actualooblen, bool raw);
++int mtk_snand_write_page_auto_oob(struct mtk_snand *snf, uint64_t addr,
++				  const void *buf, const void *oob,
++				  size_t ooblen, size_t *actualooblen,
++				  bool raw);
++int mtk_snand_get_chip_info(struct mtk_snand *snf,
++			    struct mtk_snand_chip_info *info);
++int mtk_snand_irq_process(struct mtk_snand *snf);
++
++#endif /* _MTK_SNAND_H_ */

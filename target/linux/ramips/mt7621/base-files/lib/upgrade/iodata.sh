@@ -16,24 +16,33 @@ iodata_mstc_prepare_fail() {
 #     use 1st image in OpenWrt
 # - debugflag: enable/disable debug
 #     users can interrupt Z-Loader for recovering the device if enabled
+#
+# parameters:
+# - $1: the offset of "debugflag"
 iodata_mstc_upgrade_prepare() {
 	local persist_mtd="$(find_mtd_part persist)"
 	local factory_mtd="$(find_mtd_part factory)"
+	local dflag_offset="$1"
 
-	if [ -z "$persist_mtd" -o -z "$factory_mtd" ]; then
+	if [ -z "$dflag_offset" ]; then
+		echo 'no debugflag offset provided'
+		iodata_mstc_prepare_fail
+	fi
+
+	if [ -z "$persist_mtd" ] || [ -z "$factory_mtd" ]; then
 		echo 'cannot find mtd partition(s), "factory" or "persist"'
 		iodata_mstc_prepare_fail
 	fi
 
 	local bootnum=$(hexdump -s 4 -n 1 -e '"%x"' ${persist_mtd})
-	local debugflag=$(hexdump -s 65141 -n 1 -e '"%x"' ${factory_mtd})
+	local debugflag=$(hexdump -s $((dflag_offset)) -n 1 -e '"%x"' ${factory_mtd})
 
-	if [ "$bootnum" != "1" -a "$bootnum" != "2" ]; then
+	if [ "$bootnum" != "1" ] && [ "$bootnum" != "2" ]; then
 		echo "failed to get bootnum, please check the value at 0x4 in ${persist_mtd}"
 		iodata_mstc_prepare_fail
 	fi
-	if [ "$debugflag" != "0" -a "$debugflag" != "1" ]; then
-		echo "failed to get debugflag, please check the value at 0xFE75 in ${factory_mtd}"
+	if [ "$debugflag" != "0" ] && [ "$debugflag" != "1" ]; then
+		echo "failed to get debugflag, please check the value at ${dflag_offset} in ${factory_mtd}"
 		iodata_mstc_prepare_fail
 	fi
 	echo "current: bootnum => ${bootnum}, debugflag => ${debugflag}"
@@ -46,7 +55,7 @@ iodata_mstc_upgrade_prepare() {
 		echo "### switch to 1st os-image on next boot ###"
 	fi
 	if [ "$debugflag" = "0" ]; then
-		if ! (echo -ne "\x01" | dd bs=1 count=1 seek=65141 conv=notrunc of=${factory_mtd} 2>/dev/null); then
+		if ! (echo -ne "\x01" | dd bs=1 count=1 seek=$((dflag_offset)) conv=notrunc of=${factory_mtd} 2>/dev/null); then
 			echo "failed to set debugflag"
 			iodata_mstc_prepare_fail
 		fi

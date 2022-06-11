@@ -9,9 +9,20 @@ define Device/tplink_archer-a7-v5
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
 	ath10k-firmware-qca988x-ct
   TPLINK_BOARD_ID := ARCHER-A7-V5
-  BOARDNAME := ARCHER-A7-V5
 endef
 TARGET_DEVICES += tplink_archer-a7-v5
+
+define Device/tplink_archer-a9-v6
+  $(Device/tplink-safeloader-uimage)
+  SOC := qcn5502
+  IMAGE_SIZE := 15360k
+  DEVICE_MODEL := Archer A9
+  DEVICE_VARIANT := v6
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
+	ath10k-firmware-qca9984-ct
+  TPLINK_BOARD_ID := ARCHER-A9-V6
+endef
+TARGET_DEVICES += tplink_archer-a9-v6
 
 define Device/tplink_archer-c2-v3
   $(Device/tplink-safeloader-uimage)
@@ -181,7 +192,6 @@ define Device/tplink_archer-c7-v4
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
 	ath10k-firmware-qca988x-ct
   TPLINK_BOARD_ID := ARCHER-C7-V4
-  BOARDNAME := ARCHER-C7-V4
   SUPPORTED_DEVICES += archer-c7-v4
 endef
 TARGET_DEVICES += tplink_archer-c7-v4
@@ -195,7 +205,6 @@ define Device/tplink_archer-c7-v5
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
 	ath10k-firmware-qca988x-ct
   TPLINK_BOARD_ID := ARCHER-C7-V5
-  BOARDNAME := ARCHER-C7-V5
   SUPPORTED_DEVICES += archer-c7-v5
 endef
 TARGET_DEVICES += tplink_archer-c7-v5
@@ -207,7 +216,6 @@ define Device/tplink_archer-d50-v1
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport \
 	kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
-  BOARDNAME := ARCHER-D50-V1
   IMAGE_SIZE := 7808k
   TPLINK_HWID := 0xC1200001
   TPLINK_HWREV := 0x00000046
@@ -362,6 +370,17 @@ define Device/tplink_cpe610-v2
 endef
 TARGET_DEVICES += tplink_cpe610-v2
 
+define Device/tplink_cpe710-v1
+  $(Device/tplink-safeloader-uimage)
+  SOC := qca9563
+  IMAGE_SIZE := 15680k
+  DEVICE_MODEL := CPE710
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  TPLINK_BOARD_ID := CPE710V1
+endef
+TARGET_DEVICES += tplink_cpe710-v1
+
 define Device/tplink-eap2x5
   $(Device/tplink-safeloader)
   LOADER_TYPE := elf
@@ -370,6 +389,39 @@ define Device/tplink-eap2x5
   IMAGE/factory.bin := append-rootfs | tplink-safeloader factory | \
 	pad-extra 128
 endef
+
+define Device/tplink_eap225-outdoor-v1
+  $(Device/tplink-eap2x5)
+  SOC := qca9563
+  IMAGE_SIZE := 13824k
+  DEVICE_MODEL := EAP225-Outdoor
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  TPLINK_BOARD_ID := EAP225-OUTDOOR-V1
+endef
+TARGET_DEVICES += tplink_eap225-outdoor-v1
+
+define Device/tplink_eap225-v1
+  $(Device/tplink-eap2x5)
+  SOC := qca9563
+  IMAGE_SIZE := 13824k
+  DEVICE_MODEL := EAP225
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  TPLINK_BOARD_ID := EAP225-V1
+endef
+TARGET_DEVICES += tplink_eap225-v1
+
+define Device/tplink_eap225-v3
+  $(Device/tplink-eap2x5)
+  SOC := qca9563
+  IMAGE_SIZE := 13824k
+  DEVICE_MODEL := EAP225
+  DEVICE_VARIANT := v3
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+  TPLINK_BOARD_ID := EAP225-V3
+endef
+TARGET_DEVICES += tplink_eap225-v3
 
 define Device/tplink_eap225-wall-v2
   $(Device/tplink-eap2x5)
@@ -381,6 +433,17 @@ define Device/tplink_eap225-wall-v2
   TPLINK_BOARD_ID := EAP225-WALL-V2
 endef
 TARGET_DEVICES += tplink_eap225-wall-v2
+
+define Device/tplink_eap245-v1
+  $(Device/tplink-eap2x5)
+  SOC := qca9563
+  IMAGE_SIZE := 13824k
+  DEVICE_MODEL := EAP245
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca988x-ct
+  TPLINK_BOARD_ID := EAP245-V1
+endef
+TARGET_DEVICES += tplink_eap245-v1
 
 define Device/tplink_eap245-v3
   $(Device/tplink-eap2x5)
@@ -453,17 +516,40 @@ define Device/tplink_re450-v3
 endef
 TARGET_DEVICES += tplink_re450-v3
 
+define Device/tplink_re455-v1
+  $(Device/tplink-safeloader)
+  SOC := qca9563
+  IMAGE_SIZE := 7808k
+  DEVICE_MODEL := RE455
+  DEVICE_VARIANT := v1
+  DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+  TPLINK_BOARD_ID := RE455-V1
+  LOADER_TYPE := elf
+endef
+TARGET_DEVICES += tplink_re455-v1
+
 define Device/tplink_tl-mr6400-v1
   $(Device/tplink-8mlzma)
   SOC := qca9531
   DEVICE_MODEL := TL-MR6400
   DEVICE_VARIANT := v1
   TPLINK_HWID := 0x64000001
-  DEVICE_PACKAGES := kmod-usb2 kmod-usb-net-rndis kmod-usb-serial \
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-net-rndis \
 	kmod-usb-serial-option adb-enablemodem
   SUPPORTED_DEVICES += tl-mr6400
 endef
 TARGET_DEVICES += tplink_tl-mr6400-v1
+
+define Device/tplink_tl-wa1201-v2
+  $(Device/tplink-safeloader-uimage)
+  SOC := qca9563
+  IMAGE_SIZE := 13184k
+  DEVICE_MODEL := TL-WA1201
+  DEVICE_VARIANT := v2
+  TPLINK_BOARD_ID := TL-WA1201-V2
+  DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
+endef
+TARGET_DEVICES += tplink_tl-wa1201-v2
 
 define Device/tplink_tl-wdr3500-v1
   $(Device/tplink-8mlzma)
@@ -531,6 +617,18 @@ define Device/tplink_tl-wdr4900-v2
 endef
 TARGET_DEVICES += tplink_tl-wdr4900-v2
 
+define Device/tplink_tl-wdr7500-v3
+  $(Device/tplink-8mlzma)
+  SOC := qca9558
+  DEVICE_MODEL := TL-WDR7500
+  DEVICE_VARIANT := v3
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct \
+	ath10k-firmware-qca988x-ct
+  TPLINK_HWID := 0x75000003
+  SUPPORTED_DEVICES += archer-c7
+endef
+TARGET_DEVICES += tplink_tl-wdr7500-v3
+
 define Device/tplink_tl-wpa8630-v1
   $(Device/tplink-8mlzma)
   SOC := qca9563
@@ -550,19 +648,27 @@ define Device/tplink_tl-wpa8630p-v2
   DEVICE_PACKAGES := kmod-ath10k-ct ath10k-firmware-qca9888-ct
 endef
 
-define Device/tplink_tl-wpa8630p-v2-eu
-  $(Device/tplink_tl-wpa8630p-v2)
-  DEVICE_VARIANT := v2 (EU)
-  TPLINK_BOARD_ID := TL-WPA8630P-V2-EU
-endef
-TARGET_DEVICES += tplink_tl-wpa8630p-v2-eu
-
 define Device/tplink_tl-wpa8630p-v2-int
   $(Device/tplink_tl-wpa8630p-v2)
   DEVICE_VARIANT := v2 (Int.)
   TPLINK_BOARD_ID := TL-WPA8630P-V2-INT
 endef
 TARGET_DEVICES += tplink_tl-wpa8630p-v2-int
+
+define Device/tplink_tl-wpa8630p-v2.0-eu
+  $(Device/tplink_tl-wpa8630p-v2)
+  DEVICE_VARIANT := v2.0 (EU)
+  TPLINK_BOARD_ID := TL-WPA8630P-V2.0-EU
+  SUPPORTED_DEVICES += tplink,tl-wpa8630p-v2-eu
+endef
+TARGET_DEVICES += tplink_tl-wpa8630p-v2.0-eu
+
+define Device/tplink_tl-wpa8630p-v2.1-eu
+  $(Device/tplink_tl-wpa8630p-v2)
+  DEVICE_VARIANT := v2.1 (EU)
+  TPLINK_BOARD_ID := TL-WPA8630P-V2.1-EU
+endef
+TARGET_DEVICES += tplink_tl-wpa8630p-v2.1-eu
 
 define Device/tplink_tl-wr1043nd-v1
   $(Device/tplink-8m)
@@ -605,6 +711,7 @@ define Device/tplink_tl-wr1043nd-v4
   DEVICE_VARIANT := v4
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   TPLINK_HWID := 0x10430004
+  TPLINK_HWREV := 0x1
   TPLINK_BOARD_ID := TLWR1043NDV4
   SUPPORTED_DEVICES += tl-wr1043nd-v4
 endef
@@ -639,7 +746,7 @@ define Device/tplink_tl-wr2543-v1
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   TPLINK_HWID := 0x25430001
   IMAGE/sysupgrade.bin := tplink-v1-image sysupgrade -v 3.13.99 | \
-	append-metadata | check-size
+	check-size | append-metadata
   IMAGE/factory.bin := tplink-v1-image factory -v 3.13.99
   SUPPORTED_DEVICES += tl-wr2543n
 endef
@@ -689,6 +796,24 @@ define Device/tplink_tl-wr810n-v2
 endef
 TARGET_DEVICES += tplink_tl-wr810n-v2
 
+define Device/tplink_tl-wr841hp-v2
+  $(Device/tplink-8mlzma)
+  SOC := ar9344
+  DEVICE_MODEL := TL-WR841HP
+  DEVICE_VARIANT := v2
+  TPLINK_HWID := 0x08411002
+endef
+TARGET_DEVICES += tplink_tl-wr841hp-v2
+
+define Device/tplink_tl-wr841hp-v3
+  $(Device/tplink-8mlzma)
+  SOC := qca9533
+  DEVICE_MODEL := TL-WR841HP
+  DEVICE_VARIANT := v3
+  TPLINK_HWID := 0x08411003
+endef
+TARGET_DEVICES += tplink_tl-wr841hp-v3
+
 define Device/tplink_tl-wr842n-v1
   $(Device/tplink-8m)
   SOC := ar7241
@@ -735,6 +860,16 @@ define Device/tplink_tl-wr902ac-v1
   SUPPORTED_DEVICES += tl-wr902ac-v1
 endef
 TARGET_DEVICES += tplink_tl-wr902ac-v1
+
+define Device/tplink_tl-wr941hp-v1
+  $(Device/tplink-safeloader)
+  SOC := tp9343
+  DEVICE_MODEL := TL-WR941HP
+  DEVICE_VARIANT := v1
+  TPLINK_BOARD_ID := TL-WR941HP-V1
+  IMAGE_SIZE := 7360k
+endef
+TARGET_DEVICES += tplink_tl-wr941hp-v1
 
 define Device/tplink_wbs210-v1
   $(Device/tplink-safeloader-okli)

@@ -1,4 +1,3 @@
-#!/bin/sh
 # Copyright (C) 2013 OpenWrt.org
 
 get_dt_led_path() {
@@ -18,7 +17,8 @@ get_dt_led() {
 
 	[ -n "$ledpath" ] && \
 		label=$(cat "$ledpath/label" 2>/dev/null) || \
-		label=$(cat "$ledpath/chan-name" 2>/dev/null)
+		label=$(cat "$ledpath/chan-name" 2>/dev/null) || \
+		label=$(basename "$ledpath")
 
 	echo "$label"
 }

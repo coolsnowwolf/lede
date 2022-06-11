@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=odhcp6c
-PKG_RELEASE:=16
+PKG_RELEASE:=18
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/odhcp6c.git
-PKG_SOURCE_DATE:=2020-03-28
-PKG_SOURCE_VERSION:=f575351cbb3defc0bf52680c9082912a6c264374
-PKG_MIRROR_HASH:=3a0df503be81d25da44a83ae36d5fbeaabae1b7c99f6eb8ffe6f62311e254d06
+PKG_SOURCE_DATE:=2021-01-09
+PKG_SOURCE_VERSION:=53f07e90b7f1da6977143a488dd5cb73a33b233b
+PKG_MIRROR_HASH:=ad3665b611d19177996771b11df28d92f066b0125484ea3bdfc0b3185c14f90e
 PKG_MAINTAINER:=Hans Dedecker <dedeckeh@gmail.com>
 PKG_LICENSE:=GPL-2.0
 
@@ -42,12 +42,19 @@ define Package/odhcp6c/config
     default 0
 endef
 
+define Package/odhcp6c/conffiles
+/etc/odhcp6c.user
+/etc/odhcp6c.user.d/
+endef
+
 define Package/odhcp6c/install
 	$(INSTALL_DIR) $(1)/usr/sbin/
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/odhcp6c $(1)/usr/sbin/
 	$(INSTALL_DIR) $(1)/lib/netifd/proto
 	$(INSTALL_BIN) ./files/dhcpv6.sh $(1)/lib/netifd/proto/dhcpv6.sh
 	$(INSTALL_BIN) ./files/dhcpv6.script $(1)/lib/netifd/
+	$(INSTALL_DIR) $(1)/etc/odhcp6c.user.d/
+	$(INSTALL_CONF) ./files/odhcp6c.user $(1)/etc/
 endef
 
 $(eval $(call BuildPackage,odhcp6c))

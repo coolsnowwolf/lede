@@ -96,7 +96,7 @@ platform_identify() {
 	echo "unknown"
 }
 
-platform_check_image() {
+platform_other_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	local file_type=$(platform_identify "$1")
@@ -226,6 +226,25 @@ platform_check_image() {
 
 	return $error
 }
+
+platform_check_image() {
+	case "$(board_name)" in
+	meraki,mr32)
+		# Ideally, REQUIRE_IMAGE_METADATA=1 would suffice
+		# but this would require converting all other
+		# devices too.
+		nand_do_platform_check meraki-mr32 "$1"
+		return $?
+		;;
+	*)
+		platform_other_check_image "$1"
+		return $?
+		;;
+	esac
+
+	return 1
+}
+
 
 # $(1): image for upgrade (with possible extra header)
 # $(2): offset of trx in image
@@ -393,7 +412,7 @@ platform_img_from_seama() {
 	echo -n $dir/image-entity.bin
 }
 
-platform_do_upgrade() {
+platform_other_do_upgrade() {
 	local file_type=$(platform_identify "$1")
 	local trx="$1"
 	local cmd=
@@ -423,4 +442,24 @@ platform_do_upgrade() {
 	esac
 
 	default_do_upgrade "$trx" "$cmd"
+}
+
+platform_do_upgrade() {
+	case "$(board_name)" in
+	meraki,mr32)
+		CI_KERNPART="part.safe"
+		nand_do_upgrade "$1"
+		;;
+	*)
+		platform_other_do_upgrade "$1"
+		;;
+	esac
+}
+
+platform_nand_pre_upgrade() {
+	case "$(board_name)" in
+	meraki,mr32)
+		CI_KERNPART="part.safe"
+		;;
+	esac
 }

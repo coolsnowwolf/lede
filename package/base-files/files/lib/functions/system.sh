@@ -79,6 +79,24 @@ mtd_get_mac_ascii() {
 	[ -n "$mac_dirty" ] && macaddr_canonicalize "$mac_dirty"
 }
 
+mtd_get_mac_ascii_mmc() {
+	local mtdname="$1"
+	local key="$2"
+	local part
+	local mac_dirty
+
+	part=$(find_mmc_part "$mtdname")
+	if [ -z "$part" ]; then
+		echo "mtd_get_mac_ascii: partition $mtdname not found!" >&2
+		return
+	fi
+
+	mac_dirty=$(strings "$part" | sed -n 's/^'"$key"'=//p')
+
+	# "canonicalize" mac
+	[ -n "$mac_dirty" ] && macaddr_canonicalize "$mac_dirty"
+}
+
 mtd_get_mac_text() {
 	local mtdname=$1
 	local offset=$(($2))
@@ -123,6 +141,15 @@ mtd_get_mac_binary_ubi() {
 	get_mac_binary "/dev/$part" "$offset"
 }
 
+mtd_get_mac_binary_mmc() {
+	local mtdname="$1"
+	local offset="$2"
+	local part
+
+	part=$(find_mmc_part "$mtdname")
+	get_mac_binary "$part" "$offset"
+}
+
 mtd_get_part_size() {
 	local part_name=$1
 	local first dev size erasesize name
@@ -152,10 +179,26 @@ macaddr_geteui() {
 	echo ${mac:9:2}$sep${mac:12:2}$sep${mac:15:2}
 }
 
-macaddr_setbit_la() {
+macaddr_setbit() {
 	local mac=$1
+	local bit=${2:-0}
 
-	printf "%02x:%s" $((0x${mac%%:*} | 0x02)) ${mac#*:}
+	[ $bit -gt 0 -a $bit -le 48 ] || return
+
+	printf "%012x" $(( 0x${mac//:/} | 2**(48-bit) )) | sed -e 's/\(.\{2\}\)/\1:/g' -e 's/:$//'
+}
+
+macaddr_unsetbit() {
+	local mac=$1
+	local bit=${2:-0}
+
+	[ $bit -gt 0 -a $bit -le 48 ] || return
+
+	printf "%012x" $(( 0x${mac//:/} & ~(2**(48-bit)) )) | sed -e 's/\(.\{2\}\)/\1:/g' -e 's/:$//'
+}
+
+macaddr_setbit_la() {
+	macaddr_setbit $1 7
 }
 
 macaddr_unsetbit_mc() {
@@ -166,7 +209,7 @@ macaddr_unsetbit_mc() {
 
 macaddr_random() {
 	local randsrc=$(get_mac_binary /dev/urandom 0)
-
+	
 	echo "$(macaddr_unsetbit_mc "$(macaddr_setbit_la "${randsrc}")")"
 }
 

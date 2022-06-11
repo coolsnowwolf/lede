@@ -57,7 +57,7 @@ platform_do_upgrade_linksys() {
 
 	if [ ! -n "$part_label" ]
 	then
-		echo "cannot find target partition"
+		v "cannot find target partition"
 		exit 1
 	fi
 

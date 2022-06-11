@@ -147,8 +147,6 @@ case $host_os in
 cygwin* | mingw* | pw32*)
      test "X$LIBS" != "X" && LIBS="$LIBS "
      LIBS="${LIBS}-lwinmm" ;;
-*)
-     ;;
 esac
 fi
 ])#

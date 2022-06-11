@@ -156,7 +156,11 @@ void rt2880_port_init(struct fe_priv *priv, struct device_node *np)
 	const __be32 *id = of_get_property(np, "reg", NULL);
 	const __be32 *link;
 	int size;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	int phy_mode;
+#else
+	phy_interface_t phy_mode = PHY_INTERFACE_MODE_NA;
+#endif
 
 	if (!id || (be32_to_cpu(*id) != 0)) {
 		pr_err("%s: invalid port id\n", np->name);
@@ -172,7 +176,11 @@ void rt2880_port_init(struct fe_priv *priv, struct device_node *np)
 		return;
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	phy_mode = of_get_phy_mode(np);
+#else
+	of_get_phy_mode(np, &phy_mode);
+#endif
 	switch (phy_mode) {
 	case PHY_INTERFACE_MODE_RGMII:
 		break;

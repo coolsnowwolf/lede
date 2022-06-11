@@ -329,7 +329,7 @@ static int ip_phy_read(struct ip17xx_state *state, int port, int reg)
 {
 	int val = mdiobus_read(state->mii_bus, port, reg);
 	if (val < 0)
-		pr_warning("IP17xx: Unable to get MII register %d,%d: error %d\n", port, reg, -val);
+		pr_warn("IP17xx: Unable to get MII register %d,%d: error %d\n", port, reg, -val);
 #ifdef DUMP_MII_IO
 	else
 		pr_debug("IP17xx: Read MII(%d,%d) -> %04x\n", port, reg, val);
@@ -346,7 +346,7 @@ static int ip_phy_write(struct ip17xx_state *state, int port, int reg, u16 val)
 #endif
 	err = mdiobus_write(state->mii_bus, port, reg, val);
 	if (err < 0)
-		pr_warning("IP17xx: Unable to write MII register %d,%d: error %d\n", port, reg, -err);
+		pr_warn("IP17xx: Unable to write MII register %d,%d: error %d\n", port, reg, -err);
 	return err;
 }
 
@@ -451,7 +451,7 @@ static int get_model(struct ip17xx_state *state)
 			}
 		}
 	} else {
-		pr_warning("IP17xx: Found an unknown IC+ switch with model number %02x, revision %X.\n", model_no, rev_no);
+		pr_warn("IP17xx: Found an unknown IC+ switch with model number %02x, revision %X.\n", model_no, rev_no);
 		return -EPERM;
 	}
 	return 0;
@@ -1337,12 +1337,6 @@ static int ip17xx_aneg_done(struct phy_device *pdev)
 	return 1;	/* Return any positive value */
 }
 
-static int ip17xx_update_link(struct phy_device *pdev)
-{
-	pdev->link = 1;
-	return 0;
-}
-
 static int ip17xx_read_status(struct phy_device *pdev)
 {
 	pdev->speed = SPEED_100;
@@ -1364,7 +1358,6 @@ static struct phy_driver ip17xx_driver[] = {
 		.config_init	= ip17xx_config_init,
 		.config_aneg	= ip17xx_config_aneg,
 		.aneg_done	= ip17xx_aneg_done,
-		.update_link	= ip17xx_update_link,
 		.read_status	= ip17xx_read_status,
 	}
 };

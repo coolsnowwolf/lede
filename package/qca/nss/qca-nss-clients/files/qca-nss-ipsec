@@ -1,0 +1,92 @@
+#!/bin/sh  /etc/rc.common
+#
+# Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
+#
+# Permission to use, copy, modify, and/or distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+NSS_IPSEC_LOG_FILE=/tmp/.nss_ipsec_log
+NSS_IPSEC_LOG_STR_ECM="ECM_Loaded"
+
+ecm_load () {
+	if [ ! -d /sys/module/ecm ]; then
+		/etc/init.d/qca-nss-ecm start
+		if [ -d /sys/module/ecm ]; then
+			echo ${NSS_IPSEC_LOG_STR_ECM} >> ${NSS_IPSEC_LOG_FILE}
+		fi
+	fi
+}
+
+ecm_unload () {
+	if [ -f /tmp/.nss_ipsec_log ]; then
+		str=`grep ${NSS_IPSEC_LOG_STR_ECM} ${NSS_IPSEC_LOG_FILE}`
+		if [[ $str == ${NSS_IPSEC_LOG_STR_ECM} ]]; then
+			/etc/init.d/qca-nss-ecm stop
+			`sed 's/${NSS_IPSEC_LOG_STR_ECM}/ /g' $NSS_IPSEC_LOG_FILE >  $NSS_IPSEC_LOG_FILE`
+		fi
+	fi
+}
+
+ecm_disable() {
+
+	if [ ! -d /sys/module/ecm ]; then
+		return;
+	fi
+
+	echo 1 > /sys/kernel/debug/ecm/front_end_ipv4_stop
+	echo 1 > /sys/kernel/debug/ecm/front_end_ipv6_stop
+	echo 1 > /sys/kernel/debug/ecm/ecm_db/defunct_all
+	sleep 2
+}
+
+ecm_enable() {
+	if [ ! -d /sys/module/ecm ]; then
+		return;
+	fi
+
+	echo 0 > /sys/kernel/debug/ecm/ecm_db/defunct_all
+	echo 0 > /sys/kernel/debug/ecm/front_end_ipv4_stop
+	echo 0 > /sys/kernel/debug/ecm/front_end_ipv6_stop
+}
+
+start() {
+	ecm_load
+
+	local kernel_version=$(uname -r)
+
+	insmod /lib/modules/${kernel_version}/qca-nss-ipsec-klips.ko
+	if [ "$?" -gt 0 ]; then
+		echo "Failed to load plugin. Please start ecm if not done already"
+		ecm_enable
+		return
+	fi
+
+	/etc/init.d/ipsec start
+	sleep 2
+	ipsec eroute
+
+	ecm_enable
+}
+
+stop() {
+	ecm_disable
+
+	/etc/init.d/ipsec stop
+	rmmod qca-nss-ipsec-klips
+
+	ecm_unload
+}
+
+restart() {
+	stop
+	start
+}

@@ -158,6 +158,10 @@ sub parse_target_metadata($) {
 		};
 		/^Target-Profile-Packages:\s*(.*)\s*$/ and $profile->{packages} = [ split(/\s+/, $1) ];
 		/^Target-Profile-Description:\s*(.*)\s*/ and $profile->{desc} = get_multiline(*FILE);
+		/^Target-Profile-Broken:\s*(.+)\s*$/ and do {
+			$profile->{broken} = 1;
+			$profile->{default} = "n";
+		};
 		/^Target-Profile-Default:\s*(.+)\s*$/ and $profile->{default} = $1;
 	}
 	close FILE;
@@ -245,7 +249,6 @@ sub parse_package_metadata($) {
 		/^Build-Types:\s*(.+)\s*$/ and $src->{buildtypes} = [ split /\s+/, $1 ];
 		next unless $pkg;
 		/^Version: \s*(.+)\s*$/ and $pkg->{version} = $1;
-		/^ABIVersion: \s*(.+)\s*$/ and $pkg->{abiversion} = $1;
 		/^Title: \s*(.+)\s*$/ and $pkg->{title} = $1;
 		/^Menu: \s*(.+)\s*$/ and $pkg->{menu} = $1;
 		/^Submenu: \s*(.+)\s*$/ and $pkg->{submenu} = $1;

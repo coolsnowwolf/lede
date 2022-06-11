@@ -301,7 +301,7 @@ static int mtk_init_foe_table(struct mtk_eth *eth)
 	return 0;
 }
 
-static int mtk_ppe_start(struct mtk_eth *eth)
+static int ra_ppe_start(struct mtk_eth *eth)
 {
 	int ret;
 
@@ -425,7 +425,7 @@ static int mtk_ppe_busy_wait(struct mtk_eth *eth)
 	return -ETIMEDOUT;
 }
 
-static int mtk_ppe_stop(struct mtk_eth *eth)
+static int ra_ppe_stop(struct mtk_eth *eth)
 {
 	u32 r1 = 0, r2 = 0;
 	int i;
@@ -501,7 +501,7 @@ static void mtk_offload_keepalive(struct fe_priv *eth, unsigned int hash)
 	rcu_read_unlock();
 }
 
-int mtk_offload_check_rx(struct fe_priv *eth, struct sk_buff *skb, u32 rxd4)
+int ra_offload_check_rx(struct fe_priv *eth, struct sk_buff *skb, u32 rxd4)
 {
 	unsigned int hash;
 
@@ -519,22 +519,22 @@ int mtk_offload_check_rx(struct fe_priv *eth, struct sk_buff *skb, u32 rxd4)
 	}
 }
 
-int mtk_ppe_probe(struct mtk_eth *eth)
+int ra_ppe_probe(struct mtk_eth *eth)
 {
 	int err;
 
-	err = mtk_ppe_start(eth);
+	err = ra_ppe_start(eth);
 	if (err)
 		return err;
 
-	err = mtk_ppe_debugfs_init(eth);
+	err = ra_ppe_debugfs_init(eth);
 	if (err)
 		return err;
 
 	return 0;
 }
 
-void mtk_ppe_remove(struct mtk_eth *eth)
+void ra_ppe_remove(struct mtk_eth *eth)
 {
-	mtk_ppe_stop(eth);
+	ra_ppe_stop(eth);
 }

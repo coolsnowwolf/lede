@@ -1,0 +1,92 @@
+From af066bde5a442efd50868ffed1aad30190400c91 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Tue, 19 May 2020 15:57:08 +0100
+Subject: [PATCH] staging: vc04_services: isp: Reorder operations
+ during device probe
+
+Register the video node at the end of the probe, swapping order with
+registering the controls.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../bcm2835-isp/bcm2835-v4l2-isp.c            | 48 ++++++++++++-------
+ 1 file changed, 32 insertions(+), 16 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
++++ b/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
+@@ -1295,21 +1295,6 @@ static int register_node(struct bcm2835_
+ 	}
+ 	node->queue_init = true;
+ 
+-	/* Define the device names */
+-	snprintf(vfd->name, sizeof(node->vfd.name), "%s-%s%d", BCM2835_ISP_NAME,
+-		 node->name, node->id);
+-
+-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr + index);
+-	if (ret) {
+-		v4l2_err(&dev->v4l2_dev,
+-			 "Failed to register video %s[%d] device node\n",
+-			 node->name, node->id);
+-		return ret;
+-	}
+-
+-	node->registered = true;
+-	video_set_drvdata(vfd, node);
+-
+ 	/* Set some controls and defaults, but only on the VIDEO_OUTPUT node. */
+ 	if (node_is_output(node)) {
+ 		unsigned int i;
+@@ -1324,7 +1309,12 @@ static int register_node(struct bcm2835_
+ 			.step		= 1,
+ 		};
+ 
+-		v4l2_ctrl_handler_init(&dev->ctrl_handler, 4);
++		ret = v4l2_ctrl_handler_init(&dev->ctrl_handler, 12);
++		if (ret) {
++			v4l2_err(&dev->v4l2_dev, "ctrl_handler init failed (%d)\n",
++				 ret);
++			return ret;
++		}
+ 
+ 		dev->r_gain = 1000;
+ 		dev->b_gain = 1000;
+@@ -1350,13 +1340,39 @@ static int register_node(struct bcm2835_
+ 		}
+ 
+ 		node->vfd.ctrl_handler = &dev->ctrl_handler;
++		if (dev->ctrl_handler.error) {
++			ret = dev->ctrl_handler.error;
++			v4l2_err(&dev->v4l2_dev, "controls init failed (%d)\n",
++				 ret);
++			v4l2_ctrl_handler_free(&dev->ctrl_handler);
++			goto ctrl_cleanup;
++		}
+ 	}
+ 
++	/* Define the device names */
++	snprintf(vfd->name, sizeof(node->vfd.name), "%s-%s%d", BCM2835_ISP_NAME,
++		 node->name, node->id);
++
++	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr + index);
++	if (ret) {
++		v4l2_err(&dev->v4l2_dev,
++			 "Failed to register video %s[%d] device node\n",
++			 node->name, node->id);
++		goto ctrl_cleanup;
++	}
++
++	node->registered = true;
++	video_set_drvdata(vfd, node);
++
+ 	v4l2_info(&dev->v4l2_dev,
+ 		  "Device node %s[%d] registered as /dev/video%d\n",
+ 		  node->name, node->id, vfd->num);
+ 
+ 	return 0;
++
++ctrl_cleanup:
++	v4l2_ctrl_handler_free(&dev->ctrl_handler);
++	return ret;
+ }
+ 
+ /* Unregister one of the /dev/video<N> nodes associated with the ISP. */

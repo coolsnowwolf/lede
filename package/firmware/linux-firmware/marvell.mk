@@ -20,12 +20,14 @@ define Package/mwifiex-pcie-firmware/install
 endef
 $(eval $(call BuildPackage,mwifiex-pcie-firmware))
 
-Package/mwifiex-sdio-firmware = $(call Package/firmware-default,Marvell 8887 firmware)
+Package/mwifiex-sdio-firmware = $(call Package/firmware-default,Marvell 8887/8997 firmware)
 define Package/mwifiex-sdio-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mrvl
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/mrvl/sd8887_uapsta.bin \
+		$(PKG_BUILD_DIR)/mrvl/sdsd8997_combo_v4.bin \
 		$(1)/lib/firmware/mrvl/
+	ln -s ../mrvl/sdsd8997_combo_v4.bin $(1)/lib/firmware/mrvl/sd8997_uapsta.bin
 endef
 $(eval $(call BuildPackage,mwifiex-sdio-firmware))
 
@@ -68,3 +70,11 @@ define Package/libertas-spi-firmware/install
 endef
 $(eval $(call BuildPackage,libertas-spi-firmware))
 
+Package/qed-firmware = $(call Package/firmware-default,=QLogic FastLinQ 41xxx firmware)
+define Package/qed-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/qed
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/qed/* \
+		$(1)/lib/firmware/qed/
+endef
+$(eval $(call BuildPackage,qed-firmware))

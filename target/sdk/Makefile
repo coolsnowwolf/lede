@@ -20,7 +20,10 @@ STAGING_SUBDIR_HOST := staging_dir/host
 STAGING_SUBDIR_TARGET := staging_dir/$(TARGET_DIR_NAME)
 STAGING_SUBDIR_TOOLCHAIN := staging_dir/toolchain-$(ARCH)$(ARCH_SUFFIX)_gcc-$(GCCV)_$(LIBC)$(if $(CONFIG_arm),_eabi)
 
-EXCLUDE_DIRS:=*/ccache/* \
+BUNDLER_PATH := $(subst $(space),:,$(filter-out $(TOPDIR)/%,$(subst :,$(space),$(PATH))))
+BUNDLER_COMMAND := PATH=$(BUNDLER_PATH) $(XARGS) $(SCRIPT_DIR)/bundle-libraries.sh $(SDK_BUILD_DIR)/$(STAGING_SUBDIR_HOST)
+
+EXCLUDE_DIRS:= \
 	*/stamp \
 	*/stampfiles \
 	*/man \
@@ -82,7 +85,12 @@ KERNEL_FILES := $(patsubst $(TOPDIR)/%,%,$(wildcard $(addprefix $(LINUX_DIR)/,$(
 all: compile
 
 $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
-	mkdir -p $(SDK_BUILD_DIR)/dl $(SDK_BUILD_DIR)/package
+	mkdir -p \
+		$(SDK_BUILD_DIR)/dl \
+		$(SDK_BUILD_DIR)/package \
+		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_TARGET)/include \
+		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_TARGET)/usr/include
+
 	$(CP) -L $(INCLUDE_DIR) $(SCRIPT_DIR) $(SDK_BUILD_DIR)/
 	$(TAR) -cf - -C $(TOPDIR) \
 		`cd $(TOPDIR); find $(KDIR_BASE)/ -name \*.ko` \
@@ -99,7 +107,7 @@ $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
 	(cd $(SDK_BUILD_DIR); find $(STAGING_SUBDIR_HOST)/bin $(STAGING_SUBDIR_HOST)/usr/bin \
 		$(STAGING_SUBDIR_TOOLCHAIN)/bin $(STAGING_SUBDIR_TOOLCHAIN)/*/bin $(STAGING_SUBDIR_TOOLCHAIN)/libexec \
 		$(KDIR_BASE) \
-		-type f | $(XARGS) $(SCRIPT_DIR)/bundle-libraries.sh $(SDK_BUILD_DIR)/$(STAGING_SUBDIR_HOST))
+		-type f | $(BUNDLER_COMMAND))
 
 	@-( \
 		find \
@@ -122,24 +130,24 @@ $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
 		$(SDK_BUILD_DIR)/target/linux/*/patches*
 	./convert-config.pl $(TOPDIR)/.config > $(SDK_BUILD_DIR)/Config-build.in
 	$(CP) -L \
-		$(TOPDIR)/LICENSE \
+		$(TOPDIR)/LICENSES \
+		$(TOPDIR)/COPYING \
 		$(TOPDIR)/rules.mk \
 		./files/Config.in \
 		./files/Makefile \
 		./files/include/prepare.mk \
 		./files/README.SDK \
 		$(SDK_BUILD_DIR)/
+	mkdir -p $(SDK_BUILD_DIR)/package/kernel
 	$(CP) \
 		$(TOPDIR)/package/Makefile \
 		$(TOPDIR)/package/libs/toolchain \
-		$(TOPDIR)/package/kernel/linux \
 		$(SDK_BUILD_DIR)/package/
+	$(CP) \
+		$(TOPDIR)/package/kernel/linux \
+		$(SDK_BUILD_DIR)/package/kernel/
 
-	-rm -rf \
-		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_HOST)/ccache \
-		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_TARGET)/ccache \
-		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_TOOLCHAIN)/ccache \
-		$(SDK_BUILD_DIR)/$(STAGING_SUBDIR_HOST)/.prereq-build
+	-rm -rf $(SDK_BUILD_DIR)/$(STAGING_SUBDIR_HOST)/.prereq-build
 
 	-rm -f $(SDK_BUILD_DIR)/feeds.conf.default
 	$(if $(BASE_FEED),echo "$(BASE_FEED)" > $(SDK_BUILD_DIR)/feeds.conf.default)
@@ -156,7 +164,8 @@ $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
 	find $(SDK_BUILD_DIR) -name CVS | $(XARGS) rm -rf
 	-make -C $(SDK_BUILD_DIR)/scripts/config clean
 	(cd $(BUILD_DIR); \
-		tar -I 'xz -7e' -cf $@ $(SDK_NAME); \
+		tar -I '$(STAGING_DIR_HOST)/bin/xz -7e -T$(if $(filter 1,$(NPROC)),2,0)' -cf $@ $(SDK_NAME) \
+		--mtime="$(shell date --date=@$(SOURCE_DATE_EPOCH))"; \
 	)
 
 download:

@@ -78,6 +78,21 @@ endef
 
 $(eval $(call KernelPackage,iio-ad799x))
 
+define KernelPackage/iio-ads1015
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c +kmod-industrialio-triggered-buffer
+  TITLE:=Texas Instruments ADS1015 ADC driver
+  KCONFIG:= CONFIG_TI_ADS1015
+  FILES:=$(LINUX_DIR)/drivers/iio/adc/ti-ads1015.ko
+  AUTOLOAD:=$(call AutoLoad,56,ti-ads1015)
+endef
+
+define KernelPackage/iio-ads1015/description
+ This driver adds support for Texas Instruments ADS1015 and ADS1115 ADCs.
+endef
+
+$(eval $(call KernelPackage,iio-ads1015))
+
 define KernelPackage/iio-hmc5843
   SUBMENU:=$(IIO_MENU)
   DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-regmap-i2c +kmod-industrialio-triggered-buffer
@@ -159,7 +174,7 @@ $(eval $(call KernelPackage,iio-dht11))
 define KernelPackage/iio-bme680
   SUBMENU:=$(IIO_MENU)
   TITLE:=BME680 gas/humidity/pressure/temperature sensor
-  DEPENDS:=@!LINUX_4_14 +kmod-iio-core +kmod-regmap-core
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core
   KCONFIG:=CONFIG_BME680
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/bme680_core.ko
 endef
@@ -414,7 +429,7 @@ $(eval $(call KernelPackage,iio-lsm6dsx-spi))
 
 define KernelPackage/iio-sps30
   SUBMENU:=$(IIO_MENU)
-  DEPENDS:=@!LINUX_4_14 +kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
+  DEPENDS:=+kmod-i2c-core +kmod-iio-core +kmod-industrialio-triggered-buffer +kmod-lib-crc8
   TITLE:=Sensirion SPS30 particulate matter sensor
   KCONFIG:=CONFIG_SPS30
   FILES:=$(LINUX_DIR)/drivers/iio/chemical/sps30.ko
@@ -444,6 +459,56 @@ define KernelPackage/iio-tsl4531/description
 endef
 
 $(eval $(call KernelPackage,iio-tsl4531))
+
+
+define KernelPackage/iio-fxas21002c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver
+  DEPENDS:=+kmod-iio-core +kmod-regmap-core +kmod-industrialio-triggered-buffer
+  KCONFIG:= CONFIG_FXAS21002C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_core.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c)
+endef
+
+define KernelPackage/iio-fxas21002c/description
+ Support for Freescale FXAS21002C 3-axis gyro.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c))
+
+
+define KernelPackage/iio-fxas21002c-i2c
+  SUBMENU:=$(IIO_MENU)
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (I2C)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-i2c-core +kmod-regmap-i2c
+  KCONFIG:= CONFIG_FXAS21002C_I2C
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_i2c.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_i2c)
+endef
+
+define KernelPackage/iio-fxas21002c-i2c/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via I2C.
+endef
+
+
+$(eval $(call KernelPackage,iio-fxas21002c-i2c))
+
+define KernelPackage/iio-fxas21002c-spi
+  SUBMENU:=$(IIO_MENU)
+  DEPENDS:=+kmod-iio-fxas21002c +kmod-regmap-spi
+  TITLE:=Freescale FXAS21002C 3-axis gyro driver (SPI)
+  KCONFIG:= CONFIG_FXAS21002C_SPI
+  FILES:=$(LINUX_DIR)/drivers/iio/gyro/fxas21002c_spi.ko
+  AUTOLOAD:=$(call AutoLoad,56,fxas21002c_spi)
+endef
+
+define KernelPackage/iio-fxas21002c-spi/description
+ Support for Freescale FXAS21002C 3-axis gyro
+ connected via SPI.
+endef
+
+$(eval $(call KernelPackage,iio-fxas21002c-spi))
 
 
 define KernelPackage/iio-fxos8700

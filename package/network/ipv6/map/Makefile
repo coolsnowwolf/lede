@@ -8,8 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=map
-PKG_VERSION:=4
-PKG_RELEASE:=13
+PKG_RELEASE:=7
 PKG_LICENSE:=GPL-2.0
 
 include $(INCLUDE_DIR)/package.mk

@@ -8,12 +8,13 @@ FEATURES:=gpio ramdisk rtc squashfs
 DEVICE_TYPE:=nas
 
 KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.10
 
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += \
 	kmod-button-hotplug kmod-input-gpio-keys-polled \
-	kmod-ledtrig-timer kmod-leds-gpio uboot-envtools
+	kmod-leds-gpio uboot-envtools
 
 KERNELNAME:=zImage dtbs
 

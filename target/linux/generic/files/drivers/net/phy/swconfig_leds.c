@@ -321,14 +321,6 @@ err_free:
 	return err;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
-static void
-swconfig_trig_activate_void(struct led_classdev *led_cdev)
-{
-	swconfig_trig_activate(led_cdev);
-}
-#endif
-
 static void
 swconfig_trig_deactivate(struct led_classdev *led_cdev)
 {
@@ -523,11 +515,7 @@ swconfig_create_led_trigger(struct switch_dev *swdev)
 
 	sw_trig->swdev = swdev;
 	sw_trig->trig.name = swdev->devname;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
-	sw_trig->trig.activate = swconfig_trig_activate_void;
-#else
 	sw_trig->trig.activate = swconfig_trig_activate;
-#endif
 	sw_trig->trig.deactivate = swconfig_trig_deactivate;
 
 	INIT_DELAYED_WORK(&sw_trig->sw_led_work, swconfig_led_work_func);

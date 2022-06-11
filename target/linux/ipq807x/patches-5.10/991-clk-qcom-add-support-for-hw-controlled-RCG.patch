@@ -1,0 +1,136 @@
+From 0245360f8e118b67f4015533cfc79314f2d848d5 Mon Sep 17 00:00:00 2001
+From: Praveenkumar I <ipkumar@codeaurora.org>
+Date: Tue, 13 Jun 2017 15:30:39 +0530
+Subject: [PATCH 2/3] clk: qcom: add support for hw controlled RCG
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The current driver generates stack trace during RCG update if
+the RCG is off and new parent source is also disabled. For
+hardware controlled RCG’s, clock is forced on during update
+process and goes back to off status once switch is completed.
+Since the new parent is in disabled state so update bit won’t
+be cleared in this case. The check for update bit can be
+skipped in this case.
+
+Signed-off-by: Abhishek Sahu <absahu@codeaurora.org>
+(cherry picked from commit 84dd0e12f10eebff44a464eb8455205abc4b4178)
+Signed-off-by: Praveenkumar I <ipkumar@codeaurora.org>
+
+Change-Id: Ifb4175b02d89542baa1b758107c2ce86f7bf8599
+---
+ drivers/clk/qcom/clk-rcg.h  |  4 ++++
+ drivers/clk/qcom/clk-rcg2.c | 27 +++++++++++++++++++++------
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+--- a/drivers/clk/qcom/clk-rcg.h
++++ b/drivers/clk/qcom/clk-rcg.h
+@@ -135,6 +135,7 @@ extern const struct clk_ops clk_dyn_rcg_
+  * @mnd_width: number of bits in m/n/d values
+  * @hid_width: number of bits in half integer divider
+  * @safe_src_index: safe src index value
++ * @flags: RCG2 specific clock flags
+  * @parent_map: map from software's parent index to hardware's src_sel field
+  * @freq_tbl: frequency table
+  * @clkr: regmap clock handle
+@@ -145,6 +146,9 @@ struct clk_rcg2 {
+ 	u8			mnd_width;
+ 	u8			hid_width;
+ 	u8			safe_src_index;
++
++#define CLK_RCG2_HW_CONTROLLED		BIT(0)
++	u8			flags;
+ 	const struct parent_map	*parent_map;
+ 	const struct freq_tbl	*freq_tbl;
+ 	struct clk_regmap	clkr;
+--- a/drivers/clk/qcom/clk-rcg2.c
++++ b/drivers/clk/qcom/clk-rcg2.c
+@@ -97,7 +97,7 @@ err:
+ 	return 0;
+ }
+ 
+-static int update_config(struct clk_rcg2 *rcg)
++static int update_config(struct clk_rcg2 *rcg, bool check_update_clear)
+ {
+ 	int count, ret;
+ 	u32 cmd;
+@@ -109,6 +109,9 @@ static int update_config(struct clk_rcg2
+ 	if (ret)
+ 		return ret;
+ 
++	if (!check_update_clear)
++		return 0;
++
+ 	/* Wait for update to take effect */
+ 	for (count = 500; count > 0; count--) {
+ 		ret = regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + CMD_REG, &cmd);
+@@ -127,14 +130,19 @@ static int clk_rcg2_set_parent(struct cl
+ {
+ 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+ 	int ret;
++	bool check_update_clear = true;
+ 	u32 cfg = rcg->parent_map[index].cfg << CFG_SRC_SEL_SHIFT;
+ 
++	if ((rcg->flags & CLK_RCG2_HW_CONTROLLED) &&
++	    !clk_hw_is_enabled(clk_hw_get_parent_by_index(hw, index)))
++		check_update_clear = false;
++
+ 	ret = regmap_update_bits(rcg->clkr.regmap, RCG_CFG_OFFSET(rcg),
+ 				 CFG_SRC_SEL_MASK, cfg);
+ 	if (ret)
+ 		return ret;
+ 
+-	return update_config(rcg);
++	return update_config(rcg, check_update_clear);
+ }
+ 
+ /*
+@@ -311,12 +319,19 @@ static int __clk_rcg2_configure(struct c
+ static int clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
+ {
+ 	int ret;
++	bool check_update_clear = true;
++	struct clk_hw *hw = &rcg->clkr.hw;
++	int index = qcom_find_src_index(hw, rcg->parent_map, f->src);
+ 
+ 	ret = __clk_rcg2_configure(rcg, f);
+ 	if (ret)
+ 		return ret;
+ 
+-	return update_config(rcg);
++	if ((rcg->flags & CLK_RCG2_HW_CONTROLLED) &&
++	    !clk_hw_is_enabled(clk_hw_get_parent_by_index(hw, index)))
++		check_update_clear = false;
++
++	return update_config(rcg, check_update_clear);
+ }
+ 
+ static int __clk_rcg2_set_rate(struct clk_hw *hw, unsigned long rate,
+@@ -796,7 +811,7 @@ static int clk_gfx3d_set_rate_and_parent
+ 	if (ret)
+ 		return ret;
+ 
+-	return update_config(rcg);
++	return update_config(rcg, true);
+ }
+ 
+ static int clk_gfx3d_set_rate(struct clk_hw *hw, unsigned long rate,
+@@ -908,7 +923,7 @@ static int clk_rcg2_shared_enable(struct
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = update_config(rcg);
++	ret = update_config(rcg, true);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -939,7 +954,7 @@ static void clk_rcg2_shared_disable(stru
+ 	regmap_write(rcg->clkr.regmap, rcg->cmd_rcgr + CFG_REG,
+ 		     rcg->safe_src_index << CFG_SRC_SEL_SHIFT);
+ 
+-	update_config(rcg);
++	update_config(rcg, true);
+ 
+ 	clk_rcg2_clear_force_enable(hw);
+ 

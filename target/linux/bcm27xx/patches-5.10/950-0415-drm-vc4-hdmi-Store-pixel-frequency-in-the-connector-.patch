@@ -1,0 +1,97 @@
+From 1dd22d945a99fa35e387e01101c758ae7be3d9a4 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 15 Dec 2020 16:42:40 +0100
+Subject: [PATCH] drm/vc4: hdmi: Store pixel frequency in the connector
+ state
+
+The pixel rate is for now quite simple to compute, but with more features
+(30 and 36 bits output, YUV output, etc.) will depend on a bunch of
+connectors properties.
+
+Let's store the rate we have to run the pixel clock at in our custom
+connector state, and compute it in atomic_check.
+
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 26 +++++++++++++++++++++++++-
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  1 +
+ 2 files changed, 26 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -243,6 +243,7 @@ vc4_hdmi_connector_duplicate_state(struc
+ 	if (!new_state)
+ 		return NULL;
+ 
++	new_state->pixel_rate = vc4_state->pixel_rate;
+ 	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
+ 
+ 	return &new_state->base;
+@@ -669,9 +670,29 @@ static void vc4_hdmi_recenter_fifo(struc
+ 		  "VC4_HDMI_FIFO_CTL_RECENTER_DONE");
+ }
+ 
++static struct drm_connector_state *
++vc4_hdmi_encoder_get_connector_state(struct drm_encoder *encoder,
++				     struct drm_atomic_state *state)
++{
++	struct drm_connector_state *conn_state;
++	struct drm_connector *connector;
++	unsigned int i;
++
++	for_each_new_connector_in_state(state, connector, conn_state, i) {
++		if (conn_state->best_encoder == encoder)
++			return conn_state;
++	}
++
++	return NULL;
++}
++
+ static void vc4_hdmi_encoder_pre_crtc_configure(struct drm_encoder *encoder,
+ 						struct drm_atomic_state *state)
+ {
++	struct drm_connector_state *conn_state =
++		vc4_hdmi_encoder_get_connector_state(encoder, state);
++	struct vc4_hdmi_connector_state *vc4_conn_state =
++		conn_state_to_vc4_hdmi_conn_state(conn_state);
+ 	struct drm_display_mode *mode = &encoder->crtc->state->adjusted_mode;
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	unsigned long pixel_rate, hsm_rate;
+@@ -683,7 +704,7 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 		return;
+ 	}
+ 
+-	pixel_rate = mode->clock * 1000 * ((mode->flags & DRM_MODE_FLAG_DBLCLK) ? 2 : 1);
++	pixel_rate = vc4_conn_state->pixel_rate;
+ 	ret = clk_set_rate(vc4_hdmi->pixel_clock, pixel_rate);
+ 	if (ret) {
+ 		DRM_ERROR("Failed to set pixel clock rate: %d\n", ret);
+@@ -845,6 +866,7 @@ static int vc4_hdmi_encoder_atomic_check
+ 					 struct drm_crtc_state *crtc_state,
+ 					 struct drm_connector_state *conn_state)
+ {
++	struct vc4_hdmi_connector_state *vc4_state = conn_state_to_vc4_hdmi_conn_state(conn_state);
+ 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	unsigned long long pixel_rate = mode->clock * 1000;
+@@ -876,6 +898,8 @@ static int vc4_hdmi_encoder_atomic_check
+ 	if (pixel_rate > vc4_hdmi->variant->max_pixel_clock)
+ 		return -EINVAL;
+ 
++	vc4_state->pixel_rate = pixel_rate;
++
+ 	return 0;
+ }
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -189,6 +189,7 @@ encoder_to_vc4_hdmi(struct drm_encoder *
+ 
+ struct vc4_hdmi_connector_state {
+ 	struct drm_connector_state	base;
++	unsigned long long		pixel_rate;
+ };
+ 
+ static inline struct vc4_hdmi_connector_state *

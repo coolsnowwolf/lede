@@ -1,0 +1,80 @@
+From 298923cf999cecd2ef06df126f85a3d68da8c4d8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Mon, 8 Mar 2021 10:03:18 +0100
+Subject: [PATCH] firmware: bcm47xx_nvram: extract code copying NVRAM
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This simplifies function finding NVRAM. It doesn't directly deal with
+NVRAM structure anymore and is a bit smaller.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+---
+ drivers/firmware/broadcom/bcm47xx_nvram.c | 43 +++++++++++++----------
+ 1 file changed, 25 insertions(+), 18 deletions(-)
+
+--- a/drivers/firmware/broadcom/bcm47xx_nvram.c
++++ b/drivers/firmware/broadcom/bcm47xx_nvram.c
+@@ -55,11 +55,34 @@ static u32 find_nvram_size(void __iomem
+ }
+ 
+ /**
++ * bcm47xx_nvram_copy - copy NVRAM to internal buffer
++ */
++static void bcm47xx_nvram_copy(void __iomem *nvram_start, size_t res_size)
++{
++	struct nvram_header __iomem *header = nvram_start;
++	size_t copy_size;
++
++	copy_size = header->len;
++	if (copy_size > res_size) {
++		pr_err("The nvram size according to the header seems to be bigger than the partition on flash\n");
++		copy_size = res_size;
++	}
++	if (copy_size >= NVRAM_SPACE) {
++		pr_err("nvram on flash (%zu bytes) is bigger than the reserved space in memory, will just copy the first %i bytes\n",
++		       copy_size, NVRAM_SPACE - 1);
++		copy_size = NVRAM_SPACE - 1;
++	}
++
++	__ioread32_copy(nvram_buf, nvram_start, DIV_ROUND_UP(copy_size, 4));
++	nvram_buf[NVRAM_SPACE - 1] = '\0';
++	nvram_len = copy_size;
++}
++
++/**
+  * bcm47xx_nvram_find_and_copy - find NVRAM on flash mapping & copy it
+  */
+ static int bcm47xx_nvram_find_and_copy(void __iomem *flash_start, size_t res_size)
+ {
+-	struct nvram_header __iomem *header;
+ 	size_t flash_size;
+ 	size_t offset;
+ 	u32 size;
+@@ -95,23 +118,7 @@ static int bcm47xx_nvram_find_and_copy(v
+ 	return -ENXIO;
+ 
+ found:
+-	header = (struct nvram_header *)(flash_start + offset);
+-	__ioread32_copy(nvram_buf, header, sizeof(*header) / 4);
+-	nvram_len = ((struct nvram_header *)(nvram_buf))->len;
+-	size = res_size - offset;
+-	if (nvram_len > size) {
+-		pr_err("The nvram size according to the header seems to be bigger than the partition on flash\n");
+-		nvram_len = size;
+-	}
+-	if (nvram_len >= NVRAM_SPACE) {
+-		pr_err("nvram on flash (%zu bytes) is bigger than the reserved space in memory, will just copy the first %i bytes\n",
+-		       nvram_len, NVRAM_SPACE - 1);
+-		nvram_len = NVRAM_SPACE - 1;
+-	}
+-	/* proceed reading data after header */
+-	__ioread32_copy(nvram_buf + sizeof(*header), header + 1,
+-			DIV_ROUND_UP(nvram_len, 4));
+-	nvram_buf[NVRAM_SPACE - 1] = '\0';
++	bcm47xx_nvram_copy(flash_start + offset, res_size - offset);
+ 
+ 	return 0;
+ }

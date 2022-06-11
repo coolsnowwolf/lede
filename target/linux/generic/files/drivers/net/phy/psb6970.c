@@ -326,13 +326,9 @@ static int psb6970_config_init(struct phy_device *pdev)
 		return 0;
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 	linkmode_zero(pdev->supported);
 	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, pdev->supported);
 	linkmode_copy(pdev->advertising, pdev->supported);
-#else
-	pdev->supported = pdev->advertising = SUPPORTED_100baseT_Full;
-#endif
 
 	mutex_init(&priv->reg_mutex);
 	priv->read = psb6970_mii_read;
@@ -358,8 +354,6 @@ static int psb6970_config_init(struct phy_device *pdev)
 		kfree(priv);
 		goto done;
 	}
-
-	dev->phy_ptr = priv;
 
 done:
 	return ret;

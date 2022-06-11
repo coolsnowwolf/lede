@@ -275,11 +275,11 @@ MAC_TABLE_ENTRY *MacTableInsertWDSEntry(
 		if ((wdev->PhyMode == MODE_VHT) &&
 			(pAd->CommonCfg.Channel > 14))
 		{
-			VHT_CAP_IE vht_cap;
+			VHT_CAP_IE *vht_cap = NULL;
 			VHT_CAP_INFO *vht_cap_info;
-			build_vht_cap_ie(pAd, (UCHAR *)&vht_cap);
+			build_vht_cap_ie(pAd, (UCHAR *)vht_cap);
 
-			vht_cap_info = (VHT_CAP_INFO *)&vht_cap;
+			vht_cap_info = (VHT_CAP_INFO *)vht_cap;
 
 			
 			pEntry->MaxHTPhyMode.field.MODE = MODE_VHT;
@@ -287,25 +287,25 @@ MAC_TABLE_ENTRY *MacTableInsertWDSEntry(
 				pEntry->MaxHTPhyMode.field.BW = BW_80;
 
 			/* TODO: implement get_vht_max_mcs to get peer max MCS */
-			if (vht_cap.mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_9) {
+			if (vht_cap->mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_9) {
 				if ((pEntry->MaxHTPhyMode.field.BW == BW_20))
 					pEntry->MaxHTPhyMode.field.MCS = 8;
 				else
 					pEntry->MaxHTPhyMode.field.MCS = 9;
-			} else if (vht_cap.mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_8) {
+			} else if (vht_cap->mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_8) {
 				pEntry->MaxHTPhyMode.field.MCS = 8;
-			} else if (vht_cap.mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_7) {
+			} else if (vht_cap->mcs_set.rx_mcs_map.mcs_ss1 == VHT_MCS_CAP_7) {
 				pEntry->MaxHTPhyMode.field.MCS = 7;
 			}
 			
-			if (vht_cap.mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_9) {
+			if (vht_cap->mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_9) {
 				if ((pEntry->MaxHTPhyMode.field.BW == BW_20))
 					pEntry->MaxHTPhyMode.field.MCS = ((1 << 4) | 8);
 				else
 					pEntry->MaxHTPhyMode.field.MCS = ((1 << 4) | 9);
-			} else if (vht_cap.mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_8) {
+			} else if (vht_cap->mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_8) {
 				pEntry->MaxHTPhyMode.field.MCS = ((1 << 4) | 8);
-			} else if (vht_cap.mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_7) {
+			} else if (vht_cap->mcs_set.rx_mcs_map.mcs_ss2 == VHT_MCS_CAP_7) {
 				pEntry->MaxHTPhyMode.field.MCS = ((1 << 4) | 7);
 			}
 
@@ -333,7 +333,7 @@ MAC_TABLE_ENTRY *MacTableInsertWDSEntry(
 				if (vht_cap_info->rx_stbc)
 					CLIENT_STATUS_SET_FLAG(pEntry, fCLIENT_STATUS_VHT_RXSTBC_CAPABLE);
 			}
-			NdisMoveMemory(&pEntry->vht_cap_ie, &vht_cap, sizeof(VHT_CAP_IE));
+			NdisMoveMemory(&pEntry->vht_cap_ie, vht_cap, sizeof(VHT_CAP_IE));
 		}
 		else
 		{
@@ -707,7 +707,7 @@ VOID WdsPeerBeaconProc(
 	IN ULONG ClientRalinkIe,
 #ifdef DOT11_VHT_AC
 	IN UCHAR vht_cap_len,
-	IN VHT_CAP_IE *vht_cap,
+	IN VHT_CAP_IE vht_cap[],
 #endif /* DOT11_VHT_AC */
 	IN HT_CAPABILITY_IE *pHtCapability,
 	IN UCHAR HtCapabilityLen)
@@ -883,7 +883,7 @@ VOID WdsPeerBeaconProc(
 				if (vht_cap_info->rx_stbc)
 					CLIENT_STATUS_SET_FLAG(pEntry, fCLIENT_STATUS_VHT_RXSTBC_CAPABLE);
 			}
-			NdisMoveMemory(&pEntry->vht_cap_ie, &vht_cap, sizeof(VHT_CAP_IE));
+			NdisMoveMemory(&pEntry->vht_cap_ie, vht_cap, sizeof(VHT_CAP_IE));
 		}
 		else
 		{

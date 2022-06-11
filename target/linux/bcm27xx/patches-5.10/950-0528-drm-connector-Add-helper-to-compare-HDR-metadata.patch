@@ -1,0 +1,168 @@
+From 5278eeece5b7b66019cf9c1a833c815cff9819ec Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 19 Mar 2021 13:05:53 +0100
+Subject: [PATCH] drm/connector: Add helper to compare HDR metadata
+
+All the drivers that support the HDR metadata property have a similar
+function to compare the metadata from one connector state to the next,
+and force a mode change if they differ.
+
+All these functions run pretty much the same code, so let's turn it into
+an helper that can be shared across those drivers.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c | 21 +-------------
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi.c     | 17 +----------
+ drivers/gpu/drm/drm_connector.c               | 28 +++++++++++++++++++
+ drivers/gpu/drm/i915/display/intel_atomic.c   | 13 +--------
+ include/drm/drm_connector.h                   |  2 ++
+ 5 files changed, 33 insertions(+), 48 deletions(-)
+
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -5477,25 +5477,6 @@ static int fill_hdr_info_packet(const st
+ 	return 0;
+ }
+ 
+-static bool
+-is_hdr_metadata_different(const struct drm_connector_state *old_state,
+-			  const struct drm_connector_state *new_state)
+-{
+-	struct drm_property_blob *old_blob = old_state->hdr_output_metadata;
+-	struct drm_property_blob *new_blob = new_state->hdr_output_metadata;
+-
+-	if (old_blob != new_blob) {
+-		if (old_blob && new_blob &&
+-		    old_blob->length == new_blob->length)
+-			return memcmp(old_blob->data, new_blob->data,
+-				      old_blob->length);
+-
+-		return true;
+-	}
+-
+-	return false;
+-}
+-
+ static int
+ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
+ 				 struct drm_atomic_state *state)
+@@ -5511,7 +5492,7 @@ amdgpu_dm_connector_atomic_check(struct
+ 	if (!crtc)
+ 		return 0;
+ 
+-	if (is_hdr_metadata_different(old_con_state, new_con_state)) {
++	if (!drm_connector_atomic_hdr_metadata_equal(old_con_state, new_con_state)) {
+ 		struct dc_info_packet hdr_infopacket;
+ 
+ 		ret = fill_hdr_info_packet(new_con_state, &hdr_infopacket);
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi.c
+@@ -2403,21 +2403,6 @@ static int dw_hdmi_connector_get_modes(s
+ 	return ret;
+ }
+ 
+-static bool hdr_metadata_equal(const struct drm_connector_state *old_state,
+-			       const struct drm_connector_state *new_state)
+-{
+-	struct drm_property_blob *old_blob = old_state->hdr_output_metadata;
+-	struct drm_property_blob *new_blob = new_state->hdr_output_metadata;
+-
+-	if (!old_blob || !new_blob)
+-		return old_blob == new_blob;
+-
+-	if (old_blob->length != new_blob->length)
+-		return false;
+-
+-	return !memcmp(old_blob->data, new_blob->data, old_blob->length);
+-}
+-
+ static int dw_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 					  struct drm_atomic_state *state)
+ {
+@@ -2431,7 +2416,7 @@ static int dw_hdmi_connector_atomic_chec
+ 	if (!crtc)
+ 		return 0;
+ 
+-	if (!hdr_metadata_equal(old_state, new_state)) {
++	if (!drm_connector_atomic_hdr_metadata_equal(old_state, new_state)) {
+ 		crtc_state = drm_atomic_get_crtc_state(state, crtc);
+ 		if (IS_ERR(crtc_state))
+ 			return PTR_ERR(crtc_state);
+--- a/drivers/gpu/drm/drm_connector.c
++++ b/drivers/gpu/drm/drm_connector.c
+@@ -2165,6 +2165,34 @@ int drm_connector_attach_hdr_output_meta
+ EXPORT_SYMBOL(drm_connector_attach_hdr_output_metadata_property);
+ 
+ /**
++ * drm_connector_atomic_hdr_metadata_equal - checks if the hdr metadata changed
++ * @old_state: old connector state to compare
++ * @new_state: new connector state to compare
++ *
++ * This is used by HDR-enabled drivers to test whether the HDR metadata
++ * have changed between two different connector state (and thus probably
++ * requires a full blown mode change).
++ *
++ * Returns:
++ * True if the metadata are equal, False otherwise
++ */
++bool drm_connector_atomic_hdr_metadata_equal(struct drm_connector_state *old_state,
++					     struct drm_connector_state *new_state)
++{
++	struct drm_property_blob *old_blob = old_state->hdr_output_metadata;
++	struct drm_property_blob *new_blob = new_state->hdr_output_metadata;
++
++	if (!old_blob || !new_blob)
++		return old_blob == new_blob;
++
++	if (old_blob->length != new_blob->length)
++		return false;
++
++	return !memcmp(old_blob->data, new_blob->data, old_blob->length);
++}
++EXPORT_SYMBOL(drm_connector_atomic_hdr_metadata_equal);
++
++/**
+  * drm_connector_set_vrr_capable_property - sets the variable refresh rate
+  * capable property for a connector
+  * @connector: drm connector
+--- a/drivers/gpu/drm/i915/display/intel_atomic.c
++++ b/drivers/gpu/drm/i915/display/intel_atomic.c
+@@ -109,16 +109,6 @@ int intel_digital_connector_atomic_set_p
+ 	return -EINVAL;
+ }
+ 
+-static bool blob_equal(const struct drm_property_blob *a,
+-		       const struct drm_property_blob *b)
+-{
+-	if (a && b)
+-		return a->length == b->length &&
+-			!memcmp(a->data, b->data, a->length);
+-
+-	return !a == !b;
+-}
+-
+ int intel_digital_connector_atomic_check(struct drm_connector *conn,
+ 					 struct drm_atomic_state *state)
+ {
+@@ -150,8 +140,7 @@ int intel_digital_connector_atomic_check
+ 	    new_conn_state->base.picture_aspect_ratio != old_conn_state->base.picture_aspect_ratio ||
+ 	    new_conn_state->base.content_type != old_conn_state->base.content_type ||
+ 	    new_conn_state->base.scaling_mode != old_conn_state->base.scaling_mode ||
+-	    !blob_equal(new_conn_state->base.hdr_output_metadata,
+-			old_conn_state->base.hdr_output_metadata))
++	    !drm_connector_atomic_hdr_metadata_equal(old_state, new_state))
+ 		crtc_state->mode_changed = true;
+ 
+ 	return 0;
+--- a/include/drm/drm_connector.h
++++ b/include/drm/drm_connector.h
+@@ -1623,6 +1623,8 @@ int drm_connector_attach_scaling_mode_pr
+ int drm_connector_attach_vrr_capable_property(
+ 		struct drm_connector *connector);
+ int drm_connector_attach_hdr_output_metadata_property(struct drm_connector *connector);
++bool drm_connector_atomic_hdr_metadata_equal(struct drm_connector_state *old_state,
++					     struct drm_connector_state *new_state);
+ int drm_mode_create_aspect_ratio_property(struct drm_device *dev);
+ int drm_mode_create_hdmi_colorspace_property(struct drm_connector *connector);
+ int drm_mode_create_dp_colorspace_property(struct drm_connector *connector);

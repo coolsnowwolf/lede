@@ -8,8 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=rssileds
-PKG_VERSION:=0.2
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICNESE:=GPL-2.0+
 
 include $(INCLUDE_DIR)/package.mk
@@ -19,7 +18,7 @@ define Package/rssileds
   CATEGORY:=Network
   TITLE:=RSSI real-time LED indicator
   DEPENDS:=+libiwinfo +libnl-tiny +libubox +libuci
-  MAINTAINER:=Daniel Golle <dgolle@allnet.de>
+  MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 endef
 
 define Package/rssileds/description
@@ -41,6 +40,8 @@ define Package/rssileds/install
 	$(INSTALL_BIN) ./files/rssileds.init $(1)/etc/init.d/rssileds
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/rssileds $(1)/usr/sbin/
+	$(INSTALL_DIR) $(1)/usr/libexec/led-trigger
+	$(INSTALL_BIN) ./files/rssi $(1)/usr/libexec/led-trigger/
 endef
 
 $(eval $(call BuildPackage,rssileds))

@@ -26,4 +26,7 @@ static inline int __init mtk_switch_init(void) { return 0; }
 static inline void mtk_switch_exit(void) { }
 
 #endif
+
+int rt3050_esw_init(struct fe_priv *priv);
+int rt3050_esw_has_carrier(struct fe_priv *priv);
 #endif

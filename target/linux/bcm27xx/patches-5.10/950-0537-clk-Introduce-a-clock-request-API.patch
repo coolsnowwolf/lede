@@ -1,0 +1,284 @@
+From d937a5c25139dd919d857a8e4a6491917b568176 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 13 Apr 2021 11:00:01 +0200
+Subject: [PATCH] clk: Introduce a clock request API
+
+It's not unusual to find clocks being shared across multiple devices
+that need to change the rate depending on what the device is doing at a
+given time.
+
+The SoC found on the RaspberryPi4 (BCM2711) is in such a situation
+between its two HDMI controllers that share a clock that needs to be
+raised depending on the output resolution of each controller.
+
+The current clk_set_rate API doesn't really allow to support that case
+since there's really no synchronisation between multiple users, it's
+essentially a fire-and-forget solution.
+
+clk_set_min_rate does allow for such a synchronisation, but has another
+drawback: it doesn't allow to reduce the clock rate once the work is
+over.
+
+In our previous example, this means that if we were to raise the
+resolution of one HDMI controller to the largest resolution and then
+changing for a smaller one, we would still have the clock running at the
+largest resolution rate resulting in a poor power-efficiency.
+
+In order to address both issues, let's create an API that allows user to
+create temporary requests to increase the rate to a minimum, before
+going back to the initial rate once the request is done.
+
+This introduces mainly two side-effects:
+
+  * There's an interaction between clk_set_rate and requests. This has
+    been addressed by having clk_set_rate increasing the rate if it's
+    greater than what the requests asked for, and in any case changing
+    the rate the clock will return to once all the requests are done.
+
+  * Similarly, clk_round_rate has been adjusted to take the requests
+    into account and return a rate that will be greater or equal to the
+    requested rates.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk.c   | 121 ++++++++++++++++++++++++++++++++++++++++++++
+ include/linux/clk.h |   4 ++
+ 2 files changed, 125 insertions(+)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -77,12 +77,14 @@ struct clk_core {
+ 	unsigned int		protect_count;
+ 	unsigned long		min_rate;
+ 	unsigned long		max_rate;
++	unsigned long		default_request_rate;
+ 	unsigned long		accuracy;
+ 	int			phase;
+ 	struct clk_duty		duty;
+ 	struct hlist_head	children;
+ 	struct hlist_node	child_node;
+ 	struct hlist_head	clks;
++	struct list_head	pending_requests;
+ 	unsigned int		notifier_count;
+ #ifdef CONFIG_DEBUG_FS
+ 	struct dentry		*dentry;
+@@ -105,6 +107,12 @@ struct clk {
+ 	struct hlist_node clks_node;
+ };
+ 
++struct clk_request {
++	struct list_head list;
++	struct clk *clk;
++	unsigned long rate;
++};
++
+ /***           runtime pm          ***/
+ static int clk_pm_runtime_get(struct clk_core *core)
+ {
+@@ -1431,10 +1439,14 @@ unsigned long clk_hw_round_rate(struct c
+ {
+ 	int ret;
+ 	struct clk_rate_request req;
++	struct clk_request *clk_req;
+ 
+ 	clk_core_get_boundaries(hw->core, &req.min_rate, &req.max_rate);
+ 	req.rate = rate;
+ 
++	list_for_each_entry(clk_req, &hw->core->pending_requests, list)
++		req.min_rate = max(clk_req->rate, req.min_rate);
++
+ 	ret = clk_core_round_rate_nolock(hw->core, &req);
+ 	if (ret)
+ 		return 0;
+@@ -1455,6 +1467,7 @@ EXPORT_SYMBOL_GPL(clk_hw_round_rate);
+ long clk_round_rate(struct clk *clk, unsigned long rate)
+ {
+ 	struct clk_rate_request req;
++	struct clk_request *clk_req;
+ 	int ret;
+ 
+ 	if (!clk)
+@@ -1468,6 +1481,9 @@ long clk_round_rate(struct clk *clk, uns
+ 	clk_core_get_boundaries(clk->core, &req.min_rate, &req.max_rate);
+ 	req.rate = rate;
+ 
++	list_for_each_entry(clk_req, &clk->core->pending_requests, list)
++		req.min_rate = max(clk_req->rate, req.min_rate);
++
+ 	ret = clk_core_round_rate_nolock(clk->core, &req);
+ 
+ 	if (clk->exclusive_count)
+@@ -1935,6 +1951,7 @@ static struct clk_core *clk_calc_new_rat
+ 	unsigned long new_rate;
+ 	unsigned long min_rate;
+ 	unsigned long max_rate;
++	struct clk_request *req;
+ 	int p_index = 0;
+ 	long ret;
+ 
+@@ -1949,6 +1966,9 @@ static struct clk_core *clk_calc_new_rat
+ 
+ 	clk_core_get_boundaries(core, &min_rate, &max_rate);
+ 
++	list_for_each_entry(req, &core->pending_requests, list)
++		min_rate = max(req->rate, min_rate);
++
+ 	/* find the closest rate and parent clk/rate */
+ 	if (clk_core_can_round(core)) {
+ 		struct clk_rate_request req;
+@@ -2153,6 +2173,7 @@ static unsigned long clk_core_req_round_
+ {
+ 	int ret, cnt;
+ 	struct clk_rate_request req;
++	struct clk_request *clk_req;
+ 
+ 	lockdep_assert_held(&prepare_lock);
+ 
+@@ -2167,6 +2188,9 @@ static unsigned long clk_core_req_round_
+ 	clk_core_get_boundaries(core, &req.min_rate, &req.max_rate);
+ 	req.rate = req_rate;
+ 
++	list_for_each_entry(clk_req, &core->pending_requests, list)
++		req.min_rate = max(clk_req->rate, req.min_rate);
++
+ 	ret = clk_core_round_rate_nolock(core, &req);
+ 
+ 	/* restore the protection */
+@@ -2260,6 +2284,9 @@ int clk_set_rate(struct clk *clk, unsign
+ 
+ 	ret = clk_core_set_rate_nolock(clk->core, rate);
+ 
++	if (!list_empty(&clk->core->pending_requests))
++		clk->core->default_request_rate = rate;
++
+ 	if (clk->exclusive_count)
+ 		clk_core_rate_protect(clk->core);
+ 
+@@ -2426,6 +2453,99 @@ int clk_set_max_rate(struct clk *clk, un
+ EXPORT_SYMBOL_GPL(clk_set_max_rate);
+ 
+ /**
++ * clk_request_start - Request a rate to be enforced temporarily
++ * @clk: the clk to act on
++ * @rate: the new rate asked for
++ *
++ * This function will create a request to temporarily increase the rate
++ * of the clock to a given rate to a certain minimum.
++ *
++ * This is meant as a best effort mechanism and while the rate of the
++ * clock will be guaranteed to be equal or higher than the requested
++ * rate, there's none on what the actual rate will be due to other
++ * factors (other requests previously set, clock boundaries, etc.).
++ *
++ * Once the request is marked as done through clk_request_done(), the
++ * rate will be reverted back to what the rate was before the request.
++ *
++ * The reported boundaries of the clock will also be adjusted so that
++ * clk_round_rate() take those requests into account. A call to
++ * clk_set_rate() during a request will affect the rate the clock will
++ * return to after the requests on that clock are done.
++ *
++ * Returns 0 on success, an ERR_PTR otherwise.
++ */
++struct clk_request *clk_request_start(struct clk *clk, unsigned long rate)
++{
++	struct clk_request *req;
++	int ret;
++
++	if (!clk)
++		return ERR_PTR(-EINVAL);
++
++	req = kzalloc(sizeof(*req), GFP_KERNEL);
++	if (!req)
++		return ERR_PTR(-ENOMEM);
++
++	clk_prepare_lock();
++
++	req->clk = clk;
++	req->rate = rate;
++
++	if (list_empty(&clk->core->pending_requests))
++		clk->core->default_request_rate = clk_core_get_rate_recalc(clk->core);
++
++	ret = clk_core_set_rate_nolock(clk->core, rate);
++	if (ret) {
++		clk_prepare_unlock();
++		kfree(req);
++		return ERR_PTR(ret);
++	}
++
++	list_add_tail(&req->list, &clk->core->pending_requests);
++	clk_prepare_unlock();
++
++	return req;
++}
++EXPORT_SYMBOL_GPL(clk_request_start);
++
++/**
++ * clk_request_done - Mark a clk_request as done
++ * @req: the request to mark done
++ *
++ * This function will remove the rate request from the clock and adjust
++ * the clock rate back to either to what it was before the request
++ * started, or if there's any other request on that clock to a proper
++ * rate for them.
++ */
++void clk_request_done(struct clk_request *req)
++{
++	struct clk_core *core = req->clk->core;
++
++	clk_prepare_lock();
++
++	list_del(&req->list);
++
++	if (list_empty(&core->pending_requests)) {
++		clk_core_set_rate_nolock(core, core->default_request_rate);
++		core->default_request_rate = 0;
++	} else {
++		struct clk_request *cur_req;
++		unsigned long new_rate = 0;
++
++		list_for_each_entry(cur_req, &core->pending_requests, list)
++			new_rate = max(new_rate, cur_req->rate);
++
++		clk_core_set_rate_nolock(core, new_rate);
++	}
++
++	clk_prepare_unlock();
++
++	kfree(req);
++}
++EXPORT_SYMBOL_GPL(clk_request_done);
++
++/**
+  * clk_get_parent - return the parent of a clk
+  * @clk: the clk whose parent gets returned
+  *
+@@ -3875,6 +3995,7 @@ __clk_register(struct device *dev, struc
+ 		goto fail_parents;
+ 
+ 	INIT_HLIST_HEAD(&core->clks);
++	INIT_LIST_HEAD(&core->pending_requests);
+ 
+ 	/*
+ 	 * Don't call clk_hw_create_clk() here because that would pin the
+--- a/include/linux/clk.h
++++ b/include/linux/clk.h
+@@ -15,6 +15,7 @@
+ 
+ struct device;
+ struct clk;
++struct clk_request;
+ struct device_node;
+ struct of_phandle_args;
+ 
+@@ -743,6 +744,9 @@ int clk_save_context(void);
+  */
+ void clk_restore_context(void);
+ 
++struct clk_request *clk_request_start(struct clk *clk, unsigned long rate);
++void clk_request_done(struct clk_request *req);
++
+ #else /* !CONFIG_HAVE_CLK */
+ 
+ static inline struct clk *clk_get(struct device *dev, const char *id)

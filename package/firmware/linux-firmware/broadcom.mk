@@ -34,24 +34,6 @@ define Package/brcmfmac-firmware-4329-sdio/install
 endef
 $(eval $(call BuildPackage,brcmfmac-firmware-4329-sdio))
 
-Package/brcmfmac-firmware-43362-sdio = $(call Package/firmware-default,Broadcom BCM43362 FullMac SDIO firmware)
-define Package/brcmfmac-firmware-43362-sdio/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/brcm/brcmfmac43362-sdio.bin \
-		$(1)/lib/firmware/brcm/brcmfmac43362-sdio.bin
-endef
-$(eval $(call BuildPackage,brcmfmac-firmware-43362-sdio))
-
-Package/brcmfmac-firmware-43430-sdio = $(call Package/firmware-default,Broadcom BCM43430 FullMac SDIO firmware)
-define Package/brcmfmac-firmware-43430-sdio/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/brcm/brcmfmac43430-sdio.bin \
-		$(1)/lib/firmware/brcm/brcmfmac43430-sdio.bin
-endef
-$(eval $(call BuildPackage,brcmfmac-firmware-43430-sdio))
-
 Package/brcmfmac-firmware-43430-sdio-rpi-3b = $(call Package/firmware-default,Broadcom BCM43430 NVRAM for Raspberry Pi 3B)
 define Package/brcmfmac-firmware-43430-sdio-rpi-3b/install
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
@@ -79,15 +61,6 @@ define Package/brcmfmac-firmware-43430a0-sdio/install
 endef
 $(eval $(call BuildPackage,brcmfmac-firmware-43430a0-sdio))
 
-Package/brcmfmac-firmware-43455-sdio = $(call Package/firmware-default,Broadcom BCM43455 FullMac SDIO firmware)
-define Package/brcmfmac-firmware-43455-sdio/install
-	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/brcm/brcmfmac43455-sdio.bin \
-		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.bin
-endef
-$(eval $(call BuildPackage,brcmfmac-firmware-43455-sdio))
-
 Package/brcmfmac-firmware-43455-sdio-rpi-3b-plus = $(call Package/firmware-default,Broadcom BCM43455 NVRAM for Raspberry Pi 3B+)
 define Package/brcmfmac-firmware-43455-sdio-rpi-3b-plus/install
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
@@ -101,9 +74,7 @@ Package/brcmfmac-firmware-43455-sdio-rpi-4b = $(call Package/firmware-default,Br
 define Package/brcmfmac-firmware-43455-sdio-rpi-4b/install
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/brcm/brcmfmac43455-sdio.raspberrypi,3-model-b-plus.txt \
-		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
-	$(SED) 's/boardflags3=.*/boardflags3=0x44200100/g' \
+		$(PKG_BUILD_DIR)/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43455-sdio.raspberrypi,4-model-b.txt
 endef
 $(eval $(call BuildPackage,brcmfmac-firmware-43455-sdio-rpi-4b))

@@ -1,0 +1,108 @@
+From c329e5afb42ff0a88285eb4d8a391a18793e4777 Mon Sep 17 00:00:00 2001
+From: David Bauer <mail@david-bauer.net>
+Date: Thu, 15 Apr 2021 03:26:50 +0200
+Subject: [PATCH] net: phy: at803x: select correct page on config init
+
+The Atheros AR8031 and AR8033 expose different registers for SGMII/Fiber
+as well as the copper side of the PHY depending on the BT_BX_REG_SEL bit
+in the chip configure register.
+
+The driver assumes the copper side is selected on probe, but this might
+not be the case depending which page was last selected by the
+bootloader. Notably, Ubiquiti UniFi bootloaders show this behavior.
+
+Select the copper page when probing to circumvent this.
+
+Signed-off-by: David Bauer <mail@david-bauer.net>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/at803x.c | 50 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 49 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -139,6 +139,9 @@
+ #define ATH8035_PHY_ID 0x004dd072
+ #define AT8030_PHY_ID_MASK			0xffffffef
+ 
++#define AT803X_PAGE_FIBER		0
++#define AT803X_PAGE_COPPER		1
++
+ MODULE_DESCRIPTION("Qualcomm Atheros AR803x PHY driver");
+ MODULE_AUTHOR("Matus Ujhelyi");
+ MODULE_LICENSE("GPL");
+@@ -190,6 +193,35 @@ static int at803x_debug_reg_mask(struct
+ 	return phy_write(phydev, AT803X_DEBUG_DATA, val);
+ }
+ 
++static int at803x_write_page(struct phy_device *phydev, int page)
++{
++	int mask;
++	int set;
++
++	if (page == AT803X_PAGE_COPPER) {
++		set = AT803X_BT_BX_REG_SEL;
++		mask = 0;
++	} else {
++		set = 0;
++		mask = AT803X_BT_BX_REG_SEL;
++	}
++
++	return __phy_modify(phydev, AT803X_REG_CHIP_CONFIG, mask, set);
++}
++
++static int at803x_read_page(struct phy_device *phydev)
++{
++	int ccr = __phy_read(phydev, AT803X_REG_CHIP_CONFIG);
++
++	if (ccr < 0)
++		return ccr;
++
++	if (ccr & AT803X_BT_BX_REG_SEL)
++		return AT803X_PAGE_COPPER;
++
++	return AT803X_PAGE_FIBER;
++}
++
+ static int at803x_enable_rx_delay(struct phy_device *phydev)
+ {
+ 	return at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0, 0,
+@@ -508,6 +540,7 @@ static int at803x_probe(struct phy_devic
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct at803x_priv *priv;
++	int ret;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+@@ -515,7 +548,20 @@ static int at803x_probe(struct phy_devic
+ 
+ 	phydev->priv = priv;
+ 
+-	return at803x_parse_dt(phydev);
++	ret = at803x_parse_dt(phydev);
++	if (ret)
++		return ret;
++
++	/* Some bootloaders leave the fiber page selected.
++	 * Switch to the copper page, as otherwise we read
++	 * the PHY capabilities from the fiber side.
++	 */
++	if (at803x_match_phy_id(phydev, ATH8031_PHY_ID)) {
++		ret = phy_select_page(phydev, AT803X_PAGE_COPPER);
++		ret = phy_restore_page(phydev, AT803X_PAGE_COPPER, ret);
++	}
++
++	return ret;
+ }
+ 
+ static void at803x_remove(struct phy_device *phydev)
+@@ -1097,6 +1143,8 @@ static struct phy_driver at803x_driver[]
+ 	.get_wol		= at803x_get_wol,
+ 	.suspend		= at803x_suspend,
+ 	.resume			= at803x_resume,
++	.read_page		= at803x_read_page,
++	.write_page		= at803x_write_page,
+ 	/* PHY_GBIT_FEATURES */
+ 	.read_status		= at803x_read_status,
+ 	.aneg_done		= at803x_aneg_done,

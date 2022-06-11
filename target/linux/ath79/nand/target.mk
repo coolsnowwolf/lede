@@ -1,6 +1,6 @@
 BOARDNAME := Generic devices with NAND flash
 
-FEATURES += squashfs nand
+FEATURES += nand
 
 DEFAULT_PACKAGES += wpad-basic-wolfssl
 

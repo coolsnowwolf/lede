@@ -5,7 +5,8 @@
 [ -z "$password" ] && write_log 14 "Configuration error! [Password] cannot be empty"
 
 #检查外部调用工具
-[ -n "$WGET_SSL" ] || write_log 13 "GNU Wget support is required to use Alibaba Cloud API. Please install first"
+WGET_SSL='wget'
+[ -n "$WGET_SSL" ] || write_log 13 "GNU Wget support is required to use dnspod API. Please install first"
 
 # 变量声明
 local __URLBASE __HOST __DOMAIN __TYPE __CMDBASE __POST __POST1 __RECIP __RECID __value __TTL
@@ -114,7 +115,7 @@ update_domain() {
 #获取域名解析记录
 describe_domain() {
 	ret=0
-	__POST="login_token=$username,$password&format=json&domain=$__DOMAIN&sub_domain=$__HOST"
+	__POST="login_token=$username,$password&format=json&domain=$__DOMAIN&sub_domain=$__HOST&record_type=$__TYPE"
 	__POST1="$__POST&value=$__IP&record_type=$__TYPE&record_line_id=0"
 	dnspod_transfer 0
 	__TMP=`jsonfilter -i $DATFILE -e "@.records[@.type!='NS']"`

@@ -1,0 +1,42 @@
+From 66ca4b2544dbd4f10d8f387782f5c7200d1e2167 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Wed, 29 Jan 2020 09:35:19 +0000
+Subject: [PATCH] tty: amba-pl011: Avoid rare write-when-full error
+
+Under some circumstances on BCM283x processors data loss can be
+observed - a single byte missing from the TX output stream. These bytes
+are always the last byte of a batch of 8 written from pl011_tx_chars
+when from_irq is true, meaning that the FIFO full flag is not checked
+before writing.
+
+The transmit optimisation relies on the FIFO being half-empty when the
+TX interrupt is raised. Instrumenting the driver further showed that
+the failure case correlated with the TX FIFO full flag being set at the
+point where the last byte was written to the data register, which
+explains the data loss but not how the FIFO appeared to be prematurely
+full. A possible explanation is that a FIFO write was in flight at the
+time the interrupt was raised, but as yet there is no hypothesis as to
+how this might occur.
+
+In the absence of a clear understanding of the failure mechanism, avoid
+the problem by checking the FIFO levels before writing the last byte of
+the group, which will have minimal performance impact.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/tty/serial/amba-pl011.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+--- a/drivers/tty/serial/amba-pl011.c
++++ b/drivers/tty/serial/amba-pl011.c
+@@ -1447,6 +1447,10 @@ static bool pl011_tx_chars(struct uart_a
+ 		if (likely(from_irq) && count-- == 0)
+ 			break;
+ 
++		if (likely(from_irq) && count == 0 &&
++		    pl011_read(uap, REG_FR) & UART01x_FR_TXFF)
++			break;
++
+ 		if (!pl011_tx_char(uap, xmit->buf[xmit->tail], from_irq))
+ 			break;
+ 

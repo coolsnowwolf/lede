@@ -124,16 +124,18 @@ $(eval $(call KernelPackage,lib-lzo))
 define KernelPackage/lib-zstd
   SUBMENU:=$(LIB_MENU)
   TITLE:=ZSTD support
+  DEPENDS:=+kmod-crypto-acompress
   KCONFIG:= \
+	CONFIG_CRYPTO_ZSTD \
 	CONFIG_ZSTD_COMPRESS \
 	CONFIG_ZSTD_DECOMPRESS \
 	CONFIG_XXHASH
-  HIDDEN:=1
   FILES:= \
+	$(LINUX_DIR)/crypto/zstd.ko \
 	$(LINUX_DIR)/lib/xxhash.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_compress.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_decompress.ko
-  AUTOLOAD:=$(call AutoProbe,xxhash zstd_compress zstd_decompress)
+  AUTOLOAD:=$(call AutoProbe,xxhash zstd zstd_compress zstd_decompress)
 endef
 
 define KernelPackage/lib-zstd/description
@@ -250,8 +252,7 @@ define KernelPackage/lib-cordic
   SUBMENU:=$(LIB_MENU)
   TITLE:=Cordic function support
   KCONFIG:=CONFIG_CORDIC
-  FILES:=$(LINUX_DIR)/lib/cordic.ko@lt5.2 \
-	  $(LINUX_DIR)/lib/math/cordic.ko@ge5.2
+  FILES:=$(LINUX_DIR)/lib/math/cordic.ko
   AUTOLOAD:=$(call AutoProbe,cordic)
 endef
 
@@ -271,3 +272,25 @@ define KernelPackage/asn1-decoder
 endef
 
 $(eval $(call KernelPackage,asn1-decoder))
+
+
+define KernelPackage/asn1-encoder
+  SUBMENU:=$(LIB_MENU)
+  TITLE:=Simple ASN1 encoder
+  KCONFIG:= CONFIG_ASN1_ENCODER
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/lib/asn1_encoder.ko
+endef
+
+$(eval $(call KernelPackage,asn1-encoder))
+
+
+define KernelPackage/oid-registry
+  SUBMENU:=$(LIB_MENU)
+  TITLE:=Object identifier registry
+  KCONFIG:= CONFIG_OID_REGISTRY
+  FILES:=$(LINUX_DIR)/lib/oid_registry.ko
+  AUTOLOAD:=$(call AutoLoad,31,oid_registry)
+endef
+
+$(eval $(call KernelPackage,oid-registry))

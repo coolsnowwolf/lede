@@ -1,9 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Copyright (C) 2010 OpenWrt.org
-#
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
-#
+
 include $(TOPDIR)/rules.mk
 
 ARCH:=powerpc
@@ -14,6 +12,7 @@ FEATURES:=squashfs ramdisk
 SUBTARGETS:=p1010 p1020 p2020
 
 KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=5.10
 
 KERNELNAME:=zImage
 

@@ -1048,14 +1048,9 @@ static int adm6996_config_init(struct phy_device *pdev)
 	struct adm6996_priv *priv;
 	int ret;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 	linkmode_zero(pdev->supported);
 	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, pdev->supported);
 	linkmode_copy(pdev->advertising, pdev->supported);
-#else
-	pdev->supported = ADVERTISED_100baseT_Full;
-	pdev->advertising = ADVERTISED_100baseT_Full;
-#endif
 
 	if (pdev->mdio.addr != 0) {
 		pr_info ("%s: PHY overlaps ADM6996, providing fixed PHY 0x%x.\n"

@@ -112,6 +112,7 @@ proto_wireguard_setup() {
 	config_get fwmark "${config}" "fwmark"
 	config_get ip6prefix "${config}" "ip6prefix"
 	config_get nohostroute "${config}" "nohostroute"
+	config_get tunlink "${config}" "tunlink"
 
 	ip link del dev "${config}" 2>/dev/null
 	ip link add dev "${config}" type wireguard
@@ -173,7 +174,7 @@ proto_wireguard_setup() {
 		sed -E 's/\[?([0-9.:a-f]+)\]?:([0-9]+)/\1 \2/' | \
 		while IFS=$'\t ' read -r key address port; do
 			[ -n "${port}" ] || continue
-			proto_add_host_dependency "${config}" "${address}"
+			proto_add_host_dependency "${config}" "${address}" "${tunlink}"
 		done
 	fi
 

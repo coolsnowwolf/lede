@@ -13,6 +13,6 @@ iNIC_ap.dat
 	For configuration of 1st 7615 chip. Refer to /etc/wireless/l1profile.dat,
         it should be generated at /etc/Wireless/iNIC/iNIC_ap.dat due to INDEX1_profile_path.
 
-mt7615_3.da
+mt7615_3.dat
 	For configuration of 2nd 7615 chip. Refer to /etc/wireless/l1profile.dat,
         it should be generated at /etc/wireless/mt7615/mt7615_3.dat due to INDEX2_profile_path.

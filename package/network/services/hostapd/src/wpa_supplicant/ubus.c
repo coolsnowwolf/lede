@@ -264,6 +264,10 @@ wpas_config_add(struct ubus_context *ctx, struct ubus_object *obj,
 	if (!wpa_supplicant_add_iface(global, iface, NULL))
 		return UBUS_STATUS_INVALID_ARGUMENT;
 
+	blob_buf_init(&b, 0);
+	blobmsg_add_u32(&b, "pid", getpid());
+	ubus_send_reply(ctx, req, b.head);
+
 	return UBUS_STATUS_OK;
 }
 

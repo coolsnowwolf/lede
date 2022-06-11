@@ -1,0 +1,159 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Sun, 28 Mar 2021 23:08:55 +0200
+Subject: [PATCH] netfilter: flowtable: dst_check() from garbage collector path
+
+Move dst_check() to the garbage collector path. Stale routes trigger the
+flow entry teardown state which makes affected flows go back to the
+classic forwarding path to re-evaluate flow offloading.
+
+IPv6 requires the dst cookie to work, store it in the flow_tuple,
+otherwise dst_check() always fails.
+
+Fixes: e5075c0badaa ("netfilter: flowtable: call dst_check() to fall back to classic forwarding")
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -129,7 +129,10 @@ struct flow_offload_tuple {
+ 					in_vlan_ingress:2;
+ 	u16				mtu;
+ 	union {
+-		struct dst_entry	*dst_cache;
++		struct {
++			struct dst_entry *dst_cache;
++			u32		dst_cookie;
++		};
+ 		struct {
+ 			u32		ifidx;
+ 			u32		hw_ifidx;
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -74,6 +74,18 @@ err_ct_refcnt:
+ }
+ EXPORT_SYMBOL_GPL(flow_offload_alloc);
+ 
++static u32 flow_offload_dst_cookie(struct flow_offload_tuple *flow_tuple)
++{
++	const struct rt6_info *rt;
++
++	if (flow_tuple->l3proto == NFPROTO_IPV6) {
++		rt = (const struct rt6_info *)flow_tuple->dst_cache;
++		return rt6_get_cookie(rt);
++	}
++
++	return 0;
++}
++
+ static int flow_offload_fill_route(struct flow_offload *flow,
+ 				   const struct nf_flow_route *route,
+ 				   enum flow_offload_tuple_dir dir)
+@@ -116,6 +128,7 @@ static int flow_offload_fill_route(struc
+ 			return -1;
+ 
+ 		flow_tuple->dst_cache = dst;
++		flow_tuple->dst_cookie = flow_offload_dst_cookie(flow_tuple);
+ 		break;
+ 	}
+ 	flow_tuple->xmit_type = route->tuple[dir].xmit_type;
+@@ -389,11 +402,33 @@ nf_flow_table_iterate(struct nf_flowtabl
+ 	return err;
+ }
+ 
++static bool flow_offload_stale_dst(struct flow_offload_tuple *tuple)
++{
++	struct dst_entry *dst;
++
++	if (tuple->xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
++	    tuple->xmit_type == FLOW_OFFLOAD_XMIT_XFRM) {
++		dst = tuple->dst_cache;
++		if (!dst_check(dst, tuple->dst_cookie))
++			return true;
++	}
++
++	return false;
++}
++
++static bool nf_flow_has_stale_dst(struct flow_offload *flow)
++{
++	return flow_offload_stale_dst(&flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple) ||
++	       flow_offload_stale_dst(&flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple);
++}
++
+ static void nf_flow_offload_gc_step(struct flow_offload *flow, void *data)
+ {
+ 	struct nf_flowtable *flow_table = data;
+ 
+-	if (nf_flow_has_expired(flow) || nf_ct_is_dying(flow->ct))
++	if (nf_flow_has_expired(flow) ||
++	    nf_ct_is_dying(flow->ct) ||
++	    nf_flow_has_stale_dst(flow))
+ 		set_bit(NF_FLOW_TEARDOWN, &flow->flags);
+ 
+ 	if (test_bit(NF_FLOW_TEARDOWN, &flow->flags)) {
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -364,15 +364,6 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 	if (nf_flow_state_check(flow, iph->protocol, skb, thoff))
+ 		return NF_ACCEPT;
+ 
+-	if (tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
+-	    tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM) {
+-		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+-		if (!dst_check(&rt->dst, 0)) {
+-			flow_offload_teardown(flow);
+-			return NF_ACCEPT;
+-		}
+-	}
+-
+ 	if (skb_try_make_writable(skb, thoff + hdrsize))
+ 		return NF_DROP;
+ 
+@@ -391,6 +382,7 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
+ 
+ 	if (unlikely(tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
++		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+ 		memset(skb->cb, 0, sizeof(struct inet_skb_parm));
+ 		IPCB(skb)->iif = skb->dev->ifindex;
+ 		IPCB(skb)->flags = IPSKB_FORWARDED;
+@@ -399,6 +391,7 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 
+ 	switch (tuplehash->tuple.xmit_type) {
+ 	case FLOW_OFFLOAD_XMIT_NEIGH:
++		rt = (struct rtable *)tuplehash->tuple.dst_cache;
+ 		outdev = rt->dst.dev;
+ 		skb->dev = outdev;
+ 		nexthop = rt_nexthop(rt, flow->tuplehash[!dir].tuple.src_v4.s_addr);
+@@ -607,15 +600,6 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 	if (nf_flow_state_check(flow, ip6h->nexthdr, skb, thoff))
+ 		return NF_ACCEPT;
+ 
+-	if (tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
+-	    tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM) {
+-		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+-		if (!dst_check(&rt->dst, 0)) {
+-			flow_offload_teardown(flow);
+-			return NF_ACCEPT;
+-		}
+-	}
+-
+ 	if (skb_try_make_writable(skb, thoff + hdrsize))
+ 		return NF_DROP;
+ 
+@@ -633,6 +617,7 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
+ 
+ 	if (unlikely(tuplehash->tuple.xmit_type == FLOW_OFFLOAD_XMIT_XFRM)) {
++		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+ 		memset(skb->cb, 0, sizeof(struct inet6_skb_parm));
+ 		IP6CB(skb)->iif = skb->dev->ifindex;
+ 		IP6CB(skb)->flags = IP6SKB_FORWARDED;
+@@ -641,6 +626,7 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 
+ 	switch (tuplehash->tuple.xmit_type) {
+ 	case FLOW_OFFLOAD_XMIT_NEIGH:
++		rt = (struct rt6_info *)tuplehash->tuple.dst_cache;
+ 		outdev = rt->dst.dev;
+ 		skb->dev = outdev;
+ 		nexthop = rt6_nexthop(rt, &flow->tuplehash[!dir].tuple.src_v6);

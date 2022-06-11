@@ -1,0 +1,142 @@
+This adds a bwmode debugfs file which can be used to set alternate
+channel operating bandwidths.  Only tested with AR5413 and only at
+5 and 20 mhz channels.
+
+Signed-off-by: Pat Erley <pat-lkml at erley.org>
+---
+Other devices will need to be added to the switch in  write_file_bwmode
+
+drivers/net/wireless/ath/ath5k/debug.c |   86 ++++++++++++++++++++++++++++++++
+ 1 files changed, 86 insertions(+), 0 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath5k/debug.c
++++ b/drivers/net/wireless/ath/ath5k/debug.c
+@@ -803,6 +803,97 @@ static const struct file_operations fops
+ 	.llseek = default_llseek,
+ };
+ 
++/* debugfs: bwmode */
++
++static ssize_t read_file_bwmode(struct file *file, char __user *user_buf,
++				   size_t count, loff_t *ppos)
++{
++	struct ath5k_hw *ah = file->private_data;
++	char buf[15];
++	unsigned int len = 0;
++
++	int cur_ah_bwmode = ah->ah_bwmode_debug;
++
++#define print_selected(MODE, LABEL) \
++	if (cur_ah_bwmode == MODE) \
++		len += snprintf(buf+len, sizeof(buf)-len, "[%s]", LABEL); \
++	else \
++		len += snprintf(buf+len, sizeof(buf)-len, "%s", LABEL); \
++	len += snprintf(buf+len, sizeof(buf)-len, " ");
++
++	print_selected(AR5K_BWMODE_5MHZ, "5");
++	print_selected(AR5K_BWMODE_10MHZ, "10");
++	print_selected(AR5K_BWMODE_DEFAULT, "20");
++	print_selected(AR5K_BWMODE_40MHZ, "40");
++#undef print_selected
++
++	len += snprintf(buf+len, sizeof(buf)-len, "\n");
++
++	return simple_read_from_buffer(user_buf, count, ppos, buf, len);
++}
++
++static ssize_t write_file_bwmode(struct file *file,
++				 const char __user *userbuf,
++				 size_t count, loff_t *ppos)
++{
++	struct ath5k_hw *ah = file->private_data;
++	char buf[3];
++	int bw = 20;
++	int tobwmode = AR5K_BWMODE_DEFAULT;
++
++	if (copy_from_user(buf, userbuf, min(count, sizeof(buf))))
++		return -EFAULT;
++
++	/* TODO: Add check for active interface */
++
++	if(strncmp(buf, "5", 1) == 0 ) {
++		tobwmode = AR5K_BWMODE_5MHZ;
++		bw = 5;
++	} else if ( strncmp(buf, "10", 2) == 0 ) {
++		tobwmode = AR5K_BWMODE_10MHZ;
++		bw = 10;
++	} else if ( strncmp(buf, "20", 2) == 0 ) {
++		tobwmode = AR5K_BWMODE_DEFAULT;
++		bw = 20;
++	} else if ( strncmp(buf, "40", 2) == 0 ) {
++		tobwmode = AR5K_BWMODE_40MHZ;
++		bw = 40;
++	} else
++		return -EINVAL;
++
++	ATH5K_INFO(ah, "Changing to %imhz channel width[%i]\n",
++		bw, tobwmode);
++
++	switch (ah->ah_radio) {
++	/* TODO: only define radios that actually support 5/10mhz channels */
++	case AR5K_RF5413:
++	case AR5K_RF5110:
++	case AR5K_RF5111:
++	case AR5K_RF5112:
++	case AR5K_RF2413:
++	case AR5K_RF2316:
++	case AR5K_RF2317:
++	case AR5K_RF2425:
++		if(ah->ah_bwmode_debug != tobwmode) {
++			mutex_lock(&ah->lock);
++			ah->ah_bwmode = tobwmode;
++			ah->ah_bwmode_debug = tobwmode;
++			mutex_unlock(&ah->lock);
++		}
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++	return count;
++}
++
++static const struct file_operations fops_bwmode = {
++	.read = read_file_bwmode,
++	.write = write_file_bwmode,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
+ 
+ /* debugfs: queues etc */
+ 
+@@ -997,6 +1088,8 @@ ath5k_debug_init_device(struct ath5k_hw
+ 	debugfs_create_file("queue", 0600, phydir, ah, &fops_queue);
+ 	debugfs_create_bool("32khz_clock", 0600, phydir,
+ 			    &ah->ah_use_32khz_clock);
++	debugfs_create_file("bwmode", S_IWUSR | S_IRUSR, phydir, ah,
++			    &fops_bwmode);
+ }
+ 
+ /* functions used in other places */
+--- a/drivers/net/wireless/ath/ath5k/ath5k.h
++++ b/drivers/net/wireless/ath/ath5k/ath5k.h
+@@ -1372,6 +1372,7 @@ struct ath5k_hw {
+ 	u8			ah_coverage_class;
+ 	bool			ah_ack_bitrate_high;
+ 	u8			ah_bwmode;
++	u8			ah_bwmode_debug;
+ 	bool			ah_short_slot;
+ 
+ 	/* Antenna Control */
+--- a/drivers/net/wireless/ath/ath5k/base.c
++++ b/drivers/net/wireless/ath/ath5k/base.c
+@@ -465,6 +465,9 @@ ath5k_chan_set(struct ath5k_hw *ah, stru
+ 		return -EINVAL;
+ 	}
+ 
++	if (ah->ah_bwmode_debug != AR5K_BWMODE_DEFAULT)
++		ah->ah_bwmode = ah->ah_bwmode_debug;
++
+ 	/*
+ 	 * To switch channels clear any pending DMA operations;
+ 	 * wait long enough for the RX fifo to drain, reset the

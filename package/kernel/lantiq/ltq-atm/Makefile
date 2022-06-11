@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ltq-atm
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 PKG_LICENSE:=GPL-2.0+
@@ -36,7 +36,7 @@ endef
 define Build/Compile
 	cd $(LINUX_DIR); \
 		ARCH=mips CROSS_COMPILE="$(KERNEL_CROSS)" \
-		$(MAKE) BUILD_VARIANT=$(BUILD_VARIANT) M=$(PKG_BUILD_DIR) V=1 modules
+		$(MAKE) $(KERNEL_MAKE_FLAGS) BUILD_VARIANT=$(BUILD_VARIANT) M=$(PKG_BUILD_DIR) V=1 modules
 endef
 
 $(eval $(call KernelPackage,ltq-atm-danube))

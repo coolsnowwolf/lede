@@ -1,5 +1,5 @@
 /*
- * patch-cmdline.c - patch the kernel command line on rb532
+ * patch-cmdline.c - patch the kernel command line
  *
  * Copyright (C) 2006 Felix Fietkau <nbd@nbd.name>
  *

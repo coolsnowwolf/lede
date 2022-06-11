@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2020.10-rc4
+PKG_VERSION:=2021.01
 PKG_RELEASE:=1
 
-PKG_HASH:=0a7bdd2c7df2c14daf2730fcf3277fd917aadfaae935529e29c7412314bbf260
+PKG_HASH:=b407e1510a74e863b8b5cb42a24625344f0e0c2fc7582d8c866bd899367d0454
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -38,22 +38,12 @@ endef
 
 define U-Boot/espressobin
   NAME:=Marvell ESPRESSObin
-  BUILD_DEVICES:=globalscale_espressobin globalscale_espressobin-v7
   BUILD_SUBTARGET:=cortexa53
   UBOOT_CONFIG:=mvebu_espressobin-88f3720
-endef
-
-define U-Boot/espressobin-emmc
-  NAME:=Marvell ESPRESSObin
-  BUILD_DEVICES:=globalscale_espressobin-emmc globalscale_espressobin-v7-emmc
-  BUILD_SUBTARGET:=cortexa53
-  UBOOT_CONFIG:=mvebu_espressobin-88f3720
-  UBOOT_MAKE_FLAGS+=DEVICE_TREE=armada-3720-espressobin-emmc
 endef
 
 define U-Boot/uDPU
   NAME:=Methode uDPU
-  BUILD_DEVICES:=methode_udpu
   BUILD_SUBTARGET:=cortexa53
 endef
 
@@ -61,17 +51,19 @@ UBOOT_TARGETS:= \
 	clearfog \
 	helios4 \
 	espressobin \
-	espressobin-emmc \
 	uDPU
 
 Build/Exports:=$(Host/Exports)
 
 define Build/Configure
 	# enable additional options beyond <device>_defconfig
-	echo CONFIG_NET_RANDOM_ETHADDR=y >> $(PKG_BUILD_DIR)/configs/$(UBOOT_CONFIG)_defconfig
 	echo CONFIG_CMD_SETEXPR=y >> $(PKG_BUILD_DIR)/configs/$(UBOOT_CONFIG)_defconfig
 
 	$(call Build/Configure/U-Boot)
+endef
+
+define Package/u-boot/install
+	$(if $(findstring cortexa53,$(BUILD_SUBTARGET)),,$(Package/u-boot/install/default))
 endef
 
 define Build/InstallDev

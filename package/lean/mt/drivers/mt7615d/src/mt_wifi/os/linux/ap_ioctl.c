@@ -32,6 +32,22 @@
 #include <linux/wireless.h>
 #include "rtmp_def.h"
 
+static const UCHAR Cfg80211_Chan[] = {
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, //14
+
+	/* 802.11 UNI / HyperLan 2 */
+	36, 40, 44, 48, 52, 56, 60, 64, //8
+
+	/* 802.11 HyperLan 2 */
+	100, 104, 108, 112, 116, 120, 124, 128, 132, 136, //10
+
+	/* 802.11 UNII */
+	140, 144, 149, 153, 157, 161, 165, 169, 173, //9
+
+	/* Japan */
+	184, 188, 192, 196, 208, 212, 216, //7
+};
+
 struct iw_priv_args ap_privtab[] = {
 	{
 		RTPRIV_IOCTL_SET,
@@ -47,7 +63,7 @@ struct iw_priv_args ap_privtab[] = {
 	},
 	{
 		RTPRIV_IOCTL_GSITESURVEY,
-		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
+		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | IW_PRIV_SIZE_MASK,
 		"get_site_survey"
 	},
 	{
@@ -67,7 +83,7 @@ struct iw_priv_args ap_privtab[] = {
 	},
 	{
 		RTPRIV_IOCTL_E2P,
-		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | 1024,
+		IW_PRIV_TYPE_CHAR | 1024, IW_PRIV_TYPE_CHAR | IW_PRIV_SIZE_MASK,
 		"e2p"
 	},
 #if defined(DBG) || (defined(BB_SOC) && defined(CONFIG_ATE))
@@ -131,6 +147,44 @@ const struct iw_handler_def rt28xx_ap_iw_handler_def = {
 };
 #endif /* CONFIG_APSTA_MIXED_SUPPORT */
 
+static int rtw_ch2freq(int chan)
+{
+	/* see 802.11 17.3.8.3.2 and Annex J
+	* there are overlapping channel numbers in 5GHz and 2GHz bands */
+
+	/*
+	* RTK: don't consider the overlapping channel numbers: 5G channel <= 14,
+	* because we don't support it. simply judge from channel number
+	*/
+
+	if (chan >= 1 && chan <= 14) {
+		if (chan == 14)
+			return 2484;
+		else if (chan < 14)
+			return 2407 + chan * 5;
+	} else if (chan >= 36 && chan <= 177)
+		return 5000 + chan * 5;
+
+	return 0; /* not supported */
+}
+
+static void setChans(struct iw_range *prange) {
+	/* channels */
+	int i;
+	int NumOfChan = CFG80211_NUM_OF_CHAN_2GHZ + CFG80211_NUM_OF_CHAN_5GHZ;
+	if (NumOfChan > 32) {
+		// iw_range::freq cannot exceed 32 items 
+		NumOfChan = 32;
+	}
+	for (i = 0; i < NumOfChan; i++) {
+		prange->freq[i].i = Cfg80211_Chan[i];
+		prange->freq[i].e = 6;
+		prange->freq[i].m = rtw_ch2freq(Cfg80211_Chan[i]);
+	}
+	prange->num_channels = NumOfChan;
+	prange->num_frequency = NumOfChan;
+
+}
 
 INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 {
@@ -285,9 +339,9 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 		ULONG Channel;
 
 		RTMP_DRIVER_CHANNEL_GET(pAd, pIoctlConfig->apidx, &Channel);
-		wrqin->u.freq.m = Channel; /*wdev->channel; */
-		wrqin->u.freq.e = 0;
-		wrqin->u.freq.i = 0;
+		wrqin->u.freq.m = rtw_ch2freq(Channel); /*wdev->channel; */
+		wrqin->u.freq.e = 6;
+		wrqin->u.freq.i = Channel;
 	}
 	break;
 
@@ -365,7 +419,17 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 
 		memset(prange, 0, sizeof(struct iw_range));
 		prange->we_version_compiled = WIRELESS_EXT;
-		prange->we_version_source = 14;
+		prange->we_version_source = 16;
+		prange->retry_capa = IW_RETRY_LIMIT;
+		prange->retry_flags = IW_RETRY_LIMIT;
+		prange->min_retry = 0;
+		prange->max_retry = 255;
+		prange->min_rts = 0;
+		prange->max_rts = 2347;
+		prange->min_frag = 256;
+		prange->max_frag = 2346;
+
+		prange->max_encoding_tokens = 4;
 		/*
 		 *	what is correct max? This was not
 		 *	documented exactly. At least
@@ -374,6 +438,16 @@ INT rt28xx_ap_ioctl(struct net_device *net_dev, struct ifreq *rq, int cmd)
 		prange->max_qual.qual = 100;
 		prange->max_qual.level = 0; /* dB */
 		prange->max_qual.noise = 0; /* dB */
+
+		/* channels */
+		setChans(prange);
+
+		/* encrypt */
+		prange->enc_capa |= (IW_ENC_CAPA_CIPHER_TKIP |
+					IW_ENC_CAPA_WPA |
+					IW_ENC_CAPA_CIPHER_CCMP |
+					IW_ENC_CAPA_WPA2);
+
 		len = copy_to_user(wrq->u.data.pointer, prange, sizeof(struct iw_range));
 		os_free_mem(prange);
 	}

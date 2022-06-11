@@ -1,0 +1,99 @@
+From 2738d9d963bd1f06d5114c2b4fa5771a95703991 Mon Sep 17 00:00:00 2001
+From: Ritaro Takenaka <ritarot634@gmail.com>
+Date: Tue, 17 May 2022 12:55:30 +0200
+Subject: [PATCH] netfilter: flowtable: move dst_check to packet path
+
+Fixes sporadic IPv6 packet loss when flow offloading is enabled.
+
+IPv6 route GC and flowtable GC are not synchronized.
+When dst_cache becomes stale and a packet passes through the flow before
+the flowtable GC teardowns it, the packet can be dropped.
+So, it is necessary to check dst every time in packet path.
+
+Fixes: 227e1e4d0d6c ("netfilter: nf_flowtable: skip device lookup from interface index")
+Signed-off-by: Ritaro Takenaka <ritarot634@gmail.com>
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+ net/netfilter/nf_flow_table_core.c | 23 +----------------------
+ net/netfilter/nf_flow_table_ip.c   | 19 +++++++++++++++++++
+ 2 files changed, 20 insertions(+), 22 deletions(-)
+
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -433,33 +433,12 @@ nf_flow_table_iterate(struct nf_flowtabl
+ 	return err;
+ }
+ 
+-static bool flow_offload_stale_dst(struct flow_offload_tuple *tuple)
+-{
+-	struct dst_entry *dst;
+-
+-	if (tuple->xmit_type == FLOW_OFFLOAD_XMIT_NEIGH ||
+-	    tuple->xmit_type == FLOW_OFFLOAD_XMIT_XFRM) {
+-		dst = tuple->dst_cache;
+-		if (!dst_check(dst, tuple->dst_cookie))
+-			return true;
+-	}
+-
+-	return false;
+-}
+-
+-static bool nf_flow_has_stale_dst(struct flow_offload *flow)
+-{
+-	return flow_offload_stale_dst(&flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].tuple) ||
+-	       flow_offload_stale_dst(&flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple);
+-}
+-
+ static void nf_flow_offload_gc_step(struct flow_offload *flow, void *data)
+ {
+ 	struct nf_flowtable *flow_table = data;
+ 
+ 	if (nf_flow_has_expired(flow) ||
+-	    nf_ct_is_dying(flow->ct) ||
+-	    nf_flow_has_stale_dst(flow))
++	    nf_ct_is_dying(flow->ct))
+ 		set_bit(NF_FLOW_TEARDOWN, &flow->flags);
+ 
+ 	if (test_bit(NF_FLOW_TEARDOWN, &flow->flags)) {
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -229,6 +229,15 @@ static bool nf_flow_exceeds_mtu(const st
+ 	return true;
+ }
+ 
++static inline bool nf_flow_dst_check(struct flow_offload_tuple *tuple)
++{
++	if (tuple->xmit_type != FLOW_OFFLOAD_XMIT_NEIGH &&
++	    tuple->xmit_type != FLOW_OFFLOAD_XMIT_XFRM)
++		return true;
++
++	return dst_check(tuple->dst_cache, tuple->dst_cookie);
++}
++
+ static unsigned int nf_flow_xmit_xfrm(struct sk_buff *skb,
+ 				      const struct nf_hook_state *state,
+ 				      struct dst_entry *dst)
+@@ -364,6 +373,11 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 	if (nf_flow_state_check(flow, iph->protocol, skb, thoff))
+ 		return NF_ACCEPT;
+ 
++	if (!nf_flow_dst_check(&tuplehash->tuple)) {
++		flow_offload_teardown(flow);
++		return NF_ACCEPT;
++	}
++
+ 	if (skb_try_make_writable(skb, thoff + hdrsize))
+ 		return NF_DROP;
+ 
+@@ -600,6 +614,11 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 	if (nf_flow_state_check(flow, ip6h->nexthdr, skb, thoff))
+ 		return NF_ACCEPT;
+ 
++	if (!nf_flow_dst_check(&tuplehash->tuple)) {
++		flow_offload_teardown(flow);
++		return NF_ACCEPT;
++	}
++
+ 	if (skb_try_make_writable(skb, thoff + hdrsize))
+ 		return NF_DROP;
+ 
