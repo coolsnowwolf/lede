@@ -18,7 +18,7 @@ define Device/embedfire_doornet2
   SOC := rk3399
   UBOOT_DEVICE_NAME := doornet2-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8169 kmod-rtl8821cu -urngd
+  DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += embedfire_doornet2
 
