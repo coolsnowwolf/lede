@@ -1,0 +1,176 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1354,9 +1354,21 @@ static int mtk_poll_rx(struct napi_struc
+ 			skb_set_hash(skb, hash, PKT_HASH_TYPE_L4);
+ 
+ 		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX &&
+-		    (trxd.rxd2 & RX_DMA_VTAG))
+-			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+-					       RX_DMA_VID(trxd.rxd3));
++		    (trxd.rxd2 & RX_DMA_VTAG)) {
++			__vlan_hwaccel_put_tag(skb,
++					       htons(RX_DMA_VPID(trxd.rxd3)),
++					       RX_DMA_TCI(trxd.rxd3));
++
++			/* If netdev is attached to dsa switch, the special
++			 * tag inserted in VLAN field by switch hardware can
++			 * be offload by RX HW VLAN offload. Clears the VLAN
++			 * information from @skb to avoid unexpected 8021d
++			 * handler before packet enter dsa framework.
++			 */
++			if (netdev_uses_dsa(netdev))
++				__vlan_hwaccel_clear_tag(skb);
++		}
++
+ 		if (mtk_offload_check_rx(eth, skb, trxd.rxd4) == 0) {
+ 			skb_record_rx_queue(skb, 0);
+ 			napi_gro_receive(napi, skb);
+@@ -2050,19 +2062,32 @@ static netdev_features_t mtk_fix_feature
+ 		}
+ 	}
+ 
++	if ((features & NETIF_F_HW_VLAN_CTAG_TX) && netdev_uses_dsa(dev)) {
++		netdev_info(dev, "TX vlan offload cannot be enabled when dsa is attached.\n");
++
++		features &= ~NETIF_F_HW_VLAN_CTAG_TX;
++	}
++
+ 	return features;
+ }
+ 
+ static int mtk_set_features(struct net_device *dev, netdev_features_t features)
+ {
++	struct mtk_mac *mac = netdev_priv(dev);
++	struct mtk_eth *eth = mac->hw;
+ 	int err = 0;
+ 
+-	if (!((dev->features ^ features) & NETIF_F_LRO))
++	if (!((dev->features ^ features) & MTK_SET_FEATURES))
+ 		return 0;
+ 
+ 	if (!(features & NETIF_F_LRO))
+ 		mtk_hwlro_netdev_disable(dev);
+ 
++	if (!(features & NETIF_F_HW_VLAN_CTAG_RX))
++		mtk_w32(eth, 0, MTK_CDMP_EG_CTRL);
++	else
++		mtk_w32(eth, 1, MTK_CDMP_EG_CTRL);
++
+ 	return err;
+ }
+ 
+@@ -2326,6 +2351,15 @@ static int mtk_open(struct net_device *d
+ 
+ 		mtk_gdm_config(eth, gdm_config);
+ 
++		/* Indicates CDM to parse the MTK special tag from CPU */
++		if (netdev_uses_dsa(dev)) {
++			u32 val;
++			val = mtk_r32(eth, MTK_CDMQ_IG_CTRL);
++			mtk_w32(eth, val | MTK_CDMQ_STAG_EN, MTK_CDMQ_IG_CTRL);
++			val = mtk_r32(eth, MTK_CDMP_IG_CTRL);
++			mtk_w32(eth, val | MTK_CDMP_STAG_EN, MTK_CDMP_IG_CTRL);
++		}
++
+ 		napi_enable(&eth->tx_napi);
+ 		napi_enable(&eth->rx_napi);
+ 		mtk_tx_irq_enable(eth, MTK_TX_DONE_INT);
+@@ -2500,7 +2534,7 @@ static void mtk_dim_tx(struct work_struc
+ 
+ static int mtk_hw_init(struct mtk_eth *eth)
+ {
+-	int i, val, ret;
++	int i, ret;
+ 
+ 	if (test_and_set_bit(MTK_HW_INIT, &eth->state))
+ 		return 0;
+@@ -2555,12 +2589,6 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	for (i = 0; i < MTK_MAC_COUNT; i++)
+ 		mtk_w32(eth, MAC_MCR_FORCE_LINK_DOWN, MTK_MAC_MCR(i));
+ 
+-	/* Indicates CDM to parse the MTK special tag from CPU
+-	 * which also is working out for untag packets.
+-	 */
+-	val = mtk_r32(eth, MTK_CDMQ_IG_CTRL);
+-	mtk_w32(eth, val | MTK_CDMQ_STAG_EN, MTK_CDMQ_IG_CTRL);
+-
+ 	/* Enable RX VLan Offloading */
+ 	mtk_w32(eth, 1, MTK_CDMP_EG_CTRL);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -42,6 +42,8 @@
+ 				 NETIF_F_SG | NETIF_F_TSO | \
+ 				 NETIF_F_TSO6 | \
+ 				 NETIF_F_IPV6_CSUM)
++#define MTK_SET_FEATURES	(NETIF_F_LRO | \
++				 NETIF_F_HW_VLAN_CTAG_RX)
+ #define MTK_HW_FEATURES_MT7628	(NETIF_F_SG | NETIF_F_RXCSUM)
+ #define NEXT_DESP_IDX(X, Y)	(((X) + 1) & ((Y) - 1))
+ 
+@@ -78,6 +80,10 @@
+ #define MTK_CDMQ_IG_CTRL	0x1400
+ #define MTK_CDMQ_STAG_EN	BIT(0)
+ 
++/* CDMP Ingress Control Register */
++#define MTK_CDMP_IG_CTRL	0x400
++#define MTK_CDMP_STAG_EN	BIT(0)
++
+ /* CDMP Exgress Control Register */
+ #define MTK_CDMP_EG_CTRL	0x404
+ 
+@@ -307,7 +313,9 @@
+ #define RX_DMA_VTAG		BIT(15)
+ 
+ /* QDMA descriptor rxd3 */
+-#define RX_DMA_VID(_x)		((_x) & 0xfff)
++#define RX_DMA_VID(_x)		((_x) & VLAN_VID_MASK)
++#define RX_DMA_TCI(_x)		((_x) & (VLAN_PRIO_MASK | VLAN_VID_MASK))
++#define RX_DMA_VPID(_x)		(((_x) >> 16) & 0xffff)
+ 
+ /* QDMA descriptor rxd4 */
+ #define MTK_RXD4_FOE_ENTRY	GENMASK(13, 0)
+--- a/net/dsa/tag_mtk.c
++++ b/net/dsa/tag_mtk.c
+@@ -73,22 +73,28 @@ static struct sk_buff *mtk_tag_rcv(struc
+ 	bool is_multicast_skb = is_multicast_ether_addr(dest) &&
+ 				!is_broadcast_ether_addr(dest);
+ 
+-	if (unlikely(!pskb_may_pull(skb, MTK_HDR_LEN)))
+-		return NULL;
++	if (dev->features & NETIF_F_HW_VLAN_CTAG_RX) {
++		hdr = ntohs(skb->vlan_proto);
++		skb->vlan_proto = 0;
++		skb->vlan_tci = 0;
++	} else {
++		if (unlikely(!pskb_may_pull(skb, MTK_HDR_LEN)))
++			return NULL;
+ 
+-	/* The MTK header is added by the switch between src addr
+-	 * and ethertype at this point, skb->data points to 2 bytes
+-	 * after src addr so header should be 2 bytes right before.
+-	 */
+-	phdr = (__be16 *)(skb->data - 2);
+-	hdr = ntohs(*phdr);
++		/* The MTK header is added by the switch between src addr
++		 * and ethertype at this point, skb->data points to 2 bytes
++		 * after src addr so header should be 2 bytes right before.
++		 */
++		phdr = (__be16 *)(skb->data - 2);
++		hdr = ntohs(*phdr);
+ 
+-	/* Remove MTK tag and recalculate checksum. */
+-	skb_pull_rcsum(skb, MTK_HDR_LEN);
++		/* Remove MTK tag and recalculate checksum. */
++		skb_pull_rcsum(skb, MTK_HDR_LEN);
+ 
+-	memmove(skb->data - ETH_HLEN,
+-		skb->data - ETH_HLEN - MTK_HDR_LEN,
+-		2 * ETH_ALEN);
++		memmove(skb->data - ETH_HLEN,
++			skb->data - ETH_HLEN - MTK_HDR_LEN,
++			2 * ETH_ALEN);
++	}
+ 
+ 	/* Get source port information */
+ 	port = (hdr & MTK_HDR_RECV_SOURCE_PORT_MASK);
