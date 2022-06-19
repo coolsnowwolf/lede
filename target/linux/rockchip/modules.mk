@@ -11,8 +11,8 @@ define KernelPackage/drm-rockchip
 	CONFIG_DRM_LOAD_EDID_FIRMWARE=y \
 	CONFIG_DRM_FBDEV_EMULATION=y \
 	CONFIG_DRM_FBDEV_OVERALLOC=100 \
-	CONFIG_DRM_BRIDGE \
-	CONFIG_HDMI \
+	CONFIG_DRM_BRIDGE=y \
+	CONFIG_HDMI=y \
 	CONFIG_PHY_ROCKCHIP_INNO_HDMI \
 	CONFIG_DRM_DW_HDMI \
 	CONFIG_DRM_DW_HDMI_CEC \
@@ -24,16 +24,17 @@ define KernelPackage/drm-rockchip
 	CONFIG_ROCKCHIP_LVDS=y \
 	CONFIG_ROCKCHIP_RGB=n \
 	CONFIG_ROCKCHIP_RK3066_HDMI=n \
-	CONFIG_DRM_PANEL \
-	CONFIG_DRM_PANEL_BRIDGE \
+	CONFIG_DRM_DP_AUX_BUS@ge5.15 \
+	CONFIG_DRM_PANEL=y \
+	CONFIG_DRM_PANEL_BRIDGE=y \
 	CONFIG_DRM_PANEL_SIMPLE
   FILES:= \
 	$(LINUX_DIR)/drivers/gpu/drm/bridge/synopsys/dw-hdmi.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/bridge/synopsys/dw-hdmi-cec.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.ko \
-	$(LINUX_DIR)/drivers/media/cec/cec.ko@lt5.10 \
-	$(LINUX_DIR)/drivers/media/cec/core/cec.ko@ge5.10 \
+	$(LINUX_DIR)/drivers/media/cec/core/cec.ko \
 	$(LINUX_DIR)/drivers/phy/rockchip/phy-rockchip-inno-hdmi.ko \
+	$(LINUX_DIR)/drivers/gpu/drm/drm_dp_aux_bus.ko@ge5.15 \
 	$(LINUX_DIR)/drivers/gpu/drm/panel/panel-simple.ko \
 	$(LINUX_DIR)/drivers/gpu/drm/rockchip/rockchipdrm.ko
   AUTOLOAD:=$(call AutoProbe,rockchipdrm phy-rockchip-inno-hdmi dw-hdmi-cec)
