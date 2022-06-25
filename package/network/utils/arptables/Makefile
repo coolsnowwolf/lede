@@ -1,21 +1,20 @@
-# Copyright (C) 2006-2016 OpenWrt.org
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
+# Copyright (C) 2006-2016 OpenWrt.org
 #
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=arptables
+PKG_VERSION:=0.0.5
 PKG_RELEASE:=1
 
-PKG_SOURCE_URL:=https://git.netfilter.org/arptables
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2015-05-20
-PKG_SOURCE_VERSION:=f4ab8f63f11a72f14687a6646d04ae1bae3fa45f
-PKG_MIRROR_HASH:=84bc660be4c9f70be91046acfd87785add930eceab7c543036058e1a9de2e9d9
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=http://ftp.netfilter.org/pub/arptables
+PKG_HASH:=4f9a0656ce5c90868f551cd4deeb2d04f33899667e1fb2818b64e432fe8f629c
 
 PKG_LICENSE:=GPL-2.0
+PKG_LICENSE_FILES:=COPYING
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -37,7 +36,7 @@ MAKE_FLAGS += \
 
 define Package/arptables-legacy/install
 	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/arptables $(1)/usr/sbin/arptables-legacy
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/arptables-legacy $(1)/usr/sbin/arptables-legacy
 endef
 
 $(eval $(call BuildPackage,arptables-legacy))
