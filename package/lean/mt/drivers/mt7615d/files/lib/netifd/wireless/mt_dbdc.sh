@@ -5,8 +5,9 @@
 # Copyright (c) 2013, Hoowa <hoowa.sun@gmail.com>
 # Copyright (c) 2015-2017, GuoGuo <gch981213@gmail.com>
 # Copyright (c) 2020, jjm2473 <jjm2473@gmail.com>
+# Copyright (c) 2022, nanchuci <nanchuci023@gmail.com>
 #
-# 	netifd config script for MT7615 DBDC mode.
+# 	netifd config script for MT7615/MT7915 DBDC mode.
 #
 # 	嘿，对着屏幕的哥们,为了表示对原作者辛苦工作的尊重，任何引用跟借用都不允许你抹去所有作者的信息,请保留这段话。
 #
@@ -68,7 +69,10 @@ drv_mt_dbdc_init_device_config() {
 drv_mt_dbdc_init_iface_config() { 
 	config_add_boolean disabled
 	config_add_string mode bssid ssid encryption
+	config_add_boolean hidden isolate doth ieee80211k
+	config_add_boolean hidden isolate doth ieee80211v
 	config_add_boolean hidden isolate doth ieee80211r
+	config_add_boolean hidden isolate doth ieee80211w
 	config_add_string key key1 key2 key3 key4
 	config_add_string wps
 	config_add_string pin
@@ -97,7 +101,7 @@ mt_dbdc_ap_vif_pre_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r macfilter
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211k ieee80211v ieee80211r ieee80211w macfilter
 	json_get_values maclist maclist
 	json_select ..
 	[ "$disabled" == "1" ] && return
@@ -192,7 +196,7 @@ mt_dbdc_ap_vif_pre_config() {
 	mt_cmd echo "Interface $ifname now up."
 	mt_cmd iwpriv $ifname set NoForwarding=${isolate:-0}
 	mt_cmd iwpriv $ifname set IEEE80211H=${doth:-0}
-	if [ "$wps" == "pbc" ]  && [ "$encryption" != "none" ]; then
+	if [ "$wps" == "pbc" ] || [ "$wps" == "pin" ]  && [ "$encryption" != "none" ]; then
 		echo "Enable WPS for ${ifname}."
 		mt_cmd iwpriv $ifname set WscConfMode=4
 		mt_cmd iwpriv $ifname set WscConfStatus=2
@@ -203,7 +207,10 @@ mt_dbdc_ap_vif_pre_config() {
 	fi
 	[ -n "$disassoc_low_ack" ]  && [ "$disassoc_low_ack" != "0" ] && mt_cmd iwpriv $ifname set KickStaRssiLow=$disassoc_low_ack
 	[ -n "$rssiassoc" ]  && [ "$rssiassoc" != "0" ] && mt_cmd iwpriv $ifname set AssocReqRssiThres=$rssiassoc
+	[ -n "$ieee80211k" ]  && [ "$ieee80211k" != "0" ] && mt_cmd iwpriv $ifname set rrmenable=1
+	[ -n "$ieee80211v" ]  && [ "$ieee80211v" != "0" ] && mt_cmd iwpriv $ifname set wnmenable=1
 	[ -n "$ieee80211r" ]  && [ "$ieee80211r" != "0" ] && mt_cmd iwpriv $ifname set ftenable=1
+	[ -n "$ieee80211w" ]  && [ "$ieee80211w" != "0" ] && mt_cmd iwpriv $ifname set pmfenable=1
 }
 
 mt_dbdc_wds_vif_pre_config() {
@@ -272,7 +279,7 @@ mt_dbdc_ap_vif_post_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211k ieee80211v ieee80211r ieee80211w
 	json_select ..
 
 	[ "$disabled" == "1" ] && return
@@ -532,6 +539,10 @@ MacAddress=${macaddr}
 CountryRegion=${countryregion:-5}
 CountryRegionABand=${countryregion_a:-7}
 CountryCode=${country:-CN}
+RRMEnable=${RRMEnable:-0};${RRMEnable:-0};${RRMEnable:-0};${RRMEnable:-0}
+WNMEnable=${WNMEnable:-0};${WNMEnable:-0};${WNMEnable:-0};${WNMEnable:-0}
+FTEnable=${FTEnable:-0};${FTEnable:-0};${FTEnable:-0};${FTEnable:-0}
+PMFenable=${PMFenable:-0};${PMFenable:-0};${PMFenable:-0};${PMFenable:-0}
 WirelessMode=${WirelessMode}
 G_BAND_256QAM=1
 FixedTxMode=
@@ -547,8 +558,8 @@ BFBACKOFFenable=0
 CalCacheApply=0
 DisableOLBC=0
 BGProtection=0
-TxAntenna=
-RxAntenna=
+TxAntenna=${TxAntenna:-2};${TxAntenna:-2};${TxAntenna:-4};${TxAntenna:-4}
+RxAntenna=${RxAntenna:-2};${RxAntenna:-2};${RxAntenna:-4};${RxAntenna:-4}
 TxPreamble=1
 RTSThreshold=${rts:-2347}
 FragThreshold=${frag:-2346}
@@ -677,8 +688,8 @@ VHT_STBC=${tx_stbc:-1}
 VHT_BW_SIGNAL=0
 VHT_DisallowNonVHT=${VHT_DisallowNonVHT:-0}
 VHT_LDPC=${ldpc:-1}
-#HT_TxStream=2
-#HT_RxStream=2
+HT_TxStream=2;2;2;2
+HT_RxStream=2;2;2;2
 HT_PROTECT=0
 HT_DisallowTKIP=${HT_DisallowTKIP:-0}
 HT_BSSCoexistence=${HT_CE:-1}
