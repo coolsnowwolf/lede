@@ -1,0 +1,134 @@
+From: Matt Johnston <matt@ucc.asn.au>
+Date: Wed, 8 Jun 2022 21:26:20 +0800
+Subject: Fix MAX_UNAUTH_CLIENTS regression
+
+Since re-exec change in 2022.82 Dropbear count
+treat authenticated sessions towards the unauthenticated
+session limit. This is fixed by passing the childpipe FD
+through to the re-execed process.
+---
+ runopts.h     |  5 +++--
+ svr-main.c    | 21 +++++++++++----------
+ svr-runopts.c | 15 ++++++++++++---
+ 3 files changed, 26 insertions(+), 15 deletions(-)
+
+--- a/runopts.h
++++ b/runopts.h
+@@ -79,8 +79,9 @@ typedef struct svr_runopts {
+ 	char *addresses[DROPBEAR_MAX_PORTS];
+ 
+ 	int inetdmode;
+-	/* Hidden "-2" flag indicates it's re-executing itself */
+-	int reexec_child;
++	/* Hidden "-2 childpipe_fd" flag indicates it's re-executing itself,
++	   stores the childpipe preauth file descriptor. Set to -1 otherwise. */
++	int reexec_childpipe;
+ 
+ 	/* Flags indicating whether to use ipv4 and ipv6 */
+ 	/* not used yet
+--- a/svr-main.c
++++ b/svr-main.c
+@@ -71,7 +71,7 @@ int main(int argc, char ** argv)
+ #endif
+ 
+ #if DROPBEAR_DO_REEXEC
+-	if (svr_opts.reexec_child) {
++	if (svr_opts.reexec_childpipe >= 0) {
+ #ifdef PR_SET_NAME
+ 		/* Fix the "Name:" in /proc/pid/status, otherwise it's
+ 		a FD number from fexecve.
+@@ -102,7 +102,7 @@ static void main_inetd() {
+ 
+ 	seedrandom();
+ 
+-	if (!svr_opts.reexec_child) {
++	if (svr_opts.reexec_childpipe < 0) {
+ 		/* In case our inetd was lax in logging source addresses */
+ 		get_socket_address(0, NULL, NULL, &host, &port, 0);
+ 			dropbear_log(LOG_INFO, "Child connection from %s:%s", host, port);
+@@ -115,10 +115,8 @@ static void main_inetd() {
+ 		setsid();
+ 	}
+ 
+-	/* Start service program 
+-	 * -1 is a dummy childpipe, just something we can close() without 
+-	 * mattering. */
+-	svr_session(0, -1);
++	/* -1 for childpipe in the inetd case is discarded */
++	svr_session(0, svr_opts.reexec_childpipe);
+ 
+ 	/* notreached */
+ }
+@@ -347,9 +345,10 @@ static void main_noinetd(int argc, char
+ 
+ 				if (execfd >= 0) {
+ #if DROPBEAR_DO_REEXEC
+-					/* Add "-2" to the args and re-execute ourself. */
+-					char **new_argv = m_malloc(sizeof(char*) * (argc+3));
+-					int pos0 = 0, new_argc = argc+1;
++					/* Add "-2 childpipe[1]" to the args and re-execute ourself. */
++					char **new_argv = m_malloc(sizeof(char*) * (argc+4));
++					char buf[10];
++					int pos0 = 0, new_argc = argc+2;
+ 
+ 					/* We need to specially handle "dropbearmulti dropbear". */
+ 					if (multipath) {
+@@ -359,7 +358,9 @@ static void main_noinetd(int argc, char
+ 					}
+ 
+ 					memcpy(&new_argv[pos0], argv, sizeof(char*) * argc);
+-					new_argv[new_argc-1] = "-2";
++					new_argv[new_argc-2] = "-2";
++					snprintf(buf, sizeof(buf), "%d", childpipe[1]);
++					new_argv[new_argc-1] = buf;
+ 					new_argv[new_argc] = NULL;
+ 
+ 					if ((dup2(childsock, STDIN_FILENO) < 0)) {
+--- a/svr-runopts.c
++++ b/svr-runopts.c
+@@ -138,6 +138,7 @@ void svr_getopts(int argc, char ** argv)
+ 	char* keepalive_arg = NULL;
+ 	char* idle_timeout_arg = NULL;
+ 	char* maxauthtries_arg = NULL;
++	char* reexec_fd_arg = NULL;
+ 	char* keyfile = NULL;
+ 	char c;
+ #if DROPBEAR_PLUGIN
+@@ -175,6 +176,7 @@ void svr_getopts(int argc, char ** argv)
+         svr_opts.pubkey_plugin_options = NULL;
+ #endif
+ 	svr_opts.pass_on_env = 0;
++	svr_opts.reexec_childpipe = -1;
+ 
+ #ifndef DISABLE_ZLIB
+ 	opts.compress_mode = DROPBEAR_COMPRESS_DELAYED;
+@@ -250,12 +252,12 @@ void svr_getopts(int argc, char ** argv)
+ #if DROPBEAR_DO_REEXEC && NON_INETD_MODE
+ 				/* For internal use by re-exec */
+ 				case '2':
+-					svr_opts.reexec_child = 1;
++					next = &reexec_fd_arg;
+ 					break;
+ #endif
+ 				case 'p':
+-				  nextisport = 1;
+-				  break;
++					nextisport = 1;
++					break;
+ 				case 'P':
+ 					next = &svr_opts.pidfile;
+ 					break;
+@@ -426,6 +428,13 @@ void svr_getopts(int argc, char ** argv)
+ 		dropbear_log(LOG_INFO, "Forced command set to '%s'", svr_opts.forced_command);
+ 	}
+ 
++	if (reexec_fd_arg) {
++		if (m_str_to_uint(reexec_fd_arg, &svr_opts.reexec_childpipe) == DROPBEAR_FAILURE
++			|| svr_opts.reexec_childpipe < 0) {
++			dropbear_exit("Bad -2");
++		}
++	}
++
+ #if INETD_MODE
+ 	if (svr_opts.inetdmode && (
+ 		opts.usingsyslog == 0
