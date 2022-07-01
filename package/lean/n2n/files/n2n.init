@@ -1,0 +1,143 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2008-2020 OpenWrt.org
+# Copyright (C) 2022 ImmortalWrt.org
+
+START=99
+USE_PROCD=1
+
+start_instance() {
+	local cfg="$1"
+
+	local type
+	config_get type "$cfg" TYPE
+
+	case "$type" in
+	edge)
+		local enabled
+		config_get_bool enabled "$cfg" 'enabled' '0'
+		[ "$enabled" = "1" ] || return 1
+
+		local masquerade tunname mode ipaddr prefix mtu
+		local supernode port second_supernode second_port
+		local community key route
+		config_get_bool masquerade "$cfg" 'masquerade' '0'
+		config_get tunname "$cfg" 'tunname'
+		config_get mode "$cfg" 'mode'
+		config_get ipaddr "$cfg" 'ipaddr'
+		config_get prefix "$cfg" 'prefix'
+		config_get mtu "$cfg" 'mtu'
+		config_get supernode "$cfg" 'supernode'
+		config_get port "$cfg" 'port'
+		config_get second_supernode "$cfg" 'second_supernode'
+		config_get second_port "$cfg" 'second_port'
+		config_get community "$cfg" 'community'
+		config_get key "$cfg" 'key'
+		config_get_bool route "$cfg" 'route' '0'
+
+		local address
+		address="$ipaddr/$prefix"
+		[ "$mode" != 'dhcp' ] || address='0.0.0.0'
+
+		procd_open_instance "edge_$cfg"
+		procd_set_param command /usr/bin/n2n-edge -f
+		procd_append_param command -u 0 -g 0
+		procd_append_param command -d "$tunname"
+		procd_append_param command -a "$mode:$address"
+		procd_append_param command -c "$community"
+		procd_append_param command -l "$supernode:$port"
+		[ -z "$key" ] || procd_append_param command -k "$key"
+		[ -z "$mtu" ] || procd_append_param command -M "$mtu"
+		[ -z "$second_supernode" -o -z "$second_port" ] || procd_append_param command -l "$second_supernode:$second_port"
+		[ "$route" = "0" ] || procd_append_param command -r
+
+		procd_set_param stdout 1
+		procd_set_param stderr 1
+		procd_set_param respawn
+		procd_close_instance
+
+		iptables -I FORWARD -i "$tunname" -j ACCEPT -m comment --comment 'n2n edge eth'
+		iptables -I FORWARD -o "$tunname" -j ACCEPT -m comment --comment 'n2n edge eth'
+		[ "$masquerade" = "0" ] || iptables -t nat -I POSTROUTING -o "$tunname" -j MASQUERADE -m comment --comment 'n2n edge net'
+	;;
+	supernode)
+		local enabled
+		config_get_bool enabled "$cfg" 'enabled' '0'
+		[ "$enabled" = "1" ] || return 1
+
+		local port subnet
+		config_get port "$cfg" 'port'
+		config_get subnet "$cfg" 'subnet'
+
+		procd_open_instance "supernode_$cfg"
+		procd_set_param command /usr/bin/n2n-supernode -f
+		procd_append_param command -p "$port"
+		procd_append_param command -a "$subnet"
+
+		procd_set_param stdout 1
+		procd_set_param stderr 1
+		procd_set_param respawn
+		procd_close_instance
+
+		iptables -I INPUT -p udp --dport $port -j ACCEPT -m comment --comment 'n2n supernode port'
+	;;
+	route)
+		local enabled
+		config_get_bool enabled "$cfg" 'enabled' '0'
+		[ "$enabled" = "1" ] || return 1
+
+		local ip mask gw
+		config_get ip "$cfg" 'ip'
+		config_get mask "$cfg" 'mask'
+		config_get gw "$cfg" 'gw'
+		route add -net "$ip/$mask" gw "$gw"
+	;;
+	esac
+}
+
+stop_instance() {
+	local cfg="$1"
+
+	local type
+	config_get type "$cfg" TYPE
+
+	case "$type" in
+	edge)
+		local tunname masquerade
+		config_get tunname "$cfg" 'tunname'
+		config_get_bool masquerade "$cfg" 'masquerade' '0'
+
+		iptables -D FORWARD -i "$tunname" -j ACCEPT -m comment --comment 'n2n edge eth' 2>/dev/null
+		iptables -D FORWARD -o "$tunname" -j ACCEPT -m comment --comment 'n2n edge eth' 2>/dev/null
+		iptables -t nat -D POSTROUTING -o "$tunname" -j MASQUERADE -m comment --comment 'n2n edge net' 2>"/dev/null"
+	;;
+	supernode)
+		local port
+		config_get port "$cfg" 'port'
+
+		iptables -D INPUT -p udp --dport "$port" -j ACCEPT -m comment --comment 'n2n supernode port' 2>"/dev/null"
+	;;
+	esac
+}
+
+start_service() {
+	config_load 'n2n'
+	config_foreach start_instance 'edge'
+	config_foreach start_instance 'supernode'
+	sleep 2
+	config_foreach start_instance 'route'
+}
+
+stop_service() {
+	config_load 'n2n'
+	config_foreach stop_instance 'edge'
+	config_foreach stop_instance 'supernode'
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "n2n"
+}
