@@ -14,9 +14,6 @@ PKG_LICENSE_FILES:=COPYING
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
-TAR_OPTIONS+= --strip-components 1
-TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
-
 define KernelPackage/fs-ksmbd
 	SUBMENU:=Filesystems
 	TITLE:=SMB kernel server support
