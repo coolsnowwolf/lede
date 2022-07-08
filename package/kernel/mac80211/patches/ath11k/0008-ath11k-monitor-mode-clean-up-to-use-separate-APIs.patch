@@ -1,0 +1,370 @@
+From 689a5e6fff75229ac7c2af7a9c51dc2d3ca1882b Mon Sep 17 00:00:00 2001
+From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Date: Tue, 21 Sep 2021 16:39:30 +0300
+Subject: [PATCH] ath11k: monitor mode clean up to use separate APIs
+
+If monitor interface is enabled in co-exist mode, only local traffic are
+captured. It's caused by missing monitor vdev in co-exist mode. So,
+monitor mode clean up is done with separate Monitor APIs. For this,
+introduce flags monitor_started and monitor_vdev_created.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.4.0.1-01725-QCAHKSWPL_SILICONZ-1
+
+Co-developed-by: Miles Hu <milehu@codeaurora.org>
+Signed-off-by: Miles Hu <milehu@codeaurora.org>
+Co-developed-by: Vasanthakumar Thiagarajan <vthiagar@codeaurora.org>
+Signed-off-by: Vasanthakumar Thiagarajan <vthiagar@codeaurora.org>
+Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20210721162053.46290-4-jouni@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.h  |   1 -
+ drivers/net/wireless/ath/ath11k/dp_rx.c |   2 +-
+ drivers/net/wireless/ath/ath11k/dp_tx.c |   8 +-
+ drivers/net/wireless/ath/ath11k/mac.c   | 150 ++++++++++++++++--------
+ 4 files changed, 110 insertions(+), 51 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -199,7 +199,6 @@ enum ath11k_dev_flags {
+ };
+ 
+ enum ath11k_monitor_flags {
+-	ATH11K_FLAG_MONITOR_ENABLED,
+ 	ATH11K_FLAG_MONITOR_CONF_ENABLED,
+ 	ATH11K_FLAG_MONITOR_STARTED,
+ 	ATH11K_FLAG_MONITOR_VDEV_CREATED,
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -5032,7 +5032,7 @@ int ath11k_dp_rx_process_mon_rings(struc
+ 	struct ath11k *ar = ath11k_ab_to_ar(ab, mac_id);
+ 	int ret = 0;
+ 
+-	if (test_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags))
++	if (test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags))
+ 		ret = ath11k_dp_mon_process_rx(ab, mac_id, napi, budget);
+ 	else
+ 		ret = ath11k_dp_rx_process_mon_status(ab, mac_id, napi, budget);
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -1076,12 +1076,16 @@ int ath11k_dp_tx_htt_monitor_mode_ring_c
+ 
+ 	for (i = 0; i < ab->hw_params.num_rxmda_per_pdev; i++) {
+ 		ring_id = dp->rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
+-		if (!reset)
++		if (!reset) {
+ 			tlv_filter.rx_filter =
+ 					HTT_RX_MON_FILTER_TLV_FLAGS_MON_STATUS_RING;
+-		else
++		} else {
+ 			tlv_filter = ath11k_mac_mon_status_filter_default;
+ 
++			if (ath11k_debugfs_is_extd_rx_stats_enabled(ar))
++				tlv_filter.rx_filter = ath11k_debugfs_rx_filter(ar);
++		}
++
+ 		ret = ath11k_dp_tx_htt_rx_filter_setup(ab, ring_id,
+ 						       dp->mac_id + i,
+ 						       HAL_RXDMA_MONITOR_STATUS,
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -716,22 +716,6 @@ void ath11k_mac_peer_cleanup_all(struct
+ 	ar->num_stations = 0;
+ }
+ 
+-static int ath11k_monitor_vdev_up(struct ath11k *ar, int vdev_id)
+-{
+-	int ret = 0;
+-
+-	ret = ath11k_wmi_vdev_up(ar, vdev_id, 0, ar->mac_addr);
+-	if (ret) {
+-		ath11k_warn(ar->ab, "failed to put up monitor vdev %i: %d\n",
+-			    vdev_id, ret);
+-		return ret;
+-	}
+-
+-	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "mac monitor vdev %i started\n",
+-		   vdev_id);
+-	return 0;
+-}
+-
+ static inline int ath11k_mac_vdev_setup_sync(struct ath11k *ar)
+ {
+ 	lockdep_assert_held(&ar->conf_mutex);
+@@ -2331,7 +2315,7 @@ static int ath11k_mac_config_obss_pd(str
+ 
+ 	/* Set and enable SRG/non-SRG OBSS PD Threshold */
+ 	param_id = WMI_PDEV_PARAM_SET_CMD_OBSS_PD_THRESHOLD;
+-	if (test_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags)) {
++	if (test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags)) {
+ 		ret = ath11k_wmi_pdev_set_param(ar, param_id, 0, pdev_id);
+ 		if (ret)
+ 			ath11k_warn(ar->ab,
+@@ -5110,8 +5094,8 @@ static int ath11k_mac_op_add_interface(s
+ 	}
+ 
+ 	if (ar->num_created_vdevs > (TARGET_NUM_VDEVS - 1)) {
+-		ath11k_warn(ab, "failed to create vdev, reached max vdev limit %d\n",
+-			    TARGET_NUM_VDEVS);
++		ath11k_warn(ab, "failed to create vdev %u, reached max vdev limit %d\n",
++			    ar->num_created_vdevs, TARGET_NUM_VDEVS);
+ 		ret = -EBUSY;
+ 		goto err;
+ 	}
+@@ -5151,6 +5135,7 @@ static int ath11k_mac_op_add_interface(s
+ 		break;
+ 	case NL80211_IFTYPE_MONITOR:
+ 		arvif->vdev_type = WMI_VDEV_TYPE_MONITOR;
++		ar->monitor_vdev_id = bit;
+ 		break;
+ 	default:
+ 		WARN_ON(1);
+@@ -5252,6 +5237,9 @@ static int ath11k_mac_op_add_interface(s
+ 			goto err_peer_del;
+ 		}
+ 		break;
++	case WMI_VDEV_TYPE_MONITOR:
++		set_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags);
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -5272,6 +5260,16 @@ static int ath11k_mac_op_add_interface(s
+ 
+ 	ath11k_dp_vdev_tx_attach(ar, arvif);
+ 
++	if (vif->type != NL80211_IFTYPE_MONITOR &&
++	    test_bit(ATH11K_FLAG_MONITOR_CONF_ENABLED, &ar->monitor_flags)) {
++		ret = ath11k_mac_monitor_vdev_create(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to create monitor vdev during add interface: %d",
++				    ret);
++			goto err_peer_del;
++		}
++	}
++
+ 	mutex_unlock(&ar->conf_mutex);
+ 
+ 	return 0;
+@@ -5369,6 +5367,18 @@ static void ath11k_mac_op_remove_interfa
+ 	ath11k_dbg(ab, ATH11K_DBG_MAC, "vdev %pM deleted, vdev_id %d\n",
+ 		   vif->addr, arvif->vdev_id);
+ 
++	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
++		clear_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags);
++		ar->monitor_vdev_id = -1;
++	} else if (test_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags) &&
++		   !test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags)) {
++		ret = ath11k_mac_monitor_vdev_delete(ar);
++		if (ret)
++			/* continue even if there's an error */
++			ath11k_warn(ar->ab, "failed to delete vdev monitor during remove interface: %d",
++				    ret);
++	}
++
+ err_vdev_del:
+ 	spin_lock_bh(&ar->data_lock);
+ 	list_del(&arvif->list);
+@@ -5388,7 +5398,6 @@ err_vdev_del:
+ 
+ 	/* Recalc txpower for remaining vdev */
+ 	ath11k_mac_txpower_recalc(ar);
+-	clear_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags);
+ 
+ 	/* TODO: recal traffic pause state based on the available vdevs */
+ 
+@@ -5411,8 +5420,6 @@ static void ath11k_mac_op_configure_filt
+ 					   u64 multicast)
+ {
+ 	struct ath11k *ar = hw->priv;
+-	bool reset_flag = false;
+-	int ret = 0;
+ 
+ 	mutex_lock(&ar->conf_mutex);
+ 
+@@ -5420,23 +5427,6 @@ static void ath11k_mac_op_configure_filt
+ 	*total_flags &= SUPPORTED_FILTERS;
+ 	ar->filter_flags = *total_flags;
+ 
+-	/* For monitor mode */
+-	reset_flag = !(ar->filter_flags & FIF_BCN_PRBRESP_PROMISC);
+-
+-	ret = ath11k_dp_tx_htt_monitor_mode_ring_config(ar, reset_flag);
+-	if (!ret) {
+-		if (!reset_flag)
+-			set_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags);
+-		else
+-			clear_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags);
+-	} else {
+-		ath11k_warn(ar->ab,
+-			    "fail to set monitor filter: %d\n", ret);
+-	}
+-	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
+-		   "changed_flags:0x%x, total_flags:0x%x, reset_flag:%d\n",
+-		   changed_flags, *total_flags, reset_flag);
+-
+ 	mutex_unlock(&ar->conf_mutex);
+ }
+ 
+@@ -5627,7 +5617,9 @@ ath11k_mac_vdev_start_restart(struct ath
+ 		return ret;
+ 	}
+ 
+-	ar->num_started_vdevs++;
++	if (!restart)
++		ar->num_started_vdevs++;
++
+ 	ath11k_dbg(ab, ATH11K_DBG_MAC,  "vdev %pM started, vdev_id %d\n",
+ 		   arvif->vif->addr, arvif->vdev_id);
+ 
+@@ -5755,12 +5747,16 @@ ath11k_mac_update_vif_chan(struct ath11k
+ 	struct ath11k_vif *arvif;
+ 	int ret;
+ 	int i;
++	bool monitor_vif = false;
+ 
+ 	lockdep_assert_held(&ar->conf_mutex);
+ 
+ 	for (i = 0; i < n_vifs; i++) {
+ 		arvif = (void *)vifs[i].vif->drv_priv;
+ 
++		if (vifs[i].vif->type == NL80211_IFTYPE_MONITOR)
++			monitor_vif = true;
++
+ 		ath11k_dbg(ab, ATH11K_DBG_MAC,
+ 			   "mac chanctx switch vdev_id %i freq %u->%u width %d->%d\n",
+ 			   arvif->vdev_id,
+@@ -5781,6 +5777,8 @@ ath11k_mac_update_vif_chan(struct ath11k
+ 				    arvif->vdev_id, ret);
+ 			continue;
+ 		}
++
++		ar->num_started_vdevs--;
+ 	}
+ 
+ 	/* All relevant vdevs are downed and associated channel resources
+@@ -5818,6 +5816,24 @@ ath11k_mac_update_vif_chan(struct ath11k
+ 			continue;
+ 		}
+ 	}
++
++	/* Restart the internal monitor vdev on new channel */
++	if (!monitor_vif &&
++	    test_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags)) {
++		ret = ath11k_mac_monitor_stop(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to stop monitor during vif channel update: %d",
++				    ret);
++			return;
++		}
++
++		ret = ath11k_mac_monitor_start(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to start monitor during vif channel update: %d",
++				    ret);
++			return;
++		}
++	}
+ }
+ 
+ static void
+@@ -5897,7 +5913,7 @@ static int ath11k_start_vdev_delay(struc
+ 	}
+ 
+ 	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
+-		ret = ath11k_monitor_vdev_up(ar, arvif->vdev_id);
++		ret = ath11k_wmi_vdev_up(ar, arvif->vdev_id, 0, ar->mac_addr);
+ 		if (ret) {
+ 			ath11k_warn(ab, "failed put monitor up: %d\n", ret);
+ 			return ret;
+@@ -5957,6 +5973,18 @@ ath11k_mac_op_assign_vif_chanctx(struct
+ 		}
+ 	}
+ 
++	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
++		ret = ath11k_mac_monitor_start(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to start monitor during vif channel context assignment: %d",
++				    ret);
++			goto out;
++		}
++
++		arvif->is_started = true;
++		goto out;
++	}
++
+ 	ret = ath11k_mac_vdev_start(arvif, &ctx->def);
+ 	if (ret) {
+ 		ath11k_warn(ab, "failed to start vdev %i addr %pM on freq %d: %d\n",
+@@ -5964,14 +5992,19 @@ ath11k_mac_op_assign_vif_chanctx(struct
+ 			    ctx->def.chan->center_freq, ret);
+ 		goto out;
+ 	}
+-	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
+-		ret = ath11k_monitor_vdev_up(ar, arvif->vdev_id);
+-		if (ret)
+-			goto out;
+-	}
+ 
+ 	arvif->is_started = true;
+ 
++	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR &&
++	    test_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags)) {
++		ret = ath11k_mac_monitor_start(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to start monitor during vif channel context assignment: %d",
++				    ret);
++			goto out;
++		}
++	}
++
+ 	/* TODO: Setup ps and cts/rts protection */
+ 
+ 	ret = 0;
+@@ -6005,6 +6038,20 @@ ath11k_mac_op_unassign_vif_chanctx(struc
+ 	    ath11k_peer_find_by_addr(ab, ar->mac_addr))
+ 		ath11k_peer_delete(ar, arvif->vdev_id, ar->mac_addr);
+ 
++	if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
++		ret = ath11k_mac_monitor_stop(ar);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to stop monitor during vif channel context unassignment: %d",
++				    ret);
++			mutex_unlock(&ar->conf_mutex);
++			return;
++		}
++
++		arvif->is_started = false;
++		mutex_unlock(&ar->conf_mutex);
++		return;
++	}
++
+ 	ret = ath11k_mac_vdev_stop(arvif);
+ 	if (ret)
+ 		ath11k_warn(ab, "failed to stop vdev %i: %d\n",
+@@ -6016,6 +6063,16 @@ ath11k_mac_op_unassign_vif_chanctx(struc
+ 	    arvif->vdev_type == WMI_VDEV_TYPE_MONITOR)
+ 		ath11k_wmi_vdev_down(ar, arvif->vdev_id);
+ 
++	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR &&
++	    ar->num_started_vdevs == 1 &&
++	    test_bit(ATH11K_FLAG_MONITOR_VDEV_CREATED, &ar->monitor_flags)) {
++		ret = ath11k_mac_monitor_stop(ar);
++		if (ret)
++			/* continue even if there's an error */
++			ath11k_warn(ar->ab, "failed to stop monitor during vif channel context unassignment: %d",
++				    ret);
++	}
++
+ 	mutex_unlock(&ar->conf_mutex);
+ }
+ 
+@@ -7138,7 +7195,6 @@ int ath11k_mac_allocate(struct ath11k_ba
+ 		INIT_WORK(&ar->wmi_mgmt_tx_work, ath11k_mgmt_over_wmi_tx_work);
+ 		skb_queue_head_init(&ar->wmi_mgmt_tx_queue);
+ 
+-		clear_bit(ATH11K_FLAG_MONITOR_ENABLED, &ar->monitor_flags);
+ 		clear_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags);
+ 
+ 		ar->monitor_vdev_id = -1;

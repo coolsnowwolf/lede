@@ -1,0 +1,163 @@
+From 70f119fb82af7f7417dc659faf02c91e1f853739 Mon Sep 17 00:00:00 2001
+From: Sergey Ryazanov <ryazanov.s.a@gmail.com>
+Date: Mon, 16 May 2022 13:26:00 +0300
+Subject: ath10k: htt_tx: do not interpret Eth frames as WiFi
+
+The xmit path for the Ethernet encapsulated frames become more or less
+usable since d740d8fd2439 ("ath10k: unify tx mode and dispatch"). This
+change reorganize the xmit path in a manageable way to properly support
+various tx modes, but misses that the Ethernet encapsulated frame is a
+special case. We do not have an IEEE 802.11 header at the begining of
+them. But the HTT Tx handler still interprets first bytes of each frame
+as an IEEE 802.11 Frame Control field.
+
+Than this code was copied by e62ee5c381c5 ("ath10k: Add support for
+htt_data_tx_desc_64 descriptor") and a2097d6444c3 ("ath10k: htt: High
+latency TX support") to another handlers. In fact the issue in the high
+latency (HL) handler was introduced by 83ac260151e7 ("ath10k: add mic
+bytes for pmf management packet").
+
+Ethernet encapsulated frame tx mode stay unused until 75d85fd9993c
+("ath10k: introduce basic tdls functionality") started using it for TDLS
+frames to avoid key selection issue in some firmwares.
+
+Trying to interpret the begining of an Ethernet encapsulated frame as an
+IEEE 802.11 header was not hurt us noticeably since we need to meet two
+conditions: (1) xmit should be performed towards a TDLS peer, and (2)
+the TDLS peer should have a specific OUI part of its MAC address. Looks
+like that the rareness in TDLS communications of OUIs that can be
+interpreted as an 802.11 management frame saves users from facing this
+issue earlier.
+
+Improve Ethernet tx mode support in the HTT Tx handler by avoiding
+interpreting its first bytes as an IEEE 802.11 header. While at it, make
+the ieee80211_hdr variable local to the code block that is guarded by
+!is_eth check. In this way, we clarify in which cases a frame can be
+interpreted as IEEE 802.11, and saves us from similar issues in the
+future.
+
+Credits: this change as part of xmit encapsulation offloading support
+was originally made by QCA and then submitted for inclusion by John
+Crispin [1]. But the whole work was not accepted due to the lack of a
+part for 64-bits descriptors [2]. Zhijun You then pointed this out to me
+in a reply to my initial RFC patch series. And I made this slightly
+reworked version that covered all the HTT Tx handler variants.
+
+1. https://lore.kernel.org/all/20191216092207.31032-1-john@phrozen.org/
+2. https://patchwork.kernel.org/project/linux-wireless/patch/20191216092207.31032-1-john@phrozen.org/
+
+Reported-by: Zhijun You <hujy652@gmail.com>
+Signed-off-by: Vasanthakumar Thiagarajan <vthiagar@qti.qualcomm.com>
+Signed-off-by: John Crispin <john@phrozen.org>
+Signed-off-by: Sergey Ryazanov <ryazanov.s.a@gmail.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220516032519.29831-3-ryazanov.s.a@gmail.com
+---
+ drivers/net/wireless/ath/ath10k/htt_tx.c | 61 ++++++++++++++++++--------------
+ 1 file changed, 35 insertions(+), 26 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath10k/htt_tx.c
++++ b/drivers/net/wireless/ath/ath10k/htt_tx.c
+@@ -1295,7 +1295,6 @@ static int ath10k_htt_tx_hl(struct ath10
+ 	struct ath10k *ar = htt->ar;
+ 	int res, data_len;
+ 	struct htt_cmd_hdr *cmd_hdr;
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+ 	struct htt_data_tx_desc *tx_desc;
+ 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
+ 	struct sk_buff *tmp_skb;
+@@ -1306,11 +1305,15 @@ static int ath10k_htt_tx_hl(struct ath10
+ 	u16 flags1 = 0;
+ 	u16 msdu_id = 0;
+ 
+-	if ((ieee80211_is_action(hdr->frame_control) ||
+-	     ieee80211_is_deauth(hdr->frame_control) ||
+-	     ieee80211_is_disassoc(hdr->frame_control)) &&
+-	     ieee80211_has_protected(hdr->frame_control)) {
+-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++	if (!is_eth) {
++		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
++
++		if ((ieee80211_is_action(hdr->frame_control) ||
++		     ieee80211_is_deauth(hdr->frame_control) ||
++		     ieee80211_is_disassoc(hdr->frame_control)) &&
++		     ieee80211_has_protected(hdr->frame_control)) {
++			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++		}
+ 	}
+ 
+ 	data_len = msdu->len;
+@@ -1407,7 +1410,6 @@ static int ath10k_htt_tx_32(struct ath10
+ {
+ 	struct ath10k *ar = htt->ar;
+ 	struct device *dev = ar->dev;
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
+ 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
+ 	struct ath10k_hif_sg_item sg_items[2];
+@@ -1439,15 +1441,19 @@ static int ath10k_htt_tx_32(struct ath10
+ 	txbuf_paddr = htt->txbuf.paddr +
+ 		      (sizeof(struct ath10k_htt_txbuf_32) * msdu_id);
+ 
+-	if ((ieee80211_is_action(hdr->frame_control) ||
+-	     ieee80211_is_deauth(hdr->frame_control) ||
+-	     ieee80211_is_disassoc(hdr->frame_control)) &&
+-	     ieee80211_has_protected(hdr->frame_control)) {
+-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+-	} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
+-		   txmode == ATH10K_HW_TXRX_RAW &&
+-		   ieee80211_has_protected(hdr->frame_control)) {
+-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++	if (!is_eth) {
++		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
++
++		if ((ieee80211_is_action(hdr->frame_control) ||
++		     ieee80211_is_deauth(hdr->frame_control) ||
++		     ieee80211_is_disassoc(hdr->frame_control)) &&
++		     ieee80211_has_protected(hdr->frame_control)) {
++			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++		} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
++			   txmode == ATH10K_HW_TXRX_RAW &&
++			   ieee80211_has_protected(hdr->frame_control)) {
++			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++		}
+ 	}
+ 
+ 	skb_cb->paddr = dma_map_single(dev, msdu->data, msdu->len,
+@@ -1609,7 +1615,6 @@ static int ath10k_htt_tx_64(struct ath10
+ {
+ 	struct ath10k *ar = htt->ar;
+ 	struct device *dev = ar->dev;
+-	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+ 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
+ 	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
+ 	struct ath10k_hif_sg_item sg_items[2];
+@@ -1641,15 +1646,19 @@ static int ath10k_htt_tx_64(struct ath10
+ 	txbuf_paddr = htt->txbuf.paddr +
+ 		      (sizeof(struct ath10k_htt_txbuf_64) * msdu_id);
+ 
+-	if ((ieee80211_is_action(hdr->frame_control) ||
+-	     ieee80211_is_deauth(hdr->frame_control) ||
+-	     ieee80211_is_disassoc(hdr->frame_control)) &&
+-	     ieee80211_has_protected(hdr->frame_control)) {
+-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+-	} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
+-		   txmode == ATH10K_HW_TXRX_RAW &&
+-		   ieee80211_has_protected(hdr->frame_control)) {
+-		skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++	if (!is_eth) {
++		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
++
++		if ((ieee80211_is_action(hdr->frame_control) ||
++		     ieee80211_is_deauth(hdr->frame_control) ||
++		     ieee80211_is_disassoc(hdr->frame_control)) &&
++		     ieee80211_has_protected(hdr->frame_control)) {
++			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++		} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
++			   txmode == ATH10K_HW_TXRX_RAW &&
++			   ieee80211_has_protected(hdr->frame_control)) {
++			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
++		}
+ 	}
+ 
+ 	skb_cb->paddr = dma_map_single(dev, msdu->data, msdu->len,
