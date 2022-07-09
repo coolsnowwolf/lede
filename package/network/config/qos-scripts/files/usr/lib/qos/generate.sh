@@ -2,11 +2,10 @@
 [ -e /lib/functions.sh ] && . /lib/functions.sh || . ./functions.sh
 [ -x /sbin/modprobe ] && {
 	insmod="modprobe"
-	rmmod="$insmod -r"
 } || {
 	insmod="insmod"
-	rmmod="rmmod"
 }
+rmmod="rmmod"
 
 add_insmod() {
 	eval "export isset=\${insmod_$1}"
