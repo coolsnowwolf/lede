@@ -12,7 +12,7 @@ config_get teql $INTERFACE teql
 
 if [ "$teql" != "" ]; then
     logger Adding device $DEVICE to TEQL master $teql
-    insmod sch_teql
+    modprobe sch_teql
     tc qdisc add dev $DEVICE root $teql
 
     # The kernel doesn't let us bring it up until it has at least one
