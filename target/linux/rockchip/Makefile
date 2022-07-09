@@ -8,7 +8,7 @@ FEATURES:=ext4 audio usb usbgadget display gpio fpu pci pcie rootfs-part boot-pa
 SUBTARGETS:=armv8
 
 KERNEL_PATCHVER=5.15
-KERNEL_TESTING_PATCHVER=5.10
+KERNEL_TESTING_PATCHVER=5.18
 
 define Target/Description
 	Build firmware image for Rockchip SoC devices.
@@ -18,7 +18,7 @@ include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += uboot-envtools partx-utils e2fsprogs mkf2fs kmod-gpio-button-hotplug \
 		    automount autocore-arm autosamba fdisk cfdisk e2fsprogs ethtool haveged htop \
-		    luci-app-zerotier luci-app-ipsec-vpnd wpad-openssl kmod-mt76x2u usbutils
+		    luci-app-zerotier luci-app-ipsec-vpnd usbutils
 
 KERNELNAME:=Image dtbs
 
