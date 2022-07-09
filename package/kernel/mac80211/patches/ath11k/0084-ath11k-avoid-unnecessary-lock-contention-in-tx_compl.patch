@@ -1,0 +1,102 @@
+From be8867cb47652418e488170785bd9ffbadae3f1f Mon Sep 17 00:00:00 2001
+From: P Praneesh <ppranees@codeaurora.org>
+Date: Fri, 12 Nov 2021 11:06:11 +0200
+Subject: [PATCH] ath11k: avoid unnecessary lock contention in tx_completion
+ path
+
+Avoid unnecessary idr_find calls before the idr_remove calls. Because
+idr_remove gives the valid ptr if id is valid otherwise return NULL ptr.
+So removed the idr_find before idr_remove in tx completion path. Also no
+need to disable the bottom half preempt if it is already in the
+bottom half context, so modify the spin_lock_bh to spin_lock in the
+data tx completion path.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.4.0.1-01734-QCAHKSWPL_SILICONZ-1 v2
+
+Co-developed-by: Karthikeyan Periyasamy <periyasa@codeaurora.org>
+Signed-off-by: Karthikeyan Periyasamy <periyasa@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: P Praneesh <ppranees@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/1630560820-21905-13-git-send-email-ppranees@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/dp_tx.c | 32 +++++++++++--------------
+ 1 file changed, 14 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -293,20 +293,18 @@ static void ath11k_dp_tx_free_txbuf(stru
+ 	struct sk_buff *msdu;
+ 	struct ath11k_skb_cb *skb_cb;
+ 
+-	spin_lock_bh(&tx_ring->tx_idr_lock);
+-	msdu = idr_find(&tx_ring->txbuf_idr, msdu_id);
+-	if (!msdu) {
++	spin_lock(&tx_ring->tx_idr_lock);
++	msdu = idr_remove(&tx_ring->txbuf_idr, msdu_id);
++	spin_unlock(&tx_ring->tx_idr_lock);
++
++	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",
+ 			    msdu_id);
+-		spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 		return;
+ 	}
+ 
+ 	skb_cb = ATH11K_SKB_CB(msdu);
+ 
+-	idr_remove(&tx_ring->txbuf_idr, msdu_id);
+-	spin_unlock_bh(&tx_ring->tx_idr_lock);
+-
+ 	dma_unmap_single(ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
+ 	dev_kfree_skb_any(msdu);
+ 
+@@ -325,12 +323,13 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 	struct ath11k_skb_cb *skb_cb;
+ 	struct ath11k *ar;
+ 
+-	spin_lock_bh(&tx_ring->tx_idr_lock);
+-	msdu = idr_find(&tx_ring->txbuf_idr, ts->msdu_id);
++	spin_lock(&tx_ring->tx_idr_lock);
++	msdu = idr_remove(&tx_ring->txbuf_idr, ts->msdu_id);
++	spin_unlock(&tx_ring->tx_idr_lock);
++
+ 	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "htt tx completion for unknown msdu_id %d\n",
+ 			    ts->msdu_id);
+-		spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 		return;
+ 	}
+ 
+@@ -339,9 +338,6 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 
+ 	ar = skb_cb->ar;
+ 
+-	idr_remove(&tx_ring->txbuf_idr, ts->msdu_id);
+-	spin_unlock_bh(&tx_ring->tx_idr_lock);
+-
+ 	if (atomic_dec_and_test(&ar->dp.num_tx_pending))
+ 		wake_up(&ar->dp.tx_empty_waitq);
+ 
+@@ -584,16 +580,16 @@ void ath11k_dp_tx_completion_handler(str
+ 			continue;
+ 		}
+ 
+-		spin_lock_bh(&tx_ring->tx_idr_lock);
+-		msdu = idr_find(&tx_ring->txbuf_idr, msdu_id);
++		spin_lock(&tx_ring->tx_idr_lock);
++		msdu = idr_remove(&tx_ring->txbuf_idr, msdu_id);
+ 		if (unlikely(!msdu)) {
+ 			ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",
+ 				    msdu_id);
+-			spin_unlock_bh(&tx_ring->tx_idr_lock);
++			spin_unlock(&tx_ring->tx_idr_lock);
+ 			continue;
+ 		}
+-		idr_remove(&tx_ring->txbuf_idr, msdu_id);
+-		spin_unlock_bh(&tx_ring->tx_idr_lock);
++
++		spin_unlock(&tx_ring->tx_idr_lock);
+ 
+ 		ar = ab->pdevs[mac_id].ar;
+ 
