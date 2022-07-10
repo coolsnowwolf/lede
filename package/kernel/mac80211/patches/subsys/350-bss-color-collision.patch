@@ -1,0 +1,118 @@
+From 6d945a33f2b0aa24fc210dadaa0af3e8218e7002 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 25 Mar 2022 11:42:41 +0100
+Subject: [PATCH] mac80211: introduce BSS color collision detection
+
+Add ieee80211_rx_check_bss_color_collision routine in order to introduce
+BSS color collision detection in mac80211 if it is not supported in HW/FW
+(e.g. for mt7915 chipset).
+Add IEEE80211_HW_DETECTS_COLOR_COLLISION flag to let the driver notify
+BSS color collision detection is supported in HW/FW. Set this for ath11k
+which apparently didn't need this code.
+
+Tested-by: Peter Chiu <Chui-Hao.Chiu@mediatek.com>
+Co-developed-by: Ryder Lee <ryder.lee@mediatek.com>
+Signed-off-by: Ryder Lee <ryder.lee@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/a05eeeb1841a84560dc5aaec77894fcb69a54f27.1648204871.git.lorenzo@kernel.org
+[clarify commit message a bit, move flag to mac80211]
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ drivers/net/wireless/ath/ath11k/mac.c |  5 ++-
+ include/net/mac80211.h                |  4 +++
+ net/mac80211/debugfs.c                |  1 +
+ net/mac80211/rx.c                     | 46 +++++++++++++++++++++++++++
+ 4 files changed, 55 insertions(+), 1 deletion(-)
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -2418,6 +2418,9 @@ struct ieee80211_txq {
+  *	usage and 802.11 frames with %RX_FLAG_ONLY_MONITOR set for monitor to
+  *	the stack.
+  *
++ * @IEEE80211_HW_DETECTS_COLOR_COLLISION: HW/driver has support for BSS color
++ *	collision detection and doesn't need it in software.
++ *
+  * @NUM_IEEE80211_HW_FLAGS: number of hardware flags, used for sizing arrays
+  */
+ enum ieee80211_hw_flags {
+@@ -2473,6 +2476,7 @@ enum ieee80211_hw_flags {
+ 	IEEE80211_HW_SUPPORTS_TX_ENCAP_OFFLOAD,
+ 	IEEE80211_HW_SUPPORTS_RX_DECAP_OFFLOAD,
+ 	IEEE80211_HW_SUPPORTS_CONC_MON_RX_DECAP,
++	IEEE80211_HW_DETECTS_COLOR_COLLISION,
+ 
+ 	/* keep last, obviously */
+ 	NUM_IEEE80211_HW_FLAGS
+--- a/net/mac80211/debugfs.c
++++ b/net/mac80211/debugfs.c
+@@ -494,6 +494,7 @@ static const char *hw_flag_names[] = {
+ 	FLAG(SUPPORTS_TX_ENCAP_OFFLOAD),
+ 	FLAG(SUPPORTS_RX_DECAP_OFFLOAD),
+ 	FLAG(SUPPORTS_CONC_MON_RX_DECAP),
++	FLAG(DETECTS_COLOR_COLLISION),
+ #undef FLAG
+ };
+ 
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -3181,6 +3181,49 @@ static void ieee80211_process_sa_query_r
+ 	ieee80211_tx_skb(sdata, skb);
+ }
+ 
++static void
++ieee80211_rx_check_bss_color_collision(struct ieee80211_rx_data *rx)
++{
++	struct ieee80211_mgmt *mgmt = (void *)rx->skb->data;
++	const struct element *ie;
++	size_t baselen;
++
++	if (!wiphy_ext_feature_isset(rx->local->hw.wiphy,
++				     NL80211_EXT_FEATURE_BSS_COLOR))
++		return;
++
++	if (ieee80211_hw_check(&rx->local->hw, DETECTS_COLOR_COLLISION))
++		return;
++
++	if (rx->sdata->vif.csa_active)
++		return;
++
++	baselen = mgmt->u.beacon.variable - rx->skb->data;
++	if (baselen > rx->skb->len)
++		return;
++
++	ie = cfg80211_find_ext_elem(WLAN_EID_EXT_HE_OPERATION,
++				    mgmt->u.beacon.variable,
++				    rx->skb->len - baselen);
++	if (ie && ie->datalen >= sizeof(struct ieee80211_he_operation) &&
++	    ie->datalen >= ieee80211_he_oper_size(ie->data + 1)) {
++		struct ieee80211_bss_conf *bss_conf = &rx->sdata->vif.bss_conf;
++		const struct ieee80211_he_operation *he_oper;
++		u8 color;
++
++		he_oper = (void *)(ie->data + 1);
++		if (le32_get_bits(he_oper->he_oper_params,
++				  IEEE80211_HE_OPERATION_BSS_COLOR_DISABLED))
++			return;
++
++		color = le32_get_bits(he_oper->he_oper_params,
++				      IEEE80211_HE_OPERATION_BSS_COLOR_MASK);
++		if (color == bss_conf->he_bss_color.color)
++			ieeee80211_obss_color_collision_notify(&rx->sdata->vif,
++							       BIT_ULL(color));
++	}
++}
++
+ static ieee80211_rx_result debug_noinline
+ ieee80211_rx_h_mgmt_check(struct ieee80211_rx_data *rx)
+ {
+@@ -3206,6 +3249,9 @@ ieee80211_rx_h_mgmt_check(struct ieee802
+ 	    !(rx->flags & IEEE80211_RX_BEACON_REPORTED)) {
+ 		int sig = 0;
+ 
++		/* sw bss color collision detection */
++		ieee80211_rx_check_bss_color_collision(rx);
++
+ 		if (ieee80211_hw_check(&rx->local->hw, SIGNAL_DBM) &&
+ 		    !(status->flag & RX_FLAG_NO_SIGNAL_VAL))
+ 			sig = status->signal;
