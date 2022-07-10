@@ -521,18 +521,16 @@ define Device/hiwifi_c526a
 endef
 TARGET_DEVICES += hiwifi_c526a
 
-define Device/hugo_ac1200
-	$(call Device/FitImage)
-	DEVICE_VENDOR := Hugo
-	DEVICE_MODEL := AC1200
-	BOARD_NAME := hugo_ac1200
-	DEVICE_DTS := qcom-ipq4019-hugo-ac1200
+define Device/leguang_ca100
+	$(call Device/FitzImage)
+	DEVICE_VENDOR := LEGUANG
+	DEVICE_MODEL := CA100
+	SOC := qcom-ipq4019
 	KERNEL_SIZE := 4096k
 	IMAGE_SIZE := 31232k
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ipq-wifi-hugo_ac1200
 endef
-TARGET_DEVICES += hugo_ac1200
+TARGET_DEVICES += leguang_ca100
 
 define Device/linksys_ea6350v3
 	# The Linksys EA6350v3 has a uboot bootloader that does not
