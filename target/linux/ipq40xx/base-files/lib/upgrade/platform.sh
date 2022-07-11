@@ -182,7 +182,8 @@ platform_do_upgrade() {
 	cilab,meshpoint-one |\
 	hiwifi,c526a |\
 	mobipromo,cm520-79f |\
-	qxwlan,e2600ac-c2)
+	qxwlan,e2600ac-c2 |\
+	zte,mf263)
 		nand_do_upgrade "$1"
 		;;
 	alfa-network,ap120c-ac)
@@ -211,10 +212,6 @@ platform_do_upgrade() {
 		else
 			asus_nand_upgrade_tar 20951040 "$1"
 		fi
-		;;
-	zte,mf263)
-		PART_NAME=rootfs
-		nand_do_upgrade "$1"
 		;;
 	cellc,rtl30vw)
 		CI_UBIPART="ubifs"

@@ -1,0 +1,97 @@
+From 94936600fce68845edea66ae6d06ad12d6469e0b Mon Sep 17 00:00:00 2001
+From: Ritaro Takenaka <ritarot634@gmail.com>
+Date: Tue, 31 May 2022 00:25:08 +0900
+Subject: [PATCH] netfilter: flowtable: add check_dst in packet path
+
+Flow offload dst can become invalid after the route cache is created.
+dst_check() in packet path is necessary to prevent packet drop.
+
+[ Upstream commit  2738d9d963bd1f06d5114c2b4fa5771a95703991
+                   8b9229d15877ec77775633f058d14145f6eb98fa
+                   e5075c0badaaac245a6fa0b4625b5cd714d8ade3 ]
+
+Signed-off-by: Ritaro Takenaka <ritarot634@gmail.com>
+---
+ include/net/netfilter/nf_flow_table.h |  5 ++++-
+ net/netfilter/nf_flow_table_core.c    | 13 +++++++++++++
+ net/netfilter/nf_flow_table_ip.c      | 12 ++----------
+ 3 files changed, 19 insertions(+), 11 deletions(-)
+
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -56,7 +56,10 @@ struct flow_offload_tuple {
+ 
+ 	u16				mtu;
+ 
+-	struct dst_entry		*dst_cache;
++	struct {
++		struct dst_entry *dst_cache;
++		u32		dst_cookie;
++	};
+ };
+ 
+ struct flow_offload_tuple_rhash {
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -23,6 +23,18 @@ struct flow_offload_entry {
+ static DEFINE_MUTEX(flowtable_lock);
+ static LIST_HEAD(flowtables);
+ 
++static u32 flow_offload_dst_cookie(struct flow_offload_tuple *flow_tuple)
++{
++	const struct rt6_info *rt;
++
++	if (flow_tuple->l3proto == NFPROTO_IPV6) {
++		rt = (const struct rt6_info *)flow_tuple->dst_cache;
++		return rt6_get_cookie(rt);
++	}
++
++	return 0;
++}
++
+ static void
+ flow_offload_fill_dir(struct flow_offload *flow, struct nf_conn *ct,
+ 		      struct nf_flow_route *route,
+@@ -55,6 +67,7 @@ flow_offload_fill_dir(struct flow_offloa
+ 
+ 	ft->iifidx = other_dst->dev->ifindex;
+ 	ft->dst_cache = dst;
++	ft->dst_cookie = flow_offload_dst_cookie(ft);
+ }
+ 
+ struct flow_offload *
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -215,14 +215,6 @@ static bool nf_flow_exceeds_mtu(const st
+ 	return true;
+ }
+ 
+-static int nf_flow_offload_dst_check(struct dst_entry *dst)
+-{
+-	if (unlikely(dst_xfrm(dst)))
+-		return dst_check(dst, 0) ? 0 : -1;
+-
+-	return 0;
+-}
+-
+ static unsigned int nf_flow_xmit_xfrm(struct sk_buff *skb,
+ 				      const struct nf_hook_state *state,
+ 				      struct dst_entry *dst)
+@@ -273,7 +265,7 @@ nf_flow_offload_ip_hook(void *priv, stru
+ 	if (nf_flow_state_check(flow, ip_hdr(skb)->protocol, skb, thoff))
+ 		return NF_ACCEPT;
+ 
+-	if (nf_flow_offload_dst_check(&rt->dst)) {
++	if (!dst_check(&rt->dst, 0)) {
+ 		flow_offload_teardown(flow);
+ 		return NF_ACCEPT;
+ 	}
+@@ -500,7 +492,7 @@ nf_flow_offload_ipv6_hook(void *priv, st
+ 				sizeof(*ip6h)))
+ 		return NF_ACCEPT;
+ 
+-	if (nf_flow_offload_dst_check(&rt->dst)) {
++	if (!dst_check(&rt->dst, tuplehash->tuple.dst_cookie)) {
+ 		flow_offload_teardown(flow);
+ 		return NF_ACCEPT;
+ 	}
