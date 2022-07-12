@@ -1,0 +1,173 @@
+From ea6da572fe3cee637319f1e7e588c059622c815e Mon Sep 17 00:00:00 2001
+From: Peter Geis <pgwipeout@gmail.com>
+Date: Wed, 22 Dec 2021 19:52:38 -0500
+Subject: [PATCH 11/11] rockchip: rk356x: attempt to fix ram detection
+
+Signed-off-by: Peter Geis <pgwipeout@gmail.com>
+---
+ arch/arm/mach-rockchip/rk3568/rk3568.c | 29 ++++++++++++++++++++++++
+ arch/arm/mach-rockchip/sdram.c         | 31 ++++++++++++++------------
+ common/board_f.c                       |  7 ++++++
+ configs/quartz64-a-rk3566_defconfig    |  1 +
+ include/configs/rk3568_common.h        |  5 +++++
+ 5 files changed, 59 insertions(+), 14 deletions(-)
+
+--- a/arch/arm/mach-rockchip/rk3568/rk3568.c
++++ b/arch/arm/mach-rockchip/rk3568/rk3568.c
+@@ -5,6 +5,7 @@
+ 
+ #include <common.h>
+ #include <dm.h>
++#include <fdt_support.h>
+ #include <asm/armv8/mmu.h>
+ #include <asm/io.h>
+ #include <asm/arch-rockchip/bootrom.h>
+@@ -135,3 +136,31 @@ int arch_cpu_init(void)
+ #endif
+ 	return 0;
+ }
++
++#ifdef CONFIG_OF_SYSTEM_SETUP
++int ft_system_setup(void *blob, struct bd_info *bd)
++{
++	int ret;
++	int areas = 1;
++	u64 start[2], size[2];
++
++	/* Reserve the io address space. */
++	if (gd->ram_top > SDRAM_UPPER_ADDR_MIN) {
++		start[0] = gd->bd->bi_dram[0].start;
++		size[0] = SDRAM_LOWER_ADDR_MAX - gd->bd->bi_dram[0].start;
++
++		/* Add the upper 4GB address space */
++		start[1] = SDRAM_UPPER_ADDR_MIN;
++		size[1] = gd->ram_top - SDRAM_UPPER_ADDR_MIN;
++		areas = 2;
++
++		ret = fdt_set_usable_memory(blob, start, size, areas);
++		if (ret) {
++			printf("Cannot set usable memory\n");
++			return ret;
++		}
++	}
++
++	return 0;
++};
++#endif
+--- a/arch/arm/mach-rockchip/sdram.c
++++ b/arch/arm/mach-rockchip/sdram.c
+@@ -3,6 +3,8 @@
+  * Copyright (C) 2017 Rockchip Electronics Co., Ltd.
+  */
+ 
++#define DEBUG
++
+ #include <common.h>
+ #include <dm.h>
+ #include <init.h>
+@@ -98,8 +100,7 @@ size_t rockchip_sdram_size(phys_addr_t r
+ 			  SYS_REG_COL_MASK);
+ 		cs1_col = cs0_col;
+ 		bk = 3 - ((sys_reg2 >> SYS_REG_BK_SHIFT(ch)) & SYS_REG_BK_MASK);
+-		if ((sys_reg3 >> SYS_REG_VERSION_SHIFT &
+-		     SYS_REG_VERSION_MASK) == 0x2) {
++		if ((sys_reg3 >> SYS_REG_VERSION_SHIFT & SYS_REG_VERSION_MASK) >= 0x2) {
+ 			cs1_col = 9 + (sys_reg3 >> SYS_REG_CS1_COL_SHIFT(ch) &
+ 				  SYS_REG_CS1_COL_MASK);
+ 			if (((sys_reg3 >> SYS_REG_EXTEND_CS0_ROW_SHIFT(ch) &
+@@ -136,7 +137,7 @@ size_t rockchip_sdram_size(phys_addr_t r
+ 			SYS_REG_BW_MASK));
+ 		row_3_4 = sys_reg2 >> SYS_REG_ROW_3_4_SHIFT(ch) &
+ 			SYS_REG_ROW_3_4_MASK;
+-		if (dram_type == DDR4) {
++		if ((dram_type == DDR4) && (sys_reg3 >> SYS_REG_VERSION_SHIFT & SYS_REG_VERSION_MASK) != 0x3){
+ 			dbw = (sys_reg2 >> SYS_REG_DBW_SHIFT(ch)) &
+ 				SYS_REG_DBW_MASK;
+ 			bg = (dbw == 2) ? 2 : 1;
+@@ -150,15 +151,11 @@ size_t rockchip_sdram_size(phys_addr_t r
+ 			chipsize_mb = chipsize_mb * 3 / 4;
+ 		size_mb += chipsize_mb;
+ 		if (rank > 1)
+-			debug("rank %d cs0_col %d cs1_col %d bk %d cs0_row %d\
+-			       cs1_row %d bw %d row_3_4 %d\n",
+-			       rank, cs0_col, cs1_col, bk, cs0_row,
+-			       cs1_row, bw, row_3_4);
++			debug("rank=%d cs0_col=%d cs1_col=%d bk=%d cs0_row=%d cs1_row=%d bg=%d bw=%d row_3_4=%d\n",
++			       rank, cs0_col, cs1_col, bk, cs0_row, cs1_row, bg, bw, row_3_4);
+ 		else
+-			debug("rank %d cs0_col %d bk %d cs0_row %d\
+-			       bw %d row_3_4 %d\n",
+-			       rank, cs0_col, bk, cs0_row,
+-			       bw, row_3_4);
++			debug("rank %d cs0_col %d bk %d cs0_row %d bw %d row_3_4 %d\n",
++			       rank, cs0_col, bk, cs0_row, bw, row_3_4);
+ 	}
+ 
+ 	/*
+@@ -176,9 +173,11 @@ size_t rockchip_sdram_size(phys_addr_t r
+ 	 *   2. update board_get_usable_ram_top() and dram_init_banksize()
+ 	 *   to reserve memory for peripheral space after previous update.
+ 	 */
++
++#ifndef __aarch64__
+ 	if (size_mb > (SDRAM_MAX_SIZE >> 20))
+ 		size_mb = (SDRAM_MAX_SIZE >> 20);
+-
++#endif
+ 	return (size_t)size_mb << 20;
+ }
+ 
+@@ -208,6 +207,10 @@ int dram_init(void)
+ ulong board_get_usable_ram_top(ulong total_size)
+ {
+ 	unsigned long top = CONFIG_SYS_SDRAM_BASE + SDRAM_MAX_SIZE;
+-
+-	return (gd->ram_top > top) ? top : gd->ram_top;
++#ifdef SDRAM_UPPER_ADDR_MIN
++	if (gd->ram_top > SDRAM_UPPER_ADDR_MIN)
++		return gd->ram_top;
++	else
++#endif
++		return (gd->ram_top > top) ? top : gd->ram_top;
+ }
+--- a/common/board_f.c
++++ b/common/board_f.c
+@@ -345,7 +345,14 @@ static int setup_dest_addr(void)
+ #endif
+ 	gd->ram_top = gd->ram_base + get_effective_memsize();
+ 	gd->ram_top = board_get_usable_ram_top(gd->mon_len);
++#ifdef SDRAM_LOWER_ADDR_MAX
++	if (gd->ram_top > SDRAM_LOWER_ADDR_MAX)
++		gd->relocaddr = SDRAM_LOWER_ADDR_MAX;
++	else
++		gd->relocaddr = gd->ram_top;
++#else
+ 	gd->relocaddr = gd->ram_top;
++#endif
+ 	debug("Ram top: %08lX\n", (ulong)gd->ram_top);
+ #if defined(CONFIG_MP) && (defined(CONFIG_MPC86xx) || defined(CONFIG_E500))
+ 	/*
+--- a/configs/quartz64-a-rk3566_defconfig
++++ b/configs/quartz64-a-rk3566_defconfig
+@@ -21,6 +21,7 @@ CONFIG_API=y
+ CONFIG_FIT=y
+ CONFIG_FIT_VERBOSE=y
+ CONFIG_SPL_LOAD_FIT=y
++CONFIG_OF_SYSTEM_SETUP=y
+ CONFIG_DEFAULT_FDT_FILE="rockchip/rk3566-quartz64-a.dtb"
+ # CONFIG_SYS_DEVICE_NULLDEV is not set
+ # CONFIG_DISPLAY_CPUINFO is not set
+--- a/include/configs/rk3568_common.h
++++ b/include/configs/rk3568_common.h
+@@ -24,6 +24,11 @@
+ #define CONFIG_SYS_SDRAM_BASE		0
+ #define SDRAM_MAX_SIZE			0xf0000000
+ 
++#ifdef CONFIG_OF_SYSTEM_SETUP
++#define SDRAM_LOWER_ADDR_MAX		0xf0000000
++#define SDRAM_UPPER_ADDR_MIN		0x100000000
++#endif
++
+ #ifndef CONFIG_SPL_BUILD
+ #define ENV_MEM_LAYOUT_SETTINGS		\
+ 	"scriptaddr=0x00c00000\0"	\
