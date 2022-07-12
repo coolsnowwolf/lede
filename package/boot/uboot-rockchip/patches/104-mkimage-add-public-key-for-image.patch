@@ -1,0 +1,166 @@
+--- a/include/image.h
++++ b/include/image.h
+@@ -1020,21 +1020,6 @@ int fit_image_hash_get_value(const void
+ 
+ int fit_set_timestamp(void *fit, int noffset, time_t timestamp);
+ 
+-/**
+- * fit_pre_load_data() - add public key to fdt blob
+- *
+- * Adds public key to the node pre load.
+- *
+- * @keydir:	Directory containing keys
+- * @keydest:	FDT blob to write public key
+- * @fit:	Pointer to the FIT format image header
+- *
+- * returns:
+- *	0, on success
+- *	< 0, on failure
+- */
+-int fit_pre_load_data(const char *keydir, void *keydest, void *fit);
+-
+ int fit_cipher_data(const char *keydir, void *keydest, void *fit,
+ 		    const char *comment, int require_keys,
+ 		    const char *engine_id, const char *cmdname);
+--- a/tools/fit_image.c
++++ b/tools/fit_image.c
+@@ -59,9 +59,6 @@ static int fit_add_file_data(struct imag
+ 		ret = fit_set_timestamp(ptr, 0, time);
+ 	}
+ 
+-	if (!ret)
+-		ret = fit_pre_load_data(params->keydir, dest_blob, ptr);
+-
+ 	if (!ret) {
+ 		ret = fit_cipher_data(params->keydir, dest_blob, ptr,
+ 				      params->comment,
+--- a/tools/image-host.c
++++ b/tools/image-host.c
+@@ -14,11 +14,6 @@
+ #include <image.h>
+ #include <version.h>
+ 
+-#include <openssl/pem.h>
+-#include <openssl/evp.h>
+-
+-#define IMAGE_PRE_LOAD_PATH                             "/image/pre-load/sig"
+-
+ /**
+  * fit_set_hash_value - set hash value in requested has node
+  * @fit: pointer to the FIT format image header
+@@ -1116,115 +1111,6 @@ static int fit_config_add_verification_d
+ 	return 0;
+ }
+ 
+-/*
+- * 0) open file (open)
+- * 1) read certificate (PEM_read_X509)
+- * 2) get public key (X509_get_pubkey)
+- * 3) provide der format (d2i_RSAPublicKey)
+- */
+-static int read_pub_key(const char *keydir, const void *name,
+-			unsigned char **pubkey, int *pubkey_len)
+-{
+-	char path[1024];
+-	EVP_PKEY *key = NULL;
+-	X509 *cert;
+-	FILE *f;
+-	int ret;
+-
+-	memset(path, 0, 1024);
+-	snprintf(path, sizeof(path), "%s/%s.crt", keydir, (char *)name);
+-
+-	/* Open certificate file */
+-	f = fopen(path, "r");
+-	if (!f) {
+-		fprintf(stderr, "Couldn't open RSA certificate: '%s': %s\n",
+-			path, strerror(errno));
+-		return -EACCES;
+-	}
+-
+-	/* Read the certificate */
+-	cert = NULL;
+-	if (!PEM_read_X509(f, &cert, NULL, NULL)) {
+-		printf("Couldn't read certificate");
+-		ret = -EINVAL;
+-		goto err_cert;
+-	}
+-
+-	/* Get the public key from the certificate. */
+-	key = X509_get_pubkey(cert);
+-	if (!key) {
+-		printf("Couldn't read public key\n");
+-		ret = -EINVAL;
+-		goto err_pubkey;
+-	}
+-
+-	/* Get DER form */
+-	ret = i2d_PublicKey(key, pubkey);
+-	if (ret < 0) {
+-		printf("Couldn't get DER form\n");
+-		ret = -EINVAL;
+-		goto err_pubkey;
+-	}
+-
+-	*pubkey_len = ret;
+-	ret = 0;
+-
+-err_pubkey:
+-	X509_free(cert);
+-err_cert:
+-	fclose(f);
+-	return ret;
+-}
+-
+-int fit_pre_load_data(const char *keydir, void *keydest, void *fit)
+-{
+-	int pre_load_noffset;
+-	const void *algo_name;
+-	const void *key_name;
+-	unsigned char *pubkey = NULL;
+-	int ret, pubkey_len;
+-
+-	if (!keydir || !keydest || !fit)
+-		return 0;
+-
+-	/* Search node pre-load sig */
+-	pre_load_noffset = fdt_path_offset(keydest, IMAGE_PRE_LOAD_PATH);
+-	if (pre_load_noffset < 0) {
+-		ret = 0;
+-		goto out;
+-	}
+-
+-	algo_name = fdt_getprop(keydest, pre_load_noffset, "algo-name", NULL);
+-	key_name  = fdt_getprop(keydest, pre_load_noffset, "key-name", NULL);
+-
+-	/* Check that all mandatory properties are present */
+-	if (!algo_name || !key_name) {
+-		if (!algo_name)
+-			printf("The property algo-name is missing in the node %s\n",
+-			       IMAGE_PRE_LOAD_PATH);
+-		if (!key_name)
+-			printf("The property key-name is missing in the node %s\n",
+-			       IMAGE_PRE_LOAD_PATH);
+-		ret = -EINVAL;
+-		goto out;
+-	}
+-
+-	/* Read public key */
+-	ret = read_pub_key(keydir, key_name, &pubkey, &pubkey_len);
+-	if (ret < 0)
+-		goto out;
+-
+-	/* Add the public key to the device tree */
+-	ret = fdt_setprop(keydest, pre_load_noffset, "public-key",
+-			  pubkey, pubkey_len);
+-	if (ret)
+-		printf("Can't set public-key in node %s (ret = %d)\n",
+-		       IMAGE_PRE_LOAD_PATH, ret);
+-
+- out:
+-	return ret;
+-}
+-
+ int fit_cipher_data(const char *keydir, void *keydest, void *fit,
+ 		    const char *comment, int require_keys,
+ 		    const char *engine_id, const char *cmdname)
