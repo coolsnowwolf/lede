@@ -17,17 +17,7 @@ case "$VARIANT" in
 	DDR="rk33/rk3399_ddr_800MHz_v1.25.bin"
 	LOADER="rk33/rk3399_miniloader_v1.26.bin"
 	;;
-"rk3566")
-	ATF="rk35/rk3568_bl31_v1.24.elf"
-	DDR="rk35/rk3566_ddr_1056MHz_v1.08.bin"
-	LOADER="rk35/rk356x_spl_v1.11.bin"
-	;;
-"rk3568")
-	ATF="rk35/rk3568_bl31_v1.24.elf"
-	DDR="rk35/rk3568_ddr_1560MHz_v1.08.bin"
-	LOADER="rk35/rk356x_spl_v1.11.bin"
-	;;
-*)	
+*)
 	echo -e "Not compatible with your platform: $VARIANT."
 	exit 1
 	;;
