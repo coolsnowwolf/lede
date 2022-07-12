@@ -175,6 +175,14 @@ define U-Boot/mt7629_rfb
   UBOOT_CONFIG:=mt7629_rfb
 endef
 
+define U-Boot/mt7986_rfb
+  NAME:=MT7986 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7986-rfb
+  UBOOT_CONFIG:=mt7986_rfb
+  UBOOT_IMAGE:=u-boot.bin
+endef
+
 UBOOT_TARGETS := \
 	mt7620_mt7530_rfb \
 	mt7620_rfb \
@@ -190,7 +198,8 @@ UBOOT_TARGETS := \
 	mt7623a_unielec_u7623 \
 	mt7628_rfb \
 	ravpower_rp-wd009 \
-	mt7629_rfb
+	mt7629_rfb \
+	mt7986_rfb
 
 ifdef CONFIG_TARGET_mediatek
 UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE:.fip=.bin)

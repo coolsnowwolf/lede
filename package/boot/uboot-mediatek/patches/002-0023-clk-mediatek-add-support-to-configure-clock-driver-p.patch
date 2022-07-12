@@ -1,0 +1,198 @@
+From cd4d6be5ed0488de2e0df9c388d89ad93d781caa Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Fri, 29 Jul 2022 10:57:05 +0800
+Subject: [PATCH 23/31] clk: mediatek: add support to configure clock driver
+ parent
+
+This patch adds support for a clock node to configure its parent clock
+where possible.
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/clk/mediatek/clk-mtk.c | 79 ++++++++++++++++++++--------------
+ drivers/clk/mediatek/clk-mtk.h |  2 +
+ 2 files changed, 48 insertions(+), 33 deletions(-)
+
+--- a/drivers/clk/mediatek/clk-mtk.c
++++ b/drivers/clk/mediatek/clk-mtk.c
+@@ -42,20 +42,14 @@
+  * the accurate frequency.
+  */
+ static ulong mtk_clk_find_parent_rate(struct clk *clk, int id,
+-				      const struct driver *drv)
++				      struct udevice *pdev)
+ {
+ 	struct clk parent = { .id = id, };
+ 
+-	if (drv) {
+-		struct udevice *dev;
+-
+-		if (uclass_get_device_by_driver(UCLASS_CLK, drv, &dev))
+-			return -ENODEV;
+-
+-		parent.dev = dev;
+-	} else {
++	if (pdev)
++		parent.dev = pdev;
++	else
+ 		parent.dev = clk->dev;
+-	}
+ 
+ 	return clk_get_rate(&parent);
+ }
+@@ -296,7 +290,7 @@ static ulong mtk_topckgen_get_factor_rat
+ 	switch (fdiv->flags & CLK_PARENT_MASK) {
+ 	case CLK_PARENT_APMIXED:
+ 		rate = mtk_clk_find_parent_rate(clk, fdiv->parent,
+-				DM_DRIVER_GET(mtk_clk_apmixedsys));
++						priv->parent);
+ 		break;
+ 	case CLK_PARENT_TOPCKGEN:
+ 		rate = mtk_clk_find_parent_rate(clk, fdiv->parent, NULL);
+@@ -322,9 +316,18 @@ static ulong mtk_topckgen_get_mux_rate(s
+ 
+ 	if (mux->parent[index] == CLK_XTAL && priv->tree->flags & CLK_BYPASS_XTAL)
+ 		flag = 1;
+-	if (mux->parent[index] > 0 || flag == 1)
+-		return mtk_clk_find_parent_rate(clk, mux->parent[index],
+-						NULL);
++	if (mux->parent[index] > 0 || flag == 1) {
++		switch (mux->flags & CLK_PARENT_MASK) {
++		case CLK_PARENT_APMIXED:
++			return mtk_clk_find_parent_rate(clk, mux->parent[index],
++							priv->parent);
++			break;
++		default:
++			return mtk_clk_find_parent_rate(clk, mux->parent[index],
++							NULL);
++			break;
++		}
++	}
+ 
+ 	return priv->tree->xtal_rate;
+ }
+@@ -343,7 +346,7 @@ static ulong mtk_topckgen_get_rate(struc
+ 						 priv->tree->muxes_offs);
+ }
+ 
+-static int mtk_topckgen_enable(struct clk *clk)
++static int mtk_clk_mux_enable(struct clk *clk)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+ 	const struct mtk_composite *mux;
+@@ -376,7 +379,7 @@ static int mtk_topckgen_enable(struct cl
+ 	return 0;
+ }
+ 
+-static int mtk_topckgen_disable(struct clk *clk)
++static int mtk_clk_mux_disable(struct clk *clk)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+ 	const struct mtk_composite *mux;
+@@ -402,7 +405,7 @@ static int mtk_topckgen_disable(struct c
+ 	return 0;
+ }
+ 
+-static int mtk_topckgen_set_parent(struct clk *clk, struct clk *parent)
++static int mtk_common_clk_set_parent(struct clk *clk, struct clk *parent)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+ 
+@@ -474,19 +477,7 @@ static ulong mtk_clk_gate_get_rate(struc
+ 	struct mtk_cg_priv *priv = dev_get_priv(clk->dev);
+ 	const struct mtk_gate *gate = &priv->gates[clk->id];
+ 
+-	switch (gate->flags & CLK_PARENT_MASK) {
+-	case CLK_PARENT_APMIXED:
+-		return mtk_clk_find_parent_rate(clk, gate->parent,
+-				DM_DRIVER_GET(mtk_clk_apmixedsys));
+-		break;
+-	case CLK_PARENT_TOPCKGEN:
+-		return mtk_clk_find_parent_rate(clk, gate->parent,
+-				DM_DRIVER_GET(mtk_clk_topckgen));
+-		break;
+-
+-	default:
+-		return priv->tree->xtal_rate;
+-	}
++	return mtk_clk_find_parent_rate(clk, gate->parent, priv->parent);
+ }
+ 
+ const struct clk_ops mtk_clk_apmixedsys_ops = {
+@@ -497,10 +488,10 @@ const struct clk_ops mtk_clk_apmixedsys_
+ };
+ 
+ const struct clk_ops mtk_clk_topckgen_ops = {
+-	.enable = mtk_topckgen_enable,
+-	.disable = mtk_topckgen_disable,
++	.enable = mtk_clk_mux_enable,
++	.disable = mtk_clk_mux_disable,
+ 	.get_rate = mtk_topckgen_get_rate,
+-	.set_parent = mtk_topckgen_set_parent,
++	.set_parent = mtk_common_clk_set_parent,
+ };
+ 
+ const struct clk_ops mtk_clk_gate_ops = {
+@@ -513,11 +504,22 @@ int mtk_common_clk_init(struct udevice *
+ 			const struct mtk_clk_tree *tree)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(dev);
++	struct udevice *parent;
++	int ret;
+ 
+ 	priv->base = dev_read_addr_ptr(dev);
+ 	if (!priv->base)
+ 		return -ENOENT;
+ 
++	ret = uclass_get_device_by_phandle(UCLASS_CLK, dev, "clock-parent", &parent);
++	if (ret || !parent) {
++		ret = uclass_get_device_by_driver(UCLASS_CLK,
++				DM_DRIVER_GET(mtk_clk_apmixedsys), &parent);
++		if (ret || !parent)
++			return -ENOENT;
++	}
++
++	priv->parent = parent;
+ 	priv->tree = tree;
+ 
+ 	return 0;
+@@ -528,11 +530,22 @@ int mtk_common_clk_gate_init(struct udev
+ 			     const struct mtk_gate *gates)
+ {
+ 	struct mtk_cg_priv *priv = dev_get_priv(dev);
++	struct udevice *parent;
++	int ret;
+ 
+ 	priv->base = dev_read_addr_ptr(dev);
+ 	if (!priv->base)
+ 		return -ENOENT;
+ 
++	ret = uclass_get_device_by_phandle(UCLASS_CLK, dev, "clock-parent", &parent);
++	if (ret || !parent) {
++		ret = uclass_get_device_by_driver(UCLASS_CLK,
++				DM_DRIVER_GET(mtk_clk_topckgen), &parent);
++		if (ret || !parent)
++			return -ENOENT;
++	}
++
++	priv->parent = parent;
+ 	priv->tree = tree;
+ 	priv->gates = gates;
+ 
+--- a/drivers/clk/mediatek/clk-mtk.h
++++ b/drivers/clk/mediatek/clk-mtk.h
+@@ -206,11 +206,13 @@ struct mtk_clk_tree {
+ };
+ 
+ struct mtk_clk_priv {
++	struct udevice *parent;
+ 	void __iomem *base;
+ 	const struct mtk_clk_tree *tree;
+ };
+ 
+ struct mtk_cg_priv {
++	struct udevice *parent;
+ 	void __iomem *base;
+ 	const struct mtk_clk_tree *tree;
+ 	const struct mtk_gate *gates;
