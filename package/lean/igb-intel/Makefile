@@ -32,7 +32,7 @@ define KernelPackage/igb-intel
   SUBMENU:=Network Devices
   TITLE:=Intel igb drivers - oot version from Intel
   DEPENDS:=+kmod-ptp @PCI_SUPPORT
-  CONFLICT:=kmod-igb
+  CONFLICTS:=kmod-igb
   KCONFIG:=CONFIG_IGB \
     CONFIG_IGB_HWMON=n \
     CONFIG_IGB_DCA=n
