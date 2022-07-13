@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kmod-igb-intel
 PKG_VERSION:=5.10.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=igb-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://downloads.sourceforge.net/project/e1000/igb%20stable/$(PKG_VERSION)/
@@ -31,7 +31,8 @@ MAKE_OPTS:= \
 define KernelPackage/igb-intel
   SUBMENU:=Network Devices
   TITLE:=Intel igb drivers - oot version from Intel
-  DEPENDS:=+kmod-ptp @PCI_SUPPORT 
+  DEPENDS:=+kmod-ptp @PCI_SUPPORT
+  CONFLICT:=kmod-igb
   KCONFIG:=CONFIG_IGB \
     CONFIG_IGB_HWMON=n \
     CONFIG_IGB_DCA=n
