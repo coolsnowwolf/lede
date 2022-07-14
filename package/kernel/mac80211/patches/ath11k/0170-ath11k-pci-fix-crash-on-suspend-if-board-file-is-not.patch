@@ -1,0 +1,84 @@
+From b4f4c56459a5c744f7f066b9fc2b54ea995030c5 Mon Sep 17 00:00:00 2001
+From: Kalle Valo <quic_kvalo@quicinc.com>
+Date: Thu, 27 Jan 2022 11:01:16 +0200
+Subject: [PATCH] ath11k: pci: fix crash on suspend if board file is not found
+
+Mario reported that the kernel was crashing on suspend if ath11k was not able
+to find a board file:
+
+[  473.693286] PM: Suspending system (s2idle)
+[  473.693291] printk: Suspending console(s) (use no_console_suspend to debug)
+[  474.407787] BUG: unable to handle page fault for address: 0000000000002070
+[  474.407791] #PF: supervisor read access in kernel mode
+[  474.407794] #PF: error_code(0x0000) - not-present page
+[  474.407798] PGD 0 P4D 0
+[  474.407801] Oops: 0000 [#1] PREEMPT SMP NOPTI
+[  474.407805] CPU: 2 PID: 2350 Comm: kworker/u32:14 Tainted: G        W         5.16.0 #248
+[...]
+[  474.407868] Call Trace:
+[  474.407870]  <TASK>
+[  474.407874]  ? _raw_spin_lock_irqsave+0x2a/0x60
+[  474.407882]  ? lock_timer_base+0x72/0xa0
+[  474.407889]  ? _raw_spin_unlock_irqrestore+0x29/0x3d
+[  474.407892]  ? try_to_del_timer_sync+0x54/0x80
+[  474.407896]  ath11k_dp_rx_pktlog_stop+0x49/0xc0 [ath11k]
+[  474.407912]  ath11k_core_suspend+0x34/0x130 [ath11k]
+[  474.407923]  ath11k_pci_pm_suspend+0x1b/0x50 [ath11k_pci]
+[  474.407928]  pci_pm_suspend+0x7e/0x170
+[  474.407935]  ? pci_pm_freeze+0xc0/0xc0
+[  474.407939]  dpm_run_callback+0x4e/0x150
+[  474.407947]  __device_suspend+0x148/0x4c0
+[  474.407951]  async_suspend+0x20/0x90
+dmesg-efi-164255130401001:
+Oops#1 Part1
+[  474.407955]  async_run_entry_fn+0x33/0x120
+[  474.407959]  process_one_work+0x220/0x3f0
+[  474.407966]  worker_thread+0x4a/0x3d0
+[  474.407971]  kthread+0x17a/0x1a0
+[  474.407975]  ? process_one_work+0x3f0/0x3f0
+[  474.407979]  ? set_kthread_struct+0x40/0x40
+[  474.407983]  ret_from_fork+0x22/0x30
+[  474.407991]  </TASK>
+
+The issue here is that board file loading happens after ath11k_pci_probe()
+succesfully returns (ath11k initialisation happends asynchronously) and the
+suspend handler is still enabled, of course failing as ath11k is not properly
+initialised. Fix this by checking ATH11K_FLAG_QMI_FAIL during both suspend and
+resume.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-03003-QCAHSPSWPL_V1_V2_SILICONZ_LITE-2
+
+Reported-by: Mario Limonciello <mario.limonciello@amd.com>
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=215504
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220127090117.2024-1-kvalo@kernel.org
+---
+ drivers/net/wireless/ath/ath11k/pci.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -1571,6 +1571,11 @@ static __maybe_unused int ath11k_pci_pm_
+ 	struct ath11k_base *ab = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	if (test_bit(ATH11K_FLAG_QMI_FAIL, &ab->dev_flags)) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT, "boot skipping pci suspend as qmi is not initialised\n");
++		return 0;
++	}
++
+ 	ret = ath11k_core_suspend(ab);
+ 	if (ret)
+ 		ath11k_warn(ab, "failed to suspend core: %d\n", ret);
+@@ -1583,6 +1588,11 @@ static __maybe_unused int ath11k_pci_pm_
+ 	struct ath11k_base *ab = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	if (test_bit(ATH11K_FLAG_QMI_FAIL, &ab->dev_flags)) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT, "boot skipping pci resume as qmi is not initialised\n");
++		return 0;
++	}
++
+ 	ret = ath11k_core_resume(ab);
+ 	if (ret)
+ 		ath11k_warn(ab, "failed to resume core: %d\n", ret);

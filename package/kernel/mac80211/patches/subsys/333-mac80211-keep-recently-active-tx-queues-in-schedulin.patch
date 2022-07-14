@@ -1,0 +1,118 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 20 Jun 2022 20:52:50 +0200
+Subject: [PATCH] mac80211: keep recently active tx queues in scheduling
+ list
+
+This allows proper deficit accounting to ensure that they don't carry their
+deficit until the next time they become active
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -83,6 +83,13 @@ extern const u8 ieee80211_ac_to_qos_mask
+ 
+ #define IEEE80211_MAX_NAN_INSTANCE_ID 255
+ 
++
++/*
++ * Keep a station's queues on the active list for deficit accounting purposes
++ * if it was active or queued during the last 100ms
++ */
++#define AIRTIME_ACTIVE_DURATION (HZ / 10)
++
+ struct ieee80211_bss {
+ 	u32 device_ts_beacon, device_ts_presp;
+ 
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -138,6 +138,7 @@ enum ieee80211_agg_stop_reason {
+ struct airtime_info {
+ 	u64 rx_airtime;
+ 	u64 tx_airtime;
++	u32 last_active;
+ 	s32 deficit;
+ 	atomic_t aql_tx_pending; /* Estimated airtime for frames pending */
+ 	u32 aql_limit_low;
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3824,6 +3824,36 @@ static inline s32 ieee80211_sta_deficit(
+ 	return air_info->deficit - atomic_read(&air_info->aql_tx_pending);
+ }
+ 
++static void
++ieee80211_txq_set_active(struct txq_info *txqi)
++{
++	struct sta_info *sta;
++
++	if (!txqi->txq.sta)
++		return;
++
++	sta = container_of(txqi->txq.sta, struct sta_info, sta);
++	sta->airtime[txqi->txq.ac].last_active = (u32)jiffies;
++}
++
++static bool
++ieee80211_txq_keep_active(struct txq_info *txqi)
++{
++	struct sta_info *sta;
++	u32 diff;
++
++	if (!txqi->txq.sta)
++		return false;
++
++	sta = container_of(txqi->txq.sta, struct sta_info, sta);
++	if (ieee80211_sta_deficit(sta, txqi->txq.ac) >= 0)
++		return false;
++
++	diff = (u32)jiffies - sta->airtime[txqi->txq.ac].last_active;
++
++	return diff <= AIRTIME_ACTIVE_DURATION;
++}
++
+ struct ieee80211_txq *ieee80211_next_txq(struct ieee80211_hw *hw, u8 ac)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+@@ -3870,7 +3900,6 @@ struct ieee80211_txq *ieee80211_next_txq
+ 		}
+ 	}
+ 
+-
+ 	if (txqi->schedule_round == local->schedule_round[ac])
+ 		goto out;
+ 
+@@ -3890,12 +3919,13 @@ void __ieee80211_schedule_txq(struct iee
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 	struct txq_info *txqi = to_txq_info(txq);
++	bool has_queue;
+ 
+ 	spin_lock_bh(&local->active_txq_lock[txq->ac]);
+ 
++	has_queue = force || txq_has_queue(txq);
+ 	if (list_empty(&txqi->schedule_order) &&
+-	    (force || !skb_queue_empty(&txqi->frags) ||
+-	     txqi->tin.backlog_packets)) {
++	    (has_queue || ieee80211_txq_keep_active(txqi))) {
+ 		/* If airtime accounting is active, always enqueue STAs at the
+ 		 * head of the list to ensure that they only get moved to the
+ 		 * back by the airtime DRR scheduler once they have a negative
+@@ -3903,7 +3933,7 @@ void __ieee80211_schedule_txq(struct iee
+ 		 * get immediately moved to the back of the list on the next
+ 		 * call to ieee80211_next_txq().
+ 		 */
+-		if (txqi->txq.sta && local->airtime_flags &&
++		if (txqi->txq.sta && local->airtime_flags && has_queue &&
+ 		    wiphy_ext_feature_isset(local->hw.wiphy,
+ 					    NL80211_EXT_FEATURE_AIRTIME_FAIRNESS))
+ 			list_add(&txqi->schedule_order,
+@@ -3911,6 +3941,8 @@ void __ieee80211_schedule_txq(struct iee
+ 		else
+ 			list_add_tail(&txqi->schedule_order,
+ 				      &local->active_txqs[txq->ac]);
++		if (has_queue)
++			ieee80211_txq_set_active(txqi);
+ 	}
+ 
+ 	spin_unlock_bh(&local->active_txq_lock[txq->ac]);

@@ -1,0 +1,227 @@
+From 6452f0a3d5651bb7edfd9c709e78973aaa4d3bfc Mon Sep 17 00:00:00 2001
+From: P Praneesh <ppranees@codeaurora.org>
+Date: Fri, 12 Nov 2021 11:01:26 +0200
+Subject: [PATCH] ath11k: allocate dst ring descriptors from cacheable memory
+
+tcl_data and reo_dst rings are currently being allocated using
+dma_allocate_coherent() which is non cacheable.
+
+Allocating ring memory from cacheable memory area allows cached descriptor
+access and prefetch next descriptors to optimize CPU usage during
+descriptor processing on NAPI. Based on the hardware param we can enable
+or disable this feature for the corresponding platform.
+
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.4.0.1.r2-00012-QCAHKSWPL_SILICONZ-1
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.4.0.1-01695-QCAHKSWPL_SILICONZ-1
+
+Co-developed-by: Pradeep Kumar Chitrapu <pradeepc@codeaurora.org>
+Signed-off-by: Pradeep Kumar Chitrapu <pradeepc@codeaurora.org>
+Co-developed-by: Sriram R <srirrama@codeaurora.org>
+Signed-off-by: Sriram R <srirrama@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: P Praneesh <ppranees@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/1630560820-21905-3-git-send-email-ppranees@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.c |  5 ++++
+ drivers/net/wireless/ath/ath11k/dp.c   | 38 ++++++++++++++++++++++----
+ drivers/net/wireless/ath/ath11k/dp.h   |  1 +
+ drivers/net/wireless/ath/ath11k/hal.c  | 28 +++++++++++++++++--
+ drivers/net/wireless/ath/ath11k/hal.h  |  1 +
+ drivers/net/wireless/ath/ath11k/hw.h   |  1 +
+ 6 files changed, 67 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -84,6 +84,7 @@ static const struct ath11k_hw_params ath
+ 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
+ 		.hal_params = &ath11k_hw_hal_params_ipq8074,
+ 		.supports_dynamic_smps_6ghz = false,
++		.alloc_cacheable_memory = true,
+ 	},
+ 	{
+ 		.hw_rev = ATH11K_HW_IPQ6018_HW10,
+@@ -135,6 +136,7 @@ static const struct ath11k_hw_params ath
+ 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
+ 		.hal_params = &ath11k_hw_hal_params_ipq8074,
+ 		.supports_dynamic_smps_6ghz = false,
++		.alloc_cacheable_memory = true,
+ 	},
+ 	{
+ 		.name = "qca6390 hw2.0",
+@@ -185,6 +187,7 @@ static const struct ath11k_hw_params ath
+ 		.max_tx_ring = DP_TCL_NUM_RING_MAX_QCA6390,
+ 		.hal_params = &ath11k_hw_hal_params_qca6390,
+ 		.supports_dynamic_smps_6ghz = false,
++		.alloc_cacheable_memory = false,
+ 	},
+ 	{
+ 		.name = "qcn9074 hw1.0",
+@@ -235,6 +238,7 @@ static const struct ath11k_hw_params ath
+ 		.max_tx_ring = DP_TCL_NUM_RING_MAX,
+ 		.hal_params = &ath11k_hw_hal_params_ipq8074,
+ 		.supports_dynamic_smps_6ghz = true,
++		.alloc_cacheable_memory = true,
+ 	},
+ 	{
+ 		.name = "wcn6855 hw2.0",
+@@ -285,6 +289,7 @@ static const struct ath11k_hw_params ath
+ 		.max_tx_ring = DP_TCL_NUM_RING_MAX_QCA6390,
+ 		.hal_params = &ath11k_hw_hal_params_qca6390,
+ 		.supports_dynamic_smps_6ghz = false,
++		.alloc_cacheable_memory = false,
+ 	},
+ };
+ 
+--- a/drivers/net/wireless/ath/ath11k/dp.c
++++ b/drivers/net/wireless/ath/ath11k/dp.c
+@@ -101,8 +101,11 @@ void ath11k_dp_srng_cleanup(struct ath11
+ 	if (!ring->vaddr_unaligned)
+ 		return;
+ 
+-	dma_free_coherent(ab->dev, ring->size, ring->vaddr_unaligned,
+-			  ring->paddr_unaligned);
++	if (ring->cached)
++		kfree(ring->vaddr_unaligned);
++	else
++		dma_free_coherent(ab->dev, ring->size, ring->vaddr_unaligned,
++				  ring->paddr_unaligned);
+ 
+ 	ring->vaddr_unaligned = NULL;
+ }
+@@ -222,6 +225,7 @@ int ath11k_dp_srng_setup(struct ath11k_b
+ 	int entry_sz = ath11k_hal_srng_get_entrysize(ab, type);
+ 	int max_entries = ath11k_hal_srng_get_max_entries(ab, type);
+ 	int ret;
++	bool cached = false;
+ 
+ 	if (max_entries < 0 || entry_sz < 0)
+ 		return -EINVAL;
+@@ -230,9 +234,28 @@ int ath11k_dp_srng_setup(struct ath11k_b
+ 		num_entries = max_entries;
+ 
+ 	ring->size = (num_entries * entry_sz) + HAL_RING_BASE_ALIGN - 1;
+-	ring->vaddr_unaligned = dma_alloc_coherent(ab->dev, ring->size,
+-						   &ring->paddr_unaligned,
+-						   GFP_KERNEL);
++
++	if (ab->hw_params.alloc_cacheable_memory) {
++		/* Allocate the reo dst and tx completion rings from cacheable memory */
++		switch (type) {
++		case HAL_REO_DST:
++			cached = true;
++			break;
++		default:
++			cached = false;
++		}
++
++		if (cached) {
++			ring->vaddr_unaligned = kzalloc(ring->size, GFP_KERNEL);
++			ring->paddr_unaligned = virt_to_phys(ring->vaddr_unaligned);
++		}
++	}
++
++	if (!cached)
++		ring->vaddr_unaligned = dma_alloc_coherent(ab->dev, ring->size,
++							   &ring->paddr_unaligned,
++							   GFP_KERNEL);
++
+ 	if (!ring->vaddr_unaligned)
+ 		return -ENOMEM;
+ 
+@@ -292,6 +315,11 @@ int ath11k_dp_srng_setup(struct ath11k_b
+ 		return -EINVAL;
+ 	}
+ 
++	if (cached) {
++		params.flags |= HAL_SRNG_FLAGS_CACHED;
++		ring->cached = 1;
++	}
++
+ 	ret = ath11k_hal_srng_setup(ab, type, ring_num, mac_id, &params);
+ 	if (ret < 0) {
+ 		ath11k_warn(ab, "failed to setup srng: %d ring_id %d\n",
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -64,6 +64,7 @@ struct dp_srng {
+ 	dma_addr_t paddr;
+ 	int size;
+ 	u32 ring_id;
++	u8 cached;
+ };
+ 
+ struct dp_rxdma_ring {
+--- a/drivers/net/wireless/ath/ath11k/hal.c
++++ b/drivers/net/wireless/ath/ath11k/hal.c
+@@ -627,6 +627,21 @@ u32 *ath11k_hal_srng_dst_peek(struct ath
+ 	return NULL;
+ }
+ 
++static void ath11k_hal_srng_prefetch_desc(struct ath11k_base *ab,
++					  struct hal_srng *srng)
++{
++	u32 *desc;
++
++	/* prefetch only if desc is available */
++	desc = ath11k_hal_srng_dst_peek(ab, srng);
++	if (likely(desc)) {
++		dma_sync_single_for_cpu(ab->dev, virt_to_phys(desc),
++					(srng->entry_size * sizeof(u32)),
++					DMA_FROM_DEVICE);
++		prefetch(desc);
++	}
++}
++
+ u32 *ath11k_hal_srng_dst_get_next_entry(struct ath11k_base *ab,
+ 					struct hal_srng *srng)
+ {
+@@ -642,6 +657,10 @@ u32 *ath11k_hal_srng_dst_get_next_entry(
+ 	srng->u.dst_ring.tp = (srng->u.dst_ring.tp + srng->entry_size) %
+ 			      srng->ring_size;
+ 
++	/* Try to prefetch the next descriptor in the ring */
++	if (srng->flags & HAL_SRNG_FLAGS_CACHED)
++		ath11k_hal_srng_prefetch_desc(ab, srng);
++
+ 	return desc;
+ }
+ 
+@@ -775,11 +794,16 @@ void ath11k_hal_srng_access_begin(struct
+ {
+ 	lockdep_assert_held(&srng->lock);
+ 
+-	if (srng->ring_dir == HAL_SRNG_DIR_SRC)
++	if (srng->ring_dir == HAL_SRNG_DIR_SRC) {
+ 		srng->u.src_ring.cached_tp =
+ 			*(volatile u32 *)srng->u.src_ring.tp_addr;
+-	else
++	} else {
+ 		srng->u.dst_ring.cached_hp = *srng->u.dst_ring.hp_addr;
++
++		/* Try to prefetch the next descriptor in the ring */
++		if (srng->flags & HAL_SRNG_FLAGS_CACHED)
++			ath11k_hal_srng_prefetch_desc(ab, srng);
++	}
+ }
+ 
+ /* Update cached ring head/tail pointers to HW. ath11k_hal_srng_access_begin()
+--- a/drivers/net/wireless/ath/ath11k/hal.h
++++ b/drivers/net/wireless/ath/ath11k/hal.h
+@@ -513,6 +513,7 @@ enum hal_srng_dir {
+ #define HAL_SRNG_FLAGS_DATA_TLV_SWAP		0x00000020
+ #define HAL_SRNG_FLAGS_LOW_THRESH_INTR_EN	0x00010000
+ #define HAL_SRNG_FLAGS_MSI_INTR			0x00020000
++#define HAL_SRNG_FLAGS_CACHED                   0x20000000
+ #define HAL_SRNG_FLAGS_LMAC_RING		0x80000000
+ 
+ #define HAL_SRNG_TLV_HDR_TAG		GENMASK(9, 1)
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -178,6 +178,7 @@ struct ath11k_hw_params {
+ 	u8 max_tx_ring;
+ 	const struct ath11k_hw_hal_params *hal_params;
+ 	bool supports_dynamic_smps_6ghz;
++	bool alloc_cacheable_memory;
+ };
+ 
+ struct ath11k_hw_ops {
