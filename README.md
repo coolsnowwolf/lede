@@ -4,7 +4,6 @@
 
 ## 注意
 
-0. **免责声明：!! 这个源代码不欢迎 “Redmi ax6 机友会” 的群里任何一位成员 直接 或者 间接 使用，否则一旦发生全家富贵的事情一律均和本人无关！！**
 1. **不要用 root 用户进行编译**
 2. 国内用户编译前最好准备好梯子
 3. 默认登陆IP 192.168.1.1 密码 password
@@ -22,7 +21,7 @@
    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
    libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz \
-   mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip qemu-utils \
+   mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip libpython3-dev qemu-utils \
    rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
    ```
 
