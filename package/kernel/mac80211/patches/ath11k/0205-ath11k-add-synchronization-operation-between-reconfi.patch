@@ -1,0 +1,182 @@
+From 38194f3a605e4a961f28bc38a73a4f4d43123968 Mon Sep 17 00:00:00 2001
+From: Wen Gong <quic_wgong@quicinc.com>
+Date: Mon, 21 Mar 2022 13:16:57 +0200
+Subject: [PATCH] ath11k: add synchronization operation between reconfigure of
+ mac80211 and ath11k_base
+
+ieee80211_reconfig() of mac80211 is the main function for recovery of
+each ieee80211_hw and ath11k, and ath11k_core_reconfigure_on_crash()
+is the main function for recovery of ath11k_base, it has more than
+one ieee80211_hw and ath11k for each ath11k_base, so it need to add
+synchronization between them, otherwise it has many issue.
+
+For example, when ath11k_core_reconfigure_on_crash() is not complete,
+mac80211 send a hw scan request to ath11k, it leads firmware crash,
+because firmware has not been initialized at that moment, firmware
+is only finished downloaded and loaded, it can not receive scan
+command.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-03003-QCAHSPSWPL_V1_V2_SILICONZ_LITE-2
+
+Signed-off-by: Wen Gong <quic_wgong@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220228064606.8981-3-quic_wgong@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c | 51 ++++++++++++++++++++++----
+ drivers/net/wireless/ath/ath11k/core.h |  5 +++
+ drivers/net/wireless/ath/ath11k/mac.c  | 22 +++++++++++
+ 3 files changed, 70 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -1302,12 +1302,11 @@ static void ath11k_update_11d(struct wor
+ 	}
+ }
+ 
+-static void ath11k_core_restart(struct work_struct *work)
++static void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab)
+ {
+-	struct ath11k_base *ab = container_of(work, struct ath11k_base, restart_work);
+ 	struct ath11k *ar;
+ 	struct ath11k_pdev *pdev;
+-	int i, ret = 0;
++	int i;
+ 
+ 	spin_lock_bh(&ab->base_lock);
+ 	ab->stats.fw_crash_counter++;
+@@ -1340,12 +1339,13 @@ static void ath11k_core_restart(struct w
+ 
+ 	wake_up(&ab->wmi_ab.tx_credits_wq);
+ 	wake_up(&ab->peer_mapping_wq);
++}
+ 
+-	ret = ath11k_core_reconfigure_on_crash(ab);
+-	if (ret) {
+-		ath11k_err(ab, "failed to reconfigure driver on crash recovery\n");
+-		return;
+-	}
++static void ath11k_core_post_reconfigure_recovery(struct ath11k_base *ab)
++{
++	struct ath11k *ar;
++	struct ath11k_pdev *pdev;
++	int i;
+ 
+ 	for (i = 0; i < ab->num_radios; i++) {
+ 		pdev = &ab->pdevs[i];
+@@ -1381,6 +1381,27 @@ static void ath11k_core_restart(struct w
+ 	complete(&ab->driver_recovery);
+ }
+ 
++static void ath11k_core_restart(struct work_struct *work)
++{
++	struct ath11k_base *ab = container_of(work, struct ath11k_base, restart_work);
++	int ret;
++
++	if (!ab->is_reset)
++		ath11k_core_pre_reconfigure_recovery(ab);
++
++	ret = ath11k_core_reconfigure_on_crash(ab);
++	if (ret) {
++		ath11k_err(ab, "failed to reconfigure driver on crash recovery\n");
++		return;
++	}
++
++	if (ab->is_reset)
++		complete_all(&ab->reconfigure_complete);
++
++	if (!ab->is_reset)
++		ath11k_core_post_reconfigure_recovery(ab);
++}
++
+ static void ath11k_core_reset(struct work_struct *work)
+ {
+ 	struct ath11k_base *ab = container_of(work, struct ath11k_base, reset_work);
+@@ -1432,6 +1453,18 @@ static void ath11k_core_reset(struct wor
+ 
+ 	ab->is_reset = true;
+ 	atomic_set(&ab->recovery_count, 0);
++	reinit_completion(&ab->recovery_start);
++	atomic_set(&ab->recovery_start_count, 0);
++
++	ath11k_core_pre_reconfigure_recovery(ab);
++
++	reinit_completion(&ab->reconfigure_complete);
++	ath11k_core_post_reconfigure_recovery(ab);
++
++	ath11k_dbg(ab, ATH11K_DBG_BOOT, "waiting recovery start...\n");
++
++	time_left = wait_for_completion_timeout(&ab->recovery_start,
++						ATH11K_RECOVER_START_TIMEOUT_HZ);
+ 
+ 	ath11k_hif_power_down(ab);
+ 	ath11k_qmi_free_resource(ab);
+@@ -1540,6 +1573,8 @@ struct ath11k_base *ath11k_core_alloc(st
+ 	spin_lock_init(&ab->base_lock);
+ 	mutex_init(&ab->vdev_id_11d_lock);
+ 	init_completion(&ab->reset_complete);
++	init_completion(&ab->reconfigure_complete);
++	init_completion(&ab->recovery_start);
+ 
+ 	INIT_LIST_HEAD(&ab->peers);
+ 	init_waitqueue_head(&ab->peer_mapping_wq);
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -44,6 +44,8 @@ extern unsigned int ath11k_frame_mode;
+ #define ATH11K_RESET_MAX_FAIL_COUNT_FIRST 3
+ #define ATH11K_RESET_MAX_FAIL_COUNT_FINAL 5
+ #define ATH11K_RESET_FAIL_TIMEOUT_HZ (20 * HZ)
++#define ATH11K_RECONFIGURE_TIMEOUT_HZ (10 * HZ)
++#define ATH11K_RECOVER_START_TIMEOUT_HZ (20 * HZ)
+ 
+ enum ath11k_supported_bw {
+ 	ATH11K_BW_20	= 0,
+@@ -828,8 +830,11 @@ struct ath11k_base {
+ 	struct work_struct reset_work;
+ 	atomic_t reset_count;
+ 	atomic_t recovery_count;
++	atomic_t recovery_start_count;
+ 	bool is_reset;
+ 	struct completion reset_complete;
++	struct completion reconfigure_complete;
++	struct completion recovery_start;
+ 	/* continuous recovery fail count */
+ 	atomic_t fail_cont_count;
+ 	unsigned long reset_fail_timeout;
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -5749,6 +5749,27 @@ static int ath11k_mac_config_mon_status_
+ 	return ret;
+ }
+ 
++static void ath11k_mac_wait_reconfigure(struct ath11k_base *ab)
++{
++	int recovery_start_count;
++
++	if (!ab->is_reset)
++		return;
++
++	recovery_start_count = atomic_inc_return(&ab->recovery_start_count);
++	ath11k_dbg(ab, ATH11K_DBG_MAC, "recovery start count %d\n", recovery_start_count);
++
++	if (recovery_start_count == ab->num_radios) {
++		complete(&ab->recovery_start);
++		ath11k_dbg(ab, ATH11K_DBG_MAC, "recovery started success\n");
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_MAC, "waiting reconfigure...\n");
++
++	wait_for_completion_timeout(&ab->reconfigure_complete,
++				    ATH11K_RECONFIGURE_TIMEOUT_HZ);
++}
++
+ static int ath11k_mac_op_start(struct ieee80211_hw *hw)
+ {
+ 	struct ath11k *ar = hw->priv;
+@@ -5765,6 +5786,7 @@ static int ath11k_mac_op_start(struct ie
+ 		break;
+ 	case ATH11K_STATE_RESTARTING:
+ 		ar->state = ATH11K_STATE_RESTARTED;
++		ath11k_mac_wait_reconfigure(ab);
+ 		break;
+ 	case ATH11K_STATE_RESTARTED:
+ 	case ATH11K_STATE_WEDGED:

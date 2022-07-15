@@ -1,0 +1,151 @@
+From 34c67dc366419e06129dad0f32f521842bdff9bc Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Wed, 21 Jul 2021 00:31:46 +0300
+Subject: [PATCH] ath11k: fix 4-addr tx failure for AP and STA modes
+
+Ath11k FW requires peer parameter WMI_PEER_USE_4ADDR to be set for
+4-addr peers allowing 4-address frame transmission to those peers.
+
+Add ath11k driver callback for sta_set_4addr() to queue new workq
+set_4addr_wk only once based on new boolean, use_4addr_set.
+
+sta_set_4addr() will be called during 4-addr STA association cases
+applicable for both AP and STA modes.
+
+In ath11k_sta_set_4addr_wk(),
+
+AP mode:
+        WMI_PEER_USE_4ADDR will be set for the corresponding
+        associated 4-addr STA(s)
+
+STA mode:
+        WMI_PEER_USE_4ADDR will be set for the AP to which the
+        4-addr STA got associated.
+
+Tested-on: IPQ8074 WLAN.HK.2.1.0.1-01238-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20210720213147.90042-1-jouni@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.h |  3 ++
+ drivers/net/wireless/ath/ath11k/mac.c  | 48 ++++++++++++++++++++++++--
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -368,6 +368,7 @@ struct ath11k_sta {
+ 	enum hal_pn_type pn_type;
+ 
+ 	struct work_struct update_wk;
++	struct work_struct set_4addr_wk;
+ 	struct rate_info txrate;
+ 	struct rate_info last_txrate;
+ 	u64 rx_duration;
+@@ -380,6 +381,8 @@ struct ath11k_sta {
+ 	/* protected by conf_mutex */
+ 	bool aggr_mode;
+ #endif
++
++	bool use_4addr_set;
+ };
+ 
+ #define ATH11K_MIN_5G_FREQ 4150
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -3161,6 +3161,31 @@ static void ath11k_sta_rc_update_wk(stru
+ 	mutex_unlock(&ar->conf_mutex);
+ }
+ 
++static void ath11k_sta_set_4addr_wk(struct work_struct *wk)
++{
++	struct ath11k *ar;
++	struct ath11k_vif *arvif;
++	struct ath11k_sta *arsta;
++	struct ieee80211_sta *sta;
++	int ret = 0;
++
++	arsta = container_of(wk, struct ath11k_sta, set_4addr_wk);
++	sta = container_of((void *)arsta, struct ieee80211_sta, drv_priv);
++	arvif = arsta->arvif;
++	ar = arvif->ar;
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
++		   "setting USE_4ADDR for peer %pM\n", sta->addr);
++
++	ret = ath11k_wmi_set_peer_param(ar, sta->addr,
++					arvif->vdev_id,
++					WMI_PEER_USE_4ADDR, 1);
++
++	if (ret)
++		ath11k_warn(ar->ab, "failed to set peer %pM 4addr capability: %d\n",
++			    sta->addr, ret);
++}
++
+ static int ath11k_mac_inc_num_stations(struct ath11k_vif *arvif,
+ 				       struct ieee80211_sta *sta)
+ {
+@@ -3240,11 +3265,13 @@ static int ath11k_mac_station_add(struct
+ 	}
+ 
+ 	if (ieee80211_vif_is_mesh(vif)) {
++		ath11k_dbg(ab, ATH11K_DBG_MAC,
++			   "setting USE_4ADDR for mesh STA %pM\n", sta->addr);
+ 		ret = ath11k_wmi_set_peer_param(ar, sta->addr,
+ 						arvif->vdev_id,
+ 						WMI_PEER_USE_4ADDR, 1);
+ 		if (ret) {
+-			ath11k_warn(ab, "failed to STA %pM 4addr capability: %d\n",
++			ath11k_warn(ab, "failed to set mesh STA %pM 4addr capability: %d\n",
+ 				    sta->addr, ret);
+ 			goto free_tx_stats;
+ 		}
+@@ -3297,8 +3324,10 @@ static int ath11k_mac_op_sta_state(struc
+ 
+ 	/* cancel must be done outside the mutex to avoid deadlock */
+ 	if ((old_state == IEEE80211_STA_NONE &&
+-	     new_state == IEEE80211_STA_NOTEXIST))
++	     new_state == IEEE80211_STA_NOTEXIST)) {
+ 		cancel_work_sync(&arsta->update_wk);
++		cancel_work_sync(&arsta->set_4addr_wk);
++	}
+ 
+ 	mutex_lock(&ar->conf_mutex);
+ 
+@@ -3307,6 +3336,7 @@ static int ath11k_mac_op_sta_state(struc
+ 		memset(arsta, 0, sizeof(*arsta));
+ 		arsta->arvif = arvif;
+ 		INIT_WORK(&arsta->update_wk, ath11k_sta_rc_update_wk);
++		INIT_WORK(&arsta->set_4addr_wk, ath11k_sta_set_4addr_wk);
+ 
+ 		ret = ath11k_mac_station_add(ar, vif, sta);
+ 		if (ret)
+@@ -3401,6 +3431,19 @@ out:
+ 	return ret;
+ }
+ 
++static void ath11k_mac_op_sta_set_4addr(struct ieee80211_hw *hw,
++					struct ieee80211_vif *vif,
++					struct ieee80211_sta *sta, bool enabled)
++{
++	struct ath11k *ar = hw->priv;
++	struct ath11k_sta *arsta = (struct ath11k_sta *)sta->drv_priv;
++
++	if (enabled && !arsta->use_4addr_set) {
++		ieee80211_queue_work(ar->hw, &arsta->set_4addr_wk);
++		arsta->use_4addr_set = true;
++	}
++}
++
+ static void ath11k_mac_op_sta_rc_update(struct ieee80211_hw *hw,
+ 					struct ieee80211_vif *vif,
+ 					struct ieee80211_sta *sta,
+@@ -6190,6 +6233,7 @@ static const struct ieee80211_ops ath11k
+ 	.cancel_hw_scan                 = ath11k_mac_op_cancel_hw_scan,
+ 	.set_key                        = ath11k_mac_op_set_key,
+ 	.sta_state                      = ath11k_mac_op_sta_state,
++	.sta_set_4addr                  = ath11k_mac_op_sta_set_4addr,
+ 	.sta_set_txpwr			= ath11k_mac_op_sta_set_txpwr,
+ 	.sta_rc_update			= ath11k_mac_op_sta_rc_update,
+ 	.conf_tx                        = ath11k_mac_op_conf_tx,

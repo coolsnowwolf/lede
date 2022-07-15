@@ -1,14 +1,14 @@
 #
 # This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information.
+# See /LICENSE for more information. 
 #
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2021.07
+PKG_VERSION:=2022.07
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_HASH:=312b7eeae44581d1362c3a3f02c28d806647756c82ba8c72241c7cdbe68ba77e
+PKG_HASH:=92b08eb49c24da14c1adbf70a71ae8f37cc53eeb4230e859ad8b6733d13dcf5e
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -32,7 +32,6 @@ define U-Boot/nanopi-r2c-rk3328
   DEPENDS:=+PACKAGE_u-boot-nanopi-r2c-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
-  OF_PLATDATA:=$(1)
   USE_RKBIN:=1
 endef
 
@@ -45,7 +44,6 @@ define U-Boot/nanopi-r2s-rk3328
   DEPENDS:=+PACKAGE_u-boot-nanopi-r2s-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
-  OF_PLATDATA:=$(1)
   USE_RKBIN:=1
 endef
 
@@ -57,7 +55,6 @@ define U-Boot/orangepi-r1-plus-rk3328
   DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
-  OF_PLATDATA:=$(1)
   USE_RKBIN:=1
 endef
 
@@ -69,7 +66,6 @@ define U-Boot/orangepi-r1-plus-lts-rk3328
   DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-lts-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
-  OF_PLATDATA:=$(1)
   USE_RKBIN:=1
 endef
 
@@ -81,7 +77,6 @@ define U-Boot/doornet1-rk3328
   DEPENDS:=+PACKAGE_u-boot-doornet1-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk322xh_bl31_v1.46.elf
-  OF_PLATDATA:=$(1)
   USE_RKBIN:=1
 endef
 
@@ -119,6 +114,17 @@ define U-Boot/nanopi-r4s-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/nanopi-r4se-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=NanoPi R4SE
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r4se
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r4se-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
+
 define U-Boot/rock-pi-4-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=Rock Pi 4
@@ -143,6 +149,7 @@ UBOOT_TARGETS := \
   doornet2-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
+  nanopi-r4se-rk3399 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
   doornet1-rk3328 \
@@ -159,15 +166,7 @@ UBOOT_MAKE_FLAGS += \
 define Build/Configure
 	$(call Build/Configure/U-Boot)
 
-ifneq ($(OF_PLATDATA),)
-	mkdir -p $(PKG_BUILD_DIR)/tpl/dts
-	mkdir -p $(PKG_BUILD_DIR)/include/generated
-
-	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-plat.c $(PKG_BUILD_DIR)/tpl/dts/dt-plat.c
-	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-structs-gen.h $(PKG_BUILD_DIR)/include/generated/dt-structs-gen.h
-	$(CP) $(PKG_BUILD_DIR)/of-platdata/$(OF_PLATDATA)/dt-decl.h $(PKG_BUILD_DIR)/include/generated/dt-decl.h
-endif
-
+	$(SED) 's/CONFIG_TOOLS_LIBCRYPTO=y/# CONFIG_TOOLS_LIBCRYPTO is not set/' $(PKG_BUILD_DIR)/.config
 	$(SED) 's#CONFIG_MKIMAGE_DTC_PATH=.*#CONFIG_MKIMAGE_DTC_PATH="$(PKG_BUILD_DIR)/scripts/dtc/dtc"#g' $(PKG_BUILD_DIR)/.config
 	echo 'CONFIG_IDENT_STRING=" OpenWrt"' >> $(PKG_BUILD_DIR)/.config
 endef
