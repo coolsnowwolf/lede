@@ -1314,6 +1314,22 @@ endef
 $(eval $(call KernelPackage,wireguard))
 
 
+define KernelPackage/netconsole
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Network console logging support
+  KCONFIG:=CONFIG_NETCONSOLE \
+	  CONFIG_NETCONSOLE_DYNAMIC=n
+  FILES:=$(LINUX_DIR)/drivers/net/netconsole.ko
+  AUTOLOAD:=$(call AutoProbe,netconsole)
+endef
+
+define KernelPackage/netconsole/description
+  Network console logging support.
+endef
+
+$(eval $(call KernelPackage,netconsole))
+
+
 define KernelPackage/qrtr
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Qualcomm IPC Router support
