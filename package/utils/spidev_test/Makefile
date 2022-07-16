@@ -19,7 +19,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/spidev-test
   SECTION:=utils
   CATEGORY:=Utilities
-  DEPENDS:=+kmod-spi-dev @!IN_SDK
+  DEPENDS:=+PACKAGE_kmod-spi-dev:kmod-spi-dev @!IN_SDK
   TITLE:=SPI testing utility
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
