@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kmod-igb-intel
 PKG_VERSION:=5.10.2
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE:=igb-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://downloads.sourceforge.net/project/e1000/igb%20stable/$(PKG_VERSION)/
@@ -19,24 +19,20 @@ include $(INCLUDE_DIR)/package.mk
 
 PKG_UNPACK:=zcat $(DL_DIR)/$(PKG_SOURCE) | $(TAR) -C $(PKG_BUILD_DIR) --strip-components=1 -xf -
 
-MAKE_PATH:=src
-
-MAKE_VARS:= \
-  KSRC="$(LINUX_DIR)" 
-
-MAKE_OPTS:= \
-  ARCH="$(LINUX_KARCH)" \
-  CROSS_COMPILE="$(KERNEL_CROSS)" 
-
 define KernelPackage/igb-intel
   SUBMENU:=Network Devices
   TITLE:=Intel igb drivers - oot version from Intel
-  DEPENDS:=+kmod-ptp @PCI_SUPPORT 
+  DEPENDS:=+kmod-ptp @PCI_SUPPORT
+  CONFLICTS:=kmod-igb
   KCONFIG:=CONFIG_IGB \
     CONFIG_IGB_HWMON=n \
     CONFIG_IGB_DCA=n
   FILES:=$(PKG_BUILD_DIR)/src/igb.ko
   AUTOLOAD:=$(call AutoLoad,35,igb)
+endef
+
+define Build/Compile
+	+$(KERNEL_MAKE) M=$(PKG_BUILD_DIR)/src modules
 endef
 
 define KernelPackage/igb-intel/description
