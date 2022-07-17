@@ -451,7 +451,7 @@ static u32 fc_conn_hash(sfe_ip_addr_t *saddr, sfe_ip_addr_t *daddr,
  */
 static int fast_classifier_update_protocol(struct sfe_connection_create *p_sic, struct nf_conn *ct)
 {
-  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
+  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
     struct net *net=NULL ;
     struct nf_tcp_net *tn=NULL;
 	#endif
@@ -465,7 +465,7 @@ static int fast_classifier_update_protocol(struct sfe_connection_create *p_sic, 
 		p_sic->dest_td_max_window = ct->proto.tcp.seen[1].td_maxwin;
 		p_sic->dest_td_end = ct->proto.tcp.seen[1].td_end;
 		p_sic->dest_td_max_end = ct->proto.tcp.seen[1].td_maxend;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	net = nf_ct_net(ct);
 	tn = nf_tcp_pernet(net);
 	if ((tn&&tn->tcp_no_window_check)
