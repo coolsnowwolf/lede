@@ -16,7 +16,7 @@ PKG_HASH:=4458d8de7849df44ccab15e16b1548b285224dbba5f08fac070c1c0e0bcc4cfa
 
 HOST_BUILD_PARALLEL := 1
 
-BUILD_PROGRAMS = date readlink touch ln
+BUILD_PROGRAMS = date readlink touch ln chown ginstall
 
 include $(INCLUDE_DIR)/host-build.mk
 
@@ -31,7 +31,8 @@ HOST_MAKE_FLAGS += \
 
 define Host/Install
 	$(INSTALL_DIR) $(1)/bin
-	$(CP) $(patsubst %,$(HOST_BUILD_DIR)/%,$(BUILD_BINS)) $(1)/bin/
+	$(INSTALL_BIN) $(patsubst %,$(HOST_BUILD_DIR)/%,$(BUILD_BINS)) $(1)/bin/
+	ln -sf ginstall $(1)/bin/install
 endef
 
 $(eval $(call HostBuild))
