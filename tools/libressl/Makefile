@@ -24,8 +24,14 @@ HOST_BUILD_PARALLEL:=1
 include $(INCLUDE_DIR)/host-build.mk
 
 HOSTCC := $(HOSTCC_NOCACHE)
-HOST_CONFIGURE_ARGS += --enable-static --disable-shared --disable-tests
+
 HOST_CFLAGS += $(HOST_FPIC)
+
+HOST_CONFIGURE_ARGS += \
+	--enable-static \
+	--disable-shared \
+	--with-pic \
+	--disable-tests
 
 ifeq ($(GNU_HOST_NAME),x86_64-linux-gnux32)
 HOST_CONFIGURE_ARGS += --disable-asm
