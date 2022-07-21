@@ -90,7 +90,6 @@ define U-Boot/doornet2-rk3399
   DEPENDS:=+PACKAGE_u-boot-doornet2-rk3399:arm-trusted-firmware-rk3399
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3399_bl31_v1.35.elf
-  USE_RKBIN:=1
 endef
 
 define U-Boot/guangmiao-g4c-rk3399
