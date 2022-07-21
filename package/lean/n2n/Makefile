@@ -26,12 +26,12 @@ define Package/n2n/template
   SUBMENU:=VPN
   TITLE:=N2N Peer-to-peer VPN
   URL:=http://www.ntop.org/n2n
-  DEPENDS:=+libcap +libopenssl +libpthread +libzstd
+  DEPENDS:=+libopenssl +libpthread +libzstd
 endef
 
 define Package/n2n
   $(call Package/n2n/template)
-  DEPENDS+=+kmod-tun +resolveip
+  DEPENDS+=+libcap +kmod-tun +resolveip
 endef
 
 define Package/n2n/description
