@@ -1,0 +1,159 @@
+From e40d2cca01893c1941f5959b14bb0cd0d4f4d099 Mon Sep 17 00:00:00 2001
+From: DENG Qingfang <dqfext@gmail.com>
+Date: Wed, 19 May 2021 11:31:59 +0800
+Subject: [PATCH] net: phy: add MediaTek Gigabit Ethernet PHY driver
+
+Add support for MediaTek Gigabit Ethernet PHYs found in MT7530 and
+MT7531 switches.
+The initialization procedure is from the vendor driver, but due to lack
+of documentation, the function of some register values remains unknown.
+
+Signed-off-by: DENG Qingfang <dqfext@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/Kconfig       |   5 ++
+ drivers/net/phy/Makefile      |   1 +
+ drivers/net/phy/mediatek-ge.c | 116 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 122 insertions(+)
+ create mode 100644 drivers/net/phy/mediatek-ge.c
+
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -201,6 +201,11 @@ config MARVELL_10G_PHY
+ 	help
+ 	  Support for the Marvell Alaska MV88X3310 and compatible PHYs.
+ 
++config MEDIATEK_GE_PHY
++	tristate "MediaTek PHYs"
++	help
++	  Supports the MediaTek switch integrated PHYs.
++
+ config MICREL_PHY
+ 	tristate "Micrel PHYs"
+ 	help
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -63,6 +63,7 @@ obj-$(CONFIG_LSI_ET1011C_PHY)	+= et1011c
+ obj-$(CONFIG_LXT_PHY)		+= lxt.o
+ obj-$(CONFIG_MARVELL_10G_PHY)	+= marvell10g.o
+ obj-$(CONFIG_MARVELL_PHY)	+= marvell.o
++obj-$(CONFIG_MEDIATEK_GE_PHY)	+= mediatek-ge.o
+ obj-$(CONFIG_MESON_GXL_PHY)	+= meson-gxl.o
+ obj-$(CONFIG_MICREL_KS8995MA)	+= spi_ks8995.o
+ obj-$(CONFIG_MICREL_PHY)	+= micrel.o
+--- /dev/null
++++ b/drivers/net/phy/mediatek-ge.c
+@@ -0,0 +1,113 @@
++// SPDX-License-Identifier: GPL-2.0+
++#include <linux/bitfield.h>
++#include <linux/module.h>
++#include <linux/phy.h>
++
++#define MTK_T10_TEST_CONTROL		0x145
++#define MTK_PHY_TP_MASK			GENMASK(4, 3)
++#define MTK_PHY_TP_AUTO			0
++#define MTK_PHY_TP_MDI			2
++#define MTK_PHY_TP_MDIX			3
++
++#define MTK_EXT_PAGE_ACCESS		0x1f
++#define MTK_PHY_PAGE_STANDARD		0x0000
++#define MTK_PHY_PAGE_EXTENDED		0x0001
++#define MTK_PHY_PAGE_EXTENDED_2		0x0002
++#define MTK_PHY_PAGE_EXTENDED_3		0x0003
++#define MTK_PHY_PAGE_EXTENDED_2A30	0x2a30
++#define MTK_PHY_PAGE_EXTENDED_52B5	0x52b5
++
++static int mtk_gephy_read_page(struct phy_device *phydev)
++{
++	return __phy_read(phydev, MTK_EXT_PAGE_ACCESS);
++}
++
++static int mtk_gephy_write_page(struct phy_device *phydev, int page)
++{
++	return __phy_write(phydev, MTK_EXT_PAGE_ACCESS, page);
++}
++
++static void mtk_gephy_config_init(struct phy_device *phydev)
++{
++	/* Disable EEE */
++	phy_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_EEE_ADV, 0);
++
++	/* Enable HW auto downshift */
++	phy_modify_paged(phydev, MTK_PHY_PAGE_EXTENDED, 0x14, 0, BIT(4));
++
++	/* Increase SlvDPSready time */
++	phy_select_page(phydev, MTK_PHY_PAGE_EXTENDED_52B5);
++	__phy_write(phydev, 0x10, 0xafae);
++	__phy_write(phydev, 0x12, 0x2f);
++	__phy_write(phydev, 0x10, 0x8fae);
++	phy_restore_page(phydev, MTK_PHY_PAGE_STANDARD, 0);
++
++	/* Adjust 100_mse_threshold */
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x123, 0xffff);
++
++	/* Disable mcc */
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0xa6, 0x300);
++}
++
++static int mt7530_phy_config_init(struct phy_device *phydev)
++{
++	mtk_gephy_config_init(phydev);
++
++	/* Increase post_update_timer */
++	phy_write_paged(phydev, MTK_PHY_PAGE_EXTENDED_3, 0x11, 0x4b);
++
++	return 0;
++}
++
++static int mt7531_phy_config_init(struct phy_device *phydev)
++{
++	mtk_gephy_config_init(phydev);
++
++	/* PHY link down power saving enable */
++	phy_set_bits(phydev, 0x17, BIT(4));
++	phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, 0xc6, 0x300);
++
++	/* Set TX Pair delay selection */
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x13, 0x404);
++	phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x14, 0x404);
++
++	return 0;
++}
++
++static struct phy_driver mtk_gephy_driver[] = {
++	{
++		PHY_ID_MATCH_EXACT(0x03a29412),
++		.name		= "MediaTek MT7530 PHY",
++		.config_init	= mt7530_phy_config_init,
++		/* Interrupts are handled by the switch, not the PHY
++		 * itself.
++		 */
++		.config_intr	= genphy_no_config_intr,
++		.ack_interrupt  = genphy_no_ack_interrupt,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++		.read_page	= mtk_gephy_read_page,
++		.write_page	= mtk_gephy_write_page,
++	},
++	{
++		PHY_ID_MATCH_EXACT(0x03a29441),
++		.name		= "MediaTek MT7531 PHY",
++		.config_init	= mt7531_phy_config_init,
++		/* Interrupts are handled by the switch, not the PHY
++		 * itself.
++		 */
++		.config_intr	= genphy_no_config_intr,
++		.ack_interrupt  = genphy_no_ack_interrupt,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++		.read_page	= mtk_gephy_read_page,
++		.write_page	= mtk_gephy_write_page,
++	},
++};
++
++module_phy_driver(mtk_gephy_driver);
++
++static struct mdio_device_id __maybe_unused mtk_gephy_tbl[] = {
++	{ PHY_ID_MATCH_VENDOR(0x03a29400) },
++	{ }
++};

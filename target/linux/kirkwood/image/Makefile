@@ -139,6 +139,15 @@ define Device/linksys_ea4500
 endef
 TARGET_DEVICES += linksys_ea4500
 
+define Device/Prafly_m8621t
+  DEVICE_VENDOR := Prafly
+  DEVICE_MODEL := m8621t
+  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mvswe61xxx kmod-ata-core kmod-mmc kmod-mvsdio kmod-usb2
+  KERNEL_INSTALL := 1
+  SUPPORTED_DEVICES += m8621t
+endef
+TARGET_DEVICES += Prafly_m8621t
+
 define Device/raidsonic_ib-nas62x0
   DEVICE_VENDOR := RaidSonic
   DEVICE_MODEL := ICY BOX IB-NAS62x0
@@ -182,6 +191,16 @@ define Device/seagate_goflexhome
   SUPPORTED_DEVICES += goflexhome
 endef
 TARGET_DEVICES += seagate_goflexhome
+
+define Device/surfilter_net110
+  DEVICE_VENDOR := Surfilter
+  DEVICE_MODEL := Net110-88F6281
+  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mv88e6xxx kmod-ata-core \
+	  kmod-mmc kmod-mvsdio kmod-rt2800-pci kmod-usb2 kmod-usb-ledtrig-usbport kmod-gpio-button-hotplug
+  KERNEL_INSTALL := 1
+  SUPPORTED_DEVICES += net110-88F6281
+endef
+TARGET_DEVICES += surfilter_net110
 
 define Device/zyxel_nsa310b
   DEVICE_VENDOR := ZyXEL

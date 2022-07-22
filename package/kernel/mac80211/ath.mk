@@ -12,7 +12,8 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_ATH9K_TX99 \
 	CONFIG_ATH10K_LEDS \
 	CONFIG_ATH10K_THERMAL \
-	CONFIG_ATH11K_MEM_PROFILE_512M \
+	CONFIG_ATH11K_MEM_PROFILE_512MB \
+	CONFIG_ATH11K_MEM_PROFILE_1GB \
 	CONFIG_ATH_USER_REGD
 
 ifdef CONFIG_PACKAGE_MAC80211_DEBUGFS
@@ -55,7 +56,8 @@ config-$(CONFIG_ATH9K_TX99) += ATH9K_TX99
 config-$(CONFIG_ATH9K_UBNTHSR) += ATH9K_UBNTHSR
 config-$(CONFIG_ATH10K_LEDS) += ATH10K_LEDS
 config-$(CONFIG_ATH10K_THERMAL) += ATH10K_THERMAL
-config-$(CONFIG_ATH11K_MEM_PROFILE_512M) += ATH11K_MEM_PROFILE_512M
+config-$(CONFIG_ATH11K_MEM_PROFILE_512MB) += ATH11K_MEM_PROFILE_512MB
+config-$(CONFIG_ATH11K_MEM_PROFILE_1GB) += ATH11K_MEM_PROFILE_1GB
 
 config-$(call config_package,ath9k-htc) += ATH9K_HTC
 config-$(call config_package,ath10k) += ATH10K ATH10K_PCI
@@ -267,7 +269,8 @@ define KernelPackage/ath10k
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_core.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath10k/ath10k_pci.ko
-  AUTOLOAD:=$(call AutoProbe,ath10k_pci)
+  AUTOLOAD:=$(call AutoProbe,ath10k_core ath10k_pci)
+  MODPARAMS.ath10k_core:=frame_mode=2
   VARIANT:=regular
 endef
 
@@ -285,8 +288,8 @@ define KernelPackage/ath10k/config
                depends on PACKAGE_kmod-ath10k || PACKAGE_kmod-ath10k-smallbuffers
 
        config ATH10K_THERMAL
-               bool "Enable thermal sensors and throttling support"
                default y
+               bool "Enable thermal sensors and throttling support"
                depends on PACKAGE_kmod-ath10k || PACKAGE_kmod-ath10k-smallbuffers
 
 endef
@@ -302,9 +305,9 @@ define KernelPackage/ath11k
   TITLE:=Qualcomm 802.11ax wireless chipset support (common code)
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath11k
   DEPENDS+= +kmod-ath +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT \
-	+kmod-crypto-michael-mic +ATH11K_THERMAL:kmod-hwmon-core +ATH11K_THERMAL:kmod-thermal
+  +kmod-qcom-qmi-helpers +kmod-crypto-michael-mic +ATH11K_THERMAL:kmod-hwmon-core \
+  +ATH11K_THERMAL:kmod-thermal
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/ath11k.ko
-  AUTOLOAD:=$(call AutoProbe,ath11k)
 endef
 
 define KernelPackage/ath11k/description
@@ -319,18 +322,29 @@ define KernelPackage/ath11k/config
                depends on PACKAGE_kmod-ath11k
                default y if TARGET_ipq807x
 
-       config ATH11K_MEM_PROFILE_512M
-               bool "Enable 512MB profile"
-               depends on PACKAGE_kmod-ath11k
-               default y if TARGET_ipq807x_generic_DEVICE_redmi_ax6 || TARGET_ipq807x_generic_DEVICE_xiaomi_ax3600 || TARGET_ipq807x_generic_DEVICE_zte_mf269
+       if PACKAGE_kmod-ath11k
 
+       choice
+        prompt "ath11k memory profile"
+        default ATH11K_MEM_PROFILE_512MB
+        help
+          This allows selecting the ath11k memory size profile to be used.
+
+       config ATH11K_MEM_PROFILE_512MB
+               bool "Use limits for the 512MB memory size"
+
+       config ATH11K_MEM_PROFILE_1GB
+               bool "Use limits for the 1GB memory size"
+
+       endchoice
+       endif
 endef
 
 define KernelPackage/ath11k-ahb
   $(call KernelPackage/mac80211/Default)
   TITLE:=Qualcomm 802.11ax AHB wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath11k
-  DEPENDS+= @TARGET_ipq807x +kmod-ath11k
+  DEPENDS+= @TARGET_ipq807x +kmod-ath11k +(LINUX_5_15||LINUX_5_18):kmod-qrtr-smd
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/ath11k_ahb.ko
   AUTOLOAD:=$(call AutoProbe,ath11k_ahb)
 endef
@@ -344,7 +358,7 @@ define KernelPackage/ath11k-pci
   $(call KernelPackage/mac80211/Default)
   TITLE:=Qualcomm 802.11ax PCI wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath11k
-  DEPENDS+= @PCI_SUPPORT @TARGET_ipq807x +kmod-ath11k
+  DEPENDS+= @PCI_SUPPORT +(LINUX_5_15||LINUX_5_18):kmod-qrtr-mhi +kmod-ath11k
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/ath11k_pci.ko
   AUTOLOAD:=$(call AutoProbe,ath11k_pci)
 endef

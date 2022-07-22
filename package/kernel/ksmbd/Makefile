@@ -1,21 +1,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ksmbd
-PKG_VERSION:=3.4.3
+PKG_VERSION:=3.4.5
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/cifsd-team/cifsd/tar.gz/$(PKG_VERSION)?
-PKG_HASH:=a910c55d9e6924775e00504eddd00b49788603af29d0772cb9fb6722c189f628
+PKG_HASH:=2873c8ba1027fc5b04c5f5344804ef1469ad7019a033456c16ca4aa3f2c161f0
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
-
-TAR_OPTIONS+= --strip-components 1
-TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
 define KernelPackage/fs-ksmbd
 	SUBMENU:=Filesystems

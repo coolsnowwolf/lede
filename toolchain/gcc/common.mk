@@ -122,7 +122,7 @@ GCC_CONFIGURE:= \
 		--disable-decimal-float \
 		--with-diagnostics-color=auto-if-env \
 		--enable-__cxa_atexit \
-		--disable-libstdcxx-dual-abi \
+		--enable-libstdcxx-dual-abi \
 		--with-default-libstdcxx-abi=new
 ifneq ($(CONFIG_mips)$(CONFIG_mipsel),)
   GCC_CONFIGURE += --with-mips-plt

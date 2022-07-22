@@ -243,7 +243,8 @@ define KernelPackage/drm
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Direct Rendering Manager (DRM) support
   HIDDEN:=1
-  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit  +PACKAGE_kmod-backlight:kmod-backlight
+  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit  +PACKAGE_kmod-backlight:kmod-backlight \
+	+(LINUX_5_15||LINUX_5_18):kmod-fb
   KCONFIG:=	\
 	CONFIG_DRM	\
 	CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y	\
@@ -1075,23 +1076,23 @@ define KernelPackage/drm-i915
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel GPU drm support
   DEPENDS:=@TARGET_x86 +kmod-drm-ttm +kmod-drm-kms-helper +i915-firmware
-  KCONFIG:=	\
-          CONFIG_INTEL_GTT=y			\
-          CONFIG_DRM_I915=m			\
-          CONFIG_DRM_I915_CAPTURE_ERROR=y	\
-          CONFIG_DRM_I915_COMPRESS_ERROR=y	\
-          CONFIG_DRM_I915_USERPTR=y		\
-          CONFIG_DRM_I915_GVT=y			\
-          CONFIG_DRM_I915_WERROR=n		\
-          CONFIG_DRM_I915_DEBUG=n		\
-          CONFIG_DRM_I915_DEBUG_MMIO=n		\
-          CONFIG_DRM_I915_SW_FENCE_DEBUG_OBJECTS=n	\
-          CONFIG_DRM_I915_SW_FENCE_CHECK_DAG=n	\
-          CONFIG_DRM_I915_DEBUG_GUC=n		\
-          CONFIG_DRM_I915_SELFTEST=n		\
-          CONFIG_DRM_I915_LOW_LEVEL_TRACEPOINTS=n	\
-          CONFIG_DRM_I915_DEBUG_VBLANK_EVADE=n	\
-          CONFIG_DRM_I915_DEBUG_RUNTIME_PM=n
+  KCONFIG:= \
+	CONFIG_INTEL_GTT \
+	CONFIG_DRM_I915 \
+	CONFIG_DRM_I915_CAPTURE_ERROR \
+	CONFIG_DRM_I915_COMPRESS_ERROR \
+	CONFIG_DRM_I915_DEBUG=n \
+	CONFIG_DRM_I915_DEBUG_GUC=n \
+	CONFIG_DRM_I915_DEBUG_MMIO=n \
+	CONFIG_DRM_I915_DEBUG_RUNTIME_PM=n \
+	CONFIG_DRM_I915_DEBUG_VBLANK_EVADE=n \
+	CONFIG_DRM_I915_GVT=y \
+	CONFIG_DRM_I915_LOW_LEVEL_TRACEPOINTS=n \
+	CONFIG_DRM_I915_SELFTEST=n \
+	CONFIG_DRM_I915_SW_FENCE_CHECK_DAG=n \
+	CONFIG_DRM_I915_SW_FENCE_DEBUG_OBJECTS=n \
+	CONFIG_DRM_I915_USERPTR=y \
+	CONFIG_DRM_I915_WERROR=n
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko
   AUTOLOAD:=$(call AutoProbe,i915)
 endef

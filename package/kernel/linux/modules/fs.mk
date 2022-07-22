@@ -109,9 +109,9 @@ define KernelPackage/fs-cifs
     +kmod-crypto-ccm \
     +kmod-crypto-ecb \
     +kmod-crypto-des \
-    +(LINUX_5_15):kmod-asn1-decoder \
-    +(LINUX_5_15):kmod-oid-registry \
-    +(LINUX_5_15):kmod-dnsresolver
+    +(LINUX_5_15||LINUX_5_18):kmod-asn1-decoder \
+    +(LINUX_5_15||LINUX_5_18):kmod-oid-registry \
+    +(LINUX_5_15||LINUX_5_18):kmod-dnsresolver
 endef
 
 define KernelPackage/fs-cifs/description
@@ -378,7 +378,7 @@ $(eval $(call KernelPackage,fs-msdos))
 define KernelPackage/fs-nfs
   SUBMENU:=$(FS_MENU)
   TITLE:=NFS filesystem client support
-  DEPENDS:=+kmod-fs-nfs-common +kmod-dnsresolver
+  DEPENDS:=+kmod-fs-nfs-common +kmod-dnsresolver +!LINUX_5_4:kmod-fs-nfs-ssc
   KCONFIG:= \
 	CONFIG_NFS_FS \
 	CONFIG_NFS_USE_LEGACY_DNS=n \
@@ -530,7 +530,7 @@ $(eval $(call KernelPackage,fs-ntfs))
 define KernelPackage/fs-ntfs3
   SUBMENU:=$(FS_MENU)
   TITLE:=NTFS3 Read-Write file system support
-  DEPENDS:=@LINUX_5_15 +kmod-nls-base
+  DEPENDS:=@(LINUX_5_15||LINUX_5_18) +kmod-nls-base
   KCONFIG:= \
 	CONFIG_NTFS3_FS \
 	CONFIG_NTFS3_64BIT_CLUSTER=y \
@@ -613,6 +613,22 @@ define KernelPackage/fs-vfat/description
 endef
 
 $(eval $(call KernelPackage,fs-vfat))
+
+
+define KernelPackage/fs-virtiofs
+  SUBMENU:=$(FS_MENU)
+  TITLE:=Virtiofs filesystem support
+  DEPENDS:=+kmod-fuse
+  KCONFIG:=CONFIG_VIRTIO_FS
+  FILES:=$(LINUX_DIR)/fs/fuse/virtiofs.ko
+  AUTOLOAD:=$(call AutoLoad,30,virtiofs)
+endef
+
+define KernelPackage/fs-virtiofs/description
+  Kernel module for Virtiofs filesystem support
+endef
+
+$(eval $(call KernelPackage,fs-virtiofs))
 
 
 define KernelPackage/fs-xfs

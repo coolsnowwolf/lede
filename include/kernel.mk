@@ -70,7 +70,11 @@ else
       LINUX_UNAME_VERSION:=$(strip $(shell cat $(LINUX_DIR)/include/config/kernel.release 2>/dev/null))
   endif
 
-  MODULES_SUBDIR:=lib/modules/$(LINUX_UNAME_VERSION)
+  ifeq (,$(findstring -android,$(LINUX_VERSION)))
+    MODULES_SUBDIR:=lib/modules/$(LINUX_UNAME_VERSION)
+  else
+    MODULES_SUBDIR:=lib/modules/$(LINUX_UNAME_VERSION)-android
+  endif
   TARGET_MODULES_DIR:=$(LINUX_TARGET_DIR)/$(MODULES_SUBDIR)
 
   ifneq ($(TARGET_BUILD),1)
@@ -110,8 +114,7 @@ KERNEL_MAKE_FLAGS = \
 	KBUILD_BUILD_HOST="$(call qstrip,$(CONFIG_KERNEL_BUILD_DOMAIN))" \
 	KBUILD_BUILD_TIMESTAMP="$(KBUILD_BUILD_TIMESTAMP)" \
 	KBUILD_BUILD_VERSION="0" \
-	HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib" \
-	KBUILD_HOSTLDLIBS="-L$(STAGING_DIR_HOST)/lib" \
+	KBUILD_HOSTLDFLAGS="-L$(STAGING_DIR_HOST)/lib" \
 	CONFIG_SHELL="$(BASH)" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
 	$(if $(PKG_BUILD_ID),LDFLAGS_MODULE=--build-id=0x$(PKG_BUILD_ID)) \
