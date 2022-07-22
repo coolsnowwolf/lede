@@ -13,7 +13,7 @@ endef
 TARGET_DEVICES += embedfire_doornet1
 
 define Device/embedfire_doornet2
-  DEVICE_VENDOR := EmbedFire 
+  DEVICE_VENDOR := EmbedFire
   DEVICE_MODEL := DoorNet2 1GB
   SOC := rk3399
   UBOOT_DEVICE_NAME := doornet2-rk3399
