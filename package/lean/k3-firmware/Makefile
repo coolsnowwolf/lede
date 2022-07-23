@@ -13,13 +13,8 @@ PKG_RELEASE:=2
 include $(INCLUDE_DIR)/package.mk
 
 define Package/k3wifi
-  TITLE:=k3wifi
-  DEPENDS:=
-  URL:=http://www.k3wifi.com/
-endef
-
-define Package/k3wifi/description
-  k3wifi fw
+  TITLE:=k3 wifi fw
+  DEPENDS:=@TARGET_bcm53xx
 endef
 
 define Build/Prepare
@@ -32,10 +27,8 @@ define Build/Compile
 endef
 
 define Package/k3wifi/install
-	$(INSTALL_DIR) $(1)/lib
-	$(INSTALL_DIR) $(1)/lib/firmware
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
-	$(INSTALL_DATA) ./files/lib/firmware/brcm/brcmfmac4366c-pcie.bin $(1)/lib/firmware/brcm/brcmfmac4366c-pcie.bin
+	$(INSTALL_BIN) ./files/brcmfmac4366c-pcie.bin $(1)/lib/firmware/brcm/
 endef
 
 $(eval $(call BuildPackage,k3wifi))
