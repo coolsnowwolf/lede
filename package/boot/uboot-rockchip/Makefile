@@ -97,7 +97,8 @@ define U-Boot/guangmiao-g4c-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=GuangMiao G4C
   BUILD_DEVICES:= \
-    sharevdi_guangmiao-g4c
+    sharevdi_guangmiao-g4c \
+    embedfire_doornet2-4gb
   DEPENDS:=+PACKAGE_u-boot-guangmiao-g4c-rk3399:arm-trusted-firmware-rockchip
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
   ATF:=rk3399_bl31.elf
