@@ -91,7 +91,8 @@ define KernelPackage/vxlan
 	+kmod-udptunnel4 \
 	+IPV6:kmod-udptunnel6
   KCONFIG:=CONFIG_VXLAN
-  FILES:=$(LINUX_DIR)/drivers/net/vxlan.ko
+  FILES:=$(LINUX_DIR)/drivers/net/vxlan.ko@lt5.18 \
+          $(LINUX_DIR)/drivers/net/vxlan/vxlan.ko@ge5.18
   AUTOLOAD:=$(call AutoLoad,13,vxlan)
 endef
 
@@ -1311,6 +1312,22 @@ define KernelPackage/wireguard/description
 endef
 
 $(eval $(call KernelPackage,wireguard))
+
+
+define KernelPackage/netconsole
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Network console logging support
+  KCONFIG:=CONFIG_NETCONSOLE \
+	  CONFIG_NETCONSOLE_DYNAMIC=n
+  FILES:=$(LINUX_DIR)/drivers/net/netconsole.ko
+  AUTOLOAD:=$(call AutoProbe,netconsole)
+endef
+
+define KernelPackage/netconsole/description
+  Network console logging support.
+endef
+
+$(eval $(call KernelPackage,netconsole))
 
 
 define KernelPackage/qrtr
