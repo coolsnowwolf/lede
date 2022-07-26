@@ -23,8 +23,8 @@ endif
 
 tools-y += autoconf autoconf-archive automake bc bison cmake cpio dosfstools
 tools-y += e2fsprogs expat fakeroot findutils firmware-utils flex gengetopt
-tools-y += libressl libtool lzma m4 make-ext4fs meson missing-macros mkimage
-tools-y += mklibs mtd-utils mtools ninja padjffs2 patch-image
+tools-y += libdeflate libressl libtool lzma m4 make-ext4fs meson missing-macros
+tools-y += mkimage mklibs mtd-utils mtools ninja padjffs2 patch-image
 tools-y += patchelf pkgconf quilt squashfskit4 sstrip zip zlib zstd
 tools-$(if $(CONFIG_BUILD_ALL_HOST_TOOLS)$(BUILD_B43_TOOLS),y) += b43-tools
 tools-$(if $(CONFIG_BUILD_ALL_HOST_TOOLS)$(BUILD_ISL),y) += isl
@@ -56,6 +56,7 @@ $(curdir)/genext2fs/compile := $(curdir)/libtool/compile
 $(curdir)/gengetopt/compile := $(curdir)/libtool/compile
 $(curdir)/gmp/compile := $(curdir)/libtool/compile
 $(curdir)/isl/compile := $(curdir)/gmp/compile
+$(curdir)/libdeflate/compile := $(curdir)/cmake/compile
 $(curdir)/libressl/compile := $(curdir)/pkgconf/compile
 $(curdir)/libtool/compile := $(curdir)/automake/compile $(curdir)/missing-macros/compile
 $(curdir)/lzma-old/compile := $(curdir)/zlib/compile
