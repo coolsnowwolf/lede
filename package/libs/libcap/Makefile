@@ -6,12 +6,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libcap
-PKG_VERSION:=2.64
+PKG_VERSION:=2.65
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/libs/security/linux-privs/libcap2
-PKG_HASH:=c8465e1f0b068d5fc06199231135ccac7adb56d662b1de93589252e8cd071e13
+PKG_HASH:=73e350020cc31fe15360879d19384ffa3395a825f065fcf6bda3a5cdf965bebd
 
 PKG_MAINTAINER:=Paul Wassi <p.wassi@gmx.at>
 PKG_LICENSE:=GPL-2.0-only
