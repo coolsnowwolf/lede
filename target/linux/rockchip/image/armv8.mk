@@ -22,16 +22,6 @@ define Device/embedfire_doornet2
 endef
 TARGET_DEVICES += embedfire_doornet2
 
-define Device/embedfire_doornet2-4gb
-  DEVICE_VENDOR := EmbedFire
-  DEVICE_MODEL := DoorNet2 4GB
-  SOC := rk3399
-  UBOOT_DEVICE_NAME := guangmiao-g4c-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 -urngd
-endef
-TARGET_DEVICES += embedfire_doornet2-4gb
-
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
