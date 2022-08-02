@@ -109,9 +109,9 @@ define KernelPackage/fs-cifs
     +kmod-crypto-ccm \
     +kmod-crypto-ecb \
     +kmod-crypto-des \
-    +(LINUX_5_15||LINUX_5_18):kmod-asn1-decoder \
-    +(LINUX_5_15||LINUX_5_18):kmod-oid-registry \
-    +(LINUX_5_15||LINUX_5_18):kmod-dnsresolver
+    +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-asn1-decoder \
+    +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-oid-registry \
+    +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-dnsresolver
 endef
 
 define KernelPackage/fs-cifs/description
@@ -530,7 +530,7 @@ $(eval $(call KernelPackage,fs-ntfs))
 define KernelPackage/fs-ntfs3
   SUBMENU:=$(FS_MENU)
   TITLE:=NTFS3 Read-Write file system support
-  DEPENDS:=@(LINUX_5_15||LINUX_5_18) +kmod-nls-base
+  DEPENDS:=@(LINUX_5_15||LINUX_5_18||LINUX_5_19) +kmod-nls-base
   KCONFIG:= \
 	CONFIG_NTFS3_FS \
 	CONFIG_NTFS3_64BIT_CLUSTER=y \
