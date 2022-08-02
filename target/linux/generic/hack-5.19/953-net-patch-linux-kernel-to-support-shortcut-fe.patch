@@ -1,0 +1,204 @@
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -69,6 +69,9 @@ void brioctl_set(int (*hook)(struct net
+ int br_ioctl_call(struct net *net, struct net_bridge *br, unsigned int cmd,
+ 		  struct ifreq *ifr, void __user *uarg);
+ 
++extern void br_dev_update_stats(struct net_device *dev,
++				struct rtnl_link_stats64 *nlstats);
++
+ #if IS_ENABLED(CONFIG_BRIDGE) && IS_ENABLED(CONFIG_BRIDGE_IGMP_SNOOPING)
+ int br_multicast_list_adjacent(struct net_device *dev,
+ 			       struct list_head *br_ip_list);
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -1022,6 +1022,10 @@ struct sk_buff {
+ 	__u8			slow_gro:1;
+ 	__u8			csum_not_inet:1;
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	__u8			fast_forwarded:1;
++#endif
++
+ #ifdef CONFIG_NET_SCHED
+ 	__u16			tc_index;	/* traffic control index */
+ #endif
+--- a/include/linux/timer.h
++++ b/include/linux/timer.h
+@@ -18,6 +18,10 @@ struct timer_list {
+ 	void			(*function)(struct timer_list *);
+ 	u32			flags;
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	unsigned long		cust_data;
++#endif
++
+ #ifdef CONFIG_LOCKDEP
+ 	struct lockdep_map	lockdep_map;
+ #endif
+--- a/include/net/netfilter/nf_conntrack_ecache.h
++++ b/include/net/netfilter/nf_conntrack_ecache.h
+@@ -84,6 +84,8 @@ struct nf_ct_event_notifier {
+ #ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
+ extern int nf_conntrack_register_notifier(struct net *net, struct notifier_block *nb);
+ extern int nf_conntrack_unregister_notifier(struct net *net, struct notifier_block *nb);
++extern int nf_conntrack_register_chain_notifier(struct net *net, struct notifier_block *nb);
++extern int nf_conntrack_unregister_chain_notifier(struct net *net, struct notifier_block *nb);
+ #else
+ int nf_conntrack_register_notifier(struct net *net,
+ 				   const struct nf_ct_event_notifier *nb);
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -460,6 +460,9 @@ config FAILOVER
+ 	  migration of VMs with direct attached VFs by failing over to the
+ 	  paravirtual datapath when the VF is unplugged.
+ 
++config SHORTCUT_FE
++	bool "Enables kernel network stack path for Shortcut  Forwarding Engine"
++
+ config ETHTOOL_NETLINK
+ 	bool "Netlink interface for ethtool"
+ 	default y
+--- a/net/bridge/br_if.c
++++ b/net/bridge/br_if.c
+@@ -774,6 +774,28 @@ void br_port_flags_change(struct net_bri
+ 		br_recalculate_neigh_suppress_enabled(br);
+ }
+ 
++void br_dev_update_stats(struct net_device *dev,
++			 struct rtnl_link_stats64 *nlstats)
++{
++	
++	struct pcpu_sw_netstats *stats;
++
++	/* Is this a bridge? */
++	if (!(dev->priv_flags & IFF_EBRIDGE))
++		return;
++
++	
++	stats = this_cpu_ptr(dev->tstats);
++
++	u64_stats_update_begin(&stats->syncp);
++	stats->rx_packets += nlstats->rx_packets;
++	stats->rx_bytes += nlstats->rx_bytes;
++	stats->tx_packets += nlstats->tx_packets;
++	stats->tx_bytes += nlstats->tx_bytes;
++	u64_stats_update_end(&stats->syncp);
++}
++EXPORT_SYMBOL_GPL(br_dev_update_stats);
++
+ bool br_port_flag_is_set(const struct net_device *dev, unsigned long flag)
+ {
+ 	struct net_bridge_port *p;
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -3532,9 +3532,17 @@ static int xmit_one(struct sk_buff *skb,
+ {
+ 	unsigned int len;
+ 	int rc;
+-
++#ifdef CONFIG_SHORTCUT_FE
++	/* If this skb has been fast forwarded then we don't want it to
++	 * go to any taps (by definition we're trying to bypass them).
++	 */
++	if (!skb->fast_forwarded) {
++#endif
+ 	if (dev_nit_active(dev))
+ 		dev_queue_xmit_nit(skb, dev);
++#ifdef CONFIG_SHORTCUT_FE
++	}
++#endif
+ 
+ 	len = skb->len;
+ 	PRANDOM_ADD_NOISE(skb, dev, txq, len + jiffies);
+@@ -5161,6 +5169,11 @@ void netdev_rx_handler_unregister(struct
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
+ 
++#ifdef CONFIG_SHORTCUT_FE
++int (*athrs_fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
++EXPORT_SYMBOL_GPL(athrs_fast_nat_recv);
++#endif
++
+ /*
+  * Limit the use of PFMEMALLOC reserves to those protocols that implement
+  * the special handling of PFMEMALLOC skbs.
+@@ -5209,6 +5222,10 @@ static int __netif_receive_skb_core(stru
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	int (*fast_recv)(struct sk_buff *skb);
++#endif
++
+ 	net_timestamp_check(!netdev_tstamp_prequeue, skb);
+ 
+ 	trace_netif_receive_skb(skb);
+@@ -5246,6 +5263,15 @@ another_round:
+ 			goto out;
+ 	}
+ 
++#ifdef CONFIG_SHORTCUT_FE
++	fast_recv = rcu_dereference(athrs_fast_nat_recv);
++	if (fast_recv) {
++		if (fast_recv(skb)) {
++			ret = NET_RX_SUCCESS;
++			goto out;
++		}
++	}
++#endif
+ 	if (skb_skip_tc_classify(skb))
+ 		goto skip_classify;
+ 
+--- a/net/netfilter/nf_conntrack_ecache.c
++++ b/net/netfilter/nf_conntrack_ecache.c
+@@ -143,12 +143,23 @@ static int __nf_conntrack_eventmask_repo
+ 	rcu_read_lock();
+ 
+ 	notify = rcu_dereference(net->ct.nf_conntrack_event_cb);
+-	if (!notify) {
++#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
++	if (!notify && !rcu_dereference_raw(net->ct.nf_conntrack_chain.head))
++#else
++	if (!notify) 
++#endif
++	{
+ 		rcu_read_unlock();
+ 		return 0;
+ 	}
+-
++#ifdef CONFIG_NF_CONNTRACK_CHAIN_EVENTS
++		ret = atomic_notifier_call_chain(&net->ct.nf_conntrack_chain,
++			events | missed, &item);
++		if (notify)
++			ret = notify->ct_event(events | missed, item);
++#else
+ 	ret = notify->ct_event(events | missed, item);
++#endif
+ 	rcu_read_unlock();
+ 
+ 	if (likely(ret >= 0 && missed == 0))
+@@ -339,6 +350,11 @@ int nf_conntrack_register_notifier(struc
+ {
+ 	return atomic_notifier_chain_register(&net->ct.nf_conntrack_chain, nb);
+ }
++int nf_conntrack_register_chain_notifier(struct net *net, struct notifier_block *nb)
++{
++	return atomic_notifier_chain_register(&net->ct.nf_conntrack_chain, nb);
++}
++EXPORT_SYMBOL_GPL(nf_conntrack_register_chain_notifier);
+ #else
+ int nf_conntrack_register_notifier(struct net *net,
+ 				    const struct nf_ct_event_notifier *new)
+@@ -369,6 +385,11 @@ int nf_conntrack_unregister_notifier(str
+ {
+ 	return atomic_notifier_chain_unregister(&net->ct.nf_conntrack_chain, nb);
+ }
++int nf_conntrack_unregister_chain_notifier(struct net *net, struct notifier_block *nb)
++{
++	return atomic_notifier_chain_unregister(&net->ct.nf_conntrack_chain, nb);
++}
++EXPORT_SYMBOL_GPL(nf_conntrack_unregister_chain_notifier);
+ #else
+ void nf_conntrack_unregister_notifier(struct net *net)
+ {
