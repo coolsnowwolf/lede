@@ -1151,8 +1151,8 @@ $(eval $(call KernelPackage,keys-trusted))
 define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
-  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_5_18):kmod-asn1-decoder \
-	  +(LINUX_5_15||LINUX_5_18):kmod-asn1-encoder +(LINUX_5_15||LINUX_5_18):kmod-oid-registry
+  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-asn1-decoder \
+	  +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-asn1-encoder +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-oid-registry
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
