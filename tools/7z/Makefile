@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=7z
-PKG_VERSION:=22.00
-PKG_SOURCE_VERSION:=2200
+PKG_VERSION:=22.01
+PKG_SOURCE_VERSION:=2201
 
 PKG_SOURCE:=$(PKG_NAME)$(PKG_SOURCE_VERSION)-src.tar.xz
 PKG_SOURCE_URL:=https://7-zip.org/a/
-PKG_HASH:=40969f601e86aff49aaa0ba0df5ce6fd397cf7e2683a84b591b0081e461ef675
+PKG_HASH:=393098730c70042392af808917e765945dc2437dee7aae3cfcc4966eb920fbc5
 
 # This builds the 7zr variant which supports only 7z, so no non-LGPL code should be included
 PKG_LICENSE:=LGPL-2.1-or-later
