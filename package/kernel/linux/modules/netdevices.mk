@@ -1489,9 +1489,10 @@ $(eval $(call KernelPackage,mhi-net))
 define KernelPackage/mhi-wwan-ctrl
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI WWAN Control
-  DEPENDS:=@LINUX_5_15 @PCI_SUPPORT +kmod-mhi-bus
-  KCONFIG:=CONFIG_MHI_WWAN_CTRL
-  FILES:=$(LINUX_DIR)/drivers/net/mhi_wwan_ctrl.ko
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_WWAN_CTRL \
+	CONFIG_WWAN=y
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_ctrl.ko
   AUTOLOAD:=$(call AutoProbe,mhi_wwan_ctrl)
 endef
 
@@ -1505,9 +1506,10 @@ $(eval $(call KernelPackage,mhi-wwan-ctrl))
 define KernelPackage/mhi-wwan-mbim
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI MBIM
-  DEPENDS:=@LINUX_5_15 @PCI_SUPPORT +kmod-mhi-bus
-  KCONFIG:=CONFIG_MHI_WWAN_MBIM
-  FILES:=$(LINUX_DIR)/drivers/net/mhi_wwan_mbim.ko
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_WWAN_MBIM \
+	CONFIG_WWAN=y
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_mbim.ko
   AUTOLOAD:=$(call AutoProbe,mhi_wwan_mbim)
 endef
 
