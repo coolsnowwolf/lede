@@ -103,7 +103,9 @@ define KernelPackage/i915-gvt
   TITLE:=Enable KVM/VFIO support for Intel GVT-g
   DEPENDS:=@TARGET_x86_64 +kmod-kvm-intel +kmod-drm-i915 +kmod-vfio-mdev
   KCONFIG:= CONFIG_DRM_I915_GVT_KVMGT
-  FILES:=$(LINUX_DIR)/drivers/gpu/drm/i915/gvt/kvmgt.ko
+  FILES:= \
+      $(LINUX_DIR)/drivers/gpu/drm/i915/gvt/kvmgt.ko@lt5.18 \
+      $(LINUX_DIR)/drivers/gpu/drm/i915/kvmgt.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,kvmgt)
 endef
 
