@@ -1471,6 +1471,23 @@ endef
 
 $(eval $(call KernelPackage,sfc-falcon))
 
+
+define KernelPackage/wwan
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=WWAN Driver Core
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  KCONFIG:=CONFIG_WWAN
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/wwan.ko
+  AUTOLOAD:=$(call AutoProbe,wwan)
+endef
+
+define KernelPackage/wwan/description
+ his driver provides a common framework for WWAN drivers.
+endef
+
+$(eval $(call KernelPackage,wwan))
+
+
 define KernelPackage/mhi-net
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI Network Device
@@ -1489,9 +1506,8 @@ $(eval $(call KernelPackage,mhi-net))
 define KernelPackage/mhi-wwan-ctrl
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI WWAN Control
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
-  KCONFIG:=CONFIG_MHI_WWAN_CTRL \
-	CONFIG_WWAN=y
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_CTRL
   FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_ctrl.ko
   AUTOLOAD:=$(call AutoProbe,mhi_wwan_ctrl)
 endef
@@ -1506,9 +1522,8 @@ $(eval $(call KernelPackage,mhi-wwan-ctrl))
 define KernelPackage/mhi-wwan-mbim
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI MBIM
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
-  KCONFIG:=CONFIG_MHI_WWAN_MBIM \
-	CONFIG_WWAN=y
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_MBIM
   FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_mbim.ko
   AUTOLOAD:=$(call AutoProbe,mhi_wwan_mbim)
 endef
