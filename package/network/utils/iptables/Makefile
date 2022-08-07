@@ -222,19 +222,6 @@ iptables extensions for extra NAT targets.
   - NETMAP
 endef
 
-define Package/iptables-mod-ulog
-$(call Package/iptables/Module, +kmod-ipt-ulog)
-  TITLE:=user-space packet logging
-endef
-
-define Package/iptables-mod-ulog/description
-iptables extensions for user-space packet logging.
-
- Targets:
-  - ULOG
-
-endef
-
 define Package/iptables-mod-nflog
 $(call Package/iptables/Module, +kmod-nfnetlink-log +kmod-ipt-nflog)
   TITLE:=Netfilter NFLOG target
@@ -684,7 +671,6 @@ $(eval $(call BuildPlugin,iptables-mod-nat-extra,$(IPT_NAT_EXTRA-m)))
 $(eval $(call BuildPlugin,iptables-mod-iprange,$(IPT_IPRANGE-m)))
 $(eval $(call BuildPlugin,iptables-mod-cluster,$(IPT_CLUSTER-m)))
 $(eval $(call BuildPlugin,iptables-mod-clusterip,$(IPT_CLUSTERIP-m)))
-$(eval $(call BuildPlugin,iptables-mod-ulog,$(IPT_ULOG-m)))
 $(eval $(call BuildPlugin,iptables-mod-hashlimit,$(IPT_HASHLIMIT-m)))
 $(eval $(call BuildPlugin,iptables-mod-rpfilter,$(IPT_RPFILTER-m)))
 $(eval $(call BuildPlugin,iptables-mod-led,$(IPT_LED-m)))
