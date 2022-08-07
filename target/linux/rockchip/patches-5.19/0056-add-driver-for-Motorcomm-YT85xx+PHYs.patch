@@ -1,0 +1,2243 @@
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -1,137 +1,1540 @@
+-// SPDX-License-Identifier: GPL-2.0+
+ /*
++ * drivers/net/phy/motorcomm.c
++ *
+  * Driver for Motorcomm PHYs
+  *
+- * Author: Peter Geis <pgwipeout@gmail.com>
++ * Author: Leilei Zhao <leilei.zhao@motorcomm.com>
++ *
++ * Copyright (c) 2019 Motorcomm, Inc.
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ * Support : Motorcomm Phys:
++ *		Giga phys: yt8511, yt8521
++ *		100/10 Phys : yt8512, yt8512b, yt8510
++ *		Automotive 100Mb Phys : yt8010
++ *		Automotive 100/10 hyper range Phys: yt8510
+  */
+ 
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/phy.h>
++#include <linux/motorcomm_phy.h>
++#include <linux/of.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#ifndef LINUX_VERSION_CODE
++#include <linux/version.h>
++#else
++#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
++#endif
++/*for wol, 20210604*/
++#include <linux/netdevice.h>
++
++#include "yt8614-phy.h"
++
++/**** configuration section begin ***********/
++
++/* if system depends on ethernet packet to restore from sleep, please define this macro to 1
++ * otherwise, define it to 0.
++ */
++#define SYS_WAKEUP_BASED_ON_ETH_PKT 	1
++
++/* to enable system WOL of phy, please define this macro to 1
++ * otherwise, define it to 0.
++ */
++#define YTPHY_ENABLE_WOL 		0
++
++/* some GMAC need clock input from PHY, for eg., 125M, please enable this macro
++ * by degault, it is set to 0
++ * NOTE: this macro will need macro SYS_WAKEUP_BASED_ON_ETH_PKT to set to 1
++ */
++#define GMAC_CLOCK_INPUT_NEEDED 1
+ 
+-#define PHY_ID_YT8511		0x0000010a
+ 
+-#define YT8511_PAGE_SELECT	0x1e
+-#define YT8511_PAGE		0x1f
+-#define YT8511_EXT_CLK_GATE	0x0c
+-#define YT8511_EXT_DELAY_DRIVE	0x0d
+-#define YT8511_EXT_SLEEP_CTRL	0x27
+-
+-/* 2b00 25m from pll
+- * 2b01 25m from xtl *default*
+- * 2b10 62.m from pll
+- * 2b11 125m from pll
+- */
+-#define YT8511_CLK_125M		(BIT(2) | BIT(1))
+-#define YT8511_PLLON_SLP	BIT(14)
+-
+-/* RX Delay enabled = 1.8ns 1000T, 8ns 10/100T */
+-#define YT8511_DELAY_RX		BIT(0)
+-
+-/* TX Gig-E Delay is bits 7:4, default 0x5
+- * TX Fast-E Delay is bits 15:12, default 0xf
+- * Delay = 150ps * N - 250ps
+- * On = 2000ps, off = 50ps
+- */
+-#define YT8511_DELAY_GE_TX_EN	(0xf << 4)
+-#define YT8511_DELAY_GE_TX_DIS	(0x2 << 4)
+-#define YT8511_DELAY_FE_TX_EN	(0xf << 12)
+-#define YT8511_DELAY_FE_TX_DIS	(0x2 << 12)
++#define YT8521_PHY_MODE_FIBER	1 //fiber mode only
++#define YT8521_PHY_MODE_UTP		2 //utp mode only
++#define YT8521_PHY_MODE_POLL	3 //fiber and utp, poll mode
+ 
+-static int yt8511_read_page(struct phy_device *phydev)
++/* please make choice according to system design
++ * for Fiber only system, please define YT8521_PHY_MODE_CURR 1
++ * for UTP only system, please define YT8521_PHY_MODE_CURR 2
++ * for combo system, please define YT8521_PHY_MODE_CURR 3 
++ */
++#define YT8521_PHY_MODE_CURR	3
++
++/**** configuration section end ***********/
++
++
++/* no need to change below */
++
++#if (YTPHY_ENABLE_WOL)
++#undef SYS_WAKEUP_BASED_ON_ETH_PKT
++#define SYS_WAKEUP_BASED_ON_ETH_PKT 	1
++#endif
++
++/* workaround for 8521 fiber 100m mode */
++static int link_mode_8521 = 0; //0: no link; 1: utp; 32: fiber. traced that 1000m fiber uses 32.
++static int link_mode_8614[4] = {0}; //0: no link; 1: utp; 32: fiber. traced that 1000m fiber uses 32.
++
++/* for multiple port phy, base phy address */
++static unsigned int yt_mport_base_phy_addr = 0xff; //0xff: invalid; for 8618
++static unsigned int yt_mport_base_phy_addr_8614 = 0xff; //0xff: invalid;
++
++int phy_yt8531_led_fixup(struct mii_bus *bus, int addr);
++int yt8511_config_out_125m(struct mii_bus *bus, int phy_id);
++
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(5,0,0) )
++int genphy_config_init(struct phy_device *phydev)
+ {
+-	return __phy_read(phydev, YT8511_PAGE_SELECT);
+-};
++	int ret;
++
++	printk (KERN_INFO "yzhang..read phyaddr=%d, phyid=%08x\n",phydev->mdio.addr, phydev->phy_id);
+ 
+-static int yt8511_write_page(struct phy_device *phydev, int page)
++	if(phydev->phy_id == 0x4f51e91b)
++	{
++		printk (KERN_INFO "yzhang..get YT8511, abt to set 125m clk out, phyaddr=%d, phyid=%08x\n",phydev->mdio.addr, phydev->phy_id);
++		ret = yt8511_config_out_125m(phydev->mdio.bus, phydev->mdio.addr);
++		printk (KERN_INFO "yzhang..8511 set 125m clk out, reg=%#04x\n",phydev->mdio.bus->read(phydev->mdio.bus,phydev->mdio.addr,0x1f)/*double check as delay*/);
++		if (ret<0)
++			printk (KERN_INFO "yzhang..failed to set 125m clk out, ret=%d\n",ret);
++
++		phy_yt8531_led_fixup(phydev->mdio.bus, phydev->mdio.addr);
++	}
++	return  genphy_read_abilities(phydev);
++}
++#endif
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++static int ytphy_config_init(struct phy_device *phydev)
+ {
+-	return __phy_write(phydev, YT8511_PAGE_SELECT, page);
+-};
++	return 0;
++}
++#endif
++
++static int ytphy_read_ext(struct phy_device *phydev, u32 regnum)
++{
++	int ret;
++	int val;
++
++	ret = phy_write(phydev, REG_DEBUG_ADDR_OFFSET, regnum);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_DEBUG_DATA);
++
++	return val;
++}
++
++static int ytphy_write_ext(struct phy_device *phydev, u32 regnum, u16 val)
++{
++	int ret;
++
++	ret = phy_write(phydev, REG_DEBUG_ADDR_OFFSET, regnum);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write(phydev, REG_DEBUG_DATA, val);
++
++	return ret;
++}
++
++static int yt8010_config_aneg(struct phy_device *phydev)
++{
++	phydev->speed = SPEED_100;
++	return 0;
++}
++
++static int yt8512_clk_init(struct phy_device *phydev)
++{
++	int ret;
++	int val;
++
++	val = ytphy_read_ext(phydev, YT8512_EXTREG_AFE_PLL);
++	if (val < 0)
++		return val;
++
++	val |= YT8512_CONFIG_PLL_REFCLK_SEL_EN;
++
++	ret = ytphy_write_ext(phydev, YT8512_EXTREG_AFE_PLL, val);
++	if (ret < 0)
++		return ret;
++
++	val = ytphy_read_ext(phydev, YT8512_EXTREG_EXTEND_COMBO);
++	if (val < 0)
++		return val;
++
++	val |= YT8512_CONTROL1_RMII_EN;
++
++	ret = ytphy_write_ext(phydev, YT8512_EXTREG_EXTEND_COMBO, val);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, MII_BMCR);
++	if (val < 0)
++		return val;
++
++	val |= YT_SOFTWARE_RESET;
++	ret = phy_write(phydev, MII_BMCR, val);
++
++	return ret;
++}
++
++static int yt8512_led_init(struct phy_device *phydev)
++{
++	int ret;
++	int val;
++	int mask;
++
++	val = ytphy_read_ext(phydev, YT8512_EXTREG_LED0);
++	if (val < 0)
++		return val;
++
++	val |= YT8512_LED0_ACT_BLK_IND;
++
++	mask = YT8512_LED0_DIS_LED_AN_TRY | YT8512_LED0_BT_BLK_EN |
++		YT8512_LED0_HT_BLK_EN | YT8512_LED0_COL_BLK_EN |
++		YT8512_LED0_BT_ON_EN;
++	val &= ~mask;
++
++	ret = ytphy_write_ext(phydev, YT8512_EXTREG_LED0, val);
++	if (ret < 0)
++		return ret;
++
++	val = ytphy_read_ext(phydev, YT8512_EXTREG_LED1);
++	if (val < 0)
++		return val;
++
++	val |= YT8512_LED1_BT_ON_EN;
++
++	mask = YT8512_LED1_TXACT_BLK_EN | YT8512_LED1_RXACT_BLK_EN;
++	val &= ~mask;
++
++	ret = ytphy_write_ext(phydev, YT8512_LED1_BT_ON_EN, val);
++
++	return ret;
++}
++
++static int yt8512_config_init(struct phy_device *phydev)
++{
++	int ret;
++	int val;
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	ret = ytphy_config_init(phydev);
++#else
++	ret = genphy_config_init(phydev);
++#endif
++	if (ret < 0)
++		return ret;
++
++	ret = yt8512_clk_init(phydev);
++	if (ret < 0)
++		return ret;
++
++	ret = yt8512_led_init(phydev);
++
++	/* disable auto sleep */
++	val = ytphy_read_ext(phydev, YT8512_EXTREG_SLEEP_CONTROL1);
++	if (val < 0)
++		return val;
++
++	val &= (~BIT(YT8512_EN_SLEEP_SW_BIT));
++
++	ret = ytphy_write_ext(phydev, YT8512_EXTREG_SLEEP_CONTROL1, val);
++	if (ret < 0)
++		return ret;
++
++	return ret;
++}
++
++static int yt8512_read_status(struct phy_device *phydev)
++{
++	int ret;
++	int val;
++	int speed, speed_mode, duplex;
++
++	ret = genphy_update_link(phydev);
++	if (ret)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++
++	duplex = (val & YT8512_DUPLEX) >> YT8512_DUPLEX_BIT;
++	speed_mode = (val & YT8512_SPEED_MODE) >> YT8512_SPEED_MODE_BIT;
++	switch (speed_mode) {
++	case 0:
++		speed = SPEED_10;
++		break;
++	case 1:
++		speed = SPEED_100;
++		break;
++	case 2:
++	case 3:
++	default:
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		speed = -1;
++#else
++		speed = SPEED_UNKNOWN;
++#endif
++		break;
++	}
++
++	phydev->speed = speed;
++	phydev->duplex = duplex;
++
++	return 0;
++}
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++#if 0
++int yt8521_soft_reset(struct phy_device *phydev)
++{
++	int ret;
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	ret = genphy_soft_reset(phydev);
++	if (ret < 0)
++		return ret;
++
++	ytphy_write_ext(phydev, 0xa000, 2);
++	ret = genphy_soft_reset(phydev);
++	if (ret < 0) {
++		ytphy_write_ext(phydev, 0xa000, 0);
++		return ret;
++	}
++
++	return 0;
++}
++#else
++/* qingsong feedback 2 genphy_soft_reset will cause problem.
++ * and this is the reduction version
++ */
++int yt8521_soft_reset(struct phy_device *phydev)
++{
++	int ret, val;
++
++	val = ytphy_read_ext(phydev, 0xa001);
++	ytphy_write_ext(phydev, 0xa001, (val & ~0x8000));
++
++	ret = genphy_soft_reset(phydev);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++#endif
++
++#endif
++
++#if GMAC_CLOCK_INPUT_NEEDED
++static int ytphy_mii_rd_ext(struct mii_bus *bus, int phy_id, u32 regnum)
++{
++	int ret;
++	int val;
++
++	ret = bus->write(bus, phy_id, REG_DEBUG_ADDR_OFFSET, regnum);
++	if (ret < 0)
++		return ret;
++
++	val = bus->read(bus, phy_id, REG_DEBUG_DATA);
++
++	return val;
++}
++
++static int ytphy_mii_wr_ext(struct mii_bus *bus, int phy_id, u32 regnum, u16 val)
++{
++	int ret;
++
++	ret = bus->write(bus, phy_id, REG_DEBUG_ADDR_OFFSET, regnum);
++	if (ret < 0)
++		return ret;
++
++	ret = bus->write(bus, phy_id, REG_DEBUG_DATA, val);
++
++	return ret;
++}
++
++int yt8511_config_dis_txdelay(struct mii_bus *bus, int phy_id)
++{
++    int ret;
++    int val;
++
++    /* disable auto sleep */
++    val = ytphy_mii_rd_ext(bus, phy_id, 0x27);
++    if (val < 0)
++            return val;
++
++    val &= (~BIT(15));
++
++    ret = ytphy_mii_wr_ext(bus, phy_id, 0x27, val);
++    if (ret < 0)
++            return ret;
++
++    /* enable RXC clock when no wire plug */
++    val = ytphy_mii_rd_ext(bus, phy_id, 0xc);
++    if (val < 0)
++            return val;
++
++    /* ext reg 0xc b[7:4]
++	Tx Delay time = 150ps * N - 250ps
++    */
++    val &= ~(0xf << 4);
++    ret = ytphy_mii_wr_ext(bus, phy_id, 0xc, val);
++    printk("yt8511_config_dis_txdelay..phy txdelay, val=%#08x\n",val);
++
++    return ret;
++}
++
++int phy_yt8531_led_fixup(struct mii_bus *bus, int addr)
++{
++	printk("%s in\n", __func__);
++
++	ytphy_mii_wr_ext(bus, addr, 0xa00d, 0x670);
++	ytphy_mii_wr_ext(bus, addr, 0xa00e, 0x2070);
++	ytphy_mii_wr_ext(bus, addr, 0xa00f, 0x7e);
++
++	return 0;
++}
++
++int yt8511_config_out_125m(struct mii_bus *bus, int addr)
++{
++	int ret;
++	int val;
++
++	mdelay(50);
++	ret = ytphy_mii_wr_ext(bus, addr, 0xa012, 0xd0);
++
++	mdelay(100);
++	val = ytphy_mii_rd_ext(bus, addr, 0xa012);
++	
++	if(val != 0xd0)
++	{
++		printk("yt8511_config_out_125m error\n");
++		return -1;
++	}
++
++	/* disable auto sleep */
++	val = ytphy_mii_rd_ext(bus, addr, 0x27);
++	if (val < 0)
++	        return val;
++
++	val &= (~BIT(15));
++
++	ret = ytphy_mii_wr_ext(bus, addr, 0x27, val);
++	if (ret < 0)
++	        return ret;
++
++	/* enable RXC clock when no wire plug */
++	val = ytphy_mii_rd_ext(bus, addr, 0xc);
++	if (val < 0)
++	        return val;
++
++	/* ext reg 0xc.b[2:1]
++	00-----25M from pll;
++	01---- 25M from xtl;(default)
++	10-----62.5M from pll;
++	11----125M from pll(here set to this value)
++	*/
++	val |= (3 << 1);
++	ret = ytphy_mii_wr_ext(bus, addr, 0xc, val);
++	printk("yt8511_config_out_125m, phy clk out, val=%#08x\n",val);
++
++#if 0
++	/* for customer, please enable it based on demand.
++	 * configure to master
++	 */	
++	val = bus->read(bus, phy_id, 0x9/*master/slave config reg*/);
++	val |= (0x3<<11); //to be manual config and force to be master
++	ret = bus->write(bus, phy_id, 0x9, val); //take effect until phy soft reset
++	if (ret < 0)
++		return ret;
++
++	printk("yt8511_config_out_125m, phy to be master, val=%#08x\n",val);
++#endif
++
++    return ret;
++}
++
++EXPORT_SYMBOL(yt8511_config_out_125m);
+ 
+ static int yt8511_config_init(struct phy_device *phydev)
+ {
+-	int oldpage, ret = 0;
+-	unsigned int ge, fe;
++	int ret;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	ret = ytphy_config_init(phydev);
++#else
++	ret = genphy_config_init(phydev);
++#endif
++
++	return ret;
++}
++#endif /*GMAC_CLOCK_INPUT_NEEDED*/
++
++#if (YTPHY_ENABLE_WOL)
++static int ytphy_switch_reg_space(struct phy_device *phydev, int space)
++{
++	int ret;
++
++	if (space == YTPHY_REG_SPACE_UTP){
++		ret = ytphy_write_ext(phydev, 0xa000, 0);
++	}else{
++		ret = ytphy_write_ext(phydev, 0xa000, 2);
++	}
++	
++	return ret;
++}
++
++static int ytphy_wol_en_cfg(struct phy_device *phydev, ytphy_wol_cfg_t wol_cfg)
++{
++	int ret=0;
++	int val=0;
++
++	val = ytphy_read_ext(phydev, YTPHY_WOL_CFG_REG);
++	if (val < 0)
++		return val;
++
++	if(wol_cfg.enable) {
++		val |= YTPHY_WOL_CFG_EN;
++
++		if(wol_cfg.type == YTPHY_WOL_TYPE_LEVEL) {
++			val &= ~YTPHY_WOL_CFG_TYPE;
++			val &= ~YTPHY_WOL_CFG_INTR_SEL;
++		} else if(wol_cfg.type == YTPHY_WOL_TYPE_PULSE) {
++			val |= YTPHY_WOL_CFG_TYPE;
++			val |= YTPHY_WOL_CFG_INTR_SEL;
++
++			if(wol_cfg.width == YTPHY_WOL_WIDTH_84MS) {
++				val &= ~YTPHY_WOL_CFG_WIDTH1;
++				val &= ~YTPHY_WOL_CFG_WIDTH2;
++			} else if(wol_cfg.width == YTPHY_WOL_WIDTH_168MS) {
++				val |= YTPHY_WOL_CFG_WIDTH1;
++				val &= ~YTPHY_WOL_CFG_WIDTH2;
++			} else if(wol_cfg.width == YTPHY_WOL_WIDTH_336MS) {
++				val &= ~YTPHY_WOL_CFG_WIDTH1;
++				val |= YTPHY_WOL_CFG_WIDTH2;
++			} else if(wol_cfg.width == YTPHY_WOL_WIDTH_672MS) {
++				val |= YTPHY_WOL_CFG_WIDTH1;
++				val |= YTPHY_WOL_CFG_WIDTH2;
++			}
++		}
++	} else {
++		val &= ~YTPHY_WOL_CFG_EN;
++		val &= ~YTPHY_WOL_CFG_INTR_SEL;
++	}
++
++	ret = ytphy_write_ext(phydev, YTPHY_WOL_CFG_REG, val);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static void ytphy_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
++{
++	int val = 0;
++
++	wol->supported = WAKE_MAGIC;
++	wol->wolopts = 0;
++
++	val = ytphy_read_ext(phydev, YTPHY_WOL_CFG_REG);
++	if (val < 0)
++		return;
++
++	if (val & YTPHY_WOL_CFG_EN)
++		wol->wolopts |= WAKE_MAGIC;
++
++	return;
++}
++
++static int ytphy_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
++{
++	int ret, pre_page, val;
++	ytphy_wol_cfg_t wol_cfg;
++	struct net_device *p_attached_dev = phydev->attached_dev;
++
++	memset(&wol_cfg,0,sizeof(ytphy_wol_cfg_t));
++	pre_page = ytphy_read_ext(phydev, 0xa000);
++	if (pre_page < 0)
++		return pre_page;
++
++	/* Switch to phy UTP page */
++	ret = ytphy_switch_reg_space(phydev, YTPHY_REG_SPACE_UTP);
++	if (ret < 0)
++		return ret;
++
++	if (wol->wolopts & WAKE_MAGIC) {
++		
++		/* Enable the WOL interrupt */
++		val = phy_read(phydev, YTPHY_UTP_INTR_REG);
++		val |= YTPHY_WOL_INTR;
++		ret = phy_write(phydev, YTPHY_UTP_INTR_REG, val);
++		if (ret < 0)
++			return ret;
++
++		/* Set the WOL config */
++		wol_cfg.enable = 1; //enable
++		wol_cfg.type= YTPHY_WOL_TYPE_PULSE;
++		wol_cfg.width= YTPHY_WOL_WIDTH_672MS;
++		ret = ytphy_wol_en_cfg(phydev, wol_cfg);
++		if (ret < 0)
++			return ret;
++
++		/* Store the device address for the magic packet */
++		ret = ytphy_write_ext(phydev, YTPHY_MAGIC_PACKET_MAC_ADDR2,
++				((p_attached_dev->dev_addr[0] << 8) |
++				 p_attached_dev->dev_addr[1]));
++		if (ret < 0)
++			return ret;
++		ret = ytphy_write_ext(phydev, YTPHY_MAGIC_PACKET_MAC_ADDR1,
++				((p_attached_dev->dev_addr[2] << 8) |
++				 p_attached_dev->dev_addr[3]));
++		if (ret < 0)
++			return ret;
++		ret = ytphy_write_ext(phydev, YTPHY_MAGIC_PACKET_MAC_ADDR0,
++				((p_attached_dev->dev_addr[4] << 8) |
++				 p_attached_dev->dev_addr[5]));
++		if (ret < 0)
++			return ret;
++	} else {
++		wol_cfg.enable = 0; //disable
++		wol_cfg.type= YTPHY_WOL_TYPE_MAX;
++		wol_cfg.width= YTPHY_WOL_WIDTH_MAX;
++		ret = ytphy_wol_en_cfg(phydev, wol_cfg);
++		if (ret < 0)
++			return ret;
++	}
++
++	/* Recover to previous register space page */
++	ret = ytphy_switch_reg_space(phydev, pre_page);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++#endif /*(YTPHY_ENABLE_WOL)*/
++
++static int yt8521_config_init(struct phy_device *phydev)
++{
++	int ret;
++	int val;
+ 
+-	oldpage = phy_select_page(phydev, YT8511_EXT_CLK_GATE);
+-	if (oldpage < 0)
+-		goto err_restore_page;
++	phydev->irq = PHY_POLL;
+ 
+-	/* set rgmii delay mode */
+-	switch (phydev->interface) {
+-	case PHY_INTERFACE_MODE_RGMII:
+-		ge = YT8511_DELAY_GE_TX_DIS;
+-		fe = YT8511_DELAY_FE_TX_DIS;
++	ytphy_write_ext(phydev, 0xa000, 0);
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	ret = ytphy_config_init(phydev);
++#else
++	ret = genphy_config_init(phydev);
++#endif
++	if (ret < 0)
++		return ret;
++
++	/* disable auto sleep */
++	val = ytphy_read_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1);
++	if (val < 0)
++		return val;
++
++	val &= (~BIT(YT8521_EN_SLEEP_SW_BIT));
++
++	ret = ytphy_write_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1, val);
++	if (ret < 0)
++		return ret;
++
++	/* enable RXC clock when no wire plug */
++	ret = ytphy_write_ext(phydev, 0xa000, 0);
++	if (ret < 0)
++		return ret;
++
++	val = ytphy_read_ext(phydev, 0xc);
++	if (val < 0)
++		return val;
++	val &= ~(1 << 12);
++	ret = ytphy_write_ext(phydev, 0xc, val);
++	if (ret < 0)
++		return ret;
++
++	printk (KERN_INFO "yt8521_config_init, 8521 init call out.\n");
++	return ret;
++}
++
++/*
++ * for fiber mode, there is no 10M speed mode and 
++ * this function is for this purpose.
++ */
++static int yt8521_adjust_status(struct phy_device *phydev, int val, int is_utp)
++{
++	int speed_mode, duplex;
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	int speed = -1;
++#else
++	int speed = SPEED_UNKNOWN;
++#endif
++
++	duplex = (val & YT8512_DUPLEX) >> YT8521_DUPLEX_BIT;
++	speed_mode = (val & YT8521_SPEED_MODE) >> YT8521_SPEED_MODE_BIT;
++	switch (speed_mode) {
++	case 0:
++		if (is_utp)
++			speed = SPEED_10;
+ 		break;
+-	case PHY_INTERFACE_MODE_RGMII_RXID:
+-		ge = YT8511_DELAY_RX | YT8511_DELAY_GE_TX_DIS;
+-		fe = YT8511_DELAY_FE_TX_DIS;
++	case 1:
++		speed = SPEED_100;
+ 		break;
+-	case PHY_INTERFACE_MODE_RGMII_TXID:
+-		ge = YT8511_DELAY_GE_TX_EN;
+-		fe = YT8511_DELAY_FE_TX_EN;
++	case 2:
++		speed = SPEED_1000;
+ 		break;
+-	case PHY_INTERFACE_MODE_RGMII_ID:
+-		ge = YT8511_DELAY_RX | YT8511_DELAY_GE_TX_EN;
+-		fe = YT8511_DELAY_FE_TX_EN;
++	case 3:
+ 		break;
+-	default: /* do not support other modes */
+-		ret = -EOPNOTSUPP;
+-		goto err_restore_page;
++	default:
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		speed = -1;
++#else
++		speed = SPEED_UNKNOWN;
++#endif
++		break;
++	}
++
++	phydev->speed = speed;
++	phydev->duplex = duplex;
++	//printk (KERN_INFO "yt8521_adjust_status call out,regval=0x%04x,mode=%s,speed=%dm...\n", val,is_utp?"utp":"fiber", phydev->speed);
++
++	return 0;
++}
++
++/*
++ * for fiber mode, when speed is 100M, there is no definition for autonegotiation, and
++ * this function handles this case and return 1 per linux kernel's polling.
++ */
++int yt8521_aneg_done (struct phy_device *phydev)
++{
++
++	//printk("yt8521_aneg_done callin,speed=%dm,linkmoded=%d\n", phydev->speed,link_mode_8521);
++
++	if((32 == link_mode_8521) && (SPEED_100 == phydev->speed))
++	{
++		return 1/*link_mode_8521*/;
++	}
++
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(3,11,0) )
++	return genphy_aneg_done(phydev);
++#else
++	return 1;
++#endif
++}
++
++static int yt8521_read_status(struct phy_device *phydev)
++{
++	int ret;
++	volatile int val, yt8521_fiber_latch_val, yt8521_fiber_curr_val;
++	volatile int link;
++	int link_utp = 0, link_fiber = 0;
++
++#if (YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++	/* reading UTP */
++	ret = ytphy_write_ext(phydev, 0xa000, 0);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++
++	link = val & (BIT(YT8521_LINK_STATUS_BIT));
++	if (link) {
++		link_utp = 1;
++		link_mode_8521 = 1;
++		yt8521_adjust_status(phydev, val, 1);
++	} else {
++		link_utp = 0;
++	}
++#endif //(YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++
++#if (YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_UTP)
++	/* reading Fiber */
++	ret = ytphy_write_ext(phydev, 0xa000, 2);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++	
++	//note: below debug information is used to check multiple PHy ports.
++	//printk (KERN_INFO "yt8521_read_status, fiber status=%04x,macbase=0x%08lx\n", val,(unsigned long)phydev->attached_dev);
++
++	/* for fiber, from 1000m to 100m, there is not link down from 0x11, and check reg 1 to identify such case
++	 * this is important for Linux kernel for that, missing linkdown event will cause problem.
++	 */	
++	yt8521_fiber_latch_val = phy_read(phydev, MII_BMSR);
++	yt8521_fiber_curr_val = phy_read(phydev, MII_BMSR);
++	link = val & (BIT(YT8521_LINK_STATUS_BIT));
++	if((link) && (yt8521_fiber_latch_val != yt8521_fiber_curr_val))
++	{
++		link = 0;
++		printk (KERN_INFO "yt8521_read_status, fiber link down detect,latch=%04x,curr=%04x\n", yt8521_fiber_latch_val,yt8521_fiber_curr_val);
++	}
++	
++	if (link) {
++		link_fiber = 1;
++		yt8521_adjust_status(phydev, val, 0);
++		link_mode_8521 = 32; //fiber mode
++
++
++	} else {
++		link_fiber = 0;
++	}
++#endif //(YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_UTP)
++
++	if (link_utp || link_fiber) {
++		phydev->link = 1;
++	} else {
++		phydev->link = 0;
++		link_mode_8521 = 0;
++	}
++
++#if (YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++	if (link_utp) {
++		ytphy_write_ext(phydev, 0xa000, 0);
+ 	}
++#endif
+ 
+-	ret = __phy_modify(phydev, YT8511_PAGE, (YT8511_DELAY_RX | YT8511_DELAY_GE_TX_EN), ge);
++	//printk (KERN_INFO "yzhang..8521 read status call out,link=%d,linkmode=%d\n", phydev->link, link_mode_8521 );
++	return 0;
++}
++
++int yt8521_suspend(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value | BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 2);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value | BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
++
++int yt8521_resume(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++	int ret;
++	
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value & ~BMCR_PDOWN);
++
++	/* disable auto sleep */
++	value = ytphy_read_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1);
++	if (value < 0)
++		return value;
++
++	value &= (~BIT(YT8521_EN_SLEEP_SW_BIT));
++	ret = ytphy_write_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1, value);
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
+ 
+-	/* set clock mode to 125mhz */
+-	ret = __phy_modify(phydev, YT8511_PAGE, 0, YT8511_CLK_125M);
++	/* enable RXC clock when no wire plug */
++	value = ytphy_read_ext(phydev, 0xc);
++	if (value < 0)
++		return value;
++	value &= ~(1 << 12);
++	ret = ytphy_write_ext(phydev, 0xc, value);
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
++
++	ytphy_write_ext(phydev, 0xa000, 2);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value & ~BMCR_PDOWN);
++
++#if (YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++	ytphy_write_ext(phydev, 0xa000, 0);
++#endif
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
+ 
+-	/* fast ethernet delay is in a separate page */
+-	ret = __phy_write(phydev, YT8511_PAGE_SELECT, YT8511_EXT_DELAY_DRIVE);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++int yt8618_soft_reset(struct phy_device *phydev)
++{
++	int ret;
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	ret = genphy_soft_reset(phydev);
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
+ 
+-	ret = __phy_modify(phydev, YT8511_PAGE, YT8511_DELAY_FE_TX_EN, fe);
++	return 0;
++}
++
++int yt8614_soft_reset(struct phy_device *phydev)
++{
++	int ret;
++
++	/* utp */
++	ytphy_write_ext(phydev, 0xa000, 0);
++	ret = genphy_soft_reset(phydev);
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
++
++	/* qsgmii */
++	ytphy_write_ext(phydev, 0xa000, 2);
++	ret = genphy_soft_reset(phydev);
++	if (ret < 0) {
++		ytphy_write_ext(phydev, 0xa000, 0); //back to utp mode
++		return ret;
++	}
++
++	/* sgmii */
++	ytphy_write_ext(phydev, 0xa000, 3);
++	ret = genphy_soft_reset(phydev);
++	if (ret < 0) {
++		ytphy_write_ext(phydev, 0xa000, 0); //back to utp mode
++		return ret;
++	}
+ 
+-	/* leave pll enabled in sleep */
+-	ret = __phy_write(phydev, YT8511_PAGE_SELECT, YT8511_EXT_SLEEP_CTRL);
++	return 0;
++}
++
++#endif
++
++static int yt8618_config_init(struct phy_device *phydev)
++{
++	int ret;
++	int val;
++
++	phydev->irq = PHY_POLL;
++
++	if(0xff == yt_mport_base_phy_addr)
++		/* by default, we think the first phy should be the base phy addr. for mul */
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	{
++		yt_mport_base_phy_addr = phydev->addr;
++	}else if (yt_mport_base_phy_addr > phydev->addr) { 
++		printk (KERN_INFO "yzhang..8618 init, phy address mismatch, base=%d, cur=%d\n", yt_mport_base_phy_addr, phydev->addr);
++	}
++#else
++	{
++		yt_mport_base_phy_addr = phydev->mdio.addr;
++	}else if (yt_mport_base_phy_addr > phydev->mdio.addr) { 
++		printk (KERN_INFO "yzhang..8618 init, phy address mismatch, base=%d, cur=%d\n", yt_mport_base_phy_addr, phydev->mdio.addr);
++	}
++#endif	
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	ret = ytphy_config_init(phydev);
++#else
++	ret = genphy_config_init(phydev);
++#endif
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
+ 
+-	ret = __phy_modify(phydev, YT8511_PAGE, 0, YT8511_PLLON_SLP);
++	/* for utp to optimize signal */
++	ret = ytphy_write_ext(phydev, 0x41, 0x33);
++	if (ret < 0)
++		return ret;
++	ret = ytphy_write_ext(phydev, 0x42, 0x66);
+ 	if (ret < 0)
+-		goto err_restore_page;
++		return ret;
++	ret = ytphy_write_ext(phydev, 0x43, 0xaa);
++	if (ret < 0)
++		return ret;
++	ret = ytphy_write_ext(phydev, 0x44, 0xd0d);
++	if (ret < 0)
++		return ret;
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	if((phydev->addr > yt_mport_base_phy_addr) && ((2 == phydev->addr - yt_mport_base_phy_addr) || (5 == phydev->addr - yt_mport_base_phy_addr)))
++#else
++	if((phydev->mdio.addr > yt_mport_base_phy_addr) && ((2 == phydev->mdio.addr - yt_mport_base_phy_addr) || (5 == phydev->mdio.addr - yt_mport_base_phy_addr)))
++#endif
++	{
++		ret = ytphy_write_ext(phydev, 0x44, 0x2929);
++		if (ret < 0)
++			return ret;
++	}
++
++	val = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, val | BMCR_RESET);
+ 
+-err_restore_page:
+-	return phy_restore_page(phydev, oldpage, ret);
++	printk (KERN_INFO "yt8618_config_init call out.\n");
++	return ret;
+ }
+ 
+-static struct phy_driver motorcomm_phy_drvs[] = {
++static int yt8614_config_init(struct phy_device *phydev)
++{
++	int ret = 0;
++
++	phydev->irq = PHY_POLL;
++
++	if(0xff == yt_mport_base_phy_addr_8614)
++		/* by default, we think the first phy should be the base phy addr. for mul */
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
+ 	{
+-		PHY_ID_MATCH_EXACT(PHY_ID_YT8511),
++		yt_mport_base_phy_addr_8614 = (unsigned int)phydev->addr;
++	}else if (yt_mport_base_phy_addr_8614 > (unsigned int)phydev->addr) { 
++		printk (KERN_INFO "yzhang..8618 init, phy address mismatch, base=%u, cur=%d\n", yt_mport_base_phy_addr_8614, phydev->addr);
++	}
++#else
++	{
++		yt_mport_base_phy_addr_8614 = (unsigned int)phydev->mdio.addr;
++	}else if (yt_mport_base_phy_addr_8614 > (unsigned int)phydev->mdio.addr) { 
++		printk (KERN_INFO "yzhang..8618 init, phy address mismatch, base=%u, cur=%d\n", yt_mport_base_phy_addr_8614, phydev->mdio.addr);
++	}
++#endif	
++	return ret;
++}
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#define yt8614_get_port_from_phydev(phydev) ((0xff == yt_mport_base_phy_addr_8614) && (yt_mport_base_phy_addr_8614 <= (phydev)->addr) ? 0 : (unsigned int)((phydev)->addr) - yt_mport_base_phy_addr_8614)
++#else
++#define yt8614_get_port_from_phydev(phydev) ((0xff == yt_mport_base_phy_addr_8614) && (yt_mport_base_phy_addr_8614 <= (phydev)->mdio.addr) ? 0 : (unsigned int)((phydev)->mdio.addr) - yt_mport_base_phy_addr_8614)
++#endif
++
++int yt8618_aneg_done (struct phy_device *phydev)
++{
++
++	return genphy_aneg_done(phydev);
++}
++
++int yt8614_aneg_done (struct phy_device *phydev)
++{
++	int port = yt8614_get_port_from_phydev(phydev);
++	
++	/*it should be used for 8614 fiber*/
++	if((32 == link_mode_8614[port]) && (SPEED_100 == phydev->speed))
++	{
++		return 1;
++	}
++
++	return genphy_aneg_done(phydev);
++}
++
++static int yt8614_read_status(struct phy_device *phydev)
++{
++        //int i;
++	int ret;
++	volatile int val, yt8614_fiber_latch_val, yt8614_fiber_curr_val;
++	volatile int link;
++	int link_utp = 0, link_fiber = 0;
++	int port = yt8614_get_port_from_phydev(phydev);
++
++#if (YT8614_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++	/* switch to utp and reading regs  */
++	ret = ytphy_write_ext(phydev, 0xa000, 0);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++
++	link = val & (BIT(YT8521_LINK_STATUS_BIT));
++	if (link) {
++		link_utp = 1;
++		// here is same as 8521 and re-use the function;
++		yt8521_adjust_status(phydev, val, 1);  
++	} else {
++		link_utp = 0;
++	}
++#endif //(YT8614_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++
++#if (YT8614_PHY_MODE_CURR != YT8521_PHY_MODE_UTP)
++	/* reading Fiber/sgmii */
++	ret = ytphy_write_ext(phydev, 0xa000, 3);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++	
++	//printk (KERN_INFO "yzhang..8614 read fiber status=%04x,macbase=0x%08lx\n", val,(unsigned long)phydev->attached_dev);
++
++	/* for fiber, from 1000m to 100m, there is not link down from 0x11, and check reg 1 to identify such case */	
++	yt8614_fiber_latch_val = phy_read(phydev, MII_BMSR);
++	yt8614_fiber_curr_val = phy_read(phydev, MII_BMSR);
++	link = val & (BIT(YT8521_LINK_STATUS_BIT));
++	if((link) && (yt8614_fiber_latch_val != yt8614_fiber_curr_val))
++	{
++		link = 0;
++		printk (KERN_INFO "yt8614_read_status, fiber link down detect,latch=%04x,curr=%04x\n", yt8614_fiber_latch_val,yt8614_fiber_curr_val);
++	}
++	
++	if (link) {
++		link_fiber = 1;
++		yt8521_adjust_status(phydev, val, 0);
++		link_mode_8614[port] = 32; //fiber mode
++
++
++	} else {
++		link_fiber = 0;
++	}
++#endif //(YT8521_PHY_MODE_CURR != YT8521_PHY_MODE_UTP)
++
++	if (link_utp || link_fiber) {
++		phydev->link = 1;
++	} else {
++		phydev->link = 0;
++		link_mode_8614[port] = 0;
++	}
++
++#if (YT8614_PHY_MODE_CURR != YT8521_PHY_MODE_FIBER)
++	if (link_utp) {
++		ytphy_write_ext(phydev, 0xa000, 0);
++	}
++#endif
++	//printk (KERN_INFO "yt8614_read_status call out,link=%d,linkmode=%d\n", phydev->link, link_mode_8614[port] );
++
++	return 0;
++}
++
++static int yt8618_read_status(struct phy_device *phydev)
++{
++	int ret;
++	volatile int val; //maybe for 8614 yt8521_fiber_latch_val, yt8521_fiber_curr_val;
++	volatile int link;
++	int link_utp = 0, link_fiber = 0;
++
++	/* switch to utp and reading regs  */
++	ret = ytphy_write_ext(phydev, 0xa000, 0);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, REG_PHY_SPEC_STATUS);
++	if (val < 0)
++		return val;
++
++	link = val & (BIT(YT8521_LINK_STATUS_BIT));
++	if (link) {
++		link_utp = 1;
++		yt8521_adjust_status(phydev, val, 1);
++	} else {
++		link_utp = 0;
++	}
++
++	if (link_utp || link_fiber) {
++		phydev->link = 1;
++	} else {
++		phydev->link = 0;
++	}
++
++	return 0;
++}
++
++int yt8618_suspend(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value | BMCR_PDOWN);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
++
++int yt8618_resume(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value & ~BMCR_PDOWN);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
++
++int yt8614_suspend(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value | BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 3);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value | BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
++
++int yt8614_resume(struct phy_device *phydev)
++{
++#if !(SYS_WAKEUP_BASED_ON_ETH_PKT)				
++	int value;
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_lock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value & ~BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 3);
++	value = phy_read(phydev, MII_BMCR);
++	phy_write(phydev, MII_BMCR, value & ~BMCR_PDOWN);
++
++	ytphy_write_ext(phydev, 0xa000, 0);
++
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++	mutex_unlock(&phydev->lock);
++#else
++	/* no need lock/unlock in 4.19 */
++#endif
++#endif /*!(SYS_WAKEUP_BASED_ON_ETH_PKT)*/				
++
++	return 0;
++}
++
++
++static struct phy_driver ytphy_drvs[] = {
++	{
++		.phy_id         = PHY_ID_YT8010,
++		.name           = "YT8010 Automotive Ethernet",
++		.phy_id_mask    = MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features       = PHY_BASIC_FEATURES,
++		.flags          = PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg    = yt8010_config_aneg,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		.config_init	= ytphy_config_init,
++#else
++		.config_init	= genphy_config_init,
++#endif
++		.read_status    = genphy_read_status,
++	}, {
++		.phy_id		= PHY_ID_YT8510,
++		.name		= "YT8510 100/10Mb Ethernet",
++		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features	= PHY_BASIC_FEATURES,
++		.flags			= PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg	= genphy_config_aneg,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		.config_init	= ytphy_config_init,
++#else
++		.config_init	= genphy_config_init,
++#endif
++		.read_status	= genphy_read_status,
++	}, {
++		.phy_id		= PHY_ID_YT8511,
+ 		.name		= "YT8511 Gigabit Ethernet",
++		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features	= PHY_GBIT_FEATURES,
++		.flags			= PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg	= genphy_config_aneg,
++#if GMAC_CLOCK_INPUT_NEEDED
+ 		.config_init	= yt8511_config_init,
++#else
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		.config_init	= ytphy_config_init,
++#else
++		.config_init	= genphy_config_init,
++#endif
++#endif
++		.read_status	= genphy_read_status,
+ 		.suspend	= genphy_suspend,
+ 		.resume		= genphy_resume,
+-		.read_page	= yt8511_read_page,
+-		.write_page	= yt8511_write_page,
+-	},
++	}, {
++		.phy_id		= PHY_ID_YT8512,
++		.name		= "YT8512 Ethernet",
++		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features	= PHY_BASIC_FEATURES,
++		.flags			= PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg	= genphy_config_aneg,
++		.config_init	= yt8512_config_init,
++		.read_status	= yt8512_read_status,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++	}, {
++		.phy_id		= PHY_ID_YT8512B,
++		.name		= "YT8512B Ethernet",
++		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features	= PHY_BASIC_FEATURES,
++		.flags			= PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg	= genphy_config_aneg,
++		.config_init	= yt8512_config_init,
++		.read_status	= yt8512_read_status,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++	}, {
++        .phy_id         = PHY_ID_YT8521,
++        .name           = "YT8521 Ethernet",
++        .phy_id_mask    = MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++        .features       = PHY_BASIC_FEATURES | PHY_GBIT_FEATURES,
++#endif
++        .flags          = PHY_POLL,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++		.soft_reset	= yt8521_soft_reset,
++#endif
++        .config_aneg    = genphy_config_aneg,
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(3,11,0) )
++        .aneg_done	= yt8521_aneg_done,
++#endif
++        .config_init    = yt8521_config_init,
++        .read_status    = yt8521_read_status,
++        .suspend        = yt8521_suspend,
++        .resume         = yt8521_resume,
++#if (YTPHY_ENABLE_WOL)
++		.get_wol		= &ytphy_get_wol,
++		.set_wol		= &ytphy_set_wol,
++#endif                
++        },{
++		/* same as 8521 */
++        .phy_id         = PHY_ID_YT8531S,
++        .name           = "YT8531S Ethernet",
++        .phy_id_mask    = MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++        .features       = PHY_BASIC_FEATURES | PHY_GBIT_FEATURES,
++#endif
++        .flags          = PHY_POLL,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++		.soft_reset	= yt8521_soft_reset,
++#endif
++        .config_aneg    = genphy_config_aneg,
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(3,11,0) )
++        .aneg_done	= yt8521_aneg_done,
++#endif
++        .config_init    = yt8521_config_init,
++        .read_status    = yt8521_read_status,
++        .suspend        = yt8521_suspend,
++        .resume         = yt8521_resume,
++#if (YTPHY_ENABLE_WOL)
++		.get_wol		= &ytphy_get_wol,
++		.set_wol		= &ytphy_set_wol,
++#endif                
++        }, {
++        /* same as 8511 */
++		.phy_id		= PHY_ID_YT8531,
++		.name		= "YT8531 Gigabit Ethernet",
++		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features	= PHY_BASIC_FEATURES | PHY_GBIT_FEATURES,
++		.flags			= PHY_HAS_INTERRUPT,
++#endif		
++		.config_aneg	= genphy_config_aneg,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++		.config_init	= ytphy_config_init,
++#else
++		.config_init	= genphy_config_init,
++#endif
++		.read_status	= genphy_read_status,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++#if (YTPHY_ENABLE_WOL)
++		.get_wol		= &ytphy_get_wol,
++		.set_wol		= &ytphy_set_wol,
++#endif                
++	}, {
++        .phy_id         = PHY_ID_YT8618,
++        .name           = "YT8618 Ethernet",
++        .phy_id_mask    = MOTORCOMM_MPHY_ID_MASK,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++        .features       = PHY_BASIC_FEATURES | PHY_GBIT_FEATURES,
++#endif
++        .flags          = PHY_POLL,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++		.soft_reset	= yt8618_soft_reset,
++#endif
++        .config_aneg    = genphy_config_aneg,
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(3,11,0) )
++        .aneg_done		= yt8618_aneg_done,
++#endif
++        .config_init    = yt8618_config_init,
++        .read_status    = yt8618_read_status,
++        .suspend        = yt8618_suspend,
++        .resume         = yt8618_resume,
++    }, {
++		.phy_id 		= PHY_ID_YT8614,
++		.name			= "YT8614 Ethernet",
++		.phy_id_mask	= MOTORCOMM_MPHY_ID_MASK_8614,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0) )
++		.features		= PHY_BASIC_FEATURES | PHY_GBIT_FEATURES,
++#endif
++		.flags			= PHY_POLL,
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++#else
++		.soft_reset = yt8614_soft_reset,
++#endif
++		.config_aneg	= genphy_config_aneg,
++#if ( LINUX_VERSION_CODE > KERNEL_VERSION(3,11,0) )
++		.aneg_done		= yt8614_aneg_done,
++#endif
++		.config_init	= yt8614_config_init,
++		.read_status	= yt8614_read_status,
++		.suspend		= yt8614_suspend,
++		.resume 		= yt8614_resume,
++		}, 
+ };
+ 
+-module_phy_driver(motorcomm_phy_drvs);
++#if ( LINUX_VERSION_CODE < KERNEL_VERSION(4,0,0) )
++static int ytphy_drivers_register(struct phy_driver* phy_drvs, int size)
++{
++	int i, j;
++	int ret;
++
++	for (i = 0; i < size; i++) {
++		ret = phy_driver_register(&phy_drvs[i]);
++		if (ret)
++			goto err;
++	}
++
++	return 0;
++
++err:
++	for (j = 0; j < i; j++)
++		phy_driver_unregister(&phy_drvs[j]);
++
++	return ret;
++}
++
++static void ytphy_drivers_unregister(struct phy_driver* phy_drvs, int size)
++{
++	int i;
++
++	for (i = 0; i < size; i++) {
++		phy_driver_unregister(&phy_drvs[i]);
++	}
++}
++
++static int __init ytphy_init(void)
++{
++	printk("motorcomm phy register\n");
++	return ytphy_drivers_register(ytphy_drvs, ARRAY_SIZE(ytphy_drvs));
++}
++
++static void __exit ytphy_exit(void)
++{
++	printk("motorcomm phy unregister\n");
++	ytphy_drivers_unregister(ytphy_drvs, ARRAY_SIZE(ytphy_drvs));
++}
++
++module_init(ytphy_init);
++module_exit(ytphy_exit);
++#else
++/* for linux 4.x */
++module_phy_driver(ytphy_drvs);
++#endif
+ 
+ MODULE_DESCRIPTION("Motorcomm PHY driver");
+-MODULE_AUTHOR("Peter Geis");
++MODULE_AUTHOR("Leilei Zhao");
+ MODULE_LICENSE("GPL");
+ 
+-static const struct mdio_device_id __maybe_unused motorcomm_tbl[] = {
+-	{ PHY_ID_MATCH_EXACT(PHY_ID_YT8511) },
+-	{ /* sentinal */ }
++static struct mdio_device_id __maybe_unused motorcomm_tbl[] = {
++	{ PHY_ID_YT8010, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8510, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8511, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8512, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8512B, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8521, MOTORCOMM_PHY_ID_MASK },
++	{ PHY_ID_YT8531S, MOTORCOMM_PHY_ID_8531_MASK },
++	{ PHY_ID_YT8531, MOTORCOMM_PHY_ID_8531_MASK },
++	{ PHY_ID_YT8618, MOTORCOMM_MPHY_ID_MASK },
++	{ PHY_ID_YT8614, MOTORCOMM_MPHY_ID_MASK_8614 },
++	{ }
+ };
+ 
+ MODULE_DEVICE_TABLE(mdio, motorcomm_tbl);
++
++
+--- /dev/null
++++ b/drivers/net/phy/yt8614-phy.h
+@@ -0,0 +1,491 @@
++#ifndef _PHY_H_
++#define _PHY_H_
++
++
++/* configuration for driver */
++
++#define YT8614_MAX_LPORT_ID		3
++
++#define YT8614_PHY_MODE_FIBER	1 //fiber mode only
++#define YT8614_PHY_MODE_UTP		2 //utp mode only
++#define YT8614_PHY_MODE_POLL	3 //fiber and utp, poll mode
++
++/* please make choice according to system design
++ * for Fiber only system, please define YT8614_PHY_MODE_CURR 1
++ * for UTP only system, please define YT8614_PHY_MODE_CURR 2
++ * for combo system, please define YT8614_PHY_MODE_CURR 3 
++ */
++#define YT8614_PHY_MODE_CURR	3
++
++
++
++/* pls dont modify below lines */
++
++#define PHY_ID_YT8614  0x4F51E899 //serdes
++#define MOTORCOMM_MPHY_ID_MASK_8614 0xffffffff
++
++#ifndef BOOL
++#define BOOL unsigned int
++#endif
++
++#ifndef FALSE
++#define FALSE 0
++#endif
++
++#ifndef TRUE
++#define TRUE 1
++#endif
++
++#ifndef SPEED_1000M
++#define SPEED_1000M     2
++#endif
++#ifndef SPEED_100M
++#define SPEED_100M     	1
++#endif
++#ifndef SPEED_10M
++#define SPEED_10M     	0
++#endif
++
++#ifndef SPEED_UNKNOWN
++#define SPEED_UNKNOWN   0xffff
++#endif
++
++#ifndef DUPLEX_FULL
++#define DUPLEX_FULL		1	
++#endif
++#ifndef DUPLEX_HALF
++#define DUPLEX_HALF		0	
++#endif
++
++#ifndef BIT
++#define BIT(n) (0x1<<(n))
++#endif
++#ifndef s32
++typedef int  s32;
++typedef unsigned int  u32;
++typedef unsigned short  u16;
++typedef unsigned char  u8;
++#endif
++
++#ifndef REG_PHY_SPEC_STATUS
++#define REG_PHY_SPEC_STATUS		0x11
++#define REG_DEBUG_ADDR_OFFSET		0x1e
++#define REG_DEBUG_DATA			0x1f
++#endif
++
++/**********YT8614************************************************/
++
++#define YT8614_SMI_SEL_PHY        0x0
++#define YT8614_SMI_SEL_SDS_QSGMII 0x02
++#define YT8614_SMI_SEL_SDS_SGMII  0x03
++
++/* yt8614 register type */
++#define YT8614_TYPE_COMMON         0x01
++#define YT8614_TYPE_UTP_MII        0x02
++#define YT8614_TYPE_UTP_EXT        0x03
++#define YT8614_TYPE_LDS_MII        0x04
++#define YT8614_TYPE_UTP_MMD        0x05
++#define YT8614_TYPE_SDS_QSGMII_MII 0x06
++#define YT8614_TYPE_SDS_SGMII_MII  0x07
++#define YT8614_TYPE_SDS_QSGMII_EXT 0x08
++#define YT8614_TYPE_SDS_SGMII_EXT  0x09
++
++/* YT8614 extended common register */
++#define YT8614_REG_COM_SMI_MUX        0xA000
++#define YT8614_REG_COM_SLED_CFG0      0xA001
++#define YT8614_REG_COM_PHY_ID         0xA002
++#define YT8614_REG_COM_CHIP_VER       0xA003
++#define YT8614_REG_COM_SLED_CFG       0xA004
++#define YT8614_REG_COM_MODE_CHG_RESET 0xA005
++#define YT8614_REG_COM_SYNCE0_CFG     0xA006
++#define YT8614_REG_COM_CHIP_MODE      0xA007
++
++#define YT8614_REG_COM_HIDE_SPEED     0xA009
++
++#define YT8614_REG_COM_SYNCE1_CFG     0xA00E
++
++#define YT8614_REG_COM_HIDE_FIBER_MODE 0xA019
++
++
++#define YT8614_REG_COM_HIDE_SEL1      0xA054
++#define YT8614_REG_COM_HIDE_LED_CFG2  0xB8
++#define YT8614_REG_COM_HIDE_LED_CFG3  0xB9
++#define YT8614_REG_COM_HIDE_LED_CFG5  0xBB
++
++#define YT8614_REG_COM_HIDE_LED_CFG4  0xBA //not used currently
++
++#if 0
++#define YT8614_REG_COM_HIDE_LED12_CFG 0xA060 //not used currently
++#define YT8614_REG_COM_HIDE_LED13_CFG 0xA061
++#define YT8614_REG_COM_HIDE_LED14_CFG 0xA062
++#define YT8614_REG_COM_HIDE_LED15_CFG 0xA063
++#define YT8614_REG_COM_HIDE_LED16_CFG 0xA064
++#define YT8614_REG_COM_HIDE_LED17_CFG 0xA065
++#define YT8614_REG_COM_HIDE_LED18_CFG 0xA066
++#define YT8614_REG_COM_HIDE_LED19_CFG 0xA067
++#define YT8614_REG_COM_HIDE_LED20_CFG 0xA068
++#define YT8614_REG_COM_HIDE_LED21_CFG 0xA069
++#define YT8614_REG_COM_HIDE_LED22_CFG 0xA06A
++#define YT8614_REG_COM_HIDE_LED23_CFG 0xA06B
++#define YT8614_REG_COM_HIDE_LED24_CFG 0xA06C
++#define YT8614_REG_COM_HIDE_LED25_CFG 0xA06D
++#define YT8614_REG_COM_HIDE_LED26_CFG 0xA06E
++#define YT8614_REG_COM_HIDE_LED27_CFG 0xA06F
++#endif
++
++#define YT8614_REG_COM_HIDE_LED28_CFG 0xA070
++#define YT8614_REG_COM_HIDE_LED29_CFG 0xA071
++#define YT8614_REG_COM_HIDE_LED30_CFG 0xA072
++#define YT8614_REG_COM_HIDE_LED31_CFG 0xA073
++#define YT8614_REG_COM_HIDE_LED32_CFG 0xA074
++#define YT8614_REG_COM_HIDE_LED33_CFG 0xA075
++#define YT8614_REG_COM_HIDE_LED34_CFG 0xA076
++#define YT8614_REG_COM_HIDE_LED35_CFG 0xA077
++
++#define YT8614_REG_COM_PKG_CFG0       0xA0A0
++#define YT8614_REG_COM_PKG_CFG1       0xA0A1
++#define YT8614_REG_COM_PKG_CFG2       0xA0A2
++#define YT8614_REG_COM_PKG_RX_VALID0  0xA0A3
++#define YT8614_REG_COM_PKG_RX_VALID1  0xA0A4
++#define YT8614_REG_COM_PKG_RX_OS0     0xA0A5
++#define YT8614_REG_COM_PKG_RX_OS1     0xA0A6
++#define YT8614_REG_COM_PKG_RX_US0     0xA0A7
++#define YT8614_REG_COM_PKG_RX_US1     0xA0A8
++#define YT8614_REG_COM_PKG_RX_ERR     0xA0A9
++#define YT8614_REG_COM_PKG_RX_OS_BAD  0xA0AA
++#define YT8614_REG_COM_PKG_RX_FRAG    0xA0AB
++#define YT8614_REG_COM_PKG_RX_NOSFD   0xA0AC
++#define YT8614_REG_COM_PKG_TX_VALID0  0xA0AD
++#define YT8614_REG_COM_PKG_TX_VALID1  0xA0AE
++#define YT8614_REG_COM_PKG_TX_OS0     0xA0AF
++
++#define YT8614_REG_COM_PKG_TX_OS1     0xA0B0
++#define YT8614_REG_COM_PKG_TX_US0     0xA0B1
++#define YT8614_REG_COM_PKG_TX_US1     0xA0B2
++#define YT8614_REG_COM_PKG_TX_ERR     0xA0B3
++#define YT8614_REG_COM_PKG_TX_OS_BAD  0xA0B4
++#define YT8614_REG_COM_PKG_TX_FRAG    0xA0B5
++#define YT8614_REG_COM_PKG_TX_NOSFD   0xA0B6
++#define YT8614_REG_COM_PKG_CFG3       0xA0B7
++#define YT8614_REG_COM_PKG_AZ_CFG     0xA0B8
++#define YT8614_REG_COM_PKG_DA_SA_CFG3 0xA0B9
++
++#define YT8614_REG_COM_MANU_HW_RESET  0xA0C0
++
++/* YT8614 UTP MII register: same as generic phy register definitions */
++#define REG_MII_BMCR          0x00    /* Basic mode control register */
++#define REG_MII_BMSR          0x01    /* Basic mode status register  */
++#define REG_MII_PHYSID1       0x02    /* PHYS ID 1                   */
++#define REG_MII_PHYSID2       0x03    /* PHYS ID 2                   */
++#define REG_MII_ADVERTISE     0x04    /* Advertisement control reg   */
++#define REG_MII_LPA           0x05    /* Link partner ability reg    */
++#define REG_MII_EXPANSION     0x06    /* Expansion register          */
++#define REG_MII_NEXT_PAGE     0x07    /* Next page register          */
++#define REG_MII_LPR_NEXT_PAGE 0x08    /* LPR next page register      */
++#define REG_MII_CTRL1000      0x09    /* 1000BASE-T control          */
++#define REG_MII_STAT1000      0x0A    /* 1000BASE-T status           */
++
++#define REG_MII_MMD_CTRL      0x0D    /* MMD access control register */
++#define REG_MII_MMD_DATA      0x0E    /* MMD access data register    */
++
++#define REG_MII_ESTATUS       0x0F    /* Extended Status             */
++#define REG_MII_SPEC_CTRL     0x10    /* PHY specific func control   */
++#define REG_MII_SPEC_STATUS   0x11    /* PHY specific status         */
++#define REG_MII_INT_MASK      0x12    /* Interrupt mask register     */
++#define REG_MII_INT_STATUS    0x13    /* Interrupt status register   */
++#define REG_MII_DOWNG_CTRL    0x14    /* Speed auto downgrade control*/
++#define REG_MII_RERRCOUNTER   0x15    /* Receive error counter       */
++
++#define REG_MII_EXT_ADDR      0x1E    /* Extended reg's address      */
++#define REG_MII_EXT_DATA      0x1F    /* Extended reg's date         */
++
++#ifndef MII_BMSR
++#define MII_BMSR						REG_MII_BMSR
++#endif
++
++#ifndef YT8614_SPEED_MODE_BIT
++#define YT8614_SPEED_MODE		0xc000
++#define YT8614_DUPLEX			0x2000
++#define YT8614_SPEED_MODE_BIT		14
++#define YT8614_DUPLEX_BIT		13
++#define YT8614_LINK_STATUS_BIT		10
++
++#endif
++
++#define YT8614_REG_COM_HIDE_SPEED_CMB_PRI		0x2000
++
++/* YT8614 UTP MMD register  */
++#define YT8614_REG_UTP_MMD_CTRL1           0x00    /* PCS control 1 register     */
++#define YT8614_REG_UTP_MMD_STATUS1         0x01    /* PCS status 1 register      */
++#define YT8614_REG_UTP_MMD_EEE_CTRL        0x14    /* EEE control and capability */
++#define YT8614_REG_UTP_MMD_EEE_WK_ERR_CNT  0x16    /* EEE wake error counter     */
++#define YT8614_REG_UTP_MMD_EEE_LOCAL_ABI   0x3C    /* local device EEE ability   */
++#define YT8614_REG_UTP_MMD_EEE_LP_ABI      0x3D    /* link partner EEE ability   */
++#define YT8614_REG_UTP_MMD_EEE_AUTONEG_RES 0x8000  /* autoneg result of EEE      */
++
++/* YT8614 UTP EXT register  */
++#define YT8614_REG_UTP_EXT_LPBK        0x0A
++#define YT8614_REG_UTP_EXT_SLEEP_CTRL1 0x27
++#define YT8614_REG_UTP_EXT_DEBUG_MON1  0x5A
++#define YT8614_REG_UTP_EXT_DEBUG_MON2  0x5B
++#define YT8614_REG_UTP_EXT_DEBUG_MON3  0x5C
++#define YT8614_REG_UTP_EXT_DEBUG_MON4  0x5D
++
++/* YT8614 SDS(1.25G/5G) MII register: same as YT8521S */
++#define REG_SDS_BMCR          0x00    /* Basic mode control register */
++#define REG_SDS_BMSR          0x01    /* Basic mode status register  */
++#define REG_SDS_PHYSID1       0x02    /* PHYS ID 1                   */
++#define REG_SDS_PHYSID2       0x03    /* PHYS ID 2                   */
++#define REG_SDS_ADVERTISE     0x04    /* Advertisement control reg   */
++#define REG_SDS_LPA           0x05    /* Link partner ability reg    */
++#define REG_SDS_EXPANSION     0x06    /* Expansion register          */
++#define REG_SDS_NEXT_PAGE     0x07    /* Next page register          */
++#define REG_SDS_LPR_NEXT_PAGE 0x08    /* LPR next page register      */
++
++#define REG_SDS_ESTATUS       0x0F    /* Extended Status             */
++#define REG_SDS_SPEC_STATUS   0x11    /* SDS specific status         */
++
++#define REG_SDS_100FX_CFG     0x14    /* 100fx cfg                   */
++#define REG_SDS_RERRCOUNTER   0x15    /* Receive error counter       */
++#define REG_SDS_LINT_FAIL_CNT 0x16    /* Lint fail counter mon       */
++
++/* YT8614 SDS(5G) EXT register */
++#define YT8614_REG_QSGMII_EXT_ANA_DIG_CFG 0x02    /* sds analog digital interface cfg */
++#define YT8614_REG_QSGMII_EXT_PRBS_CFG1   0x05    /* sds prbs cfg1 */
++#define YT8614_REG_QSGMII_EXT_PRBS_CFG2_1 0x06    /* sds prbs cfg2 */
++#define YT8614_REG_QSGMII_EXT_PRBS_CFG2_2 0x07    /* sds prbs cfg2 */
++#define YT8614_REG_QSGMII_EXT_PRBS_MON1   0x08    /* sds prbs mon1 */
++#define YT8614_REG_QSGMII_EXT_PRBS_MON2   0x09    /* sds prbs mon2 */
++#define YT8614_REG_QSGMII_EXT_PRBS_MON3   0x0A    /* sds prbs mon3 */
++#define YT8614_REG_QSGMII_EXT_PRBS_MON4   0x0B    /* sds prbs mon4 */
++#define YT8614_REG_QSGMII_EXT_PRBS_MON5   0x0C    /* sds prbs mon5 */
++#define YT8614_REG_QSGMII_EXT_ANA_CFG2    0xA1    /* Analog cfg2   */
++
++/* YT8614 SDS(1.25G) EXT register */
++#define YT8614_REG_SGMII_EXT_PRBS_CFG1    0x05    /* sds prbs cfg1 */
++#define YT8614_REG_SGMII_EXT_PRBS_CFG2    0x06    /* sds prbs cfg2 */
++#define YT8614_REG_SGMII_EXT_PRBS_MON1    0x08    /* sds prbs mon1 */
++#define YT8614_REG_SGMII_EXT_PRBS_MON2    0x09    /* sds prbs mon2 */
++#define YT8614_REG_SGMII_EXT_PRBS_MON3    0x0A    /* sds prbs mon3 */
++#define YT8614_REG_SGMII_EXT_PRBS_MON4    0x0B    /* sds prbs mon4 */
++#define YT8614_REG_SGMII_EXT_PRBS_MON5    0x0C    /* sds prbs mon5 */
++#define YT8614_REG_SGMII_EXT_ANA_CFG2     0xA1    /* Analog cfg2   */
++#define YT8614_REG_SGMII_EXT_HIDE_AUTO_SEN 0xA5   /* Fiber auto sensing */
++
++////////////////////////////////////////////////////////////////////
++#define YT8614_MMD_DEV_ADDR1     0x1
++#define YT8614_MMD_DEV_ADDR3     0x3
++#define YT8614_MMD_DEV_ADDR7     0x7
++#define YT8614_MMD_DEV_ADDR_NONE 0xFF
++
++/**********YT8521S************************************************/
++/* Basic mode control register(0x00) */
++#define BMCR_RESV         0x003f  /* Unused...                   */
++#define BMCR_SPEED1000    0x0040  /* MSB of Speed (1000)         */
++#define BMCR_CTST         0x0080  /* Collision test              */
++#define BMCR_FULLDPLX     0x0100  /* Full duplex                 */
++#define BMCR_ANRESTART    0x0200  /* Auto negotiation restart    */
++#define BMCR_ISOLATE      0x0400  /* Disconnect DP83840 from MII */
++#define BMCR_PDOWN        0x0800  /* Powerdown the DP83840       */
++#define BMCR_ANENABLE     0x1000  /* Enable auto negotiation     */
++#define BMCR_SPEED100     0x2000  /* Select 100Mbps              */
++#define BMCR_LOOPBACK     0x4000  /* TXD loopback bits           */
++#define BMCR_RESET        0x8000  /* Reset the DP83840           */
++
++/* Basic mode status register(0x01) */
++#define BMSR_ERCAP        0x0001  /* Ext-reg capability          */
++#define BMSR_JCD          0x0002  /* Jabber detected             */
++#define BMSR_LSTATUS      0x0004  /* Link status                 */
++#define BMSR_ANEGCAPABLE  0x0008  /* Able to do auto-negotiation */
++#define BMSR_RFAULT       0x0010  /* Remote fault detected       */
++#define BMSR_ANEGCOMPLETE 0x0020  /* Auto-negotiation complete   */
++#define BMSR_RESV         0x00c0  /* Unused...                   */
++#define BMSR_ESTATEN      0x0100  /* Extended Status in R15      */
++#define BMSR_100HALF2     0x0200  /* Can do 100BASE-T2 HDX       */
++#define BMSR_100FULL2     0x0400  /* Can do 100BASE-T2 FDX       */
++#define BMSR_10HALF       0x0800  /* Can do 10mbps, half-duplex  */
++#define BMSR_10FULL       0x1000  /* Can do 10mbps, full-duplex  */
++#define BMSR_100HALF      0x2000  /* Can do 100mbps, half-duplex */
++#define BMSR_100FULL      0x4000  /* Can do 100mbps, full-duplex */
++#define BMSR_100BASE4     0x8000  /* Can do 100mbps, 4k packets  */
++
++/* Advertisement control register(0x04) */
++#define ADVERTISE_SLCT          0x001f  /* Selector bits               */
++#define ADVERTISE_CSMA          0x0001  /* Only selector supported     */
++#define ADVERTISE_10HALF        0x0020  /* Try for 10mbps half-duplex  */
++#define ADVERTISE_1000XFULL     0x0020  /* Try for 1000BASE-X full-duplex */
++#define ADVERTISE_10FULL        0x0040  /* Try for 10mbps full-duplex  */
++#define ADVERTISE_1000XHALF     0x0040  /* Try for 1000BASE-X half-duplex */
++#define ADVERTISE_100HALF       0x0080  /* Try for 100mbps half-duplex */
++#define ADVERTISE_1000XPAUSE    0x0080  /* Try for 1000BASE-X pause    */
++#define ADVERTISE_100FULL       0x0100  /* Try for 100mbps full-duplex */
++#define ADVERTISE_1000XPSE_ASYM 0x0100  /* Try for 1000BASE-X asym pause */
++#define ADVERTISE_100BASE4      0x0200  /* Try for 100mbps 4k packets  */
++#define ADVERTISE_PAUSE_CAP     0x0400  /* Try for pause               */
++#define ADVERTISE_PAUSE_ASYM    0x0800  /* Try for asymetric pause     */
++#define ADVERTISE_RESV          0x1000  /* Unused...                   */
++#define ADVERTISE_RFAULT        0x2000  /* Say we can detect faults    */
++#define ADVERTISE_LPACK         0x4000  /* Ack link partners response  */
++#define ADVERTISE_NPAGE         0x8000  /* Next page bit               */
++
++#define ADVERTISE_FULL (ADVERTISE_100FULL | ADVERTISE_10FULL | ADVERTISE_CSMA)
++#define ADVERTISE_ALL  (ADVERTISE_10HALF  | ADVERTISE_10FULL | \
++                        ADVERTISE_100HALF | ADVERTISE_100FULL)
++
++/* Link partner ability register(0x05) */
++#define LPA_SLCT              0x001f  /* Same as advertise selector    */
++#define LPA_10HALF            0x0020  /* Can do 10mbps half-duplex     */
++#define LPA_1000XFULL         0x0020  /* Can do 1000BASE-X full-duplex */
++#define LPA_10FULL            0x0040  /* Can do 10mbps full-duplex     */
++#define LPA_1000XHALF         0x0040  /* Can do 1000BASE-X half-duplex */
++#define LPA_100HALF           0x0080  /* Can do 100mbps half-duplex    */
++#define LPA_1000XPAUSE        0x0080  /* Can do 1000BASE-X pause       */
++#define LPA_100FULL           0x0100  /* Can do 100mbps full-duplex    */
++#define LPA_1000XPAUSE_ASYM   0x0100  /* Can do 1000BASE-X pause asym  */
++#define LPA_100BASE4          0x0200  /* Can do 100mbps 4k packets     */
++#define LPA_PAUSE_CAP         0x0400  /* Can pause                     */
++#define LPA_PAUSE_ASYM        0x0800  /* Can pause asymetrically       */
++#define LPA_RESV              0x1000  /* Unused...                     */
++#define LPA_RFAULT            0x2000  /* Link partner faulted          */
++#define LPA_LPACK             0x4000  /* Link partner acked us         */
++#define LPA_NPAGE             0x8000  /* Next page bit                 */
++
++/* 1000BASE-T Control register(0x09) */
++#define ADVERTISE_1000FULL    0x0200  /* Advertise 1000BASE-T full duplex */
++#define ADVERTISE_1000HALF    0x0100  /* Advertise 1000BASE-T half duplex */
++#define CTL1000_AS_MASTER     0x0800
++#define CTL1000_ENABLE_MASTER 0x1000
++
++/* 1000BASE-T Status register(0x0A) */
++#define LPA_1000LOCALRXOK     0x2000  /* Link partner local receiver status  */
++#define LPA_1000REMRXOK       0x1000  /* Link partner remote receiver status */
++#define LPA_1000FULL          0x0800  /* Link partner 1000BASE-T full duplex */
++#define LPA_1000HALF          0x0400  /* Link partner 1000BASE-T half duplex */
++
++/**********YT8614************************************************/
++/* Basic mode control register(0x00) */
++#define FIBER_BMCR_RESV        0x001f  /* b[4:0] Unused...                      */
++#define FIBER_BMCR_EN_UNIDIR   0x0020  /* b[5]   Valid when bit 0.12 is zero and bit 0.8 is one */
++#define FIBER_BMCR_SPEED1000   0x0040  /* b[6]   MSB of Speed (1000)            */
++#define FIBER_BMCR_CTST        0x0080  /* b[7]   Collision test                 */
++#define FIBER_BMCR_DUPLEX_MODE 0x0100  /* b[8]   Duplex mode                    */
++#define FIBER_BMCR_ANRESTART   0x0200  /* b[9]   Auto negotiation restart       */
++#define FIBER_BMCR_ISOLATE     0x0400  /* b[10]  Isolate phy from RGMII/SGMII/FIBER */
++#define FIBER_BMCR_PDOWN       0x0800  /* b[11]  1: Power down                  */
++#define FIBER_BMCR_ANENABLE    0x1000  /* b[12]  Enable auto negotiation        */
++#define FIBER_BMCR_SPEED100    0x2000  /* b[13]  LSB of Speed (100)             */
++#define FIBER_BMCR_LOOPBACK    0x4000  /* b[14]  Internal loopback control      */
++#define FIBER_BMCR_RESET       0x8000  /* b[15]  PHY Software Reset(self-clear) */
++
++/* Sds specific status register(0x11) */
++#define FIBER_SSR_ERCAP          0x0001  /* b[0]     realtime syncstatus */
++#define FIBER_SSR_XMIT           0x000E  /* b[3:1]   realtime transmit statemachine.
++                                                     001: Xmit Idle;
++                                                     010: Xmit Config; 
++                                                     100: Xmit Data. */
++#define FIBER_SSR_SER_MODE_CFG   0x0030  /* b[5:4]   realtime serdes working mode.
++                                                     00: SG_MAC;
++                                                     01: SG_PHY;
++                                                     10: FIB_1000;
++                                                     11: FIB_100. */
++#define FIBER_SSR_EN_FLOWCTRL_TX 0x0040  /* b[6]     realtime en_flowctrl_tx */
++#define FIBER_SSR_EN_FLOWCTRL_RX 0x0080  /* b[7]     realtime en_flowctrl_rx */
++#define FIBER_SSR_DUPLEX_ERROR   0x0100  /* b[8]     realtime deplex error */
++#define FIBER_SSR_RX_LPI_ACTIVE  0x0200  /* b[9]     rx lpi is active */
++#define FIBER_SSR_LSTATUS        0x0400  /* b[10]    Link status real-time */
++#define FIBER_SSR_PAUSE          0x1800  /* b[12:11] Pause to mac */
++#define FIBER_SSR_DUPLEX         0x2000  /* b[13]    This status bit is valid only when bit10 is 1.
++                                                     1: full duplex 
++                                                     0: half duplex */
++#define FIBER_SSR_SPEED_MODE     0xC000  /* b[15:14] These status bits are valid only when bit10 is 1.
++                                                     10---1000M 
++                                                     01---100M */
++
++/* SLED cfg0 (ext 0xA001) */
++#define FIBER_SLED_CFG0_EN_CTRL  0x00FF  /* b[7:0]   Control to enable the eight ports' SLED */
++#define FIBER_SLED_CFG0_BIT_MASK 0x0700  /* b[10:8]  1: enable the pin output */
++#define FIBER_SLED_CFG0_ACT_LOW  0x0800  /* b[11]    control SLED's polarity. 1: active low; 0: active high */
++#define FIBER_SLED_CFG0_MANU_ST  0x7000  /* b[14:12] SLEDs' manul status, corresponding to each port's 3 SLEDs */
++#define FIBER_SLED_CFG0_MANU_EN  0x8000  /* b[15]    to control serial LEDs status manually */
++
++/**********YT8614************************************************/
++/* Fiber auto sensing(sgmii ext 0xA5) */
++#define FIBER_AUTO_SEN_ENABLE    0x8000  /* b[15]  Enable fiber auto sensing */
++
++/* Fiber force speed(common ext 0xA009) */
++#define FIBER_FORCE_1000M        0x0001  /* b[0]  1:1000BX 0:100FX */
++
++#ifndef NULL
++#define NULL 0
++#endif
++
++/* errno */
++enum ytphy_8614_errno_e
++{
++	SYS_E_NONE,
++	SYS_E_PARAM,
++	SYS_E_MAX
++};
++
++/* errno */
++enum ytphy_8614_combo_speed_e
++{
++	YT8614_COMBO_FIBER_1000M,
++	YT8614_COMBO_FIBER_100M,
++	YT8614_COMBO_UTP_ONLY,
++	YT8614_COMBO_SPEED_MAX
++};
++
++/* definition for porting */
++/* phy registers access */
++typedef struct
++{
++    u16 reg;     /* the offset of the phy internal address */
++    u16 val;     /* the value of the register */
++    u8  regType; /* register type */
++} phy_data_s;
++
++/* for porting use.
++ * pls over-write member function read/write for mdio access
++ */
++typedef struct phy_info_str
++{
++#if 0
++    struct phy_device *phydev;
++	int mdio_base;
++#endif
++	unsigned int lport;
++	unsigned int bus_id;
++	unsigned int phy_addr;
++
++    s32 (*read)(struct phy_info_str *info, phy_data_s *param);
++    s32 (*write)(struct phy_info_str *info, phy_data_s *param);
++}phy_info_s;
++
++/* get phy access method */
++s32 yt8614_read_reg(struct phy_info_str *info, phy_data_s *param);
++s32 yt8614_write_reg(struct phy_info_str *info, phy_data_s *param);
++s32 yt8614_phy_soft_reset(u32 lport);
++s32 yt8614_phy_init(u32 lport);
++s32 yt8614_fiber_enable(u32 lport, BOOL enable);
++s32 yt8614_utp_enable(u32 lport, BOOL enable);
++s32 yt8614_fiber_unidirection_set(u32 lport, int speed, BOOL enable);
++s32 yt8614_fiber_autosensing_set(u32 lport, BOOL enable);
++s32 yt8614_fiber_speed_set(u32 lport, int fiber_speed);
++s32 yt8614_qsgmii_autoneg_set(u32 lport, BOOL enable);
++s32 yt8614_sgmii_autoneg_set(u32 lport, BOOL enable);
++s32 yt8614_qsgmii_sgmii_link_status_get(u32 lport, BOOL *enable, BOOL if_qsgmii);
++int yt8614_combo_media_priority_set (u32 lport, int fiber);
++int yt8614_combo_media_priority_get (u32 lport, int *fiber);
++s32 yt8614_utp_autoneg_set(u32 lport, BOOL enable);
++s32 yt8614_utp_autoneg_get(u32 lport, BOOL *enable);
++s32 yt8614_utp_autoneg_ability_set(u32 lport, unsigned int cap_mask);
++s32 yt8614_utp_autoneg_ability_get(u32 lport, unsigned int *cap_mask);
++s32 yt8614_utp_force_duplex_set(u32 lport, BOOL full);
++s32 yt8614_utp_force_duplex_get(u32 lport, BOOL *full);
++s32 yt8614_utp_force_speed_set(u32 lport, unsigned int speed);
++s32 yt8614_utp_force_speed_get(u32 lport, unsigned int *speed);
++int yt8614_autoneg_done_get (u32 lport, int speed, int *aneg);
++int yt8614_media_status_get(u32 lport, int* speed, int* duplex, int* ret_link, int *media);
++
++#endif
+--- /dev/null
++++ b/include/linux/motorcomm_phy.h
+@@ -0,0 +1,119 @@
++/*
++ * include/linux/motorcomm_phy.h
++ *
++ * Motorcomm PHY IDs
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ */
++
++#ifndef _MOTORCOMM_PHY_H
++#define _MOTORCOMM_PHY_H
++
++#define MOTORCOMM_PHY_ID_MASK	0x00000fff
++#define MOTORCOMM_PHY_ID_8531_MASK	0xffffffff
++#define MOTORCOMM_MPHY_ID_MASK	0x0000ffff
++
++#define PHY_ID_YT8010		0x00000309
++#define PHY_ID_YT8510		0x00000109
++#define PHY_ID_YT8511		0x0000010a
++#define PHY_ID_YT8512		0x00000118
++#define PHY_ID_YT8512B		0x00000128
++#define PHY_ID_YT8521		0x0000011a
++#define PHY_ID_YT8531S		0x4f51e91a
++#define PHY_ID_YT8531		0x4f51e91b
++//#define PHY_ID_YT8614		0x0000e899
++#define PHY_ID_YT8618		0x0000e889
++
++#define REG_PHY_SPEC_STATUS		0x11
++#define REG_DEBUG_ADDR_OFFSET		0x1e
++#define REG_DEBUG_DATA			0x1f
++
++#define YT8512_EXTREG_AFE_PLL		0x50
++#define YT8512_EXTREG_EXTEND_COMBO	0x4000
++#define YT8512_EXTREG_LED0		0x40c0
++#define YT8512_EXTREG_LED1		0x40c3
++
++#define YT8512_EXTREG_SLEEP_CONTROL1	0x2027
++
++#define YT_SOFTWARE_RESET		0x8000
++
++#define YT8512_CONFIG_PLL_REFCLK_SEL_EN	0x0040
++#define YT8512_CONTROL1_RMII_EN		0x0001
++#define YT8512_LED0_ACT_BLK_IND		0x1000
++#define YT8512_LED0_DIS_LED_AN_TRY	0x0001
++#define YT8512_LED0_BT_BLK_EN		0x0002
++#define YT8512_LED0_HT_BLK_EN		0x0004
++#define YT8512_LED0_COL_BLK_EN		0x0008
++#define YT8512_LED0_BT_ON_EN		0x0010
++#define YT8512_LED1_BT_ON_EN		0x0010
++#define YT8512_LED1_TXACT_BLK_EN	0x0100
++#define YT8512_LED1_RXACT_BLK_EN	0x0200
++#define YT8512_SPEED_MODE		0xc000
++#define YT8512_DUPLEX			0x2000
++
++#define YT8512_SPEED_MODE_BIT		14
++#define YT8512_DUPLEX_BIT		13
++#define YT8512_EN_SLEEP_SW_BIT		15
++
++#define YT8521_EXTREG_SLEEP_CONTROL1	0x27
++#define YT8521_EN_SLEEP_SW_BIT		15
++
++#define YT8521_SPEED_MODE		0xc000
++#define YT8521_DUPLEX			0x2000
++#define YT8521_SPEED_MODE_BIT		14
++#define YT8521_DUPLEX_BIT		13
++#define YT8521_LINK_STATUS_BIT		10
++
++/* based on yt8521 wol config register */
++#define YTPHY_UTP_INTR_REG             0x12
++/* WOL Event Interrupt Enable */
++#define YTPHY_WOL_INTR            BIT(6)
++
++/* Magic Packet MAC address registers */
++#define YTPHY_MAGIC_PACKET_MAC_ADDR2                 0xa007
++#define YTPHY_MAGIC_PACKET_MAC_ADDR1                 0xa008
++#define YTPHY_MAGIC_PACKET_MAC_ADDR0                 0xa009
++
++#define YTPHY_WOL_CFG_REG		0xa00a
++#define YTPHY_WOL_CFG_TYPE		BIT(0)	/* WOL TYPE */
++#define YTPHY_WOL_CFG_EN		BIT(3)	/* WOL Enable */
++#define YTPHY_WOL_CFG_INTR_SEL	BIT(6)	/* WOL Event Interrupt Enable */
++#define YTPHY_WOL_CFG_WIDTH1	BIT(1)	/* WOL Pulse Width */
++#define YTPHY_WOL_CFG_WIDTH2	BIT(2)
++
++#define YTPHY_REG_SPACE_UTP             0
++#define YTPHY_REG_SPACE_FIBER           2
++
++enum ytphy_wol_type_e
++{
++    YTPHY_WOL_TYPE_LEVEL,
++    YTPHY_WOL_TYPE_PULSE,
++    YTPHY_WOL_TYPE_MAX
++};
++typedef enum ytphy_wol_type_e ytphy_wol_type_t;
++
++enum ytphy_wol_width_e
++{
++    YTPHY_WOL_WIDTH_84MS,
++    YTPHY_WOL_WIDTH_168MS,
++    YTPHY_WOL_WIDTH_336MS,
++    YTPHY_WOL_WIDTH_672MS,
++    YTPHY_WOL_WIDTH_MAX
++};
++typedef enum ytphy_wol_width_e ytphy_wol_width_t;
++
++struct ytphy_wol_cfg_s
++{
++    int enable;
++    int type;
++    int width;
++};
++typedef struct ytphy_wol_cfg_s ytphy_wol_cfg_t;
++
++#endif /* _MOTORCOMM_PHY_H */
++
++

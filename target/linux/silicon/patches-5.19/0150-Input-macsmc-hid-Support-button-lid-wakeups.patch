@@ -1,0 +1,99 @@
+From f197789f0d78ce24b6032ac53ddc06d7722422fb Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sat, 5 Mar 2022 01:08:04 +0900
+Subject: [PATCH 150/171] Input: macsmc-hid: Support button/lid wakeups
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+---
+ drivers/input/misc/macsmc-hid.c | 41 +++++++++++++++++++++++++++++++--
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/misc/macsmc-hid.c b/drivers/input/misc/macsmc-hid.c
+index 1c0f7476081f..c4c7440d4ee6 100644
+--- a/drivers/input/misc/macsmc-hid.c
++++ b/drivers/input/misc/macsmc-hid.c
+@@ -18,6 +18,7 @@ struct macsmc_hid {
+ 	struct apple_smc *smc;
+ 	struct input_dev *input;
+ 	struct notifier_block nb;
++	bool wakeup_mode;
+ };
+ 
+ #define SMC_EV_BTN 0x7201
+@@ -38,8 +39,15 @@ static int macsmc_hid_event(struct notifier_block *nb, unsigned long event, void
+ 	case SMC_EV_BTN:
+ 		switch (d1) {
+ 		case BTN_POWER:
+-			input_report_key(smchid->input, KEY_POWER, d2);
+-			input_sync(smchid->input);
++			if (smchid->wakeup_mode) {
++				if (d2) {
++					dev_info(smchid->dev, "Button wakeup\n");
++					pm_wakeup_hard_event(smchid->dev);
++				}
++			} else {
++				input_report_key(smchid->input, KEY_POWER, d2);
++				input_sync(smchid->input);
++			}
+ 			break;
+ 		case BTN_POWER_HELD1:
+ 			/*
+@@ -68,6 +76,10 @@ static int macsmc_hid_event(struct notifier_block *nb, unsigned long event, void
+ 		}
+ 		return NOTIFY_OK;
+ 	case SMC_EV_LID:
++		if (smchid->wakeup_mode && !d1) {
++			dev_info(smchid->dev, "Lid wakeup\n");
++			pm_wakeup_hard_event(smchid->dev);
++		}
+ 		input_report_switch(smchid->input, SW_LID, d1);
+ 		input_sync(smchid->input);
+ 		return NOTIFY_OK;
+@@ -95,6 +107,7 @@ static int macsmc_hid_probe(struct platform_device *pdev)
+ 
+ 	smchid->dev = &pdev->dev;
+ 	smchid->smc = smc;
++	platform_set_drvdata(pdev, smchid);
+ 
+ 	smchid->input = devm_input_allocate_device(&pdev->dev);
+ 	if (!smchid->input)
+@@ -140,12 +153,36 @@ static int macsmc_hid_probe(struct platform_device *pdev)
+ 	smchid->nb.notifier_call = macsmc_hid_event;
+ 	apple_smc_register_notifier(smc, &smchid->nb);
+ 
++	device_init_wakeup(&pdev->dev, 1);
++
++	return 0;
++}
++
++static int macsmc_hid_pm_prepare(struct device *dev)
++{
++	struct macsmc_hid *smchid = dev_get_drvdata(dev);
++
++	smchid->wakeup_mode = true;
+ 	return 0;
+ }
+ 
++static void macsmc_hid_pm_complete(struct device *dev)
++{
++	struct macsmc_hid *smchid = dev_get_drvdata(dev);
++
++	smchid->wakeup_mode = false;
++}
++
++static const struct dev_pm_ops macsmc_hid_pm_ops = {
++	.prepare = macsmc_hid_pm_prepare,
++	.complete = macsmc_hid_pm_complete,
++};
++
+ static struct platform_driver macsmc_hid_driver = {
+ 	.driver = {
+ 		.name = "macsmc-hid",
++		.owner = THIS_MODULE,
++		.pm = &macsmc_hid_pm_ops,
+ 	},
+ 	.probe = macsmc_hid_probe,
+ };
+-- 
+2.34.1
+
