@@ -1,7 +1,7 @@
-From d6c5309185aae3d9ecf80eae8b248522d11a6136 Mon Sep 17 00:00:00 2001
+From f7704275957852cd4c4632d6da126979ef24b83a Mon Sep 17 00:00:00 2001
 From: Weijie Gao <weijie.gao@mediatek.com>
 Date: Tue, 2 Mar 2021 16:58:01 +0800
-Subject: [PATCH 04/12] drivers: mtd: add support for MediaTek SPI-NAND flash
+Subject: [PATCH 36/71] drivers: mtd: add support for MediaTek SPI-NAND flash
  controller
 
 Add mtd driver for MediaTek SPI-NAND flash controller
@@ -16,15 +16,15 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  drivers/mtd/Makefile                  |    2 +
  drivers/mtd/mtk-snand/Kconfig         |   21 +
  drivers/mtd/mtk-snand/Makefile        |   11 +
- drivers/mtd/mtk-snand/mtk-snand-def.h |  266 ++++
- drivers/mtd/mtk-snand/mtk-snand-ecc.c |  264 ++++
+ drivers/mtd/mtk-snand/mtk-snand-def.h |  271 ++++
+ drivers/mtd/mtk-snand/mtk-snand-ecc.c |  395 +++++
  drivers/mtd/mtk-snand/mtk-snand-ids.c |  511 +++++++
- drivers/mtd/mtk-snand/mtk-snand-mtd.c |  526 ++++++++
+ drivers/mtd/mtk-snand/mtk-snand-mtd.c |  535 +++++++
  drivers/mtd/mtk-snand/mtk-snand-os.c  |   39 +
  drivers/mtd/mtk-snand/mtk-snand-os.h  |  120 ++
- drivers/mtd/mtk-snand/mtk-snand.c     | 1776 +++++++++++++++++++++++++
- drivers/mtd/mtk-snand/mtk-snand.h     |   77 ++
- 12 files changed, 3615 insertions(+)
+ drivers/mtd/mtk-snand/mtk-snand.c     | 1933 +++++++++++++++++++++++++
+ drivers/mtd/mtk-snand/mtk-snand.h     |   77 +
+ 12 files changed, 3917 insertions(+)
  create mode 100644 drivers/mtd/mtk-snand/Kconfig
  create mode 100644 drivers/mtd/mtk-snand/Makefile
  create mode 100644 drivers/mtd/mtk-snand/mtk-snand-def.h
@@ -95,7 +95,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +ccflags-y += -DPRIVATE_MTK_SNAND_HEADER
 --- /dev/null
 +++ b/drivers/mtd/mtk-snand/mtk-snand-def.h
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,271 @@
 +/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 +/*
 + * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
@@ -213,6 +213,9 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	const uint8_t *spare_sizes;
 +	uint32_t num_spare_size;
++
++	uint16_t latch_lat;
++	uint16_t sample_delay;
 +};
 +
 +enum mtk_ecc_regs {
@@ -272,6 +275,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	uint8_t *page_cache;	/* Used by read/write page */
 +	uint8_t *buf_cache;	/* Used by block bad/markbad & auto_oob */
++	int *sect_bf;		/* Used by ECC correction */
 +};
 +
 +enum mtk_snand_log_category {
@@ -290,7 +294,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +int mtk_snand_ecc_decoder_start(struct mtk_snand *snf);
 +void mtk_snand_ecc_decoder_stop(struct mtk_snand *snf);
 +int mtk_ecc_wait_decoder_done(struct mtk_snand *snf);
-+int mtk_ecc_check_decode_error(struct mtk_snand *snf, uint32_t page);
++int mtk_ecc_check_decode_error(struct mtk_snand *snf);
++int mtk_ecc_fixup_empty_sector(struct mtk_snand *snf, uint32_t sect);
 +
 +int mtk_snand_mac_io(struct mtk_snand *snf, const uint8_t *out, uint32_t outlen,
 +		     uint8_t *in, uint32_t inlen);
@@ -364,7 +369,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#endif /* _MTK_SNAND_DEF_H_ */
 --- /dev/null
 +++ b/drivers/mtd/mtk-snand/mtk-snand-ecc.c
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,395 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
@@ -599,7 +604,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	return ret;
 +}
 +
-+int mtk_ecc_check_decode_error(struct mtk_snand *snf, uint32_t page)
++int mtk_ecc_check_decode_error(struct mtk_snand *snf)
 +{
 +	uint32_t i, regi, fi, errnum;
 +	uint32_t errnum_shift = snf->ecc_soc->errnum_shift;
@@ -612,22 +617,153 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +		errnum = ecc_read32(snf, ECC_DECENUM(regi));
 +		errnum = (errnum >> (fi * errnum_shift)) & errnum_mask;
-+		if (!errnum)
-+			continue;
 +
 +		if (errnum <= snf->ecc_strength) {
-+			if (ret >= 0)
-+				ret += errnum;
-+			continue;
++			snf->sect_bf[i] = errnum;
++		} else {
++			snf->sect_bf[i] = -1;
++			ret = -EBADMSG;
 +		}
-+
-+		snand_log_ecc(snf->pdev,
-+			      "Uncorrectable bitflips in page %u sect %u\n",
-+			      page, i);
-+		ret = -EBADMSG;
 +	}
 +
 +	return ret;
++}
++
++static int mtk_ecc_check_buf_bitflips(struct mtk_snand *snf, const void *buf,
++				      size_t len, uint32_t bitflips)
++{
++	const uint8_t *buf8 = buf;
++	const uint32_t *buf32;
++	uint32_t d, weight;
++
++	while (len && ((uintptr_t)buf8) % sizeof(uint32_t)) {
++		weight = hweight8(*buf8);
++		bitflips += BITS_PER_BYTE - weight;
++		buf8++;
++		len--;
++
++		if (bitflips > snf->ecc_strength)
++			return -EBADMSG;
++	}
++
++	buf32 = (const uint32_t *)buf8;
++	while (len >= sizeof(uint32_t)) {
++		d = *buf32;
++
++		if (d != ~0) {
++			weight = hweight32(d);
++			bitflips += sizeof(uint32_t) * BITS_PER_BYTE - weight;
++		}
++
++		buf32++;
++		len -= sizeof(uint32_t);
++
++		if (bitflips > snf->ecc_strength)
++			return -EBADMSG;
++	}
++
++	buf8 = (const uint8_t *)buf32;
++	while (len) {
++		weight = hweight8(*buf8);
++		bitflips += BITS_PER_BYTE - weight;
++		buf8++;
++		len--;
++
++		if (bitflips > snf->ecc_strength)
++			return -EBADMSG;
++	}
++
++	return bitflips;
++}
++
++static int mtk_ecc_check_parity_bitflips(struct mtk_snand *snf, const void *buf,
++					 uint32_t bits, uint32_t bitflips)
++{
++	uint32_t len, i;
++	uint8_t b;
++	int rc;
++
++	len = bits >> 3;
++	bits &= 7;
++
++	rc = mtk_ecc_check_buf_bitflips(snf, buf, len, bitflips);
++	if (!bits || rc < 0)
++		return rc;
++
++	bitflips = rc;
++
++	/* We want a precise count of bits */
++	b = ((const uint8_t *)buf)[len];
++	for (i = 0; i < bits; i++) {
++		if (!(b & BIT(i)))
++			bitflips++;
++	}
++
++	if (bitflips > snf->ecc_strength)
++		return -EBADMSG;
++
++	return bitflips;
++}
++
++static void mtk_ecc_reset_parity(void *buf, uint32_t bits)
++{
++	uint32_t len;
++
++	len = bits >> 3;
++	bits &= 7;
++
++	memset(buf, 0xff, len);
++
++	/* Only reset bits protected by ECC to 1 */
++	if (bits)
++		((uint8_t *)buf)[len] |= GENMASK(bits - 1, 0);
++}
++
++int mtk_ecc_fixup_empty_sector(struct mtk_snand *snf, uint32_t sect)
++{
++	uint32_t ecc_bytes = snf->spare_per_sector - snf->nfi_soc->fdm_size;
++	uint8_t *oob = snf->page_cache + snf->writesize;
++	uint8_t *data_ptr, *fdm_ptr, *ecc_ptr;
++	int bitflips = 0, ecc_bits, parity_bits;
++
++	parity_bits = fls(snf->nfi_soc->sector_size * 8);
++	ecc_bits = snf->ecc_strength * parity_bits;
++
++	data_ptr = snf->page_cache + sect * snf->nfi_soc->sector_size;
++	fdm_ptr = oob + sect * snf->nfi_soc->fdm_size;
++	ecc_ptr = oob + snf->ecc_steps * snf->nfi_soc->fdm_size +
++		  sect * ecc_bytes;
++
++	/*
++	 * Check whether DATA + FDM + ECC of a sector contains correctable
++	 * bitflips
++	 */
++	bitflips = mtk_ecc_check_buf_bitflips(snf, data_ptr,
++					      snf->nfi_soc->sector_size,
++					      bitflips);
++	if (bitflips < 0)
++		return -EBADMSG;
++
++	bitflips = mtk_ecc_check_buf_bitflips(snf, fdm_ptr,
++					      snf->nfi_soc->fdm_ecc_size,
++					      bitflips);
++	if (bitflips < 0)
++		return -EBADMSG;
++
++	bitflips = mtk_ecc_check_parity_bitflips(snf, ecc_ptr, ecc_bits,
++						 bitflips);
++	if (bitflips < 0)
++		return -EBADMSG;
++
++	if (!bitflips)
++		return 0;
++
++	/* Reset the data of this sector to 0xff */
++	memset(data_ptr, 0xff, snf->nfi_soc->sector_size);
++	memset(fdm_ptr, 0xff, snf->nfi_soc->fdm_ecc_size);
++	mtk_ecc_reset_parity(ecc_ptr, ecc_bits);
++
++	return bitflips;
 +}
 --- /dev/null
 +++ b/drivers/mtd/mtk-snand/mtk-snand-ids.c
@@ -1145,7 +1281,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +}
 --- /dev/null
 +++ b/drivers/mtd/mtk-snand/mtk-snand-mtd.c
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,535 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
@@ -1220,13 +1356,12 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		start_addr += mtd->erasesize;
 +	}
 +
-+	if (ret)
-+		instr->state = MTD_ERASE_FAILED;
-+	else
++	if (!ret) {
 +		instr->state = MTD_ERASE_DONE;
-+
-+	if (ret)
++	} else {
++		instr->state = MTD_ERASE_FAILED;
 +		ret = -EIO;
++	}
 +
 +	return ret;
 +}
@@ -1238,8 +1373,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	size_t len, ooblen, maxooblen, chklen;
 +	uint32_t col, ooboffs;
 +	uint8_t *datcache, *oobcache;
-+	bool raw = ops->mode == MTD_OPS_RAW ? true : false;
-+	int ret;
++	bool ecc_failed = false, raw = ops->mode == MTD_OPS_RAW ? true : false;
++	int ret, max_bitflips = 0;
 +
 +	col = addr & mtd->writesize_mask;
 +	addr &= ~mtd->writesize_mask;
@@ -1264,8 +1399,19 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +			ret = mtk_snand_read_page(msm->snf, addr, datcache,
 +				oobcache, raw);
 +
-+		if (ret < 0)
++		if (ret < 0 && ret != -EBADMSG)
 +			return ret;
++
++		if (ret == -EBADMSG) {
++			mtd->ecc_stats.failed++;
++			ecc_failed = true;
++		} else {
++			mtd->ecc_stats.corrected += ret;
++			max_bitflips = max_t(int, ret, max_bitflips);
++		}
++
++		mtd->ecc_stats.corrected += ret;
++		max_bitflips = max_t(int, ret, max_bitflips);
 +
 +		if (len) {
 +			/* Move data */
@@ -1296,7 +1442,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		addr += mtd->writesize;
 +	}
 +
-+	return 0;
++	return ecc_failed ? -EBADMSG : max_bitflips;
 +}
 +
 +static int mtk_snand_mtd_read_oob(struct mtd_info *mtd, loff_t from,
@@ -1620,7 +1766,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	mtd->ooblayout = &mtk_snand_ooblayout;
 +
-+	mtd->ecc_strength = msm->cinfo.ecc_strength * msm->cinfo.num_sectors;
++	mtd->ecc_strength = msm->cinfo.ecc_strength;
 +	mtd->bitflip_threshold = (mtd->ecc_strength * 3) / 4;
 +	mtd->ecc_step_size = msm->cinfo.sector_size;
 +
@@ -1659,6 +1805,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +static const struct udevice_id mtk_snand_ids[] = {
 +	{ .compatible = "mediatek,mt7622-snand", .data = SNAND_SOC_MT7622 },
 +	{ .compatible = "mediatek,mt7629-snand", .data = SNAND_SOC_MT7629 },
++	{ .compatible = "mediatek,mt7981-snand", .data = SNAND_SOC_MT7981 },
 +	{ .compatible = "mediatek,mt7986-snand", .data = SNAND_SOC_MT7986 },
 +	{ /* sentinel */ },
 +};
@@ -1837,7 +1984,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#endif /* _MTK_SNAND_OS_H_ */
 --- /dev/null
 +++ b/drivers/mtd/mtk-snand/mtk-snand.c
-@@ -0,0 +1,1776 @@
+@@ -0,0 +1,1933 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
@@ -1897,7 +2044,15 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#define FIFO_WR_REMAIN_S		8
 +#define FIFO_RD_REMAIN_S		0
 +
++#define NFI_ADDRCNTR			0x070
++#define SEC_CNTR			GENMASK(16, 12)
++#define SEC_CNTR_S			12
++#define NFI_SEC_CNTR(val)               (((val) & SEC_CNTR) >> SEC_CNTR_S)
++
 +#define NFI_STRADDR			0x080
++
++#define NFI_BYTELEN			0x084
++#define BUS_SEC_CNTR(val)		(((val) & SEC_CNTR) >> SEC_CNTR_S)
 +
 +#define NFI_FDM0L			0x0a0
 +#define NFI_FDM0M			0x0a4
@@ -1915,6 +2070,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#define NFI_MASTERSTA_MASK_7622		(MAS_ADDR | MAS_RD | MAS_WR | MAS_RDDLY)
 +#define AHB_BUS_BUSY			BIT(1)
 +#define BUS_BUSY			BIT(0)
++#define NFI_MASTERSTA_MASK_7981		(AHB_BUS_BUSY | BUS_BUSY)
 +#define NFI_MASTERSTA_MASK_7986		(AHB_BUS_BUSY | BUS_BUSY)
 +
 +/* SNFI registers */
@@ -1950,6 +2106,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#define   DATA_READ_MODE_X4		2
 +#define   DATA_READ_MODE_DUAL		5
 +#define   DATA_READ_MODE_QUAD		6
++#define LATCH_LAT_S			8
++#define LATCH_LAT			GENMASK(9, 8)
 +#define PG_LOAD_CUSTOM_EN		BIT(7)
 +#define DATARD_CUSTOM_EN		BIT(6)
 +#define CS_DESELECT_CYC_S		0
@@ -1977,6 +2135,11 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +static const uint8_t mt7622_spare_sizes[] = { 16, 26, 27, 28 };
 +
++static const uint8_t mt7981_spare_sizes[] = {
++	16, 26, 27, 28, 32, 36, 40, 44, 48, 49, 50, 51, 52, 62, 61, 63, 64,
++	67, 74
++};
++
 +static const uint8_t mt7986_spare_sizes[] = {
 +	16, 26, 27, 28, 32, 36, 40, 44, 48, 49, 50, 51, 52, 62, 61, 63, 64,
 +	67, 74
@@ -1993,7 +2156,9 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		.empty_page_check = false,
 +		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
 +		.spare_sizes = mt7622_spare_sizes,
-+		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
++		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes),
++		.latch_lat = 0,
++		.sample_delay = 40
 +	},
 +	[SNAND_SOC_MT7629] = {
 +		.sector_size = 512,
@@ -2005,7 +2170,23 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		.empty_page_check = false,
 +		.mastersta_mask = NFI_MASTERSTA_MASK_7622,
 +		.spare_sizes = mt7622_spare_sizes,
-+		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes)
++		.num_spare_size = ARRAY_SIZE(mt7622_spare_sizes),
++		.latch_lat = 0,
++		.sample_delay = 40
++	},
++	[SNAND_SOC_MT7981] = {
++		.sector_size = 1024,
++		.max_sectors = 16,
++		.fdm_size = 8,
++		.fdm_ecc_size = 1,
++		.fifo_size = 64,
++		.bbm_swap = true,
++		.empty_page_check = true,
++		.mastersta_mask = NFI_MASTERSTA_MASK_7981,
++		.spare_sizes = mt7981_spare_sizes,
++		.num_spare_size = ARRAY_SIZE(mt7981_spare_sizes),
++		.latch_lat = 0,
++		.sample_delay = 40
 +	},
 +	[SNAND_SOC_MT7986] = {
 +		.sector_size = 1024,
@@ -2017,7 +2198,9 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		.empty_page_check = true,
 +		.mastersta_mask = NFI_MASTERSTA_MASK_7986,
 +		.spare_sizes = mt7986_spare_sizes,
-+		.num_spare_size = ARRAY_SIZE(mt7986_spare_sizes)
++		.num_spare_size = ARRAY_SIZE(mt7986_spare_sizes),
++		.latch_lat = 0,
++		.sample_delay = 40
 +	},
 +};
 +
@@ -2189,7 +2372,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		snand_log_snfi(snf->pdev, "Failed to reset SNFI MAC\n");
 +
 +	nfi_write32(snf, SNF_MISC_CTL, (2 << FIFO_RD_LTC_S) |
-+		    (10 << CS_DESELECT_CYC_S));
++		    (10 << CS_DESELECT_CYC_S) | (snf->nfi_soc->latch_lat << LATCH_LAT_S));
 +
 +	return ret;
 +}
@@ -2485,9 +2668,77 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	}
 +}
 +
++static int mtk_snand_read_ecc_parity(struct mtk_snand *snf, uint32_t page,
++				     uint32_t sect, uint8_t *oob)
++{
++	uint32_t ecc_bytes = snf->spare_per_sector - snf->nfi_soc->fdm_size;
++	uint32_t coladdr, raw_offs, offs;
++	uint8_t op[4];
++
++	if (sizeof(op) + ecc_bytes > SNF_GPRAM_SIZE) {
++		snand_log_snfi(snf->pdev,
++			       "ECC parity size does not fit the GPRAM\n");
++		return -ENOTSUPP;
++	}
++
++	raw_offs = sect * snf->raw_sector_size + snf->nfi_soc->sector_size +
++		   snf->nfi_soc->fdm_size;
++	offs = snf->ecc_steps * snf->nfi_soc->fdm_size + sect * ecc_bytes;
++
++	/* Column address with plane bit */
++	coladdr = raw_offs | mtk_snand_get_plane_address(snf, page);
++
++	op[0] = SNAND_CMD_READ_FROM_CACHE;
++	op[1] = (coladdr >> 8) & 0xff;
++	op[2] = coladdr & 0xff;
++	op[3] = 0;
++
++	return mtk_snand_mac_io(snf, op, sizeof(op), oob + offs, ecc_bytes);
++}
++
++static int mtk_snand_check_ecc_result(struct mtk_snand *snf, uint32_t page)
++{
++	uint8_t *oob = snf->page_cache + snf->writesize;
++	int i, rc, ret = 0, max_bitflips = 0;
++
++	for (i = 0; i < snf->ecc_steps; i++) {
++		if (snf->sect_bf[i] >= 0) {
++			if (snf->sect_bf[i] > max_bitflips)
++				max_bitflips = snf->sect_bf[i];
++			continue;
++		}
++
++		rc = mtk_snand_read_ecc_parity(snf, page, i, oob);
++		if (rc)
++			return rc;
++
++		rc = mtk_ecc_fixup_empty_sector(snf, i);
++		if (rc < 0) {
++			ret = -EBADMSG;
++
++			snand_log_ecc(snf->pdev,
++			      "Uncorrectable bitflips in page %u sect %u\n",
++			      page, i);
++		} else if (rc) {
++			snf->sect_bf[i] = rc;
++
++			if (snf->sect_bf[i] > max_bitflips)
++				max_bitflips = snf->sect_bf[i];
++
++			snand_log_ecc(snf->pdev,
++			      "%u bitflip%s corrected in page %u sect %u\n",
++			      rc, rc > 1 ? "s" : "", page, i);
++		} else {
++			snf->sect_bf[i] = 0;
++		}
++	}
++
++	return ret ? ret : max_bitflips;
++}
++
 +static int mtk_snand_read_cache(struct mtk_snand *snf, uint32_t page, bool raw)
 +{
-+	uint32_t coladdr, rwbytes, mode, len;
++	uint32_t coladdr, rwbytes, mode, len, val;
 +	uintptr_t dma_addr;
 +	int ret;
 +
@@ -2507,7 +2758,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	/* Set read mode */
 +	mode = (uint32_t)snf->mode_rfc << DATA_READ_MODE_S;
-+	nfi_rmw32(snf, SNF_MISC_CTL, DATA_READ_MODE, mode | DATARD_CUSTOM_EN);
++	nfi_rmw32(snf, SNF_MISC_CTL, DATA_READ_MODE,
++			mode | DATARD_CUSTOM_EN | (snf->nfi_soc->latch_lat << LATCH_LAT_S));
 +
 +	/* Set bytes to read */
 +	rwbytes = snf->ecc_steps * snf->raw_sector_size;
@@ -2555,6 +2807,26 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		goto cleanup;
 +	}
 +
++	/* Wait for BUS_SEC_CNTR returning expected value */
++	ret = read32_poll_timeout(snf->nfi_base + NFI_BYTELEN, val,
++				  BUS_SEC_CNTR(val) >= snf->ecc_steps,
++				  0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "Timed out waiting for BUS_SEC_CNTR\n");
++		goto cleanup;
++	}
++
++	/* Wait for bus becoming idle */
++	ret = read32_poll_timeout(snf->nfi_base + NFI_MASTERSTA, val,
++				  !(val & snf->nfi_soc->mastersta_mask),
++				  0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "Timed out waiting for bus becoming idle\n");
++		goto cleanup;
++	}
++
 +	if (!raw) {
 +		ret = mtk_ecc_wait_decoder_done(snf);
 +		if (ret)
@@ -2562,17 +2834,10 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +		mtk_snand_read_fdm(snf, snf->page_cache + snf->writesize);
 +
-+		/*
-+		 * For new IPs, ecc error may occur on empty pages.
-+		 * Use an specific indication bit to check empty page.
-+		 */
-+		if (snf->nfi_soc->empty_page_check &&
-+		    (nfi_read32(snf, NFI_STA) & READ_EMPTY))
-+			ret = 0;
-+		else
-+			ret = mtk_ecc_check_decode_error(snf, page);
-+
++		mtk_ecc_check_decode_error(snf);
 +		mtk_snand_ecc_decoder_stop(snf);
++
++		ret = mtk_snand_check_ecc_result(snf, page);
 +	}
 +
 +cleanup:
@@ -2581,6 +2846,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	/* Stop read */
 +	nfi_write32(snf, NFI_CON, 0);
++	nfi_write16(snf, NFI_CNFG, 0);
 +
 +	/* Clear SNF done flag */
 +	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_READ_DONE);
@@ -2590,7 +2856,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	nfi_read32(snf, NFI_INTR_STA);
 +	nfi_write32(snf, NFI_INTR_EN, 0);
 +
-+	nfi_rmw32(snf, SNF_MISC_CTL, DATARD_CUSTOM_EN, 0);
++	nfi_rmw32(snf, SNF_MISC_CTL, DATARD_CUSTOM_EN | LATCH_LAT, 0);
 +
 +	return ret;
 +}
@@ -2626,11 +2892,13 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +				  void *buf, void *oob, bool raw, bool format)
 +{
 +	uint64_t die_addr;
-+	uint32_t page;
-+	int ret;
++	uint32_t page, dly_ctrl3;
++	int ret, retry_cnt = 0;
 +
 +	die_addr = mtk_snand_select_die_address(snf, addr);
 +	page = die_addr >> snf->writesize_shift;
++
++	dly_ctrl3 = nfi_read32(snf, SNF_DLY_CTL3);
 +
 +	ret = mtk_snand_page_op(snf, page, SNAND_CMD_READ_TO_CACHE);
 +	if (ret)
@@ -2642,9 +2910,29 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		return ret;
 +	}
 +
++retry:
 +	ret = mtk_snand_read_cache(snf, page, raw);
 +	if (ret < 0 && ret != -EBADMSG)
 +		return ret;
++
++	if (ret == -EBADMSG && retry_cnt < 16) {
++		nfi_write32(snf, SNF_DLY_CTL3, retry_cnt * 2);
++		retry_cnt++;
++		goto retry;
++	}
++
++	if (retry_cnt) {
++		if(ret == -EBADMSG) {
++			nfi_write32(snf, SNF_DLY_CTL3, dly_ctrl3);
++			snand_log_chip(snf->pdev,
++				       "NFI calibration failed. Original sample delay: 0x%x\n",
++				       dly_ctrl3);
++		} else {
++			snand_log_chip(snf->pdev,
++				       "NFI calibration passed. New sample delay: 0x%x\n",
++				       nfi_read32(snf, SNF_DLY_CTL3));
++		}
++	}
 +
 +	if (raw) {
 +		if (format) {
@@ -2719,7 +3007,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +static int mtk_snand_program_load(struct mtk_snand *snf, uint32_t page,
 +				  bool raw)
 +{
-+	uint32_t coladdr, rwbytes, mode, len;
++	uint32_t coladdr, rwbytes, mode, len, val;
 +	uintptr_t dma_addr;
 +	int ret;
 +
@@ -2789,6 +3077,16 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		goto cleanup;
 +	}
 +
++	/* Wait for NFI_SEC_CNTR returning expected value */
++	ret = read32_poll_timeout(snf->nfi_base + NFI_ADDRCNTR, val,
++				  NFI_SEC_CNTR(val) >= snf->ecc_steps,
++				  0, SNFI_POLL_INTERVAL);
++	if (ret) {
++		snand_log_nfi(snf->pdev,
++			      "Timed out waiting for BUS_SEC_CNTR\n");
++		goto cleanup;
++	}
++
 +	if (!raw)
 +		mtk_snand_ecc_encoder_stop(snf);
 +
@@ -2797,7 +3095,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	dma_mem_unmap(snf->pdev, dma_addr, len, true);
 +
 +	/* Stop write */
-+	nfi_write16(snf, NFI_CON, 0);
++	nfi_write32(snf, NFI_CON, 0);
++	nfi_write16(snf, NFI_CNFG, 0);
 +
 +	/* Clear SNF done flag */
 +	nfi_rmw32(snf, SNF_STA_CTL1, 0, CUS_PG_DONE);
@@ -3454,7 +3753,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	/* Tuning options */
 +	nfi_write16(snf, NFI_DEBUG_CON1, WBUF_EN);
-+	nfi_write32(snf, SNF_DLY_CTL3, (40 << SFCK_SAM_DLY_S));
++	nfi_write32(snf, SNF_DLY_CTL3, (snf->nfi_soc->sample_delay << SFCK_SAM_DLY_S));
 +
 +	/* Interrupts */
 +	nfi_read32(snf, NFI_INTR_STA);
@@ -3523,8 +3822,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +		   struct mtk_snand **psnf)
 +{
 +	const struct snand_flash_info *snand_info;
++	uint32_t rawpage_size, sect_bf_size;
 +	struct mtk_snand tmpsnf, *snf;
-+	uint32_t rawpage_size;
 +	int ret;
 +
 +	if (!pdata || !psnf)
@@ -3565,14 +3864,19 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +	rawpage_size = snand_info->memorg.pagesize +
 +		       snand_info->memorg.sparesize;
 +
++	sect_bf_size = mtk_snand_socs[pdata->soc].max_sectors *
++		       sizeof(*snf->sect_bf);
++
 +	/* Allocate memory for instance and cache */
-+	snf = generic_mem_alloc(dev, sizeof(*snf) + rawpage_size);
++	snf = generic_mem_alloc(dev,
++				sizeof(*snf) + rawpage_size + sect_bf_size);
 +	if (!snf) {
 +		snand_log_chip(dev, "Failed to allocate memory for instance\n");
 +		return -ENOMEM;
 +	}
 +
-+	snf->buf_cache = (uint8_t *)((uintptr_t)snf + sizeof(*snf));
++	snf->sect_bf = (int *)((uintptr_t)snf + sizeof(*snf));
++	snf->buf_cache = (uint8_t *)((uintptr_t)snf->sect_bf + sect_bf_size);
 +
 +	/* Allocate memory for DMA buffer */
 +	snf->page_cache = dma_mem_alloc(dev, rawpage_size);
@@ -3636,8 +3940,8 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +enum mtk_snand_soc {
 +	SNAND_SOC_MT7622,
 +	SNAND_SOC_MT7629,
++	SNAND_SOC_MT7981,
 +	SNAND_SOC_MT7986,
-+
 +	__SNAND_SOC_MAX
 +};
 +
