@@ -1,0 +1,77 @@
+From c1dacaf4f9ff59463b2c48edf78b39f5308f7ff5 Mon Sep 17 00:00:00 2001
+From: Sven Peter <sven@svenpeter.dev>
+Date: Mon, 1 Aug 2022 12:36:32 +0200
+Subject: [PATCH 169/171] Bluetooth: Add quirk to disable extended scanning
+
+Broadcom 4377 controllers found in Apple x86 Macs with the T2 chip
+claim to support extended scanning when querying supported states,
+
+< HCI Command: LE Read Supported St.. (0x08|0x001c) plen 0  #27 [hci0] 2.971839
+> HCI Event: Command Complete (0x0e) plen 12                #28 [hci0] 2.972730
+      LE Read Supported States (0x08|0x001c) ncmd 1
+        Status: Success (0x00)
+        States: 0x000003ffffffffff
+[...]
+          LE Set Extended Scan Parameters (Octet 37 - Bit 5)
+          LE Set Extended Scan Enable (Octet 37 - Bit 6)
+[...]
+
+, but then fail to actually implement the extended scanning:
+
+< HCI Command: LE Set Extended Sca.. (0x08|0x0041) plen 8  #105 [hci0] 5.460776
+        Own address type: Random (0x01)
+        Filter policy: Accept all advertisement (0x00)
+        PHYs: 0x01
+        Entry 0: LE 1M
+          Type: Active (0x01)
+          Interval: 11.250 msec (0x0012)
+          Window: 11.250 msec (0x0012)
+> HCI Event: Command Complete (0x0e) plen 4                #106 [hci0] 5.461777
+      LE Set Extended Scan Parameters (0x08|0x0041) ncmd 1
+        Status: Unknown HCI Command (0x01)
+
+Signed-off-by: Sven Peter <sven@svenpeter.dev>
+---
+ include/net/bluetooth/hci.h      | 10 ++++++++++
+ include/net/bluetooth/hci_core.h |  4 +++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/include/net/bluetooth/hci.h b/include/net/bluetooth/hci.h
+index 47e1ee6f275d..dd275842b9b2 100644
+--- a/include/net/bluetooth/hci.h
++++ b/include/net/bluetooth/hci.h
+@@ -285,6 +285,16 @@ enum {
+ 	 * during the hdev->setup vendor callback.
+ 	 */
+ 	HCI_QUIRK_FIXUP_LE_EXT_ADV_REPORT_EVT_TYPE,
++
++	/*
++	 * When this quirk is set, the HCI_OP_LE_SET_EXT_SCAN_ENABLE command is
++	 * disabled. This is required for some Broadcom controllers which
++	 * erroneously claim to support extended scanning.
++	 *
++	 * This quirk can be set before hci_register_dev is called or
++	 * during the hdev->setup vendor callback.
++	 */
++	HCI_QUIRK_BROKEN_EXT_SCAN,
+ };
+ 
+ /* HCI device flags */
+diff --git a/include/net/bluetooth/hci_core.h b/include/net/bluetooth/hci_core.h
+index c0ea2a4892b1..149b9a10f52f 100644
+--- a/include/net/bluetooth/hci_core.h
++++ b/include/net/bluetooth/hci_core.h
+@@ -1501,7 +1501,9 @@ void hci_conn_del_sysfs(struct hci_conn *conn);
+ 
+ /* Use ext scanning if set ext scan param and ext scan enable is supported */
+ #define use_ext_scan(dev) (((dev)->commands[37] & 0x20) && \
+-			   ((dev)->commands[37] & 0x40))
++			   ((dev)->commands[37] & 0x40) && \
++			   !test_bit(HCI_QUIRK_BROKEN_EXT_SCAN, &(dev)->quirks))
++
+ /* Use ext create connection if command is supported */
+ #define use_ext_conn(dev) ((dev)->commands[37] & 0x80)
+ 
+-- 
+2.34.1
+
