@@ -1,0 +1,205 @@
+From 170220fc8fb15839654131612ac3dc84bb4469ea Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Martin=20Povi=C5=A1er?= <povik+lin@cutebit.org>
+Date: Sun, 20 Feb 2022 14:29:38 +0100
+Subject: [PATCH 077/171] HACK: ASoC: Add card->filter_controls hook
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add a new ASoC card callback for filtering the kcontrols of the card's
+constituent components. This lets the card take over some of the
+controls, deciding their value instead of leaving it up to userspace.
+
+Also, and here's the HACK: part, move dapm_new_widgets call in front
+of the card's late_probe call. This way all kcontrols should have been
+crated by the time late_probe is called.
+
+Signed-off-by: Martin Povišer <povik+lin@cutebit.org>
+---
+ include/sound/soc.h  |  3 +++
+ sound/soc/soc-core.c | 45 +++++++++++++++++++++++++++-----------------
+ sound/soc/soc-dapm.c | 34 ++++++++++++++++++++++++++++-----
+ 3 files changed, 60 insertions(+), 22 deletions(-)
+
+diff --git a/include/sound/soc.h b/include/sound/soc.h
+index b276dcb5d4e8..7ef168a8c759 100644
+--- a/include/sound/soc.h
++++ b/include/sound/soc.h
+@@ -916,6 +916,9 @@ struct snd_soc_card {
+ 	int (*late_probe)(struct snd_soc_card *card);
+ 	int (*remove)(struct snd_soc_card *card);
+ 
++	int (*filter_controls)(struct snd_soc_card *card,
++			struct snd_kcontrol *kcontrol);
++
+ 	/* the pre and post PM functions are used to do any PM work before and
+ 	 * after the codec and DAI's do any PM work. */
+ 	int (*suspend_pre)(struct snd_soc_card *card);
+diff --git a/sound/soc/soc-core.c b/sound/soc/soc-core.c
+index 9574f86dd4de..37e2a8b2af10 100644
+--- a/sound/soc/soc-core.c
++++ b/sound/soc/soc-core.c
+@@ -2069,12 +2069,12 @@ static int snd_soc_bind_card(struct snd_soc_card *card)
+ 		}
+ 	}
+ 
++	snd_soc_dapm_new_widgets(card);
++
+ 	ret = snd_soc_card_late_probe(card);
+ 	if (ret < 0)
+ 		goto probe_end;
+ 
+-	snd_soc_dapm_new_widgets(card);
+-
+ 	ret = snd_card_register(card->snd_card);
+ 	if (ret < 0) {
+ 		dev_err(card->dev, "ASoC: failed to register soundcard %d\n",
+@@ -2209,19 +2209,34 @@ struct snd_kcontrol *snd_soc_cnew(const struct snd_kcontrol_new *_template,
+ }
+ EXPORT_SYMBOL_GPL(snd_soc_cnew);
+ 
+-static int snd_soc_add_controls(struct snd_card *card, struct device *dev,
++static int snd_soc_add_controls(struct snd_soc_card *card, struct device *dev,
+ 	const struct snd_kcontrol_new *controls, int num_controls,
+ 	const char *prefix, void *data)
+ {
+-	int i;
++	int i, err;
+ 
+ 	for (i = 0; i < num_controls; i++) {
+-		const struct snd_kcontrol_new *control = &controls[i];
+-		int err = snd_ctl_add(card, snd_soc_cnew(control, data,
+-							 control->name, prefix));
++		const struct snd_kcontrol_new *control_new = &controls[i];
++		struct snd_kcontrol *control;
++
++		control = snd_soc_cnew(control_new, data,
++					control_new->name, prefix);
++
++		if (card->filter_controls) {
++			err = card->filter_controls(card, control);
++			if (err < 0) {
++				snd_ctl_free_one(control);
++				return err;
++			} else if (err) {
++				continue;
++			}
++		} 
++
++		err = snd_ctl_add(card->snd_card, control);
++
+ 		if (err < 0) {
+ 			dev_err(dev, "ASoC: Failed to add %s: %d\n",
+-				control->name, err);
++				control_new->name, err);
+ 			return err;
+ 		}
+ 	}
+@@ -2241,9 +2256,7 @@ static int snd_soc_add_controls(struct snd_card *card, struct device *dev,
+ int snd_soc_add_component_controls(struct snd_soc_component *component,
+ 	const struct snd_kcontrol_new *controls, unsigned int num_controls)
+ {
+-	struct snd_card *card = component->card->snd_card;
+-
+-	return snd_soc_add_controls(card, component->dev, controls,
++	return snd_soc_add_controls(component->card, component->dev, controls,
+ 			num_controls, component->name_prefix, component);
+ }
+ EXPORT_SYMBOL_GPL(snd_soc_add_component_controls);
+@@ -2258,13 +2271,11 @@ EXPORT_SYMBOL_GPL(snd_soc_add_component_controls);
+  *
+  * Return 0 for success, else error.
+  */
+-int snd_soc_add_card_controls(struct snd_soc_card *soc_card,
++int snd_soc_add_card_controls(struct snd_soc_card *card,
+ 	const struct snd_kcontrol_new *controls, int num_controls)
+ {
+-	struct snd_card *card = soc_card->snd_card;
+-
+-	return snd_soc_add_controls(card, soc_card->dev, controls, num_controls,
+-			NULL, soc_card);
++	return snd_soc_add_controls(card, card->dev, controls, num_controls,
++			NULL, card);
+ }
+ EXPORT_SYMBOL_GPL(snd_soc_add_card_controls);
+ 
+@@ -2281,7 +2292,7 @@ EXPORT_SYMBOL_GPL(snd_soc_add_card_controls);
+ int snd_soc_add_dai_controls(struct snd_soc_dai *dai,
+ 	const struct snd_kcontrol_new *controls, int num_controls)
+ {
+-	struct snd_card *card = dai->component->card->snd_card;
++	struct snd_soc_card *card = dai->component->card;
+ 
+ 	return snd_soc_add_controls(card, dai->dev, controls, num_controls,
+ 			NULL, dai);
+diff --git a/sound/soc/soc-dapm.c b/sound/soc/soc-dapm.c
+index a8e842e02cdc..c87137f364da 100644
+--- a/sound/soc/soc-dapm.c
++++ b/sound/soc/soc-dapm.c
+@@ -878,7 +878,7 @@ static int dapm_create_or_share_kcontrol(struct snd_soc_dapm_widget *w,
+ 	int kci)
+ {
+ 	struct snd_soc_dapm_context *dapm = w->dapm;
+-	struct snd_card *card = dapm->card->snd_card;
++	struct snd_soc_card *card = dapm->card;
+ 	const char *prefix;
+ 	size_t prefix_len;
+ 	int shared;
+@@ -962,7 +962,19 @@ static int dapm_create_or_share_kcontrol(struct snd_soc_dapm_widget *w,
+ 			goto exit_free;
+ 		}
+ 
+-		ret = snd_ctl_add(card, kcontrol);
++		if (card->filter_controls) {
++			ret = card->filter_controls(card, kcontrol);
++			if (ret < 0) {
++				snd_ctl_free_one(kcontrol);
++				goto exit_free;
++			}
++
++			if (!ret)
++				ret = snd_ctl_add(card->snd_card, kcontrol);
++		} else {
++			ret = snd_ctl_add(card->snd_card, kcontrol);	
++		}
++
+ 		if (ret < 0) {
+ 			dev_err(dapm->dev,
+ 				"ASoC: failed to add widget %s dapm kcontrol %s: %d\n",
+@@ -1079,7 +1091,7 @@ static int dapm_new_pga(struct snd_soc_dapm_widget *w)
+ /* create new dapm dai link control */
+ static int dapm_new_dai_link(struct snd_soc_dapm_widget *w)
+ {
+-	int i;
++	int i, ret;
+ 	struct snd_soc_pcm_runtime *rtd = w->priv;
+ 
+ 	/* create control for links with > 1 config */
+@@ -1089,10 +1101,22 @@ static int dapm_new_dai_link(struct snd_soc_dapm_widget *w)
+ 	/* add kcontrol */
+ 	for (i = 0; i < w->num_kcontrols; i++) {
+ 		struct snd_soc_dapm_context *dapm = w->dapm;
+-		struct snd_card *card = dapm->card->snd_card;
++		struct snd_soc_card *card = dapm->card;
+ 		struct snd_kcontrol *kcontrol = snd_soc_cnew(&w->kcontrol_news[i],
+ 							     w, w->name, NULL);
+-		int ret = snd_ctl_add(card, kcontrol);
++
++		if (card->filter_controls) {
++			ret = card->filter_controls(card, kcontrol);
++			if (ret < 0) {
++				snd_ctl_free_one(kcontrol);
++				return ret;
++			}
++
++			if (!ret)
++				ret = snd_ctl_add(card->snd_card, kcontrol);
++		} else {
++			ret = snd_ctl_add(card->snd_card, kcontrol);
++		}
+ 
+ 		if (ret < 0) {
+ 			dev_err(dapm->dev,
+-- 
+2.34.1
+

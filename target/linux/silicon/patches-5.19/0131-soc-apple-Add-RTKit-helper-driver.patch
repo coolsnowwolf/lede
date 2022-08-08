@@ -1,0 +1,211 @@
+From 19e6fb36a68b5afbe7a603fda647fcd2214e191c Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Sun, 3 Jul 2022 23:33:37 +0900
+Subject: [PATCH 131/171] soc: apple: Add RTKit helper driver
+
+This driver can be used for coprocessors that do some background task or
+communicate out-of-band, and do not do any mailbox I/O beyond the
+standard RTKit initialization.
+
+Signed-off-by: Hector Martin <marcan@marcan.st>
+---
+ drivers/soc/apple/Kconfig        |  14 +++
+ drivers/soc/apple/Makefile       |   3 +
+ drivers/soc/apple/rtkit-helper.c | 146 +++++++++++++++++++++++++++++++
+ 3 files changed, 163 insertions(+)
+ create mode 100644 drivers/soc/apple/rtkit-helper.c
+
+diff --git a/drivers/soc/apple/Kconfig b/drivers/soc/apple/Kconfig
+index 9e93df0ac825..694a44968f76 100644
+--- a/drivers/soc/apple/Kconfig
++++ b/drivers/soc/apple/Kconfig
+@@ -30,6 +30,20 @@ config APPLE_RTKIT
+ 
+ 	  Say 'y' here if you have an Apple SoC.
+ 
++config APPLE_RTKIT_HELPER
++	tristate "Apple Generic RTKit helper co-processor"
++	depends on APPLE_RTKIT
++	depends on ARCH_APPLE || COMPILE_TEST
++	default ARCH_APPLE
++	help
++	  Apple SoCs such as the M1 come with various co-processors running
++	  their proprietary RTKit operating system. This option enables support
++	  for a generic co-processor that does not implement any additional
++	  in-band communications. It can be used for testing purposes, or for
++	  coprocessors such as MTP that communicate over a different interface.
++
++	  Say 'y' here if you have an Apple SoC.
++
+ config APPLE_SART
+ 	tristate "Apple SART DMA address filter"
+ 	depends on ARCH_APPLE || COMPILE_TEST
+diff --git a/drivers/soc/apple/Makefile b/drivers/soc/apple/Makefile
+index aa4203e02462..07a95a883d3d 100644
+--- a/drivers/soc/apple/Makefile
++++ b/drivers/soc/apple/Makefile
+@@ -4,6 +4,9 @@ obj-$(CONFIG_APPLE_PMGR_PWRSTATE)	+= apple-pmgr-pwrstate.o
+ obj-$(CONFIG_APPLE_RTKIT) += apple-rtkit.o
+ apple-rtkit-y = rtkit.o rtkit-crashlog.o
+ 
++obj-$(CONFIG_APPLE_RTKIT_HELPER) += apple-rtkit-helper.o
++apple-rtkit-helper-y = rtkit-helper.o
++
+ obj-$(CONFIG_APPLE_SART) += apple-sart.o
+ apple-sart-y = sart.o
+ 
+diff --git a/drivers/soc/apple/rtkit-helper.c b/drivers/soc/apple/rtkit-helper.c
+new file mode 100644
+index 000000000000..01c7f30e41e6
+--- /dev/null
++++ b/drivers/soc/apple/rtkit-helper.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-2.0-only OR MIT
++/*
++ * Apple Generic RTKit helper coprocessor
++ * Copyright The Asahi Linux Contributors
++ */
++
++#include <linux/device.h>
++#include <linux/dma-mapping.h>
++#include <linux/io.h>
++#include <linux/ioport.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/soc/apple/rtkit.h>
++
++#define APPLE_ASC_CPU_CONTROL		0x44
++#define APPLE_ASC_CPU_CONTROL_RUN	BIT(4)
++
++struct apple_rtkit_helper {
++	struct device *dev;
++	struct apple_rtkit *rtk;
++
++	void __iomem *asc_base;
++
++	struct resource *sram;
++	void __iomem *sram_base;
++};
++
++static int apple_rtkit_helper_shmem_setup(void *cookie, struct apple_rtkit_shmem *bfr)
++{
++	struct apple_rtkit_helper *helper = cookie;
++	struct resource res = {
++		.start = bfr->iova,
++		.end = bfr->iova + bfr->size - 1,
++		.name = "rtkit_map",
++		.flags = helper->sram->flags,
++	};
++
++	if (!bfr->iova) {
++		bfr->buffer = dma_alloc_coherent(helper->dev, bfr->size,
++						    &bfr->iova, GFP_KERNEL);
++		if (!bfr->buffer)
++			return -ENOMEM;
++		return 0;
++	}
++
++	if (!helper->sram) {
++		dev_err(helper->dev,
++			"RTKit buffer request with no SRAM region: %pR", &res);
++		return -EFAULT;
++	}
++
++	if (res.end < res.start || !resource_contains(helper->sram, &res)) {
++		dev_err(helper->dev,
++			"RTKit buffer request outside SRAM region: %pR", &res);
++		return -EFAULT;
++	}
++
++	bfr->iomem = helper->sram_base + (res.start - helper->sram->start);
++	bfr->is_mapped = true;
++
++	return 0;
++}
++
++static void apple_rtkit_helper_shmem_destroy(void *cookie, struct apple_rtkit_shmem *bfr)
++{
++	// no-op
++}
++
++static const struct apple_rtkit_ops apple_rtkit_helper_ops = {
++	.shmem_setup = apple_rtkit_helper_shmem_setup,
++	.shmem_destroy = apple_rtkit_helper_shmem_destroy,
++};
++
++static int apple_rtkit_helper_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct apple_rtkit_helper *helper;
++	int ret;
++
++	helper = devm_kzalloc(dev, sizeof(*helper), GFP_KERNEL);
++	if (!helper)
++		return -ENOMEM;
++
++	helper->dev = dev;
++	platform_set_drvdata(pdev, helper);
++
++	helper->asc_base = devm_platform_ioremap_resource_byname(pdev, "asc");
++	if (IS_ERR(helper->asc_base))
++		return PTR_ERR(helper->asc_base);
++
++	helper->sram = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sram");
++	if (helper->sram) {
++		helper->sram_base = devm_ioremap_resource(dev, helper->sram);
++		if (IS_ERR(helper->sram_base))
++			return dev_err_probe(dev, PTR_ERR(helper->sram_base),
++					"Failed to map SRAM region");
++	}
++
++	helper->rtk =
++		devm_apple_rtkit_init(dev, helper, NULL, 0, &apple_rtkit_helper_ops);
++	if (IS_ERR(helper->rtk))
++		return dev_err_probe(dev, PTR_ERR(helper->rtk),
++				     "Failed to intialize RTKit");
++
++	writel_relaxed(APPLE_ASC_CPU_CONTROL_RUN,
++		       helper->asc_base + APPLE_ASC_CPU_CONTROL);
++
++	/* Works for both wake and boot */
++	ret = apple_rtkit_wake(helper->rtk);
++	if (ret != 0)
++		return dev_err_probe(dev, ret, "Failed to wake up coprocessor");
++
++	return 0;
++}
++
++static int apple_rtkit_helper_remove(struct platform_device *pdev)
++{
++	struct apple_rtkit_helper *helper = platform_get_drvdata(pdev);
++
++	if (apple_rtkit_is_running(helper->rtk))
++		apple_rtkit_quiesce(helper->rtk);
++
++	writel_relaxed(0, helper->asc_base + APPLE_ASC_CPU_CONTROL);
++
++	return 0;
++}
++
++static const struct of_device_id apple_rtkit_helper_of_match[] = {
++	{ .compatible = "apple,rtk-helper-asc4" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, apple_rtkit_helper_of_match);
++
++static struct platform_driver apple_rtkit_helper_driver = {
++	.driver = {
++		.name = "rtkit-helper",
++		.of_match_table = apple_rtkit_helper_of_match,
++	},
++	.probe = apple_rtkit_helper_probe,
++	.remove = apple_rtkit_helper_remove,
++};
++module_platform_driver(apple_rtkit_helper_driver);
++
++MODULE_AUTHOR("Hector Martin <marcan@marcan.st>");
++MODULE_LICENSE("Dual MIT/GPL");
++MODULE_DESCRIPTION("Apple RTKit helper driver");
+-- 
+2.34.1
+

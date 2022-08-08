@@ -1,0 +1,82 @@
+From b696ea7c641c2172aff67297e9c0f13d8d46620f Mon Sep 17 00:00:00 2001
+From: Hector Martin <marcan@marcan.st>
+Date: Thu, 23 Dec 2021 19:30:17 +0900
+Subject: [PATCH 098/171] brcmfmac: pcie: Provide a buffer of random bytes to
+ the device
+
+Newer Apple firmwares on chipsets without a hardware RNG require the
+host to provide a buffer of 256 random bytes to the device on
+initialization. This buffer is present immediately before NVRAM,
+suffixed by a footer containing a magic number and the buffer length.
+
+This won't affect chips/firmwares that do not use this feature, so do it
+unconditionally.
+
+Reviewed-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: Hector Martin <marcan@marcan.st>
+---
+ .../broadcom/brcm80211/brcmfmac/pcie.c        | 29 +++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 2ca2c4b603cf..1e2afca5a60b 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -13,6 +13,7 @@
+ #include <linux/bcma/bcma.h>
+ #include <linux/sched.h>
+ #include <linux/io.h>
++#include <linux/random.h>
+ #include <asm/unaligned.h>
+ 
+ #include <soc.h>
+@@ -1625,6 +1626,13 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
+ 	return 0;
+ }
+ 
++struct brcmf_random_seed_footer {
++	__le32 length;
++	__le32 magic;
++};
++
++#define BRCMF_RANDOM_SEED_MAGIC		0xfeedc0de
++#define BRCMF_RANDOM_SEED_LENGTH	0x100
+ 
+ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
+ 					const struct firmware *fw, void *nvram,
+@@ -1656,11 +1664,32 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
+ 	brcmf_pcie_write_ram32(devinfo, devinfo->ci->ramsize - 4, 0);
+ 
+ 	if (nvram) {
++		size_t rand_len = BRCMF_RANDOM_SEED_LENGTH;
++		struct brcmf_random_seed_footer footer = {
++			.length = cpu_to_le32(rand_len),
++			.magic = cpu_to_le32(BRCMF_RANDOM_SEED_MAGIC),
++		};
++		void *randbuf;
++
+ 		brcmf_dbg(PCIE, "Download NVRAM %s\n", devinfo->nvram_name);
+ 		address = devinfo->ci->rambase + devinfo->ci->ramsize -
+ 			  nvram_len;
+ 		memcpy_toio(devinfo->tcm + address, nvram, nvram_len);
+ 		brcmf_fw_nvram_free(nvram);
++
++		/* Some Apple chips/firmwares expect a buffer of random data
++		 * to be present before NVRAM
++		 */
++		brcmf_dbg(PCIE, "Download random seed\n");
++
++		address -= sizeof(footer);
++		memcpy_toio(devinfo->tcm + address, &footer, sizeof(footer));
++
++		address -= rand_len;
++		randbuf = kzalloc(rand_len, GFP_KERNEL);
++		get_random_bytes(randbuf, rand_len);
++		memcpy_toio(devinfo->tcm + address, randbuf, rand_len);
++		kfree(randbuf);
+ 	} else {
+ 		brcmf_dbg(PCIE, "No matching NVRAM file found %s\n",
+ 			  devinfo->nvram_name);
+-- 
+2.34.1
+
