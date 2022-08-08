@@ -1093,7 +1093,10 @@ define KernelPackage/drm-i915
 	CONFIG_DRM_I915_SW_FENCE_DEBUG_OBJECTS=n \
 	CONFIG_DRM_I915_USERPTR=y \
 	CONFIG_DRM_I915_WERROR=n
-  FILES:=$(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko
+  FILES:= \
+      $(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko \
+      $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko@ge5.18  \
+      $(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,i915)
 endef
 
