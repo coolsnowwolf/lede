@@ -31,7 +31,7 @@ define U-Boot/nanopi-r2c-rk3328
     friendlyarm_nanopi-r2c
   DEPENDS:=+PACKAGE_u-boot-nanopi-r2c-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.46.elf
+  ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
 
@@ -43,7 +43,7 @@ define U-Boot/nanopi-r2s-rk3328
     friendlyarm_nanopi-neo3
   DEPENDS:=+PACKAGE_u-boot-nanopi-r2s-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.46.elf
+  ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
 
@@ -54,7 +54,7 @@ define U-Boot/orangepi-r1-plus-rk3328
     xunlong_orangepi-r1-plus
   DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.46.elf
+  ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
 
@@ -65,7 +65,7 @@ define U-Boot/orangepi-r1-plus-lts-rk3328
     xunlong_orangepi-r1-plus-lts
   DEPENDS:=+PACKAGE_u-boot-orangepi-r1-plus-lts-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.46.elf
+  ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
 
@@ -76,7 +76,7 @@ define U-Boot/doornet1-rk3328
     embedfire_doornet1
   DEPENDS:=+PACKAGE_u-boot-doornet1-rk3328:arm-trusted-firmware-rk3328
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.46.elf
+  ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
 
