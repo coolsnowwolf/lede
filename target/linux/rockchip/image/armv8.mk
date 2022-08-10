@@ -22,16 +22,15 @@ define Device/embedfire_doornet2
 endef
 TARGET_DEVICES += embedfire_doornet2
 
-define Device/fastrhino-r66s
+define Device/fastrhino_r66s
   DEVICE_VENDOR := FastRhino
   DEVICE_MODEL := R66S
   SOC := rk3568
   UBOOT_DEVICE_NAME := fastrhino-r66s-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8125
-  SUPPORTED_DEVICES := fastrhino,r66s
 endef
-TARGET_DEVICES += fastrhino-r66s
+TARGET_DEVICES += fastrhino_r66s
 
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
