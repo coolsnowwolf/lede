@@ -142,7 +142,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=@(LINUX_5_10||LINUX_5_15||LINUX_5_18||LINUX_5_19) +kmod-libphy PACKAGE_kmod-of-mdio:kmod-of-mdio
+  DEPENDS:=@(LINUX_5_10||LINUX_5_15||LINUX_5_18||LINUX_5_19) +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_MDIO_DEVRES
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
@@ -1027,8 +1027,8 @@ define KernelPackage/of-mdio
   KCONFIG:=CONFIG_OF_MDIO
   FILES:= \
 	$(LINUX_DIR)/drivers/net/phy/fixed_phy.ko \
-	$(LINUX_DIR)/drivers/of/of_mdio.ko@lt5.10 \
-	$(LINUX_DIR)/drivers/net/mdio/of_mdio.ko@ge5.10
+	$(LINUX_DIR)/drivers/net/mdio/of_mdio.ko \
+	$(LINUX_DIR)/drivers/net/mdio/fwnode_mdio.ko@ge5.15
   AUTOLOAD:=$(call AutoLoad,41,of_mdio)
 endef
 
