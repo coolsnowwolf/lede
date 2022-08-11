@@ -126,6 +126,17 @@ define U-Boot/nanopi-r4se-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/fastrhino-r66s-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=FastRhin-R66S
+  BUILD_DEVICES:= \
+    fastrhino_r66s
+  DEPENDS:=+PACKAGE_u-boot-fastrhino-r66s-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.34.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/nanopi-r5s-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=NANOPI-R5S
@@ -157,8 +168,20 @@ define U-Boot/rockpro64-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
+define U-Boot/station-p2-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=StationP2
+  BUILD_DEVICES:= \
+       firefly_station-p2
+  DEPENDS:=+PACKAGE_u-boot-station-p2-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.34.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 UBOOT_TARGETS := \
   doornet2-rk3399 \
+  fastrhino-r66s-rk3568 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
@@ -169,7 +192,8 @@ UBOOT_TARGETS := \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
-  orangepi-r1-plus-lts-rk3328
+  orangepi-r1-plus-lts-rk3328 \
+  station-p2-rk3568
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
