@@ -19,6 +19,7 @@ PKG_MIRROR_HASH:=4af9ce8e11511afee7f588cc982946c06339edbfa47afef6a7f3e2231ac9f34
 
 PKG_MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 
+include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/trusted-firmware-a.mk
 include $(INCLUDE_DIR)/package.mk
 
