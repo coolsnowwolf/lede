@@ -22,6 +22,26 @@ define Device/embedfire_doornet2
 endef
 TARGET_DEVICES += embedfire_doornet2
 
+define Device/fastrhino_r66s
+  DEVICE_VENDOR := FastRhino
+  DEVICE_MODEL := R66S
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := fastrhino-r66s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125
+endef
+TARGET_DEVICES += fastrhino_r66s
+
+define Device/firefly_station-p2
+  DEVICE_VENDOR := Firefly
+  DEVICE_MODEL := Station P2
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := station-p2-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig ata-ahci-platform station-p2-firmware wpad
+endef
+TARGET_DEVICES += firefly_station-p2
+
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
@@ -70,6 +90,16 @@ define Device/friendlyarm_nanopi-r4se
   DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4se
+
+define Device/friendlyelec_nanopi-r5s
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R5S
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := nanopi-r5s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125
+endef
+TARGET_DEVICES += friendlyelec_nanopi-r5s
 
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
