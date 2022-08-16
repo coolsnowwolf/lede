@@ -137,6 +137,17 @@ define U-Boot/fastrhino-r66s-rk3568
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
+define U-Boot/fastrhino-r68s-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=FastRhin-R68S
+  BUILD_DEVICES:= \
+    fastrhino_r68s
+  DEPENDS:=+PACKAGE_u-boot-fastrhino-r68s-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/nanopi-r5s-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=NANOPI-R5S
@@ -182,6 +193,7 @@ endef
 UBOOT_TARGETS := \
   doornet2-rk3399 \
   fastrhino-r66s-rk3568 \
+  fastrhino-r68s-rk3568 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \

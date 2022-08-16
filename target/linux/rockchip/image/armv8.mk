@@ -32,6 +32,16 @@ define Device/fastrhino_r66s
 endef
 TARGET_DEVICES += fastrhino_r66s
 
+define Device/fastrhino_r68s
+  DEVICE_VENDOR := FastRhino
+  DEVICE_MODEL := R68S
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := fastrhino-r68s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125
+endef
+TARGET_DEVICES += fastrhino_r68s
+
 define Device/firefly_station-p2
   DEVICE_VENDOR := Firefly
   DEVICE_MODEL := Station P2
