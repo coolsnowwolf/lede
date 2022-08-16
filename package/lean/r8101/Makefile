@@ -25,7 +25,6 @@ define KernelPackage/r8101
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
   FILES:= $(PKG_BUILD_DIR)/src/r8101.ko
   AUTOLOAD:=$(call AutoProbe,r8101)
-  CONFLICTS:=kmod-r8101
 endef
 
 define Package/r8101/description
