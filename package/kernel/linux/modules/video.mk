@@ -244,7 +244,7 @@ define KernelPackage/drm
   TITLE:=Direct Rendering Manager (DRM) support
   HIDDEN:=1
   DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit  +PACKAGE_kmod-backlight:kmod-backlight \
-	+(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-fb
+	+(LINUX_5_15||LINUX_5_19):kmod-fb
   KCONFIG:=	\
 	CONFIG_DRM	\
 	CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y	\
