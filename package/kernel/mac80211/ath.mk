@@ -344,7 +344,7 @@ define KernelPackage/ath11k-ahb
   $(call KernelPackage/mac80211/Default)
   TITLE:=Qualcomm 802.11ax AHB wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath11k
-  DEPENDS+= @TARGET_ipq807x +kmod-ath11k +(LINUX_5_15||LINUX_5_18):kmod-qrtr-smd
+  DEPENDS+= @TARGET_ipq807x +kmod-ath11k +(LINUX_5_15||LINUX_5_19):kmod-qrtr-smd
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/ath11k_ahb.ko
   AUTOLOAD:=$(call AutoProbe,ath11k_ahb)
 endef
@@ -358,7 +358,7 @@ define KernelPackage/ath11k-pci
   $(call KernelPackage/mac80211/Default)
   TITLE:=Qualcomm 802.11ax PCI wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath11k
-  DEPENDS+= @PCI_SUPPORT +(LINUX_5_15||LINUX_5_18):kmod-qrtr-mhi +kmod-ath11k
+  DEPENDS+= @PCI_SUPPORT +(LINUX_5_15||LINUX_5_19):kmod-qrtr-mhi +kmod-ath11k
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath11k/ath11k_pci.ko
   AUTOLOAD:=$(call AutoProbe,ath11k_pci)
 endef
