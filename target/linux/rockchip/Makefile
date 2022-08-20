@@ -18,7 +18,7 @@ include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += uboot-envtools partx-utils e2fsprogs mkf2fs kmod-gpio-button-hotplug \
 		    automount autocore-arm autosamba fdisk cfdisk e2fsprogs ethtool haveged htop \
-		    luci-app-zerotier luci-app-ipsec-vpnd luci-app-diskman usbutils
+		    luci-app-zerotier luci-app-ipsec-vpnd luci-app-diskman usbutils usb-modeswitch
 
 KERNELNAME:=Image dtbs
 
