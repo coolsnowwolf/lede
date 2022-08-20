@@ -38,7 +38,7 @@ define Device/firefly_station-p2
   SOC := rk3568
   UBOOT_DEVICE_NAME := station-p2-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig ata-ahci-platform station-p2-firmware wpad
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig ata-ahci-platform station-p2-firmware wpad-openssl
 endef
 TARGET_DEVICES += firefly_station-p2
 
@@ -110,6 +110,16 @@ define Device/pine64_rockpro64
   DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += pine64_rockpro64
+
+define Device/radxa_rock-3a
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK3 Model A
+  SOC := rk3568
+  SUPPORTED_DEVICES := radxa,rock3a
+  UBOOT_DEVICE_NAME := rock-3a-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += radxa_rock-3a
 
 define Device/radxa_rock-pi-4
   DEVICE_VENDOR := Radxa
