@@ -63,6 +63,35 @@ preinit_config_switch() {
 	json_select ..
 }
 
+preinit_config_port() {
+	local original
+	local dev_port
+
+	local netdev="$1"
+	local path="$2"
+	local port="$3"
+
+	[ -d "/sys/devices/$path/net" ] || return
+
+	if [ -z "$port" ]; then
+		original="$(ls "/sys/devices/$path/net" | head -1)"
+	else
+		for device in /sys/devices/$path/net/*; do
+			dev_port="$(cat "$device/dev_port")"
+			if [ "$dev_port" = "$port" ]; then
+				original="${device##*/}"
+				break
+			fi
+		done
+
+		[ -z "$original" ] && return
+	fi
+
+	[ "$netdev" = "$original" ] && return
+
+	ip link set "$original" name "$netdev"
+}
+
 preinit_config_board() {
 	/bin/board_detect /tmp/board.json
 
@@ -72,6 +101,34 @@ preinit_config_board() {
 
 	json_init
 	json_load "$(cat /tmp/board.json)"
+
+	# Find the current highest eth*
+	max_eth=$(grep -o '^ *eth[0-9]*:' /proc/net/dev | tr -dc '[0-9]\n' | sort -n | tail -1)
+	# Find and move netdevs using eth*s we are configuring
+	json_get_keys keys "network_device"
+	for netdev in $keys; do
+		json_select "network_device"
+			json_select "$netdev"
+				json_get_vars path path
+				if [ -n "$path" -a -h "/sys/class/net/$netdev" ]; then
+					ip link set "$netdev" down
+					ip link set "$netdev" name eth$((++max_eth))
+				fi
+			json_select ..
+		json_select ..
+	done
+
+	# Move interfaces by path to their netdev name
+	json_get_keys keys "network_device"
+	for netdev in $keys; do
+		json_select "network_device"
+			json_select "$netdev"
+				json_get_vars path path
+				json_get_vars port port
+				[ -n "$path" ] && preinit_config_port "$netdev" "$path" "$port"
+			json_select ..
+		json_select ..
+	done
 
 	json_select network
 		json_select "lan"

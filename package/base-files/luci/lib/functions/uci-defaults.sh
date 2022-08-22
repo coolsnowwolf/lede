@@ -106,12 +106,29 @@ ucidef_set_bridge_mac() {
 	json_select ..
 }
 
-ucidef_set_network_device_mac() {
-	json_select_object "network-device"
+_ucidef_set_network_device_common() {
+	json_select_object "network_device"
 	json_select_object "${1}"
-	json_add_string macaddr "${2}"
+	json_add_string "${2}" "${3}"
 	json_select ..
 	json_select ..
+}
+
+ucidef_set_network_device_mac() {
+	_ucidef_set_network_device_common $1 macaddr $2
+}
+
+ucidef_set_network_device_path() {
+	_ucidef_set_network_device_common $1 path $2
+}
+
+ucidef_set_network_device_path_port() {
+	_ucidef_set_network_device_common $1 path $2
+	_ucidef_set_network_device_common $1 port $3
+}
+
+ucidef_set_network_device_conduit() {
+	_ucidef_set_network_device_common $1 conduit $2
 }
 
 _ucidef_add_switch_port() {
@@ -633,6 +650,17 @@ ucidef_set_ntpserver() {
 		json_select_array ntpserver
 			for server in "$@"; do
 				json_add_string "" "$server"
+			done
+		json_select ..
+	json_select ..
+}
+
+ucidef_set_poe() {
+	json_select_object poe
+		json_add_string "budget" "$1"
+		json_select_array ports
+			for port in $2; do
+				json_add_string "" "$port"
 			done
 		json_select ..
 	json_select ..
