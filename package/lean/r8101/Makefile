@@ -11,8 +11,8 @@ PKG_VERSION:=1.037.01
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=https://github.com/umarizulkifli/r8101/blob/main/r8101-1.037.01.tar.bz2
-PKG_HASH:=45b3ae6af31054879b06c13ce4f0fb14
+PKG_SOURCE_URL:=https://github.com/umarizulkifli/r8101/raw/main/
+PKG_HASH:=62bb19848a87d2fe4de3fa9332225dcb5381f06cb93ec8931ea3fd894d492aea
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 PKG_MAINTAINER:=umarizulkifli <umarizulkifli@gmail.com>
