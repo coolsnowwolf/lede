@@ -263,7 +263,7 @@ $(_endef)
     endif
 
 	$(INSTALL_DIR) $$(PDIR_$(1))
-	$(FAKEROOT) $(SCRIPT_DIR)/ipkg-build -m "$(FILE_MODES)" $$(IDIR_$(1)) $$(PDIR_$(1))
+	$(FAKEROOT) $(STAGING_DIR_HOST)/bin/bash $(SCRIPT_DIR)/ipkg-build -m "$(FILE_MODES)" $$(IDIR_$(1)) $$(PDIR_$(1))
 	@[ -f $$(IPKG_$(1)) ]
 
     $(1)-clean:
