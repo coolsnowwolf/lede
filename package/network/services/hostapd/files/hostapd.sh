@@ -48,12 +48,15 @@ hostapd_append_wpa_key_mgmt() {
 		;;
 		eap192)
 			append wpa_key_mgmt "WPA-EAP-SUITE-B-192"
-			[ "${ieee80211r:-0}" -gt 0 ] && append wpa_key_mgmt "FT-EAP"
+			[ "${ieee80211r:-0}" -gt 0 ] && append wpa_key_mgmt "FT-EAP-SHA384"
 		;;
 		eap-eap192)
 			append wpa_key_mgmt "WPA-EAP-SUITE-B-192"
 			append wpa_key_mgmt "WPA-EAP"
-			[ "${ieee80211r:-0}" -gt 0 ] && append wpa_key_mgmt "FT-EAP"
+			[ "${ieee80211r:-0}" -gt 0 ] && {
+				append wpa_key_mgmt "FT-EAP-SHA384"
+				append wpa_key_mgmt "FT-EAP"
+			}
 			[ "${ieee80211w:-0}" -gt 0 ] && append wpa_key_mgmt "WPA-EAP-SHA256"
 		;;
 		sae)
@@ -934,7 +937,11 @@ hostapd_set_bss_options() {
 				json_get_vars ieee80211w_mgmt_cipher ieee80211w_max_timeout ieee80211w_retry_timeout
 				append bss_conf "ieee80211w=$ieee80211w" "$N"
 				[ "$ieee80211w" -gt "0" ] && {
-					append bss_conf "group_mgmt_cipher=${ieee80211w_mgmt_cipher:-AES-128-CMAC}" "$N"
+					if [ "$auth_type" = "eap192" ]; then
+						append bss_conf "group_mgmt_cipher=BIP-GMAC-256" "$N"
+					else
+						append bss_conf "group_mgmt_cipher=${ieee80211w_mgmt_cipher:-AES-128-CMAC}" "$N"
+					fi
 					[ -n "$ieee80211w_max_timeout" ] && \
 						append bss_conf "assoc_sa_query_max_timeout=$ieee80211w_max_timeout" "$N"
 					[ -n "$ieee80211w_retry_timeout" ] && \
