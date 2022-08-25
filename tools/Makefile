@@ -82,6 +82,14 @@ ifneq ($(HOST_OS),Linux)
   $(curdir)/squashfskit4/compile += $(curdir)/coreutils/compile
   tools-y += coreutils
 endif
+ifeq ($(HOST_OS),Darwin)
+  tools-y += bash
+else
+  $(curdir)/dwarves/compile += $(curdir)/elfutils/compile
+  $(curdir)/elfutils/compile := $(curdir)/m4/compile $(curdir)/zlib/compile
+  tools-$(CONFIG_DWARVES) += dwarves
+  tools-y += elfutils
+endif
 
 ifneq ($(CONFIG_CCACHE)$(CONFIG_SDK),)
 $(foreach tool, $(filter-out xz zstd patch pkgconf libressl ninja cmake,$(tools-y)), $(eval $(curdir)/$(tool)/compile += $(curdir)/ccache/compile))

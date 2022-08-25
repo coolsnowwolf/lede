@@ -148,6 +148,17 @@ define U-Boot/nanopi-r5s-rk3568
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
+define U-Boot/rock-3a-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=ROCK-3A
+  BUILD_DEVICES:= \
+    radxa_rock-3a
+  DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/rock-pi-4-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=Rock Pi 4
@@ -186,6 +197,7 @@ UBOOT_TARGETS := \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
   nanopi-r5s-rk3568 \
+  rock-3a-rk3568 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
   doornet1-rk3328 \
