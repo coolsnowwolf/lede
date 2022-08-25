@@ -47,6 +47,11 @@ $(Package/ath11k-firmware-default)
   TITLE:=ath11k firmware for QCN9074 devices
 endef
 
+define Package/ath11k-firmware-wcn6855
+$(Package/ath11k-firmware-default)
+  TITLE:=ath11k firmware for WCN6855 devices
+endef
+
 define Build/Compile
 
 endef
@@ -87,7 +92,22 @@ define Package/ath11k-firmware-qcn9074/install
 		$(1)/lib/firmware/ath11k/QCN9074/hw1.0/
 endef
 
+define Package/ath11k-firmware-wcn6855/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/WCN6855/hw2.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/1.1/WLAN.HSP.1.1-03125-QCAHSPSWPL_V1_V2_SILICONZ_LITE-3.6510.7/* \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/board-2.bin \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/board-2.bin
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/regdb.bin \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/regdb.bin
+	$(LN) $(1)/lib/firmware/ath11k/WCN6855/hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
+endef
+
 $(eval $(call BuildPackage,ath11k-firmware-ipq6018))
 $(eval $(call BuildPackage,ath11k-firmware-ipq8074))
 $(eval $(call BuildPackage,ath11k-firmware-qca6390))
 $(eval $(call BuildPackage,ath11k-firmware-qcn9074))
+$(eval $(call BuildPackage,ath11k-firmware-wcn6855))
