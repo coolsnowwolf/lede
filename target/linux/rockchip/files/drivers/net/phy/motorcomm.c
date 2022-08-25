@@ -25,6 +25,7 @@
 #include <linux/motorcomm_phy.h>
 #include <linux/of.h>
 #include <linux/clk.h>
+#include <linux/version.h>
 
 static int ytphy_read_ext(struct phy_device *phydev, u32 regnum)
 {
@@ -309,6 +310,7 @@ static int yt8521_config_intr(struct phy_device *phydev)
 	return phy_write(phydev, REG_INT_MASK, val);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
 static int yt8521_ack_interrupt(struct phy_device *phydev)
 {
 	int val;
@@ -318,6 +320,33 @@ static int yt8521_ack_interrupt(struct phy_device *phydev)
 
 	return (val < 0) ? val : 0;
 }
+#else
+static irqreturn_t yt8521_handle_interrupt(struct phy_device *phydev)
+{
+	int irq_status, int_enabled;
+
+	irq_status = phy_read(phydev, REG_INT_STATUS);
+	if (irq_status < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+
+	/* Read the current enabled interrupts */
+	int_enabled = phy_read(phydev, REG_INT_MASK);
+	if (int_enabled < 0) {
+		phy_error(phydev);
+		return IRQ_NONE;
+	}
+
+	/* See if this was one of our enabled interrupts */
+	if (!(irq_status & int_enabled))
+		return IRQ_NONE;
+
+	phy_trigger_machine(phydev);
+
+	return IRQ_HANDLED;
+}
+#endif
 
 static struct phy_driver ytphy_drvs[] = {
 	{
@@ -365,7 +394,11 @@ static struct phy_driver ytphy_drvs[] = {
 		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
 		/* PHY_GBIT_FEATURES */
 		.config_init	= yt8521_config_init,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
 		.ack_interrupt	= yt8521_ack_interrupt,
+#else
+		.handle_interrupt = yt8521_handle_interrupt,
+#endif
 		.config_intr	= yt8521_config_intr,
 		.suspend	= genphy_suspend,
 		.resume		= genphy_resume,
@@ -376,7 +409,11 @@ static struct phy_driver ytphy_drvs[] = {
 		.phy_id_mask	= MOTORCOMM_PHY_ID_MASK,
 		/* PHY_GBIT_FEATURES */
 		.config_init	= yt8521_config_init,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
 		.ack_interrupt	= yt8521_ack_interrupt,
+#else
+		.handle_interrupt = yt8521_handle_interrupt,
+#endif
 		.config_intr	= yt8521_config_intr,
 		.suspend	= genphy_suspend,
 		.resume		= genphy_resume,
@@ -395,10 +432,6 @@ static struct phy_driver ytphy_drvs[] = {
 
 module_phy_driver(ytphy_drvs);
 
-MODULE_DESCRIPTION("Motorcomm PHY driver");
-MODULE_AUTHOR("Leilei Zhao");
-MODULE_LICENSE("GPL");
-
 static struct mdio_device_id __maybe_unused motorcomm_tbl[] = {
 	{ PHY_ID_YT8010, MOTORCOMM_PHY_ID_MASK },
 	{ PHY_ID_YT8510, MOTORCOMM_PHY_ID_MASK },
@@ -411,4 +444,7 @@ static struct mdio_device_id __maybe_unused motorcomm_tbl[] = {
 	{ }
 };
 
+MODULE_AUTHOR("Leilei Zhao");
+MODULE_DESCRIPTION("Motorcomm PHY driver");
 MODULE_DEVICE_TABLE(mdio, motorcomm_tbl);
+MODULE_LICENSE("GPL");
