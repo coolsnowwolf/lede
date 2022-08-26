@@ -8,7 +8,7 @@ FEATURES:=ext4 audio usb usbgadget display gpio fpu pci pcie rootfs-part boot-pa
 SUBTARGETS:=armv8
 
 KERNEL_PATCHVER=5.19
-KERNEL_TESTING_PATCHVER=5.4
+KERNEL_TESTING_PATCHVER=5.15
 
 define Target/Description
 	Build firmware image for Rockchip SoC devices.
