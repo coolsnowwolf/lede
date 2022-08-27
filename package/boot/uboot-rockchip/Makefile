@@ -135,7 +135,22 @@ define U-Boot/rockpro64-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
+
+# RK3568 boards
+
+define U-Boot/rock-3a-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=ROCK3 Model A
+  BUILD_DEVICES:= \
+    radxa_rock-3a
+  DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 UBOOT_TARGETS := \
+  rock-3a-rk3568 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
