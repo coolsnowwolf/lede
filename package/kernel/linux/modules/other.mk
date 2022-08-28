@@ -1151,8 +1151,8 @@ $(eval $(call KernelPackage,keys-trusted))
 define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
-  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-asn1-decoder \
-	  +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-asn1-encoder +(LINUX_5_15||LINUX_5_18||LINUX_5_19):kmod-oid-registry
+  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_5_19):kmod-asn1-decoder \
+	  +(LINUX_5_15||LINUX_5_19):kmod-asn1-encoder +(LINUX_5_15||LINUX_5_19):kmod-oid-registry
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
@@ -1298,12 +1298,14 @@ $(eval $(call KernelPackage,qcom-qmi-helpers))
 define KernelPackage/mhi
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Modem Host Interface (MHI) bus
-  DEPENDS:=@LINUX_5_15
+  DEPENDS:=@(LINUX_5_15||LINUX_5_19)
   KCONFIG:=CONFIG_MHI_BUS \
            CONFIG_MHI_BUS_DEBUG=y \
            CONFIG_MHI_BUS_PCI_GENERIC=n \
            CONFIG_MHI_NET=n
-  FILES:=$(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko
+  FILES:= \
+      $(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko@lt5.18  \
+      $(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,mhi)
 endef
 
