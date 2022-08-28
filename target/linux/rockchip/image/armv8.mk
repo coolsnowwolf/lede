@@ -2,6 +2,16 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
+define Device/ezpro_mrkaio-m68s
+  DEVICE_VENDOR := EZPRO
+  DEVICE_MODEL := Mrkaio M68S
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci kmod-ata-ahci-platform
+endef
+TARGET_DEVICES += ezpro_mrkaio-m68s
+
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
