@@ -74,6 +74,7 @@ define U-Boot/mt7622_ubnt_unifi-6-lr
   BL2_BOOTDEV:=nor
   BL2_DDRBLOB:=2
   DEPENDS:=+trusted-firmware-a-mt7622-nor-2ddr
+  FIP_COMPRESS:=1
 endef
 
 define U-Boot/mt7623a_unielec_u7623
@@ -114,9 +115,13 @@ UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE:.fip=.bin)
 Build/Exports:=$(Host/Exports)
 
 define Build/fip-image
+	$(if $(FIP_COMPRESS),\
+		xz -f -e -k -9 -C crc32 $(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-$(BL2_BOOTDEV)-$(BL2_DDRBLOB)ddr-bl31.bin ;\
+		xz -f -e -k -9 -C crc32 $(PKG_BUILD_DIR)/u-boot.bin \
+	)
 	$(STAGING_DIR_HOST)/bin/fiptool create \
-		--soc-fw $(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-$(BL2_BOOTDEV)-$(BL2_DDRBLOB)ddr-bl31.bin \
-		--nt-fw $(PKG_BUILD_DIR)/u-boot.bin \
+		--soc-fw $(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-$(BL2_BOOTDEV)-$(BL2_DDRBLOB)ddr-bl31.bin$(if $(FIP_COMPRESS),.xz) \
+		--nt-fw $(PKG_BUILD_DIR)/u-boot.bin$(if $(FIP_COMPRESS),.xz) \
 		$(PKG_BUILD_DIR)/u-boot.fip
 endef
 
