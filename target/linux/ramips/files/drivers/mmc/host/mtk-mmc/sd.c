@@ -99,7 +99,6 @@
 #define MAX_SGMT_SZ         (MAX_DMA_CNT)
 #define MAX_REQ_SZ          (MAX_SGMT_SZ * 8)
 
-static int host_max_mclk = HOST_MAX_MCLK;
 static int cd_active_low = 1;
 
 //=================================
@@ -456,7 +455,7 @@ static void msdc_tasklet_card(struct work_struct *work)
 	host->card_inserted = inserted;
 
 	if (!host->suspend) {
-		host->mmc->f_max = host_max_mclk;
+		host->mmc->f_max = HOST_MAX_MCLK;
 		mmc_detect_change(host->mmc, msecs_to_jiffies(20));
 	}
 
@@ -2234,13 +2233,10 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		goto host_free;
 	}
 
-	if (of_property_read_u32(pdev->dev.of_node, "max-frequency", &ret) == 0)
-		host_max_mclk = ret;
-
 	/* Set host parameters to mmc */
 	mmc->ops        = &mt_msdc_ops;
 	mmc->f_min      = HOST_MIN_MCLK;
-	mmc->f_max      = host_max_mclk;
+	mmc->f_max      = HOST_MAX_MCLK;
 	mmc->ocr_avail  = MSDC_OCR_AVAIL;
 
 	mmc->caps   = MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED;
