@@ -126,6 +126,17 @@ define U-Boot/nanopi-r4se-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/opc-h68k-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=HINLINK OPC-H68K
+  BUILD_DEVICES:= \
+    hinlink_opc-h68k-d
+  DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/fastrhino-r66s-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=FastRhin-R66S
@@ -205,6 +216,7 @@ UBOOT_TARGETS := \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
   orangepi-r1-plus-lts-rk3328 \
+  opc-h68k-rk3568 \
   station-p2-rk3568
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes

@@ -1,0 +1,150 @@
+--- a/drivers/net/phy/realtek.c
++++ b/drivers/net/phy/realtek.c
+@@ -7,6 +7,7 @@
+  * Author: Johnson Leung <r58129@freescale.com>
+  *
+  * Copyright (c) 2004 Freescale Semiconductor, Inc.
++ * Copyright (c) 2022 Aodzip <aodzip@gmail.com>
+  */
+ #include <linux/bitops.h>
+ #include <linux/phy.h>
+@@ -28,6 +29,12 @@
+ 
+ #define RTL8211F_INSR				0x1d
+ 
++#define RTL8211x_FIBER_ESR			0x0F
++#define RTL8211x_MODE_MASK			0xC000
++
++#define RTL8211x_MODE_COPPER			0
++#define RTL8211x_MODE_FIBER			1
++
+ #define RTL8211F_TX_DELAY			BIT(8)
+ #define RTL8211E_TX_DELAY			BIT(1)
+ #define RTL8211E_RX_DELAY			BIT(2)
+@@ -49,6 +56,10 @@
+ 
+ #define RTL_GENERIC_PHYID			0x001cc800
+ 
++struct rtl8211x_priv {
++	int lastmode;
++};
++
+ MODULE_DESCRIPTION("Realtek PHY driver");
+ MODULE_AUTHOR("Johnson Leung");
+ MODULE_LICENSE("GPL");
+@@ -443,6 +454,88 @@ static int rtl8125_match_phy_device(struct phy_device *phydev)
+ 	       rtlgen_supports_2_5gbps(phydev);
+ }
+ 
++static int rtl8211x_probe(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++	struct rtl8211x_priv *priv;
++
++	priv = devm_kzalloc(dev, sizeof(struct rtl8211x_priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	phydev->priv = priv;
++
++	return 0;
++}
++
++static void rtl8211x_remove(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++	struct rtl8211x_priv *priv = phydev->priv;
++
++	if (priv)
++		devm_kfree(dev, priv);
++}
++
++static int rtl8211x_mode(struct phy_device *phydev)
++{
++	u16 val;
++
++	val = phy_read(phydev, RTL8211x_FIBER_ESR);
++	val &= RTL8211x_MODE_MASK;
++
++	if(val)
++		return RTL8211x_MODE_FIBER;
++	else
++		return RTL8211x_MODE_COPPER;
++}
++
++static int rtl8211x_config_aneg(struct phy_device *phydev)
++{
++	int ret;
++
++	struct rtl8211x_priv *priv = phydev->priv;
++
++	ret = genphy_read_abilities(phydev);
++	if(ret < 0)
++		return ret;
++
++	linkmode_copy(phydev->advertising, phydev->supported);
++
++	if (rtl8211x_mode(phydev) == RTL8211x_MODE_FIBER) {
++		dev_info(&phydev->mdio.dev, "Fiber Mode");
++		priv->lastmode = RTL8211x_MODE_FIBER;
++		return genphy_c37_config_aneg(phydev);
++	}
++
++	dev_info(&phydev->mdio.dev, "Copper Mode");
++
++	priv->lastmode = RTL8211x_MODE_COPPER;
++
++	return genphy_config_aneg(phydev);
++}
++
++static int rtl8211x_read_status(struct phy_device *phydev)
++{
++	int ret;
++	struct rtl8211x_priv *priv = phydev->priv;
++
++	if(rtl8211x_mode(phydev) != priv->lastmode) {
++		ret = rtl8211x_config_aneg(phydev);
++		if(ret < 0)
++			return ret;
++
++		ret = genphy_restart_aneg(phydev);
++		if(ret < 0)
++			return ret;
++	}
++
++	if (rtl8211x_mode(phydev) == RTL8211x_MODE_FIBER)
++		return genphy_c37_read_status(phydev);
++
++	return genphy_read_status(phydev);
++}
++
+ static struct phy_driver realtek_drvs[] = {
+ 	{
+ 		PHY_ID_MATCH_EXACT(0x00008201),
+@@ -495,8 +588,12 @@ static struct phy_driver realtek_drvs[] = {
+ 	}, {
+ 		PHY_ID_MATCH_EXACT(0x001cc914),
+ 		.name		= "RTL8211DN Gigabit Ethernet",
++		.probe		= rtl8211x_probe,
++		.remove		= rtl8211x_remove,
+ 		.ack_interrupt	= rtl821x_ack_interrupt,
+ 		.config_intr	= rtl8211e_config_intr,
++		.config_aneg	= rtl8211x_config_aneg,
++		.read_status	= rtl8211x_read_status,
+ 		.suspend	= genphy_suspend,
+ 		.resume		= genphy_resume,
+ 		.read_page	= rtl821x_read_page,
+@@ -514,9 +611,13 @@ static struct phy_driver realtek_drvs[] = {
+ 	}, {
+ 		PHY_ID_MATCH_EXACT(0x001cc916),
+ 		.name		= "RTL8211F Gigabit Ethernet",
++		.probe		= rtl8211x_probe,
++		.remove		= rtl8211x_remove,
+ 		.config_init	= &rtl8211f_config_init,
+ 		.ack_interrupt	= &rtl8211f_ack_interrupt,
+ 		.config_intr	= &rtl8211f_config_intr,
++		.config_aneg	= rtl8211x_config_aneg,
++		.read_status	= rtl8211x_read_status,
+ 		.suspend	= genphy_suspend,
+ 		.resume		= genphy_resume,
+ 		.read_page	= rtl821x_read_page,
