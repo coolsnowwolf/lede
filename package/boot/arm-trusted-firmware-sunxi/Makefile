@@ -21,6 +21,7 @@ PKG_LICENSE_FILES:=license.md
 
 PKG_MAINTAINER:=Hauke Mehrtens <hauke@hauke-m.de>
 
+include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/trusted-firmware-a.mk
 include $(INCLUDE_DIR)/package.mk
 
