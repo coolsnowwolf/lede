@@ -12,6 +12,16 @@ define Device/ezpro_mrkaio-m68s
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s
 
+define Device/hinlink_opc-h68k
+  DEVICE_VENDOR := HINLINK
+  DEVICE_MODEL := OPC-H68K
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := opc-h68k-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-mt7921e kmod-r8125
+endef
+#TARGET_DEVICES += hinlink_opc-h68k
+
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
