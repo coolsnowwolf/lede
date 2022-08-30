@@ -14,9 +14,24 @@
 
 use strict;
 use warnings;
-use File::Slurp qw(slurp);
 
-my $indata = slurp(@ARGV ? $ARGV[0] : \*STDIN);
+my $indata;
+
+{
+	local $/;
+	my $fh;
+
+	if (@ARGV) {
+		open($fh, '<:raw', $ARGV[0]) || die("Unable to open $ARGV[0]: $!\n");
+	} else {
+		$fh = \*STDIN;
+	}
+
+	$indata = readline $fh;
+
+	close $fh;
+}
+
 my $len_data = length($indata);
 my $num_digits_per_line = 12;
 my $var_name;
