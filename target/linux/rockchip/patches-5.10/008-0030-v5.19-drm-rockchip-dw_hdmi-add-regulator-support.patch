@@ -1,0 +1,109 @@
+From ca80c4eb4b01a7f1c2f333d0a329937ef9c7f03a Mon Sep 17 00:00:00 2001
+From: Sascha Hauer <s.hauer@pengutronix.de>
+Date: Fri, 22 Apr 2022 09:28:26 +0200
+Subject: [PATCH] drm/rockchip: dw_hdmi: add regulator support
+
+The RK3568 has HDMI_TX_AVDD0V9 and HDMI_TX_AVDD_1V8 supply inputs needed
+for the HDMI port. add support for these to the driver for boards which
+have them supplied by switchable regulators.
+
+Signed-off-by: Sascha Hauer <s.hauer@pengutronix.de>
+Reviewed-by: Dmitry Osipenko <dmitry.osipenko@collabora.com>
+Tested-by: Michael Riesch <michael.riesch@wolfvision.net>
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20220422072841.2206452-10-s.hauer@pengutronix.de
+---
+ drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c | 41 +++++++++++++++++++--
+ 1 file changed, 38 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c
+@@ -9,6 +9,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/phy/phy.h>
+ #include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
+ 
+ #include <drm/bridge/dw_hdmi.h>
+ #include <drm/drm_edid.h>
+@@ -76,6 +77,8 @@ struct rockchip_hdmi {
+ 	struct clk *ref_clk;
+ 	struct clk *grf_clk;
+ 	struct dw_hdmi *hdmi;
++	struct regulator *avdd_0v9;
++	struct regulator *avdd_1v8;
+ 	struct phy *phy;
+ };
+ 
+@@ -226,6 +229,14 @@ static int rockchip_hdmi_parse_dt(struct
+ 		return PTR_ERR(hdmi->grf_clk);
+ 	}
+ 
++	hdmi->avdd_0v9 = devm_regulator_get(hdmi->dev, "avdd-0v9");
++	if (IS_ERR(hdmi->avdd_0v9))
++		return PTR_ERR(hdmi->avdd_0v9);
++
++	hdmi->avdd_1v8 = devm_regulator_get(hdmi->dev, "avdd-1v8");
++	if (IS_ERR(hdmi->avdd_1v8))
++		return PTR_ERR(hdmi->avdd_1v8);
++
+ 	return 0;
+ }
+ 
+@@ -566,11 +577,23 @@ static int dw_hdmi_rockchip_bind(struct
+ 		return ret;
+ 	}
+ 
++	ret = regulator_enable(hdmi->avdd_0v9);
++	if (ret) {
++		DRM_DEV_ERROR(hdmi->dev, "failed to enable avdd0v9: %d\n", ret);
++		goto err_avdd_0v9;
++	}
++
++	ret = regulator_enable(hdmi->avdd_1v8);
++	if (ret) {
++		DRM_DEV_ERROR(hdmi->dev, "failed to enable avdd1v8: %d\n", ret);
++		goto err_avdd_1v8;
++	}
++
+ 	ret = clk_prepare_enable(hdmi->ref_clk);
+ 	if (ret) {
+ 		DRM_DEV_ERROR(hdmi->dev, "Failed to enable HDMI reference clock: %d\n",
+ 			      ret);
+-		return ret;
++		goto err_clk;
+ 	}
+ 
+ 	if (hdmi->chip_data == &rk3568_chip_data) {
+@@ -594,10 +617,19 @@ static int dw_hdmi_rockchip_bind(struct
+ 	 */
+ 	if (IS_ERR(hdmi->hdmi)) {
+ 		ret = PTR_ERR(hdmi->hdmi);
+-		drm_encoder_cleanup(encoder);
+-		clk_disable_unprepare(hdmi->ref_clk);
++		goto err_bind;
+ 	}
+ 
++	return 0;
++
++err_bind:
++	drm_encoder_cleanup(encoder);
++	clk_disable_unprepare(hdmi->ref_clk);
++err_clk:
++	regulator_disable(hdmi->avdd_1v8);
++err_avdd_1v8:
++	regulator_disable(hdmi->avdd_0v9);
++err_avdd_0v9:
+ 	return ret;
+ }
+ 
+@@ -608,6 +640,9 @@ static void dw_hdmi_rockchip_unbind(stru
+ 
+ 	dw_hdmi_unbind(hdmi->hdmi);
+ 	clk_disable_unprepare(hdmi->ref_clk);
++
++	regulator_disable(hdmi->avdd_1v8);
++	regulator_disable(hdmi->avdd_0v9);
+ }
+ 
+ static const struct component_ops dw_hdmi_rockchip_ops = {

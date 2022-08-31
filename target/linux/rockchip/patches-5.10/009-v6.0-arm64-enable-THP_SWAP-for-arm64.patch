@@ -1,0 +1,123 @@
+From d0637c505f8a1d8c4088642f1f3e9e3b22da14f6 Mon Sep 17 00:00:00 2001
+From: Barry Song <v-songbaohua@oppo.com>
+Date: Wed, 20 Jul 2022 21:37:37 +1200
+Subject: [PATCH] arm64: enable THP_SWAP for arm64
+
+THP_SWAP has been proven to improve the swap throughput significantly
+on x86_64 according to commit bd4c82c22c367e ("mm, THP, swap: delay
+splitting THP after swapped out").
+As long as arm64 uses 4K page size, it is quite similar with x86_64
+by having 2MB PMD THP. THP_SWAP is architecture-independent, thus,
+enabling it on arm64 will benefit arm64 as well.
+A corner case is that MTE has an assumption that only base pages
+can be swapped. We won't enable THP_SWAP for ARM64 hardware with
+MTE support until MTE is reworked to coexist with THP_SWAP.
+
+A micro-benchmark is written to measure thp swapout throughput as
+below,
+
+ unsigned long long tv_to_ms(struct timeval tv)
+ {
+ 	return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+ }
+
+ main()
+ {
+ 	struct timeval tv_b, tv_e;;
+ #define SIZE 400*1024*1024
+ 	volatile void *p = mmap(NULL, SIZE, PROT_READ | PROT_WRITE,
+ 				MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+ 	if (!p) {
+ 		perror("fail to get memory");
+ 		exit(-1);
+ 	}
+
+ 	madvise(p, SIZE, MADV_HUGEPAGE);
+ 	memset(p, 0x11, SIZE); /* write to get mem */
+
+ 	gettimeofday(&tv_b, NULL);
+ 	madvise(p, SIZE, MADV_PAGEOUT);
+ 	gettimeofday(&tv_e, NULL);
+
+ 	printf("swp out bandwidth: %ld bytes/ms\n",
+ 			SIZE/(tv_to_ms(tv_e) - tv_to_ms(tv_b)));
+ }
+
+Testing is done on rk3568 64bit Quad Core Cortex-A55 platform -
+ROCK 3A.
+thp swp throughput w/o patch: 2734bytes/ms (mean of 10 tests)
+thp swp throughput w/  patch: 3331bytes/ms (mean of 10 tests)
+
+Cc: "Huang, Ying" <ying.huang@intel.com>
+Cc: Minchan Kim <minchan@kernel.org>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Hugh Dickins <hughd@google.com>
+Cc: Andrea Arcangeli <aarcange@redhat.com>
+Cc: Steven Price <steven.price@arm.com>
+Cc: Yang Shi <shy828301@gmail.com>
+Reviewed-by: Anshuman Khandual <anshuman.khandual@arm.com>
+Signed-off-by: Barry Song <v-songbaohua@oppo.com>
+Link: https://lore.kernel.org/r/20220720093737.133375-1-21cnbao@gmail.com
+Signed-off-by: Will Deacon <will@kernel.org>
+---
+ arch/arm64/Kconfig               |  1 +
+ arch/arm64/include/asm/pgtable.h |  6 ++++++
+ include/linux/huge_mm.h          | 12 ++++++++++++
+ mm/swap_slots.c                  |  2 +-
+ 4 files changed, 20 insertions(+), 1 deletion(-)
+
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -82,6 +82,7 @@ config ARM64
+ 	select ARCH_WANT_FRAME_POINTERS
+ 	select ARCH_WANT_HUGE_PMD_SHARE if ARM64_4K_PAGES || (ARM64_16K_PAGES && !ARM64_VA_BITS_36)
+ 	select ARCH_WANT_LD_ORPHAN_WARN
++	select ARCH_WANTS_THP_SWAP if ARM64_4K_PAGES
+ 	select ARCH_HAS_UBSAN_SANITIZE_ALL
+ 	select ARM_AMBA
+ 	select ARM_ARCH_TIMER
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -46,6 +46,12 @@
+ 	__flush_tlb_range(vma, addr, end, PUD_SIZE, false, 1)
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ 
++static inline bool arch_thp_swp_supported(void)
++{
++	return !system_supports_mte();
++}
++#define arch_thp_swp_supported arch_thp_swp_supported
++
+ /*
+  * Outside of a few very special situations (e.g. hibernation), we always
+  * use broadcast TLB invalidation instructions, therefore a spurious page
+--- a/include/linux/huge_mm.h
++++ b/include/linux/huge_mm.h
+@@ -499,4 +499,16 @@ static inline unsigned long thp_size(str
+ 	return PAGE_SIZE << thp_order(page);
+ }
+ 
++/*
++ * archs that select ARCH_WANTS_THP_SWAP but don't support THP_SWP due to
++ * limitations in the implementation like arm64 MTE can override this to
++ * false
++ */
++#ifndef arch_thp_swp_supported
++static inline bool arch_thp_swp_supported(void)
++{
++	return true;
++}
++#endif
++
+ #endif /* _LINUX_HUGE_MM_H */
+--- a/mm/swap_slots.c
++++ b/mm/swap_slots.c
+@@ -311,7 +311,7 @@ swp_entry_t get_swap_page(struct page *p
+ 	entry.val = 0;
+ 
+ 	if (PageTransHuge(page)) {
+-		if (IS_ENABLED(CONFIG_THP_SWAP))
++		if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported())
+ 			get_swap_pages(1, &entry, HPAGE_PMD_NR);
+ 		goto out;
+ 	}
