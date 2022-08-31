@@ -1,0 +1,149 @@
+From 604be85547ce4d61b89292d2f9a78c721b778c16 Mon Sep 17 00:00:00 2001
+From: Andy Yan <andy.yan@rock-chips.com>
+Date: Fri, 22 Apr 2022 09:28:39 +0200
+Subject: [PATCH] drm/rockchip: Add VOP2 driver
+
+The VOP2 unit is found on Rockchip SoCs beginning with rk3566/rk3568.
+It replaces the VOP unit found in the older Rockchip SoCs.
+
+This driver has been derived from the downstream Rockchip Kernel and
+heavily modified:
+
+- All nonstandard DRM properties have been removed
+- dropped struct vop2_plane_state and pass around less data between
+  functions
+- Dropped all DRM_FORMAT_* not known on upstream
+- rework register access to get rid of excessively used macros
+- Drop all waiting for framesyncs
+
+The driver is tested with HDMI and MIPI-DSI display on a RK3568-EVB
+board. Overlay support is tested with the modetest utility. AFBC support
+on the cluster windows is tested with weston-simple-dmabuf-egl on
+weston using the (yet to be upstreamed) panfrost driver support.
+
+Signed-off-by: Andy Yan <andy.yan@rock-chips.com>
+Co-Developed-by: Sascha Hauer <s.hauer@pengutronix.de>
+Signed-off-by: Sascha Hauer <s.hauer@pengutronix.de>
+Tested-by: Michael Riesch <michael.riesch@wolfvision.net>
+[dt-binding-header:]
+Acked-by: Rob Herring <robh@kernel.org>
+[moved dt-binding header from dt-nodes patch to here
+ and made checkpatch --strict happier]
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20220422072841.2206452-23-s.hauer@pengutronix.de
+---
+ drivers/gpu/drm/rockchip/Kconfig             |    6 +
+ drivers/gpu/drm/rockchip/Makefile            |    1 +
+ drivers/gpu/drm/rockchip/rockchip_drm_drv.c  |    1 +
+ drivers/gpu/drm/rockchip/rockchip_drm_drv.h  |    6 +-
+ drivers/gpu/drm/rockchip/rockchip_drm_fb.c   |    2 +
+ drivers/gpu/drm/rockchip/rockchip_drm_vop.h  |   14 +
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.c | 2706 ++++++++++++++++++
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.h |  477 +++
+ drivers/gpu/drm/rockchip/rockchip_vop2_reg.c |  281 ++
+ include/dt-bindings/soc/rockchip,vop2.h      |   14 +
+ 10 files changed, 3507 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+ create mode 100644 drivers/gpu/drm/rockchip/rockchip_drm_vop2.h
+ create mode 100644 drivers/gpu/drm/rockchip/rockchip_vop2_reg.c
+ create mode 100644 include/dt-bindings/soc/rockchip,vop2.h
+
+--- a/drivers/gpu/drm/rockchip/Kconfig
++++ b/drivers/gpu/drm/rockchip/Kconfig
+@@ -27,6 +27,12 @@ config ROCKCHIP_VOP
+ 	  This selects support for the VOP driver. You should enable it
+ 	  on older SoCs.
+ 
++config ROCKCHIP_VOP2
++	bool "Rockchip VOP2 driver"
++	help
++	  This selects support for the VOP2 driver. The VOP2 hardware is
++	  first found on the RK3568.
++
+ config ROCKCHIP_ANALOGIX_DP
+ 	bool "Rockchip specific extensions for Analogix DP driver"
+ 	depends on ROCKCHIP_VOP
+--- a/drivers/gpu/drm/rockchip/Makefile
++++ b/drivers/gpu/drm/rockchip/Makefile
+@@ -7,6 +7,7 @@ rockchipdrm-y := rockchip_drm_drv.o rock
+ 		rockchip_drm_gem.o
+ rockchipdrm-$(CONFIG_DRM_FBDEV_EMULATION) += rockchip_drm_fbdev.o
+ 
++rockchipdrm-$(CONFIG_ROCKCHIP_VOP2) += rockchip_drm_vop2.o rockchip_vop2_reg.o
+ rockchipdrm-$(CONFIG_ROCKCHIP_VOP) += rockchip_drm_vop.o rockchip_vop_reg.o
+ rockchipdrm-$(CONFIG_ROCKCHIP_ANALOGIX_DP) += analogix_dp-rockchip.o
+ rockchipdrm-$(CONFIG_ROCKCHIP_CDN_DP) += cdn-dp-core.o cdn-dp-reg.o
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
+@@ -504,6 +504,7 @@ static int __init rockchip_drm_init(void
+ 
+ 	num_rockchip_sub_drivers = 0;
+ 	ADD_ROCKCHIP_SUB_DRIVER(vop_platform_driver, CONFIG_ROCKCHIP_VOP);
++	ADD_ROCKCHIP_SUB_DRIVER(vop2_platform_driver, CONFIG_ROCKCHIP_VOP2);
+ 	ADD_ROCKCHIP_SUB_DRIVER(rockchip_lvds_driver,
+ 				CONFIG_ROCKCHIP_LVDS);
+ 	ADD_ROCKCHIP_SUB_DRIVER(rockchip_dp_driver,
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.h
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.h
+@@ -18,7 +18,7 @@
+ 
+ #define ROCKCHIP_MAX_FB_BUFFER	3
+ #define ROCKCHIP_MAX_CONNECTOR	2
+-#define ROCKCHIP_MAX_CRTC	2
++#define ROCKCHIP_MAX_CRTC	4
+ 
+ struct drm_device;
+ struct drm_connector;
+@@ -31,6 +31,9 @@ struct rockchip_crtc_state {
+ 	int output_bpc;
+ 	int output_flags;
+ 	bool enable_afbc;
++	u32 bus_format;
++	u32 bus_flags;
++	int color_space;
+ };
+ #define to_rockchip_crtc_state(s) \
+ 		container_of(s, struct rockchip_crtc_state, base)
+@@ -73,6 +76,7 @@ extern struct platform_driver rockchip_d
+ extern struct platform_driver rockchip_lvds_driver;
+ extern struct platform_driver vop_platform_driver;
+ extern struct platform_driver rk3066_hdmi_driver;
++extern struct platform_driver vop2_platform_driver;
+ 
+ static inline struct rockchip_encoder *to_rockchip_encoder(struct drm_encoder *encoder)
+ {
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_fb.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_fb.c
+@@ -134,4 +134,6 @@ void rockchip_drm_mode_config_init(struc
+ 
+ 	dev->mode_config.funcs = &rockchip_drm_mode_config_funcs;
+ 	dev->mode_config.helper_private = &rockchip_mode_config_helpers;
++
++	dev->mode_config.normalize_zpos = true;
+ }
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop.h
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop.h
+@@ -54,9 +54,23 @@ struct vop_afbc {
+ 	struct vop_reg enable;
+ 	struct vop_reg win_sel;
+ 	struct vop_reg format;
++	struct vop_reg rb_swap;
++	struct vop_reg uv_swap;
++	struct vop_reg auto_gating_en;
++	struct vop_reg block_split_en;
++	struct vop_reg pic_vir_width;
++	struct vop_reg tile_num;
+ 	struct vop_reg hreg_block_split;
++	struct vop_reg pic_offset;
+ 	struct vop_reg pic_size;
++	struct vop_reg dsp_offset;
++	struct vop_reg transform_offset;
+ 	struct vop_reg hdr_ptr;
++	struct vop_reg half_block_en;
++	struct vop_reg xmirror;
++	struct vop_reg ymirror;
++	struct vop_reg rotate_270;
++	struct vop_reg rotate_90;
+ 	struct vop_reg rstn;
+ };
+ 
