@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=xxd
 PKG_VERSION:=1.10
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=http://grail.cba.csuohio.edu/~somos/
+PKG_SOURCE_URL:=https://grail.cba.csuohio.edu/~somos/
 PKG_HASH:=9bf05c19b9084973e3cc877696a7f9881a5c87fa5a9fa438d9962519726559f9
 PKG_CPE_ID:=cpe:/a:vim:vim
 
