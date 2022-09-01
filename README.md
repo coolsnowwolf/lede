@@ -144,4 +144,4 @@ iKOOLCORE 硬酷R1 多网口小主机 - N5105/N6005 : Cube box, rest fun. 方寸
 
 如果你觉得此项目对你有帮助，可以捐助我们，以鼓励项目能持续发展，更加完善
 
-支付宝 ![alipay](doc/alipay_donate.jpg)  微信 ![wechat](doc/wechat_donate.jpg)
+ ![star](doc/star.png) 
