@@ -855,7 +855,7 @@ static int hnat_remove(struct platform_device *pdev)
 
 static const struct mtk_hnat_data hnat_data_v1 = {
 	.num_of_sch = 2,
-	.whnat = false,
+	.whnat = true,
 	.per_flow_accounting = false,
 	.mcast = false,
 	.version = MTK_HNAT_V1,

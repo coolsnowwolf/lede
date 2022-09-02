@@ -2,45 +2,45 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
-define Device/embedfire_doornet1
-  DEVICE_VENDOR := EmbedFire
-  DEVICE_MODEL := DoorNet1
-  SOC := rk3328
-  UBOOT_DEVICE_NAME := doornet1-rk3328
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r2s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-rtl8821cu
-endef
-TARGET_DEVICES += embedfire_doornet1
-
-define Device/embedfire_doornet2
-  DEVICE_VENDOR := EmbedFire
-  DEVICE_MODEL := DoorNet2 1GB
-  SOC := rk3399
-  UBOOT_DEVICE_NAME := doornet2-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 -urngd
-endef
-TARGET_DEVICES += embedfire_doornet2
-
-define Device/fastrhino_r66s
-  DEVICE_VENDOR := FastRhino
-  DEVICE_MODEL := R66S
+define Device/ezpro_mrkaio-m68s
+  DEVICE_VENDOR := EZPRO
+  DEVICE_MODEL := Mrkaio M68S
   SOC := rk3568
-  UBOOT_DEVICE_NAME := fastrhino-r66s-rk3568
+  UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci kmod-ata-ahci-platform
+endef
+TARGET_DEVICES += ezpro_mrkaio-m68s
+
+define Device/hinlink_opc-h68k
+  DEVICE_VENDOR := HINLINK
+  DEVICE_MODEL := OPC-H68K
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := opc-h68k-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-mt7921e kmod-r8125
+endef
+#TARGET_DEVICES += hinlink_opc-h68k
+
+define Device/fastrhino_common
+  DEVICE_VENDOR := FastRhino
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := r66s-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8125
 endef
+
+define Device/fastrhino_r66s
+$(call Device/fastrhino_common)
+  DEVICE_MODEL := R66S
+endef
 TARGET_DEVICES += fastrhino_r66s
 
-define Device/firefly_station-p2
-  DEVICE_VENDOR := Firefly
-  DEVICE_MODEL := Station P2
-  SOC := rk3568
-  UBOOT_DEVICE_NAME := station-p2-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig kmod-ata-ahci-platform station-p2-firmware wpad-openssl
+define Device/fastrhino_r68s
+$(call Device/fastrhino_common)
+  DEVICE_MODEL := R68S
 endef
-TARGET_DEVICES += firefly_station-p2
+TARGET_DEVICES += fastrhino_r68s
 
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
@@ -91,7 +91,7 @@ define Device/friendlyarm_nanopi-r4se
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4se
 
-define Device/friendlyelec_nanopi-r5s
+define Device/friendlyarm_nanopi-r5s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R5S
   SOC := rk3568
@@ -99,7 +99,17 @@ define Device/friendlyelec_nanopi-r5s
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8125
 endef
-TARGET_DEVICES += friendlyelec_nanopi-r5s
+TARGET_DEVICES += friendlyarm_nanopi-r5s
+
+define Device/firefly_station-p2
+  DEVICE_VENDOR := Firefly
+  DEVICE_MODEL := Station P2
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := station-p2-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig kmod-ata-ahci-platform station-p2-firmware wpad-openssl
+endef
+TARGET_DEVICES += firefly_station-p2
 
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
@@ -113,7 +123,7 @@ TARGET_DEVICES += pine64_rockpro64
 
 define Device/radxa_rock-3a
   DEVICE_VENDOR := Radxa
-  DEVICE_MODEL := ROCK3 Model A
+  DEVICE_MODEL := ROCK3 A
   SOC := rk3568
   SUPPORTED_DEVICES := radxa,rock3a
   UBOOT_DEVICE_NAME := rock-3a-rk3568
