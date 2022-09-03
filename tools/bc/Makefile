@@ -14,6 +14,7 @@ PKG_SOURCE_URL:=@GNU/bc
 PKG_HASH:=55cf1fc33a728d7c3d386cc7b0cb556eb5bacf8e0cb5a3fcca7f109fc61205ad
 
 PKG_FIXUP := autoreconf
+PKG_CPE_ID:=cpe:/a:gnu:bc
 
 include $(INCLUDE_DIR)/host-build.mk
 
