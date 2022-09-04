@@ -1,0 +1,106 @@
+From 0d22d4b626a4eaa3196019092eb6c1919e9f8caa Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Wed, 15 Dec 2021 15:34:20 +0000
+Subject: [PATCH] net: phylink: add pcs_validate() method
+
+Add a hook for PCS to validate the link parameters. This avoids MAC
+drivers having to have knowledge of their PCS in their validate()
+method, thereby allowing several MAC drivers to be simplfied.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/phylink.c | 31 +++++++++++++++++++++++++++++++
+ include/linux/phylink.h   | 20 ++++++++++++++++++++
+ 2 files changed, 51 insertions(+)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -160,13 +160,44 @@ static int phylink_validate_mac_and_pcs(
+ 					struct phylink_link_state *state)
+ {
+ 	struct phylink_pcs *pcs;
++	int ret;
+ 
++	/* Get the PCS for this interface mode */
+ 	if (pl->mac_ops->mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+ 		if (IS_ERR(pcs))
+ 			return PTR_ERR(pcs);
++	} else {
++		pcs = pl->pcs;
+ 	}
+ 
++	if (pcs) {
++		/* The PCS, if present, must be setup before phylink_create()
++		 * has been called. If the ops is not initialised, print an
++		 * error and backtrace rather than oopsing the kernel.
++		 */
++		if (!pcs->ops) {
++			phylink_err(pl, "interface %s: uninitialised PCS\n",
++				    phy_modes(state->interface));
++			dump_stack();
++			return -EINVAL;
++		}
++
++		/* Validate the link parameters with the PCS */
++		if (pcs->ops->pcs_validate) {
++			ret = pcs->ops->pcs_validate(pcs, supported, state);
++			if (ret < 0 || phylink_is_empty_linkmode(supported))
++				return -EINVAL;
++
++			/* Ensure the advertising mask is a subset of the
++			 * supported mask.
++			 */
++			linkmode_and(state->advertising, state->advertising,
++				     supported);
++		}
++	}
++
++	/* Then validate the link parameters with the MAC */
+ 	pl->mac_ops->validate(pl->config, supported, state);
+ 
+ 	return phylink_is_empty_linkmode(supported) ? -EINVAL : 0;
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -396,6 +396,7 @@ struct phylink_pcs {
+ 
+ /**
+  * struct phylink_pcs_ops - MAC PCS operations structure.
++ * @pcs_validate: validate the link configuration.
+  * @pcs_get_state: read the current MAC PCS link state from the hardware.
+  * @pcs_config: configure the MAC PCS for the selected mode and state.
+  * @pcs_an_restart: restart 802.3z BaseX autonegotiation.
+@@ -403,6 +404,8 @@ struct phylink_pcs {
+  *               (where necessary).
+  */
+ struct phylink_pcs_ops {
++	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
++			    const struct phylink_link_state *state);
+ 	void (*pcs_get_state)(struct phylink_pcs *pcs,
+ 			      struct phylink_link_state *state);
+ 	int (*pcs_config)(struct phylink_pcs *pcs, unsigned int mode,
+@@ -416,6 +419,23 @@ struct phylink_pcs_ops {
+ 
+ #if 0 /* For kernel-doc purposes only. */
+ /**
++ * pcs_validate() - validate the link configuration.
++ * @pcs: a pointer to a &struct phylink_pcs.
++ * @supported: ethtool bitmask for supported link modes.
++ * @state: a const pointer to a &struct phylink_link_state.
++ *
++ * Validate the interface mode, and advertising's autoneg bit, removing any
++ * media ethtool link modes that would not be supportable from the supported
++ * mask. Phylink will propagate the changes to the advertising mask. See the
++ * &struct phylink_mac_ops validate() method.
++ *
++ * Returns -EINVAL if the interface mode/autoneg mode is not supported.
++ * Returns non-zero positive if the link state can be supported.
++ */
++int pcs_validate(struct phylink_pcs *pcs, unsigned long *supported,
++		 const struct phylink_link_state *state);
++
++/**
+  * pcs_get_state() - Read the current inband link state from the hardware
+  * @pcs: a pointer to a &struct phylink_pcs.
+  * @state: a pointer to a &struct phylink_link_state.

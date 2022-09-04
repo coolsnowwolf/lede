@@ -1,0 +1,87 @@
+From e26be16262e1fc1e9f1798c12762663bd9c265c6 Mon Sep 17 00:00:00 2001
+From: Frank Wunderlich <frank-w@public-files.de>
+Date: Fri, 10 Jun 2022 19:05:37 +0200
+Subject: [PATCH 11/13] net: dsa: mt7530: rework mt7530_hw_vlan_{add,del}
+
+Rework vlan_add/vlan_del functions in preparation for dynamic cpu port.
+
+Currently BIT(MT7530_CPU_PORT) is added to new_members, even though
+mt7530_port_vlan_add() will be called on the CPU port too.
+
+Let DSA core decide when to call port_vlan_add for the CPU port, rather
+than doing it implicitly.
+
+We can do autonomous forwarding in a certain VLAN, but not add br0 to that
+VLAN and avoid flooding the CPU with those packets, if software knows it
+doesn't need to process them.
+
+Suggested-by: Vladimir Oltean <olteanv@gmail.com>
+Signed-off-by: Frank Wunderlich <frank-w@public-files.de>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mt7530.c | 30 ++++++++++++------------------
+ 1 file changed, 12 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1522,11 +1522,11 @@ static void
+ mt7530_hw_vlan_add(struct mt7530_priv *priv,
+ 		   struct mt7530_hw_vlan_entry *entry)
+ {
++	struct dsa_port *dp = dsa_to_port(priv->ds, entry->port);
+ 	u8 new_members;
+ 	u32 val;
+ 
+-	new_members = entry->old_members | BIT(entry->port) |
+-		      BIT(MT7530_CPU_PORT);
++	new_members = entry->old_members | BIT(entry->port);
+ 
+ 	/* Validate the entry with independent learning, create egress tag per
+ 	 * VLAN and joining the port as one of the port members.
+@@ -1537,22 +1537,20 @@ mt7530_hw_vlan_add(struct mt7530_priv *p
+ 
+ 	/* Decide whether adding tag or not for those outgoing packets from the
+ 	 * port inside the VLAN.
+-	 */
+-	val = entry->untagged ? MT7530_VLAN_EGRESS_UNTAG :
+-				MT7530_VLAN_EGRESS_TAG;
+-	mt7530_rmw(priv, MT7530_VAWD2,
+-		   ETAG_CTRL_P_MASK(entry->port),
+-		   ETAG_CTRL_P(entry->port, val));
+-
+-	/* CPU port is always taken as a tagged port for serving more than one
++	 * CPU port is always taken as a tagged port for serving more than one
+ 	 * VLANs across and also being applied with egress type stack mode for
+ 	 * that VLAN tags would be appended after hardware special tag used as
+ 	 * DSA tag.
+ 	 */
++	if (dsa_port_is_cpu(dp))
++		val = MT7530_VLAN_EGRESS_STACK;
++	else if (entry->untagged)
++		val = MT7530_VLAN_EGRESS_UNTAG;
++	else
++		val = MT7530_VLAN_EGRESS_TAG;
+ 	mt7530_rmw(priv, MT7530_VAWD2,
+-		   ETAG_CTRL_P_MASK(MT7530_CPU_PORT),
+-		   ETAG_CTRL_P(MT7530_CPU_PORT,
+-			       MT7530_VLAN_EGRESS_STACK));
++		   ETAG_CTRL_P_MASK(entry->port),
++		   ETAG_CTRL_P(entry->port, val));
+ }
+ 
+ static void
+@@ -1571,11 +1569,7 @@ mt7530_hw_vlan_del(struct mt7530_priv *p
+ 		return;
+ 	}
+ 
+-	/* If certain member apart from CPU port is still alive in the VLAN,
+-	 * the entry would be kept valid. Otherwise, the entry is got to be
+-	 * disabled.
+-	 */
+-	if (new_members && new_members != BIT(MT7530_CPU_PORT)) {
++	if (new_members) {
+ 		val = IVL_MAC | VTAG_EN | PORT_MEM(new_members) |
+ 		      VLAN_VALID;
+ 		mt7530_write(priv, MT7530_VAWD1, val);
