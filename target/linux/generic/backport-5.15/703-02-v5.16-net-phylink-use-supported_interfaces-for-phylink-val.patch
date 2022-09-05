@@ -1,0 +1,98 @@
+From d25f3a74f30aace819163dfa54f2a4b8ca1dc932 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 26 Oct 2021 11:06:11 +0100
+Subject: [PATCH] net: phylink: use supported_interfaces for phylink
+ validation
+
+If the network device supplies a supported interface bitmap, we can use
+that during phylink's validation to simplify MAC drivers in two ways by
+using the supported_interfaces bitmap to:
+
+1. reject unsupported interfaces before calling into the MAC driver.
+2. generate the set of all supported link modes across all supported
+   interfaces (used mainly for SFP, but also some 10G PHYs.)
+
+Suggested-by: Sean Anderson <sean.anderson@seco.com>
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/phylink.c | 36 ++++++++++++++++++++++++++++++++++++
+ include/linux/phylink.h   | 12 ++++++++++--
+ 2 files changed, 46 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -155,9 +155,45 @@ static const char *phylink_an_mode_str(u
+ 	return mode < ARRAY_SIZE(modestr) ? modestr[mode] : "unknown";
+ }
+ 
++static int phylink_validate_any(struct phylink *pl, unsigned long *supported,
++				struct phylink_link_state *state)
++{
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(all_adv) = { 0, };
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(all_s) = { 0, };
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(s);
++	struct phylink_link_state t;
++	int intf;
++
++	for (intf = 0; intf < PHY_INTERFACE_MODE_MAX; intf++) {
++		if (test_bit(intf, pl->config->supported_interfaces)) {
++			linkmode_copy(s, supported);
++
++			t = *state;
++			t.interface = intf;
++			pl->mac_ops->validate(pl->config, s, &t);
++			linkmode_or(all_s, all_s, s);
++			linkmode_or(all_adv, all_adv, t.advertising);
++		}
++	}
++
++	linkmode_copy(supported, all_s);
++	linkmode_copy(state->advertising, all_adv);
++
++	return phylink_is_empty_linkmode(supported) ? -EINVAL : 0;
++}
++
+ static int phylink_validate(struct phylink *pl, unsigned long *supported,
+ 			    struct phylink_link_state *state)
+ {
++	if (!phy_interface_empty(pl->config->supported_interfaces)) {
++		if (state->interface == PHY_INTERFACE_MODE_NA)
++			return phylink_validate_any(pl, supported, state);
++
++		if (!test_bit(state->interface,
++			      pl->config->supported_interfaces))
++			return -EINVAL;
++	}
++
+ 	pl->mac_ops->validate(pl->config, supported, state);
+ 
+ 	return phylink_is_empty_linkmode(supported) ? -EINVAL : 0;
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -67,6 +67,8 @@ enum phylink_op_type {
+  * @ovr_an_inband: if true, override PCS to MLO_AN_INBAND
+  * @get_fixed_state: callback to execute to determine the fixed link state,
+  *		     if MAC link is at %MLO_AN_FIXED mode.
++ * @supported_interfaces: bitmap describing which PHY_INTERFACE_MODE_xxx
++ *                        are supported by the MAC/PCS.
+  */
+ struct phylink_config {
+ 	struct device *dev;
+@@ -134,8 +136,14 @@ struct phylink_mac_ops {
+  * based on @state->advertising and/or @state->speed and update
+  * @state->interface accordingly. See phylink_helper_basex_speed().
+  *
+- * When @state->interface is %PHY_INTERFACE_MODE_NA, phylink expects the
+- * MAC driver to return all supported link modes.
++ * When @config->supported_interfaces has been set, phylink will iterate
++ * over the supported interfaces to determine the full capability of the
++ * MAC. The validation function must not print errors if @state->interface
++ * is set to an unexpected value.
++ *
++ * When @config->supported_interfaces is empty, phylink will call this
++ * function with @state->interface set to %PHY_INTERFACE_MODE_NA, and
++ * expects the MAC driver to return all supported link modes.
+  *
+  * If the @state->interface mode is not supported, then the @supported
+  * mask must be cleared.

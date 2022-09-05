@@ -1,6 +1,6 @@
 #
 # This is free software, licensed under the GNU General Public License v2.
-# See /LICENSE for more information. 
+# See /LICENSE for more information.
 #
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
@@ -69,36 +69,14 @@ define U-Boot/orangepi-r1-plus-lts-rk3328
   USE_RKBIN:=1
 endef
 
-define U-Boot/doornet1-rk3328
-  BUILD_SUBTARGET:=armv8
-  NAME:=DoorNet1
-  BUILD_DEVICES:= \
-    embedfire_doornet1
-  DEPENDS:=+PACKAGE_u-boot-doornet1-rk3328:arm-trusted-firmware-rk3328
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk322xh_bl31_v1.49.elf
-  USE_RKBIN:=1
-endef
 
 # RK3399 boards
-
-define U-Boot/doornet2-rk3399
-  BUILD_SUBTARGET:=armv8
-  NAME:=DoorNet2
-  BUILD_DEVICES:= \
-    embedfire_doornet2
-  DEPENDS:=+PACKAGE_u-boot-doornet2-rk3399:arm-trusted-firmware-rk3399
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3399_bl31_v1.35.elf
-  USE_RKBIN:=1
-endef
 
 define U-Boot/guangmiao-g4c-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=GuangMiao G4C
   BUILD_DEVICES:= \
-    sharevdi_guangmiao-g4c \
-    embedfire_doornet2-4gb
+    sharevdi_guangmiao-g4c
   DEPENDS:=+PACKAGE_u-boot-guangmiao-g4c-rk3399:arm-trusted-firmware-rockchip
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
   ATF:=rk3399_bl31.elf
@@ -126,45 +104,12 @@ define U-Boot/nanopi-r4se-rk3399
   USE_RKBIN:=1
 endef
 
-define U-Boot/opc-h68k-rk3568
-  BUILD_SUBTARGET:=armv8
-  NAME:=HINLINK OPC-H68K
-  BUILD_DEVICES:= \
-    hinlink_opc-h68k-d
-  DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
-  DDR:=rk3568_ddr_1560MHz_v1.13.bin
-endef
-
-define U-Boot/fastrhino-r66s-rk3568
-  BUILD_SUBTARGET:=armv8
-  NAME:=FastRhin-R66S
-  BUILD_DEVICES:= \
-    fastrhino_r66s
-  DEPENDS:=+PACKAGE_u-boot-fastrhino-r66s-rk3568:arm-trusted-firmware-rk3568
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
-  DDR:=rk3568_ddr_1560MHz_v1.13.bin
-endef
-
 define U-Boot/nanopi-r5s-rk3568
   BUILD_SUBTARGET:=armv8
-  NAME:=NANOPI-R5S
+  NAME:=NanoPi R5S
   BUILD_DEVICES:= \
-    friendlyelec_nanopi-r5s
+    friendlyarm_nanopi-r5s
   DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
-  DDR:=rk3568_ddr_1560MHz_v1.13.bin
-endef
-
-define U-Boot/rock-3a-rk3568
-  BUILD_SUBTARGET:=armv8
-  NAME:=ROCK-3A
-  BUILD_DEVICES:= \
-    radxa_rock-3a
-  DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.28.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
@@ -190,6 +135,54 @@ define U-Boot/rockpro64-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
+
+# RK3568 boards
+
+define U-Boot/mrkaio-m68s-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=Mrkaio M68S
+  BUILD_DEVICES:= \
+    ezpro_mrkaio-m68s
+  DEPENDS:=+PACKAGE_u-boot-mrkaio-m68s-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/opc-h68k-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=OPC-H68K Board
+  BUILD_DEVICES:= \
+    hinlink_opc-h68k
+  DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/rock-3a-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=ROCK3 Model A
+  BUILD_DEVICES:= \
+    radxa_rock-3a
+  DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/r66s-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=R66S/R68S
+  BUILD_DEVICES:= \
+    fastrhino_r66s \
+    fastrhino_r68s
+  DEPENDS:=+PACKAGE_u-boot-r66s-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/station-p2-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=StationP2
@@ -202,22 +195,21 @@ define U-Boot/station-p2-rk3568
 endef
 
 UBOOT_TARGETS := \
-  doornet2-rk3399 \
-  fastrhino-r66s-rk3568 \
+  mrkaio-m68s-rk3568 \
+  opc-h68k-rk3568 \
+  rock-3a-rk3568 \
+  r66s-rk3568 \
+  station-p2-rk3568 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
   nanopi-r5s-rk3568 \
-  rock-3a-rk3568 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
-  doornet1-rk3328 \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
-  orangepi-r1-plus-lts-rk3328 \
-  opc-h68k-rk3568 \
-  station-p2-rk3568
+  orangepi-r1-plus-lts-rk3328
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 

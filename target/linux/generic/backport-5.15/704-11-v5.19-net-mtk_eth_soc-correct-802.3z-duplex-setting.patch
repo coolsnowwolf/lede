@@ -1,0 +1,101 @@
+From a459187390bb221827f9c07866c3a5ffbdf9622b Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Wed, 18 May 2022 15:54:52 +0100
+Subject: [PATCH 05/12] net: mtk_eth_soc: correct 802.3z duplex setting
+
+Phylink does not guarantee that state->duplex will be set correctly in
+the mac_config() call, so it's a bug that the driver makes use of it.
+
+Move the 802.3z PCS duplex configuration to mac_link_up().
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 16 +++++++++++----
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  1 +
+ drivers/net/ethernet/mediatek/mtk_sgmii.c   | 22 +++++++++++++++------
+ 3 files changed, 29 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -532,8 +532,18 @@ static void mtk_mac_link_up(struct phyli
+ {
+ 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+ 					   phylink_config);
+-	u32 mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
++	u32 mcr;
+ 
++	if (phy_interface_mode_is_8023z(interface)) {
++		struct mtk_eth *eth = mac->hw;
++
++		/* Decide how GMAC and SGMIISYS be mapped */
++		int sid = (MTK_HAS_CAPS(eth->soc->caps, MTK_SHARED_SGMII)) ?
++			   0 : mac->id;
++		mtk_sgmii_link_up(eth->sgmii, sid, speed, duplex);
++	}
++
++	mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
+ 	mcr &= ~(MAC_MCR_SPEED_100 | MAC_MCR_SPEED_1000 |
+ 		 MAC_MCR_FORCE_DPX | MAC_MCR_FORCE_TX_FC |
+ 		 MAC_MCR_FORCE_RX_FC);
+@@ -3265,9 +3275,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 
+ 	mac->phylink_config.dev = &eth->netdev[id]->dev;
+ 	mac->phylink_config.type = PHYLINK_NETDEV;
+-	/* This driver makes use of state->speed/state->duplex in
+-	 * mac_config
+-	 */
++	/* This driver makes use of state->speed in mac_config */
+ 	mac->phylink_config.legacy_pre_march2020 = true;
+ 	mac->phylink_config.mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
+ 		MAC_10 | MAC_100 | MAC_1000 | MAC_2500FD;
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -1103,6 +1103,7 @@ int mtk_sgmii_init(struct mtk_sgmii *ss,
+ int mtk_sgmii_setup_mode_an(struct mtk_sgmii *ss, int id);
+ int mtk_sgmii_setup_mode_force(struct mtk_sgmii *ss, int id,
+ 			       const struct phylink_link_state *state);
++void mtk_sgmii_link_up(struct mtk_sgmii *ss, int id, int speed, int duplex);
+ void mtk_sgmii_restart_an(struct mtk_eth *eth, int mac_id);
+ 
+ int mtk_gmac_sgmii_path_setup(struct mtk_eth *eth, int mac_id);
+--- a/drivers/net/ethernet/mediatek/mtk_sgmii.c
++++ b/drivers/net/ethernet/mediatek/mtk_sgmii.c
+@@ -83,14 +83,10 @@ int mtk_sgmii_setup_mode_force(struct mt
+ 	val &= ~SGMII_AN_ENABLE;
+ 	regmap_write(ss->regmap[id], SGMSYS_PCS_CONTROL_1, val);
+ 
+-	/* SGMII force mode setting */
++	/* Set the speed etc but leave the duplex unchanged */
+ 	regmap_read(ss->regmap[id], SGMSYS_SGMII_MODE, &val);
+-	val &= ~SGMII_IF_MODE_MASK;
++	val &= SGMII_DUPLEX_FULL | ~SGMII_IF_MODE_MASK;
+ 	val |= SGMII_SPEED_1000;
+-
+-	if (state->duplex == DUPLEX_FULL)
+-		val |= SGMII_DUPLEX_FULL;
+-
+ 	regmap_write(ss->regmap[id], SGMSYS_SGMII_MODE, val);
+ 
+ 	/* Release PHYA power down state */
+@@ -101,6 +97,20 @@ int mtk_sgmii_setup_mode_force(struct mt
+ 	return 0;
+ }
+ 
++/* For 1000BASE-X and 2500BASE-X interface modes */
++void mtk_sgmii_link_up(struct mtk_sgmii *ss, int id, int speed, int duplex)
++{
++	unsigned int val;
++
++	/* SGMII force duplex setting */
++	regmap_read(ss->regmap[id], SGMSYS_SGMII_MODE, &val);
++	val &= ~SGMII_DUPLEX_FULL;
++	if (duplex == DUPLEX_FULL)
++		val |= SGMII_DUPLEX_FULL;
++
++	regmap_write(ss->regmap[id], SGMSYS_SGMII_MODE, val);
++}
++
+ void mtk_sgmii_restart_an(struct mtk_eth *eth, int mac_id)
+ {
+ 	struct mtk_sgmii *ss = eth->sgmii;
