@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=5.4.0-stable
+PKG_VERSION:=5.5.0-stable
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=dc36cc19dad197253e5c2ecaa490c7eef579ad448706e55d73d79396e814098b
+PKG_HASH:=c34b74b5f689fac7becb05583b044e84d3b10d39f38709f0095dd5d423ded67f
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1

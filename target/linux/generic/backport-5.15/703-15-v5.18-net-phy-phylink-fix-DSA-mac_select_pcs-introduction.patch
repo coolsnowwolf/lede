@@ -1,0 +1,88 @@
+From 1054457006d4a14de4ae4132030e33d7eedaeba1 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Mon, 21 Feb 2022 17:10:52 +0000
+Subject: [PATCH] net: phy: phylink: fix DSA mac_select_pcs() introduction
+
+Vladimir Oltean reports that probing on DSA drivers that aren't yet
+populating supported_interfaces now fails. Fix this by allowing
+phylink to detect whether DSA actually provides an underlying
+mac_select_pcs() implementation.
+
+Reported-by: Vladimir Oltean <olteanv@gmail.com>
+Fixes: bde018222c6b ("net: dsa: add support for phylink mac_select_pcs()")
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Tested-by: Vladimir Oltean <olteanv@gmail.com>
+Link: https://lore.kernel.org/r/E1nMCD6-00A0wC-FG@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 14 +++++++++++---
+ net/dsa/port.c            |  2 +-
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -74,6 +74,7 @@ struct phylink {
+ 	struct work_struct resolve;
+ 
+ 	bool mac_link_dropped;
++	bool using_mac_select_pcs;
+ 
+ 	struct sfp_bus *sfp_bus;
+ 	bool sfp_may_have_phy;
+@@ -163,7 +164,7 @@ static int phylink_validate_mac_and_pcs(
+ 	int ret;
+ 
+ 	/* Get the PCS for this interface mode */
+-	if (pl->mac_ops->mac_select_pcs) {
++	if (pl->using_mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+ 		if (IS_ERR(pcs))
+ 			return PTR_ERR(pcs);
+@@ -790,7 +791,7 @@ static void phylink_major_config(struct
+ 
+ 	phylink_dbg(pl, "major config %s\n", phy_modes(state->interface));
+ 
+-	if (pl->mac_ops->mac_select_pcs) {
++	if (pl->using_mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+ 		if (IS_ERR(pcs)) {
+ 			phylink_err(pl,
+@@ -1192,11 +1193,17 @@ struct phylink *phylink_create(struct ph
+ 			       phy_interface_t iface,
+ 			       const struct phylink_mac_ops *mac_ops)
+ {
++	bool using_mac_select_pcs = false;
+ 	struct phylink *pl;
+ 	int ret;
+ 
+-	/* Validate the supplied configuration */
+ 	if (mac_ops->mac_select_pcs &&
++	    mac_ops->mac_select_pcs(config, PHY_INTERFACE_MODE_NA) !=
++	      ERR_PTR(-EOPNOTSUPP))
++		using_mac_select_pcs = true;
++
++	/* Validate the supplied configuration */
++	if (using_mac_select_pcs &&
+ 	    phy_interface_empty(config->supported_interfaces)) {
+ 		dev_err(config->dev,
+ 			"phylink: error: empty supported_interfaces but mac_select_pcs() method present\n");
+@@ -1220,6 +1227,7 @@ struct phylink *phylink_create(struct ph
+ 		return ERR_PTR(-EINVAL);
+ 	}
+ 
++	pl->using_mac_select_pcs = using_mac_select_pcs;
+ 	pl->phy_state.interface = iface;
+ 	pl->link_interface = iface;
+ 	if (iface == PHY_INTERFACE_MODE_MOCA)
+--- a/net/dsa/port.c
++++ b/net/dsa/port.c
+@@ -1017,8 +1017,8 @@ dsa_port_phylink_mac_select_pcs(struct p
+ 				phy_interface_t interface)
+ {
+ 	struct dsa_port *dp = container_of(config, struct dsa_port, pl_config);
++	struct phylink_pcs *pcs = ERR_PTR(-EOPNOTSUPP);
+ 	struct dsa_switch *ds = dp->ds;
+-	struct phylink_pcs *pcs = NULL;
+ 
+ 	if (ds->ops->phylink_mac_select_pcs)
+ 		pcs = ds->ops->phylink_mac_select_pcs(ds, dp->index, interface);
