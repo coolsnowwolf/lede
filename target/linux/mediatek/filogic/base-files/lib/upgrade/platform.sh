@@ -25,6 +25,7 @@ platform_do_upgrade() {
 		esac
 		;;
 	*)
+		nand_do_upgrade "$1"
 		;;
 	esac
 }
