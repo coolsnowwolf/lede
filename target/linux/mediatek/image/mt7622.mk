@@ -86,13 +86,18 @@ define Device/bananapi_bpi-r64
   ARTIFACT/sdcard.img.gz	:= mt7622-gpt sdmmc |\
 				   pad-to 512k | bl2 sdmmc-2ddr |\
 				   pad-to 2048k | bl31-uboot bananapi_bpi-r64-sdmmc |\
-				   pad-to 6144k | append-image-stage initramfs-recovery.itb |\
+				$(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
+				   pad-to 6144k | append-image-stage initramfs-recovery.itb | check-size 38912k |\
+				) \
 				   pad-to 38912k | mt7622-gpt emmc |\
 				   pad-to 39424k | bl2 emmc-2ddr |\
 				   pad-to 40960k | bl31-uboot bananapi_bpi-r64-emmc |\
 				   pad-to 43008k | bl2 snand-2ddr |\
 				   pad-to 43520k | bl31-uboot bananapi_bpi-r64-snand |\
-				   pad-to 46080k | append-image squashfs-sysupgrade.itb | gzip
+				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
+				   pad-to 46080k | append-image squashfs-sysupgrade.itb | check-size | gzip \
+				)
+  IMAGE_SIZE := $$(shell expr 45 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
   KERNEL			:= kernel-bin | gzip
   KERNEL_INITRAMFS		:= kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb with-initrd | pad-to 128k
   IMAGE/sysupgrade.itb		:= append-kernel | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb external-static-with-rootfs | append-metadata
