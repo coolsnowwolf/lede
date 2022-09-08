@@ -62,7 +62,9 @@ define Device/bananapi_bpi-r3
   ARTIFACT/sdcard.img.gz	:= mt7986-gpt sdmmc |\
 				   pad-to 17k | bl2 sdmmc-ddr4 |\
 				   pad-to 6656k | bl31-uboot bananapi_bpi-r3-sdmmc |\
-				   pad-to 12M | append-image-stage initramfs-recovery.itb |\
+				$(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
+				   pad-to 12M | append-image-stage initramfs-recovery.itb | check-size 44m |\
+				) \
 				   pad-to 44M | bl2 spim-nand-ddr4 |\
 				   pad-to 45M | bl31-uboot bananapi_bpi-r3-snand |\
 				   pad-to 49M | bl2 nor-ddr4 |\
@@ -70,7 +72,10 @@ define Device/bananapi_bpi-r3
 				   pad-to 51M | bl2 emmc-ddr4 |\
 				   pad-to 52M | bl31-uboot bananapi_bpi-r3-emmc |\
 				   pad-to 56M | mt7986-gpt emmc |\
-				   pad-to 64M | append-image squashfs-sysupgrade.itb | gzip
+				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
+				   pad-to 64M | append-image squashfs-sysupgrade.itb | check-size | gzip \
+				)
+  IMAGE_SIZE := $$(shell expr 64 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
   KERNEL			:= kernel-bin | gzip
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
