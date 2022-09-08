@@ -1,0 +1,74 @@
+From 8647f7f0b9080bc2d2f6e02524782f2f02f159bc Mon Sep 17 00:00:00 2001
+From: Sascha Hauer <s.hauer@pengutronix.de>
+Date: Fri, 2 Dec 2022 09:12:18 +0100
+Subject: [PATCH] wifi: rtw88: Drop coex mutex
+
+coex->mutex is used in rtw_coex_info_request() only. Most callers of this
+function hold rtwdev->mutex already, except for one callsite in the
+debugfs code. The debugfs code alone doesn't justify the extra lock, so
+acquire rtwdev->mutex there as well and drop the now unnecessary
+spinlock.
+
+Signed-off-by: Sascha Hauer <s.hauer@pengutronix.de>
+---
+
+--- a/coex.c
++++ b/coex.c
+@@ -633,7 +633,7 @@ static struct sk_buff *rtw_coex_info_request(struct rtw_dev *rtwdev,
+ 	struct rtw_coex *coex = &rtwdev->coex;
+ 	struct sk_buff *skb_resp = NULL;
+ 
+-	mutex_lock(&coex->mutex);
++	lockdep_assert_held(&rtwdev->mutex);
+ 
+ 	rtw_fw_query_bt_mp_info(rtwdev, req);
+ 
+@@ -650,7 +650,6 @@ static struct sk_buff *rtw_coex_info_request(struct rtw_dev *rtwdev,
+ 	}
+ 
+ out:
+-	mutex_unlock(&coex->mutex);
+ 	return skb_resp;
+ }
+ 
+--- a/debug.c
++++ b/debug.c
+@@ -842,7 +842,9 @@ static int rtw_debugfs_get_coex_info(struct seq_file *m, void *v)
+ 	struct rtw_debugfs_priv *debugfs_priv = m->private;
+ 	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+ 
++	mutex_lock(&rtwdev->mutex);
+ 	rtw_coex_display_coex_info(rtwdev, m);
++	mutex_unlock(&rtwdev->mutex);
+ 
+ 	return 0;
+ }
+--- a/main.c
++++ b/main.c
+@@ -1998,7 +1998,6 @@ int rtw_core_init(struct rtw_dev *rtwdev)
+ 	spin_lock_init(&rtwdev->tx_report.q_lock);
+ 
+ 	mutex_init(&rtwdev->mutex);
+-	mutex_init(&rtwdev->coex.mutex);
+ 	mutex_init(&rtwdev->hal.tx_power_mutex);
+ 
+ 	init_waitqueue_head(&rtwdev->coex.wait);
+@@ -2066,7 +2065,6 @@ void rtw_core_deinit(struct rtw_dev *rtwdev)
+ 	}
+ 
+ 	mutex_destroy(&rtwdev->mutex);
+-	mutex_destroy(&rtwdev->coex.mutex);
+ 	mutex_destroy(&rtwdev->hal.tx_power_mutex);
+ }
+ EXPORT_SYMBOL(rtw_core_deinit);
+--- a/main.h
++++ b/main.h
+@@ -1507,8 +1507,6 @@ struct rtw_coex_stat {
+ };
+ 
+ struct rtw_coex {
+-	/* protects coex info request section */
+-	struct mutex mutex;
+ 	struct sk_buff_head queue;
+ 	wait_queue_head_t wait;
+ 
