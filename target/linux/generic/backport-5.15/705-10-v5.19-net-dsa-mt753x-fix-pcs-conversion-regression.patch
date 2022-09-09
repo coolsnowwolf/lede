@@ -1,0 +1,116 @@
+From 1f15b5e8733115cee65342bcaafeaf0368809fae Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Mon, 25 Apr 2022 22:28:02 +0100
+Subject: [PATCH 10/13] net: dsa: mt753x: fix pcs conversion regression
+
+Daniel Golle reports that the conversion of mt753x to phylink PCS caused
+an oops as below.
+
+The problem is with the placement of the PCS initialisation, which
+occurs after mt7531_setup() has been called. However, burited in this
+function is a call to setup the CPU port, which requires the PCS
+structure to be already setup.
+
+Fix this by changing the initialisation order.
+
+Unable to handle kernel NULL pointer dereference at virtual address 0000000000000020
+Mem abort info:
+  ESR = 0x96000005
+  EC = 0x25: DABT (current EL), IL = 32 bits
+  SET = 0, FnV = 0
+  EA = 0, S1PTW = 0
+  FSC = 0x05: level 1 translation fault
+Data abort info:
+  ISV = 0, ISS = 0x00000005
+  CM = 0, WnR = 0
+user pgtable: 4k pages, 39-bit VAs, pgdp=0000000046057000
+[0000000000000020] pgd=0000000000000000, p4d=0000000000000000, pud=0000000000000000
+Internal error: Oops: 96000005 [#1] SMP
+Modules linked in:
+CPU: 0 PID: 32 Comm: kworker/u4:1 Tainted: G S 5.18.0-rc3-next-20220422+ #0
+Hardware name: Bananapi BPI-R64 (DT)
+Workqueue: events_unbound deferred_probe_work_func
+pstate: 60000005 (nZCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+pc : mt7531_cpu_port_config+0xcc/0x1b0
+lr : mt7531_cpu_port_config+0xc0/0x1b0
+sp : ffffffc008d5b980
+x29: ffffffc008d5b990 x28: ffffff80060562c8 x27: 00000000f805633b
+x26: ffffff80001a8880 x25: 00000000000009c4 x24: 0000000000000016
+x23: ffffff8005eb6470 x22: 0000000000003600 x21: ffffff8006948080
+x20: 0000000000000000 x19: 0000000000000006 x18: 0000000000000000
+x17: 0000000000000001 x16: 0000000000000001 x15: 02963607fcee069e
+x14: 0000000000000000 x13: 0000000000000030 x12: 0101010101010101
+x11: ffffffc037302000 x10: 0000000000000870 x9 : ffffffc008d5b800
+x8 : ffffff800028f950 x7 : 0000000000000001 x6 : 00000000662b3000
+x5 : 00000000000002f0 x4 : 0000000000000000 x3 : ffffff800028f080
+x2 : 0000000000000000 x1 : ffffff800028f080 x0 : 0000000000000000
+Call trace:
+ mt7531_cpu_port_config+0xcc/0x1b0
+ mt753x_cpu_port_enable+0x24/0x1f0
+ mt7531_setup+0x49c/0x5c0
+ mt753x_setup+0x20/0x31c
+ dsa_register_switch+0x8bc/0x1020
+ mt7530_probe+0x118/0x200
+ mdio_probe+0x30/0x64
+ really_probe.part.0+0x98/0x280
+ __driver_probe_device+0x94/0x140
+ driver_probe_device+0x40/0x114
+ __device_attach_driver+0xb0/0x10c
+ bus_for_each_drv+0x64/0xa0
+ __device_attach+0xa8/0x16c
+ device_initial_probe+0x10/0x20
+ bus_probe_device+0x94/0x9c
+ deferred_probe_work_func+0x80/0xb4
+ process_one_work+0x200/0x3a0
+ worker_thread+0x260/0x4c0
+ kthread+0xd4/0xe0
+ ret_from_fork+0x10/0x20
+Code: 9409e911 937b7e60 8b0002a0 f9405800 (f9401005)
+---[ end trace 0000000000000000 ]---
+
+Reported-by: Daniel Golle <daniel@makrotopia.org>
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Fixes: cbd1f243bc41 ("net: dsa: mt7530: partially convert to phylink_pcs")
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Link: https://lore.kernel.org/r/E1nj6FW-007WZB-5Y@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mt7530.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -3031,9 +3031,16 @@ static int
+ mt753x_setup(struct dsa_switch *ds)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+-	int ret = priv->info->sw_setup(ds);
+-	int i;
++	int i, ret;
+ 
++	/* Initialise the PCS devices */
++	for (i = 0; i < priv->ds->num_ports; i++) {
++		priv->pcs[i].pcs.ops = priv->info->pcs_ops;
++		priv->pcs[i].priv = priv;
++		priv->pcs[i].port = i;
++	}
++
++	ret = priv->info->sw_setup(ds);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -3045,13 +3052,6 @@ mt753x_setup(struct dsa_switch *ds)
+ 	if (ret && priv->irq)
+ 		mt7530_free_irq_common(priv);
+ 
+-	/* Initialise the PCS devices */
+-	for (i = 0; i < priv->ds->num_ports; i++) {
+-		priv->pcs[i].pcs.ops = priv->info->pcs_ops;
+-		priv->pcs[i].priv = priv;
+-		priv->pcs[i].port = i;
+-	}
+-
+ 	return ret;
+ }
+ 

@@ -1,6 +1,6 @@
 # 欢迎来到 Lean 的 Openwrt 源码仓库
 
-如何编译自己需要的 OpenWrt 固件 [English](./README_EN.md)
+如何编译自己需要的 OpenWrt 固件 [How to build your Openwrt firmware](./README_EN.md)
 
 ## 官方讨论群
 如有技术问题需要讨论或者交流，欢迎加入以下群：
@@ -48,7 +48,7 @@
    make V=s -j1
    ```
 
-本套代码保证肯定可以编译成功。里面包括了 R21 所有源代码，包括 IPK 的。
+本套代码保证肯定可以编译成功。里面包括了 R22 所有源代码，包括 IPK 的。
 
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 
@@ -127,7 +127,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ## 软路由介绍
 
-iKOOLCORE 硬酷R1 多网口小主机 - N5105/N6005 : Cube box, rest is fun.方寸之外尽是乐趣  
+iKOOLCORE 硬酷R1 多网口小主机 - N5105/N6005 : Cube box, rest fun. 方寸之间，尽是乐趣
 
 (商品介绍页面 - 深圳市硬酷科技)：
 [Lean用户R1专属券](https://taoquan.taobao.com/coupon/unify_apply.htm?sellerId=1981117776&activityId=3eb8a2ad3c8945ed831b203f44dc218b)
@@ -144,4 +144,4 @@ iKOOLCORE 硬酷R1 多网口小主机 - N5105/N6005 : Cube box, rest is fun.方�
 
 如果你觉得此项目对你有帮助，可以捐助我们，以鼓励项目能持续发展，更加完善
 
-支付宝 ![alipay](doc/alipay_donate.jpg)  微信 ![wechat](doc/wechat_donate.jpg)
+ ![star](doc/star.png) 
