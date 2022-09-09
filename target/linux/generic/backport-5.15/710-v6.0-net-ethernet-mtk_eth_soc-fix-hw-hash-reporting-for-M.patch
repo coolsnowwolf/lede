@@ -1,0 +1,74 @@
+From 0cf731f9ebb5bf6f252055bebf4463a5c0bd490b Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 23 Aug 2022 14:24:07 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: fix hw hash reporting for
+ MTK_NETSYS_V2
+
+Properly report hw rx hash for mt7986 chipset accroding to the new dma
+descriptor layout.
+
+Fixes: 197c9e9b17b11 ("net: ethernet: mtk_eth_soc: introduce support for mt7986 chipset")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/091394ea4e705fbb35f828011d98d0ba33808f69.1661257293.git.lorenzo@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 22 +++++++++++----------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  5 +++++
+ 2 files changed, 17 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1469,10 +1469,19 @@ static int mtk_poll_rx(struct napi_struc
+ 		skb->dev = netdev;
+ 		skb_put(skb, pktlen);
+ 
+-		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2))
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2)) {
++			hash = trxd.rxd5 & MTK_RXD5_FOE_ENTRY;
++			if (hash != MTK_RXD5_FOE_ENTRY)
++				skb_set_hash(skb, jhash_1word(hash, 0),
++					     PKT_HASH_TYPE_L4);
+ 			rxdcsum = &trxd.rxd3;
+-		else
++		} else {
++			hash = trxd.rxd4 & MTK_RXD4_FOE_ENTRY;
++			if (hash != MTK_RXD4_FOE_ENTRY)
++				skb_set_hash(skb, jhash_1word(hash, 0),
++					     PKT_HASH_TYPE_L4);
+ 			rxdcsum = &trxd.rxd4;
++		}
+ 
+ 		if (*rxdcsum & eth->soc->txrx.rx_dma_l4_valid)
+ 			skb->ip_summed = CHECKSUM_UNNECESSARY;
+@@ -1481,16 +1490,9 @@ static int mtk_poll_rx(struct napi_struc
+ 		skb->protocol = eth_type_trans(skb, netdev);
+ 		bytes += pktlen;
+ 
+-		hash = trxd.rxd4 & MTK_RXD4_FOE_ENTRY;
+-		if (hash != MTK_RXD4_FOE_ENTRY) {
+-			hash = jhash_1word(hash, 0);
+-			skb_set_hash(skb, hash, PKT_HASH_TYPE_L4);
+-		}
+-
+ 		reason = FIELD_GET(MTK_RXD4_PPE_CPU_REASON, trxd.rxd4);
+ 		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
+-			mtk_ppe_check_skb(eth->ppe, skb,
+-					  trxd.rxd4 & MTK_RXD4_FOE_ENTRY);
++			mtk_ppe_check_skb(eth->ppe, skb, hash);
+ 
+ 		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX) {
+ 			if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2)) {
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -307,6 +307,11 @@
+ #define RX_DMA_L4_VALID_PDMA	BIT(30)		/* when PDMA is used */
+ #define RX_DMA_SPECIAL_TAG	BIT(22)
+ 
++/* PDMA descriptor rxd5 */
++#define MTK_RXD5_FOE_ENTRY	GENMASK(14, 0)
++#define MTK_RXD5_PPE_CPU_REASON	GENMASK(22, 18)
++#define MTK_RXD5_SRC_PORT	GENMASK(29, 26)
++
+ #define RX_DMA_GET_SPORT(x)	(((x) >> 19) & 0xf)
+ #define RX_DMA_GET_SPORT_V2(x)	(((x) >> 26) & 0x7)
+ 
