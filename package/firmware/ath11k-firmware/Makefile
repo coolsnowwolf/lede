@@ -103,7 +103,7 @@ define Package/ath11k-firmware-wcn6855/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/WCN6855/hw2.0/regdb.bin \
 		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/regdb.bin
-	$(LN) $(1)/lib/firmware/ath11k/WCN6855/hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
+	$(LN) ./hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
 endef
 
 $(eval $(call BuildPackage,ath11k-firmware-ipq6018))
