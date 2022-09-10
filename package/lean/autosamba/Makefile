@@ -17,7 +17,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/autosamba
   TITLE:=Samba autoconfig hotplug script.
   MAINTAINER:=Lean
-  DEPENDS:=+luci-app-samba +wsdd2
+  DEPENDS:=+luci-app-samba4 +wsdd2
 endef
 
 define Package/autosamba/description
@@ -28,6 +28,8 @@ define Build/Compile
 endef
 
 define Package/autosamba/install
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/block
+	$(INSTALL_BIN) ./files/20-smb $(1)/etc/hotplug.d/block/20-smb
 endef
 
 $(eval $(call BuildPackage,autosamba))
