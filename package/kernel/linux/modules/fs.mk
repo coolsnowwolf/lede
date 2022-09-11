@@ -530,7 +530,7 @@ $(eval $(call KernelPackage,fs-ntfs))
 define KernelPackage/fs-ntfs3
   SUBMENU:=$(FS_MENU)
   TITLE:=NTFS3 Read-Write file system support
-  DEPENDS:=@(LINUX_5_15||LINUX_5_19) +kmod-nls-base
+  DEPENDS:=@(LINUX_5_4||LINUX_5_10||LINUX_5_15||LINUX_5_19) +kmod-nls-base
   KCONFIG:= \
 	CONFIG_NTFS3_FS \
 	CONFIG_NTFS3_64BIT_CLUSTER=y \
