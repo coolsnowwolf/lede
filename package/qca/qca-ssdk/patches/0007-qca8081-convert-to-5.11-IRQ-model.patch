@@ -1,0 +1,83 @@
+From 25ff0ae02accadd7b05f1dae788505f833d5c019 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Fri, 24 Dec 2021 20:02:32 +0100
+Subject: [PATCH] qca8081: convert to 5.11 IRQ model
+
+Kernel 5.11 introduced new IRQ handling model for PHY-s,
+so provide those if 5.11 or later is used.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ src/hsl/phy/qca808x.c | 46 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+--- a/src/hsl/phy/qca808x.c
++++ b/src/hsl/phy/qca808x.c
+@@ -238,6 +238,7 @@ static int qca808x_config_intr(struct ph
+ 	return err;
+ }
+ 
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
+ static int qca808x_ack_interrupt(struct phy_device *phydev)
+ {
+ 	int err;
+@@ -257,6 +258,47 @@ static int qca808x_ack_interrupt(struct
+ 
+ 	return (err < 0) ? err : 0;
+ }
++#endif
++
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(5, 11, 0))
++static irqreturn_t qca808x_handle_interrupt(struct phy_device *phydev)
++{
++	a_uint16_t irq_status, int_enabled;
++	a_uint32_t dev_id = 0, phy_id = 0;
++	qca808x_priv *priv = phydev->priv;
++	const struct qca808x_phy_info *pdata = priv->phy_info;
++
++	if (!pdata) {
++		return SW_FAIL;
++	}
++
++	dev_id = pdata->dev_id;
++	phy_id = pdata->phy_addr;
++
++	irq_status = qca808x_phy_reg_read(dev_id, phy_id,
++					  QCA808X_PHY_INTR_STATUS);
++	if (irq_status < 0) {
++		phy_error(phydev);
++		return IRQ_NONE;
++	}
++
++	/* Read the current enabled interrupts */
++	int_enabled = qca808x_phy_reg_read(dev_id, phy_id,
++					   QCA808X_PHY_INTR_MASK);
++	if (int_enabled < 0) {
++		phy_error(phydev);
++		return IRQ_NONE;
++	}
++
++	/* See if this was one of our enabled interrupts */
++	if (!(irq_status & int_enabled))
++		return IRQ_NONE;
++
++	phy_trigger_machine(phydev);
++
++	return IRQ_HANDLED;
++}
++#endif
+ 
+ /* switch linux negtiation capability to fal avariable */
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
+@@ -559,7 +601,11 @@ struct phy_driver qca808x_phy_driver = {
+ 	.config_intr	= qca808x_config_intr,
+ 	.config_aneg	= qca808x_config_aneg,
+ 	.aneg_done	= qca808x_aneg_done,
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
+ 	.ack_interrupt	= qca808x_ack_interrupt,
++#else
++	.handle_interrupt = qca808x_handle_interrupt,
++#endif
+ 	.read_status	= qca808x_read_status,
+ 	.suspend	= qca808x_suspend,
+ 	.resume		= qca808x_resume,

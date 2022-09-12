@@ -1,0 +1,112 @@
+From 0f7bf6cf6fd536cd5965d596067e469e84559761 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 24 Jun 2022 20:04:17 +0200
+Subject: [PATCH 20/21] edma_v1: add support for threaded napi
+
+Add required changed to enable threaded napi. Also change rxfill to use
+napi_alloc_skb.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ hal/dp_ops/edma_dp/edma_v1/edma_cfg.c        |  5 -----
+ hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c | 12 ++++++++++--
+ hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h |  4 ++--
+ hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c      |  7 ++++---
+ 4 files changed, 16 insertions(+), 12 deletions(-)
+
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c b/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
+index 6f2c082..33f4297 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
+@@ -670,11 +670,6 @@ static void edma_configure_rxfill_ring(struct edma_hw *ehw,
+ 
+ 	data = rxfill_ring->count & EDMA_RXFILL_RING_SIZE_MASK;
+ 	edma_reg_write(EDMA_REG_RXFILL_RING_SIZE(rxfill_ring->id), data);
+-
+-	/*
+-	 * Alloc Rx buffers
+-	 */
+-	edma_alloc_rx_buffer(ehw, rxfill_ring);
+ }
+ 
+ /*
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
+index 49c7f8c..3736254 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
+@@ -457,8 +457,15 @@ static int edma_if_open(struct nss_dp_data_plane_ctx *dpc,
+ 	if (edma_hw.active++ != 0)
+ 		return NSS_DP_SUCCESS;
+ 
+-	for (i = 0; i < edma_hw.rxdesc_rings; i++)
+-		napi_enable(&edma_hw.rxdesc_ring[i].napi);
++	for (i = 0; i < edma_hw.rxdesc_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring = &edma_hw.rxdesc_ring[i];
++		/*
++		 * Alloc Rx buffers
++		 */
++		edma_alloc_rx_buffer(&edma_hw, &rxdesc_ring->napi, rxdesc_ring->rxfill);
++
++		napi_enable(&rxdesc_ring->napi);
++	}
+ 
+ 	for (i = 0; i < edma_hw.txcmpl_rings; i++)
+ 		napi_enable(&edma_hw.txcmpl_ring[i].napi);
+@@ -899,6 +906,7 @@ static int edma_if_init(struct nss_dp_data_plane_ctx *dpc)
+ 	 * Headroom needed for Tx preheader
+ 	 */
+ 	netdev->needed_headroom += EDMA_TX_PREHDR_SIZE;
++	dev_set_threaded(netdev, true);
+ 
+ 	return NSS_DP_SUCCESS;
+ }
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
+index 8ec7e35..7f8a8d4 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
+@@ -276,8 +276,8 @@ extern struct edma_hw edma_hw;
+ uint32_t edma_reg_read(uint32_t reg_off);
+ void edma_reg_write(uint32_t reg_off, uint32_t val);
+ 
+-int edma_alloc_rx_buffer(struct edma_hw *ehw,
+-		struct edma_rxfill_ring *rxfill_ring);
++int edma_alloc_rx_buffer(struct edma_hw *ehw, struct napi_struct *napi,
++			 struct edma_rxfill_ring *rxfill_ring);
+ enum edma_tx edma_ring_xmit(struct edma_hw *ehw,
+ 			    struct net_device *netdev,
+ 			    struct sk_buff *skb,
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+index 8221a9c..001f883 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+@@ -29,7 +29,8 @@
+  *	Alloc Rx buffers for one RxFill ring
+  */
+ int edma_alloc_rx_buffer(struct edma_hw *ehw,
+-		struct edma_rxfill_ring *rxfill_ring)
++			 struct napi_struct *napi,
++			 struct edma_rxfill_ring *rxfill_ring)
+ {
+ 	struct platform_device *pdev = ehw->pdev;
+ 	struct sk_buff *skb;
+@@ -64,7 +65,7 @@ int edma_alloc_rx_buffer(struct edma_hw *ehw,
+ 		/*
+ 		 * Allocate buffer
+ 		 */
+-		skb = dev_alloc_skb(alloc_size);
++		skb = napi_alloc_skb(napi, alloc_size);
+ 		if (unlikely(!skb))
+ 			break;
+ 
+@@ -445,7 +446,7 @@ next_rx_desc:
+ 		work_done++;
+ 	}
+ 
+-	edma_alloc_rx_buffer(ehw, rxdesc_ring->rxfill);
++	edma_alloc_rx_buffer(ehw, &rxdesc_ring->napi, rxdesc_ring->rxfill);
+ 
+ 	/*
+ 	 * make sure the consumer index is updated
+-- 
+2.36.1
+
