@@ -23,13 +23,16 @@ define Device/UbiFit
 	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
-define Device/qihoo_v6
+define Device/qihoo_360v6
 	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
 	DEVICE_VENDOR := Qihoo
 	DEVICE_MODEL := 360v6
 	SOC := ipq6018
 endef
-TARGET_DEVICES += qihoo_v6
+TARGET_DEVICES += qihoo_360v6
 
 define Device/eap610-outdoor
 	$(call Device/FitImage)

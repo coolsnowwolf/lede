@@ -3,11 +3,11 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=qca-nss-drv-64
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/nss-drv
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-drv.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-04-26
-PKG_SOURCE_VERSION:=1cf4bf81fd395f61648efeae78cdf1df60e954ff
-PKG_MIRROR_HASH:=3dd84a548a530188021fd4dab54ca4e1eb9056ca77381b24f587365fc7c16f21
+PKG_SOURCE_DATE:=2022-06-15
+PKG_SOURCE_VERSION:=0bbd153ec2698a17e9dd32dd72a2c65f22b449e0
+PKG_MIRROR_HASH:=96429842f32c23ff8ce4a9ec6723770875a7b8ba6fb9c62f62a7bf9c8a3078fc
 
 PKG_BUILD_PARALLEL:=1
 
@@ -50,7 +50,10 @@ define Build/InstallDev
 	$(CP) $(PKG_BUILD_DIR)/exports/* $(1)/usr/include/qca-nss-drv/
 endef
 
-EXTRA_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-nss-gmac -I$(STAGING_DIR)/usr/include/qca-nss-dp -I$(STAGING_DIR)/usr/include/qca-ssdk
+EXTRA_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-nss-gmac \
+			   -I$(STAGING_DIR)/usr/include/qca-nss-dp \
+			   -I$(STAGING_DIR)/usr/include/qca-ssdk \
+			   -Wno-unused-variable
 
 ifneq (, $(findstring $(CONFIG_TARGET_BOARD), "ipq807x" "ipq60xx"))
 EXTRA_CFLAGS+= -DNSS_MEM_PROFILE_MEDIUM
@@ -63,11 +66,12 @@ endif
 
 DRV_MAKE_OPTS:=
 ifeq ($(LOW_MEM_PROFILE_MAKE_OPTS),y)
-DRV_MAKE_OPTS+=NSS_DRV_C2C_ENABLE=n \
+DRV_MAKE_OPTS+= \
+	NSS_DRV_C2C_ENABLE=n \
 	NSS_DRV_CAPWAP_ENABLE=n \
 	NSS_DRV_CLMAP_ENABLE=n \
-	NSS_DRV_CRYPTO_ENABLE=n \
-	NSS_DRV_DTLS_ENABLE=n \
+	NSS_DRV_CRYPTO_ENABLE=y \
+	NSS_DRV_DTLS_ENABLE=y \
 	NSS_DRV_GRE_ENABLE=n \
 	NSS_DRV_GRE_REDIR_ENABLE=n \
 	NSS_DRV_GRE_TUNNEL_ENABLE=n \
@@ -85,14 +89,20 @@ DRV_MAKE_OPTS+=NSS_DRV_C2C_ENABLE=n \
 	NSS_DRV_RMNET_ENABLE=n \
 	NSS_DRV_SHAPER_ENABLE=n \
 	NSS_DRV_SJACK_ENABLE=n \
-	NSS_DRV_TLS_ENABLE=n \
+	NSS_DRV_TLS_ENABLE=y \
 	NSS_DRV_TRUSTSEC_ENABLE=n \
 	NSS_DRV_TSTAMP_ENABLE=n \
 	NSS_DRV_TUN6RD_ENABLE=n \
 	NSS_DRV_TUNIPIP6_ENABLE=n \
-	NSS_DRV_VXLAN_ENABLE=n \
+	NSS_DRV_VXLAN_ENABLE=y \
 	NSS_DRV_MATCH_ENABLE=n \
-	NSS_DRV_MIRROR_ENABLE=n
+	NSS_DRV_MIRROR_ENABLE=n \
+	NSS_DRV_PPPOE_ENABLE=y \
+	NSS_DRV_VIRT_IF_ENABLE=n \
+	NSS_DRV_VLAN_ENABLE=y \
+	NSS_DRV_BRIDGE_ENABLE=y \
+	NSS_DRV_WIFI_EXT_VDEV_ENABLE=n \
+	NSS_DRV_WIFI_MESH_ENABLE=n
 endif
 
 ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
@@ -103,8 +113,6 @@ endif
 
 define Build/Configure
 	$(LN) arch/nss_$(SOC).h $(PKG_BUILD_DIR)/exports/nss_arch.h
-	sed -i "s/define NSS_FW_VERSION_MAJOR.*/define NSS_FW_VERSION_MAJOR 11/" $(PKG_BUILD_DIR)/exports/nss_fw_version.h
-	sed -i "s/define NSS_FW_VERSION_MINOR.*/define NSS_FW_VERSION_MINOR 3/" $(PKG_BUILD_DIR)/exports/nss_fw_version.h
 endef
 
 define Build/Compile
