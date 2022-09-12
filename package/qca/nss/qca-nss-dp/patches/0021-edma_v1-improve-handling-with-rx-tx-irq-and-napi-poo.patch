@@ -1,0 +1,204 @@
+From 1e1543fb908e382001881d2aad7ab9d4a903c0ee Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 24 Jun 2022 22:08:25 +0200
+Subject: [PATCH] edma_v1: improve handling with rx/tx irq and napi pool
+
+Correctly disable interrupt and schedule napi instead of consuming the
+entire ring and emit napi_complete.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c | 133 ++++++++----------------
+ 1 file changed, 46 insertions(+), 87 deletions(-)
+
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+index 2bf1467..82fb697 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+@@ -460,35 +460,30 @@ next_rx_desc:
+ int edma_rx_napi(struct napi_struct *napi, int budget)
+ {
+ 	struct edma_rxdesc_ring *rxdesc_ring = container_of(napi, struct edma_rxdesc_ring, napi);
+-	struct edma_rxfill_ring *rxfill_ring = rxdesc_ring->rxfill;
+ 	struct edma_hw *ehw = rxdesc_ring->ehw;
++	uint32_t status;
+ 
+ 	int work_done = 0;
+ 
+-	work_done += edma_clean_rx(ehw, budget, rxdesc_ring);
++	do {
++		work_done += edma_clean_rx(ehw, budget, rxdesc_ring);
++		if (likely(work_done >= budget)) {
++			return work_done;
++		}
++
++		status = EDMA_RXDESC_RING_INT_STATUS_MASK & edma_reg_read(
++			EDMA_REG_RXDESC_INT_STAT(rxdesc_ring->id));
++	} while (likely(status));
++
++	napi_complete(napi);
+ 
+ 	/*
+-	 * TODO - rework and fix the budget control
++	 * Set RXDESC ring interrupt mask
+ 	 */
+-	if (work_done < budget) {
+-		/*
+-		 * TODO per core NAPI
+-		 */
+-		napi_complete(napi);
++	edma_reg_write(
++		EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->id),
++		ehw->rxdesc_intr_mask);
+ 
+-		/*
+-		 * Set RXDESC ring interrupt mask
+-		 */
+-		edma_reg_write(
+-			EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->id),
+-			ehw->rxdesc_intr_mask);
+-
+-		/*
+-		 * Set RXFILL ring interrupt mask
+-		 */
+-		edma_reg_write(EDMA_REG_RXFILL_INT_MASK(rxfill_ring->id),
+-					edma_hw.rxfill_intr_mask);
+-	}
+ 	return work_done;
+ }
+ 
+@@ -503,10 +498,27 @@ int edma_tx_napi(struct napi_struct *napi, int budget)
+ 
+ 	struct net_device *ndev;
+ 	int work_done = 0;
++	uint32_t status;
+ 	int i;
+ 
+-	edma_clean_tx(ehw, txcmpl_ring);
++	do {
++		work_done += edma_clean_tx(ehw, txcmpl_ring);
++		if (work_done >= budget) {
++			goto exit;
++		}
++
++		status = EDMA_TXCMPL_RING_INT_STATUS_MASK & edma_reg_read(EDMA_REG_TX_INT_STAT(txcmpl_ring->id));
++	} while (status);
+ 
++	napi_complete(napi);
++
++	/*
++	 * Set TXCMPL ring interrupt mask
++	 */
++	edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
++			ehw->txcmpl_intr_mask);
++
++exit:
+ 	/*
+ 	 * Resume netdev Tx queue
+ 	 */
+@@ -524,21 +536,6 @@ int edma_tx_napi(struct napi_struct *napi, int budget)
+ 			netif_start_queue(ndev);
+ 	}
+ 
+-	/*
+-	 * TODO - rework and fix the budget control
+-	 */
+-	if (work_done < budget) {
+-		/*
+-		 * TODO per core NAPI
+-		 */
+-		napi_complete(napi);
+-
+-		/*
+-		 * Set TXCMPL ring interrupt mask
+-		 */
+-		edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
+-				ehw->txcmpl_intr_mask);
+-	}
+ 	return work_done;
+ }
+ 
+@@ -741,35 +738,14 @@ irqreturn_t edma_handle_misc_irq(int irq, void *ctx)
+ irqreturn_t edma_rx_handle_irq(int irq, void *ctx)
+ {
+ 	struct edma_rxdesc_ring *rxdesc_ring = (struct edma_rxdesc_ring *)ctx;
+-	uint32_t rxdesc_intr_status = 0;
+-	uint32_t reg_data = 0;
+ 
+-	/*
+-	 * Read RxDesc intr status
+-	 */
+-	reg_data = edma_reg_read(
+-			EDMA_REG_RXDESC_INT_STAT(rxdesc_ring->id));
+-	rxdesc_intr_status |= reg_data &
+-			EDMA_RXDESC_RING_INT_STATUS_MASK;
++	if (likely(napi_schedule_prep(&rxdesc_ring->napi))) {
+ 
+-	/*
+-	 * Disable RxDesc intr
+-	 */
+-	edma_reg_write(EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->id),
++		edma_reg_write(EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->id),
+ 			EDMA_MASK_INT_DISABLE);
+ 
+-	if (rxdesc_intr_status == 0)
+-		return IRQ_NONE;
+-
+-	edma_reg_write(EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->id),
+-			EDMA_MASK_INT_DISABLE);
+-
+-	/*
+-	 *TODO - per core NAPI
+-	 */
+-	if (rxdesc_intr_status)
+-		if (likely(napi_schedule_prep(&rxdesc_ring->napi)))
+-			__napi_schedule(&rxdesc_ring->napi);
++		__napi_schedule(&rxdesc_ring->napi);
++	}
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -781,32 +757,15 @@ irqreturn_t edma_rx_handle_irq(int irq, void *ctx)
+ irqreturn_t edma_tx_handle_irq(int irq, void *ctx)
+ {
+ 	struct edma_txcmpl_ring *txcmpl_ring = (struct edma_txcmpl_ring *)ctx;
+-	uint32_t txcmpl_intr_status = 0;
+-	uint32_t reg_data = 0;
+ 
+-	/*
+-	 * Read TxCmpl intr status
+-	 */
+-	reg_data = edma_reg_read(
+-			EDMA_REG_TX_INT_STAT(txcmpl_ring->id));
+-	txcmpl_intr_status |= reg_data &
+-			EDMA_TXCMPL_RING_INT_STATUS_MASK;
+-
+-	/*
+-	 * Disable TxCmpl intr
+-	 */
+-	edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
+-			EDMA_MASK_INT_DISABLE);
+-
+-	if (txcmpl_intr_status == 0)
+-		return IRQ_NONE;
+-
+-	/*
+-	 *TODO - per core NAPI
+-	 */
+-	if (txcmpl_intr_status)
+-		if (likely(napi_schedule_prep(&txcmpl_ring->napi)))
+-			__napi_schedule(&txcmpl_ring->napi);
++	if (likely(napi_schedule_prep(&txcmpl_ring->napi))) {
++		/*
++		 * Disable TxCmpl intr
++		 */
++		edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
++				EDMA_MASK_INT_DISABLE);
++		__napi_schedule(&txcmpl_ring->napi);
++	}
+ 
+ 	return IRQ_HANDLED;
+ }
+-- 
+2.36.1
+
