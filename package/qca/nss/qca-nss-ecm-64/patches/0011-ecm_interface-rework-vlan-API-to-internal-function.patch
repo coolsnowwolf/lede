@@ -1,0 +1,63 @@
+From 3ae9322a469d2c59449cdcb40a0e21b47a2fced9 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Sat, 14 May 2022 21:11:08 +0200
+Subject: [PATCH 11/12] ecm_interface: rework vlan API to internal function
+
+vlan_real_dev and update_accel_stats API can be reimplemented without
+referring to kernel changes. Everything is already exported by the
+kernel. Rework these 2 function to use standard function instead.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+---
+ ecm_interface.c | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/ecm_interface.c b/ecm_interface.c
+index 6be872a..9a17cc7 100644
+--- a/ecm_interface.c
++++ b/ecm_interface.c
+@@ -306,8 +306,31 @@ EXPORT_SYMBOL(ecm_interface_get_and_hold_dev_master);
+  */
+ static inline struct net_device *ecm_interface_vlan_real_dev(struct net_device *vlan_dev)
+ {
+-	return vlan_dev_next_dev(vlan_dev);
++	struct vlan_dev_priv *vlan = vlan_dev_priv(vlan_dev);
++
++	return vlan->real_dev;
++}
++
++#ifdef ECM_INTERFACE_VLAN_ENABLE
++static void ecm_interface_vlan_dev_update_accel_stats(struct net_device *dev,
++						      struct rtnl_link_stats64 *nlstats)
++{
++	struct vlan_dev_priv *vlan = vlan_dev_priv(dev);
++	struct vlan_pcpu_stats *stats;
++
++	if (!is_vlan_dev(dev))
++		return;
++
++	stats = per_cpu_ptr(vlan->vlan_pcpu_stats, 0);
++
++	u64_stats_update_begin(&stats->syncp);
++	stats->rx_packets += nlstats->rx_packets;
++	stats->rx_bytes += nlstats->rx_bytes;
++	stats->tx_packets += nlstats->tx_packets;
++	stats->tx_bytes += nlstats->tx_bytes;
++	u64_stats_update_end(&stats->syncp);
+ }
++#endif
+ 
+ /*
+  * ecm_interface_dev_find_by_local_addr_ipv4()
+@@ -6593,7 +6616,7 @@ skip_bridge_refresh:
+ 			stats.rx_bytes = rx_bytes;
+ 			stats.tx_packets = tx_packets;
+ 			stats.tx_bytes = tx_bytes;
+-			__vlan_dev_update_accel_stats(dev, &stats);
++			ecm_interface_vlan_dev_update_accel_stats(dev, &stats);
+ 			dev_put(dev);
+ 			continue;
+ #endif
+-- 
+2.34.1
+

@@ -3,11 +3,11 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=qca-nss-ecm-64
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/cc-qrdk/oss/lklm/qca-nss-ecm
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-nss-ecm.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-04-29
-PKG_SOURCE_VERSION:=c115aec34867b582e2e5ea79fc5315971e0e953c
-PKG_MIRROR_HASH:=962385b45daa2e552a15018bf2930c2df1f6f575d885375bf935a142b4255da5
+PKG_SOURCE_DATE:=2022-06-15
+PKG_SOURCE_VERSION:=a4854db8d70ed0367556d817faa45e43b533a164
+PKG_MIRROR_HASH:=7661c6c3b137c127b9ec96aec3a05433d341c3a1db231e812d10380216b87858
 
 PKG_BUILD_PARALLEL:=1
 
@@ -19,7 +19,7 @@ define KernelPackage/qca-nss-ecm-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   DEPENDS:=@(TARGET_ipq807x||TARGET_ipq60xx) \
-  	+kmod-qca-nss-drv-64 \
+  	+kmod-qca-nss-drv \
 	+iptables-mod-extra \
 	+kmod-ipt-conntrack \
 	+kmod-ipt-physdev \
@@ -27,10 +27,10 @@ define KernelPackage/qca-nss-ecm-64
 	+kmod-ppp \
 	+kmod-pppoe
   TITLE:=QCA NSS Enhanced Connection Manager (ECM)
-  FILES:=$(PKG_BUILD_DIR)/*.ko
+  FILES:=$(PKG_BUILD_DIR)/ecm.ko
   KCONFIG:=CONFIG_BRIDGE_NETFILTER=y \
 	CONFIG_NF_CONNTRACK_EVENTS=y \
-	CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y \
+	CONFIG_NF_CONNTRACK_CHAIN_EVENTS=n \
 	CONFIG_NF_CONNTRACK_DSCPREMARK_EXT=n
 endef
 
@@ -47,6 +47,7 @@ define KernelPackage/qca-nss-ecm-64/install
 	$(INSTALL_DATA) ./files/qca-nss-ecm.uci $(1)/etc/config/ecm
 	$(INSTALL_DATA) ./files/qca-nss-ecm.defaults $(1)/etc/uci-defaults/99-qca-nss-ecm
 	$(INSTALL_BIN) ./files/qca-nss-ecm.sysctl $(1)/etc/sysctl.d/qca-nss-ecm.conf
+	echo 'net.netfilter.nf_conntrack_max=8192' >> $(1)/etc/sysctl.d/qca-nss-ecm.conf
 endef
 
 EXTRA_CFLAGS+=-I$(STAGING_DIR)/usr/include/qca-nss-drv
@@ -68,13 +69,7 @@ ECM_MAKE_OPTS+= ECM_FRONT_END_NSS_ENABLE=y \
 		ECM_CLASSIFIER_DSCP_ENABLE=n \
 		ECM_CLASSIFIER_PCC_ENABLE=n \
 		ECM_BAND_STEERING_ENABLE=n \
-		ECM_INTERFACE_PPPOE_ENABLE=y
-endif
-
-ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
-    SOC="ipq807x_64"
-else ifeq ($(CONFIG_TARGET_BOARD), "ipq60xx")
-    SOC="ipq60xx_64"
+		ECM_INTERFACE_PPPOE_ENABLE=n
 endif
 
 define Build/InstallDev
@@ -87,7 +82,7 @@ define Build/Compile
 		CROSS_COMPILE="$(TARGET_CROSS)" \
 		ARCH="$(LINUX_KARCH)" \
 		M="$(PKG_BUILD_DIR)" \
-		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" SoC=$(SOC) \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" SoC=$(CONFIG_TARGET_BOARD) \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_JOBS) \
 		modules
