@@ -1,0 +1,79 @@
+From 69fd055957a02309ffdc23d887a01988b6e5bab1 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Sat, 16 Apr 2022 01:30:12 +0200
+Subject: [PATCH 1/6] net: dsa: qca8k: drop MTU tracking from qca8k_priv
+
+DSA set the CPU port based on the largest MTU of all the slave ports.
+Based on this we can drop the MTU array from qca8k_priv and set the
+port_change_mtu logic on DSA changing MTU of the CPU port as the switch
+have a global MTU settingfor each port.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca8k.c | 26 +++++++++-----------------
+ drivers/net/dsa/qca8k.h |  1 -
+ 2 files changed, 9 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/dsa/qca8k.c
++++ b/drivers/net/dsa/qca8k.c
+@@ -1803,16 +1803,6 @@ qca8k_setup(struct dsa_switch *ds)
+ 				  QCA8K_PORT_HOL_CTRL1_WRED_EN,
+ 				  mask);
+ 		}
+-
+-		/* Set initial MTU for every port.
+-		 * We have only have a general MTU setting. So track
+-		 * every port and set the max across all port.
+-		 * Set per port MTU to 1500 as the MTU change function
+-		 * will add the overhead and if its set to 1518 then it
+-		 * will apply the overhead again and we will end up with
+-		 * MTU of 1536 instead of 1518
+-		 */
+-		priv->port_mtu[i] = ETH_DATA_LEN;
+ 	}
+ 
+ 	/* Special GLOBAL_FC_THRESH value are needed for ar8327 switch */
+@@ -2525,13 +2515,16 @@ static int
+ qca8k_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
+ {
+ 	struct qca8k_priv *priv = ds->priv;
+-	int ret, i, mtu = 0;
+-
+-	priv->port_mtu[port] = new_mtu;
++	int ret;
+ 
+-	for (i = 0; i < QCA8K_NUM_PORTS; i++)
+-		if (priv->port_mtu[i] > mtu)
+-			mtu = priv->port_mtu[i];
++	/* We have only have a general MTU setting.
++	 * DSA always set the CPU port's MTU to the largest MTU of the slave
++	 * ports.
++	 * Setting MTU just for the CPU port is sufficient to correctly set a
++	 * value for every port.
++	 */
++	if (!dsa_is_cpu_port(ds, port))
++		return 0;
+ 
+ 	/* To change the MAX_FRAME_SIZE the cpu ports must be off or
+ 	 * the switch panics.
+@@ -2545,7 +2538,7 @@ qca8k_port_change_mtu(struct dsa_switch
+ 		qca8k_port_set_status(priv, 6, 0);
+ 
+ 	/* Include L2 header / FCS length */
+-	ret = qca8k_write(priv, QCA8K_MAX_FRAME_SIZE, mtu + ETH_HLEN + ETH_FCS_LEN);
++	ret = qca8k_write(priv, QCA8K_MAX_FRAME_SIZE, new_mtu + ETH_HLEN + ETH_FCS_LEN);
+ 
+ 	if (priv->port_sts[0].enabled)
+ 		qca8k_port_set_status(priv, 0, 1);
+--- a/drivers/net/dsa/qca8k.h
++++ b/drivers/net/dsa/qca8k.h
+@@ -392,7 +392,6 @@ struct qca8k_priv {
+ 	struct device *dev;
+ 	struct dsa_switch_ops ops;
+ 	struct gpio_desc *reset_gpio;
+-	unsigned int port_mtu[QCA8K_NUM_PORTS];
+ 	struct net_device *mgmt_master; /* Track if mdio/mib Ethernet is available */
+ 	struct qca8k_mgmt_eth_data mgmt_eth_data;
+ 	struct qca8k_mib_eth_data mib_eth_data;
