@@ -25,6 +25,9 @@ endef
 
 define Device/qihoo_360v6
 	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
 	DEVICE_VENDOR := Qihoo
 	DEVICE_MODEL := 360v6
 	SOC := ipq6018
