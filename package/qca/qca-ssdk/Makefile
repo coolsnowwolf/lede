@@ -26,7 +26,7 @@ endef
 
 define KernelPackage/qca-ssdk-nohnat
 $(call KernelPackage/qca-ssdk/default-nohnat)
-  DEPENDS:=@(TARGET_ipq806x||TARGET_ipq807x)
+  DEPENDS:=@(TARGET_ipq806x||TARGET_ipq807x||TARGET_ipq60xx)
   VARIANT:=nohnat
 endef
 
