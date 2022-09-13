@@ -18,7 +18,7 @@
 # openwrt build scripts automatically enable this package starting
 # at boot.
 
-START=99
+START=19
 
 get_front_end_mode() {
 	config_load "ecm"
@@ -57,6 +57,10 @@ load_sfe() {
 		[ -d /sys/module/shortcut_fe_ipv6 ] || insmod shortcut-fe-ipv6
 	}
 
+	[ -e "/lib/modules/$kernel_version/shortcut-fe-cm.ko" ] && {
+		[ -d /sys/module/shortcut_fe_cm ] || insmod shortcut-fe-cm
+	}
+
 	[ -e "/lib/modules/$kernel_version/shortcut-fe-drv.ko" ] && {
 		[ -d /sys/module/shortcut_fe_drv ] || insmod shortcut-fe-drv
 	}
@@ -65,14 +69,18 @@ load_sfe() {
 load_ecm() {
 	[ -d /sys/module/ecm ] || {
 		[ ! -e /proc/device-tree/MP_256 ] && load_sfe
-		modprobe ecm front_end_selection=$(get_front_end_mode)
+		insmod ecm front_end_selection=$(get_front_end_mode)
+	}
+
+	support_bridge && {
+		sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+		sysctl -w net.bridge.bridge-nf-call-iptables=1
 	}
 }
 
 unload_ecm() {
-	sysctl -w net.bridge.bridge-nf-call-arptables=0
-	sysctl -w net.bridge.bridge-nf-call-iptables=0
 	sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+	sysctl -w net.bridge.bridge-nf-call-iptables=0
 
 	if [ -d /sys/module/ecm ]; then
 		#
@@ -84,7 +92,7 @@ unload_ecm() {
 		#
 		# Defunct the connections
 		#
-	    echo 1 > /sys/kernel/debug/ecm/ecm_db/defunct_all
+	        echo 1 > /sys/kernel/debug/ecm/ecm_db/defunct_all
 		sleep 5;
 
 		rmmod ecm
@@ -93,24 +101,14 @@ unload_ecm() {
 }
 
 start() {
-	# If SFE CM is loaded, return.
-	if [ -d /sys/module/shortcut_fe_cm ]; then
-		echo "shortcut_fe CM is loaded, unload it first"
-		echo "cmd: /etc/init.d/shortcut_fe stop"
-		return
-	fi
-
 	load_ecm
 
 	# If the acceleration engine is NSS, enable wifi redirect.
 	[ -d /sys/kernel/debug/ecm/ecm_nss_ipv4 ] && sysctl -w dev.nss.general.redirect=1
 
 	support_bridge && {
-		if ([ -z "$(grep "net.bridge.bridge-nf-call-ip6tables=1" /etc/sysctl.d/qca-nss-ecm.conf)" ] && [ -z "$(grep "net.bridge.bridge-nf-call-iptables=1" /etc/sysctl.d/qca-nss-ecm.conf)" ]); then
-			echo 'net.bridge.bridge-nf-call-ip6tables=1' >> /etc/sysctl.d/qca-nss-ecm.conf
-			echo 'net.bridge.bridge-nf-call-iptables=1' >> /etc/sysctl.d/qca-nss-ecm.conf
-			echo 'net.bridge.bridge-nf-call-arptables=1' >> /etc/sysctl.d/qca-nss-ecm.conf
-		fi
+		echo 'net.bridge.bridge-nf-call-ip6tables=1' >> /etc/sysctl.d/qca-nss-ecm.conf
+		echo 'net.bridge.bridge-nf-call-iptables=1' >> /etc/sysctl.d/qca-nss-ecm.conf
 	}
 
 	if [ -d /sys/module/qca_ovsmgr ]; then
@@ -128,9 +126,8 @@ stop() {
 	# If the acceleration engine is NSS, disable wifi redirect.
 	[ -d /sys/kernel/debug/ecm/ecm_nss_ipv4 ] && sysctl -w dev.nss.general.redirect=0
 
-	sed '/net.bridge.bridge-nf-call-arptables=1/d' -i /etc/sysctl.d/qca-nss-ecm.conf
-	sed '/net.bridge.bridge-nf-call-iptables=1/d' -i /etc/sysctl.d/qca-nss-ecm.conf
 	sed '/net.bridge.bridge-nf-call-ip6tables=1/d' -i /etc/sysctl.d/qca-nss-ecm.conf
+	sed '/net.bridge.bridge-nf-call-iptables=1/d' -i /etc/sysctl.d/qca-nss-ecm.conf
 
 	if [ -d /sys/module/ecm_ovs ]; then
 		rmmod ecm_ovs
