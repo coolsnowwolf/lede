@@ -7,7 +7,7 @@ PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-nss-ecm.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2022-06-15
 PKG_SOURCE_VERSION:=a4854db8d70ed0367556d817faa45e43b533a164
-PKG_MIRROR_HASH:=7661c6c3b137c127b9ec96aec3a05433d341c3a1db231e812d10380216b87858
+PKG_MIRROR_HASH:=073b347d6bc5fa224f7e6d5df8da3af9aa98cede0439f93ff4f2ec223580b0f6
 
 PKG_BUILD_PARALLEL:=1
 
@@ -19,7 +19,7 @@ define KernelPackage/qca-nss-ecm-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   DEPENDS:=@(TARGET_ipq807x||TARGET_ipq60xx) \
-  	+kmod-qca-nss-drv \
+  +kmod-qca-nss-drv-64 \
 	+iptables-mod-extra \
 	+kmod-ipt-conntrack \
 	+kmod-ipt-physdev \
