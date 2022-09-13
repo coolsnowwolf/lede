@@ -76,7 +76,7 @@ sub download_cmd($) {
 	my $url = shift;
 	my $have_curl = 0;
 
-	if (open CURL, '-|', 'curl', '--version') {
+	if (open CURL, "curl --version 2>/dev/null |") {
 		if (defined(my $line = readline CURL)) {
 			$have_curl = 1 if $line =~ /^curl /;
 		}
