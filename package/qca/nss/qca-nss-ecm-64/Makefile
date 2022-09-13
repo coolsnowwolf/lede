@@ -19,7 +19,7 @@ define KernelPackage/qca-nss-ecm-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   DEPENDS:=@(TARGET_ipq807x||TARGET_ipq60xx) \
-  	+kmod-qca-nss-drv-64 \
+	+kmod-qca-nss-drv-64 \
 	+iptables-mod-extra \
 	+kmod-ipt-conntrack \
 	+kmod-ipt-physdev \
