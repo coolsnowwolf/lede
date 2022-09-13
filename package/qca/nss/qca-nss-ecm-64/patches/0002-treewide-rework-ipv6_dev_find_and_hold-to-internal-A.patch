@@ -1,0 +1,120 @@
+From c4036311d65872756cd50ad8125668c422a164d0 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Sat, 15 May 2021 03:51:14 +0200
+Subject: [PATCH 02/12] treewide: rework ipv6_dev_find_and_hold to internal API
+
+ipv6_dev_find_and_hold is a downstream API not present in upstream
+kernel. Rework the function and reimplement it to an internal function
+of the kernel as it doesn't require special export.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+---
+ ecm_interface.c                  | 32 ++++++++++++++++++++++++++++++--
+ ecm_interface.h                  |  1 +
+ frontends/ecm_front_end_common.c |  7 +++++--
+ 3 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/ecm_interface.c b/ecm_interface.c
+index 2ca02bc..b461456 100644
+--- a/ecm_interface.c
++++ b/ecm_interface.c
+@@ -334,7 +334,7 @@ static struct net_device *ecm_interface_dev_find_by_local_addr_ipv6(ip_addr_t ad
+ 	struct net_device *dev;
+ 
+ 	ECM_IP_ADDR_TO_NIN6_ADDR(addr6, addr);
+-	dev = (struct net_device *)ipv6_dev_find(&init_net, &addr6, 1);
++	dev = (struct net_device *)ecm_interface_ipv6_dev_find_and_hold(&init_net, &addr6, 1);
+ 	return dev;
+ }
+ #endif
+@@ -718,6 +718,34 @@ bool ecm_interface_mac_addr_get(ip_addr_t addr, uint8_t *mac_addr, bool *on_link
+ EXPORT_SYMBOL(ecm_interface_mac_addr_get);
+ 
+ #ifdef ECM_IPV6_ENABLE
++/* ecm_interface_ipv6_dev_find_and_hold()
++ *	Find (and hold) net device that has the given address.
++ *	Or NULL on failure.
++ */
++struct net_device *ecm_interface_ipv6_dev_find_and_hold(struct net *net, struct in6_addr *addr,
++							int strict)
++{
++	struct inet6_ifaddr *ifp;
++	struct net_device *dev;
++
++	ifp = ipv6_get_ifaddr(net, addr, NULL, strict);
++	if (!ifp)
++		return NULL;
++
++	if (!ifp->idev) {
++		in6_ifa_put(ifp);
++		return NULL;
++	}
++
++	dev = ifp->idev->dev;
++	if (dev)
++		dev_hold(dev);
++
++	in6_ifa_put(ifp);
++
++	return dev;
++}
++
+ /*
+  * ecm_interface_mac_addr_get_ipv6_no_route()
+  *	Finds the mac address of a node from its ip address reachable via
+@@ -736,7 +764,7 @@ static bool ecm_interface_mac_addr_get_ipv6_no_route(struct net_device *dev, ip_
+ 	 * Get the MAC address that corresponds to IP address given.
+ 	 */
+ 	ECM_IP_ADDR_TO_NIN6_ADDR(daddr, addr);
+-	local_dev = ipv6_dev_find(&init_net, &daddr, 1);
++	local_dev = ecm_interface_ipv6_dev_find_and_hold(&init_net, &daddr, 1);
+ 	if (local_dev) {
+ 		DEBUG_TRACE("%pi6 is a local address\n", &daddr);
+ 		memcpy(mac_addr, dev->dev_addr, ETH_ALEN);
+diff --git a/ecm_interface.h b/ecm_interface.h
+index 0172e8d..4c17fee 100644
+--- a/ecm_interface.h
++++ b/ecm_interface.h
+@@ -58,6 +58,7 @@ bool ecm_interface_mac_addr_get(ip_addr_t addr, uint8_t *mac_addr, bool *on_link
+ bool ecm_interface_find_route_by_addr(ip_addr_t addr, struct ecm_interface_route *ecm_rt);
+ void ecm_interface_route_release(struct ecm_interface_route *rt);
+ #ifdef ECM_IPV6_ENABLE
++struct net_device *ecm_interfcae_ipv6_dev_find_and_hold(struct net *net, struct in6_addr *addr, int strict);
+ struct neighbour *ecm_interface_ipv6_neigh_get(struct ecm_front_end_connection_instance *feci, ecm_db_obj_dir_t dir, ip_addr_t addr);
+ void ecm_interface_send_neighbour_solicitation(struct net_device *dev, ip_addr_t addr);
+ #endif
+diff --git a/frontends/ecm_front_end_common.c b/frontends/ecm_front_end_common.c
+index e21ca24..6054685 100644
+--- a/frontends/ecm_front_end_common.c
++++ b/frontends/ecm_front_end_common.c
+@@ -56,6 +56,9 @@
+ #include "ecm_db.h"
+ #include "ecm_front_end_common.h"
+ #include "ecm_interface.h"
++#ifdef ECM_IPV6_ENABLE
++#include "ecm_front_end_ipv6.h"
++#endif
+ 
+ /*
+  * Sysctl table header
+@@ -315,7 +318,7 @@ bool ecm_front_end_gre_proto_is_accel_allowed(struct net_device *indev,
+ 		}
+ 	} else {
+ #ifdef ECM_IPV6_ENABLE
+-		dev = ipv6_dev_find(&init_net, &(tuple->src.u3.in6), 1);
++		dev = ecm_interface_ipv6_dev_find_and_hold(&init_net, &(tuple->src.u3.in6), 1);
+ 		if (dev) {
+ 			/*
+ 			 * Source IP address is local
+@@ -325,7 +328,7 @@ bool ecm_front_end_gre_proto_is_accel_allowed(struct net_device *indev,
+ 			return false;
+ 		}
+ 
+-		dev = ipv6_dev_find(&init_net, &(tuple->dst.u3.in6), 1);
++		dev = ecm_interface_ipv6_dev_find_and_hold(&init_net, &(tuple->dst.u3.in6), 1);
+ 		if (dev) {
+ 			/*
+ 			 * Destination IP address is local
+-- 
+2.34.1
+

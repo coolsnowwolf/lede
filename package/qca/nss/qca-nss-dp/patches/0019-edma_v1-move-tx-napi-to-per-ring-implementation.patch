@@ -1,0 +1,206 @@
+From de169603dcfa7a33026587c4cef9938cc6c28b1e Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 24 Jun 2022 18:25:16 +0200
+Subject: [PATCH 19/21] edma_v1: move tx napi to per ring implementation
+
+Move tx napi to per ring implementation.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ hal/dp_ops/edma_dp/edma_v1/edma_cfg.c        |  1 +
+ hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c | 17 +++---
+ hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h |  4 +-
+ hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c      | 55 +++++++-------------
+ 4 files changed, 32 insertions(+), 45 deletions(-)
+
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c b/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
+index 20d055e..6f2c082 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_cfg.c
+@@ -373,6 +373,7 @@ static int edma_setup_ring_resources(struct edma_hw *ehw)
+ 	 */
+ 	for (i = 0; i < ehw->txcmpl_rings; i++) {
+ 		txcmpl_ring = &ehw->txcmpl_ring[i];
++		txcmpl_ring->ehw = ehw;
+ 		txcmpl_ring->count = EDMA_RING_SIZE;
+ 		txcmpl_ring->id = ehw->txcmpl_ring_start + i;
+ 
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
+index 565564a..49c7f8c 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
+@@ -410,7 +410,8 @@ void edma_cleanup(bool is_dp_override)
+ 		for (i = 0; i < edma_hw.rxdesc_rings; i++)
+ 			netif_napi_del(&edma_hw.rxdesc_ring[i].napi);
+ 
+-		netif_napi_del(&edma_hw.tx_napi);
++		for (i = 0; i < edma_hw.txcmpl_rings; i++)
++			netif_napi_del(&edma_hw.txcmpl_ring[i].napi);
+ 		edma_hw.napi_added = 0;
+ 	}
+ 
+@@ -459,7 +460,8 @@ static int edma_if_open(struct nss_dp_data_plane_ctx *dpc,
+ 	for (i = 0; i < edma_hw.rxdesc_rings; i++)
+ 		napi_enable(&edma_hw.rxdesc_ring[i].napi);
+ 
+-	napi_enable(&edma_hw.tx_napi);
++	for (i = 0; i < edma_hw.txcmpl_rings; i++)
++		napi_enable(&edma_hw.txcmpl_ring[i].napi);
+ 
+ 	/*
+ 	 * Enable the interrupt masks.
+@@ -491,7 +493,9 @@ static int edma_if_close(struct nss_dp_data_plane_ctx *dpc)
+ 	for (i = 0; i < edma_hw.rxdesc_rings; i++)
+ 		napi_disable(&edma_hw.rxdesc_ring[i].napi);
+ 
+-	napi_disable(&edma_hw.tx_napi);
++	for (i = 0; i < edma_hw.txcmpl_rings; i++)
++		napi_disable(&edma_hw.txcmpl_ring[i].napi);
++
+ 	return NSS_DP_SUCCESS;
+ }
+ 
+@@ -730,7 +734,7 @@ static int edma_irq_init(void)
+ 	for (i = 0; i < edma_hw.txcmpl_rings; i++) {
+ 		err = request_irq(edma_hw.txcmpl_intr[i],
+ 				  edma_tx_handle_irq, IRQF_SHARED,
+-				  "edma_txcmpl", (void *)edma_hw.pdev);
++				  "edma_txcmpl", (void *)&edma_hw.txcmpl_ring[i]);
+ 		if (err) {
+ 			pr_debug("TXCMPL ring IRQ:%d request failed\n",
+ 					edma_hw.txcmpl_intr[i]);
+@@ -855,8 +859,9 @@ static int edma_register_netdevice(struct net_device *netdev, uint32_t macid)
+ 			netif_napi_add(netdev, &edma_hw.rxdesc_ring[i].napi, edma_rx_napi,
+ 					NAPI_POLL_WEIGHT);
+ 
+-		netif_tx_napi_add(netdev, &edma_hw.tx_napi, edma_tx_napi,
+-				NAPI_POLL_WEIGHT);
++		for (i = 0; i < edma_hw.txcmpl_rings; i++)
++			netif_tx_napi_add(netdev, &edma_hw.txcmpl_ring[i].napi, edma_tx_napi,
++					NAPI_POLL_WEIGHT);
+ 		/*
+ 		 * Register the interrupt handlers and enable interrupts
+ 		 */
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
+index 01a6453..8ec7e35 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.h
+@@ -95,6 +95,8 @@ struct edma_txdesc_ring {
+  * TxCmpl ring
+  */
+ struct edma_txcmpl_ring {
++	struct napi_struct napi;	/* napi structure */
++	struct edma_hw *ehw;
+ 	uint32_t id;			/* TXCMPL ring number */
+ 	void *desc;			/* descriptor ring virtual address */
+ 	dma_addr_t dma;			/* descriptor ring physical address */
+@@ -174,8 +176,6 @@ enum edma_tx {
+  * EDMA private data structure
+  */
+ struct edma_hw {
+-	struct napi_struct tx_napi;
+-			/* napi structure */
+ 	struct net_device *netdev_arr[EDMA_MAX_GMACS];
+ 			/* netdev for each gmac port */
+ 	struct device_node *device_node;
+diff --git a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+index 1d2fa8a..8221a9c 100644
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+@@ -501,17 +501,14 @@ int edma_rx_napi(struct napi_struct *napi, int budget)
+  */
+ int edma_tx_napi(struct napi_struct *napi, int budget)
+ {
+-	struct edma_hw *ehw = container_of(napi, struct edma_hw, tx_napi);
+-	struct edma_txcmpl_ring *txcmpl_ring = NULL;
++	struct edma_txcmpl_ring *txcmpl_ring = container_of(napi, struct edma_txcmpl_ring, napi);
++	struct edma_hw *ehw = txcmpl_ring->ehw;
+ 
+ 	struct net_device *ndev;
+ 	int work_done = 0;
+ 	int i;
+ 
+-	for (i = 0; i < ehw->txcmpl_rings; i++) {
+-		txcmpl_ring = &ehw->txcmpl_ring[i];
+-		edma_clean_tx(ehw, txcmpl_ring);
+-	}
++	edma_clean_tx(ehw, txcmpl_ring);
+ 
+ 	/*
+ 	 * Resume netdev Tx queue
+@@ -542,12 +539,8 @@ int edma_tx_napi(struct napi_struct *napi, int budget)
+ 		/*
+ 		 * Set TXCMPL ring interrupt mask
+ 		 */
+-		for (i = 0; i < ehw->txcmpl_rings; i++) {
+-			txcmpl_ring = &ehw->txcmpl_ring[i];
+-			edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
+-					ehw->txcmpl_intr_mask);
+-		}
+-
++		edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
++				ehw->txcmpl_intr_mask);
+ 	}
+ 	return work_done;
+ }
+@@ -790,35 +783,23 @@ irqreturn_t edma_rx_handle_irq(int irq, void *ctx)
+  */
+ irqreturn_t edma_tx_handle_irq(int irq, void *ctx)
+ {
+-	uint32_t reg_data = 0;
++	struct edma_txcmpl_ring *txcmpl_ring = (struct edma_txcmpl_ring *)ctx;
+ 	uint32_t txcmpl_intr_status = 0;
+-	int i;
+-	struct edma_txcmpl_ring *txcmpl_ring = NULL;
+-	struct edma_hw *ehw = NULL;
+-	struct platform_device *pdev = (struct platform_device *)ctx;
+-
+-	ehw = platform_get_drvdata(pdev);
+-	if (!ehw) {
+-		pr_info("Unable to retrieve platrofm data");
+-		return IRQ_HANDLED;
+-	}
++	uint32_t reg_data = 0;
+ 
+ 	/*
+ 	 * Read TxCmpl intr status
+ 	 */
+-	for (i = 0; i < ehw->txcmpl_rings; i++) {
+-		txcmpl_ring = &ehw->txcmpl_ring[i];
+-		reg_data = edma_reg_read(
+-				EDMA_REG_TX_INT_STAT(txcmpl_ring->id));
+-		txcmpl_intr_status |= reg_data &
+-				EDMA_TXCMPL_RING_INT_STATUS_MASK;
++	reg_data = edma_reg_read(
++			EDMA_REG_TX_INT_STAT(txcmpl_ring->id));
++	txcmpl_intr_status |= reg_data &
++			EDMA_TXCMPL_RING_INT_STATUS_MASK;
+ 
+-		/*
+-		 * Disable TxCmpl intr
+-		 */
+-		edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
+-				EDMA_MASK_INT_DISABLE);
+-	}
++	/*
++	 * Disable TxCmpl intr
++	 */
++	edma_reg_write(EDMA_REG_TX_INT_MASK(txcmpl_ring->id),
++			EDMA_MASK_INT_DISABLE);
+ 
+ 	if (txcmpl_intr_status == 0)
+ 		return IRQ_NONE;
+@@ -827,8 +808,8 @@ irqreturn_t edma_tx_handle_irq(int irq, void *ctx)
+ 	 *TODO - per core NAPI
+ 	 */
+ 	if (txcmpl_intr_status)
+-		if (likely(napi_schedule_prep(&ehw->tx_napi)))
+-			__napi_schedule(&ehw->tx_napi);
++		if (likely(napi_schedule_prep(&txcmpl_ring->napi)))
++			__napi_schedule(&txcmpl_ring->napi);
+ 
+ 	return IRQ_HANDLED;
+ }
+-- 
+2.36.1
+
