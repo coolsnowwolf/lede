@@ -1,0 +1,64 @@
+From 76dd9d2f2f32dd5bb720ba6a2a9904ce361d059f Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Thu, 5 Apr 2018 14:46:11 +0100
+Subject: [PATCH] lan78xx: Move enabling of EEE into PHY init code
+
+Enable EEE mode as soon as possible after connecting to the PHY, and
+before phy_start. This avoids a second link negotiation, which speeds
+up booting and stops the interface failing to become ready.
+
+See: https://github.com/raspberrypi/linux/issues/2437
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/net/usb/lan78xx.c | 32 ++++++++++++++++----------------
+ 1 file changed, 16 insertions(+), 16 deletions(-)
+
+--- a/drivers/net/usb/lan78xx.c
++++ b/drivers/net/usb/lan78xx.c
+@@ -2277,6 +2277,22 @@ static int lan78xx_phy_init(struct lan78
+ 	mii_adv_to_linkmode_adv_t(fc, mii_adv);
+ 	linkmode_or(phydev->advertising, fc, phydev->advertising);
+ 
++	if (of_property_read_bool(dev->udev->dev.of_node,
++				  "microchip,eee-enabled")) {
++		struct ethtool_eee edata;
++		memset(&edata, 0, sizeof(edata));
++		edata.cmd = ETHTOOL_SEEE;
++		edata.advertised = ADVERTISED_1000baseT_Full |
++				   ADVERTISED_100baseT_Full;
++		edata.eee_enabled = true;
++		edata.tx_lpi_enabled = true;
++		if (of_property_read_u32(dev->udev->dev.of_node,
++					 "microchip,tx-lpi-timer",
++					 &edata.tx_lpi_timer))
++			edata.tx_lpi_timer = 600; /* non-aggressive */
++		(void)lan78xx_set_eee(dev->net, &edata);
++	}
++
+ 	if (phydev->mdio.dev.of_node) {
+ 		u32 reg;
+ 		int len;
+@@ -2969,22 +2985,6 @@ static int lan78xx_open(struct net_devic
+ 
+ 	netif_dbg(dev, ifup, dev->net, "phy initialised successfully");
+ 
+-	if (of_property_read_bool(dev->udev->dev.of_node,
+-				  "microchip,eee-enabled")) {
+-		struct ethtool_eee edata;
+-		memset(&edata, 0, sizeof(edata));
+-		edata.cmd = ETHTOOL_SEEE;
+-		edata.advertised = ADVERTISED_1000baseT_Full |
+-				   ADVERTISED_100baseT_Full;
+-		edata.eee_enabled = true;
+-		edata.tx_lpi_enabled = true;
+-		if (of_property_read_u32(dev->udev->dev.of_node,
+-					 "microchip,tx-lpi-timer",
+-					 &edata.tx_lpi_timer))
+-			edata.tx_lpi_timer = 600; /* non-aggressive */
+-		(void)lan78xx_set_eee(net, &edata);
+-	}
+-
+ 	/* for Link Check */
+ 	if (dev->urb_intr) {
+ 		ret = usb_submit_urb(dev->urb_intr, GFP_KERNEL);

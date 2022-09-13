@@ -1,0 +1,238 @@
+From 06f02ffffc5aa432e119d094f019ba97ccd8bb89 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 25 Mar 2022 17:11:44 +0100
+Subject: [PATCH] clk: Drop the rate range on clk_put()
+
+When clk_put() is called we don't make another clk_set_rate() call to
+re-evaluate the rate boundaries. This is unlike clk_set_rate_range()
+that evaluates the rate again each time it is called.
+
+However, clk_put() is essentially equivalent to clk_set_rate_range()
+since after clk_put() completes the consumer's boundaries shouldn't be
+enforced anymore.
+
+Let's add a call to clk_set_rate_range() in clk_put() to make sure those
+rate boundaries are dropped and the clock provider drivers can react. In
+order to be as non-intrusive as possible, we'll just make that call if
+the clock had non-default boundaries.
+
+Also add a few tests to make sure this case is covered.
+
+Fixes: c80ac50cbb37 ("clk: Always set the rate on clk_set_range_rate")
+Tested-by: Alexander Stein <alexander.stein@ew.tq-group.com> # imx8mp
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com> # exynos4210, meson g12b
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk.c      |  45 +++++++++++------
+ drivers/clk/clk_test.c | 108 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 139 insertions(+), 14 deletions(-)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -2330,19 +2330,15 @@ int clk_set_rate_exclusive(struct clk *c
+ }
+ EXPORT_SYMBOL_GPL(clk_set_rate_exclusive);
+ 
+-/**
+- * clk_set_rate_range - set a rate range for a clock source
+- * @clk: clock source
+- * @min: desired minimum clock rate in Hz, inclusive
+- * @max: desired maximum clock rate in Hz, inclusive
+- *
+- * Returns success (0) or negative errno.
+- */
+-int clk_set_rate_range(struct clk *clk, unsigned long min, unsigned long max)
++static int clk_set_rate_range_nolock(struct clk *clk,
++				     unsigned long min,
++				     unsigned long max)
+ {
+ 	int ret = 0;
+ 	unsigned long old_min, old_max, rate;
+ 
++	lockdep_assert_held(&prepare_lock);
++
+ 	if (!clk)
+ 		return 0;
+ 
+@@ -2355,8 +2351,6 @@ int clk_set_rate_range(struct clk *clk,
+ 		return -EINVAL;
+ 	}
+ 
+-	clk_prepare_lock();
+-
+ 	if (clk->exclusive_count)
+ 		clk_core_rate_unprotect(clk->core);
+ 
+@@ -2400,6 +2394,28 @@ out:
+ 	if (clk->exclusive_count)
+ 		clk_core_rate_protect(clk->core);
+ 
++	return ret;
++}
++
++/**
++ * clk_set_rate_range - set a rate range for a clock source
++ * @clk: clock source
++ * @min: desired minimum clock rate in Hz, inclusive
++ * @max: desired maximum clock rate in Hz, inclusive
++ *
++ * Return: 0 for success or negative errno on failure.
++ */
++int clk_set_rate_range(struct clk *clk, unsigned long min, unsigned long max)
++{
++	int ret;
++
++	if (!clk)
++		return 0;
++
++	clk_prepare_lock();
++
++	ret = clk_set_rate_range_nolock(clk, min, max);
++
+ 	clk_prepare_unlock();
+ 
+ 	return ret;
+@@ -4359,9 +4375,10 @@ void __clk_put(struct clk *clk)
+ 	}
+ 
+ 	hlist_del(&clk->clks_node);
+-	if (clk->min_rate > clk->core->req_rate ||
+-	    clk->max_rate < clk->core->req_rate)
+-		clk_core_set_rate_nolock(clk->core, clk->core->req_rate);
++
++	/* If we had any boundaries on that clock, let's drop them. */
++	if (clk->min_rate > 0 || clk->max_rate < ULONG_MAX)
++		clk_set_rate_range_nolock(clk, 0, ULONG_MAX);
+ 
+ 	owner = clk->core->owner;
+ 	kref_put(&clk->core->ref, __clk_release);
+--- a/drivers/clk/clk_test.c
++++ b/drivers/clk/clk_test.c
+@@ -760,9 +760,65 @@ static void clk_range_test_multiple_set_
+ 	clk_put(user1);
+ }
+ 
++/*
++ * Test that if we have several subsequent calls to
++ * clk_set_rate_range(), across multiple users, the core will reevaluate
++ * whether a new rate is needed, including when a user drop its clock.
++ *
++ * With clk_dummy_maximize_rate_ops, this means that the rate will
++ * trail along the maximum as it evolves.
++ */
++static void clk_range_test_multiple_set_range_rate_put_maximized(struct kunit *test)
++{
++	struct clk_dummy_context *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk *user1, *user2;
++	unsigned long rate;
++
++	user1 = clk_hw_get_clk(hw, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, user1);
++
++	user2 = clk_hw_get_clk(hw, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, user2);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate(clk, DUMMY_CLOCK_RATE_2 + 1000),
++			0);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate_range(user1,
++					   0,
++					   DUMMY_CLOCK_RATE_2),
++			0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_2);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate_range(user2,
++					   0,
++					   DUMMY_CLOCK_RATE_1),
++			0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_1);
++
++	clk_put(user2);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_2);
++
++	clk_put(user1);
++}
++
+ static struct kunit_case clk_range_maximize_test_cases[] = {
+ 	KUNIT_CASE(clk_range_test_set_range_rate_maximized),
+ 	KUNIT_CASE(clk_range_test_multiple_set_range_rate_maximized),
++	KUNIT_CASE(clk_range_test_multiple_set_range_rate_put_maximized),
+ 	{}
+ };
+ 
+@@ -877,9 +933,61 @@ static void clk_range_test_multiple_set_
+ 	clk_put(user1);
+ }
+ 
++/*
++ * Test that if we have several subsequent calls to
++ * clk_set_rate_range(), across multiple users, the core will reevaluate
++ * whether a new rate is needed, including when a user drop its clock.
++ *
++ * With clk_dummy_minimize_rate_ops, this means that the rate will
++ * trail along the minimum as it evolves.
++ */
++static void clk_range_test_multiple_set_range_rate_put_minimized(struct kunit *test)
++{
++	struct clk_dummy_context *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk *user1, *user2;
++	unsigned long rate;
++
++	user1 = clk_hw_get_clk(hw, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, user1);
++
++	user2 = clk_hw_get_clk(hw, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, user2);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate_range(user1,
++					   DUMMY_CLOCK_RATE_1,
++					   ULONG_MAX),
++			0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_1);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate_range(user2,
++					   DUMMY_CLOCK_RATE_2,
++					   ULONG_MAX),
++			0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_2);
++
++	clk_put(user2);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, DUMMY_CLOCK_RATE_1);
++
++	clk_put(user1);
++}
++
+ static struct kunit_case clk_range_minimize_test_cases[] = {
+ 	KUNIT_CASE(clk_range_test_set_range_rate_minimized),
+ 	KUNIT_CASE(clk_range_test_multiple_set_range_rate_minimized),
++	KUNIT_CASE(clk_range_test_multiple_set_range_rate_put_minimized),
+ 	{}
+ };
+ 

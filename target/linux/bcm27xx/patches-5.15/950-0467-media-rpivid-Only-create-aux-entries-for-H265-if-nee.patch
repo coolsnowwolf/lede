@@ -1,0 +1,111 @@
+From 9b0eddfd7341525e0e3074a7f6202f5ccd431b05 Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Thu, 6 May 2021 13:48:05 +0100
+Subject: [PATCH] media: rpivid: Only create aux entries for H265 if
+ needed
+
+Only create aux entries of mv info for frames where that info might
+be used by a later frame.  This saves some memory bandwidth and
+potentially some memory.
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/staging/media/rpivid/rpivid_h265.c | 38 +++++++++++++---------
+ 1 file changed, 23 insertions(+), 15 deletions(-)
+
+--- a/drivers/staging/media/rpivid/rpivid_h265.c
++++ b/drivers/staging/media/rpivid/rpivid_h265.c
+@@ -246,6 +246,8 @@ struct rpivid_dec_state {
+ 	// Slice vars
+ 	unsigned int slice_idx;
+ 	bool slice_temporal_mvp;  /* Slice flag but constant for frame */
++	bool use_aux;
++	bool mk_aux;
+ 
+ 	// Temp vars per run - don't actually need to persist
+ 	u8 *src_buf;
+@@ -1657,7 +1659,7 @@ static u32 mk_config2(const struct rpivi
+ 		c |= BIT(13);
+ 	if (sps->flags & V4L2_HEVC_SPS_FLAG_STRONG_INTRA_SMOOTHING_ENABLED)
+ 		c |= BIT(14);
+-	if (sps->flags & V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED)
++	if (s->mk_aux)
+ 		c |= BIT(15); /* Write motion vectors to external memory */
+ 	c |= (pps->log2_parallel_merge_level_minus2 + 2) << 16;
+ 	if (s->slice_temporal_mvp)
+@@ -1669,6 +1671,14 @@ static u32 mk_config2(const struct rpivi
+ 	return c;
+ }
+ 
++static inline bool is_ref_unit_type(const unsigned int nal_unit_type)
++{
++	/* From Table 7-1
++	 * True for 1, 3, 5, 7, 9, 11, 13, 15
++	 */
++	return (nal_unit_type & ~0xe) != 0;
++}
++
+ static void rpivid_h265_setup(struct rpivid_ctx *ctx, struct rpivid_run *run)
+ {
+ 	struct rpivid_dev *const dev = ctx->dev;
+@@ -1685,7 +1695,6 @@ static void rpivid_h265_setup(struct rpi
+ 	struct rpivid_dec_env *de = ctx->dec0;
+ 	unsigned int prev_rs;
+ 	unsigned int i;
+-	int use_aux;
+ 	int rv;
+ 	bool slice_temporal_mvp;
+ 	bool frame_end;
+@@ -1828,6 +1837,16 @@ static void rpivid_h265_setup(struct rpi
+ 		 */
+ 		s->slice_temporal_mvp = slice_temporal_mvp;
+ 
++		/*
++		 * Need Aux ents for all (ref) DPB ents if temporal MV could
++		 * be enabled for any pic
++		 */
++		s->use_aux = ((s->sps.flags &
++			       V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED) != 0);
++		s->mk_aux = s->use_aux &&
++			    (s->sps.sps_max_sub_layers_minus1 >= sh0->nuh_temporal_id_plus1 ||
++			     is_ref_unit_type(sh0->nal_unit_type));
++
+ 		// Phase 2 reg pre-calc
+ 		de->rpi_config2 = mk_config2(s);
+ 		de->rpi_framesize = (s->sps.pic_height_in_luma_samples << 16) |
+@@ -1952,15 +1971,6 @@ static void rpivid_h265_setup(struct rpi
+ 	// Frame end
+ 	memset(dpb_q_aux, 0,
+ 	       sizeof(*dpb_q_aux) * V4L2_HEVC_DPB_ENTRIES_NUM_MAX);
+-	/*
+-	 * Need Aux ents for all (ref) DPB ents if temporal MV could
+-	 * be enabled for any pic
+-	 * ** At the moment we create aux ents for all pics whether or not
+-	 *    they are ref - they should then be discarded by the DPB-aux
+-	 *    garbage collection code
+-	 */
+-	use_aux = ((s->sps.flags &
+-		  V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED) != 0);
+ 
+ 	// Locate ref frames
+ 	// At least in the current implementation this is constant across all
+@@ -1994,7 +2004,7 @@ static void rpivid_h265_setup(struct rpi
+ 			continue;
+ 		}
+ 
+-		if (use_aux) {
++		if (s->use_aux) {
+ 			dpb_q_aux[i] = aux_q_ref_idx(ctx, buffer_index);
+ 			if (!dpb_q_aux[i])
+ 				v4l2_warn(&dev->v4l2_dev,
+@@ -2016,9 +2026,7 @@ static void rpivid_h265_setup(struct rpi
+ 	// now
+ 	aux_q_release(ctx, &s->frame_aux);
+ 
+-	if (use_aux) {
+-		// New frame so new aux ent
+-		// ??? Do we need this if non-ref ??? can we tell
++	if (s->mk_aux) {
+ 		s->frame_aux = aux_q_new(ctx, run->dst->vb2_buf.index);
+ 
+ 		if (!s->frame_aux) {

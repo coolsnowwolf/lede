@@ -46,6 +46,7 @@ static void ath9k_pci_fixup(struct pci_dev *dev)
 	u32 bar0;
 	u32 val;
 	unsigned i;
+	int rc;
 
 	for (i = 0; i < ath9k_num_fixups; i++) {
 		if (ath9k_fixups[i]->pci_dev != PCI_SLOT(dev->devfn))
@@ -74,8 +75,11 @@ static void ath9k_pci_fixup(struct pci_dev *dev)
 		return;
 	}
 
-	if (bridge)
-		pci_enable_device(bridge);
+	if (bridge) {
+		rc = pci_enable_device(bridge);
+		if (rc < 0)
+			pr_err("pci %s: bridge enable error\n", pci_name(dev));
+	}
 
 	pci_read_config_dword(dev, PCI_BASE_ADDRESS_0, &bar0);
 	pci_read_config_dword(dev, PCI_BASE_ADDRESS_0, &bar0);
@@ -167,7 +171,6 @@ static int ath9k_fixup_probe(struct platform_device *pdev)
 	struct device_node *node = dev->of_node;
 	struct ath9k_fixup *priv;
 	struct resource *res;
-	const void *mac;
 	int ret;
 
 	if (ath9k_num_fixups >= ATH9K_MAX_FIXUPS)
@@ -200,9 +203,8 @@ static int ath9k_fixup_probe(struct platform_device *pdev)
 	priv->pdata.led_active_high = of_property_read_bool(node,
 		"ath,led-active-high");
 
-	mac = of_get_mac_address(node);
-	if (!IS_ERR_OR_NULL(mac)) {
-		memcpy(priv->mac, mac, ETH_ALEN);
+	of_get_mac_address(node, priv->mac);
+	if (is_valid_ether_addr(priv->mac)) {
 		dev_info(dev, "mtd mac %pM\n", priv->mac);
 	} else {
 		random_ether_addr(priv->mac);

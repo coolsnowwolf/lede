@@ -1,0 +1,172 @@
+From a69fe8364ec161c1c9a2c5691beea97b20ee664f Mon Sep 17 00:00:00 2001
+From: P33M <P33M@github.com>
+Date: Wed, 21 Oct 2015 14:55:21 +0100
+Subject: [PATCH] rpi_display: add backlight driver and overlay
+
+Add a mailbox-driven backlight controller for the Raspberry Pi DSI
+touchscreen display. Requires updated GPU firmware to recognise the
+mailbox request.
+
+Signed-off-by: Gordon Hollingworth <gordon@raspberrypi.org>
+
+Add Raspberry Pi firmware driver to the dependencies of backlight driver
+
+Otherwise the backlight driver fails to build if the firmware
+loading driver is not in the kernel
+
+Signed-off-by: Alex Riesen <alexander.riesen@cetitec.com>
+---
+ drivers/video/backlight/Kconfig         |   7 ++
+ drivers/video/backlight/Makefile        |   1 +
+ drivers/video/backlight/rpi_backlight.c | 119 ++++++++++++++++++++++++
+ 3 files changed, 127 insertions(+)
+ create mode 100644 drivers/video/backlight/rpi_backlight.c
+
+--- a/drivers/video/backlight/Kconfig
++++ b/drivers/video/backlight/Kconfig
+@@ -248,6 +248,13 @@ config BACKLIGHT_PWM
+ 	  If you have a LCD backlight adjustable by PWM, say Y to enable
+ 	  this driver.
+ 
++config BACKLIGHT_RPI
++	tristate "Raspberry Pi display firmware driven backlight"
++	depends on RASPBERRYPI_FIRMWARE
++	help
++	  If you have the Raspberry Pi DSI touchscreen display, say Y to
++	  enable the mailbox-controlled backlight driver.
++
+ config BACKLIGHT_DA903X
+ 	tristate "Backlight Driver for DA9030/DA9034 using WLED"
+ 	depends on PMIC_DA903X
+--- a/drivers/video/backlight/Makefile
++++ b/drivers/video/backlight/Makefile
+@@ -49,6 +49,7 @@ obj-$(CONFIG_BACKLIGHT_PANDORA)		+= pand
+ obj-$(CONFIG_BACKLIGHT_PCF50633)	+= pcf50633-backlight.o
+ obj-$(CONFIG_BACKLIGHT_PWM)		+= pwm_bl.o
+ obj-$(CONFIG_BACKLIGHT_QCOM_WLED)	+= qcom-wled.o
++obj-$(CONFIG_BACKLIGHT_RPI)			+= rpi_backlight.o
+ obj-$(CONFIG_BACKLIGHT_RT4831)		+= rt4831-backlight.o
+ obj-$(CONFIG_BACKLIGHT_SAHARA)		+= kb3886_bl.o
+ obj-$(CONFIG_BACKLIGHT_SKY81452)	+= sky81452-backlight.o
+--- /dev/null
++++ b/drivers/video/backlight/rpi_backlight.c
+@@ -0,0 +1,119 @@
++/*
++ * rpi_bl.c - Backlight controller through VPU
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ */
++
++#include <linux/backlight.h>
++#include <linux/err.h>
++#include <linux/fb.h>
++#include <linux/gpio.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_gpio.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++struct rpi_backlight {
++	struct device *dev;
++	struct device *fbdev;
++	struct rpi_firmware *fw;
++};
++
++static int rpi_backlight_update_status(struct backlight_device *bl)
++{
++	struct rpi_backlight *gbl = bl_get_data(bl);
++	int brightness = bl->props.brightness;
++	int ret;
++
++	if (bl->props.power != FB_BLANK_UNBLANK ||
++	    bl->props.fb_blank != FB_BLANK_UNBLANK ||
++	    bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
++		brightness = 0;
++
++	ret = rpi_firmware_property(gbl->fw,
++			RPI_FIRMWARE_FRAMEBUFFER_SET_BACKLIGHT,
++			&brightness, sizeof(brightness));
++	if (ret) {
++		dev_err(gbl->dev, "Failed to set brightness\n");
++		return ret;
++	}
++
++	if (brightness < 0) {
++		dev_err(gbl->dev, "Backlight change failed\n");
++		return -EAGAIN;
++	}
++
++	return 0;
++}
++
++static const struct backlight_ops rpi_backlight_ops = {
++	.options	= BL_CORE_SUSPENDRESUME,
++	.update_status	= rpi_backlight_update_status,
++};
++
++static int rpi_backlight_probe(struct platform_device *pdev)
++{
++	struct backlight_properties props;
++	struct backlight_device *bl;
++	struct rpi_backlight *gbl;
++	struct device_node *fw_node;
++
++	gbl = devm_kzalloc(&pdev->dev, sizeof(*gbl), GFP_KERNEL);
++	if (gbl == NULL)
++		return -ENOMEM;
++
++	gbl->dev = &pdev->dev;
++
++	fw_node = of_parse_phandle(pdev->dev.of_node, "firmware", 0);
++	if (!fw_node) {
++		dev_err(&pdev->dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	gbl->fw = rpi_firmware_get(fw_node);
++	if (!gbl->fw)
++		return -EPROBE_DEFER;
++
++	memset(&props, 0, sizeof(props));
++	props.type = BACKLIGHT_RAW;
++	props.max_brightness = 255;
++	bl = devm_backlight_device_register(&pdev->dev, dev_name(&pdev->dev),
++					&pdev->dev, gbl, &rpi_backlight_ops,
++					&props);
++	if (IS_ERR(bl)) {
++		dev_err(&pdev->dev, "failed to register backlight\n");
++		return PTR_ERR(bl);
++	}
++
++	bl->props.brightness = 255;
++	backlight_update_status(bl);
++
++	platform_set_drvdata(pdev, bl);
++	return 0;
++}
++
++static const struct of_device_id rpi_backlight_of_match[] = {
++	{ .compatible = "raspberrypi,rpi-backlight" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, rpi_backlight_of_match);
++
++static struct platform_driver rpi_backlight_driver = {
++	.driver		= {
++		.name		= "rpi-backlight",
++		.of_match_table = of_match_ptr(rpi_backlight_of_match),
++	},
++	.probe		= rpi_backlight_probe,
++};
++
++module_platform_driver(rpi_backlight_driver);
++
++MODULE_AUTHOR("Gordon Hollingworth <gordon@raspberrypi.org>");
++MODULE_DESCRIPTION("Raspberry Pi mailbox based Backlight Driver");
++MODULE_LICENSE("GPL");

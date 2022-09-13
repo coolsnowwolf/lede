@@ -1,0 +1,51 @@
+From 0ba6ff7f5632f01143911e307be538ecc62e5094 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 19 Aug 2021 15:59:30 +0200
+Subject: [PATCH] drm/vc4: hdmi: Make sure the device is powered with
+ CEC
+
+Similarly to what we encountered with the detect hook with DRM, nothing
+actually prevents any of the CEC callback from being run while the HDMI
+output is disabled.
+
+However, this is an issue since any register access to the controller
+when it's powered down will result in a silent hang.
+
+Let's make sure we run the runtime_pm hooks when the CEC adapter is
+opened and closed by the userspace to avoid that issue.
+
+Fixes: 15b4511a4af6 ("drm/vc4: add HDMI CEC support")
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Link: https://patchwork.freedesktop.org/patch/msgid/20210819135931.895976-6-maxime@cerno.tech
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1753,8 +1753,14 @@ static int vc4_hdmi_cec_enable(struct ce
+ 	struct vc4_hdmi *vc4_hdmi = cec_get_drvdata(adap);
+ 	/* clock period in microseconds */
+ 	const u32 usecs = 1000000 / CEC_CLOCK_FREQ;
+-	u32 val = HDMI_READ(HDMI_CEC_CNTRL_5);
++	u32 val;
++	int ret;
+ 
++	ret = pm_runtime_resume_and_get(&vc4_hdmi->pdev->dev);
++	if (ret)
++		return ret;
++
++	val = HDMI_READ(HDMI_CEC_CNTRL_5);
+ 	val &= ~(VC4_HDMI_CEC_TX_SW_RESET | VC4_HDMI_CEC_RX_SW_RESET |
+ 		 VC4_HDMI_CEC_CNT_TO_4700_US_MASK |
+ 		 VC4_HDMI_CEC_CNT_TO_4500_US_MASK);
+@@ -1797,6 +1803,8 @@ static int vc4_hdmi_cec_disable(struct c
+ 	HDMI_WRITE(HDMI_CEC_CNTRL_5, HDMI_READ(HDMI_CEC_CNTRL_5) |
+ 		   VC4_HDMI_CEC_TX_SW_RESET | VC4_HDMI_CEC_RX_SW_RESET);
+ 
++	pm_runtime_put(&vc4_hdmi->pdev->dev);
++
+ 	return 0;
+ }
+ 
