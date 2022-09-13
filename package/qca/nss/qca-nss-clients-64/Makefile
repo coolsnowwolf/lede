@@ -3,11 +3,11 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=qca-nss-clients-64
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-clients.git
+PKG_SOURCE_URL:=https://source.codeaurora.org/quic/cc-qrdk/oss/lklm/nss-clients
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-04-23
-PKG_SOURCE_VERSION:=7e86daa6a51e8c1427a6342cc2076394ea0eab93
-PKG_MIRROR_HASH:=af8f20110bad3b57e4d9ed179b614f4079b8408c72071db1d7979fc64449f9ab
+PKG_SOURCE_DATE:=2021-04-29
+PKG_SOURCE_VERSION:=b93c72c1b72c591c2ddc2f0b24f0e2b457720118
+PKG_MIRROR_HASH:=fbfba64a364b095ea7c9a24cd7af96b63ab0bc29c179e1628c675aa223c0d063
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
@@ -17,7 +17,7 @@ define KernelPackage/qca-nss-drv-pppoe-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - PPPoE
-  DEPENDS:=@(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64 +kmod-ppp +kmod-pppoe
+  DEPENDS:=@TARGET_ipq807x +kmod-qca-nss-drv-64 +kmod-ppp +kmod-pppoe
   FILES:=$(PKG_BUILD_DIR)/pppoe/qca-nss-pppoe.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-pppoe)
 endef
@@ -31,7 +31,7 @@ define KernelPackage/qca-nss-drv-bridge-mgr-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS bridge manager
-  DEPENDS:=@(LINUX_5_10||LINUX_5_15) @(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64 +kmod-qca-nss-drv-vlan-mgr-64
+  DEPENDS:=@LINUX_5_10 @TARGET_ipq807x +kmod-qca-nss-drv-64 +kmod-qca-nss-drv-vlan-mgr-64
   FILES:=$(PKG_BUILD_DIR)/bridge/qca-nss-bridge-mgr.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-bridge-mgr)
 endef
@@ -45,7 +45,7 @@ define KernelPackage/qca-nss-drv-vlan-mgr-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS vlan manager
-  DEPENDS:=@(LINUX_5_10||LINUX_5_15) @(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64
+  DEPENDS:=@LINUX_5_10 @TARGET_ipq807x +kmod-qca-nss-drv-64
   FILES:=$(PKG_BUILD_DIR)/vlan/qca-nss-vlan.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-vlan)
 endef
