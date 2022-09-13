@@ -1,0 +1,118 @@
+From 99c7b8eabae7a6a6e6c5f53f3a9d0996b24e10b3 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 2 May 2022 15:27:36 +0200
+Subject: [PATCH] drm/vc4: crtc: Move the BO Handling out of Common
+ Page-Flip Handler
+
+The function vc4_async_page_flip() handles asynchronous page-flips in
+the vc4 driver.
+
+However, it mixes some generic code with code that should only be run on
+older generations that have the GPU handled by the vc4 driver.
+
+Let's split the generic part out of vc4_async_page_flip() and into a
+common function that we be reusable by an handler made for the BCM2711.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 75 ++++++++++++++++++++++------------
+ 1 file changed, 48 insertions(+), 27 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -912,40 +912,19 @@ static int vc4_async_set_fence_cb(struct
+ 	return 0;
+ }
+ 
+-/* Implements async (non-vblank-synced) page flips.
+- *
+- * The page flip ioctl needs to return immediately, so we grab the
+- * modeset semaphore on the pipe, and queue the address update for
+- * when V3D is done with the BO being flipped to.
+- */
+-static int vc4_async_page_flip(struct drm_crtc *crtc,
+-			       struct drm_framebuffer *fb,
+-			       struct drm_pending_vblank_event *event,
+-			       uint32_t flags)
++static int
++vc4_async_page_flip_common(struct drm_crtc *crtc,
++			   struct drm_framebuffer *fb,
++			   struct drm_pending_vblank_event *event,
++			   uint32_t flags)
+ {
+ 	struct drm_device *dev = crtc->dev;
+ 	struct drm_plane *plane = crtc->primary;
+-	int ret = 0;
+ 	struct vc4_async_flip_state *flip_state;
+-	struct drm_gem_cma_object *cma_bo = drm_fb_cma_get_gem_obj(fb, 0);
+-	struct vc4_bo *bo = to_vc4_bo(&cma_bo->base);
+-
+-	/* Increment the BO usecnt here, so that we never end up with an
+-	 * unbalanced number of vc4_bo_{dec,inc}_usecnt() calls when the
+-	 * plane is later updated through the non-async path.
+-	 * FIXME: we should move to generic async-page-flip when it's
+-	 * available, so that we can get rid of this hand-made prepare_fb()
+-	 * logic.
+-	 */
+-	ret = vc4_bo_inc_usecnt(bo);
+-	if (ret)
+-		return ret;
+ 
+ 	flip_state = kzalloc(sizeof(*flip_state), GFP_KERNEL);
+-	if (!flip_state) {
+-		vc4_bo_dec_usecnt(bo);
++	if (!flip_state)
+ 		return -ENOMEM;
+-	}
+ 
+ 	drm_framebuffer_get(fb);
+ 	flip_state->fb = fb;
+@@ -978,6 +957,48 @@ static int vc4_async_page_flip(struct dr
+ 	return 0;
+ }
+ 
++/* Implements async (non-vblank-synced) page flips.
++ *
++ * The page flip ioctl needs to return immediately, so we grab the
++ * modeset semaphore on the pipe, and queue the address update for
++ * when V3D is done with the BO being flipped to.
++ */
++static int vc4_async_page_flip(struct drm_crtc *crtc,
++			       struct drm_framebuffer *fb,
++			       struct drm_pending_vblank_event *event,
++			       uint32_t flags)
++{
++	struct drm_device *dev = crtc->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct drm_gem_cma_object *cma_bo = drm_fb_cma_get_gem_obj(fb, 0);
++	struct vc4_bo *bo = to_vc4_bo(&cma_bo->base);
++	int ret;
++
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
++	/*
++	 * Increment the BO usecnt here, so that we never end up with an
++	 * unbalanced number of vc4_bo_{dec,inc}_usecnt() calls when the
++	 * plane is later updated through the non-async path.
++	 *
++	 * FIXME: we should move to generic async-page-flip when
++	 * it's available, so that we can get rid of this
++	 * hand-made prepare_fb() logic.
++	 */
++	ret = vc4_bo_inc_usecnt(bo);
++	if (ret)
++		return ret;
++
++	ret = vc4_async_page_flip_common(crtc, fb, event, flags);
++	if (ret) {
++		vc4_bo_dec_usecnt(bo);
++		return ret;
++	}
++
++	return 0;
++}
++
+ int vc4_page_flip(struct drm_crtc *crtc,
+ 		  struct drm_framebuffer *fb,
+ 		  struct drm_pending_vblank_event *event,

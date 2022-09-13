@@ -1,0 +1,238 @@
+From 0377ad93031d3e51c2afe44231241185f684b6af Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Fri, 5 Mar 2021 15:14:32 +0100
+Subject: [PATCH 1/2] mips: bmips: automatically detect CPU frequency
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some BCM63xx SoCs support multiple CPU frequencies depending on HW config.
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+---
+ arch/mips/bmips/setup.c | 198 ++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 191 insertions(+), 7 deletions(-)
+
+--- a/arch/mips/bmips/setup.c
++++ b/arch/mips/bmips/setup.c
+@@ -31,11 +31,51 @@
+ 
+ #define RELO_NORMAL_VEC		BIT(18)
+ 
++#define REG_BCM6318_SOB		((void __iomem *)CKSEG1ADDR(0x10000900))
++#define BCM6318_FREQ_SHIFT	23
++#define BCM6318_FREQ_MASK	(0x3 << BCM6318_FREQ_SHIFT)
++
+ #define REG_BCM6328_OTP		((void __iomem *)CKSEG1ADDR(0x1000062c))
+ #define BCM6328_TP1_DISABLED	BIT(9)
++#define REG_BCM6328_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001a40))
++#define BCM6328_FCVO_SHIFT	7
++#define BCM6328_FCVO_MASK	(0x1f << BCM6328_FCVO_SHIFT)
++
++#define REG_BCM6358_DDR_PLLC	((void __iomem *)0xfffe12b8)
++#define BCM6358_PLLC_M1_SHIFT	0
++#define BCM6358_PLLC_M1_MASK	(0xff << BCM6358_PLLC_M1_SHIFT)
++#define BCM6358_PLLC_N1_SHIFT	23
++#define BCM6358_PLLC_N1_MASK	(0x3f << BCM6358_PLLC_N1_SHIFT)
++#define BCM6358_PLLC_N2_SHIFT	29
++#define BCM6358_PLLC_N2_MASK	(0x7 << BCM6358_PLLC_N2_SHIFT)
++
++#define REG_BCM6362_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001814))
++#define BCM6362_FCVO_SHIFT	1
++#define BCM6362_FCVO_MASK	(0x1f << BCM6362_FCVO_SHIFT)
++
++#define REG_BCM6368_DDR_PLLC	((void __iomem *)CKSEG1ADDR(0x100012a0))
++#define BCM6368_PLLC_P1_SHIFT	0
++#define BCM6368_PLLC_P1_MASK	(0xf << BCM6368_PLLC_P1_SHIFT)
++#define BCM6368_PLLC_P2_SHIFT	4
++#define BCM6368_PLLC_P2_MASK	(0xf << BCM6368_PLLC_P2_SHIFT)
++#define BCM6368_PLLC_NDIV_SHIFT	16
++#define BCM6368_PLLC_NDIV_MASK	(0x1ff << BCM6368_PLLC_NDIV_SHIFT)
++#define REG_BCM6368_DDR_PLLD	((void __iomem *)CKSEG1ADDR(0x100012a4))
++#define BCM6368_PLLD_MDIV_SHIFT	0
++#define BCM6368_PLLD_MDIV_MASK	(0xff << BCM6368_PLLD_MDIV_SHIFT)
++
++#define REG_BCM63268_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001814))
++#define BCM63268_FCVO_SHIFT	21
++#define BCM63268_FCVO_MASK	(0xf << BCM63268_FCVO_SHIFT)
++
+ 
+ static const unsigned long kbase = VMLINUX_LOAD_ADDRESS & 0xfff00000;
+ 
++struct bmips_cpufreq {
++	const char		*compatible;
++	u32			(*cpu_freq)(void);
++};
++
+ struct bmips_quirk {
+ 	const char		*compatible;
+ 	void			(*quirk_fn)(void);
+@@ -134,17 +174,161 @@ const char *get_system_type(void)
+ 	return "Generic BMIPS kernel";
+ }
+ 
++static u32 bcm6318_cpufreq(void)
++{
++	u32 val = __raw_readl(REG_BCM6318_SOB);
++
++	switch ((val & BCM6318_FREQ_MASK) >> BCM6318_FREQ_SHIFT) {
++	case 0:
++		return 166000000;
++	case 2:
++		return 250000000;
++	case 3:
++		return 333000000;
++	case 1:
++		return 400000000;
++	default:
++		return 0;
++	}
++}
++
++static u32 bcm6328_cpufreq(void)
++{
++	u32 val = __raw_readl(REG_BCM6328_MISC_SB);
++
++	switch ((val & BCM6328_FCVO_MASK) >> BCM6328_FCVO_SHIFT) {
++	case 0x12:
++	case 0x14:
++	case 0x19:
++		return 160000000;
++	case 0x1c:
++		return 192000000;
++	case 0x13:
++	case 0x15:
++		return 200000000;
++	case 0x1a:
++		return 384000000;
++	case 0x16:
++		return 400000000;
++	default:
++		return 320000000;
++	}
++}
++
++static u32 bcm6358_cpufreq(void)
++{
++	u32 val, n1, n2, m1;
++
++	val = __raw_readl(REG_BCM6358_DDR_PLLC);
++	n1 = (val & BCM6358_PLLC_N1_MASK) >> BCM6358_PLLC_N1_SHIFT;
++	n2 = (val & BCM6358_PLLC_N2_MASK) >> BCM6358_PLLC_N2_SHIFT;
++	m1 = (val & BCM6358_PLLC_M1_MASK) >> BCM6358_PLLC_M1_SHIFT;
++
++	return (16 * 1000000 * n1 * n2) / m1;
++}
++
++static u32 bcm6362_cpufreq(void)
++{
++	u32 val = __raw_readl(REG_BCM6362_MISC_SB);
++
++	switch ((val & BCM6362_FCVO_MASK) >> BCM6362_FCVO_SHIFT) {
++	case 0x04:
++	case 0x0c:
++	case 0x14:
++	case 0x1c:
++		return 160000000;
++	case 0x15:
++	case 0x1d:
++		return 200000000;
++	case 0x03:
++	case 0x0b:
++	case 0x13:
++	case 0x1b:
++		return 240000000;
++	case 0x07:
++	case 0x17:
++		return 384000000;
++	case 0x05:
++	case 0x0e:
++	case 0x16:
++	case 0x1e:
++	case 0x1f:
++		return 400000000;
++	case 0x06:
++		return 440000000;
++	default:
++		return 320000000;
++	}
++}
++
++static u32 bcm6368_cpufreq(void)
++{
++	u32 val, p1, p2, ndiv, m1;
++
++	val = __raw_readl(REG_BCM6368_DDR_PLLC);
++	p1 = (val & BCM6368_PLLC_P1_MASK) >> BCM6368_PLLC_P1_SHIFT;
++	p2 = (val & BCM6368_PLLC_P2_MASK) >> BCM6368_PLLC_P2_SHIFT;
++	ndiv = (val & BCM6368_PLLC_NDIV_MASK) >>
++	       BCM6368_PLLC_NDIV_SHIFT;
++
++	val = __raw_readl(REG_BCM6368_DDR_PLLD);
++	m1 = (val & BCM6368_PLLD_MDIV_MASK) >> BCM6368_PLLD_MDIV_SHIFT;
++
++	return (((64 * 1000000) / p1) * p2 * ndiv) / m1;
++}
++
++static u32 bcm63268_cpufreq(void)
++{
++	u32 val = __raw_readl(REG_BCM63268_MISC_SB);
++
++	switch ((val & BCM63268_FCVO_MASK) >> BCM63268_FCVO_SHIFT) {
++	case 0x3:
++	case 0xe:
++		return 320000000;
++	case 0xa:
++		return 333000000;
++	case 0x2:
++	case 0xb:
++	case 0xf:
++		return 400000000;
++	default:
++		return 0;
++	}
++}
++
++static const struct bmips_cpufreq bmips_cpufreq_list[] = {
++	{ "brcm,bcm6318", &bcm6318_cpufreq },
++	{ "brcm,bcm6328", &bcm6328_cpufreq },
++	{ "brcm,bcm6358", &bcm6358_cpufreq },
++	{ "brcm,bcm6362", &bcm6362_cpufreq },
++	{ "brcm,bcm6368", &bcm6368_cpufreq },
++	{ "brcm,bcm63268", &bcm63268_cpufreq },
++	{ /* sentinel */ }
++};
++
+ void __init plat_time_init(void)
+ {
++	const struct bmips_cpufreq *cf;
+ 	struct device_node *np;
+-	u32 freq;
++	u32 freq = 0;
+ 
+-	np = of_find_node_by_name(NULL, "cpus");
+-	if (!np)
+-		panic("missing 'cpus' DT node");
+-	if (of_property_read_u32(np, "mips-hpt-frequency", &freq) < 0)
+-		panic("missing 'mips-hpt-frequency' property");
+-	of_node_put(np);
++	for (cf = bmips_cpufreq_list; cf->cpu_freq; cf++) {
++		if (of_flat_dt_is_compatible(of_get_flat_dt_root(),
++					     cf->compatible)) {
++			freq = cf->cpu_freq() / 2;
++			printk("%s detected @ %u MHz\n", cf->compatible, freq / 500000);
++			break;
++		}
++	}
++
++	if (!freq) {
++		np = of_find_node_by_name(NULL, "cpus");
++		if (!np)
++			panic("missing 'cpus' DT node");
++		if (of_property_read_u32(np, "mips-hpt-frequency", &freq) < 0)
++			panic("missing 'mips-hpt-frequency' property");
++		of_node_put(np);
++	}
+ 
+ 	mips_hpt_frequency = freq;
+ }

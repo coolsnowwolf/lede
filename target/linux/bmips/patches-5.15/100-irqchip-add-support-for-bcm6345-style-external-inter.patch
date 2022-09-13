@@ -1,0 +1,392 @@
+From cf908990d4a8ccdb73ee4484aa8cadad379ca314 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jogo@openwrt.org>
+Date: Sun, 30 Nov 2014 14:54:27 +0100
+Subject: [PATCH 2/5] irqchip: add support for bcm6345-style external
+ interrupt controller
+
+Signed-off-by: Jonas Gorski <jogo@openwrt.org>
+---
+ .../interrupt-controller/brcm,bcm6345-ext-intc.txt |   29 ++
+ drivers/irqchip/Kconfig                            |    4 +
+ drivers/irqchip/Makefile                           |    1 +
+ drivers/irqchip/irq-bcm6345-ext.c                  |  287 ++++++++++++++++++++
+ include/linux/irqchip/irq-bcm6345-ext.h            |   14 +
+ 5 files changed, 335 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/interrupt-controller/brcm,bcm6345-ext-intc.txt
+ create mode 100644 drivers/irqchip/irq-bcm6345-ext.c
+ create mode 100644 include/linux/irqchip/irq-bcm6345-ext.h
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/interrupt-controller/brcm,bcm6345-ext-intc.txt
+@@ -0,0 +1,29 @@
++Broadcom BCM6345-style external interrupt controller
++
++Required properties:
++
++- compatible: Should be "brcm,bcm6345-ext-intc" or "brcm,bcm6318-ext-intc".
++- reg: Specifies the base physical addresses and size of the registers.
++- interrupt-controller: identifies the node as an interrupt controller.
++- #interrupt-cells: Specifies the number of cells needed to encode an interrupt
++  source, Should be 2.
++- interrupt-parent: Specifies the phandle to the parent interrupt controller
++  this one is cascaded from.
++- interrupts: Specifies the interrupt line(s) in the interrupt-parent controller
++  node, valid values depend on the type of parent interrupt controller.
++
++Optional properties:
++
++- brcm,field-width: Size of each field (mask, clear, sense, ...) in bits in the
++  register. Defaults to 4.
++
++Example:
++
++ext_intc: interrupt-controller@10000018 {
++	compatible = "brcm,bcm6345-ext-intc";
++	interrupt-parent = <&periph_intc>;
++	#interrupt-cells = <2>;
++	reg = <0x10000018 0x4>;
++	interrupt-controller;
++	interrupts = <24>, <25>, <26>, <27>;
++};
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -108,6 +108,10 @@ config I8259
+ 	bool
+ 	select IRQ_DOMAIN
+ 
++config BCM6345_EXT_IRQ
++	bool "BCM6345 External IRQ Controller"
++	select IRQ_DOMAIN
++
+ config BCM6345_L1_IRQ
+ 	bool
+ 	select GENERIC_IRQ_CHIP
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -62,6 +62,7 @@ obj-$(CONFIG_XTENSA_MX)			+= irq-xtensa-
+ obj-$(CONFIG_XILINX_INTC)		+= irq-xilinx-intc.o
+ obj-$(CONFIG_IRQ_CROSSBAR)		+= irq-crossbar.o
+ obj-$(CONFIG_SOC_VF610)			+= irq-vf610-mscm-ir.o
++obj-$(CONFIG_BCM6345_EXT_IRQ)		+= irq-bcm6345-ext.o
+ obj-$(CONFIG_BCM6345_L1_IRQ)		+= irq-bcm6345-l1.o
+ obj-$(CONFIG_BCM7038_L1_IRQ)		+= irq-bcm7038-l1.o
+ obj-$(CONFIG_BCM7120_L2_IRQ)		+= irq-bcm7120-l2.o
+--- /dev/null
++++ b/drivers/irqchip/irq-bcm6345-ext.c
+@@ -0,0 +1,299 @@
++/*
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file "COPYING" in the main directory of this archive
++ * for more details.
++ *
++ * Copyright (C) 2014 Jonas Gorski <jogo@openwrt.org>
++ */
++
++#include <linux/ioport.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/irqchip/irq-bcm6345-ext.h>
++#include <linux/kernel.h>
++#include <linux/of.h>
++#include <linux/of_irq.h>
++#include <linux/of_address.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++
++#ifdef CONFIG_BCM63XX
++#include <asm/mach-bcm63xx/bcm63xx_irq.h>
++
++#define VIRQ_BASE		IRQ_EXTERNAL_BASE
++#else
++#define VIRQ_BASE		0
++#endif
++
++#define MAX_IRQS		4
++
++#define EXTIRQ_CFG_SENSE	0
++#define EXTIRQ_CFG_STAT		1
++#define EXTIRQ_CFG_CLEAR	2
++#define EXTIRQ_CFG_MASK		3
++#define EXTIRQ_CFG_BOTHEDGE	4
++#define EXTIRQ_CFG_LEVELSENSE	5
++
++struct intc_data {
++	struct irq_chip chip;
++	struct irq_domain *domain;
++	raw_spinlock_t lock;
++
++	int parent_irq[MAX_IRQS];
++	void __iomem *reg;
++	int shift;
++	unsigned int toggle_clear_on_ack:1;
++};
++
++static void bcm6345_ext_intc_irq_handle(struct irq_desc *desc)
++{
++	struct intc_data *data = irq_desc_get_handler_data(desc);
++	struct irq_chip *chip = irq_desc_get_chip(desc);
++	unsigned int irq = irq_desc_get_irq(desc);
++	unsigned int idx;
++
++	chained_irq_enter(chip, desc);
++
++	for (idx = 0; idx < MAX_IRQS; idx++) {
++		if (data->parent_irq[idx] != irq)
++			continue;
++
++		generic_handle_irq(irq_find_mapping(data->domain, idx));
++	}
++
++	chained_irq_exit(chip, desc);
++}
++
++static void bcm6345_ext_intc_irq_ack(struct irq_data *data)
++{
++	struct intc_data *priv = data->domain->host_data;
++	irq_hw_number_t hwirq = irqd_to_hwirq(data);
++	u32 reg;
++
++	raw_spin_lock(&priv->lock);
++	reg = __raw_readl(priv->reg);
++	__raw_writel(reg | (1 << (hwirq + EXTIRQ_CFG_CLEAR * priv->shift)),
++		     priv->reg);
++	if (priv->toggle_clear_on_ack)
++		__raw_writel(reg, priv->reg);
++	raw_spin_unlock(&priv->lock);
++}
++
++static void bcm6345_ext_intc_irq_mask(struct irq_data *data)
++{
++	struct intc_data *priv = data->domain->host_data;
++	irq_hw_number_t hwirq = irqd_to_hwirq(data);
++	u32 reg;
++
++	raw_spin_lock(&priv->lock);
++	reg = __raw_readl(priv->reg);
++	reg &= ~(1 << (hwirq + EXTIRQ_CFG_MASK * priv->shift));
++	__raw_writel(reg, priv->reg);
++	raw_spin_unlock(&priv->lock);
++}
++
++static void bcm6345_ext_intc_irq_unmask(struct irq_data *data)
++{
++	struct intc_data *priv = data->domain->host_data;
++	irq_hw_number_t hwirq = irqd_to_hwirq(data);
++	u32 reg;
++
++	raw_spin_lock(&priv->lock);
++	reg = __raw_readl(priv->reg);
++	reg |= 1 << (hwirq + EXTIRQ_CFG_MASK * priv->shift);
++	__raw_writel(reg, priv->reg);
++	raw_spin_unlock(&priv->lock);
++}
++
++static int bcm6345_ext_intc_set_type(struct irq_data *data,
++				     unsigned int flow_type)
++{
++	struct intc_data *priv = data->domain->host_data;
++	irq_hw_number_t hwirq = irqd_to_hwirq(data);
++	bool levelsense = 0, sense = 0, bothedge = 0;
++	u32 reg;
++
++	flow_type &= IRQ_TYPE_SENSE_MASK;
++
++	if (flow_type == IRQ_TYPE_NONE)
++		flow_type = IRQ_TYPE_LEVEL_LOW;
++
++	switch (flow_type) {
++	case IRQ_TYPE_EDGE_BOTH:
++		bothedge = 1;
++		break;
++
++	case IRQ_TYPE_EDGE_RISING:
++		sense = 1;
++		break;
++
++	case IRQ_TYPE_EDGE_FALLING:
++		break;
++
++	case IRQ_TYPE_LEVEL_HIGH:
++		levelsense = 1;
++		sense = 1;
++		break;
++
++	case IRQ_TYPE_LEVEL_LOW:
++		levelsense = 1;
++		break;
++
++	default:
++		pr_err("bogus flow type combination given!\n");
++		return -EINVAL;
++	}
++
++	raw_spin_lock(&priv->lock);
++	reg = __raw_readl(priv->reg);
++
++	if (levelsense)
++		reg |= 1 << (hwirq + EXTIRQ_CFG_LEVELSENSE * priv->shift);
++	else
++		reg &= ~(1 << (hwirq + EXTIRQ_CFG_LEVELSENSE * priv->shift));
++	if (sense)
++		reg |= 1 << (hwirq + EXTIRQ_CFG_SENSE * priv->shift);
++	else
++		reg &= ~(1 << (hwirq + EXTIRQ_CFG_SENSE * priv->shift));
++	if (bothedge)
++		reg |= 1 << (hwirq + EXTIRQ_CFG_BOTHEDGE * priv->shift);
++	else
++		reg &= ~(1 << (hwirq + EXTIRQ_CFG_BOTHEDGE * priv->shift));
++
++	__raw_writel(reg, priv->reg);
++	raw_spin_unlock(&priv->lock);
++
++	irqd_set_trigger_type(data, flow_type);
++	if (flow_type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
++		irq_set_handler_locked(data, handle_level_irq);
++	else
++		irq_set_handler_locked(data, handle_edge_irq);
++
++	return 0;
++}
++
++static int bcm6345_ext_intc_map(struct irq_domain *d, unsigned int irq,
++				irq_hw_number_t hw)
++{
++	struct intc_data *priv = d->host_data;
++
++	irq_set_chip_and_handler(irq, &priv->chip, handle_level_irq);
++
++	return 0;
++}
++
++static const struct irq_domain_ops bcm6345_ext_domain_ops = {
++	.xlate = irq_domain_xlate_twocell,
++	.map = bcm6345_ext_intc_map,
++};
++
++static int __init __bcm6345_ext_intc_init(struct device_node *node,
++					  int num_irqs, int *irqs,
++					  void __iomem *reg, int shift,
++					  bool toggle_clear_on_ack)
++{
++	struct intc_data *data;
++	unsigned int i;
++	int start = VIRQ_BASE;
++
++	data = kzalloc(sizeof(*data), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	raw_spin_lock_init(&data->lock);
++
++	for (i = 0; i < num_irqs; i++) {
++		data->parent_irq[i] = irqs[i];
++
++		irq_set_handler_data(irqs[i], data);
++		irq_set_chained_handler(irqs[i], bcm6345_ext_intc_irq_handle);
++	}
++
++	data->reg = reg;
++	data->shift = shift;
++	data->toggle_clear_on_ack = toggle_clear_on_ack;
++
++	data->chip.name = "bcm6345-ext-intc";
++	data->chip.irq_ack = bcm6345_ext_intc_irq_ack;
++	data->chip.irq_mask = bcm6345_ext_intc_irq_mask;
++	data->chip.irq_unmask = bcm6345_ext_intc_irq_unmask;
++	data->chip.irq_set_type = bcm6345_ext_intc_set_type;
++
++	/*
++	 * If we have less than 4 irqs, this is the second controller on
++	 * bcm63xx. So increase the VIRQ start to not overlap with the first
++	 * one, but only do so if we actually use a non-zero start.
++	 *
++	 * This can be removed when bcm63xx has no legacy users anymore.
++	 */
++	if (start && num_irqs < 4)
++		start += 4;
++
++	data->domain = irq_domain_add_simple(node, num_irqs, start,
++					     &bcm6345_ext_domain_ops, data);
++	if (!data->domain) {
++		kfree(data);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++void __init bcm6345_ext_intc_init(int num_irqs, int *irqs, void __iomem *reg,
++				  int shift)
++{
++	__bcm6345_ext_intc_init(NULL, num_irqs, irqs, reg, shift, false);
++}
++
++#ifdef CONFIG_OF
++static int __init bcm6345_ext_intc_of_init(struct device_node *node,
++					   struct device_node *parent)
++{
++	int num_irqs, ret = -EINVAL;
++	unsigned i;
++	void __iomem *base;
++	int irqs[MAX_IRQS] = { 0 };
++	u32 shift;
++	bool toggle_clear_on_ack = false;
++
++	num_irqs = of_irq_count(node);
++
++	if (!num_irqs || num_irqs > MAX_IRQS)
++		return -EINVAL;
++
++	if (of_property_read_u32(node, "brcm,field-width", &shift))
++		shift = 4;
++
++	/* on BCM6318 setting CLEAR seems to continuously mask interrupts */
++	if (of_device_is_compatible(node, "brcm,bcm6318-ext-intc"))
++		toggle_clear_on_ack = true;
++
++	for (i = 0; i < num_irqs; i++) {
++		irqs[i] = irq_of_parse_and_map(node, i);
++		if (!irqs[i])
++			return -ENOMEM;
++	}
++
++	base = of_iomap(node, 0);
++	if (!base)
++		return -ENXIO;
++
++	ret = __bcm6345_ext_intc_init(node, num_irqs, irqs, base, shift,
++				      toggle_clear_on_ack);
++	if (!ret)
++		return 0;
++
++	iounmap(base);
++
++	for (i = 0; i < num_irqs; i++)
++		irq_dispose_mapping(irqs[i]);
++
++	return ret;
++}
++
++IRQCHIP_DECLARE(bcm6318_ext_intc, "brcm,bcm6318-ext-intc",
++		bcm6345_ext_intc_of_init);
++IRQCHIP_DECLARE(bcm6345_ext_intc, "brcm,bcm6345-ext-intc",
++		bcm6345_ext_intc_of_init);
++#endif
+--- /dev/null
++++ b/include/linux/irqchip/irq-bcm6345-ext.h
+@@ -0,0 +1,14 @@
++/*
++ * This file is subject to the terms and conditions of the GNU General Public
++ * License.  See the file "COPYING" in the main directory of this archive
++ * for more details.
++ *
++ * Copyright (C) 2014 Jonas Gorski <jogo@openwrt.org>
++ */
++
++#ifndef __INCLUDE_LINUX_IRQCHIP_IRQ_BCM6345_EXT_H
++#define __INCLUDE_LINUX_IRQCHIP_IRQ_BCM6345_EXT_H
++
++void bcm6345_ext_intc_init(int n_irqs, int *irqs, void __iomem *reg, int shift);
++
++#endif /* __INCLUDE_LINUX_IRQCHIP_IRQ_BCM6345_EXT_H */

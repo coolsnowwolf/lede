@@ -1,0 +1,85 @@
+From 3df60f3d0615c011e91b7d6f39cb9123b2e96530 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 20 Sep 2021 14:37:17 +0100
+Subject: [PATCH] staging: bcm2835-codec: Add support for H&V Flips to
+ ISP
+
+The ISP can do H & V flips whilst resizing or converting
+the image, so expose that via V4L2_CID_[H|V]FLIP.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 48 +++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -679,6 +679,9 @@ struct bcm2835_codec_ctx {
+ 	enum v4l2_xfer_func	xfer_func;
+ 	enum v4l2_quantization	quant;
+ 
++	int hflip;
++	int vflip;
++
+ 	/* Source and destination queue data */
+ 	struct bcm2835_codec_q_data   q_data[2];
+ 	s32  bitrate;
+@@ -2202,6 +2205,34 @@ static int bcm2835_codec_s_ctrl(struct v
+ 						    sizeof(mmal_bool));
+ 		break;
+ 	}
++	case V4L2_CID_HFLIP:
++	case V4L2_CID_VFLIP: {
++		u32 u32_value;
++
++		if (ctrl->id == V4L2_CID_HFLIP)
++			ctx->hflip = ctrl->val;
++		else
++			ctx->vflip = ctrl->val;
++
++		if (!ctx->component)
++			break;
++
++		if (ctx->hflip && ctx->vflip)
++			u32_value = MMAL_PARAM_MIRROR_BOTH;
++		else if (ctx->hflip)
++			u32_value = MMAL_PARAM_MIRROR_HORIZONTAL;
++		else if (ctx->vflip)
++			u32_value = MMAL_PARAM_MIRROR_VERTICAL;
++		else
++			u32_value = MMAL_PARAM_MIRROR_NONE;
++
++		ret = vchiq_mmal_port_parameter_set(ctx->dev->instance,
++						    &ctx->component->input[0],
++						    MMAL_PARAMETER_MIRROR,
++						    &u32_value,
++						    sizeof(u32_value));
++		break;
++	}
+ 
+ 	default:
+ 		v4l2_err(&ctx->dev->v4l2_dev, "Invalid control\n");
+@@ -3152,6 +3183,23 @@ static int bcm2835_codec_open(struct fil
+ 	}
+ 	break;
+ 	case ISP:
++	{
++		v4l2_ctrl_handler_init(hdl, 2);
++
++		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_HFLIP,
++				  1, 0, 1, 0);
++		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
++				  V4L2_CID_VFLIP,
++				  1, 0, 1, 0);
++		if (hdl->error) {
++			rc = hdl->error;
++			goto free_ctrl_handler;
++		}
++		ctx->fh.ctrl_handler = hdl;
++		v4l2_ctrl_handler_setup(hdl);
++	}
++	break;
+ 	case DEINTERLACE:
+ 	{
+ 		v4l2_ctrl_handler_init(hdl, 0);
