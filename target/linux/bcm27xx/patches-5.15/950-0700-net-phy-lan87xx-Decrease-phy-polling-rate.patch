@@ -1,0 +1,55 @@
+From 01649f43afb30df3c7450fd09c04a5a8ee6cb2c1 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 3 Feb 2022 15:51:41 +0000
+Subject: [PATCH] net: phy: lan87xx: Decrease phy polling rate
+
+Polling at 100Hz for 1.5s consumes quite a bit of kworker time with no
+obvious benefit. Reduce that polling rate to ~6Hz.
+
+To further save CPU and power, defer the next poll if no energy is
+detected.
+
+See: https://github.com/raspberrypi/linux/issues/4780
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/net/phy/smsc.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/smsc.c
++++ b/drivers/net/phy/smsc.c
+@@ -220,6 +220,8 @@ static int lan87xx_read_status(struct ph
+ 	int err = genphy_read_status(phydev);
+ 
+ 	if (!phydev->link && priv->energy_enable && phydev->irq == PHY_POLL) {
++		int energy_detected;
++
+ 		/* Disable EDPD to wake up PHY */
+ 		int rc = phy_read(phydev, MII_LAN83C185_CTRL_STATUS);
+ 		if (rc < 0)
+@@ -235,7 +237,7 @@ static int lan87xx_read_status(struct ph
+ 		 */
+ 		read_poll_timeout(phy_read, rc,
+ 				  rc & MII_LAN83C185_ENERGYON || rc < 0,
+-				  10000, 1500000, true, phydev,
++				  150000, 1500000, true, phydev,
+ 				  MII_LAN83C185_CTRL_STATUS);
+ 		if (rc < 0)
+ 			return rc;
+@@ -245,10 +247,16 @@ static int lan87xx_read_status(struct ph
+ 		if (rc < 0)
+ 			return rc;
+ 
++		energy_detected = !!(rc & MII_LAN83C185_ENERGYON);
++
+ 		rc = phy_write(phydev, MII_LAN83C185_CTRL_STATUS,
+ 			       rc | MII_LAN83C185_EDPWRDOWN);
+ 		if (rc < 0)
+ 			return rc;
++
++		/* Save CPU and power by deferring the next poll */
++		if (!energy_detected)
++			msleep(2000);
+ 	}
+ 
+ 	return err;

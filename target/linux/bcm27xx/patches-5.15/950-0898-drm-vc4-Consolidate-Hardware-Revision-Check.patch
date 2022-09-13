@@ -1,0 +1,352 @@
+From def27ddc4bcd560f7e7a53d7aecc4ba4f78921e1 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 21 Apr 2022 14:27:11 +0200
+Subject: [PATCH] drm/vc4: Consolidate Hardware Revision Check
+
+A new generation of controller has been introduced with the
+BCM2711/RaspberryPi4. This generation needs a bunch of quirks, and over
+time we've piled on a number of checks in most parts of the drivers.
+
+All these checks are performed several times, and are not always
+consistent. Let's create a single, global, variable to hold it and use
+it everywhere.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c  | 10 +++++-----
+ drivers/gpu/drm/vc4/vc4_drv.c   |  4 ++++
+ drivers/gpu/drm/vc4/vc4_drv.h   |  6 +++---
+ drivers/gpu/drm/vc4/vc4_hvs.c   | 26 +++++++++++++-------------
+ drivers/gpu/drm/vc4/vc4_kms.c   | 12 +++++-------
+ drivers/gpu/drm/vc4/vc4_plane.c | 13 ++++++-------
+ 6 files changed, 36 insertions(+), 35 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -256,7 +256,7 @@ static u32 vc4_get_fifo_full_level(struc
+ 		 * Removing 1 from the FIFO full level however
+ 		 * seems to completely remove that issue.
+ 		 */
+-		if (!vc4->hvs->hvs5)
++		if (!vc4->is_vc5)
+ 			return fifo_len_bytes - 3 * HVS_FIFO_LATENCY_PIX - 1;
+ 
+ 		return fifo_len_bytes - 3 * HVS_FIFO_LATENCY_PIX;
+@@ -425,7 +425,7 @@ static void vc4_crtc_config_pv(struct dr
+ 	if (is_dsi)
+ 		CRTC_WRITE(PV_HACT_ACT, mode->hdisplay * pixel_rep);
+ 
+-	if (vc4->hvs->hvs5)
++	if (vc4->is_vc5)
+ 		CRTC_WRITE(PV_MUX_CFG,
+ 			   VC4_SET_FIELD(PV_MUX_CFG_RGB_PIXEL_MUX_MODE_NO_SWAP,
+ 					 PV_MUX_CFG_RGB_PIXEL_MUX_MODE));
+@@ -883,7 +883,7 @@ static int vc4_async_set_fence_cb(struct
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct dma_fence *fence;
+ 
+-	if (!vc4->hvs->hvs5) {
++	if (!vc4->is_vc5) {
+ 		struct vc4_bo *bo = to_vc4_bo(&cma_bo->base);
+ 
+ 		return vc4_queue_seqno_cb(dev, &flip_state->cb, bo->seqno,
+@@ -1225,13 +1225,13 @@ int vc4_crtc_init(struct drm_device *drm
+ 				  crtc_funcs, NULL);
+ 	drm_crtc_helper_add(crtc, crtc_helper_funcs);
+ 
+-	if (!vc4->hvs->hvs5) {
++	if (!vc4->is_vc5) {
+ 		drm_mode_crtc_set_gamma_size(crtc, ARRAY_SIZE(vc4_crtc->lut_r));
+ 		drm_crtc_enable_color_mgmt(crtc, 0, false, crtc->gamma_size);
+ 	}
+ 
+ 
+-	if (!vc4->hvs->hvs5) {
++	if (!vc4->is_vc5) {
+ 		/* We support CTM, but only for one CRTC at a time. It's therefore
+ 		 * implemented as private driver state in vc4_kms, not here.
+ 		 */
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -247,10 +247,13 @@ static int vc4_drm_bind(struct device *d
+ 	struct vc4_dev *vc4;
+ 	struct device_node *node;
+ 	struct drm_crtc *crtc;
++	bool is_vc5;
+ 	int ret = 0;
+ 
+ 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
+ 
++	is_vc5 = of_device_is_compatible(dev->of_node, "brcm,bcm2711-vc5");
++
+ 	/* If VC4 V3D is missing, don't advertise render nodes. */
+ 	node = of_find_matching_node_and_match(NULL, vc4_v3d_dt_match, NULL);
+ 	if (!node || !of_device_is_available(node))
+@@ -270,6 +273,7 @@ static int vc4_drm_bind(struct device *d
+ 	vc4 = devm_drm_dev_alloc(dev, &vc4_drm_driver, struct vc4_dev, base);
+ 	if (IS_ERR(vc4))
+ 		return PTR_ERR(vc4);
++	vc4->is_vc5 = is_vc5;
+ 
+ 	drm = &vc4->base;
+ 	platform_set_drvdata(pdev, drm);
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -75,6 +75,8 @@ struct vc4_perfmon {
+ struct vc4_dev {
+ 	struct drm_device base;
+ 
++	bool is_vc5;
++
+ 	unsigned int irq;
+ 
+ 	bool firmware_kms;
+@@ -321,6 +323,7 @@ struct vc4_v3d {
+ };
+ 
+ struct vc4_hvs {
++	struct vc4_dev *vc4;
+ 	struct platform_device *pdev;
+ 	void __iomem *regs;
+ 	u32 __iomem *dlist;
+@@ -339,9 +342,6 @@ struct vc4_hvs {
+ 
+ 	struct debugfs_regset32 regset;
+ 
+-	/* HVS version 5 flag, therefore requires updated dlist structures */
+-	bool hvs5;
+-
+ 	/*
+ 	 * Even if HDMI0 on the RPi4 can output modes requiring a pixel
+ 	 * rate higher than 297MHz, it needs some adjustments in the
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -413,10 +413,11 @@ static void vc5_hvs_update_gamma_lut(str
+ 
+ int vc4_hvs_get_fifo_from_output(struct vc4_hvs *hvs, unsigned int output)
+ {
++	struct vc4_dev *vc4 = hvs->vc4;
+ 	u32 reg;
+ 	int ret;
+ 
+-	if (!hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		return output;
+ 
+ 	switch (output) {
+@@ -466,6 +467,7 @@ int vc4_hvs_get_fifo_from_output(struct
+ static int vc4_hvs_init_channel(struct vc4_hvs *hvs, struct drm_crtc *crtc,
+ 				struct drm_display_mode *mode, bool oneshot)
+ {
++	struct vc4_dev *vc4 = hvs->vc4;
+ 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+ 	struct vc4_crtc_state *vc4_crtc_state = to_vc4_crtc_state(crtc->state);
+ 	unsigned int chan = vc4_crtc_state->assigned_channel;
+@@ -484,7 +486,7 @@ static int vc4_hvs_init_channel(struct v
+ 	 */
+ 	dispctrl = SCALER_DISPCTRLX_ENABLE;
+ 
+-	if (!hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		dispctrl |= VC4_SET_FIELD(mode->hdisplay,
+ 					  SCALER_DISPCTRLX_WIDTH) |
+ 			    VC4_SET_FIELD(mode->vdisplay,
+@@ -514,7 +516,7 @@ static int vc4_hvs_init_channel(struct v
+ 	/* Reload the LUT, since the SRAMs would have been disabled if
+ 	 * all CRTCs had SCALER_DISPBKGND_GAMMA unset at once.
+ 	 */
+-	if (!hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		vc4_hvs_lut_load(hvs, vc4_crtc);
+ 	else
+ 		vc5_hvs_lut_load(hvs, vc4_crtc);
+@@ -553,7 +555,7 @@ static int vc4_hvs_gamma_check(struct dr
+ 	struct drm_device *dev = crtc->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
+-	if (!vc4->hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		return 0;
+ 
+ 	if (!crtc_state->color_mgmt_changed)
+@@ -780,7 +782,7 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		u32 dispbkgndx = HVS_READ(SCALER_DISPBKGNDX(channel));
+ 
+ 		if (crtc->state->gamma_lut) {
+-			if (!vc4->hvs->hvs5) {
++			if (!vc4->is_vc5) {
+ 				vc4_hvs_update_gamma_lut(hvs, vc4_crtc);
+ 				dispbkgndx |= SCALER_DISPBKGND_GAMMA;
+ 			} else {
+@@ -797,7 +799,7 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 			 * should already be disabling/enabling the pipeline
+ 			 * when gamma changes.
+ 			 */
+-			if (!vc4->hvs->hvs5)
++			if (!vc4->is_vc5)
+ 				dispbkgndx &= ~SCALER_DISPBKGND_GAMMA;
+ 		}
+ 		HVS_WRITE(SCALER_DISPBKGNDX(channel), dispbkgndx);
+@@ -883,11 +885,9 @@ static int vc4_hvs_bind(struct device *d
+ 	if (!hvs)
+ 		return -ENOMEM;
+ 
++	hvs->vc4 = vc4;
+ 	hvs->pdev = pdev;
+ 
+-	if (of_device_is_compatible(pdev->dev.of_node, "brcm,bcm2711-hvs"))
+-		hvs->hvs5 = true;
+-
+ 	hvs->regs = vc4_ioremap_regs(pdev, 0);
+ 	if (IS_ERR(hvs->regs))
+ 		return PTR_ERR(hvs->regs);
+@@ -896,7 +896,7 @@ static int vc4_hvs_bind(struct device *d
+ 	hvs->regset.regs = hvs_regs;
+ 	hvs->regset.nregs = ARRAY_SIZE(hvs_regs);
+ 
+-	if (hvs->hvs5) {
++	if (vc4->is_vc5) {
+ 		unsigned long max_rate;
+ 
+ 		hvs->core_clk = devm_clk_get(&pdev->dev, NULL);
+@@ -916,7 +916,7 @@ static int vc4_hvs_bind(struct device *d
+ 		}
+ 	}
+ 
+-	if (!hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		hvs->dlist = hvs->regs + SCALER_DLIST_START;
+ 	else
+ 		hvs->dlist = hvs->regs + SCALER5_DLIST_START;
+@@ -937,7 +937,7 @@ static int vc4_hvs_bind(struct device *d
+ 	 * between planes when they don't overlap on the screen, but
+ 	 * for now we just allocate globally.
+ 	 */
+-	if (!hvs->hvs5)
++	if (!vc4->is_vc5)
+ 		/* 48k words of 2x12-bit pixels */
+ 		drm_mm_init(&hvs->lbm_mm, 0, 48 * 1024);
+ 	else
+@@ -1008,7 +1008,7 @@ static int vc4_hvs_bind(struct device *d
+ 			     NULL);
+ 	vc4_debugfs_add_file(drm, "hvs_dlists", vc4_hvs_debugfs_dlist,
+ 			     NULL);
+-	if (hvs->hvs5)
++	if (vc4->is_vc5)
+ 		vc4_debugfs_add_file(drm, "hvs_gamma", vc5_hvs_debugfs_gamma,
+ 				     NULL);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -395,7 +395,7 @@ static void vc4_atomic_commit_tail(struc
+ 		old_hvs_state->fifo_state[channel].pending_commit = NULL;
+ 	}
+ 
+-	if (vc4->hvs && vc4->hvs->hvs5) {
++	if (vc4->is_vc5 && !vc4->firmware_kms) {
+ 		unsigned long state_rate = max(old_hvs_state->core_clock_rate,
+ 					       new_hvs_state->core_clock_rate);
+ 		unsigned long core_rate = clamp_t(unsigned long, state_rate,
+@@ -409,7 +409,7 @@ static void vc4_atomic_commit_tail(struc
+ 	vc4_ctm_commit(vc4, state);
+ 
+ 	if (!vc4->firmware_kms) {
+-		if (vc4->hvs && vc4->hvs->hvs5)
++		if (vc4->is_vc5)
+ 			vc5_hvs_pv_muxing_commit(vc4, state);
+ 		else
+ 			vc4_hvs_pv_muxing_commit(vc4, state);
+@@ -427,7 +427,7 @@ static void vc4_atomic_commit_tail(struc
+ 
+ 	drm_atomic_helper_cleanup_planes(dev, state);
+ 
+-	if (vc4->hvs && vc4->hvs->hvs5) {
++	if (vc4->is_vc5 && !vc4->firmware_kms) {
+ 		unsigned long core_rate = min_t(unsigned long,
+ 					       max_clock_rate,
+ 					       new_hvs_state->core_clock_rate);
+@@ -995,8 +995,6 @@ static const struct drm_mode_config_func
+ int vc4_kms_load(struct drm_device *dev)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+-	bool is_vc5 = of_device_is_compatible(dev->dev->of_node,
+-					      "brcm,bcm2711-vc5");
+ 	int ret;
+ 
+ 	/*
+@@ -1004,7 +1002,7 @@ int vc4_kms_load(struct drm_device *dev)
+ 	 * the BCM2711, but the load tracker computations are used for
+ 	 * the core clock rate calculation.
+ 	 */
+-	if (!is_vc5) {
++	if (!vc4->is_vc5) {
+ 		/* Start with the load tracker enabled. Can be
+ 		 * disabled through the debugfs load_tracker file.
+ 		 */
+@@ -1020,7 +1018,7 @@ int vc4_kms_load(struct drm_device *dev)
+ 		return ret;
+ 	}
+ 
+-	if (is_vc5) {
++	if (vc4->is_vc5) {
+ 		dev->mode_config.max_width = 7680;
+ 		dev->mode_config.max_height = 7680;
+ 	} else {
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -542,10 +542,10 @@ static u32 vc4_lbm_size(struct drm_plane
+ 	}
+ 
+ 	/* Align it to 64 or 128 (hvs5) bytes */
+-	lbm = roundup(lbm, vc4->hvs->hvs5 ? 128 : 64);
++	lbm = roundup(lbm, vc4->is_vc5 ? 128 : 64);
+ 
+ 	/* Each "word" of the LBM memory contains 2 or 4 (hvs5) pixels */
+-	lbm /= vc4->hvs->hvs5 ? 4 : 2;
++	lbm /= vc4->is_vc5 ? 4 : 2;
+ 
+ 	return lbm;
+ }
+@@ -664,7 +664,7 @@ static int vc4_plane_allocate_lbm(struct
+ 		ret = drm_mm_insert_node_generic(&vc4->hvs->lbm_mm,
+ 						 &vc4_state->lbm,
+ 						 lbm_size,
+-						 vc4->hvs->hvs5 ? 64 : 32,
++						 vc4->is_vc5 ? 64 : 32,
+ 						 0, 0);
+ 		spin_unlock_irqrestore(&vc4->hvs->mm_lock, irqflags);
+ 
+@@ -1039,7 +1039,7 @@ static int vc4_plane_mode_set(struct drm
+ 	mix_plane_alpha = state->alpha != DRM_BLEND_ALPHA_OPAQUE &&
+ 			  fb->format->has_alpha;
+ 
+-	if (!vc4->hvs->hvs5) {
++	if (!vc4->is_vc5) {
+ 	/* Control word */
+ 		vc4_dlist_write(vc4_state,
+ 				SCALER_CTL0_VALID |
+@@ -1570,14 +1570,13 @@ static const struct drm_plane_funcs vc4_
+ struct drm_plane *vc4_plane_init(struct drm_device *dev,
+ 				 enum drm_plane_type type)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_plane *plane = NULL;
+ 	struct vc4_plane *vc4_plane;
+ 	u32 formats[ARRAY_SIZE(hvs_formats)];
+ 	int num_formats = 0;
+ 	int ret = 0;
+ 	unsigned i;
+-	bool hvs5 = of_device_is_compatible(dev->dev->of_node,
+-					    "brcm,bcm2711-vc5");
+ 	static const uint64_t modifiers[] = {
+ 		DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED,
+ 		DRM_FORMAT_MOD_BROADCOM_SAND128,
+@@ -1593,7 +1592,7 @@ struct drm_plane *vc4_plane_init(struct
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(hvs_formats); i++) {
+-		if (!hvs_formats[i].hvs5_only || hvs5) {
++		if (!hvs_formats[i].hvs5_only || vc4->is_vc5) {
+ 			formats[num_formats] = hvs_formats[i].drm;
+ 			num_formats++;
+ 		}

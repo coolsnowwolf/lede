@@ -1,0 +1,280 @@
+From bf5020c3cbf3e799379c661e2f653ac572175d67 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Noralf=20Tr=C3=B8nnes?= <noralf@tronnes.org>
+Date: Mon, 7 Mar 2022 17:05:49 +0100
+Subject: [PATCH] overlays: Add overlay for MIPI DBI displays
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add an overlay that can be used with all displays that have a
+MIPI DBI compatible controller (pixels over SPI).
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |  67 +++++++
+ .../dts/overlays/mipi-dbi-spi-overlay.dts     | 172 ++++++++++++++++++
+ 3 files changed, 240 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/mipi-dbi-spi-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -135,6 +135,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	midi-uart5.dtbo \
+ 	minipitft13.dtbo \
+ 	miniuart-bt.dtbo \
++	mipi-dbi-spi.dtbo \
+ 	mlx90640.dtbo \
+ 	mmc.dtbo \
+ 	mpu6050.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2386,6 +2386,73 @@ Params: krnbt                   Set to "
+                                 driver without need of hciattach/btattach
+ 
+ 
++Name:   mipi-dbi-spi
++Info:   Overlay for SPI-connected MIPI DBI displays using the panel-mipi-dbi
++        driver. The driver will load a file /lib/firmware/panel.bin containing
++        the initialisation commands.
++
++        Example:
++          dtoverlay=mipi-dbi-spi,spi0-0,speed=70000000
++          dtparam=width=320,height=240
++          dtparam=reset-gpio=23,dc-gpio=24
++          dtparam=backlight-gpio=18
++
++        Compared to fbtft panel-mipi-dbi runs pixel data at spi-max-frequency
++        and init commands at 10MHz. This makes it possible to push the envelope
++        without messing up the controller configuration due to command
++        transmission errors.
++
++        For devices on spi1 or spi2, the interfaces should be enabled
++        with one of the spi1-1/2/3cs and/or spi2-1/2/3cs overlays.
++
++        See https://github.com/notro/panel-mipi-dbi/wiki for more info.
++
++Load:   dtoverlay=mipi-dbi-spi,<param>=<val>
++Params:
++        compatible              Set the compatible string to load a different
++                                firmware file. Both the panel compatible value
++                                used to load the firmware file and the value
++                                used to load the driver has to be set having a
++                                NUL (\0) separator between them.
++                                Example:
++                                dtparam=compatible=mypanel\0panel-mipi-dbi-spi
++        spi<n>-<m>              Configure device at spi<n>, cs<m>
++                                (boolean, required)
++        speed                   SPI bus speed in Hz (default 32000000)
++        cpha                    Shifted SPI clock phase (CPHA) mode
++        cpol                    Inverse SPI clock polarity (CPOL) mode
++        write-only              Controller is not readable
++                                (ie. MISO is not wired up).
++
++        width                   Panel width in pixels (required)
++        height                  Panel height in pixels (required)
++        width-mm                Panel width in mm
++        height-mm               Panel height in mm
++        x-offset                Panel x-offset in controller RAM
++        y-offset                Panel y-offset in controller RAM
++
++        clock-frequency         Panel clock frequency in Hz
++                                (optional, just informational).
++
++        reset-gpio              GPIO pin to be used for RESET
++        dc-gpio                 GPIO pin to be used for D/C
++
++        backlight-gpio          GPIO pin to be used for backlight control
++                                (default of none).
++        backlight-pwm           PWM channel to be used for backlight control
++                                (default of none). NB Disables audio headphone
++                                output as that also uses PWM.
++        backlight-pwm-chan      Choose channel on &pwm node for backlight
++                                control (default 0).
++        backlight-pwm-gpio      GPIO pin to be used for the PWM backlight. See
++                                pwm-2chan for valid options (default 18).
++        backlight-pwm-func      Pin function of GPIO used for the PWM backlight.
++                                See pwm-2chan for valid options (default 2).
++        backlight-def-brightness
++                                Set the default brightness. Normal range 1-16.
++                                (default 16).
++
++
+ Name:   mlx90640
+ Info:   Overlay for i2c connected mlx90640 thermal camera
+ Load:   dtoverlay=mlx90640
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/mipi-dbi-spi-overlay.dts
+@@ -0,0 +1,172 @@
++/*
++ * mipi-dbi-spi-overlay.dts
++ */
++
++#include <dt-bindings/gpio/gpio.h>
++
++/dts-v1/;
++/plugin/;
++
++/ {
++	compatible = "brcm,bcm2835";
++
++	spidev_fragment: fragment@0 {
++		target-path = "spi0/spidev@0";
++		__overlay__ {
++			status = "disabled";
++		};
++	};
++
++	panel_fragment: fragment@1 {
++		target = <&spi0>;
++		__overlay__ {
++			/* needed to avoid dtc warning */
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			status = "okay";
++
++			panel: panel@0 {
++				compatible = "panel", "panel-mipi-dbi-spi";
++				reg = <0>;
++				spi-max-frequency = <32000000>;
++
++				timing: panel-timing {
++					hactive = <320>;
++					vactive = <240>;
++					hback-porch = <0>;
++					vback-porch = <0>;
++
++					clock-frequency = <0>;
++					hfront-porch = <0>;
++					hsync-len = <0>;
++					vfront-porch = <0>;
++					vsync-len = <0>;
++				};
++			};
++		};
++	};
++
++	fragment@10 {
++		target = <&panel>;
++		__dormant__  {
++			backlight = <&backlight_gpio>;
++		};
++	};
++
++	fragment@11 {
++		target-path = "/";
++		__dormant__  {
++			backlight_gpio: backlight_gpio {
++				compatible = "gpio-backlight";
++				gpios = <&gpio 255 GPIO_ACTIVE_HIGH>;
++			};
++		};
++	};
++
++	fragment@20 {
++		target = <&panel>;
++		__dormant__  {
++			backlight = <&backlight_pwm>;
++		};
++	};
++
++	fragment@21 {
++		target-path = "/";
++		__dormant__  {
++			backlight_pwm: backlight_pwm {
++				compatible = "pwm-backlight";
++				brightness-levels = <0 6 8 12 16 24 32 40 48 64 96 128 160 192 224 255>;
++				default-brightness-level = <16>;
++				pwms = <&pwm 0 200000>;
++			};
++		};
++	};
++
++	fragment@22 {
++		target = <&pwm>;
++		__dormant__ {
++			pinctrl-names = "default";
++			pinctrl-0 = <&pwm_pins>;
++			assigned-clock-rates = <1000000>;
++			status = "okay";
++		};
++	};
++
++	fragment@23 {
++		target = <&gpio>;
++		__dormant__ {
++			pwm_pins: pwm_pins {
++				brcm,pins = <18>;
++				brcm,function = <2>; /* Alt5 */
++			};
++		};
++	};
++
++	fragment@24 {
++		target = <&audio>;
++		__dormant__  {
++		    brcm,disable-headphones;
++		};
++	};
++
++	__overrides__ {
++		compatible    = <&panel>, "compatible";
++
++		spi0-0        = <&panel_fragment>, "target:0=",<&spi0>,
++				<&spidev_fragment>, "target-path=spi0/spidev@0",
++				<&panel>, "reg:0=0";
++		spi0-1        = <&panel_fragment>, "target:0=",<&spi0>,
++				<&spidev_fragment>, "target-path=spi0/spidev@1",
++				<&panel>, "reg:0=1";
++		spi1-0        = <&panel_fragment>, "target:0=",<&spi1>,
++				<&spidev_fragment>, "target-path=spi1/spidev@0",
++				<&panel>, "reg:0=0";
++		spi1-1        = <&panel_fragment>, "target:0=",<&spi1>,
++				<&spidev_fragment>, "target-path=spi1/spidev@1",
++				<&panel>, "reg:0=1";
++		spi1-2        = <&panel_fragment>, "target:0=",<&spi1>,
++				<&spidev_fragment>, "target-path=spi1/spidev@2",
++				<&panel>, "reg:0=2";
++		spi2-0        = <&panel_fragment>, "target:0=",<&spi2>,
++				<&spidev_fragment>, "target-path=spi2/spidev@0",
++				<&panel>, "reg:0=0";
++		spi2-1        = <&panel_fragment>, "target:0=",<&spi2>,
++				<&spidev_fragment>, "target-path=spi2/spidev@1",
++				<&panel>, "reg:0=1";
++		spi2-2        = <&panel_fragment>, "target:0=",<&spi2>,
++				<&spidev_fragment>, "target-path=spi2/spidev@2",
++				<&panel>, "reg:0=2";
++
++		speed         = <&panel>, "spi-max-frequency:0";
++		cpha          = <&panel>, "spi-cpha?";
++		cpol          = <&panel>, "spi-cpol?";
++
++		write-only    = <&panel>, "write-only?";
++
++		width         = <&timing>, "hactive:0";
++		height        = <&timing>, "vactive:0";
++		x-offset      = <&timing>, "hback-porch:0";
++		y-offset      = <&timing>, "vback-porch:0";
++		clock-frequency = <&timing>, "clock-frequency:0";
++
++		width-mm      = <&panel>, "width-mm:0";
++		height-mm     = <&panel>, "height-mm:0";
++
++		/* optional gpios */
++		reset-gpio    = <&panel>, "reset-gpios:0=", <&gpio>,
++				<&panel>, "reset-gpios:4",
++				<&panel>, "reset-gpios:8=0"; /* GPIO_ACTIVE_HIGH */
++		dc-gpio       = <&panel>, "dc-gpios:0=", <&gpio>,
++				<&panel>, "dc-gpios:4",
++				<&panel>, "dc-gpios:8=0"; /* GPIO_ACTIVE_HIGH */
++
++		backlight-gpio        = <0>, "+10+11",
++					<&backlight_gpio>, "gpios:4";
++		backlight-pwm         = <0>, "+20+21+22+23+24";
++		backlight-pwm-chan    = <&backlight_pwm>, "pwms:4";
++		backlight-pwm-gpio    = <&pwm_pins>, "brcm,pins:0";
++		backlight-pwm-func    = <&pwm_pins>, "brcm,function:0";
++		backlight-def-brightness = <&backlight_pwm>, "default-brightness-level:0";
++	};
++};
