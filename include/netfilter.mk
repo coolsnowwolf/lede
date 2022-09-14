@@ -174,7 +174,7 @@ $(eval $(call nf_add,IPT_IPV6_EXTRA,CONFIG_IP6_NF_MATCH_RT, $(P_V6)ip6t_rt))
 $(eval $(call nf_add,NF_LOG,CONFIG_NF_LOG_COMMON, $(P_XT)nf_log_common, lt 5.13))
 $(eval $(call nf_add,NF_LOG,CONFIG_NF_LOG_IPV4, $(P_V4)nf_log_ipv4, lt 5.13))
 $(eval $(call nf_add,NF_LOG,CONFIG_NF_LOG_SYSLOG, $(P_XT)nf_log_syslog, ge 5.13))
-$(eval $(if $(NF_KMOD),$(call nf_add,NF_LOG6,CONFIG_NF_LOG_IPV6, $(P_V6)nf_log_ipv6,lt 5.13),))
+# $(eval $(if $(NF_KMOD),$(call nf_add,NF_LOG6,CONFIG_NF_LOG_IPV6, $(P_V6)nf_log_ipv6,lt 5.13),))
 
 # nat
 
