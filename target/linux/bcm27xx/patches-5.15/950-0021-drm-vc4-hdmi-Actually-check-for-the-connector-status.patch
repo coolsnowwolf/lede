@@ -1,0 +1,60 @@
+From b30b747d76946fb176bb4b044c830415d551b7bb Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 19 Aug 2021 13:50:12 +0200
+Subject: [PATCH] drm/vc4: hdmi: Actually check for the connector
+ status in hotplug
+
+The drm_helper_hpd_irq_event() documentation states that this function
+is "useful for drivers which can't or don't track hotplug interrupts for
+each connector." and that "Drivers which support hotplug interrupts for
+each connector individually and which have a more fine-grained detect
+logic should bypass this code and directly call
+drm_kms_helper_hotplug_event()". This is thus what we ended-up doing.
+
+However, what this actually means, and is further explained in the
+drm_kms_helper_hotplug_event() documentation, is that
+drm_kms_helper_hotplug_event() should be called by drivers that can
+track the connection status change, and if it has changed we should call
+that function.
+
+This underlying expectation we failed to provide is that the caller of
+drm_kms_helper_hotplug_event() should call drm_helper_probe_detect() to
+probe the new status of the connector.
+
+Since we didn't do it, it meant that even though we were sending the
+notification to user-space and the DRM clients that something changed we
+never probed or updated our internal connector status ourselves.
+
+This went mostly unnoticed since the detect callback usually doesn't
+have any side-effect. Also, if we were using the DRM fbdev emulation
+(which is a DRM client), or any user-space application that can deal
+with hotplug events, chances are they would react to the hotplug event
+by probing the connector status eventually.
+
+However, now that we have to enable the scrambler in detect() if it was
+enabled it has a side effect, and an application such as Kodi or
+modetest doesn't deal with hotplug events. This resulted with a black
+screen when Kodi or modetest was running when a screen was disconnected
+and then reconnected, or switched off and on.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1801,10 +1801,11 @@ static void vc4_hdmi_audio_exit(struct v
+ static irqreturn_t vc4_hdmi_hpd_irq_thread(int irq, void *priv)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = priv;
+-	struct drm_device *dev = vc4_hdmi->connector.dev;
++	struct drm_connector *connector = &vc4_hdmi->connector;
++	struct drm_device *dev = connector->dev;
+ 
+ 	if (dev && dev->registered)
+-		drm_kms_helper_hotplug_event(dev);
++		drm_connector_helper_hpd_irq_event(connector);
+ 
+ 	return IRQ_HANDLED;
+ }

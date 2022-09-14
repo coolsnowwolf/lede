@@ -163,7 +163,8 @@ $(curdir)/ := .config prereq
 
 $(curdir)/install: $(curdir)/compile
 
-tools_enabled = $(foreach tool,$(sort $(tools-y) $(tools-)),$(if $(filter $(tool),$(tools-y)),y,n))
+tools_config = CONFIG_SDK_LLVM_BPF
+tools_enabled = $(foreach tool,$(sort $(tools-y) $(tools-)),$(if $(filter $(tool),$(tools-y)),y,n))$(foreach c,$(tools_config),$(if $($(c)),y,n))
 $(eval $(call stampfile,$(curdir),tools,compile,,_$(subst $(space),,$(tools_enabled)),$(STAGING_DIR_HOST)))
 $(eval $(call stampfile,$(curdir),tools,check,$(TMP_DIR)/.build,,$(STAGING_DIR_HOST)))
 $(eval $(call subdir,$(curdir)))

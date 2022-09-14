@@ -1,0 +1,158 @@
+From e22b0f50781bc8507c1e3b8f775ac69d406bd155 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 25 Mar 2022 11:27:28 +0100
+Subject: [PATCH] clk: test: Test clk_set_rate_range on orphan mux
+
+A bug recently affected the Tegra30 where calling clk_set_rate_range()
+on a clock would make it change its rate to the minimum.
+
+This was due to the clock in question being a mux that was orphan at
+registration, which lead to the clk_core req_rate being 0, and the
+clk_set_rate_range() function then calling clk_set_rate() with req_rate,
+effectively making that clock running at the minimum rate allowed, even
+though the initial rate was within that range.
+
+Make a test suite to create a mux initially orphan, and then make sure
+that if our clock rate was initially within a given range, then
+enforcing that range won't affect it.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk_test.c | 105 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 105 insertions(+)
+
+--- a/drivers/clk/clk_test.c
++++ b/drivers/clk/clk_test.c
+@@ -72,6 +72,19 @@ static int clk_dummy_set_rate(struct clk
+ 	return 0;
+ }
+ 
++static int clk_dummy_single_set_parent(struct clk_hw *hw, u8 index)
++{
++	if (index >= clk_hw_get_num_parents(hw))
++		return -EINVAL;
++
++	return 0;
++}
++
++static u8 clk_dummy_single_get_parent(struct clk_hw *hw)
++{
++	return 0;
++}
++
+ static const struct clk_ops clk_dummy_rate_ops = {
+ 	.recalc_rate = clk_dummy_recalc_rate,
+ 	.determine_rate = clk_dummy_determine_rate,
+@@ -90,6 +103,11 @@ static const struct clk_ops clk_dummy_mi
+ 	.set_rate = clk_dummy_set_rate,
+ };
+ 
++static const struct clk_ops clk_dummy_single_parent_ops = {
++	.set_parent = clk_dummy_single_set_parent,
++	.get_parent = clk_dummy_single_get_parent,
++};
++
+ static int clk_test_init_with_ops(struct kunit *test, const struct clk_ops *ops)
+ {
+ 	struct clk_dummy_context *ctx;
+@@ -239,6 +257,92 @@ static struct kunit_suite clk_test_suite
+ 	.test_cases = clk_test_cases,
+ };
+ 
++struct clk_single_parent_ctx {
++	struct clk_dummy_context parent_ctx;
++	struct clk_hw hw;
++};
++
++static int clk_orphan_transparent_single_parent_mux_test_init(struct kunit *test)
++{
++	struct clk_single_parent_ctx *ctx;
++	struct clk_init_data init = { };
++	const char *parents[] = { "orphan_parent" };
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++
++	init.name = "test_orphan_dummy_parent";
++	init.ops = &clk_dummy_single_parent_ops;
++	init.parent_names = parents;
++	init.num_parents = ARRAY_SIZE(parents);
++	init.flags = CLK_SET_RATE_PARENT;
++	ctx->hw.init = &init;
++
++	ret = clk_hw_register(NULL, &ctx->hw);
++	if (ret)
++		return ret;
++
++	memset(&init, 0, sizeof(init));
++	init.name = "orphan_parent";
++	init.ops = &clk_dummy_rate_ops;
++	ctx->parent_ctx.hw.init = &init;
++	ctx->parent_ctx.rate = DUMMY_CLOCK_INIT_RATE;
++
++	ret = clk_hw_register(NULL, &ctx->parent_ctx.hw);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static void clk_orphan_transparent_single_parent_mux_test_exit(struct kunit *test)
++{
++	struct clk_single_parent_ctx *ctx = test->priv;
++
++	clk_hw_unregister(&ctx->hw);
++	clk_hw_unregister(&ctx->parent_ctx.hw);
++}
++
++/*
++ * Test that a mux-only clock, with an initial rate within a range,
++ * will still have the same rate after the range has been enforced.
++ */
++static void clk_test_orphan_transparent_parent_mux_set_range(struct kunit *test)
++{
++	struct clk_single_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	unsigned long rate, new_rate;
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++
++	KUNIT_ASSERT_EQ(test,
++			clk_set_rate_range(clk,
++					   ctx->parent_ctx.rate - 1000,
++					   ctx->parent_ctx.rate + 1000),
++			0);
++
++	new_rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, new_rate, 0);
++	KUNIT_EXPECT_EQ(test, rate, new_rate);
++}
++
++static struct kunit_case clk_orphan_transparent_single_parent_mux_test_cases[] = {
++	KUNIT_CASE(clk_test_orphan_transparent_parent_mux_set_range),
++	{}
++};
++
++static struct kunit_suite clk_orphan_transparent_single_parent_test_suite = {
++	.name = "clk-orphan-transparent-single-parent-test",
++	.init = clk_orphan_transparent_single_parent_mux_test_init,
++	.exit = clk_orphan_transparent_single_parent_mux_test_exit,
++	.test_cases = clk_orphan_transparent_single_parent_mux_test_cases,
++};
++
+ /*
+  * Test that clk_set_rate_range won't return an error for a valid range
+  * and that it will make sure the rate of the clock is within the
+@@ -788,6 +892,7 @@ static struct kunit_suite clk_range_mini
+ 
+ kunit_test_suites(
+ 	&clk_test_suite,
++	&clk_orphan_transparent_single_parent_test_suite,
+ 	&clk_range_test_suite,
+ 	&clk_range_maximize_test_suite,
+ 	&clk_range_minimize_test_suite

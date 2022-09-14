@@ -9,7 +9,7 @@ set_state() {
 	case "$(board_name)" in
 	raspberrypi,2-model-b |\
 	raspberrypi,2-model-b-rev2 |\
-	raspberrypi,3-model-b |\
+	raspberrypi,3-model-b |\
 	raspberrypi,3-model-b-plus |\
 	raspberrypi,400 |\
 	raspberrypi,4-compute-module |\
@@ -20,6 +20,7 @@ set_state() {
 	raspberrypi,3-compute-module |\
 	raspberrypi,model-b |\
 	raspberrypi,model-zero |\
+	raspberrypi,model-zero-2 |\
 	raspberrypi,model-zero-w)
 		status_led="led0"
 		;;
