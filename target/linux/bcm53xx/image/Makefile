@@ -436,7 +436,7 @@ TARGET_DEVICES += smartrg_sr400ac
 define Device/phicomm_k3
   DEVICE_VENDOR := PHICOMM
   DEVICE_MODEL := K3
-  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
+  DEVICE_PACKAGES := $(IEEE8021X) kmod-brcmfmac k3wifi $(USB3_PACKAGES) k3screenctrl
   IMAGES := trx
 endef
 TARGET_DEVICES += phicomm_k3
@@ -448,7 +448,7 @@ define Device/tenda_ac9
   IMAGES := trx
   IMAGE/trx := append-rootfs | trx-serial
 endef
-TARGET_DEVICES += tenda_ac9
+#TARGET_DEVICES += tenda_ac9
 
 define Device/tplink_archer-c5-v2
   DEVICE_VENDOR := TP-Link
