@@ -1,6 +1,6 @@
 DTS_DIR := $(DTS_DIR)/mediatek
 
-KERNEL_LOADADDR := 0x44000000
+KERNEL_LOADADDR := 0x48000000
 
 define Image/Prepare
 	# For UBI we want only one extra block
@@ -45,7 +45,7 @@ define Device/bananapi_bpi-r3
   DEVICE_DTS_CONFIG := config-mt7986a-bananapi-bpi-r3
   DEVICE_DTS_OVERLAY:= mt7986a-bananapi-bpi-r3-nor mt7986a-bananapi-bpi-r3-emmc-nor mt7986a-bananapi-bpi-r3-emmc-snand mt7986a-bananapi-bpi-r3-snand
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-btmtkuart kmod-usb3 kmod-i2c-gpio kmod-sfp e2fsprogs f2fsck mkf2fs
+  DEVICE_PACKAGES := kmod-usb3 kmod-i2c-gpio kmod-sfp e2fsprogs f2fsck mkf2fs
   IMAGES := sysupgrade.itb
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   ARTIFACTS := \
@@ -89,7 +89,6 @@ define Device/mediatek_mt7986a-rfb
   DEVICE_MODEL := MTK7986 rfba AP
   DEVICE_DTS := mt7986a-rfb
   DEVICE_DTS_DIR := $(DTS_DIR)/
-  KERNEL_LOADADDR := 0x48000000
   DEVICE_DTS_OVERLAY := mt7986a-rfb-spim-nand mt7986a-rfb-spim-nor
   SUPPORTED_DEVICES := mediatek,mt7986a-rfb
   UBINIZE_OPTS := -E 5
@@ -113,7 +112,6 @@ define Device/mediatek_mt7986b-rfb
   DEVICE_MODEL := MTK7986 rfbb AP
   DEVICE_DTS := mt7986b-rfb
   DEVICE_DTS_DIR := $(DTS_DIR)/
-  KERNEL_LOADADDR := 0x48000000
   SUPPORTED_DEVICES := mediatek,mt7986b-rfb
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
@@ -131,12 +129,10 @@ define Device/xiaomi_redmi-router-ax6000
   DEVICE_MODEL := Redmi Router AX6000
   DEVICE_DTS := mt7986a-xiaomi-redmi-router-ax6000
   DEVICE_DTS_DIR := ../dts
-  KERNEL_LOADADDR := 0x48000000
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_IN_UBI := 1
-  KERNEL_SIZE := 4096k
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ax6000
