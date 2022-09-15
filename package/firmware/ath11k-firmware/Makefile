@@ -83,6 +83,9 @@ define Package/ath11k-firmware-qca6390/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/QCA6390/hw2.0/1.0.1/WLAN.HST.1.0.1-05266-QCAHSTSWPLZ_V2_TO_X86-1/* \
 		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6390/hw2.0/board-2.bin \
+		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/board-2.bin
 endef
 
 define Package/ath11k-firmware-qcn9074/install
