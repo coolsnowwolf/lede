@@ -1,0 +1,143 @@
+From 0e864ac98ffc97d0bb5fc343ca62d860fbe8da09 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 29 Apr 2020 17:25:56 +0100
+Subject: [PATCH] media: i2c: ov5647: Set V4L2_SUBDEV_FL_HAS_EVENTS
+ flag
+
+The ov5647 subdev can generate control events, therefore set
+the V4L2_SUBDEV_FL_HAS_EVENTS flag.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -90,6 +90,8 @@ struct ov5647_mode {
+ 	struct v4l2_rect crop;
+ 
+ 	u64 pixel_rate;
++	/* HTS as defined in the register set (0x380C/0x380D) */
++	int hts;
+ 
+ 	struct regval_list		*reg_list;
+ 	unsigned int			num_regs;
+@@ -106,6 +108,7 @@ struct ov5647 {
+ 	unsigned int			flags;
+ 	struct v4l2_ctrl_handler	ctrls;
+ 	struct v4l2_ctrl		*pixel_rate;
++	struct v4l2_ctrl		*hblank;
+ 	bool				write_mode_regs;
+ };
+ 
+@@ -605,6 +608,7 @@ static struct ov5647_mode supported_mode
+ 			.height = 960,
+ 		},
+ 		.pixel_rate = 77291670,
++		.hts = 1896,
+ 		ov5647_640x480_8bit,
+ 		ARRAY_SIZE(ov5647_640x480_8bit)
+ 	},
+@@ -629,6 +633,7 @@ static struct ov5647_mode supported_mode
+ 			.height = 1944
+ 		},
+ 		.pixel_rate = 87500000,
++		.hts = 2844,
+ 		ov5647_2592x1944_10bit,
+ 		ARRAY_SIZE(ov5647_2592x1944_10bit)
+ 	},
+@@ -651,6 +656,7 @@ static struct ov5647_mode supported_mode
+ 			.height = 1080,
+ 		},
+ 		.pixel_rate = 81666700,
++		.hts = 2416,
+ 		ov5647_1080p30_10bit,
+ 		ARRAY_SIZE(ov5647_1080p30_10bit)
+ 	},
+@@ -672,6 +678,7 @@ static struct ov5647_mode supported_mode
+ 			.height = 1944,
+ 		},
+ 		.pixel_rate = 81666700,
++		.hts = 1896,
+ 		ov5647_2x2binned_10bit,
+ 		ARRAY_SIZE(ov5647_2x2binned_10bit)
+ 	},
+@@ -694,6 +701,7 @@ static struct ov5647_mode supported_mode
+ 			.height = 1920,
+ 		},
+ 		.pixel_rate = 55000000,
++		.hts = 1852,
+ 		ov5647_640x480_10bit,
+ 		ARRAY_SIZE(ov5647_640x480_10bit)
+ 	},
+@@ -1168,6 +1176,8 @@ static int ov5647_set_fmt(struct v4l2_su
+ 		 * If we have changed modes, write the I2C register list on
+ 		 * a stream_on().
+ 		 */
++		int hblank;
++
+ 		if (state->mode != mode)
+ 			state->write_mode_regs = true;
+ 		state->mode = mode;
+@@ -1176,6 +1186,9 @@ static int ov5647_set_fmt(struct v4l2_su
+ 					 mode->pixel_rate,
+ 					 mode->pixel_rate, 1,
+ 					 mode->pixel_rate);
++		hblank = mode->hts - mode->format.width;
++		__v4l2_ctrl_modify_range(state->hblank, hblank, hblank, 1,
++					 hblank);
+ 	}
+ 
+ 	mutex_unlock(&state->lock);
+@@ -1395,6 +1408,9 @@ static int ov5647_s_ctrl(struct v4l2_ctr
+ 	case V4L2_CID_PIXEL_RATE:
+ 		/* Read-only, but we adjust it based on mode. */
+ 		break;
++	case V4L2_CID_HBLANK:
++		/* Read-only, but we adjust it based on mode. */
++		break;
+ 	default:
+ 		dev_info(&client->dev,
+ 			 "ctrl(id:0x%x,val:0x%x) is not handled\n",
+@@ -1419,6 +1435,7 @@ static int ov5647_probe(struct i2c_clien
+ 	struct device_node *np = client->dev.of_node;
+ 	u32 xclk_freq;
+ 	struct v4l2_ctrl *ctrl;
++	int hblank;
+ 
+ 	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
+ 	if (!sensor)
+@@ -1452,7 +1469,7 @@ static int ov5647_probe(struct i2c_clien
+ 	mutex_init(&sensor->lock);
+ 
+ 	/* Initialise controls. */
+-	v4l2_ctrl_handler_init(&sensor->ctrls, 6);
++	v4l2_ctrl_handler_init(&sensor->ctrls, 7);
+ 	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
+ 			  V4L2_CID_AUTOGAIN,
+ 			  0,  /* min */
+@@ -1495,6 +1512,13 @@ static int ov5647_probe(struct i2c_clien
+ 					       sensor->mode->pixel_rate, 1,
+ 					       sensor->mode->pixel_rate);
+ 
++	/* By default, HBLANK is read only, but it does change per mode */
++	hblank = sensor->mode->hts - sensor->mode->format.width;
++	sensor->hblank = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++					   V4L2_CID_HBLANK, hblank, hblank, 1,
++					   hblank);
++	sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
+ 	if (sensor->ctrls.error) {
+ 		ret = sensor->ctrls.error;
+ 		dev_err(&client->dev, "%s control init failed (%d)\n",
+@@ -1509,7 +1533,8 @@ static int ov5647_probe(struct i2c_clien
+ 	sd = &sensor->sd;
+ 	v4l2_i2c_subdev_init(sd, client, &ov5647_subdev_ops);
+ 	sensor->sd.internal_ops = &ov5647_subdev_internal_ops;
+-	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	sensor->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
++			    V4L2_SUBDEV_FL_HAS_EVENTS;
+ 
+ 	sensor->pad.flags = MEDIA_PAD_FL_SOURCE;
+ 	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;

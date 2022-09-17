@@ -1,0 +1,87 @@
+From 23ed834712dfc0d25451f16b46ae9c19abb675b5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Wed, 18 Sep 2019 15:49:13 +0100
+Subject: [PATCH] drm/vc4: Correct handling of rotation parameter in
+ fkms
+
+One bit within DRM_MODE_ROTATE_MASK will always be set to
+determine the base rotation 0/90/180/270, and then REFLECT_X
+and REFLECT_Y are on top.
+
+Correct the handling which was assuming that REFLECT_[X|Y]
+was instead of ROTATE_x.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 37 ++++++++++----------------
+ 1 file changed, 14 insertions(+), 23 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -82,11 +82,6 @@ struct set_plane {
+ #define TRANSFORM_FLIP_HRIZ	BIT(16)
+ #define TRANSFORM_FLIP_VERT	BIT(17)
+ 
+-#define SUPPORTED_ROTATIONS	(DRM_MODE_ROTATE_0 | \
+-				 DRM_MODE_ROTATE_180 | \
+-				 DRM_MODE_REFLECT_X | \
+-				 DRM_MODE_REFLECT_Y)
+-
+ struct mailbox_set_plane {
+ 	struct rpi_firmware_property_tag_header tag;
+ 	struct set_plane plane;
+@@ -525,7 +520,7 @@ static int vc4_plane_to_mb(struct drm_pl
+ 	const struct vc_image_format *vc_fmt =
+ 					vc4_get_vc_image_fmt(drm_fmt->format);
+ 	int num_planes = fb->format->num_planes;
+-	unsigned int rotation = SUPPORTED_ROTATIONS;
++	unsigned int rotation;
+ 
+ 	mb->plane.vc_image_type = vc_fmt->vc_image;
+ 	mb->plane.width = fb->width;
+@@ -546,23 +541,16 @@ static int vc4_plane_to_mb(struct drm_pl
+ 	mb->plane.is_vu = vc_fmt->is_vu;
+ 	mb->plane.planes[0] = bo->paddr + fb->offsets[0];
+ 
+-	rotation = drm_rotation_simplify(state->rotation, rotation);
+-
+-	switch (rotation) {
+-	default:
+-	case DRM_MODE_ROTATE_0:
+-		mb->plane.transform = TRANSFORM_NO_ROTATE;
+-		break;
+-	case DRM_MODE_ROTATE_180:
+-		mb->plane.transform = TRANSFORM_ROTATE_180;
+-		break;
+-	case DRM_MODE_REFLECT_X:
+-		mb->plane.transform = TRANSFORM_FLIP_HRIZ;
+-		break;
+-	case DRM_MODE_REFLECT_Y:
+-		mb->plane.transform = TRANSFORM_FLIP_VERT;
+-		break;
+-	}
++	rotation = drm_rotation_simplify(state->rotation,
++					 DRM_MODE_ROTATE_0 |
++					 DRM_MODE_REFLECT_X |
++					 DRM_MODE_REFLECT_Y);
++
++	mb->plane.transform = TRANSFORM_NO_ROTATE;
++	if (rotation & DRM_MODE_REFLECT_X)
++		mb->plane.transform |= TRANSFORM_FLIP_HRIZ;
++	if (rotation & DRM_MODE_REFLECT_Y)
++		mb->plane.transform |= TRANSFORM_FLIP_VERT;
+ 
+ 	vc4_fkms_margins_adj(state, &mb->plane);
+ 
+@@ -803,7 +791,10 @@ static struct drm_plane *vc4_fkms_plane_
+ 
+ 	drm_plane_create_alpha_property(plane);
+ 	drm_plane_create_rotation_property(plane, DRM_MODE_ROTATE_0,
+-					   SUPPORTED_ROTATIONS);
++					   DRM_MODE_ROTATE_0 |
++					   DRM_MODE_ROTATE_180 |
++					   DRM_MODE_REFLECT_X |
++					   DRM_MODE_REFLECT_Y);
+ 	drm_plane_create_color_properties(plane,
+ 					  BIT(DRM_COLOR_YCBCR_BT601) |
+ 					  BIT(DRM_COLOR_YCBCR_BT709) |

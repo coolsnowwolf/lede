@@ -1,0 +1,131 @@
+From e947a531a5c6a61fc568dc6a502543e1145efc29 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 29 Apr 2020 12:25:13 +0100
+Subject: [PATCH] media: i2c: ov5647: Support V4L2_CID_PIXEL_RATE
+
+Clients need to know the pixel rate in order to compute exposure
+and frame rate values.
+Advertise it.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 31 +++++++++++++++++++++++++++----
+ 1 file changed, 27 insertions(+), 4 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -89,6 +89,8 @@ struct ov5647_mode {
+ 	/* Analog crop rectangle. */
+ 	struct v4l2_rect crop;
+ 
++	u64 pixel_rate;
++
+ 	struct regval_list		*reg_list;
+ 	unsigned int			num_regs;
+ };
+@@ -103,6 +105,7 @@ struct ov5647 {
+ 	struct gpio_desc		*pwdn;
+ 	unsigned int			flags;
+ 	struct v4l2_ctrl_handler	ctrls;
++	struct v4l2_ctrl		*pixel_rate;
+ 	bool				write_mode_regs;
+ };
+ 
+@@ -601,6 +604,7 @@ static struct ov5647_mode supported_mode
+ 			.width = 1280,
+ 			.height = 960,
+ 		},
++		.pixel_rate = 77291670,
+ 		ov5647_640x480_8bit,
+ 		ARRAY_SIZE(ov5647_640x480_8bit)
+ 	},
+@@ -624,6 +628,7 @@ static struct ov5647_mode supported_mode
+ 			.width = 2592,
+ 			.height = 1944
+ 		},
++		.pixel_rate = 87500000,
+ 		ov5647_2592x1944_10bit,
+ 		ARRAY_SIZE(ov5647_2592x1944_10bit)
+ 	},
+@@ -645,6 +650,7 @@ static struct ov5647_mode supported_mode
+ 			.width = 1928,
+ 			.height = 1080,
+ 		},
++		.pixel_rate = 81666700,
+ 		ov5647_1080p30_10bit,
+ 		ARRAY_SIZE(ov5647_1080p30_10bit)
+ 	},
+@@ -665,6 +671,7 @@ static struct ov5647_mode supported_mode
+ 			.width = 2592,
+ 			.height = 1944,
+ 		},
++		.pixel_rate = 81666700,
+ 		ov5647_2x2binned_10bit,
+ 		ARRAY_SIZE(ov5647_2x2binned_10bit)
+ 	},
+@@ -686,6 +693,7 @@ static struct ov5647_mode supported_mode
+ 			.width = 2560,
+ 			.height = 1920,
+ 		},
++		.pixel_rate = 55000000,
+ 		ov5647_640x480_10bit,
+ 		ARRAY_SIZE(ov5647_640x480_10bit)
+ 	},
+@@ -1163,6 +1171,11 @@ static int ov5647_set_fmt(struct v4l2_su
+ 		if (state->mode != mode)
+ 			state->write_mode_regs = true;
+ 		state->mode = mode;
++
++		__v4l2_ctrl_modify_range(state->pixel_rate,
++					 mode->pixel_rate,
++					 mode->pixel_rate, 1,
++					 mode->pixel_rate);
+ 	}
+ 
+ 	mutex_unlock(&state->lock);
+@@ -1379,6 +1392,9 @@ static int ov5647_s_ctrl(struct v4l2_ctr
+ 	case V4L2_CID_EXPOSURE:
+ 		ret = ov5647_s_exposure(sd, ctrl->val);
+ 		break;
++	case V4L2_CID_PIXEL_RATE:
++		/* Read-only, but we adjust it based on mode. */
++		break;
+ 	default:
+ 		dev_info(&client->dev,
+ 			 "ctrl(id:0x%x,val:0x%x) is not handled\n",
+@@ -1436,7 +1452,7 @@ static int ov5647_probe(struct i2c_clien
+ 	mutex_init(&sensor->lock);
+ 
+ 	/* Initialise controls. */
+-	v4l2_ctrl_handler_init(&sensor->ctrls, 3);
++	v4l2_ctrl_handler_init(&sensor->ctrls, 6);
+ 	v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
+ 			  V4L2_CID_AUTOGAIN,
+ 			  0,  /* min */
+@@ -1469,6 +1485,16 @@ static int ov5647_probe(struct i2c_clien
+ 				 32);  /* default, 32 = 2.0x */
+ 	ctrl->flags |= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE;
+ 
++	/* Set the default mode before we init the subdev */
++	sensor->mode = OV5647_DEFAULT_MODE;
++
++	/* By default, PIXEL_RATE is read only, but it does change per mode */
++	sensor->pixel_rate = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++					       V4L2_CID_PIXEL_RATE,
++					       sensor->mode->pixel_rate,
++					       sensor->mode->pixel_rate, 1,
++					       sensor->mode->pixel_rate);
++
+ 	if (sensor->ctrls.error) {
+ 		ret = sensor->ctrls.error;
+ 		dev_err(&client->dev, "%s control init failed (%d)\n",
+@@ -1477,9 +1503,6 @@ static int ov5647_probe(struct i2c_clien
+ 	}
+ 	sensor->sd.ctrl_handler = &sensor->ctrls;
+ 
+-	/* Set the default mode before we init the subdev */
+-	sensor->mode = OV5647_DEFAULT_MODE;
+-
+ 	/* Write out the register set over I2C on stream-on. */
+ 	sensor->write_mode_regs = true;
+ 

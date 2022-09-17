@@ -1,0 +1,85 @@
+From e399911ab20b650a031d883554180463804ac3f7 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 4 Jun 2019 12:14:30 +0100
+Subject: [PATCH] drm: vc4: Add status of which display is updated
+ through vblank
+
+Previously multiple  displays were slaved off the same SMI
+interrupt, triggered by HVS channel 1 (HDMI0).
+This doesn't work if you only have a DPI or DSI screen (HVS channel
+0), and gives slightly erroneous results with dual HDMI as the
+events for HDMI1 are incorrect.
+
+Use SMIDSW0 and SMIDSW1 registers to denote which display has
+triggered the vblank.
+Handling should be backwards compatible with older firmware.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 41 ++++++++++++++++++++++----
+ 1 file changed, 36 insertions(+), 5 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -233,8 +233,13 @@ static const struct vc_image_format *vc4
+  * hardware, which has only this one register.
+  */
+ #define SMICS 0x0
++#define SMIDSW0 0x14
++#define SMIDSW1 0x1C
+ #define SMICS_INTERRUPTS (BIT(9) | BIT(10) | BIT(11))
+ 
++/* Flag to denote that the firmware is giving multiple display callbacks */
++#define SMI_NEW 0xabcd0000
++
+ #define vc4_crtc vc4_kms_crtc
+ #define to_vc4_crtc to_vc4_kms_crtc
+ struct vc4_crtc {
+@@ -885,16 +890,42 @@ static irqreturn_t vc4_crtc_irq_handler(
+ 	int i;
+ 	u32 stat = readl(crtc_list[0]->regs + SMICS);
+ 	irqreturn_t ret = IRQ_NONE;
++	u32 chan;
+ 
+ 	if (stat & SMICS_INTERRUPTS) {
+ 		writel(0, crtc_list[0]->regs + SMICS);
+ 
+-		for (i = 0; crtc_list[i]; i++) {
+-			if (crtc_list[i]->vblank_enabled)
+-				drm_crtc_handle_vblank(&crtc_list[i]->base);
+-			vc4_crtc_handle_page_flip(crtc_list[i]);
+-			ret = IRQ_HANDLED;
++		chan = readl(crtc_list[0]->regs + SMIDSW0);
++
++		if ((chan & 0xFFFF0000) != SMI_NEW) {
++			/* Older firmware. Treat the one interrupt as vblank/
++			 * complete for all crtcs.
++			 */
++			for (i = 0; crtc_list[i]; i++) {
++				if (crtc_list[i]->vblank_enabled)
++					drm_crtc_handle_vblank(&crtc_list[i]->base);
++				vc4_crtc_handle_page_flip(crtc_list[i]);
++			}
++		} else {
++			if (chan & 1) {
++				writel(SMI_NEW, crtc_list[0]->regs + SMIDSW0);
++				if (crtc_list[0]->vblank_enabled)
++					drm_crtc_handle_vblank(&crtc_list[0]->base);
++				vc4_crtc_handle_page_flip(crtc_list[0]);
++			}
++
++			/* Check for the secondary display too */
++			chan = readl(crtc_list[0]->regs + SMIDSW1);
++
++			if (chan & 1) {
++				writel(SMI_NEW, crtc_list[0]->regs + SMIDSW1);
++				if (crtc_list[1]->vblank_enabled)
++					drm_crtc_handle_vblank(&crtc_list[1]->base);
++				vc4_crtc_handle_page_flip(crtc_list[1]);
++			}
+ 		}
++
++		ret = IRQ_HANDLED;
+ 	}
+ 
+ 	return ret;
