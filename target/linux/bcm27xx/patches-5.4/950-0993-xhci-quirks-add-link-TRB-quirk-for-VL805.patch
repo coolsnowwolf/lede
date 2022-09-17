@@ -1,0 +1,61 @@
+From 510fccc1a7533aa9f46d97ad500fe45ab7f91010 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.org>
+Date: Mon, 26 Oct 2020 14:03:35 +0000
+Subject: [PATCH] xhci: quirks: add link TRB quirk for VL805
+
+The VL805 controller can't cope with the TR Dequeue Pointer for an endpoint
+being set to a Link TRB. The hardware-maintained endpoint context ends up
+stuck at the address of the Link TRB, leading to erroneous ring expansion
+events whenever the enqueue pointer wraps to the dequeue position.
+
+If the search for the end of the current TD and ring cycle state lands on
+a Link TRB, move to the next segment.
+
+See: https://github.com/raspberrypi/linux/issues/3919
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-pci.c  |  1 +
+ drivers/usb/host/xhci-ring.c | 10 ++++++++++
+ drivers/usb/host/xhci.h      |  1 +
+ 3 files changed, 12 insertions(+)
+
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -275,6 +275,7 @@ static void xhci_pci_quirks(struct devic
+ 			pdev->device == 0x3483) {
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
+ 		xhci->quirks |= XHCI_EP_CTX_BROKEN_DCS;
++		xhci->quirks |= XHCI_AVOID_DQ_ON_LINK;
+ 	}
+ 
+ 	if (pdev->vendor == PCI_VENDOR_ID_ASMEDIA &&
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -660,6 +660,16 @@ void xhci_find_new_dequeue_state(struct
+ 
+ 	} while (!cycle_found || !td_last_trb_found);
+ 
++	/*
++	 * Quirk: the xHC does not correctly parse link TRBs if the HW Dequeue
++	 * pointer is set to one. Advance to the next TRB (and next segment).
++	 */
++	if (xhci->quirks & XHCI_AVOID_DQ_ON_LINK && trb_is_link(new_deq)) {
++		if (link_trb_toggles_cycle(new_deq))
++			state->new_cycle_state ^= 0x1;
++		next_trb(xhci, ep_ring, &new_seg, &new_deq);
++	}
++
+ 	state->new_deq_seg = new_seg;
+ 	state->new_deq_ptr = new_deq;
+ 
+--- a/drivers/usb/host/xhci.h
++++ b/drivers/usb/host/xhci.h
+@@ -1883,6 +1883,7 @@ struct xhci_hcd {
+ #define XHCI_EP_CTX_BROKEN_DCS	BIT_ULL(36)
+ #define XHCI_SKIP_PHY_INIT	BIT_ULL(37)
+ #define XHCI_DISABLE_SPARSE	BIT_ULL(38)
++#define XHCI_AVOID_DQ_ON_LINK	BIT_ULL(39)
+ #define XHCI_NO_SOFT_RETRY	BIT_ULL(40)
+ 
+ 	unsigned int		num_active_eps;

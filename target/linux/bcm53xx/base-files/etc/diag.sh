@@ -18,6 +18,9 @@ get_status_led() {
 		status_led=$(basename $status_led_file)
 		return
 	fi;
+
+	# And finally, let's also try the device-Tree aliases node
+	status_led="$(get_dt_led status)"
 }
 
 set_state() {
