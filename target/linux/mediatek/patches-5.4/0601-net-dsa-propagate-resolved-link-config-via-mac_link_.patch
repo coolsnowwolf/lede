@@ -1,0 +1,143 @@
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Wed, 26 Feb 2020 10:23:46 +0000
+Subject: [PATCH] net: dsa: propagate resolved link config via mac_link_up()
+
+Propagate the resolved link configuration down via DSA's
+phylink_mac_link_up() operation to allow split PCS/MAC to work.
+
+Tested-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1284,7 +1284,9 @@ EXPORT_SYMBOL(b53_phylink_mac_link_down)
+ void b53_phylink_mac_link_up(struct dsa_switch *ds, int port,
+ 			     unsigned int mode,
+ 			     phy_interface_t interface,
+-			     struct phy_device *phydev)
++			     struct phy_device *phydev,
++			     int speed, int duplex,
++			     bool tx_pause, bool rx_pause)
+ {
+ 	struct b53_device *dev = ds->priv;
+ 
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -337,7 +337,9 @@ void b53_phylink_mac_link_down(struct ds
+ void b53_phylink_mac_link_up(struct dsa_switch *ds, int port,
+ 			     unsigned int mode,
+ 			     phy_interface_t interface,
+-			     struct phy_device *phydev);
++			     struct phy_device *phydev,
++			     int speed, int duplex,
++			     bool tx_pause, bool rx_pause);
+ int b53_vlan_filtering(struct dsa_switch *ds, int port, bool vlan_filtering);
+ int b53_vlan_prepare(struct dsa_switch *ds, int port,
+ 		     const struct switchdev_obj_port_vlan *vlan);
+--- a/drivers/net/dsa/bcm_sf2.c
++++ b/drivers/net/dsa/bcm_sf2.c
+@@ -641,7 +641,9 @@ static void bcm_sf2_sw_mac_link_down(str
+ static void bcm_sf2_sw_mac_link_up(struct dsa_switch *ds, int port,
+ 				   unsigned int mode,
+ 				   phy_interface_t interface,
+-				   struct phy_device *phydev)
++				   struct phy_device *phydev,
++				   int speed, int duplex,
++				   bool tx_pause, bool rx_pause)
+ {
+ 	struct bcm_sf2_priv *priv = bcm_sf2_to_priv(ds);
+ 	struct ethtool_eee *p = &priv->dev->ports[port].eee;
+--- a/drivers/net/dsa/lantiq_gswip.c
++++ b/drivers/net/dsa/lantiq_gswip.c
+@@ -1661,7 +1661,9 @@ static void gswip_phylink_mac_link_down(
+ static void gswip_phylink_mac_link_up(struct dsa_switch *ds, int port,
+ 				      unsigned int mode,
+ 				      phy_interface_t interface,
+-				      struct phy_device *phydev)
++				      struct phy_device *phydev,
++				      int speed, int duplex,
++				      bool tx_pause, bool rx_pause)
+ {
+ 	struct gswip_priv *priv = ds->priv;
+ 
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1440,7 +1440,9 @@ static void mt7530_phylink_mac_link_down
+ static void mt7530_phylink_mac_link_up(struct dsa_switch *ds, int port,
+ 				       unsigned int mode,
+ 				       phy_interface_t interface,
+-				       struct phy_device *phydev)
++				       struct phy_device *phydev,
++				       int speed, int duplex,
++				       bool tx_pause, bool rx_pause)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+ 
+--- a/drivers/net/dsa/mv88e6xxx/chip.c
++++ b/drivers/net/dsa/mv88e6xxx/chip.c
+@@ -652,7 +652,9 @@ static void mv88e6xxx_mac_link_down(stru
+ 
+ static void mv88e6xxx_mac_link_up(struct dsa_switch *ds, int port,
+ 				  unsigned int mode, phy_interface_t interface,
+-				  struct phy_device *phydev)
++				  struct phy_device *phydev,
++				  int speed, int duplex,
++				  bool tx_pause, bool rx_pause)
+ {
+ 	if (mode == MLO_AN_FIXED)
+ 		mv88e6xxx_mac_link_force(ds, port, LINK_FORCED_UP);
+--- a/drivers/net/dsa/sja1105/sja1105_main.c
++++ b/drivers/net/dsa/sja1105/sja1105_main.c
+@@ -831,7 +831,9 @@ static void sja1105_mac_link_down(struct
+ static void sja1105_mac_link_up(struct dsa_switch *ds, int port,
+ 				unsigned int mode,
+ 				phy_interface_t interface,
+-				struct phy_device *phydev)
++				struct phy_device *phydev,
++				int speed, int duplex,
++				bool tx_pause, bool rx_pause)
+ {
+ 	sja1105_inhibit_tx(ds->priv, BIT(port), false);
+ }
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -406,7 +406,9 @@ struct dsa_switch_ops {
+ 	void	(*phylink_mac_link_up)(struct dsa_switch *ds, int port,
+ 				       unsigned int mode,
+ 				       phy_interface_t interface,
+-				       struct phy_device *phydev);
++				       struct phy_device *phydev,
++				       int speed, int duplex,
++				       bool tx_pause, bool rx_pause);
+ 	void	(*phylink_fixed_state)(struct dsa_switch *ds, int port,
+ 				       struct phylink_link_state *state);
+ 	/*
+--- a/net/dsa/port.c
++++ b/net/dsa/port.c
+@@ -544,7 +544,8 @@ void dsa_port_phylink_mac_link_up(struct
+ 		return;
+ 	}
+ 
+-	ds->ops->phylink_mac_link_up(ds, dp->index, mode, interface, phydev);
++	ds->ops->phylink_mac_link_up(ds, dp->index, mode, interface, phydev,
++				     speed, duplex, tx_pause, rx_pause);
+ }
+ EXPORT_SYMBOL_GPL(dsa_port_phylink_mac_link_up);
+ 
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -192,9 +192,11 @@ void dsa_port_phylink_mac_link_down(stru
+ 				    unsigned int mode,
+ 				    phy_interface_t interface);
+ void dsa_port_phylink_mac_link_up(struct phylink_config *config,
++				  struct phy_device *phydev,
+ 				  unsigned int mode,
+ 				  phy_interface_t interface,
+-				  struct phy_device *phydev);
++				  int speed, int duplex,
++				  bool tx_pause, bool rx_pause);
+ extern const struct phylink_mac_ops dsa_port_phylink_mac_ops;
+ 
+ /* slave.c */

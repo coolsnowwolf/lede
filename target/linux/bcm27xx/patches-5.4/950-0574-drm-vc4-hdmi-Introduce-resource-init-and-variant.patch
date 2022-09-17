@@ -1,0 +1,151 @@
+From 9fa3342da883f6e111952768b36ca1df4d529660 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 18 Dec 2019 11:30:54 +0100
+Subject: [PATCH] drm/vc4: hdmi: Introduce resource init and variant
+
+The HDMI controllers found in the BCM2711 has a pretty different clock and
+registers areas than found in the older BCM283x SoCs.
+
+Let's create a variant structure to store the various adjustments we'll
+need later on, and a function to get the resources needed for one
+particular version.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 67 ++++++++++++++++++++++------------
+ drivers/gpu/drm/vc4/vc4_hdmi.h | 10 +++++
+ 2 files changed, 54 insertions(+), 23 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1190,38 +1190,23 @@ static const struct cec_adap_ops vc4_hdm
+ };
+ #endif
+ 
+-static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
++static int vc4_hdmi_init_resources(struct vc4_hdmi *vc4_hdmi)
+ {
+-#ifdef CONFIG_DRM_VC4_HDMI_CEC
+-	struct cec_connector_info conn_info;
+-#endif
+-	struct platform_device *pdev = to_platform_device(dev);
+-	struct drm_device *drm = dev_get_drvdata(master);
+-	struct vc4_hdmi *vc4_hdmi;
+-	struct drm_encoder *encoder;
+-	struct device_node *ddc_node;
+-	u32 value;
+-	int ret;
+-
+-	vc4_hdmi = devm_kzalloc(dev, sizeof(*vc4_hdmi), GFP_KERNEL);
+-	if (!vc4_hdmi)
+-		return -ENOMEM;
+-
+-	vc4_hdmi->pdev = pdev;
+-	encoder = &vc4_hdmi->encoder.base.base;
+-	encoder->base.type = VC4_ENCODER_TYPE_HDMI0;
++	struct platform_device *pdev = vc4_hdmi->pdev;
++	struct device *dev = &pdev->dev;
+ 
+ 	vc4_hdmi->hdmicore_regs = vc4_ioremap_regs(pdev, 0);
+ 	if (IS_ERR(vc4_hdmi->hdmicore_regs))
+ 		return PTR_ERR(vc4_hdmi->hdmicore_regs);
+ 
++	vc4_hdmi->hdmi_regset.base = vc4_hdmi->hdmicore_regs;
++	vc4_hdmi->hdmi_regset.regs = hdmi_regs;
++	vc4_hdmi->hdmi_regset.nregs = ARRAY_SIZE(hdmi_regs);
++
+ 	vc4_hdmi->hd_regs = vc4_ioremap_regs(pdev, 1);
+ 	if (IS_ERR(vc4_hdmi->hd_regs))
+ 		return PTR_ERR(vc4_hdmi->hd_regs);
+ 
+-	vc4_hdmi->hdmi_regset.base = vc4_hdmi->hdmicore_regs;
+-	vc4_hdmi->hdmi_regset.regs = hdmi_regs;
+-	vc4_hdmi->hdmi_regset.nregs = ARRAY_SIZE(hdmi_regs);
+ 	vc4_hdmi->hd_regset.base = vc4_hdmi->hd_regs;
+ 	vc4_hdmi->hd_regset.regs = hd_regs;
+ 	vc4_hdmi->hd_regset.nregs = ARRAY_SIZE(hd_regs);
+@@ -1231,12 +1216,44 @@ static int vc4_hdmi_bind(struct device *
+ 		DRM_ERROR("Failed to get pixel clock\n");
+ 		return PTR_ERR(vc4_hdmi->pixel_clock);
+ 	}
++
+ 	vc4_hdmi->hsm_clock = devm_clk_get(dev, "hdmi");
+ 	if (IS_ERR(vc4_hdmi->hsm_clock)) {
+ 		DRM_ERROR("Failed to get HDMI state machine clock\n");
+ 		return PTR_ERR(vc4_hdmi->hsm_clock);
+ 	}
+ 
++	return 0;
++}
++
++static int vc4_hdmi_bind(struct device *dev, struct device *master, void *data)
++{
++#ifdef CONFIG_DRM_VC4_HDMI_CEC
++	struct cec_connector_info conn_info;
++#endif
++	struct platform_device *pdev = to_platform_device(dev);
++	struct drm_device *drm = dev_get_drvdata(master);
++	const struct vc4_hdmi_variant *variant;
++	struct vc4_hdmi *vc4_hdmi;
++	struct drm_encoder *encoder;
++	struct device_node *ddc_node;
++	u32 value;
++	int ret;
++
++	vc4_hdmi = devm_kzalloc(dev, sizeof(*vc4_hdmi), GFP_KERNEL);
++	if (!vc4_hdmi)
++		return -ENOMEM;
++
++	vc4_hdmi->pdev = pdev;
++	variant = of_device_get_match_data(dev);
++	vc4_hdmi->variant = variant;
++	vc4_hdmi->encoder.base.type = VC4_ENCODER_TYPE_HDMI0;
++	encoder = &vc4_hdmi->encoder.base.base;
++
++	ret = variant->init_resources(vc4_hdmi);
++	if (ret)
++		return ret;
++
+ 	ddc_node = of_parse_phandle(dev->of_node, "ddc", 0);
+ 	if (!ddc_node) {
+ 		DRM_ERROR("Failed to find ddc node in device tree\n");
+@@ -1397,8 +1414,12 @@ static int vc4_hdmi_dev_remove(struct pl
+ 	return 0;
+ }
+ 
++static const struct vc4_hdmi_variant bcm2835_variant = {
++	.init_resources		= vc4_hdmi_init_resources,
++};
++
+ static const struct of_device_id vc4_hdmi_dt_match[] = {
+-	{ .compatible = "brcm,bcm2835-hdmi" },
++	{ .compatible = "brcm,bcm2835-hdmi", .data = &bcm2835_variant },
+ 	{}
+ };
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -21,6 +21,15 @@ to_vc4_hdmi_encoder(struct drm_encoder *
+ 	return container_of(encoder, struct vc4_hdmi_encoder, base.base);
+ }
+ 
++struct vc4_hdmi;
++
++struct vc4_hdmi_variant {
++	/* Callback to get the resources (memory region, interrupts,
++	 * clocks, etc) for that variant.
++	 */
++	int (*init_resources)(struct vc4_hdmi *vc4_hdmi);
++};
++
+ /* HDMI audio information */
+ struct vc4_hdmi_audio {
+ 	struct snd_soc_card card;
+@@ -37,6 +46,7 @@ struct vc4_hdmi_audio {
+ /* General HDMI hardware state. */
+ struct vc4_hdmi {
+ 	struct platform_device *pdev;
++	const struct vc4_hdmi_variant *variant;
+ 
+ 	struct vc4_hdmi_encoder encoder;
+ 	struct drm_connector connector;

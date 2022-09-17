@@ -1,0 +1,149 @@
+From 9b899afd231b7dde6084092cf46dd15c05ed8a5c Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 27 Oct 2020 12:11:56 +0000
+Subject: [PATCH] dwc_otg: Fix more build warnings
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c  | 10 +++++----
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c      | 23 ++++++++++++++-------
+ drivers/usb/host/dwc_otg/dwc_otg_hcd_ddma.c |  3 ++-
+ drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c |  8 +++----
+ 4 files changed, 27 insertions(+), 17 deletions(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
+@@ -240,7 +240,8 @@ static int notrace fiq_increment_dma_buf
+ 	hcdma_data_t hcdma;
+ 	int i = st->channel[n].dma_info.index;
+ 	int len;
+-	struct fiq_dma_blob *blob = (struct fiq_dma_blob *) st->dma_base;
++	struct fiq_dma_blob *blob =
++		(struct fiq_dma_blob *)(uintptr_t)st->dma_base;
+ 
+ 	len = fiq_get_xfer_len(st, n);
+ 	fiq_print(FIQDBG_INT, st, "LEN: %03d", len);
+@@ -249,7 +250,7 @@ static int notrace fiq_increment_dma_buf
+ 	if (i > 6)
+ 		BUG();
+ 
+-	hcdma.d32 = (dma_addr_t) &blob->channel[n].index[i].buf[0];
++	hcdma.d32 = (u32)(uintptr_t)&blob->channel[n].index[i].buf[0];
+ 	FIQ_WRITE(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA, hcdma.d32);
+ 	st->channel[n].dma_info.index = i;
+ 	return 0;
+@@ -289,7 +290,8 @@ static int notrace fiq_iso_out_advance(s
+ 	hcsplt_data_t hcsplt;
+ 	hctsiz_data_t hctsiz;
+ 	hcdma_data_t hcdma;
+-	struct fiq_dma_blob *blob = (struct fiq_dma_blob *) st->dma_base;
++	struct fiq_dma_blob *blob =
++		(struct fiq_dma_blob *)(uintptr_t)st->dma_base;
+ 	int last = 0;
+ 	int i = st->channel[n].dma_info.index;
+ 
+@@ -301,7 +303,7 @@ static int notrace fiq_iso_out_advance(s
+ 		last = 1;
+ 
+ 	/* New DMA address - address of bounce buffer referred to in index */
+-	hcdma.d32 = (dma_addr_t) blob->channel[n].index[i].buf;
++	hcdma.d32 = (u32)(uintptr_t)blob->channel[n].index[i].buf;
+ 	//hcdma.d32 = FIQ_READ(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA);
+ 	//hcdma.d32 += st->channel[n].dma_info.slot_len[i];
+ 	fiq_print(FIQDBG_INT, st, "LAST: %01d ", last);
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -1268,7 +1268,8 @@ static void assign_and_init_hc(dwc_otg_h
+ 	hc->multi_count = 1;
+ 
+ 	if (hcd->core_if->dma_enable) {
+-		hc->xfer_buff = (uint8_t *) urb->dma + urb->actual_length;
++		hc->xfer_buff =
++		    (uint8_t *)(uintptr_t)urb->dma + urb->actual_length;
+ 
+ 		/* For non-dword aligned case */
+ 		if (((unsigned long)hc->xfer_buff & 0x3)
+@@ -1312,7 +1313,8 @@ static void assign_and_init_hc(dwc_otg_h
+ 			hc->ep_is_in = 0;
+ 			hc->data_pid_start = DWC_OTG_HC_PID_SETUP;
+ 			if (hcd->core_if->dma_enable) {
+-				hc->xfer_buff = (uint8_t *) urb->setup_dma;
++				hc->xfer_buff =
++					(uint8_t *)(uintptr_t)urb->setup_dma;
+ 			} else {
+ 				hc->xfer_buff = (uint8_t *) urb->setup_packet;
+ 			}
+@@ -1360,7 +1362,8 @@ static void assign_and_init_hc(dwc_otg_h
+ 
+ 			hc->xfer_len = 0;
+ 			if (hcd->core_if->dma_enable) {
+-				hc->xfer_buff = (uint8_t *) hcd->status_buf_dma;
++				hc->xfer_buff = (uint8_t *)
++					(uintptr_t)hcd->status_buf_dma;
+ 			} else {
+ 				hc->xfer_buff = (uint8_t *) hcd->status_buf;
+ 			}
+@@ -1388,7 +1391,7 @@ static void assign_and_init_hc(dwc_otg_h
+ 			frame_desc->status = 0;
+ 
+ 			if (hcd->core_if->dma_enable) {
+-				hc->xfer_buff = (uint8_t *) urb->dma;
++				hc->xfer_buff = (uint8_t *)(uintptr_t)urb->dma;
+ 			} else {
+ 				hc->xfer_buff = (uint8_t *) urb->buf;
+ 			}
+@@ -1569,8 +1572,10 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 		 * Pointer arithmetic on hcd->fiq_state->dma_base (a dma_addr_t)
+ 		 * to point it to the correct offset in the allocated buffers.
+ 		 */
+-		blob = (struct fiq_dma_blob *) hcd->fiq_state->dma_base;
+-		st->hcdma_copy.d32 = (dma_addr_t) blob->channel[hc->hc_num].index[0].buf;
++		blob = (struct fiq_dma_blob *)
++			(uintptr_t)hcd->fiq_state->dma_base;
++		st->hcdma_copy.d32 =(u32)(uintptr_t)
++			blob->channel[hc->hc_num].index[0].buf;
+ 
+ 		/* Calculate the max number of CSPLITS such that the FIQ can time out
+ 		 * a transaction if it fails.
+@@ -1625,8 +1630,10 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 			 * dma_addr_t) to point it to the correct offset in the
+ 			 * allocated buffers.
+ 			 */
+-			blob = (struct fiq_dma_blob *) hcd->fiq_state->dma_base;
+-			st->hcdma_copy.d32 = (dma_addr_t) blob->channel[hc->hc_num].index[0].buf;
++			blob = (struct fiq_dma_blob *)
++				(uintptr_t)hcd->fiq_state->dma_base;
++			st->hcdma_copy.d32 = (u32)(uintptr_t)
++				blob->channel[hc->hc_num].index[0].buf;
+ 
+ 			/* fixup xfersize to the actual packet size */
+ 			st->hctsiz_copy.b.pid = 0;
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd_ddma.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd_ddma.c
+@@ -620,7 +620,8 @@ static void init_non_isoc_dma_desc(dwc_o
+ 
+ 		if (n_desc) {
+ 			/* SG request - more than 1 QTDs */
+-			hc->xfer_buff = (uint8_t *)qtd->urb->dma + qtd->urb->actual_length;
++			hc->xfer_buff = (uint8_t *)(uintptr_t)qtd->urb->dma +
++					qtd->urb->actual_length;
+ 			hc->xfer_len = qtd->urb->length - qtd->urb->actual_length;
+ 		}
+ 
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c
+@@ -1857,10 +1857,10 @@ static int32_t handle_hc_ahberr_intr(dwc
+ 	DWC_ERROR("  Max packet size: %d\n",
+ 		  dwc_otg_hcd_get_mps(&urb->pipe_info));
+ 	DWC_ERROR("  Data buffer length: %d\n", urb->length);
+-	DWC_ERROR("  Transfer buffer: %p, Transfer DMA: %p\n",
+-		  urb->buf, (void *)urb->dma);
+-	DWC_ERROR("  Setup buffer: %p, Setup DMA: %p\n",
+-		  urb->setup_packet, (void *)urb->setup_dma);
++	DWC_ERROR("  Transfer buffer: %p, Transfer DMA: %pad\n",
++		  urb->buf, &urb->dma);
++	DWC_ERROR("  Setup buffer: %p, Setup DMA: %pad\n",
++		  urb->setup_packet, &urb->setup_dma);
+ 	DWC_ERROR("  Interval: %d\n", urb->interval);
+ 
+ 	/* Core haltes the channel for Descriptor DMA mode */

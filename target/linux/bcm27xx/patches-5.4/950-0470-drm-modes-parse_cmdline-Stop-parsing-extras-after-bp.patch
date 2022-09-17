@@ -1,0 +1,95 @@
+From 0e7c5e80d8d310a881d723a426762e8822d5bf35 Mon Sep 17 00:00:00 2001
+From: Hans de Goede <hdegoede@redhat.com>
+Date: Mon, 18 Nov 2019 16:51:24 +0100
+Subject: [PATCH] drm/modes: parse_cmdline: Stop parsing extras after
+ bpp / refresh at ', '
+
+Commit c2ed3e941901810ad3d55ce1935fa22c5007fee4 upstream.
+
+Before this commit it was impossible to add an extra mode argument after
+a bpp or refresh specifier, combined with an option, e.g.
+video=HDMI-1:720x480-24e,rotate=180 would not work, either the "e" to
+force enable would need to be dropped or the ",rotate=180", otherwise
+the mode_option would not be accepted.
+
+This commit fixes this by fixing the length calculation if extras_ptr
+is set to stop the extra parsing at the start of the options (stop at the
+',' options_ptr points to).
+
+Acked-by: Maxime Ripard <mripard@kernel.org>
+Signed-off-by: Hans de Goede <hdegoede@redhat.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20191118155134.30468-3-hdegoede@redhat.com
+---
+ drivers/gpu/drm/drm_modes.c                   | 10 ++++---
+ .../gpu/drm/selftests/drm_cmdline_selftests.h |  1 +
+ .../drm/selftests/test-drm_cmdline_parser.c   | 26 +++++++++++++++++++
+ 3 files changed, 33 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -1728,7 +1728,7 @@ bool drm_mode_parse_command_line_for_con
+ 	const char *bpp_ptr = NULL, *refresh_ptr = NULL, *extra_ptr = NULL;
+ 	const char *options_ptr = NULL;
+ 	char *bpp_end_ptr = NULL, *refresh_end_ptr = NULL;
+-	int ret;
++	int i, len, ret;
+ 
+ #ifdef CONFIG_FB
+ 	if (!mode_option)
+@@ -1848,9 +1848,11 @@ bool drm_mode_parse_command_line_for_con
+ 	else if (refresh_ptr)
+ 		extra_ptr = refresh_end_ptr;
+ 
+-	if (extra_ptr &&
+-	    extra_ptr != options_ptr) {
+-		int len = strlen(name) - (extra_ptr - name);
++	if (extra_ptr) {
++		if (options_ptr)
++			len = options_ptr - extra_ptr;
++		else
++			len = strlen(extra_ptr);
+ 
+ 		ret = drm_mode_parse_cmdline_extra(extra_ptr, len, false,
+ 						   connector, mode);
+--- a/drivers/gpu/drm/selftests/drm_cmdline_selftests.h
++++ b/drivers/gpu/drm/selftests/drm_cmdline_selftests.h
+@@ -61,3 +61,4 @@ cmdline_test(drm_cmdline_test_vmirror)
+ cmdline_test(drm_cmdline_test_margin_options)
+ cmdline_test(drm_cmdline_test_multiple_options)
+ cmdline_test(drm_cmdline_test_invalid_option)
++cmdline_test(drm_cmdline_test_bpp_extra_and_option)
+--- a/drivers/gpu/drm/selftests/test-drm_cmdline_parser.c
++++ b/drivers/gpu/drm/selftests/test-drm_cmdline_parser.c
+@@ -1003,6 +1003,32 @@ static int drm_cmdline_test_invalid_opti
+ 	return 0;
+ }
+ 
++static int drm_cmdline_test_bpp_extra_and_option(void *ignored)
++{
++	struct drm_cmdline_mode mode = { };
++
++	FAIL_ON(!drm_mode_parse_command_line_for_connector("720x480-24e,rotate=180",
++							   &no_connector,
++							   &mode));
++	FAIL_ON(!mode.specified);
++	FAIL_ON(mode.xres != 720);
++	FAIL_ON(mode.yres != 480);
++	FAIL_ON(mode.rotation_reflection != DRM_MODE_ROTATE_180);
++
++	FAIL_ON(mode.refresh_specified);
++
++	FAIL_ON(!mode.bpp_specified);
++	FAIL_ON(mode.bpp != 24);
++
++	FAIL_ON(mode.rb);
++	FAIL_ON(mode.cvt);
++	FAIL_ON(mode.interlace);
++	FAIL_ON(mode.margins);
++	FAIL_ON(mode.force != DRM_FORCE_ON);
++
++	return 0;
++}
++
+ #include "drm_selftest.c"
+ 
+ static int __init test_drm_cmdline_init(void)
