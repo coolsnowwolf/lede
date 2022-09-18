@@ -1,0 +1,81 @@
+Subject: [PATCH v2] PCI: aardvark: Implement workaround for PCIe Completion Timeout
+Date:   Tue,  2 Aug 2022 14:38:16 +0200
+Message-Id: <20220802123816.21817-1-pali@kernel.org>
+X-Mailer: git-send-email 2.20.1
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+Precedence: bulk
+List-ID: <linux-pci.vger.kernel.org>
+X-Mailing-List: linux-pci@vger.kernel.org
+
+Marvell Armada 3700 Functional Errata, Guidelines, and Restrictions
+document describes in erratum 3.12 PCIe Completion Timeout (Ref #: 251),
+that PCIe IP does not support a strong-ordered model for inbound posted vs.
+outbound completion.
+
+As a workaround for this erratum, DIS_ORD_CHK flag in Debug Mux Control
+register must be set. It disables the ordering check in the core between
+Completions and Posted requests received from the link.
+
+Marvell also suggests to do full memory barrier at the beginning of
+aardvark summary interrupt handler before calling interrupt handlers of
+endpoint drivers in order to minimize the risk for the race condition
+documented in the Erratum between the DMA done status reading and the
+completion of writing to the host memory.
+
+More details about this issue and suggested workarounds are in discussion:
+https://lore.kernel.org/linux-pci/BN9PR18MB425154FE5019DCAF2028A1D5DB8D9@BN9PR18MB4251.namprd18.prod.outlook.com/t/#u
+
+It was reported that enabling this workaround fixes instability issues and
+"Unhandled fault" errors when using 60 GHz WiFi 802.11ad card with Qualcomm
+QCA6335 chip under significant load which were caused by interrupt status
+stuck in the outbound CMPLT queue traced back to this erratum.
+
+This workaround fixes also kernel panic triggered after some minutes of
+usage 5 GHz WiFi 802.11ax card with Mediatek MT7915 chip:
+
+    Internal error: synchronous external abort: 96000210 [#1] SMP
+    Kernel panic - not syncing: Fatal exception in interrupt
+
+Signed-off-by: Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Fixes: 8c39d710363c ("PCI: aardvark: Add Aardvark PCI host controller driver")
+Cc: stable@vger.kernel.org
+---
+ drivers/pci/controller/pci-aardvark.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/drivers/pci/controller/pci-aardvark.c
++++ b/drivers/pci/controller/pci-aardvark.c
+@@ -210,6 +210,8 @@ enum {
+ };
+ 
+ #define VENDOR_ID_REG				(LMI_BASE_ADDR + 0x44)
++#define DEBUG_MUX_CTRL_REG			(LMI_BASE_ADDR + 0x208)
++#define     DIS_ORD_CHK				BIT(30)
+ 
+ /* PCIe core controller registers */
+ #define CTRL_CORE_BASE_ADDR			0x18000
+@@ -558,6 +560,11 @@ static void advk_pcie_setup_hw(struct ad
+ 		PCIE_CORE_CTRL2_TD_ENABLE;
+ 	advk_writel(pcie, reg, PCIE_CORE_CTRL2_REG);
+ 
++	/* Disable ordering checks, workaround for erratum 3.12 "PCIe completion timeout" */
++	reg = advk_readl(pcie, DEBUG_MUX_CTRL_REG);
++	reg |= DIS_ORD_CHK;
++	advk_writel(pcie, reg, DEBUG_MUX_CTRL_REG);
++
+ 	/* Set lane X1 */
+ 	reg = advk_readl(pcie, PCIE_CORE_CTRL0_REG);
+ 	reg &= ~LANE_CNT_MSK;
+@@ -1580,6 +1587,9 @@ static irqreturn_t advk_pcie_irq_handler
+ 	struct advk_pcie *pcie = arg;
+ 	u32 status;
+ 
++	/* Full memory barrier (ARM dsb sy), workaround for erratum 3.12 "PCIe completion timeout" */
++	mb();
++
+ 	status = advk_readl(pcie, HOST_CTRL_INT_STATUS_REG);
+ 	if (!(status & PCIE_IRQ_CORE_INT))
+ 		return IRQ_NONE;

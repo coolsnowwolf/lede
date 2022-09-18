@@ -1,0 +1,444 @@
+From 5976ef1d81c8d474eddb55103f29a686f84f22f1 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 25 Oct 2021 16:11:09 +0200
+Subject: [PATCH] drm/vc4: hdmi: Use a mutex to prevent concurrent
+ framework access
+
+The vc4 HDMI controller registers into the KMS, CEC and ALSA
+frameworks.
+
+However, no particular care is done to prevent the concurrent execution
+of different framework hooks from happening at the same time.
+
+In order to protect against that scenario, let's introduce a mutex that
+relevant ALSA and KMS hooks will need to take to prevent concurrent
+execution.
+
+CEC is left out at the moment though, since the .get_modes and .detect
+KMS hooks, when running cec_s_phys_addr_from_edid, can end up calling
+CEC's .adap_enable hook. This introduces some reentrancy that isn't easy
+to deal with properly.
+
+The CEC hooks also don't share much state with the rest of the driver:
+the registers are entirely separate, we don't share any variable, the
+only thing that can conflict is the CEC clock divider setup that can be
+affected by a mode set.
+
+However, after discussing it, it looks like CEC should be able to
+recover from this if it was to happen.
+
+Link: https://lore.kernel.org/r/20211025141113.702757-6-maxime@cerno.tech
+Fixes: bb7d78568814 ("drm/vc4: Add HDMI audio support")
+Acked-by: Daniel Vetter <daniel.vetter@ffwll.ch>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 118 +++++++++++++++++++++++++++++++--
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  14 ++++
+ 2 files changed, 126 insertions(+), 6 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -192,6 +192,8 @@ vc4_hdmi_connector_detect(struct drm_con
+ 	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
+ 	bool connected = false;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	WARN_ON(pm_runtime_resume_and_get(&vc4_hdmi->pdev->dev));
+ 
+ 	if (vc4_hdmi->hpd_gpio) {
+@@ -222,11 +224,13 @@ vc4_hdmi_connector_detect(struct drm_con
+ 
+ 		vc4_hdmi_enable_scrambling(&vc4_hdmi->encoder.base.base);
+ 		pm_runtime_put(&vc4_hdmi->pdev->dev);
++		mutex_unlock(&vc4_hdmi->mutex);
+ 		return connector_status_connected;
+ 	}
+ 
+ 	cec_phys_addr_invalidate(vc4_hdmi->cec_adap);
+ 	pm_runtime_put(&vc4_hdmi->pdev->dev);
++	mutex_unlock(&vc4_hdmi->mutex);
+ 	return connector_status_disconnected;
+ }
+ 
+@@ -243,10 +247,14 @@ static int vc4_hdmi_connector_get_modes(
+ 	int ret = 0;
+ 	struct edid *edid;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	edid = drm_get_edid(connector, vc4_hdmi->ddc);
+ 	cec_s_phys_addr_from_edid(vc4_hdmi->cec_adap, edid);
+-	if (!edid)
+-		return -ENODEV;
++	if (!edid) {
++		ret = -ENODEV;
++		goto out;
++	}
+ 
+ 	vc4_encoder->hdmi_monitor = drm_detect_hdmi_monitor(edid);
+ 
+@@ -266,6 +274,9 @@ static int vc4_hdmi_connector_get_modes(
+ 		}
+ 	}
+ 
++out:
++	mutex_unlock(&vc4_hdmi->mutex);
++
+ 	return ret;
+ }
+ 
+@@ -482,6 +493,8 @@ static void vc4_hdmi_set_avi_infoframe(s
+ 	union hdmi_infoframe frame;
+ 	int ret;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	ret = drm_hdmi_avi_infoframe_from_display_mode(&frame.avi,
+ 						       connector, mode);
+ 	if (ret < 0) {
+@@ -533,6 +546,8 @@ static void vc4_hdmi_set_hdr_infoframe(s
+ 	struct drm_connector_state *conn_state = connector->state;
+ 	union hdmi_infoframe frame;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	if (!vc4_hdmi->variant->supports_hdr)
+ 		return;
+ 
+@@ -549,6 +564,8 @@ static void vc4_hdmi_set_infoframes(stru
+ {
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	vc4_hdmi_set_avi_infoframe(encoder);
+ 	vc4_hdmi_set_spd_infoframe(encoder);
+ 	/*
+@@ -568,6 +585,8 @@ static bool vc4_hdmi_supports_scrambling
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	struct drm_display_info *display = &vc4_hdmi->connector.display_info;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	if (!vc4_encoder->hdmi_monitor)
+ 		return false;
+ 
+@@ -586,6 +605,8 @@ static void vc4_hdmi_enable_scrambling(s
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	unsigned long flags;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	if (!vc4_hdmi_supports_scrambling(encoder, mode))
+ 		return;
+ 
+@@ -655,6 +676,8 @@ static void vc4_hdmi_encoder_post_crtc_d
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	unsigned long flags;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+ 	HDMI_WRITE(HDMI_RAM_PACKET_CONFIG, 0);
+@@ -671,6 +694,8 @@ static void vc4_hdmi_encoder_post_crtc_d
+ 	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
+ 
+ 	vc4_hdmi_disable_scrambling(encoder);
++
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_encoder_post_crtc_powerdown(struct drm_encoder *encoder,
+@@ -680,6 +705,8 @@ static void vc4_hdmi_encoder_post_crtc_p
+ 	unsigned long flags;
+ 	int ret;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 	HDMI_WRITE(HDMI_VID_CTL,
+ 		   HDMI_READ(HDMI_VID_CTL) | VC4_HD_VID_CTL_BLANKPIX);
+@@ -694,6 +721,8 @@ static void vc4_hdmi_encoder_post_crtc_p
+ 	ret = pm_runtime_put(&vc4_hdmi->pdev->dev);
+ 	if (ret < 0)
+ 		DRM_ERROR("Failed to release power domain: %d\n", ret);
++
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_encoder_disable(struct drm_encoder *encoder)
+@@ -995,6 +1024,8 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 	unsigned long flags;
+ 	int ret;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	/*
+ 	 * As stated in RPi's vc4 firmware "HDMI state machine (HSM) clock must
+ 	 * be faster than pixel clock, infinitesimally faster, tested in
+@@ -1015,13 +1046,13 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 	ret = clk_set_min_rate(vc4_hdmi->hsm_clock, hsm_rate);
+ 	if (ret) {
+ 		DRM_ERROR("Failed to set HSM clock rate: %d\n", ret);
+-		return;
++		goto out;
+ 	}
+ 
+ 	ret = pm_runtime_resume_and_get(&vc4_hdmi->pdev->dev);
+ 	if (ret < 0) {
+ 		DRM_ERROR("Failed to retain power domain: %d\n", ret);
+-		return;
++		goto out;
+ 	}
+ 
+ 	ret = clk_set_rate(vc4_hdmi->pixel_clock, pixel_rate);
+@@ -1073,13 +1104,16 @@ static void vc4_hdmi_encoder_pre_crtc_co
+ 	if (vc4_hdmi->variant->set_timings)
+ 		vc4_hdmi->variant->set_timings(vc4_hdmi, conn_state, mode);
+ 
++	mutex_unlock(&vc4_hdmi->mutex);
++
+ 	return;
+ 
+ err_disable_pixel_clock:
+ 	clk_disable_unprepare(vc4_hdmi->pixel_clock);
+ err_put_runtime_pm:
+ 	pm_runtime_put(&vc4_hdmi->pdev->dev);
+-
++out:
++	mutex_unlock(&vc4_hdmi->mutex);
+ 	return;
+ }
+ 
+@@ -1091,6 +1125,8 @@ static void vc4_hdmi_encoder_pre_crtc_en
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	unsigned long flags;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	if (vc4_encoder->hdmi_monitor &&
+ 	    drm_default_rgb_quant_range(mode) == HDMI_QUANTIZATION_RANGE_LIMITED) {
+ 		if (vc4_hdmi->variant->csc_setup)
+@@ -1107,6 +1143,8 @@ static void vc4_hdmi_encoder_pre_crtc_en
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 	HDMI_WRITE(HDMI_FIFO_CTL, VC4_HDMI_FIFO_CTL_MASTER_SLAVE_N);
+ 	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
++
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_encoder_post_crtc_enable(struct drm_encoder *encoder,
+@@ -1120,6 +1158,8 @@ static void vc4_hdmi_encoder_post_crtc_e
+ 	unsigned long flags;
+ 	int ret;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+ 	HDMI_WRITE(HDMI_VID_CTL,
+@@ -1179,6 +1219,8 @@ static void vc4_hdmi_encoder_post_crtc_e
+ 
+ 	vc4_hdmi_recenter_fifo(vc4_hdmi);
+ 	vc4_hdmi_enable_scrambling(encoder);
++
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_encoder_enable(struct drm_encoder *encoder)
+@@ -1322,6 +1364,7 @@ static void vc4_hdmi_set_n_cts(struct vc
+ 	u32 n, cts;
+ 	u64 tmp;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
+ 	lockdep_assert_held(&vc4_hdmi->hw_lock);
+ 
+ 	n = 128 * samplerate / 1000;
+@@ -1355,13 +1398,17 @@ static int vc4_hdmi_audio_startup(struct
+ 	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+ 	unsigned long flags;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	/*
+ 	 * If the HDMI encoder hasn't probed, or the encoder is
+ 	 * currently in DVI mode, treat the codec dai as missing.
+ 	 */
+ 	if (!encoder->crtc || !(HDMI_READ(HDMI_RAM_PACKET_CONFIG) &
+-				VC4_HDMI_RAM_PACKET_ENABLE))
++				VC4_HDMI_RAM_PACKET_ENABLE)) {
++		mutex_unlock(&vc4_hdmi->mutex);
+ 		return -ENODEV;
++	}
+ 
+ 	vc4_hdmi->audio.streaming = true;
+ 
+@@ -1377,6 +1424,8 @@ static int vc4_hdmi_audio_startup(struct
+ 	if (vc4_hdmi->variant->phy_rng_enable)
+ 		vc4_hdmi->variant->phy_rng_enable(vc4_hdmi);
+ 
++	mutex_unlock(&vc4_hdmi->mutex);
++
+ 	return 0;
+ }
+ 
+@@ -1387,6 +1436,8 @@ static void vc4_hdmi_audio_reset(struct
+ 	unsigned long flags;
+ 	int ret;
+ 
++	lockdep_assert_held(&vc4_hdmi->mutex);
++
+ 	vc4_hdmi->audio.streaming = false;
+ 	ret = vc4_hdmi_stop_packet(encoder, HDMI_INFOFRAME_TYPE_AUDIO, false);
+ 	if (ret)
+@@ -1406,6 +1457,8 @@ static void vc4_hdmi_audio_shutdown(stru
+ 	struct vc4_hdmi *vc4_hdmi = dev_get_drvdata(dev);
+ 	unsigned long flags;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+ 	HDMI_WRITE(HDMI_MAI_CTL,
+@@ -1420,6 +1473,8 @@ static void vc4_hdmi_audio_shutdown(stru
+ 
+ 	vc4_hdmi->audio.streaming = false;
+ 	vc4_hdmi_audio_reset(vc4_hdmi);
++
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static int sample_rate_to_mai_fmt(int samplerate)
+@@ -1478,6 +1533,8 @@ static int vc4_hdmi_audio_prepare(struct
+ 	dev_dbg(dev, "%s: %u Hz, %d bit, %d channels\n", __func__,
+ 		sample_rate, params->sample_width, channels);
+ 
++	mutex_lock(&vc4_hdmi->mutex);
++
+ 	vc4_hdmi_audio_set_mai_clock(vc4_hdmi, sample_rate);
+ 
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+@@ -1532,6 +1589,8 @@ static int vc4_hdmi_audio_prepare(struct
+ 	memcpy(&vc4_hdmi->audio.infoframe, &params->cea, sizeof(params->cea));
+ 	vc4_hdmi_set_audio_infoframe(encoder);
+ 
++	mutex_unlock(&vc4_hdmi->mutex);
++
+ 	return 0;
+ }
+ 
+@@ -1574,7 +1633,9 @@ static int vc4_hdmi_audio_get_eld(struct
+ 	struct vc4_hdmi *vc4_hdmi = dev_get_drvdata(dev);
+ 	struct drm_connector *connector = &vc4_hdmi->connector;
+ 
++	mutex_lock(&vc4_hdmi->mutex);
+ 	memcpy(buf, connector->eld, min(sizeof(connector->eld), len));
++	mutex_unlock(&vc4_hdmi->mutex);
+ 
+ 	return 0;
+ }
+@@ -1911,6 +1972,17 @@ static int vc4_hdmi_cec_enable(struct ce
+ 	u32 val;
+ 	int ret;
+ 
++	/*
++	 * NOTE: This function should really take vc4_hdmi->mutex, but doing so
++	 * results in a reentrancy since cec_s_phys_addr_from_edid() called in
++	 * .detect or .get_modes might call .adap_enable, which leads to this
++	 * function being called with that mutex held.
++	 *
++	 * Concurrency is not an issue for the moment since we don't share any
++	 * state with KMS, so we can ignore the lock for now, but we need to
++	 * keep it in mind if we were to change that assumption.
++	 */
++
+ 	ret = pm_runtime_resume_and_get(&vc4_hdmi->pdev->dev);
+ 	if (ret)
+ 		return ret;
+@@ -1957,6 +2029,17 @@ static int vc4_hdmi_cec_disable(struct c
+ 	struct vc4_hdmi *vc4_hdmi = cec_get_drvdata(adap);
+ 	unsigned long flags;
+ 
++	/*
++	 * NOTE: This function should really take vc4_hdmi->mutex, but doing so
++	 * results in a reentrancy since cec_s_phys_addr_from_edid() called in
++	 * .detect or .get_modes might call .adap_enable, which leads to this
++	 * function being called with that mutex held.
++	 *
++	 * Concurrency is not an issue for the moment since we don't share any
++	 * state with KMS, so we can ignore the lock for now, but we need to
++	 * keep it in mind if we were to change that assumption.
++	 */
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+ 	if (!vc4_hdmi->variant->external_irq_controller)
+@@ -1985,6 +2068,17 @@ static int vc4_hdmi_cec_adap_log_addr(st
+ 	struct vc4_hdmi *vc4_hdmi = cec_get_drvdata(adap);
+ 	unsigned long flags;
+ 
++	/*
++	 * NOTE: This function should really take vc4_hdmi->mutex, but doing so
++	 * results in a reentrancy since cec_s_phys_addr_from_edid() called in
++	 * .detect or .get_modes might call .adap_enable, which leads to this
++	 * function being called with that mutex held.
++	 *
++	 * Concurrency is not an issue for the moment since we don't share any
++	 * state with KMS, so we can ignore the lock for now, but we need to
++	 * keep it in mind if we were to change that assumption.
++	 */
++
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 	HDMI_WRITE(HDMI_CEC_CNTRL_1,
+ 		   (HDMI_READ(HDMI_CEC_CNTRL_1) & ~VC4_HDMI_CEC_ADDR_MASK) |
+@@ -2003,6 +2097,17 @@ static int vc4_hdmi_cec_adap_transmit(st
+ 	u32 val;
+ 	unsigned int i;
+ 
++	/*
++	 * NOTE: This function should really take vc4_hdmi->mutex, but doing so
++	 * results in a reentrancy since cec_s_phys_addr_from_edid() called in
++	 * .detect or .get_modes might call .adap_enable, which leads to this
++	 * function being called with that mutex held.
++	 *
++	 * Concurrency is not an issue for the moment since we don't share any
++	 * state with KMS, so we can ignore the lock for now, but we need to
++	 * keep it in mind if we were to change that assumption.
++	 */
++
+ 	if (msg->len > 16) {
+ 		drm_err(dev, "Attempting to transmit too much data (%d)\n", msg->len);
+ 		return -ENOMEM;
+@@ -2358,6 +2463,7 @@ static int vc4_hdmi_bind(struct device *
+ 	vc4_hdmi = devm_kzalloc(dev, sizeof(*vc4_hdmi), GFP_KERNEL);
+ 	if (!vc4_hdmi)
+ 		return -ENOMEM;
++	mutex_init(&vc4_hdmi->mutex);
+ 	spin_lock_init(&vc4_hdmi->hw_lock);
+ 	INIT_DELAYED_WORK(&vc4_hdmi->scrambling_work, vc4_hdmi_scrambling_wq);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -184,6 +184,20 @@ struct vc4_hdmi {
+ 	 * @hw_lock: Spinlock protecting device register access.
+ 	 */
+ 	spinlock_t hw_lock;
++
++	/**
++	 * @mutex: Mutex protecting the driver access across multiple
++	 * frameworks (KMS, ALSA).
++	 *
++	 * NOTE: While supported, CEC has been left out since
++	 * cec_s_phys_addr_from_edid() might call .adap_enable and lead to a
++	 * reentrancy issue between .get_modes (or .detect) and .adap_enable.
++	 * Since we don't share any state between the CEC hooks and KMS', it's
++	 * not a big deal. The only trouble might come from updating the CEC
++	 * clock divider which might be affected by a modeset, but CEC should
++	 * be resilient to that.
++	 */
++	struct mutex mutex;
+ };
+ 
+ static inline struct vc4_hdmi *

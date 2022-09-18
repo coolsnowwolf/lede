@@ -1,0 +1,143 @@
+From 74de23a947ad5964b25e9f9f15329d3174488fea Mon Sep 17 00:00:00 2001
+From: Joerg Schambacher <joerg@hifiberry.com>
+Date: Wed, 6 Oct 2021 17:21:07 +0200
+Subject: [PATCH] Hifiberry DAC+ADCPro: adding optional headphone amp
+ control
+
+This is a copy of the code and approach from our DAC+ driver.
+It allows to probe (and activate) an optional TPA6130A2 headphone
+amplifier. Updated email address.
+
+Signed-off-by: Joerg Schambacher <joerg@hifiberry.com>
+---
+ sound/soc/bcm/Kconfig                   |  3 +-
+ sound/soc/bcm/hifiberry_dacplusadcpro.c | 74 ++++++++++++++++++++++++-
+ 2 files changed, 73 insertions(+), 4 deletions(-)
+
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -79,7 +79,8 @@ config SND_BCM2708_SOC_HIFIBERRY_DACPLUS
+         tristate "Support for HifiBerry DAC+ADC PRO"
+         depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+         select SND_SOC_PCM512x_I2C
+-	select SND_SOC_PCM186X_I2C
++        select SND_SOC_PCM186X_I2C
++        select SND_SOC_TPA6130A2
+         select COMMON_CLK_HIFIBERRY_DACPRO
+         help
+          Say Y or M if you want to add support for HifiBerry DAC+ADC PRO.
+--- a/sound/soc/bcm/hifiberry_dacplusadcpro.c
++++ b/sound/soc/bcm/hifiberry_dacplusadcpro.c
+@@ -4,8 +4,8 @@
+  * Author:	Daniel Matuschek, Stuart MacLean <stuart@hifiberry.com>
+  *		Copyright 2014-2015
+  *		based on code by Florian Meier <florian.meier@koalo.de>
+- *		ADC added by Joerg Schambacher <joerg@i2audio.com>
+- *		Copyright 2018-19
++ *		ADC, HP added by Joerg Schambacher <joerg@hifiberry.com>
++ *		Copyright 2018-21
+  *
+  * This program is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU General Public License
+@@ -26,6 +26,7 @@
+ #include <linux/of.h>
+ #include <linux/slab.h>
+ #include <linux/delay.h>
++#include <linux/i2c.h>
+ 
+ #include <sound/core.h>
+ #include <sound/pcm.h>
+@@ -468,6 +469,15 @@ static struct snd_soc_dai_link snd_rpi_h
+ },
+ };
+ 
++/* aux device for optional headphone amp */
++static struct snd_soc_aux_dev hifiberry_dacplusadcpro_aux_devs[] = {
++	{
++		.dlc = {
++			.name = "tpa6130a2.1-0060",
++		},
++	},
++};
++
+ /* audio machine driver */
+ static struct snd_soc_card snd_rpi_hifiberry_dacplusadcpro = {
+ 	.name         = "snd_rpi_hifiberry_dacplusadcpro",
+@@ -477,10 +487,68 @@ static struct snd_soc_card snd_rpi_hifib
+ 	.num_links    = ARRAY_SIZE(snd_rpi_hifiberry_dacplusadcpro_dai),
+ };
+ 
++static int hb_hp_detect(void)
++{
++	struct i2c_adapter *adap = i2c_get_adapter(1);
++	int ret;
++	struct i2c_client tpa_i2c_client = {
++		.addr = 0x60,
++		.adapter = adap,
++	};
++
++	if (!adap)
++		return -EPROBE_DEFER;	/* I2C module not yet available */
++
++	ret = i2c_smbus_read_byte(&tpa_i2c_client) >= 0;
++	i2c_put_adapter(adap);
++	return ret;
++};
++
++static struct property tpa_enable_prop = {
++	       .name = "status",
++	       .length = 4 + 1, /* length 'okay' + 1 */
++	       .value = "okay",
++	};
++
+ static int snd_rpi_hifiberry_dacplusadcpro_probe(struct platform_device *pdev)
+ {
+ 	int ret = 0, i = 0;
+ 	struct snd_soc_card *card = &snd_rpi_hifiberry_dacplusadcpro;
++	struct device_node *tpa_node;
++	struct property *tpa_prop;
++	struct of_changeset ocs;
++	int len;
++
++	/* probe for head phone amp */
++	ret = hb_hp_detect();
++	if (ret < 0)
++		return ret;
++	if (ret) {
++		card->aux_dev = hifiberry_dacplusadcpro_aux_devs;
++		card->num_aux_devs =
++				ARRAY_SIZE(hifiberry_dacplusadcpro_aux_devs);
++		tpa_node = of_find_compatible_node(NULL, NULL, "ti,tpa6130a2");
++		tpa_prop = of_find_property(tpa_node, "status", &len);
++
++		if (strcmp((char *)tpa_prop->value, "okay")) {
++			/* and activate headphone using change_sets */
++			dev_info(&pdev->dev, "activating headphone amplifier");
++			of_changeset_init(&ocs);
++			ret = of_changeset_update_property(&ocs, tpa_node,
++							&tpa_enable_prop);
++			if (ret) {
++				dev_err(&pdev->dev,
++				"cannot activate headphone amplifier\n");
++				return -ENODEV;
++			}
++			ret = of_changeset_apply(&ocs);
++			if (ret) {
++				dev_err(&pdev->dev,
++				"cannot activate headphone amplifier\n");
++				return -ENODEV;
++			}
++		}
++	}
+ 
+ 	snd_rpi_hifiberry_dacplusadcpro.dev = &pdev->dev;
+ 	if (pdev->dev.of_node) {
+@@ -531,7 +599,7 @@ static struct platform_driver snd_rpi_hi
+ 
+ module_platform_driver(snd_rpi_hifiberry_dacplusadcpro_driver);
+ 
+-MODULE_AUTHOR("Joerg Schambacher <joerg@i2audio.com>");
++MODULE_AUTHOR("Joerg Schambacher <joerg@hifiberry.com>");
+ MODULE_AUTHOR("Daniel Matuschek <daniel@hifiberry.com>");
+ MODULE_DESCRIPTION("ASoC Driver for HiFiBerry DAC+ADC");
+ MODULE_LICENSE("GPL v2");

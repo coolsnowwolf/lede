@@ -1,0 +1,234 @@
+From 2b9f5f00b22766743607b70d361875a9a1b0e1ed Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 20 Jan 2022 15:50:27 +0000
+Subject: [PATCH] power: rpi-poe: Add option of being created by MFD or
+ FW
+
+The firmware can only use I2C0 if the kernel isn't, therefore
+with libcamera and DRM using it the PoE HAT fan control needs
+to move to the kernel.
+
+Add the option for the driver to be created by the PoE HAT core
+MFD driver, and use the I2C regmap that provides to control fan
+functions.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/power/supply/rpi_poe_power.c | 124 ++++++++++++++++-----------
+ 1 file changed, 75 insertions(+), 49 deletions(-)
+
+--- a/drivers/power/supply/rpi_poe_power.c
++++ b/drivers/power/supply/rpi_poe_power.c
+@@ -12,10 +12,13 @@
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/power_supply.h>
++#include <linux/regmap.h>
+ #include <soc/bcm2835/raspberrypi-firmware.h>
+ 
+-#define RPI_POE_ADC_REG			0x2
+-#define RPI_POE_FLAG_REG		0x4
++#define RPI_POE_FW_BASE_REG		0x2
++
++#define RPI_POE_ADC_REG			0x0
++#define RPI_POE_FLAG_REG		0x2
+ 
+ #define RPI_POE_FLAG_AT			BIT(0)
+ #define RPI_POE_FLAG_OC			BIT(1)
+@@ -26,8 +29,12 @@
+ #define DRVNAME "rpi-poe-power-supply"
+ 
+ struct rpi_poe_power_supply_ctx {
+-	struct power_supply *supply;
+ 	struct rpi_firmware *fw;
++
++	struct regmap *regmap;
++	u32 offset;
++
++	struct power_supply *supply;
+ };
+ 
+ struct fw_tag_data_s {
+@@ -36,40 +43,51 @@ struct fw_tag_data_s {
+ 	u32 ret;
+ };
+ 
+-static int write_reg(struct rpi_firmware *fw, u32 reg, u32 *val)
++static int write_reg(struct rpi_poe_power_supply_ctx *ctx, u32 reg, u32 *val)
+ {
+ 	struct fw_tag_data_s fw_tag_data = {
+-		.reg = reg,
++		.reg = reg + RPI_POE_FW_BASE_REG,
+ 		.val = *val
+ 	};
+ 	int ret;
+ 
+-	ret = rpi_firmware_property(fw, RPI_FIRMWARE_SET_POE_HAT_VAL,
+-				    &fw_tag_data, sizeof(fw_tag_data));
+-	if (ret)
+-		return ret;
+-	else if (fw_tag_data.ret)
+-		return -EIO;
+-	return 0;
++	if (ctx->fw) {
++		ret = rpi_firmware_property(ctx->fw, RPI_FIRMWARE_SET_POE_HAT_VAL,
++					    &fw_tag_data, sizeof(fw_tag_data));
++		if (!ret && fw_tag_data.ret)
++			ret = -EIO;
++	} else {
++		ret = regmap_write(ctx->regmap, ctx->offset + reg, *val);
++	}
++
++	return ret;
+ }
+ 
+-static int read_reg(struct rpi_firmware *fw, u32 reg, u32 *val)
++static int read_reg(struct rpi_poe_power_supply_ctx *ctx, u32 reg, u32 *val)
+ {
+ 	struct fw_tag_data_s fw_tag_data = {
+-		.reg = reg,
++		.reg = reg + RPI_POE_FW_BASE_REG,
+ 		.val = *val
+ 	};
++	u32 value;
+ 	int ret;
+ 
+-	ret = rpi_firmware_property(fw, RPI_FIRMWARE_GET_POE_HAT_VAL,
+-				    &fw_tag_data, sizeof(fw_tag_data));
+-	if (ret)
+-		return ret;
+-	else if (fw_tag_data.ret)
+-		return -EIO;
++	if (ctx->fw) {
++		ret = rpi_firmware_property(ctx->fw, RPI_FIRMWARE_GET_POE_HAT_VAL,
++					    &fw_tag_data, sizeof(fw_tag_data));
++		if (!ret && fw_tag_data.ret)
++			ret = -EIO;
++		*val = fw_tag_data.val;
++	} else {
++		ret = regmap_read(ctx->regmap, ctx->offset + reg, &value);
++		if (!ret) {
++			*val = value;
++			ret = regmap_read(ctx->regmap, ctx->offset + reg + 1, &value);
++			*val |= value << 8;
++		}
++	}
+ 
+-	*val = fw_tag_data.val;
+-	return 0;
++	return ret;
+ }
+ 
+ static int rpi_poe_power_supply_get_property(struct power_supply *psy,
+@@ -82,14 +100,14 @@ static int rpi_poe_power_supply_get_prop
+ 
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_HEALTH:
+-		ret = read_reg(ctx->fw, RPI_POE_FLAG_REG, &val);
++		ret = read_reg(ctx, RPI_POE_FLAG_REG, &val);
+ 		if (ret)
+ 			return ret;
+ 
+ 		if (val & RPI_POE_FLAG_OC) {
+ 			r_val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
+ 			val = RPI_POE_FLAG_OC;
+-			ret = write_reg(ctx->fw, RPI_POE_FLAG_REG, &val);
++			ret = write_reg(ctx, RPI_POE_FLAG_REG, &val);
+ 			if (ret)
+ 				return ret;
+ 			return 0;
+@@ -99,7 +117,7 @@ static int rpi_poe_power_supply_get_prop
+ 		return 0;
+ 
+ 	case POWER_SUPPLY_PROP_ONLINE:
+-		ret = read_reg(ctx->fw, RPI_POE_ADC_REG, &val);
++		ret = read_reg(ctx, RPI_POE_ADC_REG, &val);
+ 		if (ret)
+ 			return ret;
+ 
+@@ -107,7 +125,7 @@ static int rpi_poe_power_supply_get_prop
+ 		return 0;
+ 
+ 	case POWER_SUPPLY_PROP_CURRENT_NOW:
+-		ret = read_reg(ctx->fw, RPI_POE_ADC_REG, &val);
++		ret = read_reg(ctx, RPI_POE_ADC_REG, &val);
+ 		if (ret)
+ 			return ret;
+ 		val = (val * 3300)/9821;
+@@ -115,15 +133,14 @@ static int rpi_poe_power_supply_get_prop
+ 		return 0;
+ 
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+-		ret = read_reg(ctx->fw, RPI_POE_FLAG_REG, &val);
++		ret = read_reg(ctx, RPI_POE_FLAG_REG, &val);
+ 		if (ret)
+ 			return ret;
+ 
+-		if (val & RPI_POE_FLAG_AT) {
++		if (val & RPI_POE_FLAG_AT)
+ 			r_val->intval = RPI_POE_CURRENT_AT_MAX;
+-			return 0;
+-		}
+-		r_val->intval = RPI_POE_CURRENT_AF_MAX;
++		else
++			r_val->intval = RPI_POE_CURRENT_AF_MAX;
+ 		return 0;
+ 
+ 	default:
+@@ -158,29 +175,38 @@ static int rpi_poe_power_supply_probe(st
+ 	if (!of_device_is_available(pdev->dev.of_node))
+ 		return -ENODEV;
+ 
+-	fw_node = of_parse_phandle(pdev->dev.of_node, "firmware", 0);
+-	if (!fw_node) {
+-		dev_err(&pdev->dev, "Missing firmware node\n");
+-		return -ENOENT;
+-	}
+-
+ 	ctx = devm_kzalloc(&pdev->dev, sizeof(*ctx), GFP_KERNEL);
+ 	if (!ctx)
+ 		return -ENOMEM;
+ 
+-	ctx->fw = rpi_firmware_get(fw_node);
+-	if (!ctx->fw)
+-		return -EPROBE_DEFER;
+-	if (rpi_firmware_property(ctx->fw,
+-			RPI_FIRMWARE_GET_FIRMWARE_REVISION,
+-			&revision, sizeof(revision))) {
+-		dev_err(&pdev->dev, "Failed to get firmware revision\n");
+-		return -ENOENT;
+-	}
+-	if (revision < 0x60af72e8) {
+-		dev_err(&pdev->dev, "Unsupported firmware\n");
+-		return -ENOENT;
++	if (pdev->dev.parent)
++		ctx->regmap = dev_get_regmap(pdev->dev.parent, NULL);
++
++	if (ctx->regmap) {
++		if (device_property_read_u32(&pdev->dev, "reg", &ctx->offset))
++			return -EINVAL;
++	} else {
++		fw_node = of_parse_phandle(pdev->dev.of_node, "firmware", 0);
++		if (!fw_node) {
++			dev_err(&pdev->dev, "Missing firmware node\n");
++			return -ENOENT;
++		}
++
++		ctx->fw = rpi_firmware_get(fw_node);
++		if (!ctx->fw)
++			return -EPROBE_DEFER;
++		if (rpi_firmware_property(ctx->fw,
++					  RPI_FIRMWARE_GET_FIRMWARE_REVISION,
++					  &revision, sizeof(revision))) {
++			dev_err(&pdev->dev, "Failed to get firmware revision\n");
++			return -ENOENT;
++		}
++		if (revision < 0x60af72e8) {
++			dev_err(&pdev->dev, "Unsupported firmware\n");
++			return -ENOENT;
++		}
+ 	}
++
+ 	platform_set_drvdata(pdev, ctx);
+ 
+ 	psy_cfg.of_node = pdev->dev.of_node;

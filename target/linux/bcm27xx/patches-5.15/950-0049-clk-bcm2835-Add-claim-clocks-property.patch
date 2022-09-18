@@ -1,0 +1,120 @@
+From 9e4d97d8b1643b0eccdcf793e898101b18a01801 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 13 Feb 2017 17:20:08 +0000
+Subject: [PATCH] clk-bcm2835: Add claim-clocks property
+
+The claim-clocks property can be used to prevent PLLs and dividers
+from being marked as critical. It contains a vector of clock IDs,
+as defined by dt-bindings/clock/bcm2835.h.
+
+Use this mechanism to claim PLLD_DSI0, PLLD_DSI1, PLLH_AUX and
+PLLH_PIX for the vc4_kms_v3d driver.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/clk/bcm/clk-bcm2835.c | 45 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 42 insertions(+), 3 deletions(-)
+
+--- a/drivers/clk/bcm/clk-bcm2835.c
++++ b/drivers/clk/bcm/clk-bcm2835.c
+@@ -1306,6 +1306,8 @@ static const struct clk_ops bcm2835_vpu_
+ 	.debug_init = bcm2835_clock_debug_init,
+ };
+ 
++static bool bcm2835_clk_is_claimed(const char *name);
++
+ static struct clk_hw *bcm2835_register_pll(struct bcm2835_cprman *cprman,
+ 					   const void *data)
+ {
+@@ -1323,6 +1325,9 @@ static struct clk_hw *bcm2835_register_p
+ 	init.ops = &bcm2835_pll_clk_ops;
+ 	init.flags = pll_data->flags | CLK_IGNORE_UNUSED;
+ 
++	if (!bcm2835_clk_is_claimed(pll_data->name))
++		init.flags |= CLK_IS_CRITICAL;
++
+ 	pll = kzalloc(sizeof(*pll), GFP_KERNEL);
+ 	if (!pll)
+ 		return NULL;
+@@ -1378,9 +1383,11 @@ bcm2835_register_pll_divider(struct bcm2
+ 	divider->div.hw.init = &init;
+ 	divider->div.table = NULL;
+ 
+-	if (!(cprman_read(cprman, data->cm_reg) & data->hold_mask)) {
+-		init.flags |= CLK_IS_CRITICAL;
+-		divider->div.flags |= CLK_IS_CRITICAL;
++	if (!(cprman_read(cprman, divider_data->cm_reg) & divider_data->hold_mask)) {
++		if (!bcm2835_clk_is_claimed(divider_data->source_pll))
++			init.flags |= CLK_IS_CRITICAL;
++		if (!bcm2835_clk_is_claimed(divider_data->name))
++			divider->div.flags |= CLK_IS_CRITICAL;
+ 	}
+ 
+ 	divider->cprman = cprman;
+@@ -1437,6 +1444,15 @@ static struct clk_hw *bcm2835_register_c
+ 	init.flags = clock_data->flags | CLK_IGNORE_UNUSED;
+ 
+ 	/*
++	 * Some GPIO clocks for ethernet/wifi PLLs are marked as
++	 * critical (since some platforms use them), but if the
++	 * firmware didn't have them turned on then they clearly
++	 * aren't actually critical.
++	 */
++	if ((cprman_read(cprman, clock_data->ctl_reg) & CM_ENABLE) == 0)
++		init.flags &= ~CLK_IS_CRITICAL;
++
++	/*
+ 	 * Pass the CLK_SET_RATE_PARENT flag if we are allowed to propagate
+ 	 * rate changes on at least of the parents.
+ 	 */
+@@ -2215,6 +2231,8 @@ static const struct bcm2835_clk_desc clk
+ 		.ctl_reg = CM_PERIICTL),
+ };
+ 
++static bool bcm2835_clk_claimed[ARRAY_SIZE(clk_desc_array)];
++
+ /*
+  * Permanently take a reference on the parent of the SDRAM clock.
+  *
+@@ -2234,6 +2252,19 @@ static int bcm2835_mark_sdc_parent_criti
+ 	return clk_prepare_enable(parent);
+ }
+ 
++static bool bcm2835_clk_is_claimed(const char *name)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(clk_desc_array); i++) {
++		const char *clk_name = *(const char **)(clk_desc_array[i].data);
++		if (!strcmp(name, clk_name))
++		    return bcm2835_clk_claimed[i];
++	}
++
++	return false;
++}
++
+ static int bcm2835_clk_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -2243,6 +2274,7 @@ static int bcm2835_clk_probe(struct plat
+ 	const size_t asize = ARRAY_SIZE(clk_desc_array);
+ 	const struct cprman_plat_data *pdata;
+ 	size_t i;
++	u32 clk_id;
+ 	int ret;
+ 
+ 	pdata = of_device_get_match_data(&pdev->dev);
+@@ -2261,6 +2293,13 @@ static int bcm2835_clk_probe(struct plat
+ 	if (IS_ERR(cprman->regs))
+ 		return PTR_ERR(cprman->regs);
+ 
++	memset(bcm2835_clk_claimed, 0, sizeof(bcm2835_clk_claimed));
++	for (i = 0;
++	     !of_property_read_u32_index(pdev->dev.of_node, "claim-clocks",
++					 i, &clk_id);
++	     i++)
++		bcm2835_clk_claimed[clk_id]= true;
++
+ 	memcpy(cprman->real_parent_names, cprman_parent_names,
+ 	       sizeof(cprman_parent_names));
+ 	of_clk_parent_fill(dev->of_node, cprman->real_parent_names,
