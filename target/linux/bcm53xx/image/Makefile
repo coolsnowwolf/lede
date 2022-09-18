@@ -111,7 +111,7 @@ DEVICE_VARS += SIGNATURE
 DEVICE_VARS += NETGEAR_BOARD_ID NETGEAR_REGION TPLINK_BOARD
 DEVICE_VARS += LUXUL_BOARD
 
-IEEE8021X := wpad-basic-wolfssl
+IEEE8021X := wpad-openssl
 B43 := $(IEEE8021X) kmod-b43
 BRCMFMAC_43602A1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-43602a1-pcie
 BRCMFMAC_4366B1 := $(IEEE8021X) kmod-brcmfmac brcmfmac-firmware-4366b1-pcie
@@ -166,14 +166,6 @@ define Device/asus_rt-ac87u
   ASUS_PRODUCTID := RT-AC87U
 endef
 TARGET_DEVICES += asus_rt-ac87u
-
-define Device/asus_rt-ac88u
-  $(call Device/asus)
-  DEVICE_MODEL := RT-AC88U
-  DEVICE_PACKAGES := $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
-  ASUS_PRODUCTID := RT-AC88U
-endef
-TARGET_DEVICES += asus_rt-ac88u
 
 define Device/asus_rt-n18u
   $(call Device/asus)
@@ -250,11 +242,13 @@ define Device/dlink_dir-885l
 endef
 TARGET_DEVICES += dlink_dir-885l
 
+# Linksys devices are disabled due to problem with 2 TRX partitions
 define Device/linksys_ea6300-v1
   DEVICE_VENDOR := Linksys
   DEVICE_MODEL := EA6300
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := $(B43) $(USB3_PACKAGES)
+  BROKEN := y
 endef
 TARGET_DEVICES += linksys_ea6300-v1
 
@@ -271,6 +265,7 @@ define Device/linksys_ea9200
   DEVICE_MODEL := EA9200
   DEVICE_VARIANT := v1
   DEVICE_PACKAGES := $(BRCMFMAC_43602A1) $(USB3_PACKAGES)
+  BROKEN := y
 endef
 TARGET_DEVICES += linksys_ea9200
 
@@ -322,27 +317,10 @@ define Device/luxul_xwr-3150
 endef
 TARGET_DEVICES += luxul_xwr-3150
 
-define Device/meraki_mr26
-  DEVICE_VENDOR := Meraki
-  DEVICE_MODEL := MR26
-  DEVICE_PACKAGES := $(B43) kmod-i2c-bcm-iproc kmod-eeprom-at24 \
-	kmod-hwmon-ina2xx nu801
-  DEVICE_DTS := bcm53015-meraki-mr26
-# resize the initramfs to fit the size of the existing part.safe.
-  KERNEL_LOADADDR := 0x00008000
-  KERNEL_INITRAMFS_SUFFIX := .bin
-  KERNEL_INITRAMFS := kernel-bin | append-dtb | gzip | uImage gzip | pad-to 9310208
-# LZMA is not supported by the uboot
-  KERNEL := kernel-bin | append-dtb | gzip | uImage gzip
-  IMAGES += sysupgrade.bin
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES += meraki_mr26
-
 define Device/meraki_mr32
   DEVICE_VENDOR := Meraki
   DEVICE_MODEL := MR32
-  DEVICE_PACKAGES := $(B43) kmod-i2c-bcm-iproc kmod-eeprom-at24 \
+  DEVICE_PACKAGES := $(B43) kmod-i2c-bcm-iproc kmod-i2c-gpio kmod-eeprom-at24 \
 	kmod-leds-pwm kmod-hwmon-ina2xx kmod-bluetooth
   DEVICE_DTS := bcm53016-meraki-mr32
 # Meraki FW r23 tries to resize the part.safe partition before it will
@@ -350,12 +328,11 @@ define Device/meraki_mr32
 # if the partition is smaller than the old one.
   KERNEL_LOADADDR := 0x00008000
   KERNEL_INITRAMFS_SUFFIX := .bin
-  DEVICE_DTS_DELIMITER := @
-  DEVICE_DTS_CONFIG := config@1
   KERNEL_INITRAMFS := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb | \
 	pad-to 10362880
   KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
-  IMAGES += sysupgrade.bin
+  IMAGES := sysupgrade.bin
+# Currently the only device that uses the new image check
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 
 # The loader is specifically looking for fdt@2:

@@ -11,7 +11,7 @@ FEATURES:=squashfs nand usb pci pcie gpio pwm
 CPU_TYPE:=cortex-a9
 SUBTARGETS:=generic
 
-KERNEL_PATCHVER:=5.10
+KERNEL_PATCHVER:=5.4
 KERNEL_TESTING_PATCHVER:=5.15
 
 define Target/Description
@@ -22,7 +22,7 @@ include $(INCLUDE_DIR)/target.mk
 
 KERNELNAME:=zImage dtbs
 
-DEFAULT_PACKAGES += nvram \
+DEFAULT_PACKAGES += swconfig nvram \
 	osafeloader oseama otrx \
 	kmod-gpio-button-hotplug \
 	kmod-leds-gpio

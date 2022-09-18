@@ -9,28 +9,74 @@ bcm53xx_setup_interfaces()
 {
 	local board="$1"
 
+	# On BCM4708 / BCM4709(4) there are 3 Ethernet interfaces connected to 3 switch
+	# ports. It's up to vendor which to use.
 	case "$board" in
-	asus,rt-ac87u)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+	tenda,ac9)
+		ucidef_add_switch "switch0" \
+			"1:lan" "2:lan" "3:lan" "4:lan" "8@eth0" "0:wan" "5@eth1"
 		;;
-	asus,rt-ac88u)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 extsw" "wan"
+	buffalo,wxr-1900dhp| \
+	buffalo,wzr-1750dhp)
+		ucidef_add_switch "switch0" \
+			"0:lan:1" "1:lan:2" "2:lan:3" "3:lan:4" "4:wan:5" "5@eth0"
+		;;
+	dlink,dir-885l | \
+	netgear,r7900 | \
+	netgear,r8000 | \
+	netgear,r8500)
+		# NVRAM specifies port 8 (eth2) - unsupported by OpenWrt b53
+		# Use port 5 (eth0) as workaround
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5t@eth0"
 		;;
 	linksys,panamera)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 lan7 lan8 extsw" "wan"
+		ucidef_add_switch "switch1" \
+			"0:lan" "1:lan:7" "2:lan:4" "3:lan:8" "4:wan" "5t@eth0"
+		;;
+	luxul,abr-4500-v1|\
+	luxul,xbr-4500-v1)
+		ucidef_add_switch "switch0" \
+			"0:wan" "1:lan:4" "2:lan:3" "3:lan:2" "4:lan:1" "5@eth0"
 		;;
 	luxul,xap-1610-v1)
-		ucidef_set_interface_lan "poe lan" "dhcp"
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "5@eth0"
+		ucidef_set_interface_lan "eth0.1" "dhcp"
 		;;
-	meraki,mr26 | \
-	meraki,mr32)
-		ucidef_set_interface_lan "poe" "dhcp"
+	luxul,xwr-3150-v1)
+		ucidef_add_switch "switch0" \
+			"0:lan:4" "1:lan:3" "2:lan:2" "3:lan:1" "4:wan" "5@eth0"
 		;;
 	phicomm,k3)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+		ucidef_add_switch "switch0" \
+			"0:lan" "1:lan" "2:lan" "3:wan" "5@eth0"
 		;;
 	*)
-		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
+		# NVRAM entries may contain unsorted ports, e.g. Netgear R6250 uses
+		# vlan1ports=3 2 1 0 5*
+		# vlan2ports=4 5u
+		# and early Netgear R8000 was using
+		# vlan1ports=3 2 1 0 5 7 8*
+		# (the enclosing echo is needed to convert newline back to space)
+		vlan1ports="$(echo $(nvram get vlan1ports | tr " " "\n" | sort))"
+		vlan2ports="$(echo $(nvram get vlan2ports | tr " " "\n" | sort))"
+		if echo "$vlan1ports" | egrep -q "^1 2 3 4 5" && \
+		   echo "$vlan2ports" | egrep -q "^0 5"; then
+			ucidef_add_switch "switch0" \
+				"1:lan" "2:lan" "3:lan" "4:lan" "0:wan" "5t@eth0"
+		elif echo "$vlan1ports" | egrep -q "^1 2 3 5 7" && \
+		     echo "$vlan2ports" | egrep -q "^0 7"; then
+			ucidef_add_switch "switch0" \
+				"1:lan" "2:lan" "3:lan" "5:lan" "0:wan" "7t@eth1"
+		elif echo "$vlan1ports" | egrep -q "^0 1 2 3 5 7 8" && \
+		     echo "$vlan2ports" | egrep -q "^4 8"; then
+			ucidef_add_switch "switch0" \
+				"0:lan" "1:lan" "2:lan" "3:lan" "5:lan" "7:lan" "4:wan" "8t@eth2"
+		else
+			ucidef_add_switch "switch0" \
+				"0:lan" "1:lan" "2:lan" "3:lan" "4:wan" "5t@eth0"
+		fi
 		;;
 	esac
 }
@@ -39,8 +85,24 @@ bcm53xx_setup_macs()
 {
 	local board="$1"
 
-	wan_macaddr="$(nvram get wan_hwaddr)"
+	case "$board" in
+	dlink,dir-885l | \
+	linksys,panamera | \
+	netgear,r7900 | \
+	netgear,r8000 | \
+	netgear,r8500)
+		# As vendor doesn't use eth0 its MAC may be missing. Use one from eth2.
+		et2macaddr="$(nvram get et2macaddr)"
+		;;
+	meraki,mr32)
+		# The MAC is stored on an AT24C64 eeprom and not on the nvram
+		et2macaddr=$(get_mac_binary "/sys/bus/i2c/devices/0-0050/eeprom" 0x66)
+		;;
+	esac
 
+	[ -n "$et2macaddr" ] && ucidef_set_interface_macaddr "lan" "$et2macaddr"
+
+	wan_macaddr="$(nvram get wan_hwaddr)"
 	case "$board" in
 	asus,rt-ac87u)
 		etXmacaddr=$(nvram get et1macaddr)
@@ -58,11 +120,6 @@ bcm53xx_setup_macs()
 	luxul,xwr-3150-v1)
 		etXmacaddr=$(nvram get et0macaddr)
 		offset=5
-		;;
-	meraki,mr26)
-		label_mac="$(mtd_get_mac_binary_ubi board-config 0x66)"
-		ucidef_set_interface_macaddr "lan" "$label_mac"
-		ucidef_set_label_macaddr "$label_mac"
 		;;
 	*)
 		etXmacaddr=$(nvram get et0macaddr)

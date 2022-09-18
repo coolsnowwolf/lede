@@ -1,0 +1,74 @@
+From 23f717168dc55f69ad517d3ab5f412d04a5afc0e Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.org>
+Date: Wed, 15 Jan 2020 13:40:38 +0000
+Subject: [PATCH] media: ov5647: Fix return codes from
+ ov5647_write/ov5647_read functions.
+
+Previously they were returning positive non-zero codes for success,
+which were getting passed up the call stack. Since release 4.19,
+do_dentry_open (fs/open.c) has been catching these and flagging an
+error. (So this driver has been broken since that date.)
+
+Fixes: 3c2472a [media] media: i2c: Add support for OV5647 sensor
+Signed-off-by: David Plowman <david.plowman@raspberrypi.org>
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 30 +++++++++++++++++++++++++++---
+ 1 file changed, 27 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -214,9 +214,18 @@ static int ov5647_write(struct v4l2_subd
+ 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+ 
+ 	ret = i2c_master_send(client, data, 3);
+-	if (ret < 0)
++	/*
++	 * Writing the wrong number of bytes also needs to be flagged as an
++	 * error. Success needs to produce a 0 return code.
++	 */
++	if (ret == 3) {
++		ret = 0;
++	} else {
+ 		dev_dbg(&client->dev, "%s: i2c write error, reg: %x\n",
+ 				__func__, reg);
++		if (ret >= 0)
++			ret = -EINVAL;
++	}
+ 
+ 	return ret;
+ }
+@@ -228,16 +237,31 @@ static int ov5647_read(struct v4l2_subde
+ 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+ 
+ 	ret = i2c_master_send(client, data_w, 2);
+-	if (ret < 0) {
++	/*
++	 * A negative return code, or sending the wrong number of bytes, both
++	 * count as an error.
++	 */
++	if (ret != 2) {
+ 		dev_dbg(&client->dev, "%s: i2c write error, reg: %x\n",
+ 			__func__, reg);
++		if (ret >= 0)
++			ret = -EINVAL;
+ 		return ret;
+ 	}
+ 
+ 	ret = i2c_master_recv(client, val, 1);
+-	if (ret < 0)
++	/*
++	 * The only return value indicating success is 1. Anything else, even
++	 * a non-negative value, indicates something went wrong.
++	 */
++	if (ret == 1) {
++		ret = 0;
++	} else {
+ 		dev_dbg(&client->dev, "%s: i2c read error, reg: %x\n",
+ 				__func__, reg);
++		if (ret >= 0)
++			ret = -EINVAL;
++	}
+ 
+ 	return ret;
+ }
