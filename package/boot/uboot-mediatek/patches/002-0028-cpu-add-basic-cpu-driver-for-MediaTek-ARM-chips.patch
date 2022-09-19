@@ -1,0 +1,133 @@
+From e3c707d23a3a5bc1ba9b8c03731a32c3714ae56a Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 31 Aug 2022 19:05:20 +0800
+Subject: [PATCH 28/32] cpu: add basic cpu driver for MediaTek ARM chips
+
+Add basic CPU driver used to retrieve CPU model information.
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/cpu/Makefile  |   1 +
+ drivers/cpu/mtk_cpu.c | 106 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 107 insertions(+)
+ create mode 100644 drivers/cpu/mtk_cpu.c
+
+--- a/drivers/cpu/Makefile
++++ b/drivers/cpu/Makefile
+@@ -9,6 +9,7 @@ obj-$(CONFIG_CPU) += cpu-uclass.o
+ obj-$(CONFIG_ARCH_BMIPS) += bmips_cpu.o
+ obj-$(CONFIG_ARCH_IMX8) += imx8_cpu.o
+ obj-$(CONFIG_ARCH_AT91) += at91_cpu.o
++obj-$(CONFIG_ARCH_MEDIATEK) += mtk_cpu.o
+ obj-$(CONFIG_CPU_MPC83XX) += mpc83xx_cpu.o
+ obj-$(CONFIG_CPU_RISCV) += riscv_cpu.o
+ obj-$(CONFIG_SANDBOX) += cpu_sandbox.o
+--- /dev/null
++++ b/drivers/cpu/mtk_cpu.c
+@@ -0,0 +1,106 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2022 MediaTek Inc. All rights reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include <linux/types.h>
++#include <cpu.h>
++#include <dm.h>
++#include <fdt_support.h>
++#include <mapmem.h>
++#include <asm/global_data.h>
++#include <linux/io.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++struct mtk_cpu_plat {
++	void __iomem *hwver_base;
++};
++
++static int mtk_cpu_get_desc(const struct udevice *dev, char *buf, int size)
++{
++	struct mtk_cpu_plat *plat = dev_get_plat(dev);
++
++	snprintf(buf, size, "MediaTek MT%04X", readl(plat->hwver_base));
++
++	return 0;
++}
++
++static int mtk_cpu_get_count(const struct udevice *dev)
++{
++	return 1;
++}
++
++static int mtk_cpu_get_vendor(const struct udevice *dev, char *buf, int size)
++{
++	snprintf(buf, size, "MediaTek");
++
++	return 0;
++}
++
++static int mtk_cpu_probe(struct udevice *dev)
++{
++	struct mtk_cpu_plat *plat = dev_get_plat(dev);
++	const void *fdt = gd->fdt_blob, *reg;
++	int offset, parent, len, na, ns;
++	u64 addr;
++
++	if (!fdt)
++		return -ENODEV;
++
++	offset = fdt_path_offset(fdt, "/hwver");
++	if (offset < 0)
++		return -ENODEV;
++
++	parent = fdt_parent_offset(fdt, offset);
++	if (parent < 0)
++		return -ENODEV;
++
++	na = fdt_address_cells(fdt, parent);
++	if (na < 1)
++		return -ENODEV;
++
++	ns = fdt_size_cells(gd->fdt_blob, parent);
++	if (ns < 0)
++		return -ENODEV;
++
++	reg = fdt_getprop(gd->fdt_blob, offset, "reg", &len);
++	if (!reg)
++		return -ENODEV;
++
++	if (ns)
++		addr = fdt_translate_address(fdt, offset, reg);
++	else
++		addr = fdt_read_number(reg, na);
++
++	plat->hwver_base = map_sysmem(addr, 0);
++	if (!plat->hwver_base)
++		return -EINVAL;
++
++	return 0;
++}
++
++static const struct cpu_ops mtk_cpu_ops = {
++	.get_desc	= mtk_cpu_get_desc,
++	.get_count	= mtk_cpu_get_count,
++	.get_vendor	= mtk_cpu_get_vendor,
++};
++
++static const struct udevice_id mtk_cpu_ids[] = {
++	{ .compatible = "arm,cortex-a7" },
++	{ .compatible = "arm,cortex-a53" },
++	{ .compatible = "arm,cortex-a73" },
++	{ /* sentinel */ }
++};
++
++U_BOOT_DRIVER(cpu_mtk) = {
++	.name		= "mtk-cpu",
++	.id		= UCLASS_CPU,
++	.of_match	= mtk_cpu_ids,
++	.ops		= &mtk_cpu_ops,
++	.probe		= mtk_cpu_probe,
++	.plat_auto	= sizeof(struct mtk_cpu_plat),
++	.flags		= DM_FLAG_PRE_RELOC,
++};

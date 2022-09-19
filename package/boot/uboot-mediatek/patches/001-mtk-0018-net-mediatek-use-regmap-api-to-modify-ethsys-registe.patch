@@ -1,0 +1,67 @@
+From 955cc76d8074df943d59d559895007f91de8eed5 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Fri, 20 May 2022 11:23:37 +0800
+Subject: [PATCH 18/25] net: mediatek: use regmap api to modify ethsys
+ registers
+
+The address returned by regmap_get_range() is not remapped. Directly r/w
+to this address is ok for ARM platforms since it's idential to the virtual
+address.
+
+But for MIPS platform only virtual address should be used for access.
+To solve this issue, the regmap api regmap_read/regmap_write should be used
+since they will remap address before accessing.
+
+Reviewed-by: Ramon Fried <rfried.dev@gmail.com>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/net/mtk_eth.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/mtk_eth.c
++++ b/drivers/net/mtk_eth.c
+@@ -159,9 +159,10 @@ struct mtk_eth_priv {
+ 
+ 	void __iomem *fe_base;
+ 	void __iomem *gmac_base;
+-	void __iomem *ethsys_base;
+ 	void __iomem *sgmii_base;
+ 
++	struct regmap *ethsys_regmap;
++
+ 	struct mii_dev *mdio_bus;
+ 	int (*mii_read)(struct mtk_eth_priv *priv, u8 phy, u8 reg);
+ 	int (*mii_write)(struct mtk_eth_priv *priv, u8 phy, u8 reg, u16 val);
+@@ -233,7 +234,12 @@ static void mtk_gmac_rmw(struct mtk_eth_
+ static void mtk_ethsys_rmw(struct mtk_eth_priv *priv, u32 reg, u32 clr,
+ 			   u32 set)
+ {
+-	clrsetbits_le32(priv->ethsys_base + reg, clr, set);
++	uint val;
++
++	regmap_read(priv->ethsys_regmap, reg, &val);
++	val &= ~clr;
++	val |= set;
++	regmap_write(priv->ethsys_regmap, reg, val);
+ }
+ 
+ /* Direct MDIO clause 22/45 access via SoC */
+@@ -1427,15 +1433,9 @@ static int mtk_eth_of_to_plat(struct ude
+ 	if (ret)
+ 		return ret;
+ 
+-	regmap = syscon_node_to_regmap(args.node);
+-	if (IS_ERR(regmap))
+-		return PTR_ERR(regmap);
+-
+-	priv->ethsys_base = regmap_get_range(regmap, 0);
+-	if (!priv->ethsys_base) {
+-		dev_err(dev, "Unable to find ethsys\n");
+-		return -ENODEV;
+-	}
++	priv->ethsys_regmap = syscon_node_to_regmap(args.node);
++	if (IS_ERR(priv->ethsys_regmap))
++		return PTR_ERR(priv->ethsys_regmap);
+ 
+ 	/* Reset controllers */
+ 	ret = reset_get_by_name(dev, "fe", &priv->rst_fe);

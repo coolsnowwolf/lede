@@ -1,0 +1,163 @@
+From ba6af13fd58c0ec418720d959152e0db47e91b02 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 31 Aug 2022 19:04:19 +0800
+Subject: [PATCH 06/32] net: mediatek: use a struct to cover variations of all
+ SoCs
+
+Using a single soc id to control different initialization and TX/RX flow
+for all SoCs is not extensible if more hardware variations are added in
+the future.
+
+This patch introduces a struct to replace the original mtk_soc to allow
+the driver be able handle newer hardwares.
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/net/mtk_eth.c | 56 ++++++++++++++++++++++++++++++-------------
+ drivers/net/mtk_eth.h | 25 ++++++++++++++++++-
+ 2 files changed, 64 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/mtk_eth.c
++++ b/drivers/net/mtk_eth.c
+@@ -142,11 +142,15 @@ enum mtk_switch {
+ 	SW_MT7531
+ };
+ 
+-enum mtk_soc {
+-	SOC_MT7623,
+-	SOC_MT7629,
+-	SOC_MT7622,
+-	SOC_MT7621
++/* struct mtk_soc_data -	This is the structure holding all differences
++ *				among various plaforms
++ * @caps			Flags shown the extra capability for the SoC
++ * @ana_rgc3:			The offset for register ANA_RGC3 related to
++ *				sgmiisys syscon
++ */
++struct mtk_soc_data {
++	u32 caps;
++	u32 ana_rgc3;
+ };
+ 
+ struct mtk_eth_priv {
+@@ -171,7 +175,7 @@ struct mtk_eth_priv {
+ 	int (*mmd_write)(struct mtk_eth_priv *priv, u8 addr, u8 devad, u16 reg,
+ 			 u16 val);
+ 
+-	enum mtk_soc soc;
++	const struct mtk_soc_data *soc;
+ 	int gmac_id;
+ 	int force_mode;
+ 	int speed;
+@@ -679,7 +683,7 @@ static int mt7530_setup(struct mtk_eth_p
+ 	u32 val, txdrv;
+ 	int i;
+ 
+-	if (priv->soc != SOC_MT7621) {
++	if (!MTK_HAS_CAPS(priv->soc->caps, MTK_TRGMII_MT7621_CLK)) {
+ 		/* Select 250MHz clk for RGMII mode */
+ 		mtk_ethsys_rmw(priv, ETHSYS_CLKCFG0_REG,
+ 			       ETHSYS_TRGMII_CLK_SEL362_5, 0);
+@@ -1108,9 +1112,8 @@ static int mtk_phy_probe(struct udevice
+ static void mtk_sgmii_init(struct mtk_eth_priv *priv)
+ {
+ 	/* Set SGMII GEN2 speed(2.5G) */
+-	clrsetbits_le32(priv->sgmii_base + ((priv->soc == SOC_MT7622) ?
+-			SGMSYS_GEN2_SPEED : SGMSYS_GEN2_SPEED_V2),
+-			SGMSYS_SPEED_2500, SGMSYS_SPEED_2500);
++	setbits_le32(priv->sgmii_base + priv->soc->ana_rgc3,
++		     SGMSYS_SPEED_2500);
+ 
+ 	/* Disable SGMII AN */
+ 	clrsetbits_le32(priv->sgmii_base + SGMSYS_PCS_CONTROL_1,
+@@ -1182,7 +1185,8 @@ static void mtk_mac_init(struct mtk_eth_
+ 		mtk_gmac_write(priv, GMAC_PORT_MCR(priv->gmac_id), mcr);
+ 	}
+ 
+-	if (priv->soc == SOC_MT7623) {
++	if (MTK_HAS_CAPS(priv->soc->caps, MTK_GMAC1_TRGMII) &&
++	    !MTK_HAS_CAPS(priv->soc->caps, MTK_TRGMII_MT7621_CLK)) {
+ 		/* Lower Tx Driving for TRGMII path */
+ 		for (i = 0 ; i < NUM_TRGMII_CTRL; i++)
+ 			mtk_gmac_write(priv, GMAC_TRGMII_TD_ODT(i),
+@@ -1431,7 +1435,11 @@ static int mtk_eth_of_to_plat(struct ude
+ 	ofnode subnode;
+ 	int ret;
+ 
+-	priv->soc = dev_get_driver_data(dev);
++	priv->soc = (const struct mtk_soc_data *)dev_get_driver_data(dev);
++	if (!priv->soc) {
++		dev_err(dev, "missing soc compatible data\n");
++		return -EINVAL;
++	}
+ 
+ 	pdata->iobase = (phys_addr_t)dev_remap_addr(dev);
+ 
+@@ -1544,11 +1552,27 @@ static int mtk_eth_of_to_plat(struct ude
+ 	return 0;
+ }
+ 
++static const struct mtk_soc_data mt7629_data = {
++	.ana_rgc3 = 0x128,
++};
++
++static const struct mtk_soc_data mt7623_data = {
++	.caps = MT7623_CAPS,
++};
++
++static const struct mtk_soc_data mt7622_data = {
++	.ana_rgc3 = 0x2028,
++};
++
++static const struct mtk_soc_data mt7621_data = {
++	.caps = MT7621_CAPS,
++};
++
+ static const struct udevice_id mtk_eth_ids[] = {
+-	{ .compatible = "mediatek,mt7629-eth", .data = SOC_MT7629 },
+-	{ .compatible = "mediatek,mt7623-eth", .data = SOC_MT7623 },
+-	{ .compatible = "mediatek,mt7622-eth", .data = SOC_MT7622 },
+-	{ .compatible = "mediatek,mt7621-eth", .data = SOC_MT7621 },
++	{ .compatible = "mediatek,mt7629-eth", .data = (ulong)&mt7629_data },
++	{ .compatible = "mediatek,mt7623-eth", .data = (ulong)&mt7623_data },
++	{ .compatible = "mediatek,mt7622-eth", .data = (ulong)&mt7622_data },
++	{ .compatible = "mediatek,mt7621-eth", .data = (ulong)&mt7621_data },
+ 	{}
+ };
+ 
+--- a/drivers/net/mtk_eth.h
++++ b/drivers/net/mtk_eth.h
+@@ -9,8 +9,31 @@
+ #ifndef _MTK_ETH_H_
+ #define _MTK_ETH_H_
+ 
+-/* Frame Engine Register Bases */
+ #include <linux/bitops.h>
++
++enum mkt_eth_capabilities {
++	MTK_TRGMII_BIT,
++	MTK_TRGMII_MT7621_CLK_BIT,
++
++	/* PATH BITS */
++	MTK_ETH_PATH_GMAC1_TRGMII_BIT,
++};
++
++#define MTK_TRGMII			BIT(MTK_TRGMII_BIT)
++#define MTK_TRGMII_MT7621_CLK		BIT(MTK_TRGMII_MT7621_CLK_BIT)
++
++/* Supported path present on SoCs */
++#define MTK_ETH_PATH_GMAC1_TRGMII	BIT(MTK_ETH_PATH_GMAC1_TRGMII_BIT)
++
++#define MTK_GMAC1_TRGMII	(MTK_ETH_PATH_GMAC1_TRGMII | MTK_TRGMII)
++
++#define MTK_HAS_CAPS(caps, _x)		(((caps) & (_x)) == (_x))
++
++#define MT7621_CAPS  (MTK_GMAC1_TRGMII | MTK_TRGMII_MT7621_CLK)
++
++#define MT7623_CAPS  (MTK_GMAC1_TRGMII)
++
++/* Frame Engine Register Bases */
+ #define PDMA_BASE			0x0800
+ #define GDMA1_BASE			0x0500
+ #define GDMA2_BASE			0x1500

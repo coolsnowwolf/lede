@@ -1,0 +1,202 @@
+From d19ad7515a7ef4ee58b5c6606ee9f74c94f28932 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 31 Aug 2022 19:04:32 +0800
+Subject: [PATCH 10/32] serial: mtk: add support for using dynamic baud clock
+ souce
+
+The baud clock on some platform may change due to assigned-clock-parent
+set in DT. In current flow the baud clock is only retrieved during probe
+stage. If the parent of the source clock changes after probe stage, the
+setbrg will set wrong baudrate.
+
+To get the right clock rate, this patch records the baud clk struct to the
+driver's priv, and changes the driver's flow to get the clock rate before
+calling _mtk_serial_setbrg().
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/serial/serial_mtk.c | 80 ++++++++++++++++++++++---------------
+ 1 file changed, 47 insertions(+), 33 deletions(-)
+
+--- a/drivers/serial/serial_mtk.c
++++ b/drivers/serial/serial_mtk.c
+@@ -10,6 +10,7 @@
+ #include <common.h>
+ #include <div64.h>
+ #include <dm.h>
++#include <dm/device_compat.h>
+ #include <errno.h>
+ #include <log.h>
+ #include <serial.h>
+@@ -70,27 +71,37 @@ struct mtk_serial_regs {
+ #define BAUD_ALLOW_MAX(baud)	((baud) + (baud) * 3 / 100)
+ #define BAUD_ALLOW_MIX(baud)	((baud) - (baud) * 3 / 100)
+ 
++/* struct mtk_serial_priv -	Structure holding all information used by the
++ *				driver
++ * @regs:			Register base of the serial port
++ * @clk:			The baud clock device
++ * @fixed_clk_rate:		Fallback fixed baud clock rate if baud clock
++ *				device is not specified
++ * @force_highspeed:		Force using high-speed mode
++ */
+ struct mtk_serial_priv {
+ 	struct mtk_serial_regs __iomem *regs;
+-	u32 clock;
++	struct clk clk;
++	u32 fixed_clk_rate;
+ 	bool force_highspeed;
+ };
+ 
+-static void _mtk_serial_setbrg(struct mtk_serial_priv *priv, int baud)
++static void _mtk_serial_setbrg(struct mtk_serial_priv *priv, int baud,
++			       uint clk_rate)
+ {
+ 	u32 quot, realbaud, samplecount = 1;
+ 
+ 	/* Special case for low baud clock */
+-	if (baud <= 115200 && priv->clock <= 12000000) {
++	if (baud <= 115200 && clk_rate == 12000000) {
+ 		writel(3, &priv->regs->highspeed);
+ 
+-		quot = DIV_ROUND_CLOSEST(priv->clock, 256 * baud);
++		quot = DIV_ROUND_CLOSEST(clk_rate, 256 * baud);
+ 		if (quot == 0)
+ 			quot = 1;
+ 
+-		samplecount = DIV_ROUND_CLOSEST(priv->clock, quot * baud);
++		samplecount = DIV_ROUND_CLOSEST(clk_rate, quot * baud);
+ 
+-		realbaud = priv->clock / samplecount / quot;
++		realbaud = clk_rate / samplecount / quot;
+ 		if (realbaud > BAUD_ALLOW_MAX(baud) ||
+ 		    realbaud < BAUD_ALLOW_MIX(baud)) {
+ 			pr_info("baud %d can't be handled\n", baud);
+@@ -104,7 +115,7 @@ static void _mtk_serial_setbrg(struct mt
+ 
+ 	if (baud <= 115200) {
+ 		writel(0, &priv->regs->highspeed);
+-		quot = DIV_ROUND_CLOSEST(priv->clock, 16 * baud);
++		quot = DIV_ROUND_CLOSEST(clk_rate, 16 * baud);
+ 	} else if (baud <= 576000) {
+ 		writel(2, &priv->regs->highspeed);
+ 
+@@ -112,13 +123,13 @@ static void _mtk_serial_setbrg(struct mt
+ 		if ((baud == 500000) || (baud == 576000))
+ 			baud = 460800;
+ 
+-		quot = DIV_ROUND_UP(priv->clock, 4 * baud);
++		quot = DIV_ROUND_UP(clk_rate, 4 * baud);
+ 	} else {
+ use_hs3:
+ 		writel(3, &priv->regs->highspeed);
+ 
+-		quot = DIV_ROUND_UP(priv->clock, 256 * baud);
+-		samplecount = DIV_ROUND_CLOSEST(priv->clock, quot * baud);
++		quot = DIV_ROUND_UP(clk_rate, 256 * baud);
++		samplecount = DIV_ROUND_CLOSEST(clk_rate, quot * baud);
+ 	}
+ 
+ set_baud:
+@@ -167,8 +178,13 @@ static int _mtk_serial_pending(struct mt
+ static int mtk_serial_setbrg(struct udevice *dev, int baudrate)
+ {
+ 	struct mtk_serial_priv *priv = dev_get_priv(dev);
++	u32 clk_rate;
++
++	clk_rate = clk_get_rate(&priv->clk);
++	if (IS_ERR_VALUE(clk_rate) || clk_rate == 0)
++		clk_rate = priv->fixed_clk_rate;
+ 
+-	_mtk_serial_setbrg(priv, baudrate);
++	_mtk_serial_setbrg(priv, baudrate, clk_rate);
+ 
+ 	return 0;
+ }
+@@ -211,7 +227,6 @@ static int mtk_serial_of_to_plat(struct
+ {
+ 	struct mtk_serial_priv *priv = dev_get_priv(dev);
+ 	fdt_addr_t addr;
+-	struct clk clk;
+ 	int err;
+ 
+ 	addr = dev_read_addr(dev);
+@@ -220,22 +235,19 @@ static int mtk_serial_of_to_plat(struct
+ 
+ 	priv->regs = map_physmem(addr, 0, MAP_NOCACHE);
+ 
+-	err = clk_get_by_index(dev, 0, &clk);
+-	if (!err) {
+-		err = clk_get_rate(&clk);
+-		if (!IS_ERR_VALUE(err))
+-			priv->clock = err;
+-	} else if (err != -ENOENT && err != -ENODEV && err != -ENOSYS) {
+-		debug("mtk_serial: failed to get clock\n");
+-		return err;
+-	}
+-
+-	if (!priv->clock)
+-		priv->clock = dev_read_u32_default(dev, "clock-frequency", 0);
+-
+-	if (!priv->clock) {
+-		debug("mtk_serial: clock not defined\n");
+-		return -EINVAL;
++	err = clk_get_by_index(dev, 0, &priv->clk);
++	if (err) {
++		err = dev_read_u32(dev, "clock-frequency", &priv->fixed_clk_rate);
++		if (err) {
++			dev_err(dev, "baud clock not defined\n");
++			return -EINVAL;
++		}
++	} else {
++		err = clk_get_rate(&priv->clk);
++		if (IS_ERR_VALUE(err)) {
++			dev_err(dev, "invalid baud clock\n");
++			return -EINVAL;
++		}
+ 	}
+ 
+ 	priv->force_highspeed = dev_read_bool(dev, "mediatek,force-highspeed");
+@@ -273,7 +285,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define DECLARE_HSUART_PRIV(port) \
+ 	static struct mtk_serial_priv mtk_hsuart##port = { \
+ 	.regs = (struct mtk_serial_regs *)CONFIG_SYS_NS16550_COM##port, \
+-	.clock = CONFIG_SYS_NS16550_CLK \
++	.fixed_clk_rate = CONFIG_SYS_NS16550_CLK \
+ };
+ 
+ #define DECLARE_HSUART_FUNCTIONS(port) \
+@@ -282,12 +294,14 @@ DECLARE_GLOBAL_DATA_PTR;
+ 		writel(0, &mtk_hsuart##port.regs->ier); \
+ 		writel(UART_MCRVAL, &mtk_hsuart##port.regs->mcr); \
+ 		writel(UART_FCRVAL, &mtk_hsuart##port.regs->fcr); \
+-		_mtk_serial_setbrg(&mtk_hsuart##port, gd->baudrate); \
++		_mtk_serial_setbrg(&mtk_hsuart##port, gd->baudrate, \
++				   mtk_hsuart##port.fixed_clk_rate); \
+ 		return 0 ; \
+ 	} \
+ 	static void mtk_serial##port##_setbrg(void) \
+ 	{ \
+-		_mtk_serial_setbrg(&mtk_hsuart##port, gd->baudrate); \
++		_mtk_serial_setbrg(&mtk_hsuart##port, gd->baudrate, \
++				   mtk_hsuart##port.fixed_clk_rate); \
+ 	} \
+ 	static int mtk_serial##port##_getc(void) \
+ 	{ \
+@@ -427,13 +441,13 @@ static inline void _debug_uart_init(void
+ 	struct mtk_serial_priv priv;
+ 
+ 	priv.regs = (void *) CONFIG_VAL(DEBUG_UART_BASE);
+-	priv.clock = CONFIG_DEBUG_UART_CLOCK;
++	priv.fixed_clk_rate = CONFIG_DEBUG_UART_CLOCK;
+ 
+ 	writel(0, &priv.regs->ier);
+ 	writel(UART_MCRVAL, &priv.regs->mcr);
+ 	writel(UART_FCRVAL, &priv.regs->fcr);
+ 
+-	_mtk_serial_setbrg(&priv, CONFIG_BAUDRATE);
++	_mtk_serial_setbrg(&priv, CONFIG_BAUDRATE, priv.fixed_clk_rate);
+ }
+ 
+ static inline void _debug_uart_putc(int ch)
