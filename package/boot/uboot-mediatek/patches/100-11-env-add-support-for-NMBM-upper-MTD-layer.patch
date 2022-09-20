@@ -1,0 +1,280 @@
+From 240d98e6ad0aed3c11236aa40a60bbd6fe01fae5 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Mon, 25 Jul 2022 10:50:46 +0800
+Subject: [PATCH 45/71] env: add support for NMBM upper MTD layer
+
+Add an env driver for NMBM upper MTD layer
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ cmd/nvedit.c           |   3 +-
+ env/Kconfig            |  19 ++++-
+ env/Makefile           |   1 +
+ env/env.c              |   3 +
+ env/nmbm.c             | 155 +++++++++++++++++++++++++++++++++++++++++
+ include/env_internal.h |   1 +
+ tools/Makefile         |   1 +
+ 7 files changed, 180 insertions(+), 3 deletions(-)
+ create mode 100644 env/nmbm.c
+
+--- a/cmd/nvedit.c
++++ b/cmd/nvedit.c
+@@ -50,6 +50,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ 	defined(CONFIG_ENV_IS_IN_EXT4)		|| \
+ 	defined(CONFIG_ENV_IS_IN_MTD)		|| \
+ 	defined(CONFIG_ENV_IS_IN_NAND)		|| \
++	defined(CONFIG_ENV_IS_IN_NMBM)		|| \
+ 	defined(CONFIG_ENV_IS_IN_NVRAM)		|| \
+ 	defined(CONFIG_ENV_IS_IN_ONENAND)	|| \
+ 	defined(CONFIG_ENV_IS_IN_SATA)		|| \
+@@ -64,7 +65,7 @@ DECLARE_GLOBAL_DATA_PTR;
+ #if	!defined(ENV_IS_IN_DEVICE)		&& \
+ 	!defined(CONFIG_ENV_IS_NOWHERE)
+ # error Define one of CONFIG_ENV_IS_IN_{EEPROM|FLASH|MMC|FAT|EXT4|MTD|\
+-NAND|NVRAM|ONENAND|SATA|SPI_FLASH|REMOTE|UBI} or CONFIG_ENV_IS_NOWHERE
++NAND|NMBM|NVRAM|ONENAND|SATA|SPI_FLASH|REMOTE|UBI} or CONFIG_ENV_IS_NOWHERE
+ #endif
+ 
+ /*
+--- a/env/Kconfig
++++ b/env/Kconfig
+@@ -37,7 +37,7 @@ config ENV_IS_NOWHERE
+ 		     !ENV_IS_IN_MMC && !ENV_IS_IN_NAND && \
+ 		     !ENV_IS_IN_NVRAM && !ENV_IS_IN_ONENAND && \
+ 		     !ENV_IS_IN_REMOTE && !ENV_IS_IN_SPI_FLASH && \
+-		     !ENV_IS_IN_UBI && !ENV_IS_IN_MTD
++		     !ENV_IS_IN_UBI && !ENV_IS_IN_NMBM && !ENV_IS_IN_MTD
+ 	help
+ 	  Define this if you don't want to or can't have an environment stored
+ 	  on a storage medium. In this case the environment will still exist
+@@ -285,6 +285,21 @@ config ENV_IS_IN_NAND
+ 	  Currently, CONFIG_ENV_OFFSET_REDUND is not supported when
+ 	  using CONFIG_ENV_OFFSET_OOB.
+ 
++config ENV_IS_IN_NMBM
++	bool "Environment in a NMBM upper MTD layer"
++	depends on !CHAIN_OF_TRUST
++	depends on NMBM_MTD
++	help
++	  Define this if you have a NMBM upper MTD which you want to use for
++	  the environment.
++
++	  - CONFIG_ENV_OFFSET:
++	  - CONFIG_ENV_SIZE:
++
++	  These two #defines specify the offset and size of the environment
++	  area within the first NAND device.  CONFIG_ENV_OFFSET must be
++	  aligned to an erase block boundary.
++
+ config ENV_IS_IN_NVRAM
+ 	bool "Environment in a non-volatile RAM"
+ 	depends on !CHAIN_OF_TRUST
+@@ -561,7 +576,7 @@ config ENV_MTD_NAME
+ config ENV_OFFSET
+ 	hex "Environment offset"
+ 	depends on ENV_IS_IN_EEPROM || ENV_IS_IN_MMC || ENV_IS_IN_NAND || \
+-		    ENV_IS_IN_SPI_FLASH || ENV_IS_IN_MTD
++		    ENV_IS_IN_SPI_FLASH || ENV_IS_IN_NMBM || ENV_IS_IN_MTD
+ 	default 0x3f8000 if ARCH_ROCKCHIP && ENV_IS_IN_MMC
+ 	default 0x140000 if ARCH_ROCKCHIP && ENV_IS_IN_SPI_FLASH
+ 	default 0xF0000 if ARCH_SUNXI
+--- a/env/Makefile
++++ b/env/Makefile
+@@ -28,6 +28,7 @@ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_FAT) +
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_EXT4) += ext4.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_MTD) += mtd.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_NAND) += nand.o
++obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_NMBM) += nmbm.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_SPI_FLASH) += sf.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_FLASH) += flash.o
+ 
+--- a/env/env.c
++++ b/env/env.c
+@@ -75,6 +75,9 @@ static enum env_location env_locations[]
+ #ifdef CONFIG_ENV_IS_IN_NAND
+ 	ENVL_NAND,
+ #endif
++#ifdef CONFIG_ENV_IS_IN_NMBM
++	ENVL_NMBM,
++#endif
+ #ifdef CONFIG_ENV_IS_IN_NVRAM
+ 	ENVL_NVRAM,
+ #endif
+--- /dev/null
++++ b/env/nmbm.c
+@@ -0,0 +1,155 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include <command.h>
++#include <env.h>
++#include <env_internal.h>
++#include <errno.h>
++#include <linux/kernel.h>
++#include <linux/stddef.h>
++#include <linux/types.h>
++#include <malloc.h>
++#include <memalign.h>
++#include <search.h>
++
++#include <nmbm/nmbm-mtd.h>
++
++#if defined(CONFIG_CMD_SAVEENV) && defined(CONFIG_NMBM_MTD)
++#define CMD_SAVEENV
++#endif
++
++#if defined(ENV_IS_EMBEDDED)
++env_t *env_ptr = &environment;
++#else /* ! ENV_IS_EMBEDDED */
++env_t *env_ptr;
++#endif /* ENV_IS_EMBEDDED */
++
++DECLARE_GLOBAL_DATA_PTR;
++
++static int env_nmbm_init(void)
++{
++#if defined(ENV_IS_EMBEDDED)
++	int crc1_ok = 0, crc2_ok = 0;
++	env_t *tmp_env1;
++
++	tmp_env1 = env_ptr;
++	crc1_ok = crc32(0, tmp_env1->data, ENV_SIZE) == tmp_env1->crc;
++
++	if (!crc1_ok && !crc2_ok) {
++		gd->env_addr	= 0;
++		gd->env_valid	= ENV_INVALID;
++
++		return 0;
++	} else if (crc1_ok && !crc2_ok) {
++		gd->env_valid = ENV_VALID;
++	}
++
++	if (gd->env_valid == ENV_VALID)
++		env_ptr = tmp_env1;
++
++	gd->env_addr = (ulong)env_ptr->data;
++
++#else /* ENV_IS_EMBEDDED */
++	gd->env_addr	= (ulong)&default_environment[0];
++	gd->env_valid	= ENV_VALID;
++#endif /* ENV_IS_EMBEDDED */
++
++	return 0;
++}
++
++#ifdef CMD_SAVEENV
++static int env_nmbm_save(void)
++{
++	ALLOC_CACHE_ALIGN_BUFFER(env_t, env_new, 1);
++	struct mtd_info *mtd;
++	struct erase_info ei;
++	int ret = 0;
++
++	ret = env_export(env_new);
++	if (ret)
++		return ret;
++
++	mtd = nmbm_mtd_get_upper_by_index(0);
++	if (!mtd)
++		return 1;
++
++	printf("Erasing on NMBM...\n");
++	memset(&ei, 0, sizeof(ei));
++
++	ei.mtd = mtd;
++	ei.addr = CONFIG_ENV_OFFSET;
++	ei.len = CONFIG_ENV_SIZE;
++
++	if (mtd_erase(mtd, &ei))
++		return 1;
++
++	printf("Writing on NMBM... ");
++	ret = mtd_write(mtd, CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE, NULL,
++			(u_char *)env_new);
++	puts(ret ? "FAILED!\n" : "OK\n");
++
++	return !!ret;
++}
++#endif /* CMD_SAVEENV */
++
++static int readenv(size_t offset, u_char *buf)
++{
++	struct mtd_info *mtd;
++	struct mtd_oob_ops ops;
++	int ret;
++	size_t len = CONFIG_ENV_SIZE;
++
++	mtd = nmbm_mtd_get_upper_by_index(0);
++	if (!mtd)
++		return 1;
++
++	ops.mode = MTD_OPS_AUTO_OOB;
++	ops.ooblen = 0;
++	while(len > 0) {
++		ops.datbuf = buf;
++		ops.len = min(len, (size_t)mtd->writesize);
++		ops.oobbuf = NULL;
++
++		ret = mtd_read_oob(mtd, offset, &ops);
++		if (ret)
++			return 1;
++
++		buf += mtd->writesize;
++		len -= mtd->writesize;
++		offset += mtd->writesize;
++	}
++
++	return 0;
++}
++
++static int env_nmbm_load(void)
++{
++#if !defined(ENV_IS_EMBEDDED)
++	ALLOC_CACHE_ALIGN_BUFFER(char, buf, CONFIG_ENV_SIZE);
++	int ret;
++
++	ret = readenv(CONFIG_ENV_OFFSET, (u_char *)buf);
++	if (ret) {
++		env_set_default("readenv() failed", 0);
++		return -EIO;
++	}
++
++	return env_import(buf, 1, H_EXTERNAL);
++#endif /* ! ENV_IS_EMBEDDED */
++
++	return 0;
++}
++
++U_BOOT_ENV_LOCATION(nmbm) = {
++	.location	= ENVL_NMBM,
++	ENV_NAME("NMBM")
++	.load		= env_nmbm_load,
++#if defined(CMD_SAVEENV)
++	.save		= env_save_ptr(env_nmbm_save),
++#endif
++	.init		= env_nmbm_init,
++};
+--- a/include/env_internal.h
++++ b/include/env_internal.h
+@@ -132,6 +132,7 @@ enum env_location {
+ 	ENVL_MMC,
+ 	ENVL_MTD,
+ 	ENVL_NAND,
++	ENVL_NMBM,
+ 	ENVL_NVRAM,
+ 	ENVL_ONENAND,
+ 	ENVL_REMOTE,
+--- a/tools/Makefile
++++ b/tools/Makefile
+@@ -43,6 +43,7 @@ ENVCRC-$(CONFIG_ENV_IS_IN_FLASH) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_ONENAND) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_MTD) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_NAND) = y
++ENVCRC-$(CONFIG_ENV_IS_IN_NMBM) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_NVRAM) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_SPI_FLASH) = y
+ CONFIG_BUILD_ENVCRC ?= $(ENVCRC-y)
