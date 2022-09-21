@@ -1,4 +1,4 @@
-# 欢迎来到 Lean 的 Openwrt 源码仓库
+# Lede
 
 如何编译自己需要的 OpenWrt 固件 [How to build your Openwrt firmware](./README_EN.md)
 
