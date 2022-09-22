@@ -1,0 +1,73 @@
+From 3470079687448abac42deb62774253be1d6bdef3 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 23 Jul 2022 16:29:33 +0200
+Subject: [PATCH 5/5] net: ethernet: stmicro: stmmac: permit MTU change with
+ interface up
+
+Remove the limitation where the interface needs to be down to change
+MTU by releasing and opening the stmmac driver to set the new MTU.
+Also call the set_filter function to correctly init the port.
+This permits to remove the EBUSY error while the ethernet port is
+running permitting a correct MTU change if for example a DSA request
+a MTU change for a switch CPU port.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ .../net/ethernet/stmicro/stmmac/stmmac_main.c | 30 +++++++++++++++----
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -5598,18 +5598,15 @@ static int stmmac_change_mtu(struct net_
+ {
+ 	struct stmmac_priv *priv = netdev_priv(dev);
+ 	int txfifosz = priv->plat->tx_fifo_size;
++	struct stmmac_dma_conf *dma_conf;
+ 	const int mtu = new_mtu;
++	int ret;
+ 
+ 	if (txfifosz == 0)
+ 		txfifosz = priv->dma_cap.tx_fifo_size;
+ 
+ 	txfifosz /= priv->plat->tx_queues_to_use;
+ 
+-	if (netif_running(dev)) {
+-		netdev_err(priv->dev, "must be stopped to change its MTU\n");
+-		return -EBUSY;
+-	}
+-
+ 	if (stmmac_xdp_is_enabled(priv) && new_mtu > ETH_DATA_LEN) {
+ 		netdev_dbg(priv->dev, "Jumbo frames not supported for XDP\n");
+ 		return -EINVAL;
+@@ -5621,8 +5618,29 @@ static int stmmac_change_mtu(struct net_
+ 	if ((txfifosz < new_mtu) || (new_mtu > BUF_SIZE_16KiB))
+ 		return -EINVAL;
+ 
+-	dev->mtu = mtu;
++	if (netif_running(dev)) {
++		netdev_dbg(priv->dev, "restarting interface to change its MTU\n");
++		/* Try to allocate the new DMA conf with the new mtu */
++		dma_conf = stmmac_setup_dma_desc(priv, mtu);
++		if (IS_ERR(dma_conf)) {
++			netdev_err(priv->dev, "failed allocating new dma conf for new MTU %d\n",
++				   mtu);
++			return PTR_ERR(dma_conf);
++		}
++
++		stmmac_release(dev);
++
++		ret = __stmmac_open(dev, dma_conf);
++		kfree(dma_conf);
++		if (ret) {
++			netdev_err(priv->dev, "failed reopening the interface after MTU change\n");
++			return ret;
++		}
++
++		stmmac_set_rx_mode(dev);
++	}
+ 
++	dev->mtu = mtu;
+ 	netdev_update_features(dev);
+ 
+ 	return 0;

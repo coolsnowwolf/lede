@@ -1,0 +1,142 @@
+From f9ec5723c3dbfcede9c7b0dcdf85e401ce16316c Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 23 Jul 2022 16:29:29 +0200
+Subject: [PATCH 1/5] net: ethernet: stmicro: stmmac: move queue reset to
+ dedicated functions
+
+Move queue reset to dedicated functions. This aside from a simple
+cleanup is also required to allocate a dma conf without resetting the tx
+queue while the device is temporarily detached as now the reset is not
+part of the dma init function and can be done later in the code flow.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ .../net/ethernet/stmicro/stmmac/stmmac_main.c | 59 ++++++++++---------
+ 1 file changed, 31 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -130,6 +130,9 @@ static irqreturn_t stmmac_mac_interrupt(
+ static irqreturn_t stmmac_safety_interrupt(int irq, void *dev_id);
+ static irqreturn_t stmmac_msi_intr_tx(int irq, void *data);
+ static irqreturn_t stmmac_msi_intr_rx(int irq, void *data);
++static void stmmac_reset_rx_queue(struct stmmac_priv *priv, u32 queue);
++static void stmmac_reset_tx_queue(struct stmmac_priv *priv, u32 queue);
++static void stmmac_reset_queues_param(struct stmmac_priv *priv);
+ static void stmmac_tx_timer_arm(struct stmmac_priv *priv, u32 queue);
+ static void stmmac_flush_tx_descriptors(struct stmmac_priv *priv, int queue);
+ 
+@@ -1697,9 +1700,6 @@ static int __init_dma_rx_desc_rings(stru
+ 			return -ENOMEM;
+ 	}
+ 
+-	rx_q->cur_rx = 0;
+-	rx_q->dirty_rx = 0;
+-
+ 	/* Setup the chained descriptor addresses */
+ 	if (priv->mode == STMMAC_CHAIN_MODE) {
+ 		if (priv->extend_desc)
+@@ -1805,12 +1805,6 @@ static int __init_dma_tx_desc_rings(stru
+ 		tx_q->tx_skbuff[i] = NULL;
+ 	}
+ 
+-	tx_q->dirty_tx = 0;
+-	tx_q->cur_tx = 0;
+-	tx_q->mss = 0;
+-
+-	netdev_tx_reset_queue(netdev_get_tx_queue(priv->dev, queue));
+-
+ 	return 0;
+ }
+ 
+@@ -2679,10 +2673,7 @@ static void stmmac_tx_err(struct stmmac_
+ 	stmmac_stop_tx_dma(priv, chan);
+ 	dma_free_tx_skbufs(priv, chan);
+ 	stmmac_clear_tx_descriptors(priv, chan);
+-	tx_q->dirty_tx = 0;
+-	tx_q->cur_tx = 0;
+-	tx_q->mss = 0;
+-	netdev_tx_reset_queue(netdev_get_tx_queue(priv->dev, chan));
++	stmmac_reset_tx_queue(priv, chan);
+ 	stmmac_init_tx_chan(priv, priv->ioaddr, priv->plat->dma_cfg,
+ 			    tx_q->dma_tx_phy, chan);
+ 	stmmac_start_tx_dma(priv, chan);
+@@ -3757,6 +3748,8 @@ static int stmmac_open(struct net_device
+ 		goto init_error;
+ 	}
+ 
++	stmmac_reset_queues_param(priv);
++
+ 	ret = stmmac_hw_setup(dev, true);
+ 	if (ret < 0) {
+ 		netdev_err(priv->dev, "%s: Hw setup failed\n", __func__);
+@@ -6396,6 +6389,7 @@ void stmmac_enable_rx_queue(struct stmma
+ 		return;
+ 	}
+ 
++	stmmac_reset_rx_queue(priv, queue);
+ 	stmmac_clear_rx_descriptors(priv, queue);
+ 
+ 	stmmac_init_rx_chan(priv, priv->ioaddr, priv->plat->dma_cfg,
+@@ -6457,6 +6451,7 @@ void stmmac_enable_tx_queue(struct stmma
+ 		return;
+ 	}
+ 
++	stmmac_reset_tx_queue(priv, queue);
+ 	stmmac_clear_tx_descriptors(priv, queue);
+ 
+ 	stmmac_init_tx_chan(priv, priv->ioaddr, priv->plat->dma_cfg,
+@@ -7384,6 +7379,25 @@ int stmmac_suspend(struct device *dev)
+ }
+ EXPORT_SYMBOL_GPL(stmmac_suspend);
+ 
++static void stmmac_reset_rx_queue(struct stmmac_priv *priv, u32 queue)
++{
++	struct stmmac_rx_queue *rx_q = &priv->rx_queue[queue];
++
++	rx_q->cur_rx = 0;
++	rx_q->dirty_rx = 0;
++}
++
++static void stmmac_reset_tx_queue(struct stmmac_priv *priv, u32 queue)
++{
++	struct stmmac_tx_queue *tx_q = &priv->tx_queue[queue];
++
++	tx_q->cur_tx = 0;
++	tx_q->dirty_tx = 0;
++	tx_q->mss = 0;
++
++	netdev_tx_reset_queue(netdev_get_tx_queue(priv->dev, queue));
++}
++
+ /**
+  * stmmac_reset_queues_param - reset queue parameters
+  * @priv: device pointer
+@@ -7394,22 +7408,11 @@ static void stmmac_reset_queues_param(st
+ 	u32 tx_cnt = priv->plat->tx_queues_to_use;
+ 	u32 queue;
+ 
+-	for (queue = 0; queue < rx_cnt; queue++) {
+-		struct stmmac_rx_queue *rx_q = &priv->rx_queue[queue];
++	for (queue = 0; queue < rx_cnt; queue++)
++		stmmac_reset_rx_queue(priv, queue);
+ 
+-		rx_q->cur_rx = 0;
+-		rx_q->dirty_rx = 0;
+-	}
+-
+-	for (queue = 0; queue < tx_cnt; queue++) {
+-		struct stmmac_tx_queue *tx_q = &priv->tx_queue[queue];
+-
+-		tx_q->cur_tx = 0;
+-		tx_q->dirty_tx = 0;
+-		tx_q->mss = 0;
+-
+-		netdev_tx_reset_queue(netdev_get_tx_queue(priv->dev, queue));
+-	}
++	for (queue = 0; queue < tx_cnt; queue++)
++		stmmac_reset_tx_queue(priv, queue);
+ }
+ 
+ /**
