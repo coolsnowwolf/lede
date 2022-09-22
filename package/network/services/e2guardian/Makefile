@@ -41,7 +41,7 @@ endef
 
 CONFIGURE_VARS += \
 	INCLUDES="" \
-	CXXFLAGS="$$$$CXXFLAGS -fno-rtti" \
+	CXXFLAGS="$$$$CXXFLAGS -fno-rtti -std=c++14" \
 	LIBS="-lpthread"
 
 CONFIGURE_ARGS += \
