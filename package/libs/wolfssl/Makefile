@@ -25,7 +25,6 @@ PKG_MAINTAINER:=Eneas U de Queiroz <cotequeiroz@gmail.com>
 PKG_CPE_ID:=cpe:/a:wolfssl:wolfssl
 
 PKG_CONFIG_DEPENDS:=\
-	CONFIG_PACKAGE_libwolfssl-benchmark \
 	CONFIG_WOLFSSL_HAS_AES_CCM \
 	CONFIG_WOLFSSL_HAS_ARC4 \
 	CONFIG_WOLFSSL_HAS_CERTGEN \
@@ -44,6 +43,7 @@ PKG_CONFIG_DEPENDS:=\
 PKG_ABI_VERSION:=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(call confvar,$(PKG_CONFIG_DEPENDS)))
 
 PKG_CONFIG_DEPENDS+=\
+	CONFIG_PACKAGE_libwolfssl-benchmark \
 	CONFIG_WOLFSSL_HAS_AFALG \
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES \
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC \
