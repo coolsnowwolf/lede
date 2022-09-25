@@ -17,9 +17,9 @@ include $(INCLUDE_DIR)/meson.mk
 MESON_HOST_BUILD_DIR:=$(HOST_BUILD_DIR)/build/meson/openwrt-build
 
 HOSTCC:= $(HOSTCC_NOCACHE)
-HOST_LDFLAGS += -Wl,-rpath,$(STAGING_DIR_HOST)/lib
 
 MESON_HOST_ARGS += \
+	-Ddefault_library=static \
 	-Dlegacy_level=7 \
 	-Ddebug_level=0 \
 	-Dbacktrace=false \
