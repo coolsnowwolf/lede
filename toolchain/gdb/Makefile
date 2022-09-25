@@ -33,12 +33,12 @@ HOST_CONFIGURE_ARGS = \
 	--with-gmp=$(TOPDIR)/staging_dir/host \
 	--with-mpfr=$(TOPDIR)/staging_dir/host \
 	--with-mpc=$(TOPDIR)/staging_dir/host \
+	--with-expat=$(TOPDIR)/staging_dir/host \
 	--disable-werror \
 	--without-uiout \
 	--enable-tui --disable-gdbtk --without-x \
 	--without-included-gettext \
 	--enable-threads \
-	--with-expat \
 	--disable-unit-tests \
 	--disable-ubsan \
 	--disable-binutils \
