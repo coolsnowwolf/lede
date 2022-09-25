@@ -77,8 +77,7 @@ sub download_cmd {
 	my $have_curl = 0;
 	my $have_aria2c = 0;
 	my $filename = shift;
-	my @additional_mirrors = @_;
-	my $mirrors_url = "'$url'";
+	my $additional_mirrors = join(" ", map "$_/$filename", @_);
 
 	my @chArray = ('a'..'z', 'A'..'Z', 0..9);
 	my $rfn = join '', map{ $chArray[int rand @chArray] } 0..9;
@@ -95,13 +94,9 @@ sub download_cmd {
 		close ARIA2C;
 	}
 
-	for my $mirror (@additional_mirrors ) {
-		$mirrors_url = $mirrors_url ." '$mirror /$filename'";
-	}
-
 	if ($have_aria2c) {
 		return join(" ", "touch /dev/shm/${rfn}_spp;",
-			qw(aria2c --stderr -c -x2 -s10 -j10 -k1M), $mirrors_url ,
+			qw(aria2c --stderr -c -x2 -s10 -j10 -k1M), $url, $additional_mirrors,
 			$check_certificate ? () : '--check-certificate=false',
 			"--server-stat-of=/dev/shm/${rfn}_spp",
 			"--server-stat-if=/dev/shm/${rfn}_spp",
