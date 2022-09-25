@@ -95,6 +95,7 @@ sub download_cmd {
 	}
 
 	if ($have_aria2c) {
+		@mirrors=();
 		return join(" ", "touch /dev/shm/${rfn}_spp;",
 			qw(aria2c --stderr -c -x2 -s10 -j10 -k1M), $url, $additional_mirrors,
 			$check_certificate ? () : '--check-certificate=false',
@@ -334,7 +335,6 @@ while (!-f "$target/$filename") {
 	if (!-f "$target/$filename" && $url_filename ne $filename) {
 		download($mirror, $filename, @mirrors);
 	}
-	@mirrors=();
 }
 
 $SIG{INT} = \&cleanup;
