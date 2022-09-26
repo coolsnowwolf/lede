@@ -110,4 +110,13 @@ ifeq ($(SUBTARGET),mesongx)
   TARGET_DEVICES += khadas-vim1
 endif
 
+define Device/thunder-onecloud
+  DEVICE_DTS := meson8b-onecloud
+  DEVICE_TITLE := Thunder OneCloud
+  KERNEL_LOADADDR := 0x00208000
+endef
+ifeq ($(SUBTARGET),meson8b)
+  TARGET_DEVICES += thunder-onecloud
+endif
+
 $(eval $(call BuildImage))
