@@ -26,8 +26,8 @@ HOST_CONFIGURE_ARGS += \
 	--without-docbook \
 	--with-pic
 
-define Host/Install
-	$(MAKE) -C $(HOST_BUILD_DIR) install
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
 endef
 
 $(eval $(call HostBuild))

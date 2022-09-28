@@ -34,11 +34,8 @@ HOST_CONFIGURE_ARGS = \
 	--includedir=$(STAGING_DIR_HOST)/include \
 	--static
 
-define Host/Clean
-	rm -f $(STAGING_DIR_HOST)/lib/libz.a
-	rm -f $(STAGING_DIR_HOST)/include/zconf.h
-	rm -f $(STAGING_DIR_HOST)/include/zlib.h
-	rm -f $(STAGING_DIR_HOST)/lib/pkgconfig//zlib.pc
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
 endef
 
 $(eval $(call HostBuild))

@@ -18,4 +18,8 @@ PKG_CPE_ID:=cpe:/a:gnu:bc
 
 include $(INCLUDE_DIR)/host-build.mk
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

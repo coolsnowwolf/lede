@@ -25,4 +25,8 @@ HOST_CONFIGURE_VARS += \
 HOST_CONFIGURE_ARGS += \
 	--with-ipc=tcp
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

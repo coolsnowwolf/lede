@@ -18,4 +18,8 @@ HOST_BUILD_PARALLEL := 1
 
 include $(INCLUDE_DIR)/host-build.mk
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

@@ -32,4 +32,8 @@ define Host/Install
 	$(INSTALL_BIN) $(HOST_BUILD_DIR)/zip $(STAGING_DIR_HOST)/bin/
 endef
 
+define Host/Clean
+	rm -rf $(STAGING_DIR_HOST)/bin/zip
+endef
+
 $(eval $(call HostBuild))
