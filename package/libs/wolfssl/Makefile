@@ -25,7 +25,6 @@ PKG_MAINTAINER:=Eneas U de Queiroz <cotequeiroz@gmail.com>
 PKG_CPE_ID:=cpe:/a:wolfssl:wolfssl
 
 PKG_CONFIG_DEPENDS:=\
-	CONFIG_PACKAGE_libwolfssl-benchmark \
 	CONFIG_WOLFSSL_HAS_AES_CCM \
 	CONFIG_WOLFSSL_HAS_ARC4 \
 	CONFIG_WOLFSSL_HAS_CERTGEN \
@@ -44,6 +43,7 @@ PKG_CONFIG_DEPENDS:=\
 PKG_ABI_VERSION:=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(call confvar,$(PKG_CONFIG_DEPENDS)))
 
 PKG_CONFIG_DEPENDS+=\
+	CONFIG_PACKAGE_libwolfssl-benchmark \
 	CONFIG_WOLFSSL_HAS_AFALG \
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES \
 	CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC \
@@ -67,7 +67,7 @@ $(call Package/libwolfssl/Default)
   ABI_VERSION:=$(PKG_ABI_VERSION)
   VARIANT:=regular
   DEFAULT_VARIANT:=1
-  CONFLICTS:=libwolfssl-cpu-crypto
+  CONFLICTS:=libwolfsslcpu-crypto
 endef
 
 define Package/libwolfssl/description
@@ -79,7 +79,7 @@ define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
 endef
 
-define Package/libwolfssl-cpu-crypto
+define Package/libwolfsslcpu-crypto
 $(call Package/libwolfssl/Default)
   TITLE:=wolfSSL library with AES CPU instructions
   PROVIDES:=libwolfssl libcyassl
@@ -94,20 +94,20 @@ $(call Package/libwolfssl/Default)
   DEPENDS:=libwolfssl
 endef
 
-define Package/libwolfssl-cpu-crypto/description
+define Package/libwolfsslcpu-crypto/description
 $(call Package/libwolfssl/description)
 This variant uses AES CPU instructions (Intel AESNI or ARMv8 Crypto Extension)
 endef
 
-define Package/libwolfssl-cpu-crypto/config
-    if TARGET_armvirt && PACKAGE_libwolfssl-cpu-crypto = y
-	comment "You are about to build libwolfssl-cpu-crypto into an armvirt_64 image."
+define Package/libwolfsslcpu-crypto/config
+    if TARGET_armvirt && PACKAGE_libwolfsslcpu-crypto = y
+	comment "You are about to build libwolfsslcpu-crypto into an armvirt_64 image."
 	comment "Ensure all of your installation targets support the Crypto Extension. "
 	comment "Look for the 'aes' feature in /proc/cpuinfo. This library does not do "
 	comment "run-time detection and will crash if the CPU does not support it.     "
     endif
-    if TARGET_bcm27xx && PACKAGE_libwolfssl-cpu-crypto
-	comment "Beware that libwolfssl-cpu-crypto will not run in a bcm27xx target.   "
+    if TARGET_bcm27xx && PACKAGE_libwolfsslcpu-crypto
+	comment "Beware that libwolfsslcpu-crypto will not run in a bcm27xx target.   "
     endif
 endef
 
@@ -161,7 +161,7 @@ else ifdef CONFIG_aarch64
     CONFIGURE_ARGS += --enable-armasm
     TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
     WOLFSSL_NOASM_REGEX:=^bcm27xx/.*
-    Package/libwolfssl-cpu-crypto/preinst=\
+    Package/libwolfsslcpu-crypto/preinst=\
 	$(subst @@WOLFSSL_NOASM_REGEX@@,$(WOLFSSL_NOASM_REGEX),$(file <preinst.arm-ce))
 else ifdef CONFIG_TARGET_x86_64
 	CONFIGURE_ARGS += --enable-intelasm
@@ -194,7 +194,7 @@ define Package/libwolfssl/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so.* $(1)/usr/lib/
 endef
 
-Package/libwolfssl-cpu-crypto/install=$(Package/libwolfssl/install)
+Package/libwolfsslcpu-crypto/install=$(Package/libwolfssl/install)
 
 define Package/libwolfssl-benchmark/install
 	$(INSTALL_DIR) $(1)/usr/bin
@@ -202,5 +202,5 @@ define Package/libwolfssl-benchmark/install
 endef
 
 $(eval $(call BuildPackage,libwolfssl))
-$(eval $(call BuildPackage,libwolfssl-cpu-crypto))
+$(eval $(call BuildPackage,libwolfsslcpu-crypto))
 $(eval $(call BuildPackage,libwolfssl-benchmark))
