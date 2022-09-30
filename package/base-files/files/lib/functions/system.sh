@@ -251,3 +251,7 @@ macaddr_canonicalize() {
 
 	printf "%02x:%02x:%02x:%02x:%02x:%02x" 0x${canon// / 0x} 2>/dev/null
 }
+
+dt_is_enabled() {
+	grep -q okay "/proc/device-tree/$1/status"
+}

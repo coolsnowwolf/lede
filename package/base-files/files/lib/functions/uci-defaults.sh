@@ -629,6 +629,21 @@ ucidef_set_ntpserver() {
 	json_select ..
 }
 
+ucidef_add_wlan() {
+	local path="$1"; shift
+
+	ucidef_wlan_idx=${ucidef_wlan_idx:-0}
+
+	json_select_object wlan
+	json_select_object "wl$ucidef_wlan_idx"
+	json_add_string path "$path"
+	json_add_fields "$@"
+	json_select ..
+	json_select ..
+
+	ucidef_wlan_idx="$((ucidef_wlan_idx + 1))"
+}
+
 board_config_update() {
 	json_init
 	[ -f ${CFG} ] && json_load "$(cat ${CFG})"
