@@ -378,23 +378,6 @@ endef
 $(eval $(call KernelPackage,mmc))
 
 
-define KernelPackage/mvsdio
-  SUBMENU:=$(OTHER_MENU)
-  TITLE:=Marvell MMC/SD/SDIO host driver
-  DEPENDS:=+kmod-mmc @TARGET_kirkwood
-  KCONFIG:= CONFIG_MMC_MVSDIO
-  FILES:= \
-	$(LINUX_DIR)/drivers/mmc/host/mvsdio.ko
-  AUTOLOAD:=$(call AutoProbe,mvsdio,1)
-endef
-
-define KernelPackage/mvsdio/description
- Kernel support for the Marvell SDIO host driver.
-endef
-
-$(eval $(call KernelPackage,mvsdio))
-
-
 define KernelPackage/sdhci
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Secure Digital Host Controller Interface support
