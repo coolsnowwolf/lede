@@ -7,12 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mtd-utils
-PKG_VERSION:=2.1.2
+PKG_VERSION:=2.1.4
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=ftp://ftp.infradead.org/pub/mtd-utils/
-PKG_HASH:=8ad4c5f34716d40646aa28724a2f5616d325a6f119254f914e26976f1f76e9d6
+PKG_SOURCE_URL:=https://infraroot.at/pub/mtd/
+PKG_HASH:=2c6711d15d282c47cb3867b6857340597e26d332c238465134c602e5eef71b99
 
 PKG_FIXUP:=autoreconf
 

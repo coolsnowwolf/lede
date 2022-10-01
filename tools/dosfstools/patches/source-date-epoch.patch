@@ -1,0 +1,157 @@
+From 8da7bc93315cb0c32ad868f17808468b81fa76ec Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Bj=C3=B8rn=20Forsman?= <bjorn.forsman@gmail.com>
+Date: Wed, 5 Dec 2018 19:52:51 +0100
+Subject: [PATCH] Honor the SOURCE_DATE_EPOCH variable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implement the SOURCE_DATE_EPOCH specification[1] for reproducible
+builds. If SOURCE_DATE_EPOCH is set, use it as timestamp instead of the
+current time.
+
+[1] https://reproducible-builds.org/specs/source-date-epoch/
+
+Signed-off-by: Bjørn Forsman <bjorn.forsman@gmail.com>
+---
+ src/boot.c     | 23 +++++++++++++++++++++--
+ src/common.c   | 18 ++++++++++++++++--
+ src/mkfs.fat.c | 19 ++++++++++++++++---
+ 3 files changed, 53 insertions(+), 7 deletions(-)
+
+diff --git a/src/boot.c b/src/boot.c
+index 4de450d..8f78e1c 100644
+--- a/src/boot.c
++++ b/src/boot.c
+@@ -33,6 +33,8 @@
+ #include <stdlib.h>
+ #include <sys/types.h>
+ #include <time.h>
++#include <errno.h>
++#include <ctype.h>
+ 
+ #include "common.h"
+ #include "fsck.fat.h"
+@@ -672,6 +674,7 @@ void write_volume_label(DOS_FS * fs, char *label)
+ {
+     time_t now;
+     struct tm *mtime;
++    char *source_date_epoch = NULL;
+     off_t offset;
+     int created;
+     DIR_ENT de;
+@@ -687,8 +690,24 @@ void write_volume_label(DOS_FS * fs, char *label)
+     if (de.name[0] == 0xe5)
+ 	de.name[0] = 0x05;
+ 
+-    now = time(NULL);
+-    mtime = (now != (time_t)-1) ? localtime(&now) : NULL;
++    source_date_epoch = getenv("SOURCE_DATE_EPOCH");
++    if (source_date_epoch) {
++        char *tmp = NULL;
++        long long conversion = 0;
++        errno = 0;
++        conversion = strtoll(source_date_epoch, &tmp, 10);
++        now = conversion;
++        if (!isdigit((unsigned char)*source_date_epoch) || *tmp != '\0'
++                || errno != 0 || (long long)now != conversion) {
++            die("SOURCE_DATE_EPOCH is too big or contains non-digits: \"%s\"",
++                source_date_epoch);
++        }
++        mtime = gmtime(&now);
++    } else {
++        now = time(NULL);
++        mtime = (now != (time_t)-1) ? localtime(&now) : NULL;
++    }
++
+     if (mtime && mtime->tm_year >= 80 && mtime->tm_year <= 207) {
+ 	de.time = htole16((unsigned short)((mtime->tm_sec >> 1) +
+ 					   (mtime->tm_min << 5) +
+diff --git a/src/common.c b/src/common.c
+index 6a2e396..4f1afcb 100644
+--- a/src/common.c
++++ b/src/common.c
+@@ -30,6 +30,7 @@
+ #include <string.h>
+ #include <stdarg.h>
+ #include <errno.h>
++#include <ctype.h>
+ #include <wctype.h>
+ #include <termios.h>
+ #include <sys/time.h>
+@@ -298,8 +299,21 @@ void check_atari(void)
+ uint32_t generate_volume_id(void)
+ {
+     struct timeval now;
+-
+-    if (gettimeofday(&now, NULL) != 0 || now.tv_sec == (time_t)-1 || now.tv_sec < 0) {
++    char *source_date_epoch = NULL;
++
++    source_date_epoch = getenv("SOURCE_DATE_EPOCH");
++    if (source_date_epoch) {
++        char *tmp = NULL;
++        long long conversion = 0;
++        errno = 0;
++        conversion = strtoll(source_date_epoch, &tmp, 10);
++        if (!isdigit((unsigned char)*source_date_epoch) || *tmp != '\0'
++                || errno != 0) {
++            die("SOURCE_DATE_EPOCH is too big or contains non-digits: \"%s\"",
++                source_date_epoch);
++        }
++        return (uint32_t)conversion;
++    } else if (gettimeofday(&now, NULL) != 0 || now.tv_sec == (time_t)-1 || now.tv_sec < 0) {
+         srand(getpid());
+         /* rand() returns int from [0,RAND_MAX], therefore only 31 bits */
+         return (((uint32_t)(rand() & 0xFFFF)) << 16) | ((uint32_t)(rand() & 0xFFFF));
+diff --git a/src/mkfs.fat.c b/src/mkfs.fat.c
+index 37fc8ff..1948635 100644
+--- a/src/mkfs.fat.c
++++ b/src/mkfs.fat.c
+@@ -1074,7 +1074,7 @@ static void setup_tables(void)
+         }
+ 
+         /* If is not available then generate random 32 bit disk signature */
+-        if (invariant)
++        if (invariant || getenv("SOURCE_DATE_EPOCH"))
+             disk_sig = volume_id;
+         else if (!disk_sig)
+             disk_sig = generate_volume_id();
+@@ -1287,7 +1287,7 @@ static void setup_tables(void)
+ 	    de->name[0] = 0x05;
+ 	de->attr = ATTR_VOLUME;
+ 	if (create_time != (time_t)-1) {
+-	    if (!invariant)
++	    if (!invariant && !getenv("SOURCE_DATE_EPOCH"))
+ 		ctime = localtime(&create_time);
+ 	    else
+ 		ctime = gmtime(&create_time);
+@@ -1477,6 +1477,7 @@ int main(int argc, char **argv)
+     int blocks_specified = 0;
+     struct timeval create_timeval;
+     long long conversion;
++    char *source_date_epoch = NULL;
+ 
+     enum {OPT_HELP=1000, OPT_INVARIANT, OPT_MBR, OPT_VARIANT, OPT_CODEPAGE, OPT_OFFSET};
+     const struct option long_options[] = {
+@@ -1497,8 +1498,20 @@ int main(int argc, char **argv)
+ 	    program_name = p + 1;
+     }
+ 
+-    if (gettimeofday(&create_timeval, NULL) == 0 && create_timeval.tv_sec != (time_t)-1)
++    source_date_epoch = getenv("SOURCE_DATE_EPOCH");
++    if (source_date_epoch) {
++        errno = 0;
++        conversion = strtoll(source_date_epoch, &tmp, 10);
++        create_time = conversion;
++        if (!isdigit((unsigned char)*source_date_epoch) || *tmp != '\0'
++                || errno != 0 || (long long)create_time != conversion) {
++            die("SOURCE_DATE_EPOCH is too big or contains non-digits: \"%s\"",
++                source_date_epoch);
++        }
++    } else if (gettimeofday(&create_timeval, NULL) == 0 && create_timeval.tv_sec != (time_t)-1) {
+         create_time = create_timeval.tv_sec;
++    }
++
+     volume_id = generate_volume_id();
+     check_atari();
+ 
