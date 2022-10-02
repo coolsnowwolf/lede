@@ -129,6 +129,7 @@ sub download_cmd {
 			$check_certificate ? () : '--check-certificate=false',
 			"--server-stat-of=$ENV{'TMPDIR'}/aria2c/${rfn}_spp",
 			"--server-stat-if=$ENV{'TMPDIR'}/aria2c/${rfn}_spp",
+			"--daemon=false --no-conf", shellwords($ENV{ARIA2C_OPTIONS} || ''),
 			"-d $ENV{'TMPDIR'}/aria2c -o $rfn;",
 			"cat $ENV{'TMPDIR'}/aria2c/$rfn;",
 			"rm $ENV{'TMPDIR'}/aria2c/$rfn $ENV{'TMPDIR'}/aria2c/${rfn}_spp");
