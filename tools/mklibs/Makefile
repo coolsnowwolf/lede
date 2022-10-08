@@ -7,11 +7,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mklibs
-PKG_VERSION:=0.1.44
+PKG_VERSION:=0.1.45
 
 PKG_SOURCE:=$(PKG_NAME)_$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@DEBIAN/pool/main/m/mklibs/
-PKG_HASH:=3af0b6bd35e5b6fc58d8b68827fbae2ff6b7e20dd2b238ccb9b49d84722066c2
+PKG_HASH:=dd92a904b3942566f713fe536cd77dd1a5cfc62243c0e0bc6bb5d866e37422f3
 
 HOST_FIXUP:=autoreconf
 

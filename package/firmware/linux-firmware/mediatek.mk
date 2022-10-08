@@ -50,3 +50,21 @@ define Package/mt7622bt-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 $(eval $(call BuildPackage,mt7622bt-firmware))
+
+Package/mt7921bt-firmware = $(call Package/firmware-default,mt7921bt firmware)
+define Package/mt7921bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/BT_RAM_CODE_MT7961_1_2_hdr.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7921bt-firmware))
+
+Package/mt7922bt-firmware = $(call Package/firmware-default,mt7922bt firmware)
+define Package/mt7922bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7922bt-firmware))
