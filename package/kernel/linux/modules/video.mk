@@ -297,11 +297,27 @@ endef
 
 $(eval $(call KernelPackage,drm-kms-helper))
 
+define KernelPackage/drm-display-helper
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=DRM helpers for display adapters drivers
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm @(LINUX_5_19||LINUX_6_0)
+  KCONFIG:= \
+    CONFIG_DRM_DISPLAY_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko
+  AUTOLOAD:=$(call AutoProbe,drm_display_helper)
+endef
+
+define KernelPackage/drm-display-helper/description
+  DRM helpers for display adapters drivers.
+endef
+
+$(eval $(call KernelPackage,drm-display-helper))
+
 define KernelPackage/drm-amdgpu
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=AMDGPU DRM support
   DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
-	+kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware
+	+kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware +(LINUX_5_19||LINUX_6_0):kmod-drm-display-helper
   KCONFIG:=CONFIG_DRM_AMDGPU \
 	CONFIG_DRM_AMDGPU_SI=y \
 	CONFIG_DRM_AMDGPU_CIK=y \
@@ -1075,7 +1091,7 @@ $(eval $(call KernelPackage,video-gspca-konica))
 define KernelPackage/drm-i915
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel GPU drm support
-  DEPENDS:=@TARGET_x86 +kmod-drm-ttm +kmod-drm-kms-helper +i915-firmware
+  DEPENDS:=@TARGET_x86 +kmod-drm-ttm +kmod-drm-kms-helper +i915-firmware +(LINUX_5_19||LINUX_6_0):kmod-drm-display-helper
   KCONFIG:= \
 	CONFIG_INTEL_GTT \
 	CONFIG_DRM_I915 \
@@ -1095,8 +1111,7 @@ define KernelPackage/drm-i915
 	CONFIG_DRM_I915_WERROR=n
   FILES:= \
       $(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko \
-      $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko@ge5.18  \
-      $(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko@ge5.18
+      $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,i915)
 endef
 
