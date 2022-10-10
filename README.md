@@ -1,6 +1,6 @@
-# 欢迎来到 Lean 的 Openwrt 源码仓库
+# 欢迎来到 Lean 的 LEDE 源码仓库
 
-如何编译自己需要的 OpenWrt 固件 [How to build your Openwrt firmware](./README_EN.md)
+如何编译自己需要的 LEDE 固件 [How to build your LEDE firmware](./README_EN.md)
 
 ## 官方讨论群
 如有技术问题需要讨论或者交流，欢迎加入以下群：
@@ -22,7 +22,7 @@
    ```bash
    sudo apt update -y
    sudo apt full-upgrade -y
-   sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+   sudo apt install -y ack antlr3 aria2 asciidoc autoconf automake autopoint binutils bison build-essential \
    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
    libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz \

@@ -1697,6 +1697,7 @@ define KernelPackage/usb3
 	+TARGET_bcm53xx:kmod-usb-bcma \
 	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb3 \
 	+TARGET_ramips_mt7621:kmod-usb-xhci-mtk \
+	+TARGET_mediatek:kmod-usb-xhci-mtk \
 	+(TARGET_apm821xx_nand&&LINUX_5_10):kmod-usb-xhci-pci-renesas
   KCONFIG:= \
 	CONFIG_USB_PCI=y \

@@ -26,31 +26,35 @@
 #define UBNT_LEDBAR_MAX_BRIGHTNESS	0xff
 
 #define UBNT_LEDBAR_TRANSACTION_LENGTH	8
-#define UBNT_LEDBAR_TRANSACTION_SUCCESS	0xaa
+#define UBNT_LEDBAR_TRANSACTION_SUCCESS	(char) 0xaa
 
 #define UBNT_LEDBAR_TRANSACTION_BLUE_IDX	2
 #define UBNT_LEDBAR_TRANSACTION_GREEN_IDX	3
 #define UBNT_LEDBAR_TRANSACTION_RED_IDX		4
+#define UBNT_LEDBAR_TRANSACTION_LED_COUNT_IDX	6
 
 struct ubnt_ledbar {
 	struct mutex lock;
+	u32 led_count;
 	struct i2c_client *client;
 	struct led_classdev led_red;
 	struct led_classdev led_green;
 	struct led_classdev led_blue;
 	struct gpio_desc *enable_gpio;
+	struct gpio_desc *reset_gpio;
 };
 
-static int ubnt_ledbar_perform_transaction(struct ubnt_ledbar *ledbar,
-					   char *transaction)
+static void ubnt_ledbar_perform_transaction(struct ubnt_ledbar *ledbar,
+					   const char *transaction, int len,
+					   char *result, int result_len)
 {
-	int ret;
 	int i;
 
-	for (i = 0; i < UBNT_LEDBAR_TRANSACTION_LENGTH; i++)
+	for (i = 0; i < len; i++)
 		i2c_smbus_write_byte(ledbar->client, transaction[i]);
 
-	return i2c_smbus_read_byte(ledbar->client);
+	for (i = 0; i < result_len; i++)
+		result[i] = i2c_smbus_read_byte(ledbar->client);
 }
 
 static int ubnt_ledbar_apply_state(struct ubnt_ledbar *ledbar)
@@ -58,7 +62,7 @@ static int ubnt_ledbar_apply_state(struct ubnt_ledbar *ledbar)
 	char setup_msg[UBNT_LEDBAR_TRANSACTION_LENGTH] = {0x40, 0x10, 0x00, 0x00,
 							  0x00, 0x00, 0x00, 0x11};
 	char led_msg[UBNT_LEDBAR_TRANSACTION_LENGTH] = {0x40, 0x00, 0x00, 0x00,
-							0x00, 0x00, 0x01, 0x00};
+							0x00, 0x00, 0x00, 0x00};
 	char i2c_response;
 	int ret = 0;
 
@@ -67,32 +71,61 @@ static int ubnt_ledbar_apply_state(struct ubnt_ledbar *ledbar)
 	led_msg[UBNT_LEDBAR_TRANSACTION_BLUE_IDX] = ledbar->led_blue.brightness;
 	led_msg[UBNT_LEDBAR_TRANSACTION_GREEN_IDX] = ledbar->led_green.brightness;
 	led_msg[UBNT_LEDBAR_TRANSACTION_RED_IDX] = ledbar->led_red.brightness;
+	led_msg[UBNT_LEDBAR_TRANSACTION_LED_COUNT_IDX] = ledbar->led_count;
 
-	gpiod_set_raw_value(ledbar->enable_gpio, 1);
+	gpiod_set_value(ledbar->enable_gpio, 1);
 
 	msleep(10);
 
-	i2c_response = ubnt_ledbar_perform_transaction(ledbar, setup_msg);
+	ubnt_ledbar_perform_transaction(ledbar, setup_msg, sizeof(setup_msg), &i2c_response, sizeof(i2c_response));
 	if (i2c_response != UBNT_LEDBAR_TRANSACTION_SUCCESS) {
-		dev_err(&ledbar->client->dev, "Error initializing LED transaction: %02x\n", ret);
+		dev_err(&ledbar->client->dev, "Error initializing LED transaction: %02hhx\n", i2c_response);
 		ret = -EINVAL;
 		goto out_gpio;
 	}
 
-	i2c_response = ubnt_ledbar_perform_transaction(ledbar, led_msg);
+	ubnt_ledbar_perform_transaction(ledbar, led_msg, sizeof(led_msg), &i2c_response, sizeof(i2c_response));
 	if (i2c_response != UBNT_LEDBAR_TRANSACTION_SUCCESS) {
-		dev_err(&ledbar->client->dev, "Failed LED transaction: %02x\n", ret);
+		dev_err(&ledbar->client->dev, "Failed LED transaction: %02hhx\n", i2c_response);
 		ret = -EINVAL;
 		goto out_gpio;
 	}
 
 	msleep(10);
 out_gpio:
-	gpiod_set_raw_value(ledbar->enable_gpio, 0);
+	gpiod_set_value(ledbar->enable_gpio, 0);
 
 	mutex_unlock(&ledbar->lock);
 
 	return ret;
+}
+
+static void ubnt_ledbar_reset(struct ubnt_ledbar *ledbar)
+{
+	static const char init_msg[16] = {0x02, 0x81, 0xfd, 0x7e,
+					  0x00, 0x00, 0x00, 0x00,
+					  0x00, 0x00, 0x00, 0x00,
+					  0x00, 0x00, 0x00, 0x00};
+	char init_response[4];
+
+	if (!ledbar->reset_gpio)
+		return;
+
+	mutex_lock(&ledbar->lock);
+
+	gpiod_set_value(ledbar->reset_gpio, 1);
+	msleep(10);
+	gpiod_set_value(ledbar->reset_gpio, 0);
+
+	msleep(10);
+
+	gpiod_set_value(ledbar->enable_gpio, 1);
+	msleep(10);
+	ubnt_ledbar_perform_transaction(ledbar, init_msg, sizeof(init_msg), init_response, sizeof(init_response));
+	msleep(10);
+	gpiod_set_value(ledbar->enable_gpio, 0);
+
+	mutex_unlock(&ledbar->lock);
 }
 
 #define UBNT_LEDBAR_CONTROL_RGBS(name)				\
@@ -153,13 +186,25 @@ static int ubnt_ledbar_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	gpiod_direction_output(ledbar->enable_gpio, 0);
+	ledbar->reset_gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_OUT_LOW);
+
+	if (IS_ERR(ledbar->reset_gpio)) {
+		ret = PTR_ERR(ledbar->reset_gpio);
+		dev_err(&client->dev, "Failed to get reset gpio: %d\n", ret);
+		return ret;
+	}
+
+	ledbar->led_count = 1;
+	of_property_read_u32(np, "led-count", &ledbar->led_count);
 
 	ledbar->client = client;
 
 	mutex_init(&ledbar->lock);
 
 	i2c_set_clientdata(client, ledbar);
+
+	// Reset and initialize the MCU
+	ubnt_ledbar_reset(ledbar);
 
 	ledbar->led_red.brightness_set_blocking = ubnt_ledbar_set_red_brightness;
 	ubnt_ledbar_init_led(of_get_child_by_name(np, "red"), ledbar, &ledbar->led_red);
