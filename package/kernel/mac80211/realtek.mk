@@ -1,11 +1,7 @@
 PKG_DRIVERS += \
-	rtl8180 rtl8187 \
 	rtlwifi rtlwifi-pci rtlwifi-btcoexist rtlwifi-usb rtl8192c-common \
 	rtl8192ce rtl8192se rtl8192de rtl8192cu rtl8723bs rtl8821ae \
 	rtl8xxxu rtw88
-
-config-$(call config_package,rtl8180) += RTL8180
-config-$(call config_package,rtl8187) += RTL8187
 
 config-$(call config_package,rtlwifi) += RTL_CARDS RTLWIFI
 config-$(call config_package,rtlwifi-pci) += RTLWIFI_PCI
@@ -29,29 +25,6 @@ config-$(call config_package,rtw88) += RTW88 RTW88_CORE RTW88_PCI
 config-y += RTW88_8822BE RTW88_8822CE RTW88_8723DE
 config-$(CONFIG_PACKAGE_RTW88_DEBUG) += RTW88_DEBUG
 config-$(CONFIG_PACKAGE_RTW88_DEBUGFS) += RTW88_DEBUGFS
-
-define KernelPackage/rtl818x/Default
-  $(call KernelPackage/mac80211/Default)
-  TITLE:=Realtek Drivers for RTL818x devices
-  URL:=https://wireless.wiki.kernel.org/en/users/drivers/rtl8187
-  DEPENDS+= +kmod-eeprom-93cx6 +kmod-mac80211
-endef
-
-define KernelPackage/rtl8180
-  $(call KernelPackage/rtl818x/Default)
-  DEPENDS+= @PCI_SUPPORT
-  TITLE+= (RTL8180 PCI)
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtl818x/rtl8180/rtl818x_pci.ko
-  AUTOLOAD:=$(call AutoProbe,rtl818x_pci)
-endef
-
-define KernelPackage/rtl8187
-$(call KernelPackage/rtl818x/Default)
-  DEPENDS+= @USB_SUPPORT +kmod-usb-core
-  TITLE+= (RTL8187 USB)
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtl818x/rtl8187/rtl8187.ko
-  AUTOLOAD:=$(call AutoProbe,rtl8187)
-endef
 
 define KernelPackage/rtlwifi/config
 	config PACKAGE_RTLWIFI_DEBUG
