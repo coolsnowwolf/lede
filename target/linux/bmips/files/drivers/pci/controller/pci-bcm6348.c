@@ -346,7 +346,6 @@ static struct pci_controller bcm6348_pci_controller = {
 	.pci_ops = &bcm6348_pci_ops,
 	.io_resource = &bcm6348_pci_io_resource,
 	.mem_resource = &bcm6348_pci_mem_resource,
-	.busn_resource = &bcm6348_pci_busn_resource,
 };
 
 #ifdef CONFIG_CARDBUS
@@ -729,6 +728,7 @@ static int bcm6348_pci_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	struct bcm6348_pci *priv = &bcm6348_pci;
 	struct resource *res;
+	LIST_HEAD(resources);
 
 	of_pci_check_probe_only();
 
@@ -771,6 +771,7 @@ static int bcm6348_pci_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	of_pci_parse_bus_range(np, &bcm6348_pci_busn_resource);
+	pci_add_resource(&resources, &bcm6348_pci_busn_resource);
 
 	/*
 	 * Configuration accesses are done through IO space, remap 4

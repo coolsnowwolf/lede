@@ -1,0 +1,111 @@
+From f8b663bbfa30af5515e222fd74df20ea4e8393a2 Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Sat, 26 Sep 2020 21:17:18 -0600
+Subject: [PATCH 02/10] mm: x86: add CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG
+
+Some architectures support the accessed bit on non-leaf PMD entries,
+e.g., x86_64 sets the accessed bit on a non-leaf PMD entry when using
+it as part of linear address translation [1]. As an optimization, page
+table walkers who are interested in the accessed bit can skip the PTEs
+under a non-leaf PMD entry if the accessed bit is cleared on this PMD
+entry.
+
+Although an inline function may be preferable, this capability is
+added as a configuration option to look consistent when used with the
+existing macros.
+
+[1]: Intel 64 and IA-32 Architectures Software Developer's Manual
+     Volume 3 (June 2021), section 4.8
+
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Tested-by: Konstantin Kharlamov <Hi-Angel@yandex.ru>
+Change-Id: I1a17be3ae926f721f7b17ea1539e5c39e8c4f9a8
+---
+ arch/Kconfig                   | 9 +++++++++
+ arch/x86/Kconfig               | 1 +
+ arch/x86/include/asm/pgtable.h | 3 ++-
+ arch/x86/mm/pgtable.c          | 5 ++++-
+ include/linux/pgtable.h        | 4 ++--
+ 5 files changed, 18 insertions(+), 4 deletions(-)
+
+--- a/arch/Kconfig
++++ b/arch/Kconfig
+@@ -1295,6 +1295,15 @@ config ARCH_HAS_ELFCORE_COMPAT
+ config ARCH_HAS_PARANOID_L1D_FLUSH
+ 	bool
+ 
++config ARCH_HAS_NONLEAF_PMD_YOUNG
++	bool
++	depends on PGTABLE_LEVELS > 2
++	help
++	  Architectures that select this are able to set the accessed bit on
++	  non-leaf PMD entries in addition to leaf PTE entries where pages are
++	  mapped. For them, page table walkers that clear the accessed bit may
++	  stop at non-leaf PMD entries if they do not see the accessed bit.
++
+ source "kernel/gcov/Kconfig"
+ 
+ source "scripts/gcc-plugins/Kconfig"
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -84,6 +84,7 @@ config X86
+ 	select ARCH_HAS_PMEM_API		if X86_64
+ 	select ARCH_HAS_PTE_DEVMAP		if X86_64
+ 	select ARCH_HAS_PTE_SPECIAL
++	select ARCH_HAS_NONLEAF_PMD_YOUNG	if X86_64
+ 	select ARCH_HAS_UACCESS_FLUSHCACHE	if X86_64
+ 	select ARCH_HAS_COPY_MC			if X86_64
+ 	select ARCH_HAS_SET_MEMORY
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -817,7 +817,8 @@ static inline unsigned long pmd_page_vad
+ 
+ static inline int pmd_bad(pmd_t pmd)
+ {
+-	return (pmd_flags(pmd) & ~_PAGE_USER) != _KERNPG_TABLE;
++	return (pmd_flags(pmd) & ~(_PAGE_USER | _PAGE_ACCESSED)) !=
++	       (_KERNPG_TABLE & ~_PAGE_ACCESSED);
+ }
+ 
+ static inline unsigned long pages_to_mb(unsigned long npg)
+--- a/arch/x86/mm/pgtable.c
++++ b/arch/x86/mm/pgtable.c
+@@ -550,7 +550,7 @@ int ptep_test_and_clear_young(struct vm_
+ 	return ret;
+ }
+ 
+-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
++#if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG)
+ int pmdp_test_and_clear_young(struct vm_area_struct *vma,
+ 			      unsigned long addr, pmd_t *pmdp)
+ {
+@@ -562,6 +562,9 @@ int pmdp_test_and_clear_young(struct vm_
+ 
+ 	return ret;
+ }
++#endif
++
++#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ int pudp_test_and_clear_young(struct vm_area_struct *vma,
+ 			      unsigned long addr, pud_t *pudp)
+ {
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -212,7 +212,7 @@ static inline int ptep_test_and_clear_yo
+ #endif
+ 
+ #ifndef __HAVE_ARCH_PMDP_TEST_AND_CLEAR_YOUNG
+-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
++#if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG)
+ static inline int pmdp_test_and_clear_young(struct vm_area_struct *vma,
+ 					    unsigned long address,
+ 					    pmd_t *pmdp)
+@@ -233,7 +233,7 @@ static inline int pmdp_test_and_clear_yo
+ 	BUILD_BUG();
+ 	return 0;
+ }
+-#endif /* CONFIG_TRANSPARENT_HUGEPAGE */
++#endif /* CONFIG_TRANSPARENT_HUGEPAGE || CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG */
+ #endif
+ 
+ #ifndef __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH

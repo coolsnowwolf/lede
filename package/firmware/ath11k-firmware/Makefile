@@ -83,6 +83,9 @@ define Package/ath11k-firmware-qca6390/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/QCA6390/hw2.0/1.0.1/WLAN.HST.1.0.1-05266-QCAHSTSWPLZ_V2_TO_X86-1/* \
 		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6390/hw2.0/board-2.bin \
+		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/board-2.bin
 endef
 
 define Package/ath11k-firmware-qcn9074/install
@@ -103,7 +106,7 @@ define Package/ath11k-firmware-wcn6855/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/WCN6855/hw2.0/regdb.bin \
 		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/regdb.bin
-	$(LN) $(1)/lib/firmware/ath11k/WCN6855/hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
+	$(LN) ./hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
 endef
 
 $(eval $(call BuildPackage,ath11k-firmware-ipq6018))

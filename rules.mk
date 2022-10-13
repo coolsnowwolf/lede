@@ -269,6 +269,9 @@ ESED:=$(STAGING_DIR_HOST)/bin/sed -E -i -e
 MKHASH:=$(STAGING_DIR_HOST)/bin/mkhash
 # MKHASH is used in /scripts, so we export it here.
 export MKHASH
+# DOWNLOAD_CHECK_CERTIFICATE is used in /scripts, so we export it here.
+DOWNLOAD_CHECK_CERTIFICATE:=$(CONFIG_DOWNLOAD_CHECK_CERTIFICATE)
+export DOWNLOAD_CHECK_CERTIFICATE
 CP:=cp -fpR
 LN:=ln -sf
 XARGS:=xargs -r

@@ -1,0 +1,134 @@
+From 62dd8774e71d9af9b0f3cabdeacbb80d24313504 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 24 Mar 2022 11:57:57 +0100
+Subject: [PATCH] drm/vc4: hdmi: Rework hdmi_enable_4kp60 detection
+
+In order to support higher HDMI frequencies, users have to set the
+hdmi_enable_4kp60 parameter in their config.txt file.
+
+We were detecting this so far by calling clk_round_rate on the core
+clock with the frequency we're supposed to run at when one of those
+modes is enabled. Whether or not the parameter was enabled could then be
+inferred by the returned rate since the maximum clock rate reported by
+the firmware was one of the side effect of setting that parameter.
+
+However, the recent clock rework we did changed what clk_round_rate was
+returning to always return the minimum allowed, and thus this test
+wasn't reliable anymore.
+
+Let's instead try to set a minimum on that clock for the rate we'd like
+to reach. If the maximum reported by the firmware is below the minimum
+we're trying to set, the clock framework will return an error which we
+then can use to infer whether the parameter is set or not.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h  |  8 ++++++++
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 14 ++++----------
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  8 --------
+ drivers/gpu/drm/vc4/vc4_hvs.c  |  6 ++++++
+ 4 files changed, 18 insertions(+), 18 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -341,6 +341,14 @@ struct vc4_hvs {
+ 
+ 	/* HVS version 5 flag, therefore requires updated dlist structures */
+ 	bool hvs5;
++
++	/*
++	 * Even if HDMI0 on the RPi4 can output modes requiring a pixel
++	 * rate higher than 297MHz, it needs some adjustments in the
++	 * config.txt file to be able to do so and thus won't always be
++	 * available.
++	 */
++	bool vc5_hdmi_enable_scrambling;
+ };
+ 
+ struct vc4_plane {
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -292,6 +292,7 @@ static int vc4_hdmi_connector_get_modes(
+ {
+ 	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
+ 	struct vc4_hdmi_encoder *vc4_encoder = &vc4_hdmi->encoder;
++	struct vc4_dev *vc4 = to_vc4_dev(connector->dev);
+ 	int ret = 0;
+ 	struct edid *edid;
+ 
+@@ -310,7 +311,7 @@ static int vc4_hdmi_connector_get_modes(
+ 	ret = drm_add_edid_modes(connector, edid);
+ 	kfree(edid);
+ 
+-	if (vc4_hdmi->disable_4kp60) {
++	if (!vc4->hvs->vc5_hdmi_enable_scrambling) {
+ 		struct drm_device *drm = connector->dev;
+ 		struct drm_display_mode *mode;
+ 
+@@ -1672,11 +1673,12 @@ vc4_hdmi_encoder_clock_valid(const struc
+ {
+ 	const struct drm_connector *connector = &vc4_hdmi->connector;
+ 	const struct drm_display_info *info = &connector->display_info;
++	struct vc4_dev *vc4 = to_vc4_dev(connector->dev);
+ 
+ 	if (clock > vc4_hdmi->variant->max_pixel_clock)
+ 		return MODE_CLOCK_HIGH;
+ 
+-	if (vc4_hdmi->disable_4kp60 && clock > HDMI_14_MAX_TMDS_CLK)
++	if (!vc4->hvs->vc5_hdmi_enable_scrambling && clock > HDMI_14_MAX_TMDS_CLK)
+ 		return MODE_CLOCK_HIGH;
+ 
+ 	if (info->max_tmds_clock && clock > (info->max_tmds_clock * 1000))
+@@ -3156,14 +3158,6 @@ static int vc4_hdmi_bind(struct device *
+ 	vc4_hdmi->disable_wifi_frequencies =
+ 		of_property_read_bool(dev->of_node, "wifi-2.4ghz-coexistence");
+ 
+-	if (variant->max_pixel_clock == 600000000) {
+-		struct vc4_dev *vc4 = to_vc4_dev(drm);
+-		long max_rate = clk_round_rate(vc4->hvs->core_clk, 550000000);
+-
+-		if (max_rate < 550000000)
+-			vc4_hdmi->disable_4kp60 = true;
+-	}
+-
+ 	/*
+ 	 * If we boot without any cable connected to the HDMI connector,
+ 	 * the firmware will skip the HSM initialization and leave it
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -169,14 +169,6 @@ struct vc4_hdmi {
+ 	 */
+ 	bool disable_wifi_frequencies;
+ 
+-	/*
+-	 * Even if HDMI0 on the RPi4 can output modes requiring a pixel
+-	 * rate higher than 297MHz, it needs some adjustments in the
+-	 * config.txt file to be able to do so and thus won't always be
+-	 * available.
+-	 */
+-	bool disable_4kp60;
+-
+ 	struct cec_adapter *cec_adap;
+ 	struct cec_msg cec_rx_msg;
+ 	bool cec_tx_ok;
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -897,12 +897,18 @@ static int vc4_hvs_bind(struct device *d
+ 	hvs->regset.nregs = ARRAY_SIZE(hvs_regs);
+ 
+ 	if (hvs->hvs5) {
++		unsigned long max_rate;
++
+ 		hvs->core_clk = devm_clk_get(&pdev->dev, NULL);
+ 		if (IS_ERR(hvs->core_clk)) {
+ 			dev_err(&pdev->dev, "Couldn't get core clock\n");
+ 			return PTR_ERR(hvs->core_clk);
+ 		}
+ 
++		max_rate = clk_get_max_rate(hvs->core_clk);
++		if (max_rate >= 550000000)
++			hvs->vc5_hdmi_enable_scrambling = true;
++
+ 		ret = clk_prepare_enable(hvs->core_clk);
+ 		if (ret) {
+ 			dev_err(&pdev->dev, "Couldn't enable the core clock\n");

@@ -1,0 +1,169 @@
+From a8e6015d9534f39abc08e6804566af059e498a60 Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Wed, 4 Aug 2021 01:31:34 -0600
+Subject: [PATCH 01/10] mm: x86, arm64: add arch_has_hw_pte_young()
+
+Some architectures automatically set the accessed bit in PTEs, e.g.,
+x86 and arm64 v8.2. On architectures that do not have this capability,
+clearing the accessed bit in a PTE triggers a page fault following the
+TLB miss of this PTE.
+
+Being aware of this capability can help make better decisions, i.e.,
+whether to limit the size of each batch of PTEs and the burst of
+batches when clearing the accessed bit.
+
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Change-Id: Ib49b44fb56df3333a2ff1fcc496fb1980b976e7a
+---
+ arch/arm64/include/asm/cpufeature.h |  5 +++++
+ arch/arm64/include/asm/pgtable.h    | 13 ++++++++-----
+ arch/arm64/kernel/cpufeature.c      | 10 ++++++++++
+ arch/arm64/tools/cpucaps            |  1 +
+ arch/x86/include/asm/pgtable.h      |  6 +++---
+ include/linux/pgtable.h             | 13 +++++++++++++
+ mm/memory.c                         | 14 +-------------
+ 7 files changed, 41 insertions(+), 21 deletions(-)
+
+--- a/arch/arm64/include/asm/cpufeature.h
++++ b/arch/arm64/include/asm/cpufeature.h
+@@ -808,6 +808,11 @@ static inline bool system_supports_tlb_r
+ 		cpus_have_const_cap(ARM64_HAS_TLB_RANGE);
+ }
+ 
++static inline bool system_has_hw_af(void)
++{
++	return IS_ENABLED(CONFIG_ARM64_HW_AFDBM) && cpus_have_const_cap(ARM64_HW_AF);
++}
++
+ extern int do_emulate_mrs(struct pt_regs *regs, u32 sys_reg, u32 rt);
+ 
+ static inline u32 id_aa64mmfr0_parange_to_phys_shift(int parange)
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -999,13 +999,16 @@ static inline void update_mmu_cache(stru
+  * page after fork() + CoW for pfn mappings. We don't always have a
+  * hardware-managed access flag on arm64.
+  */
+-static inline bool arch_faults_on_old_pte(void)
++static inline bool arch_has_hw_pte_young(bool local)
+ {
+-	WARN_ON(preemptible());
++	if (local) {
++		WARN_ON(preemptible());
++		return cpu_has_hw_af();
++	}
+ 
+-	return !cpu_has_hw_af();
++	return system_has_hw_af();
+ }
+-#define arch_faults_on_old_pte		arch_faults_on_old_pte
++#define arch_has_hw_pte_young		arch_has_hw_pte_young
+ 
+ /*
+  * Experimentally, it's cheap to set the access flag in hardware and we
+@@ -1013,7 +1016,7 @@ static inline bool arch_faults_on_old_pt
+  */
+ static inline bool arch_wants_old_prefaulted_pte(void)
+ {
+-	return !arch_faults_on_old_pte();
++	return arch_has_hw_pte_young(true);
+ }
+ #define arch_wants_old_prefaulted_pte	arch_wants_old_prefaulted_pte
+ 
+--- a/arch/arm64/kernel/cpufeature.c
++++ b/arch/arm64/kernel/cpufeature.c
+@@ -2187,6 +2187,16 @@ static const struct arm64_cpu_capabiliti
+ 		.matches = has_hw_dbm,
+ 		.cpu_enable = cpu_enable_hw_dbm,
+ 	},
++	{
++		.desc = "Hardware update of the Access flag",
++		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
++		.capability = ARM64_HW_AF,
++		.sys_reg = SYS_ID_AA64MMFR1_EL1,
++		.sign = FTR_UNSIGNED,
++		.field_pos = ID_AA64MMFR1_HADBS_SHIFT,
++		.min_field_value = 1,
++		.matches = has_cpuid_feature,
++	},
+ #endif
+ 	{
+ 		.desc = "CRC32 instructions",
+--- a/arch/arm64/tools/cpucaps
++++ b/arch/arm64/tools/cpucaps
+@@ -35,6 +35,7 @@ HAS_STAGE2_FWB
+ HAS_SYSREG_GIC_CPUIF
+ HAS_TLB_RANGE
+ HAS_VIRT_HOST_EXTN
++HW_AF
+ HW_DBM
+ KVM_PROTECTED_MODE
+ MISMATCHED_CACHE_TYPE
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1397,10 +1397,10 @@ static inline bool arch_has_pfn_modify_c
+ 	return boot_cpu_has_bug(X86_BUG_L1TF);
+ }
+ 
+-#define arch_faults_on_old_pte arch_faults_on_old_pte
+-static inline bool arch_faults_on_old_pte(void)
++#define arch_has_hw_pte_young arch_has_hw_pte_young
++static inline bool arch_has_hw_pte_young(bool local)
+ {
+-	return false;
++	return true;
+ }
+ 
+ #endif	/* __ASSEMBLY__ */
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -259,6 +259,19 @@ static inline int pmdp_clear_flush_young
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ #endif
+ 
++#ifndef arch_has_hw_pte_young
++/*
++ * Return whether the accessed bit is supported by the local CPU or all CPUs.
++ *
++ * Those arches which have hw access flag feature need to implement their own
++ * helper. By default, "false" means pagefault will be hit on old pte.
++ */
++static inline bool arch_has_hw_pte_young(bool local)
++{
++	return false;
++}
++#endif
++
+ #ifndef __HAVE_ARCH_PTEP_GET_AND_CLEAR
+ static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
+ 				       unsigned long address,
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -121,18 +121,6 @@ int randomize_va_space __read_mostly =
+ 					2;
+ #endif
+ 
+-#ifndef arch_faults_on_old_pte
+-static inline bool arch_faults_on_old_pte(void)
+-{
+-	/*
+-	 * Those arches which don't have hw access flag feature need to
+-	 * implement their own helper. By default, "true" means pagefault
+-	 * will be hit on old pte.
+-	 */
+-	return true;
+-}
+-#endif
+-
+ #ifndef arch_wants_old_prefaulted_pte
+ static inline bool arch_wants_old_prefaulted_pte(void)
+ {
+@@ -2782,7 +2770,7 @@ static inline bool cow_user_page(struct
+ 	 * On architectures with software "accessed" bits, we would
+ 	 * take a double page fault, so mark it accessed here.
+ 	 */
+-	if (arch_faults_on_old_pte() && !pte_young(vmf->orig_pte)) {
++	if (!arch_has_hw_pte_young(true) && !pte_young(vmf->orig_pte)) {
+ 		pte_t entry;
+ 
+ 		vmf->pte = pte_offset_map_lock(mm, vmf->pmd, addr, &vmf->ptl);

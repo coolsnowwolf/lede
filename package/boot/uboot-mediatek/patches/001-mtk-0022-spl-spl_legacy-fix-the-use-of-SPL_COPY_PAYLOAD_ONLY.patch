@@ -1,0 +1,64 @@
+From ba9c81e720f39b5dbc14592252bfc9402afee79d Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Fri, 20 May 2022 11:23:58 +0800
+Subject: [PATCH 22/25] spl: spl_legacy: fix the use of SPL_COPY_PAYLOAD_ONLY
+
+If the payload is compressed, SPL_COPY_PAYLOAD_ONLY should always be set
+since the payload will not be directly read to its load address. The
+payload will first be read to a temporary buffer, and then be decompressed
+to its load address, without image header.
+
+If the payload is not compressed, and SPL_COPY_PAYLOAD_ONLY is set, image
+header should be skipped on loading. Otherwise image header should also be
+read to its load address.
+
+Reviewed-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ common/spl/spl_legacy.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+--- a/common/spl/spl_legacy.c
++++ b/common/spl/spl_legacy.c
+@@ -88,15 +88,29 @@ int spl_load_legacy_img(struct spl_image
+ 	/* Read header into local struct */
+ 	load->read(load, header, sizeof(hdr), &hdr);
+ 
++	/*
++	 * If the payload is compressed, the decompressed data should be
++	 * directly write to its load address.
++	 */
++	if (spl_image_get_comp(&hdr) != IH_COMP_NONE)
++		spl_image->flags |= SPL_COPY_PAYLOAD_ONLY;
++
+ 	ret = spl_parse_image_header(spl_image, bootdev, &hdr);
+ 	if (ret)
+ 		return ret;
+ 
+-	dataptr = header + sizeof(hdr);
+-
+ 	/* Read image */
+ 	switch (spl_image_get_comp(&hdr)) {
+ 	case IH_COMP_NONE:
++		dataptr = header;
++
++		/*
++		 * Image header will be skipped only if SPL_COPY_PAYLOAD_ONLY
++		 * is set
++		 */
++		if (spl_image->flags & SPL_COPY_PAYLOAD_ONLY)
++			dataptr += sizeof(hdr);
++
+ 		load->read(load, dataptr, spl_image->size,
+ 			   (void *)(unsigned long)spl_image->load_addr);
+ 		break;
+@@ -104,6 +118,9 @@ int spl_load_legacy_img(struct spl_image
+ 	case IH_COMP_LZMA:
+ 		lzma_len = LZMA_LEN;
+ 
++		/* dataptr points to compressed payload  */
++		dataptr = header + sizeof(hdr);
++
+ 		debug("LZMA: Decompressing %08lx to %08lx\n",
+ 		      dataptr, spl_image->load_addr);
+ 		src = malloc(spl_image->size);
