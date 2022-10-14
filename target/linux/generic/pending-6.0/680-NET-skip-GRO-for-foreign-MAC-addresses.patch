@@ -1,0 +1,139 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: net: replace GRO optimization patch with a new one that supports VLANs/bridges with different MAC addresses
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/netdevice.h |  2 ++
+ include/linux/skbuff.h    |  3 ++-
+ net/core/dev.c            | 48 +++++++++++++++++++++++++++++++++++++++++++++++
+ net/ethernet/eth.c        | 18 +++++++++++++++++-
+ 4 files changed, 69 insertions(+), 2 deletions(-)
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -2117,6 +2117,8 @@ struct net_device {
+ 	struct netdev_hw_addr_list	mc;
+ 	struct netdev_hw_addr_list	dev_addrs;
+ 
++	unsigned char		local_addr_mask[MAX_ADDR_LEN];
++
+ #ifdef CONFIG_SYSFS
+ 	struct kset		*queues_kset;
+ #endif
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -955,6 +955,7 @@ struct sk_buff {
+ #ifdef CONFIG_IPV6_NDISC_NODETYPE
+ 	__u8			ndisc_nodetype:2;
+ #endif
++	__u8			gro_skip:1;
+ 
+ 	__u8			ipvs_property:1;
+ 	__u8			inner_protocol_type:1;
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -7614,6 +7614,48 @@ static void __netdev_adjacent_dev_unlink
+ 					   &upper_dev->adj_list.lower);
+ }
+ 
++static void __netdev_addr_mask(unsigned char *mask, const unsigned char *addr,
++			       struct net_device *dev)
++{
++	int i;
++
++	for (i = 0; i < dev->addr_len; i++)
++		mask[i] |= addr[i] ^ dev->dev_addr[i];
++}
++
++static void __netdev_upper_mask(unsigned char *mask, struct net_device *dev,
++				struct net_device *lower)
++{
++	struct net_device *cur;
++	struct list_head *iter;
++
++	netdev_for_each_upper_dev_rcu(dev, cur, iter) {
++		__netdev_addr_mask(mask, cur->dev_addr, lower);
++		__netdev_upper_mask(mask, cur, lower);
++	}
++}
++
++static void __netdev_update_addr_mask(struct net_device *dev)
++{
++	unsigned char mask[MAX_ADDR_LEN];
++	struct net_device *cur;
++	struct list_head *iter;
++
++	memset(mask, 0, sizeof(mask));
++	__netdev_upper_mask(mask, dev, dev);
++	memcpy(dev->local_addr_mask, mask, dev->addr_len);
++
++	netdev_for_each_lower_dev(dev, cur, iter)
++		__netdev_update_addr_mask(cur);
++}
++
++static void netdev_update_addr_mask(struct net_device *dev)
++{
++	rcu_read_lock();
++	__netdev_update_addr_mask(dev);
++	rcu_read_unlock();
++}
++
+ static int __netdev_upper_dev_link(struct net_device *dev,
+ 				   struct net_device *upper_dev, bool master,
+ 				   void *upper_priv, void *upper_info,
+@@ -7665,6 +7707,7 @@ static int __netdev_upper_dev_link(struc
+ 	if (ret)
+ 		return ret;
+ 
++	netdev_update_addr_mask(dev);
+ 	ret = call_netdevice_notifiers_info(NETDEV_CHANGEUPPER,
+ 					    &changeupper_info.info);
+ 	ret = notifier_to_errno(ret);
+@@ -7756,6 +7799,7 @@ static void __netdev_upper_dev_unlink(st
+ 
+ 	changeupper_info.master = netdev_master_upper_dev_get(dev) == upper_dev;
+ 
++	netdev_update_addr_mask(dev);
+ 	call_netdevice_notifiers_info(NETDEV_PRECHANGEUPPER,
+ 				      &changeupper_info.info);
+ 
+@@ -8813,6 +8857,7 @@ int dev_set_mac_address(struct net_devic
+ 	if (err)
+ 		return err;
+ 	dev->addr_assign_type = NET_ADDR_SET;
++	netdev_update_addr_mask(dev);
+ 	call_netdevice_notifiers(NETDEV_CHANGEADDR, dev);
+ 	add_device_randomness(dev->dev_addr, dev->addr_len);
+ 	return 0;
+--- a/net/ethernet/eth.c
++++ b/net/ethernet/eth.c
+@@ -143,6 +143,18 @@ u32 eth_get_headlen(const struct net_dev
+ }
+ EXPORT_SYMBOL(eth_get_headlen);
+ 
++static inline bool
++eth_check_local_mask(const void *addr1, const void *addr2, const void *mask)
++{
++	const u16 *a1 = addr1;
++	const u16 *a2 = addr2;
++	const u16 *m = mask;
++
++	return (((a1[0] ^ a2[0]) & ~m[0]) |
++		((a1[1] ^ a2[1]) & ~m[1]) |
++		((a1[2] ^ a2[2]) & ~m[2]));
++}
++
+ /**
+  * eth_type_trans - determine the packet's protocol ID.
+  * @skb: received socket data
+@@ -174,6 +186,10 @@ __be16 eth_type_trans(struct sk_buff *sk
+ 		} else {
+ 			skb->pkt_type = PACKET_OTHERHOST;
+ 		}
++
++		if (eth_check_local_mask(eth->h_dest, dev->dev_addr,
++					 dev->local_addr_mask))
++			skb->gro_skip = 1;
+ 	}
+ 
+ 	/*
