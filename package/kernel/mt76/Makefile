@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mt76
-PKG_RELEASE=5
+PKG_RELEASE=6
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
@@ -28,6 +28,12 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_CFG80211_TESTMODE
 
 STAMP_CONFIGURED_DEPENDS := $(STAGING_DIR)/usr/include/mac80211-backport/backport/autoconf.h
+
+ifeq ($(SUBTARGET),filogic)
+	WED_ENABLE:=y
+else
+	WED_ENABLE:=n
+endif
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
@@ -224,6 +230,7 @@ define KernelPackage/mt7915e
   DEPENDS+=@PCI_SUPPORT +kmod-mt7615-common +kmod-hwmon-core +kmod-thermal +@DRIVER_11AX_SUPPORT +@KERNEL_RELAY
   FILES:= $(PKG_BUILD_DIR)/mt7915/mt7915e.ko
   AUTOLOAD:=$(call AutoProbe,mt7915e)
+  MODPARAMS.mt7915e:=wed_enable=$(WED_ENABLE)
 endef
 
 define KernelPackage/mt7986-firmware
