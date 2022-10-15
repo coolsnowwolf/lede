@@ -20,7 +20,7 @@ define Device/hinlink_opc-h68k
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-mt7921e kmod-r8125
 endef
-#TARGET_DEVICES += hinlink_opc-h68k
+TARGET_DEVICES += hinlink_opc-h68k
 
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
