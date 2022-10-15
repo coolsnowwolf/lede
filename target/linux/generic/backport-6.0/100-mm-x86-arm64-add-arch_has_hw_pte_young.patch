@@ -1,0 +1,154 @@
+From e3264035bdac67898d685423ffb2f3a9c3a5964a Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Wed, 4 Aug 2021 01:31:34 -0600
+Subject: [PATCH 01/14] mm: x86, arm64: add arch_has_hw_pte_young()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some architectures automatically set the accessed bit in PTEs, e.g.,
+x86 and arm64 v8.2. On architectures that do not have this capability,
+clearing the accessed bit in a PTE usually triggers a page fault
+following the TLB miss of this PTE (to emulate the accessed bit).
+
+Being aware of this capability can help make better decisions, e.g.,
+whether to spread the work out over a period of time to reduce bursty
+page faults when trying to clear the accessed bit in many PTEs.
+
+Note that theoretically this capability can be unreliable, e.g.,
+hotplugged CPUs might be different from builtin ones. Therefore it
+should not be used in architecture-independent code that involves
+correctness, e.g., to determine whether TLB flushes are required (in
+combination with the accessed bit).
+
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Reviewed-by: Barry Song <baohua@kernel.org>
+Acked-by: Brian Geffon <bgeffon@google.com>
+Acked-by: Jan Alexander Steffens (heftig) <heftig@archlinux.org>
+Acked-by: Oleksandr Natalenko <oleksandr@natalenko.name>
+Acked-by: Steven Barrett <steven@liquorix.net>
+Acked-by: Suleiman Souhlal <suleiman@google.com>
+Acked-by: Will Deacon <will@kernel.org>
+Tested-by: Daniel Byrne <djbyrne@mtu.edu>
+Tested-by: Donald Carr <d@chaos-reins.com>
+Tested-by: Holger Hoffstätte <holger@applied-asynchrony.com>
+Tested-by: Konstantin Kharlamov <Hi-Angel@yandex.ru>
+Tested-by: Shuang Zhai <szhai2@cs.rochester.edu>
+Tested-by: Sofia Trinh <sofia.trinh@edi.works>
+Tested-by: Vaibhav Jain <vaibhav@linux.ibm.com>
+Change-Id: Ib49b44fb56df3333a2ff1fcc496fb1980b976e7a
+---
+ arch/arm64/include/asm/pgtable.h | 15 ++-------------
+ arch/x86/include/asm/pgtable.h   |  6 +++---
+ include/linux/pgtable.h          | 13 +++++++++++++
+ mm/memory.c                      | 14 +-------------
+ 4 files changed, 19 insertions(+), 29 deletions(-)
+
+diff --git a/arch/arm64/include/asm/pgtable.h b/arch/arm64/include/asm/pgtable.h
+index b5df82aa99e6..71a1af42f0e8 100644
+--- a/arch/arm64/include/asm/pgtable.h
++++ b/arch/arm64/include/asm/pgtable.h
+@@ -1082,24 +1082,13 @@ static inline void update_mmu_cache(struct vm_area_struct *vma,
+  * page after fork() + CoW for pfn mappings. We don't always have a
+  * hardware-managed access flag on arm64.
+  */
+-static inline bool arch_faults_on_old_pte(void)
+-{
+-	/* The register read below requires a stable CPU to make any sense */
+-	cant_migrate();
+-
+-	return !cpu_has_hw_af();
+-}
+-#define arch_faults_on_old_pte		arch_faults_on_old_pte
++#define arch_has_hw_pte_young		cpu_has_hw_af
+ 
+ /*
+  * Experimentally, it's cheap to set the access flag in hardware and we
+  * benefit from prefaulting mappings as 'old' to start with.
+  */
+-static inline bool arch_wants_old_prefaulted_pte(void)
+-{
+-	return !arch_faults_on_old_pte();
+-}
+-#define arch_wants_old_prefaulted_pte	arch_wants_old_prefaulted_pte
++#define arch_wants_old_prefaulted_pte	cpu_has_hw_af
+ 
+ static inline bool pud_sect_supported(void)
+ {
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index 44e2d6f1dbaa..dc5f7d8ef68a 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1431,10 +1431,10 @@ static inline bool arch_has_pfn_modify_check(void)
+ 	return boot_cpu_has_bug(X86_BUG_L1TF);
+ }
+ 
+-#define arch_faults_on_old_pte arch_faults_on_old_pte
+-static inline bool arch_faults_on_old_pte(void)
++#define arch_has_hw_pte_young arch_has_hw_pte_young
++static inline bool arch_has_hw_pte_young(void)
+ {
+-	return false;
++	return true;
+ }
+ 
+ #ifdef CONFIG_PAGE_TABLE_CHECK
+diff --git a/include/linux/pgtable.h b/include/linux/pgtable.h
+index 014ee8f0fbaa..95f408df4695 100644
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -260,6 +260,19 @@ static inline int pmdp_clear_flush_young(struct vm_area_struct *vma,
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ #endif
+ 
++#ifndef arch_has_hw_pte_young
++/*
++ * Return whether the accessed bit is supported on the local CPU.
++ *
++ * This stub assumes accessing through an old PTE triggers a page fault.
++ * Architectures that automatically set the access bit should overwrite it.
++ */
++static inline bool arch_has_hw_pte_young(void)
++{
++	return false;
++}
++#endif
++
+ #ifndef __HAVE_ARCH_PTEP_GET_AND_CLEAR
+ static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
+ 				       unsigned long address,
+diff --git a/mm/memory.c b/mm/memory.c
+index a78814413ac0..68294ce1cb06 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -125,18 +125,6 @@ int randomize_va_space __read_mostly =
+ 					2;
+ #endif
+ 
+-#ifndef arch_faults_on_old_pte
+-static inline bool arch_faults_on_old_pte(void)
+-{
+-	/*
+-	 * Those arches which don't have hw access flag feature need to
+-	 * implement their own helper. By default, "true" means pagefault
+-	 * will be hit on old pte.
+-	 */
+-	return true;
+-}
+-#endif
+-
+ #ifndef arch_wants_old_prefaulted_pte
+ static inline bool arch_wants_old_prefaulted_pte(void)
+ {
+@@ -2870,7 +2858,7 @@ static inline bool __wp_page_copy_user(struct page *dst, struct page *src,
+ 	 * On architectures with software "accessed" bits, we would
+ 	 * take a double page fault, so mark it accessed here.
+ 	 */
+-	if (arch_faults_on_old_pte() && !pte_young(vmf->orig_pte)) {
++	if (!arch_has_hw_pte_young() && !pte_young(vmf->orig_pte)) {
+ 		pte_t entry;
+ 
+ 		vmf->pte = pte_offset_map_lock(mm, vmf->pmd, addr, &vmf->ptl);
+-- 
+2.17.1
+
