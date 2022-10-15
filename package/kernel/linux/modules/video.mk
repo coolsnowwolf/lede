@@ -243,8 +243,8 @@ define KernelPackage/drm
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Direct Rendering Manager (DRM) support
   HIDDEN:=1
-  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit  +PACKAGE_kmod-backlight:kmod-backlight \
-	+(LINUX_5_15||LINUX_5_19):kmod-fb
+  DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit +PACKAGE_kmod-backlight:kmod-backlight \
+	+(LINUX_5_15||LINUX_5_19||LINUX_6_0):kmod-fb
   KCONFIG:=	\
 	CONFIG_DRM	\
 	CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y	\
@@ -302,8 +302,10 @@ define KernelPackage/drm-display-helper
   TITLE:=DRM helpers for display adapters drivers
   DEPENDS:=@DISPLAY_SUPPORT +kmod-drm @(LINUX_5_19||LINUX_6_0)
   KCONFIG:= \
-    CONFIG_DRM_DISPLAY_HELPER
-  FILES:=$(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko
+    CONFIG_DRM_DISPLAY_HELPER \
+    CONFIG_DRM_BUDDY
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko \
+   $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko  
   AUTOLOAD:=$(call AutoProbe,drm_display_helper)
 endef
 
@@ -1110,8 +1112,7 @@ define KernelPackage/drm-i915
 	CONFIG_DRM_I915_USERPTR=y \
 	CONFIG_DRM_I915_WERROR=n
   FILES:= \
-      $(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko \
-      $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko@ge5.18
+      $(LINUX_DIR)/drivers/gpu/drm/i915/i915.ko
   AUTOLOAD:=$(call AutoProbe,i915)
 endef
 
