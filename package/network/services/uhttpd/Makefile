@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uhttpd
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/uhttpd.git
@@ -113,6 +113,8 @@ define Package/uhttpd/install
 	$(VERSION_SED_SCRIPT) $(1)/etc/config/uhttpd
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uhttpd $(1)/usr/sbin/uhttpd
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/acme
+	$(INSTALL_DATA) ./files/acme.hotplug $(1)/etc/hotplug.d/acme/00-uhttpd
 endef
 
 define Package/uhttpd-mod-lua/install
