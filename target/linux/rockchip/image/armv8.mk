@@ -20,7 +20,7 @@ define Device/hinlink_opc-h68k
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-mt7921e kmod-r8125
 endef
-#TARGET_DEVICES += hinlink_opc-h68k
+TARGET_DEVICES += hinlink_opc-h68k
 
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
@@ -104,7 +104,7 @@ TARGET_DEVICES += friendlyarm_nanopi-r5s
 define Device/firefly_station-p2
   DEVICE_VENDOR := Firefly
   DEVICE_MODEL := Station P2
-  SOC := rk3568
+  DEVICE_DTS := rockchip/rk3568-roc-pc
   UBOOT_DEVICE_NAME := station-p2-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig kmod-ata-ahci-platform station-p2-firmware wpad-openssl
