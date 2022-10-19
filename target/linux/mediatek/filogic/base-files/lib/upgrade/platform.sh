@@ -2,23 +2,20 @@ REQUIRE_IMAGE_METADATA=1
 
 platform_do_upgrade() {
 	local board=$(board_name)
-	local file_type=$(identify $1)
 
 	case "$board" in
 	bananapi,bpi-r3)
-		export_bootdevice
-		export_partdevice rootdev 0
-		case "$rootdev" in
-		mmc*)
+		case "$(cmdline_get_var root)" in
+		/dev/mmc*)
 			CI_ROOTDEV="$rootdev"
 			CI_KERNPART="production"
 			emmc_do_upgrade "$1"
 			;;
-		mtdblock*)
+		/dev/mtdblock*)
 			PART_NAME="fit"
 			default_do_upgrade "$1"
 			;;
-		ubiblock*)
+		/dev/ubiblock*)
 			CI_KERNPART="fit"
 			nand_do_upgrade "$1"
 			;;
@@ -58,10 +55,8 @@ platform_check_image() {
 platform_copy_config() {
 	case "$(board_name)" in
 	bananapi,bpi-r3)
-		export_bootdevice
-		export_partdevice rootdev 0
-		case "$rootdev" in
-		mmc*)
+		case "$(cmdline_get_var root)" in
+		/dev/mmc*)
 			emmc_copy_config
 			;;
 		esac

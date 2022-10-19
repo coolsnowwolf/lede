@@ -23,21 +23,31 @@ define Device/UbiFit
 	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
-define Device/qihoo_360v6
+define Device/mr7350
 	$(call Device/FitImage)
-	$(call Device/UbiFit)
-	BLOCKSIZE := 128k
-	PAGESIZE := 2048
+	DEVICE_VENDOR := Linksys
+	DEVICE_MODEL := MR7350
+	SOC := ipq6018
+	DEVICE_PACKAGES := kmod-leds-pca963x
+endef
+TARGET_DEVICES += mr7350
+
+define Device/cp01-c1
+	$(call Device/FitImage)
 	DEVICE_VENDOR := Qihoo
 	DEVICE_MODEL := 360v6
 	SOC := ipq6018
 endef
-TARGET_DEVICES += qihoo_360v6
+TARGET_DEVICES += cp01-c1
 
 define Device/eap610-outdoor
 	$(call Device/FitImage)
+	$(call Device/UbiFit)
 	DEVICE_VENDOR := TP-Link
 	DEVICE_MODEL := EAP610-Outdoor
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
 	SOC := ipq6018
+	IMAGE/nand-factory.ubi := append-ubi | qsdk-ipq-factory-nand
 endef
 TARGET_DEVICES += eap610-outdoor
