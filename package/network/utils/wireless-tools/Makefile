@@ -8,6 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wireless-tools
+PKG_CPE_ID:=cpe:/a:wireless_tools_project:wireless_tools
 PKG_VERSION:=29
 PKG_MINOR:=
 PKG_RELEASE:=6
