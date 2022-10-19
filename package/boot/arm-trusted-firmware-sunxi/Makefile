@@ -8,6 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=arm-trusted-firmware-sunxi
+PKG_CPE_ID:=cpe:/o:arm:arm_trusted_firmware
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
