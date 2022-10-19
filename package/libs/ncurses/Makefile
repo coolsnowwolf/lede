@@ -8,6 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ncurses
+PKG_CPE_ID:=cpe:/a:gnu:ncurses
 PKG_VERSION:=6.3
 PKG_RELEASE:=$(AUTORELEASE)
 
