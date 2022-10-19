@@ -1,0 +1,181 @@
+From a8a988a5e67068b554f92418775f274771cfb068 Mon Sep 17 00:00:00 2001
+From: Corentin Labbe <clabbe@baylibre.com>
+Date: Tue, 27 Sep 2022 07:54:51 +0000
+Subject: [PATCH 29/49] crypto: rockchip: introduce PM
+
+Add runtime PM support for rockchip crypto.
+
+Reviewed-by: John Keeping <john@metanate.com>
+Signed-off-by: Corentin Labbe <clabbe@baylibre.com>
+---
+ drivers/crypto/rockchip/rk3288_crypto.c       | 51 ++++++++++++++++++-
+ drivers/crypto/rockchip/rk3288_crypto.h       |  1 +
+ drivers/crypto/rockchip/rk3288_crypto_ahash.c | 10 ++++
+ .../crypto/rockchip/rk3288_crypto_skcipher.c  |  9 ++++
+ 4 files changed, 69 insertions(+), 2 deletions(-)
+
+--- a/drivers/crypto/rockchip/rk3288_crypto.c
++++ b/drivers/crypto/rockchip/rk3288_crypto.c
+@@ -65,6 +65,48 @@ static void rk_crypto_disable_clk(struct
+ 	clk_disable_unprepare(dev->sclk);
+ }
+ 
++/*
++ * Power management strategy: The device is suspended unless a TFM exists for
++ * one of the algorithms proposed by this driver.
++ */
++static int rk_crypto_pm_suspend(struct device *dev)
++{
++	struct rk_crypto_info *rkdev = dev_get_drvdata(dev);
++
++	rk_crypto_disable_clk(rkdev);
++	return 0;
++}
++
++static int rk_crypto_pm_resume(struct device *dev)
++{
++	struct rk_crypto_info *rkdev = dev_get_drvdata(dev);
++
++	return rk_crypto_enable_clk(rkdev);
++}
++
++static const struct dev_pm_ops rk_crypto_pm_ops = {
++	SET_RUNTIME_PM_OPS(rk_crypto_pm_suspend, rk_crypto_pm_resume, NULL)
++};
++
++static int rk_crypto_pm_init(struct rk_crypto_info *rkdev)
++{
++	int err;
++
++	pm_runtime_use_autosuspend(rkdev->dev);
++	pm_runtime_set_autosuspend_delay(rkdev->dev, 2000);
++
++	err = pm_runtime_set_suspended(rkdev->dev);
++	if (err)
++		return err;
++	pm_runtime_enable(rkdev->dev);
++	return err;
++}
++
++static void rk_crypto_pm_exit(struct rk_crypto_info *rkdev)
++{
++	pm_runtime_disable(rkdev->dev);
++}
++
+ static irqreturn_t rk_crypto_irq_handle(int irq, void *dev_id)
+ {
+ 	struct rk_crypto_info *dev  = platform_get_drvdata(dev_id);
+@@ -273,7 +315,9 @@ static int rk_crypto_probe(struct platfo
+ 	crypto_engine_start(crypto_info->engine);
+ 	init_completion(&crypto_info->complete);
+ 
+-	rk_crypto_enable_clk(crypto_info);
++	err = rk_crypto_pm_init(crypto_info);
++	if (err)
++		goto err_pm;
+ 
+ 	err = rk_crypto_register(crypto_info);
+ 	if (err) {
+@@ -294,6 +338,8 @@ static int rk_crypto_probe(struct platfo
+ 	return 0;
+ 
+ err_register_alg:
++	rk_crypto_pm_exit(crypto_info);
++err_pm:
+ 	crypto_engine_exit(crypto_info->engine);
+ err_crypto:
+ 	dev_err(dev, "Crypto Accelerator not successfully registered\n");
+@@ -308,7 +354,7 @@ static int rk_crypto_remove(struct platf
+ 	debugfs_remove_recursive(crypto_tmp->dbgfs_dir);
+ #endif
+ 	rk_crypto_unregister();
+-	rk_crypto_disable_clk(crypto_tmp);
++	rk_crypto_pm_exit(crypto_tmp);
+ 	crypto_engine_exit(crypto_tmp->engine);
+ 	return 0;
+ }
+@@ -318,6 +364,7 @@ static struct platform_driver crypto_dri
+ 	.remove		= rk_crypto_remove,
+ 	.driver		= {
+ 		.name	= "rk3288-crypto",
++		.pm		= &rk_crypto_pm_ops,
+ 		.of_match_table	= crypto_of_id_table,
+ 	},
+ };
+--- a/drivers/crypto/rockchip/rk3288_crypto.h
++++ b/drivers/crypto/rockchip/rk3288_crypto.h
+@@ -9,6 +9,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/debugfs.h>
+ #include <linux/delay.h>
++#include <linux/pm_runtime.h>
+ #include <linux/scatterlist.h>
+ #include <crypto/engine.h>
+ #include <crypto/internal/hash.h>
+--- a/drivers/crypto/rockchip/rk3288_crypto_ahash.c
++++ b/drivers/crypto/rockchip/rk3288_crypto_ahash.c
+@@ -328,6 +328,7 @@ static int rk_cra_hash_init(struct crypt
+ 	struct ahash_alg *alg = __crypto_ahash_alg(tfm->__crt_alg);
+ 
+ 	const char *alg_name = crypto_tfm_alg_name(tfm);
++	int err;
+ 
+ 	algt = container_of(alg, struct rk_crypto_tmp, alg.hash);
+ 
+@@ -349,7 +350,15 @@ static int rk_cra_hash_init(struct crypt
+ 	tctx->enginectx.op.prepare_request = rk_hash_prepare;
+ 	tctx->enginectx.op.unprepare_request = rk_hash_unprepare;
+ 
++	err = pm_runtime_resume_and_get(tctx->dev->dev);
++	if (err < 0)
++		goto error_pm;
++
+ 	return 0;
++error_pm:
++	crypto_free_ahash(tctx->fallback_tfm);
++
++	return err;
+ }
+ 
+ static void rk_cra_hash_exit(struct crypto_tfm *tfm)
+@@ -357,6 +366,7 @@ static void rk_cra_hash_exit(struct cryp
+ 	struct rk_ahash_ctx *tctx = crypto_tfm_ctx(tfm);
+ 
+ 	crypto_free_ahash(tctx->fallback_tfm);
++	pm_runtime_put_autosuspend(tctx->dev->dev);
+ }
+ 
+ struct rk_crypto_tmp rk_ahash_sha1 = {
+--- a/drivers/crypto/rockchip/rk3288_crypto_skcipher.c
++++ b/drivers/crypto/rockchip/rk3288_crypto_skcipher.c
+@@ -454,6 +454,7 @@ static int rk_ablk_init_tfm(struct crypt
+ 	struct skcipher_alg *alg = crypto_skcipher_alg(tfm);
+ 	const char *name = crypto_tfm_alg_name(&tfm->base);
+ 	struct rk_crypto_tmp *algt;
++	int err;
+ 
+ 	algt = container_of(alg, struct rk_crypto_tmp, alg.skcipher);
+ 
+@@ -471,7 +472,14 @@ static int rk_ablk_init_tfm(struct crypt
+ 
+ 	ctx->enginectx.op.do_one_request = rk_cipher_run;
+ 
++	err = pm_runtime_resume_and_get(ctx->dev->dev);
++	if (err < 0)
++		goto error_pm;
++
+ 	return 0;
++error_pm:
++	crypto_free_skcipher(ctx->fallback_tfm);
++	return err;
+ }
+ 
+ static void rk_ablk_exit_tfm(struct crypto_skcipher *tfm)
+@@ -480,6 +488,7 @@ static void rk_ablk_exit_tfm(struct cryp
+ 
+ 	memzero_explicit(ctx->key, ctx->keylen);
+ 	crypto_free_skcipher(ctx->fallback_tfm);
++	pm_runtime_put_autosuspend(ctx->dev->dev);
+ }
+ 
+ struct rk_crypto_tmp rk_ecb_aes_alg = {
