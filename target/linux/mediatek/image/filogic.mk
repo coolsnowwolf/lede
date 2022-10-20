@@ -38,6 +38,20 @@ define Build/mt7986-gpt
 	rm $@.tmp
 endef
 
+define Build/gen-ubi-initramfs
+       sh $(TOPDIR)/scripts/ubinize-image.sh \
+               $(if $(UBOOTENV_IN_UBI),--uboot-env) \
+               --kernel $(KDIR)/tmp/$(KERNEL_INITRAMFS_IMAGE) \
+               $(foreach part,$(UBINIZE_PARTS),--part $(part)) \
+               "$(1).tmp" \
+               -p $(BLOCKSIZE:%k=%KiB) -m $(PAGESIZE) \
+               $(if $(SUBPAGESIZE),-s $(SUBPAGESIZE)) \
+               $(if $(VID_HDR_OFFSET),-O $(VID_HDR_OFFSET)) \
+               $(UBINIZE_OPTS) && \
+       cat "$(1).tmp" > "$(1)" && rm "$(1).tmp" && \
+       $(CP) "$(1)" $(BIN_DIR)/
+endef
+
 define Device/bananapi_bpi-r3
   DEVICE_VENDOR := Bananapi
   DEVICE_MODEL := BPi-R3
@@ -133,6 +147,9 @@ define Device/xiaomi_redmi-router-ax6000
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_IN_UBI := 1
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+       fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | \
+       gen-ubi-initramfs $(KDIR)/tmp/$$(KERNEL_INITRAMFS_PREFIX)-factory.ubi
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ax6000
