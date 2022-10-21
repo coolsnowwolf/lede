@@ -1,7 +1,7 @@
-From 9d276da259cce20b2ed7a868b6e6a6a205f7bb04 Mon Sep 17 00:00:00 2001
+From 934337080c6c59b75db76b180b509f218640ad48 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
-Date: Thu, 23 Sep 2021 19:20:13 +0200
-Subject: [PATCH] phy: marvell: phy-mvebu-a3700-comphy: Add native kernel
+Date: Thu, 3 Feb 2022 22:44:41 +0100
+Subject: [PATCH 2/2] phy: marvell: phy-mvebu-a3700-comphy: Add native kernel
  implementation
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -46,16 +46,19 @@ original code not conforming to kernel standards. Also PCIe mode poweroff
 support was added here, and PHY reset support. These changes are also going
 to be sent to ARM Trusted Firmware.
 
-Signed-off-by: Pali Rohár <pali@kernel.org>
-Acked-by: Miquel Raynal <miquel.raynal@bootlin.com>
 [ Pali did the porting from ATF.
   I (Marek) then fixed some register names, some various other things,
   added some comments and refactored the code to kernel standards. Also
   fixed PHY poweroff and added PHY reset. ]
+
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Acked-by: Miquel Raynal <miquel.raynal@bootlin.com>
 Signed-off-by: Marek Behún <kabel@kernel.org>
+Link: https://lore.kernel.org/r/20220203214444.1508-3-kabel@kernel.org
+Signed-off-by: Vinod Koul <vkoul@kernel.org>
 ---
- drivers/phy/marvell/phy-mvebu-a3700-comphy.c | 1351 ++++++++++++++++--
- 1 file changed, 1234 insertions(+), 117 deletions(-)
+ drivers/phy/marvell/phy-mvebu-a3700-comphy.c | 1332 ++++++++++++++++--
+ 1 file changed, 1215 insertions(+), 117 deletions(-)
 
 --- a/drivers/phy/marvell/phy-mvebu-a3700-comphy.c
 +++ b/drivers/phy/marvell/phy-mvebu-a3700-comphy.c
@@ -78,7 +81,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  #include <linux/io.h>
  #include <linux/iopoll.h>
  #include <linux/mfd/syscon.h>
-@@ -18,103 +22,1147 @@
+@@ -18,103 +22,1118 @@
  #include <linux/phy.h>
  #include <linux/phy/phy.h>
  #include <linux/platform_device.h>
@@ -480,23 +483,23 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 -	struct arm_smccc_res res;
 -	s32 ret;
 +	u32 val;
- 
--	arm_smccc_smc(function, lane, mode, 0, 0, 0, 0, 0, &res);
--	ret = res.a0;
++
 +	val = readl(addr);
 +	val = (val & ~mask) | (data & mask);
 +	writel(val, addr);
 +}
+ 
+-	arm_smccc_smc(function, lane, mode, 0, 0, 0, 0, 0, &res);
+-	ret = res.a0;
++static inline void comphy_reg_set16(void __iomem *addr, u16 data, u16 mask)
++{
++	u16 val;
  
 -	switch (ret) {
 -	case SMCCC_RET_SUCCESS:
 -		return 0;
 -	case SMCCC_RET_NOT_SUPPORTED:
 -		return -EOPNOTSUPP;
-+static inline void comphy_reg_set16(void __iomem *addr, u16 data, u16 mask)
-+{
-+	u16 val;
-+
 +	val = readw(addr);
 +	val = (val & ~mask) | (data & mask);
 +	writew(val, addr);
@@ -708,12 +711,10 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	ret = comphy_lane_reg_poll(lane, COMPHY_DIG_LOOPBACK_EN,
 +				   PLL_READY_TX_BIT, COMPHY_PLL_SLEEP,
 +				   COMPHY_PLL_TIMEOUT);
-+	if (ret) {
++	if (ret)
 +		dev_err(lane->dev, "Failed to lock SATA PLL\n");
-+		return ret;
-+	}
 +
-+	return 0;
++	return ret;
 +}
 +
 +static void comphy_gbe_phy_init(struct mvebu_a3700_comphy_lane *lane,
@@ -827,7 +828,8 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	mask = REF_FREF_SEL_MASK;
 +	comphy_lane_reg_set(lane, COMPHY_POWER_PLL_CTRL, data, mask);
 +
-+	/* 10. Program COMPHY register PHY_GEN_MAX[1:0]
++	/*
++	 * 10. Program COMPHY register PHY_GEN_MAX[1:0]
 +	 * This step is mentioned in the flow received from verification team.
 +	 * However the PHY_GEN_MAX value is only meaningful for other interfaces
 +	 * (not SERDES). For instance, it selects SATA speed 1.5/3/6 Gbps or
@@ -846,9 +848,8 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	 * 12. As long as DFE function needs to be enabled in any mode,
 +	 * COMPHY register DFE_UPDATE_EN[5:0] shall be programmed to 0x3F
 +	 * for real chip during COMPHY power on.
-+	 * The step 14 exists (and empty) in the original initialization flow
-+	 * obtained from the verification team. According to the functional
-+	 * specification DFE_UPDATE_EN already has the default value 0x3F
++	 * The value of the DFE_UPDATE_EN already is 0x3F, because it is the
++	 * default value after reset of the PHY.
 +	 */
 +
 +	/*
@@ -867,19 +868,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +				    lane->submode != PHY_INTERFACE_MODE_2500BASEX);
 +
 +	/*
-+	 * 14. [Simulation Only] should not be used for real chip.
-+	 * By pass power up calibration by programming EXT_FORCE_CAL_DONE
-+	 * (R02h[9]) to 1 to shorten COMPHY simulation time.
-+	 */
-+
-+	/*
-+	 * 15. [Simulation Only: should not be used for real chip]
-+	 * Program COMPHY register FAST_DFE_TIMER_EN=1 to shorten RX training
-+	 * simulation time.
-+	 */
-+
-+	/*
-+	 * 16. Check the PHY Polarity invert bit
++	 * 14. Check the PHY Polarity invert bit
 +	 */
 +	data = 0x0;
 +	if (lane->invert_tx)
@@ -890,7 +879,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	comphy_lane_reg_set(lane, COMPHY_SYNC_PATTERN, data, mask);
 +
 +	/*
-+	 * 17. Set PHY input ports PIN_PU_PLL, PIN_PU_TX and PIN_PU_RX to 1 to
++	 * 15. Set PHY input ports PIN_PU_PLL, PIN_PU_TX and PIN_PU_RX to 1 to
 +	 * start PHY power up sequence. All the PHY register programming should
 +	 * be done before PIN_PU_PLL=1. There should be no register programming
 +	 * for normal PHY operation from this point.
@@ -900,7 +889,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	comphy_periph_reg_set(lane, COMPHY_PHY_CFG1, data, mask);
 +
 +	/*
-+	 * 18. Wait for PHY power up sequence to finish by checking output ports
++	 * 16. Wait for PHY power up sequence to finish by checking output ports
 +	 * PIN_PLL_READY_TX=1 and PIN_PLL_READY_RX=1.
 +	 */
 +	ret = comphy_periph_reg_poll(lane, COMPHY_PHY_STAT1,
@@ -914,12 +903,12 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	}
 +
 +	/*
-+	 * 19. Set COMPHY input port PIN_TX_IDLE=0
++	 * 17. Set COMPHY input port PIN_TX_IDLE=0
 +	 */
 +	comphy_periph_reg_set(lane, COMPHY_PHY_CFG1, 0x0, PIN_TX_IDLE_BIT);
 +
 +	/*
-+	 * 20. After valid data appear on PIN_RXDATA bus, set PIN_RX_INIT=1. To
++	 * 18. After valid data appear on PIN_RXDATA bus, set PIN_RX_INIT=1. To
 +	 * start RX initialization. PIN_RX_INIT_DONE will be cleared to 0 by the
 +	 * PHY After RX initialization is done, PIN_RX_INIT_DONE will be set to
 +	 * 1 by COMPHY Set PIN_RX_INIT=0 after PIN_RX_INIT_DONE= 1. Please
@@ -941,13 +930,11 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +	ret = comphy_periph_reg_poll(lane, COMPHY_PHY_STAT1,
 +				     PHY_RX_INIT_DONE_BIT,
 +				     COMPHY_PLL_SLEEP, COMPHY_PLL_TIMEOUT);
-+	if (ret) {
++	if (ret)
 +		dev_err(lane->dev, "Failed to init RX of SERDES PHY %d\n",
 +			lane->id);
-+		return ret;
-+	}
 +
-+	return 0;
++	return ret;
  }
  
 -static int mvebu_a3700_comphy_get_fw_mode(int lane,
@@ -1107,12 +1094,10 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +
 +	ret = comphy_lane_reg_poll(lane, COMPHY_PIPE_LANE_STAT1, TXDCLK_PCLK_EN,
 +				   COMPHY_PLL_SLEEP, COMPHY_PLL_TIMEOUT);
-+	if (ret) {
++	if (ret)
 +		dev_err(lane->dev, "Failed to lock USB3 PLL\n");
-+		return ret;
-+	}
 +
-+	return 0;
++	return ret;
 +}
 +
 +static int
@@ -1197,21 +1182,10 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 +
 +	ret = comphy_lane_reg_poll(lane, COMPHY_PIPE_LANE_STAT1, TXDCLK_PCLK_EN,
 +				   COMPHY_PLL_SLEEP, COMPHY_PLL_TIMEOUT);
-+	if (ret) {
++	if (ret)
 +		dev_err(lane->dev, "Failed to lock PCIE PLL\n");
-+		return ret;
-+	}
 +
-+	return 0;
-+}
-+
-+static void
-+mvebu_a3700_comphy_usb3_power_off(struct mvebu_a3700_comphy_lane *lane)
-+{
-+	/*
-+	 * Currently the USB3 MAC sets the USB3 PHY to low state, so we do not
-+	 * need to power off USB3 PHY again.
-+	 */
++	return ret;
 +}
 +
 +static void
@@ -1285,7 +1259,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  					  enum phy_mode mode,
  					  int submode)
  {
-@@ -122,7 +1170,7 @@ static int mvebu_a3700_comphy_get_fw_mod
+@@ -122,7 +1141,7 @@ static int mvebu_a3700_comphy_get_fw_mod
  
  	/* Unused PHY mux value is 0x0 */
  	if (mode == PHY_MODE_INVALID)
@@ -1294,7 +1268,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  
  	for (i = 0; i < n; i++) {
  		if (mvebu_a3700_comphy_modes[i].lane == lane &&
-@@ -132,27 +1180,30 @@ static int mvebu_a3700_comphy_get_fw_mod
+@@ -132,27 +1151,30 @@ static int mvebu_a3700_comphy_get_fw_mod
  	}
  
  	if (i == n)
@@ -1310,10 +1284,10 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  {
  	struct mvebu_a3700_comphy_lane *lane = phy_get_drvdata(phy);
 -	int fw_mode;
--
+ 
 -	if (submode == PHY_INTERFACE_MODE_1000BASEX)
 -		submode = PHY_INTERFACE_MODE_SGMII;
- 
+-
 -	fw_mode = mvebu_a3700_comphy_get_fw_mode(lane->id, mode,
 -						 submode);
 -	if (fw_mode < 0) {
@@ -1335,7 +1309,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  	/* Just remember the mode, ->power_on() will do the real setup */
  	lane->mode = mode;
  	lane->submode = submode;
-@@ -163,76 +1214,68 @@ static int mvebu_a3700_comphy_set_mode(s
+@@ -163,76 +1185,77 @@ static int mvebu_a3700_comphy_set_mode(s
  static int mvebu_a3700_comphy_power_on(struct phy *phy)
  {
  	struct mvebu_a3700_comphy_lane *lane = phy_get_drvdata(phy);
@@ -1423,21 +1397,30 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
 -	return mvebu_a3700_comphy_smc(COMPHY_SIP_POWER_OFF, lane->id, 0);
 +	switch (lane->mode) {
 +	case PHY_MODE_USB_HOST_SS:
-+		mvebu_a3700_comphy_usb3_power_off(lane);
-+		return 0;
++		/*
++		 * The USB3 MAC sets the USB3 PHY to low state, so we do not
++		 * need to power off USB3 PHY again.
++		 */
++		break;
++
 +	case PHY_MODE_SATA:
 +		mvebu_a3700_comphy_sata_power_off(lane);
-+		return 0;
++		break;
++
 +	case PHY_MODE_ETHERNET:
 +		mvebu_a3700_comphy_ethernet_power_off(lane);
-+		return 0;
++		break;
++
 +	case PHY_MODE_PCIE:
 +		mvebu_a3700_comphy_pcie_power_off(lane);
-+		return 0;
++		break;
++
 +	default:
 +		dev_err(lane->dev, "invalid COMPHY mode\n");
 +		return -EINVAL;
 +	}
++
++	return 0;
  }
  
  static const struct phy_ops mvebu_a3700_comphy_ops = {
@@ -1447,7 +1430,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  	.set_mode	= mvebu_a3700_comphy_set_mode,
  	.owner		= THIS_MODULE,
  };
-@@ -256,13 +1299,75 @@ static struct phy *mvebu_a3700_comphy_xl
+@@ -256,13 +1279,75 @@ static struct phy *mvebu_a3700_comphy_xl
  		return ERR_PTR(-EINVAL);
  	}
  
@@ -1523,7 +1506,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  
  	for_each_available_child_of_node(pdev->dev.of_node, child) {
  		struct mvebu_a3700_comphy_lane *lane;
-@@ -277,7 +1382,7 @@ static int mvebu_a3700_comphy_probe(stru
+@@ -277,7 +1362,7 @@ static int mvebu_a3700_comphy_probe(stru
  			continue;
  		}
  
@@ -1532,7 +1515,7 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  			dev_err(&pdev->dev, "invalid 'reg' property\n");
  			continue;
  		}
-@@ -295,11 +1400,21 @@ static int mvebu_a3700_comphy_probe(stru
+@@ -295,15 +1380,26 @@ static int mvebu_a3700_comphy_probe(stru
  			return PTR_ERR(phy);
  		}
  
@@ -1554,7 +1537,12 @@ Signed-off-by: Marek Behún <kabel@kernel.org>
  	}
  
  	provider = devm_of_phy_provider_register(&pdev->dev,
-@@ -323,5 +1438,7 @@ static struct platform_driver mvebu_a370
+ 						 mvebu_a3700_comphy_xlate);
++
+ 	return PTR_ERR_OR_ZERO(provider);
+ }
+ 
+@@ -323,5 +1419,7 @@ static struct platform_driver mvebu_a370
  module_platform_driver(mvebu_a3700_comphy_driver);
  
  MODULE_AUTHOR("Miquèl Raynal <miquel.raynal@bootlin.com>");
