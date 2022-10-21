@@ -1,0 +1,131 @@
+From 5194c69ca3e4af8c3a6ffc77e5eb1ee0a62a6bbe Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 10 Dec 2021 15:29:56 +0100
+Subject: [PATCH] drm/vc4: hdmi: Always try to have the highest bpc
+
+Currently we take the max_bpc property as the bpc value and do not try
+anything else.
+
+However, what the other drivers seem to be doing is that they would try
+with the highest bpc allowed by the max_bpc property and the hardware
+capabilities, test if it results in an acceptable configuration, and if
+not decrease the bpc and try again.
+
+Let's use the same logic.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 44 ++++++++++++++++++++++++++++++----
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  4 +++-
+ 2 files changed, 43 insertions(+), 5 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -357,6 +357,7 @@ vc4_hdmi_connector_duplicate_state(struc
+ 		return NULL;
+ 
+ 	new_state->pixel_rate = vc4_state->pixel_rate;
++	new_state->output_bpc = vc4_state->output_bpc;
+ 	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
+ 
+ 	return &new_state->base;
+@@ -914,6 +915,8 @@ static void vc5_hdmi_set_timings(struct
+ 				 struct drm_connector_state *state,
+ 				 struct drm_display_mode *mode)
+ {
++	const struct vc4_hdmi_connector_state *vc4_state =
++		conn_state_to_vc4_hdmi_conn_state(state);
+ 	bool hsync_pos = mode->flags & DRM_MODE_FLAG_PHSYNC;
+ 	bool vsync_pos = mode->flags & DRM_MODE_FLAG_PVSYNC;
+ 	bool interlaced = mode->flags & DRM_MODE_FLAG_INTERLACE;
+@@ -961,7 +964,7 @@ static void vc5_hdmi_set_timings(struct
+ 	HDMI_WRITE(HDMI_VERTB0, vertb_even);
+ 	HDMI_WRITE(HDMI_VERTB1, vertb);
+ 
+-	switch (state->max_bpc) {
++	switch (vc4_state->output_bpc) {
+ 	case 12:
+ 		gcp = 6;
+ 		gcp_en = true;
+@@ -1251,9 +1254,11 @@ static void vc4_hdmi_encoder_atomic_mode
+ 					     struct drm_connector_state *conn_state)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
++	struct vc4_hdmi_connector_state *vc4_state =
++		conn_state_to_vc4_hdmi_conn_state(conn_state);
+ 
+ 	mutex_lock(&vc4_hdmi->mutex);
+-	vc4_hdmi->output_bpc = conn_state->max_bpc;
++	vc4_hdmi->output_bpc = vc4_state->output_bpc;
+ 	memcpy(&vc4_hdmi->saved_adjusted_mode,
+ 	       &crtc_state->adjusted_mode,
+ 	       sizeof(vc4_hdmi->saved_adjusted_mode));
+@@ -1308,6 +1313,38 @@ vc4_hdmi_encoder_compute_clock(const str
+ 	return 0;
+ }
+ 
++static int
++vc4_hdmi_encoder_compute_config(const struct vc4_hdmi *vc4_hdmi,
++				struct vc4_hdmi_connector_state *vc4_state,
++				const struct drm_display_mode *mode)
++{
++	struct drm_connector_state *conn_state = &vc4_state->base;
++	unsigned int max_bpc = clamp_t(unsigned int, conn_state->max_bpc, 8, 12);
++	unsigned int bpc;
++	int ret;
++
++	for (bpc = max_bpc; bpc >= 8; bpc -= 2) {
++		drm_dbg(dev, "Trying with a %d bpc output\n", bpc);
++
++		ret = vc4_hdmi_encoder_compute_clock(vc4_hdmi, vc4_state,
++						     mode, bpc);
++		if (ret)
++			continue;
++
++		vc4_state->output_bpc = bpc;
++
++		drm_dbg(dev,
++			"Mode %ux%u @ %uHz: Found configuration: bpc: %u, clock: %llu\n",
++			mode->hdisplay, mode->vdisplay, drm_mode_vrefresh(mode),
++			vc4_state->output_bpc,
++			vc4_state->pixel_rate);
++
++		break;
++	}
++
++	return ret;
++}
++
+ #define WIFI_2_4GHz_CH1_MIN_FREQ	2400000000ULL
+ #define WIFI_2_4GHz_CH1_MAX_FREQ	2422000000ULL
+ 
+@@ -1342,8 +1379,7 @@ static int vc4_hdmi_encoder_atomic_check
+ 		pixel_rate = mode->clock * 1000;
+ 	}
+ 
+-	ret = vc4_hdmi_encoder_compute_clock(vc4_hdmi, vc4_state, mode,
+-					     conn_state->max_bpc);
++	ret = vc4_hdmi_encoder_compute_config(vc4_hdmi, vc4_state, mode);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -222,7 +222,8 @@ struct vc4_hdmi {
+ 	bool scdc_enabled;
+ 
+ 	/**
+-	 * @output_bpc: BPC currently being used. Protected by @mutex.
++	 * @output_bpc: Copy of @vc4_connector_state.output_bpc for use
++	 * outside of KMS hooks. Protected by @mutex.
+ 	 */
+ 	unsigned int output_bpc;
+ 
+@@ -252,6 +253,7 @@ encoder_to_vc4_hdmi(struct drm_encoder *
+ struct vc4_hdmi_connector_state {
+ 	struct drm_connector_state	base;
+ 	unsigned long long		pixel_rate;
++	unsigned int 			output_bpc;
+ };
+ 
+ static inline struct vc4_hdmi_connector_state *

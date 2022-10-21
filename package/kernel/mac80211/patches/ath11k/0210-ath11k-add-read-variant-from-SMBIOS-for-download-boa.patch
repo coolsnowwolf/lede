@@ -1,0 +1,169 @@
+From 9d97114d222047c0699bbdbf8f128907f423bbe6 Mon Sep 17 00:00:00 2001
+From: Wen Gong <quic_wgong@quicinc.com>
+Date: Wed, 23 Mar 2022 11:14:17 +0200
+Subject: [PATCH] ath11k: add read variant from SMBIOS for download board data
+
+This is to read variant from SMBIOS such as read from DT, the variant
+string will be used to one part of string which used to search board
+data from board-2.bin.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-03125-QCAHSPSWPL_V1_V2_SILICONZ_LITE-3
+
+Signed-off-by: Wen Gong <quic_wgong@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220315104721.26649-3-quic_wgong@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c | 70 ++++++++++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/core.h | 20 +++++++-
+ drivers/net/wireless/ath/ath11k/qmi.c  |  4 ++
+ 3 files changed, 93 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -9,6 +9,7 @@
+ #include <linux/remoteproc.h>
+ #include <linux/firmware.h>
+ #include <linux/of.h>
++
+ #include "core.h"
+ #include "dp_tx.h"
+ #include "dp_rx.h"
+@@ -548,6 +549,75 @@ int ath11k_core_resume(struct ath11k_bas
+ }
+ EXPORT_SYMBOL(ath11k_core_resume);
+ 
++static void ath11k_core_check_bdfext(const struct dmi_header *hdr, void *data)
++{
++	struct ath11k_base *ab = data;
++	const char *magic = ATH11K_SMBIOS_BDF_EXT_MAGIC;
++	struct ath11k_smbios_bdf *smbios = (struct ath11k_smbios_bdf *)hdr;
++	ssize_t copied;
++	size_t len;
++	int i;
++
++	if (ab->qmi.target.bdf_ext[0] != '\0')
++		return;
++
++	if (hdr->type != ATH11K_SMBIOS_BDF_EXT_TYPE)
++		return;
++
++	if (hdr->length != ATH11K_SMBIOS_BDF_EXT_LENGTH) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT,
++			   "wrong smbios bdf ext type length (%d).\n",
++			   hdr->length);
++		return;
++	}
++
++	if (!smbios->bdf_enabled) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT, "bdf variant name not found.\n");
++		return;
++	}
++
++	/* Only one string exists (per spec) */
++	if (memcmp(smbios->bdf_ext, magic, strlen(magic)) != 0) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT,
++			   "bdf variant magic does not match.\n");
++		return;
++	}
++
++	len = min_t(size_t,
++		    strlen(smbios->bdf_ext), sizeof(ab->qmi.target.bdf_ext));
++	for (i = 0; i < len; i++) {
++		if (!isascii(smbios->bdf_ext[i]) || !isprint(smbios->bdf_ext[i])) {
++			ath11k_dbg(ab, ATH11K_DBG_BOOT,
++				   "bdf variant name contains non ascii chars.\n");
++			return;
++		}
++	}
++
++	/* Copy extension name without magic prefix */
++	copied = strscpy(ab->qmi.target.bdf_ext, smbios->bdf_ext + strlen(magic),
++			 sizeof(ab->qmi.target.bdf_ext));
++	if (copied < 0) {
++		ath11k_dbg(ab, ATH11K_DBG_BOOT,
++			   "bdf variant string is longer than the buffer can accommodate\n");
++		return;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_BOOT,
++		   "found and validated bdf variant smbios_type 0x%x bdf %s\n",
++		   ATH11K_SMBIOS_BDF_EXT_TYPE, ab->qmi.target.bdf_ext);
++}
++
++int ath11k_core_check_smbios(struct ath11k_base *ab)
++{
++	ab->qmi.target.bdf_ext[0] = '\0';
++	dmi_walk(ath11k_core_check_bdfext, ab);
++
++	if (ab->qmi.target.bdf_ext[0] == '\0')
++		return -ENODATA;
++
++	return 0;
++}
++
+ int ath11k_core_check_dt(struct ath11k_base *ab)
+ {
+ 	size_t max_len = sizeof(ab->qmi.target.bdf_ext);
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -10,6 +10,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/irq.h>
+ #include <linux/bitfield.h>
++#include <linux/dmi.h>
++#include <linux/ctype.h>
+ #include "qmi.h"
+ #include "htc.h"
+ #include "wmi.h"
+@@ -37,6 +39,15 @@
+ #define ATH11K_INVALID_HW_MAC_ID	0xFF
+ #define ATH11K_CONNECTION_LOSS_HZ	(3 * HZ)
+ 
++/* SMBIOS type containing Board Data File Name Extension */
++#define ATH11K_SMBIOS_BDF_EXT_TYPE 0xF8
++
++/* SMBIOS type structure length (excluding strings-set) */
++#define ATH11K_SMBIOS_BDF_EXT_LENGTH 0x9
++
++/* The magic used by QCA spec */
++#define ATH11K_SMBIOS_BDF_EXT_MAGIC "BDF_"
++
+ extern unsigned int ath11k_frame_mode;
+ 
+ #define ATH11K_MON_TIMER_INTERVAL  10
+@@ -154,6 +165,13 @@ struct ath11k_ext_irq_grp {
+ 	struct net_device napi_ndev;
+ };
+ 
++struct ath11k_smbios_bdf {
++	struct dmi_header hdr;
++	u32 padding;
++	u8 bdf_enabled;
++	u8 bdf_ext[];
++};
++
+ #define HEHANDLE_CAP_PHYINFO_SIZE       3
+ #define HECAP_PHYINFO_SIZE              9
+ #define HECAP_MACINFO_SIZE              5
+@@ -1046,7 +1064,7 @@ int ath11k_core_fetch_board_data_api_1(s
+ 				       const char *name);
+ void ath11k_core_free_bdf(struct ath11k_base *ab, struct ath11k_board_data *bd);
+ int ath11k_core_check_dt(struct ath11k_base *ath11k);
+-
++int ath11k_core_check_smbios(struct ath11k_base *ab);
+ void ath11k_core_halt(struct ath11k *ar);
+ int ath11k_core_resume(struct ath11k_base *ab);
+ int ath11k_core_suspend(struct ath11k_base *ab);
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -2095,6 +2095,10 @@ static int ath11k_qmi_request_target_cap
+ 		    ab->qmi.target.fw_build_timestamp,
+ 		    fw_build_id);
+ 
++	r = ath11k_core_check_smbios(ab);
++	if (r)
++		ath11k_dbg(ab, ATH11K_DBG_QMI, "SMBIOS bdf variant name not set.\n");
++
+ 	r = ath11k_core_check_dt(ab);
+ 	if (r)
+ 		ath11k_dbg(ab, ATH11K_DBG_QMI, "DT bdf variant name not set.\n");

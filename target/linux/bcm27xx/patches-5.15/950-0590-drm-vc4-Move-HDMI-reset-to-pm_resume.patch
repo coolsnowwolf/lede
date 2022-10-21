@@ -1,0 +1,125 @@
+From 740955399f42caa6406761975656b8aa5b88a39c Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 25 Nov 2021 14:46:55 +0000
+Subject: [PATCH] drm/vc4: Move HDMI reset to pm_resume
+
+Pi0-3 have power domains attached to the pm_runtime hooks
+for the HDMI block. Initialisation done in the reset called
+from bind is therefore lost if all users of the domain are
+suspended.
+The VEC shares the same lowest level clock/power gating as
+the HDMI block, so whilst that is enabled the block is never
+actually powered down, but if it isn't enabled then we lose
+the state.
+
+Reset and initialise the HDMI block from pm_resume.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c      | 61 ++++++++++++++++++-----------
+ drivers/gpu/drm/vc4/vc4_hdmi_regs.h |  4 +-
+ 2 files changed, 41 insertions(+), 24 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -2193,7 +2193,6 @@ static int vc4_hdmi_cec_init(struct vc4_
+ 	struct platform_device *pdev = vc4_hdmi->pdev;
+ 	struct device *dev = &pdev->dev;
+ 	unsigned long flags;
+-	u32 value;
+ 	int ret;
+ 
+ 	if (!of_find_property(dev->of_node, "interrupts", NULL)) {
+@@ -2212,15 +2211,6 @@ static int vc4_hdmi_cec_init(struct vc4_
+ 	cec_fill_conn_info_from_drm(&conn_info, &vc4_hdmi->connector);
+ 	cec_s_conn_info(vc4_hdmi->cec_adap, &conn_info);
+ 
+-	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+-	value = HDMI_READ(HDMI_CEC_CNTRL_1);
+-	/* Set the logical address to Unregistered */
+-	value |= VC4_HDMI_CEC_ADDR_MASK;
+-	HDMI_WRITE(HDMI_CEC_CNTRL_1, value);
+-	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
+-
+-	vc4_hdmi_cec_update_clk_div(vc4_hdmi);
+-
+ 	if (vc4_hdmi->variant->external_irq_controller) {
+ 		ret = request_threaded_irq(platform_get_irq_byname(pdev, "cec-rx"),
+ 					   vc4_cec_irq_handler_rx_bare,
+@@ -2283,6 +2273,29 @@ static void vc4_hdmi_cec_exit(struct vc4
+ 
+ 	cec_unregister_adapter(vc4_hdmi->cec_adap);
+ }
++
++static int vc4_hdmi_cec_resume(struct vc4_hdmi *vc4_hdmi)
++{
++	unsigned long flags;
++	u32 value;
++
++	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
++	value = HDMI_READ(HDMI_CEC_CNTRL_1);
++	/* Set the logical address to Unregistered */
++	value |= VC4_HDMI_CEC_ADDR_MASK;
++	HDMI_WRITE(HDMI_CEC_CNTRL_1, value);
++	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
++
++	vc4_hdmi_cec_update_clk_div(vc4_hdmi);
++
++	if (!vc4_hdmi->variant->external_irq_controller) {
++		spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
++		HDMI_WRITE(HDMI_CEC_CPU_MASK_SET, 0xffffffff);
++		spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
++	}
++
++	return 0;
++}
+ #else
+ static int vc4_hdmi_cec_init(struct vc4_hdmi *vc4_hdmi)
+ {
+@@ -2291,6 +2304,10 @@ static int vc4_hdmi_cec_init(struct vc4_
+ 
+ static void vc4_hdmi_cec_exit(struct vc4_hdmi *vc4_hdmi) {};
+ 
++static void vc4_hdmi_cec_resume(struct vc4_hdmi *vc4_hdmi)
++{
++	return 0;
++}
+ #endif
+ 
+ static int vc4_hdmi_build_regset(struct vc4_hdmi *vc4_hdmi,
+@@ -2525,6 +2542,15 @@ static int vc4_hdmi_runtime_resume(struc
+ 	if (ret)
+ 		return ret;
+ 
++	if (vc4_hdmi->variant->reset)
++		vc4_hdmi->variant->reset(vc4_hdmi);
++
++	ret = vc4_hdmi_cec_resume(vc4_hdmi);
++	if (ret) {
++		clk_disable_unprepare(vc4_hdmi->hsm_clock);
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi_regs.h
+@@ -417,7 +417,7 @@ static inline u32 vc4_hdmi_read(struct v
+ 	const struct vc4_hdmi_variant *variant = hdmi->variant;
+ 	void __iomem *base;
+ 
+-	WARN_ON(!pm_runtime_active(&hdmi->pdev->dev));
++	WARN_ON(pm_runtime_status_suspended(&hdmi->pdev->dev));
+ 
+ 	if (reg >= variant->num_registers) {
+ 		dev_warn(&hdmi->pdev->dev,
+@@ -447,7 +447,7 @@ static inline void vc4_hdmi_write(struct
+ 
+ 	lockdep_assert_held(&hdmi->hw_lock);
+ 
+-	WARN_ON(!pm_runtime_active(&hdmi->pdev->dev));
++	WARN_ON(pm_runtime_status_suspended(&hdmi->pdev->dev));
+ 
+ 	if (reg >= variant->num_registers) {
+ 		dev_warn(&hdmi->pdev->dev,

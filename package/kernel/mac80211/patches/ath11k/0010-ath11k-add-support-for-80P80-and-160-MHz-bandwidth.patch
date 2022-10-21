@@ -1,0 +1,322 @@
+From f552d6fd2f27ce9430c74482c46272838e2de688 Mon Sep 17 00:00:00 2001
+From: P Praneesh <ppranees@codeaurora.org>
+Date: Fri, 24 Sep 2021 16:52:46 +0300
+Subject: [PATCH] ath11k: add support for 80P80 and 160 MHz bandwidth
+
+For 160 MHz, nss_ratio_enabled flag is added to indicate firmware
+supports sending NSS ratio information from firmware as a part of
+service ready ext event. Extract this NSS ratio info from service
+ready ext event and save this information in ath11k_pdev_cap to
+calculate NSS ratio.
+
+Current firmware configurations support two types of NSS ratio
+which is WMI_NSS_RATIO_1_NSS for QCN9074 and WMI_NSS_RATIO_1BY2_NSS
+for IPQ8074. Based on this two configuration, max supported
+NSS getting calculated.
+
+Move ath11k_peer_assoc_h_phymode() before ath11k_peer_assoc_h_vht()
+to get arg->peer_phymode updated.
+
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.4.0.1-00097-QCAHKSWPL_SILICONZ-1
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.4.0.1-01467-QCAHKSWPL_SILICONZ-1
+
+Co-developed-by: Ganesh Sesetti <gseset@codeaurora.org>
+Signed-off-by: Ganesh Sesetti <gseset@codeaurora.org>
+Co-developed-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Signed-off-by: P Praneesh <ppranees@codeaurora.org>
+Signed-off-by: Jouni Malinen <jouni@codeaurora.org>
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+Link: https://lore.kernel.org/r/20210721173615.75637-2-jouni@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.h |  2 +
+ drivers/net/wireless/ath/ath11k/mac.c  | 95 ++++++++++++++++++++++----
+ drivers/net/wireless/ath/ath11k/mac.h  |  3 +
+ drivers/net/wireless/ath/ath11k/wmi.c  | 20 +++++-
+ drivers/net/wireless/ath/ath11k/wmi.h  | 30 ++++++++
+ 5 files changed, 136 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -603,6 +603,8 @@ struct ath11k_pdev_cap {
+ 	u32 tx_chain_mask_shift;
+ 	u32 rx_chain_mask_shift;
+ 	struct ath11k_band_cap band[NUM_NL80211_BANDS];
++	bool nss_ratio_enabled;
++	u8 nss_ratio_info;
+ };
+ 
+ struct ath11k_pdev {
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -1586,6 +1586,34 @@ ath11k_peer_assoc_h_vht_limit(u16 tx_mcs
+ 	return tx_mcs_set;
+ }
+ 
++static u8 ath11k_get_nss_160mhz(struct ath11k *ar,
++				u8 max_nss)
++{
++	u8 nss_ratio_info = ar->pdev->cap.nss_ratio_info;
++	u8 max_sup_nss = 0;
++
++	switch (nss_ratio_info) {
++	case WMI_NSS_RATIO_1BY2_NSS:
++		max_sup_nss = max_nss >> 1;
++		break;
++	case WMI_NSS_RATIO_3BY4_NSS:
++		ath11k_warn(ar->ab, "WMI_NSS_RATIO_3BY4_NSS not supported\n");
++		break;
++	case WMI_NSS_RATIO_1_NSS:
++		max_sup_nss = max_nss;
++		break;
++	case WMI_NSS_RATIO_2_NSS:
++		ath11k_warn(ar->ab, "WMI_NSS_RATIO_2_NSS not supported\n");
++		break;
++	default:
++		ath11k_warn(ar->ab, "invalid nss ratio received from firmware: %d\n",
++			    nss_ratio_info);
++		break;
++	}
++
++	return max_sup_nss;
++}
++
+ static void ath11k_peer_assoc_h_vht(struct ath11k *ar,
+ 				    struct ieee80211_vif *vif,
+ 				    struct ieee80211_sta *sta,
+@@ -1600,6 +1628,7 @@ static void ath11k_peer_assoc_h_vht(stru
+ 	u8 max_nss, vht_mcs;
+ 	int i, vht_nss, nss_idx;
+ 	bool user_rate_valid = true;
++	u32 rx_nss, tx_nss, nss_160;
+ 
+ 	if (WARN_ON(ath11k_mac_vif_chan(vif, &def)))
+ 		return;
+@@ -1692,10 +1721,29 @@ static void ath11k_peer_assoc_h_vht(stru
+ 	/* TODO:  Check */
+ 	arg->tx_max_mcs_nss = 0xFF;
+ 
+-	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "mac vht peer %pM max_mpdu %d flags 0x%x\n",
+-		   sta->addr, arg->peer_max_mpdu, arg->peer_flags);
++	if (arg->peer_phymode == MODE_11AC_VHT160 ||
++	    arg->peer_phymode == MODE_11AC_VHT80_80) {
++		tx_nss = ath11k_get_nss_160mhz(ar, max_nss);
++		rx_nss = min(arg->peer_nss, tx_nss);
++		arg->peer_bw_rxnss_override = ATH11K_BW_NSS_MAP_ENABLE;
++
++		if (!rx_nss) {
++			ath11k_warn(ar->ab, "invalid max_nss\n");
++			return;
++		}
++
++		if (arg->peer_phymode == MODE_11AC_VHT160)
++			nss_160 = FIELD_PREP(ATH11K_PEER_RX_NSS_160MHZ, rx_nss - 1);
++		else
++			nss_160 = FIELD_PREP(ATH11K_PEER_RX_NSS_80_80MHZ, rx_nss - 1);
+ 
+-	/* TODO: rxnss_override */
++		arg->peer_bw_rxnss_override |= nss_160;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
++		   "mac vht peer %pM max_mpdu %d flags 0x%x nss_override 0x%x\n",
++		   sta->addr, arg->peer_max_mpdu, arg->peer_flags,
++		   arg->peer_bw_rxnss_override);
+ }
+ 
+ static int ath11k_mac_get_max_he_mcs_map(u16 mcs_map, int nss)
+@@ -1779,6 +1827,7 @@ static void ath11k_peer_assoc_h_he(struc
+ 	u16 he_tx_mcs = 0, v = 0;
+ 	int i, he_nss, nss_idx;
+ 	bool user_rate_valid = true;
++	u32 rx_nss, tx_nss, nss_160;
+ 
+ 	if (WARN_ON(ath11k_mac_vif_chan(vif, &def)))
+ 		return;
+@@ -1942,9 +1991,30 @@ static void ath11k_peer_assoc_h_he(struc
+ 	}
+ 	arg->peer_nss = min(sta->rx_nss, max_nss);
+ 
++	if (arg->peer_phymode == MODE_11AX_HE160 ||
++	    arg->peer_phymode == MODE_11AX_HE80_80) {
++		tx_nss = ath11k_get_nss_160mhz(ar, max_nss);
++		rx_nss = min(arg->peer_nss, tx_nss);
++		arg->peer_bw_rxnss_override = ATH11K_BW_NSS_MAP_ENABLE;
++
++		if (!rx_nss) {
++			ath11k_warn(ar->ab, "invalid max_nss\n");
++			return;
++		}
++
++		if (arg->peer_phymode == MODE_11AX_HE160)
++			nss_160 = FIELD_PREP(ATH11K_PEER_RX_NSS_160MHZ, rx_nss - 1);
++		else
++			nss_160 = FIELD_PREP(ATH11K_PEER_RX_NSS_80_80MHZ, rx_nss - 1);
++
++		arg->peer_bw_rxnss_override |= nss_160;
++	}
++
+ 	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
+-		   "mac he peer %pM nss %d mcs cnt %d\n",
+-		   sta->addr, arg->peer_nss, arg->peer_he_mcs_count);
++		   "mac he peer %pM nss %d mcs cnt %d nss_override 0x%x\n",
++		   sta->addr, arg->peer_nss,
++		   arg->peer_he_mcs_count,
++		   arg->peer_bw_rxnss_override);
+ }
+ 
+ static void ath11k_peer_assoc_h_smps(struct ieee80211_sta *sta,
+@@ -2232,11 +2302,11 @@ static void ath11k_peer_assoc_prepare(st
+ 	ath11k_peer_assoc_h_basic(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_crypto(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_rates(ar, vif, sta, arg);
++	ath11k_peer_assoc_h_phymode(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_ht(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_vht(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_he(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_qos(ar, vif, sta, arg);
+-	ath11k_peer_assoc_h_phymode(ar, vif, sta, arg);
+ 	ath11k_peer_assoc_h_smps(sta, arg);
+ 
+ 	/* TODO: amsdu_disable req? */
+@@ -4433,11 +4503,6 @@ ath11k_create_vht_cap(struct ath11k *ar,
+ 
+ 	ath11k_set_vht_txbf_cap(ar, &vht_cap.cap);
+ 
+-	/* TODO: Enable back VHT160 mode once association issues are fixed */
+-	/* Disabling VHT160 and VHT80+80 modes */
+-	vht_cap.cap &= ~IEEE80211_VHT_CAP_SUPP_CHAN_WIDTH_MASK;
+-	vht_cap.cap &= ~IEEE80211_VHT_CAP_SHORT_GI_160;
+-
+ 	rxmcs_map = 0;
+ 	txmcs_map = 0;
+ 	for (i = 0; i < 8; i++) {
+@@ -7355,7 +7420,9 @@ static int ath11k_mac_setup_iface_combin
+ 	combinations[0].radar_detect_widths = BIT(NL80211_CHAN_WIDTH_20_NOHT) |
+ 						BIT(NL80211_CHAN_WIDTH_20) |
+ 						BIT(NL80211_CHAN_WIDTH_40) |
+-						BIT(NL80211_CHAN_WIDTH_80);
++						BIT(NL80211_CHAN_WIDTH_80) |
++						BIT(NL80211_CHAN_WIDTH_80P80) |
++						BIT(NL80211_CHAN_WIDTH_160);
+ 
+ 	ar->hw->wiphy->iface_combinations = combinations;
+ 	ar->hw->wiphy->n_iface_combinations = 1;
+@@ -7494,6 +7561,10 @@ static int __ath11k_mac_register(struct
+ 	ieee80211_hw_set(ar->hw, SUPPORTS_TX_FRAG);
+ 	ieee80211_hw_set(ar->hw, REPORTS_LOW_ACK);
+ 	ieee80211_hw_set(ar->hw, SUPPORTS_TX_ENCAP_OFFLOAD);
++
++	if (cap->nss_ratio_enabled)
++		ieee80211_hw_set(ar->hw, SUPPORTS_VHT_EXT_NSS_BW);
++
+ 	if (ht_cap & WMI_HT_CAP_ENABLED) {
+ 		ieee80211_hw_set(ar->hw, AMPDU_AGGREGATION);
+ 		ieee80211_hw_set(ar->hw, TX_AMPDU_SETUP_IN_HW);
+--- a/drivers/net/wireless/ath/ath11k/mac.h
++++ b/drivers/net/wireless/ath/ath11k/mac.h
+@@ -115,6 +115,9 @@ struct ath11k_generic_iter {
+ #define WMI_MAX_SPATIAL_STREAM			3
+ 
+ #define ATH11K_CHAN_WIDTH_NUM			8
++#define ATH11K_BW_NSS_MAP_ENABLE		BIT(31)
++#define ATH11K_PEER_RX_NSS_160MHZ		GENMASK(2, 0)
++#define ATH11K_PEER_RX_NSS_80_80MHZ		GENMASK(5, 3)
+ 
+ #define ATH11K_OBSS_PD_MAX_THRESHOLD			-82
+ #define ATH11K_OBSS_PD_NON_SRG_MAX_THRESHOLD		-62
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -360,6 +360,10 @@ ath11k_pull_mac_phy_cap_svc_ready_ext(st
+ 		pdev_cap->he_mcs = mac_phy_caps->he_supp_mcs_5g;
+ 		pdev_cap->tx_chain_mask = mac_phy_caps->tx_chain_mask_5g;
+ 		pdev_cap->rx_chain_mask = mac_phy_caps->rx_chain_mask_5g;
++		pdev_cap->nss_ratio_enabled =
++			WMI_NSS_RATIO_ENABLE_DISABLE_GET(mac_phy_caps->nss_ratio);
++		pdev_cap->nss_ratio_info =
++			WMI_NSS_RATIO_INFO_GET(mac_phy_caps->nss_ratio);
+ 	} else {
+ 		return -EINVAL;
+ 	}
+@@ -783,14 +787,26 @@ int ath11k_wmi_vdev_down(struct ath11k *
+ static void ath11k_wmi_put_wmi_channel(struct wmi_channel *chan,
+ 				       struct wmi_vdev_start_req_arg *arg)
+ {
++	u32 center_freq1 = arg->channel.band_center_freq1;
++
+ 	memset(chan, 0, sizeof(*chan));
+ 
+ 	chan->mhz = arg->channel.freq;
+ 	chan->band_center_freq1 = arg->channel.band_center_freq1;
+-	if (arg->channel.mode == MODE_11AC_VHT80_80)
++
++	if (arg->channel.mode == MODE_11AX_HE160) {
++		if (arg->channel.freq > arg->channel.band_center_freq1)
++			chan->band_center_freq1 = center_freq1 + 40;
++		else
++			chan->band_center_freq1 = center_freq1 - 40;
++
++		chan->band_center_freq2 = arg->channel.band_center_freq1;
++
++	} else if (arg->channel.mode == MODE_11AC_VHT80_80) {
+ 		chan->band_center_freq2 = arg->channel.band_center_freq2;
+-	else
++	} else {
+ 		chan->band_center_freq2 = 0;
++	}
+ 
+ 	chan->info |= FIELD_PREP(WMI_CHAN_INFO_MODE, arg->channel.mode);
+ 	if (arg->channel.passive)
+--- a/drivers/net/wireless/ath/ath11k/wmi.h
++++ b/drivers/net/wireless/ath/ath11k/wmi.h
+@@ -2146,6 +2146,24 @@ enum wmi_direct_buffer_module {
+ 	WMI_DIRECT_BUF_MAX
+ };
+ 
++/* enum wmi_nss_ratio - NSS ratio received from FW during service ready ext
++ *			event
++ * WMI_NSS_RATIO_1BY2_NSS -Max nss of 160MHz is equals to half of the max nss
++ *			   of 80MHz
++ * WMI_NSS_RATIO_3BY4_NSS - Max nss of 160MHz is equals to 3/4 of the max nss
++ *			    of 80MHz
++ * WMI_NSS_RATIO_1_NSS - Max nss of 160MHz is equals to the max nss of 80MHz
++ * WMI_NSS_RATIO_2_NSS - Max nss of 160MHz is equals to two times the max
++ *			 nss of 80MHz
++ */
++
++enum wmi_nss_ratio {
++	WMI_NSS_RATIO_1BY2_NSS = 0x0,
++	WMI_NSS_RATIO_3BY4_NSS = 0x1,
++	WMI_NSS_RATIO_1_NSS = 0x2,
++	WMI_NSS_RATIO_2_NSS = 0x3,
++};
++
+ struct wmi_host_pdev_band_to_mac {
+ 	u32 pdev_id;
+ 	u32 start_freq;
+@@ -2390,6 +2408,12 @@ struct wmi_hw_mode_capabilities {
+ } __packed;
+ 
+ #define WMI_MAX_HECAP_PHY_SIZE                 (3)
++#define WMI_NSS_RATIO_ENABLE_DISABLE_BITPOS    BIT(0)
++#define WMI_NSS_RATIO_ENABLE_DISABLE_GET(_val) \
++	FIELD_GET(WMI_NSS_RATIO_ENABLE_DISABLE_BITPOS, _val)
++#define WMI_NSS_RATIO_INFO_BITPOS              GENMASK(4, 1)
++#define WMI_NSS_RATIO_INFO_GET(_val) \
++	FIELD_GET(WMI_NSS_RATIO_INFO_BITPOS, _val)
+ 
+ struct wmi_mac_phy_capabilities {
+ 	u32 hw_mode_id;
+@@ -2423,6 +2447,12 @@ struct wmi_mac_phy_capabilities {
+ 	u32 he_cap_info_2g_ext;
+ 	u32 he_cap_info_5g_ext;
+ 	u32 he_cap_info_internal;
++	u32 wireless_modes;
++	u32 low_2ghz_chan_freq;
++	u32 high_2ghz_chan_freq;
++	u32 low_5ghz_chan_freq;
++	u32 high_5ghz_chan_freq;
++	u32 nss_ratio;
+ } __packed;
+ 
+ struct wmi_hal_reg_capabilities_ext {

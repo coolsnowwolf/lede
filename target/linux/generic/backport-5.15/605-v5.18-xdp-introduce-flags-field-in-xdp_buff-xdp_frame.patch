@@ -1,0 +1,97 @@
+commit 2e88d4ff03013937028f5397268b21e10cf68713
+Author: Lorenzo Bianconi <lorenzo@kernel.org>
+Date:   Fri Jan 21 11:09:45 2022 +0100
+
+    xdp: introduce flags field in xdp_buff/xdp_frame
+    
+    Introduce flags field in xdp_frame and xdp_buffer data structures
+    to define additional buffer features. At the moment the only
+    supported buffer feature is frags bit (XDP_FLAGS_HAS_FRAGS).
+    frags bit is used to specify if this is a linear buffer
+    (XDP_FLAGS_HAS_FRAGS not set) or a frags frame (XDP_FLAGS_HAS_FRAGS
+    set). In the latter case the driver is expected to initialize the
+    skb_shared_info structure at the end of the first buffer to link together
+    subsequent buffers belonging to the same frame.
+    
+    Acked-by: Toke Hoiland-Jorgensen <toke@redhat.com>
+    Acked-by: John Fastabend <john.fastabend@gmail.com>
+    Acked-by: Jesper Dangaard Brouer <brouer@redhat.com>
+    Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+    Link: https://lore.kernel.org/r/e389f14f3a162c0a5bc6a2e1aa8dd01a90be117d.1642758637.git.lorenzo@kernel.org
+    Signed-off-by: Alexei Starovoitov <ast@kernel.org>
+
+--- a/include/net/xdp.h
++++ b/include/net/xdp.h
+@@ -66,6 +66,10 @@ struct xdp_txq_info {
+ 	struct net_device *dev;
+ };
+ 
++enum xdp_buff_flags {
++	XDP_FLAGS_HAS_FRAGS	= BIT(0), /* non-linear xdp buff */
++};
++
+ struct xdp_buff {
+ 	void *data;
+ 	void *data_end;
+@@ -74,13 +78,30 @@ struct xdp_buff {
+ 	struct xdp_rxq_info *rxq;
+ 	struct xdp_txq_info *txq;
+ 	u32 frame_sz; /* frame size to deduce data_hard_end/reserved tailroom*/
++	u32 flags; /* supported values defined in xdp_buff_flags */
+ };
+ 
++static __always_inline bool xdp_buff_has_frags(struct xdp_buff *xdp)
++{
++	return !!(xdp->flags & XDP_FLAGS_HAS_FRAGS);
++}
++
++static __always_inline void xdp_buff_set_frags_flag(struct xdp_buff *xdp)
++{
++	xdp->flags |= XDP_FLAGS_HAS_FRAGS;
++}
++
++static __always_inline void xdp_buff_clear_frags_flag(struct xdp_buff *xdp)
++{
++	xdp->flags &= ~XDP_FLAGS_HAS_FRAGS;
++}
++
+ static __always_inline void
+ xdp_init_buff(struct xdp_buff *xdp, u32 frame_sz, struct xdp_rxq_info *rxq)
+ {
+ 	xdp->frame_sz = frame_sz;
+ 	xdp->rxq = rxq;
++	xdp->flags = 0;
+ }
+ 
+ static __always_inline void
+@@ -122,8 +143,14 @@ struct xdp_frame {
+ 	 */
+ 	struct xdp_mem_info mem;
+ 	struct net_device *dev_rx; /* used by cpumap */
++	u32 flags; /* supported values defined in xdp_buff_flags */
+ };
+ 
++static __always_inline bool xdp_frame_has_frags(struct xdp_frame *frame)
++{
++	return !!(frame->flags & XDP_FLAGS_HAS_FRAGS);
++}
++
+ #define XDP_BULK_QUEUE_SIZE	16
+ struct xdp_frame_bulk {
+ 	int count;
+@@ -180,6 +207,7 @@ void xdp_convert_frame_to_buff(struct xd
+ 	xdp->data_end = frame->data + frame->len;
+ 	xdp->data_meta = frame->data - frame->metasize;
+ 	xdp->frame_sz = frame->frame_sz;
++	xdp->flags = frame->flags;
+ }
+ 
+ static inline
+@@ -206,6 +234,7 @@ int xdp_update_frame_from_buff(struct xd
+ 	xdp_frame->headroom = headroom - sizeof(*xdp_frame);
+ 	xdp_frame->metasize = metasize;
+ 	xdp_frame->frame_sz = xdp->frame_sz;
++	xdp_frame->flags = xdp->flags;
+ 
+ 	return 0;
+ }

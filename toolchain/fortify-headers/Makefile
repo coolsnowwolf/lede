@@ -11,7 +11,7 @@ PKG_NAME:=fortify-headers
 PKG_VERSION:=1.1
 PKG_RELEASE=1
 
-PKG_SOURCE_URL:=http://dl.2f30.org/releases
+PKG_SOURCE_URL:=https://dl.2f30.org/releases
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_HASH:=6ba5d860a2d2ba4c3346924b93930c34856eafe148bdbdf271ecab8065201fb6
 

@@ -1,0 +1,135 @@
+From c53d249df9a75f77f5d0abb986a8913bc13070d0 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 31 Aug 2022 19:05:09 +0800
+Subject: [PATCH 24/32] clk: mediatek: add infrasys clock mux support
+
+This patch adds infrasys clock mux support for mediatek clock drivers.
+
+Reviewed-by: Simon Glass <sjg@chromium.org>
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/clk/mediatek/clk-mtk.c | 71 ++++++++++++++++++++++++++++++++++
+ drivers/clk/mediatek/clk-mtk.h |  4 +-
+ 2 files changed, 74 insertions(+), 1 deletion(-)
+
+--- a/drivers/clk/mediatek/clk-mtk.c
++++ b/drivers/clk/mediatek/clk-mtk.c
+@@ -303,6 +303,24 @@ static ulong mtk_topckgen_get_factor_rat
+ 	return mtk_factor_recalc_rate(fdiv, rate);
+ }
+ 
++static ulong mtk_infrasys_get_factor_rate(struct clk *clk, u32 off)
++{
++	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
++	const struct mtk_fixed_factor *fdiv = &priv->tree->fdivs[off];
++	ulong rate;
++
++	switch (fdiv->flags & CLK_PARENT_MASK) {
++	case CLK_PARENT_TOPCKGEN:
++		rate = mtk_clk_find_parent_rate(clk, fdiv->parent,
++						priv->parent);
++		break;
++	default:
++		rate = mtk_clk_find_parent_rate(clk, fdiv->parent, NULL);
++	}
++
++	return mtk_factor_recalc_rate(fdiv, rate);
++}
++
+ static ulong mtk_topckgen_get_mux_rate(struct clk *clk, u32 off)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+@@ -331,6 +349,33 @@ static ulong mtk_topckgen_get_mux_rate(s
+ 	return priv->tree->xtal_rate;
+ }
+ 
++static ulong mtk_infrasys_get_mux_rate(struct clk *clk, u32 off)
++{
++	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
++	const struct mtk_composite *mux = &priv->tree->muxes[off];
++	u32 index;
++
++	index = readl(priv->base + mux->mux_reg);
++	index &= mux->mux_mask << mux->mux_shift;
++	index = index >> mux->mux_shift;
++
++	if (mux->parent[index] > 0 ||
++	    (mux->parent[index] == CLK_XTAL &&
++	     priv->tree->flags & CLK_BYPASS_XTAL)) {
++		switch (mux->flags & CLK_PARENT_MASK) {
++		case CLK_PARENT_TOPCKGEN:
++			return mtk_clk_find_parent_rate(clk, mux->parent[index],
++							priv->parent);
++			break;
++		default:
++			return mtk_clk_find_parent_rate(clk, mux->parent[index],
++							NULL);
++			break;
++		}
++	}
++	return 0;
++}
++
+ static ulong mtk_topckgen_get_rate(struct clk *clk)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+@@ -345,6 +390,25 @@ static ulong mtk_topckgen_get_rate(struc
+ 						 priv->tree->muxes_offs);
+ }
+ 
++static ulong mtk_infrasys_get_rate(struct clk *clk)
++{
++	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
++
++	ulong rate;
++
++	if (clk->id < priv->tree->fdivs_offs) {
++		rate = priv->tree->fclks[clk->id].rate;
++	} else if (clk->id < priv->tree->muxes_offs) {
++		rate = mtk_infrasys_get_factor_rate(clk, clk->id -
++						    priv->tree->fdivs_offs);
++	} else {
++		rate = mtk_infrasys_get_mux_rate(clk, clk->id -
++						 priv->tree->muxes_offs);
++	}
++
++	return rate;
++}
++
+ static int mtk_clk_mux_enable(struct clk *clk)
+ {
+ 	struct mtk_clk_priv *priv = dev_get_priv(clk->dev);
+@@ -493,6 +557,13 @@ const struct clk_ops mtk_clk_topckgen_op
+ 	.set_parent = mtk_common_clk_set_parent,
+ };
+ 
++const struct clk_ops mtk_clk_infrasys_ops = {
++	.enable = mtk_clk_mux_enable,
++	.disable = mtk_clk_mux_disable,
++	.get_rate = mtk_infrasys_get_rate,
++	.set_parent = mtk_common_clk_set_parent,
++};
++
+ const struct clk_ops mtk_clk_gate_ops = {
+ 	.enable = mtk_clk_gate_enable,
+ 	.disable = mtk_clk_gate_disable,
+--- a/drivers/clk/mediatek/clk-mtk.h
++++ b/drivers/clk/mediatek/clk-mtk.h
+@@ -28,7 +28,8 @@
+ 
+ #define CLK_PARENT_APMIXED		BIT(4)
+ #define CLK_PARENT_TOPCKGEN		BIT(5)
+-#define CLK_PARENT_MASK			GENMASK(5, 4)
++#define CLK_PARENT_INFRASYS		BIT(6)
++#define CLK_PARENT_MASK			GENMASK(6, 4)
+ 
+ #define ETHSYS_HIFSYS_RST_CTRL_OFS	0x34
+ 
+@@ -220,6 +221,7 @@ struct mtk_cg_priv {
+ 
+ extern const struct clk_ops mtk_clk_apmixedsys_ops;
+ extern const struct clk_ops mtk_clk_topckgen_ops;
++extern const struct clk_ops mtk_clk_infrasys_ops;
+ extern const struct clk_ops mtk_clk_gate_ops;
+ 
+ int mtk_common_clk_init(struct udevice *dev,

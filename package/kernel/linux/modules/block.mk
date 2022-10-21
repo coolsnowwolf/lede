@@ -65,7 +65,7 @@ define KernelPackage/ata-ahci-platform
     $(LINUX_DIR)/drivers/ata/ahci_platform.ko \
     $(LINUX_DIR)/drivers/ata/libahci_platform.ko
   AUTOLOAD:=$(call AutoLoad,40,libahci libahci_platform ahci_platform,1)
-  $(call AddDepends/ata,@TARGET_ipq806x||TARGET_layerscape||TARGET_sunxi)
+  $(call AddDepends/ata,@TARGET_ipq806x||TARGET_layerscape||TARGET_rockchip||TARGET_sunxi)
 endef
 
 define KernelPackage/ata-ahci-platform/description
@@ -88,21 +88,6 @@ define KernelPackage/ata-artop/description
 endef
 
 $(eval $(call KernelPackage,ata-artop))
-
-
-define KernelPackage/ata-marvell-sata
-  TITLE:=Marvell Serial ATA support
-  KCONFIG:=CONFIG_SATA_MV
-  FILES:=$(LINUX_DIR)/drivers/ata/sata_mv.ko
-  AUTOLOAD:=$(call AutoLoad,41,sata_mv,1)
-  $(call AddDepends/ata)
-endef
-
-define KernelPackage/ata-marvell-sata/description
- SATA support for marvell chipsets
-endef
-
-$(eval $(call KernelPackage,ata-marvell-sata))
 
 
 define KernelPackage/ata-nvidia-sata
@@ -506,6 +491,29 @@ define KernelPackage/nbd/description
 endef
 
 $(eval $(call KernelPackage,nbd))
+
+
+define KernelPackage/nvme
+  SUBMENU:=$(BLOCK_MENU)
+  TITLE:=NVM Express block device
+  DEPENDS:=@PCI_SUPPORT
+  KCONFIG:= \
+	CONFIG_NVME_CORE \
+	CONFIG_BLK_DEV_NVME \
+	CONFIG_NVME_MULTIPATH=n \
+	CONFIG_NVME_HWMON=n
+  FILES:= \
+	$(LINUX_DIR)/drivers/nvme/host/nvme-core.ko \
+	$(LINUX_DIR)/drivers/nvme/host/nvme.ko
+  AUTOLOAD:=$(call AutoLoad,30,nvme-core nvme)
+endef
+
+define KernelPackage/nvme/description
+ Kernel module for NVM Express solid state drives directly
+ connected to the PCI or PCI Express bus.
+endef
+
+$(eval $(call KernelPackage,nvme))
 
 
 define KernelPackage/scsi-core

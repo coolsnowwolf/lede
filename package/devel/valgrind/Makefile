@@ -12,7 +12,7 @@ PKG_VERSION:=3.16.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=http://sourceware.org/pub/valgrind/
+PKG_SOURCE_URL:=https://sourceware.org/pub/valgrind/
 PKG_HASH:=c91f3a2f7b02db0f3bc99479861656154d241d2fdb265614ba918cc6720a33ca
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>

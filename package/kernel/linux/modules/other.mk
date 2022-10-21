@@ -40,6 +40,8 @@ define KernelPackage/bluetooth
 	CONFIG_BT_BNEP \
 	CONFIG_BT_HCIBTUSB \
 	CONFIG_BT_HCIBTUSB_BCM=n \
+	CONFIG_BT_HCIBTUSB_MTK=y \
+	CONFIG_BT_HCIBTUSB_RTL=n \
 	CONFIG_BT_HCIUART \
 	CONFIG_BT_HCIUART_BCM=n \
 	CONFIG_BT_HCIUART_INTEL=n \
@@ -374,23 +376,6 @@ define KernelPackage/mmc/description
 endef
 
 $(eval $(call KernelPackage,mmc))
-
-
-define KernelPackage/mvsdio
-  SUBMENU:=$(OTHER_MENU)
-  TITLE:=Marvell MMC/SD/SDIO host driver
-  DEPENDS:=+kmod-mmc @TARGET_kirkwood
-  KCONFIG:= CONFIG_MMC_MVSDIO
-  FILES:= \
-	$(LINUX_DIR)/drivers/mmc/host/mvsdio.ko
-  AUTOLOAD:=$(call AutoProbe,mvsdio,1)
-endef
-
-define KernelPackage/mvsdio/description
- Kernel support for the Marvell SDIO host driver.
-endef
-
-$(eval $(call KernelPackage,mvsdio))
 
 
 define KernelPackage/sdhci
@@ -1151,8 +1136,8 @@ $(eval $(call KernelPackage,keys-trusted))
 define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
-  DEPENDS:= +kmod-random-core +(LINUX_5_15):kmod-asn1-decoder \
-	  +(LINUX_5_15):kmod-asn1-encoder +(LINUX_5_15):kmod-oid-registry
+  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_5_19||LINUX_6_0):kmod-asn1-decoder \
+	  +(LINUX_5_15||LINUX_5_19||LINUX_6_0):kmod-asn1-encoder +(LINUX_5_15||LINUX_5_19||LINUX_6_0):kmod-oid-registry
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
@@ -1298,12 +1283,14 @@ $(eval $(call KernelPackage,qcom-qmi-helpers))
 define KernelPackage/mhi
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Modem Host Interface (MHI) bus
-  DEPENDS:=@LINUX_5_15
+  DEPENDS:=@(LINUX_5_15||LINUX_5_19||LINUX_6_0)
   KCONFIG:=CONFIG_MHI_BUS \
            CONFIG_MHI_BUS_DEBUG=y \
            CONFIG_MHI_BUS_PCI_GENERIC=n \
            CONFIG_MHI_NET=n
-  FILES:=$(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko
+  FILES:= \
+      $(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko@lt5.18  \
+      $(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,mhi)
 endef
 

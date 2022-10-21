@@ -1,16 +1,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mt76
-PKG_RELEASE=4
+PKG_RELEASE=5
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-06-02
-PKG_SOURCE_VERSION:=1d8af168e86fa4087351b7d10572accd5dee4d36
-PKG_MIRROR_HASH:=5ffd53150c57f378a3ff90e5acc15b9c3321916c4cf5a5698cff03469e6fdab4
+PKG_SOURCE_DATE:=2022-10-05
+PKG_SOURCE_VERSION:=269df4b01f27518e9bdbf12dca15baa1cd899030
+PKG_MIRROR_HASH:=3d10ee0db0dd4b9cedde7a250124bfc14feb216b430b2b01811990587b71da41
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_USE_NINJA:=0
@@ -226,6 +226,12 @@ define KernelPackage/mt7915e
   AUTOLOAD:=$(call AutoProbe,mt7915e)
 endef
 
+define KernelPackage/mt7986-firmware
+  $(KernelPackage/mt76-default)
+  DEPENDS:=@TARGET_mediatek_filogic
+  TITLE:=MediaTek MT7986 firmware
+endef
+
 define KernelPackage/mt7921-common
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7615 wireless driver common code
@@ -343,6 +349,10 @@ ifdef CONFIG_PACKAGE_kmod-mt7663u
 endif
 ifdef CONFIG_PACKAGE_kmod-mt7915e
   PKG_MAKE_FLAGS += CONFIG_MT7915E=m
+  ifdef CONFIG_TARGET_mediatek_filogic
+    PKG_MAKE_FLAGS += CONFIG_MT7986_WMAC=y
+    NOSTDINC_FLAGS += -DCONFIG_MT7986_WMAC
+  endif
 endif
 ifdef CONFIG_PACKAGE_kmod-mt7921-common
   PKG_MAKE_FLAGS += CONFIG_MT7921_COMMON=m
@@ -447,6 +457,23 @@ define KernelPackage/mt7915e/install
 		$(PKG_BUILD_DIR)/firmware/mt7915_wa.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7915_wm.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7915_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wm.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_eeprom.bin \
+		$(1)/lib/firmware/mediatek
+endef
+
+define KernelPackage/mt7986-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7986_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_wm_mt7975.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_wm.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_rom_patch_mt7975.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_eeprom_mt7975_dual.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7986_eeprom_mt7976_dual.bin \
 		$(1)/lib/firmware/mediatek
 endef
 
@@ -455,6 +482,8 @@ define KernelPackage/mt7921e/install
 	cp \
 		$(PKG_BUILD_DIR)/firmware/WIFI_MT7961_patch_mcu_1_2_hdr.bin \
 		$(PKG_BUILD_DIR)/firmware/WIFI_RAM_CODE_MT7961_1.bin \
+		$(PKG_BUILD_DIR)/firmware/WIFI_MT7922_patch_mcu_1_1_hdr.bin \
+		$(PKG_BUILD_DIR)/firmware/WIFI_RAM_CODE_MT7922_1.bin \
 		$(1)/lib/firmware/mediatek
 endef
 
@@ -485,6 +514,7 @@ $(eval $(call KernelPackage,mt7663-usb-sdio))
 $(eval $(call KernelPackage,mt7663u))
 $(eval $(call KernelPackage,mt7663s))
 $(eval $(call KernelPackage,mt7915e))
+$(eval $(call KernelPackage,mt7986-firmware))
 $(eval $(call KernelPackage,mt7921-common))
 $(eval $(call KernelPackage,mt7921u))
 $(eval $(call KernelPackage,mt7921s))

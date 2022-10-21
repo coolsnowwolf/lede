@@ -1,0 +1,103 @@
+From 997dc60f0855b39aec0400511b37d65781da9255 Mon Sep 17 00:00:00 2001
+From: Karthikeyan Periyasamy <quic_periyasa@quicinc.com>
+Date: Mon, 28 Feb 2022 10:24:39 +0530
+Subject: [PATCH] ath11k: Refactor the peer delete
+
+Introduce new helper function for peer delete to reuse this logic
+in all peer cleanup procedures. Found this in code review.
+Also this change is applicable for all the platform.
+
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.5.0.1-01067-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Karthikeyan Periyasamy <quic_periyasa@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/1646024079-26391-1-git-send-email-quic_periyasa@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/mac.c  | 16 +++----------
+ drivers/net/wireless/ath/ath11k/peer.c | 31 +++++++++++++-------------
+ 2 files changed, 19 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6387,22 +6387,12 @@ static int ath11k_mac_op_add_interface(s
+ 
+ err_peer_del:
+ 	if (arvif->vdev_type == WMI_VDEV_TYPE_AP) {
+-		reinit_completion(&ar->peer_delete_done);
+-
+-		fbret = ath11k_wmi_send_peer_delete_cmd(ar, vif->addr,
+-							arvif->vdev_id);
++		fbret = ath11k_peer_delete(ar, arvif->vdev_id, vif->addr);
+ 		if (fbret) {
+-			ath11k_warn(ar->ab, "failed to delete peer vdev_id %d addr %pM\n",
+-				    arvif->vdev_id, vif->addr);
++			ath11k_warn(ar->ab, "fallback fail to delete peer addr %pM vdev_id %d ret %d\n",
++				    vif->addr, arvif->vdev_id, fbret);
+ 			goto err;
+ 		}
+-
+-		fbret = ath11k_wait_for_peer_delete_done(ar, arvif->vdev_id,
+-							 vif->addr);
+-		if (fbret)
+-			goto err;
+-
+-		ar->num_peers--;
+ 	}
+ 
+ err_vdev_del:
+--- a/drivers/net/wireless/ath/ath11k/peer.c
++++ b/drivers/net/wireless/ath/ath11k/peer.c
+@@ -217,7 +217,7 @@ int ath11k_wait_for_peer_delete_done(str
+ 	return 0;
+ }
+ 
+-int ath11k_peer_delete(struct ath11k *ar, u32 vdev_id, u8 *addr)
++static int __ath11k_peer_delete(struct ath11k *ar, u32 vdev_id, const u8 *addr)
+ {
+ 	int ret;
+ 
+@@ -237,6 +237,19 @@ int ath11k_peer_delete(struct ath11k *ar
+ 	if (ret)
+ 		return ret;
+ 
++	return 0;
++}
++
++int ath11k_peer_delete(struct ath11k *ar, u32 vdev_id, u8 *addr)
++{
++	int ret;
++
++	lockdep_assert_held(&ar->conf_mutex);
++
++	ret = __ath11k_peer_delete(ar, vdev_id, addr);
++	if (ret)
++		return ret;
++
+ 	ar->num_peers--;
+ 
+ 	return 0;
+@@ -323,22 +336,10 @@ int ath11k_peer_create(struct ath11k *ar
+ 	return 0;
+ 
+ cleanup:
+-	reinit_completion(&ar->peer_delete_done);
+-
+-	fbret = ath11k_wmi_send_peer_delete_cmd(ar, param->peer_addr,
+-						param->vdev_id);
+-	if (fbret) {
+-		ath11k_warn(ar->ab, "failed to delete peer vdev_id %d addr %pM\n",
+-			    param->vdev_id, param->peer_addr);
+-		goto exit;
+-	}
+-
+-	fbret = ath11k_wait_for_peer_delete_done(ar, param->vdev_id,
+-						 param->peer_addr);
++	fbret = __ath11k_peer_delete(ar, param->vdev_id, param->peer_addr);
+ 	if (fbret)
+-		ath11k_warn(ar->ab, "failed wait for peer %pM delete done id %d fallback ret %d\n",
++		ath11k_warn(ar->ab, "failed peer %pM delete vdev_id %d fallback ret %d\n",
+ 			    param->peer_addr, param->vdev_id, fbret);
+ 
+-exit:
+ 	return ret;
+ }

@@ -1,0 +1,141 @@
+From 6c8c3ae8ce7813a315f4729865f99d0d318f678a Mon Sep 17 00:00:00 2001
+From: Jens Axboe <axboe@kernel.dk>
+Date: Wed, 16 Feb 2022 12:17:58 -0700
+Subject: [PATCH 065/171] apple-nvme: defer cache flushes by a specified amount
+
+Cache flushes on the M1 nvme are really slow, taking 17-18 msec to
+complete. This can slow down workloads considerably, pure random writes
+end up being bound by the flush latency and hence run at 55-60 IOPS.
+
+Add a deferred flush work around to provide better performance, at a
+minimal risk. By default, flushes are delayed at most 1 second, but this
+is configurable.
+
+With this work-around, a pure random write workload runs at ~12K IOPS
+rather than 56 IOPS.
+
+Signed-off-by: Jens Axboe <axboe@kernel.dk>
+---
+ drivers/nvme/host/apple.c | 69 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 69 insertions(+)
+
+diff --git a/drivers/nvme/host/apple.c b/drivers/nvme/host/apple.c
+index d702d7d60235..46294f99a1b0 100644
+--- a/drivers/nvme/host/apple.c
++++ b/drivers/nvme/host/apple.c
+@@ -195,8 +195,20 @@ struct apple_nvme {
+ 
+ 	int irq;
+ 	spinlock_t lock;
++
++	/*
++	 * Delayed cache flush handling state
++	 */
++	struct nvme_ns *flush_ns;
++	unsigned long flush_interval;
++	unsigned long last_flush;
++	struct delayed_work flush_dwork;
+ };
+ 
++unsigned int flush_interval = 1000;
++module_param(flush_interval, uint, 0644);
++MODULE_PARM_DESC(flush_interval, "Grace period in msecs between flushes");
++
+ static_assert(sizeof(struct nvme_command) == 64);
+ static_assert(sizeof(struct apple_nvmmu_tcb) == 128);
+ 
+@@ -729,6 +741,26 @@ static int apple_nvme_remove_sq(struct apple_nvme *anv)
+ 	return nvme_submit_sync_cmd(anv->ctrl.admin_q, &c, NULL, 0);
+ }
+ 
++static bool apple_nvme_delayed_flush(struct apple_nvme *anv, struct nvme_ns *ns,
++				     struct request *req)
++{
++	if (!anv->flush_interval || req_op(req) != REQ_OP_FLUSH)
++		return false;
++	if (delayed_work_pending(&anv->flush_dwork))
++		return true;
++	if (time_before(jiffies, anv->last_flush + anv->flush_interval)) {
++		kblockd_mod_delayed_work_on(WORK_CPU_UNBOUND, &anv->flush_dwork,
++						anv->flush_interval);
++		if (WARN_ON_ONCE(anv->flush_ns && anv->flush_ns != ns))
++			goto out;
++		anv->flush_ns = ns;
++		return true;
++	}
++out:
++	anv->last_flush = jiffies;
++	return false;
++}
++
+ static blk_status_t apple_nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
+ 					const struct blk_mq_queue_data *bd)
+ {
+@@ -764,6 +796,12 @@ static blk_status_t apple_nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
+ 	}
+ 
+ 	blk_mq_start_request(req);
++
++	if (apple_nvme_delayed_flush(anv, ns, req)) {
++		blk_mq_complete_request(req);
++		return BLK_STS_OK;
++	}
++
+ 	apple_nvme_submit_cmd(q, cmnd);
+ 	return BLK_STS_OK;
+ 
+@@ -1366,6 +1404,28 @@ static int apple_nvme_attach_genpd(struct apple_nvme *anv)
+ 	return 0;
+ }
+ 
++static void apple_nvme_flush_work(struct work_struct *work)
++{
++	struct nvme_command c = { };
++	struct apple_nvme *anv;
++	struct nvme_ns *ns;
++	int err;
++
++	anv = container_of(work, struct apple_nvme, flush_dwork.work);
++	ns = anv->flush_ns;
++	if (WARN_ON_ONCE(!ns))
++		return;
++
++	c.common.opcode = nvme_cmd_flush;
++	c.common.nsid = cpu_to_le32(anv->flush_ns->head->ns_id);
++	err = nvme_submit_sync_cmd(ns->queue, &c, NULL, 0);
++	if (err) {
++		dev_err(anv->dev, "Deferred flush failed: %d\n", err);
++	} else {
++		anv->last_flush = jiffies;
++	}
++}
++
+ static int apple_nvme_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -1508,6 +1568,14 @@ static int apple_nvme_probe(struct platform_device *pdev)
+ 		goto put_dev;
+ 	}
+ 
++	if (flush_interval) {
++		anv->flush_interval = msecs_to_jiffies(flush_interval);
++		anv->flush_ns = NULL;
++		anv->last_flush = jiffies - anv->flush_interval;
++	}
++
++	INIT_DELAYED_WORK(&anv->flush_dwork, apple_nvme_flush_work);
++
+ 	nvme_reset_ctrl(&anv->ctrl);
+ 	async_schedule(apple_nvme_async_probe, anv);
+ 
+@@ -1541,6 +1609,7 @@ static void apple_nvme_shutdown(struct platform_device *pdev)
+ {
+ 	struct apple_nvme *anv = platform_get_drvdata(pdev);
+ 
++	flush_delayed_work(&anv->flush_dwork);
+ 	apple_nvme_disable(anv, true);
+ 	if (apple_rtkit_is_running(anv->rtk))
+ 		apple_rtkit_shutdown(anv->rtk);
+-- 
+2.34.1
+

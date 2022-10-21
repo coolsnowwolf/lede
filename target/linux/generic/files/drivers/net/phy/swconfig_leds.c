@@ -85,7 +85,11 @@ swconfig_trig_update_port_mask(struct led_trigger *trigger)
 	sw_trig = (void *) trigger;
 
 	port_mask = 0;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 15, 0)
+	spin_lock(&trigger->leddev_list_lock);
+#else
 	read_lock(&trigger->leddev_list_lock);
+#endif
 	list_for_each(entry, &trigger->led_cdevs) {
 		struct led_classdev *led_cdev;
 		struct swconfig_trig_data *trig_data;
@@ -98,8 +102,11 @@ swconfig_trig_update_port_mask(struct led_trigger *trigger)
 			read_unlock(&trig_data->lock);
 		}
 	}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 15, 0)
+	spin_unlock(&trigger->leddev_list_lock);
+#else
 	read_unlock(&trigger->leddev_list_lock);
-
+#endif
 	sw_trig->port_mask = port_mask;
 
 	if (port_mask)
@@ -418,14 +425,22 @@ swconfig_trig_update_leds(struct switch_led_trigger *sw_trig)
 	struct led_trigger *trigger;
 
 	trigger = &sw_trig->trig;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 15, 0)
+	spin_lock(&trigger->leddev_list_lock);
+#else
 	read_lock(&trigger->leddev_list_lock);
+#endif
 	list_for_each(entry, &trigger->led_cdevs) {
 		struct led_classdev *led_cdev;
 
 		led_cdev = list_entry(entry, struct led_classdev, trig_list);
 		swconfig_trig_led_event(sw_trig, led_cdev);
 	}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 15, 0)
+	spin_unlock(&trigger->leddev_list_lock);
+#else
 	read_unlock(&trigger->leddev_list_lock);
+#endif
 }
 
 static void

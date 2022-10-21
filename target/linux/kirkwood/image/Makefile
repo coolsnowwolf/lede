@@ -139,6 +139,15 @@ define Device/linksys_ea4500
 endef
 TARGET_DEVICES += linksys_ea4500
 
+define Device/Prafly_m8621t
+  DEVICE_VENDOR := Prafly
+  DEVICE_MODEL := m8621t
+  DEVICE_PACKAGES := kmod-ata-marvell-sata kmod-fs-ext4 kmod-switch-mvswe61xxx kmod-ata-core kmod-mmc kmod-mvsdio kmod-usb2
+  KERNEL_INSTALL := 1
+  SUPPORTED_DEVICES += m8621t
+endef
+TARGET_DEVICES += Prafly_m8621t
+
 define Device/raidsonic_ib-nas62x0
   DEVICE_VENDOR := RaidSonic
   DEVICE_MODEL := ICY BOX IB-NAS62x0

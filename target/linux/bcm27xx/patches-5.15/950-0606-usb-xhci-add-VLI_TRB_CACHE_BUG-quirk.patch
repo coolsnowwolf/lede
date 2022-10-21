@@ -1,0 +1,73 @@
+From a1d5ce866f2e2062246343af757c22e9abe4e844 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Mon, 13 Dec 2021 16:04:03 +0000
+Subject: [PATCH] usb: xhci: add VLI_TRB_CACHE_BUG quirk
+
+The VL805 fetches up to 4 transfer TRBs at a time. TRB reads don't cross
+a 64B boundary, and if a TRB is fetched and is not on a 64B boundary,
+the read is sized up to the next 64B boundary.
+
+However the VL805 implements a readahead prefetch for TRBs on a transfer
+ring. This fetches the next 64B after any TRB read has happened. Near
+the end of a ring segment, the prefetcher can read the first 64B of the
+next page in physical memory and this is where the behaviour causes a
+bug.
+
+The controller does not tag reads with which endpoint they are for, so
+if the start of the next page is a ring segment used by a victim
+endpoint, and the victim endpoint is about to fetch TRBs from the start
+of the segment, the victim endpoint will read from the prefetched data
+and not perform a read to main memory. If the data is stale, the ring
+cycle state bit may not be correct and the endpoint will silently halt.
+
+Adjust trbs_per_seg for transfer rings allocated for this controller.
+
+See https://github.com/raspberrypi/linux/issues/4685
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-mem.c | 11 +++++++++++
+ drivers/usb/host/xhci-pci.c |  1 +
+ drivers/usb/host/xhci.h     |  1 +
+ 3 files changed, 13 insertions(+)
+
+--- a/drivers/usb/host/xhci-mem.c
++++ b/drivers/usb/host/xhci-mem.c
+@@ -392,6 +392,17 @@ struct xhci_ring *xhci_ring_alloc(struct
+ 		return ring;
+ 
+ 	ring->trbs_per_seg = TRBS_PER_SEGMENT;
++	/*
++	 * The Via VL805 has a bug where cache readahead will fetch off the end
++	 * of a page if the Link TRB of a transfer ring is in the last 4 slots.
++	 * Where there are consecutive physical pages containing ring segments,
++	 * this can cause a desync between the controller's view of a ring
++	 * and the host.
++	 */
++	if (xhci->quirks & XHCI_VLI_TRB_CACHE_BUG &&
++	    type != TYPE_EVENT && type != TYPE_COMMAND)
++		ring->trbs_per_seg -= 4;
++
+ 	ret = xhci_alloc_segments_for_ring(xhci, &ring->first_seg,
+ 			&ring->last_seg, num_segs, ring->trbs_per_seg,
+ 			cycle_state, type, max_packet, flags);
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -305,6 +305,7 @@ static void xhci_pci_quirks(struct devic
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
+ 		xhci->quirks |= XHCI_EP_CTX_BROKEN_DCS;
+ 		xhci->quirks |= XHCI_AVOID_DQ_ON_LINK;
++		xhci->quirks |= XHCI_VLI_TRB_CACHE_BUG;
+ 	}
+ 
+ 	if (pdev->vendor == PCI_VENDOR_ID_ASMEDIA &&
+--- a/drivers/usb/host/xhci.h
++++ b/drivers/usb/host/xhci.h
+@@ -1905,6 +1905,7 @@ struct xhci_hcd {
+ #define XHCI_BROKEN_D3COLD	BIT_ULL(41)
+ #define XHCI_EP_CTX_BROKEN_DCS	BIT_ULL(42)
+ #define XHCI_AVOID_DQ_ON_LINK	BIT_ULL(43)
++#define XHCI_VLI_TRB_CACHE_BUG	BIT_ULL(44)
+ 
+ 	unsigned int		num_active_eps;
+ 	unsigned int		limit_active_eps;
