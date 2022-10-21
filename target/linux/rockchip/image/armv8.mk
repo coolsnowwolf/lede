@@ -91,6 +91,16 @@ define Device/friendlyarm_nanopi-r4se
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4se
 
+define Device/rongpin_king3399
+  DEVICE_VENDOR := Rongpin
+  DEVICE_MODEL := King3399
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := rongpin-king3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += rongpin_king3399
+
 define Device/friendlyarm_nanopi-r5s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R5S
