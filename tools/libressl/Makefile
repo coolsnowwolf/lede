@@ -34,4 +34,8 @@ HOST_CONFIGURE_ARGS += \
 	--with-pic \
 	--disable-tests
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))
