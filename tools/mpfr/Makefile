@@ -25,4 +25,8 @@ HOST_CONFIGURE_ARGS += \
 	--enable-thread-safe \
 	--with-gmp=$(STAGING_DIR_HOST)
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

@@ -30,4 +30,8 @@ HOST_CONFIGURE_ARGS += \
 HOST_MAKE_FLAGS += \
 	SUBDIRS="lib libelf libcpu backends libebl libdwelf libdwfl libdw"
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))
