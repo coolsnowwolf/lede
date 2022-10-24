@@ -14,8 +14,8 @@ include $(INCLUDE_DIR)/target.mk
 DEFAULT_PACKAGES += \
 	kmod-usb3 kmod-usb-dwc3 kmod-usb-dwc3-qcom \
 	kmod-leds-gpio kmod-gpio-button-hotplug \
-	kmod-ath11k-ahb wpad-openssl uboot-envtools \
+	kmod-ath11k-ahb ath11k-firmware-ipq6018 wpad-openssl uboot-envtools \
 	kmod-qca-nss-dp kmod-qca-nss-drv-64 kmod-qca-nss-drv-pppoe-64 \
 	nss-firmware-ipq6018 qca-nss-ecm-64
-		
+
 $(eval $(call BuildTarget))

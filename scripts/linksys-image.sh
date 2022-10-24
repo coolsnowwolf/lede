@@ -11,11 +11,11 @@
 # This is appended to the factory image and is tested by the Linksys Upgrader - as observed in civic.
 # The footer is 256 bytes. The format is:
 #  .LINKSYS.        This is detected by the Linksys upgrader before continuing with upgrade. (9 bytes)
-#  <VERSION>        The version number of upgrade. Not checked so use arbitary value (8 bytes)
+#  <VERSION>        The version number of upgrade. Not checked so use arbitrary value (8 bytes)
 #  <TYPE>           Model of target device, padded (0x20) to (15 bytes)
 #  <CRC>      	    CRC checksum of the image to flash (8 byte)
 #  <padding>	    Padding (0x20) (7 bytes)
-#  <signature>	    Signature of signer. Not checked so use Arbitary value (16 bytes)
+#  <signature>	    Signature of signer. Not checked so use arbitrary value (16 bytes)
 #  <padding>        Padding (0x00) (192 bytes)
 #  0x0A		    (1 byte)
 

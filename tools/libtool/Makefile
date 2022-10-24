@@ -34,8 +34,11 @@ define Host/Install
 	$(SED) 's,-lstdc++,-luClibc++,g' $(STAGING_DIR_HOST)/bin/libtool-ucxx
 endef
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 define Host/Clean
-	-$(MAKE) -C $(HOST_BUILD_DIR) uninstall
 	$(call Host/Clean/Default)
 endef
 

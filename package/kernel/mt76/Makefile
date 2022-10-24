@@ -8,9 +8,9 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-10-01
-PKG_SOURCE_VERSION:=72b87836d368685a093b927229209b61d8272541
-PKG_MIRROR_HASH:=ea4dfe93f7632d5063ac2ccf0f5a3698e2bfeadbbef45910381b5ef07e334cfc
+PKG_SOURCE_DATE:=2022-10-05
+PKG_SOURCE_VERSION:=269df4b01f27518e9bdbf12dca15baa1cd899030
+PKG_MIRROR_HASH:=3d10ee0db0dd4b9cedde7a250124bfc14feb216b430b2b01811990587b71da41
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_USE_NINJA:=0
@@ -457,6 +457,10 @@ define KernelPackage/mt7915e/install
 		$(PKG_BUILD_DIR)/firmware/mt7915_wa.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7915_wm.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7915_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_wm.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7916_eeprom.bin \
 		$(1)/lib/firmware/mediatek
 endef
 

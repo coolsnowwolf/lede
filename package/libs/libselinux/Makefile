@@ -6,17 +6,20 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libselinux
-PKG_VERSION:=3.2
-PKG_RELEASE:=1
+PKG_VERSION:=3.3
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://github.com/SELinuxProject/selinux/releases/download/3.2
-PKG_HASH:=df758ef1d9d4811051dd901ea6b029ae334ffd7c671c128beb16bce1e25ac161
+PKG_SOURCE_URL:=https://github.com/SELinuxProject/selinux/releases/download/$(PKG_VERSION)
+PKG_HASH:=acfdee27633d2496508c28727c3d41d3748076f66d42fccde2e6b9f3463a7057
 HOST_BUILD_DEPENDS:=libsepol/host pcre/host
 
 PKG_LICENSE:=libselinux-1.0
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Thomas Petazzoni <thomas.petazzoni@bootlin.com>
+PKG_CPE_ID:=cpe:/a:selinuxproject:libselinux
+
+HOST_BUILD_DEPENDS:=libsepol/host pcre/host
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
@@ -107,7 +110,8 @@ HOST_LDFLAGS += -Wl,-rpath="$(STAGING_DIR_HOSTPKG)/lib"
 
 HOST_MAKE_FLAGS += \
 	PREFIX=$(STAGING_DIR_HOSTPKG) \
-	SHLIBDIR=$(STAGING_DIR_HOSTPKG)/lib
+	SHLIBDIR=$(STAGING_DIR_HOSTPKG)/lib \
+	FTS_LDLIBS=-lfts
 
 ifeq ($(CONFIG_USE_MUSL),y)
 MAKE_FLAGS += FTS_LDLIBS=-lfts

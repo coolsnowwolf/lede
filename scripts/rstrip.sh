@@ -27,6 +27,7 @@ find $TARGETS -type f -a -exec file {} \; | \
   while read F S; do
     echo "$SELF: $F: $S"
 	[ "${S}" = "relocatable" ] && {
+		[ "${F##*.}" == "o" ] && continue
 		eval "$STRIP_KMOD $F"
 	} || {
 		b=$(stat -c '%a' $F)

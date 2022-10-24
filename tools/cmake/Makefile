@@ -32,7 +32,13 @@ HOST_CONFIGURE_VARS += \
 HOST_CONFIGURE_ARGS := \
 	$(if $(MAKE_JOBSERVER),--parallel="$(MAKE_JOBSERVER)") \
 	--prefix="$(STAGING_DIR_HOST)" \
+	--system-expat \
+	--system-liblzma \
+	--system-zlib \
+	--system-zstd \
 	--generator=Ninja
+
+HOST_LDFLAGS += -Wl,-rpath,$(STAGING_DIR_HOST)/lib
 
 define Host/Compile/Default
 	+$(NINJA) -C $(HOST_BUILD_DIR) $(1)
