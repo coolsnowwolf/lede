@@ -24,4 +24,8 @@ define Host/Install
 	$(INSTALL_BIN) $(HOST_BUILD_DIR)/src/patchelf $(STAGING_DIR_HOST)/bin/patchelf
 endef
 
+define Host/Clean
+	rm -rf $(STAGING_DIR_HOST)/bin/patchelf
+endef
+
 $(eval $(call HostBuild))

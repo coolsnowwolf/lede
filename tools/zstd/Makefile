@@ -11,15 +11,25 @@ PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=LICENSE
 PKG_CPE_ID:=cpe:/a:facebook:zstandard
 
-CMAKE_SOURCE_SUBDIR:=build/cmake
-
 include $(INCLUDE_DIR)/host-build.mk
-include $(INCLUDE_DIR)/cmake.mk
+include $(INCLUDE_DIR)/meson.mk
 
-CMAKE_HOST_OPTIONS += \
-	-DBUILD_TESTING=OFF \
-	-DCMAKE_C_COMPILER_LAUNCHER="" \
-	-DCMAKE_C_COMPILER=$(HOSTCC_NOCACHE) \
-	-DZSTD_LEGACY_SUPPORT=OFF
+MESON_HOST_BUILD_DIR:=$(HOST_BUILD_DIR)/build/meson/openwrt-build
+
+HOSTCC:= $(HOSTCC_NOCACHE)
+HOST_LDFLAGS += -Wl,-rpath,$(STAGING_DIR_HOST)/lib
+
+MESON_HOST_ARGS += \
+	-Dlegacy_level=7 \
+	-Ddebug_level=0 \
+	-Dbacktrace=false \
+	-Dstatic_runtime=false \
+	-Dbin_programs=true \
+	-Dbin_tests=false \
+	-Dbin_contrib=false \
+	-Dmulti_thread=enabled \
+	-Dzlib=disabled \
+	-Dlzma=disabled \
+	-Dlz4=disabled
 
 $(eval $(call HostBuild))
