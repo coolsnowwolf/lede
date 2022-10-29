@@ -28,9 +28,7 @@ define KernelPackage/backlight
 		CONFIG_BACKLIGHT_ADP8870=n \
 		CONFIG_BACKLIGHT_OT200=n \
 		CONFIG_BACKLIGHT_PM8941_WLED=n
-	FILES:=$(LINUX_DIR)/drivers/video/backlight/backlight.ko \
-    $(LINUX_DIR)/drivers/acpi/video.ko@ge6.1 \
-    $(LINUX_DIR)/drivers/platform/x86/wmi.ko@ge6.1 
+	FILES:=$(LINUX_DIR)/drivers/video/backlight/backlight.ko
 	AUTOLOAD:=$(call AutoProbe,video backlight)
 endef
 
