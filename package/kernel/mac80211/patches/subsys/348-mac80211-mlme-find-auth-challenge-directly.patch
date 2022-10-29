@@ -1,0 +1,80 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Mon, 20 Sep 2021 15:40:09 +0200
+Subject: [PATCH] mac80211: mlme: find auth challenge directly
+
+commit 49a765d6785e99157ff5091cc37485732496864e upstream.
+
+There's no need to parse all elements etc. just to find the
+authentication challenge - use cfg80211_find_elem() instead.
+This also allows us to remove WLAN_EID_CHALLENGE handling
+from the element parsing entirely.
+
+Link: https://lore.kernel.org/r/20210920154009.45f9b3a15722.Ice3159ffad03a007d6154cbf1fb3a8c48489e86f@changeid
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -1535,7 +1535,6 @@ struct ieee802_11_elems {
+ 	const u8 *supp_rates;
+ 	const u8 *ds_params;
+ 	const struct ieee80211_tim_ie *tim;
+-	const u8 *challenge;
+ 	const u8 *rsn;
+ 	const u8 *rsnx;
+ 	const u8 *erp_info;
+@@ -1589,7 +1588,6 @@ struct ieee802_11_elems {
+ 	u8 ssid_len;
+ 	u8 supp_rates_len;
+ 	u8 tim_len;
+-	u8 challenge_len;
+ 	u8 rsn_len;
+ 	u8 rsnx_len;
+ 	u8 ext_supp_rates_len;
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -2889,17 +2889,17 @@ static void ieee80211_auth_challenge(str
+ {
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_mgd_auth_data *auth_data = sdata->u.mgd.auth_data;
++	const struct element *challenge;
+ 	u8 *pos;
+-	struct ieee802_11_elems elems;
+ 	u32 tx_flags = 0;
+ 	struct ieee80211_prep_tx_info info = {
+ 		.subtype = IEEE80211_STYPE_AUTH,
+ 	};
+ 
+ 	pos = mgmt->u.auth.variable;
+-	ieee802_11_parse_elems(pos, len - (pos - (u8 *)mgmt), false, &elems,
+-			       mgmt->bssid, auth_data->bss->bssid);
+-	if (!elems.challenge)
++	challenge = cfg80211_find_elem(WLAN_EID_CHALLENGE, pos,
++				       len - (pos - (u8 *)mgmt));
++	if (!challenge)
+ 		return;
+ 	auth_data->expected_transaction = 4;
+ 	drv_mgd_prepare_tx(sdata->local, sdata, &info);
+@@ -2907,7 +2907,8 @@ static void ieee80211_auth_challenge(str
+ 		tx_flags = IEEE80211_TX_CTL_REQ_TX_STATUS |
+ 			   IEEE80211_TX_INTFL_MLME_CONN_TX;
+ 	ieee80211_send_auth(sdata, 3, auth_data->algorithm, 0,
+-			    elems.challenge - 2, elems.challenge_len + 2,
++			    (void *)challenge,
++			    challenge->datalen + sizeof(*challenge),
+ 			    auth_data->bss->bssid, auth_data->bss->bssid,
+ 			    auth_data->key, auth_data->key_len,
+ 			    auth_data->key_idx, tx_flags);
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -1120,10 +1120,6 @@ _ieee802_11_parse_elems_crc(const u8 *st
+ 			} else
+ 				elem_parse_failed = true;
+ 			break;
+-		case WLAN_EID_CHALLENGE:
+-			elems->challenge = pos;
+-			elems->challenge_len = elen;
+-			break;
+ 		case WLAN_EID_VENDOR_SPECIFIC:
+ 			if (elen >= 4 && pos[0] == 0x00 && pos[1] == 0x50 &&
+ 			    pos[2] == 0xf2) {
