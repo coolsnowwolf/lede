@@ -42,6 +42,37 @@ endef
 $(eval $(call KernelPackage,atmtcp))
 
 
+define KernelPackage/mptcp
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=MultiPath TCP support
+  KCONFIG:=CONFIG_MPTCP@ge5.6=y
+  FILES:=$(LINUX_DIR)/net/mptcp/mptcp.ko@ge5.6
+  AUTOLOAD:=$(call AutoLoad,30,mptcp)
+endef
+
+define KernelPackage/mptcp/description
+ MPTCP is a module made for MultiPath TCP support
+endef
+
+$(eval $(call KernelPackage,mptcp))
+
+
+define KernelPackage/mptcp_ipv6
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=MultiPath TCP IPv6 support
+  DEPENDS:=@IPV6 +kmod-mptcp
+  KCONFIG:=CONFIG_MPTCP_IPV6@ge5.6=y
+  FILES:=$(LINUX_DIR)/net/mptcp/mptcp_ipv6.ko@ge5.6
+  AUTOLOAD:=$(call AutoLoad,30,mptcp_ipv6)
+endef
+
+define KernelPackage/mptcp_ipv6/description
+ MPTCP is a module made for MultiPath TCP IPv6 support
+endef
+
+$(eval $(call KernelPackage,mptcp_ipv6))
+
+
 define KernelPackage/bonding
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Ethernet bonding driver
@@ -1285,6 +1316,23 @@ native Linux tools such as ss.
 endef
 
 $(eval $(call KernelPackage,inet-diag))
+
+
+define KernelPackage/inet-mptcp-diag
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=INET diag support for MultiPath TCP
+  DEPENDS:=@IPV6 +kmod-mptcp +kmod-inet-diag
+  KCONFIG:= CONFIG_INET_MPTCP_DIAG@ge5.6=y
+  FILES:= $(LINUX_DIR)/net/ipv4/mptcp_diag.ko@ge5.6
+  AUTOLOAD:=$(call AutoLoad,31,mptcp_diag)
+endef
+
+define KernelPackage/inet-mptcp-diag/description
+Support for INET (MultiPath TCP) socket monitoring interface used by
+native Linux tools such as ss.
+endef
+
+$(eval $(call KernelPackage,inet-mptcp-diag))
 
 
 define KernelPackage/wireguard
