@@ -1,0 +1,230 @@
+From c0333749b53881e61ecdfc62f253e24b01dda129 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Tue, 28 Dec 2021 20:37:55 +0100
+Subject: [PATCH] clk: qcom: Add IPQ8074 APSS clock controller
+
+IPQ8074 APSS clock controller provides the clock for the IPQ8074 CPU
+cores, thus also providing support for CPU frequency scaling.
+
+It looks like they are clocked by the XO and a custom APSS type PLL.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ drivers/clk/qcom/Kconfig        |  10 ++
+ drivers/clk/qcom/Makefile       |   1 +
+ drivers/clk/qcom/apss-ipq8074.c | 170 ++++++++++++++++++++++++++++++++
+ 3 files changed, 181 insertions(+)
+ create mode 100644 drivers/clk/qcom/apss-ipq8074.c
+
+diff --git a/drivers/clk/qcom/Kconfig b/drivers/clk/qcom/Kconfig
+index 9ef007b3cf9b..76f3c999e507 100644
+--- a/drivers/clk/qcom/Kconfig
++++ b/drivers/clk/qcom/Kconfig
+@@ -134,6 +134,16 @@ config IPQ_APSS_6018
+ 	  Say Y if you want to support CPU frequency scaling on
+ 	  ipq based devices.
+ 
++config IPQ_APSS_8074
++	tristate "IPQ8074 APSS Clock Controller"
++	depends on QCOM_APCS_IPC || COMPILE_TEST
++	help
++	  Support for APSS clock controller on IPQ8074 platforms. The
++	  APSS clock controller manages the Mux and enable block that feeds the
++	  CPUs.
++	  Say Y if you want to support CPU frequency scaling on
++	  ipq based devices.
++
+ config IPQ_GCC_4019
+ 	tristate "IPQ4019 Global Clock Controller"
+ 	help
+diff --git a/drivers/clk/qcom/Makefile b/drivers/clk/qcom/Makefile
+index 9825ef843f4a..a47b0dcc0add 100644
+--- a/drivers/clk/qcom/Makefile
++++ b/drivers/clk/qcom/Makefile
+@@ -22,6 +22,7 @@ obj-$(CONFIG_APQ_MMCC_8084) += mmcc-apq8084.o
+ obj-$(CONFIG_CLK_GFM_LPASS_SM8250) += lpass-gfm-sm8250.o
+ obj-$(CONFIG_IPQ_APSS_PLL) += apss-ipq-pll.o
+ obj-$(CONFIG_IPQ_APSS_6018) += apss-ipq6018.o
++obj-$(CONFIG_IPQ_APSS_8074) += apss-ipq8074.o
+ obj-$(CONFIG_IPQ_GCC_4019) += gcc-ipq4019.o
+ obj-$(CONFIG_IPQ_GCC_6018) += gcc-ipq6018.o
+ obj-$(CONFIG_IPQ_GCC_806X) += gcc-ipq806x.o
+diff --git a/drivers/clk/qcom/apss-ipq8074.c b/drivers/clk/qcom/apss-ipq8074.c
+new file mode 100644
+index 000000000000..51548539194c
+--- /dev/null
++++ b/drivers/clk/qcom/apss-ipq8074.c
+@@ -0,0 +1,170 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2021, The Linux Foundation. All rights reserved.
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/err.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++#include <dt-bindings/clock/qcom,apss-ipq8074.h>
++
++#include "common.h"
++#include "clk-regmap.h"
++#include "clk-pll.h"
++#include "clk-rcg.h"
++#include "clk-branch.h"
++#include "clk-alpha-pll.h"
++#include "clk-regmap-divider.h"
++#include "clk-regmap-mux.h"
++
++#define F(f, s, h, m, n) { (f), (s), (2 * (h) - 1), (m), (n) }
++
++enum {
++	P_XO,
++	P_GPLL0,
++	P_GPLL2,
++	P_GPLL4,
++	P_APSS_PLL_EARLY,
++	P_APSS_PLL
++};
++
++static struct clk_alpha_pll apss_pll_early = {
++	.offset = 0x5000,
++	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_APSS],
++	.clkr = {
++		.enable_reg = 0x5000,
++		.enable_mask = BIT(0),
++		.hw.init = &(struct clk_init_data){
++			.name = "apss_pll_early",
++			.parent_names = (const char *[]){
++				"xo"
++			},
++			.num_parents = 1,
++			.ops = &clk_alpha_pll_huayra_ops,
++		},
++	},
++};
++
++static struct clk_alpha_pll_postdiv apss_pll = {
++	.offset = 0x5000,
++	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_APSS],
++	.width = 2,
++	.clkr.hw.init = &(struct clk_init_data){
++		.name = "apss_pll",
++		.parent_names = (const char *[]){ "apss_pll_early" },
++		.num_parents = 1,
++		.ops = &clk_alpha_pll_postdiv_ro_ops,
++	},
++};
++
++static const char * const parents_apcs_alias0_clk_src[] = {
++	"xo",
++	"gpll0",
++	"gpll2",
++	"gpll4",
++	"apss_pll",
++	"apss_pll_early",
++};
++
++static const struct parent_map parents_apcs_alias0_clk_src_map[] = {
++	{ P_XO, 0 },
++	{ P_GPLL0, 4 },
++	{ P_GPLL2, 2 },
++	{ P_GPLL4, 1 },
++	{ P_APSS_PLL, 3 },
++	{ P_APSS_PLL_EARLY, 5 },
++};
++
++struct freq_tbl ftbl_apcs_alias0_clk_src[] = {
++	F(19200000, P_XO, 1, 0, 0),
++	F(403200000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(806400000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(1017600000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(1382400000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(1651200000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(1843200000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(1920000000, P_APSS_PLL_EARLY, 1, 0, 0),
++	F(2208000000UL, P_APSS_PLL_EARLY, 1, 0, 0),
++	{ }
++};
++
++struct clk_rcg2 apcs_alias0_clk_src = {
++	.cmd_rcgr = 0x0050,
++	.freq_tbl = ftbl_apcs_alias0_clk_src,
++	.hid_width = 5,
++	.parent_map = parents_apcs_alias0_clk_src_map,
++	.clkr.hw.init = &(struct clk_init_data){
++		.name = "apcs_alias0_clk_src",
++		.parent_names = parents_apcs_alias0_clk_src,
++		.num_parents = 6,
++		.ops = &clk_rcg2_ops,
++		.flags = CLK_SET_RATE_PARENT,
++	},
++};
++
++static struct clk_branch apcs_alias0_core_clk = {
++	.halt_reg = 0x0058,
++	.halt_bit = 31,
++	.clkr = {
++		.enable_reg = 0x0058,
++		.enable_mask = BIT(0),
++		.hw.init = &(struct clk_init_data){
++			.name = "apcs_alias0_core_clk",
++			.parent_names = (const char *[]){
++				"apcs_alias0_clk_src"
++			},
++			.num_parents = 1,
++			.flags = CLK_SET_RATE_PARENT |
++				CLK_IS_CRITICAL,
++			.ops = &clk_branch2_ops,
++		},
++	},
++};
++
++static struct clk_regmap *apss_ipq8074_clks[] = {
++	[APSS_PLL_EARLY] = &apss_pll_early.clkr,
++	[APSS_PLL] = &apss_pll.clkr,
++	[APCS_ALIAS0_CLK_SRC] = &apcs_alias0_clk_src.clkr,
++	[APCS_ALIAS0_CORE_CLK] = &apcs_alias0_core_clk.clkr,
++};
++
++static const struct regmap_config apss_ipq8074_regmap_config = {
++	.reg_bits       = 32,
++	.reg_stride     = 4,
++	.val_bits       = 32,
++	.max_register   = 0x5ffc,
++	.fast_io	= true,
++};
++
++static const struct qcom_cc_desc apss_ipq8074_desc = {
++	.config = &apss_ipq8074_regmap_config,
++	.clks = apss_ipq8074_clks,
++	.num_clks = ARRAY_SIZE(apss_ipq8074_clks),
++};
++
++static int apss_ipq8074_probe(struct platform_device *pdev)
++{
++	struct regmap *regmap;
++
++	regmap = dev_get_regmap(pdev->dev.parent, NULL);
++	if (!regmap)
++		return -ENODEV;
++
++	return qcom_cc_really_probe(pdev, &apss_ipq8074_desc, regmap);
++}
++
++static struct platform_driver apss_ipq8074_driver = {
++	.probe = apss_ipq8074_probe,
++	.driver = {
++		.name   = "qcom,apss-ipq8074-clk",
++	},
++};
++
++module_platform_driver(apss_ipq8074_driver);
++
++MODULE_DESCRIPTION("Qualcomm IPQ8074 APSS clock driver");
++MODULE_LICENSE("GPLv2");
+-- 
+2.35.1
+
