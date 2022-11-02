@@ -1,4 +1,4 @@
-默认登陆IP 192.168.1.1 密码 password
+默认登陆IP 192.168.1.3 密码 password 关闭dhcp，适合旁路网关，做主路由需要手动开启。
 
    sudo apt update -y
    
