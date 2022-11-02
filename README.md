@@ -55,4 +55,4 @@ make V=s -j$(nproc)
 
 1、不要使用root用户编译，可以新建一个账户
 
-2、遇到po2lmo错误可以对luci-base先编译，在最后编译前运行 make package/feeds/luci/luci-base/compile V=99
+2、遇到po2lmo错误可以对luci-base先编译，在最后编译前先运行 make package/feeds/luci/luci-base/compile V=99
