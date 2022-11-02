@@ -12,29 +12,42 @@
    rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
    
    git clone https://github.com/coolsnowwolf/lede
+   
    cd lede
+   
    ./scripts/feeds update -a
+   
    ./scripts/feeds install -a
+   
    make menuconfig
 
    make download -j8
+   
    make V=s -j1
 
 二次编译：
 
 cd lede
+
 git pull
+
 ./scripts/feeds update -a
+
 ./scripts/feeds install -a
+
 make defconfig
+
 make download -j8
+
 make V=s -j$(nproc)
 
 如果需要重新配置：
-rm -rf ./tmp && rm -rf .config
-make menuconfig
-make V=s -j$(nproc)
 
+rm -rf ./tmp && rm -rf .config
+
+make menuconfig
+
+make V=s -j$(nproc)
 
 编译完成后输出路径：bin/targets
 
