@@ -1,6 +1,9 @@
 默认登陆IP 192.168.1.1 密码 password
+
    sudo apt update -y
+   
    sudo apt full-upgrade -y
+   
    sudo apt install -y ack antlr3 aria2 asciidoc autoconf automake autopoint binutils bison build-essential \
    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
