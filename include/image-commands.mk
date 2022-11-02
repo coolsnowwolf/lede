@@ -459,6 +459,13 @@ define Build/qsdk-ipq-factory-nand
 	@mv $@.new $@
 endef
 
+define Build/qsdk-ipq-factory-mmc
+	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh \
+		$@.its kernel $(IMAGE_KERNEL) rootfs $(IMAGE_ROOTFS)
+	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
+	@mv $@.new $@
+endef
+
 define Build/qsdk-ipq-factory-nor
 	$(TOPDIR)/scripts/mkits-qsdk-ipq-image.sh \
 		$@.its hlos $(IMAGE_KERNEL) rootfs $(IMAGE_ROOTFS)

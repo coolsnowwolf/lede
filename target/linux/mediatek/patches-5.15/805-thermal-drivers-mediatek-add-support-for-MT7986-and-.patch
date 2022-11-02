@@ -70,15 +70,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  struct mtk_thermal;
  
  struct thermal_bank_cfg {
-@@ -279,6 +316,7 @@ struct mtk_thermal {
- 
- 	struct clk *clk_peri_therm;
- 	struct clk *clk_auxadc;
-+	struct clk *clk_adc_32k;
- 	/* lock: for getting and putting banks */
- 	struct mutex lock;
- 
-@@ -386,6 +424,14 @@ static const int mt7622_mux_values[MT762
+@@ -386,6 +423,14 @@ static const int mt7622_mux_values[MT762
  static const int mt7622_vts_index[MT7622_NUM_SENSORS] = { VTS1 };
  static const int mt7622_tc_offset[MT7622_NUM_CONTROLLER] = { 0x0, };
  
@@ -93,7 +85,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /*
   * The MT8173 thermal controller has four banks. Each bank can read up to
   * four temperature sensors simultaneously. The MT8173 has a total of 5
-@@ -549,6 +595,30 @@ static const struct mtk_thermal_data mt8
+@@ -549,6 +594,30 @@ static const struct mtk_thermal_data mt8
  	.version = MTK_THERMAL_V1,
  };
  
@@ -124,7 +116,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /**
   * raw_to_mcelsius - convert a raw ADC value to mcelsius
   * @mt:	The thermal controller
-@@ -603,6 +673,22 @@ static int raw_to_mcelsius_v2(struct mtk
+@@ -603,6 +672,22 @@ static int raw_to_mcelsius_v2(struct mtk
  	return (format_2 - tmp) * 100;
  }
  
@@ -147,7 +139,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /**
   * mtk_thermal_get_bank - get bank
   * @bank:	The bank
-@@ -659,9 +745,12 @@ static int mtk_thermal_bank_temperature(
+@@ -659,9 +744,12 @@ static int mtk_thermal_bank_temperature(
  		if (mt->conf->version == MTK_THERMAL_V1) {
  			temp = raw_to_mcelsius_v1(
  				mt, conf->bank_data[bank->id].sensors[i], raw);
@@ -161,7 +153,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		}
  
  		/*
-@@ -887,6 +976,26 @@ static int mtk_thermal_extract_efuse_v2(
+@@ -887,6 +975,26 @@ static int mtk_thermal_extract_efuse_v2(
  	return 0;
  }
  
@@ -188,7 +180,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  static int mtk_thermal_get_calibration_data(struct device *dev,
  					    struct mtk_thermal *mt)
  {
-@@ -897,6 +1006,7 @@ static int mtk_thermal_get_calibration_d
+@@ -897,6 +1005,7 @@ static int mtk_thermal_get_calibration_d
  
  	/* Start with default values */
  	mt->adc_ge = 512;
@@ -196,7 +188,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	for (i = 0; i < mt->conf->num_sensors; i++)
  		mt->vts[i] = 260;
  	mt->degc_cali = 40;
-@@ -924,8 +1034,10 @@ static int mtk_thermal_get_calibration_d
+@@ -924,8 +1033,10 @@ static int mtk_thermal_get_calibration_d
  
  	if (mt->conf->version == MTK_THERMAL_V1)
  		ret = mtk_thermal_extract_efuse_v1(mt, buf);
@@ -208,7 +200,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  
  	if (ret) {
  		dev_info(dev, "Device not calibrated, using default calibration values\n");
-@@ -956,6 +1068,10 @@ static const struct of_device_id mtk_the
+@@ -956,6 +1067,10 @@ static const struct of_device_id mtk_the
  		.data = (void *)&mt7622_thermal_data,
  	},
  	{
@@ -219,40 +211,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		.compatible = "mediatek,mt8183-thermal",
  		.data = (void *)&mt8183_thermal_data,
  	}, {
-@@ -1009,6 +1125,12 @@ static int mtk_thermal_probe(struct plat
- 	if (IS_ERR(mt->clk_auxadc))
- 		return PTR_ERR(mt->clk_auxadc);
- 
-+	if (mt->conf->version == MTK_THERMAL_V3) {
-+		mt->clk_adc_32k = devm_clk_get(&pdev->dev, "adc_32k");
-+		if (IS_ERR(mt->clk_adc_32k))
-+			return PTR_ERR(mt->clk_adc_32k);
-+	}
-+
- 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
- 	mt->thermal_base = devm_ioremap_resource(&pdev->dev, res);
- 	if (IS_ERR(mt->thermal_base))
-@@ -1058,10 +1180,18 @@ static int mtk_thermal_probe(struct plat
- 	if (ret)
- 		return ret;
- 
-+	if (mt->conf->version == MTK_THERMAL_V3) {
-+		ret = clk_prepare_enable(mt->clk_adc_32k);
-+		if (ret) {
-+			dev_err(&pdev->dev, "Can't enable auxadc 32k clk: %d\n", ret);
-+			return ret;
-+		}
-+	}
-+
- 	ret = clk_prepare_enable(mt->clk_auxadc);
- 	if (ret) {
- 		dev_err(&pdev->dev, "Can't enable auxadc clk: %d\n", ret);
--		return ret;
-+		goto err_disable_clk_adc_32k;
- 	}
- 
- 	ret = clk_prepare_enable(mt->clk_peri_therm);
-@@ -1070,7 +1200,8 @@ static int mtk_thermal_probe(struct plat
+@@ -1070,7 +1185,8 @@ static int mtk_thermal_probe(struct plat
  		goto err_disable_clk_auxadc;
  	}
  
@@ -262,23 +221,3 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		mtk_thermal_turn_on_buffer(apmixed_base);
  		mtk_thermal_release_periodic_ts(mt, auxadc_base);
  	}
-@@ -1099,6 +1230,9 @@ err_disable_clk_peri_therm:
- 	clk_disable_unprepare(mt->clk_peri_therm);
- err_disable_clk_auxadc:
- 	clk_disable_unprepare(mt->clk_auxadc);
-+err_disable_clk_adc_32k:
-+	if (mt->conf->version == MTK_THERMAL_V3)
-+		clk_disable_unprepare(mt->clk_adc_32k);
- 
- 	return ret;
- }
-@@ -1110,6 +1244,9 @@ static int mtk_thermal_remove(struct pla
- 	clk_disable_unprepare(mt->clk_peri_therm);
- 	clk_disable_unprepare(mt->clk_auxadc);
- 
-+	if (mt->conf->version == MTK_THERMAL_V3)
-+		clk_disable_unprepare(mt->clk_adc_32k);
-+
- 	return 0;
- }
- 
