@@ -21,33 +21,28 @@ make download -j8
 make V=s -j1
  ```
 二次编译：
-
+```bash
 cd lede
-
 git pull
-
 ./scripts/feeds update -a
-
 ./scripts/feeds install -a
-
 make defconfig
-
 make download -j8
-
 make V=s -j$(nproc)
-
+```
 如果需要重新配置：
-
+```bash
 rm -rf ./tmp && rm -rf .config
-
 make menuconfig
-
 make V=s -j$(nproc)
-
+```
 编译完成后输出路径：bin/targets
 
 错误排查：
 
 1、不要使用root用户编译，可以新建一个账户
 
-2、遇到po2lmo错误可以对luci-base先编译，运行一次 make package/feeds/luci/luci-base/compile V=99
+2、遇到po2lmo错误可以对luci-base先编译，运行一次
+```bash
+make package/feeds/luci/luci-base/compile V=99
+```
