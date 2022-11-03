@@ -46,3 +46,8 @@ make V=s -j$(nproc)
 ```bash
 make package/feeds/luci/luci-base/compile V=99
 ```
+3、脑残问题：安装Ubuntu系统时设置分辨率
+ctrl+Alt+T调出终端后执行
+```bash
+xrandr -s 1280x800
+```
