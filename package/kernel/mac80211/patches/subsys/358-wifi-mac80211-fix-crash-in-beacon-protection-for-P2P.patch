@@ -1,0 +1,52 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Wed, 5 Oct 2022 21:24:10 +0200
+Subject: [PATCH] wifi: mac80211: fix crash in beacon protection for
+ P2P-device
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit b2d03cabe2b2e150ff5a381731ea0355459be09f upstream.
+
+If beacon protection is active but the beacon cannot be
+decrypted or is otherwise malformed, we call the cfg80211
+API to report this to userspace, but that uses a netdev
+pointer, which isn't present for P2P-Device. Fix this to
+call it only conditionally to ensure cfg80211 won't crash
+in the case of P2P-Device.
+
+This fixes CVE-2022-42722.
+
+Reported-by: Sönke Huster <shuster@seemoo.tu-darmstadt.de>
+Fixes: 9eaf183af741 ("mac80211: Report beacon protection failures to user space")
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -1987,10 +1987,11 @@ ieee80211_rx_h_decrypt(struct ieee80211_
+ 
+ 		if (mmie_keyidx < NUM_DEFAULT_KEYS + NUM_DEFAULT_MGMT_KEYS ||
+ 		    mmie_keyidx >= NUM_DEFAULT_KEYS + NUM_DEFAULT_MGMT_KEYS +
+-		    NUM_DEFAULT_BEACON_KEYS) {
+-			cfg80211_rx_unprot_mlme_mgmt(rx->sdata->dev,
+-						     skb->data,
+-						     skb->len);
++				   NUM_DEFAULT_BEACON_KEYS) {
++			if (rx->sdata->dev)
++				cfg80211_rx_unprot_mlme_mgmt(rx->sdata->dev,
++							     skb->data,
++							     skb->len);
+ 			return RX_DROP_MONITOR; /* unexpected BIP keyidx */
+ 		}
+ 
+@@ -2138,7 +2139,8 @@ ieee80211_rx_h_decrypt(struct ieee80211_
+ 	/* either the frame has been decrypted or will be dropped */
+ 	status->flag |= RX_FLAG_DECRYPTED;
+ 
+-	if (unlikely(ieee80211_is_beacon(fc) && result == RX_DROP_UNUSABLE))
++	if (unlikely(ieee80211_is_beacon(fc) && result == RX_DROP_UNUSABLE &&
++		     rx->sdata->dev))
+ 		cfg80211_rx_unprot_mlme_mgmt(rx->sdata->dev,
+ 					     skb->data, skb->len);
+ 

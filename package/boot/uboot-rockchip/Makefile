@@ -135,6 +135,16 @@ define U-Boot/rockpro64-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
+define U-Boot/rongpin-king3399-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=Rongpin King3399
+  BUILD_DEVICES:= \
+    rongpin_king3399
+  DEPENDS:=+PACKAGE_u-boot-rongpin-king3399-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
 
 # RK3568 boards
 
@@ -206,6 +216,7 @@ UBOOT_TARGETS := \
   nanopi-r5s-rk3568 \
   rock-pi-4-rk3399 \
   rockpro64-rk3399 \
+  rongpin-king3399-rk3399 \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \

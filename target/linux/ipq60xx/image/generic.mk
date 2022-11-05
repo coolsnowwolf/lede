@@ -23,14 +23,29 @@ define Device/UbiFit
 	IMAGE/nand-sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
-define Device/mr7350
+define Device/cmiot_ax18
 	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := CMIOT
+	DEVICE_MODEL := AX18
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6018
+endef
+TARGET_DEVICES += cmiot_ax18
+
+define Device/linksys_mr7350
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
 	DEVICE_VENDOR := Linksys
 	DEVICE_MODEL := MR7350
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
 	SOC := ipq6018
 	DEVICE_PACKAGES := kmod-leds-pca963x
 endef
-TARGET_DEVICES += mr7350
+TARGET_DEVICES += linksys_mr7350
 
 define Device/cp01-c1
 	$(call Device/FitImage)
@@ -51,3 +66,15 @@ define Device/eap610-outdoor
 	IMAGE/nand-factory.ubi := append-ubi | qsdk-ipq-factory-nand
 endef
 TARGET_DEVICES += eap610-outdoor
+
+define Device/zn_m2
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZN
+	DEVICE_MODEL := M2
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6018
+endef
+TARGET_DEVICES += zn_m2
