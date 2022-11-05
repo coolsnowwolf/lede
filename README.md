@@ -117,6 +117,24 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 5. 重新加载一下 shell 启动文件 `source ~/.bashrc`，然后输入 `bash` 进入 bash shell，就可以和 Linux 一样正常编译了
 
+## 体验 [OUI](https://github.com/zhaojh329/oui)
+
+[OUI](https://github.com/zhaojh329/oui) 是一个用来开发 OpenWrt Web 接口的框架。适合企业用户用来开发自己的商业产品。
+
+1. 首先在自己的编译主机上安装 Node(需要 14.18 以上版本)
+
+	参考 https://nodejs.org/en/download/package-manager/
+
+2. 取消 Luci 相关的配置选项
+
+3. 勾选 Oui: 选中需要编译的 App 以及如下选项
+
+	[*] Use existing nodejs installation on the host system
+
+4. 编译
+
+	make V=s -j$(nproc)
+
 ## 特别提示
 
 1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的；
