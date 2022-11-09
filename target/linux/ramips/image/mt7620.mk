@@ -1140,6 +1140,18 @@ define Device/xiaomi_miwifi-r3
 endef
 TARGET_DEVICES += xiaomi_miwifi-r3
 
+define Device/youku_x2
+  SOC := mt7620a
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Youku
+  DEVICE_MODEL := X2
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci \
+	kmod-sdhci-mt7620 kmod-usb-ledtrig-usbport
+  UIMAGE_MAGIC := 0x12291000
+  UIMAGE_NAME := 400000000000000000001000
+endef
+TARGET_DEVICES += youku_x2
+
 define Device/youku_yk-l1
   SOC := mt7620a
   IMAGE_SIZE := 32448k
@@ -1148,6 +1160,8 @@ define Device/youku_yk-l1
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += youku-yk1 youku,yk1
+  UIMAGE_MAGIC := 0x12291000
+  UIMAGE_NAME := 400000000000000000000000
 endef
 TARGET_DEVICES += youku_yk-l1
 
@@ -1158,6 +1172,8 @@ define Device/youku_yk-l1c
   DEVICE_MODEL := YK-L1c
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
 	kmod-usb-ledtrig-usbport
+  UIMAGE_MAGIC := 0x12291000
+  UIMAGE_NAME := 400000000000000000000000
 endef
 TARGET_DEVICES += youku_yk-l1c
 

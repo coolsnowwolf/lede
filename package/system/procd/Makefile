@@ -68,7 +68,7 @@ define Package/procd-ujail
   SECTION:=base
   CATEGORY:=Base system
   DEPENDS:=@KERNEL_NAMESPACES +@KERNEL_UTS_NS +@KERNEL_IPC_NS +@KERNEL_PID_NS \
-	  +libubox +libubus +libblobmsg-json
+	  +libubox +libubus +libuci +libblobmsg-json
   TITLE:=OpenWrt process jail helper
 endef
 
