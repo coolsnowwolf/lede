@@ -93,6 +93,7 @@ platform_do_upgrade() {
 		linksys_do_upgrade "$1"
 		;;
 	cmiot,ax18|\
+	qihoo,v6|\
 	zn,m2)
 		nand_do_upgrade "$1"
 		;;
