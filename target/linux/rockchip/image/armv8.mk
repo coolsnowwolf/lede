@@ -153,6 +153,16 @@ define Device/radxa_rock-pi-e25
 endef
 TARGET_DEVICES += radxa_rock-pi-e25
 
+define Device/rongpin_king3399
+  DEVICE_VENDOR := Rongpin
+  DEVICE_MODEL := King3399
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := rongpin-king3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += rongpin_king3399
+
 define Device/sharevdi_guangmiao-g4c
   DEVICE_VENDOR := SHAREVDI
   DEVICE_MODEL := GuangMiao G4C
