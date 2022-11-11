@@ -224,7 +224,7 @@ def main(argv):
     try:
         (opts, args) = getopt.getopt(
             argv[1:],
-            "hdBwDb:",
+            "hdBw:D:b:",
             [
                 "help",
                 "dry-run",
@@ -268,12 +268,15 @@ def main(argv):
         if o in ("-b", "--build-dir"):
             builddir = v
 
+    if args:
+        directory = args[0]
+
     if not os.path.exists(directory):
-        print("Can't find dl path", directory)
+        print("Can't find download directory", directory)
         return 1
 
     if not os.path.exists(builddir):
-        print("Can't find dl path", builddir)
+        print("Can't find build directory", builddir)
         return 1
 
     # Create a directory listing and parse the file names.

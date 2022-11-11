@@ -116,7 +116,7 @@ define Quilt/RefreshDir
 endef
 
 define Quilt/Refresh/Host
-	$(call Quilt/RefreshDir,$(HOST_BUILD_DIR),$(PATCH_DIR))
+	$(call Quilt/RefreshDir,$(HOST_BUILD_DIR),$(HOST_PATCH_DIR))
 endef
 
 define Quilt/Refresh/Package

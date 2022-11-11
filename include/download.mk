@@ -63,6 +63,21 @@ define dl_tar_pack
 		$$$${TAR_TIMESTAMP:+--mtime="$$$$TAR_TIMESTAMP"} -c $(2) | $(call dl_pack,$(1))
 endef
 
+gen_sha256sum = $(shell $(MKHASH) sha256 $(DL_DIR)/$(1))
+
+# Used in Build/CoreTargets and HostBuild/Core as an integrity check for
+# downloaded files.  It will add a FORCE rule if the sha256 hash does not
+# match, so that the download can be more thoroughly handled by download.pl.
+define check_download_integrity
+  expected_hash:=$(strip $(if $(filter-out x,$(HASH)),$(HASH),$(MIRROR_HASH)))
+  $$(if $$(and $(FILE),$$(wildcard $(DL_DIR)/$(FILE)), \
+	       $$(filter undefined,$$(flavor DownloadChecked/$(FILE)))), \
+    $$(eval DownloadChecked/$(FILE):=1) \
+    $$(if $$(filter-out $$(call gen_sha256sum,$(FILE)),$$(expected_hash)), \
+      $(DL_DIR)/$(FILE): FORCE) \
+  )
+endef
+
 ifdef CHECK
 check_escape=$(subst ','\'',$(1))
 #')
@@ -77,8 +92,6 @@ ifndef FIXUP
 else
   check_warn = $(if $(filter-out undefined,$(origin F_$(1))),$(filter ,$(shell $(call F_$(1),$(2),$(3),$(4)) >&2)),$(check_warn_nofix))
 endif
-
-gen_sha256sum = $(shell $(MKHASH) sha256 $(DL_DIR)/$(1))
 
 ifdef FIXUP
 F_hash_deprecated = $(SCRIPT_DIR)/fixup-makefile.pl $(CURDIR)/Makefile fix-hash $(3) $(call gen_sha256sum,$(1)) $(2)

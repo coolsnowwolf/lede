@@ -18,6 +18,6 @@ define FixupLibdir
 		mkdir -p $(1)/lib; \
 		mv $(1)/lib64/* $(1)/lib/; \
 		rm -rf $(1)/lib64; \
+		ln -sf lib $(1)/lib64; \
 	fi
-	ln -sf lib $(1)/lib64
 endef
