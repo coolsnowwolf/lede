@@ -970,6 +970,16 @@ define Device/jcg_y2
 endef
 TARGET_DEVICES += jcg_y2
 
+define Device/jdcloud_luban
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := jdcloud
+  DEVICE_MODEL := Luban
+  DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
+endef
+TARGET_DEVICES += jdcloud_luban
+
 define Device/lenovo_newifi-d1
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
@@ -1815,16 +1825,6 @@ define Device/xiaoyu_xy-c5
   DEVICE_PACKAGES := kmod-ata-ahci kmod-usb3 -wpad-openssl
 endef
 TARGET_DEVICES += xiaoyu_xy-c5
-
-define Device/jdcloud_luban
-  $(Device/dsa-migration)
-  $(Device/uimage-lzma-loader)
-  IMAGE_SIZE := 15808k
-  DEVICE_VENDOR := jdcloud
-  DEVICE_MODEL := Luban
-  DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
-endef
-TARGET_DEVICES += jdcloud_luban
 
 define Device/xzwifi_creativebox-v1
   $(Device/dsa-migration)
