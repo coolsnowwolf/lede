@@ -244,6 +244,40 @@ endef
 $(eval $(call KernelPackage,phy-bcm84881))
 
 
+define KernelPackage/phy-marvell
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Marvell Gigabit Ethernet PHY driver
+   KCONFIG:=CONFIG_MARVELL_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/marvell.ko
+   AUTOLOAD:=$(call AutoLoad,18,marvell)
+endef
+
+define KernelPackage/phy-marvell/description
+   Supports Marvell Gigabit Ethernet PHYs:
+   * 88E1101
+   * 88E1112
+   * 88E1111 (incl. Finisar variant)
+   * 88E1118
+   * 88E1121R
+   * 88E1145
+   * 88E1149R
+   * 88E1240
+   * 88E1318S
+   * 88E1116R
+   * 88E1510
+   * 88E1540
+   * 88E1545
+   * 88E3016
+   * 88E6341 family
+   * 88E6390 family
+   * 88E6393 family
+   * 88E1340S
+   * 88E1548P
+endef
+
+$(eval $(call KernelPackage,phy-marvell))
+
 
 define KernelPackage/phy-realtek
    SUBMENU:=$(NETWORK_DEVICES_MENU)

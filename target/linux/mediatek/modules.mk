@@ -37,3 +37,18 @@ define KernelPackage/iio-mt6577-auxadc
   $(call AddDepends/iio)
 endef
 $(eval $(call KernelPackage,iio-mt6577-auxadc))
+
+define KernelPackage/leds-spi-single-wire
+  SUBMENU:=LED modules
+  TITLE:=SPI single wire LED support
+  DEPENDS:=@(TARGET_mediatek_filogic)
+  KCONFIG:=CONFIG_LEDS_SPI_SINGLE_WIRE
+  FILES:= $(LINUX_DIR)/drivers/leds/leds-spi-single-wire.ko
+  AUTOLOAD:=$(call AutoLoad,60,leds-spi-single-wire,1)
+endef
+
+define KernelPackage/leds-spi-single-wire/description
+  LED support for SPI LED controller with a single wire (MOSI)
+endef
+
+$(eval $(call KernelPackage,leds-spi-single-wire))
