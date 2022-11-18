@@ -8,9 +8,9 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-11-28
-PKG_SOURCE_VERSION:=dc350bbf41d987c5b2db54405bcc9ef3cd66d5db
-PKG_MIRROR_HASH:=92422485c7b92be840a40bf8d157bb6731d14d3811907b6cb4e4cfab0777b60d
+PKG_SOURCE_DATE:=2022-05-13
+PKG_SOURCE_VERSION:=f808496fcc6b1f68942914117aebf8b3f8d52bb3
+PKG_MIRROR_HASH:=39527b3408696594eda5579521a9fb798417be4dda73fa08e8b3a8c7b0d3f3d9
 
 # Build the 5.15 ath10k-ct driver version.
 # Probably this should match as closely as
@@ -33,7 +33,8 @@ define KernelPackage/ath10k-ct
   FILES:=\
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_pci.ko \
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_core.ko
-  AUTOLOAD:=$(call AutoProbe,ath10k_pci)
+  AUTOLOAD:=$(call AutoProbe,ath10k_core ath10k_pci)
+  MODPARAMS.ath10k_core:=frame_mode=2
   PROVIDES:=kmod-ath10k
   VARIANT:=regular
 endef
