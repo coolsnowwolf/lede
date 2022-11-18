@@ -9,7 +9,7 @@ Op固件技术研究群 ,号码 891659613 ，加群链接：[点击加入](https
 2. TG 讨论群： OP 编译官方大群 ，加群链接：[点击加入](https://t.me/JhKgAA6Hx1 "OP 编译官方大群")
 3. Rockchip RK3568 预编译固件发布 Release 下载更新地址 (包括 H68K )：<https://github.com/coolsnowwolf/lede/releases/tag/20220716>
 
-<img src="https://github.com/coolsnowwolf/lede/blob/master/doc/h68k.jpg?raw=true" width=600  />
+<a href ="https://item.taobao.com/item.htm?spm=a230r.1.14.26.4bb55247bX9SiV&id=692981063139&ns=1&abbucket=15#detail"><img src="https://github.com/coolsnowwolf/lede/blob/master/doc/h68k.jpg?raw=true" width=600  /></a>
 
 ## 注意
 
