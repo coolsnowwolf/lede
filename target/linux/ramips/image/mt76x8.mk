@@ -171,6 +171,14 @@ define Device/hilink_hlk-7688a
 endef
 TARGET_DEVICES += hilink_hlk-7688a
 
+define Device/hiwifi_hc5611
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := HiWiFi
+  DEVICE_MODEL := HC5611
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += hiwifi_hc5611
+
 define Device/hiwifi_hc5661a
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
