@@ -68,6 +68,9 @@ define Build/Trusted-Firmware-A/Target
   endef
 endef
 
+define Build/Configure/Trusted-Firmware-A
+	$(INSTALL_DIR) $(STAGING_DIR)/usr/include
+endef
 
 DTC=$(wildcard $(LINUX_DIR)/scripts/dtc/dtc)
 

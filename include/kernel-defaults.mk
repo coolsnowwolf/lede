@@ -117,7 +117,7 @@ define Kernel/Configure/Default
 		cp $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config; \
 		cp $(LINUX_DIR)/.config.set $(LINUX_DIR)/.config.prev; \
 	}
-	$(_SINGLE) [ -d $(LINUX_DIR)/user_headers ] || $(KERNEL_MAKE) INSTALL_HDR_PATH=$(LINUX_DIR)/user_headers headers_install
+	$(_SINGLE) [ -d $(LINUX_DIR)/user_headers ] || $(KERNEL_MAKE) $(if $(findstring uml,$(BOARD)),ARCH=$(ARCH)) INSTALL_HDR_PATH=$(LINUX_DIR)/user_headers headers_install
 	grep '=[ym]' $(LINUX_DIR)/.config.set | LC_ALL=C sort | $(MKHASH) md5 > $(LINUX_DIR)/.vermagic
 endef
 
@@ -129,6 +129,10 @@ define Kernel/CompileModules/Default
 	rm -f $(LINUX_DIR)/vmlinux $(LINUX_DIR)/System.map
 	+$(KERNEL_MAKE) olddefconfig
 	+$(KERNEL_MAKE) $(if $(KERNELNAME),$(KERNELNAME),all) modules
+	# If .config did not change, use the previous timestamp to avoid package rebuilds
+	cmp -s $(LINUX_DIR)/.config $(LINUX_DIR)/.config.modules.save && \
+		mv $(LINUX_DIR)/.config.modules.save $(LINUX_DIR)/.config; \
+	$(CP) $(LINUX_DIR)/.config $(LINUX_DIR)/.config.modules.save
 endef
 
 OBJCOPY_STRIP = -R .reginfo -R .notes -R .note -R .comment -R .mdebug -R .note.gnu.build-id
@@ -165,19 +169,20 @@ ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
 define Kernel/CompileImage/Initramfs
 	$(call Kernel/Configure/Initramfs)
 	$(CP) $(GENERIC_PLATFORM_DIR)/other-files/init $(TARGET_DIR)/init
-	$(if $(SOURCE_DATE_EPOCH),touch -hcd "@$(SOURCE_DATE_EPOCH)" $(TARGET_DIR)/init)
+	$(if $(SOURCE_DATE_EPOCH),touch -hcd "@$(SOURCE_DATE_EPOCH)" $(TARGET_DIR) $(TARGET_DIR)/init)
 	rm -rf $(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION)/usr/initramfs_data.cpio*
 ifeq ($(CONFIG_TARGET_ROOTFS_INITRAMFS_SEPARATE),y)
-ifeq ($(CONFIG_EXTERNAL_CPIO),y)
+ifneq ($(qstrip $(CONFIG_EXTERNAL_CPIO)),)
 	$(CP) $(CONFIG_EXTERNAL_CPIO) $(KERNEL_BUILD_DIR)/initrd.cpio
 else
-	( cd $(TARGET_DIR); find . | $(STAGING_DIR_HOST)/bin/cpio -o -H newc -R 0:0 > $(KERNEL_BUILD_DIR)/initrd.cpio )
+	( cd $(TARGET_DIR); find . | LC_ALL=C sort | $(STAGING_DIR_HOST)/bin/cpio --reproducible -o -H newc -R 0:0 > $(KERNEL_BUILD_DIR)/initrd.cpio )
 endif
+	$(if $(SOURCE_DATE_EPOCH),touch -hcd "@$(SOURCE_DATE_EPOCH)" $(KERNEL_BUILD_DIR)/initrd.cpio)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_BZIP2),bzip2 -9 -c < $(KERNEL_BUILD_DIR)/initrd.cpio > $(KERNEL_BUILD_DIR)/initrd.cpio.bzip2)
-	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),gzip -f -S .gzip -9n $(KERNEL_BUILD_DIR)/initrd.cpio)
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),gzip -n -f -S .gzip -9n $(KERNEL_BUILD_DIR)/initrd.cpio)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZMA),$(STAGING_DIR_HOST)/bin/lzma e -lc1 -lp2 -pb2 $(KERNEL_BUILD_DIR)/initrd.cpio $(KERNEL_BUILD_DIR)/initrd.cpio.lzma)
 # ?	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZO),)
-	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_XZ),$(STAGING_DIR_HOST)/bin/xz -9 -fz --check=crc32 $(KERNEL_BUILD_DIR)/initrd.cpio)
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_XZ),$(STAGING_DIR_HOST)/bin/xz -T$(if $(filter 1,$(NPROC)),2,0) -9 -fz --check=crc32 $(KERNEL_BUILD_DIR)/initrd.cpio)
 # ?	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZ4),)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_ZSTD),$(STAGING_DIR_HOST)/bin/zstd -T0 -f -o $(KERNEL_BUILD_DIR)/initrd.cpio.zstd $(KERNEL_BUILD_DIR)/initrd.cpio)
 endif

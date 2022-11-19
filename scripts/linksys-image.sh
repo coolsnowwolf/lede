@@ -14,7 +14,7 @@
 #  <VERSION>        The version number of upgrade. Not checked so use arbitrary value (8 bytes)
 #  <TYPE>           Model of target device, padded (0x20) to (15 bytes)
 #  <CRC>      	    CRC checksum of the image to flash (8 byte)
-#  <padding>	    Padding (0x20) (7 bytes)
+#  <padding>	    Padding ('0' + 0x20 *7) (8 bytes)
 #  <signature>	    Signature of signer. Not checked so use arbitrary value (16 bytes)
 #  <padding>        Padding (0x00) (192 bytes)
 #  0x0A		    (1 byte)
@@ -58,7 +58,7 @@ IMG_OUT="${IMG_IN}.new"
 dd if="${IMG_IN}" of="${IMG_TMP_OUT}"
 CRC=$(printf "%08X" $(dd if="${IMG_IN}" bs=$(stat -c%s "${IMG_IN}") count=1|cksum| cut -d ' ' -f1))
 
-printf ".LINKSYS.01000409%-15s%-8s%-7s%-16s" "${TYPE}" "${CRC}" "" "K0000000F0246434" >> "${IMG_TMP_OUT}"
+printf ".LINKSYS.01000409%-15s%-8s%-8s%-16s" "${TYPE}" "${CRC}" "0" "K0000000F0246434" >> "${IMG_TMP_OUT}"
 
 dd if=/dev/zero bs=1 count=192 conv=notrunc >> "${IMG_TMP_OUT}"
 

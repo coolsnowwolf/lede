@@ -35,7 +35,7 @@ define autoreconf
 		$(patsubst %,rm -f %;,$(2)) \
 		$(foreach p,$(3), \
 			if [ -f $(p)/configure.ac ] || [ -f $(p)/configure.in ]; then \
-				[ -d $(p)/autom4te.cache ] && rm -rf autom4te.cache; \
+				[ -d $(p)/autom4te.cache ] && rm -rf $(p)/autom4te.cache; \
 				[ -e $(p)/config.rpath ] || \
 						ln -s $(SCRIPT_DIR)/config.rpath $(p)/config.rpath; \
 				touch NEWS AUTHORS COPYING ABOUT-NLS ChangeLog; \
@@ -113,7 +113,7 @@ ifneq ($(filter patch-libtool,$(PKG_FIXUP)),)
 endif
 
 ifneq ($(filter libtool,$(PKG_FIXUP)),)
-  PKG_BUILD_DEPENDS += libtool gettext libiconv
+  PKG_BUILD_DEPENDS += libtool
  ifeq ($(filter no-autoreconf,$(PKG_FIXUP)),)
   Hooks/Configure/Pre += autoreconf_target
  endif
@@ -124,7 +124,7 @@ ifneq ($(filter libtool-abiver,$(PKG_FIXUP)),)
 endif
 
 ifneq ($(filter libtool-ucxx,$(PKG_FIXUP)),)
-  PKG_BUILD_DEPENDS += libtool gettext libiconv
+  PKG_BUILD_DEPENDS += libtool
  ifeq ($(filter no-autoreconf,$(PKG_FIXUP)),)
   Hooks/Configure/Pre += autoreconf_target
  endif

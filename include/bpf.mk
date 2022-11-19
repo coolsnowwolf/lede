@@ -63,12 +63,14 @@ BPF_CFLAGS := \
 	-Wno-unused-label \
 	-O2 -emit-llvm -Xclang -disable-llvm-passes
 
+ifneq ($(CONFIG_HAS_BPF_TOOLCHAIN),)
 ifeq ($(DUMP),)
   CLANG_VER:=$(shell $(CLANG) -dM -E - < /dev/null | grep __clang_major__ | cut -d' ' -f3)
   CLANG_VER_VALID:=$(shell [ "$(CLANG_VER)" -ge "$(CLANG_MIN_VER)" ] && echo 1 )
   ifeq ($(CLANG_VER_VALID),)
     $(error ERROR: LLVM/clang version too old. Minimum required: $(CLANG_MIN_VER), found: $(CLANG_VER))
   endif
+endif
 endif
 
 define CompileBPF
