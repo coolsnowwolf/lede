@@ -340,7 +340,7 @@ static int show_matching_key_value(struct tffs_key_name_table *key_names)
 	for (uint32_t i = 0; i < key_names->size; i++) {
 		name = key_names->entries[i].val;
 
-		if (strncmp(name, name_filter, strlen(name)) == 0) {
+		if (strcmp(name, name_filter) == 0) {
 			if (find_entry(key_names->entries[i].id, &tmp)) {
 				print_entry_value(&tmp);
 				printf("\n");
