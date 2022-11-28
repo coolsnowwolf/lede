@@ -39,9 +39,10 @@ CMAKE_HOST_OPTIONS += \
 
 
 define Package/ucode/default
-  SECTION:=utils
-  CATEGORY:=Utilities
-  TITLE:=ucode - Tiny scripting and templating language
+  SUBMENU:=ucode
+  SECTION:=lang
+  CATEGORY:=Languages
+  TITLE:=Tiny scripting and templating language
 endef
 
 define Package/ucode
@@ -57,7 +58,10 @@ endef
 
 define Package/libucode
   $(Package/ucode/default)
-  TITLE+= - runtime library
+  SUBMENU:=
+  SECTION:=libs
+  CATEGORY:=Libraries
+  TITLE+= (library)
   ABI_VERSION:=$(PKG_ABI_VERSION)
   DEPENDS:=+libjson-c
 endef
@@ -129,7 +133,7 @@ define Package/ucode-mod-struct
 endef
 
 define Package/ucode-mod-struct/description
- The struct plugin implemnts Python 3 compatible struct.pack/unpack functionality.
+ The struct plugin implements Python 3 compatible struct.pack/unpack functionality.
 endef
 
 
