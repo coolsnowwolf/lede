@@ -916,6 +916,10 @@ define KernelPackage/zram/config
             bool "lz4"
             select PACKAGE_kmod-lib-lz4
 
+  config ZRAM_DEF_COMP_LZ4HC
+            bool "lz4-hc"
+            select PACKAGE_kmod-lib-lz4hc
+
   config ZRAM_DEF_COMP_ZSTD
             bool "zstd"
             select PACKAGE_kmod-lib-zstd
