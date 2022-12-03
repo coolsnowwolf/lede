@@ -2253,15 +2253,15 @@ static NDIS_STATUS AndesMTLoadFwMethod1(RTMP_ADAPTER *ad)
 
 	Ctl->Stage = FW_DOWNLOAD;
 
-	DBGPRINT(RT_DEBUG_OFF, ("FW Version:"));
+	printk(KERN_CONT "FW Version:");
 	for (loop = 0; loop < 10; loop++)
-		DBGPRINT(RT_DEBUG_OFF, ("%c", *(cap->FWImageName + cap->fw_len - 29 + loop)));
-	DBGPRINT(RT_DEBUG_OFF, ("\n"));
+		printk(KERN_CONT "%c", *(cap->FWImageName + cap->fw_len - 29 + loop));
+	printk(KERN_CONT "\n");
 
-	DBGPRINT(RT_DEBUG_OFF, ("FW Build Date:"));
+	printk(KERN_CONT "FW Build Date:");
 	for (loop = 0; loop < 15; loop++)
-		DBGPRINT(RT_DEBUG_OFF, ("%c", *(cap->FWImageName + cap->fw_len - 19 + loop)));
-	DBGPRINT(RT_DEBUG_OFF, ("\n"));
+		printk(KERN_CONT "%c", *(cap->FWImageName + cap->fw_len - 19 + loop));
+	printk(KERN_CONT "\n");
 
 	dl_len = (*(cap->FWImageName + cap->fw_len - 1) << 24) |
 				(*(cap->FWImageName + cap->fw_len - 2) << 16) |
