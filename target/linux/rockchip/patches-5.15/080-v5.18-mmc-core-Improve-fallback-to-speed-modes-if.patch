@@ -1,0 +1,54 @@
+From 3b6c472822f8bdeaa3cea8290f5b4a210dca5585 Mon Sep 17 00:00:00 2001
+From: Ulf Hansson <ulf.hansson@linaro.org>
+Date: Thu, 3 Mar 2022 17:45:22 +0100
+Subject: [PATCH] mmc: core: Improve fallback to speed modes if eMMC HS200
+ fails
+
+In the error path of mmc_select_hs200() we are trying our best to restore
+the card/host into a valid state. This makes sense, especially if we
+encounter a simple switch error (-EBADMSG). However, rather than then
+continue with using the legacy speed mode, let's try the other better speed
+modes first. Additionally, let's update the card->mmc_avail_type to avoid
+us from trying a broken HS200 mode again.
+
+In an Amlogic S905W based TV box where the switch to HS200 mode fails for
+the eMMC, this allows us to use the eMMC in DDR mode in favor of the legacy
+mode, which greatly improves the performance.
+
+Suggested-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Ulf Hansson <ulf.hansson@linaro.org>
+Tested-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://lore.kernel.org/r/20220303164522.129583-1-ulf.hansson@linaro.org
+---
+ drivers/mmc/core/mmc.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+--- a/drivers/mmc/core/mmc.c
++++ b/drivers/mmc/core/mmc.c
+@@ -1523,13 +1523,23 @@ static int mmc_select_timing(struct mmc_card *card)
+ 	if (!mmc_can_ext_csd(card))
+ 		goto bus_speed;
+ 
+-	if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS400ES)
++	if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS400ES) {
+ 		err = mmc_select_hs400es(card);
+-	else if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS200)
++		goto out;
++	}
++
++	if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS200) {
+ 		err = mmc_select_hs200(card);
+-	else if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS)
++		if (err == -EBADMSG)
++			card->mmc_avail_type &= ~EXT_CSD_CARD_TYPE_HS200;
++		else
++			goto out;
++	}
++
++	if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS)
+ 		err = mmc_select_hs(card);
+ 
++out:
+ 	if (err && err != -EBADMSG)
+ 		return err;
+ 
