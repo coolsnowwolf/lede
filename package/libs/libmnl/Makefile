@@ -22,6 +22,7 @@ PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 PKG_LICENSE:=LGPL-2.1+
+PKG_CPE_ID:=cpe:/a:netfilter:libmnl
 
 include $(INCLUDE_DIR)/package.mk
 
