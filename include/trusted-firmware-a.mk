@@ -81,6 +81,7 @@ define Build/Compile/Trusted-Firmware-A
 		$(if $(DTC),DTC="$(DTC)") \
 		PLAT=$(PLAT) \
 		BUILD_STRING="OpenWrt v$(PKG_VERSION)-$(PKG_RELEASE) ($(VARIANT))" \
+		$(if $(CONFIG_BINUTILS_VERSION_2_39),LDFLAGS="-no-warn-rwx-segments") \
 		$(TFA_MAKE_FLAGS)
 endef
 
