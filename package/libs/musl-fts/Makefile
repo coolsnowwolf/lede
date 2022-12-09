@@ -30,6 +30,7 @@ PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define Package/musl-fts
   SECTION:=libs
@@ -43,6 +44,7 @@ define Package/musl-fts/description
   The musl-fts package implements the fts(3) functions fts_open, fts_read, fts_children, fts_set and fts_close, which are missing in musl libc.
 endef
 
+HOST_CONFIGURE_ARGS += --disable-shared --with-pic
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
@@ -58,3 +60,4 @@ define Package/musl-fts/install
 endef
 
 $(eval $(call BuildPackage,musl-fts))
+$(eval $(call HostBuild))

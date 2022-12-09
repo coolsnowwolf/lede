@@ -2,9 +2,8 @@
 
 START=15
 
-EXTRA_COMMANDS="compact status"
-EXTRA_HELP="	compact Trigger compaction for all Z-RAM swap dev's
-status Print out information & statistics about Z-RAM swap devices"
+extra_command "compact" "Trigger compaction for all zram swap devices"
+extra_command "status" "Print out information & statistics about zram swap devices"
 
 ram_getsize()
 {
@@ -24,31 +23,6 @@ zram_getsize()	# in megabytes
 	else
 		echo "$zram_size"
 	fi
-}
-
-zram_applicable()
-{
-	local zram_dev="$1"
-
-	[ -e "$zram_dev" ] || {
-		logger -s -t zram_applicable -p daemon.crit "[ERROR] device '$zram_dev' not found"
-		return 1
-	}
-
-	[ -x /sbin/mkswap ] || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox mkswap' not installed"
-		return 1
-	}
-
-	[ -x /sbin/swapon ] || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox swapon' not installed"
-		return 1
-	}
-
-	[ -x /sbin/swapoff ] || {
-		logger -s -t zram_applicable -p daemon.err "[ERROR] 'BusyBox swapoff' not installed"
-		return 1
-	}
 }
 
 zram_dev()
@@ -86,15 +60,15 @@ zram_comp_algo()
 	local zram_comp_algo="$( uci -q get system.@system[0].zram_comp_algo )"
 
 	if [ -z "$zram_comp_algo" ]; then
-		# lzo-rle fails on small RAM devices, default to lzo, which is always available
+		# default to lzo, which is always available
 		zram_comp_algo="lzo"
 	fi
 
 	if [ $(grep -c "$zram_comp_algo" /sys/block/$( basename $dev )/comp_algorithm) -ne 0 ]; then
-		logger -s -t zram_comp_algo -p daemon.debug "Set compression algorithm '$zram_comp_algo' for zram '$dev'"
+		logger -s -t zram_comp_algo -p daemon.debug "set compression algorithm '$zram_comp_algo' for zram '$dev'"
 		echo $zram_comp_algo > "/sys/block/$( basename $dev )/comp_algorithm"
 	else
-		logger -s -t zram_comp_algo -p daemon.debug "Compression algorithm '$zram_comp_algo' is not supported for '$dev'"
+		logger -s -t zram_comp_algo -p daemon.debug "compression algorithm '$zram_comp_algo' is not supported for '$dev'"
 	fi
 }
 
@@ -105,7 +79,7 @@ zram_stats()
 
 	printf "\nGathering stats info for zram device \"$( basename "$1" )\"\n\n"
 
-	printf "Z-RAM\n-----\n"
+	printf "ZRAM\n----\n"
 	printf "%-25s - %s\n" "Block device" $zdev
 	awk '{ printf "%-25s - %d MiB\n", "Device size", $1/1024/1024 }' <$zdev/disksize
 	printf "%-25s - %s\n" "Compression algo" "$(cat $zdev/comp_algorithm)"
@@ -157,23 +131,31 @@ start()
 	}
 
 	if [ $( grep -cs zram /proc/swaps ) -ne 0 ]; then
-		logger -s -t zram_start -p daemon.notice "[OK] zram swap is already mounted"
+		logger -s -t zram_start -p daemon.notice "zram swap is already mounted"
 		return 1
 	fi
 
-	local zram_size="$( zram_getsize )"
 	local zram_dev="$( zram_getdev )"
-	zram_applicable "$zram_dev" || return 1
-	local zram_priority="$( uci -q get system.@system[0].zram_priority )"
-	zram_priority=${zram_priority:+-p $zram_priority}
 
-	logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MegaBytes)"
+	[ -e "$zram_dev" ] || {
+		logger -s -t zram_start -p daemon.crit "[ERROR] device '$zram_dev' not found"
+		return 1
+	}
+
+	local zram_size="$( zram_getsize )"
+	local zram_priority="$( uci -q get system.@system[0].zram_priority )"
+
+	if [ -z "$zram_priority" ]; then
+		zram_priority="100"
+	fi
+
+	logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MiB)"
 
 	zram_reset "$zram_dev" "enforcing defaults"
 	zram_comp_algo "$zram_dev"
 	echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename "$zram_dev" )/disksize"
-	/sbin/mkswap "$zram_dev"
-	/sbin/swapon -d $zram_priority "$zram_dev"
+	busybox mkswap "$zram_dev"
+	busybox swapon -d -p $zram_priority "$zram_dev"
 }
 
 stop()
@@ -182,7 +164,7 @@ stop()
 
 	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
 		logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
-		/sbin/swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
+		busybox swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
 		local dev_index="$( echo $zram_dev | grep -o "[0-9]*$" )"
 		if [ $dev_index -ne 0 ]; then
 			logger -s -t zram_stop -p daemon.debug "removing zram $zram_dev"

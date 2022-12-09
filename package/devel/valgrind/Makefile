@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=valgrind
-PKG_VERSION:=3.16.1
+PKG_VERSION:=3.20.0
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://sourceware.org/pub/valgrind/
-PKG_HASH:=c91f3a2f7b02db0f3bc99479861656154d241d2fdb265614ba918cc6720a33ca
+PKG_HASH:=8536c031dbe078d342f121fa881a9ecd205cb5a78e639005ad570011bdb9f3c6
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0+
@@ -33,7 +33,7 @@ include $(INCLUDE_DIR)/kernel.mk
 define Package/valgrind
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:=@mips||mipsel||i386||x86_64||powerpc||arm_v7||aarch64 +libpthread +librt
+  DEPENDS:=@mips||mipsel||mips64||mips64el||i386||x86_64||powerpc||arm_v7||aarch64 +libpthread +librt
   TITLE:=debugging and profiling tools for Linux
   URL:=http://www.valgrind.org
 endef

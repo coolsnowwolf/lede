@@ -25,6 +25,7 @@ endef
 # <https://wireless.wiki.kernel.org/en/users/drivers/ath10k/boardfiles>
 
 ALLWIFIBOARDS:= \
+  edgecore-eap102 \
 	gl-ax1800 \
 	gl-axt1800 \
 	qihoo_v6
@@ -84,6 +85,7 @@ endef
 # Place files in this directory as board-<devicename>.<qca4019|qca9888|qca9984>
 # Add $(eval $(call generate-ath11k-wifi-package,<devicename>,<display name>))
 
+$(eval $(call generate-ath11k-wifi-package,edgecore-eap102,Edgecore EAP102))
 $(eval $(call generate-ath11k-wifi-package,gl-ax1800,Gl.iNET AX1800))
 $(eval $(call generate-ath11k-wifi-package,gl-axt1800,Gl.iNET AXT1800))
 $(eval $(call generate-ath11k-wifi-package,qihoo_v6,QIHOO 360V6))

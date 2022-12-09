@@ -8,16 +8,17 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nettle
-PKG_VERSION:=3.7.3
+PKG_VERSION:=3.8.1
 PKG_RELEASE:=$(AUTORELEASE)
 PKG_USE_MIPS16:=0
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/nettle
-PKG_HASH:=661f5eb03f048a3b924c3a8ad2515d4068e40f67e774e8a26827658007e3bcf0
+PKG_HASH:=364f3e2b77cd7dcde83fd7c45219c834e54b0c75e428b6f894a23d12dd41cbfe
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
+PKG_CPE_ID:=cpe:/a:nettle_project:nettle
 PKG_BUILD_PARALLEL:=1
 
 PKG_CONFIG_DEPENDS := CONFIG_LIBNETTLE_MINI
@@ -44,7 +45,8 @@ CONFIGURE_ARGS += \
 	--enable-fat \
 	--disable-openssl \
 	--disable-documentation \
-	--enable-static
+	--enable-static \
+	$(if $(CONFIG_powerpc64), $(if $(CONFIG_USE_MUSL),--disable-assembler))
 
 ifeq ($(CONFIG_LIBNETTLE_MINI),y)
 CONFIGURE_ARGS += --enable-mini-gmp
