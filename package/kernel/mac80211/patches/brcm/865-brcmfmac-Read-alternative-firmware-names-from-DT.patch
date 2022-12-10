@@ -1,0 +1,187 @@
+From 4e32024cbb14230af3048e249e84f8c2b25ce45a Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 28 Oct 2021 15:03:16 +0100
+Subject: [PATCH] brcmfmac: Read alternative firmware names from DT
+
+Add the ability to load the names of alternative firmwares from the
+Device Tree node. This permits separate firmwares for 43436s and 43438
+and allows downstream firmwares to coexist with upstream.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/of.c | 36 ++++++++++++++
+ .../wireless/broadcom/brcm80211/brcmfmac/of.h |  7 +++
+ .../broadcom/brcm80211/brcmfmac/sdio.c        | 47 +++++++++++++++++--
+ 3 files changed, 87 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.c
+@@ -11,6 +11,7 @@
+ #include "debug.h"
+ #include "core.h"
+ #include "common.h"
++#include "firmware.h"
+ #include "of.h"
+ 
+ static int brcmf_of_get_country_codes(struct device *dev,
+@@ -167,3 +168,38 @@ void brcmf_of_probe(struct device *dev,
+ 	sdio->oob_irq_nr = irq;
+ 	sdio->oob_irq_flags = irqf;
+ }
++
++struct brcmf_firmware_mapping *
++brcmf_of_fwnames(struct device *dev, u32 *fwname_count)
++{
++	struct device_node *np = dev->of_node;
++	struct brcmf_firmware_mapping *fwnames;
++	struct device_node *map_np, *fw_np;
++	int of_count;
++	int count = 0;
++
++	map_np = of_get_child_by_name(np, "firmwares");
++	of_count = of_get_child_count(map_np);
++	if (!of_count)
++		return NULL;
++
++	fwnames = devm_kcalloc(dev, of_count,
++			       sizeof(struct brcmf_firmware_mapping),
++			       GFP_KERNEL);
++
++	for_each_child_of_node(map_np, fw_np)
++	{
++		struct brcmf_firmware_mapping *cur = &fwnames[count];
++
++		if (of_property_read_u32(fw_np, "chipid", &cur->chipid) ||
++		    of_property_read_u32(fw_np, "revmask", &cur->revmask))
++			continue;
++		cur->fw_base = of_get_property(fw_np, "fw_base", NULL);
++		if (cur->fw_base)
++			count++;
++	}
++
++	*fwname_count = count;
++
++	return count ? fwnames : NULL;
++}
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.h
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/of.h
+@@ -5,9 +5,16 @@
+ #ifdef CONFIG_OF
+ void brcmf_of_probe(struct device *dev, enum brcmf_bus_type bus_type,
+ 		    struct brcmf_mp_device *settings);
++struct brcmf_firmware_mapping *
++brcmf_of_fwnames(struct device *dev, u32 *map_count);
+ #else
+ static void brcmf_of_probe(struct device *dev, enum brcmf_bus_type bus_type,
+ 			   struct brcmf_mp_device *settings)
+ {
+ }
++static struct brcmf_firmware_mapping *
++brcmf_of_fwnames(struct device *dev, u32 *map_count)
++{
++	return NULL;
++}
+ #endif /* CONFIG_OF */
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/sdio.c
+@@ -35,6 +35,7 @@
+ #include "core.h"
+ #include "common.h"
+ #include "bcdc.h"
++#include "of.h"
+ 
+ #define DCMD_RESP_TIMEOUT	msecs_to_jiffies(2500)
+ #define CTL_DONE_TIMEOUT	msecs_to_jiffies(2500)
+@@ -634,7 +635,7 @@ MODULE_FIRMWARE(BRCMF_FW_DEFAULT_PATH "b
+ /* per-board firmware binaries */
+ MODULE_FIRMWARE(BRCMF_FW_DEFAULT_PATH "brcmfmac*-sdio.*.bin");
+ 
+-static const struct brcmf_firmware_mapping brcmf_sdio_fwnames[] = {
++static const struct brcmf_firmware_mapping sdio_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43143_CHIP_ID, 0xFFFFFFFF, 43143),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x0000001F, 43241B0),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43241_CHIP_ID, 0x00000020, 43241B4),
+@@ -662,6 +663,9 @@ static const struct brcmf_firmware_mappi
+ 	BRCMF_FW_ENTRY(CY_CC_43752_CHIP_ID, 0xFFFFFFFF, 43752)
+ };
+ 
++static const struct brcmf_firmware_mapping *brcmf_sdio_fwnames = sdio_fwnames;
++static u32 brcmf_sdio_fwnames_count = ARRAY_SIZE(sdio_fwnames);
++
+ #define TXCTL_CREDITS	2
+ 
+ static void pkt_align(struct sk_buff *p, int len, int align)
+@@ -4192,6 +4196,9 @@ static const struct brcmf_bus_ops brcmf_
+ #define BRCMF_SDIO_FW_NVRAM	1
+ #define BRCMF_SDIO_FW_CLM	2
+ 
++static struct brcmf_fw_request *
++brcmf_sdio_prepare_fw_request(struct brcmf_sdio *bus);
++
+ static void brcmf_sdio_firmware_callback(struct device *dev, int err,
+ 					 struct brcmf_fw_request *fwreq)
+ {
+@@ -4207,6 +4214,22 @@ static void brcmf_sdio_firmware_callback
+ 
+ 	brcmf_dbg(TRACE, "Enter: dev=%s, err=%d\n", dev_name(dev), err);
+ 
++	if (err && brcmf_sdio_fwnames != sdio_fwnames) {
++		/* Try again with the standard firmware names */
++		brcmf_sdio_fwnames = sdio_fwnames;
++		brcmf_sdio_fwnames_count = ARRAY_SIZE(sdio_fwnames);
++		kfree(fwreq);
++		fwreq = brcmf_sdio_prepare_fw_request(bus);
++		if (!fwreq) {
++			err = -ENOMEM;
++			goto fail;
++		}
++		err = brcmf_fw_get_firmwares(dev, fwreq,
++					     brcmf_sdio_firmware_callback);
++		if (!err)
++			return;
++	}
++
+ 	if (err)
+ 		goto fail;
+ 
+@@ -4417,7 +4440,7 @@ brcmf_sdio_prepare_fw_request(struct brc
+ 
+ 	fwreq = brcmf_fw_alloc_request(bus->ci->chip, bus->ci->chiprev,
+ 				       brcmf_sdio_fwnames,
+-				       ARRAY_SIZE(brcmf_sdio_fwnames),
++				       brcmf_sdio_fwnames_count,
+ 				       fwnames, ARRAY_SIZE(fwnames));
+ 	if (!fwreq)
+ 		return NULL;
+@@ -4437,6 +4460,9 @@ struct brcmf_sdio *brcmf_sdio_probe(stru
+ 	struct brcmf_sdio *bus;
+ 	struct workqueue_struct *wq;
+ 	struct brcmf_fw_request *fwreq;
++	struct brcmf_firmware_mapping *of_fwnames, *fwnames = NULL;
++	const int fwname_size = sizeof(struct brcmf_firmware_mapping);
++	u32 of_fw_count;
+ 
+ 	brcmf_dbg(TRACE, "Enter\n");
+ 
+@@ -4519,6 +4545,21 @@ struct brcmf_sdio *brcmf_sdio_probe(stru
+ 
+ 	brcmf_dbg(INFO, "completed!!\n");
+ 
++	of_fwnames = brcmf_of_fwnames(sdiodev->dev, &of_fw_count);
++	if (of_fwnames)
++		fwnames = devm_kcalloc(sdiodev->dev,
++				       of_fw_count + brcmf_sdio_fwnames_count,
++				       fwname_size, GFP_KERNEL);
++
++	if (fwnames) {
++		/* The array is scanned in order, so overrides come first */
++		memcpy(fwnames, of_fwnames, of_fw_count * fwname_size);
++		memcpy(fwnames + of_fw_count, sdio_fwnames,
++		       brcmf_sdio_fwnames_count * fwname_size);
++		brcmf_sdio_fwnames = fwnames;
++		brcmf_sdio_fwnames_count += of_fw_count;
++	}
++
+ 	fwreq = brcmf_sdio_prepare_fw_request(bus);
+ 	if (!fwreq) {
+ 		ret = -ENOMEM;
