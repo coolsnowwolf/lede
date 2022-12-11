@@ -96,7 +96,7 @@ ucidef_set_interfaces_lan_wan() {
 
 ucidef_set_bridge_device() {
 	json_select_object bridge
-	json_add_string name "${1:switch0}"
+	json_add_string name "${1:-switch0}"
 	json_select ..
 }
 
