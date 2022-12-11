@@ -114,7 +114,7 @@ NDIS_STATUS RTMPAllocAdapterBlock(VOID *handle, VOID **ppAdapter)
 			pAd->OS_Cookie = handle;
 			((POS_COOKIE)(handle))->pAd_va = (UINT32)pAd;
 		}
-		DBGPRINT(RT_DEBUG_OFF, ("\n\n=== pAd = %p, size = %d ===\n\n", pAd, sizeof(RTMP_ADAPTER)));
+		DBGPRINT(RT_DEBUG_OFF, ("\n=== pAd = %p, size = %d ===\n", pAd, sizeof(RTMP_ADAPTER)));
 
 		if (RtmpOsStatsAlloc(&pAd->stats, &pAd->iw_stats) == FALSE)
 		{
