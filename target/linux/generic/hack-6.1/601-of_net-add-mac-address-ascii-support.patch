@@ -1,0 +1,112 @@
+From: Yousong Zhou <yszhou4tech@gmail.com>
+Subject: [PATCH] ath79: add nvmem cell mac-address-ascii support
+
+This is needed for devices with mac address stored in ascii format, e.g.
+HiWiFi HC6361 to be ported in the following patch.
+
+Submitted-by: Yousong Zhou <yszhou4tech@gmail.com>
+---
+ net/ethernet/eth.c                            | 83 ++++++++++++------
+ 1 files changed, 72 insertions(+), 11 deletions(-)
+
+--- a/net/ethernet/eth.c
++++ b/net/ethernet/eth.c
+@@ -531,6 +531,63 @@ int eth_platform_get_mac_address(struct
+ }
+ EXPORT_SYMBOL(eth_platform_get_mac_address);
+ 
++static void *nvmem_cell_get_mac_address(struct nvmem_cell *cell)
++{
++	size_t len;
++	void *mac;
++
++	mac = nvmem_cell_read(cell, &len);
++	if (IS_ERR(mac))
++		return PTR_ERR(mac);
++	if (len != ETH_ALEN) {
++		kfree(mac);
++		return ERR_PTR(-EINVAL);
++	}
++	return mac;
++}
++
++static void *nvmem_cell_get_mac_address_ascii(struct nvmem_cell *cell)
++{
++	size_t len;
++	int ret;
++	void *mac_ascii;
++	u8 *mac;
++
++	mac_ascii = nvmem_cell_read(cell, &len);
++	if (IS_ERR(mac_ascii))
++		return PTR_ERR(mac_ascii);
++	if (len != ETH_ALEN*2+5) {
++		kfree(mac_ascii);
++		return ERR_PTR(-EINVAL);
++	}
++	mac = kmalloc(ETH_ALEN, GFP_KERNEL);
++	if (!mac) {
++		kfree(mac_ascii);
++		return ERR_PTR(-ENOMEM);
++	}
++	ret = sscanf(mac_ascii, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
++				&mac[0], &mac[1], &mac[2],
++				&mac[3], &mac[4], &mac[5]);
++	kfree(mac_ascii);
++	if (ret == ETH_ALEN)
++		return mac;
++	kfree(mac);
++	return ERR_PTR(-EINVAL);
++}
++
++static struct nvmem_cell_mac_address_property {
++	char *name;
++	void *(*read)(struct nvmem_cell *);
++} nvmem_cell_mac_address_properties[] = {
++	{
++		.name = "mac-address",
++		.read = nvmem_cell_get_mac_address,
++	}, {
++		.name = "mac-address-ascii",
++		.read = nvmem_cell_get_mac_address_ascii,
++	},
++};
++
+ /**
+  * platform_get_ethdev_address - Set netdev's MAC address from a given device
+  * @dev:	Pointer to the device
+@@ -564,19 +621,23 @@ int nvmem_get_mac_address(struct device
+ {
+ 	struct nvmem_cell *cell;
+ 	const void *mac;
+-	size_t len;
++	struct nvmem_cell_mac_address_property *property;
++	int i;
+ 
+-	cell = nvmem_cell_get(dev, "mac-address");
+-	if (IS_ERR(cell))
+-		return PTR_ERR(cell);
+-
+-	mac = nvmem_cell_read(cell, &len);
+-	nvmem_cell_put(cell);
+-
+-	if (IS_ERR(mac))
+-		return PTR_ERR(mac);
++	for (i = 0; i < ARRAY_SIZE(nvmem_cell_mac_address_properties); i++) {
++		property = &nvmem_cell_mac_address_properties[i];
++		cell = nvmem_cell_get(dev, property->name);
++		if (IS_ERR(cell)) {
++			if (i == ARRAY_SIZE(nvmem_cell_mac_address_properties) - 1)
++				return PTR_ERR(cell);
++			continue;
++		}
++		mac = property->read(cell);
++		nvmem_cell_put(cell);
++		break;
++	}
+ 
+-	if (len != ETH_ALEN || !is_valid_ether_addr(mac)) {
++	if (!is_valid_ether_addr(mac)) {
+ 		kfree(mac);
+ 		return -EINVAL;
+ 	}

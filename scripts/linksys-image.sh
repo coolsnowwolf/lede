@@ -17,7 +17,6 @@
 #  <padding>	    Padding ('0' + 0x20 *7) (8 bytes)
 #  <signature>	    Signature of signer. Not checked so use arbitrary value (16 bytes)
 #  <padding>        Padding (0x00) (192 bytes)
-#  0x0A		    (1 byte)
 
 ## version history
 # * version 1: initial commit
@@ -61,7 +60,5 @@ CRC=$(printf "%08X" $(dd if="${IMG_IN}" bs=$(stat -c%s "${IMG_IN}") count=1|cksu
 printf ".LINKSYS.01000409%-15s%-8s%-8s%-16s" "${TYPE}" "${CRC}" "0" "K0000000F0246434" >> "${IMG_TMP_OUT}"
 
 dd if=/dev/zero bs=1 count=192 conv=notrunc >> "${IMG_TMP_OUT}"
-
-printf '\12' >> "${IMG_TMP_OUT}"
 
 cp "${IMG_TMP_OUT}" "${IMG_OUT}"

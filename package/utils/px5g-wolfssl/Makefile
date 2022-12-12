@@ -5,12 +5,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=px5g-wolfssl
-PKG_RELEASE:=$(COMMITCOUNT)
+PKG_RELEASE:=$(COMMITCOUNT).1
 PKG_LICENSE:=GPL-2.0-or-later
 
 PKG_USE_MIPS16:=0
 
 PKG_MAINTAINER:=Paul Spooren <mail@aparcar.org>
+
+PKG_CONFIG_DEPENDS:=CONFIG_WOLFSSL_ALT_NAMES
 
 include $(INCLUDE_DIR)/package.mk
 

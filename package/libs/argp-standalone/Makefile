@@ -34,8 +34,10 @@ define Package/argp-standalone/description
 endef
 
 MAKE_FLAGS += \
-	CFLAGS="$(TARGET_CFLAGS) $(FPIC)"
+	CFLAGS="$(TARGET_CFLAGS) $(FPIC) -std=gnu89"
 
+HOST_MAKE_FLAGS += \
+	CFLAGS="$(HOST_CFLAGS) $(FPIC) -std=gnu89"
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
