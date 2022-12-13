@@ -1138,7 +1138,7 @@ $(eval $(call KernelPackage,usb-net-aqc111))
 
 define KernelPackage/usb-net-asix
   TITLE:=Kernel module for USB-to-Ethernet Asix convertors
-  DEPENDS:=+kmod-libphy +(LINUX_5_15||LINUX_6_0):kmod-mdio-devres
+  DEPENDS:=+kmod-libphy +(LINUX_5_15||LINUX_6_0||LINUX_6_1):kmod-mdio-devres
   KCONFIG:=CONFIG_USB_NET_AX8817X
   FILES:= \
 	$(LINUX_DIR)/drivers/$(USBNET_DIR)/asix.ko \

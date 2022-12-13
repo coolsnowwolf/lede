@@ -28,7 +28,9 @@ define KernelPackage/backlight
 		CONFIG_BACKLIGHT_ADP8870=n \
 		CONFIG_BACKLIGHT_OT200=n \
 		CONFIG_BACKLIGHT_PM8941_WLED=n
-	FILES:=$(LINUX_DIR)/drivers/video/backlight/backlight.ko
+	FILES:=$(LINUX_DIR)/drivers/video/backlight/backlight.ko \
+    $(LINUX_DIR)/drivers/acpi/video.ko@ge6.1 \
+    $(LINUX_DIR)/drivers/platform/x86/wmi.ko@ge6.1 
 	AUTOLOAD:=$(call AutoProbe,video backlight)
 endef
 
@@ -244,7 +246,7 @@ define KernelPackage/drm
   TITLE:=Direct Rendering Manager (DRM) support
   HIDDEN:=1
   DEPENDS:=+kmod-dma-buf +kmod-i2c-core +kmod-i2c-algo-bit +PACKAGE_kmod-backlight:kmod-backlight \
-	+(LINUX_5_15||LINUX_6_0):kmod-fb
+	+(LINUX_5_15||LINUX_6_0||LINUX_6_1):kmod-fb
   KCONFIG:=	\
 	CONFIG_DRM	\
 	CONFIG_DRM_PANEL_ORIENTATION_QUIRKS=y	\
@@ -266,7 +268,7 @@ $(eval $(call KernelPackage,drm))
 define KernelPackage/drm-buddy
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=A page based buddy allocator
-  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-drm @LINUX_6_0
+  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-drm @(LINUX_6_0||LINUX_6_1)
   KCONFIG:=CONFIG_DRM_BUDDY
   FILES:= $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko
   AUTOLOAD:=$(call AutoProbe,drm_buddy)
@@ -311,7 +313,7 @@ $(eval $(call KernelPackage,drm-kms-helper))
 define KernelPackage/drm-display-helper
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM helpers for display adapters drivers
-  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm +TARGET_x86:kmod-drm-buddy @LINUX_6_0
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm +TARGET_x86:kmod-drm-buddy @(LINUX_6_0||LINUX_6_1)
   KCONFIG:=CONFIG_DRM_DISPLAY_HELPER
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko
   AUTOLOAD:=$(call AutoProbe,drm_display_helper)
@@ -328,7 +330,7 @@ define KernelPackage/drm-amdgpu
   TITLE:=AMDGPU DRM support
   DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
 	+kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware \
-	+LINUX_6_0:kmod-drm-display-helper
+	+(LINUX_6_0||LINUX_6_1):kmod-drm-display-helper
   KCONFIG:=CONFIG_DRM_AMDGPU \
 	CONFIG_DRM_AMDGPU_SI=y \
 	CONFIG_DRM_AMDGPU_CIK=y \
@@ -1103,7 +1105,7 @@ define KernelPackage/drm-i915
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel GPU drm support
   DEPENDS:=@TARGET_x86 +kmod-drm-ttm +kmod-drm-kms-helper +i915-firmware \
-	+LINUX_6_0:kmod-drm-display-helper
+	+(LINUX_6_0||LINUX_6_1):kmod-drm-display-helper
   KCONFIG:= \
 	CONFIG_INTEL_GTT \
 	CONFIG_DRM_I915 \

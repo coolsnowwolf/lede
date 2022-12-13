@@ -1,0 +1,175 @@
+From 3b6115d6b57a263bdc8c9b1df273bd4a7955eead Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sat, 8 Jul 2017 08:16:31 +0200
+Subject: debloat: add some debloat patches, strip down procfs and make O_DIRECT support optional, saves ~15K after lzma on MIPS
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ net/Kconfig         | 3 +++
+ net/core/Makefile   | 3 ++-
+ net/core/sock.c     | 2 ++
+ net/ipv4/Kconfig    | 1 +
+ net/netlink/Kconfig | 1 +
+ net/packet/Kconfig  | 1 +
+ net/unix/Kconfig    | 1 +
+ 7 files changed, 11 insertions(+), 1 deletion(-)
+
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -104,6 +104,9 @@ source "net/mptcp/Kconfig"
+ 
+ endif # if INET
+ 
++config SOCK_DIAG
++	bool
++
+ config NETWORK_SECMARK
+ 	bool "Security Marking"
+ 	help
+--- a/net/core/Makefile
++++ b/net/core/Makefile
+@@ -11,11 +11,12 @@ obj-$(CONFIG_SYSCTL) += sysctl_net_core.
+ 
+ obj-y		     += dev.o dev_addr_lists.o dst.o netevent.o \
+ 			neighbour.o rtnetlink.o utils.o link_watch.o filter.o \
+-			sock_diag.o dev_ioctl.o tso.o sock_reuseport.o \
++ 			dev_ioctl.o tso.o sock_reuseport.o \
+ 			fib_notifier.o xdp.o flow_offload.o gro.o
+ 
+ obj-$(CONFIG_NETDEV_ADDR_LIST_TEST) += dev_addr_lists_test.o
+ 
++obj-$(CONFIG_SOCK_DIAG) += sock_diag.o
+ obj-y += net-sysfs.o
+ obj-$(CONFIG_PAGE_POOL) += page_pool.o
+ obj-$(CONFIG_PROC_FS) += net-procfs.o
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -114,6 +114,7 @@
+ #include <linux/memcontrol.h>
+ #include <linux/prefetch.h>
+ #include <linux/compat.h>
++#include <linux/cookie.h>
+ 
+ #include <linux/uaccess.h>
+ 
+@@ -145,6 +146,7 @@
+ 
+ static DEFINE_MUTEX(proto_list_mutex);
+ static LIST_HEAD(proto_list);
++DEFINE_COOKIE(sock_cookie);
+ 
+ static void sock_def_write_space_wfree(struct sock *sk);
+ static void sock_def_write_space(struct sock *sk);
+@@ -582,6 +584,18 @@ discard_and_relse:
+ }
+ EXPORT_SYMBOL(__sk_receive_skb);
+ 
++u64 __sock_gen_cookie(struct sock *sk)
++{
++	while (1) {
++		u64 res = atomic64_read(&sk->sk_cookie);
++
++		if (res)
++			return res;
++		res = gen_cookie_next(&sock_cookie);
++		atomic64_cmpxchg(&sk->sk_cookie, 0, res);
++	}
++}
++
+ INDIRECT_CALLABLE_DECLARE(struct dst_entry *ip6_dst_check(struct dst_entry *,
+ 							  u32));
+ INDIRECT_CALLABLE_DECLARE(struct dst_entry *ipv4_dst_check(struct dst_entry *,
+@@ -2172,9 +2186,11 @@ static void __sk_free(struct sock *sk)
+ 	if (likely(sk->sk_net_refcnt))
+ 		sock_inuse_add(sock_net(sk), -1);
+ 
++#ifdef CONFIG_SOCK_DIAG
+ 	if (unlikely(sk->sk_net_refcnt && sock_diag_has_destroy_listeners(sk)))
+ 		sock_diag_broadcast_destroy(sk);
+ 	else
++#endif
+ 		sk_destruct(sk);
+ }
+ 
+--- a/net/core/sock_diag.c
++++ b/net/core/sock_diag.c
+@@ -12,7 +12,6 @@
+ #include <linux/tcp.h>
+ #include <linux/workqueue.h>
+ #include <linux/nospec.h>
+-#include <linux/cookie.h>
+ #include <linux/inet_diag.h>
+ #include <linux/sock_diag.h>
+ 
+@@ -21,20 +20,6 @@ static int (*inet_rcv_compat)(struct sk_
+ static DEFINE_MUTEX(sock_diag_table_mutex);
+ static struct workqueue_struct *broadcast_wq;
+ 
+-DEFINE_COOKIE(sock_cookie);
+-
+-u64 __sock_gen_cookie(struct sock *sk)
+-{
+-	while (1) {
+-		u64 res = atomic64_read(&sk->sk_cookie);
+-
+-		if (res)
+-			return res;
+-		res = gen_cookie_next(&sock_cookie);
+-		atomic64_cmpxchg(&sk->sk_cookie, 0, res);
+-	}
+-}
+-
+ int sock_diag_check_cookie(struct sock *sk, const __u32 *cookie)
+ {
+ 	u64 res;
+--- a/net/ipv4/Kconfig
++++ b/net/ipv4/Kconfig
+@@ -423,6 +423,7 @@ config INET_TUNNEL
+ 
+ config INET_DIAG
+ 	tristate "INET: socket monitoring interface"
++	select SOCK_DIAG
+ 	default y
+ 	help
+ 	  Support for INET (TCP, DCCP, etc) socket monitoring interface used by
+--- a/net/netlink/Kconfig
++++ b/net/netlink/Kconfig
+@@ -5,6 +5,7 @@
+ 
+ config NETLINK_DIAG
+ 	tristate "NETLINK: socket monitoring interface"
++	select SOCK_DIAG
+ 	default n
+ 	help
+ 	  Support for NETLINK socket monitoring interface used by the ss tool.
+--- a/net/netlink/genetlink.c
++++ b/net/netlink/genetlink.c
+@@ -380,8 +380,6 @@ static int genl_validate_ops(const struc
+ 		genl_get_cmd_by_index(i, family, &op);
+ 		if (op.dumpit == NULL && op.doit == NULL)
+ 			return -EINVAL;
+-		if (WARN_ON(op.cmd >= family->resv_start_op && op.validate))
+-			return -EINVAL;
+ 		for (j = i + 1; j < genl_get_cmd_cnt(family); j++) {
+ 			struct genl_ops op2;
+ 
+--- a/net/packet/Kconfig
++++ b/net/packet/Kconfig
+@@ -19,6 +19,7 @@ config PACKET
+ config PACKET_DIAG
+ 	tristate "Packet: sockets monitoring interface"
+ 	depends on PACKET
++	select SOCK_DIAG
+ 	default n
+ 	help
+ 	  Support for PF_PACKET sockets monitoring interface used by the ss tool.
+--- a/net/unix/Kconfig
++++ b/net/unix/Kconfig
+@@ -33,6 +33,7 @@ config	AF_UNIX_OOB
+ config UNIX_DIAG
+ 	tristate "UNIX: socket monitoring interface"
+ 	depends on UNIX
++	select SOCK_DIAG
+ 	default n
+ 	help
+ 	  Support for UNIX socket monitoring interface used by the ss tool.
