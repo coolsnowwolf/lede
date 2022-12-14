@@ -1154,7 +1154,6 @@ endef
 
 $(eval $(call KernelPackage,usb-net-asix))
 
-
 define KernelPackage/usb-net-asix-ax88179
   TITLE:=Kernel module for USB-to-Gigabit-Ethernet Asix convertors
   DEPENDS:=+kmod-libphy
