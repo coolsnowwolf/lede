@@ -33,6 +33,7 @@ dnsmasq_ignore_opt() {
 		[ "${dnsmasq_features#* DNSSEC }" = "$dnsmasq_features" ] || dnsmasq_has_dnssec=1
 		[ "${dnsmasq_features#* TFTP }" = "$dnsmasq_features" ] || dnsmasq_has_tftp=1
 		[ "${dnsmasq_features#* ipset }" = "$dnsmasq_features" ] || dnsmasq_has_ipset=1
+		[ "${dnsmasq_features#* nftset }" = "$dnsmasq_features" ] || dnsmasq_has_nftset=1
 	fi
 
 	case "$opt" in
@@ -55,6 +56,8 @@ dnsmasq_ignore_opt() {
 			[ -z "$dnsmasq_has_tftp" ] ;;
 		ipset)
 			[ -z "$dnsmasq_has_ipset" ] ;;
+		nftset)
+			[ -z "$dnsmasq_has_nftset" ] ;;
 		*)
 			return 1
 	esac
@@ -169,10 +172,6 @@ append_address() {
 	xappend "--address=$1"
 }
 
-append_ipset() {
-	xappend "--ipset=$1"
-}
-
 append_connmark_allowlist() {
 	xappend "--connmark-allowlist=$1"
 }
@@ -205,8 +204,12 @@ ismounted() {
 	return 1
 }
 
-append_addnhosts() {
+append_extramount() {
 	ismounted "$1" || append EXTRA_MOUNT "$1"
+}
+
+append_addnhosts() {
+	append_extramount "$1"
 	xappend "--addn-hosts=$1"
 }
 
@@ -796,29 +799,60 @@ dhcp_relay_add() {
 
 dnsmasq_ipset_add() {
 	local cfg="$1"
-	local ipsets
+	local ipsets nftsets domains
 
 	add_ipset() {
 		ipsets="${ipsets:+$ipsets,}$1"
 	}
 
-	add_domain() {
-		xappend "--ipset=/$1/$ipsets"
+	add_nftset() {
+		local IFS=,
+		for set in $1; do
+			local fam="$family"
+			[ -n "$fam" ] || fam=$(echo "$set" | sed -nre \
+				's#^.*[^0-9]([46])$|^.*[-_]([46])[-_].*$|^([46])[^0-9].*$#\1\2\3#p')
+			[ -n "$fam" ] || \
+				fam=$(nft -t list set "$table_family" "$table" "$set" 2>&1 | sed -nre \
+				's#^\t\ttype .*\bipv([46])_addr\b.*$#\1#p')
+
+			[ -n "$fam" ] || \
+				logger -t dnsmasq "Cannot infer address family from non-existent nftables set '$set'"
+
+			nftsets="${nftsets:+$nftsets,}${fam:+$fam#}$table_family#$table#$set"
+		done
 	}
 
-	config_list_foreach "$cfg" "name" add_ipset
+	add_domain() {
+		# leading '/' is expected
+		domains="$domains/$1"
+	}
 
-	if [ -z "$ipsets" ]; then
+	config_get table "$cfg" table 'fw4'
+	config_get table_family "$cfg" table_family 'inet'
+	if [ "$table_family" = "ip" ] ; then
+		family="4"
+	elif [ "$table_family" = "ip6" ] ; then
+		family="6"
+	else
+		config_get family "$cfg" family
+	fi
+
+	config_list_foreach "$cfg" "name" add_ipset
+	config_list_foreach "$cfg" "name" add_nftset
+	config_list_foreach "$cfg" "domain" add_domain
+
+	if [ -z "$ipsets" ] || [ -z "$nftsets" ] || [ -z "$domains" ]; then
 		return 0
 	fi
 
-	config_list_foreach "$cfg" "domain" add_domain
+	xappend "--ipset=$domains/$ipsets"
+	xappend "--nftset=$domains/$nftsets"
 }
 
 dnsmasq_start()
 {
 	local cfg="$1"
-	local disabled user_dhcpscript
+	local disabled user_dhcpscript logfacility
 	local resolvfile resolvdir localuse=0
 
 	config_get_bool disabled "$cfg" disabled 0
@@ -934,9 +968,7 @@ dnsmasq_start()
 	append_bool "$cfg" filter_a "--filter-A"
 
 	append_parm "$cfg" logfacility "--log-facility"
-
-	append_parm "$cfg" mini_ttl "--min-ttl"
-
+	config_get logfacility "$cfg" "logfacility"
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
 	append_parm "$cfg" port "--port"
@@ -951,7 +983,6 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "server" append_server
 	config_list_foreach "$cfg" "rev_server" append_rev_server
 	config_list_foreach "$cfg" "address" append_address
-	config_list_foreach "$cfg" "ipset" append_ipset
 
 	local connmark_allowlist_enable
 	config_get connmark_allowlist_enable "$cfg" connmark_allowlist_enable 0
@@ -975,7 +1006,14 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
-	append_parm "$cfg" "serversfile" "--servers-file"
+
+	local serversfile
+	config_get serversfile "$cfg" "serversfile"
+	[ -n "$serversfile" ] && {
+		xappend "--servers-file=$serversfile"
+		append EXTRA_MOUNT "$serversfile"
+	}
+
 	append_parm "$cfg" "tftp_root" "--tftp-root"
 	append_parm "$cfg" "dhcp_boot" "--dhcp-boot"
 	append_parm "$cfg" "local_ttl" "--local-ttl"
@@ -1137,7 +1175,6 @@ dnsmasq_start()
 	config_foreach filter_dnsmasq ipset dnsmasq_ipset_add "$cfg"
 	echo >> $CONFIGFILE_TMP
 
-	echo >> $CONFIGFILE_TMP
 	mv -f $CONFIGFILE_TMP $CONFIGFILE
 	mv -f $HOSTFILE_TMP $HOSTFILE
 
@@ -1153,18 +1190,29 @@ dnsmasq_start()
 		done
 	}
 
+	config_list_foreach "$cfg" addnmount append_extramount
+
 	procd_open_instance $cfg
 	procd_set_param command $PROG -C $CONFIGFILE -k -x /var/run/dnsmasq/dnsmasq."${cfg}".pid
 	procd_set_param file $CONFIGFILE
 	[ -n "$user_dhcpscript" ] && procd_set_param env USER_DHCPSCRIPT="$user_dhcpscript"
 	procd_set_param respawn
 
+	local instance_ifc instance_netdev
+	config_get instance_ifc "$cfg" interface
+	[ -n "$instance_ifc" ] && network_get_device instance_netdev "$instance_ifc" &&
+		[ -n "$instance_netdev" ] && procd_set_param netdev $instance_netdev
+
 	procd_add_jail dnsmasq ubus log
 	procd_add_jail_mount $CONFIGFILE $DHCPBOGUSHOSTNAMEFILE $DHCPSCRIPT $DHCPSCRIPT_DEPENDS
 	procd_add_jail_mount $EXTRA_MOUNT $RFC6761FILE $TRUSTANCHORSFILE
 	procd_add_jail_mount $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript
 	procd_add_jail_mount /etc/passwd /etc/group /etc/TZ /etc/hosts /etc/ethers
-	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
+	procd_add_jail_mount_rw /var/run/dnsmasq/ /var/etc/ $leasefile
+	case "$logfacility" in */*)
+		[ ! -e "$logfacility" ] && touch "$logfacility"
+		procd_add_jail_mount_rw "$logfacility"
+	esac
 
 	procd_close_instance
 }
