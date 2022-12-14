@@ -40,6 +40,15 @@ define Device/friendlyarm_nanopi-neo2
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo2
 
+define Device/friendlyarm_nanopi-r1s-h5
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := Nanopi R1S H5
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-usb-net-rtl8152
+  SUPPORTED_DEVICES:=nanopi-r1s-h5
+  $(Device/sun50i-h5)
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r1s-h5
+
 define Device/libretech_all-h3-cc-h5
   DEVICE_VENDOR := Libre Computer
   DEVICE_MODEL := ALL-H3-CC
