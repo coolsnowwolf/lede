@@ -121,6 +121,16 @@ define Device/pine64_rockpro64
 endef
 TARGET_DEVICES += pine64_rockpro64
 
+define Device/radxa_e25
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := E25
+  DEVICE_DTS := rockchip/rk3568-radxa-e25
+  UBOOT_DEVICE_NAME := radxa-e25-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-r8125
+endef
+TARGET_DEVICES += radxa_e25
+
 define Device/radxa_rock-3a
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK3 A
@@ -141,17 +151,6 @@ define Device/radxa_rock-pi-4
   DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += radxa_rock-pi-4
-
-define Device/radxa_rock-pi-e25
-  DEVICE_VENDOR := Radxa
-  DEVICE_MODEL := ROCK Pi E25
-  SOC := rk3568
-  SUPPORTED_DEVICES := radxa,rockpi-e25
-  UBOOT_DEVICE_NAME := rock-pi-e25-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8125
-endef
-TARGET_DEVICES += radxa_rock-pi-e25
 
 define Device/rongpin_king3399
   DEVICE_VENDOR := Rongpin
