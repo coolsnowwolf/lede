@@ -604,23 +604,6 @@ endef
 $(eval $(call KernelPackage,nf-nathelper-extra))
 
 
-define KernelPackage/ipt-ulog
-  TITLE:=Module for user-space packet logging
-  KCONFIG:=$(KCONFIG_IPT_ULOG)
-  FILES:=$(foreach mod,$(IPT_ULOG-m),$(LINUX_DIR)/net/$(mod).ko)
-  AUTOLOAD:=$(call AutoProbe,$(notdir $(IPT_ULOG-m)))
-  $(call AddDepends/ipt)
-endef
-
-define KernelPackage/ipt-ulog/description
- Netfilter (IPv4) module for user-space packet logging
- Includes:
- - ULOG
-endef
-
-$(eval $(call KernelPackage,ipt-ulog))
-
-
 define KernelPackage/ipt-nflog
   TITLE:=Module for user-space packet logging
   KCONFIG:=$(KCONFIG_IPT_NFLOG)
