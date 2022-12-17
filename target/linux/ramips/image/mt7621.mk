@@ -392,7 +392,7 @@ define Device/c-life_xg1
 	check-size
   DEVICE_VENDOR := C-Life
   DEVICE_MODEL := XG1
-  DEVICE_PACKAGES := kmod-mt7915e uboot-envtools kmod-usb3
+  DEVICE_PACKAGES := kmod-mt7915-firmware uboot-envtools kmod-usb3
 endef
 TARGET_DEVICES += c-life_xg1
 
@@ -952,7 +952,7 @@ define Device/jcg_q20
 	check-size
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := Q20
-  DEVICE_PACKAGES := kmod-mt7915e uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7915-firmware uboot-envtools
 endef
 TARGET_DEVICES += jcg_q20
 
@@ -1446,7 +1446,7 @@ define Device/tenbay_t-mb5eu-v01
   DEVICE_VENDOR := Tenbay
   DEVICE_MODEL := T-MB5EU-V01
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES += kmod-mt7915e kmod-usb3
+  DEVICE_PACKAGES += kmod-mt7915-firmware kmod-usb3
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   IMAGE_SIZE := 15808k
   SUPPORTED_DEVICES += mt7621-dm2-t-mb5eu-v01-nor
@@ -1480,7 +1480,7 @@ define Device/totolink_x5000r
   UIMAGE_NAME := C8343R-9999
   DEVICE_VENDOR := TOTOLINK
   DEVICE_MODEL := X5000R
-  DEVICE_PACKAGES := kmod-mt7915e
+  DEVICE_PACKAGES := kmod-mt7915-firmware
 endef
 TARGET_DEVICES += totolink_x5000r
 
@@ -1604,7 +1604,7 @@ define Device/ubnt_unifi-6-lite
   DEVICE_VENDOR := Ubiquiti
   DEVICE_MODEL := UniFi 6 Lite
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7915e
+  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7915-firmware
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   IMAGE_SIZE := 15424k
 endef
@@ -1802,7 +1802,7 @@ define Device/xiaomi_mi-router-cr660x
 	check-size
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router CR660x
-  DEVICE_PACKAGES += kmod-mt7915e wpad-openssl uboot-envtools
+  DEVICE_PACKAGES += kmod-mt7915-firmware wpad-openssl uboot-envtools
   SUPPORTED_DEVICES += xiaomi,mi-router-cr6606
 endef
 TARGET_DEVICES += xiaomi_mi-router-cr660x
