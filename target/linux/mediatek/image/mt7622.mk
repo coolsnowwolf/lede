@@ -129,7 +129,7 @@ define Device/buffalo_wsr-2533dhp2
   IMAGE/sysupgrade.bin := append-kernel | \
 	buffalo-kernel-trx 0x32504844 $(KDIR)/tmp/$$(DEVICE_NAME).null | \
 	sysupgrade-tar kernel=$$$$@ | append-metadata
-  DEVICE_PACKAGES := swconfig
+  DEVICE_PACKAGES := kmod-mt7615-firmware swconfig
 endef
 TARGET_DEVICES += buffalo_wsr-2533dhp2
 
@@ -138,7 +138,7 @@ define Device/elecom_wrc-2533gent
   DEVICE_MODEL := WRC-2533GENT
   DEVICE_DTS := mt7622-elecom-wrc-2533gent
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-btmtkuart kmod-usb3 swconfig
+  DEVICE_PACKAGES := kmod-btmtkuart kmod-mt7615-firmware kmod-usb3 swconfig
 endef
 TARGET_DEVICES += elecom_wrc-2533gent
 
@@ -242,7 +242,7 @@ define Device/totolink_a8000ru
   DEVICE_MODEL := A8000RU
   DEVICE_DTS := mt7622-totolink-a8000ru
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := swconfig
+  DEVICE_PACKAGES := kmod-mt7615-firmware swconfig
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += totolink_a8000ru
