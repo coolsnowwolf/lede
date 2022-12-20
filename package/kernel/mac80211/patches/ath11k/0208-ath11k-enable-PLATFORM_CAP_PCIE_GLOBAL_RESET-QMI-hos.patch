@@ -1,0 +1,115 @@
+From 1e4ac7173c9394de7f54a4a861377ac3f030c614 Mon Sep 17 00:00:00 2001
+From: Baochen Qiang <bqiang@codeaurora.org>
+Date: Mon, 11 Oct 2021 13:56:02 +0800
+Subject: [PATCH] ath11k: enable PLATFORM_CAP_PCIE_GLOBAL_RESET QMI host
+ capability
+
+In Qualcomm ARM platforms there is WL_EN pin and other power regulators
+which can be controlled at platform side to completely reset the chip.
+For most of x86 and other platforms, the chip is connected via PCIe M.2
+interface, and there is no way to control WL_EN pin. Instead the host
+driver needs to reset the chip via PCIE_SOC_GLOBAL_RESET hardware
+register, just like ath11k does currently.
+
+But when using PCIE_SOC_GLOBAL_RESET there are some hardware registers
+which are not cleared/restored. To handle those cases we can enable
+PLATFORM_CAP_PCIE_GLOBAL_RESET QMI host capability to tell the firmware
+to do some platform specific operations after firmware download.
+
+This does not fix any known issues, but is recommended by the firmware
+team, so enable the capability on QCA6390 and WCN6855 PCI devices. It is
+currently unclear if this should be enabled also on QCN9074, so leave it
+disabled for now. On AHB devices this is not needed as they don't use
+PCIE_SOC_GLOBAL_RESET.
+
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-01720.1-QCAHSPSWPL_V1_V2_SILICONZ_LITE-1
+
+Signed-off-by: Baochen Qiang <bqiang@codeaurora.org>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20211011055602.77342-1-bqiang@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.c | 6 ++++++
+ drivers/net/wireless/ath/ath11k/hw.h   | 1 +
+ drivers/net/wireless/ath/ath11k/qmi.c  | 4 ++++
+ 3 files changed, 11 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -100,6 +100,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = false,
+ 		.current_cc_support = false,
+ 		.dbr_debug_support = true,
++		.global_reset = false,
+ 	},
+ 	{
+ 		.hw_rev = ATH11K_HW_IPQ6018_HW10,
+@@ -166,6 +167,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = false,
+ 		.current_cc_support = false,
+ 		.dbr_debug_support = true,
++		.global_reset = false,
+ 	},
+ 	{
+ 		.name = "qca6390 hw2.0",
+@@ -231,6 +233,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = true,
+ 		.current_cc_support = true,
+ 		.dbr_debug_support = false,
++		.global_reset = true,
+ 	},
+ 	{
+ 		.name = "qcn9074 hw1.0",
+@@ -296,6 +299,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = false,
+ 		.current_cc_support = false,
+ 		.dbr_debug_support = true,
++		.global_reset = false,
+ 	},
+ 	{
+ 		.name = "wcn6855 hw2.0",
+@@ -361,6 +365,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = true,
+ 		.current_cc_support = true,
+ 		.dbr_debug_support = false,
++		.global_reset = true,
+ 	},
+ 	{
+ 		.name = "wcn6855 hw2.1",
+@@ -425,6 +430,7 @@ static const struct ath11k_hw_params ath
+ 		.fw_wmi_diag_event = true,
+ 		.current_cc_support = true,
+ 		.dbr_debug_support = false,
++		.global_reset = true,
+ 	},
+ };
+ 
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -194,6 +194,7 @@ struct ath11k_hw_params {
+ 	bool fw_wmi_diag_event;
+ 	bool current_cc_support;
+ 	bool dbr_debug_support;
++	bool global_reset;
+ };
+ 
+ struct ath11k_hw_ops {
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -15,6 +15,7 @@
+ 
+ #define SLEEP_CLOCK_SELECT_INTERNAL_BIT	0x02
+ #define HOST_CSTATE_BIT			0x04
++#define PLATFORM_CAP_PCIE_GLOBAL_RESET	0x08
+ 
+ #define FW_BUILD_ID_MASK "QC_IMAGE_VERSION_STRING="
+ 
+@@ -1676,6 +1677,9 @@ static int ath11k_qmi_host_cap_send(stru
+ 		req.nm_modem |= SLEEP_CLOCK_SELECT_INTERNAL_BIT;
+ 	}
+ 
++	if (ab->hw_params.global_reset)
++		req.nm_modem |= PLATFORM_CAP_PCIE_GLOBAL_RESET;
++
+ 	ath11k_dbg(ab, ATH11K_DBG_QMI, "qmi host cap request\n");
+ 
+ 	ret = qmi_txn_init(&ab->qmi.handle, &txn,

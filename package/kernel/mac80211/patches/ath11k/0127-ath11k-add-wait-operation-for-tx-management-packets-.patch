@@ -1,0 +1,230 @@
+From dddaa64d0af37275314a656bd8f8e941799e2d61 Mon Sep 17 00:00:00 2001
+From: Wen Gong <quic_wgong@quicinc.com>
+Date: Thu, 2 Dec 2021 01:37:05 -0500
+Subject: [PATCH] ath11k: add wait operation for tx management packets for
+ flush from mac80211
+
+In ath11k, tx of management packet is doing in a work queue. Sometimes
+the workqueue does not finish tx immediately, then it lead after the next
+step of vdev delete finished, it start to send the management packet to
+firmware and lead firmware crash.
+
+ieee80211_set_disassoc() have logic of ieee80211_flush_queues() after
+it send_deauth_disassoc() to ath11k, its purpose is make sure the
+deauth was actually sent, so it need to change ath11k to match the
+purpose of mac80211.
+
+To address these issue wait for tx mgmt as well as tx data packets.
+
+dmesg log of connect/disconnect to AP:
+[  307.522226] wls1: authenticate with 62:66:e4:e9:6a:a9
+[  307.586565] wls1: send auth to 62:66:e4:e9:6a:a9 (try 1/3)
+[  307.586581] ath11k_pci 0000:05:00.0: mac tx mgmt frame, buf id 0
+[  307.586922] ath11k_pci 0000:05:00.0: mac tx mgmt frame, vdev_id 0
+[  307.590179] ath11k_pci 0000:05:00.0: wmi mgmt tx comp pending 0 desc id 0
+[  307.590181] ath11k_pci 0000:05:00.0: mgmt tx compl ev pdev_id 2, desc_id 0, status 0
+[  307.598699] wls1: authenticated
+[  307.599483] wls1: associate with 62:66:e4:e9:6a:a9 (try 1/3)
+[  307.599506] ath11k_pci 0000:05:00.0: mac tx mgmt frame, buf id 0
+[  307.599519] ath11k_pci 0000:05:00.0: mac tx mgmt frame, vdev_id 0
+[  307.603059] ath11k_pci 0000:05:00.0: wmi mgmt tx comp pending 0 desc id 0
+[  307.603063] ath11k_pci 0000:05:00.0: mgmt tx compl ev pdev_id 2, desc_id 0, status 0
+[  307.637105] wls1: associated
+[  317.365239] wls1: deauthenticating from 62:66:e4:e9:6a:a9 by local choice (Reason: 3=DEAUTH_LEAVING)
+[  317.368104] ath11k_pci 0000:05:00.0: mac tx mgmt frame, buf id 0
+[  317.372622] ath11k_pci 0000:05:00.0: mac tx mgmt frame, vdev_id 0
+[  317.378320] ath11k_pci 0000:05:00.0: wmi mgmt tx comp pending 0 desc id 0
+[  317.378330] ath11k_pci 0000:05:00.0: mgmt tx compl ev pdev_id 2, desc_id 0, status 0
+[  317.378359] ath11k_pci 0000:05:00.0: mac mgmt tx flush mgmt pending 0
+[  317.421066] ath11k_pci 0000:05:00.0: mac mgmt tx flush mgmt pending 0
+[  317.421427] ath11k_pci 0000:05:00.0: mac remove interface (vdev 0)
+
+Tested-on: QCA6390 hw2.0 PCI WLAN.HST.1.0.1-01230-QCAHSTSWPLZ_V2_TO_X86-1
+Tested-on: WCN6855 hw2.0 PCI WLAN.HSP.1.1-01720.1-QCAHSPSWPL_V1_V2_SILICONZ_LITE-1
+
+Signed-off-by: Wen Gong <quic_wgong@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20211202063705.14321-1-quic_wgong@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c |  1 +
+ drivers/net/wireless/ath/ath11k/core.h |  1 +
+ drivers/net/wireless/ath/ath11k/mac.c  | 51 +++++++++++++++++++++-----
+ drivers/net/wireless/ath/ath11k/wmi.c  | 12 +++++-
+ 4 files changed, 55 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -1165,6 +1165,7 @@ static void ath11k_core_restart(struct w
+ 		idr_for_each(&ar->txmgmt_idr,
+ 			     ath11k_mac_tx_mgmt_pending_free, ar);
+ 		idr_destroy(&ar->txmgmt_idr);
++		wake_up(&ar->txmgmt_empty_waitq);
+ 	}
+ 
+ 	wake_up(&ab->wmi_ab.tx_credits_wq);
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -551,6 +551,7 @@ struct ath11k {
+ 	/* protects txmgmt_idr data */
+ 	spinlock_t txmgmt_idr_lock;
+ 	atomic_t num_pending_mgmt_tx;
++	wait_queue_head_t txmgmt_empty_waitq;
+ 
+ 	/* cycle count is reported twice for each visited channel during scan.
+ 	 * access protected by data_lock
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -5268,6 +5268,21 @@ static int __ath11k_set_antenna(struct a
+ 	return 0;
+ }
+ 
++static void ath11k_mgmt_over_wmi_tx_drop(struct ath11k *ar, struct sk_buff *skb)
++{
++	int num_mgmt;
++
++	ieee80211_free_txskb(ar->hw, skb);
++
++	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
++
++	if (num_mgmt < 0)
++		WARN_ON_ONCE(1);
++
++	if (!num_mgmt)
++		wake_up(&ar->txmgmt_empty_waitq);
++}
++
+ static void ath11k_mac_tx_mgmt_free(struct ath11k *ar, int buf_id)
+ {
+ 	struct sk_buff *msdu;
+@@ -5286,7 +5301,7 @@ static void ath11k_mac_tx_mgmt_free(stru
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
+ 
+-	ieee80211_free_txskb(ar->hw, msdu);
++	ath11k_mgmt_over_wmi_tx_drop(ar, msdu);
+ }
+ 
+ int ath11k_mac_tx_mgmt_pending_free(int buf_id, void *skb, void *ctx)
+@@ -5326,6 +5341,10 @@ static int ath11k_mac_mgmt_tx_wmi(struct
+ 	buf_id = idr_alloc(&ar->txmgmt_idr, skb, 0,
+ 			   ATH11K_TX_MGMT_NUM_PENDING_MAX, GFP_ATOMIC);
+ 	spin_unlock_bh(&ar->txmgmt_idr_lock);
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
++		   "mac tx mgmt frame, buf id %d\n", buf_id);
++
+ 	if (buf_id < 0)
+ 		return -ENOSPC;
+ 
+@@ -5372,7 +5391,7 @@ static void ath11k_mgmt_over_wmi_tx_purg
+ 	struct sk_buff *skb;
+ 
+ 	while ((skb = skb_dequeue(&ar->wmi_mgmt_tx_queue)) != NULL)
+-		ieee80211_free_txskb(ar->hw, skb);
++		ath11k_mgmt_over_wmi_tx_drop(ar, skb);
+ }
+ 
+ static void ath11k_mgmt_over_wmi_tx_work(struct work_struct *work)
+@@ -5387,29 +5406,29 @@ static void ath11k_mgmt_over_wmi_tx_work
+ 		skb_cb = ATH11K_SKB_CB(skb);
+ 		if (!skb_cb->vif) {
+ 			ath11k_warn(ar->ab, "no vif found for mgmt frame\n");
+-			ieee80211_free_txskb(ar->hw, skb);
++			ath11k_mgmt_over_wmi_tx_drop(ar, skb);
+ 			continue;
+ 		}
+ 
+ 		arvif = ath11k_vif_to_arvif(skb_cb->vif);
+ 		if (ar->allocated_vdev_map & (1LL << arvif->vdev_id) &&
+ 		    arvif->is_started) {
+-			atomic_inc(&ar->num_pending_mgmt_tx);
+ 			ret = ath11k_mac_mgmt_tx_wmi(ar, arvif, skb);
+ 			if (ret) {
+-				if (atomic_dec_if_positive(&ar->num_pending_mgmt_tx) < 0)
+-					WARN_ON_ONCE(1);
+-
+ 				ath11k_warn(ar->ab, "failed to tx mgmt frame, vdev_id %d :%d\n",
+ 					    arvif->vdev_id, ret);
+-				ieee80211_free_txskb(ar->hw, skb);
++				ath11k_mgmt_over_wmi_tx_drop(ar, skb);
++			} else {
++				ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
++					   "mac tx mgmt frame, vdev_id %d\n",
++					   arvif->vdev_id);
+ 			}
+ 		} else {
+ 			ath11k_warn(ar->ab,
+ 				    "dropping mgmt frame for vdev %d, is_started %d\n",
+ 				    arvif->vdev_id,
+ 				    arvif->is_started);
+-			ieee80211_free_txskb(ar->hw, skb);
++			ath11k_mgmt_over_wmi_tx_drop(ar, skb);
+ 		}
+ 	}
+ }
+@@ -5440,6 +5459,7 @@ static int ath11k_mac_mgmt_tx(struct ath
+ 	}
+ 
+ 	skb_queue_tail(q, skb);
++	atomic_inc(&ar->num_pending_mgmt_tx);
+ 	ieee80211_queue_work(ar->hw, &ar->wmi_mgmt_tx_work);
+ 
+ 	return 0;
+@@ -7026,6 +7046,17 @@ static void ath11k_mac_op_flush(struct i
+ 				       ATH11K_FLUSH_TIMEOUT);
+ 	if (time_left == 0)
+ 		ath11k_warn(ar->ab, "failed to flush transmit queue %ld\n", time_left);
++
++	time_left = wait_event_timeout(ar->txmgmt_empty_waitq,
++				       (atomic_read(&ar->num_pending_mgmt_tx) == 0),
++				       ATH11K_FLUSH_TIMEOUT);
++	if (time_left == 0)
++		ath11k_warn(ar->ab, "failed to flush mgmt transmit queue %ld\n",
++			    time_left);
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
++		   "mac mgmt tx flush mgmt pending %d\n",
++		   atomic_read(&ar->num_pending_mgmt_tx));
+ }
+ 
+ static int
+@@ -8264,6 +8295,8 @@ int ath11k_mac_register(struct ath11k_ba
+ 		ret = __ath11k_mac_register(ar);
+ 		if (ret)
+ 			goto err_cleanup;
++
++		init_waitqueue_head(&ar->txmgmt_empty_waitq);
+ 	}
+ 
+ 	return 0;
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -4980,6 +4980,7 @@ static int wmi_process_mgmt_tx_comp(stru
+ 	struct sk_buff *msdu;
+ 	struct ieee80211_tx_info *info;
+ 	struct ath11k_skb_cb *skb_cb;
++	int num_mgmt;
+ 
+ 	spin_lock_bh(&ar->txmgmt_idr_lock);
+ 	msdu = idr_find(&ar->txmgmt_idr, desc_id);
+@@ -5003,10 +5004,19 @@ static int wmi_process_mgmt_tx_comp(stru
+ 
+ 	ieee80211_tx_status_irqsafe(ar->hw, msdu);
+ 
++	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
++
+ 	/* WARN when we received this event without doing any mgmt tx */
+-	if (atomic_dec_if_positive(&ar->num_pending_mgmt_tx) < 0)
++	if (num_mgmt < 0)
+ 		WARN_ON_ONCE(1);
+ 
++	ath11k_dbg(ar->ab, ATH11K_DBG_WMI,
++		   "wmi mgmt tx comp pending %d desc id %d\n",
++		   num_mgmt, desc_id);
++
++	if (!num_mgmt)
++		wake_up(&ar->txmgmt_empty_waitq);
++
+ 	return 0;
+ }
+ 

@@ -1,0 +1,151 @@
+From a1e16842a097171cc544b45e343effe97eadb493 Mon Sep 17 00:00:00 2001
+From: Anilkumar Kolli <akolli@codeaurora.org>
+Date: Wed, 30 Mar 2022 11:28:03 +0300
+Subject: ath11k: update debugfs support for mupltiple radios in PCI bus
+
+debugfs_ath11k struct is moved to ath11k_core, since its common
+for both pci and ahb.
+
+Current ath11k_pci insmod fails if there are multiple PCI rdaios,
+
+ ath11k_pci 0000:01:00.0: Hardware name qcn9074 hw1.0
+ debugfs: Directory 'ath11k' with parent '/' already present!
+ ath11k_pci 0000:01:00.0: failed to create ath11k debugfs
+ ath11k_pci 0000:01:00.0: failed to create soc core: -17
+ ath11k_pci 0000:01:00.0: failed to init core: -17
+ ath11k_pci: probe of 0000:01:00.0 failed with error -17
+
+To avoid the failure, debugfs directory is created with soc_name
+and bus_id to allow creating debugfs directory for second PCI radio.
+
+with this Debugfs entries looks like,
+ # ls -l /sys/kernel/debug/ath11k/
+ ipq8074 hw2.0 qcn9000 hw1.0_0000:01:00.0 qcn9000 hw1.0_0001:01:00.0
+
+ # ls -l /sys/kernel/debug/ath11k/ipq8074 hw2.0/
+  mac0  mac1 simulate_fw_crash soc_dp_stats
+
+ # ls -l /sys/kernel/debug/ath11k/qcn9000 hw1.0_0000:01:00.0
+  mac0 simulate_fw_crash soc_dp_stats
+
+ # /sys/kernel/debug/ath11k/qcn9000 hw1.0_0001:01:00.0:
+   mac0  simulate_fw_crash soc_dp_stats
+
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.4.0.1.r2-00012-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Anilkumar Kolli <akolli@codeaurora.org>
+Patchwork-Id: 12101611
+Signed-off-by: Kalle Valo <kvalo@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/debugfs.c | 58 +++++++++++++++++++++++++------
+ 1 file changed, 48 insertions(+), 10 deletions(-)
+
+(limited to 'drivers/net/wireless/ath/ath11k/debugfs.c')
+
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -15,6 +15,8 @@
+ #include "debugfs_htt_stats.h"
+ #include "peer.h"
+ 
++struct dentry *debugfs_ath11k;
++
+ static const char *htt_bp_umac_ring[HTT_SW_UMAC_RING_IDX_MAX] = {
+ 	"REO2SW1_RING",
+ 	"REO2SW2_RING",
+@@ -987,10 +989,6 @@ int ath11k_debugfs_pdev_create(struct at
+ 	if (test_bit(ATH11K_FLAG_REGISTERED, &ab->dev_flags))
+ 		return 0;
+ 
+-	ab->debugfs_soc = debugfs_create_dir(ab->hw_params.name, ab->debugfs_ath11k);
+-	if (IS_ERR(ab->debugfs_soc))
+-		return PTR_ERR(ab->debugfs_soc);
+-
+ 	debugfs_create_file("simulate_fw_crash", 0600, ab->debugfs_soc, ab,
+ 			    &fops_simulate_fw_crash);
+ 
+@@ -1002,24 +1000,58 @@ int ath11k_debugfs_pdev_create(struct at
+ 
+ void ath11k_debugfs_pdev_destroy(struct ath11k_base *ab)
+ {
+-	debugfs_remove_recursive(ab->debugfs_soc);
+-	ab->debugfs_soc = NULL;
+ }
+ 
+ int ath11k_debugfs_soc_create(struct ath11k_base *ab)
+ {
+-	ab->debugfs_ath11k = debugfs_create_dir("ath11k", NULL);
++	struct device *dev = ab->dev;
++	char soc_name[64] = {0};
++
++	if (!(IS_ERR_OR_NULL(ab->debugfs_soc)))
++		return 0;
++
++	if (ab->hif.bus == ATH11K_BUS_AHB) {
++		snprintf(soc_name, sizeof(soc_name), "%s", ab->hw_params.name);
++	} else {
++		snprintf(soc_name, sizeof(soc_name), "%s_%s",
++			 ab->hw_params.name, dev_name(dev));
++	}
+ 
+-	return PTR_ERR_OR_ZERO(ab->debugfs_ath11k);
++	ab->debugfs_soc = debugfs_create_dir(soc_name, debugfs_ath11k);
++	if (IS_ERR_OR_NULL(ab->debugfs_soc)) {
++		if (IS_ERR(ab->debugfs_soc))
++			return PTR_ERR(ab->debugfs_soc);
++		return -ENOMEM;
++	}
++
++	return 0;
+ }
+ 
+ void ath11k_debugfs_soc_destroy(struct ath11k_base *ab)
+ {
+-	debugfs_remove_recursive(ab->debugfs_ath11k);
+-	ab->debugfs_ath11k = NULL;
++	debugfs_remove_recursive(ab->debugfs_soc);
++	ab->debugfs_soc = NULL;
+ }
+ EXPORT_SYMBOL(ath11k_debugfs_soc_destroy);
+ 
++int ath11k_debugfs_create(void)
++{
++	debugfs_ath11k = debugfs_create_dir("ath11k", NULL);
++	if (IS_ERR_OR_NULL(debugfs_ath11k)) {
++		if (IS_ERR(debugfs_ath11k))
++			return PTR_ERR(debugfs_ath11k);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++void ath11k_debugfs_destroy(void)
++{
++	debugfs_remove_recursive(debugfs_ath11k);
++	debugfs_ath11k = NULL;
++}
++
+ void ath11k_debugfs_fw_stats_init(struct ath11k *ar)
+ {
+ 	struct dentry *fwstats_dir = debugfs_create_dir("fw_stats",
+@@ -1388,6 +1420,9 @@ int ath11k_debugfs_register(struct ath11
+ 	char pdev_name[5];
+ 	char buf[100] = {0};
+ 
++	if (!(IS_ERR_OR_NULL(ar->debug.debugfs_pdev)))
++		return 0;
++
+ 	snprintf(pdev_name, sizeof(pdev_name), "%s%d", "mac", ar->pdev_idx);
+ 
+ 	ar->debug.debugfs_pdev = debugfs_create_dir(pdev_name, ab->debugfs_soc);
+@@ -1448,6 +1483,9 @@ void ath11k_debugfs_unregister(struct at
+ 		kfree(dbr_debug);
+ 		ar->debug.dbr_debug[i] = NULL;
+ 	}
++
++	debugfs_remove_recursive(ar->debug.debugfs_pdev);
++	ar->debug.debugfs_pdev = NULL;
+ }
+ 
+ static ssize_t ath11k_write_twt_add_dialog(struct file *file,

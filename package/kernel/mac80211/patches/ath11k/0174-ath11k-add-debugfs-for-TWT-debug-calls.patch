@@ -1,0 +1,347 @@
+From fe98a6137d03a9e51db2197674c355d64eb3b709 Mon Sep 17 00:00:00 2001
+From: John Crispin <john@phrozen.org>
+Date: Mon, 31 Jan 2022 16:16:44 +0200
+Subject: [PATCH] ath11k: add debugfs for TWT debug calls
+
+New debugfs files to manually add/delete/pause/resume TWT
+dialogs for test/debug purposes.
+
+The debugfs files expect the following parameters
+- Add dialog
+echo '<Peer_MAC> <Dialog_ID> <Wake_Interval_Usec> <Wake_Interval_Mantis>
+ <Wake_Duration_Usec> <First_SP_Offset> <TWT_Command>
+ <1:Broadcast /0:Individual> <1:Triggered / 0:Untriggered>
+ <1:Unannounced /0:Announced> <1:Protected / 0:Unprotected>' >
+ /sys/kernel/debug/ieee80211/phyX/netdev:wlanX/twt/add_dialog
+
+Example (Non-triggered and un-announced):
+echo '00:03:7F:20:13:52 1 102400 100 30720 20480 4 0 0 1 0' >
+ /sys/kernel/debug/ieee80211/phy0/netdev:wlan0/twt/add_dialog
+
+- Delete dialog
+echo '<Peer_MAC> <Dialog_ID>' >
+ /sys/kernel/debug/ieee80211/phyX/netdev:wlanX/twt/del_dialog
+
+- Pause dialog
+echo '<Peer_MAC> <Dialog_ID>' >
+ /sys/kernel/debug/ieee80211/phyX/netdev:wlanX/twt/pause_dialog
+
+- Resume dialog
+echo '<Peer_MAC> <Dialog_ID> <SP_Offset_Usec> <Next_TWT_Size>' >
+ /sys/kernel/debug/ieee80211/phyX/netdev:wlanX/twt/resume_dialog
+
+Example:
+echo '00:03:7F:20:13:52 1 2000000 3' >
+ /sys/kernel/debug/ieee80211/phy0/netdev:wlan0/twt/resume_dialog
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.5.0.1-01179-QCAHKSWPL_SILICONZ-1
+Signed-off-by: John Crispin <john@phrozen.org>
+Signed-off-by: Aloka Dixit <alokad@codeaurora.org>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220131031043.1295-2-alokad@codeaurora.org
+---
+ drivers/net/wireless/ath/ath11k/core.h    |   3 +
+ drivers/net/wireless/ath/ath11k/debugfs.c | 222 ++++++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/debugfs.h |  14 +-
+ drivers/net/wireless/ath/ath11k/mac.c     |   7 +
+ 4 files changed, 245 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -263,6 +263,9 @@ struct ath11k_vif {
+ 	bool bcca_zero_sent;
+ 	bool do_not_send_tmpl;
+ 	struct ieee80211_chanctx_conf chanctx;
++#ifdef CPTCFG_ATH11K_DEBUGFS
++	struct dentry *debugfs_twt;
++#endif /* CPTCFG_ATH11K_DEBUGFS */
+ };
+ 
+ struct ath11k_vif_iter {
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -1224,3 +1224,225 @@ int ath11k_debugfs_register(struct ath11
+ void ath11k_debugfs_unregister(struct ath11k *ar)
+ {
+ }
++
++static ssize_t ath11k_write_twt_add_dialog(struct file *file,
++					   const char __user *ubuf,
++					   size_t count, loff_t *ppos)
++{
++	struct ath11k_vif *arvif = file->private_data;
++	struct wmi_twt_add_dialog_params params = { 0 };
++	u8 buf[128] = {0};
++	int ret;
++
++	if (arvif->ar->twt_enabled == 0) {
++		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
++		return -EOPNOTSUPP;
++	}
++
++	ret = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, ubuf, count);
++	if (ret < 0)
++		return ret;
++
++	buf[ret] = '\0';
++	ret = sscanf(buf,
++		     "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx %u %u %u %u %u %hhu %hhu %hhu %hhu %hhu",
++		     &params.peer_macaddr[0],
++		     &params.peer_macaddr[1],
++		     &params.peer_macaddr[2],
++		     &params.peer_macaddr[3],
++		     &params.peer_macaddr[4],
++		     &params.peer_macaddr[5],
++		     &params.dialog_id,
++		     &params.wake_intvl_us,
++		     &params.wake_intvl_mantis,
++		     &params.wake_dura_us,
++		     &params.sp_offset_us,
++		     &params.twt_cmd,
++		     &params.flag_bcast,
++		     &params.flag_trigger,
++		     &params.flag_flow_type,
++		     &params.flag_protection);
++	if (ret != 16)
++		return -EINVAL;
++
++	params.vdev_id = arvif->vdev_id;
++
++	ret = ath11k_wmi_send_twt_add_dialog_cmd(arvif->ar, &params);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static ssize_t ath11k_write_twt_del_dialog(struct file *file,
++					   const char __user *ubuf,
++					   size_t count, loff_t *ppos)
++{
++	struct ath11k_vif *arvif = file->private_data;
++	struct wmi_twt_del_dialog_params params = { 0 };
++	u8 buf[64] = {0};
++	int ret;
++
++	if (arvif->ar->twt_enabled == 0) {
++		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
++		return -EOPNOTSUPP;
++	}
++
++	ret = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, ubuf, count);
++	if (ret < 0)
++		return ret;
++
++	buf[ret] = '\0';
++	ret = sscanf(buf, "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx %u",
++		     &params.peer_macaddr[0],
++		     &params.peer_macaddr[1],
++		     &params.peer_macaddr[2],
++		     &params.peer_macaddr[3],
++		     &params.peer_macaddr[4],
++		     &params.peer_macaddr[5],
++		     &params.dialog_id);
++	if (ret != 7)
++		return -EINVAL;
++
++	params.vdev_id = arvif->vdev_id;
++
++	ret = ath11k_wmi_send_twt_del_dialog_cmd(arvif->ar, &params);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static ssize_t ath11k_write_twt_pause_dialog(struct file *file,
++					     const char __user *ubuf,
++					     size_t count, loff_t *ppos)
++{
++	struct ath11k_vif *arvif = file->private_data;
++	struct wmi_twt_pause_dialog_params params = { 0 };
++	u8 buf[64] = {0};
++	int ret;
++
++	if (arvif->ar->twt_enabled == 0) {
++		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
++		return -EOPNOTSUPP;
++	}
++
++	ret = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, ubuf, count);
++	if (ret < 0)
++		return ret;
++
++	buf[ret] = '\0';
++	ret = sscanf(buf, "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx %u",
++		     &params.peer_macaddr[0],
++		     &params.peer_macaddr[1],
++		     &params.peer_macaddr[2],
++		     &params.peer_macaddr[3],
++		     &params.peer_macaddr[4],
++		     &params.peer_macaddr[5],
++		     &params.dialog_id);
++	if (ret != 7)
++		return -EINVAL;
++
++	params.vdev_id = arvif->vdev_id;
++
++	ret = ath11k_wmi_send_twt_pause_dialog_cmd(arvif->ar, &params);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static ssize_t ath11k_write_twt_resume_dialog(struct file *file,
++					      const char __user *ubuf,
++					      size_t count, loff_t *ppos)
++{
++	struct ath11k_vif *arvif = file->private_data;
++	struct wmi_twt_resume_dialog_params params = { 0 };
++	u8 buf[64] = {0};
++	int ret;
++
++	if (arvif->ar->twt_enabled == 0) {
++		ath11k_err(arvif->ar->ab, "twt support is not enabled\n");
++		return -EOPNOTSUPP;
++	}
++
++	ret = simple_write_to_buffer(buf, sizeof(buf) - 1, ppos, ubuf, count);
++	if (ret < 0)
++		return ret;
++
++	buf[ret] = '\0';
++	ret = sscanf(buf, "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx %u %u %u",
++		     &params.peer_macaddr[0],
++		     &params.peer_macaddr[1],
++		     &params.peer_macaddr[2],
++		     &params.peer_macaddr[3],
++		     &params.peer_macaddr[4],
++		     &params.peer_macaddr[5],
++		     &params.dialog_id,
++		     &params.sp_offset_us,
++		     &params.next_twt_size);
++	if (ret != 9)
++		return -EINVAL;
++
++	params.vdev_id = arvif->vdev_id;
++
++	ret = ath11k_wmi_send_twt_resume_dialog_cmd(arvif->ar, &params);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static const struct file_operations ath11k_fops_twt_add_dialog = {
++	.write = ath11k_write_twt_add_dialog,
++	.open = simple_open
++};
++
++static const struct file_operations ath11k_fops_twt_del_dialog = {
++	.write = ath11k_write_twt_del_dialog,
++	.open = simple_open
++};
++
++static const struct file_operations ath11k_fops_twt_pause_dialog = {
++	.write = ath11k_write_twt_pause_dialog,
++	.open = simple_open
++};
++
++static const struct file_operations ath11k_fops_twt_resume_dialog = {
++	.write = ath11k_write_twt_resume_dialog,
++	.open = simple_open
++};
++
++int ath11k_debugfs_add_interface(struct ath11k_vif *arvif)
++{
++	if (arvif->vif->type == NL80211_IFTYPE_AP && !arvif->debugfs_twt) {
++		arvif->debugfs_twt = debugfs_create_dir("twt",
++							arvif->vif->debugfs_dir);
++		if (!arvif->debugfs_twt || IS_ERR(arvif->debugfs_twt)) {
++			ath11k_warn(arvif->ar->ab,
++				    "failed to create directory %p\n",
++				    arvif->debugfs_twt);
++			arvif->debugfs_twt = NULL;
++			return -1;
++		}
++
++		debugfs_create_file("add_dialog", 0200, arvif->debugfs_twt,
++				    arvif, &ath11k_fops_twt_add_dialog);
++
++		debugfs_create_file("del_dialog", 0200, arvif->debugfs_twt,
++				    arvif, &ath11k_fops_twt_del_dialog);
++
++		debugfs_create_file("pause_dialog", 0200, arvif->debugfs_twt,
++				    arvif, &ath11k_fops_twt_pause_dialog);
++
++		debugfs_create_file("resume_dialog", 0200, arvif->debugfs_twt,
++				    arvif, &ath11k_fops_twt_resume_dialog);
++	}
++	return 0;
++}
++
++void ath11k_debugfs_remove_interface(struct ath11k_vif *arvif)
++{
++	debugfs_remove_recursive(arvif->debugfs_twt);
++	arvif->debugfs_twt = NULL;
++}
+--- a/drivers/net/wireless/ath/ath11k/debugfs.h
++++ b/drivers/net/wireless/ath/ath11k/debugfs.h
+@@ -276,6 +276,9 @@ static inline int ath11k_debugfs_rx_filt
+ 	return ar->debug.rx_filter;
+ }
+ 
++int ath11k_debugfs_add_interface(struct ath11k_vif *arvif);
++void ath11k_debugfs_remove_interface(struct ath11k_vif *arvif);
++
+ #else
+ static inline int ath11k_debugfs_soc_create(struct ath11k_base *ab)
+ {
+@@ -349,6 +352,15 @@ static inline int ath11k_debugfs_get_fw_
+ 	return 0;
+ }
+ 
+-#endif /* CPTCFG_MAC80211_DEBUGFS*/
++static inline int ath11k_debugfs_add_interface(struct ath11k_vif *arvif)
++{
++	return 0;
++}
++
++static inline void ath11k_debugfs_remove_interface(struct ath11k_vif *arvif)
++{
++}
++
++#endif /* CPTCFG_ATH11K_DEBUGFS*/
+ 
+ #endif /* _ATH11K_DEBUGFS_H_ */
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6354,6 +6354,10 @@ static int ath11k_mac_op_add_interface(s
+ 		}
+ 	}
+ 
++	ret = ath11k_debugfs_add_interface(arvif);
++	if (ret)
++		goto err_peer_del;
++
+ 	mutex_unlock(&ar->conf_mutex);
+ 
+ 	return 0;
+@@ -6388,6 +6392,7 @@ err_vdev_del:
+ 	spin_unlock_bh(&ar->data_lock);
+ 
+ err:
++	ath11k_debugfs_remove_interface(arvif);
+ 	mutex_unlock(&ar->conf_mutex);
+ 
+ 	return ret;
+@@ -6486,6 +6491,8 @@ err_vdev_del:
+ 	/* Recalc txpower for remaining vdev */
+ 	ath11k_mac_txpower_recalc(ar);
+ 
++	ath11k_debugfs_remove_interface(arvif);
++
+ 	/* TODO: recal traffic pause state based on the available vdevs */
+ 
+ 	mutex_unlock(&ar->conf_mutex);

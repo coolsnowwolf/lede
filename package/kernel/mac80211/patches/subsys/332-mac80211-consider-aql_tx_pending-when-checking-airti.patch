@@ -1,0 +1,48 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 20 Jun 2022 14:59:09 +0200
+Subject: [PATCH] mac80211: consider aql_tx_pending when checking airtime
+ deficit
+
+When queueing packets for a station, deficit only gets added once the packets
+have been transmitted, which could be much later. During that time, a lot of
+temporary unfairness could happen, which could lead to bursty behavior.
+Fix this by subtracting the aql_tx_pending when checking the deficit in tx
+scheduling.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -3817,6 +3817,13 @@ out:
+ }
+ EXPORT_SYMBOL(ieee80211_tx_dequeue);
+ 
++static inline s32 ieee80211_sta_deficit(struct sta_info *sta, u8 ac)
++{
++	struct airtime_info *air_info = &sta->airtime[ac];
++
++	return air_info->deficit - atomic_read(&air_info->aql_tx_pending);
++}
++
+ struct ieee80211_txq *ieee80211_next_txq(struct ieee80211_hw *hw, u8 ac)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+@@ -3847,7 +3854,7 @@ struct ieee80211_txq *ieee80211_next_txq
+ 		struct sta_info *sta = container_of(txqi->txq.sta,
+ 						    struct sta_info, sta);
+ 		bool aql_check = ieee80211_txq_airtime_check(hw, &txqi->txq);
+-		s32 deficit = sta->airtime[txqi->txq.ac].deficit;
++		s32 deficit = ieee80211_sta_deficit(sta, txqi->txq.ac);
+ 
+ 		if (aql_check)
+ 			found_eligible_txq = true;
+@@ -3972,7 +3979,7 @@ bool ieee80211_txq_may_transmit(struct i
+ 			continue;
+ 		}
+ 		sta = container_of(iter->txq.sta, struct sta_info, sta);
+-		if (sta->airtime[ac].deficit < 0)
++		if (ieee80211_sta_deficit(sta, ac) < 0)
+ 			sta->airtime[ac].deficit += sta->airtime_weight;
+ 		list_move_tail(&iter->schedule_order, &local->active_txqs[ac]);
+ 	}
