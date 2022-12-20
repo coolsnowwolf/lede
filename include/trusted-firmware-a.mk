@@ -1,5 +1,5 @@
 PKG_NAME ?= trusted-firmware-a
-PKG_CPE_ID ?= cpe:/a:arm:arm_trusted_firmware
+PKG_CPE_ID ?= cpe:/a:arm:trusted_firmware-a
 
 ifndef PKG_SOURCE_PROTO
 PKG_SOURCE = trusted-firmware-a-$(PKG_VERSION).tar.gz
