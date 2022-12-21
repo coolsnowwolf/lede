@@ -66,6 +66,7 @@ CONFIGURE_ARGS+= \
 	--without-mpc \
 	--without-mpfr \
 	--without-isl \
+	--without-xxhash \
 	--with-libgmp-prefix=$(STAGING_DIR)/usr
 
 CONFIGURE_VARS+= \

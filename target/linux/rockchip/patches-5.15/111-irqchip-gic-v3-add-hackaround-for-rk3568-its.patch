@@ -1,0 +1,198 @@
+From 536378a084c6a4148141e132efee2fa9a464e007 Mon Sep 17 00:00:00 2001
+From: Peter Geis <pgwipeout@gmail.com>
+Date: Thu, 3 Jun 2021 11:36:35 -0400
+Subject: [PATCH] irqchip: gic-v3: add hackaround for rk3568 its
+
+---
+ drivers/irqchip/irq-gic-v3-its.c | 70 +++++++++++++++++++++++++++++---
+ 1 file changed, 65 insertions(+), 5 deletions(-)
+
+--- a/drivers/irqchip/irq-gic-v3-its.c
++++ b/drivers/irqchip/irq-gic-v3-its.c
+@@ -45,6 +45,7 @@
+ 
+ #define RDIST_FLAGS_PROPBASE_NEEDS_FLUSHING	(1 << 0)
+ #define RDIST_FLAGS_RD_TABLES_PREALLOCATED	(1 << 1)
++#define RDIST_FLAGS_FORCE_NO_LOCAL_CACHE	(1 << 2)
+ 
+ static u32 lpi_id_bits;
+ 
+@@ -2172,6 +2173,11 @@ static struct page *its_allocate_prop_table(gfp_t gfp_flags)
+ {
+ 	struct page *prop_page;
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE) {
++		pr_err("ITS ALLOCATE PROP WORKAROUND\n");
++		gfp_flags |= GFP_DMA;
++	}
++
+ 	prop_page = alloc_pages(gfp_flags, get_order(LPI_PROPBASE_SZ));
+ 	if (!prop_page)
+ 		return NULL;
+@@ -2295,6 +2301,7 @@ static int its_setup_baser(struct its_node *its, struct its_baser *baser,
+ 	u32 alloc_pages, psz;
+ 	struct page *page;
+ 	void *base;
++	gfp_t gfp_flags;
+ 
+ 	psz = baser->psz;
+ 	alloc_pages = (PAGE_ORDER_TO_SIZE(order) / psz);
+@@ -2306,7 +2313,10 @@ static int its_setup_baser(struct its_node *its, struct its_baser *baser,
+ 		order = get_order(GITS_BASER_PAGES_MAX * psz);
+ 	}
+ 
+-	page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO, order);
++	gfp_flags = GFP_KERNEL | __GFP_ZERO;
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE)
++		gfp_flags |= GFP_DMA;
++	page = alloc_pages_node(its->numa_node, gfp_flags, order);
+ 	if (!page)
+ 		return -ENOMEM;
+ 
+@@ -2353,6 +2363,13 @@ retry_baser:
+ 	its_write_baser(its, baser, val);
+ 	tmp = baser->val;
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE) {
++		if (tmp & GITS_BASER_SHAREABILITY_MASK)
++			tmp &= ~GITS_BASER_SHAREABILITY_MASK;
++		else
++			gic_flush_dcache_to_poc(base, PAGE_ORDER_TO_SIZE(order));
++	}
++
+ 	if ((val ^ tmp) & GITS_BASER_SHAREABILITY_MASK) {
+ 		/*
+ 		 * Shareability didn't stick. Just use
+@@ -2935,6 +2952,10 @@ static struct page *its_allocate_pending_table(gfp_t gfp_flags)
+ {
+ 	struct page *pend_page;
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE) {
++		gfp_flags |= GFP_DMA;
++	}
++
+ 	pend_page = alloc_pages(gfp_flags | __GFP_ZERO,
+ 				get_order(LPI_PENDBASE_SZ));
+ 	if (!pend_page)
+@@ -3092,6 +3113,9 @@ static void its_cpu_init_lpis(void)
+ 	gicr_write_propbaser(val, rbase + GICR_PROPBASER);
+ 	tmp = gicr_read_propbaser(rbase + GICR_PROPBASER);
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE)
++		tmp &= ~GICR_PROPBASER_SHAREABILITY_MASK;
++
+ 	if ((tmp ^ val) & GICR_PROPBASER_SHAREABILITY_MASK) {
+ 		if (!(tmp & GICR_PROPBASER_SHAREABILITY_MASK)) {
+ 			/*
+@@ -3116,6 +3140,9 @@ static void its_cpu_init_lpis(void)
+ 	gicr_write_pendbaser(val, rbase + GICR_PENDBASER);
+ 	tmp = gicr_read_pendbaser(rbase + GICR_PENDBASER);
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE)
++		tmp &= ~GICR_PENDBASER_SHAREABILITY_MASK;
++
+ 	if (!(tmp & GICR_PENDBASER_SHAREABILITY_MASK)) {
+ 		/*
+ 		 * The HW reports non-shareable, we must remove the
+@@ -3278,7 +3305,12 @@ static bool its_alloc_table_entry(struct its_node *its,
+ 
+ 	/* Allocate memory for 2nd level table */
+ 	if (!table[idx]) {
+-		page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
++		gfp_t gfp_flags = GFP_KERNEL | __GFP_ZERO;
++		if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE) {
++			gfp_flags |= GFP_DMA;
++		}
++
++		page = alloc_pages_node(its->numa_node, gfp_flags,
+ 					get_order(baser->psz));
+ 		if (!page)
+ 			return false;
+@@ -3367,6 +3399,7 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
+ 	int nr_lpis;
+ 	int nr_ites;
+ 	int sz;
++	gfp_t gfp_flags;
+ 
+ 	if (!its_alloc_device_table(its, dev_id))
+ 		return NULL;
+@@ -3374,7 +3407,11 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
+ 	if (WARN_ON(!is_power_of_2(nvecs)))
+ 		nvecs = roundup_pow_of_two(nvecs);
+ 
+-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
++	gfp_flags = GFP_KERNEL;
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE)
++		gfp_flags |= GFP_DMA;
++
++	dev = kzalloc(sizeof(*dev), gfp_flags);
+ 	/*
+ 	 * Even if the device wants a single LPI, the ITT must be
+ 	 * sized as a power of two (and you need at least one bit...).
+@@ -3382,7 +3419,7 @@ static struct its_device *its_create_device(struct its_node *its, u32 dev_id,
+ 	nr_ites = max(2, nvecs);
+ 	sz = nr_ites * (FIELD_GET(GITS_TYPER_ITT_ENTRY_SIZE, its->typer) + 1);
+ 	sz = max(sz, ITS_ITT_ALIGN) + ITS_ITT_ALIGN - 1;
+-	itt = kzalloc_node(sz, GFP_KERNEL, its->numa_node);
++	itt = kzalloc_node(sz, gfp_flags, its->numa_node);
+ 	if (alloc_lpis) {
+ 		lpi_map = its_lpi_alloc(nvecs, &lpi_base, &nr_lpis);
+ 		if (lpi_map)
+@@ -4705,6 +4742,13 @@ static bool __maybe_unused its_enable_quirk_hip07_161600802(void *data)
+ 	return true;
+ }
+ 
++static bool __maybe_unused its_enable_quirk_rk3568(void *data)
++{
++	gic_rdists->flags |= RDIST_FLAGS_FORCE_NO_LOCAL_CACHE;
++
++	return true;
++}
++
+ static const struct gic_quirk its_quirks[] = {
+ #ifdef CONFIG_CAVIUM_ERRATUM_22375
+ 	{
+@@ -4750,6 +4794,14 @@ static const struct gic_quirk its_quirks[] = {
+ 		.mask	= 0xffffffff,
+ 		.init	= its_enable_quirk_hip07_161600802,
+ 	},
++#endif
++#ifdef CONFIG_ROCKCHIP_ERRATUM_114514
++	{
++		.desc	= "ITS: Rockchip erratum 114514",
++		.iidr	= 0x0201743b,
++		.mask	= 0xffffffff,
++		.init	= its_enable_quirk_rk3568,
++	},
+ #endif
+ 	{
+ 	}
+@@ -4974,6 +5026,7 @@ static int __init its_probe_one(struct resource *res,
+ 	u64 baser, tmp, typer;
+ 	struct page *page;
+ 	int err;
++	gfp_t gfp_flags;
+ 
+ 	its_base = ioremap(res->start, SZ_64K);
+ 	if (!its_base) {
+@@ -5042,7 +5095,9 @@ static int __init its_probe_one(struct resource *res,
+ 
+ 	its->numa_node = numa_node;
+ 
+-	page = alloc_pages_node(its->numa_node, GFP_KERNEL | __GFP_ZERO,
++	gfp_flags = GFP_KERNEL | __GFP_ZERO | GFP_DMA;
++
++	page = alloc_pages_node(its->numa_node, gfp_flags,
+ 				get_order(ITS_CMD_QUEUE_SZ));
+ 	if (!page) {
+ 		err = -ENOMEM;
+@@ -5073,6 +5128,9 @@ static int __init its_probe_one(struct resource *res,
+ 	gits_write_cbaser(baser, its->base + GITS_CBASER);
+ 	tmp = gits_read_cbaser(its->base + GITS_CBASER);
+ 
++	if (gic_rdists->flags & RDIST_FLAGS_FORCE_NO_LOCAL_CACHE)
++		tmp &= ~GITS_CBASER_SHAREABILITY_MASK;
++
+ 	if ((tmp ^ baser) & GITS_CBASER_SHAREABILITY_MASK) {
+ 		if (!(tmp & GITS_CBASER_SHAREABILITY_MASK)) {
+ 			/*
