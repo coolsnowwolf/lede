@@ -385,8 +385,7 @@ ifdef CONFIG_PACKAGE_kmod-mt7921e
 endif
 
 define Build/Compile
-	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-		$(KERNEL_MAKE_FLAGS) \
+	+$(KERNEL_MAKE) $(PKG_JOBS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
 		NOSTDINC_FLAGS="$(NOSTDINC_FLAGS)" \
