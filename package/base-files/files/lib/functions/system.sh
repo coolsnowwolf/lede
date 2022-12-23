@@ -172,6 +172,14 @@ macaddr_add() {
 	echo $oui:$nic
 }
 
+macaddr_generate_from_mmc_cid() {
+	local mmc_dev=$1
+
+	local sd_hash=$(sha256sum /sys/class/block/$mmc_dev/device/cid)
+	local mac_base=$(macaddr_canonicalize "$(echo "${sd_hash}" | dd bs=1 count=12 2>/dev/null)")
+	echo "$(macaddr_unsetbit_mc "$(macaddr_setbit_la "${mac_base}")")"
+}
+
 macaddr_geteui() {
 	local mac=$1
 	local sep=$2
