@@ -520,6 +520,7 @@ define Device/Build/compile
   $$(_COMPILE_TARGET): $(KDIR)/$(1)
   $(eval $(call Device/Export,$(KDIR)/$(1)))
   $(KDIR)/$(1): FORCE
+	rm -f $(KDIR)/$(1)
 	$$(call concat_cmd,$(COMPILE/$(1)))
 
 endef
