@@ -6,7 +6,7 @@ define KernelPackage/drm-rockchip
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Rockchip DRM support
   DEPENDS:=@TARGET_rockchip +kmod-backlight +kmod-drm-kms-helper \
-	+kmod-multimedia-input +LINUX_6_0:kmod-drm-display-helper
+	+kmod-multimedia-input +LINUX_6_1:kmod-drm-display-helper
   KCONFIG:= \
 	CONFIG_DRM_ROCKCHIP \
 	CONFIG_DRM_LOAD_EDID_FIRMWARE=y \

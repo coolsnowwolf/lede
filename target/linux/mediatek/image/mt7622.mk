@@ -228,6 +228,33 @@ define Device/mediatek_mt7622-rfb1-ubi
 endef
 TARGET_DEVICES += mediatek_mt7622-rfb1-ubi
 
+define Device/netgear_wax206
+  $(Device/dsa-migration)
+  DEVICE_VENDOR := NETGEAR
+  DEVICE_MODEL := WAX206
+  DEVICE_DTS := mt7622-netgear-wax206
+  DEVICE_DTS_DIR := ../dts
+  NETGEAR_ENC_MODEL := WAX206
+  NETGEAR_ENC_REGION := US
+  DEVICE_PACKAGES := kmod-mt7915e
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 6144k
+  IMAGE_SIZE := 32768k
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb | \
+	append-squashfs4-fakeroot
+# recovery can also be used with stock firmware web-ui, hence the padding...
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES += factory.img
+  IMAGE/factory.img := append-kernel | pad-to $$(KERNEL_SIZE) | \
+	append-ubi | check-size | netgear-encrypted-factory
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += netgear_wax206
+
 define Device/ruijie_rg-ew3200gx-pro
   DEVICE_VENDOR := Ruijie
   DEVICE_MODEL := RG-EW3200GX PRO
