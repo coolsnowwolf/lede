@@ -21,9 +21,6 @@ define Package/ath10k-board-qca9377/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath10k/QCA9377/hw1.0/board-2.bin \
 		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/ath10k/QCA9377/hw1.0/board.bin \
-		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/
 endef
 $(eval $(call BuildPackage,ath10k-board-qca9377))
 Package/ath10k-firmware-qca9377 = $(call Package/firmware-default,ath10k qca9377 firmware,+ath10k-board-qca9377)
@@ -32,11 +29,25 @@ define Package/ath10k-firmware-qca9377/install
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath10k/QCA9377/hw1.0/firmware-6.bin \
 		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/firmware-6.bin
+endef
+$(eval $(call BuildPackage,ath10k-firmware-qca9377))
+
+Package/ath10k-board-qca9377-sdio = $(call Package/firmware-default,ath10k qca9377 board sdio firmware)
+define Package/ath10k-board-qca9377-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA9377/hw1.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath10k/QCA9377/hw1.0/board.bin \
+		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/board.bin
+endef
+$(eval $(call BuildPackage,ath10k-board-qca9377-sdio))
+Package/ath10k-firmware-qca9377-sdio = $(call Package/firmware-default,ath10k qca9377 sdio firmware,+ath10k-board-qca9377-sdio)
+define Package/ath10k-firmware-qca9377-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA9377/hw1.0
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath10k/QCA9377/hw1.0/firmware-sdio-5.bin \
 		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/firmware-sdio-5.bin
 endef
-$(eval $(call BuildPackage,ath10k-firmware-qca9377))
+$(eval $(call BuildPackage,ath10k-firmware-qca9377-sdio))
 
 Package/ath10k-board-qca9887 = $(call Package/firmware-default,ath10k qca9887 board firmware)
 define Package/ath10k-board-qca9887/install
