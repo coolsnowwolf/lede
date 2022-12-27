@@ -29,6 +29,10 @@ define Package/firmware-default
   DEPENDS:=$(2)
 endef
 
+define Build/Configure
+chmod a+x $(PKG_BUILD_DIR)/configure 
+endef
+
 define Build/Compile
 
 endef
