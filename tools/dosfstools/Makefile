@@ -11,10 +11,10 @@ PKG_NAME:=dosfstools
 PKG_CPE_ID:=cpe:/a:dosfstools_project:dosfstools
 PKG_VERSION:=4.2
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/dosfstools/dosfstools/releases/download/v$(PKG_VERSION)/ \
 		http://fossies.org/linux/misc
-PKG_HASH:=ba7c716ff9b8208a3bba5094a77584a7dc814141de09ab4ce1ae9b84bbcd7844
+PKG_HASH:=64926eebf90092dca21b14259a5301b7b98e7b1943e8a201c7d726084809b527
 
 HOST_FIXUP:=autoreconf
 

@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mdadm
-PKG_VERSION:=4.1
-PKG_RELEASE:=2
+PKG_VERSION:=4.2
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/raid/mdadm
-PKG_HASH:=ab7688842908d3583a704d491956f31324c3a5fc9f6a04653cb75d19f1934f4a
+PKG_HASH:=461c215670864bb74a4d1a3620684aa2b2f8296dffa06743f26dda5557acf01d
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_CPE_ID:=cpe:/a:mdadm_project:mdadm
@@ -48,11 +48,16 @@ TARGET_CFLAGS += \
 	-DCONFFILE='\"/var/etc/mdadm.conf\"' \
 	-DMAP_DIR='\"/var/run/mdadm\"' \
 	-DMDMON_DIR='\"/var/run/mdadm\"' \
-	-DFAILED_SLOTS_DIR='\"/var/run/mdadm/failed-slots\"'
+	-DFAILED_SLOTS_DIR='\"/var/run/mdadm/failed-slots\"' \
+	-DNO_LIBUDEV
+
+TARGET_CXFLAGS = -DNO_LIBUDEV
 
 TARGET_LDFLAGS += -Wl,--gc-sections
 
-MAKE_FLAGS += CHECK_RUN_DIR=0
+MAKE_FLAGS += \
+		CHECK_RUN_DIR=0 \
+		CXFLAGS="$(TARGET_CXFLAGS)"
 
 define Build/Compile
 	$(call Build/Compile/Default,mdadm)

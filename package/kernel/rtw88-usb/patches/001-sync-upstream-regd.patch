@@ -1,0 +1,391 @@
+--- a/debug.c
++++ b/debug.c
+@@ -868,37 +868,6 @@ static int rtw_debugfs_get_coex_enable(struct seq_file *m, void *v)
+ 	return 0;
+ }
+ 
+-static ssize_t rtw_debugfs_set_edcca_enable(struct file *filp,
+-					    const char __user *buffer,
+-					    size_t count, loff_t *loff)
+-{
+-	struct seq_file *seqpriv = (struct seq_file *)filp->private_data;
+-	struct rtw_debugfs_priv *debugfs_priv = seqpriv->private;
+-	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+-	char tmp[32 + 1];
+-	int err;
+-
+-	rtw_debugfs_copy_from_user(tmp, sizeof(tmp), buffer, count, 1);
+-
+-	err = kstrtobool(tmp, &rtw_edcca_enabled);
+-	if (err)
+-		return err;
+-	rtw_phy_adaptivity_set_mode(rtwdev);
+-
+-	return count;
+-}
+-
+-static int rtw_debugfs_get_edcca_enable(struct seq_file *m, void *v)
+-{
+-	struct rtw_debugfs_priv *debugfs_priv = m->private;
+-	struct rtw_dev *rtwdev = debugfs_priv->rtwdev;
+-	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
+-
+-	seq_printf(m, "EDCCA mode %d\n", dm_info->edcca_mode);
+-
+-	return 0;
+-}
+-
+ static ssize_t rtw_debugfs_set_fw_crash(struct file *filp,
+ 					const char __user *buffer,
+ 					size_t count, loff_t *loff)
+@@ -1118,11 +1087,6 @@ static struct rtw_debugfs_priv rtw_debug_priv_coex_info = {
+ 	.cb_read = rtw_debugfs_get_coex_info,
+ };
+ 
+-static struct rtw_debugfs_priv rtw_debug_priv_edcca_enable = {
+-	.cb_write = rtw_debugfs_set_edcca_enable,
+-	.cb_read = rtw_debugfs_get_edcca_enable,
+-};
+-
+ static struct rtw_debugfs_priv rtw_debug_priv_fw_crash = {
+ 	.cb_write = rtw_debugfs_set_fw_crash,
+ 	.cb_read = rtw_debugfs_get_fw_crash,
+@@ -1209,7 +1173,6 @@ void rtw_debugfs_init(struct rtw_dev *rtwdev)
+ 	rtw_debugfs_add_r(tx_pwr_tbl);
+ 	rtw_debugfs_add_rw(fw_crash);
+ 	rtw_debugfs_add_rw(dm_cap);
+-	rtw_debugfs_add_rw(edcca_enable);
+ }
+ 
+ #endif /* CONFIG_RTW88_DEBUGFS */
+--- a/phy.c
++++ b/phy.c
+@@ -9,7 +9,6 @@
+ #include "fw.h"
+ #include "phy.h"
+ #include "debug.h"
+-#include "regd.h"
+ 
+ struct phy_cfg_pair {
+ 	u32 addr;
+@@ -121,58 +120,6 @@ static void rtw_phy_cck_pd_init(struct rtw_dev *rtwdev)
+ 	dm_info->cck_fa_avg = CCK_FA_AVG_RESET;
+ }
+ 
+-void rtw_phy_set_edcca_th(struct rtw_dev *rtwdev, u8 l2h, u8 h2l)
+-{
+-	struct rtw_hw_reg_offset *edcca_th = rtwdev->chip->edcca_th;
+-
+-	rtw_write32_mask(rtwdev,
+-			 edcca_th[EDCCA_TH_L2H_IDX].hw_reg.addr,
+-			 edcca_th[EDCCA_TH_L2H_IDX].hw_reg.mask,
+-			 l2h + edcca_th[EDCCA_TH_L2H_IDX].offset);
+-	rtw_write32_mask(rtwdev,
+-			 edcca_th[EDCCA_TH_H2L_IDX].hw_reg.addr,
+-			 edcca_th[EDCCA_TH_H2L_IDX].hw_reg.mask,
+-			 h2l + edcca_th[EDCCA_TH_H2L_IDX].offset);
+-}
+-EXPORT_SYMBOL(rtw_phy_set_edcca_th);
+-
+-void rtw_phy_adaptivity_set_mode(struct rtw_dev *rtwdev)
+-{
+-	struct rtw_chip_info *chip = rtwdev->chip;
+-	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
+-
+-	/* turn off in debugfs for debug usage */
+-	if (!rtw_edcca_enabled) {
+-		dm_info->edcca_mode = RTW_EDCCA_NORMAL;
+-		rtw_dbg(rtwdev, RTW_DBG_PHY, "EDCCA disabled, cannot be set\n");
+-		return;
+-	}
+-
+-	switch (rtwdev->regd.region) {
+-	case NL80211_DFS_ETSI:
+-		dm_info->edcca_mode = RTW_EDCCA_ADAPTIVITY;
+-		dm_info->l2h_th_ini = chip->l2h_th_ini_ad;
+-		break;
+-	case NL80211_DFS_JP:
+-		dm_info->edcca_mode = RTW_EDCCA_ADAPTIVITY;
+-		dm_info->l2h_th_ini = chip->l2h_th_ini_cs;
+-		break;
+-	default:
+-		dm_info->edcca_mode = RTW_EDCCA_NORMAL;
+-		break;
+-	}
+-}
+-
+-static void rtw_phy_adaptivity_init(struct rtw_dev *rtwdev)
+-{
+-	struct rtw_chip_info *chip = rtwdev->chip;
+-
+-	rtw_regd_init_dfs_region(rtwdev, rtwdev->regd.region);
+-	rtw_phy_adaptivity_set_mode(rtwdev);
+-	if (chip->ops->adaptivity_init)
+-		chip->ops->adaptivity_init(rtwdev);
+-}
+-
+ static void rtw_phy_cfo_init(struct rtw_dev *rtwdev)
+ {
+ 	struct rtw_chip_info *chip = rtwdev->chip;
+@@ -202,8 +149,6 @@ void rtw_phy_init(struct rtw_dev *rtwdev)
+ 	rtw_phy_cck_pd_init(rtwdev);
+ 
+ 	dm_info->iqk.done = false;
+-	dm_info->iqk.done = false;
+-	rtw_phy_adaptivity_init(rtwdev);
+ }
+ EXPORT_SYMBOL(rtw_phy_init);
+ 
+--- a/phy.h
++++ b/phy.h
+@@ -61,8 +61,6 @@ void rtw_phy_config_swing_table(struct rtw_dev *rtwdev,
+ 				struct rtw_swing_table *swing_table);
+ void rtw_phy_parsing_cfo(struct rtw_dev *rtwdev,
+ 			 struct rtw_rx_pkt_stat *pkt_stat);
+-void rtw_phy_set_edcca_th(struct rtw_dev *rtwdev, u8 l2h, u8 h2l);
+-void rtw_phy_adaptivity_set_mode(struct rtw_dev *rtwdev);
+ 
+ struct rtw_txpwr_lmt_cfg_pair {
+ 	u8 regd;
+--- a/regd.c
++++ b/regd.c
+@@ -7,18 +7,6 @@
+ #include "debug.h"
+ #include "phy.h"
+ 
+-static const struct ieee80211_regdomain rtw88_world_regdom = {
+-	.n_reg_rules = 5,
+-	.alpha2 =  "99",
+-	.reg_rules = {
+-		REG_RULE(2412 - 10, 2462 + 10, 40, 0, 20, 0),
+-		REG_RULE(2467 - 10, 2484 + 10, 40, 0, 20, NL80211_RRF_NO_IR),
+-		REG_RULE(5180 - 10, 5240 + 10, 80, 0, 20, NL80211_RRF_NO_IR),
+-		REG_RULE(5260 - 10, 5700 + 10, 80, 0, 20,
+-			 NL80211_RRF_NO_IR | NL80211_RRF_DFS),
+-		REG_RULE(5745 - 10, 5825 + 10, 80, 0, 20, NL80211_RRF_NO_IR),
+-	}
+-};
+ #define COUNTRY_CHPLAN_ENT(_alpha2, _chplan, _txpwr_regd) \
+ 	{.alpha2 = (_alpha2), \
+ 	 .chplan = (_chplan), \
+@@ -351,73 +339,28 @@ static struct rtw_regulatory rtw_regd_find_reg_by_name(char *alpha2)
+ 	return rtw_defined_chplan;
+ }
+ 
+-static bool rtw_regd_is_ww(struct rtw_regulatory *reg)
+-{
+-	if (reg->txpwr_regd == RTW_REGD_WW)
+-		return true;
+-	return false;
+-}
+-
+-void rtw_regd_init_dfs_region(struct rtw_dev *rtwdev,
+-			      enum nl80211_dfs_regions curr_region)
+-{
+-	struct ieee80211_hw *hw = rtwdev->hw;
+-	const struct ieee80211_regdomain *wiphy_regd = NULL;
+-
+-	if (curr_region != RTW_REGION_INVALID)
+-		return;
+-
+-	rcu_read_lock();
+-	wiphy_regd = rcu_dereference(hw->wiphy->regd);
+-	if (wiphy_regd)
+-		rtwdev->regd.region = wiphy_regd->dfs_region;
+-	rcu_read_unlock();
+-}
+-
+ static int rtw_regd_notifier_apply(struct rtw_dev *rtwdev,
+ 				   struct wiphy *wiphy,
+ 				   struct regulatory_request *request)
+ {
+-	if (request->initiator == NL80211_REGDOM_SET_BY_DRIVER)
+-		return -ENOTSUPP;
+-	if (request->initiator == NL80211_REGDOM_SET_BY_USER &&
+-	    !IS_ENABLED(CONFIG_RTW88_REGD_USER_REG_HINTS))
+-		return -EPERM;
+-	if (request->initiator == NL80211_REGDOM_SET_BY_COUNTRY_IE &&
+-	    !rtw_regd_is_ww(&rtwdev->regd))
+-		return -EINVAL;
+-	if (request->initiator == NL80211_REGDOM_SET_BY_CORE &&
+-	    !rtwdev->efuse.country_worldwide) {
+-		rtwdev->regd =
+-			rtw_regd_find_reg_by_name(rtwdev->efuse.country_code);
+-		/* return to the efuse setting */
+-		rtw_regd_init_dfs_region(rtwdev, RTW_REGION_INVALID);
++	if (request->initiator == NL80211_REGDOM_SET_BY_USER)
+ 		return 0;
+-	}
+ 	rtwdev->regd = rtw_regd_find_reg_by_name(request->alpha2);
+ 	rtw_regd_apply_world_flags(wiphy, request->initiator);
+-	rtwdev->regd.region = request->dfs_region;
+ 
+ 	return 0;
+ }
+ 
+ static int
+-rtw_regd_init_wiphy(struct rtw_dev *rtwdev, struct wiphy *wiphy,
++rtw_regd_init_wiphy(struct rtw_regulatory *reg, struct wiphy *wiphy,
+ 		    void (*reg_notifier)(struct wiphy *wiphy,
+ 					 struct regulatory_request *request))
+ {
+-	struct rtw_regulatory *reg = &rtwdev->regd;
+-
+ 	wiphy->reg_notifier = reg_notifier;
+ 
+-	if (rtw_regd_is_ww(reg)) {
+-		rtwdev->efuse.country_worldwide = true;
+-		wiphy->regulatory_flags |= REGULATORY_CUSTOM_REG;
+-		wiphy_apply_custom_regulatory(wiphy, &rtw88_world_regdom);
+-	} else {
+-		rtwdev->efuse.country_worldwide = false;
+-	}
+-	wiphy->regulatory_flags |= REGULATORY_STRICT_REG;
++	wiphy->regulatory_flags &= ~REGULATORY_CUSTOM_REG;
++	wiphy->regulatory_flags &= ~REGULATORY_STRICT_REG;
++	wiphy->regulatory_flags &= ~REGULATORY_DISABLE_BEACON_HINTS;
+ 
+ 	rtw_regd_apply_hw_cap_flags(wiphy);
+ 
+@@ -434,8 +377,7 @@ int rtw_regd_init(struct rtw_dev *rtwdev,
+ 		return -EINVAL;
+ 
+ 	rtwdev->regd = rtw_regd_find_reg_by_name(rtwdev->efuse.country_code);
+-	rtw_regd_init_wiphy(rtwdev, wiphy, reg_notifier);
+-	rtwdev->regd.region = RTW_REGION_INVALID;
++	rtw_regd_init_wiphy(&rtwdev->regd, wiphy, reg_notifier);
+ 
+ 	return 0;
+ }
+@@ -445,21 +387,12 @@ void rtw_regd_notifier(struct wiphy *wiphy, struct regulatory_request *request)
+ 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+ 	struct rtw_dev *rtwdev = hw->priv;
+ 	struct rtw_hal *hal = &rtwdev->hal;
+-	int ret;
+ 
+-	ret = rtw_regd_notifier_apply(rtwdev, wiphy, request);
+-	if (ret) {
+-		rtw_warn(rtwdev, "failed to apply regulatory from initiator %d: %d\n",
+-			 request->initiator, ret);
+-		return;
+-	}
++	rtw_regd_notifier_apply(rtwdev, wiphy, request);
+ 	rtw_dbg(rtwdev, RTW_DBG_REGD,
+ 		"get alpha2 %c%c from initiator %d, mapping to chplan 0x%x, txregd %d\n",
+-		request->alpha2[0], request->alpha2[1],
+-		request->initiator, rtwdev->regd.chplan,
+-		rtwdev->regd.txpwr_regd);
+-
+-	rtw_phy_adaptivity_set_mode(rtwdev);
++		request->alpha2[0], request->alpha2[1], request->initiator,
++		rtwdev->regd.chplan, rtwdev->regd.txpwr_regd);
+ 
+ 	rtw_phy_set_tx_power_level(rtwdev, hal->current_channel);
+ }
+--- a/regd.h
++++ b/regd.h
+@@ -68,6 +68,4 @@ int rtw_regd_init(struct rtw_dev *rtwdev,
+ 		  void (*reg_notifier)(struct wiphy *wiphy,
+ 				       struct regulatory_request *request));
+ void rtw_regd_notifier(struct wiphy *wiphy, struct regulatory_request *request);
+-void rtw_regd_init_dfs_region(struct rtw_dev *rtwdev,
+-			      enum nl80211_dfs_regions curr_region);
+ #endif
+--- a/rtw8822b.c
++++ b/rtw8822b.c
+@@ -1561,37 +1561,6 @@ static void rtw8822b_bf_config_bfee(struct rtw_dev *rtwdev, struct rtw_vif *vif,
+ 		rtw_warn(rtwdev, "wrong bfee role\n");
+ }
+ 
+-static void rtw8822b_adaptivity_init(struct rtw_dev *rtwdev)
+-{
+-	rtw_phy_set_edcca_th(rtwdev, 0x7f, 0x7f);
+-	/* mac edcca state setting */
+-	rtw_write32_mask(rtwdev, REG_TX_PTCL_CTRL, BIT_DIS_EDCCA, 0);
+-	rtw_write32_mask(rtwdev, REG_RD_CTRL, BIT_EDCCA_MSK_CNTDOWN_EN, 1);
+-
+-	rtw_write32_mask(rtwdev, REG_EDCCA_SOURCE, BIT_SOURCE_OPTION, 1);
+-	rtw_write32_mask(rtwdev, REG_EDCCA_POW_MA, BIT_MA_LEVEL, 0);
+-	/* edcca decistion opt */
+-	rtw_write32_mask(rtwdev, REG_EDCCA_DECISION, BIT_EDCCA_OPTION, 1);
+-}
+-
+-static void rtw8822b_adaptivity(struct rtw_dev *rtwdev)
+-{
+-	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
+-	s8 l2h, h2l;
+-	u8 igi;
+-
+-	igi = dm_info->igi_history[0];
+-	if (dm_info->edcca_mode == RTW_EDCCA_NORMAL) {
+-		l2h = max_t(s8, igi + EDCCA_IGI_L2H_DIFF, EDCCA_TH_L2H_LB);
+-		h2l = l2h - EDCCA_L2H_H2L_DIFF_NORMAL;
+-	} else {
+-		l2h = min_t(s8, igi, dm_info->l2h_th_ini);
+-		h2l = l2h - EDCCA_L2H_H2L_DIFF;
+-	}
+-
+-	rtw_phy_set_edcca_th(rtwdev, l2h, h2l);
+-}
+-
+ static void rtw8822b_fill_txdesc_checksum(struct rtw_dev *rtwdev,
+ 					  struct rtw_tx_pkt_info *pkt_info,
+ 					  u8 *txdesc)
+@@ -2174,8 +2143,6 @@ static struct rtw_chip_ops rtw8822b_ops = {
+ 	.config_bfee		= rtw8822b_bf_config_bfee,
+ 	.set_gid_table		= rtw_bf_set_gid_table,
+ 	.cfg_csi_rate		= rtw_bf_cfg_csi_rate,
+-	.adaptivity_init	= rtw8822b_adaptivity_init,
+-	.adaptivity		= rtw8822b_adaptivity,
+ 	.fill_txdesc_checksum	= rtw8822b_fill_txdesc_checksum,
+ 
+ 	.coex_set_init		= rtw8822b_coex_cfg_init,
+--- a/rtw8822c.c
++++ b/rtw8822c.c
+@@ -4442,37 +4442,6 @@ static void rtw8822c_pwr_track(struct rtw_dev *rtwdev)
+ 	dm_info->pwr_trk_triggered = false;
+ }
+ 
+-static void rtw8822c_adaptivity_init(struct rtw_dev *rtwdev)
+-{
+-	rtw_phy_set_edcca_th(rtwdev, 0x7f, 0x7f);
+-	/* mac edcca state setting */
+-	rtw_write32_mask(rtwdev, REG_TX_PTCL_CTRL, BIT_DIS_EDCCA, 0);
+-	rtw_write32_mask(rtwdev, REG_RD_CTRL, BIT_EDCCA_MSK_CNTDOWN_EN, 1);
+-	/* edcca decistion opt */
+-	rtw_write32_mask(rtwdev, REG_EDCCA_DECISION, BIT_EDCCA_OPTION, 0);
+-}
+-
+-static void rtw8822c_adaptivity(struct rtw_dev *rtwdev)
+-{
+-	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
+-	s8 l2h, h2l;
+-	u8 igi;
+-
+-	igi = dm_info->igi_history[0];
+-	if (dm_info->edcca_mode == RTW_EDCCA_NORMAL) {
+-		l2h = max_t(s8, igi + EDCCA_IGI_L2H_DIFF, EDCCA_TH_L2H_LB);
+-		h2l = l2h - EDCCA_L2H_H2L_DIFF_NORMAL;
+-	} else {
+-		if (igi < dm_info->l2h_th_ini - EDCCA_ADC_BACKOFF)
+-			l2h = igi + EDCCA_ADC_BACKOFF;
+-		else
+-			l2h = dm_info->l2h_th_ini;
+-		h2l = l2h - EDCCA_L2H_H2L_DIFF;
+-	}
+-
+-	rtw_phy_set_edcca_th(rtwdev, l2h, h2l);
+-}
+-
+ static void rtw8822c_fill_txdesc_checksum(struct rtw_dev *rtwdev,
+ 					  struct rtw_tx_pkt_info *pkt_info,
+ 					  u8 *txdesc)
+@@ -4903,8 +4872,6 @@ static struct rtw_chip_ops rtw8822c_ops = {
+ 	.cfg_csi_rate		= rtw_bf_cfg_csi_rate,
+ 	.cfo_init		= rtw8822c_cfo_init,
+ 	.cfo_track		= rtw8822c_cfo_track,
+-	.adaptivity_init	= rtw8822c_adaptivity_init,
+-	.adaptivity		= rtw8822c_adaptivity,
+ 	.fill_txdesc_checksum	= rtw8822c_fill_txdesc_checksum,
+ 
+ 	.coex_set_init		= rtw8822c_coex_cfg_init,

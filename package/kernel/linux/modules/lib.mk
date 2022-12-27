@@ -134,6 +134,7 @@ define KernelPackage/lib-zstd
 	$(LINUX_DIR)/crypto/zstd.ko \
 	$(LINUX_DIR)/lib/xxhash.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_compress.ko \
+	$(LINUX_DIR)/lib/zstd/zstd_common.ko@ge6.1 \
 	$(LINUX_DIR)/lib/zstd/zstd_decompress.ko
   AUTOLOAD:=$(call AutoProbe,xxhash zstd zstd_compress zstd_decompress)
 endef
@@ -151,13 +152,15 @@ define KernelPackage/lib-lz4
   DEPENDS:=+kmod-crypto-acompress
   KCONFIG:= \
 	CONFIG_CRYPTO_LZ4 \
+	CONFIG_CRYPTO_LZ4HC \
 	CONFIG_LZ4_COMPRESS \
 	CONFIG_LZ4_DECOMPRESS
   FILES:= \
 	$(LINUX_DIR)/crypto/lz4.ko \
 	$(LINUX_DIR)/lib/lz4/lz4_compress.ko \
+	$(LINUX_DIR)/lib/lz4/lz4hc_compress.ko \
 	$(LINUX_DIR)/lib/lz4/lz4_decompress.ko
-  AUTOLOAD:=$(call AutoProbe,lz4 lz4_compress lz4_decompress)
+  AUTOLOAD:=$(call AutoProbe,lz4 lz4_compress lz4hc_compress lz4_decompress)
 endef
 
 define KernelPackage/lib-lz4/description
