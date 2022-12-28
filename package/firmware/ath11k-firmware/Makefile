@@ -7,6 +7,9 @@
 
 include $(TOPDIR)/rules.mk
 
+RSTRIP:=:
+STRIP:=:
+
 PKG_NAME:=ath11k-firmware
 PKG_SOURCE_DATE:=2022-11-25
 PKG_SOURCE_VERSION:=9f285fbc1f7040d0ca6480926d1922b479e2d839
@@ -37,9 +40,19 @@ $(Package/ath11k-firmware-default)
   TITLE:=ath11k firmware for IPQ8074 devices
 endef
 
+define Package/ath11k-firmware-qca6390
+$(Package/ath11k-firmware-default)
+  TITLE:=ath11k firmware for QCA6390 devices
+endef
+
 define Package/ath11k-firmware-qcn9074
 $(Package/ath11k-firmware-default)
   TITLE:=ath11k firmware for QCN9074 devices
+endef
+
+define Package/ath11k-firmware-wcn6855
+$(Package/ath11k-firmware-default)
+  TITLE:=ath11k firmware for WCN6855 devices
 endef
 
 define Build/Compile
@@ -68,6 +81,16 @@ define Package/ath11k-firmware-ipq8074/install
 		$(1)/lib/firmware/IPQ8074/
 endef
 
+define Package/ath11k-firmware-qca6390/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA6390/hw2.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6390/hw2.0/1.0.1/WLAN.HST.1.0.1-05266-QCAHSTSWPLZ_V2_TO_X86-1/* \
+		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/QCA6390/hw2.0/board-2.bin \
+		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/board-2.bin
+endef
+
 define Package/ath11k-firmware-qcn9074/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCN9074/hw1.0
 	$(INSTALL_DATA) \
@@ -75,6 +98,22 @@ define Package/ath11k-firmware-qcn9074/install
 		$(1)/lib/firmware/ath11k/QCN9074/hw1.0/
 endef
 
+define Package/ath11k-firmware-wcn6855/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/WCN6855/hw2.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/1.1/WLAN.HSP.1.1-03125-QCAHSPSWPL_V1_V2_SILICONZ_LITE-3.6510.16/* \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/board-2.bin \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/board-2.bin
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/WCN6855/hw2.0/regdb.bin \
+		$(1)/lib/firmware/ath11k/WCN6855/hw2.0/regdb.bin
+	$(LN) ./hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
+endef
+
 $(eval $(call BuildPackage,ath11k-firmware-ipq6018))
 $(eval $(call BuildPackage,ath11k-firmware-ipq8074))
+$(eval $(call BuildPackage,ath11k-firmware-qca6390))
 $(eval $(call BuildPackage,ath11k-firmware-qcn9074))
+$(eval $(call BuildPackage,ath11k-firmware-wcn6855))
