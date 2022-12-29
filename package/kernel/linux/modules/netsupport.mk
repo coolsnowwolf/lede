@@ -1403,7 +1403,7 @@ $(eval $(call KernelPackage,qrtr-smd))
 define KernelPackage/qrtr-mhi
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=MHI IPC Router channels
-  DEPENDS:=+kmod-mhi +kmod-qrtr
+  DEPENDS:=+kmod-mhi-bus +kmod-qrtr
   KCONFIG:=CONFIG_QRTR_MHI
   FILES:= $(LINUX_DIR)/net/qrtr/qrtr-mhi.ko
   AUTOLOAD:=$(call AutoProbe,qrtr-mhi)
