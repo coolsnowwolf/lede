@@ -23,11 +23,13 @@ endef
 define Device/hinlink_opc-h66k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H66K
+endef
 TARGET_DEVICES += hinlink_opc-h66k
 
 define Device/hinlink_opc-h68k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H68K
+endef
 TARGET_DEVICES += hinlink_opc-h68k
 
 define Device/fastrhino_common
