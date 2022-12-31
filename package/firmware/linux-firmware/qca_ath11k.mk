@@ -19,5 +19,6 @@ define Package/ath11k-firmware-wcn6855/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/WCN6855/hw2.0
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath11k/WCN6855/hw2.0/* $(1)/lib/firmware/ath11k/WCN6855/hw2.0/
+	$(LN) ./hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
 endef
 $(eval $(call BuildPackage,ath11k-firmware-wcn6855))
