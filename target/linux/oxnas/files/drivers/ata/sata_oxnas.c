@@ -2038,7 +2038,7 @@ static int sata_oxnas_softreset(struct ata_link *link, unsigned int *class,
 
 	/* if link is occupied, -ENODEV too is an error */
 	if (rc && (rc != -ENODEV || sata_scr_valid(link))) {
-		ata_link_printk(link, KERN_ERR, "SRST failed (errno=%d)\n", rc);
+		ata_link_err(link, "SRST failed (errno=%d)\n", rc);
 		return rc;
 	}
 
