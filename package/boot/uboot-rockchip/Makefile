@@ -163,8 +163,20 @@ define U-Boot/opc-h68k-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=OPC-H68K Board
   BUILD_DEVICES:= \
+    hinlink_opc-h66k \
     hinlink_opc-h68k
   DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/radxa-e25-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=Radxa E25
+  BUILD_DEVICES:= \
+    radxa_e25
+  DEPENDS:=+PACKAGE_u-boot-radxa-e25-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.28.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
@@ -176,17 +188,6 @@ define U-Boot/rock-3a-rk3568
   BUILD_DEVICES:= \
     radxa_rock-3a
   DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
-  DDR:=rk3568_ddr_1560MHz_v1.13.bin
-endef
-
-define U-Boot/rock-pi-e25-rk3568
-  BUILD_SUBTARGET:=armv8
-  NAME:=ROCK Pi E25
-  BUILD_DEVICES:= \
-    radxa_rock-pi-e25
-  DEPENDS:=+PACKAGE_u-boot-rock-pi-e25-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.28.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
@@ -218,8 +219,8 @@ endef
 UBOOT_TARGETS := \
   mrkaio-m68s-rk3568 \
   opc-h68k-rk3568 \
+  radxa-e25-rk3568 \
   rock-3a-rk3568 \
-  rock-pi-e25-rk3568 \
   r66s-rk3568 \
   station-p2-rk3568 \
   guangmiao-g4c-rk3399 \

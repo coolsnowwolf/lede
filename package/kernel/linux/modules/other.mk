@@ -916,6 +916,10 @@ define KernelPackage/zram/config
             bool "lz4"
             select PACKAGE_kmod-lib-lz4
 
+  config ZRAM_DEF_COMP_LZ4HC
+            bool "lz4-hc"
+            select PACKAGE_kmod-lib-lz4hc
+
   config ZRAM_DEF_COMP_ZSTD
             bool "zstd"
             select PACKAGE_kmod-lib-zstd
@@ -1136,8 +1140,8 @@ $(eval $(call KernelPackage,keys-trusted))
 define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
-  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_6_0||LINUX_6_1):kmod-asn1-decoder \
-	  +(LINUX_5_15||LINUX_6_0||LINUX_6_1):kmod-asn1-encoder +(LINUX_5_15||LINUX_6_0||LINUX_6_1):kmod-oid-registry
+  DEPENDS:= +kmod-random-core +(LINUX_5_15||LINUX_6_1):kmod-asn1-decoder \
+	  +(LINUX_5_15||LINUX_6_1):kmod-asn1-encoder +(LINUX_5_15||LINUX_6_1):kmod-oid-registry
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
@@ -1280,22 +1284,37 @@ endef
 
 $(eval $(call KernelPackage,qcom-qmi-helpers))
 
-define KernelPackage/mhi
+define KernelPackage/mhi-bus
   SUBMENU:=$(OTHER_MENU)
-  TITLE:=Modem Host Interface (MHI) bus
-  DEPENDS:=@(LINUX_5_15||LINUX_6_0||LINUX_6_1)
+  TITLE:=MHI bus
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
   KCONFIG:=CONFIG_MHI_BUS \
-           CONFIG_MHI_BUS_DEBUG=y \
-           CONFIG_MHI_BUS_PCI_GENERIC=n \
-           CONFIG_MHI_NET=n
+           CONFIG_MHI_BUS_DEBUG=y
   FILES:= \
-      $(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko@lt5.18  \
-      $(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko@ge5.18
+	$(LINUX_DIR)/drivers/bus/mhi/core/mhi.ko@lt5.18 \
+	$(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko@ge5.18
   AUTOLOAD:=$(call AutoProbe,mhi)
 endef
 
-define KernelPackage/mhi/description
-  Bus driver for MHI protocol.
+define KernelPackage/mhi-bus/description
+  Kernel module for the Qualcomm MHI bus.
 endef
 
-$(eval $(call KernelPackage,mhi))
+$(eval $(call KernelPackage,mhi-bus))
+
+define KernelPackage/mhi-pci-generic
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=MHI PCI controller driver
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1) +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_BUS_PCI_GENERIC
+  FILES:= \
+	$(LINUX_DIR)/drivers/bus/mhi/mhi_pci_generic.ko@lt5.18 \
+	$(LINUX_DIR)/drivers/bus/mhi/host/mhi_pci_generic.ko@ge5.18
+  AUTOLOAD:=$(call AutoProbe,mhi_pci_generic)
+endef
+
+define KernelPackage/mhi-pci-generic/description
+  Kernel module for the MHI PCI controller driver.
+endef
+
+$(eval $(call KernelPackage,mhi-pci-generic))

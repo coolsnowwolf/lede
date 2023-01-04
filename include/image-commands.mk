@@ -306,8 +306,13 @@ define Build/fit
 	@mv $@.new $@
 endef
 
+define Build/libdeflate-gzip
+	$(STAGING_DIR_HOST)/bin/libdeflate-gzip -f -12 -c $@ $(1) > $@.new
+	@mv $@.new $@
+endef
+
 define Build/gzip
-	gzip -f -9n -c $@ $(1) > $@.new
+	$(STAGING_DIR_HOST)/bin/gzip -f -9n -c $@ $(1) > $@.new
 	@mv $@.new $@
 endef
 
