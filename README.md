@@ -45,7 +45,8 @@ Op固件技术研究群 ,号码 891659613 ，加群链接：[点击加入](https
    nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools \
    subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev gcc-multilib-i686-linux-gnu gcc-multilib-s390x-linux-gnu \
    gcc-multilib-x86-64-linux-gnu gcc-multilib-x86-64-linux-gnux32 libc6-dev-i386-amd64-cross libc6-dev-i386-cross libc6-dev-i386-x32-cross
-   
+   ```
+
 3. 下载源代码，更新 feeds 并选择配置
 
    ```bash
