@@ -684,6 +684,22 @@ endef
 $(eval $(call KernelPackage,e1000e))
 
 
+define KernelPackage/hv_utils
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Microsoft Hyper-V Utilities driver
+  DEPENDS:=@PCIE_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_HYPERV_UTILS
+  FILES:=$(LINUX_DIR)/drivers/hv/hv_utils.ko
+  AUTOLOAD:=$(call AutoLoad,35,hv_utils,1)
+endef
+
+define KernelPackage/hv_utils/description
+ Microsoft Hyper-V Utilities driver.
+endef
+
+$(eval $(call KernelPackage,hv_utils))
+
+
 define KernelPackage/igb
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82575/82576 PCI-Express Gigabit Ethernet support
