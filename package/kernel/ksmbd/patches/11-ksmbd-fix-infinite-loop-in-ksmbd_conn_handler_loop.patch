@@ -1,0 +1,63 @@
+From cc4f3b5a6ab4693aba94a45cc073188df4d67175 Mon Sep 17 00:00:00 2001
+From: Namjae Jeon <linkinjeon@kernel.org>
+Date: Mon, 26 Dec 2022 01:28:52 +0900
+Subject: ksmbd: fix infinite loop in ksmbd_conn_handler_loop()
+
+If kernel_recvmsg() return -EAGAIN in ksmbd_tcp_readv() and go round
+again, It will cause infinite loop issue. And all threads from next
+connections would be doing that. This patch add max retry count(2) to
+avoid it. kernel_recvmsg() will wait during 7sec timeout and try to
+retry two time if -EAGAIN is returned. And add flags of kvmalloc to
+__GFP_NOWARN and __GFP_NORETRY to disconnect immediately without
+retrying on memory alloation failure.
+
+Fixes: 0626e66 ("cifsd: add server handler for central processing and tranport layers")
+Cc: stable@vger.kernel.org
+Reported-by: zdi-disclosures@trendmicro.com # ZDI-CAN-18259
+Reviewed-by: Sergey Senozhatsky <senozhatsky@chromium.org>
+Signed-off-by: Namjae Jeon <linkinjeon@kernel.org>
+---
+ connection.c    | 7 +++++--
+ transport_tcp.c | 5 ++++-
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+--- a/connection.c
++++ b/connection.c
+@@ -337,9 +337,12 @@ int ksmbd_conn_handler_loop(void *p)
+ 
+ 		/* 4 for rfc1002 length field */
+ 		size = pdu_size + 4;
+-		conn->request_buf = kvmalloc(size, GFP_KERNEL);
++		conn->request_buf = kvmalloc(size,
++					     GFP_KERNEL |
++					     __GFP_NOWARN |
++					     __GFP_NORETRY);
+ 		if (!conn->request_buf)
+-			continue;
++			break;
+ 
+ 		memcpy(conn->request_buf, hdr_buf, sizeof(hdr_buf));
+ 		if (!ksmbd_smb_request(conn))
+--- a/transport_tcp.c
++++ b/transport_tcp.c
+@@ -323,6 +323,7 @@ static int ksmbd_tcp_readv(struct tcp_tr
+ 	struct msghdr ksmbd_msg;
+ 	struct kvec *iov;
+ 	struct ksmbd_conn *conn = KSMBD_TRANS(t)->conn;
++	int max_retry = 2;
+ 
+ 	iov = get_conn_iovec(t, nr_segs);
+ 	if (!iov)
+@@ -349,9 +350,11 @@ static int ksmbd_tcp_readv(struct tcp_tr
+ 		} else if (conn->status == KSMBD_SESS_NEED_RECONNECT) {
+ 			total_read = -EAGAIN;
+ 			break;
+-		} else if (length == -ERESTARTSYS || length == -EAGAIN) {
++		} else if ((length == -ERESTARTSYS || length == -EAGAIN) &&
++			   max_retry) {
+ 			usleep_range(1000, 2000);
+ 			length = 0;
++			max_retry--;
+ 			continue;
+ 		} else if (length <= 0) {
+ 			total_read = -EAGAIN;
