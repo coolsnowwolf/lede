@@ -1248,6 +1248,22 @@ endef
 $(eval $(call KernelPackage,mlx5-core))
 
 
+define KernelPackage/net-selftests
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  DEPENDS:=+kmod-libphy
+  TITLE:=Network generic selftest support
+  KCONFIG:=CONFIG_NET_SELFTESTS
+  FILES:=$(LINUX_DIR)/net/core/selftests.ko
+  AUTOLOAD:=$(call AutoLoad,99,selftests)
+endef
+
+define KernelPackage/net-selftests/description
+  Kernel modules for the generic selftest support
+endef
+
+$(eval $(call KernelPackage,net-selftests))
+
+
 define KernelPackage/qlcnic
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   DEPENDS:=@PCI_SUPPORT +kmod-hwmon-core
