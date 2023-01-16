@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=qca-nss-dp
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/cc-qrdk/oss/lklm/nss-dp
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-dp.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2022-04-30
 PKG_SOURCE_VERSION:=72e9ec4187414461cbcf6ccff100e8b5ebe5f40b
@@ -42,11 +42,11 @@ define Build/Configure
 		$(PKG_BUILD_DIR)/exports/nss_dp_arch.h
 endef
 
-# ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
-#     SOC="ipq807x_64"
-# else ifeq ($(CONFIG_TARGET_BOARD), "ipq60xx")
-#     SOC="ipq60xx_64"
-# endif
+ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
+    SOC="ipq807x_64"
+else ifeq ($(CONFIG_TARGET_BOARD), "ipq60xx")
+    SOC="ipq60xx_64"
+endif
 
 define Build/Compile
 	+$(MAKE) -C "$(LINUX_DIR)" \
