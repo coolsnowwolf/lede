@@ -46,6 +46,7 @@ platform_do_upgrade() {
 	zte,mf269)
 		nand_do_upgrade "$1"
 		;;
+	tplink,tl-er2260t|\
 	tplink,xtr10890)
 		nand_do_upgrade "$1"
 		;;
