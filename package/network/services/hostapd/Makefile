@@ -128,11 +128,6 @@ ifneq ($(LOCAL_TYPE),hostapd)
   endif
 endif
 
-ifdef CONFIG_USE_GLIBC
-  TARGET_LDFLAGS += -lrt
-  TARGET_LDFLAGS_C += -lrt
-endif
-
 DRV_DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny
 
 
