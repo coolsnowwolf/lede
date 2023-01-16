@@ -5,9 +5,9 @@ PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_URL:=https://source.codeaurora.org/quic/cc-qrdk/oss/lklm/nss-dp
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-03-26
-PKG_SOURCE_VERSION:=e0c89348d5ad99559ce2fbe15d37b3b5bc66aa03
-PKG_MIRROR_HASH:=f369f0c3b33b5f4ad6d0a6ad6ac5495f63c9ecaf94e4e7fa345169f3e44fcf45
+PKG_SOURCE_DATE:=2022-04-30
+PKG_SOURCE_VERSION:=72e9ec4187414461cbcf6ccff100e8b5ebe5f40b
+PKG_MIRROR_HASH:=805f16e59c75511132922f97740ebf6bf953845b0bbfd2089c4615456893bb37
 
 PKG_BUILD_PARALLEL:=1
 
@@ -38,22 +38,22 @@ EXTRA_CFLAGS+= \
 
 NSS_DP_HAL_DIR:=$(PKG_BUILD_DIR)/hal
 define Build/Configure
-	$(LN) $(NSS_DP_HAL_DIR)/arch/$(CONFIG_TARGET_BOARD)/nss_$(CONFIG_TARGET_BOARD).h \
+	$(LN) $(NSS_DP_HAL_DIR)/soc_ops/$(CONFIG_TARGET_BOARD)/nss_$(CONFIG_TARGET_BOARD).h \
 		$(PKG_BUILD_DIR)/exports/nss_dp_arch.h
 endef
 
-ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
-    SOC="ipq807x_64"
-else ifeq ($(CONFIG_TARGET_BOARD), "ipq60xx")
-    SOC="ipq60xx_64"
-endif
+# ifeq ($(CONFIG_TARGET_BOARD), "ipq807x")
+#     SOC="ipq807x_64"
+# else ifeq ($(CONFIG_TARGET_BOARD), "ipq60xx")
+#     SOC="ipq60xx_64"
+# endif
 
 define Build/Compile
 	+$(MAKE) -C "$(LINUX_DIR)" \
 		CROSS_COMPILE="$(TARGET_CROSS)" \
 		ARCH="$(LINUX_KARCH)" \
 		M="$(PKG_BUILD_DIR)" \
-		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" SoC="$(SOC)" \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" SoC="$(CONFIG_TARGET_BOARD)" \
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_JOBS) \
 		modules
