@@ -1,9 +1,9 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2022.10
-PKG_HASH:=50b4482a505bc281ba8470c399a3c26e145e29b23500bc35c50debd7fa46bdf8
-PKG_BUILD_DEPENDS:=arm-trusted-firmware-tools/host
+PKG_VERSION:=2023.01
+PKG_HASH:=69423bad380f89a0916636e89e6dcbd2e4512d584308d922d1039d1e4331950f
+PKG_BUILD_DEPENDS:=!TARGET_mediatek_mt7623:arm-trusted-firmware-tools/host
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk

@@ -1,12 +1,15 @@
 From: Felix Fietkau <nbd@nbd.name>
 Date: Thu, 3 Nov 2022 12:38:49 +0100
-Subject: [PATCH] net: ethernet: mtk_eth_soc: work around issue with
- sending small fragments
+Subject: [PATCH] net: ethernet: mtk_eth_soc: work around issue with sending
+ small fragments
 
-When frames are sent with very small fragments, the DMA engine appears to
-lock up and transmit attempts time out. Fix this by detecting the presence
-of small fragments and use skb_gso_segment + skb_linearize to deal with
-them
+When lots of frames are sent with a number of very small fragments, an
+internal FIFO can overflow, causing the DMA engine to lock up lock up and
+transmit attempts time out.
+
+Fix this on MT7986 by increasing the reserved FIFO space.
+Fix this on older chips by detecting the presence of small fragments and use
+skb_gso_segment + skb_linearize to deal with them.
 
 Signed-off-by: Felix Fietkau <nbd@nbd.name>
 ---
@@ -42,11 +45,12 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	bool gso = false;
  	int tx_num;
  
-@@ -1423,6 +1439,17 @@ static netdev_tx_t mtk_start_xmit(struct
+@@ -1423,6 +1439,18 @@ static netdev_tx_t mtk_start_xmit(struct
  		return NETDEV_TX_BUSY;
  	}
  
-+	if (skb_is_gso(skb) && mtk_skb_has_small_frag(skb)) {
++	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2) &&
++	    skb_is_gso(skb) && mtk_skb_has_small_frag(skb)) {
 +		segs = skb_gso_segment(skb, dev->features & ~NETIF_F_ALL_TSO);
 +		if (IS_ERR(segs))
 +			goto drop;
@@ -60,19 +64,31 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	/* TSO: fill MSS info in tcp checksum field */
  	if (skb_is_gso(skb)) {
  		if (skb_cow_head(skb, 0)) {
-@@ -1438,8 +1465,13 @@ static netdev_tx_t mtk_start_xmit(struct
+@@ -1438,8 +1466,14 @@ static netdev_tx_t mtk_start_xmit(struct
  		}
  	}
  
 -	if (mtk_tx_map(skb, dev, tx_num, ring, gso) < 0)
 -		goto drop;
 +	skb_list_walk_safe(skb, skb, next) {
-+		if ((mtk_skb_has_small_frag(skb) && skb_linearize(skb)) ||
++		if ((!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2) &&
++		     mtk_skb_has_small_frag(skb) && skb_linearize(skb)) ||
 +		    mtk_tx_map(skb, dev, tx_num, ring, gso) < 0) {
-+			stats->tx_dropped++;
-+			dev_kfree_skb_any(skb);
++				stats->tx_dropped++;
++				dev_kfree_skb_any(skb);
 +		}
 +	}
  
  	if (unlikely(atomic_read(&ring->free_count) <= ring->thresh))
  		netif_tx_stop_all_queues(dev);
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -246,7 +246,7 @@
+ #define MTK_CHK_DDONE_EN	BIT(28)
+ #define MTK_DMAD_WR_WDONE	BIT(26)
+ #define MTK_WCOMP_EN		BIT(24)
+-#define MTK_RESV_BUF		(0x40 << 16)
++#define MTK_RESV_BUF		(0x80 << 16)
+ #define MTK_MUTLI_CNT		(0x4 << 12)
+ #define MTK_LEAKY_BUCKET_EN	BIT(11)
+ 
