@@ -5,17 +5,20 @@ platform_do_upgrade() {
 
 	case "$board" in
 	bananapi,bpi-r3)
-		case "$(cmdline_get_var root)" in
-		/dev/mmc*)
+		local rootdev="$(cmdline_get_var root)"
+		rootdev="${rootdev##*/}"
+		rootdev="${rootdev%p[0-9]*}"
+		case "$rootdev" in
+		mmc*)
 			CI_ROOTDEV="$rootdev"
 			CI_KERNPART="production"
 			emmc_do_upgrade "$1"
 			;;
-		/dev/mtdblock*)
+		mtdblock*)
 			PART_NAME="fit"
 			default_do_upgrade "$1"
 			;;
-		/dev/ubiblock*)
+		ubiblock*)
 			CI_KERNPART="fit"
 			nand_do_upgrade "$1"
 			;;

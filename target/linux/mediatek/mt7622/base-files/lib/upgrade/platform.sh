@@ -8,6 +8,7 @@ platform_do_upgrade() {
 	bananapi,bpi-r64)
 		local rootdev="$(cmdline_get_var root)"
 		rootdev="${rootdev##*/}"
+		rootdev="${rootdev%p[0-9]*}"
 		case "$rootdev" in
 		mmc*)
 			CI_ROOTDEV="$rootdev"
