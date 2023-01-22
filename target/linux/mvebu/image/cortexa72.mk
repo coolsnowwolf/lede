@@ -108,6 +108,26 @@ define Device/iei_puzzle-m902
 endef
 TARGET_DEVICES += iei_puzzle-m902
 
+define Device/qnap_qhora-321
+  $(call Device/Default-arm64)
+  SOC := cn9131
+  DEVICE_VENDOR := QNAP
+  DEVICE_MODEL := QHora-321
+  DEVICE_DTS := cn9131-qhora-321
+  DEVICE_PACKAGES += kmod-rtc-ds1307
+endef
+TARGET_DEVICES += qnap_qhora-321
+
+define Device/qnap_qhora-322
+  $(call Device/Default-arm64)
+  SOC := cn9132
+  DEVICE_VENDOR := QNAP
+  DEVICE_MODEL := QHora-322
+  DEVICE_DTS := cn9132-qhora-322
+  DEVICE_PACKAGES += kmod-rtc-ds1307
+endef
+TARGET_DEVICES += qnap_qhora-322
+
 define Device/solidrun_clearfog-pro
   $(call Device/Default-arm64)
   SOC := cn9130
