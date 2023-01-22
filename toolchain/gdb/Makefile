@@ -30,10 +30,10 @@ HOST_CONFIGURE_ARGS = \
 	--build=$(GNU_HOST_NAME) \
 	--host=$(GNU_HOST_NAME) \
 	--target=$(REAL_GNU_TARGET_NAME) \
-	--with-gmp=$(TOPDIR)/staging_dir/host \
-	--with-mpfr=$(TOPDIR)/staging_dir/host \
-	--with-mpc=$(TOPDIR)/staging_dir/host \
-	--with-expat=$(TOPDIR)/staging_dir/host \
+	--with-gmp=$(STAGING_DIR_HOST) \
+	--with-mpfr=$(STAGING_DIR_HOST) \
+	--with-mpc=$(STAGING_DIR_HOST) \
+	--with-expat=$(STAGING_DIR_HOST) \
 	--disable-werror \
 	--without-uiout \
 	--enable-tui --disable-gdbtk --without-x \
