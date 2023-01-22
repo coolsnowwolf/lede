@@ -21,7 +21,7 @@ Kernel/Patch:=$(Kernel/Patch/Default)
 ifneq (,$(findstring .xz,$(LINUX_SOURCE)))
   LINUX_CAT:=xzcat
 else
-  LINUX_CAT:=gzip -dc
+  LINUX_CAT:=$(STAGING_DIR_HOST)/bin/libdeflate-gzip -dc
 endif
 
 ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
