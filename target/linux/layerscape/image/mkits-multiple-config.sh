@@ -198,6 +198,11 @@ parse_args() {
 			usage;;
 		esac
 	done
+	shift $(($OPTIND - 1))
+	[ $# -gt 0 ] && {
+		echo "Failed to parse all passed arguments (unrecognized: \"$@\")"
+		exit 1
+	}
 	[ -n "${OUTPUT}" ] || OUTPUT=fitimage.its
 	[ -n "${VERSION}" ] || VERSION="Unknown"
 	[ -n "${ARCH}" ] || ARCH=arm
