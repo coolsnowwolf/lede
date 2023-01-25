@@ -133,7 +133,7 @@ class Path(object):
     def tar(path, subdir, into=None, ts=None):
         """Pack ``path`` into tarball ``into``."""
         # --sort=name requires a recent build of GNU tar
-        args = ['tar', '--numeric-owner', '--owner=0', '--group=0', '--sort=name']
+        args = ['tar', '--numeric-owner', '--owner=0', '--group=0', '--sort=name', '--mode=a-s']
         args += ['-C', path, '-cf', into, subdir]
         envs = os.environ.copy()
         if ts is not None:

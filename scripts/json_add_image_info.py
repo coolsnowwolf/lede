@@ -21,7 +21,7 @@ if not file_path.is_file():
 
 def get_titles():
     titles = []
-    for prefix in ["", "ALT0_", "ALT1_", "ALT2_"]:
+    for prefix in ["", "ALT0_", "ALT1_", "ALT2_", "ALT3_", "ALT4_"]:
         title = {}
         for var in ["vendor", "model", "variant"]:
             if getenv("DEVICE_{}{}".format(prefix, var.upper())):

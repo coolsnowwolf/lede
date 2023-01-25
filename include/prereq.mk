@@ -63,6 +63,18 @@ define RequireHeader
   $$(eval $$(call Require,$(1),$(2)))
 endef
 
+# 1: header to test
+# 2: failure message
+# 3: optional compile time test
+# 4: optional link library test (example -lncurses)
+define RequireCHeader
+  define Require/$(1)
+    echo 'int main(int argc, char **argv) { $(3); return 0; }' | gcc -include $(1) -x c -o $(TMP_DIR)/a.out - $(4)
+  endef
+
+  $$(eval $$(call Require,$(1),$(2)))
+endef
+
 define CleanupPython2
   define Require/python2-cleanup
 	if [ -f "$(STAGING_DIR_HOST)/bin/python" ] && \

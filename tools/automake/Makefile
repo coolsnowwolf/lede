@@ -25,7 +25,7 @@ HOST_CONFIGURE_VARS += \
 	am_cv_prog_PERL_ithreads=no
 
 define Host/Configure
-	(cd $(HOST_BUILD_DIR); $(AM_TOOL_PATHS) STAGING_DIR="" ./bootstrap)
+	(cd $(HOST_BUILD_DIR); $(AM_TOOL_PATHS) STAGING_DIR_HOST="" ./bootstrap)
 	$(call Host/Configure/Default)
 endef
 
