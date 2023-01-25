@@ -182,6 +182,17 @@ define U-Boot/opc-h68k-rk3568
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
+define U-Boot/photonicat-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=Ariaboard Photonicat
+  BUILD_DEVICES:= \
+    ariaboard_photonicat
+  DEPENDS:=+PACKAGE_u-boot-photonicat-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/radxa-e25-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=Radxa E25
@@ -230,6 +241,7 @@ endef
 UBOOT_TARGETS := \
   mrkaio-m68s-rk3568 \
   opc-h68k-rk3568 \
+  photonicat-rk3568 \
   radxa-e25-rk3568 \
   rock-3a-rk3568 \
   r66s-rk3568 \
