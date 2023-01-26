@@ -21,7 +21,7 @@ Kernel/Patch:=$(Kernel/Patch/Default)
 ifneq (,$(findstring .xz,$(LINUX_SOURCE)))
   LINUX_CAT:=xzcat
 else
-  LINUX_CAT:=gzip -dc
+  LINUX_CAT:=$(STAGING_DIR_HOST)/bin/libdeflate-gzip -dc
 endif
 
 ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
@@ -180,10 +180,10 @@ endif
 	$(if $(SOURCE_DATE_EPOCH),touch -hcd "@$(SOURCE_DATE_EPOCH)" $(KERNEL_BUILD_DIR)/initrd.cpio)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_BZIP2),bzip2 -9 -c < $(KERNEL_BUILD_DIR)/initrd.cpio > $(KERNEL_BUILD_DIR)/initrd.cpio.bzip2)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_GZIP),gzip -n -f -S .gzip -9n $(KERNEL_BUILD_DIR)/initrd.cpio)
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZ4),$(STAGING_DIR_HOST)/bin/lz4c -l -c1 -fz --favor-decSpeed $(KERNEL_BUILD_DIR)/initrd.cpio)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZMA),$(STAGING_DIR_HOST)/bin/lzma e -lc1 -lp2 -pb2 $(KERNEL_BUILD_DIR)/initrd.cpio $(KERNEL_BUILD_DIR)/initrd.cpio.lzma)
-# ?	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZO),)
+	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZO),$(STAGING_DIR_HOST)/bin/lzop -9 -f $(KERNEL_BUILD_DIR)/initrd.cpio)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_XZ),$(STAGING_DIR_HOST)/bin/xz -T$(if $(filter 1,$(NPROC)),2,0) -9 -fz --check=crc32 $(KERNEL_BUILD_DIR)/initrd.cpio)
-# ?	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_LZ4),)
 	$(if $(CONFIG_TARGET_INITRAMFS_COMPRESSION_ZSTD),$(STAGING_DIR_HOST)/bin/zstd -T0 -f -o $(KERNEL_BUILD_DIR)/initrd.cpio.zstd $(KERNEL_BUILD_DIR)/initrd.cpio)
 endif
 	+$(KERNEL_MAKE) $(KERNEL_MAKEOPTS_IMAGE) $(if $(KERNELNAME),$(KERNELNAME),all) modules

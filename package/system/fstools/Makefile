@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2014-2022 OpenWrt.org
+# Copyright (C) 2014-2015 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fstools
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_MIRROR_HASH:=28be14a1e28fc62e80681e1b5e7f2435692ee326b66afcc1f3d158764df686d5
-PKG_SOURCE_DATE:=2022-11-10
-PKG_SOURCE_VERSION:=3affe9ea5098c8bb90111ce97d50ad976ef0c034
+PKG_MIRROR_HASH:=edda9151c73c1adfe369f5e315347344727a540ad57d3e2b41b9f57f9d4313fe
+PKG_SOURCE_DATE:=2023-01-22
+PKG_SOURCE_VERSION:=1ea5855e980cd88766dd9f615e78e7dd6edfbb74
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0

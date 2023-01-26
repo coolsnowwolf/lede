@@ -76,7 +76,7 @@ ifdef CONFIG_INSTALL_GCCGO
 endif
 
 ifdef CONFIG_GCC_USE_GRAPHITE
-  GRAPHITE_CONFIGURE:= --with-isl=$(TOPDIR)/staging_dir/host
+  GRAPHITE_CONFIGURE:= --with-isl=$(STAGING_DIR_HOST)
 else
   GRAPHITE_CONFIGURE:= --without-isl --without-cloog
 endif
@@ -110,9 +110,9 @@ GCC_CONFIGURE:= \
 			--with-abi=$(call qstrip,$(CONFIG_MIPS64_ABI))) \
 		$(if $(CONFIG_arc),--with-cpu=$(CONFIG_CPU_TYPE)) \
 		$(if $(CONFIG_powerpc64), $(if $(CONFIG_USE_MUSL),--with-abi=elfv2)) \
-		--with-gmp=$(TOPDIR)/staging_dir/host \
-		--with-mpfr=$(TOPDIR)/staging_dir/host \
-		--with-mpc=$(TOPDIR)/staging_dir/host \
+		--with-gmp=$(STAGING_DIR_HOST) \
+		--with-mpfr=$(STAGING_DIR_HOST) \
+		--with-mpc=$(STAGING_DIR_HOST) \
 		--disable-decimal-float \
 		--with-diagnostics-color=auto-if-env \
 		--enable-__cxa_atexit \
@@ -181,7 +181,7 @@ define Host/SetToolchainInfo
 	$(SED) 's,GCC_VERSION=.*,GCC_VERSION=$(GCC_VERSION),' $(TOOLCHAIN_DIR)/info.mk
 endef
 
-ifdef CONFIG_GCC_USE_VERSION_12
+ifeq ($(GCC_MAJOR_VERSION),12)
 	GCC_VERSION_FILE:=gcc/genversion.cc
 else
 	GCC_VERSION_FILE:=gcc/version.c

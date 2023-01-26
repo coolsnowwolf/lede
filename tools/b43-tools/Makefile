@@ -8,17 +8,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=b43-tools
-PKG_DATE:=2017-09-13
+PKG_DATE:=2022-07-05
 
-PKG_SOURCE_URL:=https://github.com/mbuesch/b43-tools.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)
-PKG_SOURCE_VERSION:=27892ef741e7f1d08cb939744f8b8f5dac7b04ae
-PKG_MIRROR_HASH:=f914c36ac566e9e3b5a3a04de16ddb014fcad6a1cf25cdd8e4825c708d28d3f4
-HOST_BUILD_DIR=$(BUILD_DIR_HOST)/$(PKG_NAME)
+PKG_SOURCE_URL:=https://github.com/mbuesch/b43-tools.git
+PKG_SOURCE_VERSION:=2fe10ea6690df9a068cb21cde537236bae784a14
+PKG_MIRROR_HASH:=4f1cde5da35a1e768f6a01d67888549d04512073990769342381af1b2c9e7fd2
 
 include $(INCLUDE_DIR)/host-build.mk
-
 
 define Host/Compile
 	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR)/fwcutter \
