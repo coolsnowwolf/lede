@@ -130,13 +130,6 @@ CMAKE_OPTIONS += \
 	-DENABLE_TESTING:Bool=OFF \
 	-DENABLE_PROGRAMS:Bool=ON
 
-define Build/Configure
-	$(call Build/Configure/Default)
-
-	sed -i '/fuzz/d' $(PKG_BUILD_DIR)/programs/CMakeLists.txt
-	sed -i '/test/d' $(PKG_BUILD_DIR)/programs/CMakeLists.txt
-endef
-
 define Build/Prepare
        $(call Build/Prepare/Default)
 

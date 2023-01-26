@@ -5,16 +5,14 @@ HOST_BUILD_DIR=$(pwd)/"build_dir/host"
 HOST_STAGING_DIR_STAMP=$(pwd)/"staging_dir/host/stamp"
 
 refresh_timestamps() {
-	find "$1" -not -type l -print0 | xargs -0 touch
+	find -H "$1" -not -type l -print0 | xargs -0 touch
 }
 
 extract_prebuilt_tar() {
 	tar -xf "$1"
 }
 
-install_prebuilt_tools() {
-	extract_prebuilt_tar "$TOOLS_TAR"
-
+refresh_prebuilt_tools() {
 	if [ ! -d "$HOST_BUILD_DIR" ]; then
 		echo "Can't find Host Build Dir "$HOST_BUILD_DIR"" >&2
 		exit 1
@@ -29,6 +27,14 @@ install_prebuilt_tools() {
 	fi
 
 	refresh_timestamps "$HOST_STAGING_DIR_STAMP"
+
+	return 0
+}
+
+install_prebuilt_tools() {
+	extract_prebuilt_tar "$TOOLS_TAR"
+
+	refresh_prebuilt_tools
 
 	return 0
 }
@@ -63,6 +69,12 @@ while [ -n "$1" ]; do
 			exit $?
 		;;
 
+		--refresh)
+			refresh_prebuilt_tools
+
+			exit $?
+		;;
+
 		-h|--help)
 			me="$(basename "$0")"
 			echo -e "\nUsage:\n"                                            >&2
@@ -81,8 +93,12 @@ while [ -n "$1" ]; do
 			echo -e "  $me --tools {tar}"                                   >&2
 			echo -e "    Install the prebuilt tools present in the passed"  >&2
 			echo -e "    tar and prepare them."                             >&2
-			echo -e "    To correctly use them it's needed to update the."  >&2
+			echo -e "    To correctly use them it's needed to update the"   >&2
 			echo -e "    timestamp of each tools to skip recompilation.\n"  >&2
+			echo -e "  $me --refresh"                                       >&2
+			echo -e "    Refresh timestamps of already extracted prebuilt"  >&2
+			echo -e "    tools to correctly use them and skip"              >&2
+			echo -e "    recompilation.\n"                                  >&2
 			echo -e "  $me --help"                                          >&2
 			echo -e "    Display this help text and exit.\n\n"              >&2
 			exit 1
