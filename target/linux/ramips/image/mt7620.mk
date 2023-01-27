@@ -1338,3 +1338,25 @@ define Device/zyxel_keenetic-viva
   SUPPORTED_DEVICES += kng_rc
 endef
 TARGET_DEVICES += zyxel_keenetic-viva
+
+
+define Device/hiwifi_r33
+  SOC := mt7620a
+  DEVICE_VENDOR := HiWiFi
+  DEVICE_MODEL := R33
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport \
+	kmod-switch-rtl8366-smi kmod-switch-rtl8367b kmod-mt76x2
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_SIZE := 4096k
+  UBINIZE_OPTS := -E 5
+  IMAGE_SIZE := 32768k
+  IMAGES += kernel.bin rootfs.bin factory.bin
+  IMAGE/kernel.bin := append-kernel | check-size $$$$(KERNEL_SIZE)
+  IMAGE/rootfs.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  SUPPORTED_DEVICES += r33
+endef
+TARGET_DEVICES += hiwifi_r33
