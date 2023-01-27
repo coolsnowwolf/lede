@@ -12,9 +12,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/jow-/ucode.git
-PKG_SOURCE_DATE:=2023-01-09
-PKG_SOURCE_VERSION:=8dad974baa4696fcba85837fa70cde8b68dd7c12
-PKG_MIRROR_HASH:=91494352ac298ac2735d62355837a1f18e366999c9e940613e6fa3265edc0364
+PKG_SOURCE_DATE:=2023-01-23
+PKG_SOURCE_VERSION:=941d14837faf248eb2fa88dd0d5cfddeed044a15
+PKG_MIRROR_HASH:=19e8654bcb8a13a0a276a240a1da0f2815b0dd0d4f8bb8622e8de1040d5408a5
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=ISC
 
@@ -96,7 +96,7 @@ endef
 define Package/ucode-mod-nl80211
   $(Package/ucode/default)
   TITLE+= (nl80211 module)
-  DEPENDS:=ucode +libnl-tiny
+  DEPENDS:=ucode +libnl-tiny +libubox
 endef
 
 define Package/ucode-mod-nl80211/description
