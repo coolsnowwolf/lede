@@ -21,17 +21,20 @@
 ###   -p --package-size 	Check IPK package size and not installed size
 ###   -h --help 		This message
 
-CONFIG_TARGET=$(sed -n 's/^CONFIG_TARGET_BOARD="\(.*\)"$/\1/p' .config)
-CONFIG_SUBTARGET=$(sed -n 's/^CONFIG_TARGET_SUBTARGET="\(.*\)"$/\1/p' .config)
-CONFIG_ARCH=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"$/\1/p' .config)
+eval "$(grep \
+	-e ^CONFIG_TARGET_BOARD= \
+	-e ^CONFIG_TARGET_SUBTARGET= \
+	-e ^CONFIG_TARGET_ARCH_PACKAGES= \
+	-e ^CONFIG_BINARY_FOLDER= \
+	.config 2>/dev/null \
+)"
 CONFIG_PACKAGES=$(sed -n 's/^CONFIG_PACKAGE_\(.*\)=y$/\1/p' .config | tr '\n' ' ')
-CONFIG_BIN_DIR=$(sed -n 's/^CONFIG_BINARY_DIR="\(.*\)"$/\1/p' .config)
 
-TARGET=${TARGET:-$CONFIG_TARGET}
-SUBTARGET=${SUBTARGET:-$CONFIG_SUBTARGET}
-ARCH=${ARCH:-$CONFIG_ARCH}
+TARGET=${TARGET:-$CONFIG_TARGET_BOARD}
+SUBTARGET=${SUBTARGET:-$CONFIG_TARGET_SUBTARGET}
+ARCH=${ARCH:-$CONFIG_TARGET_ARCH_PACKAGES}
 PACKAGES=${PACKAGES:-$CONFIG_PACKAGES}
-BIN_DIR=${CONFIG_BIN_DIR:-./bin}
+BIN_DIR=${CONFIG_BINARY_FOLDER:-./bin}
 BASE_URL="${BASE_URL:-https://downloads.openwrt.org/snapshots}"
 CHECK_INSTALLED="${CHECK_INSTALLED:-y}"
 
