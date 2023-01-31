@@ -75,6 +75,7 @@ package_size () {
 }
 
 compare_sizes () {
+	TOTAL_DIFF="0"
 	for PACKAGE in $PACKAGES; do
 		if [ "$PACKAGE" = "libc" ]; then
 			continue
@@ -92,7 +93,8 @@ compare_sizes () {
 			SIZE_LOCAL=$(tar tzvf "$PACKAGE_FILE" ./data.tar.gz | awk '{ print $3 }')
 		fi
 		SIZE_UPSTREAM=$(package_size "$TMP_INDEX" "$PACKAGE")
-		SIZE_DIFF="$((SIZE_LOCAL-SIZE_UPSTREAM))"
+		SIZE_DIFF="$((SIZE_LOCAL - SIZE_UPSTREAM))"
+		TOTAL_DIFF="$((TOTAL_DIFF + SIZE_DIFF))"
 		if [ "$SIZE_DIFF" -gt 0 ]; then
 			SIZE_DIFF="+$SIZE_DIFF"
 		fi
@@ -102,6 +104,7 @@ compare_sizes () {
 			echo "$PACKAGE is missing upstream"
 		fi
 	done
+	echo "~~~~~~~	total change	${TOTAL_DIFF}"
 }
 
 if [ "$1" = "-h" ]; then
