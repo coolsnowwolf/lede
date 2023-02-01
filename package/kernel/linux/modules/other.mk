@@ -406,11 +406,13 @@ define KernelPackage/rfkill
   DEPENDS:=@USE_RFKILL +kmod-input-core
   KCONFIG:= \
     CONFIG_RFKILL_FULL \
+    CONFIG_RFKILL_GPIO=y \
     CONFIG_RFKILL_INPUT=y \
     CONFIG_RFKILL_LEDS=y
   FILES:= \
-    $(LINUX_DIR)/net/rfkill/rfkill.ko
-  AUTOLOAD:=$(call AutoLoad,20,rfkill)
+    $(LINUX_DIR)/net/rfkill/rfkill.ko \
+    $(LINUX_DIR)/net/rfkill/rfkill-gpio.ko
+  AUTOLOAD:=$(call AutoLoad,20,rfkill-gpio)
 endef
 
 define KernelPackage/rfkill/description

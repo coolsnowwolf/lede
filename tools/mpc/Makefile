@@ -22,8 +22,8 @@ unexport CFLAGS
 HOST_CONFIGURE_ARGS += \
 	--enable-static \
 	--disable-shared \
-	--with-mpfr=$(TOPDIR)/staging_dir/host \
-	--with-gmp=$(TOPDIR)/staging_dir/host
+	--with-mpfr=$(STAGING_DIR_HOST) \
+	--with-gmp=$(STAGING_DIR_HOST)
 
 define Host/Uninstall
 	-$(call Host/Compile/Default,uninstall)
