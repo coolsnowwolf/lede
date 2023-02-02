@@ -5,9 +5,9 @@ PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/nss-drv
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2021-04-26
-PKG_SOURCE_VERSION:=1cf4bf81fd395f61648efeae78cdf1df60e954ff
-PKG_MIRROR_HASH:=3dd84a548a530188021fd4dab54ca4e1eb9056ca77381b24f587365fc7c16f21
+PKG_SOURCE_DATE:=2022-01-24
+PKG_SOURCE_VERSION:=4f1b8e51105bb71ebd0bb07c1ec0d8b6e5d0913e
+PKG_MIRROR_HASH:=4d32e072fb019d43adce8b1bc58c11a424aba31c3baa2d0b802141baa73d53e7
 
 PKG_BUILD_PARALLEL:=1
 
@@ -103,8 +103,6 @@ endif
 
 define Build/Configure
 	$(LN) arch/nss_$(SOC).h $(PKG_BUILD_DIR)/exports/nss_arch.h
-	sed -i "s/define NSS_FW_VERSION_MAJOR.*/define NSS_FW_VERSION_MAJOR 11/" $(PKG_BUILD_DIR)/exports/nss_fw_version.h
-	sed -i "s/define NSS_FW_VERSION_MINOR.*/define NSS_FW_VERSION_MINOR 3/" $(PKG_BUILD_DIR)/exports/nss_fw_version.h
 endef
 
 define Build/Compile

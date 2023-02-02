@@ -1,39 +1,40 @@
-#!/bin/sh
+#!/usr/bin/lua
+-- Copyright (C) 2022-2023 Tianling Shen <cnsztl@immortalwrt.org>
+-- Copyright (C) 2022-2023 Lean
 
-a=$(ls /sys/class/net/*/device/uevent | grep -v wlan | awk -F '/' '{print $5}')
-b=$(echo "$a" | wc -l)
-rm -f /tmp/state/ethinfo
+local util = require "luci.util"
+local jsonc = require "luci.jsonc"
 
-echo -n "[" > /tmp/state/ethinfo
+local eth_info = {}
+local ifname, stat
+for ifname, stat in pairs(util.ubus("network.device", "status")) do
+        if ifname:match("^(eth%d+)$") == ifname then
+                local status, speed, duplex
 
-for i in $(seq 1 $b)
-do
-	h=$(echo '{"name":' )
-	c=$(echo "$a" | sed -n ${i}p)
-	d=$(ethtool $c)
+                status = stat.carrier and 1 or 0
 
-	e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-	if [ $e = yes ]; then
-		l=1
-	else
-		l=0
-	fi
+                if not stat.carrier or not stat.speed or stat.speed:sub(1, 1) == "-" or stat.speed:find("65535") then
+                        speed = " - "
+                else
+                        speed = stat.speed:sub(1, -2) .. "Mb/s"
+                end
 
-	f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g' | tr -d "Unknown!")
-	[ -z "$f" ] && f=" - "
+                if speed == " - " then
+			duplex = 0
+		elseif stat.speed:sub(-1) == "F" then
+                        duplex = 1
+                else
+                        duplex = 0
+                end
 
-	g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-	if [ "$g" == "Full" ]; then
-		x=1
-	else
-		x=0
-	fi
+		eth_info[#eth_info+1] = { name = ifname, status = status,
+					speed = speed, duplex = duplex }
+        end
+end
 
-	echo -n "$h \"$c\", \"status\": $l, \"speed\": \"$f\", \"duplex\": $x}," >> /tmp/state/ethinfo
-done
+table.sort(eth_info,
+        function(a, b)
+                return a.name < b.name
+        end)
 
-sed -i 's/.$//' /tmp/state/ethinfo
-
-echo -n "]" >> /tmp/state/ethinfo
-
-cat /tmp/state/ethinfo
+print(jsonc.stringify(eth_info))
