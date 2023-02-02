@@ -31,8 +31,11 @@ define Package/uqmi/description
   the QMI-protocol.
 endef
 
-TARGET_CFLAGS += \
-	-I$(STAGING_DIR)/usr/include -ffunction-sections -fdata-sections
+TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include -ffunction-sections -fdata-sections
+
+ifeq ($(GCC_MAJOR_VERSION),12)
+	TARGET_CFLAGS += -Wno-error=dangling-pointer -Wno-error=maybe-uninitialized
+endif
 
 TARGET_LDFLAGS += -Wl,--gc-sections
 

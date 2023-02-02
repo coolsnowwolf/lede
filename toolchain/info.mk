@@ -4,3 +4,4 @@ LIBC_TYPE=unknown
 LIBC_URL=unknown
 LIBC_VERSION=unknown
 LIBC_SO_VERSION=unknown
+GCC_MAJOR_VERSION=unknown

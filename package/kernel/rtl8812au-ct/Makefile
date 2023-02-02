@@ -39,9 +39,11 @@ NOSTDINC_FLAGS := \
 	-I$(STAGING_DIR)/usr/include/mac80211-backport/uapi \
 	-I$(STAGING_DIR)/usr/include/mac80211 \
 	-I$(STAGING_DIR)/usr/include/mac80211/uapi \
-	-include backport/backport.h \
-	-Wno-error=address \
-	-Wno-error=stringop-overread
+	-include backport/backport.h
+
+ifeq ($(GCC_MAJOR_VERSION),12)
+	TARGET_CFLAGS += -Wno-error=address -Wno-error=stringop-overread
+endif
 
 NOSTDINC_FLAGS+=-DCONFIG_IOCTL_CFG80211 -DRTW_USE_CFG80211_STA_EVENT -DBUILD_OPENWRT
 
