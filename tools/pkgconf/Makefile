@@ -7,11 +7,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pkgconf
-PKG_VERSION:=1.9.3
+PKG_VERSION:=1.9.4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://distfiles.dereferenced.org/pkgconf
-PKG_HASH:=5fb355b487d54fb6d341e4f18d4e2f7e813a6622cf03a9e87affa6a40565699d
+PKG_HASH:=daccf1bbe5a30d149b556c7d2ffffeafd76d7b514e249271abdd501533c1d8ae
 
 PKG_CPE_ID:=cpe:/a:pkgconf:pkgconf
 
@@ -24,7 +24,7 @@ HOSTCC := $(HOSTCC_NOCACHE)
 
 MESON_HOST_ARGS += \
 	-Ddefault_library=static \
-	-Dtests=false
+	-Dtests=disabled
 
 define Host/Install
 	$(call Host/Install/Meson)
