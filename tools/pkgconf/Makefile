@@ -13,6 +13,8 @@ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://distfiles.dereferenced.org/pkgconf
 PKG_HASH:=5fb355b487d54fb6d341e4f18d4e2f7e813a6622cf03a9e87affa6a40565699d
 
+PKG_CPE_ID:=cpe:/a:pkgconf:pkgconf
+
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/meson.mk
 
