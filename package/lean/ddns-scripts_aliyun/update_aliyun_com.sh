@@ -199,7 +199,7 @@ enable_domain() {
 # 获取子域名解析记录列表
 describe_domain() {
 	local count value; local ret=0
-	aliyun_transfer "Action=DescribeSubDomainRecords" "SubDomain=${__HOST}.${__DOMAIN}"  "DomainName=${__DOMAIN}" || write_log 14 "服务器通信失败"
+	aliyun_transfer "Action=DescribeSubDomainRecords" "SubDomain=${__HOST}.${__DOMAIN}"  "DomainName=${__DOMAIN}" "Line=default" || write_log 14 "服务器通信失败"
 	write_log 7 "获取到解析记录: $(cat "$DATFILE" 2> /dev/null)" 
 	json_cleanup; json_load "$(cat "$DATFILE" 2> /dev/null)" >/dev/null 2>&1
 	json_get_var count "TotalCount"
