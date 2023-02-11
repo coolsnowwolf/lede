@@ -310,6 +310,8 @@ define Build/Prepare
 		$(PKG_BUILD_DIR)/backport-include/linux/bcm47xx_nvram.h
 
 	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(PKG_BUILD_DIR)/compat_version
+	sed -i '/#define is_signed_type/i#ifndef is_signed_type' $(PKG_BUILD_DIR)/include/linux/overflow.h
+	sed -i '/#define is_signed_type/a#endif' $(PKG_BUILD_DIR)/include/linux/overflow.h
 endef
 
 ifneq ($(CONFIG_PACKAGE_kmod-cfg80211),)

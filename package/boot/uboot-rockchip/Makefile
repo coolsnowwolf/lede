@@ -104,17 +104,6 @@ define U-Boot/nanopi-r4se-rk3399
   USE_RKBIN:=1
 endef
 
-define U-Boot/nanopi-r5s-rk3568
-  BUILD_SUBTARGET:=armv8
-  NAME:=NanoPi R5S
-  BUILD_DEVICES:= \
-    friendlyarm_nanopi-r5s
-  DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
-  DDR:=rk3568_ddr_1560MHz_v1.13.bin
-endef
-
 define U-Boot/rock-pi-4-rk3399
   BUILD_SUBTARGET:=armv8
   NAME:=Rock Pi 4
@@ -165,6 +154,17 @@ define U-Boot/mrkaio-m68s-rk3568
   BUILD_DEVICES:= \
     ezpro_mrkaio-m68s
   DEPENDS:=+PACKAGE_u-boot-mrkaio-m68s-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.28.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/nanopi-r5s-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=NanoPi R5S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r5s
+  DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.28.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
