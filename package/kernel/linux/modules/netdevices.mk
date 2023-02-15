@@ -311,6 +311,22 @@ endef
 $(eval $(call KernelPackage,phy-smsc))
 
 
+define KernelPackage/phy-aquantia
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Aquantia Ethernet PHYs
+  DEPENDS:=+kmod-libphy +kmod-hwmon-core
+  KCONFIG:=CONFIG_AQUANTIA_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko
+  AUTOLOAD:=$(call AutoLoad,18,aquantia,1)
+endef
+
+define KernelPackage/phy-aquantia/description
+  Kernel modules for Aquantia Ethernet PHYs
+endef
+
+$(eval $(call KernelPackage,phy-aquantia))
+
+
 define KernelPackage/swconfig
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=switch configuration API
