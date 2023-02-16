@@ -1,27 +1,30 @@
-From cd47d86ab09f1f3ec5c86441d4fe95e0cf597c06 Mon Sep 17 00:00:00 2001
+From aa957c759b1182aee00cc35178667f849f941b42 Mon Sep 17 00:00:00 2001
 From: Daniel Golle <daniel@makrotopia.org>
-Date: Tue, 13 Sep 2022 00:56:24 +0100
-Subject: [PATCH] thermal/drivers/mediatek: add support for MT7986 and MT7981
+Date: Wed, 30 Nov 2022 13:19:39 +0000
+Subject: [PATCH 2/2] thermal: mediatek: add support for MT7986 and MT7981
 
 Add support for V3 generation thermal found in MT7986 and MT7981 SoCs.
+Brings code to assign values from efuse as well as new function to
+convert raw temperature to millidegree celsius, as found in MediaTek's
+SDK sources (but cleaned up and de-duplicated)
 
+[1]: https://git01.mediatek.com/plugins/gitiles/openwrt/feeds/mtk-openwrt-feeds/+/baf36c7eef477aae1f8f2653b6c29e2caf48475b
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- drivers/thermal/mtk_thermal.c | 202 +++++++++++++++++++++++++++++++++-
- 1 file changed, 198 insertions(+), 4 deletions(-)
+ drivers/thermal/mtk_thermal.c | 137 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 132 insertions(+), 5 deletions(-)
 
 --- a/drivers/thermal/mtk_thermal.c
 +++ b/drivers/thermal/mtk_thermal.c
-@@ -150,6 +150,21 @@
+@@ -150,6 +150,20 @@
  #define CALIB_BUF1_VALID_V2(x)		(((x) >> 4) & 0x1)
  #define CALIB_BUF1_O_SLOPE_SIGN_V2(x)	(((x) >> 3) & 0x1)
  
 +/*
 + * Layout of the fuses providing the calibration data
-+ * These macros could be used for MT7981 and MT7986.
++ * These macros can be used for MT7981 and MT7986.
 + */
 +#define CALIB_BUF0_ADC_GE_V3(x)		(((x) >> 0) & 0x3ff)
-+#define CALIB_BUF0_ADC_OE_V3(x)		(((x) >> 10) & 0x3ff)
 +#define CALIB_BUF0_DEGC_CALI_V3(x)	(((x) >> 20) & 0x3f)
 +#define CALIB_BUF0_O_SLOPE_V3(x)	(((x) >> 26) & 0x3f)
 +#define CALIB_BUF1_VTS_TS1_V3(x)	(((x) >> 0) & 0x1ff)
@@ -34,7 +37,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  enum {
  	VTS1,
  	VTS2,
-@@ -163,6 +178,7 @@ enum {
+@@ -163,6 +177,7 @@ enum {
  enum mtk_thermal_version {
  	MTK_THERMAL_V1 = 1,
  	MTK_THERMAL_V2,
@@ -42,7 +45,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  };
  
  /* MT2701 thermal sensors */
-@@ -245,6 +261,27 @@ enum mtk_thermal_version {
+@@ -245,6 +260,27 @@ enum mtk_thermal_version {
  /* The calibration coefficient of sensor  */
  #define MT8183_CALIBRATION	153
  
@@ -59,7 +62,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +#define MT7986_NUM_SENSORS_PER_ZONE	1
 +
 +/* MT7986 thermal sensors */
-+#define MT7986_TS1	0
++#define MT7986_TS1			0
 +
 +/* The number of controller in the MT7986 */
 +#define MT7986_NUM_CONTROLLER		1
@@ -70,14 +73,14 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  struct mtk_thermal;
  
  struct thermal_bank_cfg {
-@@ -386,6 +423,14 @@ static const int mt7622_mux_values[MT762
+@@ -388,6 +424,14 @@ static const int mt7622_mux_values[MT762
  static const int mt7622_vts_index[MT7622_NUM_SENSORS] = { VTS1 };
  static const int mt7622_tc_offset[MT7622_NUM_CONTROLLER] = { 0x0, };
  
 +/* MT7986 thermal sensor data */
 +static const int mt7986_bank_data[MT7986_NUM_SENSORS] = { MT7986_TS1, };
 +static const int mt7986_msr[MT7986_NUM_SENSORS_PER_ZONE] = { TEMP_MSR0, };
-+static const int mt7986_adcpnp[MT7986_NUM_SENSORS_PER_ZONE] = {	TEMP_ADCPNP0, };
++static const int mt7986_adcpnp[MT7986_NUM_SENSORS_PER_ZONE] = { TEMP_ADCPNP0, };
 +static const int mt7986_mux_values[MT7986_NUM_SENSORS] = { 0, };
 +static const int mt7986_vts_index[MT7986_NUM_SENSORS] = { VTS1 };
 +static const int mt7986_tc_offset[MT7986_NUM_CONTROLLER] = { 0x0, };
@@ -85,7 +88,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /*
   * The MT8173 thermal controller has four banks. Each bank can read up to
   * four temperature sensors simultaneously. The MT8173 has a total of 5
-@@ -549,6 +594,30 @@ static const struct mtk_thermal_data mt8
+@@ -551,6 +595,30 @@ static const struct mtk_thermal_data mt8
  	.version = MTK_THERMAL_V1,
  };
  
@@ -116,7 +119,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /**
   * raw_to_mcelsius - convert a raw ADC value to mcelsius
   * @mt:	The thermal controller
-@@ -603,6 +672,22 @@ static int raw_to_mcelsius_v2(struct mtk
+@@ -605,6 +673,22 @@ static int raw_to_mcelsius_v2(struct mtk
  	return (format_2 - tmp) * 100;
  }
  
@@ -131,7 +134,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	tmp = 100000 * 15 / 16 * 10000;
 +	tmp /= 4096 - 512 + mt->adc_ge;
 +	tmp /= 1490;
-+	tmp *= raw - mt->vts[sensno] - 2900 - mt->adc_oe + 512;
++	tmp *= raw - mt->vts[sensno] - 2900;
 +
 +	return mt->degc_cali * 500 - tmp;
 +}
@@ -139,21 +142,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /**
   * mtk_thermal_get_bank - get bank
   * @bank:	The bank
-@@ -659,9 +744,12 @@ static int mtk_thermal_bank_temperature(
- 		if (mt->conf->version == MTK_THERMAL_V1) {
- 			temp = raw_to_mcelsius_v1(
- 				mt, conf->bank_data[bank->id].sensors[i], raw);
--		} else {
-+		} else if (mt->conf->version == MTK_THERMAL_V2) {
- 			temp = raw_to_mcelsius_v2(
- 				mt, conf->bank_data[bank->id].sensors[i], raw);
-+		} else {
-+			temp = raw_to_mcelsius_v3(
-+				mt, conf->bank_data[bank->id].sensors[i], raw);
- 		}
- 
- 		/*
-@@ -887,6 +975,26 @@ static int mtk_thermal_extract_efuse_v2(
+@@ -885,6 +969,25 @@ static int mtk_thermal_extract_efuse_v2(
  	return 0;
  }
  
@@ -162,7 +151,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	if (!CALIB_BUF1_VALID_V3(buf[1]))
 +		return -EINVAL;
 +
-+	mt->adc_oe = CALIB_BUF0_ADC_OE_V3(buf[0]);
 +	mt->adc_ge = CALIB_BUF0_ADC_GE_V3(buf[0]);
 +	mt->degc_cali = CALIB_BUF0_DEGC_CALI_V3(buf[0]);
 +	mt->o_slope = CALIB_BUF0_O_SLOPE_V3(buf[0]);
@@ -180,7 +168,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  static int mtk_thermal_get_calibration_data(struct device *dev,
  					    struct mtk_thermal *mt)
  {
-@@ -897,6 +1005,7 @@ static int mtk_thermal_get_calibration_d
+@@ -895,6 +998,7 @@ static int mtk_thermal_get_calibration_d
  
  	/* Start with default values */
  	mt->adc_ge = 512;
@@ -188,19 +176,30 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	for (i = 0; i < mt->conf->num_sensors; i++)
  		mt->vts[i] = 260;
  	mt->degc_cali = 40;
-@@ -924,8 +1033,10 @@ static int mtk_thermal_get_calibration_d
+@@ -920,10 +1024,20 @@ static int mtk_thermal_get_calibration_d
+ 		goto out;
+ 	}
  
- 	if (mt->conf->version == MTK_THERMAL_V1)
+-	if (mt->conf->version == MTK_THERMAL_V1)
++	switch (mt->conf->version) {
++	case MTK_THERMAL_V1:
  		ret = mtk_thermal_extract_efuse_v1(mt, buf);
 -	else
-+	else if (mt->conf->version == MTK_THERMAL_V2)
++		break;
++	case MTK_THERMAL_V2:
  		ret = mtk_thermal_extract_efuse_v2(mt, buf);
-+	else
++		break;
++	case MTK_THERMAL_V3:
 +		ret = mtk_thermal_extract_efuse_v3(mt, buf);
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
  
  	if (ret) {
  		dev_info(dev, "Device not calibrated, using default calibration values\n");
-@@ -956,6 +1067,10 @@ static const struct of_device_id mtk_the
+@@ -954,6 +1068,10 @@ static const struct of_device_id mtk_the
  		.data = (void *)&mt7622_thermal_data,
  	},
  	{
@@ -211,13 +210,31 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		.compatible = "mediatek,mt8183-thermal",
  		.data = (void *)&mt8183_thermal_data,
  	}, {
-@@ -1070,7 +1185,8 @@ static int mtk_thermal_probe(struct plat
+@@ -1068,15 +1186,24 @@ static int mtk_thermal_probe(struct plat
  		goto err_disable_clk_auxadc;
  	}
  
 -	if (mt->conf->version == MTK_THERMAL_V2) {
-+	if (mt->conf->version == MTK_THERMAL_V2 ||
-+	    mt->conf->version == MTK_THERMAL_V3) {
++	if (mt->conf->version != MTK_THERMAL_V1) {
  		mtk_thermal_turn_on_buffer(apmixed_base);
  		mtk_thermal_release_periodic_ts(mt, auxadc_base);
  	}
+ 
+-	if (mt->conf->version == MTK_THERMAL_V1)
++	switch (mt->conf->version) {
++	case MTK_THERMAL_V1:
+ 		mt->raw_to_mcelsius = raw_to_mcelsius_v1;
+-	else
++		break;
++	case MTK_THERMAL_V2:
+ 		mt->raw_to_mcelsius = raw_to_mcelsius_v2;
++		break;
++	case MTK_THERMAL_V3:
++		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
++		break;
++	default:
++		break;
++	}
+ 
+ 	for (ctrl_id = 0; ctrl_id < mt->conf->num_controller ; ctrl_id++)
+ 		for (i = 0; i < mt->conf->num_banks; i++)
