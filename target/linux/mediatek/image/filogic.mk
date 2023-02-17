@@ -138,6 +138,32 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/tplink_tl-common
+  DEVICE_VENDOR := TP-Link
+  DEVICE_DTS_DIR := ../dts
+  KERNEL_LOADADDR := 0x48000000
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-usb3
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+
+define Device/tplink_tl-xdr6086
+  DEVICE_MODEL := TL-XDR6086
+  DEVICE_DTS := mt7986a-tl-xdr6086
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xdr6086
+
+define Device/tplink_tl-xdr6088
+  DEVICE_MODEL := TL-XDR6088
+  DEVICE_DTS := mt7986a-tl-xdr6088
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xdr6088
+
 define Device/xiaomi_redmi-router-ax6000
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AX6000
