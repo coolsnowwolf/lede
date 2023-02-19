@@ -263,8 +263,6 @@ struct rtl8367b_initval {
 	u16 val;
 };
 
-u32 rtl_device_id;
-
 #define RTL8367B_MIB_RXB_ID		0	/* IfInOctets */
 #define RTL8367B_MIB_TXB_ID		28	/* IfOutOctets */
 
@@ -614,10 +612,6 @@ static int rtl8367b_write_initvals(struct rtl8366_smi *smi,
 	int err;
 	int i;
 
-	if (rtl_device_id == 0x0020) {
-		return 0;
-	}
-
 	for (i = 0; i < count; i++)
 		REG_WR(smi, initvals[i].reg, initvals[i].val);
 
@@ -750,6 +744,9 @@ static int rtl8367b_init_regs(struct rtl8366_smi *smi)
 	}
 
 	/* TODO: disable RLTP */
+
+	if(chip_ver == 0x0020)
+		return 0;
 
 	return rtl8367b_write_initvals(smi, initvals, count);
 }
@@ -1545,8 +1542,6 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 			"chip mode");
 		return ret;
 	}
-
-	rtl_device_id = chip_ver;
 
 	switch (chip_ver) {
 	case 0x0020:
