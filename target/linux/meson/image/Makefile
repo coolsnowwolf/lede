@@ -99,15 +99,13 @@ ifeq ($(SUBTARGET),mesongx)
   TARGET_DEVICES += gxl-s905x-p212
 endif
 
-define Device/khadas-vim1
-  DEVICE_DTS := amlogic/meson-gxl-s905x-khadas-vim
-  DEVICE_PACKAGES += \
-	cypress-firmware-43455-sdio \
-	kmod-brcmfmac wpad-basic
-  DEVICE_TITLE := Khadas VIM1 Development Board
+define Device/gxm-q200
+  DEVICE_DTS := amlogic/meson-gxm-q200
+  DEVICE_PACKAGES +=
+  DEVICE_TITLE := GXM Q200 Development Board
 endef
 ifeq ($(SUBTARGET),mesongx)
-  TARGET_DEVICES += khadas-vim1
+  TARGET_DEVICES += gxm-q200
 endif
 
 define Device/thunder-onecloud

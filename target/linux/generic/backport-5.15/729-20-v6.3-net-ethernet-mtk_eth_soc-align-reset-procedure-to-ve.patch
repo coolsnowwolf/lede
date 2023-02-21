@@ -1,0 +1,262 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 14 Jan 2023 18:01:30 +0100
+Subject: [PATCH] net: ethernet: mtk_eth_soc: align reset procedure to vendor
+ sdk
+
+Avoid to power-down the ethernet chip during hw reset and align reset
+procedure to vendor sdk.
+
+Reviewed-by: Leon Romanovsky <leonro@nvidia.com>
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Co-developed-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -2785,14 +2785,29 @@ static void mtk_dma_free(struct mtk_eth
+ 	kfree(eth->scratch_head);
+ }
+ 
++static bool mtk_hw_reset_check(struct mtk_eth *eth)
++{
++	u32 val = mtk_r32(eth, MTK_INT_STATUS2);
++
++	return (val & MTK_FE_INT_FQ_EMPTY) || (val & MTK_FE_INT_RFIFO_UF) ||
++	       (val & MTK_FE_INT_RFIFO_OV) || (val & MTK_FE_INT_TSO_FAIL) ||
++	       (val & MTK_FE_INT_TSO_ALIGN) || (val & MTK_FE_INT_TSO_ILLEGAL);
++}
++
+ static void mtk_tx_timeout(struct net_device *dev, unsigned int txqueue)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 
++	if (test_bit(MTK_RESETTING, &eth->state))
++		return;
++
++	if (!mtk_hw_reset_check(eth))
++		return;
++
+ 	eth->netdev[mac->id]->stats.tx_errors++;
+-	netif_err(eth, tx_err, dev,
+-		  "transmit timed out\n");
++	netif_err(eth, tx_err, dev, "transmit timed out\n");
++
+ 	schedule_work(&eth->pending_work);
+ }
+ 
+@@ -3274,15 +3289,17 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	const struct mtk_reg_map *reg_map = eth->soc->reg_map;
+ 	int i, val, ret;
+ 
+-	if (test_and_set_bit(MTK_HW_INIT, &eth->state))
++	if (!reset && test_and_set_bit(MTK_HW_INIT, &eth->state))
+ 		return 0;
+ 
+-	pm_runtime_enable(eth->dev);
+-	pm_runtime_get_sync(eth->dev);
++	if (!reset) {
++		pm_runtime_enable(eth->dev);
++		pm_runtime_get_sync(eth->dev);
+ 
+-	ret = mtk_clk_enable(eth);
+-	if (ret)
+-		goto err_disable_pm;
++		ret = mtk_clk_enable(eth);
++		if (ret)
++			goto err_disable_pm;
++	}
+ 
+ 	if (eth->ethsys)
+ 		regmap_update_bits(eth->ethsys, ETHSYS_DMA_AG_MAP, dma_mask,
+@@ -3408,8 +3425,10 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	return 0;
+ 
+ err_disable_pm:
+-	pm_runtime_put_sync(eth->dev);
+-	pm_runtime_disable(eth->dev);
++	if (!reset) {
++		pm_runtime_put_sync(eth->dev);
++		pm_runtime_disable(eth->dev);
++	}
+ 
+ 	return ret;
+ }
+@@ -3488,30 +3507,53 @@ static int mtk_do_ioctl(struct net_devic
+ 	return -EOPNOTSUPP;
+ }
+ 
++static void mtk_prepare_for_reset(struct mtk_eth *eth)
++{
++	u32 val;
++	int i;
++
++	/* disabe FE P3 and P4 */
++	val = mtk_r32(eth, MTK_FE_GLO_CFG) | MTK_FE_LINK_DOWN_P3;
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_RSTCTRL_PPE1))
++		val |= MTK_FE_LINK_DOWN_P4;
++	mtk_w32(eth, val, MTK_FE_GLO_CFG);
++
++	/* adjust PPE configurations to prepare for reset */
++	for (i = 0; i < ARRAY_SIZE(eth->ppe); i++)
++		mtk_ppe_prepare_reset(eth->ppe[i]);
++
++	/* disable NETSYS interrupts */
++	mtk_w32(eth, 0, MTK_FE_INT_ENABLE);
++
++	/* force link down GMAC */
++	for (i = 0; i < 2; i++) {
++		val = mtk_r32(eth, MTK_MAC_MCR(i)) & ~MAC_MCR_FORCE_LINK;
++		mtk_w32(eth, val, MTK_MAC_MCR(i));
++	}
++}
++
+ static void mtk_pending_work(struct work_struct *work)
+ {
+ 	struct mtk_eth *eth = container_of(work, struct mtk_eth, pending_work);
+-	int err, i;
+ 	unsigned long restart = 0;
++	u32 val;
++	int i;
+ 
+ 	rtnl_lock();
+-
+-	dev_dbg(eth->dev, "[%s][%d] reset\n", __func__, __LINE__);
+ 	set_bit(MTK_RESETTING, &eth->state);
+ 
++	mtk_prepare_for_reset(eth);
++
+ 	/* stop all devices to make sure that dma is properly shut down */
+ 	for (i = 0; i < MTK_MAC_COUNT; i++) {
+-		if (!eth->netdev[i])
++		if (!eth->netdev[i] || !netif_running(eth->netdev[i]))
+ 			continue;
++
+ 		mtk_stop(eth->netdev[i]);
+ 		__set_bit(i, &restart);
+ 	}
+-	dev_dbg(eth->dev, "[%s][%d] mtk_stop ends\n", __func__, __LINE__);
+ 
+-	/* restart underlying hardware such as power, clock, pin mux
+-	 * and the connected phy
+-	 */
+-	mtk_hw_deinit(eth);
++	usleep_range(15000, 16000);
+ 
+ 	if (eth->dev->pins)
+ 		pinctrl_select_state(eth->dev->pins->p,
+@@ -3522,15 +3564,19 @@ static void mtk_pending_work(struct work
+ 	for (i = 0; i < MTK_MAC_COUNT; i++) {
+ 		if (!test_bit(i, &restart))
+ 			continue;
+-		err = mtk_open(eth->netdev[i]);
+-		if (err) {
++
++		if (mtk_open(eth->netdev[i])) {
+ 			netif_alert(eth, ifup, eth->netdev[i],
+-			      "Driver up/down cycle failed, closing device.\n");
++				    "Driver up/down cycle failed\n");
+ 			dev_close(eth->netdev[i]);
+ 		}
+ 	}
+ 
+-	dev_dbg(eth->dev, "[%s][%d] reset done\n", __func__, __LINE__);
++	/* enabe FE P3 and P4 */
++	val = mtk_r32(eth, MTK_FE_GLO_CFG) & ~MTK_FE_LINK_DOWN_P3;
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_RSTCTRL_PPE1))
++		val &= ~MTK_FE_LINK_DOWN_P4;
++	mtk_w32(eth, val, MTK_FE_GLO_CFG);
+ 
+ 	clear_bit(MTK_RESETTING, &eth->state);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -72,12 +72,24 @@
+ #define	MTK_HW_LRO_REPLACE_DELTA	1000
+ #define	MTK_HW_LRO_SDL_REMAIN_ROOM	1522
+ 
++/* Frame Engine Global Configuration */
++#define MTK_FE_GLO_CFG		0x00
++#define MTK_FE_LINK_DOWN_P3	BIT(11)
++#define MTK_FE_LINK_DOWN_P4	BIT(12)
++
+ /* Frame Engine Global Reset Register */
+ #define MTK_RST_GL		0x04
+ #define RST_GL_PSE		BIT(0)
+ 
+ /* Frame Engine Interrupt Status Register */
+ #define MTK_INT_STATUS2		0x08
++#define MTK_FE_INT_ENABLE	0x0c
++#define MTK_FE_INT_FQ_EMPTY	BIT(8)
++#define MTK_FE_INT_TSO_FAIL	BIT(12)
++#define MTK_FE_INT_TSO_ILLEGAL	BIT(13)
++#define MTK_FE_INT_TSO_ALIGN	BIT(14)
++#define MTK_FE_INT_RFIFO_OV	BIT(18)
++#define MTK_FE_INT_RFIFO_UF	BIT(19)
+ #define MTK_GDM1_AF		BIT(28)
+ #define MTK_GDM2_AF		BIT(29)
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -716,6 +716,33 @@ int mtk_foe_entry_idle_time(struct mtk_p
+ 	return __mtk_foe_entry_idle_time(ppe, entry->data.ib1);
+ }
+ 
++int mtk_ppe_prepare_reset(struct mtk_ppe *ppe)
++{
++	if (!ppe)
++		return -EINVAL;
++
++	/* disable KA */
++	ppe_clear(ppe, MTK_PPE_TB_CFG, MTK_PPE_TB_CFG_KEEPALIVE);
++	ppe_clear(ppe, MTK_PPE_BIND_LMT1, MTK_PPE_NTU_KEEPALIVE);
++	ppe_w32(ppe, MTK_PPE_KEEPALIVE, 0);
++	usleep_range(10000, 11000);
++
++	/* set KA timer to maximum */
++	ppe_set(ppe, MTK_PPE_BIND_LMT1, MTK_PPE_NTU_KEEPALIVE);
++	ppe_w32(ppe, MTK_PPE_KEEPALIVE, 0xffffffff);
++
++	/* set KA tick select */
++	ppe_set(ppe, MTK_PPE_TB_CFG, MTK_PPE_TB_TICK_SEL);
++	ppe_set(ppe, MTK_PPE_TB_CFG, MTK_PPE_TB_CFG_KEEPALIVE);
++	usleep_range(10000, 11000);
++
++	/* disable scan mode */
++	ppe_clear(ppe, MTK_PPE_TB_CFG, MTK_PPE_TB_CFG_SCAN_MODE);
++	usleep_range(10000, 11000);
++
++	return mtk_ppe_wait_busy(ppe);
++}
++
+ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
+ 			     int version, int index)
+ {
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -306,6 +306,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ 			     int version, int index);
+ void mtk_ppe_start(struct mtk_ppe *ppe);
+ int mtk_ppe_stop(struct mtk_ppe *ppe);
++int mtk_ppe_prepare_reset(struct mtk_ppe *ppe);
+ 
+ void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_regs.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_regs.h
+@@ -58,6 +58,12 @@
+ #define MTK_PPE_TB_CFG_SCAN_MODE		GENMASK(17, 16)
+ #define MTK_PPE_TB_CFG_HASH_DEBUG		GENMASK(19, 18)
+ #define MTK_PPE_TB_CFG_INFO_SEL			BIT(20)
++#define MTK_PPE_TB_TICK_SEL			BIT(24)
++
++#define MTK_PPE_BIND_LMT1			0x230
++#define MTK_PPE_NTU_KEEPALIVE			GENMASK(23, 16)
++
++#define MTK_PPE_KEEPALIVE			0x234
+ 
+ enum {
+ 	MTK_PPE_SCAN_MODE_DISABLED,
