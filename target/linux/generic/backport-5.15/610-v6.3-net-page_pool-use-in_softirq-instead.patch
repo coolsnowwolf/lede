@@ -1,0 +1,56 @@
+From: Qingfang DENG <qingfang.deng@siflower.com.cn>
+Date: Fri, 3 Feb 2023 09:16:11 +0800
+Subject: [PATCH] net: page_pool: use in_softirq() instead
+
+We use BH context only for synchronization, so we don't care if it's
+actually serving softirq or not.
+
+As a side node, in case of threaded NAPI, in_serving_softirq() will
+return false because it's in process context with BH off, making
+page_pool_recycle_in_cache() unreachable.
+
+Signed-off-by: Qingfang DENG <qingfang.deng@siflower.com.cn>
+---
+
+--- a/include/net/page_pool.h
++++ b/include/net/page_pool.h
+@@ -357,7 +357,7 @@ static inline void page_pool_nid_changed
+ static inline void page_pool_ring_lock(struct page_pool *pool)
+ 	__acquires(&pool->ring.producer_lock)
+ {
+-	if (in_serving_softirq())
++	if (in_softirq())
+ 		spin_lock(&pool->ring.producer_lock);
+ 	else
+ 		spin_lock_bh(&pool->ring.producer_lock);
+@@ -366,7 +366,7 @@ static inline void page_pool_ring_lock(s
+ static inline void page_pool_ring_unlock(struct page_pool *pool)
+ 	__releases(&pool->ring.producer_lock)
+ {
+-	if (in_serving_softirq())
++	if (in_softirq())
+ 		spin_unlock(&pool->ring.producer_lock);
+ 	else
+ 		spin_unlock_bh(&pool->ring.producer_lock);
+--- a/net/core/page_pool.c
++++ b/net/core/page_pool.c
+@@ -512,8 +512,8 @@ static void page_pool_return_page(struct
+ static bool page_pool_recycle_in_ring(struct page_pool *pool, struct page *page)
+ {
+ 	int ret;
+-	/* BH protection not needed if current is serving softirq */
+-	if (in_serving_softirq())
++	/* BH protection not needed if current is softirq */
++	if (in_softirq())
+ 		ret = ptr_ring_produce(&pool->ring, page);
+ 	else
+ 		ret = ptr_ring_produce_bh(&pool->ring, page);
+@@ -576,7 +576,7 @@ __page_pool_put_page(struct page_pool *p
+ 			page_pool_dma_sync_for_device(pool, page,
+ 						      dma_sync_size);
+ 
+-		if (allow_direct && in_serving_softirq() &&
++		if (allow_direct && in_softirq() &&
+ 		    page_pool_recycle_in_cache(page, pool))
+ 			return NULL;
+ 
