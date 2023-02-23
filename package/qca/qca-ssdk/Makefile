@@ -4,10 +4,10 @@ PKG_NAME:=qca-ssdk
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/qca-ssdk
-PKG_SOURCE_DATE:=2021-04-28
-PKG_SOURCE_VERSION:=c9bc3bc34eaaac78083573524097356e2dcc1b66
-PKG_MIRROR_HASH:=29db78529be32427b8b96fcbfec22a016a243676781ec96d9d65b810944fa405
+PKG_SOURCE_DATE:=2022-02-09
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-ssdk.git
+PKG_SOURCE_VERSION:=0d6d410637648b1bea0dede48d3fab791689cfce
+PKG_MIRROR_HASH:=54891fbd66f147ccc51d9815d91cf20720046b37c41c80311fa12cf66b31b8b0
 
 LOCAL_VARIANT=$(patsubst qca-ssdk-%,%,$(patsubst qca-ssdk-%,%,$(BUILD_VARIANT)))
 

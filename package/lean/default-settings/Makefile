@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2016-2017 GitHub 
+# Copyright (C) 2016-2023 GitHub 
 #
 # This is free software, licensed under the GNU General Public License v3.
 # See /LICENSE for more information.
@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=default-settings
 PKG_VERSION:=2
-PKG_RELEASE:=35
+PKG_RELEASE:=36
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
 
