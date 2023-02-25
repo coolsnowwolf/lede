@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=ncurses
 PKG_CPE_ID:=cpe:/a:gnu:ncurses
 PKG_VERSION:=6.4
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
@@ -123,6 +123,7 @@ ifneq ($(HOST_OS),FreeBSD)
 	)
 	for file in \
 		a/ansi \
+		a/alacritty \
 		d/dumb \
 		l/linux \
 		r/rxvt \
