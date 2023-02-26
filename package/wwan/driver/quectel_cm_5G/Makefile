@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:= quectel-CM-5G
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_VERSION:=1.0
 
 include $(INCLUDE_DIR)/package.mk
@@ -15,11 +15,6 @@ endef
 
 define Package/quectel-CM-5G/description
 	quectel-CM-5G app building test
-endef
-
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ${TOPDIR}/package/quectel_cm_5G/src/* $(PKG_BUILD_DIR)/
 endef
 
 define Build/Compile
