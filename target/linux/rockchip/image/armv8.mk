@@ -178,7 +178,7 @@ define Device/rongpin_king3399
   SOC := rk3399
   UBOOT_DEVICE_NAME := rongpin-king3399-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 -urngd
+  DEVICE_PACKAGES := kmod-r8168 -urngd kmod-brcmfmac cypress-firmware-4356-sdio rongpin-king3399-firmware wpad-openssl
 endef
 TARGET_DEVICES += rongpin_king3399
 
