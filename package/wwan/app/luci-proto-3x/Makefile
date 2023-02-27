@@ -24,9 +24,9 @@ endef
 
 define Package/luci-proto-3x
 $(call Package/luci-proto-3x/Default)
-  SECTION:=net
-  CATEGORY:=ROOter
-  SUBMENU:=Protocols
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=5. Protocols
   TITLE:=Support for 3x
 endef
 
