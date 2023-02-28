@@ -108,6 +108,25 @@ endef
 $(eval $(call KernelPackage,hwmon-drivetemp))
 
 
+define KernelPackage/hwmon-gsc
+  TITLE:=Gateworks System Controller support
+  KCONFIG:=CONFIG_MFD_GATEWORKS_GSC \
+        CONFIG_SENSORS_GSC
+  FILES:= \
+	$(LINUX_DIR)/drivers/mfd/gateworks-gsc.ko \
+	$(LINUX_DIR)/drivers/hwmon/gsc-hwmon.ko
+  AUTOLOAD:=$(call AutoLoad,20,gsc-hwmon,1)
+  $(call AddDepends/hwmon,@!LINUX_5_4 +kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-gsc/description
+ Kernel module for Gateworks System Controller with temperature sensor,
+ADCs, and FAN controller
+endef
+
+$(eval $(call KernelPackage,hwmon-gsc))
+
+
 define KernelPackage/hwmon-gpiofan
   TITLE:=Generic GPIO FAN support
   KCONFIG:=CONFIG_SENSORS_GPIO_FAN
