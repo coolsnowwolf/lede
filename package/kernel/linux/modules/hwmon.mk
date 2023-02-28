@@ -303,6 +303,21 @@ endef
 $(eval $(call KernelPackage,hwmon-ltc4151))
 
 
+define KernelPackage/hwmon-max6642
+  TITLE:=MAX6642 monitoring support
+  KCONFIG:=CONFIG_SENSORS_MAX6642
+  FILES:=$(LINUX_DIR)/drivers/hwmon/max6642.ko
+  AUTOLOAD:=$(call AutoLoad,60,max6642 max6642)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-max6642/description
+ Kernel module for Maxim MAX6642 temperature monitor
+endef
+
+$(eval $(call KernelPackage,hwmon-max6642))
+
+
 define KernelPackage/hwmon-mcp3021
   TITLE:=MCP3021/3221 monitoring support
   KCONFIG:=CONFIG_SENSORS_MCP3021
