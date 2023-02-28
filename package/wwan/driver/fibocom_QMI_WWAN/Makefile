@@ -7,23 +7,23 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=gobinet
-PKG_VERSION:=1.6.3
-PKG_RELEASE:=1
+PKG_NAME:=qmi_wwan_f
+PKG_VERSION:=1.0
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
-define KernelPackage/gobinet
+define KernelPackage/qmi_wwan_f
   SUBMENU:=WWAN Support
-  TITLE:=Quectel Linux USB Gobinet Driver
-  DEPENDS:=+kmod-usb-net
-  FILES:=$(PKG_BUILD_DIR)/GobiNet.ko
-  AUTOLOAD:=$(call AutoLoad,81,GobiNet)
+  TITLE:=Fibocom Linux USB QMI WWAN Driver
+  DEPENDS:=+kmod-usb-net +kmod-usb-wdm
+  FILES:=$(PKG_BUILD_DIR)/qmi_wwan_f.ko
+  AUTOLOAD:=$(call AutoLoad,82,qmi_wwan_f)
 endef
 
-define KernelPackage/gobinet/description
-  Quectel Linux USB gobinet Driver
+define KernelPackage/qmi_wwan_f/description
+  Fibocom Linux USB QMI WWAN Driver
 endef
 
 MAKE_OPTS:= \
@@ -44,4 +44,4 @@ define Build/Compile
 		modules
 endef
 
-$(eval $(call KernelPackage,gobinet))
+$(eval $(call KernelPackage,qmi_wwan_f))
