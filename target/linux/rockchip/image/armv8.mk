@@ -188,7 +188,7 @@ define Device/rocktech_mpc1903
   SOC := rk3399
   SUPPORTED_DEVICES := rocktech,mpc1903
   UBOOT_DEVICE_NAME := rocktech-mpc1903-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-smsc75xx kmod-usb-serial-cp210x -urngd
 endef
 TARGET_DEVICES += rocktech_mpc1903
