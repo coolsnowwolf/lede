@@ -70,3 +70,20 @@ define Device/tplink_xtr10890
 	DEVICE_PACKAGES := ipq-wifi-tplink_xtr10890 uboot-envtools
 endef
 TARGET_DEVICES += tplink_xtr10890
+
+define Device/zyxel_nbg7815
+	$(call Device/FitImage)
+	DEVICE_VENDOR := ZYXEL
+	DEVICE_MODEL := NBG7815
+	DEVICE_TITLE := Zyxel Armor G5 (NBG7815)
+	DEVICE_DTS_CONFIG := config@nbg7815
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	SOC := ipq8074
+	IMAGES += factory.bin sysupgrade.bin
+	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 64k
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to 64k | sysupgrade-tar rootfs=$$$$@ | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-zyxel_nbg7815 kmod-ath11k-pci e2fsprogs kmod-fs-ext4 losetup kmod-hwmon-tmp103
+endef
+TARGET_DEVICES += zyxel_nbg7815
+
