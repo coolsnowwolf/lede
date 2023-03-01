@@ -48,4 +48,8 @@ tool = s:option(Value, "tool", translate("Tools"))
 tool:value("quectel-CM", "quectel-CM")
 tool.rmempty = true
 
+tool = s:option(Value, "tool", translate("Tools"))
+tool:value("fibocom-dial", "fibocom-dial")
+tool.rmempty = true
+
 return mp
