@@ -10,6 +10,7 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	zyxel,nbg7815|\
 	qnap,301w)
 		kernelname="0:HLOS"
 		rootfsname="rootfs"

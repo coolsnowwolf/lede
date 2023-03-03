@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=wireless-tools
 PKG_VERSION:=29
 PKG_MINOR:=
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 
 PKG_SOURCE:=wireless_tools.$(PKG_VERSION)$(PKG_MINOR).tar.gz
 PKG_SOURCE_URL:=https://hewlettpackard.github.io/wireless-tools
