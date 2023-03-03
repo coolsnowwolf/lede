@@ -537,17 +537,6 @@ define Device/dlink_dir-882-r1
 endef
 TARGET_DEVICES += dlink_dir-882-r1
 
-define Device/d-team_newifi-d2
-  $(Device/uimage-lzma-loader)
-  IMAGE_SIZE := 32448k
-  DEVICE_VENDOR := Newifi
-  DEVICE_MODEL := D2
-  DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
-endef
-TARGET_DEVICES += d-team_newifi-d2
-
 define Device/d-team_pbr-m1
   $(Device/dsa-migration)
   IMAGE_SIZE := 32448k
@@ -979,18 +968,6 @@ define Device/jdcloud_re-sp-01b
 endef
 TARGET_DEVICES += jdcloud_re-sp-01b
 
-define Device/lenovo_newifi-d1
-  $(Device/dsa-migration)
-  $(Device/uimage-lzma-loader)
-  IMAGE_SIZE := 32448k
-  DEVICE_VENDOR := Newifi
-  DEVICE_MODEL := D1
-  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-sdhci-mt7620 \
-	kmod-usb-ledtrig-usbport
-  SUPPORTED_DEVICES += newifi-d1
-endef
-TARGET_DEVICES += lenovo_newifi-d1
-
 define Device/linksys_e5600
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
@@ -1339,13 +1316,36 @@ define Device/netis_wf2881
 endef
 TARGET_DEVICES += netis_wf2881
 
+define Device/lenovo_newifi-d1
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := Newifi
+  DEVICE_MODEL := D1
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-sdhci-mt7620 \
+	kmod-usb-ledtrig-usbport
+  SUPPORTED_DEVICES += newifi-d1
+endef
+TARGET_DEVICES += lenovo_newifi-d1
+
+define Device/d-team_newifi-d2
+  $(Device/uimage-lzma-loader)
+  IMAGE_SIZE := 32448k
+  DEVICE_VENDOR := Newifi
+  DEVICE_MODEL := D2
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
+	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
+endef
+TARGET_DEVICES += d-team_newifi-d2
+
 define Device/oraybox_x3a
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
   IMAGE_SIZE := 15360k
   DEVICE_VENDOR := OrayBox
   DEVICE_MODEL := X3A
-  DEVICE_PACKAGES := kmod-mt7615-firmware
+  DEVICE_PACKAGES := -luci-newapi -wpad-openssl kmod-mt7615d_dbdc wireless-tools
 endef
 TARGET_DEVICES += oraybox_x3a
 
