@@ -100,7 +100,7 @@ void igc_reset(struct igc_adapter *adapter)
 		netdev_err(dev, "Error on hardware initialization\n");
 
 	/* Re-establish EEE setting */
-	igc_set_eee_i225(hw, true, true, true);
+	igc_set_eee_i225(hw, false, false, false);
 
 	if (!netif_running(adapter->netdev))
 		igc_power_down_phy_copper_base(&adapter->hw);
