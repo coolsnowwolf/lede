@@ -1339,6 +1339,21 @@ endef
 
 $(eval $(call KernelPackage,igc))
 
+define KernelPackage/ice
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller E810 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_ICE
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
+  AUTOLOAD:=$(call AutoProbe,ice)
+endef
+
+define KernelPackage/ice/description
+  Kernel modules for Intel(R) Ethernet Controller E810 Series
+endef
+
+$(eval $(call KernelPackage,ice))
+
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Solarflare SFC9000/SFC9100/EF100-family support
