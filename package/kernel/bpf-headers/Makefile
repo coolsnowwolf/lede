@@ -39,7 +39,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/bpf-headers
   SECTION:=kernel
-  CATEGORY:=Kernel
+  CATEGORY:=Kernel modules
   TITLE:=eBPF kernel headers
   BUILDONLY:=1
   HIDDEN:=1
