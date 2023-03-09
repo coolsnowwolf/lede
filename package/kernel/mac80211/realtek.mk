@@ -22,7 +22,7 @@ config-$(call config_package,rtl8723bs) += RTL8723BS
 config-y += STAGING
 
 config-$(call config_package,rtw88) += RTW88 RTW88_CORE RTW88_PCI
-config-y += RTW88_8822BE RTW88_8822CE RTW88_8723DE
+config-y += RTW88_8821CE RTW88_8822BE RTW88_8822CE RTW88_8723DE
 config-$(CONFIG_PACKAGE_RTW88_DEBUG) += RTW88_DEBUG
 config-$(CONFIG_PACKAGE_RTW88_DEBUGFS) += RTW88_DEBUGFS
 
@@ -168,9 +168,11 @@ endef
 
 define KernelPackage/rtw88
   $(call KernelPackage/mac80211/Default)
-  TITLE:=Realtek RTL8822BE/RTL8822CE/RTL8723DE
+  TITLE:=Realtek RTL8821CE/RTL8822BE/RTL8822CE/RTL8723DE
   DEPENDS+= @(PCI_SUPPORT) +kmod-mac80211 +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT
   FILES:=\
+	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8821ce.ko \
+	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8821c.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8822be.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8822b.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8822ce.ko \
@@ -179,7 +181,7 @@ define KernelPackage/rtw88
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_8723d.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_core.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/realtek/rtw88/rtw88_pci.ko
-  AUTOLOAD:=$(call AutoProbe,rtw88_8822be rtw88_8822ce rtw88_8723de)
+  AUTOLOAD:=$(call AutoProbe,rtw88_8821ce rtw88_8822be rtw88_8822ce rtw88_8723de)
 endef
 
 define KernelPackage/rtl8723bs
