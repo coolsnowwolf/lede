@@ -42,7 +42,7 @@ define Device/asus_tuf-ax4200
   DEVICE_DTS := mt7986a-asus-tuf-ax4200
   DEVICE_DTS_DIR := ../dts
   DEVICE_DTS_LOADADDR := 0x47000000
-  DEVICE_PACKAGES := kmod-usb3
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7986-firmware mt7986-wo-firmware
   IMAGES := sysupgrade.bin
   KERNEL := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
@@ -60,7 +60,7 @@ define Device/bananapi_bpi-r3
   DEVICE_DTS_CONFIG := config-mt7986a-bananapi-bpi-r3
   DEVICE_DTS_OVERLAY:= mt7986a-bananapi-bpi-r3-nor mt7986a-bananapi-bpi-r3-emmc-nor mt7986a-bananapi-bpi-r3-emmc-snand mt7986a-bananapi-bpi-r3-snand
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-gpio kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs
+  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-gpio kmod-mt7986-firmware kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs mt7986-wo-firmware
   IMAGES := sysupgrade.itb
   KERNEL_LOADADDR := 0x44000000
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
@@ -128,6 +128,7 @@ define Device/mediatek_mt7986b-rfb
   DEVICE_MODEL := MTK7986 rfbb AP
   DEVICE_DTS := mt7986b-rfb
   DEVICE_DTS_DIR := $(DTS_DIR)/
+  DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-wo-firmware
   SUPPORTED_DEVICES := mediatek,mt7986b-rfb
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
@@ -147,7 +148,7 @@ define Device/tplink_tl-common
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_IN_UBI := 1
-  DEVICE_PACKAGES := kmod-usb3
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7986-firmware mt7986-wo-firmware
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
@@ -177,7 +178,7 @@ define Device/xiaomi_redmi-router-ax6000
   DEVICE_MODEL := Redmi Router AX6000
   DEVICE_DTS := mt7986a-xiaomi-redmi-router-ax6000
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-leds-ws2812b
+  DEVICE_PACKAGES := kmod-leds-ws2812b kmod-mt7986-firmware mt7986-wo-firmware
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
