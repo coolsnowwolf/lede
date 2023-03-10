@@ -295,6 +295,38 @@ endef
 $(eval $(call KernelPackage,phy-realtek))
 
 
+define KernelPackage/phy-smsc
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=SMSC PHY driver
+   KCONFIG:=CONFIG_SMSC_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/smsc.ko
+   AUTOLOAD:=$(call AutoProbe,smsc)
+endef
+
+define KernelPackage/phy-smsc/description
+   Currently supports the LAN83C185, LAN8187 and LAN8700 PHYs
+endef
+
+$(eval $(call KernelPackage,phy-smsc))
+
+
+define KernelPackage/phy-aquantia
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Aquantia Ethernet PHYs
+  DEPENDS:=+kmod-libphy +kmod-hwmon-core
+  KCONFIG:=CONFIG_AQUANTIA_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko
+  AUTOLOAD:=$(call AutoLoad,18,aquantia,1)
+endef
+
+define KernelPackage/phy-aquantia/description
+  Kernel modules for Aquantia Ethernet PHYs
+endef
+
+$(eval $(call KernelPackage,phy-aquantia))
+
+
 define KernelPackage/swconfig
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=switch configuration API
