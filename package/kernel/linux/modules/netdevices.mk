@@ -1423,3 +1423,35 @@ define KernelPackage/sfc-falcon/description
 endef
 
 $(eval $(call KernelPackage,sfc-falcon))
+
+define KernelPackage/atlantic
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Aquantia AQtion 10Gbps Ethernet NIC
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +kmod-macsec
+  KCONFIG:=CONFIG_AQTION
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/aquantia/atlantic/atlantic.ko
+  AUTOLOAD:=$(call AutoProbe,atlantic)
+endef
+
+define KernelPackage/atlantic/description
+  Kernel modules for Aquantia AQtion 10Gbps Ethernet NIC
+endef
+
+$(eval $(call KernelPackage,atlantic))
+
+
+define KernelPackage/lan743x
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Microchip LAN743x PCI Express Gigabit Ethernet NIC
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mdio-devres
+  KCONFIG:=CONFIG_LAN743X
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/microchip/lan743x.ko
+  AUTOLOAD:=$(call AutoProbe,lan743x)
+endef
+
+define KernelPackage/lan743x/description
+  Kernel module for Microchip LAN743x PCI Express Gigabit Ethernet NIC
+endef
+
+$(eval $(call KernelPackage,lan743x))
+
