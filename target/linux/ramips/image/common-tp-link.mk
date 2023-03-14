@@ -1,6 +1,19 @@
 DEVICE_VARS += TPLINK_FLASHLAYOUT TPLINK_HWID TPLINK_HWREV TPLINK_HWREVADD
 DEVICE_VARS += TPLINK_HVERSION TPLINK_BOARD_ID TPLINK_HEADER_VERSION
 
+define Build/uImage-tplink-c9
+	mkimage \
+		-A $(LINUX_KARCH) \
+		-O linux \
+		-T $(word 1,$(1)) \
+		-C none \
+		-a $(KERNEL_LOADADDR) \
+		-e $(KERNEL_LOADADDR) \
+		-n $(wordlist 2,$(words $(1)),$(1)) \
+		-d $@ $@.new
+	mv $@.new $@
+endef
+
 define Device/tplink-v1
   DEVICE_VENDOR := TP-Link
   TPLINK_FLASHLAYOUT :=

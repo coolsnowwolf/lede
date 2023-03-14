@@ -10,7 +10,7 @@ KERNELNAME:=vmlinux vmlinuz
 # make Kernel/CopyImage use $LINUX_DIR/vmlinuz
 IMAGES_DIR:=../../..
 
-DEFAULT_PACKAGES += kmod-mtk-hnat wpad-openssl swconfig kmod-crypto-hw-eip93
+DEFAULT_PACKAGES += wpad-basic-mbedtls uboot-envtools
 
 define Target/Description
 	Build firmware images for Ralink MT7621 based boards.

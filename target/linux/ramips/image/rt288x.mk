@@ -40,7 +40,7 @@ TARGET_DEVICES += airlink101_ar725w
 define Device/asus_rt-n15
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N15
   DEVICE_PACKAGES := kmod-switch-rtl8366s
   SUPPORTED_DEVICES += rt-n15

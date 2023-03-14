@@ -120,6 +120,7 @@ endef
 TARGET_DEVICES += allnet_all5002
 
 define Device/allnet_all5003
+  $(Device/uimage-lzma-loader)
   SOC := rt5350
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := Allnet
@@ -209,7 +210,7 @@ define Device/asus_rt-g32-b1
   SOC := rt3050
   BLOCKSIZE := 4k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-G32
   DEVICE_VARIANT := B1
   SUPPORTED_DEVICES += rt-g32-b1
@@ -221,7 +222,7 @@ define Device/asus_rt-n10-plus
   SOC := rt3050
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N10+
   SUPPORTED_DEVICES += rt-n10-plus
   DEFAULT := n
@@ -231,7 +232,7 @@ TARGET_DEVICES += asus_rt-n10-plus
 define Device/asus_rt-n13u
   SOC := rt3052
   IMAGE_SIZE := 7872k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N13U
   DEVICE_PACKAGES := kmod-leds-gpio kmod-rt2800-pci kmod-usb-dwc2
   SUPPORTED_DEVICES += rt-n13u
@@ -242,7 +243,7 @@ define Device/asus_wl-330n
   SOC := rt3050
   BLOCKSIZE := 4k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := WL-330N
   SUPPORTED_DEVICES += wl-330n
   DEFAULT := n
@@ -253,7 +254,7 @@ define Device/asus_wl-330n3g
   SOC := rt3050
   BLOCKSIZE := 4k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := WL-330N3G
   DEVICE_PACKAGES :=
   SUPPORTED_DEVICES += wl-330n3g
@@ -433,6 +434,7 @@ endef
 TARGET_DEVICES += dlink_dir-615-d
 
 define Device/dlink_dir-615-h1
+  $(Device/uimage-lzma-loader)
   SOC := rt3352
   BLOCKSIZE := 4k
   IMAGES += factory.bin
@@ -989,7 +991,6 @@ define Device/teltonika_rut5xx
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Teltonika
   DEVICE_MODEL := RUT5XX
-  DEVICE_PACKAGES := om-watchdog
   SUPPORTED_DEVICES += rut5xx
 endef
 TARGET_DEVICES += teltonika_rut5xx
@@ -1071,7 +1072,7 @@ define Device/unbranded_a5-v11
   IMAGES += factory.bin
   IMAGE/factory.bin := $$(sysupgrade_bin) | check-size | \
 	poray-header -B A5-V11 -F 4M
-  DEVICE_VENDOR :=
+  DEVICE_VENDOR := Unbranded
   DEVICE_MODEL := A5-V11
   DEVICE_PACKAGES := kmod-usb-ohci kmod-usb2
   SUPPORTED_DEVICES += a5-v11
@@ -1082,7 +1083,7 @@ TARGET_DEVICES += unbranded_a5-v11
 define Device/unbranded_wr512-3gn-4m
   SOC := rt3052
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := Ralink
+  DEVICE_VENDOR := Unbranded
   DEVICE_MODEL := WR512-3GN
   DEVICE_VARIANT := 4M
   SUPPORTED_DEVICES += wr512-3gn-4M
@@ -1093,7 +1094,7 @@ TARGET_DEVICES += unbranded_wr512-3gn-4m
 define Device/unbranded_wr512-3gn-8m
   SOC := rt3052
   IMAGE_SIZE := 7872k
-  DEVICE_VENDOR := Ralink
+  DEVICE_VENDOR := Unbranded
   DEVICE_MODEL := WR512-3GN
   DEVICE_VARIANT := 8M
   SUPPORTED_DEVICES += wr512-3gn-8M
@@ -1104,8 +1105,8 @@ define Device/unbranded_xdx-rn502j
   SOC := rt3052
   BLOCKSIZE := 64k
   IMAGE_SIZE := 3776k
-  DEVICE_VENDOR := XDX
-  DEVICE_MODEL := RN502J
+  DEVICE_VENDOR := Unbranded
+  DEVICE_MODEL := XDX-RN502J
   SUPPORTED_DEVICES += xdxrn502j
   DEFAULT := n
 endef
@@ -1206,6 +1207,16 @@ define Device/zyxel_keenetic
 endef
 TARGET_DEVICES += zyxel_keenetic
 
+define Device/zyxel_keenetic-4g-b
+  $(Device/uimage-lzma-loader)
+  SOC := rt5350
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := ZyXEL
+  DEVICE_MODEL := Keenetic 4G
+  DEVICE_VARIANT := B
+endef
+TARGET_DEVICES += zyxel_keenetic-4g-b
+
 define Device/zyxel_keenetic-lite-b
   $(Device/uimage-lzma-loader)
   SOC := rt5350
@@ -1237,6 +1248,7 @@ endef
 TARGET_DEVICES += zyxel_nbg-419n
 
 define Device/zyxel_nbg-419n-v2
+  $(Device/uimage-lzma-loader)
   SOC := rt3352
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := ZyXEL

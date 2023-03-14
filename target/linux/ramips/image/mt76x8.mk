@@ -38,9 +38,35 @@ define Device/alfa-network_awusfree1
 endef
 TARGET_DEVICES += alfa-network_awusfree1
 
+define Device/asus_rt-ac1200
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := ASUS
+  DEVICE_MODEL := RT-AC1200
+  DEVICE_ALT0_VENDOR := ASUS
+  DEVICE_ALT0_MODEL := RT-N600
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci \
+	kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += asus_rt-ac1200
+
+define Device/asus_rt-ac1200-v2
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := ASUS
+  DEVICE_MODEL := RT-AC1200
+  DEVICE_VARIANT := V2
+  DEVICE_ALT0_VENDOR := ASUS
+  DEVICE_ALT0_MODEL := RT-AC750L
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(BLOCKSIZE) | \
+	append-rootfs | pad-rootfs
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap
+endef
+TARGET_DEVICES += asus_rt-ac1200-v2
+
 define Device/asus_rt-n10p-v3
   IMAGE_SIZE := 7872k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N10P
   DEVICE_VARIANT := V3
 endef
@@ -48,15 +74,21 @@ TARGET_DEVICES += asus_rt-n10p-v3
 
 define Device/asus_rt-n11p-b1
   IMAGE_SIZE := 7872k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N11P
   DEVICE_VARIANT := B1
+  DEVICE_ALT0_VENDOR := ASUS
+  DEVICE_ALT0_MODEL := RT-N12+
+  DEVICE_ALT0_VARIANT := B1
+  DEVICE_ALT1_VENDOR := ASUS
+  DEVICE_ALT1_MODEL := RT-N300
+  DEVICE_ALT1_VARIANT := B1
 endef
 TARGET_DEVICES += asus_rt-n11p-b1
 
 define Device/asus_rt-n12-vp-b1
   IMAGE_SIZE := 7872k
-  DEVICE_VENDOR := Asus
+  DEVICE_VENDOR := ASUS
   DEVICE_MODEL := RT-N12 VP
   DEVICE_VARIANT := B1
 endef
@@ -68,7 +100,7 @@ define Device/buffalo_wcr-1166ds
   BUFFALO_TAG_VERSION := 9.99
   BUFFALO_TAG_MINOR := 9.99
   IMAGES += factory.bin
-  IMAGE/sysupgrade.bin := trx | pad-rootfs | append-metadata
+  IMAGE/sysupgrade.bin := trx -M 0x746f435c | pad-rootfs | append-metadata
   IMAGE/factory.bin := trx -M 0x746f435c | pad-rootfs | append-metadata | \
 	buffalo-enc WCR-1166DS $$(BUFFALO_TAG_VERSION) -l | \
 	buffalo-tag-dhp WCR-1166DS JP JP | buffalo-enc-tag -l | buffalo-dhp-image
@@ -78,6 +110,41 @@ define Device/buffalo_wcr-1166ds
   SUPPORTED_DEVICES += wcr-1166ds
 endef
 TARGET_DEVICES += buffalo_wcr-1166ds
+
+define Device/comfast_cf-wr617ac
+  IMAGE_SIZE := 7872k
+  DTS := CF-WR617AC
+  DEVICE_VENDOR := Comfast
+  DEVICE_MODEL := CF-WR617AC
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-rt2800-pci
+endef
+TARGET_DEVICES += comfast_cf-wr617ac
+
+define Device/comfast_cf-wr758ac
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := COMFAST
+  DEVICE_MODEL := CF-WR758AC
+  DEVICE_ALT0_VENDOR := Joowin
+  DEVICE_ALT0_MODEL := JW-WR758AC
+endef
+
+define Device/comfast_cf-wr758ac-v1
+  $(Device/comfast_cf-wr758ac)
+  DEVICE_PACKAGES := kmod-mt76x2
+  DEVICE_VARIANT := V1
+  DEVICE_ALT0_VARIANT := V1
+  SUPPORTED_DEVICES += joowin,jw-wr758ac-v1
+endef
+TARGET_DEVICES += comfast_cf-wr758ac-v1
+
+define Device/comfast_cf-wr758ac-v2
+  $(Device/comfast_cf-wr758ac)
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap
+  DEVICE_VARIANT := V2
+  DEVICE_ALT0_VARIANT := V2
+  SUPPORTED_DEVICES += joowin,jw-wr758ac-v2
+endef
+TARGET_DEVICES += comfast_cf-wr758ac-v2
 
 define Device/cudy_wr1000
   IMAGE_SIZE := 7872k
@@ -99,6 +166,13 @@ define Device/d-team_pbr-d1
   SUPPORTED_DEVICES += pbr-d1
 endef
 TARGET_DEVICES += d-team_pbr-d1
+
+define Device/dlink_dap-1325-a1
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := D-Link
+  DEVICE_MODEL := DAP-1325 A1
+endef
+TARGET_DEVICES += dlink_dap-1325-a1
 
 define Device/duzun_dm06
   IMAGE_SIZE := 7872k
@@ -248,6 +322,55 @@ define Device/jotale_js76x8-32m
 endef
 TARGET_DEVICES += jotale_js76x8-32m
 
+define Device/keenetic_kn-1613
+  BLOCKSIZE := 64k
+  IMAGE_SIZE := 31488k
+  DEVICE_VENDOR := Keenetic
+  DEVICE_MODEL := KN-1613
+  DEVICE_PACKAGES := kmod-mt7615e kmod-mt7663-firmware-ap
+  IMAGES += factory.bin
+  IMAGE/factory.bin := $$(sysupgrade_bin) | pad-to $$$$(BLOCKSIZE) | \
+	check-size | zyimage -d 0x801613 -v "KN-1613"
+endef
+TARGET_DEVICES += keenetic_kn-1613
+
+define Device/kroks_kndrt31r16
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Kroks
+  DEVICE_MODEL := Rt-Cse5 UW DRSIM
+  DEVICE_ALT0_VENDOR := Kroks
+  DEVICE_ALT0_MODEL := KNdRt31R16
+  DEVICE_PACKAGES := kmod-usb2
+  SUPPORTED_DEVICES += kndrt31r16
+endef
+TARGET_DEVICES += kroks_kndrt31r16
+
+define Device/kroks_kndrt31r19
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Kroks
+  DEVICE_MODEL := Rt-Pot mXw DS RSIM
+  DEVICE_ALT0_VENDOR := Kroks
+  DEVICE_ALT0_MODEL := KNdRt31R19
+  DEVICE_PACKAGES := kmod-usb2 uqmi
+  SUPPORTED_DEVICES += kndrt31r19
+endef
+TARGET_DEVICES += kroks_kndrt31r19
+
+define Device/linksys_e5400
+  IMAGE_SIZE := 16000k
+  DEVICE_VENDOR := Linksys
+  DEVICE_MODEL := E5400
+  DEVICE_ALT0_VENDOR := Linksys
+  DEVICE_ALT0_MODEL := E2500
+  DEVICE_ALT0_VARIANT := v4
+  DEVICE_ALT1_VENDOR := Linksys
+  DEVICE_ALT1_MODEL := E5300
+  DEVICE_ALT2_VENDOR := Linksys
+  DEVICE_ALT2_MODEL := E5350
+  DEVICE_PACKAGES := kmod-mt76x2
+endef
+TARGET_DEVICES += linksys_e5400
+
 define Device/mediatek_linkit-smart-7688
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := MediaTek
@@ -285,6 +408,14 @@ define Device/minew_g1-c
   SUPPORTED_DEVICES += minew-g1c
 endef
 TARGET_DEVICES += minew_g1-c
+
+define Device/motorola_mwr03
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Motorola
+  DEVICE_MODEL := MWR03
+  DEVICE_PACKAGES := kmod-mt76x2
+endef
+TARGET_DEVICES += motorola_mwr03
 
 define Device/netgear_r6020
   $(Device/netgear_sercomm_nor)
@@ -505,6 +636,16 @@ define Device/tplink_re305-v1
 endef
 TARGET_DEVICES += tplink_re305-v1
 
+define Device/tplink_re305-v3
+  $(Device/tplink-safeloader)
+  IMAGE_SIZE := 7808k
+  DEVICE_MODEL := RE305
+  DEVICE_VARIANT := v3
+  DEVICE_PACKAGES := kmod-mt76x2
+  TPLINK_BOARD_ID := RE305-V3
+endef
+TARGET_DEVICES += tplink_re305-v3
+
 define Device/tplink_tl-mr3020-v3
   $(Device/tplink-v2)
   IMAGE_SIZE := 7808k
@@ -724,6 +865,17 @@ define Device/vocore_vocore2-lite
 endef
 TARGET_DEVICES += vocore_vocore2-lite
 
+define Device/wavlink_wl-wn531a3
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Wavlink
+  DEVICE_MODEL := WL-WN531A3
+  DEVICE_ALT0_VENDOR := Wavlink
+  DEVICE_ALT0_MODEL := QUANTUM D4
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci
+  SUPPORTED_DEVICES += wl-wn531a3
+endef
+TARGET_DEVICES += wavlink_wl-wn531a3
+
 define Device/wavlink_wl-wn570ha1
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Wavlink
@@ -740,6 +892,16 @@ define Device/wavlink_wl-wn575a3
   SUPPORTED_DEVICES += wl-wn575a3
 endef
 TARGET_DEVICES += wavlink_wl-wn575a3
+
+define Device/wavlink_wl-wn576a2
+  IMAGE_SIZE := 7872k
+  DEVICE_VENDOR := Wavlink
+  DEVICE_MODEL := WL-WN576A2
+  DEVICE_ALT0_VENDOR := Silvercrest
+  DEVICE_ALT0_MODEL := SWV 733 B1
+  DEVICE_PACKAGES := kmod-mt76x0e
+endef
+TARGET_DEVICES += wavlink_wl-wn576a2
 
 define Device/wavlink_wl-wn577a2
   IMAGE_SIZE := 7872k
@@ -816,6 +978,16 @@ define Device/xiaomi_mi-router-4a-100m
 endef
 TARGET_DEVICES += xiaomi_mi-router-4a-100m
 
+define Device/xiaomi_mi-router-4a-100m-intl
+  IMAGE_SIZE := 14976k
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router 4A
+  DEVICE_VARIANT := 100M International Edition
+  DEVICE_PACKAGES := kmod-mt76x2
+  SUPPORTED_DEVICES += xiaomi,mir4a-100m-intl
+endef
+TARGET_DEVICES += xiaomi_mi-router-4a-100m-intl
+
 define Device/xiaomi_mi-router-4c
   IMAGE_SIZE := 14976k
   DEVICE_VENDOR := Xiaomi
@@ -823,6 +995,14 @@ define Device/xiaomi_mi-router-4c
   DEVICE_PACKAGES := uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-4c
+
+define Device/xiaomi_miwifi-3c
+  IMAGE_SIZE := 15104k
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := MiWiFi 3C
+  DEVICE_PACKAGES := uboot-envtools
+endef
+TARGET_DEVICES += xiaomi_miwifi-3c
 
 define Device/xiaomi_miwifi-nano
   IMAGE_SIZE := 16064k
@@ -833,6 +1013,16 @@ define Device/xiaomi_miwifi-nano
 endef
 TARGET_DEVICES += xiaomi_miwifi-nano
 
+define Device/xiaomi_mi-ra75
+  IMAGE_SIZE := 14976k
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := MiWiFi Range Extender AC1200 
+  DEVICE_VARIANT := RA75
+  DEVICE_PACKAGES := kmod-mt76x2
+  SUPPORTED_DEVICES += xiaomi,mira75
+endef
+TARGET_DEVICES += xiaomi_mi-ra75
+
 define Device/zbtlink_zbt-we1226
   IMAGE_SIZE := 7872k
   DEVICE_VENDOR := Zbtlink
@@ -841,7 +1031,7 @@ endef
 TARGET_DEVICES += zbtlink_zbt-we1226
 
 define Device/zyxel_keenetic-extra-ii
-  IMAGE_SIZE := 14912k
+  IMAGE_SIZE := 29824k
   BLOCKSIZE := 64k
   DEVICE_VENDOR := ZyXEL
   DEVICE_MODEL := Keenetic Extra II
