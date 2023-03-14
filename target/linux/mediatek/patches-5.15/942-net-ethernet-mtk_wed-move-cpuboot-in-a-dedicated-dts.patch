@@ -1,0 +1,96 @@
+From f292d1bf83ec160bef2532b58aa08f5b71041923 Mon Sep 17 00:00:00 2001
+Message-Id: <f292d1bf83ec160bef2532b58aa08f5b71041923.1678716918.git.lorenzo@kernel.org>
+In-Reply-To: <3cf212c4ce6cd72c09bc47f35f539ba0afd4d106.1678716918.git.lorenzo@kernel.org>
+References: <3cf212c4ce6cd72c09bc47f35f539ba0afd4d106.1678716918.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 11 Mar 2023 18:13:04 +0100
+Subject: [PATCH net-next 2/2] net: ethernet: mtk_wed: move cpuboot in a
+ dedicated dts node
+
+Since the cpuboot memory region is not part of the RAM SoC, move cpuboot
+in a deidicated syscon node.
+This patch helps to keep backward-compatibility with older version of
+uboot codebase where we have a limit of 8 reserved-memory dts child
+nodes.
+Keep backward-compatibility with older dts version where cpuboot was
+defined as reserved-memory child node.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_wed_mcu.c | 34 +++++++++++++++++----
+ drivers/net/ethernet/mediatek/mtk_wed_wo.h  |  3 +-
+ 2 files changed, 30 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/net/ethernet/mediatek/mtk_wed_mcu.c b/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
+index 6624f6d6abdd..797c3b412ab6 100644
+--- a/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
+@@ -18,12 +18,23 @@
+ 
+ static u32 wo_r32(struct mtk_wed_wo *wo, u32 reg)
+ {
+-	return readl(wo->boot.addr + reg);
++	u32 val;
++
++	if (!wo->boot_regmap)
++		return readl(wo->boot.addr + reg);
++
++	if (regmap_read(wo->boot_regmap, reg, &val))
++		val = ~0;
++
++	return val;
+ }
+ 
+ static void wo_w32(struct mtk_wed_wo *wo, u32 reg, u32 val)
+ {
+-	writel(val, wo->boot.addr + reg);
++	if (wo->boot_regmap)
++		regmap_write(wo->boot_regmap, reg, val);
++	else
++		writel(val, wo->boot.addr + reg);
+ }
+ 
+ static struct sk_buff *
+@@ -316,10 +327,21 @@ mtk_wed_mcu_load_firmware(struct mtk_wed_wo *wo)
+ 			return ret;
+ 	}
+ 
+-	wo->boot.name = "wo-boot";
+-	ret = mtk_wed_get_reserved_memory_region(wo, &wo->boot);
+-	if (ret)
+-		return ret;
++	wo->boot_regmap = syscon_regmap_lookup_by_phandle(wo->hw->node,
++							  "mediatek,wo-cpuboot");
++	if (IS_ERR(wo->boot_regmap)) {
++		if (wo->boot_regmap != ERR_PTR(-ENODEV))
++			return PTR_ERR(wo->boot_regmap);
++
++		/* For backward compatibility, we need to check if cpu_boot
++		 * is defined through reserved memory property.
++		 */
++		wo->boot_regmap = NULL;
++		wo->boot.name = "wo-boot";
++		ret = mtk_wed_get_reserved_memory_region(wo, &wo->boot);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/* set dummy cr */
+ 	wed_w32(wo->hw->wed_dev, MTK_WED_SCR0 + 4 * MTK_WED_DUMMY_CR_FWDL,
+diff --git a/drivers/net/ethernet/mediatek/mtk_wed_wo.h b/drivers/net/ethernet/mediatek/mtk_wed_wo.h
+index dbcf42ce9173..c03071203cc0 100644
+--- a/drivers/net/ethernet/mediatek/mtk_wed_wo.h
++++ b/drivers/net/ethernet/mediatek/mtk_wed_wo.h
+@@ -227,7 +227,8 @@ struct mtk_wed_wo_queue {
+ 
+ struct mtk_wed_wo {
+ 	struct mtk_wed_hw *hw;
+-	struct mtk_wed_wo_memory_region boot;
++	struct mtk_wed_wo_memory_region boot; /* backward compatibility */
++	struct regmap *boot_regmap;
+ 
+ 	struct mtk_wed_wo_queue q_tx;
+ 	struct mtk_wed_wo_queue q_rx;
+-- 
+2.39.2
+
