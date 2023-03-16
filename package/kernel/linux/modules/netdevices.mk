@@ -226,6 +226,23 @@ endef
 $(eval $(call KernelPackage,phylib-broadcom))
 
 
+define KernelPackage/phy-ax88796b
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Asix PHY driver
+   KCONFIG:=CONFIG_AX88796B_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/ax88796b.ko
+   AUTOLOAD:=$(call AutoProbe,ax88796b)
+endef
+
+define KernelPackage/phy-ax88796b/description
+   Currently supports the Asix Electronics PHY found in the X-Surf 100
+   AX88796B package.
+endef
+
+$(eval $(call KernelPackage,phy-ax88796b))
+
+
 define KernelPackage/phy-broadcom
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Broadcom Ethernet PHY driver
@@ -1453,6 +1470,70 @@ define KernelPackage/sfc-falcon/description
 endef
 
 $(eval $(call KernelPackage,sfc-falcon))
+
+
+define KernelPackage/wwan
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=WWAN Driver Core
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  KCONFIG:=CONFIG_WWAN
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/wwan.ko
+  AUTOLOAD:=$(call AutoProbe,wwan)
+endef
+
+define KernelPackage/wwan/description
+ his driver provides a common framework for WWAN drivers.
+endef
+
+$(eval $(call KernelPackage,wwan))
+
+
+define KernelPackage/mhi-net
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI Network Device
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_NET
+  FILES:=$(LINUX_DIR)/drivers/net/mhi_net.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_net)
+endef
+
+define KernelPackage/mhi-net/description
+ Driver for MHI network interface
+endef
+
+$(eval $(call KernelPackage,mhi-net))
+
+define KernelPackage/mhi-wwan-ctrl
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI WWAN Control
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_CTRL
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_ctrl.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_wwan_ctrl)
+endef
+
+define KernelPackage/mhi-wwan-ctrl/description
+ Driver for MHI WWAN Control
+ This exposes all modem control ports like AT, MBIM, QMI, DIAG, ..
+endef
+
+$(eval $(call KernelPackage,mhi-wwan-ctrl))
+
+define KernelPackage/mhi-wwan-mbim
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI MBIM
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_MBIM
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_mbim.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_wwan_mbim)
+endef
+
+define KernelPackage/mhi-wwan-mbim/description
+ Driver for MHI MBIM
+ This implements MBIM over MHI
+endef
+
+$(eval $(call KernelPackage,mhi-wwan-mbim))
 
 define KernelPackage/atlantic
   SUBMENU:=$(NETWORK_DEVICES_MENU)
