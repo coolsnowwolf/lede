@@ -1,11 +1,12 @@
 From: Felix Fietkau <nbd@nbd.name>
-Date: Thu, 17 Nov 2022 11:58:21 +0100
+Date: Mon, 20 Mar 2023 15:49:15 +0100
 Subject: [PATCH] net: ethernet: mtk_eth_soc: fix flow_offload related refcount
  bug
 
 Since we call flow_block_cb_decref on FLOW_BLOCK_UNBIND, we need to call
 flow_block_cb_incref unconditionally, even for a newly allocated cb.
-Fixes a use-after-free bug
+Fixes a use-after-free bug. Also fix the accidentally inverted refcount
+check on unbind.
 
 Fixes: 502e84e2382d ("net: ethernet: mtk_eth_soc: add flow offloading support")
 Signed-off-by: Felix Fietkau <nbd@nbd.name>
@@ -13,7 +14,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
-@@ -564,6 +564,7 @@ mtk_eth_setup_tc_block(struct net_device
+@@ -561,6 +561,7 @@ mtk_eth_setup_tc_block(struct net_device
  	struct mtk_eth *eth = mac->hw;
  	static LIST_HEAD(block_cb_list);
  	struct flow_block_cb *block_cb;
@@ -21,7 +22,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	flow_setup_cb_t *cb;
  
  	if (!eth->soc->offload_version)
-@@ -578,16 +579,20 @@ mtk_eth_setup_tc_block(struct net_device
+@@ -575,23 +576,27 @@ mtk_eth_setup_tc_block(struct net_device
  	switch (f->command) {
  	case FLOW_BLOCK_BIND:
  		block_cb = flow_block_cb_lookup(f->block, cb, dev);
@@ -50,3 +51,11 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  		return 0;
  	case FLOW_BLOCK_UNBIND:
  		block_cb = flow_block_cb_lookup(f->block, cb, dev);
+ 		if (!block_cb)
+ 			return -ENOENT;
+ 
+-		if (flow_block_cb_decref(block_cb)) {
++		if (!flow_block_cb_decref(block_cb)) {
+ 			flow_block_cb_remove(block_cb, f);
+ 			list_del(&block_cb->driver_list);
+ 		}
