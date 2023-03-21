@@ -22,6 +22,16 @@ define Device/ezpro_mrkaio-m68s
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s
 
+define Device/ezpro_mrkaio-m68s-plus
+  DEVICE_VENDOR := EZPRO
+  DEVICE_MODEL := Mrkaio M68S PLUS
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125 kmod-ata-ahci kmod-ata-ahci-platform kmod-nvme kmod-scsi-core
+endef
+TARGET_DEVICES += ezpro_mrkaio-m68s-plus
+
 define Device/hinlink_common
   DEVICE_VENDOR := HINLINK
   SOC := rk3568
