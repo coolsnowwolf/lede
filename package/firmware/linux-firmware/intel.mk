@@ -241,6 +241,7 @@ define Package/i915-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_33.0.0.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_49.0.1.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_70.1.1.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_4.0.0.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_ver03_01_2893.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_dmc_ver1_07.bin $(1)/lib/firmware/i915/
