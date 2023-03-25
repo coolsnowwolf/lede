@@ -176,7 +176,8 @@ define U-Boot/opc-h68k-rk3568
   NAME:=OPC-H68K Board
   BUILD_DEVICES:= \
     hinlink_opc-h66k \
-    hinlink_opc-h68k
+    hinlink_opc-h68k \
+    hinlink_opc-h69k
   DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.28.elf
