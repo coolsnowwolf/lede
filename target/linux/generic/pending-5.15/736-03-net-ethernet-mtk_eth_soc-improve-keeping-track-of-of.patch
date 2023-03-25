@@ -12,7 +12,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/drivers/net/ethernet/mediatek/mtk_ppe.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
-@@ -466,26 +466,30 @@ int mtk_foe_entry_set_queue(struct mtk_e
+@@ -466,42 +466,43 @@ int mtk_foe_entry_set_queue(struct mtk_e
  	return 0;
  }
  
@@ -51,15 +51,17 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +__mtk_foe_entry_clear(struct mtk_ppe *ppe, struct mtk_flow_entry *entry,
 +		      bool set_state)
  {
- 	struct hlist_head *head;
+-	struct hlist_head *head;
  	struct hlist_node *tmp;
-@@ -495,13 +499,12 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
+ 
+ 	if (entry->type == MTK_FLOW_TYPE_L2) {
+ 		rhashtable_remove_fast(&ppe->l2_flows, &entry->l2_node,
  				       mtk_flow_l2_ht_params);
  
- 		head = &entry->l2_flows;
+-		head = &entry->l2_flows;
 -		hlist_for_each_entry_safe(entry, tmp, head, l2_data.list)
 -			__mtk_foe_entry_clear(ppe, entry);
-+		hlist_for_each_entry_safe(entry, tmp, head, list)
++		hlist_for_each_entry_safe(entry, tmp, &entry->l2_flows, l2_list)
 +			__mtk_foe_entry_clear(ppe, entry, set_state);
  		return;
  	}
@@ -70,16 +72,17 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  		struct mtk_foe_entry *hwe = mtk_foe_get_entry(ppe, entry->hash);
  
  		hwe->ib1 &= ~MTK_FOE_IB1_STATE;
-@@ -520,7 +523,7 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
+@@ -520,7 +521,8 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
  	if (entry->type != MTK_FLOW_TYPE_L2_SUBFLOW)
  		return;
  
 -	hlist_del_init(&entry->l2_data.list);
++	hlist_del_init(&entry->l2_list);
 +	hlist_del_init(&entry->list);
  	kfree(entry);
  }
  
-@@ -536,66 +539,55 @@ static int __mtk_foe_entry_idle_time(str
+@@ -536,66 +538,55 @@ static int __mtk_foe_entry_idle_time(str
  		return now - timestamp;
  }
  
@@ -118,7 +121,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	idle = __mtk_foe_entry_idle_time(ppe, entry->data.ib1);
 -	hlist_for_each_entry_safe(cur, tmp, &entry->l2_flows, l2_data.list) {
-+	hlist_for_each_entry_safe(cur, tmp, &entry->l2_flows, list) {
++	hlist_for_each_entry_safe(cur, tmp, &entry->l2_flows, l2_list) {
  		int cur_idle;
 -		u32 ib1;
 -
@@ -175,7 +178,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  }
  
  static void
-@@ -632,7 +624,8 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
+@@ -632,7 +623,8 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
  void mtk_foe_entry_clear(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
  {
  	spin_lock_bh(&ppe_lock);
@@ -185,7 +188,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	spin_unlock_bh(&ppe_lock);
  }
  
-@@ -679,8 +672,8 @@ mtk_foe_entry_commit_subflow(struct mtk_
+@@ -679,8 +671,8 @@ mtk_foe_entry_commit_subflow(struct mtk_
  {
  	const struct mtk_soc_data *soc = ppe->eth->soc;
  	struct mtk_flow_entry *flow_info;
@@ -195,7 +198,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	u32 ib1_mask = mtk_get_ib1_pkt_type_mask(ppe->eth) | MTK_FOE_IB1_UDP;
  	int type;
  
-@@ -688,30 +681,30 @@ mtk_foe_entry_commit_subflow(struct mtk_
+@@ -688,30 +680,30 @@ mtk_foe_entry_commit_subflow(struct mtk_
  	if (!flow_info)
  		return;
  
@@ -205,7 +208,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	hlist_add_head(&flow_info->list,
  		       &ppe->foe_flow[hash / soc->hash_offset]);
 -	hlist_add_head(&flow_info->l2_data.list, &entry->l2_flows);
-+	hlist_add_head(&flow_info->list, &entry->l2_flows);
++	hlist_add_head(&flow_info->l2_list, &entry->l2_flows);
  
  	hwe = mtk_foe_get_entry(ppe, hash);
 -	memcpy(&foe, hwe, soc->foe_entry_size);
@@ -236,7 +239,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  }
  
  void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash)
-@@ -721,9 +714,11 @@ void __mtk_ppe_check_skb(struct mtk_ppe
+@@ -721,9 +713,11 @@ void __mtk_ppe_check_skb(struct mtk_ppe
  	struct mtk_foe_entry *hwe = mtk_foe_get_entry(ppe, hash);
  	struct mtk_flow_entry *entry;
  	struct mtk_foe_bridge key = {};
@@ -248,7 +251,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	u8 *tag;
  
  	spin_lock_bh(&ppe_lock);
-@@ -731,20 +726,14 @@ void __mtk_ppe_check_skb(struct mtk_ppe
+@@ -731,20 +725,14 @@ void __mtk_ppe_check_skb(struct mtk_ppe
  	if (FIELD_GET(MTK_FOE_IB1_STATE, hwe->ib1) == MTK_FOE_STATE_BIND)
  		goto out;
  
@@ -275,7 +278,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  			continue;
  		}
  
-@@ -795,9 +784,17 @@ out:
+@@ -795,9 +783,17 @@ out:
  
  int mtk_foe_entry_idle_time(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
  {
@@ -297,7 +300,21 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  int mtk_ppe_prepare_reset(struct mtk_ppe *ppe)
 --- a/drivers/net/ethernet/mediatek/mtk_ppe.h
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
-@@ -275,13 +275,7 @@ struct mtk_flow_entry {
+@@ -265,7 +265,12 @@ enum {
+ 
+ struct mtk_flow_entry {
+ 	union {
+-		struct hlist_node list;
++		/* regular flows + L2 subflows */
++		struct {
++			struct hlist_node list;
++			struct hlist_node l2_list;
++		};
++		/* L2 flows */
+ 		struct {
+ 			struct rhash_head l2_node;
+ 			struct hlist_head l2_flows;
+@@ -275,13 +280,7 @@ struct mtk_flow_entry {
  	s8 wed_index;
  	u8 ppe_index;
  	u16 hash;
