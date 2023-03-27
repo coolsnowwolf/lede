@@ -1,8 +1,8 @@
 From 7ff82416de8295c61423ef6fd75f052d3837d2f7 Mon Sep 17 00:00:00 2001
 From: Alexander Couzens <lynxis@fe80.eu>
 Date: Wed, 1 Feb 2023 19:23:29 +0100
-Subject: [PATCH] net: mediatek: sgmii: ensure the SGMII PHY is powered down on
- configuration
+Subject: [PATCH 11/13] net: mediatek: sgmii: ensure the SGMII PHY is powered
+ down on configuration
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -34,7 +34,7 @@ Signed-off-by: Jakub Kicinski <kuba@kernel.org>
 
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
-@@ -1063,11 +1063,13 @@ struct mtk_soc_data {
+@@ -1070,11 +1070,13 @@ struct mtk_soc_data {
   * @regmap:            The register map pointing at the range used to setup
   *                     SGMII modes
   * @ana_rgc3:          The offset refers to register ANA_RGC3 related to regmap
@@ -50,57 +50,51 @@ Signed-off-by: Jakub Kicinski <kuba@kernel.org>
  
 --- a/drivers/net/ethernet/mediatek/mtk_sgmii.c
 +++ b/drivers/net/ethernet/mediatek/mtk_sgmii.c
-@@ -24,6 +24,10 @@ static int mtk_pcs_setup_mode_an(struct
- {
- 	unsigned int val;
+@@ -43,11 +43,6 @@ static int mtk_pcs_config(struct phylink
+ 	int advertise, link_timer;
+ 	bool changed, use_an;
  
-+	regmap_read(mpcs->regmap, mpcs->ana_rgc3, &val);
-+	val &= ~RG_PHY_SPEED_MASK;
-+	regmap_write(mpcs->regmap, mpcs->ana_rgc3, val);
-+
- 	/* Setup the link timer and QPHY power up inside SGMIISYS */
- 	regmap_write(mpcs->regmap, SGMSYS_PCS_LINK_TIMER,
- 		     SGMII_LINK_TIMER_DEFAULT);
-@@ -36,9 +40,6 @@ static int mtk_pcs_setup_mode_an(struct
- 	val |= SGMII_AN_RESTART;
- 	regmap_write(mpcs->regmap, SGMSYS_PCS_CONTROL_1, val);
- 
--	regmap_read(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL, &val);
--	val &= ~SGMII_PHYA_PWD;
--	regmap_write(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL, val);
- 
- 	return 0;
- 
-@@ -69,11 +70,6 @@ static int mtk_pcs_setup_mode_force(stru
- 	val |= SGMII_SPEED_1000;
- 	regmap_write(mpcs->regmap, SGMSYS_SGMII_MODE, val);
- 
--	/* Release PHYA power down state */
--	regmap_read(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL, &val);
--	val &= ~SGMII_PHYA_PWD;
--	regmap_write(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL, val);
+-	if (interface == PHY_INTERFACE_MODE_2500BASEX)
+-		rgc3 = RG_PHY_SPEED_3_125G;
+-	else
+-		rgc3 = 0;
 -
- 	return 0;
- }
+ 	advertise = phylink_mii_c22_pcs_encode_advertisement(interface,
+ 							     advertising);
+ 	if (advertise < 0)
+@@ -88,9 +83,22 @@ static int mtk_pcs_config(struct phylink
+ 		bmcr = 0;
+ 	}
  
-@@ -85,12 +81,32 @@ static int mtk_pcs_config(struct phylink
- 	struct mtk_pcs *mpcs = pcs_to_mtk_pcs(pcs);
- 	int err = 0;
- 
+-	/* Configure the underlying interface speed */
+-	regmap_update_bits(mpcs->regmap, mpcs->ana_rgc3,
+-			   RG_PHY_SPEED_3_125G, rgc3);
 +	if (mpcs->interface != interface) {
 +		/* PHYA power down */
 +		regmap_update_bits(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL,
 +				   SGMII_PHYA_PWD, SGMII_PHYA_PWD);
 +
++		if (interface == PHY_INTERFACE_MODE_2500BASEX)
++			rgc3 = RG_PHY_SPEED_3_125G;
++		else
++			rgc3 = 0;
++
++		/* Configure the underlying interface speed */
++		regmap_update_bits(mpcs->regmap, mpcs->ana_rgc3,
++				   RG_PHY_SPEED_3_125G, rgc3);
++
 +		mpcs->interface = interface;
 +	}
-+
- 	/* Setup SGMIISYS with the determined property */
- 	if (interface != PHY_INTERFACE_MODE_SGMII)
- 		err = mtk_pcs_setup_mode_force(mpcs, interface);
- 	else if (phylink_autoneg_inband(mode))
- 		err = mtk_pcs_setup_mode_an(mpcs);
  
+ 	/* Update the advertisement, noting whether it has changed */
+ 	regmap_update_bits_check(mpcs->regmap, SGMSYS_PCS_ADVERTISE,
+@@ -108,9 +116,17 @@ static int mtk_pcs_config(struct phylink
+ 	regmap_update_bits(mpcs->regmap, SGMSYS_PCS_CONTROL_1,
+ 			   SGMII_AN_RESTART | SGMII_AN_ENABLE, bmcr);
+ 
+-	/* Release PHYA power down state */
+-	regmap_update_bits(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL,
+-			   SGMII_PHYA_PWD, 0);
 +	/* Release PHYA power down state
 +	 * Only removing bit SGMII_PHYA_PWD isn't enough.
 +	 * There are cases when the SGMII_PHYA_PWD register contains 0x9 which
@@ -112,11 +106,10 @@ Signed-off-by: Jakub Kicinski <kuba@kernel.org>
 +	 */
 +	usleep_range(50, 100);
 +	regmap_write(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL, 0);
-+
- 	return err;
- }
  
-@@ -145,6 +161,7 @@ int mtk_sgmii_init(struct mtk_sgmii *ss,
+ 	return changed;
+ }
+@@ -171,6 +187,7 @@ int mtk_sgmii_init(struct mtk_sgmii *ss,
  			return PTR_ERR(ss->pcs[i].regmap);
  
  		ss->pcs[i].pcs.ops = &mtk_pcs_ops;
