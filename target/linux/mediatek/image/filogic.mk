@@ -38,6 +38,24 @@ define Build/mt7986-gpt
 	rm $@.tmp
 endef
 
+define Device/asus_tuf-ax4200
+  DEVICE_VENDOR := ASUS
+  DEVICE_MODEL := TUF-AX4200
+  DEVICE_DTS := mt7986a-asus-tuf-ax4200
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_LOADADDR := 0x47000000
+  DEVICE_PACKAGES := kmod-usb3
+  IMAGES := sysupgrade.bin
+  KERNEL_LOADADDR := 0x48000000
+  KERNEL = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += asus_tuf-ax4200
+
+
 define Device/bananapi_bpi-r3
   DEVICE_VENDOR := Bananapi
   DEVICE_MODEL := BPi-R3
