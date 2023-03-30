@@ -164,6 +164,7 @@ define U-Boot/nanopi-r5s-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=NanoPi R5S
   BUILD_DEVICES:= \
+    friendlyarm_nanopi-r5c \
     friendlyarm_nanopi-r5s
   DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
