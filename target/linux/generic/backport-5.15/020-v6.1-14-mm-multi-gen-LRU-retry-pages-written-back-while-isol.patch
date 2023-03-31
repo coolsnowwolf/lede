@@ -1,0 +1,124 @@
+From 6f315879ad750391a0b1fab8c9170bc054a5f5d7 Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Tue, 15 Nov 2022 18:38:07 -0700
+Subject: [PATCH 14/29] mm: multi-gen LRU: retry pages written back while
+ isolated
+
+The page reclaim isolates a batch of pages from the tail of one of the
+LRU lists and works on those pages one by one.  For a suitable
+swap-backed page, if the swap device is async, it queues that page for
+writeback.  After the page reclaim finishes an entire batch, it puts back
+the pages it queued for writeback to the head of the original LRU list.
+
+In the meantime, the page writeback flushes the queued pages also by
+batches.  Its batching logic is independent from that of the page reclaim.
+For each of the pages it writes back, the page writeback calls
+rotate_reclaimable_page() which tries to rotate a page to the tail.
+
+rotate_reclaimable_page() only works for a page after the page reclaim
+has put it back.  If an async swap device is fast enough, the page
+writeback can finish with that page while the page reclaim is still
+working on the rest of the batch containing it.  In this case, that page
+will remain at the head and the page reclaim will not retry it before
+reaching there.
+
+This patch adds a retry to evict_pages().  After evict_pages() has
+finished an entire batch and before it puts back pages it cannot free
+immediately, it retries those that may have missed the rotation.
+
+Before this patch, ~60% of pages swapped to an Intel Optane missed
+rotate_reclaimable_page().  After this patch, ~99% of missed pages were
+reclaimed upon retry.
+
+This problem affects relatively slow async swap devices like Samsung 980
+Pro much less and does not affect sync swap devices like zram or zswap at
+all.
+
+Link: https://lkml.kernel.org/r/20221116013808.3995280-1-yuzhao@google.com
+Fixes: ac35a4902374 ("mm: multi-gen LRU: minimal implementation")
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Cc: "Yin, Fengwei" <fengwei.yin@intel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 48 +++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 37 insertions(+), 11 deletions(-)
+
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4723,10 +4723,13 @@ static int evict_pages(struct lruvec *lr
+ 	int scanned;
+ 	int reclaimed;
+ 	LIST_HEAD(list);
++	LIST_HEAD(clean);
+ 	struct page *page;
++	struct page *next;
+ 	enum vm_event_item item;
+ 	struct reclaim_stat stat;
+ 	struct lru_gen_mm_walk *walk;
++	bool skip_retry = false;
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 	struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+ 
+@@ -4743,20 +4746,37 @@ static int evict_pages(struct lruvec *lr
+ 
+ 	if (list_empty(&list))
+ 		return scanned;
+-
++retry:
+ 	reclaimed = shrink_page_list(&list, pgdat, sc, &stat, false);
++	sc->nr_reclaimed += reclaimed;
+ 
+-	list_for_each_entry(page, &list, lru) {
+-		/* restore LRU_REFS_FLAGS cleared by isolate_page() */
+-		if (PageWorkingset(page))
+-			SetPageReferenced(page);
++	list_for_each_entry_safe_reverse(page, next, &list, lru) {
++		if (!page_evictable(page)) {
++			list_del(&page->lru);
++			putback_lru_page(page);
++			continue;
++		}
+ 
+-		/* don't add rejected pages to the oldest generation */
+ 		if (PageReclaim(page) &&
+-		    (PageDirty(page) || PageWriteback(page)))
+-			ClearPageActive(page);
+-		else
+-			SetPageActive(page);
++		    (PageDirty(page) || PageWriteback(page))) {
++			/* restore LRU_REFS_FLAGS cleared by isolate_page() */
++			if (PageWorkingset(page))
++				SetPageReferenced(page);
++			continue;
++		}
++
++		if (skip_retry || PageActive(page) || PageReferenced(page) ||
++		    page_mapped(page) || PageLocked(page) ||
++		    PageDirty(page) || PageWriteback(page)) {
++			/* don't add rejected pages to the oldest generation */
++			set_mask_bits(&page->flags, LRU_REFS_MASK | LRU_REFS_FLAGS,
++				      BIT(PG_active));
++			continue;
++		}
++
++		/* retry pages that may have missed rotate_reclaimable_page() */
++		list_move(&page->lru, &clean);
++		sc->nr_scanned -= thp_nr_pages(page);
+ 	}
+ 
+ 	spin_lock_irq(&lruvec->lru_lock);
+@@ -4778,7 +4798,13 @@ static int evict_pages(struct lruvec *lr
+ 	mem_cgroup_uncharge_list(&list);
+ 	free_unref_page_list(&list);
+ 
+-	sc->nr_reclaimed += reclaimed;
++	INIT_LIST_HEAD(&list);
++	list_splice_init(&clean, &list);
++
++	if (!list_empty(&list)) {
++		skip_retry = true;
++		goto retry;
++	}
+ 
+ 	if (need_swapping && type == LRU_GEN_ANON)
+ 		*need_swapping = true;
