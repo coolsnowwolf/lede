@@ -5,7 +5,7 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2022-01-24
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/ssdk-shell
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/ssdk-shell.git
 PKG_SOURCE_VERSION:=01a60b45ac3498a40bbb011d0c3b7d5d3a1cc9cb
 PKG_MIRROR_HASH:=6233c02c296af241eb2e1c25e49dfc8d9c6cf1095cb82f1862b125dd125c758e
 
