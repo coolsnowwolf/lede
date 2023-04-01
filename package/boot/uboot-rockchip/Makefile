@@ -260,6 +260,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   r66s-rk3568 \
   station-p2-rk3568 \
+  sharevdi-h3399pc-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
