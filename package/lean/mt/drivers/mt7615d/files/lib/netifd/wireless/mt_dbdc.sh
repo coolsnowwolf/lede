@@ -856,7 +856,10 @@ EOF
 
 	for_each_interface "ap" mt_dbdc_ap_vif_pre_config
 
-	[[ "$phy_name" = "ra0" ]] && [[ "$ApBssidNum" = "0" ]] && mt_cmd ifconfig ra0 down
+# 设置频道，每个PHY只有一个频道
+	[[ "${AutoChannelSelect:-0}" = "0" ]] && mt_cmd iwpriv $phy_name set Channel=${channel}
+
+	[[ "$phy_name" = "ra0" && "$ApBssidNum" = "0" ]] && mt_cmd ifconfig ra0 down
 #For DBDC profile merging......
 	while [ $ApBssidNum -lt $RTWIFI_DEF_MAX_BSSID ]
 	do
