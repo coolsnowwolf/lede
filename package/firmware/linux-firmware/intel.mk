@@ -178,7 +178,7 @@ $(eval $(call BuildPackage,iwlwifi-firmware-ax200))
 Package/iwlwifi-firmware-ax201 = $(call Package/firmware-default,Intel AX201 firmware)
 define Package/iwlwifi-firmware-ax201/install
 	$(INSTALL_DIR) $(1)/lib/firmware
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-so-a0-hr-b0-64.ucode $(1)/lib/firmware
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/iwlwifi-so-a0-hr-b0-72.ucode $(1)/lib/firmware
 endef
 $(eval $(call BuildPackage,iwlwifi-firmware-ax201))
 
@@ -206,7 +206,12 @@ define Package/i915-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_09.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_10.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_12.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_14.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_dmc_ver2_16.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_guc_62.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_guc_69.0.3.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_guc_70.1.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adlp_guc_70.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/adls_dmc_ver2_01.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/bxt_dmc_ver1_07.bin $(1)/lib/firmware/i915/
 	ln -s /lib/firmware/i915/bxt_dmc_ver1_07.bin $(1)/lib/firmware/i915/bxt_dmc_ver1.bin
@@ -241,6 +246,7 @@ define Package/i915-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_33.0.0.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_49.0.1.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_62.0.0.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_guc_70.1.1.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_4.0.0.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/glk_huc_ver03_01_2893.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/icl_dmc_ver1_07.bin $(1)/lib/firmware/i915/
@@ -288,6 +294,7 @@ define Package/i915-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_49.0.1.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_62.0.0.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_guc_70.1.1.bin $(1)/lib/firmware/i915/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.0.12.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.0.3.bin $(1)/lib/firmware/i915/
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/i915/tgl_huc_7.5.0.bin $(1)/lib/firmware/i915/
