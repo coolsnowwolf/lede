@@ -146,6 +146,17 @@ define U-Boot/rocktech-mpc1903-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/sharevdi-h3399pc-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=SHAREVDI H3399PC
+  BUILD_DEVICES:= \
+    sharevdi_h3399pc
+  DEPENDS:=+PACKAGE_u-boot-sharevdi-h3399pc-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
+
 # RK3568 boards
 
 define U-Boot/mrkaio-m68s-rk3568
@@ -249,6 +260,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   r66s-rk3568 \
   station-p2-rk3568 \
+  sharevdi-h3399pc-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
