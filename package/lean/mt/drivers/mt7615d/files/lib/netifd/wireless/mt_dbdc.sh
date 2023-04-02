@@ -310,13 +310,18 @@ mt_dbdc_sta_vif_pre_config() {
 		;;
 	esac
 
+	# mt_cmd iwpriv $APCLI_IF set MACRepeaterEn=1
 	mt_cmd iwpriv $APCLI_IF set ApCliAuthMode=$ApCliAuthMode
 	mt_cmd iwpriv $APCLI_IF set ApCliEncrypType=$ApCliEncrypType
 	if [[ "$ApCliEncrypType" = "WEP" ]]; then
 		mt_cmd iwpriv $APCLI_IF set ApCliDefaultKeyID=$key
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey1Type=1 # 0:hex, 1:ascii
 		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey1=${key1##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey2Type=1
 		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey2=${key2##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey3Type=1
 		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey3=${key3##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey4Type=1
 		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey4=${key4##*:}\""
 	elif ! [[ "$ApCliEncrypType" = "NONE" ]]; then
 		mt_cmd iwpriv $APCLI_IF set "\"ApCliWPAPSK=$key\""
