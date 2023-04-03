@@ -242,6 +242,16 @@ define Device/sharevdi_guangmiao-g4c
 endef
 TARGET_DEVICES += sharevdi_guangmiao-g4c
 
+define Device/newland_nl5101a
+  DEVICE_VENDOR := Newland
+  DEVICE_MODEL := NL-5101A
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := newland-nl5101a-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := -urngd
+endef
+TARGET_DEVICES += newland_nl5101a
+
 define Device/xunlong_orangepi-r1-plus
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi R1 Plus
