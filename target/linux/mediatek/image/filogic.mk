@@ -47,7 +47,7 @@ define Device/asus_tuf-ax4200
   DEVICE_PACKAGES := kmod-usb3
   IMAGES := sysupgrade.bin
   KERNEL_LOADADDR := 0x48000000
-  KERNEL = kernel-bin | lzma | \
+  KERNEL := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
