@@ -167,7 +167,7 @@ define U-Boot/mrkaio-m68s-rk3568
     ezpro_mrkaio-m68s-plus
   DEPENDS:=+PACKAGE_u-boot-mrkaio-m68s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -179,7 +179,7 @@ define U-Boot/nanopi-r5s-rk3568
     friendlyarm_nanopi-r5s
   DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -192,7 +192,7 @@ define U-Boot/opc-h68k-rk3568
     hinlink_opc-h69k
   DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -203,7 +203,7 @@ define U-Boot/photonicat-rk3568
     ariaboard_photonicat
   DEPENDS:=+PACKAGE_u-boot-photonicat-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -214,7 +214,7 @@ define U-Boot/radxa-e25-rk3568
     radxa_e25
   DEPENDS:=+PACKAGE_u-boot-radxa-e25-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -225,7 +225,7 @@ define U-Boot/rock-3a-rk3568
     radxa_rock-3a
   DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -237,7 +237,7 @@ define U-Boot/r66s-rk3568
     fastrhino_r68s
   DEPENDS:=+PACKAGE_u-boot-r66s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
@@ -248,7 +248,7 @@ define U-Boot/station-p2-rk3568
        firefly_station-p2
   DEPENDS:=+PACKAGE_u-boot-station-p2-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.28.elf
+  ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
 endef
 
