@@ -151,6 +151,13 @@ define Device/tplink_tl-common
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
+define Device/tplink_tl-xdr4288
+  DEVICE_MODEL := TL-XDR4288
+  DEVICE_DTS := mt7986a-tl-xdr4288
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xdr4288
+
 define Device/tplink_tl-xdr6086
   DEVICE_MODEL := TL-XDR6086
   DEVICE_DTS := mt7986a-tl-xdr6086
