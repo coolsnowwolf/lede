@@ -1,7 +1,5 @@
 DTS_DIR := $(DTS_DIR)/mediatek
 
-KERNEL_LOADADDR := 0x44000000
-
 define Image/Prepare
 	# For UBI we want only one extra block
 	rm -f $(KDIR)/ubi_mark
@@ -46,8 +44,7 @@ define Device/asus_tuf-ax4200
   DEVICE_DTS_LOADADDR := 0x47000000
   DEVICE_PACKAGES := kmod-usb3
   IMAGES := sysupgrade.bin
-  KERNEL_LOADADDR := 0x48000000
-  KERNEL = kernel-bin | lzma | \
+  KERNEL := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
@@ -65,6 +62,7 @@ define Device/bananapi_bpi-r3
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-gpio kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs
   IMAGES := sysupgrade.itb
+  KERNEL_LOADADDR := 0x44000000
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   ARTIFACTS := \
 	       emmc-preloader.bin emmc-bl31-uboot.fip \
@@ -145,7 +143,6 @@ TARGET_DEVICES += mediatek_mt7986b-rfb
 define Device/tplink_tl-common
   DEVICE_VENDOR := TP-Link
   DEVICE_DTS_DIR := ../dts
-  KERNEL_LOADADDR := 0x48000000
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -153,6 +150,13 @@ define Device/tplink_tl-common
   DEVICE_PACKAGES := kmod-usb3
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
+
+define Device/tplink_tl-xdr4288
+  DEVICE_MODEL := TL-XDR4288
+  DEVICE_DTS := mt7986a-tl-xdr4288
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xdr4288
 
 define Device/tplink_tl-xdr6086
   DEVICE_MODEL := TL-XDR6086
@@ -174,7 +178,6 @@ define Device/xiaomi_redmi-router-ax6000
   DEVICE_DTS := mt7986a-xiaomi-redmi-router-ax6000
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-leds-ws2812b
-  KERNEL_LOADADDR := 0x48000000
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
