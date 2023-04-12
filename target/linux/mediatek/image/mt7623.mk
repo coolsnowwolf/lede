@@ -1,4 +1,3 @@
-KERNEL_LOADADDR := 0x80008000
 DEVICE_VARS += UBOOT_TARGET UBOOT_OFFSET UBOOT_IMAGE
 
 # The bootrom of MT7623 expects legacy MediaTek headers present in
