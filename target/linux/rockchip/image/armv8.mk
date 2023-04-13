@@ -12,6 +12,16 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/dilusense_dlfr100
+  DEVICE_VENDOR := Dilusense
+  DEVICE_MODEL := DLFR100
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := dilusense-dlfr100-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += dilusense_dlfr100
+
 define Device/ezpro_mrkaio-m68s
   DEVICE_VENDOR := EZPRO
   DEVICE_MODEL := Mrkaio M68S
@@ -241,16 +251,6 @@ define Device/sharevdi_guangmiao-g4c
   DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += sharevdi_guangmiao-g4c
-
-define Device/dilusense_dlfr100
-  DEVICE_VENDOR := Dilusense
-  DEVICE_MODEL := DLFR100
-  SOC := rk3399
-  UBOOT_DEVICE_NAME := dilusense-dlfr100-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 -urngd
-endef
-TARGET_DEVICES += dilusense_dlfr100
 
 define Device/xunlong_orangepi-r1-plus
   DEVICE_VENDOR := Xunlong
