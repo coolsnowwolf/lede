@@ -1,0 +1,134 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Wed, 29 Mar 2023 16:46:26 +0200
+Subject: [PATCH] wifi: ieee80211: correctly mark FTM frames non-bufferable
+
+The checks of whether or not a frame is bufferable were not
+taking into account that some action frames aren't, such as
+FTM. Check this, which requires some changes to the function
+ieee80211_is_bufferable_mmpdu() since we need the whole skb
+for the checks now.
+
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+Reviewed-by: Greenman, Gregory <gregory.greenman@intel.com>
+Reviewed-by: Peer, Ilan <ilan.peer@intel.com>
+---
+
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/tx.c
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/tx.c
+@@ -601,8 +601,9 @@ static void iwl_mvm_skb_prepare_status(s
+ 
+ static int iwl_mvm_get_ctrl_vif_queue(struct iwl_mvm *mvm,
+ 				      struct ieee80211_tx_info *info,
+-				      struct ieee80211_hdr *hdr)
++				      struct sk_buff *skb)
+ {
++	struct ieee80211_hdr *hdr = (void *)skb->data;
+ 	struct iwl_mvm_vif *mvmvif =
+ 		iwl_mvm_vif_from_mac80211(info->control.vif);
+ 	__le16 fc = hdr->frame_control;
+@@ -621,7 +622,7 @@ static int iwl_mvm_get_ctrl_vif_queue(st
+ 		 * reason 7 ("Class 3 frame received from nonassociated STA").
+ 		 */
+ 		if (ieee80211_is_mgmt(fc) &&
+-		    (!ieee80211_is_bufferable_mmpdu(fc) ||
++		    (!ieee80211_is_bufferable_mmpdu(skb) ||
+ 		     ieee80211_is_deauth(fc) || ieee80211_is_disassoc(fc)))
+ 			return mvm->probe_queue;
+ 
+@@ -740,7 +741,7 @@ int iwl_mvm_tx_skb_non_sta(struct iwl_mv
+ 			else
+ 				sta_id = mvmvif->mcast_sta.sta_id;
+ 
+-			queue = iwl_mvm_get_ctrl_vif_queue(mvm, &info, hdr);
++			queue = iwl_mvm_get_ctrl_vif_queue(mvm, &info, skb);
+ 		} else if (info.control.vif->type == NL80211_IFTYPE_MONITOR) {
+ 			queue = mvm->snif_queue;
+ 			sta_id = mvm->snif_sta.sta_id;
+--- a/include/linux/ieee80211.h
++++ b/include/linux/ieee80211.h
+@@ -772,20 +772,6 @@ static inline bool ieee80211_is_any_null
+ }
+ 
+ /**
+- * ieee80211_is_bufferable_mmpdu - check if frame is bufferable MMPDU
+- * @fc: frame control field in little-endian byteorder
+- */
+-static inline bool ieee80211_is_bufferable_mmpdu(__le16 fc)
+-{
+-	/* IEEE 802.11-2012, definition of "bufferable management frame";
+-	 * note that this ignores the IBSS special case. */
+-	return ieee80211_is_mgmt(fc) &&
+-	       (ieee80211_is_action(fc) ||
+-		ieee80211_is_disassoc(fc) ||
+-		ieee80211_is_deauth(fc));
+-}
+-
+-/**
+  * ieee80211_is_first_frag - check if IEEE80211_SCTL_FRAG is not set
+  * @seq_ctrl: frame sequence control bytes in little-endian byteorder
+  */
+@@ -4121,6 +4107,44 @@ static inline u8 *ieee80211_get_DA(struc
+ }
+ 
+ /**
++ * ieee80211_is_bufferable_mmpdu - check if frame is bufferable MMPDU
++ * @skb: the skb to check, starting with the 802.11 header
++ */
++static inline bool ieee80211_is_bufferable_mmpdu(struct sk_buff *skb)
++{
++	struct ieee80211_mgmt *mgmt = (void *)skb->data;
++	__le16 fc = mgmt->frame_control;
++
++	/*
++	 * IEEE 802.11 REVme D2.0 definition of bufferable MMPDU;
++	 * note that this ignores the IBSS special case.
++	 */
++	if (!ieee80211_is_mgmt(fc))
++		return false;
++
++	if (ieee80211_is_disassoc(fc) || ieee80211_is_deauth(fc))
++		return true;
++
++	if (!ieee80211_is_action(fc))
++		return false;
++
++	if (skb->len < offsetofend(typeof(*mgmt), u.action.u.ftm.action_code))
++		return true;
++
++	/* action frame - additionally check for non-bufferable FTM */
++
++	if (mgmt->u.action.category != WLAN_CATEGORY_PUBLIC &&
++	    mgmt->u.action.category != WLAN_CATEGORY_PROTECTED_DUAL_OF_ACTION)
++		return true;
++
++	if (mgmt->u.action.u.ftm.action_code == WLAN_PUB_ACTION_FTM_REQUEST ||
++	    mgmt->u.action.u.ftm.action_code == WLAN_PUBLIC_ACTION_FTM_RESPONSE)
++		return false;
++
++	return true;
++}
++
++/**
+  * _ieee80211_is_robust_mgmt_frame - check if frame is a robust management frame
+  * @hdr: the frame (buffer must include at least the first octet of payload)
+  */
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -488,7 +488,7 @@ ieee80211_tx_h_unicast_ps_buf(struct iee
+ 		int ac = skb_get_queue_mapping(tx->skb);
+ 
+ 		if (ieee80211_is_mgmt(hdr->frame_control) &&
+-		    !ieee80211_is_bufferable_mmpdu(hdr->frame_control)) {
++		    !ieee80211_is_bufferable_mmpdu(tx->skb)) {
+ 			info->flags |= IEEE80211_TX_CTL_NO_PS_BUFFER;
+ 			return TX_CONTINUE;
+ 		}
+@@ -1326,7 +1326,7 @@ static struct txq_info *ieee80211_get_tx
+ 	if (!(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
+ 	    unlikely(!ieee80211_is_data_present(hdr->frame_control))) {
+ 		if ((!ieee80211_is_mgmt(hdr->frame_control) ||
+-		     ieee80211_is_bufferable_mmpdu(hdr->frame_control) ||
++		     ieee80211_is_bufferable_mmpdu(skb) ||
+ 		     vif->type == NL80211_IFTYPE_STATION) &&
+ 		    sta && sta->uploaded) {
+ 			/*
