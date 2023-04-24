@@ -17,27 +17,42 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
-@@ -2002,29 +2002,16 @@ static int mtk_poll_rx(struct napi_struc
- 		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
- 			mtk_ppe_check_skb(eth->ppe[0], skb, hash);
+@@ -1829,9 +1829,7 @@ static int mtk_poll_rx(struct napi_struc
  
+ 	while (done < budget) {
+ 		unsigned int pktlen, *rxdcsum;
+-		bool has_hwaccel_tag = false;
+ 		struct net_device *netdev;
+-		u16 vlan_proto, vlan_tci;
+ 		dma_addr_t dma_addr;
+ 		u32 hash, reason;
+ 		int mac = 0;
+@@ -1966,36 +1964,21 @@ static int mtk_poll_rx(struct napi_struc
+ 			skb_checksum_none_assert(skb);
+ 		skb->protocol = eth_type_trans(skb, netdev);
+ 
+-		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
+-			mtk_ppe_check_skb(eth->ppe[0], skb, hash);
+-
 -		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX) {
 -			if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2)) {
--				if (trxd.rxd3 & RX_DMA_VTAG_V2)
--					__vlan_hwaccel_put_tag(skb,
--						htons(RX_DMA_VPID(trxd.rxd4)),
--						RX_DMA_VID(trxd.rxd4));
+-				if (trxd.rxd3 & RX_DMA_VTAG_V2) {
+-					vlan_proto = RX_DMA_VPID(trxd.rxd4);
+-					vlan_tci = RX_DMA_VID(trxd.rxd4);
+-					has_hwaccel_tag = true;
+-				}
 -			} else if (trxd.rxd2 & RX_DMA_VTAG) {
--				__vlan_hwaccel_put_tag(skb, htons(RX_DMA_VPID(trxd.rxd3)),
--						       RX_DMA_VID(trxd.rxd3));
+-				vlan_proto = RX_DMA_VPID(trxd.rxd3);
+-				vlan_tci = RX_DMA_VID(trxd.rxd3);
+-				has_hwaccel_tag = true;
 -			}
 -		}
 -
  		/* When using VLAN untagging in combination with DSA, the
  		 * hardware treats the MTK special tag as a VLAN and untags it.
  		 */
--		if (skb_vlan_tag_present(skb) && netdev_uses_dsa(netdev)) {
--			unsigned int port = ntohs(skb->vlan_proto) & GENMASK(2, 0);
+-		if (has_hwaccel_tag && netdev_uses_dsa(netdev)) {
+-			unsigned int port = vlan_proto & GENMASK(2, 0);
 +		if (!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2) &&
 +		    (trxd.rxd2 & RX_DMA_VTAG) && netdev_uses_dsa(netdev)) {
 +			unsigned int port = RX_DMA_VPID(trxd.rxd3) & GENMASK(2, 0);
@@ -45,12 +60,17 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  			if (port < ARRAY_SIZE(eth->dsa_meta) &&
  			    eth->dsa_meta[port])
  				skb_dst_set_noref(skb, &eth->dsa_meta[port]->dst);
--
--			__vlan_hwaccel_clear_tag(skb);
+-		} else if (has_hwaccel_tag) {
+-			__vlan_hwaccel_put_tag(skb, htons(vlan_proto), vlan_tci);
  		}
  
++		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
++			mtk_ppe_check_skb(eth->ppe[0], skb, hash);
++
  		skb_record_rx_queue(skb, 0);
-@@ -2841,29 +2828,11 @@ static netdev_features_t mtk_fix_feature
+ 		napi_gro_receive(napi, skb);
+ 
+@@ -2810,29 +2793,11 @@ static netdev_features_t mtk_fix_feature
  
  static int mtk_set_features(struct net_device *dev, netdev_features_t features)
  {
@@ -80,7 +100,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	return 0;
  }
  
-@@ -3177,30 +3146,6 @@ static int mtk_open(struct net_device *d
+@@ -3146,30 +3111,6 @@ static int mtk_open(struct net_device *d
  	struct mtk_eth *eth = mac->hw;
  	int i, err;
  
@@ -111,7 +131,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	err = phylink_of_phy_connect(mac->phylink, mac->of_node, 0);
  	if (err) {
  		netdev_err(dev, "%s: could not attach PHY: %d\n", __func__,
-@@ -3241,6 +3186,35 @@ static int mtk_open(struct net_device *d
+@@ -3210,6 +3151,35 @@ static int mtk_open(struct net_device *d
  	phylink_start(mac->phylink);
  	netif_tx_start_all_queues(dev);
  
@@ -147,7 +167,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	return 0;
  }
  
-@@ -3725,10 +3699,9 @@ static int mtk_hw_init(struct mtk_eth *e
+@@ -3694,10 +3664,9 @@ static int mtk_hw_init(struct mtk_eth *e
  	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2)) {
  		val = mtk_r32(eth, MTK_CDMP_IG_CTRL);
  		mtk_w32(eth, val | MTK_CDMP_STAG_EN, MTK_CDMP_IG_CTRL);
@@ -160,7 +180,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  	/* set interrupt delays based on current Net DIM sample */
  	mtk_dim_rx(&eth->rx_dim.work);
-@@ -4366,7 +4339,7 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -4335,7 +4304,7 @@ static int mtk_add_mac(struct mtk_eth *e
  		eth->netdev[id]->hw_features |= NETIF_F_LRO;
  
  	eth->netdev[id]->vlan_features = eth->soc->hw_features &
@@ -176,6 +196,6 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  				 NETIF_F_RXCSUM | \
  				 NETIF_F_HW_VLAN_CTAG_TX | \
 -				 NETIF_F_HW_VLAN_CTAG_RX | \
- 				 NETIF_F_SG | NETIF_F_ALL_TSO | \
+ 				 NETIF_F_SG | NETIF_F_TSO | \
+ 				 NETIF_F_TSO6 | \
  				 NETIF_F_IPV6_CSUM |\
- 				 NETIF_F_HW_TC)
