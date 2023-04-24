@@ -1550,6 +1550,21 @@ endef
 
 $(eval $(call KernelPackage,atlantic))
 
+define KernelPackage/amazon-ena
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Elastic Network Adapter (for Amazon AWS)
+  DEPENDS:=@TARGET_x86_64||TARGET_armvirt_64
+  KCONFIG:=CONFIG_ENA_ETHERNET
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/amazon/ena/ena.ko
+  AUTOLOAD:=$(call AutoLoad,12,ena)
+endef
+
+define KernelPackage/amazon-ena/description
+  This driver supports Elastic Network Adapter (ENA)
+  used by Amazon AWS T3 (2018) and later instances.
+endef
+
+$(eval $(call KernelPackage,amazon-ena))
 
 define KernelPackage/lan743x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
