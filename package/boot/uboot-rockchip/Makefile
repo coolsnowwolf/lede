@@ -256,12 +256,22 @@ define U-Boot/station-p2-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=StationP2
   BUILD_DEVICES:= \
-       firefly_station-p2 \
-       firefly_station-m2
+       firefly_station-p2
   DEPENDS:=+PACKAGE_u-boot-station-p2-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
+define U-Boot/station-m2-rk3566
+  BUILD_SUBTARGET:=armv8
+  NAME:=StationM2
+  BUILD_DEVICES:= \
+       firefly_station-m2
+  DEPENDS:=+PACKAGE_u-boot-station-m2-rk3566:arm-trusted-firmware-rk3566
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.34.elf
+  DDR:=rk3566_ddr_1056MHz_v1.13.bin
 endef
 
 UBOOT_TARGETS := \
@@ -295,6 +305,11 @@ UBOOT_MAKE_FLAGS += \
   BL31=$(STAGING_DIR_IMAGE)/$(ATF)
 
 ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3568),y)
+UBOOT_MAKE_FLAGS += \
+  ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
+endif
+
+ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3566),y)
 UBOOT_MAKE_FLAGS += \
   ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
 endif
