@@ -170,6 +170,16 @@ define Device/firefly_station-p2
 endef
 TARGET_DEVICES += firefly_station-p2
 
+define Device/firefly_station-m2
+  DEVICE_VENDOR := Firefly
+  DEVICE_MODEL := Station M2
+  DEVICE_DTS := rockchip/rk3566-roc-pc
+  UBOOT_DEVICE_NAME := station-p2-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig kmod-ata-ahci-platform station-p2-firmware wpad-openssl
+endef
+TARGET_DEVICES += firefly_station-m2
+
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
   DEVICE_MODEL := RockPro64
