@@ -32,14 +32,15 @@ include $(INCLUDE_DIR)/package.mk
 define Package/grub2/Default
   CATEGORY:=Boot Loaders
   SECTION:=boot
-  TITLE:=GRand Unified Bootloader ($(1))
+  TITLE:=GRand Unified Bootloader ($(2))
   URL:=http://www.gnu.org/software/grub/
-  DEPENDS:=@TARGET_x86
-  VARIANT:=$(1)
+  DEPENDS:=@TARGET_$(1)
+  VARIANT:=$(2)
 endef
 
-Package/grub2=$(call Package/grub2/Default,pc)
-Package/grub2-efi=$(call Package/grub2/Default,efi)
+Package/grub2=$(call Package/grub2/Default,x86,pc)
+Package/grub2-efi=$(call Package/grub2/Default,x86,efi)
+Package/grub2-efi-arm=$(call Package/grub2/Default,armvirt,efi)
 
 define Package/grub2-editenv
   CATEGORY:=Utilities
@@ -106,6 +107,10 @@ ifneq ($(BUILD_VARIANT),none)
   MAKE_PATH := grub-core
 endif
 
+ifeq ($(CONFIG_arm),y)
+  TARGET_CFLAGS := $(filter-out -mfloat-abi=hard,$(TARGET_CFLAGS))
+endif
+
 define Host/Configure
 	$(SED) 's,(RANLIB),(TARGET_RANLIB),' $(HOST_BUILD_DIR)/grub-core/Makefile.in
 	$(Host/Configure/Default)
@@ -161,8 +166,28 @@ define Package/grub2-efi/install
 		-O $(CONFIG_ARCH)-efi \
 		-c ./files/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/iso-boot$(if $(CONFIG_x86_64),x64,ia32).efi \
-		at_keyboard boot chain configfile fat iso9660 linux ls part_msdos part_gpt reboot serial test efi_gop efi_uga
+		boot chain configfile fat iso9660 linux ls part_msdos part_gpt reboot serial test efi_gop efi_uga
 endef
+
+define Package/grub2-efi-arm/install
+	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)/grub2
+	cp ./files/grub-early-gpt.cfg $(PKG_BUILD_DIR)/grub-early.cfg
+	$(STAGING_DIR_HOST)/bin/grub-mkimage \
+		-d $(PKG_BUILD_DIR)/grub-core \
+		-p /boot/grub \
+		-O arm$(if $(CONFIG_aarch64),64,)-efi \
+		-c $(PKG_BUILD_DIR)/grub-early.cfg \
+		-o $(STAGING_DIR_IMAGE)/grub2/boot$(if $(CONFIG_aarch64),aa64,arm).efi \
+		boot chain configfile fat linux ls part_gpt reboot search search_fs_uuid search_label serial efi_gop lsefi minicmd
+	$(STAGING_DIR_HOST)/bin/grub-mkimage \
+		-d $(PKG_BUILD_DIR)/grub-core \
+		-p /boot/grub \
+		-O arm$(if $(CONFIG_aarch64),64,)-efi \
+		-c ./files/grub-early.cfg \
+		-o $(STAGING_DIR_IMAGE)/grub2/iso-bootaa$(if $(CONFIG_aarch64),aa64,arm).efi \
+		boot chain configfile fat iso9660 linux ls lsefi minicmd part_msdos part_gpt reboot serial test efi_gop
+endef
+
 
 define Package/grub2-editenv/install
 	$(INSTALL_DIR) $(1)/usr/sbin
@@ -177,5 +202,6 @@ endef
 $(eval $(call HostBuild))
 $(eval $(call BuildPackage,grub2))
 $(eval $(call BuildPackage,grub2-efi))
+$(eval $(call BuildPackage,grub2-efi-arm))
 $(eval $(call BuildPackage,grub2-editenv))
 $(eval $(call BuildPackage,grub2-bios-setup))

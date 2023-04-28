@@ -8,9 +8,19 @@ define Device/ariaboard_photonicat
   SOC := rk3568
   UBOOT_DEVICE_NAME := photonicat-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := ar3k-firmware pcat-manager
+  DEVICE_PACKAGES := ath10k-firmware-qca9377-sdio kmod-ath10k kmod-ath10k-sdio pcat-manager
 endef
 TARGET_DEVICES += ariaboard_photonicat
+
+define Device/dilusense_dlfr100
+  DEVICE_VENDOR := Dilusense
+  DEVICE_MODEL := DLFR100
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := dilusense-dlfr100-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += dilusense_dlfr100
 
 define Device/ezpro_mrkaio-m68s
   DEVICE_VENDOR := EZPRO
@@ -22,9 +32,18 @@ define Device/ezpro_mrkaio-m68s
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s
 
+define Device/ezpro_mrkaio-m68s-plus
+  DEVICE_VENDOR := EZPRO
+  DEVICE_MODEL := Mrkaio M68S PLUS
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125 kmod-ata-ahci kmod-ata-ahci-platform kmod-nvme kmod-scsi-core
+endef
+TARGET_DEVICES += ezpro_mrkaio-m68s-plus
+
 define Device/hinlink_common
   DEVICE_VENDOR := HINLINK
-  SOC := rk3568
   UBOOT_DEVICE_NAME := opc-h68k-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-mt7921e kmod-r8125 kmod-usb-serial-cp210x wpad-openssl
@@ -33,14 +52,24 @@ endef
 define Device/hinlink_opc-h66k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H66K
+  SOC := rk3568
 endef
 TARGET_DEVICES += hinlink_opc-h66k
 
 define Device/hinlink_opc-h68k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H68K
+  SOC := rk3568
 endef
 TARGET_DEVICES += hinlink_opc-h68k
+
+define Device/hinlink_opc-h69k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H69K
+  SOC := rk3568
+  DEVICE_PACKAGES += kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += hinlink_opc-h69k
 
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
@@ -110,6 +139,16 @@ define Device/friendlyarm_nanopi-r4se
   DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4se
+
+define Device/friendlyarm_nanopi-r5c
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R5C
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := nanopi-r5s-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125 kmod-nvme kmod-scsi-core
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r5c
 
 define Device/friendlyarm_nanopi-r5s
   DEVICE_VENDOR := FriendlyARM
@@ -192,6 +231,16 @@ define Device/rocktech_mpc1903
   DEVICE_PACKAGES := kmod-usb-net-smsc75xx kmod-usb-serial-cp210x -urngd
 endef
 TARGET_DEVICES += rocktech_mpc1903
+
+define Device/sharevdi_h3399pc
+  DEVICE_VENDOR := SHAREVDI
+  DEVICE_MODEL := H3399PC
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := sharevdi-h3399pc-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r4s | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += sharevdi_h3399pc
 
 define Device/sharevdi_guangmiao-g4c
   DEVICE_VENDOR := SHAREVDI

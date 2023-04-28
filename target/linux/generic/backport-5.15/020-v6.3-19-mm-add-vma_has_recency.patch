@@ -1,0 +1,196 @@
+From 6c7f552a48b49a8612786a28a2239fbc24fac289 Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Fri, 30 Dec 2022 14:52:51 -0700
+Subject: [PATCH 19/29] mm: add vma_has_recency()
+
+Add vma_has_recency() to indicate whether a VMA may exhibit temporal
+locality that the LRU algorithm relies on.
+
+This function returns false for VMAs marked by VM_SEQ_READ or
+VM_RAND_READ.  While the former flag indicates linear access, i.e., a
+special case of spatial locality, both flags indicate a lack of temporal
+locality, i.e., the reuse of an area within a relatively small duration.
+
+"Recency" is chosen over "locality" to avoid confusion between temporal
+and spatial localities.
+
+Before this patch, the active/inactive LRU only ignored the accessed bit
+from VMAs marked by VM_SEQ_READ.  After this patch, the active/inactive
+LRU and MGLRU share the same logic: they both ignore the accessed bit if
+vma_has_recency() returns false.
+
+For the active/inactive LRU, the following fio test showed a [6, 8]%
+increase in IOPS when randomly accessing mapped files under memory
+pressure.
+
+  kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+  kb=$((kb - 8*1024*1024))
+
+  modprobe brd rd_nr=1 rd_size=$kb
+  dd if=/dev/zero of=/dev/ram0 bs=1M
+
+  mkfs.ext4 /dev/ram0
+  mount /dev/ram0 /mnt/
+  swapoff -a
+
+  fio --name=test --directory=/mnt/ --ioengine=mmap --numjobs=8 \
+      --size=8G --rw=randrw --time_based --runtime=10m \
+      --group_reporting
+
+The discussion that led to this patch is here [1].  Additional test
+results are available in that thread.
+
+[1] https://lore.kernel.org/r/Y31s%2FK8T85jh05wH@google.com/
+
+Link: https://lkml.kernel.org/r/20221230215252.2628425-1-yuzhao@google.com
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Cc: Alexander Viro <viro@zeniv.linux.org.uk>
+Cc: Andrea Righi <andrea.righi@canonical.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michael Larabel <Michael@MichaelLarabel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_inline.h |  9 +++++++++
+ mm/memory.c               |  8 ++++----
+ mm/rmap.c                 | 42 +++++++++++++++++----------------------
+ mm/vmscan.c               |  5 ++++-
+ 4 files changed, 35 insertions(+), 29 deletions(-)
+
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -333,4 +333,13 @@ static __always_inline void del_page_fro
+ 	update_lru_size(lruvec, page_lru(page), page_zonenum(page),
+ 			-thp_nr_pages(page));
+ }
++
++static inline bool vma_has_recency(struct vm_area_struct *vma)
++{
++	if (vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))
++		return false;
++
++	return true;
++}
++
+ #endif
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -41,6 +41,7 @@
+ 
+ #include <linux/kernel_stat.h>
+ #include <linux/mm.h>
++#include <linux/mm_inline.h>
+ #include <linux/sched/mm.h>
+ #include <linux/sched/coredump.h>
+ #include <linux/sched/numa_balancing.h>
+@@ -1353,8 +1354,7 @@ again:
+ 					force_flush = 1;
+ 					set_page_dirty(page);
+ 				}
+-				if (pte_young(ptent) &&
+-				    likely(!(vma->vm_flags & VM_SEQ_READ)))
++				if (pte_young(ptent) && likely(vma_has_recency(vma)))
+ 					mark_page_accessed(page);
+ 			}
+ 			rss[mm_counter(page)]--;
+@@ -4781,8 +4781,8 @@ static inline void mm_account_fault(stru
+ #ifdef CONFIG_LRU_GEN
+ static void lru_gen_enter_fault(struct vm_area_struct *vma)
+ {
+-	/* the LRU algorithm doesn't apply to sequential or random reads */
+-	current->in_lru_fault = !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ));
++	/* the LRU algorithm only applies to accesses with recency */
++	current->in_lru_fault = vma_has_recency(vma);
+ }
+ 
+ static void lru_gen_exit_fault(void)
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -794,25 +794,14 @@ static bool page_referenced_one(struct p
+ 		}
+ 
+ 		if (pvmw.pte) {
+-			if (lru_gen_enabled() && pte_young(*pvmw.pte) &&
+-			    !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))) {
++			if (lru_gen_enabled() && pte_young(*pvmw.pte)) {
+ 				lru_gen_look_around(&pvmw);
+ 				referenced++;
+ 			}
+ 
+ 			if (ptep_clear_flush_young_notify(vma, address,
+-						pvmw.pte)) {
+-				/*
+-				 * Don't treat a reference through
+-				 * a sequentially read mapping as such.
+-				 * If the page has been used in another mapping,
+-				 * we will catch it; if this other mapping is
+-				 * already gone, the unmap path will have set
+-				 * PG_referenced or activated the page.
+-				 */
+-				if (likely(!(vma->vm_flags & VM_SEQ_READ)))
+-					referenced++;
+-			}
++						pvmw.pte))
++				referenced++;
+ 		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
+ 			if (pmdp_clear_flush_young_notify(vma, address,
+ 						pvmw.pmd))
+@@ -846,7 +835,20 @@ static bool invalid_page_referenced_vma(
+ 	struct page_referenced_arg *pra = arg;
+ 	struct mem_cgroup *memcg = pra->memcg;
+ 
+-	if (!mm_match_cgroup(vma->vm_mm, memcg))
++	/*
++	 * Ignore references from this mapping if it has no recency. If the
++	 * page has been used in another mapping, we will catch it; if this
++	 * other mapping is already gone, the unmap path will have set the
++	 * referenced flag or activated the page in zap_pte_range().
++	 */
++	if (!vma_has_recency(vma))
++		return true;
++
++	/*
++	 * If we are reclaiming on behalf of a cgroup, skip counting on behalf
++	 * of references from different cgroups.
++	 */
++	if (memcg && !mm_match_cgroup(vma->vm_mm, memcg))
+ 		return true;
+ 
+ 	return false;
+@@ -876,6 +878,7 @@ int page_referenced(struct page *page,
+ 		.rmap_one = page_referenced_one,
+ 		.arg = (void *)&pra,
+ 		.anon_lock = page_lock_anon_vma_read,
++		.invalid_vma = invalid_page_referenced_vma,
+ 	};
+ 
+ 	*vm_flags = 0;
+@@ -891,15 +894,6 @@ int page_referenced(struct page *page,
+ 			return 1;
+ 	}
+ 
+-	/*
+-	 * If we are reclaiming on behalf of a cgroup, skip
+-	 * counting on behalf of references from different
+-	 * cgroups
+-	 */
+-	if (memcg) {
+-		rwc.invalid_vma = invalid_page_referenced_vma;
+-	}
+-
+ 	rmap_walk(page, &rwc);
+ 	*vm_flags = pra.vm_flags;
+ 
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3486,7 +3486,10 @@ static int should_skip_vma(unsigned long
+ 	if (is_vm_hugetlb_page(vma))
+ 		return true;
+ 
+-	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL | VM_SEQ_READ | VM_RAND_READ))
++	if (!vma_has_recency(vma))
++		return true;
++
++	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL))
+ 		return true;
+ 
+ 	if (vma == get_gate_vma(vma->vm_mm))

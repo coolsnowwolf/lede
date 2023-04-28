@@ -4,7 +4,7 @@ PKG_NAME:=qca-rfs
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/qca-rfs
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-rfs.git
 PKG_SOURCE_DATE:=2021-03-17
 PKG_SOURCE_VERSION:=75197c386f477c7b3a6f02489d9903a9409fd5cc
 PKG_MIRROR_HASH:=90f1c3ec2e984cf8efa79c85d715ebd8a21e347ab57adbd9695de23e64eea1ec
