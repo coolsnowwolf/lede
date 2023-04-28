@@ -53,18 +53,18 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
 
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
-@@ -4321,7 +4321,9 @@ static int mtk_probe(struct platform_dev
+@@ -4585,8 +4585,8 @@ static int mtk_probe(struct platform_dev
+ 		for (i = 0; i < num_ppe; i++) {
  			u32 ppe_addr = eth->soc->reg_map->ppe_base + i * 0x400;
  
- 			eth->ppe[i] = mtk_ppe_init(eth, eth->base + ppe_addr,
+-			eth->ppe[i] = mtk_ppe_init(eth, eth->base + ppe_addr,
 -						   eth->soc->offload_version, i);
-+						   eth->soc->offload_version, i,
-+						   eth->soc->has_accounting);
++			eth->ppe[i] = mtk_ppe_init(eth, eth->base + ppe_addr, i);
 +
  			if (!eth->ppe[i]) {
  				err = -ENOMEM;
  				goto err_free_dev;
-@@ -4446,6 +4448,7 @@ static const struct mtk_soc_data mt7622_
+@@ -4711,6 +4711,7 @@ static const struct mtk_soc_data mt7622_
  	.required_pctl = false,
  	.offload_version = 2,
  	.hash_offset = 2,
@@ -72,7 +72,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	.foe_entry_size = sizeof(struct mtk_foe_entry) - 16,
  	.txrx = {
  		.txd_size = sizeof(struct mtk_tx_dma),
-@@ -4483,6 +4486,7 @@ static const struct mtk_soc_data mt7629_
+@@ -4748,6 +4749,7 @@ static const struct mtk_soc_data mt7629_
  	.hw_features = MTK_HW_FEATURES,
  	.required_clks = MT7629_CLKS_BITMAP,
  	.required_pctl = false,
@@ -80,7 +80,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	.txrx = {
  		.txd_size = sizeof(struct mtk_tx_dma),
  		.rxd_size = sizeof(struct mtk_rx_dma),
-@@ -4503,6 +4507,7 @@ static const struct mtk_soc_data mt7986_
+@@ -4768,6 +4770,7 @@ static const struct mtk_soc_data mt7986_
  	.offload_version = 2,
  	.hash_offset = 4,
  	.foe_entry_size = sizeof(struct mtk_foe_entry),
@@ -90,7 +90,16 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  		.rxd_size = sizeof(struct mtk_rx_dma_v2),
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
-@@ -1008,6 +1008,7 @@ struct mtk_soc_data {
+@@ -1025,6 +1025,8 @@ struct mtk_reg_map {
+  *				the extra setup for those pins used by GMAC.
+  * @hash_offset			Flow table hash offset.
+  * @foe_entry_size		Foe table entry size.
++ * @has_accounting		Bool indicating support for accounting of
++ *				offloaded flows.
+  * @txd_size			Tx DMA descriptor size.
+  * @rxd_size			Rx DMA descriptor size.
+  * @rx_irq_done_mask		Rx irq done register mask.
+@@ -1042,6 +1044,7 @@ struct mtk_soc_data {
  	u8		hash_offset;
  	u16		foe_entry_size;
  	netdev_features_t hw_features;
@@ -100,7 +109,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  		u32	rxd_size;
 --- a/drivers/net/ethernet/mediatek/mtk_ppe.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
-@@ -74,6 +74,46 @@ static int mtk_ppe_wait_busy(struct mtk_
+@@ -74,6 +74,48 @@ static int mtk_ppe_wait_busy(struct mtk_
  	return ret;
  }
  
@@ -121,14 +130,16 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
 +
 +static int mtk_mib_entry_read(struct mtk_ppe *ppe, u16 index, u64 *bytes, u64 *packets)
 +{
-+	u32 val, cnt_r0, cnt_r1, cnt_r2;
 +	u32 byte_cnt_low, byte_cnt_high, pkt_cnt_low, pkt_cnt_high;
++	u32 val, cnt_r0, cnt_r1, cnt_r2;
++	int ret;
 +
 +	val = FIELD_PREP(MTK_PPE_MIB_SER_CR_ADDR, index) | MTK_PPE_MIB_SER_CR_ST;
 +	ppe_w32(ppe, MTK_PPE_MIB_SER_CR, val);
 +
-+	if (mtk_ppe_mib_wait_busy(ppe))
-+		return -ETIMEDOUT;
++	ret = mtk_ppe_mib_wait_busy(ppe);
++	if (ret)
++		return ret;
 +
 +	cnt_r0 = readl(ppe->base + MTK_PPE_MIB_SER_R0);
 +	cnt_r1 = readl(ppe->base + MTK_PPE_MIB_SER_R1);
@@ -147,7 +158,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  static void mtk_ppe_cache_clear(struct mtk_ppe *ppe)
  {
  	ppe_set(ppe, MTK_PPE_CACHE_CTL, MTK_PPE_CACHE_CTL_CLEAR);
-@@ -444,6 +484,13 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
+@@ -464,6 +506,13 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
  		hwe->ib1 &= ~MTK_FOE_IB1_STATE;
  		hwe->ib1 |= FIELD_PREP(MTK_FOE_IB1_STATE, MTK_FOE_STATE_INVALID);
  		dma_wmb();
@@ -161,7 +172,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	}
  	entry->hash = 0xffff;
  
-@@ -551,6 +598,9 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
+@@ -571,6 +620,9 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
  	wmb();
  	hwe->ib1 = entry->ib1;
  
@@ -171,10 +182,12 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	dma_wmb();
  
  	mtk_ppe_cache_clear(ppe);
-@@ -742,14 +792,42 @@ int mtk_ppe_prepare_reset(struct mtk_ppe
+@@ -762,11 +814,39 @@ int mtk_ppe_prepare_reset(struct mtk_ppe
  	return mtk_ppe_wait_busy(ppe);
  }
  
+-struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
+-			     int version, int index)
 +struct mtk_foe_accounting *mtk_foe_entry_get_mib(struct mtk_ppe *ppe, u32 index,
 +						 struct mtk_foe_accounting *diff)
 +{
@@ -201,29 +214,27 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
 +	return acct;
 +}
 +
- struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
--			     int version, int index)
-+			     int version, int index, bool accounting)
++struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index)
  {
++	bool accounting = eth->soc->has_accounting;
  	const struct mtk_soc_data *soc = eth->soc;
++	struct mtk_foe_accounting *acct;
  	struct device *dev = eth->dev;
++	struct mtk_mib_entry *mib;
  	struct mtk_ppe *ppe;
  	u32 foe_flow_size;
  	void *foe;
-+	struct mtk_mib_entry *mib;
-+	struct mtk_foe_accounting *acct;
- 
- 	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
- 	if (!ppe)
-@@ -764,6 +842,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+@@ -783,7 +863,8 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ 	ppe->base = base;
  	ppe->eth = eth;
  	ppe->dev = dev;
- 	ppe->version = version;
+-	ppe->version = version;
++	ppe->version = eth->soc->offload_version;
 +	ppe->accounting = accounting;
  
  	foe = dmam_alloc_coherent(ppe->dev,
  				  MTK_PPE_ENTRIES * soc->foe_entry_size,
-@@ -779,6 +858,25 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+@@ -799,6 +880,23 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
  	if (!ppe->foe_flow)
  		return NULL;
  
@@ -232,8 +243,6 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
 +					  &ppe->mib_phys, GFP_KERNEL);
 +		if (!mib)
 +			return NULL;
-+
-+		memset(mib, 0, MTK_PPE_ENTRIES * sizeof(*mib));
 +
 +		ppe->mib_table = mib;
 +
@@ -249,7 +258,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	mtk_ppe_debugfs_init(ppe, index);
  
  	return ppe;
-@@ -893,6 +991,16 @@ void mtk_ppe_start(struct mtk_ppe *ppe)
+@@ -913,6 +1011,16 @@ void mtk_ppe_start(struct mtk_ppe *ppe)
  		ppe_w32(ppe, MTK_PPE_DEFAULT_CPU_PORT1, 0xcb777);
  		ppe_w32(ppe, MTK_PPE_SBW_CTRL, 0x7f);
  	}
@@ -276,7 +285,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  #define MTK_FOE_IB2_WDMA_DEVIDX		BIT(16)
  #define MTK_FOE_IB2_WDMA_WINFO		BIT(17)
  
-@@ -283,16 +284,34 @@ struct mtk_flow_entry {
+@@ -285,16 +286,34 @@ struct mtk_flow_entry {
  	unsigned long cookie;
  };
  
@@ -311,16 +320,17 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	u16 foe_check_time[MTK_PPE_ENTRIES];
  	struct hlist_head *foe_flow;
  
-@@ -302,7 +321,7 @@ struct mtk_ppe {
+@@ -303,8 +322,7 @@ struct mtk_ppe {
+ 	void *acct_table;
  };
  
- struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
+-struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
 -			     int version, int index);
-+			     int version, int index, bool accounting);
++struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index);
  void mtk_ppe_start(struct mtk_ppe *ppe);
  int mtk_ppe_stop(struct mtk_ppe *ppe);
  int mtk_ppe_prepare_reset(struct mtk_ppe *ppe);
-@@ -354,5 +373,7 @@ int mtk_foe_entry_commit(struct mtk_ppe
+@@ -358,5 +376,7 @@ int mtk_foe_entry_commit(struct mtk_ppe
  void mtk_foe_entry_clear(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
  int mtk_foe_entry_idle_time(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
  int mtk_ppe_debugfs_init(struct mtk_ppe *ppe, int index);
@@ -353,7 +363,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  		seq_printf(m, " eth=%pM->%pM etype=%04x"
 -			      " vlan=%d,%d ib1=%08x ib2=%08x\n",
 +			      " vlan=%d,%d ib1=%08x ib2=%08x"
-+			      " packets=%lld bytes=%lld\n",
++			      " packets=%llu bytes=%llu\n",
  			   h_source, h_dest, ntohs(l2->etype),
 -			   l2->vlan1, l2->vlan2, entry->ib1, ib2);
 +			   l2->vlan1, l2->vlan2, entry->ib1, ib2,
@@ -363,7 +373,7 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	return 0;
 --- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
 +++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
-@@ -494,6 +494,7 @@ static int
+@@ -497,6 +497,7 @@ static int
  mtk_flow_offload_stats(struct mtk_eth *eth, struct flow_cls_offload *f)
  {
  	struct mtk_flow_entry *entry;
@@ -371,12 +381,13 @@ v2: fix wrong variable name in return value check spotted by Denis Kirjanov
  	u32 idle;
  
  	entry = rhashtable_lookup(&eth->flow_table, &f->cookie,
-@@ -504,6 +505,12 @@ mtk_flow_offload_stats(struct mtk_eth *e
+@@ -507,6 +508,13 @@ mtk_flow_offload_stats(struct mtk_eth *e
  	idle = mtk_foe_entry_idle_time(eth->ppe[entry->ppe_index], entry);
  	f->stats.lastused = jiffies - idle * HZ;
  
-+	if (entry->hash != 0xFFFF) {
-+		mtk_foe_entry_get_mib(eth->ppe[entry->ppe_index], entry->hash, &diff);
++	if (entry->hash != 0xFFFF &&
++	    mtk_foe_entry_get_mib(eth->ppe[entry->ppe_index], entry->hash,
++				  &diff)) {
 +		f->stats.pkts += diff.packets;
 +		f->stats.bytes += diff.bytes;
 +	}
