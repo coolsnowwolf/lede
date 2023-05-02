@@ -143,6 +143,9 @@ define Package/rtl8822ce-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/rtw88
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtw88/rtw8822c_fw.bin $(1)/lib/firmware/rtw88
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtw88/rtw8822c_wow_fw.bin $(1)/lib/firmware/rtw88
+	$(INSTALL_DIR) $(1)/lib/firmware/rtl_bt
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtl_bt/rtl8822cu_config.bin $(1)/lib/firmware/rtl_bt
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtl_bt/rtl8822cu_fw.bin $(1)/lib/firmware/rtl_bt
 endef
 $(eval $(call BuildPackage,rtl8822ce-firmware))
 
