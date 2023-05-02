@@ -7,7 +7,7 @@
 1. QQ 讨论群： RK3568吃瓜 ,号码 136214897 ，加群链接：[点击加入](http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=3GRrYTS2WPGKpwnkx_jhdhjwQ6SpkVMX&authKey=gDpBrz3hKSHLVSxHG%2BteK9zTqq5oyaPEFYngphDx0rxreDVlLs3BP8MLo4fPCVKV&noverify=0&group_code=136214897 "RK3568吃瓜")
 
 <a href ="https://item.taobao.com/item.htm?spm=a1z10.1-c.w4004-1463280478.8.6145536bqhSAlY&id=711773675433
-"><img src="https://github.com/6ang996/lede/blob/master/doc/xgp.jpg?raw=true" width=600  /></a>
+"><img src="https://github.com/6ang996/lede/blob/rk356x-xgp_support/doc/xgp.jpg?raw=true" width=600  /></a>
 
 ## 注意
 
