@@ -129,6 +129,16 @@ define Package/station-p2-firmware/install
 endef
 $(eval $(call BuildPackage,station-p2-firmware))
 
+Package/station-m2-firmware = $(call Package/firmware-default,Broadcom FullMac SDIO firmware)
+define Package/station-m2-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) ./brcm_firmware/ap6255/BCM4345C0.hcd $(1)/lib/firmware/brcm/BCM4345C0.hcd
+	$(INSTALL_DATA) ./brcm_firmware/ap6255/brcmfmac43455-sdio.clm_blob $(1)/lib/firmware/brcm/brcmfmac43455-sdio.clm_blob
+	$(INSTALL_DATA) ./brcm_firmware/ap6255/brcmfmac43455-sdio.bin $(1)/lib/firmware/brcm/brcmfmac43455-sdio.firefly,rk3566-roc-pc.bin
+	$(INSTALL_DATA) ./brcm_firmware/ap6255/brcmfmac43455-sdio.txt $(1)/lib/firmware/brcm/brcmfmac43455-sdio.firefly,rk3566-roc-pc.txt
+endef
+$(eval $(call BuildPackage,station-m2-firmware))
+
 Package/rongpin-king3399-firmware = $(call Package/firmware-default,Broadcom FullMac SDIO firmware)
 define Package/rongpin-king3399-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/brcm
