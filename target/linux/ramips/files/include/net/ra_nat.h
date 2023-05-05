@@ -10,6 +10,7 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 
+
 #ifndef NEXTHDR_IPIP
 #define NEXTHDR_IPIP 4
 #endif
@@ -52,7 +53,6 @@ static inline void hwnat_copy_tailroom(u8 *data, int size, struct sk_buff *skb)
 }
 
 #endif
-
 enum foe_cpu_reason {
 	TTL_0 = 0x02,		/* IPv4(IPv6) TTL(hop limit) = 0 */
 	/* IPv4(IPv6) has option(extension) header */
@@ -103,6 +103,34 @@ enum foe_cpu_reason {
 
 #define MAX_IF_NUM 64
 
+#if defined(CONFIG_MEDIATEK_NETSYS_V3)
+struct dmad_rx_descinfo4 {
+	uint32_t foe_entry_num:15;
+	uint32_t rsv0:3;
+	uint32_t CRSN:5;
+	uint32_t rsv1:3;
+	uint32_t SPORT:4;
+	uint32_t ppe:1;
+	uint32_t ALG:1;
+	uint32_t IF:8;
+	uint32_t WDMAID:2;
+	uint32_t RXID:2;
+	uint32_t WCID:16;
+	uint32_t BSSID:8;
+	uint32_t USR_INFO:16;
+	uint32_t TID:4;
+	uint32_t IS_FIXEDRATE:1;
+	uint32_t IS_PRIOR:1;
+	uint32_t IS_SP:1;
+	uint32_t HF:1;
+	uint32_t AMSDU:1;
+	uint16_t minfo:1;
+	uint16_t ntype:3;
+	uint16_t chid:8;
+	uint16_t rsv2:7;
+	u16 MAGIC_TAG_PROTECT;
+} __packed;
+#else
 struct dmad_rx_descinfo4 {
 	uint32_t foe_entry_num:15;
 	uint32_t rsv0:3;
@@ -123,6 +151,7 @@ struct dmad_rx_descinfo4 {
 	uint16_t rsv4:4;
 	u16 MAGIC_TAG_PROTECT;
 } __packed;
+#endif
 
 struct pdma_rx_desc_info4 {
 	u16 MAGIC_TAG_PROTECT;
@@ -221,12 +250,12 @@ struct cb_rx_desc_info4 {
 
 
 
-#define FOE_INFO_LEN		    12
 #define WIFI_INFO_LEN		    6
+#define FOE_INFO_LEN		    (10 + WIFI_INFO_LEN)
 
 
 #if defined(CONFIG_RA_HW_NAT_PPTP_L2TP)
-#define FOE_INFO_LEN		    (6 + 4 + WIFI_INFO_LEN)
+#define FOE_INFO_LEN		    (10 + 4 + WIFI_INFO_LEN)
 #define FOE_MAGIC_FASTPATH	    0x77
 #define FOE_MAGIC_L2TPPATH	    0x78
 #endif
@@ -237,6 +266,7 @@ struct cb_rx_desc_info4 {
 #define FOE_MAGIC_PPE		    0x76
 #define FOE_MAGIC_WED0		    0x78
 #define FOE_MAGIC_WED1		    0x79
+#define FOE_MAGIC_WED2		    0x7A
 #define FOE_MAGIC_MED		    0x80
 #define FOE_MAGIC_EDMA0		    0x81
 #define FOE_MAGIC_EDMA1		    0x82
@@ -265,6 +295,16 @@ struct cb_rx_desc_info4 {
 #define FOE_RX_ID(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->RXID)
 #define FOE_WC_ID(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->WCID)
 #define FOE_BSS_ID(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->BSSID)
+#define FOE_USR_INFO(skb)	\
+	(((struct dmad_rx_descinfo4 *)((skb)->head))->USR_INFO)
+#define FOE_TID(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->TID)
+#define FOE_IS_FIXEDRATE(skb)	\
+	(((struct dmad_rx_descinfo4 *)((skb)->head))->IS_FIXEDRATE)
+#define FOE_IS_PRIOR(skb)	\
+	(((struct dmad_rx_descinfo4 *)((skb)->head))->IS_PRIOR)
+#define FOE_IS_SP(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->IS_SP)
+#define FOE_HF(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->HF)
+#define FOE_AMSDU(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->AMSDU)
 #define FOE_PPE(skb)	(((struct dmad_rx_descinfo4 *)((skb)->head))->ppe)
 
 /***********************HEAD FORMAT*************************************/

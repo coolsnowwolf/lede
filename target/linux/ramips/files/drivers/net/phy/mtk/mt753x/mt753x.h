@@ -13,6 +13,7 @@
 #include <linux/of_mdio.h>
 #include <linux/workqueue.h>
 #include <linux/gpio/consumer.h>
+#include <linux/phy.h>
 
 #ifdef CONFIG_SWCONFIG
 #include <linux/switch.h>
@@ -20,8 +21,15 @@
 
 #include "mt753x_vlan.h"
 
+#ifndef MT7988_FPGA
+#define MT7988_FPGA 0
+#endif
 #define MT753X_DFL_CPU_PORT	6
-#define MT753X_NUM_PHYS		5
+#if MT7988_FPGA
+#define MT753X_NUM_PHYS 4
+#else
+#define MT753X_NUM_PHYS	 5
+#endif
 
 #define MT753X_DFL_SMI_ADDR	0x1f
 #define MT753X_SMI_ADDR_MASK	0x1f
@@ -35,7 +43,7 @@ enum mt753x_model {
 
 struct mt753x_port_cfg {
 	struct device_node *np;
-	int phy_mode;
+	phy_interface_t phy_mode;
 	u32 enabled: 1;
 	u32 force_link: 1;
 	u32 speed: 2;
@@ -60,6 +68,8 @@ struct gsw_mt753x {
 	u32 smi_addr;
 	u32 phy_base;
 	int direct_phy_access;
+
+	void __iomem *base;
 
 	enum mt753x_model model;
 	const char *name;

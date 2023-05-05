@@ -212,7 +212,6 @@
 #define MIB_COUNTER_PORT_OFFSET		0x100
 #define MIB_COUNTER_REG(p, r)		(MIB_COUNTER_BASE + \
 					(p) * MIB_COUNTER_PORT_OFFSET + (r))
-
 #define STATS_TDPC			0x00
 #define STATS_TCRC			0x04
 #define STATS_TUPC			0x08

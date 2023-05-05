@@ -505,6 +505,7 @@ static int mt7531_mac_port_setup(struct gsw_mt753x *gsw, u32 port,
 
 static void mt7531_core_pll_setup(struct gsw_mt753x *gsw)
 {
+#if !MT7988_FPGA
 	u32 val;
 	u32 top_sig;
 	u32 hwstrap;
@@ -654,6 +655,7 @@ static void mt7531_core_pll_setup(struct gsw_mt753x *gsw)
 		usleep_range(25, 35);
 		break;
 	}
+#endif
 }
 
 static int mt7531_internal_phy_calibration(struct gsw_mt753x *gsw)
@@ -663,6 +665,7 @@ static int mt7531_internal_phy_calibration(struct gsw_mt753x *gsw)
 
 static int mt7531_sw_detect(struct gsw_mt753x *gsw, struct chip_rev *crev)
 {
+#if !MT7988_FPGA
 	u32 rev, topsig;
 
 	rev = mt753x_reg_read(gsw, CHIP_REV);
@@ -680,6 +683,11 @@ static int mt7531_sw_detect(struct gsw_mt753x *gsw, struct chip_rev *crev)
 	}
 
 	return -ENODEV;
+#else
+	crev->rev = 2;
+	crev->name = "MT7531AE";
+	return 0;
+#endif
 }
 
 static void pinmux_set_mux_7531(struct gsw_mt753x *gsw, u32 pin, u32 mode)
@@ -961,6 +969,7 @@ static int mt7531_sw_init(struct gsw_mt753x *gsw)
 	}
 
 	/* Force MAC link down before reset */
+#if !MT7988_FPGA
 	mt753x_reg_write(gsw, PMCR(5), FORCE_MODE_LNK);
 	mt753x_reg_write(gsw, PMCR(6), FORCE_MODE_LNK);
 
@@ -971,12 +980,15 @@ static int mt7531_sw_init(struct gsw_mt753x *gsw)
 	/* Enable MDC input Schmitt Trigger */
 	val = mt753x_reg_read(gsw, SMT0_IOLB);
 	mt753x_reg_write(gsw, SMT0_IOLB, val | SMT_IOLB_5_SMI_MDC_EN);
+#endif
 
 	/* Set 7531 gpio pinmux */
 	mt7531_set_gpio_pinmux(gsw);
 
 	mt7531_core_pll_setup(gsw);
+#if !MT7988_FPGA
 	mt7531_mac_port_setup(gsw, 5, &gsw->port5_cfg);
+#endif
 	mt7531_mac_port_setup(gsw, 6, &gsw->port6_cfg);
 
 	/* Global mac control settings */
@@ -1001,6 +1013,7 @@ static int mt7531_sw_init(struct gsw_mt753x *gsw)
 
 static int mt7531_sw_post_init(struct gsw_mt753x *gsw)
 {
+#if !MT7988_FPGA
 	int i;
 	u32 val;
 
@@ -1042,6 +1055,7 @@ static int mt7531_sw_post_init(struct gsw_mt753x *gsw)
 		gsw->mmd_write(gsw, i, PHY_DEV1E, PHY_DEV1E_REG_141, 0x0);
 
 	mt7531_internal_phy_calibration(gsw);
+#endif
 
 	return 0;
 }
