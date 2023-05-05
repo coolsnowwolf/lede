@@ -1,0 +1,52 @@
+From 7aa9189e401ddee705d851fe30b59d81cc71ebac Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 2 May 2022 15:28:05 +0200
+Subject: [PATCH] drm/vc4: crtc: Don't call into BO Handling on Async
+ Page-Flips on BCM2711
+
+The BCM2711 doesn't have a v3d GPU so we don't want to call into its BO
+management code. Let's create an asynchronous page-flip handler for the
+BCM2711 that just calls into the common code.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -983,16 +983,31 @@ static int vc4_async_page_flip(struct dr
+ 	return 0;
+ }
+ 
++static int vc5_async_page_flip(struct drm_crtc *crtc,
++			       struct drm_framebuffer *fb,
++			       struct drm_pending_vblank_event *event,
++			       uint32_t flags)
++{
++	return vc4_async_page_flip_common(crtc, fb, event, flags);
++}
++
+ int vc4_page_flip(struct drm_crtc *crtc,
+ 		  struct drm_framebuffer *fb,
+ 		  struct drm_pending_vblank_event *event,
+ 		  uint32_t flags,
+ 		  struct drm_modeset_acquire_ctx *ctx)
+ {
+-	if (flags & DRM_MODE_PAGE_FLIP_ASYNC)
+-		return vc4_async_page_flip(crtc, fb, event, flags);
+-	else
++	if (flags & DRM_MODE_PAGE_FLIP_ASYNC) {
++		struct drm_device *dev = crtc->dev;
++		struct vc4_dev *vc4 = to_vc4_dev(dev);
++
++		if (vc4->is_vc5)
++			return vc5_async_page_flip(crtc, fb, event, flags);
++		else
++			return vc4_async_page_flip(crtc, fb, event, flags);
++	} else {
+ 		return drm_atomic_helper_page_flip(crtc, fb, event, flags, ctx);
++	}
+ }
+ 
+ struct drm_crtc_state *vc4_crtc_duplicate_state(struct drm_crtc *crtc)

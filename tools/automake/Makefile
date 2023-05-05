@@ -25,7 +25,7 @@ HOST_CONFIGURE_VARS += \
 	am_cv_prog_PERL_ithreads=no
 
 define Host/Configure
-	(cd $(HOST_BUILD_DIR); $(AM_TOOL_PATHS) STAGING_DIR="" ./bootstrap)
+	(cd $(HOST_BUILD_DIR); $(AM_TOOL_PATHS) STAGING_DIR_HOST="" ./bootstrap)
 	$(call Host/Configure/Default)
 endef
 
@@ -43,9 +43,8 @@ define Host/Install
 	ln -sf aclocal $(STAGING_DIR_HOST)/bin/aclocal-1.15
 endef
 
-define Host/Clean
-	-$(MAKE) -C $(HOST_BUILD_DIR) uninstall
-	$(call Host/Clean/Default)
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
 endef
 
 $(eval $(call HostBuild))

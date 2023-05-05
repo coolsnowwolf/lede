@@ -1,0 +1,78 @@
+From 02631cb4e30d7bc46f2b30657a84ddeb65831798 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 19 Oct 2021 17:31:58 +0200
+Subject: [PATCH] drm/vc4: hdmi: Introduce an output_enabled flag
+
+We currently poke at encoder->crtc in the ALSA code path to determine
+whether the HDMI output is enabled or not, and thus whether we should
+allow the audio output.
+
+However, that pointer is deprecated and shouldn't really be used by
+atomic drivers anymore. Since we have the infrastructure in place now,
+let's just create a flag that we toggle to report whether the controller
+is currently enabled and use that instead of encoder->crtc in ALSA.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 16 ++++++++++++----
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  6 ++++++
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -729,6 +729,11 @@ static void vc4_hdmi_encoder_post_crtc_p
+ 
+ static void vc4_hdmi_encoder_disable(struct drm_encoder *encoder)
+ {
++	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
++
++	mutex_lock(&vc4_hdmi->mutex);
++	vc4_hdmi->output_enabled = false;
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi, bool enable)
+@@ -1228,6 +1233,11 @@ static void vc4_hdmi_encoder_post_crtc_e
+ 
+ static void vc4_hdmi_encoder_enable(struct drm_encoder *encoder)
+ {
++	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
++
++	mutex_lock(&vc4_hdmi->mutex);
++	vc4_hdmi->output_enabled = true;
++	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+ static void vc4_hdmi_encoder_atomic_mode_set(struct drm_encoder *encoder,
+@@ -1409,14 +1419,12 @@ static inline struct vc4_hdmi *dai_to_hd
+ 
+ static bool vc4_hdmi_audio_can_stream(struct vc4_hdmi *vc4_hdmi)
+ {
+-	struct drm_encoder *encoder = &vc4_hdmi->encoder.base.base;
+-
+ 	lockdep_assert_held(&vc4_hdmi->mutex);
+ 
+ 	/*
+-	 * The encoder doesn't have a CRTC until the first modeset.
++	 * If the controller is disabled, prevent any ALSA output.
+ 	 */
+-	if (!encoder->crtc)
++	if (!vc4_hdmi->output_enabled)
+ 		return false;
+ 
+ 	/*
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -204,6 +204,12 @@ struct vc4_hdmi {
+ 	 * for use by ALSA hooks and interrupt handlers. Protected by @mutex.
+ 	 */
+ 	struct drm_display_mode saved_adjusted_mode;
++
++	/**
++	 * @output_enabled: Is the HDMI controller currently active?
++	 * Protected by @mutex.
++	 */
++	bool output_enabled;
+ };
+ 
+ static inline struct vc4_hdmi *

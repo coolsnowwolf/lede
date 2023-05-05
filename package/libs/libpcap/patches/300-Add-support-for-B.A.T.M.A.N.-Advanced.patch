@@ -1,0 +1,642 @@
+From 3d8d268320d2381021a409ff8d03533698dd6242 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Linus=20L=C3=BCssing?= <linus.luessing@c0d3.blue>
+Date: Mon, 23 Nov 2020 00:38:22 +0100
+Subject: [PATCH] Add support for B.A.T.M.A.N. Advanced
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This adds support for the layer 2 mesh routing protocol
+B.A.T.M.A.N. Advanced. "batadv" can be used to filter on batman-adv
+packets. It also allows later filters to look at frames inside the
+tunnel when both "version" and "type" are specified.
+
+Documentation for the batman-adv protocol can be found at the following
+locations:
+
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/Documentation/networking/batman-adv.rst
+https://www.open-mesh.org/
+
+Signed-off-by: Linus Lüssing <linus.luessing@c0d3.blue>
+---
+ Makefile.in            |   2 +
+ batadv_legacy_packet.h |  77 +++++++++++++++++++
+ batadv_packet.h        |  78 ++++++++++++++++++++
+ ethertype.h            |   3 +
+ gencode.c              | 164 +++++++++++++++++++++++++++++++++++++++++
+ gencode.h              |   3 +
+ grammar.y.in           |  32 +++++++-
+ nametoaddr.c           |  59 +++++++++++++++
+ pcap-filter.manmisc.in |  35 ++++++++-
+ pcap/namedb.h          |   2 +
+ scanner.l              |   1 +
+ 11 files changed, 453 insertions(+), 3 deletions(-)
+ create mode 100644 batadv_legacy_packet.h
+ create mode 100644 batadv_packet.h
+
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -133,6 +133,8 @@ PUBHDR = \
+ HDR = $(PUBHDR) \
+ 	arcnet.h \
+ 	atmuni31.h \
++	batadv_legacy_packet.h \
++	batadv_packet.h \
+ 	diag-control.h \
+ 	ethertype.h \
+ 	extract.h \
+--- /dev/null
++++ b/batadv_legacy_packet.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: BSD-3 */
++/* Copyright (C) 2020  Linus Lüssing */
++
++#ifndef _BATADV_LEGACY_PACKET_H_
++#define _BATADV_LEGACY_PACKET_H_
++
++enum batadv_legacy_packettype {
++	BATADV_LEGACY_IV_OGM		= 0x01,
++	BATADV_LEGACY_ICMP		= 0x02,
++	BATADV_LEGACY_UNICAST		= 0x03,
++	BATADV_LEGACY_BCAST		= 0x04,
++	BATADV_LEGACY_VIS		= 0x05,
++	BATADV_LEGACY_UNICAST_FRAG	= 0x06,
++	BATADV_LEGACY_TT_QUERY		= 0x07,
++	BATADV_LEGACY_ROAM_ADV		= 0x08,
++	BATADV_LEGACY_UNICAST_4ADDR	= 0x09,
++	BATADV_LEGACY_CODED		= 0x0a,
++};
++
++#define ETH_ALEN	6
++
++struct batadv_legacy_unicast_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t ttvn;
++	uint8_t dest[ETH_ALEN];
++};
++
++struct batadv_legacy_unicast_4addr_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t src[ETH_ALEN];
++	uint8_t subtype;
++	uint8_t reserved;
++};
++
++struct batadv_legacy_unicast_frag_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t ttvn;
++	uint8_t dest[ETH_ALEN];
++	uint8_t flags;
++	uint8_t align;
++	uint8_t orig[ETH_ALEN];
++	uint8_t seqno[2];		/* 2-byte integral value */
++};
++
++struct batadv_legacy_bcast_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t reserved;
++	uint8_t seqno[4];		/* 4-byte integral value */
++	uint8_t orig[ETH_ALEN];
++};
++
++struct batadv_legacy_coded_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t first_ttvn;
++	uint8_t first_source[ETH_ALEN];
++	uint8_t first_orig_dest[ETH_ALEN];
++	uint8_t first_crc[4];		/* 4-byte integral value */
++	uint8_t second_ttl;
++	uint8_t second_ttvn;
++	uint8_t second_dest[ETH_ALEN];
++	uint8_t second_source[ETH_ALEN];
++	uint8_t second_orig_dest[ETH_ALEN];
++	uint8_t second_crc[4];		/* 4-byte integral value */
++	uint8_t coded_len[2];		/* 2-byte integral value */
++};
++
++#endif /* _BATADV_LEGACY_PACKET_H_ */
+--- /dev/null
++++ b/batadv_packet.h
+@@ -0,0 +1,78 @@
++/* SPDX-License-Identifier: BSD-3 */
++/* Copyright (C) 2020  Linus Lüssing */
++
++#ifndef _BATADV_PACKET_H_
++#define _BATADV_PACKET_H_
++
++/* For the definitive and most recent packet format definition,
++ * see the batadv_packet.h in the Linux kernel.
++ */
++
++enum batadv_packettype {
++	BATADV_IV_OGM           = 0x00,
++	BATADV_BCAST            = 0x01,
++	BATADV_CODED            = 0x02,
++	BATADV_ELP		= 0x03,
++	BATADV_OGM2		= 0x04,
++	BATADV_UNICAST          = 0x40,
++	BATADV_UNICAST_FRAG     = 0x41,
++	BATADV_UNICAST_4ADDR    = 0x42,
++	BATADV_ICMP             = 0x43,
++	BATADV_UNICAST_TVLV     = 0x44,
++};
++
++#define ETH_ALEN	6
++
++struct batadv_unicast_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t ttvn;
++	uint8_t dest[ETH_ALEN];
++};
++
++struct batadv_unicast_4addr_packet {
++	struct batadv_unicast_packet u;
++	uint8_t src[ETH_ALEN];
++	uint8_t subtype;
++	uint8_t reserved;
++};
++
++struct batadv_frag_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t num_pri;	/* number and priority */
++	uint8_t dest[ETH_ALEN];
++	uint8_t orig[ETH_ALEN];
++	uint8_t seqno[2];	/* 2-byte integral value */
++	uint8_t total_size[2];	/* 2-byte integral value */
++};
++
++struct batadv_bcast_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t reserved;
++	uint8_t seqno[4];	/* 4-byte integral value */
++	uint8_t orig[ETH_ALEN];
++};
++
++struct batadv_coded_packet {
++	uint8_t packet_type;
++	uint8_t version;
++	uint8_t ttl;
++	uint8_t first_ttvn;
++	uint8_t first_source[ETH_ALEN];
++	uint8_t first_orig_dest[ETH_ALEN];
++	uint8_t first_crc[4];	/* 4-byte integral value */
++	uint8_t second_ttl;
++	uint8_t second_ttvn;
++	uint8_t second_dest[ETH_ALEN];
++	uint8_t second_source[ETH_ALEN];
++	uint8_t second_orig_dest[ETH_ALEN];
++	uint8_t second_crc[4];	/* 4-byte integral value */
++	uint8_t coded_len[2];	/* 2-byte integral value */
++};
++
++#endif /* _BATADV_PACKET_H_ */
+--- a/ethertype.h
++++ b/ethertype.h
+@@ -49,6 +49,9 @@
+ #ifndef ETHERTYPE_TRAIL
+ #define ETHERTYPE_TRAIL		0x1000
+ #endif
++#ifndef ETHERTYPE_BATMAN
++#define ETHERTYPE_BATMAN	0x4305 /* B.A.T.M.A.N. Advanced */
++#endif
+ #ifndef	ETHERTYPE_MOPDL
+ #define ETHERTYPE_MOPDL		0x6001
+ #endif
+--- a/gencode.c
++++ b/gencode.c
+@@ -60,6 +60,8 @@
+ #include "sunatmpos.h"
+ #include "pflog.h"
+ #include "ppp.h"
++#include "batadv_packet.h"
++#include "batadv_legacy_packet.h"
+ #include "pcap/sll.h"
+ #include "pcap/ipnet.h"
+ #include "arcnet.h"
+@@ -9436,6 +9438,168 @@ gen_geneve(compiler_state_t *cstate, bpf
+ 	return b1;
+ }
+ 
++static struct block *
++gen_batadv_check_version(compiler_state_t *cstate, struct block *b0, bpf_u_int32 version)
++{
++	struct block *b1;
++
++	if (version > UINT8_MAX)
++		bpf_error(cstate,
++			  "batman-adv compatibility version number %u unsupported",
++			  version);
++
++	b1 = gen_cmp(cstate, OR_LINKPL, 1, BPF_B, version);
++	gen_and(b0, b1);
++
++	return b1;
++}
++
++static struct block *
++gen_batadv_check_type(compiler_state_t *cstate, struct block *b0,
++		      bpf_u_int32 version, bpf_u_int32 type)
++{
++	struct block *b1;
++
++	switch (version) {
++	case 14:
++	case 15:
++		if (type > UINT8_MAX)
++			bpf_error(cstate,
++				  "batman-adv packet type %u unsupported for compatibility version %u",
++				  type, version);
++
++		b1 = gen_cmp(cstate, OR_LINKPL, 0, BPF_B, type);
++		gen_and(b0, b1);
++		b0 = b1;
++
++		break;
++	default:
++		bpf_error(cstate,
++			  "batman-adv compatibility version number %u unsupported",
++			  version);
++	}
++
++	return b0;
++}
++
++
++static void gen_batadv_push_offset(compiler_state_t *cstate, u_int offset)
++{
++	PUSH_LINKHDR(cstate, DLT_EN10MB, cstate->off_linkpl.is_variable,
++		     cstate->off_linkpl.constant_part + cstate->off_nl + offset,
++		     cstate->off_linkpl.reg);
++
++	cstate->off_linktype.constant_part += cstate->off_linkhdr.constant_part;
++	cstate->off_linkpl.constant_part += cstate->off_linkhdr.constant_part;
++
++	cstate->off_nl = 0;
++	cstate->off_nl_nosnap = 0;	/* no 802.2 LLC */
++}
++
++static void
++gen_batadv_offsets_v14(compiler_state_t *cstate, bpf_u_int32 type)
++{
++	size_t offset;
++
++	switch (type) {
++	case BATADV_LEGACY_UNICAST:		/* 0x03 */
++		offset = sizeof(struct batadv_legacy_unicast_packet);
++		break;
++	case BATADV_LEGACY_BCAST:		/* 0x04 */
++		offset = sizeof(struct batadv_legacy_bcast_packet);
++		break;
++	case BATADV_LEGACY_UNICAST_FRAG:	/* 0x06 */
++		offset = sizeof(struct batadv_legacy_unicast_frag_packet);
++		break;
++	case BATADV_LEGACY_UNICAST_4ADDR:	/* 0x09 */
++		offset = sizeof(struct batadv_legacy_unicast_4addr_packet);
++		break;
++	case BATADV_LEGACY_CODED:		/* 0x0a */
++		offset = sizeof(struct batadv_legacy_coded_packet);
++		break;
++	default:
++		offset = 0;
++	}
++
++	if (offset)
++		gen_batadv_push_offset(cstate, (u_int)offset);
++}
++
++static void
++gen_batadv_offsets_v15(compiler_state_t *cstate, bpf_u_int32 type)
++{
++	size_t offset;
++
++	switch (type) {
++	case BATADV_BCAST:		/* 0x01 */
++		offset = sizeof(struct batadv_bcast_packet);
++		break;
++	case BATADV_CODED:		/* 0x02 */
++		offset = sizeof(struct batadv_coded_packet);
++		break;
++	case BATADV_UNICAST:		/* 0x40 */
++		offset = sizeof(struct batadv_unicast_packet);
++		break;
++	case BATADV_UNICAST_FRAG:	/* 0x41 */
++		offset = sizeof(struct batadv_frag_packet);
++		break;
++	case BATADV_UNICAST_4ADDR:	/* 0x42 */
++		offset = sizeof(struct batadv_unicast_4addr_packet);
++		break;
++	case BATADV_UNICAST_TVLV:
++		/* unsupported for now, needs variable offset to
++		 * take tvlv_len into account
++		 */
++		/* fall through */
++	default:
++		offset = 0;
++	}
++
++	if (offset)
++		gen_batadv_push_offset(cstate, (u_int)offset);
++}
++
++static void
++gen_batadv_offsets(compiler_state_t *cstate, bpf_u_int32 version, bpf_u_int32 type)
++{
++	switch (version) {
++	case 14:
++		gen_batadv_offsets_v14(cstate, type);
++		break;
++	case 15:
++		gen_batadv_offsets_v15(cstate, type);
++		break;
++	default:
++		break;
++	}
++}
++
++struct block *
++gen_batadv(compiler_state_t *cstate, bpf_u_int32 version, int has_version,
++	   bpf_u_int32 type, int has_type)
++{
++	struct block *b0;
++
++	/*
++	 * Catch errors reported by us and routines below us, and return NULL
++	 * on an error.
++	 */
++	if (setjmp(cstate->top_ctx))
++		return (NULL);
++
++	b0 = gen_linktype(cstate, ETHERTYPE_BATMAN);
++
++	if (has_version)
++		b0 = gen_batadv_check_version(cstate, b0, version);
++
++	if (has_type) {
++		b0 = gen_batadv_check_type(cstate, b0, version, type);
++		gen_batadv_offsets(cstate, version, type);
++	}
++
++	return b0;
++}
++
+ /* Check that the encapsulated frame has a link layer header
+  * for Ethernet filters. */
+ static struct block *
+--- a/gencode.h
++++ b/gencode.h
+@@ -358,6 +358,9 @@ struct block *gen_pppoes(compiler_state_
+ 
+ struct block *gen_geneve(compiler_state_t *, bpf_u_int32, int);
+ 
++struct block *gen_batadv(compiler_state_t *, bpf_u_int32, int,
++			 bpf_u_int32, int);
++
+ struct block *gen_atmfield_code(compiler_state_t *, int, bpf_u_int32,
+     int, int);
+ struct block *gen_atmtype_abbrev(compiler_state_t *, int);
+--- a/grammar.y.in
++++ b/grammar.y.in
+@@ -375,6 +375,7 @@ DIAG_OFF_BISON_BYACC
+ %type	<i>	mtp2type
+ %type	<blk>	mtp3field
+ %type	<blk>	mtp3fieldvalue mtp3value mtp3listvalue
++%type	<rblk>	pbatadv
+ 
+ 
+ %token  DST SRC HOST GATEWAY
+@@ -393,7 +394,7 @@ DIAG_OFF_BISON_BYACC
+ %token  LEN
+ %token  IPV6 ICMPV6 AH ESP
+ %token	VLAN MPLS
+-%token	PPPOED PPPOES GENEVE
++%token	PPPOED PPPOES GENEVE BATADV
+ %token  ISO ESIS CLNP ISIS L1 L2 IIH LSP SNP CSNP PSNP
+ %token  STP
+ %token  IPX
+@@ -620,11 +621,40 @@ other:	  pqual TK_BROADCAST	{ CHECK_PTR_
+ 	| PPPOES		{ CHECK_PTR_VAL(($$ = gen_pppoes(cstate, 0, 0))); }
+ 	| GENEVE pnum		{ CHECK_PTR_VAL(($$ = gen_geneve(cstate, $2, 1))); }
+ 	| GENEVE		{ CHECK_PTR_VAL(($$ = gen_geneve(cstate, 0, 0))); }
++	| BATADV pbatadv	{ $$ = $2; }
+ 	| pfvar			{ $$ = $1; }
+ 	| pqual p80211		{ $$ = $2; }
+ 	| pllc			{ $$ = $1; }
+ 	;
+ 
++pbatadv:		{ CHECK_PTR_VAL(($$ = gen_batadv(cstate, 0, 0, 0, 0))); }
++	| pnum		{ CHECK_PTR_VAL(($$ = gen_batadv(cstate, $1, 1, 0, 0))); }
++	| pnum pnum	{ CHECK_PTR_VAL(($$ = gen_batadv(cstate, $1, 1, $2, 1))); }
++	| pnum ID
++		{
++			int type;
++
++			switch ($1) {
++			case 14:
++				type = pcap_nametobatadvtype_v14($2);
++				break;
++			case 15:
++				type = pcap_nametobatadvtype_v15($2);
++				break;
++			default:
++				bpf_set_error(cstate, "batman-adv compatibility version number %u unsupported", $1);
++				YYABORT;
++			}
++
++			if (type == PROTO_UNDEF) {
++				bpf_set_error(cstate, "invalid batman-adv packet type value \"%s\"", $2);
++				YYABORT;
++			}
++
++			CHECK_PTR_VAL(($$ = gen_batadv(cstate, $1, 1, type, 1)));
++		}
++	;
++
+ pfvar:	  PF_IFNAME ID		{ CHECK_PTR_VAL($2); CHECK_PTR_VAL(($$ = gen_pf_ifname(cstate, $2))); }
+ 	| PF_RSET ID		{ CHECK_PTR_VAL($2); CHECK_PTR_VAL(($$ = gen_pf_ruleset(cstate, $2))); }
+ 	| PF_RNR NUM		{ CHECK_PTR_VAL(($$ = gen_pf_rnr(cstate, $2))); }
+--- a/nametoaddr.c
++++ b/nametoaddr.c
+@@ -136,8 +136,12 @@
+ 
+ #include "diag-control.h"
+ 
++#include "batadv_packet.h"
++#include "batadv_legacy_packet.h"
++
+ #include "gencode.h"
+ #include <pcap/namedb.h>
++
+ #include "nametoaddr.h"
+ 
+ #ifdef HAVE_OS_PROTO_H
+@@ -604,6 +608,7 @@ PCAP_API_DEF struct eproto eproto_db[] =
+ 	{ "moprc", ETHERTYPE_MOPRC },
+ 	{ "rarp", ETHERTYPE_REVARP },
+ 	{ "sca", ETHERTYPE_SCA },
++	{ "batadv", ETHERTYPE_BATMAN },
+ 	{ (char *)0, 0 }
+ };
+ 
+@@ -638,6 +643,60 @@ pcap_nametollc(const char *s)
+ 
+ 	while (p->s != 0) {
+ 		if (strcmp(p->s, s) == 0)
++			return p->p;
++		p += 1;
++	}
++	return PROTO_UNDEF;
++}
++
++/* Static data base of batman-adv v14 packet type values. */
++static struct eproto batadv_type_db_v14[] = {
++	{ "iv_ogm",		BATADV_LEGACY_IV_OGM },
++	{ "icmp",		BATADV_LEGACY_ICMP },
++	{ "unicast",		BATADV_LEGACY_UNICAST },
++	{ "bcast",		BATADV_LEGACY_BCAST },
++	{ "vis",		BATADV_LEGACY_VIS },
++	{ "unicast_frag",	BATADV_LEGACY_UNICAST_FRAG },
++	{ "tt_query",		BATADV_LEGACY_TT_QUERY },
++	{ "roam_adv",		BATADV_LEGACY_ROAM_ADV },
++	{ "unicast_4addr",	BATADV_LEGACY_UNICAST_4ADDR },
++	{ "coded",		BATADV_LEGACY_CODED },
++	{ (char *)0, 0 }
++};
++
++int pcap_nametobatadvtype_v14(const char *s)
++{
++	struct eproto *p = batadv_type_db_v14;
++
++	while (p->s != 0) {
++		if (strcmp(p->s, s) == 0)
++			return p->p;
++		p += 1;
++	}
++	return PROTO_UNDEF;
++}
++
++/* Static data base of batman-adv v15 packet type values. */
++static struct eproto batadv_type_db_v15[] = {
++	{ "iv_ogm",		BATADV_IV_OGM },
++	{ "bcast",		BATADV_BCAST },
++	{ "coded",		BATADV_CODED },
++	{ "elp",		BATADV_ELP },
++	{ "ogm2",		BATADV_OGM2 },
++	{ "unicast",		BATADV_UNICAST },
++	{ "unicast_frag",	BATADV_UNICAST_FRAG },
++	{ "unicast_4addr",	BATADV_UNICAST_4ADDR },
++	{ "icmp",		BATADV_ICMP },
++	{ "unicast_tvlv",	BATADV_UNICAST_TVLV },
++	{ (char *)0, 0 }
++};
++
++int pcap_nametobatadvtype_v15(const char *s)
++{
++	struct eproto *p = batadv_type_db_v15;
++
++	while (p->s != 0) {
++		if (strcmp(p->s, s) == 0)
+ 			return p->p;
+ 		p += 1;
+ 	}
+--- a/pcap-filter.manmisc.in
++++ b/pcap-filter.manmisc.in
+@@ -98,6 +98,7 @@ protocols are:
+ .BR arp ,
+ .BR rarp ,
+ .BR decnet ,
++.BR batadv ,
+ .BR sctp ,
+ .B tcp
+ and
+@@ -400,7 +401,7 @@ True if the packet is an IPv6 multicast
+ .IP  "\fBether proto \fIprotocol\fR"
+ True if the packet is of ether type \fIprotocol\fR.
+ \fIProtocol\fP can be a number or one of the names
+-\fBaarp\fP, \fBarp\fP, \fBatalk\fP, \fBdecnet\fP, \fBip\fP, \fBip6\fP,
++\fBaarp\fP, \fBarp\fP, \fBatalk\fP, \fBbatadv\fP, \fBdecnet\fP, \fBip\fP, \fBip6\fP,
+ \fBipx\fP, \fBiso\fP, \fBlat\fP, \fBloopback\fP, \fBmopdl\fP, \fBmoprc\fP, \fBnetbeui\fP,
+ \fBrarp\fP, \fBsca\fP or \fBstp\fP.
+ Note these identifiers (except \fBloopback\fP) are also keywords
+@@ -454,7 +455,7 @@ the filter checks for the IPX etype in a
+ DSAP in the LLC header, the 802.3-with-no-LLC-header encapsulation of
+ IPX, and the IPX etype in a SNAP frame.
+ .RE
+-.IP "\fBip\fR, \fBip6\fR, \fBarp\fR, \fBrarp\fR, \fBatalk\fR, \fBaarp\fR, \fBdecnet\fR, \fBiso\fR, \fBstp\fR, \fBipx\fR, \fBnetbeui\fP"
++.IP "\fBip\fR, \fBip6\fR, \fBarp\fR, \fBrarp\fR, \fBatalk\fR, \fBaarp\fR, \fBdecnet\fR, \fBiso\fR, \fBstp\fR, \fBipx\fR, \fBnetbeui\fP, \fBbatadv\fP"
+ Abbreviations for:
+ .in +.5i
+ .nf
+@@ -792,6 +793,36 @@ For example:
+ filters IPv4 protocol encapsulated in Geneve with VNI 0xb. This will
+ match both IPv4 directly encapsulated in Geneve as well as IPv4 contained
+ inside an Ethernet frame.
++.IP "\fBbatadv \fI[version] \fI[type]\fR"
++True if the packet is a B.A.T.M.A.N. Advanced packet (Ethernet type 0x4305).
++If the optional \fIversion\fR is specified, only true if the packet has the
++specified batman-adv compatibility \fIversion\fR. If the optional \fIversion\fR
++and \fItype\fR are specified, only true if the packet has both the specified
++batman-adv compatibility \fIversion\fR and batman-adv packet \fItype\fR.
++.IP
++\fIversion\fR may be a number from 0 to 255, though only compatibility version
++14 and 15 were actually deployed in the wild. Version 15 is the current version,
++14 is considered deprecated.
++.IP
++\fItype\fR is currently only defined for compatibility \fIversion\fR 14 and 15.
++\fItype\fR may be a number from 0 to 255 for compatibility \fIversion\fR 14 and 15.
++.IP
++The following packet \fItype\fR aliases are available for compat \fIversion\fR 14:
++\fBiv_ogm\fP, \fBicmp\fP, \fBunicast\fP, \fBbcast\fP, \fBvis\fP, \fBunicast-frag\fP,
++\fBtt_query\fP, \fBroam_adv\fP, \fBunicast_4addr\fP, \fPcoded\fP.
++.IP
++The following packet \fItype\fR aliases are available for compat \fIversion\fR 15:
++\fBiv_ogm\fP, \fBbcast\fP, \fBcoded\fP, \fBelp\fP, \fBogm2\fP, \fBunicast\fP,
++\fBunicast_frag\fP, \fBunicast_4addr\fP, \fBicmp\fP, \fPunicast_tvlv\fP.
++.IP
++Note that when the \fBbatadv\fR keyword is encountered in an expression and
++a batman-adv packet \fItype\fR is provided which specifies an encapsulating
++packet type then it changes the decoding offsets for the remainder of the
++expression on the assumption that the packet is a batman-adv packet. For compat
++\fIversion\fR 14 these are packet \fItype\fRs \fBunicast\fP, \fBbcast\fP,
++\fBunicast_frag\fP, \fBunicast_4addr\fP and \fBcoded\fP. For compat \fIversion\fR
++15 these are currently packet \fItype\fRs \fBbcast\fP, \fBcoded\fP, \fBunicast\fP,
++\fBunicast_frag\fP and \fBunicast_4addr\fP.
+ .IP "\fBiso proto \fIprotocol\fR"
+ True if the packet is an OSI packet of protocol type \fIprotocol\fP.
+ \fIProtocol\fP can be a number or one of the names
+--- a/pcap/namedb.h
++++ b/pcap/namedb.h
+@@ -70,6 +70,8 @@ PCAP_API int	pcap_nametoportrange(const
+ PCAP_API int	pcap_nametoproto(const char *);
+ PCAP_API int	pcap_nametoeproto(const char *);
+ PCAP_API int	pcap_nametollc(const char *);
++PCAP_API int	pcap_nametobatadvtype_v14(const char *);
++PCAP_API int	pcap_nametobatadvtype_v15(const char *);
+ /*
+  * If a protocol is unknown, PROTO_UNDEF is returned.
+  * Also, pcap_nametoport() returns the protocol along with the port number.
+--- a/scanner.l
++++ b/scanner.l
+@@ -347,6 +347,7 @@ mpls		return MPLS;
+ pppoed		return PPPOED;
+ pppoes		return PPPOES;
+ geneve		return GENEVE;
++batadv		return BATADV;
+ 
+ lane		return LANE;
+ llc		return LLC;

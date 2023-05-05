@@ -1,0 +1,115 @@
+From 001f4261fe4d5ae710cf1f445b6cae6d9d3ae26e Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Thu, 9 Dec 2021 13:11:48 +0000
+Subject: [PATCH] net: phylink: use legacy_pre_march2020
+
+Use the legacy flag to indicate whether we should operate in legacy
+mode. This allows us to stop using the presence of a PCS as an
+indicator to the age of the phylink user, and make PCS presence
+optional.
+
+Legacy mode involves:
+1) calling mac_config() whenever the link comes up
+2) calling mac_config() whenever the inband advertisement changes,
+   possibly followed by a call to mac_an_restart()
+3) making use of mac_an_restart()
+4) making use of mac_pcs_get_state()
+
+All the above functionality was moved to a seperate "PCS" block of
+operations in March 2020.
+
+Update the documents to indicate that the differences that this flag
+makes.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 12 ++++++------
+ include/linux/phylink.h   | 17 +++++++++++++++++
+ 2 files changed, 23 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -777,7 +777,7 @@ static void phylink_mac_pcs_an_restart(s
+ 	    phylink_autoneg_inband(pl->cur_link_an_mode)) {
+ 		if (pl->pcs_ops)
+ 			pl->pcs_ops->pcs_an_restart(pl->pcs);
+-		else
++		else if (pl->config->legacy_pre_march2020)
+ 			pl->mac_ops->mac_an_restart(pl->config);
+ 	}
+ }
+@@ -855,7 +855,7 @@ static int phylink_change_inband_advert(
+ 	if (test_bit(PHYLINK_DISABLE_STOPPED, &pl->phylink_disable_state))
+ 		return 0;
+ 
+-	if (!pl->pcs_ops) {
++	if (!pl->pcs_ops && pl->config->legacy_pre_march2020) {
+ 		/* Legacy method */
+ 		phylink_mac_config(pl, &pl->link_config);
+ 		phylink_mac_pcs_an_restart(pl);
+@@ -900,7 +900,8 @@ static void phylink_mac_pcs_get_state(st
+ 
+ 	if (pl->pcs_ops)
+ 		pl->pcs_ops->pcs_get_state(pl->pcs, state);
+-	else if (pl->mac_ops->mac_pcs_get_state)
++	else if (pl->mac_ops->mac_pcs_get_state &&
++		 pl->config->legacy_pre_march2020)
+ 		pl->mac_ops->mac_pcs_get_state(pl->config, state);
+ 	else
+ 		state->link = 0;
+@@ -1094,12 +1095,11 @@ static void phylink_resolve(struct work_
+ 			}
+ 			phylink_major_config(pl, false, &link_state);
+ 			pl->link_config.interface = link_state.interface;
+-		} else if (!pl->pcs_ops) {
++		} else if (!pl->pcs_ops && pl->config->legacy_pre_march2020) {
+ 			/* The interface remains unchanged, only the speed,
+ 			 * duplex or pause settings have changed. Call the
+ 			 * old mac_config() method to configure the MAC/PCS
+-			 * only if we do not have a PCS installed (an
+-			 * unconverted user.)
++			 * only if we do not have a legacy MAC driver.
+ 			 */
+ 			phylink_mac_config(pl, &link_state);
+ 		}
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -210,6 +210,10 @@ struct phylink_pcs *mac_select_pcs(struc
+  * negotiation completion state in @state->an_complete, and link up state
+  * in @state->link. If possible, @state->lp_advertising should also be
+  * populated.
++ *
++ * Note: This is a legacy method. This function will not be called unless
++ * legacy_pre_march2020 is set in &struct phylink_config and there is no
++ * PCS attached.
+  */
+ void mac_pcs_get_state(struct phylink_config *config,
+ 		       struct phylink_link_state *state);
+@@ -250,6 +254,15 @@ int mac_prepare(struct phylink_config *c
+  * guaranteed to be correct, and so any mac_config() implementation must
+  * never reference these fields.
+  *
++ * Note: For legacy March 2020 drivers (drivers with legacy_pre_march2020 set
++ * in their &phylnk_config and which don't have a PCS), this function will be
++ * called on each link up event, and to also change the in-band advert. For
++ * non-legacy drivers, it will only be called to reconfigure the MAC for a
++ * "major" change in e.g. interface mode. It will not be called for changes
++ * in speed, duplex or pause modes or to change the in-band advertisement.
++ * In any case, it is strongly preferred that speed, duplex and pause settings
++ * are handled in the mac_link_up() method and not in this method.
++ *
+  * (this requires a rewrite - please refer to mac_link_up() for situations
+  *  where the PCS and MAC are not tightly integrated.)
+  *
+@@ -334,6 +347,10 @@ int mac_finish(struct phylink_config *co
+ /**
+  * mac_an_restart() - restart 802.3z BaseX autonegotiation
+  * @config: a pointer to a &struct phylink_config.
++ *
++ * Note: This is a legacy method. This function will not be called unless
++ * legacy_pre_march2020 is set in &struct phylink_config and there is no
++ * PCS attached.
+  */
+ void mac_an_restart(struct phylink_config *config);
+ 

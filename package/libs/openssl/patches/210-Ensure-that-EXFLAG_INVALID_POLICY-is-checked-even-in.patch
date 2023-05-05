@@ -1,0 +1,48 @@
+From b013765abfa80036dc779dd0e50602c57bb3bf95 Mon Sep 17 00:00:00 2001
+From: Matt Caswell <matt@openssl.org>
+Date: Tue, 7 Mar 2023 16:52:55 +0000
+Subject: [PATCH] Ensure that EXFLAG_INVALID_POLICY is checked even in leaf
+ certs
+
+Even though we check the leaf cert to confirm it is valid, we
+later ignored the invalid flag and did not notice that the leaf
+cert was bad.
+
+Fixes: CVE-2023-0465
+
+Reviewed-by: Hugo Landau <hlandau@openssl.org>
+Reviewed-by: Tomas Mraz <tomas@openssl.org>
+(Merged from https://github.com/openssl/openssl/pull/20588)
+
+diff --git a/crypto/x509/x509_vfy.c b/crypto/x509/x509_vfy.c
+index 925fbb5412..1dfe4f9f31 100644
+--- a/crypto/x509/x509_vfy.c
++++ b/crypto/x509/x509_vfy.c
+@@ -1649,18 +1649,25 @@ static int check_policy(X509_STORE_CTX *ctx)
+     }
+     /* Invalid or inconsistent extensions */
+     if (ret == X509_PCY_TREE_INVALID) {
+-        int i;
++        int i, cbcalled = 0;
+ 
+         /* Locate certificates with bad extensions and notify callback. */
+-        for (i = 1; i < sk_X509_num(ctx->chain); i++) {
++        for (i = 0; i < sk_X509_num(ctx->chain); i++) {
+             X509 *x = sk_X509_value(ctx->chain, i);
+ 
+             if (!(x->ex_flags & EXFLAG_INVALID_POLICY))
+                 continue;
++            cbcalled = 1;
+             if (!verify_cb_cert(ctx, x, i,
+                                 X509_V_ERR_INVALID_POLICY_EXTENSION))
+                 return 0;
+         }
++        if (!cbcalled) {
++            /* Should not be able to get here */
++            X509err(X509_F_CHECK_POLICY, ERR_R_INTERNAL_ERROR);
++            return 0;
++        }
++        /* The callback ignored the error so we return success */
+         return 1;
+     }
+     if (ret == X509_PCY_TREE_FAILURE) {

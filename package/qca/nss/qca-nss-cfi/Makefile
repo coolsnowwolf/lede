@@ -4,7 +4,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=qca-nss-cfi
 PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/nss-cfi
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-cfi.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=8035a8ddefdcc8a2f06c96b2a82618ca6ce6406d
 PKG_MIRROR_HASH:=23316395d1346994d069eb41ef73a5505853687f8beab14f83545b3a05e52429

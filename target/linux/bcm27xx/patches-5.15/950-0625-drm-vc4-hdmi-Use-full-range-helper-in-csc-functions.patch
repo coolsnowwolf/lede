@@ -1,0 +1,126 @@
+From 183b128892a416e4c09b6379f964cb9620f2a7ea Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 12 Jan 2021 15:57:50 +0100
+Subject: [PATCH] drm/vc4: hdmi: Use full range helper in csc functions
+
+The CSC callbacks takes a boolean as an argument to tell whether we're
+using the full range or limited range RGB.
+
+However, with the upcoming YUV support, the logic will be a bit more
+complex. In order to address this, let's make the callbacks take the
+entire mode, and call our new helper to tell whether the full or limited
+range RGB should be used.
+
+Acked-by: Thomas Zimmermann <tzimmermann@suse.de>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 31 +++++++++++--------------------
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  4 ++--
+ 2 files changed, 13 insertions(+), 22 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -505,7 +505,6 @@ static void vc4_hdmi_write_infoframe(str
+ static void vc4_hdmi_set_avi_infoframe(struct drm_encoder *encoder)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+-	struct vc4_hdmi_encoder *vc4_encoder = to_vc4_hdmi_encoder(encoder);
+ 	struct drm_connector *connector = &vc4_hdmi->connector;
+ 	struct drm_connector_state *cstate = connector->state;
+ 	const struct drm_display_mode *mode = &vc4_hdmi->saved_adjusted_mode;
+@@ -523,9 +522,9 @@ static void vc4_hdmi_set_avi_infoframe(s
+ 
+ 	drm_hdmi_avi_infoframe_quant_range(&frame.avi,
+ 					   connector, mode,
+-					   vc4_encoder->limited_rgb_range ?
+-					   HDMI_QUANTIZATION_RANGE_LIMITED :
+-					   HDMI_QUANTIZATION_RANGE_FULL);
++					   vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode) ?
++					   HDMI_QUANTIZATION_RANGE_FULL :
++					   HDMI_QUANTIZATION_RANGE_LIMITED);
+ 	drm_hdmi_avi_infoframe_colorimetry(&frame.avi, cstate);
+ 	drm_hdmi_avi_infoframe_bars(&frame.avi, cstate);
+ 
+@@ -742,7 +741,8 @@ static void vc4_hdmi_encoder_post_crtc_p
+ 	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+-static void vc4_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi, bool enable)
++static void vc4_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
++			       const struct drm_display_mode *mode)
+ {
+ 	unsigned long flags;
+ 	u32 csc_ctl;
+@@ -752,7 +752,7 @@ static void vc4_hdmi_csc_setup(struct vc
+ 	csc_ctl = VC4_SET_FIELD(VC4_HD_CSC_CTL_ORDER_BGR,
+ 				VC4_HD_CSC_CTL_ORDER);
+ 
+-	if (enable) {
++	if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode)) {
+ 		/* CEA VICs other than #1 requre limited range RGB
+ 		 * output unless overridden by an AVI infoframe.
+ 		 * Apply a colorspace conversion to squash 0-255 down
+@@ -782,7 +782,8 @@ static void vc4_hdmi_csc_setup(struct vc
+ 	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
+ }
+ 
+-static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi, bool enable)
++static void vc5_hdmi_csc_setup(struct vc4_hdmi *vc4_hdmi,
++			       const struct drm_display_mode *mode)
+ {
+ 	unsigned long flags;
+ 	u32 csc_ctl;
+@@ -791,7 +792,7 @@ static void vc5_hdmi_csc_setup(struct vc
+ 
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+-	if (enable) {
++	if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode)) {
+ 		/* CEA VICs other than #1 requre limited range RGB
+ 		 * output unless overridden by an AVI infoframe.
+ 		 * Apply a colorspace conversion to squash 0-255 down
+@@ -1121,22 +1122,12 @@ static void vc4_hdmi_encoder_pre_crtc_en
+ {
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
+ 	struct drm_display_mode *mode = &vc4_hdmi->saved_adjusted_mode;
+-	struct vc4_hdmi_encoder *vc4_encoder = to_vc4_hdmi_encoder(encoder);
+ 	unsigned long flags;
+ 
+ 	mutex_lock(&vc4_hdmi->mutex);
+ 
+-	if (!vc4_hdmi_is_full_range_rgb(vc4_hdmi, mode)) {
+-		if (vc4_hdmi->variant->csc_setup)
+-			vc4_hdmi->variant->csc_setup(vc4_hdmi, true);
+-
+-		vc4_encoder->limited_rgb_range = true;
+-	} else {
+-		if (vc4_hdmi->variant->csc_setup)
+-			vc4_hdmi->variant->csc_setup(vc4_hdmi, false);
+-
+-		vc4_encoder->limited_rgb_range = false;
+-	}
++	if (vc4_hdmi->variant->csc_setup)
++		vc4_hdmi->variant->csc_setup(vc4_hdmi, mode);
+ 
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 	HDMI_WRITE(HDMI_FIFO_CTL, VC4_HDMI_FIFO_CTL_MASTER_SLAVE_N);
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -12,7 +12,6 @@
+ struct vc4_hdmi_encoder {
+ 	struct vc4_encoder base;
+ 	bool hdmi_monitor;
+-	bool limited_rgb_range;
+ };
+ 
+ static inline struct vc4_hdmi_encoder *
+@@ -77,7 +76,8 @@ struct vc4_hdmi_variant {
+ 	void (*reset)(struct vc4_hdmi *vc4_hdmi);
+ 
+ 	/* Callback to enable / disable the CSC */
+-	void (*csc_setup)(struct vc4_hdmi *vc4_hdmi, bool enable);
++	void (*csc_setup)(struct vc4_hdmi *vc4_hdmi,
++			  const struct drm_display_mode *mode);
+ 
+ 	/* Callback to configure the video timings in the HDMI block */
+ 	void (*set_timings)(struct vc4_hdmi *vc4_hdmi,

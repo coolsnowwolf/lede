@@ -43,20 +43,6 @@ endef
 
 $(eval $(call KernelPackage,hwmon-ad7418))
 
-define KernelPackage/hwmon-ads1015
-  TITLE:=Texas Instruments ADS1015
-  KCONFIG:= CONFIG_SENSORS_ADS1015
-  FILES:= $(LINUX_DIR)/drivers/hwmon/ads1015.ko
-  AUTOLOAD:=$(call AutoLoad,60,ads1015)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
-endef
-
-define KernelPackage/hwmon-ads1015/description
- Kernel module for Texas Instruments ADS1015 Analog-to-Digital converter
-endef
-
-$(eval $(call KernelPackage,hwmon-ads1015))
-
 define KernelPackage/hwmon-adt7410
   TITLE:=ADT7410 monitoring support
   KCONFIG:= \
@@ -122,20 +108,23 @@ endef
 $(eval $(call KernelPackage,hwmon-drivetemp))
 
 
-define KernelPackage/hwmon-emc2305
-  TITLE:=SMSC EMC2305 fan support
-  KCONFIG:=CONFIG_SENSORS_EMC2305
+define KernelPackage/hwmon-gsc
+  TITLE:=Gateworks System Controller support
+  KCONFIG:=CONFIG_MFD_GATEWORKS_GSC \
+        CONFIG_SENSORS_GSC
   FILES:= \
-  $(LINUX_DIR)/drivers/hwmon/emc2305.ko
-  AUTOLOAD:=$(call AutoProbe,emc2305)
-  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
+	$(LINUX_DIR)/drivers/mfd/gateworks-gsc.ko \
+	$(LINUX_DIR)/drivers/hwmon/gsc-hwmon.ko
+  AUTOLOAD:=$(call AutoLoad,20,gsc-hwmon,1)
+  $(call AddDepends/hwmon,@!LINUX_5_4 +kmod-i2c-core)
 endef
 
-define KernelPackage/hwmon-emc2305/description
- SMSC SMSC EMC2301/2/3/5 fan controllers support
+define KernelPackage/hwmon-gsc/description
+ Kernel module for Gateworks System Controller with temperature sensor,
+ADCs, and FAN controller
 endef
 
-$(eval $(call KernelPackage,hwmon-emc2305))
+$(eval $(call KernelPackage,hwmon-gsc))
 
 
 define KernelPackage/hwmon-gpiofan
@@ -333,6 +322,21 @@ endef
 $(eval $(call KernelPackage,hwmon-ltc4151))
 
 
+define KernelPackage/hwmon-max6642
+  TITLE:=MAX6642 monitoring support
+  KCONFIG:=CONFIG_SENSORS_MAX6642
+  FILES:=$(LINUX_DIR)/drivers/hwmon/max6642.ko
+  AUTOLOAD:=$(call AutoLoad,60,max6642 max6642)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-max6642/description
+ Kernel module for Maxim MAX6642 temperature monitor
+endef
+
+$(eval $(call KernelPackage,hwmon-max6642))
+
+
 define KernelPackage/hwmon-mcp3021
   TITLE:=MCP3021/3221 monitoring support
   KCONFIG:=CONFIG_SENSORS_MCP3021
@@ -455,6 +459,21 @@ define KernelPackage/hwmon-sht21/description
 endef
 
 $(eval $(call KernelPackage,hwmon-sht21))
+
+
+define KernelPackage/hwmon-sht3x
+  TITLE:=Sensiron SHT3x and compat. monitoring support
+  KCONFIG:=CONFIG_SENSORS_SHT3x
+  FILES:=$(LINUX_DIR)/drivers/hwmon/sht3x.ko
+  AUTOLOAD:=$(call AutoProbe,sht3x)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-lib-crc8)
+endef
+
+define KernelPackage/hwmon-sht3x/description
+ Kernel module for Sensirion SHT3x temperature and humidity sensors chip
+endef
+
+$(eval $(call KernelPackage,hwmon-sht3x))
 
 
 define KernelPackage/hwmon-tmp102

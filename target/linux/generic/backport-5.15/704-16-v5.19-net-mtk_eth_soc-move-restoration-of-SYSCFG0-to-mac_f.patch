@@ -1,0 +1,57 @@
+From 21089867278deb2a110b685e3cd33f64f9ce41e2 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Wed, 18 May 2022 15:55:17 +0100
+Subject: [PATCH 10/12] net: mtk_eth_soc: move restoration of SYSCFG0 to
+ mac_finish()
+
+The SGMIISYS configuration is performed while ETHSYS_SYSCFG0 is in a
+disabled state. In order to preserve this when we switch to phylink_pcs
+we need to move the restoration of this register to the mac_finish()
+callback.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 11 +++++++++--
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  1 +
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -447,8 +447,8 @@ static void mtk_mac_config(struct phylin
+ 		if (err)
+ 			goto init_err;
+ 
+-		regmap_update_bits(eth->ethsys, ETHSYS_SYSCFG0,
+-				   SYSCFG0_SGMII_MASK, val);
++		/* Save the syscfg0 value for mac_finish */
++		mac->syscfg0 = val;
+ 	} else if (phylink_autoneg_inband(mode)) {
+ 		dev_err(eth->dev,
+ 			"In-band mode not supported in non SGMII mode!\n");
+@@ -472,8 +472,15 @@ static int mtk_mac_finish(struct phylink
+ {
+ 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+ 					   phylink_config);
++	struct mtk_eth *eth = mac->hw;
+ 	u32 mcr_cur, mcr_new;
+ 
++	/* Enable SGMII */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    phy_interface_mode_is_8023z(interface))
++		regmap_update_bits(eth->ethsys, ETHSYS_SYSCFG0,
++				   SYSCFG0_SGMII_MASK, mac->syscfg0);
++
+ 	/* Setup gmac */
+ 	mcr_cur = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
+ 	mcr_new = mcr_cur;
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -1088,6 +1088,7 @@ struct mtk_mac {
+ 	struct mtk_hw_stats		*hw_stats;
+ 	__be32				hwlro_ip[MTK_MAX_LRO_IP_CNT];
+ 	int				hwlro_ip_cnt;
++	unsigned int			syscfg0;
+ };
+ 
+ /* the struct describing the SoC. these are declared in the soc_xyz.c files */

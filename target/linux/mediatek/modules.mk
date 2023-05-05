@@ -27,37 +27,13 @@ endef
 
 $(eval $(call KernelPackage,btmtkuart))
 
-define KernelPackage/sdhci-mtk
-  SUBMENU:=Other modules
-  TITLE:=Mediatek SDHCI driver
-  DEPENDS:=@TARGET_mediatek_mt7622 +kmod-sdhci
-  KCONFIG:=CONFIG_MMC_MTK 
+define KernelPackage/iio-mt6577-auxadc
+  TITLE:=Mediatek AUXADC driver
+  DEPENDS:=@(TARGET_mediatek_mt7622||TARGET_mediatek_filogic)
+  KCONFIG:=CONFIG_MEDIATEK_MT6577_AUXADC
   FILES:= \
-	$(LINUX_DIR)/drivers/mmc/host/mtk-sd.ko
-  AUTOLOAD:=$(call AutoProbe,mtk-sd,1)
+	$(LINUX_DIR)/drivers/iio/adc/mt6577_auxadc.ko
+  AUTOLOAD:=$(call AutoProbe,mt6577_auxadc)
+  $(call AddDepends/iio)
 endef
-
-$(eval $(call KernelPackage,sdhci-mtk))
-
-define KernelPackage/crypto-hw-mtk
-  TITLE:= MediaTek's Crypto Engine module
-  DEPENDS:=@TARGET_mediatek
-  KCONFIG:= \
-	CONFIG_CRYPTO_HW=y \
-	CONFIG_CRYPTO_AES=y \
-	CONFIG_CRYPTO_AEAD=y \
-	CONFIG_CRYPTO_SHA1=y \
-	CONFIG_CRYPTO_SHA256=y \
-	CONFIG_CRYPTO_SHA512=y \
-	CONFIG_CRYPTO_HMAC=y \
-	CONFIG_CRYPTO_DEV_MEDIATEK
-  FILES:=$(LINUX_DIR)/drivers/crypto/mediatek/mtk-crypto.ko
-  AUTOLOAD:=$(call AutoLoad,90,mtk-crypto)
-  $(call AddDepends/crypto)
-endef
-
-define KernelPackage/crypto-hw-mtk/description
-  MediaTek's EIP97 Cryptographic Engine driver.
-endef
-
-$(eval $(call KernelPackage,crypto-hw-mtk))
+$(eval $(call KernelPackage,iio-mt6577-auxadc))

@@ -27,6 +27,7 @@ include $(INCLUDE_DIR)/rootfs.mk
 
 include $(INCLUDE_DIR)/version.mk
 export REVISION
+export SOURCE_DATE_EPOCH
 
 define Helptext
 Available Commands:
@@ -34,8 +35,11 @@ Available Commands:
 	info:	Show a list of available target profiles
 	clean:	Remove images and temporary build files
 	image:	Build an image (see below for more information).
+	manifest: Show all package that will be installed into the image
+	package_whatdepends: Show which packages have a dependency on this
+	package_depends: Show installation dependency of the package
 
-Building images:
+image:
 	By default 'make image' will create an image with the default
 	target profile and package set. You can use the following parameters
 	to change that:
@@ -48,13 +52,26 @@ Building images:
 	make image DISABLED_SERVICES="<svc1> [<svc2> [<svc3> ..]]" # Which services in /etc/init.d/ should be disabled
 	make image ADD_LOCAL_KEY=1 # store locally generated signing key in built images
 
-Print manifest:
+manifest:
 	List "all" packages which get installed into the image.
 	You can use the following parameters:
 
 	make manifest PROFILE="<profilename>" # override the default target profile
 	make manifest PACKAGES="<pkg1> [<pkg2> [<pkg3> ...]]" # include extra packages
 	make manifest STRIP_ABI=1 # remove ABI version from printed package names
+
+
+package_whatdepends:
+	List "all" packages that have a dependency on this package
+	You can use the following parameters:
+
+	make package_whatdepends PACKAGE="<pkg>"
+
+package_depends:
+	List "all" packages dependency of the package
+	You can use the following parameters:
+
+	make package_depends PACKAGE="<pkg>"
 
 endef
 $(eval $(call shexport,Helptext))
@@ -102,6 +119,7 @@ staging_dir/host/.prereq-build: include/prereq-build.mk
 
 _call_info: FORCE
 	echo 'Current Target: "$(TARGETID)"'
+	echo 'Current Architecture: "$(ARCH)"'
 	echo 'Current Revision: "$(REVISION)"'
 	echo 'Default Packages: $(DEFAULT_PACKAGES)'
 	echo 'Available Profiles:'
@@ -253,7 +271,7 @@ manifest: FORCE
 		$(if $(PROFILE),USER_PROFILE="$(PROFILE_FILTER)") \
 		$(if $(PACKAGES),USER_PACKAGES="$(PACKAGES)"))
 
-whatdepends: FORCE
+package_whatdepends: FORCE
 ifeq ($(PACKAGE),)
 	@echo 'Variable `PACKAGE` is not set but required by `whatdepends`'
 	@exit 1
@@ -261,4 +279,13 @@ endif
 	@$(MAKE) -s package_reload
 	@$(OPKG) whatdepends -A $(PACKAGE)
 
-.SILENT: help info image manifest whatdepends
+package_depends: FORCE
+ifeq ($(PACKAGE),)
+	@echo 'Variable `PACKAGE` is not set but required by `package_depends`'
+	@exit 1
+endif
+	@$(MAKE) -s package_reload
+	@$(OPKG) depends -A $(PACKAGE)
+
+
+.SILENT: help info image manifest package_whatdepends package_depends

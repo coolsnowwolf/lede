@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=4.7.0-stable
-PKG_RELEASE:=2
+PKG_VERSION:=5.5.4-stable
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=b0e740b31d4d877d540ad50cc539a8873fc41af02bd3091c4357b403f7106e31
+PKG_HASH:=b7ee150e49def77c765bc02aac92ddeb0bebefd4cb12aa263d8f95e405221fb8
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
@@ -25,29 +25,49 @@ PKG_MAINTAINER:=Eneas U de Queiroz <cotequeiroz@gmail.com>
 PKG_CPE_ID:=cpe:/a:wolfssl:wolfssl
 
 PKG_CONFIG_DEPENDS:=\
-	CONFIG_WOLFSSL_HAS_AES_CCM CONFIG_WOLFSSL_HAS_AFALG \
-	CONFIG_WOLFSSL_HAS_ARC4 CONFIG_WOLFSSL_HAS_CHACHA_POLY \
-	CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL \
-	CONFIG_WOLFSSL_HAS_DH CONFIG_WOLFSSL_HAS_DTLS \
-	CONFIG_WOLFSSL_HAS_ECC25519 CONFIG_WOLFSSL_HAS_OCSP \
-	CONFIG_WOLFSSL_HAS_SESSION_TICKET CONFIG_WOLFSSL_HAS_TLSV10 \
-	CONFIG_WOLFSSL_HAS_TLSV13 CONFIG_WOLFSSL_HAS_WPAS CONFIG_WOLFSSL_HAS_CERTGEN \
-	CONFIG_WOLFSSL_HAS_OPENVPN
+	CONFIG_WOLFSSL_HAS_AES_CCM \
+	CONFIG_WOLFSSL_HAS_ARC4 \
+	CONFIG_WOLFSSL_HAS_CERTGEN \
+	CONFIG_WOLFSSL_HAS_CHACHA_POLY \
+	CONFIG_WOLFSSL_HAS_DH \
+	CONFIG_WOLFSSL_HAS_DTLS \
+	CONFIG_WOLFSSL_HAS_ECC25519 \
+	CONFIG_WOLFSSL_HAS_ECC448 \
+	CONFIG_WOLFSSL_HAS_OCSP \
+	CONFIG_WOLFSSL_HAS_OPENVPN CONFIG_WOLFSSL_ALT_NAMES \
+	CONFIG_WOLFSSL_HAS_SESSION_TICKET \
+	CONFIG_WOLFSSL_HAS_TLSV10 \
+	CONFIG_WOLFSSL_HAS_TLSV13 \
+	CONFIG_WOLFSSL_HAS_WPAS
 
-PKG_ABI_VERSION=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(call confvar,$(PKG_CONFIG_DEPENDS)))
+PKG_ABI_VERSION:=$(patsubst %-stable,%,$(PKG_VERSION)).$(call version_abbrev,$(call confvar,$(PKG_CONFIG_DEPENDS)))
+
+PKG_CONFIG_DEPENDS+=\
+	CONFIG_PACKAGE_libwolfssl-benchmark \
+	CONFIG_WOLFSSL_HAS_AFALG \
+	CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES \
+	CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC \
+	CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/libwolfssl
+define Package/libwolfssl/Default
   SECTION:=libs
   SUBMENU:=SSL
   CATEGORY:=Libraries
-  TITLE:=wolfSSL library
   URL:=http://www.wolfssl.com/
+endef
+
+define Package/libwolfssl
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL library
   MENU:=1
   PROVIDES:=libcyassl
   DEPENDS:=+WOLFSSL_HAS_DEVCRYPTO:kmod-cryptodev +WOLFSSL_HAS_AFALG:kmod-crypto-user
   ABI_VERSION:=$(PKG_ABI_VERSION)
+  VARIANT:=regular
+  DEFAULT_VARIANT:=1
+  CONFLICTS:=libwolfsslcpu-crypto
 endef
 
 define Package/libwolfssl/description
@@ -59,17 +79,61 @@ define Package/libwolfssl/config
 	source "$(SOURCE)/Config.in"
 endef
 
-TARGET_CFLAGS += $(FPIC) -DFP_MAX_BITS=8192 -fomit-frame-pointer -flto
+define Package/libwolfsslcpu-crypto
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL library with AES CPU instructions
+  PROVIDES:=libwolfssl libcyassl
+  DEPENDS:=@((aarch64||x86_64)&&(m||!TARGET_bcm27xx))
+  ABI_VERSION:=$(PKG_ABI_VERSION)
+  VARIANT:=cpu-crypto
+endef
+
+define Package/libwolfssl-benchmark
+$(call Package/libwolfssl/Default)
+  TITLE:=wolfSSL Benchmark Utility
+  DEPENDS:=libwolfssl
+endef
+
+define Package/libwolfsslcpu-crypto/description
+$(call Package/libwolfssl/description)
+This variant uses AES CPU instructions (Intel AESNI or ARMv8 Crypto Extension)
+endef
+
+define Package/libwolfsslcpu-crypto/config
+    if TARGET_armvirt && PACKAGE_libwolfsslcpu-crypto = y
+	comment "You are about to build libwolfsslcpu-crypto into an armvirt_64 image."
+	comment "Ensure all of your installation targets support the Crypto Extension. "
+	comment "Look for the 'aes' feature in /proc/cpuinfo. This library does not do "
+	comment "run-time detection and will crash if the CPU does not support it.     "
+    endif
+    if TARGET_bcm27xx && PACKAGE_libwolfsslcpu-crypto
+	comment "Beware that libwolfsslcpu-crypto will not run in a bcm27xx target.   "
+    endif
+endef
+
+define Package/libwolfssl-benchmark/description
+This is the wolfssl benchmark utility.
+endef
+
+TARGET_CFLAGS += \
+	$(FPIC) \
+	-fomit-frame-pointer \
+	-flto \
+	-DFP_MAX_BITS=8192 \
+	$(if $(CONFIG_WOLFSSL_ALT_NAMES),-DWOLFSSL_ALT_NAMES)
+
 TARGET_LDFLAGS += -flto
 
 # --enable-stunnel needed for OpenSSL API compatibility bits
 CONFIGURE_ARGS += \
+	--enable-reproducible-build \
 	--enable-lighty \
 	--enable-opensslall \
 	--enable-opensslextra \
 	--enable-sni \
 	--enable-stunnel \
-	--disable-crypttests \
+	--enable-altcertchains \
+	--$(if $(CONFIG_PACKAGE_libwolfssl-benchmark),enable,disable)-crypttests \
 	--disable-examples \
 	--disable-jobserver \
 	--$(if $(CONFIG_IPV6),enable,disable)-ipv6 \
@@ -84,11 +148,49 @@ CONFIGURE_ARGS += \
 	--$(if $(CONFIG_WOLFSSL_HAS_SESSION_TICKET),enable,disable)-session-ticket \
 	--$(if $(CONFIG_WOLFSSL_HAS_DTLS),enable,disable)-dtls \
 	--$(if $(CONFIG_WOLFSSL_HAS_ECC25519),enable,disable)-curve25519 \
+	--$(if $(CONFIG_WOLFSSL_HAS_ECC448),enable,disable)-curve448 \
+	--$(if $(CONFIG_WOLFSSL_HAS_OPENVPN),enable,disable)-openvpn
+
+define Package/libwolfsslcpu-crypto/preinst-aarch64
+#!/bin/sh
+exec >&2
+printf "[libwolfsslcpu-crypto] Checking for Arm v8-A Cryptographic Extension support: "
+if [ -n "$${IPKG_INSTROOT}" ]; then
+    printf "...[offline]... "
+    eval "$$(grep '^DISTRIB_TARGET=' "$${IPKG_INSTROOT}/etc/openwrt_release")"
+    echo "$${DISTRIB_TARGET}" | grep '^bcm27xx/.*' > /dev/null && {
+	echo "not supported"
+	echo "Error: Target $${DISTRIB_TARGET} does not support Arm Cryptographic Extension."
+	echo "Install the regular libwolfssl package instead of libwolfsslcpu-crypto."
+	exit 1
+    }
+else
+    grep -q '^Features.*\baes\b' /proc/cpuinfo || {
+	echo "not supported"
+	echo "Error: Arm v8-A Cryptographic Extension not supported."
+	echo "Install the regular libwolfssl package instead of libwolfsslcpu-crypto."
+	echo "Contents of /proc/cpuinfo:"
+	cat /proc/cpuinfo
+	exit 1
+    }
+fi
+echo OK
+exit 0
+endef
+
+ifeq ($(BUILD_VARIANT),regular)
+CONFIGURE_ARGS += \
 	--$(if $(CONFIG_WOLFSSL_HAS_AFALG),enable,disable)-afalg \
-	--$(if $(CONFIG_WOLFSSL_HAS_OPENVPN),enable,disable)-openvpn \
 	--enable-devcrypto=$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_CBC),cbc\
 			  ,$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_AES),aes\
 			  ,$(if $(CONFIG_WOLFSSL_HAS_DEVCRYPTO_FULL),yes,no)))
+else ifdef CONFIG_aarch64
+    CONFIGURE_ARGS += --enable-armasm
+    TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
+    Package/libwolfsslcpu-crypto/preinst=$(Package/libwolfsslcpu-crypto/preinst-aarch64)
+else ifdef CONFIG_TARGET_x86_64
+	CONFIGURE_ARGS += --enable-intelasm
+endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_OCSP),y)
 CONFIGURE_ARGS += \
@@ -97,7 +199,7 @@ endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_WPAS),y)
 CONFIGURE_ARGS += \
-	--enable-wpas --enable-sha512 --enable-fortress --enable-fastmath
+	--enable-wpas --enable-fortress --enable-fastmath
 endif
 
 define Build/InstallDev
@@ -117,4 +219,13 @@ define Package/libwolfssl/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libwolfssl.so.* $(1)/usr/lib/
 endef
 
+Package/libwolfsslcpu-crypto/install=$(Package/libwolfssl/install)
+
+define Package/libwolfssl-benchmark/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(CP) $(PKG_BUILD_DIR)/wolfcrypt/benchmark/.libs/benchmark $(1)/usr/bin/wolfssl-benchmark
+endef
+
 $(eval $(call BuildPackage,libwolfssl))
+$(eval $(call BuildPackage,libwolfsslcpu-crypto))
+$(eval $(call BuildPackage,libwolfssl-benchmark))

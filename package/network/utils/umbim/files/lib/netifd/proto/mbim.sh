@@ -11,6 +11,7 @@ proto_mbim_init_config() {
 	available=1
 	no_device=1
 	proto_config_add_string "device:device"
+	proto_config_add_string pdptype
 	proto_config_add_string apn
 	proto_config_add_string pincode
 	proto_config_add_string delay
@@ -23,12 +24,23 @@ proto_mbim_init_config() {
 _proto_mbim_setup() {
 	local interface="$1"
 	local tid=2
-	local ret
 
-	local device apn pincode delay $PROTO_DEFAULT_OPTIONS
-	json_get_vars device apn pincode delay auth username password $PROTO_DEFAULT_OPTIONS
+	local device pdptype apn pincode delay auth username password $PROTO_DEFAULT_OPTIONS
+	json_get_vars device pdptype apn pincode delay auth username password $PROTO_DEFAULT_OPTIONS
 
 	[ -n "$ctl_device" ] && device=$ctl_device
+
+	pdptype=$(echo "$pdptype" | awk '{print tolower($0)}')
+	case "$pdptype" in
+		ip )
+			pdptype="ipv4"
+			;;
+		ipv4 | ipv6 | ipv4v6 | ipv4-and-ipv6 )
+			;;
+		* )
+			pdptype="default"
+			;;
+	esac
 
 	[ -n "$device" ] || {
 		echo "mbim[$$]" "No control device specified"
@@ -82,11 +94,17 @@ _proto_mbim_setup() {
 	tid=$((tid + 1))
 
 	echo "mbim[$$]" "Checking pin"
-	umbim $DBG -n -t $tid -d $device pinstate || {
-		echo "mbim[$$]" "PIN required"
-		proto_notify_error "$interface" PIN_FAILED
-		proto_block_restart "$interface"
-		return 1
+	local pinstate="/var/run/mbim.$$.pinstate"
+	umbim $DBG -n -t $tid -d $device pinstate > "$pinstate" 2>&1 || {
+		local pin
+		pin=$(awk '$2=="pin:" {print $5}' "$pinstate")
+		# we only need pin1 (the SIM pin) to connect
+		[ "$pin" = "pin1" ] && {
+			echo "mbim[$$]" "PIN required"
+			proto_notify_error "$interface" PIN_FAILED
+			proto_block_restart "$interface"
+			return 1
+		}
 	}
 	tid=$((tid + 1))
 
@@ -115,40 +133,89 @@ _proto_mbim_setup() {
 	tid=$((tid + 1))
 
 	echo "mbim[$$]" "Connect to network"
-	while ! umbim $DBG -n -t $tid -d $device connect "$apn" "$auth" "$username" "$password"; do
+	while ! umbim $DBG -n -t $tid -d $device connect "$pdptype:$apn" "$auth" "$username" "$password"; do
 		tid=$((tid + 1))
 		sleep 1;
 	done
 	tid=$((tid + 1))
 
-	uci_set_state network $interface tid "$tid"
+	echo "mbim[$$]" "Connected, obtain IP address and configure interface"
+	local config="/var/run/mbim.$$.config"
+	umbim $DBG -n -t $tid -d $device config > "$config" || {
+		echo "mbim[$$]" "Failed to obtain IP address"
+		proto_notify_error "$interface" CONFIG_FAILED
+		return 1
+	}
+	tid=$((tid + 1))
 
-	echo "mbim[$$]" "Connected, starting DHCP"
 	proto_init_update "$ifname" 1
+	proto_add_data
+	json_add_int tid $tid
+	proto_close_data
 	proto_send_update "$interface"
 
-	json_init
-	json_add_string name "${interface}_4"
-	json_add_string ifname "@$interface"
-	json_add_string proto "dhcp"
-	proto_add_dynamic_defaults
-	json_close_object
-	ubus call network add_dynamic "$(json_dump)"
+	local ip_4 ip_6
+	ip_4=$(awk '$1=="ipv4address:" {print $2}' "$config")
+	ip_6=$(awk '$1=="ipv6address:" {print $2}' "$config")
+	[ -n "$ip_4" ] || [ -n "$ip_6" ] || {
+		echo "mbim[$$]" "Failed to obtain IP addresses"
+		proto_notify_error "$interface" CONFIG_FAILED
+		return 1
+	}
 
-	json_init
-	json_add_string name "${interface}_6"
-	json_add_string ifname "@$interface"
-	json_add_string proto "dhcpv6"
-	json_add_string extendprefix 1
-	proto_add_dynamic_defaults
-	ubus call network add_dynamic "$(json_dump)"
+	proto_init_update "$ifname" 1
+	proto_set_keep 1
+	local ip mask gateway mtu dns dns_servers
+
+	[ -n "$ip_4" ] && {
+		echo "mbim[$$]" "Configure IPv4 on $ifname"
+		ip=${ip_4%%/*}
+		mask=${ip_4##*/}
+		gateway=$(awk '$1=="ipv4gateway:" {print $2}' "$config")
+		mtu=$(awk '$1=="ipv4mtu:" {print $2}' "$config")
+		[ "$mtu" ] && ip link set "$ifname" mtu "$mtu"
+
+		proto_add_ipv4_address "$ip" "$mask"
+		[ "$defaultroute" = 0 ] || proto_add_ipv4_route 0.0.0.0 0 "$gateway" "$ip_4" "$metric"
+		[ "$peerdns" = 0 ] || {
+			dns_servers=$(awk '$1=="ipv4dnsserver:" {printf "%s ",$2}' "$config")
+			for dns in $dns_servers; do
+				proto_add_dns_server "$dns"
+			done
+		}
+
+	}
+	[ -n "$ip_6" ] && {
+		echo "mbim[$$]" "Configure IPv6 on $ifname"
+		ip=${ip_6%%/*}
+		mask=${ip_6##*/}
+		gateway=$(awk '$1=="ipv6gateway:" {print $2}' "$config")
+		mtu=$(awk '$1=="ipv6mtu:" {print $2}' "$config")
+		[ "$mtu" ] && ip -6 link set "$ifname" mtu "$mtu"
+
+		proto_add_ipv6_address "$ip" "128"
+		proto_add_ipv6_prefix "$ip_6"
+		proto_add_ipv6_route "$gateway" "128"
+		[ "$defaultroute" = 0 ] || proto_add_ipv6_route "::" 0 "$gateway" "$metric" "" "$ip_6"
+		[ "$peerdns" = 0 ] || {
+			dns_servers=$(awk '$1=="ipv6dnsserver:" {printf "%s ",$2}' "$config")
+			for dns in $dns_servers; do
+				proto_add_dns_server "$dns"
+			done
+		}
+	}
+
+	proto_send_update "$interface"
+	echo "mbim[$$]" "Connection setup complete"
 }
 
 proto_mbim_setup() {
 	local ret
 
-	_proto_mbim_setup $@
+	_proto_mbim_setup "$@"
 	ret=$?
+
+	rm -f "/var/run/mbim.$$."*
 
 	[ "$ret" = 0 ] || {
 		logger "mbim bringup failed, retry in 15s"
@@ -161,17 +228,13 @@ proto_mbim_setup() {
 proto_mbim_teardown() {
 	local interface="$1"
 
-	local device
-	json_get_vars device
-	local tid=$(uci_get_state network $interface tid)
+	local device tid
+	json_get_vars device tid
 
 	[ -n "$ctl_device" ] && device=$ctl_device
 
 	echo "mbim[$$]" "Stopping network"
-	[ -n "$tid" ] && {
-		umbim $DBG -t$tid -d "$device" disconnect
-		uci_revert_state network $interface tid
-	}
+	[ -n "$tid" ] && umbim $DBG -t$tid -d "$device" disconnect
 
 	proto_init_update "*" 0
 	proto_send_update "$interface"

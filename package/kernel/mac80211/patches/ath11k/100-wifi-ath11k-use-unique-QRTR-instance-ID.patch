@@ -1,0 +1,162 @@
+From 534a5f99d589cfa6b244b4433c192b6a278a67ff Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sat, 5 Nov 2022 20:15:40 +0100
+Subject: [PATCH] wifi: ath11k: use unique QRTR instance ID
+
+Currently, trying to use AHB + PCI/MHI cards or multiple PCI/MHI cards
+will cause a clash in the QRTR instance node ID and prevent the driver
+from talking via QMI to the card and thus initializing it with:
+[    9.836329] ath11k c000000.wifi: host capability request failed: 1 90
+[    9.842047] ath11k c000000.wifi: failed to send qmi host cap: -22
+
+So, in order to allow for this combination of cards, especially AHB + PCI
+cards like IPQ8074 + QCN9074 (Used by me and tested on) set the desired
+QRTR instance ID offset by calculating a unique one based on PCI domain
+and bus ID-s and writing it to bits 7-0 of BHI_ERRDBG2 MHI register by
+using the SBL state callback that is added as part of the series.
+We also have to make sure that new QRTR offset is added on top of the
+default QRTR instance ID-s that are currently used in the driver.
+
+This finally allows using AHB + PCI or multiple PCI cards on the same
+system.
+
+Since this is not supported on QCA6390 and like, its limited to QCN9074
+which is known to support changing QRTR instance ID.
+
+Before:
+root@OpenWrt:/# qrtr-lookup
+  Service Version Instance Node  Port
+     1054       1        0    7     1 <unknown>
+       69       1        2    7     3 ATH10k WLAN firmware service
+
+After:
+root@OpenWrt:/# qrtr-lookup
+  Service Version Instance Node  Port
+     1054       1        0    7     1 <unknown>
+       69       1        2    7     3 ATH10k WLAN firmware service
+       15       1        0    8     1 Test service
+       69       1        8    8     2 ATH10k WLAN firmware service
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.5.0.1-01208-QCAHKSWPL_SILICONZ-1
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.5.0.1-01208-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ drivers/net/wireless/ath/ath11k/mhi.c | 49 ++++++++++++++++++---------
+ drivers/net/wireless/ath/ath11k/mhi.h |  3 ++
+ drivers/net/wireless/ath/ath11k/pci.c |  9 ++++-
+ 3 files changed, 44 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mhi.c
++++ b/drivers/net/wireless/ath/ath11k/mhi.c
+@@ -294,6 +294,34 @@ static void ath11k_mhi_op_runtime_put(st
+ {
+ }
+ 
++static int ath11k_mhi_op_read_reg(struct mhi_controller *mhi_cntrl,
++				  void __iomem *addr,
++				  u32 *out)
++{
++	*out = readl(addr);
++
++	return 0;
++}
++
++static void ath11k_mhi_op_write_reg(struct mhi_controller *mhi_cntrl,
++				    void __iomem *addr,
++				    u32 val)
++{
++	writel(val, addr);
++}
++
++static void ath11k_mhi_qrtr_instance_set(struct mhi_controller *mhi_cntrl)
++{
++	struct ath11k_base *ab = dev_get_drvdata(mhi_cntrl->cntrl_dev);
++
++	if (ab->hw_rev == ATH11K_HW_QCN9074_HW10) {
++		ath11k_mhi_op_write_reg(mhi_cntrl,
++					mhi_cntrl->bhi + BHI_ERRDBG2,
++					FIELD_PREP(QRTR_INSTANCE_MASK,
++					ab->qmi.service_ins_id - ab->hw_params.qmi_service_ins_id));
++	}
++}
++
+ static char *ath11k_mhi_op_callback_to_str(enum mhi_callback reason)
+ {
+ 	switch (reason) {
+@@ -315,6 +343,8 @@ static char *ath11k_mhi_op_callback_to_s
+ 		return "MHI_CB_FATAL_ERROR";
+ 	case MHI_CB_BW_REQ:
+ 		return "MHI_CB_BW_REQ";
++	case MHI_CB_EE_SBL_MODE:
++		return "MHI_CB_EE_SBL_MODE";
+ 	default:
+ 		return "UNKNOWN";
+ 	}
+@@ -336,27 +366,14 @@ static void ath11k_mhi_op_status_cb(stru
+ 		if (!(test_bit(ATH11K_FLAG_UNREGISTERING, &ab->dev_flags)))
+ 			queue_work(ab->workqueue_aux, &ab->reset_work);
+ 		break;
++	case MHI_CB_EE_SBL_MODE:
++		ath11k_mhi_qrtr_instance_set(mhi_cntrl);
++		break;
+ 	default:
+ 		break;
+ 	}
+ }
+ 
+-static int ath11k_mhi_op_read_reg(struct mhi_controller *mhi_cntrl,
+-				  void __iomem *addr,
+-				  u32 *out)
+-{
+-	*out = readl(addr);
+-
+-	return 0;
+-}
+-
+-static void ath11k_mhi_op_write_reg(struct mhi_controller *mhi_cntrl,
+-				    void __iomem *addr,
+-				    u32 val)
+-{
+-	writel(val, addr);
+-}
+-
+ static int ath11k_mhi_read_addr_from_dt(struct mhi_controller *mhi_ctrl)
+ {
+ 	struct device_node *np;
+--- a/drivers/net/wireless/ath/ath11k/mhi.h
++++ b/drivers/net/wireless/ath/ath11k/mhi.h
+@@ -16,6 +16,9 @@
+ #define MHICTRL					0x38
+ #define MHICTRL_RESET_MASK			0x2
+ 
++#define BHI_ERRDBG2				0x38
++#define QRTR_INSTANCE_MASK			GENMASK(7, 0)
++
+ int ath11k_mhi_start(struct ath11k_pci *ar_pci);
+ void ath11k_mhi_stop(struct ath11k_pci *ar_pci);
+ int ath11k_mhi_register(struct ath11k_pci *ar_pci);
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -370,13 +370,20 @@ static void ath11k_pci_sw_reset(struct a
+ static void ath11k_pci_init_qmi_ce_config(struct ath11k_base *ab)
+ {
+ 	struct ath11k_qmi_ce_cfg *cfg = &ab->qmi.ce_cfg;
++	struct ath11k_pci *ab_pci = ath11k_pci_priv(ab);
++	struct pci_bus *bus = ab_pci->pdev->bus;
+ 
+ 	cfg->tgt_ce = ab->hw_params.target_ce_config;
+ 	cfg->tgt_ce_len = ab->hw_params.target_ce_count;
+ 
+ 	cfg->svc_to_ce_map = ab->hw_params.svc_to_ce_map;
+ 	cfg->svc_to_ce_map_len = ab->hw_params.svc_to_ce_map_len;
+-	ab->qmi.service_ins_id = ab->hw_params.qmi_service_ins_id;
++
++	if (ab->hw_rev == ATH11K_HW_QCN9074_HW10) {
++		ab->qmi.service_ins_id = ab->hw_params.qmi_service_ins_id +
++		(((pci_domain_nr(bus) & 0xF) << 4) | (bus->number & 0xF));
++	} else
++		ab->qmi.service_ins_id = ab->hw_params.qmi_service_ins_id;
+ 
+ 	ath11k_ce_get_shadow_config(ab, &cfg->shadow_reg_v2,
+ 				    &cfg->shadow_reg_v2_len);

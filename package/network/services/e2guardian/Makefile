@@ -22,12 +22,11 @@ PKG_FIXUP:=autoreconf
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
 
-include $(INCLUDE_DIR)/uclibc++.mk
 include $(INCLUDE_DIR)/package.mk
 
 define Package/e2guardian
   SECTION:=net
-  DEPENDS:=+libpthread $(CXX_DEPENDS) +zlib +libpcre
+  DEPENDS:=+libstdcpp +libpthread +zlib +libpcre
   CATEGORY:=Network
   SUBMENU:=Web Servers/Proxies
   TITLE:=E2Guardian
@@ -41,7 +40,7 @@ endef
 
 CONFIGURE_VARS += \
 	INCLUDES="" \
-	CXXFLAGS="$$$$CXXFLAGS -fno-rtti" \
+	CXXFLAGS="$$$$CXXFLAGS -fno-rtti -std=c++14" \
 	LIBS="-lpthread"
 
 CONFIGURE_ARGS += \

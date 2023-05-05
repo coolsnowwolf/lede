@@ -484,6 +484,21 @@ define Device/ezviz_cs-w3-wd1200g-eup
 endef
 TARGET_DEVICES += ezviz_cs-w3-wd1200g-eup
 
+define Device/glinet_gl-a1300
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := GL.iNet
+	DEVICE_MODEL := GL-A1300
+	BOARD_NAME := gl-a1300
+	DEVICE_DTS := qcom-ipq4018-gl-a1300
+	DEVICE_DTS_CONFIG := config@ap.dk01.1-c2
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 131072k
+	DEVICE_PACKAGE := ipq-wifi-glinet_gl-a1300
+endef
+TARGET_DEVICES += glinet_gl-a1300
+
 define Device/glinet_gl-b1300
 	$(call Device/FitImage)
 	DEVICE_VENDOR := GL.iNet
@@ -521,18 +536,16 @@ define Device/hiwifi_c526a
 endef
 TARGET_DEVICES += hiwifi_c526a
 
-define Device/hugo_ac1200
-	$(call Device/FitImage)
-	DEVICE_VENDOR := Hugo
-	DEVICE_MODEL := AC1200
-	BOARD_NAME := hugo_ac1200
-	DEVICE_DTS := qcom-ipq4019-hugo-ac1200
+define Device/leguang_ca100
+	$(call Device/FitzImage)
+	DEVICE_VENDOR := LEGUANG
+	DEVICE_MODEL := CA100
+	DEVICE_DTS := qcom-ipq4019-ca100
 	KERNEL_SIZE := 4096k
 	IMAGE_SIZE := 31232k
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
-	DEVICE_PACKAGES := ipq-wifi-hugo_ac1200
 endef
-TARGET_DEVICES += hugo_ac1200
+TARGET_DEVICES += leguang_ca100
 
 define Device/linksys_ea6350v3
 	# The Linksys EA6350v3 has a uboot bootloader that does not
@@ -773,6 +786,20 @@ define Device/unielec_u4019-32m
 	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += unielec_u4019-32m
+
+define Device/zte_mf263
+	$(call Device/FitzImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZTE
+	DEVICE_MODEL := MF263
+	DEVICE_DTS := qcom-ipq4019-zte-mf263
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE/factory.img := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
+	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-zte_mf263
+endef
+TARGET_DEVICES += zte_mf263
 
 define Device/zyxel_nbg6617
 	$(call Device/FitImageLzma)

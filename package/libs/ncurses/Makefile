@@ -8,12 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ncurses
-PKG_VERSION:=6.2
-PKG_RELEASE:=2
+PKG_CPE_ID:=cpe:/a:gnu:ncurses
+PKG_VERSION:=6.4
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=30306e0c76e0f9f1f0de987cf1c82a5c21e1ce6568b9227f7da5b71cbea86c9d
+PKG_HASH:=6931283d9ac87c5073f30b6290c4c75f21632bb4fc3603ac8100812bed248159
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=README
@@ -128,6 +129,8 @@ ifneq ($(HOST_OS),FreeBSD)
 		r/rxvt-unicode \
 		s/screen \
 		s/screen-256color \
+		t/tmux \
+		t/tmux-256color \
 		v/vt100 \
 		v/vt102 \
 		x/xterm \

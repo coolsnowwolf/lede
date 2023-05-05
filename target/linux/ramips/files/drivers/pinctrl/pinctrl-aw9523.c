@@ -822,7 +822,7 @@ static int aw9523_init_gpiochip(struct aw9523 *awi, unsigned int npins)
 	gpiochip->parent = dev;
 	gpiochip->of_node = dev->of_node;
 	gpiochip->owner = THIS_MODULE;
-	gpiochip->can_sleep = false;
+	gpiochip->can_sleep = true;
 
 	return 0;
 }

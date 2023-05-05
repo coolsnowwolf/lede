@@ -24,11 +24,6 @@ config KERNEL_PRINTK
 	bool "Enable support for printk"
 	default y
 
-config KERNEL_CRASHLOG
-	bool "Crash logging"
-	depends on !(arm || powerpc || sparc || TARGET_uml || i386 || x86_64)
-	default y
-
 config KERNEL_SWAP
 	bool "Support for paging of anonymous memory (swap)"
 	default y if !SMALL_FLASH
@@ -48,8 +43,7 @@ config KERNEL_DEBUG_FS
 
 config KERNEL_MIPS_FP_SUPPORT
 	bool
-	default y
-	depends on (mips || mipsel || mips64 || mips64el)
+	default y if TARGET_pistachio
 
 config KERNEL_ARM_PMU
 	bool
@@ -87,6 +81,11 @@ config KERNEL_PROFILING
 	  Enable the extended profiling support mechanisms used by profilers such
 	  as OProfile.
 
+config KERNEL_RPI_AXIPERF
+	bool "Compile the kernel with RaspberryPi AXI Performance monitors"
+	default y
+	depends on KERNEL_PERF_EVENTS && TARGET_bcm27xx
+
 config KERNEL_UBSAN
 	bool "Compile the kernel with undefined behaviour sanity checker"
 	help
@@ -115,12 +114,35 @@ config KERNEL_UBSAN_ALIGNMENT
 	  Enabling this option on architectures that support unaligned
 	  accesses may produce a lot of false positives.
 
+config KERNEL_UBSAN_BOUNDS
+	bool "Perform array index bounds checking"
+	depends on KERNEL_UBSAN
+	help
+	  This option enables detection of directly indexed out of bounds array
+	  accesses, where the array size is known at compile time. Note that
+	  this does not protect array overflows via bad calls to the
+	  {str,mem}*cpy() family of functions (that is addressed by
+	  FORTIFY_SOURCE).
+
 config KERNEL_UBSAN_NULL
 	bool "Enable checking of null pointers"
 	depends on KERNEL_UBSAN
 	help
 	  This option enables detection of memory accesses via a
 	  null pointer.
+
+config KERNEL_UBSAN_TRAP
+	bool "On Sanitizer warnings, abort the running kernel code"
+	depends on KERNEL_UBSAN
+	help
+	  Building kernels with Sanitizer features enabled tends to grow the
+	  kernel size by around 5%, due to adding all the debugging text on
+	  failure paths. To avoid this, Sanitizer instrumentation can just
+	  issue a trap. This reduces the kernel size overhead but turns all
+	  warnings (including potentially harmless conditions) into full
+	  exceptions that abort the running kernel code (regardless of context,
+	  locks held, etc), which may destabilize the system. For some system
+	  builders this is an acceptable trade-off.
 
 config KERNEL_KASAN
 	bool "Compile the kernel with KASan: runtime memory debugger"
@@ -148,6 +170,30 @@ config KERNEL_KASAN_EXTRA
 	  compile time.
 	  https://gcc.gnu.org/bugzilla/show_bug.cgi?id=81715 has more
 
+config KERNEL_KASAN_VMALLOC
+	bool "Back mappings in vmalloc space with real shadow memory"
+	depends on KERNEL_KASAN
+	help
+	  By default, the shadow region for vmalloc space is the read-only
+	  zero page. This means that KASAN cannot detect errors involving
+	  vmalloc space.
+
+	  Enabling this option will hook in to vmap/vmalloc and back those
+	  mappings with real shadow memory allocated on demand. This allows
+	  for KASAN to detect more sorts of errors (and to support vmapped
+	  stacks), but at the cost of higher memory usage.
+
+	  This option depends on HAVE_ARCH_KASAN_VMALLOC, but we can't
+	  depend on that in here, so it is possible that enabling this
+	  will have no effect.
+
+if KERNEL_KASAN
+	config KERNEL_KASAN_GENERIC
+	def_bool y
+
+	config KERNEL_KASAN_SW_TAGS
+	def_bool n
+endif
 
 choice
 	prompt "Instrumentation type"
@@ -303,6 +349,19 @@ config KERNEL_PREEMPT_TRACER
 	  enabled. This option and the irqs-off timing option can be
 	  used together or separately.)
 
+config KERNEL_HIST_TRIGGERS
+	bool "Histogram triggers"
+	depends on KERNEL_FTRACE
+	help
+	  Hist triggers allow one or more arbitrary trace event fields to be
+	  aggregated into hash tables and dumped to stdout by reading a
+	  debugfs/tracefs file. They're useful for gathering quick and dirty
+	  (though precise) summaries of event activity as an initial guide for
+	  further investigation using more advanced tools.
+
+	  Inter-event tracing of quantities such as latencies is also
+	  supported using hist triggers under this option.
+
 config KERNEL_DEBUG_KERNEL
 	bool
 	default n
@@ -313,6 +372,34 @@ config KERNEL_DEBUG_INFO
 	select KERNEL_DEBUG_KERNEL
 	help
 	  This will compile your kernel and modules with debug information.
+
+config KERNEL_DEBUG_INFO_BTF
+
+	bool "Enable additional BTF type information"
+	default n
+	depends on !HOST_OS_MACOS
+	depends on KERNEL_DEBUG_INFO && !KERNEL_DEBUG_INFO_REDUCED
+	select DWARVES
+	help
+	  Generate BPF Type Format (BTF) information from DWARF debug info.
+	  Turning this on expects presence of pahole tool, which will convert
+	  DWARF type info into equivalent deduplicated BTF type info.
+
+	  Required to run BPF CO-RE applications.
+
+config KERNEL_DEBUG_INFO_REDUCED
+	bool "Reduce debugging information"
+	default y
+	depends on KERNEL_DEBUG_INFO
+	help
+	  If you say Y here gcc is instructed to generate less debugging
+	  information for structure types. This means that tools that
+	  need full debugging information (like kgdb or systemtap) won't
+	  be happy. But if you merely need debugging information to
+	  resolve line numbers there is no loss. Advantage is that
+	  build directory object sizes shrink dramatically over a full
+	  DEBUG_INFO build and compile times are reduced too.
+	  Only works with newer gcc versions.
 
 config KERNEL_DEBUG_LL_UART_NONE
 	bool
@@ -326,6 +413,14 @@ config KERNEL_DEBUG_LL
 	select KERNEL_DEBUG_LL_UART_NONE
 	help
 	  ARM low level debugging.
+
+config KERNEL_DEBUG_VIRTUAL
+	bool "Compile the kernel with VM translations debugging"
+	select KERNEL_DEBUG_KERNEL
+	default n
+	help
+	  Enable checks sanity checks to catch invalid uses of
+	  virt_to_phys()/phys_to_virt() against the non-linear address space.
 
 config KERNEL_DYNAMIC_DEBUG
 	bool "Compile the kernel with dynamic printk"
@@ -367,6 +462,21 @@ config KERNEL_KPROBES
 config KERNEL_KPROBE_EVENTS
 	bool
 	default y if KERNEL_KPROBES
+
+config KERNEL_BPF_EVENTS
+	bool "Compile the kernel with BPF event support"
+	default n
+	select KERNEL_KPROBES
+	help
+	  Allows to attach BPF programs to kprobe, uprobe and tracepoint events.
+	  This is required to use BPF maps of type BPF_MAP_TYPE_PERF_EVENT_ARRAY
+	  for sending data from BPF programs to user-space for post-processing
+	  or logging.
+
+config KERNEL_BPF_KPROBE_OVERRIDE
+	bool
+	default n
+	depends on KERNEL_KPROBES
 
 config KERNEL_AIO
 	bool "Compile the kernel with asynchronous IO support"
@@ -437,34 +547,22 @@ config KERNEL_PROVE_LOCKING
 	select KERNEL_DEBUG_KERNEL
 	default n
 
-config KERNEL_LOCKUP_DETECTOR
-	bool "Compile the kernel with detect Hard and Soft Lockups"
+config KERNEL_SOFTLOCKUP_DETECTOR
+	bool "Compile the kernel with detect Soft Lockups"
 	depends on KERNEL_DEBUG_KERNEL
 	help
 	  Say Y here to enable the kernel to act as a watchdog to detect
-	  hard and soft lockups.
+	  soft lockups.
 
 	  Softlockups are bugs that cause the kernel to loop in kernel
 	  mode for more than 20 seconds, without giving other tasks a
 	  chance to run.  The current stack trace is displayed upon
 	  detection and the system will stay locked up.
 
-	  Hardlockups are bugs that cause the CPU to loop in kernel mode
-	  for more than 10 seconds, without letting other interrupts have a
-	  chance to run.  The current stack trace is displayed upon detection
-	  and the system will stay locked up.
-
-	  The overhead should be minimal.  A periodic hrtimer runs to
-	  generate interrupts and kick the watchdog task every 4 seconds.
-	  An NMI is generated every 10 seconds or so to check for hardlockups.
-
-	  The frequency of hrtimer and NMI events and the soft and hard lockup
-	  thresholds can be controlled through the sysctl watchdog_thresh.
-
 config KERNEL_DETECT_HUNG_TASK
 	bool "Compile the kernel with detect Hung Tasks"
 	depends on KERNEL_DEBUG_KERNEL
-	default KERNEL_LOCKUP_DETECTOR
+	default KERNEL_SOFTLOCKUP_DETECTOR
 	help
 	  Say Y here to enable the kernel to detect "hung tasks",
 	  which are bugs that cause the task to be stuck in
@@ -545,6 +643,7 @@ config KERNEL_CRASH_DUMP
 
 config USE_RFKILL
 	bool "Enable rfkill support"
+	default y if TARGET_rockchip
 	default RFKILL_SUPPORT
 
 config USE_SPARSE
@@ -681,7 +780,7 @@ if KERNEL_CGROUPS
 		bool "Memory Resource Controller for Control Groups"
 		default y
 		select KERNEL_FREEZER
-		depends on KERNEL_RESOURCE_COUNTERS || !LINUX_3_18
+		depends on KERNEL_RESOURCE_COUNTERS
 		help
 		  Provides a memory resource controller that manages both anonymous
 		  memory and page cache. (See Documentation/cgroups/memory.txt)
@@ -944,6 +1043,19 @@ config KERNEL_IP_MROUTE
 	  Multicast routing requires a multicast routing daemon in
 	  addition to kernel support.
 
+if KERNEL_IP_MROUTE
+
+	config KERNEL_IP_MROUTE_MULTIPLE_TABLES
+		def_bool y
+
+	config KERNEL_IP_PIMSM_V1
+		def_bool y
+
+	config KERNEL_IP_PIMSM_V2
+		def_bool y
+
+endif
+
 #
 # IPv6 configuration
 #
@@ -966,8 +1078,15 @@ if KERNEL_IPV6
 		  Multicast routing requires a multicast routing daemon in
 		  addition to kernel support.
 
-	config KERNEL_IPV6_PIMSM_V2
-		def_bool n
+	if KERNEL_IPV6_MROUTE
+
+		config KERNEL_IPV6_MROUTE_MULTIPLE_TABLES
+			def_bool y
+
+		config KERNEL_IPV6_PIMSM_V2
+			def_bool y
+
+	endif
 
 	config KERNEL_IPV6_SEG6_LWTUNNEL
 		bool "Enable support for lightweight tunnels"
@@ -979,6 +1098,24 @@ if KERNEL_IPV6
 		def_bool n
 
 endif
+
+#
+# Miscellaneous network configuration
+#
+
+config KERNEL_NET_L3_MASTER_DEV
+	bool "L3 Master device support"
+	help
+	  This module provides glue between core networking code and device
+	  drivers to support L3 master devices like VRF.
+
+config KERNEL_PAGE_POOL
+	def_bool n
+
+config KERNEL_PAGE_POOL_STATS
+	bool "Page pool stats support"
+	depends on KERNEL_PAGE_POOL
+	depends on !(LINUX_5_4||LINUX_5_10)
 
 #
 # NFS related symbols
@@ -1125,7 +1262,7 @@ config KERNEL_SQUASHFS_XATTR
 	bool "Squashfs XATTR support"
 
 #
-# compile optimiziation setting
+# compile optimization setting
 #
 choice
 	prompt "Compiler optimization level"

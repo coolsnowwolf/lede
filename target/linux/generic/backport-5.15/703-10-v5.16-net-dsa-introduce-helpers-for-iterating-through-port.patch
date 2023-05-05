@@ -1,0 +1,68 @@
+From 82b318983c515f29b8b3a0dad9f6a5fe8a68a7f4 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Wed, 20 Oct 2021 20:49:49 +0300
+Subject: [PATCH] net: dsa: introduce helpers for iterating through ports using
+ dp
+
+Since the DSA conversion from the ds->ports array into the dst->ports
+list, the DSA API has encouraged driver writers, as well as the core
+itself, to write inefficient code.
+
+Currently, code that wants to filter by a specific type of port when
+iterating, like {!unused, user, cpu, dsa}, uses the dsa_is_*_port helper.
+Under the hood, this uses dsa_to_port which iterates again through
+dst->ports. But the driver iterates through the port list already, so
+the complexity is quadratic for the typical case of a single-switch
+tree.
+
+This patch introduces some iteration helpers where the iterator is
+already a struct dsa_port *dp, so that the other variant of the
+filtering functions, dsa_port_is_{unused,user,cpu_dsa}, can be used
+directly on the iterator. This eliminates the second lookup.
+
+These functions can be used both by the core and by drivers.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/net/dsa.h | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -476,6 +476,34 @@ static inline bool dsa_is_user_port(stru
+ 	return dsa_to_port(ds, p)->type == DSA_PORT_TYPE_USER;
+ }
+ 
++#define dsa_tree_for_each_user_port(_dp, _dst) \
++	list_for_each_entry((_dp), &(_dst)->ports, list) \
++		if (dsa_port_is_user((_dp)))
++
++#define dsa_switch_for_each_port(_dp, _ds) \
++	list_for_each_entry((_dp), &(_ds)->dst->ports, list) \
++		if ((_dp)->ds == (_ds))
++
++#define dsa_switch_for_each_port_safe(_dp, _next, _ds) \
++	list_for_each_entry_safe((_dp), (_next), &(_ds)->dst->ports, list) \
++		if ((_dp)->ds == (_ds))
++
++#define dsa_switch_for_each_port_continue_reverse(_dp, _ds) \
++	list_for_each_entry_continue_reverse((_dp), &(_ds)->dst->ports, list) \
++		if ((_dp)->ds == (_ds))
++
++#define dsa_switch_for_each_available_port(_dp, _ds) \
++	dsa_switch_for_each_port((_dp), (_ds)) \
++		if (!dsa_port_is_unused((_dp)))
++
++#define dsa_switch_for_each_user_port(_dp, _ds) \
++	dsa_switch_for_each_port((_dp), (_ds)) \
++		if (dsa_port_is_user((_dp)))
++
++#define dsa_switch_for_each_cpu_port(_dp, _ds) \
++	dsa_switch_for_each_port((_dp), (_ds)) \
++		if (dsa_port_is_cpu((_dp)))
++
+ static inline u32 dsa_user_ports(struct dsa_switch *ds)
+ {
+ 	u32 mask = 0;

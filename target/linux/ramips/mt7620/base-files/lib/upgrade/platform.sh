@@ -35,6 +35,9 @@ platform_do_upgrade() {
 		dd if=/dev/mtd0 bs=64 count=1 2>/dev/null | grep -qi breed && CI_KERNPART_EXT="kernel_stock"
 		nand_do_upgrade "$1"
 		;;
+	hiwifi,r33)
+		nand_do_upgrade "$1"
+		;;
 	*)
 		default_do_upgrade "$1"
 		;;

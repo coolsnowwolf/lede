@@ -1,0 +1,79 @@
+From 73472c830eae5fce2107f7f086f1e6827d215caf Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 13 Sep 2022 20:06:48 +0100
+Subject: [PATCH 1/1] net: sfp: add support for HALNy GPON SFP
+
+Add a quirk for the HALNy HL-GSFP module, which appears to have an
+inverted RX_LOS signal, and maybe uses TX_FAULT as a serial port
+transmit pin. Rather than use these hardware signals, switch to
+using software polling for these status signals.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/sfp-bus.c |  2 +-
+ drivers/net/phy/sfp.c     | 21 ++++++++++++++++++---
+ 2 files changed, 19 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/phy/sfp-bus.c
++++ b/drivers/net/phy/sfp-bus.c
+@@ -283,7 +283,7 @@ void sfp_parse_support(struct sfp_bus *b
+ 			phylink_set(modes, 2500baseX_Full);
+ 	}
+ 
+-	if (bus->sfp_quirk)
++	if (bus->sfp_quirk && bus->sfp_quirk->modes)
+ 		bus->sfp_quirk->modes(id, modes);
+ 
+ 	linkmode_or(support, support, modes);
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -321,6 +321,15 @@ static void sfp_fixup_ignore_tx_fault(st
+ 	sfp->tx_fault_ignore = true;
+ }
+ 
++static void sfp_fixup_halny_gsfp(struct sfp *sfp)
++{
++	/* Ignore the TX_FAULT and LOS signals on this module.
++	 * these are possibly used for other purposes on this
++	 * module, e.g. a serial port.
++	 */
++	sfp->state_hw_mask &= ~(SFP_F_TX_FAULT | SFP_F_LOS);
++}
++
+ static void sfp_quirk_2500basex(const struct sfp_eeprom_id *id,
+ 				unsigned long *modes)
+ {
+@@ -353,6 +362,10 @@ static const struct sfp_quirk sfp_quirks
+ 		.modes = sfp_quirk_2500basex,
+ 		.fixup = sfp_fixup_long_startup,
+ 	}, {
++		.vendor = "HALNy",
++		.part = "HL-GSFP",
++		.fixup = sfp_fixup_halny_gsfp,
++	}, {
+ 		// Huawei MA5671A can operate at 2500base-X, but report 1.2GBd
+ 		// NRZ in their EEPROM
+ 		.vendor = "HUAWEI",
+@@ -369,16 +382,18 @@ static const struct sfp_quirk sfp_quirks
+ 		.vendor = "UBNT",
+ 		.part = "UF-INSTANT",
+ 		.modes = sfp_quirk_ubnt_uf_instant,
+-	},
++	}
+ };
+ 
+ static size_t sfp_strlen(const char *str, size_t maxlen)
+ {
+ 	size_t size, i;
+ 
+-	/* Trailing characters should be filled with space chars */
++	/* Trailing characters should be filled with space chars, but
++	 * some manufacturers can't read SFF-8472 and use NUL.
++	 */
+ 	for (i = 0, size = 0; i < maxlen; i++)
+-		if (str[i] != ' ')
++		if (str[i] != ' ' && str[i] != '\0')
+ 			size = i + 1;
+ 
+ 	return size;

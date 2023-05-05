@@ -4,9 +4,10 @@
 # Copyright (c) 2005-2015, lintel <lintel.huang@gmail.com>
 # Copyright (c) 2013, Hoowa <hoowa.sun@gmail.com>
 # Copyright (c) 2015-2017, GuoGuo <gch981213@gmail.com>
-# Copyright (c) 2020, jjm2473 <jjm2473@gmail.com>
+# Copyright (c) 2020,2023, jjm2473 <jjm2473@gmail.com>
+# Copyright (c) 2022, nanchuci <nanchuci023@gmail.com>
 #
-# 	netifd config script for MT7615 DBDC mode.
+# 	netifd config script for MT7615/MT7915 DBDC mode.
 #
 # 	嘿，对着屏幕的哥们,为了表示对原作者辛苦工作的尊重，任何引用跟借用都不允许你抹去所有作者的信息,请保留这段话。
 #
@@ -68,7 +69,10 @@ drv_mt_dbdc_init_device_config() {
 drv_mt_dbdc_init_iface_config() { 
 	config_add_boolean disabled
 	config_add_string mode bssid ssid encryption
+	config_add_boolean hidden isolate doth ieee80211k
+	config_add_boolean hidden isolate doth ieee80211v
 	config_add_boolean hidden isolate doth ieee80211r
+	config_add_boolean hidden isolate doth ieee80211w
 	config_add_string key key1 key2 key3 key4
 	config_add_string wps
 	config_add_string pin
@@ -97,12 +101,17 @@ mt_dbdc_ap_vif_pre_config() {
 	local name="$1"
 
 	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r macfilter
+	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211k ieee80211v ieee80211r ieee80211w macfilter
 	json_get_values maclist maclist
 	json_select ..
-	[ "$disabled" == "1" ] && return
+
+	[[ "$disabled" = "1" ]] && return
 	echo "Generating ap config for interface ra${RTWIFI_IFPREFIX}${ApBssidNum}"
 	ifname="ra${RTWIFI_IFPREFIX}${ApBssidNum}"
+
+	json_add_object data
+	json_add_string ifname "$ifname"
+	json_close_object
 
 	#MAC过滤方式相关设定 由于编号问题......我扔在这了......
 	ra_maclist="${maclist// /;};"
@@ -192,7 +201,7 @@ mt_dbdc_ap_vif_pre_config() {
 	mt_cmd echo "Interface $ifname now up."
 	mt_cmd iwpriv $ifname set NoForwarding=${isolate:-0}
 	mt_cmd iwpriv $ifname set IEEE80211H=${doth:-0}
-	if [ "$wps" == "pbc" ]  && [ "$encryption" != "none" ]; then
+	if [ "$wps" = "pbc" -o \( "$wps" = "pin" -a "$encryption" != "none" \) ]; then
 		echo "Enable WPS for ${ifname}."
 		mt_cmd iwpriv $ifname set WscConfMode=4
 		mt_cmd iwpriv $ifname set WscConfStatus=2
@@ -203,7 +212,10 @@ mt_dbdc_ap_vif_pre_config() {
 	fi
 	[ -n "$disassoc_low_ack" ]  && [ "$disassoc_low_ack" != "0" ] && mt_cmd iwpriv $ifname set KickStaRssiLow=$disassoc_low_ack
 	[ -n "$rssiassoc" ]  && [ "$rssiassoc" != "0" ] && mt_cmd iwpriv $ifname set AssocReqRssiThres=$rssiassoc
+	[ -n "$ieee80211k" ]  && [ "$ieee80211k" != "0" ] && mt_cmd iwpriv $ifname set rrmenable=1
+	[ -n "$ieee80211v" ]  && [ "$ieee80211v" != "0" ] && mt_cmd iwpriv $ifname set wnmenable=1
 	[ -n "$ieee80211r" ]  && [ "$ieee80211r" != "0" ] && mt_cmd iwpriv $ifname set ftenable=1
+	[ -n "$ieee80211w" ]  && [ "$ieee80211w" != "0" ] && mt_cmd iwpriv $ifname set pmfenable=1
 }
 
 mt_dbdc_wds_vif_pre_config() {
@@ -215,9 +227,14 @@ mt_dbdc_wds_vif_pre_config() {
 	set_default wdstxmcs 33
 	set_default wdsphymode "GREENFIELD"
 	json_select ..
-	[ "$disabled" == "1" ] && return
+	[[ "$disabled" = "1" ]] && return
 	[ $WDSBssidNum -gt 3 ] && return
 	ifname="wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
+
+	json_add_object data
+	json_add_string ifname "$ifname"
+	json_close_object
+
 	echo "Generating WDS config for interface $ifname"
 	WDSEN=1
 	WDSList="${WDSList}${bssid};"
@@ -243,82 +260,105 @@ mt_dbdc_sta_vif_pre_config() {
 		return
 	}
 
-	[ "$disabled" == "1" ] && return
+	[[ "$disabled" = "1" ]] && return
 	let stacount+=1
 
+	json_add_object data
+	json_add_string ifname "$APCLI_IF"
+	json_close_object
+
+	local ApCliAuthMode=OPEN ApCliEncrypType=NONE
+	case "$encryption" in #加密方式
+	wpa*|psk*|WPA*|Mixed|mixed)
+		local enc
+		local crypto
+		case "$encryption" in
+			Mixed|mixed|psk+psk2|psk-mixed*)
+				enc=WPAPSKWPA2PSK
+			;;
+			WPA2*|wpa2*|psk2*)
+				enc=WPA2PSK
+			;;
+			WPA*|WPA1*|wpa*|wpa1*|psk*)
+				enc=WPAPSK
+			;;
+		esac
+		crypto="AES"
+		case "$encryption" in
+			*tkip+aes*|*tkip+ccmp*|*aes+tkip*|*ccmp+tkip*)
+				crypto="TKIPAES"
+			;;
+			*aes*|*ccmp*)
+				crypto="AES"
+			;;
+			*tkip*)
+				crypto="TKIP"
+			;;
+		esac
+		ApCliAuthMode="${enc}"
+		ApCliEncrypType="${crypto}"
+	;;
+	WEP|wep|wep-open|wep-shared)
+		if [[ "$encryption" = "wep-shared" ]]; then
+			ApCliAuthMode="SHARED"
+		else
+			ApCliAuthMode="OPEN"
+		fi
+		ApCliEncrypType="WEP"
+		;;
+	none|open)
+		;;
+	esac
+
+	# mt_cmd iwpriv $APCLI_IF set MACRepeaterEn=1
+	mt_cmd iwpriv $APCLI_IF set ApCliAuthMode=$ApCliAuthMode
+	mt_cmd iwpriv $APCLI_IF set ApCliEncrypType=$ApCliEncrypType
+	if [[ "$ApCliEncrypType" = "WEP" ]]; then
+		mt_cmd iwpriv $APCLI_IF set ApCliDefaultKeyID=$key
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey1Type=1 # 0:hex, 1:ascii
+		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey1=${key1##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey2Type=1
+		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey2=${key2##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey3Type=1
+		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey3=${key3##*:}\""
+		# mt_cmd iwpriv $APCLI_IF set ApCliKey4Type=1
+		mt_cmd iwpriv $APCLI_IF set "\"ApCliKey4=${key4##*:}\""
+	elif ! [[ "$ApCliEncrypType" = "NONE" ]]; then
+		mt_cmd iwpriv $APCLI_IF set "\"ApCliWPAPSK=$key\""
+	fi
+	[ -z "$bssid" ] || mt_cmd iwpriv $APCLI_IF set "ApCliBssid=$(echo $bssid | tr 'A-Z' 'a-z')"
+	mt_cmd iwpriv $APCLI_IF set "\"ApCliSsid=$ssid\""
+
+	mt_cmd iwpriv $APCLI_IF set ApCliEnable=1
 	mt_cmd ifconfig $APCLI_IF up
-	killall  $APCLI_APCTRL
-	[ ! -z "$key" ] && APCTRL_KEY_ARG="-k"
-	[ ! -z "$bssid" ] && APCTRL_BSS_ARG="-b $(echo $bssid | tr 'A-Z' 'a-z')"
-	mt_cmd $APCLI_APCTRL ra${RTWIFI_IFPREFIX}0 connect -s "$ssid" $APCTRL_BSS_ARG $APCTRL_KEY_ARG "$key"
 }
 
-mt_dbdc_wds_vif_post_config() {
+mt_dbdc_vif_post_config() {
 	local name="$1"
 	json_select config
 	json_get_vars disabled
 	json_select ..
 
-	[ "$disabled" == "1" ] && return
-	[ $WDSBssidNum -gt 3 ] && return
-
-	ifname="wds${RTWIFI_IFPREFIX}${WDSBssidNum}"
-	let WDSBssidNum+=1
-
-	wireless_add_vif "$name" "$ifname"
-}
-
-mt_dbdc_ap_vif_post_config() {
-	local name="$1"
-
-	json_select config
-	json_get_vars disabled encryption key key1 key2 key3 key4 ssid mode wps pin isolate doth hidden disassoc_low_ack rssiassoc ieee80211r
+	json_select data
+	json_get_vars ifname
 	json_select ..
 
-	[ "$disabled" == "1" ] && return
-
-	[ $ApIfCNT -gt $RTWIFI_DEF_MAX_BSSID ] && return 
-
-	ifname="ra${RTWIFI_IFPREFIX}${ApIfCNT}"
-	let ApIfCNT+=1
-
+	[ "$disabled" = "1" -o -z "$ifname" ] && return
+	logger -t "mt_dbdc" "wireless_add_vif $name $ifname"
 	wireless_add_vif "$name" "$ifname"
-}
-
-mt_dbdc_sta_vif_post_config() {
-	local name="$1"
-
-	json_select config
-	json_get_vars disabled
-	json_select ..
-
-	[ $stacount -gt 1 ] && {
-		return
-	}
-
-	[ "$disabled" == "1" ] && return
-	let stacount+=1
-
-	wireless_add_vif "$name" "$APCLI_IF"
-}
-
-get_if_stat() {
-	[ ! -z "$1" ] && [ -d "/sys/class/net/$1" ] && cat /sys/class/net/$1/operstate
 }
 
 mt_dbdc_vif_down() {
 	phy_name=${1}
-	killall -9 -q apcli_2g
-	killall -9 -q apcli_5g
 	case "$phy_name" in
 		rax0)
 			for vif in ra0 ra1 ra2 ra3 ra4 ra5 ra6 ra7 wds0 wds1 wds2 wds3 apcli0; do
-				[ "$(get_if_stat $vif)" != "down" ] && ifconfig $vif down && echo $vif
+				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
 		ra0)
 			for vif in rax0 rax1 rax2 rax3 rax4 rax5 rax6 rax7 wdsx0 wdsx1 wdsx2 wdsx3 apclix0; do
-				[ "$(get_if_stat $vif)" != "down" ] && ifconfig $vif down && echo $vif
+				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
 	esac
@@ -332,14 +372,12 @@ drv_mt_dbdc_teardown() {
 	phy_name=${1}
 	case "$phy_name" in
 		ra0)
-			killall -9 -q apcli_2g
 			for vif in ra0 ra1 ra2 ra3 ra4 ra5 ra6 ra7 wds0 wds1 wds2 wds3 apcli0; do
 				# iwpriv $vif set DisConnectAllSta=1
 				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
 			done
 		;;
 		rax0)
-			killall -9 -q apcli_5g
 			for vif in rax0 rax1 rax2 rax3 rax4 rax5 rax6 rax7 wdsx0 wdsx1 wdsx2 wdsx3 apclix0; do
 				# iwpriv $vif set DisConnectAllSta=1
 				[ -d "/sys/class/net/$vif" ] && ifconfig $vif down
@@ -435,7 +473,7 @@ drv_mt_dbdc_setup() {
 			hwmode=${RTWIFI_DEF_BAND}
 		;;
 	esac
-	
+
 #HT默认模式设定
 	HT_BW=1  #允许HT40
 	HT_CE=1  #允许HT20/40共存
@@ -444,14 +482,14 @@ drv_mt_dbdc_setup() {
 	VHT_SGI=1 #VHT_SHORT_GI
 	#HT_MIMOPSMode用于省电模式设置
 	#HT_MIMOPSMode=3
-	
+
 #VHT默认模式设定
 	VHT_BW=1 #允许VHT
 	VHT_DisallowNonVHT=0 #是否禁止非VHT客户端连接，VHT80 only
-	
+
 	[ "$short_gi_20" == "0" -o "$short_gi_40" == "0" ] && HT_GI=0
 	[ "$short_gi_80" == "0" -o "$short_gi_160" == "0" ] && VHT_SGI=0
-	
+
 	case "$htmode" in
 		HT20 |\
 		VHT20) 
@@ -483,9 +521,9 @@ drv_mt_dbdc_setup() {
 #仅HT20以外才需要设置的参数
      [ "$htmode" != "HT20" ] && {
 #强制HT40/VHT80
-		[ "$noscan" == "1" ] && HT_CE=0 && RTWIFI_FORCE_HT=1
+		[[ "$noscan" = "1" ]] && HT_CE=0 && RTWIFI_FORCE_HT=1
 #HT HTC
-		[ "$ht_htc" == "1" ] && HT_HTC=1
+		[[ "$ht_htc" = "1" ]] && HT_HTC=1
     }
 
 #自动处理CountryRegion:指定信道的时候支持全频段
@@ -500,7 +538,7 @@ drv_mt_dbdc_setup() {
 		a)
 			EXTCHA=1
 			[ "$channel" != "auto" ] && [ "$channel" != "0" ] && [ "$(( ($channel / 4) % 2 ))" == "0" ] && EXTCHA=0
-			[ "$channel" == "165" ] && EXTCHA=0
+			[[ "$channel" = "165" ]] && EXTCHA=0
 			[ "$channel" == "auto" -o "$channel" == "0" ] && {
 				#CountryRegion CN
 				countryregion=1
@@ -532,6 +570,10 @@ MacAddress=${macaddr}
 CountryRegion=${countryregion:-5}
 CountryRegionABand=${countryregion_a:-7}
 CountryCode=${country:-CN}
+RRMEnable=${RRMEnable:-0};${RRMEnable:-0};${RRMEnable:-0};${RRMEnable:-0}
+WNMEnable=${WNMEnable:-0};${WNMEnable:-0};${WNMEnable:-0};${WNMEnable:-0}
+FTEnable=${FTEnable:-0};${FTEnable:-0};${FTEnable:-0};${FTEnable:-0}
+PMFenable=${PMFenable:-0};${PMFenable:-0};${PMFenable:-0};${PMFenable:-0}
 WirelessMode=${WirelessMode}
 G_BAND_256QAM=1
 FixedTxMode=
@@ -547,8 +589,8 @@ BFBACKOFFenable=0
 CalCacheApply=0
 DisableOLBC=0
 BGProtection=0
-TxAntenna=
-RxAntenna=
+TxAntenna=${TxAntenna:-2};${TxAntenna:-2};${TxAntenna:-4};${TxAntenna:-4}
+RxAntenna=${RxAntenna:-2};${RxAntenna:-2};${RxAntenna:-4};${RxAntenna:-4}
 TxPreamble=1
 RTSThreshold=${rts:-2347}
 FragThreshold=${frag:-2346}
@@ -677,8 +719,8 @@ VHT_STBC=${tx_stbc:-1}
 VHT_BW_SIGNAL=0
 VHT_DisallowNonVHT=${VHT_DisallowNonVHT:-0}
 VHT_LDPC=${ldpc:-1}
-#HT_TxStream=2
-#HT_RxStream=2
+HT_TxStream=2;2;2;2
+HT_RxStream=2;2;2;2
 HT_PROTECT=0
 HT_DisallowTKIP=${HT_DisallowTKIP:-0}
 HT_BSSCoexistence=${HT_CE:-1}
@@ -795,6 +837,8 @@ EOF
 
 #接口配置生成
 #	STA模式
+	mt_cmd ifconfig $APCLI_IF down
+	mt_cmd iwpriv $APCLI_IF set ApCliEnable=0
 	stacount=0
 	for_each_interface "sta" mt_dbdc_sta_vif_pre_config
 
@@ -812,7 +856,10 @@ EOF
 
 	for_each_interface "ap" mt_dbdc_ap_vif_pre_config
 
-	[ "$phy_name" == "ra0" ] && [ "$ApBssidNum" == "0" ] && mt_cmd ifconfig ra0 down
+# 设置频道，每个PHY只有一个频道
+	[[ "${AutoChannelSelect:-0}" = "0" ]] && mt_cmd iwpriv $phy_name set Channel=${channel}
+
+	[[ "$phy_name" = "ra0" && "$ApBssidNum" = "0" ]] && mt_cmd ifconfig ra0 down
 #For DBDC profile merging......
 	while [ $ApBssidNum -lt $RTWIFI_DEF_MAX_BSSID ]
 	do
@@ -856,36 +903,34 @@ EOF
 #加锁
 	echo "Pending..."
 	if lock -n $WIFI_OP_LOCK; then
-		sleep 3
-		RA_MAIN_UP=$(get_if_stat ra0)
+		sleep 2
 		drv_mt_dbdc_teardown $phy_name
-		RESET_IF=$(mt_dbdc_vif_down $phy_name)
-		echo "MT_DBDC:ra0:$RA_MAIN_UP.Later we'll restart $(echo ${RESET_IF} | tr '\n' ' ')"
-		sleep 1
+		mt_dbdc_vif_down $phy_name
 
 #Start root device
 		ifconfig ra0 up
 #restore interfaces
-		sh $RTWIFI_CMD_OPATH
-
-		sh $RTWIFI_CMD_PATH
+		if [[ "$phy_name" = "ra0" ]]; then
+			sh $RTWIFI_CMD_OPATH
+			sh $RTWIFI_CMD_PATH
+		else
+			sh $RTWIFI_CMD_PATH
+			sh $RTWIFI_CMD_OPATH
+		fi
 #重启HWNAT
 		[ -d /sys/module/hw_nat ] && {
 			/etc/init.d/hwacc restart
 		}
 	else
-		echo "Wait other process"
+		echo "Wait other process reload wifi"
 		lock $WIFI_OP_LOCK
 	fi
-#AP模式
-	ApIfCNT=0
-	for_each_interface "ap" mt_dbdc_ap_vif_post_config
 #WDS接口
-	WDSBssidNum=0
-	for_each_interface "wds" mt_dbdc_wds_vif_post_config
+	for_each_interface "wds" mt_dbdc_vif_post_config
 #STA模式
-	stacount=0
-	for_each_interface "sta" mt_dbdc_sta_vif_post_config
+	for_each_interface "sta" mt_dbdc_vif_post_config
+#AP模式
+	for_each_interface "ap" mt_dbdc_vif_post_config
 
 #设置无线上线
 	wireless_set_up

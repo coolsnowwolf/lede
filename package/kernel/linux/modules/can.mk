@@ -121,7 +121,7 @@ define KernelPackage/can-flexcan
   KCONFIG:=CONFIG_CAN_FLEXCAN
   FILES:=$(LINUX_DIR)/drivers/net/can/flexcan.ko
   AUTOLOAD:=$(call AutoProbe,flexcan)
-  $(call AddDepends/can,@TARGET_imx6)
+  $(call AddDepends/can,@TARGET_imx)
 endef
 
 define KernelPackage/can-flexcan/description
@@ -152,7 +152,7 @@ define KernelPackage/can-mcp251x
 	CONFIG_SPI=y \
 	CONFIG_CAN_MCP251X
   FILES:=$(LINUX_DIR)/drivers/net/can/spi/mcp251x.ko
-  AUTOLOAD:=$(call AutoProbe,can-mcp251x)
+  AUTOLOAD:=$(call AutoProbe,mcp251x)
   $(call AddDepends/can)
 endef
 

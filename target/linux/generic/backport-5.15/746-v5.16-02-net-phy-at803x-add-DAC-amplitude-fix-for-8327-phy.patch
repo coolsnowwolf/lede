@@ -1,0 +1,91 @@
+From 1ca8311949aec5c9447645731ef1c6bc5bd71350 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Sun, 10 Oct 2021 00:46:16 +0200
+Subject: net: phy: at803x: add DAC amplitude fix for 8327 phy
+
+QCA8327 internal phy require DAC amplitude adjustement set to +6% with
+100m speed. Also add additional define to report a change of the same
+reg in QCA8337. (different scope it does set 1000m voltage)
+Add link_change_notify function to set the proper amplitude adjustement
+on PHY_RUNNING state and disable on any other state.
+
+Fixes: b4df02b562f4 ("net: phy: at803x: add support for qca 8327 A variant internal phy")
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/at803x.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -87,6 +87,8 @@
+ #define AT803X_PSSR_MR_AN_COMPLETE		0x0200
+ 
+ #define AT803X_DEBUG_REG_0			0x00
++#define QCA8327_DEBUG_MANU_CTRL_EN		BIT(2)
++#define QCA8337_DEBUG_MANU_CTRL_EN		GENMASK(3, 2)
+ #define AT803X_DEBUG_RX_CLK_DLY_EN		BIT(15)
+ 
+ #define AT803X_DEBUG_REG_5			0x05
+@@ -1306,9 +1308,37 @@ static int qca83xx_config_init(struct ph
+ 		break;
+ 	}
+ 
++	/* QCA8327 require DAC amplitude adjustment for 100m set to +6%.
++	 * Disable on init and enable only with 100m speed following
++	 * qca original source code.
++	 */
++	if (phydev->drv->phy_id == QCA8327_A_PHY_ID ||
++	    phydev->drv->phy_id == QCA8327_B_PHY_ID)
++		at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0,
++				      QCA8327_DEBUG_MANU_CTRL_EN, 0);
++
+ 	return 0;
+ }
+ 
++static void qca83xx_link_change_notify(struct phy_device *phydev)
++{
++	/* QCA8337 doesn't require DAC Amplitude adjustement */
++	if (phydev->drv->phy_id == QCA8337_PHY_ID)
++		return;
++
++	/* Set DAC Amplitude adjustment to +6% for 100m on link running */
++	if (phydev->state == PHY_RUNNING) {
++		if (phydev->speed == SPEED_100)
++			at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0,
++					      QCA8327_DEBUG_MANU_CTRL_EN,
++					      QCA8327_DEBUG_MANU_CTRL_EN);
++	} else {
++		/* Reset DAC Amplitude adjustment */
++		at803x_debug_reg_mask(phydev, AT803X_DEBUG_REG_0,
++				      QCA8327_DEBUG_MANU_CTRL_EN, 0);
++	}
++}
++
+ static int qca83xx_resume(struct phy_device *phydev)
+ {
+ 	int ret, val;
+@@ -1463,6 +1493,7 @@ static struct phy_driver at803x_driver[]
+ 	.phy_id_mask		= QCA8K_PHY_ID_MASK,
+ 	.name			= "Qualcomm Atheros 8337 internal PHY",
+ 	/* PHY_GBIT_FEATURES */
++	.link_change_notify	= qca83xx_link_change_notify,
+ 	.probe			= at803x_probe,
+ 	.flags			= PHY_IS_INTERNAL,
+ 	.config_init		= qca83xx_config_init,
+@@ -1478,6 +1509,7 @@ static struct phy_driver at803x_driver[]
+ 	.phy_id_mask		= QCA8K_PHY_ID_MASK,
+ 	.name			= "Qualcomm Atheros 8327-A internal PHY",
+ 	/* PHY_GBIT_FEATURES */
++	.link_change_notify	= qca83xx_link_change_notify,
+ 	.probe			= at803x_probe,
+ 	.flags			= PHY_IS_INTERNAL,
+ 	.config_init		= qca83xx_config_init,
+@@ -1493,6 +1525,7 @@ static struct phy_driver at803x_driver[]
+ 	.phy_id_mask		= QCA8K_PHY_ID_MASK,
+ 	.name			= "Qualcomm Atheros 8327-B internal PHY",
+ 	/* PHY_GBIT_FEATURES */
++	.link_change_notify	= qca83xx_link_change_notify,
+ 	.probe			= at803x_probe,
+ 	.flags			= PHY_IS_INTERNAL,
+ 	.config_init		= qca83xx_config_init,

@@ -11,11 +11,12 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
+
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=shortcut-fe
-PKG_RELEASE:=2
+PKG_RELEASE:=8
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -23,10 +24,13 @@ define KernelPackage/shortcut-fe
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
-  DEPENDS:=@IPV6
+  DEPENDS:=@IPV6 +kmod-nf-conntrack
   TITLE:=Kernel driver for SFE
-  FILES:=$(PKG_BUILD_DIR)/shortcut-fe.ko $(if $(CONFIG_IPV6),$(PKG_BUILD_DIR)/shortcut-fe-ipv6.ko,)
-  KCONFIG:=CONFIG_NF_CONNTRACK_EVENTS=y \
+  FILES:= \
+	   $(PKG_BUILD_DIR)/shortcut-fe.ko \
+	   $(PKG_BUILD_DIR)/shortcut-fe-ipv6.ko
+  KCONFIG:= \
+	   CONFIG_NF_CONNTRACK_EVENTS=y \
 	   CONFIG_NF_CONNTRACK_TIMEOUT=y \
 	   CONFIG_SHORTCUT_FE=y \
 	   CONFIG_XFRM=y
@@ -39,8 +43,6 @@ Shortcut is an in-Linux-kernel IP packet forwarding engine.
 endef
 
 define KernelPackage/shortcut-fe/install
-	$(INSTALL_DIR) $(1)/etc/init.d
-	$(INSTALL_BIN) ./files/etc/init.d/shortcut-fe $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/sfe_dump $(1)/usr/bin
 endef
@@ -54,9 +56,10 @@ define KernelPackage/shortcut-fe-cm
   DEPENDS:=+kmod-ipt-conntrack +kmod-shortcut-fe
   TITLE:=Kernel driver for SFE
   FILES:=$(PKG_BUILD_DIR)/shortcut-fe-cm.ko
-  KCONFIG:=CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y \
-  	   CONFIG_NF_CONNTRACK_EVENTS=y \
-  	   CONFIG_XFRM=y
+  KCONFIG:= \
+	   CONFIG_NF_CONNTRACK_CHAIN_EVENTS=y \
+	   CONFIG_NF_CONNTRACK_EVENTS=y \
+	   CONFIG_XFRM=y
   CONFLICTS:=kmod-shortcut-fe-drv
 endef
 
@@ -69,7 +72,7 @@ define Build/Compile
 		$(KERNEL_MAKE_FLAGS) \
 		$(PKG_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
-		$(if $(CONFIG_IPV6),EXTRA_CFLAGS+="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y,) \
+		EXTRA_CFLAGS+="-DSFE_SUPPORT_IPV6" SFE_SUPPORT_IPV6=y \
 		$(if $(HAVE_ECM),EXTRA_CFLAGS+="-DCONFIG_SFE_ECM" CONFIG_SFE_ECM=y,) \
 		modules
 endef

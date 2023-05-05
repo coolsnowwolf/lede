@@ -431,10 +431,7 @@ define KernelPackage/usb-dwc2
   TITLE:=DWC2 USB controller driver
   DEPENDS:=+USB_GADGET_SUPPORT:kmod-usb-gadget +kmod-usb-roles
   KCONFIG:= \
-	CONFIG_USB_PCI=y \
 	CONFIG_USB_DWC2 \
-	CONFIG_USB_DWC2_PCI \
-	CONFIG_USB_DWC2_PLATFORM \
 	CONFIG_USB_DWC2_DEBUG=n \
 	CONFIG_USB_DWC2_VERBOSE=n \
 	CONFIG_USB_DWC2_TRACK_MISSED_SOFS=n \
@@ -451,6 +448,26 @@ define KernelPackage/usb-dwc2/description
 endef
 
 $(eval $(call KernelPackage,usb-dwc2))
+
+
+define KernelPackage/usb-dwc2-pci
+  TITLE:=DWC2 USB controller driver (PCI)
+  DEPENDS:=@PCI_SUPPORT +kmod-usb-dwc2 +kmod-usb-phy-nop
+  KCONFIG:= \
+	CONFIG_USB_PCI=y \
+	CONFIG_USB_DWC2_PCI
+  FILES:= \
+	$(LINUX_DIR)/drivers/usb/dwc2/dwc2_pci.ko
+  AUTOLOAD:=$(call AutoLoad,54,dwc2_pci,1)
+  $(call AddDepends/usb)
+endef
+
+define KernelPackage/usb-dwc2-pci/description
+  The Designware USB2.0 PCI interface module for controllers
+  connected to a PCI bus.
+endef
+
+$(eval $(call KernelPackage,usb-dwc2-pci))
 
 
 define KernelPackage/usb-dwc3
@@ -477,7 +494,7 @@ $(eval $(call KernelPackage,usb-dwc3))
 
 define KernelPackage/usb-dwc3-qcom
   TITLE:=DWC3 Qualcomm USB driver
-  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x) +kmod-usb-dwc3
+  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x||TARGET_ipq807x||TARGET_ipq60xx) +kmod-usb-dwc3
   KCONFIG:= CONFIG_USB_DWC3_QCOM
   FILES:= $(LINUX_DIR)/drivers/usb/dwc3/dwc3-qcom.ko
   AUTOLOAD:=$(call AutoLoad,53,dwc3-qcom,1)
@@ -1138,7 +1155,9 @@ $(eval $(call KernelPackage,usb-net-aqc111))
 
 define KernelPackage/usb-net-asix
   TITLE:=Kernel module for USB-to-Ethernet Asix convertors
-  DEPENDS:=+kmod-libphy
+  DEPENDS:=+kmod-phy-ax88796b +LINUX_6_1:kmod-phylink \
+	+(LINUX_5_15||LINUX_6_1):kmod-mdio-devres \
+	+(LINUX_5_15||LINUX_6_1):kmod-net-selftests
   KCONFIG:=CONFIG_USB_NET_AX8817X
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/asix.ko
   AUTOLOAD:=$(call AutoProbe,asix)
@@ -1150,7 +1169,6 @@ define KernelPackage/usb-net-asix/description
 endef
 
 $(eval $(call KernelPackage,usb-net-asix))
-
 
 define KernelPackage/usb-net-asix-ax88179
   TITLE:=Kernel module for USB-to-Gigabit-Ethernet Asix convertors
@@ -1201,6 +1219,23 @@ endef
 $(eval $(call KernelPackage,usb-net-kaweth))
 
 
+define KernelPackage/usb-net-lan78xx
+  TITLE:=USB-To-Ethernet Microchip LAN78XX convertors
+  DEPENDS:=+kmod-fixed-phy +kmod-phy-microchip +PACKAGE_kmod-of-mdio:kmod-of-mdio
+  KCONFIG:=CONFIG_USB_LAN78XX
+  FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/lan78xx.ko
+  AUTOLOAD:=$(call AutoProbe,lan78xx)
+  $(call AddDepends/usb-net)
+endef
+
+define KernelPackage/usb-net-lan78xx/description
+ Kernel module for Microchip LAN78XX based USB 2 & USB 3
+ 10/100/1000 Ethernet adapters.
+endef
+
+$(eval $(call KernelPackage,usb-net-lan78xx))
+
+
 define KernelPackage/usb-net-pegasus
   TITLE:=Kernel module for USB-to-Ethernet Pegasus convertors
   KCONFIG:=CONFIG_USB_PEGASUS
@@ -1231,9 +1266,25 @@ endef
 $(eval $(call KernelPackage,usb-net-mcs7830))
 
 
+define KernelPackage/usb-net-smsc75xx
+  TITLE:=SMSC LAN75XX based USB 2.0 Gigabit ethernet devices
+  DEPENDS:=+!LINUX_5_4:kmod-libphy
+  KCONFIG:=CONFIG_USB_NET_SMSC75XX
+  FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/smsc75xx.ko
+  AUTOLOAD:=$(call AutoProbe,smsc75xx)
+  $(call AddDepends/usb-net, +kmod-lib-crc16)
+endef
+
+define KernelPackage/usb-net-smsc75xx/description
+ Kernel module for SMSC LAN75XX based devices
+endef
+
+$(eval $(call KernelPackage,usb-net-smsc75xx))
+
+
 define KernelPackage/usb-net-smsc95xx
   TITLE:=SMSC LAN95XX based USB 2.0 10/100 ethernet devices
-  DEPENDS:=+LINUX_5_10:kmod-libphy
+  DEPENDS:=+kmod-phy-smsc +LINUX_6_1:kmod-net-selftests
   KCONFIG:=CONFIG_USB_NET_SMSC95XX
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/smsc95xx.ko
   AUTOLOAD:=$(call AutoProbe,smsc95xx)
@@ -1340,6 +1391,7 @@ $(eval $(call KernelPackage,usb-net-rtl8150))
 
 define KernelPackage/usb-net-rtl8152
   TITLE:=Kernel module for USB-to-Ethernet Realtek convertors
+  DEPENDS:=+r8152-firmware +kmod-crypto-sha256 +kmod-usb-net-cdc-ncm
   KCONFIG:=CONFIG_USB_RTL8152
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/r8152.ko
   AUTOLOAD:=$(call AutoProbe,r8152)
@@ -1678,6 +1730,7 @@ define KernelPackage/usb3
 	+TARGET_bcm53xx:kmod-usb-bcma \
 	+TARGET_bcm53xx:kmod-phy-bcm-ns-usb3 \
 	+TARGET_ramips_mt7621:kmod-usb-xhci-mtk \
+	+TARGET_mediatek:kmod-usb-xhci-mtk \
 	+(TARGET_apm821xx_nand&&LINUX_5_10):kmod-usb-xhci-pci-renesas
   KCONFIG:= \
 	CONFIG_USB_PCI=y \
@@ -1752,8 +1805,10 @@ define KernelPackage/usb-xhci-mtk
   DEPENDS:=+kmod-usb-xhci-hcd
   KCONFIG:=CONFIG_USB_XHCI_MTK
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/drivers/usb/host/xhci-mtk.ko
-  AUTOLOAD:=$(call AutoLoad,54,xhci-mtk,1)
+  FILES:= \
+	 $(LINUX_DIR)/drivers/usb/host/xhci-mtk.ko@lt5.13 \
+	 $(LINUX_DIR)/drivers/usb/host/xhci-mtk-hcd.ko@ge5.13
+  AUTOLOAD:=$(call AutoLoad,54,xhci-mtk@lt5.13 xhci-mtk-hcd@gt5.13,1)
   $(call AddDepends/usb)
 endef
 

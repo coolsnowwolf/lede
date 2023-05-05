@@ -1,0 +1,267 @@
+From 3fbd7957bae36bbafb54dc7bf1624b158fa2a984 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 6 Aug 2021 15:37:16 +0100
+Subject: [PATCH] staging/bcm2835_codec: Add support for image_fx to
+ deinterlace
+
+Adds another /dev/video node wrapping image_fx doing deinterlace.
+
+Co-developed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 152 +++++++++++++++++-
+ 1 file changed, 150 insertions(+), 2 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -58,6 +58,10 @@ static int isp_video_nr = 12;
+ module_param(isp_video_nr, int, 0644);
+ MODULE_PARM_DESC(isp_video_nr, "isp video device number");
+ 
++static int deinterlace_video_nr = 18;
++module_param(deinterlace_video_nr, int, 0644);
++MODULE_PARM_DESC(deinterlace_video_nr, "deinterlace video device number");
++
+ /*
+  * Workaround for GStreamer v4l2convert component not considering Bayer formats
+  * as raw, and therefore not considering a V4L2 device that supports them as
+@@ -71,22 +75,33 @@ static unsigned int debug;
+ module_param(debug, uint, 0644);
+ MODULE_PARM_DESC(debug, "activates debug info (0-3)");
+ 
++static bool advanced_deinterlace = true;
++module_param(advanced_deinterlace, bool, 0644);
++MODULE_PARM_DESC(advanced_deinterlace, "Use advanced deinterlace");
++
++static int field_override;
++module_param(field_override, int, 0644);
++MODULE_PARM_DESC(field_override, "force TB(8)/BT(9) field");
++
+ enum bcm2835_codec_role {
+ 	DECODE,
+ 	ENCODE,
+ 	ISP,
++	DEINTERLACE,
+ };
+ 
+ static const char * const roles[] = {
+ 	"decode",
+ 	"encode",
+-	"isp"
++	"isp",
++	"image_fx",
+ };
+ 
+ static const char * const components[] = {
+ 	"ril.video_decode",
+ 	"ril.video_encode",
+ 	"ril.isp",
++	"ril.image_fx",
+ };
+ 
+ /* Timeout for stop_streaming to allow all buffers to return */
+@@ -683,6 +698,7 @@ struct bcm2835_codec_driver {
+ 	struct bcm2835_codec_dev *encode;
+ 	struct bcm2835_codec_dev *decode;
+ 	struct bcm2835_codec_dev *isp;
++	struct bcm2835_codec_dev *deinterlace;
+ };
+ 
+ enum {
+@@ -1196,6 +1212,19 @@ static void vb2_to_mmal_buffer(struct m2
+ 	do_div(pts, 1000);
+ 	buf->mmal.pts = pts;
+ 	buf->mmal.dts = MMAL_TIME_UNKNOWN;
++
++	switch (field_override ? field_override : vb2->field) {
++	default:
++	case V4L2_FIELD_NONE:
++		break;
++	case V4L2_FIELD_INTERLACED_BT:
++		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED;
++		break;
++	case V4L2_FIELD_INTERLACED_TB:
++		buf->mmal.mmal_flags |= MMAL_BUFFER_HEADER_VIDEO_FLAG_INTERLACED |
++					MMAL_BUFFER_HEADER_VIDEO_FLAG_TOP_FIELD_FIRST;
++		break;
++	}
+ }
+ 
+ /* device_run() - prepares and starts the device
+@@ -1396,7 +1425,7 @@ static int vidioc_try_fmt(struct bcm2835
+ 	memset(f->fmt.pix_mp.plane_fmt[0].reserved, 0,
+ 	       sizeof(f->fmt.pix_mp.plane_fmt[0].reserved));
+ 
+-	if (ctx->dev->role == DECODE) {
++	if (ctx->dev->role == DECODE || ctx->dev->role == DEINTERLACE) {
+ 		switch (f->fmt.pix_mp.field) {
+ 		/*
+ 		 * All of this is pretty much guesswork as we'll set the
+@@ -1686,6 +1715,46 @@ static int vidioc_g_selection(struct fil
+ 		break;
+ 	case ISP:
+ 		break;
++	case DEINTERLACE:
++		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
++			switch (s->target) {
++			case V4L2_SEL_TGT_COMPOSE_DEFAULT:
++			case V4L2_SEL_TGT_COMPOSE:
++				s->r.left = 0;
++				s->r.top = 0;
++				s->r.width = q_data->crop_width;
++				s->r.height = q_data->crop_height;
++				break;
++			case V4L2_SEL_TGT_COMPOSE_BOUNDS:
++				s->r.left = 0;
++				s->r.top = 0;
++				s->r.width = q_data->crop_width;
++				s->r.height = q_data->crop_height;
++				break;
++			default:
++				return -EINVAL;
++			}
++		} else {
++			/* must be V4L2_BUF_TYPE_VIDEO_OUTPUT */
++			switch (s->target) {
++			case V4L2_SEL_TGT_CROP_DEFAULT:
++			case V4L2_SEL_TGT_CROP_BOUNDS:
++				s->r.top = 0;
++				s->r.left = 0;
++				s->r.width = q_data->bytesperline;
++				s->r.height = q_data->height;
++				break;
++			case V4L2_SEL_TGT_CROP:
++				s->r.top = 0;
++				s->r.left = 0;
++				s->r.width = q_data->crop_width;
++				s->r.height = q_data->crop_height;
++				break;
++			default:
++				return -EINVAL;
++			}
++		}
++		break;
+ 	}
+ 
+ 	return 0;
+@@ -1761,6 +1830,41 @@ static int vidioc_s_selection(struct fil
+ 		break;
+ 	case ISP:
+ 		break;
++	case DEINTERLACE:
++		if (s->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
++			switch (s->target) {
++			case V4L2_SEL_TGT_COMPOSE:
++				/* Accept cropped image */
++				s->r.left = 0;
++				s->r.top = 0;
++				s->r.width = min(s->r.width, q_data->crop_width);
++				s->r.height = min(s->r.height, q_data->height);
++				q_data->crop_width = s->r.width;
++				q_data->crop_height = s->r.height;
++				q_data->selection_set = true;
++				break;
++			default:
++				return -EINVAL;
++			}
++			break;
++		} else {
++			/* must be V4L2_BUF_TYPE_VIDEO_OUTPUT */
++			switch (s->target) {
++			case V4L2_SEL_TGT_CROP:
++				/* Only support crop from (0,0) */
++				s->r.top = 0;
++				s->r.left = 0;
++				s->r.width = min(s->r.width, q_data->crop_width);
++				s->r.height = min(s->r.height, q_data->height);
++				q_data->crop_width = s->r.width;
++				q_data->crop_height = s->r.height;
++				q_data->selection_set = true;
++				break;
++			default:
++				return -EINVAL;
++			}
++			break;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -2335,6 +2439,30 @@ static int bcm2835_codec_create_componen
+ 					      MMAL_PARAMETER_VIDEO_VALIDATE_TIMESTAMPS,
+ 					      &enable,
+ 					      sizeof(enable));
++	} else if (dev->role == DEINTERLACE) {
++		/* Select the default deinterlace algorithm. */
++		int half_framerate = 0;
++		int default_frame_interval = -1; /* don't interpolate */
++		int frame_type = 5; /* 0=progressive, 3=TFF, 4=BFF, 5=see frame */
++		int use_qpus = 0;
++		enum mmal_parameter_imagefx effect =
++			advanced_deinterlace && ctx->q_data[V4L2_M2M_SRC].crop_width <= 800 ?
++			MMAL_PARAM_IMAGEFX_DEINTERLACE_ADV :
++			MMAL_PARAM_IMAGEFX_DEINTERLACE_FAST;
++		struct mmal_parameter_imagefx_parameters params = {
++			.effect = effect,
++			.num_effect_params = 4,
++			.effect_parameter = { frame_type,
++					      default_frame_interval,
++					      half_framerate,
++					      use_qpus },
++		};
++
++		vchiq_mmal_port_parameter_set(dev->instance,
++					      &ctx->component->output[0],
++					      MMAL_PARAMETER_IMAGE_EFFECT_PARAMETERS,
++					      &params,
++					      sizeof(params));
+ 	}
+ 
+ 	setup_mmal_port_format(ctx, &ctx->q_data[V4L2_M2M_SRC],
+@@ -3173,6 +3301,16 @@ static int bcm2835_codec_create(struct b
+ 		function = MEDIA_ENT_F_PROC_VIDEO_SCALER;
+ 		video_nr = isp_video_nr;
+ 		break;
++	case DEINTERLACE:
++		v4l2_disable_ioctl(vfd, VIDIOC_ENCODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_TRY_ENCODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_DECODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_TRY_DECODER_CMD);
++		v4l2_disable_ioctl(vfd, VIDIOC_S_PARM);
++		v4l2_disable_ioctl(vfd, VIDIOC_G_PARM);
++		function = MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER;
++		video_nr = deinterlace_video_nr;
++		break;
+ 	default:
+ 		ret = -EINVAL;
+ 		goto unreg_dev;
+@@ -3268,6 +3406,10 @@ static int bcm2835_codec_probe(struct pl
+ 	if (ret)
+ 		goto out;
+ 
++	ret = bcm2835_codec_create(drv, &drv->deinterlace, DEINTERLACE);
++	if (ret)
++		goto out;
++
+ 	/* Register the media device node */
+ 	if (media_device_register(mdev) < 0)
+ 		goto out;
+@@ -3277,6 +3419,10 @@ static int bcm2835_codec_probe(struct pl
+ 	return 0;
+ 
+ out:
++	if (drv->deinterlace) {
++		bcm2835_codec_destroy(drv->deinterlace);
++		drv->deinterlace = NULL;
++	}
+ 	if (drv->isp) {
+ 		bcm2835_codec_destroy(drv->isp);
+ 		drv->isp = NULL;
+@@ -3298,6 +3444,8 @@ static int bcm2835_codec_remove(struct p
+ 
+ 	media_device_unregister(&drv->mdev);
+ 
++	bcm2835_codec_destroy(drv->deinterlace);
++
+ 	bcm2835_codec_destroy(drv->isp);
+ 
+ 	bcm2835_codec_destroy(drv->encode);

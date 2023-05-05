@@ -1,0 +1,272 @@
+From fc26e29e257c8d737b78e4581f7ffd9be338a70c Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 27 Apr 2021 14:24:21 +0200
+Subject: [PATCH] drm/vc4: Add support for gamma on BCM2711
+
+BCM2711 changes from a 256 entry lookup table to a 16 point
+piecewise linear function as the pipeline bitdepth has increased
+to make a LUT unwieldy.
+
+Implement a simple conversion from a 256 entry LUT that userspace
+is likely to expect to 16 evenly spread points in the PWL. This
+could be improved with curve fitting at a later date.
+
+Co-developed-by: Juerg Haefliger <juergh@canonical.com>
+Signed-off-by: Juerg Haefliger <juergh@canonical.com>
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 35 +++++++++++---
+ drivers/gpu/drm/vc4/vc4_drv.h  | 28 +++++++++--
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 87 ++++++++++++++++++++++++++++++++--
+ drivers/gpu/drm/vc4/vc4_regs.h | 22 +++++++++
+ 4 files changed, 159 insertions(+), 13 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -1148,19 +1148,42 @@ int vc4_crtc_init(struct drm_device *drm
+ 
+ 	if (!vc4->hvs->hvs5) {
+ 		drm_mode_crtc_set_gamma_size(crtc, ARRAY_SIZE(vc4_crtc->lut_r));
++	} else {
++		/* This is a lie for hvs5 which uses a 16 point PWL, but it
++		 * allows for something smarter than just 16 linearly spaced
++		 * segments. Conversion is done in vc5_hvs_update_gamma_lut.
++		 */
++		drm_mode_crtc_set_gamma_size(crtc, 256);
++	}
+ 
+-		drm_crtc_enable_color_mgmt(crtc, 0, false, crtc->gamma_size);
++	drm_crtc_enable_color_mgmt(crtc, 0, false, crtc->gamma_size);
+ 
++	if (!vc4->hvs->hvs5) {
+ 		/* We support CTM, but only for one CRTC at a time. It's therefore
+ 		 * implemented as private driver state in vc4_kms, not here.
+ 		 */
+ 		drm_crtc_enable_color_mgmt(crtc, 0, true, crtc->gamma_size);
+-	}
+ 
+-	for (i = 0; i < crtc->gamma_size; i++) {
+-		vc4_crtc->lut_r[i] = i;
+-		vc4_crtc->lut_g[i] = i;
+-		vc4_crtc->lut_b[i] = i;
++		/* Initialize the VC4 gamma LUTs */
++		for (i = 0; i < crtc->gamma_size; i++) {
++			vc4_crtc->lut_r[i] = i;
++			vc4_crtc->lut_g[i] = i;
++			vc4_crtc->lut_b[i] = i;
++		}
++	} else {
++		/* Initialize the VC5 gamma PWL entries. Assume 12-bit pipeline,
++		 * evenly spread over full range.
++		 */
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++) {
++			vc4_crtc->pwl_r[i] =
++				VC5_HVS_SET_GAMMA_ENTRY(i << 8, i << 12, 1 << 8);
++			vc4_crtc->pwl_g[i] =
++				VC5_HVS_SET_GAMMA_ENTRY(i << 8, i << 12, 1 << 8);
++			vc4_crtc->pwl_b[i] =
++				VC5_HVS_SET_GAMMA_ENTRY(i << 8, i << 12, 1 << 8);
++			vc4_crtc->pwl_a[i] =
++				VC5_HVS_SET_GAMMA_ENTRY(i << 8, i << 12, 1 << 8);
++		}
+ 	}
+ 
+ 	return 0;
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -19,6 +19,7 @@
+ #include <drm/drm_modeset_lock.h>
+ 
+ #include "uapi/drm/vc4_drm.h"
++#include "vc4_regs.h"
+ 
+ struct drm_device;
+ struct drm_gem_object;
+@@ -481,6 +482,17 @@ struct vc4_pv_data {
+ 
+ };
+ 
++struct vc5_gamma_entry {
++	u32 x_c_terms;
++	u32 grad_term;
++};
++
++#define VC5_HVS_SET_GAMMA_ENTRY(x, c, g) (struct vc5_gamma_entry){	\
++	.x_c_terms = VC4_SET_FIELD((x), SCALER5_DSPGAMMA_OFF_X) | 	\
++		     VC4_SET_FIELD((c), SCALER5_DSPGAMMA_OFF_C),	\
++	.grad_term = (g)						\
++}
++
+ struct vc4_crtc {
+ 	struct drm_crtc base;
+ 	struct platform_device *pdev;
+@@ -490,9 +502,19 @@ struct vc4_crtc {
+ 	/* Timestamp at start of vblank irq - unaffected by lock delays. */
+ 	ktime_t t_vblank;
+ 
+-	u8 lut_r[256];
+-	u8 lut_g[256];
+-	u8 lut_b[256];
++	union {
++		struct {  /* VC4 gamma LUT */
++			u8 lut_r[256];
++			u8 lut_g[256];
++			u8 lut_b[256];
++		};
++		struct {  /* VC5 gamma PWL entries */
++			struct vc5_gamma_entry pwl_r[SCALER5_DSPGAMMA_NUM_POINTS];
++			struct vc5_gamma_entry pwl_g[SCALER5_DSPGAMMA_NUM_POINTS];
++			struct vc5_gamma_entry pwl_b[SCALER5_DSPGAMMA_NUM_POINTS];
++			struct vc5_gamma_entry pwl_a[SCALER5_DSPGAMMA_NUM_POINTS];
++		};
++	};
+ 
+ 	struct drm_pending_vblank_event *event;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -259,6 +259,80 @@ u8 vc4_hvs_get_fifo_frame_count(struct d
+ 	return field;
+ }
+ 
++static void vc5_hvs_write_gamma_entry(struct vc4_dev *vc4,
++				      u32 offset,
++				      struct vc5_gamma_entry *gamma)
++{
++	HVS_WRITE(offset, gamma->x_c_terms);
++	HVS_WRITE(offset + 4, gamma->grad_term);
++}
++
++static void vc5_hvs_lut_load(struct drm_crtc *crtc)
++{
++	struct drm_device *dev = crtc->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
++	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
++	u32 i;
++	u32 offset = SCALER5_DSPGAMMA_START +
++		vc4_state->assigned_channel * SCALER5_DSPGAMMA_CHAN_OFFSET;
++
++	for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8)
++		vc5_hvs_write_gamma_entry(vc4, offset, &vc4_crtc->pwl_r[i]);
++	for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8)
++		vc5_hvs_write_gamma_entry(vc4, offset, &vc4_crtc->pwl_g[i]);
++	for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8)
++		vc5_hvs_write_gamma_entry(vc4, offset, &vc4_crtc->pwl_b[i]);
++
++	if (vc4_state->assigned_channel == 2) {
++		/* Alpha only valid on channel 2 */
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8)
++			vc5_hvs_write_gamma_entry(vc4, offset, &vc4_crtc->pwl_a[i]);
++	}
++}
++
++static void vc5_hvs_update_gamma_lut(struct drm_crtc *crtc)
++{
++	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
++	struct drm_color_lut *lut = crtc->state->gamma_lut->data;
++	unsigned int step, i;
++	u32 start, end;
++
++#define VC5_HVS_UPDATE_GAMMA_ENTRY_FROM_LUT(pwl, chan)			\
++	start = drm_color_lut_extract(lut[i * step].chan, 12);		\
++	end = drm_color_lut_extract(lut[(i + 1) * step - 1].chan, 12);	\
++									\
++	/* Negative gradients not permitted by the hardware, so		\
++	 * flatten such points out.					\
++	 */								\
++	if (end < start)						\
++		end = start;						\
++									\
++	/* Assume 12bit pipeline.					\
++	 * X evenly spread over full range (12 bit).			\
++	 * C as U12.4 format.						\
++	 * Gradient as U4.8 format.					\
++	*/								\
++	vc4_crtc->pwl[i] =						\
++		VC5_HVS_SET_GAMMA_ENTRY(i << 8, start << 4,		\
++				((end - start) << 4) / (step - 1))
++
++	/* HVS5 has a 16 point piecewise linear function for each colour
++	 * channel (including alpha on channel 2) on each display channel.
++	 *
++	 * Currently take a crude subsample of the gamma LUT, but this could
++	 * be improved to implement curve fitting.
++	 */
++	step = crtc->gamma_size / SCALER5_DSPGAMMA_NUM_POINTS;
++	for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++) {
++		VC5_HVS_UPDATE_GAMMA_ENTRY_FROM_LUT(pwl_r, red);
++		VC5_HVS_UPDATE_GAMMA_ENTRY_FROM_LUT(pwl_g, green);
++		VC5_HVS_UPDATE_GAMMA_ENTRY_FROM_LUT(pwl_b, blue);
++	}
++
++	vc5_hvs_lut_load(crtc);
++}
++
+ int vc4_hvs_get_fifo_from_output(struct drm_device *dev, unsigned int output)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+@@ -352,14 +426,16 @@ static int vc4_hvs_init_channel(struct v
+ 	dispbkgndx &= ~SCALER_DISPBKGND_INTERLACE;
+ 
+ 	HVS_WRITE(SCALER_DISPBKGNDX(chan), dispbkgndx |
+-		  SCALER_DISPBKGND_AUTOHS |
+-		  ((!vc4->hvs->hvs5) ? SCALER_DISPBKGND_GAMMA : 0) |
++		  SCALER_DISPBKGND_AUTOHS | SCALER_DISPBKGND_GAMMA |
+ 		  (interlace ? SCALER_DISPBKGND_INTERLACE : 0));
+ 
+ 	/* Reload the LUT, since the SRAMs would have been disabled if
+ 	 * all CRTCs had SCALER_DISPBKGND_GAMMA unset at once.
+ 	 */
+-	vc4_hvs_lut_load(crtc);
++	if (!vc4->hvs->hvs5)
++		vc4_hvs_lut_load(crtc);
++	else
++		vc5_hvs_lut_load(crtc);
+ 
+ 	return 0;
+ }
+@@ -557,7 +633,10 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		u32 dispbkgndx = HVS_READ(SCALER_DISPBKGNDX(vc4_state->assigned_channel));
+ 
+ 		if (crtc->state->gamma_lut) {
+-			vc4_hvs_update_gamma_lut(crtc);
++			if (!vc4->hvs->hvs5)
++				vc4_hvs_update_gamma_lut(crtc);
++			else
++				vc5_hvs_update_gamma_lut(crtc);
+ 			dispbkgndx |= SCALER_DISPBKGND_GAMMA;
+ 		} else {
+ 			/* Unsetting DISPBKGND_GAMMA skips the gamma lut step
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -505,6 +505,28 @@
+ #define SCALER_DLIST_START                      0x00002000
+ #define SCALER_DLIST_SIZE                       0x00004000
+ 
++/* Gamma PWL for each channel. 16 points for each of 4 colour channels (alpha
++ * only on channel 2). 8 bytes per entry, offsets first, then gradient:
++ *   Y = GRAD * X + C
++ *
++ * Values for X and C are left justified, and vary depending on the width of
++ * the HVS channel:
++ *    8-bit pipeline: X uses [31:24], C is U8.8 format, and GRAD is U4.8.
++ *   12-bit pipeline: X uses [31:20], C is U12.4 format, and GRAD is U4.8.
++ *
++ * The 3 HVS channels start at 0x400 offsets (ie chan 1 starts at 0x2400, and
++ * chan 2 at 0x2800).
++ */
++#define SCALER5_DSPGAMMA_NUM_POINTS		16
++#define SCALER5_DSPGAMMA_START			0x00002000
++#define SCALER5_DSPGAMMA_CHAN_OFFSET		0x400
++# define SCALER5_DSPGAMMA_OFF_X_MASK		VC4_MASK(31, 20)
++# define SCALER5_DSPGAMMA_OFF_X_SHIFT		20
++# define SCALER5_DSPGAMMA_OFF_C_MASK		VC4_MASK(15, 0)
++# define SCALER5_DSPGAMMA_OFF_C_SHIFT		0
++# define SCALER5_DSPGAMMA_GRAD_MASK		VC4_MASK(11, 0)
++# define SCALER5_DSPGAMMA_GRAD_SHIFT		0
++
+ #define SCALER5_DLIST_START			0x00004000
+ 
+ # define VC4_HDMI_SW_RESET_FORMAT_DETECT	BIT(1)
