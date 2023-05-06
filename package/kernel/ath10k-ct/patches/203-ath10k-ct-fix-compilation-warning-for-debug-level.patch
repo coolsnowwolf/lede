@@ -1,0 +1,222 @@
+From 3b07c3a6e4adebd0466f5e539f318224db8cfc37 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 6 May 2023 15:29:52 +0200
+Subject: [PATCH] ath10k-ct: fix compilation warning for debug level
+
+Rework read_debug_level function as it does exceed the stack limit for
+some arch.
+Fix compilation error:
+/__w/openwrt/openwrt/openwrt/build_dir/target-mips-openwrt-linux-musl_musl/linux-malta_be/ath10k-ct-regular/ath10k-ct-2022-05-13-f808496f/ath10k-5.15/debug.c: In function 'ath10k_read_debug_level':
+/__w/openwrt/openwrt/openwrt/build_dir/target-mips-openwrt-linux-musl_musl/linux-malta_be/ath10k-ct-regular/ath10k-ct-2022-05-13-f808496f/ath10k-5.15/debug.c:1388:1: error: the frame size of 1440 bytes is larger than 1024 bytes [-Werror=frame-larger-than=]
+ 1388 | }
+      | ^
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ ath10k-5.15/debug.c | 85 +++++++++++++++++++++++++--------------------
+ ath10k-5.17/debug.c | 85 +++++++++++++++++++++++++--------------------
+ 2 files changed, 96 insertions(+), 74 deletions(-)
+
+diff --git a/ath10k-5.15/debug.c b/ath10k-5.15/debug.c
+index af84012..d0fa911 100644
+--- a/ath10k-5.15/debug.c
++++ b/ath10k-5.15/debug.c
+@@ -1344,47 +1344,58 @@ static const struct file_operations fops_simulate_fw_crash = {
+ 	.llseek = default_llseek,
+ };
+ 
++static const char debug_level_buf[] =
++	"To change debug level, set value adding up desired flags:\n"
++	"PCI:                0x1\n"
++	"WMI:                0x2\n"
++	"HTC:                0x4\n"
++	"HTT:                0x8\n"
++	"MAC:               0x10\n"
++	"BOOT:              0x20\n"
++	"PCI-DUMP:          0x40\n"
++	"HTT-DUMP:          0x80\n"
++	"MGMT:             0x100\n"
++	"DATA:             0x200\n"
++	"BMI:              0x400\n"
++	"REGULATORY:       0x800\n"
++	"TESTMODE:        0x1000\n"
++	"WMI-PRINT:       0x2000\n"
++	"PCI-PS:          0x4000\n"
++	"AHB:             0x8000\n"
++	"SDIO:		 0x10000\n"
++	"SDIO_DUMP:	 0x20000\n"
++	"USB:		 0x40000\n"
++	"USB_BULK:	 0x80000\n"
++	"SNOC:		0x100000\n"
++	"QMI:		0x200000\n"
++	"BEACONS:      0x8000000\n"
++	"NO-FW-DBGLOG:0x10000000\n"
++	"MAC2:        0x20000000\n"
++	"INFO-AS-DBG: 0x40000000\n"
++	"FW:          0x80000000\n"
++	"ALL:         0xEFFFFFFF\n";
++
++#define READ_DEBUG_LEVEL_SIZE sizeof(debug_level_buf) + 60
++
+ static ssize_t ath10k_read_debug_level(struct file *file,
+ 				       char __user *user_buf,
+ 				       size_t count, loff_t *ppos)
+ {
+-	int sz;
+-	const char buf[] =
+-		"To change debug level, set value adding up desired flags:\n"
+-		"PCI:                0x1\n"
+-		"WMI:                0x2\n"
+-		"HTC:                0x4\n"
+-		"HTT:                0x8\n"
+-		"MAC:               0x10\n"
+-		"BOOT:              0x20\n"
+-		"PCI-DUMP:          0x40\n"
+-		"HTT-DUMP:          0x80\n"
+-		"MGMT:             0x100\n"
+-		"DATA:             0x200\n"
+-		"BMI:              0x400\n"
+-		"REGULATORY:       0x800\n"
+-		"TESTMODE:        0x1000\n"
+-		"WMI-PRINT:       0x2000\n"
+-		"PCI-PS:          0x4000\n"
+-		"AHB:             0x8000\n"
+-		"SDIO:		 0x10000\n"
+-		"SDIO_DUMP:	 0x20000\n"
+-		"USB:		 0x40000\n"
+-		"USB_BULK:	 0x80000\n"
+-		"SNOC:		0x100000\n"
+-		"QMI:		0x200000\n"
+-		"BEACONS:      0x8000000\n"
+-		"NO-FW-DBGLOG:0x10000000\n"
+-		"MAC2:        0x20000000\n"
+-		"INFO-AS-DBG: 0x40000000\n"
+-		"FW:          0x80000000\n"
+-		"ALL:         0xEFFFFFFF\n";
+-	char wbuf[sizeof(buf) + 60];
+-	sz = snprintf(wbuf, sizeof(wbuf), "Current debug level: 0x%x\n\n%s",
+-		      ath10k_debug_mask, buf);
+-	wbuf[sizeof(wbuf) - 1] = 0;
+-
+-	return simple_read_from_buffer(user_buf, count, ppos, wbuf, sz);
++	int sz, ret;
++	char *wbuf;
++
++	wbuf = kcalloc(READ_DEBUG_LEVEL_SIZE, sizeof(char), GFP_KERNEL);
++	if (!wbuf)
++		return -ENOMEM;
++
++	sz = snprintf(wbuf, READ_DEBUG_LEVEL_SIZE,
++		      "Current debug level: 0x%x\n\n%s",
++		      ath10k_debug_mask, debug_level_buf);
++
++	ret = simple_read_from_buffer(user_buf, count, ppos, wbuf, sz);
++	kfree(wbuf);
++
++	return ret;
+ }
+ 
+ /* Set logging level.
+diff --git a/ath10k-5.17/debug.c b/ath10k-5.17/debug.c
+index af84012..d0fa911 100644
+--- a/ath10k-5.17/debug.c
++++ b/ath10k-5.17/debug.c
+@@ -1344,47 +1344,58 @@ static const struct file_operations fops_simulate_fw_crash = {
+ 	.llseek = default_llseek,
+ };
+ 
++static const char debug_level_buf[] =
++	"To change debug level, set value adding up desired flags:\n"
++	"PCI:                0x1\n"
++	"WMI:                0x2\n"
++	"HTC:                0x4\n"
++	"HTT:                0x8\n"
++	"MAC:               0x10\n"
++	"BOOT:              0x20\n"
++	"PCI-DUMP:          0x40\n"
++	"HTT-DUMP:          0x80\n"
++	"MGMT:             0x100\n"
++	"DATA:             0x200\n"
++	"BMI:              0x400\n"
++	"REGULATORY:       0x800\n"
++	"TESTMODE:        0x1000\n"
++	"WMI-PRINT:       0x2000\n"
++	"PCI-PS:          0x4000\n"
++	"AHB:             0x8000\n"
++	"SDIO:		 0x10000\n"
++	"SDIO_DUMP:	 0x20000\n"
++	"USB:		 0x40000\n"
++	"USB_BULK:	 0x80000\n"
++	"SNOC:		0x100000\n"
++	"QMI:		0x200000\n"
++	"BEACONS:      0x8000000\n"
++	"NO-FW-DBGLOG:0x10000000\n"
++	"MAC2:        0x20000000\n"
++	"INFO-AS-DBG: 0x40000000\n"
++	"FW:          0x80000000\n"
++	"ALL:         0xEFFFFFFF\n";
++
++#define READ_DEBUG_LEVEL_SIZE sizeof(debug_level_buf) + 60
++
+ static ssize_t ath10k_read_debug_level(struct file *file,
+ 				       char __user *user_buf,
+ 				       size_t count, loff_t *ppos)
+ {
+-	int sz;
+-	const char buf[] =
+-		"To change debug level, set value adding up desired flags:\n"
+-		"PCI:                0x1\n"
+-		"WMI:                0x2\n"
+-		"HTC:                0x4\n"
+-		"HTT:                0x8\n"
+-		"MAC:               0x10\n"
+-		"BOOT:              0x20\n"
+-		"PCI-DUMP:          0x40\n"
+-		"HTT-DUMP:          0x80\n"
+-		"MGMT:             0x100\n"
+-		"DATA:             0x200\n"
+-		"BMI:              0x400\n"
+-		"REGULATORY:       0x800\n"
+-		"TESTMODE:        0x1000\n"
+-		"WMI-PRINT:       0x2000\n"
+-		"PCI-PS:          0x4000\n"
+-		"AHB:             0x8000\n"
+-		"SDIO:		 0x10000\n"
+-		"SDIO_DUMP:	 0x20000\n"
+-		"USB:		 0x40000\n"
+-		"USB_BULK:	 0x80000\n"
+-		"SNOC:		0x100000\n"
+-		"QMI:		0x200000\n"
+-		"BEACONS:      0x8000000\n"
+-		"NO-FW-DBGLOG:0x10000000\n"
+-		"MAC2:        0x20000000\n"
+-		"INFO-AS-DBG: 0x40000000\n"
+-		"FW:          0x80000000\n"
+-		"ALL:         0xEFFFFFFF\n";
+-	char wbuf[sizeof(buf) + 60];
+-	sz = snprintf(wbuf, sizeof(wbuf), "Current debug level: 0x%x\n\n%s",
+-		      ath10k_debug_mask, buf);
+-	wbuf[sizeof(wbuf) - 1] = 0;
+-
+-	return simple_read_from_buffer(user_buf, count, ppos, wbuf, sz);
++	int sz, ret;
++	char *wbuf;
++
++	wbuf = kcalloc(READ_DEBUG_LEVEL_SIZE, sizeof(char), GFP_KERNEL);
++	if (!wbuf)
++		return -ENOMEM;
++
++	sz = snprintf(wbuf, READ_DEBUG_LEVEL_SIZE,
++		      "Current debug level: 0x%x\n\n%s",
++		      ath10k_debug_mask, debug_level_buf);
++
++	ret = simple_read_from_buffer(user_buf, count, ppos, wbuf, sz);
++	kfree(wbuf);
++
++	return ret;
+ }
+ 
+ /* Set logging level.
+-- 
+2.39.2
+
