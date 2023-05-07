@@ -496,9 +496,9 @@ endef
 define KernelPackage/mt7916-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	cp \
-		$(PKG_BUILD_DIR)/firmware/mt7916_wa.bin \
-		$(PKG_BUILD_DIR)/firmware/mt7916_wm.bin \
-		$(PKG_BUILD_DIR)/firmware/mt7916_rom_patch.bin \
+		./files/lib/firmware/mediatek/mt7916_wa.bin \
+		./files/lib/firmware/mediatek/mt7916_wm.bin \
+		./files/lib/firmware/mediatek/mt7916_rom_patch.bin \
 		$(1)/lib/firmware/mediatek
 endef
 
