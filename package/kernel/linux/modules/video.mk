@@ -213,6 +213,7 @@ define KernelPackage/fb-tft
   KCONFIG:= \
        CONFIG_FB_BACKLIGHT=y \
        CONFIG_FB_DEFERRED_IO=y \
+       CONFIG_STAGING=y \
        CONFIG_FB_TFT
   FILES:= \
        $(LINUX_DIR)/drivers/staging/fbtft/fbtft.ko
