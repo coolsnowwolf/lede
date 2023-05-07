@@ -241,6 +241,21 @@ endef
 
 $(eval $(call KernelPackage,fb-tft-ili9486))
 
+define KernelPackage/fb-tft-st7735r
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=FB driver for the ST7735R LCD Controller
+  DEPENDS:=+kmod-fb-tft
+  KCONFIG:=CONFIG_FB_TFT_ST7735R
+  FILES:=$(LINUX_DIR)/drivers/staging/fbtft/fb_st7735r.ko
+  AUTOLOAD:=$(call AutoLoad,09,fb_st7735r)
+endef
+
+define KernelPackage/fb-tft-st7735r/description
+  FB driver for the ST7735R LCD Controller
+endef
+
+$(eval $(call KernelPackage,fb-tft-st7735r))
+
 define KernelPackage/multimedia-input
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Multimedia input support
