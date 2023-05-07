@@ -197,6 +197,21 @@ endef
 
 $(eval $(call KernelPackage,et131x))
 
+define KernelPackage/phy-microchip
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Microchip Ethernet PHY driver
+   KCONFIG:=CONFIG_MICROCHIP_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/microchip.ko
+   AUTOLOAD:=$(call AutoLoad,18,microchip,1)
+endef
+
+define KernelPackage/phy-microchip/description
+   Supports the LAN88XX PHYs.
+endef
+
+$(eval $(call KernelPackage,phy-microchip))
+
 
 define KernelPackage/phylib-broadcom
    SUBMENU:=$(NETWORK_DEVICES_MENU)
@@ -209,6 +224,23 @@ define KernelPackage/phylib-broadcom
 endef
 
 $(eval $(call KernelPackage,phylib-broadcom))
+
+
+define KernelPackage/phy-ax88796b
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Asix PHY driver
+   KCONFIG:=CONFIG_AX88796B_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/ax88796b.ko
+   AUTOLOAD:=$(call AutoProbe,ax88796b)
+endef
+
+define KernelPackage/phy-ax88796b/description
+   Currently supports the Asix Electronics PHY found in the X-Surf 100
+   AX88796B package.
+endef
+
+$(eval $(call KernelPackage,phy-ax88796b))
 
 
 define KernelPackage/phy-broadcom
@@ -293,6 +325,38 @@ define KernelPackage/phy-realtek/description
 endef
 
 $(eval $(call KernelPackage,phy-realtek))
+
+
+define KernelPackage/phy-smsc
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=SMSC PHY driver
+   KCONFIG:=CONFIG_SMSC_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/smsc.ko
+   AUTOLOAD:=$(call AutoProbe,smsc)
+endef
+
+define KernelPackage/phy-smsc/description
+   Currently supports the LAN83C185, LAN8187 and LAN8700 PHYs
+endef
+
+$(eval $(call KernelPackage,phy-smsc))
+
+
+define KernelPackage/phy-aquantia
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Aquantia Ethernet PHYs
+  DEPENDS:=+kmod-libphy +kmod-hwmon-core
+  KCONFIG:=CONFIG_AQUANTIA_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko
+  AUTOLOAD:=$(call AutoLoad,18,aquantia,1)
+endef
+
+define KernelPackage/phy-aquantia/description
+  Kernel modules for Aquantia Ethernet PHYs
+endef
+
+$(eval $(call KernelPackage,phy-aquantia))
 
 
 define KernelPackage/swconfig
@@ -1054,13 +1118,28 @@ endef
 
 $(eval $(call KernelPackage,forcedeth))
 
+define KernelPackage/fixed-phy
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MDIO Bus/PHY emulation with fixed speed/link PHYs
+  DEPENDS:=+kmod-libphy
+  KCONFIG:=CONFIG_FIXED_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/fixed_phy.ko
+  AUTOLOAD:=$(call AutoProbe,fixed_phy)
+endef
+
+define KernelPackage/fixed-phy/description
+ Kernel driver for "fixed" MDIO Bus to cover the boards
+ and devices that use PHYs that are not connected to the real MDIO bus.
+endef
+
+$(eval $(call KernelPackage,fixed-phy))
+
 define KernelPackage/of-mdio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=OpenFirmware MDIO support
-  DEPENDS:=+kmod-libphy @!TARGET_x86
+  DEPENDS:=+kmod-libphy +kmod-fixed-phy @!TARGET_x86
   KCONFIG:=CONFIG_OF_MDIO
   FILES:= \
-	$(LINUX_DIR)/drivers/net/phy/fixed_phy.ko \
 	$(LINUX_DIR)/drivers/net/mdio/of_mdio.ko \
 	$(LINUX_DIR)/drivers/net/mdio/fwnode_mdio.ko@ge5.15
   AUTOLOAD:=$(call AutoLoad,41,of_mdio)
@@ -1391,3 +1470,114 @@ define KernelPackage/sfc-falcon/description
 endef
 
 $(eval $(call KernelPackage,sfc-falcon))
+
+
+define KernelPackage/wwan
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=WWAN Driver Core
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  KCONFIG:=CONFIG_WWAN
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/wwan.ko
+  AUTOLOAD:=$(call AutoProbe,wwan)
+endef
+
+define KernelPackage/wwan/description
+ his driver provides a common framework for WWAN drivers.
+endef
+
+$(eval $(call KernelPackage,wwan))
+
+
+define KernelPackage/mhi-net
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI Network Device
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
+  KCONFIG:=CONFIG_MHI_NET
+  FILES:=$(LINUX_DIR)/drivers/net/mhi_net.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_net)
+endef
+
+define KernelPackage/mhi-net/description
+ Driver for MHI network interface
+endef
+
+$(eval $(call KernelPackage,mhi-net))
+
+define KernelPackage/mhi-wwan-ctrl
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI WWAN Control
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_CTRL
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_ctrl.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_wwan_ctrl)
+endef
+
+define KernelPackage/mhi-wwan-ctrl/description
+ Driver for MHI WWAN Control
+ This exposes all modem control ports like AT, MBIM, QMI, DIAG, ..
+endef
+
+$(eval $(call KernelPackage,mhi-wwan-ctrl))
+
+define KernelPackage/mhi-wwan-mbim
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MHI MBIM
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus +kmod-wwan
+  KCONFIG:=CONFIG_MHI_WWAN_MBIM
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/mhi_wwan_mbim.ko
+  AUTOLOAD:=$(call AutoProbe,mhi_wwan_mbim)
+endef
+
+define KernelPackage/mhi-wwan-mbim/description
+ Driver for MHI MBIM
+ This implements MBIM over MHI
+endef
+
+$(eval $(call KernelPackage,mhi-wwan-mbim))
+
+define KernelPackage/atlantic
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Aquantia AQtion 10Gbps Ethernet NIC
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +kmod-macsec
+  KCONFIG:=CONFIG_AQTION
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/aquantia/atlantic/atlantic.ko
+  AUTOLOAD:=$(call AutoProbe,atlantic)
+endef
+
+define KernelPackage/atlantic/description
+  Kernel modules for Aquantia AQtion 10Gbps Ethernet NIC
+endef
+
+$(eval $(call KernelPackage,atlantic))
+
+define KernelPackage/amazon-ena
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Elastic Network Adapter (for Amazon AWS)
+  DEPENDS:=@TARGET_x86_64||TARGET_armvirt_64
+  KCONFIG:=CONFIG_ENA_ETHERNET
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/amazon/ena/ena.ko
+  AUTOLOAD:=$(call AutoLoad,12,ena)
+endef
+
+define KernelPackage/amazon-ena/description
+  This driver supports Elastic Network Adapter (ENA)
+  used by Amazon AWS T3 (2018) and later instances.
+endef
+
+$(eval $(call KernelPackage,amazon-ena))
+
+define KernelPackage/lan743x
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Microchip LAN743x PCI Express Gigabit Ethernet NIC
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mdio-devres
+  KCONFIG:=CONFIG_LAN743X
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/microchip/lan743x.ko
+  AUTOLOAD:=$(call AutoProbe,lan743x)
+endef
+
+define KernelPackage/lan743x/description
+  Kernel module for Microchip LAN743x PCI Express Gigabit Ethernet NIC
+endef
+
+$(eval $(call KernelPackage,lan743x))
+

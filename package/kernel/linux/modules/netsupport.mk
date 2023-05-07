@@ -1360,7 +1360,7 @@ define KernelPackage/qrtr
   KCONFIG:=CONFIG_QRTR
   FILES:= \
   $(LINUX_DIR)/net/qrtr/qrtr.ko \
-  $(LINUX_DIR)/net/qrtr/ns.ko@lt6.0
+  $(LINUX_DIR)/net/qrtr/ns.ko@lt5.15
   AUTOLOAD:=$(call AutoProbe,qrtr)
 endef
 

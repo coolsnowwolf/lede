@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "mfreemon@cloudflare.com" <mfreemon@cloudflare.com>
+Date: Tue, 1 Mar 2022 17:06:02 -0600
+Subject: [PATCH] Add a sysctl to skip tcp collapse processing when the receive
+ buffer is full.
+
+For context and additional information about this patch, see the
+blog post at https://blog.cloudflare.com/optimizing-tcp-for-high-throughput-and-low-latency/
+
+sysctl:  net.ipv4.tcp_collapse_max_bytes
+
+If tcp_collapse_max_bytes is non-zero, attempt to collapse the
+queue to free up memory if the current amount of memory allocated
+is less than tcp_collapse_max_bytes.  Otherwise, the packet is
+dropped without attempting to collapse the queue.
+
+If tcp_collapse_max_bytes is zero, this feature is disabled
+and the default Linux behavior is used.  The default Linux
+behavior is to always perform the attempt to collapse the
+queue to free up memory.
+
+When the receive queue is small, we want to collapse the
+queue.  There are two reasons for this: (a) the latency of
+performing the collapse will be small on a small queue, and
+(b) we want to avoid sending a congestion signal (via a
+packet drop) to the sender when the receive queue is small.
+
+The result is that we avoid latency spikes caused by the
+time it takes to perform the collapse logic when the receive
+queue is large and full, while preserving existing behavior
+and performance for all other cases.
+---
+ include/net/netns/ipv4.h   |  1 +
+ include/trace/events/tcp.h |  7 +++++++
+ net/ipv4/sysctl_net_ipv4.c |  7 +++++++
+ net/ipv4/tcp_input.c       | 36 ++++++++++++++++++++++++++++++++++++
+ net/ipv4/tcp_ipv4.c        |  2 ++
+ 5 files changed, 53 insertions(+)
+
+--- a/include/net/netns/ipv4.h
++++ b/include/net/netns/ipv4.h
+@@ -188,6 +188,7 @@ struct netns_ipv4 {
+ 	int sysctl_udp_rmem_min;
+ 
+ 	u8 sysctl_fib_notify_on_flag_change;
++	unsigned int sysctl_tcp_collapse_max_bytes;
+ 
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+ 	u8 sysctl_udp_l3mdev_accept;
+--- a/include/trace/events/tcp.h
++++ b/include/trace/events/tcp.h
+@@ -187,6 +187,13 @@ DEFINE_EVENT(tcp_event_sk, tcp_rcv_space
+ 	TP_ARGS(sk)
+ );
+ 
++DEFINE_EVENT(tcp_event_sk, tcp_collapse_max_bytes_exceeded,
++
++	TP_PROTO(struct sock *sk),
++
++	TP_ARGS(sk)
++);
++
+ TRACE_EVENT(tcp_retransmit_synack,
+ 
+ 	TP_PROTO(const struct sock *sk, const struct request_sock *req),
+--- a/net/ipv4/sysctl_net_ipv4.c
++++ b/net/ipv4/sysctl_net_ipv4.c
+@@ -1387,6 +1387,13 @@ static struct ctl_table ipv4_net_table[]
+ 		.extra1		= SYSCTL_ZERO,
+ 		.extra2		= SYSCTL_TWO,
+ 	},
++	{
++		.procname	= "tcp_collapse_max_bytes",
++		.data		= &init_net.ipv4.sysctl_tcp_collapse_max_bytes,
++		.maxlen		= sizeof(unsigned int),
++		.mode		= 0644,
++		.proc_handler	= proc_douintvec_minmax,
++	},
+ 	{ }
+ };
+ 
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -5384,6 +5384,7 @@ static bool tcp_prune_ofo_queue(struct s
+ static int tcp_prune_queue(struct sock *sk)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
++	struct net *net = sock_net(sk);
+ 
+ 	NET_INC_STATS(sock_net(sk), LINUX_MIB_PRUNECALLED);
+ 
+@@ -5395,6 +5396,39 @@ static int tcp_prune_queue(struct sock *
+ 	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf)
+ 		return 0;
+ 
++	/* For context and additional information about this patch, see the
++	 * blog post at
++	 *
++	 * sysctl:  net.ipv4.tcp_collapse_max_bytes
++	 *
++	 * If tcp_collapse_max_bytes is non-zero, attempt to collapse the
++	 * queue to free up memory if the current amount of memory allocated
++	 * is less than tcp_collapse_max_bytes.  Otherwise, the packet is
++	 * dropped without attempting to collapse the queue.
++	 *
++	 * If tcp_collapse_max_bytes is zero, this feature is disabled
++	 * and the default Linux behavior is used.  The default Linux
++	 * behavior is to always perform the attempt to collapse the
++	 * queue to free up memory.
++	 *
++	 * When the receive queue is small, we want to collapse the
++	 * queue.  There are two reasons for this: (a) the latency of
++	 * performing the collapse will be small on a small queue, and
++	 * (b) we want to avoid sending a congestion signal (via a
++	 * packet drop) to the sender when the receive queue is small.
++	 *
++	 * The result is that we avoid latency spikes caused by the
++	 * time it takes to perform the collapse logic when the receive
++	 * queue is large and full, while preserving existing behavior
++	 * and performance for all other cases.
++	 */
++	if (net->ipv4.sysctl_tcp_collapse_max_bytes &&
++		(atomic_read(&sk->sk_rmem_alloc) > net->ipv4.sysctl_tcp_collapse_max_bytes)) {
++		/* We are dropping the packet */
++		trace_tcp_collapse_max_bytes_exceeded(sk);
++		goto do_not_collapse;
++	}
++
+ 	tcp_collapse_ofo_queue(sk);
+ 	if (!skb_queue_empty(&sk->sk_receive_queue))
+ 		tcp_collapse(sk, &sk->sk_receive_queue, NULL,
+@@ -5413,6 +5447,8 @@ static int tcp_prune_queue(struct sock *
+ 	if (atomic_read(&sk->sk_rmem_alloc) <= sk->sk_rcvbuf)
+ 		return 0;
+ 
++do_not_collapse:
++
+ 	/* If we are really being abused, tell the caller to silently
+ 	 * drop receive data on the floor.  It will get retransmitted
+ 	 * and hopefully then we'll have sufficient space.
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -3215,6 +3215,8 @@ static int __net_init tcp_sk_init(struct
+ 	else
+ 		net->ipv4.tcp_congestion_control = &tcp_reno;
+ 
++	net->ipv4.sysctl_tcp_collapse_max_bytes = 0;
++
+ 	return 0;
+ }
+ 

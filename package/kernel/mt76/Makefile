@@ -8,9 +8,17 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/openwrt/mt76
 PKG_SOURCE_PROTO:=git
+
+ifdef CONFIG_LINUX_5_4
 PKG_SOURCE_DATE:=2022-12-22
 PKG_SOURCE_VERSION:=5b509e80384ab019ac11aa90c81ec0dbb5b0d7f2
 PKG_MIRROR_HASH:=6fc25df4d28becd010ff4971b23731c08b53e69381a9e4c868091899712f78a9
+PATCH_DIR:=./patches-5.4
+else
+PKG_SOURCE_DATE:=2023-04-18
+PKG_SOURCE_VERSION:=cddbd796bbc649debe457f7b34b200bbda4fcc53
+PKG_MIRROR_HASH:=3c9e24863f3e045dbab1d05cf760ef0f4a21106766987558ce4df6c0964df11a
+endif
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_USE_NINJA:=0
@@ -40,7 +48,8 @@ define KernelPackage/mt76-default
   SUBMENU:=Wireless Drivers
   DEPENDS:= \
 	+kmod-mac80211 \
-	+@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT
+	+@DRIVER_11AC_SUPPORT \
+	+@KERNEL_PAGE_POOL
 endef
 
 define KernelPackage/mt76
@@ -242,6 +251,12 @@ define KernelPackage/mt7916-firmware
   $(KernelPackage/mt76-default)
   DEPENDS+=+kmod-mt7915e
   TITLE:=MediaTek MT7916 firmware
+endef
+
+define KernelPackage/mt7981-firmware
+  $(KernelPackage/mt76-default)
+  DEPENDS:=@TARGET_mediatek_filogic
+  TITLE:=MediaTek MT7981 firmware
 endef
 
 define KernelPackage/mt7986-firmware
@@ -502,6 +517,15 @@ define KernelPackage/mt7916-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 
+define KernelPackage/mt7981-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7981_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7981_wm.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7981_rom_patch.bin \
+		$(1)/lib/firmware/mediatek
+endef
+
 define KernelPackage/mt7986-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	cp \
@@ -561,6 +585,7 @@ $(eval $(call KernelPackage,mt7663s))
 $(eval $(call KernelPackage,mt7915-firmware))
 $(eval $(call KernelPackage,mt7915e))
 $(eval $(call KernelPackage,mt7916-firmware))
+$(eval $(call KernelPackage,mt7981-firmware))
 $(eval $(call KernelPackage,mt7986-firmware))
 $(eval $(call KernelPackage,mt7921-firmware))
 $(eval $(call KernelPackage,mt7922-firmware))
