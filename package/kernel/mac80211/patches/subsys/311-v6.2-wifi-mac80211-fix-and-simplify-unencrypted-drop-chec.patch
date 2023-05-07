@@ -1,0 +1,87 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 1 Dec 2022 14:57:30 +0100
+Subject: [PATCH] wifi: mac80211: fix and simplify unencrypted drop check for
+ mesh
+
+ieee80211_drop_unencrypted is called from ieee80211_rx_h_mesh_fwding and
+ieee80211_frame_allowed.
+
+Since ieee80211_rx_h_mesh_fwding can forward packets for other mesh nodes
+and is called earlier, it needs to check the decryptions status and if the
+packet is using the control protocol on its own, instead of deferring to
+the later call from ieee80211_frame_allowed.
+
+Because of that, ieee80211_drop_unencrypted has a mesh specific check
+that skips over the mesh header in order to check the payload protocol.
+This code is invalid when called from ieee80211_frame_allowed, since that
+happens after the 802.11->802.3 conversion.
+
+Fix this by moving the mesh specific check directly into
+ieee80211_rx_h_mesh_fwding.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Link: https://lore.kernel.org/r/20221201135730.19723-1-nbd@nbd.name
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2403,7 +2403,6 @@ static int ieee80211_802_1x_port_control
+ 
+ static int ieee80211_drop_unencrypted(struct ieee80211_rx_data *rx, __le16 fc)
+ {
+-	struct ieee80211_hdr *hdr = (void *)rx->skb->data;
+ 	struct sk_buff *skb = rx->skb;
+ 	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
+ 
+@@ -2414,31 +2413,6 @@ static int ieee80211_drop_unencrypted(st
+ 	if (status->flag & RX_FLAG_DECRYPTED)
+ 		return 0;
+ 
+-	/* check mesh EAPOL frames first */
+-	if (unlikely(rx->sta && ieee80211_vif_is_mesh(&rx->sdata->vif) &&
+-		     ieee80211_is_data(fc))) {
+-		struct ieee80211s_hdr *mesh_hdr;
+-		u16 hdr_len = ieee80211_hdrlen(fc);
+-		u16 ethertype_offset;
+-		__be16 ethertype;
+-
+-		if (!ether_addr_equal(hdr->addr1, rx->sdata->vif.addr))
+-			goto drop_check;
+-
+-		/* make sure fixed part of mesh header is there, also checks skb len */
+-		if (!pskb_may_pull(rx->skb, hdr_len + 6))
+-			goto drop_check;
+-
+-		mesh_hdr = (struct ieee80211s_hdr *)(skb->data + hdr_len);
+-		ethertype_offset = hdr_len + ieee80211_get_mesh_hdrlen(mesh_hdr) +
+-				   sizeof(rfc1042_header);
+-
+-		if (skb_copy_bits(rx->skb, ethertype_offset, &ethertype, 2) == 0 &&
+-		    ethertype == rx->sdata->control_port_protocol)
+-			return 0;
+-	}
+-
+-drop_check:
+ 	/* Drop unencrypted frames if key is set. */
+ 	if (unlikely(!ieee80211_has_protected(fc) &&
+ 		     !ieee80211_is_any_nullfunc(fc) &&
+@@ -2892,8 +2866,16 @@ ieee80211_rx_h_mesh_fwding(struct ieee80
+ 	hdr = (struct ieee80211_hdr *) skb->data;
+ 	mesh_hdr = (struct ieee80211s_hdr *) (skb->data + hdrlen);
+ 
+-	if (ieee80211_drop_unencrypted(rx, hdr->frame_control))
+-		return RX_DROP_MONITOR;
++	if (ieee80211_drop_unencrypted(rx, hdr->frame_control)) {
++		int offset = hdrlen + ieee80211_get_mesh_hdrlen(mesh_hdr) +
++			     sizeof(rfc1042_header);
++		__be16 ethertype;
++
++		if (!ether_addr_equal(hdr->addr1, rx->sdata->vif.addr) ||
++		    skb_copy_bits(rx->skb, offset, &ethertype, 2) != 0 ||
++		    ethertype != rx->sdata->control_port_protocol)
++			return RX_DROP_MONITOR;
++	}
+ 
+ 	/* frame is in RMC, don't forward */
+ 	if (ieee80211_is_data(hdr->frame_control) &&
