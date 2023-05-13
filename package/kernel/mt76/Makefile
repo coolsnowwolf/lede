@@ -386,8 +386,8 @@ endif
 ifdef CONFIG_PACKAGE_kmod-mt7915e
   PKG_MAKE_FLAGS += CONFIG_MT7915E=m
   ifdef CONFIG_TARGET_mediatek_filogic
-    PKG_MAKE_FLAGS += CONFIG_MT7986_WMAC=y
-    NOSTDINC_FLAGS += -DCONFIG_MT7986_WMAC
+    PKG_MAKE_FLAGS += CONFIG_MT798X_WMAC=y
+    NOSTDINC_FLAGS += -DCONFIG_MT798X_WMAC
   endif
 endif
 ifdef CONFIG_PACKAGE_kmod-mt7921-common
@@ -525,7 +525,7 @@ define KernelPackage/mt7986-firmware/install
 		$(PKG_BUILD_DIR)/firmware/mt7986_wm_mt7975.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7986_wm.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7986_rom_patch_mt7975.bin \
-		$(PKG_BUILD_DIR)/firmware/mt7986_rom_patch.bin
+		$(PKG_BUILD_DIR)/firmware/mt7986_rom_patch.bin \
 		$(1)/lib/firmware/mediatek
 endef
 
