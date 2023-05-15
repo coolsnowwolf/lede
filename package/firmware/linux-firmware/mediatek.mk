@@ -69,6 +69,15 @@ define Package/mt7922bt-firmware/install
 endef
 $(eval $(call BuildPackage,mt7922bt-firmware))
 
+Package/mt7981-wo-firmware = $(call Package/firmware-default,MT7981 offload firmware)
+define Package/mt7981-wo-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7981_wo.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7981-wo-firmware))
+
 Package/mt7986-wo-firmware = $(call Package/firmware-default,MT7986 offload firmware)
 define Package/mt7986-wo-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
