@@ -24,6 +24,7 @@
 #include <linux/ctype.h>
 #include <linux/debugfs.h>
 #include <linux/of_mdio.h>
+#include <linux/version.h>
 
 #include "mtk_eth_soc.h"
 #include "mtk_eth_dbg.h"
@@ -610,6 +611,7 @@ static int switch_count_open(struct inode *inode, struct file *file)
 	return single_open(file, esw_cnt_read, 0);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations switch_count_fops = {
 	.owner = THIS_MODULE,
 	.open = switch_count_open,
@@ -617,6 +619,14 @@ static const struct file_operations switch_count_fops = {
 	.llseek = seq_lseek,
 	.release = single_release
 };
+#else
+static const struct proc_ops switch_count_fops = {
+	.proc_open = switch_count_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release
+};
+#endif
 
 static struct proc_dir_entry *proc_tx_ring, *proc_hwtx_ring, *proc_rx_ring;
 
@@ -662,6 +672,7 @@ static int tx_ring_open(struct inode *inode, struct file *file)
 	return single_open(file, tx_ring_read, NULL);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations tx_ring_fops = {
 	.owner = THIS_MODULE,
 	.open = tx_ring_open,
@@ -669,6 +680,14 @@ static const struct file_operations tx_ring_fops = {
 	.llseek = seq_lseek,
 	.release = single_release
 };
+#else
+static const struct proc_ops tx_ring_fops = {
+	.proc_open = tx_ring_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release
+};
+#endif
 
 int hwtx_ring_read(struct seq_file *seq, void *v)
 {
@@ -709,6 +728,7 @@ static int hwtx_ring_open(struct inode *inode, struct file *file)
 	return single_open(file, hwtx_ring_read, NULL);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations hwtx_ring_fops = {
 	.owner = THIS_MODULE,
 	.open = hwtx_ring_open,
@@ -716,6 +736,14 @@ static const struct file_operations hwtx_ring_fops = {
 	.llseek = seq_lseek,
 	.release = single_release
 };
+#else
+static const struct proc_ops hwtx_ring_fops = {
+	.proc_open = hwtx_ring_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release
+};
+#endif
 
 int rx_ring_read(struct seq_file *seq, void *v)
 {
@@ -757,6 +785,7 @@ static int rx_ring_open(struct inode *inode, struct file *file)
 	return single_open(file, rx_ring_read, NULL);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations rx_ring_fops = {
 	.owner = THIS_MODULE,
 	.open = rx_ring_open,
@@ -764,6 +793,14 @@ static const struct file_operations rx_ring_fops = {
 	.llseek = seq_lseek,
 	.release = single_release
 };
+#else
+static const struct proc_ops rx_ring_fops = {
+	.proc_open = rx_ring_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release
+};
+#endif
 
 static inline u32 mtk_dbg_r32(u32 reg)
 {
@@ -885,6 +922,7 @@ static int dbg_regs_open(struct inode *inode, struct file *file)
 	return single_open(file, dbg_regs_read, 0);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations dbg_regs_fops = {
 	.owner = THIS_MODULE,
 	.open = dbg_regs_open,
@@ -892,6 +930,14 @@ static const struct file_operations dbg_regs_fops = {
 	.llseek = seq_lseek,
 	.release = single_release
 };
+#else
+static const struct proc_ops dbg_regs_fops = {
+	.proc_open = dbg_regs_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release
+};
+#endif
 
 void hw_lro_stats_update(u32 ring_no, struct mtk_rx_dma *rxd)
 {
@@ -1177,6 +1223,7 @@ static int hw_lro_stats_open(struct inode *inode, struct file *file)
 	return single_open(file, hw_lro_stats_read_wrapper, NULL);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations hw_lro_stats_fops = {
 	.owner = THIS_MODULE,
 	.open = hw_lro_stats_open,
@@ -1185,6 +1232,15 @@ static const struct file_operations hw_lro_stats_fops = {
 	.write = hw_lro_stats_write,
 	.release = single_release
 };
+#else
+static const struct proc_ops hw_lro_stats_fops = {
+	.proc_open = hw_lro_stats_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = hw_lro_stats_write,
+	.proc_release = single_release
+};
+#endif
 
 int hwlro_agg_cnt_ctrl(int cnt)
 {
@@ -1485,6 +1541,7 @@ static int hw_lro_auto_tlb_open(struct inode *inode, struct file *file)
 	return single_open(file, hw_lro_auto_tlb_read, NULL);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations hw_lro_auto_tlb_fops = {
 	.owner = THIS_MODULE,
 	.open = hw_lro_auto_tlb_open,
@@ -1493,6 +1550,15 @@ static const struct file_operations hw_lro_auto_tlb_fops = {
 	.write = hw_lro_auto_tlb_write,
 	.release = single_release
 };
+#else
+static const struct proc_ops hw_lro_auto_tlb_fops = {
+	.proc_open = hwtx_ring_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = hw_lro_auto_tlb_write,
+	.proc_release = single_release
+};
+#endif
 
 int reset_event_read(struct seq_file *seq, void *v)
 {
@@ -1542,6 +1608,7 @@ ssize_t reset_event_write(struct file *file, const char __user *buffer,
 	return count;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static const struct file_operations reset_event_fops = {
 	.owner = THIS_MODULE,
 	.open = reset_event_open,
@@ -1550,6 +1617,15 @@ static const struct file_operations reset_event_fops = {
 	.write = reset_event_write,
 	.release = single_release
 };
+#else
+static const struct proc_ops reset_event_fops = {
+	.proc_open = reset_event_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_write = reset_event_write,
+	.proc_release = single_release
+};
+#endif
 
 struct proc_dir_entry *proc_reg_dir;
 static struct proc_dir_entry *proc_esw_cnt, *proc_dbg_regs, *proc_reset_event;
