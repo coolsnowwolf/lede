@@ -201,6 +201,20 @@ define Device/tplink_tl-xdr6088
 endef
 TARGET_DEVICES += tplink_tl-xdr6088
 
+define Device/xiaomi_mi-router-wr30u
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router WR30U
+  DEVICE_DTS := mt7981b-xiaomi-wr30u
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += xiaomi_mi-router-wr30u
+
 define Device/xiaomi_redmi-router-ax6000
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Redmi Router AX6000
