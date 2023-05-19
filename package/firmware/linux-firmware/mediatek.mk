@@ -1,9 +1,9 @@
 Package/mt7601u-firmware = $(call Package/firmware-default,MediaTek MT7601U firmware)
 define Package/mt7601u-firmware/install
-	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/mt7601u.bin \
-		$(1)/lib/firmware
+		$(PKG_BUILD_DIR)/mediatek/mt7601u.bin \
+		$(1)/lib/firmware/mediatek
 endef
 $(eval $(call BuildPackage,mt7601u-firmware))
 
@@ -68,6 +68,15 @@ define Package/mt7922bt-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 $(eval $(call BuildPackage,mt7922bt-firmware))
+
+Package/mt7981-wo-firmware = $(call Package/firmware-default,MT7981 offload firmware)
+define Package/mt7981-wo-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7981_wo.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7981-wo-firmware))
 
 Package/mt7986-wo-firmware = $(call Package/firmware-default,MT7986 offload firmware)
 define Package/mt7986-wo-firmware/install
