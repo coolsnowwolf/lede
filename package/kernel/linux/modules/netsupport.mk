@@ -46,6 +46,7 @@ define KernelPackage/bonding
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Ethernet bonding driver
   KCONFIG:=CONFIG_BONDING
+  DEPENDS:=PACKAGE_kmod-tls:kmod-tls
   FILES:=$(LINUX_DIR)/drivers/net/bonding/bonding.ko
   AUTOLOAD:=$(call AutoLoad,40,bonding)
   MODPARAMS.bonding:=max_bonds=0
@@ -967,6 +968,25 @@ define KernelPackage/tcp-bbr/install
 endef
 
 $(eval $(call KernelPackage,tcp-bbr))
+
+define KernelPackage/tls
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=In-kernel TLS Support with HW Offload
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  KCONFIG:=CONFIG_TLS \
+	CONFIG_TLS_DEVICE=y
+  FILES:=$(LINUX_DIR)/net/tls/tls.ko
+  AUTOLOAD:=$(call AutoProbe,tls)
+endef
+
+define KernelPackage/tls/description
+ Kernel module for in-kernel TLS protocol support and hw offload
+ (to supported interfaces).
+ This allows symmetric encryption handling of the TLS protocol to
+ be done in-kernel and it's HW offload when available.
+endef
+
+$(eval $(call KernelPackage,tls))
 
 
 define KernelPackage/tcp-hybla

@@ -504,7 +504,7 @@ static unsigned int sfe_cm_post_routing(struct sk_buff *skb, int is_v4)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	net = nf_ct_net(ct);
 	tn = nf_tcp_pernet(net);
-	if ((tn&&tn->tcp_be_liberal)
+	if ((tn&&tn->tcp_no_window_check)
 #else
 	if (nf_ct_tcp_no_window_check
 #endif
