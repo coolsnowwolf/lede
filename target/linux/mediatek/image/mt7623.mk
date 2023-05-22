@@ -104,8 +104,12 @@ define Device/bananapi_bpi-r2
 			    pad-to 2k | append-preloader $$(UBOOT_TARGET) |\
 			    pad-to $$(UBOOT_OFFSET) | append-bootloader $$(UBOOT_TARGET) |\
 			    pad-to 4092k | mt7623-mbr emmc |\
+			    $(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
 			    pad-to 4M | append-image-stage initramfs-recovery.itb |\
+			    ) \
+			    $(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
 			    pad-to 48M | append-image squashfs-sysupgrade.itb |\
+			    ) \
 			    gzip
   ARTIFACTS := u-boot.bin preloader.bin sdcard.img.gz
   SUPPORTED_DEVICES := bananapi,bpi-r2
@@ -135,8 +139,12 @@ define Device/unielec_u7623-02
 # but OpenWrt expects 'SDMM' magic for sysupgrade.
   ARTIFACT/emmc.img.gz := mt7623-mbr sdmmc |\
 			    pad-to $$(UBOOT_OFFSET) | append-bootloader $$(UBOOT_TARGET) |\
+			    $(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
 			    pad-to 4M | append-image-stage initramfs-recovery.itb |\
+			    ) \
+			    $(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
 			    pad-to 48M | append-image squashfs-sysupgrade.itb |\
+			    ) \
 			    gzip | append-metadata
   ARTIFACT/scatter.txt := scatterfile emmc.img.gz
   ARTIFACTS := u-boot.bin scatter.txt emmc.img.gz
