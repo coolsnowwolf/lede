@@ -39,6 +39,17 @@ endef
 
 $(eval $(call KernelPackage,nf-reject6))
 
+define KernelPackage/nf-conncount
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter conncount support
+  KCONFIG:=$(KCONFIG_NF_CONNCOUNT)
+  HIDDEN:=1
+  DEPENDS:=+kmod-nf-conntrack
+  FILES:=$(foreach mod,$(NF_CONNCOUNT-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_CONNCOUNT-m)))
+endef
+
+$(eval $(call KernelPackage,nf-conncount))
 
 define KernelPackage/nf-ipt
   SUBMENU:=$(NF_MENU)
@@ -120,6 +131,7 @@ endef
 
 $(eval $(call KernelPackage,nf-conntrack6))
 
+
 define KernelPackage/nf-log
   SUBMENU:=$(NF_MENU)
   TITLE:=Netfilter Logging
@@ -141,6 +153,7 @@ define KernelPackage/nf-log6
 endef
 
 $(eval $(call KernelPackage,nf-log6))
+
 
 define KernelPackage/nf-nat
   SUBMENU:=$(NF_MENU)
@@ -176,11 +189,12 @@ define KernelPackage/nf-flow
   DEPENDS:=+kmod-nf-conntrack
   FILES:= \
 	$(LINUX_DIR)/net/netfilter/nf_flow_table.ko \
-	$(if $(CONFIG_LINUX_5_4),$(LINUX_DIR)/net/netfilter/nf_flow_table_hw.ko)
+	$(LINUX_DIR)/net/netfilter/nf_flow_table_hw.ko@lt5.8
   AUTOLOAD:=$(call AutoProbe,nf_flow_table nf_flow_table_hw)
 endef
 
 $(eval $(call KernelPackage,nf-flow))
+
 
 define KernelPackage/nf-socket
   SUBMENU:=$(NF_MENU)
@@ -202,6 +216,7 @@ define KernelPackage/nf-tproxy
 endef
 
 $(eval $(call KernelPackage,nf-tproxy))
+
 
 define AddDepends/ipt
   SUBMENU:=$(NF_MENU)
@@ -346,6 +361,7 @@ IPSET_MODULES:= \
 	ipset/ip_set_bitmap_ipmac \
 	ipset/ip_set_bitmap_port \
 	ipset/ip_set_hash_ip \
+	ipset/ip_set_hash_ipmac \
 	ipset/ip_set_hash_ipmark \
 	ipset/ip_set_hash_ipport \
 	ipset/ip_set_hash_ipportip \
@@ -583,7 +599,7 @@ define KernelPackage/nf-nathelper-extra
   KCONFIG:=$(KCONFIG_NF_NATHELPER_EXTRA)
   FILES:=$(foreach mod,$(NF_NATHELPER_EXTRA-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_NATHELPER_EXTRA-m)))
-  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-ipt-raw +kmod-asn1-decoder
+  DEPENDS:=+kmod-nf-nat +kmod-lib-textsearch +kmod-asn1-decoder
 endef
 
 define KernelPackage/nf-nathelper-extra/description
@@ -1262,3 +1278,14 @@ define KernelPackage/nft-xfrm
 endef
 
 $(eval $(call KernelPackage,nft-xfrm))
+
+define KernelPackage/nft-connlimit
+  SUBMENU:=$(NF_MENU)
+  TITLE:=Netfilter nf_tables connlimit support
+  DEPENDS:=+kmod-nft-core +kmod-nf-conncount
+  FILES:=$(foreach mod,$(NFT_CONNLIMIT-m),$(LINUX_DIR)/net/$(mod).ko)
+  AUTOLOAD:=$(call AutoProbe,$(notdir $(NFT_CONNLIMIT-m)))
+  KCONFIG:=$(KCONFIG_NFT_CONNLIMIT)
+endef
+
+$(eval $(call KernelPackage,nft-connlimit))
