@@ -1,0 +1,110 @@
+From 9a7acb8f03346705d7420a490d95b32309d90e22 Mon Sep 17 00:00:00 2001
+From: Roman Beranek <roman.beranek@prusa3d.com>
+Date: Wed, 25 Nov 2020 13:07:35 +0100
+Subject: [PATCH 086/117] drm/sun4i: decouple TCON_DCLK_DIV value from
+ pll_mipi/dotclock ratio
+
+Observations showed that an actual refresh rate differs from the intended.
+Specifically, in case of 4-lane panels it was reduced by 1/3, and in case of
+2-lane panels by 2/3.
+
+BSP code apparently distinguishes between a `dsi_div` and a 'tcon inner div'.
+While this 'inner' divider is under DSI always 4, the `dsi_div` is defined
+as a number of bits per pixel over a number of DSI lanes. This value is then
+involved in setting the rate of PLL_MIPI.
+
+I couldn't really figure out how to fit this into the dotclock driver,
+so I opted for this hack where the requested rate is adjusted in such a way
+that the sun4i_dotclock driver can remain untouched.
+
+Signed-off-by: Roman Beranek <roman.beranek@prusa3d.com>
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/gpu/drm/sun4i/sun4i_tcon.c | 44 +++++++++++++++++-------------
+ 1 file changed, 25 insertions(+), 19 deletions(-)
+
+--- a/drivers/gpu/drm/sun4i/sun4i_tcon.c
++++ b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+@@ -291,18 +291,6 @@ static int sun4i_tcon_get_clk_delay(cons
+ 	return delay;
+ }
+ 
+-static void sun4i_tcon0_mode_set_common(struct sun4i_tcon *tcon,
+-					const struct drm_display_mode *mode)
+-{
+-	/* Configure the dot clock */
+-	clk_set_rate(tcon->dclk, mode->crtc_clock * 1000);
+-
+-	/* Set the resolution */
+-	regmap_write(tcon->regs, SUN4I_TCON0_BASIC0_REG,
+-		     SUN4I_TCON0_BASIC0_X(mode->crtc_hdisplay) |
+-		     SUN4I_TCON0_BASIC0_Y(mode->crtc_vdisplay));
+-}
+-
+ static void sun4i_tcon0_mode_set_dithering(struct sun4i_tcon *tcon,
+ 					   const struct drm_connector *connector)
+ {
+@@ -365,12 +353,18 @@ static void sun4i_tcon0_mode_set_cpu(str
+ 	u8 bpp = mipi_dsi_pixel_format_to_bpp(device->format);
+ 	u8 lanes = device->lanes;
+ 	u32 block_space, start_delay;
+-	u32 tcon_div;
+ 
+ 	tcon->dclk_min_div = SUN6I_DSI_TCON_DIV;
+ 	tcon->dclk_max_div = SUN6I_DSI_TCON_DIV;
+ 
+-	sun4i_tcon0_mode_set_common(tcon, mode);
++	/* Configure the dot clock */
++	clk_set_rate(tcon->dclk, mode->crtc_clock * 1000
++				 * bpp / (lanes * SUN6I_DSI_TCON_DIV));
++
++        /* Set the resolution */
++	regmap_write(tcon->regs, SUN4I_TCON0_BASIC0_REG,
++		     SUN4I_TCON0_BASIC0_X(mode->crtc_hdisplay) |
++		     SUN4I_TCON0_BASIC0_Y(mode->crtc_vdisplay));
+ 
+ 	/* Set dithering if needed */
+ 	sun4i_tcon0_mode_set_dithering(tcon, sun4i_tcon_get_connector(encoder));
+@@ -394,9 +388,7 @@ static void sun4i_tcon0_mode_set_cpu(str
+ 	 * The datasheet says that this should be set higher than 20 *
+ 	 * pixel cycle, but it's not clear what a pixel cycle is.
+ 	 */
+-	regmap_read(tcon->regs, SUN4I_TCON0_DCLK_REG, &tcon_div);
+-	tcon_div &= GENMASK(6, 0);
+-	block_space = mode->htotal * bpp / (tcon_div * lanes);
++	block_space = mode->htotal * bpp / (SUN6I_DSI_TCON_DIV * lanes);
+ 	block_space -= mode->hdisplay + 40;
+ 
+ 	regmap_write(tcon->regs, SUN4I_TCON0_CPU_TRI0_REG,
+@@ -438,7 +430,14 @@ static void sun4i_tcon0_mode_set_lvds(st
+ 
+ 	tcon->dclk_min_div = 7;
+ 	tcon->dclk_max_div = 7;
+-	sun4i_tcon0_mode_set_common(tcon, mode);
++
++	/* Configure the dot clock */
++	clk_set_rate(tcon->dclk, mode->crtc_clock * 1000);
++
++        /* Set the resolution */
++	regmap_write(tcon->regs, SUN4I_TCON0_BASIC0_REG,
++		     SUN4I_TCON0_BASIC0_X(mode->crtc_hdisplay) |
++		     SUN4I_TCON0_BASIC0_Y(mode->crtc_vdisplay));
+ 
+ 	/* Set dithering if needed */
+ 	sun4i_tcon0_mode_set_dithering(tcon, sun4i_tcon_get_connector(encoder));
+@@ -515,7 +514,14 @@ static void sun4i_tcon0_mode_set_rgb(str
+ 
+ 	tcon->dclk_min_div = tcon->quirks->dclk_min_div;
+ 	tcon->dclk_max_div = 127;
+-	sun4i_tcon0_mode_set_common(tcon, mode);
++
++	/* Configure the dot clock */
++	clk_set_rate(tcon->dclk, mode->crtc_clock * 1000);
++
++	/* Set the resolution */
++	regmap_write(tcon->regs, SUN4I_TCON0_BASIC0_REG,
++		     SUN4I_TCON0_BASIC0_X(mode->crtc_hdisplay) |
++		     SUN4I_TCON0_BASIC0_Y(mode->crtc_vdisplay));
+ 
+ 	/* Set dithering if needed */
+ 	sun4i_tcon0_mode_set_dithering(tcon, connector);

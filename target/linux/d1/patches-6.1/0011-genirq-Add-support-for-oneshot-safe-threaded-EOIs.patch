@@ -1,0 +1,124 @@
+From ee6459d60f24d91052f0288155f44e6a7f991050 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 7 May 2022 18:34:25 -0500
+Subject: [PATCH 011/117] genirq: Add support for oneshot-safe threaded EOIs
+
+irqchips can use the combination of flags IRQCHIP_ONESHOT_SAFE |
+IRQCHIP_EOI_THREADED to elide mask operations.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ kernel/irq/chip.c      | 36 +++++++++++++++++-------------------
+ kernel/irq/internals.h |  2 +-
+ kernel/irq/manage.c    | 12 ++++++------
+ 3 files changed, 24 insertions(+), 26 deletions(-)
+
+--- a/kernel/irq/chip.c
++++ b/kernel/irq/chip.c
+@@ -439,16 +439,6 @@ void unmask_irq(struct irq_desc *desc)
+ 	}
+ }
+ 
+-void unmask_threaded_irq(struct irq_desc *desc)
+-{
+-	struct irq_chip *chip = desc->irq_data.chip;
+-
+-	if (chip->flags & IRQCHIP_EOI_THREADED)
+-		chip->irq_eoi(&desc->irq_data);
+-
+-	unmask_irq(desc);
+-}
+-
+ /*
+  *	handle_nested_irq - Handle a nested irq from a irq thread
+  *	@irq:	the interrupt number
+@@ -656,25 +646,33 @@ out_unlock:
+ }
+ EXPORT_SYMBOL_GPL(handle_level_irq);
+ 
+-static void cond_unmask_eoi_irq(struct irq_desc *desc, struct irq_chip *chip)
++void unmask_eoi_threaded_irq(struct irq_desc *desc)
+ {
+-	if (!(desc->istate & IRQS_ONESHOT)) {
++	struct irq_chip *chip = desc->irq_data.chip;
++
++	if (desc->istate & IRQS_ONESHOT)
++		unmask_irq(desc);
++
++	if (chip->flags & IRQCHIP_EOI_THREADED)
+ 		chip->irq_eoi(&desc->irq_data);
++}
++
++static void cond_unmask_eoi_irq(struct irq_desc *desc, struct irq_chip *chip)
++{
++	/* Do not send EOI if the thread will do it for us. */
++	if ((chip->flags & IRQCHIP_EOI_THREADED) && desc->threads_oneshot)
+ 		return;
+-	}
++
+ 	/*
+ 	 * We need to unmask in the following cases:
+ 	 * - Oneshot irq which did not wake the thread (caused by a
+ 	 *   spurious interrupt or a primary handler handling it
+ 	 *   completely).
+ 	 */
+-	if (!irqd_irq_disabled(&desc->irq_data) &&
+-	    irqd_irq_masked(&desc->irq_data) && !desc->threads_oneshot) {
+-		chip->irq_eoi(&desc->irq_data);
++	if ((desc->istate & IRQS_ONESHOT) && !desc->threads_oneshot)
+ 		unmask_irq(desc);
+-	} else if (!(chip->flags & IRQCHIP_EOI_THREADED)) {
+-		chip->irq_eoi(&desc->irq_data);
+-	}
++
++	chip->irq_eoi(&desc->irq_data);
+ }
+ 
+ /**
+--- a/kernel/irq/internals.h
++++ b/kernel/irq/internals.h
+@@ -93,7 +93,7 @@ extern void irq_percpu_enable(struct irq
+ extern void irq_percpu_disable(struct irq_desc *desc, unsigned int cpu);
+ extern void mask_irq(struct irq_desc *desc);
+ extern void unmask_irq(struct irq_desc *desc);
+-extern void unmask_threaded_irq(struct irq_desc *desc);
++extern void unmask_eoi_threaded_irq(struct irq_desc *desc);
+ 
+ #ifdef CONFIG_SPARSE_IRQ
+ static inline void irq_mark_irq(unsigned int irq) { }
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -1074,9 +1074,9 @@ static int irq_wait_for_interrupt(struct
+ static void irq_finalize_oneshot(struct irq_desc *desc,
+ 				 struct irqaction *action)
+ {
+-	if (!(desc->istate & IRQS_ONESHOT) ||
+-	    action->handler == irq_forced_secondary_handler)
++	if (action->handler == irq_forced_secondary_handler)
+ 		return;
++
+ again:
+ 	chip_bus_lock(desc);
+ 	raw_spin_lock_irq(&desc->lock);
+@@ -1112,9 +1112,8 @@ again:
+ 
+ 	desc->threads_oneshot &= ~action->thread_mask;
+ 
+-	if (!desc->threads_oneshot && !irqd_irq_disabled(&desc->irq_data) &&
+-	    irqd_irq_masked(&desc->irq_data))
+-		unmask_threaded_irq(desc);
++	if (!desc->threads_oneshot)
++		unmask_eoi_threaded_irq(desc);
+ 
+ out_unlock:
+ 	raw_spin_unlock_irq(&desc->lock);
+@@ -1662,7 +1661,8 @@ __setup_irq(unsigned int irq, struct irq
+ 	 * !ONESHOT irqs the thread mask is 0 so we can avoid a
+ 	 * conditional in irq_wake_thread().
+ 	 */
+-	if (new->flags & IRQF_ONESHOT) {
++	if ((new->flags & IRQF_ONESHOT) ||
++	    (desc->irq_data.chip->flags & (IRQCHIP_ONESHOT_SAFE | IRQCHIP_EOI_THREADED)) == (IRQCHIP_ONESHOT_SAFE | IRQCHIP_EOI_THREADED)) {
+ 		/*
+ 		 * Unlikely to have 32 resp 64 irqs sharing one line,
+ 		 * but who knows.

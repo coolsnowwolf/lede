@@ -1,0 +1,57 @@
+From 9ea0c216d4f85a8ea888a38853e9573bbd9e995a Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sun, 7 Aug 2022 21:09:39 -0500
+Subject: [PATCH 087/117] drm/sun4i: tcon: Always protect the LCD dotclock rate
+
+This handles the case where multiple CRTCs get their .mode_set function
+called during the same atomic commit, before rate protection is applied
+by enabling the CRTC.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/gpu/drm/sun4i/sun4i_dotclock.c | 4 ++++
+ drivers/gpu/drm/sun4i/sun4i_tcon.c     | 6 ++++--
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/sun4i/sun4i_dotclock.c
++++ b/drivers/gpu/drm/sun4i/sun4i_dotclock.c
+@@ -6,6 +6,7 @@
+  * Maxime Ripard <maxime.ripard@free-electrons.com>
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/clk-provider.h>
+ #include <linux/regmap.h>
+ 
+@@ -194,12 +195,15 @@ int sun4i_dclk_create(struct device *dev
+ 	if (IS_ERR(tcon->dclk))
+ 		return PTR_ERR(tcon->dclk);
+ 
++	clk_rate_exclusive_get(tcon->dclk);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL(sun4i_dclk_create);
+ 
+ int sun4i_dclk_free(struct sun4i_tcon *tcon)
+ {
++	clk_rate_exclusive_put(tcon->dclk);
+ 	clk_unregister(tcon->dclk);
+ 	return 0;
+ }
+--- a/drivers/gpu/drm/sun4i/sun4i_tcon.c
++++ b/drivers/gpu/drm/sun4i/sun4i_tcon.c
+@@ -108,9 +108,11 @@ static void sun4i_tcon_channel_set_statu
+ 
+ 	if (enabled) {
+ 		clk_prepare_enable(clk);
+-		clk_rate_exclusive_get(clk);
++		if (clk != tcon->dclk)
++			clk_rate_exclusive_get(clk);
+ 	} else {
+-		clk_rate_exclusive_put(clk);
++		if (clk != tcon->dclk)
++			clk_rate_exclusive_put(clk);
+ 		clk_disable_unprepare(clk);
+ 	}
+ }

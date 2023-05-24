@@ -1,0 +1,146 @@
+From ec8dfb455da3822451129257ab21e2f0d03a6ae3 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Fri, 16 Jul 2021 21:46:31 -0500
+Subject: [PATCH 076/117] spi: spi-sun6i: Add Allwinner R329 support
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/spi/spi-sun6i.c | 78 ++++++++++++++++++++++++++---------------
+ 1 file changed, 49 insertions(+), 29 deletions(-)
+
+--- a/drivers/spi/spi-sun6i.c
++++ b/drivers/spi/spi-sun6i.c
+@@ -30,6 +30,7 @@
+ #define SUN6I_GBL_CTL_REG		0x04
+ #define SUN6I_GBL_CTL_BUS_ENABLE		BIT(0)
+ #define SUN6I_GBL_CTL_MASTER			BIT(1)
++#define SUN6I_GBL_CTL_SAMPLE_MODE		BIT(2)
+ #define SUN6I_GBL_CTL_TP			BIT(7)
+ #define SUN6I_GBL_CTL_RST			BIT(31)
+ 
+@@ -87,6 +88,8 @@
+ 
+ struct sun6i_spi_quirks {
+ 	unsigned long		fifo_depth;
++	bool			has_divider : 1;
++	bool			has_new_sample_mode : 1;
+ };
+ 
+ struct sun6i_spi {
+@@ -362,38 +365,44 @@ static int sun6i_spi_transfer_one(struct
+ 	sun6i_spi_write(sspi, SUN6I_TFR_CTL_REG, reg);
+ 
+ 	/* Ensure that we have a parent clock fast enough */
+-	mclk_rate = clk_get_rate(sspi->mclk);
+-	if (mclk_rate < (2 * tfr->speed_hz)) {
+-		clk_set_rate(sspi->mclk, 2 * tfr->speed_hz);
++	if (sspi->quirks->has_divider) {
+ 		mclk_rate = clk_get_rate(sspi->mclk);
+-	}
++		if (mclk_rate < (2 * tfr->speed_hz)) {
++			clk_set_rate(sspi->mclk, 2 * tfr->speed_hz);
++			mclk_rate = clk_get_rate(sspi->mclk);
++		}
+ 
+-	/*
+-	 * Setup clock divider.
+-	 *
+-	 * We have two choices there. Either we can use the clock
+-	 * divide rate 1, which is calculated thanks to this formula:
+-	 * SPI_CLK = MOD_CLK / (2 ^ cdr)
+-	 * Or we can use CDR2, which is calculated with the formula:
+-	 * SPI_CLK = MOD_CLK / (2 * (cdr + 1))
+-	 * Wether we use the former or the latter is set through the
+-	 * DRS bit.
+-	 *
+-	 * First try CDR2, and if we can't reach the expected
+-	 * frequency, fall back to CDR1.
+-	 */
+-	div_cdr1 = DIV_ROUND_UP(mclk_rate, tfr->speed_hz);
+-	div_cdr2 = DIV_ROUND_UP(div_cdr1, 2);
+-	if (div_cdr2 <= (SUN6I_CLK_CTL_CDR2_MASK + 1)) {
+-		reg = SUN6I_CLK_CTL_CDR2(div_cdr2 - 1) | SUN6I_CLK_CTL_DRS;
+-		tfr->effective_speed_hz = mclk_rate / (2 * div_cdr2);
++		/*
++		 * Setup clock divider.
++		 *
++		 * We have two choices there. Either we can use the clock
++		 * divide rate 1, which is calculated thanks to this formula:
++		 * SPI_CLK = MOD_CLK / (2 ^ cdr)
++		 * Or we can use CDR2, which is calculated with the formula:
++		 * SPI_CLK = MOD_CLK / (2 * (cdr + 1))
++		 * Wether we use the former or the latter is set through the
++		 * DRS bit.
++		 *
++		 * First try CDR2, and if we can't reach the expected
++		 * frequency, fall back to CDR1.
++		 */
++		div_cdr1 = DIV_ROUND_UP(mclk_rate, tfr->speed_hz);
++		div_cdr2 = DIV_ROUND_UP(div_cdr1, 2);
++		if (div_cdr2 <= (SUN6I_CLK_CTL_CDR2_MASK + 1)) {
++			reg = SUN6I_CLK_CTL_CDR2(div_cdr2 - 1) | SUN6I_CLK_CTL_DRS;
++			tfr->effective_speed_hz = mclk_rate / (2 * div_cdr2);
++		} else {
++			div = min(SUN6I_CLK_CTL_CDR1_MASK, order_base_2(div_cdr1));
++			reg = SUN6I_CLK_CTL_CDR1(div);
++			tfr->effective_speed_hz = mclk_rate / (1 << div);
++		}
++		sun6i_spi_write(sspi, SUN6I_CLK_CTL_REG, reg);
+ 	} else {
+-		div = min(SUN6I_CLK_CTL_CDR1_MASK, order_base_2(div_cdr1));
+-		reg = SUN6I_CLK_CTL_CDR1(div);
+-		tfr->effective_speed_hz = mclk_rate / (1 << div);
++		clk_set_rate(sspi->mclk, tfr->speed_hz);
++		mclk_rate = clk_get_rate(sspi->mclk);
++		tfr->effective_speed_hz = mclk_rate;
+ 	}
+ 
+-	sun6i_spi_write(sspi, SUN6I_CLK_CTL_REG, reg);
+ 	/* Finally enable the bus - doing so before might raise SCK to HIGH */
+ 	reg = sun6i_spi_read(sspi, SUN6I_GBL_CTL_REG);
+ 	reg |= SUN6I_GBL_CTL_BUS_ENABLE;
+@@ -518,6 +527,7 @@ static int sun6i_spi_runtime_resume(stru
+ 	struct spi_master *master = dev_get_drvdata(dev);
+ 	struct sun6i_spi *sspi = spi_master_get_devdata(master);
+ 	int ret;
++	u32 reg;
+ 
+ 	ret = clk_prepare_enable(sspi->hclk);
+ 	if (ret) {
+@@ -537,8 +547,10 @@ static int sun6i_spi_runtime_resume(stru
+ 		goto err2;
+ 	}
+ 
+-	sun6i_spi_write(sspi, SUN6I_GBL_CTL_REG,
+-			SUN6I_GBL_CTL_MASTER | SUN6I_GBL_CTL_TP);
++	reg = SUN6I_GBL_CTL_MASTER | SUN6I_GBL_CTL_TP;
++	if (sspi->quirks->has_new_sample_mode)
++		reg |= SUN6I_GBL_CTL_SAMPLE_MODE;
++	sun6i_spi_write(sspi, SUN6I_GBL_CTL_REG, reg);
+ 
+ 	return 0;
+ 
+@@ -729,15 +741,23 @@ static int sun6i_spi_remove(struct platf
+ 
+ static const struct sun6i_spi_quirks sun6i_a31_spi_quirks = {
+ 	.fifo_depth		= SUN6I_FIFO_DEPTH,
++	.has_divider		= true,
+ };
+ 
+ static const struct sun6i_spi_quirks sun8i_h3_spi_quirks = {
+ 	.fifo_depth		= SUN8I_FIFO_DEPTH,
++	.has_divider		= true,
++};
++
++static const struct sun6i_spi_quirks sun50i_r329_spi_quirks = {
++	.fifo_depth		= SUN8I_FIFO_DEPTH,
++	.has_new_sample_mode	= true,
+ };
+ 
+ static const struct of_device_id sun6i_spi_match[] = {
+ 	{ .compatible = "allwinner,sun6i-a31-spi", .data = &sun6i_a31_spi_quirks },
+ 	{ .compatible = "allwinner,sun8i-h3-spi", .data = &sun8i_h3_spi_quirks },
++	{ .compatible = "allwinner,sun50i-r329-spi", .data = &sun50i_r329_spi_quirks },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, sun6i_spi_match);

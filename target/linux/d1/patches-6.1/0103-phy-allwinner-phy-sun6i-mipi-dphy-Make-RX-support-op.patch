@@ -1,0 +1,80 @@
+From 27c0c2cbe7b30b907b031016d2cd15fe9505cb1b Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sun, 7 Aug 2022 12:11:53 -0500
+Subject: [PATCH 103/117] phy: allwinner: phy-sun6i-mipi-dphy: Make RX support
+ optional
+
+While all variants of the DPHY likely support RX mode, the new variant
+in the A100 is not used in this direction by the BSP, and it has some
+analog register changes, so its RX power-on sequence is unknown. To be
+safe, limit RX support to variants where the power-on sequence is known.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/phy/allwinner/phy-sun6i-mipi-dphy.c | 25 +++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+--- a/drivers/phy/allwinner/phy-sun6i-mipi-dphy.c
++++ b/drivers/phy/allwinner/phy-sun6i-mipi-dphy.c
+@@ -114,6 +114,10 @@ enum sun6i_dphy_direction {
+ 	SUN6I_DPHY_DIRECTION_RX,
+ };
+ 
++struct sun6i_dphy_variant {
++	bool	supports_rx;
++};
++
+ struct sun6i_dphy {
+ 	struct clk				*bus_clk;
+ 	struct clk				*mod_clk;
+@@ -123,6 +127,7 @@ struct sun6i_dphy {
+ 	struct phy				*phy;
+ 	struct phy_configure_opts_mipi_dphy	config;
+ 
++	const struct sun6i_dphy_variant		*variant;
+ 	enum sun6i_dphy_direction		direction;
+ };
+ 
+@@ -409,6 +414,10 @@ static int sun6i_dphy_probe(struct platf
+ 	if (!dphy)
+ 		return -ENOMEM;
+ 
++	dphy->variant = device_get_match_data(&pdev->dev);
++	if (!dphy->variant)
++		return -EINVAL;
++
+ 	regs = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(regs)) {
+ 		dev_err(&pdev->dev, "Couldn't map the DPHY encoder registers\n");
+@@ -445,8 +454,13 @@ static int sun6i_dphy_probe(struct platf
+ 	ret = of_property_read_string(pdev->dev.of_node, "allwinner,direction",
+ 				      &direction);
+ 
+-	if (!ret && !strncmp(direction, "rx", 2))
++	if (!ret && !strncmp(direction, "rx", 2)) {
++		if (!dphy->variant->supports_rx) {
++			dev_err(&pdev->dev, "RX not supported on this variant\n");
++			return -EOPNOTSUPP;
++		}
+ 		dphy->direction = SUN6I_DPHY_DIRECTION_RX;
++	}
+ 
+ 	phy_set_drvdata(dphy->phy, dphy);
+ 	phy_provider = devm_of_phy_provider_register(&pdev->dev, of_phy_simple_xlate);
+@@ -454,8 +468,15 @@ static int sun6i_dphy_probe(struct platf
+ 	return PTR_ERR_OR_ZERO(phy_provider);
+ }
+ 
++static const struct sun6i_dphy_variant sun6i_a31_mipi_dphy_variant = {
++	.supports_rx	= true,
++};
++
+ static const struct of_device_id sun6i_dphy_of_table[] = {
+-	{ .compatible = "allwinner,sun6i-a31-mipi-dphy" },
++	{
++		.compatible	= "allwinner,sun6i-a31-mipi-dphy",
++		.data		= &sun6i_a31_mipi_dphy_variant,
++	},
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, sun6i_dphy_of_table);
