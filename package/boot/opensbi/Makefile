@@ -29,7 +29,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/opensbi
     SECTION:=boot
     CATEGORY:=Boot Loaders
-    DEPENDS:=@TARGET_sifiveu
+    DEPENDS:=@(TARGET_sifiveu||TARGET_allwinner)
     URL:=https://github.com/riscv/opensbi/blob/master/README.md
     VARIANT:=$(subst _,/,$(subst opensbi_,,$(1)))
     TITLE:=OpenSBI generic
