@@ -92,8 +92,9 @@ define KernelPackage/vxlan
 	+kmod-udptunnel4 \
 	+IPV6:kmod-udptunnel6
   KCONFIG:=CONFIG_VXLAN
-  FILES:=$(LINUX_DIR)/drivers/net/vxlan.ko@lt5.18 \
-          $(LINUX_DIR)/drivers/net/vxlan/vxlan.ko@ge5.18
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/vxlan.ko@lt5.18 \
+	$(LINUX_DIR)/drivers/net/vxlan/vxlan.ko@ge5.18
   AUTOLOAD:=$(call AutoLoad,13,vxlan)
 endef
 

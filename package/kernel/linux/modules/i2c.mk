@@ -84,6 +84,20 @@ endef
 $(eval $(call KernelPackage,i2c-algo-pcf))
 
 
+I2C_CCGS_UCSI_MODULES:= \
+  CONFIG_I2C_CCGX_UCSI:drivers/i2c/busses/i2c-ccgx-ucsi
+
+define KernelPackage/i2c-ccgs-ucsi
+  $(call i2c_defaults,$(I2C_CCGS_UCSI_MODULES),58)
+  TITLE:=Cypress CCGx Type-C controller
+  DEPENDS:=+kmod-i2c-core +kmod-regmap-core
+  HIDDEN:=y
+endef
+
+
+$(eval $(call KernelPackage,i2c-ccgs-ucsi))
+
+
 I2C_DWCORE_MODULES:= \
   CONFIG_I2C_DESIGNWARE_CORE:drivers/i2c/busses/i2c-designware-core
 
@@ -103,7 +117,7 @@ I2C_DWPCI_MODULES:= \
 define KernelPackage/i2c-designware-pci
   $(call i2c_defaults,$(I2C_DWPCI_MODULES),59)
   TITLE:=Synopsys DesignWare PCI
-  DEPENDS:=+kmod-i2c-designware-core
+  DEPENDS:=+kmod-i2c-designware-core +kmod-i2c-ccgs-ucsi
 endef
 
 define KernelPackage/i2c-designware-pci/description
