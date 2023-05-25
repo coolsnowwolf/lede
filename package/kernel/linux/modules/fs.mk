@@ -371,6 +371,7 @@ $(eval $(call KernelPackage,fs-msdos))
 define KernelPackage/fs-netfs
   SUBMENU:=$(FS_MENU)
   TITLE:=Network Filesystems support
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
   KCONFIG:= CONFIG_NETFS_SUPPORT
   FILES:=$(LINUX_DIR)/fs/netfs/netfs.ko
   AUTOLOAD:=$(call AutoLoad,28,netfs)

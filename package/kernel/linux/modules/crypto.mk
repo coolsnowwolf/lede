@@ -738,9 +738,10 @@ ifndef CONFIG_TARGET_x86_64
     FILES+= \
 	$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko \
 	$(LINUX_DIR)/arch/x86/crypto/serpent-sse2-i586.ko \
+	$(LINUX_DIR)/arch/x86/crypto/glue_helper.ko@lt5.12 \
 	$(LINUX_DIR)/crypto/cryptd.ko \
 	$(LINUX_DIR)/crypto/crypto_simd.ko
-    AUTOLOAD+= $(call AutoLoad,10,cryptd \
+    AUTOLOAD+= $(call AutoLoad,10,cryptd glue_helper@lt5.12 \
 	serpent-sse2-i586 twofish-i586 blowfish_generic)
   endef
 endif
@@ -826,7 +827,9 @@ $(eval $(call KernelPackage,crypto-rmd160))
 
 define KernelPackage/crypto-rng
   TITLE:=CryptoAPI random number generation
-  DEPENDS:=+kmod-crypto-hash +kmod-crypto-hmac +kmod-crypto-sha512
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-hmac \
+	   +(LINUX_5_4||LINUX_5_10):kmod-crypto-sha256 \
+	   +(LINUX_5_15||LINUX_6_1):kmod-crypto-sha512
   KCONFIG:= \
 	CONFIG_CRYPTO_DRBG \
 	CONFIG_CRYPTO_DRBG_HMAC=y \

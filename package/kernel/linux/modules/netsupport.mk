@@ -1048,7 +1048,6 @@ $(eval $(call KernelPackage,tcp-bbr))
 define KernelPackage/tls
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=In-kernel TLS Support with HW Offload
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
   KCONFIG:=CONFIG_TLS \
 	CONFIG_TLS_DEVICE=y
   FILES:=$(LINUX_DIR)/net/tls/tls.ko

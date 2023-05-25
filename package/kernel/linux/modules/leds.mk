@@ -118,6 +118,7 @@ $(eval $(call KernelPackage,ledtrig-pattern))
 define KernelPackage/ledtrig-tty
   SUBMENU:=$(LEDS_MENU)
   TITLE:=LED Trigger for TTY devices
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
   KCONFIG:=CONFIG_LEDS_TRIGGER_TTY
   FILES:=$(LED_TRIGGER_DIR)/ledtrig-tty.ko
   AUTOLOAD:=$(call AutoLoad,50,ledtrig-tty)

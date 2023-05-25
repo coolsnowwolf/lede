@@ -92,7 +92,8 @@ $(eval $(call KernelPackage,input-gpio-keys))
 define KernelPackage/input-gpio-keys-polled
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=Polled GPIO key support
-  DEPENDS:=@GPIO_SUPPORT +kmod-input-core
+  DEPENDS:=@GPIO_SUPPORT +kmod-input-core \
+	+(LINUX_5_4||LINUX_5_10):kmod-input-polldev
   KCONFIG:= \
 	CONFIG_KEYBOARD_GPIO_POLLED \
 	CONFIG_INPUT_KEYBOARD=y
@@ -142,6 +143,21 @@ endef
 $(eval $(call KernelPackage,input-joydev))
 
 
+define KernelPackage/input-polldev
+  SUBMENU:=$(INPUT_MODULES_MENU)
+  TITLE:=Polled Input device support
+  DEPENDS:=+kmod-input-core @(LINUX_5_4||LINUX_5_10)
+  KCONFIG:=CONFIG_INPUT_POLLDEV
+  FILES:=$(LINUX_DIR)/drivers/input/input-polldev.ko
+endef
+
+define KernelPackage/input-polldev/description
+ Kernel module for support of polled input devices
+endef
+
+$(eval $(call KernelPackage,input-polldev))
+
+
 define KernelPackage/input-matrixkmap
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=Input matrix devices support
@@ -184,8 +200,10 @@ define KernelPackage/input-touchscreen-edt-ft5x06
   DEPENDS:=+kmod-i2c-core +kmod-input-core
   KCONFIG:= \
 	CONFIG_INPUT_TOUCHSCREEN=y \
+	CONFIG_TOUCHSCREEN_PROPERTIES=y@lt5.13 \
 	CONFIG_TOUCHSCREEN_EDT_FT5X06
-  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/edt-ft5x06.ko
+  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/edt-ft5x06.ko \
+	$(LINUX_DIR)/drivers/input/touchscreen/of_touchscreen.ko@lt5.13
   AUTOLOAD:=$(call AutoProbe,edt-ft5x06)
 endef
 
