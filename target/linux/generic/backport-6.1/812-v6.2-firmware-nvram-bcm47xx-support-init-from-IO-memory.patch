@@ -1,0 +1,100 @@
+From a5be5ce0e25439fae3cd42e3d775979547926812 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Thu, 3 Nov 2022 09:25:29 +0100
+Subject: [PATCH] firmware/nvram: bcm47xx: support init from IO memory
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Provide NVMEM content to the NVRAM driver from a simple
+memory resource. This is necessary to use NVRAM in a memory-
+mapped flash device. Patch taken from OpenWrts development
+tree.
+
+This patch makes it possible to use memory-mapped NVRAM
+on the D-Link DWL-8610AP and the D-Link DIR-890L.
+
+Cc: Hauke Mehrtens <hauke@hauke-m.de>
+Cc: linux-mips@vger.kernel.org
+Cc: Florian Fainelli <f.fainelli@gmail.com>
+Cc: bcm-kernel-feedback-list@broadcom.com
+Cc: Thomas Bogendoerfer <tsbogend@alpha.franken.de>
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+[Added an export for modules potentially using the init symbol]
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+Link: https://lore.kernel.org/r/20221103082529.359084-1-linus.walleij@linaro.org
+Signed-off-by: Florian Fainelli <f.fainelli@gmail.com>
+---
+ drivers/firmware/broadcom/bcm47xx_nvram.c | 18 ++++++++++++++++++
+ drivers/nvmem/brcm_nvram.c                |  3 +++
+ include/linux/bcm47xx_nvram.h             |  6 ++++++
+ 3 files changed, 27 insertions(+)
+
+--- a/drivers/firmware/broadcom/bcm47xx_nvram.c
++++ b/drivers/firmware/broadcom/bcm47xx_nvram.c
+@@ -110,6 +110,24 @@ found:
+ 	return 0;
+ }
+ 
++int bcm47xx_nvram_init_from_iomem(void __iomem *nvram_start, size_t res_size)
++{
++	if (nvram_len) {
++		pr_warn("nvram already initialized\n");
++		return -EEXIST;
++	}
++
++	if (!bcm47xx_nvram_is_valid(nvram_start)) {
++		pr_err("No valid NVRAM found\n");
++		return -ENOENT;
++	}
++
++	bcm47xx_nvram_copy(nvram_start, res_size);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(bcm47xx_nvram_init_from_iomem);
++
+ /*
+  * On bcm47xx we need access to the NVRAM very early, so we can't use mtd
+  * subsystem to access flash. We can't even use platform device / driver to
+--- a/drivers/nvmem/brcm_nvram.c
++++ b/drivers/nvmem/brcm_nvram.c
+@@ -3,6 +3,7 @@
+  * Copyright (C) 2021 Rafał Miłecki <rafal@milecki.pl>
+  */
+ 
++#include <linux/bcm47xx_nvram.h>
+ #include <linux/io.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
+@@ -139,6 +140,8 @@ static int brcm_nvram_probe(struct platf
+ 	if (err)
+ 		return err;
+ 
++	bcm47xx_nvram_init_from_iomem(priv->base, resource_size(res));
++
+ 	config.dev = dev;
+ 	config.cells = priv->cells;
+ 	config.ncells = priv->ncells;
+--- a/include/linux/bcm47xx_nvram.h
++++ b/include/linux/bcm47xx_nvram.h
+@@ -11,6 +11,7 @@
+ #include <linux/vmalloc.h>
+ 
+ #ifdef CONFIG_BCM47XX_NVRAM
++int bcm47xx_nvram_init_from_iomem(void __iomem *nvram_start, size_t res_size);
+ int bcm47xx_nvram_init_from_mem(u32 base, u32 lim);
+ int bcm47xx_nvram_getenv(const char *name, char *val, size_t val_len);
+ int bcm47xx_nvram_gpio_pin(const char *name);
+@@ -20,6 +21,11 @@ static inline void bcm47xx_nvram_release
+ 	vfree(nvram);
+ };
+ #else
++static inline int bcm47xx_nvram_init_from_iomem(void __iomem *nvram_start,
++						size_t res_size)
++{
++	return -ENOTSUPP;
++}
+ static inline int bcm47xx_nvram_init_from_mem(u32 base, u32 lim)
+ {
+ 	return -ENOTSUPP;
