@@ -1,0 +1,74 @@
+From 95e4dfbf33dc0a0843ba20db811f7ea271235e1e Mon Sep 17 00:00:00 2001
+From: Kewei Xu <kewei.xu@mediatek.com>
+Date: Sun, 10 Oct 2021 15:05:12 +0800
+Subject: [PATCH 01/16] i2c: mediatek: Reset the handshake signal between i2c
+ and dma
+
+Due to changes in the hardware design of the handshaking signal
+between i2c and dma, it is necessary to reset the handshaking
+signal before each transfer to ensure that the multi-msgs can
+be transferred correctly.
+
+Signed-off-by: Kewei Xu <kewei.xu@mediatek.com>
+Reviewed-by: Qii Wang <qii.wang@mediatek.com>
+Signed-off-by: Wolfram Sang <wsa@kernel.org>
+---
+ drivers/i2c/busses/i2c-mt65xx.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+--- a/drivers/i2c/busses/i2c-mt65xx.c
++++ b/drivers/i2c/busses/i2c-mt65xx.c
+@@ -15,6 +15,7 @@
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/kernel.h>
+ #include <linux/mm.h>
+ #include <linux/module.h>
+@@ -49,6 +50,8 @@
+ #define I2C_RD_TRANAC_VALUE		0x0001
+ #define I2C_SCL_MIS_COMP_VALUE		0x0000
+ #define I2C_CHN_CLR_FLAG		0x0000
++#define I2C_RELIABILITY		0x0010
++#define I2C_DMAACK_ENABLE		0x0008
+ 
+ #define I2C_DMA_CON_TX			0x0000
+ #define I2C_DMA_CON_RX			0x0001
+@@ -851,6 +854,7 @@ static int mtk_i2c_do_transfer(struct mt
+ 	u16 restart_flag = 0;
+ 	u16 dma_sync = 0;
+ 	u32 reg_4g_mode;
++	u32 reg_dma_reset;
+ 	u8 *dma_rd_buf = NULL;
+ 	u8 *dma_wr_buf = NULL;
+ 	dma_addr_t rpaddr = 0;
+@@ -864,6 +868,28 @@ static int mtk_i2c_do_transfer(struct mt
+ 
+ 	reinit_completion(&i2c->msg_complete);
+ 
++	if (i2c->dev_comp->apdma_sync &&
++	    i2c->op != I2C_MASTER_WRRD && num > 1) {
++		mtk_i2c_writew(i2c, 0x00, OFFSET_DEBUGCTRL);
++		writel(I2C_DMA_HANDSHAKE_RST | I2C_DMA_WARM_RST,
++		       i2c->pdmabase + OFFSET_RST);
++
++		ret = readw_poll_timeout(i2c->pdmabase + OFFSET_RST,
++					 reg_dma_reset,
++					 !(reg_dma_reset & I2C_DMA_WARM_RST),
++					 0, 100);
++		if (ret) {
++			dev_err(i2c->dev, "DMA warm reset timeout\n");
++			return -ETIMEDOUT;
++		}
++
++		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
++		mtk_i2c_writew(i2c, I2C_HANDSHAKE_RST, OFFSET_SOFTRESET);
++		mtk_i2c_writew(i2c, I2C_CHN_CLR_FLAG, OFFSET_SOFTRESET);
++		mtk_i2c_writew(i2c, I2C_RELIABILITY | I2C_DMAACK_ENABLE,
++			       OFFSET_DEBUGCTRL);
++	}
++
+ 	control_reg = mtk_i2c_readw(i2c, OFFSET_CONTROL) &
+ 			~(I2C_CONTROL_DIR_CHANGE | I2C_CONTROL_RS);
+ 	if ((i2c->speed_hz > I2C_MAX_FAST_MODE_PLUS_FREQ) || (left_num >= 1))
