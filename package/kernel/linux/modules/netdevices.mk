@@ -111,7 +111,6 @@ $(eval $(call KernelPackage,libphy))
 define KernelPackage/phylink
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Model for MAC to optional PHY connection
-  DEPENDS:=+kmod-libphy
   KCONFIG:=CONFIG_PHYLINK
   FILES:=$(LINUX_DIR)/drivers/net/phy/phylink.ko
   AUTOLOAD:=$(call AutoLoad,15,phylink,1)
@@ -142,7 +141,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=@(LINUX_5_10||LINUX_5_15||LINUX_6_1) +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@!LINUX_5_4 +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_MDIO_DEVRES
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
@@ -159,7 +158,7 @@ $(eval $(call KernelPackage,mdio-devres))
 define KernelPackage/mdio-gpio
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:= Supports GPIO lib-based MDIO busses
-  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=+kmod-libphy @GPIO_SUPPORT +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:= \
 	CONFIG_MDIO_BITBANG \
 	CONFIG_MDIO_GPIO
@@ -440,7 +439,7 @@ $(eval $(call KernelPackage,switch-rtl8306))
 define KernelPackage/switch-rtl8366-smi
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek RTL8366 SMI switch interface support
-  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@GPIO_SUPPORT +kmod-swconfig +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_RTL8366_SMI
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366_smi.ko
   AUTOLOAD:=$(call AutoLoad,42,rtl8366_smi,1)
@@ -459,7 +458,7 @@ define KernelPackage/switch-rtl8366rb
   DEPENDS:=+kmod-switch-rtl8366-smi
   KCONFIG:=CONFIG_RTL8366RB_PHY
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366rb.ko
-  AUTOLOAD:=$(call AutoLoad,43,rtl8366rb)
+  AUTOLOAD:=$(call AutoLoad,43,rtl8366rb,1)
 endef
 
 define KernelPackage/switch-rtl8366rb/description
@@ -475,7 +474,7 @@ define KernelPackage/switch-rtl8366s
   DEPENDS:=+kmod-switch-rtl8366-smi
   KCONFIG:=CONFIG_RTL8366S_PHY
   FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8366s.ko
-  AUTOLOAD:=$(call AutoLoad,43,rtl8366s)
+  AUTOLOAD:=$(call AutoLoad,43,rtl8366s,1)
 endef
 
 define KernelPackage/switch-rtl8366s/description
@@ -483,6 +482,22 @@ define KernelPackage/switch-rtl8366s/description
 endef
 
 $(eval $(call KernelPackage,switch-rtl8366s))
+
+
+define KernelPackage/switch-rtl8367
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Realtek RTL8367 switch support
+  DEPENDS:=+kmod-switch-rtl8366-smi
+  KCONFIG:=CONFIG_RTL8367_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/rtl8367.ko
+  AUTOLOAD:=$(call AutoLoad,43,rtl8367,1)
+endef
+
+define KernelPackage/switch-rtl8367/description
+ Realtek RTL8367 switch support
+endef
+
+$(eval $(call KernelPackage,switch-rtl8367))
 
 
 define KernelPackage/switch-rtl8367b
@@ -499,6 +514,22 @@ define KernelPackage/switch-rtl8367b/description
 endef
 
 $(eval $(call KernelPackage,switch-rtl8367b))
+
+
+define KernelPackage/switch-ar8xxx
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Atheros AR8216/8327 switch support
+  DEPENDS:=+kmod-swconfig +!LINUX_5_4:kmod-mdio-devres
+  KCONFIG:=CONFIG_AR8216_PHY
+  FILES:=$(LINUX_DIR)/drivers/net/phy/ar8xxx.ko
+  AUTOLOAD:=$(call AutoLoad,43,ar8xxx,1)
+endef
+
+define KernelPackage/switch-ar8xxx/description
+ Atheros AR8216/8327 switch support
+endef
+
+$(eval $(call KernelPackage,switch-ar8xxx))
 
 
 define KernelPackage/natsemi
@@ -661,7 +692,7 @@ $(eval $(call KernelPackage,8139cp))
 define KernelPackage/r8169
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=RealTek RTL-8169 PCI Gigabit Ethernet Adapter kernel support
-  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +(LINUX_5_10||LINUX_5_15||LINUX_6_1):kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +!LINUX_5_4:kmod-mdio-devres
   KCONFIG:= \
     CONFIG_R8169 \
     CONFIG_R8169_NAPI=y \
@@ -787,7 +818,7 @@ $(eval $(call KernelPackage,igbvf))
 define KernelPackage/ixgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +(LINUX_5_10||LINUX_5_15||LINUX_6_1):kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +!LINUX_5_4:kmod-mdio-devres
   KCONFIG:=CONFIG_IXGBE \
     CONFIG_IXGBE_VXLAN=n \
     CONFIG_IXGBE_HWMON=y \
@@ -921,7 +952,7 @@ define KernelPackage/tg3
   TITLE:=Broadcom Tigon3 Gigabit Ethernet
   KCONFIG:=CONFIG_TIGON3 \
 	CONFIG_TIGON3_HWMON=n
-  DEPENDS:=+!TARGET_bcm47xx:kmod-libphy +kmod-ptp
+  DEPENDS:=@PCI_SUPPORT +!TARGET_bcm47xx:kmod-libphy +kmod-ptp
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/broadcom/tg3.ko
   AUTOLOAD:=$(call AutoLoad,19,tg3,1)
@@ -937,7 +968,7 @@ $(eval $(call KernelPackage,tg3))
 define KernelPackage/hfcpci
   TITLE:=HFC PCI cards (single port) support for mISDN
   KCONFIG:=CONFIG_MISDN_HFCPCI
-  DEPENDS:=+kmod-misdn
+  DEPENDS:=@PCI_SUPPORT +kmod-misdn
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/isdn/hardware/mISDN/hfcpci.ko
   AUTOLOAD:=$(call AutoLoad,31,hfcpci)
@@ -954,7 +985,7 @@ $(eval $(call KernelPackage,hfcpci))
 define KernelPackage/hfcmulti
   TITLE:=HFC multiport cards (HFC-4S/8S/E1) support for mISDN
   KCONFIG:=CONFIG_MISDN_HFCMULTI
-  DEPENDS:=+kmod-misdn
+  DEPENDS:=@PCI_SUPPORT +kmod-misdn
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   FILES:=$(LINUX_DIR)/drivers/isdn/hardware/mISDN/hfcmulti.ko
   AUTOLOAD:=$(call AutoLoad,31,hfcmulti)
@@ -1476,13 +1507,15 @@ define KernelPackage/wwan
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=WWAN Driver Core
   DEPENDS:=@(LINUX_5_15||LINUX_6_1)
-  KCONFIG:=CONFIG_WWAN
+  KCONFIG:= \
+  CONFIG_WWAN \
+  CONFIG_WWAN_DEBUGFS=y@ge5.17
   FILES:=$(LINUX_DIR)/drivers/net/wwan/wwan.ko
   AUTOLOAD:=$(call AutoProbe,wwan)
 endef
 
 define KernelPackage/wwan/description
- his driver provides a common framework for WWAN drivers.
+ This driver provides a common framework for WWAN drivers.
 endef
 
 $(eval $(call KernelPackage,wwan))
@@ -1491,7 +1524,7 @@ $(eval $(call KernelPackage,wwan))
 define KernelPackage/mhi-net
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MHI Network Device
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1) @PCI_SUPPORT +kmod-mhi-bus
+  DEPENDS:=@PCI_SUPPORT +kmod-mhi-bus
   KCONFIG:=CONFIG_MHI_NET
   FILES:=$(LINUX_DIR)/drivers/net/mhi_net.ko
   AUTOLOAD:=$(call AutoProbe,mhi_net)
@@ -1569,7 +1602,7 @@ $(eval $(call KernelPackage,amazon-ena))
 define KernelPackage/lan743x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Microchip LAN743x PCI Express Gigabit Ethernet NIC
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +!LINUX_5_4:kmod-mdio-devres
   KCONFIG:=CONFIG_LAN743X
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/microchip/lan743x.ko
   AUTOLOAD:=$(call AutoProbe,lan743x)
