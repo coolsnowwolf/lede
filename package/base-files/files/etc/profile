@@ -1,17 +1,339 @@
-[ -e /tmp/.failsafe ] && export FAILSAFE=1
-
-[ -f /etc/banner ] && cat /etc/banner
-[ -n "$FAILSAFE" ] && cat /etc/banner.failsafe
-
-grep -Fsq '/ overlay ro,' /proc/mounts && {
-	echo 'Your JFFS2-partition seems full and overlayfs is mounted read-only.'
-	echo 'Please try to remove files from /overlay/upper/... and reboot!'
+## 2023 sirpdboy  herboy2008@gmail.com
+Sysinfo() {
+[ -z "${TARGET_PROFILE}" ] && local TARGET_PROFILE=$(jsonfilter -e '@.model.id' < /etc/board.json | tr ',' '_')
+local DISTRIB_ARCH=$(cat /etc/openwrt_release | grep "DISTRIB_ARCH=" |awk -F "'" '{print $2}')
+if grep -Eq "x86" "/etc/openwrt_release" ; then
+	[ -d /sys/firmware/efi ] && DISTRIB_ARCH= "${DISTRIB_ARCH} - UEFI" || DISTRIB_ARCH="${DISTRIB_ARCH} - BIOS"
+else
+	DISTRIB_ARCH=${DISTRIB_ARCH}	
+fi
+local IP_Address=`ip -4 a | egrep "br-lan" | grep "inet" | awk '{print $2}'`
+local CPU_Model=$(awk -F ':[ ]' '/model name/{printf ($2);exit}' /proc/cpuinfo)
+local Mem_sum=$(free | grep Mem | awk '{a=$2/1024} {printf("%dMB\n",a)}')
+local Overlay_Available="$(df -h | grep ":/overlay" | awk '{print $4}' | awk 'NR==1')"
+local Tmp_Available="$(df -h | grep "/tmp" | awk '{print $4}' | awk 'NR==1')"
+local TEMP=$(sensors 2>/dev/null | grep 'Core 0' | awk '{print $3}')
+local Sys_time=$(awk '{a=$1/86400;b=($1%86400)/3600;c=($1%3600)/60;d=($1%60)} {printf("%d 天 %d 小时 %d 分钟 %d 秒\n",a,b,c,d)}' /proc/uptime)
+cat <<EOF
+$(echo -e "${Yellow}$(uname -n)/${TARGET_PROFILE}")
+$(echo -e "${Red}CPU    Model:	${CPU_Model}${White}")
+$(echo -e "${Blue}Mem    Total:	${Mem_sum}${White}")
+$(echo -e "${Green}TARGET  Info:	${DISTRIB_ARCH}${White}")
+FIRWare  Ver:	$(uname -rs)$([ -n "${TEMP}" ] && echo -e "${TEMP}")
+$(echo -e "${Red}IPv4 Address:	${IP_Address}${White}")
+Overlay SIZE:	${Overlay_Available} / ${Tmp_Available}
+$(echo -e "${Red}Run     Time:	${Sys_time}${White}")
+EOF
 }
 
-export PATH="%PATH%"
+White="\e[0m"
+Yellow="\e[33m"
+Red="\e[31m"
+Blue="\e[34m"
+Grey="\e[36m"
+Green="\e[32m"
+Div="${Grey}|${White}"
+
+function EY() {
+  echo -e "${Yellow} $1${Font}"
+}
+function ER() {
+  echo
+  echo -e "${Red} $1${Font}"
+}
+function EB() {
+  echo
+  echo -e "${Blue} $1${Font}"
+  echo
+}
+function EG() {
+  echo -e "${Green} $1${Font}"
+}
+function EW() {
+  echo -e "${White} $1${Font}"
+}
+
+function k_theme() {
+echo
+while :; do
+echo -e "\n q. 返回(return)"
+read -p "是否恢复默认主题?(Do you want to restore the default theme?)[Y/n]:" YN
+
+case ${YN} in
+[Yy]) 
+    ER "已恢复默认主题(The default theme has been restored.)..."
+
+cat <<EOF  >>/etc/config/advancedplus
+    config basic
+	option gossr 'bypass'
+	option gouser 'admin'
+	option gohome 'overview'
+	option background '0'
+	option mode 'light'
+	option primary_rgbs '225,112,88'
+	option primary_body '#f8f8f8'
+	option primary '#2d6693'
+	option primary_rgb '45,102,147'
+	option primary_rgb_ts '0.3'
+	option fontmode '0'
+	option font_d '1.2rem'
+	option font_z '0.92rem'
+	option font_x '0.875rem'
+
+config theme
+	option primary_rgb '74,161,133'
+	option primary_body '#f8f8f8'
+	option primary_rgbs '38,12,6'
+	option mode 'light'
+	option primary 'green'
+	option primary_rgb_ts '0.3'
+	option use '1'
+
+config theme
+	option primary_body '#f8f8f8'
+	option primary_rgbs '225,112,88'
+	option primary '#2d6693'
+	option primary_rgb '45,102,147'
+	option mode 'light'
+	option primary_rgb_ts '0.3'
+	option use '0'
+
+config theme
+	option primary_body '#212d3c'
+	option primary '#101f30'
+	option primary_rgbs '38,12,6'
+	option primary_rgb '133,95,3'
+	option mode 'dark'
+	option use '1'
+	option primary_rgb_ts '0.5'
+
+config theme
+	option primary 'green'
+	option primary_body '#f8f8f8'
+	option primary_rgb '74,161,133'
+	option primary_rgbs '225,112,88'
+	option mode 'dark'
+	option use '0'
+	option primary_rgb_ts '0.3'
+EOF
+    uci set luci.main.mediaurlbase='/luci-static/kucat'
+    uci set luci.themes.KuCat=/luci-static/kucat
+    uci set luci.themes.Bootstrap='/luci-static/bootstrap'
+    uci commit luci
+    /etc/init.d/system restart
+    return
+;;
+[Nn])
+    EW "返回主菜单(return)"
+    . /etc/profile
+
+;;
+[Qq])
+    . /etc/profile
+;;
+*)
+    ER "输入正确选择(Enter the correct choice!)"
+;;
+esac
+done
+}
+
+function k_poweroff() {
+echo
+while :; do
+echo -e "\n q. 返回(return)"
+read -p "是否确定关闭系统？(Are you sure to shut down the system)[Y/n]:" YN
+case ${YN} in
+[Yy]) 
+    ER "正在关闭系统中，请稍等(Shutting down the system, please wait)..."
+    sync && poweroff
+;;
+[Nn])
+    EW "返回主菜单(return)"
+    . /etc/profile
+;;
+[Qq])
+    . /etc/profile
+;;
+*)
+    ER "输入正确选择(Enter the correct choice!)"
+;;
+esac
+done
+}
+
+function k_change_ip() {
+  echo -e "\n q. 返回(return)"
+  export k_ip="请输入新IP(Please input the new IP[eg:192.168.11.1])"
+  echo
+  while :; do
+  domainy=""
+  read -p " ${k_ip}：" keyip
+  if [[ -n "${keyip}" ]] && [[ "$(echo ${keyip} |grep -Eoc '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')" == '1' ]]; then
+    keyipy="Y"
+  fi 
+    if [[ -n "${keyip}" ]] && [[ ${keyip} == 'q'  ||  ${keyip} == 'Q'  ]]; then
+    keyipy="Q"
+  fi
+  case $keyipy in
+  Y)
+    export keyipn="${keyip}"
+    uci set network.lan.ipaddr="${keyip}"
+    ER "您的IP已经改为(Your IP has been changed to)：${keyip}！"
+    uci commit network
+    /etc/init.d/network restart
+    return
+  ;; 
+
+ Q)
+    . /etc/profile
+;;
+
+  *) 
+  echo -e "\n q. 返回(return)"
+  export k_ip="输入正确格式IP地址[x.x.x.x](enter IP address format[x.x.x.x])"
+  ;;
+  esac
+  done
+}
+
+function k_clear() {
+while :; do 
+echo -e "\n q. 返回(return)"
+read -p "否清空密码并重启？(Clear password and Reboot)[Y/n]：" YN
+case ${YN} in
+[Yy]) 
+    if [[ "$USER" == "admin" ]]; then
+      sed -i 's/admin:.*/admin::0:0:99999:7:::/g' /etc/shadow
+      passwd -d root
+    else
+      passwd -d root
+    fi
+    goreboot
+;;
+[Nn])
+    EW "返回主菜单(return)"
+    . /etc/profile
+;;
+[Qq])
+    . /etc/profile
+;;
+*)
+    ER "输入正确选择!(Enter the correct choice!)"
+;;
+esac
+done
+}
+
+function k_reboot() {
+echo
+while :; do
+echo -e "\n q. 返回(return)"
+read -p "是否重启系统(Whether to restart the system)[Y/n]:" YN
+case ${YN} in
+[Yy]) 
+    ER "系统重启中(System is restarting)..."
+    rm -rf /etc/config/wizard
+    uci set argon.@global[0].bing_background=0
+    uci commit argon
+    reboot -f
+    goreboot
+;;
+[Nn])
+    EW "返回主菜单(return)"
+    . /etc/profile
+;;
+[Qq])
+    . /etc/profile
+;;
+*)
+    ER "输入正确选择!(Enter the correct choice!)"
+;;
+esac
+done
+}
+
+function k_firstboot() {
+echo
+while :; do
+echo -e "\n q. 返回(return)"
+read -p "是否恢复出厂设置(Restore factory settings)?[Y/y]or[N/n]:" YN
+case ${YN} in
+[Yy]) 
+    ER "已经恢复出厂设置,系统重启中(The factory settings have been restored, and the system is restarting)..." 
+    firstboot -y
+    reboot -f
+    goreboot
+;;
+[Nn])
+    EW "取消返回主菜单(return)"
+    . /etc/profile
+;;
+[Qq])
+    . /etc/profile
+;;
+*)
+    ER "输入正确选择!(Enter the correct choice!)"
+;;
+esac
+done
+}
+
+function Check_Pkg() {
+	while [[ $1 ]];do
+		CMD=$(echo $1 | cut -d ':' -f1)
+		PKG=$(echo $1 | cut -d ':' -f2)
+		[[ -z ${PKG} ]] && PKG=${CMD}
+		if [[ $(CHECK_PKG ${CMD}) == false ]]
+		then
+			if_False=1
+			ECHO r "\n缺少软件包(Missing package):[${PKG}]"
+		fi
+		shift
+	done
+	if [[ ${if_False} == 1 ]]
+	then
+		sleep 2
+		return 1
+	else
+		return 0
+	fi
+}
+function CHECK_PKG() {
+	which $1 > /dev/null 2>&1
+	[[ $? == 0 ]] && echo true || echo false
+}
+goreboot() {
+  if [[ 0 -eq $? ]]; then
+    ER "$1 完成,正在为您重启系统(Done, restarting the system for you)"
+    reboot -f
+  else
+    ER "$1 失败 (invalid)"
+    exit 0
+  fi
+}
+clear
+[ -e /tmp/.failsafe ] && export FAILSAFE=1
+[ -f /etc/banner ] && echo -e "${Skyb}$(cat /etc/banner)${White}"
+[ -n "$FAILSAFE" ] && cat /etc/banner.failsafe
+
+Sysinfo
+
+fgrep -sq '/ overlay ro,' /proc/mounts && {
+	echo -e "${Red}Your JFFS2-partition seems full and overlayfs is mounted read-only."
+	echo -e "Please try to remove files from /overlay/upper/... and reboot!${}"
+}
+
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 export HOME=$(grep -e "^${USER:-root}:" /etc/passwd | cut -d ":" -f 6)
 export HOME=${HOME:-/root}
-export PS1='\u@\h:\w\$ '
+export CONFIG=/etc/config
+if [ -n "${TARGET_PROFILE}" ]
+then
+	export PS1='\u@\h[${TARGET_PROFILE}]:\w\$ '
+else
+	export PS1='\u@\h:\w\$ '
+fi
 export ENV=/etc/shinit
 
 case "$TERM" in
@@ -31,10 +353,93 @@ if ( grep -qs '^root::' /etc/shadow && \
      [ -z "$FAILSAFE" ] )
 then
 cat << EOF
-=== WARNING! =====================================
+================== WARNING! ====================
 There is no root password defined on this device!
 Use the "passwd" command to set up a new password
 in order to prevent unauthorized SSH logins.
---------------------------------------------------
+------------------------------------------------
 EOF
 fi
+
+alias menu='. /etc/profile'
+alias shutdown='sync && poweroff'
+alias dh='df -h'
+alias ls='ls --color=auto'
+alias top='top -d 1'
+
+function mainmenu() {
+  EB "     Sirdpboy快捷命令菜单(Shortcut Command Menu)   "
+  EG " menu->重进菜单(Reentry menu)   top->查看进程(View Processes) "
+  EY " 1. 修改后台IPv4地址(Modify IPv4 address)"
+  EY " 2. 清除密码并重启(Clear password and Reboot)"
+  EY " 3. 修复向导默认主题(Restore wizard default theme)"
+  EY " 4. 重启服务器(Reboot)"
+  EY " 5. 关闭服务器(Shutdown)"
+  EY " 6. 恢复出厂设置(Restore factory settings)"
+  EY " 7. 网络连接检查(Check network connectivity)"
+  EY " 8. 刷新释放内存(Refresh and free memory)"
+  ER " 9. 退出菜单(Exit)"
+  echo
+  KEY="请输入数字(please enter a number)"
+  while :; do
+  read -p " ${KEY}： " CHOOSE
+  case $CHOOSE in
+    1)
+      k_change_ip
+    ;;
+    2)
+      k_clear
+    break
+    ;;
+    3)
+      k_theme
+    ;;
+    4)
+      k_reboot
+    break
+    ;;
+    5)
+      k_poweroff
+    break
+    ;;
+    6)
+      k_firstboot
+    break
+    ;;
+    7)
+	ping 114.114.114.114 -c 1 -W 2 > /dev/null 2>&1 && \
+	EY  " 基础114网络连接正常!(Basic 114 network connection is OK!)" || EG  " 基础114网络连接错误!(Basic 114 network connection error!)"
+	nslookup -type=a baidu.com > /dev/null 2>&1 &&\
+	EY  " 基础 IPv4 DNS 解析正常!(Basic IPv4 DNS resolution is OK!)" || EG  " 基础 IPv4 DNS 解析错误!(Basic IPv4 DNS resolution error!)"
+	Google_Check=$(curl -I -s --connect-timeout 3 http://www.google.com/generate_204 -w %{http_code} | tail -n1)
+			
+	case ${Google_Check} in
+	204)
+		EY " Google 连接正常!(Google connection is OK!)"
+	;;
+	*)
+		EG " Google 连接错误!(Google connection is error!)"
+	;;
+		esac
+		ER " "
+		sleep 2
+	;;
+    8)
+        EY " 刷新状态清除内存完成!(Refresh status clear memory completed!)"
+        sync && echo 3 > /proc/sys/vm/drop_caches
+        rm -rf /tmp/luci*
+	ER " "
+	sleep 2
+    ;;
+    9)
+      EW " 退出程序成功(Exit the program successfully)"
+      EW " "
+      break
+    ;;
+    *)
+     KEY="请输入数字(please enter a number)"
+    ;;
+    esac
+    done
+}
+mainmenu

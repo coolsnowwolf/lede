@@ -1,0 +1,149 @@
+#!/bin/sh
+
+userinfo() {
+    grep 'br-lan' /proc/net/arp | grep '0x2' | grep -v '0x0' | wc -l
+}
+
+memory() {
+free | grep Mem | awk '{a=$2/1000;b=(a>800)?a/1000:a;c=(a>800)?"G":"M"} {printf("%0.f%s\n",b,c)}' 
+}
+
+cntime() {
+    awk '{a=$1/86400;b=($1%86400)/3600;c=($1%3600)/60;d=($1%60)} {printf("%d 天 %d 小时 %d 分钟 %d 秒\n",a,b,c,d)}' /proc/uptime
+}
+
+time() {
+date "+%A [%W] | [%j] %Y/%m/%d-%X %Z"
+}
+
+cpuinfo() {
+    cpu_arch="$(awk -F ': ' '/model name/ {print $2}' "/proc/cpuinfo" | head -n1)"
+    [ -n "${cpu_arch}" ] || cpu_arch="ARMv8 Processor"
+    if grep -q "x86" "/etc/openwrt_release"; then
+	cpu_cores="$(grep "core id" "/proc/cpuinfo" | sort -u | wc -l)核 $(grep -c "processor" "/proc/cpuinfo")线程" 
+    else
+	cpu_cores="$(grep -c "processor" "/proc/cpuinfo")核"
+    fi
+    echo -n "${cpu_arch} x ${cpu_cores}"
+
+}
+
+cpuspeed() {
+CPUINFO_PATH="/proc/cpuinfo"
+CPUFREQ_PATH="/sys/devices/system/cpu/cpufreq"
+
+if grep -q "bcm27xx" "/etc/openwrt_release"; then
+	cpu_freq="$( $(vcgencmd measure_clock arm | awk -F '=' '{print $2}') / 1000000  | awk -F '.' '{print $1}' ) )Mhz" 
+elif grep -q "bcm53xx" "/etc/openwrt_release"; then
+	cpu_freq="$(nvram get clkfreq | awk -F ',' '{print $1}')MHz"
+elif grep -q "mvebu" "/etc/openwrt_release"; then
+	cpu_freq="$(cat "$CPUINFO_PATH" | awk -F':' '/BogoMIPS/ {print $2}' | head -n1 | awk -F '.' '{print $1}' )MHz" 
+elif grep -q "ramips" "/etc/openwrt_release"; then
+	cpu_freq="$(cat "$CPUINFO_PATH" | awk -F':' '/BogoMIPS/ {print $2}' | head -n1 | awk -F '.' '{print $1}' )MHz" 
+elif grep -q "x86" "/etc/openwrt_release"; then
+	cpu_freq="$(cat "$CPUINFO_PATH" | awk -F':' '/MHz/ {print $2}' | head -n1 | awk -F '.' '{print $1}' )MHz" 
+        # cpu_freq=`grep 'MHz' /proc/cpuinfo | cut -c11- |sed -n '1p' | awk -F '.' '{print $1}' `MHz
+elif ! grep -q "filogic" "/etc/openwrt_release"; then
+	cpu_freq="$(expr $(cat /sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq) / 1000)MHz"
+	big_cpu_freq="$(expr $(cat /sys/devices/system/cpu/cpufreq/policy4/cpuinfo_cur_freq 2>"/dev/null") / 1000 2>"/dev/null")"
+	[ -n "${big_cpu_freq}" ] && big_cpu_freq="${big_cpu_freq}MHz "
+fi
+
+
+if grep -Eq "ipq|mt7622" "/etc/openwrt_release" ; then
+	echo -n "${cpu_freq}"
+else
+	echo -n "${big_cpu_freq}${cpu_freq}"
+fi
+
+}
+url() {
+	URL=$(awk '{print $4}' /proc/version | cut -d '@' -f2 2> /dev/null | cut -d ')' -f1)
+	if [ "$(echo -n ${URL} | grep -q 'http' ; echo $?)" = 0 ]
+	then
+		echo ${URL}
+	fi
+}
+
+armtempinfo() {
+if grep -q "ipq" "/etc/openwrt_release"; then
+	if grep -q "ipq40xx" "/etc/openwrt_release"; then
+		sys_temp="$(awk '{ printf("%.1f ", $0 / 1000) }' /sys/class/ieee80211/phy*/device/hwmon/hwmon*/temp1_input)"
+	else
+		sys_temp="$(awk '{ printf("%.1f ", $0 / 1000) }' /sys/class/thermal/thermal_zone0/temp)"
+	fi
+	echo -n "${sys_temp}"
+else
+	if grep -q "bcm27xx" "/etc/openwrt_release"; then
+		cpu_temp="$(vcgencmd measure_temp | awk -F '=' '{print $2}' | awk -F "'" '{print $1}')"
+	else
+		cpu_temp="$(awk "BEGIN{printf (\"%.1f\n\",$(cat /sys/class/thermal/thermal_zone0/temp)/1000) }")"
+	fi
+	echo -n "${cpu_temp}"
+fi
+
+}
+
+sensorsbin(){
+	ret=$(which sensors)
+	echo ${ret:=0}
+}
+
+tempinfo(){
+    THERMAL_PATH="/sys/class/thermal/thermal_zone0/temp"
+
+    if grep -q "x86" "/etc/openwrt_release"; then
+	
+	if [ "$(grep 'AMD' /proc/cpuinfo)" != "" ]; then
+	# AMD
+		[ -n "${cpu_temp}" ] || cpu_temp="$(sensors "k*temp-*" 2>"/dev/null" | awk '/Tdie/ {print $2}' | head -n1 | tr -d "+")"
+		[ -n "${cpu_temp}" ] || cpu_temp="$(sensors | grep -E 'temp1'  | grep -Eo "\+[0-9]*.[0-9]" | head -n1 | tr -d "+")"
+		[ -n "${cpu_temp}" ] || cpu_temp="$(sensors | grep -E 'Tctl'  | grep -Eo "\+[0-9]*.[0-9]" | head -n1 | tr -d "+")"
+	else
+	
+		cpu_temp="$(sensors "coretemp-*" 2>"/dev/null" | grep -E "(Core )" | grep -Eo "\+[0-9]*" | head -n1 | tr -d "+")"
+	fi
+    else
+	[ ! -e "$THERMAL_PATH" ] || \
+		cpu_temp="$(awk '{printf("%.f, $0 / 1000)}' "$THERMAL_PATH")"
+    fi
+    echo -n "${cpu_temp}"
+
+}
+
+upnpinfo() {
+    if [ "$(uci get upnpd.config.enabled)" != 1 ]
+    then
+        echo "Not Enabled"
+        return
+    fi
+    upnp_lease=$(uci get upnpd.config.upnp_lease_file)
+    cat ${upnp_lease} 2> /dev/null | wc -l
+}
+
+ethinfo() {
+    [ ! -d /tmp/state ] && mkdir -p /tmp/state 2>/dev/null
+    sed -i '/_orig_ifname/d' /etc/config/network
+    {
+    echo -n "["
+    for i in $(ip address | awk -F ': ' '/eth[0-9]+/ {print $2}' | awk -F '@' {'print $1'} | awk '{ if ( length($0) <=7 ) print $0}' | xargs)
+    do
+	h=$(echo '{"face":' )
+	d=$(ethtool $i)
+	face=$(uci show network | grep "$i" | head -n1 |awk -F '.'  '{print $2}' | awk -F '_'  '{print $1}')
+	m=$(ifconfig | grep "$i" | head -n1 | awk -F 'HWaddr ' '{print $2}')
+	e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
+	[ $e = yes ] && l=1 || l=0
+	f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g' | tr -d "Unknown!")
+	[ $i == "eth0" -a -z "$f"  ]  && f="10Gb/s"  
+	[ -z "$f" ] && f="-Mb/s"
+	g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
+	[ "$g" == "Full" ] && x=1 || x=0
+	echo -n "$h \"$face[$i]\", \"status\": $l, \"duplex\": $x, \"speed\": \"$f\", \"mac\": \"$m\"},"
+    done
+    echo -n "]" 
+    } > /tmp/state/ethinfo
+    cat /tmp/state/ethinfo
+}
+
+$*

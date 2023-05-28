@@ -56,6 +56,8 @@ define Package/autocore-x86/install
 	$(INSTALL_DATA) ./files/x86/index.htm $(1)/etc/index.htm
 	$(INSTALL_DIR) $(1)/sbin
 	$(CP) ./files/x86/sbin/* $(1)/sbin
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/icons/devices
+	$(CP) ./files/x86/icons/devices/* $(1)/www/luci-static/resources/icons/devices
 endef
 
 $(eval $(call BuildPackage,autocore-arm))
