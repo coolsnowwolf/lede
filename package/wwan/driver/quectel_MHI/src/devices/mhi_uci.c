@@ -8,6 +8,8 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/delay.h>
+#include  <linux/version.h>
+
 #if 1
 static inline void *ipc_log_context_create(int max_num_pages,
         const char *modname, uint16_t user_version)
@@ -158,7 +160,20 @@ static int mhi_queue_inbound(struct uci_dev *uci_dev)
 
 	return ret;
 }
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#ifdef TCGETS2
+static int kernel_termios_to_user_termios_1(struct termios __user *u,
+						   struct ktermios *k)
+{
+	return copy_to_user(u, k, sizeof(struct termios));
+}
+static int user_termios_to_kernel_termios_1(struct ktermios *k,
+						   struct termios __user *u)
+{
+	return copy_from_user(k, u, sizeof(struct termios));
+}
+#endif
+#endif
 static long mhi_uci_ioctl(struct file *file,
 			  unsigned int cmd,
 			  unsigned long arg)

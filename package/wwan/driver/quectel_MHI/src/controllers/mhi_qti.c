@@ -177,11 +177,16 @@ static int mhi_init_pci_dev(struct mhi_controller *mhi_cntrl)
 
 #if 1 //some SOC like rpi_4b need next codes
 	ret = -EIO;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	if((ret = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(64))))
+		ret = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32));
+#else
 	if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(64))) {
 		ret = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(64));
 	} else if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(32))) {
 		ret = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(32));
 	}
+#endif
 	if (ret) {
 		MHI_ERR("Error dma mask\n");
 	}
