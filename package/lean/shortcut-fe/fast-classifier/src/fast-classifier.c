@@ -468,7 +468,7 @@ static int fast_classifier_update_protocol(struct sfe_connection_create *p_sic, 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
 	net = nf_ct_net(ct);
 	tn = nf_tcp_pernet(net);
-	if ((tn&&tn->tcp_be_liberal)
+	if ((tn&&tn->tcp_no_window_check)
 #else
 	if (nf_ct_tcp_no_window_check
 #endif
