@@ -170,6 +170,16 @@ define Device/firefly_station-p2
 endef
 TARGET_DEVICES += firefly_station-p2
 
+define Device/lyt_t68m
+  DEVICE_VENDOR := LYT
+  DEVICE_MODEL := T68M
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := lyt-t68m-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125
+endef
+TARGET_DEVICES += lyt_t68m
+
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
   DEVICE_MODEL := RockPro64
