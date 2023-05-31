@@ -13,6 +13,15 @@ endif
 
 include $(KERNEL_DETAILS_FILE)
 
+ifdef KERNEL_TESTING_PATCHVER
+  KERNEL_TESTING_DETAILS_FILE=$(INCLUDE_DIR)/kernel-$(KERNEL_TESTING_PATCHVER)
+  ifeq ($(wildcard $(KERNEL_TESTING_DETAILS_FILE)),)
+    $(error Missing kernel version/hash file for $(KERNEL_TESTING_PATCHVER). Please create $(KERNEL_TESTING_DETAILS_FILE))
+  endif
+
+  include $(KERNEL_TESTING_DETAILS_FILE)
+endif
+
 remove_uri_prefix=$(subst git://,,$(subst http://,,$(subst https://,,$(1))))
 sanitize_uri=$(call qstrip,$(subst @,_,$(subst :,_,$(subst .,_,$(subst -,_,$(subst /,_,$(1)))))))
 
