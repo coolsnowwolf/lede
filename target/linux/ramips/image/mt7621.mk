@@ -802,6 +802,15 @@ define Device/hiwifi_hc5962
 endef
 TARGET_DEVICES += hiwifi_hc5962
 
+define Device/ht-jsh_0211
+  $(Device/dsa-migration)
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := HT-JSH
+  DEVICE_MODEL := 0211
+  DEVICE_PACKAGES := kmod-mt7603
+endef
+TARGET_DEVICES += ht-jsh_0211
+
 define Device/iodata_wn-ax1167gr
   $(Device/dsa-migration)
   $(Device/uimage-lzma-loader)
