@@ -555,13 +555,30 @@ define Device/Build/dtb
   endif
 
 endef
+
+define Device/Build/dtbo
+  ifndef BUILD_DTS_$(1)
+  BUILD_DTS_$(1) := 1
+  $(KDIR)/image-$(1).dtbo: FORCE
+	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dtso,$$@)
+
+  image_prepare: $(KDIR)/image-$(1).dtbo
+  endif
+
+endef
 endif
 
 define Device/Build/kernel
-  $$(eval $$(foreach dts,$$(DEVICE_DTS) $$(DEVICE_DTS_OVERLAY), \
+  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
 	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
 		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
 		$$(dts) \
+	) \
+  ))
+  $$(eval $$(foreach dtso,$$(DEVICE_DTS_OVERLAY), \
+	$$(call Device/Build/dtbo,$$(notdir $$(dtso)), \
+		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
+		$$(dtso) \
 	) \
   ))
 
