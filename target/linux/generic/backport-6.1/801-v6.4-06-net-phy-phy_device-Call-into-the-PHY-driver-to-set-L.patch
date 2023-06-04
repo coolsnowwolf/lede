@@ -1,0 +1,97 @@
+From 684818189b04b095b34964ed4a3ea5249a840eab Mon Sep 17 00:00:00 2001
+From: Andrew Lunn <andrew@lunn.ch>
+Date: Mon, 17 Apr 2023 17:17:28 +0200
+Subject: [PATCH 6/9] net: phy: phy_device: Call into the PHY driver to set LED
+ brightness
+
+Linux LEDs can be software controlled via the brightness file in /sys.
+LED drivers need to implement a brightness_set function which the core
+will call. Implement an intermediary in phy_device, which will call
+into the phy driver if it implements the necessary function.
+
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/phy_device.c | 15 ++++++++++++---
+ include/linux/phy.h          | 13 +++++++++++++
+ 2 files changed, 25 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -2934,11 +2934,18 @@ static bool phy_drv_supports_irq(struct
+ 	return phydrv->config_intr && phydrv->handle_interrupt;
+ }
+ 
+-/* Dummy implementation until calls into PHY driver are added */
+ static int phy_led_set_brightness(struct led_classdev *led_cdev,
+ 				  enum led_brightness value)
+ {
+-	return 0;
++	struct phy_led *phyled = to_phy_led(led_cdev);
++	struct phy_device *phydev = phyled->phydev;
++	int err;
++
++	mutex_lock(&phydev->lock);
++	err = phydev->drv->led_brightness_set(phydev, phyled->index, value);
++	mutex_unlock(&phydev->lock);
++
++	return err;
+ }
+ 
+ static int of_phy_led(struct phy_device *phydev,
+@@ -2955,12 +2962,14 @@ static int of_phy_led(struct phy_device
+ 		return -ENOMEM;
+ 
+ 	cdev = &phyled->led_cdev;
++	phyled->phydev = phydev;
+ 
+ 	err = of_property_read_u8(led, "reg", &phyled->index);
+ 	if (err)
+ 		return err;
+ 
+-	cdev->brightness_set_blocking = phy_led_set_brightness;
++	if (phydev->drv->led_brightness_set)
++		cdev->brightness_set_blocking = phy_led_set_brightness;
+ 	cdev->max_brightness = 1;
+ 	init_data.devicename = dev_name(&phydev->mdio.dev);
+ 	init_data.fwnode = of_fwnode_handle(led);
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -765,15 +765,19 @@ struct phy_tdr_config {
+  * struct phy_led: An LED driven by the PHY
+  *
+  * @list: List of LEDs
++ * @phydev: PHY this LED is attached to
+  * @led_cdev: Standard LED class structure
+  * @index: Number of the LED
+  */
+ struct phy_led {
+ 	struct list_head list;
++	struct phy_device *phydev;
+ 	struct led_classdev led_cdev;
+ 	u8 index;
+ };
+ 
++#define to_phy_led(d) container_of(d, struct phy_led, led_cdev)
++
+ /**
+  * struct phy_driver - Driver structure for a particular PHY type
+  *
+@@ -988,6 +992,15 @@ struct phy_driver {
+ 	int (*get_sqi)(struct phy_device *dev);
+ 	/** @get_sqi_max: Get the maximum signal quality indication */
+ 	int (*get_sqi_max)(struct phy_device *dev);
++
++	/**
++	 * @led_brightness_set: Set a PHY LED brightness. Index
++	 * indicates which of the PHYs led should be set. Value
++	 * follows the standard LED class meaning, e.g. LED_OFF,
++	 * LED_HALF, LED_FULL.
++	 */
++	int (*led_brightness_set)(struct phy_device *dev,
++				  u8 index, enum led_brightness value);
+ };
+ #define to_phy_driver(d) container_of(to_mdio_common_driver(d),		\
+ 				      struct phy_driver, mdiodrv)
