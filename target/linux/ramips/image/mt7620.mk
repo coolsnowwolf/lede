@@ -136,7 +136,6 @@ define Device/bolt_bl201
   DEVICE_VENDOR := Bolt
   DEVICE_MODEL := BL201
   DEVICE_PACKAGES := kmod-mt76x2
-  SUPPORTED_DEVICES += bolt_bl201
 endef
 TARGET_DEVICES += bolt_bl201
 
