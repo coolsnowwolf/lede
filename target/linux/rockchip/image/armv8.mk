@@ -12,14 +12,15 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
-define Device/codinge_xiaobao-nas1
+define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
   DEVICE_MODEL := XiaoBao NAS-I
   SOC := rk3399
-  UBOOT_DEVICE_NAME := xiaobao-nas1-rk3399
+  UBOOT_DEVICE_NAME := xiaobao-nas-v1-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci
 endef
-TARGET_DEVICES += codinge_xiaobao-nas1
+TARGET_DEVICES += codinge_xiaobao-nas-v1
 
 define Device/dilusense_dlfr100
   DEVICE_VENDOR := Dilusense
