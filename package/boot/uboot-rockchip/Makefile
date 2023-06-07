@@ -168,6 +168,17 @@ define U-Boot/dilusense-dlfr100-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/xiaobao-nas1-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=Codinge Xiaobao NAS-I
+  BUILD_DEVICES:= \
+    codinge_xiaobao-nas1
+  DEPENDS:=+PACKAGE_u-boot-xiaobao-nas1-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.35.elf
+  USE_RKBIN:=1
+endef
+
 # RK3568 boards
 
 define U-Boot/mrkaio-m68s-rk3568
@@ -281,6 +292,7 @@ UBOOT_TARGETS := \
   rongpin-king3399-rk3399 \
   rocktech-mpc1903-rk3399 \
   dilusense-dlfr100-rk3399 \
+  xiaobao-nas1-rk3399 \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
