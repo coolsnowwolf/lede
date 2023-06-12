@@ -329,8 +329,7 @@ define Device/nradio_wt6285
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := NRadio
   DEVICE_MODEL := WT6285
-  DEVICE_PACKAGES := kmod-usb-net kmod-usb-net-rndis kmod-usb-core kmod-usb-net-cdc-ether kmod-usb-ohci \
-  	kmod-usb-serial kmod-usb-serial-option kmod-usb-uhci kmod-usb2 usb-modeswitch usbutils
+  DEVICE_PACKAGES := kmod-usb-net-cdc-ether kmod-usb-serial-option usb-modeswitch
   SUPPORTED_DEVICES += wt6285
 endef
 TARGET_DEVICES += nradio_wt6285
