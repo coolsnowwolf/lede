@@ -325,6 +325,15 @@ define Device/netgear_r6120
 endef
 TARGET_DEVICES += netgear_r6120
 
+define Device/nradio_wt6285
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := NRadio
+  DEVICE_MODEL := WT6285
+  DEVICE_PACKAGES := kmod-usb-net-cdc-ether kmod-usb-serial-option usb-modeswitch
+  SUPPORTED_DEVICES += wt6285
+endef
+TARGET_DEVICES += nradio_wt6285
+
 define Device/onion_omega2
   IMAGE_SIZE := 16064k
   DEVICE_VENDOR := Onion
