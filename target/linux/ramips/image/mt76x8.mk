@@ -203,6 +203,15 @@ define Device/hiwifi_hc5861b
 endef
 TARGET_DEVICES += hiwifi_hc5861b
 
+define Device/nradio_wt6285
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := NRadio
+  DEVICE_MODEL := WT6285
+  DEVICE_PACKAGES := kmod-usb-net kmod-usb-net-rndis kmod-usb-core kmod-usb-net kmod-usb-net-cdc-ether kmod-usb-net-rndis kmod-usb-ohci kmod-usb-serial kmod-usb-serial-option kmod-usb-uhci kmod-usb2 usb-modeswitch usbutils
+  SUPPORTED_DEVICES += wt6285
+endef
+TARGET_DEVICES += nradio_wt6285
+
 define Device/iptime_a3
   IMAGE_SIZE := 7936k
   UIMAGE_NAME := a3
