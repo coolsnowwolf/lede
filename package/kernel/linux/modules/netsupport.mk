@@ -1371,7 +1371,7 @@ define KernelPackage/mdio-bus-mux
   AUTOLOAD:=$(call AutoLoad,32,mdio-mux)
 endef
 
-define KernelPackage/mdio/description
+define KernelPackage/mdio-bus-mux/description
  Kernel framework for MDIO bus multiplexers.
 endef
 
