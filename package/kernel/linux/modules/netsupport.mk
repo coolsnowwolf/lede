@@ -1433,6 +1433,23 @@ endef
 $(eval $(call KernelPackage,inet-diag))
 
 
+define KernelPackage/inet-mptcp-diag
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=INET diag support for MultiPath TCP
+  DEPENDS:= +@KERNEL_MPTCP +@KERNEL_MPTCP_IPV6 +kmod-inet-diag
+  KCONFIG:= CONFIG_INET_MPTCP_DIAG@ge5.6
+  FILES:= $(LINUX_DIR)/net/mptcp/mptcp_diag.ko@ge5.6
+  AUTOLOAD:=$(call AutoProbe,mptcp_diag)
+endef
+
+define KernelPackage/inet-mptcp-diag/description
+Support for INET (MultiPath TCP) socket monitoring interface used by
+native Linux tools such as ss.
+endef
+
+$(eval $(call KernelPackage,inet-mptcp-diag))
+
+
 define KernelPackage/wireguard
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=WireGuard secure network tunnel
