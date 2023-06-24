@@ -1,0 +1,457 @@
+From fb34a9ae383ae26326d4889fd2513e49f1019b88 Mon Sep 17 00:00:00 2001
+From: Zhiyong Tao <zhiyong.tao@mediatek.com>
+Date: Fri, 24 Sep 2021 16:06:31 +0800
+Subject: [PATCH] pinctrl: mediatek: support rsel feature
+
+This patch supports rsel(resistance selection) feature for I2C pins.
+It provides more resistance selection solution in different ICs.
+It provides rsel define and si unit solution by identifying
+"mediatek,rsel_resistance_in_si_unit" property in pio dtsi node.
+
+Signed-off-by: Zhiyong Tao <zhiyong.tao@mediatek.com>
+Reviewed-by: Chen-Yu Tsai <wenst@chromium.org>
+Link: https://lore.kernel.org/r/20210924080632.28410-5-zhiyong.tao@mediatek.com
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+---
+ .../pinctrl/mediatek/pinctrl-mtk-common-v2.c  | 231 +++++++++++++++---
+ .../pinctrl/mediatek/pinctrl-mtk-common-v2.h  |  46 ++++
+ drivers/pinctrl/mediatek/pinctrl-paris.c      |  60 +++--
+ 3 files changed, 289 insertions(+), 48 deletions(-)
+
+--- a/drivers/pinctrl/mediatek/pinctrl-mtk-common-v2.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mtk-common-v2.c
+@@ -665,6 +665,181 @@ out:
+ 	return err;
+ }
+ 
++static int mtk_hw_pin_rsel_lookup(struct mtk_pinctrl *hw,
++				  const struct mtk_pin_desc *desc,
++				  u32 pullup, u32 arg, u32 *rsel_val)
++{
++	const struct mtk_pin_rsel *rsel;
++	int check;
++	bool found = false;
++
++	rsel = hw->soc->pin_rsel;
++
++	for (check = 0; check <= hw->soc->npin_rsel - 1; check++) {
++		if (desc->number >= rsel[check].s_pin &&
++		    desc->number <= rsel[check].e_pin) {
++			if (pullup) {
++				if (rsel[check].up_rsel == arg) {
++					found = true;
++					*rsel_val = rsel[check].rsel_index;
++					break;
++				}
++			} else {
++				if (rsel[check].down_rsel == arg) {
++					found = true;
++					*rsel_val = rsel[check].rsel_index;
++					break;
++				}
++			}
++		}
++	}
++
++	if (!found) {
++		dev_err(hw->dev, "Not support rsel value %d Ohm for pin = %d (%s)\n",
++			arg, desc->number, desc->name);
++		return -ENOTSUPP;
++	}
++
++	return 0;
++}
++
++static int mtk_pinconf_bias_set_rsel(struct mtk_pinctrl *hw,
++				     const struct mtk_pin_desc *desc,
++				     u32 pullup, u32 arg)
++{
++	int err, rsel_val;
++
++	if (hw->rsel_si_unit) {
++		/* find pin rsel_index from pin_rsel array*/
++		err = mtk_hw_pin_rsel_lookup(hw, desc, pullup, arg, &rsel_val);
++		if (err)
++			goto out;
++	} else {
++		if (arg < MTK_PULL_SET_RSEL_000 ||
++		    arg > MTK_PULL_SET_RSEL_111) {
++			err = -EINVAL;
++			goto out;
++		}
++
++		rsel_val = arg - MTK_PULL_SET_RSEL_000;
++	}
++
++	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_RSEL, rsel_val);
++	if (err)
++		goto out;
++
++	err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, MTK_ENABLE);
++
++out:
++	return err;
++}
++
++int mtk_pinconf_bias_set_combo(struct mtk_pinctrl *hw,
++			       const struct mtk_pin_desc *desc,
++			       u32 pullup, u32 arg)
++{
++	int err = -ENOTSUPP;
++	u32 try_all_type;
++
++	if (hw->soc->pull_type)
++		try_all_type = hw->soc->pull_type[desc->number];
++	else
++		try_all_type = MTK_PULL_TYPE_MASK;
++
++	if (try_all_type & MTK_PULL_RSEL_TYPE) {
++		err = mtk_pinconf_bias_set_rsel(hw, desc, pullup, arg);
++		if (!err)
++			return err;
++	}
++
++	if (try_all_type & MTK_PULL_PU_PD_TYPE) {
++		err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, arg);
++		if (!err)
++			return err;
++	}
++
++	if (try_all_type & MTK_PULL_PULLSEL_TYPE) {
++		err = mtk_pinconf_bias_set_pullsel_pullen(hw, desc,
++							  pullup, arg);
++		if (!err)
++			return err;
++	}
++
++	if (try_all_type & MTK_PULL_PUPD_R1R0_TYPE)
++		err = mtk_pinconf_bias_set_pupd_r1_r0(hw, desc, pullup, arg);
++
++	if (err)
++		dev_err(hw->dev, "Invalid pull argument\n");
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(mtk_pinconf_bias_set_combo);
++
++static int mtk_rsel_get_si_unit(struct mtk_pinctrl *hw,
++				const struct mtk_pin_desc *desc,
++				u32 pullup, u32 rsel_val, u32 *si_unit)
++{
++	const struct mtk_pin_rsel *rsel;
++	int check;
++
++	rsel = hw->soc->pin_rsel;
++
++	for (check = 0; check <= hw->soc->npin_rsel - 1; check++) {
++		if (desc->number >= rsel[check].s_pin &&
++		    desc->number <= rsel[check].e_pin) {
++			if (rsel_val == rsel[check].rsel_index) {
++				if (pullup)
++					*si_unit = rsel[check].up_rsel;
++				else
++					*si_unit = rsel[check].down_rsel;
++				break;
++			}
++		}
++	}
++
++	return 0;
++}
++
++static int mtk_pinconf_bias_get_rsel(struct mtk_pinctrl *hw,
++				     const struct mtk_pin_desc *desc,
++				     u32 *pullup, u32 *enable)
++{
++	int pu, pd, rsel, err;
++
++	err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_RSEL, &rsel);
++	if (err)
++		goto out;
++
++	err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_PU, &pu);
++	if (err)
++		goto out;
++
++	err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_PD, &pd);
++
++	if (pu == 0 && pd == 0) {
++		*pullup = 0;
++		*enable = MTK_DISABLE;
++	} else if (pu == 1 && pd == 0) {
++		*pullup = 1;
++		if (hw->rsel_si_unit)
++			mtk_rsel_get_si_unit(hw, desc, *pullup, rsel, enable);
++		else
++			*enable = rsel + MTK_PULL_SET_RSEL_000;
++	} else if (pu == 0 && pd == 1) {
++		*pullup = 0;
++		if (hw->rsel_si_unit)
++			mtk_rsel_get_si_unit(hw, desc, *pullup, rsel, enable);
++		else
++			*enable = rsel + MTK_PULL_SET_RSEL_000;
++	} else {
++		err = -EINVAL;
++		goto out;
++	}
++
++out:
++	return err;
++}
++
+ static int mtk_pinconf_bias_get_pu_pd(struct mtk_pinctrl *hw,
+ 				const struct mtk_pin_desc *desc,
+ 				u32 *pullup, u32 *enable)
+@@ -746,44 +921,40 @@ out:
+ 	return err;
+ }
+ 
+-int mtk_pinconf_bias_set_combo(struct mtk_pinctrl *hw,
+-				const struct mtk_pin_desc *desc,
+-				u32 pullup, u32 arg)
+-{
+-	int err;
+-
+-	err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, arg);
+-	if (!err)
+-		goto out;
+-
+-	err = mtk_pinconf_bias_set_pullsel_pullen(hw, desc, pullup, arg);
+-	if (!err)
+-		goto out;
+-
+-	err = mtk_pinconf_bias_set_pupd_r1_r0(hw, desc, pullup, arg);
+-
+-out:
+-	return err;
+-}
+-EXPORT_SYMBOL_GPL(mtk_pinconf_bias_set_combo);
+-
+ int mtk_pinconf_bias_get_combo(struct mtk_pinctrl *hw,
+ 			      const struct mtk_pin_desc *desc,
+ 			      u32 *pullup, u32 *enable)
+ {
+-	int err;
++	int err = -ENOTSUPP;
++	u32 try_all_type;
+ 
+-	err = mtk_pinconf_bias_get_pu_pd(hw, desc, pullup, enable);
+-	if (!err)
+-		goto out;
++	if (hw->soc->pull_type)
++		try_all_type = hw->soc->pull_type[desc->number];
++	else
++		try_all_type = MTK_PULL_TYPE_MASK;
+ 
+-	err = mtk_pinconf_bias_get_pullsel_pullen(hw, desc, pullup, enable);
+-	if (!err)
+-		goto out;
++	if (try_all_type & MTK_PULL_RSEL_TYPE) {
++		err = mtk_pinconf_bias_get_rsel(hw, desc, pullup, enable);
++		if (!err)
++			return err;
++	}
++
++	if (try_all_type & MTK_PULL_PU_PD_TYPE) {
++		err = mtk_pinconf_bias_get_pu_pd(hw, desc, pullup, enable);
++		if (!err)
++			return err;
++	}
++
++	if (try_all_type & MTK_PULL_PULLSEL_TYPE) {
++		err = mtk_pinconf_bias_get_pullsel_pullen(hw, desc,
++							  pullup, enable);
++		if (!err)
++			return err;
++	}
+ 
+-	err = mtk_pinconf_bias_get_pupd_r1_r0(hw, desc, pullup, enable);
++	if (try_all_type & MTK_PULL_PUPD_R1R0_TYPE)
++		err = mtk_pinconf_bias_get_pupd_r1_r0(hw, desc, pullup, enable);
+ 
+-out:
+ 	return err;
+ }
+ EXPORT_SYMBOL_GPL(mtk_pinconf_bias_get_combo);
+--- a/drivers/pinctrl/mediatek/pinctrl-mtk-common-v2.h
++++ b/drivers/pinctrl/mediatek/pinctrl-mtk-common-v2.h
+@@ -17,6 +17,22 @@
+ #define MTK_ENABLE     1
+ #define MTK_PULLDOWN   0
+ #define MTK_PULLUP     1
++#define MTK_PULL_PU_PD_TYPE		BIT(0)
++#define MTK_PULL_PULLSEL_TYPE		BIT(1)
++#define MTK_PULL_PUPD_R1R0_TYPE		BIT(2)
++/* MTK_PULL_RSEL_TYPE can select resistance and can be
++ * turned on/off itself. But it can't be selected pull up/down
++ */
++#define MTK_PULL_RSEL_TYPE		BIT(3)
++/* MTK_PULL_PU_PD_RSEL_TYPE is a type which is controlled by
++ * MTK_PULL_PU_PD_TYPE and MTK_PULL_RSEL_TYPE.
++ */
++#define MTK_PULL_PU_PD_RSEL_TYPE	(MTK_PULL_PU_PD_TYPE \
++					| MTK_PULL_RSEL_TYPE)
++#define MTK_PULL_TYPE_MASK	(MTK_PULL_PU_PD_TYPE |\
++				 MTK_PULL_PULLSEL_TYPE |\
++				 MTK_PULL_PUPD_R1R0_TYPE |\
++				 MTK_PULL_RSEL_TYPE)
+ 
+ #define EINT_NA	U16_MAX
+ #define NO_EINT_SUPPORT	EINT_NA
+@@ -42,6 +58,14 @@
+ 	PIN_FIELD_CALC(_s_pin, _e_pin, 0, _s_addr, _x_addrs, _s_bit,	\
+ 		       _x_bits, 32, 1)
+ 
++#define PIN_RSEL(_s_pin, _e_pin, _rsel_index, _up_resl, _down_rsel) {	\
++		.s_pin = _s_pin,					\
++		.e_pin = _e_pin,					\
++		.rsel_index = _rsel_index,				\
++		.up_rsel = _up_resl,					\
++		.down_rsel = _down_rsel,				\
++	}
++
+ /* List these attributes which could be modified for the pin */
+ enum {
+ 	PINCTRL_PIN_REG_MODE,
+@@ -67,6 +91,7 @@ enum {
+ 	PINCTRL_PIN_REG_DRV_E0,
+ 	PINCTRL_PIN_REG_DRV_E1,
+ 	PINCTRL_PIN_REG_DRV_ADV,
++	PINCTRL_PIN_REG_RSEL,
+ 	PINCTRL_PIN_REG_MAX,
+ };
+ 
+@@ -129,6 +154,22 @@ struct mtk_pin_field_calc {
+ 	u8  fixed;
+ };
+ 
++/**
++ * struct mtk_pin_rsel - the structure that provides bias resistance selection.
++ * @s_pin:		the start pin within the rsel range
++ * @e_pin:		the end pin within the rsel range
++ * @rsel_index:	the rsel bias resistance index
++ * @up_rsel:	the pullup rsel bias resistance value
++ * @down_rsel:	the pulldown rsel bias resistance value
++ */
++struct mtk_pin_rsel {
++	u16 s_pin;
++	u16 e_pin;
++	u16 rsel_index;
++	u32 up_rsel;
++	u32 down_rsel;
++};
++
+ /* struct mtk_pin_reg_calc - the structure that holds all ranges used to
+  *			     determine which register the pin would make use of
+  *			     for certain pin attribute.
+@@ -206,6 +247,9 @@ struct mtk_pin_soc {
+ 	bool				ies_present;
+ 	const char * const		*base_names;
+ 	unsigned int			nbase_names;
++	const unsigned int		*pull_type;
++	const struct mtk_pin_rsel	*pin_rsel;
++	unsigned int			npin_rsel;
+ 
+ 	/* Specific pinconfig operations */
+ 	int (*bias_disable_set)(struct mtk_pinctrl *hw,
+@@ -254,6 +298,8 @@ struct mtk_pinctrl {
+ 	const char          **grp_names;
+ 	/* lock pin's register resource to avoid multiple threads issue*/
+ 	spinlock_t lock;
++	/* identify rsel setting by si unit or rsel define in dts node */
++	bool rsel_si_unit;
+ };
+ 
+ void mtk_rmw(struct mtk_pinctrl *pctl, u8 i, u32 reg, u32 mask, u32 set);
+--- a/drivers/pinctrl/mediatek/pinctrl-paris.c
++++ b/drivers/pinctrl/mediatek/pinctrl-paris.c
+@@ -574,8 +574,9 @@ static int mtk_hw_get_value_wrap(struct
+ ssize_t mtk_pctrl_show_one_pin(struct mtk_pinctrl *hw,
+ 	unsigned int gpio, char *buf, unsigned int buf_len)
+ {
+-	int pinmux, pullup = 0, pullen = 0, len = 0, r1 = -1, r0 = -1;
++	int pinmux, pullup = 0, pullen = 0, len = 0, r1 = -1, r0 = -1, rsel = -1;
+ 	const struct mtk_pin_desc *desc;
++	u32 try_all_type;
+ 
+ 	if (gpio >= hw->soc->npins)
+ 		return -EINVAL;
+@@ -589,24 +590,39 @@ ssize_t mtk_pctrl_show_one_pin(struct mt
+ 		pinmux -= hw->soc->nfuncs;
+ 
+ 	mtk_pinconf_bias_get_combo(hw, desc, &pullup, &pullen);
+-	if (pullen == MTK_PUPD_SET_R1R0_00) {
+-		pullen = 0;
+-		r1 = 0;
+-		r0 = 0;
+-	} else if (pullen == MTK_PUPD_SET_R1R0_01) {
+-		pullen = 1;
+-		r1 = 0;
+-		r0 = 1;
+-	} else if (pullen == MTK_PUPD_SET_R1R0_10) {
+-		pullen = 1;
+-		r1 = 1;
+-		r0 = 0;
+-	} else if (pullen == MTK_PUPD_SET_R1R0_11) {
++
++	if (hw->soc->pull_type)
++		try_all_type = hw->soc->pull_type[desc->number];
++
++	if (hw->rsel_si_unit && (try_all_type & MTK_PULL_RSEL_TYPE)) {
++		rsel = pullen;
+ 		pullen = 1;
+-		r1 = 1;
+-		r0 = 1;
+-	} else if (pullen != MTK_DISABLE && pullen != MTK_ENABLE) {
+-		pullen = 0;
++	} else {
++		/* Case for: R1R0 */
++		if (pullen == MTK_PUPD_SET_R1R0_00) {
++			pullen = 0;
++			r1 = 0;
++			r0 = 0;
++		} else if (pullen == MTK_PUPD_SET_R1R0_01) {
++			pullen = 1;
++			r1 = 0;
++			r0 = 1;
++		} else if (pullen == MTK_PUPD_SET_R1R0_10) {
++			pullen = 1;
++			r1 = 1;
++			r0 = 0;
++		} else if (pullen == MTK_PUPD_SET_R1R0_11) {
++			pullen = 1;
++			r1 = 1;
++			r0 = 1;
++		}
++
++		/* Case for: RSEL */
++		if (pullen >= MTK_PULL_SET_RSEL_000 &&
++		    pullen <= MTK_PULL_SET_RSEL_111) {
++			rsel = pullen - MTK_PULL_SET_RSEL_000;
++			pullen = 1;
++		}
+ 	}
+ 	len += scnprintf(buf + len, buf_len - len,
+ 			"%03d: %1d%1d%1d%1d%02d%1d%1d%1d%1d",
+@@ -624,6 +640,8 @@ ssize_t mtk_pctrl_show_one_pin(struct mt
+ 	if (r1 != -1) {
+ 		len += scnprintf(buf + len, buf_len - len, " (%1d %1d)\n",
+ 			r1, r0);
++	} else if (rsel != -1) {
++		len += scnprintf(buf + len, buf_len - len, " (%1d)\n", rsel);
+ 	} else {
+ 		len += scnprintf(buf + len, buf_len - len, "\n");
+ 	}
+@@ -966,6 +984,12 @@ int mtk_paris_pinctrl_probe(struct platf
+ 
+ 	hw->nbase = hw->soc->nbase_names;
+ 
++	if (of_find_property(hw->dev->of_node,
++			     "mediatek,rsel_resistance_in_si_unit", NULL))
++		hw->rsel_si_unit = true;
++	else
++		hw->rsel_si_unit = false;
++
+ 	spin_lock_init(&hw->lock);
+ 
+ 	err = mtk_pctrl_build_state(pdev);
