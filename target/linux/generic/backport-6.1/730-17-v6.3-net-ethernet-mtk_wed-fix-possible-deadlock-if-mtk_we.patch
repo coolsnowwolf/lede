@@ -1,0 +1,58 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 7 Dec 2022 15:04:55 +0100
+Subject: [PATCH] net: ethernet: mtk_wed: fix possible deadlock if
+ mtk_wed_wo_init fails
+
+Introduce __mtk_wed_detach() in order to avoid a deadlock in
+mtk_wed_attach routine if mtk_wed_wo_init fails since both
+mtk_wed_attach and mtk_wed_detach run holding hw_lock mutex.
+
+Fixes: 4c5de09eb0d0 ("net: ethernet: mtk_wed: add configure wed wo support")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Leon Romanovsky <leonro@nvidia.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_wed.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed.c
+@@ -619,12 +619,10 @@ mtk_wed_deinit(struct mtk_wed_device *de
+ }
+ 
+ static void
+-mtk_wed_detach(struct mtk_wed_device *dev)
++__mtk_wed_detach(struct mtk_wed_device *dev)
+ {
+ 	struct mtk_wed_hw *hw = dev->hw;
+ 
+-	mutex_lock(&hw_lock);
+-
+ 	mtk_wed_deinit(dev);
+ 
+ 	mtk_wdma_rx_reset(dev);
+@@ -657,6 +655,13 @@ mtk_wed_detach(struct mtk_wed_device *de
+ 	module_put(THIS_MODULE);
+ 
+ 	hw->wed_dev = NULL;
++}
++
++static void
++mtk_wed_detach(struct mtk_wed_device *dev)
++{
++	mutex_lock(&hw_lock);
++	__mtk_wed_detach(dev);
+ 	mutex_unlock(&hw_lock);
+ }
+ 
+@@ -1538,8 +1543,10 @@ mtk_wed_attach(struct mtk_wed_device *de
+ 		ret = mtk_wed_wo_init(hw);
+ 	}
+ out:
+-	if (ret)
+-		mtk_wed_detach(dev);
++	if (ret) {
++		dev_err(dev->hw->dev, "failed to attach wed device\n");
++		__mtk_wed_detach(dev);
++	}
+ unlock:
+ 	mutex_unlock(&hw_lock);
+ 
