@@ -40,39 +40,10 @@ static const struct mtk_gate ethdma_clks[] = {
 		    29),
 };
 
-static int clk_mt7988_ethsys_probe(struct platform_device *pdev)
-{
-	struct clk_onecell_data *clk_data;
-	struct device_node *node = pdev->dev.of_node;
-	int r;
-	void __iomem *base;
-
-	base = of_iomap(node, 0);
-	if (!base) {
-		pr_err("%s(): ioremap failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	clk_data = mtk_alloc_clk_data(ARRAY_SIZE(ethdma_clks));
-
-	if (!clk_data)
-		return -ENOMEM;
-
-	mtk_clk_register_gates(node, ethdma_clks, ARRAY_SIZE(ethdma_clks),
-			       clk_data);
-
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
-	if (r) {
-		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
-		goto free_data;
-	}
-	return r;
-
-free_data:
-	mtk_free_clk_data(clk_data);
-	return r;
-}
+static const struct mtk_clk_desc ethdma_desc = {
+	.clks = ethdma_clks,
+	.num_clks = ARRAY_SIZE(ethdma_clks),
+};
 
 static const struct mtk_gate_regs sgmii0_cg_regs = {
 	.set_ofs = 0xe4,
@@ -92,39 +63,10 @@ static const struct mtk_gate sgmii0_clks[] = {
 	GATE_SGMII0(CLK_SGM0_RX_EN, "sgm0_rx_en", "top_xtal", 3),
 };
 
-static int clk_mt7988_sgmii0_probe(struct platform_device *pdev)
-{
-	struct clk_onecell_data *clk_data;
-	struct device_node *node = pdev->dev.of_node;
-	int r;
-	void __iomem *base;
-
-	base = of_iomap(node, 0);
-	if (!base) {
-		pr_err("%s(): ioremap failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	clk_data = mtk_alloc_clk_data(ARRAY_SIZE(sgmii0_clks));
-
-	if (!clk_data)
-		return -ENOMEM;
-
-	mtk_clk_register_gates(node, sgmii0_clks, ARRAY_SIZE(sgmii0_clks),
-			       clk_data);
-
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
-	if (r) {
-		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
-		goto free_data;
-	}
-	return r;
-
-free_data:
-	mtk_free_clk_data(clk_data);
-	return r;
-}
+static const struct mtk_clk_desc sgmii0_desc = {
+	.clks = sgmii0_clks,
+	.num_clks = ARRAY_SIZE(sgmii0_clks),
+};
 
 static const struct mtk_gate_regs sgmii1_cg_regs = {
 	.set_ofs = 0xe4,
@@ -144,39 +86,10 @@ static const struct mtk_gate sgmii1_clks[] = {
 	GATE_SGMII1(CLK_SGM1_RX_EN, "sgm1_rx_en", "top_xtal", 3),
 };
 
-static int clk_mt7988_sgmii1_probe(struct platform_device *pdev)
-{
-	struct clk_onecell_data *clk_data;
-	struct device_node *node = pdev->dev.of_node;
-	int r;
-	void __iomem *base;
-
-	base = of_iomap(node, 0);
-	if (!base) {
-		pr_err("%s(): ioremap failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	clk_data = mtk_alloc_clk_data(ARRAY_SIZE(sgmii1_clks));
-
-	if (!clk_data)
-		return -ENOMEM;
-
-	mtk_clk_register_gates(node, sgmii1_clks, ARRAY_SIZE(sgmii1_clks),
-			       clk_data);
-
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
-	if (r) {
-		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
-		goto free_data;
-	}
-	return r;
-
-free_data:
-	mtk_free_clk_data(clk_data);
-	return r;
-}
+static const struct mtk_clk_desc sgmii1_desc = {
+	.clks = sgmii1_clks,
+	.num_clks = ARRAY_SIZE(sgmii1_clks),
+};
 
 static const struct mtk_gate_regs ethwarp_cg_regs = {
 	.set_ofs = 0x14,
@@ -200,100 +113,29 @@ static const struct mtk_gate ethwarp_clks[] = {
 		     "netsys_mcu_sel", 15),
 };
 
-static int clk_mt7988_ethwarp_probe(struct platform_device *pdev)
-{
-	struct clk_onecell_data *clk_data;
-	struct device_node *node = pdev->dev.of_node;
-	int r;
-	void __iomem *base;
-
-	base = of_iomap(node, 0);
-	if (!base) {
-		pr_err("%s(): ioremap failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	clk_data = mtk_alloc_clk_data(ARRAY_SIZE(ethwarp_clks));
-
-	if (!clk_data)
-		return -ENOMEM;
-
-	mtk_clk_register_gates(node, ethwarp_clks, ARRAY_SIZE(ethwarp_clks),
-			       clk_data);
-
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
-	if (r) {
-		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
-		goto free_data;
-	}
-	return r;
-
-free_data:
-	mtk_free_clk_data(clk_data);
-	return r;
-}
-
-static const struct of_device_id of_match_clk_mt7988_ethsys[] = {
-	{
-		.compatible = "mediatek,mt7988-ethsys",
-	},
-	{}
+static const struct mtk_clk_desc ethwarp_desc = {
+	.clks = ethwarp_clks,
+	.num_clks = ARRAY_SIZE(ethwarp_clks),
 };
 
-static struct platform_driver clk_mt7988_ethsys_drv = {
-	.probe = clk_mt7988_ethsys_probe,
+static const struct of_device_id of_match_clk_mt7986_eth[] = {
+	{ .compatible = "mediatek,mt7988-ethsys", .data = &ethdma_desc },
+	{ .compatible = "mediatek,mt7988-sgmiisys_0", .data = &sgmii0_desc },
+	{ .compatible = "mediatek,mt7988-sgmiisys_1", .data = &sgmii1_desc },
+	{ .compatible = "mediatek,mt7988-ethwarp", .data = &ethwarp_desc },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, of_match_clk_mt7988_eth);
+
+static struct platform_driver clk_mt7988_eth_drv = {
 	.driver = {
-		.name = "clk-mt7988-ethsys",
-		.of_match_table = of_match_clk_mt7988_ethsys,
+		.name = "clk-mt7988-eth",
+		.of_match_table = of_match_clk_mt7986_eth,
 	},
+	.probe = mtk_clk_simple_probe,
+	.remove = mtk_clk_simple_remove,
 };
-builtin_platform_driver(clk_mt7988_ethsys_drv);
+module_platform_driver(clk_mt7988_eth_drv);
 
-static const struct of_device_id of_match_clk_mt7988_sgmii0[] = {
-	{
-		.compatible = "mediatek,mt7988-sgmiisys_0",
-	},
-	{}
-};
-
-static struct platform_driver clk_mt7988_sgmii0_drv = {
-	.probe = clk_mt7988_sgmii0_probe,
-	.driver = {
-		.name = "clk-mt7988-sgmiisys_0",
-		.of_match_table = of_match_clk_mt7988_sgmii0,
-	},
-};
-builtin_platform_driver(clk_mt7988_sgmii0_drv);
-
-static const struct of_device_id of_match_clk_mt7988_sgmii1[] = {
-	{
-		.compatible = "mediatek,mt7988-sgmiisys_1",
-	},
-	{}
-};
-
-static struct platform_driver clk_mt7988_sgmii1_drv = {
-	.probe = clk_mt7988_sgmii1_probe,
-	.driver = {
-		.name = "clk-mt7988-sgmiisys_1",
-		.of_match_table = of_match_clk_mt7988_sgmii1,
-	},
-};
-builtin_platform_driver(clk_mt7988_sgmii1_drv);
-
-static const struct of_device_id of_match_clk_mt7988_ethwarp[] = {
-	{
-		.compatible = "mediatek,mt7988-ethwarp",
-	},
-	{}
-};
-
-static struct platform_driver clk_mt7988_ethwarp_drv = {
-	.probe = clk_mt7988_ethwarp_probe,
-	.driver = {
-		.name = "clk-mt7988-ethwarp",
-		.of_match_table = of_match_clk_mt7988_ethwarp,
-	},
-};
-builtin_platform_driver(clk_mt7988_ethwarp_drv);
+MODULE_DESCRIPTION("MediaTek MT7988 Ethernet clocks driver");
+MODULE_LICENSE("GPL");

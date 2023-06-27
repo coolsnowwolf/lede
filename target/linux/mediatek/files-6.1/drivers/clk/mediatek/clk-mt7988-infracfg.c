@@ -344,56 +344,26 @@ static const struct mtk_gate infra_clks[] = {
 		    "sysaxi_sel", 31),
 };
 
-static int clk_mt7988_infracfg_probe(struct platform_device *pdev)
-{
-	struct clk_onecell_data *clk_data;
-	struct device_node *node = pdev->dev.of_node;
-	int r;
-	void __iomem *base;
-	int nr = ARRAY_SIZE(infra_muxes) + ARRAY_SIZE(infra_clks);
-
-	base = of_iomap(node, 0);
-	if (!base) {
-		pr_err("%s(): ioremap failed\n", __func__);
-		return -ENOMEM;
-	}
-
-	clk_data = mtk_alloc_clk_data(nr);
-
-	if (!clk_data)
-		return -ENOMEM;
-
-	mtk_clk_register_muxes(infra_muxes, ARRAY_SIZE(infra_muxes), node,
-			       &mt7988_clk_lock, clk_data);
-
-	mtk_clk_register_gates(node, infra_clks, ARRAY_SIZE(infra_clks),
-			       clk_data);
-
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
-	if (r) {
-		pr_err("%s(): could not register clock provider: %d\n",
-		       __func__, r);
-		goto free_infracfg_data;
-	}
-	return r;
-
-free_infracfg_data:
-	mtk_free_clk_data(clk_data);
-	return r;
-}
-
-static const struct of_device_id of_match_clk_mt7988_infracfg[] = {
-	{
-		.compatible = "mediatek,mt7988-infracfg",
-	},
-	{}
+static const struct mtk_clk_desc infra_desc = {
+	.clks = infra_clks,
+	.num_clks = ARRAY_SIZE(infra_clks),
+	.mux_clks = infra_muxes,
+	.num_mux_clks = ARRAY_SIZE(infra_muxes),
+	.clk_lock = &mt7988_clk_lock,
 };
 
+static const struct of_device_id of_match_clk_mt7988_infracfg[] = {
+	{ .compatible = "mediatek,mt7988-infracfg", .data = &infra_desc },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, of_match_clk_mt7988_infracfg);
+
 static struct platform_driver clk_mt7988_infracfg_drv = {
-	.probe = clk_mt7988_infracfg_probe,
 	.driver = {
 		.name = "clk-mt7988-infracfg",
 		.of_match_table = of_match_clk_mt7988_infracfg,
 	},
+	.probe = mtk_clk_simple_probe,
+	.remove = mtk_clk_simple_remove,
 };
-builtin_platform_driver(clk_mt7988_infracfg_drv);
+module_platform_driver(clk_mt7988_infracfg_drv);

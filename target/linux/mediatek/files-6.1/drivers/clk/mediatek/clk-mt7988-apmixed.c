@@ -13,6 +13,7 @@
 #include "clk-mtk.h"
 #include "clk-gate.h"
 #include "clk-mux.h"
+#include "clk-pll.h"
 #include <dt-bindings/clock/mediatek,mt7988-clk.h>
 
 #define MT7988_PLL_FMAX (2500UL * MHZ)
@@ -72,15 +73,13 @@ static const struct mtk_pll_data plls[] = {
 };
 
 static const struct of_device_id of_match_clk_mt7988_apmixed[] = {
-	{
-		.compatible = "mediatek,mt7988-apmixedsys",
-	},
-	{}
+	{ .compatible = "mediatek,mt7988-apmixedsys", },
+	{ /* sentinel */ }
 };
 
 static int clk_mt7988_apmixed_probe(struct platform_device *pdev)
 {
-	struct clk_onecell_data *clk_data;
+	struct clk_hw_onecell_data *clk_data;
 	struct device_node *node = pdev->dev.of_node;
 	int r;
 
@@ -90,7 +89,7 @@ static int clk_mt7988_apmixed_probe(struct platform_device *pdev)
 
 	mtk_clk_register_plls(node, plls, ARRAY_SIZE(plls), clk_data);
 
-	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
+	r = of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
 	if (r) {
 		pr_err("%s(): could not register clock provider: %d\n",
 		       __func__, r);
@@ -111,3 +110,4 @@ static struct platform_driver clk_mt7988_apmixed_drv = {
 	},
 };
 builtin_platform_driver(clk_mt7988_apmixed_drv);
+MODULE_LICENSE("GPL");
