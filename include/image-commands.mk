@@ -581,6 +581,7 @@ define Build/tplink-v2-image
 endef
 
 define Build/uImage
+	$(if $(UIMAGE_TIME),SOURCE_DATE_EPOCH="$(UIMAGE_TIME)") \
 	mkimage \
 		-A $(LINUX_KARCH) \
 		-O linux \

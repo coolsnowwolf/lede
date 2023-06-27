@@ -1362,6 +1362,21 @@ endef
 
 $(eval $(call KernelPackage,mdio))
 
+define KernelPackage/mdio-bus-mux
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=MDIO bus multiplexers
+  KCONFIG:=CONFIG_MDIO_BUS_MUX
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/drivers/net/mdio/mdio-mux.ko
+  AUTOLOAD:=$(call AutoLoad,32,mdio-mux)
+endef
+
+define KernelPackage/mdio-bus-mux/description
+ Kernel framework for MDIO bus multiplexers.
+endef
+
+$(eval $(call KernelPackage,mdio-bus-mux))
+
 define KernelPackage/macsec
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=IEEE 802.1AE MAC-level encryption (MAC)
@@ -1416,6 +1431,23 @@ native Linux tools such as ss.
 endef
 
 $(eval $(call KernelPackage,inet-diag))
+
+
+define KernelPackage/inet-mptcp-diag
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=INET diag support for MultiPath TCP
+  DEPENDS:= +@KERNEL_MPTCP +@KERNEL_MPTCP_IPV6 +kmod-inet-diag
+  KCONFIG:= CONFIG_INET_MPTCP_DIAG@ge5.6
+  FILES:= $(LINUX_DIR)/net/mptcp/mptcp_diag.ko@ge5.6
+  AUTOLOAD:=$(call AutoProbe,mptcp_diag)
+endef
+
+define KernelPackage/inet-mptcp-diag/description
+Support for INET (MultiPath TCP) socket monitoring interface used by
+native Linux tools such as ss.
+endef
+
+$(eval $(call KernelPackage,inet-mptcp-diag))
 
 
 define KernelPackage/wireguard
