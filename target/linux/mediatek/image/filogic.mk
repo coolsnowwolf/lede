@@ -114,6 +114,21 @@ define Device/glinet_gl-mt3000
 endef
 TARGET_DEVICES += glinet_gl-mt3000
 
+define Device/h3c_magic-nx30-pro
+  DEVICE_VENDOR := H3C
+  DEVICE_MODEL := Magic NX30 Pro
+  DEVICE_DTS := mt7981b-h3c-magic-nx30-pro
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  IMAGE_SIZE := 65536k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+endef
+TARGET_DEVICES += h3c_magic-nx30-pro
+
 define Device/mediatek_mt7986a-rfb
   DEVICE_VENDOR := MediaTek
   DEVICE_MODEL := MTK7986 rfba AP
@@ -155,6 +170,41 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/jcg_q30_pro
+  DEVICE_VENDOR := JCG
+  DEVICE_MODEL := Q30 Pro
+  DEVICE_DTS := mt7981b-jcg-q30_pro
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 113152k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  KERNEL = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
+endef
+TARGET_DEVICES += jcg_q30_pro
+
+define Device/qihoo_360t7
+  DEVICE_VENDOR := Qihoo
+  DEVICE_MODEL := 360T7
+  DEVICE_DTS := mt7981b-qihoo-360t7
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += qihoo_360t7
+
 define Device/tplink_tl-common
   DEVICE_VENDOR := TP-Link
   DEVICE_DTS_DIR := ../dts
@@ -168,24 +218,38 @@ endef
 
 define Device/tplink_tl-xdr4288
   DEVICE_MODEL := TL-XDR4288
-  DEVICE_DTS := mt7986a-tl-xdr4288
+  DEVICE_DTS := mt7986a-tplink-tl-xdr4288
   $(call Device/tplink_tl-common)
 endef
 TARGET_DEVICES += tplink_tl-xdr4288
 
 define Device/tplink_tl-xdr6086
   DEVICE_MODEL := TL-XDR6086
-  DEVICE_DTS := mt7986a-tl-xdr6086
+  DEVICE_DTS := mt7986a-tplink-tl-xdr6086
   $(call Device/tplink_tl-common)
 endef
 TARGET_DEVICES += tplink_tl-xdr6086
 
 define Device/tplink_tl-xdr6088
   DEVICE_MODEL := TL-XDR6088
-  DEVICE_DTS := mt7986a-tl-xdr6088
+  DEVICE_DTS := mt7986a-tplink-tl-xdr6088
   $(call Device/tplink_tl-common)
 endef
 TARGET_DEVICES += tplink_tl-xdr6088
+
+define Device/xiaomi_mi-router-wr30u
+  DEVICE_VENDOR := Xiaomi
+  DEVICE_MODEL := Mi Router WR30U
+  DEVICE_DTS := mt7981b-xiaomi-wr30u
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += xiaomi_mi-router-wr30u
 
 define Device/xiaomi_redmi-router-ax6000
   DEVICE_VENDOR := Xiaomi
