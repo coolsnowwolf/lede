@@ -170,6 +170,17 @@ endef
 
 # RK3568 boards
 
+define U-Boot/lyt-t68m-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=LYT T68M
+  BUILD_DEVICES:= \
+    lyt_t68m
+  DEPENDS:=+PACKAGE_u-boot-lyt-t68m-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.34.elf
+  DDR:=rk3568_ddr_1560MHz_v1.13.bin
+endef
+
 define U-Boot/mrkaio-m68s-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=Mrkaio M68S
@@ -264,6 +275,7 @@ define U-Boot/station-p2-rk3568
 endef
 
 UBOOT_TARGETS := \
+  lyt-t68m-rk3568 \
   mrkaio-m68s-rk3568 \
   opc-h68k-rk3568 \
   photonicat-rk3568 \

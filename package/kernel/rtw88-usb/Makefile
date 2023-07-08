@@ -11,10 +11,10 @@ PKG_NAME:=rtw88-usb
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-02-11
+PKG_SOURCE_DATE:=2023-06-28
 PKG_SOURCE_URL:=https://github.com/lwfinger/rtw88.git
-PKG_SOURCE_VERSION:=3af004dd40588e86280f0c58a483de6f53b9803f
-PKG_MIRROR_HASH:=13a476c6e46702dee0a3ea2cd743587ab889414be2dce979e652f3bbfa106d76
+PKG_SOURCE_VERSION:=7ca1ec0e768f083e4a2116d6978021814b83bb74
+PKG_MIRROR_HASH:=101e4769c8c25a0b1c186c2b65a1f03b4c600b36fdb20948ef3c82e75e2f6582
 
 PKG_BUILD_PARALLEL:=1
 
@@ -35,7 +35,7 @@ define KernelPackage/rtw88-usb
   HIDDEN:=1
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_core.ko \
-	$(PKG_BUILD_DIR)/rtw88_usb.ko
+	$(PKG_BUILD_DIR)/rtw_usb.ko
 endef
 
 define KernelPackage/rtl8723du
@@ -44,8 +44,8 @@ define KernelPackage/rtl8723du
   DEPENDS+=+kmod-rtw88-usb +rtl8723du-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8723d.ko \
-	$(PKG_BUILD_DIR)/rtw88_8723du.ko
-  AUTOLOAD:=$(call AutoProbe,rtw88_8723du)
+	$(PKG_BUILD_DIR)/rtw_8723du.ko
+  AUTOLOAD:=$(call AutoProbe,rtw_8723du)
 endef
 
 define KernelPackage/rtl8821cu
@@ -54,8 +54,8 @@ define KernelPackage/rtl8821cu
   DEPENDS+=+kmod-rtw88-usb +rtl8821ce-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8821c.ko \
-	$(PKG_BUILD_DIR)/rtw88_8821cu.ko
-  AUTOLOAD:=$(call AutoProbe,rtw88_8821cu)
+	$(PKG_BUILD_DIR)/rtw_8821cu.ko
+  AUTOLOAD:=$(call AutoProbe,rtw_8821cu)
 endef
 
 define KernelPackage/rtl8822bu
@@ -64,8 +64,8 @@ define KernelPackage/rtl8822bu
   DEPENDS+=+kmod-rtw88-usb +rtl8822be-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8822b.ko \
-	$(PKG_BUILD_DIR)/rtw88_8822bu.ko
-  AUTOLOAD:=$(call AutoProbe,rtw88_8822bu)
+	$(PKG_BUILD_DIR)/rtw_8822bu.ko
+  AUTOLOAD:=$(call AutoProbe,rtw_8822bu)
 endef
 
 define KernelPackage/rtl8822cu
@@ -74,8 +74,8 @@ define KernelPackage/rtl8822cu
   DEPENDS+=+kmod-rtw88-usb +rtl8822ce-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8822c.ko \
-	$(PKG_BUILD_DIR)/rtw88_8822cu.ko
-  AUTOLOAD:=$(call AutoProbe,rtw88_8822cu)
+	$(PKG_BUILD_DIR)/rtw_8822cu.ko
+  AUTOLOAD:=$(call AutoProbe,rtw_8822cu)
 endef
 
 NOSTDINC_FLAGS := \
