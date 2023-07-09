@@ -319,6 +319,14 @@ define Device/tplink_tl-xdr6088
 endef
 TARGET_DEVICES += tplink_tl-xdr6088
 
+define Device/tplink_tl-xtr8488
+  DEVICE_MODEL := TL-XTR8488
+  DEVICE_DTS := mt7986a-tplink-tl-xtr8488
+  DEVICE_PACKAGES += kmod-mt7915-firmware
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xtr8488
+
 define Device/xiaomi_mi-router-ax3000t
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := Mi Router AX3000T
