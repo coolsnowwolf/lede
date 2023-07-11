@@ -309,6 +309,11 @@ UBOOT_MAKE_FLAGS += \
   ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
 endif
 
+ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3566),y)
+UBOOT_MAKE_FLAGS += \
+  ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
+endif
+
 define Build/Configure
 	$(call Build/Configure/U-Boot)
 
