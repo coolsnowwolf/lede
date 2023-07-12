@@ -168,6 +168,19 @@ define U-Boot/dilusense-dlfr100-rk3399
   USE_RKBIN:=1
 endef
 
+# RK3566 boards
+
+define U-Boot/panther-x2-rk3566
+  BUILD_SUBTARGET:=armv8
+  NAME:=Panther X2
+  BUILD_DEVICES:= \
+    panther-x2
+  DEPENDS:=+PACKAGE_u-boot-panther-x2-rk3566:arm-trusted-firmware-rk3566
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.34.elf
+  DDR:=rk3566_ddr_1056MHz_v1.13.bin
+endef
+
 # RK3568 boards
 
 define U-Boot/lyt-t68m-rk3568
@@ -283,6 +296,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   r66s-rk3568 \
   station-p2-rk3568 \
+  panther-x2-rk3566 \
   sharevdi-h3399pc-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
@@ -305,6 +319,11 @@ UBOOT_MAKE_FLAGS += \
   BL31=$(STAGING_DIR_IMAGE)/$(ATF)
 
 ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3568),y)
+UBOOT_MAKE_FLAGS += \
+  ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
+endif
+
+ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3566),y)
 UBOOT_MAKE_FLAGS += \
   ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
 endif
