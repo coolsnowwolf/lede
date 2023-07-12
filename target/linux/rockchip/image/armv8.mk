@@ -180,6 +180,16 @@ define Device/lyt_t68m
 endef
 TARGET_DEVICES += lyt_t68m
 
+define Device/panther_x2
+  DEVICE_VENDOR := Panther
+  DEVICE_MODEL := Panther X2
+  DEVICE_DTS := rockchip/rk3566-panther-x2
+  UBOOT_DEVICE_NAME := panther-x2-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig panther-x2-firmware wpad-openssl
+endef
+TARGET_DEVICES += panther_x2
+
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
   DEVICE_MODEL := RockPro64
