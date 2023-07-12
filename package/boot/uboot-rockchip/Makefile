@@ -177,7 +177,8 @@ define U-Boot/xiaobao-nas-v1-rk3399
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3399_bl31_v1.35.elf
   USE_RKBIN:=1
-  
+endef
+
 # RK3566 boards
 
 define U-Boot/panther-x2-rk3566
@@ -189,7 +190,6 @@ define U-Boot/panther-x2-rk3566
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.34.elf
   DDR:=rk3566_ddr_1056MHz_v1.13.bin
-
 endef
 
 # RK3568 boards
