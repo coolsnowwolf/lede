@@ -83,23 +83,44 @@ endef
 $(eval $(call KernelPackage,fs-btrfs))
 
 
+define KernelPackage/fs-smbfs-common
+  SUBMENU:=$(FS_MENU)
+  TITLE:=SMBFS common dependencies support
+  HIDDEN:=1
+  KCONFIG:=\
+	CONFIG_SMBFS_COMMON@lt6.1 \
+	CONFIG_SMBFS@ge6.1
+  DEPENDS:= \
+	+(LINUX_5_4||LINUX_5_10):kmod-crypto-arc4 \
+	+(LINUX_5_4||LINUX_5_10):kmod-crypto-md4
+  FILES:= \
+	$(LINUX_DIR)/fs/smbfs_common/cifs_arc4.ko@lt6.1 \
+	$(LINUX_DIR)/fs/smbfs_common/cifs_md4.ko@lt6.1 \
+	$(LINUX_DIR)/fs/smb/common/cifs_arc4.ko@ge6.1 \
+	$(LINUX_DIR)/fs/smb/common/cifs_md4.ko@ge6.1
+endef
+
+define KernelPackage/fs-smbfs-common/description
+ Kernel module dependency for CIFS or SMB_SERVER support
+endef
+
+$(eval $(call KernelPackage,fs-smbfs-common))
+
+
 define KernelPackage/fs-cifs
   SUBMENU:=$(FS_MENU)
   TITLE:=CIFS support
   KCONFIG:= \
-	CONFIG_SMBFS_COMMON@ge5.15 \
 	CONFIG_CIFS \
 	CONFIG_CIFS_DFS_UPCALL=n \
 	CONFIG_CIFS_UPCALL=n
   FILES:= \
-	$(LINUX_DIR)/fs/smbfs_common/cifs_arc4.ko@ge5.15 \
-	$(LINUX_DIR)/fs/smbfs_common/cifs_md4.ko@ge5.15 \
-	$(LINUX_DIR)/fs/cifs/cifs.ko
+	$(LINUX_DIR)/fs/cifs/cifs.ko@lt6.1 \
+	$(LINUX_DIR)/fs/smb/client/cifs.ko@ge6.1
   AUTOLOAD:=$(call AutoLoad,30,cifs)
   $(call AddDepends/nls)
   DEPENDS+= \
-    +(LINUX_5_4||LINUX_5_10):kmod-crypto-md4\
-    +(LINUX_5_4||LINUX_5_10):kmod-crypto-arc4 \
+    +kmod-fs-smbfs-common \
     +kmod-crypto-md5 \
     +kmod-crypto-sha256 \
     +kmod-crypto-sha512 \

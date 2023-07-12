@@ -199,7 +199,7 @@ $(eval $(call KernelPackage,nf-flow))
 define KernelPackage/nf-socket
   SUBMENU:=$(NF_MENU)
   TITLE:=Netfilter socket lookup support
-  KCONFIG:= $(KCOFNIG_NF_SOCKET)
+  KCONFIG:= $(KCONFIG_NF_SOCKET)
   FILES:=$(foreach mod,$(NF_SOCKET-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_SOCKET-m)))
 endef
@@ -210,7 +210,7 @@ $(eval $(call KernelPackage,nf-socket))
 define KernelPackage/nf-tproxy
   SUBMENU:=$(NF_MENU)
   TITLE:=Netfilter tproxy support
-  KCONFIG:= $(KCOFNIG_NF_TPROXY)
+  KCONFIG:= $(KCONFIG_NF_TPROXY)
   FILES:=$(foreach mod,$(NF_TPROXY-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_TPROXY-m)))
 endef
