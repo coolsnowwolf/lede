@@ -3,6 +3,8 @@ define Package/ibt-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/intel
 	$(CP) \
 		$(PKG_BUILD_DIR)/intel/*.bseq \
+		$(PKG_BUILD_DIR)/intel/ibt*.sfi \
+		$(PKG_BUILD_DIR)/intel/ibt*.ddc \
 		$(1)/lib/firmware/intel
 endef
 $(eval $(call BuildPackage,ibt-firmware))

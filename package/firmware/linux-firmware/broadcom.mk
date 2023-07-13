@@ -136,3 +136,11 @@ define Package/rongpin-king3399-firmware/install
 	$(INSTALL_DATA) ./brcm_firmware/ap6356s/brcmfmac4356-sdio.rongpin,king3399.txt $(1)/lib/firmware/brcm/brcmfmac4356-sdio.rongpin,king3399.txt
 endef
 $(eval $(call BuildPackage,rongpin-king3399-firmware))
+
+Package/panther-x2-firmware = $(call Package/firmware-default,Broadcom FullMac SDIO firmware)
+define Package/panther-x2-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) ./brcm_firmware/ap6236/brcmfmac43430-sdio.bin $(1)/lib/firmware/brcm/brcmfmac43430-sdio.bin
+	$(INSTALL_DATA) ./brcm_firmware/ap6236/brcmfmac43430-sdio.txt $(1)/lib/firmware/brcm/brcmfmac43430-sdio.txt
+endef
+$(eval $(call BuildPackage,panther-x2-firmware))

@@ -12,6 +12,16 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/codinge_xiaobao-nas-v1
+  DEVICE_VENDOR := Codinge
+  DEVICE_MODEL := XiaoBao NAS-I
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := xiaobao-nas-v1-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci
+endef
+TARGET_DEVICES += codinge_xiaobao-nas-v1
+
 define Device/dilusense_dlfr100
   DEVICE_VENDOR := Dilusense
   DEVICE_MODEL := DLFR100
@@ -179,6 +189,16 @@ define Device/lyt_t68m
   DEVICE_PACKAGES := kmod-r8125
 endef
 TARGET_DEVICES += lyt_t68m
+
+define Device/panther_x2
+  DEVICE_VENDOR := Panther
+  DEVICE_MODEL := Panther X2
+  DEVICE_DTS := rockchip/rk3566-panther-x2
+  UBOOT_DEVICE_NAME := panther-x2-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig panther-x2-firmware wpad-openssl
+endef
+TARGET_DEVICES += panther_x2
 
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
