@@ -192,7 +192,7 @@ TARGET_DEVICES += lyt_t68m
 
 define Device/panther_x2
   DEVICE_VENDOR := Panther
-  DEVICE_MODEL := Panther X2
+  DEVICE_MODEL := X2
   DEVICE_DTS := rockchip/rk3566-panther-x2
   UBOOT_DEVICE_NAME := panther-x2-rk3566
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata

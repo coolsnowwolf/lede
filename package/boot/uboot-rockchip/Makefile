@@ -185,7 +185,7 @@ define U-Boot/panther-x2-rk3566
   BUILD_SUBTARGET:=armv8
   NAME:=Panther X2
   BUILD_DEVICES:= \
-    panther-x2
+    panther_x2
   DEPENDS:=+PACKAGE_u-boot-panther-x2-rk3566:arm-trusted-firmware-rk3566
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.34.elf
