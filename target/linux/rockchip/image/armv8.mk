@@ -52,35 +52,6 @@ define Device/ezpro_mrkaio-m68s-plus
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s-plus
 
-define Device/hinlink_common
-  DEVICE_VENDOR := HINLINK
-  UBOOT_DEVICE_NAME := opc-h68k-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
-endef
-
-define Device/hinlink_opc-h66k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H66K
-  SOC := rk3568
-endef
-TARGET_DEVICES += hinlink_opc-h66k
-
-define Device/hinlink_opc-h68k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H68K
-  SOC := rk3568
-endef
-TARGET_DEVICES += hinlink_opc-h68k
-
-define Device/hinlink_opc-h69k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H69K
-  SOC := rk3568
-  DEVICE_PACKAGES += kmod-usb-serial-option uqmi
-endef
-TARGET_DEVICES += hinlink_opc-h69k
-
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
   SOC := rk3568
@@ -180,13 +151,42 @@ define Device/firefly_station-p2
 endef
 TARGET_DEVICES += firefly_station-p2
 
+define Device/hinlink_common
+  DEVICE_VENDOR := HINLINK
+  UBOOT_DEVICE_NAME := opc-h68k-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
+endef
+
+define Device/hinlink_opc-h66k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H66K
+  SOC := rk3568
+endef
+TARGET_DEVICES += hinlink_opc-h66k
+
+define Device/hinlink_opc-h68k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H68K
+  SOC := rk3568
+endef
+TARGET_DEVICES += hinlink_opc-h68k
+
+define Device/hinlink_opc-h69k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H69K
+  SOC := rk3568
+  DEVICE_PACKAGES += kmod-mt7916-firmware kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += hinlink_opc-h69k
+
 define Device/lyt_t68m
   DEVICE_VENDOR := LYT
   DEVICE_MODEL := T68M
   SOC := rk3568
   UBOOT_DEVICE_NAME := lyt-t68m-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8125 wpad-openssl kmod-mt7921-firmware kmod-mt7922-firmware kmod-mt7921e kmod-mt7916-firmware
+  DEVICE_PACKAGES := kmod-mt7921e kmod-r8125 wpad-openssl
 endef
 TARGET_DEVICES += lyt_t68m
 
