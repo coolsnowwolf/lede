@@ -15,9 +15,9 @@ PKG_SOURCE_VERSION:=5b509e80384ab019ac11aa90c81ec0dbb5b0d7f2
 PKG_MIRROR_HASH:=6fc25df4d28becd010ff4971b23731c08b53e69381a9e4c868091899712f78a9
 PATCH_DIR:=./patches-5.4
 else
-PKG_SOURCE_DATE:=2023-07-26
-PKG_SOURCE_VERSION:=cd3dfe39276905307cc028ac8edf2c06963cda23
-PKG_MIRROR_HASH:=413d2d0faa81d834ba13cb9e503e1e3a61e3e071014da6b525a123e5da053f90
+PKG_SOURCE_DATE:=2023-08-14
+PKG_SOURCE_VERSION:=b14c2351ddb8601c322576d84029e463d456caef
+PKG_MIRROR_HASH:=62b5e157ad525424b6857e77ed373e8d39d03af71b057f8b309d8b293d6eac5f
 endif
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
@@ -272,22 +272,37 @@ endef
 
 define KernelPackage/mt7922-firmware
   $(KernelPackage/mt76-default)
-  DEPENDS+=+kmod-mt7921-common
   TITLE:=MediaTek MT7922 firmware
+endef
+
+define KernelPackage/mt792x-common
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT792x wireless driver common code
+  HIDDEN:=1
+  DEPENDS+=+kmod-mt76-connac +@DRIVER_11AX_SUPPORT
+  FILES:= $(PKG_BUILD_DIR)/mt792x-lib.ko
+endef
+
+define KernelPackage/mt792x-usb
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT792x wireless driver USB code
+  HIDDEN:=1
+  DEPENDS+=+kmod-mt792x-common +kmod-mt76-usb +@DRIVER_11AX_SUPPORT
+  FILES:= $(PKG_BUILD_DIR)/mt792x-usb.ko
 endef
 
 define KernelPackage/mt7921-common
   $(KernelPackage/mt76-default)
-  TITLE:=MediaTek MT7615 wireless driver common code
+  TITLE:=MediaTek MT7921 wireless driver common code
   HIDDEN:=1
-  DEPENDS+=+kmod-mt76-connac +kmod-mt7921-firmware +@DRIVER_11AX_SUPPORT +kmod-hwmon-core
+  DEPENDS+=+kmod-mt792x-common +kmod-mt7921-firmware +@DRIVER_11AX_SUPPORT +kmod-hwmon-core
   FILES:= $(PKG_BUILD_DIR)/mt7921/mt7921-common.ko
 endef
 
 define KernelPackage/mt7921u
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7921U wireless driver
-  DEPENDS+=+kmod-mt76-usb +kmod-mt7921-common
+  DEPENDS+=+kmod-mt792x-usb +kmod-mt7921-common
   FILES:= $(PKG_BUILD_DIR)/mt7921/mt7921u.ko
   AUTOLOAD:=$(call AutoProbe,mt7921u)
 endef
@@ -397,6 +412,12 @@ ifdef CONFIG_PACKAGE_kmod-mt7915e
     PKG_MAKE_FLAGS += CONFIG_MT798X_WMAC=y
     NOSTDINC_FLAGS += -DCONFIG_MT798X_WMAC
   endif
+endif
+ifdef CONFIG_PACKAGE_kmod-mt792x-common
+  PKG_MAKE_FLAGS += CONFIG_MT792x_LIB=m
+endif
+ifdef CONFIG_PACKAGE_kmod-mt792x-usb
+  PKG_MAKE_FLAGS += CONFIG_MT792x_USB=m
 endif
 ifdef CONFIG_PACKAGE_kmod-mt7921-common
   PKG_MAKE_FLAGS += CONFIG_MT7921_COMMON=m
@@ -587,6 +608,8 @@ $(eval $(call KernelPackage,mt7981-firmware))
 $(eval $(call KernelPackage,mt7986-firmware))
 $(eval $(call KernelPackage,mt7921-firmware))
 $(eval $(call KernelPackage,mt7922-firmware))
+$(eval $(call KernelPackage,mt792x-common))
+$(eval $(call KernelPackage,mt792x-usb))
 $(eval $(call KernelPackage,mt7921-common))
 $(eval $(call KernelPackage,mt7921u))
 $(eval $(call KernelPackage,mt7921s))
