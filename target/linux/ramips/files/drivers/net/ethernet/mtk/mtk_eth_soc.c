@@ -19,6 +19,7 @@
 #include <linux/interrupt.h>
 #include <linux/pinctrl/devinfo.h>
 #include <linux/phylink.h>
+#include <linux/version.h>
 #include <net/dsa.h>
 
 #include "mtk_eth_soc.h"
@@ -437,7 +438,11 @@ init_err:
 		mac->id, phy_modes(state->interface), err);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 static int mtk_mac_link_state(struct phylink_config *config,
+#else
+static void mtk_mac_pcs_get_state(struct phylink_config *config,
+#endif
 			      struct phylink_link_state *state)
 {
 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
@@ -468,7 +473,9 @@ static int mtk_mac_link_state(struct phylink_config *config,
 	if (pmsr & MAC_MSR_TX_FC)
 		state->pause |= MLO_PAUSE_TX;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	return 1;
+#endif
 }
 
 static void mtk_mac_an_restart(struct phylink_config *config)
@@ -490,9 +497,16 @@ static void mtk_mac_link_down(struct phylink_config *config, unsigned int mode,
 	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
 static void mtk_mac_link_up(struct phylink_config *config, unsigned int mode,
 			    phy_interface_t interface,
 			    struct phy_device *phy)
+#else
+static void mtk_mac_link_up(struct phylink_config *config,
+			    struct phy_device *phy,
+			    unsigned int mode, phy_interface_t interface,
+			    int speed, int duplex, bool tx_pause, bool rx_pause)
+#endif
 {
 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
 					   phylink_config);
@@ -590,7 +604,11 @@ static void mtk_validate(struct phylink_config *config,
 
 static const struct phylink_mac_ops mtk_phylink_ops = {
 	.validate = mtk_validate,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	.mac_link_state = mtk_mac_link_state,
+#else
+	.mac_pcs_get_state = mtk_mac_pcs_get_state,
+#endif
 	.mac_an_restart = mtk_mac_an_restart,
 	.mac_config = mtk_mac_config,
 	.mac_link_down = mtk_mac_link_down,
@@ -2490,7 +2508,11 @@ static void mtk_dma_free(struct mtk_eth *eth)
 	}
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 static void mtk_tx_timeout(struct net_device *dev)
+#else
+static void mtk_tx_timeout(struct net_device *dev, unsigned int txqueue)
+#endif
 {
 	struct mtk_mac *mac = netdev_priv(dev);
 	struct mtk_eth *eth = mac->hw;
@@ -3402,8 +3424,14 @@ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
 {
 	const __be32 *_id = of_get_property(np, "reg", NULL);
 	struct phylink *phylink;
-	int phy_mode, id, err;
 	struct mtk_mac *mac;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+	int phy_mode, id, err;
+#else
+	int id, err;
+	phy_interface_t phy_mode = PHY_INTERFACE_MODE_NA;
+#endif
 
 	if (!_id) {
 		dev_err(eth->dev, "missing mac id\n");
@@ -3448,8 +3476,13 @@ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
 	mac->hw_stats->reg_offset = id * MTK_STAT_OFFSET;
 
 	/* phylink create */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	phy_mode = of_get_phy_mode(np);
 	if (phy_mode < 0) {
+#else
+	of_get_phy_mode(np, &phy_mode);
+	if (phy_mode == PHY_INTERFACE_MODE_NA) {
+#endif
 		dev_err(eth->dev, "incorrect phy-mode\n");
 		err = -EINVAL;
 		goto free_netdev;

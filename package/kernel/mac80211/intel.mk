@@ -6,7 +6,7 @@ config-$(CONFIG_PACKAGE_IWLWIFI_DEBUGFS)+= IWLWIFI_DEBUGFS
 
 define KernelPackage/iwlwifi
   $(call KernelPackage/mac80211/Default)
-  DEPENDS:= +kmod-mac80211 @PCI_SUPPORT +@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT
+  DEPENDS:= +kmod-mac80211 @PCI_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT
   TITLE:=Intel AGN Wireless support
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko \
