@@ -1,0 +1,86 @@
+From 345ec382cd4b736c36e01f155d08c913b225b736 Mon Sep 17 00:00:00 2001
+From: Michael Walle <michael@walle.cc>
+Date: Tue, 4 Apr 2023 18:21:24 +0100
+Subject: [PATCH] nvmem: core: add per-cell post processing
+
+Instead of relying on the name the consumer is using for the cell, like
+it is done for the nvmem .cell_post_process configuration parameter,
+provide a per-cell post processing hook. This can then be populated by
+the NVMEM provider (or the NVMEM layout) when adding the cell.
+
+Signed-off-by: Michael Walle <michael@walle.cc>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230404172148.82422-17-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/core.c           | 17 +++++++++++++++++
+ include/linux/nvmem-provider.h |  3 +++
+ 2 files changed, 20 insertions(+)
+
+--- a/drivers/nvmem/core.c
++++ b/drivers/nvmem/core.c
+@@ -54,6 +54,7 @@ struct nvmem_cell_entry {
+ 	int			bytes;
+ 	int			bit_offset;
+ 	int			nbits;
++	nvmem_cell_post_process_t read_post_process;
+ 	struct device_node	*np;
+ 	struct nvmem_device	*nvmem;
+ 	struct list_head	node;
+@@ -470,6 +471,7 @@ static int nvmem_cell_info_to_nvmem_cell
+ 	cell->offset = info->offset;
+ 	cell->bytes = info->bytes;
+ 	cell->name = info->name;
++	cell->read_post_process = info->read_post_process;
+ 
+ 	cell->bit_offset = info->bit_offset;
+ 	cell->nbits = info->nbits;
+@@ -1563,6 +1565,13 @@ static int __nvmem_cell_read(struct nvme
+ 	if (cell->bit_offset || cell->nbits)
+ 		nvmem_shift_read_buffer_in_place(cell, buf);
+ 
++	if (cell->read_post_process) {
++		rc = cell->read_post_process(nvmem->priv, id, index,
++					     cell->offset, buf, cell->bytes);
++		if (rc)
++			return rc;
++	}
++
+ 	if (nvmem->cell_post_process) {
+ 		rc = nvmem->cell_post_process(nvmem->priv, id, index,
+ 					      cell->offset, buf, cell->bytes);
+@@ -1671,6 +1680,14 @@ static int __nvmem_cell_entry_write(stru
+ 	    (cell->bit_offset == 0 && len != cell->bytes))
+ 		return -EINVAL;
+ 
++	/*
++	 * Any cells which have a read_post_process hook are read-only because
++	 * we cannot reverse the operation and it might affect other cells,
++	 * too.
++	 */
++	if (cell->read_post_process)
++		return -EINVAL;
++
+ 	if (cell->bit_offset || cell->nbits) {
+ 		buf = nvmem_cell_prepare_write_buffer(cell, buf, len);
+ 		if (IS_ERR(buf))
+--- a/include/linux/nvmem-provider.h
++++ b/include/linux/nvmem-provider.h
+@@ -54,6 +54,8 @@ struct nvmem_keepout {
+  * @bit_offset:	Bit offset if cell is smaller than a byte.
+  * @nbits:	Number of bits.
+  * @np:		Optional device_node pointer.
++ * @read_post_process:	Callback for optional post processing of cell data
++ *			on reads.
+  */
+ struct nvmem_cell_info {
+ 	const char		*name;
+@@ -62,6 +64,7 @@ struct nvmem_cell_info {
+ 	unsigned int		bit_offset;
+ 	unsigned int		nbits;
+ 	struct device_node	*np;
++	nvmem_cell_post_process_t read_post_process;
+ };
+ 
+ /**
