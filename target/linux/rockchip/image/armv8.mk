@@ -12,6 +12,16 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/codinge_xiaobao-nas-v1
+  DEVICE_VENDOR := Codinge
+  DEVICE_MODEL := XiaoBao NAS-I
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := xiaobao-nas-v1-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci
+endef
+TARGET_DEVICES += codinge_xiaobao-nas-v1
+
 define Device/dilusense_dlfr100
   DEVICE_VENDOR := Dilusense
   DEVICE_MODEL := DLFR100
@@ -41,35 +51,6 @@ define Device/ezpro_mrkaio-m68s-plus
   DEVICE_PACKAGES := kmod-r8125 kmod-ata-ahci kmod-ata-ahci-platform kmod-nvme kmod-scsi-core
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s-plus
-
-define Device/hinlink_common
-  DEVICE_VENDOR := HINLINK
-  UBOOT_DEVICE_NAME := opc-h68k-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
-endef
-
-define Device/hinlink_opc-h66k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H66K
-  SOC := rk3568
-endef
-TARGET_DEVICES += hinlink_opc-h66k
-
-define Device/hinlink_opc-h68k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H68K
-  SOC := rk3568
-endef
-TARGET_DEVICES += hinlink_opc-h68k
-
-define Device/hinlink_opc-h69k
-$(call Device/hinlink_common)
-  DEVICE_MODEL := OPC-H69K
-  SOC := rk3568
-  DEVICE_PACKAGES += kmod-usb-serial-option uqmi
-endef
-TARGET_DEVICES += hinlink_opc-h69k
 
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
@@ -170,15 +151,54 @@ define Device/firefly_station-p2
 endef
 TARGET_DEVICES += firefly_station-p2
 
+define Device/hinlink_common
+  DEVICE_VENDOR := HINLINK
+  UBOOT_DEVICE_NAME := opc-h68k-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
+endef
+
+define Device/hinlink_opc-h66k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H66K
+  SOC := rk3568
+endef
+TARGET_DEVICES += hinlink_opc-h66k
+
+define Device/hinlink_opc-h68k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H68K
+  SOC := rk3568
+endef
+TARGET_DEVICES += hinlink_opc-h68k
+
+define Device/hinlink_opc-h69k
+$(call Device/hinlink_common)
+  DEVICE_MODEL := OPC-H69K
+  SOC := rk3568
+  DEVICE_PACKAGES += kmod-mt7916-firmware kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += hinlink_opc-h69k
+
 define Device/lyt_t68m
   DEVICE_VENDOR := LYT
   DEVICE_MODEL := T68M
   SOC := rk3568
   UBOOT_DEVICE_NAME := lyt-t68m-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8125
+  DEVICE_PACKAGES := kmod-mt7921e kmod-r8125 wpad-openssl
 endef
 TARGET_DEVICES += lyt_t68m
+
+define Device/panther_x2
+  DEVICE_VENDOR := Panther
+  DEVICE_MODEL := X2
+  DEVICE_DTS := rockchip/rk3566-panther-x2
+  UBOOT_DEVICE_NAME := panther-x2-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig panther-x2-firmware wpad-openssl
+endef
+TARGET_DEVICES += panther_x2
 
 define Device/pine64_rockpro64
   DEVICE_VENDOR := Pine64
