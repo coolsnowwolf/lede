@@ -1281,20 +1281,20 @@ static const struct group_desc mt7988_groups[] = {
 /* Joint those groups owning the same capability in user point of view which
  * allows that people tend to use through the device tree.
  */
-static const char * const mt7988_jtag_groups[] = {
+static const char *mt7988_jtag_groups[] = {
 	"tops_jtag0_0", "wo0_jtag", "wo1_jtag",
 	"wo2_jtag",	"jtag",	    "tops_jtag0_1",
 };
-static const char * const mt7988_int_usxgmii_groups[] = {
+static const char *mt7988_int_usxgmii_groups[] = {
 	"int_usxgmii",
 };
-static const char * const mt7988_pwm_groups[] = {
+static const char *mt7988_pwm_groups[] = {
 	"pwm0", "pwm1", "pwm2", "pwm3", "pwm4",	"pwm5",	"pwm6", "pwm7"
 };
-static const char * const mt7988_dfd_groups[] = {
+static const char *mt7988_dfd_groups[] = {
 	"dfd",
 };
-static const char * const mt7988_i2c_groups[] = {
+static const char *mt7988_i2c_groups[] = {
 	"xfi_phy0_i2c0",
 	"xfi_phy1_i2c0",
 	"xfi_phy_pll_i2c0",
@@ -1319,13 +1319,13 @@ static const char * const mt7988_i2c_groups[] = {
 	"i2c2_0",
 	"i2c2_1",
 };
-static const char * const mt7988_ethernet_groups[] = {
+static const char *mt7988_ethernet_groups[] = {
 	"mdc_mdio0",
 	"2p5g_ext_mdio",
 	"gbe_ext_mdio",
 	"mdc_mdio1",
 };
-static const char * const mt7988_pcie_groups[] = {
+static const char *mt7988_pcie_groups[] = {
 	"pcie_wake_n0_0",    "pcie_clk_req_n0_0", "pcie_wake_n3_0",
 	"pcie_clk_req_n3",   "pcie_p0_phy_i2c",	  "pcie_p1_phy_i2c",
 	"pcie_p3_phy_i2c",   "pcie_p2_phy_i2c",	  "ckm_phy_i2c",
@@ -1335,18 +1335,18 @@ static const char * const mt7988_pcie_groups[] = {
 	"pcie_wake_n2_0",    "pcie_clk_req_n2_0", "pcie_wake_n2_1",
 	"pcie_clk_req_n0_1"
 };
-static const char * const mt7988_pmic_groups[] = {
+static const char *mt7988_pmic_groups[] = {
 	"pmic",
 };
-static const char * const mt7988_wdt_groups[] = {
+static const char *mt7988_wdt_groups[] = {
 	"watchdog",
 };
-static const char * const mt7988_spi_groups[] = {
+static const char *mt7988_spi_groups[] = {
 	"spi0", "spi0_wp_hold", "spi1", "spi2", "spi2_wp_hold",
 };
-static const char * const mt7988_flash_groups[] = { "emmc_45", "sdcard", "snfi",
+static const char *mt7988_flash_groups[] = { "emmc_45", "sdcard", "snfi",
 						    "emmc_51" };
-static const char * const mt7988_uart_groups[] = {
+static const char *mt7988_uart_groups[] = {
 	"uart2",
 	"tops_uart0_0",
 	"uart2_0",
@@ -1368,18 +1368,18 @@ static const char * const mt7988_uart_groups[] = {
 	"net_wo1_uart_txd_1",
 	"net_wo2_uart_txd_1",
 };
-static const char * const mt7988_udi_groups[] = {
+static const char *mt7988_udi_groups[] = {
 	"udi",
 };
-static const char * const mt7988_audio_groups[] = {
+static const char *mt7988_audio_groups[] = {
 	"i2s", "pcm",
 };
-static const char * const mt7988_led_groups[] = {
+static const char *mt7988_led_groups[] = {
 	"gbe0_led1", "gbe1_led1", "gbe2_led1", "gbe3_led1", "2p5gbe_led1",
 	"gbe0_led0", "gbe1_led0", "gbe2_led0", "gbe3_led0", "2p5gbe_led0",
 	"wf5g_led0",   "wf5g_led1",
 };
-static const char * const mt7988_usb_groups[] = {
+static const char *mt7988_usb_groups[] = {
 	"drv_vbus",
 	"drv_vbus_p1",
 };
@@ -1411,7 +1411,7 @@ static const struct mtk_eint_hw mt7988_eint_hw = {
 	.db_cnt = 16,
 };
 
-static const char * const mt7988_pinctrl_register_base_names[] = {
+static const char *mt7988_pinctrl_register_base_names[] = {
 	"gpio_base",	 "iocfg_tr_base", "iocfg_br_base",
 	"iocfg_rb_base", "iocfg_lb_base", "iocfg_tl_base",
 };
