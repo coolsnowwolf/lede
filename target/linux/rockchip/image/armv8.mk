@@ -72,19 +72,6 @@ $(call Device/fastrhino_common)
 endef
 TARGET_DEVICES += fastrhino_r68s
 
-define Device/nlnet_common
-  DEVICE_VENDOR := NLnet
-  SOC := rk3568
-  UBOOT_DEVICE_NAME := xgp-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-endef
-
-define Device/nlnet_xgp
-$(call Device/nlnet_common)
-  DEVICE_MODEL := XiGuaPi
-endef
-TARGET_DEVICES += nlnet_xgp
-
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
@@ -202,6 +189,15 @@ define Device/lyt_t68m
   DEVICE_PACKAGES := kmod-mt7921e kmod-r8125 wpad-openssl
 endef
 TARGET_DEVICES += lyt_t68m
+
+define Device/nlnet_xgp
+  DEVICE_MODEL := XiGuaPi
+  DEVICE_VENDOR := NLnet
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := nlnet-xgp-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += nlnet_xgp
 
 define Device/panther_x2
   DEVICE_VENDOR := Panther
