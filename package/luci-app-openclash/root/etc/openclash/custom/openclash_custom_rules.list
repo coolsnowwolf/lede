@@ -1,0 +1,69 @@
+script:
+##  shortcuts:
+##    Notice: The core timezone is UTC
+##    CST 20:00-24:00 = time.now().hour > 12 and time.now().hour < 16
+##    内核时区为UTC,故以下time.now()函数的取值需要根据本地时区进行转换
+##    北京时间(CST) 20:00-24:00 = time.now().hour > 12 and time.now().hour < 16
+##    quic: network == 'udp' and dst_port == 443 and (geoip(resolve_ip(host)) != 'CN' or geoip(dst_ip) != 'CN')
+##    time-limit: in_cidr(src_ip,'192.168.1.2/32') and time.now().hour < 20 or time.now().hour > 21
+##    time-limit: src_ip == '192.168.1.2' and time.now().hour < 20 or time.now().hour > 21
+
+##  code: |
+##    def main(ctx, metadata):
+##        directkeywordlist = ["baidu"]
+##        for directkeyword in directkeywordlist:
+##          if directkeyword in metadata["host"]:
+##            ctx.log('[Script] matched keyword %s use direct' % directkeyword)
+##            return "DIRECT"
+
+rules:
+##- SCRIPT,quic,REJECT #shortcuts rule
+##- SCRIPT,time-limit,REJECT #shortcuts rule
+
+##- PROCESS-NAME,curl,DIRECT #匹配路由自身进程(curl直连)
+##- DOMAIN-SUFFIX,google.com,Proxy #匹配域名后缀(交由Proxy代理服务器组)
+##- DOMAIN-KEYWORD,google,Proxy #匹配域名关键字(交由Proxy代理服务器组)
+##- DOMAIN,google.com,Proxy #匹配域名(交由Proxy代理服务器组)
+##- DOMAIN-SUFFIX,ad.com,REJECT #匹配域名后缀(拒绝)
+##- IP-CIDR,127.0.0.0/8,DIRECT #匹配数据目标IP(直连)
+##- SRC-IP-CIDR,192.168.1.201/32,DIRECT #匹配数据发起IP(直连)
+##- DST-PORT,80,DIRECT #匹配数据目标端口(直连)
+##- SRC-PORT,7777,DIRECT #匹配数据源端口(直连)
+
+##排序在上的规则优先生效,如添加（去除规则前的#号）：
+##IP段：192.168.1.2-192.168.1.200 直连
+##- SRC-IP-CIDR,192.168.1.2/31,DIRECT
+##- SRC-IP-CIDR,192.168.1.4/30,DIRECT
+##- SRC-IP-CIDR,192.168.1.8/29,DIRECT
+##- SRC-IP-CIDR,192.168.1.16/28,DIRECT
+##- SRC-IP-CIDR,192.168.1.32/27,DIRECT
+##- SRC-IP-CIDR,192.168.1.64/26,DIRECT
+##- SRC-IP-CIDR,192.168.1.128/26,DIRECT
+##- SRC-IP-CIDR,192.168.1.192/29,DIRECT
+##- SRC-IP-CIDR,192.168.1.200/32,DIRECT
+
+##IP段：192.168.1.202-192.168.1.255 直连
+##- SRC-IP-CIDR,192.168.1.202/31,DIRECT
+##- SRC-IP-CIDR,192.168.1.204/30,DIRECT
+##- SRC-IP-CIDR,192.168.1.208/28,DIRECT
+##- SRC-IP-CIDR,192.168.1.224/27,DIRECT
+
+##此时IP为192.168.1.1和192.168.1.201的客户端流量走代理（策略），其余客户端不走代理
+##因为Fake-IP模式下，IP地址为192.168.1.1的路由器自身流量可走代理（策略），所以需要排除
+
+##仅设置路由器自身直连：
+##- SRC-IP-CIDR,192.168.1.1/32,DIRECT
+##- SRC-IP-CIDR,198.18.0.1/32,DIRECT
+
+##DDNS
+##- DOMAIN-SUFFIX,checkip.dyndns.org,DIRECT
+##- DOMAIN-SUFFIX,checkipv6.dyndns.org,DIRECT
+##- DOMAIN-SUFFIX,checkip.synology.com,DIRECT
+##- DOMAIN-SUFFIX,ifconfig.co,DIRECT
+##- DOMAIN-SUFFIX,api.myip.com,DIRECT
+##- DOMAIN-SUFFIX,ip-api.com,DIRECT
+##- DOMAIN-SUFFIX,ipapi.co,DIRECT
+##- DOMAIN-SUFFIX,ip6.seeip.org,DIRECT
+##- DOMAIN-SUFFIX,members.3322.org,DIRECT
+
+##在线IP段转CIDR地址：http://ip2cidr.com
