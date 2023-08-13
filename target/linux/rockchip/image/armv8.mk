@@ -191,8 +191,8 @@ endef
 TARGET_DEVICES += lyt_t68m
 
 define Device/nlnet_xgp
-  DEVICE_MODEL := XiGuaPi
   DEVICE_VENDOR := NLnet
+  DEVICE_MODEL := XiGuaPi
   SOC := rk3568
   UBOOT_DEVICE_NAME := nlnet-xgp-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
