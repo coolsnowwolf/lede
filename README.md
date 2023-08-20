@@ -90,6 +90,23 @@ make V=s -j$(nproc)
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ```
 
+由于默认情况下，装载到 WSL 发行版的 NTFS 格式的驱动器将不区分大小写，因此大概率在 WSL/WSL2 的编译检查中会返回以下错误：
+
+```txt
+Build dependency: OpenWrt can only be built on a case-sensitive filesystem 
+```
+
+一个比较简洁的解决方法是，在 `git clone` 前先创建 Repository 目录，并为其启用大小写敏感：
+
+```powershell
+# 以管理员身份打开终端
+PS > fsutil.exe file setCaseSensitiveInfo <your_local_lede_path> enable
+# 将本项目 git clone 到开启了大小写敏感的目录 <your_local_lede_path> 中
+PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
+```
+
+> 对已经 `git clone` 完成的项目目录执行 `fsutil.exe` 命令无法生效，大小写敏感只对新增的文件变更有效。
+
 ### macOS 原生系统进行编译
 
 1. 在 AppStore 中安装 Xcode
