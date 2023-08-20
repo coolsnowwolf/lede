@@ -1,6 +1,6 @@
 # 欢迎来到 Lean 的 LEDE 源码仓库
 
-如何编译自己需要的 LEDE 固件 [How to build your LEDE firmware](./README_EN.md)
+I18N: [English](README_EN.md) | [简体中文](README.md)
 
 ## 官方讨论群
 如有技术问题需要讨论或者交流，欢迎加入以下群：
