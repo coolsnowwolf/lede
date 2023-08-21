@@ -11,7 +11,7 @@ FEATURES:=audio boot-part ext4 fpu legacy-sdcard squashfs usbgadget
 MAINTAINER:=Stijn Tintel <stijn@linux-ipv6.be>
 SUBTARGETS:=meson8b mesongx
 
-KERNEL_PATCHVER:=5.10
+KERNEL_PATCHVER:=6.1
 
 define Target/Description
 	Build firmware image for Amlogic Meson SoC devices.
