@@ -22,7 +22,7 @@ define Host/Configure
 endef
 
 define Host/Compile
-	$(MAKE) -C $(HOST_BUILD_DIR) SHELL="$(BASH)" all
+	$(MAKE) -C $(HOST_BUILD_DIR) SHELL="$(BASH)" po/quilt.pot all
 endef
 
 define Host/Install
