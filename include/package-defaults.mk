@@ -64,6 +64,7 @@ ifneq ($(strip $(PKG_UNPACK)),)
   define Build/Prepare/Default
 	$(PKG_UNPACK)
 	[ ! -d ./src/ ] || $(CP) ./src/. $(PKG_BUILD_DIR)
+	[ "$(shell uname | tr '[:upper:]' '[:lower:]')" = "linux" ] && find $(PKG_BUILD_DIR) -type f -exec dos2unix {} \;
 	$(Build/Patch)
   endef
 endif
