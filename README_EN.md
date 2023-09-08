@@ -168,6 +168,23 @@ Build artifacts will be outputted to `bin/targets` directory.
 ### If you are using WSL/WSL2 as your build environment
 
 <!--
+由于 WSL 的 PATH 中包含带有空格的 Windows 路径，有可能会导致编译失败，请在 `make` 前面加上：
+
+```bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+-->
+WSL's `PATH` potentially contain Windows paths with spaces, which may cause compilation failure. Please add the following lines to your local environment profiles before compiling:
+
+```bash
+# Update and reload your profile, ~/.bashrc for example.
+cat << EOF >> ~/.bashrc
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+EOF
+source ~/.bashrc
+```
+
+<!--
 由于默认情况下，装载到 WSL 发行版的 NTFS 格式的驱动器将不区分大小写，因此大概率在 WSL/WSL2 的编译检查中会返回以下错误：
 
 ```txt
