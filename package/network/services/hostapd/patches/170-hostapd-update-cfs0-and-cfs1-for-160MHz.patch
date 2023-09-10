@@ -1,0 +1,141 @@
+From d4c4ef302f98fd6bce173b8636e7e350d8b44981 Mon Sep 17 00:00:00 2001
+From: P Praneesh <ppranees@codeaurora.org>
+Date: Fri, 19 Mar 2021 12:17:27 +0530
+Subject: [PATCH] hostapd: update cfs0 and cfs1 for 160MHz
+
+As per standard Draft P802.11ax_D8.0,( Table 26-9—Setting
+of the VHT Channel Width and VHT NSS at an HE STA
+transmitting the OM Control subfield ), center frequency of
+160MHz should be published in HT information subset 2 of
+HT information when EXT NSS BW field is enabled.
+
+If the supported number of NSS in 160MHz is at least max NSS
+support, then center_freq_seg0 indicates the center frequency of 80MHz and
+center_freq_seg1 indicates the center frequency of 160MHz.
+
+If the supported number of NSS in 160MHz is less than max NSS
+support, then center_freq_seg0 indicates the center frequency of 80MHz and
+center_freq_seg1 is 0. The center frequency of 160MHz is published in HT
+operation information element instead.
+
+Signed-off-by: P Praneesh <ppranees@codeaurora.org>
+---
+ hostapd/config_file.c           |  2 ++
+ src/ap/ieee802_11_ht.c          |  7 +++++++
+ src/ap/ieee802_11_vht.c         | 16 ++++++++++++++++
+ src/common/hw_features_common.c |  1 +
+ src/common/ieee802_11_defs.h    |  1 +
+ 5 files changed, 27 insertions(+)
+
+--- a/hostapd/config_file.c
++++ b/hostapd/config_file.c
+@@ -1153,6 +1153,8 @@ static int hostapd_config_vht_capab(stru
+ 		conf->vht_capab |= VHT_CAP_RX_ANTENNA_PATTERN;
+ 	if (os_strstr(capab, "[TX-ANTENNA-PATTERN]"))
+ 		conf->vht_capab |= VHT_CAP_TX_ANTENNA_PATTERN;
++	if (os_strstr(capab, "[EXT-NSS-BW-SUPP]"))
++		conf->vht_capab |= VHT_CAP_EXTENDED_NSS_BW_SUPPORT;
+ 	return 0;
+ }
+ #endif /* CONFIG_IEEE80211AC */
+--- a/src/ap/ieee802_11_ht.c
++++ b/src/ap/ieee802_11_ht.c
+@@ -82,7 +82,9 @@ u8 * hostapd_eid_ht_capabilities(struct
+ u8 * hostapd_eid_ht_operation(struct hostapd_data *hapd, u8 *eid)
+ {
+ 	struct ieee80211_ht_operation *oper;
++	le32 vht_capabilities_info;
+ 	u8 *pos = eid;
++	u8 chwidth;
+ 
+ 	if (!hapd->iconf->ieee80211n || hapd->conf->disable_11n ||
+ 	    is_6ghz_op_class(hapd->iconf->op_class))
+@@ -103,6 +105,13 @@ u8 * hostapd_eid_ht_operation(struct hos
+ 		oper->ht_param |= HT_INFO_HT_PARAM_SECONDARY_CHNL_BELOW |
+ 			HT_INFO_HT_PARAM_STA_CHNL_WIDTH;
+ 
++	vht_capabilities_info = host_to_le32(hapd->iface->current_mode->vht_capab);
++	chwidth = hostapd_get_oper_chwidth(hapd->iconf);
++	if (vht_capabilities_info & VHT_CAP_EXTENDED_NSS_BW_SUPPORT
++		&& ((chwidth == CHANWIDTH_160MHZ) || (chwidth == CHANWIDTH_80P80MHZ))) {
++		oper->operation_mode = host_to_le16(hapd->iconf->vht_oper_centr_freq_seg0_idx << 5);
++	}
++
+ 	pos += sizeof(*oper);
+ 
+ 	return pos;
+--- a/src/ap/ieee802_11_vht.c
++++ b/src/ap/ieee802_11_vht.c
+@@ -25,6 +25,7 @@ u8 * hostapd_eid_vht_capabilities(struct
+ 	struct ieee80211_vht_capabilities *cap;
+ 	struct hostapd_hw_modes *mode = hapd->iface->current_mode;
+ 	u8 *pos = eid;
++	u8 chwidth;
+ 
+ 	if (!mode || is_6ghz_op_class(hapd->iconf->op_class))
+ 		return eid;
+@@ -62,6 +63,17 @@ u8 * hostapd_eid_vht_capabilities(struct
+ 			host_to_le32(nsts << VHT_CAP_BEAMFORMEE_STS_OFFSET);
+ 	}
+ 
++	chwidth = hostapd_get_oper_chwidth(hapd->iconf);
++	if (((host_to_le32(mode->vht_capab)) & VHT_CAP_EXTENDED_NSS_BW_SUPPORT)
++		&& ((chwidth == CHANWIDTH_160MHZ) || (chwidth == CHANWIDTH_80P80MHZ))) {
++		cap->vht_capabilities_info |= VHT_CAP_EXTENDED_NSS_BW_SUPPORT;
++		cap->vht_capabilities_info &= ~(host_to_le32(VHT_CAP_SUPP_CHAN_WIDTH_160_80PLUS80MHZ));
++		cap->vht_capabilities_info &= ~(host_to_le32(VHT_CAP_SUPP_CHAN_WIDTH_160MHZ));
++		cap->vht_capabilities_info &= ~(host_to_le32(VHT_CAP_SUPP_CHAN_WIDTH_MASK));
++	} else {
++		cap->vht_capabilities_info &= ~VHT_CAP_EXTENDED_NSS_BW_SUPPORT_MASK;
++	}
++
+ 	/* Supported MCS set comes from hw */
+ 	os_memcpy(&cap->vht_supported_mcs_set, mode->vht_mcs_set, 8);
+ 
+@@ -74,6 +86,7 @@ u8 * hostapd_eid_vht_capabilities(struct
+ u8 * hostapd_eid_vht_operation(struct hostapd_data *hapd, u8 *eid)
+ {
+ 	struct ieee80211_vht_operation *oper;
++	le32 vht_capabilities_info;
+ 	u8 *pos = eid;
+ 	enum oper_chan_width oper_chwidth =
+ 		hostapd_get_oper_chwidth(hapd->iconf);
+@@ -106,6 +119,7 @@ u8 * hostapd_eid_vht_operation(struct ho
+ 	oper->vht_op_info_chan_center_freq_seg1_idx = seg1;
+ 
+ 	oper->vht_op_info_chwidth = oper_chwidth;
++	vht_capabilities_info = host_to_le32(hapd->iface->current_mode->vht_capab);
+ 	if (oper_chwidth == CONF_OPER_CHWIDTH_160MHZ) {
+ 		/*
+ 		 * Convert 160 MHz channel width to new style as interop
+@@ -119,6 +133,9 @@ u8 * hostapd_eid_vht_operation(struct ho
+ 			oper->vht_op_info_chan_center_freq_seg0_idx -= 8;
+ 		else
+ 			oper->vht_op_info_chan_center_freq_seg0_idx += 8;
++
++		if (vht_capabilities_info & VHT_CAP_EXTENDED_NSS_BW_SUPPORT)
++			oper->vht_op_info_chan_center_freq_seg1_idx = 0;
+ 	} else if (oper_chwidth == CONF_OPER_CHWIDTH_80P80MHZ) {
+ 		/*
+ 		 * Convert 80+80 MHz channel width to new style as interop
+--- a/src/common/hw_features_common.c
++++ b/src/common/hw_features_common.c
+@@ -808,6 +808,7 @@ int ieee80211ac_cap_check(u32 hw, u32 co
+ 	VHT_CAP_CHECK(VHT_CAP_VHT_LINK_ADAPTATION_VHT_MRQ_MFB);
+ 	VHT_CAP_CHECK(VHT_CAP_RX_ANTENNA_PATTERN);
+ 	VHT_CAP_CHECK(VHT_CAP_TX_ANTENNA_PATTERN);
++	VHT_CAP_CHECK(VHT_CAP_EXTENDED_NSS_BW_SUPPORT);
+ 
+ #undef VHT_CAP_CHECK
+ #undef VHT_CAP_CHECK_MAX
+--- a/src/common/ieee802_11_defs.h
++++ b/src/common/ieee802_11_defs.h
+@@ -1348,6 +1348,8 @@ struct ieee80211_ampe_ie {
+ #define VHT_CAP_VHT_LINK_ADAPTATION_VHT_MRQ_MFB     ((u32) BIT(26) | BIT(27))
+ #define VHT_CAP_RX_ANTENNA_PATTERN                  ((u32) BIT(28))
+ #define VHT_CAP_TX_ANTENNA_PATTERN                  ((u32) BIT(29))
++#define VHT_CAP_EXTENDED_NSS_BW_SUPPORT		    ((u32) BIT(30))
++#define VHT_CAP_EXTENDED_NSS_BW_SUPPORT_MASK	    ((u32) BIT(30) | BIT(31))
+ 
+ #define VHT_OPMODE_CHANNEL_WIDTH_MASK		    ((u8) BIT(0) | BIT(1))
+ #define VHT_OPMODE_CHANNEL_RxNSS_MASK		    ((u8) BIT(4) | BIT(5) | \
