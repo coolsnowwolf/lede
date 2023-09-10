@@ -84,13 +84,14 @@ define Device/nlnet_common
   DEVICE_VENDOR := NLnet
   SOC := rk3568
   UBOOT_DEVICE_NAME := xgp-rk3568
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  IMAGE/sysupgrade.img.gz := boot-combined | boot-script nlnet-xgp | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8125
 endef
 
 define Device/nlnet_xgp
 $(call Device/nlnet_common)
   DEVICE_MODEL := XiGuaPi
+  DEVICE_DTS = rockchip/rk3568-xgp rockchip/rk3568-xgp-v3
 endef
 TARGET_DEVICES += nlnet_xgp
 
