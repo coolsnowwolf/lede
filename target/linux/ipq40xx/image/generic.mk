@@ -983,6 +983,20 @@ define Device/unielec_u4019-32m
 endef
 TARGET_DEVICES += unielec_u4019-32m
 
+define Device/yyets_le1
+	$(call Device/FitzImage)
+	DEVICE_VENDOR := YYeTs
+	DEVICE_MODEL := LE1
+	SOC := qcom-ipq4019
+	KERNEL_SIZE := 4096k
+	IMAGE_SIZE := 31232k
+	IMAGES += factory.bin
+	IMAGE/factory.bin := qsdk-ipq-factory-nor | check-size
+	IMAGE/sysupgrade.bin := append-kernel | append-rootfs | pad-rootfs | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-yyets_le1 kmod-usb-ledtrig-usbport
+endef
+TARGET_DEVICES += yyets_le1
+
 define Device/zte_mf28x_common
 	$(call Device/FitzImage)
 	DEVICE_VENDOR := ZTE
