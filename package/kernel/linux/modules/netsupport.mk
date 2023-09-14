@@ -1311,17 +1311,13 @@ $(eval $(call KernelPackage,mpls))
 define KernelPackage/9pnet
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Plan 9 Resource Sharing Support (9P2000)
-  DEPENDS:=@VIRTIO_SUPPORT
   KCONFIG:= \
 	CONFIG_NET_9P \
 	CONFIG_NET_9P_DEBUG=n \
-	CONFIG_NET_9P_XEN=n \
-	CONFIG_NET_9P_VIRTIO \
 	CONFIG_NET_9P_FD=n@ge5.17
   FILES:= \
-	$(LINUX_DIR)/net/9p/9pnet.ko \
-	$(LINUX_DIR)/net/9p/9pnet_virtio.ko
-  AUTOLOAD:=$(call AutoLoad,29,9pnet 9pnet_virtio)
+	$(LINUX_DIR)/net/9p/9pnet.ko
+  AUTOLOAD:=$(call AutoLoad,29,9pnet)
 endef
 
 define KernelPackage/9pnet/description
@@ -1330,6 +1326,25 @@ define KernelPackage/9pnet/description
 endef
 
 $(eval $(call KernelPackage,9pnet))
+
+define KernelPackage/9pvirtio
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Plan 9 Virtio Support
+  DEPENDS:=+kmod-9pnet @VIRTIO_SUPPORT
+  KCONFIG:= \
+	CONFIG_NET_9P_XEN=n \
+	CONFIG_NET_9P_VIRTIO
+  FILES:= \
+	$(LINUX_DIR)/net/9p/9pnet_virtio.ko
+  AUTOLOAD:=$(call AutoLoad,29,9pnet_virtio)
+endef
+
+define KernelPackage/9pvirtio/description
+  Kernel support support for
+  Plan 9 resource sharing for virtio.
+endef
+
+$(eval $(call KernelPackage,9pvirtio))
 
 
 define KernelPackage/nlmon
