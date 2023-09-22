@@ -1,0 +1,94 @@
+--- a/drivers/net/bonding/bond_main.c
++++ b/drivers/net/bonding/bond_main.c
+@@ -247,6 +247,7 @@ static const struct flow_dissector_key f
+ };
+
+ static struct flow_dissector flow_keys_bonding __read_mostly;
++static unsigned long bond_id_mask = 0xFFFFFFF0;
+
+ /*-------------------------- Forward declarations ---------------------------*/
+
+@@ -301,6 +302,20 @@ netdev_tx_t bond_dev_queue_xmit(struct b
+ 	return dev_queue_xmit(skb);
+ }
+
++int bond_get_id(struct net_device *bond_dev)
++{
++	struct bonding *bond;
++
++	if (!((bond_dev->priv_flags & IFF_BONDING) &&
++		(bond_dev->flags & IFF_MASTER)))
++	return -EINVAL;
++
++	bond = netdev_priv(bond_dev);
++
++	return bond->id;
++}
++EXPORT_SYMBOL(bond_get_id);
++
+ /*---------------------------------- VLAN -----------------------------------*/
+
+ /* In the following 2 functions, bond_vlan_rx_add_vid and bond_vlan_rx_kill_vid,
+@@ -4822,6 +4837,9 @@ static void bond_destructor(struct net_d
+ 	struct bonding *bond = netdev_priv(bond_dev);
+ 	if (bond->wq)
+ 		destroy_workqueue(bond->wq);
++
++	if (bond->id != (~0U))
++		clear_bit(bond->id, &bond_id_mask);
+ }
+
+ void bond_setup(struct net_device *bond_dev)
+@@ -4936,7 +4954,7 @@ static int bond_check_params(struct bond
+ 	int bond_mode	= BOND_MODE_ROUNDROBIN;
+ 	int xmit_hashtype = BOND_XMIT_POLICY_LAYER2;
+ 	int lacp_fast = 0;
+-	int tlb_dynamic_lb;
++	int tlb_dynamic_lb;
+
+ 	/* Convert string parameters. */
+ 	if (mode) {
+@@ -5275,7 +5293,7 @@ static int bond_check_params(struct bond
+ 	params->peer_notif_delay = 0;
+ 	params->use_carrier = use_carrier;
+ 	params->lacp_fast = lacp_fast;
+-	params->primary[0] = 0;
++	params->primary[0] = 0;
+ 	params->primary_reselect = primary_reselect_value;
+ 	params->fail_over_mac = fail_over_mac_value;
+ 	params->tx_queues = tx_queues;
+@@ -5390,7 +5408,15 @@ int bond_create(struct net *net, const c
+ 	bond_work_init_all(bond);
+
+ 	rtnl_unlock();
+-	return 0;
++
++	bond = netdev_priv(bond_dev);
++	bond->id = ~0U;
++	if (bond_id_mask != (~0UL)) {
++		bond->id = (u32)ffz(bond_id_mask);
++		set_bit(bond->id, &bond_id_mask);
++	}
++
++	return 0;
+ }
+
+ static int __net_init bond_net_init(struct net *net)
+--- a/include/net/bonding.h
++++ b/include/net/bonding.h
+@@ -256,6 +256,7 @@ struct bonding {
+ 	/* protecting ipsec_list */
+ 	spinlock_t ipsec_lock;
+ #endif /* CONFIG_XFRM_OFFLOAD */
++	u32      id;
+ };
+
+ #define bond_slave_get_rcu(dev) \
+@@ -629,6 +629,7 @@ struct bond_net {
+ 
+ int bond_arp_rcv(const struct sk_buff *skb, struct bonding *bond, struct slave *slave);
+ netdev_tx_t bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_device *slave_dev);
++int bond_get_id(struct net_device *bond_dev);
+ int bond_create(struct net *net, const char *name);
+ int bond_create_sysfs(struct bond_net *net);
+ void bond_destroy_sysfs(struct bond_net *net);
