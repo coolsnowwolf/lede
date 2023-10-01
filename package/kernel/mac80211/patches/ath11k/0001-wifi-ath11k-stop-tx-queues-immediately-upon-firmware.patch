@@ -1,0 +1,78 @@
+From 81e60b2dfb2744ab6642c4aa62534b4f711fdc5d Mon Sep 17 00:00:00 2001
+From: Aditya Kumar Singh <quic_adisi@quicinc.com>
+Date: Tue, 27 Sep 2022 09:18:54 +0300
+Subject: [PATCH] wifi: ath11k: stop tx queues immediately upon firmware exit
+
+Currently, recovery flag is set immediately upon firmware
+exit but tx queues are stopped once firmware arrives back
+and is ready which is during ath11k_core_restart. Once
+ieee80211 hw restart is completed, tx queues are resumed.
+If during the time delta between firmware exit and firmware
+ready, mac80211 send packets, currently ath11k will drop it
+since recovery flag will be set. But warning prints will
+come -
+  "ath11k c000000.wifi: failed to transmit frame -108"
+
+If more tx packets are there, this could lead to flooding
+of above print.
+
+However, actually tx queues should be stopped immediately
+when firmware leaves. This will prevent packets to get
+dropped when firmware is recovering.
+
+Add fix to stop tx queues immediately after firmware exit.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.5.0.1-01100-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20220923170235.18873-1-quic_adisi@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c | 5 +----
+ drivers/net/wireless/ath/ath11k/core.h | 1 +
+ drivers/net/wireless/ath/ath11k/qmi.c  | 3 +++
+ 3 files changed, 5 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -1641,7 +1641,7 @@ static void ath11k_update_11d(struct wor
+ 	}
+ }
+ 
+-static void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab)
++void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab)
+ {
+ 	struct ath11k *ar;
+ 	struct ath11k_pdev *pdev;
+@@ -1730,9 +1730,6 @@ static void ath11k_core_restart(struct w
+ 	struct ath11k_base *ab = container_of(work, struct ath11k_base, restart_work);
+ 	int ret;
+ 
+-	if (!ab->is_reset)
+-		ath11k_core_pre_reconfigure_recovery(ab);
+-
+ 	ret = ath11k_core_reconfigure_on_crash(ab);
+ 	if (ret) {
+ 		ath11k_err(ab, "failed to reconfigure driver on crash recovery\n");
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -1158,6 +1158,7 @@ int ath11k_core_check_smbios(struct ath1
+ void ath11k_core_halt(struct ath11k *ar);
+ int ath11k_core_resume(struct ath11k_base *ab);
+ int ath11k_core_suspend(struct ath11k_base *ab);
++void ath11k_core_pre_reconfigure_recovery(struct ath11k_base *ab);
+ 
+ const struct firmware *ath11k_core_firmware_request(struct ath11k_base *ab,
+ 						    const char *filename);
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -3164,6 +3164,9 @@ static void ath11k_qmi_driver_event_work
+ 		case ATH11K_QMI_EVENT_SERVER_EXIT:
+ 			set_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags);
+ 			set_bit(ATH11K_FLAG_RECOVERY, &ab->dev_flags);
++
++			if (!ab->is_reset)
++				ath11k_core_pre_reconfigure_recovery(ab);
+ 			break;
+ 		case ATH11K_QMI_EVENT_REQUEST_MEM:
+ 			ret = ath11k_qmi_event_mem_request(qmi);

@@ -171,6 +171,14 @@ define Device/hilink_hlk-7688a
 endef
 TARGET_DEVICES += hilink_hlk-7688a
 
+define Device/hiwifi_hc5611
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := HiWiFi
+  DEVICE_MODEL := HC5611
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += hiwifi_hc5611
+
 define Device/hiwifi_hc5661a
   IMAGE_SIZE := 15808k
   DEVICE_VENDOR := HiWiFi
@@ -316,6 +324,15 @@ define Device/netgear_r6120
   SERCOMM_PAD := 576k
 endef
 TARGET_DEVICES += netgear_r6120
+
+define Device/nradio_wt6285
+  IMAGE_SIZE := 15808k
+  DEVICE_VENDOR := NRadio
+  DEVICE_MODEL := WT6285
+  DEVICE_PACKAGES := kmod-usb-net-cdc-ether kmod-usb-serial-option usb-modeswitch
+  SUPPORTED_DEVICES += wt6285
+endef
+TARGET_DEVICES += nradio_wt6285
 
 define Device/onion_omega2
   IMAGE_SIZE := 16064k

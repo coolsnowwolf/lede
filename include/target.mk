@@ -233,6 +233,7 @@ ifeq ($(DUMP),1)
   ifeq ($(ARCH),powerpc)
     CPU_CFLAGS_603e:=-mcpu=603e
     CPU_CFLAGS_8540:=-mcpu=8540
+    CPU_CFLAGS_8548:=-mcpu=8548
     CPU_CFLAGS_405:=-mcpu=405
     CPU_CFLAGS_440:=-mcpu=440
     CPU_CFLAGS_464fp:=-mcpu=464fp
@@ -256,6 +257,10 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS += -matomic
     CPU_CFLAGS_arc700 = -mcpu=arc700
     CPU_CFLAGS_archs = -mcpu=archs
+  endif
+  ifeq ($(ARCH),riscv64)
+    CPU_TYPE ?= riscv64
+    CPU_CFLAGS_riscv64:=-mabi=lp64d -march=rv64imafdc
   endif
   ifneq ($(CPU_TYPE),)
     ifndef CPU_CFLAGS_$(CPU_TYPE)

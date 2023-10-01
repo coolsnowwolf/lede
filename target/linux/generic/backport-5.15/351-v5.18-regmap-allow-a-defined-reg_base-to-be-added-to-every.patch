@@ -1,0 +1,95 @@
+From 0074f3f2b1e43d3cedd97e47fb6980db6d2ba79e Mon Sep 17 00:00:00 2001
+From: Colin Foster <colin.foster@in-advantage.com>
+Date: Sun, 13 Mar 2022 15:45:24 -0700
+Subject: [PATCH 2/2] regmap: allow a defined reg_base to be added to every
+ address
+
+There's an inconsistency that arises when a register set can be accessed
+internally via MMIO, or externally via SPI. The VSC7514 chip allows both
+modes of operation. When internally accessed, the system utilizes __iomem,
+devm_ioremap_resource, and devm_regmap_init_mmio.
+
+For SPI it isn't possible to utilize memory-mapped IO. To properly operate,
+the resource base must be added to the register before every operation.
+
+Signed-off-by: Colin Foster <colin.foster@in-advantage.com>
+Link: https://lore.kernel.org/r/20220313224524.399947-3-colin.foster@in-advantage.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ drivers/base/regmap/internal.h | 1 +
+ drivers/base/regmap/regmap.c   | 6 ++++++
+ include/linux/regmap.h         | 3 +++
+ 3 files changed, 10 insertions(+)
+
+--- a/drivers/base/regmap/internal.h
++++ b/drivers/base/regmap/internal.h
+@@ -63,6 +63,7 @@ struct regmap {
+ 	regmap_unlock unlock;
+ 	void *lock_arg; /* This is passed to lock/unlock functions */
+ 	gfp_t alloc_flags;
++	unsigned int reg_base;
+ 
+ 	struct device *dev; /* Device we do I/O on */
+ 	void *work_buf;     /* Scratch buffer used to format I/O */
+--- a/drivers/base/regmap/regmap.c
++++ b/drivers/base/regmap/regmap.c
+@@ -821,6 +821,8 @@ struct regmap *__regmap_init(struct devi
+ 	else
+ 		map->alloc_flags = GFP_KERNEL;
+ 
++	map->reg_base = config->reg_base;
++
+ 	map->format.reg_bytes = DIV_ROUND_UP(config->reg_bits, 8);
+ 	map->format.pad_bytes = config->pad_bits / 8;
+ 	map->format.reg_downshift = config->reg_downshift;
+@@ -1736,6 +1738,7 @@ static int _regmap_raw_write_impl(struct
+ 			return ret;
+ 	}
+ 
++	reg += map->reg_base;
+ 	reg >>= map->format.reg_downshift;
+ 	map->format.format_reg(map->work_buf, reg, map->reg_shift);
+ 	regmap_set_work_buf_flag_mask(map, map->format.reg_bytes,
+@@ -1907,6 +1910,7 @@ static int _regmap_bus_formatted_write(v
+ 			return ret;
+ 	}
+ 
++	reg += map->reg_base;
+ 	reg >>= map->format.reg_downshift;
+ 	map->format.format_write(map, reg, val);
+ 
+@@ -2349,6 +2353,7 @@ static int _regmap_raw_multi_reg_write(s
+ 		unsigned int reg = regs[i].reg;
+ 		unsigned int val = regs[i].def;
+ 		trace_regmap_hw_write_start(map, reg, 1);
++		reg += map->reg_base;
+ 		reg >>= map->format.reg_downshift;
+ 		map->format.format_reg(u8, reg, map->reg_shift);
+ 		u8 += reg_bytes + pad_bytes;
+@@ -2677,6 +2682,7 @@ static int _regmap_raw_read(struct regma
+ 			return ret;
+ 	}
+ 
++	reg += map->reg_base;
+ 	reg >>= map->format.reg_downshift;
+ 	map->format.format_reg(map->work_buf, reg, map->reg_shift);
+ 	regmap_set_work_buf_flag_mask(map, map->format.reg_bytes,
+--- a/include/linux/regmap.h
++++ b/include/linux/regmap.h
+@@ -239,6 +239,8 @@ typedef void (*regmap_unlock)(void *);
+  *              used.
+  * @reg_downshift: The number of bits to downshift the register before
+  *		   performing any operations.
++ * @reg_base: Value to be added to every register address before performing any
++ *	      operation.
+  * @pad_bits: Number of bits of padding between register and value.
+  * @val_bits: Number of bits in a register value, mandatory.
+  *
+@@ -363,6 +365,7 @@ struct regmap_config {
+ 	int reg_bits;
+ 	int reg_stride;
+ 	int reg_downshift;
++	unsigned int reg_base;
+ 	int pad_bits;
+ 	int val_bits;
+ 

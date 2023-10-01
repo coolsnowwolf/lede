@@ -1,0 +1,91 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Mon, 13 Mar 2023 11:53:51 +0100
+Subject: [PATCH] wifi: mac80211: add flush_sta method
+
+Some drivers like iwlwifi might have per-STA queues, so we
+may want to flush/drop just those queues rather than all
+when removing a station. Add a separate method for that.
+
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+Reviewed-by: Greenman, Gregory <gregory.greenman@intel.com>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -3918,6 +3918,10 @@ struct ieee80211_prep_tx_info {
+  *	Note that vif can be NULL.
+  *	The callback can sleep.
+  *
++ * @flush_sta: Flush or drop all pending frames from the hardware queue(s) for
++ *	the given station, as it's about to be removed.
++ *	The callback can sleep.
++ *
+  * @channel_switch: Drivers that need (or want) to offload the channel
+  *	switch operation for CSAs received from the AP may implement this
+  *	callback. They must then call ieee80211_chswitch_done() to indicate
+@@ -4372,6 +4376,8 @@ struct ieee80211_ops {
+ #endif
+ 	void (*flush)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 		      u32 queues, bool drop);
++	void (*flush_sta)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++			  struct ieee80211_sta *sta);
+ 	void (*channel_switch)(struct ieee80211_hw *hw,
+ 			       struct ieee80211_vif *vif,
+ 			       struct ieee80211_channel_switch *ch_switch);
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -617,6 +617,21 @@ static inline void drv_flush(struct ieee
+ 	trace_drv_return_void(local);
+ }
+ 
++static inline void drv_flush_sta(struct ieee80211_local *local,
++				 struct ieee80211_sub_if_data *sdata,
++				 struct sta_info *sta)
++{
++	might_sleep();
++
++	if (sdata && !check_sdata_in_driver(sdata))
++		return;
++
++	trace_drv_flush_sta(local, sdata, &sta->sta);
++	if (local->ops->flush_sta)
++		local->ops->flush_sta(&local->hw, &sdata->vif, &sta->sta);
++	trace_drv_return_void(local);
++}
++
+ static inline void drv_channel_switch(struct ieee80211_local *local,
+ 				      struct ieee80211_sub_if_data *sdata,
+ 				      struct ieee80211_channel_switch *ch_switch)
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -1276,8 +1276,12 @@ static void __sta_info_destroy_part2(str
+ 	 * frames sitting on hardware queues might be sent out without
+ 	 * any encryption at all.
+ 	 */
+-	if (local->ops->set_key)
+-		ieee80211_flush_queues(local, sta->sdata, false);
++	if (local->ops->set_key) {
++		if (local->ops->flush_sta)
++			drv_flush_sta(local, sta->sdata, sta);
++		else
++			ieee80211_flush_queues(local, sta->sdata, false);
++	}
+ 
+ 	/* now keys can no longer be reached */
+ 	ieee80211_free_sta_keys(local, sta);
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -1177,6 +1177,13 @@ TRACE_EVENT(drv_flush,
+ 	)
+ );
+ 
++DEFINE_EVENT(sta_event, drv_flush_sta,
++	TP_PROTO(struct ieee80211_local *local,
++		 struct ieee80211_sub_if_data *sdata,
++		 struct ieee80211_sta *sta),
++	TP_ARGS(local, sdata, sta)
++);
++
+ TRACE_EVENT(drv_channel_switch,
+ 	TP_PROTO(struct ieee80211_local *local,
+ 		 struct ieee80211_sub_if_data *sdata,

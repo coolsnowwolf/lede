@@ -107,7 +107,7 @@ static struct bh_map button_map[] = {
 static __printf(3, 4)
 int bh_event_add_var(struct bh_event *event, int argv, const char *format, ...)
 {
-	static char buf[128];
+	char buf[128];
 	char *s;
 	va_list args;
 	int len;

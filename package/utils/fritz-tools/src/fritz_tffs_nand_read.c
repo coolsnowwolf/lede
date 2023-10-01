@@ -73,21 +73,18 @@ static uint8_t readbuf[TFFS_SECTOR_SIZE];
 static uint8_t oobbuf[TFFS_SECTOR_OOB_SIZE];
 static uint32_t blocksize;
 static int mtdfd;
-struct tffs_sectors *sectors;
-
-struct tffs_sectors {
-	uint32_t num_sectors;
-	uint8_t sectors[0];
-};
+static uint32_t num_sectors;
+static uint8_t *sectors;
+static uint32_t *sector_ids;
 
 static inline void sector_mark_bad(int num)
 {
-	sectors->sectors[num / 8] &= ~(0x80 >> (num % 8));
+	sectors[num / 8] &= ~(0x80 >> (num % 8));
 };
 
 static inline uint8_t sector_get_good(int num)
 {
-	return sectors->sectors[num / 8] & 0x80 >> (num % 8);
+	return sectors[num / 8] & 0x80 >> (num % 8);
 };
 
 struct tffs_entry_segment {
@@ -139,6 +136,8 @@ static int read_sector(off_t pos)
 		return -1;
 	}
 
+	sector_ids[pos / TFFS_SECTOR_SIZE] = read_uint32(readbuf, 0x00);
+
 	return 0;
 }
 
@@ -176,25 +175,39 @@ static int find_entry(uint32_t id, struct tffs_entry *entry)
 
 	off_t pos = 0;
 	uint8_t block_end = 0;
-	for (uint32_t sector = 0; sector < sectors->num_sectors; sector++, pos += TFFS_SECTOR_SIZE) {
+	for (uint32_t sector = 0; sector < num_sectors; sector++, pos += TFFS_SECTOR_SIZE) {
 		if (block_end) {
 			if (pos % blocksize == 0) {
 				block_end = 0;
 			}
 		} else if (sector_get_good(sector)) {
+			if (sector_ids[sector]) {
+				if (sector_ids[sector] == TFFS_ID_END) {
+					/* no more entries in this block */
+					block_end = 1;
+					continue;
+				}
+
+				if (sector_ids[sector] != id)
+					continue;
+			}
+
 			if (read_sectoroob(pos) || read_sector(pos)) {
 				fprintf(stderr, "ERROR: sector isn't readable, but has been previously!\n");
 				exit(EXIT_FAILURE);
 			}
-			uint32_t oob_id = read_uint32(oobbuf, 0x02);
-			uint32_t oob_len = read_uint32(oobbuf, 0x06);
-			uint32_t oob_rev = read_uint32(oobbuf, 0x0a);
 			uint32_t read_id = read_uint32(readbuf, 0x00);
 			uint32_t read_len = read_uint32(readbuf, 0x04);
 			uint32_t read_rev = read_uint32(readbuf, 0x0c);
-			if (read_oob_sector_health && (oob_id != read_id || oob_len != read_len || oob_rev != read_rev)) {
-				fprintf(stderr, "Warning: sector has inconsistent metadata\n");
-				continue;
+			if (read_oob_sector_health) {
+				uint32_t oob_id = read_uint32(oobbuf, 0x02);
+				uint32_t oob_len = read_uint32(oobbuf, 0x06);
+				uint32_t oob_rev = read_uint32(oobbuf, 0x0a);
+
+				if (oob_id != read_id || oob_len != read_len || oob_rev != read_rev) {
+					fprintf(stderr, "Warning: sector has inconsistent metadata\n");
+					continue;
+				}
 			}
 			if (read_id == TFFS_ID_END) {
 				/* no more entries in this block */
@@ -340,7 +353,7 @@ static int show_matching_key_value(struct tffs_key_name_table *key_names)
 	for (uint32_t i = 0; i < key_names->size; i++) {
 		name = key_names->entries[i].val;
 
-		if (strncmp(name, name_filter, strlen(name)) == 0) {
+		if (strcmp(name, name_filter) == 0) {
 			if (find_entry(key_names->entries[i].id, &tmp)) {
 				print_entry_value(&tmp);
 				printf("\n");
@@ -414,13 +427,14 @@ static int scan_mtd(void)
 
 	blocksize = info.erasesize;
 
-	sectors = malloc(sizeof(*sectors) + (info.size / TFFS_SECTOR_SIZE + 7) / 8);
-	if (sectors == NULL) {
+	num_sectors = info.size / TFFS_SECTOR_SIZE;
+	sectors = malloc((num_sectors + 7) / 8);
+	sector_ids = calloc(num_sectors, sizeof(uint32_t));
+	if (!sectors || !sector_ids) {
 		fprintf(stderr, "ERROR: memory allocation failed!\n");
 		exit(EXIT_FAILURE);
 	}
-	sectors->num_sectors = info.size / TFFS_SECTOR_SIZE;
-	memset(sectors->sectors, 0xff, (info.size / TFFS_SECTOR_SIZE + 7) / 8);
+	memset(sectors, 0xff, (num_sectors + 7) / 8);
 
 	uint32_t sector = 0, valid_blocks = 0;
 	uint8_t block_ok = 0;
@@ -564,6 +578,7 @@ int main(int argc, char *argv[])
 out_free_entry:
 	free(name_table.val);
 out_free_sectors:
+	free(sector_ids);
 	free(sectors);
 out_close:
 	close(mtdfd);

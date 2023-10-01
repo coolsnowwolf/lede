@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=5.5.3-stable
+PKG_VERSION:=5.5.4-stable
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_VERSION)
-PKG_HASH:=fd3135b8657d09fb96a8aad16585da850b96ea420ae8ce5ac4d5fdfc614c2683
+PKG_HASH:=b7ee150e49def77c765bc02aac92ddeb0bebefd4cb12aa263d8f95e405221fb8
 
 PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
@@ -151,6 +151,33 @@ CONFIGURE_ARGS += \
 	--$(if $(CONFIG_WOLFSSL_HAS_ECC448),enable,disable)-curve448 \
 	--$(if $(CONFIG_WOLFSSL_HAS_OPENVPN),enable,disable)-openvpn
 
+define Package/libwolfsslcpu-crypto/preinst-aarch64
+#!/bin/sh
+exec >&2
+printf "[libwolfsslcpu-crypto] Checking for Arm v8-A Cryptographic Extension support: "
+if [ -n "$${IPKG_INSTROOT}" ]; then
+    printf "...[offline]... "
+    eval "$$(grep '^DISTRIB_TARGET=' "$${IPKG_INSTROOT}/etc/openwrt_release")"
+    echo "$${DISTRIB_TARGET}" | grep '^bcm27xx/.*' > /dev/null && {
+	echo "not supported"
+	echo "Error: Target $${DISTRIB_TARGET} does not support Arm Cryptographic Extension."
+	echo "Install the regular libwolfssl package instead of libwolfsslcpu-crypto."
+	exit 1
+    }
+else
+    grep -q '^Features.*\baes\b' /proc/cpuinfo || {
+	echo "not supported"
+	echo "Error: Arm v8-A Cryptographic Extension not supported."
+	echo "Install the regular libwolfssl package instead of libwolfsslcpu-crypto."
+	echo "Contents of /proc/cpuinfo:"
+	cat /proc/cpuinfo
+	exit 1
+    }
+fi
+echo OK
+exit 0
+endef
+
 ifeq ($(BUILD_VARIANT),regular)
 CONFIGURE_ARGS += \
 	--$(if $(CONFIG_WOLFSSL_HAS_AFALG),enable,disable)-afalg \
@@ -160,9 +187,7 @@ CONFIGURE_ARGS += \
 else ifdef CONFIG_aarch64
     CONFIGURE_ARGS += --enable-armasm
     TARGET_CFLAGS:=$(TARGET_CFLAGS:-mcpu%=-mcpu%+crypto)
-    WOLFSSL_NOASM_REGEX:=^bcm27xx/.*
-    Package/libwolfsslcpu-crypto/preinst=\
-	$(subst @@WOLFSSL_NOASM_REGEX@@,$(WOLFSSL_NOASM_REGEX),$(file <preinst.arm-ce))
+    Package/libwolfsslcpu-crypto/preinst=$(Package/libwolfsslcpu-crypto/preinst-aarch64)
 else ifdef CONFIG_TARGET_x86_64
 	CONFIGURE_ARGS += --enable-intelasm
 endif

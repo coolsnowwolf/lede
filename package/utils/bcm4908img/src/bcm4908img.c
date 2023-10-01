@@ -77,13 +77,14 @@ struct bcm4908img_tail {
  * 4. padding  ├─ firmware
  * 5. rootfs  ─┘
  * 6. BCM4908 tail
+ * 7. (Optional) vendor tail
  */
 struct bcm4908img_info {
-	size_t file_size;
 	size_t cferom_offset;
 	size_t bootfs_offset;
 	size_t padding_offset;
 	size_t rootfs_offset;
+	size_t tail_offset;
 	uint32_t crc32;			/* Calculated checksum */
 	struct bcm4908img_tail tail;
 };
@@ -219,7 +220,7 @@ static int bcm4908img_calc_crc32(FILE *fp, struct bcm4908img_info *info) {
 	fseek(fp, info->cferom_offset, SEEK_SET);
 
 	info->crc32 = 0xffffffff;
-	length = info->file_size - info->cferom_offset - sizeof(struct bcm4908img_tail);
+	length = info->tail_offset - info->cferom_offset;
 	while (length && (bytes = fread(buf, 1, bcm4908img_min(sizeof(buf), length), fp)) > 0) {
 		info->crc32 = bcm4908img_crc32(info->crc32, buf, bytes);
 		length -= bytes;
@@ -249,6 +250,16 @@ struct chk_header {
 	char board_id[0];
 };
 
+struct linksys_tail {
+	char magic[9];
+	uint8_t version[8];
+	char model[15];
+	uint32_t crc32;
+	uint8_t padding[9];
+	uint8_t signature[16];
+	uint8_t reserved[192];
+};
+
 static bool bcm4908img_is_all_ff(const void *buf, size_t length)
 {
 	const uint8_t *in = buf;
@@ -264,9 +275,11 @@ static bool bcm4908img_is_all_ff(const void *buf, size_t length)
 
 static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 	struct bcm4908img_tail *tail = &info->tail;
+	struct linksys_tail *linksys;
 	struct chk_header *chk;
 	struct stat st;
 	uint8_t buf[1024];
+	size_t file_size;
 	uint16_t tmp16;
 	size_t length;
 	size_t bytes;
@@ -281,7 +294,9 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 		fprintf(stderr, "Failed to fstat: %d\n", err);
 		return err;
 	}
-	info->file_size = st.st_size;
+	file_size = st.st_size;
+
+	info->tail_offset = file_size - sizeof(*tail);
 
 	/* Vendor formats */
 
@@ -294,10 +309,20 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 	if (be32_to_cpu(chk->magic) == 0x2a23245e)
 		info->cferom_offset = be32_to_cpu(chk->header_len);
 
+	fseek(fp, -sizeof(buf), SEEK_END);
+	if (fread(buf, 1, sizeof(buf), fp) != sizeof(buf)) {
+		fprintf(stderr, "Failed to read file header\n");
+		return -EIO;
+	}
+	linksys = (void *)(buf + sizeof(buf) - sizeof(*linksys));
+	if (!memcmp(linksys->magic, ".LINKSYS.", sizeof(linksys->magic))) {
+		info->tail_offset -= sizeof(*linksys);
+	}
+
 	/* Offsets */
 
 	for (info->bootfs_offset = info->cferom_offset;
-	     info->bootfs_offset < info->file_size;
+	     info->bootfs_offset < info->tail_offset;
 	     info->bootfs_offset += 0x20000) {
 		if (fseek(fp, info->bootfs_offset, SEEK_SET)) {
 			err = -errno;
@@ -311,13 +336,13 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 		if (be16_to_cpu(tmp16) == 0x8519)
 			break;
 	}
-	if (info->bootfs_offset >= info->file_size) {
+	if (info->bootfs_offset >= info->tail_offset) {
 		fprintf(stderr, "Failed to find bootfs offset\n");
 		return -EPROTO;
 	}
 
 	for (info->rootfs_offset = info->bootfs_offset;
-	     info->rootfs_offset < info->file_size;
+	     info->rootfs_offset < info->tail_offset;
 	     info->rootfs_offset += 0x20000) {
 		uint32_t *magic = (uint32_t *)&buf[0];
 
@@ -340,7 +365,7 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 		if (be32_to_cpu(*magic) == UBI_EC_HDR_MAGIC)
 			break;
 	}
-	if (info->rootfs_offset >= info->file_size) {
+	if (info->rootfs_offset >= info->tail_offset) {
 		fprintf(stderr, "Failed to find rootfs offset\n");
 		return -EPROTO;
 	}
@@ -351,7 +376,7 @@ static int bcm4908img_parse(FILE *fp, struct bcm4908img_info *info) {
 	fseek(fp, info->cferom_offset, SEEK_SET);
 
 	info->crc32 = 0xffffffff;
-	length = info->file_size - info->cferom_offset - sizeof(*tail);
+	length = info->tail_offset - info->cferom_offset;
 	while (length && (bytes = fread(buf, 1, bcm4908img_min(sizeof(buf), length), fp)) > 0) {
 		info->crc32 = bcm4908img_crc32(info->crc32, buf, bytes);
 		length -= bytes;
@@ -617,10 +642,10 @@ static int bcm4908img_extract(int argc, char **argv) {
 		length = (info.padding_offset ? info.padding_offset : info.rootfs_offset) - offset;
 	} else if (!strcmp(type, "rootfs")) {
 		offset = info.rootfs_offset;
-		length = info.file_size - offset - sizeof(struct bcm4908img_tail);
+		length = info.tail_offset - offset;
 	} else if (!strcmp(type, "firmware")) {
 		offset = info.bootfs_offset;
-		length = info.file_size - offset - sizeof(struct bcm4908img_tail);
+		length = info.tail_offset - offset;
 	} else {
 		err = -EINVAL;
 		fprintf(stderr, "Unsupported extract type: %s\n", type);

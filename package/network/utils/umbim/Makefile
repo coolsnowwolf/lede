@@ -13,8 +13,6 @@ PKG_MAINTAINER:=John Crispin <john@phrozen.org>
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=
 
-PKG_BUILD_PARALLEL:=1
-
 PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk

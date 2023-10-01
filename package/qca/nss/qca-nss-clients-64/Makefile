@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=qca-nss-clients-64
 PKG_RELEASE:=$(AUTORELEASE)
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/cc-qrdk/oss/lklm/nss-clients
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-clients.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_DATE:=2021-04-29
 PKG_SOURCE_VERSION:=b93c72c1b72c591c2ddc2f0b24f0e2b457720118
@@ -17,7 +17,7 @@ define KernelPackage/qca-nss-drv-pppoe-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - PPPoE
-  DEPENDS:=@(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64 +kmod-ppp +kmod-pppoe
+  DEPENDS:=@(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64 +kmod-ppp +kmod-pppoe +kmod-bonding
   FILES:=$(PKG_BUILD_DIR)/pppoe/qca-nss-pppoe.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-pppoe)
 endef
@@ -45,7 +45,7 @@ define KernelPackage/qca-nss-drv-vlan-mgr-64
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS vlan manager
-  DEPENDS:=@(LINUX_5_10||LINUX_5_15) @(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64
+  DEPENDS:=@(LINUX_5_10||LINUX_5_15) @(TARGET_ipq60xx||TARGET_ipq807x) +kmod-qca-nss-drv-64 +kmod-bonding
   FILES:=$(PKG_BUILD_DIR)/vlan/qca-nss-vlan.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-vlan)
 endef

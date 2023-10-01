@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2010-2022 OpenWrt.org
+# Copyright (C) 2010-2023 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -24,7 +24,7 @@ endef
 define Package/autocore-x86
   TITLE:=x86/x64 auto core loadbalance script.
   MAINTAINER:=Lean
-  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool
+  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool +pciutils
   VARIANT:=x86
 endef
 

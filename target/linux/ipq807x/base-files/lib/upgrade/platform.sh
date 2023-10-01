@@ -10,6 +10,7 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	zyxel,nbg7815|\
 	qnap,301w)
 		kernelname="0:HLOS"
 		rootfsname="rootfs"
@@ -46,6 +47,7 @@ platform_do_upgrade() {
 	zte,mf269)
 		nand_do_upgrade "$1"
 		;;
+	tplink,tl-er2260t|\
 	tplink,xtr10890)
 		nand_do_upgrade "$1"
 		;;

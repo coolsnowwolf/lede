@@ -1,0 +1,162 @@
+From afd37e73db04c7e6b47411120ac5f6a7eca51fec Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Wed, 21 Dec 2022 21:19:00 -0700
+Subject: [PATCH 22/29] mm: multi-gen LRU: rename lrugen->lists[] to
+ lrugen->pages[]
+
+lru_gen_page will be chained into per-node lists by the coming
+lrugen->list.
+
+Link: https://lkml.kernel.org/r/20221222041905.2431096-3-yuzhao@google.com
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Michael Larabel <Michael@MichaelLarabel.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_inline.h |  4 ++--
+ include/linux/mmzone.h    |  8 ++++----
+ mm/vmscan.c               | 20 ++++++++++----------
+ 3 files changed, 16 insertions(+), 16 deletions(-)
+
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -246,9 +246,9 @@ static inline bool lru_gen_add_page(stru
+ 	lru_gen_update_size(lruvec, page, -1, gen);
+ 	/* for rotate_reclaimable_page() */
+ 	if (reclaiming)
+-		list_add_tail(&page->lru, &lrugen->lists[gen][type][zone]);
++		list_add_tail(&page->lru, &lrugen->pages[gen][type][zone]);
+ 	else
+-		list_add(&page->lru, &lrugen->lists[gen][type][zone]);
++		list_add(&page->lru, &lrugen->pages[gen][type][zone]);
+ 
+ 	return true;
+ }
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -302,7 +302,7 @@ enum lruvec_flags {
+  * They form a sliding window of a variable size [MIN_NR_GENS, MAX_NR_GENS]. An
+  * offset within MAX_NR_GENS, i.e., gen, indexes the LRU list of the
+  * corresponding generation. The gen counter in page->flags stores gen+1 while
+- * a page is on one of lrugen->lists[]. Otherwise it stores 0.
++ * a page is on one of lrugen->pages[]. Otherwise it stores 0.
+  *
+  * A page is added to the youngest generation on faulting. The aging needs to
+  * check the accessed bit at least twice before handing this page over to the
+@@ -314,8 +314,8 @@ enum lruvec_flags {
+  * rest of generations, if they exist, are considered inactive. See
+  * lru_gen_is_active().
+  *
+- * PG_active is always cleared while a page is on one of lrugen->lists[] so that
+- * the aging needs not to worry about it. And it's set again when a page
++ * PG_active is always cleared while a page is on one of lrugen->pages[] so
++ * that the aging needs not to worry about it. And it's set again when a page
+  * considered active is isolated for non-reclaiming purposes, e.g., migration.
+  * See lru_gen_add_page() and lru_gen_del_page().
+  *
+@@ -402,7 +402,7 @@ struct lru_gen_page {
+ 	/* the birth time of each generation in jiffies */
+ 	unsigned long timestamps[MAX_NR_GENS];
+ 	/* the multi-gen LRU lists, lazily sorted on eviction */
+-	struct list_head lists[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
++	struct list_head pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+ 	/* the multi-gen LRU sizes, eventually consistent */
+ 	long nr_pages[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES];
+ 	/* the exponential moving average of refaulted */
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3987,7 +3987,7 @@ static bool inc_min_seq(struct lruvec *l
+ 
+ 	/* prevent cold/hot inversion if force_scan is true */
+ 	for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+-		struct list_head *head = &lrugen->lists[old_gen][type][zone];
++		struct list_head *head = &lrugen->pages[old_gen][type][zone];
+ 
+ 		while (!list_empty(head)) {
+ 			struct page *page = lru_to_page(head);
+@@ -3998,7 +3998,7 @@ static bool inc_min_seq(struct lruvec *l
+ 			VM_WARN_ON_ONCE_PAGE(page_zonenum(page) != zone, page);
+ 
+ 			new_gen = page_inc_gen(lruvec, page, false);
+-			list_move_tail(&page->lru, &lrugen->lists[new_gen][type][zone]);
++			list_move_tail(&page->lru, &lrugen->pages[new_gen][type][zone]);
+ 
+ 			if (!--remaining)
+ 				return false;
+@@ -4026,7 +4026,7 @@ static bool try_to_inc_min_seq(struct lr
+ 			gen = lru_gen_from_seq(min_seq[type]);
+ 
+ 			for (zone = 0; zone < MAX_NR_ZONES; zone++) {
+-				if (!list_empty(&lrugen->lists[gen][type][zone]))
++				if (!list_empty(&lrugen->pages[gen][type][zone]))
+ 					goto next;
+ 			}
+ 
+@@ -4491,7 +4491,7 @@ static bool sort_page(struct lruvec *lru
+ 
+ 	/* promoted */
+ 	if (gen != lru_gen_from_seq(lrugen->min_seq[type])) {
+-		list_move(&page->lru, &lrugen->lists[gen][type][zone]);
++		list_move(&page->lru, &lrugen->pages[gen][type][zone]);
+ 		return true;
+ 	}
+ 
+@@ -4500,7 +4500,7 @@ static bool sort_page(struct lruvec *lru
+ 		int hist = lru_hist_from_seq(lrugen->min_seq[type]);
+ 
+ 		gen = page_inc_gen(lruvec, page, false);
+-		list_move_tail(&page->lru, &lrugen->lists[gen][type][zone]);
++		list_move_tail(&page->lru, &lrugen->pages[gen][type][zone]);
+ 
+ 		WRITE_ONCE(lrugen->protected[hist][type][tier - 1],
+ 			   lrugen->protected[hist][type][tier - 1] + delta);
+@@ -4512,7 +4512,7 @@ static bool sort_page(struct lruvec *lru
+ 	if (PageLocked(page) || PageWriteback(page) ||
+ 	    (type == LRU_GEN_FILE && PageDirty(page))) {
+ 		gen = page_inc_gen(lruvec, page, true);
+-		list_move(&page->lru, &lrugen->lists[gen][type][zone]);
++		list_move(&page->lru, &lrugen->pages[gen][type][zone]);
+ 		return true;
+ 	}
+ 
+@@ -4579,7 +4579,7 @@ static int scan_pages(struct lruvec *lru
+ 	for (zone = sc->reclaim_idx; zone >= 0; zone--) {
+ 		LIST_HEAD(moved);
+ 		int skipped = 0;
+-		struct list_head *head = &lrugen->lists[gen][type][zone];
++		struct list_head *head = &lrugen->pages[gen][type][zone];
+ 
+ 		while (!list_empty(head)) {
+ 			struct page *page = lru_to_page(head);
+@@ -4980,7 +4980,7 @@ static bool __maybe_unused state_is_vali
+ 		int gen, type, zone;
+ 
+ 		for_each_gen_type_zone(gen, type, zone) {
+-			if (!list_empty(&lrugen->lists[gen][type][zone]))
++			if (!list_empty(&lrugen->pages[gen][type][zone]))
+ 				return false;
+ 		}
+ 	}
+@@ -5025,7 +5025,7 @@ static bool drain_evictable(struct lruve
+ 	int remaining = MAX_LRU_BATCH;
+ 
+ 	for_each_gen_type_zone(gen, type, zone) {
+-		struct list_head *head = &lruvec->lrugen.lists[gen][type][zone];
++		struct list_head *head = &lruvec->lrugen.pages[gen][type][zone];
+ 
+ 		while (!list_empty(head)) {
+ 			bool success;
+@@ -5558,7 +5558,7 @@ void lru_gen_init_lruvec(struct lruvec *
+ 		lrugen->timestamps[i] = jiffies;
+ 
+ 	for_each_gen_type_zone(gen, type, zone)
+-		INIT_LIST_HEAD(&lrugen->lists[gen][type][zone]);
++		INIT_LIST_HEAD(&lrugen->pages[gen][type][zone]);
+ 
+ 	lruvec->mm_state.seq = MIN_NR_GENS;
+ 	init_waitqueue_head(&lruvec->mm_state.wait);

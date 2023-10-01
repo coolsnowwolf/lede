@@ -23,6 +23,7 @@
 #include <linux/clk.h>
 #include <linux/string.h>
 #include <linux/reset.h>
+#include <linux/version.h>
 #include "edma.h"
 #include "ess_edma.h"
 
@@ -718,7 +719,11 @@ static int edma_axi_probe(struct platform_device *pdev)
 	int i, j, k, err = 0;
 	int portid_bmp;
 	int idx = 0, idx_mac = 0;
-	int netdev_group = 2;
+
+	if (CONFIG_NR_CPUS != EDMA_CPU_CORES_SUPPORTED) {
+		dev_err(&pdev->dev, "Invalid CPU Cores\n");
+		return -EINVAL;
+	}
 
 	if ((num_rxq != 4) && (num_rxq != 8)) {
 		dev_err(&pdev->dev, "Invalid RX queue, edma probe failed\n");
@@ -742,7 +747,7 @@ static int edma_axi_probe(struct platform_device *pdev)
 	/* Initialize the netdev array before allocation
 	 * to avoid double free
 	 */
-	for (i = 0 ; i < EDMA_MAX_PORTID_SUPPORTED; i++)
+	for (i = 0 ; i < edma_cinfo->num_gmac ; i++)
 		edma_netdev[i] = NULL;
 
 	for (i = 0 ; i < edma_cinfo->num_gmac ; i++) {
@@ -763,11 +768,8 @@ static int edma_axi_probe(struct platform_device *pdev)
 
 	/* Fill ring details */
 	edma_cinfo->num_tx_queues = EDMA_MAX_TRANSMIT_QUEUE;
-	edma_cinfo->num_txq_per_core = (EDMA_MAX_TRANSMIT_QUEUE / num_online_cpus());
-	edma_cinfo->num_txq_per_core_netdev = (EDMA_MAX_TRANSMIT_QUEUE / netdev_group / num_online_cpus());
+	edma_cinfo->num_txq_per_core = (EDMA_MAX_TRANSMIT_QUEUE / 4);
 	edma_cinfo->tx_ring_count = EDMA_TX_RING_SIZE;
-	if (edma_cinfo->num_txq_per_core == 0)
-		edma_cinfo->num_txq_per_core = 1;
 
 	/* Update num rx queues based on module parameter */
 	edma_cinfo->num_rx_queues = num_rxq;
@@ -917,13 +919,6 @@ static int edma_axi_probe(struct platform_device *pdev)
 		idx_mac++;
 	}
 
-	if (edma_cinfo->num_gmac == 1) {
-		netdev_group = 1;
-		edma_cinfo->num_txq_per_core_netdev = (EDMA_MAX_TRANSMIT_QUEUE / netdev_group / num_online_cpus());
-	}
-	if (edma_cinfo->num_txq_per_core_netdev == 0)
-		edma_cinfo->num_txq_per_core_netdev = 1;
-
 	/* Populate the adapter structure register the netdevice */
 	for (i = 0; i < edma_cinfo->num_gmac; i++) {
 		int k, m;
@@ -931,16 +926,17 @@ static int edma_axi_probe(struct platform_device *pdev)
 		adapter[i] = netdev_priv(edma_netdev[i]);
 		adapter[i]->netdev = edma_netdev[i];
 		adapter[i]->pdev = pdev;
-		for (j = 0; j < num_online_cpus() && j < EDMA_CPU_CORES_SUPPORTED; j++) {
-			m = i % netdev_group;
-			adapter[i]->tx_start_offset[j] = j * edma_cinfo->num_txq_per_core + m * edma_cinfo->num_txq_per_core_netdev;
+		for (j = 0; j < CONFIG_NR_CPUS; j++) {
+			m = i % 2;
+			adapter[i]->tx_start_offset[j] =
+				((j << EDMA_TX_CPU_START_SHIFT) + (m << 1));
 			/* Share the queues with available net-devices.
 			 * For instance , with 5 net-devices
 			 * eth0/eth2/eth4 will share q0,q1,q4,q5,q8,q9,q12,q13
 			 * and eth1/eth3 will get the remaining.
 			 */
 			for (k = adapter[i]->tx_start_offset[j]; k <
-			     (adapter[i]->tx_start_offset[j] + edma_cinfo->num_txq_per_core_netdev); k++) {
+			     (adapter[i]->tx_start_offset[j] + 2); k++) {
 				if (edma_fill_netdev(edma_cinfo, k, i, j)) {
 					pr_err("Netdev overflow Error\n");
 					goto err_register;
@@ -1089,11 +1085,8 @@ static int edma_axi_probe(struct platform_device *pdev)
 	/* populate per_core_info, do a napi_Add, request 16 TX irqs,
 	 * 8 RX irqs, do a napi enable
 	 */
-	for (i = 0; i < num_online_cpus() && i < EDMA_CPU_CORES_SUPPORTED; i++) {
+	for (i = 0; i < CONFIG_NR_CPUS; i++) {
 		u8 rx_start;
-
-		tx_mask[i] = (0xFFFF >> (16 - edma_cinfo->num_txq_per_core)) << (i * edma_cinfo->num_txq_per_core);
-		tx_start[i] = i * edma_cinfo->num_txq_per_core;
 
 		edma_cinfo->edma_percpu_info[i].napi.state = 0;
 
@@ -1114,7 +1107,7 @@ static int edma_axi_probe(struct platform_device *pdev)
 
 		/* Request irq per core */
 		for (j = edma_cinfo->edma_percpu_info[i].tx_start;
-		     j < tx_start[i] + edma_cinfo->num_txq_per_core; j++) {
+		     j < tx_start[i] + 4; j++) {
 			sprintf(&edma_tx_irq[j][0], "edma_eth_tx%d", j);
 			err = request_irq(edma_cinfo->tx_irq[j],
 					  edma_interrupt,
@@ -1192,10 +1185,17 @@ static int edma_axi_probe(struct platform_device *pdev)
 
 	for (i = 0; i < edma_cinfo->num_gmac; i++) {
 		if (adapter[i]->poll_required) {
-			int phy_mode = of_get_phy_mode(np);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,5,0)
+			phy_interface_t phy_mode;
 
+			err = of_get_phy_mode(np, &phy_mode);
+			if (err)
+				phy_mode = PHY_INTERFACE_MODE_SGMII;
+#else
+			int phy_mode = of_get_phy_mode(np);
 			if (phy_mode < 0)
 				phy_mode = PHY_INTERFACE_MODE_SGMII;
+#endif
 			adapter[i]->phydev =
 				phy_connect(edma_netdev[i],
 					    (const char *)adapter[i]->phy_id,
@@ -1238,7 +1238,7 @@ err_configure:
 #endif
 err_rmap_add_fail:
 	edma_free_irqs(adapter[0]);
-	for (i = 0; i < num_online_cpus() && i < EDMA_CPU_CORES_SUPPORTED; i++)
+	for (i = 0; i < CONFIG_NR_CPUS; i++)
 		napi_disable(&edma_cinfo->edma_percpu_info[i].napi);
 err_reset:
 err_unregister_sysctl_tbl:
@@ -1286,7 +1286,7 @@ static int edma_axi_remove(struct platform_device *pdev)
 		unregister_netdev(edma_netdev[i]);
 
 	edma_stop_rx_tx(hw);
-	for (i = 0; i < num_online_cpus() && i < EDMA_CPU_CORES_SUPPORTED; i++)
+	for (i = 0; i < CONFIG_NR_CPUS; i++)
 		napi_disable(&edma_cinfo->edma_percpu_info[i].napi);
 
 	edma_irq_disable(edma_cinfo);

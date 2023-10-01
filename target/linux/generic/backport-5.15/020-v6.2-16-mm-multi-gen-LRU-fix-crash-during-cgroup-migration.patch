@@ -1,0 +1,56 @@
+From c7dfefd4bdfba3d5171038d1cc2d4160288e6ee4 Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Sun, 15 Jan 2023 20:44:05 -0700
+Subject: [PATCH 16/29] mm: multi-gen LRU: fix crash during cgroup migration
+
+lru_gen_migrate_mm() assumes lru_gen_add_mm() runs prior to itself.  This
+isn't true for the following scenario:
+
+    CPU 1                         CPU 2
+
+  clone()
+    cgroup_can_fork()
+                                cgroup_procs_write()
+    cgroup_post_fork()
+                                  task_lock()
+                                  lru_gen_migrate_mm()
+                                  task_unlock()
+    task_lock()
+    lru_gen_add_mm()
+    task_unlock()
+
+And when the above happens, kernel crashes because of linked list
+corruption (mm_struct->lru_gen.list).
+
+Link: https://lore.kernel.org/r/20230115134651.30028-1-msizanoen@qtmlabs.xyz/
+Link: https://lkml.kernel.org/r/20230116034405.2960276-1-yuzhao@google.com
+Fixes: bd74fdaea146 ("mm: multi-gen LRU: support page table walks")
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Reported-by: msizanoen <msizanoen@qtmlabs.xyz>
+Tested-by: msizanoen <msizanoen@qtmlabs.xyz>
+Cc: <stable@vger.kernel.org>	[6.1+]
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ mm/vmscan.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3024,13 +3024,16 @@ void lru_gen_migrate_mm(struct mm_struct
+ 	if (mem_cgroup_disabled())
+ 		return;
+ 
++	/* migration can happen before addition */
++	if (!mm->lru_gen.memcg)
++		return;
++
+ 	rcu_read_lock();
+ 	memcg = mem_cgroup_from_task(task);
+ 	rcu_read_unlock();
+ 	if (memcg == mm->lru_gen.memcg)
+ 		return;
+ 
+-	VM_WARN_ON_ONCE(!mm->lru_gen.memcg);
+ 	VM_WARN_ON_ONCE(list_empty(&mm->lru_gen.list));
+ 
+ 	lru_gen_del_mm(mm);
