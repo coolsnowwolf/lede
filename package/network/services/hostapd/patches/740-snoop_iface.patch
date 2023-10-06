@@ -1,0 +1,139 @@
+--- a/src/ap/ap_config.h
++++ b/src/ap/ap_config.h
+@@ -284,6 +284,7 @@ struct hostapd_bss_config {
+ 	char iface[IFNAMSIZ + 1];
+ 	char bridge[IFNAMSIZ + 1];
+ 	char ft_iface[IFNAMSIZ + 1];
++	char snoop_iface[IFNAMSIZ + 1];
+ 	char vlan_bridge[IFNAMSIZ + 1];
+ 	char wds_bridge[IFNAMSIZ + 1];
+ 	int bridge_hairpin; /* hairpin_mode on bridge members */
+--- a/src/ap/x_snoop.c
++++ b/src/ap/x_snoop.c
+@@ -33,28 +33,31 @@ int x_snoop_init(struct hostapd_data *ha
+ 
+ 	hapd->x_snoop_initialized = true;
+ 
+-	if (hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_HAIRPIN_MODE,
++	if (!conf->snoop_iface[0] &&
++	    hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_HAIRPIN_MODE,
+ 					 1)) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "x_snoop: Failed to enable hairpin_mode on the bridge port");
+ 		return -1;
+ 	}
+ 
+-	if (hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_PROXYARP, 1)) {
++	if (!conf->snoop_iface[0] &&
++	    hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_PROXYARP, 1)) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "x_snoop: Failed to enable proxyarp on the bridge port");
+ 		return -1;
+ 	}
+ 
+ 	if (hostapd_drv_br_set_net_param(hapd, DRV_BR_NET_PARAM_GARP_ACCEPT,
+-					 1)) {
++					 conf->snoop_iface[0] ? conf->snoop_iface : NULL, 1)) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "x_snoop: Failed to enable accepting gratuitous ARP on the bridge");
+ 		return -1;
+ 	}
+ 
+ #ifdef CONFIG_IPV6
+-	if (hostapd_drv_br_set_net_param(hapd, DRV_BR_MULTICAST_SNOOPING, 1)) {
++	if (!conf->snoop_iface[0] &&
++	    hostapd_drv_br_set_net_param(hapd, DRV_BR_MULTICAST_SNOOPING, NULL, 1)) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "x_snoop: Failed to enable multicast snooping on the bridge");
+ 		return -1;
+@@ -73,8 +76,12 @@ x_snoop_get_l2_packet(struct hostapd_dat
+ {
+ 	struct hostapd_bss_config *conf = hapd->conf;
+ 	struct l2_packet_data *l2;
++	const char *ifname = conf->bridge;
++
++	if (conf->snoop_iface[0])
++		ifname = conf->snoop_iface;
+ 
+-	l2 = l2_packet_init(conf->bridge, NULL, ETH_P_ALL, handler, hapd, 1);
++	l2 = l2_packet_init(ifname, NULL, ETH_P_ALL, handler, hapd, 1);
+ 	if (l2 == NULL) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "x_snoop: Failed to initialize L2 packet processing %s",
+@@ -127,9 +134,12 @@ void x_snoop_mcast_to_ucast_convert_send
+ 
+ void x_snoop_deinit(struct hostapd_data *hapd)
+ {
++	struct hostapd_bss_config *conf = hapd->conf;
++
+ 	if (!hapd->x_snoop_initialized)
+ 		return;
+-	hostapd_drv_br_set_net_param(hapd, DRV_BR_NET_PARAM_GARP_ACCEPT, 0);
++	hostapd_drv_br_set_net_param(hapd, DRV_BR_NET_PARAM_GARP_ACCEPT,
++				     conf->snoop_iface[0] ? conf->snoop_iface : NULL, 0);
+ 	hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_PROXYARP, 0);
+ 	hostapd_drv_br_port_set_attr(hapd, DRV_BR_PORT_ATTR_HAIRPIN_MODE, 0);
+ 	hapd->x_snoop_initialized = false;
+--- a/hostapd/config_file.c
++++ b/hostapd/config_file.c
+@@ -2322,6 +2322,8 @@ static int hostapd_config_fill(struct ho
+ 			os_strlcpy(bss->wds_bridge, pos, sizeof(bss->wds_bridge));
+ 	} else if (os_strcmp(buf, "bridge_hairpin") == 0) {
+ 		bss->bridge_hairpin = atoi(pos);
++	} else if (os_strcmp(buf, "snoop_iface") == 0) {
++		os_strlcpy(bss->snoop_iface, pos, sizeof(bss->snoop_iface));
+ 	} else if (os_strcmp(buf, "vlan_bridge") == 0) {
+ 		os_strlcpy(bss->vlan_bridge, pos, sizeof(bss->vlan_bridge));
+ 	} else if (os_strcmp(buf, "wds_bridge") == 0) {
+--- a/src/ap/ap_drv_ops.h
++++ b/src/ap/ap_drv_ops.h
+@@ -366,12 +366,12 @@ static inline int hostapd_drv_br_port_se
+ 
+ static inline int hostapd_drv_br_set_net_param(struct hostapd_data *hapd,
+ 					       enum drv_br_net_param param,
+-					       unsigned int val)
++					       const char *ifname, unsigned int val)
+ {
+ 	if (hapd->driver == NULL || hapd->drv_priv == NULL ||
+ 	    hapd->driver->br_set_net_param == NULL)
+ 		return -1;
+-	return hapd->driver->br_set_net_param(hapd->drv_priv, param, val);
++	return hapd->driver->br_set_net_param(hapd->drv_priv, param, ifname, val);
+ }
+ 
+ static inline int hostapd_drv_vendor_cmd(struct hostapd_data *hapd,
+--- a/src/drivers/driver.h
++++ b/src/drivers/driver.h
+@@ -4209,7 +4209,7 @@ struct wpa_driver_ops {
+ 	 * Returns: 0 on success, negative (<0) on failure
+ 	 */
+ 	int (*br_set_net_param)(void *priv, enum drv_br_net_param param,
+-				unsigned int val);
++				const char *ifname, unsigned int val);
+ 
+ 	/**
+ 	 * get_wowlan - Get wake-on-wireless status
+--- a/src/drivers/driver_nl80211.c
++++ b/src/drivers/driver_nl80211.c
+@@ -12168,7 +12168,7 @@ static const char * drv_br_net_param_str
+ 
+ 
+ static int wpa_driver_br_set_net_param(void *priv, enum drv_br_net_param param,
+-				       unsigned int val)
++				       const char *ifname, unsigned int val)
+ {
+ 	struct i802_bss *bss = priv;
+ 	char path[128];
+@@ -12194,8 +12194,11 @@ static int wpa_driver_br_set_net_param(v
+ 			return -EINVAL;
+ 	}
+ 
++	if (!ifname)
++		ifname = bss->brname;
++
+ 	os_snprintf(path, sizeof(path), "/proc/sys/net/ipv%d/conf/%s/%s",
+-		    ip_version, bss->brname, param_txt);
++		    ip_version, ifname, param_txt);
+ 
+ set_val:
+ 	if (linux_write_system_file(path, val))

@@ -1,0 +1,114 @@
+From c8dba4bd750269bcc80fed3d546e2077cb4cdf0e Mon Sep 17 00:00:00 2001
+From: Glenn Strauss <gstrauss@gluelogic.com>
+Date: Tue, 19 Jul 2022 20:02:21 -0400
+Subject: [PATCH 2/7] mbedtls: fips186_2_prf()
+
+Signed-off-by: Glenn Strauss <gstrauss@gluelogic.com>
+---
+ hostapd/Makefile            |  4 ---
+ src/crypto/crypto_mbedtls.c | 60 +++++++++++++++++++++++++++++++++++++
+ wpa_supplicant/Makefile     |  4 ---
+ 3 files changed, 60 insertions(+), 8 deletions(-)
+
+--- a/hostapd/Makefile
++++ b/hostapd/Makefile
+@@ -759,10 +759,6 @@ endif
+ OBJS += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+ HOBJS += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+ SOBJS += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+-ifdef NEED_FIPS186_2_PRF
+-OBJS += ../src/crypto/fips_prf_internal.o
+-SHA1OBJS += ../src/crypto/sha1-internal.o
+-endif
+ ifeq ($(CONFIG_CRYPTO), mbedtls)
+ ifdef CONFIG_DPP
+ LIBS += -lmbedx509
+--- a/src/crypto/crypto_mbedtls.c
++++ b/src/crypto/crypto_mbedtls.c
+@@ -132,6 +132,12 @@
+ #define CRYPTO_MBEDTLS_HMAC_KDF_SHA512
+ #endif
+ 
++#if defined(EAP_SIM) || defined(EAP_SIM_DYNAMIC) || defined(EAP_SERVER_SIM) \
++ || defined(EAP_AKA) || defined(EAP_AKA_DYNAMIC) || defined(EAP_SERVER_AKA)
++/* EAP_SIM=y EAP_AKA=y */
++#define CRYPTO_MBEDTLS_FIPS186_2_PRF
++#endif
++
+ #if defined(EAP_FAST) || defined(EAP_FAST_DYNAMIC) || defined(EAP_SERVER_FAST) \
+  || defined(EAP_TEAP) || defined(EAP_TEAP_DYNAMIC) || defined(EAP_SERVER_FAST)
+ #define CRYPTO_MBEDTLS_SHA1_T_PRF
+@@ -813,6 +819,60 @@ int sha1_t_prf(const u8 *key, size_t key
+ 
+ #endif /* CRYPTO_MBEDTLS_SHA1_T_PRF */
+ 
++#ifdef CRYPTO_MBEDTLS_FIPS186_2_PRF
++
++/* fips_prf_internal.c sha1-internal.c */
++
++/* used only by src/eap_common/eap_sim_common.c:eap_sim_prf()
++ * for eap_sim_derive_keys() and eap_sim_derive_keys_reauth()
++ * where xlen is 160 */
++
++int fips186_2_prf(const u8 *seed, size_t seed_len, u8 *x, size_t xlen)
++{
++	/* FIPS 186-2 + change notice 1 */
++
++	mbedtls_sha1_context ctx;
++	u8 * const xkey = ctx.MBEDTLS_PRIVATE(buffer);
++	u32 * const xstate = ctx.MBEDTLS_PRIVATE(state);
++	const u32 xstate_init[] =
++	  { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
++
++	mbedtls_sha1_init(&ctx);
++	os_memcpy(xkey, seed, seed_len < 64 ? seed_len : 64);
++
++	/* note: does not fill extra bytes if (xlen % 20) (SHA1_MAC_LEN) */
++	for (; xlen >= 20; xlen -= 20) {
++		/* XSEED_j = 0 */
++		/* XVAL = (XKEY + XSEED_j) mod 2^b */
++
++		/* w_i = G(t, XVAL) */
++		os_memcpy(xstate, xstate_init, sizeof(xstate_init));
++		mbedtls_internal_sha1_process(&ctx, xkey);
++
++	  #if __BYTE_ORDER == __LITTLE_ENDIAN
++		xstate[0] = host_to_be32(xstate[0]);
++		xstate[1] = host_to_be32(xstate[1]);
++		xstate[2] = host_to_be32(xstate[2]);
++		xstate[3] = host_to_be32(xstate[3]);
++		xstate[4] = host_to_be32(xstate[4]);
++	  #endif
++		os_memcpy(x, xstate, 20);
++		if (xlen == 20) /*(done; skip prep for next loop)*/
++			break;
++
++		/* XKEY = (1 + XKEY + w_i) mod 2^b */
++		for (u32 carry = 1, k = 20; k-- > 0; carry >>= 8)
++			xkey[k] = (carry += xkey[k] + x[k]) & 0xff;
++		x += 20;
++		/* x_j = w_0|w_1 (each pair of iterations through loop)*/
++	}
++
++	mbedtls_sha1_free(&ctx);
++	return 0;
++}
++
++#endif /* CRYPTO_MBEDTLS_FIPS186_2_PRF */
++
+ #endif /* MBEDTLS_SHA1_C */
+ 
+ 
+--- a/wpa_supplicant/Makefile
++++ b/wpa_supplicant/Makefile
+@@ -1174,10 +1174,6 @@ endif
+ OBJS += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+ OBJS_p += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+ OBJS_priv += ../src/crypto/crypto_$(CONFIG_CRYPTO).o
+-ifdef NEED_FIPS186_2_PRF
+-OBJS += ../src/crypto/fips_prf_internal.o
+-SHA1OBJS += ../src/crypto/sha1-internal.o
+-endif
+ ifeq ($(CONFIG_CRYPTO), mbedtls)
+ LIBS += -lmbedcrypto
+ LIBS_p += -lmbedcrypto

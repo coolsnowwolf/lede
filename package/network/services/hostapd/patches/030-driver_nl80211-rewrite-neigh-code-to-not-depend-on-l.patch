@@ -1,0 +1,275 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 28 Jul 2021 05:49:46 +0200
+Subject: [PATCH] driver_nl80211: rewrite neigh code to not depend on
+ libnl3-route
+
+Removes an unnecessary dependency and also makes the code smaller
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/src/drivers/driver_nl80211.c
++++ b/src/drivers/driver_nl80211.c
+@@ -16,9 +16,6 @@
+ #include <net/if.h>
+ #include <netlink/genl/genl.h>
+ #include <netlink/genl/ctrl.h>
+-#ifdef CONFIG_LIBNL3_ROUTE
+-#include <netlink/route/neighbour.h>
+-#endif /* CONFIG_LIBNL3_ROUTE */
+ #include <linux/rtnetlink.h>
+ #include <netpacket/packet.h>
+ #include <linux/errqueue.h>
+@@ -5783,26 +5780,29 @@ fail:
+ 
+ static void rtnl_neigh_delete_fdb_entry(struct i802_bss *bss, const u8 *addr)
+ {
+-#ifdef CONFIG_LIBNL3_ROUTE
+ 	struct wpa_driver_nl80211_data *drv = bss->drv;
+-	struct rtnl_neigh *rn;
+-	struct nl_addr *nl_addr;
++	struct ndmsg nhdr = {
++		.ndm_state = NUD_PERMANENT,
++		.ndm_ifindex = bss->ifindex,
++		.ndm_family = AF_BRIDGE,
++	};
++	struct nl_msg *msg;
+ 	int err;
+ 
+-	rn = rtnl_neigh_alloc();
+-	if (!rn)
++	msg = nlmsg_alloc_simple(RTM_DELNEIGH, NLM_F_CREATE);
++	if (!msg)
+ 		return;
+ 
+-	rtnl_neigh_set_family(rn, AF_BRIDGE);
+-	rtnl_neigh_set_ifindex(rn, bss->ifindex);
+-	nl_addr = nl_addr_build(AF_BRIDGE, (void *) addr, ETH_ALEN);
+-	if (!nl_addr) {
+-		rtnl_neigh_put(rn);
+-		return;
+-	}
+-	rtnl_neigh_set_lladdr(rn, nl_addr);
++	if (nlmsg_append(msg, &nhdr, sizeof(nhdr), NLMSG_ALIGNTO) < 0)
++		goto errout;
++
++	if (nla_put(msg, NDA_LLADDR, ETH_ALEN, (void *)addr))
++		goto errout;
++
++	if (nl_send_auto_complete(drv->rtnl_sk, msg) < 0)
++		goto errout;
+ 
+-	err = rtnl_neigh_delete(drv->rtnl_sk, rn, 0);
++	err = nl_wait_for_ack(drv->rtnl_sk);
+ 	if (err < 0) {
+ 		wpa_printf(MSG_DEBUG, "nl80211: bridge FDB entry delete for "
+ 			   MACSTR " ifindex=%d failed: %s", MAC2STR(addr),
+@@ -5812,9 +5812,8 @@ static void rtnl_neigh_delete_fdb_entry(
+ 			   MACSTR, MAC2STR(addr));
+ 	}
+ 
+-	nl_addr_put(nl_addr);
+-	rtnl_neigh_put(rn);
+-#endif /* CONFIG_LIBNL3_ROUTE */
++errout:
++	nlmsg_free(msg);
+ }
+ 
+ 
+@@ -8492,7 +8491,6 @@ static void *i802_init(struct hostapd_da
+ 	    (params->num_bridge == 0 || !params->bridge[0]))
+ 		add_ifidx(drv, br_ifindex, drv->ifindex);
+ 
+-#ifdef CONFIG_LIBNL3_ROUTE
+ 	if (bss->added_if_into_bridge || bss->already_in_bridge) {
+ 		int err;
+ 
+@@ -8509,7 +8507,6 @@ static void *i802_init(struct hostapd_da
+ 			goto failed;
+ 		}
+ 	}
+-#endif /* CONFIG_LIBNL3_ROUTE */
+ 
+ 	if (drv->capa.flags2 & WPA_DRIVER_FLAGS2_CONTROL_PORT_RX) {
+ 		wpa_printf(MSG_DEBUG,
+@@ -11883,13 +11880,14 @@ static int wpa_driver_br_add_ip_neigh(vo
+ 				      const u8 *ipaddr, int prefixlen,
+ 				      const u8 *addr)
+ {
+-#ifdef CONFIG_LIBNL3_ROUTE
+ 	struct i802_bss *bss = priv;
+ 	struct wpa_driver_nl80211_data *drv = bss->drv;
+-	struct rtnl_neigh *rn;
+-	struct nl_addr *nl_ipaddr = NULL;
+-	struct nl_addr *nl_lladdr = NULL;
+-	int family, addrsize;
++	struct ndmsg nhdr = {
++		.ndm_state = NUD_PERMANENT,
++		.ndm_ifindex = bss->br_ifindex,
++	};
++	struct nl_msg *msg;
++	int addrsize;
+ 	int res;
+ 
+ 	if (!ipaddr || prefixlen == 0 || !addr)
+@@ -11908,85 +11906,66 @@ static int wpa_driver_br_add_ip_neigh(vo
+ 	}
+ 
+ 	if (version == 4) {
+-		family = AF_INET;
++		nhdr.ndm_family = AF_INET;
+ 		addrsize = 4;
+ 	} else if (version == 6) {
+-		family = AF_INET6;
++		nhdr.ndm_family = AF_INET6;
+ 		addrsize = 16;
+ 	} else {
+ 		return -EINVAL;
+ 	}
+ 
+-	rn = rtnl_neigh_alloc();
+-	if (rn == NULL)
++	msg = nlmsg_alloc_simple(RTM_NEWNEIGH, NLM_F_CREATE);
++	if (!msg)
+ 		return -ENOMEM;
+ 
+-	/* set the destination ip address for neigh */
+-	nl_ipaddr = nl_addr_build(family, (void *) ipaddr, addrsize);
+-	if (nl_ipaddr == NULL) {
+-		wpa_printf(MSG_DEBUG, "nl80211: nl_ipaddr build failed");
+-		res = -ENOMEM;
++	res = -ENOMEM;
++	if (nlmsg_append(msg, &nhdr, sizeof(nhdr), NLMSG_ALIGNTO) < 0)
+ 		goto errout;
+-	}
+-	nl_addr_set_prefixlen(nl_ipaddr, prefixlen);
+-	res = rtnl_neigh_set_dst(rn, nl_ipaddr);
+-	if (res) {
+-		wpa_printf(MSG_DEBUG,
+-			   "nl80211: neigh set destination addr failed");
++
++	if (nla_put(msg, NDA_DST, addrsize, (void *)ipaddr))
+ 		goto errout;
+-	}
+ 
+-	/* set the corresponding lladdr for neigh */
+-	nl_lladdr = nl_addr_build(AF_BRIDGE, (u8 *) addr, ETH_ALEN);
+-	if (nl_lladdr == NULL) {
+-		wpa_printf(MSG_DEBUG, "nl80211: neigh set lladdr failed");
+-		res = -ENOMEM;
++	if (nla_put(msg, NDA_LLADDR, ETH_ALEN, (void *)addr))
+ 		goto errout;
+-	}
+-	rtnl_neigh_set_lladdr(rn, nl_lladdr);
+ 
+-	rtnl_neigh_set_ifindex(rn, bss->br_ifindex);
+-	rtnl_neigh_set_state(rn, NUD_PERMANENT);
++	res = nl_send_auto_complete(drv->rtnl_sk, msg);
++	if (res < 0)
++		goto errout;
+ 
+-	res = rtnl_neigh_add(drv->rtnl_sk, rn, NLM_F_CREATE);
++	res = nl_wait_for_ack(drv->rtnl_sk);
+ 	if (res) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "nl80211: Adding bridge ip neigh failed: %s",
+ 			   nl_geterror(res));
+ 	}
+ errout:
+-	if (nl_lladdr)
+-		nl_addr_put(nl_lladdr);
+-	if (nl_ipaddr)
+-		nl_addr_put(nl_ipaddr);
+-	if (rn)
+-		rtnl_neigh_put(rn);
++	nlmsg_free(msg);
+ 	return res;
+-#else /* CONFIG_LIBNL3_ROUTE */
+-	return -1;
+-#endif /* CONFIG_LIBNL3_ROUTE */
+ }
+ 
+ 
+ static int wpa_driver_br_delete_ip_neigh(void *priv, u8 version,
+ 					 const u8 *ipaddr)
+ {
+-#ifdef CONFIG_LIBNL3_ROUTE
+ 	struct i802_bss *bss = priv;
+ 	struct wpa_driver_nl80211_data *drv = bss->drv;
+-	struct rtnl_neigh *rn;
+-	struct nl_addr *nl_ipaddr;
+-	int family, addrsize;
++	struct ndmsg nhdr = {
++		.ndm_state = NUD_PERMANENT,
++		.ndm_ifindex = bss->br_ifindex,
++	};
++	struct nl_msg *msg;
++	int addrsize;
+ 	int res;
+ 
+ 	if (!ipaddr)
+ 		return -EINVAL;
+ 
+ 	if (version == 4) {
+-		family = AF_INET;
++		nhdr.ndm_family = AF_INET;
+ 		addrsize = 4;
+ 	} else if (version == 6) {
+-		family = AF_INET6;
++		nhdr.ndm_family = AF_INET6;
+ 		addrsize = 16;
+ 	} else {
+ 		return -EINVAL;
+@@ -12004,41 +11983,30 @@ static int wpa_driver_br_delete_ip_neigh
+ 		return -1;
+ 	}
+ 
+-	rn = rtnl_neigh_alloc();
+-	if (rn == NULL)
++	msg = nlmsg_alloc_simple(RTM_DELNEIGH, NLM_F_CREATE);
++	if (!msg)
+ 		return -ENOMEM;
+ 
+-	/* set the destination ip address for neigh */
+-	nl_ipaddr = nl_addr_build(family, (void *) ipaddr, addrsize);
+-	if (nl_ipaddr == NULL) {
+-		wpa_printf(MSG_DEBUG, "nl80211: nl_ipaddr build failed");
+-		res = -ENOMEM;
++	res = -ENOMEM;
++	if (nlmsg_append(msg, &nhdr, sizeof(nhdr), NLMSG_ALIGNTO) < 0)
+ 		goto errout;
+-	}
+-	res = rtnl_neigh_set_dst(rn, nl_ipaddr);
+-	if (res) {
+-		wpa_printf(MSG_DEBUG,
+-			   "nl80211: neigh set destination addr failed");
++
++	if (nla_put(msg, NDA_DST, addrsize, (void *)ipaddr))
+ 		goto errout;
+-	}
+ 
+-	rtnl_neigh_set_ifindex(rn, bss->br_ifindex);
++	res = nl_send_auto_complete(drv->rtnl_sk, msg);
++	if (res < 0)
++		goto errout;
+ 
+-	res = rtnl_neigh_delete(drv->rtnl_sk, rn, 0);
++	res = nl_wait_for_ack(drv->rtnl_sk);
+ 	if (res) {
+ 		wpa_printf(MSG_DEBUG,
+ 			   "nl80211: Deleting bridge ip neigh failed: %s",
+ 			   nl_geterror(res));
+ 	}
+ errout:
+-	if (nl_ipaddr)
+-		nl_addr_put(nl_ipaddr);
+-	if (rn)
+-		rtnl_neigh_put(rn);
++	nlmsg_free(msg);
+ 	return res;
+-#else /* CONFIG_LIBNL3_ROUTE */
+-	return -1;
+-#endif /* CONFIG_LIBNL3_ROUTE */
+ }
+ 
+ 

@@ -1,0 +1,154 @@
+--- a/hostapd/Makefile
++++ b/hostapd/Makefile
+@@ -63,6 +63,10 @@ endif
+ OBJS += main.o
+ OBJS += config_file.o
+ 
++ifdef CONFIG_RADIUS_SERVER
++OBJS += radius.o
++endif
++
+ OBJS += ../src/ap/hostapd.o
+ OBJS += ../src/ap/wpa_auth_glue.o
+ OBJS += ../src/ap/drv_callbacks.o
+--- a/hostapd/main.c
++++ b/hostapd/main.c
+@@ -40,6 +40,7 @@ struct hapd_global {
+ 
+ static struct hapd_global global;
+ 
++extern int radius_main(int argc, char **argv);
+ 
+ #ifndef CONFIG_NO_HOSTAPD_LOGGER
+ static void hostapd_logger_cb(void *ctx, const u8 *addr, unsigned int module,
+@@ -771,6 +772,11 @@ int main(int argc, char *argv[])
+ 	if (os_program_init())
+ 		return -1;
+ 
++#ifdef RADIUS_SERVER
++	if (strstr(argv[0], "radius"))
++		return radius_main(argc, argv);
++#endif
++
+ 	os_memset(&interfaces, 0, sizeof(interfaces));
+ 	interfaces.reload_config = hostapd_reload_config;
+ 	interfaces.config_read_cb = hostapd_config_read;
+--- a/src/radius/radius_server.c
++++ b/src/radius/radius_server.c
+@@ -63,6 +63,12 @@ struct radius_server_counters {
+ 	u32 unknown_acct_types;
+ };
+ 
++struct radius_accept_attr {
++	u8 type;
++	u16 len;
++	void *data;
++};
++
+ /**
+  * struct radius_session - Internal RADIUS server data for a session
+  */
+@@ -90,7 +96,7 @@ struct radius_session {
+ 	unsigned int macacl:1;
+ 	unsigned int t_c_filtering:1;
+ 
+-	struct hostapd_radius_attr *accept_attr;
++	struct radius_accept_attr *accept_attr;
+ 
+ 	u32 t_c_timestamp; /* Last read T&C timestamp from user DB */
+ };
+@@ -394,6 +400,7 @@ static void radius_server_session_free(s
+ 	radius_msg_free(sess->last_reply);
+ 	os_free(sess->username);
+ 	os_free(sess->nas_ip);
++	os_free(sess->accept_attr);
+ 	os_free(sess);
+ 	data->num_sess--;
+ }
+@@ -554,6 +561,36 @@ radius_server_erp_find_key(struct radius
+ }
+ #endif /* CONFIG_ERP */
+ 
++static struct radius_accept_attr *
++radius_server_copy_attr(const struct hostapd_radius_attr *data)
++{
++	const struct hostapd_radius_attr *attr;
++	struct radius_accept_attr *attr_new;
++	size_t data_size = 0;
++	void *data_buf;
++	int n_attr = 1;
++
++	for (attr = data; attr; attr = attr->next) {
++		n_attr++;
++		data_size += wpabuf_len(attr->val);
++	}
++
++	attr_new = os_zalloc(n_attr * sizeof(*attr) + data_size);
++	if (!attr_new)
++		return NULL;
++
++	data_buf = &attr_new[n_attr];
++	for (n_attr = 0, attr = data; attr; attr = attr->next) {
++		struct radius_accept_attr *cur = &attr_new[n_attr++];
++
++		cur->type = attr->type;
++		cur->len = wpabuf_len(attr->val);
++		cur->data = memcpy(data_buf, wpabuf_head(attr->val), cur->len);
++		data_buf += cur->len;
++	}
++
++	return attr_new;
++}
+ 
+ static struct radius_session *
+ radius_server_get_new_session(struct radius_server_data *data,
+@@ -607,7 +644,7 @@ radius_server_get_new_session(struct rad
+ 		eap_user_free(tmp);
+ 		return NULL;
+ 	}
+-	sess->accept_attr = tmp->accept_attr;
++	sess->accept_attr = radius_server_copy_attr(tmp->accept_attr);
+ 	sess->macacl = tmp->macacl;
+ 	eap_user_free(tmp);
+ 
+@@ -1118,11 +1155,10 @@ radius_server_encapsulate_eap(struct rad
+ 	}
+ 
+ 	if (code == RADIUS_CODE_ACCESS_ACCEPT) {
+-		struct hostapd_radius_attr *attr;
+-		for (attr = sess->accept_attr; attr; attr = attr->next) {
+-			if (!radius_msg_add_attr(msg, attr->type,
+-						 wpabuf_head(attr->val),
+-						 wpabuf_len(attr->val))) {
++		struct radius_accept_attr *attr;
++		for (attr = sess->accept_attr; attr->data; attr++) {
++			if (!radius_msg_add_attr(msg, attr->type, attr->data,
++						 attr->len)) {
+ 				wpa_printf(MSG_ERROR, "Could not add RADIUS attribute");
+ 				radius_msg_free(msg);
+ 				return NULL;
+@@ -1211,11 +1247,10 @@ radius_server_macacl(struct radius_serve
+ 	}
+ 
+ 	if (code == RADIUS_CODE_ACCESS_ACCEPT) {
+-		struct hostapd_radius_attr *attr;
+-		for (attr = sess->accept_attr; attr; attr = attr->next) {
+-			if (!radius_msg_add_attr(msg, attr->type,
+-						 wpabuf_head(attr->val),
+-						 wpabuf_len(attr->val))) {
++		struct radius_accept_attr *attr;
++		for (attr = sess->accept_attr; attr->data; attr++) {
++			if (!radius_msg_add_attr(msg, attr->type, attr->data,
++						 attr->len)) {
+ 				wpa_printf(MSG_ERROR, "Could not add RADIUS attribute");
+ 				radius_msg_free(msg);
+ 				return NULL;
+@@ -2512,7 +2547,7 @@ static int radius_server_get_eap_user(vo
+ 	ret = data->get_eap_user(data->conf_ctx, identity, identity_len,
+ 				 phase2, user);
+ 	if (ret == 0 && user) {
+-		sess->accept_attr = user->accept_attr;
++		sess->accept_attr = radius_server_copy_attr(user->accept_attr);
+ 		sess->remediation = user->remediation;
+ 		sess->macacl = user->macacl;
+ 		sess->t_c_timestamp = user->t_c_timestamp;
