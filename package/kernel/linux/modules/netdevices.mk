@@ -483,6 +483,72 @@ endef
 
 $(eval $(call KernelPackage,phy-aquantia))
 
+define KernelPackage/dsa
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Distributed Switch Architecture support
+  DEPENDS:=+kmod-mdio-devres +kmod-net-selftests +kmod-phylink
+  KCONFIG:=CONFIG_NET_DSA
+  FILES:=$(LINUX_DIR)/net/dsa/dsa_core.ko
+endef
+
+define KernelPackage/dsa/description
+  Kernel module support for Distributed Switch Architecture
+endef
+
+$(eval $(call KernelPackage,dsa))
+
+define KernelPackage/dsa-tag-dsa
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Marvell DSA type DSA and EDSA taggers
+  DEPENDS:=+kmod-dsa
+  KCONFIG:= CONFIG_NET_DSA_TAG_DSA_COMMON \
+	CONFIG_NET_DSA_TAG_DSA \
+	CONFIG_NET_DSA_TAG_EDSA
+  FILES:=$(LINUX_DIR)/net/dsa/tag_dsa.ko
+  AUTOLOAD:=$(call AutoLoad,40,tag_dsa,1)
+endef
+
+define KernelPackage/dsa-tag-dsa/description
+  Kernel modules for Marvell DSA and EDSA tagging
+endef
+
+$(eval $(call KernelPackage,dsa-tag-dsa))
+
+define KernelPackage/dsa-mv88e6xxx
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Marvell MV88E6XXX DSA Switch
+  DEPENDS:=+kmod-dsa +kmod-ptp +kmod-phy-marvell +kmod-dsa-tag-dsa
+  KCONFIG:=CONFIG_NET_DSA_MV88E6XXX \
+	CONFIG_NET_DSA_MV88E6XXX_PTP=y
+  FILES:=$(LINUX_DIR)/drivers/net/dsa/mv88e6xxx/mv88e6xxx.ko
+  AUTOLOAD:=$(call AutoLoad,41,mv88e6xxx,1)
+endef
+
+define KernelPackage/dsa-mv88e6xxx/description
+  Kernel modules for MV88E6XXX DSA switches
+endef
+
+$(eval $(call KernelPackage,dsa-mv88e6xxx))
+
+define KernelPackage/dsa-qca8k
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Qualcomm Atheros QCA8xxx switch family DSA support
+  DEPENDS:=+kmod-dsa +kmod-regmap-core
+  KCONFIG:= \
+	CONFIG_NET_DSA_QCA8K \
+	CONFIG_NET_DSA_QCA8K_LEDS_SUPPORT=y \
+	CONFIG_NET_DSA_TAG_QCA
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/dsa/qca/qca8k.ko \
+	$(LINUX_DIR)/net/dsa/tag_qca.ko
+  AUTOLOAD:=$(call AutoLoad,42,qca8k,1)
+endef
+
+define KernelPackage/dsa-qca8k/description
+  DSA based kernel modules for the Qualcomm Atheros QCA8xxx switch family
+endef
+
+$(eval $(call KernelPackage,dsa-qca8k))
 
 define KernelPackage/swconfig
   SUBMENU:=$(NETWORK_DEVICES_MENU)
