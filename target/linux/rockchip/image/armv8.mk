@@ -262,6 +262,16 @@ define Device/rocktech_mpc1903
 endef
 TARGET_DEVICES += rocktech_mpc1903
 
+define Device/seewo_sv21-rk3568
+  DEVICE_VENDOR := Seewo
+  DEVICE_MODEL := sv21
+  DEVICE_DTS := rockchip/rk3568-seewo-sv21
+  UBOOT_DEVICE_NAME := seewo-sv21-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-ata-ahci kmod-ata-ahci-platform
+endef
+TARGET_DEVICES += seewo_sv21-rk3568
+
 define Device/sharevdi_h3399pc
   DEVICE_VENDOR := SHAREVDI
   DEVICE_MODEL := H3399PC

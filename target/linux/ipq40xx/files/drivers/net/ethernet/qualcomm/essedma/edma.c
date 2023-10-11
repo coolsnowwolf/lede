@@ -22,6 +22,14 @@ extern struct net_device *edma_netdev[EDMA_MAX_PORTID_SUPPORTED];
 bool edma_stp_rstp;
 u16 edma_ath_eth_type;
 
+/* edma_skb_priority_offset()
+ * 	get edma skb priority
+ */
+static unsigned int edma_skb_priority_offset(struct sk_buff *skb)
+{
+	return (skb->priority >> 2) & 1;
+}
+
 /* edma_alloc_tx_ring()
  *	Allocate Tx descriptors ring
  */
@@ -719,11 +727,13 @@ static u16 edma_rx_complete(struct edma_common_info *edma_cinfo,
 			edma_receive_checksum(rd, skb);
 
 			/* Process VLAN HW acceleration indication provided by HW */
-			vlan = rd->rrd4;
-			if (likely(rd->rrd7 & EDMA_RRD_CVLAN))
-				__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan);
-			else if (rd->rrd1 & EDMA_RRD_SVLAN)
-				__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021AD), vlan);
+			if (unlikely(adapter->default_vlan_tag != rd->rrd4)) {
+				vlan = rd->rrd4;
+				if (likely(rd->rrd7 & EDMA_RRD_CVLAN))
+					__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vlan);
+				else if (rd->rrd1 & EDMA_RRD_SVLAN)
+					__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021AD), vlan);
+			}
 
 			/* Update rx statistics */
 			adapter->stats.rx_packets++;
@@ -1004,14 +1014,13 @@ static inline u16 edma_tpd_available(struct edma_common_info *edma_cinfo,
 /* edma_tx_queue_get()
  *	Get the starting number of  the queue
  */
-static inline int edma_tx_queue_get(struct edma_common_info *edma_cinfo, struct edma_adapter *adapter,
+static inline int edma_tx_queue_get(struct edma_adapter *adapter,
 				   struct sk_buff *skb, int txq_id)
 {
 	/* skb->priority is used as an index to skb priority table
 	 * and based on packet priority, correspong queue is assigned.
-	 * FIXME we just simple use jiffies for time base balance
 	 */
-	return adapter->tx_start_offset[txq_id] + (smp_processor_id() % edma_cinfo->num_txq_per_core_netdev);
+	return adapter->tx_start_offset[txq_id] + edma_skb_priority_offset(skb);
 }
 
 /* edma_tx_update_hw_idx()
@@ -1380,9 +1389,8 @@ netdev_tx_t edma_xmit(struct sk_buff *skb,
 	}
 
 	/* this will be one of the 4 TX queues exposed to linux kernel */
-	/* XXX what if num_online_cpus() > EDMA_CPU_CORES_SUPPORTED */
-	txq_id = ((jiffies >> 5) % (EDMA_CPU_CORES_SUPPORTED - 1) + smp_processor_id() + 1) % EDMA_CPU_CORES_SUPPORTED;
-	queue_id = edma_tx_queue_get(edma_cinfo, adapter, skb, txq_id);
+	txq_id = skb_get_queue_mapping(skb);
+	queue_id = edma_tx_queue_get(adapter, skb, txq_id);
 	etdr = edma_cinfo->tpd_ring[queue_id];
 	nq = netdev_get_tx_queue(net_dev, txq_id);
 
@@ -1863,8 +1871,8 @@ void edma_free_irqs(struct edma_adapter *adapter)
 	int i, j;
 	int k = ((edma_cinfo->num_rx_queues == 4) ? 1 : 2);
 
-	for (i = 0; i < num_online_cpus() && i < EDMA_CPU_CORES_SUPPORTED; i++) {
-		for (j = edma_cinfo->edma_percpu_info[i].tx_start; j < (edma_cinfo->edma_percpu_info[i].tx_start + edma_cinfo->num_txq_per_core); j++)
+	for (i = 0; i < CONFIG_NR_CPUS; i++) {
+		for (j = edma_cinfo->edma_percpu_info[i].tx_start; j < (edma_cinfo->edma_percpu_info[i].tx_start + 4); j++)
 			free_irq(edma_cinfo->tx_irq[j], &edma_cinfo->edma_percpu_info[i]);
 
 		for (j = edma_cinfo->edma_percpu_info[i].rx_start; j < (edma_cinfo->edma_percpu_info[i].rx_start + k); j++)
@@ -2077,13 +2085,15 @@ int edma_poll(struct napi_struct *napi, int budget)
 	int i, work_done = 0;
 	u16 rx_pending_fill;
 
-	/* Store the Tx status by ANDing it with
-	 * appropriate CPU TX mask
+	/* Store the Rx/Tx status by ANDing it with
+	 * appropriate CPU RX?TX mask
 	 */
+	edma_read_reg(EDMA_REG_RX_ISR, &reg_data);
+	edma_percpu_info->rx_status |= reg_data & edma_percpu_info->rx_mask;
+	shadow_rx_status = edma_percpu_info->rx_status;
 	edma_read_reg(EDMA_REG_TX_ISR, &reg_data);
 	edma_percpu_info->tx_status |= reg_data & edma_percpu_info->tx_mask;
 	shadow_tx_status = edma_percpu_info->tx_status;
-	edma_write_reg(EDMA_REG_TX_ISR, shadow_tx_status);
 
 	/* Every core will have a start, which will be computed
 	 * in probe and stored in edma_percpu_info->tx_start variable.
@@ -2097,14 +2107,6 @@ int edma_poll(struct napi_struct *napi, int budget)
 		edma_tx_complete(edma_cinfo, queue_id);
 		edma_percpu_info->tx_status &= ~(1 << queue_id);
 	}
-
-	/* Store the Rx status by ANDing it with
-	 * appropriate CPU RX mask
-	 */
-	edma_read_reg(EDMA_REG_RX_ISR, &reg_data);
-	edma_percpu_info->rx_status |= reg_data & edma_percpu_info->rx_mask;
-	shadow_rx_status = edma_percpu_info->rx_status;
-	edma_write_reg(EDMA_REG_RX_ISR, shadow_rx_status);
 
 	/* Every core will have a start, which will be computed
 	 * in probe and stored in edma_percpu_info->tx_start variable.
@@ -2129,6 +2131,15 @@ int edma_poll(struct napi_struct *napi, int budget)
 			break;
 		}
 	}
+
+	/* Clear the status register, to avoid the interrupts to
+	 * reoccur.This clearing of interrupt status register is
+	 * done here as writing to status register only takes place
+	 * once the  producer/consumer index has been updated to
+	 * reflect that the packet transmission/reception went fine.
+	 */
+	edma_write_reg(EDMA_REG_RX_ISR, shadow_rx_status);
+	edma_write_reg(EDMA_REG_TX_ISR, shadow_tx_status);
 
 	/* If budget not fully consumed, exit the polling mode */
 	if (likely(work_done < budget)) {

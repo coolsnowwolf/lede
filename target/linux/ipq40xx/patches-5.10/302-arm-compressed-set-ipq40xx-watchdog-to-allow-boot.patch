@@ -1,0 +1,66 @@
+From 11d6a6128a5a07c429941afc202b6e62a19771be Mon Sep 17 00:00:00 2001
+From: John Thomson <git@johnthomson.fastmail.com.au>
+Date: Fri, 23 Oct 2020 19:42:36 +1000
+Subject: [PATCH 2/2] arm: compressed: set ipq40xx watchdog to allow boot
+
+For IPQ40XX systems where the SoC watchdog is activated before linux,
+the watchdog timer may be too small for linux to finish uncompress,
+boot, and watchdog management start.
+If the watchdog is enabled, set the timeout for it to 30 seconds.
+The functionality and offsets were copied from:
+drivers/watchdog/qcom-wdt.c qcom_wdt_set_timeout & qcom_wdt_start
+The watchdog memory address was taken from:
+arch/arm/boot/dts/qcom-ipq4019.dtsi
+
+This was required on Mikrotik IPQ40XX consumer hardware using Mikrotik's
+RouterBoot bootloader.
+
+Signed-off-by: John Thomson <git@johnthomson.fastmail.com.au>
+---
+ arch/arm/boot/compressed/head.S | 35 +++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+--- a/arch/arm/boot/compressed/head.S
++++ b/arch/arm/boot/compressed/head.S
+@@ -602,6 +602,41 @@ not_relocated:	mov	r0, #0
+ 		bic	r4, r4, #1
+ 		blne	cache_on
+ 
++/* Set the Qualcom IPQ40xx watchdog timeout to 30 seconds
++ * if it is enabled, so that there is time for kernel
++ * to decompress, boot, and take over the watchdog.
++ * data and functionality from drivers/watchdog/qcom-wdt.c
++ * address from arch/arm/boot/dts/qcom-ipq4019.dtsi
++ */
++#ifdef CONFIG_ARCH_IPQ40XX
++watchdog_set:
++		/* offsets:
++		 * 0x04 reset	(=1 resets countdown)
++		 * 0x08 enable	(=0 disables)
++		 * 0x0c status	(=1 when SoC was reset by watchdog)
++		 * 0x10 bark	(=timeout warning in ticks)
++		 * 0x14 bite	(=timeout reset in ticks)
++		 * clock rate is 1<<15 hertz
++		 */
++		.equ watchdog, 0x0b017000	@Store watchdog base address
++		movw r0, #:lower16:watchdog
++		movt r0, #:upper16:watchdog
++		ldr r1, [r0, #0x08]	@Get enabled?
++		cmp r1, #1		@If not enabled, do not change
++		bne watchdog_finished
++		mov r1, #0
++		str r1, [r0, #0x08]	@Disable the watchdog
++		mov r1, #1
++		str r1, [r0, #0x04]	@Pet the watchdog
++		mov r1, #30		@30 seconds timeout
++		lsl r1, r1, #15		@converted to ticks
++		str r1, [r0, #0x10]	@Set the bark timeout
++		str r1, [r0, #0x14]	@Set the bite timeout
++		mov r1, #1
++		str r1, [r0, #0x08]	@Enable the watchdog
++watchdog_finished:
++#endif /* CONFIG_ARCH_IPQ40XX */
++
+ /*
+  * The C runtime environment should now be setup sufficiently.
+  * Set up some pointers, and start decompressing.
