@@ -24,8 +24,6 @@ DEFAULT_PACKAGES += \
 	mkf2fs \
 	automount \
 	resize2fs \
-	parted \
-	losetup \
 	partx-utils
 
 KERNELNAME:=Image dtbs
