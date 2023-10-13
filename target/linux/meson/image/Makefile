@@ -13,7 +13,7 @@ define Build/boot-script
 	mkimage -A arm -O linux -T script -C none -a 0 -e 0 -n "boot.scr" -d boot.txt  $(KDIR)/boot.scr
 endef
 
-define Build/sdcard-common
+define Build/emmc-common
 	$(RM) -f $@.boot
 	mkfs.fat -C $@.boot $(FAT32_BLOCKS)
 
@@ -29,14 +29,14 @@ define Build/sdcard-common
 
 	$(RM) -rf $(KDIR)/boot.fat
 
-	./gen_aml_sdcard_img.sh $@ $@.boot $(IMAGE_ROOTFS) \
+	./gen_aml_emmc_img.sh $@ $@.boot $(IMAGE_ROOTFS) \
 		$(CONFIG_TARGET_KERNEL_PARTSIZE) $(CONFIG_TARGET_ROOTFS_PARTSIZE)
 endef
 
 ### Devices ###
 define Device/Default
   FILESYSTEMS := ext4
-  IMAGES := sdcard.img
+  IMAGES := emmc.img
   KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
   KERNEL_LOADADDR := 0x01080000
   KERNEL_NAME := Image
@@ -48,7 +48,7 @@ define Device/thunder-onecloud
   DEVICE_DTS := meson8b-onecloud
   DEVICE_TITLE := Thunder OneCloud
   KERNEL_LOADADDR := 0x00208000
-  IMAGE/sdcard.img := boot-script onecloud | sdcard-common $$(DEVICE_NAME)
+  IMAGE/emmc.img := boot-script onecloud | emmc-common $$(DEVICE_NAME)
 endef
 ifeq ($(SUBTARGET),meson8b)
   TARGET_DEVICES += thunder-onecloud
