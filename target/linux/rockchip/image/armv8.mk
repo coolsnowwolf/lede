@@ -8,7 +8,7 @@ define Device/ariaboard_photonicat
   SOC := rk3568
   UBOOT_DEVICE_NAME := photonicat-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script nanopi-r5s | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := ath10k-firmware-qca9377-sdio kmod-ath10k kmod-ath10k-sdio pcat-manager wpad
+  DEVICE_PACKAGES := ath10k-firmware-qca9377-sdio kmod-ath10k kmod-ath10k-sdio pcat-manager wpad-openssl ath11k-firmware-wcn6855 kmod-ath11k-pci kmod-mt7922-firmware kmod-mt7921-firmware kmod-mt7615e kmod-mt7916-firmware
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
