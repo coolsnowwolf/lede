@@ -502,7 +502,7 @@ define KernelPackage/video-core
 	CONFIG_MEDIA_CAMERA_SUPPORT=y \
 	CONFIG_VIDEO_DEV \
 	CONFIG_V4L_PLATFORM_DRIVERS=y
-  FILES:= \
+  FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko@ge6.1 \
 	$(LINUX_DIR)/drivers/media/$(V4L2_DIR)/videodev.ko
   AUTOLOAD:=$(call AutoLoad,60, videodev v4l2-common)
 endef
