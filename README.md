@@ -1,21 +1,3 @@
-# 欢迎来到 Lean 的 LEDE 源码仓库
-
-I18N: [English](README_EN.md) | [简体中文](README.md)
-
-## 官方讨论群
-如有技术问题需要讨论或者交流，欢迎加入以下群：
-1. QQ 讨论群： Op固件技术研究群 ,号码 891659613 ，加群链接：[点击加入](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群")
-2. TG 讨论群： OP 编译官方大群 ，加群链接：[点击加入](https://t.me/JhKgAA6Hx1 "OP 编译官方大群")
-
-## 软路由介绍
-
-硬酷R2 - N95/N300迷你四网HomeLab服务器
-
-[商品介绍页面 - 硬酷科技（支持花呗）](https://item.taobao.com/item.htm?id=721197662185)
-
-[![r1](doc/r1.jpg)](https://item.taobao.com/item.htm?id=721197662185)
-
-
 ## 注意
 
 1. **不要用 root 用户进行编译**
