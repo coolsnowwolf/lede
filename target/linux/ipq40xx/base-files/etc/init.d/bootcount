@@ -1,0 +1,20 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+boot() {
+	case $(board_name) in
+	alfa-network,ap120c-ac)
+		[ -n "$(fw_printenv bootcount changed 2>/dev/null)" ] &&\
+			echo -e "bootcount\nchanged\n" | /usr/sbin/fw_setenv -s -
+		;;
+	linksys,ea6350v3|\
+	linksys,ea8300|\
+	linksys,mr8300)
+		mtd resetbc s_env || true
+		;;
+	netgear,wac510)
+		fw_setenv boot_cnt=0
+		;;
+	esac
+}

@@ -1,0 +1,180 @@
+From: Christian Lamparter <chunkeey@googlemail.com>
+Subject: SoC: add qualcomm syscon
+--- a/drivers/soc/qcom/Makefile
++++ b/drivers/soc/qcom/Makefile
+@@ -21,6 +21,7 @@ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
+ obj-$(CONFIG_QCOM_SMSM)	+= smsm.o
+ obj-$(CONFIG_QCOM_SOCINFO)	+= socinfo.o
+ obj-$(CONFIG_QCOM_WCNSS_CTRL) += wcnss_ctrl.o
++obj-$(CONFIG_QCOM_TCSR)	 += qcom_tcsr.o
+ obj-$(CONFIG_QCOM_APR) += apr.o
+ obj-$(CONFIG_QCOM_LLCC) += llcc-qcom.o
+ obj-$(CONFIG_QCOM_RPMHPD) += rpmhpd.o
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -191,6 +191,13 @@ config QCOM_SOCINFO
+ 	 Say yes here to support the Qualcomm socinfo driver, providing
+ 	 information about the SoC to user space.
+ 
++config QCOM_TCSR
++	tristate "QCOM Top Control and Status Registers"
++	depends on ARCH_QCOM
++	help
++	  Say y here to enable TCSR support.  The TCSR provides control
++	  functions for various peripherals.
++
+ config QCOM_WCNSS_CTRL
+ 	tristate "Qualcomm WCNSS control driver"
+ 	depends on ARCH_QCOM || COMPILE_TEST
+--- /dev/null
++++ b/drivers/soc/qcom/qcom_tcsr.c
+@@ -0,0 +1,98 @@
++/*
++ * Copyright (c) 2014, The Linux foundation. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License rev 2 and
++ * only rev 2 as published by the free Software foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or fITNESS fOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++
++#define TCSR_USB_PORT_SEL	0xb0
++#define TCSR_USB_HSPHY_CONFIG	0xC
++
++#define TCSR_ESS_INTERFACE_SEL_OFFSET   0x0
++#define TCSR_ESS_INTERFACE_SEL_MASK     0xf
++
++#define TCSR_WIFI0_GLB_CFG_OFFSET	0x0
++#define TCSR_WIFI1_GLB_CFG_OFFSET	0x4
++#define TCSR_PNOC_SNOC_MEMTYPE_M0_M2	0x4
++
++static int tcsr_probe(struct platform_device *pdev)
++{
++	struct resource *res;
++	const struct device_node *node = pdev->dev.of_node;
++	void __iomem *base;
++	u32 val;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	base = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	if (!of_property_read_u32(node, "qcom,usb-ctrl-select", &val)) {
++		dev_err(&pdev->dev, "setting usb port select = %d\n", val);
++		writel(val, base + TCSR_USB_PORT_SEL);
++	}
++
++	if (!of_property_read_u32(node, "qcom,usb-hsphy-mode-select", &val)) {
++		dev_info(&pdev->dev, "setting usb hs phy mode select = %x\n", val);
++		writel(val, base + TCSR_USB_HSPHY_CONFIG);
++	}
++
++	if (!of_property_read_u32(node, "qcom,ess-interface-select", &val)) {
++		u32 tmp = 0;
++		dev_info(&pdev->dev, "setting ess interface select = %x\n", val);
++		tmp = readl(base + TCSR_ESS_INTERFACE_SEL_OFFSET);
++		tmp = tmp & (~TCSR_ESS_INTERFACE_SEL_MASK);
++		tmp = tmp | (val&TCSR_ESS_INTERFACE_SEL_MASK);
++		writel(tmp, base + TCSR_ESS_INTERFACE_SEL_OFFSET);
++        }
++
++	if (!of_property_read_u32(node, "qcom,wifi_glb_cfg", &val)) {
++		dev_info(&pdev->dev, "setting wifi_glb_cfg = %x\n", val);
++		writel(val, base + TCSR_WIFI0_GLB_CFG_OFFSET);
++		writel(val, base + TCSR_WIFI1_GLB_CFG_OFFSET);
++	}
++
++	if (!of_property_read_u32(node, "qcom,wifi_noc_memtype_m0_m2", &val)) {
++		dev_info(&pdev->dev,
++			"setting wifi_noc_memtype_m0_m2 = %x\n", val);
++		writel(val, base + TCSR_PNOC_SNOC_MEMTYPE_M0_M2);
++	}
++
++	return 0;
++}
++
++static const struct of_device_id tcsr_dt_match[] = {
++	{ .compatible = "qcom,tcsr", },
++	{ },
++};
++
++MODULE_DEVICE_TABLE(of, tcsr_dt_match);
++
++static struct platform_driver tcsr_driver = {
++	.driver = {
++		.name		= "tcsr",
++		.owner		= THIS_MODULE,
++		.of_match_table	= tcsr_dt_match,
++	},
++	.probe = tcsr_probe,
++};
++
++module_platform_driver(tcsr_driver);
++
++MODULE_AUTHOR("Andy Gross <agross@codeaurora.org>");
++MODULE_DESCRIPTION("QCOM TCSR driver");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/include/dt-bindings/soc/qcom,tcsr.h
+@@ -0,0 +1,48 @@
++/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 and
++ * only version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++#ifndef __DT_BINDINGS_QCOM_TCSR_H
++#define __DT_BINDINGS_QCOM_TCSR_H
++
++#define TCSR_USB_SELECT_USB3_P0		0x1
++#define TCSR_USB_SELECT_USB3_P1		0x2
++#define TCSR_USB_SELECT_USB3_DUAL	0x3
++
++/* IPQ40xx HS PHY Mode Select */
++#define TCSR_USB_HSPHY_HOST_MODE	0x00E700E7
++#define TCSR_USB_HSPHY_DEVICE_MODE	0x00C700E7
++
++/* IPQ40xx ess interface mode select */
++#define TCSR_ESS_PSGMII              0
++#define TCSR_ESS_PSGMII_RGMII5       1
++#define TCSR_ESS_PSGMII_RMII0        2
++#define TCSR_ESS_PSGMII_RMII1        4
++#define TCSR_ESS_PSGMII_RMII0_RMII1  6
++#define TCSR_ESS_PSGMII_RGMII4       9
++
++/*
++ * IPQ40xx WiFi Global Config
++ * Bit 30:AXID_EN
++ * Enable AXI master bus Axid translating to confirm all txn submitted by order
++ * Bit 24: Use locally generated socslv_wxi_bvalid
++ * 1:  use locally generate socslv_wxi_bvalid for performance.
++ * 0:  use SNOC socslv_wxi_bvalid.
++ */
++#define TCSR_WIFI_GLB_CFG		0x41000000
++
++/* IPQ40xx MEM_TYPE_SEL_M0_M2 Select Bit 26:24 - 2 NORMAL */
++#define TCSR_WIFI_NOC_MEMTYPE_M0_M2	0x02222222
++
++/* TCSR A/B REG */
++#define IPQ806X_TCSR_REG_A_ADM_CRCI_MUX_SEL     0
++#define IPQ806X_TCSR_REG_B_ADM_CRCI_MUX_SEL     1
++
++#endif
