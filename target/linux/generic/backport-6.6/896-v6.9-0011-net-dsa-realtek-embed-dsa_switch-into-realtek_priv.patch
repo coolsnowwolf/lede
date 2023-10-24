@@ -1,0 +1,180 @@
+From 9fc469b2943d9b1ff2a7800f823e7cd7a5cac0ca Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Fri, 9 Feb 2024 02:03:47 -0300
+Subject: net: dsa: realtek: embed dsa_switch into realtek_priv
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Embed dsa_switch within realtek_priv to eliminate the need for a second
+memory allocation.
+
+Suggested-by: Alvin Šipraga <alsi@bang-olufsen.dk>
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/realtek/realtek.h   |  2 +-
+ drivers/net/dsa/realtek/rtl8365mb.c | 15 +++++++++------
+ drivers/net/dsa/realtek/rtl8366rb.c |  3 ++-
+ drivers/net/dsa/realtek/rtl83xx.c   | 15 +++++++--------
+ 4 files changed, 19 insertions(+), 16 deletions(-)
+
+--- a/drivers/net/dsa/realtek/realtek.h
++++ b/drivers/net/dsa/realtek/realtek.h
+@@ -61,7 +61,7 @@ struct realtek_priv {
+ 	const struct realtek_variant *variant;
+ 
+ 	spinlock_t		lock; /* Locks around command writes */
+-	struct dsa_switch	*ds;
++	struct dsa_switch	ds;
+ 	struct irq_domain	*irqdomain;
+ 	bool			leds_disabled;
+ 
+--- a/drivers/net/dsa/realtek/rtl8365mb.c
++++ b/drivers/net/dsa/realtek/rtl8365mb.c
+@@ -870,6 +870,7 @@ static int rtl8365mb_ext_config_rgmii(st
+ {
+ 	const struct rtl8365mb_extint *extint =
+ 		rtl8365mb_get_port_extint(priv, port);
++	struct dsa_switch *ds = &priv->ds;
+ 	struct device_node *dn;
+ 	struct dsa_port *dp;
+ 	int tx_delay = 0;
+@@ -880,7 +881,7 @@ static int rtl8365mb_ext_config_rgmii(st
+ 	if (!extint)
+ 		return -ENODEV;
+ 
+-	dp = dsa_to_port(priv->ds, port);
++	dp = dsa_to_port(ds, port);
+ 	dn = dp->dn;
+ 
+ 	/* Set the RGMII TX/RX delay
+@@ -1534,6 +1535,7 @@ static void rtl8365mb_get_stats64(struct
+ static void rtl8365mb_stats_setup(struct realtek_priv *priv)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
++	struct dsa_switch *ds = &priv->ds;
+ 	int i;
+ 
+ 	/* Per-chip global mutex to protect MIB counter access, since doing
+@@ -1544,7 +1546,7 @@ static void rtl8365mb_stats_setup(struct
+ 	for (i = 0; i < priv->num_ports; i++) {
+ 		struct rtl8365mb_port *p = &mb->ports[i];
+ 
+-		if (dsa_is_unused_port(priv->ds, i))
++		if (dsa_is_unused_port(ds, i))
+ 			continue;
+ 
+ 		/* Per-port spinlock to protect the stats64 data */
+@@ -1560,12 +1562,13 @@ static void rtl8365mb_stats_setup(struct
+ static void rtl8365mb_stats_teardown(struct realtek_priv *priv)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
++	struct dsa_switch *ds = &priv->ds;
+ 	int i;
+ 
+ 	for (i = 0; i < priv->num_ports; i++) {
+ 		struct rtl8365mb_port *p = &mb->ports[i];
+ 
+-		if (dsa_is_unused_port(priv->ds, i))
++		if (dsa_is_unused_port(ds, i))
+ 			continue;
+ 
+ 		cancel_delayed_work_sync(&p->mib_work);
+@@ -1964,7 +1967,7 @@ static int rtl8365mb_setup(struct dsa_sw
+ 		dev_info(priv->dev, "no interrupt support\n");
+ 
+ 	/* Configure CPU tagging */
+-	dsa_switch_for_each_cpu_port(cpu_dp, priv->ds) {
++	dsa_switch_for_each_cpu_port(cpu_dp, ds) {
+ 		cpu->mask |= BIT(cpu_dp->index);
+ 
+ 		if (cpu->trap_port == RTL8365MB_MAX_NUM_PORTS)
+@@ -1979,7 +1982,7 @@ static int rtl8365mb_setup(struct dsa_sw
+ 	for (i = 0; i < priv->num_ports; i++) {
+ 		struct rtl8365mb_port *p = &mb->ports[i];
+ 
+-		if (dsa_is_unused_port(priv->ds, i))
++		if (dsa_is_unused_port(ds, i))
+ 			continue;
+ 
+ 		/* Forward only to the CPU */
+@@ -1996,7 +1999,7 @@ static int rtl8365mb_setup(struct dsa_sw
+ 		 * ports will still forward frames to the CPU despite being
+ 		 * administratively down by default.
+ 		 */
+-		rtl8365mb_port_stp_state_set(priv->ds, i, BR_STATE_DISABLED);
++		rtl8365mb_port_stp_state_set(ds, i, BR_STATE_DISABLED);
+ 
+ 		/* Set up per-port private data */
+ 		p->priv = priv;
+--- a/drivers/net/dsa/realtek/rtl8366rb.c
++++ b/drivers/net/dsa/realtek/rtl8366rb.c
+@@ -1565,6 +1565,7 @@ static int rtl8366rb_get_mc_index(struct
+ 
+ static int rtl8366rb_set_mc_index(struct realtek_priv *priv, int port, int index)
+ {
++	struct dsa_switch *ds = &priv->ds;
+ 	struct rtl8366rb *rb;
+ 	bool pvid_enabled;
+ 	int ret;
+@@ -1589,7 +1590,7 @@ static int rtl8366rb_set_mc_index(struct
+ 	 * not drop any untagged or C-tagged frames. Make sure to update the
+ 	 * filtering setting.
+ 	 */
+-	if (dsa_port_is_vlan_filtering(dsa_to_port(priv->ds, port)))
++	if (dsa_port_is_vlan_filtering(dsa_to_port(ds, port)))
+ 		ret = rtl8366rb_drop_untagged(priv, port, !pvid_enabled);
+ 
+ 	return ret;
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -218,7 +218,7 @@ EXPORT_SYMBOL_NS_GPL(rtl83xx_probe, REAL
+  */
+ int rtl83xx_register_switch(struct realtek_priv *priv)
+ {
+-	struct dsa_switch *ds;
++	struct dsa_switch *ds = &priv->ds;
+ 	int ret;
+ 
+ 	ret = priv->ops->detect(priv);
+@@ -227,15 +227,10 @@ int rtl83xx_register_switch(struct realt
+ 		return ret;
+ 	}
+ 
+-	ds = devm_kzalloc(priv->dev, sizeof(*ds), GFP_KERNEL);
+-	if (!ds)
+-		return -ENOMEM;
+-
+ 	ds->priv = priv;
+ 	ds->dev = priv->dev;
+ 	ds->ops = priv->variant->ds_ops;
+ 	ds->num_ports = priv->num_ports;
+-	priv->ds = ds;
+ 
+ 	ret = dsa_register_switch(ds);
+ 	if (ret) {
+@@ -258,7 +253,9 @@ EXPORT_SYMBOL_NS_GPL(rtl83xx_register_sw
+  */
+ void rtl83xx_unregister_switch(struct realtek_priv *priv)
+ {
+-	dsa_unregister_switch(priv->ds);
++	struct dsa_switch *ds = &priv->ds;
++
++	dsa_unregister_switch(ds);
+ }
+ EXPORT_SYMBOL_NS_GPL(rtl83xx_unregister_switch, REALTEK_DSA);
+ 
+@@ -275,7 +272,9 @@ EXPORT_SYMBOL_NS_GPL(rtl83xx_unregister_
+  */
+ void rtl83xx_shutdown(struct realtek_priv *priv)
+ {
+-	dsa_switch_shutdown(priv->ds);
++	struct dsa_switch *ds = &priv->ds;
++
++	dsa_switch_shutdown(ds);
+ 
+ 	dev_set_drvdata(priv->dev, NULL);
+ }
