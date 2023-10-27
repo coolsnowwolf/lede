@@ -9,13 +9,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=arm-trusted-firmware-mediatek
-PKG_RELEASE:=2
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/mtk-openwrt/arm-trusted-firmware.git
-PKG_SOURCE_DATE:=2023-07-24
-PKG_SOURCE_VERSION:=00ac6db375b76e57e1f5e9e9bffa033e907c3581
-PKG_MIRROR_HASH:=74fc18395532c4292f530da8d00fa1873ada4e05e600c0077a7b7f85ace0d913
+PKG_SOURCE_DATE:=2023-10-13
+PKG_SOURCE_VERSION:=0ea67d76ae8be127c91caa3fcdf449b1fe533175
+PKG_MIRROR_HASH:=b102f6ffaa7cd2202161c44cab4d27f426d9d74c311ea9eb4d2f371ea2af4a2e
 
 PKG_MAINTAINER:=Daniel Golle <daniel@makrotopia.org>
 
