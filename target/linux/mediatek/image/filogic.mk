@@ -273,6 +273,20 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/netcore_n60
+  DEVICE_VENDOR := Netcore
+  DEVICE_MODEL := N60
+  DEVICE_DTS := mt7986a-netcore-n60
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += netcore_n60
+
 define Device/qihoo_360t7
   DEVICE_VENDOR := Qihoo
   DEVICE_MODEL := 360T7
