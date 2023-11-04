@@ -236,6 +236,18 @@ define U-Boot/mt7986_bananapi_bpi-r3-nor
   FIP_COMPRESS:=1
 endef
 
+define U-Boot/mt7986_glinet_gl-mt6000
+  NAME:=GL.iNet GL-MT6000
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=glinet_gl-mt6000
+  UBOOT_CONFIG:=mt7986a_glinet_gl-mt6000
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=emmc
+  BL2_SOC:=mt7986
+  BL2_DDRTYPE:=ddr4
+  DEPENDS:=+trusted-firmware-a-mt7986-emmc-ddr4
+endef
+
 define U-Boot/mt7986_xiaomi_redmi-router-ax6000
   NAME:=Xiaomi Redmi AX6000
   BUILD_SUBTARGET:=filogic
@@ -268,6 +280,7 @@ UBOOT_TARGETS := \
 	mt7986_bananapi_bpi-r3-sdmmc \
 	mt7986_bananapi_bpi-r3-snand \
 	mt7986_bananapi_bpi-r3-nor \
+  mt7986_glinet_gl-mt6000 \
 	mt7986_xiaomi_redmi-router-ax6000 \
 	mt7986_rfb
 
