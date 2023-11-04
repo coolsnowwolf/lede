@@ -29,6 +29,11 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
+	glinet,gl-mt6000)
+		CI_KERNPART="kernel"
+		CI_ROOTPART="rootfs"
+		emmc_do_upgrade "$1"
+		;;
 	*)
 		nand_do_upgrade "$1"
 		;;
@@ -68,6 +73,9 @@ platform_copy_config() {
 			emmc_copy_config
 			;;
 		esac
+		;;
+	glinet,gl-mt6000)
+		emmc_copy_config
 		;;
 	esac
 }
