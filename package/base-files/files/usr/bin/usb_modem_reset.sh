@@ -7,7 +7,7 @@ else
     active_low=0
 fi
 
-echo ${RESET_GPIO} > /sys/class/gpio/export > /dev/null
+echo ${RESET_GPIO} > /sys/class/gpio/export 2> /dev/null
 echo ${active_low} > /sys/class/gpio/gpio${RESET_GPIO}/active_low
 echo out > /sys/class/gpio/gpio${RESET_GPIO}/direction
 echo 1 > /sys/class/gpio/gpio${RESET_GPIO}/value
