@@ -1,0 +1,145 @@
+#!/bin/sh
+# author: jjm2473
+
+SAVE=/tmp/run/fanTP
+ACTION=${1}
+shift
+
+# print: zone trip_point current_target_temp [max_target_temp]
+# ex. thermal_zone0 0 50000 60000
+function getFanTP() {
+    local zone cdev trip temp mintemp mintrip minzone maxtemp
+    [[ -d /sys/class/thermal ]] || return 1
+    cd /sys/class/thermal
+    for zone in thermal_zone* ; do
+        cd "$zone"
+        for cdev in `ls | grep 'cdev[0-9]\+$'`; do
+            [[ -d "$cdev" ]] || continue
+            grep -Fiq fan "$cdev/type" || continue
+            trip=`cat ${cdev}_trip_point`
+            grep -Fwq active trip_point_${trip}_type || continue
+            [[ "`stat -c '%#a' trip_point_${trip}_temp || echo 0444`" = "0644" ]] || continue
+            temp=`cat trip_point_${trip}_temp`
+            if [[ -z "$mintemp" ]] || [[ "$temp" -lt "$mintemp" ]]; then
+                if [[ -n "$mintemp" ]]; then
+                    if [[ "$zone" = "$minzone" ]]; then
+                        maxtemp=$mintemp
+                    else
+                        maxtemp=
+                    fi
+                fi
+                mintemp=$temp
+                mintrip=$trip
+                minzone=$zone
+            elif [[ -z "$maxtemp" ]] || [[ "$temp" -lt "$maxtemp" ]]; then
+                maxtemp=$temp
+            fi
+        done
+        cd /sys/class/thermal
+    done
+    if [[ -n "$mintemp" ]]; then
+        echo "$minzone" "$mintrip" "$mintemp" $maxtemp
+        return 0
+    else
+        return 1
+    fi
+}
+
+function getFanTP_C() {
+    if [[ -f "$SAVE" ]]; then
+        if [[ -s "$SAVE" ]]; then
+            cat "$SAVE"
+            return 0
+        else
+            return 1
+        fi
+    fi
+    ( getFanTP ) | tee "$SAVE"
+    [[ -s "$SAVE" ]]
+}
+
+function getFanTP_U() {
+    set $(getFanTP_C)
+    [[ -n "$1" && -n "$2" ]] || return 1
+    local onTemp=`cat "/sys/class/thermal/${1}/trip_point_${2}_temp"`
+    echo "$1" "$2" "$onTemp" $4
+    return 0
+}
+
+function initFanTP() {
+    [[ -f "$SAVE" ]] || ( getFanTP >"$SAVE" )
+}
+
+# param: ON_TEMP [OFF_TEMP]
+# OFF_TEMP = ON_TEMP - 5000 if not set
+# ex. 60000 55000
+function setFanTP() {
+    local ON_TEMP=$1
+    local OFF_TEMP=$2
+    [[ -n "$ON_TEMP" ]] || {
+        echo "ON_TEMP must be present" >&2
+        return 1
+    }
+    if [[ -z "$OFF_TEMP" ]]; then
+        [[ "$ON_TEMP" -gt 5000 ]] || {
+            echo "ON_TEMP must greater than 5000 when OFF_TEMP not present" >&2
+            return 1
+        }
+        OFF_TEMP=$(( $ON_TEMP - 5000 ))
+    fi
+    [[ "$ON_TEMP" -gt "$OFF_TEMP" ]] || {
+        echo "ON_TEMP must greater than OFF_TEMP" >&2
+        return 1
+    }
+    local HYST=$(( $ON_TEMP - $OFF_TEMP ))
+
+    set $(getFanTP_C)
+    [[ -n "$1" && -n "$2" ]] || return 1
+    [[ -d "/sys/class/thermal/${1}" ]] || return 1
+
+    [[ -n "$4" ]] && [[ "$ON_TEMP" -ge "$4" ]] && {
+        ON_TEMP=$(( $4 - 5000 ))
+        echo "WARN: ON_TEMP greater than next TP $4, fixed to $ON_TEMP" >&2
+    }
+    echo "$ON_TEMP" > "/sys/class/thermal/${1}/trip_point_${2}_temp"
+    echo "$HYST" > "/sys/class/thermal/${1}/trip_point_${2}_hyst"
+}
+
+# print: current thermal sensor value and fan on temp
+function getTemp() {
+    set $(getFanTP_C)
+    [[ -n "$1" && -n "$2" ]] || return 1
+    [[ -f "/sys/class/thermal/$1/temp" ]] || return 1
+    local temp=`cat "/sys/class/thermal/$1/temp"`
+    local tpt=`cat "/sys/class/thermal/$1/trip_point_${2}_temp"`
+    echo "$temp $tpt"
+}
+
+usage() {
+    echo "usage: $0 sub-command"
+    echo "where sub-command is one of:"
+    echo "      get                     Get Fan setting"
+    echo "      set ON_TEMP [OFF_TEMP]  Set Fan setting"
+    echo "      temp                    Get current thermal temp and Fan on temp"
+    echo "      init                    init, internal used"
+}
+
+case ${ACTION} in
+    "get")
+        getFanTP_U
+    ;;
+    "set")
+        setFanTP "$@"
+    ;;
+    "temp")
+        getTemp
+    ;;
+    "init")
+        initFanTP
+    ;;
+    *)
+        usage
+        exit 1
+    ;;
+esac
+
