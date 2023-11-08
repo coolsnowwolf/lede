@@ -2457,6 +2457,8 @@ static const struct driver_info qmi_wwan_raw_ip_info_sdx55 = {
 static const struct usb_device_id products[] = {
 	{ QMI_FIXED_INTF(0x05C6, 0x9003, 4) },  /* Quectel UC20 */
 	{ QMI_FIXED_INTF(0x05C6, 0x9215, 4) },  /* Quectel EC20 (MDM9215) */
+	{ QMI_FIXED_INTF(0x05C6, 0xF601, 5) },  /* MeigLink SLM750 SLM730 SLM750VR2.0 */
+	{ QMI_FIXED_INTF(0x2DEE, 0x4D22, 5) },  /* SRM815 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0125, 4, mdm9x07) },  /* Quectel EC20 (MDM9X07)/EC25/EG25 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0121, 4, mdm9x07) },  /* Quectel EC21 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0191, 4, mdm9x07) },  /* Quectel EG91 */
