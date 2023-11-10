@@ -198,8 +198,14 @@ define Device/glinet_gl-mt6000
   DEVICE_DTS := mt7986a-glinet-gl-mt6000
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-usb2 kmod-usb3 kmod-mt7986-firmware mt7986-wo-firmware e2fsprogs f2fsck mkf2fs
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-gl-metadata
+  ARTIFACTS := preloader.bin bl31-uboot.fip
+  ARTIFACT/preloader.bin := bl2 emmc-ddr4
+  ARTIFACT/bl31-uboot.fip := bl31-uboot glinet_gl-mt6000
 endef
 TARGET_DEVICES += glinet_gl-mt6000
 
@@ -273,6 +279,20 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/netcore_n60
+  DEVICE_VENDOR := Netcore
+  DEVICE_MODEL := N60
+  DEVICE_DTS := mt7986a-netcore-n60
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += netcore_n60
+
 define Device/qihoo_360t7
   DEVICE_VENDOR := Qihoo
   DEVICE_MODEL := 360T7
@@ -318,6 +338,14 @@ define Device/tplink_tl-xdr6088
   $(call Device/tplink_tl-common)
 endef
 TARGET_DEVICES += tplink_tl-xdr6088
+
+define Device/tplink_tl-xtr8488
+  DEVICE_MODEL := TL-XTR8488
+  DEVICE_DTS := mt7986a-tplink-tl-xtr8488
+  DEVICE_PACKAGES += kmod-mt7915-firmware
+  $(call Device/tplink_tl-common)
+endef
+TARGET_DEVICES += tplink_tl-xtr8488
 
 define Device/xiaomi_mi-router-ax3000t
   DEVICE_VENDOR := Xiaomi
