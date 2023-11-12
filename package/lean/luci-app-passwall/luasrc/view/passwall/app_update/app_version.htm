@@ -1,0 +1,204 @@
+<%
+local api = require "luci.passwall.api"
+local com = require "luci.passwall.com"
+local version = {}
+-%>
+
+<script type="text/javascript">
+	//<![CDATA[
+	var appInfoList = new Array();
+	var inProgressCount = 0;
+	var tokenStr = '<%=token%>';
+	var checkUpdateText = '<%:Check update%>';
+	var noUpdateText = '<%:It is the latest version%>';
+	var updateSuccessText = '<%:Update successful%>';
+	var clickToUpdateText = '<%:Click to update%>';
+	var inProgressText = '<%:Updating...%>';
+	var unexpectedErrorText = '<%:Unexpected error%>';
+	var updateInProgressNotice = '<%:Updating, are you sure to close?%>';
+	var downloadingText = '<%:Downloading...%>';
+	var decompressioningText = '<%:Unpacking...%>';
+	var movingText = '<%:Moving...%>';
+
+	//window.onload = function () {};
+
+	function addPageNotice() {
+		if (inProgressCount === 0) {
+			window.onbeforeunload = function (e) {
+				e.returnValue = updateInProgressNotice;
+				return updateInProgressNotice;
+			};
+		}
+		inProgressCount++;
+	}
+
+	function removePageNotice() {
+		inProgressCount--;
+		if (inProgressCount === 0) {
+			window.onbeforeunload = undefined;
+		}
+	}
+
+	function onUpdateSuccess(btn) {
+		if (btn) {
+			btn.value = updateSuccessText;
+			btn.placeholder = updateSuccessText;
+			btn.disabled = true;
+		}
+
+		if (inProgressCount === 0) {
+			window.setTimeout(function () {
+				window.location.reload();
+			}, 1000);
+		}
+	}
+
+	function onRequestError(btn, errorMessage) {
+		btn.disabled = false;
+		btn.value = checkUpdateText;
+
+		var ckeckDetailElm = document.getElementById(btn.id + '-detail');
+		if (errorMessage && ckeckDetailElm) {
+			ckeckDetailElm.textContent = errorMessage
+		}
+	}
+
+	function onBtnClick(btn, app) {
+		if (appInfoList[app] === undefined) {
+			checkUpdate(btn, app);
+		} else {
+			doUpdate(btn, app);
+		}
+	}
+
+	function checkUpdate(btn, app) {
+		btn.disabled = true;
+		btn.value = inProgressText;
+
+		addPageNotice();
+
+		var ckeckDetailElm = document.getElementById(btn.id + '-detail');
+		if (ckeckDetailElm) {
+			ckeckDetailElm.textContent = "";
+		}
+		XHR.get('<%=api.url("check_")%>' + app, {
+			token: tokenStr,
+			arch: ''
+		}, function (x, json) {
+			removePageNotice();
+			if (json.code) {
+				appInfoList[app] = undefined;
+				onRequestError(btn, json.error);
+			} else {
+				if (json.has_update) {
+					appInfoList[app] = json;
+					btn.disabled = false;
+					btn.value = clickToUpdateText;
+					btn.placeholder = clickToUpdateText;
+
+					if (ckeckDetailElm) {
+						var urlNode = '';
+						if (json.remote_version) {
+							urlNode = '<em style="color:red;">' + json.remote_version + '</em>';
+							if (json.html_url) {
+								urlNode = '<a href="' + json.html_url + '" target="_blank">' + urlNode + '</a>';
+							}
+						}
+						ckeckDetailElm.innerHTML = urlNode;
+					}
+				} else {
+					btn.disabled = true;
+					btn.value = noUpdateText;
+				}
+			}
+		}, 300);
+	}
+
+	function doUpdate(btn, app) {
+		btn.disabled = true;
+		btn.value = downloadingText;
+
+		addPageNotice();
+
+		var appUpdateUrl = '<%=api.url("update_")%>' + app;
+		var appInfo = appInfoList[app];
+		// Download file
+		XHR.get(appUpdateUrl, {
+			token: tokenStr,
+			url: appInfo ? appInfo.data.browser_download_url : '',
+			size: appInfo ? appInfo.data.size / 1024 : null
+		}, function (x, json) {
+			if (json.code) {
+				removePageNotice();
+				onRequestError(btn, json.error);
+			} else if (json.zip) {
+				btn.value = decompressioningText;
+
+				// Extract file
+				XHR.get(appUpdateUrl, {
+					token: tokenStr,
+					task: 'extract',
+					file: json.file,
+					subfix: appInfo ? appInfo.type : ''
+				}, function (x, json) {
+					if (json.code) {
+						removePageNotice();
+						onRequestError(btn, json.error);
+					} else {
+						move(btn, appUpdateUrl, json.file);
+					}
+				}, 300)
+			} else {
+				move(btn, appUpdateUrl, json.file);
+			}
+		}, 300)
+	}
+
+	function move(btn, url, file) {
+		btn.value = movingText;
+
+		// Move file to target dir
+		XHR.get(url, {
+			token: tokenStr,
+			task: 'move',
+			file: file
+		}, function (x, json) {
+			removePageNotice();
+			if (json.code) {
+				onRequestError(btn, json.error);
+			} else {
+				onUpdateSuccess(btn);
+			}
+		}, 300)
+	}
+//]]>
+</script>
+
+<div class="cbi-value">
+	<label class="cbi-value-title">Passwall <%:Version%></label>
+	<div class="cbi-value-field">
+		<div class="cbi-value-description">
+			<span>【 <%=api.get_version()%> 】</span>
+			<input class="btn cbi-button cbi-button-apply" type="button" id="passwall-check_btn"
+				onclick="onBtnClick(this,'passwall');" value="<%:Check update%>" />
+			<span id="passwall-check_btn-detail"></span>
+		</div>
+	</div>
+</div>
+
+<%for k, v in pairs(com) do
+	version[k] = api.get_app_version(k)%>
+<div class="cbi-value">
+	<label class="cbi-value-title"><%=v.name%>
+		<%:Version%>
+	</label>
+	<div class="cbi-value-field">
+		<div class="cbi-value-description">
+			<span>【 <%=version[k] ~="" and version[k] or translate("Null") %> 】</span>
+			<input class="btn cbi-button cbi-button-apply" type="button" id="_<%=k%>-check_btn"
+				onclick="onBtnClick(this,'<%=k%>');" value="<%:Check update%>" />
+			<span id="_<%=k%>-check_btn-detail"></span>
+		</div>
+	</div>
+</div>
+<%end%>

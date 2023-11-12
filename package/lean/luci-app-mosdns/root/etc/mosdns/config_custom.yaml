@@ -1,0 +1,142 @@
+log:
+  level: info
+  file: "/var/log/mosdns.log"
+
+# API 入口设置
+api:
+  http: "0.0.0.0:9091"
+
+include: []
+
+plugins:
+  # 国内域名
+  - tag: geosite_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_cn.txt"
+
+  # 国内 IP
+  - tag: geoip_cn
+    type: ip_set
+    args:
+      files:
+        - "/var/mosdns/geoip_cn.txt"
+
+  # 国外域名
+  - tag: geosite_no_cn
+    type: domain_set
+    args:
+      files:
+        - "/var/mosdns/geosite_geolocation-!cn.txt"
+
+  # 缓存
+  - tag: lazy_cache
+    type: cache
+    args:
+      size: 20000
+      lazy_cache_ttl: 86400
+      dump_file: "/etc/mosdns/cache.dump"
+      dump_interval: 600
+
+  # 转发至本地服务器
+  - tag: forward_local
+    type: forward
+    args:
+      upstreams:
+        - addr: "https://doh.pub/dns-query"
+          bootstrap: 180.76.76.76
+        - addr: 119.29.29.29
+
+  # 转发至远程服务器
+  - tag: forward_remote
+    type: forward
+    args:
+      upstreams:
+        - addr: tls://8.8.8.8
+          enable_pipeline: false
+
+  # 国内解析
+  - tag: local_sequence
+    type: sequence
+    args:
+      - exec: $forward_local
+
+  # 国外解析
+  - tag: remote_sequence
+    type: sequence
+    args:
+      - exec: prefer_ipv4
+      - exec: $forward_remote
+
+  # 有响应终止返回
+  - tag: has_resp_sequence
+    type: sequence
+    args:
+      - matches: has_resp
+        exec: accept
+
+  # fallback 用本地服务器 sequence
+  # 返回非国内 ip 则 drop_resp
+  - tag: query_is_local_ip
+    type: sequence
+    args:
+      - exec: $local_sequence
+      - matches: "!resp_ip $geoip_cn"
+        exec: drop_resp
+
+  # fallback 用远程服务器 sequence
+  - tag: query_is_remote
+    type: sequence
+    args:
+      - exec: $remote_sequence
+
+  # fallback 用远程服务器 sequence
+  - tag: fallback
+    type: fallback
+    args:
+      primary: query_is_local_ip
+      secondary: query_is_remote
+      threshold: 500
+      always_standby: true
+
+  # 查询国内域名
+  - tag: query_is_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_cn
+        exec: $local_sequence
+
+  # 查询国外域名
+  - tag: query_is_no_local_domain
+    type: sequence
+    args:
+      - matches: qname $geosite_no_cn
+        exec: $remote_sequence
+
+  # 主要的运行逻辑插件
+  # sequence 插件中调用的插件 tag 必须在 sequence 前定义，
+  # 否则 sequence 找不到对应插件。
+  - tag: main_sequence
+    type: sequence
+    args:
+      - exec: $lazy_cache
+      - exec: $query_is_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $query_is_no_local_domain
+      - exec: jump has_resp_sequence
+      - exec: $fallback
+
+  # 启动 udp 服务器。
+  - tag: udp_server
+    type: udp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"
+
+  # 启动 tcp 服务器。
+  - tag: tcp_server
+    type: tcp_server
+    args:
+      entry: main_sequence
+      listen: ":5335"

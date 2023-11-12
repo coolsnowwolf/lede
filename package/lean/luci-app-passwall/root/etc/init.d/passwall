@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=15
+
+CONFIG=passwall
+APP_FILE=/usr/share/${CONFIG}/app.sh
+LOCK_FILE_DIR=/var/lock
+LOCK_FILE=${LOCK_FILE_DIR}/${CONFIG}.lock
+
+set_lock() {
+	[ ! -d "$LOCK_FILE_DIR" ] && mkdir -p $LOCK_FILE_DIR
+	exec 999>"$LOCK_FILE"
+	flock -xn 999
+}
+
+unset_lock() {
+	flock -u 999
+	rm -rf "$LOCK_FILE"
+}
+
+unlock() {
+	failcount=1
+	while [ "$failcount" -le 10 ]; do
+		if [ -f "$LOCK_FILE" ]; then
+			let "failcount++"
+			sleep 1s
+			[ "$failcount" -ge 10 ] && unset_lock
+		else
+			break
+		fi
+	done
+}
+
+boot() {
+	local delay=$(uci -q get ${CONFIG}.@global_delay[0].start_delay || echo 1)
+	if [ "$delay" -gt 0 ]; then
+		$APP_FILE echolog "执行启动延时 $delay 秒后再启动!"
+		sleep $delay
+	fi
+	restart
+	touch ${LOCK_FILE_DIR}/${CONFIG}_ready.lock
+}
+
+start() {
+	set_lock
+	[ $? == 1 ] && $APP_FILE echolog "脚本已经在运行，不重复运行，退出." && exit 0
+	$APP_FILE start
+	unset_lock
+}
+
+stop() {
+	unlock
+	set_lock
+	[ $? == 1 ] && $APP_FILE echolog "停止脚本等待超时，不重复运行，退出." && exit 0
+	$APP_FILE stop
+	unset_lock
+}
+
+restart() {
+	set_lock
+	[ $? == 1 ] && $APP_FILE echolog "脚本已经在运行，不重复运行，退出." && exit 0
+	$APP_FILE stop
+	$APP_FILE start
+	unset_lock
+}

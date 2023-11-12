@@ -1,0 +1,249 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2020-2022, IrineSistiana
+#
+# Copyright (C) 2023, sbwml <admin@cooluc.com>
+#
+# This file is part of mosdns.
+#
+# mosdns is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# mosdns is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+
+START=99
+USE_PROCD=1
+
+PROG=/usr/bin/mosdns
+CONF=$(uci -q get mosdns.config.configfile)
+CRON_FILE=/etc/crontabs/root
+DUMP_FILE=/etc/mosdns/cache.dump
+DUMP_FILE_DEFAULT=/usr/share/mosdns/cache.dump
+DEFAULT_CONF=/usr/share/mosdns/default.yaml
+MOSDNS_SCRIPT=/usr/share/mosdns/mosdns.sh
+
+get_config() {
+    config_get enabled $1 enabled 0
+    config_get adblock $1 adblock 0
+    config_get ad_source $1 ad_source ""
+    config_get cache_size $1 cache_size 8000
+    config_get cache_survival_time $1 cache_survival_time 86400
+    config_get dump_file $1 dump_file 0
+    config_get dump_interval $1 dump_interval 3600
+    config_get enable_pipeline $1 enable_pipeline 0
+    config_get geo_auto_update $1 geo_auto_update 0
+    config_get geo_update_day_time $1 geo_update_day_time 2
+    config_get geo_update_week_time $1 geo_update_week_time "*"
+    config_get listen_port $1 listen_port 5335
+    config_get log_file $1 logfile "/var/log/mosdns.log"
+    config_get log_level $1 log_level "info"
+    config_get maximum_ttl_custom $1 maximum_ttl 0
+    config_get minimal_ttl_custom $1 minimal_ttl 0
+    config_get redirect $1 redirect 0
+    config_get prefer_ipv4 $1 prefer_ipv4 0
+    config_get remote_dns $1 remote_dns "tls://8.8.8.8 tls://1.1.1.1"
+    config_get custom_local_dns $1 custom_local_dns 0
+    config_get apple_optimization $1 apple_optimization 0
+    config_get bootstrap_dns $1 bootstrap_dns "119.29.29.29"
+    config_get listen_port_api $1 listen_port_api 9091
+    config_get concurrent $1 concurrent 1
+    config_get insecure_skip_verify $1 insecure_skip_verify 0
+    config_get idle_timeout $1 idle_timeout 30
+    config_get enable_ecs_remote $1 enable_ecs_remote 0
+    config_get remote_ecs_ip $1 remote_ecs_ip "110.34.181.1"
+    config_get dns_leak $1 dns_leak 0
+    config_get cloudflare $1 cloudflare 0
+}
+
+init_yaml() {
+    TMPDIR=$(mktemp -d) || exit 1
+    [ $enable_pipeline -eq 1 ] && enable_pipeline=true || enable_pipeline=false
+    [ $insecure_skip_verify -eq 1 ] && insecure_skip_verify=true || insecure_skip_verify=false
+    # China DNS
+    if [ "$custom_local_dns" -eq 1 ]; then
+        local_dns=$($MOSDNS_SCRIPT dns | awk -v s='        ' '{
+          for(i=1; i<=NF; i++) {
+            if ($i ~ /^h3:\/\//) {
+              printf "%s- addr: \"%s\"\n%s  bootstrap: '${bootstrap_dns}'\n%s  enable_pipeline: '${enable_pipeline}'\n%s  insecure_skip_verify: '${insecure_skip_verify}'\n%s  idle_timeout: '${idle_timeout}'\n%s  enable_http3: true\n",s,$i,s,s,s,s,s
+            } else {
+              printf "%s- addr: \"%s\"\n%s  bootstrap: '${bootstrap_dns}'\n%s  enable_pipeline: '${enable_pipeline}'\n%s  insecure_skip_verify: '${insecure_skip_verify}'\n%s  idle_timeout: '${idle_timeout}'\n",s,$i,s,s,s,s
+            }
+          }
+        }')
+    else
+        local_dns=$($MOSDNS_SCRIPT dns | awk '{for(i=1;i<=NF;i++)printf "%s- addr: \"%s\"\n",s,$i,s}' s='        ')
+    fi
+    # Remote DNS
+    remote_dns=$(echo $remote_dns | awk -v s='        ' '{
+      for(i=1; i<=NF; i++) {
+        if ($i ~ /^h3:\/\//) {
+          printf "%s- addr: \"%s\"\n%s  bootstrap: '${bootstrap_dns}'\n%s  enable_pipeline: '${enable_pipeline}'\n%s  insecure_skip_verify: '${insecure_skip_verify}'\n%s  idle_timeout: '${idle_timeout}'\n%s  enable_http3: true\n",s,$i,s,s,s,s,s
+        } else {
+          printf "%s- addr: \"%s\"\n%s  bootstrap: '${bootstrap_dns}'\n%s  enable_pipeline: '${enable_pipeline}'\n%s  insecure_skip_verify: '${insecure_skip_verify}'\n%s  idle_timeout: '${idle_timeout}'\n",s,$i,s,s,s,s
+        }
+      }
+    }')
+    # Write parameters
+    sed "s,log_level,$log_level,g;s,log_file,$log_file,g; \
+    s,listen_port,$listen_port,g;s,cache_size,$cache_size,g; \
+    s,cache_survival_time,$cache_survival_time,g; \
+    s,minimal_ttl_custom,$minimal_ttl_custom,g; \
+    s,maximum_ttl_custom,$maximum_ttl_custom,g; \
+    s,concurrent_num,$concurrent,g;s,api_port,$listen_port_api,g; \
+    s,remote_dns_pipeline,$enable_pipeline,g" $DEFAULT_CONF > $CONF
+    # Apple optimization
+    [ "$apple_optimization" != 1 ] && sed -i '/- exec: \$query_is_apple_domain/,+1d' $CONF
+    # Adlist
+    adlist=$($MOSDNS_SCRIPT adlist)
+    echo "${adlist}" > $TMPDIR/adlist_files.txt
+    sed -i -e '/ADBLOCK_LIST/{r '$TMPDIR/adlist_files.txt -e';d}' $CONF
+    # DNS
+    echo "${local_dns}" > $TMPDIR/local_dns.txt
+    echo "${remote_dns}" > $TMPDIR/remote_dns.txt
+    sed -i -e '/- addr: local_dns/{r '$TMPDIR/local_dns.txt -e';d};/- addr: remote_dns/{r '$TMPDIR/remote_dns.txt -e';d}' $CONF
+    # Convert HTTP/3 prefix format
+    sed -i 's/h3:\/\//https:\/\//g' $CONF
+    # Prefer IPv4
+    [ $prefer_ipv4 -ne 1 ] && sed -i "/prefer_ipv4/d" $CONF
+    # Cache dump
+    [ "$dump_file" -eq 1 ] && sed -i "/lazy_cache_ttl/a\      dump_file: $DUMP_FILE\n      dump_interval: $dump_interval" $CONF
+    [ "$dump_file" -eq 1 ] && [ ! -f $DUMP_FILE ] && cp -a $DUMP_FILE_DEFAULT $DUMP_FILE
+    [ "$dump_file" -eq 0 ] && \cp -a $DUMP_FILE_DEFAULT $DUMP_FILE
+    # ECS
+    if [ "$enable_ecs_remote" -eq 1 ]; then
+        sed -i "s,ecs_remote,ecs\ $remote_ecs_ip,g" $CONF
+    else
+        sed -i "/ecs_remote/d;" $CONF
+    fi
+    # DNS Leak
+    if [ $dns_leak -eq 1 ]; then
+        sed -i "s/primary: UNDEFINED/primary: forward_remote_upstream/g" $CONF
+    else
+        sed -i "s/primary: UNDEFINED/primary: query_is_non_local_ip/g" $CONF
+    fi
+    # Cloudflare IP
+    if [ $cloudflare -eq 1 ]; then
+        cloudflare_ip=$(sh $MOSDNS_SCRIPT cloudflare)
+        sed -i "s/CLOUDFLARE_IP/$cloudflare_ip/g" $CONF
+    else
+        sed -i '/\$cloudflare_cidr\|CLOUDFLARE_IP/d' $CONF
+    fi
+    # disable lazy_cache plugin when cache_size is 0
+    [ $cache_size -eq 0 ] && sed -i -E ':l;N;/exec: \$lazy_cache/s/(\n[^\n]*){6}$//;bl' $CONF
+    rm -rf $TMPDIR
+}
+
+service_triggers() {
+    procd_add_reload_trigger "mosdns"
+}
+
+restore_setting() {
+    rm -f /etc/mosdns/redirect.lock
+    sed -i "/list server/d" /etc/config/dhcp
+    uci set dhcp.@dnsmasq[0].noresolv='0'
+    uci del dhcp.@dnsmasq[0].cachesize
+    uci commit dhcp
+}
+
+redirect_setting() {
+    if [ "${CONF}" = "/etc/mosdns/config.yaml" ]; then
+        sed -i "/list server/d" /etc/config/dhcp
+        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$listen_port"
+        uci set dhcp.@dnsmasq[0].rebind_protection='0'
+        uci set dhcp.@dnsmasq[0].noresolv="1"
+        uci set dhcp.@dnsmasq[0].cachesize='0'
+        uci commit dhcp
+    else
+        sed -i "/list server/d" /etc/config/dhcp
+        uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$(awk -F'[:" ]+' '/^\s+listen:/{for(i=1;i<=NF;i++){if($i~/^[0-9]+$/){print $i;exit}}}' $CONF)"
+        uci set dhcp.@dnsmasq[0].rebind_protection='0'
+        uci set dhcp.@dnsmasq[0].noresolv="1"
+        uci set dhcp.@dnsmasq[0].cachesize='0'
+        uci commit dhcp
+    fi
+    touch /etc/mosdns/redirect.lock
+}
+
+reload_dnsmasq() {
+    /etc/init.d/dnsmasq reload
+}
+
+reload_service() {
+    stop
+    sleep 1
+    start
+}
+
+setcron() {
+    sed -i '/mosdns.sh/d' $CRON_FILE 2>/dev/null
+    [ "$geo_auto_update" -eq 1 ] && echo "0 $geo_update_day_time * * $geo_update_week_time $MOSDNS_SCRIPT geodata" >> $CRON_FILE
+    crontab $CRON_FILE
+}
+
+delcron() {
+    sed -i '/mosdns.sh/d' $CRON_FILE 2>/dev/null
+    crontab $CRON_FILE
+}
+
+v2dat_dump() {
+    $MOSDNS_SCRIPT v2dat_dump
+}
+
+start_service() {
+    config_load "mosdns"
+    config_foreach get_config "mosdns"
+    [ $enabled -ne 1 ] && return 1
+    delcron ; setcron
+    [ "${CONF}" = "/etc/mosdns/config.yaml" ] && init_yaml
+    :> $($MOSDNS_SCRIPT logfile)
+    if [ "${log_level}" = "error" ] || [ "${log_level}" = "warn" ]; then
+        v2dat_dump > /dev/null 2>&1
+    else
+        v2dat_dump >> $($MOSDNS_SCRIPT logfile) 2>&1
+    fi
+    procd_open_instance mosdns
+    procd_set_param env QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING=true
+    procd_set_param command $PROG start -c "$CONF"
+    procd_set_param user root
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn "${respawn_threshold:-3600}" "${respawn_timeout:-5}" "${respawn_retry:-5}"
+    procd_close_instance mosdns
+    [ "$redirect" -ne 1 ] && [ -f "/etc/mosdns/redirect.lock" ] && restore_setting
+    [ "$redirect" -eq 1 ] && redirect_setting
+    reload_dnsmasq
+    # Update Adlist
+    update_list=0
+    if [ "$adblock" -eq 1 ]; then
+        if [ -f "/etc/mosdns/rule/.ad_source" ]; then
+            for url in $ad_source;
+            do
+                [ "$url" = "geosite.dat" ] && continue
+		        if [ $(grep -c "$url" "/etc/mosdns/rule/.ad_source") -eq 0 ]; then
+                    update_list=1
+                    break
+                fi
+	        done
+        else
+            update_list=1
+        fi
+    fi
+    [ "$update_list" -eq 1 ] && $MOSDNS_SCRIPT adlist_update &> /dev/null &
+}
+
+stop_service() {
+    config_load "mosdns"
+    config_foreach get_config "mosdns"
+    [ "$enabled" -eq "0" ] && [ -f "/etc/mosdns/redirect.lock" ] && restore_setting
+    reload_dnsmasq
+    delcron
+}
