@@ -496,12 +496,12 @@ $(eval $(call KernelPackage,nbd))
 define KernelPackage/nvme
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=NVM Express block device
-  DEPENDS:=@PCI_SUPPORT
+  DEPENDS:=@PCI_SUPPORT +kmod-hwmon-core
   KCONFIG:= \
 	CONFIG_NVME_CORE \
 	CONFIG_BLK_DEV_NVME \
 	CONFIG_NVME_MULTIPATH=n \
-	CONFIG_NVME_HWMON=n
+	CONFIG_NVME_HWMON=y
   FILES:= \
 	$(LINUX_DIR)/drivers/nvme/host/nvme-core.ko \
 	$(LINUX_DIR)/drivers/nvme/host/nvme.ko
