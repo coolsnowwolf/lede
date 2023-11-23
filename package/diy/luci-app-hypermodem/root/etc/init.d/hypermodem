@@ -1,0 +1,122 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2006-2014 OpenWrt.org
+
+START=94
+STOP=13
+USE_PROCD=1
+
+pre_set()
+{
+	[ "$(uci get network.wan.ifname)" != "$1" ] && {
+		uci set network.wwan='interface'
+		uci set network.wwan.ifname="$1"
+		uci set network.wwan.proto='dhcp'
+		if [ "$ipv6" = 1 ]; then
+			uci set network.wwan6='interface'
+			uci set network.wwan6.ifname="$1"
+			uci set network.wwan6.proto='dhcpv6'
+			uci set network.wwan6.extendprefix='1'
+		fi
+		uci commit network
+
+		num=`uci show firewall |grep "name='wan'" |wc -l`
+		wwan_num=`uci get firewall.@zone[$num].network |grep -w wwan |wc -l`
+		wwan6_num=`uci get firewall.@zone[$num].network |grep -w wwan6 |wc -l`
+		if [ "$wwan_num" = "0" ]; then
+			uci add_list firewall.@zone[$num].network='wwan'
+		fi
+		if [ "$ipv6" = 1 ]; then
+			if [ "$wwan6_num" = "0" ]; then
+				uci add_list firewall.@zone[$num].network='wwan6'
+			fi
+		fi
+		uci commit firewall
+
+		ifup wwan
+		if [ "$ipv6" = 1 ]; then
+			ifup wwan6
+		fi
+	}
+
+	[ "$(uci get network.wan6.ifname)" == "$1" ] && {
+		uci set network.wan6.extendprefix='1'
+		uci commit network
+	}
+}
+
+run_dial()
+{
+	local enabled
+	config_get_bool enabled $1 enabled
+
+	if [ "$enabled" = "1" ]; then
+		local apn
+		local user
+		local password
+		local auth
+		local ipv6
+		local device
+
+		config_get apn $1 apn
+		config_get user $1 user
+		config_get password $1 password
+		config_get auth $1 auth
+		config_get ipv6 $1 ipv6
+		config_get device $1 device
+
+		devname="$(basename "$device")"
+		devicepath="$(find /sys/class/ -name $devname)"
+		devpath="$(readlink -f $devicepath/device/)"
+		ifname="$( ls "$devpath"/net )"
+
+		procd_open_instance
+		procd_set_param command quectel-CM
+		if [ "$ipv6" = 1 ]; then
+			procd_append_param command -4 -6
+		fi
+		if [ "$apn" != "" ];then
+			procd_append_param command -s $apn
+		fi
+		if [ "$user" != "" ]; then
+			procd_append_param command $user
+		fi
+		if [ "$password" != "" ]; then
+			procd_append_param command $password
+		fi
+		if [ "$auth" != "" ]; then
+			procd_append_param command $auth
+		fi
+		if [ "$device" != "" ]; then
+			procd_append_param command -i $ifname
+		fi
+		procd_set_param respawn
+		procd_close_instance
+
+		if [ -d /sys/class/net/rmnet_mhi0 ]; then
+			pre_set rmnet_mhi0.1
+		elif [ -d /sys/class/net/wwan0_1 ]; then
+			pre_set wwan0_1
+		elif [ -d /sys/class/net/wwan0.1 ]; then
+			pre_set wwan0.1
+		elif [ -d /sys/class/net/wwan0 ]; then
+			pre_set wwan0
+		fi
+	fi
+
+	sleep 3
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "hypermodem"
+}
+
+start_service() {
+	config_load hypermodem
+	config_foreach run_dial service
+}
+
+stop_service()
+{
+	killall quectel-CM >/dev/null 2>&1
+}
