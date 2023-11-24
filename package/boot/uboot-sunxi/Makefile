@@ -337,6 +337,15 @@ define U-Boot/orangepi_zero2
   ATF:=h616
 endef
 
+define U-Boot/orangepi_zero3
+  BUILD_SUBTARGET:=cortexa53
+  NAME:=Xunlong Orange Pi Zero3
+  BUILD_DEVICES:=xunlong_orangepi-zero3
+  DEPENDS:=+PACKAGE_u-boot-orangepi_zero3:trusted-firmware-a-sunxi-h616
+  UENV:=h616
+  ATF:=h616
+endef
+
 define U-Boot/Bananapi_M2_Ultra
   BUILD_SUBTARGET:=cortexa7
   NAME:=Bananapi M2 Ultra
@@ -400,6 +409,7 @@ UBOOT_TARGETS := \
 	orangepi_2 \
 	orangepi_pc2 \
 	orangepi_zero2 \
+	orangepi_zero3 \
 	pangolin \
 	pine64_plus \
 	Sinovoip_BPI_M3 \
