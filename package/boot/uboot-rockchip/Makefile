@@ -229,6 +229,17 @@ define U-Boot/nanopi-r5s-rk3568
   DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
+define U-Boot/nlnet-xgp-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=NLnet XGP Board
+  BUILD_DEVICES:= \
+    nlnet_xgp
+  DEPENDS:=+PACKAGE_u-boot-nlnet-xgp-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
+endef
+
 define U-Boot/opc-h68k-rk3568
   BUILD_SUBTARGET:=armv8
   NAME:=OPC-H68K Board
@@ -312,6 +323,7 @@ endef
 UBOOT_TARGETS := \
   lyt-t68m-rk3568 \
   mrkaio-m68s-rk3568 \
+  nlnet-xgp-rk3568 \
   opc-h68k-rk3568 \
   photonicat-rk3568 \
   radxa-e25-rk3568 \
