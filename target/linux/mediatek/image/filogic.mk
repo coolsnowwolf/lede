@@ -146,6 +146,23 @@ define Device/cetron_ct3003-mod
 endef
 TARGET_DEVICES += cetron_ct3003-mod
 
+define Device/glinet_gl-mt2500
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-MT2500
+  DEVICE_DTS := mt7981b-glinet-gl-mt2500
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_LOADADDR := 0x47000000
+  DEVICE_PACKAGES := kmod-usb3
+  SUPPORTED_DEVICES += glinet,mt2500-emmc
+  IMAGES := sysupgrade.bin
+  KERNEL := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += glinet_gl-mt2500
+
 define Device/glinet_gl-mt3000
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT3000
@@ -158,7 +175,7 @@ define Device/glinet_gl-mt3000
   KERNEL_IN_UBI := 1
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
-#TARGET_DEVICES += glinet_gl-mt3000
+TARGET_DEVICES += glinet_gl-mt3000
 
 define Device/glinet_gl-mt6000
   DEVICE_VENDOR := GL.iNet
@@ -172,7 +189,7 @@ define Device/glinet_gl-mt6000
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
-#TARGET_DEVICES += glinet_gl-mt6000
+TARGET_DEVICES += glinet_gl-mt6000
 
 define Device/h3c_magic-nx30-pro
   DEVICE_VENDOR := H3C

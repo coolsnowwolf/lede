@@ -29,6 +29,7 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
+	glinet,gl-mt2500|\
 	glinet,gl-mt6000)
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
@@ -74,6 +75,7 @@ platform_copy_config() {
 			;;
 		esac
 		;;
+	glinet,gl-mt2500|\
 	glinet,gl-mt6000)
 		emmc_copy_config
 		;;
