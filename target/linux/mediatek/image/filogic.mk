@@ -151,14 +151,9 @@ define Device/glinet_gl-mt2500
   DEVICE_MODEL := GL-MT2500
   DEVICE_DTS := mt7981b-glinet-gl-mt2500
   DEVICE_DTS_DIR := ../dts
-  DEVICE_DTS_LOADADDR := 0x47000000
-  DEVICE_PACKAGES := kmod-usb3
+  DEVICE_PACKAGES := e2fsprogs f2fsck mkf2fs kmod-usb3
   SUPPORTED_DEVICES += glinet,mt2500-emmc
   IMAGES := sysupgrade.bin
-  KERNEL := kernel-bin | lzma | \
-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
-  KERNEL_INITRAMFS := kernel-bin | lzma | \
-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += glinet_gl-mt2500
