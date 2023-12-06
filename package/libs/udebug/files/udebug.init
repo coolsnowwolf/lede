@@ -1,0 +1,55 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2021 OpenWrt.org
+
+START=11
+
+USE_PROCD=1
+PROG=/usr/sbin/udebugd
+
+start_service() {
+	procd_open_instance
+	procd_set_param command "$PROG"
+	procd_set_param respawn
+	procd_close_instance
+}
+
+get_vars() {
+	local cfg="$1"
+	uci show "udebug.$cfg" | while read LINE; do
+		cur="${LINE##udebug.$1.}"
+		[[ "$cur" = "$LINE" ]] && continue
+		var="${cur%%=*}"
+		[[ "$cur" = "$var" ]] && continue
+		echo "$var"
+	done
+}
+
+add_debug_service() {
+	local cfg="$1"
+
+	json_add_object "$cfg"
+	for var in $(get_vars "$cfg"); do
+		config_get val "$cfg" "$var"
+		json_add_string "$var" "$val"
+	done
+	json_close_object "$cfg"
+}
+
+reload_service() {
+	config_load udebug
+
+	json_init
+	json_add_object service
+	config_foreach add_debug_service service
+	json_close_object
+	ubus call udebug set_config "$(json_dump)"
+}
+
+service_triggers() {
+	procd_add_reload_trigger udebug
+}
+
+service_running() {
+	ubus -t 10 wait_for udebug
+	[ $? = 0 ] && reload_service
+}
