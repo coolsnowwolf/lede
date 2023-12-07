@@ -215,6 +215,20 @@ define Device/jcg_q30-pro
 endef
 TARGET_DEVICES += jcg_q30-pro
 
+define Device/jdcloud_re-cs-05
+  DEVICE_VENDOR := JDCloud
+  DEVICE_MODEL := AX6000
+  DEVICE_DTS := mt7986a-jdcloud-re-cs-05
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := e2fsprogs f2fsck mkf2fs kmod-mt7986-firmware mt7986-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGES := sysupgrade.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += jdcloud_re-cs-05
+
 define Device/mediatek_mt7986a-rfb
   DEVICE_VENDOR := MediaTek
   DEVICE_MODEL := MTK7986 rfba AP
