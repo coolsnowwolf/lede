@@ -1,0 +1,398 @@
+From d9962b0d42029bcb40fe3c38bce06d1870fa4df4 Mon Sep 17 00:00:00 2001
+From: Douglas Anderson <dianders@chromium.org>
+Date: Fri, 20 Oct 2023 14:06:59 -0700
+Subject: [PATCH] r8152: Block future register access if register access fails
+
+Even though the functions to read/write registers can fail, most of
+the places in the r8152 driver that read/write register values don't
+check error codes. The lack of error code checking is problematic in
+at least two ways.
+
+The first problem is that the r8152 driver often uses code patterns
+similar to this:
+  x = read_register()
+  x = x | SOME_BIT;
+  write_register(x);
+
+...with the above pattern, if the read_register() fails and returns
+garbage then we'll end up trying to write modified garbage back to the
+Realtek adapter. If the write_register() succeeds that's bad. Note
+that as of commit f53a7ad18959 ("r8152: Set memory to all 0xFFs on
+failed reg reads") the "garbage" returned by read_register() will at
+least be consistent garbage, but it is still garbage.
+
+It turns out that this problem is very serious. Writing garbage to
+some of the hardware registers on the Ethernet adapter can put the
+adapter in such a bad state that it needs to be power cycled (fully
+unplugged and plugged in again) before it can enumerate again.
+
+The second problem is that the r8152 driver generally has functions
+that are long sequences of register writes. Assuming everything will
+be OK if a random register write fails in the middle isn't a great
+assumption.
+
+One might wonder if the above two problems are real. You could ask if
+we would really have a successful write after a failed read. It turns
+out that the answer appears to be "yes, this can happen". In fact,
+we've seen at least two distinct failure modes where this happens.
+
+On a sc7180-trogdor Chromebook if you drop into kdb for a while and
+then resume, you can see:
+1. We get a "Tx timeout"
+2. The "Tx timeout" queues up a USB reset.
+3. In rtl8152_pre_reset() we try to reinit the hardware.
+4. The first several (2-9) register accesses fail with a timeout, then
+   things recover.
+
+The above test case was actually fixed by the patch ("r8152: Increase
+USB control msg timeout to 5000ms as per spec") but at least shows
+that we really can see successful calls after failed ones.
+
+On a different (AMD) based Chromebook with a particular adapter, we
+found that during reboot tests we'd also sometimes get a transitory
+failure. In this case we saw -EPIPE being returned sometimes. Retrying
+worked, but retrying is not always safe for all register accesses
+since reading/writing some registers might have side effects (like
+registers that clear on read).
+
+Let's fully lock out all register access if a register access fails.
+When we do this, we'll try to queue up a USB reset and try to unlock
+register access after the reset. This is slightly tricker than it
+sounds since the r8152 driver has an optimized reset sequence that
+only works reliably after probe happens. In order to handle this, we
+avoid the optimized reset if probe didn't finish. Instead, we simply
+retry the probe routine in this case.
+
+When locking out access, we'll use the existing infrastructure that
+the driver was using when it detected we were unplugged. This keeps us
+from getting stuck in delay loops in some parts of the driver.
+
+Signed-off-by: Douglas Anderson <dianders@chromium.org>
+Reviewed-by: Grant Grundler <grundler@chromium.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/usb/r8152.c | 207 ++++++++++++++++++++++++++++++++++------
+ 1 file changed, 176 insertions(+), 31 deletions(-)
+
+--- a/drivers/net/usb/r8152.c
++++ b/drivers/net/usb/r8152.c
+@@ -772,6 +772,9 @@ enum rtl8152_flags {
+ 	SCHEDULE_TASKLET,
+ 	GREEN_ETHERNET,
+ 	RX_EPROTO,
++	IN_PRE_RESET,
++	PROBED_WITH_NO_ERRORS,
++	PROBE_SHOULD_RETRY,
+ };
+ 
+ #define DEVICE_ID_THINKPAD_ONELINK_PLUS_DOCK		0x3054
+@@ -949,6 +952,8 @@ struct r8152 {
+ 	u8 version;
+ 	u8 duplex;
+ 	u8 autoneg;
++
++	unsigned int reg_access_reset_count;
+ };
+ 
+ /**
+@@ -1196,6 +1201,96 @@ static unsigned int agg_buf_sz = 16384;
+ 
+ #define RTL_LIMITED_TSO_SIZE	(size_to_mtu(agg_buf_sz) - sizeof(struct tx_desc))
+ 
++/* If register access fails then we block access and issue a reset. If this
++ * happens too many times in a row without a successful access then we stop
++ * trying to reset and just leave access blocked.
++ */
++#define REGISTER_ACCESS_MAX_RESETS	3
++
++static void rtl_set_inaccessible(struct r8152 *tp)
++{
++	set_bit(RTL8152_INACCESSIBLE, &tp->flags);
++	smp_mb__after_atomic();
++}
++
++static void rtl_set_accessible(struct r8152 *tp)
++{
++	clear_bit(RTL8152_INACCESSIBLE, &tp->flags);
++	smp_mb__after_atomic();
++}
++
++static
++int r8152_control_msg(struct r8152 *tp, unsigned int pipe, __u8 request,
++		      __u8 requesttype, __u16 value, __u16 index, void *data,
++		      __u16 size, const char *msg_tag)
++{
++	struct usb_device *udev = tp->udev;
++	int ret;
++
++	if (test_bit(RTL8152_INACCESSIBLE, &tp->flags))
++		return -ENODEV;
++
++	ret = usb_control_msg(udev, pipe, request, requesttype,
++			      value, index, data, size,
++			      USB_CTRL_GET_TIMEOUT);
++
++	/* No need to issue a reset to report an error if the USB device got
++	 * unplugged; just return immediately.
++	 */
++	if (ret == -ENODEV)
++		return ret;
++
++	/* If the write was successful then we're done */
++	if (ret >= 0) {
++		tp->reg_access_reset_count = 0;
++		return ret;
++	}
++
++	dev_err(&udev->dev,
++		"Failed to %s %d bytes at %#06x/%#06x (%d)\n",
++		msg_tag, size, value, index, ret);
++
++	/* Block all future register access until we reset. Much of the code
++	 * in the driver doesn't check for errors. Notably, many parts of the
++	 * driver do a read/modify/write of a register value without
++	 * confirming that the read succeeded. Writing back modified garbage
++	 * like this can fully wedge the adapter, requiring a power cycle.
++	 */
++	rtl_set_inaccessible(tp);
++
++	/* If probe hasn't yet finished, then we'll request a retry of the
++	 * whole probe routine if we get any control transfer errors. We
++	 * never have to clear this bit since we free/reallocate the whole "tp"
++	 * structure if we retry probe.
++	 */
++	if (!test_bit(PROBED_WITH_NO_ERRORS, &tp->flags)) {
++		set_bit(PROBE_SHOULD_RETRY, &tp->flags);
++		return ret;
++	}
++
++	/* Failing to access registers in pre-reset is not surprising since we
++	 * wouldn't be resetting if things were behaving normally. The register
++	 * access we do in pre-reset isn't truly mandatory--we're just reusing
++	 * the disable() function and trying to be nice by powering the
++	 * adapter down before resetting it. Thus, if we're in pre-reset,
++	 * we'll return right away and not try to queue up yet another reset.
++	 * We know the post-reset is already coming.
++	 */
++	if (test_bit(IN_PRE_RESET, &tp->flags))
++		return ret;
++
++	if (tp->reg_access_reset_count < REGISTER_ACCESS_MAX_RESETS) {
++		usb_queue_reset_device(tp->intf);
++		tp->reg_access_reset_count++;
++	} else if (tp->reg_access_reset_count == REGISTER_ACCESS_MAX_RESETS) {
++		dev_err(&udev->dev,
++			"Tried to reset %d times; giving up.\n",
++			REGISTER_ACCESS_MAX_RESETS);
++	}
++
++	return ret;
++}
++
+ static
+ int get_registers(struct r8152 *tp, u16 value, u16 index, u16 size, void *data)
+ {
+@@ -1206,9 +1301,10 @@ int get_registers(struct r8152 *tp, u16
+ 	if (!tmp)
+ 		return -ENOMEM;
+ 
+-	ret = usb_control_msg(tp->udev, tp->pipe_ctrl_in,
+-			      RTL8152_REQ_GET_REGS, RTL8152_REQT_READ,
+-			      value, index, tmp, size, USB_CTRL_GET_TIMEOUT);
++	ret = r8152_control_msg(tp, tp->pipe_ctrl_in,
++				RTL8152_REQ_GET_REGS, RTL8152_REQT_READ,
++				value, index, tmp, size, "read");
++
+ 	if (ret < 0)
+ 		memset(data, 0xff, size);
+ 	else
+@@ -1229,9 +1325,9 @@ int set_registers(struct r8152 *tp, u16
+ 	if (!tmp)
+ 		return -ENOMEM;
+ 
+-	ret = usb_control_msg(tp->udev, tp->pipe_ctrl_out,
+-			      RTL8152_REQ_SET_REGS, RTL8152_REQT_WRITE,
+-			      value, index, tmp, size, USB_CTRL_SET_TIMEOUT);
++	ret = r8152_control_msg(tp, tp->pipe_ctrl_out,
++				RTL8152_REQ_SET_REGS, RTL8152_REQT_WRITE,
++				value, index, tmp, size, "write");
+ 
+ 	kfree(tmp);
+ 
+@@ -1240,10 +1336,8 @@ int set_registers(struct r8152 *tp, u16
+ 
+ static void rtl_set_unplug(struct r8152 *tp)
+ {
+-	if (tp->udev->state == USB_STATE_NOTATTACHED) {
+-		set_bit(RTL8152_INACCESSIBLE, &tp->flags);
+-		smp_mb__after_atomic();
+-	}
++	if (tp->udev->state == USB_STATE_NOTATTACHED)
++		rtl_set_inaccessible(tp);
+ }
+ 
+ static int generic_ocp_read(struct r8152 *tp, u16 index, u16 size,
+@@ -8254,7 +8348,7 @@ static int rtl8152_pre_reset(struct usb_
+ 	struct r8152 *tp = usb_get_intfdata(intf);
+ 	struct net_device *netdev;
+ 
+-	if (!tp)
++	if (!tp || !test_bit(PROBED_WITH_NO_ERRORS, &tp->flags))
+ 		return 0;
+ 
+ 	netdev = tp->netdev;
+@@ -8269,7 +8363,9 @@ static int rtl8152_pre_reset(struct usb_
+ 	napi_disable(&tp->napi);
+ 	if (netif_carrier_ok(netdev)) {
+ 		mutex_lock(&tp->control);
++		set_bit(IN_PRE_RESET, &tp->flags);
+ 		tp->rtl_ops.disable(tp);
++		clear_bit(IN_PRE_RESET, &tp->flags);
+ 		mutex_unlock(&tp->control);
+ 	}
+ 
+@@ -8282,9 +8378,11 @@ static int rtl8152_post_reset(struct usb
+ 	struct net_device *netdev;
+ 	struct sockaddr sa;
+ 
+-	if (!tp)
++	if (!tp || !test_bit(PROBED_WITH_NO_ERRORS, &tp->flags))
+ 		return 0;
+ 
++	rtl_set_accessible(tp);
++
+ 	/* reset the MAC address in case of policy change */
+ 	if (determine_ethernet_addr(tp, &sa) >= 0) {
+ 		rtnl_lock();
+@@ -9482,17 +9580,29 @@ static u8 __rtl_get_hw_ver(struct usb_de
+ 	__le32 *tmp;
+ 	u8 version;
+ 	int ret;
++	int i;
+ 
+ 	tmp = kmalloc(sizeof(*tmp), GFP_KERNEL);
+ 	if (!tmp)
+ 		return 0;
+ 
+-	ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
+-			      RTL8152_REQ_GET_REGS, RTL8152_REQT_READ,
+-			      PLA_TCR0, MCU_TYPE_PLA, tmp, sizeof(*tmp),
+-			      USB_CTRL_GET_TIMEOUT);
+-	if (ret > 0)
+-		ocp_data = (__le32_to_cpu(*tmp) >> 16) & VERSION_MASK;
++	/* Retry up to 3 times in case there is a transitory error. We do this
++	 * since retrying a read of the version is always safe and this
++	 * function doesn't take advantage of r8152_control_msg().
++	 */
++	for (i = 0; i < 3; i++) {
++		ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
++				      RTL8152_REQ_GET_REGS, RTL8152_REQT_READ,
++				      PLA_TCR0, MCU_TYPE_PLA, tmp, sizeof(*tmp),
++				      USB_CTRL_GET_TIMEOUT);
++		if (ret > 0) {
++			ocp_data = (__le32_to_cpu(*tmp) >> 16) & VERSION_MASK;
++			break;
++		}
++	}
++
++	if (i != 0 && ret > 0)
++		dev_warn(&udev->dev, "Needed %d retries to read version\n", i);
+ 
+ 	kfree(tmp);
+ 
+@@ -9566,25 +9676,14 @@ u8 rtl8152_get_version(struct usb_interf
+ }
+ EXPORT_SYMBOL_GPL(rtl8152_get_version);
+ 
+-static int rtl8152_probe(struct usb_interface *intf,
+-			 const struct usb_device_id *id)
++static int rtl8152_probe_once(struct usb_interface *intf,
++			      const struct usb_device_id *id, u8 version)
+ {
+ 	struct usb_device *udev = interface_to_usbdev(intf);
+ 	struct r8152 *tp;
+ 	struct net_device *netdev;
+-	u8 version;
+ 	int ret;
+ 
+-	if (intf->cur_altsetting->desc.bInterfaceClass != USB_CLASS_VENDOR_SPEC)
+-		return -ENODEV;
+-
+-	if (!rtl_check_vendor_ok(intf))
+-		return -ENODEV;
+-
+-	version = rtl8152_get_version(intf);
+-	if (version == RTL_VER_UNKNOWN)
+-		return -ENODEV;
+-
+ 	usb_reset_device(udev);
+ 	netdev = alloc_etherdev(sizeof(struct r8152));
+ 	if (!netdev) {
+@@ -9757,10 +9856,20 @@ static int rtl8152_probe(struct usb_inte
+ 	else
+ 		device_set_wakeup_enable(&udev->dev, false);
+ 
++	/* If we saw a control transfer error while probing then we may
++	 * want to try probe() again. Consider this an error.
++	 */
++	if (test_bit(PROBE_SHOULD_RETRY, &tp->flags))
++		goto out2;
++
++	set_bit(PROBED_WITH_NO_ERRORS, &tp->flags);
+ 	netif_info(tp, probe, netdev, "%s\n", DRIVER_VERSION);
+ 
+ 	return 0;
+ 
++out2:
++	unregister_netdev(netdev);
++
+ out1:
+ 	tasklet_kill(&tp->tx_tl);
+ 	cancel_delayed_work_sync(&tp->hw_phy_work);
+@@ -9769,10 +9878,46 @@ out1:
+ 	rtl8152_release_firmware(tp);
+ 	usb_set_intfdata(intf, NULL);
+ out:
++	if (test_bit(PROBE_SHOULD_RETRY, &tp->flags))
++		ret = -EAGAIN;
++
+ 	free_netdev(netdev);
+ 	return ret;
+ }
+ 
++#define RTL8152_PROBE_TRIES	3
++
++static int rtl8152_probe(struct usb_interface *intf,
++			 const struct usb_device_id *id)
++{
++	u8 version;
++	int ret;
++	int i;
++
++	if (intf->cur_altsetting->desc.bInterfaceClass != USB_CLASS_VENDOR_SPEC)
++		return -ENODEV;
++
++	if (!rtl_check_vendor_ok(intf))
++		return -ENODEV;
++
++	version = rtl8152_get_version(intf);
++	if (version == RTL_VER_UNKNOWN)
++		return -ENODEV;
++
++	for (i = 0; i < RTL8152_PROBE_TRIES; i++) {
++		ret = rtl8152_probe_once(intf, id, version);
++		if (ret != -EAGAIN)
++			break;
++	}
++	if (ret == -EAGAIN) {
++		dev_err(&intf->dev,
++			"r8152 failed probe after %d tries; giving up\n", i);
++		return -ENODEV;
++	}
++
++	return ret;
++}
++
+ static void rtl8152_disconnect(struct usb_interface *intf)
+ {
+ 	struct r8152 *tp = usb_get_intfdata(intf);
