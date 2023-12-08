@@ -1,8 +1,8 @@
-# Welcome to Lean's git source of OpenWrt and packages
+# OpenWrt とパッケージの Lean の git ソースへようこそ
 
 I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_JA.md)
 
-## Official Channels
+## 公式チャンネル
 <!--
 如有技术问题需要讨论或者交流，欢迎加入以下群：
 1. QQ 讨论群： Op固件技术研究群 ,号码 891659613 ，加群链接：[点击加入](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群")
@@ -10,11 +10,11 @@ I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_J
 3. Rockchip RK3568 预编译固件发布 Release 下载更新地址 (包括 H68K )：<https://github.com/coolsnowwolf/lede/releases/tag/20220716>
 -->
 
-If you have technical questions for discussion or sharing, feel free to join the following channels:
-1. QQ Group: *OpenWRT Firmware Technical Research Group*, Group Number is `891659613`. Join the group: [Link](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群").
-    -  [Click to download QQ client](https://im.qq.com/pcqq).
-2. Telegram Group: *OpenWRT Firmware Technical Research Group*. Join the group: [Link](https://t.me/JhKgAA6Hx1 "OP 编译官方大群").
-3. Rockchip **RK3568** precompiled firmware release (including H68K): [Click to download](https://github.com/coolsnowwolf/lede/releases/tag/20220716).
+ディスカッションや共有したい技術的な質問がある場合は、以下のチャンネルにお気軽にご参加ください:
+1. QQ グループ: *OpenWRT ファームウェア技術研究グループ*、グループ番号は `891659613` です。グループに参加する: [リンク](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群")。
+    -  [クリックして QQ クライアントをダウンロードする](https://im.qq.com/pcqq)。
+2. Telegram グループ: *OpenWRT ファームウェア技術研究グループ*。グループに参加する: [リンク](https://t.me/JhKgAA6Hx1 "OP 编译官方大群")。
+3. Rockchip **RK3568** コンパイル済みファームウェアリリース (H68K を含む): [クリックしてダウンロード](https://github.com/coolsnowwolf/lede/releases/tag/20220716)。
 
 <div align="left">
     <a href="https://item.taobao.com/item.htm?spm=a230r.1.14.11.4bb55247rdHEAP&id=702787603594&ns=1&abbucket=17#detail
@@ -23,20 +23,20 @@ If you have technical questions for discussion or sharing, feel free to join the
     </a>
 </div>
 
-4. Rockchip **RK3588** precompiled firmware release (including H68K): [Click to download](https://github.com/coolsnowwolf/lede/releases/tag/20230609).
+4. Rockchip **RK3588**コンパイル済みファームウェアリリース（H68K を含む）: [クリックしてダウンロード](https://github.com/coolsnowwolf/lede/releases/tag/20230609)。
 
 
-## Notice
+## 注意
 <!--
 1. **不要用 root 用户进行编译**
 2. 国内用户编译前最好准备好梯子
 3. 默认登陆IP 192.168.1.1 密码 password
 -->
-1. **Never compile OpenWRT as `root`**
-2. If you are living in mainland China, please make sure you could visit the **REAL** Internet.
-3. Default login IP is `192.168.1.1`, password is `password`.
+1. **OpenWRT を決して `root` としてコンパイルしないこと**
+2. 中国本土にお住まいの方は、ぜひ **REAL** インターネットをご覧ください。
+3. デフォルトのログイン IP は `192.168.1.1` で、パスワードは `password` です。
 
-## How to Compile
+## コンパイル方法
 <!--
 1. 首先装好 Linux 系统，推荐 Debian 11 或 Ubuntu LTS
 2. 安装编译依赖
@@ -54,8 +54,8 @@ If you have technical questions for discussion or sharing, feel free to join the
    ```
 -->
 
-1. Install a Linux distribution, Debian 11 or Ubuntu LTS is recommended.
-2. Install dependencies:
+1. Linuxディストリビューションをインストールし、Debian 11 または Ubuntu LTS を推奨します。
+2. 依存関係をインストールする:
 
    ```bash
    sudo apt update -y
@@ -89,7 +89,7 @@ If you have technical questions for discussion or sharing, feel free to join the
    ```
 -->
 
-3. Clone the source code, update `feeds` and configure:
+3. ソースコードをクローンし、`feeds` を更新し、設定する:
 
    ```bash
    git clone https://github.com/coolsnowwolf/lede
@@ -99,8 +99,8 @@ If you have technical questions for discussion or sharing, feel free to join the
    make menuconfig
    ```
 
-4. Download libraries and compile firmware
-   > (`-j` is the thread count, single-thread is recommended for the first build):
+4. ライブラリのダウンロードとファームウェアのコンパイル
+   > (`-j` はスレッドカウント、最初のビルドはシングルスレッドを推奨):
 
    ```bash
    make -j8 download V=s
@@ -113,11 +113,11 @@ If you have technical questions for discussion or sharing, feel free to join the
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 -->
 
-These commands are supposed to compile the source code successfully.
-All source code of R23 is included, including IPK.
+これらのコマンドは、ソースコードを正常にコンパイルするためのものです。
+R23 のソースコードは IPK を含めてすべて含まれています。
 
-You can use this source code freely, but please link this GitHub repository when redistributing.
-Thank you for your cooperation!
+このソースコードはご自由にお使いいただけますが、再配布の際はこの GitHub リポジトリをリンクしてください。
+ご協力ありがとうございました！
 
 <!--
 二次编译：
@@ -143,7 +143,7 @@ make V=s -j$(nproc)
 编译完成后输出路径：bin/targets
 -->
 
-Rebuild:
+リビルド:
 
 ```bash
 cd lede
@@ -155,7 +155,7 @@ make download -j8
 make V=s -j$(nproc)
 ```
 
-If reconfiguration is need:
+再設定が必要な場合:
 
 ```bash
 rm -rf ./tmp && rm -rf .config
@@ -163,9 +163,9 @@ make menuconfig
 make V=s -j$(nproc)
 ```
 
-Build artifacts will be outputted to `bin/targets` directory.
+ビルドの成果物は `bin/targets` ディレクトリに出力されます。
 
-### If you are using WSL/WSL2 as your build environment
+### WSL/WSL2 をビルド環境として使用している場合
 
 <!--
 由于 WSL 的 PATH 中包含带有空格的 Windows 路径，有可能会导致编译失败，请在 `make` 前面加上：
@@ -174,10 +174,10 @@ Build artifacts will be outputted to `bin/targets` directory.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ```
 -->
-WSL's `PATH` potentially contain Windows paths with spaces, which may cause compilation failure. Please add the following lines to your local environment profiles before compiling:
+WSL の `PATH` には、Windows のパスが空白で含まれている可能性があり、コンパイルに失敗することがあります。コンパイルする前に、ローカルの環境プロファイルに以下の行を追加してください:
 
 ```bash
-# Update and reload your profile, ~/.bashrc for example.
+# 例えば、~/.bashrc などのプロファイルを更新した後、再読み込みを行う。
 cat << EOF >> ~/.bashrc
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 EOF
@@ -188,7 +188,7 @@ source ~/.bashrc
 由于默认情况下，装载到 WSL 发行版的 NTFS 格式的驱动器将不区分大小写，因此大概率在 WSL/WSL2 的编译检查中会返回以下错误：
 
 ```txt
-Build dependency: OpenWrt can only be built on a case-sensitive filesystem 
+Build dependency: OpenWrt can only be built on a case-sensitive filesystem
 ```
 
 一个比较简洁的解决方法是，在 `git clone` 前先创建 Repository 目录，并为其启用大小写敏感：
@@ -203,24 +203,24 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 > 对已经 `git clone` 完成的项目目录执行 `fsutil.exe` 命令无法生效，大小写敏感只对新增的文件变更有效。
 -->
 
-NTFS-formatted drives mounted to a WSL distribution will be case-insensitive by default. This will cause the following error when compiling in WSL/WSL2:
+WSL ディストリビューションにマウントされた NTFS フォーマットのドライブは、デフォルトで大文字と小文字が区別されません。このため、WSL/WSL2 でコンパイルすると、次のようなエラーが発生します:
 
 ```txt
-Build dependency: OpenWrt can only be built on a case-sensitive filesystem 
+Build dependency: OpenWrt can only be built on a case-sensitive filesystem
 ```
 
-A simple solution is to create a case-sensitive directory for the repository before `git clone`:
+単純な解決策は、`git clone` の前に大文字小文字を区別してリポジトリ用のディレクトリを作成することです:
 
 ```powershell
-# Open a terminal as administrator
+# 管理者としてターミナルを開く
 PS > fsutil.exe file setCaseSensitiveInfo <your_local_lede_path> enable
-# Clone this repository to the case-sensitive directory <your_local_lede_path>
+# 大文字と小文字を区別して、このリポジトリを <your_local_lede_path> ディレクトリにクローンする
 PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 ```
 
-> For directories that have already been `git clone`d, `fsutil.exe` will not take effect. Case sensitivity will only be enabled for new changes in the directory.
+> すでに `git clone` されたディレクトリでは、`fsutil.exe` は有効になりません。大文字小文字の区別はディレクトリの新しい変更に対してのみ有効になります。
 
-### macOS Compilation
+### macOS コンパイル
 <!--
 1. 在 AppStore 中安装 Xcode
 
@@ -253,18 +253,18 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 5. 重新加载一下 shell 启动文件 `source ~/.bashrc`，然后输入 `bash` 进入 bash shell，就可以和 Linux 一样正常编译了
 -->
 
-1. Install Xcode from AppStore
-2. Install Homebrew:
+1. AppStore から Xcode をインストールする
+2. Homebrew をインストールする:
    ```bash
    /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
    ```
-3. Install toolchain, dependencies and packages with Homebrew:
+3. Homebrew でツールチェーン、依存関係、パッケージをインストールする:
    ```bash
    brew unlink awk
    brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep make ncurses pkg-config wget quilt xz
    brew install gcc@11
    ```
-4. Update your system environment:
+4. システム環境のアップデート:
    ```bash
    echo 'export PATH="/usr/local/opt/coreutils/libexec/gnubin:$PATH"' >> ~/.bashrc
    echo 'export PATH="/usr/local/opt/findutils/libexec/gnubin:$PATH"' >> ~/.bashrc
@@ -274,9 +274,9 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
    echo 'export PATH="/usr/local/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
    echo 'export PATH="/usr/local/opt/make/libexec/gnubin:$PATH"' >> ~/.bashrc
    ```
-5. Reload your shell profile `source ~/.bashrc && bash`, then you can compile normally like Linux.
+5. シェルプロファイル `source ~/.bashrc && bash` を再読み込みすれば、Linux のように普通にコンパイルできます。
 
-## Declaration
+## 宣言
 <!--
 1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的；
 
@@ -287,12 +287,12 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 
 4. 存档版本仓库地址：<https://github.com/coolsnowwolf/openwrt>
 -->
-1. This source code doesn't contain any backdoors or closed source applications that can monitor/capture your HTTPS traffic. SSL security is the final castle of cyber security. Safety is what a firmware should do.
-2. Want to learn OpenWRT development but don't know how to start? Can't motivate yourself for self-learning? Do not have enough fundamental knowledge? Learn OpenWRT development with Mr. Zuo through his Beginner OpenWRT Training Course. Click [here](http://forgotfun.org/2018/04/openwrt-training-2018.html) to register.
-3. QCA IPQ60xx open source repository: <https://github.com/coolsnowwolf/openwrt-gl-ax1800>
-4. OpenWRT Archive repository: <https://github.com/coolsnowwolf/openwrt>
+1. このソースコードには、HTTPS トラフィックを監視／キャプチャできるバックドアやクローズドソースアプリケーションは含まれていません。SSL セキュリティはサイバーセキュリティの最後の城です。安全性はファームウェアがすべきことです。
+2. OpenWRT の開発を学びたいが、何から始めたらいいかわからないですか？自己学習のモチベーションが上がらない？基礎知識が足りない？ズオ氏の初心者 OpenWRT トレーニングコースで一緒に OpenWRT 開発を学びましょう。お申し込みは[こちら](http://forgotfun.org/2018/04/openwrt-training-2018.html)をクリックしてください。
+3. QCA IPQ60xx オープンソースリポジトリ: <https://github.com/coolsnowwolf/openwrt-gl-ax1800>
+4. OpenWRT アーカイブリポジトリ: <https://github.com/coolsnowwolf/openwrt>
 
-## Introduction to Software Routers
+## ソフトウェアルーター入門
 <!--
 硬酷R2 - N95/N300迷你四网HomeLab服务器
 
@@ -304,9 +304,9 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 -->
 Yingku R2 - N95/N300 Mini Four-Network HomeLab Server
 
-(Introduction page - Yingku Technology (support AliPay Huabei)):
+(紹介ページ - Yingku Technology (support AliPay Huabei)):
 
-[Pre-sale link](https://item.taobao.com/item.htm?ft=t&id=719159813003)
+[先行販売リンク](https://item.taobao.com/item.htm?ft=t&id=719159813003)
 <div align="left">
 <a href="https://item.taobao.com/item.htm?ft=t&id=719159813003">
   <img src="doc/r1.jpg" width = "600" alt="" align=center />
@@ -314,16 +314,16 @@ Yingku R2 - N95/N300 Mini Four-Network HomeLab Server
 </div>
 <br>
 
-## Donation
+## 寄付
 
 <!--
 如果你觉得此项目对你有帮助，可以捐助我们，以鼓励项目能持续发展，更加完善
 
  ![star](doc/star.png)
 -->
-If this project did helped you, please consider donating to support the development of this project.
+このプロジェクトがあなたのお役に立てたのであれば、このプロジェクトの発展を支援するための寄付をご検討ください。
 
-<div align="left">    
+<div align="left">
   <img src="./doc/star.png" width = "400" alt="" align=center />
 </div>
 <br>
