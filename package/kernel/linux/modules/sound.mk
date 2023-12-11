@@ -254,6 +254,18 @@ endef
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
 
 
+define KernelPackage/sound-soc-wm8960
+  TITLE:=SoC WM8960 codec support
+  KCONFIG:=CONFIG_SND_SOC_WM8960
+  FILES:=$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8960.ko
+  DEPENDS:=+kmod-sound-soc-core +kmod-i2c-core +kmod-regmap-i2c
+  AUTOLOAD:=$(call AutoProbe,snd-soc-wm8960)
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-soc-wm8960))
+
+
 define KernelPackage/sound-soc-spdif
   TITLE:=SoC S/PDIF codec support
   KCONFIG:=CONFIG_SND_SOC_SPDIF
