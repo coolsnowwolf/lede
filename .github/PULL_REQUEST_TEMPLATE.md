@@ -1,2 +1,4 @@
-Q：你知道这是`pull request`吗？(使用 "x" 选择)
-* [ ] 我知道
+# Pull Request 规则，创建时请删除
+
+- 禁止有关 "GitHub Actions" 的提交
+- 禁止使用 users.noreply.github.com 提交
