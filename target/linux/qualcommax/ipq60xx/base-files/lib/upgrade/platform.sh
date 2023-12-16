@@ -10,8 +10,10 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	cmiot,ax18|\
 	glinet,gl-ax1800|\
 	glinet,gl-axt1800|\
+	qihoo,360v6|\
 	xiaomi,rm1800)
 		nand_do_upgrade "$1"
 		;;
