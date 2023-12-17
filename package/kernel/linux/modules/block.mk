@@ -228,7 +228,7 @@ define KernelPackage/dm
     $(LINUX_DIR)/drivers/md/dm-log.ko \
     $(LINUX_DIR)/drivers/md/dm-mirror.ko \
     $(LINUX_DIR)/drivers/md/dm-region-hash.ko
-  AUTOLOAD:=$(call AutoLoad,30,dm-mod dm-log dm-region-hash dm-mirror dm-crypt)
+  AUTOLOAD:=$(call AutoLoad,30,dm-mod dm-log dm-region-hash dm-mirror dm-crypt,1)
 endef
 
 define KernelPackage/dm/description
@@ -450,7 +450,7 @@ define KernelPackage/loop
 	CONFIG_BLK_DEV_LOOP \
 	CONFIG_BLK_DEV_CRYPTOLOOP=n
   FILES:=$(LINUX_DIR)/drivers/block/loop.ko
-  AUTOLOAD:=$(call AutoLoad,30,loop)
+  AUTOLOAD:=$(call AutoLoad,30,loop,1)
 endef
 
 define KernelPackage/loop/description
@@ -496,12 +496,12 @@ $(eval $(call KernelPackage,nbd))
 define KernelPackage/nvme
   SUBMENU:=$(BLOCK_MENU)
   TITLE:=NVM Express block device
-  DEPENDS:=@PCI_SUPPORT
+  DEPENDS:=@PCI_SUPPORT +kmod-hwmon-core
   KCONFIG:= \
 	CONFIG_NVME_CORE \
 	CONFIG_BLK_DEV_NVME \
 	CONFIG_NVME_MULTIPATH=n \
-	CONFIG_NVME_HWMON=n
+	CONFIG_NVME_HWMON=y
   FILES:= \
 	$(LINUX_DIR)/drivers/nvme/host/nvme-core.ko \
 	$(LINUX_DIR)/drivers/nvme/host/nvme.ko
@@ -521,7 +521,7 @@ define KernelPackage/scsi-core
   TITLE:=SCSI device support
   KCONFIG:= \
 	CONFIG_SCSI \
-  CONFIG_SCSI_COMMON@ge5.15 \
+	CONFIG_SCSI_COMMON \
 	CONFIG_BLK_DEV_SD
   FILES:= \
 	$(LINUX_DIR)/drivers/scsi/scsi_mod.ko \

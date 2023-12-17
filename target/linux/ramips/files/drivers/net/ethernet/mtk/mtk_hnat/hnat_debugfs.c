@@ -2261,10 +2261,13 @@ static const struct debugfs_reg32 hnat_regs[] = {
 int hnat_init_debugfs(struct mtk_hnat *h)
 {
 	int ret = 0;
-	struct dentry *root;
-	struct dentry *file;
 	long i;
 	char name[16];
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
+	struct dentry *file;
+#endif
+	struct dentry *root;
 
 	root = debugfs_create_dir("hnat", NULL);
 	if (!root) {
@@ -2285,10 +2288,17 @@ int hnat_init_debugfs(struct mtk_hnat *h)
 		h->regset[i]->nregs = ARRAY_SIZE(hnat_regs);
 		h->regset[i]->base = h->ppe_base[i];
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 		snprintf(name, sizeof(name), "regdump%ld", i);
 		file = debugfs_create_regset32(name, S_IRUGO,
 					       root, h->regset[i]);
 		if (!file) {
+#else
+		debugfs_create_regset32(name, S_IRUGO,
+					root, h->regset[i]);
+		ret = snprintf(name, sizeof(name), "regdump%ld", i);
+		if (ret != strlen(name)) {
+#endif
 			dev_notice(h->dev, "%s:err at %d\n", __func__, __LINE__);
 			ret = -ENOMEM;
 			goto err1;

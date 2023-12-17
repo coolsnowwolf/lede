@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2007-2015 OpenWrt.org
+# Copyright (C) 2007-2023 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -10,10 +10,11 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=5.15.33-1
-PKG_RELEASE:=2
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.15.33/
-PKG_HASH:=1b6b3bded4c81814ebebe2d194c2f8966d2399005b85ebb0557285b6e73f5422
+PKG_VERSION:=6.1.24
+PKG_RELEASE:=3
+# PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.15.58/
+PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+PKG_HASH:=5d39aca7e34c33cb9b3e366117b2e86841b7bdd37933679d6b1e61be6b150648
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -162,7 +163,7 @@ endef
 define KernelPackage/mac80211-hwsim
   $(call KernelPackage/mac80211/Default)
   TITLE:=mac80211 HW simulation device
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11AX_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT
+  DEPENDS+= +kmod-mac80211 +@DRIVER_11AX_SUPPORT +@DRIVER_11AC_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mac80211_hwsim.ko
   AUTOLOAD:=$(call AutoProbe,mac80211_hwsim)
 endef
@@ -171,7 +172,7 @@ endef
 define KernelPackage/mt7601u
   $(call KernelPackage/mac80211/Default)
   TITLE:=MT7601U-based USB dongles Wireless Driver
-  DEPENDS+= +kmod-mac80211 +@DRIVER_11N_SUPPORT @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
+  DEPENDS+= +kmod-mac80211 @USB_SUPPORT +kmod-usb-core +mt7601u-firmware
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mediatek/mt7601u/mt7601u.ko
   AUTOLOAD:=$(call AutoProbe,mt7601u)
 endef
@@ -272,8 +273,8 @@ ifeq ($(BUILD_VARIANT),smallbuffers)
 	C_DEFINES+= -DCONFIG_ATH10K_SMALLBUFFERS
 endif
 
-MAKE_OPTS:= -C "$(PKG_BUILD_DIR)" \
-	$(KERNEL_MAKE_FLAGS) \
+MAKE_OPTS:= \
+	$(subst -C $(LINUX_DIR),-C "$(PKG_BUILD_DIR)",$(KERNEL_MAKEOPTS)) \
 	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) $(C_DEFINES)" \
 	KLIB_BUILD="$(LINUX_DIR)" \
 	MODPROBE=true \
@@ -306,12 +307,11 @@ define Build/Prepare
 		$(PKG_BUILD_DIR)/include/linux/crc8.h \
 		$(PKG_BUILD_DIR)/include/linux/eeprom_93cx6.h \
 		$(PKG_BUILD_DIR)/include/linux/wl12xx.h \
+		$(PKG_BUILD_DIR)/include/linux/mhi.h \
 		$(PKG_BUILD_DIR)/include/net/ieee80211.h \
 		$(PKG_BUILD_DIR)/backport-include/linux/bcm47xx_nvram.h
 
 	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(PKG_BUILD_DIR)/compat_version
-	sed -i '/#define is_signed_type/i#ifndef is_signed_type' $(PKG_BUILD_DIR)/include/linux/overflow.h
-	sed -i '/#define is_signed_type/a#endif' $(PKG_BUILD_DIR)/include/linux/overflow.h
 endef
 
 ifneq ($(CONFIG_PACKAGE_kmod-cfg80211),)
@@ -342,6 +342,7 @@ define Build/Patch
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mt7601u,mt7601u/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
@@ -357,6 +358,7 @@ define Quilt/Refresh/Package
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mt7601u,mt7601u/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)

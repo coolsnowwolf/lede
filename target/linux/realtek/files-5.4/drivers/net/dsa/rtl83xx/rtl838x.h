@@ -411,7 +411,7 @@ struct rtl838x_l2_entry {
 
 struct rtl838x_nexthop {
 	u16 id;		// ID in HW Nexthop table
-	u32 ip;		// IP Addres of nexthop
+	u32 ip;		// IP Address of nexthop
 	u32 dev_id;
 	u16 port;
 	u16 vid;

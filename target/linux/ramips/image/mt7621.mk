@@ -731,9 +731,9 @@ define Device/glinet_gl-mt1300
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT1300
-  DEVICE_PACKAGES := kmod-mt7615d_dbdc kmod-usb3 -luci-newapi -wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7615-firmware kmod-usb3 -uboot-envtools
 endef
-TARGET_DEVICES += glinet_gl-mt1300
+#TARGET_DEVICES += glinet_gl-mt1300
 
 define Device/gnubee_gb-pc1
   $(Device/dsa-migration)
@@ -801,6 +801,15 @@ define Device/hiwifi_hc5962
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3
 endef
 TARGET_DEVICES += hiwifi_hc5962
+
+define Device/ht-jsh_0211
+  $(Device/dsa-migration)
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := HT-JSH
+  DEVICE_MODEL := 0211
+  DEVICE_PACKAGES := kmod-mt7603
+endef
+TARGET_DEVICES += ht-jsh_0211
 
 define Device/iodata_wn-ax1167gr
   $(Device/dsa-migration)
@@ -1964,7 +1973,7 @@ define Device/zte_e8820s
   PAGESIZE := 2048
   KERNEL_SIZE := 4096k
   UBINIZE_OPTS := -E 5
-  IMAGE_SIZE := 32768k
+  IMAGE_SIZE := 129280k
   IMAGES += factory.bin
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
@@ -1972,6 +1981,6 @@ define Device/zte_e8820s
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := E8820S
   DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi
+	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
 endef
 TARGET_DEVICES += zte_e8820s

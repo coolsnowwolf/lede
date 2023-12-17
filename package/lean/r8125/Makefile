@@ -1,18 +1,18 @@
-# Attribution: https://gist.github.com/lenew/9b41ba901c3393047ede0766760f9d55
-
-#Put this source to 'package/lean/r8125' folder of OpenWRT/LEDE SDK
-#Build(make menuconfig, make defconfig, make)
+#
+# Download realtek r8125 linux driver from official site:
+# [https://www.realtek.com/component/zoo/category/network-interface-controllers-10-100-1000m-gigabit-ethernet-pci-express-software]
+#
 
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=r8125
-PKG_VERSION:=9.010.01-2
+PKG_VERSION:=9.012.03-1
 PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/awesometic/realtek-r8125-dkms/tar.gz/$(PKG_VERSION)?
-PKG_HASH:=b3e1b36578ba92a775049535e7434a9fc46710a721846c3706aca3d265db8cb9
+PKG_HASH:=7964aacf4a2873cbe4133aeca830bd0725f819ea286bab162026ff283510144f
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/realtek-$(PKG_NAME)-dkms-$(PKG_VERSION)
 
 PKG_LICENSE:=GPL-2.0-only

@@ -1,0 +1,150 @@
+From cfbd6de588ef659c198083205dc954a6d3ed2aec Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 29 Dec 2022 17:33:35 +0100
+Subject: [PATCH 4/5] net: dsa: qca8k: introduce single mii read/write lo/hi
+
+It may be useful to read/write just the lo or hi half of a reg.
+
+This is especially useful for phy poll with the use of mdio master.
+The mdio master reg is composed by the first 16 bit related to setup and
+the other half with the returned data or data to write.
+
+Refactor the mii function to permit single mii read/write of lo or hi
+half of the reg.
+
+Tested-by: Ronald Wahl <ronald.wahl@raritan.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca/qca8k-8xxx.c | 106 ++++++++++++++++++++++++-------
+ 1 file changed, 84 insertions(+), 22 deletions(-)
+
+--- a/drivers/net/dsa/qca/qca8k-8xxx.c
++++ b/drivers/net/dsa/qca/qca8k-8xxx.c
+@@ -37,42 +37,104 @@ qca8k_split_addr(u32 regaddr, u16 *r1, u
+ }
+ 
+ static int
+-qca8k_mii_read32(struct mii_bus *bus, int phy_id, u32 regnum, u32 *val)
++qca8k_mii_write_lo(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
+ {
+ 	int ret;
++	u16 lo;
+ 
+-	ret = bus->read(bus, phy_id, regnum);
+-	if (ret >= 0) {
+-		*val = ret;
+-		ret = bus->read(bus, phy_id, regnum + 1);
+-		*val |= ret << 16;
+-	}
++	lo = val & 0xffff;
++	ret = bus->write(bus, phy_id, regnum, lo);
++	if (ret < 0)
++		dev_err_ratelimited(&bus->dev,
++				    "failed to write qca8k 32bit lo register\n");
++
++	return ret;
++}
+ 
+-	if (ret < 0) {
++static int
++qca8k_mii_write_hi(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
++{
++	int ret;
++	u16 hi;
++
++	hi = (u16)(val >> 16);
++	ret = bus->write(bus, phy_id, regnum, hi);
++	if (ret < 0)
+ 		dev_err_ratelimited(&bus->dev,
+-				    "failed to read qca8k 32bit register\n");
+-		*val = 0;
+-		return ret;
+-	}
++				    "failed to write qca8k 32bit hi register\n");
+ 
++	return ret;
++}
++
++static int
++qca8k_mii_read_lo(struct mii_bus *bus, int phy_id, u32 regnum, u32 *val)
++{
++	int ret;
++
++	ret = bus->read(bus, phy_id, regnum);
++	if (ret < 0)
++		goto err;
++
++	*val = ret & 0xffff;
+ 	return 0;
++
++err:
++	dev_err_ratelimited(&bus->dev,
++			    "failed to read qca8k 32bit lo register\n");
++	*val = 0;
++
++	return ret;
+ }
+ 
+-static void
+-qca8k_mii_write32(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
++static int
++qca8k_mii_read_hi(struct mii_bus *bus, int phy_id, u32 regnum, u32 *val)
+ {
+-	u16 lo, hi;
+ 	int ret;
+ 
+-	lo = val & 0xffff;
+-	hi = (u16)(val >> 16);
++	ret = bus->read(bus, phy_id, regnum);
++	if (ret < 0)
++		goto err;
+ 
+-	ret = bus->write(bus, phy_id, regnum, lo);
+-	if (ret >= 0)
+-		ret = bus->write(bus, phy_id, regnum + 1, hi);
++	*val = ret << 16;
++	return 0;
++
++err:
++	dev_err_ratelimited(&bus->dev,
++			    "failed to read qca8k 32bit hi register\n");
++	*val = 0;
++
++	return ret;
++}
++
++static int
++qca8k_mii_read32(struct mii_bus *bus, int phy_id, u32 regnum, u32 *val)
++{
++	u32 hi, lo;
++	int ret;
++
++	*val = 0;
++
++	ret = qca8k_mii_read_lo(bus, phy_id, regnum, &lo);
+ 	if (ret < 0)
+-		dev_err_ratelimited(&bus->dev,
+-				    "failed to write qca8k 32bit register\n");
++		goto err;
++
++	ret = qca8k_mii_read_hi(bus, phy_id, regnum + 1, &hi);
++	if (ret < 0)
++		goto err;
++
++	*val = lo | hi;
++
++err:
++	return ret;
++}
++
++static void
++qca8k_mii_write32(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
++{
++	if (qca8k_mii_write_lo(bus, phy_id, regnum, val) < 0)
++		return;
++
++	qca8k_mii_write_hi(bus, phy_id, regnum + 1, val);
+ }
+ 
+ static int

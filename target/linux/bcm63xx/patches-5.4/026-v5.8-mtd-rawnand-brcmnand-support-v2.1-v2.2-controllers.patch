@@ -25,9 +25,9 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  	const unsigned int	*page_sizes;
 +	unsigned int		page_size_shift;
  	unsigned int		max_oob;
+ 	u32			ecc_level_shift;
  	u32			features;
- 
-@@ -269,6 +270,36 @@ enum brcmnand_reg {
+@@ -270,6 +271,36 @@ enum brcmnand_reg {
  	BRCMNAND_FC_BASE,
  };
  
@@ -64,7 +64,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  /* BRCMNAND v3.3-v4.0 */
  static const u16 brcmnand_regs_v33[] = {
  	[BRCMNAND_CMD_START]		=  0x04,
-@@ -467,6 +498,9 @@ enum {
+@@ -468,6 +499,9 @@ enum {
  	CFG_BUS_WIDTH			= BIT(CFG_BUS_WIDTH_SHIFT),
  	CFG_DEVICE_SIZE_SHIFT		= 24,
  
@@ -74,7 +74,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  	/* Only for pre-v7.1 (with no CFG_EXT register) */
  	CFG_PAGE_SIZE_SHIFT		= 20,
  	CFG_BLK_SIZE_SHIFT		= 28,
-@@ -502,12 +536,16 @@ static int brcmnand_revision_init(struct
+@@ -531,12 +565,16 @@ static int brcmnand_revision_init(struct
  {
  	static const unsigned int block_sizes_v6[] = { 8, 16, 128, 256, 512, 1024, 2048, 0 };
  	static const unsigned int block_sizes_v4[] = { 16, 128, 8, 512, 256, 1024, 2048, 0 };
@@ -93,7 +93,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  		dev_err(ctrl->dev, "version %#x not supported\n",
  			ctrl->nand_version);
  		return -ENODEV;
-@@ -524,6 +562,8 @@ static int brcmnand_revision_init(struct
+@@ -553,6 +591,8 @@ static int brcmnand_revision_init(struct
  		ctrl->reg_offsets = brcmnand_regs_v50;
  	else if (ctrl->nand_version >= 0x0303)
  		ctrl->reg_offsets = brcmnand_regs_v33;
@@ -102,7 +102,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  
  	/* Chip-select stride */
  	if (ctrl->nand_version >= 0x0701)
-@@ -549,14 +589,32 @@ static int brcmnand_revision_init(struct
+@@ -578,14 +618,32 @@ static int brcmnand_revision_init(struct
  		ctrl->max_page_size = 16 * 1024;
  		ctrl->max_block_size = 2 * 1024 * 1024;
  	} else {
@@ -138,7 +138,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  			ctrl->max_block_size = 512 * 1024;
  		}
  	}
-@@ -724,6 +782,9 @@ static void brcmnand_wr_corr_thresh(stru
+@@ -759,6 +817,9 @@ static void brcmnand_wr_corr_thresh(stru
  	enum brcmnand_reg reg = BRCMNAND_CORR_THRESHOLD;
  	int cs = host->cs;
  
@@ -148,7 +148,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  	if (ctrl->nand_version == 0x0702)
  		bits = 7;
  	else if (ctrl->nand_version >= 0x0600)
-@@ -782,8 +843,10 @@ static inline u32 brcmnand_spare_area_ma
+@@ -793,8 +854,10 @@ static inline u32 brcmnand_spare_area_ma
  		return GENMASK(7, 0);
  	else if (ctrl->nand_version >= 0x0600)
  		return GENMASK(6, 0);
@@ -159,8 +159,8 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
 +		return GENMASK(4, 0);
  }
  
- #define NAND_ACC_CONTROL_ECC_SHIFT	16
-@@ -2146,7 +2209,7 @@ static int brcmnand_set_cfg(struct brcmn
+ static inline u32 brcmnand_ecc_level_mask(struct brcmnand_controller *ctrl)
+@@ -2186,7 +2249,7 @@ static int brcmnand_set_cfg(struct brcmn
  		(!!(cfg->device_width == 16) << CFG_BUS_WIDTH_SHIFT) |
  		(device_size << CFG_DEVICE_SIZE_SHIFT);
  	if (cfg_offs == cfg_ext_offs) {
@@ -169,21 +169,7 @@ Link: https://lore.kernel.org/linux-mtd/20200522121524.4161539-6-noltari@gmail.c
  		       (block_size << CFG_BLK_SIZE_SHIFT);
  		nand_writereg(ctrl, cfg_offs, tmp);
  	} else {
-@@ -2158,9 +2221,11 @@ static int brcmnand_set_cfg(struct brcmn
- 
- 	tmp = nand_readreg(ctrl, acc_control_offs);
- 	tmp &= ~brcmnand_ecc_level_mask(ctrl);
--	tmp |= cfg->ecc_level << NAND_ACC_CONTROL_ECC_SHIFT;
- 	tmp &= ~brcmnand_spare_area_mask(ctrl);
--	tmp |= cfg->spare_area_size;
-+	if (ctrl->nand_version >= 0x0302) {
-+		tmp |= cfg->ecc_level << NAND_ACC_CONTROL_ECC_SHIFT;
-+		tmp |= cfg->spare_area_size;
-+	}
- 	nand_writereg(ctrl, acc_control_offs, tmp);
- 
- 	brcmnand_set_sector_size_1k(host, cfg->sector_size_1k);
-@@ -2530,6 +2595,8 @@ const struct dev_pm_ops brcmnand_pm_ops
+@@ -2570,6 +2633,8 @@ const struct dev_pm_ops brcmnand_pm_ops
  EXPORT_SYMBOL_GPL(brcmnand_pm_ops);
  
  static const struct of_device_id brcmnand_of_match[] = {

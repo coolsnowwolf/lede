@@ -85,7 +85,6 @@ define KernelPackage/fb
 	CONFIG_FRAMEBUFFER_CONSOLE=y \
 	CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY=y \
 	CONFIG_FRAMEBUFFER_CONSOLE_ROTATION=y \
-	CONFIG_FRAMEBUFFER_CONSOLE_LEGACY_ACCELERATION=y \
 	CONFIG_FONTS=y \
 	CONFIG_FONT_8x8=y \
 	CONFIG_FONT_8x16=y \
@@ -241,6 +240,23 @@ endef
 
 $(eval $(call KernelPackage,fb-tft-ili9486))
 
+define KernelPackage/media-core
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE=Multimedia support
+  HIDDEN:=1
+  KCONFIG:= \
+	CONFIG_MEDIA_SUPPORT \
+	CONFIG_MEDIA_CAMERA_SUPPORT=y
+  FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko
+  AUTOLOAD:=$(call AutoProbe,mc)
+endef
+
+define KernelPackage/media-core/description
+  Kernel modules for media controller support
+endef
+
+$(eval $(call KernelPackage,media-core))
+
 define KernelPackage/multimedia-input
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Multimedia input support
@@ -309,6 +325,20 @@ endef
 
 $(eval $(call KernelPackage,drm-ttm))
 
+
+define KernelPackage/drm-ttm-helper
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Helpers for ttm-based gem objects
+  HIDDEN:=1
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm-ttm
+  KCONFIG:=CONFIG_DRM_TTM_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_ttm_helper.ko
+  AUTOLOAD:=$(call AutoProbe,drm_ttm_helper)
+endef
+
+$(eval $(call KernelPackage,drm-ttm-helper))
+
+
 define KernelPackage/drm-kms-helper
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=CRTC helpers for KMS drivers
@@ -370,6 +400,8 @@ define KernelPackage/drm-imx
   TITLE:=Freescale i.MX DRM support
   DEPENDS:=@TARGET_imx +kmod-drm-kms-helper
   KCONFIG:=CONFIG_DRM_IMX \
+	CONFIG_DRM_FBDEV_EMULATION=y \
+	CONFIG_DRM_FBDEV_OVERALLOC=100 \
 	CONFIG_IMX_IPUV3_CORE \
 	CONFIG_RESET_CONTROLLER=y \
 	CONFIG_DRM_IMX_IPUV3 \
@@ -428,7 +460,8 @@ define KernelPackage/drm-imx-ldb
 	CONFIG_DRM_PANEL_S6E8AA0=n \
 	CONFIG_DRM_PANEL_SITRONIX_ST7789V=n
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/imx/imx-ldb.ko \
-	$(LINUX_DIR)/drivers/gpu/drm/panel/panel-simple.ko
+	$(LINUX_DIR)/drivers/gpu/drm/panel/panel-simple.ko \
+	$(LINUX_DIR)/drivers/gpu/drm/drm_dp_aux_bus.ko@gt5.10
   AUTOLOAD:=$(call AutoLoad,08,imx-ldb)
 endef
 
@@ -437,6 +470,37 @@ define KernelPackage/drm-imx-ldb/description
 endef
 
 $(eval $(call KernelPackage,drm-imx-ldb))
+
+define KernelPackage/drm-lima
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=DRM support for ARM Mali 400/450 GPU
+  DEPENDS:=@(TARGET_rockchip||TARGET_sunxi) +kmod-drm-sched
+  KCONFIG:=CONFIG_DRM_LIMA
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/lima/lima.ko
+  AUTOLOAD:=$(call AutoProbe,lima)
+endef
+
+define KernelPackage/drm-lima/description
+  DRM driver for ARM Mali 400/450 GPUs
+endef
+
+$(eval $(call KernelPackage,drm-lima))
+
+define KernelPackage/drm-panfrost
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=DRM support for ARM Mali Midgard/Bifrost GPUs
+  DEPENDS:=@(TARGET_rockchip||TARGET_sunxi) +kmod-drm-sched
+  KCONFIG:=CONFIG_DRM_PANFROST
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/panfrost/panfrost.ko
+  AUTOLOAD:=$(call AutoProbe,panfrost)
+endef
+
+define KernelPackage/drm-panfrost/description
+  DRM driver for ARM Mali Midgard (T6xx, T7xx, T8xx) and
+  Bifrost (G3x, G5x, G7x) GPUs
+endef
+
+$(eval $(call KernelPackage,drm-panfrost))
 
 define KernelPackage/drm-radeon
   SUBMENU:=$(VIDEO_MENU)
@@ -453,6 +517,20 @@ define KernelPackage/drm-radeon/description
 endef
 
 $(eval $(call KernelPackage,drm-radeon))
+
+define KernelPackage/drm-sched
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=DRM helper for ARM GPUs
+  DEPENDS:=+kmod-drm
+  HIDDEN:=1
+  KCONFIG:=CONFIG_DRM_SCHED
+  FILES:= \
+	$(LINUX_DIR)/drivers/gpu/drm/drm_shmem_helper.ko@gt5.17 \
+	$(LINUX_DIR)/drivers/gpu/drm/scheduler/gpu-sched.ko
+  AUTOLOAD:=$(call AutoProbe,gpu-sched)
+endef
+
+$(eval $(call KernelPackage,drm-sched))
 
 define KernelPackage/drm-nouveau
   SUBMENU:=$(VIDEO_MENU)
@@ -480,10 +558,9 @@ $(eval $(call KernelPackage,drm-nouveau))
 define KernelPackage/video-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Video4Linux support
-  DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core
+  DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core \
+	+LINUX_6_1:kmod-media-core
   KCONFIG:= \
-	CONFIG_MEDIA_SUPPORT \
-	CONFIG_MEDIA_CAMERA_SUPPORT=y \
 	CONFIG_VIDEO_DEV \
 	CONFIG_V4L_PLATFORM_DRIVERS=y
   FILES:= \

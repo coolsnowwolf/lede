@@ -1,0 +1,73 @@
+From a4165830ca237f2b3318faf62562bce8ce12a389 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 29 Dec 2022 17:33:36 +0100
+Subject: [PATCH 5/5] net: dsa: qca8k: improve mdio master read/write by using
+ single lo/hi
+
+Improve mdio master read/write by using singe mii read/write lo/hi.
+
+In a read and write we need to poll the mdio master regs in a busy loop
+to check for a specific bit present in the upper half of the reg. We can
+ignore the other half since it won't contain useful data. This will save
+an additional useless read for each read and write operation.
+
+In a read operation the returned data is present in the mdio master reg
+lower half. We can ignore the other half since it won't contain useful
+data. This will save an additional useless read for each read operation.
+
+In a read operation it's needed to just set the hi half of the mdio
+master reg as the lo half will be replaced by the result. This will save
+an additional useless write for each read operation.
+
+Tested-by: Ronald Wahl <ronald.wahl@raritan.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca/qca8k-8xxx.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/dsa/qca/qca8k-8xxx.c
++++ b/drivers/net/dsa/qca/qca8k-8xxx.c
+@@ -754,9 +754,9 @@ qca8k_mdio_busy_wait(struct mii_bus *bus
+ 
+ 	qca8k_split_addr(reg, &r1, &r2, &page);
+ 
+-	ret = read_poll_timeout(qca8k_mii_read32, ret1, !(val & mask), 0,
++	ret = read_poll_timeout(qca8k_mii_read_hi, ret1, !(val & mask), 0,
+ 				QCA8K_BUSY_WAIT_TIMEOUT * USEC_PER_MSEC, false,
+-				bus, 0x10 | r2, r1, &val);
++				bus, 0x10 | r2, r1 + 1, &val);
+ 
+ 	/* Check if qca8k_read has failed for a different reason
+ 	 * before returnting -ETIMEDOUT
+@@ -798,7 +798,7 @@ qca8k_mdio_write(struct qca8k_priv *priv
+ 
+ exit:
+ 	/* even if the busy_wait timeouts try to clear the MASTER_EN */
+-	qca8k_mii_write32(bus, 0x10 | r2, r1, 0);
++	qca8k_mii_write_hi(bus, 0x10 | r2, r1 + 1, 0);
+ 
+ 	mutex_unlock(&bus->mdio_lock);
+ 
+@@ -828,18 +828,18 @@ qca8k_mdio_read(struct qca8k_priv *priv,
+ 	if (ret)
+ 		goto exit;
+ 
+-	qca8k_mii_write32(bus, 0x10 | r2, r1, val);
++	qca8k_mii_write_hi(bus, 0x10 | r2, r1 + 1, val);
+ 
+ 	ret = qca8k_mdio_busy_wait(bus, QCA8K_MDIO_MASTER_CTRL,
+ 				   QCA8K_MDIO_MASTER_BUSY);
+ 	if (ret)
+ 		goto exit;
+ 
+-	ret = qca8k_mii_read32(bus, 0x10 | r2, r1, &val);
++	ret = qca8k_mii_read_lo(bus, 0x10 | r2, r1, &val);
+ 
+ exit:
+ 	/* even if the busy_wait timeouts try to clear the MASTER_EN */
+-	qca8k_mii_write32(bus, 0x10 | r2, r1, 0);
++	qca8k_mii_write_hi(bus, 0x10 | r2, r1 + 1, 0);
+ 
+ 	mutex_unlock(&bus->mdio_lock);
+ 

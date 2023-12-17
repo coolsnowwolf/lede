@@ -236,18 +236,6 @@ define U-Boot/mt7986_bananapi_bpi-r3-nor
   FIP_COMPRESS:=1
 endef
 
-define U-Boot/mt7986_xiaomi_redmi-router-ax6000
-  NAME:=Xiaomi Redmi AX6000
-  BUILD_SUBTARGET:=filogic
-  BUILD_DEVICES:=xiaomi_redmi-router-ax6000-ubootmod
-  UBOOT_CONFIG:=mt7986_xiaomi_redmi-ax6000
-  UBOOT_IMAGE:=u-boot.fip
-  BL2_BOOTDEV:=spim-nand
-  BL2_SOC:=mt7986
-  BL2_DDRTYPE:=ddr4
-  DEPENDS:=+trusted-firmware-a-mt7986-spim-nand-ddr4
-endef
-
 UBOOT_TARGETS := \
 	mt7620_mt7530_rfb \
 	mt7620_rfb \
@@ -268,7 +256,6 @@ UBOOT_TARGETS := \
 	mt7986_bananapi_bpi-r3-sdmmc \
 	mt7986_bananapi_bpi-r3-snand \
 	mt7986_bananapi_bpi-r3-nor \
-	mt7986_xiaomi_redmi-router-ax6000 \
 	mt7986_rfb
 
 ifdef CONFIG_TARGET_mediatek
