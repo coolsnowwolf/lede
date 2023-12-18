@@ -7,9 +7,6 @@
 
 include $(TOPDIR)/rules.mk
 
-RSTRIP:=:
-STRIP:=:
-
 PKG_NAME:=ath11k-firmware
 PKG_SOURCE_DATE:=2023-03-31
 PKG_SOURCE_VERSION:=a039049a9349722fa5c74185452ab04644a0d351
@@ -40,19 +37,9 @@ $(Package/ath11k-firmware-default)
   TITLE:=IPQ8074 ath11k firmware
 endef
 
-define Package/ath11k-firmware-qca6390
-$(Package/ath11k-firmware-default)
-  TITLE:=ath11k firmware for QCA6390 devices
-endef
-
 define Package/ath11k-firmware-qcn9074
 $(Package/ath11k-firmware-default)
   TITLE:=QCN9074 ath11k firmware
-endef
-
-define Package/ath11k-firmware-wcn6855
-$(Package/ath11k-firmware-default)
-  TITLE:=ath11k firmware for WCN6855 devices
 endef
 
 define Build/Compile
@@ -77,16 +64,6 @@ define Package/ath11k-firmware-ipq8074/install
 		$(1)/lib/firmware/IPQ8074/
 endef
 
-define Package/ath11k-firmware-qca6390/install
-	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA6390/hw2.0
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA6390/hw2.0/1.0.1/WLAN.HST.1.0.1-05266-QCAHSTSWPLZ_V2_TO_X86-1/* \
-		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/
-	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/QCA6390/hw2.0/board-2.bin \
-		$(1)/lib/firmware/ath11k/QCA6390/hw2.0/board-2.bin
-endef
-
 define Package/ath11k-firmware-qcn9074/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCN9074/hw1.0
 	$(INSTALL_DATA) \
@@ -97,6 +74,4 @@ define Package/ath11k-firmware-qcn9074/install
 endef
 
 $(eval $(call BuildPackage,ath11k-firmware-ipq8074))
-$(eval $(call BuildPackage,ath11k-firmware-qca6390))
 $(eval $(call BuildPackage,ath11k-firmware-qcn9074))
-$(eval $(call BuildPackage,ath11k-firmware-wcn6855))
