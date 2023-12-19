@@ -2096,8 +2096,8 @@ static int qmi_wwan_reset_resume(struct usb_interface *intf)
 
 static int rmnet_usb_bind(struct usbnet *dev, struct usb_interface *intf)
 {
-    dev_err(&intf->dev, "rmnet_usb_bind\n");
     int status = qmi_wwan_bind(dev, intf);
+    dev_err(&intf->dev, "rmnet_usb_bind\n");
 
     if (!status) {
         struct qmi_wwan_state *info = (void *)&dev->data;
