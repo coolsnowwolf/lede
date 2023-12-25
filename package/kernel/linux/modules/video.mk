@@ -243,6 +243,7 @@ $(eval $(call KernelPackage,fb-tft-ili9486))
 define KernelPackage/media-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Multimedia support
+  HIDDEN:=1
   KCONFIG:= \
 	CONFIG_MEDIA_SUPPORT \
 	CONFIG_MEDIA_CONTROLLER=y \
