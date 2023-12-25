@@ -243,9 +243,9 @@ $(eval $(call KernelPackage,fb-tft-ili9486))
 define KernelPackage/media-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Multimedia support
-  HIDDEN:=1
   KCONFIG:= \
 	CONFIG_MEDIA_SUPPORT \
+	CONFIG_MEDIA_CONTROLLER=y \
 	CONFIG_MEDIA_CAMERA_SUPPORT=y
   FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko
   AUTOLOAD:=$(call AutoProbe,mc)
@@ -559,7 +559,7 @@ define KernelPackage/video-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Video4Linux support
   DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core \
-	+LINUX_6_1:kmod-media-core
+	+kmod-media-core
   KCONFIG:= \
 	CONFIG_VIDEO_DEV \
 	CONFIG_V4L_PLATFORM_DRIVERS=y
