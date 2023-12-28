@@ -246,6 +246,7 @@ define KernelPackage/media-core
   HIDDEN:=1
   KCONFIG:= \
 	CONFIG_MEDIA_SUPPORT \
+	CONFIG_MEDIA_CONTROLLER=y \
 	CONFIG_MEDIA_CAMERA_SUPPORT=y
   FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko
   AUTOLOAD:=$(call AutoProbe,mc)
