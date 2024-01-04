@@ -1,0 +1,1867 @@
+From 3d833ad2cfc1ab503d9aae2967b7f10811bb3c9c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 1 Mar 2023 11:56:04 +0000
+Subject: [PATCH 7/7] net: ethernet: mtk_eth_soc: add paths and SerDes modes 
+ for MT7988
+
+MT7988 comes with a built-in 2.5G PHY as well as
+USXGMII/10GBase-KR/5GBase-KR compatible SerDes lanes for external PHYs.
+Add support for configuring the MAC and SerDes parts for the new paths.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/Kconfig        |   7 +
+ drivers/net/ethernet/mediatek/Makefile       |   1 +
+ drivers/net/ethernet/mediatek/mtk_eth_path.c | 154 +++-
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c  | 270 +++++-
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h  | 194 ++++-
+ drivers/net/ethernet/mediatek/mtk_usxgmii.c  | 835 +++++++++++++++++++
+ 6 files changed, 1428 insertions(+), 33 deletions(-)
+ create mode 100644 drivers/net/ethernet/mediatek/mtk_usxgmii.c
+
+--- a/drivers/net/ethernet/mediatek/Kconfig
++++ b/drivers/net/ethernet/mediatek/Kconfig
+@@ -25,6 +25,13 @@ config NET_MEDIATEK_SOC
+ 	  This driver supports the gigabit ethernet MACs in the
+ 	  MediaTek SoC family.
+ 
++config NET_MEDIATEK_SOC_USXGMII
++	bool "Support USXGMII SerDes on MT7988"
++	depends on (ARCH_MEDIATEK && ARM64) || COMPILE_TEST
++	def_bool NET_MEDIATEK_SOC != n
++	help
++	  Include support for 10G SerDes which can be found on MT7988.
++
+ config NET_MEDIATEK_STAR_EMAC
+ 	tristate "MediaTek STAR Ethernet MAC support"
+ 	select PHYLIB
+--- a/drivers/net/ethernet/mediatek/Makefile
++++ b/drivers/net/ethernet/mediatek/Makefile
+@@ -5,6 +5,7 @@
+ 
+ obj-$(CONFIG_NET_MEDIATEK_SOC) += mtk_eth.o
+ mtk_eth-y := mtk_eth_soc.o mtk_eth_path.o mtk_ppe.o mtk_ppe_debugfs.o mtk_ppe_offload.o
++mtk_eth-$(CONFIG_NET_MEDIATEK_SOC_USXGMII) += mtk_usxgmii.o
+ mtk_eth-$(CONFIG_NET_MEDIATEK_SOC_WED) += mtk_wed.o mtk_wed_mcu.o mtk_wed_wo.o
+ ifdef CONFIG_DEBUG_FS
+ mtk_eth-$(CONFIG_NET_MEDIATEK_SOC_WED) += mtk_wed_debugfs.o
+--- a/drivers/net/ethernet/mediatek/mtk_eth_path.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_path.c
+@@ -31,10 +31,20 @@ static const char *mtk_eth_path_name(u64
+ 		return "gmac2_rgmii";
+ 	case MTK_ETH_PATH_GMAC2_SGMII:
+ 		return "gmac2_sgmii";
++	case MTK_ETH_PATH_GMAC2_2P5GPHY:
++		return "gmac2_2p5gphy";
+ 	case MTK_ETH_PATH_GMAC2_GEPHY:
+ 		return "gmac2_gephy";
++	case MTK_ETH_PATH_GMAC3_SGMII:
++		return "gmac3_sgmii";
+ 	case MTK_ETH_PATH_GDM1_ESW:
+ 		return "gdm1_esw";
++	case MTK_ETH_PATH_GMAC1_USXGMII:
++		return "gmac1_usxgmii";
++	case MTK_ETH_PATH_GMAC2_USXGMII:
++		return "gmac2_usxgmii";
++	case MTK_ETH_PATH_GMAC3_USXGMII:
++		return "gmac3_usxgmii";
+ 	default:
+ 		return "unknown path";
+ 	}
+@@ -42,8 +52,8 @@ static const char *mtk_eth_path_name(u64
+ 
+ static int set_mux_gdm1_to_gmac1_esw(struct mtk_eth *eth, u64 path)
+ {
++	u32 val, mask, set, reg;
+ 	bool updated = true;
+-	u32 val, mask, set;
+ 
+ 	switch (path) {
+ 	case MTK_ETH_PATH_GMAC1_SGMII:
+@@ -59,10 +69,15 @@ static int set_mux_gdm1_to_gmac1_esw(str
+ 		break;
+ 	}
+ 
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3))
++		reg = MTK_MAC_MISC_V3;
++	else
++		reg = MTK_MAC_MISC;
++
+ 	if (updated) {
+-		val = mtk_r32(eth, MTK_MAC_MISC);
++		val = mtk_r32(eth, reg);
+ 		val = (val & mask) | set;
+-		mtk_w32(eth, val, MTK_MAC_MISC);
++		mtk_w32(eth, val, reg);
+ 	}
+ 
+ 	dev_dbg(eth->dev, "path %s in %s updated = %d\n",
+@@ -125,6 +140,31 @@ static int set_mux_u3_gmac2_to_qphy(stru
+ 	return 0;
+ }
+ 
++static int set_mux_gmac2_to_2p5gphy(struct mtk_eth *eth, u64 path)
++{
++	unsigned int val = 0;
++	bool updated = true;
++	int mac_id = 0;
++
++	regmap_read(eth->ethsys, ETHSYS_SYSCFG0, &val);
++
++	switch (path) {
++	case MTK_ETH_PATH_GMAC2_2P5GPHY:
++		val &= ~(u32)SYSCFG0_SGMII_GMAC2_V2;
++		mac_id = MTK_GMAC2_ID;
++		break;
++	default:
++		updated = false;
++		break;
++	};
++
++	if (updated)
++		regmap_update_bits(eth->ethsys, ETHSYS_SYSCFG0,
++				   SYSCFG0_SGMII_MASK, val);
++
++	return 0;
++}
++
+ static int set_mux_gmac1_gmac2_to_sgmii_rgmii(struct mtk_eth *eth, u64 path)
+ {
+ 	unsigned int val = 0;
+@@ -163,7 +203,61 @@ static int set_mux_gmac1_gmac2_to_sgmii_
+ 	return 0;
+ }
+ 
+-static int set_mux_gmac12_to_gephy_sgmii(struct mtk_eth *eth, u64 path)
++static int set_mux_gmac123_to_usxgmii(struct mtk_eth *eth, u64 path)
++{
++	unsigned int val = 0;
++	bool updated = true;
++	int mac_id = 0;
++
++	dev_dbg(eth->dev, "path %s in %s updated = %d\n",
++		mtk_eth_path_name(path), __func__, updated);
++
++	/* Disable SYSCFG1 SGMII */
++	regmap_read(eth->ethsys, ETHSYS_SYSCFG0, &val);
++
++	switch (path) {
++	case MTK_ETH_PATH_GMAC1_USXGMII:
++		val &= ~(u32)SYSCFG0_SGMII_GMAC1_V2;
++		mac_id = MTK_GMAC1_ID;
++		break;
++	case MTK_ETH_PATH_GMAC2_USXGMII:
++		val &= ~(u32)SYSCFG0_SGMII_GMAC2_V2;
++		mac_id = MTK_GMAC2_ID;
++		break;
++	case MTK_ETH_PATH_GMAC3_USXGMII:
++		val &= ~(u32)SYSCFG0_SGMII_GMAC3_V2;
++		mac_id = MTK_GMAC3_ID;
++		break;
++	default:
++		updated = false;
++	};
++
++	if (updated) {
++		regmap_update_bits(eth->ethsys, ETHSYS_SYSCFG0,
++				   SYSCFG0_SGMII_MASK, val);
++
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3) &&
++		    mac_id == MTK_GMAC2_ID) {
++			regmap_update_bits(eth->infra,
++					   TOP_MISC_NETSYS_PCS_MUX,
++					   NETSYS_PCS_MUX_MASK,
++					   MUX_G2_USXGMII_SEL);
++		}
++	}
++
++	/* Enable XGDM Path */
++	val = mtk_r32(eth, MTK_GDMA_EG_CTRL(mac_id));
++	val |= MTK_GDMA_XGDM_SEL;
++	mtk_w32(eth, val, MTK_GDMA_EG_CTRL(mac_id));
++
++	dev_dbg(eth->dev, "path %s in %s updated = %d\n",
++		mtk_eth_path_name(path), __func__, updated);
++
++
++	return 0;
++}
++
++static int set_mux_gmac123_to_gephy_sgmii(struct mtk_eth *eth, u64 path)
+ {
+ 	unsigned int val = 0;
+ 	bool updated = true;
+@@ -180,6 +274,9 @@ static int set_mux_gmac12_to_gephy_sgmii
+ 	case MTK_ETH_PATH_GMAC2_SGMII:
+ 		val |= SYSCFG0_SGMII_GMAC2_V2;
+ 		break;
++	case MTK_ETH_PATH_GMAC3_SGMII:
++		val |= SYSCFG0_SGMII_GMAC3_V2;
++		break;
+ 	default:
+ 		updated = false;
+ 	}
+@@ -208,13 +305,25 @@ static const struct mtk_eth_muxc mtk_eth
+ 		.cap_bit = MTK_ETH_MUX_U3_GMAC2_TO_QPHY,
+ 		.set_path = set_mux_u3_gmac2_to_qphy,
+ 	}, {
++		.name = "mux_gmac2_to_2p5gphy",
++		.cap_bit = MTK_ETH_MUX_GMAC2_TO_2P5GPHY,
++		.set_path = set_mux_gmac2_to_2p5gphy,
++	}, {
+ 		.name = "mux_gmac1_gmac2_to_sgmii_rgmii",
+ 		.cap_bit = MTK_ETH_MUX_GMAC1_GMAC2_TO_SGMII_RGMII,
+ 		.set_path = set_mux_gmac1_gmac2_to_sgmii_rgmii,
+ 	}, {
+ 		.name = "mux_gmac12_to_gephy_sgmii",
+ 		.cap_bit = MTK_ETH_MUX_GMAC12_TO_GEPHY_SGMII,
+-		.set_path = set_mux_gmac12_to_gephy_sgmii,
++		.set_path = set_mux_gmac123_to_gephy_sgmii,
++	}, {
++		.name = "mux_gmac123_to_gephy_sgmii",
++		.cap_bit = MTK_ETH_MUX_GMAC123_TO_GEPHY_SGMII,
++		.set_path = set_mux_gmac123_to_gephy_sgmii,
++	}, {
++		.name = "mux_gmac123_to_usxgmii",
++		.cap_bit = MTK_ETH_MUX_GMAC123_TO_USXGMII,
++		.set_path = set_mux_gmac123_to_usxgmii,
+ 	},
+ };
+ 
+@@ -243,16 +352,46 @@ static int mtk_eth_mux_setup(struct mtk_
+ 		}
+ 	}
+ 
++	dev_dbg(eth->dev, "leaving mux_setup %s\n",
++		mtk_eth_path_name(path));
++
+ out:
+ 	return err;
+ }
+ 
++int mtk_gmac_usxgmii_path_setup(struct mtk_eth *eth, int mac_id)
++{
++	u64 path;
++
++	path = (mac_id == MTK_GMAC1_ID) ?  MTK_ETH_PATH_GMAC1_USXGMII :
++	       (mac_id == MTK_GMAC2_ID) ?  MTK_ETH_PATH_GMAC2_USXGMII :
++					   MTK_ETH_PATH_GMAC3_USXGMII;
++
++	/* Setup proper MUXes along the path */
++	return mtk_eth_mux_setup(eth, path);
++}
++
+ int mtk_gmac_sgmii_path_setup(struct mtk_eth *eth, int mac_id)
+ {
+ 	u64 path;
+ 
+-	path = (mac_id == 0) ?  MTK_ETH_PATH_GMAC1_SGMII :
+-				MTK_ETH_PATH_GMAC2_SGMII;
++	path = (mac_id == MTK_GMAC1_ID) ? MTK_ETH_PATH_GMAC1_SGMII :
++	       (mac_id == MTK_GMAC2_ID) ? MTK_ETH_PATH_GMAC2_SGMII :
++					  MTK_ETH_PATH_GMAC3_SGMII;
++
++	/* Setup proper MUXes along the path */
++	return mtk_eth_mux_setup(eth, path);
++}
++
++int mtk_gmac_2p5gphy_path_setup(struct mtk_eth *eth, int mac_id)
++{
++	u64 path = 0;
++
++	if (mac_id == MTK_GMAC2_ID)
++		path = MTK_ETH_PATH_GMAC2_2P5GPHY;
++
++	if (!path)
++		return -EINVAL;
+ 
+ 	/* Setup proper MUXes along the path */
+ 	return mtk_eth_mux_setup(eth, path);
+@@ -282,4 +421,3 @@ int mtk_gmac_rgmii_path_setup(struct mtk
+ 	/* Setup proper MUXes along the path */
+ 	return mtk_eth_mux_setup(eth, path);
+ }
+-
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -480,6 +480,23 @@ static void mtk_gmac0_rgmii_adjust(struc
+ 	mtk_w32(eth, val, TRGMII_TCK_CTRL);
+ }
+ 
++static void mtk_setup_bridge_switch(struct mtk_eth *eth)
++{
++	int val;
++
++	/* Force Port1 XGMAC Link Up */
++	val = mtk_r32(eth, MTK_XGMAC_STS(MTK_GMAC1_ID));
++	mtk_w32(eth, val | MTK_XGMAC_FORCE_LINK(MTK_GMAC1_ID),
++		MTK_XGMAC_STS(MTK_GMAC1_ID));
++
++	/* Adjust GSW bridge IPG to 11*/
++	val = mtk_r32(eth, MTK_GSW_CFG);
++	val &= ~(GSWTX_IPG_MASK | GSWRX_IPG_MASK);
++	val |= (GSW_IPG_11 << GSWTX_IPG_SHIFT) |
++	       (GSW_IPG_11 << GSWRX_IPG_SHIFT);
++	mtk_w32(eth, val, MTK_GSW_CFG);
++}
++
+ static struct phylink_pcs *mtk_mac_select_pcs(struct phylink_config *config,
+ 					      phy_interface_t interface)
+ {
+@@ -494,6 +511,12 @@ static struct phylink_pcs *mtk_mac_selec
+ 		       0 : mac->id;
+ 
+ 		return eth->sgmii_pcs[sid];
++	} else if ((interface == PHY_INTERFACE_MODE_USXGMII ||
++		    interface == PHY_INTERFACE_MODE_10GKR ||
++		    interface == PHY_INTERFACE_MODE_5GBASER) &&
++		   MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3) &&
++		   mac->id != MTK_GMAC1_ID) {
++			return mtk_usxgmii_select_pcs(eth, mac->id);
+ 	}
+ 
+ 	return NULL;
+@@ -505,7 +528,7 @@ static void mtk_mac_config(struct phylin
+ 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+ 					   phylink_config);
+ 	struct mtk_eth *eth = mac->hw;
+-	int val, ge_mode, err = 0;
++	int val, ge_mode, force_link, err = 0;
+ 	u32 i;
+ 
+ 	/* MT76x8 has no hardware settings between for the MAC */
+@@ -549,6 +572,23 @@ static void mtk_mac_config(struct phylin
+ 					goto init_err;
+ 			}
+ 			break;
++		case PHY_INTERFACE_MODE_USXGMII:
++		case PHY_INTERFACE_MODE_10GKR:
++		case PHY_INTERFACE_MODE_5GBASER:
++			if (MTK_HAS_CAPS(eth->soc->caps, MTK_USXGMII)) {
++				err = mtk_gmac_usxgmii_path_setup(eth, mac->id);
++				if (err)
++					goto init_err;
++			}
++			break;
++		case PHY_INTERFACE_MODE_INTERNAL:
++			if (mac->id == MTK_GMAC2_ID &&
++			    MTK_HAS_CAPS(eth->soc->caps, MTK_2P5GPHY)) {
++				err = mtk_gmac_2p5gphy_path_setup(eth, mac->id);
++				if (err)
++					goto init_err;
++			}
++			break;
+ 		default:
+ 			goto err_phy;
+ 		}
+@@ -627,14 +667,78 @@ static void mtk_mac_config(struct phylin
+ 				   SYSCFG0_SGMII_MASK,
+ 				   ~(u32)SYSCFG0_SGMII_MASK);
+ 
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3)) {
++			mtk_xfi_pll_enable(eth);
++			mtk_sgmii_reset(eth, mac->id);
++			if (phylink_autoneg_inband(mode))
++				mtk_sgmii_setup_phya_gen1(eth, mac->id);
++			else
++				mtk_sgmii_setup_phya_gen2(eth, mac->id);
++		}
+ 		/* Save the syscfg0 value for mac_finish */
+ 		mac->syscfg0 = val;
+-	} else if (phylink_autoneg_inband(mode)) {
++	} else if (state->interface != PHY_INTERFACE_MODE_USXGMII &&
++		   state->interface != PHY_INTERFACE_MODE_10GKR &&
++		   state->interface != PHY_INTERFACE_MODE_5GBASER &&
++		   phylink_autoneg_inband(mode)) {
+ 		dev_err(eth->dev,
+-			"In-band mode not supported in non SGMII mode!\n");
++			"In-band mode not supported in non-SerDes modes!\n");
+ 		return;
+ 	}
+ 
++	/* Setup gmac */
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3) &&
++	    (mtk_interface_mode_is_xgmii(state->interface) ||
++	     mac->interface == PHY_INTERFACE_MODE_INTERNAL)) {
++		mtk_w32(mac->hw, MTK_GDMA_XGDM_SEL, MTK_GDMA_EG_CTRL(mac->id));
++		mtk_w32(mac->hw, MAC_MCR_FORCE_LINK_DOWN, MTK_MAC_MCR(mac->id));
++
++		switch (mac->id) {
++		case MTK_GMAC1_ID:
++			mtk_setup_bridge_switch(eth);
++			break;
++		case MTK_GMAC2_ID:
++			force_link = (mac->interface ==
++				      PHY_INTERFACE_MODE_INTERNAL) ?
++				      MTK_XGMAC_FORCE_LINK(mac->id) : 0;
++			val = mtk_r32(eth, MTK_XGMAC_STS(mac->id));
++			mtk_w32(eth, val | force_link,
++				MTK_XGMAC_STS(mac->id));
++			break;
++		case MTK_GMAC3_ID:
++			val = mtk_r32(eth, MTK_XGMAC_STS(mac->id));
++			mtk_w32(eth, val | MTK_XGMAC_FORCE_LINK(mac->id),
++				MTK_XGMAC_STS(mac->id));
++			break;
++		}
++	} else {
++		val = mtk_r32(eth, MTK_GDMA_EG_CTRL(mac->id));
++		mtk_w32(eth, val & ~MTK_GDMA_XGDM_SEL,
++			MTK_GDMA_EG_CTRL(mac->id));
++
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3)) {
++			switch (mac->id) {
++			case MTK_GMAC2_ID:
++			case MTK_GMAC3_ID:
++				val = mtk_r32(eth, MTK_XGMAC_STS(mac->id));
++				mtk_w32(eth,
++					val & ~MTK_XGMAC_FORCE_LINK(mac->id),
++					MTK_XGMAC_STS(mac->id));
++				break;
++			}
++		}
++
++/*
++		if (mac->type != mac_type) {
++			if (atomic_read(&reset_pending) == 0) {
++				atomic_inc(&force);
++				schedule_work(&eth->pending_work);
++				atomic_inc(&reset_pending);
++			} else
++				atomic_dec(&reset_pending);
++		}
++*/
++	}
+ 	return;
+ 
+ err_phy:
+@@ -675,11 +779,40 @@ static int mtk_mac_finish(struct phylink
+ 	return 0;
+ }
+ 
+-static void mtk_mac_pcs_get_state(struct phylink_config *config,
++static void mtk_xgdm_pcs_get_state(struct mtk_mac *mac,
++				  struct phylink_link_state *state)
++{
++	u32 sts = mtk_r32(mac->hw, MTK_XGMAC_STS(mac->id));
++
++	if (mac->id == MTK_GMAC2_ID)
++		sts = sts >> 16;
++
++	state->link = FIELD_GET(MTK_USXGMII_PCS_LINK, sts);
++	if (!state->link)
++		return;
++
++	state->duplex = DUPLEX_FULL;
++	state->interface = mac->interface;
++
++	switch (FIELD_GET(MTK_USXGMII_PCS_MODE, sts)) {
++	case 0:
++		state->speed = SPEED_10000;
++		break;
++	case 1:
++		state->speed = SPEED_5000;
++		break;
++	case 2:
++		state->speed = SPEED_2500;
++		break;
++	case 3:
++		state->speed = SPEED_1000;
++		break;
++	}
++}
++
++static void mtk_gdm_pcs_get_state(struct mtk_mac *mac,
+ 				  struct phylink_link_state *state)
+ {
+-	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+-					   phylink_config);
+ 	u32 pmsr = mtk_r32(mac->hw, MTK_MAC_MSR(mac->id));
+ 
+ 	state->link = (pmsr & MAC_MSR_LINK);
+@@ -707,15 +840,35 @@ static void mtk_mac_pcs_get_state(struct
+ 		state->pause |= MLO_PAUSE_TX;
+ }
+ 
++static void mtk_mac_pcs_get_state(struct phylink_config *config,
++				  struct phylink_link_state *state)
++{
++	struct mtk_mac *mac = container_of(config, struct mtk_mac,
++					   phylink_config);
++
++	if (mtk_interface_mode_is_xgmii(state->interface))
++		mtk_xgdm_pcs_get_state(mac, state);
++	else
++		mtk_gdm_pcs_get_state(mac, state);
++}
++
+ static void mtk_mac_link_down(struct phylink_config *config, unsigned int mode,
+ 			      phy_interface_t interface)
+ {
+ 	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+ 					   phylink_config);
+-	u32 mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
++	u32 mcr;
+ 
+-	mcr &= ~(MAC_MCR_TX_EN | MAC_MCR_RX_EN);
+-	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
++	if (!mtk_interface_mode_is_xgmii(interface)) {
++		mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
++		mcr &= ~(MAC_MCR_TX_EN | MAC_MCR_RX_EN);
++		mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
++	} else if (mac->id != MTK_GMAC1_ID) {
++		mcr = mtk_r32(mac->hw, MTK_XMAC_MCR(mac->id));
++		mcr &= 0xfffffff0;
++		mcr |= XMAC_MCR_TRX_DISABLE;
++		mtk_w32(mac->hw, mcr, MTK_XMAC_MCR(mac->id));
++	}
+ }
+ 
+ static void mtk_set_queue_speed(struct mtk_eth *eth, unsigned int idx,
+@@ -787,13 +940,11 @@ static void mtk_set_queue_speed(struct m
+ 	mtk_w32(eth, val, soc->reg_map->qdma.qtx_sch + ofs);
+ }
+ 
+-static void mtk_mac_link_up(struct phylink_config *config,
+-			    struct phy_device *phy,
+-			    unsigned int mode, phy_interface_t interface,
+-			    int speed, int duplex, bool tx_pause, bool rx_pause)
++static void mtk_gdm_mac_link_up(struct mtk_mac *mac,
++				struct phy_device *phy,
++				unsigned int mode, phy_interface_t interface,
++				int speed, int duplex, bool tx_pause, bool rx_pause)
+ {
+-	struct mtk_mac *mac = container_of(config, struct mtk_mac,
+-					   phylink_config);
+ 	u32 mcr;
+ 
+ 	mcr = mtk_r32(mac->hw, MTK_MAC_MCR(mac->id));
+@@ -827,6 +978,47 @@ static void mtk_mac_link_up(struct phyli
+ 	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
+ }
+ 
++static void mtk_xgdm_mac_link_up(struct mtk_mac *mac,
++				 struct phy_device *phy,
++				 unsigned int mode, phy_interface_t interface,
++				 int speed, int duplex, bool tx_pause, bool rx_pause)
++{
++	u32 mcr;
++
++	if (mac->id == MTK_GMAC1_ID)
++		return;
++
++	mcr = mtk_r32(mac->hw, MTK_XMAC_MCR(mac->id));
++
++	mcr &= ~(XMAC_MCR_FORCE_TX_FC |	XMAC_MCR_FORCE_RX_FC);
++	/* Configure pause modes -
++	 * phylink will avoid these for half duplex
++	 */
++	if (tx_pause)
++		mcr |= XMAC_MCR_FORCE_TX_FC;
++	if (rx_pause)
++		mcr |= XMAC_MCR_FORCE_RX_FC;
++
++	mcr &= ~(XMAC_MCR_TRX_DISABLE);
++	mtk_w32(mac->hw, mcr, MTK_XMAC_MCR(mac->id));
++}
++
++static void mtk_mac_link_up(struct phylink_config *config,
++			    struct phy_device *phy,
++			    unsigned int mode, phy_interface_t interface,
++			    int speed, int duplex, bool tx_pause, bool rx_pause)
++{
++	struct mtk_mac *mac = container_of(config, struct mtk_mac,
++					   phylink_config);
++
++	if (mtk_interface_mode_is_xgmii(interface))
++		mtk_xgdm_mac_link_up(mac, phy, mode, interface, speed, duplex,
++				     tx_pause, rx_pause);
++	else
++		mtk_gdm_mac_link_up(mac, phy, mode, interface, speed, duplex,
++				    tx_pause, rx_pause);
++}
++
+ static const struct phylink_mac_ops mtk_phylink_ops = {
+ 	.validate = phylink_generic_validate,
+ 	.mac_select_pcs = mtk_mac_select_pcs,
+@@ -880,10 +1072,21 @@ static int mtk_mdio_init(struct mtk_eth
+ 	}
+ 	divider = min_t(unsigned int, DIV_ROUND_UP(MDC_MAX_FREQ, max_clk), 63);
+ 
++	/* Configure MDC Turbo Mode */
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3)) {
++		val = mtk_r32(eth, MTK_MAC_MISC_V3);
++		val |= MISC_MDC_TURBO;
++		mtk_w32(eth, val, MTK_MAC_MISC_V3);
++	} else {
++		val = mtk_r32(eth, MTK_PPSC);
++		val |= PPSC_MDC_TURBO;
++		mtk_w32(eth, val, MTK_PPSC);
++	}
++
+ 	/* Configure MDC Divider */
+ 	val = mtk_r32(eth, MTK_PPSC);
+ 	val &= ~PPSC_MDC_CFG;
+-	val |= FIELD_PREP(PPSC_MDC_CFG, divider) | PPSC_MDC_TURBO;
++	val |= FIELD_PREP(PPSC_MDC_CFG, divider);
+ 	mtk_w32(eth, val, MTK_PPSC);
+ 
+ 	dev_dbg(eth->dev, "MDC is running on %d Hz\n", MDC_MAX_FREQ / divider);
+@@ -4487,8 +4690,8 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	const __be32 *_id = of_get_property(np, "reg", NULL);
+ 	phy_interface_t phy_mode;
+ 	struct phylink *phylink;
+-	struct mtk_mac *mac;
+ 	int id, err;
++	struct mtk_mac *mac;
+ 	int txqs = 1;
+ 
+ 	if (!_id) {
+@@ -4579,6 +4782,32 @@ static int mtk_add_mac(struct mtk_eth *e
+ 			  mac->phylink_config.supported_interfaces);
+ 	}
+ 
++	if (MTK_HAS_CAPS(mac->hw->soc->caps, MTK_USXGMII)) {
++		if (id == MTK_GMAC1_ID) {
++			mac->phylink_config.mac_capabilities = MAC_ASYM_PAUSE |
++							       MAC_SYM_PAUSE |
++							       MAC_10000FD;
++			phy_interface_zero(
++				mac->phylink_config.supported_interfaces);
++			__set_bit(PHY_INTERFACE_MODE_INTERNAL,
++				  mac->phylink_config.supported_interfaces);
++		} else {
++			mac->phylink_config.mac_capabilities |= MAC_5000FD | MAC_10000FD;
++			__set_bit(PHY_INTERFACE_MODE_5GBASER,
++				  mac->phylink_config.supported_interfaces);
++			__set_bit(PHY_INTERFACE_MODE_10GKR,
++				  mac->phylink_config.supported_interfaces);
++			__set_bit(PHY_INTERFACE_MODE_USXGMII,
++				  mac->phylink_config.supported_interfaces);
++		}
++	}
++
++	if (MTK_HAS_CAPS(mac->hw->soc->caps, MTK_2P5GPHY)) {
++		if (id == MTK_GMAC2_ID)
++			__set_bit(PHY_INTERFACE_MODE_INTERNAL,
++				  mac->phylink_config.supported_interfaces);
++	}
++
+ 	phylink = phylink_create(&mac->phylink_config,
+ 				 of_fwnode_handle(mac->of_node),
+ 				 phy_mode, &mtk_phylink_ops);
+@@ -4766,6 +4995,13 @@ static int mtk_probe(struct platform_dev
+ 
+ 		if (err)
+ 			return err;
++	}
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_USXGMII)) {
++		err = mtk_usxgmii_init(eth);
++
++		if (err)
++			return err;
+ 	}
+ 
+ 	if (eth->soc->required_pctl) {
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -126,6 +126,11 @@
+ #define MTK_GDMA_TO_PDMA	0x0
+ #define MTK_GDMA_DROP_ALL       0x7777
+ 
++/* GDM Egress Control Register */
++#define MTK_GDMA_EG_CTRL(x)	((x == MTK_GMAC3_ID) ?		\
++				 0x544 : 0x504 + (x * 0x1000))
++#define MTK_GDMA_XGDM_SEL	BIT(31)
++
+ /* Unicast Filter MAC Address Register - Low */
+ #define MTK_GDMA_MAC_ADRL(x)	(0x508 + (x * 0x1000))
+ 
+@@ -389,7 +394,26 @@
+ #define PHY_IAC_TIMEOUT		HZ
+ 
+ #define MTK_MAC_MISC		0x1000c
++#define MTK_MAC_MISC_V3		0x10010
+ #define MTK_MUX_TO_ESW		BIT(0)
++#define MISC_MDC_TURBO		BIT(4)
++
++/* XMAC status registers */
++#define MTK_XGMAC_STS(x)	((x == MTK_GMAC3_ID) ? 0x1001C : 0x1000C)
++#define MTK_XGMAC_FORCE_LINK(x)	((x == MTK_GMAC2_ID) ? BIT(31) : BIT(15))
++#define MTK_USXGMII_PCS_LINK	BIT(8)
++#define MTK_XGMAC_RX_FC		BIT(5)
++#define MTK_XGMAC_TX_FC		BIT(4)
++#define MTK_USXGMII_PCS_MODE	GENMASK(3, 1)
++#define MTK_XGMAC_LINK_STS	BIT(0)
++
++/* GSW bridge registers */
++#define MTK_GSW_CFG		(0x10080)
++#define GSWTX_IPG_MASK		GENMASK(19, 16)
++#define GSWTX_IPG_SHIFT		16
++#define GSWRX_IPG_MASK		GENMASK(3, 0)
++#define GSWRX_IPG_SHIFT		0
++#define GSW_IPG_11		11
+ 
+ /* Mac control registers */
+ #define MTK_MAC_MCR(x)		(0x10100 + (x * 0x100))
+@@ -414,6 +438,17 @@
+ #define MAC_MCR_FORCE_LINK	BIT(0)
+ #define MAC_MCR_FORCE_LINK_DOWN	(MAC_MCR_FORCE_MODE)
+ 
++/* Mac EEE control registers */
++#define MTK_MAC_EEE(x)		(0x10104 + (x * 0x100))
++#define MAC_EEE_WAKEUP_TIME_1000	GENMASK(31, 24)
++#define MAC_EEE_WAKEUP_TIME_100	GENMASK(23, 16)
++#define MAC_EEE_LPI_TXIDLE_THD	GENMASK(15, 8)
++#define MAC_EEE_RESV0		GENMASK(7, 4)
++#define MAC_EEE_CKG_TXILDE	BIT(3)
++#define MAC_EEE_CKG_RXLPI	BIT(2)
++#define MAC_EEE_TX_DOWN_REQ	BIT(1)
++#define MAC_EEE_LPI_MODE	BIT(0)
++
+ /* Mac status registers */
+ #define MTK_MAC_MSR(x)		(0x10108 + (x * 0x100))
+ #define MAC_MSR_EEE1G		BIT(7)
+@@ -458,6 +493,12 @@
+ #define INTF_MODE_RGMII_1000    (TRGMII_MODE | TRGMII_CENTRAL_ALIGNED)
+ #define INTF_MODE_RGMII_10_100  0
+ 
++/* XFI Mac control registers */
++#define MTK_XMAC_MCR(x)		(0x12000 + ((x - 1) * 0x1000))
++#define XMAC_MCR_TRX_DISABLE	0xf
++#define XMAC_MCR_FORCE_TX_FC	BIT(5)
++#define XMAC_MCR_FORCE_RX_FC	BIT(4)
++
+ /* GPIO port control registers for GMAC 2*/
+ #define GPIO_OD33_CTRL8		0x4c0
+ #define GPIO_BIAS_CTRL		0xed0
+@@ -483,6 +524,7 @@
+ #define SYSCFG0_SGMII_GMAC2    ((3 << 8) & SYSCFG0_SGMII_MASK)
+ #define SYSCFG0_SGMII_GMAC1_V2 BIT(9)
+ #define SYSCFG0_SGMII_GMAC2_V2 BIT(8)
++#define SYSCFG0_SGMII_GMAC3_V2 BIT(7)
+ 
+ 
+ /* ethernet subsystem clock register */
+@@ -509,16 +551,91 @@
+ #define ETHSYS_DMA_AG_MAP_QDMA	BIT(1)
+ #define ETHSYS_DMA_AG_MAP_PPE	BIT(2)
+ 
++/* USXGMII subsystem config registers */
++/* Register to control speed */
++#define RG_PHY_TOP_SPEED_CTRL1	0x80C
++#define USXGMII_RATE_UPDATE_MODE	BIT(31)
++#define USXGMII_MAC_CK_GATED	BIT(29)
++#define USXGMII_IF_FORCE_EN	BIT(28)
++#define USXGMII_RATE_ADAPT_MODE	GENMASK(10, 8)
++#define USXGMII_RATE_ADAPT_MODE_X1	0
++#define USXGMII_RATE_ADAPT_MODE_X2	1
++#define USXGMII_RATE_ADAPT_MODE_X4	2
++#define USXGMII_RATE_ADAPT_MODE_X10	3
++#define USXGMII_RATE_ADAPT_MODE_X100	4
++#define USXGMII_RATE_ADAPT_MODE_X5	5
++#define USXGMII_RATE_ADAPT_MODE_X50	6
++#define USXGMII_XFI_RX_MODE	GENMASK(6, 4)
++#define USXGMII_XFI_RX_MODE_10G	0
++#define USXGMII_XFI_RX_MODE_5G	1
++#define USXGMII_XFI_TX_MODE	GENMASK(2, 0)
++#define USXGMII_XFI_TX_MODE_10G	0
++#define USXGMII_XFI_TX_MODE_5G	1
++
++/* Register to control PCS AN */
++#define RG_PCS_AN_CTRL0		0x810
++#define USXGMII_AN_RESTART	BIT(31)
++#define USXGMII_AN_SYNC_CNT	GENMASK(30, 11)
++#define USXGMII_AN_ENABLE	BIT(0)
++
++#define RG_PCS_AN_CTRL2		0x818
++#define USXGMII_LINK_TIMER_IDLE_DETECT	GENMASK(29, 20)
++#define USXGMII_LINK_TIMER_COMP_ACK_DETECT	GENMASK(19, 10)
++#define USXGMII_LINK_TIMER_AN_RESTART	GENMASK(9, 0)
++
++/* Register to read PCS AN status */
++#define RG_PCS_AN_STS0		0x81c
++#define USXGMII_LPA_SPEED_MASK	GENMASK(11, 9)
++#define USXGMII_LPA_SPEED_10	0
++#define USXGMII_LPA_SPEED_100	1
++#define USXGMII_LPA_SPEED_1000	2
++#define USXGMII_LPA_SPEED_10000	3
++#define USXGMII_LPA_SPEED_2500	4
++#define USXGMII_LPA_SPEED_5000	5
++#define USXGMII_LPA_DUPLEX	BIT(12)
++#define USXGMII_LPA_LINK	BIT(15)
++#define USXGMII_LPA_LATCH	BIT(31)
++
++/* Register to control USXGMII XFI PLL digital */
++#define XFI_PLL_DIG_GLB8	0x08
++#define RG_XFI_PLL_EN		BIT(31)
++
++/* Register to control USXGMII XFI PLL analog */
++#define XFI_PLL_ANA_GLB8	0x108
++#define RG_XFI_PLL_ANA_SWWA	0x02283248
++
+ /* Infrasys subsystem config registers */
+ #define INFRA_MISC2            0x70c
+ #define CO_QPHY_SEL            BIT(0)
+ #define GEPHY_MAC_SEL          BIT(1)
+ 
++/* Toprgu subsystem config registers */
++#define TOPRGU_SWSYSRST		0x18
++#define SWSYSRST_UNLOCK_KEY	GENMASK(31, 24)
++#define SWSYSRST_XFI_PLL_GRST	BIT(16)
++#define SWSYSRST_XFI_PEXPT1_GRST	BIT(15)
++#define SWSYSRST_XFI_PEXPT0_GRST	BIT(14)
++#define SWSYSRST_XFI1_GRST	BIT(13)
++#define SWSYSRST_XFI0_GRST	BIT(12)
++#define SWSYSRST_SGMII1_GRST	BIT(2)
++#define SWSYSRST_SGMII0_GRST	BIT(1)
++#define TOPRGU_SWSYSRST_EN		0xFC
++
+ /* Top misc registers */
++#define TOP_MISC_NETSYS_PCS_MUX	0x84
++#define NETSYS_PCS_MUX_MASK	GENMASK(1, 0)
++#define	MUX_G2_USXGMII_SEL	BIT(1)
++#define MUX_HSGMII1_G1_SEL	BIT(0)
++
+ #define USB_PHY_SWITCH_REG	0x218
+ #define QPHY_SEL_MASK		GENMASK(1, 0)
+ #define SGMII_QPHY_SEL		0x2
+ 
++/* MDIO control */
++#define MII_MMD_ACC_CTL_REG	0x0d
++#define MII_MMD_ADDR_DATA_REG	0x0e
++#define MMD_OP_MODE_DATA	BIT(14)
++
+ /* MT7628/88 specific stuff */
+ #define MT7628_PDMA_OFFSET	0x0800
+ #define MT7628_SDM_OFFSET	0x0c00
+@@ -812,13 +929,6 @@ enum mtk_gmac_id {
+ 	MTK_GMAC_ID_MAX
+ };
+ 
+-/* GDM Type */
+-enum mtk_gdm_type {
+-	MTK_GDM_TYPE = 0,
+-	MTK_XGDM_TYPE,
+-	MTK_GDM_TYPE_MAX
+-};
+-
+ enum mtk_tx_buf_type {
+ 	MTK_TYPE_SKB,
+ 	MTK_TYPE_XDP_TX,
+@@ -905,6 +1015,7 @@ enum mkt_eth_capabilities {
+ 	MTK_TRGMII_BIT,
+ 	MTK_SGMII_BIT,
+ 	MTK_USXGMII_BIT,
++	MTK_2P5GPHY_BIT,
+ 	MTK_ESW_BIT,
+ 	MTK_GEPHY_BIT,
+ 	MTK_MUX_BIT,
+@@ -925,6 +1036,7 @@ enum mkt_eth_capabilities {
+ 	MTK_ETH_MUX_GDM1_TO_GMAC1_ESW_BIT,
+ 	MTK_ETH_MUX_GMAC2_GMAC0_TO_GEPHY_BIT,
+ 	MTK_ETH_MUX_U3_GMAC2_TO_QPHY_BIT,
++	MTK_ETH_MUX_GMAC2_TO_2P5GPHY_BIT,
+ 	MTK_ETH_MUX_GMAC1_GMAC2_TO_SGMII_RGMII_BIT,
+ 	MTK_ETH_MUX_GMAC12_TO_GEPHY_SGMII_BIT,
+ 	MTK_ETH_MUX_GMAC123_TO_GEPHY_SGMII_BIT,
+@@ -936,6 +1048,7 @@ enum mkt_eth_capabilities {
+ 	MTK_ETH_PATH_GMAC1_SGMII_BIT,
+ 	MTK_ETH_PATH_GMAC2_RGMII_BIT,
+ 	MTK_ETH_PATH_GMAC2_SGMII_BIT,
++	MTK_ETH_PATH_GMAC2_2P5GPHY_BIT,
+ 	MTK_ETH_PATH_GMAC2_GEPHY_BIT,
+ 	MTK_ETH_PATH_GMAC3_SGMII_BIT,
+ 	MTK_ETH_PATH_GDM1_ESW_BIT,
+@@ -949,6 +1062,7 @@ enum mkt_eth_capabilities {
+ #define MTK_TRGMII		BIT_ULL(MTK_TRGMII_BIT)
+ #define MTK_SGMII		BIT_ULL(MTK_SGMII_BIT)
+ #define MTK_USXGMII		BIT_ULL(MTK_USXGMII_BIT)
++#define MTK_2P5GPHY		BIT_ULL(MTK_2P5GPHY_BIT)
+ #define MTK_ESW			BIT_ULL(MTK_ESW_BIT)
+ #define MTK_GEPHY		BIT_ULL(MTK_GEPHY_BIT)
+ #define MTK_MUX			BIT_ULL(MTK_MUX_BIT)
+@@ -971,6 +1085,8 @@ enum mkt_eth_capabilities {
+ 	BIT_ULL(MTK_ETH_MUX_GMAC2_GMAC0_TO_GEPHY_BIT)
+ #define MTK_ETH_MUX_U3_GMAC2_TO_QPHY		\
+ 	BIT_ULL(MTK_ETH_MUX_U3_GMAC2_TO_QPHY_BIT)
++#define MTK_ETH_MUX_GMAC2_TO_2P5GPHY		\
++	BIT_ULL(MTK_ETH_MUX_GMAC2_TO_2P5GPHY_BIT)
+ #define MTK_ETH_MUX_GMAC1_GMAC2_TO_SGMII_RGMII	\
+ 	BIT_ULL(MTK_ETH_MUX_GMAC1_GMAC2_TO_SGMII_RGMII_BIT)
+ #define MTK_ETH_MUX_GMAC12_TO_GEPHY_SGMII	\
+@@ -986,6 +1102,7 @@ enum mkt_eth_capabilities {
+ #define MTK_ETH_PATH_GMAC1_SGMII	BIT_ULL(MTK_ETH_PATH_GMAC1_SGMII_BIT)
+ #define MTK_ETH_PATH_GMAC2_RGMII	BIT_ULL(MTK_ETH_PATH_GMAC2_RGMII_BIT)
+ #define MTK_ETH_PATH_GMAC2_SGMII	BIT_ULL(MTK_ETH_PATH_GMAC2_SGMII_BIT)
++#define MTK_ETH_PATH_GMAC2_2P5GPHY	BIT_ULL(MTK_ETH_PATH_GMAC2_2P5GPHY_BIT)
+ #define MTK_ETH_PATH_GMAC2_GEPHY	BIT_ULL(MTK_ETH_PATH_GMAC2_GEPHY_BIT)
+ #define MTK_ETH_PATH_GMAC3_SGMII	BIT_ULL(MTK_ETH_PATH_GMAC3_SGMII_BIT)
+ #define MTK_ETH_PATH_GDM1_ESW		BIT_ULL(MTK_ETH_PATH_GDM1_ESW_BIT)
+@@ -999,6 +1116,7 @@ enum mkt_eth_capabilities {
+ #define MTK_GMAC2_RGMII		(MTK_ETH_PATH_GMAC2_RGMII | MTK_RGMII)
+ #define MTK_GMAC2_SGMII		(MTK_ETH_PATH_GMAC2_SGMII | MTK_SGMII)
+ #define MTK_GMAC2_GEPHY		(MTK_ETH_PATH_GMAC2_GEPHY | MTK_GEPHY)
++#define MTK_GMAC2_2P5GPHY	(MTK_ETH_PATH_GMAC2_2P5GPHY | MTK_2P5GPHY)
+ #define MTK_GMAC3_SGMII		(MTK_ETH_PATH_GMAC3_SGMII | MTK_SGMII)
+ #define MTK_GDM1_ESW		(MTK_ETH_PATH_GDM1_ESW | MTK_ESW)
+ #define MTK_GMAC1_USXGMII	(MTK_ETH_PATH_GMAC1_USXGMII | MTK_USXGMII)
+@@ -1022,6 +1140,10 @@ enum mkt_eth_capabilities {
+ 	(MTK_ETH_MUX_GMAC1_GMAC2_TO_SGMII_RGMII | MTK_MUX | \
+ 	MTK_SHARED_SGMII)
+ 
++/* 2: GMAC2 -> XGMII */
++#define MTK_MUX_GMAC2_TO_2P5GPHY      \
++	(MTK_ETH_MUX_GMAC2_TO_2P5GPHY | MTK_MUX | MTK_INFRA)
++
+ /* 0: GMACx -> GEPHY, 1: GMACx -> SGMII where x is 1 or 2 */
+ #define MTK_MUX_GMAC12_TO_GEPHY_SGMII   \
+ 	(MTK_ETH_MUX_GMAC12_TO_GEPHY_SGMII | MTK_MUX)
+@@ -1080,7 +1202,8 @@ enum mkt_eth_capabilities {
+ 		       MTK_MUX_GMAC123_TO_GEPHY_SGMII |		\
+ 		       MTK_NETSYS_V3 | MTK_RSTCTRL_PPE1 |	\
+ 		       MTK_GMAC1_USXGMII | MTK_GMAC2_USXGMII |	\
+-		       MTK_GMAC3_USXGMII | MTK_MUX_GMAC123_TO_USXGMII)
++		       MTK_GMAC3_USXGMII | MTK_MUX_GMAC123_TO_USXGMII | \
++		       MTK_GMAC2_2P5GPHY | MTK_MUX_GMAC2_TO_2P5GPHY)
+ 
+ struct mtk_tx_dma_desc_info {
+ 	dma_addr_t	addr;
+@@ -1186,6 +1309,22 @@ struct mtk_soc_data {
+ 
+ #define MTK_DMA_MONITOR_TIMEOUT		msecs_to_jiffies(1000)
+ 
++/* struct mtk_usxgmii_pcs - This structure holds each usxgmii regmap and
++ *			associated data
++ * @regmap:		The register map pointing at the range used to setup
++ *			USXGMII modes
++ * @interface:		Currently selected interface mode
++ * @id:			The element is used to record the index of PCS
++ * @pcs:		Phylink PCS structure
++ */
++struct mtk_usxgmii_pcs {
++	struct mtk_eth		*eth;
++	struct regmap		*regmap;
++	phy_interface_t		interface;
++	u8			id;
++	struct phylink_pcs	pcs;
++};
++
+ /* struct mtk_eth -	This is the main datasructure for holding the state
+  *			of the driver
+  * @dev:		The device pointer
+@@ -1206,6 +1345,11 @@ struct mtk_soc_data {
+  * @infra:              The register map pointing at the range used to setup
+  *                      SGMII and GePHY path
+  * @sgmii_pcs:		Pointers to mtk-pcs-lynxi phylink_pcs instances
++ * @usxgmii_pll:	The register map pointing at the range used to control
++ *			the USXGMII SerDes PLL
++ * @regmap_pextp:	The register map pointing at the range used to setup
++ *			PHYA
++ * @usxgmii_pcs:	Pointer to array of pointers to struct for USXGMII PCS
+  * @pctl:		The register map pointing at the range used to setup
+  *			GMAC port drive/slew values
+  * @dma_refcnt:		track how many netdevs are using the DMA engine
+@@ -1247,7 +1391,11 @@ struct mtk_eth {
+ 	unsigned long			sysclk;
+ 	struct regmap			*ethsys;
+ 	struct regmap			*infra;
++	struct regmap			*toprgu;
+ 	struct phylink_pcs		**sgmii_pcs;
++	struct regmap			*usxgmii_pll;
++	struct regmap			**regmap_pextp;
++	struct mtk_usxgmii_pcs		**usxgmii_pcs;
+ 	struct regmap			*pctl;
+ 	bool				hwlro;
+ 	refcount_t			dma_refcnt;
+@@ -1403,6 +1551,19 @@ static inline u32 mtk_get_ib2_multicast_
+ 	return MTK_FOE_IB2_MULTICAST;
+ }
+ 
++static inline bool mtk_interface_mode_is_xgmii(phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GKR:
++	case PHY_INTERFACE_MODE_5GBASER:
++		return true;
++		break;
++	default:
++		return false;
++	}
++}
++
+ /* read the hardware status register */
+ void mtk_stats_update_mac(struct mtk_mac *mac);
+ 
+@@ -1410,8 +1571,10 @@ void mtk_w32(struct mtk_eth *eth, u32 va
+ u32 mtk_r32(struct mtk_eth *eth, unsigned reg);
+ 
+ int mtk_gmac_sgmii_path_setup(struct mtk_eth *eth, int mac_id);
++int mtk_gmac_2p5gphy_path_setup(struct mtk_eth *eth, int mac_id);
+ int mtk_gmac_gephy_path_setup(struct mtk_eth *eth, int mac_id);
+ int mtk_gmac_rgmii_path_setup(struct mtk_eth *eth, int mac_id);
++int mtk_gmac_usxgmii_path_setup(struct mtk_eth *eth, int mac_id);
+ 
+ int mtk_eth_offload_init(struct mtk_eth *eth);
+ int mtk_eth_setup_tc(struct net_device *dev, enum tc_setup_type type,
+@@ -1421,5 +1584,20 @@ int mtk_flow_offload_cmd(struct mtk_eth
+ void mtk_flow_offload_cleanup(struct mtk_eth *eth, struct list_head *list);
+ void mtk_eth_set_dma_device(struct mtk_eth *eth, struct device *dma_dev);
+ 
++#ifdef CONFIG_NET_MEDIATEK_SOC_USXGMII
++struct phylink_pcs *mtk_usxgmii_select_pcs(struct mtk_eth *eth, int id);
++int mtk_usxgmii_init(struct mtk_eth *eth);
++int mtk_xfi_pll_enable(struct mtk_eth *eth);
++void mtk_sgmii_setup_phya_gen1(struct mtk_eth *eth, int mac_id);
++void mtk_sgmii_setup_phya_gen2(struct mtk_eth *eth, int mac_id);
++void mtk_sgmii_reset(struct mtk_eth *eth, int mac_id);
++#else
++static inline struct phylink_pcs *mtk_usxgmii_select_pcs(struct mtk_eth *eth, int id) { return NULL; }
++static inline int mtk_usxgmii_init(struct mtk_eth *eth) { return 0; }
++static inline int mtk_xfi_pll_enable(struct mtk_eth *eth) { return 0; }
++static inline void mtk_sgmii_setup_phya_gen1(struct mtk_eth *eth, int mac_id) { }
++static inline void mtk_sgmii_setup_phya_gen2(struct mtk_eth *eth, int mac_id) { }
++static inline void mtk_sgmii_reset(struct mtk_eth *eth, int mac_id) { }
++#endif /* NET_MEDIATEK_SOC_USXGMII */
+ 
+ #endif /* MTK_ETH_H */
+--- /dev/null
++++ b/drivers/net/ethernet/mediatek/mtk_usxgmii.c
+@@ -0,0 +1,835 @@
++/* SPDX-License-Identifier: GPL-2.0
++ *
++ * Copyright (c) 2022 MediaTek Inc.
++ * Author: Henry Yen <henry.yen@mediatek.com>
++ *         Daniel Golle <daniel@makrotopia.org>
++ */
++
++#include <linux/mfd/syscon.h>
++#include <linux/of.h>
++#include <linux/regmap.h>
++#include "mtk_eth_soc.h"
++
++static struct mtk_usxgmii_pcs *pcs_to_mtk_usxgmii_pcs(struct phylink_pcs *pcs)
++{
++	return container_of(pcs, struct mtk_usxgmii_pcs, pcs);
++}
++
++static int mtk_xfi_pextp_init(struct mtk_eth *eth)
++{
++	struct device *dev = eth->dev;
++	struct device_node *r = dev->of_node;
++	struct device_node *np;
++	int i;
++
++	eth->regmap_pextp = devm_kcalloc(dev, eth->soc->num_devs, sizeof(eth->regmap_pextp), GFP_KERNEL);
++	if (!eth->regmap_pextp)
++		return -ENOMEM;
++
++	for (i = 0; i < eth->soc->num_devs; i++) {
++		np = of_parse_phandle(r, "mediatek,xfi_pextp", i);
++		if (!np)
++			break;
++
++		eth->regmap_pextp[i] = syscon_node_to_regmap(np);
++		if (IS_ERR(eth->regmap_pextp[i]))
++			return PTR_ERR(eth->regmap_pextp[i]);
++	}
++
++	return 0;
++}
++
++static int mtk_xfi_pll_init(struct mtk_eth *eth)
++{
++	struct device_node *r = eth->dev->of_node;
++	struct device_node *np;
++
++	np = of_parse_phandle(r, "mediatek,xfi_pll", 0);
++	if (!np)
++		return -1;
++
++	eth->usxgmii_pll = syscon_node_to_regmap(np);
++	if (IS_ERR(eth->usxgmii_pll))
++		return PTR_ERR(eth->usxgmii_pll);
++
++	return 0;
++}
++
++static int mtk_toprgu_init(struct mtk_eth *eth)
++{
++	struct device_node *r = eth->dev->of_node;
++	struct device_node *np;
++
++	np = of_parse_phandle(r, "mediatek,toprgu", 0);
++	if (!np)
++		return -1;
++
++	eth->toprgu = syscon_node_to_regmap(np);
++	if (IS_ERR(eth->toprgu))
++		return PTR_ERR(eth->toprgu);
++
++	return 0;
++}
++
++int mtk_xfi_pll_enable(struct mtk_eth *eth)
++{
++	u32 val = 0;
++
++	if (!eth->usxgmii_pll)
++		return -EINVAL;
++
++	/* Add software workaround for USXGMII PLL TCL issue */
++	regmap_write(eth->usxgmii_pll, XFI_PLL_ANA_GLB8, RG_XFI_PLL_ANA_SWWA);
++
++	regmap_read(eth->usxgmii_pll, XFI_PLL_DIG_GLB8, &val);
++	val |= RG_XFI_PLL_EN;
++	regmap_write(eth->usxgmii_pll, XFI_PLL_DIG_GLB8, val);
++
++	return 0;
++}
++
++static int mtk_mac2xgmii_id(struct mtk_eth *eth, int mac_id)
++{
++	int xgmii_id = mac_id;
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3)) {
++		switch (mac_id) {
++		case MTK_GMAC1_ID:
++		case MTK_GMAC2_ID:
++			xgmii_id = 1;
++			break;
++		case MTK_GMAC3_ID:
++			xgmii_id = 0;
++			break;
++		default:
++			xgmii_id = -1;
++		}
++	}
++
++	return xgmii_id;
++}
++
++static int mtk_xgmii2mac_id(struct mtk_eth *eth, int xgmii_id)
++{
++	int mac_id = xgmii_id;
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V3)) {
++		switch (xgmii_id) {
++		case 0:
++			mac_id = 2;
++			break;
++		case 1:
++			mac_id = 1;
++			break;
++		default:
++			mac_id = -1;
++		}
++	}
++
++	return mac_id;
++}
++
++
++static void mtk_usxgmii_setup_phya_usxgmii(struct mtk_usxgmii_pcs *mpcs)
++{
++	struct regmap *pextp;
++
++	if (!mpcs->eth)
++		return;
++
++	pextp = mpcs->eth->regmap_pextp[mpcs->id];
++	if (!pextp)
++		return;
++
++	/* Setup operation mode */
++	regmap_write(pextp, 0x9024, 0x00C9071C);
++	regmap_write(pextp, 0x2020, 0xAA8585AA);
++	regmap_write(pextp, 0x2030, 0x0C020707);
++	regmap_write(pextp, 0x2034, 0x0E050F0F);
++	regmap_write(pextp, 0x2040, 0x00140032);
++	regmap_write(pextp, 0x50F0, 0x00C014AA);
++	regmap_write(pextp, 0x50E0, 0x3777C12B);
++	regmap_write(pextp, 0x506C, 0x005F9CFF);
++	regmap_write(pextp, 0x5070, 0x9D9DFAFA);
++	regmap_write(pextp, 0x5074, 0x27273F3F);
++	regmap_write(pextp, 0x5078, 0xA7883C68);
++	regmap_write(pextp, 0x507C, 0x11661166);
++	regmap_write(pextp, 0x5080, 0x0E000AAF);
++	regmap_write(pextp, 0x5084, 0x08080D0D);
++	regmap_write(pextp, 0x5088, 0x02030909);
++	regmap_write(pextp, 0x50E4, 0x0C0C0000);
++	regmap_write(pextp, 0x50E8, 0x04040000);
++	regmap_write(pextp, 0x50EC, 0x0F0F0C06);
++	regmap_write(pextp, 0x50A8, 0x506E8C8C);
++	regmap_write(pextp, 0x6004, 0x18190000);
++	regmap_write(pextp, 0x00F8, 0x01423342);
++	/* Force SGDT_OUT off and select PCS */
++	regmap_write(pextp, 0x00F4, 0x80201F20);
++	/* Force GLB_CKDET_OUT */
++	regmap_write(pextp, 0x0030, 0x00050C00);
++	/* Force AEQ on */
++	regmap_write(pextp, 0x0070, 0x02002800);
++	ndelay(1020);
++	/* Setup DA default value */
++	regmap_write(pextp, 0x30B0, 0x00000020);
++	regmap_write(pextp, 0x3028, 0x00008A01);
++	regmap_write(pextp, 0x302C, 0x0000A884);
++	regmap_write(pextp, 0x3024, 0x00083002);
++	regmap_write(pextp, 0x3010, 0x00022220);
++	regmap_write(pextp, 0x5064, 0x0F020A01);
++	regmap_write(pextp, 0x50B4, 0x06100600);
++	regmap_write(pextp, 0x3048, 0x40704000);
++	regmap_write(pextp, 0x3050, 0xA8000000);
++	regmap_write(pextp, 0x3054, 0x000000AA);
++	regmap_write(pextp, 0x306C, 0x00000F00);
++	regmap_write(pextp, 0xA060, 0x00040000);
++	regmap_write(pextp, 0x90D0, 0x00000001);
++	/* Release reset */
++	regmap_write(pextp, 0x0070, 0x0200E800);
++	udelay(150);
++	/* Switch to P0 */
++	regmap_write(pextp, 0x0070, 0x0200C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0200C101);
++	udelay(15);
++	/* Switch to Gen3 */
++	regmap_write(pextp, 0x0070, 0x0202C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0202C101);
++	udelay(100);
++	regmap_write(pextp, 0x30B0, 0x00000030);
++	regmap_write(pextp, 0x00F4, 0x80201F00);
++	regmap_write(pextp, 0x3040, 0x30000000);
++	udelay(400);
++}
++
++static void mtk_usxgmii_setup_phya_5gbaser(struct mtk_usxgmii_pcs *mpcs)
++{
++	struct regmap *pextp;
++
++	if (!mpcs->eth)
++		return;
++
++	pextp = mpcs->eth->regmap_pextp[mpcs->id];
++	if (!pextp)
++		return;
++
++	/* Setup operation mode */
++	regmap_write(pextp, 0x9024, 0x00D9071C);
++	regmap_write(pextp, 0x2020, 0xAAA5A5AA);
++	regmap_write(pextp, 0x2030, 0x0C020707);
++	regmap_write(pextp, 0x2034, 0x0E050F0F);
++	regmap_write(pextp, 0x2040, 0x00140032);
++	regmap_write(pextp, 0x50F0, 0x00C018AA);
++	regmap_write(pextp, 0x50E0, 0x3777812B);
++	regmap_write(pextp, 0x506C, 0x005C9CFF);
++	regmap_write(pextp, 0x5070, 0x9DFAFAFA);
++	regmap_write(pextp, 0x5074, 0x273F3F3F);
++	regmap_write(pextp, 0x5078, 0xA8883868);
++	regmap_write(pextp, 0x507C, 0x14661466);
++	regmap_write(pextp, 0x5080, 0x0E001ABF);
++	regmap_write(pextp, 0x5084, 0x080B0D0D);
++	regmap_write(pextp, 0x5088, 0x02050909);
++	regmap_write(pextp, 0x50E4, 0x0C000000);
++	regmap_write(pextp, 0x50E8, 0x04000000);
++	regmap_write(pextp, 0x50EC, 0x0F0F0C06);
++	regmap_write(pextp, 0x50A8, 0x50808C8C);
++	regmap_write(pextp, 0x6004, 0x18000000);
++	regmap_write(pextp, 0x00F8, 0x00A132A1);
++	/* Force SGDT_OUT off and select PCS */
++	regmap_write(pextp, 0x00F4, 0x80201F20);
++	/* Force GLB_CKDET_OUT */
++	regmap_write(pextp, 0x0030, 0x00050C00);
++	/* Force AEQ on */
++	regmap_write(pextp, 0x0070, 0x02002800);
++	ndelay(1020);
++	/* Setup DA default value */
++	regmap_write(pextp, 0x30B0, 0x00000020);
++	regmap_write(pextp, 0x3028, 0x00008A01);
++	regmap_write(pextp, 0x302C, 0x0000A884);
++	regmap_write(pextp, 0x3024, 0x00083002);
++	regmap_write(pextp, 0x3010, 0x00022220);
++	regmap_write(pextp, 0x5064, 0x0F020A01);
++	regmap_write(pextp, 0x50B4, 0x06100600);
++	regmap_write(pextp, 0x3048, 0x40704000);
++	regmap_write(pextp, 0x3050, 0xA8000000);
++	regmap_write(pextp, 0x3054, 0x000000AA);
++	regmap_write(pextp, 0x306C, 0x00000F00);
++	regmap_write(pextp, 0xA060, 0x00040000);
++	regmap_write(pextp, 0x90D0, 0x00000003);
++	/* Release reset */
++	regmap_write(pextp, 0x0070, 0x0200E800);
++	udelay(150);
++	/* Switch to P0 */
++	regmap_write(pextp, 0x0070, 0x0200C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0200C101);
++	udelay(15);
++	/* Switch to Gen3 */
++	regmap_write(pextp, 0x0070, 0x0202C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0202C101);
++	udelay(100);
++	regmap_write(pextp, 0x30B0, 0x00000030);
++	regmap_write(pextp, 0x00F4, 0x80201F00);
++	regmap_write(pextp, 0x3040, 0x30000000);
++	udelay(400);
++}
++
++static void mtk_usxgmii_setup_phya_10gbaser(struct mtk_usxgmii_pcs *mpcs)
++{
++	struct regmap *pextp;
++
++	if (!mpcs->eth)
++		return;
++
++	pextp = mpcs->eth->regmap_pextp[mpcs->id];
++	if (!pextp)
++		return;
++
++	/* Setup operation mode */
++	regmap_write(pextp, 0x9024, 0x00C9071C);
++	regmap_write(pextp, 0x2020, 0xAA8585AA);
++	regmap_write(pextp, 0x2030, 0x0C020707);
++	regmap_write(pextp, 0x2034, 0x0E050F0F);
++	regmap_write(pextp, 0x2040, 0x00140032);
++	regmap_write(pextp, 0x50F0, 0x00C014AA);
++	regmap_write(pextp, 0x50E0, 0x3777C12B);
++	regmap_write(pextp, 0x506C, 0x005F9CFF);
++	regmap_write(pextp, 0x5070, 0x9D9DFAFA);
++	regmap_write(pextp, 0x5074, 0x27273F3F);
++	regmap_write(pextp, 0x5078, 0xA7883C68);
++	regmap_write(pextp, 0x507C, 0x11661166);
++	regmap_write(pextp, 0x5080, 0x0E000AAF);
++	regmap_write(pextp, 0x5084, 0x08080D0D);
++	regmap_write(pextp, 0x5088, 0x02030909);
++	regmap_write(pextp, 0x50E4, 0x0C0C0000);
++	regmap_write(pextp, 0x50E8, 0x04040000);
++	regmap_write(pextp, 0x50EC, 0x0F0F0C06);
++	regmap_write(pextp, 0x50A8, 0x506E8C8C);
++	regmap_write(pextp, 0x6004, 0x18190000);
++	regmap_write(pextp, 0x00F8, 0x01423342);
++	/* Force SGDT_OUT off and select PCS */
++	regmap_write(pextp, 0x00F4, 0x80201F20);
++	/* Force GLB_CKDET_OUT */
++	regmap_write(pextp, 0x0030, 0x00050C00);
++	/* Force AEQ on */
++	regmap_write(pextp, 0x0070, 0x02002800);
++	ndelay(1020);
++	/* Setup DA default value */
++	regmap_write(pextp, 0x30B0, 0x00000020);
++	regmap_write(pextp, 0x3028, 0x00008A01);
++	regmap_write(pextp, 0x302C, 0x0000A884);
++	regmap_write(pextp, 0x3024, 0x00083002);
++	regmap_write(pextp, 0x3010, 0x00022220);
++	regmap_write(pextp, 0x5064, 0x0F020A01);
++	regmap_write(pextp, 0x50B4, 0x06100600);
++	regmap_write(pextp, 0x3048, 0x47684100);
++	regmap_write(pextp, 0x3050, 0x00000000);
++	regmap_write(pextp, 0x3054, 0x00000000);
++	regmap_write(pextp, 0x306C, 0x00000F00);
++	if (mpcs->id == 0)
++		regmap_write(pextp, 0xA008, 0x0007B400);
++
++	regmap_write(pextp, 0xA060, 0x00040000);
++	regmap_write(pextp, 0x90D0, 0x00000001);
++	/* Release reset */
++	regmap_write(pextp, 0x0070, 0x0200E800);
++	udelay(150);
++	/* Switch to P0 */
++	regmap_write(pextp, 0x0070, 0x0200C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0200C101);
++	udelay(15);
++	/* Switch to Gen3 */
++	regmap_write(pextp, 0x0070, 0x0202C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0202C101);
++	udelay(100);
++	regmap_write(pextp, 0x30B0, 0x00000030);
++	regmap_write(pextp, 0x00F4, 0x80201F00);
++	regmap_write(pextp, 0x3040, 0x30000000);
++	udelay(400);
++}
++
++void mtk_sgmii_setup_phya_gen1(struct mtk_eth *eth, int mac_id)
++{
++	u32 id = mtk_mac2xgmii_id(eth, mac_id);
++	struct regmap *pextp;
++
++	if (id >= eth->soc->num_devs)
++		return;
++
++	pextp = eth->regmap_pextp[id];
++	if (!pextp)
++		return;
++
++	/* Setup operation mode */
++	regmap_write(pextp, 0x9024, 0x00D9071C);
++	regmap_write(pextp, 0x2020, 0xAA8585AA);
++	regmap_write(pextp, 0x2030, 0x0C020207);
++	regmap_write(pextp, 0x2034, 0x0E05050F);
++	regmap_write(pextp, 0x2040, 0x00200032);
++	regmap_write(pextp, 0x50F0, 0x00C014BA);
++	regmap_write(pextp, 0x50E0, 0x3777C12B);
++	regmap_write(pextp, 0x506C, 0x005F9CFF);
++	regmap_write(pextp, 0x5070, 0x9D9DFAFA);
++	regmap_write(pextp, 0x5074, 0x27273F3F);
++	regmap_write(pextp, 0x5078, 0xA7883C68);
++	regmap_write(pextp, 0x507C, 0x11661166);
++	regmap_write(pextp, 0x5080, 0x0E000EAF);
++	regmap_write(pextp, 0x5084, 0x08080E0D);
++	regmap_write(pextp, 0x5088, 0x02030B09);
++	regmap_write(pextp, 0x50E4, 0x0C0C0000);
++	regmap_write(pextp, 0x50E8, 0x04040000);
++	regmap_write(pextp, 0x50EC, 0x0F0F0606);
++	regmap_write(pextp, 0x50A8, 0x506E8C8C);
++	regmap_write(pextp, 0x6004, 0x18190000);
++	regmap_write(pextp, 0x00F8, 0x00FA32FA);
++	/* Force SGDT_OUT off and select PCS */
++	regmap_write(pextp, 0x00F4, 0x80201F21);
++	/* Force GLB_CKDET_OUT */
++	regmap_write(pextp, 0x0030, 0x00050C00);
++	/* Force AEQ on */
++	regmap_write(pextp, 0x0070, 0x02002800);
++	ndelay(1020);
++	/* Setup DA default value */
++	regmap_write(pextp, 0x30B0, 0x00000020);
++	regmap_write(pextp, 0x3028, 0x00008A01);
++	regmap_write(pextp, 0x302C, 0x0000A884);
++	regmap_write(pextp, 0x3024, 0x00083002);
++	regmap_write(pextp, 0x3010, 0x00011110);
++	regmap_write(pextp, 0x3048, 0x40704000);
++	regmap_write(pextp, 0x3064, 0x0000C000);
++	regmap_write(pextp, 0x3050, 0xA8000000);
++	regmap_write(pextp, 0x3054, 0x000000AA);
++	regmap_write(pextp, 0x306C, 0x20200F00);
++	regmap_write(pextp, 0xA060, 0x00050000);
++	regmap_write(pextp, 0x90D0, 0x00000007);
++	/* Release reset */
++	regmap_write(pextp, 0x0070, 0x0200E800);
++	udelay(150);
++	/* Switch to P0 */
++	regmap_write(pextp, 0x0070, 0x0200C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0200C101);
++	udelay(15);
++	/* Switch to Gen2 */
++	regmap_write(pextp, 0x0070, 0x0201C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0201C101);
++	udelay(100);
++	regmap_write(pextp, 0x30B0, 0x00000030);
++	regmap_write(pextp, 0x00F4, 0x80201F01);
++	regmap_write(pextp, 0x3040, 0x30000000);
++	udelay(400);
++}
++
++void mtk_sgmii_setup_phya_gen2(struct mtk_eth *eth, int mac_id)
++{
++	u32 id = mtk_mac2xgmii_id(eth, mac_id);
++	struct regmap *pextp;
++
++	if (id >= eth->soc->num_devs)
++		return;
++
++	pextp = eth->regmap_pextp[id];
++	if (!pextp)
++		return;
++
++	/* Setup operation mode */
++	regmap_write(pextp, 0x9024, 0x00D9071C);
++	regmap_write(pextp, 0x2020, 0xAA8585AA);
++	regmap_write(pextp, 0x2030, 0x0C020707);
++	regmap_write(pextp, 0x2034, 0x0E050F0F);
++	regmap_write(pextp, 0x2040, 0x00140032);
++	regmap_write(pextp, 0x50F0, 0x00C014AA);
++	regmap_write(pextp, 0x50E0, 0x3777C12B);
++	regmap_write(pextp, 0x506C, 0x005F9CFF);
++	regmap_write(pextp, 0x5070, 0x9D9DFAFA);
++	regmap_write(pextp, 0x5074, 0x27273F3F);
++	regmap_write(pextp, 0x5078, 0xA7883C68);
++	regmap_write(pextp, 0x507C, 0x11661166);
++	regmap_write(pextp, 0x5080, 0x0E000AAF);
++	regmap_write(pextp, 0x5084, 0x08080D0D);
++	regmap_write(pextp, 0x5088, 0x02030909);
++	regmap_write(pextp, 0x50E4, 0x0C0C0000);
++	regmap_write(pextp, 0x50E8, 0x04040000);
++	regmap_write(pextp, 0x50EC, 0x0F0F0C06);
++	regmap_write(pextp, 0x50A8, 0x506E8C8C);
++	regmap_write(pextp, 0x6004, 0x18190000);
++	regmap_write(pextp, 0x00F8, 0x009C329C);
++	/* Force SGDT_OUT off and select PCS */
++	regmap_write(pextp, 0x00F4, 0x80201F21);
++	/* Force GLB_CKDET_OUT */
++	regmap_write(pextp, 0x0030, 0x00050C00);
++	/* Force AEQ on */
++	regmap_write(pextp, 0x0070, 0x02002800);
++	ndelay(1020);
++	/* Setup DA default value */
++	regmap_write(pextp, 0x30B0, 0x00000020);
++	regmap_write(pextp, 0x3028, 0x00008A01);
++	regmap_write(pextp, 0x302C, 0x0000A884);
++	regmap_write(pextp, 0x3024, 0x00083002);
++	regmap_write(pextp, 0x3010, 0x00011110);
++	regmap_write(pextp, 0x3048, 0x40704000);
++	regmap_write(pextp, 0x3050, 0xA8000000);
++	regmap_write(pextp, 0x3054, 0x000000AA);
++	regmap_write(pextp, 0x306C, 0x22000F00);
++	regmap_write(pextp, 0xA060, 0x00050000);
++	regmap_write(pextp, 0x90D0, 0x00000005);
++	/* Release reset */
++	regmap_write(pextp, 0x0070, 0x0200E800);
++	udelay(150);
++	/* Switch to P0 */
++	regmap_write(pextp, 0x0070, 0x0200C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0200C101);
++	udelay(15);
++	/* Switch to Gen2 */
++	regmap_write(pextp, 0x0070, 0x0201C111);
++	ndelay(1020);
++	regmap_write(pextp, 0x0070, 0x0201C101);
++	udelay(100);
++	regmap_write(pextp, 0x30B0, 0x00000030);
++	regmap_write(pextp, 0x00F4, 0x80201F01);
++	regmap_write(pextp, 0x3040, 0x30000000);
++	udelay(400);
++}
++
++static void mtk_usxgmii_reset(struct mtk_eth *eth, int id)
++{
++	u32 val = 0;
++
++	if (id >= eth->soc->num_devs || !eth->toprgu)
++		return;
++
++	switch (id) {
++	case 0:
++		/* Enable software reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST_EN, &val);
++		val |= SWSYSRST_XFI_PEXPT0_GRST |
++		       SWSYSRST_XFI0_GRST;
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST_EN, val);
++
++		/* Assert USXGMII reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST, &val);
++		val |= FIELD_PREP(SWSYSRST_UNLOCK_KEY, 0x88) |
++		       SWSYSRST_XFI_PEXPT0_GRST |
++		       SWSYSRST_XFI0_GRST;
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST, val);
++
++		udelay(100);
++
++		/* De-assert USXGMII reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST, &val);
++		val |= FIELD_PREP(SWSYSRST_UNLOCK_KEY, 0x88);
++		val &= ~(SWSYSRST_XFI_PEXPT0_GRST |
++			 SWSYSRST_XFI0_GRST);
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST, val);
++
++		/* Disable software reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST_EN, &val);
++		val &= ~(SWSYSRST_XFI_PEXPT0_GRST |
++			 SWSYSRST_XFI0_GRST);
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST_EN, val);
++		break;
++	case 1:
++		/* Enable software reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST_EN, &val);
++		val |= SWSYSRST_XFI_PEXPT1_GRST |
++		       SWSYSRST_XFI1_GRST;
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST_EN, val);
++
++		/* Assert USXGMII reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST, &val);
++		val |= FIELD_PREP(SWSYSRST_UNLOCK_KEY, 0x88) |
++		       SWSYSRST_XFI_PEXPT1_GRST |
++		       SWSYSRST_XFI1_GRST;
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST, val);
++
++		udelay(100);
++
++		/* De-assert USXGMII reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST, &val);
++		val |= FIELD_PREP(SWSYSRST_UNLOCK_KEY, 0x88);
++		val &= ~(SWSYSRST_XFI_PEXPT1_GRST |
++			 SWSYSRST_XFI1_GRST);
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST, val);
++
++		/* Disable software reset */
++		regmap_read(eth->toprgu, TOPRGU_SWSYSRST_EN, &val);
++		val &= ~(SWSYSRST_XFI_PEXPT1_GRST |
++			 SWSYSRST_XFI1_GRST);
++		regmap_write(eth->toprgu, TOPRGU_SWSYSRST_EN, val);
++		break;
++	}
++
++	mdelay(10);
++}
++
++void mtk_sgmii_reset(struct mtk_eth *eth, int mac_id)
++{
++	u32 xgmii_id = mtk_mac2xgmii_id(eth, mac_id);
++
++	mtk_usxgmii_reset(eth, xgmii_id);
++}
++
++
++static int mtk_usxgmii_pcs_config(struct phylink_pcs *pcs, unsigned int mode,
++				  phy_interface_t interface,
++				  const unsigned long *advertising,
++				  bool permit_pause_to_mac)
++{
++	struct mtk_usxgmii_pcs *mpcs = pcs_to_mtk_usxgmii_pcs(pcs);
++	struct mtk_eth *eth = mpcs->eth;
++	unsigned int an_ctrl = 0, link_timer = 0, xfi_mode = 0, adapt_mode = 0;
++	bool mode_changed = false;
++
++	if (interface == PHY_INTERFACE_MODE_USXGMII) {
++		an_ctrl = FIELD_PREP(USXGMII_AN_SYNC_CNT, 0x1FF) |
++			  USXGMII_AN_ENABLE;
++		link_timer = FIELD_PREP(USXGMII_LINK_TIMER_IDLE_DETECT, 0x7B) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_COMP_ACK_DETECT, 0x7B) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_AN_RESTART, 0x7B);
++		xfi_mode = FIELD_PREP(USXGMII_XFI_RX_MODE, USXGMII_XFI_RX_MODE_10G) |
++			   FIELD_PREP(USXGMII_XFI_TX_MODE, USXGMII_XFI_TX_MODE_10G);
++	} else if (interface == PHY_INTERFACE_MODE_10GKR) {
++		an_ctrl = FIELD_PREP(USXGMII_AN_SYNC_CNT, 0x1FF);
++		link_timer = FIELD_PREP(USXGMII_LINK_TIMER_IDLE_DETECT, 0x7B) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_COMP_ACK_DETECT, 0x7B) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_AN_RESTART, 0x7B);
++		xfi_mode = FIELD_PREP(USXGMII_XFI_RX_MODE, USXGMII_XFI_RX_MODE_10G) |
++			   FIELD_PREP(USXGMII_XFI_TX_MODE, USXGMII_XFI_TX_MODE_10G);
++		adapt_mode = USXGMII_RATE_UPDATE_MODE;
++	} else if (interface == PHY_INTERFACE_MODE_5GBASER) {
++		an_ctrl = FIELD_PREP(USXGMII_AN_SYNC_CNT, 0xFF);
++		link_timer = FIELD_PREP(USXGMII_LINK_TIMER_IDLE_DETECT, 0x3D) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_COMP_ACK_DETECT, 0x3D) |
++			     FIELD_PREP(USXGMII_LINK_TIMER_AN_RESTART, 0x3D);
++		xfi_mode = FIELD_PREP(USXGMII_XFI_RX_MODE, USXGMII_XFI_RX_MODE_5G) |
++			   FIELD_PREP(USXGMII_XFI_TX_MODE, USXGMII_XFI_TX_MODE_5G);
++		adapt_mode = USXGMII_RATE_UPDATE_MODE;
++	} else
++		return -EINVAL;
++
++	adapt_mode |= FIELD_PREP(USXGMII_RATE_ADAPT_MODE, USXGMII_RATE_ADAPT_MODE_X1);
++
++	if (mpcs->interface != interface) {
++		mpcs->interface = interface;
++		mode_changed = true;
++	}
++
++	mtk_xfi_pll_enable(eth);
++	mtk_usxgmii_reset(eth, mpcs->id);
++
++	/* Setup USXGMII AN ctrl */
++	regmap_update_bits(mpcs->regmap, RG_PCS_AN_CTRL0,
++			   USXGMII_AN_SYNC_CNT | USXGMII_AN_ENABLE,
++			   an_ctrl);
++
++	regmap_update_bits(mpcs->regmap, RG_PCS_AN_CTRL2,
++			   USXGMII_LINK_TIMER_IDLE_DETECT |
++			   USXGMII_LINK_TIMER_COMP_ACK_DETECT |
++			   USXGMII_LINK_TIMER_AN_RESTART,
++			   link_timer);
++
++	/* Gated MAC CK */
++	regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++			   USXGMII_MAC_CK_GATED, USXGMII_MAC_CK_GATED);
++
++	/* Enable interface force mode */
++	regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++			   USXGMII_IF_FORCE_EN, USXGMII_IF_FORCE_EN);
++
++	/* Setup USXGMII adapt mode */
++	regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++			   USXGMII_RATE_UPDATE_MODE | USXGMII_RATE_ADAPT_MODE,
++			   adapt_mode);
++
++	/* Setup USXGMII speed */
++	regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++			   USXGMII_XFI_RX_MODE | USXGMII_XFI_TX_MODE,
++			   xfi_mode);
++
++	udelay(1);
++
++	/* Un-gated MAC CK */
++	regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++			   USXGMII_MAC_CK_GATED, 0);
++
++	udelay(1);
++
++	/* Disable interface force mode for the AN mode */
++	if (an_ctrl & USXGMII_AN_ENABLE)
++		regmap_update_bits(mpcs->regmap, RG_PHY_TOP_SPEED_CTRL1,
++				   USXGMII_IF_FORCE_EN, 0);
++
++	/* Setup USXGMIISYS with the determined property */
++	if (interface == PHY_INTERFACE_MODE_USXGMII)
++		mtk_usxgmii_setup_phya_usxgmii(mpcs);
++	else if (interface == PHY_INTERFACE_MODE_10GKR)
++		mtk_usxgmii_setup_phya_10gbaser(mpcs);
++	else if (interface == PHY_INTERFACE_MODE_5GBASER)
++		mtk_usxgmii_setup_phya_5gbaser(mpcs);
++
++	return mode_changed;
++}
++
++static void mtk_usxgmii_pcs_get_state(struct phylink_pcs *pcs,
++				    struct phylink_link_state *state)
++{
++	struct mtk_usxgmii_pcs *mpcs = pcs_to_mtk_usxgmii_pcs(pcs);
++	struct mtk_eth *eth = mpcs->eth;
++	struct mtk_mac *mac = eth->mac[mtk_xgmii2mac_id(eth, mpcs->id)];
++	u32 val = 0;
++
++	regmap_read(mpcs->regmap, RG_PCS_AN_CTRL0, &val);
++	if (FIELD_GET(USXGMII_AN_ENABLE, val)) {
++		/* Refresh LPA by inverting LPA_LATCH */
++		regmap_read(mpcs->regmap, RG_PCS_AN_STS0, &val);
++		regmap_update_bits(mpcs->regmap, RG_PCS_AN_STS0,
++				   USXGMII_LPA_LATCH,
++				   !(val & USXGMII_LPA_LATCH));
++
++		regmap_read(mpcs->regmap, RG_PCS_AN_STS0, &val);
++
++		state->interface = mpcs->interface;
++		state->link = FIELD_GET(USXGMII_LPA_LINK, val);
++		state->duplex = FIELD_GET(USXGMII_LPA_DUPLEX, val);
++
++		switch (FIELD_GET(USXGMII_LPA_SPEED_MASK, val)) {
++		case USXGMII_LPA_SPEED_10:
++			state->speed = SPEED_10;
++			break;
++		case USXGMII_LPA_SPEED_100:
++			state->speed = SPEED_100;
++			break;
++		case USXGMII_LPA_SPEED_1000:
++			state->speed = SPEED_1000;
++			break;
++		case USXGMII_LPA_SPEED_2500:
++			state->speed = SPEED_2500;
++			break;
++		case USXGMII_LPA_SPEED_5000:
++			state->speed = SPEED_5000;
++			break;
++		case USXGMII_LPA_SPEED_10000:
++			state->speed = SPEED_10000;
++			break;
++		}
++	} else {
++		val = mtk_r32(mac->hw, MTK_XGMAC_STS(mac->id));
++
++		if (mac->id == MTK_GMAC2_ID)
++			val = val >> 16;
++
++		switch (FIELD_GET(MTK_USXGMII_PCS_MODE, val)) {
++		case 0:
++			state->speed = SPEED_10000;
++			break;
++		case 1:
++			state->speed = SPEED_5000;
++			break;
++		case 2:
++			state->speed = SPEED_2500;
++			break;
++		case 3:
++			state->speed = SPEED_1000;
++			break;
++		}
++
++		state->interface = mpcs->interface;
++		state->link = FIELD_GET(MTK_USXGMII_PCS_LINK, val);
++		state->duplex = DUPLEX_FULL;
++	}
++
++	if (state->link == 0)
++		mtk_usxgmii_pcs_config(pcs, MLO_AN_INBAND,
++				       state->interface, NULL, false);
++}
++
++static void mtk_usxgmii_pcs_restart_an(struct phylink_pcs *pcs)
++{
++	struct mtk_usxgmii_pcs *mpcs = pcs_to_mtk_usxgmii_pcs(pcs);
++	unsigned int val = 0;
++
++	if (!mpcs->regmap)
++		return;
++
++	regmap_read(mpcs->regmap, RG_PCS_AN_CTRL0, &val);
++	val |= USXGMII_AN_RESTART;
++	regmap_write(mpcs->regmap, RG_PCS_AN_CTRL0, val);
++}
++
++static void mtk_usxgmii_pcs_link_up(struct phylink_pcs *pcs, unsigned int mode,
++				    phy_interface_t interface,
++				    int speed, int duplex)
++{
++	/* Reconfiguring USXGMII to ensure the quality of the RX signal
++	 * after the line side link up.
++	 */
++	mtk_usxgmii_pcs_config(pcs, mode,
++			       interface, NULL, false);
++}
++
++static const struct phylink_pcs_ops mtk_usxgmii_pcs_ops = {
++	.pcs_config = mtk_usxgmii_pcs_config,
++	.pcs_get_state = mtk_usxgmii_pcs_get_state,
++	.pcs_an_restart = mtk_usxgmii_pcs_restart_an,
++	.pcs_link_up = mtk_usxgmii_pcs_link_up,
++};
++
++int mtk_usxgmii_init(struct mtk_eth *eth)
++{
++	struct device_node *r = eth->dev->of_node;
++	struct device *dev = eth->dev;
++	struct device_node *np;
++	int i, ret;
++
++	eth->usxgmii_pcs = devm_kcalloc(dev, eth->soc->num_devs, sizeof(eth->usxgmii_pcs), GFP_KERNEL);
++	if (!eth->usxgmii_pcs)
++		return -ENOMEM;
++
++	for (i = 0; i < eth->soc->num_devs; i++) {
++		np = of_parse_phandle(r, "mediatek,usxgmiisys", i);
++		if (!np)
++			break;
++
++		eth->usxgmii_pcs[i] = devm_kzalloc(dev, sizeof(*eth->usxgmii_pcs), GFP_KERNEL);
++		if (!eth->usxgmii_pcs[i])
++			return -ENOMEM;
++
++		eth->usxgmii_pcs[i]->id = i;
++		eth->usxgmii_pcs[i]->eth = eth;
++		eth->usxgmii_pcs[i]->regmap = syscon_node_to_regmap(np);
++		if (IS_ERR(eth->usxgmii_pcs[i]->regmap))
++			return PTR_ERR(eth->usxgmii_pcs[i]->regmap);
++
++		eth->usxgmii_pcs[i]->pcs.ops = &mtk_usxgmii_pcs_ops;
++		eth->usxgmii_pcs[i]->pcs.poll = true;
++		eth->usxgmii_pcs[i]->interface = PHY_INTERFACE_MODE_NA;
++
++		of_node_put(np);
++	}
++
++	ret = mtk_xfi_pextp_init(eth);
++	if (ret)
++		return ret;
++
++	ret = mtk_xfi_pll_init(eth);
++	if (ret)
++		return ret;
++
++	return mtk_toprgu_init(eth);
++}
++
++struct phylink_pcs *mtk_usxgmii_select_pcs(struct mtk_eth *eth, int mac_id)
++{
++	u32 xgmii_id = mtk_mac2xgmii_id(eth, mac_id);
++
++	if (!eth->usxgmii_pcs[xgmii_id]->regmap)
++		return NULL;
++
++	return &eth->usxgmii_pcs[xgmii_id]->pcs;
++}

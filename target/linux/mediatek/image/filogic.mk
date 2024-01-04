@@ -280,6 +280,24 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/mediatek_mt7988a-rfb-nand
+  DEVICE_VENDOR := MediaTek
+  DEVICE_MODEL := MT7988a nand rfb
+  DEVICE_DTS := mt7988a-dsa-10g-spim-nand
+  DEVICE_DTS_DIR := $(DTS_DIR)/
+  KERNEL_LOADADDR := 0x48000000
+  SUPPORTED_DEVICES := mediatek,mt7988a-rfb
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 65536k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += mediatek_mt7988a-rfb-nand
+
 define Device/netcore_n60
   DEVICE_VENDOR := Netcore
   DEVICE_MODEL := N60
