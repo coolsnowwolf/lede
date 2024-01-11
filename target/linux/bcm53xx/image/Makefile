@@ -168,6 +168,14 @@ define Device/asus_rt-ac87u
 endef
 TARGET_DEVICES += asus_rt-ac87u
 
+define Device/asus_rt-ac3100
+  $(call Device/asus)
+  DEVICE_MODEL := RT-AC3100
+  DEVICE_PACKAGES := $(BRCMFMAC_4366B1) $(BRCMFMAC_4366C0) $(USB3_PACKAGES)
+  ASUS_PRODUCTID := RT-AC3100
+endef
+TARGET_DEVICES += asus_rt-ac3100
+
 define Device/asus_rt-n18u
   $(call Device/asus)
   DEVICE_MODEL := RT-N18U
