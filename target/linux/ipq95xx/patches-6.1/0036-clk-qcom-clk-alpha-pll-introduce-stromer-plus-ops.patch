@@ -1,0 +1,99 @@
+From 539a79c58042c7902bfff6453a589d5dc2e0230c Mon Sep 17 00:00:00 2001
+From: Varadarajan Narayanan <quic_varada@quicinc.com>
+Date: Fri, 20 Oct 2023 11:49:32 +0530
+Subject: [PATCH 36/41] clk: qcom: clk-alpha-pll: introduce stromer plus ops
+
+Stromer plus APSS PLL does not support dynamic frequency scaling.
+To switch between frequencies, we have to shut down the PLL,
+configure the L and ALPHA values and turn on again. So introduce the
+separate set of ops for Stromer Plus PLL.
+
+Reviewed-by: Dmitry Baryshkov <dmitry.baryshkov@linaro.org>
+Signed-off-by: Kathiravan T <quic_kathirav@quicinc.com>
+Signed-off-by: Varadarajan Narayanan <quic_varada@quicinc.com>
+Link: https://lore.kernel.org/r/2affa6c63ff0c4342230623a7d4eef02ec7c02d4.1697781921.git.quic_varada@quicinc.com
+Signed-off-by: Bjorn Andersson <andersson@kernel.org>
+---
+ drivers/clk/qcom/clk-alpha-pll.c | 63 ++++++++++++++++++++++++++++++++
+ drivers/clk/qcom/clk-alpha-pll.h |  1 +
+ 2 files changed, 64 insertions(+)
+
+--- a/drivers/clk/qcom/clk-alpha-pll.c
++++ b/drivers/clk/qcom/clk-alpha-pll.c
+@@ -2434,3 +2434,66 @@ const struct clk_ops clk_alpha_pll_strom
+ 	.set_rate = clk_alpha_pll_stromer_set_rate,
+ };
+ EXPORT_SYMBOL_GPL(clk_alpha_pll_stromer_ops);
++
++static int clk_alpha_pll_stromer_plus_set_rate(struct clk_hw *hw,
++					       unsigned long rate,
++					       unsigned long prate)
++{
++	struct clk_alpha_pll *pll = to_clk_alpha_pll(hw);
++	u32 l, alpha_width = pll_alpha_width(pll);
++	int ret, pll_mode;
++	u64 a;
++
++	rate = alpha_pll_round_rate(rate, prate, &l, &a, alpha_width);
++
++	ret = regmap_read(pll->clkr.regmap, PLL_MODE(pll), &pll_mode);
++	if (ret)
++		return ret;
++
++	regmap_write(pll->clkr.regmap, PLL_MODE(pll), 0);
++
++	/* Delay of 2 output clock ticks required until output is disabled */
++	udelay(1);
++
++	regmap_write(pll->clkr.regmap, PLL_L_VAL(pll), l);
++
++	if (alpha_width > ALPHA_BITWIDTH)
++		a <<= alpha_width - ALPHA_BITWIDTH;
++
++	regmap_write(pll->clkr.regmap, PLL_ALPHA_VAL(pll), a);
++	regmap_write(pll->clkr.regmap, PLL_ALPHA_VAL_U(pll),
++					a >> ALPHA_BITWIDTH);
++
++	regmap_write(pll->clkr.regmap, PLL_MODE(pll), PLL_BYPASSNL);
++
++	/* Wait five micro seconds or more */
++	udelay(5);
++	regmap_update_bits(pll->clkr.regmap, PLL_MODE(pll), PLL_RESET_N,
++			   PLL_RESET_N);
++
++	/* The lock time should be less than 50 micro seconds worst case */
++	usleep_range(50, 60);
++
++	ret = wait_for_pll_enable_lock(pll);
++	if (ret) {
++		pr_err("Wait for PLL enable lock failed [%s] %d\n",
++		       clk_hw_get_name(hw), ret);
++		return ret;
++	}
++
++	if (pll_mode & PLL_OUTCTRL)
++		regmap_update_bits(pll->clkr.regmap, PLL_MODE(pll), PLL_OUTCTRL,
++				   PLL_OUTCTRL);
++
++	return 0;
++}
++
++const struct clk_ops clk_alpha_pll_stromer_plus_ops = {
++	.prepare = clk_alpha_pll_enable,
++	.unprepare = clk_alpha_pll_disable,
++	.is_enabled = clk_alpha_pll_is_enabled,
++	.recalc_rate = clk_alpha_pll_recalc_rate,
++	.determine_rate = clk_alpha_pll_stromer_determine_rate,
++	.set_rate = clk_alpha_pll_stromer_plus_set_rate,
++};
++EXPORT_SYMBOL_GPL(clk_alpha_pll_stromer_plus_ops);
+--- a/drivers/clk/qcom/clk-alpha-pll.h
++++ b/drivers/clk/qcom/clk-alpha-pll.h
+@@ -145,6 +145,7 @@ extern const struct clk_ops clk_alpha_pl
+ extern const struct clk_ops clk_alpha_pll_huayra_ops;
+ extern const struct clk_ops clk_alpha_pll_postdiv_ro_ops;
+ extern const struct clk_ops clk_alpha_pll_stromer_ops;
++extern const struct clk_ops clk_alpha_pll_stromer_plus_ops;
+ 
+ extern const struct clk_ops clk_alpha_pll_fabia_ops;
+ extern const struct clk_ops clk_alpha_pll_fixed_fabia_ops;

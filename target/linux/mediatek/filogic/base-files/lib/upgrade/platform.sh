@@ -29,7 +29,9 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
-	glinet,gl-mt6000)
+	glinet,gl-mt2500|\
+	glinet,gl-mt6000|\
+	jdcloud,re-cs-05)
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
 		emmc_do_upgrade "$1"
@@ -74,7 +76,9 @@ platform_copy_config() {
 			;;
 		esac
 		;;
-	glinet,gl-mt6000)
+	glinet,gl-mt2500|\
+	glinet,gl-mt6000|\
+	jdcloud,re-cs-05)
 		emmc_copy_config
 		;;
 	esac

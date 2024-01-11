@@ -1,9 +1,11 @@
 # 欢迎来到 Lean 的 LEDE 源码仓库
 
-I18N: [English](README_EN.md) | [简体中文](README.md)
+I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_JA.md)
 
 ## 官方讨论群
+
 如有技术问题需要讨论或者交流，欢迎加入以下群：
+
 1. QQ 讨论群： Op固件技术研究群 ,号码 891659613 ，加群链接：[点击加入](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群")
 2. TG 讨论群： OP 编译官方大群 ，加群链接：[点击加入](https://t.me/JhKgAA6Hx1 "OP 编译官方大群")
 
@@ -14,7 +16,6 @@ I18N: [English](README_EN.md) | [简体中文](README.md)
 [商品介绍页面 - 硬酷科技（支持花呗）](https://item.taobao.com/item.htm?id=721197662185)
 
 [![r1](doc/r1.jpg)](https://item.taobao.com/item.htm?id=721197662185)
-
 
 ## 注意
 
@@ -33,11 +34,11 @@ I18N: [English](README_EN.md) | [简体中文](README.md)
    sudo apt full-upgrade -y
    sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
    bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
-   git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
-   libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz \
-   mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools \
-   libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip \
-   vim wget xmlto xxd zlib1g-dev python3-setuptools
+   git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+   libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+   libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 \
+   python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+   uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
    ```
 
 3. 下载源代码，更新 feeds 并选择配置
@@ -77,14 +78,14 @@ make V=s -j$(nproc)
 如果需要重新配置：
 
 ```bash
-rm -rf ./tmp && rm -rf .config
+rm -rf .config
 make menuconfig
 make V=s -j$(nproc)
 ```
 
 编译完成后输出路径：bin/targets
 
-### 如果你使用 WSL/WSL2 进行编译
+### 使用 WSL/WSL2 进行编译
 
 由于 WSL 的 PATH 中包含带有空格的 Windows 路径，有可能会导致编译失败，请在 `make` 前面加上：
 
@@ -95,7 +96,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 由于默认情况下，装载到 WSL 发行版的 NTFS 格式的驱动器将不区分大小写，因此大概率在 WSL/WSL2 的编译检查中会返回以下错误：
 
 ```txt
-Build dependency: OpenWrt can only be built on a case-sensitive filesystem 
+Build dependency: OpenWrt can only be built on a case-sensitive filesystem
 ```
 
 一个比较简洁的解决方法是，在 `git clone` 前先创建 Repository 目录，并为其启用大小写敏感：
@@ -151,8 +152,6 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 3. QCA IPQ60xx 开源仓库地址：<https://github.com/coolsnowwolf/openwrt-gl-ax1800>
 
 4. 存档版本仓库地址：<https://github.com/coolsnowwolf/openwrt>
-
-
 
 ## 捐贈
 

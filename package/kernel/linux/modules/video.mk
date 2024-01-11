@@ -240,6 +240,24 @@ endef
 
 $(eval $(call KernelPackage,fb-tft-ili9486))
 
+define KernelPackage/media-core
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE=Multimedia support
+  HIDDEN:=1
+  KCONFIG:= \
+	CONFIG_MEDIA_SUPPORT \
+	CONFIG_MEDIA_CONTROLLER=y \
+	CONFIG_MEDIA_CAMERA_SUPPORT=y
+  FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko
+  AUTOLOAD:=$(call AutoProbe,mc)
+endef
+
+define KernelPackage/media-core/description
+  Kernel modules for media controller support
+endef
+
+$(eval $(call KernelPackage,media-core))
+
 define KernelPackage/multimedia-input
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Multimedia input support
@@ -541,13 +559,12 @@ $(eval $(call KernelPackage,drm-nouveau))
 define KernelPackage/video-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Video4Linux support
-  DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core
+  DEPENDS:=+PACKAGE_kmod-i2c-core:kmod-i2c-core \
+	+LINUX_6_1:kmod-media-core
   KCONFIG:= \
-	CONFIG_MEDIA_SUPPORT \
-	CONFIG_MEDIA_CAMERA_SUPPORT=y \
 	CONFIG_VIDEO_DEV \
 	CONFIG_V4L_PLATFORM_DRIVERS=y
-  FILES:=$(LINUX_DIR)/drivers/media/mc/mc.ko@ge6.1 \
+  FILES:= \
 	$(LINUX_DIR)/drivers/media/$(V4L2_DIR)/videodev.ko
   AUTOLOAD:=$(call AutoLoad,60, videodev v4l2-common)
 endef
