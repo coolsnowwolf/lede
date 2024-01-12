@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=aarch64
 BOARD:=octeontx
 BOARDNAME:=Octeon-TX
-FEATURES:=targz pcie gpio rtc usb fpu
+FEATURES:=squashfs ramdisk targz pcie gpio rtc usb fpu
 
 KERNEL_PATCHVER:=5.4
 

@@ -13,6 +13,7 @@ PKG_INSTALL_DIR ?= $(PKG_BUILD_DIR)/ipkg-install
 PKG_BUILD_PARALLEL ?=
 PKG_USE_MIPS16 ?= 1
 PKG_IREMAP ?= 1
+PKG_SKIP_DOWNLOAD=$(USE_SOURCE_DIR)$(USE_GIT_TREE)$(USE_GIT_SRC_CHECKOUT)
 
 MAKE_J:=$(if $(MAKE_JOBSERVER),$(MAKE_JOBSERVER) $(if $(filter 3.% 4.0 4.1,$(MAKE_VERSION)),-j))
 
@@ -84,7 +85,7 @@ ifneq ($(PREV_STAMP_PREPARED),)
   STAMP_PREPARED:=$(PREV_STAMP_PREPARED)
   CONFIG_AUTOREBUILD:=
 else
-  STAMP_PREPARED=$(PKG_BUILD_DIR)/.prepared$(if $(QUILT)$(DUMP),,_$(shell $(call find_md5,${CURDIR} $(PKG_FILE_DEPENDS),))_$(call confvar,CONFIG_AUTOREMOVE $(PKG_PREPARED_DEPENDS)))
+  STAMP_PREPARED=$(PKG_BUILD_DIR)/.prepared$(if $(QUILT)$(DUMP),,_$(shell $(call $(if $(CONFIG_AUTOREMOVE),find_md5_reproducible,find_md5),${CURDIR} $(PKG_FILE_DEPENDS),))_$(call confvar,CONFIG_AUTOREMOVE $(PKG_PREPARED_DEPENDS)))
 endif
 STAMP_CONFIGURED=$(PKG_BUILD_DIR)/.configured$(if $(DUMP),,_$(call confvar,$(PKG_CONFIG_DEPENDS)))
 STAMP_CONFIGURED_WILDCARD=$(PKG_BUILD_DIR)/.configured_*
@@ -183,7 +184,7 @@ define Build/CoreTargets
   $(call Build/Autoclean)
   $(call DefaultTargets)
 
-  $(DL_DIR)/$(FILE): FORCE
+  $(call check_download_integrity)
 
   download:
 	$(foreach hook,$(Hooks/Download),
@@ -258,13 +259,13 @@ define Build/CoreTargets
   ifneq ($(CONFIG_AUTOREMOVE),)
     compile:
 		-touch -r $(PKG_BUILD_DIR)/.built $(PKG_BUILD_DIR)/.autoremove 2>/dev/null >/dev/null
-		$(FIND) $(PKG_BUILD_DIR) -mindepth 1 -maxdepth 1 -not '(' -type f -and -name '.*' -and -size 0 ')' -and -not -name '.pkgdir' | \
-			$(XARGS) rm -rf
+		$(FIND) $(PKG_BUILD_DIR) -mindepth 1 -maxdepth 1 -not '(' -type f -and -name '.*' -and -size 0 ')' -and -not -name '.pkgdir'  -print0 | \
+			$(XARGS) -0 rm -rf
   endif
 endef
 
 define Build/DefaultTargets
-  $(if $(USE_SOURCE_DIR)$(USE_GIT_TREE)$(USE_GIT_SRC_CHECKOUT),,$(if $(strip $(PKG_SOURCE_URL)),$(call Download,default)))
+  $(if $(PKG_SKIP_DOWNLOAD),,$(if $(strip $(PKG_SOURCE_URL)),$(call Download,default)))
   $(if $(DUMP),,$(Build/CoreTargets))
 
   define Build/DefaultTargets

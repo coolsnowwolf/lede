@@ -1,0 +1,110 @@
+From b5e5e7a57e2a0475826df547921d2bc72f0daf02 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 15 Dec 2021 17:44:49 +0000
+Subject: [PATCH] drm/vc4: Remove splitting the bridge chain from the
+ driver.
+
+Splitting the bridge chain fails for atomic bridges as the
+framework can't add the relevant state in
+drm_atomic_add_encoder_bridges.
+The chain was split because we needed to power up before
+calling pre_enable, but that is now done in mode_set, and will
+move into the framework.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_dsi.c | 38 -----------------------------------
+ 1 file changed, 38 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_dsi.c
++++ b/drivers/gpu/drm/vc4/vc4_dsi.c
+@@ -554,7 +554,6 @@ struct vc4_dsi {
+ 	struct mipi_dsi_host dsi_host;
+ 	struct drm_encoder *encoder;
+ 	struct drm_bridge *out_bridge;
+-	struct list_head bridge_chain;
+ 
+ 	void __iomem *regs;
+ 
+@@ -798,23 +797,9 @@ static void vc4_dsi_encoder_disable(stru
+ 	struct vc4_dsi_encoder *vc4_encoder = to_vc4_dsi_encoder(encoder);
+ 	struct vc4_dsi *dsi = vc4_encoder->dsi;
+ 	struct device *dev = &dsi->pdev->dev;
+-	struct drm_bridge *iter;
+-
+-	list_for_each_entry_reverse(iter, &dsi->bridge_chain, chain_node) {
+-		if (iter->funcs->disable)
+-			iter->funcs->disable(iter);
+-
+-		if (iter == dsi->out_bridge)
+-			break;
+-	}
+ 
+ 	vc4_dsi_ulps(dsi, true);
+ 
+-	list_for_each_entry_from(iter, &dsi->bridge_chain, chain_node) {
+-		if (iter->funcs->post_disable)
+-			iter->funcs->post_disable(iter);
+-	}
+-
+ 	clk_disable_unprepare(dsi->pll_phy_clock);
+ 	clk_disable_unprepare(dsi->escape_clock);
+ 	clk_disable_unprepare(dsi->pixel_clock);
+@@ -1118,12 +1103,6 @@ static void vc4_dsi_encoder_enable(struc
+ 	struct vc4_dsi_encoder *vc4_encoder = to_vc4_dsi_encoder(encoder);
+ 	struct vc4_dsi *dsi = vc4_encoder->dsi;
+ 	bool debug_dump_regs = false;
+-	struct drm_bridge *iter;
+-
+-	list_for_each_entry_reverse(iter, &dsi->bridge_chain, chain_node) {
+-		if (iter->funcs->pre_enable)
+-			iter->funcs->pre_enable(iter);
+-	}
+ 
+ 	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
+ 		DSI_PORT_WRITE(DISP0_CTRL,
+@@ -1140,11 +1119,6 @@ static void vc4_dsi_encoder_enable(struc
+ 			       DSI_DISP0_ENABLE);
+ 	}
+ 
+-	list_for_each_entry(iter, &dsi->bridge_chain, chain_node) {
+-		if (iter->funcs->enable)
+-			iter->funcs->enable(iter);
+-	}
+-
+ 	if (debug_dump_regs) {
+ 		struct drm_printer p = drm_info_printer(&dsi->pdev->dev);
+ 		dev_info(&dsi->pdev->dev, "DSI regs after:\n");
+@@ -1588,7 +1562,6 @@ static int vc4_dsi_bind(struct device *d
+ 	if (!vc4_dsi_encoder)
+ 		return -ENOMEM;
+ 
+-	INIT_LIST_HEAD(&dsi->bridge_chain);
+ 	vc4_dsi_encoder->base.type = dsi->variant->port ?
+ 			VC4_ENCODER_TYPE_DSI1 : VC4_ENCODER_TYPE_DSI0;
+ 	vc4_dsi_encoder->dsi = dsi;
+@@ -1717,12 +1690,6 @@ static int vc4_dsi_bind(struct device *d
+ 	ret = drm_bridge_attach(dsi->encoder, dsi->out_bridge, NULL, 0);
+ 	if (ret)
+ 		return ret;
+-	/* Disable the atomic helper calls into the bridge.  We
+-	 * manually call the bridge pre_enable / enable / etc. calls
+-	 * from our driver, since we need to sequence them within the
+-	 * encoder's enable/disable paths.
+-	 */
+-	list_splice_init(&dsi->encoder->bridge_chain, &dsi->bridge_chain);
+ 
+ 	vc4_debugfs_add_regset32(drm, dsi->variant->debugfs_name, &dsi->regset);
+ 
+@@ -1738,11 +1705,6 @@ static void vc4_dsi_unbind(struct device
+ 
+ 	pm_runtime_disable(dev);
+ 
+-	/*
+-	 * Restore the bridge_chain so the bridge detach procedure can happen
+-	 * normally.
+-	 */
+-	list_splice_init(&dsi->bridge_chain, &dsi->encoder->bridge_chain);
+ 	drm_encoder_cleanup(dsi->encoder);
+ }
+ 

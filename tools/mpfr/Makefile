@@ -7,12 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mpfr
-PKG_VERSION:=4.1.0
+PKG_VERSION:=4.2.0
 PKG_CPE_ID:=cpe:/a:mpfr:gnu_mpfr
 
 PKG_SOURCE_URL:=@GNU/mpfr http://www.mpfr.org/mpfr-$(PKG_VERSION)
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_HASH:=0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f
+PKG_HASH:=06a378df13501248c1b2db5aa977a2c8126ae849a9d9b7be2546fb4a9c26d993
 
 HOST_BUILD_PARALLEL:=1
 HOST_FIXUP:=autoreconf
@@ -24,5 +24,9 @@ HOST_CONFIGURE_ARGS += \
 	--disable-shared \
 	--enable-thread-safe \
 	--with-gmp=$(STAGING_DIR_HOST)
+
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
 
 $(eval $(call HostBuild))

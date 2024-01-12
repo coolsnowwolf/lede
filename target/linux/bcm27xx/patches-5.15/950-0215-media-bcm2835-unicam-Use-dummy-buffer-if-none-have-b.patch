@@ -1,0 +1,308 @@
+From f84e5dc673c401f4ac3d9b7423bf611a88a7b0c0 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Thu, 2 Apr 2020 16:08:51 +0100
+Subject: [PATCH] media: bcm2835-unicam: Use dummy buffer if none have
+ been queued
+
+If no buffer has been queued by a userland application, we use an
+internal dummy buffer for the hardware to spin in. This will allow
+the driver to release the existing userland buffer back to the
+application for processing.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 160 ++++++++++++------
+ 1 file changed, 110 insertions(+), 50 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -47,6 +47,7 @@
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/device.h>
++#include <linux/dma-mapping.h>
+ #include <linux/err.h>
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+@@ -112,6 +113,12 @@ MODULE_PARM_DESC(debug, "Debug level 0-3
+ /* Default size of the embedded buffer */
+ #define UNICAM_EMBEDDED_SIZE	8192
+ 
++/*
++ * Size of the dummy buffer. Can be any size really, but the DMA
++ * allocation works in units of page sizes.
++ */
++#define DUMMY_BUF_SIZE	(PAGE_SIZE)
++
+ enum pad_types {
+ 	IMAGE_PAD,
+ 	METADATA_PAD,
+@@ -390,6 +397,12 @@ struct unicam_node {
+ 	struct media_pad pad;
+ 	struct v4l2_ctrl_handler ctrl_handler;
+ 	unsigned int embedded_lines;
++	/*
++	 * Dummy buffer intended to be used by unicam
++	 * if we have no other queued buffers to swap to.
++	 */
++	void *dummy_buf_cpu_addr;
++	dma_addr_t dummy_buf_dma_addr;
+ };
+ 
+ struct unicam_device {
+@@ -661,27 +674,24 @@ static int unicam_reset_format(struct un
+ 	return 0;
+ }
+ 
+-static void unicam_wr_dma_addr(struct unicam_device *dev, dma_addr_t dmaaddr,
+-			       int pad_id)
++static void unicam_wr_dma_addr(struct unicam_cfg *cfg, dma_addr_t dmaaddr,
++			       unsigned int buffer_size, int pad_id)
+ {
+-	dma_addr_t endaddr;
++	dma_addr_t endaddr = dmaaddr + buffer_size;
+ 
+ 	/*
+-	 * dmaaddr should be a 32-bit address with the top two bits set to 0x3
+-	 * to signify uncached access through the Videocore memory controller.
++	 * dmaaddr and endaddr should be a 32-bit address with the top two bits
++	 * set to 0x3 to signify uncached access through the Videocore memory
++	 * controller.
+ 	 */
+-	BUG_ON((dmaaddr >> 30) != 0x3);
++	BUG_ON((dmaaddr >> 30) != 0x3 && (endaddr >> 30) != 0x3);
+ 
+ 	if (pad_id == IMAGE_PAD) {
+-		endaddr = dmaaddr +
+-			  dev->node[IMAGE_PAD].v_fmt.fmt.pix.sizeimage;
+-		reg_write(&dev->cfg, UNICAM_IBSA0, dmaaddr);
+-		reg_write(&dev->cfg, UNICAM_IBEA0, endaddr);
++		reg_write(cfg, UNICAM_IBSA0, dmaaddr);
++		reg_write(cfg, UNICAM_IBEA0, endaddr);
+ 	} else {
+-		endaddr = dmaaddr +
+-			  dev->node[METADATA_PAD].v_fmt.fmt.meta.buffersize;
+-		reg_write(&dev->cfg, UNICAM_DBSA0, dmaaddr);
+-		reg_write(&dev->cfg, UNICAM_DBEA0, endaddr);
++		reg_write(cfg, UNICAM_DBSA0, dmaaddr);
++		reg_write(cfg, UNICAM_DBEA0, endaddr);
+ 	}
+ }
+ 
+@@ -704,6 +714,7 @@ static inline void unicam_schedule_next_
+ 	struct unicam_device *dev = node->dev;
+ 	struct unicam_dmaqueue *dma_q = &node->dma_queue;
+ 	struct unicam_buffer *buf;
++	unsigned int size;
+ 	dma_addr_t addr;
+ 
+ 	buf = list_entry(dma_q->active.next, struct unicam_buffer, list);
+@@ -711,7 +722,23 @@ static inline void unicam_schedule_next_
+ 	list_del(&buf->list);
+ 
+ 	addr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
+-	unicam_wr_dma_addr(dev, addr, node->pad_id);
++	size = (node->pad_id == IMAGE_PAD) ?
++			dev->node[IMAGE_PAD].v_fmt.fmt.pix.sizeimage :
++			dev->node[METADATA_PAD].v_fmt.fmt.meta.buffersize;
++
++	unicam_wr_dma_addr(&dev->cfg, addr, size, node->pad_id);
++}
++
++static inline void unicam_schedule_dummy_buffer(struct unicam_node *node)
++{
++	struct unicam_device *dev = node->dev;
++	dma_addr_t addr = node->dummy_buf_dma_addr;
++
++	unicam_dbg(3, dev, "Scheduling dummy buffer for node %d\n",
++		   node->pad_id);
++
++	unicam_wr_dma_addr(&dev->cfg, addr, DUMMY_BUF_SIZE, node->pad_id);
++	node->next_frm = NULL;
+ }
+ 
+ static inline void unicam_process_buffer_complete(struct unicam_node *node,
+@@ -721,7 +748,6 @@ static inline void unicam_process_buffer
+ 	node->cur_frm->vb.sequence = sequence;
+ 
+ 	vb2_buffer_done(&node->cur_frm->vb.vb2_buf, VB2_BUF_STATE_DONE);
+-	node->cur_frm = node->next_frm;
+ }
+ 
+ static int unicam_num_nodes_streaming(struct unicam_device *dev)
+@@ -788,6 +814,28 @@ static irqreturn_t unicam_isr(int irq, v
+ 	if (!(sta && (UNICAM_IS | UNICAM_PI0)))
+ 		return IRQ_HANDLED;
+ 
++	/*
++	 * We must run the frame end handler first. If we have a valid next_frm
++	 * and we get a simultaneout FE + FS interrupt, running the FS handler
++	 * first would null out the next_frm ptr and we would have lost the
++	 * buffer forever.
++	 */
++	if (ista & UNICAM_FEI || sta & UNICAM_PI0) {
++		/*
++		 * Ensure we have swapped buffers already as we can't
++		 * stop the peripheral. If no buffer is available, use a
++		 * dummy buffer to dump out frames until we get a new buffer
++		 * to use.
++		 */
++		for (i = 0; i < num_nodes_streaming; i++) {
++			if (unicam->node[i].cur_frm)
++				unicam_process_buffer_complete(&unicam->node[i],
++							       sequence);
++			unicam->node[i].cur_frm = unicam->node[i].next_frm;
++		}
++		unicam->sequence++;
++	}
++
+ 	if (ista & UNICAM_FSI) {
+ 		/*
+ 		 * Timestamp is to be when the first data byte was captured,
+@@ -798,24 +846,16 @@ static irqreturn_t unicam_isr(int irq, v
+ 			if (unicam->node[i].cur_frm)
+ 				unicam->node[i].cur_frm->vb.vb2_buf.timestamp =
+ 								ts;
++			/*
++			 * Set the next frame output to go to a dummy frame
++			 * if we have not managed to obtain another frame
++			 * from the queue.
++			 */
++			unicam_schedule_dummy_buffer(&unicam->node[i]);
+ 		}
+ 	}
+-	if (ista & UNICAM_FEI || sta & UNICAM_PI0) {
+-		/*
+-		 * Ensure we have swapped buffers already as we can't
+-		 * stop the peripheral. Overwrite the frame we've just
+-		 * captured instead.
+-		 */
+-		for (i = 0; i < num_nodes_streaming; i++) {
+-			if (unicam->node[i].cur_frm &&
+-			    unicam->node[i].cur_frm != unicam->node[i].next_frm)
+-				unicam_process_buffer_complete(&unicam->node[i],
+-							       sequence);
+-		}
+-		unicam->sequence++;
+-	}
+-
+-	/* Cannot swap buffer at frame end, there may be a race condition
++	/*
++	 * Cannot swap buffer at frame end, there may be a race condition
+ 	 * where the HW does not actually swap it if the new frame has
+ 	 * already started.
+ 	 */
+@@ -823,7 +863,7 @@ static irqreturn_t unicam_isr(int irq, v
+ 		for (i = 0; i < num_nodes_streaming; i++) {
+ 			spin_lock(&unicam->node[i].dma_queue_lock);
+ 			if (!list_empty(&unicam->node[i].dma_queue.active) &&
+-			    unicam->node[i].cur_frm == unicam->node[i].next_frm)
++			    !unicam->node[i].next_frm)
+ 				unicam_schedule_next_buffer(&unicam->node[i]);
+ 			spin_unlock(&unicam->node[i].dma_queue_lock);
+ 		}
+@@ -1352,7 +1392,7 @@ static void unicam_start_rx(struct unica
+ {
+ 	struct unicam_cfg *cfg = &dev->cfg;
+ 	int line_int_freq = dev->node[IMAGE_PAD].v_fmt.fmt.pix.height >> 2;
+-	unsigned int i;
++	unsigned int size, i;
+ 	u32 val;
+ 
+ 	if (line_int_freq < 128)
+@@ -1413,7 +1453,7 @@ static void unicam_start_rx(struct unica
+ 	reg_write_field(cfg, UNICAM_ANA, 0, UNICAM_DDL);
+ 
+ 	/* Always start in trigger frame capture mode (UNICAM_FCM set) */
+-	val = UNICAM_FSIE | UNICAM_FEIE | UNICAM_FCM;
++	val = UNICAM_FSIE | UNICAM_FEIE | UNICAM_FCM | UNICAM_IBOB;
+ 	set_field(&val,  line_int_freq, UNICAM_LCIE_MASK);
+ 	reg_write(cfg, UNICAM_ICTL, val);
+ 	reg_write(cfg, UNICAM_STA, UNICAM_STA_MASK_ALL);
+@@ -1501,7 +1541,8 @@ static void unicam_start_rx(struct unica
+ 
+ 	reg_write(&dev->cfg, UNICAM_IBLS,
+ 		  dev->node[IMAGE_PAD].v_fmt.fmt.pix.bytesperline);
+-	unicam_wr_dma_addr(dev, addr[IMAGE_PAD], IMAGE_PAD);
++	size = dev->node[IMAGE_PAD].v_fmt.fmt.pix.sizeimage;
++	unicam_wr_dma_addr(&dev->cfg, addr[IMAGE_PAD], size, IMAGE_PAD);
+ 	unicam_set_packing_config(dev);
+ 	unicam_cfg_image_id(dev);
+ 
+@@ -1511,8 +1552,10 @@ static void unicam_start_rx(struct unica
+ 	reg_write(cfg, UNICAM_MISC, val);
+ 
+ 	if (dev->node[METADATA_PAD].streaming && dev->sensor_embedded_data) {
++		size = dev->node[METADATA_PAD].v_fmt.fmt.meta.buffersize;
+ 		unicam_enable_ed(dev);
+-		unicam_wr_dma_addr(dev, addr[METADATA_PAD], METADATA_PAD);
++		unicam_wr_dma_addr(&dev->cfg, addr[METADATA_PAD], size,
++				   METADATA_PAD);
+ 	}
+ 
+ 	/* Enable peripheral */
+@@ -1686,13 +1729,14 @@ static void unicam_stop_streaming(struct
+ 		unicam_runtime_put(dev);
+ 
+ 	} else if (node->pad_id == METADATA_PAD) {
+-		/* Null out the embedded data buffer address so the HW does
+-		 * not use it.  This is only really needed if the embedded data
+-		 * pad is disabled before the image pad.  The 0x3 in the top two
+-		 * bits signifies uncached accesses through the Videocore
+-		 * memory controller.
++		/* Allow the hardware to spin in the dummy buffer.
++		 * This is only really needed if the embedded data pad is
++		 * disabled before the image pad.  The 0x3 in the top two bits
++		 * signifies uncached accesses through the Videocore memory
++		 * controller.
+ 		 */
+-		unicam_wr_dma_addr(dev, 0xc0000000, METADATA_PAD);
++		unicam_wr_dma_addr(&dev->cfg, node->dummy_buf_dma_addr,
++				   DUMMY_BUF_SIZE, METADATA_PAD);
+ 	}
+ 
+ 	/* Clear all queued buffers for the node */
+@@ -2321,6 +2365,15 @@ static int register_node(struct unicam_d
+ 	video_set_drvdata(vdev, node);
+ 	vdev->entity.flags |= MEDIA_ENT_FL_DEFAULT;
+ 
++	node->dummy_buf_cpu_addr = dma_alloc_coherent(&unicam->pdev->dev,
++						      DUMMY_BUF_SIZE,
++						      &node->dummy_buf_dma_addr,
++						      GFP_ATOMIC);
++	if (!node->dummy_buf_cpu_addr) {
++		unicam_err(unicam, "Unable to allocate dummy buffer.\n");
++		return -ENOMEM;
++	}
++
+ 	if (node->pad_id == METADATA_PAD ||
+ 	    !v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
+ 		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_STD);
+@@ -2376,13 +2429,20 @@ static int register_node(struct unicam_d
+ 
+ static void unregister_nodes(struct unicam_device *unicam)
+ {
+-	if (unicam->node[IMAGE_PAD].registered) {
+-		video_unregister_device(&unicam->node[IMAGE_PAD].video_dev);
+-		unicam->node[IMAGE_PAD].registered = 0;
+-	}
+-	if (unicam->node[METADATA_PAD].registered) {
+-		video_unregister_device(&unicam->node[METADATA_PAD].video_dev);
+-		unicam->node[METADATA_PAD].registered = 0;
++	struct unicam_node *node;
++	int i;
++
++	for (i = 0; i < MAX_NODES; i++) {
++		node = &unicam->node[i];
++		if (node->dummy_buf_cpu_addr) {
++			dma_free_coherent(&unicam->pdev->dev, DUMMY_BUF_SIZE,
++					  node->dummy_buf_cpu_addr,
++					  node->dummy_buf_dma_addr);
++		}
++		if (node->registered) {
++			video_unregister_device(&node->video_dev);
++			node->registered = 0;
++		}
+ 	}
+ }
+ 

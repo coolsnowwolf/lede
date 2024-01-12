@@ -1,0 +1,76 @@
+--- a/source3/lib/smbldap.c
++++ b/source3/lib/smbldap.c
+@@ -876,7 +876,15 @@
+ 	    Could we get a referral to a machine that we don't want to give our
+ 	    username and password to? */
+ 
+-	rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
++	if (ldap_state->bind_secret)
++		rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
++	else {
++		struct berval *servercredp=NULL;
++
++		rc = ldap_sasl_bind_s(ldap_struct, NULL, "EXTERNAL", NULL, NULL, NULL, &servercredp);
++		if (rc == LDAP_SASL_BIND_IN_PROGRESS)
++			rc = ldap_sasl_bind_s(ldap_struct, NULL, "EXTERNAL", servercredp, NULL, NULL, &servercredp);
++	}
+ 
+ 	/* only set the last rebind timestamp when we did rebind after a
+ 	 * non-read LDAP operation. That way we avoid the replication sleep
+@@ -983,7 +991,15 @@
+ 		rc = ldap_state->bind_callback(ldap_struct, ldap_state, ldap_state->bind_callback_data);
+ 		unbecome_root();
+ 	} else {
+-		rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
++		if (ldap_state->bind_secret)
++			rc = ldap_simple_bind_s(ldap_struct, ldap_state->bind_dn, ldap_state->bind_secret);
++		else {
++			struct berval *servercredp=NULL;
++
++			rc = ldap_sasl_bind_s(ldap_struct, NULL, "EXTERNAL", NULL, NULL, NULL, &servercredp);
++			if (rc == LDAP_SASL_BIND_IN_PROGRESS)
++				rc = ldap_sasl_bind_s(ldap_struct, NULL, "EXTERNAL", servercredp, NULL, NULL, &servercredp);
++		}
+ 	}
+ 
+ 	if (rc != LDAP_SUCCESS) {
+--- a/source3/passdb/pdb_ldap.c
++++ b/source3/passdb/pdb_ldap.c
+@@ -6451,16 +6451,21 @@
+ 	}
+ 
+ 	if (!fetch_ldap_pw(&bind_dn, &bind_secret)) {
+-		DEBUG(0, ("pdb_init_ldapsam_common: Failed to retrieve LDAP password from secrets.tdb\n"));
+-		return NT_STATUS_NO_MEMORY;
++		DEBUG(1, ("pdb_init_ldapsam_common: Failed to retrieve password from secrets.tdb. Switching to SASL\n"));
+ 	}
+ 
+ 	nt_status = smbldap_init(*pdb_method, pdb_get_tevent_context(),
+ 				 location, false, bind_dn, bind_secret,
+ 				 &ldap_state->smbldap_state);
+-	memset(bind_secret, '\0', strlen(bind_secret));
+-	SAFE_FREE(bind_secret);
+-	SAFE_FREE(bind_dn);
++
++	if (bind_secret) {
++		memset(bind_secret, '\0', strlen(bind_secret));
++		SAFE_FREE(bind_secret);
++	}
++
++	if (bind_dn)
++		SAFE_FREE(bind_dn);
++
+ 	if ( !NT_STATUS_IS_OK(nt_status) ) {
+ 		return nt_status;
+ 	}
+--- a/source3/passdb/secrets.c	2012-08-18 01:59:39.251910842 +0200
++++ b/source3/passdb/secrets.c	2012-08-18 01:59:51.348560121 +0200
+@@ -363,7 +363,7 @@
+ 
+ 		data=(char *)secrets_fetch(old_style_key, &size);
+ 		if ((data == NULL) || (size < sizeof(old_style_pw))) {
+-			DEBUG(0,("fetch_ldap_pw: neither ldap secret retrieved!\n"));
++			DEBUG(1,("fetch_ldap_pw: neither ldap secret retrieved!\n"));
+ 			SAFE_FREE(old_style_key);
+ 			SAFE_FREE(*dn);
+ 			SAFE_FREE(data);

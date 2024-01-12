@@ -39,7 +39,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/bpf-headers
   SECTION:=kernel
-  CATEGORY:=Kernel
+  CATEGORY:=Kernel modules
   TITLE:=eBPF kernel headers
   BUILDONLY:=1
   HIDDEN:=1
@@ -56,7 +56,6 @@ KERNEL_MAKE := \
 		LLVM=1 CC="$(CLANG)" LD="$(TARGET_CROSS)ld" \
 		HOSTCC="$(HOSTCC)" \
 		HOSTCXX="$(HOSTCXX)" \
-		HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib" \
 		KBUILD_HOSTLDLIBS="-L$(STAGING_DIR_HOST)/lib" \
 		CONFIG_SHELL="$(BASH)" \
 		INSTALL_HDR_PATH="$(PKG_BUILD_DIR)/user_headers"

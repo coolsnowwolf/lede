@@ -1,0 +1,150 @@
+From 01c6c9fccbd51c1d9eab0f5794b0271b026178df Mon Sep 17 00:00:00 2001
+From: Abinaya Kalaiselvan <quic_akalaise@quicinc.com>
+Date: Mon, 19 Dec 2022 11:08:44 +0530
+Subject: [PATCH] wifi: ath11k: Add tx ack signal support for management
+ packets
+
+Add support to notify tx ack signal values for management
+packets to userspace through nl80211 interface.
+
+Advertise NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT flag
+to enable this feature and it will be used for data
+packets as well.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Abinaya Kalaiselvan <quic_akalaise@quicinc.com>
+Signed-off-by: Maharaja Kennadyrajan <quic_mkenna@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20221219053844.4084486-1-quic_mkenna@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/hw.c  |  1 +
+ drivers/net/wireless/ath/ath11k/mac.c |  5 +++++
+ drivers/net/wireless/ath/ath11k/wmi.c | 27 ++++++++++++++++-----------
+ drivers/net/wireless/ath/ath11k/wmi.h |  3 +++
+ 4 files changed, 25 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -201,6 +201,7 @@ static void ath11k_init_wmi_config_ipq80
+ 	config->twt_ap_pdev_count = ab->num_radios;
+ 	config->twt_ap_sta_count = 1000;
+ 	config->flag1 |= WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64;
++	config->flag1 |= WMI_RSRC_CFG_FLAG1_ACK_RSSI;
+ }
+ 
+ static int ath11k_hw_mac_id_to_pdev_id_ipq8074(struct ath11k_hw_params *hw,
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -9174,6 +9174,11 @@ static int __ath11k_mac_register(struct
+ 		goto err_free_if_combs;
+ 	}
+ 
++	if (test_bit(WMI_TLV_SERVICE_TX_DATA_MGMT_ACK_RSSI,
++		     ar->ab->wmi_ab.svc_map))
++		wiphy_ext_feature_set(ar->hw->wiphy,
++				      NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT);
++
+ 	ar->hw->queues = ATH11K_HW_MAX_QUEUES;
+ 	ar->hw->wiphy->tx_queue_len = ATH11K_QUEUE_LEN;
+ 	ar->hw->offchannel_tx_hw_queue = ATH11K_HW_MAX_QUEUES - 1;
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -5229,8 +5229,8 @@ static int ath11k_pull_mgmt_rx_params_tl
+ 	return 0;
+ }
+ 
+-static int wmi_process_mgmt_tx_comp(struct ath11k *ar, u32 desc_id,
+-				    u32 status)
++static int wmi_process_mgmt_tx_comp(struct ath11k *ar,
++				    struct wmi_mgmt_tx_compl_event *tx_compl_param)
+ {
+ 	struct sk_buff *msdu;
+ 	struct ieee80211_tx_info *info;
+@@ -5238,24 +5238,29 @@ static int wmi_process_mgmt_tx_comp(stru
+ 	int num_mgmt;
+ 
+ 	spin_lock_bh(&ar->txmgmt_idr_lock);
+-	msdu = idr_find(&ar->txmgmt_idr, desc_id);
++	msdu = idr_find(&ar->txmgmt_idr, tx_compl_param->desc_id);
+ 
+ 	if (!msdu) {
+ 		ath11k_warn(ar->ab, "received mgmt tx compl for invalid msdu_id: %d\n",
+-			    desc_id);
++			    tx_compl_param->desc_id);
+ 		spin_unlock_bh(&ar->txmgmt_idr_lock);
+ 		return -ENOENT;
+ 	}
+ 
+-	idr_remove(&ar->txmgmt_idr, desc_id);
++	idr_remove(&ar->txmgmt_idr, tx_compl_param->desc_id);
+ 	spin_unlock_bh(&ar->txmgmt_idr_lock);
+ 
+ 	skb_cb = ATH11K_SKB_CB(msdu);
+ 	dma_unmap_single(ar->ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
+ 
+ 	info = IEEE80211_SKB_CB(msdu);
+-	if ((!(info->flags & IEEE80211_TX_CTL_NO_ACK)) && !status)
++	if ((!(info->flags & IEEE80211_TX_CTL_NO_ACK)) &&
++	    !tx_compl_param->status) {
+ 		info->flags |= IEEE80211_TX_STAT_ACK;
++		if (test_bit(WMI_TLV_SERVICE_TX_DATA_MGMT_ACK_RSSI,
++			     ar->ab->wmi_ab.svc_map))
++			info->status.ack_signal = tx_compl_param->ack_rssi;
++	}
+ 
+ 	ieee80211_tx_status_irqsafe(ar->hw, msdu);
+ 
+@@ -5267,7 +5272,7 @@ static int wmi_process_mgmt_tx_comp(stru
+ 
+ 	ath11k_dbg(ar->ab, ATH11K_DBG_WMI,
+ 		   "wmi mgmt tx comp pending %d desc id %d\n",
+-		   num_mgmt, desc_id);
++		   num_mgmt, tx_compl_param->desc_id);
+ 
+ 	if (!num_mgmt)
+ 		wake_up(&ar->txmgmt_empty_waitq);
+@@ -5300,6 +5305,7 @@ static int ath11k_pull_mgmt_tx_compl_par
+ 	param->pdev_id = ev->pdev_id;
+ 	param->desc_id = ev->desc_id;
+ 	param->status = ev->status;
++	param->ack_rssi = ev->ack_rssi;
+ 
+ 	kfree(tb);
+ 	return 0;
+@@ -7070,13 +7076,12 @@ static void ath11k_mgmt_tx_compl_event(s
+ 		goto exit;
+ 	}
+ 
+-	wmi_process_mgmt_tx_comp(ar, tx_compl_param.desc_id,
+-				 tx_compl_param.status);
++	wmi_process_mgmt_tx_comp(ar, &tx_compl_param);
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_MGMT,
+-		   "mgmt tx compl ev pdev_id %d, desc_id %d, status %d",
++		   "mgmt tx compl ev pdev_id %d, desc_id %d, status %d ack_rssi %d",
+ 		   tx_compl_param.pdev_id, tx_compl_param.desc_id,
+-		   tx_compl_param.status);
++		   tx_compl_param.status, tx_compl_param.ack_rssi);
+ 
+ exit:
+ 	rcu_read_unlock();
+--- a/drivers/net/wireless/ath/ath11k/wmi.h
++++ b/drivers/net/wireless/ath/ath11k/wmi.h
+@@ -2311,6 +2311,7 @@ struct wmi_init_cmd {
+ } __packed;
+ 
+ #define WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64 BIT(5)
++#define WMI_RSRC_CFG_FLAG1_ACK_RSSI BIT(18)
+ 
+ struct wmi_resource_config {
+ 	u32 tlv_header;
+@@ -4550,6 +4551,8 @@ struct wmi_mgmt_tx_compl_event {
+ 	u32 desc_id;
+ 	u32 status;
+ 	u32 pdev_id;
++	u32 ppdu_id;
++	u32 ack_rssi;
+ } __packed;
+ 
+ struct wmi_scan_event {

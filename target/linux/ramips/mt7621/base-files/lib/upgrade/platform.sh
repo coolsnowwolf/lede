@@ -9,6 +9,28 @@ RAMFS_COPY_BIN='fw_printenv fw_setenv'
 RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
 
 platform_check_image() {
+	local board=$(board_name)
+
+	case "$board" in
+	hatlab,gateboard-one)
+		hatlab_check_image "$1"
+		return $?;
+		;;
+	esac
+
+	return 0
+}
+
+platform_copy_config() {
+	local board=$(board_name)
+
+	case "$board" in
+	hatlab,gateboard-one)
+		hatlab_copy_config
+		return $?;
+		;;
+	esac
+
 	return 0
 }
 
@@ -55,6 +77,7 @@ platform_do_upgrade() {
 	asus,rt-ac85p|\
 	beeline,smartbox-giga|\
 	beeline,smartbox-turbo-plus|\
+	c-life,xg1|\
 	dlink,dir-1960-a1|\
 	dlink,dir-2640-a1|\
 	dlink,dir-2660-a1|\
@@ -85,6 +108,9 @@ platform_do_upgrade() {
 	xiaomi,mi-router-cr660x|\
 	xiaomi,redmi-router-ac2100)
 		nand_do_upgrade "$1"
+		;;
+	hatlab,gateboard-one)
+		hatlab_do_upgrade "$1"
 		;;
 	iodata,wn-ax1167gr2|\
 	iodata,wn-ax2033gr|\

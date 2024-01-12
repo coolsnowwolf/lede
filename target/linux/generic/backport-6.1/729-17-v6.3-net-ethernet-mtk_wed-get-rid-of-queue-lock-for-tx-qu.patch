@@ -1,0 +1,75 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 12 Jan 2023 10:21:29 +0100
+Subject: [PATCH] net: ethernet: mtk_wed: get rid of queue lock for tx queue
+
+Similar to MTK Wireless Ethernet Dispatcher (WED) MCU rx queue,
+we do not need to protect WED MCU tx queue with a spin lock since
+the tx queue is accessed in the two following routines:
+- mtk_wed_wo_queue_tx_skb():
+  it is run at initialization and during mt7915 normal operation.
+  Moreover MCU messages are serialized through MCU mutex.
+- mtk_wed_wo_queue_tx_clean():
+  it runs just at mt7915 driver module unload when no more messages
+  are sent to the MCU.
+
+Remove tx queue spinlock.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/7bd0337b2a13ab1a63673b7c03fd35206b3b284e.1673515140.git.lorenzo@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_wed_wo.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed_wo.c
+@@ -258,7 +258,6 @@ mtk_wed_wo_queue_alloc(struct mtk_wed_wo
+ 		       int n_desc, int buf_size, int index,
+ 		       struct mtk_wed_wo_queue_regs *regs)
+ {
+-	spin_lock_init(&q->lock);
+ 	q->regs = *regs;
+ 	q->n_desc = n_desc;
+ 	q->buf_size = buf_size;
+@@ -290,7 +289,6 @@ mtk_wed_wo_queue_tx_clean(struct mtk_wed
+ 	struct page *page;
+ 	int i;
+ 
+-	spin_lock_bh(&q->lock);
+ 	for (i = 0; i < q->n_desc; i++) {
+ 		struct mtk_wed_wo_queue_entry *entry = &q->entry[i];
+ 
+@@ -299,7 +297,6 @@ mtk_wed_wo_queue_tx_clean(struct mtk_wed
+ 		skb_free_frag(entry->buf);
+ 		entry->buf = NULL;
+ 	}
+-	spin_unlock_bh(&q->lock);
+ 
+ 	if (!q->cache.va)
+ 		return;
+@@ -347,8 +344,6 @@ int mtk_wed_wo_queue_tx_skb(struct mtk_w
+ 	int ret = 0, index;
+ 	u32 ctrl;
+ 
+-	spin_lock_bh(&q->lock);
+-
+ 	q->tail = mtk_wed_mmio_r32(wo, q->regs.dma_idx);
+ 	index = (q->head + 1) % q->n_desc;
+ 	if (q->tail == index) {
+@@ -379,8 +374,6 @@ int mtk_wed_wo_queue_tx_skb(struct mtk_w
+ 	mtk_wed_wo_queue_kick(wo, q, q->head);
+ 	mtk_wed_wo_kickout(wo);
+ out:
+-	spin_unlock_bh(&q->lock);
+-
+ 	dev_kfree_skb(skb);
+ 
+ 	return ret;
+--- a/drivers/net/ethernet/mediatek/mtk_wed_wo.h
++++ b/drivers/net/ethernet/mediatek/mtk_wed_wo.h
+@@ -211,7 +211,6 @@ struct mtk_wed_wo_queue {
+ 	struct mtk_wed_wo_queue_regs regs;
+ 
+ 	struct page_frag_cache cache;
+-	spinlock_t lock;
+ 
+ 	struct mtk_wed_wo_queue_desc *desc;
+ 	dma_addr_t desc_dma;

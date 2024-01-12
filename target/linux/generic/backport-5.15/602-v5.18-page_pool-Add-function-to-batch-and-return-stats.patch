@@ -1,0 +1,74 @@
+commit 6b95e3388b1ea0ca63500c5a6e39162dbf828433
+Author: Joe Damato <jdamato@fastly.com>
+Date:   Tue Mar 1 23:55:49 2022 -0800
+
+    page_pool: Add function to batch and return stats
+    
+    Adds a function page_pool_get_stats which can be used by drivers to obtain
+    stats for a specified page_pool.
+    
+    Signed-off-by: Joe Damato <jdamato@fastly.com>
+    Acked-by: Jesper Dangaard Brouer <brouer@redhat.com>
+    Reviewed-by: Ilias Apalodimas <ilias.apalodimas@linaro.org>
+    Signed-off-by: David S. Miller <davem@davemloft.net>
+
+--- a/include/net/page_pool.h
++++ b/include/net/page_pool.h
+@@ -105,6 +105,23 @@ struct page_pool_recycle_stats {
+ 			      * refcnt
+ 			      */
+ };
++
++/* This struct wraps the above stats structs so users of the
++ * page_pool_get_stats API can pass a single argument when requesting the
++ * stats for the page pool.
++ */
++struct page_pool_stats {
++	struct page_pool_alloc_stats alloc_stats;
++	struct page_pool_recycle_stats recycle_stats;
++};
++
++/*
++ * Drivers that wish to harvest page pool stats and report them to users
++ * (perhaps via ethtool, debugfs, or another mechanism) can allocate a
++ * struct page_pool_stats call page_pool_get_stats to get stats for the specified pool.
++ */
++bool page_pool_get_stats(struct page_pool *pool,
++			 struct page_pool_stats *stats);
+ #endif
+ 
+ struct page_pool {
+--- a/net/core/page_pool.c
++++ b/net/core/page_pool.c
+@@ -58,6 +58,31 @@ static void page_pool_producer_unlock(st
+ 		struct page_pool_recycle_stats __percpu *s = pool->recycle_stats;	\
+ 		this_cpu_inc(s->__stat);						\
+ 	} while (0)
++
++bool page_pool_get_stats(struct page_pool *pool,
++			 struct page_pool_stats *stats)
++{
++	int cpu = 0;
++
++	if (!stats)
++		return false;
++
++	memcpy(&stats->alloc_stats, &pool->alloc_stats, sizeof(pool->alloc_stats));
++
++	for_each_possible_cpu(cpu) {
++		const struct page_pool_recycle_stats *pcpu =
++			per_cpu_ptr(pool->recycle_stats, cpu);
++
++		stats->recycle_stats.cached += pcpu->cached;
++		stats->recycle_stats.cache_full += pcpu->cache_full;
++		stats->recycle_stats.ring += pcpu->ring;
++		stats->recycle_stats.ring_full += pcpu->ring_full;
++		stats->recycle_stats.released_refcnt += pcpu->released_refcnt;
++	}
++
++	return true;
++}
++EXPORT_SYMBOL(page_pool_get_stats);
+ #else
+ #define alloc_stat_inc(pool, __stat)
+ #define recycle_stat_inc(pool, __stat)

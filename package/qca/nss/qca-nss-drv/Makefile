@@ -4,7 +4,7 @@ include $(INCLUDE_DIR)/kernel.mk
 PKG_NAME:=qca-nss-drv
 PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=https://source.codeaurora.org/quic/qsdk/oss/lklm/nss-drv
+PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-drv.git
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=809a00deffe9f3d4ecd15965790a152757073437
 PKG_MIRROR_HASH:=9c4340561fe9d6ccaa094bbfc5c7f98c27867d2d9a3f1a3f9a7483bca9bbedf8

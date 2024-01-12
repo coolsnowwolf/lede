@@ -7,16 +7,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=llvm-project
-PKG_VERSION:=13.0.0
+PKG_VERSION:=15.0.7
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).src.tar.xz
 PKG_SOURCE_URL:=https://github.com/llvm/llvm-project/releases/download/llvmorg-$(PKG_VERSION)
-PKG_HASH:=6075ad30f1ac0e15f07c1bf062c1e1268c241d674f11bd32cdf0e040c71f2bf3
+PKG_HASH:=8b5fcb24b4128cf04df1b0b9410ce8b1a729cb3c544e6da885d234280dedeac6
 
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/$(PKG_NAME)-$(PKG_VERSION).src
-
-HOST_BUILD_PARALLEL:=1
 
 CMAKE_BINARY_SUBDIR := build
 CMAKE_SOURCE_SUBDIR := llvm

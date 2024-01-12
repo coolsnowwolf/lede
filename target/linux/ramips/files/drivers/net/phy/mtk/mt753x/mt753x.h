@@ -13,6 +13,7 @@
 #include <linux/of_mdio.h>
 #include <linux/workqueue.h>
 #include <linux/gpio/consumer.h>
+#include <linux/version.h>
 
 #ifdef CONFIG_SWCONFIG
 #include <linux/switch.h>
@@ -35,7 +36,11 @@ enum mt753x_model {
 
 struct mt753x_port_cfg {
 	struct device_node *np;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	int phy_mode;
+#else
+	phy_interface_t phy_mode;
+#endif
 	u32 enabled: 1;
 	u32 force_link: 1;
 	u32 speed: 2;

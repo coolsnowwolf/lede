@@ -11,4 +11,8 @@ PKG_HASH:=eab5bdc5ae1df285c59f2a4f140a98fc33678a0bf61bdba67d9436ae26b46f6d
 
 include $(INCLUDE_DIR)/host-build.mk
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

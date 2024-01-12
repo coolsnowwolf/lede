@@ -1,0 +1,129 @@
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Tue, 7 Feb 2023 12:30:27 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: fix DSA TX tag hwaccel for switch
+ port 0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Arınç reports that on his MT7621AT Unielec U7621-06 board and MT7623NI
+Bananapi BPI-R2, packets received by the CPU over mt7530 switch port 0
+(of which this driver acts as the DSA master) are not processed
+correctly by software. More precisely, they arrive without a DSA tag
+(in packet or in the hwaccel area - skb_metadata_dst()), so DSA cannot
+demux them towards the switch's interface for port 0. Traffic from other
+ports receives a skb_metadata_dst() with the correct port and is demuxed
+properly.
+
+Looking at mtk_poll_rx(), it becomes apparent that this driver uses the
+skb vlan hwaccel area:
+
+	union {
+		u32		vlan_all;
+		struct {
+			__be16	vlan_proto;
+			__u16	vlan_tci;
+		};
+	};
+
+as a temporary storage for the VLAN hwaccel tag, or the DSA hwaccel tag.
+If this is a DSA master it's a DSA hwaccel tag, and finally clears up
+the skb VLAN hwaccel header.
+
+I'm guessing that the problem is the (mis)use of API.
+skb_vlan_tag_present() looks like this:
+
+ #define skb_vlan_tag_present(__skb)	(!!(__skb)->vlan_all)
+
+So if both vlan_proto and vlan_tci are zeroes, skb_vlan_tag_present()
+returns precisely false. I don't know for sure what is the format of the
+DSA hwaccel tag, but I surely know that lowermost 3 bits of vlan_proto
+are 0 when receiving from port 0:
+
+	unsigned int port = vlan_proto & GENMASK(2, 0);
+
+If the RX descriptor has no other bits set to non-zero values in
+RX_DMA_VTAG, then the call to __vlan_hwaccel_put_tag() will not, in
+fact, make the subsequent skb_vlan_tag_present() return true, because
+it's implemented like this:
+
+static inline void __vlan_hwaccel_put_tag(struct sk_buff *skb,
+					  __be16 vlan_proto, u16 vlan_tci)
+{
+	skb->vlan_proto = vlan_proto;
+	skb->vlan_tci = vlan_tci;
+}
+
+What we need to do to fix this problem (assuming this is the problem) is
+to stop using skb->vlan_all as temporary storage for driver affairs, and
+just create some local variables that serve the same purpose, but
+hopefully better. Instead of calling skb_vlan_tag_present(), let's look
+at a boolean has_hwaccel_tag which we set to true when the RX DMA
+descriptors have something. Disambiguate based on netdev_uses_dsa()
+whether this is a VLAN or DSA hwaccel tag, and only call
+__vlan_hwaccel_put_tag() if we're certain it's a VLAN tag.
+
+Arınç confirms that the treatment works, so this validates the
+assumption.
+
+Link: https://lore.kernel.org/netdev/704f3a72-fc9e-714a-db54-272e17612637@arinc9.com/
+Fixes: 2d7605a72906 ("net: ethernet: mtk_eth_soc: enable hardware DSA untagging")
+Reported-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+Tested-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1878,7 +1878,9 @@ static int mtk_poll_rx(struct napi_struc
+ 
+ 	while (done < budget) {
+ 		unsigned int pktlen, *rxdcsum;
++		bool has_hwaccel_tag = false;
+ 		struct net_device *netdev;
++		u16 vlan_proto, vlan_tci;
+ 		dma_addr_t dma_addr;
+ 		u32 hash, reason;
+ 		int mac = 0;
+@@ -2018,27 +2020,29 @@ static int mtk_poll_rx(struct napi_struc
+ 
+ 		if (netdev->features & NETIF_F_HW_VLAN_CTAG_RX) {
+ 			if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2)) {
+-				if (trxd.rxd3 & RX_DMA_VTAG_V2)
+-					__vlan_hwaccel_put_tag(skb,
+-						htons(RX_DMA_VPID(trxd.rxd4)),
+-						RX_DMA_VID(trxd.rxd4));
++				if (trxd.rxd3 & RX_DMA_VTAG_V2) {
++					vlan_proto = RX_DMA_VPID(trxd.rxd4);
++					vlan_tci = RX_DMA_VID(trxd.rxd4);
++					has_hwaccel_tag = true;
++				}
+ 			} else if (trxd.rxd2 & RX_DMA_VTAG) {
+-				__vlan_hwaccel_put_tag(skb, htons(RX_DMA_VPID(trxd.rxd3)),
+-						       RX_DMA_VID(trxd.rxd3));
++				vlan_proto = RX_DMA_VPID(trxd.rxd3);
++				vlan_tci = RX_DMA_VID(trxd.rxd3);
++				has_hwaccel_tag = true;
+ 			}
+ 		}
+ 
+ 		/* When using VLAN untagging in combination with DSA, the
+ 		 * hardware treats the MTK special tag as a VLAN and untags it.
+ 		 */
+-		if (skb_vlan_tag_present(skb) && netdev_uses_dsa(netdev)) {
+-			unsigned int port = ntohs(skb->vlan_proto) & GENMASK(2, 0);
++		if (has_hwaccel_tag && netdev_uses_dsa(netdev)) {
++			unsigned int port = vlan_proto & GENMASK(2, 0);
+ 
+ 			if (port < ARRAY_SIZE(eth->dsa_meta) &&
+ 			    eth->dsa_meta[port])
+ 				skb_dst_set_noref(skb, &eth->dsa_meta[port]->dst);
+-
+-			__vlan_hwaccel_clear_tag(skb);
++		} else if (has_hwaccel_tag) {
++			__vlan_hwaccel_put_tag(skb, htons(vlan_proto), vlan_tci);
+ 		}
+ 
+ 		skb_record_rx_queue(skb, 0);

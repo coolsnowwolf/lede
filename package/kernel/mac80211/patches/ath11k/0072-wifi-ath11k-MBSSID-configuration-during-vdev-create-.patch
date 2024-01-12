@@ -1,0 +1,215 @@
+From 5a81610acf66c4ad6e1a1fbd09f3f555fca863b1 Mon Sep 17 00:00:00 2001
+From: Aloka Dixit <quic_alokad@quicinc.com>
+Date: Fri, 5 May 2023 16:11:27 +0300
+Subject: [PATCH 72/77] wifi: ath11k: MBSSID configuration during vdev
+ create/start
+
+Configure multiple BSSID flags and index of the transmitting interface
+in vdev create/start commands depending on the service bit
+WMI_TLV_SERVICE_MBSS_PARAM_IN_VDEV_START_SUPPORT.
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+Co-developed-by: John Crispin <john@phrozen.org>
+Signed-off-by: John Crispin <john@phrozen.org>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20230405221648.17950-3-quic_alokad@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/mac.c | 70 +++++++++++++++++++++++++--
+ drivers/net/wireless/ath/ath11k/wmi.c |  5 ++
+ drivers/net/wireless/ath/ath11k/wmi.h | 19 ++++++++
+ 3 files changed, 90 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6181,17 +6181,62 @@ static void ath11k_mac_op_stop(struct ie
+ 	atomic_set(&ar->num_pending_mgmt_tx, 0);
+ }
+ 
+-static void
+-ath11k_mac_setup_vdev_create_params(struct ath11k_vif *arvif,
+-				    struct vdev_create_params *params)
++static int ath11k_mac_setup_vdev_params_mbssid(struct ath11k_vif *arvif,
++					       u32 *flags, u32 *tx_vdev_id)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ath11k_vif *tx_arvif;
++	struct ieee80211_vif *tx_vif;
++
++	*tx_vdev_id = 0;
++	tx_vif = arvif->vif->mbssid_tx_vif;
++	if (!tx_vif) {
++		*flags = WMI_HOST_VDEV_FLAGS_NON_MBSSID_AP;
++		return 0;
++	}
++
++	tx_arvif = (void *)tx_vif->drv_priv;
++
++	if (arvif->vif->bss_conf.nontransmitted) {
++		if (ar->hw->wiphy != ieee80211_vif_to_wdev(tx_vif)->wiphy)
++			return -EINVAL;
++
++		*flags = WMI_HOST_VDEV_FLAGS_NON_TRANSMIT_AP;
++		*tx_vdev_id = ath11k_vif_to_arvif(tx_vif)->vdev_id;
++	} else if (tx_arvif == arvif) {
++		*flags = WMI_HOST_VDEV_FLAGS_TRANSMIT_AP;
++	} else {
++		return -EINVAL;
++	}
++
++	if (arvif->vif->bss_conf.ema_ap)
++		*flags |= WMI_HOST_VDEV_FLAGS_EMA_MODE;
++
++	return 0;
++}
++
++static int ath11k_mac_setup_vdev_create_params(struct ath11k_vif *arvif,
++					       struct vdev_create_params *params)
+ {
+ 	struct ath11k *ar = arvif->ar;
+ 	struct ath11k_pdev *pdev = ar->pdev;
++	int ret;
+ 
+ 	params->if_id = arvif->vdev_id;
+ 	params->type = arvif->vdev_type;
+ 	params->subtype = arvif->vdev_subtype;
+ 	params->pdev_id = pdev->pdev_id;
++	params->mbssid_flags = 0;
++	params->mbssid_tx_vdev_id = 0;
++
++	if (!test_bit(WMI_TLV_SERVICE_MBSS_PARAM_IN_VDEV_START_SUPPORT,
++		      ar->ab->wmi_ab.svc_map)) {
++		ret = ath11k_mac_setup_vdev_params_mbssid(arvif,
++							  &params->mbssid_flags,
++							  &params->mbssid_tx_vdev_id);
++		if (ret)
++			return ret;
++	}
+ 
+ 	if (pdev->cap.supported_bands & WMI_HOST_WLAN_2G_CAP) {
+ 		params->chains[NL80211_BAND_2GHZ].tx = ar->num_tx_chains;
+@@ -6206,6 +6251,7 @@ ath11k_mac_setup_vdev_create_params(stru
+ 		params->chains[NL80211_BAND_6GHZ].tx = ar->num_tx_chains;
+ 		params->chains[NL80211_BAND_6GHZ].rx = ar->num_rx_chains;
+ 	}
++	return 0;
+ }
+ 
+ static void ath11k_mac_op_update_vif_offload(struct ieee80211_hw *hw,
+@@ -6500,7 +6546,12 @@ static int ath11k_mac_op_add_interface(s
+ 	for (i = 0; i < ARRAY_SIZE(vif->hw_queue); i++)
+ 		vif->hw_queue[i] = i % (ATH11K_HW_MAX_QUEUES - 1);
+ 
+-	ath11k_mac_setup_vdev_create_params(arvif, &vdev_param);
++	ret = ath11k_mac_setup_vdev_create_params(arvif, &vdev_param);
++	if (ret) {
++		ath11k_warn(ab, "failed to create vdev parameters %d: %d\n",
++			    arvif->vdev_id, ret);
++		goto err;
++	}
+ 
+ 	ret = ath11k_wmi_vdev_create(ar, vif->addr, &vdev_param);
+ 	if (ret) {
+@@ -6905,6 +6956,17 @@ ath11k_mac_vdev_start_restart(struct ath
+ 	arg.pref_tx_streams = ar->num_tx_chains;
+ 	arg.pref_rx_streams = ar->num_rx_chains;
+ 
++	arg.mbssid_flags = 0;
++	arg.mbssid_tx_vdev_id = 0;
++	if (test_bit(WMI_TLV_SERVICE_MBSS_PARAM_IN_VDEV_START_SUPPORT,
++		     ar->ab->wmi_ab.svc_map)) {
++		ret = ath11k_mac_setup_vdev_params_mbssid(arvif,
++							  &arg.mbssid_flags,
++							  &arg.mbssid_tx_vdev_id);
++		if (ret)
++			return ret;
++	}
++
+ 	if (arvif->vdev_type == WMI_VDEV_TYPE_AP) {
+ 		arg.ssid = arvif->u.ap.ssid;
+ 		arg.ssid_len = arvif->u.ap.ssid_len;
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -724,6 +724,9 @@ int ath11k_wmi_vdev_create(struct ath11k
+ 	cmd->vdev_subtype = param->subtype;
+ 	cmd->num_cfg_txrx_streams = WMI_NUM_SUPPORTED_BAND_MAX;
+ 	cmd->pdev_id = param->pdev_id;
++	cmd->mbssid_flags = param->mbssid_flags;
++	cmd->mbssid_tx_vdev_id = param->mbssid_tx_vdev_id;
++
+ 	ether_addr_copy(cmd->vdev_macaddr.addr, macaddr);
+ 
+ 	ptr = skb->data + sizeof(*cmd);
+@@ -941,6 +944,8 @@ int ath11k_wmi_vdev_start(struct ath11k
+ 	cmd->cac_duration_ms = arg->cac_duration_ms;
+ 	cmd->regdomain = arg->regdomain;
+ 	cmd->he_ops = arg->he_ops;
++	cmd->mbssid_flags = arg->mbssid_flags;
++	cmd->mbssid_tx_vdev_id = arg->mbssid_tx_vdev_id;
+ 
+ 	if (!restart) {
+ 		if (arg->ssid) {
+--- a/drivers/net/wireless/ath/ath11k/wmi.h
++++ b/drivers/net/wireless/ath/ath11k/wmi.h
+@@ -137,6 +137,14 @@ enum {
+ 	WMI_AUTORATE_3200NS_GI = BIT(11),
+ };
+ 
++enum {
++	WMI_HOST_VDEV_FLAGS_NON_MBSSID_AP       = 0x00000001,
++	WMI_HOST_VDEV_FLAGS_TRANSMIT_AP         = 0x00000002,
++	WMI_HOST_VDEV_FLAGS_NON_TRANSMIT_AP     = 0x00000004,
++	WMI_HOST_VDEV_FLAGS_EMA_MODE            = 0x00000008,
++	WMI_HOST_VDEV_FLAGS_SCAN_MODE_VAP       = 0x00000010,
++};
++
+ /*
+  * wmi command groups.
+  */
+@@ -2096,6 +2104,7 @@ enum wmi_tlv_service {
+ 	WMI_TLV_SERVICE_EXT2_MSG = 220,
+ 	WMI_TLV_SERVICE_PEER_POWER_SAVE_DURATION_SUPPORT = 246,
+ 	WMI_TLV_SERVICE_SRG_SRP_SPATIAL_REUSE_SUPPORT = 249,
++	WMI_TLV_SERVICE_MBSS_PARAM_IN_VDEV_START_SUPPORT = 253,
+ 	WMI_TLV_SERVICE_PASSIVE_SCAN_START_TIME_ENHANCE = 263,
+ 
+ 	/* The second 128 bits */
+@@ -2583,6 +2592,8 @@ struct vdev_create_params {
+ 		u8 rx;
+ 	} chains[NUM_NL80211_BANDS];
+ 	u32 pdev_id;
++	u32 mbssid_flags;
++	u32 mbssid_tx_vdev_id;
+ };
+ 
+ struct wmi_vdev_create_cmd {
+@@ -2593,6 +2604,8 @@ struct wmi_vdev_create_cmd {
+ 	struct wmi_mac_addr vdev_macaddr;
+ 	u32 num_cfg_txrx_streams;
+ 	u32 pdev_id;
++	u32 mbssid_flags;
++	u32 mbssid_tx_vdev_id;
+ } __packed;
+ 
+ struct wmi_vdev_txrx_streams {
+@@ -2656,6 +2669,9 @@ struct wmi_vdev_start_request_cmd {
+ 	u32 he_ops;
+ 	u32 cac_duration_ms;
+ 	u32 regdomain;
++	u32 min_data_rate;
++	u32 mbssid_flags;
++	u32 mbssid_tx_vdev_id;
+ } __packed;
+ 
+ #define MGMT_TX_DL_FRM_LEN		     64
+@@ -2825,6 +2841,9 @@ struct wmi_vdev_start_req_arg {
+ 	u32 pref_rx_streams;
+ 	u32 pref_tx_streams;
+ 	u32 num_noa_descriptors;
++	u32 min_data_rate;
++	u32 mbssid_flags;
++	u32 mbssid_tx_vdev_id;
+ };
+ 
+ struct peer_create_params {

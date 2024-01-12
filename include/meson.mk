@@ -19,7 +19,6 @@
 #
 # Host packages are built in the same fashion, just use these vars instead:
 #
-# HOST_BUILD_DEPENDS:=meson/host
 # MESON_HOST_ARGS+=-Dfoo -Dbar=baz
 # MESON_HOST_VARS+=FOO=bar
 
@@ -57,7 +56,7 @@ MESON_CPU:="$(CPU_TYPE)$(if $(CPU_SUBTYPE),+$(CPU_SUBTYPE))"
 endif
 
 define Meson
-	$(2) $(STAGING_DIR_HOST)/bin/$(PYTHON) $(MESON_DIR)/meson.py $(1)
+	$(2) $(STAGING_DIR_HOST)/bin/$(PYTHON) $(STAGING_DIR_HOST)/bin/meson.py $(1)
 endef
 
 define Meson/CreateNativeFile
@@ -65,6 +64,8 @@ define Meson/CreateNativeFile
 		-e "s|@CC@|$(foreach BIN,$(HOSTCC),'$(BIN)',)|" \
 		-e "s|@CXX@|$(foreach BIN,$(HOSTCXX),'$(BIN)',)|" \
 		-e "s|@PKGCONFIG@|$(PKG_CONFIG)|" \
+		-e "s|@CMAKE@|$(STAGING_DIR_HOST)/bin/cmake|" \
+		-e "s|@PYTHON@|$(STAGING_DIR_HOST)/bin/python3|" \
 		-e "s|@CFLAGS@|$(foreach FLAG,$(HOST_CFLAGS) $(HOST_CPPFLAGS),'$(FLAG)',)|" \
 		-e "s|@CXXFLAGS@|$(foreach FLAG,$(HOST_CXXFLAGS) $(HOST_CPPFLAGS),'$(FLAG)',)|" \
 		-e "s|@LDFLAGS@|$(foreach FLAG,$(HOST_LDFLAGS),'$(FLAG)',)|" \
@@ -81,6 +82,8 @@ define Meson/CreateCrossFile
 		-e "s|@STRIP@|$(TARGET_CROSS)strip|" \
 		-e "s|@NM@|$(TARGET_NM)|" \
 		-e "s|@PKGCONFIG@|$(PKG_CONFIG)|" \
+		-e "s|@CMAKE@|$(STAGING_DIR_HOST)/bin/cmake|" \
+		-e "s|@PYTHON@|$(STAGING_DIR_HOST)/bin/python3|" \
 		-e "s|@CFLAGS@|$(foreach FLAG,$(TARGET_CFLAGS) $(EXTRA_CFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS),'$(FLAG)',)|" \
 		-e "s|@CXXFLAGS@|$(foreach FLAG,$(TARGET_CXXFLAGS) $(EXTRA_CXXFLAGS) $(TARGET_CPPFLAGS) $(EXTRA_CPPFLAGS),'$(FLAG)',)|" \
 		-e "s|@LDFLAGS@|$(foreach FLAG,$(TARGET_LDFLAGS) $(EXTRA_LDFLAGS),'$(FLAG)',)|" \
@@ -97,7 +100,7 @@ define Host/Configure/Meson
 		--native-file $(HOST_BUILD_DIR)/openwrt-native.txt \
 		$(MESON_HOST_ARGS) \
 		$(MESON_HOST_BUILD_DIR) \
-		$(HOST_BUILD_DIR), \
+		$(MESON_HOST_BUILD_DIR)/.., \
 		$(MESON_HOST_VARS))
 endef
 

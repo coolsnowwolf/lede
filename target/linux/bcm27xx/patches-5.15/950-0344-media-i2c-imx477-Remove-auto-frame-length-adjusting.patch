@@ -1,0 +1,142 @@
+From e783c62652ae18705f1a9cfeaa5c830c76e7facc Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Wed, 10 Feb 2021 10:18:53 +0000
+Subject: [PATCH] media: i2c: imx477: Remove auto frame length
+ adjusting
+
+The V4L2_CID_EXPOSURE_AUTO_PRIORITY was used to let the sensor control
+frame length (effectively framerate) based on the requested exposure
+time requested. Remove this feature as it is never used, and goes
+against how V4L2 likes to handle exposure and vblank controls.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/imx477.c | 83 +++-----------------------------------
+ 1 file changed, 6 insertions(+), 77 deletions(-)
+
+--- a/drivers/media/i2c/imx477.c
++++ b/drivers/media/i2c/imx477.c
+@@ -1082,8 +1082,6 @@ struct imx477 {
+ 	struct v4l2_ctrl *hflip;
+ 	struct v4l2_ctrl *vblank;
+ 	struct v4l2_ctrl *hblank;
+-	/* This ctrl allows automatic variable framerate */
+-	struct v4l2_ctrl *exposure_auto;
+ 
+ 	/* Current mode */
+ 	const struct imx477_mode *mode;
+@@ -1280,66 +1278,14 @@ static int imx477_open(struct v4l2_subde
+ 	return 0;
+ }
+ 
+-static int imx477_set_exposure(struct imx477 *imx477, unsigned int val)
+-{
+-	int ret;
+-
+-	ret = imx477_write_reg(imx477, IMX477_REG_EXPOSURE,
+-			       IMX477_REG_VALUE_16BIT, val);
+-
+-	/* Setup the frame length in the case of auto framerate mode. */
+-	if (imx477->exposure_auto->val) {
+-		unsigned int frame_length, frame_length_max, frame_length_min;
+-
+-		frame_length_min = imx477->vblank->minimum +
+-				   imx477->mode->height;
+-		frame_length_max = imx477->vblank->maximum +
+-				   imx477->mode->height;
+-		frame_length = max(frame_length_min,
+-				   val + IMX477_EXPOSURE_OFFSET);
+-		frame_length = min(frame_length_max, frame_length);
+-		ret += imx477_write_reg(imx477, IMX477_REG_FRAME_LENGTH,
+-					IMX477_REG_VALUE_16BIT, frame_length);
+-	}
+-
+-	return ret;
+-}
+-
+ static void imx477_adjust_exposure_range(struct imx477 *imx477,
+ 					 struct v4l2_ctrl *ctrl)
+ {
+ 	int exposure_max, exposure_def;
+ 
+-	if (ctrl->id == V4L2_CID_VBLANK || !ctrl->val) {
+-		/*
+-		 * Either VBLANK has been changed or auto framerate
+-		 * adjusting has been disabled. Honour the VBLANK limits
+-		 * when setting exposure.
+-		 */
+-		exposure_max = imx477->mode->height + imx477->vblank->val -
+-						      IMX477_EXPOSURE_OFFSET;
+-
+-		if (ctrl->id == V4L2_CID_EXPOSURE_AUTO_PRIORITY) {
+-			/*
+-			 * Allow VBLANK adjustments since the driver is not
+-			 * handling frame length control automatically.
+-			 */
+-			__v4l2_ctrl_grab(imx477->vblank, false);
+-		}
+-	} else {
+-		/*
+-		 * Auto framerate adjusting has been enabled. VBLANK
+-		 * ctrl has been disabled and exposure can ramp up
+-		 * to the maximum allowable value.
+-		 */
+-		exposure_max = IMX477_EXPOSURE_MAX;
+-		/*
+-		 * Do not allow VBLANK adjustments if the driver is
+-		 * handling it frame length control automatically.
+-		 */
+-		__v4l2_ctrl_grab(imx477->vblank, true);
+-	}
+-
++	/* Honour the VBLANK limits when setting exposure. */
++	exposure_max = imx477->mode->height + imx477->vblank->val -
++						IMX477_EXPOSURE_OFFSET;
+ 	exposure_def = min(exposure_max, imx477->exposure->val);
+ 	__v4l2_ctrl_modify_range(imx477->exposure, imx477->exposure->minimum,
+ 				 exposure_max, imx477->exposure->step,
+@@ -1353,14 +1299,8 @@ static int imx477_set_ctrl(struct v4l2_c
+ 	struct i2c_client *client = v4l2_get_subdevdata(&imx477->sd);
+ 	int ret = 0;
+ 
+-	if (ctrl->id == V4L2_CID_VBLANK ||
+-	    ctrl->id == V4L2_CID_EXPOSURE_AUTO_PRIORITY) {
+-		/*
+-		 * These controls may change the limits of usable exposure,
+-		 * so check and adjust if necessary.
+-		 */
++	if (ctrl->id == V4L2_CID_VBLANK)
+ 		imx477_adjust_exposure_range(imx477, ctrl);
+-	}
+ 
+ 	/*
+ 	 * Applying V4L2 control value only happens
+@@ -1375,14 +1315,8 @@ static int imx477_set_ctrl(struct v4l2_c
+ 				       IMX477_REG_VALUE_16BIT, ctrl->val);
+ 		break;
+ 	case V4L2_CID_EXPOSURE:
+-		ret = imx477_set_exposure(imx477, ctrl->val);
+-		break;
+-	case V4L2_CID_EXPOSURE_AUTO_PRIORITY:
+-		/*
+-		 * imx477_set_exposure() will recalculate the frame length
+-		 * to adjust the framerate to match the exposure.
+-		 */
+-		ret = imx477_set_exposure(imx477, imx477->exposure->val);
++		ret = imx477_write_reg(imx477, IMX477_REG_EXPOSURE,
++				       IMX477_REG_VALUE_16BIT, ctrl->val);
+ 		break;
+ 	case V4L2_CID_DIGITAL_GAIN:
+ 		ret = imx477_write_reg(imx477, IMX477_REG_DIGITAL_GAIN,
+@@ -2005,11 +1939,6 @@ static int imx477_init_controls(struct i
+ 			  IMX477_DGTL_GAIN_MIN, IMX477_DGTL_GAIN_MAX,
+ 			  IMX477_DGTL_GAIN_STEP, IMX477_DGTL_GAIN_DEFAULT);
+ 
+-	imx477->exposure_auto =
+-			v4l2_ctrl_new_std(ctrl_hdlr, &imx477_ctrl_ops,
+-					  V4L2_CID_EXPOSURE_AUTO_PRIORITY,
+-					  0, 1, 1, 0);
+-
+ 	imx477->hflip = v4l2_ctrl_new_std(ctrl_hdlr, &imx477_ctrl_ops,
+ 					  V4L2_CID_HFLIP, 0, 1, 1, 0);
+ 	if (imx477->hflip)

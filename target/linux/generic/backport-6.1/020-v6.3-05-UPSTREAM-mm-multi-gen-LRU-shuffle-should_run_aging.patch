@@ -1,0 +1,166 @@
+From eca3858631e0cbad2ca6e40f788892749428e4cb Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Wed, 21 Dec 2022 21:19:03 -0700
+Subject: [PATCH 05/19] UPSTREAM: mm: multi-gen LRU: shuffle should_run_aging()
+
+Move should_run_aging() next to its only caller left.
+
+Link: https://lkml.kernel.org/r/20221222041905.2431096-6-yuzhao@google.com
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Michael Larabel <Michael@MichaelLarabel.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+Bug: 274865848
+(cherry picked from commit 77d4459a4a1a472b7309e475f962dda87d950abd)
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+Change-Id: I3b0383fe16b93a783b4d8c0b3a0b325160392576
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+---
+ mm/vmscan.c | 124 ++++++++++++++++++++++++++--------------------------
+ 1 file changed, 62 insertions(+), 62 deletions(-)
+
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -4456,68 +4456,6 @@ done:
+ 	return true;
+ }
+ 
+-static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
+-			     struct scan_control *sc, bool can_swap, unsigned long *nr_to_scan)
+-{
+-	int gen, type, zone;
+-	unsigned long old = 0;
+-	unsigned long young = 0;
+-	unsigned long total = 0;
+-	struct lru_gen_folio *lrugen = &lruvec->lrugen;
+-	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+-	DEFINE_MIN_SEQ(lruvec);
+-
+-	/* whether this lruvec is completely out of cold folios */
+-	if (min_seq[!can_swap] + MIN_NR_GENS > max_seq) {
+-		*nr_to_scan = 0;
+-		return true;
+-	}
+-
+-	for (type = !can_swap; type < ANON_AND_FILE; type++) {
+-		unsigned long seq;
+-
+-		for (seq = min_seq[type]; seq <= max_seq; seq++) {
+-			unsigned long size = 0;
+-
+-			gen = lru_gen_from_seq(seq);
+-
+-			for (zone = 0; zone < MAX_NR_ZONES; zone++)
+-				size += max(READ_ONCE(lrugen->nr_pages[gen][type][zone]), 0L);
+-
+-			total += size;
+-			if (seq == max_seq)
+-				young += size;
+-			else if (seq + MIN_NR_GENS == max_seq)
+-				old += size;
+-		}
+-	}
+-
+-	/* try to scrape all its memory if this memcg was deleted */
+-	*nr_to_scan = mem_cgroup_online(memcg) ? (total >> sc->priority) : total;
+-
+-	/*
+-	 * The aging tries to be lazy to reduce the overhead, while the eviction
+-	 * stalls when the number of generations reaches MIN_NR_GENS. Hence, the
+-	 * ideal number of generations is MIN_NR_GENS+1.
+-	 */
+-	if (min_seq[!can_swap] + MIN_NR_GENS < max_seq)
+-		return false;
+-
+-	/*
+-	 * It's also ideal to spread pages out evenly, i.e., 1/(MIN_NR_GENS+1)
+-	 * of the total number of pages for each generation. A reasonable range
+-	 * for this average portion is [1/MIN_NR_GENS, 1/(MIN_NR_GENS+2)]. The
+-	 * aging cares about the upper bound of hot pages, while the eviction
+-	 * cares about the lower bound of cold pages.
+-	 */
+-	if (young * MIN_NR_GENS > total)
+-		return true;
+-	if (old * (MIN_NR_GENS + 2) < total)
+-		return true;
+-
+-	return false;
+-}
+-
+ static bool lruvec_is_sizable(struct lruvec *lruvec, struct scan_control *sc)
+ {
+ 	int gen, type, zone;
+@@ -5111,6 +5049,68 @@ retry:
+ 	return scanned;
+ }
+ 
++static bool should_run_aging(struct lruvec *lruvec, unsigned long max_seq,
++			     struct scan_control *sc, bool can_swap, unsigned long *nr_to_scan)
++{
++	int gen, type, zone;
++	unsigned long old = 0;
++	unsigned long young = 0;
++	unsigned long total = 0;
++	struct lru_gen_folio *lrugen = &lruvec->lrugen;
++	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
++	DEFINE_MIN_SEQ(lruvec);
++
++	/* whether this lruvec is completely out of cold folios */
++	if (min_seq[!can_swap] + MIN_NR_GENS > max_seq) {
++		*nr_to_scan = 0;
++		return true;
++	}
++
++	for (type = !can_swap; type < ANON_AND_FILE; type++) {
++		unsigned long seq;
++
++		for (seq = min_seq[type]; seq <= max_seq; seq++) {
++			unsigned long size = 0;
++
++			gen = lru_gen_from_seq(seq);
++
++			for (zone = 0; zone < MAX_NR_ZONES; zone++)
++				size += max(READ_ONCE(lrugen->nr_pages[gen][type][zone]), 0L);
++
++			total += size;
++			if (seq == max_seq)
++				young += size;
++			else if (seq + MIN_NR_GENS == max_seq)
++				old += size;
++		}
++	}
++
++	/* try to scrape all its memory if this memcg was deleted */
++	*nr_to_scan = mem_cgroup_online(memcg) ? (total >> sc->priority) : total;
++
++	/*
++	 * The aging tries to be lazy to reduce the overhead, while the eviction
++	 * stalls when the number of generations reaches MIN_NR_GENS. Hence, the
++	 * ideal number of generations is MIN_NR_GENS+1.
++	 */
++	if (min_seq[!can_swap] + MIN_NR_GENS < max_seq)
++		return false;
++
++	/*
++	 * It's also ideal to spread pages out evenly, i.e., 1/(MIN_NR_GENS+1)
++	 * of the total number of pages for each generation. A reasonable range
++	 * for this average portion is [1/MIN_NR_GENS, 1/(MIN_NR_GENS+2)]. The
++	 * aging cares about the upper bound of hot pages, while the eviction
++	 * cares about the lower bound of cold pages.
++	 */
++	if (young * MIN_NR_GENS > total)
++		return true;
++	if (old * (MIN_NR_GENS + 2) < total)
++		return true;
++
++	return false;
++}
++
+ /*
+  * For future optimizations:
+  * 1. Defer try_to_inc_max_seq() to workqueues to reduce latency for memcg

@@ -1,0 +1,65 @@
+From d1f7e9e87961139c7da9a570b1858a8841a32d6e Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 7 Feb 2022 17:14:51 +0000
+Subject: [PATCH] drm/vc4: Move DSI initialisation to encoder_mode_set.
+
+Breaking the bridge chain does not work for atomic bridges/panels
+and generally causes issues.
+We need to initialise the DSI host before the bridge pre_enables
+are called, so move that to encoder_mode_set in the same way that
+dw-mipi-dsi does.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_dsi.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_dsi.c
++++ b/drivers/gpu/drm/vc4/vc4_dsi.c
+@@ -872,19 +872,19 @@ static bool vc4_dsi_encoder_mode_fixup(s
+ 	return true;
+ }
+ 
+-static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
++static void vc4_dsi_encoder_mode_set(struct drm_encoder *encoder,
++				     struct drm_display_mode *user_mode,
++				     struct drm_display_mode *adjusted_mode)
+ {
+-	struct drm_display_mode *mode = &encoder->crtc->state->adjusted_mode;
+ 	struct vc4_dsi_encoder *vc4_encoder = to_vc4_dsi_encoder(encoder);
+ 	struct vc4_dsi *dsi = vc4_encoder->dsi;
+ 	struct device *dev = &dsi->pdev->dev;
+ 	bool debug_dump_regs = false;
+-	struct drm_bridge *iter;
+ 	unsigned long hs_clock;
+ 	u32 ui_ns;
+ 	/* Minimum LP state duration in escape clock cycles. */
+ 	u32 lpx = dsi_esc_timing(60);
+-	unsigned long pixel_clock_hz = mode->clock * 1000;
++	unsigned long pixel_clock_hz = adjusted_mode->clock * 1000;
+ 	unsigned long dsip_clock;
+ 	unsigned long phy_clock;
+ 	int ret;
+@@ -1111,6 +1111,14 @@ static void vc4_dsi_encoder_enable(struc
+ 		       ~DSI_PORT_BIT(PHY_AFEC0_RESET));
+ 
+ 	vc4_dsi_ulps(dsi, false);
++}
++
++static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
++{
++	struct vc4_dsi_encoder *vc4_encoder = to_vc4_dsi_encoder(encoder);
++	struct vc4_dsi *dsi = vc4_encoder->dsi;
++	bool debug_dump_regs = false;
++	struct drm_bridge *iter;
+ 
+ 	list_for_each_entry_reverse(iter, &dsi->bridge_chain, chain_node) {
+ 		if (iter->funcs->pre_enable)
+@@ -1376,6 +1384,7 @@ static const struct drm_encoder_helper_f
+ 	.disable = vc4_dsi_encoder_disable,
+ 	.enable = vc4_dsi_encoder_enable,
+ 	.mode_fixup = vc4_dsi_encoder_mode_fixup,
++	.mode_set = vc4_dsi_encoder_mode_set,
+ };
+ 
+ static const struct vc4_dsi_variant bcm2711_dsi1_variant = {

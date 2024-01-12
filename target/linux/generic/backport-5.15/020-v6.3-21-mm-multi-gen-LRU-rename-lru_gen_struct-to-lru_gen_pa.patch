@@ -1,0 +1,348 @@
+From 348fdbada9fb3f0bf1a53651be46319105af187f Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Wed, 21 Dec 2022 21:18:59 -0700
+Subject: [PATCH 21/29] mm: multi-gen LRU: rename lru_gen_struct to
+ lru_gen_page
+
+Patch series "mm: multi-gen LRU: memcg LRU", v3.
+
+Overview
+========
+
+An memcg LRU is a per-node LRU of memcgs.  It is also an LRU of LRUs,
+since each node and memcg combination has an LRU of pages (see
+mem_cgroup_lruvec()).
+
+Its goal is to improve the scalability of global reclaim, which is
+critical to system-wide memory overcommit in data centers.  Note that
+memcg reclaim is currently out of scope.
+
+Its memory bloat is a pointer to each lruvec and negligible to each
+pglist_data.  In terms of traversing memcgs during global reclaim, it
+improves the best-case complexity from O(n) to O(1) and does not affect
+the worst-case complexity O(n).  Therefore, on average, it has a sublinear
+complexity in contrast to the current linear complexity.
+
+The basic structure of an memcg LRU can be understood by an analogy to
+the active/inactive LRU (of pages):
+1. It has the young and the old (generations), i.e., the counterparts
+   to the active and the inactive;
+2. The increment of max_seq triggers promotion, i.e., the counterpart
+   to activation;
+3. Other events trigger similar operations, e.g., offlining an memcg
+   triggers demotion, i.e., the counterpart to deactivation.
+
+In terms of global reclaim, it has two distinct features:
+1. Sharding, which allows each thread to start at a random memcg (in
+   the old generation) and improves parallelism;
+2. Eventual fairness, which allows direct reclaim to bail out at will
+   and reduces latency without affecting fairness over some time.
+
+The commit message in patch 6 details the workflow:
+https://lore.kernel.org/r/20221222041905.2431096-7-yuzhao@google.com/
+
+The following is a simple test to quickly verify its effectiveness.
+
+  Test design:
+  1. Create multiple memcgs.
+  2. Each memcg contains a job (fio).
+  3. All jobs access the same amount of memory randomly.
+  4. The system does not experience global memory pressure.
+  5. Periodically write to the root memory.reclaim.
+
+  Desired outcome:
+  1. All memcgs have similar pgsteal counts, i.e., stddev(pgsteal)
+     over mean(pgsteal) is close to 0%.
+  2. The total pgsteal is close to the total requested through
+     memory.reclaim, i.e., sum(pgsteal) over sum(requested) is close
+     to 100%.
+
+  Actual outcome [1]:
+                                     MGLRU off    MGLRU on
+  stddev(pgsteal) / mean(pgsteal)    75%          20%
+  sum(pgsteal) / sum(requested)      425%         95%
+
+  ####################################################################
+  MEMCGS=128
+
+  for ((memcg = 0; memcg < $MEMCGS; memcg++)); do
+      mkdir /sys/fs/cgroup/memcg$memcg
+  done
+
+  start() {
+      echo $BASHPID > /sys/fs/cgroup/memcg$memcg/cgroup.procs
+
+      fio -name=memcg$memcg --numjobs=1 --ioengine=mmap \
+          --filename=/dev/zero --size=1920M --rw=randrw \
+          --rate=64m,64m --random_distribution=random \
+          --fadvise_hint=0 --time_based --runtime=10h \
+          --group_reporting --minimal
+  }
+
+  for ((memcg = 0; memcg < $MEMCGS; memcg++)); do
+      start &
+  done
+
+  sleep 600
+
+  for ((i = 0; i < 600; i++)); do
+      echo 256m >/sys/fs/cgroup/memory.reclaim
+      sleep 6
+  done
+
+  for ((memcg = 0; memcg < $MEMCGS; memcg++)); do
+      grep "pgsteal " /sys/fs/cgroup/memcg$memcg/memory.stat
+  done
+  ####################################################################
+
+[1]: This was obtained from running the above script (touches less
+     than 256GB memory) on an EPYC 7B13 with 512GB DRAM for over an
+     hour.
+
+This patch (of 8):
+
+The new name lru_gen_page will be more distinct from the coming
+lru_gen_memcg.
+
+Link: https://lkml.kernel.org/r/20221222041905.2431096-1-yuzhao@google.com
+Link: https://lkml.kernel.org/r/20221222041905.2431096-2-yuzhao@google.com
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Jonathan Corbet <corbet@lwn.net>
+Cc: Michael Larabel <Michael@MichaelLarabel.com>
+Cc: Michal Hocko <mhocko@kernel.org>
+Cc: Mike Rapoport <rppt@kernel.org>
+Cc: Roman Gushchin <roman.gushchin@linux.dev>
+Cc: Suren Baghdasaryan <surenb@google.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ include/linux/mm_inline.h |  4 ++--
+ include/linux/mmzone.h    |  6 +++---
+ mm/vmscan.c               | 34 +++++++++++++++++-----------------
+ mm/workingset.c           |  4 ++--
+ 4 files changed, 24 insertions(+), 24 deletions(-)
+
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -168,7 +168,7 @@ static inline void lru_gen_update_size(s
+ 	int zone = page_zonenum(page);
+ 	int delta = thp_nr_pages(page);
+ 	enum lru_list lru = type * LRU_INACTIVE_FILE;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	VM_WARN_ON_ONCE(old_gen != -1 && old_gen >= MAX_NR_GENS);
+ 	VM_WARN_ON_ONCE(new_gen != -1 && new_gen >= MAX_NR_GENS);
+@@ -214,7 +214,7 @@ static inline bool lru_gen_add_page(stru
+ 	int gen = page_lru_gen(page);
+ 	int type = page_is_file_lru(page);
+ 	int zone = page_zonenum(page);
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	VM_WARN_ON_ONCE_PAGE(gen != -1, page);
+ 
+--- a/include/linux/mmzone.h
++++ b/include/linux/mmzone.h
+@@ -394,7 +394,7 @@ enum {
+  * The number of pages in each generation is eventually consistent and therefore
+  * can be transiently negative when reset_batch_size() is pending.
+  */
+-struct lru_gen_struct {
++struct lru_gen_page {
+ 	/* the aging increments the youngest generation number */
+ 	unsigned long max_seq;
+ 	/* the eviction increments the oldest generation numbers */
+@@ -451,7 +451,7 @@ struct lru_gen_mm_state {
+ struct lru_gen_mm_walk {
+ 	/* the lruvec under reclaim */
+ 	struct lruvec *lruvec;
+-	/* unstable max_seq from lru_gen_struct */
++	/* unstable max_seq from lru_gen_page */
+ 	unsigned long max_seq;
+ 	/* the next address within an mm to scan */
+ 	unsigned long next_addr;
+@@ -514,7 +514,7 @@ struct lruvec {
+ 	unsigned long			flags;
+ #ifdef CONFIG_LRU_GEN
+ 	/* evictable pages divided into generations */
+-	struct lru_gen_struct		lrugen;
++	struct lru_gen_page		lrugen;
+ 	/* to concurrently iterate lru_gen_mm_list */
+ 	struct lru_gen_mm_state		mm_state;
+ #endif
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -2910,7 +2910,7 @@ static int get_nr_gens(struct lruvec *lr
+ 
+ static bool __maybe_unused seq_is_valid(struct lruvec *lruvec)
+ {
+-	/* see the comment on lru_gen_struct */
++	/* see the comment on lru_gen_page */
+ 	return get_nr_gens(lruvec, LRU_GEN_FILE) >= MIN_NR_GENS &&
+ 	       get_nr_gens(lruvec, LRU_GEN_FILE) <= get_nr_gens(lruvec, LRU_GEN_ANON) &&
+ 	       get_nr_gens(lruvec, LRU_GEN_ANON) <= MAX_NR_GENS;
+@@ -3316,7 +3316,7 @@ struct ctrl_pos {
+ static void read_ctrl_pos(struct lruvec *lruvec, int type, int tier, int gain,
+ 			  struct ctrl_pos *pos)
+ {
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	int hist = lru_hist_from_seq(lrugen->min_seq[type]);
+ 
+ 	pos->refaulted = lrugen->avg_refaulted[type][tier] +
+@@ -3331,7 +3331,7 @@ static void read_ctrl_pos(struct lruvec
+ static void reset_ctrl_pos(struct lruvec *lruvec, int type, bool carryover)
+ {
+ 	int hist, tier;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	bool clear = carryover ? NR_HIST_GENS == 1 : NR_HIST_GENS > 1;
+ 	unsigned long seq = carryover ? lrugen->min_seq[type] : lrugen->max_seq + 1;
+ 
+@@ -3408,7 +3408,7 @@ static int page_update_gen(struct page *
+ static int page_inc_gen(struct lruvec *lruvec, struct page *page, bool reclaiming)
+ {
+ 	int type = page_is_file_lru(page);
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	int new_gen, old_gen = lru_gen_from_seq(lrugen->min_seq[type]);
+ 	unsigned long new_flags, old_flags = READ_ONCE(page->flags);
+ 
+@@ -3453,7 +3453,7 @@ static void update_batch_size(struct lru
+ static void reset_batch_size(struct lruvec *lruvec, struct lru_gen_mm_walk *walk)
+ {
+ 	int gen, type, zone;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	walk->batched = 0;
+ 
+@@ -3979,7 +3979,7 @@ static bool inc_min_seq(struct lruvec *l
+ {
+ 	int zone;
+ 	int remaining = MAX_LRU_BATCH;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	int new_gen, old_gen = lru_gen_from_seq(lrugen->min_seq[type]);
+ 
+ 	if (type == LRU_GEN_ANON && !can_swap)
+@@ -4015,7 +4015,7 @@ static bool try_to_inc_min_seq(struct lr
+ {
+ 	int gen, type, zone;
+ 	bool success = false;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	DEFINE_MIN_SEQ(lruvec);
+ 
+ 	VM_WARN_ON_ONCE(!seq_is_valid(lruvec));
+@@ -4036,7 +4036,7 @@ next:
+ 		;
+ 	}
+ 
+-	/* see the comment on lru_gen_struct */
++	/* see the comment on lru_gen_page */
+ 	if (can_swap) {
+ 		min_seq[LRU_GEN_ANON] = min(min_seq[LRU_GEN_ANON], min_seq[LRU_GEN_FILE]);
+ 		min_seq[LRU_GEN_FILE] = max(min_seq[LRU_GEN_ANON], lrugen->min_seq[LRU_GEN_FILE]);
+@@ -4058,7 +4058,7 @@ static void inc_max_seq(struct lruvec *l
+ {
+ 	int prev, next;
+ 	int type, zone;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	spin_lock_irq(&lruvec->lru_lock);
+ 
+@@ -4116,7 +4116,7 @@ static bool try_to_inc_max_seq(struct lr
+ 	bool success;
+ 	struct lru_gen_mm_walk *walk;
+ 	struct mm_struct *mm = NULL;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	VM_WARN_ON_ONCE(max_seq > READ_ONCE(lrugen->max_seq));
+ 
+@@ -4181,7 +4181,7 @@ static bool should_run_aging(struct lruv
+ 	unsigned long old = 0;
+ 	unsigned long young = 0;
+ 	unsigned long total = 0;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 
+ 	for (type = !can_swap; type < ANON_AND_FILE; type++) {
+@@ -4466,7 +4466,7 @@ static bool sort_page(struct lruvec *lru
+ 	int delta = thp_nr_pages(page);
+ 	int refs = page_lru_refs(page);
+ 	int tier = lru_tier_from_refs(refs);
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	VM_WARN_ON_ONCE_PAGE(gen >= MAX_NR_GENS, page);
+ 
+@@ -4566,7 +4566,7 @@ static int scan_pages(struct lruvec *lru
+ 	int scanned = 0;
+ 	int isolated = 0;
+ 	int remaining = MAX_LRU_BATCH;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 
+ 	VM_WARN_ON_ONCE(!list_empty(list));
+@@ -4967,7 +4967,7 @@ done:
+ 
+ static bool __maybe_unused state_is_valid(struct lruvec *lruvec)
+ {
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	if (lrugen->enabled) {
+ 		enum lru_list lru;
+@@ -5247,7 +5247,7 @@ static void lru_gen_seq_show_full(struct
+ 	int i;
+ 	int type, tier;
+ 	int hist = lru_hist_from_seq(seq);
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	for (tier = 0; tier < MAX_NR_TIERS; tier++) {
+ 		seq_printf(m, "            %10d", tier);
+@@ -5296,7 +5296,7 @@ static int lru_gen_seq_show(struct seq_f
+ 	unsigned long seq;
+ 	bool full = !debugfs_real_fops(m->file)->write;
+ 	struct lruvec *lruvec = v;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 	int nid = lruvec_pgdat(lruvec)->node_id;
+ 	struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+ 	DEFINE_MAX_SEQ(lruvec);
+@@ -5549,7 +5549,7 @@ void lru_gen_init_lruvec(struct lruvec *
+ {
+ 	int i;
+ 	int gen, type, zone;
+-	struct lru_gen_struct *lrugen = &lruvec->lrugen;
++	struct lru_gen_page *lrugen = &lruvec->lrugen;
+ 
+ 	lrugen->max_seq = MIN_NR_GENS + 1;
+ 	lrugen->enabled = lru_gen_enabled();
+--- a/mm/workingset.c
++++ b/mm/workingset.c
+@@ -223,7 +223,7 @@ static void *lru_gen_eviction(struct pag
+ 	unsigned long token;
+ 	unsigned long min_seq;
+ 	struct lruvec *lruvec;
+-	struct lru_gen_struct *lrugen;
++	struct lru_gen_page *lrugen;
+ 	int type = page_is_file_lru(page);
+ 	int delta = thp_nr_pages(page);
+ 	int refs = page_lru_refs(page);
+@@ -252,7 +252,7 @@ static void lru_gen_refault(struct page
+ 	unsigned long token;
+ 	unsigned long min_seq;
+ 	struct lruvec *lruvec;
+-	struct lru_gen_struct *lrugen;
++	struct lru_gen_page *lrugen;
+ 	struct mem_cgroup *memcg;
+ 	struct pglist_data *pgdat;
+ 	int type = page_is_file_lru(page);

@@ -1,0 +1,120 @@
+From c19602f73386571bc9aed6059e2cce14f84eded4 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 7 Feb 2022 16:06:11 +0000
+Subject: [PATCH] overlays: rpi-poe(-plus): Fix parameters
+
+The support of PoE HATs is complicated because there are two methods to
+control them - via the firmware, and directly over I2C - the choice
+between the two methods depending on which side "owns" the i2c0 bus.
+
+The firmware determines the ownership of i2c0 by analysing the Device
+Tree after applying any dtoverlays and dtparams. For this reason the
+PoE HAT overlays have recently been applied by the firmware _after_
+config.txt has been processed, but this has prevented any user-supplied
+threshold settings from being applied - either because the parameters
+are unknown or because (after an explicit dtoverlay=rpi-poe) the
+firmware's reload of the overlay has overwritten the user's settings.
+
+Solve the problem by restructuring the rpi-poe overlays to support
+a mode switch _after_ the overlay has been merged, thereby allowing
+the overlays to be loaded _before_ config.txt is processed.
+
+There is a companion firmware patch that changes the point at which
+the overlays are loaded, and the parameter used to switch modes, but
+the updated overlays are still compatible with older firmware, albeit
+without working parameters.
+
+See: https://github.com/raspberrypi/firmware/issues/1689
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ arch/arm/boot/dts/overlays/rpi-poe-overlay.dts    | 15 ++++++++++-----
+ .../boot/dts/overlays/rpi-poe-plus-overlay.dts    | 15 +++++++++++++--
+ 2 files changed, 23 insertions(+), 7 deletions(-)
+
+--- a/arch/arm/boot/dts/overlays/rpi-poe-overlay.dts
++++ b/arch/arm/boot/dts/overlays/rpi-poe-overlay.dts
+@@ -67,7 +67,7 @@
+ 
+ 	fragment@2 {
+ 		target-path = "/__overrides__";
+-		__overlay__ {
++		params: __overlay__ {
+ 			poe_fan_temp0 =		<&trip0>,"temperature:0";
+ 			poe_fan_temp0_hyst =	<&trip0>,"hysteresis:0";
+ 			poe_fan_temp1 =		<&trip1>,"temperature:0";
+@@ -76,6 +76,9 @@
+ 			poe_fan_temp2_hyst =	<&trip2>,"hysteresis:0";
+ 			poe_fan_temp3 =		<&trip3>,"temperature:0";
+ 			poe_fan_temp3_hyst =	<&trip3>,"hysteresis:0";
++			poe_fan_i2c =		<&fwpwm>,"status=disabled",
++						<&poe_mfd>,"status=okay",
++						<&fan>,"pwms:0=",<&poe_mfd_pwm>;
+ 		};
+ 	};
+ 
+@@ -91,15 +94,14 @@
+ 
+ 	fragment@4 {
+ 		target = <&i2c0>;
+-		__dormant__ {
++		i2c_bus: __overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			poe_mfd: poe@51 {
+ 				compatible = "raspberrypi,poe-core";
+ 				reg = <0x51>;
+-				status = "okay";
++				status = "disabled";
+ 
+ 				poe_mfd_pwm: poe_pwm@f0 {
+ 					compatible = "raspberrypi,poe-pwm";
+@@ -134,7 +136,10 @@
+ 		poe_fan_temp2_hyst =	<&trip2>,"hysteresis:0";
+ 		poe_fan_temp3 =		<&trip3>,"temperature:0";
+ 		poe_fan_temp3_hyst =	<&trip3>,"hysteresis:0";
+-		i2c =			<0>, "-3+4+5+6",
++		i2c =			<0>, "+5+6",
++					<&fwpwm>,"status=disabled",
++					<&i2c_bus>,"status=okay",
++					<&poe_mfd>,"status=okay",
+ 					<&fan>,"pwms:0=",<&poe_mfd_pwm>;
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/rpi-poe-plus-overlay.dts
++++ b/arch/arm/boot/dts/overlays/rpi-poe-plus-overlay.dts
+@@ -18,7 +18,7 @@
+ 	};
+ 	fragment@11 {
+ 		target = <&poe_mfd>;
+-		__dormant__ {
++		__overlay__ {
+ 			rpi-poe-power-supply@f2 {
+ 				compatible = "raspberrypi,rpi-poe-power-supply";
+ 				reg = <0xf2>;
+@@ -28,7 +28,11 @@
+ 	};
+ 
+ 	__overrides__ {
+-		i2c =	<0>, "-3+4+5+6-10+11",
++		i2c =	<0>, "+5+6",
++			<&fwpwm>,"status=disabled",
++			<&rpi_poe_power_supply>,"status=disabled",
++			<&i2c_bus>,"status=okay",
++			<&poe_mfd>,"status=okay",
+ 			<&fan>,"pwms:0=",<&poe_mfd_pwm>;
+ 	};
+ };
+@@ -36,3 +40,10 @@
+ &fan {
+ 	cooling-levels = <0 32 64 128 255>;
+ };
++
++&params {
++	poe_fan_i2c = <&fwpwm>,"status=disabled",
++		      <&rpi_poe_power_supply>,"status=disabled",
++		      <&poe_mfd>,"status=okay",
++		      <&fan>,"pwms:0=",<&poe_mfd_pwm>;
++};

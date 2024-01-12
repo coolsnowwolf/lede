@@ -2,20 +2,31 @@
 # Copyright (C) 2008-2012 OpenWrt.org
 
 START=60
-USE_PROCD=1
 
 smb_header() {
-	config_get samba_iface $1 interface "loopback lan"
+ 	local enabled
+	config_get_bool enabled $1 enabled 1
+	[ $enabled == "0" ] && {
+	  echo "Samba disabled!"
+	  exit 0
+	}
+	
+	local interface
+	config_get interface $1 interface "loopback lan"
 
 	# resolve interfaces
 	local interfaces=$(
 		. /lib/functions/network.sh
 
 		local net
-		for net in $samba_iface; do
+		for net in $interface; do
 			local device
-			network_is_up $net || continue
-			network_get_device device "$net"
+			network_get_device device "$net" && {
+				local subnet
+				network_get_subnet  subnet "$net" && echo -n "$subnet "
+				network_get_subnet6 subnet "$net" && echo -n "$subnet "
+			}
+
 			echo -n "${device:-$net} "
 		done
 	)
@@ -23,17 +34,19 @@ smb_header() {
 	local name workgroup description charset
 	local hostname="$(uci_get system.@system[0].hostname)"
 
-	config_get name        $1 name        "${hostname:-OpenWrt}"
-	config_get workgroup   $1 workgroup   "${hostname:-OpenWrt}"
-	config_get description $1 description "Samba on ${hostname:-OpenWrt}"
+	config_get name        $1 name        "${hostname:-PandoraBox}"
+	config_get workgroup   $1 workgroup   "${hostname:-PandoraBox}"
+	config_get description $1 description "Samba on ${hostname:-PandoraBox}"
 	config_get charset     $1 charset     "UTF-8"
-
+	config_get master     $1 master     "yes"
+	
 	mkdir -p /var/etc
 	sed -e "s#|NAME|#$name#g" \
 	    -e "s#|WORKGROUP|#$workgroup#g" \
 	    -e "s#|DESCRIPTION|#$description#g" \
 	    -e "s#|INTERFACES|#$interfaces#g" \
 	    -e "s#|CHARSET|#$charset#g" \
+	    -e "s#|MASTER|#$master#g" \
 	    /etc/samba/smb.conf.template > /var/etc/smb.conf
 
 	local homes
@@ -82,34 +95,16 @@ smb_add_share() {
 	[ -n "$browseable" ] && echo -e "\tbrowseable = $browseable" >> /var/etc/smb.conf
 }
 
-init_config() {
+start() {
 	config_load samba
 	config_foreach smb_header samba
 	config_foreach smb_add_share sambashare
+	
+	service_start /usr/sbin/smbd -D
+	service_start /usr/sbin/nmbd -D
 }
 
-service_triggers() {
-	procd_add_reload_trigger samba
-
-	local i
-	for i in $samba_iface; do
-		procd_add_reload_interface_trigger $i
-	done
-}
-
-start_service() {
-	init_config
-
-	procd_open_instance
-	procd_add_mdns "smb" "tcp" "445"
-	procd_set_param command /usr/sbin/smbd -F
-	procd_set_param respawn
-	procd_set_param file /var/etc/smb.conf
-	procd_close_instance
-
-	procd_open_instance
-	procd_set_param command /usr/sbin/nmbd -F
-	procd_set_param respawn
-	procd_set_param file /var/etc/smb.conf
-	procd_close_instance
+stop() {
+	service_stop /usr/sbin/smbd
+	service_stop /usr/sbin/nmbd
 }

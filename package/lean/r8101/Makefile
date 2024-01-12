@@ -7,16 +7,15 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=r8101
-PKG_VERSION:=1.037.01
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=1.038.02
+PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=https://github.com/umarizulkifli/r8101/raw/main/
-PKG_HASH:=62bb19848a87d2fe4de3fa9332225dcb5381f06cb93ec8931ea3fd894d492aea
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/sbwml/package_kernel_r8101
+PKG_SOURCE_VERSION:=5dea36329c0524490c093991801973fc48d92a8b
+PKG_MIRROR_HASH:=f4182719b25cd177023dddd6f0f555597c8e340fa38127566681d10be885dd9a
+
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
-
-PKG_MAINTAINER:=umarizulkifli <umarizulkifli@gmail.com>
-PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk
 

@@ -1,0 +1,105 @@
+From d4a2fa7b58d3891544c9b7e41e92f17774ad7d1f Mon Sep 17 00:00:00 2001
+From: Ben Avison <bavison@riscosopen.org>
+Date: Mon, 8 Mar 2021 15:32:25 +0000
+Subject: [PATCH] Assign crypto aliases to different AES implementation
+ modules
+
+The kernel modules aes-neon-blk and aes-neon-bs perform poorly, at least on
+Cortex-A72 without crypto extensions. In fact, aes-arm64 outperforms them
+on benchmarks, despite it being a simpler implementation (only accelerating
+the single-block AES cipher).
+
+For modes of operation where multiple cipher blocks can be processed in
+parallel, aes-neon-bs outperforms aes-neon-blk by around 60-70% and aes-arm64
+is another 10-20% faster still. But the difference is even more marked with
+modes of operation with dependencies between neighbouring blocks, such as
+CBC encryption, which defeat parallelism: in these cases, aes-arm64 is
+typically around 250% faster than either aes-neon-blk or aes-neon-bs.
+
+The key trade-off with aes-arm64 is that the look-up tables are situated in
+RAM. This leaves them potentially open to cache timing attacks. The two other
+modules, by contrast, load the look-up tables into NEON registers and so are
+able to perform in constant time.
+
+This patch aims to load aes-arm64 more often.
+
+If none of the currently-loaded crypto modules implement a given algorithm,
+a new one is typically selected for loading using a platform-neutral alias
+describing the required algorithm. To enable users to still
+load aes-neon-blk or aes-neon-bs if they really want them, while still
+ensuring that aes-arm64 is usually selected, remove the aliases from
+aes-neonbs-glue.c and aes-glue.c and apply them to aes-cipher-glue.c, but
+still build the two NEON modules.
+
+Since aes-glue.c can also be used to build aes-ce-blk, leave them enabled
+if USE_V8_CRYPTO_EXTENSIONS is defined, to ensure they are selected if we
+in future use a CPU which has the crypto extensions enabled.
+
+Note that the algorithm priority specifiers are unchanged, so if
+aes-neon-bs is loaded at the same time as aes-arm64, the former will be
+used in preference. However, aes-neon-blk and aes-arm64 have tied priority,
+so whichever module was loaded first will be used (assuming aes-neon-bs is
+not loaded).
+
+Signed-off-by: Ben Avison <bavison@riscosopen.org>
+---
+ arch/arm64/crypto/aes-cipher-glue.c | 10 ++++++++++
+ arch/arm64/crypto/aes-glue.c        |  4 ++--
+ arch/arm64/crypto/aes-neonbs-glue.c |  5 -----
+ 3 files changed, 12 insertions(+), 7 deletions(-)
+
+--- a/arch/arm64/crypto/aes-cipher-glue.c
++++ b/arch/arm64/crypto/aes-cipher-glue.c
+@@ -9,6 +9,16 @@
+ #include <linux/crypto.h>
+ #include <linux/module.h>
+ 
++MODULE_ALIAS_CRYPTO("ecb(aes)");
++MODULE_ALIAS_CRYPTO("cbc(aes)");
++MODULE_ALIAS_CRYPTO("ctr(aes)");
++MODULE_ALIAS_CRYPTO("xts(aes)");
++MODULE_ALIAS_CRYPTO("cts(cbc(aes))");
++MODULE_ALIAS_CRYPTO("essiv(cbc(aes),sha256)");
++MODULE_ALIAS_CRYPTO("cmac(aes)");
++MODULE_ALIAS_CRYPTO("xcbc(aes)");
++MODULE_ALIAS_CRYPTO("cbcmac(aes)");
++
+ asmlinkage void __aes_arm64_encrypt(u32 *rk, u8 *out, const u8 *in, int rounds);
+ asmlinkage void __aes_arm64_decrypt(u32 *rk, u8 *out, const u8 *in, int rounds);
+ 
+--- a/arch/arm64/crypto/aes-glue.c
++++ b/arch/arm64/crypto/aes-glue.c
+@@ -57,17 +57,17 @@ MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS
+ #define aes_mac_update		neon_aes_mac_update
+ MODULE_DESCRIPTION("AES-ECB/CBC/CTR/XTS using ARMv8 NEON");
+ #endif
+-#if defined(USE_V8_CRYPTO_EXTENSIONS) || !IS_ENABLED(CONFIG_CRYPTO_AES_ARM64_BS)
++#if defined(USE_V8_CRYPTO_EXTENSIONS)
+ MODULE_ALIAS_CRYPTO("ecb(aes)");
+ MODULE_ALIAS_CRYPTO("cbc(aes)");
+ MODULE_ALIAS_CRYPTO("ctr(aes)");
+ MODULE_ALIAS_CRYPTO("xts(aes)");
+-#endif
+ MODULE_ALIAS_CRYPTO("cts(cbc(aes))");
+ MODULE_ALIAS_CRYPTO("essiv(cbc(aes),sha256)");
+ MODULE_ALIAS_CRYPTO("cmac(aes)");
+ MODULE_ALIAS_CRYPTO("xcbc(aes)");
+ MODULE_ALIAS_CRYPTO("cbcmac(aes)");
++#endif
+ 
+ MODULE_AUTHOR("Ard Biesheuvel <ard.biesheuvel@linaro.org>");
+ MODULE_LICENSE("GPL v2");
+--- a/arch/arm64/crypto/aes-neonbs-glue.c
++++ b/arch/arm64/crypto/aes-neonbs-glue.c
+@@ -18,11 +18,6 @@
+ MODULE_AUTHOR("Ard Biesheuvel <ard.biesheuvel@linaro.org>");
+ MODULE_LICENSE("GPL v2");
+ 
+-MODULE_ALIAS_CRYPTO("ecb(aes)");
+-MODULE_ALIAS_CRYPTO("cbc(aes)");
+-MODULE_ALIAS_CRYPTO("ctr(aes)");
+-MODULE_ALIAS_CRYPTO("xts(aes)");
+-
+ asmlinkage void aesbs_convert_key(u8 out[], u32 const rk[], int rounds);
+ 
+ asmlinkage void aesbs_ecb_encrypt(u8 out[], u8 const in[], u8 const rk[],

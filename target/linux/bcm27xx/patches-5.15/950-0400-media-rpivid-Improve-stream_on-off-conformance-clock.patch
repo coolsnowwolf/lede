@@ -1,0 +1,260 @@
+From 6242eec33d0b49a6ea12c60cf98693dc5abc5577 Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Sat, 3 Apr 2021 16:27:03 +0100
+Subject: [PATCH] media: rpivid: Improve stream_on/off conformance &
+ clock setup
+
+Fix stream on & off such that failures leave the driver in the correct
+state.  Ensure that the clock is on when we are streaming and off when
+all contexts attached to this device have stopped streaming.
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/staging/media/rpivid/rpivid.c       |   8 +-
+ drivers/staging/media/rpivid/rpivid.h       |  15 ++-
+ drivers/staging/media/rpivid/rpivid_hw.c    |   1 +
+ drivers/staging/media/rpivid/rpivid_video.c | 103 +++++++++++++++-----
+ 4 files changed, 101 insertions(+), 26 deletions(-)
+
+--- a/drivers/staging/media/rpivid/rpivid.c
++++ b/drivers/staging/media/rpivid/rpivid.c
+@@ -212,9 +212,12 @@ static int rpivid_open(struct file *file
+ 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+ 	if (!ctx) {
+ 		mutex_unlock(&dev->dev_mutex);
+-		return -ENOMEM;
++		ret = -ENOMEM;
++		goto err_unlock;
+ 	}
+ 
++	mutex_init(&ctx->ctx_mutex);
++
+ 	v4l2_fh_init(&ctx->fh, video_devdata(file));
+ 	file->private_data = &ctx->fh;
+ 	ctx->dev = dev;
+@@ -245,7 +248,9 @@ static int rpivid_open(struct file *file
+ err_ctrls:
+ 	v4l2_ctrl_handler_free(&ctx->hdl);
+ err_free:
++	mutex_destroy(&ctx->ctx_mutex);
+ 	kfree(ctx);
++err_unlock:
+ 	mutex_unlock(&dev->dev_mutex);
+ 
+ 	return ret;
+@@ -266,6 +271,7 @@ static int rpivid_release(struct file *f
+ 	kfree(ctx->ctrls);
+ 
+ 	v4l2_fh_exit(&ctx->fh);
++	mutex_destroy(&ctx->ctx_mutex);
+ 
+ 	kfree(ctx);
+ 
+--- a/drivers/staging/media/rpivid/rpivid.h
++++ b/drivers/staging/media/rpivid/rpivid.h
+@@ -84,6 +84,11 @@ struct rpivid_q_aux;
+ #define RPIVID_AUX_ENT_COUNT VB2_MAX_FRAME
+ 
+ 
++#define RPIVID_CTX_STATE_STOPPED	0	/* stream_off */
++#define RPIVID_CTX_STATE_STREAM_ON	1	/* decoding */
++#define RPIVID_CTX_STATE_STREAM_STOP	2	/* in stream_off */
++#define RPIVID_CTX_STATE_STREAM_ERR	3	/* stream_on but broken */
++
+ struct rpivid_ctx {
+ 	struct v4l2_fh			fh;
+ 	struct rpivid_dev		*dev;
+@@ -91,10 +96,19 @@ struct rpivid_ctx {
+ 	struct v4l2_pix_format_mplane	src_fmt;
+ 	struct v4l2_pix_format_mplane	dst_fmt;
+ 	int dst_fmt_set;
++
++	atomic_t 			stream_state;
++	struct clk_request		*clk_req;
++	int 				src_stream_on;
++	int 				dst_stream_on;
++
+ 	// fatal_err is set if an error has occurred s.t. decode cannot
+ 	// continue (such as running out of CMA)
+ 	int fatal_err;
+ 
++	/* Lock for queue operations */
++	struct mutex			ctx_mutex;
++
+ 	struct v4l2_ctrl_handler	hdl;
+ 	struct v4l2_ctrl		**ctrls;
+ 
+@@ -180,7 +194,6 @@ struct rpivid_dev {
+ 	void __iomem		*base_h265;
+ 
+ 	struct clk		*clock;
+-	struct clk_request      *hevc_req;
+ 
+ 	int			cache_align;
+ 
+--- a/drivers/staging/media/rpivid/rpivid_hw.c
++++ b/drivers/staging/media/rpivid/rpivid_hw.c
+@@ -359,6 +359,7 @@ int rpivid_hw_probe(struct rpivid_dev *d
+ void rpivid_hw_remove(struct rpivid_dev *dev)
+ {
+ 	// IRQ auto freed on unload so no need to do it here
++	// ioremap auto freed on unload
+ 	ictl_uninit(&dev->ic_active1);
+ 	ictl_uninit(&dev->ic_active2);
+ }
+--- a/drivers/staging/media/rpivid/rpivid_video.c
++++ b/drivers/staging/media/rpivid/rpivid_video.c
+@@ -18,6 +18,7 @@
+ #include <media/v4l2-mem2mem.h>
+ 
+ #include "rpivid.h"
++#include "rpivid_hw.h"
+ #include "rpivid_video.h"
+ #include "rpivid_dec.h"
+ 
+@@ -533,33 +534,85 @@ static int rpivid_buf_prepare(struct vb2
+ 	return 0;
+ }
+ 
++/* Only stops the clock if streaom off on both output & capture */
++static void stop_clock(struct rpivid_dev *dev, struct rpivid_ctx *ctx)
++{
++	if (ctx->src_stream_on ||
++	    ctx->dst_stream_on ||
++	    !ctx->clk_req)
++		return;
++
++	clk_request_done(ctx->clk_req);
++	ctx->clk_req = NULL;
++
++	clk_disable_unprepare(dev->clock);
++}
++
++/* Always starts the clock if it isn't already on this ctx */
++static int start_clock(struct rpivid_dev *dev, struct rpivid_ctx *ctx)
++{
++	long max_hevc_clock;
++	int rv;
++
++	if (ctx->clk_req)
++		return 0;
++
++	max_hevc_clock = clk_round_rate(dev->clock, ULONG_MAX);
++
++	ctx->clk_req = clk_request_start(dev->clock, max_hevc_clock);
++	if (!ctx->clk_req) {
++		dev_err(dev->dev, "Failed to set clock rate\n");
++		return -EIO;
++	}
++
++	rv = clk_prepare_enable(dev->clock);
++	if (rv) {
++		dev_err(dev->dev, "Failed to enable clock\n");
++		clk_request_done(ctx->clk_req);
++		ctx->clk_req = NULL;
++		return rv;
++	}
++
++	return 0;
++}
++
+ static int rpivid_start_streaming(struct vb2_queue *vq, unsigned int count)
+ {
+ 	struct rpivid_ctx *ctx = vb2_get_drv_priv(vq);
+ 	struct rpivid_dev *dev = ctx->dev;
+-	long max_hevc_clock = clk_round_rate(dev->clock, ULONG_MAX);
+ 	int ret = 0;
+ 
+-	if (ctx->src_fmt.pixelformat != V4L2_PIX_FMT_HEVC_SLICE)
+-		return -EINVAL;
+-
+-	if (V4L2_TYPE_IS_OUTPUT(vq->type) && dev->dec_ops->start)
+-		ret = dev->dec_ops->start(ctx);
++	if (!V4L2_TYPE_IS_OUTPUT(vq->type)) {
++		ctx->dst_stream_on = 1;
++		goto ok;
++	}
+ 
+-	dev->hevc_req = clk_request_start(dev->clock, max_hevc_clock);
+-	if (!dev->hevc_req) {
+-		dev_err(dev->dev, "Failed to set clock rate\n");
+-		goto out;
++	if (ctx->src_fmt.pixelformat != V4L2_PIX_FMT_HEVC_SLICE) {
++		ret = -EINVAL;
++		goto fail_cleanup;
+ 	}
+ 
+-	ret = clk_prepare_enable(dev->clock);
++	if (ctx->src_stream_on)
++		goto ok;
++
++	ret = start_clock(dev, ctx);
+ 	if (ret)
+-		dev_err(dev->dev, "Failed to enable clock\n");
++		goto fail_cleanup;
+ 
+-out:
++	if (dev->dec_ops->start)
++		ret = dev->dec_ops->start(ctx);
+ 	if (ret)
+-		rpivid_queue_cleanup(vq, VB2_BUF_STATE_QUEUED);
++		goto fail_stop_clock;
++
++	ctx->src_stream_on = 1;
++ok:
++	return 0;
+ 
++fail_stop_clock:
++	stop_clock(dev, ctx);
++fail_cleanup:
++	v4l2_err(&dev->v4l2_dev, "%s: qtype=%d: FAIL\n", __func__, vq->type);
++	rpivid_queue_cleanup(vq, VB2_BUF_STATE_QUEUED);
+ 	return ret;
+ }
+ 
+@@ -568,17 +621,19 @@ static void rpivid_stop_streaming(struct
+ 	struct rpivid_ctx *ctx = vb2_get_drv_priv(vq);
+ 	struct rpivid_dev *dev = ctx->dev;
+ 
+-	if (V4L2_TYPE_IS_OUTPUT(vq->type) && dev->dec_ops->stop)
+-		dev->dec_ops->stop(ctx);
++	if (V4L2_TYPE_IS_OUTPUT(vq->type)) {
++		ctx->src_stream_on = 0;
++		if (dev->dec_ops->stop)
++			dev->dec_ops->stop(ctx);
++	} else {
++		ctx->dst_stream_on = 0;
++	}
+ 
+ 	rpivid_queue_cleanup(vq, VB2_BUF_STATE_ERROR);
+ 
+-	if (dev->hevc_req)
+-	{
+-		clk_request_done(dev->hevc_req);
+-		dev->hevc_req = NULL;
+-	}
+-	clk_disable_unprepare(dev->clock);
++	vb2_wait_for_all_buffers(vq);
++
++	stop_clock(dev, ctx);
+ }
+ 
+ static void rpivid_buf_queue(struct vb2_buffer *vb)
+@@ -622,7 +677,7 @@ int rpivid_queue_init(void *priv, struct
+ 	src_vq->ops = &rpivid_qops;
+ 	src_vq->mem_ops = &vb2_dma_contig_memops;
+ 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+-	src_vq->lock = &ctx->dev->dev_mutex;
++	src_vq->lock = &ctx->ctx_mutex;
+ 	src_vq->dev = ctx->dev->dev;
+ 	src_vq->supports_requests = true;
+ 	src_vq->requires_requests = true;
+@@ -639,7 +694,7 @@ int rpivid_queue_init(void *priv, struct
+ 	dst_vq->ops = &rpivid_qops;
+ 	dst_vq->mem_ops = &vb2_dma_contig_memops;
+ 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
+-	dst_vq->lock = &ctx->dev->dev_mutex;
++	dst_vq->lock = &ctx->ctx_mutex;
+ 	dst_vq->dev = ctx->dev->dev;
+ 
+ 	return vb2_queue_init(dst_vq);

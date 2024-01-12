@@ -1,5 +1,3 @@
-KERNEL_LOADADDR := 0x40008000
-
 define Device/mediatek_mt7629-rfb
   DEVICE_VENDOR := MediaTek
   DEVICE_MODEL := MT7629 rfb AP

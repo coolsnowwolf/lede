@@ -9,17 +9,17 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=strace
-PKG_VERSION:=5.16
+PKG_VERSION:=6.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://strace.io/files/$(PKG_VERSION)
-PKG_HASH:=dc7db230ff3e57c249830ba94acab2b862da1fcaac55417e9b85041a833ca285
+PKG_HASH:=2579e9cec37dbb786f6ea0bebd15f40dd561ef2bde2a2a2ecdce5963b01859fd
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=LGPL-2.1-or-later
 PKG_LICENSE_FILES:=COPYING
-PKG_CPE_ID:=cpe:/a:paul_kranenburg:strace
+PKG_CPE_ID:=cpe:/a:strace_project:strace
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
@@ -29,6 +29,7 @@ PKG_CONFIG_DEPENDS := \
 	CONFIG_STRACE_LIBUNWIND
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/nls.mk
 
 HOST_CFLAGS += -I$(LINUX_DIR)/user_headers/include
 

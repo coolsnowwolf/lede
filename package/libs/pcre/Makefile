@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcre
-PKG_VERSION:=8.44
-PKG_RELEASE:=4
+PKG_VERSION:=8.45
+PKG_RELEASE:=$(AUTORELEASE)
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
-PKG_HASH:=19108658b23b3ec5058edc9f66ac545ea19f9537234be1ec62b714c84399366d
+PKG_HASH:=4dae6fdcd2bb0bb6c37b5f97c33c2be954da743985369cddac3546e3218bffb8
 
 PKG_MAINTAINER:=Thomas Heil <heil@terminal-consulting.de>
 PKG_LICENSE:=BSD-3-Clause
@@ -24,6 +24,7 @@ PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
 
 PKG_CONFIG_DEPENDS:=\
+	CONFIG_PACKAGE_libpcrecpp \
 	CONFIG_PCRE_JIT_ENABLED
 
 include $(INCLUDE_DIR)/package.mk
@@ -54,14 +55,20 @@ define Package/libpcre32
   TITLE:=A Perl Compatible Regular Expression library (32bit support)
 endef
 
+define Package/libpcrecpp
+  $(call Package/libpcre/default)
+  TITLE:=C++ wrapper for Perl Compatible Regular Expression library
+  DEPENDS:=+libpcre +libstdcpp
+endef
+
 HOST_CONFIGURE_ARGS += \
+	--disable-shared \
 	--enable-utf8 \
 	--enable-unicode-properties \
 	--enable-pcre16 \
 	--with-match-limit-recursion=16000 \
-	--disable-cpp
-
-TARGET_CFLAGS += $(FPIC)
+	--enable-cpp \
+	--with-pic
 
 CONFIGURE_ARGS += \
 	--enable-utf8 \
@@ -70,7 +77,8 @@ CONFIGURE_ARGS += \
 	--enable-pcre32 \
 	$(if $(CONFIG_PCRE_JIT_ENABLED),--enable-jit,--disable-jit) \
 	--with-match-limit-recursion=16000 \
-	-disable-cpp
+	--$(if $(CONFIG_PACKAGE_libpcrecpp),en,dis)able-cpp \
+	--with-pic
 
 MAKE_FLAGS += \
 	CFLAGS="$(TARGET_CFLAGS)"
@@ -109,7 +117,13 @@ define Package/libpcre32/install
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libpcre32.so* $(1)/usr/lib/
 endef
 
+define Package/libpcrecpp/install
+	$(INSTALL_DIR) $(1)/usr/lib
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libpcrecpp.so.* $(1)/usr/lib/
+endef
+
 $(eval $(call BuildPackage,libpcre))
 $(eval $(call BuildPackage,libpcre16))
 $(eval $(call BuildPackage,libpcre32))
+$(eval $(call BuildPackage,libpcrecpp))
 $(eval $(call HostBuild))

@@ -1,0 +1,118 @@
+From 80e643510cb14f116f687e992210c0008a09d869 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marek=20Beh=C3=BAn?= <kabel@kernel.org>
+Date: Mon, 4 Jul 2022 12:59:53 +0200
+Subject: [PATCH] leds: turris-omnia: support HW controlled mode via
+ private trigger
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add support for enabling MCU controlled mode of the Turris Omnia LEDs
+via a LED private trigger called "omnia-mcu".
+
+When in MCU controlled mode, the user can still set LED color, but the
+blinking is done by MCU, which does different things for various LEDs:
+- WAN LED is blinked according to the LED[0] pin of the WAN PHY
+- LAN LEDs are blinked according to the LED[0] output of corresponding
+  port of the LAN switch
+- PCIe LEDs are blinked according to the logical OR of the MiniPCIe port
+  LED pins
+
+For a long time I wanted to actually do this differently: I wanted to
+make the netdev trigger to transparently offload the blinking to the HW
+if user set compatible settings for the netdev trigger.
+There was some work on this, and hopefully we will be able to complete
+it sometime, but since there are various complications, it will probably
+not be soon.
+
+In the meantime let's support HW controlled mode via this private LED
+trigger. If, in the future, we manage to complete the netdev trigger
+offloading, we can still keep this private trigger for backwards
+compatiblity, if needed.
+
+We also set "omnia-mcu" to cdev->default_trigger, so that the MCU keeps
+control until the user first wants to take over it. If a different
+default trigger is specified in device-tree via the
+`linux,default-trigger` property, LED class will overwrite
+cdev->default_trigger, and so the DT property will be respected.
+
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ drivers/leds/Kconfig             |  1 +
+ drivers/leds/leds-turris-omnia.c | 41 ++++++++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -182,6 +182,7 @@ config LEDS_TURRIS_OMNIA
+ 	depends on I2C
+ 	depends on MACH_ARMADA_38X || COMPILE_TEST
+ 	depends on OF
++	select LEDS_TRIGGERS
+ 	help
+ 	  This option enables basic support for the LEDs found on the front
+ 	  side of CZ.NIC's Turris Omnia router. There are 12 RGB LEDs on the
+--- a/drivers/leds/leds-turris-omnia.c
++++ b/drivers/leds/leds-turris-omnia.c
+@@ -49,6 +49,39 @@ struct omnia_leds {
+ 	struct omnia_led leds[];
+ };
+ 
++static struct led_hw_trigger_type omnia_hw_trigger_type;
++
++static int omnia_hwtrig_activate(struct led_classdev *cdev)
++{
++	struct omnia_leds *leds = dev_get_drvdata(cdev->dev->parent);
++	struct omnia_led *led = to_omnia_led(lcdev_to_mccdev(cdev));
++
++	/* put the LED into MCU controlled mode */
++	return i2c_smbus_write_byte_data(leds->client, CMD_LED_MODE,
++					 CMD_LED_MODE_LED(led->reg));
++}
++
++static void omnia_hwtrig_deactivate(struct led_classdev *cdev)
++{
++	struct omnia_leds *leds = dev_get_drvdata(cdev->dev->parent);
++	struct omnia_led *led = to_omnia_led(lcdev_to_mccdev(cdev));
++	int ret;
++
++	/* put the LED into software mode */
++	ret = i2c_smbus_write_byte_data(leds->client, CMD_LED_MODE,
++					CMD_LED_MODE_LED(led->reg) |
++					CMD_LED_MODE_USER);
++	if (ret < 0)
++		dev_err(cdev->dev, "Cannot put to software mode: %i\n", ret);
++}
++
++static struct led_trigger omnia_hw_trigger = {
++	.name		= "omnia-mcu",
++	.activate	= omnia_hwtrig_activate,
++	.deactivate	= omnia_hwtrig_deactivate,
++	.trigger_type	= &omnia_hw_trigger_type,
++};
++
+ static int omnia_led_brightness_set_blocking(struct led_classdev *cdev,
+ 					     enum led_brightness brightness)
+ {
+@@ -120,6 +153,8 @@ static int omnia_led_register(struct i2c
+ 	cdev = &led->mc_cdev.led_cdev;
+ 	cdev->max_brightness = 255;
+ 	cdev->brightness_set_blocking = omnia_led_brightness_set_blocking;
++	cdev->trigger_type = &omnia_hw_trigger_type;
++	cdev->default_trigger = omnia_hw_trigger.name;
+ 
+ 	/* put the LED into software mode */
+ 	ret = i2c_smbus_write_byte_data(client, CMD_LED_MODE,
+@@ -231,6 +266,12 @@ static int omnia_leds_probe(struct i2c_c
+ 
+ 	mutex_init(&leds->lock);
+ 
++	ret = devm_led_trigger_register(dev, &omnia_hw_trigger);
++	if (ret < 0) {
++		dev_err(dev, "Cannot register private LED trigger: %d\n", ret);
++		return ret;
++	}
++
+ 	led = &leds->leds[0];
+ 	for_each_available_child_of_node(np, child) {
+ 		ret = omnia_led_register(client, led, child);

@@ -204,7 +204,7 @@ static int show_matching_key_value(uint8_t *buffer,
 	for (i = 0; i < key_names->size; i++) {
 		name = key_names->entries[i].val;
 
-		if (strncmp(name, name_filter, strlen(name)) == 0) {
+		if (strcmp(name, name_filter) == 0) {
 			id = to_entry_header_id(*key_names->entries[i].id);
 
 			if (find_entry(buffer, id, &tmp)) {

@@ -1,0 +1,366 @@
+From 6d969d963a86c88ca1d6dcbc25447e2937e833b1 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Sat, 2 Apr 2022 14:36:59 +0200
+Subject: [PATCH] clk: Stop forwarding clk_rate_requests to the parent
+
+If the clock cannot modify its rate and has CLK_SET_RATE_PARENT,
+clk_mux_determine_rate_flags() and clk_core_round_rate_nolock() will
+call clk_core_round_rate_nolock() with its parent clock but use the
+request of the child node either directly (clk_core_round_rate_nolock())
+or by copying it (clk_mux_determine_rate_flags()).
+
+Both cases are problematic since the parent will now have a request with
+the best parent fields of the child (so pointing to itself) and the
+boundaries of the child as well.
+
+clk_core_round_rate_nolock() is even worse since we would directly
+modify the caller structure if the parent was ever to modify its own
+parent or its parent rate, then returning to the caller a best parent
+that isn't a parent of the clock we just called clk_determine_rate()
+onto.
+
+Let's create a new function that will create a new request to forward to
+the parent, clk_core_forward_rate_req() and update the relevant call
+sites to that new function.
+
+Let's also add a test to make sure we avoid regressions there.
+
+Tested-by: Alexander Stein <alexander.stein@ew.tq-group.com> # imx8mp
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com> # exynos4210, meson g12b
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk.c      |  58 ++++++++++++--
+ drivers/clk/clk_test.c | 176 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 227 insertions(+), 7 deletions(-)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -542,6 +542,10 @@ static bool mux_is_better_rate(unsigned
+ 	return now <= rate && now > best;
+ }
+ 
++static void clk_core_init_rate_req(struct clk_core * const core,
++				   struct clk_rate_request *req,
++				   unsigned long rate);
++
+ static int clk_core_round_rate_nolock(struct clk_core *core,
+ 				      struct clk_rate_request *req);
+ 
+@@ -565,6 +569,24 @@ static bool clk_core_has_parent(struct c
+ 	return false;
+ }
+ 
++static void
++clk_core_forward_rate_req(struct clk_core * const core,
++			  struct clk_core * const parent,
++			  struct clk_rate_request * const old_req,
++			  struct clk_rate_request *req)
++{
++	if (WARN_ON(!clk_core_has_parent(core, parent)))
++		return;
++
++	clk_core_init_rate_req(parent, req, old_req->rate);
++
++	if (req->min_rate < old_req->min_rate)
++		req->min_rate = old_req->min_rate;
++
++	if (req->max_rate > old_req->max_rate)
++		req->max_rate = old_req->max_rate;
++}
++
+ int clk_mux_determine_rate_flags(struct clk_hw *hw,
+ 				 struct clk_rate_request *req,
+ 				 unsigned long flags)
+@@ -572,17 +594,19 @@ int clk_mux_determine_rate_flags(struct
+ 	struct clk_core *core = hw->core, *parent, *best_parent = NULL;
+ 	int i, num_parents, ret;
+ 	unsigned long best = 0;
+-	struct clk_rate_request parent_req = *req;
+ 
+ 	/* if NO_REPARENT flag set, pass through to current parent */
+ 	if (core->flags & CLK_SET_RATE_NO_REPARENT) {
+ 		parent = core->parent;
+ 		if (core->flags & CLK_SET_RATE_PARENT) {
++			struct clk_rate_request parent_req;
++
+ 			if (!parent) {
+ 				req->rate = 0;
+ 				return 0;
+ 			}
+ 
++			clk_core_forward_rate_req(core, parent, req, &parent_req);
+ 			ret = clk_core_round_rate_nolock(parent, &parent_req);
+ 			if (ret)
+ 				return ret;
+@@ -600,23 +624,29 @@ int clk_mux_determine_rate_flags(struct
+ 	/* find the parent that can provide the fastest rate <= rate */
+ 	num_parents = core->num_parents;
+ 	for (i = 0; i < num_parents; i++) {
++		unsigned long parent_rate;
++
+ 		parent = clk_core_get_parent_by_index(core, i);
+ 		if (!parent)
+ 			continue;
+ 
+ 		if (core->flags & CLK_SET_RATE_PARENT) {
+-			parent_req = *req;
++			struct clk_rate_request parent_req;
++
++			clk_core_forward_rate_req(core, parent, req, &parent_req);
+ 			ret = clk_core_round_rate_nolock(parent, &parent_req);
+ 			if (ret)
+ 				continue;
++
++			parent_rate = parent_req.rate;
+ 		} else {
+-			parent_req.rate = clk_core_get_rate_nolock(parent);
++			parent_rate = clk_core_get_rate_nolock(parent);
+ 		}
+ 
+-		if (mux_is_better_rate(req->rate, parent_req.rate,
++		if (mux_is_better_rate(req->rate, parent_rate,
+ 				       best, flags)) {
+ 			best_parent = parent;
+-			best = parent_req.rate;
++			best = parent_rate;
+ 		}
+ 	}
+ 
+@@ -1449,6 +1479,8 @@ static bool clk_core_can_round(struct cl
+ static int clk_core_round_rate_nolock(struct clk_core *core,
+ 				      struct clk_rate_request *req)
+ {
++	int ret;
++
+ 	lockdep_assert_held(&prepare_lock);
+ 
+ 	if (!core) {
+@@ -1458,8 +1490,20 @@ static int clk_core_round_rate_nolock(st
+ 
+ 	if (clk_core_can_round(core))
+ 		return clk_core_determine_round_nolock(core, req);
+-	else if (core->flags & CLK_SET_RATE_PARENT)
+-		return clk_core_round_rate_nolock(core->parent, req);
++
++	if (core->flags & CLK_SET_RATE_PARENT) {
++		struct clk_rate_request parent_req;
++
++		clk_core_forward_rate_req(core, core->parent, req, &parent_req);
++		ret = clk_core_round_rate_nolock(core->parent, &parent_req);
++		if (ret)
++			return ret;
++
++		req->best_parent_rate = parent_req.rate;
++		req->rate = parent_req.rate;
++
++		return 0;
++	}
+ 
+ 	req->rate = core->rate;
+ 	return 0;
+--- a/drivers/clk/clk_test.c
++++ b/drivers/clk/clk_test.c
+@@ -999,6 +999,34 @@ clk_test_single_parent_mux_set_range_dis
+ 
+ /*
+  * Test that for a clock that can't modify its rate and with a single
++ * parent, if we set a range on the parent and then call
++ * clk_round_rate(), the boundaries of the parent are taken into
++ * account.
++ */
++static void
++clk_test_single_parent_mux_set_range_round_rate_parent_only(struct kunit *test)
++{
++	struct clk_single_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk *parent;
++	unsigned long rate;
++	int ret;
++
++	parent = clk_get_parent(clk);
++	KUNIT_ASSERT_PTR_NE(test, parent, NULL);
++
++	ret = clk_set_rate_range(parent, DUMMY_CLOCK_RATE_1, DUMMY_CLOCK_RATE_2);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	rate = clk_round_rate(clk, DUMMY_CLOCK_RATE_1 - 1000);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_GE(test, rate, DUMMY_CLOCK_RATE_1);
++	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2);
++}
++
++/*
++ * Test that for a clock that can't modify its rate and with a single
+  * parent, if we set a range on the parent and a more restrictive one on
+  * the child, and then call clk_round_rate(), the boundaries of the
+  * two clocks are taken into account.
+@@ -1033,12 +1061,50 @@ clk_test_single_parent_mux_set_range_rou
+ 	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2 - 1000);
+ }
+ 
++/*
++ * Test that for a clock that can't modify its rate and with a single
++ * parent, if we set a range on the child and a more restrictive one on
++ * the parent, and then call clk_round_rate(), the boundaries of the
++ * two clocks are taken into account.
++ */
++static void
++clk_test_single_parent_mux_set_range_round_rate_parent_smaller(struct kunit *test)
++{
++	struct clk_single_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk *parent;
++	unsigned long rate;
++	int ret;
++
++	parent = clk_get_parent(clk);
++	KUNIT_ASSERT_PTR_NE(test, parent, NULL);
++
++	ret = clk_set_rate_range(parent, DUMMY_CLOCK_RATE_1 + 1000, DUMMY_CLOCK_RATE_2 - 1000);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	ret = clk_set_rate_range(clk, DUMMY_CLOCK_RATE_1, DUMMY_CLOCK_RATE_2);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	rate = clk_round_rate(clk, DUMMY_CLOCK_RATE_1 - 1000);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_GE(test, rate, DUMMY_CLOCK_RATE_1 + 1000);
++	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2 - 1000);
++
++	rate = clk_round_rate(clk, DUMMY_CLOCK_RATE_2 + 1000);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_GE(test, rate, DUMMY_CLOCK_RATE_1 + 1000);
++	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2 - 1000);
++}
++
+ static struct kunit_case clk_single_parent_mux_test_cases[] = {
+ 	KUNIT_CASE(clk_test_single_parent_mux_get_parent),
+ 	KUNIT_CASE(clk_test_single_parent_mux_has_parent),
+ 	KUNIT_CASE(clk_test_single_parent_mux_set_range_disjoint_child_last),
+ 	KUNIT_CASE(clk_test_single_parent_mux_set_range_disjoint_parent_last),
+ 	KUNIT_CASE(clk_test_single_parent_mux_set_range_round_rate_child_smaller),
++	KUNIT_CASE(clk_test_single_parent_mux_set_range_round_rate_parent_only),
++	KUNIT_CASE(clk_test_single_parent_mux_set_range_round_rate_parent_smaller),
+ 	{}
+ };
+ 
+@@ -1945,7 +2011,117 @@ static struct kunit_suite clk_range_mini
+ 	.test_cases = clk_range_minimize_test_cases,
+ };
+ 
++struct clk_leaf_mux_ctx {
++	struct clk_multiple_parent_ctx mux_ctx;
++	struct clk_hw hw;
++};
++
++static int
++clk_leaf_mux_set_rate_parent_test_init(struct kunit *test)
++{
++	struct clk_leaf_mux_ctx *ctx;
++	const char *top_parents[2] = { "parent-0", "parent-1" };
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++
++	ctx->mux_ctx.parents_ctx[0].hw.init = CLK_HW_INIT_NO_PARENT("parent-0",
++								    &clk_dummy_rate_ops,
++								    0);
++	ctx->mux_ctx.parents_ctx[0].rate = DUMMY_CLOCK_RATE_1;
++	ret = clk_hw_register(NULL, &ctx->mux_ctx.parents_ctx[0].hw);
++	if (ret)
++		return ret;
++
++	ctx->mux_ctx.parents_ctx[1].hw.init = CLK_HW_INIT_NO_PARENT("parent-1",
++								    &clk_dummy_rate_ops,
++								    0);
++	ctx->mux_ctx.parents_ctx[1].rate = DUMMY_CLOCK_RATE_2;
++	ret = clk_hw_register(NULL, &ctx->mux_ctx.parents_ctx[1].hw);
++	if (ret)
++		return ret;
++
++	ctx->mux_ctx.current_parent = 0;
++	ctx->mux_ctx.hw.init = CLK_HW_INIT_PARENTS("test-mux", top_parents,
++						   &clk_multiple_parents_mux_ops,
++						   0);
++	ret = clk_hw_register(NULL, &ctx->mux_ctx.hw);
++	if (ret)
++		return ret;
++
++	ctx->hw.init = CLK_HW_INIT_HW("test-clock", &ctx->mux_ctx.hw,
++				      &clk_dummy_single_parent_ops,
++				      CLK_SET_RATE_PARENT);
++	ret = clk_hw_register(NULL, &ctx->hw);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static void clk_leaf_mux_set_rate_parent_test_exit(struct kunit *test)
++{
++	struct clk_leaf_mux_ctx *ctx = test->priv;
++
++	clk_hw_unregister(&ctx->hw);
++	clk_hw_unregister(&ctx->mux_ctx.hw);
++	clk_hw_unregister(&ctx->mux_ctx.parents_ctx[0].hw);
++	clk_hw_unregister(&ctx->mux_ctx.parents_ctx[1].hw);
++}
++
++/*
++ * Test that, for a clock that will forward any rate request to its
++ * parent, the rate request structure returned by __clk_determine_rate
++ * is sane and will be what we expect.
++ */
++static void clk_leaf_mux_set_rate_parent_determine_rate(struct kunit *test)
++{
++	struct clk_leaf_mux_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk_rate_request req;
++	unsigned long rate;
++	int ret;
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_EQ(test, rate, DUMMY_CLOCK_RATE_1);
++
++	clk_hw_init_rate_request(hw, &req, DUMMY_CLOCK_RATE_2);
++
++	ret = __clk_determine_rate(hw, &req);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	KUNIT_EXPECT_EQ(test, req.rate, DUMMY_CLOCK_RATE_2);
++	KUNIT_EXPECT_EQ(test, req.best_parent_rate, DUMMY_CLOCK_RATE_2);
++	KUNIT_EXPECT_PTR_EQ(test, req.best_parent_hw, &ctx->mux_ctx.hw);
++}
++
++static struct kunit_case clk_leaf_mux_set_rate_parent_test_cases[] = {
++	KUNIT_CASE(clk_leaf_mux_set_rate_parent_determine_rate),
++	{}
++};
++
++/*
++ * Test suite for a clock whose parent is a mux with multiple parents.
++ * The leaf clock has CLK_SET_RATE_PARENT, and will forward rate
++ * requests to the mux, which will then select which parent is the best
++ * fit for a given rate.
++ *
++ * These tests are supposed to exercise the behaviour of muxes, and the
++ * proper selection of parents.
++  */
++static struct kunit_suite clk_leaf_mux_set_rate_parent_test_suite = {
++	.name = "clk-leaf-mux-set-rate-parent",
++	.init = clk_leaf_mux_set_rate_parent_test_init,
++	.exit = clk_leaf_mux_set_rate_parent_test_exit,
++	.test_cases = clk_leaf_mux_set_rate_parent_test_cases,
++};
++
+ kunit_test_suites(
++	&clk_leaf_mux_set_rate_parent_test_suite,
+ 	&clk_test_suite,
+ 	&clk_multiple_parents_mux_test_suite,
+ 	&clk_orphan_transparent_multiple_parent_mux_test_suite,

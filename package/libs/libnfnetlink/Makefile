@@ -18,6 +18,7 @@ PKG_SOURCE_URL:= \
 PKG_HASH:=b064c7c3d426efb4786e60a8e6859b82ee2f2c5e49ffeea640cfe4fe33cbc376
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=GPL-2.0+
+PKG_CPE_ID:=cpe:/a:netfilter:libnfnetlink
 
 PKG_FIXUP:=autoreconf
 

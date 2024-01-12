@@ -24,4 +24,8 @@ HOST_CONFIGURE_ARGS += \
 	--disable-shared \
 	--with-gmp-prefix=$(STAGING_DIR_HOST)
 
+define Host/Uninstall
+	-$(call Host/Compile/Default,uninstall)
+endef
+
 $(eval $(call HostBuild))

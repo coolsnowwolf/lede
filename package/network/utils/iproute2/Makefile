@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iproute2
-PKG_VERSION:=5.19.0
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=6.2.0
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/net/iproute2
-PKG_HASH:=26b7a34d6a7fd2f7a42e2b39c5a90cb61bac522d1096067ffeb195e5693d7791
+PKG_HASH:=4d72730200ec5b2aabaa1a2f20553c6748292f065d9a154c7d5e22559df9fd62
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_DEPENDS:=iptables
 PKG_LICENSE:=GPL-2.0
@@ -82,7 +82,7 @@ define Package/tc-mod-iptables
 $(call Package/iproute2/Default)
   TITLE:=Traffic control module - iptables action
   VARIANT:=tcfull
-  DEPENDS:=+libxtables
+  DEPENDS:=+libxtables +libbpf
 endef
 
 define Package/genl

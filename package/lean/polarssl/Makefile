@@ -19,7 +19,6 @@ PKG_MD5SUM:=66ebbbf67e8a9463041846822b0a1692
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(SRC_PKG_NAME)-$(PKG_VERSION)
 
-PKG_BUILD_PARALLEL:=1
 PKG_LICENSE:=GPL-2.0+
 
 include $(INCLUDE_DIR)/package.mk
@@ -48,8 +47,6 @@ define Package/libpolarssl/description
 $(call Package/polarssl/Default/description)
 This package contains the PolarSSL library.
 endef
-
-PKG_INSTALL:=1
 
 CMAKE_OPTIONS += \
 	-DCMAKE_BUILD_TYPE:String="Release" \

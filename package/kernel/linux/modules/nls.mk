@@ -135,8 +135,10 @@ define KernelPackage/nls-cp932
   SUBMENU:=Native Language Support
   TITLE:=Codepage 932 (Japanese)
   KCONFIG:=CONFIG_NLS_CODEPAGE_932
-  FILES:=$(LINUX_DIR)/fs/nls/nls_cp932.ko
-  AUTOLOAD:=$(call AutoLoad,25,nls_cp932)
+  FILES:= \
+	$(LINUX_DIR)/fs/nls/nls_cp932.ko \
+	$(LINUX_DIR)/fs/nls/nls_euc-jp.ko
+  AUTOLOAD:=$(call AutoLoad,25,nls_cp932 nls_euc-jp)
   $(call AddDepends/nls)
 endef
 

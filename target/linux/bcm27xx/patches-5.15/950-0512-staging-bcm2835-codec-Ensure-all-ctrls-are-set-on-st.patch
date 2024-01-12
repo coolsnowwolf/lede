@@ -1,0 +1,111 @@
+From df5051094f02f536291e84f2820e9680cc98687d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 20 Sep 2021 15:00:51 +0100
+Subject: [PATCH] staging: bcm2835-codec: Ensure all ctrls are set on
+ streamon
+
+Currently the code was only setting some controls from
+bcm2835_codec_set_ctrls, but it's simpler to use
+v4l2_ctrl_handler_setup to avoid forgetting to adding new
+controls to the list.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 51 +++++++------------
+ 1 file changed, 19 insertions(+), 32 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -2437,33 +2437,6 @@ static const struct v4l2_ioctl_ops bcm28
+ 	.vidioc_enum_framesizes = vidioc_enum_framesizes,
+ };
+ 
+-static int bcm2835_codec_set_ctrls(struct bcm2835_codec_ctx *ctx)
+-{
+-	/*
+-	 * Query the control handler for the value of the various controls and
+-	 * set them.
+-	 */
+-	const u32 control_ids[] = {
+-		V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
+-		V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER,
+-		V4L2_CID_MPEG_VIDEO_HEADER_MODE,
+-		V4L2_CID_MPEG_VIDEO_H264_I_PERIOD,
+-		V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+-		V4L2_CID_MPEG_VIDEO_H264_PROFILE,
+-	};
+-	int i;
+-
+-	for (i = 0; i < ARRAY_SIZE(control_ids); i++) {
+-		struct v4l2_ctrl *ctrl;
+-
+-		ctrl = v4l2_ctrl_find(&ctx->hdl, control_ids[i]);
+-		if (ctrl)
+-			bcm2835_codec_s_ctrl(ctrl);
+-	}
+-
+-	return 0;
+-}
+-
+ static int bcm2835_codec_create_component(struct bcm2835_codec_ctx *ctx)
+ {
+ 	struct bcm2835_codec_dev *dev = ctx->dev;
+@@ -2567,9 +2540,6 @@ static int bcm2835_codec_create_componen
+ 				 ctx->q_data[V4L2_M2M_SRC].sizeimage,
+ 				 ctx->component->output[0].minimum_buffer.size);
+ 
+-		/* Now we have a component we can set all the ctrls */
+-		bcm2835_codec_set_ctrls(ctx);
+-
+ 		/* Enable SPS Timing header so framerate information is encoded
+ 		 * in the H264 header.
+ 		 */
+@@ -2598,6 +2568,10 @@ static int bcm2835_codec_create_componen
+ 				 ctx->q_data[V4L2_M2M_DST].sizeimage,
+ 				 ctx->component->output[0].minimum_buffer.size);
+ 	}
++
++	/* Now we have a component we can set all the ctrls */
++	ret = v4l2_ctrl_handler_setup(&ctx->hdl);
++
+ 	v4l2_dbg(2, debug, &dev->v4l2_dev, "%s: component created as %s\n",
+ 		 __func__, components[dev->role]);
+ 
+@@ -3099,7 +3073,9 @@ static int bcm2835_codec_open(struct fil
+ 	file->private_data = &ctx->fh;
+ 	ctx->dev = dev;
+ 	hdl = &ctx->hdl;
+-	if (dev->role == ENCODE) {
++	switch (dev->role) {
++	case ENCODE:
++	{
+ 		/* Encode controls */
+ 		v4l2_ctrl_handler_init(hdl, 9);
+ 
+@@ -3158,7 +3134,10 @@ static int bcm2835_codec_open(struct fil
+ 		}
+ 		ctx->fh.ctrl_handler = hdl;
+ 		v4l2_ctrl_handler_setup(hdl);
+-	} else if (dev->role == DECODE) {
++	}
++	break;
++	case DECODE:
++	{
+ 		v4l2_ctrl_handler_init(hdl, 1);
+ 
+ 		v4l2_ctrl_new_std(hdl, &bcm2835_codec_ctrl_ops,
+@@ -3171,6 +3150,14 @@ static int bcm2835_codec_open(struct fil
+ 		ctx->fh.ctrl_handler = hdl;
+ 		v4l2_ctrl_handler_setup(hdl);
+ 	}
++	break;
++	case ISP:
++	case DEINTERLACE:
++	{
++		v4l2_ctrl_handler_init(hdl, 0);
++	}
++	break;
++	}
+ 
+ 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx, &queue_init);
+ 

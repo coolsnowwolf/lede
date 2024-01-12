@@ -1,0 +1,136 @@
+From 33020d03596ae7767f278716ba539589b316299e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Noralf=20Tr=C3=B8nnes?= <noralf@tronnes.org>
+Date: Sun, 27 Mar 2022 18:54:17 +0200
+Subject: [PATCH] overlays/rpi-display: Add support for DRM driver
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add a "drm" parameter that enables use of the drm/mi0283qt driver instead
+of fbtft/fb_ili9341. Also add a "backlight-pwm" parameter that can be used
+with the "drm" parameter.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+---
+ arch/arm/boot/dts/overlays/README             | 26 +++++++-
+ .../boot/dts/overlays/rpi-display-overlay.dts | 61 ++++++++++++++++++-
+ 2 files changed, 84 insertions(+), 3 deletions(-)
+
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2913,14 +2913,36 @@ Params: <None>
+ 
+ Name:   rpi-display
+ Info:   RPi-Display - 2.8" Touch Display by Watterott
++        Linux has 2 drivers that support this display and this overlay supports
++        both.
++
++        Examples:
++          fbtft/fb_ili9341: dtoverlay=rpi-display
++          drm/mi0283qt: dtoverlay=rpi-display,drm,backlight-pwm,rotate=180
++
++        Some notable differences with the DRM driver compared to fbtft:
++        - The display is turned on when it's first used and not on driver load
++          as with fbtft. So if nothing uses the display it stays off.
++        - Can run with a higher SPI clock increasing framerate. This is possible
++          since the driver avoids messing up the controller configuration due to
++          transmission errors by running config commands at 10MHz and only pixel
++          data at full speed (occasional pixel glitch might occur).
++        - PWM backlight is supported.
++
+ Load:   dtoverlay=rpi-display,<param>=<val>
+ Params: speed                   Display SPI bus speed
+         rotate                  Display rotation {0,90,180,270}
+-        fps                     Delay between frame updates
+-        debug                   Debug output level {0-7}
++        fps                     Delay between frame updates (fbtft only)
++        debug                   Debug output level {0-7} (fbtft only)
+         xohms                   Touchpanel sensitivity (X-plate resistance)
+         swapxy                  Swap x and y axis
+         backlight               Change backlight GPIO pin {e.g. 12, 18}
++                                (fbtft only)
++        drm                     Use DRM/KMS driver mi0283qt instead of fbtft.
++                                Set the SPI clock to 70MHz.
++                                This has to be the first parameter.
++        backlight-pwm           Use pwm for backlight (drm only). NB: Disables
++                                audio headphone output as that also uses PWM.
+ 
+ 
+ Name:   rpi-ft5406
+--- a/arch/arm/boot/dts/overlays/rpi-display-overlay.dts
++++ b/arch/arm/boot/dts/overlays/rpi-display-overlay.dts
+@@ -78,14 +78,73 @@
+ 			};
+ 		};
+ 	};
++
++	fragment@10 {
++		target = <&rpidisplay>;
++		__dormant__  {
++			backlight = <&backlight_gpio>;
++		};
++	};
++
++	fragment@11 {
++		target-path = "/";
++		__dormant__  {
++			backlight_gpio: backlight_gpio {
++				compatible = "gpio-backlight";
++				gpios = <&gpio 18 0>; /* GPIO_ACTIVE_HIGH */
++			};
++		};
++	};
++
++	fragment@20 {
++		target = <&rpidisplay>;
++		__dormant__  {
++			backlight = <&backlight_pwm>;
++		};
++	};
++
++	fragment@21 {
++		target-path = "/";
++		__dormant__  {
++			backlight_pwm: backlight_pwm {
++				compatible = "pwm-backlight";
++				brightness-levels = <0 6 8 12 16 24 32 40 48 64 96 128 160 192 224 255>;
++				default-brightness-level = <16>;
++				pwms = <&pwm 0 200000>;
++			};
++		};
++	};
++
++	fragment@22 {
++		target = <&pwm>;
++		__dormant__ {
++			assigned-clock-rates = <1000000>;
++			status = "okay";
++		};
++	};
++
++	fragment@23 {
++		target = <&audio>;
++		__dormant__  {
++		    brcm,disable-headphones;
++		};
++	};
++
+ 	__overrides__ {
+ 		speed =     <&rpidisplay>,"spi-max-frequency:0";
+-		rotate =    <&rpidisplay>,"rotate:0";
++		rotate =    <&rpidisplay>,"rotate:0", /* fbtft */
++			    <&rpidisplay>,"rotation:0"; /* drm */
+ 		fps =       <&rpidisplay>,"fps:0";
+ 		debug =     <&rpidisplay>,"debug:0";
+ 		xohms =     <&rpidisplay_ts>,"ti,x-plate-ohms;0";
+ 		swapxy =    <&rpidisplay_ts>,"ti,swap-xy?";
+ 		backlight = <&rpidisplay>,"led-gpios:4",
+ 		            <&rpi_display_pins>,"brcm,pins:0";
++		drm =       <&rpidisplay>, "compatible=multi-inno,mi0283qt",
++			    <&rpidisplay>, "spi-max-frequency:0=70000000",
++			    <&rpidisplay>, "reset-gpios:8=0", /* GPIO_ACTIVE_HIGH */
++			    <0>, "+10+11";
++		backlight-pwm = <0>, "-10-11+20+21+22+23",
++				<&rpi_display_pins>, "brcm,function:0=2"; /* Alt5 */
+ 	};
+ };

@@ -1,0 +1,477 @@
+From c284f9ae98f0c853d93fb7fd3a41e457496fba41 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Thu, 15 Jul 2021 15:55:22 +0100
+Subject: [PATCH] media: v4l2-subdev: add subdev-wide state struct
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/media/i2c/imx290.c                    |  9 +++---
+ drivers/media/i2c/imx477.c                    | 30 ++++++++++---------
+ drivers/media/i2c/irs1125.c                   |  8 ++---
+ drivers/media/i2c/ov9281.c                    | 25 +++++++++-------
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 18 +++++------
+ .../platform/rockchip/rkisp1/rkisp1-isp.c     | 18 +++++++++++
+ .../platform/rockchip/rkisp1/rkisp1-resizer.c | 18 +++++++++++
+ .../bcm2835-isp/bcm2835-v4l2-isp.c            |  4 +--
+ 8 files changed, 86 insertions(+), 44 deletions(-)
+
+--- a/drivers/media/i2c/imx290.c
++++ b/drivers/media/i2c/imx290.c
+@@ -988,12 +988,13 @@ static int imx290_write_current_format(s
+ }
+ 
+ static const struct v4l2_rect *
+-__imx290_get_pad_crop(struct imx290 *imx290, struct v4l2_subdev_pad_config *cfg,
++__imx290_get_pad_crop(struct imx290 *imx290,
++		      struct v4l2_subdev_state *sd_state,
+ 		      unsigned int pad, enum v4l2_subdev_format_whence which)
+ {
+ 	switch (which) {
+ 	case V4L2_SUBDEV_FORMAT_TRY:
+-		return v4l2_subdev_get_try_crop(&imx290->sd, cfg, pad);
++		return v4l2_subdev_get_try_crop(&imx290->sd, sd_state, pad);
+ 	case V4L2_SUBDEV_FORMAT_ACTIVE:
+ 		return &imx290->current_mode->crop;
+ 	}
+@@ -1002,7 +1003,7 @@ __imx290_get_pad_crop(struct imx290 *imx
+ }
+ 
+ static int imx290_get_selection(struct v4l2_subdev *sd,
+-				struct v4l2_subdev_pad_config *cfg,
++				struct v4l2_subdev_state *sd_state,
+ 				struct v4l2_subdev_selection *sel)
+ {
+ 	switch (sel->target) {
+@@ -1010,7 +1011,7 @@ static int imx290_get_selection(struct v
+ 		struct imx290 *imx290 = to_imx290(sd);
+ 
+ 		mutex_lock(&imx290->lock);
+-		sel->r = *__imx290_get_pad_crop(imx290, cfg, sel->pad,
++		sel->r = *__imx290_get_pad_crop(imx290, sd_state, sel->pad,
+ 						sel->which);
+ 		mutex_unlock(&imx290->lock);
+ 
+--- a/drivers/media/i2c/imx477.c
++++ b/drivers/media/i2c/imx477.c
+@@ -1254,9 +1254,9 @@ static int imx477_open(struct v4l2_subde
+ {
+ 	struct imx477 *imx477 = to_imx477(sd);
+ 	struct v4l2_mbus_framefmt *try_fmt_img =
+-		v4l2_subdev_get_try_format(sd, fh->pad, IMAGE_PAD);
++		v4l2_subdev_get_try_format(sd, fh->state, IMAGE_PAD);
+ 	struct v4l2_mbus_framefmt *try_fmt_meta =
+-		v4l2_subdev_get_try_format(sd, fh->pad, METADATA_PAD);
++		v4l2_subdev_get_try_format(sd, fh->state, METADATA_PAD);
+ 	struct v4l2_rect *try_crop;
+ 
+ 	mutex_lock(&imx477->mutex);
+@@ -1275,7 +1275,7 @@ static int imx477_open(struct v4l2_subde
+ 	try_fmt_meta->field = V4L2_FIELD_NONE;
+ 
+ 	/* Initialize try_crop */
+-	try_crop = v4l2_subdev_get_try_crop(sd, fh->pad, IMAGE_PAD);
++	try_crop = v4l2_subdev_get_try_crop(sd, fh->state, IMAGE_PAD);
+ 	try_crop->left = IMX477_PIXEL_ARRAY_LEFT;
+ 	try_crop->top = IMX477_PIXEL_ARRAY_TOP;
+ 	try_crop->width = IMX477_PIXEL_ARRAY_WIDTH;
+@@ -1403,7 +1403,7 @@ static const struct v4l2_ctrl_ops imx477
+ };
+ 
+ static int imx477_enum_mbus_code(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_pad_config *cfg,
++				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_mbus_code_enum *code)
+ {
+ 	struct imx477 *imx477 = to_imx477(sd);
+@@ -1428,7 +1428,7 @@ static int imx477_enum_mbus_code(struct
+ }
+ 
+ static int imx477_enum_frame_size(struct v4l2_subdev *sd,
+-				  struct v4l2_subdev_pad_config *cfg,
++				  struct v4l2_subdev_state *sd_state,
+ 				  struct v4l2_subdev_frame_size_enum *fse)
+ {
+ 	struct imx477 *imx477 = to_imx477(sd);
+@@ -1494,7 +1494,7 @@ static void imx477_update_metadata_pad_f
+ }
+ 
+ static int imx477_get_pad_format(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_pad_config *cfg,
++				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_format *fmt)
+ {
+ 	struct imx477 *imx477 = to_imx477(sd);
+@@ -1506,7 +1506,8 @@ static int imx477_get_pad_format(struct
+ 
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+ 		struct v4l2_mbus_framefmt *try_fmt =
+-			v4l2_subdev_get_try_format(&imx477->sd, cfg, fmt->pad);
++			v4l2_subdev_get_try_format(&imx477->sd, sd_state,
++						   fmt->pad);
+ 		/* update the code which could change due to vflip or hflip: */
+ 		try_fmt->code = fmt->pad == IMAGE_PAD ?
+ 				imx477_get_format_code(imx477, try_fmt->code) :
+@@ -1574,7 +1575,7 @@ static void imx477_set_framing_limits(st
+ }
+ 
+ static int imx477_set_pad_format(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_pad_config *cfg,
++				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_format *fmt)
+ {
+ 	struct v4l2_mbus_framefmt *framefmt;
+@@ -1603,7 +1604,7 @@ static int imx477_set_pad_format(struct
+ 					      fmt->format.height);
+ 		imx477_update_image_pad_format(imx477, mode, fmt);
+ 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+-			framefmt = v4l2_subdev_get_try_format(sd, cfg,
++			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
+ 							      fmt->pad);
+ 			*framefmt = fmt->format;
+ 		} else {
+@@ -1613,7 +1614,7 @@ static int imx477_set_pad_format(struct
+ 		}
+ 	} else {
+ 		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+-			framefmt = v4l2_subdev_get_try_format(sd, cfg,
++			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
+ 							      fmt->pad);
+ 			*framefmt = fmt->format;
+ 		} else {
+@@ -1628,12 +1629,13 @@ static int imx477_set_pad_format(struct
+ }
+ 
+ static const struct v4l2_rect *
+-__imx477_get_pad_crop(struct imx477 *imx477, struct v4l2_subdev_pad_config *cfg,
++__imx477_get_pad_crop(struct imx477 *imx477,
++		      struct v4l2_subdev_state *sd_state,
+ 		      unsigned int pad, enum v4l2_subdev_format_whence which)
+ {
+ 	switch (which) {
+ 	case V4L2_SUBDEV_FORMAT_TRY:
+-		return v4l2_subdev_get_try_crop(&imx477->sd, cfg, pad);
++		return v4l2_subdev_get_try_crop(&imx477->sd, sd_state, pad);
+ 	case V4L2_SUBDEV_FORMAT_ACTIVE:
+ 		return &imx477->mode->crop;
+ 	}
+@@ -1642,7 +1644,7 @@ __imx477_get_pad_crop(struct imx477 *imx
+ }
+ 
+ static int imx477_get_selection(struct v4l2_subdev *sd,
+-				struct v4l2_subdev_pad_config *cfg,
++				struct v4l2_subdev_state *sd_state,
+ 				struct v4l2_subdev_selection *sel)
+ {
+ 	switch (sel->target) {
+@@ -1650,7 +1652,7 @@ static int imx477_get_selection(struct v
+ 		struct imx477 *imx477 = to_imx477(sd);
+ 
+ 		mutex_lock(&imx477->mutex);
+-		sel->r = *__imx477_get_pad_crop(imx477, cfg, sel->pad,
++		sel->r = *__imx477_get_pad_crop(imx477, sd_state, sel->pad,
+ 						sel->which);
+ 		mutex_unlock(&imx477->mutex);
+ 
+--- a/drivers/media/i2c/irs1125.c
++++ b/drivers/media/i2c/irs1125.c
+@@ -562,8 +562,8 @@ static const struct v4l2_subdev_video_op
+ };
+ 
+ static int irs1125_enum_mbus_code(struct v4l2_subdev *sd,
+-				  struct v4l2_subdev_pad_config *cfg,
+-	struct v4l2_subdev_mbus_code_enum *code)
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_mbus_code_enum *code)
+ {
+ 	if (code->index > 0)
+ 		return -EINVAL;
+@@ -574,7 +574,7 @@ static int irs1125_enum_mbus_code(struct
+ }
+ 
+ static int irs1125_set_get_fmt(struct v4l2_subdev *sd,
+-			       struct v4l2_subdev_pad_config *cfg,
++			       struct v4l2_subdev_state *sd_state,
+ 			       struct v4l2_subdev_format *format)
+ {
+ 	struct v4l2_mbus_framefmt *fmt = &format->format;
+@@ -930,7 +930,7 @@ static int irs1125_detect(struct v4l2_su
+ static int irs1125_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+ {
+ 	struct v4l2_mbus_framefmt *format =
+-	v4l2_subdev_get_try_format(sd, fh->pad, 0);
++	v4l2_subdev_get_try_format(sd, fh->state, 0);
+ 
+ 	format->code = MEDIA_BUS_FMT_Y12_1X12;
+ 	format->width = IRS1125_WINDOW_WIDTH_DEF;
+--- a/drivers/media/i2c/ov9281.c
++++ b/drivers/media/i2c/ov9281.c
+@@ -491,7 +491,7 @@ ov9281_find_best_fit(struct v4l2_subdev_
+ }
+ 
+ static int ov9281_set_fmt(struct v4l2_subdev *sd,
+-			  struct v4l2_subdev_pad_config *cfg,
++			  struct v4l2_subdev_state *sd_state,
+ 			  struct v4l2_subdev_format *fmt)
+ {
+ 	struct ov9281 *ov9281 = to_ov9281(sd);
+@@ -516,7 +516,7 @@ static int ov9281_set_fmt(struct v4l2_su
+ 		V4L2_MAP_XFER_FUNC_DEFAULT(fmt->format.colorspace);
+ 
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
++		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
+ 	} else {
+ 		ov9281->cur_mode = mode;
+ 		ov9281->code = fmt->format.code;
+@@ -542,7 +542,7 @@ static int ov9281_set_fmt(struct v4l2_su
+ }
+ 
+ static int ov9281_get_fmt(struct v4l2_subdev *sd,
+-			  struct v4l2_subdev_pad_config *cfg,
++			  struct v4l2_subdev_state *sd_state,
+ 			  struct v4l2_subdev_format *fmt)
+ {
+ 	struct ov9281 *ov9281 = to_ov9281(sd);
+@@ -550,7 +550,8 @@ static int ov9281_get_fmt(struct v4l2_su
+ 
+ 	mutex_lock(&ov9281->mutex);
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+-		fmt->format = *v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
++		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state,
++							  fmt->pad);
+ 	} else {
+ 		fmt->format.width = mode->width;
+ 		fmt->format.height = mode->height;
+@@ -572,7 +573,7 @@ static int ov9281_get_fmt(struct v4l2_su
+ }
+ 
+ static int ov9281_enum_mbus_code(struct v4l2_subdev *sd,
+-				 struct v4l2_subdev_pad_config *cfg,
++				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_mbus_code_enum *code)
+ {
+ 	switch (code->index) {
+@@ -590,7 +591,7 @@ static int ov9281_enum_mbus_code(struct
+ }
+ 
+ static int ov9281_enum_frame_sizes(struct v4l2_subdev *sd,
+-				   struct v4l2_subdev_pad_config *cfg,
++				   struct v4l2_subdev_state *sd_state,
+ 				   struct v4l2_subdev_frame_size_enum *fse)
+ {
+ 	if (fse->index >= ARRAY_SIZE(supported_modes))
+@@ -658,12 +659,14 @@ static int ov9281_set_ctrl_vflip(struct
+ }
+ 
+ static const struct v4l2_rect *
+-__ov9281_get_pad_crop(struct ov9281 *ov9281, struct v4l2_subdev_pad_config *cfg,
++__ov9281_get_pad_crop(struct ov9281 *ov9281,
++		      struct v4l2_subdev_state *sd_state,
+ 		      unsigned int pad, enum v4l2_subdev_format_whence which)
+ {
+ 	switch (which) {
+ 	case V4L2_SUBDEV_FORMAT_TRY:
+-		return v4l2_subdev_get_try_crop(&ov9281->subdev, cfg, pad);
++		return v4l2_subdev_get_try_crop(&ov9281->subdev, sd_state,
++						pad);
+ 	case V4L2_SUBDEV_FORMAT_ACTIVE:
+ 		return &ov9281->cur_mode->crop;
+ 	}
+@@ -672,7 +675,7 @@ __ov9281_get_pad_crop(struct ov9281 *ov9
+ }
+ 
+ static int ov9281_get_selection(struct v4l2_subdev *sd,
+-				struct v4l2_subdev_pad_config *cfg,
++				struct v4l2_subdev_state *sd_state,
+ 				struct v4l2_subdev_selection *sel)
+ {
+ 	switch (sel->target) {
+@@ -680,7 +683,7 @@ static int ov9281_get_selection(struct v
+ 		struct ov9281 *ov9281 = to_ov9281(sd);
+ 
+ 		mutex_lock(&ov9281->mutex);
+-		sel->r = *__ov9281_get_pad_crop(ov9281, cfg, sel->pad,
++		sel->r = *__ov9281_get_pad_crop(ov9281, sd_state, sel->pad,
+ 						sel->which);
+ 		mutex_unlock(&ov9281->mutex);
+ 
+@@ -898,7 +901,7 @@ static int ov9281_open(struct v4l2_subde
+ {
+ 	struct ov9281 *ov9281 = to_ov9281(sd);
+ 	struct v4l2_mbus_framefmt *try_fmt =
+-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
++				v4l2_subdev_get_try_format(sd, fh->state, 0);
+ 	const struct ov9281_mode *def_mode = &supported_modes[0];
+ 
+ 	mutex_lock(&ov9281->mutex);
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -444,7 +444,7 @@ struct unicam_device {
+ 	/* ptr to  sub device */
+ 	struct v4l2_subdev *sensor;
+ 	/* Pad config for the sensor */
+-	struct v4l2_subdev_pad_config *sensor_config;
++	struct v4l2_subdev_state *sensor_state;
+ 
+ 	enum v4l2_mbus_type bus_type;
+ 	/*
+@@ -595,7 +595,7 @@ static int __subdev_get_format(struct un
+ 	};
+ 	int ret;
+ 
+-	ret = v4l2_subdev_call(dev->sensor, pad, get_fmt, dev->sensor_config,
++	ret = v4l2_subdev_call(dev->sensor, pad, get_fmt, dev->sensor_state,
+ 			       &sd_fmt);
+ 	if (ret < 0)
+ 		return ret;
+@@ -619,7 +619,7 @@ static int __subdev_set_format(struct un
+ 
+ 	sd_fmt.format = *fmt;
+ 
+-	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_config,
++	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_state,
+ 			       &sd_fmt);
+ 	if (ret < 0)
+ 		return ret;
+@@ -1095,7 +1095,7 @@ static int unicam_try_fmt_vid_cap(struct
+ 	 */
+ 	mbus_fmt->field = V4L2_FIELD_NONE;
+ 
+-	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_config,
++	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_state,
+ 			       &sd_fmt);
+ 	if (ret && ret != -ENOIOCTLCMD && ret != -ENODEV)
+ 		return ret;
+@@ -1117,7 +1117,7 @@ static int unicam_try_fmt_vid_cap(struct
+ 			mbus_fmt->code = fmt->code;
+ 
+ 			ret = v4l2_subdev_call(dev->sensor, pad, set_fmt,
+-					       dev->sensor_config, &sd_fmt);
++					       dev->sensor_state, &sd_fmt);
+ 			if (ret && ret != -ENOIOCTLCMD && ret != -ENODEV)
+ 				return ret;
+ 
+@@ -2330,8 +2330,8 @@ static void unicam_release(struct kref *
+ 	v4l2_ctrl_handler_free(&unicam->ctrl_handler);
+ 	media_device_cleanup(&unicam->mdev);
+ 
+-	if (unicam->sensor_config)
+-		v4l2_subdev_free_pad_config(unicam->sensor_config);
++	if (unicam->sensor_state)
++		v4l2_subdev_free_state(unicam->sensor_state);
+ 
+ 	kfree(unicam);
+ }
+@@ -2593,8 +2593,8 @@ static int unicam_probe_complete(struct
+ 
+ 	unicam->v4l2_dev.notify = unicam_notify;
+ 
+-	unicam->sensor_config = v4l2_subdev_alloc_pad_config(unicam->sensor);
+-	if (!unicam->sensor_config)
++	unicam->sensor_state = v4l2_subdev_alloc_state(unicam->sensor);
++	if (!unicam->sensor_state)
+ 		return -ENOMEM;
+ 
+ 	unicam->sensor_embedded_data = (unicam->sensor->entity.num_pads >= 2);
+--- a/drivers/media/platform/rockchip/rkisp1/rkisp1-isp.c
++++ b/drivers/media/platform/rockchip/rkisp1/rkisp1-isp.c
+@@ -214,6 +214,12 @@ rkisp1_isp_get_pad_fmt(struct rkisp1_isp
+ 	struct v4l2_subdev_state state = {
+ 		.pads = isp->pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	if (which == V4L2_SUBDEV_FORMAT_TRY)
+ 		return v4l2_subdev_get_try_format(&isp->sd, sd_state, pad);
+ 	else
+@@ -228,6 +234,12 @@ rkisp1_isp_get_pad_crop(struct rkisp1_is
+ 	struct v4l2_subdev_state state = {
+ 		.pads = isp->pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	if (which == V4L2_SUBDEV_FORMAT_TRY)
+ 		return v4l2_subdev_get_try_crop(&isp->sd, sd_state, pad);
+ 	else
+@@ -1053,6 +1065,12 @@ int rkisp1_isp_register(struct rkisp1_de
+ 	struct v4l2_subdev_state state = {
+ 		.pads = rkisp1->isp.pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	struct rkisp1_isp *isp = &rkisp1->isp;
+ 	struct media_pad *pads = isp->pads;
+ 	struct v4l2_subdev *sd = &isp->sd;
+--- a/drivers/media/platform/rockchip/rkisp1/rkisp1-resizer.c
++++ b/drivers/media/platform/rockchip/rkisp1/rkisp1-resizer.c
+@@ -186,6 +186,12 @@ rkisp1_rsz_get_pad_fmt(struct rkisp1_res
+ 	struct v4l2_subdev_state state = {
+ 		.pads = rsz->pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	if (which == V4L2_SUBDEV_FORMAT_TRY)
+ 		return v4l2_subdev_get_try_format(&rsz->sd, sd_state, pad);
+ 	else
+@@ -200,6 +206,12 @@ rkisp1_rsz_get_pad_crop(struct rkisp1_re
+ 	struct v4l2_subdev_state state = {
+ 		.pads = rsz->pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	if (which == V4L2_SUBDEV_FORMAT_TRY)
+ 		return v4l2_subdev_get_try_crop(&rsz->sd, sd_state, pad);
+ 	else
+@@ -795,6 +807,12 @@ static int rkisp1_rsz_register(struct rk
+ 	struct v4l2_subdev_state state = {
+ 		.pads = rsz->pad_cfg
+ 		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
++	struct v4l2_subdev_state state = {
++		.pads = &state
++		};
+ 	static const char * const dev_names[] = {
+ 		RKISP1_RSZ_MP_DEV_NAME,
+ 		RKISP1_RSZ_SP_DEV_NAME
+--- a/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
++++ b/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
+@@ -1463,7 +1463,7 @@ queue_cleanup:
+ }
+ 
+ /* Unregister one of the /dev/video<N> nodes associated with the ISP. */
+-static void unregister_node(struct bcm2835_isp_node *node)
++static void bcm2835_unregister_node(struct bcm2835_isp_node *node)
+ {
+ 	struct bcm2835_isp_dev *dev = node_get_dev(node);
+ 
+@@ -1666,7 +1666,7 @@ static int bcm2835_isp_remove(struct pla
+ 	media_controller_unregister(dev);
+ 
+ 	for (i = 0; i < BCM2835_ISP_NUM_NODES; i++)
+-		unregister_node(&dev->node[i]);
++		bcm2835_unregister_node(&dev->node[i]);
+ 
+ 	v4l2_device_unregister(&dev->v4l2_dev);
+ 

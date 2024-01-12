@@ -4,7 +4,8 @@
 
 ifeq ($(DUMP),)
   define BuildTarget/bin
-    ifeq ($(if $(VARIANT),$(BUILD_VARIANT)),$(VARIANT))
+    TARGET_VARIANT=$(if $(ALL_VARIANTS),$(if $(VARIANT),$(filter-out *,$(VARIANT)),$(firstword $(ALL_VARIANTS))))
+    ifeq ($(if $(TARGET_VARIANT),$(BUILD_VARIANT)),$(TARGET_VARIANT))
     ifdef Package/$(1)/install
       ifneq ($(CONFIG_PACKAGE_$(1))$(DEVELOPER),)
         $(_pkg_target)compile: $(PKG_BUILD_DIR)/.pkgdir/$(1).installed

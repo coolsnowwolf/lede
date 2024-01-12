@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2018 Chion Tang <tech@chionlab.moe>
+# Copyright (C) 2022 Chion Tang <tech@chionlab.moe>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=6
+PKG_RELEASE:=10
 
 PKG_SOURCE_DATE:=2022-02-13
 PKG_SOURCE_PROTO:=git
@@ -49,9 +49,7 @@ endef
 include $(INCLUDE_DIR)/kernel-defaults.mk
 
 define Build/Compile
-	+$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
-		CROSS_COMPILE="$(TARGET_CROSS)" \
-		ARCH="$(LINUX_KARCH)" \
+	+$(KERNEL_MAKE) $(PKG_JOBS) \
 		M="$(PKG_BUILD_DIR)" \
 		EXTRA_CFLAGS="$(BUILDFLAGS)" \
 		modules

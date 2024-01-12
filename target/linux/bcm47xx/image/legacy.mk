@@ -4,7 +4,7 @@
 
 define Device/asus_wl-300g
   DEVICE_MODEL := WL-300g
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy
+  DEVICE_PACKAGES := kmod-b43
   $(Device/asus)
   PRODUCTID := "WL300g      "
 endef
@@ -78,7 +78,7 @@ TARGET_DEVICES += asus_wl-550ge
 
 define Device/asus_wl-hdd25
   DEVICE_MODEL := WL-HDD25
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy $(USB1_PACKAGES)
+  DEVICE_PACKAGES := kmod-b43 $(USB1_PACKAGES)
   $(Device/asus)
   PRODUCTID := "WLHDD       "
 endef
@@ -145,7 +145,7 @@ TARGET_DEVICES += linksys_wrt54g3gv2-vf
 
 define Device/linksys_wrt54g
   DEVICE_MODEL := WRT54G
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy
+  DEVICE_PACKAGES := kmod-b43
   $(Device/linksys)
   DEVICE_ID := W54G
   VERSION := 4.71.1
@@ -218,7 +218,7 @@ TARGET_DEVICES += linksys_wrt300n-v1
 
 define Device/motorola_wa840g
   DEVICE_MODEL := WA840G
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy
+  DEVICE_PACKAGES := kmod-b43
   $(Device/motorola)
   MOTOROLA_DEVICE := 2
 endef
@@ -226,7 +226,7 @@ TARGET_DEVICES += motorola_wa840g
 
 define Device/motorola_we800g
   DEVICE_MODEL := WE800G
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy
+  DEVICE_PACKAGES := kmod-b43
   $(Device/motorola)
   MOTOROLA_DEVICE := 3
 endef
@@ -234,7 +234,7 @@ TARGET_DEVICES += motorola_we800g
 
 define Device/motorola_wr850g
   DEVICE_MODEL := WR850G
-  DEVICE_PACKAGES := kmod-b43 kmod-b43legacy
+  DEVICE_PACKAGES := kmod-b43
   $(Device/motorola)
   MOTOROLA_DEVICE := 1
 endef

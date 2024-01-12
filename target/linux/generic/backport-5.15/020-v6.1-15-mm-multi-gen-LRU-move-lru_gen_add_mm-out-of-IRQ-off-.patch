@@ -1,0 +1,49 @@
+From 255bb0ac393f1c2818cd75af45a9226300ab3daf Mon Sep 17 00:00:00 2001
+From: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Date: Wed, 26 Oct 2022 15:48:30 +0200
+Subject: [PATCH 15/29] mm: multi-gen LRU: move lru_gen_add_mm() out of IRQ-off
+ region
+
+lru_gen_add_mm() has been added within an IRQ-off region in the commit
+mentioned below.  The other invocations of lru_gen_add_mm() are not within
+an IRQ-off region.
+
+The invocation within IRQ-off region is problematic on PREEMPT_RT because
+the function is using a spin_lock_t which must not be used within
+IRQ-disabled regions.
+
+The other invocations of lru_gen_add_mm() occur while
+task_struct::alloc_lock is acquired.  Move lru_gen_add_mm() after
+interrupts are enabled and before task_unlock().
+
+Link: https://lkml.kernel.org/r/20221026134830.711887-1-bigeasy@linutronix.de
+Fixes: bd74fdaea1460 ("mm: multi-gen LRU: support page table walks")
+Signed-off-by: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Acked-by: Yu Zhao <yuzhao@google.com>
+Cc: Al Viro <viro@zeniv.linux.org.uk>
+Cc: "Eric W . Biederman" <ebiederm@xmission.com>
+Cc: Kees Cook <keescook@chromium.org>
+Cc: Thomas Gleixner <tglx@linutronix.de>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ fs/exec.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1013,7 +1013,6 @@ static int exec_mmap(struct mm_struct *m
+ 	active_mm = tsk->active_mm;
+ 	tsk->active_mm = mm;
+ 	tsk->mm = mm;
+-	lru_gen_add_mm(mm);
+ 	/*
+ 	 * This prevents preemption while active_mm is being loaded and
+ 	 * it and mm are being updated, which could cause problems for
+@@ -1028,6 +1027,7 @@ static int exec_mmap(struct mm_struct *m
+ 		local_irq_enable();
+ 	tsk->mm->vmacache_seqnum = 0;
+ 	vmacache_flush(tsk);
++	lru_gen_add_mm(mm);
+ 	task_unlock(tsk);
+ 	lru_gen_use_mm(mm);
+ 	if (old_mm) {

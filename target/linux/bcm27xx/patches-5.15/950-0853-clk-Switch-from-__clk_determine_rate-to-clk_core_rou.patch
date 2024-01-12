@@ -1,0 +1,60 @@
+From dc4310d9d45e72360b8fdf46d514b6d29c92e808 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Sat, 2 Apr 2022 13:52:55 +0200
+Subject: [PATCH] clk: Switch from __clk_determine_rate to
+ clk_core_round_rate_nolock
+
+clk_mux_determine_rate_flags() will call into __clk_determine_rate()
+with a clk_hw pointer, while it has access to the clk_core pointer
+already.
+
+This leads to back and forth between clk_hw and clk_core, while
+__clk_determine_rate will only call clk_core_round_rate_nolock() with
+the clk_core pointer it retrieved from the clk_hw.
+
+Let's simplify things a bit by calling into clk_core_round_rate_nolock
+directly.
+
+Tested-by: Alexander Stein <alexander.stein@ew.tq-group.com> # imx8mp
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com> # exynos4210, meson g12b
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -542,6 +542,9 @@ static bool mux_is_better_rate(unsigned
+ 	return now <= rate && now > best;
+ }
+ 
++static int clk_core_round_rate_nolock(struct clk_core *core,
++				      struct clk_rate_request *req);
++
+ int clk_mux_determine_rate_flags(struct clk_hw *hw,
+ 				 struct clk_rate_request *req,
+ 				 unsigned long flags)
+@@ -555,8 +558,12 @@ int clk_mux_determine_rate_flags(struct
+ 	if (core->flags & CLK_SET_RATE_NO_REPARENT) {
+ 		parent = core->parent;
+ 		if (core->flags & CLK_SET_RATE_PARENT) {
+-			ret = __clk_determine_rate(parent ? parent->hw : NULL,
+-						   &parent_req);
++			if (!parent) {
++				req->rate = 0;
++				return 0;
++			}
++
++			ret = clk_core_round_rate_nolock(parent, &parent_req);
+ 			if (ret)
+ 				return ret;
+ 
+@@ -579,7 +586,7 @@ int clk_mux_determine_rate_flags(struct
+ 
+ 		if (core->flags & CLK_SET_RATE_PARENT) {
+ 			parent_req = *req;
+-			ret = __clk_determine_rate(parent->hw, &parent_req);
++			ret = clk_core_round_rate_nolock(parent, &parent_req);
+ 			if (ret)
+ 				continue;
+ 		} else {

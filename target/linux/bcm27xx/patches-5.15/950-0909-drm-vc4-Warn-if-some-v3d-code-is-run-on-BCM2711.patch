@@ -1,0 +1,753 @@
+From cec5fc1572ae50252a492ceeabe1b896f8d521b2 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 21 Apr 2022 16:29:43 +0200
+Subject: [PATCH] drm/vc4: Warn if some v3d code is run on BCM2711
+
+The BCM2711 has a separate driver for the v3d, and thus we can't call
+into any of the driver entrypoints that rely on the v3d being there.
+
+Let's add a bunch of checks and complain loudly if that ever happen.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_bo.c               | 49 ++++++++++++++++++++++
+ drivers/gpu/drm/vc4/vc4_drv.c              | 11 +++++
+ drivers/gpu/drm/vc4/vc4_drv.h              |  6 +++
+ drivers/gpu/drm/vc4/vc4_gem.c              | 40 ++++++++++++++++++
+ drivers/gpu/drm/vc4/vc4_irq.c              | 16 +++++++
+ drivers/gpu/drm/vc4/vc4_kms.c              |  4 ++
+ drivers/gpu/drm/vc4/vc4_perfmon.c          | 47 ++++++++++++++++++++-
+ drivers/gpu/drm/vc4/vc4_render_cl.c        |  4 ++
+ drivers/gpu/drm/vc4/vc4_v3d.c              | 15 +++++++
+ drivers/gpu/drm/vc4/vc4_validate.c         | 16 +++++++
+ drivers/gpu/drm/vc4/vc4_validate_shaders.c |  4 ++
+ 11 files changed, 211 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_bo.c
++++ b/drivers/gpu/drm/vc4/vc4_bo.c
+@@ -248,6 +248,9 @@ void vc4_bo_add_to_purgeable_pool(struct
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	mutex_lock(&vc4->purgeable.lock);
+ 	list_add_tail(&bo->size_head, &vc4->purgeable.list);
+ 	vc4->purgeable.num++;
+@@ -259,6 +262,9 @@ static void vc4_bo_remove_from_purgeable
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	/* list_del_init() is used here because the caller might release
+ 	 * the purgeable lock in order to acquire the madv one and update the
+ 	 * madv status.
+@@ -389,6 +395,9 @@ struct drm_gem_object *vc4_create_object
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_bo *bo;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return ERR_PTR(-ENODEV);
++
+ 	bo = kzalloc(sizeof(*bo), GFP_KERNEL);
+ 	if (!bo)
+ 		return NULL;
+@@ -415,6 +424,9 @@ struct vc4_bo *vc4_bo_create(struct drm_
+ 	struct drm_gem_cma_object *cma_obj;
+ 	struct vc4_bo *bo;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return ERR_PTR(-ENODEV);
++
+ 	if (size == 0)
+ 		return ERR_PTR(-EINVAL);
+ 
+@@ -477,9 +489,13 @@ int vc4_bo_dumb_create(struct drm_file *
+ 		       struct drm_device *dev,
+ 		       struct drm_mode_create_dumb *args)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_bo *bo = NULL;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	ret = vc4_dumb_fixup_args(args);
+ 	if (ret)
+ 		return ret;
+@@ -600,8 +616,12 @@ static void vc4_bo_cache_time_work(struc
+ 
+ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	/* Fast path: if the BO is already retained by someone, no need to
+ 	 * check the madv status.
+ 	 */
+@@ -636,6 +656,11 @@ int vc4_bo_inc_usecnt(struct vc4_bo *bo)
+ 
+ void vc4_bo_dec_usecnt(struct vc4_bo *bo)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(bo->base.base.dev);
++
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	/* Fast path: if the BO is still retained by someone, no need to test
+ 	 * the madv value.
+ 	 */
+@@ -761,6 +786,9 @@ int vc4_create_bo_ioctl(struct drm_devic
+ 	struct vc4_bo *bo = NULL;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	ret = vc4_grab_bin_bo(vc4, vc4file);
+ 	if (ret)
+ 		return ret;
+@@ -784,9 +812,13 @@ int vc4_create_bo_ioctl(struct drm_devic
+ int vc4_mmap_bo_ioctl(struct drm_device *dev, void *data,
+ 		      struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_vc4_mmap_bo *args = data;
+ 	struct drm_gem_object *gem_obj;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	gem_obj = drm_gem_object_lookup(file_priv, args->handle);
+ 	if (!gem_obj) {
+ 		DRM_DEBUG("Failed to look up GEM BO %d\n", args->handle);
+@@ -810,6 +842,9 @@ vc4_create_shader_bo_ioctl(struct drm_de
+ 	struct vc4_bo *bo = NULL;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (args->size == 0)
+ 		return -EINVAL;
+ 
+@@ -880,11 +915,15 @@ fail:
+ int vc4_set_tiling_ioctl(struct drm_device *dev, void *data,
+ 			 struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_vc4_set_tiling *args = data;
+ 	struct drm_gem_object *gem_obj;
+ 	struct vc4_bo *bo;
+ 	bool t_format;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (args->flags != 0)
+ 		return -EINVAL;
+ 
+@@ -923,10 +962,14 @@ int vc4_set_tiling_ioctl(struct drm_devi
+ int vc4_get_tiling_ioctl(struct drm_device *dev, void *data,
+ 			 struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_vc4_get_tiling *args = data;
+ 	struct drm_gem_object *gem_obj;
+ 	struct vc4_bo *bo;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (args->flags != 0 || args->modifier != 0)
+ 		return -EINVAL;
+ 
+@@ -953,6 +996,9 @@ int vc4_bo_cache_init(struct drm_device
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	int i;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	/* Create the initial set of BO labels that the kernel will
+ 	 * use.  This lets us avoid a bunch of string reallocation in
+ 	 * the kernel's draw and BO allocation paths.
+@@ -1012,6 +1058,9 @@ int vc4_label_bo_ioctl(struct drm_device
+ 	struct drm_gem_object *gem_obj;
+ 	int ret = 0, label;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!args->len)
+ 		return -EINVAL;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -101,6 +101,9 @@ static int vc4_get_param_ioctl(struct dr
+ 	if (args->pad != 0)
+ 		return -EINVAL;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d)
+ 		return -ENODEV;
+ 
+@@ -144,11 +147,16 @@ static int vc4_get_param_ioctl(struct dr
+ 
+ static int vc4_open(struct drm_device *dev, struct drm_file *file)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_file *vc4file;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	vc4file = kzalloc(sizeof(*vc4file), GFP_KERNEL);
+ 	if (!vc4file)
+ 		return -ENOMEM;
++	vc4file->dev = vc4;
+ 
+ 	vc4_perfmon_open_file(vc4file);
+ 	file->driver_priv = vc4file;
+@@ -160,6 +168,9 @@ static void vc4_close(struct drm_device
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_file *vc4file = file->driver_priv;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (vc4file->bin_bo_used)
+ 		vc4_v3d_bin_bo_put(vc4);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -49,6 +49,8 @@ enum vc4_kernel_bo_type {
+  * done. This way, only events related to a specific job will be counted.
+  */
+ struct vc4_perfmon {
++	struct vc4_dev *dev;
++
+ 	/* Tracks the number of users of the perfmon, when this counter reaches
+ 	 * zero the perfmon is destroyed.
+ 	 */
+@@ -612,6 +614,8 @@ to_vc4_crtc_state(struct drm_crtc_state
+ #define VC4_REG32(reg) { .name = #reg, .offset = reg }
+ 
+ struct vc4_exec_info {
++	struct vc4_dev *dev;
++
+ 	/* Sequence number for this bin/render job. */
+ 	uint64_t seqno;
+ 
+@@ -733,6 +737,8 @@ struct vc4_exec_info {
+  * released when the DRM file is closed should be placed here.
+  */
+ struct vc4_file {
++	struct vc4_dev *dev;
++
+ 	struct {
+ 		struct idr idr;
+ 		struct mutex lock;
+--- a/drivers/gpu/drm/vc4/vc4_gem.c
++++ b/drivers/gpu/drm/vc4/vc4_gem.c
+@@ -76,6 +76,9 @@ vc4_get_hang_state_ioctl(struct drm_devi
+ 	u32 i;
+ 	int ret = 0;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d) {
+ 		DRM_DEBUG("VC4_GET_HANG_STATE with no VC4 V3D probed\n");
+ 		return -ENODEV;
+@@ -386,6 +389,9 @@ vc4_wait_for_seqno(struct drm_device *de
+ 	unsigned long timeout_expire;
+ 	DEFINE_WAIT(wait);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (vc4->finished_seqno >= seqno)
+ 		return 0;
+ 
+@@ -468,6 +474,9 @@ vc4_submit_next_bin_job(struct drm_devic
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_exec_info *exec;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ again:
+ 	exec = vc4_first_bin_job(vc4);
+ 	if (!exec)
+@@ -511,6 +520,9 @@ vc4_submit_next_render_job(struct drm_de
+ 	if (!exec)
+ 		return;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	/* A previous RCL may have written to one of our textures, and
+ 	 * our full cache flush at bin time may have occurred before
+ 	 * that RCL completed.  Flush the texture cache now, but not
+@@ -528,6 +540,9 @@ vc4_move_job_to_render(struct drm_device
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	bool was_empty = list_empty(&vc4->render_job_list);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	list_move_tail(&exec->head, &vc4->render_job_list);
+ 	if (was_empty)
+ 		vc4_submit_next_render_job(dev);
+@@ -992,6 +1007,9 @@ vc4_job_handle_completed(struct vc4_dev
+ 	unsigned long irqflags;
+ 	struct vc4_seqno_cb *cb, *cb_temp;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	spin_lock_irqsave(&vc4->job_lock, irqflags);
+ 	while (!list_empty(&vc4->job_done_list)) {
+ 		struct vc4_exec_info *exec =
+@@ -1028,6 +1046,9 @@ int vc4_queue_seqno_cb(struct drm_device
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	unsigned long irqflags;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	cb->func = func;
+ 	INIT_WORK(&cb->work, vc4_seqno_cb_work);
+ 
+@@ -1078,8 +1099,12 @@ int
+ vc4_wait_seqno_ioctl(struct drm_device *dev, void *data,
+ 		     struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_vc4_wait_seqno *args = data;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	return vc4_wait_for_seqno_ioctl_helper(dev, args->seqno,
+ 					       &args->timeout_ns);
+ }
+@@ -1088,11 +1113,15 @@ int
+ vc4_wait_bo_ioctl(struct drm_device *dev, void *data,
+ 		  struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	int ret;
+ 	struct drm_vc4_wait_bo *args = data;
+ 	struct drm_gem_object *gem_obj;
+ 	struct vc4_bo *bo;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (args->pad != 0)
+ 		return -EINVAL;
+ 
+@@ -1135,6 +1164,9 @@ vc4_submit_cl_ioctl(struct drm_device *d
+ 	struct dma_fence *in_fence;
+ 	int ret = 0;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d) {
+ 		DRM_DEBUG("VC4_SUBMIT_CL with no VC4 V3D probed\n");
+ 		return -ENODEV;
+@@ -1158,6 +1190,7 @@ vc4_submit_cl_ioctl(struct drm_device *d
+ 		DRM_ERROR("malloc failure on exec struct\n");
+ 		return -ENOMEM;
+ 	}
++	exec->dev = vc4;
+ 
+ 	ret = vc4_v3d_pm_get(vc4);
+ 	if (ret) {
+@@ -1267,6 +1300,9 @@ int vc4_gem_init(struct drm_device *dev)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	vc4->dma_fence_context = dma_fence_context_alloc(1);
+ 
+ 	INIT_LIST_HEAD(&vc4->bin_job_list);
+@@ -1312,11 +1348,15 @@ static void vc4_gem_destroy(struct drm_d
+ int vc4_gem_madvise_ioctl(struct drm_device *dev, void *data,
+ 			  struct drm_file *file_priv)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_vc4_gem_madvise *args = data;
+ 	struct drm_gem_object *gem_obj;
+ 	struct vc4_bo *bo;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	switch (args->madv) {
+ 	case VC4_MADV_DONTNEED:
+ 	case VC4_MADV_WILLNEED:
+--- a/drivers/gpu/drm/vc4/vc4_irq.c
++++ b/drivers/gpu/drm/vc4/vc4_irq.c
+@@ -260,6 +260,9 @@ vc4_irq_enable(struct drm_device *dev)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (!vc4->v3d)
+ 		return;
+ 
+@@ -274,6 +277,9 @@ vc4_irq_disable(struct drm_device *dev)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (!vc4->v3d)
+ 		return;
+ 
+@@ -291,8 +297,12 @@ vc4_irq_disable(struct drm_device *dev)
+ 
+ int vc4_irq_install(struct drm_device *dev, int irq)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (irq == IRQ_NOTCONNECTED)
+ 		return -ENOTCONN;
+ 
+@@ -311,6 +321,9 @@ void vc4_irq_uninstall(struct drm_device
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	vc4_irq_disable(dev);
+ 	free_irq(vc4->irq, dev);
+ }
+@@ -321,6 +334,9 @@ void vc4_irq_reset(struct drm_device *de
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	unsigned long irqflags;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	/* Acknowledge any stale IRQs. */
+ 	V3D_WRITE(V3D_INTCTL, V3D_DRIVER_IRQS);
+ 
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -485,8 +485,12 @@ static struct drm_framebuffer *vc4_fb_cr
+ 					     struct drm_file *file_priv,
+ 					     const struct drm_mode_fb_cmd2 *mode_cmd)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_mode_fb_cmd2 mode_cmd_local;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return ERR_PTR(-ENODEV);
++
+ 	/* If the user didn't specify a modifier, use the
+ 	 * vc4_set_tiling_ioctl() state for the BO.
+ 	 */
+--- a/drivers/gpu/drm/vc4/vc4_perfmon.c
++++ b/drivers/gpu/drm/vc4/vc4_perfmon.c
+@@ -17,13 +17,27 @@
+ 
+ void vc4_perfmon_get(struct vc4_perfmon *perfmon)
+ {
++	struct vc4_dev *vc4 = perfmon->dev;
++
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (perfmon)
+ 		refcount_inc(&perfmon->refcnt);
+ }
+ 
+ void vc4_perfmon_put(struct vc4_perfmon *perfmon)
+ {
+-	if (perfmon && refcount_dec_and_test(&perfmon->refcnt))
++	struct vc4_dev *vc4;
++
++	if (!perfmon)
++		return;
++
++	vc4 = perfmon->dev;
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
++	if (refcount_dec_and_test(&perfmon->refcnt))
+ 		kfree(perfmon);
+ }
+ 
+@@ -32,6 +46,9 @@ void vc4_perfmon_start(struct vc4_dev *v
+ 	unsigned int i;
+ 	u32 mask;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (WARN_ON_ONCE(!perfmon || vc4->active_perfmon))
+ 		return;
+ 
+@@ -49,6 +66,9 @@ void vc4_perfmon_stop(struct vc4_dev *vc
+ {
+ 	unsigned int i;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	if (WARN_ON_ONCE(!vc4->active_perfmon ||
+ 			 perfmon != vc4->active_perfmon))
+ 		return;
+@@ -64,8 +84,12 @@ void vc4_perfmon_stop(struct vc4_dev *vc
+ 
+ struct vc4_perfmon *vc4_perfmon_find(struct vc4_file *vc4file, int id)
+ {
++	struct vc4_dev *vc4 = vc4file->dev;
+ 	struct vc4_perfmon *perfmon;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return NULL;
++
+ 	mutex_lock(&vc4file->perfmon.lock);
+ 	perfmon = idr_find(&vc4file->perfmon.idr, id);
+ 	vc4_perfmon_get(perfmon);
+@@ -76,8 +100,14 @@ struct vc4_perfmon *vc4_perfmon_find(str
+ 
+ void vc4_perfmon_open_file(struct vc4_file *vc4file)
+ {
++	struct vc4_dev *vc4 = vc4file->dev;
++
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	mutex_init(&vc4file->perfmon.lock);
+ 	idr_init_base(&vc4file->perfmon.idr, VC4_PERFMONID_MIN);
++	vc4file->dev = vc4;
+ }
+ 
+ static int vc4_perfmon_idr_del(int id, void *elem, void *data)
+@@ -91,6 +121,11 @@ static int vc4_perfmon_idr_del(int id, v
+ 
+ void vc4_perfmon_close_file(struct vc4_file *vc4file)
+ {
++	struct vc4_dev *vc4 = vc4file->dev;
++
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	mutex_lock(&vc4file->perfmon.lock);
+ 	idr_for_each(&vc4file->perfmon.idr, vc4_perfmon_idr_del, NULL);
+ 	idr_destroy(&vc4file->perfmon.idr);
+@@ -107,6 +142,9 @@ int vc4_perfmon_create_ioctl(struct drm_
+ 	unsigned int i;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d) {
+ 		DRM_DEBUG("Creating perfmon no VC4 V3D probed\n");
+ 		return -ENODEV;
+@@ -127,6 +165,7 @@ int vc4_perfmon_create_ioctl(struct drm_
+ 			  GFP_KERNEL);
+ 	if (!perfmon)
+ 		return -ENOMEM;
++	perfmon->dev = vc4;
+ 
+ 	for (i = 0; i < req->ncounters; i++)
+ 		perfmon->events[i] = req->events[i];
+@@ -157,6 +196,9 @@ int vc4_perfmon_destroy_ioctl(struct drm
+ 	struct drm_vc4_perfmon_destroy *req = data;
+ 	struct vc4_perfmon *perfmon;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d) {
+ 		DRM_DEBUG("Destroying perfmon no VC4 V3D probed\n");
+ 		return -ENODEV;
+@@ -182,6 +224,9 @@ int vc4_perfmon_get_values_ioctl(struct
+ 	struct vc4_perfmon *perfmon;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (!vc4->v3d) {
+ 		DRM_DEBUG("Getting perfmon no VC4 V3D probed\n");
+ 		return -ENODEV;
+--- a/drivers/gpu/drm/vc4/vc4_render_cl.c
++++ b/drivers/gpu/drm/vc4/vc4_render_cl.c
+@@ -593,11 +593,15 @@ vc4_rcl_render_config_surface_setup(stru
+ 
+ int vc4_get_rcl(struct drm_device *dev, struct vc4_exec_info *exec)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct vc4_rcl_setup setup = {0};
+ 	struct drm_vc4_submit_cl *args = exec->args;
+ 	bool has_bin = args->bin_cl_size != 0;
+ 	int ret;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	if (args->min_x_tile > args->max_x_tile ||
+ 	    args->min_y_tile > args->max_y_tile) {
+ 		DRM_DEBUG("Bad render tile set (%d,%d)-(%d,%d)\n",
+--- a/drivers/gpu/drm/vc4/vc4_v3d.c
++++ b/drivers/gpu/drm/vc4/vc4_v3d.c
+@@ -127,6 +127,9 @@ static int vc4_v3d_debugfs_ident(struct
+ int
+ vc4_v3d_pm_get(struct vc4_dev *vc4)
+ {
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	mutex_lock(&vc4->power_lock);
+ 	if (vc4->power_refcount++ == 0) {
+ 		int ret = pm_runtime_get_sync(&vc4->v3d->pdev->dev);
+@@ -145,6 +148,9 @@ vc4_v3d_pm_get(struct vc4_dev *vc4)
+ void
+ vc4_v3d_pm_put(struct vc4_dev *vc4)
+ {
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	mutex_lock(&vc4->power_lock);
+ 	if (--vc4->power_refcount == 0) {
+ 		pm_runtime_mark_last_busy(&vc4->v3d->pdev->dev);
+@@ -172,6 +178,9 @@ int vc4_v3d_get_bin_slot(struct vc4_dev
+ 	uint64_t seqno = 0;
+ 	struct vc4_exec_info *exec;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ try_again:
+ 	spin_lock_irqsave(&vc4->job_lock, irqflags);
+ 	slot = ffs(~vc4->bin_alloc_used);
+@@ -316,6 +325,9 @@ int vc4_v3d_bin_bo_get(struct vc4_dev *v
+ {
+ 	int ret = 0;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	mutex_lock(&vc4->bin_bo_lock);
+ 
+ 	if (used && *used)
+@@ -348,6 +360,9 @@ static void bin_bo_release(struct kref *
+ 
+ void vc4_v3d_bin_bo_put(struct vc4_dev *vc4)
+ {
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return;
++
+ 	mutex_lock(&vc4->bin_bo_lock);
+ 	kref_put(&vc4->bin_bo_kref, bin_bo_release);
+ 	mutex_unlock(&vc4->bin_bo_lock);
+--- a/drivers/gpu/drm/vc4/vc4_validate.c
++++ b/drivers/gpu/drm/vc4/vc4_validate.c
+@@ -105,9 +105,13 @@ size_is_lt(uint32_t width, uint32_t heig
+ struct drm_gem_cma_object *
+ vc4_use_bo(struct vc4_exec_info *exec, uint32_t hindex)
+ {
++	struct vc4_dev *vc4 = exec->dev;
+ 	struct drm_gem_cma_object *obj;
+ 	struct vc4_bo *bo;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return NULL;
++
+ 	if (hindex >= exec->bo_count) {
+ 		DRM_DEBUG("BO index %d greater than BO count %d\n",
+ 			  hindex, exec->bo_count);
+@@ -160,10 +164,14 @@ vc4_check_tex_size(struct vc4_exec_info
+ 		   uint32_t offset, uint8_t tiling_format,
+ 		   uint32_t width, uint32_t height, uint8_t cpp)
+ {
++	struct vc4_dev *vc4 = exec->dev;
+ 	uint32_t aligned_width, aligned_height, stride, size;
+ 	uint32_t utile_w = utile_width(cpp);
+ 	uint32_t utile_h = utile_height(cpp);
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	/* The shaded vertex format stores signed 12.4 fixed point
+ 	 * (-2048,2047) offsets from the viewport center, so we should
+ 	 * never have a render target larger than 4096.  The texture
+@@ -482,10 +490,14 @@ vc4_validate_bin_cl(struct drm_device *d
+ 		    void *unvalidated,
+ 		    struct vc4_exec_info *exec)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	uint32_t len = exec->args->bin_cl_size;
+ 	uint32_t dst_offset = 0;
+ 	uint32_t src_offset = 0;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	while (src_offset < len) {
+ 		void *dst_pkt = validated + dst_offset;
+ 		void *src_pkt = unvalidated + src_offset;
+@@ -926,9 +938,13 @@ int
+ vc4_validate_shader_recs(struct drm_device *dev,
+ 			 struct vc4_exec_info *exec)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	uint32_t i;
+ 	int ret = 0;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return -ENODEV;
++
+ 	for (i = 0; i < exec->shader_state_count; i++) {
+ 		ret = validate_gl_shader_rec(dev, exec, &exec->shader_state[i]);
+ 		if (ret)
+--- a/drivers/gpu/drm/vc4/vc4_validate_shaders.c
++++ b/drivers/gpu/drm/vc4/vc4_validate_shaders.c
+@@ -778,6 +778,7 @@ vc4_handle_branch_target(struct vc4_shad
+ struct vc4_validated_shader_info *
+ vc4_validate_shader(struct drm_gem_cma_object *shader_obj)
+ {
++	struct vc4_dev *vc4 = to_vc4_dev(shader_obj->base.dev);
+ 	bool found_shader_end = false;
+ 	int shader_end_ip = 0;
+ 	uint32_t last_thread_switch_ip = -3;
+@@ -785,6 +786,9 @@ vc4_validate_shader(struct drm_gem_cma_o
+ 	struct vc4_validated_shader_info *validated_shader = NULL;
+ 	struct vc4_shader_validation_state validation_state;
+ 
++	if (WARN_ON_ONCE(vc4->is_vc5))
++		return NULL;
++
+ 	memset(&validation_state, 0, sizeof(validation_state));
+ 	validation_state.shader = shader_obj->vaddr;
+ 	validation_state.max_ip = shader_obj->base.size / sizeof(uint64_t);

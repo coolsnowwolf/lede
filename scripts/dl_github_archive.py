@@ -133,7 +133,7 @@ class Path(object):
     def tar(path, subdir, into=None, ts=None):
         """Pack ``path`` into tarball ``into``."""
         # --sort=name requires a recent build of GNU tar
-        args = ['tar', '--numeric-owner', '--owner=0', '--group=0', '--sort=name']
+        args = ['tar', '--numeric-owner', '--owner=0', '--group=0', '--sort=name', '--mode=a-s']
         args += ['-C', path, '-cf', into, subdir]
         envs = os.environ.copy()
         if ts is not None:
@@ -207,7 +207,7 @@ class GitHubCommitTsCache(object):
 
 
 class DownloadGitHubTarball(object):
-    """Download and repack archive tarabll from GitHub.
+    """Download and repack archive tarball from GitHub.
 
     Compared with the method of packing after cloning the whole repo, this
     method is more friendly to users with fragile internet connection.
@@ -220,7 +220,7 @@ class DownloadGitHubTarball(object):
 
      - GitHub archives do not contain source codes for submodules.
 
-     - GitHub archives seem to respect .gitattributes and ignore pathes with
+     - GitHub archives seem to respect .gitattributes and ignore paths with
        export-ignore attributes.
 
     For the first two issues, the method will fail loudly to allow fallback to

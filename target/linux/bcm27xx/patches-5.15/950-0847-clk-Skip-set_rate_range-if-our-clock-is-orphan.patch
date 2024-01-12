@@ -1,0 +1,123 @@
+From 655e66b0add0aba16e84587dbb939f8ddce612b0 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 1 Apr 2022 15:27:09 +0200
+Subject: [PATCH] clk: Skip set_rate_range if our clock is orphan
+
+clk_set_rate_range will now force a clk_set_rate() call to
+core->req_rate. However, if our clock is orphan, req_rate will be 0 and
+we will thus end up calling a set_rate to 0 on potentially all that
+clock subtree.
+
+This can be fairly invasive and result in poor decisions. In such a
+case, let's just store the new range but bail out and skip the set_rate.
+
+When that clock is no longer orphan though, we should be enforcing the
+new range but we don't. Let's add a skipped test to make sure we don't
+forget about that corner case.
+
+Tested-by: Alexander Stein <alexander.stein@ew.tq-group.com> # imx8mp
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com> # exynos4210, meson g12b
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk.c      |  6 +++++
+ drivers/clk/clk_test.c | 59 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -2387,6 +2387,12 @@ static int clk_set_rate_range_nolock(str
+ 	if (clk->core->flags & CLK_GET_RATE_NOCACHE)
+ 		rate = clk_core_get_rate_recalc(clk->core);
+ 
++	if (clk->core->orphan && !rate) {
++		pr_warn("%s: clk %s: Clock is orphan and doesn't have a rate!\n",
++			__func__, clk->core->name);
++		goto out;
++	}
++
+ 	/*
+ 	 * Since the boundaries have been changed, let's give the
+ 	 * opportunity to the provider to adjust the clock rate based on
+--- a/drivers/clk/clk_test.c
++++ b/drivers/clk/clk_test.c
+@@ -737,6 +737,26 @@ clk_test_orphan_transparent_multiple_par
+ 
+ /*
+  * Test that, for a mux whose current parent hasn't been registered yet,
++ * calling clk_set_rate_range() will succeed but won't affect its rate.
++ */
++static void
++clk_test_orphan_transparent_multiple_parent_mux_set_range_get_rate(struct kunit *test)
++{
++	struct clk_multiple_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	unsigned long rate;
++	int ret;
++
++	ret = clk_set_rate_range(clk, DUMMY_CLOCK_RATE_1, DUMMY_CLOCK_RATE_2);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_EXPECT_EQ(test, rate, 0);
++}
++
++/*
++ * Test that, for a mux whose current parent hasn't been registered yet,
+  * calling clk_set_rate_range() will succeed, and will be taken into
+  * account when rounding a rate.
+  */
+@@ -758,6 +778,43 @@ clk_test_orphan_transparent_multiple_par
+ 	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2);
+ }
+ 
++/*
++ * Test that, for a mux that started orphan, was assigned and rate and
++ * then got switched to a valid parent, its rate is eventually within
++ * range.
++ *
++ * FIXME: Even though we update the rate as part of clk_set_parent(), we
++ * don't evaluate whether that new rate is within range and needs to be
++ * adjusted.
++ */
++static void
++clk_test_orphan_transparent_multiple_parent_mux_set_range_set_parent_get_rate(struct kunit *test)
++{
++	struct clk_multiple_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk, *parent;
++	unsigned long rate;
++	int ret;
++
++	kunit_skip(test, "This needs to be fixed in the core.");
++
++	parent = clk_hw_get_clk(&ctx->parents_ctx[1].hw, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, parent);
++
++	ret = clk_set_rate_range(clk, DUMMY_CLOCK_RATE_1, DUMMY_CLOCK_RATE_2);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	ret = clk_set_parent(clk, parent);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	rate = clk_get_rate(clk);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_GE(test, rate, DUMMY_CLOCK_RATE_1);
++	KUNIT_EXPECT_LE(test, rate, DUMMY_CLOCK_RATE_2);
++
++	clk_put(parent);
++}
++
+ static struct kunit_case clk_orphan_transparent_multiple_parent_mux_test_cases[] = {
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_get_parent),
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_parent),
+@@ -766,7 +823,9 @@ static struct kunit_case clk_orphan_tran
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_parent_put),
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_parent_set_range_modified),
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_parent_set_range_untouched),
++	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_range_get_rate),
+ 	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_range_round_rate),
++	KUNIT_CASE(clk_test_orphan_transparent_multiple_parent_mux_set_range_set_parent_get_rate),
+ 	{}
+ };
+ 

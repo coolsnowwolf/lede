@@ -1,0 +1,393 @@
+--- a/core.c
++++ b/core.c
+@@ -706,7 +706,7 @@ static void mwl_chnl_switch_event(struct
+ 		vif = container_of((void *)mwl_vif, struct ieee80211_vif,
+ 				   drv_priv);
+ 
+-		if (vif->csa_active)
++		if (vif->bss_conf.csa_active)
+ 			ieee80211_csa_finish(vif);
+ 	}
+ 	spin_unlock_bh(&priv->vif_lock);
+--- a/debugfs.c
++++ b/debugfs.c
+@@ -455,9 +455,9 @@ static ssize_t mwl_debugfs_vif_read(stru
+ 		switch (vif->type) {
+ 		case NL80211_IFTYPE_AP:
+ 			len += scnprintf(p + len, size - len, "type: ap\n");
+-			memcpy(ssid, vif->bss_conf.ssid,
+-			       vif->bss_conf.ssid_len);
+-			ssid[vif->bss_conf.ssid_len] = 0;
++			memcpy(ssid, vif->cfg.ssid,
++			       vif->cfg.ssid_len);
++			ssid[vif->cfg.ssid_len] = 0;
+ 			len += scnprintf(p + len, size - len,
+ 					 "ssid: %s\n", ssid);
+ 			len += scnprintf(p + len, size - len,
+@@ -479,8 +479,8 @@ static ssize_t mwl_debugfs_vif_read(stru
+ 					 "type: unknown\n");
+ 			break;
+ 		}
+-		if (vif->chanctx_conf) {
+-			chan_def = &vif->chanctx_conf->def;
++		if (vif->bss_conf.chanctx_conf) {
++			chan_def = &vif->bss_conf.chanctx_conf->def;
+ 			len += scnprintf(p + len, size - len,
+ 					 "channel: %d: width: %d\n",
+ 					 chan_def->chan->hw_value,
+@@ -564,28 +564,28 @@ static ssize_t mwl_debugfs_sta_read(stru
+ 					 "amsdu cap: 0x%02x\n",
+ 					 sta_info->amsdu_ctrl.cap);
+ 		}
+-		if (sta->ht_cap.ht_supported) {
++		if (sta->deflink.ht_cap.ht_supported) {
+ 			len += scnprintf(p + len, size - len,
+ 					 "ht_cap: 0x%04x, ampdu: %02x, %02x\n",
+-					 sta->ht_cap.cap,
+-					 sta->ht_cap.ampdu_factor,
+-					 sta->ht_cap.ampdu_density);
++					 sta->deflink.ht_cap.cap,
++					 sta->deflink.ht_cap.ampdu_factor,
++					 sta->deflink.ht_cap.ampdu_density);
+ 			len += scnprintf(p + len, size - len,
+ 					 "rx_mask: 0x%02x, %02x, %02x, %02x\n",
+-					 sta->ht_cap.mcs.rx_mask[0],
+-					 sta->ht_cap.mcs.rx_mask[1],
+-					 sta->ht_cap.mcs.rx_mask[2],
+-					 sta->ht_cap.mcs.rx_mask[3]);
++					 sta->deflink.ht_cap.mcs.rx_mask[0],
++					 sta->deflink.ht_cap.mcs.rx_mask[1],
++					 sta->deflink.ht_cap.mcs.rx_mask[2],
++					 sta->deflink.ht_cap.mcs.rx_mask[3]);
+ 		}
+-		if (sta->vht_cap.vht_supported) {
++		if (sta->deflink.vht_cap.vht_supported) {
+ 			len += scnprintf(p + len, size - len,
+ 					 "vht_cap: 0x%08x, mcs: %02x, %02x\n",
+-					 sta->vht_cap.cap,
+-					 sta->vht_cap.vht_mcs.rx_mcs_map,
+-					 sta->vht_cap.vht_mcs.tx_mcs_map);
++					 sta->deflink.vht_cap.cap,
++					 sta->deflink.vht_cap.vht_mcs.rx_mcs_map,
++					 sta->deflink.vht_cap.vht_mcs.tx_mcs_map);
+ 		}
+ 		len += scnprintf(p + len, size - len, "rx_bw: %d, rx_nss: %d\n",
+-				 sta->bandwidth, sta->rx_nss);
++				 sta->deflink.bandwidth, sta->deflink.rx_nss);
+ 		len += scnprintf(p + len, size - len,
+ 				 "tdls: %d, tdls_init: %d\n",
+ 				 sta->tdls, sta->tdls_initiator);
+--- a/hif/fwcmd.c
++++ b/hif/fwcmd.c
+@@ -634,8 +634,9 @@ einval:
+ 
+ static int mwl_fwcmd_set_ap_beacon(struct mwl_priv *priv,
+ 				   struct mwl_vif *mwl_vif,
+-				   struct ieee80211_bss_conf *bss_conf)
++				   struct ieee80211_vif *vif)
+ {
++	struct ieee80211_bss_conf *bss_conf = &vif->bss_conf;
+ 	struct hostcmd_cmd_ap_beacon *pcmd;
+ 	struct ds_params *phy_ds_param_set;
+ 
+@@ -664,7 +665,7 @@ static int mwl_fwcmd_set_ap_beacon(struc
+ 	pcmd->cmd_hdr.macid = mwl_vif->macid;
+ 
+ 	ether_addr_copy(pcmd->start_cmd.sta_mac_addr, mwl_vif->bssid);
+-	memcpy(pcmd->start_cmd.ssid, bss_conf->ssid, bss_conf->ssid_len);
++	memcpy(pcmd->start_cmd.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
+ 	if (priv->chip_type == MWL8997)
+ 		ether_addr_copy(pcmd->start_cmd.bssid, mwl_vif->bssid);
+ 	pcmd->start_cmd.bss_type = 1;
+@@ -2091,7 +2092,7 @@ int mwl_fwcmd_set_beacon(struct ieee8021
+ 	if (mwl_fwcmd_set_wsc_ie(hw, b_inf->ie_wsc_len, b_inf->ie_wsc_ptr))
+ 		goto err;
+ 
+-	if (mwl_fwcmd_set_ap_beacon(priv, mwl_vif, &vif->bss_conf))
++	if (mwl_fwcmd_set_ap_beacon(priv, mwl_vif, vif))
+ 		goto err;
+ 
+ 	if (b_inf->cap_info & WLAN_CAPABILITY_SPECTRUM_MGMT)
+@@ -2153,38 +2154,38 @@ int mwl_fwcmd_set_new_stn_add(struct iee
+ 	ether_addr_copy(pcmd->mac_addr, sta->addr);
+ 
+ 	if (hw->conf.chandef.chan->band == NL80211_BAND_2GHZ)
+-		rates = sta->supp_rates[NL80211_BAND_2GHZ];
++		rates = sta->deflink.supp_rates[NL80211_BAND_2GHZ];
+ 	else
+-		rates = sta->supp_rates[NL80211_BAND_5GHZ] << 5;
++		rates = sta->deflink.supp_rates[NL80211_BAND_5GHZ] << 5;
+ 	pcmd->peer_info.legacy_rate_bitmap = cpu_to_le32(rates);
+ 
+-	if (sta->ht_cap.ht_supported) {
++	if (sta->deflink.ht_cap.ht_supported) {
+ 		int i;
+ 
+ 		for (i = 0; i < 4; i++) {
+-			if (i < sta->rx_nss) {
++			if (i < sta->deflink.rx_nss) {
+ 				pcmd->peer_info.ht_rates[i] =
+-					sta->ht_cap.mcs.rx_mask[i];
++					sta->deflink.ht_cap.mcs.rx_mask[i];
+ 			} else {
+ 				pcmd->peer_info.ht_rates[i] = 0;
+ 			}
+ 		}
+-		pcmd->peer_info.ht_cap_info = cpu_to_le16(sta->ht_cap.cap);
++		pcmd->peer_info.ht_cap_info = cpu_to_le16(sta->deflink.ht_cap.cap);
+ 		pcmd->peer_info.mac_ht_param_info =
+-			(sta->ht_cap.ampdu_factor & 3) |
+-			((sta->ht_cap.ampdu_density & 7) << 2);
++			(sta->deflink.ht_cap.ampdu_factor & 3) |
++			((sta->deflink.ht_cap.ampdu_density & 7) << 2);
+ 	}
+ 
+-	if (sta->vht_cap.vht_supported) {
++	if (sta->deflink.vht_cap.vht_supported) {
+ 		u32 rx_mcs_map_mask = 0;
+ 
+-		rx_mcs_map_mask = ((0x0000FFFF) >> (sta->rx_nss * 2))
+-			<< (sta->rx_nss * 2);
++		rx_mcs_map_mask = ((0x0000FFFF) >> (sta->deflink.rx_nss * 2))
++			<< (sta->deflink.rx_nss * 2);
+ 		pcmd->peer_info.vht_max_rx_mcs =
+ 			cpu_to_le32((*((u32 *)
+-			&sta->vht_cap.vht_mcs.rx_mcs_map)) | rx_mcs_map_mask);
+-		pcmd->peer_info.vht_cap = cpu_to_le32(sta->vht_cap.cap);
+-		pcmd->peer_info.vht_rx_channel_width = sta->bandwidth;
++			&sta->deflink.vht_cap.vht_mcs.rx_mcs_map)) | rx_mcs_map_mask);
++		pcmd->peer_info.vht_cap = cpu_to_le32(sta->deflink.vht_cap.cap);
++		pcmd->peer_info.vht_rx_channel_width = sta->deflink.bandwidth;
+ 	}
+ 
+ 	pcmd->is_qos_sta = sta->wme;
+@@ -2240,38 +2241,38 @@ int mwl_fwcmd_set_new_stn_add_sc4(struct
+ 	ether_addr_copy(pcmd->mac_addr, sta->addr);
+ 
+ 	if (hw->conf.chandef.chan->band == NL80211_BAND_2GHZ)
+-		rates = sta->supp_rates[NL80211_BAND_2GHZ];
++		rates = sta->deflink.supp_rates[NL80211_BAND_2GHZ];
+ 	else
+-		rates = sta->supp_rates[NL80211_BAND_5GHZ] << 5;
++		rates = sta->deflink.supp_rates[NL80211_BAND_5GHZ] << 5;
+ 	pcmd->peer_info.legacy_rate_bitmap = cpu_to_le32(rates);
+ 
+-	if (sta->ht_cap.ht_supported) {
++	if (sta->deflink.ht_cap.ht_supported) {
+ 		int i;
+ 
+ 		for (i = 0; i < 4; i++) {
+-			if (i < sta->rx_nss) {
++			if (i < sta->deflink.rx_nss) {
+ 				pcmd->peer_info.ht_rates[i] =
+-					sta->ht_cap.mcs.rx_mask[i];
++					sta->deflink.ht_cap.mcs.rx_mask[i];
+ 			} else {
+ 				pcmd->peer_info.ht_rates[i] = 0;
+ 			}
+ 		}
+-		pcmd->peer_info.ht_cap_info = cpu_to_le16(sta->ht_cap.cap);
++		pcmd->peer_info.ht_cap_info = cpu_to_le16(sta->deflink.ht_cap.cap);
+ 		pcmd->peer_info.mac_ht_param_info =
+-			(sta->ht_cap.ampdu_factor & 3) |
+-			((sta->ht_cap.ampdu_density & 7) << 2);
++			(sta->deflink.ht_cap.ampdu_factor & 3) |
++			((sta->deflink.ht_cap.ampdu_density & 7) << 2);
+ 	}
+ 
+-	if (sta->vht_cap.vht_supported) {
++	if (sta->deflink.vht_cap.vht_supported) {
+ 		u32 rx_mcs_map_mask = 0;
+ 
+-		rx_mcs_map_mask = ((0x0000FFFF) >> (sta->rx_nss * 2))
+-			<< (sta->rx_nss * 2);
++		rx_mcs_map_mask = ((0x0000FFFF) >> (sta->deflink.rx_nss * 2))
++			<< (sta->deflink.rx_nss * 2);
+ 		pcmd->peer_info.vht_max_rx_mcs =
+ 			cpu_to_le32((*((u32 *)
+-			&sta->vht_cap.vht_mcs.rx_mcs_map)) | rx_mcs_map_mask);
+-		pcmd->peer_info.vht_cap = cpu_to_le32(sta->vht_cap.cap);
+-		pcmd->peer_info.vht_rx_channel_width = sta->bandwidth;
++			&sta->deflink.vht_cap.vht_mcs.rx_mcs_map)) | rx_mcs_map_mask);
++		pcmd->peer_info.vht_cap = cpu_to_le32(sta->deflink.vht_cap.cap);
++		pcmd->peer_info.vht_rx_channel_width = sta->deflink.bandwidth;
+ 	}
+ 
+ 	pcmd->is_qos_sta = sta->wme;
+@@ -2788,9 +2789,9 @@ int mwl_fwcmd_create_ba(struct ieee80211
+ 	pcmd->ba_info.create_params.flags = cpu_to_le32(ba_flags);
+ 	pcmd->ba_info.create_params.queue_id = stream->idx;
+ 	pcmd->ba_info.create_params.param_info =
+-		(stream->sta->ht_cap.ampdu_factor &
++		(stream->sta->deflink.ht_cap.ampdu_factor &
+ 		 IEEE80211_HT_AMPDU_PARM_FACTOR) |
+-		((stream->sta->ht_cap.ampdu_density << 2) &
++		((stream->sta->deflink.ht_cap.ampdu_density << 2) &
+ 		 IEEE80211_HT_AMPDU_PARM_DENSITY);
+ 	if (direction == BA_FLAG_DIRECTION_UP) {
+ 		pcmd->ba_info.create_params.reset_seq_no = 0;
+@@ -2800,9 +2801,9 @@ int mwl_fwcmd_create_ba(struct ieee80211
+ 		pcmd->ba_info.create_params.current_seq = cpu_to_le16(0);
+ 	}
+ 	if (priv->chip_type == MWL8964 &&
+-	    stream->sta->vht_cap.vht_supported) {
++	    stream->sta->deflink.vht_cap.vht_supported) {
+ 		pcmd->ba_info.create_params.vht_rx_factor =
+-			cpu_to_le32((stream->sta->vht_cap.cap  &
++			cpu_to_le32((stream->sta->deflink.vht_cap.cap  &
+ 			IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
+ 			IEEE80211_VHT_CAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT);
+ 	}
+--- a/mac80211.c
++++ b/mac80211.c
+@@ -371,15 +371,15 @@ static void mwl_mac80211_bss_info_change
+ 		}
+ 	}
+ 
+-	if ((changed & BSS_CHANGED_ASSOC) && vif->bss_conf.assoc)
++	if ((changed & BSS_CHANGED_ASSOC) && vif->cfg.assoc)
+ 		mwl_fwcmd_set_aid(hw, vif, (u8 *)vif->bss_conf.bssid,
+-				  vif->bss_conf.aid);
++				  vif->cfg.aid);
+ }
+ 
+ static void mwl_mac80211_bss_info_changed_ap(struct ieee80211_hw *hw,
+ 					     struct ieee80211_vif *vif,
+ 					     struct ieee80211_bss_conf *info,
+-					     u32 changed)
++					     u64 changed)
+ {
+ 	struct mwl_priv *priv = hw->priv;
+ 	struct mwl_vif *mwl_vif;
+@@ -429,8 +429,8 @@ static void mwl_mac80211_bss_info_change
+ 	if (changed & (BSS_CHANGED_BEACON_INT | BSS_CHANGED_BEACON)) {
+ 		struct sk_buff *skb;
+ 
+-		if ((info->ssid[0] != '\0') &&
+-		    (info->ssid_len != 0) &&
++		if ((vif->cfg.ssid[0] != '\0') &&
++		    (vif->cfg.ssid_len != 0) &&
+ 		    (!info->hidden_ssid)) {
+ 			if (mwl_vif->broadcast_ssid != true) {
+ 				mwl_fwcmd_broadcast_ssid_enable(hw, vif, true);
+@@ -444,7 +444,7 @@ static void mwl_mac80211_bss_info_change
+ 		}
+ 
+ 		if (!mwl_vif->set_beacon) {
+-			skb = ieee80211_beacon_get(hw, vif);
++			skb = ieee80211_beacon_get(hw, vif, 0);
+ 
+ 			if (skb) {
+ 				mwl_fwcmd_set_beacon(hw, vif, skb->data, skb->len);
+@@ -461,7 +461,7 @@ static void mwl_mac80211_bss_info_change
+ static void mwl_mac80211_bss_info_changed(struct ieee80211_hw *hw,
+ 					  struct ieee80211_vif *vif,
+ 					  struct ieee80211_bss_conf *info,
+-					  u32 changed)
++					  u64 changed)
+ {
+ 	switch (vif->type) {
+ 	case NL80211_IFTYPE_AP:
+@@ -584,10 +584,10 @@ static int mwl_mac80211_sta_add(struct i
+ 	if (vif->type == NL80211_IFTYPE_MESH_POINT)
+ 		sta_info->is_mesh_node = true;
+ 
+-	if (sta->ht_cap.ht_supported) {
++	if (sta->deflink.ht_cap.ht_supported) {
+ 		sta_info->is_ampdu_allowed = true;
+ 		sta_info->is_amsdu_allowed = false;
+-		if (sta->ht_cap.cap & IEEE80211_HT_CAP_MAX_AMSDU)
++		if (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_MAX_AMSDU)
+ 			sta_info->amsdu_ctrl.cap = MWL_AMSDU_SIZE_8K;
+ 		else
+ 			sta_info->amsdu_ctrl.cap = MWL_AMSDU_SIZE_4K;
+@@ -669,7 +669,7 @@ static int mwl_mac80211_sta_remove(struc
+ 
+ static int mwl_mac80211_conf_tx(struct ieee80211_hw *hw,
+ 				struct ieee80211_vif *vif,
+-				u16 queue,
++				unsigned int link_id, u16 queue,
+ 				const struct ieee80211_tx_queue_params *params)
+ {
+ 	struct mwl_priv *priv = hw->priv;
+@@ -928,4 +928,5 @@ const struct ieee80211_ops mwl_mac80211_
+ 	.pre_channel_switch = mwl_mac80211_chnl_switch,
+ 	.sw_scan_start      = mwl_mac80211_sw_scan_start,
+ 	.sw_scan_complete   = mwl_mac80211_sw_scan_complete,
++	.wake_tx_queue	    = ieee80211_handle_wake_tx_queue,
+ };
+--- a/utils.c
++++ b/utils.c
+@@ -173,9 +173,9 @@ u32 utils_get_init_tx_rate(struct mwl_pr
+ 	u32 tx_rate;
+ 	u16 format, nss, bw, rate_mcs;
+ 
+-	if (sta->vht_cap.vht_supported)
++	if (sta->deflink.vht_cap.vht_supported)
+ 		format = TX_RATE_FORMAT_11AC;
+-	else if (sta->ht_cap.ht_supported)
++	else if (sta->deflink.ht_cap.ht_supported)
+ 		format = TX_RATE_FORMAT_11N;
+ 	else
+ 		format = TX_RATE_FORMAT_LEGACY;
+@@ -192,11 +192,11 @@ u32 utils_get_init_tx_rate(struct mwl_pr
+ 		nss = 3;
+ 		break;
+ 	default:
+-		nss = sta->rx_nss;
++		nss = sta->deflink.rx_nss;
+ 		break;
+ 	}
+-	if (nss > sta->rx_nss)
+-		nss = sta->rx_nss;
++	if (nss > sta->deflink.rx_nss)
++		nss = sta->deflink.rx_nss;
+ 
+ 	switch (conf->chandef.width) {
+ 	case NL80211_CHAN_WIDTH_20_NOHT:
+@@ -213,11 +213,11 @@ u32 utils_get_init_tx_rate(struct mwl_pr
+ 		bw = TX_RATE_BANDWIDTH_160;
+ 		break;
+ 	default:
+-		bw = sta->bandwidth;
++		bw = sta->deflink.bandwidth;
+ 		break;
+ 	}
+-	if (bw > sta->bandwidth)
+-		bw = sta->bandwidth;
++	if (bw > sta->deflink.bandwidth)
++		bw = sta->deflink.bandwidth;
+ 
+ 	switch (format) {
+ 	case TX_RATE_FORMAT_LEGACY:
+--- a/hif/pcie/tx.c
++++ b/hif/pcie/tx.c
+@@ -153,7 +153,7 @@ static int pcie_txbd_ring_create(struct
+ 	wiphy_info(priv->hw->wiphy,
+ 		   "TX ring: - base: %p, pbase: 0x%x, len: %d\n",
+ 		   pcie_priv->txbd_ring_vbase,
+-		   pcie_priv->txbd_ring_pbase,
++		   (u32)pcie_priv->txbd_ring_pbase,
+ 		   pcie_priv->txbd_ring_size);
+ 
+ 	for (num = 0; num < PCIE_MAX_TXRX_BD; num++) {
+@@ -1091,7 +1091,7 @@ void pcie_tx_xmit(struct ieee80211_hw *h
+ 	index = SYSADPT_TX_WMM_QUEUES - index - 1;
+ 	txpriority = index;
+ 
+-	if (sta && sta->ht_cap.ht_supported && !eapol_frame &&
++	if (sta && sta->deflink.ht_cap.ht_supported && !eapol_frame &&
+ 	    ieee80211_is_data_qos(wh->frame_control)) {
+ 		tid = qos & 0xf;
+ 		pcie_tx_count_packet(sta, tid);
+--- a/hif/pcie/tx_ndp.c
++++ b/hif/pcie/tx_ndp.c
+@@ -602,7 +602,7 @@ void pcie_tx_xmit_ndp(struct ieee80211_h
+ 		pcie_tx_encapsulate_frame(priv, skb, k_conf, NULL);
+ 	} else {
+ 		tid = qos & 0x7;
+-		if (sta && sta->ht_cap.ht_supported && !eapol_frame &&
++		if (sta && sta->deflink.ht_cap.ht_supported && !eapol_frame &&
+ 		    qos != 0xFFFF) {
+ 			pcie_tx_count_packet(sta, tid);
+ 			spin_lock_bh(&priv->stream_lock);

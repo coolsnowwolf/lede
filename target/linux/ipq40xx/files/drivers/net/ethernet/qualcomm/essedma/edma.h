@@ -324,7 +324,6 @@ struct edma_common_info {
 	u32 from_cpu; /* from CPU TPD field */
 	u32 num_rxq_per_core; /* Rx queues per core */
 	u32 num_txq_per_core; /* Tx queues per core */
-	u32 num_txq_per_core_netdev; /* Tx queues per core per netdev */
 	u16 tx_ring_count; /* Tx ring count */
 	u16 rx_ring_count; /* Rx ring*/
 	u16 rx_head_buffer_len; /* rx buffer length */
@@ -332,7 +331,7 @@ struct edma_common_info {
 	u32 page_mode; /* Jumbo frame supported flag */
 	u32 fraglist_mode; /* fraglist supported flag */
 	struct edma_hw hw; /* edma hw specific structure */
-	struct edma_per_cpu_queues_info edma_percpu_info[EDMA_CPU_CORES_SUPPORTED]; /* per cpu information */
+	struct edma_per_cpu_queues_info edma_percpu_info[CONFIG_NR_CPUS]; /* per cpu information */
 	spinlock_t stats_lock; /* protect edma stats area for updation */
 	struct timer_list edma_stats_timer;
 	bool is_single_phy;
@@ -402,7 +401,7 @@ struct edma_adapter {
 	u32 link_state; /* phy link state */
 	u32 phy_mdio_addr; /* PHY device address on MII interface */
 	u32 poll_required; /* check if link polling is required */
-	u32 tx_start_offset[EDMA_CPU_CORES_SUPPORTED]; /* tx queue start */
+	u32 tx_start_offset[CONFIG_NR_CPUS]; /* tx queue start */
 	u32 default_vlan_tag; /* vlan tag */
 	u32 dp_bitmap;
 	uint8_t phy_id[MII_BUS_ID_SIZE + 3];

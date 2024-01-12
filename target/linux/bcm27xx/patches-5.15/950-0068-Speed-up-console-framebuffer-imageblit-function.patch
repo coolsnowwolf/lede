@@ -1,0 +1,209 @@
+From 784d9bd9e4fecb27ceb3a0d0375dc13d1f35e44c Mon Sep 17 00:00:00 2001
+From: Harm Hanemaaijer <fgenfb@yahoo.com>
+Date: Thu, 20 Jun 2013 20:21:39 +0200
+Subject: [PATCH] Speed up console framebuffer imageblit function
+
+Especially on platforms with a slower CPU but a relatively high
+framebuffer fill bandwidth, like current ARM devices, the existing
+console monochrome imageblit function used to draw console text is
+suboptimal for common pixel depths such as 16bpp and 32bpp. The existing
+code is quite general and can deal with several pixel depths. By creating
+special case functions for 16bpp and 32bpp, by far the most common pixel
+formats used on modern systems, a significant speed-up is attained
+which can be readily felt on ARM-based devices like the Raspberry Pi
+and the Allwinner platform, but should help any platform using the
+fb layer.
+
+The special case functions allow constant folding, eliminating a number
+of instructions including divide operations, and allow the use of an
+unrolled loop, eliminating instructions with a variable shift size,
+reducing source memory access instructions, and eliminating excessive
+branching. These unrolled loops also allow much better code optimization
+by the C compiler. The code that selects which optimized variant is used
+is also simplified, eliminating integer divide instructions.
+
+The speed-up, measured by timing 'cat file.txt' in the console, varies
+between 40% and 70%, when testing on the Raspberry Pi and Allwinner
+ARM-based platforms, depending on font size and the pixel depth, with
+the greater benefit for 32bpp.
+
+Signed-off-by: Harm Hanemaaijer <fgenfb@yahoo.com>
+---
+ drivers/video/fbdev/core/cfbimgblt.c | 152 ++++++++++++++++++++++++++-
+ 1 file changed, 147 insertions(+), 5 deletions(-)
+
+--- a/drivers/video/fbdev/core/cfbimgblt.c
++++ b/drivers/video/fbdev/core/cfbimgblt.c
+@@ -28,6 +28,11 @@
+  *
+  *  Also need to add code to deal with cards endians that are different than
+  *  the native cpu endians. I also need to deal with MSB position in the word.
++ *  Modified by Harm Hanemaaijer (fgenfb@yahoo.com) 2013:
++ *  - Provide optimized versions of fast_imageblit for 16 and 32bpp that are
++ *    significantly faster than the previous implementation.
++ *  - Simplify the fast/slow_imageblit selection code, avoiding integer
++ *    divides.
+  */
+ #include <linux/module.h>
+ #include <linux/string.h>
+@@ -262,6 +267,133 @@ static inline void fast_imageblit(const
+ 	}
+ }	
+ 	
++/*
++ * Optimized fast_imageblit for bpp == 16. ppw = 2, bit_mask = 3 folded
++ * into the code, main loop unrolled.
++ */
++
++static inline void fast_imageblit16(const struct fb_image *image,
++				    struct fb_info *p, u8 __iomem * dst1,
++				    u32 fgcolor, u32 bgcolor)
++{
++	u32 fgx = fgcolor, bgx = bgcolor;
++	u32 spitch = (image->width + 7) / 8;
++	u32 end_mask, eorx;
++	const char *s = image->data, *src;
++	u32 __iomem *dst;
++	const u32 *tab = NULL;
++	int i, j, k;
++
++	tab = fb_be_math(p) ? cfb_tab16_be : cfb_tab16_le;
++
++	fgx <<= 16;
++	bgx <<= 16;
++	fgx |= fgcolor;
++	bgx |= bgcolor;
++
++	eorx = fgx ^ bgx;
++	k = image->width / 2;
++
++	for (i = image->height; i--;) {
++		dst = (u32 __iomem *) dst1;
++		src = s;
++
++		j = k;
++		while (j >= 4) {
++			u8 bits = *src;
++			end_mask = tab[(bits >> 6) & 3];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 4) & 3];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 2) & 3];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[bits & 3];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			src++;
++			j -= 4;
++		}
++		if (j != 0) {
++			u8 bits = *src;
++			end_mask = tab[(bits >> 6) & 3];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			if (j >= 2) {
++				end_mask = tab[(bits >> 4) & 3];
++				FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++				if (j == 3) {
++					end_mask = tab[(bits >> 2) & 3];
++					FB_WRITEL((end_mask & eorx) ^ bgx, dst);
++				}
++			}
++		}
++		dst1 += p->fix.line_length;
++		s += spitch;
++	}
++}
++
++/*
++ * Optimized fast_imageblit for bpp == 32. ppw = 1, bit_mask = 1 folded
++ * into the code, main loop unrolled.
++ */
++
++static inline void fast_imageblit32(const struct fb_image *image,
++				    struct fb_info *p, u8 __iomem * dst1,
++				    u32 fgcolor, u32 bgcolor)
++{
++	u32 fgx = fgcolor, bgx = bgcolor;
++	u32 spitch = (image->width + 7) / 8;
++	u32 end_mask, eorx;
++	const char *s = image->data, *src;
++	u32 __iomem *dst;
++	const u32 *tab = NULL;
++	int i, j, k;
++
++	tab = cfb_tab32;
++
++	eorx = fgx ^ bgx;
++	k = image->width;
++
++	for (i = image->height; i--;) {
++		dst = (u32 __iomem *) dst1;
++		src = s;
++
++		j = k;
++		while (j >= 8) {
++			u8 bits = *src;
++			end_mask = tab[(bits >> 7) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 6) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 5) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 4) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 3) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 2) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[(bits >> 1) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			end_mask = tab[bits & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++			src++;
++			j -= 8;
++		}
++		if (j != 0) {
++			u32 bits = (u32) * src;
++			while (j > 1) {
++				end_mask = tab[(bits >> 7) & 1];
++				FB_WRITEL((end_mask & eorx) ^ bgx, dst++);
++				bits <<= 1;
++				j--;
++			}
++			end_mask = tab[(bits >> 7) & 1];
++			FB_WRITEL((end_mask & eorx) ^ bgx, dst);
++		}
++		dst1 += p->fix.line_length;
++		s += spitch;
++	}
++}
++
+ void cfb_imageblit(struct fb_info *p, const struct fb_image *image)
+ {
+ 	u32 fgcolor, bgcolor, start_index, bitstart, pitch_index = 0;
+@@ -294,11 +426,21 @@ void cfb_imageblit(struct fb_info *p, co
+ 			bgcolor = image->bg_color;
+ 		}	
+ 		
+-		if (32 % bpp == 0 && !start_index && !pitch_index && 
+-		    ((width & (32/bpp-1)) == 0) &&
+-		    bpp >= 8 && bpp <= 32) 			
+-			fast_imageblit(image, p, dst1, fgcolor, bgcolor);
+-		else 
++		if (!start_index && !pitch_index) {
++			if (bpp == 32)
++				fast_imageblit32(image, p, dst1, fgcolor,
++						 bgcolor);
++			else if (bpp == 16 && (width & 1) == 0)
++				fast_imageblit16(image, p, dst1, fgcolor,
++						 bgcolor);
++			else if (bpp == 8 && (width & 3) == 0)
++				fast_imageblit(image, p, dst1, fgcolor,
++					       bgcolor);
++			else
++				slow_imageblit(image, p, dst1, fgcolor,
++					       bgcolor,
++					       start_index, pitch_index);
++		} else
+ 			slow_imageblit(image, p, dst1, fgcolor, bgcolor,
+ 					start_index, pitch_index);
+ 	} else

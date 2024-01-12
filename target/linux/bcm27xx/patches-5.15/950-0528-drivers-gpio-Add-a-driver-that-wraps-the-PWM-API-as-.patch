@@ -1,0 +1,192 @@
+From cc09cd9804f681ae3efec1832f2be890d9be467d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 14 Oct 2021 11:09:18 +0100
+Subject: [PATCH] drivers/gpio: Add a driver that wraps the PWM API as
+ a GPIO controller
+
+For cases where spare PWM outputs are available, but are desired
+to be addressed a standard outputs instead.
+Wraps a PWM channel as a new GPIO chip with the one output.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpio/Kconfig    |   8 +++
+ drivers/gpio/Makefile   |   1 +
+ drivers/gpio/gpio-pwm.c | 144 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 153 insertions(+)
+ create mode 100644 drivers/gpio/gpio-pwm.c
+
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -485,6 +485,14 @@ config GPIO_PMIC_EIC_SPRD
+ 	help
+ 	  Say yes here to support Spreadtrum PMIC EIC device.
+ 
++config GPIO_PWM
++	tristate "PWM chip GPIO"
++	depends on OF_GPIO
++	depends on PWM
++	help
++	  Turn on support for exposing a PWM chip as a GPIO
++	  driver.
++
+ config GPIO_PXA
+ 	bool "PXA GPIO support"
+ 	depends on ARCH_PXA || ARCH_MMP || COMPILE_TEST
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -122,6 +122,7 @@ obj-$(CONFIG_GPIO_PCI_IDIO_16)		+= gpio-
+ obj-$(CONFIG_GPIO_PISOSR)		+= gpio-pisosr.o
+ obj-$(CONFIG_GPIO_PL061)		+= gpio-pl061.o
+ obj-$(CONFIG_GPIO_PMIC_EIC_SPRD)	+= gpio-pmic-eic-sprd.o
++obj-$(CONFIG_GPIO_PWM)			+= gpio-pwm.o
+ obj-$(CONFIG_GPIO_PXA)			+= gpio-pxa.o
+ obj-$(CONFIG_GPIO_RASPBERRYPI_EXP)	+= gpio-raspberrypi-exp.o
+ obj-$(CONFIG_GPIO_RC5T583)		+= gpio-rc5t583.o
+--- /dev/null
++++ b/drivers/gpio/gpio-pwm.c
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * GPIO driver wrapping PWM API
++ *
++ * PWM 0% and PWM 100% are equivalent to digital GPIO
++ * outputs, and there are times where it is useful to use
++ * PWM outputs as straight GPIOs (eg outputs of NXP PCA9685
++ * I2C PWM chip). This driver wraps the PWM API as a GPIO
++ * controller.
++ *
++ * Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
++ */
++
++#include <linux/err.h>
++#include <linux/gpio/driver.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/pwm.h>
++
++struct pwm_gpio {
++	struct gpio_chip gc;
++	struct pwm_device **pwm;
++};
++
++static int pwm_gpio_get_direction(struct gpio_chip *gc, unsigned int off)
++{
++	return GPIO_LINE_DIRECTION_OUT;
++}
++
++static void pwm_gpio_set(struct gpio_chip *gc, unsigned int off, int val)
++{
++	struct pwm_gpio *pwm_gpio = gpiochip_get_data(gc);
++	struct pwm_state state;
++
++	pwm_get_state(pwm_gpio->pwm[off], &state);
++	state.duty_cycle = val ? state.period : 0;
++	pwm_apply_state(pwm_gpio->pwm[off], &state);
++}
++
++static int pwm_gpio_parse_dt(struct pwm_gpio *pwm_gpio,
++			     struct device *dev)
++{
++	struct device_node *node = dev->of_node;
++	struct pwm_state state;
++	int ret = 0, i, num_gpios;
++	const char *pwm_name;
++
++	if (!node)
++		return -ENODEV;
++
++	num_gpios = of_property_count_strings(node, "pwm-names");
++	if (num_gpios <= 0)
++		return 0;
++
++	pwm_gpio->pwm = devm_kzalloc(dev,
++				     sizeof(*pwm_gpio->pwm) * num_gpios,
++				     GFP_KERNEL);
++	if (!pwm_gpio->pwm)
++		return -ENOMEM;
++
++	for (i = 0; i < num_gpios; i++) {
++		ret = of_property_read_string_index(node, "pwm-names", i,
++						    &pwm_name);
++		if (ret) {
++			dev_err(dev, "unable to get pwm device index %d, name %s",
++				i, pwm_name);
++			goto error;
++		}
++
++		pwm_gpio->pwm[i] = devm_pwm_get(dev, pwm_name);
++		if (IS_ERR(pwm_gpio->pwm[i])) {
++			ret = PTR_ERR(pwm_gpio->pwm[i]);
++			if (ret != -EPROBE_DEFER)
++				dev_err(dev, "unable to request PWM\n");
++			goto error;
++		}
++
++		/* Sync up PWM state. */
++		pwm_init_state(pwm_gpio->pwm[i], &state);
++
++		state.duty_cycle = 0;
++		pwm_apply_state(pwm_gpio->pwm[i], &state);
++	}
++
++	pwm_gpio->gc.ngpio = num_gpios;
++
++error:
++	return ret;
++}
++
++static int pwm_gpio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct pwm_gpio *pwm_gpio;
++	int ret;
++
++	pwm_gpio = devm_kzalloc(dev, sizeof(*pwm_gpio), GFP_KERNEL);
++	if (!pwm_gpio)
++		return -ENOMEM;
++
++	pwm_gpio->gc.parent = dev;
++	pwm_gpio->gc.label = "pwm-gpio";
++	pwm_gpio->gc.owner = THIS_MODULE;
++	pwm_gpio->gc.of_node = dev->of_node;
++	pwm_gpio->gc.base = -1;
++
++	pwm_gpio->gc.get_direction = pwm_gpio_get_direction;
++	pwm_gpio->gc.set = pwm_gpio_set;
++	pwm_gpio->gc.can_sleep = true;
++
++	ret = pwm_gpio_parse_dt(pwm_gpio, dev);
++	if (ret)
++		return ret;
++
++	if (!pwm_gpio->gc.ngpio)
++		return 0;
++
++	return devm_gpiochip_add_data(dev, &pwm_gpio->gc, pwm_gpio);
++}
++
++static int pwm_gpio_remove(struct platform_device *pdev)
++{
++	return 0;
++}
++
++static const struct of_device_id pwm_gpio_of_match[] = {
++	{ .compatible = "pwm-gpio" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pwm_gpio_of_match);
++
++static struct platform_driver pwm_gpio_driver = {
++	.driver	= {
++		.name		= "pwm-gpio",
++		.of_match_table	= of_match_ptr(pwm_gpio_of_match),
++	},
++	.probe	= pwm_gpio_probe,
++	.remove	= pwm_gpio_remove,
++};
++module_platform_driver(pwm_gpio_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("PWM GPIO driver");

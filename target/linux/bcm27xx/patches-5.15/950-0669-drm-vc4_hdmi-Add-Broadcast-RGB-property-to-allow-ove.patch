@@ -1,0 +1,222 @@
+From b6cf78ca0773f54074da8dc3401b9f52aec2e27e Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 8 Apr 2020 16:12:02 +0100
+Subject: [PATCH] drm/vc4_hdmi: Add Broadcast RGB property to allow
+ override of RGB range
+
+Copy Intel's "Broadcast RGB" property semantics to add manual override
+of the HDMI pixel range for monitors that don't abide by the content
+of the AVI Infoframe.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 103 +++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  15 +++++
+ 2 files changed, 118 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -57,6 +57,14 @@
+ #include "vc4_hdmi_regs.h"
+ #include "vc4_regs.h"
+ 
++/*
++ * "Broadcast RGB" property.
++ * Allows overriding of HDMI full or limited range RGB
++ */
++#define VC4_BROADCAST_RGB_AUTO 0
++#define VC4_BROADCAST_RGB_FULL 1
++#define VC4_BROADCAST_RGB_LIMITED 2
++
+ #define VC5_HDMI_HORZA_HFP_SHIFT		16
+ #define VC5_HDMI_HORZA_HFP_MASK			VC4_MASK(28, 16)
+ #define VC5_HDMI_HORZA_VPOS			BIT(15)
+@@ -136,6 +144,10 @@ static bool vc4_hdmi_is_full_range_rgb(s
+ {
+ 	struct vc4_hdmi_encoder *vc4_encoder = &vc4_hdmi->encoder;
+ 
++	if (vc4_hdmi->broadcast_rgb == VC4_BROADCAST_RGB_LIMITED)
++		return false;
++	else if (vc4_hdmi->broadcast_rgb == VC4_BROADCAST_RGB_FULL)
++		return true;
+ 	return !vc4_encoder->hdmi_monitor ||
+ 		drm_default_rgb_quant_range(mode) == HDMI_QUANTIZATION_RANGE_FULL;
+ }
+@@ -342,6 +354,65 @@ static int vc4_hdmi_connector_atomic_che
+ 	return 0;
+ }
+ 
++/**
++ * vc4_hdmi_connector_atomic_get_property - hook for
++ *						connector->atomic_get_property.
++ * @connector: Connector to get the property for.
++ * @state: Connector state to retrieve the property from.
++ * @property: Property to retrieve.
++ * @val: Return value for the property.
++ *
++ * Returns the atomic property value for a digital connector.
++ */
++int vc4_hdmi_connector_get_property(struct drm_connector *connector,
++				    const struct drm_connector_state *state,
++				    struct drm_property *property,
++				    uint64_t *val)
++{
++	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++	const struct vc4_hdmi_connector_state *vc4_conn_state =
++				const_conn_state_to_vc4_hdmi_conn_state(state);
++
++	if (property == vc4_hdmi->broadcast_rgb_property) {
++		*val = vc4_conn_state->broadcast_rgb;
++	} else {
++		DRM_DEBUG_ATOMIC("Unknown property [PROP:%d:%s]\n",
++				 property->base.id, property->name);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++/**
++ * vc4_hdmi_connector_atomic_set_property - hook for
++ *						connector->atomic_set_property.
++ * @connector: Connector to set the property for.
++ * @state: Connector state to set the property on.
++ * @property: Property to set.
++ * @val: New value for the property.
++ *
++ * Sets the atomic property value for a digital connector.
++ */
++int vc4_hdmi_connector_set_property(struct drm_connector *connector,
++				    struct drm_connector_state *state,
++				    struct drm_property *property,
++				    uint64_t val)
++{
++	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++	struct vc4_hdmi_connector_state *vc4_conn_state =
++				conn_state_to_vc4_hdmi_conn_state(state);
++
++	if (property == vc4_hdmi->broadcast_rgb_property) {
++		vc4_conn_state->broadcast_rgb = val;
++		return 0;
++	}
++
++	DRM_DEBUG_ATOMIC("Unknown property [PROP:%d:%s]\n",
++			 property->base.id, property->name);
++	return -EINVAL;
++}
++
+ static void vc4_hdmi_connector_reset(struct drm_connector *connector)
+ {
+ 	struct vc4_hdmi_connector_state *old_state =
+@@ -378,6 +449,7 @@ vc4_hdmi_connector_duplicate_state(struc
+ 	new_state->pixel_rate = vc4_state->pixel_rate;
+ 	new_state->output_bpc = vc4_state->output_bpc;
+ 	new_state->output_format = vc4_state->output_format;
++	new_state->broadcast_rgb = vc4_state->broadcast_rgb;
+ 	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
+ 
+ 	return &new_state->base;
+@@ -390,6 +462,8 @@ static const struct drm_connector_funcs
+ 	.reset = vc4_hdmi_connector_reset,
+ 	.atomic_duplicate_state = vc4_hdmi_connector_duplicate_state,
+ 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++	.atomic_get_property = vc4_hdmi_connector_get_property,
++	.atomic_set_property = vc4_hdmi_connector_set_property,
+ };
+ 
+ static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs = {
+@@ -397,6 +471,32 @@ static const struct drm_connector_helper
+ 	.atomic_check = vc4_hdmi_connector_atomic_check,
+ };
+ 
++static const struct drm_prop_enum_list broadcast_rgb_names[] = {
++	{ VC4_BROADCAST_RGB_AUTO, "Automatic" },
++	{ VC4_BROADCAST_RGB_FULL, "Full" },
++	{ VC4_BROADCAST_RGB_LIMITED, "Limited 16:235" },
++};
++
++static void
++vc4_hdmi_attach_broadcast_rgb_property(struct drm_device *dev,
++				       struct vc4_hdmi *vc4_hdmi)
++{
++	struct drm_property *prop = vc4_hdmi->broadcast_rgb_property;
++
++	if (!prop) {
++		prop = drm_property_create_enum(dev, DRM_MODE_PROP_ENUM,
++						"Broadcast RGB",
++						broadcast_rgb_names,
++						ARRAY_SIZE(broadcast_rgb_names));
++		if (!prop)
++			return;
++
++		vc4_hdmi->broadcast_rgb_property = prop;
++	}
++
++	drm_object_attach_property(&vc4_hdmi->connector.base, prop, 0);
++}
++
+ static int vc4_hdmi_connector_init(struct drm_device *dev,
+ 				   struct vc4_hdmi *vc4_hdmi)
+ {
+@@ -440,6 +540,8 @@ static int vc4_hdmi_connector_init(struc
+ 	if (vc4_hdmi->variant->supports_hdr)
+ 		drm_connector_attach_hdr_output_metadata_property(connector);
+ 
++	vc4_hdmi_attach_broadcast_rgb_property(dev, vc4_hdmi);
++
+ 	drm_connector_attach_encoder(connector, encoder);
+ 
+ 	return 0;
+@@ -1386,6 +1488,7 @@ static void vc4_hdmi_encoder_atomic_mode
+ 	mutex_lock(&vc4_hdmi->mutex);
+ 	vc4_hdmi->output_bpc = vc4_state->output_bpc;
+ 	vc4_hdmi->output_format = vc4_state->output_format;
++	vc4_hdmi->broadcast_rgb = vc4_state->broadcast_rgb;
+ 	memcpy(&vc4_hdmi->saved_adjusted_mode,
+ 	       &crtc_state->adjusted_mode,
+ 	       sizeof(vc4_hdmi->saved_adjusted_mode));
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -140,6 +140,8 @@ struct vc4_hdmi {
+ 
+ 	struct delayed_work scrambling_work;
+ 
++	struct drm_property *broadcast_rgb_property;
++
+ 	struct i2c_adapter *ddc;
+ 	void __iomem *hdmicore_regs;
+ 	void __iomem *hd_regs;
+@@ -240,6 +242,12 @@ struct vc4_hdmi {
+ 	 */
+ 	enum vc4_hdmi_output_format output_format;
+ 
++	/**
++	 * @broadcast_rgb: Copy of @vc4_connector_state.broadcast_rgb
++	 * for use outside of KMS hooks. Protected by @mutex.
++	 */
++	int broadcast_rgb;
++
+ 	/* VC5 debugfs regset */
+ 	struct debugfs_regset32 cec_regset;
+ 	struct debugfs_regset32 csc_regset;
+@@ -268,6 +276,7 @@ struct vc4_hdmi_connector_state {
+ 	unsigned long long		pixel_rate;
+ 	unsigned int 			output_bpc;
+ 	enum vc4_hdmi_output_format	output_format;
++	int				broadcast_rgb;
+ };
+ 
+ static inline struct vc4_hdmi_connector_state *
+@@ -275,6 +284,12 @@ conn_state_to_vc4_hdmi_conn_state(struct
+ {
+ 	return container_of(conn_state, struct vc4_hdmi_connector_state, base);
+ }
++
++static inline const struct vc4_hdmi_connector_state *
++const_conn_state_to_vc4_hdmi_conn_state(const struct drm_connector_state *conn_state)
++{
++	return container_of(conn_state, struct vc4_hdmi_connector_state, base);
++}
+ 
+ void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
+ 		       struct vc4_hdmi_connector_state *vc4_conn_state);

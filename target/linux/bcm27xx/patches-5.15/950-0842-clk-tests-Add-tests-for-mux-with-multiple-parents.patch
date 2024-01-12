@@ -1,0 +1,161 @@
+From c5511ae59ece75d80acdaf37ebd08aca51f80188 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 7 Apr 2022 14:58:34 +0200
+Subject: [PATCH] clk: tests: Add tests for mux with multiple parents
+
+We'll need to test a few corner cases that occur when we have a mux
+clock whose default parent is missing.
+
+For now, let's create the context structure and the trivial ops, along
+with a test suite that just tests trivial things for now, without
+considering the orphan case.
+
+Tested-by: Alexander Stein <alexander.stein@ew.tq-group.com> # imx8mp
+Tested-by: Marek Szyprowski <m.szyprowski@samsung.com> # exynos4210, meson g12b
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/clk/clk_test.c | 119 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 119 insertions(+)
+
+--- a/drivers/clk/clk_test.c
++++ b/drivers/clk/clk_test.c
+@@ -108,6 +108,39 @@ static const struct clk_ops clk_dummy_si
+ 	.get_parent = clk_dummy_single_get_parent,
+ };
+ 
++struct clk_multiple_parent_ctx {
++	struct clk_dummy_context parents_ctx[2];
++	struct clk_hw hw;
++	u8 current_parent;
++};
++
++static int clk_multiple_parents_mux_set_parent(struct clk_hw *hw, u8 index)
++{
++	struct clk_multiple_parent_ctx *ctx =
++		container_of(hw, struct clk_multiple_parent_ctx, hw);
++
++	if (index >= clk_hw_get_num_parents(hw))
++		return -EINVAL;
++
++	ctx->current_parent = index;
++
++	return 0;
++}
++
++static u8 clk_multiple_parents_mux_get_parent(struct clk_hw *hw)
++{
++	struct clk_multiple_parent_ctx *ctx =
++		container_of(hw, struct clk_multiple_parent_ctx, hw);
++
++	return ctx->current_parent;
++}
++
++static const struct clk_ops clk_multiple_parents_mux_ops = {
++	.get_parent = clk_multiple_parents_mux_get_parent,
++	.set_parent = clk_multiple_parents_mux_set_parent,
++	.determine_rate = __clk_mux_determine_rate_closest,
++};
++
+ static int clk_test_init_with_ops(struct kunit *test, const struct clk_ops *ops)
+ {
+ 	struct clk_dummy_context *ctx;
+@@ -347,6 +380,91 @@ static struct kunit_suite clk_uncached_t
+ 	.test_cases = clk_uncached_test_cases,
+ };
+ 
++static int
++clk_multiple_parents_mux_test_init(struct kunit *test)
++{
++	struct clk_multiple_parent_ctx *ctx;
++	const char *parents[2] = { "parent-0", "parent-1"};
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++
++	ctx->parents_ctx[0].hw.init = CLK_HW_INIT_NO_PARENT("parent-0",
++							    &clk_dummy_rate_ops,
++							    0);
++	ctx->parents_ctx[0].rate = DUMMY_CLOCK_RATE_1;
++	ret = clk_hw_register(NULL, &ctx->parents_ctx[0].hw);
++	if (ret)
++		return ret;
++
++	ctx->parents_ctx[1].hw.init = CLK_HW_INIT_NO_PARENT("parent-1",
++							    &clk_dummy_rate_ops,
++							    0);
++	ctx->parents_ctx[1].rate = DUMMY_CLOCK_RATE_2;
++	ret = clk_hw_register(NULL, &ctx->parents_ctx[1].hw);
++	if (ret)
++		return ret;
++
++	ctx->current_parent = 0;
++	ctx->hw.init = CLK_HW_INIT_PARENTS("test-mux", parents,
++					   &clk_multiple_parents_mux_ops,
++					   CLK_SET_RATE_PARENT);
++	ret = clk_hw_register(NULL, &ctx->hw);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static void
++clk_multiple_parents_mux_test_exit(struct kunit *test)
++{
++	struct clk_multiple_parent_ctx *ctx = test->priv;
++
++	clk_hw_unregister(&ctx->hw);
++	clk_hw_unregister(&ctx->parents_ctx[0].hw);
++	clk_hw_unregister(&ctx->parents_ctx[1].hw);
++}
++
++/*
++ * Test that for a clock with multiple parents, clk_get_parent()
++ * actually returns the current one.
++ */
++static void
++clk_test_multiple_parents_mux_get_parent(struct kunit *test)
++{
++	struct clk_multiple_parent_ctx *ctx = test->priv;
++	struct clk_hw *hw = &ctx->hw;
++	struct clk *clk = hw->clk;
++	struct clk *parent;
++
++	parent = clk_get_parent(clk);
++	KUNIT_EXPECT_TRUE(test, clk_is_match(parent, ctx->parents_ctx[0].hw.clk));
++}
++
++static struct kunit_case clk_multiple_parents_mux_test_cases[] = {
++	KUNIT_CASE(clk_test_multiple_parents_mux_get_parent),
++	{}
++};
++
++/*
++ * Test suite for a basic mux clock with two parents, with
++ * CLK_SET_RATE_PARENT on the child.
++ *
++ * These tests are supposed to exercise the consumer API and check that
++ * the state of the child and parents are sane and consistent.
++ */
++static struct kunit_suite
++clk_multiple_parents_mux_test_suite = {
++	.name = "clk-multiple-parents-mux-test",
++	.init = clk_multiple_parents_mux_test_init,
++	.exit = clk_multiple_parents_mux_test_exit,
++	.test_cases = clk_multiple_parents_mux_test_cases,
++};
++
+ struct clk_single_parent_ctx {
+ 	struct clk_dummy_context parent_ctx;
+ 	struct clk_hw hw;
+@@ -1291,6 +1409,7 @@ static struct kunit_suite clk_range_mini
+ 
+ kunit_test_suites(
+ 	&clk_test_suite,
++	&clk_multiple_parents_mux_test_suite,
+ 	&clk_orphan_transparent_single_parent_test_suite,
+ 	&clk_range_test_suite,
+ 	&clk_range_maximize_test_suite,

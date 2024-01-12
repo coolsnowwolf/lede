@@ -745,6 +745,9 @@ static int rtl8367b_init_regs(struct rtl8366_smi *smi)
 
 	/* TODO: disable RLTP */
 
+	if(chip_ver == 0x0020)
+		return 0;
+
 	return rtl8367b_write_initvals(smi, initvals, count);
 }
 
@@ -1541,6 +1544,7 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 	}
 
 	switch (chip_ver) {
+	case 0x0020:
 	case 0x1000:
 		chip_name = "8367RB";
 		break;

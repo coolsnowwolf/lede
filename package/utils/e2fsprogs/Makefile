@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=e2fsprogs
 PKG_VERSION:=1.46.5
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/people/tytso/e2fsprogs/v$(PKG_VERSION)/
@@ -144,7 +144,6 @@ endef
 
 TARGET_CFLAGS += $(FPIC) -ffunction-sections -fdata-sections -flto
 
-TARGET_LDFLAGS += $(if $(CONFIG_USE_GLIBC),-lrt)
 TARGET_LDFLAGS += -flto
 
 CONFIGURE_ARGS += \

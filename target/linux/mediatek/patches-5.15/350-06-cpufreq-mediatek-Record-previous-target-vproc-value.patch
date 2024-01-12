@@ -1,0 +1,64 @@
+From 34737eb8d0daa0d4183f10286a2f55d8788066bc Mon Sep 17 00:00:00 2001
+From: Jia-Wei Chang <jia-wei.chang@mediatek.com>
+Date: Fri, 22 Apr 2022 15:52:29 +0800
+Subject: [PATCH 06/21] cpufreq: mediatek: Record previous target vproc value
+
+We found the buck voltage may not be exactly the same with what we set
+because CPU may share the same buck with other module.
+Therefore, we need to record the previous desired value instead of reading
+it from regulators.
+
+Signed-off-by: Andrew-sh.Cheng <andrew-sh.cheng@mediatek.com>
+Signed-off-by: Jia-Wei Chang <jia-wei.chang@mediatek.com>
+Signed-off-by: Rex-BC Chen <rex-bc.chen@mediatek.com>
+Reviewed-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+---
+ drivers/cpufreq/mediatek-cpufreq.c | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+--- a/drivers/cpufreq/mediatek-cpufreq.c
++++ b/drivers/cpufreq/mediatek-cpufreq.c
+@@ -40,6 +40,7 @@ struct mtk_cpu_dvfs_info {
+ 	struct list_head list_head;
+ 	int intermediate_voltage;
+ 	bool need_voltage_tracking;
++	int pre_vproc;
+ };
+ 
+ static struct platform_device *cpufreq_pdev;
+@@ -193,11 +194,17 @@ static int mtk_cpufreq_voltage_tracking(
+ 
+ static int mtk_cpufreq_set_voltage(struct mtk_cpu_dvfs_info *info, int vproc)
+ {
++	int ret;
++
+ 	if (info->need_voltage_tracking)
+-		return mtk_cpufreq_voltage_tracking(info, vproc);
++		ret = mtk_cpufreq_voltage_tracking(info, vproc);
+ 	else
+-		return regulator_set_voltage(info->proc_reg, vproc,
+-					     vproc + VOLT_TOL);
++		ret = regulator_set_voltage(info->proc_reg, vproc,
++					    MAX_VOLT_LIMIT);
++	if (!ret)
++		info->pre_vproc = vproc;
++
++	return ret;
+ }
+ 
+ static int mtk_cpufreq_set_target(struct cpufreq_policy *policy,
+@@ -215,7 +222,12 @@ static int mtk_cpufreq_set_target(struct
+ 	inter_vproc = info->intermediate_voltage;
+ 
+ 	pre_freq_hz = clk_get_rate(cpu_clk);
+-	pre_vproc = regulator_get_voltage(info->proc_reg);
++
++	if (unlikely(info->pre_vproc <= 0))
++		pre_vproc = regulator_get_voltage(info->proc_reg);
++	else
++		pre_vproc = info->pre_vproc;
++
+ 	if (pre_vproc < 0) {
+ 		dev_err(cpu_dev, "invalid Vproc value: %d\n", pre_vproc);
+ 		return pre_vproc;

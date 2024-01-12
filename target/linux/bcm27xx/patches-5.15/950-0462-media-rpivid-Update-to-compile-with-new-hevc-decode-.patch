@@ -1,0 +1,197 @@
+From 2a88d608907e78bc6506579de01fabaa18219483 Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Thu, 5 Aug 2021 15:18:50 +0100
+Subject: [PATCH] media: rpivid: Update to compile with new hevc decode
+ params
+
+DPB entries have moved from slice params to the new decode params
+attribute - update to deal with this.  Also fixes fallthrough
+warnings which seem to be new in 5.14.
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/staging/media/rpivid/rpivid.c      |  6 ++++
+ drivers/staging/media/rpivid/rpivid.h      |  1 +
+ drivers/staging/media/rpivid/rpivid_dec.c  |  3 ++
+ drivers/staging/media/rpivid/rpivid_h265.c | 35 ++++++++++++----------
+ 4 files changed, 30 insertions(+), 15 deletions(-)
+
+--- a/drivers/staging/media/rpivid/rpivid.c
++++ b/drivers/staging/media/rpivid/rpivid.c
+@@ -57,6 +57,12 @@ static const struct rpivid_control rpivi
+ 	},
+ 	{
+ 		.cfg = {
++			.id	= V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS,
++		},
++		.required	= true,
++	},
++	{
++		.cfg = {
+ 			.id	= V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS,
+ 		},
+ 		.required	= true,
+--- a/drivers/staging/media/rpivid/rpivid.h
++++ b/drivers/staging/media/rpivid/rpivid.h
+@@ -52,6 +52,7 @@ struct rpivid_h265_run {
+ 	u32 slice_ents;
+ 	const struct v4l2_ctrl_hevc_sps			*sps;
+ 	const struct v4l2_ctrl_hevc_pps			*pps;
++	const struct v4l2_ctrl_hevc_decode_params      	*dec;
+ 	const struct v4l2_ctrl_hevc_slice_params	*slice_params;
+ 	const struct v4l2_ctrl_hevc_scaling_matrix	*scaling_matrix;
+ };
+--- a/drivers/staging/media/rpivid/rpivid_dec.c
++++ b/drivers/staging/media/rpivid/rpivid_dec.c
+@@ -55,6 +55,9 @@ void rpivid_device_run(void *priv)
+ 		run.h265.slice_params =
+ 			rpivid_find_control_data(ctx,
+ 						 V4L2_CID_MPEG_VIDEO_HEVC_SLICE_PARAMS);
++		run.h265.dec =
++			rpivid_find_control_data(ctx,
++						 V4L2_CID_MPEG_VIDEO_HEVC_DECODE_PARAMS);
+ 		run.h265.scaling_matrix =
+ 			rpivid_find_control_data(ctx,
+ 						 V4L2_CID_MPEG_VIDEO_HEVC_SCALING_MATRIX);
+--- a/drivers/staging/media/rpivid/rpivid_h265.c
++++ b/drivers/staging/media/rpivid/rpivid_h265.c
+@@ -252,6 +252,7 @@ struct rpivid_dec_state {
+ 	u8 *src_buf;
+ 	dma_addr_t src_addr;
+ 	const struct v4l2_ctrl_hevc_slice_params *sh;
++	const struct v4l2_ctrl_hevc_decode_params *dec;
+ 	unsigned int nb_refs[2];
+ 	unsigned int slice_qp;
+ 	unsigned int max_num_merge_cand; // 0 if I-slice
+@@ -799,6 +800,7 @@ static void pre_slice_decode(struct rpiv
+ 			     const struct rpivid_dec_state *const s)
+ {
+ 	const struct v4l2_ctrl_hevc_slice_params *const sh = s->sh;
++	const struct v4l2_ctrl_hevc_decode_params *const dec = s->dec;
+ 	int weighted_pred_flag, idx;
+ 	u16 cmd_slice;
+ 	unsigned int collocated_from_l0_flag;
+@@ -825,9 +827,9 @@ static void pre_slice_decode(struct rpiv
+ 	if (sh->slice_type == HEVC_SLICE_P || sh->slice_type == HEVC_SLICE_B) {
+ 		// Flag to say all reference pictures are from the past
+ 		const int no_backward_pred_flag =
+-			has_backward(sh->dpb, sh->ref_idx_l0, s->nb_refs[L0],
++			has_backward(dec->dpb, sh->ref_idx_l0, s->nb_refs[L0],
+ 				     sh->slice_pic_order_cnt) &&
+-			has_backward(sh->dpb, sh->ref_idx_l1, s->nb_refs[L1],
++			has_backward(dec->dpb, sh->ref_idx_l1, s->nb_refs[L1],
+ 				     sh->slice_pic_order_cnt);
+ 		cmd_slice |= no_backward_pred_flag << 10;
+ 		msg_slice(de, cmd_slice);
+@@ -855,11 +857,11 @@ static void pre_slice_decode(struct rpiv
+ 
+ 			msg_slice(de,
+ 				  dpb_no |
+-				  (sh->dpb[dpb_no].rps ==
++				  (dec->dpb[dpb_no].rps ==
+ 					V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR ?
+ 						 (1 << 4) : 0) |
+ 				  (weighted_pred_flag ? (3 << 5) : 0));
+-			msg_slice(de, sh->dpb[dpb_no].pic_order_cnt[0]);
++			msg_slice(de, dec->dpb[dpb_no].pic_order_cnt[0]);
+ 
+ 			if (weighted_pred_flag) {
+ 				const struct v4l2_hevc_pred_weight_table
+@@ -901,11 +903,11 @@ static void pre_slice_decode(struct rpiv
+ 			//          "L1[%d]=dpb[%d]\n", idx, dpb_no);
+ 			msg_slice(de,
+ 				  dpb_no |
+-				  (sh->dpb[dpb_no].rps ==
++				  (dec->dpb[dpb_no].rps ==
+ 					 V4L2_HEVC_DPB_ENTRY_RPS_LT_CURR ?
+ 						 (1 << 4) : 0) |
+ 					(weighted_pred_flag ? (3 << 5) : 0));
+-			msg_slice(de, sh->dpb[dpb_no].pic_order_cnt[0]);
++			msg_slice(de, dec->dpb[dpb_no].pic_order_cnt[0]);
+ 			if (weighted_pred_flag) {
+ 				const struct v4l2_hevc_pred_weight_table
+ 					*const w = &sh->pred_weight_table;
+@@ -1670,6 +1672,8 @@ static void rpivid_h265_setup(struct rpi
+ 	struct rpivid_dev *const dev = ctx->dev;
+ 	const struct v4l2_ctrl_hevc_slice_params *const sh =
+ 						run->h265.slice_params;
++	const struct v4l2_ctrl_hevc_decode_params *const dec =
++						run->h265.dec;
+ //	const struct v4l2_hevc_pred_weight_table *pred_weight_table;
+ 	struct rpivid_q_aux *dpb_q_aux[V4L2_HEVC_DPB_ENTRIES_NUM_MAX];
+ 	struct rpivid_dec_state *const s = ctx->state;
+@@ -1895,6 +1899,7 @@ static void rpivid_h265_setup(struct rpi
+ 
+ 	// Pre calc a few things
+ 	s->sh = sh;
++	s->dec = dec;
+ 	s->slice_qp = 26 + s->pps.init_qp_minus26 + s->sh->slice_qp_delta;
+ 	s->max_num_merge_cand = sh->slice_type == HEVC_SLICE_I ?
+ 					0 :
+@@ -1965,9 +1970,9 @@ static void rpivid_h265_setup(struct rpi
+ 	if (write_cmd_buffer(dev, de, s))
+ 		goto fail;
+ 
+-	for (i = 0; i < sh->num_active_dpb_entries; ++i) {
++	for (i = 0; i < dec->num_active_dpb_entries; ++i) {
+ 		int buffer_index =
+-			vb2_find_timestamp(vq, sh->dpb[i].timestamp, 0);
++			vb2_find_timestamp(vq, dec->dpb[i].timestamp, 0);
+ 		struct vb2_buffer *buf = buffer_index < 0 ?
+ 					NULL :
+ 					vb2_get_buffer(vq, buffer_index);
+@@ -1975,7 +1980,7 @@ static void rpivid_h265_setup(struct rpi
+ 		if (!buf) {
+ 			v4l2_warn(&dev->v4l2_dev,
+ 				  "Missing DPB ent %d, timestamp=%lld, index=%d\n",
+-				  i, (long long)sh->dpb[i].timestamp,
++				  i, (long long)dec->dpb[i].timestamp,
+ 				  buffer_index);
+ 			continue;
+ 		}
+@@ -1985,7 +1990,7 @@ static void rpivid_h265_setup(struct rpi
+ 			if (!dpb_q_aux[i])
+ 				v4l2_warn(&dev->v4l2_dev,
+ 					  "Missing DPB AUX ent %d, timestamp=%lld, index=%d\n",
+-					  i, (long long)sh->dpb[i].timestamp,
++					  i, (long long)dec->dpb[i].timestamp,
+ 					  buffer_index);
+ 		}
+ 
+@@ -2017,11 +2022,11 @@ static void rpivid_h265_setup(struct rpi
+ 	}
+ 
+ 	if (de->dpbno_col != ~0U) {
+-		if (de->dpbno_col >= sh->num_active_dpb_entries) {
++		if (de->dpbno_col >= dec->num_active_dpb_entries) {
+ 			v4l2_err(&dev->v4l2_dev,
+ 				 "Col ref index %d >= %d\n",
+ 				 de->dpbno_col,
+-				 sh->num_active_dpb_entries);
++				 dec->num_active_dpb_entries);
+ 		} else {
+ 			// Standard requires that the col pic is
+ 			// constant for the duration of the pic
+@@ -2462,7 +2467,7 @@ static void rpivid_h265_trigger(struct r
+ 	switch (!de ? RPIVID_DECODE_ERROR_CONTINUE : de->state) {
+ 	case RPIVID_DECODE_SLICE_START:
+ 		de->state = RPIVID_DECODE_SLICE_CONTINUE;
+-	/* FALLTHRU */
++		fallthrough;
+ 	case RPIVID_DECODE_SLICE_CONTINUE:
+ 		v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx,
+ 						 VB2_BUF_STATE_DONE);
+@@ -2472,11 +2477,11 @@ static void rpivid_h265_trigger(struct r
+ 	default:
+ 		v4l2_err(&dev->v4l2_dev, "%s: Unexpected state: %d\n", __func__,
+ 			 de->state);
+-	/* FALLTHRU */
++		fallthrough;
+ 	case RPIVID_DECODE_ERROR_DONE:
+ 		ctx->dec0 = NULL;
+ 		dec_env_delete(de);
+-	/* FALLTHRU */
++		fallthrough;
+ 	case RPIVID_DECODE_ERROR_CONTINUE:
+ 		xtrace_fin(dev, de);
+ 		v4l2_m2m_buf_done_and_job_finish(dev->m2m_dev, ctx->fh.m2m_ctx,

@@ -1,0 +1,92 @@
+From cd850cb03a564c948db4db8cac672284c55cefc3 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 22 Sep 2021 16:42:49 +0100
+Subject: [PATCH] staging: bcm2835_codec: Correct flushing code for
+ refcounting
+
+Completions don't reference count, so setting the completion
+on the first buffer returned and then not reinitialising it
+means that the flush function doesn't behave as intended.
+
+Signal the completion when the last buffer is returned.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../bcm2835-codec/bcm2835-v4l2-codec.c        | 20 ++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
++++ b/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c
+@@ -934,7 +934,7 @@ static void ip_buffer_cb(struct vchiq_mm
+ 	v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: done %d input buffers\n",
+ 		 __func__, ctx->num_ip_buffers);
+ 
+-	if (!port->enabled)
++	if (!port->enabled && atomic_read(&port->buffers_with_vpu))
+ 		complete(&ctx->frame_cmplt);
+ }
+ 
+@@ -1135,7 +1135,8 @@ static void op_buffer_cb(struct vchiq_mm
+ 			 __func__, mmal_buf->mmal_flags);
+ 		if (!(mmal_buf->mmal_flags & MMAL_BUFFER_HEADER_FLAG_EOS)) {
+ 			vb2_buffer_done(&vb2->vb2_buf, VB2_BUF_STATE_QUEUED);
+-			if (!port->enabled)
++			if (!port->enabled &&
++			    atomic_read(&port->buffers_with_vpu))
+ 				complete(&ctx->frame_cmplt);
+ 			return;
+ 		}
+@@ -1178,7 +1179,7 @@ static void op_buffer_cb(struct vchiq_mm
+ 	v4l2_dbg(2, debug, &ctx->dev->v4l2_dev, "%s: done %d output buffers\n",
+ 		 __func__, ctx->num_op_buffers);
+ 
+-	if (!port->enabled)
++	if (!port->enabled && atomic_read(&port->buffers_with_vpu))
+ 		complete(&ctx->frame_cmplt);
+ }
+ 
+@@ -1596,6 +1597,8 @@ static int vidioc_s_fmt(struct bcm2835_c
+ 		return 0;
+ 
+ 	if (port->enabled) {
++		unsigned int num_buffers;
++
+ 		/*
+ 		 * This should only ever happen with DECODE and the MMAL output
+ 		 * port that has been enabled for resolution changed events.
+@@ -1606,10 +1609,18 @@ static int vidioc_s_fmt(struct bcm2835_c
+ 			f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
+ 			atomic_read(&port->buffers_with_vpu));
+ 
++		/*
++		 * Disable will reread the port format, so retain buffer count.
++		 */
++		num_buffers = port->current_buffer.num;
++
+ 		ret = vchiq_mmal_port_disable(ctx->dev->instance, port);
+ 		if (ret)
+ 			v4l2_err(&ctx->dev->v4l2_dev, "%s: Error disabling port update buffer count, ret %d\n",
+ 				 __func__, ret);
++
++		port->current_buffer.num = num_buffers;
++
+ 		reenable_port = true;
+ 	}
+ 
+@@ -2787,7 +2798,7 @@ static void bcm2835_codec_flush_buffers(
+ {
+ 	int ret;
+ 
+-	while (atomic_read(&port->buffers_with_vpu)) {
++	if (atomic_read(&port->buffers_with_vpu)) {
+ 		v4l2_dbg(1, debug, &ctx->dev->v4l2_dev, "%s: Waiting for buffers to be returned - %d outstanding\n",
+ 			 __func__, atomic_read(&port->buffers_with_vpu));
+ 		ret = wait_for_completion_timeout(&ctx->frame_cmplt,
+@@ -2796,7 +2807,6 @@ static void bcm2835_codec_flush_buffers(
+ 			v4l2_err(&ctx->dev->v4l2_dev, "%s: Timeout waiting for buffers to be returned - %d outstanding\n",
+ 				 __func__,
+ 				 atomic_read(&port->buffers_with_vpu));
+-			break;
+ 		}
+ 	}
+ }

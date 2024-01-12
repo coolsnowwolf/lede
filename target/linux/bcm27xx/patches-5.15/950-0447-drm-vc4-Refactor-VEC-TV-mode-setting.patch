@@ -1,0 +1,167 @@
+From 723c2a1a51f64c381ab0b5ad662e3411a6bc9fca Mon Sep 17 00:00:00 2001
+From: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+Date: Thu, 15 Jul 2021 01:07:49 +0200
+Subject: [PATCH] drm/vc4: Refactor VEC TV mode setting
+
+Change the mode_set function pointer logic to declarative config0,
+config1 and custom_freq fields, to make TV mode setting logic more
+concise and uniform.
+
+Additionally, remove the superfluous tv_mode field, which was redundant
+with the mode field in struct drm_tv_connector_state.
+
+Signed-off-by: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_vec.c | 69 +++++++++++------------------------
+ 1 file changed, 22 insertions(+), 47 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_vec.c
++++ b/drivers/gpu/drm/vc4/vc4_vec.c
+@@ -170,8 +170,6 @@ struct vc4_vec {
+ 
+ 	struct clk *clock;
+ 
+-	const struct vc4_vec_tv_mode *tv_mode;
+-
+ 	struct debugfs_regset32 regset;
+ };
+ 
+@@ -211,7 +209,9 @@ enum vc4_vec_tv_mode_id {
+ 
+ struct vc4_vec_tv_mode {
+ 	const struct drm_display_mode *mode;
+-	void (*mode_set)(struct vc4_vec *vec);
++	u32 config0;
++	u32 config1;
++	u32 custom_freq;
+ };
+ 
+ static const struct debugfs_reg32 vec_regs[] = {
+@@ -241,18 +241,6 @@ static const struct debugfs_reg32 vec_re
+ 	VC4_REG32(VEC_DAC_MISC),
+ };
+ 
+-static void vc4_vec_ntsc_mode_set(struct vc4_vec *vec)
+-{
+-	VEC_WRITE(VEC_CONFIG0, VEC_CONFIG0_NTSC_STD | VEC_CONFIG0_PDEN);
+-	VEC_WRITE(VEC_CONFIG1, VEC_CONFIG1_C_CVBS_CVBS);
+-}
+-
+-static void vc4_vec_ntsc_j_mode_set(struct vc4_vec *vec)
+-{
+-	VEC_WRITE(VEC_CONFIG0, VEC_CONFIG0_NTSC_STD);
+-	VEC_WRITE(VEC_CONFIG1, VEC_CONFIG1_C_CVBS_CVBS);
+-}
+-
+ static const struct drm_display_mode ntsc_mode = {
+ 	DRM_MODE("720x480", DRM_MODE_TYPE_DRIVER, 13500,
+ 		 720, 720 + 14, 720 + 14 + 64, 720 + 14 + 64 + 60, 0,
+@@ -260,21 +248,6 @@ static const struct drm_display_mode nts
+ 		 DRM_MODE_FLAG_INTERLACE)
+ };
+ 
+-static void vc4_vec_pal_mode_set(struct vc4_vec *vec)
+-{
+-	VEC_WRITE(VEC_CONFIG0, VEC_CONFIG0_PAL_BDGHI_STD);
+-	VEC_WRITE(VEC_CONFIG1, VEC_CONFIG1_C_CVBS_CVBS);
+-}
+-
+-static void vc4_vec_pal_m_mode_set(struct vc4_vec *vec)
+-{
+-	VEC_WRITE(VEC_CONFIG0, VEC_CONFIG0_PAL_BDGHI_STD);
+-	VEC_WRITE(VEC_CONFIG1,
+-		  VEC_CONFIG1_C_CVBS_CVBS | VEC_CONFIG1_CUSTOM_FREQ);
+-	VEC_WRITE(VEC_FREQ3_2, 0x223b);
+-	VEC_WRITE(VEC_FREQ1_0, 0x61d1);
+-}
+-
+ static const struct drm_display_mode pal_mode = {
+ 	DRM_MODE("720x576", DRM_MODE_TYPE_DRIVER, 13500,
+ 		 720, 720 + 20, 720 + 20 + 64, 720 + 20 + 64 + 60, 0,
+@@ -285,19 +258,24 @@ static const struct drm_display_mode pal
+ static const struct vc4_vec_tv_mode vc4_vec_tv_modes[] = {
+ 	[VC4_VEC_TV_MODE_NTSC] = {
+ 		.mode = &ntsc_mode,
+-		.mode_set = vc4_vec_ntsc_mode_set,
++		.config0 = VEC_CONFIG0_NTSC_STD | VEC_CONFIG0_PDEN,
++		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
+ 	},
+ 	[VC4_VEC_TV_MODE_NTSC_J] = {
+ 		.mode = &ntsc_mode,
+-		.mode_set = vc4_vec_ntsc_j_mode_set,
++		.config0 = VEC_CONFIG0_NTSC_STD,
++		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
+ 	},
+ 	[VC4_VEC_TV_MODE_PAL] = {
+ 		.mode = &pal_mode,
+-		.mode_set = vc4_vec_pal_mode_set,
++		.config0 = VEC_CONFIG0_PAL_BDGHI_STD,
++		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
+ 	},
+ 	[VC4_VEC_TV_MODE_PAL_M] = {
+ 		.mode = &pal_mode,
+-		.mode_set = vc4_vec_pal_m_mode_set,
++		.config0 = VEC_CONFIG0_PAL_BDGHI_STD,
++		.config1 = VEC_CONFIG1_C_CVBS_CVBS | VEC_CONFIG1_CUSTOM_FREQ,
++		.custom_freq = 0x223b61d1,
+ 	},
+ };
+ 
+@@ -367,7 +345,6 @@ static struct drm_connector *vc4_vec_con
+ 	drm_object_attach_property(&connector->base,
+ 				   dev->mode_config.tv_mode_property,
+ 				   VC4_VEC_TV_MODE_NTSC);
+-	vec->tv_mode = &vc4_vec_tv_modes[VC4_VEC_TV_MODE_NTSC];
+ 
+ 	drm_connector_attach_encoder(connector, vec->encoder);
+ 
+@@ -400,6 +377,7 @@ static void vc4_vec_encoder_enable(struc
+ {
+ 	struct vc4_vec_encoder *vc4_vec_encoder = to_vc4_vec_encoder(encoder);
+ 	struct vc4_vec *vec = vc4_vec_encoder->vec;
++	unsigned int tv_mode = vec->connector->state->tv.mode;
+ 	int ret;
+ 
+ 	ret = pm_runtime_get_sync(&vec->pdev->dev);
+@@ -455,7 +433,15 @@ static void vc4_vec_encoder_enable(struc
+ 	/* Mask all interrupts. */
+ 	VEC_WRITE(VEC_MASK0, 0);
+ 
+-	vec->tv_mode->mode_set(vec);
++	VEC_WRITE(VEC_CONFIG0, vc4_vec_tv_modes[tv_mode].config0);
++	VEC_WRITE(VEC_CONFIG1, vc4_vec_tv_modes[tv_mode].config1);
++	if (vc4_vec_tv_modes[tv_mode].custom_freq != 0) {
++		VEC_WRITE(VEC_FREQ3_2,
++			  (vc4_vec_tv_modes[tv_mode].custom_freq >> 16) &
++			  0xffff);
++		VEC_WRITE(VEC_FREQ1_0,
++			  vc4_vec_tv_modes[tv_mode].custom_freq & 0xffff);
++	}
+ 
+ 	VEC_WRITE(VEC_DAC_MISC,
+ 		  VEC_DAC_MISC_VID_ACT | VEC_DAC_MISC_DAC_RST_N);
+@@ -470,16 +456,6 @@ static bool vc4_vec_encoder_mode_fixup(s
+ 	return true;
+ }
+ 
+-static void vc4_vec_encoder_atomic_mode_set(struct drm_encoder *encoder,
+-					struct drm_crtc_state *crtc_state,
+-					struct drm_connector_state *conn_state)
+-{
+-	struct vc4_vec_encoder *vc4_vec_encoder = to_vc4_vec_encoder(encoder);
+-	struct vc4_vec *vec = vc4_vec_encoder->vec;
+-
+-	vec->tv_mode = &vc4_vec_tv_modes[conn_state->tv.mode];
+-}
+-
+ static int vc4_vec_encoder_atomic_check(struct drm_encoder *encoder,
+ 					struct drm_crtc_state *crtc_state,
+ 					struct drm_connector_state *conn_state)
+@@ -500,7 +476,6 @@ static const struct drm_encoder_helper_f
+ 	.enable = vc4_vec_encoder_enable,
+ 	.mode_fixup = vc4_vec_encoder_mode_fixup,
+ 	.atomic_check = vc4_vec_encoder_atomic_check,
+-	.atomic_mode_set = vc4_vec_encoder_atomic_mode_set,
+ };
+ 
+ static const struct vc4_vec_variant bcm2835_vec_variant = {

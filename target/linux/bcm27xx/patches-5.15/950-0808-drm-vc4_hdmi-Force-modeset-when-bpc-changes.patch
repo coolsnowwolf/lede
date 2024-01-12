@@ -1,0 +1,49 @@
+From 9c30f8d98ef2acd2599d2c074bce62133f82debb Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 6 Apr 2022 20:35:13 +0100
+Subject: [PATCH] drm/vc4_hdmi: Force modeset when bpc changes
+
+See: https://forum.libreelec.tv/thread/25427-le-10-0-2-on-rpi4-not-playing-files-that-10-0-1-had-no-problems-with/
+
+The issue is that kodi changes hdmi mode to 3840x2160@24 initially with "max bcp=8"
+After decoding the first frame it changes property to "max bpc=12".
+
+Now vc4_hdmi_encoder_compute_config chooses vc4_state->output_bpc = 12 with output_format=VC4_HDMI_OUTPUT_RGB
+This requires scrambling as clock > 300MHz (and we have hdmi_enable_4kp60=1).
+
+vc4_hdmi_encoder_atomic_mode_set (without this PR's assignment to mode_changed) is currenly not called so we don't assign:
+vc4_hdmi->output_bpc = vc4_state->output_bpc
+
+which means vc4_hdmi_enable_scrambling never enables scrambling (as vc4_hdmi->output_bpc is still 8).
+
+But we do set the pixel clock in phy_init() to a clock frequency that requires scrambling.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1810,6 +1810,9 @@ static int vc4_hdmi_encoder_atomic_check
+ 	struct vc4_hdmi_connector_state *vc4_state = conn_state_to_vc4_hdmi_conn_state(conn_state);
+ 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+ 	struct vc4_hdmi *vc4_hdmi = encoder_to_vc4_hdmi(encoder);
++	struct drm_connector *connector = &vc4_hdmi->connector;
++	struct drm_connector_state *old_conn_state = drm_atomic_get_old_connector_state(conn_state->state, connector);
++	struct vc4_hdmi_connector_state *old_vc4_state = conn_state_to_vc4_hdmi_conn_state(old_conn_state);
+ 	unsigned long long pixel_rate = mode->clock * 1000;
+ 	unsigned long long tmds_rate;
+ 	int ret;
+@@ -1838,6 +1841,11 @@ static int vc4_hdmi_encoder_atomic_check
+ 	if (ret)
+ 		return ret;
+ 
++	/* vc4_hdmi_encoder_compute_config may have changed output_bpc and/or output_format */
++	if (vc4_state->output_bpc != old_vc4_state->output_bpc ||
++	    vc4_state->output_format != old_vc4_state->output_format)
++		crtc_state->mode_changed = true;
++
+ 	return 0;
+ }
+ 

@@ -1,4 +1,3 @@
-KERNEL_LOADADDR := 0x80008000
 DEVICE_VARS += UBOOT_TARGET UBOOT_OFFSET UBOOT_IMAGE
 
 # The bootrom of MT7623 expects legacy MediaTek headers present in
@@ -97,6 +96,7 @@ define Device/bananapi_bpi-r2
   KERNEL := kernel-bin | gzip
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   KERNEL_INITRAMFS := kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb with-initrd
+  IMAGE_SIZE := $$(shell expr 48 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
   IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb external-static-with-rootfs | append-metadata
   ARTIFACT/preloader.bin := mt7623-mbr emmc |\
 			    pad-to 2k | append-preloader $$(UBOOT_TARGET)
@@ -105,8 +105,12 @@ define Device/bananapi_bpi-r2
 			    pad-to 2k | append-preloader $$(UBOOT_TARGET) |\
 			    pad-to $$(UBOOT_OFFSET) | append-bootloader $$(UBOOT_TARGET) |\
 			    pad-to 4092k | mt7623-mbr emmc |\
-			    pad-to 4M | append-image-stage initramfs-recovery.itb |\
-			    pad-to 48M | append-image squashfs-sysupgrade.itb |\
+			    $(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
+			    pad-to 4M | append-image-stage initramfs-recovery.itb | check-size 48m |\
+			    ) \
+			    $(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
+			    pad-to 48M | append-image squashfs-sysupgrade.itb | check-size |\
+			    ) \
 			    gzip
   ARTIFACTS := u-boot.bin preloader.bin sdcard.img.gz
   SUPPORTED_DEVICES := bananapi,bpi-r2
@@ -126,6 +130,7 @@ define Device/unielec_u7623-02
   UBOOT_TARGET := mt7623a_unielec_u7623
   UBOOT_IMAGE := u-boot-mtk.bin
   UBOOT_PATH := $(STAGING_DIR_IMAGE)/$$(UBOOT_TARGET)-$$(UBOOT_IMAGE)
+  IMAGE_SIZE := $$(shell expr 48 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
   IMAGES := sysupgrade.itb
   KERNEL := kernel-bin | gzip
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
@@ -136,8 +141,12 @@ define Device/unielec_u7623-02
 # but OpenWrt expects 'SDMM' magic for sysupgrade.
   ARTIFACT/emmc.img.gz := mt7623-mbr sdmmc |\
 			    pad-to $$(UBOOT_OFFSET) | append-bootloader $$(UBOOT_TARGET) |\
-			    pad-to 4M | append-image-stage initramfs-recovery.itb |\
-			    pad-to 48M | append-image squashfs-sysupgrade.itb |\
+			    $(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
+			    pad-to 4M | append-image-stage initramfs-recovery.itb | check-size 48m |\
+			    ) \
+			    $(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
+			    pad-to 48M | append-image squashfs-sysupgrade.itb | check-size |\
+			    ) \
 			    gzip | append-metadata
   ARTIFACT/scatter.txt := scatterfile emmc.img.gz
   ARTIFACTS := u-boot.bin scatter.txt emmc.img.gz
