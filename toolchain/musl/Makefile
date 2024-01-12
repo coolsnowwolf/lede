@@ -9,7 +9,7 @@ HOST_BUILD_PARALLEL:=1
 
 MUSL_MAKEOPTS = -C $(HOST_BUILD_DIR) \
 	DESTDIR="$(TOOLCHAIN_DIR)/" \
-	LIBCC="$(subst libgcc.a,libgcc_initial.a,$(shell $(TARGET_CC) -print-libgcc-file-name))"
+	LIBCC="$(shell $(TARGET_CC) -print-libgcc-file-name)"
 
 define Host/SetToolchainInfo
 	$(SED) 's,^\(LIBC_TYPE\)=.*,\1=$(PKG_NAME),' $(TOOLCHAIN_DIR)/info.mk

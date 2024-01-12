@@ -1,0 +1,148 @@
+From cc809a441d8f2924f785eb863dfa6aef47a25b0b Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Tue, 12 Aug 2014 20:49:27 +0200
+Subject: [PATCH 30/36] GPIO: add named gpio exports
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+--- a/drivers/gpio/gpiolib-of.c
++++ b/drivers/gpio/gpiolib-of.c
+@@ -21,6 +21,8 @@
+ 
+ #include <linux/gpio/consumer.h>
+ #include <linux/gpio/machine.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
+ 
+ #include "gpiolib.h"
+ #include "gpiolib-of.h"
+@@ -1107,3 +1109,72 @@ void of_gpiochip_remove(struct gpio_chip
+ {
+ 	of_node_put(dev_of_node(&chip->gpiodev->dev));
+ }
++
++#ifdef CONFIG_GPIO_SYSFS
++
++static struct of_device_id gpio_export_ids[] = {
++	{ .compatible = "gpio-export" },
++	{ /* sentinel */ }
++};
++
++static int of_gpio_export_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device_node *cnp;
++	u32 val;
++	int nb = 0;
++
++	for_each_child_of_node(np, cnp) {
++		const char *name = NULL;
++		int gpio;
++		bool dmc;
++		int max_gpio = 1;
++		int i;
++
++		of_property_read_string(cnp, "gpio-export,name", &name);
++
++		if (!name)
++			// max_gpio = of_gpio_count(cnp);
++
++		for (i = 0; i < max_gpio; i++) {
++			unsigned flags = 0;
++			enum of_gpio_flags of_flags;
++
++			gpio = of_get_named_gpio(cnp, i, &of_flags);
++			if (!gpio_is_valid(gpio))
++				return gpio;
++
++			if (of_flags == OF_GPIO_ACTIVE_LOW)
++				flags |= GPIOF_ACTIVE_LOW;
++
++			if (!of_property_read_u32(cnp, "gpio-export,output", &val))
++				flags |= val ? GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
++			else
++				flags |= GPIOF_IN;
++
++			if (devm_gpio_request_one(&pdev->dev, gpio, flags, name ? name : of_node_full_name(np)))
++				continue;
++
++			dmc = of_property_read_bool(cnp, "gpio-export,direction_may_change");
++			gpio_export_with_name(gpio, dmc, name);
++			nb++;
++		}
++	}
++
++	dev_info(&pdev->dev, "%d gpio(s) exported\n", nb);
++
++	return 0;
++}
++
++static struct platform_driver gpio_export_driver = {
++	.driver		= {
++		.name		= "gpio-export",
++		.owner	= THIS_MODULE,
++		.of_match_table	= of_match_ptr(gpio_export_ids),
++	},
++	.probe		= of_gpio_export_probe,
++};
++
++module_platform_driver(gpio_export_driver);
++
++#endif
+\ No newline at end of file
+--- a/include/linux/gpio/consumer.h
++++ b/include/linux/gpio/consumer.h
+@@ -644,6 +644,7 @@ static inline struct gpio_desc *acpi_get
+ 
+ #if IS_ENABLED(CONFIG_GPIOLIB) && IS_ENABLED(CONFIG_GPIO_SYSFS)
+ 
++int _gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name);
+ int gpiod_export(struct gpio_desc *desc, bool direction_may_change);
+ int gpiod_export_link(struct device *dev, const char *name,
+ 		      struct gpio_desc *desc);
+@@ -653,6 +654,13 @@ void gpiod_unexport(struct gpio_desc *de
+ 
+ #include <asm/errno.h>
+ 
++static inline int _gpiod_export(struct gpio_desc *desc,
++			       bool direction_may_change,
++			       const char *name)
++{
++	return -ENOSYS;
++}
++
+ static inline int gpiod_export(struct gpio_desc *desc,
+ 			       bool direction_may_change)
+ {
+--- a/drivers/gpio/gpiolib-sysfs.c
++++ b/drivers/gpio/gpiolib-sysfs.c
+@@ -554,7 +554,7 @@ static struct class gpio_class = {
+  *
+  * Returns zero on success, else an error.
+  */
+-int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
++int __gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name)
+ {
+ 	struct gpio_chip	*chip;
+ 	struct gpio_device	*gdev;
+@@ -616,6 +616,8 @@ int gpiod_export(struct gpio_desc *desc,
+ 	offset = gpio_chip_hwgpio(desc);
+ 	if (chip->names && chip->names[offset])
+ 		ioname = chip->names[offset];
++	if (name)
++		ioname = name;
+ 
+ 	dev = device_create_with_groups(&gpio_class, &gdev->dev,
+ 					MKDEV(0, 0), data, gpio_groups,
+@@ -637,6 +639,12 @@ err_unlock:
+ 	gpiod_dbg(desc, "%s: status %d\n", __func__, status);
+ 	return status;
+ }
++EXPORT_SYMBOL_GPL(__gpiod_export);
++
++int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
++{
++	return __gpiod_export(desc, direction_may_change, NULL);
++}
+ EXPORT_SYMBOL_GPL(gpiod_export);
+ 
+ static int match_export(struct device *dev, const void *desc)

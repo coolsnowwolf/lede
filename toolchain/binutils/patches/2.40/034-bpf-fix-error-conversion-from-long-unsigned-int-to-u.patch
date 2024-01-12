@@ -1,0 +1,209 @@
+From 3e888977f165594cf44dbe8f67e3a4960b22c11f Mon Sep 17 00:00:00 2001
+From: "Guillermo E. Martinez" <guillermo.e.martinez@oracle.com>
+Date: Fri, 3 Feb 2023 11:17:49 -0600
+Subject: [PATCH 34/50] bpf: fix error conversion from long unsigned int to
+ unsigned int [-Werror=overflow]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Regenerating BPF target using the maintainer mode emits:
+.../opcodes/bpf-opc.c:57:11: error: conversion from ‘long unsigned int’ to ‘unsigned int’ changes value from ‘18446744073709486335’ to ‘4294902015’ [-Werror=overflow]
+  57 |   64, 64, 0xffffffffffff00ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+
+The use of a narrow size to handle the mask CGEN in instruction format
+is causing this error.  Additionally eBPF `call' instructions
+constructed by expressions using symbols (BPF_PSEUDO_CALL) emits
+annotations in `src' field of the instruction, used to identify BPF
+target endianness.
+
+cpu/
+	* bpf.cpu (define-call-insn): Remove `src' field from
+	instruction mask.
+
+include/
+	*opcode/cge.h (CGEN_IFMT): Adjust mask bit width.
+
+opcodes/
+	* bpf-opc.c: Regenerate.
+
+(cherry picked from commit 7f6ebecd56e690012b05af0a492280765b17f186)
+---
+ cpu/bpf.cpu           |  2 +-
+ include/opcode/cgen.h |  2 +-
+ opcodes/bpf-opc.c     | 54 +++++++++++++++++++++++--------------------
+ opcodes/cgen-dis.c    |  2 +-
+ 4 files changed, 32 insertions(+), 28 deletions(-)
+
+--- a/cpu/bpf.cpu
++++ b/cpu/bpf.cpu
+@@ -768,7 +768,7 @@
+        "call"
+        (endian-isas x-endian)
+        "call $disp32"
+-       (+ disp32 (f-offset16 0) (f-regs 0)
++       (+ disp32 (f-offset16 0) (.sym src x-endian) ((.sym f-dst x-endian) 0)
+           OP_CLASS_JMP OP_SRC_K OP_CODE_CALL)
+        (c-call VOID
+                "bpfbf_call" disp32 (ifield (.sym f-src x-endian)))
+--- a/include/opcode/cgen.h
++++ b/include/opcode/cgen.h
+@@ -914,7 +914,7 @@ typedef struct
+      Each insn's value is stored with the insn.
+      The first step in recognizing an insn for disassembly is
+      (opcode & mask) == value.  */
+-  CGEN_INSN_INT mask;
++  CGEN_INSN_LGUINT mask;
+ #define CGEN_IFMT_MASK(ifmt) ((ifmt)->mask)
+ 
+   /* Instruction fields.
+--- a/opcodes/bpf-opc.c
++++ b/opcodes/bpf-opc.c
+@@ -50,99 +50,103 @@ static const CGEN_IFMT ifmt_empty ATTRIB
+ };
+ 
+ static const CGEN_IFMT ifmt_addile ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfffff0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_addrle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffffffff00ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_negle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfffffffffffff0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_addibe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffff0fff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_addrbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffffffff00ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_negbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffffffff0fff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_endlele ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfffff0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_endlebe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffff0fff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_lddwle ATTRIBUTE_UNUSED = {
+-  64, 128, 0xff, { { F (F_IMM64) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 128, 0xfffff0ff, { { F (F_IMM64) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_lddwbe ATTRIBUTE_UNUSED = {
+-  64, 128, 0xff, { { F (F_IMM64) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 128, 0xffff0fff, { { F (F_IMM64) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ldabsw ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ldindwle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffff0fff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ldindwbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfffff0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ldxwle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff000000ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ldxwbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff000000ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_stble ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xf0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_DSTLE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_stbbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_MODE) }, { F (F_OP_SIZE) }, { F (F_SRCBE) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_jeqile ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xf0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_jeqrle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff000000ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_jeqibe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xfff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_jeqrbe ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff000000ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_callle ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_CODE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffff0fff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_SRCLE) }, { F (F_OP_CODE) }, { F (F_DSTLE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++};
++
++static const CGEN_IFMT ifmt_callbe ATTRIBUTE_UNUSED = {
++  64, 64, 0xfffff0ff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_DSTBE) }, { F (F_OP_CODE) }, { F (F_SRCBE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_ja ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_CODE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffff0000ffff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_CODE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ static const CGEN_IFMT ifmt_exit ATTRIBUTE_UNUSED = {
+-  64, 64, 0xff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_CODE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
++  64, 64, 0xffffffffffffffff, { { F (F_IMM32) }, { F (F_OFFSET16) }, { F (F_REGS) }, { F (F_OP_CODE) }, { F (F_OP_SRC) }, { F (F_OP_CLASS) }, { 0 } }
+ };
+ 
+ #undef F
+@@ -1646,7 +1650,7 @@ static const CGEN_OPCODE bpf_cgen_insn_o
+   {
+     { 0, 0, 0, 0 },
+     { { MNEM, ' ', OP (DISP32), 0 } },
+-    & ifmt_callle, { 0x85 }
++    & ifmt_callbe, { 0x85 }
+   },
+ /* call $dstle */
+   {
+--- a/opcodes/cgen-dis.c
++++ b/opcodes/cgen-dis.c
+@@ -39,7 +39,7 @@ static void		 add_insn_to_hash_chain (CG
+ static int
+ count_decodable_bits (const CGEN_INSN *insn)
+ {
+-  unsigned mask = CGEN_INSN_BASE_MASK (insn);
++  CGEN_INSN_LGUINT mask = CGEN_INSN_BASE_MASK (insn);
+ #if GCC_VERSION >= 3004
+   return __builtin_popcount (mask);
+ #else
