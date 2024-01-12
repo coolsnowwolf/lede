@@ -1,0 +1,115 @@
+From 55d4980ce55b6bb4be66877de4dbec513911b988 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 4 Apr 2023 18:21:42 +0100
+Subject: [PATCH] nvmem: core: support specifying both: cell raw data & post
+ read lengths
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Callback .read_post_process() is designed to modify raw cell content
+before providing it to the consumer. So far we were dealing with
+modifications that didn't affect cell size (length). In some cases
+however cell content needs to be reformatted and resized.
+
+It's required e.g. to provide properly formatted MAC address in case
+it's stored in a non-binary format (e.g. using ASCII).
+
+There were few discussions how to optimally handle that. Following
+possible solutions were considered:
+1. Allow .read_post_process() to realloc (resize) content buffer
+2. Allow .read_post_process() to adjust (decrease) just buffer length
+3. Register NVMEM cells using post-read sizes
+
+The preferred solution was the last one. The problem is that simply
+adjusting "bytes" in NVMEM providers would result in core code NOT
+passing whole raw data to .read_post_process() callbacks. It means
+callback functions couldn't do their job without somehow manually
+reading original cell content on their own.
+
+This patch deals with that by registering NVMEM cells with both lengths:
+raw content one and post read one. It allows:
+1. Core code to read whole raw cell content
+2. Callbacks to return content they want
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230404172148.82422-35-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/core.c           | 11 +++++++----
+ include/linux/nvmem-provider.h |  2 ++
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+--- a/drivers/nvmem/core.c
++++ b/drivers/nvmem/core.c
+@@ -50,6 +50,7 @@ struct nvmem_device {
+ struct nvmem_cell_entry {
+ 	const char		*name;
+ 	int			offset;
++	size_t			raw_len;
+ 	int			bytes;
+ 	int			bit_offset;
+ 	int			nbits;
+@@ -469,6 +470,7 @@ static int nvmem_cell_info_to_nvmem_cell
+ {
+ 	cell->nvmem = nvmem;
+ 	cell->offset = info->offset;
++	cell->raw_len = info->raw_len ?: info->bytes;
+ 	cell->bytes = info->bytes;
+ 	cell->name = info->name;
+ 	cell->read_post_process = info->read_post_process;
+@@ -1560,7 +1562,7 @@ static int __nvmem_cell_read(struct nvme
+ {
+ 	int rc;
+ 
+-	rc = nvmem_reg_read(nvmem, cell->offset, buf, cell->bytes);
++	rc = nvmem_reg_read(nvmem, cell->offset, buf, cell->raw_len);
+ 
+ 	if (rc)
+ 		return rc;
+@@ -1571,7 +1573,7 @@ static int __nvmem_cell_read(struct nvme
+ 
+ 	if (cell->read_post_process) {
+ 		rc = cell->read_post_process(cell->priv, id, index,
+-					     cell->offset, buf, cell->bytes);
++					     cell->offset, buf, cell->raw_len);
+ 		if (rc)
+ 			return rc;
+ 	}
+@@ -1594,14 +1596,15 @@ static int __nvmem_cell_read(struct nvme
+  */
+ void *nvmem_cell_read(struct nvmem_cell *cell, size_t *len)
+ {
+-	struct nvmem_device *nvmem = cell->entry->nvmem;
++	struct nvmem_cell_entry *entry = cell->entry;
++	struct nvmem_device *nvmem = entry->nvmem;
+ 	u8 *buf;
+ 	int rc;
+ 
+ 	if (!nvmem)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	buf = kzalloc(cell->entry->bytes, GFP_KERNEL);
++	buf = kzalloc(max_t(size_t, entry->raw_len, entry->bytes), GFP_KERNEL);
+ 	if (!buf)
+ 		return ERR_PTR(-ENOMEM);
+ 
+--- a/include/linux/nvmem-provider.h
++++ b/include/linux/nvmem-provider.h
+@@ -51,6 +51,7 @@ struct nvmem_keepout {
+  * struct nvmem_cell_info - NVMEM cell description
+  * @name:	Name.
+  * @offset:	Offset within the NVMEM device.
++ * @raw_len:	Length of raw data (without post processing).
+  * @bytes:	Length of the cell.
+  * @bit_offset:	Bit offset if cell is smaller than a byte.
+  * @nbits:	Number of bits.
+@@ -62,6 +63,7 @@ struct nvmem_keepout {
+ struct nvmem_cell_info {
+ 	const char		*name;
+ 	unsigned int		offset;
++	size_t			raw_len;
+ 	unsigned int		bytes;
+ 	unsigned int		bit_offset;
+ 	unsigned int		nbits;

@@ -1,0 +1,167 @@
+From ffec49d391c5f0195360912b216aa24dbc9b53c8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marek=20Beh=C3=BAn?= <kabel@kernel.org>
+Date: Mon, 16 Oct 2023 16:15:38 +0200
+Subject: [PATCH] leds: turris-omnia: Fix brightness setting and trigger
+ activating
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+I have improperly refactored commits
+  4d5ed2621c24 ("leds: turris-omnia: Make set_brightness() more efficient")
+and
+  aaf38273cf76 ("leds: turris-omnia: Support HW controlled mode via private trigger")
+after Lee requested a change in API semantics of the new functions I
+introduced in commit
+  28350bc0ac77 ("leds: turris-omnia: Do not use SMBUS calls").
+
+Before the change, the function omnia_cmd_write_u8() returned 0 on
+success, and afterwards it returned a positive value (number of bytes
+written). The latter version was applied, but the following commits did
+not properly account for this change.
+
+This results in non-functional LED's .brightness_set_blocking() and
+trigger's .activate() methods.
+
+The main reasoning behind the semantics change was that read/write
+methods should return the number of read/written bytes on success.
+It was pointed to me [1] that this is not always true (for example the
+regmap API does not do so), and since the driver never uses this number
+of read/written bytes information, I decided to fix this issue by
+changing the functions to the original semantics (return 0 on success).
+
+[1] https://lore.kernel.org/linux-gpio/ZQnn+Gi0xVlsGCYA@smile.fi.intel.com/
+
+Fixes: 28350bc0ac77 ("leds: turris-omnia: Do not use SMBUS calls")
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ drivers/leds/leds-turris-omnia.c | 37 +++++++++++++++++---------------
+ 1 file changed, 20 insertions(+), 17 deletions(-)
+
+--- a/drivers/leds/leds-turris-omnia.c
++++ b/drivers/leds/leds-turris-omnia.c
+@@ -60,8 +60,11 @@ struct omnia_leds {
+ static int omnia_cmd_write_u8(const struct i2c_client *client, u8 cmd, u8 val)
+ {
+ 	u8 buf[2] = { cmd, val };
++	int ret;
++
++	ret = i2c_master_send(client, buf, sizeof(buf));
+ 
+-	return i2c_master_send(client, buf, sizeof(buf));
++	return ret < 0 ? ret : 0;
+ }
+ 
+ static int omnia_cmd_read_raw(struct i2c_adapter *adapter, u8 addr, u8 cmd,
+@@ -81,7 +84,7 @@ static int omnia_cmd_read_raw(struct i2c
+ 
+ 	ret = i2c_transfer(adapter, msgs, ARRAY_SIZE(msgs));
+ 	if (likely(ret == ARRAY_SIZE(msgs)))
+-		return len;
++		return 0;
+ 	else if (ret < 0)
+ 		return ret;
+ 	else
+@@ -91,11 +94,11 @@ static int omnia_cmd_read_raw(struct i2c
+ static int omnia_cmd_read_u8(const struct i2c_client *client, u8 cmd)
+ {
+ 	u8 reply;
+-	int ret;
++	int err;
+ 
+-	ret = omnia_cmd_read_raw(client->adapter, client->addr, cmd, &reply, 1);
+-	if (ret < 0)
+-		return ret;
++	err = omnia_cmd_read_raw(client->adapter, client->addr, cmd, &reply, 1);
++	if (err)
++		return err;
+ 
+ 	return reply;
+ }
+@@ -236,7 +239,7 @@ static void omnia_hwtrig_deactivate(stru
+ 
+ 	mutex_unlock(&leds->lock);
+ 
+-	if (err < 0)
++	if (err)
+ 		dev_err(cdev->dev, "Cannot put LED to software mode: %i\n",
+ 			err);
+ }
+@@ -302,7 +305,7 @@ static int omnia_led_register(struct i2c
+ 	ret = omnia_cmd_write_u8(client, CMD_LED_MODE,
+ 				 CMD_LED_MODE_LED(led->reg) |
+ 				 CMD_LED_MODE_USER);
+-	if (ret < 0) {
++	if (ret) {
+ 		dev_err(dev, "Cannot set LED %pOF to software mode: %i\n", np,
+ 			ret);
+ 		return ret;
+@@ -311,7 +314,7 @@ static int omnia_led_register(struct i2c
+ 	/* disable the LED */
+ 	ret = omnia_cmd_write_u8(client, CMD_LED_STATE,
+ 				 CMD_LED_STATE_LED(led->reg));
+-	if (ret < 0) {
++	if (ret) {
+ 		dev_err(dev, "Cannot set LED %pOF brightness: %i\n", np, ret);
+ 		return ret;
+ 	}
+@@ -364,7 +367,7 @@ static ssize_t brightness_store(struct d
+ {
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	unsigned long brightness;
+-	int ret;
++	int err;
+ 
+ 	if (kstrtoul(buf, 10, &brightness))
+ 		return -EINVAL;
+@@ -372,9 +375,9 @@ static ssize_t brightness_store(struct d
+ 	if (brightness > 100)
+ 		return -EINVAL;
+ 
+-	ret = omnia_cmd_write_u8(client, CMD_LED_SET_BRIGHTNESS, brightness);
++	err = omnia_cmd_write_u8(client, CMD_LED_SET_BRIGHTNESS, brightness);
+ 
+-	return ret < 0 ? ret : count;
++	return err ?: count;
+ }
+ static DEVICE_ATTR_RW(brightness);
+ 
+@@ -403,7 +406,7 @@ static ssize_t gamma_correction_store(st
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct omnia_leds *leds = i2c_get_clientdata(client);
+ 	bool val;
+-	int ret;
++	int err;
+ 
+ 	if (!leds->has_gamma_correction)
+ 		return -EOPNOTSUPP;
+@@ -411,9 +414,9 @@ static ssize_t gamma_correction_store(st
+ 	if (kstrtobool(buf, &val) < 0)
+ 		return -EINVAL;
+ 
+-	ret = omnia_cmd_write_u8(client, CMD_SET_GAMMA_CORRECTION, val);
++	err = omnia_cmd_write_u8(client, CMD_SET_GAMMA_CORRECTION, val);
+ 
+-	return ret < 0 ? ret : count;
++	return err ?: count;
+ }
+ static DEVICE_ATTR_RW(gamma_correction);
+ 
+@@ -431,7 +434,7 @@ static int omnia_mcu_get_features(const
+ 
+ 	err = omnia_cmd_read_raw(client->adapter, OMNIA_MCU_I2C_ADDR,
+ 				 CMD_GET_STATUS_WORD, &reply, sizeof(reply));
+-	if (err < 0)
++	if (err)
+ 		return err;
+ 
+ 	/* Check whether MCU firmware supports the CMD_GET_FEAUTRES command */
+@@ -440,7 +443,7 @@ static int omnia_mcu_get_features(const
+ 
+ 	err = omnia_cmd_read_raw(client->adapter, OMNIA_MCU_I2C_ADDR,
+ 				 CMD_GET_FEATURES, &reply, sizeof(reply));
+-	if (err < 0)
++	if (err)
+ 		return err;
+ 
+ 	return le16_to_cpu(reply);

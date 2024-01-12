@@ -1,0 +1,81 @@
+From 73bcd133c910bff3b6d3b3834d0d14be9444e90a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Sun, 11 Jun 2023 15:03:08 +0100
+Subject: [PATCH] nvmem: brcm_nvram: add .read_post_process() for MACs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1. Parse ASCII MAC format into byte based
+2. Calculate relative addresses based on index argument
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Message-ID: <20230611140330.154222-5-srinivas.kandagatla@linaro.org>
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/Kconfig      |  1 +
+ drivers/nvmem/brcm_nvram.c | 28 ++++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+--- a/drivers/nvmem/Kconfig
++++ b/drivers/nvmem/Kconfig
+@@ -55,6 +55,7 @@ config NVMEM_BRCM_NVRAM
+ 	tristate "Broadcom's NVRAM support"
+ 	depends on ARCH_BCM_5301X || COMPILE_TEST
+ 	depends on HAS_IOMEM
++	select GENERIC_NET_UTILS
+ 	help
+ 	  This driver provides support for Broadcom's NVRAM that can be accessed
+ 	  using I/O mapping.
+--- a/drivers/nvmem/brcm_nvram.c
++++ b/drivers/nvmem/brcm_nvram.c
+@@ -4,6 +4,8 @@
+  */
+ 
+ #include <linux/bcm47xx_nvram.h>
++#include <linux/etherdevice.h>
++#include <linux/if_ether.h>
+ #include <linux/io.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
+@@ -42,6 +44,25 @@ static int brcm_nvram_read(void *context
+ 	return 0;
+ }
+ 
++static int brcm_nvram_read_post_process_macaddr(void *context, const char *id, int index,
++						unsigned int offset, void *buf, size_t bytes)
++{
++	u8 mac[ETH_ALEN];
++
++	if (bytes != 3 * ETH_ALEN - 1)
++		return -EINVAL;
++
++	if (!mac_pton(buf, mac))
++		return -EINVAL;
++
++	if (index)
++		eth_addr_add(mac, index);
++
++	ether_addr_copy(buf, mac);
++
++	return 0;
++}
++
+ static int brcm_nvram_add_cells(struct brcm_nvram *priv, uint8_t *data,
+ 				size_t len)
+ {
+@@ -75,6 +96,13 @@ static int brcm_nvram_add_cells(struct b
+ 		priv->cells[idx].offset = value - (char *)data;
+ 		priv->cells[idx].bytes = strlen(value);
+ 		priv->cells[idx].np = of_get_child_by_name(dev->of_node, priv->cells[idx].name);
++		if (!strcmp(var, "et0macaddr") ||
++		    !strcmp(var, "et1macaddr") ||
++		    !strcmp(var, "et2macaddr")) {
++			priv->cells[idx].raw_len = strlen(value);
++			priv->cells[idx].bytes = ETH_ALEN;
++			priv->cells[idx].read_post_process = brcm_nvram_read_post_process_macaddr;
++		}
+ 	}
+ 
+ 	return 0;

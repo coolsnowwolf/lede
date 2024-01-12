@@ -1,0 +1,160 @@
+From bd7a7ed774afd1a4174df34227626c95573be517 Mon Sep 17 00:00:00 2001
+From: Miquel Raynal <miquel.raynal@bootlin.com>
+Date: Tue, 4 Apr 2023 18:21:17 +0100
+Subject: [PATCH] of: Move of_modalias() to module.c
+
+Create a specific .c file for OF related module handling.
+Move of_modalias() inside as a first step.
+
+The helper is exposed through of.h even though it is only used by core
+files because the users from device.c will soon be split into an OF-only
+helper in module.c as well as a device-oriented inline helper in
+of_device.h. Putting this helper in of_private.h would require to
+include of_private.h from of_device.h, which is not acceptable.
+
+Suggested-by: Rob Herring <robh+dt@kernel.org>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Reviewed-by: Rob Herring <robh@kernel.org>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230404172148.82422-10-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/of/Makefile |  2 +-
+ drivers/of/device.c | 37 -------------------------------------
+ drivers/of/module.c | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ include/linux/of.h  |  9 +++++++++
+ 4 files changed, 54 insertions(+), 38 deletions(-)
+ create mode 100644 drivers/of/module.c
+
+--- a/drivers/of/Makefile
++++ b/drivers/of/Makefile
+@@ -1,5 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0
+-obj-y = base.o device.o platform.o property.o
++obj-y = base.o device.o module.o platform.o property.o
+ obj-$(CONFIG_OF_KOBJ) += kobj.o
+ obj-$(CONFIG_OF_DYNAMIC) += dynamic.o
+ obj-$(CONFIG_OF_FLATTREE) += fdt.o
+--- a/drivers/of/device.c
++++ b/drivers/of/device.c
+@@ -1,5 +1,4 @@
+ // SPDX-License-Identifier: GPL-2.0
+-#include <linux/string.h>
+ #include <linux/kernel.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+@@ -248,42 +247,6 @@ const void *of_device_get_match_data(con
+ }
+ EXPORT_SYMBOL(of_device_get_match_data);
+ 
+-static ssize_t of_modalias(const struct device_node *np, char *str, ssize_t len)
+-{
+-	const char *compat;
+-	char *c;
+-	struct property *p;
+-	ssize_t csize;
+-	ssize_t tsize;
+-
+-	/* Name & Type */
+-	/* %p eats all alphanum characters, so %c must be used here */
+-	csize = snprintf(str, len, "of:N%pOFn%c%s", np, 'T',
+-			 of_node_get_device_type(np));
+-	tsize = csize;
+-	len -= csize;
+-	if (str)
+-		str += csize;
+-
+-	of_property_for_each_string(np, "compatible", p, compat) {
+-		csize = strlen(compat) + 1;
+-		tsize += csize;
+-		if (csize > len)
+-			continue;
+-
+-		csize = snprintf(str, len, "C%s", compat);
+-		for (c = str; c; ) {
+-			c = strchr(c, ' ');
+-			if (c)
+-				*c++ = '_';
+-		}
+-		len -= csize;
+-		str += csize;
+-	}
+-
+-	return tsize;
+-}
+-
+ int of_device_request_module(struct device *dev)
+ {
+ 	char *str;
+--- /dev/null
++++ b/drivers/of/module.c
+@@ -0,0 +1,44 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Linux kernel module helpers.
++ */
++
++#include <linux/of.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++
++ssize_t of_modalias(const struct device_node *np, char *str, ssize_t len)
++{
++	const char *compat;
++	char *c;
++	struct property *p;
++	ssize_t csize;
++	ssize_t tsize;
++
++	/* Name & Type */
++	/* %p eats all alphanum characters, so %c must be used here */
++	csize = snprintf(str, len, "of:N%pOFn%c%s", np, 'T',
++			 of_node_get_device_type(np));
++	tsize = csize;
++	len -= csize;
++	if (str)
++		str += csize;
++
++	of_property_for_each_string(np, "compatible", p, compat) {
++		csize = strlen(compat) + 1;
++		tsize += csize;
++		if (csize > len)
++			continue;
++
++		csize = snprintf(str, len, "C%s", compat);
++		for (c = str; c; ) {
++			c = strchr(c, ' ');
++			if (c)
++				*c++ = '_';
++		}
++		len -= csize;
++		str += csize;
++	}
++
++	return tsize;
++}
+--- a/include/linux/of.h
++++ b/include/linux/of.h
+@@ -374,6 +374,9 @@ extern int of_parse_phandle_with_args_ma
+ extern int of_count_phandle_with_args(const struct device_node *np,
+ 	const char *list_name, const char *cells_name);
+ 
++/* module functions */
++extern ssize_t of_modalias(const struct device_node *np, char *str, ssize_t len);
++
+ /* phandle iterator functions */
+ extern int of_phandle_iterator_init(struct of_phandle_iterator *it,
+ 				    const struct device_node *np,
+@@ -731,6 +734,12 @@ static inline int of_count_phandle_with_
+ 	return -ENOSYS;
+ }
+ 
++static inline ssize_t of_modalias(const struct device_node *np, char *str,
++				  ssize_t len)
++{
++	return -ENODEV;
++}
++
+ static inline int of_phandle_iterator_init(struct of_phandle_iterator *it,
+ 					   const struct device_node *np,
+ 					   const char *list_name,
