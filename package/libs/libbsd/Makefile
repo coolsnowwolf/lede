@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libbsd
 PKG_VERSION:=0.11.7
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://libbsd.freedesktop.org/releases
@@ -28,6 +28,8 @@ endef
 define Package/libbsd/description
  This library provides useful functions commonly found on BSD systems, and lacking on others like GNU systems, thus making it easier to port projects with strong BSD origins, without needing to embed the same code over and over again on each project.
 endef
+
+TARGET_CFLAGS += -D_LARGEFILE64_SOURCE
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib

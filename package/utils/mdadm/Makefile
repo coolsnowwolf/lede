@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mdadm
 PKG_VERSION:=4.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/raid/mdadm
@@ -49,7 +49,8 @@ TARGET_CFLAGS += \
 	-DMAP_DIR='\"/var/run/mdadm\"' \
 	-DMDMON_DIR='\"/var/run/mdadm\"' \
 	-DFAILED_SLOTS_DIR='\"/var/run/mdadm/failed-slots\"' \
-	-DNO_LIBUDEV
+	-DNO_LIBUDEV \
+	-D_LARGEFILE64_SOURCE
 
 TARGET_CXFLAGS = -DNO_LIBUDEV
 
