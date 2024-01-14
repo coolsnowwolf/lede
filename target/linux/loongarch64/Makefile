@@ -16,6 +16,6 @@ KERNELNAME:=vmlinuz.efi
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += \
-	partx-utils blkid e2fsprogs grub2-efi-loongarch64
+	partx-utils blkid e2fsprogs grub2-efi-loongarch64 htop wpad-openssl
 
 $(eval $(call BuildTarget))
