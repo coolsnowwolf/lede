@@ -15,7 +15,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
  
  #include "gpiolib.h"
  #include "gpiolib-of.h"
-@@ -1107,3 +1109,72 @@ void of_gpiochip_remove(struct gpio_chip
+@@ -1111,3 +1113,74 @@ void of_gpiochip_remove(struct gpio_chip
  {
  	of_node_put(dev_of_node(&chip->gpiodev->dev));
  }
@@ -44,17 +44,19 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		of_property_read_string(cnp, "gpio-export,name", &name);
 +
 +		if (!name)
-+			// max_gpio = of_gpio_count(cnp);
++			max_gpio = of_gpio_named_count(cnp, "gpios");
 +
 +		for (i = 0; i < max_gpio; i++) {
++			struct gpio_desc *desc;
 +			unsigned flags = 0;
 +			enum of_gpio_flags of_flags;
 +
-+			gpio = of_get_named_gpio(cnp, i, &of_flags);
-+			if (!gpio_is_valid(gpio))
-+				return gpio;
++			desc = of_get_named_gpiod_flags(cnp, "gpios", i, &of_flags);
++			if (IS_ERR(desc))
++				return PTR_ERR(desc);
++			gpio = desc_to_gpio(desc);
 +
-+			if (of_flags == OF_GPIO_ACTIVE_LOW)
++			if (of_flags & OF_GPIO_ACTIVE_LOW)
 +				flags |= GPIOF_ACTIVE_LOW;
 +
 +			if (!of_property_read_u32(cnp, "gpio-export,output", &val))
@@ -66,7 +68,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +				continue;
 +
 +			dmc = of_property_read_bool(cnp, "gpio-export,direction_may_change");
-+			gpio_export_with_name(gpio, dmc, name);
++			gpio_export_with_name(gpio_to_desc(gpio), dmc, name);
 +			nb++;
 +		}
 +	}
@@ -88,22 +90,24 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +module_platform_driver(gpio_export_driver);
 +
 +#endif
-\ No newline at end of file
 --- a/include/linux/gpio/consumer.h
 +++ b/include/linux/gpio/consumer.h
-@@ -644,6 +644,7 @@ static inline struct gpio_desc *acpi_get
+@@ -644,7 +644,10 @@ static inline struct gpio_desc *acpi_get
  
  #if IS_ENABLED(CONFIG_GPIOLIB) && IS_ENABLED(CONFIG_GPIO_SYSFS)
  
-+int _gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name);
++int __gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name);
  int gpiod_export(struct gpio_desc *desc, bool direction_may_change);
++int gpio_export_with_name(struct gpio_desc *desc, bool direction_may_change,
++			  const char *name);
  int gpiod_export_link(struct device *dev, const char *name,
  		      struct gpio_desc *desc);
-@@ -653,6 +654,13 @@ void gpiod_unexport(struct gpio_desc *de
+ void gpiod_unexport(struct gpio_desc *desc);
+@@ -653,11 +656,25 @@ void gpiod_unexport(struct gpio_desc *de
  
  #include <asm/errno.h>
  
-+static inline int _gpiod_export(struct gpio_desc *desc,
++static inline int __gpiod_export(struct gpio_desc *desc,
 +			       bool direction_may_change,
 +			       const char *name)
 +{
@@ -113,9 +117,21 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
  static inline int gpiod_export(struct gpio_desc *desc,
  			       bool direction_may_change)
  {
+ 	return -ENOSYS;
+ }
++
++static inline int gpio_export_with_name(struct gpio_desc *desc,
++					bool direction_may_change,
++					const char *name)
++{
++	return -ENOSYS;
++}
+ 
+ static inline int gpiod_export_link(struct device *dev, const char *name,
+ 				    struct gpio_desc *desc)
 --- a/drivers/gpio/gpiolib-sysfs.c
 +++ b/drivers/gpio/gpiolib-sysfs.c
-@@ -554,7 +554,7 @@ static struct class gpio_class = {
+@@ -557,7 +557,7 @@ static struct class gpio_class = {
   *
   * Returns zero on success, else an error.
   */
@@ -124,7 +140,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
  {
  	struct gpio_chip	*chip;
  	struct gpio_device	*gdev;
-@@ -616,6 +616,8 @@ int gpiod_export(struct gpio_desc *desc,
+@@ -619,6 +619,8 @@ int gpiod_export(struct gpio_desc *desc,
  	offset = gpio_chip_hwgpio(desc);
  	if (chip->names && chip->names[offset])
  		ioname = chip->names[offset];
@@ -133,7 +149,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
  
  	dev = device_create_with_groups(&gpio_class, &gdev->dev,
  					MKDEV(0, 0), data, gpio_groups,
-@@ -637,6 +639,12 @@ err_unlock:
+@@ -640,8 +642,21 @@ err_unlock:
  	gpiod_dbg(desc, "%s: status %d\n", __func__, status);
  	return status;
  }
@@ -145,4 +161,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +}
  EXPORT_SYMBOL_GPL(gpiod_export);
  
++int gpio_export_with_name(struct gpio_desc *desc, bool direction_may_change,
++			  const char *name)
++{
++	return __gpiod_export(desc, direction_may_change, name);
++}
++EXPORT_SYMBOL_GPL(gpio_export_with_name);
++
  static int match_export(struct device *dev, const void *desc)
+ {
+ 	struct gpiod_data *data = dev_get_drvdata(dev);
