@@ -55,7 +55,7 @@ HOST_CONFIGURE_ARGS = \
 	--target=$(REAL_GNU_TARGET_NAME) \
 	--with-sysroot=$(TOOLCHAIN_DIR) \
 	--with-system-zlib \
-	--with-zstd \
+	--without-zstd \
 	--enable-deterministic-archives \
 	--enable-plugins \
 	--enable-lto \

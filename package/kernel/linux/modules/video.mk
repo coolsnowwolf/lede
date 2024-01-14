@@ -308,10 +308,14 @@ $(eval $(call KernelPackage,drm))
 define KernelPackage/drm-buddy
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=A page based buddy allocator
-  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-drm @LINUX_6_1||LINUX_6_6
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm @LINUX_6_1||LINUX_6_6
   KCONFIG:=CONFIG_DRM_BUDDY
   FILES:= $(LINUX_DIR)/drivers/gpu/drm/drm_buddy.ko
   AUTOLOAD:=$(call AutoProbe,drm_buddy)
+endef
+
+define KernelPackage/drm-buddy/description
+  A page based buddy allocator
 endef
 
 $(eval $(call KernelPackage,drm-buddy))
@@ -367,7 +371,7 @@ $(eval $(call KernelPackage,drm-kms-helper))
 define KernelPackage/drm-display-helper
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM helpers for display adapters drivers
-  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm +TARGET_x86:kmod-drm-buddy @LINUX_6_1||LINUX_6_6
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm +(TARGET_x86||TARGET_loongarch64):kmod-drm-buddy @LINUX_6_1||LINUX_6_6
   KCONFIG:=CONFIG_DRM_DISPLAY_HELPER
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko
   AUTOLOAD:=$(call AutoProbe,drm_display_helper)
@@ -383,8 +387,8 @@ define KernelPackage/drm-amdgpu
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=AMDGPU DRM support
   DEPENDS:=@TARGET_x86||TARGET_loongarch64 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
-	+kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware \
-	+LINUX_6_1:kmod-drm-display-helper +LINUX_6_1:kmod-acpi-video
+	+kmod-drm-ttm-helper +kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware \
+	+kmod-drm-display-helper +kmod-drm-buddy +kmod-acpi-video
   KCONFIG:=CONFIG_DRM_AMDGPU \
 	CONFIG_DRM_AMDGPU_SI=y \
 	CONFIG_DRM_AMDGPU_CIK=y \

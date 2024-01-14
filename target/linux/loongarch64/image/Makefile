@@ -16,7 +16,7 @@ ifneq ($(CONFIG_GRUB_CONSOLE),)
   GRUB_TERMINALS += console
 endif
 
-GRUB_SERIAL:=$(call qstrip,$(CONFIG_TARGET_SERIAL))
+GRUB_SERIAL:=$(call qstrip,$(CONFIG_GRUB_SERIAL))
 
 GRUB_CONSOLE_CMDLINE += console=$(GRUB_SERIAL),$(CONFIG_GRUB_BAUDRATE)n8$(if $(CONFIG_GRUB_FLOWCONTROL),r,)
 GRUB_SERIAL_CONFIG := serial --unit=0 --speed=$(CONFIG_GRUB_BAUDRATE) --word=8 --parity=no --stop=1 --rtscts=$(if $(CONFIG_GRUB_FLOWCONTROL),on,off)
