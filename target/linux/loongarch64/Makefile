@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=loongarch64
 BOARD:=loongarch64
 BOARDNAME:=Loongson LoongArch
-FEATURES:=audio display ext4 pcie boot-part rootfs-part rtc usb targz
+FEATURES:=audio display squashfs ext4 pcie boot-part rootfs-part rtc usb targz
 
 KERNEL_PATCHVER:=6.6
 
