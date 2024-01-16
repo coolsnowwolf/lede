@@ -280,6 +280,24 @@ define Device/mediatek_mt7986b-rfb
 endef
 TARGET_DEVICES += mediatek_mt7986b-rfb
 
+define Device/mediatek_mt7988a-rfb-nand
+  DEVICE_VENDOR := MediaTek
+  DEVICE_MODEL := MT7988a nand rfb
+  DEVICE_DTS := mt7988a-dsa-10g-spim-nand
+  DEVICE_DTS_DIR := $(DTS_DIR)/
+  KERNEL_LOADADDR := 0x48000000
+  SUPPORTED_DEVICES := mediatek,mt7988a-rfb
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 65536k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += mediatek_mt7988a-rfb-nand
+
 define Device/netcore_n60
   DEVICE_VENDOR := Netcore
   DEVICE_MODEL := N60
@@ -307,6 +325,16 @@ define Device/qihoo_360t7
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += qihoo_360t7
+
+define Device/ruijie_rg-x60-pro
+  DEVICE_VENDOR := Ruijie
+  DEVICE_MODEL := RG-X60 Pro
+  DEVICE_DTS := mt7986a-ruijie-rg-x60-pro
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7986-firmware mt7986-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += ruijie_rg-x60-pro
 
 define Device/tplink_tl-common
   DEVICE_VENDOR := TP-Link

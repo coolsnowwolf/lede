@@ -1,0 +1,153 @@
+--- a/include/linux/device/class.h
++++ b/include/linux/device/class.h
+@@ -51,6 +51,7 @@
+  */
+ struct class {
+ 	const char		*name;
++	struct module		*owner;
+ 
+ 	const struct attribute_group	**class_groups;
+ 	const struct attribute_group	**dev_groups;
+--- a/include/linux/prandom.h
++++ b/include/linux/prandom.h
+@@ -24,6 +24,12 @@
+ #define prandom_init_once(pcpu_state)			\
+ 	DO_ONCE(prandom_seed_full_state, (pcpu_state))
+ 
++/* Deprecated: use get_random_u32_below() instead. */
++static inline u32 prandom_u32_max(u32 ep_ro)
++{
++	return get_random_u32_below(ep_ro);
++}
++
+ /*
+  * Handle minimum values for seeds
+  */
+--- a/include/linux/u64_stats_sync.h
++++ b/include/linux/u64_stats_sync.h
+@@ -213,4 +213,16 @@
+ 	return __u64_stats_fetch_retry(syncp, start);
+ }
+ 
++/* Obsolete interfaces */
++static inline unsigned int u64_stats_fetch_begin_irq(const struct u64_stats_sync *syncp)
++{
++	return u64_stats_fetch_begin(syncp);
++}
++
++static inline bool u64_stats_fetch_retry_irq(const struct u64_stats_sync *syncp,
++					     unsigned int start)
++{
++	return u64_stats_fetch_retry(syncp, start);
++}
++
+ #endif /* _LINUX_U64_STATS_SYNC_H */
+--- a/drivers/thermal/thermal_core.c
++++ b/drivers/thermal/thermal_core.c
+@@ -1270,7 +1270,7 @@
+ 		return ERR_PTR(-EINVAL);
+ 	}
+ 
+-	if (num_trips > 0 && !trips)
++	if (num_trips > 0 && (!ops->get_trip_type || !ops->get_trip_temp) && !trips)
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	if (!thermal_class)
+@@ -1392,6 +1392,17 @@
+ 	return ERR_PTR(result);
+ }
+ EXPORT_SYMBOL_GPL(thermal_zone_device_register_with_trips);
++
++struct thermal_zone_device *thermal_zone_device_register(const char *type, int ntrips, int mask,
++							 void *devdata, struct thermal_zone_device_ops *ops,
++							 const struct thermal_zone_params *tzp, int passive_delay,
++							 int polling_delay)
++{
++	return thermal_zone_device_register_with_trips(type, NULL, ntrips, mask,
++						       devdata, ops, tzp,
++						       passive_delay, polling_delay);
++}
++EXPORT_SYMBOL_GPL(thermal_zone_device_register);
+ 
+ struct thermal_zone_device *thermal_tripless_zone_device_register(
+ 					const char *type,
+--- a/drivers/thermal/thermal_trip.c
++++ b/drivers/thermal/thermal_trip.c
+@@ -116,11 +116,29 @@
+ int __thermal_zone_get_trip(struct thermal_zone_device *tz, int trip_id,
+ 			    struct thermal_trip *trip)
+ {
+-	if (!tz || !tz->trips || trip_id < 0 || trip_id >= tz->num_trips || !trip)
++	int ret;
++
++	if (!tz || trip_id < 0 || trip_id >= tz->num_trips || !trip)
+ 		return -EINVAL;
+ 
+-	*trip = tz->trips[trip_id];
+-	return 0;
++		if (tz->trips) {
++		*trip = tz->trips[trip_id];
++		return 0;
++	}
++
++	if (tz->ops->get_trip_hyst) {
++		ret = tz->ops->get_trip_hyst(tz, trip_id, &trip->hysteresis);
++		if (ret)
++			return ret;
++	} else {
++		trip->hysteresis = 0;
++	}
++
++	ret = tz->ops->get_trip_temp(tz, trip_id, &trip->temperature);
++	if (ret)
++		return ret;
++
++	return tz->ops->get_trip_type(tz, trip_id, &trip->type);
+ }
+ EXPORT_SYMBOL_GPL(__thermal_zone_get_trip);
+ 
+--- a/include/linux/thermal.h
++++ b/include/linux/thermal.h
+@@ -76,7 +76,11 @@
+ 	int (*set_trips) (struct thermal_zone_device *, int, int);
+ 	int (*change_mode) (struct thermal_zone_device *,
+ 		enum thermal_device_mode);
++	int (*get_trip_type) (struct thermal_zone_device *, int,
++		enum thermal_trip_type *);
++	int (*get_trip_temp) (struct thermal_zone_device *, int, int *);
+ 	int (*set_trip_temp) (struct thermal_zone_device *, int, int);
++	int (*get_trip_hyst) (struct thermal_zone_device *, int, int *);
+ 	int (*set_trip_hyst) (struct thermal_zone_device *, int, int);
+ 	int (*get_crit_temp) (struct thermal_zone_device *, int *);
+ 	int (*set_emul_temp) (struct thermal_zone_device *, int);
+@@ -300,6 +304,14 @@
+ #endif
+ 
+ #ifdef CONFIG_THERMAL
++struct thermal_zone_device *thermal_zone_device_register(
++					const char *type,
++					int num_trips, int mask,
++					void *devdata,
++					struct thermal_zone_device_ops *ops,
++					const struct thermal_zone_params *tzp,
++					int passive_delay, int polling_delay);
++					
+ struct thermal_zone_device *thermal_zone_device_register_with_trips(
+ 					const char *type,
+ 					struct thermal_trip *trips,
+@@ -356,6 +368,15 @@
+ int thermal_zone_device_disable(struct thermal_zone_device *tz);
+ void thermal_zone_device_critical(struct thermal_zone_device *tz);
+ #else
++static inline struct thermal_zone_device *thermal_zone_device_register(
++					const char *type,
++					int num_trips, int mask,
++					void *devdata,
++					struct thermal_zone_device_ops *ops,
++					const struct thermal_zone_params *tzp,
++					int passive_delay, int polling_delay)
++{ return ERR_PTR(-ENODEV); }
++
+ static inline struct thermal_zone_device *thermal_zone_device_register_with_trips(
+ 					const char *type,
+ 					struct thermal_trip *trips,

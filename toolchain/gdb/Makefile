@@ -7,12 +7,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gdb
-PKG_VERSION:=12.1
+PKG_VERSION:=14.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gdb
-PKG_HASH:=0e1793bf8f2b54d53f46dea84ccfd446f48f81b297b28c4f7fc017b818d69fed
+PKG_HASH:=d66df51276143451fcbff464cc8723d68f1e9df45a6a2d5635a54e71643edb80
+PKG_CPE_ID:=cpe:/a:gnu:gdb
 GDB_DIR:=$(PKG_NAME)-$(PKG_VERSION)
 
 HOST_BUILD_DIR:=$(BUILD_DIR_TOOLCHAIN)/$(GDB_DIR)
@@ -20,6 +21,9 @@ HOST_BUILD_DIR:=$(BUILD_DIR_TOOLCHAIN)/$(GDB_DIR)
 HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/toolchain-build.mk
+
+export ZSTD_CFLAGS=-I$(STAGING_DIR_HOST)/include -pthread
+export ZSTD_LIBS=-L$(STAGING_DIR_HOST)/lib -lzstd -lpthread
 
 HOST_CONFIGURE_VARS += \
 	acx_cv_cc_gcc_supports_ada=false \

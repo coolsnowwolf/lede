@@ -12,6 +12,7 @@ BIN_VERSION:=$(PKG_VERSION)
 
 PKG_SOURCE_URL:=@GNU/binutils/
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
+PKG_CPE_ID:=cpe:/a:gnu:binutils
 
 TAR_OPTIONS += --exclude='*.rej'
 
@@ -31,11 +32,21 @@ ifeq ($(PKG_VERSION),2.40)
   PKG_HASH:=0f8a4c272d7f17f369ded10a4aca28b8e304828e95526da482b0ccc4dfc9d8e1
 endif
 
+ifeq ($(PKG_VERSION),2.41)
+  PKG_HASH:=ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450
+endif
+
 HOST_BUILD_PARALLEL:=1
 
 PATCH_DIR:=./patches/$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/toolchain-build.mk
+
+ifdef CONFIG_GCC_USE_GRAPHITE
+  GRAPHITE_CONFIGURE:= --with-isl=$(STAGING_DIR_HOST)
+else
+  GRAPHITE_CONFIGURE:= --without-isl --without-cloog
+endif
 
 HOST_CONFIGURE_ARGS = \
 	--prefix=$(TOOLCHAIN_DIR) \
@@ -43,8 +54,12 @@ HOST_CONFIGURE_ARGS = \
 	--host=$(GNU_HOST_NAME) \
 	--target=$(REAL_GNU_TARGET_NAME) \
 	--with-sysroot=$(TOOLCHAIN_DIR) \
+	--with-system-zlib \
+	--without-zstd \
 	--enable-deterministic-archives \
 	--enable-plugins \
+	--enable-lto \
+	--disable-gprofng \
 	--disable-multilib \
 	--disable-werror \
 	--disable-nls \
@@ -74,7 +89,6 @@ define Host/Prepare
 	$(call Host/Prepare/Default)
 	ln -snf $(notdir $(HOST_BUILD_DIR)) $(BUILD_DIR_TOOLCHAIN)/$(PKG_NAME)
 	$(CP) $(SCRIPT_DIR)/config.{guess,sub} $(HOST_BUILD_DIR)/
-	$(SED) 's, " Linaro.*,,' $(HOST_BUILD_DIR)/bfd/version.h
 endef
 
 define Host/Compile
@@ -82,22 +96,10 @@ define Host/Compile
 endef
 
 define Host/Install
-	mkdir -p $(TOOLCHAIN_DIR)/initial
 	$(MAKE) -C $(HOST_BUILD_DIR) \
-		prefix=$(TOOLCHAIN_DIR)/initial \
 		install
-	$(MAKE) -C $(HOST_BUILD_DIR) \
-		prefix=$(TOOLCHAIN_DIR) \
-		install
-	$(call FixupLibdir,$(TOOLCHAIN_DIR)/initial)
-	$(RM) $(TOOLCHAIN_DIR)/initial/lib/libiberty.a
+	$(call FixupLibdir,$(TOOLCHAIN_DIR))
 	$(CP) $(TOOLCHAIN_DIR)/bin/$(REAL_GNU_TARGET_NAME)-readelf $(HOST_BUILD_PREFIX)/bin/readelf
-	# ARC gcc requires extlib.
-	# If extlib is not available in "initial" folder
-	# initial gcc will fail to build libc.
-	if [ -d $(TOOLCHAIN_DIR)/extlib ]; then \
-		$(CP) -r $(TOOLCHAIN_DIR)/extlib $(TOOLCHAIN_DIR)/initial/; \
-	fi
 endef
 
 define Host/Clean
