@@ -28,21 +28,3 @@ define KernelPackage/drm-phytium/description
 endef
 
 $(eval $(call KernelPackage,drm-phytium))
-
-define KernelPackage/rtl8821cs
-  SUBMENU:=$(WIRELESS_MENU)
-  TITLE:=Realtek RTL8821CS support
-  DEPENDS:=@TARGET_phytium +@DRIVER_11AC_SUPPORT +@DRIVER_11N_SUPPORT
-  KCONFIG:=CONFIG_RTL8821CS \
-     CONFIG_CFG80211=y
-  FILES:= \
-     $(LINUX_DIR)/drivers/net/wireless/rtl8821cs/8821cs.ko
-  AUTOLOAD:=$(call AutoProbe,8821cs)
-  MODPARAMS.8821cs:=rtw_channel_plan=0x76
-endef
-
-define KernelPackage/rtl8821cs/description
- Kernel modules for Realtek RTL8821CS support
-endef
-
-$(eval $(call KernelPackage,rtl8821cs))

@@ -19,7 +19,6 @@ define Device/phytiumpi_firefly_4GB
   IMAGE/factory.bin := append-uboot | pad-to 4096k | append-kernel | pad-to 10240k |\
 	  append-rootfs | pad-rootfs | append-metadata
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_PACKAGES := kmod-rtl8821cs
 endef
 TARGET_DEVICES += phytiumpi_firefly_4GB
 
@@ -38,6 +37,5 @@ define Device/phytiumpi_firefly_2GB
   IMAGE/factory.bin := append-uboot | pad-to 4096k | append-kernel | pad-to 10240k |\
 	  append-rootfs | pad-rootfs | append-metadata
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_PACKAGES := kmod-rtl8821cs
 endef
 TARGET_DEVICES += phytiumpi_firefly_2GB
