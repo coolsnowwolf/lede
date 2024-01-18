@@ -42,6 +42,7 @@ endef
 Package/grub2=$(call Package/grub2/Default,x86,pc)
 Package/grub2-efi=$(call Package/grub2/Default,x86,efi)
 Package/grub2-efi-arm=$(call Package/grub2/Default,armsr,efi)
+Package/grub2-efi-arm=$(call Package/grub2/Default,phytium_armv8,efi)
 Package/grub2-efi-loongarch64=$(call Package/grub2/Default,loongarch64,efi)
 
 define Package/grub2-editenv
