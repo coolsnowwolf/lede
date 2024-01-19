@@ -57,7 +57,7 @@ $(eval $(call KernelPackage,backlight-pwm))
 define KernelPackage/acpi-video
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=ACPI Extensions For Display Adapters
-  DEPENDS:=@TARGET_x86||TARGET_loongarch64 +kmod-backlight
+  DEPENDS:=@TARGET_x86||TARGET_loongarch64||TARGET_phytium +kmod-backlight
   HIDDEN:=1
   KCONFIG:=CONFIG_ACPI_VIDEO
   FILES:=$(LINUX_DIR)/drivers/acpi/video.ko
@@ -386,7 +386,7 @@ $(eval $(call KernelPackage,drm-display-helper))
 define KernelPackage/drm-amdgpu
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=AMDGPU DRM support
-  DEPENDS:=@TARGET_x86||TARGET_loongarch64 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
+  DEPENDS:=@TARGET_x86||TARGET_loongarch64||TARGET_phytium @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
 	+kmod-drm-ttm-helper +kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware \
 	+kmod-drm-display-helper +kmod-drm-buddy +kmod-acpi-video
   KCONFIG:=CONFIG_DRM_AMDGPU \
@@ -525,7 +525,7 @@ $(eval $(call KernelPackage,drm-panfrost))
 define KernelPackage/drm-radeon
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Radeon DRM support
-  DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-kms-helper \
+  DEPENDS:=@TARGET_x86||TARGET_phytium @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-kms-helper \
 	+kmod-drm-ttm +kmod-i2c-algo-bit +LINUX_6_1:kmod-acpi-video +radeon-firmware
   KCONFIG:=CONFIG_DRM_RADEON
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/radeon/radeon.ko
