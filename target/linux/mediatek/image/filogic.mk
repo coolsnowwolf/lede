@@ -146,6 +146,42 @@ define Device/cetron_ct3003-mod
 endef
 TARGET_DEVICES += cetron_ct3003-mod
 
+define Device/cmcc_rax3000m-emmc-ubootmod
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := RAX3000M eMMC version (U-Boot mod)
+  DEVICE_DTS := mt7981b-cmcc-rax3000m-emmc-ubootmod
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 \
+	automount f2fsck mkf2fs
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += cmcc_rax3000m-emmc-ubootmod
+
+define Device/cmcc_rax3000m-nand-ubootmod
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := RAX3000M NAND version (U-Boot mod)
+  DEVICE_DTS := mt7981b-cmcc-rax3000m-nand-ubootmod
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware \
+	kmod-usb3 automount
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 116736k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  KERNEL = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
+endef
+TARGET_DEVICES += cmcc_rax3000m-nand-ubootmod
+
 define Device/fzs_5gcpe-p3
   DEVICE_VENDOR := FZS
   DEVICE_MODEL := 5GCPE P3
