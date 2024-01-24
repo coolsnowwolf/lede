@@ -646,6 +646,17 @@ ucidef_set_ntpserver() {
 	json_select ..
 }
 
+ucidef_set_poe() {
+	json_select_object poe
+		json_add_string "budget" "$1"
+		json_select_array ports
+			for port in $2; do
+				json_add_string "" "$port"
+			done
+		json_select ..
+	json_select ..
+}
+
 ucidef_add_wlan() {
 	local path="$1"; shift
 
