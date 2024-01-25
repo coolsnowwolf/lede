@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=linux-firmware
-PKG_VERSION:=20230804
+PKG_VERSION:=20231211
 PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=@KERNEL/linux/kernel/firmware
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_HASH:=88d46c543847ee3b03404d4941d91c92974690ee1f6fdcbee9cef3e5f97db688
+PKG_HASH:=96af7e4b5eabd37869cdb3dcbb7ab36911106d39b76e799fa1caab16a9dbe8bb
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 
