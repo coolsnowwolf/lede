@@ -1336,7 +1336,7 @@ $(eval $(call KernelPackage,itco-wdt))
 define KernelPackage/mhi-bus
   SUBMENU:=$(OTHER_MENU)
   TITLE:=MHI bus
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1||LINUX_6_6)
   KCONFIG:=CONFIG_MHI_BUS \
            CONFIG_MHI_BUS_DEBUG=y
   FILES:=$(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko
