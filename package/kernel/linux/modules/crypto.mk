@@ -39,7 +39,8 @@ define KernelPackage/crypto-aead
   TITLE:=CryptoAPI AEAD support
   KCONFIG:= \
 	CONFIG_CRYPTO_AEAD \
-	CONFIG_CRYPTO_AEAD2
+	CONFIG_CRYPTO_AEAD2 \
+	CONFIG_CRYPTO_GENIV
   FILES:= \
 	  $(LINUX_DIR)/crypto/aead.ko \
 	  $(LINUX_DIR)/crypto/geniv.ko@ge5.10

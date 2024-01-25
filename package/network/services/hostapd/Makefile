@@ -141,7 +141,7 @@ ifneq ($(LOCAL_TYPE),hostapd)
   endif
 endif
 
-DRV_DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny
+DRV_DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny +kmod-cfg80211
 
 
 define Package/hostapd/Default

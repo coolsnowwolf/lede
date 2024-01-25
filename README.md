@@ -1,5 +1,7 @@
 # 欢迎来到 Lean 的 LEDE 源码仓库
 
+为国产龙芯 LOONGSON SoC loongarch64 / 飞腾 Phytium 腾锐2000 系列架构添加支持
+
 I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_JA.md)
 
 ## 官方讨论群

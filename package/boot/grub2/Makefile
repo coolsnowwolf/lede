@@ -6,12 +6,12 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=grub
-PKG_VERSION:=2.06
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=2.12
+PKG_RELEASE:=6
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/grub
-PKG_HASH:=b79ea44af91b93d17cd3fe80bdae6ed43770678a9a5ae192ccea803ebb657ee1
+PKG_HASH:=f3c97391f7c4eaa677a78e090c7e97e6dc47b16f655f04683ebd37bef7fe0faa
 
 PKG_LICENSE:=GPL-3.0-or-later
 PKG_CPE_ID:=cpe:/a:gnu:grub2
@@ -25,6 +25,7 @@ ifneq ($(BUILD_VARIANT),none)
 endif
 
 PKG_FLAGS:=nonshared
+PKG_BUILD_FLAGS:=no-gc-sections no-lto no-mold
 
 include $(INCLUDE_DIR)/host-build.mk
 include $(INCLUDE_DIR)/package.mk
@@ -40,7 +41,9 @@ endef
 
 Package/grub2=$(call Package/grub2/Default,x86,pc)
 Package/grub2-efi=$(call Package/grub2/Default,x86,efi)
-Package/grub2-efi-arm=$(call Package/grub2/Default,armvirt,efi)
+Package/grub2-efi-arm=$(call Package/grub2/Default,armsr,efi)
+Package/grub2-efi-arm=$(call Package/grub2/Default,phytium_armv8,efi)
+Package/grub2-efi-loongarch64=$(call Package/grub2/Default,loongarch64,efi)
 
 define Package/grub2-editenv
   CATEGORY:=Utilities
@@ -127,14 +130,14 @@ define Package/grub2/install
 		-O i386-pc \
 		-c $(PKG_BUILD_DIR)/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/gpt-core.img \
-		at_keyboard biosdisk boot chain configfile fat linux ls part_gpt reboot search serial vga
+		at_keyboard biosdisk boot chain configfile fat linux ls part_gpt reboot search serial test vga
 	$(STAGING_DIR_HOST)/bin/grub-mkimage \
 		-d $(PKG_BUILD_DIR)/grub-core \
 		-p /boot/grub \
 		-O i386-pc \
 		-c ./files/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/generic-core.img \
-		at_keyboard biosdisk boot chain configfile ext2 linux ls part_msdos reboot search serial vga
+		at_keyboard biosdisk boot chain configfile ext2 linux ls part_msdos reboot search serial test vga
 	$(STAGING_DIR_HOST)/bin/grub-mkimage \
 		-d $(PKG_BUILD_DIR)/grub-core \
 		-p /boot/grub \
@@ -159,7 +162,7 @@ define Package/grub2-efi/install
 		-O $(CONFIG_ARCH)-efi \
 		-c $(PKG_BUILD_DIR)/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/boot$(if $(CONFIG_x86_64),x64,ia32).efi \
-		at_keyboard boot chain configfile fat linux ls part_gpt reboot serial efi_gop efi_uga
+		at_keyboard boot chain configfile fat linux ls part_gpt reboot serial test efi_gop efi_uga
 	$(STAGING_DIR_HOST)/bin/grub-mkimage \
 		-d $(PKG_BUILD_DIR)/grub-core \
 		-p /boot/grub \
@@ -178,14 +181,29 @@ define Package/grub2-efi-arm/install
 		-O arm$(if $(CONFIG_aarch64),64,)-efi \
 		-c $(PKG_BUILD_DIR)/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/boot$(if $(CONFIG_aarch64),aa64,arm).efi \
-		boot chain configfile fat linux ls part_gpt reboot search search_fs_uuid search_label serial efi_gop lsefi minicmd
+		boot chain configfile fat linux ls part_gpt part_msdos reboot search \
+		search_fs_uuid search_label serial efi_gop lsefi minicmd ext2
 	$(STAGING_DIR_HOST)/bin/grub-mkimage \
 		-d $(PKG_BUILD_DIR)/grub-core \
 		-p /boot/grub \
 		-O arm$(if $(CONFIG_aarch64),64,)-efi \
 		-c ./files/grub-early.cfg \
 		-o $(STAGING_DIR_IMAGE)/grub2/iso-bootaa$(if $(CONFIG_aarch64),aa64,arm).efi \
-		boot chain configfile fat iso9660 linux ls lsefi minicmd part_msdos part_gpt reboot serial test efi_gop
+		boot chain configfile fat iso9660 linux ls lsefi minicmd part_msdos part_gpt \
+		reboot serial test efi_gop
+endef
+
+define Package/grub2-efi-loongarch64/install
+	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)/grub2
+	cp ./files/grub-early-gpt.cfg $(PKG_BUILD_DIR)/grub-early.cfg
+	$(STAGING_DIR_HOST)/bin/grub-mkimage \
+		-d $(PKG_BUILD_DIR)/grub-core \
+		-p /boot/grub \
+		-O loongarch64-efi \
+		-c $(PKG_BUILD_DIR)/grub-early.cfg \
+		-o $(STAGING_DIR_IMAGE)/grub2/bootloongarch64.efi \
+		boot chain configfile fat linux ls lsefi minicmd part_gpt part_msdos reboot search \
+		search_fs_uuid search_label serial efi_gop all_video gfxterm ext2
 endef
 
 
@@ -203,5 +221,6 @@ $(eval $(call HostBuild))
 $(eval $(call BuildPackage,grub2))
 $(eval $(call BuildPackage,grub2-efi))
 $(eval $(call BuildPackage,grub2-efi-arm))
+$(eval $(call BuildPackage,grub2-efi-loongarch64))
 $(eval $(call BuildPackage,grub2-editenv))
 $(eval $(call BuildPackage,grub2-bios-setup))
