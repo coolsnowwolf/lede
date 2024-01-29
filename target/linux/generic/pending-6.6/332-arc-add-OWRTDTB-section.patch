@@ -1,0 +1,84 @@
+From bb0c3b0175240bf152fd7c644821a0cf9f77c37c Mon Sep 17 00:00:00 2001
+From: Evgeniy Didin <Evgeniy.Didin@synopsys.com>
+Date: Fri, 15 Mar 2019 18:53:38 +0300
+Subject: [PATCH] arc add OWRTDTB section
+
+This change allows OpenWRT to patch resulting kernel binary with
+external .dtb.
+
+That allows us to re-use exactky the same vmlinux on different boards
+given its ARC core configurations match (at least cache line sizes etc).
+
+""patch-dtb" searches for ASCII "OWRTDTB:" strign and copies external
+.dtb right after it, keeping the string in place.
+
+Signed-off-by: Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
+Signed-off-by: Alexey Brodkin <abrodkin@synopsys.com>
+Signed-off-by: Evgeniy Didin <Evgeniy.Didin@synopsys.com>
+---
+ arch/arc/kernel/head.S        | 10 ++++++++++
+ arch/arc/kernel/setup.c       |  4 +++-
+ arch/arc/kernel/vmlinux.lds.S | 13 +++++++++++++
+ 3 files changed, 26 insertions(+), 1 deletion(-)
+
+--- a/arch/arc/kernel/head.S
++++ b/arch/arc/kernel/head.S
+@@ -88,6 +88,16 @@
+ 	DSP_EARLY_INIT
+ .endm
+ 
++	; Here "patch-dtb" will embed external .dtb
++	; Note "patch-dtb" searches for ASCII "OWRTDTB:" string
++	; and pastes .dtb right after it, hense the string precedes
++	; __image_dtb symbol.
++	.section .owrt, "aw",@progbits
++	.ascii  "OWRTDTB:"
++ENTRY(__image_dtb)
++	.fill   0x4000
++END(__image_dtb)
++
+ 	.section .init.text, "ax",@progbits
+ 
+ ;----------------------------------------------------------------
+--- a/arch/arc/kernel/setup.c
++++ b/arch/arc/kernel/setup.c
+@@ -450,6 +450,8 @@ static inline bool uboot_arg_invalid(uns
+ /* We always pass 0 as magic from U-boot */
+ #define UBOOT_MAGIC_VALUE	0
+ 
++extern struct boot_param_header __image_dtb;
++
+ void __init handle_uboot_args(void)
+ {
+ 	bool use_embedded_dtb = true;
+@@ -488,7 +490,7 @@ void __init handle_uboot_args(void)
+ ignore_uboot_args:
+ 
+ 	if (use_embedded_dtb) {
+-		machine_desc = setup_machine_fdt(__dtb_start);
++		machine_desc = setup_machine_fdt(&__image_dtb);
+ 		if (!machine_desc)
+ 			panic("Embedded DT invalid\n");
+ 	}
+--- a/arch/arc/kernel/vmlinux.lds.S
++++ b/arch/arc/kernel/vmlinux.lds.S
+@@ -27,6 +27,19 @@ SECTIONS
+ 
+ 	. = CONFIG_LINUX_LINK_BASE;
+ 
++	/*
++	* In OpenWRT we want to patch built binary embedding .dtb of choice.
++	* This is implemented with "patch-dtb" utility which searches for
++	* "OWRTDTB:" string in first 16k of image and if it is found
++	* copies .dtb right after mentioned string.
++	*
++	* Note: "OWRTDTB:" won't be overwritten with .dtb, .dtb will follow it.
++	*/
++ 	.owrt : {
++		*(.owrt)
++	. = ALIGN(PAGE_SIZE);
++	}
++
+ 	_int_vec_base_lds = .;
+ 	.vector : {
+ 		*(.vector)

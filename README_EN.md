@@ -1,6 +1,6 @@
 # Welcome to Lean's git source of OpenWrt and packages
 
-I18N: [English](README_EN.md) | [简体中文](README.md)
+I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_JA.md)
 
 ## Official Channels
 <!--
