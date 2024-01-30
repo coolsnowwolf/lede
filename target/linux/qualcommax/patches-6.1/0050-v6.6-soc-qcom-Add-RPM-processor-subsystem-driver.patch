@@ -1,0 +1,132 @@
+From 8ddfa81d090c71fd6cb3cb8ca1d420c0da33a575 Mon Sep 17 00:00:00 2001
+From: Stephan Gerhold <stephan@gerhold.net>
+Date: Thu, 15 Jun 2023 18:50:42 +0200
+Subject: [PATCH] soc: qcom: Add RPM processor/subsystem driver
+
+Add a simple driver for the qcom,rpm-proc compatible that registers the
+"smd-edge" and populates other children defined in the device tree.
+
+Note that the DT schema belongs to the remoteproc subsystem while this
+driver is added inside soc/qcom. I argue that the RPM *is* a remoteproc,
+but as an implementation detail in Linux it can currently not benefit
+from anything provided by the remoteproc subsystem. The RPM firmware is
+usually already loaded and started by earlier components in the boot
+chain and is not meant to be ever restarted.
+
+To avoid breaking existing kernel configurations the driver is always
+built when smd-rpm.c is also built. They belong closely together anyway.
+To avoid build errors CONFIG_RPMSG_QCOM_SMD must be also built-in if
+rpm-proc is.
+
+Reviewed-by: Konrad Dybcio <konrad.dybcio@linaro.org>
+Signed-off-by: Stephan Gerhold <stephan@gerhold.net>
+Link: https://lore.kernel.org/r/20230531-rpm-rproc-v3-9-a07dcdefd918@gerhold.net
+Signed-off-by: Bjorn Andersson <andersson@kernel.org>
+---
+ drivers/soc/qcom/Kconfig    |  1 +
+ drivers/soc/qcom/Makefile   |  2 +-
+ drivers/soc/qcom/rpm-proc.c | 77 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 79 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/soc/qcom/rpm-proc.c
+
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -153,6 +153,7 @@ config QCOM_SMD_RPM
+ 	tristate "Qualcomm Resource Power Manager (RPM) over SMD"
+ 	depends on ARCH_QCOM || COMPILE_TEST
+ 	depends on RPMSG
++	depends on RPMSG_QCOM_SMD || RPMSG_QCOM_SMD=n
+ 	help
+ 	  If you say yes to this option, support will be included for the
+ 	  Resource Power Manager system found in the Qualcomm 8974 based
+--- a/drivers/soc/qcom/Makefile
++++ b/drivers/soc/qcom/Makefile
+@@ -14,7 +14,7 @@ obj-$(CONFIG_QCOM_RMTFS_MEM)	+= rmtfs_me
+ obj-$(CONFIG_QCOM_RPMH)		+= qcom_rpmh.o
+ qcom_rpmh-y			+= rpmh-rsc.o
+ qcom_rpmh-y			+= rpmh.o
+-obj-$(CONFIG_QCOM_SMD_RPM)	+= smd-rpm.o
++obj-$(CONFIG_QCOM_SMD_RPM)	+= rpm-proc.o smd-rpm.o
+ obj-$(CONFIG_QCOM_SMEM) +=	smem.o
+ obj-$(CONFIG_QCOM_SMEM_STATE) += smem_state.o
+ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
+--- /dev/null
++++ b/drivers/soc/qcom/rpm-proc.c
+@@ -0,0 +1,77 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (c) 2021-2023, Stephan Gerhold <stephan@gerhold.net> */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/rpmsg/qcom_smd.h>
++
++static int rpm_proc_probe(struct platform_device *pdev)
++{
++	struct qcom_smd_edge *edge = NULL;
++	struct device *dev = &pdev->dev;
++	struct device_node *edge_node;
++	int ret;
++
++	edge_node = of_get_child_by_name(dev->of_node, "smd-edge");
++	if (edge_node) {
++		edge = qcom_smd_register_edge(dev, edge_node);
++		of_node_put(edge_node);
++		if (IS_ERR(edge))
++			return dev_err_probe(dev, PTR_ERR(edge),
++					     "Failed to register smd-edge\n");
++	}
++
++	ret = devm_of_platform_populate(dev);
++	if (ret) {
++		dev_err(dev, "Failed to populate child devices: %d\n", ret);
++		goto err;
++	}
++
++	platform_set_drvdata(pdev, edge);
++	return 0;
++err:
++	if (edge)
++		qcom_smd_unregister_edge(edge);
++	return ret;
++}
++
++static void rpm_proc_remove(struct platform_device *pdev)
++{
++	struct qcom_smd_edge *edge = platform_get_drvdata(pdev);
++
++	if (edge)
++		qcom_smd_unregister_edge(edge);
++}
++
++static const struct of_device_id rpm_proc_of_match[] = {
++	{ .compatible = "qcom,rpm-proc", },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, rpm_proc_of_match);
++
++static struct platform_driver rpm_proc_driver = {
++	.probe = rpm_proc_probe,
++	.remove_new = rpm_proc_remove,
++	.driver = {
++		.name = "qcom-rpm-proc",
++		.of_match_table = rpm_proc_of_match,
++	},
++};
++
++static int __init rpm_proc_init(void)
++{
++	return platform_driver_register(&rpm_proc_driver);
++}
++arch_initcall(rpm_proc_init);
++
++static void __exit rpm_proc_exit(void)
++{
++	platform_driver_unregister(&rpm_proc_driver);
++}
++module_exit(rpm_proc_exit);
++
++MODULE_DESCRIPTION("Qualcomm RPM processor/subsystem driver");
++MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
++MODULE_LICENSE("GPL");
