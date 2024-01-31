@@ -1,0 +1,111 @@
+From 25ca3308edb67aa0c6c70b83edf0e22b8ae7533f Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Thu, 29 Jun 2023 13:52:58 +0200
+Subject: [PATCH] nss-dp: switchdev: fix FDB roaming
+
+Try and solve the roaming issue by trying to replicate what NSS bridge
+module is doing, but by utilizing switchdev FDB notifiers instead of
+adding new notifiers to the bridge code.
+
+We register a new non-blocking switchdev notifier and simply wait for
+notification, and then process the SWITCHDEV_FDB_DEL_TO_DEVICE
+notifications.
+
+Those tell us that a certain FDB entry should be removed, then a VSI ID
+is fetched for the physical PPE port and using that VSI ID and the
+notification provided MAC adress existing FDB entry gets removed.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ nss_dp_switchdev.c | 73 +++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 72 insertions(+), 1 deletion(-)
+
+--- a/nss_dp_switchdev.c
++++ b/nss_dp_switchdev.c
+@@ -29,6 +29,8 @@
+ #include "nss_dp_dev.h"
+ #include "fal/fal_stp.h"
+ #include "fal/fal_ctrlpkt.h"
++#include "fal/fal_fdb.h"
++#include "ref/ref_vsi.h"
+ 
+ #define NSS_DP_SWITCH_ID		0
+ #define NSS_DP_SW_ETHTYPE_PID		0 /* PPE ethtype profile ID for slow protocols */
+@@ -521,7 +523,76 @@ static struct notifier_block *nss_dp_sw_
+ 
+ #else
+ 
+-static struct notifier_block *nss_dp_sw_ev_nb;
++/*
++ * nss_dp_switchdev_fdb_del_event
++ *
++ * Used for EDMA v1 to remove old MAC in order to preventing having
++ * duplicate MAC entries in FDB thus and avoid roaming issues.
++ */
++
++static int nss_dp_switchdev_fdb_del_event(struct net_device *netdev,
++					  struct switchdev_notifier_fdb_info *fdb_info)
++{
++	struct nss_dp_dev *dp_priv = (struct nss_dp_dev *)netdev_priv(netdev);
++	fal_fdb_entry_t entry;
++	a_uint32_t vsi_id;
++	sw_error_t rv;
++
++	netdev_dbg(netdev, "FDB DEL %pM port %d\n", fdb_info->addr, dp_priv->macid);
++
++	rv = ppe_port_vsi_get(NSS_DP_SWITCH_ID, dp_priv->macid, &vsi_id);
++	if (rv) {
++		netdev_err(netdev, "cannot get VSI ID for port %d\n", dp_priv->macid);
++		return notifier_from_errno(rv);
++	}
++
++	memset(&entry, 0, sizeof(entry));
++	memcpy(&entry.addr, fdb_info->addr, ETH_ALEN);
++	entry.fid = vsi_id;
++
++	rv = fal_fdb_entry_del_bymac(NSS_DP_SWITCH_ID, &entry);
++	if (rv) {
++		netdev_err(netdev, "FDB entry delete failed with MAC %pM and fid %d\n",
++			   &entry.addr, entry.fid);
++		return notifier_from_errno(rv);
++	}
++
++	return notifier_from_errno(rv);
++}
++
++/*
++ * nss_dp_switchdev_event_nb
++ *
++ * Non blocking switchdev event for netdevice.
++ * Used for EDMA v1 to remove old MAC and avoid roaming issues.
++ */
++static int nss_dp_switchdev_event_nb(struct notifier_block *unused,
++		unsigned long event, void *ptr)
++{
++	struct net_device *dev = switchdev_notifier_info_to_dev(ptr);
++
++	/*
++	 * Handle switchdev event only for physical devices
++	 */
++	if (!nss_dp_is_phy_dev(dev)) {
++		return NOTIFY_DONE;
++	}
++
++	switch (event) {
++	case SWITCHDEV_FDB_DEL_TO_DEVICE:
++		return nss_dp_switchdev_fdb_del_event(dev, ptr);
++	default:
++		netdev_dbg(dev, "Switchdev event %lu is not supported\n", event);
++	}
++
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block nss_dp_switchdev_notifier_nb = {
++	.notifier_call = nss_dp_switchdev_event_nb,
++};
++
++static struct notifier_block *nss_dp_sw_ev_nb = &nss_dp_switchdev_notifier_nb;
+ 
+ /*
+  * nss_dp_bridge_attr_set()

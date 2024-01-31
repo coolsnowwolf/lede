@@ -15,7 +15,7 @@ PKG_LICENSE:=GPL-2.0
 include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/gpio-button-hotplug
-  SUBMENU:=Other modules
+  SUBMENU:=GPIO support
   TITLE:=Simple GPIO Button Hotplug driver
   FILES:=$(PKG_BUILD_DIR)/gpio-button-hotplug.ko
   AUTOLOAD:=$(call AutoLoad,30,gpio-button-hotplug,1)

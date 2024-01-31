@@ -246,3 +246,37 @@ define KernelPackage/input-leds/description
 endef
 
 $(eval $(call KernelPackage,input-leds))
+
+
+define KernelPackage/leds-lp55xx-common
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=LED common driver for LP5521/LP5523/LP55231/LP5562 controllers
+  DEPENDS:=+kmod-i2c-core
+  KCONFIG:=CONFIG_LEDS_LP55XX_COMMON
+  FILES:=$(LINUX_DIR)/drivers/leds/leds-lp55xx-common.ko
+  AUTOLOAD:=$(call AutoLoad,60,leds-lp55xx-common,1)
+endef
+
+define KernelPackage/leds-lp55xx-common/description
+ This option enables support for Texas Instruments
+ LP5521/LP5523/LP55231/LP5562 common driver.
+endef
+
+$(eval $(call KernelPackage,leds-lp55xx-common))
+
+
+define KernelPackage/leds-lp5562
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=LED driver for LP5562 controllers
+  DEPENDS:=+kmod-i2c-core +kmod-leds-lp55xx-common
+  KCONFIG:=CONFIG_LEDS_LP5562
+  FILES:=$(LINUX_DIR)/drivers/leds/leds-lp5562.ko
+  AUTOLOAD:=$(call AutoLoad,60,leds-lp5562,1)
+endef
+
+define KernelPackage/leds-lp5562/description
+ This option enables support for Texas Instruments LP5562
+ LED controllers.
+endef
+
+$(eval $(call KernelPackage,leds-lp5562))

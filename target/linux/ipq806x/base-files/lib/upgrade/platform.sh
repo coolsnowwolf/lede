@@ -1,7 +1,7 @@
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
 
-RAMFS_COPY_BIN='fw_printenv fw_setenv fwtool'
+RAMFS_COPY_BIN='fw_printenv fw_setenv'
 RAMFS_COPY_DATA='/etc/fw_env.config /var/lock/fw_printenv.lock'
 
 platform_check_image() {
@@ -10,9 +10,8 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
-	arris,rac2v1a |\
+	arris,tr4400-v2 |\
 	askey,rt4230w-rev6 |\
-	askey,rt4230w-rev9.3 |\
 	compex,wpq864 |\
 	netgear,d7800 |\
 	netgear,r7500 |\
@@ -21,10 +20,6 @@ platform_do_upgrade() {
 	netgear,xr500 |\
 	qcom,ipq8064-ap148 |\
 	qcom,ipq8064-ap161)
-		nand_do_upgrade "$1"
-		;;
-	linksys,e8350-v1)
-		fwtool -q -t -i /dev/null "$1"
 		nand_do_upgrade "$1"
 		;;
 	asrock,g10)
@@ -51,6 +46,14 @@ platform_do_upgrade() {
 	linksys,ea8500)
 		platform_do_upgrade_linksys "$1"
 		;;
+	meraki,mr42 |\
+	meraki,mr52)
+		CI_KERNPART="bootkernel2"
+		nand_do_upgrade "$1"
+		;;
+	ruijie,rg-mtfi-m520)
+		ruijie_do_upgrade "$1"
+		;;
 	tplink,ad7200 |\
 	tplink,c2600)
 		PART_NAME="os-image:rootfs"
@@ -58,15 +61,8 @@ platform_do_upgrade() {
 		default_do_upgrade "$1"
 		;;
 	tplink,vr2600v)
-		PART_NAME="kernel:rootfs"
 		MTD_CONFIG_ARGS="-s 0x200000"
 		default_do_upgrade "$1"
-		;;
-	norton,core-518)
-		norton_do_upgrade "$1"
-		;;
-	ruijie,rg-mtfi-m520)
-		ruijie_do_upgrade "$1"
 		;;
 	zyxel,nbg6817)
 		zyxel_do_upgrade "$1"
