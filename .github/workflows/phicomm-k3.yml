@@ -1,0 +1,305 @@
+# 
+# <https://github.com/KFERMercer/OpenWrt-CI>
+#
+# Copyright (C) 2019 P3TERX
+#
+# Copyright (C) 2020 KFERMercer
+#
+name: phicomm-k3-CI
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 20 * * *
+  push:
+    branches: 
+      - master
+    paths:
+      - '.github/workflows/phicomm-k3.yml'
+  release:
+    types: [published]
+
+jobs:
+
+  build_openwrt:
+
+    name: Build OpenWrt firmware
+
+    runs-on: ubuntu-latest
+
+    if: github.event.repository.owner.id == github.event.sender.id || ! github.event.sender.id
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          ref: master
+
+      - name: Space cleanup
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker rmi `docker images -q`
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
+          sudo -E apt-get update
+          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+
+          df -h
+
+      - name: Update feeds
+        run: |
+          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
+          echo -e '\nsrc-git xiaorouji https://github.com/xiaorouji/openwrt-passwall-packages' >> ./feeds.conf.default
+          echo -e '\nsrc-git passwall2 https://github.com/xiaorouji/openwrt-passwall2' >> ./feeds.conf.default
+          echo -e '\nsrc-git lienol https://github.com/Lienol/openwrt-package;main' >> ./feeds.conf.default
+          ./scripts/feeds update -a
+          WORKINGDIR="`pwd`/feeds/packages/net/smartdns"
+          mkdir $WORKINGDIR -p
+          rm $WORKINGDIR/* -fr
+          wget https://github.com/pymumu/openwrt-smartdns/archive/master.zip -O $WORKINGDIR/master.zip
+          unzip $WORKINGDIR/master.zip -d $WORKINGDIR
+          mv $WORKINGDIR/openwrt-smartdns-master/* $WORKINGDIR/
+          rmdir $WORKINGDIR/openwrt-smartdns-master
+          rm $WORKINGDIR/master.zip
+
+          LUCIBRANCH="lede" #更换此变量
+          WORKINGDIR="`pwd`/feeds/luci/applications/luci-app-smartdns"
+          mkdir $WORKINGDIR -p
+          rm $WORKINGDIR/* -fr
+          wget https://github.com/pymumu/luci-app-smartdns/archive/${LUCIBRANCH}.zip -O $WORKINGDIR/${LUCIBRANCH}.zip
+          unzip $WORKINGDIR/${LUCIBRANCH}.zip -d $WORKINGDIR
+          mv $WORKINGDIR/luci-app-smartdns-${LUCIBRANCH}/* $WORKINGDIR/
+          rmdir $WORKINGDIR/luci-app-smartdns-${LUCIBRANCH}
+          rm $WORKINGDIR/${LUCIBRANCH}.zip
+          ./scripts/feeds update -a
+          rm -rf feeds/xiaorouji/chinadns-ng
+          rm -rf feeds/xiaorouji/dns2socks
+          rm -rf feeds/xiaorouji/dns2tcp
+          rm -rf feeds/xiaorouji/gn
+          rm -rf feeds/xiaorouji/hysteria
+          rm -rf feeds/xiaorouji/ipt2socks
+          rm -rf feeds/xiaorouji/microsocks
+          rm -rf feeds/xiaorouji/naiveproxy
+          rm -rf feeds/xiaorouji/shadowsocksr-libev
+          rm -rf feeds/xiaorouji/shadowsocks-rust
+          rm -rf feeds/xiaorouji/simple-obfs
+          rm -rf feeds/xiaorouji/tcping
+          rm -rf feeds/xiaorouji/trojan
+          rm -rf feeds/xiaorouji/v2ray-core
+          rm -rf feeds/xiaorouji/v2ray-geodata
+          rm -rf feeds/xiaorouji/v2ray-plugin
+          rm -rf feeds/xiaorouji/xray-core
+          rm -rf feeds/xiaorouji/xray-plugin
+          ./scripts/feeds install -a
+
+      - name: Generate configuration file
+        run: |
+          rm -f ./.config*
+          touch ./.config
+
+          #
+          # ========================固件定制部分========================
+          # 
+
+          # 
+          # 如果不对本区块做出任何编辑, 则生成默认配置固件. 
+          # 
+
+          # 以下为定制化固件选项和说明:
+          #
+
+          #
+          # 有些插件/选项是默认开启的, 如果想要关闭, 请参照以下示例进行编写:
+          # 
+          #          =========================================
+          #         |  # 取消编译VMware镜像:                   |
+          #         |  cat >> .config <<EOF                   |
+          #         |  # CONFIG_VMDK_IMAGES is not set        |
+          #         |  EOF                                    |
+          #          =========================================
+          #
+
+          # 
+          # 以下是一些提前准备好的一些插件选项.
+          # 直接取消注释相应代码块即可应用. 不要取消注释代码块上的汉字说明.
+          # 如果不需要代码块里的某一项配置, 只需要删除相应行.
+          #
+          # 如果需要其他插件, 请按照示例自行添加.
+          # 注意, 只需添加依赖链顶端的包. 如果你需要插件 A, 同时 A 依赖 B, 即只需要添加 A.
+          # 
+          # 无论你想要对固件进行怎样的定制, 都需要且只需要修改 EOF 回环内的内容.
+          # 
+
+          # 编译x64固件:
+          cat >> .config <<EOF
+          CONFIG_TARGET_bcm53xx=y
+          CONFIG_TARGET_bcm53xx_generic=y
+          CONFIG_TARGET_bcm53xx_generic_DEVICE_phicomm-k3=y
+          EOF
+
+          # 固件压缩:
+          # cat >> .config <<EOF
+          # CONFIG_TARGET_IMAGES_GZIP=y
+          # EOF
+
+          # 编译UEFI固件:
+          # cat >> .config <<EOF
+          # CONFIG_EFI_IMAGES=y
+          # EOF
+
+          # IPv6支持:
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_dnsmasq_full_dhcpv6=y
+          CONFIG_PACKAGE_ipv6helper=y
+          EOF
+
+          # 多文件系统支持:
+          # cat >> .config <<EOF
+          # CONFIG_PACKAGE_kmod-fs-nfs=y
+          # CONFIG_PACKAGE_kmod-fs-nfs-common=y
+          # CONFIG_PACKAGE_kmod-fs-nfs-v3=y
+          # CONFIG_PACKAGE_kmod-fs-nfs-v4=y
+          # CONFIG_PACKAGE_kmod-fs-ntfs=y
+          # CONFIG_PACKAGE_kmod-fs-squashfs=y
+          # EOF
+
+          # USB3.0支持:
+          # cat >> .config <<EOF
+          # CONFIG_PACKAGE_kmod-usb-ohci=y
+          # CONFIG_PACKAGE_kmod-usb-ohci-pci=y
+          # CONFIG_PACKAGE_kmod-usb2=y
+          # CONFIG_PACKAGE_kmod-usb2-pci=y
+          # CONFIG_PACKAGE_kmod-usb3=y
+          # EOF
+
+          # 常用LuCI插件选择:
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_luci-app-frpc=y
+          CONFIG_PACKAGE_luci-app-socat=y
+          # CONFIG_PACKAGE_luci-app-unblockmusic is not set
+          # CONFIG_PACKAGE_luci-app-ipsec-vpnd is not set
+          # CONFIG_PACKAGE_luci-app-minidlna is not set
+          # CONFIG_PACKAGE_luci-app-mjpg-streamer is not set
+          CONFIG_PACKAGE_luci-app-ssr-plus=y
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_NONE_Client is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Libev_Client is not set
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Rust_Client=y
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_NONE_Server is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Libev_Server is not set
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Rust_Server=y
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_NONE_V2RAY is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_V2ray is not set
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_ChinaDNS_NG=y
+          CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_MosDNS=y
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Hysteria is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_IPT2Socks is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Kcptun is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_NaiveProxy is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Redsocks2 is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_Simple_Obfs is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadowsocks_V2ray_Plugin is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_ShadowsocksR_Libev_Client is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_ShadowsocksR_Libev_Server is not set
+          # CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Trojan is not set
+          CONFIG_PACKAGE_luci-app-passwall2=y
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Brook is not set
+          CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
+          CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_SingBox=y
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Hysteria is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_NaiveProxy is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Libev_Client is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Libev_Server is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Server is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Trojan_GO is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Trojan_Plus is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Geodata is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin is not set
+          # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_tuic_client is not set
+          CONFIG_PACKAGE_luci-app-dnspod=y
+          # CONFIG_PACKAGE_luci-app-openvpn-server is not set
+          # CONFIG_PACKAGE_luci-app-vlmcsd is not set
+          # CONFIG_PACKAGE_luci-app-adbyby-plus is not set
+          # CONFIG_PACKAGE_luci-app-aria2 is not set
+          # CONFIG_PACKAGE_luci-app-baidupcs-web is not set
+          # CONFIG_PACKAGE_luci-app-docker is not set
+          # CONFIG_PACKAGE_luci-app-hd-idle=y
+          # CONFIG_PACKAGE_luci-app-openvpn is not set
+          # CONFIG_PACKAGE_luci-app-qbittorrent is not set
+          # CONFIG_PACKAGE_luci-app-v2ray-server is not set
+          # CONFIG_PACKAGE_luci-app-zerotier is not set
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          EOF
+
+          # LuCI主题:
+          # cat >> .config <<EOF
+          # CONFIG_PACKAGE_luci-theme-argon=y
+          # CONFIG_PACKAGE_luci-theme-netgear=y
+          # EOF
+
+          # 常用软件包:
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_wpad=y
+          # CONFIG_PACKAGE_shadowsocks-libev-ss-server=y
+          CONFIG_PACKAGE_k3wifi=y
+          # CONFIG_PACKAGE_brcmfmac-firmware-4366c0-pcie is not set
+          # CONFIG_PACKAGE_curl=y
+          # CONFIG_PACKAGE_htop=y
+          # CONFIG_PACKAGE_nano=y
+          # CONFIG_PACKAGE_screen=y
+          # CONFIG_PACKAGE_tree=y
+          # CONFIG_PACKAGE_vim-fuller=y
+          # CONFIG_PACKAGE_wget=y
+          EOF
+
+          # 取消编译VMware镜像以及镜像填充 (不要删除被缩进的注释符号):
+          # cat >> .config <<EOF
+          # # CONFIG_TARGET_IMAGES_PAD is not set
+          # # CONFIG_VMDK_IMAGES is not set
+          # EOF
+
+          # 
+          # ========================固件定制部分结束========================
+          # 
+
+          sed -i 's/^[ \t]*//g' ./.config
+          make defconfig
+
+      - name: Make download
+        run: |
+          make download -j8
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        run: |
+          make -j$(nproc) || make -j1 V=s
+          echo "======================="
+          echo "Space usage:"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
+          du -h --max-depth=1 ./build_dir
+          du -h --max-depth=1 ./bin
+
+      - name: Prepare artifact
+        run: |
+          rm -rf ./artifact/
+          mkdir -p ./artifact/
+          find ./bin/targets/ -name "*phicomm*" | xargs -i mv -f {} ./artifact/
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v2
+        with:
+          name: OpenWrt_firmware
+          path: ./artifact/
