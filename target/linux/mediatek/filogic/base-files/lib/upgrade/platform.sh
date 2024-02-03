@@ -29,6 +29,7 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
+	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	jdcloud,re-cs-05)
@@ -76,6 +77,7 @@ platform_copy_config() {
 			;;
 		esac
 		;;
+	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	jdcloud,re-cs-05)
