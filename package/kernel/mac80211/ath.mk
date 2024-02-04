@@ -69,12 +69,7 @@ config-$(call config_package,ath11k) += ATH11K
 config-$(call config_package,ath11k-ahb) += ATH11K_AHB
 config-$(call config_package,ath11k-pci) += ATH11K_PCI
 
-config-$(call config_package,ath5k) += ATH5K
-ifdef CONFIG_TARGET_ath25
-  config-y += ATH5K_AHB
-else
-  config-y += ATH5K_PCI
-endif
+config-$(call config_package,ath5k) += ATH5K ATH5K_PCI
 
 config-$(call config_package,ath6kl) += ATH6KL
 config-$(call config_package,ath6kl-sdio) += ATH6KL_SDIO
@@ -84,14 +79,6 @@ config-$(call config_package,carl9170) += CARL9170
 config-$(call config_package,ar5523) += AR5523
 
 config-$(call config_package,wil6210) += WIL6210
-
-define KernelPackage/qcom-qmi-helpers
-  $(call KernelPackage/mac80211/Default)
-  TITLE:=Qualcomm QMI backports helpers
-  HIDDEN:=1
-  FILES:=$(PKG_BUILD_DIR)/drivers/soc/qcom/qmi_helpers.ko
-  AUTOLOAD:=$(call AutoProbe,qmi_helpers)
-endef
 
 define KernelPackage/ath/config
   if PACKAGE_kmod-ath
@@ -143,10 +130,18 @@ define KernelPackage/ath/config
   endif
 endef
 
+define KernelPackage/qcom-qmi-helpers
+  $(call KernelPackage/mac80211/Default)
+  TITLE:=Qualcomm QMI backports helpers
+  HIDDEN:=1
+  FILES:=$(PKG_BUILD_DIR)/drivers/soc/qcom/qmi_helpers.ko
+  AUTOLOAD:=$(call AutoProbe,qmi_helpers)
+endef
+
 define KernelPackage/ath
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros common driver part
-  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ath79||TARGET_ath25 +kmod-mac80211
+  DEPENDS+= @PCI_SUPPORT||USB_SUPPORT||TARGET_ath79 +kmod-mac80211
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath.ko
   MENU:=1
 endef
@@ -159,7 +154,7 @@ define KernelPackage/ath5k
   $(call KernelPackage/mac80211/Default)
   TITLE:=Atheros 5xxx wireless cards support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath5k
-  DEPENDS+= @(PCI_SUPPORT||TARGET_ath25) +kmod-ath
+  DEPENDS+= @PCI_SUPPORT +kmod-ath
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath5k/ath5k.ko
   AUTOLOAD:=$(call AutoProbe,ath5k)
 endef

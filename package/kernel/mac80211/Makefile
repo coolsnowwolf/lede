@@ -10,13 +10,13 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=6.1.110-1
+PKG_VERSION:=6.6.15
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=COPYING
 
-PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v6.1.110/
-PKG_HASH:=2415bc529ca25be0aa597f9638d8b6fc4138080bbaea96881a38101896df6703
+PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+PKG_HASH:=3bbc461121134fda9089c084a5eed577d05e7837a157edf9a3797937172a3ece
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
@@ -166,7 +166,7 @@ define KernelPackage/mac80211-hwsim
   $(call KernelPackage/mac80211/Default)
   TITLE:=mac80211 HW simulation device
   DEPENDS+= +kmod-mac80211 +@DRIVER_11AX_SUPPORT +@DRIVER_11AC_SUPPORT
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mac80211_hwsim.ko
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/virtual/mac80211_hwsim.ko
   AUTOLOAD:=$(call AutoProbe,mac80211_hwsim)
 endef
 
@@ -299,13 +299,19 @@ define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(PKG_UNPACK)
 	$(Build/Patch)
+	rm -rf \
+		$(PKG_BUILD_DIR)/include/linux/ssb \
+		$(PKG_BUILD_DIR)/include/linux/bcma \
+		$(PKG_BUILD_DIR)/include/net/bluetooth
 
 	rm -f \
+		$(PKG_BUILD_DIR)/include/linux/cordic.h \
+		$(PKG_BUILD_DIR)/include/linux/crc8.h \
+		$(PKG_BUILD_DIR)/include/linux/eeprom_93cx6.h \
+		$(PKG_BUILD_DIR)/include/linux/wl12xx.h \
 		$(PKG_BUILD_DIR)/include/linux/mhi.h \
-		$(PKG_BUILD_DIR)/include/net/rsi_91x.h \
-		$(PKG_BUILD_DIR)/include/trace/events/qrtr.h \
-		$(PKG_BUILD_DIR)/backport-include/linux/platform_data/brcmnand.h \
-		$(PKG_BUILD_DIR)/backport-include/linux/soc/mediatek/mtk_wed.h
+		$(PKG_BUILD_DIR)/include/net/ieee80211.h \
+		$(PKG_BUILD_DIR)/backport-include/linux/bcm47xx_nvram.h
 
 	echo 'compat-wireless-$(PKG_VERSION)-$(PKG_RELEASE)-$(REVISION)' > $(PKG_BUILD_DIR)/compat_version
 endef
@@ -321,6 +327,7 @@ endif
 ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
   ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
     define Build/Configure
+	  cmp $(PKG_BUILD_DIR)/include/linux/ath9k_platform.h $(LINUX_DIR)/include/linux/ath9k_platform.h
 	  cmp $(PKG_BUILD_DIR)/include/linux/ath5k_platform.h $(LINUX_DIR)/include/linux/ath5k_platform.h
 	  cmp $(PKG_BUILD_DIR)/include/linux/rt2x00_platform.h $(LINUX_DIR)/include/linux/rt2x00_platform.h
     endef
