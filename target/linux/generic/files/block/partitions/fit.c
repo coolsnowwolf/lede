@@ -93,6 +93,14 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		config_description_len, config_loadables_len;
 	sector_t start_sect, nr_sects;
 	size_t label_min;
+	struct device_node *np = NULL;
+	const char *bootconf;
+
+	np = of_find_node_by_path("/chosen");
+	if (np)
+		bootconf = of_get_property(np, "bootconf", NULL);
+	else
+		bootconf = NULL;
 
 	if (fit_start_sector % (1<<(PAGE_SHIFT - SECTOR_SHIFT)))
 		return -ERANGE;
@@ -147,15 +155,15 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 	config_default = fdt_getprop(fit, config, FIT_DEFAULT_PROP, &config_default_len);
 
-	if (!config_default) {
+	if (!config_default && !bootconf) {
 		printk(KERN_ERR "FIT: Cannot find default configuration\n");
 		ret = -ENOENT;
 		goto ret_out;
 	}
 
-	node = fdt_subnode_offset(fit, config, config_default);
+	node = fdt_subnode_offset(fit, config, bootconf?:config_default);
 	if (node < 0) {
-		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", config_default, node);
+		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", bootconf?:config_default, node);
 		ret = -ENOENT;
 		goto ret_out;
 	}
@@ -163,7 +171,8 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 	config_description = fdt_getprop(fit, node, FIT_DESC_PROP, &config_description_len);
 	config_loadables = fdt_getprop(fit, node, FIT_LOADABLE_PROP, &config_loadables_len);
 
-	printk(KERN_DEBUG "FIT: Default configuration: \"%s\"%s%s%s\n", config_default,
+	printk(KERN_DEBUG "FIT: %s configuration: \"%s\"%s%s%s\n",
+		bootconf?"Selected":"Default", bootconf?:config_default,
 		config_description?" (":"", config_description?:"", config_description?")":"");
 
 	images = fdt_path_offset(fit, FIT_IMAGES_PATH);
@@ -233,7 +242,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		strlcat(state->pp_buf, tmp, PAGE_SIZE);
 
 		state->parts[*slot].has_info = true;
-
+		state->parts[*slot].flags |= ADDPART_FLAG_READONLY;
 		if (config_loadables && !strcmp(image_name, config_loadables)) {
 			printk(KERN_DEBUG "FIT: selecting configured loadable \"%s\" to be root filesystem\n", image_name);
 			state->parts[*slot].flags |= ADDPART_FLAG_ROOTDEV;
