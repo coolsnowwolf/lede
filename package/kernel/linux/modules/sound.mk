@@ -236,6 +236,40 @@ endef
 $(eval $(call KernelPackage,sound-soc-imx))
 
 
+define KernelPackage/sound-soc-mt7986
+  TITLE:=MediaTek MT7986 Audio support
+  KCONFIG:=CONFIG_SND_SOC_MT7986 CONFIG_SND_SOC_MT7986_WM8960
+  FILES:= \
+	$(LINUX_DIR)/sound/soc/mediatek/common/snd-soc-mtk-common.ko \
+	$(LINUX_DIR)/sound/soc/mediatek/mt7986/snd-soc-mt7986-afe.ko
+  AUTOLOAD:=$(call AutoLoad,56,snd-soc-mtk-common snd-soc-mt7986-afe)
+  DEPENDS:=@TARGET_mediatek_filogic +kmod-sound-soc-core
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-mt7986/description
+ Support for audio on systems using the MediaTek MT7986 SoC.
+endef
+
+$(eval $(call KernelPackage,sound-soc-mt7986))
+
+
+define KernelPackage/sound-soc-mt7986-wm8960
+  TITLE:=MediaTek MT7986 Audio support
+  KCONFIG:=CONFIG_SND_SOC_MT7986_WM8960
+  FILES:=$(LINUX_DIR)/sound/soc/mediatek/mt7986/mt7986-wm8960.ko
+  AUTOLOAD:=$(call AutoLoad,57,mt7986-wm8960)
+  DEPENDS:=@TARGET_mediatek_filogic +kmod-sound-soc-wm8960 +kmod-sound-soc-mt7986
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-mt7986-wm8960/description
+ Support for use of the Wolfson Audio WM8960 codec with the MediaTek MT7986 SoC.
+endef
+
+$(eval $(call KernelPackage,sound-soc-mt7986-wm8960))
+
+
 define KernelPackage/sound-soc-imx-sgtl5000
   TITLE:=IMX SoC support for SGTL5000
   KCONFIG:=CONFIG_SND_SOC_IMX_SGTL5000
@@ -252,6 +286,18 @@ define KernelPackage/sound-soc-imx-sgtl5000/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-imx-sgtl5000))
+
+
+define KernelPackage/sound-soc-wm8960
+  TITLE:=SoC WM8960 codec support
+  KCONFIG:=CONFIG_SND_SOC_WM8960
+  FILES:=$(LINUX_DIR)/sound/soc/codecs/snd-soc-wm8960.ko
+  DEPENDS:=+kmod-sound-soc-core +kmod-i2c-core +kmod-regmap-i2c
+  AUTOLOAD:=$(call AutoProbe,snd-soc-wm8960)
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-soc-wm8960))
 
 
 define KernelPackage/sound-soc-spdif

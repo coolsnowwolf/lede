@@ -17,6 +17,32 @@ define Device/UbiFit
 	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
+define Device/glinet_gl-ax1800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := GL.iNet
+	DEVICE_MODEL := GL-AX1800
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6000
+	DEVICE_PACKAGES := ipq-wifi-glinet_gl-ax1800
+endef
+TARGET_DEVICES += glinet_gl-ax1800
+
+define Device/glinet_gl-axt1800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := GL.iNet
+	DEVICE_MODEL := GL-AXT1800
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6000
+	DEVICE_PACKAGES := ipq-wifi-glinet_gl-axt1800 kmod-hwmon-gpiofan
+endef
+TARGET_DEVICES += glinet_gl-axt1800
+
 define Device/linksys_mr7350
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Linksys

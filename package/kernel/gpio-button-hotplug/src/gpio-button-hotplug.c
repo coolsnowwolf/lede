@@ -538,7 +538,7 @@ static int gpio_keys_button_probe(struct platform_device *pdev,
 			struct device_node *child =
 				of_get_next_child(dev->of_node, prev);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
 			bdata->gpiod = devm_fwnode_gpiod_get(dev,
 				of_fwnode_handle(child), "gpios", GPIOD_IN,
 				desc);
