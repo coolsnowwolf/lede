@@ -1,0 +1,62 @@
+From 4d2261fe86ce08bbee3c000718000e9f86593d88 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 8 Nov 2023 11:52:16 +0000
+Subject: [PATCH] drivers: mmc: sdhci: add SPURIOUS_INT_RESP quirk
+
+Certain controllers (dwc-mshc) generate timeout conditions separately to
+command-completion conditions, where the end result is interrupts are
+separated in time depending on the current SDCLK frequency.
+
+This causes spurious interrupts if SDCLK is slow compared to the CPU's
+ability to process and return from interrupt. This occurs during card
+probe with an empty slot where all commands that would generate a
+response time out.
+
+Add a quirk to squelch command response interrupts when a command
+timeout interrupt is received.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/sdhci.c | 11 +++++++++++
+ drivers/mmc/host/sdhci.h |  3 +++
+ 2 files changed, 14 insertions(+)
+
+--- a/drivers/mmc/host/sdhci.c
++++ b/drivers/mmc/host/sdhci.c
+@@ -1728,6 +1728,12 @@ static bool sdhci_send_command(struct sd
+ 	if (host->use_external_dma)
+ 		sdhci_external_dma_pre_transfer(host, cmd);
+ 
++	if (host->quirks2 & SDHCI_QUIRK2_SPURIOUS_INT_RESP) {
++		host->ier |= SDHCI_INT_RESPONSE;
++		sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
++		sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
++	}
++
+ 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->opcode, flags), SDHCI_COMMAND);
+ 
+ 	return true;
+@@ -3330,6 +3336,11 @@ static void sdhci_cmd_irq(struct sdhci_h
+ 		if (intmask & SDHCI_INT_TIMEOUT) {
+ 			host->cmd->error = -ETIMEDOUT;
+ 			sdhci_err_stats_inc(host, CMD_TIMEOUT);
++			if (host->quirks2 & SDHCI_QUIRK2_SPURIOUS_INT_RESP) {
++				host->ier &= ~SDHCI_INT_RESPONSE;
++				sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
++				sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
++			}
+ 		} else {
+ 			host->cmd->error = -EILSEQ;
+ 			if (!mmc_op_tuning(host->cmd->opcode))
+--- a/drivers/mmc/host/sdhci.h
++++ b/drivers/mmc/host/sdhci.h
+@@ -486,6 +486,9 @@ struct sdhci_host {
+ #define SDHCI_QUIRK2_NO_SDR50  (1<<20)
+ #define SDHCI_QUIRK2_NO_SDR104	(1<<21)
+ 
++/* Command timeouts may generate a trailing INT_RESPONSE later */
++#define SDHCI_QUIRK2_SPURIOUS_INT_RESP			(1<<31)
++
+ 	int irq;		/* Device IRQ */
+ 	void __iomem *ioaddr;	/* Mapped address */
+ 	phys_addr_t mapbase;	/* physical address base */

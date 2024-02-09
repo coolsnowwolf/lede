@@ -1,0 +1,67 @@
+From dcb717bc899cd55a969fb4f1f8526f313efe148c Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Fri, 5 May 2023 11:25:48 +0100
+Subject: [PATCH] pinctrl: bcm2835: Workaround for edge IRQ loss
+
+It has been observed that edge events can be lost when GPIO edges occur
+close to each other. Investigation suggests this is due to a hardware
+bug, although no mechanism has been identified.
+
+Work around the event loss by moving the IRQ acknowledgement into the
+main ISR, adding missing events by explicit level-change detection.
+
+See: https://forums.raspberrypi.com/viewtopic.php?t=350295
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/pinctrl/bcm/pinctrl-bcm2835.c | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+--- a/drivers/pinctrl/bcm/pinctrl-bcm2835.c
++++ b/drivers/pinctrl/bcm/pinctrl-bcm2835.c
+@@ -420,15 +420,32 @@ static void bcm2835_gpio_irq_handle_bank
+ 	unsigned long events;
+ 	unsigned offset;
+ 	unsigned gpio;
++	u32 levs, levs2;
+ 
+ 	events = bcm2835_gpio_rd(pc, GPEDS0 + bank * 4);
++	levs = bcm2835_gpio_rd(pc, GPLEV0 + bank * 4);
+ 	events &= mask;
+ 	events &= pc->enabled_irq_map[bank];
++	bcm2835_gpio_wr(pc, GPEDS0 + bank * 4, events);
++
++retry:
+ 	for_each_set_bit(offset, &events, 32) {
+ 		gpio = (32 * bank) + offset;
+ 		generic_handle_domain_irq(pc->gpio_chip.irq.domain,
+ 					  gpio);
+ 	}
++	events = bcm2835_gpio_rd(pc, GPEDS0 + bank * 4);
++	levs2 = bcm2835_gpio_rd(pc, GPLEV0 + bank * 4);
++
++	events |= levs2 & ~levs & bcm2835_gpio_rd(pc, GPREN0 + bank * 4);
++	events |= ~levs2 & levs & bcm2835_gpio_rd(pc, GPFEN0 + bank * 4);
++	events &= mask;
++	events &= pc->enabled_irq_map[bank];
++	if (events) {
++		bcm2835_gpio_wr(pc, GPEDS0 + bank * 4, events);
++		levs = levs2;
++		goto retry;
++	}
+ }
+ 
+ static void bcm2835_gpio_irq_handler(struct irq_desc *desc)
+@@ -668,11 +685,7 @@ static int bcm2835_gpio_irq_set_type(str
+ 
+ static void bcm2835_gpio_irq_ack(struct irq_data *data)
+ {
+-	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
+-	struct bcm2835_pinctrl *pc = gpiochip_get_data(chip);
+-	unsigned gpio = irqd_to_hwirq(data);
+-
+-	bcm2835_gpio_set_bit(pc, GPEDS0, gpio);
++	/* Nothing to do - the main interrupt handler includes the ACK */
+ }
+ 
+ static int bcm2835_gpio_irq_set_wake(struct irq_data *data, unsigned int on)

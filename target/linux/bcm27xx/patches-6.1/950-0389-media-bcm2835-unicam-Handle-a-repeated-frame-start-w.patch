@@ -1,0 +1,63 @@
+From e042524d5b516f852f107661cfb68187e5b1f95b Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 4 Feb 2022 16:12:35 +0000
+Subject: [PATCH] media: bcm2835-unicam: Handle a repeated frame start
+ with no end
+
+In the case of 2 frame starts being received with no frame end
+between, the queued buffer held in next_frm was lost as the
+pointer was overwritten with the dummy buffer.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 29 +++++++++++++++----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -930,10 +930,14 @@ static irqreturn_t unicam_isr(int irq, v
+ 			 * as complete, as the HW will reuse that buffer.
+ 			 */
+ 			if (unicam->node[i].cur_frm &&
+-			    unicam->node[i].cur_frm != unicam->node[i].next_frm)
++			    unicam->node[i].cur_frm != unicam->node[i].next_frm) {
+ 				unicam_process_buffer_complete(&unicam->node[i],
+ 							       sequence);
+-			unicam->node[i].cur_frm = unicam->node[i].next_frm;
++				unicam->node[i].cur_frm = unicam->node[i].next_frm;
++				unicam->node[i].next_frm = NULL;
++			} else {
++				unicam->node[i].cur_frm = unicam->node[i].next_frm;
++			}
+ 		}
+ 		unicam->sequence++;
+ 	}
+@@ -956,10 +960,25 @@ static irqreturn_t unicam_isr(int irq, v
+ 					   i);
+ 			/*
+ 			 * Set the next frame output to go to a dummy frame
+-			 * if we have not managed to obtain another frame
+-			 * from the queue.
++			 * if no buffer currently queued.
+ 			 */
+-			unicam_schedule_dummy_buffer(&unicam->node[i]);
++			if (!unicam->node[i].next_frm ||
++			    unicam->node[i].next_frm == unicam->node[i].cur_frm) {
++				unicam_schedule_dummy_buffer(&unicam->node[i]);
++			} else if (unicam->node[i].cur_frm) {
++				/*
++				 * Repeated FS without FE. Hardware will have
++				 * swapped buffers, but the cur_frm doesn't
++				 * contain valid data. Return cur_frm to the
++				 * queue.
++				 */
++				spin_lock(&unicam->node[i].dma_queue_lock);
++				list_add_tail(&unicam->node[i].cur_frm->list,
++					      &unicam->node[i].dma_queue);
++				spin_unlock(&unicam->node[i].dma_queue_lock);
++				unicam->node[i].cur_frm = unicam->node[i].next_frm;
++				unicam->node[i].next_frm = NULL;
++			}
+ 		}
+ 
+ 		unicam_queue_event_sof(unicam);

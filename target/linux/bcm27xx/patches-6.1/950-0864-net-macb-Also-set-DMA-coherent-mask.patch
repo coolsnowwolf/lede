@@ -1,0 +1,418 @@
+From bd36586dd9e05bde8e23dc3d99771269b48b65f8 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Fri, 10 Sep 2021 17:20:45 +0100
+Subject: [PATCH] net: macb: Also set DMA coherent mask
+
+macb: Add device tree properties that allow configuration of the AXI max pipeline register
+
+net: macb: add support for ethtool interrupt moderation configuration
+
+Only global throttling of rx or tx by time quanta is supported.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+
+macb: add platform device shutdown function. Prevents AXI master over PCIE from hanging when the host is rebooted.
+
+net: macb: increase polling interval for MDIO completion
+
+MDIO is a slow bus (single-digit MHz). Polling at 1us intervals
+is a bit aggressive, so increase to 100us as the transaction
+usually takes 100-200us to complete.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+
+net: macb: Several patches for RP1
+
+64-bit RX fix
+
+Also set DMA coherent mask
+
+Add device tree properties that allow configuration of the AXI max
+pipeline register
+
+Add support for ethtool interrupt moderation configuration
+
+Only global throttling of rx or tx by time quanta is supported.
+
+Add platform device shutdown function. Prevents AXI master over PCIE
+from hanging when the host is rebooted.
+
+Increase polling interval for MDIO completion
+
+MDIO is a slow bus (single-digit MHz). Polling at 1us intervals
+is a bit aggressive, so increase to 100us as the transaction
+usually takes 100-200us to complete.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+
+net: macb: Support the phy-reset-gpios property
+
+Allow a PHY to be reset with an optional GPIO. The reset duration can
+be specified in milliseconds - the default is 10ms.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+drivers: net: macb: close device on driver shutdown
+
+Fix some suspicious locking and instead call into macb_close, which
+deregisters and frees all resources the corresponding macb_open
+claimed.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+
+net: macb: add hack to prevent TX stalls in a quiet system
+
+See https://github.com/raspberrypi/linux-2712/issues/89
+
+There is some critical window during TX where a further write to the
+TSTART bit while TX is active does not cause newly queued TX descriptors
+to be consumed.
+
+For now "wait a bit, then try anyway" seems to work.
+
+Requires further investigation, but this unsticks NFS reliably.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+
+net: macb: set default interrupt moderation for GEM hardware
+
+Defaulting to intmod = 0 is antisocial, as the MAC can generate over
+130,000 interrupts per second. 50us is a sensible default.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/net/ethernet/cadence/macb.h      |  25 ++++
+ drivers/net/ethernet/cadence/macb_main.c | 151 ++++++++++++++++++++++-
+ 2 files changed, 174 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb.h
++++ b/drivers/net/ethernet/cadence/macb.h
+@@ -84,6 +84,8 @@
+ #define GEM_DMACFG		0x0010 /* DMA Configuration */
+ #define GEM_JML			0x0048 /* Jumbo Max Length */
+ #define GEM_HS_MAC_CONFIG	0x0050 /* GEM high speed config */
++#define GEM_AMP			0x0054 /* AXI Max Pipeline */
++#define GEM_INTMOD		0x005c /* Interrupt moderation */
+ #define GEM_HRB			0x0080 /* Hash Bottom */
+ #define GEM_HRT			0x0084 /* Hash Top */
+ #define GEM_SA1B		0x0088 /* Specific1 Bottom */
+@@ -346,6 +348,21 @@
+ #define GEM_ADDR64_OFFSET	30 /* Address bus width - 64b or 32b */
+ #define GEM_ADDR64_SIZE		1
+ 
++/* Bitfields in AMP */
++#define GEM_AR2R_MAX_PIPE_OFFSET	0  /* Maximum number of outstanding AXI read requests */
++#define GEM_AR2R_MAX_PIPE_SIZE		8
++#define GEM_AW2W_MAX_PIPE_OFFSET	8  /* Maximum number of outstanding AXI write requests */
++#define GEM_AW2W_MAX_PIPE_SIZE		8
++#define GEM_AW2B_FILL_OFFSET		16 /* Select wether the max AW2W transactions operates between: */
++#define GEM_AW2B_FILL_AW2W		0  /*   0: the AW to W AXI channel */
++#define GEM_AW2B_FILL_AW2B		1  /*   1: AW to B channel */
++#define GEM_AW2B_FILL_SIZE              1
++
++/* Bitfields in INTMOD */
++#define GEM_RX_MODERATION_OFFSET	0  /* RX interrupt moderation */
++#define GEM_RX_MODERATION_SIZE		8
++#define GEM_TX_MODERATION_OFFSET	16 /* TX interrupt moderation */
++#define GEM_TX_MODERATION_SIZE		8
+ 
+ /* Bitfields in NSR */
+ #define MACB_NSR_LINK_OFFSET	0 /* pcs_link_state */
+@@ -798,6 +815,7 @@
+ 	})
+ 
+ #define MACB_READ_NSR(bp)	macb_readl(bp, NSR)
++#define MACB_READ_TSR(bp)	macb_readl(bp, TSR)
+ 
+ /* struct macb_dma_desc - Hardware DMA descriptor
+  * @addr: DMA address of data buffer
+@@ -1217,6 +1235,7 @@ struct macb_queue {
+ 	dma_addr_t		tx_ring_dma;
+ 	struct work_struct	tx_error_task;
+ 	bool			txubr_pending;
++	bool			tx_pending;
+ 	struct napi_struct	napi_tx;
+ 
+ 	dma_addr_t		rx_ring_dma;
+@@ -1286,9 +1305,15 @@ struct macb {
+ 
+ 	u32			caps;
+ 	unsigned int		dma_burst_length;
++	u8			aw2w_max_pipe;
++	u8			ar2r_max_pipe;
++	bool			use_aw2b_fill;
+ 
+ 	phy_interface_t		phy_interface;
+ 
++	struct gpio_desc	*phy_reset_gpio;
++	int			phy_reset_ms;
++
+ 	/* AT91RM9200 transmit queue (1 on wire + 1 queued) */
+ 	struct macb_tx_skb	rm9200_txq[2];
+ 	unsigned int		max_tx_length;
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -41,6 +41,9 @@
+ #include <linux/firmware/xlnx-zynqmp.h>
+ #include "macb.h"
+ 
++static unsigned int txdelay = 35;
++module_param(txdelay, uint, 0644);
++
+ /* This structure is only used for MACB on SiFive FU540 devices */
+ struct sifive_fu540_macb_mgmt {
+ 	void __iomem *reg;
+@@ -336,7 +339,7 @@ static int macb_mdio_wait_for_idle(struc
+ 	u32 val;
+ 
+ 	return readx_poll_timeout(MACB_READ_NSR, bp, val, val & MACB_BIT(IDLE),
+-				  1, MACB_MDIO_TIMEOUT);
++				  100, MACB_MDIO_TIMEOUT);
+ }
+ 
+ static int macb_mdio_read(struct mii_bus *bus, int mii_id, int regnum)
+@@ -442,6 +445,19 @@ mdio_pm_exit:
+ 	return status;
+ }
+ 
++static int macb_mdio_reset(struct mii_bus *bus)
++{
++	struct macb *bp = bus->priv;
++
++	if (bp->phy_reset_gpio) {
++		gpiod_set_value_cansleep(bp->phy_reset_gpio, 1);
++		msleep(bp->phy_reset_ms);
++		gpiod_set_value_cansleep(bp->phy_reset_gpio, 0);
++	}
++
++	return 0;
++}
++
+ static void macb_init_buffers(struct macb *bp)
+ {
+ 	struct macb_queue *queue;
+@@ -914,6 +930,7 @@ static int macb_mii_init(struct macb *bp
+ 	bp->mii_bus->name = "MACB_mii_bus";
+ 	bp->mii_bus->read = &macb_mdio_read;
+ 	bp->mii_bus->write = &macb_mdio_write;
++	bp->mii_bus->reset = &macb_mdio_reset;
+ 	snprintf(bp->mii_bus->id, MII_BUS_ID_SIZE, "%s-%x",
+ 		 bp->pdev->name, bp->pdev->id);
+ 	bp->mii_bus->priv = bp;
+@@ -1583,6 +1600,11 @@ static int macb_rx(struct macb_queue *qu
+ 
+ 		macb_init_rx_ring(queue);
+ 		queue_writel(queue, RBQP, queue->rx_ring_dma);
++#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
++		if (bp->hw_dma_cap & HW_DMA_CAP_64B)
++			macb_writel(bp, RBQPH,
++				    upper_32_bits(queue->rx_ring_dma));
++#endif
+ 
+ 		macb_writel(bp, NCR, ctrl | MACB_BIT(RE));
+ 
+@@ -1883,8 +1905,9 @@ static irqreturn_t macb_interrupt(int ir
+ 				queue_writel(queue, ISR, MACB_BIT(TCOMP) |
+ 							 MACB_BIT(TXUBR));
+ 
+-			if (status & MACB_BIT(TXUBR)) {
++			if (status & MACB_BIT(TXUBR) || queue->tx_pending) {
+ 				queue->txubr_pending = true;
++				queue->tx_pending = 0;
+ 				wmb(); // ensure softirq can see update
+ 			}
+ 
+@@ -2331,6 +2354,11 @@ static netdev_tx_t macb_start_xmit(struc
+ 	skb_tx_timestamp(skb);
+ 
+ 	spin_lock_irq(&bp->lock);
++
++	/* TSTART write might get dropped, so make the IRQ retrigger a buffer read */
++	if (macb_readl(bp, TSR) & MACB_BIT(TGO))
++		queue->tx_pending = 1;
++
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
+ 	spin_unlock_irq(&bp->lock);
+ 
+@@ -2698,6 +2726,37 @@ static void macb_configure_dma(struct ma
+ 	}
+ }
+ 
++static void gem_init_axi(struct macb *bp)
++{
++	u32 amp;
++
++	/* AXI pipeline setup - don't touch values unless specified in device
++	 * tree. Some hardware could have reset values > 1.
++	 */
++	amp = gem_readl(bp, AMP);
++
++	if (bp->use_aw2b_fill)
++		amp = GEM_BFINS(AW2B_FILL, bp->use_aw2b_fill, amp);
++	if (bp->aw2w_max_pipe)
++		amp = GEM_BFINS(AW2W_MAX_PIPE, bp->aw2w_max_pipe, amp);
++	if (bp->ar2r_max_pipe)
++		amp = GEM_BFINS(AR2R_MAX_PIPE, bp->ar2r_max_pipe, amp);
++
++	gem_writel(bp, AMP, amp);
++}
++
++static void gem_init_intmod(struct macb *bp)
++{
++	unsigned int throttle;
++	u32 intmod = 0;
++
++	/* Use sensible interrupt moderation thresholds (50us rx and tx) */
++	throttle = (1000 * 50) / 800;
++	intmod = GEM_BFINS(TX_MODERATION, throttle, intmod);
++	intmod = GEM_BFINS(RX_MODERATION, throttle, intmod);
++	gem_writel(bp, INTMOD, intmod);
++}
++
+ static void macb_init_hw(struct macb *bp)
+ {
+ 	u32 config;
+@@ -2726,6 +2785,11 @@ static void macb_init_hw(struct macb *bp
+ 	if (bp->caps & MACB_CAPS_JUMBO)
+ 		bp->rx_frm_len_mask = MACB_RX_JFRMLEN_MASK;
+ 
++	if (macb_is_gem(bp)) {
++		gem_init_axi(bp);
++		gem_init_intmod(bp);
++	}
++
+ 	macb_configure_dma(bp);
+ }
+ 
+@@ -3071,6 +3135,52 @@ static void gem_get_ethtool_strings(stru
+ 	}
+ }
+ 
++static int gem_set_coalesce(struct net_device *dev,
++			    struct ethtool_coalesce *ec,
++			    struct kernel_ethtool_coalesce *kernel_coal,
++			    struct netlink_ext_ack *extack)
++{
++	struct macb *bp = netdev_priv(dev);
++	unsigned int tx_throttle;
++	unsigned int rx_throttle;
++	u32 intmod = 0;
++
++	/* GEM has simple IRQ throttling support. RX and TX interrupts
++	 * are separately moderated on 800ns quantums, with no support
++	 * for frame coalescing.
++	 */
++
++	/* Max is 255 * 0.8us = 204us. Zero implies no moderation. */
++	if (ec->rx_coalesce_usecs > 204 || ec->tx_coalesce_usecs > 204)
++		return -EINVAL;
++
++	tx_throttle = (1000 * ec->tx_coalesce_usecs) / 800;
++	rx_throttle = (1000 * ec->rx_coalesce_usecs) / 800;
++
++	intmod = GEM_BFINS(TX_MODERATION, tx_throttle, intmod);
++	intmod = GEM_BFINS(RX_MODERATION, rx_throttle, intmod);
++
++	gem_writel(bp, INTMOD, intmod);
++
++	return 0;
++}
++
++static int gem_get_coalesce(struct net_device *dev,
++			    struct ethtool_coalesce *ec,
++			    struct kernel_ethtool_coalesce *kernel_coal,
++			    struct netlink_ext_ack *extack)
++{
++	struct macb *bp = netdev_priv(dev);
++	u32 intmod;
++
++	intmod = gem_readl(bp, INTMOD);
++
++	ec->tx_coalesce_usecs = (GEM_BFEXT(TX_MODERATION, intmod) * 800) / 1000;
++	ec->rx_coalesce_usecs = (GEM_BFEXT(RX_MODERATION, intmod) * 800) / 1000;
++
++	return 0;
++}
++
+ static struct net_device_stats *macb_get_stats(struct net_device *dev)
+ {
+ 	struct macb *bp = netdev_priv(dev);
+@@ -3663,6 +3773,8 @@ static const struct ethtool_ops macb_eth
+ };
+ 
+ static const struct ethtool_ops gem_ethtool_ops = {
++	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS |
++				     ETHTOOL_COALESCE_TX_USECS,
+ 	.get_regs_len		= macb_get_regs_len,
+ 	.get_regs		= macb_get_regs,
+ 	.get_wol		= macb_get_wol,
+@@ -3672,6 +3784,8 @@ static const struct ethtool_ops gem_etht
+ 	.get_ethtool_stats	= gem_get_ethtool_stats,
+ 	.get_strings		= gem_get_ethtool_strings,
+ 	.get_sset_count		= gem_get_sset_count,
++	.get_coalesce		= gem_get_coalesce,
++	.set_coalesce		= gem_set_coalesce,
+ 	.get_link_ksettings     = macb_get_link_ksettings,
+ 	.set_link_ksettings     = macb_set_link_ksettings,
+ 	.get_ringparam		= macb_get_ringparam,
+@@ -4939,6 +5053,10 @@ static int macb_probe(struct platform_de
+ 
+ 	bp->usrio = macb_config->usrio;
+ 
++	device_property_read_u8(&pdev->dev, "cdns,aw2w-max-pipe", &bp->aw2w_max_pipe);
++	device_property_read_u8(&pdev->dev, "cdns,ar2r-max-pipe", &bp->ar2r_max_pipe);
++	bp->use_aw2b_fill = device_property_read_bool(&pdev->dev, "cdns,use-aw2b-fill");
++
+ 	spin_lock_init(&bp->lock);
+ 
+ 	/* setup capabilities */
+@@ -4994,6 +5112,21 @@ static int macb_probe(struct platform_de
+ 	else
+ 		bp->phy_interface = interface;
+ 
++	/* optional PHY reset-related properties */
++	bp->phy_reset_gpio = devm_gpiod_get_optional(&pdev->dev, "phy-reset",
++						     GPIOD_OUT_LOW);
++	if (IS_ERR(bp->phy_reset_gpio)) {
++		dev_err(&pdev->dev, "Failed to obtain phy-reset gpio\n");
++		err = PTR_ERR(bp->phy_reset_gpio);
++		goto err_out_free_netdev;
++	}
++
++	bp->phy_reset_ms = 10;
++	of_property_read_u32(np, "phy-reset-duration", &bp->phy_reset_ms);
++	/* A sane reset duration should not be longer than 1s */
++	if (bp->phy_reset_ms > 1000)
++		bp->phy_reset_ms = 1000;
++
+ 	/* IP specific init */
+ 	err = init(pdev);
+ 	if (err)
+@@ -5070,6 +5203,19 @@ static int macb_remove(struct platform_d
+ 	return 0;
+ }
+ 
++static void macb_shutdown(struct platform_device *pdev)
++{
++	struct net_device *dev;
++
++	dev = platform_get_drvdata(pdev);
++
++	rtnl_lock();
++	netif_device_detach(dev);
++	if (netif_running(dev))
++		dev_close(dev);
++	rtnl_unlock();
++}
++
+ static int __maybe_unused macb_suspend(struct device *dev)
+ {
+ 	struct net_device *netdev = dev_get_drvdata(dev);
+@@ -5284,6 +5430,7 @@ static const struct dev_pm_ops macb_pm_o
+ static struct platform_driver macb_driver = {
+ 	.probe		= macb_probe,
+ 	.remove		= macb_remove,
++	.shutdown	= macb_shutdown,
+ 	.driver		= {
+ 		.name		= "macb",
+ 		.of_match_table	= of_match_ptr(macb_dt_ids),

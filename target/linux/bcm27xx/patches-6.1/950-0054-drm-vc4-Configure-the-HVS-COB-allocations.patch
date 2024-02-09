@@ -1,0 +1,96 @@
+From 4477b8c71c8b3b5aa8bd15f9993f48d02d178fc5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 11 Aug 2022 13:49:16 +0100
+Subject: [PATCH] drm/vc4: Configure the HVS COB allocations
+
+The HVS Composite Output Buffer (COB) is the memory used to
+generate the output pixel data.
+Until now the vc4 driver has been relying on the firmware to
+have set these to sensible values.
+
+In testing triple screen support it has been noted that only
+1 line was being assigned to HVS channel 2. Whilst that is fine
+for the transposer (TXP), and indeed needed as only some pixels
+have an alpha channel, it is insufficient to run a live display.
+
+Split the COB more evenly between the 3 HVS channels.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+Revert vc4_regs change
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 56 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 55 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1013,7 +1013,7 @@ static int vc4_hvs_bind(struct device *d
+ 	struct vc4_hvs *hvs = NULL;
+ 	int ret;
+ 	u32 dispctrl;
+-	u32 reg;
++	u32 reg, top;
+ 
+ 	hvs = drmm_kzalloc(drm, sizeof(*hvs), GFP_KERNEL);
+ 	if (!hvs)
+@@ -1151,6 +1151,60 @@ static int vc4_hvs_bind(struct device *d
+ 
+ 	HVS_WRITE(SCALER_DISPCTRL, dispctrl);
+ 
++	/* Recompute Composite Output Buffer (COB) allocations for the displays
++	 */
++	if (!vc4->is_vc5) {
++		/* The COB is 20736 pixels, or just over 10 lines at 2048 wide.
++		 * The bottom 2048 pixels are full 32bpp RGBA (intended for the
++		 * TXP composing RGBA to memory), whilst the remainder are only
++		 * 24bpp RGB.
++		 *
++		 * Assign 3 lines to channels 1 & 2, and just over 4 lines to
++		 * channel 0.
++		 */
++		#define VC4_COB_SIZE		20736
++		#define VC4_COB_LINE_WIDTH	2048
++		#define VC4_COB_NUM_LINES	3
++		reg = 0;
++		top = VC4_COB_LINE_WIDTH * VC4_COB_NUM_LINES;
++		reg |= (top - 1) << 16;
++		HVS_WRITE(SCALER_DISPBASE2, reg);
++		reg = top;
++		top += VC4_COB_LINE_WIDTH * VC4_COB_NUM_LINES;
++		reg |= (top - 1) << 16;
++		HVS_WRITE(SCALER_DISPBASE1, reg);
++		reg = top;
++		top = VC4_COB_SIZE;
++		reg |= (top - 1) << 16;
++		HVS_WRITE(SCALER_DISPBASE0, reg);
++	} else {
++		/* The COB is 44416 pixels, or 10.8 lines at 4096 wide.
++		 * The bottom 4096 pixels are full RGBA (intended for the TXP
++		 * composing RGBA to memory), whilst the remainder are only
++		 * RGB. Addressing is always pixel wide.
++		 *
++		 * Assign 3 lines of 4096 to channels 1 & 2, and just over 4
++		 * lines. to channel 0.
++		 */
++		#define VC5_COB_SIZE		44416
++		#define VC5_COB_LINE_WIDTH	4096
++		#define VC5_COB_NUM_LINES	3
++		reg = 0;
++		top = VC5_COB_LINE_WIDTH * VC5_COB_NUM_LINES;
++		reg |= top << 16;
++		HVS_WRITE(SCALER_DISPBASE2, reg);
++		top += 16;
++		reg = top;
++		top += VC5_COB_LINE_WIDTH * VC5_COB_NUM_LINES;
++		reg |= top << 16;
++		HVS_WRITE(SCALER_DISPBASE1, reg);
++		top += 16;
++		reg = top;
++		top = VC5_COB_SIZE;
++		reg |= top << 16;
++		HVS_WRITE(SCALER_DISPBASE0, reg);
++	}
++
+ 	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
+ 			       vc4_hvs_irq_handler, 0, "vc4 hvs", drm);
+ 	if (ret)

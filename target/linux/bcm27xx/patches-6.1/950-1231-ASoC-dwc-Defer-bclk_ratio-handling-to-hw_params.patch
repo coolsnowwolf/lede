@@ -1,0 +1,89 @@
+From dfc04900c40eb14f9364d56e96db2cc3340a1f21 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 3 Jan 2024 14:43:43 +0000
+Subject: [PATCH] ASoC: dwc: Defer bclk_ratio handling to hw_params
+
+bclk_ratio is only a factor in clock producer mode, and needs to
+override the default value of num_channels * sample_size.
+Move the bclk_ratio handling into the hw_params method, only latching
+the value in set_bclk_ratio, to address both of those matters.
+
+See: https://github.com/raspberrypi/linux/issues/5817
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/dwc/dwc-i2s.c | 38 +++++++++++++++++++++-----------------
+ sound/soc/dwc/local.h   |  1 +
+ 2 files changed, 22 insertions(+), 17 deletions(-)
+
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -263,6 +263,25 @@ static int dw_i2s_hw_params(struct snd_p
+ 		return -EINVAL;
+ 	}
+ 
++	if ((dev->capability & DW_I2S_MASTER) && dev->bclk_ratio) {
++		switch (dev->bclk_ratio) {
++		case 32:
++			dev->ccr = 0x00;
++			break;
++
++		case 48:
++			dev->ccr = 0x08;
++			break;
++
++		case 64:
++			dev->ccr = 0x10;
++			break;
++
++		default:
++			return -EINVAL;
++		}
++	}
++
+ 	config->chan_nr = params_channels(params);
+ 
+ 	switch (config->chan_nr) {
+@@ -436,23 +455,7 @@ static int dw_i2s_set_bclk_ratio(struct
+ 
+ 	dev_dbg(dev->dev, "%s(%d)\n", __func__, ratio);
+ 
+-	switch (ratio) {
+-	case 32:
+-		dev->ccr = 0x00;
+-		break;
+-
+-	case 48:
+-		dev->ccr = 0x08;
+-		break;
+-
+-	case 64:
+-		dev->ccr = 0x10;
+-		break;
+-	default:
+-		return -EINVAL;
+-	}
+-
+-	i2s_write_reg(dev->i2s_base, CCR, dev->ccr);
++	dev->bclk_ratio = ratio;
+ 
+ 	return 0;
+ }
+@@ -746,6 +749,7 @@ static int dw_i2s_probe(struct platform_
+ 		}
+ 	}
+ 
++	dev->bclk_ratio = 0;
+ 	dev->i2s_reg_comp1 = I2S_COMP_PARAM_1;
+ 	dev->i2s_reg_comp2 = I2S_COMP_PARAM_2;
+ 	if (pdata) {
+--- a/sound/soc/dwc/local.h
++++ b/sound/soc/dwc/local.h
+@@ -107,6 +107,7 @@ struct dw_i2s_dev {
+ 	unsigned int quirks;
+ 	unsigned int i2s_reg_comp1;
+ 	unsigned int i2s_reg_comp2;
++	unsigned int bclk_ratio;
+ 	struct device *dev;
+ 	u32 ccr;
+ 	u32 xfer_resolution;

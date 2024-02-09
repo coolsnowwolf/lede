@@ -1,0 +1,329 @@
+From 3ece03b1575b0c3a0989e372aaaa4557ae74dc89 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 20 Jul 2023 11:28:20 +0100
+Subject: [PATCH] fixup! Add support for all the downstream rpi sound card
+ drivers
+
+Replace the Allo Dac clock driver with an extension of the
+HiFiBerry clock driver that it cloned.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/clk/Makefile               |   1 -
+ drivers/clk/clk-allo-dac.c         | 161 -----------------------------
+ drivers/clk/clk-hifiberry-dacpro.c |  57 ++++++----
+ sound/soc/bcm/Kconfig              |   1 +
+ 4 files changed, 40 insertions(+), 180 deletions(-)
+ delete mode 100644 drivers/clk/clk-allo-dac.c
+
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -19,7 +19,6 @@ endif
+ 
+ # hardware specific clock types
+ # please keep this section sorted lexicographically by file path name
+-obj-$(CONFIG_SND_BCM2708_SOC_ALLO_BOSS_DAC)	+= clk-allo-dac.o
+ obj-$(CONFIG_COMMON_CLK_APPLE_NCO)  	+= clk-apple-nco.o
+ obj-$(CONFIG_MACH_ASM9260)		+= clk-asm9260.o
+ obj-$(CONFIG_COMMON_CLK_AXI_CLKGEN)	+= clk-axi-clkgen.o
+--- a/drivers/clk/clk-allo-dac.c
++++ /dev/null
+@@ -1,161 +0,0 @@
+-/*
+- * Clock Driver for Allo DAC
+- *
+- * Author:	Baswaraj K <jaikumar@cem-solutions.net>
+- *		Copyright 2016
+- *		based on code by Stuart MacLean
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#include <linux/clk-provider.h>
+-#include <linux/clkdev.h>
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/slab.h>
+-#include <linux/platform_device.h>
+-
+-/* Clock rate of CLK44EN attached to GPIO6 pin */
+-#define CLK_44EN_RATE 45158400UL
+-/* Clock rate of CLK48EN attached to GPIO3 pin */
+-#define CLK_48EN_RATE 49152000UL
+-
+-/**
+- * struct allo_dac_clk - Common struct to the Allo DAC
+- * @hw: clk_hw for the common clk framework
+- * @mode: 0 => CLK44EN, 1 => CLK48EN
+- */
+-struct clk_allo_hw {
+-	struct clk_hw hw;
+-	uint8_t mode;
+-};
+-
+-#define to_allo_clk(_hw) container_of(_hw, struct clk_allo_hw, hw)
+-
+-static const struct of_device_id clk_allo_dac_dt_ids[] = {
+-	{ .compatible = "allo,dac-clk",},
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(of, clk_allo_dac_dt_ids);
+-
+-static unsigned long clk_allo_dac_recalc_rate(struct clk_hw *hw,
+-	unsigned long parent_rate)
+-{
+-	return (to_allo_clk(hw)->mode == 0) ? CLK_44EN_RATE :
+-		CLK_48EN_RATE;
+-}
+-
+-static long clk_allo_dac_round_rate(struct clk_hw *hw,
+-	unsigned long rate, unsigned long *parent_rate)
+-{
+-	long actual_rate;
+-
+-	if (rate <= CLK_44EN_RATE) {
+-		actual_rate = (long)CLK_44EN_RATE;
+-	} else if (rate >= CLK_48EN_RATE) {
+-		actual_rate = (long)CLK_48EN_RATE;
+-	} else {
+-		long diff44Rate = (long)(rate - CLK_44EN_RATE);
+-		long diff48Rate = (long)(CLK_48EN_RATE - rate);
+-
+-		if (diff44Rate < diff48Rate)
+-			actual_rate = (long)CLK_44EN_RATE;
+-		else
+-			actual_rate = (long)CLK_48EN_RATE;
+-	}
+-	return actual_rate;
+-}
+-
+-
+-static int clk_allo_dac_set_rate(struct clk_hw *hw,
+-	unsigned long rate, unsigned long parent_rate)
+-{
+-	unsigned long actual_rate;
+-	struct clk_allo_hw *clk = to_allo_clk(hw);
+-
+-	actual_rate = (unsigned long)clk_allo_dac_round_rate(hw, rate,
+-		&parent_rate);
+-	clk->mode = (actual_rate == CLK_44EN_RATE) ? 0 : 1;
+-	return 0;
+-}
+-
+-
+-const struct clk_ops clk_allo_dac_rate_ops = {
+-	.recalc_rate = clk_allo_dac_recalc_rate,
+-	.round_rate = clk_allo_dac_round_rate,
+-	.set_rate = clk_allo_dac_set_rate,
+-};
+-
+-static int clk_allo_dac_probe(struct platform_device *pdev)
+-{
+-	int ret;
+-	struct clk_allo_hw *proclk;
+-	struct clk *clk;
+-	struct device *dev;
+-	struct clk_init_data init;
+-
+-	dev = &pdev->dev;
+-
+-	proclk = kzalloc(sizeof(struct clk_allo_hw), GFP_KERNEL);
+-	if (!proclk)
+-		return -ENOMEM;
+-
+-	init.name = "clk-allo-dac";
+-	init.ops = &clk_allo_dac_rate_ops;
+-	init.flags = 0;
+-	init.parent_names = NULL;
+-	init.num_parents = 0;
+-
+-	proclk->mode = 0;
+-	proclk->hw.init = &init;
+-
+-	clk = devm_clk_register(dev, &proclk->hw);
+-	if (!IS_ERR(clk)) {
+-		ret = of_clk_add_provider(dev->of_node, of_clk_src_simple_get,
+-			clk);
+-	} else {
+-		dev_err(dev, "Fail to register clock driver\n");
+-		kfree(proclk);
+-		ret = PTR_ERR(clk);
+-	}
+-	return ret;
+-}
+-
+-static int clk_allo_dac_remove(struct platform_device *pdev)
+-{
+-	of_clk_del_provider(pdev->dev.of_node);
+-	return 0;
+-}
+-
+-static struct platform_driver clk_allo_dac_driver = {
+-	.probe = clk_allo_dac_probe,
+-	.remove = clk_allo_dac_remove,
+-	.driver = {
+-		.name = "clk-allo-dac",
+-		.of_match_table = clk_allo_dac_dt_ids,
+-	},
+-};
+-
+-static int __init clk_allo_dac_init(void)
+-{
+-	return platform_driver_register(&clk_allo_dac_driver);
+-}
+-core_initcall(clk_allo_dac_init);
+-
+-static void __exit clk_allo_dac_exit(void)
+-{
+-	platform_driver_unregister(&clk_allo_dac_driver);
+-}
+-module_exit(clk_allo_dac_exit);
+-
+-MODULE_DESCRIPTION("Allo DAC clock driver");
+-MODULE_LICENSE("GPL v2");
+-MODULE_ALIAS("platform:clk-allo-dac");
+--- a/drivers/clk/clk-hifiberry-dacpro.c
++++ b/drivers/clk/clk-hifiberry-dacpro.c
+@@ -22,10 +22,12 @@
+ #include <linux/slab.h>
+ #include <linux/platform_device.h>
+ 
+-/* Clock rate of CLK44EN attached to GPIO6 pin */
+-#define CLK_44EN_RATE 22579200UL
+-/* Clock rate of CLK48EN attached to GPIO3 pin */
+-#define CLK_48EN_RATE 24576000UL
++struct ext_clk_rates {
++	/* Clock rate of CLK44EN attached to GPIO6 pin */
++	unsigned long clk_44en;
++	/* Clock rate of CLK48EN attached to GPIO3 pin */
++	unsigned long clk_48en;
++};
+ 
+ /**
+  * struct hifiberry_dacpro_clk - Common struct to the HiFiBerry DAC Pro
+@@ -35,12 +37,24 @@
+ struct clk_hifiberry_hw {
+ 	struct clk_hw hw;
+ 	uint8_t mode;
++	struct ext_clk_rates clk_rates;
+ };
+ 
+ #define to_hifiberry_clk(_hw) container_of(_hw, struct clk_hifiberry_hw, hw)
+ 
++static const struct ext_clk_rates hifiberry_dacpro_clks = {
++	.clk_44en = 22579200UL,
++	.clk_48en = 24576000UL,
++};
++
++static const struct ext_clk_rates allo_dac_clks = {
++	.clk_44en = 45158400UL,
++	.clk_48en = 49152000UL,
++};
++
+ static const struct of_device_id clk_hifiberry_dacpro_dt_ids[] = {
+-	{ .compatible = "hifiberry,dacpro-clk",},
++	{ .compatible = "hifiberry,dacpro-clk", &hifiberry_dacpro_clks },
++	{ .compatible = "allo,dac-clk", &allo_dac_clks },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, clk_hifiberry_dacpro_dt_ids);
+@@ -48,27 +62,29 @@ MODULE_DEVICE_TABLE(of, clk_hifiberry_da
+ static unsigned long clk_hifiberry_dacpro_recalc_rate(struct clk_hw *hw,
+ 	unsigned long parent_rate)
+ {
+-	return (to_hifiberry_clk(hw)->mode == 0) ? CLK_44EN_RATE :
+-		CLK_48EN_RATE;
++	struct clk_hifiberry_hw *clk = to_hifiberry_clk(hw);
++	return (clk->mode == 0) ? clk->clk_rates.clk_44en :
++		clk->clk_rates.clk_48en;
+ }
+ 
+ static long clk_hifiberry_dacpro_round_rate(struct clk_hw *hw,
+ 	unsigned long rate, unsigned long *parent_rate)
+ {
++	struct clk_hifiberry_hw *clk = to_hifiberry_clk(hw);
+ 	long actual_rate;
+ 
+-	if (rate <= CLK_44EN_RATE) {
+-		actual_rate = (long)CLK_44EN_RATE;
+-	} else if (rate >= CLK_48EN_RATE) {
+-		actual_rate = (long)CLK_48EN_RATE;
++	if (rate <= clk->clk_rates.clk_44en) {
++		actual_rate = (long)clk->clk_rates.clk_44en;
++	} else if (rate >= clk->clk_rates.clk_48en) {
++		actual_rate = (long)clk->clk_rates.clk_48en;
+ 	} else {
+-		long diff44Rate = (long)(rate - CLK_44EN_RATE);
+-		long diff48Rate = (long)(CLK_48EN_RATE - rate);
++		long diff44Rate = (long)(rate - clk->clk_rates.clk_44en);
++		long diff48Rate = (long)(clk->clk_rates.clk_48en - rate);
+ 
+ 		if (diff44Rate < diff48Rate)
+-			actual_rate = (long)CLK_44EN_RATE;
++			actual_rate = (long)clk->clk_rates.clk_44en;
+ 		else
+-			actual_rate = (long)CLK_48EN_RATE;
++			actual_rate = (long)clk->clk_rates.clk_48en;
+ 	}
+ 	return actual_rate;
+ }
+@@ -77,12 +93,12 @@ static long clk_hifiberry_dacpro_round_r
+ static int clk_hifiberry_dacpro_set_rate(struct clk_hw *hw,
+ 	unsigned long rate, unsigned long parent_rate)
+ {
+-	unsigned long actual_rate;
+ 	struct clk_hifiberry_hw *clk = to_hifiberry_clk(hw);
++	unsigned long actual_rate;
+ 
+ 	actual_rate = (unsigned long)clk_hifiberry_dacpro_round_rate(hw, rate,
+ 		&parent_rate);
+-	clk->mode = (actual_rate == CLK_44EN_RATE) ? 0 : 1;
++	clk->mode = (actual_rate == clk->clk_rates.clk_44en) ? 0 : 1;
+ 	return 0;
+ }
+ 
+@@ -95,13 +111,17 @@ const struct clk_ops clk_hifiberry_dacpr
+ 
+ static int clk_hifiberry_dacpro_probe(struct platform_device *pdev)
+ {
+-	int ret;
++	const struct of_device_id *of_id;
+ 	struct clk_hifiberry_hw *proclk;
+ 	struct clk *clk;
+ 	struct device *dev;
+ 	struct clk_init_data init;
++	int ret;
+ 
+ 	dev = &pdev->dev;
++	of_id = of_match_node(clk_hifiberry_dacpro_dt_ids, dev->of_node);
++	if (!of_id)
++		return -EINVAL;
+ 
+ 	proclk = kzalloc(sizeof(struct clk_hifiberry_hw), GFP_KERNEL);
+ 	if (!proclk)
+@@ -115,6 +135,7 @@ static int clk_hifiberry_dacpro_probe(st
+ 
+ 	proclk->mode = 0;
+ 	proclk->hw.init = &init;
++	memcpy(&proclk->clk_rates, of_id->data, sizeof(proclk->clk_rates));
+ 
+ 	clk = devm_clk_register(dev, &proclk->hw);
+ 	if (!IS_ERR(clk)) {
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -271,6 +271,7 @@ config SND_BCM2708_SOC_ALLO_BOSS_DAC
+ 	tristate "Support for Allo Boss DAC"
+ 	depends on SND_BCM2708_SOC_I2S || SND_BCM2835_SOC_I2S
+ 	select SND_SOC_PCM512x_I2C
++	select COMMON_CLK_HIFIBERRY_DACPRO
+ 	help
+ 	  Say Y or M if you want to add support for Allo Boss DAC.
+ 
