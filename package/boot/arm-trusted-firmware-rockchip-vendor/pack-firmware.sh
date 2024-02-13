@@ -18,20 +18,20 @@ case "$VARIANT" in
 	LOADER="rk33/rk3399_miniloader_v1.30.bin"
 	;;
 "rk3528")
-	ATF="rk35/rk3528_bl31_v1.16.elf"
-	DDR="rk35/rk3528_ddr_1056MHz_v1.06.bin"
+	ATF="rk35/rk3528_bl31_v1.17.elf"
+	DDR="rk35/rk3528_ddr_1056MHz_v1.09.bin"
 	;;
 "rk3566")
-	ATF="rk35/rk3568_bl31_v1.43.elf"
-	DDR="rk35/rk3566_ddr_1056MHz_v1.18.bin"
+	ATF="rk35/rk3568_bl31_v1.44.elf"
+	DDR="rk35/rk3566_ddr_1056MHz_v1.21.bin"
 	;;
 "rk3568")
-	ATF="rk35/rk3568_bl31_v1.43.elf"
-	DDR="rk35/rk3568_ddr_1560MHz_v1.18.bin"
+	ATF="rk35/rk3568_bl31_v1.44.elf"
+	DDR="rk35/rk3568_ddr_1560MHz_v1.21.bin"
 	;;
 "rk3588")
-	ATF="rk35/rk3588_bl31_v1.40.elf"
-	DDR="rk35/rk3588_ddr_lp4_2112MHz_lp5_2736MHz_v1.12.bin"
+	ATF="rk35/rk3588_bl31_v1.45.elf"
+	DDR="rk35/rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin"
 	;;
 *)
 	echo -e "Not compatible with your platform: $VARIANT."
