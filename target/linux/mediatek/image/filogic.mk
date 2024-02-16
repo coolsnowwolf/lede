@@ -508,6 +508,21 @@ define Device/huasifei_wh3000-emmc
 endef
 TARGET_DEVICES += huasifei_wh3000-emmc
 
+define Device/huasifei_ws3006
+  DEVICE_VENDOR := Huasifei
+  DEVICE_MODEL := WS3006
+  DEVICE_DTS := mt7981b-huasifei-ws3006
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 112640k
+  KERNEL_IN_UBI := 1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += huasifei_ws3006
+
 define Device/hf_m7986r1-emmc
   DEVICE_VENDOR := HF
   DEVICE_MODEL := M7986R1 (eMMC)
