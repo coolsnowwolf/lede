@@ -72,3 +72,16 @@ define Device/qihoo_360v6
 	DEVICE_PACKAGES := ipq-wifi-qihoo_360v6
 endef
 TARGET_DEVICES += qihoo_360v6
+
+define Device/xiaomi_rm1800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Xiaomi
+	DEVICE_MODEL := RM1800 (AX5)
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	SOC := ipq6000
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	DEVICE_PACKAGES := ipq-wifi-xiaomi_rm1800
+endef
+TARGET_DEVICES += xiaomi_rm1800
