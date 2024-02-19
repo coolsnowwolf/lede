@@ -11,7 +11,8 @@ platform_check_image() {
 platform_do_upgrade() {
 	case "$(board_name)" in
 	glinet,gl-ax1800|\
-	glinet,gl-axt1800)
+	glinet,gl-axt1800|\
+	xiaomi,rm1800)
 		nand_do_upgrade "$1"
 		;;
 	linksys,mr7350)
@@ -27,6 +28,11 @@ platform_do_upgrade() {
 		fw_setenv boot_part_ready 3
 		fw_setenv auto_recovery yes
 		nand_do_upgrade "$1"
+		;;
+	redmi,ax5-jdcloud)
+		kernelname="0:HLOS"
+		rootfsname="rootfs"
+		mmc_do_upgrade "$1"
 		;;
 	*)
 		default_do_upgrade "$1"

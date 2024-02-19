@@ -17,6 +17,12 @@ define Device/UbiFit
 	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
+define Device/EmmcImage
+	IMAGES += factory.bin sysupgrade.bin
+	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 64k
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to 64k | sysupgrade-tar rootfs=$$$$@ | append-metadata
+endef
+
 define Device/glinet_gl-ax1800
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
@@ -42,6 +48,17 @@ define Device/glinet_gl-axt1800
 	DEVICE_PACKAGES := ipq-wifi-glinet_gl-axt1800 kmod-hwmon-gpiofan
 endef
 TARGET_DEVICES += glinet_gl-axt1800
+
+define Device/redmi_ax5-jdcloud
+	$(call Device/FitImage)
+	$(call Device/EmmcImage)
+	DEVICE_VENDOR := Redmi
+	DEVICE_MODEL := AX5 JDCloud
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6000
+	DEVICE_PACKAGES := ipq-wifi-redmi_ax5-jdcloud
+endef
+TARGET_DEVICES += redmi_ax5-jdcloud
 
 define Device/linksys_mr7350
 	$(call Device/FitImage)
@@ -72,3 +89,29 @@ define Device/qihoo_360v6
 	DEVICE_PACKAGES := ipq-wifi-qihoo_360v6
 endef
 TARGET_DEVICES += qihoo_360v6
+
+define Device/xiaomi_rm1800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Xiaomi
+	DEVICE_MODEL := RM1800 (AX5)
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	SOC := ipq6000
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	DEVICE_PACKAGES := ipq-wifi-xiaomi_rm1800
+endef
+TARGET_DEVICES += xiaomi_rm1800
+
+define Device/zn_m2
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZN
+	DEVICE_MODEL := M2
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	SOC := ipq6000
+	DEVICE_PACKAGES := ipq-wifi-zn_m2
+endef
+TARGET_DEVICES += zn_m2
