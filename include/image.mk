@@ -564,7 +564,7 @@ define Device/Build/dtb
   $(KDIR)/image-$(1).dtb: FORCE
 	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dts,$$@)
 
-  image_prepare: $(KDIR)/image-$(1).dtb
+  compile-dtb: $(KDIR)/image-$(1).dtb
   endif
 
 endef
@@ -575,7 +575,7 @@ define Device/Build/dtbo
   $(KDIR)/image-$(1).dtbo: FORCE
 	$(call Image/BuildDTBO,$(strip $(2))/$(strip $(3)).dtso,$$@)
 
-  image_prepare: $(KDIR)/image-$(1).dtbo
+  compile-dtb: $(KDIR)/image-$(1).dtbo
   endif
 
 endef
@@ -812,18 +812,20 @@ define BuildImage
   download:
   prepare:
   compile:
+  compile-dtb:
   clean:
   image_prepare:
 
   ifeq ($(IB),)
-    .PHONY: download prepare compile clean image_prepare kernel_prepare install install-images
+    .PHONY: download prepare compile compile-dtb clean image_prepare kernel_prepare install install-images
     compile:
 		$(call Build/Compile)
 
     clean:
 		$(call Build/Clean)
 
-    image_prepare: compile
+    compile-dtb:
+    image_prepare: compile compile-dtb
 		mkdir -p $(BIN_DIR) $(KDIR)/tmp
 		rm -rf $(BUILD_DIR)/json_info_files
 		$(call Image/Prepare)
