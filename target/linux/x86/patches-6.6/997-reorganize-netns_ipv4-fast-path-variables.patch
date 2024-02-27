@@ -1,0 +1,216 @@
+From 3b0e8ab4e41e9fe1669ba4b368ee7c3462e49102 Mon Sep 17 00:00:00 2001
+From: Coco Li <lixiaoyan@google.com>
+Date: Wed, 29 Nov 2023 07:27:54 +0000
+Subject: [PATCH] reorganize netns_ipv4 fast path variables
+
+---
+ include/linux/cache.h    | 25 ++++++++++++++++++++++
+ include/net/netns/ipv4.h | 43 ++++++++++++++++++++++++--------------
+ net/core/net_namespace.c | 45 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 98 insertions(+), 15 deletions(-)
+
+diff --git a/include/linux/cache.h b/include/linux/cache.h
+index 9900d20b7..0ecb17bb6 100644
+--- a/include/linux/cache.h
++++ b/include/linux/cache.h
+@@ -85,6 +85,31 @@
+ #define cache_line_size()	L1_CACHE_BYTES
+ #endif
+ 
++#ifndef __cacheline_group_begin
++#define __cacheline_group_begin(GROUP) \
++	__u8 __cacheline_group_begin__##GROUP[0]
++#endif
++
++#ifndef __cacheline_group_end
++#define __cacheline_group_end(GROUP) \
++	__u8 __cacheline_group_end__##GROUP[0]
++#endif
++
++#ifndef CACHELINE_ASSERT_GROUP_MEMBER
++#define CACHELINE_ASSERT_GROUP_MEMBER(TYPE, GROUP, MEMBER) \
++	BUILD_BUG_ON(!(offsetof(TYPE, MEMBER) >= \
++		       offsetofend(TYPE, __cacheline_group_begin__##GROUP) && \
++		       offsetofend(TYPE, MEMBER) <= \
++		       offsetof(TYPE, __cacheline_group_end__##GROUP)))
++#endif
++
++#ifndef CACHELINE_ASSERT_GROUP_SIZE
++#define CACHELINE_ASSERT_GROUP_SIZE(TYPE, GROUP, SIZE) \
++	BUILD_BUG_ON(offsetof(TYPE, __cacheline_group_end__##GROUP) - \
++		     offsetofend(TYPE, __cacheline_group_begin__##GROUP) > \
++		     SIZE)
++#endif
++
+ /*
+  * Helper to add padding within a struct to ensure data fall into separate
+  * cachelines.
+diff --git a/include/net/netns/ipv4.h b/include/net/netns/ipv4.h
+index 7a41c4791..b6fe3e04b 100644
+--- a/include/net/netns/ipv4.h
++++ b/include/net/netns/ipv4.h
+@@ -42,6 +42,33 @@ struct inet_timewait_death_row {
+ struct tcp_fastopen_context;
+ 
+ struct netns_ipv4 {
++
++	__cacheline_group_begin(netns_ipv4_read_tx);
++	u8 sysctl_tcp_early_retrans;
++	u8 sysctl_tcp_tso_win_divisor;
++	u8 sysctl_tcp_tso_rtt_log;
++	u8 sysctl_tcp_autocorking;
++	int sysctl_tcp_min_snd_mss;
++	unsigned int sysctl_tcp_notsent_lowat;
++	int sysctl_tcp_limit_output_bytes;
++	int sysctl_tcp_min_rtt_wlen;
++	int sysctl_tcp_wmem[3];
++	u8 sysctl_ip_fwd_use_pmtu;
++	__cacheline_group_end(netns_ipv4_read_tx);
++
++	/* TXRX readonly hotpath cache lines */
++	__cacheline_group_begin(netns_ipv4_read_txrx);
++	u8 sysctl_tcp_moderate_rcvbuf;
++	__cacheline_group_end(netns_ipv4_read_txrx);
++
++	/* RX readonly hotpath cache line */
++	__cacheline_group_begin(netns_ipv4_read_rx);
++	u8 sysctl_ip_early_demux;
++	u8 sysctl_tcp_early_demux;
++	int sysctl_tcp_reordering;
++	int sysctl_tcp_rmem[3];
++	__cacheline_group_end(netns_ipv4_read_rx);
++
+ 	struct inet_timewait_death_row tcp_death_row;
+ 	struct udp_table *udp_table;
+ 
+@@ -96,17 +123,15 @@ struct netns_ipv4 {
+ 
+ 	u8 sysctl_ip_default_ttl;
+ 	u8 sysctl_ip_no_pmtu_disc;
+-	u8 sysctl_ip_fwd_use_pmtu;
+ 	u8 sysctl_ip_fwd_update_priority;
+ 	u8 sysctl_ip_nonlocal_bind;
+ 	u8 sysctl_ip_autobind_reuse;
+ 	/* Shall we try to damage output packets if routing dev changes? */
+ 	u8 sysctl_ip_dynaddr;
+-	u8 sysctl_ip_early_demux;
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+ 	u8 sysctl_raw_l3mdev_accept;
+ #endif
+-	u8 sysctl_tcp_early_demux;
++
+ 	u8 sysctl_udp_early_demux;
+ 
+ 	u8 sysctl_nexthop_compat_mode;
+@@ -119,7 +144,6 @@ struct netns_ipv4 {
+ 	u8 sysctl_tcp_mtu_probing;
+ 	int sysctl_tcp_mtu_probe_floor;
+ 	int sysctl_tcp_base_mss;
+-	int sysctl_tcp_min_snd_mss;
+ 	int sysctl_tcp_probe_threshold;
+ 	u32 sysctl_tcp_probe_interval;
+ 
+@@ -132,17 +156,14 @@ struct netns_ipv4 {
+ 	u8 sysctl_tcp_syncookies;
+ 	u8 sysctl_tcp_migrate_req;
+ 	u8 sysctl_tcp_comp_sack_nr;
+-	int sysctl_tcp_reordering;
+ 	u8 sysctl_tcp_retries1;
+ 	u8 sysctl_tcp_retries2;
+ 	u8 sysctl_tcp_orphan_retries;
+ 	u8 sysctl_tcp_tw_reuse;
+ 	int sysctl_tcp_fin_timeout;
+-	unsigned int sysctl_tcp_notsent_lowat;
+ 	u8 sysctl_tcp_sack;
+ 	u8 sysctl_tcp_window_scaling;
+ 	u8 sysctl_tcp_timestamps;
+-	u8 sysctl_tcp_early_retrans;
+ 	u8 sysctl_tcp_recovery;
+ 	u8 sysctl_tcp_thin_linear_timeouts;
+ 	u8 sysctl_tcp_slow_start_after_idle;
+@@ -158,21 +179,13 @@ struct netns_ipv4 {
+ 	u8 sysctl_tcp_frto;
+ 	u8 sysctl_tcp_nometrics_save;
+ 	u8 sysctl_tcp_no_ssthresh_metrics_save;
+-	u8 sysctl_tcp_moderate_rcvbuf;
+-	u8 sysctl_tcp_tso_win_divisor;
+ 	u8 sysctl_tcp_workaround_signed_windows;
+-	int sysctl_tcp_limit_output_bytes;
+ 	int sysctl_tcp_challenge_ack_limit;
+-	int sysctl_tcp_min_rtt_wlen;
+ 	u8 sysctl_tcp_min_tso_segs;
+-	u8 sysctl_tcp_tso_rtt_log;
+-	u8 sysctl_tcp_autocorking;
+ 	u8 sysctl_tcp_reflect_tos;
+ 	int sysctl_tcp_invalid_ratelimit;
+ 	int sysctl_tcp_pacing_ss_ratio;
+ 	int sysctl_tcp_pacing_ca_ratio;
+-	int sysctl_tcp_wmem[3];
+-	int sysctl_tcp_rmem[3];
+ 	unsigned int sysctl_tcp_child_ehash_entries;
+ 	unsigned long sysctl_tcp_comp_sack_delay_ns;
+ 	unsigned long sysctl_tcp_comp_sack_slack_ns;
+diff --git a/net/core/net_namespace.c b/net/core/net_namespace.c
+index f4183c4c1..cb8bcbff9 100644
+--- a/net/core/net_namespace.c
++++ b/net/core/net_namespace.c
+@@ -1099,11 +1099,56 @@ static void rtnl_net_notifyid(struct net *net, int cmd, int id, u32 portid,
+ 	rtnl_set_sk_err(net, RTNLGRP_NSID, err);
+ }
+ 
++#ifdef CONFIG_NET_NS
++static void __init netns_ipv4_struct_check(void)
++{
++	/* TX readonly hotpath cache lines */
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_early_retrans);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_tso_win_divisor);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_tso_rtt_log);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_autocorking);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_min_snd_mss);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_notsent_lowat);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_limit_output_bytes);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_min_rtt_wlen);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_tcp_wmem);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_tx,
++				      sysctl_ip_fwd_use_pmtu);
++	CACHELINE_ASSERT_GROUP_SIZE(struct netns_ipv4, netns_ipv4_read_tx, 33);
++
++	/* TXRX readonly hotpath cache lines */
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_txrx,
++				      sysctl_tcp_moderate_rcvbuf);
++	CACHELINE_ASSERT_GROUP_SIZE(struct netns_ipv4, netns_ipv4_read_txrx, 1);
++
++	/* RX readonly hotpath cache line */
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_rx,
++				      sysctl_ip_early_demux);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_rx,
++				      sysctl_tcp_early_demux);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_rx,
++				      sysctl_tcp_reordering);
++	CACHELINE_ASSERT_GROUP_MEMBER(struct netns_ipv4, netns_ipv4_read_rx,
++				      sysctl_tcp_rmem);
++	CACHELINE_ASSERT_GROUP_SIZE(struct netns_ipv4, netns_ipv4_read_rx, 18);
++}
++#endif
++
+ void __init net_ns_init(void)
+ {
+ 	struct net_generic *ng;
+ 
+ #ifdef CONFIG_NET_NS
++	netns_ipv4_struct_check();
+ 	net_cachep = kmem_cache_create("net_namespace", sizeof(struct net),
+ 					SMP_CACHE_BYTES,
+ 					SLAB_PANIC|SLAB_ACCOUNT, NULL);
+-- 
+2.34.1
+
