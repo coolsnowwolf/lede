@@ -1,0 +1,150 @@
+From 380c336af070edf85826abbb0057bf92a03ec466 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Wed, 1 Mar 2023 17:57:11 +0000
+Subject: [PATCH] drivers: spi: Fix spi-gpio to correctly implement
+ sck-idle-input
+
+Formerly, if configured using DT, CS GPIOs were driven from spi.c
+and it was possible for CS to be asserted (low) *before* starting
+to drive SCK. CS GPIOs have been brought under control of this
+driver in both ACPI and DT cases, with a fixup for GPIO polarity.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/spi/spi-gpio.c | 74 +++++++++++++++++++++++++++++-------------
+ 1 file changed, 51 insertions(+), 23 deletions(-)
+
+--- a/drivers/spi/spi-gpio.c
++++ b/drivers/spi/spi-gpio.c
+@@ -37,6 +37,7 @@ struct spi_gpio {
+ 	struct gpio_desc		*mosi;
+ 	bool				sck_idle_input;
+ 	struct gpio_desc		**cs_gpios;
++	bool                            cs_dont_invert;
+ };
+ 
+ /*----------------------------------------------------------------------*/
+@@ -233,12 +234,18 @@ static void spi_gpio_chipselect(struct s
+ 			gpiod_set_value_cansleep(spi_gpio->sck, spi->mode & SPI_CPOL);
+ 	}
+ 
+-	/* Drive chip select line, if we have one */
++	/*
++	 * Drive chip select line, if we have one.
++	 * SPI chip selects are normally active-low, but when
++	 * cs_dont_invert is set, we assume their polarity is
++	 * controlled by the GPIO, and write '1' to assert.
++	 */
+ 	if (spi_gpio->cs_gpios) {
+ 		struct gpio_desc *cs = spi_gpio->cs_gpios[spi->chip_select];
++		int val = ((spi->mode & SPI_CS_HIGH) || spi_gpio->cs_dont_invert) ?
++			is_active : !is_active;
+ 
+-		/* SPI chip selects are normally active-low */
+-		gpiod_set_value_cansleep(cs, (spi->mode & SPI_CS_HIGH) ? is_active : !is_active);
++		gpiod_set_value_cansleep(cs, val);
+ 	}
+ 
+ 	if (spi_gpio->sck_idle_input && !is_active)
+@@ -254,12 +261,14 @@ static int spi_gpio_setup(struct spi_dev
+ 	/*
+ 	 * The CS GPIOs have already been
+ 	 * initialized from the descriptor lookup.
++	 * Here we set them to the non-asserted state.
+ 	 */
+ 	if (spi_gpio->cs_gpios) {
+ 		cs = spi_gpio->cs_gpios[spi->chip_select];
+ 		if (!spi->controller_state && cs)
+ 			status = gpiod_direction_output(cs,
+-						  !(spi->mode & SPI_CS_HIGH));
++							!((spi->mode & SPI_CS_HIGH) ||
++							   spi_gpio->cs_dont_invert));
+ 	}
+ 
+ 	if (!status)
+@@ -336,6 +345,38 @@ static int spi_gpio_request(struct devic
+ 	return PTR_ERR_OR_ZERO(spi_gpio->sck);
+ }
+ 
++/*
++ * In order to implement "sck-idle-input" (which requires SCK
++ * direction and CS level to be switched in a particular order),
++ * we need to control GPIO chip selects from within this driver.
++ */
++
++static int spi_gpio_probe_get_cs_gpios(struct device *dev,
++				       struct spi_master *master,
++				       bool gpio_defines_polarity)
++{
++	int i;
++	struct spi_gpio *spi_gpio = spi_master_get_devdata(master);
++
++	spi_gpio->cs_dont_invert = gpio_defines_polarity;
++	spi_gpio->cs_gpios = devm_kcalloc(dev, master->num_chipselect,
++					  sizeof(*spi_gpio->cs_gpios),
++					  GFP_KERNEL);
++	if (!spi_gpio->cs_gpios)
++		return -ENOMEM;
++
++	for (i = 0; i < master->num_chipselect; i++) {
++		spi_gpio->cs_gpios[i] =
++			devm_gpiod_get_index(dev, "cs", i,
++					     gpio_defines_polarity ?
++						GPIOD_OUT_LOW : GPIOD_OUT_HIGH);
++		if (IS_ERR(spi_gpio->cs_gpios[i]))
++			return PTR_ERR(spi_gpio->cs_gpios[i]);
++	}
++
++	return 0;
++}
++
+ #ifdef CONFIG_OF
+ static const struct of_device_id spi_gpio_dt_ids[] = {
+ 	{ .compatible = "spi-gpio" },
+@@ -346,10 +387,12 @@ MODULE_DEVICE_TABLE(of, spi_gpio_dt_ids)
+ static int spi_gpio_probe_dt(struct platform_device *pdev,
+ 			     struct spi_master *master)
+ {
+-	master->dev.of_node = pdev->dev.of_node;
+-	master->use_gpio_descriptors = true;
++	struct device *dev = &pdev->dev;
+ 
+-	return 0;
++	master->dev.of_node = dev->of_node;
++	master->num_chipselect = gpiod_count(dev, "cs");
++
++	return spi_gpio_probe_get_cs_gpios(dev, master, true);
+ }
+ #else
+ static inline int spi_gpio_probe_dt(struct platform_device *pdev,
+@@ -364,8 +407,6 @@ static int spi_gpio_probe_pdata(struct p
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct spi_gpio_platform_data *pdata = dev_get_platdata(dev);
+-	struct spi_gpio *spi_gpio = spi_master_get_devdata(master);
+-	int i;
+ 
+ #ifdef GENERIC_BITBANG
+ 	if (!pdata || !pdata->num_chipselect)
+@@ -377,20 +418,7 @@ static int spi_gpio_probe_pdata(struct p
+ 	 */
+ 	master->num_chipselect = pdata->num_chipselect ?: 1;
+ 
+-	spi_gpio->cs_gpios = devm_kcalloc(dev, master->num_chipselect,
+-					  sizeof(*spi_gpio->cs_gpios),
+-					  GFP_KERNEL);
+-	if (!spi_gpio->cs_gpios)
+-		return -ENOMEM;
+-
+-	for (i = 0; i < master->num_chipselect; i++) {
+-		spi_gpio->cs_gpios[i] = devm_gpiod_get_index(dev, "cs", i,
+-							     GPIOD_OUT_HIGH);
+-		if (IS_ERR(spi_gpio->cs_gpios[i]))
+-			return PTR_ERR(spi_gpio->cs_gpios[i]);
+-	}
+-
+-	return 0;
++	return spi_gpio_probe_get_cs_gpios(dev, master, false);
+ }
+ 
+ static int spi_gpio_probe(struct platform_device *pdev)

@@ -10,7 +10,7 @@ define KernelPackage/pwm-raspberrypi-poe
     CONFIG_PWM_RASPBERRYPI_POE
   FILES:=$(LINUX_DIR)/drivers/pwm/pwm-raspberrypi-poe.ko
   AUTOLOAD:=$(call AutoLoad,20,pwm-raspberrypi-poe)
-  DEPENDS:=@TARGET_bcm27xx @LINUX_5_15 +kmod-hwmon-pwmfan
+  DEPENDS:=@TARGET_bcm27xx +kmod-hwmon-pwmfan
 endef
 
 define KernelPackage/pwm-raspberrypi-poe/description

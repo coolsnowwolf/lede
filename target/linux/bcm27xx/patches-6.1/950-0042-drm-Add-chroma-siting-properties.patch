@@ -1,0 +1,170 @@
+From ca82414470eea1d81f8fe4169ee19b89245989dc Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 26 Jan 2022 15:58:13 +0000
+Subject: [PATCH] drm: Add chroma siting properties
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/drm_atomic_state_helper.c | 14 +++++++++
+ drivers/gpu/drm/drm_atomic_uapi.c         |  8 +++++
+ drivers/gpu/drm/drm_color_mgmt.c          | 36 +++++++++++++++++++++++
+ include/drm/drm_color_mgmt.h              |  3 ++
+ include/drm/drm_plane.h                   | 36 +++++++++++++++++++++++
+ 5 files changed, 97 insertions(+)
+
+--- a/drivers/gpu/drm/drm_atomic_state_helper.c
++++ b/drivers/gpu/drm/drm_atomic_state_helper.c
+@@ -267,6 +267,20 @@ void __drm_atomic_helper_plane_state_res
+ 			plane_state->color_range = val;
+ 	}
+ 
++	if (plane->chroma_siting_h_property) {
++		if (!drm_object_property_get_default_value(&plane->base,
++							   plane->chroma_siting_h_property,
++							   &val))
++			plane_state->chroma_siting_h = val;
++	}
++
++	if (plane->chroma_siting_v_property) {
++		if (!drm_object_property_get_default_value(&plane->base,
++							   plane->chroma_siting_v_property,
++							   &val))
++			plane_state->chroma_siting_v = val;
++	}
++
+ 	if (plane->zpos_property) {
+ 		if (!drm_object_property_get_default_value(&plane->base,
+ 							   plane->zpos_property,
+--- a/drivers/gpu/drm/drm_atomic_uapi.c
++++ b/drivers/gpu/drm/drm_atomic_uapi.c
+@@ -562,6 +562,10 @@ static int drm_atomic_plane_set_property
+ 		state->color_encoding = val;
+ 	} else if (property == plane->color_range_property) {
+ 		state->color_range = val;
++	} else if (property == plane->chroma_siting_h_property) {
++		state->chroma_siting_h = val;
++	} else if (property == plane->chroma_siting_v_property) {
++		state->chroma_siting_v = val;
+ 	} else if (property == config->prop_fb_damage_clips) {
+ 		ret = drm_atomic_replace_property_blob_from_id(dev,
+ 					&state->fb_damage_clips,
+@@ -628,6 +632,10 @@ drm_atomic_plane_get_property(struct drm
+ 		*val = state->color_encoding;
+ 	} else if (property == plane->color_range_property) {
+ 		*val = state->color_range;
++	} else if (property == plane->chroma_siting_h_property) {
++		*val = state->chroma_siting_h;
++	} else if (property == plane->chroma_siting_v_property) {
++		*val = state->chroma_siting_v;
+ 	} else if (property == config->prop_fb_damage_clips) {
+ 		*val = (state->fb_damage_clips) ?
+ 			state->fb_damage_clips->base.id : 0;
+--- a/drivers/gpu/drm/drm_color_mgmt.c
++++ b/drivers/gpu/drm/drm_color_mgmt.c
+@@ -591,6 +591,42 @@ int drm_plane_create_color_properties(st
+ EXPORT_SYMBOL(drm_plane_create_color_properties);
+ 
+ /**
++ * drm_plane_create_chroma_siting_properties - chroma siting related plane properties
++ * @plane: plane object
++ *
++ * Create and attach plane specific CHROMA_SITING
++ * properties to @plane.
++ */
++int drm_plane_create_chroma_siting_properties(struct drm_plane *plane,
++						int32_t default_chroma_siting_h,
++						int32_t default_chroma_siting_v)
++{
++	struct drm_device *dev = plane->dev;
++	struct drm_property *prop;
++
++	prop = drm_property_create_range(dev, 0, "CHROMA_SITING_H",
++					0, 1<<16);
++	if (!prop)
++		return -ENOMEM;
++	plane->chroma_siting_h_property = prop;
++	drm_object_attach_property(&plane->base, prop, default_chroma_siting_h);
++
++	prop = drm_property_create_range(dev, 0, "CHROMA_SITING_V",
++					0, 1<<16);
++	if (!prop)
++		return -ENOMEM;
++	plane->chroma_siting_v_property = prop;
++	drm_object_attach_property(&plane->base, prop, default_chroma_siting_v);
++
++	if (plane->state) {
++		plane->state->chroma_siting_h = default_chroma_siting_h;
++		plane->state->chroma_siting_v = default_chroma_siting_v;
++	}
++	return 0;
++}
++EXPORT_SYMBOL(drm_plane_create_chroma_siting_properties);
++
++/**
+  * drm_color_lut_check - check validity of lookup table
+  * @lut: property blob containing LUT to check
+  * @tests: bitmask of tests to run
+--- a/include/drm/drm_color_mgmt.h
++++ b/include/drm/drm_color_mgmt.h
+@@ -94,6 +94,9 @@ int drm_plane_create_color_properties(st
+ 				      enum drm_color_encoding default_encoding,
+ 				      enum drm_color_range default_range);
+ 
++int drm_plane_create_chroma_siting_properties(struct drm_plane *plane,
++						int32_t default_chroma_siting_h, int32_t default_chroma_siting_v);
++
+ /**
+  * enum drm_color_lut_tests - hw-specific LUT tests to perform
+  *
+--- a/include/drm/drm_plane.h
++++ b/include/drm/drm_plane.h
+@@ -178,6 +178,24 @@ struct drm_plane_state {
+ 	enum drm_color_range color_range;
+ 
+ 	/**
++	 * @chroma_siting_h:
++	 *
++	 * Location of chroma samples horizontally compared to luma
++	 * 0 means chroma is sited with left luma
++	 * 0x8000 is interstitial. 0x10000 is sited with right luma
++	 */
++	int32_t chroma_siting_h;
++
++	/**
++	 * @chroma_siting_v:
++	 *
++	 * Location of chroma samples vertically compared to luma
++	 * 0 means chroma is sited with top luma
++	 * 0x8000 is interstitial. 0x10000 is sited with bottom luma
++	 */
++	int32_t chroma_siting_v;
++
++	/**
+ 	 * @fb_damage_clips:
+ 	 *
+ 	 * Blob representing damage (area in plane framebuffer that changed
+@@ -748,6 +766,24 @@ struct drm_plane {
+ 	 * scaling.
+ 	 */
+ 	struct drm_property *scaling_filter_property;
++
++	/**
++	 * @chroma_siting_h_property:
++	 *
++	 * Optional "CHROMA_SITING_H" property for specifying
++	 * chroma siting for YUV formats.
++	 * See drm_plane_create_chroma_siting_properties().
++	 */
++	struct drm_property *chroma_siting_h_property;
++
++	/**
++	 * @chroma_siting_v_property:
++	 *
++	 * Optional "CHROMA_SITING_V" property for specifying
++	 * chroma siting for YUV formats.
++	 * See drm_plane_create_chroma_siting_properties().
++	 */
++	struct drm_property *chroma_siting_v_property;
+ };
+ 
+ #define obj_to_plane(x) container_of(x, struct drm_plane, base)

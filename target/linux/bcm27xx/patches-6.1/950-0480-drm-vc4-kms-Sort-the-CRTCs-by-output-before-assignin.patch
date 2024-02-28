@@ -1,0 +1,201 @@
+From 91dc4d4202c571edfcbc9357642609b07a9cbee8 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 23 Nov 2022 16:25:52 +0100
+Subject: [PATCH] drm/vc4: kms: Sort the CRTCs by output before
+ assigning them
+
+On the vc4 devices (and later), the blending is done by a single device
+called the HVS. The HVS has three FIFO that can operate in parallel, and
+route their output to 6 CRTCs and 7 encoders on the BCM2711.
+
+Each of these CRTCs and encoders have some constraints on which FIFO
+they can feed from, so we need some code to take all those constraints
+into account and assign FIFOs to CRTCs.
+
+The problem can be simplified by assigning those FIFOs to CRTCs by
+ascending output index number. We had a comment mentioning it already,
+but we were never actually enforcing it.
+
+It was working still in most situations because the probe order is
+roughly equivalent, except for the (optional, and fairly rarely used on
+the Pi4) VEC which was last in the probe order sequence, but one of the
+earliest device to assign.
+
+This resulted in configurations that were rejected by our code but were
+still valid with a different assignment.
+
+We can fix this by making sure we assign CRTCs to FIFOs by ordering
+them by ascending HVS output index.
+
+Fixes: 87ebcd42fb7b ("drm/vc4: crtc: Assign output to channel automatically")
+Reviewed-by: Javier Martinez Canillas <javierm@redhat.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+Link: https://patchwork.freedesktop.org/patch/msgid/20221123-rpi-kunit-tests-v1-10-051a0bb60a16@cerno.tech
+---
+ drivers/gpu/drm/vc4/vc4_kms.c | 109 ++++++++++++++++++++++++----------
+ 1 file changed, 76 insertions(+), 33 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/sort.h>
+ 
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+@@ -791,6 +792,20 @@ static int vc4_hvs_channels_obj_init(str
+ 	return drmm_add_action_or_reset(&vc4->base, vc4_hvs_channels_obj_fini, NULL);
+ }
+ 
++static int cmp_vc4_crtc_hvs_output(const void *a, const void *b)
++{
++	const struct vc4_crtc *crtc_a =
++		to_vc4_crtc(*(const struct drm_crtc **)a);
++	const struct vc4_crtc_data *data_a =
++		vc4_crtc_to_vc4_crtc_data(crtc_a);
++	const struct vc4_crtc *crtc_b =
++		to_vc4_crtc(*(const struct drm_crtc **)b);
++	const struct vc4_crtc_data *data_b =
++		vc4_crtc_to_vc4_crtc_data(crtc_b);
++
++	return data_a->hvs_output - data_b->hvs_output;
++}
++
+ /*
+  * The BCM2711 HVS has up to 7 outputs connected to the pixelvalves and
+  * the TXP (and therefore all the CRTCs found on that platform).
+@@ -826,10 +841,11 @@ static int vc4_pv_muxing_atomic_check(st
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(state->dev);
+ 	struct vc4_hvs_state *hvs_new_state;
+-	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
++	struct drm_crtc **sorted_crtcs;
+ 	struct drm_crtc *crtc;
+ 	unsigned int unassigned_channels = 0;
+ 	unsigned int i;
++	int ret;
+ 
+ 	hvs_new_state = vc4_hvs_get_global_state(state);
+ 	if (IS_ERR(hvs_new_state))
+@@ -839,18 +855,62 @@ static int vc4_pv_muxing_atomic_check(st
+ 		if (!hvs_new_state->fifo_state[i].in_use)
+ 			unassigned_channels |= BIT(i);
+ 
+-	for_each_oldnew_crtc_in_state(state, crtc, old_crtc_state, new_crtc_state, i) {
+-		struct vc4_crtc_state *old_vc4_crtc_state =
+-			to_vc4_crtc_state(old_crtc_state);
+-		struct vc4_crtc_state *new_vc4_crtc_state =
+-			to_vc4_crtc_state(new_crtc_state);
+-		struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
++	/*
++	 * The problem we have to solve here is that we have up to 7
++	 * encoders, connected to up to 6 CRTCs.
++	 *
++	 * Those CRTCs, depending on the instance, can be routed to 1, 2
++	 * or 3 HVS FIFOs, and we need to set the muxing between FIFOs and
++	 * outputs in the HVS accordingly.
++	 *
++	 * It would be pretty hard to come up with an algorithm that
++	 * would generically solve this. However, the current routing
++	 * trees we support allow us to simplify a bit the problem.
++	 *
++	 * Indeed, with the current supported layouts, if we try to
++	 * assign in the ascending crtc index order the FIFOs, we can't
++	 * fall into the situation where an earlier CRTC that had
++	 * multiple routes is assigned one that was the only option for
++	 * a later CRTC.
++	 *
++	 * If the layout changes and doesn't give us that in the future,
++	 * we will need to have something smarter, but it works so far.
++	 */
++	sorted_crtcs = kmalloc_array(dev->num_crtcs, sizeof(*sorted_crtcs), GFP_KERNEL);
++	if (!sorted_crtcs)
++		return -ENOMEM;
++
++	i = 0;
++	drm_for_each_crtc(crtc, dev)
++		sorted_crtcs[i++] = crtc;
++
++	sort(sorted_crtcs, i, sizeof(*sorted_crtcs), cmp_vc4_crtc_hvs_output, NULL);
++
++	for (i = 0; i < dev->num_crtcs; i++) {
++		struct vc4_crtc_state *old_vc4_crtc_state, *new_vc4_crtc_state;
++		struct drm_crtc_state *old_crtc_state, *new_crtc_state;
++		struct vc4_crtc *vc4_crtc;
+ 		unsigned int matching_channels;
+ 		unsigned int channel;
+ 
+ 		if (vc4->firmware_kms)
+ 			continue;
+ 
++		crtc = sorted_crtcs[i];
++		if (!crtc)
++			continue;
++		vc4_crtc = to_vc4_crtc(crtc);
++
++		old_crtc_state = drm_atomic_get_old_crtc_state(state, crtc);
++		if (!old_crtc_state)
++			continue;
++		old_vc4_crtc_state = to_vc4_crtc_state(old_crtc_state);
++
++		new_crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
++		if (!new_crtc_state)
++			continue;
++		new_vc4_crtc_state = to_vc4_crtc_state(new_crtc_state);
++
+ 		drm_dbg(dev, "%s: Trying to find a channel.\n", crtc->name);
+ 
+ 		/* Nothing to do here, let's skip it */
+@@ -879,33 +939,11 @@ static int vc4_pv_muxing_atomic_check(st
+ 			continue;
+ 		}
+ 
+-		/*
+-		 * The problem we have to solve here is that we have
+-		 * up to 7 encoders, connected to up to 6 CRTCs.
+-		 *
+-		 * Those CRTCs, depending on the instance, can be
+-		 * routed to 1, 2 or 3 HVS FIFOs, and we need to set
+-		 * the change the muxing between FIFOs and outputs in
+-		 * the HVS accordingly.
+-		 *
+-		 * It would be pretty hard to come up with an
+-		 * algorithm that would generically solve
+-		 * this. However, the current routing trees we support
+-		 * allow us to simplify a bit the problem.
+-		 *
+-		 * Indeed, with the current supported layouts, if we
+-		 * try to assign in the ascending crtc index order the
+-		 * FIFOs, we can't fall into the situation where an
+-		 * earlier CRTC that had multiple routes is assigned
+-		 * one that was the only option for a later CRTC.
+-		 *
+-		 * If the layout changes and doesn't give us that in
+-		 * the future, we will need to have something smarter,
+-		 * but it works so far.
+-		 */
+ 		matching_channels = unassigned_channels & vc4_crtc->data->hvs_available_channels;
+-		if (!matching_channels)
+-			return -EINVAL;
++		if (!matching_channels) {
++			ret = -EINVAL;
++			goto err_free_crtc_array;
++		}
+ 
+ 		channel = ffs(matching_channels) - 1;
+ 
+@@ -915,7 +953,12 @@ static int vc4_pv_muxing_atomic_check(st
+ 		hvs_new_state->fifo_state[channel].in_use = true;
+ 	}
+ 
++	kfree(sorted_crtcs);
+ 	return 0;
++
++err_free_crtc_array:
++	kfree(sorted_crtcs);
++	return ret;
+ }
+ 
+ static int

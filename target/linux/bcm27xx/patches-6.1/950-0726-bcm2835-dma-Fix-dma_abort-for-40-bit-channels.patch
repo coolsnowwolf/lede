@@ -1,0 +1,78 @@
+From 160cee9f3b24ef830fdf3abbe56f4de94eeea812 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 21 Apr 2023 20:23:42 +0100
+Subject: [PATCH] bcm2835-dma: Fix dma_abort for 40-bit channels
+
+It wasn't aborting the transfer and caused stop/start
+of hdmi audio dma to be unreliable.
+
+New sequence approved by Broadcom.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/dma/bcm2835-dma.c | 42 ++++++++++++++++++++++++++-------------
+ 1 file changed, 28 insertions(+), 14 deletions(-)
+
+--- a/drivers/dma/bcm2835-dma.c
++++ b/drivers/dma/bcm2835-dma.c
+@@ -651,10 +651,6 @@ static void bcm2835_dma_abort(struct bcm
+ {
+ 	void __iomem *chan_base = c->chan_base;
+ 	long int timeout = 10000;
+-	u32 wait_mask = BCM2835_DMA_WAITING_FOR_WRITES;
+-
+-	if (c->is_40bit_channel)
+-		wait_mask = BCM2711_DMA40_WAITING_FOR_WRITES;
+ 
+ 	/*
+ 	 * A zero control block address means the channel is idle.
+@@ -663,19 +659,37 @@ static void bcm2835_dma_abort(struct bcm
+ 	if (!readl(chan_base + BCM2835_DMA_ADDR))
+ 		return;
+ 
+-	/* Write 0 to the active bit - Pause the DMA */
+-	writel(0, chan_base + BCM2835_DMA_CS);
+-
+-	/* Wait for any current AXI transfer to complete */
+-	while ((readl(chan_base + BCM2835_DMA_CS) & wait_mask) && --timeout)
+-		cpu_relax();
+-
+-	/* Peripheral might be stuck and fail to signal AXI write responses */
+-	if (!timeout)
+-		dev_err(c->vc.chan.device->dev,
+-			"failed to complete outstanding writes\n");
++	if (c->is_40bit_channel) {
++		/* Halt the current DMA */
++		writel(readl(chan_base + BCM2711_DMA40_CS) | BCM2711_DMA40_HALT,
++			     chan_base + BCM2711_DMA40_CS);
++
++		while ((readl(chan_base + BCM2711_DMA40_CS) & BCM2711_DMA40_HALT) && --timeout)
++			cpu_relax();
++
++		/* Peripheral might be stuck and fail to halt */
++		if (!timeout)
++			dev_err(c->vc.chan.device->dev,
++				"failed to halt dma\n");
++
++		writel(0, chan_base + BCM2711_DMA40_CS);
++		writel(0, chan_base + BCM2711_DMA40_CB);
++	} else {
++		/* Write 0 to the active bit - Pause the DMA */
++		writel(0, chan_base + BCM2835_DMA_CS);
++
++		/* Wait for any current AXI transfer to complete */
++		while ((readl(chan_base + BCM2835_DMA_CS) & BCM2835_DMA_WAITING_FOR_WRITES)
++		       && --timeout)
++			cpu_relax();
++
++		/* Peripheral might be stuck and fail to signal AXI write responses */
++		if (!timeout)
++			dev_err(c->vc.chan.device->dev,
++				"failed to complete outstanding writes\n");
+ 
+-	writel(BCM2835_DMA_RESET, chan_base + BCM2835_DMA_CS);
++		writel(BCM2835_DMA_RESET, chan_base + BCM2835_DMA_CS);
++	}
+ }
+ 
+ static void bcm2835_dma_start_desc(struct bcm2835_chan *c)

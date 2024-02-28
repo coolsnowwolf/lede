@@ -1,0 +1,115 @@
+From 793023dc148830c18c437b58d88a118a72091038 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 13 Apr 2023 16:47:10 +0200
+Subject: [PATCH] dmaengine: bcm2835: Fix descriptors usage for 40-bits
+ channels
+
+The bcm2835_dma_create_cb_chain() function is in charge of building up
+the descriptors chain for a given transfer.
+
+It was initially supporting only the BCM2835-style DMA controller, and
+was later expanded to support controllers with 40-bits channels that use
+a different descriptor layout.
+
+However, some part of the function only use the old style descriptor,
+even when building a chain of new-style descriptors, resulting in weird
+bugs.
+
+Fixes: 9a52a9918306 ("bcm2835-dma: Add proper 40-bit DMA support")
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/dma/bcm2835-dma.c | 69 ++++++++++++++++++++++++++++-----------
+ 1 file changed, 50 insertions(+), 19 deletions(-)
+
+--- a/drivers/dma/bcm2835-dma.c
++++ b/drivers/dma/bcm2835-dma.c
+@@ -543,7 +543,10 @@ static struct bcm2835_desc *bcm2835_dma_
+ 				cyclic ? finalextrainfo : 0);
+ 
+ 			/* calculate new remaining length */
+-			len -= control_block->length;
++			if (c->is_40bit_channel)
++				len -= ((struct bcm2711_dma40_scb *)control_block)->len;
++			else
++				len -= control_block->length;
+ 		}
+ 
+ 		/* link this the last controlblock */
+@@ -555,10 +558,19 @@ static struct bcm2835_desc *bcm2835_dma_
+ 			d->cb_list[frame - 1].cb->next = cb_entry->paddr;
+ 
+ 		/* update src and dst and length */
+-		if (src && (info & BCM2835_DMA_S_INC))
+-			src += control_block->length;
+-		if (dst && (info & BCM2835_DMA_D_INC))
+-			dst += control_block->length;
++		if (src && (info & BCM2835_DMA_S_INC)) {
++			if (c->is_40bit_channel)
++				src += ((struct bcm2711_dma40_scb *)control_block)->len;
++			else
++				src += control_block->length;
++		}
++
++		if (dst && (info & BCM2835_DMA_D_INC)) {
++			if (c->is_40bit_channel)
++				dst += ((struct bcm2711_dma40_scb *)control_block)->len;
++			else
++				dst += control_block->length;
++		}
+ 
+ 		/* Length of total transfer */
+ 		if (c->is_40bit_channel)
+@@ -779,20 +791,39 @@ static size_t bcm2835_dma_desc_size_pos(
+ 	unsigned int i;
+ 	size_t size;
+ 
+-	for (size = i = 0; i < d->frames; i++) {
+-		struct bcm2835_dma_cb *control_block = d->cb_list[i].cb;
+-		size_t this_size = control_block->length;
+-		dma_addr_t dma;
+-
+-		if (d->dir == DMA_DEV_TO_MEM)
+-			dma = control_block->dst;
+-		else
+-			dma = control_block->src;
+-
+-		if (size)
+-			size += this_size;
+-		else if (addr >= dma && addr < dma + this_size)
+-			size += dma + this_size - addr;
++	if (d->c->is_40bit_channel) {
++		for (size = i = 0; i < d->frames; i++) {
++			struct bcm2711_dma40_scb *control_block =
++				(struct bcm2711_dma40_scb *)d->cb_list[i].cb;
++			size_t this_size = control_block->len;
++			dma_addr_t dma;
++
++			if (d->dir == DMA_DEV_TO_MEM)
++				dma = control_block->dst;
++			else
++				dma = control_block->src;
++
++			if (size)
++				size += this_size;
++			else if (addr >= dma && addr < dma + this_size)
++				size += dma + this_size - addr;
++		}
++	} else {
++		for (size = i = 0; i < d->frames; i++) {
++			struct bcm2835_dma_cb *control_block = d->cb_list[i].cb;
++			size_t this_size = control_block->length;
++			dma_addr_t dma;
++
++			if (d->dir == DMA_DEV_TO_MEM)
++				dma = control_block->dst;
++			else
++				dma = control_block->src;
++
++			if (size)
++				size += this_size;
++			else if (addr >= dma && addr < dma + this_size)
++				size += dma + this_size - addr;
++		}
+ 	}
+ 
+ 	return size;
