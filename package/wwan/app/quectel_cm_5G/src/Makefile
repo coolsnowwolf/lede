@@ -9,7 +9,7 @@ CC:=$(CROSS-COMPILE)gcc
 endif
 LD:=$(CROSS-COMPILE)ld
 
-QL_CM_SRC=QmiWwanCM.c GobiNetCM.c main.c MPQMUX.c QMIThread.c util.c qmap_bridge_mode.c mbim-cm.c device.c
+QL_CM_SRC=QmiWwanCM.c GobiNetCM.c main.c QCQMUX.c QMIThread.c util.c qmap_bridge_mode.c mbim-cm.c device.c
 QL_CM_SRC+=atc.c atchannel.c at_tok.c
 #QL_CM_SRC+=qrtr.c rmnetctl.c
 ifeq (1,1)
@@ -21,25 +21,26 @@ QL_CM_DHCP=udhcpc_netlink.c
 QL_CM_DHCP+=${LIBMNL}
 endif
 
+CFLAGS += -Wall -Wextra -Werror -O1 #-s
 LDFLAGS += -lpthread -ldl -lrt
 
 release: clean qmi-proxy mbim-proxy atc-proxy #qrtr-proxy
-	$(CC) ${CFLAGS} ${QL_CM_SRC} ${QL_CM_DHCP} -o quectel-CM ${LDFLAGS}
+	$(CC) ${CFLAGS} ${QL_CM_SRC} ${QL_CM_DHCP} -o out/quectel-CM ${LDFLAGS}
 
 debug: clean
-	$(CC) ${CFLAGS} -g -DCM_DEBUG ${QL_CM_SRC} ${QL_CM_DHCP} -o quectel-CM -lpthread -ldl -lrt
+	$(CC) ${CFLAGS} -g -DCM_DEBUG ${QL_CM_SRC} ${QL_CM_DHCP} -o out/quectel-CM -lpthread -ldl -lrt
 
 qmi-proxy:
-	$(CC) ${CFLAGS} quectel-qmi-proxy.c -o quectel-qmi-proxy ${LDFLAGS} 
+	$(CC) ${CFLAGS} quectel-qmi-proxy.c -o out/quectel-qmi-proxy ${LDFLAGS} 
 
 mbim-proxy:
-	$(CC) ${CFLAGS} quectel-mbim-proxy.c -o quectel-mbim-proxy ${LDFLAGS} 
+	$(CC) ${CFLAGS} quectel-mbim-proxy.c -o out/quectel-mbim-proxy ${LDFLAGS} 
 
 qrtr-proxy:
-	$(CC) ${CFLAGS} quectel-qrtr-proxy.c -o quectel-qrtr-proxy ${LDFLAGS} 
+	$(CC) ${CFLAGS} quectel-qrtr-proxy.c -o out/quectel-qrtr-proxy ${LDFLAGS} 
 
 atc-proxy:
-	$(CC) ${CFLAGS} quectel-atc-proxy.c atchannel.c at_tok.c util.c -o quectel-atc-proxy ${LDFLAGS} 
+	$(CC) ${CFLAGS} quectel-atc-proxy.c atchannel.c at_tok.c util.c -o out/quectel-atc-proxy ${LDFLAGS} 
 
 clean:
-	rm -rf *.o libmnl/*.o quectel-CM quectel-qmi-proxy quectel-mbim-proxy quectel-atc-proxy
+	cd out/; rm -rf *.o libmnl/*.o quectel-CM quectel-qmi-proxy quectel-mbim-proxy quectel-atc-proxy

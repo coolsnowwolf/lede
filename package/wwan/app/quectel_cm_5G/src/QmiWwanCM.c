@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -264,8 +264,8 @@ static int QmiWwanDeInit(void) {
     {
         if (qmiclientId[i] != 0)
         {
-                QmiWwanReleaseClientID(i, qmiclientId[i]);
-                qmiclientId[i] = 0;
+            QmiWwanReleaseClientID((QMUX_TYPE_WDS_IPV6 == i ? QMUX_TYPE_WDS : i), qmiclientId[i]);
+            qmiclientId[i] = 0;
         }
     }
 

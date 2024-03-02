@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -342,6 +342,7 @@ BOOL qmidevice_detect(char *qmichannel, char *usbnet_adapter, unsigned bufsize, 
             if (profile->usb_dev.idVendor == 0x2c7c) { //Quectel
                 switch (profile->usb_dev.idProduct) { //EC200U
                 case 0x0901: //EC200U
+                case 0x0904: //EC200G
                 case 0x8101: //RG801H
                     atIntf = 2;
                 break;
@@ -352,6 +353,7 @@ BOOL qmidevice_detect(char *qmichannel, char *usbnet_adapter, unsigned bufsize, 
                 case 0x6005: //EC200A
                 case 0x6002: //EC200S
                 case 0x6001: //EC100Y
+                case 0x6007: //EG915Q-NA in ECM mode, it also could set atIntf to 4
                     atIntf = 3;
                 break;
                 default:
