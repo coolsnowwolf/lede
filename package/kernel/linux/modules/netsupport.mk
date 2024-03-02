@@ -1019,8 +1019,7 @@ define KernelPackage/sched
 	CONFIG_NET_EMATCH_META \
 	CONFIG_NET_EMATCH_TEXT
   FILES:=$(SCHED_FILES_EXTRA)
-  FILES+=$(LINUX_DIR)/net/sched/sch_dsmark.ko@lt6.2
-  AUTOLOAD:=$(call AutoLoad,73, $(SCHED_MODULES_EXTRA) sch_dsmark@lt6.2)
+  AUTOLOAD:=$(call AutoLoad,73, $(SCHED_MODULES_EXTRA))
 endef
 
 define KernelPackage/sched/description
