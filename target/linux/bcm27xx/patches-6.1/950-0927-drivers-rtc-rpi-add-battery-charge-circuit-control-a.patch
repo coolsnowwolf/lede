@@ -1,0 +1,153 @@
+From 33b514cb16dbf13395a0becf7442d19676ae4224 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Fri, 15 Sep 2023 17:33:03 +0100
+Subject: [PATCH] drivers: rtc-rpi: add battery charge circuit control and
+ readback
+
+Parse devicetree for a charger voltage and apply it. If nonzero and a
+valid voltage, the firmware will enable charging, otherwise the charger
+circuit is disabled.
+
+Add sysfs attributes to read back the supported charge voltage range,
+the measured battery voltage, and the charger setpoint.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/rtc/rtc-rpi.c | 106 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 103 insertions(+), 3 deletions(-)
+
+--- a/drivers/rtc/rtc-rpi.c
++++ b/drivers/rtc/rtc-rpi.c
+@@ -19,11 +19,22 @@
+ struct rpi_rtc_data {
+ 	struct rtc_device *rtc;
+ 	struct rpi_firmware *fw;
++	u32 bbat_vchg_microvolts;
+ };
+ 
+ #define RPI_FIRMWARE_GET_RTC_REG 0x00030087
+ #define RPI_FIRMWARE_SET_RTC_REG 0x00038087
+-enum {RTC_TIME, RTC_ALARM, RTC_ALARM_PENDING, RTC_ALARM_ENABLE};
++
++enum {
++	RTC_TIME,
++	RTC_ALARM,
++	RTC_ALARM_PENDING,
++	RTC_ALARM_ENABLE,
++	RTC_BBAT_CHG_VOLTS,
++	RTC_BBAT_CHG_VOLTS_MIN,
++	RTC_BBAT_CHG_VOLTS_MAX,
++	RTC_BBAT_VOLTS
++};
+ 
+ static int rpi_rtc_read_time(struct device *dev, struct rtc_time *tm)
+ {
+@@ -114,6 +125,83 @@ static const struct rtc_class_ops rpi_rt
+ 	.alarm_irq_enable = rpi_rtc_alarm_irq_enable,
+ };
+ 
++static int rpi_rtc_set_charge_voltage(struct device *dev)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_BBAT_CHG_VOLTS, vrtc->bbat_vchg_microvolts};
++	int err;
++
++	err = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_SET_RTC_REG,
++				    &data, sizeof(data));
++
++	if (err)
++		dev_err(dev, "failed to set trickle charge voltage to %uuV: %d\n",
++			vrtc->bbat_vchg_microvolts, err);
++	else if (vrtc->bbat_vchg_microvolts)
++		dev_info(dev, "trickle charging enabled at %uuV\n",
++			 vrtc->bbat_vchg_microvolts);
++
++	return err;
++}
++
++static ssize_t rpi_rtc_print_uint_reg(struct device *dev, char *buf, u32 reg)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev->parent);
++	u32 data[2] = {reg, 0};
++	int ret = 0;
++
++	ret = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_GET_RTC_REG,
++				    &data, sizeof(data));
++	if (ret < 0)
++		return ret;
++
++	return sprintf(buf, "%u\n", data[1]);
++}
++
++static ssize_t charging_voltage_show(struct device *dev,
++				     struct device_attribute *attr,
++				     char *buf)
++{
++	return rpi_rtc_print_uint_reg(dev, buf, RTC_BBAT_CHG_VOLTS);
++}
++static DEVICE_ATTR_RO(charging_voltage);
++
++static ssize_t charging_voltage_min_show(struct device *dev,
++					 struct device_attribute *attr,
++					 char *buf)
++{
++	return rpi_rtc_print_uint_reg(dev, buf, RTC_BBAT_CHG_VOLTS_MIN);
++}
++static DEVICE_ATTR_RO(charging_voltage_min);
++
++static ssize_t charging_voltage_max_show(struct device *dev,
++					 struct device_attribute *attr,
++					 char *buf)
++{
++	return rpi_rtc_print_uint_reg(dev, buf, RTC_BBAT_CHG_VOLTS_MAX);
++}
++static DEVICE_ATTR_RO(charging_voltage_max);
++
++static ssize_t battery_voltage_show(struct device *dev,
++				    struct device_attribute *attr,
++				    char *buf)
++{
++	return rpi_rtc_print_uint_reg(dev, buf, RTC_BBAT_VOLTS);
++}
++static DEVICE_ATTR_RO(battery_voltage);
++
++static struct attribute *rpi_rtc_attrs[] = {
++	&dev_attr_charging_voltage.attr,
++	&dev_attr_charging_voltage_min.attr,
++	&dev_attr_charging_voltage_max.attr,
++	&dev_attr_battery_voltage.attr,
++	NULL
++};
++
++static const struct attribute_group rpi_rtc_sysfs_files = {
++	.attrs = rpi_rtc_attrs,
++};
++
+ static int rpi_rtc_probe(struct platform_device *pdev)
+ {
+ 	struct rpi_rtc_data *vrtc;
+@@ -151,10 +239,22 @@ static int rpi_rtc_probe(struct platform
+ 	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, vrtc->rtc->features);
+ 
+ 	vrtc->rtc->ops = &rpi_rtc_ops;
+-	ret = devm_rtc_register_device(vrtc->rtc);
++	ret = rtc_add_group(vrtc->rtc, &rpi_rtc_sysfs_files);
++	if (ret)
++		return ret;
+ 
+ 	rpi_rtc_alarm_clear_pending(dev);
+-	return ret;
++
++	/*
++	 * Optionally enable trickle charging - if the property isn't
++	 * present (or set to zero), trickle charging is disabled.
++	 */
++	of_property_read_u32(np, "trickle-charge-microvolt",
++			     &vrtc->bbat_vchg_microvolts);
++
++	rpi_rtc_set_charge_voltage(dev);
++
++	return devm_rtc_register_device(vrtc->rtc);
+ }
+ 
+ static const struct of_device_id rpi_rtc_dt_match[] = {

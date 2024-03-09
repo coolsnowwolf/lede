@@ -1,0 +1,672 @@
+From 3f949caeef21269afc67dd62ae9826204f215934 Mon Sep 17 00:00:00 2001
+From: Iago Toral Quiroga <itoral@igalia.com>
+Date: Thu, 2 Mar 2023 11:49:46 +0100
+Subject: [PATCH] drm/v3d: fix up register addresses for V3D 7.x
+
+v2: fix kernel panic with debug-fs interface to list registers
+---
+ drivers/gpu/drm/v3d/v3d_debugfs.c | 177 +++++++++++++++++-------------
+ drivers/gpu/drm/v3d/v3d_gem.c     |   3 +
+ drivers/gpu/drm/v3d/v3d_irq.c     |  47 ++++----
+ drivers/gpu/drm/v3d/v3d_regs.h    |  51 ++++++++-
+ drivers/gpu/drm/v3d/v3d_sched.c   |  41 ++++---
+ 5 files changed, 204 insertions(+), 115 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_debugfs.c
++++ b/drivers/gpu/drm/v3d/v3d_debugfs.c
+@@ -13,69 +13,83 @@
+ #include "v3d_drv.h"
+ #include "v3d_regs.h"
+ 
+-#define REGDEF(reg) { reg, #reg }
++#define REGDEF(min_ver, max_ver, reg) { min_ver, max_ver, reg, #reg }
+ struct v3d_reg_def {
++	u32 min_ver;
++	u32 max_ver;
+ 	u32 reg;
+ 	const char *name;
+ };
+ 
+ static const struct v3d_reg_def v3d_hub_reg_defs[] = {
+-	REGDEF(V3D_HUB_AXICFG),
+-	REGDEF(V3D_HUB_UIFCFG),
+-	REGDEF(V3D_HUB_IDENT0),
+-	REGDEF(V3D_HUB_IDENT1),
+-	REGDEF(V3D_HUB_IDENT2),
+-	REGDEF(V3D_HUB_IDENT3),
+-	REGDEF(V3D_HUB_INT_STS),
+-	REGDEF(V3D_HUB_INT_MSK_STS),
+-
+-	REGDEF(V3D_MMU_CTL),
+-	REGDEF(V3D_MMU_VIO_ADDR),
+-	REGDEF(V3D_MMU_VIO_ID),
+-	REGDEF(V3D_MMU_DEBUG_INFO),
++	REGDEF(33, 42, V3D_HUB_AXICFG),
++	REGDEF(33, 71, V3D_HUB_UIFCFG),
++	REGDEF(33, 71, V3D_HUB_IDENT0),
++	REGDEF(33, 71, V3D_HUB_IDENT1),
++	REGDEF(33, 71, V3D_HUB_IDENT2),
++	REGDEF(33, 71, V3D_HUB_IDENT3),
++	REGDEF(33, 71, V3D_HUB_INT_STS),
++	REGDEF(33, 71, V3D_HUB_INT_MSK_STS),
++
++	REGDEF(33, 71, V3D_MMU_CTL),
++	REGDEF(33, 71, V3D_MMU_VIO_ADDR),
++	REGDEF(33, 71, V3D_MMU_VIO_ID),
++	REGDEF(33, 71, V3D_MMU_DEBUG_INFO),
++
++	REGDEF(71, 71, V3D_V7_GMP_STATUS),
++	REGDEF(71, 71, V3D_V7_GMP_CFG),
++	REGDEF(71, 71, V3D_V7_GMP_VIO_ADDR),
+ };
+ 
+ static const struct v3d_reg_def v3d_gca_reg_defs[] = {
+-	REGDEF(V3D_GCA_SAFE_SHUTDOWN),
+-	REGDEF(V3D_GCA_SAFE_SHUTDOWN_ACK),
++	REGDEF(33, 33, V3D_GCA_SAFE_SHUTDOWN),
++	REGDEF(33, 33, V3D_GCA_SAFE_SHUTDOWN_ACK),
+ };
+ 
+ static const struct v3d_reg_def v3d_core_reg_defs[] = {
+-	REGDEF(V3D_CTL_IDENT0),
+-	REGDEF(V3D_CTL_IDENT1),
+-	REGDEF(V3D_CTL_IDENT2),
+-	REGDEF(V3D_CTL_MISCCFG),
+-	REGDEF(V3D_CTL_INT_STS),
+-	REGDEF(V3D_CTL_INT_MSK_STS),
+-	REGDEF(V3D_CLE_CT0CS),
+-	REGDEF(V3D_CLE_CT0CA),
+-	REGDEF(V3D_CLE_CT0EA),
+-	REGDEF(V3D_CLE_CT1CS),
+-	REGDEF(V3D_CLE_CT1CA),
+-	REGDEF(V3D_CLE_CT1EA),
+-
+-	REGDEF(V3D_PTB_BPCA),
+-	REGDEF(V3D_PTB_BPCS),
+-
+-	REGDEF(V3D_GMP_STATUS),
+-	REGDEF(V3D_GMP_CFG),
+-	REGDEF(V3D_GMP_VIO_ADDR),
+-
+-	REGDEF(V3D_ERR_FDBGO),
+-	REGDEF(V3D_ERR_FDBGB),
+-	REGDEF(V3D_ERR_FDBGS),
+-	REGDEF(V3D_ERR_STAT),
++	REGDEF(33, 71, V3D_CTL_IDENT0),
++	REGDEF(33, 71, V3D_CTL_IDENT1),
++	REGDEF(33, 71, V3D_CTL_IDENT2),
++	REGDEF(33, 71, V3D_CTL_MISCCFG),
++	REGDEF(33, 71, V3D_CTL_INT_STS),
++	REGDEF(33, 71, V3D_CTL_INT_MSK_STS),
++	REGDEF(33, 71, V3D_CLE_CT0CS),
++	REGDEF(33, 71, V3D_CLE_CT0CA),
++	REGDEF(33, 71, V3D_CLE_CT0EA),
++	REGDEF(33, 71, V3D_CLE_CT1CS),
++	REGDEF(33, 71, V3D_CLE_CT1CA),
++	REGDEF(33, 71, V3D_CLE_CT1EA),
++
++	REGDEF(33, 71, V3D_PTB_BPCA),
++	REGDEF(33, 71, V3D_PTB_BPCS),
++
++	REGDEF(33, 41, V3D_GMP_STATUS),
++	REGDEF(33, 41, V3D_GMP_CFG),
++	REGDEF(33, 41, V3D_GMP_VIO_ADDR),
++
++	REGDEF(33, 71, V3D_ERR_FDBGO),
++	REGDEF(33, 71, V3D_ERR_FDBGB),
++	REGDEF(33, 71, V3D_ERR_FDBGS),
++	REGDEF(33, 71, V3D_ERR_STAT),
+ };
+ 
+ static const struct v3d_reg_def v3d_csd_reg_defs[] = {
+-	REGDEF(V3D_CSD_STATUS),
+-	REGDEF(V3D_CSD_CURRENT_CFG0),
+-	REGDEF(V3D_CSD_CURRENT_CFG1),
+-	REGDEF(V3D_CSD_CURRENT_CFG2),
+-	REGDEF(V3D_CSD_CURRENT_CFG3),
+-	REGDEF(V3D_CSD_CURRENT_CFG4),
+-	REGDEF(V3D_CSD_CURRENT_CFG5),
+-	REGDEF(V3D_CSD_CURRENT_CFG6),
++	REGDEF(41, 71, V3D_CSD_STATUS),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG0),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG1),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG2),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG3),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG4),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG5),
++	REGDEF(41, 41, V3D_CSD_CURRENT_CFG6),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG0),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG1),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG2),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG3),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG4),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG5),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG6),
++	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG7),
+ };
+ 
+ static int v3d_v3d_debugfs_regs(struct seq_file *m, void *unused)
+@@ -86,38 +100,41 @@ static int v3d_v3d_debugfs_regs(struct s
+ 	int i, core;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(v3d_hub_reg_defs); i++) {
+-		seq_printf(m, "%s (0x%04x): 0x%08x\n",
+-			   v3d_hub_reg_defs[i].name, v3d_hub_reg_defs[i].reg,
+-			   V3D_READ(v3d_hub_reg_defs[i].reg));
++		const struct v3d_reg_def *def = &v3d_hub_reg_defs[i];
++
++		if (v3d->ver >= def->min_ver && v3d->ver <= def->max_ver) {
++			seq_printf(m, "%s (0x%04x): 0x%08x\n",
++				   def->name, def->reg, V3D_READ(def->reg));
++		}
+ 	}
+ 
+-	if (v3d->ver < 41) {
+-		for (i = 0; i < ARRAY_SIZE(v3d_gca_reg_defs); i++) {
++	for (i = 0; i < ARRAY_SIZE(v3d_gca_reg_defs); i++) {
++		const struct v3d_reg_def *def = &v3d_gca_reg_defs[i];
++
++		if (v3d->ver >= def->min_ver && v3d->ver <= def->max_ver) {
+ 			seq_printf(m, "%s (0x%04x): 0x%08x\n",
+-				   v3d_gca_reg_defs[i].name,
+-				   v3d_gca_reg_defs[i].reg,
+-				   V3D_GCA_READ(v3d_gca_reg_defs[i].reg));
++				   def->name, def->reg, V3D_GCA_READ(def->reg));
+ 		}
+ 	}
+ 
+ 	for (core = 0; core < v3d->cores; core++) {
+ 		for (i = 0; i < ARRAY_SIZE(v3d_core_reg_defs); i++) {
+-			seq_printf(m, "core %d %s (0x%04x): 0x%08x\n",
+-				   core,
+-				   v3d_core_reg_defs[i].name,
+-				   v3d_core_reg_defs[i].reg,
+-				   V3D_CORE_READ(core,
+-						 v3d_core_reg_defs[i].reg));
++			const struct v3d_reg_def *def = &v3d_core_reg_defs[i];
++
++			if (v3d->ver >= def->min_ver && v3d->ver <= def->max_ver) {
++				seq_printf(m, "core %d %s (0x%04x): 0x%08x\n",
++					   core, def->name, def->reg,
++					   V3D_CORE_READ(core, def->reg));
++			}
+ 		}
+ 
+-		if (v3d_has_csd(v3d)) {
+-			for (i = 0; i < ARRAY_SIZE(v3d_csd_reg_defs); i++) {
++		for (i = 0; i < ARRAY_SIZE(v3d_csd_reg_defs); i++) {
++			const struct v3d_reg_def *def = &v3d_csd_reg_defs[i];
++
++			if (v3d->ver >= def->min_ver && v3d->ver <= def->max_ver) {
+ 				seq_printf(m, "core %d %s (0x%04x): 0x%08x\n",
+-					   core,
+-					   v3d_csd_reg_defs[i].name,
+-					   v3d_csd_reg_defs[i].reg,
+-					   V3D_CORE_READ(core,
+-							 v3d_csd_reg_defs[i].reg));
++					   core, def->name, def->reg,
++					   V3D_CORE_READ(core, def->reg));
+ 			}
+ 		}
+ 	}
+@@ -148,8 +165,10 @@ static int v3d_v3d_debugfs_ident(struct
+ 		   str_yes_no(ident2 & V3D_HUB_IDENT2_WITH_MMU));
+ 	seq_printf(m, "TFU:        %s\n",
+ 		   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_TFU));
+-	seq_printf(m, "TSY:        %s\n",
+-		   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_TSY));
++	if (v3d->ver <= 42) {
++		seq_printf(m, "TSY:        %s\n",
++			   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_TSY));
++	}
+ 	seq_printf(m, "MSO:        %s\n",
+ 		   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_MSO));
+ 	seq_printf(m, "L3C:        %s (%dkb)\n",
+@@ -178,10 +197,14 @@ static int v3d_v3d_debugfs_ident(struct
+ 		seq_printf(m, "  QPUs:         %d\n", nslc * qups);
+ 		seq_printf(m, "  Semaphores:   %d\n",
+ 			   V3D_GET_FIELD(ident1, V3D_IDENT1_NSEM));
+-		seq_printf(m, "  BCG int:      %d\n",
+-			   (ident2 & V3D_IDENT2_BCG_INT) != 0);
+-		seq_printf(m, "  Override TMU: %d\n",
+-			   (misccfg & V3D_MISCCFG_OVRTMUOUT) != 0);
++		if (v3d->ver <= 42) {
++			seq_printf(m, "  BCG int:      %d\n",
++				   (ident2 & V3D_IDENT2_BCG_INT) != 0);
++		}
++		if (v3d->ver < 40) {
++			seq_printf(m, "  Override TMU: %d\n",
++				   (misccfg & V3D_MISCCFG_OVRTMUOUT) != 0);
++		}
+ 	}
+ 
+ 	return 0;
+@@ -289,8 +312,10 @@ static int v3d_measure_clock(struct seq_
+ 	int measure_ms = 1000;
+ 
+ 	if (v3d->ver >= 40) {
++		int cycle_count_reg = v3d->ver < 71 ?
++			V3D_PCTR_CYCLE_COUNT : V3D_V7_PCTR_CYCLE_COUNT;
+ 		V3D_CORE_WRITE(core, V3D_V4_PCTR_0_SRC_0_3,
+-			       V3D_SET_FIELD(V3D_PCTR_CYCLE_COUNT,
++			       V3D_SET_FIELD(cycle_count_reg,
+ 					     V3D_PCTR_S0));
+ 		V3D_CORE_WRITE(core, V3D_V4_PCTR_0_CLR, 1);
+ 		V3D_CORE_WRITE(core, V3D_V4_PCTR_0_EN, 1);
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -88,6 +88,9 @@ v3d_init_hw_state(struct v3d_dev *v3d)
+ static void
+ v3d_idle_axi(struct v3d_dev *v3d, int core)
+ {
++	if (v3d->ver >= 71)
++		return;
++
+ 	V3D_CORE_WRITE(core, V3D_GMP_CFG, V3D_GMP_CFG_STOP_REQ);
+ 
+ 	if (wait_for((V3D_CORE_READ(core, V3D_GMP_STATUS) &
+--- a/drivers/gpu/drm/v3d/v3d_irq.c
++++ b/drivers/gpu/drm/v3d/v3d_irq.c
+@@ -20,16 +20,17 @@
+ #include "v3d_regs.h"
+ #include "v3d_trace.h"
+ 
+-#define V3D_CORE_IRQS ((u32)(V3D_INT_OUTOMEM |	\
+-			     V3D_INT_FLDONE |	\
+-			     V3D_INT_FRDONE |	\
+-			     V3D_INT_CSDDONE |	\
+-			     V3D_INT_GMPV))
+-
+-#define V3D_HUB_IRQS ((u32)(V3D_HUB_INT_MMU_WRV |	\
+-			    V3D_HUB_INT_MMU_PTI |	\
+-			    V3D_HUB_INT_MMU_CAP |	\
+-			    V3D_HUB_INT_TFUC))
++#define V3D_CORE_IRQS(ver) ((u32)(V3D_INT_OUTOMEM |	\
++				  V3D_INT_FLDONE |	\
++				  V3D_INT_FRDONE |	\
++				  (ver < 71 ? V3D_INT_CSDDONE : V3D_V7_INT_CSDDONE) |	\
++				  (ver < 71 ? V3D_INT_GMPV : 0)))
++
++#define V3D_HUB_IRQS(ver) ((u32)(V3D_HUB_INT_MMU_WRV |	\
++				 V3D_HUB_INT_MMU_PTI |	\
++				 V3D_HUB_INT_MMU_CAP |	\
++				 V3D_HUB_INT_TFUC |		\
++				 (ver >= 71 ? V3D_V7_HUB_INT_GMPV : 0)))
+ 
+ static irqreturn_t
+ v3d_hub_irq(int irq, void *arg);
+@@ -118,7 +119,8 @@ v3d_irq(int irq, void *arg)
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+-	if (intsts & V3D_INT_CSDDONE) {
++	if ((v3d->ver < 71 && (intsts & V3D_INT_CSDDONE)) ||
++	    (v3d->ver >= 71 && (intsts & V3D_V7_INT_CSDDONE))) {
+ 		struct v3d_fence *fence =
+ 			to_v3d_fence(v3d->csd_job->base.irq_fence);
+ 		v3d->gpu_queue_stats[V3D_CSD].last_exec_end = local_clock();
+@@ -131,7 +133,7 @@ v3d_irq(int irq, void *arg)
+ 	/* We shouldn't be triggering these if we have GMP in
+ 	 * always-allowed mode.
+ 	 */
+-	if (intsts & V3D_INT_GMPV)
++	if (v3d->ver < 71 && (intsts & V3D_INT_GMPV))
+ 		dev_err(v3d->drm.dev, "GMP violation\n");
+ 
+ 	/* V3D 4.2 wires the hub and core IRQs together, so if we &
+@@ -205,6 +207,11 @@ v3d_hub_irq(int irq, void *arg)
+ 		status = IRQ_HANDLED;
+ 	}
+ 
++	if (v3d->ver >= 71 && intsts & V3D_V7_HUB_INT_GMPV) {
++		dev_err(v3d->drm.dev, "GMP Violation\n");
++		status = IRQ_HANDLED;
++	}
++
+ 	return status;
+ }
+ 
+@@ -219,8 +226,8 @@ v3d_irq_init(struct v3d_dev *v3d)
+ 	 * for us.
+ 	 */
+ 	for (core = 0; core < v3d->cores; core++)
+-		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS);
+-	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS);
++		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS(v3d->ver));
++	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS(v3d->ver));
+ 
+ 	irq1 = platform_get_irq_optional(v3d_to_pdev(v3d), 1);
+ 	if (irq1 == -EPROBE_DEFER)
+@@ -264,12 +271,12 @@ v3d_irq_enable(struct v3d_dev *v3d)
+ 
+ 	/* Enable our set of interrupts, masking out any others. */
+ 	for (core = 0; core < v3d->cores; core++) {
+-		V3D_CORE_WRITE(core, V3D_CTL_INT_MSK_SET, ~V3D_CORE_IRQS);
+-		V3D_CORE_WRITE(core, V3D_CTL_INT_MSK_CLR, V3D_CORE_IRQS);
++		V3D_CORE_WRITE(core, V3D_CTL_INT_MSK_SET, ~V3D_CORE_IRQS(v3d->ver));
++		V3D_CORE_WRITE(core, V3D_CTL_INT_MSK_CLR, V3D_CORE_IRQS(v3d->ver));
+ 	}
+ 
+-	V3D_WRITE(V3D_HUB_INT_MSK_SET, ~V3D_HUB_IRQS);
+-	V3D_WRITE(V3D_HUB_INT_MSK_CLR, V3D_HUB_IRQS);
++	V3D_WRITE(V3D_HUB_INT_MSK_SET, ~V3D_HUB_IRQS(v3d->ver));
++	V3D_WRITE(V3D_HUB_INT_MSK_CLR, V3D_HUB_IRQS(v3d->ver));
+ }
+ 
+ void
+@@ -284,8 +291,8 @@ v3d_irq_disable(struct v3d_dev *v3d)
+ 
+ 	/* Clear any pending interrupts we might have left. */
+ 	for (core = 0; core < v3d->cores; core++)
+-		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS);
+-	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS);
++		V3D_CORE_WRITE(core, V3D_CTL_INT_CLR, V3D_CORE_IRQS(v3d->ver));
++	V3D_WRITE(V3D_HUB_INT_CLR, V3D_HUB_IRQS(v3d->ver));
+ 
+ 	cancel_work_sync(&v3d->overflow_mem_work);
+ }
+--- a/drivers/gpu/drm/v3d/v3d_regs.h
++++ b/drivers/gpu/drm/v3d/v3d_regs.h
+@@ -57,6 +57,7 @@
+ #define V3D_HUB_INT_MSK_STS                            0x0005c
+ #define V3D_HUB_INT_MSK_SET                            0x00060
+ #define V3D_HUB_INT_MSK_CLR                            0x00064
++# define V3D_V7_HUB_INT_GMPV                           BIT(6)
+ # define V3D_HUB_INT_MMU_WRV                           BIT(5)
+ # define V3D_HUB_INT_MMU_PTI                           BIT(4)
+ # define V3D_HUB_INT_MMU_CAP                           BIT(3)
+@@ -64,6 +65,7 @@
+ # define V3D_HUB_INT_TFUC                              BIT(1)
+ # define V3D_HUB_INT_TFUF                              BIT(0)
+ 
++/* GCA registers only exist in V3D < 41 */
+ #define V3D_GCA_CACHE_CTRL                             0x0000c
+ # define V3D_GCA_CACHE_CTRL_FLUSH                      BIT(0)
+ 
+@@ -87,6 +89,7 @@
+ # define V3D_TOP_GR_BRIDGE_SW_INIT_1_V3D_CLK_108_SW_INIT BIT(0)
+ 
+ #define V3D_TFU_CS                                     0x00400
++#define V3D_V7_TFU_CS                                  0x00700
+ /* Stops current job, empties input fifo. */
+ # define V3D_TFU_CS_TFURST                             BIT(31)
+ # define V3D_TFU_CS_CVTCT_MASK                         V3D_MASK(23, 16)
+@@ -96,6 +99,7 @@
+ # define V3D_TFU_CS_BUSY                               BIT(0)
+ 
+ #define V3D_TFU_SU                                     0x00404
++#define V3D_V7_TFU_SU                                  0x00704
+ /* Interrupt when FINTTHR input slots are free (0 = disabled) */
+ # define V3D_TFU_SU_FINTTHR_MASK                       V3D_MASK(13, 8)
+ # define V3D_TFU_SU_FINTTHR_SHIFT                      8
+@@ -107,38 +111,53 @@
+ # define V3D_TFU_SU_THROTTLE_SHIFT                     0
+ 
+ #define V3D_TFU_ICFG                                   0x00408
++#define V3D_V7_TFU_ICFG                                0x00708
+ /* Interrupt when the conversion is complete. */
+ # define V3D_TFU_ICFG_IOC                              BIT(0)
+ 
+ /* Input Image Address */
+ #define V3D_TFU_IIA                                    0x0040c
++#define V3D_V7_TFU_IIA                                 0x0070c
+ /* Input Chroma Address */
+ #define V3D_TFU_ICA                                    0x00410
++#define V3D_V7_TFU_ICA                                 0x00710
+ /* Input Image Stride */
+ #define V3D_TFU_IIS                                    0x00414
++#define V3D_V7_TFU_IIS                                 0x00714
+ /* Input Image U-Plane Address */
+ #define V3D_TFU_IUA                                    0x00418
++#define V3D_V7_TFU_IUA                                 0x00718
++/* Image output config (VD 7.x only) */
++#define V3D_V7_TFU_IOC                                 0x0071c
+ /* Output Image Address */
+ #define V3D_TFU_IOA                                    0x0041c
++#define V3D_V7_TFU_IOA                                 0x00720
+ /* Image Output Size */
+ #define V3D_TFU_IOS                                    0x00420
++#define V3D_V7_TFU_IOS                                 0x00724
+ /* TFU YUV Coefficient 0 */
+ #define V3D_TFU_COEF0                                  0x00424
+-/* Use these regs instead of the defaults. */
++#define V3D_V7_TFU_COEF0                               0x00728
++/* Use these regs instead of the defaults (V3D 4.x only) */
+ # define V3D_TFU_COEF0_USECOEF                         BIT(31)
+ /* TFU YUV Coefficient 1 */
+ #define V3D_TFU_COEF1                                  0x00428
++#define V3D_V7_TFU_COEF1                               0x0072c
+ /* TFU YUV Coefficient 2 */
+ #define V3D_TFU_COEF2                                  0x0042c
++#define V3D_V7_TFU_COEF2                               0x00730
+ /* TFU YUV Coefficient 3 */
+ #define V3D_TFU_COEF3                                  0x00430
++#define V3D_V7_TFU_COEF3                               0x00734
+ 
++/* V3D 4.x only */
+ #define V3D_TFU_CRC                                    0x00434
+ 
+ /* Per-MMU registers. */
+ 
+ #define V3D_MMUC_CONTROL                               0x01000
+ # define V3D_MMUC_CONTROL_CLEAR                        BIT(3)
++# define V3D_V7_MMUC_CONTROL_CLEAR                     BIT(11)
+ # define V3D_MMUC_CONTROL_FLUSHING                     BIT(2)
+ # define V3D_MMUC_CONTROL_FLUSH                        BIT(1)
+ # define V3D_MMUC_CONTROL_ENABLE                       BIT(0)
+@@ -246,7 +265,6 @@
+ 
+ #define V3D_CTL_L2TCACTL                               0x00030
+ # define V3D_L2TCACTL_TMUWCF                           BIT(8)
+-# define V3D_L2TCACTL_L2T_NO_WM                        BIT(4)
+ /* Invalidates cache lines. */
+ # define V3D_L2TCACTL_FLM_FLUSH                        0
+ /* Removes cachelines without writing dirty lines back. */
+@@ -268,7 +286,9 @@
+ # define V3D_INT_QPU_MASK                              V3D_MASK(27, 16)
+ # define V3D_INT_QPU_SHIFT                             16
+ # define V3D_INT_CSDDONE                               BIT(7)
++# define V3D_V7_INT_CSDDONE                            BIT(6)
+ # define V3D_INT_PCTR                                  BIT(6)
++# define V3D_V7_INT_PCTR                               BIT(5)
+ # define V3D_INT_GMPV                                  BIT(5)
+ # define V3D_INT_TRFB                                  BIT(4)
+ # define V3D_INT_SPILLUSE                              BIT(3)
+@@ -350,14 +370,19 @@
+ #define V3D_V4_PCTR_0_SRC_X(x)                         (V3D_V4_PCTR_0_SRC_0_3 + \
+ 							4 * (x))
+ # define V3D_PCTR_S0_MASK                              V3D_MASK(6, 0)
++# define V3D_V7_PCTR_S0_MASK                           V3D_MASK(7, 0)
+ # define V3D_PCTR_S0_SHIFT                             0
+ # define V3D_PCTR_S1_MASK                              V3D_MASK(14, 8)
++# define V3D_V7_PCTR_S1_MASK                           V3D_MASK(15, 8)
+ # define V3D_PCTR_S1_SHIFT                             8
+ # define V3D_PCTR_S2_MASK                              V3D_MASK(22, 16)
++# define V3D_V7_PCTR_S2_MASK                           V3D_MASK(23, 16)
+ # define V3D_PCTR_S2_SHIFT                             16
+ # define V3D_PCTR_S3_MASK                              V3D_MASK(30, 24)
++# define V3D_V7_PCTR_S3_MASK                           V3D_MASK(31, 24)
+ # define V3D_PCTR_S3_SHIFT                             24
+ # define V3D_PCTR_CYCLE_COUNT                          32
++# define V3D_V7_PCTR_CYCLE_COUNT                       0
+ 
+ /* Output values of the counters. */
+ #define V3D_PCTR_0_PCTR0                               0x00680
+@@ -365,6 +390,7 @@
+ #define V3D_PCTR_0_PCTRX(x)                            (V3D_PCTR_0_PCTR0 + \
+ 							4 * (x))
+ #define V3D_GMP_STATUS                                 0x00800
++#define V3D_V7_GMP_STATUS                              0x00600
+ # define V3D_GMP_STATUS_GMPRST                         BIT(31)
+ # define V3D_GMP_STATUS_WR_COUNT_MASK                  V3D_MASK(30, 24)
+ # define V3D_GMP_STATUS_WR_COUNT_SHIFT                 24
+@@ -378,12 +404,14 @@
+ # define V3D_GMP_STATUS_VIO                            BIT(0)
+ 
+ #define V3D_GMP_CFG                                    0x00804
++#define V3D_V7_GMP_CFG                                 0x00604
+ # define V3D_GMP_CFG_LBURSTEN                          BIT(3)
+ # define V3D_GMP_CFG_PGCRSEN                           BIT()
+ # define V3D_GMP_CFG_STOP_REQ                          BIT(1)
+ # define V3D_GMP_CFG_PROT_ENABLE                       BIT(0)
+ 
+ #define V3D_GMP_VIO_ADDR                               0x00808
++#define V3D_V7_GMP_VIO_ADDR                            0x00608
+ #define V3D_GMP_VIO_TYPE                               0x0080c
+ #define V3D_GMP_TABLE_ADDR                             0x00810
+ #define V3D_GMP_CLEAR_LOAD                             0x00814
+@@ -399,24 +427,28 @@
+ # define V3D_CSD_STATUS_HAVE_QUEUED_DISPATCH           BIT(0)
+ 
+ #define V3D_CSD_QUEUED_CFG0                            0x00904
++#define V3D_V7_CSD_QUEUED_CFG0                         0x00930
+ # define V3D_CSD_QUEUED_CFG0_NUM_WGS_X_MASK            V3D_MASK(31, 16)
+ # define V3D_CSD_QUEUED_CFG0_NUM_WGS_X_SHIFT           16
+ # define V3D_CSD_QUEUED_CFG0_WG_X_OFFSET_MASK          V3D_MASK(15, 0)
+ # define V3D_CSD_QUEUED_CFG0_WG_X_OFFSET_SHIFT         0
+ 
+ #define V3D_CSD_QUEUED_CFG1                            0x00908
++#define V3D_V7_CSD_QUEUED_CFG1                         0x00934
+ # define V3D_CSD_QUEUED_CFG1_NUM_WGS_Y_MASK            V3D_MASK(31, 16)
+ # define V3D_CSD_QUEUED_CFG1_NUM_WGS_Y_SHIFT           16
+ # define V3D_CSD_QUEUED_CFG1_WG_Y_OFFSET_MASK          V3D_MASK(15, 0)
+ # define V3D_CSD_QUEUED_CFG1_WG_Y_OFFSET_SHIFT         0
+ 
+ #define V3D_CSD_QUEUED_CFG2                            0x0090c
++#define V3D_V7_CSD_QUEUED_CFG2                         0x00938
+ # define V3D_CSD_QUEUED_CFG2_NUM_WGS_Z_MASK            V3D_MASK(31, 16)
+ # define V3D_CSD_QUEUED_CFG2_NUM_WGS_Z_SHIFT           16
+ # define V3D_CSD_QUEUED_CFG2_WG_Z_OFFSET_MASK          V3D_MASK(15, 0)
+ # define V3D_CSD_QUEUED_CFG2_WG_Z_OFFSET_SHIFT         0
+ 
+ #define V3D_CSD_QUEUED_CFG3                            0x00910
++#define V3D_V7_CSD_QUEUED_CFG3                         0x0093c
+ # define V3D_CSD_QUEUED_CFG3_OVERLAP_WITH_PREV         BIT(26)
+ # define V3D_CSD_QUEUED_CFG3_MAX_SG_ID_MASK            V3D_MASK(25, 20)
+ # define V3D_CSD_QUEUED_CFG3_MAX_SG_ID_SHIFT           20
+@@ -429,22 +461,36 @@
+ 
+ /* Number of batches, minus 1 */
+ #define V3D_CSD_QUEUED_CFG4                            0x00914
++#define V3D_V7_CSD_QUEUED_CFG4                         0x00940
+ 
+ /* Shader address, pnan, singleseg, threading, like a shader record. */
+ #define V3D_CSD_QUEUED_CFG5                            0x00918
++#define V3D_V7_CSD_QUEUED_CFG5                         0x00944
+ 
+ /* Uniforms address (4 byte aligned) */
+ #define V3D_CSD_QUEUED_CFG6                            0x0091c
++#define V3D_V7_CSD_QUEUED_CFG6                         0x00948
++
++#define V3D_V7_CSD_QUEUED_CFG7                         0x0094c
+ 
+ #define V3D_CSD_CURRENT_CFG0                          0x00920
++#define V3D_V7_CSD_CURRENT_CFG0                       0x00958
+ #define V3D_CSD_CURRENT_CFG1                          0x00924
++#define V3D_V7_CSD_CURRENT_CFG1                       0x0095c
+ #define V3D_CSD_CURRENT_CFG2                          0x00928
++#define V3D_V7_CSD_CURRENT_CFG2                       0x00960
+ #define V3D_CSD_CURRENT_CFG3                          0x0092c
++#define V3D_V7_CSD_CURRENT_CFG3                       0x00964
+ #define V3D_CSD_CURRENT_CFG4                          0x00930
++#define V3D_V7_CSD_CURRENT_CFG4                       0x00968
+ #define V3D_CSD_CURRENT_CFG5                          0x00934
++#define V3D_V7_CSD_CURRENT_CFG5                       0x0096c
+ #define V3D_CSD_CURRENT_CFG6                          0x00938
++#define V3D_V7_CSD_CURRENT_CFG6                       0x00970
++#define V3D_V7_CSD_CURRENT_CFG7                       0x00974
+ 
+ #define V3D_CSD_CURRENT_ID0                            0x0093c
++#define V3D_V7_CSD_CURRENT_ID0                         0x00978
+ # define V3D_CSD_CURRENT_ID0_WG_X_MASK                 V3D_MASK(31, 16)
+ # define V3D_CSD_CURRENT_ID0_WG_X_SHIFT                16
+ # define V3D_CSD_CURRENT_ID0_WG_IN_SG_MASK             V3D_MASK(11, 8)
+@@ -453,6 +499,7 @@
+ # define V3D_CSD_CURRENT_ID0_L_IDX_SHIFT               0
+ 
+ #define V3D_CSD_CURRENT_ID1                            0x00940
++#define V3D_V7_CSD_CURRENT_ID1                         0x0097c
+ # define V3D_CSD_CURRENT_ID0_WG_Z_MASK                 V3D_MASK(31, 16)
+ # define V3D_CSD_CURRENT_ID0_WG_Z_SHIFT                16
+ # define V3D_CSD_CURRENT_ID0_WG_Y_MASK                 V3D_MASK(15, 0)
+--- a/drivers/gpu/drm/v3d/v3d_sched.c
++++ b/drivers/gpu/drm/v3d/v3d_sched.c
+@@ -282,6 +282,8 @@ static struct dma_fence *v3d_render_job_
+ 	return fence;
+ }
+ 
++#define V3D_TFU_REG(name) ((v3d->ver < 71) ? V3D_TFU_ ## name : V3D_V7_TFU_ ## name)
++
+ static struct dma_fence *
+ v3d_tfu_job_run(struct drm_sched_job *sched_job)
+ {
+@@ -302,20 +304,22 @@ v3d_tfu_job_run(struct drm_sched_job *sc
+ 	trace_v3d_submit_tfu(dev, to_v3d_fence(fence)->seqno);
+ 
+ 	v3d_sched_stats_add_job(&v3d->gpu_queue_stats[V3D_TFU], sched_job);
+-	V3D_WRITE(V3D_TFU_IIA, job->args.iia);
+-	V3D_WRITE(V3D_TFU_IIS, job->args.iis);
+-	V3D_WRITE(V3D_TFU_ICA, job->args.ica);
+-	V3D_WRITE(V3D_TFU_IUA, job->args.iua);
+-	V3D_WRITE(V3D_TFU_IOA, job->args.ioa);
+-	V3D_WRITE(V3D_TFU_IOS, job->args.ios);
+-	V3D_WRITE(V3D_TFU_COEF0, job->args.coef[0]);
+-	if (job->args.coef[0] & V3D_TFU_COEF0_USECOEF) {
+-		V3D_WRITE(V3D_TFU_COEF1, job->args.coef[1]);
+-		V3D_WRITE(V3D_TFU_COEF2, job->args.coef[2]);
+-		V3D_WRITE(V3D_TFU_COEF3, job->args.coef[3]);
++	V3D_WRITE(V3D_TFU_REG(IIA), job->args.iia);
++	V3D_WRITE(V3D_TFU_REG(IIS), job->args.iis);
++	V3D_WRITE(V3D_TFU_REG(ICA), job->args.ica);
++	V3D_WRITE(V3D_TFU_REG(IUA), job->args.iua);
++	V3D_WRITE(V3D_TFU_REG(IOA), job->args.ioa);
++	if (v3d->ver >= 71)
++		V3D_WRITE(V3D_V7_TFU_IOC, job->args.v71.ioc);
++	V3D_WRITE(V3D_TFU_REG(IOS), job->args.ios);
++	V3D_WRITE(V3D_TFU_REG(COEF0), job->args.coef[0]);
++	if (v3d->ver >= 71 || (job->args.coef[0] & V3D_TFU_COEF0_USECOEF)) {
++		V3D_WRITE(V3D_TFU_REG(COEF1), job->args.coef[1]);
++		V3D_WRITE(V3D_TFU_REG(COEF2), job->args.coef[2]);
++		V3D_WRITE(V3D_TFU_REG(COEF3), job->args.coef[3]);
+ 	}
+ 	/* ICFG kicks off the job. */
+-	V3D_WRITE(V3D_TFU_ICFG, job->args.icfg | V3D_TFU_ICFG_IOC);
++	V3D_WRITE(V3D_TFU_REG(ICFG), job->args.icfg | V3D_TFU_ICFG_IOC);
+ 
+ 	return fence;
+ }
+@@ -327,7 +331,7 @@ v3d_csd_job_run(struct drm_sched_job *sc
+ 	struct v3d_dev *v3d = job->base.v3d;
+ 	struct drm_device *dev = &v3d->drm;
+ 	struct dma_fence *fence;
+-	int i;
++	int i, csd_cfg0_reg, csd_cfg_reg_count;
+ 
+ 	v3d->csd_job = job;
+ 
+@@ -346,10 +350,12 @@ v3d_csd_job_run(struct drm_sched_job *sc
+ 	v3d_sched_stats_add_job(&v3d->gpu_queue_stats[V3D_CSD], sched_job);
+ 	v3d_switch_perfmon(v3d, &job->base);
+ 
+-	for (i = 1; i <= 6; i++)
+-		V3D_CORE_WRITE(0, V3D_CSD_QUEUED_CFG0 + 4 * i, job->args.cfg[i]);
++	csd_cfg0_reg = v3d->ver < 71 ? V3D_CSD_QUEUED_CFG0 : V3D_V7_CSD_QUEUED_CFG0;
++	csd_cfg_reg_count = v3d->ver < 71 ? 6 : 7;
++	for (i = 1; i <= csd_cfg_reg_count; i++)
++		V3D_CORE_WRITE(0, csd_cfg0_reg + 4 * i, job->args.cfg[i]);
+ 	/* CFG0 write kicks off the job. */
+-	V3D_CORE_WRITE(0, V3D_CSD_QUEUED_CFG0, job->args.cfg[0]);
++	V3D_CORE_WRITE(0, csd_cfg0_reg, job->args.cfg[0]);
+ 
+ 	return fence;
+ }
+@@ -452,7 +458,8 @@ v3d_csd_job_timedout(struct drm_sched_jo
+ {
+ 	struct v3d_csd_job *job = to_csd_job(sched_job);
+ 	struct v3d_dev *v3d = job->base.v3d;
+-	u32 batches = V3D_CORE_READ(0, V3D_CSD_CURRENT_CFG4);
++	u32 batches = V3D_CORE_READ(0, (v3d->ver < 71 ? V3D_CSD_CURRENT_CFG4 :
++							V3D_V7_CSD_CURRENT_CFG4));
+ 
+ 	/* If we've made progress, skip reset and let the timer get
+ 	 * rearmed.

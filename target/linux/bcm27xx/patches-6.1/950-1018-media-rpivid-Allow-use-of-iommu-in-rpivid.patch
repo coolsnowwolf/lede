@@ -1,0 +1,57 @@
+From 1770efc97981dbf756a18f5eb7615c4bafab665b Mon Sep 17 00:00:00 2001
+From: John Cox <jc@kynesim.co.uk>
+Date: Mon, 2 Oct 2023 15:12:52 +0100
+Subject: [PATCH] media/rpivid: Allow use of iommu in rpivid
+
+In order to use iommu on hevc set dma mask_and_coherent in probe.
+I am assured dma_set_mask_and_coherent is benign on Pi4 (which has
+no iommu) and it seems to be so in practice.
+Also adds a bit of debug to make internal buffer allocation failure
+easier to spot in future
+
+Signed-off-by: John Cox <jc@kynesim.co.uk>
+---
+ drivers/staging/media/rpivid/rpivid.c      |  7 +++++++
+ drivers/staging/media/rpivid/rpivid_h265.c | 12 ++++++++++--
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+--- a/drivers/staging/media/rpivid/rpivid.c
++++ b/drivers/staging/media/rpivid/rpivid.c
+@@ -360,6 +360,13 @@ static int rpivid_probe(struct platform_
+ 	snprintf(vfd->name, sizeof(vfd->name), "%s", rpivid_video_device.name);
+ 	video_set_drvdata(vfd, dev);
+ 
++	ret = dma_set_mask_and_coherent(dev->dev, DMA_BIT_MASK(36));
++	if (ret) {
++		v4l2_err(&dev->v4l2_dev,
++			 "Failed dma_set_mask_and_coherent\n");
++		goto err_v4l2;
++	}
++
+ 	dev->m2m_dev = v4l2_m2m_init(&rpivid_m2m_ops);
+ 	if (IS_ERR(dev->m2m_dev)) {
+ 		v4l2_err(&dev->v4l2_dev,
+--- a/drivers/staging/media/rpivid/rpivid_h265.c
++++ b/drivers/staging/media/rpivid/rpivid_h265.c
+@@ -2495,11 +2495,19 @@ static int rpivid_h265_start(struct rpiv
+ 	for (i = 0; i != ARRAY_SIZE(ctx->pu_bufs); ++i) {
+ 		// Don't actually need a kernel mapping here
+ 		if (gptr_alloc(dev, ctx->pu_bufs + i, pu_alloc,
+-			       DMA_ATTR_NO_KERNEL_MAPPING))
++			       DMA_ATTR_NO_KERNEL_MAPPING)) {
++			v4l2_err(&dev->v4l2_dev,
++				 "Failed to alloc %#zx PU%d buffer\n",
++				 pu_alloc, i);
+ 			goto fail;
++		}
+ 		if (gptr_alloc(dev, ctx->coeff_bufs + i, coeff_alloc,
+-			       DMA_ATTR_NO_KERNEL_MAPPING))
++			       DMA_ATTR_NO_KERNEL_MAPPING)) {
++			v4l2_err(&dev->v4l2_dev,
++				 "Failed to alloc %#zx Coeff%d buffer\n",
++				 pu_alloc, i);
+ 			goto fail;
++		}
+ 	}
+ 	aux_q_init(ctx);
+ 

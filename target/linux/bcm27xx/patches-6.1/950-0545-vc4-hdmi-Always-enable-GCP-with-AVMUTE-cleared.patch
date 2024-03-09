@@ -1,0 +1,104 @@
+From 3bd2ed90a679b87d4dc3fe0a70a83c323df915de Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 11 Jan 2023 17:30:58 +0000
+Subject: [PATCH] vc4/hdmi: Always enable GCP with AVMUTE cleared
+
+See: https://forum.libreelec.tv/thread/24780-le-10-0-1-rpi4-no-picture-after-update-from-le-10-0-0
+
+Issue is some displays go blank at the point of firmware to kms handover.
+Plugging/unplugging hdmi cable, power cycling display, or switching standby off/on
+typically resolve this case.
+
+Finally managed to find a display that suffers from this, and track down the issue.
+
+The firmware uses AVMUTE in normal operation. It will set AVMUTE before disabling hdmi
+clocks and phy. It will clear AVMUTE after clocks and phy are set up for a new hdmi mode.
+
+But with the hdmi handover from firmware to kms, AVMUTE will be set by firmware.
+
+kms driver typically has no GCP packet (except for deep colour modes).
+The spec isn't clear on whether to consider the AVMUTE as continuing indefinitely
+in the absense of a GCP packet, or to consider that state to have ended.
+
+Most displays behave as we want, but there are a number (from mutiple manufacturers)
+which need to see AVMUTE cleared before displaying a picture.
+
+Lets just always enable GCP packet with AVMUTE cleared. That resolves the issue on
+problematic displays.
+
+From HDMI 1.4 spec:
+A CD field of zero (Color Depth not indicated) shall be used whenever the Sink does
+not indicate support for Deep Color. This value may also be used in Deep Color mode
+to transmit a GCP indicating only non-Deep Color information (e.g. AVMUTE).
+
+So use CD=0 where we were previously not enabling a GCP.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -107,6 +107,10 @@
+ #define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_SHIFT	8
+ #define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_MASK	VC4_MASK(15, 8)
+ 
++#define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_0_MASK	VC4_MASK(7, 0)
++#define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_0_SET_AVMUTE	BIT(0)
++#define VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_0_CLEAR_AVMUTE	BIT(4)
++
+ # define VC4_HD_M_SW_RST			BIT(2)
+ # define VC4_HD_M_ENABLE			BIT(0)
+ 
+@@ -1559,7 +1563,6 @@ static void vc5_hdmi_set_timings(struct
+ 					VC4_HDMI_VERTB_VBP));
+ 	unsigned long flags;
+ 	unsigned char gcp;
+-	bool gcp_en;
+ 	u32 reg;
+ 	int idx;
+ 
+@@ -1594,16 +1597,13 @@ static void vc5_hdmi_set_timings(struct
+ 	switch (vc4_state->output_bpc) {
+ 	case 12:
+ 		gcp = 6;
+-		gcp_en = true;
+ 		break;
+ 	case 10:
+ 		gcp = 5;
+-		gcp_en = true;
+ 		break;
+ 	case 8:
+ 	default:
+-		gcp = 4;
+-		gcp_en = false;
++		gcp = 0;
+ 		break;
+ 	}
+ 
+@@ -1612,8 +1612,7 @@ static void vc5_hdmi_set_timings(struct
+ 	 * doesn't signal in GCP.
+ 	 */
+ 	if (vc4_state->output_format == VC4_HDMI_OUTPUT_YUV422) {
+-		gcp = 4;
+-		gcp_en = false;
++		gcp = 0;
+ 	}
+ 
+ 	reg = HDMI_READ(HDMI_DEEP_COLOR_CONFIG_1);
+@@ -1626,11 +1625,12 @@ static void vc5_hdmi_set_timings(struct
+ 	reg = HDMI_READ(HDMI_GCP_WORD_1);
+ 	reg &= ~VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1_MASK;
+ 	reg |= VC4_SET_FIELD(gcp, VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_1);
++	reg &= ~VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_0_MASK;
++	reg |= VC5_HDMI_GCP_WORD_1_GCP_SUBPACKET_BYTE_0_CLEAR_AVMUTE;
+ 	HDMI_WRITE(HDMI_GCP_WORD_1, reg);
+ 
+ 	reg = HDMI_READ(HDMI_GCP_CONFIG);
+-	reg &= ~VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
+-	reg |= gcp_en ? VC5_HDMI_GCP_CONFIG_GCP_ENABLE : 0;
++	reg |= VC5_HDMI_GCP_CONFIG_GCP_ENABLE;
+ 	HDMI_WRITE(HDMI_GCP_CONFIG, reg);
+ 
+ 	reg = HDMI_READ(HDMI_MISC_CONTROL);

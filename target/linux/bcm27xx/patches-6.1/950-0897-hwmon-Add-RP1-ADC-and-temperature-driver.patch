@@ -1,0 +1,343 @@
+From cad3c92ff0c1a5fa539d08b695b0f6b326924890 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 2 Mar 2023 18:04:42 +0000
+Subject: [PATCH] hwmon: Add RP1 ADC and temperature driver
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/hwmon/Kconfig   |   7 +
+ drivers/hwmon/Makefile  |   1 +
+ drivers/hwmon/rp1-adc.c | 301 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 309 insertions(+)
+ create mode 100644 drivers/hwmon/rp1-adc.c
+
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -2331,6 +2331,13 @@ config SENSORS_INTEL_M10_BMC_HWMON
+ 	  sensors monitor various telemetry data of different components on the
+ 	  card, e.g. board temperature, FPGA core temperature/voltage/current.
+ 
++config SENSORS_RP1_ADC
++	tristate "RP1 ADC and temperature sensor driver"
++	depends on MFD_RP1
++	help
++	  Say yes here to enable support for the voltage and temperature
++	  sensors of the Raspberry Pi RP1 peripheral chip.
++
+ if ACPI
+ 
+ comment "ACPI drivers"
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -173,6 +173,7 @@ obj-$(CONFIG_SENSORS_PCF8591)	+= pcf8591
+ obj-$(CONFIG_SENSORS_POWR1220)  += powr1220.o
+ obj-$(CONFIG_SENSORS_PWM_FAN)	+= pwm-fan.o
+ obj-$(CONFIG_SENSORS_RASPBERRYPI_HWMON)	+= raspberrypi-hwmon.o
++obj-$(CONFIG_SENSORS_RP1_ADC)	+= rp1-adc.o
+ obj-$(CONFIG_SENSORS_S3C)	+= s3c-hwmon.o
+ obj-$(CONFIG_SENSORS_SBTSI)	+= sbtsi_temp.o
+ obj-$(CONFIG_SENSORS_SBRMI)	+= sbrmi.o
+--- /dev/null
++++ b/drivers/hwmon/rp1-adc.c
+@@ -0,0 +1,301 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Driver for the RP1 ADC and temperature sensor
++ * Copyright (C) 2023 Raspberry Pi Ltd.
++ */
++
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/hwmon.h>
++#include <linux/hwmon-sysfs.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/consumer.h>
++
++#define MODULE_NAME	"rp1-adc"
++
++#define RP1_ADC_CS		0x00
++#define RP1_ADC_RESULT		0x04
++#define RP1_ADC_FCS		0x08
++#define RP1_ADC_FIFO		0x0c
++#define RP1_ADC_DIV		0x10
++
++#define RP1_ADC_INTR		0x14
++#define RP1_ADC_INTE		0x18
++#define RP1_ADC_INTF		0x1c
++#define RP1_ADC_INTS		0x20
++
++#define RP1_ADC_RWTYPE_SET	0x2000
++#define RP1_ADC_RWTYPE_CLR	0x3000
++
++#define RP1_ADC_CS_RROBIN_MASK	0x1f
++#define RP1_ADC_CS_RROBIN_SHIFT	16
++#define RP1_ADC_CS_AINSEL_MASK	0x7
++#define RP1_ADC_CS_AINSEL_SHIFT	12
++#define RP1_ADC_CS_ERR_STICKY	0x400
++#define RP1_ADC_CS_ERR		0x200
++#define RP1_ADC_CS_READY	0x100
++#define RP1_ADC_CS_START_MANY	0x8
++#define RP1_ADC_CS_START_ONCE	0x4
++#define RP1_ADC_CS_TS_EN	0x2
++#define RP1_ADC_CS_EN		0x1
++
++#define RP1_ADC_FCS_THRESH_MASK	0xf
++#define RP1_ADC_FCS_THRESH_SHIFT	24
++#define RP1_ADC_FCS_LEVEL_MASK	0xf
++#define RP1_ADC_FCS_LEVEL_SHIFT	16
++#define RP1_ADC_FCS_OVER	0x800
++#define RP1_ADC_FCS_UNDER	0x400
++#define RP1_ADC_FCS_FULL	0x200
++#define RP1_ADC_FCS_EMPTY	0x100
++#define RP1_ADC_FCS_DREQ_EN	0x8
++#define RP1_ADC_FCS_ERR		0x4
++#define RP1_ADC_FCS_SHIFR	0x2
++#define RP1_ADC_FCS_EN		0x1
++
++#define RP1_ADC_FIFO_ERR	0x8000
++#define RP1_ADC_FIFO_VAL_MASK	0xfff
++
++#define RP1_ADC_DIV_INT_MASK	0xffff
++#define RP1_ADC_DIV_INT_SHIFT	8
++#define RP1_ADC_DIV_FRAC_MASK	0xff
++#define RP1_ADC_DIV_FRAC_SHIFT	0
++
++struct rp1_adc_data {
++	void __iomem *base;
++	spinlock_t lock;
++	struct device *hwmon_dev;
++	int vref_mv;
++};
++
++static int rp1_adc_ready_wait(struct rp1_adc_data *data)
++{
++	int retries = 10;
++
++	while (retries && !(readl(data->base + RP1_ADC_CS) & RP1_ADC_CS_READY))
++		retries--;
++
++	return retries ? 0 : -EIO;
++}
++
++static int rp1_adc_read(struct rp1_adc_data *data,
++			struct device_attribute *devattr, unsigned int *val)
++{
++	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
++	int channel = attr->index;
++	int ret;
++
++	spin_lock(&data->lock);
++
++	writel(RP1_ADC_CS_AINSEL_MASK << RP1_ADC_CS_AINSEL_SHIFT,
++	       data->base + RP1_ADC_RWTYPE_CLR + RP1_ADC_CS);
++	writel(channel << RP1_ADC_CS_AINSEL_SHIFT,
++	       data->base + RP1_ADC_RWTYPE_SET + RP1_ADC_CS);
++	writel(RP1_ADC_CS_START_ONCE,
++	       data->base + RP1_ADC_RWTYPE_SET + RP1_ADC_CS);
++
++	ret = rp1_adc_ready_wait(data);
++	if (!ret)
++		*val = readl(data->base + RP1_ADC_RESULT);
++
++	spin_unlock(&data->lock);
++
++	return ret;
++}
++
++static int rp1_adc_to_mv(struct rp1_adc_data *data, unsigned int val)
++{
++	return ((u64)data->vref_mv * val) / 0xfff;
++}
++
++static ssize_t rp1_adc_show(struct device *dev,
++			    struct device_attribute *devattr,
++			    char *buf)
++{
++	struct rp1_adc_data *data = dev_get_drvdata(dev);
++	unsigned int val;
++	int ret;
++
++	ret = rp1_adc_read(data, devattr, &val);
++	if (ret)
++		return ret;
++
++	return sprintf(buf, "%d\n", rp1_adc_to_mv(data, val));
++}
++
++static ssize_t rp1_adc_temp_show(struct device *dev,
++				 struct device_attribute *devattr,
++				 char *buf)
++{
++	struct rp1_adc_data *data = dev_get_drvdata(dev);
++	unsigned int val;
++	int ret, mv, mc;
++
++	writel(RP1_ADC_CS_TS_EN,
++	       data->base + RP1_ADC_RWTYPE_SET + RP1_ADC_CS);
++	ret = rp1_adc_read(data, devattr, &val);
++	if (ret)
++		return ret;
++
++	mv = rp1_adc_to_mv(data, val);
++
++	/* T = 27 - (ADC_voltage - 0.706)/0.001721 */
++
++	mc = 27000 - DIV_ROUND_CLOSEST((mv - 706) * (s64)1000000, 1721);
++
++	return sprintf(buf, "%d\n", mc);
++}
++
++static ssize_t rp1_adc_raw_show(struct device *dev,
++				struct device_attribute *devattr,
++				char *buf)
++{
++	struct rp1_adc_data *data = dev_get_drvdata(dev);
++	unsigned int val;
++	int ret = rp1_adc_read(data, devattr, &val);
++
++	if (ret)
++		return ret;
++
++	return sprintf(buf, "%u\n", val);
++}
++
++static ssize_t rp1_adc_temp_raw_show(struct device *dev,
++				     struct device_attribute *devattr,
++				     char *buf)
++{
++	struct rp1_adc_data *data = dev_get_drvdata(dev);
++	unsigned int val;
++	int ret = rp1_adc_read(data, devattr, &val);
++
++	if (ret)
++		return ret;
++
++	return sprintf(buf, "%u\n", val);
++}
++
++static SENSOR_DEVICE_ATTR_RO(in1_input, rp1_adc, 0);
++static SENSOR_DEVICE_ATTR_RO(in2_input, rp1_adc, 1);
++static SENSOR_DEVICE_ATTR_RO(in3_input, rp1_adc, 2);
++static SENSOR_DEVICE_ATTR_RO(in4_input, rp1_adc, 3);
++static SENSOR_DEVICE_ATTR_RO(temp1_input, rp1_adc_temp, 4);
++static SENSOR_DEVICE_ATTR_RO(in1_raw, rp1_adc_raw, 0);
++static SENSOR_DEVICE_ATTR_RO(in2_raw, rp1_adc_raw, 1);
++static SENSOR_DEVICE_ATTR_RO(in3_raw, rp1_adc_raw, 2);
++static SENSOR_DEVICE_ATTR_RO(in4_raw, rp1_adc_raw, 3);
++static SENSOR_DEVICE_ATTR_RO(temp1_raw, rp1_adc_temp_raw, 4);
++
++static struct attribute *rp1_adc_attrs[] = {
++	&sensor_dev_attr_in1_input.dev_attr.attr,
++	&sensor_dev_attr_in2_input.dev_attr.attr,
++	&sensor_dev_attr_in3_input.dev_attr.attr,
++	&sensor_dev_attr_in4_input.dev_attr.attr,
++	&sensor_dev_attr_temp1_input.dev_attr.attr,
++	&sensor_dev_attr_in1_raw.dev_attr.attr,
++	&sensor_dev_attr_in2_raw.dev_attr.attr,
++	&sensor_dev_attr_in3_raw.dev_attr.attr,
++	&sensor_dev_attr_in4_raw.dev_attr.attr,
++	&sensor_dev_attr_temp1_raw.dev_attr.attr,
++	NULL
++};
++
++static umode_t rp1_adc_is_visible(struct kobject *kobj,
++				  struct attribute *attr, int index)
++{
++	return 0444;
++}
++
++static const struct attribute_group rp1_adc_group = {
++	.attrs = rp1_adc_attrs,
++	.is_visible = rp1_adc_is_visible,
++};
++__ATTRIBUTE_GROUPS(rp1_adc);
++
++static int __init rp1_adc_probe(struct platform_device *pdev)
++{
++	struct rp1_adc_data *data;
++	struct regulator *reg;
++	struct clk *clk;
++	int vref_uv, ret;
++
++	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	spin_lock_init(&data->lock);
++
++	data->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(data->base))
++		return PTR_ERR(data->base);
++
++	platform_set_drvdata(pdev, data);
++
++	clk = devm_clk_get(&pdev->dev, NULL);
++	if (IS_ERR(clk))
++		return -ENODEV;
++
++	clk_set_rate(clk, 50000000);
++	clk_prepare_enable(clk);
++
++	reg = devm_regulator_get(&pdev->dev, "vref");
++	if (IS_ERR(reg))
++		return PTR_ERR(reg);
++
++	vref_uv = regulator_get_voltage(reg);
++	data->vref_mv = DIV_ROUND_CLOSEST(vref_uv, 1000);
++
++	data->hwmon_dev =
++	    devm_hwmon_device_register_with_groups(&pdev->dev,
++						   "rp1_adc",
++						   data,
++						   rp1_adc_groups);
++	if (IS_ERR(data->hwmon_dev)) {
++		ret = PTR_ERR(data->hwmon_dev);
++		dev_err(&pdev->dev, "hwmon_device_register failed with %d.\n", ret);
++		goto err_register;
++	}
++
++	/* Disable interrupts */
++	writel(0, data->base + RP1_ADC_INTE);
++
++	/* Enable the block, clearing any sticky error */
++	writel(RP1_ADC_CS_EN | RP1_ADC_CS_ERR_STICKY, data->base + RP1_ADC_CS);
++
++	return 0;
++
++err_register:
++	sysfs_remove_group(&pdev->dev.kobj, &rp1_adc_group);
++
++	return ret;
++}
++
++static int rp1_adc_remove(struct platform_device *pdev)
++{
++	struct rp1_adc_data *data = platform_get_drvdata(pdev);
++
++	hwmon_device_unregister(data->hwmon_dev);
++
++	return 0;
++}
++
++static const struct of_device_id rp1_adc_dt_ids[] = {
++	{ .compatible = "raspberrypi,rp1-adc", },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, rp1_adc_dt_ids);
++
++static struct platform_driver rp1_adc_driver = {
++	.remove		= rp1_adc_remove,
++	.driver		= {
++		.name	= MODULE_NAME,
++		.of_match_table = rp1_adc_dt_ids,
++	},
++};
++
++module_platform_driver_probe(rp1_adc_driver, rp1_adc_probe);
++
++MODULE_DESCRIPTION("RP1 ADC driver");
++MODULE_AUTHOR("Phil Elwell <phil@raspberrypi.com>");
++MODULE_LICENSE("GPL");

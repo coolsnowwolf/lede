@@ -1,0 +1,64 @@
+From 665e9810340abc37769b317445907bac1843dd64 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 27 Oct 2023 16:46:04 +0100
+Subject: [PATCH] drm/vc4: Add hvs_dlist_allocs debugfs function.
+
+Users are reporting running out of DLIST memory. Add a
+debugfs file to dump out all the allocations.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -347,6 +347,36 @@ static int vc5_hvs_debugfs_gamma(struct
+ 	return 0;
+ }
+ 
++static int vc4_hvs_debugfs_dlist_allocs(struct seq_file *m, void *data)
++{
++	struct drm_info_node *node = m->private;
++	struct drm_device *dev = node->minor->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hvs *hvs = vc4->hvs;
++	struct drm_printer p = drm_seq_file_printer(m);
++	struct vc4_hvs_dlist_allocation *cur, *next;
++	struct drm_mm_node *mm_node;
++	unsigned long flags;
++
++	spin_lock_irqsave(&hvs->mm_lock, flags);
++
++	drm_printf(&p, "Allocated nodes:\n");
++	list_for_each_entry(mm_node, drm_mm_nodes(&hvs->dlist_mm), node_list) {
++		drm_printf(&p, "node [%08llx + %08llx]\n", mm_node->start, mm_node->size);
++	}
++
++	drm_printf(&p, "Stale nodes:\n");
++	list_for_each_entry_safe(cur, next, &hvs->stale_dlist_entries, node) {
++		drm_printf(&p, "node [%08llx + %08llx] channel %u frcnt %u\n",
++			   cur->mm_node.start, cur->mm_node.size, cur->channel,
++			   cur->target_frame_count);
++	}
++
++	spin_unlock_irqrestore(&hvs->mm_lock, flags);
++
++	return 0;
++}
++
+ /* The filter kernel is composed of dwords each containing 3 9-bit
+  * signed integers packed next to each other.
+  */
+@@ -1602,6 +1632,11 @@ int vc4_hvs_debugfs_init(struct drm_mino
+ 	if (ret)
+ 		return ret;
+ 
++	ret = vc4_debugfs_add_file(minor, "hvs_dlist_allocs",
++				   vc4_hvs_debugfs_dlist_allocs, NULL);
++	if (ret)
++		return ret;
++
+ 	ret = vc4_debugfs_add_regset32(minor, "hvs_regs",
+ 				       &hvs->regset);
+ 	if (ret)

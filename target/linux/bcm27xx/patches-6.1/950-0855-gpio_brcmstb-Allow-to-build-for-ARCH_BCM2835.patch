@@ -1,0 +1,282 @@
+From fa18902ee1e53ad391a455a01be3ab2ea1c5af5f Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 21 May 2021 12:33:38 +0100
+Subject: [PATCH] gpio_brcmstb: Allow to build for ARCH_BCM2835
+
+gpio-brcmstb: Report the correct bank width
+
+gpio: brcmstb: Use bank address as gpiochip label
+
+If the path to the device node is used as gpiochip label then
+gpio-brcmstb instances with multiple banks end up with duplicated
+names. Instead, use a combination of the driver name with the physical
+address of the bank, which is both unique and helpful for devmem
+debugging.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+gpio: mmio: Add DIRECT mode for shared access
+
+The generic MMIO GPIO library uses shadow registers for efficiency,
+but this breaks attempts by raspi-gpio to change other GPIOs in the
+same bank. Add a DIRECT mode that makes fewer assumptions about the
+existing register contents, but note that genuinely simultaneous
+accesses are likely to lose updates.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+gpio: brcmstb: Don't always clear interrupt mask
+
+If the GPIO controller is not being used as an interrupt source
+leave the interrupt mask register alone. On BCM2712 it might be used
+to generate interrupts to the VPU firmware, and on other devices it
+doesn't matter since no interrupts will be generated.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/gpio/Kconfig        |   2 +-
+ drivers/gpio/gpio-brcmstb.c |  14 ++--
+ drivers/gpio/gpio-mmio.c    | 124 ++++++++++++++++++++++++++++++++++--
+ include/linux/gpio/driver.h |   1 +
+ 4 files changed, 131 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -203,7 +203,7 @@ config GPIO_BCM_VIRT
+ config GPIO_BRCMSTB
+ 	tristate "BRCMSTB GPIO support"
+ 	default y if (ARCH_BRCMSTB || BMIPS_GENERIC)
+-	depends on OF_GPIO && (ARCH_BRCMSTB || BMIPS_GENERIC || COMPILE_TEST)
++	depends on OF_GPIO && (ARCH_BRCMSTB || BMIPS_GENERIC || ARCH_BCM2835 || COMPILE_TEST)
+ 	select GPIO_GENERIC
+ 	select IRQ_DOMAIN
+ 	help
+--- a/drivers/gpio/gpio-brcmstb.c
++++ b/drivers/gpio/gpio-brcmstb.c
+@@ -640,6 +640,8 @@ static int brcmstb_gpio_probe(struct pla
+ #if defined(CONFIG_MIPS) && defined(__BIG_ENDIAN)
+ 	flags = BGPIOF_BIG_ENDIAN_BYTE_ORDER;
+ #endif
++	if (of_property_read_bool(np, "brcm,gpio-direct"))
++	    flags |= BGPIOF_REG_DIRECT;
+ 
+ 	of_property_for_each_u32(np, "brcm,gpio-bank-widths", prop, p,
+ 			bank_width) {
+@@ -689,7 +691,9 @@ static int brcmstb_gpio_probe(struct pla
+ 		}
+ 
+ 		gc->owner = THIS_MODULE;
+-		gc->label = devm_kasprintf(dev, GFP_KERNEL, "%pOF", np);
++		gc->label = devm_kasprintf(dev, GFP_KERNEL, "gpio-brcmstb@%zx",
++					   (size_t)res->start +
++					   GIO_BANK_OFF(bank->id, 0));
+ 		if (!gc->label) {
+ 			err = -ENOMEM;
+ 			goto fail;
+@@ -698,7 +702,7 @@ static int brcmstb_gpio_probe(struct pla
+ 		gc->of_gpio_n_cells = 2;
+ 		gc->of_xlate = brcmstb_gpio_of_xlate;
+ 		/* not all ngpio lines are valid, will use bank width later */
+-		gc->ngpio = MAX_GPIO_PER_BANK;
++		gc->ngpio = bank_width;
+ 		gc->offset = bank->id * MAX_GPIO_PER_BANK;
+ 		if (priv->parent_irq > 0)
+ 			gc->to_irq = brcmstb_gpio_to_irq;
+@@ -707,8 +711,10 @@ static int brcmstb_gpio_probe(struct pla
+ 		 * Mask all interrupts by default, since wakeup interrupts may
+ 		 * be retained from S5 cold boot
+ 		 */
+-		need_wakeup_event |= !!__brcmstb_gpio_get_active_irqs(bank);
+-		gc->write_reg(reg_base + GIO_MASK(bank->id), 0);
++		if (priv->parent_irq > 0) {
++			need_wakeup_event |= !!__brcmstb_gpio_get_active_irqs(bank);
++			gc->write_reg(reg_base + GIO_MASK(bank->id), 0);
++		}
+ 
+ 		err = gpiochip_add_data(gc, bank);
+ 		if (err) {
+--- a/drivers/gpio/gpio-mmio.c
++++ b/drivers/gpio/gpio-mmio.c
+@@ -232,6 +232,25 @@ static void bgpio_set(struct gpio_chip *
+ 	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
+ }
+ 
++static void bgpio_set_direct(struct gpio_chip *gc, unsigned int gpio, int val)
++{
++	unsigned long mask = bgpio_line2mask(gc, gpio);
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
++
++	gc->bgpio_data = gc->read_reg(gc->reg_dat);
++
++	if (val)
++		gc->bgpio_data |= mask;
++	else
++		gc->bgpio_data &= ~mask;
++
++	gc->write_reg(gc->reg_dat, gc->bgpio_data);
++
++	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
++}
++
+ static void bgpio_set_with_clear(struct gpio_chip *gc, unsigned int gpio,
+ 				 int val)
+ {
+@@ -324,6 +343,27 @@ static void bgpio_set_multiple_with_clea
+ 		gc->write_reg(gc->reg_clr, clear_mask);
+ }
+ 
++static void bgpio_set_multiple_direct(struct gpio_chip *gc,
++				      unsigned long *mask,
++				      unsigned long *bits)
++{
++	unsigned long flags;
++	unsigned long set_mask, clear_mask;
++
++	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
++
++	bgpio_multiple_get_masks(gc, mask, bits, &set_mask, &clear_mask);
++
++	gc->bgpio_data = gc->read_reg(gc->reg_dat);
++
++	gc->bgpio_data |= set_mask;
++	gc->bgpio_data &= ~clear_mask;
++
++	gc->write_reg(gc->reg_dat, gc->bgpio_data);
++
++	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
++}
++
+ static int bgpio_simple_dir_in(struct gpio_chip *gc, unsigned int gpio)
+ {
+ 	return 0;
+@@ -361,6 +401,29 @@ static int bgpio_dir_in(struct gpio_chip
+ 	return 0;
+ }
+ 
++static int bgpio_dir_in_direct(struct gpio_chip *gc, unsigned int gpio)
++{
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
++
++	if (gc->reg_dir_in)
++		gc->bgpio_dir = ~gc->read_reg(gc->reg_dir_in);
++	if (gc->reg_dir_out)
++		gc->bgpio_dir = gc->read_reg(gc->reg_dir_out);
++
++	gc->bgpio_dir &= ~bgpio_line2mask(gc, gpio);
++
++	if (gc->reg_dir_in)
++		gc->write_reg(gc->reg_dir_in, ~gc->bgpio_dir);
++	if (gc->reg_dir_out)
++		gc->write_reg(gc->reg_dir_out, gc->bgpio_dir);
++
++	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
++
++	return 0;
++}
++
+ static int bgpio_get_dir(struct gpio_chip *gc, unsigned int gpio)
+ {
+ 	/* Return 0 if output, 1 if input */
+@@ -399,6 +462,28 @@ static void bgpio_dir_out(struct gpio_ch
+ 	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
+ }
+ 
++static void bgpio_dir_out_direct(struct gpio_chip *gc, unsigned int gpio,
++				 int val)
++{
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
++
++	if (gc->reg_dir_in)
++		gc->bgpio_dir = ~gc->read_reg(gc->reg_dir_in);
++	if (gc->reg_dir_out)
++		gc->bgpio_dir = gc->read_reg(gc->reg_dir_out);
++
++	gc->bgpio_dir |= bgpio_line2mask(gc, gpio);
++
++	if (gc->reg_dir_in)
++		gc->write_reg(gc->reg_dir_in, ~gc->bgpio_dir);
++	if (gc->reg_dir_out)
++		gc->write_reg(gc->reg_dir_out, gc->bgpio_dir);
++
++	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
++}
++
+ static int bgpio_dir_out_dir_first(struct gpio_chip *gc, unsigned int gpio,
+ 				   int val)
+ {
+@@ -415,6 +500,22 @@ static int bgpio_dir_out_val_first(struc
+ 	return 0;
+ }
+ 
++static int bgpio_dir_out_dir_first_direct(struct gpio_chip *gc,
++					  unsigned int gpio, int val)
++{
++	bgpio_dir_out_direct(gc, gpio, val);
++	gc->set(gc, gpio, val);
++	return 0;
++}
++
++static int bgpio_dir_out_val_first_direct(struct gpio_chip *gc,
++					  unsigned int gpio, int val)
++{
++	gc->set(gc, gpio, val);
++	bgpio_dir_out_direct(gc, gpio, val);
++	return 0;
++}
++
+ static int bgpio_setup_accessors(struct device *dev,
+ 				 struct gpio_chip *gc,
+ 				 bool byte_be)
+@@ -508,6 +609,9 @@ static int bgpio_setup_io(struct gpio_ch
+ 	} else if (flags & BGPIOF_NO_OUTPUT) {
+ 		gc->set = bgpio_set_none;
+ 		gc->set_multiple = NULL;
++	} else if (flags & BGPIOF_REG_DIRECT) {
++		gc->set = bgpio_set_direct;
++		gc->set_multiple = bgpio_set_multiple_direct;
+ 	} else {
+ 		gc->set = bgpio_set;
+ 		gc->set_multiple = bgpio_set_multiple;
+@@ -544,11 +648,21 @@ static int bgpio_setup_direction(struct
+ 	if (dirout || dirin) {
+ 		gc->reg_dir_out = dirout;
+ 		gc->reg_dir_in = dirin;
+-		if (flags & BGPIOF_NO_SET_ON_INPUT)
+-			gc->direction_output = bgpio_dir_out_dir_first;
+-		else
+-			gc->direction_output = bgpio_dir_out_val_first;
+-		gc->direction_input = bgpio_dir_in;
++		if (flags & BGPIOF_REG_DIRECT) {
++			if (flags & BGPIOF_NO_SET_ON_INPUT)
++				gc->direction_output =
++					bgpio_dir_out_dir_first_direct;
++			else
++				gc->direction_output =
++					bgpio_dir_out_val_first_direct;
++			gc->direction_input = bgpio_dir_in_direct;
++		} else {
++			if (flags & BGPIOF_NO_SET_ON_INPUT)
++				gc->direction_output = bgpio_dir_out_dir_first;
++			else
++				gc->direction_output = bgpio_dir_out_val_first;
++			gc->direction_input = bgpio_dir_in;
++		}
+ 		gc->get_direction = bgpio_get_dir;
+ 	} else {
+ 		if (flags & BGPIOF_NO_OUTPUT)
+--- a/include/linux/gpio/driver.h
++++ b/include/linux/gpio/driver.h
+@@ -690,6 +690,7 @@ int bgpio_init(struct gpio_chip *gc, str
+ #define BGPIOF_READ_OUTPUT_REG_SET	BIT(4) /* reg_set stores output value */
+ #define BGPIOF_NO_OUTPUT		BIT(5) /* only input */
+ #define BGPIOF_NO_SET_ON_INPUT		BIT(6)
++#define BGPIOF_REG_DIRECT		BIT(7) /* ignore shadow registers */
+ 
+ int gpiochip_irq_map(struct irq_domain *d, unsigned int irq,
+ 		     irq_hw_number_t hwirq);

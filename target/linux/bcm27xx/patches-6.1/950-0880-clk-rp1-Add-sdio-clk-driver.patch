@@ -1,0 +1,641 @@
+From b427cc1a83404f48b12dec2efbef076b38df6218 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 12 Oct 2022 14:20:07 +0100
+Subject: [PATCH] clk: rp1: Add sdio-clk driver
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/clk/Kconfig        |   6 +
+ drivers/clk/Makefile       |   1 +
+ drivers/clk/clk-rp1-sdio.c | 600 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 607 insertions(+)
+ create mode 100644 drivers/clk/clk-rp1-sdio.c
+
+--- a/drivers/clk/Kconfig
++++ b/drivers/clk/Kconfig
+@@ -96,6 +96,12 @@ config COMMON_CLK_RP1
+ 	help
+ 	  Enable common clock framework support for Raspberry Pi RP1
+ 
++config COMMON_CLK_RP1_SDIO
++	tristate "Clock driver for the RP1 SDIO interfaces"
++	depends on MFD_RP1
++	help
++	  SDIO clock driver for the RP1 support chip
++
+ config COMMON_CLK_HI655X
+ 	tristate "Clock driver for Hi655x" if EXPERT
+ 	depends on (MFD_HI655X_PMIC || COMPILE_TEST)
+--- a/drivers/clk/Makefile
++++ b/drivers/clk/Makefile
+@@ -59,6 +59,7 @@ obj-$(CONFIG_COMMON_CLK_PWM)		+= clk-pwm
+ obj-$(CONFIG_CLK_QORIQ)			+= clk-qoriq.o
+ obj-$(CONFIG_COMMON_CLK_RK808)		+= clk-rk808.o
+ obj-$(CONFIG_COMMON_CLK_RP1)		+= clk-rp1.o
++obj-$(CONFIG_COMMON_CLK_RP1_SDIO)	+= clk-rp1-sdio.o
+ obj-$(CONFIG_COMMON_CLK_HI655X)		+= clk-hi655x.o
+ obj-$(CONFIG_COMMON_CLK_S2MPS11)	+= clk-s2mps11.o
+ obj-$(CONFIG_COMMON_CLK_SCMI)           += clk-scmi.o
+--- /dev/null
++++ b/drivers/clk/clk-rp1-sdio.c
+@@ -0,0 +1,600 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * SDIO clock driver for RP1
++ *
++ * Copyright (C) 2023 Raspberry Pi Ltd.
++ */
++
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <linux/clk-provider.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++// Register    : MODE
++#define MODE        0x00000000
++#define MODE_BITS   0x70030000
++#define MODE_RESET  0x00000000
++// Field       : MODE_STEPS_PER_CYCLE
++#define MODE_STEPS_PER_CYCLE_RESET          0x0
++#define MODE_STEPS_PER_CYCLE_BITS           0x70000000
++#define MODE_STEPS_PER_CYCLE_MSB            30
++#define MODE_STEPS_PER_CYCLE_LSB            28
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_20 0x0
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_10 0x1
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_16 0x2
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_8  0x3
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_12 0x4
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_6  0x5
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_5  0x6
++#define MODE_STEPS_PER_CYCLE_VALUE_STEPS_4  0x7
++// Field       : MODE_SRC_SEL
++#define MODE_SRC_SEL_RESET                   0x0
++#define MODE_SRC_SEL_BITS                    0x00030000
++#define MODE_SRC_SEL_MSB                     17
++#define MODE_SRC_SEL_LSB                     16
++#define MODE_SRC_SEL_VALUE_STOP              0x0
++#define MODE_SRC_SEL_VALUE_CLK_ALT_SRC       0x1
++#define MODE_SRC_SEL_VALUE_PLL_SYS_VCO       0x2
++#define MODE_SRC_SEL_VALUE_PLL_SYS_VCO_AGAIN 0x3
++// Register    : FROMIP
++#define FROMIP        0x00000004
++#define FROMIP_BITS   0x0f9713ff
++#define FROMIP_RESET  0x00000000
++// Field       : FROMIP_TUNING_CCLK_SEL
++#define FROMIP_TUNING_CCLK_SEL_RESET  0x0
++#define FROMIP_TUNING_CCLK_SEL_BITS   0x0f000000
++#define FROMIP_TUNING_CCLK_SEL_MSB    27
++#define FROMIP_TUNING_CCLK_SEL_LSB    24
++// Field       : FROMIP_TUNING_CCLK_UPDATE
++#define FROMIP_TUNING_CCLK_UPDATE_RESET  0x0
++#define FROMIP_TUNING_CCLK_UPDATE_BITS   0x00800000
++#define FROMIP_TUNING_CCLK_UPDATE_MSB    23
++#define FROMIP_TUNING_CCLK_UPDATE_LSB    23
++// Field       : FROMIP_SAMPLE_CCLK_SEL
++#define FROMIP_SAMPLE_CCLK_SEL_RESET  0x0
++#define FROMIP_SAMPLE_CCLK_SEL_BITS   0x00100000
++#define FROMIP_SAMPLE_CCLK_SEL_MSB    20
++#define FROMIP_SAMPLE_CCLK_SEL_LSB    20
++// Field       : FROMIP_CLK2CARD_ON
++#define FROMIP_CLK2CARD_ON_RESET  0x0
++#define FROMIP_CLK2CARD_ON_BITS   0x00040000
++#define FROMIP_CLK2CARD_ON_MSB    18
++#define FROMIP_CLK2CARD_ON_LSB    18
++// Field       : FROMIP_CARD_CLK_STABLE
++#define FROMIP_CARD_CLK_STABLE_RESET  0x0
++#define FROMIP_CARD_CLK_STABLE_BITS   0x00020000
++#define FROMIP_CARD_CLK_STABLE_MSB    17
++#define FROMIP_CARD_CLK_STABLE_LSB    17
++// Field       : FROMIP_CARD_CLK_EN
++#define FROMIP_CARD_CLK_EN_RESET  0x0
++#define FROMIP_CARD_CLK_EN_BITS   0x00010000
++#define FROMIP_CARD_CLK_EN_MSB    16
++#define FROMIP_CARD_CLK_EN_LSB    16
++// Field       : FROMIP_CLK_GEN_SEL
++#define FROMIP_CLK_GEN_SEL_RESET  0x0
++#define FROMIP_CLK_GEN_SEL_BITS   0x00001000
++#define FROMIP_CLK_GEN_SEL_MSB    12
++#define FROMIP_CLK_GEN_SEL_LSB    12
++// Field       : FROMIP_FREQ_SEL
++#define FROMIP_FREQ_SEL_RESET  0x000
++#define FROMIP_FREQ_SEL_BITS   0x000003ff
++#define FROMIP_FREQ_SEL_MSB    9
++#define FROMIP_FREQ_SEL_LSB    0
++// Register    : LOCAL
++#define LOCAL        0x00000008
++#define LOCAL_BITS   0x1f9713ff
++#define LOCAL_RESET  0x00000000
++// Field       : LOCAL_TUNING_CCLK_SEL
++#define LOCAL_TUNING_CCLK_SEL_RESET  0x00
++#define LOCAL_TUNING_CCLK_SEL_BITS   0x1f000000
++#define LOCAL_TUNING_CCLK_SEL_MSB    28
++#define LOCAL_TUNING_CCLK_SEL_LSB    24
++// Field       : LOCAL_TUNING_CCLK_UPDATE
++#define LOCAL_TUNING_CCLK_UPDATE_RESET  0x0
++#define LOCAL_TUNING_CCLK_UPDATE_BITS   0x00800000
++#define LOCAL_TUNING_CCLK_UPDATE_MSB    23
++#define LOCAL_TUNING_CCLK_UPDATE_LSB    23
++// Field       : LOCAL_SAMPLE_CCLK_SEL
++#define LOCAL_SAMPLE_CCLK_SEL_RESET  0x0
++#define LOCAL_SAMPLE_CCLK_SEL_BITS   0x00100000
++#define LOCAL_SAMPLE_CCLK_SEL_MSB    20
++#define LOCAL_SAMPLE_CCLK_SEL_LSB    20
++// Field       : LOCAL_CLK2CARD_ON
++#define LOCAL_CLK2CARD_ON_RESET  0x0
++#define LOCAL_CLK2CARD_ON_BITS   0x00040000
++#define LOCAL_CLK2CARD_ON_MSB    18
++#define LOCAL_CLK2CARD_ON_LSB    18
++// Field       : LOCAL_CARD_CLK_STABLE
++#define LOCAL_CARD_CLK_STABLE_RESET  0x0
++#define LOCAL_CARD_CLK_STABLE_BITS   0x00020000
++#define LOCAL_CARD_CLK_STABLE_MSB    17
++#define LOCAL_CARD_CLK_STABLE_LSB    17
++// Field       : LOCAL_CARD_CLK_EN
++#define LOCAL_CARD_CLK_EN_RESET  0x0
++#define LOCAL_CARD_CLK_EN_BITS   0x00010000
++#define LOCAL_CARD_CLK_EN_MSB    16
++#define LOCAL_CARD_CLK_EN_LSB    16
++// Field       : LOCAL_CLK_GEN_SEL
++#define LOCAL_CLK_GEN_SEL_RESET               0x0
++#define LOCAL_CLK_GEN_SEL_BITS                0x00001000
++#define LOCAL_CLK_GEN_SEL_MSB                 12
++#define LOCAL_CLK_GEN_SEL_LSB                 12
++#define LOCAL_CLK_GEN_SEL_VALUE_PROGCLOCKMODE 0x0
++#define LOCAL_CLK_GEN_SEL_VALUE_DIVCLOCKMODE  0x1
++// Field       : LOCAL_FREQ_SEL
++#define LOCAL_FREQ_SEL_RESET  0x000
++#define LOCAL_FREQ_SEL_BITS   0x000003ff
++#define LOCAL_FREQ_SEL_MSB    9
++#define LOCAL_FREQ_SEL_LSB    0
++// Register    : USE_LOCAL
++#define USE_LOCAL        0x0000000c
++#define USE_LOCAL_BITS   0x01951001
++#define USE_LOCAL_RESET  0x00000000
++// Field       : USE_LOCAL_TUNING_CCLK_SEL
++#define USE_LOCAL_TUNING_CCLK_SEL_RESET  0x0
++#define USE_LOCAL_TUNING_CCLK_SEL_BITS   0x01000000
++#define USE_LOCAL_TUNING_CCLK_SEL_MSB    24
++#define USE_LOCAL_TUNING_CCLK_SEL_LSB    24
++// Field       : USE_LOCAL_TUNING_CCLK_UPDATE
++#define USE_LOCAL_TUNING_CCLK_UPDATE_RESET  0x0
++#define USE_LOCAL_TUNING_CCLK_UPDATE_BITS   0x00800000
++#define USE_LOCAL_TUNING_CCLK_UPDATE_MSB    23
++#define USE_LOCAL_TUNING_CCLK_UPDATE_LSB    23
++// Field       : USE_LOCAL_SAMPLE_CCLK_SEL
++#define USE_LOCAL_SAMPLE_CCLK_SEL_RESET  0x0
++#define USE_LOCAL_SAMPLE_CCLK_SEL_BITS   0x00100000
++#define USE_LOCAL_SAMPLE_CCLK_SEL_MSB    20
++#define USE_LOCAL_SAMPLE_CCLK_SEL_LSB    20
++// Field       : USE_LOCAL_CLK2CARD_ON
++#define USE_LOCAL_CLK2CARD_ON_RESET  0x0
++#define USE_LOCAL_CLK2CARD_ON_BITS   0x00040000
++#define USE_LOCAL_CLK2CARD_ON_MSB    18
++#define USE_LOCAL_CLK2CARD_ON_LSB    18
++// Field       : USE_LOCAL_CARD_CLK_EN
++#define USE_LOCAL_CARD_CLK_EN_RESET  0x0
++#define USE_LOCAL_CARD_CLK_EN_BITS   0x00010000
++#define USE_LOCAL_CARD_CLK_EN_MSB    16
++#define USE_LOCAL_CARD_CLK_EN_LSB    16
++// Field       : USE_LOCAL_CLK_GEN_SEL
++#define USE_LOCAL_CLK_GEN_SEL_RESET  0x0
++#define USE_LOCAL_CLK_GEN_SEL_BITS   0x00001000
++#define USE_LOCAL_CLK_GEN_SEL_MSB    12
++#define USE_LOCAL_CLK_GEN_SEL_LSB    12
++// Field       : USE_LOCAL_FREQ_SEL
++#define USE_LOCAL_FREQ_SEL_RESET  0x0
++#define USE_LOCAL_FREQ_SEL_BITS   0x00000001
++#define USE_LOCAL_FREQ_SEL_MSB    0
++#define USE_LOCAL_FREQ_SEL_LSB    0
++// Register    : SD_DELAY
++#define SD_DELAY        0x00000010
++#define SD_DELAY_BITS   0x0000001f
++#define SD_DELAY_RESET  0x00000000
++// Field       : SD_DELAY_STEPS
++#define SD_DELAY_STEPS_RESET  0x00
++#define SD_DELAY_STEPS_BITS   0x0000001f
++#define SD_DELAY_STEPS_MSB    4
++#define SD_DELAY_STEPS_LSB    0
++// Register    : RX_DELAY
++#define RX_DELAY        0x00000014
++#define RX_DELAY_BITS   0x19f3331f
++#define RX_DELAY_RESET  0x00000000
++// Field       : RX_DELAY_BYPASS
++#define RX_DELAY_BYPASS_RESET  0x0
++#define RX_DELAY_BYPASS_BITS   0x10000000
++#define RX_DELAY_BYPASS_MSB    28
++#define RX_DELAY_BYPASS_LSB    28
++// Field       : RX_DELAY_FAIL_ACTUAL
++#define RX_DELAY_FAIL_ACTUAL_RESET  0x0
++#define RX_DELAY_FAIL_ACTUAL_BITS   0x08000000
++#define RX_DELAY_FAIL_ACTUAL_MSB    27
++#define RX_DELAY_FAIL_ACTUAL_LSB    27
++// Field       : RX_DELAY_ACTUAL
++#define RX_DELAY_ACTUAL_RESET  0x00
++#define RX_DELAY_ACTUAL_BITS   0x01f00000
++#define RX_DELAY_ACTUAL_MSB    24
++#define RX_DELAY_ACTUAL_LSB    20
++// Field       : RX_DELAY_OFFSET
++#define RX_DELAY_OFFSET_RESET  0x0
++#define RX_DELAY_OFFSET_BITS   0x00030000
++#define RX_DELAY_OFFSET_MSB    17
++#define RX_DELAY_OFFSET_LSB    16
++// Field       : RX_DELAY_OVERFLOW
++#define RX_DELAY_OVERFLOW_RESET       0x0
++#define RX_DELAY_OVERFLOW_BITS        0x00003000
++#define RX_DELAY_OVERFLOW_MSB         13
++#define RX_DELAY_OVERFLOW_LSB         12
++#define RX_DELAY_OVERFLOW_VALUE_ALLOW 0x0
++#define RX_DELAY_OVERFLOW_VALUE_CLAMP 0x1
++#define RX_DELAY_OVERFLOW_VALUE_FAIL  0x2
++// Field       : RX_DELAY_MAP
++#define RX_DELAY_MAP_RESET         0x0
++#define RX_DELAY_MAP_BITS          0x00000300
++#define RX_DELAY_MAP_MSB           9
++#define RX_DELAY_MAP_LSB           8
++#define RX_DELAY_MAP_VALUE_DIRECT  0x0
++#define RX_DELAY_MAP_VALUE         0x1
++#define RX_DELAY_MAP_VALUE_STRETCH 0x2
++// Field       : RX_DELAY_FIXED
++#define RX_DELAY_FIXED_RESET  0x00
++#define RX_DELAY_FIXED_BITS   0x0000001f
++#define RX_DELAY_FIXED_MSB    4
++#define RX_DELAY_FIXED_LSB    0
++// Register    : NDIV
++#define NDIV        0x00000018
++#define NDIV_BITS   0x1fff0000
++#define NDIV_RESET  0x00110000
++// Field       : NDIV_DIVB
++#define NDIV_DIVB_RESET  0x001
++#define NDIV_DIVB_BITS   0x1ff00000
++#define NDIV_DIVB_MSB    28
++#define NDIV_DIVB_LSB    20
++// Field       : NDIV_DIVA
++#define NDIV_DIVA_RESET  0x1
++#define NDIV_DIVA_BITS   0x000f0000
++#define NDIV_DIVA_MSB    19
++#define NDIV_DIVA_LSB    16
++// Register    : CS
++#define CS        0x0000001c
++#define CS_BITS   0x00111101
++#define CS_RESET  0x00000001
++// Field       : CS_RX_DEL_UPDATED
++#define CS_RX_DEL_UPDATED_RESET  0x0
++#define CS_RX_DEL_UPDATED_BITS   0x00100000
++#define CS_RX_DEL_UPDATED_MSB    20
++#define CS_RX_DEL_UPDATED_LSB    20
++// Field       : CS_RX_CLK_RUNNING
++#define CS_RX_CLK_RUNNING_RESET  0x0
++#define CS_RX_CLK_RUNNING_BITS   0x00010000
++#define CS_RX_CLK_RUNNING_MSB    16
++#define CS_RX_CLK_RUNNING_LSB    16
++// Field       : CS_SD_CLK_RUNNING
++#define CS_SD_CLK_RUNNING_RESET  0x0
++#define CS_SD_CLK_RUNNING_BITS   0x00001000
++#define CS_SD_CLK_RUNNING_MSB    12
++#define CS_SD_CLK_RUNNING_LSB    12
++// Field       : CS_TX_CLK_RUNNING
++#define CS_TX_CLK_RUNNING_RESET  0x0
++#define CS_TX_CLK_RUNNING_BITS   0x00000100
++#define CS_TX_CLK_RUNNING_MSB    8
++#define CS_TX_CLK_RUNNING_LSB    8
++// Field       : CS_RESET
++#define CS_RESET_RESET  0x1
++#define CS_RESET_BITS   0x00000001
++#define CS_RESET_MSB    0
++#define CS_RESET_LSB    0
++
++#define FPGA_SRC_RATE 400000000
++
++/* Base number of steps to delay in relation to tx clk.
++ * The relationship of the 3 clocks are as follows:
++ * tx_clk: This clock is provided to the controller. Data is sent out
++ * to the pads using this clock.
++ * sd_clk: This clock is sent out to the card.
++ * rx_clk: This clock is used to sample the data coming back from the card.
++ * This may need to be several steps ahead of the tx_clk. The default rx delay
++ * is used as a base delay, and can be further adjusted by the sd host
++ * controller during the tuning process if using a DDR50 or faster SD card
++ */
++/*
++ * PRJY-1813 - the default SD clock delay needs to be set to ~60% of the total
++ * number of steps to meet tISU (>6ns) and tIH (>2ns) in high-speed mode.
++ * On FPGA this means delay SDCLK by 5, and sample RX with a delay of 6.
++ */
++#define DEFAULT_RX_DELAY 6
++#define DEFAULT_SD_DELAY 5
++
++struct rp1_sdio_clkgen {
++	struct device *dev;
++
++	/* Source clock. Either PLL VCO or fixed freq on FPGA */
++	struct clk *src_clk;
++	/* Desired base frequency. Max freq card can go */
++	struct clk *base_clk;
++
++	struct clk_hw hw;
++	void __iomem *regs;
++
++	/* Starting value of local register before changing freq */
++	u32 local_base;
++};
++
++static inline void clkgen_write(struct rp1_sdio_clkgen *clkgen, u32 reg, u32 val)
++{
++	dev_dbg(clkgen->dev, "%s: write reg 0x%x: 0x%x\n", __func__, reg, val);
++	writel(val, clkgen->regs + reg);
++}
++
++static inline u32 clkgen_read(struct rp1_sdio_clkgen *clkgen, u32 reg)
++{
++	u32 val = readl(clkgen->regs + reg);
++
++	dev_dbg(clkgen->dev, "%s: read reg 0x%x: 0x%x\n", __func__, reg, val);
++	return val;
++}
++
++static int get_steps(unsigned int steps)
++{
++	int ret = -1;
++
++	if (steps == 4)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_4;
++	else if (steps == 5)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_5;
++	else if (steps == 6)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_6;
++	else if (steps == 8)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_8;
++	else if (steps == 10)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_10;
++	else if (steps == 12)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_12;
++	else if (steps == 16)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_16;
++	else if (steps == 20)
++		ret = MODE_STEPS_PER_CYCLE_VALUE_STEPS_20;
++	return ret;
++}
++
++static int rp1_sdio_clk_init(struct rp1_sdio_clkgen *clkgen)
++{
++	unsigned long src_rate = clk_get_rate(clkgen->src_clk);
++	unsigned long base_rate = clk_get_rate(clkgen->base_clk);
++	unsigned int steps = src_rate / base_rate;
++	u32 reg = 0;
++	int steps_value = 0;
++
++	dev_dbg(clkgen->dev, "init: src_rate %lu, base_rate %lu, steps %d\n",
++		src_rate, base_rate, steps);
++
++	/* Assert reset while we set up clkgen */
++	clkgen_write(clkgen, CS, CS_RESET_BITS);
++
++	/* Pick clock source */
++	if (src_rate == FPGA_SRC_RATE) {
++		/* Using ALT SRC */
++		reg |= MODE_SRC_SEL_VALUE_CLK_ALT_SRC << MODE_SRC_SEL_LSB;
++	} else {
++		/* Assume we are using PLL SYS VCO */
++		reg |= MODE_SRC_SEL_VALUE_PLL_SYS_VCO << MODE_SRC_SEL_LSB;
++	}
++
++	/* How many delay steps are available in one cycle for this source */
++	steps_value = get_steps(steps);
++	if (steps_value < 0) {
++		dev_err(clkgen->dev, "Invalid step value: %d\n", steps);
++		return -EINVAL;
++	}
++	reg |= steps_value << MODE_STEPS_PER_CYCLE_LSB;
++
++	/* Mode register is done now*/
++	clkgen_write(clkgen, MODE, reg);
++
++	/* Now set delay mode */
++	/* Clamp value if out of range rx delay is used */
++	reg = RX_DELAY_OVERFLOW_VALUE_CLAMP << RX_DELAY_OVERFLOW_LSB;
++	/* SD tuning bus goes from 0x0 to 0xf but we don't necessarily have that
++	 * many steps available depending on the source so map 0x0 -> 0xf to one
++	 * cycle of rx delay
++	 */
++	reg |= RX_DELAY_MAP_VALUE_STRETCH << RX_DELAY_MAP_LSB;
++
++	/* Default RX delay */
++	dev_dbg(clkgen->dev, "default rx delay %d\n", DEFAULT_RX_DELAY);
++	reg |= (DEFAULT_RX_DELAY & RX_DELAY_FIXED_BITS) << RX_DELAY_FIXED_LSB;
++	clkgen_write(clkgen, RX_DELAY, reg);
++
++	/* Default SD delay */
++	dev_dbg(clkgen->dev, "default sd delay %d\n", DEFAULT_SD_DELAY);
++	reg = (DEFAULT_SD_DELAY & SD_DELAY_STEPS_BITS) << SD_DELAY_STEPS_LSB;
++	clkgen_write(clkgen, SD_DELAY, reg);
++
++	/* We select freq, we turn on tx clock, we turn on sd clk,
++	 * we pick clock generator mode
++	 */
++	reg = USE_LOCAL_FREQ_SEL_BITS | USE_LOCAL_CARD_CLK_EN_BITS |
++	      USE_LOCAL_CLK2CARD_ON_BITS | USE_LOCAL_CLK_GEN_SEL_BITS;
++	clkgen_write(clkgen, USE_LOCAL, reg);
++
++	/* Deassert reset. Reset bit is only writable bit of CS
++	 * reg so fine to write a 0.
++	 */
++	clkgen_write(clkgen, CS, 0);
++
++	return 0;
++}
++
++#define RUNNING	\
++	(CS_TX_CLK_RUNNING_BITS | CS_RX_CLK_RUNNING_BITS | \
++	 CS_SD_CLK_RUNNING_BITS)
++static int rp1_sdio_clk_is_prepared(struct clk_hw *hw)
++{
++	struct rp1_sdio_clkgen *clkgen =
++		container_of(hw, struct rp1_sdio_clkgen, hw);
++	u32 status;
++
++	dev_dbg(clkgen->dev, "is_prepared\n");
++	status = clkgen_read(clkgen, CS);
++	return ((status & RUNNING) == RUNNING);
++}
++
++/* Can define an additional divider if an sd card isn't working at full speed */
++/* #define SLOWDOWN 3 */
++
++static unsigned long rp1_sdio_clk_get_rate(struct clk_hw *hw,
++					   unsigned long parent_rate)
++{
++	/* Get the current rate */
++	struct rp1_sdio_clkgen *clkgen =
++		container_of(hw, struct rp1_sdio_clkgen, hw);
++	unsigned long actual_rate = 0;
++	u32 ndiv_diva;
++	u32 ndiv_divb;
++	u32 tmp;
++	u32 div;
++
++	tmp = clkgen_read(clkgen, LOCAL);
++	if ((tmp & LOCAL_CLK2CARD_ON_BITS) == 0) {
++		dev_dbg(clkgen->dev, "get_rate 0\n");
++		return 0;
++	}
++
++	tmp = clkgen_read(clkgen, NDIV);
++	ndiv_diva = (tmp & NDIV_DIVA_BITS) >> NDIV_DIVA_LSB;
++	ndiv_divb = (tmp & NDIV_DIVB_BITS) >> NDIV_DIVB_LSB;
++	div = ndiv_diva * ndiv_divb;
++	actual_rate = (clk_get_rate(clkgen->base_clk) / div);
++
++#ifdef SLOWDOWN
++	actual_rate *= SLOWDOWN;
++#endif
++
++	dev_dbg(clkgen->dev, "get_rate. ndiv_diva %d, ndiv_divb %d = %lu\n",
++		ndiv_diva, ndiv_divb, actual_rate);
++
++	return actual_rate;
++}
++
++static int rp1_sdio_clk_set_rate(struct clk_hw *hw, unsigned long rate,
++				 unsigned long parent_rate)
++{
++	struct rp1_sdio_clkgen *clkgen =
++		container_of(hw, struct rp1_sdio_clkgen, hw);
++	u32 div;
++	u32 reg;
++
++	dev_dbg(clkgen->dev, "set_rate %lu\n", rate);
++
++	if (rate == 0) {
++		/* Keep tx clock running */
++		clkgen_write(clkgen, LOCAL, LOCAL_CARD_CLK_EN_BITS);
++		return 0;
++	}
++
++#ifdef SLOWDOWN
++	rate /= SLOWDOWN;
++#endif
++
++	div = (clk_get_rate(clkgen->base_clk) / rate) - 1;
++	reg = LOCAL_CLK_GEN_SEL_BITS | LOCAL_CARD_CLK_EN_BITS |
++	      LOCAL_CLK2CARD_ON_BITS | (div << LOCAL_FREQ_SEL_LSB);
++	clkgen_write(clkgen, LOCAL, reg);
++
++	return 0;
++}
++
++#define MAX_NDIV (256 * 8)
++static int rp1_sdio_clk_determine_rate(struct clk_hw *hw,
++				       struct clk_rate_request *req)
++{
++	unsigned long rate;
++	struct rp1_sdio_clkgen *clkgen =
++		container_of(hw, struct rp1_sdio_clkgen, hw);
++	unsigned long base_rate = clk_get_rate(clkgen->base_clk);
++	u32 div;
++
++	/* What is the actual rate I can get if I request xyz */
++	if (req->rate) {
++		div = min((u32)(base_rate / req->rate), (u32)MAX_NDIV);
++		rate = base_rate / div;
++		req->rate = rate;
++		dev_dbg(clkgen->dev, "determine_rate %lu: %lu / %d = %lu\n",
++			req->rate, base_rate, div, rate);
++	} else {
++		rate = 0;
++		dev_dbg(clkgen->dev, "determine_rate %lu: %lu\n", req->rate,
++			rate);
++	}
++
++	return 0;
++}
++
++static const struct clk_ops rp1_sdio_clk_ops = {
++	.is_prepared    = rp1_sdio_clk_is_prepared,
++	.recalc_rate    = rp1_sdio_clk_get_rate,
++	.set_rate       = rp1_sdio_clk_set_rate,
++	.determine_rate = rp1_sdio_clk_determine_rate,
++};
++
++static int rp1_sdio_clk_probe(struct platform_device *pdev)
++{
++	struct device_node *node = pdev->dev.of_node;
++	struct rp1_sdio_clkgen *clkgen;
++	void __iomem *regs;
++	struct clk_init_data init = {};
++	int ret;
++
++	clkgen = devm_kzalloc(&pdev->dev, sizeof(*clkgen), GFP_KERNEL);
++	if (!clkgen)
++		return -ENOMEM;
++	platform_set_drvdata(pdev, clkgen);
++
++	clkgen->dev = &pdev->dev;
++
++	/* Source freq */
++	clkgen->src_clk = devm_clk_get(&pdev->dev, "src");
++	if (IS_ERR(clkgen->src_clk)) {
++		int err = PTR_ERR(clkgen->src_clk);
++
++		dev_err(&pdev->dev, "failed to get src clk: %d\n", err);
++		return err;
++	}
++
++	/* Desired maximum output freq (i.e. base freq) */
++	clkgen->base_clk = devm_clk_get(&pdev->dev, "base");
++	if (IS_ERR(clkgen->base_clk)) {
++		int err = PTR_ERR(clkgen->base_clk);
++
++		dev_err(&pdev->dev, "failed to get base clk: %d\n", err);
++		return err;
++	}
++
++	regs = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(regs))
++		return PTR_ERR(regs);
++
++	init.name = node->name;
++	init.ops = &rp1_sdio_clk_ops;
++	init.flags = CLK_GET_RATE_NOCACHE;
++
++	clkgen->hw.init = &init;
++	clkgen->regs = regs;
++
++	dev_info(&pdev->dev, "loaded %s\n", init.name);
++
++	ret = devm_clk_hw_register(&pdev->dev, &clkgen->hw);
++	if (ret)
++		return ret;
++
++	ret = of_clk_add_hw_provider(node, of_clk_hw_simple_get, &clkgen->hw);
++	if (ret)
++		return ret;
++
++	ret = rp1_sdio_clk_init(clkgen);
++	return ret;
++}
++
++static int rp1_sdio_clk_remove(struct platform_device *pdev)
++{
++	return 0;
++}
++
++static const struct of_device_id rp1_sdio_clk_dt_ids[] = {
++	{ .compatible = "raspberrypi,rp1-sdio-clk", },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, rp1_sdio_clk_dt_ids);
++
++static struct platform_driver rp1_sdio_clk_driver = {
++	.probe	= rp1_sdio_clk_probe,
++	.remove	= rp1_sdio_clk_remove,
++	.driver	= {
++		.name		= "rp1-sdio-clk",
++		.of_match_table	= rp1_sdio_clk_dt_ids,
++	},
++};
++module_platform_driver(rp1_sdio_clk_driver);
++
++MODULE_AUTHOR("Liam Fraser <liam@raspberrypi.com>");
++MODULE_DESCRIPTION("RP1 SDIO clock driver");
++MODULE_LICENSE("GPL");

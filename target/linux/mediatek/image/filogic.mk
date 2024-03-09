@@ -51,6 +51,20 @@ define Build/cetron-header
 	rm $@.tmp
 endef
 
+define Device/abt_asr3000
+  DEVICE_VENDOR := ABT
+  DEVICE_MODEL := ASR3000
+  DEVICE_DTS := mt7981b-abt-asr3000
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += abt_asr3000
+
 define Device/asus_tuf-ax4200
   DEVICE_VENDOR := ASUS
   DEVICE_MODEL := TUF-AX4200
@@ -72,8 +86,8 @@ define Device/bananapi_bpi-r3
   DEVICE_MODEL := BPi-R3
   DEVICE_DTS := mt7986a-bananapi-bpi-r3
   DEVICE_DTS_CONFIG := config-mt7986a-bananapi-bpi-r3
-  DEVICE_DTS_OVERLAY:= mt7986a-bananapi-bpi-r3-nor mt7986a-bananapi-bpi-r3-emmc-nor mt7986a-bananapi-bpi-r3-emmc-snand mt7986a-bananapi-bpi-r3-snand
-  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_OVERLAY:= mt7986a-bananapi-bpi-r3-emmc mt7986a-bananapi-bpi-r3-nand mt7986a-bananapi-bpi-r3-nor mt7986a-bananapi-bpi-r3-sd
+  DEVICE_DTS_DIR := $(DTS_DIR)/
   DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-gpio kmod-mt7986-firmware kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs mt7986-wo-firmware
   IMAGES := sysupgrade.itb
   KERNEL_LOADADDR := 0x44000000
@@ -111,7 +125,9 @@ define Device/bananapi_bpi-r3
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
   IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | pad-rootfs | append-metadata
-  DTC_FLAGS += -@ --space 32768
+  DEVICE_DTC_FLAGS := --pad 4096
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Device tree overlay mechanism needs bootloader update
 endef
 TARGET_DEVICES += bananapi_bpi-r3
 
@@ -145,6 +161,41 @@ define Device/cetron_ct3003-mod
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += cetron_ct3003-mod
+
+define Device/cmcc_rax3000m-emmc
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := RAX3000M (eMMC version)
+  DEVICE_DTS := mt7981b-cmcc-rax3000m-emmc
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 \
+	automount f2fsck mkf2fs
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += cmcc_rax3000m-emmc
+
+define Device/cmcc_rax3000m-nand
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := RAX3000M (NAND version)
+  DEVICE_DTS := mt7981b-cmcc-rax3000m-nand
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 automount
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 116736k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  KERNEL = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS = kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
+endef
+TARGET_DEVICES += cmcc_rax3000m-nand
 
 define Device/fzs_5gcpe-p3
   DEVICE_VENDOR := FZS
@@ -256,9 +307,8 @@ TARGET_DEVICES += jdcloud_re-cs-05
 define Device/mediatek_mt7986a-rfb
   DEVICE_VENDOR := MediaTek
   DEVICE_MODEL := MTK7986 rfba AP
-  DEVICE_DTS := mt7986a-rfb
+  DEVICE_DTS := mt7986a-rfb-spim-nand
   DEVICE_DTS_DIR := $(DTS_DIR)/
-  DEVICE_DTS_OVERLAY := mt7986a-rfb-spim-nand mt7986a-rfb-spim-nor
   SUPPORTED_DEVICES := mediatek,mt7986a-rfb
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
@@ -269,10 +319,9 @@ define Device/mediatek_mt7986a-rfb
   IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
   KERNEL = kernel-bin | lzma | \
-	fit lzma $$(KDIR)/$$(firstword $$(DEVICE_DTS)).dtb
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS = kernel-bin | lzma | \
-	fit lzma $$(KDIR)/$$(firstword $$(DEVICE_DTS)).dtb with-initrd
-  DTC_FLAGS += -@ --space 32768
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd
 endef
 TARGET_DEVICES += mediatek_mt7986a-rfb
 

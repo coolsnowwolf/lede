@@ -1,0 +1,103 @@
+From 501e87c5f421654e1bb6fd4a25de46420549cae8 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 24 Apr 2023 11:48:31 +0100
+Subject: [PATCH] serial: 8250: Add NOMSI bug for bcm2835aux
+
+The BCM2835 mini-UART has no modem status interrupt, causing all
+transmission to stop, never to use, if a speed change ever happens
+while the CTS signal is high.
+
+Add a simple polling mechanism in order to allow recovery in that
+situation.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/tty/serial/8250/8250.h            |  1 +
+ drivers/tty/serial/8250/8250_bcm2835aux.c |  1 +
+ drivers/tty/serial/8250/8250_core.c       | 15 +++++++++++++++
+ drivers/tty/serial/8250/8250_port.c       |  9 +++++++++
+ 4 files changed, 26 insertions(+)
+
+--- a/drivers/tty/serial/8250/8250.h
++++ b/drivers/tty/serial/8250/8250.h
+@@ -92,6 +92,7 @@ struct serial8250_config {
+ #define UART_BUG_NOMSR	BIT(2)	/* UART has buggy MSR status bits (Au1x00) */
+ #define UART_BUG_THRE	BIT(3)	/* UART has buggy THRE reassertion */
+ #define UART_BUG_TXRACE	BIT(5)	/* UART Tx fails to set remote DR */
++#define UART_BUG_NOMSI	BIT(6)	/* UART has no modem status interrupt */
+ 
+ 
+ #ifdef CONFIG_SERIAL_8250_SHARE_IRQ
+--- a/drivers/tty/serial/8250/8250_bcm2835aux.c
++++ b/drivers/tty/serial/8250/8250_bcm2835aux.c
+@@ -109,6 +109,7 @@ static int bcm2835aux_serial_probe(struc
+ 			UPF_SKIP_TEST | UPF_IOREMAP;
+ 	up.port.rs485_config = serial8250_em485_config;
+ 	up.port.rs485_supported = serial8250_em485_supported;
++	up.bugs |= UART_BUG_NOMSI;
+ 	up.rs485_start_tx = bcm2835aux_rs485_start_tx;
+ 	up.rs485_stop_tx = bcm2835aux_rs485_stop_tx;
+ 
+--- a/drivers/tty/serial/8250/8250_core.c
++++ b/drivers/tty/serial/8250/8250_core.c
+@@ -252,6 +252,18 @@ static void serial8250_timeout(struct ti
+ 	mod_timer(&up->timer, jiffies + uart_poll_timeout(&up->port));
+ }
+ 
++static void serial8250_cts_poll_timeout(struct timer_list *t)
++{
++	struct uart_8250_port *up = from_timer(up, t, timer);
++	unsigned long flags;
++
++	spin_lock_irqsave(&up->port.lock, flags);
++	serial8250_modem_status(up);
++	spin_unlock_irqrestore(&up->port.lock, flags);
++	if (up->port.hw_stopped)
++		mod_timer(&up->timer, jiffies + 1);
++}
++
+ static void serial8250_backup_timeout(struct timer_list *t)
+ {
+ 	struct uart_8250_port *up = from_timer(up, t, timer);
+@@ -314,6 +326,9 @@ static void univ8250_setup_timer(struct
+ 			  uart_poll_timeout(port) + HZ / 5);
+ 	}
+ 
++	if (up->bugs & UART_BUG_NOMSI)
++		up->timer.function = serial8250_cts_poll_timeout;
++
+ 	/*
+ 	 * If the "interrupt" for this port doesn't correspond with any
+ 	 * hardware interrupt, we use a timer-based system.  The original
+--- a/drivers/tty/serial/8250/8250_port.c
++++ b/drivers/tty/serial/8250/8250_port.c
+@@ -1559,6 +1559,9 @@ static void serial8250_stop_tx(struct ua
+ 		serial_icr_write(up, UART_ACR, up->acr);
+ 	}
+ 	serial8250_rpm_put(up);
++
++	if (port->hw_stopped && (up->bugs & UART_BUG_NOMSI))
++		mod_timer(&up->timer, jiffies + 1);
+ }
+ 
+ static inline void __start_tx(struct uart_port *port)
+@@ -1669,6 +1672,9 @@ static void serial8250_start_tx(struct u
+ 	struct uart_8250_port *up = up_to_u8250p(port);
+ 	struct uart_8250_em485 *em485 = up->em485;
+ 
++	if (up->bugs & UART_BUG_NOMSI)
++		del_timer(&up->timer);
++
+ 	if (!port->x_char && uart_circ_empty(&port->state->xmit))
+ 		return;
+ 
+@@ -1889,6 +1895,9 @@ unsigned int serial8250_modem_status(str
+ 			uart_handle_cts_change(port, status & UART_MSR_CTS);
+ 
+ 		wake_up_interruptible(&port->state->port.delta_msr_wait);
++	} else if (up->bugs & UART_BUG_NOMSI &&	port->hw_stopped &&
++		   status & UART_MSR_CTS) {
++		uart_handle_cts_change(port, status & UART_MSR_CTS);
+ 	}
+ 
+ 	return status;

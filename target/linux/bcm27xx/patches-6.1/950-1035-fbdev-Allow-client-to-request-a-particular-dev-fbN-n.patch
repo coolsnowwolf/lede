@@ -1,0 +1,93 @@
+From 0c7fb448e0e0e47c2b3be64e438208682c6a5e61 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 9 Oct 2023 16:32:45 +0100
+Subject: [PATCH] fbdev: Allow client to request a particular /dev/fbN node
+
+Add a flag custom_fb_num to denote that the client has
+requested a specific fbdev node number via node.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/video/fbdev/core/fbmem.c | 24 +++++++++++++++++-------
+ include/linux/fb.h               |  2 ++
+ 2 files changed, 19 insertions(+), 7 deletions(-)
+
+--- a/drivers/video/fbdev/core/fbmem.c
++++ b/drivers/video/fbdev/core/fbmem.c
+@@ -52,6 +52,7 @@ static DEFINE_MUTEX(registration_lock);
+ 
+ struct fb_info *registered_fb[FB_MAX] __read_mostly;
+ int num_registered_fb __read_mostly;
++int min_dynamic_fb __read_mostly;
+ #define for_each_registered_fb(i)		\
+ 	for (i = 0; i < FB_MAX; i++)		\
+ 		if (!registered_fb[i]) {} else
+@@ -1579,19 +1580,22 @@ static int do_register_framebuffer(struc
+ 		return -ENXIO;
+ 
+ 	num_registered_fb++;
+-	for (i = 0 ; i < FB_MAX; i++)
+-		if (!registered_fb[i])
+-			break;
+-	fb_info->node = i;
++	if (!fb_info->custom_fb_num || fb_info->node >= FB_MAX || registered_fb[fb_info->node]) {
++		for (i = min_dynamic_fb ; i < FB_MAX; i++)
++			if (!registered_fb[i])
++				break;
++		fb_info->node = i;
++	}
+ 	refcount_set(&fb_info->count, 1);
+ 	mutex_init(&fb_info->lock);
+ 	mutex_init(&fb_info->mm_lock);
+ 
+ 	fb_info->dev = device_create(fb_class, fb_info->device,
+-				     MKDEV(FB_MAJOR, i), NULL, "fb%d", i);
++				     MKDEV(FB_MAJOR, fb_info->node), NULL, "fb%d", fb_info->node);
+ 	if (IS_ERR(fb_info->dev)) {
+ 		/* Not fatal */
+-		printk(KERN_WARNING "Unable to create device for framebuffer %d; errno = %ld\n", i, PTR_ERR(fb_info->dev));
++		printk(KERN_WARNING "Unable to create device for framebuffer %d; errno = %ld\n",
++		       fb_info->node, PTR_ERR(fb_info->dev));
+ 		fb_info->dev = NULL;
+ 	} else
+ 		fb_init_device(fb_info);
+@@ -1624,7 +1628,7 @@ static int do_register_framebuffer(struc
+ 
+ 	fb_var_to_videomode(&mode, &fb_info->var);
+ 	fb_add_videomode(&mode, &fb_info->modelist);
+-	registered_fb[i] = fb_info;
++	registered_fb[fb_info->node] = fb_info;
+ 
+ #ifdef CONFIG_GUMSTIX_AM200EPD
+ 	{
+@@ -1719,6 +1723,12 @@ static int fb_aperture_acquire_for_platf
+ 	return ret;
+ }
+ 
++void fb_set_lowest_dynamic_fb(int min_fb_dev)
++{
++	min_dynamic_fb = min_fb_dev;
++}
++EXPORT_SYMBOL(fb_set_lowest_dynamic_fb);
++
+ /**
+  *	register_framebuffer - registers a frame buffer device
+  *	@fb_info: frame buffer info structure
+--- a/include/linux/fb.h
++++ b/include/linux/fb.h
+@@ -512,6 +512,7 @@ struct fb_info {
+ 	} *apertures;
+ 
+ 	bool skip_vt_switch; /* no VT switch on suspend/resume required */
++	bool custom_fb_num; /* Use value in node as the preferred node number */
+ };
+ 
+ static inline struct apertures_struct *alloc_apertures(unsigned int max_num) {
+@@ -614,6 +615,7 @@ extern ssize_t fb_sys_write(struct fb_in
+ 			    size_t count, loff_t *ppos);
+ 
+ /* drivers/video/fbmem.c */
++extern void fb_set_lowest_dynamic_fb(int min_fb_dev);
+ extern int register_framebuffer(struct fb_info *fb_info);
+ extern void unregister_framebuffer(struct fb_info *fb_info);
+ extern int fb_prepare_logo(struct fb_info *fb_info, int rotate);

@@ -1005,7 +1005,6 @@ define KernelPackage/sched
   DEPENDS:=+kmod-sched-core +kmod-lib-crc32c +kmod-lib-textsearch
   KCONFIG:= \
 	CONFIG_NET_SCH_CODEL \
-	CONFIG_NET_SCH_DSMARK@lt6.2 \
 	CONFIG_NET_SCH_GRED \
 	CONFIG_NET_SCH_MULTIQ \
 	CONFIG_NET_SCH_SFQ \
@@ -1020,8 +1019,7 @@ define KernelPackage/sched
 	CONFIG_NET_EMATCH_META \
 	CONFIG_NET_EMATCH_TEXT
   FILES:=$(SCHED_FILES_EXTRA)
-  FILES+=$(LINUX_DIR)/net/sched/sch_dsmark.ko@lt6.2
-  AUTOLOAD:=$(call AutoLoad,73, $(SCHED_MODULES_EXTRA) sch_dsmark@lt6.2)
+  AUTOLOAD:=$(call AutoLoad,73, $(SCHED_MODULES_EXTRA))
 endef
 
 define KernelPackage/sched/description
@@ -1559,7 +1557,7 @@ $(eval $(call KernelPackage,qrtr-tun))
 define KernelPackage/qrtr-smd
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=SMD IPC Router channels
-  DEPENDS:=+kmod-qrtr @(TARGET_ipq60xx||TARGET_ipq807x)
+  DEPENDS:=+kmod-qrtr @TARGET_qualcommax
   KCONFIG:=CONFIG_QRTR_SMD
   FILES:= $(LINUX_DIR)/net/qrtr/qrtr-smd.ko
   AUTOLOAD:=$(call AutoProbe,qrtr-smd)
