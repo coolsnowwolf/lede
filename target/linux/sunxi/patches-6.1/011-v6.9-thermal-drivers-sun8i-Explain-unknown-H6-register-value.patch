@@ -1,0 +1,79 @@
+From 14f118aa50fe7c7c7330f56d007ecacca487cea8 Mon Sep 17 00:00:00 2001
+From: Andre Przywara <andre.przywara@arm.com>
+Date: Mon, 19 Feb 2024 15:36:35 +0000
+Subject: [PATCH] thermal/drivers/sun8i: Explain unknown H6 register value
+
+So far we were ORing in some "unknown" value into the THS control
+register on the Allwinner H6. This part of the register is not explained
+in the H6 manual, but the H616 manual details those bits, and on closer
+inspection the THS IP blocks in both SoCs seem very close:
+- The BSP code for both SoCs writes the same values into THS_CTRL.
+- The reset values of at least the first three registers are the same.
+
+Replace the "unknown" value with its proper meaning: "acquire time",
+most probably the sample part of the sample & hold circuit of the ADC,
+according to its explanation in the H616 manual.
+
+No functional change, just a macro rename and adjustment.
+
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Reviewed-by: Jernej Skrabec <jernej.skrabec@gmail.com>
+Acked-by: Vasily Khoruzhick <anarsoul@gmail.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20240219153639.179814-4-andre.przywara@arm.com
+---
+ drivers/thermal/sun8i_thermal.c | 29 ++++++++++++++++-------------
+ 1 file changed, 16 insertions(+), 13 deletions(-)
+
+--- a/drivers/thermal/sun8i_thermal.c
++++ b/drivers/thermal/sun8i_thermal.c
+@@ -50,7 +50,8 @@
+ #define SUN8I_THS_CTRL2_T_ACQ1(x)		((GENMASK(15, 0) & (x)) << 16)
+ #define SUN8I_THS_DATA_IRQ_STS(x)		BIT(x + 8)
+ 
+-#define SUN50I_THS_CTRL0_T_ACQ(x)		((GENMASK(15, 0) & (x)) << 16)
++#define SUN50I_THS_CTRL0_T_ACQ(x)		(GENMASK(15, 0) & ((x) - 1))
++#define SUN50I_THS_CTRL0_T_SAMPLE_PER(x)	((GENMASK(15, 0) & ((x) - 1)) << 16)
+ #define SUN50I_THS_FILTER_EN			BIT(2)
+ #define SUN50I_THS_FILTER_TYPE(x)		(GENMASK(1, 0) & (x))
+ #define SUN50I_H6_THS_PC_TEMP_PERIOD(x)		((GENMASK(19, 0) & (x)) << 12)
+@@ -410,25 +411,27 @@ static int sun8i_h3_thermal_init(struct
+ 	return 0;
+ }
+ 
+-/*
+- * Without this undocumented value, the returned temperatures would
+- * be higher than real ones by about 20C.
+- */
+-#define SUN50I_H6_CTRL0_UNK 0x0000002f
+-
+ static int sun50i_h6_thermal_init(struct ths_device *tmdev)
+ {
+ 	int val;
+ 
+ 	/*
+-	 * T_acq = 20us
+-	 * clkin = 24MHz
+-	 *
+-	 * x = T_acq * clkin - 1
+-	 *   = 479
++	 * The manual recommends an overall sample frequency of 50 KHz (20us,
++	 * 480 cycles at 24 MHz), which provides plenty of time for both the
++	 * acquisition time (>24 cycles) and the actual conversion time
++	 * (>14 cycles).
++	 * The lower half of the CTRL register holds the "acquire time", in
++	 * clock cycles, which the manual recommends to be 2us:
++	 * 24MHz * 2us = 48 cycles.
++	 * The high half of THS_CTRL encodes the sample frequency, in clock
++	 * cycles: 24MHz * 20us = 480 cycles.
++	 * This is explained in the H616 manual, but apparently wrongly
++	 * described in the H6 manual, although the BSP code does the same
++	 * for both SoCs.
+ 	 */
+ 	regmap_write(tmdev->regmap, SUN50I_THS_CTRL0,
+-		     SUN50I_H6_CTRL0_UNK | SUN50I_THS_CTRL0_T_ACQ(479));
++		     SUN50I_THS_CTRL0_T_ACQ(48) |
++		     SUN50I_THS_CTRL0_T_SAMPLE_PER(480));
+ 	/* average over 4 samples */
+ 	regmap_write(tmdev->regmap, SUN50I_H6_THS_MFC,
+ 		     SUN50I_THS_FILTER_EN |
