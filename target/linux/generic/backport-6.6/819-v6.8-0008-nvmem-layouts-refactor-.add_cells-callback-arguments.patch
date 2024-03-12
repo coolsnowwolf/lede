@@ -1,0 +1,94 @@
+From 401df0d4f4098ecc9c5278da2f50756d62e5b37d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Rafa=C5=82=20Mi=C5=82ecki?= <rafal@milecki.pl>
+Date: Tue, 19 Dec 2023 13:01:03 +0100
+Subject: [PATCH] nvmem: layouts: refactor .add_cells() callback arguments
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Simply pass whole "struct nvmem_layout" instead of single variables.
+There is nothing in "struct nvmem_layout" that we have to hide from
+layout drivers. They also access it during .probe() and .remove().
+
+Thanks to this change:
+
+1. API gets more consistent
+   All layouts drivers callbacks get the same argument
+
+2. Layouts get correct device
+   Before this change NVMEM core code was passing NVMEM device instead
+   of layout device. That resulted in:
+   * Confusing prints
+   * Calling devm_*() helpers on wrong device
+   * Helpers like of_device_get_match_data() dereferencing NULLs
+
+3. It gets possible to get match data
+   First of all nvmem_layout_get_match_data() requires passing "struct
+   nvmem_layout" which .add_cells() callback didn't have before this. It
+   doesn't matter much as it's rather useless now anyway (and will be
+   dropped).
+   What's more important however is that of_device_get_match_data() can
+   be used now thanks to owning a proper device pointer.
+
+Signed-off-by: Rafał Miłecki <rafal@milecki.pl>
+Reviewed-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Reviewed-by: Michael Walle <michael@walle.cc>
+Link: https://lore.kernel.org/r/20231219120104.3422-1-zajec5@gmail.com
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/core.c             | 2 +-
+ drivers/nvmem/layouts/onie-tlv.c | 4 +++-
+ drivers/nvmem/layouts/sl28vpd.c  | 4 +++-
+ include/linux/nvmem-provider.h   | 2 +-
+ 4 files changed, 8 insertions(+), 4 deletions(-)
+
+--- a/drivers/nvmem/core.c
++++ b/drivers/nvmem/core.c
+@@ -854,7 +854,7 @@ int nvmem_layout_register(struct nvmem_l
+ 		return -EINVAL;
+ 
+ 	/* Populate the cells */
+-	ret = layout->add_cells(&layout->nvmem->dev, layout->nvmem);
++	ret = layout->add_cells(layout);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/drivers/nvmem/layouts/onie-tlv.c
++++ b/drivers/nvmem/layouts/onie-tlv.c
+@@ -182,8 +182,10 @@ static bool onie_tlv_crc_is_valid(struct
+ 	return true;
+ }
+ 
+-static int onie_tlv_parse_table(struct device *dev, struct nvmem_device *nvmem)
++static int onie_tlv_parse_table(struct nvmem_layout *layout)
+ {
++	struct nvmem_device *nvmem = layout->nvmem;
++	struct device *dev = &layout->dev;
+ 	struct onie_tlv_hdr hdr;
+ 	size_t table_len, data_len, hdr_len;
+ 	u8 *table, *data;
+--- a/drivers/nvmem/layouts/sl28vpd.c
++++ b/drivers/nvmem/layouts/sl28vpd.c
+@@ -80,8 +80,10 @@ static int sl28vpd_v1_check_crc(struct d
+ 	return 0;
+ }
+ 
+-static int sl28vpd_add_cells(struct device *dev, struct nvmem_device *nvmem)
++static int sl28vpd_add_cells(struct nvmem_layout *layout)
+ {
++	struct nvmem_device *nvmem = layout->nvmem;
++	struct device *dev = &layout->dev;
+ 	const struct nvmem_cell_info *pinfo;
+ 	struct nvmem_cell_info info = {0};
+ 	struct device_node *layout_np;
+--- a/include/linux/nvmem-provider.h
++++ b/include/linux/nvmem-provider.h
+@@ -173,7 +173,7 @@ struct nvmem_cell_table {
+ struct nvmem_layout {
+ 	struct device dev;
+ 	struct nvmem_device *nvmem;
+-	int (*add_cells)(struct device *dev, struct nvmem_device *nvmem);
++	int (*add_cells)(struct nvmem_layout *layout);
+ };
+ 
+ struct nvmem_layout_driver {

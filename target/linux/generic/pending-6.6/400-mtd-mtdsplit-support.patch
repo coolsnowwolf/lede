@@ -1,3 +1,16 @@
+From 39717277d5c87bdb183cf2f258957b44ba99b4df Mon Sep 17 00:00:00 2001
+From: OpenWrt community <openwrt-devel@lists.openwrt.org>
+Date: Wed, 13 Jul 2022 11:47:35 +0200
+Subject: [PATCH] mtd: mtdsplit support
+
+---
+ drivers/mtd/Kconfig            |  19 ++++
+ drivers/mtd/Makefile           |   2 +
+ drivers/mtd/mtdpart.c          | 169 ++++++++++++++++++++++++++++-----
+ include/linux/mtd/mtd.h        |  25 +++++
+ include/linux/mtd/partitions.h |   7 ++
+ 5 files changed, 197 insertions(+), 25 deletions(-)
+
 --- a/drivers/mtd/Kconfig
 +++ b/drivers/mtd/Kconfig
 @@ -12,6 +12,25 @@ menuconfig MTD
@@ -26,6 +39,17 @@
  config MTD_TESTS
  	tristate "MTD tests support (DANGEROUS)"
  	depends on m
+--- a/drivers/mtd/Makefile
++++ b/drivers/mtd/Makefile
+@@ -9,6 +9,8 @@ mtd-y				:= mtdcore.o mtdsuper.o mtdconc
+ 
+ obj-y				+= parsers/
+ 
++obj-$(CONFIG_MTD_SPLIT)		+= mtdsplit/
++
+ # 'Users' - code which presents functionality to userspace.
+ obj-$(CONFIG_MTD_BLKDEVS)	+= mtd_blkdevs.o
+ obj-$(CONFIG_MTD_BLOCK)		+= mtdblock.o
 --- a/drivers/mtd/mtdpart.c
 +++ b/drivers/mtd/mtdpart.c
 @@ -15,11 +15,13 @@
@@ -42,7 +66,7 @@
  
  /*
   * MTD methods which simply translate the effective address and pass through
-@@ -242,6 +244,146 @@ static int mtd_add_partition_attrs(struc
+@@ -242,6 +244,147 @@ static int mtd_add_partition_attrs(struc
  	return ret;
  }
  
@@ -174,7 +198,8 @@
 +	if (rootfs_found)
 +		return;
 +
-+	if (!strcmp(part->name, "rootfs")) {
++	if (of_find_property(mtd_get_of_node(part), "linux,rootfs", NULL) ||
++	    !strcmp(part->name, "rootfs")) {
 +		run_parsers_by_type(part, MTD_PARSER_TYPE_ROOTFS);
 +
 +		rootfs_found = 1;
@@ -189,7 +214,7 @@
  int mtd_add_partition(struct mtd_info *parent, const char *name,
  		      long long offset, long long length)
  {
-@@ -280,6 +422,7 @@ int mtd_add_partition(struct mtd_info *p
+@@ -280,6 +423,7 @@ int mtd_add_partition(struct mtd_info *p
  	if (ret)
  		goto err_remove_part;
  
@@ -197,7 +222,7 @@
  	mtd_add_partition_attrs(child);
  
  	return 0;
-@@ -423,6 +566,7 @@ int add_mtd_partitions(struct mtd_info *
+@@ -423,6 +567,7 @@ int add_mtd_partitions(struct mtd_info *
  			goto err_del_partitions;
  		}
  
@@ -205,7 +230,7 @@
  		mtd_add_partition_attrs(child);
  
  		/* Look for subpartitions */
-@@ -439,31 +583,6 @@ err_del_partitions:
+@@ -439,31 +584,6 @@ err_del_partitions:
  	return ret;
  }
  
@@ -237,40 +262,6 @@
  /*
   * Many partition parsers just expected the core to kfree() all their data in
   * one chunk. Do that by default.
---- a/include/linux/mtd/partitions.h
-+++ b/include/linux/mtd/partitions.h
-@@ -75,6 +75,12 @@ struct mtd_part_parser_data {
-  * Functions dealing with the various ways of partitioning the space
-  */
- 
-+enum mtd_parser_type {
-+	MTD_PARSER_TYPE_DEVICE = 0,
-+	MTD_PARSER_TYPE_ROOTFS,
-+	MTD_PARSER_TYPE_FIRMWARE,
-+};
-+
- struct mtd_part_parser {
- 	struct list_head list;
- 	struct module *owner;
-@@ -83,6 +89,7 @@ struct mtd_part_parser {
- 	int (*parse_fn)(struct mtd_info *, const struct mtd_partition **,
- 			struct mtd_part_parser_data *);
- 	void (*cleanup)(const struct mtd_partition *pparts, int nr_parts);
-+	enum mtd_parser_type type;
- };
- 
- /* Container for passing around a set of parsed partitions */
---- a/drivers/mtd/Makefile
-+++ b/drivers/mtd/Makefile
-@@ -9,6 +9,8 @@ mtd-y				:= mtdcore.o mtdsuper.o mtdconc
- 
- obj-y				+= parsers/
- 
-+obj-$(CONFIG_MTD_SPLIT)		+= mtdsplit/
-+
- # 'Users' - code which presents functionality to userspace.
- obj-$(CONFIG_MTD_BLKDEVS)	+= mtd_blkdevs.o
- obj-$(CONFIG_MTD_BLOCK)		+= mtdblock.o
 --- a/include/linux/mtd/mtd.h
 +++ b/include/linux/mtd/mtd.h
 @@ -615,6 +615,24 @@ static inline void mtd_align_erase_req(s
@@ -312,3 +303,26 @@
  
  struct mtd_notifier {
  	void (*add)(struct mtd_info *mtd);
+--- a/include/linux/mtd/partitions.h
++++ b/include/linux/mtd/partitions.h
+@@ -75,6 +75,12 @@ struct mtd_part_parser_data {
+  * Functions dealing with the various ways of partitioning the space
+  */
+ 
++enum mtd_parser_type {
++	MTD_PARSER_TYPE_DEVICE = 0,
++	MTD_PARSER_TYPE_ROOTFS,
++	MTD_PARSER_TYPE_FIRMWARE,
++};
++
+ struct mtd_part_parser {
+ 	struct list_head list;
+ 	struct module *owner;
+@@ -83,6 +89,7 @@ struct mtd_part_parser {
+ 	int (*parse_fn)(struct mtd_info *, const struct mtd_partition **,
+ 			struct mtd_part_parser_data *);
+ 	void (*cleanup)(const struct mtd_partition *pparts, int nr_parts);
++	enum mtd_parser_type type;
+ };
+ 
+ /* Container for passing around a set of parsed partitions */

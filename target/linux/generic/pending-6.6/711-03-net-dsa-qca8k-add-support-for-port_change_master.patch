@@ -1,0 +1,158 @@
+From b2d6ebf2f92f8695c83fa6979f4ab579c588df76 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 20 Jun 2023 07:57:38 +0200
+Subject: [PATCH 4/4] net: dsa: qca8k: add support for port_change_master
+
+Add support for port_change_master to permit assigning an alternative
+CPU port if the switch have both CPU port connected or create a LAG on
+both CPU port and assign the LAG as DSA master.
+
+On port change master request, we check if the master is a LAG.
+With LAG we compose the cpu_port_mask with the CPU port in the LAG, if
+master is a simple dsa_port, we derive the index.
+
+Finally we apply the new cpu_port_mask to the LOOKUP MEMBER to permit
+the port to receive packet by the new CPU port setup for the port and we
+refresh the CPU ports LOOKUP MEMBER configuration to reflect the new
+user port state.
+
+port_lag_join/leave is updated to refresh the user ports if we detect
+that the LAG is a DSA master and we have user port using it as a master.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/dsa/qca/qca8k-8xxx.c | 116 ++++++++++++++++++++++++++++++-
+ 1 file changed, 114 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/dsa/qca/qca8k-8xxx.c
++++ b/drivers/net/dsa/qca/qca8k-8xxx.c
+@@ -1738,6 +1738,117 @@ qca8k_get_tag_protocol(struct dsa_switch
+ 	return DSA_TAG_PROTO_QCA;
+ }
+ 
++static int qca8k_port_change_master(struct dsa_switch *ds, int port,
++				    struct net_device *master,
++				    struct netlink_ext_ack *extack)
++{
++	struct dsa_switch_tree *dst = ds->dst;
++	struct qca8k_priv *priv = ds->priv;
++	u8 cpu_port_mask = 0;
++	struct dsa_port *dp;
++	u32 val;
++	int ret;
++
++	/* With LAG of CPU port, compose the mask for port LOOKUP MEMBER */
++	if (netif_is_lag_master(master)) {
++		struct dsa_lag *lag;
++		int id;
++
++		id = dsa_lag_id(dst, master);
++		lag = dsa_lag_by_id(dst, id);
++
++		dsa_lag_foreach_port(dp, dst, lag)
++			if (dsa_port_is_cpu(dp))
++				cpu_port_mask |= BIT(dp->index);
++	} else {
++		dp = master->dsa_ptr;
++		cpu_port_mask |= BIT(dp->index);
++	}
++
++	/* Connect port to new cpu port */
++	ret = regmap_read(priv->regmap, QCA8K_PORT_LOOKUP_CTRL(port), &val);
++	if (ret)
++		return ret;
++
++	/* Reset connected CPU port in port LOOKUP MEMBER */
++	val &=  ~dsa_cpu_ports(ds);
++	/* Assign the new CPU port in port LOOKUP MEMBER */
++	val |= cpu_port_mask;
++
++	ret = regmap_update_bits(priv->regmap, QCA8K_PORT_LOOKUP_CTRL(port),
++				 QCA8K_PORT_LOOKUP_MEMBER,
++				 val);
++	if (ret)
++		return ret;
++
++	/* Refresh CPU port LOOKUP MEMBER with new port */
++	dsa_tree_for_each_cpu_port(dp, ds->dst) {
++		u32 reg = QCA8K_PORT_LOOKUP_CTRL(dp->index);
++
++		/* If CPU port in mask assign port, else remove port */
++		if (BIT(dp->index) & cpu_port_mask)
++			ret = regmap_set_bits(priv->regmap, reg, BIT(port));
++		else
++			ret = regmap_clear_bits(priv->regmap, reg, BIT(port));
++
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int qca8k_port_lag_refresh_user_ports(struct dsa_switch *ds,
++					     struct dsa_lag lag)
++{
++	struct net_device *lag_dev = lag.dev;
++	struct dsa_port *dp;
++	int ret;
++
++	/* Ignore if LAG is not a DSA master */
++	if (!netif_is_lag_master(lag_dev))
++		return 0;
++
++	dsa_switch_for_each_user_port(dp, ds) {
++		/* Skip if assigned master is not the LAG */
++		if (dsa_port_to_master(dp) != lag_dev)
++			continue;
++
++		ret = qca8k_port_change_master(ds, dp->index,
++					       lag_dev, NULL);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int qca8xxx_port_lag_join(struct dsa_switch *ds, int port,
++				 struct dsa_lag lag,
++				 struct netdev_lag_upper_info *info,
++				 struct netlink_ext_ack *extack)
++{
++	int ret;
++
++	ret = qca8k_port_lag_join(ds, port, lag, info, extack);
++	if (ret)
++		return ret;
++
++	return qca8k_port_lag_refresh_user_ports(ds, lag);
++}
++
++static int qca8xxx_port_lag_leave(struct dsa_switch *ds, int port,
++				  struct dsa_lag lag)
++{
++	int ret;
++
++	ret = qca8k_port_lag_leave(ds, port, lag);
++	if (ret)
++		return ret;
++
++	return qca8k_port_lag_refresh_user_ports(ds, lag);
++}
++
+ static void
+ qca8k_master_change(struct dsa_switch *ds, const struct net_device *master,
+ 		    bool operational)
+@@ -2024,8 +2135,9 @@ static const struct dsa_switch_ops qca8k
+ 	.phylink_mac_link_down	= qca8k_phylink_mac_link_down,
+ 	.phylink_mac_link_up	= qca8k_phylink_mac_link_up,
+ 	.get_phy_flags		= qca8k_get_phy_flags,
+-	.port_lag_join		= qca8k_port_lag_join,
+-	.port_lag_leave		= qca8k_port_lag_leave,
++	.port_lag_join		= qca8xxx_port_lag_join,
++	.port_lag_leave		= qca8xxx_port_lag_leave,
++	.port_change_master	= qca8k_port_change_master,
+ 	.master_state_change	= qca8k_master_change,
+ 	.connect_tag_protocol	= qca8k_connect_tag_protocol,
+ };
