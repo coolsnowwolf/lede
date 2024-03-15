@@ -935,7 +935,7 @@ VOID CntlOidRTBssidProc(
 /* Roaming is the only external request triggering CNTL state machine */
 /* despite of other "SET OID" operation. All "SET OID" related oerations */
 /* happen in sequence, because no other SET OID will be sent to this device */
-/* until the the previous SET operation is complete (successful o failed). */
+/* until the previous SET operation is complete (successful o failed). */
 /* So, how do we quarantee this ROAMING request won't corrupt other "SET OID"? */
 /* or been corrupted by other "SET OID"? */
 /* */

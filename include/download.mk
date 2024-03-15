@@ -85,7 +85,7 @@ check_escape=$(subst ','\'',$(1))
 # $(1): suffix of the F_, C_ variables, e.g. hash_deprecated, hash_mismatch, etc.
 # $(2): filename
 # $(3): expected hash value
-# $(4): var name of the the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
+# $(4): var name of the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
 check_warn_nofix = $(info $(shell printf "$(_R)WARNING: %s$(_N)" '$(call check_escape,$(call C_$(1),$(2),$(3),$(4)))'))
 ifndef FIXUP
   check_warn = $(check_warn_nofix)
@@ -101,7 +101,7 @@ endif
 
 # $(1): filename
 # $(2): expected hash value
-# $(3): var name of the the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
+# $(3): var name of the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
 C_download_missing = $(1) is missing, please run make download before re-running this check
 C_hash_mismatch = $(3) does not match $(1) hash $(call gen_sha256sum,$(1))
 C_hash_deprecated = $(3) uses deprecated hash, set to $(call gen_sha256sum,$(1))
@@ -109,7 +109,7 @@ C_hash_missing = $(3) is missing, set to $(call gen_sha256sum,$(1))
 
 # $(1): filename
 # $(2): expected hash value
-# $(3): var name of the the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
+# $(3): var name of the form: {PKG_,Download/<name>:}{,MIRROR_}{HASH,MIRROR_HASH}
 check_hash = \
   $(if $(wildcard $(DL_DIR)/$(1)), \
     $(if $(filter-out x,$(2)), \

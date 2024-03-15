@@ -15,7 +15,7 @@
  *
  *  The kernel image is preferably embedded inside the ELF loader, so the end
  *  of the loader equals the end of the kernel partition. This is due to the
- *  way mtd_find_rootfs_from searches for the the rootfs:
+ *  way mtd_find_rootfs_from searches for the rootfs:
  *  - if the kernel image is embedded in the loader, the appended rootfs may
  *    follow the loader immediately, within the same erase block.
  *  - if the kernel image is not embedded in the loader, but placed at some

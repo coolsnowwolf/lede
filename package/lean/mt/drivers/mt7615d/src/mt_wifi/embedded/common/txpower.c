@@ -285,7 +285,7 @@ VOID AsicCompensatePowerViaBBP(RTMP_ADAPTER *pAd, CHAR *pTotalDeltaPower)
 		*pTotalDeltaPower += 6;
 		mdsm_drop_pwr = MDSM_DROP_TX_POWER_BY_6dBm;
 	} else {
-		/* Control the the transmit power by using the MAC only */
+		/* Control the transmit power by using the MAC only */
 		mdsm_drop_pwr = MDSM_NORMAL_TX_POWER;
 	}
 

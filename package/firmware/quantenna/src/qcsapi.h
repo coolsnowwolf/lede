@@ -7145,7 +7145,7 @@ extern int	qcsapi_wifi_set_ap_isolate(const char *ifname, const int new_ap_isola
  * \note \aponly
  *
  * \param ifname \wifiX
- * \param p_ap_isolate return parameter to contain the the current intra-BSS isolation setting.
+ * \param p_ap_isolate return parameter to contain the current intra-BSS isolation setting.
  *
  * \return 0 on success.
  * \return A negative value if an error occurred.  See @ref mysection4_1_4 "QCSAPI Return Values"
@@ -7195,7 +7195,7 @@ extern int	qcsapi_wifi_set_intra_bss_isolate(const char *ifname, const qcsapi_un
  * \note \aponly
  *
  * \param ifname \wifiX
- * \param p_ap_isolate return parameter to contain the the current BSS isolation setting.
+ * \param p_ap_isolate return parameter to contain the current BSS isolation setting.
  *
  * \return 0 on success.
  * \return A negative value if an error occurred.  See @ref mysection4_1_4 "QCSAPI Return Values"
@@ -8959,7 +8959,7 @@ extern int	qcsapi_wifi_set_pmf( const char *ifname, int pmf_cap );
 
 
 /**
- * @brief Get the the WPA status for the given interface.
+ * @brief Get the WPA status for the given interface.
  *
  * Returns the current WPA status. Only applies to AP.
  *
@@ -9011,7 +9011,7 @@ extern int qcsapi_wifi_get_wpa_status( const char *ifname,
 extern int qcsapi_wifi_get_psk_auth_failures(const char *ifname, qcsapi_unsigned_int *count);
 
 /**
- * @brief Get the the authenticated state of the specific station according to the mac_addr
+ * @brief Get the authenticated state of the specific station according to the mac_addr
  * for the given interface.
  *
  * Returns the authenticated state(0/1). Only applies to AP.
@@ -15301,7 +15301,7 @@ extern int qcsapi_wifi_set_enable_mu(const char *ifname, const unsigned int mu_e
 /**
  * \brief Get the status of MU-MIMO, if it is enabled or not
  *
- * This API call is used to get the the status of MU-MIMO
+ * This API call is used to get the status of MU-MIMO
  *
  * \param ifname \wifi0
  * \param mu_enable return value storing a flag showing if MU-MIMO is enabled or not
@@ -15341,7 +15341,7 @@ extern int qcsapi_wifi_set_mu_use_precode(const char *ifname, const unsigned int
 /**
  * \brief Get the status of MU-MIMO precoding matric for the group, if it is enabled or not
  *
- * This API call is used to get the the status of MU-MIMO precoding matrix
+ * This API call is used to get the status of MU-MIMO precoding matrix
 *
  * \note This API only applies for an AP.
  *
@@ -15386,7 +15386,7 @@ extern int qcsapi_wifi_set_mu_use_eq(const char *ifname, const unsigned int eq_e
 /**
  * \brief Get the status of MU equalizer, if it is enabled or not
  *
- * This API call is used to get the the status of MU equalizer
+ * This API call is used to get the status of MU equalizer
 *
  * \note This API only applies for an STA.
  *

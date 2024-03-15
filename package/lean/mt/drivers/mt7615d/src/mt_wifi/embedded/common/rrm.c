@@ -1992,7 +1992,7 @@ int check_rrm_BcnReq_custom_params(
 	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_TRACE,
 		("%s()\n", __func__));
 
-	/* the the peer is connected or not */
+	/* the peer is connected or not */
 	pEntry = MacTableLookup(pAd, p_beacon_req->peer_address);
 	if (!pEntry ||
 		!(IS_AKM_OPEN(pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.SecConfig.AKMMap) ||
@@ -2401,7 +2401,7 @@ static VOID SendBcnReqToAir_Raw(
 	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_RRM, DBG_LVL_TRACE,
 		("%s()\n", __func__));
 
-	/* the the peer is connected or not */
+	/* the peer is connected or not */
 	pEntry = MacTableLookup(pAd, p_bcn_req_data_raw->peer_address);
 	if (!pEntry ||
 		!(IS_AKM_OPEN(pAd->ApCfg.MBSSID[IfIdx].wdev.SecConfig.AKMMap) ||

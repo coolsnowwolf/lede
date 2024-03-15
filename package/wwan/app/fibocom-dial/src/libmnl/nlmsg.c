@@ -36,7 +36,7 @@
 	|_______________________________________________|
 \endverbatim
  *
- * There is usually an extra header after the the Netlink header (at the
+ * There is usually an extra header after the Netlink header (at the
  * beginning of the payload). This extra header is specific of the Netlink
  * subsystem. After this extra header, it comes the sequence of attributes
  * that are expressed in Type-Length-Value (TLV) format.

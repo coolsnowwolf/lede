@@ -1841,7 +1841,7 @@ static int sblock_debug_show(struct seq_file *m, void *private)
 
 			/*
 			 * in precfg channel,  the ring pinter can be null
-			 * before the the block manger has been created
+			 * before the block manger has been created
 			 * and ring->header pointer can also be null
 			 * before the block handshake with host,
 			 * so must add null pointer protect here.

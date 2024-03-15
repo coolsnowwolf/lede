@@ -1994,7 +1994,7 @@ int check_rrm_BcnReq_custom_params(
 	DBGPRINT(RT_DEBUG_TRACE,
 		("%s()\n", __func__));
 
-	/* the the peer is connected or not */
+	/* the peer is connected or not */
 	pEntry = MacTableLookup(pAd, p_beacon_req->peer_address);
 	if (!pEntry || !((Ndis802_11AuthModeAutoSwitch >=
 			pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.AuthMode) ||
@@ -2425,7 +2425,7 @@ static VOID SendBcnReqToAir_Raw(
 	DBGPRINT(RT_DEBUG_TRACE,
 		("%s()\n", __func__));
 
-	/* the the peer is connected or not */
+	/* the peer is connected or not */
 	pEntry = MacTableLookup(pAd, p_bcn_req_data_raw->peer_address);
 	if (!pEntry || !((Ndis802_11AuthModeAutoSwitch >=
 			pAd->ApCfg.MBSSID[pEntry->func_tb_idx].wdev.AuthMode) ||
