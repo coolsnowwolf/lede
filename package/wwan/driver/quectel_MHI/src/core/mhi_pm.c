@@ -748,6 +748,8 @@ void mhi_pm_ready_worker(struct work_struct *work)
 		schedule_delayed_work(&mhi_cntrl->ready_worker, msecs_to_jiffies(10));
 	else if (ee == MHI_EE_AMSS || ee == MHI_EE_SBL)
 		mhi_queue_state_transition(mhi_cntrl, MHI_ST_TRANSITION_READY);
+	else if (ee == MHI_EE_EDL)
+		mhi_queue_state_transition(mhi_cntrl, MHI_ST_TRANSITION_PBL);
 }
 
 void mhi_pm_st_worker(struct work_struct *work)
