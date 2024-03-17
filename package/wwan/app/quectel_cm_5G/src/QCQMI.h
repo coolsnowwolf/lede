@@ -1,23 +1,18 @@
-/*===========================================================================
+/******************************************************************************
+  @file    QCQMI.h
 
-                            M P Q M I. H
-DESCRIPTION:
+  DESCRIPTION
+  This module contains QMI module.
 
-    This module contains forward references to the QMI module.
+  INITIALIZATION AND SEQUENCING REQUIREMENTS
+  None.
 
-INITIALIZATION AND SEQUENCING REQUIREMENTS:
+  ---------------------------------------------------------------------------
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Quectel Wireless Solution Proprietary and Confidential.
+  ---------------------------------------------------------------------------
+******************************************************************************/
 
-Copyright (C) 2011 by Qualcomm Technologies, Incorporated.  All Rights Reserved.
-===========================================================================*/
-/*===========================================================================
-
-                            EDIT HISTORY FOR FILE
-  $Header: //depot/QMI/win/qcdrivers/ndis/MPQMI.h#3 $
-
-when        who    what, where, why
---------    ---    ----------------------------------------------------------
-11/20/04    hg     Initial version.
-===========================================================================*/
 
 #ifndef USBQMI_H
 #define USBQMI_H
