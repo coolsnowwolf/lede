@@ -1,4 +1,4 @@
-From a3c5878599d530330027412eb8be12f816ac215c Mon Sep 17 00:00:00 2001
+From 8d0665327819c41fce2c8d50f19c967b22eae564 Mon Sep 17 00:00:00 2001
 From: Weijie Gao <weijie.gao@mediatek.com>
 Date: Wed, 27 Jul 2022 16:36:13 +0800
 Subject: [PATCH 57/71] mtd: spi-nand: backport from upstream kernel
@@ -7,30 +7,34 @@ Backport new features from upstream kernel
 
 Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 ---
- drivers/mtd/nand/spi/Kconfig      |   8 +
- drivers/mtd/nand/spi/core.c       | 101 ++++++----
+ drivers/mtd/nand/spi/Kconfig      |   1 +
+ drivers/mtd/nand/spi/Makefile     |   2 +-
+ drivers/mtd/nand/spi/core.c       | 102 ++++++----
+ drivers/mtd/nand/spi/etron.c      | 181 +++++++++++++++++
  drivers/mtd/nand/spi/gigadevice.c | 322 ++++++++++++++++++++++++++----
  drivers/mtd/nand/spi/macronix.c   | 173 +++++++++++++---
  drivers/mtd/nand/spi/micron.c     |  50 ++---
  drivers/mtd/nand/spi/toshiba.c    |  66 +++---
- drivers/mtd/nand/spi/winbond.c    | 171 +++++++++++++---
- include/linux/mtd/spinand.h       |  86 +++++---
- 8 files changed, 753 insertions(+), 224 deletions(-)
+ drivers/mtd/nand/spi/winbond.c    | 164 ++++++++++++---
+ include/linux/mtd/spinand.h       |  87 +++++---
+ 10 files changed, 923 insertions(+), 225 deletions(-)
+ create mode 100644 drivers/mtd/nand/spi/etron.c
 
 --- a/drivers/mtd/nand/spi/Kconfig
 +++ b/drivers/mtd/nand/spi/Kconfig
-@@ -5,3 +5,11 @@ menuconfig MTD_SPI_NAND
+@@ -5,3 +5,4 @@ menuconfig MTD_SPI_NAND
  	select SPI_MEM
  	help
  	  This is the framework for the SPI NAND device drivers.
 +
-+config MTD_SPI_NAND_W25N01KV
-+	tristate "Winbond W25N01KV Support"
-+	select MTD_SPI_NAND
-+	default n
-+	help
-+	  Winbond W25N01KV share the same ID with W25N01GV. However, they have
-+	  different attributes.
+--- a/drivers/mtd/nand/spi/Makefile
++++ b/drivers/mtd/nand/spi/Makefile
+@@ -1,4 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ 
+-spinand-objs := core.o gigadevice.o macronix.o micron.o toshiba.o winbond.o
++spinand-objs := core.o gigadevice.o macronix.o micron.o toshiba.o winbond.o etron.o
+ obj-$(CONFIG_MTD_SPI_NAND) += spinand.o
 --- a/drivers/mtd/nand/spi/core.c
 +++ b/drivers/mtd/nand/spi/core.c
 @@ -17,6 +17,7 @@
@@ -75,7 +79,15 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  static int spinand_lock_block(struct spinand_device *spinand, u8 lock)
  {
  	return spinand_write_reg_op(spinand, REG_BLOCK_LOCK, lock);
-@@ -836,24 +826,63 @@ static const struct spinand_manufacturer
+@@ -829,6 +819,7 @@ static const struct nand_ops spinand_ops
+ };
+ 
+ static const struct spinand_manufacturer *spinand_manufacturers[] = {
++	&etron_spinand_manufacturer,
+ 	&gigadevice_spinand_manufacturer,
+ 	&macronix_spinand_manufacturer,
+ 	&micron_spinand_manufacturer,
+@@ -836,24 +827,63 @@ static const struct spinand_manufacturer
  	&winbond_spinand_manufacturer,
  };
  
@@ -147,7 +159,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  static int spinand_manufacturer_init(struct spinand_device *spinand)
  {
  	if (spinand->manufacturer->ops->init)
-@@ -909,9 +938,9 @@ spinand_select_op_variant(struct spinand
+@@ -909,9 +939,9 @@ spinand_select_op_variant(struct spinand
   * @spinand: SPI NAND object
   * @table: SPI NAND device description table
   * @table_size: size of the device description table
@@ -159,7 +171,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
   * entry in the SPI NAND description table. If a match is found, the spinand
   * object will be initialized with information provided by the matching
   * spinand_info entry.
-@@ -920,8 +949,10 @@ spinand_select_op_variant(struct spinand
+@@ -920,8 +950,10 @@ spinand_select_op_variant(struct spinand
   */
  int spinand_match_and_init(struct spinand_device *spinand,
  			   const struct spinand_info *table,
@@ -171,7 +183,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  	struct nand_device *nand = spinand_to_nand(spinand);
  	unsigned int i;
  
-@@ -929,13 +960,17 @@ int spinand_match_and_init(struct spinan
+@@ -929,13 +961,17 @@ int spinand_match_and_init(struct spinan
  		const struct spinand_info *info = &table[i];
  		const struct spi_mem_op *op;
  
@@ -190,7 +202,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  		spinand->select_target = table[i].select_target;
  
  		op = spinand_select_op_variant(spinand,
-@@ -967,17 +1002,7 @@ static int spinand_detect(struct spinand
+@@ -967,17 +1003,7 @@ static int spinand_detect(struct spinand
  	struct nand_device *nand = spinand_to_nand(spinand);
  	int ret;
  
@@ -207,8 +219,192 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 -	ret = spinand_manufacturer_detect(spinand);
 +	ret = spinand_id_detect(spinand);
  	if (ret) {
- 		dev_err(spinand->slave->dev, "unknown raw ID %*phN\n",
- 			SPINAND_MAX_ID_LEN, spinand->id.data);
+ 		dev_err(spinand->slave->dev, "unknown raw ID %02x %02x %02x %02x\n",
+ 			spinand->id.data[0], spinand->id.data[1],
+--- /dev/null
++++ b/drivers/mtd/nand/spi/etron.c
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2020 Etron Technology, Inc.
++ *
++ */
++#ifndef __UBOOT__
++#include <malloc.h>
++#include <linux/device.h>
++#include <linux/kernel.h>
++#endif
++#include <linux/bug.h>
++#include <linux/mtd/spinand.h>
++
++#define SPINAND_MFR_ETRON		0xD5
++
++#define STATUS_ECC_LIMIT_BITFLIPS (3 << 4)
++
++static SPINAND_OP_VARIANTS(read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_DUALIO_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X2_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(true, 0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, NULL, 0));
++
++static SPINAND_OP_VARIANTS(write_cache_variants,
++		SPINAND_PROG_LOAD_X4(true, 0, NULL, 0),
++		SPINAND_PROG_LOAD(true, 0, NULL, 0));
++
++static SPINAND_OP_VARIANTS(update_cache_variants,
++		SPINAND_PROG_LOAD_X4(false, 0, NULL, 0),
++		SPINAND_PROG_LOAD(false, 0, NULL, 0));
++
++static int etron_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (14 * section) + 72;
++	region->length = 14;
++
++	return 0;
++}
++
++static int etron_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	if (section) {
++		region->offset = 18 * section;
++		region->length = 18;
++	} else {
++		/* section 0 has one byte reserved for bad block mark */
++		region->offset = 2;
++		region->length = 16;
++	}
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops etron_ooblayout = {
++	.ecc = etron_ooblayout_ecc,
++	.rfree = etron_ooblayout_free,
++};
++
++static int etron_ecc_get_status(struct spinand_device *spinand,
++				   u8 status)
++{
++	struct nand_device *nand = spinand_to_nand(spinand);
++
++	switch (status & STATUS_ECC_MASK) {
++	case STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	case STATUS_ECC_HAS_BITFLIPS:
++		return nand->eccreq.strength >> 1;
++
++	case STATUS_ECC_LIMIT_BITFLIPS:
++		return nand->eccreq.strength;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
++static const struct spinand_info etron_spinand_table[] = {
++	/* EM73C 1Gb 3.3V */
++	SPINAND_INFO("EM73C044VCF",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x25),
++		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xD 2Gb */
++	SPINAND_INFO("EM73D044VCR",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x41),
++		     NAND_MEMORG(1, 2048, 64, 64, 2048, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM73D044VCO",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x3A),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78D044VCM",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x8E),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xE 4Gb */
++	SPINAND_INFO("EM73E044VCE",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x3B),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78E044VCD",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x8F),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xF044VCA 8Gb */
++	SPINAND_INFO("EM73F044VCA",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x15),
++		     NAND_MEMORG(1, 4096, 256, 64, 4096, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78F044VCA",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x8D),
++		     NAND_MEMORG(1, 4096, 256, 64, 4096, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++};
++
++static const struct spinand_manufacturer_ops etron_spinand_manuf_ops = {
++};
++
++const struct spinand_manufacturer etron_spinand_manufacturer = {
++	.id = SPINAND_MFR_ETRON,
++	.name = "Etron",
++	.chips = etron_spinand_table,
++	.nchips = ARRAY_SIZE(etron_spinand_table),
++	.ops = &etron_spinand_manuf_ops,
++};
 --- a/drivers/mtd/nand/spi/gigadevice.c
 +++ b/drivers/mtd/nand/spi/gigadevice.c
 @@ -22,8 +22,13 @@
@@ -1153,7 +1349,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  };
 --- a/drivers/mtd/nand/spi/winbond.c
 +++ b/drivers/mtd/nand/spi/winbond.c
-@@ -19,6 +19,25 @@
+@@ -19,6 +19,23 @@
  
  #define WINBOND_CFG_BUF_READ		BIT(3)
  
@@ -1168,18 +1364,16 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +#define W25N01_M02GV_STATUS_ECC_1_BITFLIPS	(1 << 4)
 +#define W25N01_M02GV_STATUS_ECC_UNCOR_ERROR	(2 << 4)
 +
-+#if IS_ENABLED(CONFIG_MTD_SPI_NAND_W25N01KV)
 +#define W25N01KV_STATUS_ECC_MASK		(3 << 4)
 +#define W25N01KV_STATUS_ECC_NO_BITFLIPS		(0 << 4)
 +#define W25N01KV_STATUS_ECC_1_3_BITFLIPS	(1 << 4)
 +#define W25N01KV_STATUS_ECC_4_BITFLIPS		(3 << 4)
 +#define W25N01KV_STATUS_ECC_UNCOR_ERROR		(2 << 4)
-+#endif
 +
  static SPINAND_OP_VARIANTS(read_cache_variants,
  		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 2, NULL, 0),
  		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
-@@ -35,6 +54,35 @@ static SPINAND_OP_VARIANTS(update_cache_
+@@ -35,6 +52,35 @@ static SPINAND_OP_VARIANTS(update_cache_
  		SPINAND_PROG_LOAD_X4(false, 0, NULL, 0),
  		SPINAND_PROG_LOAD(false, 0, NULL, 0));
  
@@ -1215,11 +1409,10 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  static int w25m02gv_ooblayout_ecc(struct mtd_info *mtd, int section,
  				  struct mtd_oob_region *region)
  {
-@@ -78,8 +126,63 @@ static int w25m02gv_select_target(struct
+@@ -78,8 +124,61 @@ static int w25m02gv_select_target(struct
  	return spi_mem_exec_op(spinand->slave, &op);
  }
  
-+#if IS_ENABLED(CONFIG_MTD_SPI_NAND_W25N01KV)
 +static int w25n01kv_ecc_get_status(struct spinand_device *spinand,
 +					u8 status)
 +{
@@ -1242,7 +1435,6 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 +
 +	return -EINVAL;
 +}
-+#endif
 +
 +static int w25n02kv_n04kv_ecc_get_status(struct spinand_device *spinand,
 +					u8 status)
@@ -1280,28 +1472,26 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 2),
  		     NAND_ECCREQ(1, 512),
  		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
-@@ -88,7 +191,19 @@ static const struct spinand_info winbond
+@@ -88,7 +187,17 @@ static const struct spinand_info winbond
  		     0,
  		     SPINAND_ECCINFO(&w25m02gv_ooblayout, NULL),
  		     SPINAND_SELECT_TARGET(w25m02gv_select_target)),
 -	SPINAND_INFO("W25N01GV", 0xAA,
-+#if IS_ENABLED(CONFIG_MTD_SPI_NAND_W25N01KV)
 +	SPINAND_INFO("W25N01KV",
-+		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x21),
-+		     NAND_MEMORG(1, 2048, 96, 64, 1024, 1, 1, 1),
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xae, 0x21),
++		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 1),
 +		     NAND_ECCREQ(4, 512),
 +		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
 +					      &write_cache_variants,
 +					      &update_cache_variants),
 +		     0,
 +		     SPINAND_ECCINFO(&w25n02kv_n04kv_ooblayout, w25n01kv_ecc_get_status)),
-+#else
 +	SPINAND_INFO("W25N01GV",
 +		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x21),
  		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 1),
  		     NAND_ECCREQ(1, 512),
  		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
-@@ -96,32 +211,31 @@ static const struct spinand_info winbond
+@@ -96,32 +205,30 @@ static const struct spinand_info winbond
  					      &update_cache_variants),
  		     0,
  		     SPINAND_ECCINFO(&w25m02gv_ooblayout, NULL)),
@@ -1320,7 +1510,6 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
 -	/*
 -	 * Winbond SPI NAND read ID need a dummy byte,
 -	 * so the first byte in raw_id is dummy.
-+#endif
 +	SPINAND_INFO("W25N02KV",
 +		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x22),
 +		     NAND_MEMORG(1, 2048, 128, 64, 2048, 2, 1, 1),
@@ -1358,7 +1547,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  
  static int winbond_spinand_init(struct spinand_device *spinand)
  {
-@@ -142,12 +256,13 @@ static int winbond_spinand_init(struct s
+@@ -142,12 +249,13 @@ static int winbond_spinand_init(struct s
  }
  
  static const struct spinand_manufacturer_ops winbond_spinand_manuf_ops = {
@@ -1495,7 +1684,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  	int (*init)(struct spinand_device *spinand);
  	void (*cleanup)(struct spinand_device *spinand);
  };
-@@ -192,11 +219,16 @@ struct spinand_manufacturer_ops {
+@@ -192,15 +219,21 @@ struct spinand_manufacturer_ops {
   * struct spinand_manufacturer - SPI NAND manufacturer instance
   * @id: manufacturer ID
   * @name: manufacturer name
@@ -1512,7 +1701,12 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  	const struct spinand_manufacturer_ops *ops;
  };
  
-@@ -268,7 +300,7 @@ struct spinand_ecc_info {
+ /* SPI NAND manufacturers */
++extern const struct spinand_manufacturer etron_spinand_manufacturer;
+ extern const struct spinand_manufacturer gigadevice_spinand_manufacturer;
+ extern const struct spinand_manufacturer macronix_spinand_manufacturer;
+ extern const struct spinand_manufacturer micron_spinand_manufacturer;
+@@ -268,7 +301,7 @@ struct spinand_ecc_info {
   */
  struct spinand_info {
  	const char *model;
@@ -1521,7 +1715,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  	u32 flags;
  	struct nand_memory_organization memorg;
  	struct nand_ecc_req eccreq;
-@@ -282,6 +314,13 @@ struct spinand_info {
+@@ -282,6 +315,13 @@ struct spinand_info {
  			     unsigned int target);
  };
  
@@ -1535,7 +1729,7 @@ Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
  #define SPINAND_INFO_OP_VARIANTS(__read, __write, __update)		\
  	{								\
  		.read_cache = __read,					\
-@@ -440,9 +479,10 @@ static inline void spinand_set_ofnode(st
+@@ -440,9 +480,10 @@ static inline void spinand_set_ofnode(st
  }
  #endif /* __UBOOT__ */
  
