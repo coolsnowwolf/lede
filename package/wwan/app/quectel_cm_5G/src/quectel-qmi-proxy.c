@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -34,9 +34,9 @@
 
 #include "qendian.h"
 #include "qlist.h"
-#include "MPQMI.h"
-#include "MPQCTL.h"
-#include "MPQMUX.h"
+#include "QCQMI.h"
+#include "QCQCTL.h"
+#include "QCQMUX.h"
 
 #ifndef MIN
 #define MIN(a, b)	((a) < (b)? (a): (b))
@@ -117,6 +117,8 @@ static int modem_reset_flag = 0;
 static int qmi_sync_done = 0;
 static uint8_t qmi_buf[4096];
 
+static int send_qmi_to_cdc_wdm(PQCQMIMSG pQMI);
+
 #ifdef QUECTEL_QMI_MERGE
 static int merge_qmi_rsp_packet(void *buf, ssize_t *src_size) {
     static QMI_MSG_PACKET s_QMIPacket;
@@ -168,8 +170,8 @@ static int create_local_server(const char *name) {
     alen = strlen(name) + offsetof(struct sockaddr_un, sun_path) + 1;
     SYSCHECK(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr,sizeof(reuse_addr)));
     if(bind(sockfd, (struct sockaddr *)&sockaddr, alen) < 0) {
-        close(sockfd);
         dprintf("bind %s errno: %d (%s)\n", name, errno, strerror(errno));
+        close(sockfd);
         return -1;
     }
 
@@ -201,7 +203,7 @@ static void accept_qmi_connection(int serverfd) {
     cfmakenoblock(clientfd);
 }
 
-static void cleanup_qmi_connection(int clientfd) {
+static void cleanup_qmi_connection(int clientfd, int clientDisconnect) {
     struct qlistnode *con_node, *qmi_node;
     
     qlist_for_each(con_node, &qmi_proxy_connection) {
@@ -211,8 +213,33 @@ static void cleanup_qmi_connection(int clientfd) {
             while (!qlist_empty(&qmi_con->client_qnode)) {
                 QMI_PROXY_CLINET *qmi_client = qnode_to_item(qlist_head(&qmi_con->client_qnode), QMI_PROXY_CLINET, qnode);
 
-                dprintf("xxx ClientFd=%d QMIType=%d ClientId=%d\n", qmi_con->ClientFd, qmi_client->QMIType, qmi_client->ClientId);
+                if (clientDisconnect) {
+                    int size = 17;
+                    QMI_PROXY_MSG *qmi_msg = malloc(sizeof(QMI_PROXY_MSG) + size);
+                    PQCQMIMSG pQMI = &qmi_msg->qmi[0];
 
+                    dprintf("xxx ClientFd=%d QMIType=%d ClientId=%d\n", qmi_con->ClientFd, qmi_client->QMIType, qmi_client->ClientId);
+                    qlist_init(&qmi_msg->qnode);
+                    qmi_msg->ClientFd = qmi_proxy_server_fd;
+                    pQMI->QMIHdr.IFType   = USB_CTL_MSG_TYPE_QMI;
+                    pQMI->QMIHdr.Length = htole16(16);
+                    pQMI->QMIHdr.CtlFlags = 0x00;
+                    pQMI->QMIHdr.QMIType  = QMUX_TYPE_CTL;
+                    pQMI->QMIHdr.ClientId= 0x00;
+                    pQMI->CTLMsg.ReleaseClientIdReq.CtlFlags = QMICTL_FLAG_REQUEST;
+                    pQMI->CTLMsg.ReleaseClientIdReq.TransactionId = 255;    
+                    pQMI->CTLMsg.ReleaseClientIdReq.QMICTLType = htole16(QMICTL_RELEASE_CLIENT_ID_REQ);
+                    pQMI->CTLMsg.ReleaseClientIdReq.Length = htole16(5);
+                    pQMI->CTLMsg.ReleaseClientIdReq.TLVType = QCTLV_TYPE_REQUIRED_PARAMETER;
+                    pQMI->CTLMsg.ReleaseClientIdReq.TLVLength = htole16(2);
+                    pQMI->CTLMsg.ReleaseClientIdReq.QMIType = qmi_client->QMIType;
+                    pQMI->CTLMsg.ReleaseClientIdReq.ClientId = qmi_client->ClientId;
+
+                    if (qlist_empty(&qmi_proxy_ctl_msg))
+                        send_qmi_to_cdc_wdm(pQMI);
+                    qlist_add_tail(&qmi_proxy_ctl_msg, &qmi_msg->qnode);
+                }
+                
                 qlist_remove(&qmi_client->qnode);
                 free(qmi_client);
             }
@@ -273,12 +300,13 @@ static void dump_qmi(PQCQMIMSG pQMI, int fd, const char flag)
     {
         unsigned i;
         unsigned size = le16toh(pQMI->QMIHdr.Length) + 1;
-        printf("%c %d %u: ", flag, fd, size);
-        if (size > 16)
-            size = 16;
-        for (i = 0; i < size; i++)
-            printf("%02x ", ((uint8_t *)pQMI)[i]);
-        printf("\n");
+        char buf[128];
+        int cnt = 0;
+
+        cnt += snprintf(buf + cnt, sizeof(buf) - cnt, "%c %d %u: ", flag, fd, size);
+        for (i = 0; i < size && i < 24; i++)
+            cnt += snprintf(buf + cnt, sizeof(buf) - cnt, "%02x ", ((uint8_t *)pQMI)[i]);
+        dprintf("%s\n", buf)
     }
 }
 
@@ -327,39 +355,50 @@ static void recv_qmi_from_dev(PQCQMIMSG pQMI) {
             if (!qlist_empty(&qmi_proxy_ctl_msg)) {
                 QMI_PROXY_MSG *qmi_msg = qnode_to_item(qlist_head(&qmi_proxy_ctl_msg), QMI_PROXY_MSG, qnode);
 
-                qlist_for_each(con_node, &qmi_proxy_connection) {
-                    QMI_PROXY_CONNECTION *qmi_con = qnode_to_item(con_node, QMI_PROXY_CONNECTION, qnode);
+                if (qmi_msg->qmi[0].CTLMsg.QMICTLMsgHdrRsp.TransactionId != pQMI->CTLMsg.QMICTLMsgHdrRsp.TransactionId
+                    || qmi_msg->qmi[0].CTLMsg.QMICTLMsgHdrRsp.QMICTLType != pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) {
+                    dprintf("ERROR: ctl rsp tid:%d, type:%d - ctl req %d, %d\n",
+                        pQMI->CTLMsg.QMICTLMsgHdrRsp.TransactionId, pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType,
+                        qmi_msg->qmi[0].CTLMsg.QMICTLMsgHdrRsp.TransactionId, qmi_msg->qmi[0].CTLMsg.QMICTLMsgHdrRsp.QMICTLType);
+                }
+                else if (qmi_msg->ClientFd == qmi_proxy_server_fd) {
+                    if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_RELEASE_CLIENT_ID_RESP) {
+                        dprintf("--- ClientFd=%d QMIType=%d ClientId=%d\n", qmi_proxy_server_fd,
+                                pQMI->CTLMsg.ReleaseClientIdRsp.QMIType,  pQMI->CTLMsg.ReleaseClientIdRsp.ClientId);
+                    }
+                }
+                else {
+                    qlist_for_each(con_node, &qmi_proxy_connection) {
+                        QMI_PROXY_CONNECTION *qmi_con = qnode_to_item(con_node, QMI_PROXY_CONNECTION, qnode);
 
-                    if (qmi_con->ClientFd == qmi_msg->ClientFd) {
-                        send_qmi_to_client(pQMI, qmi_msg->ClientFd);
+                        if (qmi_con->ClientFd == qmi_msg->ClientFd) {
+                            send_qmi_to_client(pQMI, qmi_msg->ClientFd);
 
-                        if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_GET_CLIENT_ID_RESP)
-                            get_client_id(qmi_con, &pQMI->CTLMsg.GetClientIdRsp);                                                        
-                        else if ((le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_RELEASE_CLIENT_ID_RESP) ||
-                                (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_REVOKE_CLIENT_ID_IND)) {
-                            release_client_id(qmi_con, &pQMI->CTLMsg.ReleaseClientIdRsp);
-                            if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_REVOKE_CLIENT_ID_IND)
-                                modem_reset_flag = 1;
-                        }
-                        else {
+                            if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_GET_CLIENT_ID_RESP) {
+                                get_client_id(qmi_con, &pQMI->CTLMsg.GetClientIdRsp);                                                        
+                            }
+                            else if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_RELEASE_CLIENT_ID_RESP) {
+                                release_client_id(qmi_con, &pQMI->CTLMsg.ReleaseClientIdRsp);
+                            }
+                            else {
+                            }
                         }
                     }
                 }
 
                 qlist_remove(&qmi_msg->qnode);
                 free(qmi_msg);
-            }
-        }
 
-        if (!qlist_empty(&qmi_proxy_ctl_msg)) {
-            QMI_PROXY_MSG *qmi_msg = qnode_to_item(qlist_head(&qmi_proxy_ctl_msg), QMI_PROXY_MSG, qnode);
+                if (!qlist_empty(&qmi_proxy_ctl_msg)) {
+                    QMI_PROXY_MSG *qmi_msg = qnode_to_item(qlist_head(&qmi_proxy_ctl_msg), QMI_PROXY_MSG, qnode);
 
-            qlist_for_each(con_node, &qmi_proxy_connection) {
-                QMI_PROXY_CONNECTION *qmi_con = qnode_to_item(con_node, QMI_PROXY_CONNECTION, qnode);
-
-                if (qmi_con->ClientFd == qmi_msg->ClientFd) {
                     send_qmi_to_cdc_wdm(qmi_msg->qmi);
                 }
+            }
+        } 
+        else if (pQMI->QMIHdr.QMIType == QMICTL_CTL_FLAG_IND) {
+            if (le16toh(pQMI->CTLMsg.QMICTLMsgHdrRsp.QMICTLType) == QMICTL_REVOKE_CLIENT_ID_IND) {
+                modem_reset_flag = 1;
             }
         }
     }
@@ -380,10 +419,10 @@ static void recv_qmi_from_dev(PQCQMIMSG pQMI) {
 }
 
 static int recv_qmi_from_client(PQCQMIMSG pQMI, unsigned size, int clientfd) {
-    if (qmi_proxy_server_fd <= 0) {
-        send_qmi_to_cdc_wdm(pQMI);
-    }
-    else if (pQMI->QMIHdr.QMIType == QMUX_TYPE_CTL) {  
+    if (qmi_proxy_server_fd == -1)
+        return -1;
+
+    if (pQMI->QMIHdr.QMIType == QMUX_TYPE_CTL) {  
         QMI_PROXY_MSG *qmi_msg;
 
         if (pQMI->CTLMsg.QMICTLMsgHdr.QMICTLType == QMICTL_SYNC_REQ) {
@@ -391,13 +430,13 @@ static int recv_qmi_from_client(PQCQMIMSG pQMI, unsigned size, int clientfd) {
             return 0;
         }
 
-        if (qlist_empty(&qmi_proxy_ctl_msg))
-            send_qmi_to_cdc_wdm(pQMI);
-
         qmi_msg = malloc(sizeof(QMI_PROXY_MSG) + size);
         qlist_init(&qmi_msg->qnode);
         qmi_msg->ClientFd = clientfd;
         memcpy(qmi_msg->qmi, pQMI, size);
+
+        if (qlist_empty(&qmi_proxy_ctl_msg))
+            send_qmi_to_cdc_wdm(pQMI);
         qlist_add_tail(&qmi_proxy_ctl_msg, &qmi_msg->qnode);
     }
     else {
@@ -407,7 +446,7 @@ static int recv_qmi_from_client(PQCQMIMSG pQMI, unsigned size, int clientfd) {
     return 0;
 }
 
-static int qmi_proxy_init(void) {
+static int qmi_proxy_init(unsigned retry) {
     unsigned i;
     QCQMIMSG _QMI;
     PQCQMIMSG pQMI = &_QMI;
@@ -422,10 +461,10 @@ static int qmi_proxy_init(void) {
     pQMI->CTLMsg.QMICTLMsgHdr.CtlFlags = QMICTL_FLAG_REQUEST;
 
     qmi_sync_done = 0;
-    for (i = 0; i < 10; i++) {
+    for (i = 0; i < retry; i++) {
         pQMI->CTLMsg.SyncReq.TransactionId = i+1;    
-        pQMI->CTLMsg.SyncReq.QMICTLType = QMICTL_SYNC_REQ;
-        pQMI->CTLMsg.SyncReq.Length = 0;
+        pQMI->CTLMsg.SyncReq.QMICTLType = htole16(QMICTL_SYNC_REQ);
+        pQMI->CTLMsg.SyncReq.Length = htole16(0);
 
         pQMI->QMIHdr.Length = 
             htole16(le16toh(pQMI->CTLMsg.QMICTLMsgHdr.Length) + sizeof(QCQMI_HDR) + sizeof(QCQMICTL_MSG_HDR) - 1);
@@ -440,22 +479,6 @@ static int qmi_proxy_init(void) {
 
     dprintf("%s %s\n", __func__, qmi_sync_done ? "succful" : "fail");
     return qmi_sync_done ? 0 : -1;
-}
-
-static void qmi_start_server(const char* servername) {
-    qmi_proxy_server_fd = create_local_server(servername);
-    dprintf("qmi_proxy_server_fd = %d\n", qmi_proxy_server_fd);
-    if (qmi_proxy_server_fd == -1) {
-        dprintf("Failed to create %s, errno: %d (%s)\n", servername, errno, strerror(errno));
-    }
-}
-
-static void qmi_close_server(const char* servername) {
-    if (qmi_proxy_server_fd != -1) {
-        dprintf("%s %s close server\n", __func__, servername);
-        close(qmi_proxy_server_fd);
-        qmi_proxy_server_fd = -1;
-    }
 }
 
 static void *qmi_proxy_loop(void *param)
@@ -510,7 +533,7 @@ static void *qmi_proxy_loop(void *param)
         do {
             //ret = poll(pollfds, nevents, -1);
             ret = poll(pollfds, nevents, (qmi_proxy_server_fd > 0) ? -1 : 200);
-         } while (ret == -1 && errno == EINTR && qmi_proxy_quit == 0);
+        } while (ret == -1 && errno == EINTR && qmi_proxy_quit == 0);
          
         if (ret < 0) {
             dprintf("%s poll=%d, errno: %d (%s)\n", __func__, ret, errno, strerror(errno));
@@ -528,7 +551,7 @@ static void *qmi_proxy_loop(void *param)
                 } else if(fd == qmi_proxy_server_fd) {
                 
                 } else {
-                    cleanup_qmi_connection(fd);
+                    cleanup_qmi_connection(fd, 1);
                 }
 
                 continue;
@@ -566,7 +589,7 @@ static void *qmi_proxy_loop(void *param)
   
                 if (nreads <= 0) {
                     dprintf("%s read=%d errno: %d (%s)",  __func__, (int)nreads, errno, strerror(errno));
-                    cleanup_qmi_connection(fd);
+                    cleanup_qmi_connection(fd, 1);
                     break;
                 }
 
@@ -585,7 +608,7 @@ qmi_proxy_loop_exit:
     while (!qlist_empty(&qmi_proxy_connection)) {
         QMI_PROXY_CONNECTION *qmi_con = qnode_to_item(qlist_head(&qmi_proxy_connection), QMI_PROXY_CONNECTION, qnode);
 
-        cleanup_qmi_connection(qmi_con->ClientFd);
+        cleanup_qmi_connection(qmi_con->ClientFd, 0);
     }
     
     dprintf("%s exit, thread_id %p\n", __func__, (void *)pthread_self());
@@ -601,8 +624,7 @@ static void usage(void) {
 }
 
 static void sig_action(int sig) {
-    if (qmi_proxy_quit == 0) {
-        qmi_proxy_quit = 1;
+    if (qmi_proxy_quit++ == 0) {
         if (thread_id)
             pthread_kill(thread_id, sig);
     }
@@ -611,7 +633,6 @@ static void sig_action(int sig) {
 int main(int argc, char *argv[]) {
     int opt;
     char cdc_wdm[32+1] = "/dev/cdc-wdm0";
-    int retry_times = 0;
     char servername[64] = {0};
 
     optind = 1;
@@ -632,62 +653,47 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    if (access(cdc_wdm, R_OK | W_OK)) {
-        dprintf("Fail to access %s, errno: %d (%s). break\n", cdc_wdm, errno, strerror(errno));
-        return -1;
-    }
-
     sprintf(servername, "quectel-qmi-proxy%c", cdc_wdm[strlen(cdc_wdm)-1]);
     dprintf("Will use cdc-wdm='%s', proxy='%s'\n", cdc_wdm, servername);
 
     while (qmi_proxy_quit == 0) {
-        if (access(cdc_wdm, R_OK | W_OK)) {
-            dprintf("Fail to access %s, errno: %d (%s). continue\n", cdc_wdm, errno, strerror(errno));
-            // wait device
-            sleep(3);
-            continue;
-        }
-
         cdc_wdm_fd = open(cdc_wdm, O_RDWR | O_NONBLOCK | O_NOCTTY);
         if (cdc_wdm_fd == -1) {
-            dprintf("Failed to open %s, errno: %d (%s). break\n", cdc_wdm, errno, strerror(errno));
-            return -1;
+            dprintf("Failed to open %s, errno: %d (%s)\n", cdc_wdm, errno, strerror(errno));
+            sleep(3);
+            continue;
         }
         cfmakenoblock(cdc_wdm_fd);
         
         /* no qmi_proxy_loop lives, create one */
         pthread_create(&thread_id, NULL, qmi_proxy_loop, NULL);
-        /* try to redo init if failed, init function must be successfully */
-        while (qmi_proxy_init() != 0) {
-            if (retry_times < 5) {
-                dprintf("fail to init proxy, try again in 2 seconds.\n");
-                sleep(2);
-                retry_times++;
-            } else {
-                dprintf("has failed too much times, restart the modem and have a try...\n");
-                break;
-            }
-            /* break loop if modem is detached */
-            if (access(cdc_wdm, F_OK|R_OK|W_OK))
-                break;
-        }
-        retry_times = 0;
-        qmi_start_server(servername);
-        if (qmi_proxy_server_fd == -1)
-            pthread_cancel(thread_id); 
-        pthread_join(thread_id, NULL);
 
-        /* close local server at last */
-        qmi_close_server(servername);
-        close(cdc_wdm_fd);
-        /* DO RESTART IN 20s IF MODEM RESET ITSELF */
-        if (modem_reset_flag) {
-            unsigned int time_to_wait = 20;
-            while (time_to_wait) {
-                time_to_wait = sleep(time_to_wait);
+        if (qmi_proxy_init(60) == 0) {
+            qmi_proxy_server_fd = create_local_server(servername);
+            dprintf("qmi_proxy_server_fd = %d\n", qmi_proxy_server_fd);
+            if (qmi_proxy_server_fd == -1) {
+                dprintf("Failed to create %s, errno: %d (%s)\n", servername, errno, strerror(errno));
+                pthread_cancel(thread_id);
             }
-            modem_reset_flag = 0;
         }
+        else {
+            pthread_cancel(thread_id);
+        }
+
+        pthread_join(thread_id, NULL);
+        thread_id = 0;
+
+        if (qmi_proxy_server_fd != -1) {
+            dprintf("close server %s\n", servername);
+            close(qmi_proxy_server_fd);
+            qmi_proxy_server_fd = -1;
+        }
+        close(cdc_wdm_fd);
+        cdc_wdm_fd = -1;
+
+        if (qmi_proxy_quit == 0)
+            sleep(modem_reset_flag ? 30 : 3);
+        modem_reset_flag = 0;
     }
 
     return 0;
