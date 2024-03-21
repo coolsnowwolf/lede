@@ -860,6 +860,15 @@ struct mhi_ctrl_seg
    struct mhi_tre sw_in_chan_ring[NUM_MHI_SW_IP_RING_ELEMENTS]  __packed __aligned(NUM_MHI_IPA_IN_RING_ELEMENTS*16);
    struct mhi_tre sw_out_chan_ring[NUM_MHI_SW_IP_RING_ELEMENTS]  __packed __aligned(NUM_MHI_IPA_OUT_RING_ELEMENTS*16);
 #endif
+
+#ifdef ENABLE_ADPL
+   struct mhi_tre adpl_in_chan_ring[NUM_MHI_ADPL_RING_ELEMENTS]  __packed __aligned(NUM_MHI_IPA_IN_RING_ELEMENTS*16);
+#endif
+
+#ifdef ENABLE_QDSS
+   struct mhi_tre qdss_in_chan_ring[NUM_MHI_QDSS_RING_ELEMENTS]  __packed __aligned(NUM_MHI_IPA_IN_RING_ELEMENTS*16);
+#endif
+
    struct mhi_tre diag_in_chan_ring[NUM_MHI_DIAG_IN_RING_ELEMENTS]  __packed __aligned(NUM_MHI_IPA_OUT_RING_ELEMENTS*16);
    struct mhi_tre chan_ring[NUM_MHI_CHAN_RING_ELEMENTS*2*12]  __packed __aligned(NUM_MHI_CHAN_RING_ELEMENTS*16);
    struct mhi_tre event_ring[NUM_MHI_EVT_RINGS][NUM_MHI_EVT_RING_ELEMENTS]  __packed __aligned(NUM_MHI_EVT_RING_ELEMENTS*16);

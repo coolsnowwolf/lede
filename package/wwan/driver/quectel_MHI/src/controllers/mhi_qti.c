@@ -15,9 +15,35 @@
 #include <linux/uaccess.h>
 #include <linux/msi.h>
 #include <linux/interrupt.h>
+#define MAX_MHI 8
+#ifdef CONFIG_PCI_MSM
+#define QCOM_AP_AND_EFUSE_PCIE_SLEEP
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+#include <linux/platform_device.h>
+#include <linux/msm_pcie.h>
+#endif
+#endif
+//#define QCOM_AP_SDM845_IOMMU_MAP
+#ifdef QCOM_AP_SDM845_IOMMU_MAP
+#include <linux/dma-mapping.h>
+#include <asm/dma-iommu.h>
+#include <linux/iommu.h>
+#endif
 #include "../core/mhi.h"
 #include "../core/mhi_internal.h"
 #include "mhi_qti.h"
+
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+extern int pci_write_config_byte(const struct pci_dev *dev, int where, u8 val);
+struct arch_info {
+	struct mhi_dev *mhi_dev;
+	struct msm_bus_scale_pdata *msm_bus_pdata;
+	u32 bus_client;
+	struct pci_saved_state *pcie_state;
+	struct pci_saved_state *ref_pcie_state;
+	struct dma_iommu_mapping *mapping;
+};
+#endif
 
 #if 1
 #if (LINUX_VERSION_CODE < KERNEL_VERSION( 3,10,65 ))
@@ -177,11 +203,19 @@ static int mhi_init_pci_dev(struct mhi_controller *mhi_cntrl)
 
 #if 1 //some SOC like rpi_4b need next codes
 	ret = -EIO;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0))
+	if (!dma_set_mask(&pci_dev->dev, DMA_BIT_MASK(64))) {
+		ret =  dma_set_coherent_mask(&pci_dev->dev, DMA_BIT_MASK(64));
+	} else if (!dma_set_mask(&pci_dev->dev, DMA_BIT_MASK(32))) {
+		ret = dma_set_coherent_mask(&pci_dev->dev, DMA_BIT_MASK(32));
+	}
+#else
 	if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(64))) {
 		ret = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(64));
 	} else if (!pci_set_dma_mask(pci_dev, DMA_BIT_MASK(32))) {
 		ret = pci_set_consistent_dma_mask(pci_dev, DMA_BIT_MASK(32));
 	}
+#endif
 	if (ret) {
 		MHI_ERR("Error dma mask\n");
 	}
@@ -584,6 +618,28 @@ static void mhi_runtime_mark_last_busy(struct mhi_controller *mhi_cntrl, void *p
 	pm_runtime_mark_last_busy(dev);
 }
 
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+static void mhi_pci_event_cb(struct msm_pcie_notify *notify)
+{
+	struct pci_dev *pci_dev = notify->user;
+	struct device *dev = &pci_dev->dev;
+
+	dev_info(&pci_dev->dev, "Received PCIe event %d", notify->event);
+	switch (notify->event) {
+	case MSM_PCIE_EVENT_WAKEUP:
+	if (dev && pm_runtime_status_suspended(dev)) {
+		pm_request_resume(dev);
+		pm_runtime_mark_last_busy(dev);
+	}
+	break;
+	default:
+	break;
+	}
+}
+
+static struct msm_pcie_register_event mhi_pcie_events[MAX_MHI];
+#endif
+
 static void mhi_status_cb(struct mhi_controller *mhi_cntrl,
 			  void *priv,
 			  enum MHI_CB reason)
@@ -854,6 +910,11 @@ int mhi_pci_probe(struct pci_dev *pci_dev,
 	pr_info("%s pci_dev->name = %s, domain=%d, bus=%d, slot=%d, vendor=%04X, device=%04X\n",
 		__func__, dev_name(&pci_dev->dev), domain, bus, slot, pci_dev->vendor, pci_dev->device);
 
+#if !defined(CONFIG_PCI_MSI)
+        /* MT7621 RTL8198D EcoNet-EN7565 */
+	#error "pcie msi is not support by this soc! and i donot support INTx (SW1SDX55-2688)"
+#endif
+
 	if (!mhi_pci_is_alive(pci_dev)) {
 		/*
 		root@OpenWrt:~# hexdump /sys/bus/pci/devices/0000:01:00.0/config
@@ -877,9 +938,11 @@ int mhi_pci_probe(struct pci_dev *pci_dev,
 	mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
 	mhi_dev->powered_on = true;
 
+	mhi_arch_iommu_init(mhi_cntrl);
+
 	ret = mhi_arch_pcie_init(mhi_cntrl);
 	if (ret)
-		return ret;
+		goto error_init_pci_arch;
 
 	mhi_cntrl->dev = &pci_dev->dev;
 	ret = mhi_init_pci_dev(mhi_cntrl);
@@ -897,6 +960,28 @@ int mhi_pci_probe(struct pci_dev *pci_dev,
 
 	mhi_pci_show_link(mhi_cntrl, pci_dev);
 
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+	{
+		struct msm_pcie_register_event *pcie_event = &mhi_pcie_events[mhi_cntrl->cntrl_idx];
+
+		pcie_event->events = MSM_PCIE_EVENT_WAKEUP;
+#if (LINUX_VERSION_CODE > KERNEL_VERSION( 4,14,117 ))
+		pcie_event->pcie_event.user = pci_dev;
+		pcie_event->pcie_event.mode = MSM_PCIE_TRIGGER_CALLBACK;
+		pcie_event->pcie_event.callback = mhi_pci_event_cb;
+#else
+		pcie_event->user = pci_dev;
+		pcie_event->mode = MSM_PCIE_TRIGGER_CALLBACK;
+		pcie_event->callback = mhi_pci_event_cb;
+#endif
+
+		ret = msm_pcie_register_event(pcie_event);
+		if (ret) {
+			MHI_LOG("Failed to register for PCIe event");
+		}
+	}
+#endif
+
 	MHI_LOG("Return successful\n");
 
 	return 0;
@@ -907,6 +992,8 @@ error_power_up:
 
 error_init_pci:
 	mhi_arch_pcie_deinit(mhi_cntrl);
+error_init_pci_arch:
+	mhi_arch_iommu_deinit(mhi_cntrl);
 
 	return ret;
 }
@@ -924,6 +1011,14 @@ void mhi_pci_device_removed(struct pci_dev *pci_dev)
 	if (mhi_cntrl) {
 
 		struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+		{
+			struct msm_pcie_register_event *pcie_event = &mhi_pcie_events[mhi_cntrl->cntrl_idx];
+
+			msm_pcie_deregister_event(pcie_event);
+		}
+#endif
 
 		pm_stay_awake(&mhi_cntrl->mhi_dev->dev);
 
@@ -950,6 +1045,7 @@ void mhi_pci_device_removed(struct pci_dev *pci_dev)
 		mhi_arch_link_off(mhi_cntrl, false);
 
 		mhi_arch_pcie_deinit(mhi_cntrl);
+		mhi_arch_iommu_deinit(mhi_cntrl);
 
 		pm_relax(&mhi_cntrl->mhi_dev->dev);
 
@@ -1004,26 +1100,108 @@ void mhi_controller_qcom_exit(void)
 	pr_info("%s exit\n", __func__);
 }
 
+#ifdef QCOM_AP_SDM845_IOMMU_MAP
+struct dma_iommu_mapping *mhi_smmu_mapping[MAX_MHI];
+
+#define SMMU_BASE 0x10000000
+#define SMMU_SIZE  0x40000000
+static struct dma_iommu_mapping * sdm845_smmu_init(struct pci_dev *pdev) {
+	int ret = 0;
+	int atomic_ctx = 1;
+	int s1_bypass = 1;
+	struct dma_iommu_mapping *mapping;
+
+	mapping = arm_iommu_create_mapping(&platform_bus_type, SMMU_BASE, SMMU_SIZE);
+	if (IS_ERR(mapping)) {
+		ret = PTR_ERR(mapping);
+		dev_err(&pdev->dev, "Create mapping failed, err = %d\n", ret);
+		return NULL;
+	}
+
+	ret = iommu_domain_set_attr(mapping->domain, DOMAIN_ATTR_ATOMIC, &atomic_ctx);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Set atomic_ctx attribute failed, err = %d\n", ret);
+		goto set_attr_fail;
+	}
+
+	ret = iommu_domain_set_attr(mapping->domain, DOMAIN_ATTR_S1_BYPASS, &s1_bypass);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Set s1_bypass attribute failed, err = %d\n", ret);
+		arm_iommu_release_mapping(mapping);
+		goto set_attr_fail;
+	}
+
+	ret = arm_iommu_attach_device(&pdev->dev, mapping);
+		if (ret < 0) {
+		dev_err(&pdev->dev, "Attach device failed, err = %d\n", ret);
+		goto attach_fail;
+	}
+
+	return mapping;
+
+attach_fail:
+set_attr_fail:
+	arm_iommu_release_mapping(mapping);
+	return NULL;    
+}
+#endif
+
 int mhi_arch_iommu_init(struct mhi_controller *mhi_cntrl)
 {
+#ifdef QCOM_AP_SDM845_IOMMU_MAP
 	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
 
-	mhi_cntrl->dev = &mhi_dev->pci_dev->dev;
+	mhi_smmu_mapping[mhi_cntrl->cntrl_idx] = sdm845_smmu_init(mhi_dev->pci_dev);
+#endif
 
-	return dma_set_mask_and_coherent(mhi_cntrl->dev, DMA_BIT_MASK(64));
+    return 0;
 }
 
 void mhi_arch_iommu_deinit(struct mhi_controller *mhi_cntrl)
 {
+#ifdef QCOM_AP_SDM845_IOMMU_MAP
+	if (mhi_smmu_mapping[mhi_cntrl->cntrl_idx]) {
+		struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+
+		arm_iommu_detach_device(&mhi_dev->pci_dev->dev);
+		arm_iommu_release_mapping(mhi_smmu_mapping[mhi_cntrl->cntrl_idx]);
+		mhi_smmu_mapping[mhi_cntrl->cntrl_idx] = NULL;
+	}
+#endif
+}
+
+static int mhi_arch_set_bus_request(struct mhi_controller *mhi_cntrl, int index)
+{
+	MHI_LOG("Setting bus request to index %d\n", index);
+	return 0;
 }
 
 int mhi_arch_pcie_init(struct mhi_controller *mhi_cntrl)
 {
-	return 0;
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
+
+	if (!arch_info) {
+		arch_info = devm_kzalloc(&mhi_dev->pci_dev->dev,
+					 sizeof(*arch_info), GFP_KERNEL);
+		if (!arch_info)
+			return -ENOMEM;
+
+		mhi_dev->arch_info = arch_info;
+
+		/* save reference state for pcie config space */
+		arch_info->ref_pcie_state = pci_store_saved_state(
+							mhi_dev->pci_dev);
+	}
+#endif
+
+	return mhi_arch_set_bus_request(mhi_cntrl, 1);
 }
 
 void mhi_arch_pcie_deinit(struct mhi_controller *mhi_cntrl)
 {
+	mhi_arch_set_bus_request(mhi_cntrl, 0);
 }
 
 int mhi_arch_platform_init(struct mhi_dev *mhi_dev)
@@ -1038,11 +1216,91 @@ void mhi_arch_platform_deinit(struct mhi_dev *mhi_dev)
 int mhi_arch_link_off(struct mhi_controller *mhi_cntrl,
 				    bool graceful)
 {
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
+	struct pci_dev *pci_dev = mhi_dev->pci_dev;
+	int ret;
+
+	MHI_LOG("Entered\n");
+
+	if (graceful) {
+		pci_clear_master(pci_dev);
+		ret = pci_save_state(mhi_dev->pci_dev);
+		if (ret) {
+			MHI_ERR("Failed with pci_save_state, ret:%d\n", ret);
+			return ret;
+		}
+
+		arch_info->pcie_state = pci_store_saved_state(pci_dev);
+		pci_disable_device(pci_dev);
+	}
+
+	/*
+	 * We will always attempt to put link into D3hot, however
+	 * link down may have happened due to error fatal, so
+	 * ignoring the return code
+	 */
+	pci_set_power_state(pci_dev, PCI_D3hot);
+
+	ret = msm_pcie_pm_control(MSM_PCIE_SUSPEND, mhi_cntrl->bus, pci_dev,
+				    NULL, 0);
+	MHI_ERR("msm_pcie_pm_control(MSM_PCIE_SUSPEND), ret:%d\n", ret);
+
+	/* release the resources */
+	mhi_arch_set_bus_request(mhi_cntrl, 0);
+
+	MHI_LOG("Exited\n");
+#endif
+
 	return 0;
 }
 
 int mhi_arch_link_on(struct mhi_controller *mhi_cntrl)
 {
+#ifdef QCOM_AP_AND_EFUSE_PCIE_SLEEP
+	struct mhi_dev *mhi_dev = mhi_controller_get_devdata(mhi_cntrl);
+	struct arch_info *arch_info = mhi_dev->arch_info;
+	struct pci_dev *pci_dev = mhi_dev->pci_dev;
+	int ret;
+
+	MHI_LOG("Entered\n");
+
+	/* request resources and establish link trainning */
+	ret = mhi_arch_set_bus_request(mhi_cntrl, 1);
+	if (ret)
+		MHI_LOG("Could not set bus frequency, ret:%d\n", ret);
+
+	ret = msm_pcie_pm_control(MSM_PCIE_RESUME, mhi_cntrl->bus, pci_dev,
+				  NULL, 0);
+	MHI_LOG("msm_pcie_pm_control(MSM_PCIE_RESUME), ret:%d\n", ret);
+	if (ret) {
+		MHI_ERR("Link training failed, ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = pci_set_power_state(pci_dev, PCI_D0);
+	if (ret) {
+		MHI_ERR("Failed to set PCI_D0 state, ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = pci_enable_device(pci_dev);
+	if (ret) {
+		MHI_ERR("Failed to enable device, ret:%d\n", ret);
+		return ret;
+	}
+
+	ret = pci_load_and_free_saved_state(pci_dev, &arch_info->pcie_state);
+	if (ret)
+		MHI_LOG("Failed to load saved cfg state\n");
+
+	pci_restore_state(pci_dev);
+	pci_set_master(pci_dev);
+
+	MHI_LOG("Exited\n");
+#endif
+
 	return 0;
 }
 #endif
