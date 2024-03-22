@@ -142,7 +142,7 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=@!LINUX_5_4 +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  DEPENDS:=@!LINUX_5_4 +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_malta||TARGET_tegra):kmod-of-mdio
   KCONFIG:=CONFIG_MDIO_DEVRES
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
@@ -224,6 +224,22 @@ define KernelPackage/phylib-broadcom
 endef
 
 $(eval $(call KernelPackage,phylib-broadcom))
+
+
+define KernelPackage/phy-amd
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=AMD PHY driver
+   KCONFIG:=CONFIG_AMD_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/amd.ko
+   AUTOLOAD:=$(call AutoProbe,amd,1)
+endef
+
+define KernelPackage/phy-amd/description
+   Currently supports the AMD and Altima PHYs.
+endef
+
+$(eval $(call KernelPackage,phy-amd))
 
 
 define KernelPackage/phy-ax88796b
@@ -310,6 +326,24 @@ endef
 
 $(eval $(call KernelPackage,phy-marvell))
 
+define KernelPackage/phy-marvell-10g
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Marvell 10 Gigabit Ethernet PHY driver
+   KCONFIG:=CONFIG_MARVELL_10G_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/marvell10g.ko
+   AUTOLOAD:=$(call AutoLoad,18,marvell10g)
+endef
+
+define KernelPackage/phy-marvell/description
+   Supports Marvell 10 Gigabit Ethernet PHYs:
+   * 88E2110
+   * 88E2111
+   * 88x3310
+   * 88x3340
+endef
+
+$(eval $(call KernelPackage,phy-marvell-10g))
 
 define KernelPackage/phy-realtek
    SUBMENU:=$(NETWORK_DEVICES_MENU)
@@ -346,9 +380,10 @@ $(eval $(call KernelPackage,phy-smsc))
 define KernelPackage/phy-aquantia
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aquantia Ethernet PHYs
-  DEPENDS:=+kmod-libphy +kmod-hwmon-core
+  DEPENDS:=+kmod-libphy +kmod-hwmon-core +kmod-lib-crc-ccitt
   KCONFIG:=CONFIG_AQUANTIA_PHY
-  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko
+  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko@lt6.6 \
+	$(LINUX_DIR)/drivers/net/phy/aquantia/aquantia.ko@ge6.6
   AUTOLOAD:=$(call AutoLoad,18,aquantia,1)
 endef
 
@@ -1331,7 +1366,7 @@ $(eval $(call KernelPackage,mlx4-core))
 define KernelPackage/mlx5-core
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Mellanox ConnectX(R) mlx5 core Network Driver
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mlxfw +LINUX_6_6:kmod-hwmon-core
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx5/core/mlx5_core.ko
   KCONFIG:= CONFIG_MLX5_CORE \
 	CONFIG_MLX5_CORE_EN=y \
@@ -1348,7 +1383,8 @@ define KernelPackage/mlx5-core
 	CONFIG_MLX5_MPFS=y \
 	CONFIG_MLX5_SW_STEERING=n \
 	CONFIG_MLX5_TC_CT=n \
-	CONFIG_MLX5_TLS=n
+	CONFIG_MLX5_TLS=n \
+	CONFIG_MLX5_VFIO_PCI=n
   AUTOLOAD:=$(call AutoProbe,mlx5_core)
 endef
 
@@ -1357,6 +1393,119 @@ define KernelPackage/mlx5-core/description
 endef
 
 $(eval $(call KernelPackage,mlx5-core))
+
+
+define KernelPackage/mlxfw
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox Technologies firmware flash module
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxfw/mlxfw.ko
+  KCONFIG:=CONFIG_MLXFW
+  AUTOLOAD:=$(call AutoProbe,mlxfw)
+endef
+
+define KernelPackage/mlxfw/description
+  This driver supports Mellanox Technologies Firmware
+  flashing common logic.
+endef
+
+$(eval $(call KernelPackage,mlxfw))
+
+
+define KernelPackage/mlxsw-core
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox Technologies Switch ASICs support
+  DEPENDS:=+kmod-mlxfw +kmod-hwmon-core
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxsw/mlxsw_core.ko
+  KCONFIG:= \
+  CONFIG_MLXSW_CORE \
+  CONFIG_MLXSW_CORE_HWMON=y \
+  CONFIG_MLXSW_CORE_THERMAL=y
+  AUTOLOAD:=$(call AutoProbe,mlxsw_core)
+endef
+
+define KernelPackage/mlxsw-core/description
+  This driver supports Mellanox Technologies Switch ASICs family.
+endef
+
+$(eval $(call KernelPackage,mlxsw-core))
+
+
+define KernelPackage/mlxsw-i2c
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=I2C bus implementation for Mellanox Technologies Switch ASICs
+  DEPENDS:=+kmod-mlxsw-core +kmod-i2c-core
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxsw/mlxsw_i2c.ko
+  KCONFIG:=CONFIG_MLXSW_I2C
+  AUTOLOAD:=$(call AutoProbe,mlxsw_i2c)
+endef
+
+define KernelPackage/mlxsw-i2c/description
+  This is I2C bus implementation for Mellanox Technologies Switch ASICs.
+endef
+
+$(eval $(call KernelPackage,mlxsw-i2c))
+
+
+define KernelPackage/mlxsw-minimal
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox Technologies minimal I2C support
+  DEPENDS:=+kmod-mlxsw-core +kmod-mlxsw-i2c
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxsw/mlxsw_minimal.ko
+  KCONFIG:=CONFIG_MLXSW_MINIMAL
+  AUTOLOAD:=$(call AutoProbe,mlxsw_minimal)
+endef
+
+define KernelPackage/mlxsw-minimal/description
+  This driver supports I2C access for Mellanox Technologies Switch
+  ASICs.
+endef
+
+$(eval $(call KernelPackage,mlxsw-minimal))
+
+
+define KernelPackage/mlxsw-pci
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=PCI bus implementation for Mellanox Technologies Switch ASICs
+  DEPENDS:=@PCI_SUPPORT +kmod-mlxsw-core
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxsw/mlxsw_pci.ko
+  KCONFIG:=CONFIG_MLXSW_PCI
+  AUTOLOAD:=$(call AutoProbe,mlxsw_pci)
+endef
+
+define KernelPackage/mlxsw-pci/description
+  This is PCI bus implementation for Mellanox Technologies Switch ASICs.
+endef
+
+$(eval $(call KernelPackage,mlxsw-pci))
+
+
+define KernelPackage/mlxsw-spectrum
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Mellanox Technologies Spectrum family support
+  DEPENDS:= \
+  +kmod-mlxsw-core +kmod-mlxsw-pci +kmod-lib-objagg +kmod-lib-parman \
+  +kmod-ip6-tunnel +kmod-ptp +kmod-sched-act-sample +kmod-vxlan
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlxsw/mlxsw_spectrum.ko
+  KCONFIG:= \
+  CONFIG_MLXSW_SPECTRUM \
+  CONFIG_NET_SWITCHDEV=y \
+  CONFIG_MLXSW_SPECTRUM_DCB=y \
+  CONFIG_DCB=y \
+  CONFIG_AMD_XGBE_DCB=n \
+  CONFIG_IXGBE_DCB=n \
+  CONFIG_I40E_DCB=n \
+  CONFIG_QLCNIC_DCB=n \
+  CONFIG_FSL_DPAA2_ETH_DCB=n \
+  CONFIG_FSL_DPAA2_SWITCH=n
+  AUTOLOAD:=$(call AutoProbe,mlxsw_spectrum)
+endef
+
+define KernelPackage/mlxsw-spectrum/description
+  This driver supports Mellanox Technologies
+  Spectrum/Spectrum-2/Spectrum-3/Spectrum-4 Ethernet Switch ASICs.
+endef
+
+$(eval $(call KernelPackage,mlxsw-spectrum))
 
 
 define KernelPackage/net-selftests
@@ -1510,7 +1659,7 @@ $(eval $(call KernelPackage,sfc-falcon))
 define KernelPackage/wwan
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=WWAN Driver Core
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1||LINUX_6_6)
   KCONFIG:= \
   CONFIG_WWAN \
   CONFIG_WWAN_DEBUGFS=y@ge5.17

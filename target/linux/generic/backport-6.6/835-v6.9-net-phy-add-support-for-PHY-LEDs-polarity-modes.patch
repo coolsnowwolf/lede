@@ -1,0 +1,98 @@
+From 7ae215ee7bb855f13c80565470fc7f67db4ba82f Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 25 Jan 2024 21:36:59 +0100
+Subject: [PATCH 3/5] net: phy: add support for PHY LEDs polarity modes
+
+Add support for PHY LEDs polarity modes. Some PHY require LED to be set
+to active low to be turned ON. Adds support for this by declaring
+active-low property in DT.
+
+PHY driver needs to declare .led_polarity_set() to configure LED
+polarity modes. Function will pass the index with the LED index and a
+bitmap with all the required modes to set.
+
+Current supported modes are:
+- active-low with the flag PHY_LED_ACTIVE_LOW. LED is set to active-low
+  to turn it ON.
+- inactive-high-impedance with the flag PHY_LED_INACTIVE_HIGH_IMPEDANCE.
+  LED is set to high impedance to turn it OFF.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://lore.kernel.org/r/20240125203702.4552-4-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phy_device.c | 16 ++++++++++++++++
+ include/linux/phy.h          | 22 ++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -3198,6 +3198,7 @@ static int of_phy_led(struct phy_device
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct led_init_data init_data = {};
+ 	struct led_classdev *cdev;
++	unsigned long modes = 0;
+ 	struct phy_led *phyled;
+ 	u32 index;
+ 	int err;
+@@ -3215,6 +3216,21 @@ static int of_phy_led(struct phy_device
+ 	if (index > U8_MAX)
+ 		return -EINVAL;
+ 
++	if (of_property_read_bool(led, "active-low"))
++		set_bit(PHY_LED_ACTIVE_LOW, &modes);
++	if (of_property_read_bool(led, "inactive-high-impedance"))
++		set_bit(PHY_LED_INACTIVE_HIGH_IMPEDANCE, &modes);
++
++	if (modes) {
++		/* Return error if asked to set polarity modes but not supported */
++		if (!phydev->drv->led_polarity_set)
++			return -EINVAL;
++
++		err = phydev->drv->led_polarity_set(phydev, index, modes);
++		if (err)
++			return err;
++	}
++
+ 	phyled->index = index;
+ 	if (phydev->drv->led_brightness_set)
+ 		cdev->brightness_set_blocking = phy_led_set_brightness;
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -870,6 +870,15 @@ struct phy_led {
+ 
+ #define to_phy_led(d) container_of(d, struct phy_led, led_cdev)
+ 
++/* Modes for PHY LED configuration */
++enum phy_led_modes {
++	PHY_LED_ACTIVE_LOW = 0,
++	PHY_LED_INACTIVE_HIGH_IMPEDANCE = 1,
++
++	/* keep it last */
++	__PHY_LED_MODES_NUM,
++};
++
+ /**
+  * struct phy_driver - Driver structure for a particular PHY type
+  *
+@@ -1146,6 +1155,19 @@ struct phy_driver {
+ 	int (*led_hw_control_get)(struct phy_device *dev, u8 index,
+ 				  unsigned long *rules);
+ 
++	/**
++	 * @led_polarity_set: Set the LED polarity modes
++	 * @dev: PHY device which has the LED
++	 * @index: Which LED of the PHY device
++	 * @modes: bitmap of LED polarity modes
++	 *
++	 * Configure LED with all the required polarity modes in @modes
++	 * to make it correctly turn ON or OFF.
++	 *
++	 * Returns 0, or an error code.
++	 */
++	int (*led_polarity_set)(struct phy_device *dev, int index,
++				unsigned long modes);
+ };
+ #define to_phy_driver(d) container_of(to_mdio_common_driver(d),		\
+ 				      struct phy_driver, mdiodrv)

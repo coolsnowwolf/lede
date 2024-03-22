@@ -118,7 +118,7 @@ $(eval $(call KernelPackage,ledtrig-pattern))
 define KernelPackage/ledtrig-tty
   SUBMENU:=$(LEDS_MENU)
   TITLE:=LED Trigger for TTY devices
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1)
+  DEPENDS:=@(LINUX_5_15||LINUX_6_1||LINUX_6_6)
   KCONFIG:=CONFIG_LEDS_TRIGGER_TTY
   FILES:=$(LED_TRIGGER_DIR)/ledtrig-tty.ko
   AUTOLOAD:=$(call AutoLoad,50,ledtrig-tty)
@@ -146,6 +146,22 @@ define KernelPackage/leds-apu/description
 endef
 
 $(eval $(call KernelPackage,leds-apu))
+
+
+define KernelPackage/leds-mlxcpld
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=LED support for the Mellanox boards
+  FILES:=$(LINUX_DIR)/drivers/leds/leds-mlxcpld.ko
+  KCONFIG:=CONFIG_LEDS_MLXCPLD
+  AUTOLOAD:=$(call AutoProbe,leds-mlxcpld)
+endef
+
+define KernelPackage/leds-mlxcpld/description
+  This option enables support for the LEDs on the Mellanox
+  boards.
+endef
+
+$(eval $(call KernelPackage,leds-mlxcpld))
 
 
 define KernelPackage/leds-pca955x
