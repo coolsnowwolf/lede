@@ -309,7 +309,19 @@ define U-Boot/station-p2-rk3568
   DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
+define U-Boot/advantech-rsb4810-rk3568
+  BUILD_SUBTARGET:=armv8
+  NAME:=Advantech RSB4810
+  BUILD_DEVICES:= \
+       advantech_rsb4810
+  DEPENDS:=+PACKAGE_u-boot-advantech-rsb4810-rk3568:arm-trusted-firmware-rk3568
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
+endef
+
 UBOOT_TARGETS := \
+  advantech-rsb4810-rk3568 \
   lyt-t68m-rk3568 \
   mrkaio-m68s-rk3568 \
   opc-h68k-rk3568 \
