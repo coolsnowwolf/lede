@@ -1,0 +1,209 @@
+--- a/arch/arm/mach-sunxi/clock_sun50i_h6.c
++++ b/arch/arm/mach-sunxi/clock_sun50i_h6.c
+@@ -55,6 +55,7 @@
+ 	writel(MBUS_CLK_SRC_PLL6X2 | MBUS_CLK_M(3), &ccm->mbus_cfg);
+ 
+ 	writel(0x10001, 0x030017ac);
++	writel(0x80004, 0x0300a104);
+ 	writel(0x50, 0x0300a028);
+ 	writel(0x20, 0x0300a040);
+ }
+--- a/board/sunxi/board.c
++++ b/board/sunxi/board.c
+@@ -574,10 +574,13 @@
+ 	spl->dram_size = dram_size >> 20;
+ }
+ 
++#define sunxi_ac300_key (1<<8)
++
+ void sunxi_board_init(void)
+ {
+ 	int power_failed = 0;
+ 	u8 data[2];
++	int val;
+ 
+ #ifdef CONFIG_LED_STATUS
+ 	if (IS_ENABLED(CONFIG_SPL_DRIVERS_MISC))
+@@ -667,25 +670,31 @@
+ 	 */
+ 	if (!power_failed)
+ 		clock_set_pll1(get_board_sys_clk());
+-	else
+-		printf("Failed to set core voltage! Can't set CPU frequency\n");
++	else {
++		clock_set_pll1(792000000);
++		printf("Failed to set core voltage!   set CPU 792000000hz frequency\n");
++	}
+ 
+-	i2c_set_bus_num(1);
+-	data[0] = 0;
+-	data[1] = 0;
+-	i2c_write(0x10, 0xfe, 1, data, 2);
+-	i2c_write(0x10, 2, 1, data, 2);
+-	data[1] = 1;
+-	i2c_write(0x10, 2, 1, data, 2);
+-	data[1] = 0xf;
+-	i2c_write(0x10, 0x16, 1, data, 2);
+-	data[1] = 3;
+-	i2c_write(0x10, 0x14, 1, data, 2);
+-	data[1] = 0x60;
+-	i2c_write(0x10, 0xfe, 1, data, 2);
+-	data[0] = 0x08;
+-	data[1] = 0x14;
+-	i2c_write(0x10, 0, 1, data, 2);
++	val=readl(0x300622c);
++	if((val&sunxi_ac300_key)==0)
++	{
++		i2c_set_bus_num(1);
++		data[0] = 0;
++		data[1] = 0;
++		i2c_write(0x10, 0xfe, 1, data, 2);
++		i2c_write(0x10, 2, 1, data, 2);
++		data[1] = 1;
++		i2c_write(0x10, 2, 1, data, 2);
++		data[1] = 0xf;
++		i2c_write(0x10, 0x16, 1, data, 2);
++		data[1] = 3;
++		i2c_write(0x10, 0x14, 1, data, 2);
++		data[1] = 0x60;
++		i2c_write(0x10, 0xfe, 1, data, 2);
++		data[0] = 0x08;
++		data[1] = 0x14;
++		i2c_write(0x10, 0, 1, data, 2);
++	}
+ }
+ #endif /* CONFIG_SPL_BUILD */
+ 
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -16,6 +16,7 @@
+ #include <command.h>
+ #include <miiphy.h>
+ #include <phy.h>
++#include <asm/io.h>
+ #include <errno.h>
+ #include <asm/global_data.h>
+ #include <dm/of_extra.h>
+@@ -384,10 +385,79 @@
+ 	return 0;
+ }
+ 
++static void disable_intelligent_ieee(struct phy_device *phydev)
++{
++	unsigned int value;
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0100);	/* switch to page 1 */
++	value = phy_read(phydev, MDIO_DEVAD_NONE, 0x17);	/* read address 0 0x17 register */
++	value &= ~(1 << 3);					/* reg 0x17 bit 3, set 0 to disable IEEE */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x17, value);
++	phy_write(phydev, MDIO_DEVAD_NONE,0x1f, 0x0000);	/* switch to page 0 */
++}
++
++static void disable_802_3az_ieee(struct phy_device *phydev)
++{
++	unsigned int value;
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x7);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xe, 0x3c);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x1 << 14 | 0x7);
++	value = phy_read(phydev, MDIO_DEVAD_NONE, 0xe);
++	value &= ~(0x1 << 1);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x7);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xe, 0x3c);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x1 << 14 | 0x7);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xe, value);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0200);	/* switch to page 2 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x18, 0x0000);
++}
++
++static void ephy_config_default(struct phy_device *phydev)
++{
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0100);	/* Switch to Page 1 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x12, 0x4824);	/* Disable APS */
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0200);	/* Switch to Page 2 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x18, 0x0000);	/* PHYAFE TRX optimization */
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0600);	/* Switch to Page 6 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x14, 0x708b);	/* PHYAFE TX optimization */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x13, 0xF000);	/* PHYAFE RX optimization */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x15, 0x1530);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0800);	/* Switch to Page 6 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x18, 0x00bc);	/* PHYAFE TRX optimization */
++}
++
++static void __maybe_unused ephy_config_fixed(struct phy_device *phydev)
++{
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0100);	/*switch to Page 1 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x12, 0x4824);	/*Disable APS */
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0200);	/*switch to Page 2 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x18, 0x0000);	/*PHYAFE TRX optimization */
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0600);	/*switch to Page 6 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x14, 0x7809);	/*PHYAFE TX optimization */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x13, 0xf000);	/*PHYAFE RX optimization */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x10, 0x5523);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x15, 0x3533);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0800);	/*switch to Page 8 */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x1d, 0x0844);	/*disable auto offset */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0x18, 0x00bc);	/*PHYAFE TRX optimization */
++
++}
++
++#define sunxi_ac300_key (1<<8)
++
+ int genphy_config(struct phy_device *phydev)
+ {
+ 	int val;
+ 	u32 features;
++	u16 sid_value;
+ 
+ 	features = (SUPPORTED_TP | SUPPORTED_MII
+ 			| SUPPORTED_AUI | SUPPORTED_FIBRE |
+@@ -432,6 +502,42 @@
+ 
+ 	genphy_config_aneg(phydev);
+ 
++	val=readl(0x300622c);
++	sid_value=0xffff&val;
++	if(val&sunxi_ac300_key)
++	{
++		/*add quirk for h313/H616 emac1 ephy bb version bug*/
++		/*printf("apply fix for AC300 ephy bb version bug ...\n");*/
++		phy_write(phydev, MDIO_DEVAD_NONE, 0, 0x1f83);
++		phy_write(phydev, MDIO_DEVAD_NONE, 0, 0x1fb7);
++		phy_write(phydev, MDIO_DEVAD_NONE, 5, 0xa81f);
++		phy_write(phydev, MDIO_DEVAD_NONE, 6, 0);
++		udelay(500000);
++
++		val=phy_read(phydev, MDIO_DEVAD_NONE, 6);
++		val&=~(0x0f<<12);
++		val|=(0x0f&(0x03+sid_value))<<12;
++		phy_write(phydev,MDIO_DEVAD_NONE, 6,val);
++
++		if(sid_value&0x200) {
++			/*printf("using AC300 emac1 ephy fixed config ...\n");*/
++			ephy_config_fixed(phydev);
++		}
++		else {
++			/*printf("using AC300 emac1 ephy default config ...\n");*/
++			ephy_config_default(phydev);
++		}
++
++		disable_intelligent_ieee(phydev);
++
++		disable_802_3az_ieee(phydev);
++		phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, 0x0000);
++
++		val=phy_read(phydev, MDIO_DEVAD_NONE, 6);
++		val|=(0x1<<11);
++		phy_write(phydev,MDIO_DEVAD_NONE, 6,val);
++		/*add end*/
++	}
+ 	return 0;
+ }
+ 
