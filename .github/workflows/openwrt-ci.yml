@@ -5,52 +5,42 @@
 #
 # Copyright (C) 2020 KFERMercer
 #
-# 该脚本主要来源自KFERMercer/OpenWrt-CI，与P3TERX差别比较大
 name: OpenWrt-CI
 
 on:
-  # 在actions页面启用run workflow手动按钮，即可手工触发
-  # 在workflow_dispatch下通过定义inputs设定参数，在jobs中我们则可以在github.event.inputs中取到对应的参数
-  workflow_dispatch:
-  # 开启API执行，即通过http请求来手工启动，其中的opened，deleted是用户自定义的事件
-  # 例如使用curl：curl -X POST -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/{namespace}/{repo_name}/dispatches -d '{"event_type":"opened"}'
-  repository_dispatch:
-    types: [opened, deleted]
-  #schedule:
-  #  - cron: 0 20 * * *
-  release:
-    types: [published]
+  schedule:
+    - cron: 0 20 * * *
+
+permissions:
+  contents: read
 
 jobs:
 
   build_openwrt:
 
-    name: Build OpenWrt firmware
+    name: Build OpenWrt Firmware
 
     runs-on: ubuntu-latest
 
-    if: github.event.repository.owner.id == github.event.sender.id
-
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          ref: master
-
-      - name: Space cleanup
+      - name: Space cleanup and Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           docker rmi `docker images -q`
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d
-          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* android*
-          sudo -E apt-get update
-          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
+          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+          sudo -E apt-mark hold grub-efi-amd64-signed
+          sudo -E apt update
+          sudo -E apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* dotnet* snap*
+          sudo -E apt -y full-upgrade
+          sudo -E apt -y install ack antlr3 aria2 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo -E systemctl daemon-reload
+          sudo -E apt -y autoremove --purge
+          sudo -E apt clean
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
 
-          df -h
+      - name: Checkout OpenWrt
+        uses: actions/checkout@v3
 
       - name: Update feeds
         run: |
@@ -61,10 +51,8 @@ jobs:
       - name: Generate configuration file
         run: make defconfig
 
-      - name: Make download
-        run: |
-          make download -j8
-          find dl -size -1024c -exec rm -f {} \;
+      - name: Download packages
+        run: make download -j16
 
       - name: Compile firmware
         run: |
@@ -77,52 +65,29 @@ jobs:
           du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
           du -h --max-depth=1 ./build_dir
           du -h --max-depth=1 ./bin
-          
-      # 新增一个目录，用来存放make defconfig输出的.config文件，为下一步自定义编译内容做准备，maxdepth为1只查询当前目录不查找子目录
-      # 如果不限maxdepth，可能多个目录下都有.config导致多个同名文件cp不能覆盖报错
+
       - name: Prepare artifact
         run: |
-          mkdir -p ./artifact/firmware
           mkdir -p ./artifact/package
           mkdir -p ./artifact/buildinfo
-          
-          mkdir -p ./artifact/makeconfig
           rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
           cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
           cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
-          cp -rf $(find ./ -type f -name ".config" -maxdepth 1) ./artifact/makeconfig/
 
-      - name: Deliver buildinfo
-        uses: actions/upload-artifact@v2
+      - name: Upload buildinfo
+        uses: actions/upload-artifact@v3
         with:
           name: OpenWrt_buildinfo
           path: ./artifact/buildinfo/
 
-      - name: Deliver package
-        uses: actions/upload-artifact@v2
+      - name: Upload package
+        uses: actions/upload-artifact@v3
         with:
           name: OpenWrt_package
           path: ./artifact/package/
 
-      - name: Deliver firmware
-        uses: actions/upload-artifact@v2
+      - name: Upload firmware
+        uses: actions/upload-artifact@v3
         with:
           name: OpenWrt_firmware
           path: ./bin/targets/
-          
-      # 新增一个目录，用来存放make defconfig输出的.config文件，为下一步自定义编译内容做准备
-      - name: Deliver makeconfig
-        uses: actions/upload-artifact@v2
-        with:
-          name: OpenWrt_makeconfig
-          path: ./artifact/makeconfig
-
-      - name: Upload release asset
-        if: github.event == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.YOURTOKEN }}
-          file: ./artifact/firmware/*
-          tag: ${{ github.ref }}
-          file_glob: true
