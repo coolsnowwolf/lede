@@ -13,6 +13,7 @@ define KernelPackage/can
   KCONFIG:=\
 	CONFIG_CAN=m \
 	CONFIG_CAN_DEV \
+	CONFIG_CAN_NETLINK=y \
 	CONFIG_CAN_CALC_BITTIMING=y \
 	CONFIG_CAN_LEDS=y \
 	CONFIG_CAN_AT91=n \
@@ -119,7 +120,9 @@ $(eval $(call KernelPackage,can-c-can-platform))
 define KernelPackage/can-flexcan
   TITLE:=Support for Freescale FLEXCAN based chips
   KCONFIG:=CONFIG_CAN_FLEXCAN
-  FILES:=$(LINUX_DIR)/drivers/net/can/flexcan.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/can/flexcan.ko@lt5.17 \
+	$(LINUX_DIR)/drivers/net/can/flexcan/flexcan.ko@ge5.17
   AUTOLOAD:=$(call AutoProbe,flexcan)
   $(call AddDepends/can,@TARGET_imx)
 endef
@@ -182,7 +185,9 @@ $(eval $(call KernelPackage,can-raw))
 define KernelPackage/can-slcan
   TITLE:=Serial / USB serial CAN Adaptors (slcan)
   KCONFIG:=CONFIG_CAN_SLCAN
-  FILES:=$(LINUX_DIR)/drivers/net/can/slcan.ko
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/can/slcan.ko@lt6.0 \
+	$(LINUX_DIR)/drivers/net/can/slcan/slcan.ko@ge6.0
   AUTOLOAD:=$(call AutoProbe,slcan)
   $(call AddDepends/can)
 endef
