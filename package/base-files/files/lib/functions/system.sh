@@ -159,6 +159,7 @@ mmc_get_mac_ascii() {
 	part=$(find_mmc_part "$part_name")
 	if [ -z "$part" ]; then
 		echo "mmc_get_mac_ascii: partition $part_name not found!" >&2
+		return
 	fi
 
 	get_mac_ascii "$part" "$key"
