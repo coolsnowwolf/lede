@@ -1721,6 +1721,23 @@ endef
 
 $(eval $(call KernelPackage,mhi-wwan-mbim))
 
+
+define KernelPackage/mtk-t7xx
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=MediaTek T7xx 5G modem
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6) @PCI_SUPPORT +kmod-wwan
+  KCONFIG:=CONFIG_MTK_T7XX
+  FILES:=$(LINUX_DIR)/drivers/net/wwan/t7xx/mtk_t7xx.ko
+  AUTOLOAD:=$(call AutoProbe,mtk_t7xx)
+endef
+
+define KernelPackage/mtk-t7xx/description
+ Driver for MediaTek PCIe 5G WWAN modem T7xx device
+endef
+
+$(eval $(call KernelPackage,mtk-t7xx))
+
+
 define KernelPackage/atlantic
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aquantia AQtion 10Gbps Ethernet NIC
