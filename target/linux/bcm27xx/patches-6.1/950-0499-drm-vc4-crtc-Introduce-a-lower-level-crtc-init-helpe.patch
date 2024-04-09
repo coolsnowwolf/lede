@@ -1,0 +1,131 @@
+From 4e2742244ff3084dfcd465180d7b7b843af13854 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 14 Nov 2022 14:11:41 +0100
+Subject: [PATCH] drm/vc4: crtc: Introduce a lower-level crtc init
+ helper
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The current vc4_crtc_init() helper assumes that we will be using
+hardware planes and calls vc4_plane_init().
+
+While it's a reasonable assumption, we'll want to mock the plane and
+thus provide our own. Let's create a helper that will take the plane as
+an argument.
+
+Reviewed-by: Javier Martinez Canillas <javierm@redhat.com>
+Reviewed-by: Maíra Canal <mcanal@igalia.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 70 +++++++++++++++++++++++++---------
+ drivers/gpu/drm/vc4/vc4_drv.h  |  6 +++
+ 2 files changed, 57 insertions(+), 19 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -1326,31 +1326,38 @@ static void vc4_set_crtc_possible_masks(
+ 	}
+ }
+ 
+-int vc4_crtc_init(struct drm_device *drm, struct platform_device *pdev,
+-		  struct vc4_crtc *vc4_crtc,
+-		  const struct vc4_crtc_data *data,
+-		  const struct drm_crtc_funcs *crtc_funcs,
+-		  const struct drm_crtc_helper_funcs *crtc_helper_funcs,
+-		  bool feeds_txp)
++/**
++ * __vc4_crtc_init - Initializes a CRTC
++ * @drm: DRM Device
++ * @pdev: CRTC Platform Device
++ * @vc4_crtc: CRTC Object to Initialize
++ * @data: Configuration data associated with this CRTC
++ * @primary_plane: Primary plane for CRTC
++ * @crtc_funcs: Callbacks for the new CRTC
++ * @crtc_helper_funcs: Helper Callbacks for the new CRTC
++ * @feeds_txp: Is this CRTC connected to the TXP?
++ *
++ * Initializes our private CRTC structure. This function is mostly
++ * relevant for KUnit testing, all other users should use
++ * vc4_crtc_init() instead.
++ *
++ * Returns:
++ * 0 on success, a negative error code on failure.
++ */
++int __vc4_crtc_init(struct drm_device *drm,
++		    struct platform_device *pdev,
++		    struct vc4_crtc *vc4_crtc,
++		    const struct vc4_crtc_data *data,
++		    struct drm_plane *primary_plane,
++		    const struct drm_crtc_funcs *crtc_funcs,
++		    const struct drm_crtc_helper_funcs *crtc_helper_funcs,
++		    bool feeds_txp)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	struct drm_crtc *crtc = &vc4_crtc->base;
+-	struct drm_plane *primary_plane;
+ 	unsigned int i;
+ 	int ret;
+ 
+-	/* For now, we create just the primary and the legacy cursor
+-	 * planes.  We should be able to stack more planes on easily,
+-	 * but to do that we would need to compute the bandwidth
+-	 * requirement of the plane configuration, and reject ones
+-	 * that will take too much.
+-	 */
+-	primary_plane = vc4_plane_init(drm, DRM_PLANE_TYPE_PRIMARY, 0);
+-	if (IS_ERR(primary_plane)) {
+-		dev_err(drm->dev, "failed to construct primary plane\n");
+-		return PTR_ERR(primary_plane);
+-	}
+-
+ 	vc4_crtc->data = data;
+ 	vc4_crtc->pdev = pdev;
+ 	vc4_crtc->feeds_txp = feeds_txp;
+@@ -1399,6 +1406,31 @@ int vc4_crtc_init(struct drm_device *drm
+ 	return 0;
+ }
+ 
++int vc4_crtc_init(struct drm_device *drm, struct platform_device *pdev,
++		  struct vc4_crtc *vc4_crtc,
++		  const struct vc4_crtc_data *data,
++		  const struct drm_crtc_funcs *crtc_funcs,
++		  const struct drm_crtc_helper_funcs *crtc_helper_funcs,
++		  bool feeds_txp)
++{
++	struct drm_plane *primary_plane;
++
++	/* For now, we create just the primary and the legacy cursor
++	 * planes.  We should be able to stack more planes on easily,
++	 * but to do that we would need to compute the bandwidth
++	 * requirement of the plane configuration, and reject ones
++	 * that will take too much.
++	 */
++	primary_plane = vc4_plane_init(drm, DRM_PLANE_TYPE_PRIMARY, 0);
++	if (IS_ERR(primary_plane)) {
++		dev_err(drm->dev, "failed to construct primary plane\n");
++		return PTR_ERR(primary_plane);
++	}
++
++	return __vc4_crtc_init(drm, pdev, vc4_crtc, data, primary_plane,
++			       crtc_funcs, crtc_helper_funcs, feeds_txp);
++}
++
+ static int vc4_crtc_bind(struct device *dev, struct device *master, void *data)
+ {
+ 	struct platform_device *pdev = to_platform_device(dev);
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -912,6 +912,12 @@ int vc4_bo_debugfs_init(struct drm_minor
+ /* vc4_crtc.c */
+ extern struct platform_driver vc4_crtc_driver;
+ int vc4_crtc_disable_at_boot(struct drm_crtc *crtc);
++int __vc4_crtc_init(struct drm_device *drm, struct platform_device *pdev,
++		    struct vc4_crtc *vc4_crtc, const struct vc4_crtc_data *data,
++		    struct drm_plane *primary_plane,
++		    const struct drm_crtc_funcs *crtc_funcs,
++		    const struct drm_crtc_helper_funcs *crtc_helper_funcs,
++		    bool feeds_txp);
+ int vc4_crtc_init(struct drm_device *drm, struct platform_device *pdev,
+ 		  struct vc4_crtc *vc4_crtc, const struct vc4_crtc_data *data,
+ 		  const struct drm_crtc_funcs *crtc_funcs,

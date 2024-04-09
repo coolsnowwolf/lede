@@ -1,0 +1,96 @@
+From 65407c54fb4119e528b70b329448269657e0941e Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Wed, 8 Nov 2023 10:05:05 +0000
+Subject: [PATCH] drivers: media: cfe: Don't confuse MHz and Mbps
+
+The driver was interchaning these units when talking about link rate.
+Fix this to avoid confusion. Apart from the logging message change,
+there is no function change in this commit.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/platform/raspberrypi/rp1_cfe/cfe.c  |  8 ++++----
+ drivers/media/platform/raspberrypi/rp1_cfe/dphy.c | 10 +++++-----
+ drivers/media/platform/raspberrypi/rp1_cfe/dphy.h |  2 +-
+ 3 files changed, 10 insertions(+), 10 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -983,7 +983,7 @@ static void cfe_buffer_queue(struct vb2_
+ 	spin_unlock_irqrestore(&cfe->state_lock, flags);
+ }
+ 
+-static u64 sensor_link_frequency(struct cfe_device *cfe)
++static u64 sensor_link_rate(struct cfe_device *cfe)
+ {
+ 	struct v4l2_mbus_framefmt *source_fmt;
+ 	struct v4l2_subdev_state *state;
+@@ -1028,11 +1028,11 @@ static u64 sensor_link_frequency(struct
+ 
+ 	/* x2 for DDR. */
+ 	link_freq *= 2;
+-	cfe_info("Using a link frequency of %lld Hz\n", link_freq);
++	cfe_info("Using a link rate of %lld Mbps\n", link_freq / (1000 * 1000));
+ 	return link_freq;
+ 
+ err:
+-	cfe_err("Unable to determine sensor link frequency, using 999 MHz\n");
++	cfe_err("Unable to determine sensor link rate, using 999 Mbps\n");
+ 	return 999 * 1000000UL;
+ }
+ 
+@@ -1104,7 +1104,7 @@ static int cfe_start_streaming(struct vb
+ 	}
+ 
+ 	cfe_dbg("Configuring CSI-2 block\n");
+-	cfe->csi2.dphy.dphy_freq = sensor_link_frequency(cfe) / 1000000UL;
++	cfe->csi2.dphy.dphy_rate = sensor_link_rate(cfe) / 1000000UL;
+ 	csi2_open_rx(&cfe->csi2);
+ 
+ 	cfe_dbg("Starting sensor streaming\n");
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/dphy.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/dphy.c
+@@ -96,7 +96,7 @@ static uint8_t dphy_transaction(struct d
+ 	return get_tstdout(dphy);
+ }
+ 
+-static void dphy_set_hsfreqrange(struct dphy_data *dphy, uint32_t freq_mhz)
++static void dphy_set_hsfreqrange(struct dphy_data *dphy, uint32_t mbps)
+ {
+ 	/* See Table 5-1 on page 65 of dphy databook */
+ 	static const u16 hsfreqrange_table[][2] = {
+@@ -116,11 +116,11 @@ static void dphy_set_hsfreqrange(struct
+ 	};
+ 	unsigned int i;
+ 
+-	if (freq_mhz < 80 || freq_mhz > 1500)
+-		dphy_err("DPHY: Frequency %u MHz out of range\n", freq_mhz);
++	if (mbps < 80 || mbps > 1500)
++		dphy_err("DPHY: Datarate %u Mbps out of range\n", mbps);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(hsfreqrange_table) - 1; i++) {
+-		if (freq_mhz <= hsfreqrange_table[i][0])
++		if (mbps <= hsfreqrange_table[i][0])
+ 			break;
+ 	}
+ 
+@@ -139,7 +139,7 @@ static void dphy_init(struct dphy_data *
+ 	set_tstclr(dphy, 0);
+ 	usleep_range(15, 20);
+ 
+-	dphy_set_hsfreqrange(dphy, dphy->dphy_freq);
++	dphy_set_hsfreqrange(dphy, dphy->dphy_rate);
+ 
+ 	usleep_range(5, 10);
+ 	dw_csi2_host_write(dphy, PHY_SHUTDOWNZ, 1);
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/dphy.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/dphy.h
+@@ -15,7 +15,7 @@ struct dphy_data {
+ 
+ 	void __iomem *base;
+ 
+-	u32 dphy_freq;
++	u32 dphy_rate;
+ 	u32 num_lanes;
+ };
+ 

@@ -1,0 +1,329 @@
+From b74aec9ca440eb1ed2f48a3cc4ef471cd9c9d623 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 26 Jan 2022 16:02:31 +0000
+Subject: [PATCH] drm/panel: Add panel driver for TDO Y17B based panels
+
+The Top DisplayOptoelectronics (TDO) T17B driver chip is used
+in the TL040HDS20CT panel (found in the Pimoroni HyperPixel4
+Square display) and potentially other displays.
+The driver chip supports SPI for  configuration and DPI
+video data.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/panel/Kconfig          |  11 +
+ drivers/gpu/drm/panel/Makefile         |   1 +
+ drivers/gpu/drm/panel/panel-tdo-y17p.c | 277 +++++++++++++++++++++++++
+ 3 files changed, 289 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-tdo-y17p.c
+
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -669,6 +669,17 @@ config DRM_PANEL_TDO_TL070WSH30
+ 	  24 bit RGB per pixel. It provides a MIPI DSI interface to
+ 	  the host, a built-in LED backlight and touch controller.
+ 
++config DRM_PANEL_TPO_Y17P
++	tristate "TDO Y17P-based panels"
++	depends on OF && SPI
++	select DRM_KMS_HELPER
++	depends on DRM_GEM_CMA_HELPER
++	depends on BACKLIGHT_CLASS_DEVICE
++	select DRM_MIPI_DBI
++	help
++	  Say Y if you want to enable support for panels based on the
++	  TDO Y17P controller.
++
+ config DRM_PANEL_TPO_TD028TTEC1
+ 	tristate "Toppoly (TPO) TD028TTEC1 panel driver"
+ 	depends on OF && SPI
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -67,6 +67,7 @@ obj-$(CONFIG_DRM_PANEL_SITRONIX_ST7789V)
+ obj-$(CONFIG_DRM_PANEL_SONY_ACX565AKM) += panel-sony-acx565akm.o
+ obj-$(CONFIG_DRM_PANEL_SONY_TULIP_TRULY_NT35521) += panel-sony-tulip-truly-nt35521.o
+ obj-$(CONFIG_DRM_PANEL_TDO_TL070WSH30) += panel-tdo-tl070wsh30.o
++obj-$(CONFIG_DRM_PANEL_TPO_Y17P) += panel-tdo-y17p.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TD028TTEC1) += panel-tpo-td028ttec1.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TD043MTEA1) += panel-tpo-td043mtea1.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TPG110) += panel-tpo-tpg110.o
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-tdo-y17p.c
+@@ -0,0 +1,277 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * TDO Y17P TFT LCD drm_panel driver.
++ *
++ * SPI configured DPI display controller
++ * Copyright (C) 2022 Raspberry Pi Ltd
++ *
++ * Derived from drivers/drm/gpu/panel/panel-sitronix-st7789v.c
++ * Copyright (C) 2017 Free Electrons
++ */
++
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#include <linux/bitops.h>
++#include <linux/gpio/consumer.h>
++#include <linux/media-bus-format.h>
++#include <linux/module.h>
++#include <linux/of_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/spi/spi.h>
++
++#include <video/mipi_display.h>
++#include <video/of_videomode.h>
++#include <video/videomode.h>
++
++struct tdo_y17p {
++	struct drm_panel panel;
++	struct spi_device *spi;
++	struct gpio_desc *reset;
++	struct regulator *power;
++	u32 bus_format;
++};
++
++static const u16 panel_init[] = {
++	0x0ff, 0x1ff, 0x198, 0x106, 0x104, 0x101, 0x008, 0x110,
++	0x021, 0x109, 0x030, 0x102, 0x031, 0x100, 0x040, 0x110,
++	0x041, 0x155, 0x042, 0x102, 0x043, 0x109, 0x044, 0x107,
++	0x050, 0x178, 0x051, 0x178, 0x052, 0x100, 0x053, 0x16d,
++	0x060, 0x107, 0x061, 0x100, 0x062, 0x108, 0x063, 0x100,
++	0x0a0, 0x100, 0x0a1, 0x107, 0x0a2, 0x10c, 0x0a3, 0x10b,
++	0x0a4, 0x103, 0x0a5, 0x107, 0x0a6, 0x106, 0x0a7, 0x104,
++	0x0a8, 0x108, 0x0a9, 0x10c, 0x0aa, 0x113, 0x0ab, 0x106,
++	0x0ac, 0x10d, 0x0ad, 0x119, 0x0ae, 0x110, 0x0af, 0x100,
++	0x0c0, 0x100, 0x0c1, 0x107, 0x0c2, 0x10c, 0x0c3, 0x10b,
++	0x0c4, 0x103, 0x0c5, 0x107, 0x0c6, 0x107, 0x0c7, 0x104,
++	0x0c8, 0x108, 0x0c9, 0x10c, 0x0ca, 0x113, 0x0cb, 0x106,
++	0x0cc, 0x10d, 0x0cd, 0x118, 0x0ce, 0x110, 0x0cf, 0x100,
++	0x0ff, 0x1ff, 0x198, 0x106, 0x104, 0x106, 0x000, 0x120,
++	0x001, 0x10a, 0x002, 0x100, 0x003, 0x100, 0x004, 0x101,
++	0x005, 0x101, 0x006, 0x198, 0x007, 0x106, 0x008, 0x101,
++	0x009, 0x180, 0x00a, 0x100, 0x00b, 0x100, 0x00c, 0x101,
++	0x00d, 0x101, 0x00e, 0x100, 0x00f, 0x100, 0x010, 0x1f0,
++	0x011, 0x1f4, 0x012, 0x101, 0x013, 0x100, 0x014, 0x100,
++	0x015, 0x1c0, 0x016, 0x108, 0x017, 0x100, 0x018, 0x100,
++	0x019, 0x100, 0x01a, 0x100, 0x01b, 0x100, 0x01c, 0x100,
++	0x01d, 0x100, 0x020, 0x101, 0x021, 0x123, 0x022, 0x145,
++	0x023, 0x167, 0x024, 0x101, 0x025, 0x123, 0x026, 0x145,
++	0x027, 0x167, 0x030, 0x111, 0x031, 0x111, 0x032, 0x100,
++	0x033, 0x1ee, 0x034, 0x1ff, 0x035, 0x1bb, 0x036, 0x1aa,
++	0x037, 0x1dd, 0x038, 0x1cc, 0x039, 0x166, 0x03a, 0x177,
++	0x03b, 0x122, 0x03c, 0x122, 0x03d, 0x122, 0x03e, 0x122,
++	0x03f, 0x122, 0x040, 0x122, 0x052, 0x110, 0x053, 0x110,
++	0x0ff, 0x1ff, 0x198, 0x106, 0x104, 0x107, 0x018, 0x11d,
++	0x017, 0x122, 0x002, 0x177, 0x026, 0x1b2, 0x0e1, 0x179,
++	0x0ff, 0x1ff, 0x198, 0x106, 0x104, 0x100, 0x03a, 0x160,
++	0x035, 0x100, 0x011, 0x100,
++};
++
++#define NUM_INIT_REGS ARRAY_SIZE(panel_init)
++
++static inline struct tdo_y17p *panel_to_tdo_y17p(struct drm_panel *panel)
++{
++	return container_of(panel, struct tdo_y17p, panel);
++}
++
++static int tdo_y17p_write_msg(struct tdo_y17p *ctx, const u16 *msg, unsigned int len)
++{
++	struct spi_transfer xfer = { };
++	struct spi_message spi;
++
++	spi_message_init(&spi);
++
++	xfer.tx_buf = msg;
++	xfer.bits_per_word = 9;
++	xfer.len = sizeof(u16) * len;
++
++	spi_message_add_tail(&xfer, &spi);
++	return spi_sync(ctx->spi, &spi);
++}
++
++static const struct drm_display_mode tdo_y17pe_720x720_mode = {
++	.clock = 36720,
++	.hdisplay = 720,
++	.hsync_start = 720 + 20,
++	.hsync_end = 720 + 20 + 20,
++	.htotal = 720 + 20 + 20 + 40,
++	.vdisplay = 720,
++	.vsync_start = 720 + 15,
++	.vsync_end = 720 + 15 + 15,
++	.vtotal = 720 + 15 + 15 + 15,
++	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_PVSYNC,
++};
++
++static int tdo_y17p_get_modes(struct drm_panel *panel,
++			      struct drm_connector *connector)
++{
++	struct tdo_y17p *ctx = panel_to_tdo_y17p(panel);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, &tdo_y17pe_720x720_mode);
++	if (!mode) {
++		dev_err(panel->dev, "failed to add mode %ux%ux@%u\n",
++			tdo_y17pe_720x720_mode.hdisplay,
++			tdo_y17pe_720x720_mode.vdisplay,
++			drm_mode_vrefresh(&tdo_y17pe_720x720_mode));
++		return -ENOMEM;
++	}
++
++	drm_mode_set_name(mode);
++
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.width_mm = 72;
++	connector->display_info.height_mm = 72;
++	drm_display_info_set_bus_formats(&connector->display_info,
++					 &ctx->bus_format, 1);
++	connector->display_info.bus_flags = 0;
++
++	return 1;
++}
++
++static int tdo_y17p_prepare(struct drm_panel *panel)
++{
++	struct tdo_y17p *ctx = panel_to_tdo_y17p(panel);
++	int ret;
++
++	ret = regulator_enable(ctx->power);
++	if (ret)
++		return ret;
++
++	ret = tdo_y17p_write_msg(ctx, panel_init, NUM_INIT_REGS);
++
++	msleep(120);
++
++	return ret;
++}
++
++static int tdo_y17p_enable(struct drm_panel *panel)
++{
++	struct tdo_y17p *ctx = panel_to_tdo_y17p(panel);
++	const u16 msg[] = { MIPI_DCS_SET_DISPLAY_ON };
++	int ret;
++
++	ret = tdo_y17p_write_msg(ctx, msg, ARRAY_SIZE(msg));
++
++	return ret;
++}
++
++static int tdo_y17p_disable(struct drm_panel *panel)
++{
++	struct tdo_y17p *ctx = panel_to_tdo_y17p(panel);
++	const u16 msg[] = { MIPI_DCS_SET_DISPLAY_OFF };
++	int ret;
++
++	ret = tdo_y17p_write_msg(ctx, msg, ARRAY_SIZE(msg));
++
++	return ret;
++}
++
++static int tdo_y17p_unprepare(struct drm_panel *panel)
++{
++	struct tdo_y17p *ctx = panel_to_tdo_y17p(panel);
++	const u16 msg[] = { MIPI_DCS_ENTER_SLEEP_MODE };
++	int ret;
++
++	ret = tdo_y17p_write_msg(ctx, msg, ARRAY_SIZE(msg));
++
++	return ret;
++}
++
++static const struct drm_panel_funcs tdo_y17p_drm_funcs = {
++	.disable	= tdo_y17p_disable,
++	.enable		= tdo_y17p_enable,
++	.get_modes	= tdo_y17p_get_modes,
++	.prepare	= tdo_y17p_prepare,
++	.unprepare	= tdo_y17p_unprepare,
++};
++
++static const struct of_device_id tdo_y17p_of_match[] = {
++	{	.compatible = "tdo,tl040hds20ct",
++		.data = (void *)MEDIA_BUS_FMT_BGR888_1X24,
++	}, {
++		.compatible = "pimoroni,hyperpixel4square",
++		.data = (void *)MEDIA_BUS_FMT_BGR666_1X24_CPADHI,
++	}, {
++		.compatible = "tdo,y17p",
++		.data = (void *)MEDIA_BUS_FMT_BGR888_1X24,
++	}, {
++		/* sentinel */
++	}
++};
++MODULE_DEVICE_TABLE(of, tdo_y17p_of_match);
++
++static int tdo_y17p_probe(struct spi_device *spi)
++{
++	const struct of_device_id *id;
++	struct tdo_y17p *ctx;
++	int ret;
++
++	ctx = devm_kzalloc(&spi->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++
++	id = of_match_node(tdo_y17p_of_match, spi->dev.of_node);
++	if (!id)
++		return -ENODEV;
++
++	ctx->bus_format = (u32)(uintptr_t)id->data;
++
++	spi_set_drvdata(spi, ctx);
++	ctx->spi = spi;
++
++	drm_panel_init(&ctx->panel, &spi->dev, &tdo_y17p_drm_funcs,
++		       DRM_MODE_CONNECTOR_DPI);
++
++	ctx->power = devm_regulator_get(&spi->dev, "power");
++	if (IS_ERR(ctx->power))
++		return PTR_ERR(ctx->power);
++
++	ctx->reset = devm_gpiod_get_optional(&spi->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->reset)) {
++		dev_err(&spi->dev, "Couldn't get our reset line\n");
++		return PTR_ERR(ctx->reset);
++	}
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return ret;
++
++	drm_panel_add(&ctx->panel);
++
++	return 0;
++}
++
++static void tdo_y17p_remove(struct spi_device *spi)
++{
++	struct tdo_y17p *ctx = spi_get_drvdata(spi);
++
++	drm_panel_remove(&ctx->panel);
++}
++
++static const struct spi_device_id tdo_y17p_ids[] = {
++	{ "tl040hds20ct", 0 },
++	{ "hyperpixel4square", 0 },
++	{ "y17p", 0 },
++	{ /* sentinel */ }
++};
++
++MODULE_DEVICE_TABLE(spi, tdo_y17p_ids);
++
++static struct spi_driver tdo_y17p_driver = {
++	.probe = tdo_y17p_probe,
++	.remove = tdo_y17p_remove,
++	.driver = {
++		.name = "tdo_y17p",
++		.of_match_table = tdo_y17p_of_match,
++	},
++	.id_table = tdo_y17p_ids,
++};
++module_spi_driver(tdo_y17p_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("TDO Y17P LCD panel driver");
++MODULE_LICENSE("GPL v2");

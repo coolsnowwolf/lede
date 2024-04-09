@@ -1,0 +1,140 @@
+From b888303c7d23d7bd0c8667cfc657669e5d153fea Mon Sep 17 00:00:00 2001
+From: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Date: Fri, 20 Jan 2023 10:20:34 +0100
+Subject: [PATCH 02/15] clk: mediatek: cpumux: Propagate struct device where
+ possible
+
+Take a pointer to a struct device in mtk_clk_register_cpumuxes() and
+propagate the same to mtk_clk_register_cpumux() => clk_hw_register().
+Even though runtime pm is unlikely to be used with CPU muxes, this
+helps with code consistency and possibly opens to commonization of
+some mtk_clk_register_(x) functions.
+
+Signed-off-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Reviewed-by: Chen-Yu Tsai <wenst@chromium.org>
+Reviewed-by: Markus Schneider-Pargmann <msp@baylibre.com>
+Tested-by: Miles Chen <miles.chen@mediatek.com>
+Link: https://lore.kernel.org/r/20230120092053.182923-5-angelogioacchino.delregno@collabora.com
+Tested-by: Mingming Su <mingming.su@mediatek.com>
+Signed-off-by: Stephen Boyd <sboyd@kernel.org>
+---
+ drivers/clk/mediatek/clk-cpumux.c          | 8 ++++----
+ drivers/clk/mediatek/clk-cpumux.h          | 2 +-
+ drivers/clk/mediatek/clk-mt2701.c          | 2 +-
+ drivers/clk/mediatek/clk-mt6795-infracfg.c | 3 ++-
+ drivers/clk/mediatek/clk-mt7622.c          | 4 ++--
+ drivers/clk/mediatek/clk-mt7629.c          | 4 ++--
+ drivers/clk/mediatek/clk-mt8173.c          | 4 ++--
+ 7 files changed, 14 insertions(+), 13 deletions(-)
+
+--- a/drivers/clk/mediatek/clk-cpumux.c
++++ b/drivers/clk/mediatek/clk-cpumux.c
+@@ -58,7 +58,7 @@ static const struct clk_ops clk_cpumux_o
+ };
+ 
+ static struct clk_hw *
+-mtk_clk_register_cpumux(const struct mtk_composite *mux,
++mtk_clk_register_cpumux(struct device *dev, const struct mtk_composite *mux,
+ 			struct regmap *regmap)
+ {
+ 	struct mtk_clk_cpumux *cpumux;
+@@ -81,7 +81,7 @@ mtk_clk_register_cpumux(const struct mtk
+ 	cpumux->regmap = regmap;
+ 	cpumux->hw.init = &init;
+ 
+-	ret = clk_hw_register(NULL, &cpumux->hw);
++	ret = clk_hw_register(dev, &cpumux->hw);
+ 	if (ret) {
+ 		kfree(cpumux);
+ 		return ERR_PTR(ret);
+@@ -102,7 +102,7 @@ static void mtk_clk_unregister_cpumux(st
+ 	kfree(cpumux);
+ }
+ 
+-int mtk_clk_register_cpumuxes(struct device_node *node,
++int mtk_clk_register_cpumuxes(struct device *dev, struct device_node *node,
+ 			      const struct mtk_composite *clks, int num,
+ 			      struct clk_hw_onecell_data *clk_data)
+ {
+@@ -125,7 +125,7 @@ int mtk_clk_register_cpumuxes(struct dev
+ 			continue;
+ 		}
+ 
+-		hw = mtk_clk_register_cpumux(mux, regmap);
++		hw = mtk_clk_register_cpumux(dev, mux, regmap);
+ 		if (IS_ERR(hw)) {
+ 			pr_err("Failed to register clk %s: %pe\n", mux->name,
+ 			       hw);
+--- a/drivers/clk/mediatek/clk-cpumux.h
++++ b/drivers/clk/mediatek/clk-cpumux.h
+@@ -11,7 +11,7 @@ struct clk_hw_onecell_data;
+ struct device_node;
+ struct mtk_composite;
+ 
+-int mtk_clk_register_cpumuxes(struct device_node *node,
++int mtk_clk_register_cpumuxes(struct device *dev, struct device_node *node,
+ 			      const struct mtk_composite *clks, int num,
+ 			      struct clk_hw_onecell_data *clk_data);
+ 
+--- a/drivers/clk/mediatek/clk-mt2701.c
++++ b/drivers/clk/mediatek/clk-mt2701.c
+@@ -761,7 +761,7 @@ static void __init mtk_infrasys_init_ear
+ 	mtk_clk_register_factors(infra_fixed_divs, ARRAY_SIZE(infra_fixed_divs),
+ 						infra_clk_data);
+ 
+-	mtk_clk_register_cpumuxes(node, cpu_muxes, ARRAY_SIZE(cpu_muxes),
++	mtk_clk_register_cpumuxes(NULL, node, cpu_muxes, ARRAY_SIZE(cpu_muxes),
+ 				  infra_clk_data);
+ 
+ 	r = of_clk_add_hw_provider(node, of_clk_hw_onecell_get,
+--- a/drivers/clk/mediatek/clk-mt6795-infracfg.c
++++ b/drivers/clk/mediatek/clk-mt6795-infracfg.c
+@@ -105,7 +105,8 @@ static int clk_mt6795_infracfg_probe(str
+ 	if (ret)
+ 		goto free_clk_data;
+ 
+-	ret = mtk_clk_register_cpumuxes(node, cpu_muxes, ARRAY_SIZE(cpu_muxes), clk_data);
++	ret = mtk_clk_register_cpumuxes(&pdev->dev, node, cpu_muxes,
++					ARRAY_SIZE(cpu_muxes), clk_data);
+ 	if (ret)
+ 		goto unregister_gates;
+ 
+--- a/drivers/clk/mediatek/clk-mt7622.c
++++ b/drivers/clk/mediatek/clk-mt7622.c
+@@ -638,8 +638,8 @@ static int mtk_infrasys_init(struct plat
+ 	mtk_clk_register_gates(&pdev->dev, node, infra_clks,
+ 			       ARRAY_SIZE(infra_clks), clk_data);
+ 
+-	mtk_clk_register_cpumuxes(node, infra_muxes, ARRAY_SIZE(infra_muxes),
+-				  clk_data);
++	mtk_clk_register_cpumuxes(&pdev->dev, node, infra_muxes,
++				  ARRAY_SIZE(infra_muxes), clk_data);
+ 
+ 	r = of_clk_add_hw_provider(node, of_clk_hw_onecell_get,
+ 				   clk_data);
+--- a/drivers/clk/mediatek/clk-mt7629.c
++++ b/drivers/clk/mediatek/clk-mt7629.c
+@@ -588,8 +588,8 @@ static int mtk_infrasys_init(struct plat
+ 	mtk_clk_register_gates(&pdev->dev, node, infra_clks,
+ 			       ARRAY_SIZE(infra_clks), clk_data);
+ 
+-	mtk_clk_register_cpumuxes(node, infra_muxes, ARRAY_SIZE(infra_muxes),
+-				  clk_data);
++	mtk_clk_register_cpumuxes(&pdev->dev, node, infra_muxes,
++				  ARRAY_SIZE(infra_muxes), clk_data);
+ 
+ 	return of_clk_add_hw_provider(node, of_clk_hw_onecell_get,
+ 				      clk_data);
+--- a/drivers/clk/mediatek/clk-mt8173.c
++++ b/drivers/clk/mediatek/clk-mt8173.c
+@@ -892,8 +892,8 @@ static void __init mtk_infrasys_init(str
+ 						clk_data);
+ 	mtk_clk_register_factors(infra_divs, ARRAY_SIZE(infra_divs), clk_data);
+ 
+-	mtk_clk_register_cpumuxes(node, cpu_muxes, ARRAY_SIZE(cpu_muxes),
+-				  clk_data);
++	mtk_clk_register_cpumuxes(NULL, node, cpu_muxes,
++				  ARRAY_SIZE(cpu_muxes), clk_data);
+ 
+ 	r = of_clk_add_hw_provider(node, of_clk_hw_onecell_get, clk_data);
+ 	if (r)

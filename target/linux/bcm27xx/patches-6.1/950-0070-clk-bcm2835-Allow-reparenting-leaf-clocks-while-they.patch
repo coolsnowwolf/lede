@@ -1,0 +1,71 @@
+From da04f315a9aad8344c363e08939dfb7fda22df2e Mon Sep 17 00:00:00 2001
+From: Eric Anholt <eric@anholt.net>
+Date: Thu, 2 May 2019 15:24:04 -0700
+Subject: [PATCH] clk: bcm2835: Allow reparenting leaf clocks while
+ they're running.
+
+This falls under the same "we can reprogram glitch-free as long as we
+pause generation" rule as updating the div/frac fields.  This can be
+used for runtime reclocking of V3D to manage power leakage.
+
+Signed-off-by: Eric Anholt <eric@anholt.net>
+---
+ drivers/clk/bcm/clk-bcm2835.c | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+--- a/drivers/clk/bcm/clk-bcm2835.c
++++ b/drivers/clk/bcm/clk-bcm2835.c
+@@ -1127,8 +1127,10 @@ static int bcm2835_clock_on(struct clk_h
+ 	return 0;
+ }
+ 
+-static int bcm2835_clock_set_rate(struct clk_hw *hw,
+-				  unsigned long rate, unsigned long parent_rate)
++static int bcm2835_clock_set_rate_and_parent(struct clk_hw *hw,
++					     unsigned long rate,
++					     unsigned long parent_rate,
++					     u8 parent)
+ {
+ 	struct bcm2835_clock *clock = bcm2835_clock_from_hw(hw);
+ 	struct bcm2835_cprman *cprman = clock->cprman;
+@@ -1150,6 +1152,11 @@ static int bcm2835_clock_set_rate(struct
+ 		bcm2835_clock_wait_busy(clock);
+ 	}
+ 
++	if (parent != 0xff) {
++		ctl &= ~(CM_SRC_MASK << CM_SRC_SHIFT);
++		ctl |= parent << CM_SRC_SHIFT;
++	}
++
+ 	ctl &= ~CM_FRAC;
+ 	ctl |= (div & CM_DIV_FRAC_MASK) ? CM_FRAC : 0;
+ 	cprman_write(cprman, data->ctl_reg, ctl);
+@@ -1161,6 +1168,12 @@ static int bcm2835_clock_set_rate(struct
+ 	return 0;
+ }
+ 
++static int bcm2835_clock_set_rate(struct clk_hw *hw,
++				  unsigned long rate, unsigned long parent_rate)
++{
++	return bcm2835_clock_set_rate_and_parent(hw, rate, parent_rate, 0xff);
++}
++
+ static bool
+ bcm2835_clk_is_pllc(struct clk_hw *hw)
+ {
+@@ -1344,6 +1357,7 @@ static const struct clk_ops bcm2835_cloc
+ 	.unprepare = bcm2835_clock_off,
+ 	.recalc_rate = bcm2835_clock_get_rate,
+ 	.set_rate = bcm2835_clock_set_rate,
++	.set_rate_and_parent = bcm2835_clock_set_rate_and_parent,
+ 	.determine_rate = bcm2835_clock_determine_rate,
+ 	.set_parent = bcm2835_clock_set_parent,
+ 	.get_parent = bcm2835_clock_get_parent,
+@@ -1526,7 +1540,6 @@ static struct clk_hw *bcm2835_register_c
+ 		init.ops = &bcm2835_vpu_clock_clk_ops;
+ 	} else {
+ 		init.ops = &bcm2835_clock_clk_ops;
+-		init.flags |= CLK_SET_PARENT_GATE;
+ 
+ 		/* If the clock wasn't actually enabled at boot, it's not
+ 		 * critical.

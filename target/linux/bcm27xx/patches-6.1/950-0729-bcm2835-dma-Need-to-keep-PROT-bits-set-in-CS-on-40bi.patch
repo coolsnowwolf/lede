@@ -1,0 +1,77 @@
+From 132f5d41c2da9f7292f1495fd30cf04a3de8d196 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 5 May 2023 11:23:50 +0100
+Subject: [PATCH] bcm2835-dma: Need to keep PROT bits set in CS on
+ 40bit controller
+
+Resetting them to zero puts DMA channel into secure mode
+which makes further accesses impossible
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/dma/bcm2835-dma.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+--- a/drivers/dma/bcm2835-dma.c
++++ b/drivers/dma/bcm2835-dma.c
+@@ -249,6 +249,9 @@ struct bcm2835_desc {
+ #define BCM2711_DMA40_DISDEBUG		BIT(29)
+ #define BCM2711_DMA40_ABORT		BIT(30)
+ #define BCM2711_DMA40_HALT		BIT(31)
++// we always want to run in supervisor mode
++#define BCM2711_DMA40_PROT		(BIT(8)|BIT(9))
++
+ #define BCM2711_DMA40_CS_FLAGS(x) (x & (BCM2711_DMA40_QOS(15) | \
+ 					BCM2711_DMA40_PANIC_QOS(15) | \
+ 					BCM2711_DMA40_WAIT_FOR_WRITES |	\
+@@ -682,7 +685,7 @@ static void bcm2835_dma_abort(struct bcm
+ 			dev_err(c->vc.chan.device->dev,
+ 				"failed to halt dma\n");
+ 
+-		writel(0, chan_base + BCM2711_DMA40_CS);
++		writel(BCM2711_DMA40_PROT, chan_base + BCM2711_DMA40_CS);
+ 		writel(0, chan_base + BCM2711_DMA40_CB);
+ 	} else {
+ 		/*
+@@ -742,7 +745,7 @@ static void bcm2835_dma_start_desc(struc
+ 	if (c->is_40bit_channel) {
+ 		writel(to_bcm2711_cbaddr(d->cb_list[0].paddr),
+ 		       c->chan_base + BCM2711_DMA40_CB);
+-		writel(BCM2711_DMA40_ACTIVE | BCM2711_DMA40_CS_FLAGS(c->dreq),
++		writel(BCM2711_DMA40_ACTIVE | BCM2711_DMA40_PROT | BCM2711_DMA40_CS_FLAGS(c->dreq),
+ 		       c->chan_base + BCM2711_DMA40_CS);
+ 	} else {
+ 		writel(d->cb_list[0].paddr, c->chan_base + BCM2835_DMA_ADDR);
+@@ -775,8 +778,13 @@ static irqreturn_t bcm2835_dma_callback(
+ 	 * if this IRQ handler is threaded.) If the channel is finished, it
+ 	 * will remain idle despite the ACTIVE flag being set.
+ 	 */
+-	writel(BCM2835_DMA_INT | BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(c->dreq),
+-	       c->chan_base + BCM2835_DMA_CS);
++	if (c->is_40bit_channel)
++		writel(BCM2835_DMA_INT | BCM2711_DMA40_ACTIVE | BCM2711_DMA40_PROT |
++		       BCM2711_DMA40_CS_FLAGS(c->dreq),
++		       c->chan_base + BCM2711_DMA40_CS);
++	else
++		writel(BCM2835_DMA_INT | BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(c->dreq),
++		       c->chan_base + BCM2835_DMA_CS);
+ 
+ 	d = c->desc;
+ 
+@@ -1230,14 +1238,14 @@ void bcm2711_dma40_memcpy(dma_addr_t dst
+ 	scb->next_cb = 0;
+ 
+ 	writel(to_bcm2711_cbaddr(memcpy_scb_dma), memcpy_chan + BCM2711_DMA40_CB);
+-	writel(BCM2711_DMA40_MEMCPY_FLAGS + BCM2711_DMA40_ACTIVE,
++	writel(BCM2711_DMA40_MEMCPY_FLAGS | BCM2711_DMA40_ACTIVE | BCM2711_DMA40_PROT,
+ 	       memcpy_chan + BCM2711_DMA40_CS);
+ 
+ 	/* Poll for completion */
+ 	while (!(readl(memcpy_chan + BCM2711_DMA40_CS) & BCM2711_DMA40_END))
+ 		cpu_relax();
+ 
+-	writel(BCM2711_DMA40_END, memcpy_chan + BCM2711_DMA40_CS);
++	writel(BCM2711_DMA40_END | BCM2711_DMA40_PROT, memcpy_chan + BCM2711_DMA40_CS);
+ 
+ 	spin_unlock_irqrestore(&memcpy_lock, flags);
+ }

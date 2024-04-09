@@ -1,5 +1,16 @@
 REQUIRE_IMAGE_METADATA=1
 
+asus_initial_setup()
+{
+	# initialize UBI if it's running on initramfs
+	[ "$(rootfs_type)" = "tmpfs" ] || return 0
+
+	ubirmvol /dev/ubi0 -N rootfs
+	ubirmvol /dev/ubi0 -N rootfs_data
+	ubirmvol /dev/ubi0 -N jffs2
+	ubimkvol /dev/ubi0 -N jffs2 -s 0x3e000
+}
+
 platform_do_upgrade() {
 	local board=$(board_name)
 
@@ -29,6 +40,7 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
+	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	jdcloud,re-cs-05)
@@ -76,10 +88,21 @@ platform_copy_config() {
 			;;
 		esac
 		;;
+	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	jdcloud,re-cs-05)
 		emmc_copy_config
+		;;
+	esac
+ }
+ 
+platform_pre_upgrade() {
+	local board=$(board_name)
+
+	case "$board" in
+	asus,tuf-ax4200)
+		asus_initial_setup
 		;;
 	esac
 }

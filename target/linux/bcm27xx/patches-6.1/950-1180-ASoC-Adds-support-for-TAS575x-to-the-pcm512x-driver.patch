@@ -1,0 +1,102 @@
+From a535dd07aff73f3a6eb40174ab5dc413d05f36a1 Mon Sep 17 00:00:00 2001
+From: Joerg Schambacher <joerg.hifiberry@gmail.com>
+Date: Fri, 29 Sep 2023 17:07:20 +0200
+Subject: [PATCH] ASoC: Adds support for TAS575x to the pcm512x driver
+
+commit 1f817805262c2c34142291da376d4932d3c493bc upstream.
+
+Enables the existing pcm512x driver to control the almost
+compatible TAS5754 and -76 amplifers. Both amplifiers support
+only an I2C interface and the internal PLL must be always
+on to provide necessary clocks to the amplifier section.
+Tested on TAS5756 with support from Andreas Arbesser-Krasser
+from Texas Instruments <a-krasser@ti.com>
+
+Signed-off-by: Joerg Schambacher <joerg.hifiberry@gmail.com>
+Link: https://lore.kernel.org/r/20230929150722.405415-1-joerg.hifiberry@gmail.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ sound/soc/codecs/pcm512x-i2c.c |  4 ++++
+ sound/soc/codecs/pcm512x.c     | 36 +++++++++++++++++++++++++++++++---
+ 2 files changed, 37 insertions(+), 3 deletions(-)
+
+--- a/sound/soc/codecs/pcm512x-i2c.c
++++ b/sound/soc/codecs/pcm512x-i2c.c
+@@ -39,6 +39,8 @@ static const struct i2c_device_id pcm512
+ 	{ "pcm5122", },
+ 	{ "pcm5141", },
+ 	{ "pcm5142", },
++	{ "tas5754", },
++	{ "tas5756", },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(i2c, pcm512x_i2c_id);
+@@ -49,6 +51,8 @@ static const struct of_device_id pcm512x
+ 	{ .compatible = "ti,pcm5122", },
+ 	{ .compatible = "ti,pcm5141", },
+ 	{ .compatible = "ti,pcm5142", },
++	{ .compatible = "ti,tas5754", },
++	{ .compatible = "ti,tas5756", },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, pcm512x_of_match);
+--- a/sound/soc/codecs/pcm512x.c
++++ b/sound/soc/codecs/pcm512x.c
+@@ -48,6 +48,7 @@ struct pcm512x_priv {
+ 	int mute;
+ 	struct mutex mutex;
+ 	unsigned int bclk_ratio;
++	int force_pll_on;
+ };
+ 
+ /*
+@@ -1258,10 +1259,34 @@ static int pcm512x_hw_params(struct snd_
+ 			return ret;
+ 		}
+ 
+-		ret = regmap_update_bits(pcm512x->regmap, PCM512x_PLL_EN,
+-					 PCM512x_PLLE, 0);
++		if (!pcm512x->force_pll_on) {
++			ret = regmap_update_bits(pcm512x->regmap,
++						 PCM512x_PLL_EN, PCM512x_PLLE, 0);
++		} else {
++			/* provide minimum PLL config for TAS575x clocking
++			 * and leave PLL enabled
++			 */
++			ret = regmap_write(pcm512x->regmap,
++					   PCM512x_PLL_COEFF_0, 0x01);
++			if (ret != 0) {
++				dev_err(component->dev,
++					"Failed to set pll coefficient: %d\n", ret);
++				return ret;
++			}
++			ret = regmap_write(pcm512x->regmap,
++					   PCM512x_PLL_COEFF_1, 0x04);
++			if (ret != 0) {
++				dev_err(component->dev,
++					"Failed to set pll coefficient: %d\n", ret);
++				return ret;
++			}
++			ret = regmap_write(pcm512x->regmap,
++					   PCM512x_PLL_EN, 0x01);
++			dev_dbg(component->dev, "Enabling PLL for TAS575x\n");
++		}
++
+ 		if (ret != 0) {
+-			dev_err(component->dev, "Failed to disable pll: %d\n", ret);
++			dev_err(component->dev, "Failed to set pll mode: %d\n", ret);
+ 			return ret;
+ 		}
+ 	}
+@@ -1659,6 +1684,11 @@ int pcm512x_probe(struct device *dev, st
+ 			ret = -EINVAL;
+ 			goto err_pm;
+ 		}
++
++		if (!strcmp(np->name, "tas5756") ||
++		    !strcmp(np->name, "tas5754"))
++			pcm512x->force_pll_on = 1;
++		dev_dbg(dev, "Device ID: %s\n", np->name);
+ 	}
+ #endif
+ 

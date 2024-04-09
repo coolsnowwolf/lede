@@ -5,14 +5,11 @@ PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-RSTRIP:=:
-STRIP:=:
-
 define Package/photonicat-firmware
   SECTION:=firmware
   CATEGORY:=Firmware
-  TITLE:=$(1)
-  DEPENDS:=$(2)
+  TITLE:=Photonicat WiFi Firmware
+  DEPENDS:=@TARGET_rockchip_armv8
 endef
 
 define Build/Compile

@@ -88,11 +88,17 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 	const u32 *image_offset_be, *image_len_be, *image_pos_be;
 	int ret = 1, node, images, config;
 	const char *image_name, *image_type, *image_description, *config_default,
-		*config_description, *config_loadables;
+		*config_description, *config_loadables, *bootconf_c;
 	int image_name_len, image_type_len, image_description_len, config_default_len,
-		config_description_len, config_loadables_len;
+		config_description_len, config_loadables_len, bootconf_len;
 	sector_t start_sect, nr_sects;
 	size_t label_min;
+	struct device_node *np = NULL;
+	char *bootconf = NULL, *bootconf_term;
+	const char *loadable;
+	const char *select_rootfs = NULL;
+	bool found;
+	int loadables_rem_len, loadable_len;
 
 	if (fit_start_sector % (1<<(PAGE_SHIFT - SECTOR_SHIFT)))
 		return -ERANGE;
@@ -118,7 +124,6 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		dsectors = (dsectors>sectors)?sectors:dsectors;
 
 	dsize = dsectors << SECTOR_SHIFT;
-
 	size = fdt_totalsize(init_fit);
 
 	/* silently skip non-external-data legacy FIT images */
@@ -138,6 +143,19 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 	if (!fit)
 		return -ENOMEM;
 
+	np = of_find_node_by_path("/chosen");
+	if (np) {
+		bootconf_c = of_get_property(np, "u-boot,bootconf", &bootconf_len);
+		if (bootconf_c && bootconf_len)
+			bootconf = kmemdup_nul(bootconf_c, bootconf_len, GFP_KERNEL);
+	}
+
+	if (bootconf) {
+		bootconf_term = strchr(bootconf, '#');
+		if (bootconf_term)
+			*bootconf_term = '\0';
+	}
+
 	config = fdt_path_offset(fit, FIT_CONFS_PATH);
 	if (config < 0) {
 		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", FIT_CONFS_PATH, images);
@@ -147,15 +165,15 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 	config_default = fdt_getprop(fit, config, FIT_DEFAULT_PROP, &config_default_len);
 
-	if (!config_default) {
+	if (!config_default && !bootconf) {
 		printk(KERN_ERR "FIT: Cannot find default configuration\n");
 		ret = -ENOENT;
 		goto ret_out;
 	}
 
-	node = fdt_subnode_offset(fit, config, config_default);
+	node = fdt_subnode_offset(fit, config, bootconf?:config_default);
 	if (node < 0) {
-		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", config_default, node);
+		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", bootconf?:config_default, node);
 		ret = -ENOENT;
 		goto ret_out;
 	}
@@ -163,8 +181,15 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 	config_description = fdt_getprop(fit, node, FIT_DESC_PROP, &config_description_len);
 	config_loadables = fdt_getprop(fit, node, FIT_LOADABLE_PROP, &config_loadables_len);
 
-	printk(KERN_DEBUG "FIT: Default configuration: \"%s\"%s%s%s\n", config_default,
+	printk(KERN_DEBUG "FIT: %s configuration: \"%s\"%s%s%s\n",
+		bootconf?"Selected":"Default", bootconf?:config_default,
 		config_description?" (":"", config_description?:"", config_description?")":"");
+
+	if (!config_loadables || !config_loadables_len) {
+		printk(KERN_ERR "FIT: No loadables configured in \"%s\"\n", bootconf?:config_default);
+		ret = -ENOENT;
+		goto ret_out;
+	}
 
 	images = fdt_path_offset(fit, FIT_IMAGES_PATH);
 	if (images < 0) {
@@ -202,6 +227,22 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		if (strcmp(image_type, FIT_FILESYSTEM_PROP))
 			continue;
 
+		/* check if sub-image is part of configured loadables */
+		found = false;
+		loadable = config_loadables;
+		loadables_rem_len = config_loadables_len;
+		while (loadables_rem_len > 1) {
+			loadable_len = strnlen(loadable, loadables_rem_len - 1) + 1;
+			loadables_rem_len -= loadable_len;
+			if (!strncmp(image_name, loadable, loadable_len)) {
+				found = true;
+				break;
+			}
+			loadable += loadable_len;
+		}
+		if (!found)
+			continue;
+
 		if (image_pos & ((1 << PAGE_SHIFT)-1)) {
 			printk(KERN_ERR "FIT: image %s start not aligned to page boundaries, skipping\n", image_name);
 			continue;
@@ -222,7 +263,8 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		}
 
 		put_partition(state, ++(*slot), fit_start_sector + start_sect, nr_sects);
-		state->parts[*slot].flags = 0;
+		state->parts[*slot].flags = ADDPART_FLAG_READONLY;
+		state->parts[*slot].has_info = true;
 		info = &state->parts[*slot].info;
 
 		label_min = min_t(int, sizeof(info->volname) - 1, image_name_len);
@@ -232,13 +274,15 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		snprintf(tmp, sizeof(tmp), "(%s)", info->volname);
 		strlcat(state->pp_buf, tmp, PAGE_SIZE);
 
-		state->parts[*slot].has_info = true;
-
-		if (config_loadables && !strcmp(image_name, config_loadables)) {
-			printk(KERN_DEBUG "FIT: selecting configured loadable \"%s\" to be root filesystem\n", image_name);
+		/* Mark first loadable listed to be mounted as rootfs */
+		if (!strcmp(image_name, config_loadables)) {
+			select_rootfs = image_name;
 			state->parts[*slot].flags |= ADDPART_FLAG_ROOTDEV;
 		}
 	}
+
+	if (select_rootfs)
+		printk(KERN_DEBUG "FIT: selecting configured loadable \"%s\" to be root filesystem\n", select_rootfs);
 
 	if (add_remain && (imgmaxsect + MIN_FREE_SECT) < dsectors) {
 		put_partition(state, ++(*slot), fit_start_sector + imgmaxsect, dsectors - imgmaxsect);
@@ -249,6 +293,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		strlcat(state->pp_buf, tmp, PAGE_SIZE);
 	}
 ret_out:
+	kfree(bootconf);
 	kfree(fit);
 	return ret;
 }

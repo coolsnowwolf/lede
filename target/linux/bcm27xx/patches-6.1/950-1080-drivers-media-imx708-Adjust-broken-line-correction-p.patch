@@ -1,0 +1,139 @@
+From f364e0eb8f973e1aa24a3c451d18e84247a8efcd Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Wed, 8 Nov 2023 10:57:45 +0000
+Subject: [PATCH] drivers: media: imx708: Adjust broken line correction
+ parameter
+
+In full-resolution mode, the LPF_INTENSITY_EN and LPF_INTENSITY
+registers control Quad Bayer Re-mosaic broken line correction.
+Expose this as a module parameter "qbc_adjust": zero disables
+the correction and values in the range 2 to 5 set its strength.
+
+There is a trade-off between coloured and monochrome patterns.
+The previous fixed value 4 could produce ladder/spots artefacts
+in coloured textures. The new default value 2 may suit a wider
+range of scenes.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/media/i2c/imx708.c | 50 ++++++++++++++++++++++++++++++++------
+ 1 file changed, 42 insertions(+), 8 deletions(-)
+
+--- a/drivers/media/i2c/imx708.c
++++ b/drivers/media/i2c/imx708.c
+@@ -20,6 +20,14 @@
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-mediabus.h>
+ 
++/*
++ * Parameter to adjust Quad Bayer re-mosaic broken line correction
++ * strength, used in full-resolution mode only. Set zero to disable.
++ */
++static int qbc_adjust = 2;
++module_param(qbc_adjust, int, 0644);
++MODULE_PARM_DESC(qbc_adjust, "Quad Bayer broken line correction strength [0,2-5]");
++
+ #define IMX708_REG_VALUE_08BIT		1
+ #define IMX708_REG_VALUE_16BIT		2
+ 
+@@ -99,11 +107,17 @@
+ 
+ /* HDR exposure ratio (long:med == med:short) */
+ #define IMX708_HDR_EXPOSURE_RATIO       4
+-#define IMX708_REG_MID_EXPOSURE	0x3116
+-#define IMX708_REG_SHT_EXPOSURE	0x0224
++#define IMX708_REG_MID_EXPOSURE		0x3116
++#define IMX708_REG_SHT_EXPOSURE		0x0224
+ #define IMX708_REG_MID_ANALOG_GAIN	0x3118
+ #define IMX708_REG_SHT_ANALOG_GAIN	0x0216
+ 
++/* QBC Re-mosaic broken line correction registers */
++#define IMX708_LPF_INTENSITY_EN		0xC428
++#define IMX708_LPF_INTENSITY_ENABLED	0x00
++#define IMX708_LPF_INTENSITY_DISABLED	0x01
++#define IMX708_LPF_INTENSITY		0xC429
++
+ /*
+  * Metadata buffer holds a variety of data, all sent with the same VC/DT (0x12).
+  * It comprises two scanlines (of up to 5760 bytes each, for 4608 pixels)
+@@ -171,6 +185,9 @@ struct imx708_mode {
+ 
+ 	/* HDR flag, used for checking if the current mode is HDR */
+ 	bool hdr;
++
++	/* Quad Bayer Re-mosaic flag */
++	bool remosaic;
+ };
+ 
+ /* Default PDAF pixel correction gains */
+@@ -363,8 +380,6 @@ static const struct imx708_reg mode_4608
+ 	{0x341f, 0x20},
+ 	{0x3420, 0x00},
+ 	{0x3421, 0xd8},
+-	{0xC428, 0x00},
+-	{0xC429, 0x04},
+ 	{0x3366, 0x00},
+ 	{0x3367, 0x00},
+ 	{0x3368, 0x00},
+@@ -677,7 +692,8 @@ static const struct imx708_mode supporte
+ 		.pixel_rate = 595200000,
+ 		.exposure_lines_min = 8,
+ 		.exposure_lines_step = 1,
+-		.hdr = false
++		.hdr = false,
++		.remosaic = true
+ 	},
+ 	{
+ 		/* regular 2x2 binned. */
+@@ -699,7 +715,8 @@ static const struct imx708_mode supporte
+ 		.pixel_rate = 585600000,
+ 		.exposure_lines_min = 4,
+ 		.exposure_lines_step = 2,
+-		.hdr = false
++		.hdr = false,
++		.remosaic = false
+ 	},
+ 	{
+ 		/* 2x2 binned and cropped for 720p. */
+@@ -721,7 +738,8 @@ static const struct imx708_mode supporte
+ 		.pixel_rate = 566400000,
+ 		.exposure_lines_min = 4,
+ 		.exposure_lines_step = 2,
+-		.hdr = false
++		.hdr = false,
++		.remosaic = false
+ 	},
+ };
+ 
+@@ -746,7 +764,8 @@ static const struct imx708_mode supporte
+ 		.pixel_rate = 777600000,
+ 		.exposure_lines_min = 8 * IMX708_HDR_EXPOSURE_RATIO * IMX708_HDR_EXPOSURE_RATIO,
+ 		.exposure_lines_step = 2 * IMX708_HDR_EXPOSURE_RATIO * IMX708_HDR_EXPOSURE_RATIO,
+-		.hdr = true
++		.hdr = true,
++		.remosaic = false
+ 	}
+ };
+ 
+@@ -1515,6 +1534,21 @@ static int imx708_start_streaming(struct
+ 		return ret;
+ 	}
+ 
++	/* Quad Bayer re-mosaic adjustments (for full-resolution mode only) */
++	if (imx708->mode->remosaic && qbc_adjust > 0) {
++		imx708_write_reg(imx708, IMX708_LPF_INTENSITY,
++				 IMX708_REG_VALUE_08BIT, qbc_adjust);
++		imx708_write_reg(imx708,
++				 IMX708_LPF_INTENSITY_EN,
++				 IMX708_REG_VALUE_08BIT,
++				 IMX708_LPF_INTENSITY_ENABLED);
++	} else {
++		imx708_write_reg(imx708,
++				 IMX708_LPF_INTENSITY_EN,
++				 IMX708_REG_VALUE_08BIT,
++				 IMX708_LPF_INTENSITY_DISABLED);
++	}
++
+ 	/* Apply customized values from user */
+ 	ret =  __v4l2_ctrl_handler_setup(imx708->sd.ctrl_handler);
+ 	if (ret)

@@ -1,0 +1,355 @@
+From 0a1cd70189daec3baf4b4a233dd8e25ffbb9d512 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 28 Apr 2021 17:46:01 +0100
+Subject: [PATCH] dmaengine: dw-axi-dmac: Fixes for RP1
+
+Don't assume that DMA addresses of devices are the same as their
+physical addresses - convert correctly.
+
+The CFG2 register layout is used when there are more than 8 channels,
+but also when configured for more than 16 target peripheral devices
+because the index of the handshake signal has to be made wider.
+
+Reset the DMAC on probe
+
+The driver goes to the trouble of tracking when transfers have been
+paused, but then doesn't report that state when queried.
+
+Not having APB registers is not an error - for most use cases it's
+not even of interest, it's expected. Demote the message to debug level,
+which is disabled by default.
+
+Each channel has a descriptor pool, which is shared between transfers.
+It is unsafe to treat the total number of descriptors allocated from a
+pool as the number allocated to a specific transfer; doing so leads
+to releasing buffers that shouldn't be released and walking off the
+ends of descriptor lists. Instead, give each transfer descriptor its
+own count.
+
+Support partial transfers:
+Some use cases involve streaming from a device where the transfer only
+proceeds when the device's FIFO occupancy exceeds a certain threshold.
+In such cases (e.g. when pulling data from a UART) it is important to
+know how much data has been transferred so far, in order that remaining
+bytes can be read from the FIFO directly by software.
+
+Add the necessary code to provide this "residue" value with a finer,
+sub-transfer granularity.
+
+In order to prevent the occasional byte getting stuck in the DMA
+controller's internal buffers, restrict the destination memory width
+to the source register width.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../dma/dw-axi-dmac/dw-axi-dmac-platform.c    | 136 +++++++++++++++---
+ drivers/dma/dw-axi-dmac/dw-axi-dmac.h         |   3 +
+ 2 files changed, 118 insertions(+), 21 deletions(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -12,6 +12,7 @@
+ #include <linux/device.h>
+ #include <linux/dmaengine.h>
+ #include <linux/dmapool.h>
++#include <linux/dma-direct.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+ #include <linux/interrupt.h>
+@@ -79,6 +80,17 @@ axi_chan_iowrite64(struct axi_dma_chan *
+ 	iowrite32(upper_32_bits(val), chan->chan_regs + reg + 4);
+ }
+ 
++static inline u64
++axi_chan_ioread64(struct axi_dma_chan *chan, u32 reg)
++{
++	/*
++	 * We split one 64 bit read into two 32 bit reads as some HW doesn't
++	 * support 64 bit access.
++	 */
++	return ((u64)ioread32(chan->chan_regs + reg + 4) << 32) +
++		ioread32(chan->chan_regs + reg);
++}
++
+ static inline void axi_chan_config_write(struct axi_dma_chan *chan,
+ 					 struct axi_dma_chan_config *config)
+ {
+@@ -86,7 +98,7 @@ static inline void axi_chan_config_write
+ 
+ 	cfg_lo = (config->dst_multblk_type << CH_CFG_L_DST_MULTBLK_TYPE_POS |
+ 		  config->src_multblk_type << CH_CFG_L_SRC_MULTBLK_TYPE_POS);
+-	if (chan->chip->dw->hdata->reg_map_8_channels) {
++	if (!chan->chip->dw->hdata->reg_map_cfg2) {
+ 		cfg_hi = config->tt_fc << CH_CFG_H_TT_FC_POS |
+ 			 config->hs_sel_src << CH_CFG_H_HS_SEL_SRC_POS |
+ 			 config->hs_sel_dst << CH_CFG_H_HS_SEL_DST_POS |
+@@ -214,7 +226,18 @@ static void axi_dma_hw_init(struct axi_d
+ {
+ 	int ret;
+ 	u32 i;
++	int retries = 1000;
+ 
++	axi_dma_iowrite32(chip, DMAC_RESET, 1);
++	while (axi_dma_ioread32(chip, DMAC_RESET)) {
++		retries--;
++		if (!retries) {
++			dev_err(chip->dev, "%s: DMAC failed to reset\n",
++				__func__);
++			return;
++		}
++		cpu_relax();
++	}
+ 	for (i = 0; i < chip->dw->hdata->nr_channels; i++) {
+ 		axi_chan_irq_disable(&chip->dw->chan[i], DWAXIDMAC_IRQ_ALL);
+ 		axi_chan_disable(&chip->dw->chan[i]);
+@@ -276,7 +299,7 @@ static struct axi_dma_lli *axi_desc_get(
+ static void axi_desc_put(struct axi_dma_desc *desc)
+ {
+ 	struct axi_dma_chan *chan = desc->chan;
+-	int count = atomic_read(&chan->descs_allocated);
++	u32 count = desc->hw_desc_count;
+ 	struct axi_dma_hw_desc *hw_desc;
+ 	int descs_put;
+ 
+@@ -298,6 +321,48 @@ static void vchan_desc_put(struct virt_d
+ 	axi_desc_put(vd_to_axi_desc(vdesc));
+ }
+ 
++static u32 axi_dma_desc_src_pos(struct axi_dma_desc *desc, dma_addr_t addr)
++{
++	unsigned int idx = 0;
++	u32 pos = 0;
++
++	while (pos < desc->length) {
++		struct axi_dma_hw_desc *hw_desc = &desc->hw_desc[idx++];
++		u32 len = hw_desc->len;
++		dma_addr_t start = le64_to_cpu(hw_desc->lli->sar);
++
++		if (addr >= start && addr <= (start + len)) {
++			pos += addr - start;
++			break;
++		}
++
++		pos += len;
++	}
++
++	return pos;
++}
++
++static u32 axi_dma_desc_dst_pos(struct axi_dma_desc *desc, dma_addr_t addr)
++{
++	unsigned int idx = 0;
++	u32 pos = 0;
++
++	while (pos < desc->length) {
++		struct axi_dma_hw_desc *hw_desc = &desc->hw_desc[idx++];
++		u32 len = hw_desc->len;
++		dma_addr_t start = le64_to_cpu(hw_desc->lli->dar);
++
++		if (addr >= start && addr <= (start + len)) {
++			pos += addr - start;
++			break;
++		}
++
++		pos += len;
++	}
++
++	return pos;
++}
++
+ static enum dma_status
+ dma_chan_tx_status(struct dma_chan *dchan, dma_cookie_t cookie,
+ 		  struct dma_tx_state *txstate)
+@@ -307,10 +372,7 @@ dma_chan_tx_status(struct dma_chan *dcha
+ 	enum dma_status status;
+ 	u32 completed_length;
+ 	unsigned long flags;
+-	u32 completed_blocks;
+ 	size_t bytes = 0;
+-	u32 length;
+-	u32 len;
+ 
+ 	status = dma_cookie_status(dchan, cookie, txstate);
+ 	if (status == DMA_COMPLETE || !txstate)
+@@ -319,16 +381,31 @@ dma_chan_tx_status(struct dma_chan *dcha
+ 	spin_lock_irqsave(&chan->vc.lock, flags);
+ 
+ 	vdesc = vchan_find_desc(&chan->vc, cookie);
+-	if (vdesc) {
+-		length = vd_to_axi_desc(vdesc)->length;
+-		completed_blocks = vd_to_axi_desc(vdesc)->completed_blocks;
+-		len = vd_to_axi_desc(vdesc)->hw_desc[0].len;
+-		completed_length = completed_blocks * len;
+-		bytes = length - completed_length;
++	if (vdesc && vdesc == vchan_next_desc(&chan->vc)) {
++		/* This descriptor is in-progress */
++		struct axi_dma_desc *desc = vd_to_axi_desc(vdesc);
++		dma_addr_t addr;
++
++		if (chan->direction == DMA_MEM_TO_DEV) {
++			addr = axi_chan_ioread64(chan, CH_SAR);
++			completed_length = axi_dma_desc_src_pos(desc, addr);
++		} else if (chan->direction == DMA_DEV_TO_MEM) {
++			addr = axi_chan_ioread64(chan, CH_DAR);
++			completed_length = axi_dma_desc_dst_pos(desc, addr);
++		} else {
++			completed_length = 0;
++		}
++		bytes = desc->length - completed_length;
++	} else if (vdesc) {
++		/* Still in the queue so not started */
++		bytes = vd_to_axi_desc(vdesc)->length;
+ 	}
+ 
+-	spin_unlock_irqrestore(&chan->vc.lock, flags);
++	if (chan->is_paused && status == DMA_IN_PROGRESS)
++		status = DMA_PAUSED;
++
+ 	dma_set_residue(txstate, bytes);
++	spin_unlock_irqrestore(&chan->vc.lock, flags);
+ 
+ 	return status;
+ }
+@@ -516,7 +593,7 @@ static void dw_axi_dma_set_hw_channel(st
+ 	unsigned long reg_value, val;
+ 
+ 	if (!chip->apb_regs) {
+-		dev_err(chip->dev, "apb_regs not initialized\n");
++		dev_dbg(chip->dev, "apb_regs not initialized\n");
+ 		return;
+ 	}
+ 
+@@ -620,18 +697,25 @@ static int dw_axi_dma_set_hw_desc(struct
+ 	switch (chan->direction) {
+ 	case DMA_MEM_TO_DEV:
+ 		reg_width = __ffs(chan->config.dst_addr_width);
+-		device_addr = chan->config.dst_addr;
++		device_addr = phys_to_dma(chan->chip->dev, chan->config.dst_addr);
+ 		ctllo = reg_width << CH_CTL_L_DST_WIDTH_POS |
+ 			mem_width << CH_CTL_L_SRC_WIDTH_POS |
++			DWAXIDMAC_BURST_TRANS_LEN_1 << CH_CTL_L_DST_MSIZE_POS |
++			DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_SRC_MSIZE_POS |
+ 			DWAXIDMAC_CH_CTL_L_NOINC << CH_CTL_L_DST_INC_POS |
+ 			DWAXIDMAC_CH_CTL_L_INC << CH_CTL_L_SRC_INC_POS;
+ 		block_ts = len >> mem_width;
+ 		break;
+ 	case DMA_DEV_TO_MEM:
+ 		reg_width = __ffs(chan->config.src_addr_width);
+-		device_addr = chan->config.src_addr;
++		/* Prevent partial access units getting lost */
++		if (mem_width > reg_width)
++			mem_width = reg_width;
++		device_addr = phys_to_dma(chan->chip->dev, chan->config.src_addr);
+ 		ctllo = reg_width << CH_CTL_L_SRC_WIDTH_POS |
+ 			mem_width << CH_CTL_L_DST_WIDTH_POS |
++			DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_DST_MSIZE_POS |
++			DWAXIDMAC_BURST_TRANS_LEN_1 << CH_CTL_L_SRC_MSIZE_POS |
+ 			DWAXIDMAC_CH_CTL_L_INC << CH_CTL_L_DST_INC_POS |
+ 			DWAXIDMAC_CH_CTL_L_NOINC << CH_CTL_L_SRC_INC_POS;
+ 		block_ts = len >> reg_width;
+@@ -667,9 +751,6 @@ static int dw_axi_dma_set_hw_desc(struct
+ 	}
+ 
+ 	hw_desc->lli->block_ts_lo = cpu_to_le32(block_ts - 1);
+-
+-	ctllo |= DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_DST_MSIZE_POS |
+-		 DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_SRC_MSIZE_POS;
+ 	hw_desc->lli->ctl_lo = cpu_to_le32(ctllo);
+ 
+ 	set_desc_src_master(hw_desc);
+@@ -764,6 +845,8 @@ dw_axi_dma_chan_prep_cyclic(struct dma_c
+ 		src_addr += segment_len;
+ 	}
+ 
++	desc->hw_desc_count = total_segments;
++
+ 	llp = desc->hw_desc[0].llp;
+ 
+ 	/* Managed transfer list */
+@@ -843,6 +926,8 @@ dw_axi_dma_chan_prep_slave_sg(struct dma
+ 		} while (len >= segment_len);
+ 	}
+ 
++	desc->hw_desc_count = loop;
++
+ 	/* Set end-of-link to the last link descriptor of list */
+ 	set_desc_last(&desc->hw_desc[num_sgs - 1]);
+ 
+@@ -950,6 +1035,8 @@ dma_chan_prep_dma_memcpy(struct dma_chan
+ 		num++;
+ 	}
+ 
++	desc->hw_desc_count = num;
++
+ 	/* Set end-of-link to the last link descriptor of list */
+ 	set_desc_last(&desc->hw_desc[num - 1]);
+ 	/* Managed transfer list */
+@@ -998,7 +1085,7 @@ static void axi_chan_dump_lli(struct axi
+ static void axi_chan_list_dump_lli(struct axi_dma_chan *chan,
+ 				   struct axi_dma_desc *desc_head)
+ {
+-	int count = atomic_read(&chan->descs_allocated);
++	u32 count = desc_head->hw_desc_count;
+ 	int i;
+ 
+ 	for (i = 0; i < count; i++)
+@@ -1041,11 +1128,11 @@ out:
+ 
+ static void axi_chan_block_xfer_complete(struct axi_dma_chan *chan)
+ {
+-	int count = atomic_read(&chan->descs_allocated);
+ 	struct axi_dma_hw_desc *hw_desc;
+ 	struct axi_dma_desc *desc;
+ 	struct virt_dma_desc *vd;
+ 	unsigned long flags;
++	u32 count;
+ 	u64 llp;
+ 	int i;
+ 
+@@ -1067,6 +1154,7 @@ static void axi_chan_block_xfer_complete
+ 	if (chan->cyclic) {
+ 		desc = vd_to_axi_desc(vd);
+ 		if (desc) {
++			count = desc->hw_desc_count;
+ 			llp = lo_hi_readq(chan->chan_regs + CH_LLP);
+ 			for (i = 0; i < count; i++) {
+ 				hw_desc = &desc->hw_desc[i];
+@@ -1310,6 +1398,8 @@ static int parse_device_properties(struc
+ 	chip->dw->hdata->nr_channels = tmp;
+ 	if (tmp <= DMA_REG_MAP_CH_REF)
+ 		chip->dw->hdata->reg_map_8_channels = true;
++	else
++		chip->dw->hdata->reg_map_cfg2 = true;
+ 
+ 	ret = device_property_read_u32(dev, "snps,dma-masters", &tmp);
+ 	if (ret)
+@@ -1319,6 +1409,10 @@ static int parse_device_properties(struc
+ 
+ 	chip->dw->hdata->nr_masters = tmp;
+ 
++	ret = device_property_read_u32(dev, "snps,dma-targets", &tmp);
++	if (!ret && tmp > 16)
++		chip->dw->hdata->reg_map_cfg2 = true;
++
+ 	ret = device_property_read_u32(dev, "snps,data-width", &tmp);
+ 	if (ret)
+ 		return ret;
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
+@@ -32,6 +32,8 @@ struct dw_axi_dma_hcfg {
+ 	u32	axi_rw_burst_len;
+ 	/* Register map for DMAX_NUM_CHANNELS <= 8 */
+ 	bool	reg_map_8_channels;
++	/* Register map for DMAX_NUM_CHANNELS > 8 || DMAX_NUM_HS_IF > 16*/
++	bool	reg_map_cfg2;
+ 	bool	restrict_axi_burst_len;
+ };
+ 
+@@ -100,6 +102,7 @@ struct axi_dma_desc {
+ 
+ 	struct virt_dma_desc		vd;
+ 	struct axi_dma_chan		*chan;
++	u32				hw_desc_count;
+ 	u32				completed_blocks;
+ 	u32				length;
+ 	u32				period_len;

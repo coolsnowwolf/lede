@@ -1,0 +1,358 @@
+From 39ae36d19bf6e59e3091f8f0ec6f4eac59aaf6f2 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 14 Apr 2023 13:43:32 +0200
+Subject: [PATCH] drm/vc4: tests: Introduce a test for LBM buffer size
+
+The BCM2712 comes with a different LBM size computation than the
+previous generations, so let's add the few examples provided as kunit
+tests to make sure we always satisfy those requirements.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/Makefile                  |   3 +-
+ drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c | 327 ++++++++++++++++++
+ 2 files changed, 329 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
+
+--- a/drivers/gpu/drm/vc4/Makefile
++++ b/drivers/gpu/drm/vc4/Makefile
+@@ -31,7 +31,8 @@ vc4-$(CONFIG_DRM_VC4_KUNIT_TEST) += \
+ 	tests/vc4_mock_crtc.o \
+ 	tests/vc4_mock_output.o \
+ 	tests/vc4_mock_plane.o \
+-	tests/vc4_test_pv_muxing.o
++	tests/vc4_test_pv_muxing.o \
++	tests/vc4_test_lbm_size.o
+ 
+ vc4-$(CONFIG_DEBUG_FS) += vc4_debugfs.o
+ 
+--- /dev/null
++++ b/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
+@@ -0,0 +1,327 @@
++// SPDX-License-Identifier: GPL-2.0
++
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_atomic_uapi.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_plane.h>
++#include <drm/drm_kunit_helpers.h>
++
++#include "../../drm_crtc_internal.h"
++#include "../../drm_internal.h"
++
++#include <kunit/test.h>
++
++#include "../vc4_drv.h"
++
++#include "vc4_mock.h"
++
++u32 vc4_lbm_size(struct drm_plane_state *state);
++
++struct vc4_lbm_size_priv {
++	struct vc4_dev *vc4;
++	struct drm_file *file;
++	struct drm_modeset_acquire_ctx ctx;
++	struct drm_atomic_state *state;
++};
++
++struct vc4_lbm_size_param {
++	unsigned int src_w, src_h;
++	unsigned int crtc_w, crtc_h;
++	bool forced_alpha;
++	u32 fourcc;
++	enum vc4_scaling_mode expected_x_scaling[2];
++	enum vc4_scaling_mode expected_y_scaling[2];
++	unsigned int expected_lbm_size;
++};
++
++static const struct vc4_lbm_size_param vc4_test_lbm_size_params[] = {
++	{
++		.src_w = 256,
++		.crtc_w = 256,
++		.src_h = 256,
++		.crtc_h = 512,
++		.fourcc = DRM_FORMAT_ARGB8888,
++		.expected_x_scaling = { VC4_SCALING_NONE, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 32,
++	},
++	{
++		.src_w = 256,
++		.crtc_w = 179,
++		.src_h = 256,
++		.crtc_h = 512,
++		.fourcc = DRM_FORMAT_ARGB8888,
++		.expected_x_scaling = { VC4_SCALING_PPF, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 23,
++	},
++	{
++		.src_w = 256,
++		.crtc_w = 256,
++		.src_h = 256,
++		.crtc_h = 512,
++		.fourcc = DRM_FORMAT_XRGB8888,
++		.expected_x_scaling = { VC4_SCALING_NONE, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 24,
++	},
++	{
++		.src_w = 100,
++		.crtc_w = 73,
++		.src_h = 100,
++		.crtc_h = 73,
++		.fourcc = DRM_FORMAT_XRGB8888,
++		.expected_x_scaling = { VC4_SCALING_PPF, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 8,
++	},
++	{
++		.src_w = 256,
++		.crtc_w = 256,
++		.src_h = 256,
++		.crtc_h = 512,
++		.forced_alpha = true,
++		.fourcc = DRM_FORMAT_ARGB8888,
++		.expected_x_scaling = { VC4_SCALING_NONE, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 24,
++	},
++	{
++		.src_w = 100,
++		.crtc_w = 73,
++		.src_h = 100,
++		.crtc_h = 73,
++		.forced_alpha = true,
++		.fourcc = DRM_FORMAT_ARGB8888,
++		.expected_x_scaling = { VC4_SCALING_PPF, },
++		.expected_y_scaling = { VC4_SCALING_PPF, },
++		.expected_lbm_size = 8,
++	},
++	{
++		.src_w = 256,
++		.crtc_w = 94,
++		.src_h = 256,
++		.crtc_h = 94,
++		.fourcc = DRM_FORMAT_ARGB8888,
++		.expected_x_scaling = { VC4_SCALING_TPZ, },
++		.expected_y_scaling = { VC4_SCALING_TPZ, },
++		.expected_lbm_size = 6,
++	},
++
++/*
++ * TODO: Those tests reflect the LBM size calculation examples, but the
++ * driver ends up taking different scaler filters decisions, and thus
++ * doesn't end up with the same sizes. It would be valuable to have
++ * those tests, but the driver doesn't take a bad decision either, so
++ * it's not clear what we should do at this point.
++ */
++#if 0
++	{
++		.src_w = 320,
++		.crtc_w = 320,
++		.src_h = 320,
++		.crtc_h = 320,
++		.fourcc = DRM_FORMAT_YUV420,
++		.expected_x_scaling = { VC4_SCALING_NONE, VC4_SCALING_NONE, },
++		.expected_y_scaling = { VC4_SCALING_NONE, VC4_SCALING_PPF, },
++		.expected_lbm_size = 10,
++	},
++	{
++		.src_w = 512,
++		.crtc_w = 512,
++		.src_h = 512,
++		.crtc_h = 256,
++		.fourcc = DRM_FORMAT_YUV420,
++		.expected_x_scaling = { VC4_SCALING_NONE, VC4_SCALING_NONE, },
++		.expected_y_scaling = { VC4_SCALING_TPZ, VC4_SCALING_NONE, },
++		.expected_lbm_size = 5,
++	},
++	{
++		.src_w = 486,
++		.crtc_w = 157,
++		.src_h = 404,
++		.crtc_h = 929,
++		.fourcc = DRM_FORMAT_YUV422,
++		.expected_x_scaling = { VC4_SCALING_PPF, VC4_SCALING_PPF, },
++		.expected_y_scaling = { VC4_SCALING_PPF, VC4_SCALING_PPF, },
++		.expected_lbm_size = 20,
++	},
++	{
++		.src_w = 320,
++		.crtc_w = 128,
++		.src_h = 176,
++		.crtc_h = 70,
++		.fourcc = DRM_FORMAT_YUV420,
++		.expected_x_scaling = { VC4_SCALING_TPZ, VC4_SCALING_TPZ, },
++		.expected_y_scaling = { VC4_SCALING_TPZ, VC4_SCALING_TPZ, },
++		.expected_lbm_size = 8,
++	},
++#endif
++};
++
++static void vc4_test_lbm_size_desc(const struct vc4_lbm_size_param *t, char *desc)
++{
++	snprintf(desc, KUNIT_PARAM_DESC_SIZE,
++		 "%ux%u to %ux%u %s(%p4cc)",
++		 t->src_w, t->src_h,
++		 t->crtc_w, t->crtc_h,
++		 t->forced_alpha ? "with forced alpha " : "",
++		 &t->fourcc);
++}
++
++KUNIT_ARRAY_PARAM(vc4_test_lbm_size,
++		  vc4_test_lbm_size_params,
++		  vc4_test_lbm_size_desc);
++
++static void drm_vc4_test_vc4_lbm_size(struct kunit *test)
++{
++	const struct vc4_lbm_size_param *params = test->param_value;
++	const struct vc4_lbm_size_priv *priv = test->priv;
++	const struct drm_format_info *info;
++	struct drm_mode_fb_cmd2 fb_req = { };
++	struct drm_atomic_state *state = priv->state;
++	struct vc4_plane_state *vc4_plane_state;
++	struct drm_plane_state *plane_state;
++	struct vc4_dummy_output *output;
++	struct drm_framebuffer *fb;
++	struct drm_plane *plane;
++	struct drm_crtc *crtc;
++	unsigned int i;
++	int ret;
++
++	info = drm_format_info(params->fourcc);
++	KUNIT_ASSERT_NOT_NULL(test, info);
++
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
++
++	crtc = vc4_find_crtc_for_encoder(test, &output->encoder.base);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, crtc);
++
++	plane = vc4_mock_atomic_add_plane(test, state, crtc);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, plane);
++
++	plane_state = drm_atomic_get_plane_state(state, plane);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, plane_state);
++
++	vc4_plane_state = to_vc4_plane_state(plane_state);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, vc4_plane_state);
++
++	fb_req.pixel_format = params->fourcc;
++	fb_req.width = params->src_w;
++	fb_req.height = params->src_h;
++
++	for (i = 0; i < info->num_planes; i++) {
++		struct drm_mode_create_dumb dumb_args = { };
++
++		dumb_args.width = params->src_w;
++		dumb_args.height = params->src_h;
++		dumb_args.bpp = drm_format_info_bpp(info, i);
++
++		ret = drm_mode_create_dumb(state->dev, &dumb_args, priv->file);
++		KUNIT_ASSERT_EQ(test, ret, 0);
++
++		fb_req.handles[i] = dumb_args.handle;
++		fb_req.pitches[i] = dumb_args.pitch;
++	}
++
++	fb = drm_internal_framebuffer_create(state->dev, &fb_req, priv->file);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, fb);
++
++	drm_atomic_set_fb_for_plane(plane_state, fb);
++
++	plane_state->src_x = 0;
++	plane_state->src_y = 0;
++	plane_state->src_h = params->src_h << 16;
++	plane_state->src_w = params->src_w << 16;
++
++	plane_state->crtc_x = 0;
++	plane_state->crtc_y = 0;
++	plane_state->crtc_h = params->crtc_h;
++	plane_state->crtc_w = params->crtc_w;
++
++	if (params->forced_alpha)
++		plane_state->alpha = 128;
++
++	ret = drm_atomic_check_only(state);
++	KUNIT_ASSERT_EQ(test, ret, 0);
++
++	KUNIT_EXPECT_EQ(test, vc4_plane_state->lbm.size, params->expected_lbm_size);
++
++	for (i = 0; i < 2; i++) {
++		KUNIT_EXPECT_EQ(test,
++				vc4_plane_state->x_scaling[i],
++				params->expected_x_scaling[i]);
++		KUNIT_EXPECT_EQ(test,
++				vc4_plane_state->y_scaling[i],
++				params->expected_y_scaling[i]);
++	}
++
++	drm_framebuffer_put(fb);
++
++	for (i = 0; i < info->num_planes; i++)
++		drm_mode_destroy_dumb(state->dev, fb_req.handles[i], priv->file);
++}
++
++static struct kunit_case vc4_lbm_size_tests[] = {
++	KUNIT_CASE_PARAM(drm_vc4_test_vc4_lbm_size,
++			 vc4_test_lbm_size_gen_params),
++	{}
++};
++
++static int vc4_lbm_size_test_init(struct kunit *test)
++{
++	struct drm_atomic_state *state;
++	struct vc4_lbm_size_priv *priv;
++	struct drm_device *drm;
++	struct vc4_dev *vc4;
++
++	priv = kunit_kzalloc(test, sizeof(*priv), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, priv);
++	test->priv = priv;
++
++	vc4 = vc6_mock_device(test);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, vc4);
++	priv->vc4 = vc4;
++
++	priv->file = drm_file_alloc(priv->vc4->base.primary);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, priv->file);
++
++	drm_modeset_acquire_init(&priv->ctx, 0);
++
++	drm = &vc4->base;
++	state = drm_atomic_state_alloc(drm);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
++
++	state->acquire_ctx = &priv->ctx;
++
++	priv->state = state;
++
++	return 0;
++}
++
++static void vc4_lbm_size_test_exit(struct kunit *test)
++{
++	struct vc4_lbm_size_priv *priv = test->priv;
++	struct vc4_dev *vc4 = priv->vc4;
++	struct drm_device *drm = &vc4->base;
++	struct drm_atomic_state *state = priv->state;
++
++	drm_atomic_state_put(state);
++	drm_modeset_drop_locks(&priv->ctx);
++	drm_modeset_acquire_fini(&priv->ctx);
++	drm_file_free(priv->file);
++	drm_dev_unregister(drm);
++	drm_kunit_helper_free_device(test, vc4->dev);
++}
++
++static struct kunit_suite vc4_lbm_size_test_suite = {
++	.name = "vc4-lbm-size",
++	.init = vc4_lbm_size_test_init,
++	.exit = vc4_lbm_size_test_exit,
++	.test_cases = vc4_lbm_size_tests,
++};
++
++kunit_test_suite(vc4_lbm_size_test_suite);

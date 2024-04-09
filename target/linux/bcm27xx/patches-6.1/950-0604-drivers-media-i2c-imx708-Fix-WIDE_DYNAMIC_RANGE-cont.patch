@@ -1,0 +1,94 @@
+From 700a1a11144c9b18b9da3d900a1d8bfa30a195a8 Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.com>
+Date: Wed, 22 Mar 2023 12:01:57 +0000
+Subject: [PATCH] drivers: media: i2c: imx708: Fix WIDE_DYNAMIC_RANGE
+ control with long exposure
+
+Setting V4L2_CID_WIDE_DYNAMIC_RANGE was causing the long exposure
+shift count to be reset, which is incorrect if the user has already
+changed the frame length to cause it to have a non-zero value.
+
+Because it only updates control ranges and doesn't set any registers,
+the control can also be applied when the sensor is not powered on.
+
+Signed-off-by: David Plowman <david.plowman@raspberrypi.com>
+---
+ drivers/media/i2c/imx708.c | 45 ++++++++++++++++++++++++--------------
+ 1 file changed, 28 insertions(+), 17 deletions(-)
+
+--- a/drivers/media/i2c/imx708.c
++++ b/drivers/media/i2c/imx708.c
+@@ -171,7 +171,7 @@ struct imx708_mode {
+ 	/* Not all modes have the same exposure lines step. */
+ 	u32 exposure_lines_step;
+ 
+-	/* HDR flag, currently not used at runtime */
++	/* HDR flag, used for checking if the current mode is HDR */
+ 	bool hdr;
+ };
+ 
+@@ -1060,9 +1060,6 @@ static void imx708_set_framing_limits(st
+ 	unsigned int hblank;
+ 	const struct imx708_mode *mode = imx708->mode;
+ 
+-	/* Default to no long exposure multiplier */
+-	imx708->long_exp_shift = 0;
+-
+ 	__v4l2_ctrl_modify_range(imx708->pixel_rate,
+ 				 mode->pixel_rate, mode->pixel_rate,
+ 				 1, mode->pixel_rate);
+@@ -1091,12 +1088,33 @@ static int imx708_set_ctrl(struct v4l2_c
+ 	unsigned int code, num_modes;
+ 	int ret = 0;
+ 
+-	/*
+-	 * The VBLANK control may change the limits of usable exposure, so check
+-	 * and adjust if necessary.
+-	 */
+-	if (ctrl->id == V4L2_CID_VBLANK)
++	switch (ctrl->id) {
++	case V4L2_CID_VBLANK:
++		/*
++		 * The VBLANK control may change the limits of usable exposure,
++		 * so check and adjust if necessary.
++		 */
+ 		imx708_adjust_exposure_range(imx708, ctrl);
++		break;
++
++	case V4L2_CID_WIDE_DYNAMIC_RANGE:
++		/*
++		 * The WIDE_DYNAMIC_RANGE control can also be applied immediately
++		 * as it doesn't set any registers. Don't do anything if the mode
++		 * already matches.
++		 */
++		if (imx708->mode && imx708->mode->hdr != ctrl->val) {
++			code = imx708_get_format_code(imx708);
++			get_mode_table(code, &mode_list, &num_modes, ctrl->val);
++			imx708->mode = v4l2_find_nearest_size(mode_list,
++							      num_modes,
++							      width, height,
++							      imx708->mode->width,
++							      imx708->mode->height);
++			imx708_set_framing_limits(imx708);
++		}
++		break;
++	}
+ 
+ 	/*
+ 	 * Applying V4L2 control value only happens
+@@ -1158,14 +1176,7 @@ static int imx708_set_ctrl(struct v4l2_c
+ 				       imx708->notify_gains->p_new.p_u32[3]);
+ 		break;
+ 	case V4L2_CID_WIDE_DYNAMIC_RANGE:
+-		code = imx708_get_format_code(imx708);
+-		get_mode_table(code, &mode_list, &num_modes, ctrl->val);
+-		imx708->mode = v4l2_find_nearest_size(mode_list,
+-						      num_modes,
+-						      width, height,
+-						      imx708->mode->width,
+-						      imx708->mode->height);
+-		imx708_set_framing_limits(imx708);
++		/* Already handled above. */
+ 		break;
+ 	default:
+ 		dev_info(&client->dev,

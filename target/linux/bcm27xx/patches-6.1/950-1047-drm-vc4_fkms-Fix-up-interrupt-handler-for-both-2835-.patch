@@ -1,0 +1,109 @@
+From 4137b49989ce710305e476d0bd1086d7d906ff50 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 20 Oct 2023 17:09:54 +0100
+Subject: [PATCH] drm/vc4_fkms: Fix up interrupt handler for both 2835/2711 and
+ 2712
+
+2712 has switched from using the SMI peripheral to another interrupt
+source for the vsync interrupt, so handle both sources cleanly.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_firmware_kms.c | 48 ++++++++++++++++++++------
+ 1 file changed, 38 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_firmware_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_firmware_kms.c
+@@ -47,9 +47,15 @@ struct get_display_cfg {
+ 	u32  max_pixel_clock[2];  //Max pixel clock for each display
+ };
+ 
++enum vc4_fkms_revision {
++	BCM2835_6_7,
++	BCM2711,
++	BCM2712,
++};
++
+ struct vc4_fkms {
+ 	struct get_display_cfg cfg;
+-	bool bcm2711;
++	enum vc4_fkms_revision revision;
+ };
+ 
+ #define PLANES_PER_CRTC		8
+@@ -1149,7 +1155,7 @@ vc4_crtc_mode_valid(struct drm_crtc *crt
+ 	/* Pi4 can't generate odd horizontal timings on HDMI, so reject modes
+ 	 * that would set them.
+ 	 */
+-	if (fkms->bcm2711 &&
++	if (fkms->revision >= BCM2711 &&
+ 	    (vc4_crtc->display_number == 2 || vc4_crtc->display_number == 7) &&
+ 	    !(mode->flags & DRM_MODE_FLAG_DBLCLK) &&
+ 	    ((mode->hdisplay |				/* active */
+@@ -1267,6 +1273,20 @@ static irqreturn_t vc4_crtc_irq_handler(
+ 	return ret;
+ }
+ 
++static irqreturn_t vc4_crtc2712_irq_handler(int irq, void *data)
++{
++	struct vc4_crtc **crtc_list = data;
++	int i;
++
++	for (i = 0; crtc_list[i]; i++) {
++		if (crtc_list[i]->vblank_enabled)
++			drm_crtc_handle_vblank(&crtc_list[i]->base);
++		vc4_crtc_handle_page_flip(crtc_list[i]);
++	}
++
++	return IRQ_HANDLED;
++}
++
+ static int vc4_fkms_page_flip(struct drm_crtc *crtc,
+ 			      struct drm_framebuffer *fb,
+ 			      struct drm_pending_vblank_event *event,
+@@ -1352,9 +1372,12 @@ static const struct drm_crtc_helper_func
+ };
+ 
+ static const struct of_device_id vc4_firmware_kms_dt_match[] = {
+-	{ .compatible = "raspberrypi,rpi-firmware-kms" },
++	{ .compatible = "raspberrypi,rpi-firmware-kms",
++	  .data = (void *)BCM2835_6_7 },
+ 	{ .compatible = "raspberrypi,rpi-firmware-kms-2711",
+-	  .data = (void *)1 },
++	  .data = (void *)BCM2711 },
++	{ .compatible = "raspberrypi,rpi-firmware-kms-2712",
++	  .data = (void *)BCM2712 },
+ 	{}
+ };
+ 
+@@ -1924,8 +1947,7 @@ static int vc4_fkms_bind(struct device *
+ 	match = of_match_device(vc4_firmware_kms_dt_match, dev);
+ 	if (!match)
+ 		return -ENODEV;
+-	if (match->data)
+-		fkms->bcm2711 = true;
++	fkms->revision = (enum vc4_fkms_revision)match->data;
+ 
+ 	firmware_node = of_parse_phandle(dev->of_node, "brcm,firmware", 0);
+ 	vc4->firmware = devm_rpi_firmware_get(&pdev->dev, firmware_node);
+@@ -1992,10 +2014,16 @@ static int vc4_fkms_bind(struct device *
+ 		if (IS_ERR(crtc_list[0]->regs))
+ 			DRM_ERROR("Oh dear, failed to map registers\n");
+ 
+-		writel(0, crtc_list[0]->regs + SMICS);
+-		ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
+-				       vc4_crtc_irq_handler, 0,
+-				       "vc4 firmware kms", crtc_list);
++		if (fkms->revision >= BCM2712) {
++			ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
++					       vc4_crtc2712_irq_handler, 0,
++					       "vc4 firmware kms", crtc_list);
++		} else {
++			writel(0, crtc_list[0]->regs + SMICS);
++			ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
++					       vc4_crtc_irq_handler, 0,
++					       "vc4 firmware kms", crtc_list);
++		}
+ 		if (ret)
+ 			DRM_ERROR("Oh dear, failed to register IRQ\n");
+ 	} else {

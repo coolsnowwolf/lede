@@ -1,0 +1,60 @@
+From b31a82051bb9d4ba1c854df645a9195d3f00216f Mon Sep 17 00:00:00 2001
+From: Tim Gover <tim.gover@raspberrypi.com>
+Date: Tue, 20 Oct 2020 11:55:37 +0100
+Subject: [PATCH] firmware: raspberrypi: Add support for tryonce reboot
+ flag
+
+Define a new mailbox (SET_REBOOT_FLAGS) which may be used to
+pass optional flags to the Raspberry Pi firmware that changes
+the behaviour of the bootloader and firmware during a reboot.
+
+Currently this just defines the 'tryboot' flag which causes
+the firmware to load tryboot.txt instead config.txt. This
+alternate configuration file can be used to specify the
+path of an alternate firmware and kernels allowing a fallback
+mechanism to be implemented for OS upgrades.
+---
+ drivers/firmware/raspberrypi.c | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+--- a/drivers/firmware/raspberrypi.c
++++ b/drivers/firmware/raspberrypi.c
+@@ -193,6 +193,7 @@ static int rpi_firmware_notify_reboot(st
+ {
+ 	struct rpi_firmware *fw;
+ 	struct platform_device *pdev = g_pdev;
++	u32 reboot_flags = 0;
+ 
+ 	if (!pdev)
+ 		return 0;
+@@ -201,8 +202,28 @@ static int rpi_firmware_notify_reboot(st
+ 	if (!fw)
+ 		return 0;
+ 
+-	(void)rpi_firmware_property(fw, RPI_FIRMWARE_NOTIFY_REBOOT,
+-				    0, 0);
++	// The partition id is the first parameter followed by zero or
++	// more flags separated by spaces indicating the reason for the reboot.
++	//
++	// 'tryboot': Sets a one-shot flag which is cleared upon reboot and
++	//            causes the tryboot.txt to be loaded instead of config.txt
++	//            by the bootloader and the start.elf firmware.
++	//
++	//            This is intended to allow automatic fallback to a known
++	//            good image if an OS/FW upgrade fails.
++	//
++	// N.B. The firmware mechanism for storing reboot flags may vary
++	// on different Raspberry Pi models.
++	if (data && strstr(data, " tryboot"))
++		reboot_flags |= 0x1;
++
++	// The mailbox might have been called earlier, directly via vcmailbox
++	// so only overwrite if reboot flags are passed to the reboot command.
++	if (reboot_flags)
++		(void)rpi_firmware_property(fw, RPI_FIRMWARE_SET_REBOOT_FLAGS,
++				&reboot_flags, sizeof(reboot_flags));
++
++	(void)rpi_firmware_property(fw, RPI_FIRMWARE_NOTIFY_REBOOT, NULL, 0);
+ 
+ 	return 0;
+ }

@@ -1,0 +1,61 @@
+From e0f52ccfe1e383622fb30708acd38921e84fbff4 Mon Sep 17 00:00:00 2001
+From: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+Date: Tue, 3 Oct 2023 14:29:44 +0300
+Subject: [PATCH] media: rp1: cfe: Improve link validation for metadata
+
+Improve the link validation for metadata by:
+- Allowing capture buffers that are larger than the incoming frame
+  (instead of requiring exact match).
+
+- Instead of assuming that a metadata unit ("pixel") is 8 bits, use
+  find_format_by_code() to get the format and use the bit depth from
+  there. E.g. bit depth for RAW10 metadata will be 10 bits, when we
+  move to the upstream metadata formats.
+
+Signed-off-by: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 32 +++++++++++++------
+ 1 file changed, 22 insertions(+), 10 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -1715,17 +1715,29 @@ static int cfe_video_link_validate(struc
+ 		}
+ 	} else if (is_csi2_node(node) && is_meta_output_node(node)) {
+ 		struct v4l2_meta_format *meta_fmt = &node->meta_fmt.fmt.meta;
++		const struct cfe_fmt *fmt;
++		u32 source_size;
+ 
+-		if (source_fmt->width * source_fmt->height !=
+-							meta_fmt->buffersize ||
+-		    source_fmt->code != MEDIA_BUS_FMT_SENSOR_DATA) {
+-			cfe_err("WARNING: Wrong metadata width/height/code %ux%u %08x (remote pad set to %ux%u %08x)\n",
+-				meta_fmt->buffersize, 1,
+-				MEDIA_BUS_FMT_SENSOR_DATA,
+-				source_fmt->width,
+-				source_fmt->height,
+-				source_fmt->code);
+-			/* TODO: this should throw an error eventually */
++		fmt = find_format_by_code(source_fmt->code);
++		if (!fmt || fmt->fourcc != meta_fmt->dataformat) {
++			cfe_err("Metadata format mismatch!\n");
++			ret = -EINVAL;
++			goto out;
++		}
++
++		source_size = DIV_ROUND_UP(source_fmt->width * source_fmt->height * fmt->depth, 8);
++
++		if (source_fmt->code != MEDIA_BUS_FMT_SENSOR_DATA) {
++			cfe_err("Bad metadata mbus format\n");
++			ret = -EINVAL;
++			goto out;
++		}
++
++		if (source_size > meta_fmt->buffersize) {
++			cfe_err("Metadata buffer too small: %u < %u\n",
++				meta_fmt->buffersize, source_size);
++			ret = -EINVAL;
++			goto out;
+ 		}
+ 	}
+ 

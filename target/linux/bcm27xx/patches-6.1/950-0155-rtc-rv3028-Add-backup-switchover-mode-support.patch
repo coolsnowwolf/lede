@@ -1,0 +1,82 @@
+From 83cbc83905d756a4da933af63c86ca37d6af64f9 Mon Sep 17 00:00:00 2001
+From: Phil Howard <phil@gadgetoid.com>
+Date: Fri, 29 Mar 2019 10:53:14 +0000
+Subject: [PATCH] rtc: rv3028: Add backup switchover mode support
+
+Signed-off-by: Phil Howard <phil@pimoroni.com>
+---
+ drivers/rtc/rtc-rv3028.c | 45 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 40 insertions(+), 5 deletions(-)
+
+--- a/drivers/rtc/rtc-rv3028.c
++++ b/drivers/rtc/rtc-rv3028.c
+@@ -860,6 +860,8 @@ static int rv3028_probe(struct i2c_clien
+ 	struct rv3028_data *rv3028;
+ 	int ret, status;
+ 	u32 ohms;
++	u32 bsm;
++	u8 backup, backup_bits, backup_mask;
+ 	struct nvmem_config nvmem_cfg = {
+ 		.name = "rv3028_nvram",
+ 		.word_size = 1,
+@@ -926,6 +928,21 @@ static int rv3028_probe(struct i2c_clien
+ 	if (ret)
+ 		return ret;
+ 
++	backup_bits = 0;
++	backup_mask = 0;
++
++	/* setup backup switchover mode */
++	if (!device_property_read_u32(&client->dev,
++				      "backup-switchover-mode",
++				      &bsm)) {
++		if (bsm <= 3) {
++			backup_bits |= (u8)(bsm << 2);
++			backup_mask |= RV3028_BACKUP_BSM;
++		} else {
++			dev_warn(&client->dev, "invalid backup switchover mode value\n");
++		}
++	}
++
+ 	/* setup trickle charger */
+ 	if (!device_property_read_u32(&client->dev, "trickle-resistor-ohms",
+ 				      &ohms)) {
+@@ -936,15 +953,33 @@ static int rv3028_probe(struct i2c_clien
+ 				break;
+ 
+ 		if (i < ARRAY_SIZE(rv3028_trickle_resistors)) {
+-			ret = rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_TCE |
+-						 RV3028_BACKUP_TCR_MASK, RV3028_BACKUP_TCE | i);
+-			if (ret)
+-				return ret;
++			backup_bits |= RV3028_BACKUP_TCE | i;
++			backup_mask |= RV3028_BACKUP_TCE |
++				RV3028_BACKUP_TCR_MASK;
+ 		} else {
+-			dev_warn(&client->dev, "invalid trickle resistor value\n");
++			dev_warn(&client->dev,
++				 "invalid trickle resistor value\n");
+ 		}
+ 	}
+ 
++	if (backup_mask) {
++		ret = rv3028_eeprom_read((void *)rv3028, RV3028_BACKUP,
++					 (void *)&backup, 1);
++		/* Write register and EEPROM if needed */
++		if (!ret && (backup & backup_mask) != backup_bits) {
++			backup = (backup & ~backup_mask) | backup_bits;
++			ret = rv3028_update_cfg(rv3028, RV3028_BACKUP,
++						backup_mask, backup_bits);
++		}
++
++		/* In the event of an EEPROM failure, just update the register */
++		if (ret)
++			ret = regmap_update_bits(rv3028->regmap, RV3028_BACKUP,
++						 backup_mask, backup_bits);
++		if (ret)
++			return ret;
++	}
++
+ 	ret = rtc_add_group(rv3028->rtc, &rv3028_attr_group);
+ 	if (ret)
+ 		return ret;

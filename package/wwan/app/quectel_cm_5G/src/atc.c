@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -503,6 +503,7 @@ AT< OK
     safe_at_response_free(p_response);
     switch (cops_act) {
         case 2: //UTRAN
+        case 3: //GSM W/EGPRS
         case 4: //UTRAN W/HSDPA
         case 5: //UTRAN W/HSUPA
         case 6: //UTRAN W/HSDPA and HSUPA

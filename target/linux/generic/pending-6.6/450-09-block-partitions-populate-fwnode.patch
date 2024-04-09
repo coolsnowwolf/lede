@@ -1,0 +1,77 @@
+From 614f4f6fdda09e30ecf7ef6c8091579db15018cb Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 21 Jul 2023 17:51:03 +0100
+Subject: [PATCH 09/15] block: partitions: populate fwnode
+
+Let block partitions to be represented by a firmware node and hence
+allow them to being referenced e.g. for use with blk-nvmem.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ block/partitions/core.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+--- a/block/partitions/core.c
++++ b/block/partitions/core.c
+@@ -10,6 +10,8 @@
+ #include <linux/ctype.h>
+ #include <linux/vmalloc.h>
+ #include <linux/raid/detect.h>
++#include <linux/property.h>
++
+ #include "check.h"
+ 
+ static int (*const check_part[])(struct parsed_partitions *) = {
+@@ -292,6 +294,43 @@ static ssize_t whole_disk_show(struct de
+ }
+ static const DEVICE_ATTR(whole_disk, 0444, whole_disk_show, NULL);
+ 
++static struct fwnode_handle *find_partition_fwnode(struct block_device *bdev)
++{
++	struct fwnode_handle *fw_parts, *fw_part;
++	struct device *ddev = disk_to_dev(bdev->bd_disk);
++	const char *partname, *uuid;
++	u32 partno;
++
++	fw_parts = device_get_named_child_node(ddev, "partitions");
++	if (!fw_parts)
++		fw_parts = device_get_named_child_node(ddev->parent, "partitions");
++
++	if (!fw_parts)
++		return NULL;
++
++	fwnode_for_each_child_node(fw_parts, fw_part) {
++		if (!fwnode_property_read_string(fw_part, "uuid", &uuid) &&
++		    (!bdev->bd_meta_info || strncmp(uuid,
++						    bdev->bd_meta_info->uuid,
++						    PARTITION_META_INFO_UUIDLTH)))
++			continue;
++
++		if (!fwnode_property_read_string(fw_part, "partname", &partname) &&
++		    (!bdev->bd_meta_info || strncmp(partname,
++						    bdev->bd_meta_info->volname,
++						    PARTITION_META_INFO_VOLNAMELTH)))
++			continue;
++
++		if (!fwnode_property_read_u32(fw_part, "partno", &partno) &&
++		    bdev->bd_partno != partno)
++			continue;
++
++		return fw_part;
++	}
++
++	return NULL;
++}
++
+ /*
+  * Must be called either with open_mutex held, before a disk can be opened or
+  * after all disk users are gone.
+@@ -374,6 +413,8 @@ static struct block_device *add_partitio
+ 			goto out_put;
+ 	}
+ 
++	device_set_node(pdev, find_partition_fwnode(bdev));
++
+ 	/* delay uevent until 'holders' subdir is created */
+ 	dev_set_uevent_suppress(pdev, 1);
+ 	err = device_add(pdev);
