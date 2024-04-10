@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -255,11 +255,11 @@ static USHORT WdsStartNwInterfaceReq(PQMUX_MSG pMUXMsg, void *arg) {
     TLVLength += (le16_to_cpu(pIpFamily->TLVLength) + sizeof(QCQMICTL_TLV_HDR));
 
     //Set Profile Index
-    if (profile->pdp && !s_is_cdma) { //cdma only support one pdp, so no need to set profile index
+    if (profile->profile_index && !s_is_cdma) { //cdma only support one pdp, so no need to set profile index
         PQMIWDS_PROFILE_IDENTIFIER pProfileIndex = (PQMIWDS_PROFILE_IDENTIFIER)(pTLV + TLVLength);
         pProfileIndex->TLVLength = cpu_to_le16(0x01);
         pProfileIndex->TLVType = 0x31;
-        pProfileIndex->ProfileIndex = profile->pdp;
+        pProfileIndex->ProfileIndex = profile->profile_index;
         if (s_is_cdma && s_hdr_personality == 0x02) {
             pProfileIndex->TLVType = 0x32; //profile_index_3gpp2
             pProfileIndex->ProfileIndex = 101;
@@ -478,6 +478,13 @@ static USHORT UimReadTransparentIMSIReqSend(PQMUX_MSG pMUXMsg, void *arg) {
 #endif
 
 #ifdef CONFIG_APN
+
+static USHORT WdsGetProfileListReqSend(PQMUX_MSG pMUXMsg, void *arg) {
+    (void)(arg);
+    pMUXMsg->GetProfileListReq.Length = cpu_to_le16(sizeof(QMIWDS_GET_PROFILE_LIST_REQ_MSG) - 4);
+    return sizeof(QMIWDS_GET_PROFILE_LIST_REQ_MSG);
+}
+
 static USHORT WdsCreateProfileSettingsReqSend(PQMUX_MSG pMUXMsg, void *arg) {
     PROFILE_T *profile = (PROFILE_T *)arg;
     pMUXMsg->CreatetProfileSettingsReq.Length = cpu_to_le16(sizeof(QMIWDS_CREATE_PROFILE_SETTINGS_REQ_MSG) - 4);
@@ -496,7 +503,7 @@ static USHORT WdsGetProfileSettingsReqSend(PQMUX_MSG pMUXMsg, void *arg) {
     pMUXMsg->GetProfileSettingsReq.TLVType = 0x01;
     pMUXMsg->GetProfileSettingsReq.TLVLength = cpu_to_le16(0x02);
     pMUXMsg->GetProfileSettingsReq.ProfileType = 0x00; // 0 ~ 3GPP, 1 ~ 3GPP2
-    pMUXMsg->GetProfileSettingsReq.ProfileIndex = profile->pdp;
+    pMUXMsg->GetProfileSettingsReq.ProfileIndex = profile->profile_index;
     return sizeof(QMIWDS_GET_PROFILE_SETTINGS_REQ_MSG);
 }
 
@@ -510,7 +517,7 @@ static USHORT WdsModifyProfileSettingsReq(PQMUX_MSG pMUXMsg, void *arg) {
     pMUXMsg->ModifyProfileSettingsReq.TLVType = 0x01;
     pMUXMsg->ModifyProfileSettingsReq.TLVLength = cpu_to_le16(0x02);
     pMUXMsg->ModifyProfileSettingsReq.ProfileType = 0x00; // 0 ~ 3GPP, 1 ~ 3GPP2
-    pMUXMsg->ModifyProfileSettingsReq.ProfileIndex = profile->pdp;
+    pMUXMsg->ModifyProfileSettingsReq.ProfileIndex = profile->profile_index;
 
     pTLV = (UCHAR *)(&pMUXMsg->ModifyProfileSettingsReq + 1);
 
@@ -1858,8 +1865,9 @@ static int requestSetupDataCall(PROFILE_T *profile, int curIpFamily) {
             dbg_time("call_end_reason_verbose is %d", verbose_call_end_reason);
         }
 
+        err = le16_to_cpu(pMUXMsg->QMUXMsgHdrResp.QMUXError);
         free(pResponse);
-        return le16_to_cpu(pMUXMsg->QMUXMsgHdrResp.QMUXError);
+        return err;
     }
 
     if (curIpFamily == IpFamilyV4) {
@@ -2026,8 +2034,8 @@ static int requestSetProfile(PROFILE_T *profile) {
     const char *new_password = profile->password ? profile->password : "";
     const char *ipStr[] = {"IPV4", "NULL", "IPV6", "IPV4V6"};
 
-    dbg_time("%s[%d] %s/%s/%s/%d/%s", __func__, profile->pdp, profile->apn, profile->user, profile->password, profile->auth,ipStr[profile->iptype]);
-    if (!profile->pdp)
+    dbg_time("%s[pdp:%d index:%d] %s/%s/%s/%d/%s", __func__, profile->pdp, profile->profile_index, profile->apn, profile->user, profile->password, profile->auth,ipStr[profile->iptype]);
+    if (!profile->profile_index)
         return -1;
 
     if ( !strcmp(profile->old_apn, new_apn) && !strcmp(profile->old_user, new_user)
@@ -2057,6 +2065,9 @@ static int requestGetProfile(PROFILE_T *profile) {
     PQMIWDS_PASSWD pPassWd;
     PQMIWDS_AUTH_PREFERENCE pAuthPref;
     PQMIWDS_IPTYPE pIpType;
+    PQMIWDS_PDPCONTEXT pPdpContext;
+    PQMIWDS_PROFILELIST pProfileList;
+    
     const char *ipStr[] = {"IPV4", "NULL", "IPV6", "IPV4V6"};
 
     profile->old_apn[0] = profile->old_user[0] = profile->old_password[0] = '\0';
@@ -2073,19 +2084,52 @@ static int requestGetProfile(PROFILE_T *profile) {
         return 0;
 
 _re_check:
-    pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_GET_PROFILE_SETTINGS_REQ, WdsGetProfileSettingsReqSend, profile);
-    err = QmiThreadSendQMI(pRequest, &pResponse);
-    if (err == 0 && pResponse && le16_to_cpu(pResponse->MUXMsg.QMUXMsgHdrResp.QMUXResult)
-        && le16_to_cpu(pResponse->MUXMsg.QMUXMsgHdrResp.QMUXError) == QMI_ERR_EXTENDED_INTERNAL)
+    pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_GET_PROFILE_LIST_REQ, WdsGetProfileListReqSend, profile);
+    err = QmiThreadSendQMI(pRequest, &pResponse);s_pResponse = malloc(le16_to_cpu(pResponse->QMIHdr.Length) + 1);
+    qmi_rsp_check_and_return();
+    
+    pProfileList = (PQMIWDS_PROFILELIST)GetTLV(&pResponse->MUXMsg.QMUXMsgHdr, 0x01);
+    uint8 profile_indexs[42] = {0};
+    uint8 profile_num = pProfileList->ProfileList[0];
+    if(profile_num >= 1)
     {
-        free(pResponse);
-        pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_CREATE_PROFILE_REQ, WdsCreateProfileSettingsReqSend, profile);
+        uint8 j = 0;
+        uint8 k = 2;
+        for(int i=0; i<profile_num; i++)
+        {
+            profile_indexs[j++] = pProfileList->ProfileList[k];
+            if(pProfileList->ProfileList[++k] == 0)
+                k+=2;
+            else
+                k+=2+pProfileList->ProfileList[k];
+        }
+    }
+    free(pResponse);
+    
+    for(int i=0; i<profile_num; i++)
+    {
+        profile->profile_index = profile_indexs[i];
+        
+        pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_GET_PROFILE_SETTINGS_REQ, WdsGetProfileSettingsReqSend, profile);
         err = QmiThreadSendQMI(pRequest, &pResponse);
         qmi_rsp_check_and_return();
-        free(pResponse);
-        goto _re_check;
+        
+        pPdpContext = (PQMIWDS_PDPCONTEXT)GetTLV(&pResponse->MUXMsg.QMUXMsgHdr, 0x25);
+        if(pPdpContext->pdp_context == profile->pdp)
+            break;
+        else
+            free(pResponse);
+
+        if(i == profile_num-1)
+        {
+            pRequest = ComposeQMUXMsg(QMUX_TYPE_WDS, QMIWDS_CREATE_PROFILE_REQ, WdsCreateProfileSettingsReqSend, profile);
+            err = QmiThreadSendQMI(pRequest, &pResponse);
+            qmi_rsp_check_and_return();
+            free(pResponse);
+            goto _re_check;
+        }
     }
-    qmi_rsp_check_and_return();
+    
 
     pApnName = (PQMIWDS_APNNAME)GetTLV(&pResponse->MUXMsg.QMUXMsgHdr, 0x14);
     pUserName = (PQMIWDS_USERNAME)GetTLV(&pResponse->MUXMsg.QMUXMsgHdr, 0x1B);
@@ -2106,7 +2150,7 @@ _re_check:
         profile->old_iptype = pIpType->IPType;
     }
 
-    dbg_time("%s[%d] %s/%s/%s/%d/%s", __func__, profile->pdp, profile->old_apn, profile->old_user, profile->old_password, profile->old_auth, ipStr[profile->old_iptype]);
+    dbg_time("%s[pdp:%d index:%d] %s/%s/%s/%d/%s", __func__, profile->pdp, profile->profile_index, profile->old_apn, profile->old_user, profile->old_password, profile->old_auth, ipStr[profile->old_iptype]);
 
     free(pResponse);
     return 0;

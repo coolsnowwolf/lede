@@ -375,6 +375,20 @@ define Device/netcore_n60
 endef
 TARGET_DEVICES += netcore_n60
 
+define Device/nokia_ea0326gmp
+  DEVICE_VENDOR := Nokia
+  DEVICE_MODEL := EA0326GMP
+  DEVICE_DTS := mt7981b-nokia-ea0326gmp
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += nokia_ea0326gmp
+
 define Device/qihoo_360t7
   DEVICE_VENDOR := Qihoo
   DEVICE_MODEL := 360T7
