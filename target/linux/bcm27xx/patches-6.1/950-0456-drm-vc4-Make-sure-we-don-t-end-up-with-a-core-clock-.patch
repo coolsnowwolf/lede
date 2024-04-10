@@ -1,0 +1,55 @@
+From adf7289aab83651c41e7734b34844470a25ecc5f Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 25 Mar 2022 17:09:41 +0100
+Subject: [PATCH] drm/vc4: Make sure we don't end up with a core clock
+ too high
+
+Following the clock rate range improvements to the clock framework,
+trying to set a disjoint range on a clock will now result in an error.
+
+Thus, we can't set a minimum rate higher than the maximum reported by
+the firmware, or clk_set_min_rate() will fail.
+
+Thus we need to clamp the rate we are about to ask for to the maximum
+rate possible on that clock.
+
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_kms.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -399,8 +399,8 @@ static void vc4_atomic_commit_tail(struc
+ 	if (vc4->is_vc5 && !vc4->firmware_kms) {
+ 		unsigned long state_rate = max(old_hvs_state->core_clock_rate,
+ 					       new_hvs_state->core_clock_rate);
+-		unsigned long core_rate = max_t(unsigned long,
+-						500000000, state_rate);
++		unsigned long core_rate = clamp_t(unsigned long, state_rate,
++						  500000000, hvs->max_core_rate);
+ 
+ 		drm_dbg(dev, "Raising the core clock at %lu Hz\n", core_rate);
+ 
+@@ -436,14 +436,17 @@ static void vc4_atomic_commit_tail(struc
+ 	drm_atomic_helper_cleanup_planes(dev, state);
+ 
+ 	if (vc4->is_vc5 && !vc4->firmware_kms) {
+-		drm_dbg(dev, "Running the core clock at %lu Hz\n",
+-			new_hvs_state->core_clock_rate);
++		unsigned long core_rate = min_t(unsigned long,
++						hvs->max_core_rate,
++						new_hvs_state->core_clock_rate);
++
++		drm_dbg(dev, "Running the core clock at %lu Hz\n", core_rate);
+ 
+ 		/*
+ 		 * Request a clock rate based on the current HVS
+ 		 * requirements.
+ 		 */
+-		WARN_ON(clk_set_min_rate(hvs->core_clk, new_hvs_state->core_clock_rate));
++		WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
+ 
+ 		drm_dbg(dev, "Core clock actual rate: %lu Hz\n",
+ 			clk_get_rate(hvs->core_clk));

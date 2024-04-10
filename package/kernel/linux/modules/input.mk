@@ -11,7 +11,7 @@ define KernelPackage/hid
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=HID Devices
   DEPENDS:=+kmod-input-core +kmod-input-evdev
-  KCONFIG:=CONFIG_HID CONFIG_HIDRAW=y CONFIG_HID_BATTERY_STRENGTH=y
+  KCONFIG:=CONFIG_HID CONFIG_HID_SUPPORT=y CONFIG_HIDRAW=y CONFIG_HID_BATTERY_STRENGTH=y
   FILES:=$(LINUX_DIR)/drivers/hid/hid.ko
   AUTOLOAD:=$(call AutoLoad,61,hid)
 endef
@@ -197,7 +197,7 @@ $(eval $(call KernelPackage,input-touchscreen-ads7846))
 define KernelPackage/input-touchscreen-edt-ft5x06
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=EDT FT5x06 and Focaltech FT6236 based touchscreens
-  DEPENDS:=+kmod-i2c-core +kmod-input-core
+  DEPENDS:=+kmod-i2c-core +kmod-input-core +LINUX_6_6:kmod-regmap-i2c
   KCONFIG:= \
 	CONFIG_INPUT_TOUCHSCREEN=y \
 	CONFIG_TOUCHSCREEN_PROPERTIES=y@lt5.13 \

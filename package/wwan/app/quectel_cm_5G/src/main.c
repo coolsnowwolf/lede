@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 -2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 -2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -58,8 +58,10 @@ static int check_ipv4_address(PROFILE_T *profile) {
 
     if (profile->request_ops == &mbim_request_ops)
         return 1; //we will get a new ipv6 address per requestGetIPAddress()
-    if (profile->request_ops == &atc_request_ops)
-        return 1; //TODO
+    if (profile->request_ops == &atc_request_ops) {
+       if (!profile->udhcpc_ip) return 1;
+       oldAddress = profile->udhcpc_ip;
+    }
 
     if (profile->request_ops->requestGetIPAddress(profile, IpFamilyV4) == 0) {
          if (profile->ipv4.Address != oldAddress || debug_qmi) {
@@ -248,6 +250,7 @@ static int usage(const char *progname) {
     dbg_time("-m iface-idx                           Bind QMI data call to wwan0_<iface idx> when QMAP used. E.g '-n 7 -m 1' bind pdn-7 data call to wwan0_1");
     dbg_time("-b                                     Enable network interface bridge function (default 0)");
     dbg_time("-v                                     Verbose log mode, for debug purpose.");
+    dbg_time("-d                                     Obtain the IP address and dns through qmi");
     dbg_time("[Examples]");
     dbg_time("Example 1: %s ", progname);
     dbg_time("Example 2: %s -s 3gnet ", progname);
@@ -365,6 +368,15 @@ static int qmi_main(PROFILE_T *profile)
 
 #ifdef CONFIG_ENABLE_QOS
     request_ops->requestRegisterQos(profile);
+#endif
+
+#if 1 //USB disconnnect and re-connect, but not reboot modem, will get this bug
+    if (profile->enable_ipv4
+        && profile->request_ops == &atc_request_ops
+        && !request_ops->requestQueryDataCall(&IPv4ConnectionStatus, IpFamilyV4)
+        && IPv4ConnectionStatus == QWDS_PKT_DATA_CONNECTED) {
+        request_ops->requestDeactivateDefaultPDP(profile, IpFamilyV4);
+    }
 #endif
 
     send_signo_to_main(SIG_EVENT_CHECK);
@@ -716,6 +728,11 @@ static int quectel_CM(PROFILE_T *profile)
         dbg_time("Modem works in MBIM mode");
         profile->request_ops = &mbim_request_ops;
         profile->qmi_ops = &mbim_dev_ops;
+        if (!profile->apn || !profile->apn[0]) {
+            //see FAE-51804  FAE-59811
+            dbg_time("When MBIM mode, must specify APN with '-s', or setup data call may fail!");
+            exit(-404); //if no such issue on your side, please comment this
+        }
         ret = qmi_main(profile);
     }
     else if (profile->software_interface == SOFTWARE_QMI) {
@@ -757,6 +774,7 @@ static int parse_user_input(int argc, char **argv, PROFILE_T *profile) {
     int opt = 1;
 
     profile->pdp = CONFIG_DEFAULT_PDP;
+    profile->profile_index = CONFIG_DEFAULT_PDP;
 
     if (!strcmp(argv[argc-1], "&"))
         argc--;
@@ -865,6 +883,10 @@ static int parse_user_input(int argc, char **argv, PROFILE_T *profile) {
                 profile->enable_ipv6 = 1;
             break;
 
+            case 'd':
+                profile->no_dhcp = 1;
+            break;
+
             case 'u':
                 if (has_more_argv()) {
                     profile->usblogfile = argv[opt++];
@@ -899,7 +921,7 @@ int main(int argc, char *argv[])
     int ret;
     PROFILE_T *ctx = &s_profile;
 
-    dbg_time("QConnectManager_Linux_V1.6.4");
+    dbg_time("QConnectManager_Linux_V1.6.5");
 
     ret = parse_user_input(argc, argv, ctx);
     if (!ret)

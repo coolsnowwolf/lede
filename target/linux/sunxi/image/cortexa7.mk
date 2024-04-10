@@ -3,6 +3,8 @@
 # Copyright (C) 2013-2019 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 
+KERNEL_LOADADDR:=0x40008000
+
 define Device/cubietech_cubieboard2
   DEVICE_VENDOR := Cubietech
   DEVICE_MODEL := Cubieboard2
@@ -23,7 +25,7 @@ define Device/friendlyarm_nanopi-m1-plus
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi M1 Plus
   DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
-	cypress-firmware-43430-sdio wpad-basic-wolfssl
+	cypress-firmware-43430-sdio wpad-basic-mbedtls
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-m1-plus
@@ -39,7 +41,7 @@ define Device/friendlyarm_nanopi-neo-air
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO Air
   DEVICE_PACKAGES := kmod-leds-gpio kmod-brcmfmac \
-	brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
+	brcmfmac-firmware-43430a0-sdio wpad-basic-mbedtls
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo-air
@@ -48,7 +50,7 @@ define Device/friendlyarm_nanopi-r1
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R1
   DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-leds-gpio \
-	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-wolfssl
+	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-mbedtls
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r1
@@ -64,7 +66,11 @@ TARGET_DEVICES += friendlyarm_zeropi
 define Device/lamobo_lamobo-r1
   DEVICE_VENDOR := Lamobo
   DEVICE_MODEL := Lamobo R1
-  DEVICE_PACKAGES := kmod-ata-sunxi kmod-rtl8192cu wpad-basic-wolfssl
+  DEVICE_ALT0_VENDOR := Bananapi
+  DEVICE_ALT0_MODEL := BPi-R1
+  DEVICE_PACKAGES := kmod-ata-sunxi kmod-rtl8192cu wpad-basic-mbedtls
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Config cannot be migrated from swconfig to DSA
   SOC := sun7i-a20
 endef
 TARGET_DEVICES += lamobo_lamobo-r1
@@ -81,7 +87,7 @@ define Device/sinovoip_bananapi-m2-berry
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2 Berry
   DEVICE_PACKAGES:=kmod-ata-sunxi kmod-brcmfmac \
-	cypress-firmware-43430-sdio wpad-basic-wolfssl
+	cypress-firmware-43430-sdio wpad-basic-mbedtls
   SUPPORTED_DEVICES:=lemaker,bananapi-m2-berry
   SOC := sun8i-v40
 endef
@@ -91,7 +97,7 @@ define Device/sinovoip_bananapi-m2-ultra
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2 Ultra
   DEVICE_PACKAGES:=kmod-ata-sunxi kmod-brcmfmac \
-	brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
+	brcmfmac-firmware-43430a0-sdio wpad-basic-mbedtls
   SUPPORTED_DEVICES:=lemaker,bananapi-m2-ultra
   SOC := sun8i-r40
 endef
@@ -100,7 +106,8 @@ TARGET_DEVICES += sinovoip_bananapi-m2-ultra
 define Device/lemaker_bananapro
   DEVICE_VENDOR := LeMaker
   DEVICE_MODEL := Banana Pro
-  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-ata-sunxi kmod-brcmfmac
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-ata-sunxi kmod-brcmfmac \
+	cypress-firmware-43362-sdio wpad-basic-mbedtls
   SOC := sun7i-a20
 endef
 TARGET_DEVICES += lemaker_bananapro
@@ -167,10 +174,28 @@ define Device/sinovoip_bananapi-m2-plus
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2+
   DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
-	brcmfmac-firmware-43430a0-sdio wpad-basic-wolfssl
+	brcmfmac-firmware-43430a0-sdio wpad-basic-mbedtls
   SOC := sun8i-h3
 endef
 TARGET_DEVICES += sinovoip_bananapi-m2-plus
+
+define Device/sinovoip_bananapi-m3
+  DEVICE_VENDOR := Sinovoip
+  DEVICE_MODEL := Banana Pi M3
+  DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-rtc-ac100 \
+	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-mbedtls
+  SOC := sun8i-a83t
+endef
+TARGET_DEVICES += sinovoip_bananapi-m3
+
+define Device/sinovoip_bananapi-p2-zero
+  DEVICE_VENDOR := Sinovoip
+  DEVICE_MODEL := Banana Pi P2 Zero
+  DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
+	cypress-firmware-43430-sdio wpad-basic-mbedtls
+  SOC := sun8i-h2-plus
+endef
+TARGET_DEVICES += sinovoip_bananapi-p2-zero
 
 define Device/xunlong_orangepi-one
   DEVICE_VENDOR := Xunlong

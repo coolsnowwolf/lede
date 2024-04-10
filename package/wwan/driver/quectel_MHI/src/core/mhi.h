@@ -4,9 +4,13 @@
 #ifndef _MHI_H_
 #define _MHI_H_
 
-#define PCIE_MHI_DRIVER_VERSION "V1.3.4"
+#define PCIE_MHI_DRIVER_VERSION "V1.3.6"
 #define ENABLE_MHI_MON
 //#define ENABLE_IP_SW0
+
+// #define ENABLE_ADPL
+
+// #define ENABLE_QDSS
 
 #include <linux/miscdevice.h>
 typedef enum
@@ -82,7 +86,8 @@ typedef enum
    MHI_CLIENT_IP_HW_0_OUT      = 100,
    MHI_CLIENT_IP_HW_0_IN       = 101,
    MHI_CLIENT_ADPL             = 102,
-   MHI_CLIENT_RESERVED_5_LOWER = 103,
+   MHI_CLIENT_IP_HW_QDSS       = 103,
+   // MHI_CLIENT_RESERVED_5_LOWER = 103,
    MHI_CLIENT_RESERVED_5_UPPER = 127,
    MHI_MAX_CHANNELS            = 128
 }MHI_CLIENT_CHANNEL_TYPE;
@@ -98,7 +103,12 @@ typedef enum
 #endif
 	IPA_OUT_EVENT_RING,
 	IPA_IN_EVENT_RING,
+#ifdef ENABLE_ADPL
 	ADPL_EVT_RING,
+#endif
+#ifdef ENABLE_QDSS
+	QDSS_EVT_RING,
+#endif
 
 	MAX_EVT_RING_IDX
 }MHI_EVT_RING_IDX;
@@ -109,13 +119,21 @@ typedef enum
 #define MAX_NUM_MHI_DEVICES          1
 #define NUM_MHI_XFER_RINGS           128
 #define NUM_MHI_EVT_RINGS            MAX_EVT_RING_IDX
-#define NUM_MHI_HW_EVT_RINGS         3
+#define NUM_MHI_HW_EVT_RINGS         4
 #define NUM_MHI_XFER_RING_ELEMENTS   16
 #define NUM_MHI_EVT_RING_ELEMENTS    (NUM_MHI_IPA_IN_RING_ELEMENTS*2) //must *2, event ring full will make x55 dump
 #define NUM_MHI_IPA_IN_RING_ELEMENTS    512
 #define NUM_MHI_IPA_OUT_RING_ELEMENTS    512 //donot use ul agg, so increase
 #define NUM_MHI_DIAG_IN_RING_ELEMENTS    128
 #define NUM_MHI_SW_IP_RING_ELEMENTS    512
+
+#ifdef ENABLE_ADPL
+#define NUM_MHI_ADPL_RING_ELEMENTS    256
+#endif
+
+#ifdef ENABLE_QDSS
+#define NUM_MHI_QDSS_RING_ELEMENTS    256
+#endif
 
 /*
 * for if set Interrupt moderation time as 1ms,

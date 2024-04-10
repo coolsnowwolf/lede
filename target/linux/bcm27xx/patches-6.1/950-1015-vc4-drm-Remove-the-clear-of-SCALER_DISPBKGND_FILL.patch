@@ -1,0 +1,64 @@
+From e6e0631fdeb0cd7d4c50e629b4b298e0b76e885b Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 4 Oct 2023 16:02:39 +0100
+Subject: [PATCH] vc4/drm: Remove the clear of SCALER_DISPBKGND_FILL
+
+Since "drm/vc4: hvs: Support BCM2712 HVS" booting Pi4
+with dual 4kp30 displays connected fails with:
+vc4-drm gpu: [drm] *ERROR* [CRTC:107:pixelvalve-4] flip_done timed out
+
+It has been tracked down to the referenced commit adding a
+path to clear the SCALER_DISPBKGND_FILL when not required.
+
+Dual 4kp30 works with a core clock of 297MHz when background fill
+is enabled, but requires a higher value with it disabled.
+320MHz still fails, while 330MHz seems okay.
+
+Lets always enable background fill for Pi0-4.
+
+Fixes: e84da235223d ("drm/vc4: hvs: Support BCM2712 HVS")
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 20 +++++++++-----------
+ 1 file changed, 9 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1349,27 +1349,25 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	WARN_ON(!vc4_state->mm);
+ 	WARN_ON_ONCE(dlist_next - dlist_start != vc4_state->mm->mm_node.size);
+ 
+-	if (enable_bg_fill) {
++	if (vc4->gen >= VC4_GEN_6) {
+ 		/* This sets a black background color fill, as is the case
+ 		 * with other DRM drivers.
+ 		 */
+-		if (vc4->gen >= VC4_GEN_6)
++		if (enable_bg_fill)
+ 			HVS_WRITE(SCALER6_DISPX_CTRL1(channel),
+ 				  HVS_READ(SCALER6_DISPX_CTRL1(channel)) |
+ 				  SCALER6_DISPX_CTRL1_BGENB);
+ 		else
+-			HVS_WRITE(SCALER_DISPBKGNDX(channel),
+-				  HVS_READ(SCALER_DISPBKGNDX(channel)) |
+-				  SCALER_DISPBKGND_FILL);
+-	} else {
+-		if (vc4->gen >= VC4_GEN_6)
+ 			HVS_WRITE(SCALER6_DISPX_CTRL1(channel),
+ 				  HVS_READ(SCALER6_DISPX_CTRL1(channel)) &
+ 				  ~SCALER6_DISPX_CTRL1_BGENB);
+-		else
+-			HVS_WRITE(SCALER_DISPBKGNDX(channel),
+-				  HVS_READ(SCALER_DISPBKGNDX(channel)) &
+-				  ~SCALER_DISPBKGND_FILL);
++	} else {
++		/* we can actually run with a lower core clock when background
++		 * fill is enabled on VC4_GEN_5 so leave it enabled always.
++		 */
++		HVS_WRITE(SCALER_DISPBKGNDX(channel),
++			  HVS_READ(SCALER_DISPBKGNDX(channel)) |
++			  SCALER_DISPBKGND_FILL);
+ 	}
+ 
+ 	/* Only update DISPLIST if the CRTC was already running and is not

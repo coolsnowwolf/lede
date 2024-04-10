@@ -1,0 +1,149 @@
+From a4614b6f6c4e3a9ef80c88f272c1503b91f7ef8c Mon Sep 17 00:00:00 2001
+From: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+Date: Thu, 15 Jul 2021 01:08:08 +0200
+Subject: [PATCH] drm/vc4: Relax VEC modeline requirements and add
+ progressive mode support
+
+Make vc4_vec_encoder_atomic_check() accept arbitrary modelines, as long
+as they result in somewhat sane output from the VEC. The bounds have
+been determined empirically. Additionally, add support for the
+progressive 262-line and 312-line modes.
+
+Signed-off-by: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  1 +
+ drivers/gpu/drm/vc4/vc4_vec.c  | 94 ++++++++++++++++++++++++++++++----
+ 2 files changed, 85 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -422,6 +422,7 @@ static void vc4_crtc_config_pv(struct dr
+ 		CRTC_WRITE(PV_V_CONTROL,
+ 			   PV_VCONTROL_CONTINUOUS |
+ 			   (is_dsi ? PV_VCONTROL_DSI : 0));
++		CRTC_WRITE(PV_VSYNCD_EVEN, 0);
+ 	}
+ 
+ 	CRTC_WRITE(PV_VERTA,
+--- a/drivers/gpu/drm/vc4/vc4_vec.c
++++ b/drivers/gpu/drm/vc4/vc4_vec.c
+@@ -400,18 +400,11 @@ static int vc4_vec_connector_atomic_chec
+ 	struct drm_connector_state *new_state =
+ 		drm_atomic_get_new_connector_state(state, conn);
+ 
+-	const struct vc4_vec_tv_mode *vec_mode =
+-		&vc4_vec_tv_modes[new_state->tv.mode];
+-
+-	if (new_state->crtc) {
++	if (new_state->crtc && old_state->tv.mode != new_state->tv.mode) {
+ 		struct drm_crtc_state *crtc_state =
+ 			drm_atomic_get_new_crtc_state(state, new_state->crtc);
+ 
+-		if (!drm_mode_equal(vec_mode->mode, &crtc_state->mode))
+-			return -EINVAL;
+-
+-		if (old_state->tv.mode != new_state->tv.mode)
+-			crtc_state->mode_changed = true;
++		crtc_state->mode_changed = true;
+ 	}
+ 
+ 	return 0;
+@@ -546,7 +539,10 @@ static void vc4_vec_encoder_enable(struc
+ 	VEC_WRITE(VEC_CLMP0_START, 0xac);
+ 	VEC_WRITE(VEC_CLMP0_END, 0xec);
+ 	VEC_WRITE(VEC_CONFIG2,
+-		  VEC_CONFIG2_UV_DIG_DIS | VEC_CONFIG2_RGB_DIG_DIS);
++		  VEC_CONFIG2_UV_DIG_DIS |
++		  VEC_CONFIG2_RGB_DIG_DIS |
++		  ((encoder->crtc->state->adjusted_mode.flags &
++		    DRM_MODE_FLAG_INTERLACE) ? 0 : VEC_CONFIG2_PROG_SCAN));
+ 	VEC_WRITE(VEC_CONFIG3, VEC_CONFIG3_HORIZ_LEN_STD);
+ 	VEC_WRITE(VEC_DAC_CONFIG, vec->variant->dac_config);
+ 
+@@ -575,8 +571,86 @@ err_put_runtime_pm:
+ err_dev_exit:
+ 	drm_dev_exit(idx);
+ }
++static int vc4_vec_encoder_atomic_check(struct drm_encoder *encoder,
++					struct drm_crtc_state *crtc_state,
++					struct drm_connector_state *conn_state)
++{
++	const struct drm_display_mode *reference_mode =
++		vc4_vec_tv_modes[conn_state->tv.mode].mode;
++
++	if (crtc_state->adjusted_mode.crtc_clock != reference_mode->clock ||
++	    crtc_state->adjusted_mode.crtc_htotal != reference_mode->htotal ||
++	    crtc_state->adjusted_mode.crtc_hdisplay % 4 != 0 ||
++	    crtc_state->adjusted_mode.crtc_hsync_end -
++		    crtc_state->adjusted_mode.crtc_hsync_start < 1)
++		return -EINVAL;
++
++	switch (reference_mode->vtotal) {
++	case 525:
++		if (crtc_state->adjusted_mode.crtc_vdisplay < 1 ||
++		    crtc_state->adjusted_mode.crtc_vdisplay > 253 ||
++		    crtc_state->adjusted_mode.crtc_vsync_start -
++			    crtc_state->adjusted_mode.crtc_vdisplay < 1 ||
++		    crtc_state->adjusted_mode.crtc_vsync_end -
++			    crtc_state->adjusted_mode.crtc_vsync_start != 3 ||
++		    crtc_state->adjusted_mode.crtc_vtotal -
++			    crtc_state->adjusted_mode.crtc_vsync_end < 4 ||
++		    crtc_state->adjusted_mode.crtc_vtotal > 262)
++			return -EINVAL;
++
++		if ((crtc_state->adjusted_mode.flags &
++		     DRM_MODE_FLAG_INTERLACE) &&
++		    (crtc_state->adjusted_mode.vdisplay % 2 != 0 ||
++		     crtc_state->adjusted_mode.vsync_start % 2 != 1 ||
++		     crtc_state->adjusted_mode.vsync_end % 2 != 1 ||
++		     crtc_state->adjusted_mode.vtotal % 2 != 1))
++			return -EINVAL;
++
++		/* progressive mode is hard-wired to 262 total lines */
++		if (!(crtc_state->adjusted_mode.flags &
++		      DRM_MODE_FLAG_INTERLACE) &&
++		    crtc_state->adjusted_mode.crtc_vtotal != 262)
++			return -EINVAL;
++
++		break;
++
++	case 625:
++		if (crtc_state->adjusted_mode.crtc_vdisplay < 1 ||
++		    crtc_state->adjusted_mode.crtc_vdisplay > 305 ||
++		    crtc_state->adjusted_mode.crtc_vsync_start -
++			    crtc_state->adjusted_mode.crtc_vdisplay < 1 ||
++		    crtc_state->adjusted_mode.crtc_vsync_end -
++			    crtc_state->adjusted_mode.crtc_vsync_start != 3 ||
++		    crtc_state->adjusted_mode.crtc_vtotal -
++			    crtc_state->adjusted_mode.crtc_vsync_end < 2 ||
++		    crtc_state->adjusted_mode.crtc_vtotal > 312)
++			return -EINVAL;
++
++		if ((crtc_state->adjusted_mode.flags &
++		     DRM_MODE_FLAG_INTERLACE) &&
++		    (crtc_state->adjusted_mode.vdisplay % 2 != 0 ||
++		     crtc_state->adjusted_mode.vsync_start % 2 != 0 ||
++		     crtc_state->adjusted_mode.vsync_end % 2 != 0 ||
++		     crtc_state->adjusted_mode.vtotal % 2 != 1))
++			return -EINVAL;
++
++		/* progressive mode is hard-wired to 312 total lines */
++		if (!(crtc_state->adjusted_mode.flags &
++		      DRM_MODE_FLAG_INTERLACE) &&
++		    crtc_state->adjusted_mode.crtc_vtotal != 312)
++			return -EINVAL;
++
++		break;
++
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
+ 
+ static const struct drm_encoder_helper_funcs vc4_vec_encoder_helper_funcs = {
++	.atomic_check = vc4_vec_encoder_atomic_check,
+ 	.atomic_disable = vc4_vec_encoder_disable,
+ 	.atomic_enable = vc4_vec_encoder_enable,
+ };

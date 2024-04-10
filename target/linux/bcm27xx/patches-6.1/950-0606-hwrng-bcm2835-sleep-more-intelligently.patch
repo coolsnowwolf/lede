@@ -1,0 +1,66 @@
+From 3537a855e3858b1f8b6cee545a22b8b67037235c Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 22 Mar 2023 15:30:38 +0000
+Subject: [PATCH] hwrng: bcm2835 - sleep more intelligently
+
+While waiting for random data, use sleeps that are proportional
+to the amount of data expected. Prevent indefinite waits by
+giving up if nothing is received for a second.
+
+See: https://github.com/raspberrypi/linux/issues/5390
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/char/hw_random/bcm2835-rng.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+--- a/drivers/char/hw_random/bcm2835-rng.c
++++ b/drivers/char/hw_random/bcm2835-rng.c
+@@ -14,6 +14,7 @@
+ #include <linux/printk.h>
+ #include <linux/clk.h>
+ #include <linux/reset.h>
++#include <linux/delay.h>
+ 
+ #define RNG_CTRL	0x0
+ #define RNG_STATUS	0x4
+@@ -28,6 +29,9 @@
+ 
+ #define RNG_INT_OFF	0x1
+ 
++#define RNG_FIFO_WORDS	4
++#define RNG_US_PER_WORD	34 /* Tuned for throughput */
++
+ struct bcm2835_rng_priv {
+ 	struct hwrng rng;
+ 	void __iomem *base;
+@@ -64,19 +68,23 @@ static inline void rng_writel(struct bcm
+ static int bcm2835_rng_read(struct hwrng *rng, void *buf, size_t max,
+ 			       bool wait)
+ {
++	u32 retries = 1000000/(RNG_FIFO_WORDS * RNG_US_PER_WORD);
+ 	struct bcm2835_rng_priv *priv = to_rng_priv(rng);
+ 	u32 max_words = max / sizeof(u32);
+ 	u32 num_words, count;
+ 
+-	while ((rng_readl(priv, RNG_STATUS) >> 24) == 0) {
+-		if (!wait)
++	num_words = rng_readl(priv, RNG_STATUS) >> 24;
++
++	while (!num_words) {
++		if (!wait || !retries)
+ 			return 0;
+-		hwrng_yield(rng);
++		retries--;
++		usleep_range((u32)RNG_US_PER_WORD,
++				(u32)RNG_US_PER_WORD * RNG_FIFO_WORDS);
++		num_words = rng_readl(priv, RNG_STATUS) >> 24;
+ 	}
+ 
+-	num_words = rng_readl(priv, RNG_STATUS) >> 24;
+-	if (num_words > max_words)
+-		num_words = max_words;
++	num_words = min(num_words, max_words);
+ 
+ 	for (count = 0; count < num_words; count++)
+ 		((u32 *)buf)[count] = rng_readl(priv, RNG_DATA);

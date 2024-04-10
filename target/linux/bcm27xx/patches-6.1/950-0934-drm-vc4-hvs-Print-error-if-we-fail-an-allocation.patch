@@ -1,0 +1,66 @@
+From c0af63193bd307f281211e7fb32a02a52c2869b2 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 22 Mar 2023 09:53:17 +0100
+Subject: [PATCH] drm/vc4: hvs: Print error if we fail an allocation
+
+We need to allocate a few additional structures when checking our
+atomic_state, especially related to hardware SRAM that will hold the
+plane descriptors (DLIST) and the current line context (LBM) during
+composition.
+
+Since those allocation can fail, let's add some error message in that
+case to help debug what goes wrong.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c   | 6 +++++-
+ drivers/gpu/drm/vc4/vc4_plane.c | 7 +++++--
+ 2 files changed, 10 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -441,6 +441,8 @@ vc4_hvs_alloc_dlist_entry(struct vc4_hvs
+ 			  unsigned int channel,
+ 			  size_t dlist_count)
+ {
++	struct vc4_dev *vc4 = hvs->vc4;
++	struct drm_device *dev = &vc4->base;
+ 	struct vc4_hvs_dlist_allocation *alloc;
+ 	unsigned long flags;
+ 	int ret;
+@@ -458,8 +460,10 @@ vc4_hvs_alloc_dlist_entry(struct vc4_hvs
+ 	ret = drm_mm_insert_node(&hvs->dlist_mm, &alloc->mm_node,
+ 				 dlist_count);
+ 	spin_unlock_irqrestore(&hvs->mm_lock, flags);
+-	if (ret)
++	if (ret) {
++		drm_err(dev, "Failed to allocate DLIST entry: %d\n", ret);
+ 		return ERR_PTR(ret);
++	}
+ 
+ 	alloc->channel = channel;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -733,7 +733,8 @@ static void vc4_plane_calc_load(struct d
+ 
+ static int vc4_plane_allocate_lbm(struct drm_plane_state *state)
+ {
+-	struct vc4_dev *vc4 = to_vc4_dev(state->plane->dev);
++	struct drm_device *drm = state->plane->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+ 	unsigned long irqflags;
+ 	u32 lbm_size;
+@@ -759,8 +760,10 @@ static int vc4_plane_allocate_lbm(struct
+ 						 0, 0);
+ 		spin_unlock_irqrestore(&vc4->hvs->mm_lock, irqflags);
+ 
+-		if (ret)
++		if (ret) {
++			drm_err(drm, "Failed to allocate LBM entry: %d\n", ret);
+ 			return ret;
++		}
+ 	} else {
+ 		WARN_ON_ONCE(lbm_size != vc4_state->lbm.size);
+ 	}

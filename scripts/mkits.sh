@@ -191,13 +191,10 @@ OVCONFIGS=""
 "
 	OVCONFIGS="$OVCONFIGS
 
-		config-$ovname {
-			description = \"OpenWrt ${DEVICE} with $ovname\";
-			kernel = \"kernel${REFERENCE_CHAR}1\";
-			fdt = \"fdt${REFERENCE_CHAR}$FDTNUM\", \"$ovnode\";
-			${LOADABLES:+loadables = ${LOADABLES};}
+		$ovname {
+			description = \"OpenWrt ${DEVICE} overlay $ovname\";
+			fdt = \"$ovnode\";
 			${COMPATIBLE_PROP}
-			${INITRD_PROP}
 		};
 	"
 done

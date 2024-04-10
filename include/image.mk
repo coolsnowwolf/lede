@@ -146,7 +146,7 @@ endif
 
 
 # Disable noisy checks by default as in upstream
-DTC_FLAGS += \
+DTC_WARN_FLAGS := \
   -Wno-unit_address_vs_reg \
   -Wno-simple_bus_reg \
   -Wno-unit_address_format \
@@ -158,6 +158,9 @@ DTC_FLAGS += \
   -Wno-graph_child_address \
   -Wno-graph_port \
   -Wno-unique_unit_address
+
+DTC_FLAGS += $(DTC_WARN_FLAGS)
+DTCO_FLAGS += $(DTC_WARN_FLAGS)
 
 define Image/pad-to
 	dd if=$(1) of=$(1).new bs=$(2) conv=sync
@@ -174,7 +177,7 @@ endef
 # $(2) target dtb file
 # $(3) extra CPP flags
 # $(4) extra DTC flags
-define Image/BuildDTB
+define Image/BuildDTB/sub
 	$(TARGET_CROSS)cpp -nostdinc -x assembler-with-cpp \
 		$(DTS_CPPFLAGS) \
 		-I$(DTS_DIR) \
@@ -183,10 +186,18 @@ define Image/BuildDTB
 		-undef -D__DTS__ $(3) \
 		-o $(2).tmp $(1)
 	$(LINUX_DIR)/scripts/dtc/dtc -O dtb \
-		-i$(dir $(1)) $(DTC_FLAGS) $(4) \
+		-i$(dir $(1)) $(4) \
 	$(if $(CONFIG_HAS_DT_OVERLAY_SUPPORT),-@) \
 		-o $(2) $(2).tmp
 	$(RM) $(2).tmp
+endef
+
+define Image/BuildDTB
+	$(call Image/BuildDTB/sub,$(1),$(2),$(3),$(DTC_FLAGS) $(DEVICE_DTC_FLAGS) $(4))
+endef
+
+define Image/BuildDTBO
+	$(call Image/BuildDTB/sub,$(1),$(2),$(3),$(DTCO_FLAGS) $(DEVICE_DTCO_FLAGS) $(4))
 endef
 
 define Image/mkfs/jffs2/sub-raw
@@ -400,6 +411,8 @@ define Device/Init
   DEVICE_DTS_LOADADDR :=
   DEVICE_DTS_OVERLAY :=
   DEVICE_FDT_NUM :=
+  DEVICE_DTC_FLAGS :=
+  DEVICE_DTCO_FLAGS :=
   SOC :=
 
   BOARD_NAME :=
@@ -422,9 +435,9 @@ endef
 DEFAULT_DEVICE_VARS := \
   DEVICE_NAME KERNEL KERNEL_INITRAMFS KERNEL_INITRAMFS_IMAGE KERNEL_SIZE \
   CMDLINE UBOOTENV_IN_UBI KERNEL_IN_UBI BLOCKSIZE PAGESIZE SUBPAGESIZE \
-  VID_HDR_OFFSET UBINIZE_OPTS UBINIZE_PARTS MKUBIFS_OPTS DEVICE_DTS \
-  DEVICE_DTS_CONFIG DEVICE_DTS_DELIMITER DEVICE_DTS_DIR DEVICE_DTS_OVERLAY \
-  DEVICE_DTS_LOADADDR \
+  VID_HDR_OFFSET UBINIZE_OPTS UBINIZE_PARTS MKUBIFS_OPTS DEVICE_DTC_FLAGS \
+  DEVICE_DTCO_FLAGS DEVICE_DTS DEVICE_DTS_CONFIG DEVICE_DTS_DELIMITER \
+  DEVICE_DTS_DIR DEVICE_DTS_OVERLAY DEVICE_DTS_LOADADDR \
   DEVICE_FDT_NUM DEVICE_IMG_PREFIX SOC BOARD_NAME UIMAGE_MAGIC UIMAGE_NAME \
   UIMAGE_TIME SUPPORTED_DEVICES IMAGE_METADATA KERNEL_ENTRY KERNEL_LOADADDR \
   UBOOT_PATH IMAGE_SIZE \
@@ -551,17 +564,34 @@ define Device/Build/dtb
   $(KDIR)/image-$(1).dtb: FORCE
 	$(call Image/BuildDTB,$(strip $(2))/$(strip $(3)).dts,$$@)
 
-  image_prepare: $(KDIR)/image-$(1).dtb
+  compile-dtb: $(KDIR)/image-$(1).dtb
+  endif
+
+endef
+
+define Device/Build/dtbo
+  ifndef BUILD_DTSO_$(1)
+  BUILD_DTSO_$(1) := 1
+  $(KDIR)/image-$(1).dtbo: FORCE
+	$(call Image/BuildDTBO,$(strip $(2))/$(strip $(3)).dtso,$$@)
+
+  compile-dtb: $(KDIR)/image-$(1).dtbo
   endif
 
 endef
 endif
 
 define Device/Build/kernel
-  $$(eval $$(foreach dts,$$(DEVICE_DTS) $$(DEVICE_DTS_OVERLAY), \
+  $$(eval $$(foreach dts,$$(DEVICE_DTS), \
 	$$(call Device/Build/dtb,$$(notdir $$(dts)), \
 		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
 		$$(dts) \
+	) \
+  ))
+  $$(eval $$(foreach dtso,$$(DEVICE_DTS_OVERLAY), \
+	$$(call Device/Build/dtbo,$$(notdir $$(dtso)), \
+		$$(if $$(DEVICE_DTS_DIR),$$(DEVICE_DTS_DIR),$$(DTS_DIR)), \
+		$$(dtso) \
 	) \
   ))
 
@@ -782,18 +812,20 @@ define BuildImage
   download:
   prepare:
   compile:
+  compile-dtb:
   clean:
   image_prepare:
 
   ifeq ($(IB),)
-    .PHONY: download prepare compile clean image_prepare kernel_prepare install install-images
+    .PHONY: download prepare compile compile-dtb clean image_prepare kernel_prepare install install-images
     compile:
 		$(call Build/Compile)
 
     clean:
 		$(call Build/Clean)
 
-    image_prepare: compile
+    compile-dtb:
+    image_prepare: compile compile-dtb
 		mkdir -p $(BIN_DIR) $(KDIR)/tmp
 		rm -rf $(BUILD_DIR)/json_info_files
 		$(call Image/Prepare)

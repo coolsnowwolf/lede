@@ -1,0 +1,84 @@
+From 18f08bf8df95c687d6fee3d2bb747cbd2fa0b878 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 22 Sep 2022 14:55:54 +0100
+Subject: [PATCH] usb: xhci: account for num_trbs_free when
+ invalidating TDs
+
+If a ring has a number of TDs enqueued past the dequeue pointer, and the
+URBs corresponding to these TDs are dequeued, then num_trbs_free isn't
+updated to show that these TDs have been converted to no-ops and
+effectively "freed". This means that num_trbs_free creeps downwards
+until the count is exhausted, which then triggers xhci_ring_expansion()
+and effectively leaks memory by infinitely growing the transfer ring.
+
+This is commonly encounted through the use of a usb-serial port where
+the port is repeatedly opened, read, then closed.
+
+Move the num_trbs_free crediting out of the Set TR Dequeue Pointer
+handling and into xhci_invalidate_cancelled_tds().
+
+There is a potential for overestimating the actual space on the ring if
+the ring is nearly full and TDs are arbitrarily enqueued by a device
+driver while it is dequeueing them, but dequeues are usually batched
+during device close/shutdown or endpoint error recovery.
+
+See https://github.com/raspberrypi/linux/issues/5088
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-ring.c | 14 +++-----------
+ 1 file changed, 3 insertions(+), 11 deletions(-)
+
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -1012,11 +1012,13 @@ static int xhci_invalidate_cancelled_tds
+ 						 td->urb->stream_id, td->urb,
+ 						 cached_td->urb->stream_id, cached_td->urb);
+ 				cached_td = td;
++				ring->num_trbs_free += td->num_trbs;
+ 				break;
+ 			}
+ 		} else {
+ 			td_to_noop(xhci, ring, td, false);
+ 			td->cancel_status = TD_CLEARED;
++			ring->num_trbs_free += td->num_trbs;
+ 		}
+ 	}
+ 
+@@ -1264,10 +1266,7 @@ static void update_ring_for_set_deq_comp
+ 		unsigned int ep_index)
+ {
+ 	union xhci_trb *dequeue_temp;
+-	int num_trbs_free_temp;
+-	bool revert = false;
+ 
+-	num_trbs_free_temp = ep_ring->num_trbs_free;
+ 	dequeue_temp = ep_ring->dequeue;
+ 
+ 	/* If we get two back-to-back stalls, and the first stalled transfer
+@@ -1282,8 +1281,6 @@ static void update_ring_for_set_deq_comp
+ 	}
+ 
+ 	while (ep_ring->dequeue != dev->eps[ep_index].queued_deq_ptr) {
+-		/* We have more usable TRBs */
+-		ep_ring->num_trbs_free++;
+ 		ep_ring->dequeue++;
+ 		if (trb_is_link(ep_ring->dequeue)) {
+ 			if (ep_ring->dequeue ==
+@@ -1293,15 +1290,10 @@ static void update_ring_for_set_deq_comp
+ 			ep_ring->dequeue = ep_ring->deq_seg->trbs;
+ 		}
+ 		if (ep_ring->dequeue == dequeue_temp) {
+-			revert = true;
++			xhci_dbg(xhci, "Unable to find new dequeue pointer\n");
+ 			break;
+ 		}
+ 	}
+-
+-	if (revert) {
+-		xhci_dbg(xhci, "Unable to find new dequeue pointer\n");
+-		ep_ring->num_trbs_free = num_trbs_free_temp;
+-	}
+ }
+ 
+ /*

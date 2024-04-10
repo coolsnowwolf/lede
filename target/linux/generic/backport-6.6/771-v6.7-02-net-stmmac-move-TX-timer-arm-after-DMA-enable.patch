@@ -1,0 +1,100 @@
+From a594166387fe08e6f5a32130c400249a35b298f9 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Wed, 18 Oct 2023 14:35:49 +0200
+Subject: [PATCH 2/3] net: stmmac: move TX timer arm after DMA enable
+
+Move TX timer arm call after DMA interrupt is enabled again.
+
+The TX timer arm function changed logic and now is skipped if a napi is
+already scheduled. By moving the TX timer arm call after DMA is enabled,
+we permit to correctly skip if a DMA interrupt has been fired and a napi
+has been scheduled again.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ .../net/ethernet/stmicro/stmmac/stmmac_main.c | 22 +++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -2551,9 +2551,13 @@ static void stmmac_bump_dma_threshold(st
+  * @priv: driver private structure
+  * @budget: napi budget limiting this functions packet handling
+  * @queue: TX queue index
++ * @pending_packets: signal to arm the TX coal timer
+  * Description: it reclaims the transmit resources after transmission completes.
++ * If some packets still needs to be handled, due to TX coalesce, set
++ * pending_packets to true to make NAPI arm the TX coal timer.
+  */
+-static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue)
++static int stmmac_tx_clean(struct stmmac_priv *priv, int budget, u32 queue,
++			   bool *pending_packets)
+ {
+ 	struct stmmac_tx_queue *tx_q = &priv->dma_conf.tx_queue[queue];
+ 	struct stmmac_txq_stats *txq_stats = &priv->xstats.txq_stats[queue];
+@@ -2713,7 +2717,7 @@ static int stmmac_tx_clean(struct stmmac
+ 
+ 	/* We still have pending packets, let's call for a new scheduling */
+ 	if (tx_q->dirty_tx != tx_q->cur_tx)
+-		stmmac_tx_timer_arm(priv, queue);
++		*pending_packets = true;
+ 
+ 	u64_stats_update_begin(&txq_stats->napi_syncp);
+ 	u64_stats_add(&txq_stats->napi.tx_packets, tx_packets);
+@@ -5605,6 +5609,7 @@ static int stmmac_napi_poll_tx(struct na
+ 		container_of(napi, struct stmmac_channel, tx_napi);
+ 	struct stmmac_priv *priv = ch->priv_data;
+ 	struct stmmac_txq_stats *txq_stats;
++	bool pending_packets = false;
+ 	u32 chan = ch->index;
+ 	int work_done;
+ 
+@@ -5613,7 +5618,7 @@ static int stmmac_napi_poll_tx(struct na
+ 	u64_stats_inc(&txq_stats->napi.poll);
+ 	u64_stats_update_end(&txq_stats->napi_syncp);
+ 
+-	work_done = stmmac_tx_clean(priv, budget, chan);
++	work_done = stmmac_tx_clean(priv, budget, chan, &pending_packets);
+ 	work_done = min(work_done, budget);
+ 
+ 	if (work_done < budget && napi_complete_done(napi, work_done)) {
+@@ -5624,6 +5629,10 @@ static int stmmac_napi_poll_tx(struct na
+ 		spin_unlock_irqrestore(&ch->lock, flags);
+ 	}
+ 
++	/* TX still have packet to handle, check if we need to arm tx timer */
++	if (pending_packets)
++		stmmac_tx_timer_arm(priv, chan);
++
+ 	return work_done;
+ }
+ 
+@@ -5632,6 +5641,7 @@ static int stmmac_napi_poll_rxtx(struct
+ 	struct stmmac_channel *ch =
+ 		container_of(napi, struct stmmac_channel, rxtx_napi);
+ 	struct stmmac_priv *priv = ch->priv_data;
++	bool tx_pending_packets = false;
+ 	int rx_done, tx_done, rxtx_done;
+ 	struct stmmac_rxq_stats *rxq_stats;
+ 	struct stmmac_txq_stats *txq_stats;
+@@ -5647,7 +5657,7 @@ static int stmmac_napi_poll_rxtx(struct
+ 	u64_stats_inc(&txq_stats->napi.poll);
+ 	u64_stats_update_end(&txq_stats->napi_syncp);
+ 
+-	tx_done = stmmac_tx_clean(priv, budget, chan);
++	tx_done = stmmac_tx_clean(priv, budget, chan, &tx_pending_packets);
+ 	tx_done = min(tx_done, budget);
+ 
+ 	rx_done = stmmac_rx_zc(priv, budget, chan);
+@@ -5672,6 +5682,10 @@ static int stmmac_napi_poll_rxtx(struct
+ 		spin_unlock_irqrestore(&ch->lock, flags);
+ 	}
+ 
++	/* TX still have packet to handle, check if we need to arm tx timer */
++	if (tx_pending_packets)
++		stmmac_tx_timer_arm(priv, chan);
++
+ 	return min(rxtx_done, budget - 1);
+ }
+ 

@@ -1,0 +1,88 @@
+From 9c6694c24f26ea435165431d41c72451fadbd753 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Fri, 21 Jul 2023 12:07:16 +0100
+Subject: [PATCH] ASOC: dwc: Fix 16-bit audio handling
+
+IMO the Synopsys datasheet could be clearer in this area, but it seems
+that the DMA data ports (DMATX and DMARX) expect left and right samples
+in alternate writes; if a stereo pair is pushed in a single 32-bit
+write, the upper half is ignored, leading to double speed audio with a
+confused stereo image. Make sure the necessary changes happen by
+updating the DMA configuration data in the hw_params method.
+
+The set_bclk_ratio change was made at a time when it looked like it
+could be causing an error, but I think the division of responsibilities
+is clearer this way (and the kernel log clearer without the info-level
+message).
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/dwc/dwc-i2s.c | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -223,23 +223,34 @@ static int dw_i2s_hw_params(struct snd_p
+ {
+ 	struct dw_i2s_dev *dev = snd_soc_dai_get_drvdata(dai);
+ 	struct i2s_clk_config_data *config = &dev->config;
++	union dw_i2s_snd_dma_data *dma_data = NULL;
+ 	int ret;
+ 
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		dma_data = &dev->play_dma_data;
++	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		dma_data = &dev->capture_dma_data;
++	else
++		return -1;
++
+ 	switch (params_format(params)) {
+ 	case SNDRV_PCM_FORMAT_S16_LE:
+ 		config->data_width = 16;
++		dma_data->dt.addr_width = 2;
+ 		dev->ccr = 0x00;
+ 		dev->xfer_resolution = 0x02;
+ 		break;
+ 
+ 	case SNDRV_PCM_FORMAT_S24_LE:
+ 		config->data_width = 24;
++		dma_data->dt.addr_width = 4;
+ 		dev->ccr = 0x08;
+ 		dev->xfer_resolution = 0x04;
+ 		break;
+ 
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+ 		config->data_width = 32;
++		dma_data->dt.addr_width = 4;
+ 		dev->ccr = 0x10;
+ 		dev->xfer_resolution = 0x05;
+ 		break;
+@@ -418,24 +429,21 @@ static int dw_i2s_set_bclk_ratio(struct
+ 	struct dw_i2s_dev *dev = snd_soc_dai_get_drvdata(cpu_dai);
+ 	struct i2s_clk_config_data *config = &dev->config;
+ 
+-	dev_err(dev->dev, "%s(%d)\n", __func__, ratio);
++	dev_dbg(dev->dev, "%s(%d)\n", __func__, ratio);
++	if (ratio < config->data_width * 2)
++		return -EINVAL;
++
+ 	switch (ratio) {
+ 	case 32:
+-		config->data_width = 16;
+ 		dev->ccr = 0x00;
+-		dev->xfer_resolution = 0x02;
+ 		break;
+ 
+ 	case 48:
+-		config->data_width = 24;
+ 		dev->ccr = 0x08;
+-		dev->xfer_resolution = 0x04;
+ 		break;
+ 
+ 	case 64:
+-		config->data_width = 32;
+ 		dev->ccr = 0x10;
+-		dev->xfer_resolution = 0x05;
+ 		break;
+ 	default:
+ 		return -EINVAL;

@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2023.01
-PKG_HASH:=69423bad380f89a0916636e89e6dcbd2e4512d584308d922d1039d1e4331950f
+PKG_VERSION:=2023.07.02
+PKG_HASH:=6b6a48581c14abb0f95bd87c1af4d740922406d7b801002a9f94727fdde021d5
 PKG_BUILD_DEPENDS:=!(TARGET_ramips||TARGET_mediatek_mt7623):arm-trusted-firmware-tools/host
 
 include $(INCLUDE_DIR)/u-boot.mk
@@ -175,6 +175,66 @@ define U-Boot/mt7629_rfb
   UBOOT_CONFIG:=mt7629_rfb
 endef
 
+define U-Boot/mt7981_rfb-spim-nand
+  NAME:=MT7981 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7981-rfb
+  UBOOT_CONFIG:=mt7981_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7981-spim-nand-ddr3
+endef
+
+define U-Boot/mt7981_rfb-emmc
+  NAME:=MT7981 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7981-rfb
+  UBOOT_CONFIG:=mt7981_emmc_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=emmc
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7981-emmc-ddr3
+endef
+
+define U-Boot/mt7981_rfb-nor
+  NAME:=MT7981 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7981-rfb
+  UBOOT_CONFIG:=mt7981_nor_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7981-nor-ddr3
+endef
+
+define U-Boot/mt7981_rfb-sd
+  NAME:=MT7981 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7981-rfb
+  UBOOT_CONFIG:=mt7981_sd_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=sdmmc
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7981-sdmmc-ddr3
+endef
+
+define U-Boot/mt7981_rfb-snfi
+  NAME:=MT7981 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7981-rfb
+  UBOOT_CONFIG:=mt7981_snfi_nand_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=snand
+  BL2_SOC:=mt7981
+  BL2_DDRTYPE:=ddr3
+  DEPENDS:=+trusted-firmware-a-mt7981-snand-ddr3
+endef
+
 define U-Boot/mt7986_rfb
   NAME:=MT7986 Reference Board
   BUILD_SUBTARGET:=filogic
@@ -236,6 +296,67 @@ define U-Boot/mt7986_bananapi_bpi-r3-nor
   FIP_COMPRESS:=1
 endef
 
+define U-Boot/mt7988_rfb-spim-nand
+  NAME:=MT7988 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7988a-rfb
+  UBOOT_CONFIG:=mt7988_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-spim-nand-comb
+endef
+
+define U-Boot/mt7988_rfb-snand
+  NAME:=MT7988 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7988a-rfb
+  UBOOT_CONFIG:=mt7988_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=snand
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-snand-comb
+endef
+
+define U-Boot/mt7988_rfb-nor
+  NAME:=MT7988 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7988a-rfb
+  UBOOT_CONFIG:=mt7988_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=nor
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-nor-comb
+  FIP_COMPRESS:=1
+endef
+
+define U-Boot/mt7988_rfb-emmc
+  NAME:=MT7988 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7988a-rfb
+  UBOOT_CONFIG:=mt7988_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=emmc
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-emmc-comb
+endef
+
+define U-Boot/mt7988_rfb-sd
+  NAME:=MT7988 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7988a-rfb
+  UBOOT_CONFIG:=mt7988_sd_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=sdmmc
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-sdmmc-comb
+endef
+
 UBOOT_TARGETS := \
 	mt7620_mt7530_rfb \
 	mt7620_rfb \
@@ -252,11 +373,21 @@ UBOOT_TARGETS := \
 	mt7628_rfb \
 	ravpower_rp-wd009 \
 	mt7629_rfb \
+	mt7981_rfb-spim-nand \
+	mt7981_rfb-emmc \
+	mt7981_rfb-nor \
+	mt7981_rfb-sd \
+	mt7981_rfb-snfi \
 	mt7986_bananapi_bpi-r3-emmc \
 	mt7986_bananapi_bpi-r3-sdmmc \
 	mt7986_bananapi_bpi-r3-snand \
 	mt7986_bananapi_bpi-r3-nor \
-	mt7986_rfb
+	mt7986_rfb \
+	mt7988_rfb-spim-nand \
+	mt7988_rfb-snand \
+	mt7988_rfb-nor \
+	mt7988_rfb-emmc \
+	mt7988_rfb-sd
 
 ifdef CONFIG_TARGET_mediatek
 UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE:.fip=.bin)

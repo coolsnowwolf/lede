@@ -1,0 +1,104 @@
+From 214e8134842a338215831f2efa6d730f413c5ec4 Mon Sep 17 00:00:00 2001
+From: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+Date: Fri, 29 Sep 2023 17:15:20 +0300
+Subject: [PATCH] media: rp1: fe: Fix pisp_fe_pad_set_fmt()
+
+pisp_fe_pad_set_fmt() allows setting the pad formats quite freely. This
+is not correct, and the function should only allow formats as supported
+by the hardware. Fix this by:
+
+Allow no format changes for FE_CONFIG_PAD and FE_STATS_PAD. They should
+always be the hardcoded initial ones.
+
+Allow setting FE_STREAM_PAD freely (but the mbus code must be
+supported), and propagate the format to the FE_OUTPUT0_PAD and
+FE_OUTPUT1_PAD pads.
+
+Allow changing the mbus code for FE_OUTPUT0_PAD and FE_OUTPUT1_PAD pads
+only if the mbus code is the compressed version of the sink side code.
+
+TODO: FE supports scaling and cropping. This should be represented here
+too?
+
+Signed-off-by: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+---
+ .../platform/raspberrypi/rp1_cfe/pisp_fe.c    | 59 +++++++++++++++----
+ 1 file changed, 48 insertions(+), 11 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/pisp_fe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/pisp_fe.c
+@@ -433,26 +433,63 @@ static int pisp_fe_pad_set_fmt(struct v4
+ 
+ 	switch (format->pad) {
+ 	case FE_STREAM_PAD:
+-	case FE_OUTPUT0_PAD:
+-	case FE_OUTPUT1_PAD:
+ 		cfe_fmt = find_format_by_code(format->format.code);
+ 		if (!cfe_fmt || !(cfe_fmt->flags & CFE_FORMAT_FLAG_FE_OUT))
+ 			cfe_fmt = find_format_by_code(MEDIA_BUS_FMT_SRGGB16_1X16);
+ 
+ 		format->format.code = cfe_fmt->code;
++		format->format.field = V4L2_FIELD_NONE;
+ 
+-		break;
++		fmt = v4l2_subdev_get_pad_format(sd, state, FE_STREAM_PAD);
++		*fmt = format->format;
+ 
+-	case FE_STATS_PAD:
+-	case FE_CONFIG_PAD:
+-		format->format.code = MEDIA_BUS_FMT_FIXED;
+-		break;
+-	}
++		fmt = v4l2_subdev_get_pad_format(sd, state, FE_OUTPUT0_PAD);
++		*fmt = format->format;
++
++		fmt = v4l2_subdev_get_pad_format(sd, state, FE_OUTPUT1_PAD);
++		*fmt = format->format;
++
++		return 0;
+ 
+-	fmt = v4l2_subdev_get_pad_format(sd, state, format->pad);
+-	*fmt = format->format;
++	case FE_OUTPUT0_PAD:
++	case FE_OUTPUT1_PAD: {
++		/*
++		 * TODO: we should allow scaling and cropping by allowing the
++		 * user to set the size here.
++		 */
++		struct v4l2_mbus_framefmt *sink_fmt, *source_fmt;
++		u32 sink_code;
++		u32 code;
++
++		sink_fmt = v4l2_subdev_get_pad_format(sd, state, FE_STREAM_PAD);
++		if (!sink_fmt)
++			return -EINVAL;
++
++		source_fmt = v4l2_subdev_get_pad_format(sd, state, format->pad);
++		if (!source_fmt)
++			return -EINVAL;
++
++		sink_code = sink_fmt->code;
++		code = format->format.code;
++
++		/*
++		 * If the source code from the user does not match the code in
++		 * the sink pad, check that the source code matches the
++		 * compressed version of the sink code.
++		 */
++
++		if (code != sink_code &&
++		    code == cfe_find_compressed_code(sink_code))
++			source_fmt->code = code;
++
++		return 0;
++	}
+ 
+-	return 0;
++	case FE_CONFIG_PAD:
++	case FE_STATS_PAD:
++	default:
++		return v4l2_subdev_get_fmt(sd, state, format);
++	}
+ }
+ 
+ static int pisp_fe_link_validate(struct v4l2_subdev *sd,
