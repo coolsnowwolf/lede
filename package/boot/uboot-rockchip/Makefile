@@ -189,7 +189,7 @@ define U-Boot/panther-x2-rk3566
   DEPENDS:=+PACKAGE_u-boot-panther-x2-rk3566:arm-trusted-firmware-rk3566
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
   ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3566_ddr_1056MHz_v1.18.bin
+  DDR:=rk3566_ddr_1056MHz_v1.21.bin
 endef
 
 # RK3568 boards
