@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=arm-trusted-firmware-rockchip
-PKG_VERSION:=2.3
+PKG_VERSION:=2.8
 PKG_RELEASE:=1
 
 PKG_SOURCE:=atf-v$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/atf-builds/atf/releases/download/v$(PKG_VERSION)/atf-v$(PKG_VERSION).tar.gz?
-PKG_HASH:=bf352298743aed594cf2958dd588e06ab6713fc514bb6f809bf55a85a87134c1
+PKG_HASH:=61df69619fd611da9e43abf66be28d6d59722feef559587fad0ca4cd9e499758
 
 PKG_LICENSE:=BSD-3-Clause
 PKG_LICENSE_FILES:=license.md

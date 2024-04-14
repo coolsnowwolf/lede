@@ -1,0 +1,119 @@
+From a018750a2cceaf4427c4ee3d9ce3e83a171d5bd6 Mon Sep 17 00:00:00 2001
+From: Youghandhar Chintala <quic_youghand@quicinc.com>
+Date: Fri, 4 Nov 2022 14:24:03 +0530
+Subject: [PATCH] wifi: ath11k: Trigger sta disconnect on hardware restart
+
+Currently after the hardware restart triggered from the driver, the
+station interface connection remains intact, since a disconnect trigger
+is not sent to userspace. This can lead to a problem in targets where
+the wifi mac sequence is added by the firmware.
+
+After the target restart, its wifi mac sequence number gets reset to
+zero. Hence AP to which our device is connected will receive frames with
+a  wifi mac sequence number jump to the past, thereby resulting in the
+AP dropping all these frames, until the frame arrives with a wifi mac
+sequence number which AP was expecting.
+
+To avoid such frame drops, its better to trigger a station disconnect
+upon target hardware restart which can be done with API
+ieee80211_reconfig_disconnect exposed to mac80211.
+
+The other targets are not affected by this change, since the hardware
+params flag is not set.
+
+Reported-by: kernel test robot <lkp@intel.com>
+
+Tested-on: WCN6750 hw1.0 AHB WLAN.MSL.1.0.1-00887-QCAMSLSWPLZ-1
+
+Signed-off-by: Youghandhar Chintala <quic_youghand@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20221104085403.11025-1-quic_youghand@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/core.c | 6 ++++++
+ drivers/net/wireless/ath/ath11k/hw.h   | 1 +
+ drivers/net/wireless/ath/ath11k/mac.c  | 7 +++++++
+ 3 files changed, 14 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -195,6 +195,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
++		.support_fw_mac_sequence = false,
+ 	},
+ 	{
+ 		.name = "qca6390 hw2.0",
+@@ -277,6 +278,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
++		.support_fw_mac_sequence = true,
+ 	},
+ 	{
+ 		.name = "qcn9074 hw1.0",
+@@ -356,6 +358,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
++		.support_fw_mac_sequence = false,
+ 	},
+ 	{
+ 		.name = "wcn6855 hw2.0",
+@@ -438,6 +441,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
++		.support_fw_mac_sequence = true,
+ 	},
+ 	{
+ 		.name = "wcn6855 hw2.1",
+@@ -519,6 +523,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
++		.support_fw_mac_sequence = true,
+ 	},
+ 	{
+ 		.name = "wcn6750 hw1.0",
+@@ -597,6 +602,7 @@ static const struct ath11k_hw_params ath
+ 		.tcl_ring_retry = false,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE_WCN6750,
+ 		.smp2p_wow_exit = true,
++		.support_fw_mac_sequence = true,
+ 	},
+ };
+ 
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -219,6 +219,7 @@ struct ath11k_hw_params {
+ 	bool tcl_ring_retry;
+ 	u32 tx_ring_size;
+ 	bool smp2p_wow_exit;
++	bool support_fw_mac_sequence;
+ };
+ 
+ struct ath11k_hw_ops {
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -8010,6 +8010,7 @@ ath11k_mac_op_reconfig_complete(struct i
+ 	struct ath11k *ar = hw->priv;
+ 	struct ath11k_base *ab = ar->ab;
+ 	int recovery_count;
++	struct ath11k_vif *arvif;
+ 
+ 	if (reconfig_type != IEEE80211_RECONFIG_TYPE_RESTART)
+ 		return;
+@@ -8045,6 +8046,12 @@ ath11k_mac_op_reconfig_complete(struct i
+ 				ath11k_dbg(ab, ATH11K_DBG_BOOT, "reset success\n");
+ 			}
+ 		}
++		if (ar->ab->hw_params.support_fw_mac_sequence) {
++			list_for_each_entry(arvif, &ar->arvifs, list) {
++				if (arvif->is_up && arvif->vdev_type == WMI_VDEV_TYPE_STA)
++					ieee80211_hw_restart_disconnect(arvif->vif);
++			}
++		}
+ 	}
+ 
+ 	mutex_unlock(&ar->conf_mutex);

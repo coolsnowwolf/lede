@@ -1,0 +1,120 @@
+From 9dd62a4a37af19e33bfb3c8f7e7a096ffc6ce8a9 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 21 Nov 2022 17:02:15 +0100
+Subject: [PATCH] drm/tests: helpers: Allow to pass a custom drm_driver
+
+Some tests will need to provide their own drm_driver instead of relying
+on the dumb one in the helpers, so let's create a helper that allows to
+do so.
+
+Reviewed-by: Javier Martinez Canillas <javierm@redhat.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/tests/drm_kunit_helpers.c | 15 +++----
+ include/drm/drm_kunit_helpers.h           | 51 ++++++++++++++++++++++-
+ 2 files changed, 54 insertions(+), 12 deletions(-)
+
+--- a/drivers/gpu/drm/tests/drm_kunit_helpers.c
++++ b/drivers/gpu/drm/tests/drm_kunit_helpers.c
+@@ -82,20 +82,15 @@ void drm_kunit_helper_free_device(struct
+ EXPORT_SYMBOL_GPL(drm_kunit_helper_free_device);
+ 
+ struct drm_device *
+-__drm_kunit_helper_alloc_drm_device(struct kunit *test, struct device *dev,
+-				    size_t size, size_t offset,
+-				    u32 features)
++__drm_kunit_helper_alloc_drm_device_with_driver(struct kunit *test,
++						struct device *dev,
++						size_t size, size_t offset,
++						const struct drm_driver *driver)
+ {
+ 	struct drm_device *drm;
+-	struct drm_driver *driver;
+ 	void *container;
+ 	int ret;
+ 
+-	driver = kunit_kzalloc(test, sizeof(*driver), GFP_KERNEL);
+-	if (!driver)
+-		return ERR_PTR(-ENOMEM);
+-
+-	driver->driver_features = features;
+ 	container = __devm_drm_dev_alloc(dev, driver, size, offset);
+ 	if (IS_ERR(container))
+ 		return ERR_CAST(container);
+@@ -109,7 +104,7 @@ __drm_kunit_helper_alloc_drm_device(stru
+ 
+ 	return drm;
+ }
+-EXPORT_SYMBOL_GPL(__drm_kunit_helper_alloc_drm_device);
++EXPORT_SYMBOL_GPL(__drm_kunit_helper_alloc_drm_device_with_driver);
+ 
+ MODULE_AUTHOR("Maxime Ripard <maxime@cerno.tech>");
+ MODULE_LICENSE("GPL");
+--- a/include/drm/drm_kunit_helpers.h
++++ b/include/drm/drm_kunit_helpers.h
+@@ -3,6 +3,8 @@
+ #ifndef DRM_KUNIT_HELPERS_H_
+ #define DRM_KUNIT_HELPERS_H_
+ 
++#include <kunit/test.h>
++
+ struct drm_device;
+ struct kunit;
+ 
+@@ -10,9 +12,54 @@ struct device *drm_kunit_helper_alloc_de
+ void drm_kunit_helper_free_device(struct kunit *test, struct device *dev);
+ 
+ struct drm_device *
+-__drm_kunit_helper_alloc_drm_device(struct kunit *test, struct device *dev,
++__drm_kunit_helper_alloc_drm_device_with_driver(struct kunit *test,
++						struct device *dev,
++						size_t size, size_t offset,
++						const struct drm_driver *driver);
++
++/**
++ * drm_kunit_helper_alloc_drm_device_with_driver - Allocates a mock DRM device for KUnit tests
++ * @_test: The test context object
++ * @_dev: The parent device object
++ * @_type: the type of the struct which contains struct &drm_device
++ * @_member: the name of the &drm_device within @_type.
++ * @_drv: Mocked DRM device driver features
++ *
++ * This function creates a struct &drm_device from @_dev and @_drv.
++ *
++ * @_dev should be allocated using drm_kunit_helper_alloc_device().
++ *
++ * The driver is tied to the @_test context and will get cleaned at the
++ * end of the test. The drm_device is allocated through
++ * devm_drm_dev_alloc() and will thus be freed through a device-managed
++ * resource.
++ *
++ * Returns:
++ * A pointer to the new drm_device, or an ERR_PTR() otherwise.
++ */
++#define drm_kunit_helper_alloc_drm_device_with_driver(_test, _dev, _type, _member, _drv)	\
++	((_type *)__drm_kunit_helper_alloc_drm_device_with_driver(_test, _dev,			\
++						       sizeof(_type),				\
++						       offsetof(_type, _member),		\
++						       _drv))
++
++static inline struct drm_device *
++__drm_kunit_helper_alloc_drm_device(struct kunit *test,
++				    struct device *dev,
+ 				    size_t size, size_t offset,
+-				    u32 features);
++				    u32 features)
++{
++	struct drm_driver *driver;
++
++	driver = kunit_kzalloc(test, sizeof(*driver), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, driver);
++
++	driver->driver_features = features;
++
++	return __drm_kunit_helper_alloc_drm_device_with_driver(test, dev,
++							       size, offset,
++							       driver);
++}
+ 
+ /**
+  * drm_kunit_helper_alloc_drm_device - Allocates a mock DRM device for KUnit tests

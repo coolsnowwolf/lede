@@ -1,0 +1,128 @@
+From 509a2ec6ad3ea7eb3f4cf59538cf636a2126e4c3 Mon Sep 17 00:00:00 2001
+From: liuzhensong <liuzhensong@loongson.cn>
+Date: Fri, 2 Sep 2022 16:29:14 +0800
+Subject: [PATCH 039/160] LoongArch:ld: Fix relocation error of pcrel.
+
+  Patch for branch 2.39.
+  Need to reduce the address of pc when using
+  reloction R_LARCH_SOP_PUSH_PCREL.
+
+  bfd/
+    * elfnn-loongarch.c
+---
+ bfd/elfnn-loongarch.c                         |  3 +-
+ ld/testsuite/ld-loongarch-elf/pcrel-const.d   | 14 +++++++
+ ld/testsuite/ld-loongarch-elf/pcrel-const.lds | 14 +++++++
+ ld/testsuite/ld-loongarch-elf/pcrel-const.s   | 12 ++++++
+ ld/testsuite/ld-loongarch-elf/pr.exp          | 39 +++++++++++++++++++
+ 5 files changed, 81 insertions(+), 1 deletion(-)
+ create mode 100644 ld/testsuite/ld-loongarch-elf/pcrel-const.d
+ create mode 100644 ld/testsuite/ld-loongarch-elf/pcrel-const.lds
+ create mode 100644 ld/testsuite/ld-loongarch-elf/pcrel-const.s
+ create mode 100644 ld/testsuite/ld-loongarch-elf/pr.exp
+
+--- a/bfd/elfnn-loongarch.c
++++ b/bfd/elfnn-loongarch.c
+@@ -2341,9 +2341,10 @@ loongarch_elf_relocate_section (bfd *out
+ 	case R_LARCH_SOP_PUSH_PLT_PCREL:
+ 	  unresolved_reloc = false;
+ 
+-	  if (resolved_to_const)
++	  if (!is_undefweak && resolved_to_const)
+ 	    {
+ 	      relocation += rel->r_addend;
++	      relocation -= pc;
+ 	      break;
+ 	    }
+ 	  else if (is_undefweak)
+--- /dev/null
++++ b/ld/testsuite/ld-loongarch-elf/pcrel-const.d
+@@ -0,0 +1,14 @@
++#as: -mla-global-with-pcrel
++#objdump: -Drsz
++
++.*:[    ]+file format .*
++
++
++Disassembly of section .text:
++
++.* <foo>:
++#...
++[ 	]+8:[ 	]+02c04084[ 	]+addi.d[ 	]+\$a0,[ 	]+\$a0,[ 	]+16\(0x10\)
++#...
++0+14 <__sec_end>:
++#pass
+--- /dev/null
++++ b/ld/testsuite/ld-loongarch-elf/pcrel-const.lds
+@@ -0,0 +1,14 @@
++ENTRY(foo);
++SECTIONS
++{
++	.text : {
++		*(.text*)
++	}
++
++	.data : {
++		__sec_start = .;
++		*(.gzdata)
++		__sec_end = .;
++	}
++}
++PROVIDE(__sec_size = __sec_end);
+--- /dev/null
++++ b/ld/testsuite/ld-loongarch-elf/pcrel-const.s
+@@ -0,0 +1,12 @@
++	.text
++	.align	2
++	.globl	foo
++	.type	foo, @function
++foo:
++	nop
++	la.global	$r4,__sec_size
++	ldptr.w	$r4,$r4,0
++	jr	$r1
++	.size	foo, .-foo
++	.data
++	.word 1
+--- /dev/null
++++ b/ld/testsuite/ld-loongarch-elf/pr.exp
+@@ -0,0 +1,39 @@
++# Expect script for LoongArch ELF linker tests
++#   Copyright (C) 2022 Free Software Foundation, Inc.
++#
++# This file is part of the GNU Binutils.
++#
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street - Fifth Floor, Boston,
++# MA 02110-1301, USA.
++#
++
++if ![istarget loongarch64-*-*] {
++  return
++}
++
++set link_tests [list \
++  [list \
++    "pcrel const" \
++    "-T pcrel-const.lds" "" \
++    "-mla-global-with-pcrel" \
++    { pcrel-const.s } \
++    [list \
++      [list objdump -D pcrel-const.d] \
++    ] \
++    "pcrel-const" \
++  ] \
++]
++
++run_ld_link_tests $link_tests

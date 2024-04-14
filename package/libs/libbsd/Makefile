@@ -1,18 +1,20 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libbsd
-PKG_VERSION:=0.10.0
-PKG_RELEASE:=1
+PKG_VERSION:=0.11.7
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://libbsd.freedesktop.org/releases
-PKG_HASH:=34b8adc726883d0e85b3118fa13605e179a62b31ba51f676136ecb2d0bc1a887
+PKG_HASH:=9baa186059ebbf25c06308e9f991fda31f7183c0f24931826d83aa6abd8a0261
 
 PKG_LICENSE:=BSD-4-Clause
 PKG_LICENSE_FILES:=COPYING
 
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
+PKG_BUILD_DEPENDS := libmd
+PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -26,6 +28,8 @@ endef
 define Package/libbsd/description
  This library provides useful functions commonly found on BSD systems, and lacking on others like GNU systems, thus making it easier to port projects with strong BSD origins, without needing to embed the same code over and over again on each project.
 endef
+
+TARGET_CFLAGS += -D_LARGEFILE64_SOURCE
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib
@@ -42,4 +46,3 @@ define Package/libbsd/install
 endef
 
 $(eval $(call BuildPackage,libbsd))
-

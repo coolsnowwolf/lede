@@ -1,0 +1,63 @@
+From 3027d89f87707e7f3e5b683e0d37a32afb5bde96 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Thu, 27 Oct 2022 14:11:23 +0100
+Subject: [PATCH 09/10] net: mtk_eth_soc: move and correct link timer
+ programming
+
+Program the link timer appropriately for the interface mode being
+used, using the newly introduced phylink helper that provides the
+nanosecond link timer interval.
+
+The intervals are 1.6ms for SGMII based protocols and 10ms for
+802.3z based protocols.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_sgmii.c | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_sgmii.c
++++ b/drivers/net/ethernet/mediatek/mtk_sgmii.c
+@@ -36,10 +36,6 @@ static void mtk_pcs_get_state(struct phy
+ /* For SGMII interface mode */
+ static void mtk_pcs_setup_mode_an(struct mtk_pcs *mpcs)
+ {
+-	/* Setup the link timer and QPHY power up inside SGMIISYS */
+-	regmap_write(mpcs->regmap, SGMSYS_PCS_LINK_TIMER,
+-		     SGMII_LINK_TIMER_DEFAULT);
+-
+ 	regmap_update_bits(mpcs->regmap, SGMSYS_SGMII_MODE,
+ 			   SGMII_REMOTE_FAULT_DIS, SGMII_REMOTE_FAULT_DIS);
+ 
+@@ -69,8 +65,8 @@ static int mtk_pcs_config(struct phylink
+ 			  bool permit_pause_to_mac)
+ {
+ 	struct mtk_pcs *mpcs = pcs_to_mtk_pcs(pcs);
++	int advertise, link_timer;
+ 	unsigned int rgc3;
+-	int advertise;
+ 	bool changed;
+ 
+ 	if (interface == PHY_INTERFACE_MODE_2500BASEX)
+@@ -83,6 +79,10 @@ static int mtk_pcs_config(struct phylink
+ 	if (advertise < 0)
+ 		return advertise;
+ 
++	link_timer = phylink_get_link_timer_ns(interface);
++	if (link_timer < 0)
++		return link_timer;
++
+ 	/* Configure the underlying interface speed */
+ 	regmap_update_bits(mpcs->regmap, mpcs->ana_rgc3,
+ 			   RG_PHY_SPEED_3_125G, rgc3);
+@@ -91,6 +91,9 @@ static int mtk_pcs_config(struct phylink
+ 	regmap_update_bits_check(mpcs->regmap, SGMSYS_PCS_ADVERTISE,
+ 				 SGMII_ADVERTISE, advertise, &changed);
+ 
++	/* Setup the link timer and QPHY power up inside SGMIISYS */
++	regmap_write(mpcs->regmap, SGMSYS_PCS_LINK_TIMER, link_timer / 2 / 8);
++
+ 	/* Setup SGMIISYS with the determined property */
+ 	if (interface != PHY_INTERFACE_MODE_SGMII)
+ 		mtk_pcs_setup_mode_force(mpcs, interface);

@@ -30,8 +30,7 @@ define KernelPackage/gpio-nct5104d/description
 endef
 
 define Build/Compile
-	 $(MAKE) -C "$(LINUX_DIR)" \
-		$(KERNEL_MAKE_FLAGS) \
+	 $(KERNEL_MAKE) \
 		M="$(PKG_BUILD_DIR)" \
 		modules
 endef

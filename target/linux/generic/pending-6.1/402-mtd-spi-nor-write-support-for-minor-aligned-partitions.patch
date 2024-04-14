@@ -1,0 +1,245 @@
+From acacdac272927ae1d96e0bca51eb82899671eaea Mon Sep 17 00:00:00 2001
+From: John Thomson <git@johnthomson.fastmail.com.au>
+Date: Fri, 25 Dec 2020 18:50:08 +1000
+Subject: [PATCH] mtd: spi-nor: write support for minor aligned partitions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Do not prevent writing to mtd partitions where a partition boundary sits
+on a minor erasesize boundary.
+This addresses a FIXME that has been present since the start of the
+linux git history:
+/* Doesn't start on a boundary of major erase size */
+/* FIXME: Let it be writable if it is on a boundary of
+ * _minor_ erase size though */
+
+Allow a uniform erase region spi-nor device to be configured
+to use the non-uniform erase regions code path for an erase with:
+CONFIG_MTD_SPI_NOR_USE_VARIABLE_ERASE=y
+
+On supporting hardware (SECT_4K: majority of current SPI-NOR device)
+provide the facility for an erase to use the least number
+of SPI-NOR operations, as well as access to 4K erase without
+requiring CONFIG_MTD_SPI_NOR_USE_4K_SECTORS
+
+Introduce erasesize_minor to the mtd struct,
+the smallest erasesize supported by the device
+
+On existing devices, this is useful where write support is wanted
+for data on a 4K partition, such as some u-boot-env partitions,
+or RouterBoot soft_config, while still netting the performance
+benefits of using 64K sectors
+
+Performance:
+time mtd erase firmware
+OpenWrt 5.10 ramips MT7621 w25q128jv 0xfc0000 partition length
+
+Without this patch
+MTD_SPI_NOR_USE_4K_SECTORS=y	|n
+real    2m 11.66s		|0m 50.86s
+user    0m 0.00s		|0m 0.00s
+sys     1m 56.20s		|0m 50.80s
+
+With this patch
+MTD_SPI_NOR_USE_VARIABLE_ERASE=n|y		|4K_SECTORS=y
+real    0m 51.68s		|0m 50.85s	|2m 12.89s
+user    0m 0.00s		|0m 0.00s	|0m 0.01s
+sys     0m 46.94s		|0m 50.38s	|2m 12.46s
+
+Signed-off-by: John Thomson <git@johnthomson.fastmail.com.au>
+Signed-off-by: Thibaut VARÈNE <hacks+kernel@slashdirt.org>
+
+---
+
+checkpatch does not like the printk(KERN_WARNING
+these should be changed separately beforehand?
+
+Changes v1 -> v2:
+Added mtdcore sysfs for erasesize_minor
+Removed finding minor erasesize for variable erase regions device,
+as untested and no responses regarding it.
+Moved IF_ENABLED for SPINOR variable erase to guard setting
+erasesize_minor in spi-nor/core.c
+Removed setting erasesize to minor where partition boundaries require
+minor erase to be writable
+Simplified minor boundary check by relying on minor being a factor of
+major
+
+Changes RFC -> v1:
+Fix uninitialized variable smatch warning
+Reported-by: kernel test robot <lkp@intel.com>
+Reported-by: Dan Carpenter <dan.carpenter@oracle.com>
+---
+ drivers/mtd/mtdcore.c       | 10 ++++++++++
+ drivers/mtd/mtdpart.c       | 35 +++++++++++++++++++++++++----------
+ drivers/mtd/spi-nor/Kconfig | 10 ++++++++++
+ drivers/mtd/spi-nor/core.c  | 11 +++++++++--
+ include/linux/mtd/mtd.h     |  2 ++
+ 5 files changed, 56 insertions(+), 12 deletions(-)
+
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -169,6 +169,15 @@ static ssize_t mtd_erasesize_show(struct
+ }
+ MTD_DEVICE_ATTR_RO(erasesize);
+ 
++static ssize_t mtd_erasesize_minor_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct mtd_info *mtd = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%lu\n", (unsigned long)mtd->erasesize_minor);
++}
++MTD_DEVICE_ATTR_RO(erasesize_minor);
++
+ static ssize_t mtd_writesize_show(struct device *dev,
+ 		struct device_attribute *attr, char *buf)
+ {
+@@ -314,6 +323,7 @@ static struct attribute *mtd_attrs[] = {
+ 	&dev_attr_flags.attr,
+ 	&dev_attr_size.attr,
+ 	&dev_attr_erasesize.attr,
++	&dev_attr_erasesize_minor.attr,
+ 	&dev_attr_writesize.attr,
+ 	&dev_attr_subpagesize.attr,
+ 	&dev_attr_oobsize.attr,
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -41,6 +41,7 @@ static struct mtd_info *allocate_partiti
+ 	struct mtd_info *master = mtd_get_master(parent);
+ 	int wr_alignment = (parent->flags & MTD_NO_ERASE) ?
+ 			   master->writesize : master->erasesize;
++	int wr_alignment_minor = 0;
+ 	u64 parent_size = mtd_is_partition(parent) ?
+ 			  parent->part.size : parent->size;
+ 	struct mtd_info *child;
+@@ -165,6 +166,7 @@ static struct mtd_info *allocate_partiti
+ 	} else {
+ 		/* Single erase size */
+ 		child->erasesize = master->erasesize;
++		child->erasesize_minor = master->erasesize_minor;
+ 	}
+ 
+ 	/*
+@@ -172,26 +174,39 @@ static struct mtd_info *allocate_partiti
+ 	 * exposes several regions with different erasesize. Adjust
+ 	 * wr_alignment accordingly.
+ 	 */
+-	if (!(child->flags & MTD_NO_ERASE))
++	if (!(child->flags & MTD_NO_ERASE)) {
+ 		wr_alignment = child->erasesize;
++		wr_alignment_minor = child->erasesize_minor;
++	}
+ 
+ 	tmp = mtd_get_master_ofs(child, 0);
+ 	remainder = do_div(tmp, wr_alignment);
+ 	if ((child->flags & MTD_WRITEABLE) && remainder) {
+-		/* Doesn't start on a boundary of major erase size */
+-		/* FIXME: Let it be writable if it is on a boundary of
+-		 * _minor_ erase size though */
+-		child->flags &= ~MTD_WRITEABLE;
+-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't start on an erase/write block boundary -- force read-only\n",
+-			part->name);
++		if (wr_alignment_minor) {
++			/* rely on minor being a factor of major erasesize */
++			tmp = remainder;
++			remainder = do_div(tmp, wr_alignment_minor);
++		}
++		if (remainder) {
++			child->flags &= ~MTD_WRITEABLE;
++			printk(KERN_WARNING"mtd: partition \"%s\" doesn't start on an erase/write block boundary -- force read-only\n",
++				part->name);
++		}
+ 	}
+ 
+ 	tmp = mtd_get_master_ofs(child, 0) + child->part.size;
+ 	remainder = do_div(tmp, wr_alignment);
+ 	if ((child->flags & MTD_WRITEABLE) && remainder) {
+-		child->flags &= ~MTD_WRITEABLE;
+-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't end on an erase/write block -- force read-only\n",
+-			part->name);
++		if (wr_alignment_minor) {
++			tmp = remainder;
++			remainder = do_div(tmp, wr_alignment_minor);
++		}
++
++		if (remainder) {
++			child->flags &= ~MTD_WRITEABLE;
++			printk(KERN_WARNING"mtd: partition \"%s\" doesn't end on an erase/write block -- force read-only\n",
++				part->name);
++		}
+ 	}
+ 
+ 	child->size = child->part.size;
+--- a/drivers/mtd/spi-nor/Kconfig
++++ b/drivers/mtd/spi-nor/Kconfig
+@@ -10,6 +10,16 @@ menuconfig MTD_SPI_NOR
+ 
+ if MTD_SPI_NOR
+ 
++config MTD_SPI_NOR_USE_VARIABLE_ERASE
++	bool "Disable uniform_erase to allow use of all hardware supported erasesizes"
++	depends on !MTD_SPI_NOR_USE_4K_SECTORS
++	default n
++	help
++	  Allow mixed use of all hardware supported erasesizes,
++	  by forcing spi_nor to use the multiple eraseregions code path.
++	  For example: A 68K erase will use one 64K erase, and one 4K erase
++	  on supporting hardware.
++
+ config MTD_SPI_NOR_USE_4K_SECTORS
+ 	bool "Use small 4096 B erase sectors"
+ 	default y
+--- a/drivers/mtd/spi-nor/core.c
++++ b/drivers/mtd/spi-nor/core.c
+@@ -1050,6 +1050,8 @@ static u8 spi_nor_convert_3to4_erase(u8
+ 
+ static bool spi_nor_has_uniform_erase(const struct spi_nor *nor)
+ {
++	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_VARIABLE_ERASE))
++		return false;
+ 	return !!nor->params->erase_map.uniform_erase_type;
+ }
+ 
+@@ -2158,6 +2160,7 @@ static int spi_nor_select_erase(struct s
+ {
+ 	struct spi_nor_erase_map *map = &nor->params->erase_map;
+ 	const struct spi_nor_erase_type *erase = NULL;
++	const struct spi_nor_erase_type *erase_minor = NULL;
+ 	struct mtd_info *mtd = &nor->mtd;
+ 	u32 wanted_size = nor->info->sector_size;
+ 	int i;
+@@ -2190,8 +2193,9 @@ static int spi_nor_select_erase(struct s
+ 	 */
+ 	for (i = SNOR_ERASE_TYPE_MAX - 1; i >= 0; i--) {
+ 		if (map->erase_type[i].size) {
+-			erase = &map->erase_type[i];
+-			break;
++			if (!erase)
++				erase = &map->erase_type[i];
++			erase_minor = &map->erase_type[i];
+ 		}
+ 	}
+ 
+@@ -2199,6 +2203,9 @@ static int spi_nor_select_erase(struct s
+ 		return -EINVAL;
+ 
+ 	mtd->erasesize = erase->size;
++	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_VARIABLE_ERASE) &&
++			erase_minor && erase_minor->size < erase->size)
++		mtd->erasesize_minor = erase_minor->size;
+ 	return 0;
+ }
+ 
+--- a/include/linux/mtd/mtd.h
++++ b/include/linux/mtd/mtd.h
+@@ -245,6 +245,8 @@ struct mtd_info {
+ 	 * information below if they desire
+ 	 */
+ 	uint32_t erasesize;
++	/* "Minor" (smallest) erase size supported by the whole device */
++	uint32_t erasesize_minor;
+ 	/* Minimal writable flash unit size. In case of NOR flash it is 1 (even
+ 	 * though individual bits can be cleared), in case of NAND flash it is
+ 	 * one NAND page (or half, or one-fourths of it), in case of ECC-ed NOR

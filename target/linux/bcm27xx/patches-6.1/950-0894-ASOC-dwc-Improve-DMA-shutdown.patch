@@ -1,0 +1,128 @@
+From e6baee4502c0228c79408b047096a1259a84353f Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 3 Jul 2023 10:14:43 +0100
+Subject: [PATCH] ASOC: dwc: Improve DMA shutdown
+
+Disabling the I2S interface with outstanding transfers prevents the
+DMAC from shutting down, so keep it partially active after a stop.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/dwc/dwc-i2s.c | 72 ++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 64 insertions(+), 8 deletions(-)
+
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -165,24 +165,26 @@ static void i2s_start(struct dw_i2s_dev
+ 	i2s_write_reg(dev->i2s_base, CER, 1);
+ }
+ 
+-static void i2s_stop(struct dw_i2s_dev *dev,
+-		struct snd_pcm_substream *substream)
++static void i2s_pause(struct dw_i2s_dev *dev, struct snd_pcm_substream *substream)
+ {
+ 
+ 	i2s_clear_irqs(dev, substream->stream);
+-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+-		i2s_write_reg(dev->i2s_base, ITER, 0);
+-	else
+-		i2s_write_reg(dev->i2s_base, IRER, 0);
+ 
+ 	i2s_disable_irqs(dev, substream->stream, 8);
+ 
+ 	if (!dev->active) {
+ 		i2s_write_reg(dev->i2s_base, CER, 0);
+-		i2s_write_reg(dev->i2s_base, IER, 0);
++		/* Keep the device enabled until the shutdown - do not clear IER */
+ 	}
+ }
+ 
++static void i2s_stop(struct dw_i2s_dev *dev, struct snd_pcm_substream *substream)
++{
++	i2s_clear_irqs(dev, substream->stream);
++
++	i2s_disable_irqs(dev, substream->stream, 8);
++}
++
+ static void dw_i2s_config(struct dw_i2s_dev *dev, int stream)
+ {
+ 	struct i2s_clk_config_data *config = &dev->config;
+@@ -288,6 +290,55 @@ static int dw_i2s_hw_params(struct snd_p
+ 	return 0;
+ }
+ 
++static int dw_i2s_startup(struct snd_pcm_substream *substream,
++			  struct snd_soc_dai *cpu_dai)
++{
++	struct dw_i2s_dev *dev = snd_soc_dai_get_drvdata(cpu_dai);
++	union dw_i2s_snd_dma_data *dma_data = NULL;
++	u32 dmacr;
++
++	dev_dbg(dev->dev, "%s(%s)\n", __func__, substream->name);
++	if (!(dev->capability & DWC_I2S_RECORD) &&
++	    substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		return -EINVAL;
++
++	if (!(dev->capability & DWC_I2S_PLAY) &&
++	    substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		return -EINVAL;
++
++	dw_i2s_config(dev, substream->stream);
++	dmacr = i2s_read_reg(dev->i2s_base, DMACR);
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		dma_data = &dev->play_dma_data;
++	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		dma_data = &dev->capture_dma_data;
++
++	snd_soc_dai_set_dma_data(cpu_dai, substream, (void *)dma_data);
++	i2s_write_reg(dev->i2s_base, DMACR, dmacr);
++
++	return 0;
++}
++
++static void dw_i2s_shutdown(struct snd_pcm_substream *substream,
++			    struct snd_soc_dai *dai)
++{
++	struct dw_i2s_dev *dev = snd_soc_dai_get_drvdata(dai);
++
++	dev_dbg(dev->dev, "%s(%s)\n", __func__, substream->name);
++	i2s_disable_channels(dev, substream->stream);
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		i2s_write_reg(dev->i2s_base, ITER, 0);
++	else
++		i2s_write_reg(dev->i2s_base, IRER, 0);
++
++	i2s_disable_irqs(dev, substream->stream, 8);
++
++	if (!dev->active) {
++		i2s_write_reg(dev->i2s_base, CER, 0);
++		i2s_write_reg(dev->i2s_base, IER, 0);
++	}
++}
++
+ static int dw_i2s_prepare(struct snd_pcm_substream *substream,
+ 			  struct snd_soc_dai *dai)
+ {
+@@ -315,9 +366,12 @@ static int dw_i2s_trigger(struct snd_pcm
+ 		i2s_start(dev, substream);
+ 		break;
+ 
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		dev->active--;
++		i2s_pause(dev, substream);
++		break;
+ 	case SNDRV_PCM_TRIGGER_STOP:
+ 	case SNDRV_PCM_TRIGGER_SUSPEND:
+-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+ 		dev->active--;
+ 		i2s_stop(dev, substream);
+ 		break;
+@@ -394,6 +448,8 @@ static int dw_i2s_set_bclk_ratio(struct
+ 
+ static const struct snd_soc_dai_ops dw_i2s_dai_ops = {
+ 	.hw_params	= dw_i2s_hw_params,
++	.startup	= dw_i2s_startup,
++	.shutdown	= dw_i2s_shutdown,
+ 	.prepare	= dw_i2s_prepare,
+ 	.trigger	= dw_i2s_trigger,
+ 	.set_fmt	= dw_i2s_set_fmt,

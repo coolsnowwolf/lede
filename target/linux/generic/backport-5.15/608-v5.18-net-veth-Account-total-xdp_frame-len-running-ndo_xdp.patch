@@ -1,0 +1,62 @@
+commit 5142239a22219921a7863cf00c9ab853c00689d8
+Author: Lorenzo Bianconi <lorenzo@kernel.org>
+Date:   Fri Mar 11 10:14:18 2022 +0100
+
+    net: veth: Account total xdp_frame len running ndo_xdp_xmit
+    
+    Even if this is a theoretical issue since it is not possible to perform
+    XDP_REDIRECT on a non-linear xdp_frame, veth driver does not account
+    paged area in ndo_xdp_xmit function pointer.
+    Introduce xdp_get_frame_len utility routine to get the xdp_frame full
+    length and account total frame size running XDP_REDIRECT of a
+    non-linear xdp frame into a veth device.
+    
+    Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+    Signed-off-by: Daniel Borkmann <daniel@iogearbox.net>
+    Acked-by: Toke Hoiland-Jorgensen <toke@redhat.com>
+    Acked-by: John Fastabend <john.fastabend@gmail.com>
+    Link: https://lore.kernel.org/bpf/54f9fd3bb65d190daf2c0bbae2f852ff16cfbaa0.1646989407.git.lorenzo@kernel.org
+
+--- a/drivers/net/veth.c
++++ b/drivers/net/veth.c
+@@ -503,7 +503,7 @@ static int veth_xdp_xmit(struct net_devi
+ 		struct xdp_frame *frame = frames[i];
+ 		void *ptr = veth_xdp_to_ptr(frame);
+ 
+-		if (unlikely(frame->len > max_len ||
++		if (unlikely(xdp_get_frame_len(frame) > max_len ||
+ 			     __ptr_ring_produce(&rq->xdp_ring, ptr)))
+ 			break;
+ 		nxmit++;
+@@ -864,7 +864,7 @@ static int veth_xdp_rcv(struct veth_rq *
+ 			/* ndo_xdp_xmit */
+ 			struct xdp_frame *frame = veth_ptr_to_xdp(ptr);
+ 
+-			stats->xdp_bytes += frame->len;
++			stats->xdp_bytes += xdp_get_frame_len(frame);
+ 			frame = veth_xdp_rcv_one(rq, frame, bq, stats);
+ 			if (frame) {
+ 				/* XDP_PASS */
+--- a/include/net/xdp.h
++++ b/include/net/xdp.h
+@@ -295,6 +295,20 @@ out:
+ 	__xdp_release_frame(xdpf->data, mem);
+ }
+ 
++static __always_inline unsigned int xdp_get_frame_len(struct xdp_frame *xdpf)
++{
++	struct skb_shared_info *sinfo;
++	unsigned int len = xdpf->len;
++
++	if (likely(!xdp_frame_has_frags(xdpf)))
++		goto out;
++
++	sinfo = xdp_get_shared_info_from_frame(xdpf);
++	len += sinfo->xdp_frags_size;
++out:
++	return len;
++}
++
+ int xdp_rxq_info_reg(struct xdp_rxq_info *xdp_rxq,
+ 		     struct net_device *dev, u32 queue_index, unsigned int napi_id);
+ void xdp_rxq_info_unreg(struct xdp_rxq_info *xdp_rxq);

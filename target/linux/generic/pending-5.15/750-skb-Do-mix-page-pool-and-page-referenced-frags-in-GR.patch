@@ -1,0 +1,35 @@
+From: Alexander Duyck <alexanderduyck@fb.com>
+Date: Thu, 26 Jan 2023 11:06:59 -0800
+Subject: [PATCH] skb: Do mix page pool and page referenced frags in GRO
+
+GSO should not merge page pool recycled frames with standard reference
+counted frames. Traditionally this didn't occur, at least not often.
+However as we start looking at adding support for wireless adapters there
+becomes the potential to mix the two due to A-MSDU repartitioning frames in
+the receive path. There are possibly other places where this may have
+occurred however I suspect they must be few and far between as we have not
+seen this issue until now.
+
+Fixes: 53e0961da1c7 ("page_pool: add frag page recycling support in page pool")
+Reported-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Alexander Duyck <alexanderduyck@fb.com>
+---
+
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -4359,6 +4359,15 @@ int skb_gro_receive(struct sk_buff *p, s
+ 	if (unlikely(p->len + len >= 65536 || NAPI_GRO_CB(skb)->flush))
+ 		return -E2BIG;
+ 
++	/* Do not splice page pool based packets w/ non-page pool
++	 * packets. This can result in reference count issues as page
++	 * pool pages will not decrement the reference count and will
++	 * instead be immediately returned to the pool or have frag
++	 * count decremented.
++	 */
++	if (p->pp_recycle != skb->pp_recycle)
++		return -ETOOMANYREFS;
++
+ 	lp = NAPI_GRO_CB(p)->last;
+ 	pinfo = skb_shinfo(lp);
+ 

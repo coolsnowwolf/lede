@@ -8,16 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=binutils
-PKG_VERSION:=2.35.2
+PKG_VERSION:=2.40
 PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=@GNU/binutils
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_VERSION:=$(PKG_VERSION)
-PKG_HASH:=dcd5b0416e7b0a9b24bed76cd8c6c132526805761863150a26d016415b8bdc7b
+PKG_HASH:=0f8a4c272d7f17f369ded10a4aca28b8e304828e95526da482b0ccc4dfc9d8e1
 
-PKG_FIXUP:=autoreconf
-PKG_LIBTOOL_PATHS:=. gas bfd opcodes gprof binutils ld libiberty gold intl
+PKG_FIXUP:=patch-libtool
+PKG_LIBTOOL_PATHS:=. gas bfd opcodes gprof gprofng binutils ld libiberty gold intl libctf libsframe
 PKG_REMOVE_FILES:=libtool.m4
 PKG_INSTALL:=1
 
@@ -87,7 +87,11 @@ CONFIGURE_ARGS += \
 	--enable-shared \
 	--enable-install-libiberty \
 	--enable-install-libbfd \
-	--enable-install-libctf
+	--enable-install-libctf \
+	--with-system-zlib \
+	--without-zstd \
+	--without-msgpack \
+	--disable-gprofng
 
 define Build/Install
 	$(call Build/Install/Default)
@@ -105,6 +109,7 @@ endef
 define Package/libbfd/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libbfd*.so* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsframe*.so* $(1)/usr/lib/
 endef
 
 define Package/libctf/install

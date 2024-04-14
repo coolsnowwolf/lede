@@ -19,7 +19,7 @@ include $(INCLUDE_DIR)/kernel-$(PKG_PATCHVER)
 
 PKG_VERSION:=$(PKG_PATCHVER)$(strip $(LINUX_VERSION-$(PKG_PATCHVER)))
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=$(LINUX_SITE)
+PKG_SOURCE_URL:=@KERNEL/linux/kernel/v$(word 1,$(subst ., ,$(PKG_PATCHVER))).x
 PKG_HASH:=$(LINUX_KERNEL_HASH-$(strip $(PKG_VERSION)))
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/bpf-headers/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -39,7 +39,7 @@ include $(INCLUDE_DIR)/package.mk
 
 define Package/bpf-headers
   SECTION:=kernel
-  CATEGORY:=Kernel
+  CATEGORY:=Kernel modules
   TITLE:=eBPF kernel headers
   BUILDONLY:=1
   HIDDEN:=1
@@ -56,7 +56,6 @@ KERNEL_MAKE := \
 		LLVM=1 CC="$(CLANG)" LD="$(TARGET_CROSS)ld" \
 		HOSTCC="$(HOSTCC)" \
 		HOSTCXX="$(HOSTCXX)" \
-		HOST_LOADLIBES="-L$(STAGING_DIR_HOST)/lib" \
 		KBUILD_HOSTLDLIBS="-L$(STAGING_DIR_HOST)/lib" \
 		CONFIG_SHELL="$(BASH)" \
 		INSTALL_HDR_PATH="$(PKG_BUILD_DIR)/user_headers"

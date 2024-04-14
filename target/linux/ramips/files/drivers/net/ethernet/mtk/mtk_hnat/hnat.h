@@ -17,7 +17,12 @@
 #include <linux/if_ether.h>
 #include <net/netevent.h>
 #include <linux/mod_devicetable.h>
+#include <linux/version.h>
 #include "hnat_mcast.h"
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 5, 0)
+#include <net/netfilter/nf_hnat.h>
+#endif
 
 /*--------------------------------------------------------------------------*/
 /* Register Offset*/

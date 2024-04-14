@@ -605,6 +605,20 @@ static const struct rtl8367b_initval rtl8367r_vb_initvals_1[] = {
 	{0x133E, 0x000E}, {0x133F, 0x0010},
 };
 
+static const struct rtl8367b_initval rtl8367c_initvals[] = {
+	{0x13c2, 0x0000}, {0x0018, 0x0f00}, {0x0038, 0x0f00}, {0x0058, 0x0f00},
+	{0x0078, 0x0f00}, {0x0098, 0x0f00}, {0x1d15, 0x0a69}, {0x2000, 0x1340},
+	{0x2020, 0x1340}, {0x2040, 0x1340}, {0x2060, 0x1340}, {0x2080, 0x1340},
+	{0x13eb, 0x15bb}, {0x1303, 0x06d6}, {0x1304, 0x0700}, {0x13E2, 0x003F},
+	{0x13F9, 0x0090}, {0x121e, 0x03CA}, {0x1233, 0x0352}, {0x1237, 0x00a0},
+	{0x123a, 0x0030}, {0x1239, 0x0084}, {0x0301, 0x1000}, {0x1349, 0x001F},
+	{0x18e0, 0x4004}, {0x122b, 0x641c}, {0x1305, 0xc000}, {0x1200, 0x7fcb},
+	{0x0884, 0x0003}, {0x06eb, 0x0001}, {0x00cf, 0xffff}, {0x00d0, 0x0007},
+	{0x00ce, 0x48b0}, {0x00ce, 0x48b0}, {0x0398, 0xffff}, {0x0399, 0x0007},
+	{0x0300, 0x0001}, {0x03fa, 0x0007}, {0x08c8, 0x00c0}, {0x0a30, 0x020e},
+	{0x0800, 0x0000}, {0x0802, 0x0000}, {0x09da, 0x0017}, {0x1d32, 0x0002},
+};
+
 static int rtl8367b_write_initvals(struct rtl8366_smi *smi,
 				  const struct rtl8367b_initval *initvals,
 				  int count)
@@ -716,31 +730,35 @@ static int rtl8367b_write_phy_reg(struct rtl8366_smi *smi,
 static int rtl8367b_init_regs(struct rtl8366_smi *smi)
 {
 	const struct rtl8367b_initval *initvals;
+	u32 chip_num;
 	u32 chip_ver;
 	u32 rlvid;
 	int count;
 	int err;
 
 	REG_WR(smi, RTL8367B_RTL_MAGIC_ID_REG, RTL8367B_RTL_MAGIC_ID_VAL);
+	REG_RD(smi, RTL8367B_CHIP_NUMBER_REG, &chip_num);
 	REG_RD(smi, RTL8367B_CHIP_VER_REG, &chip_ver);
 
-	rlvid = (chip_ver >> RTL8367B_CHIP_VER_RLVID_SHIFT) &
-		RTL8367B_CHIP_VER_RLVID_MASK;
-
-	switch (rlvid) {
-	case 0:
-		initvals = rtl8367r_vb_initvals_0;
-		count = ARRAY_SIZE(rtl8367r_vb_initvals_0);
-		break;
-
-	case 1:
-		initvals = rtl8367r_vb_initvals_1;
-		count = ARRAY_SIZE(rtl8367r_vb_initvals_1);
-		break;
-
-	default:
-		dev_err(smi->parent, "unknow rlvid %u\n", rlvid);
-		return -ENODEV;
+	if ((chip_ver ==  0x0020 || chip_ver == 0x00A0) && chip_num == 0x6367)  {
+		initvals = rtl8367c_initvals;
+		count = ARRAY_SIZE(rtl8367c_initvals);
+	} else {
+		rlvid = (chip_ver >> RTL8367B_CHIP_VER_RLVID_SHIFT) &
+			RTL8367B_CHIP_VER_RLVID_MASK;
+		switch (rlvid) {
+		case 0:
+			initvals = rtl8367r_vb_initvals_0;
+			count = ARRAY_SIZE(rtl8367r_vb_initvals_0);
+			break;
+		case 1:
+			initvals = rtl8367r_vb_initvals_1;
+			count = ARRAY_SIZE(rtl8367r_vb_initvals_1);
+			break;
+		default:
+			dev_err(smi->parent, "unknow rlvid %u\n", rlvid);
+			return -ENODEV;
+		}
 	}
 
 	/* TODO: disable RLTP */
@@ -1509,7 +1527,7 @@ static int rtl8367b_mii_write(struct mii_bus *bus, int addr, int reg, u16 val)
 
 static int rtl8367b_detect(struct rtl8366_smi *smi)
 {
-	const char *chip_name;
+	const char *chip_name = NULL;
 	u32 chip_num;
 	u32 chip_ver;
 	u32 chip_mode;
@@ -1541,13 +1559,22 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 	}
 
 	switch (chip_ver) {
+	case 0x0020:
+		if (chip_num == 0x6367)
+			chip_name = "8367RB-VB";
+		break;
+	case 0x00A0:
+		if (chip_num == 0x6367)
+			chip_name = "8367S";
+		break;
 	case 0x1000:
 		chip_name = "8367RB";
 		break;
 	case 0x1010:
 		chip_name = "8367R-VB";
-		break;
-	default:
+	}
+
+	if (!chip_name) {
 		dev_err(smi->parent,
 			"unknown chip num:%04x ver:%04x, mode:%04x\n",
 			chip_num, chip_ver, chip_mode);

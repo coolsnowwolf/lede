@@ -1,0 +1,341 @@
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -307,6 +307,12 @@ config SPI_DLN2
+ 	 This driver can also be built as a module.  If so, the module
+ 	 will be called spi-dln2.
+ 
++config SPI_AIROHA_EN7523
++	bool "Airoha EN7523 SPI controller support"
++	depends on ARCH_AIROHA
++	help
++	  This enables SPI controller support for the Airoha EN7523 SoC.
++
+ config SPI_EP93XX
+ 	tristate "Cirrus Logic EP93xx SPI controller"
+ 	depends on ARCH_EP93XX || COMPILE_TEST
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -45,6 +45,7 @@ obj-$(CONFIG_SPI_DW_BT1)		+= spi-dw-bt1.
+ obj-$(CONFIG_SPI_DW_MMIO)		+= spi-dw-mmio.o
+ obj-$(CONFIG_SPI_DW_PCI)		+= spi-dw-pci.o
+ obj-$(CONFIG_SPI_EP93XX)		+= spi-ep93xx.o
++obj-$(CONFIG_SPI_AIROHA_EN7523)		+= spi-en7523.o
+ obj-$(CONFIG_SPI_FALCON)		+= spi-falcon.o
+ obj-$(CONFIG_SPI_FSI)			+= spi-fsi.o
+ obj-$(CONFIG_SPI_FSL_CPM)		+= spi-fsl-cpm.o
+--- /dev/null
++++ b/drivers/spi/spi-en7523.c
+@@ -0,0 +1,313 @@
++// SPDX-License-Identifier: GPL-2.0
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/mod_devicetable.h>
++#include <linux/spi/spi.h>
++
++
++#define ENSPI_READ_IDLE_EN			0x0004
++#define ENSPI_MTX_MODE_TOG			0x0014
++#define ENSPI_RDCTL_FSM				0x0018
++#define ENSPI_MANUAL_EN				0x0020
++#define ENSPI_MANUAL_OPFIFO_EMPTY		0x0024
++#define ENSPI_MANUAL_OPFIFO_WDATA		0x0028
++#define ENSPI_MANUAL_OPFIFO_FULL		0x002C
++#define ENSPI_MANUAL_OPFIFO_WR			0x0030
++#define ENSPI_MANUAL_DFIFO_FULL			0x0034
++#define ENSPI_MANUAL_DFIFO_WDATA		0x0038
++#define ENSPI_MANUAL_DFIFO_EMPTY		0x003C
++#define ENSPI_MANUAL_DFIFO_RD			0x0040
++#define ENSPI_MANUAL_DFIFO_RDATA		0x0044
++#define ENSPI_IER				0x0090
++#define ENSPI_NFI2SPI_EN			0x0130
++
++// TODO not in spi block
++#define ENSPI_CLOCK_DIVIDER			((void __iomem *)0x1fa201c4)
++
++#define	OP_CSH					0x00
++#define	OP_CSL					0x01
++#define	OP_CK					0x02
++#define	OP_OUTS					0x08
++#define	OP_OUTD					0x09
++#define	OP_OUTQ					0x0A
++#define	OP_INS					0x0C
++#define	OP_INS0					0x0D
++#define	OP_IND					0x0E
++#define	OP_INQ					0x0F
++#define	OP_OS2IS				0x10
++#define	OP_OS2ID				0x11
++#define	OP_OS2IQ				0x12
++#define	OP_OD2IS				0x13
++#define	OP_OD2ID				0x14
++#define	OP_OD2IQ				0x15
++#define	OP_OQ2IS				0x16
++#define	OP_OQ2ID				0x17
++#define	OP_OQ2IQ				0x18
++#define	OP_OSNIS				0x19
++#define	OP_ODNID				0x1A
++
++#define MATRIX_MODE_AUTO		1
++#define   CONF_MTX_MODE_AUTO		0
++#define   MANUALEN_AUTO			0
++#define MATRIX_MODE_MANUAL		0
++#define   CONF_MTX_MODE_MANUAL		9
++#define   MANUALEN_MANUAL		1
++
++#define _ENSPI_MAX_XFER			0x1ff
++
++#define REG(x)			(iobase + x)
++
++
++static void __iomem *iobase;
++
++
++static void opfifo_write(u32 cmd, u32 len)
++{
++	u32 tmp = ((cmd & 0x1f) << 9) | (len & 0x1ff);
++
++	writel(tmp, REG(ENSPI_MANUAL_OPFIFO_WDATA));
++
++	/* Wait for room in OPFIFO */
++	while (readl(REG(ENSPI_MANUAL_OPFIFO_FULL)))
++		;
++
++	/* Shift command into OPFIFO */
++	writel(1, REG(ENSPI_MANUAL_OPFIFO_WR));
++
++	/* Wait for command to finish */
++	while (!readl(REG(ENSPI_MANUAL_OPFIFO_EMPTY)))
++		;
++}
++
++static void set_cs(int state)
++{
++	if (state)
++		opfifo_write(OP_CSH, 1);
++	else
++		opfifo_write(OP_CSL, 1);
++}
++
++static void manual_begin_cmd(void)
++{
++	/* Disable read idle state */
++	writel(0, REG(ENSPI_READ_IDLE_EN));
++
++	/* Wait for FSM to reach idle state */
++	while (readl(REG(ENSPI_RDCTL_FSM)))
++		;
++
++	/* Set SPI core to manual mode */
++	writel(CONF_MTX_MODE_MANUAL, REG(ENSPI_MTX_MODE_TOG));
++	writel(MANUALEN_MANUAL, REG(ENSPI_MANUAL_EN));
++}
++
++static void manual_end_cmd(void)
++{
++	/* Set SPI core to auto mode */
++	writel(CONF_MTX_MODE_AUTO, REG(ENSPI_MTX_MODE_TOG));
++	writel(MANUALEN_AUTO, REG(ENSPI_MANUAL_EN));
++
++	/* Enable read idle state */
++	writel(1, REG(ENSPI_READ_IDLE_EN));
++}
++
++static void dfifo_read(u8 *buf, int len)
++{
++	int i;
++
++	for (i = 0; i < len; i++) {
++		/* Wait for requested data to show up in DFIFO */
++		while (readl(REG(ENSPI_MANUAL_DFIFO_EMPTY)))
++			;
++		buf[i] = readl(REG(ENSPI_MANUAL_DFIFO_RDATA));
++		/* Queue up next byte */
++		writel(1, REG(ENSPI_MANUAL_DFIFO_RD));
++	}
++}
++
++static void dfifo_write(const u8 *buf, int len)
++{
++	int i;
++
++	for (i = 0; i < len; i++) {
++		/* Wait for room in DFIFO */
++		while (readl(REG(ENSPI_MANUAL_DFIFO_FULL)))
++			;
++		writel(buf[i], REG(ENSPI_MANUAL_DFIFO_WDATA));
++	}
++}
++
++#if 0
++static void set_spi_clock_speed(int freq_mhz)
++{
++	u32 tmp, val;
++
++	tmp = readl(ENSPI_CLOCK_DIVIDER);
++	tmp &= 0xffff0000;
++	writel(tmp, ENSPI_CLOCK_DIVIDER);
++
++	val = (400 / (freq_mhz * 2));
++	tmp |= (val << 8) | 1;
++	writel(tmp, ENSPI_CLOCK_DIVIDER);
++}
++#endif
++
++static void init_hw(void)
++{
++	/* Disable manual/auto mode clash interrupt */
++	writel(0, REG(ENSPI_IER));
++
++	// TODO via clk framework
++	// set_spi_clock_speed(50);
++
++	/* Disable DMA */
++	writel(0, REG(ENSPI_NFI2SPI_EN));
++}
++
++static int xfer_read(struct spi_transfer *xfer)
++{
++	int opcode;
++	uint8_t *buf = xfer->rx_buf;
++
++	switch (xfer->rx_nbits) {
++	case SPI_NBITS_SINGLE:
++		opcode = OP_INS;
++		break;
++	case SPI_NBITS_DUAL:
++		opcode = OP_IND;
++		break;
++	case SPI_NBITS_QUAD:
++		opcode = OP_INQ;
++		break;
++	}
++
++	opfifo_write(opcode, xfer->len);
++	dfifo_read(buf, xfer->len);
++
++	return xfer->len;
++}
++
++static int xfer_write(struct spi_transfer *xfer, int next_xfer_is_rx)
++{
++	int opcode;
++	const uint8_t *buf = xfer->tx_buf;
++
++	if (next_xfer_is_rx) {
++		/* need to use Ox2Ix opcode to set the core to input afterwards */
++		switch (xfer->tx_nbits) {
++		case SPI_NBITS_SINGLE:
++			opcode = OP_OS2IS;
++			break;
++		case SPI_NBITS_DUAL:
++			opcode = OP_OS2ID;
++			break;
++		case SPI_NBITS_QUAD:
++			opcode = OP_OS2IQ;
++			break;
++		}
++	} else {
++		switch (xfer->tx_nbits) {
++		case SPI_NBITS_SINGLE:
++			opcode = OP_OUTS;
++			break;
++		case SPI_NBITS_DUAL:
++			opcode = OP_OUTD;
++			break;
++		case SPI_NBITS_QUAD:
++			opcode = OP_OUTQ;
++			break;
++		}
++	}
++
++	opfifo_write(opcode, xfer->len);
++	dfifo_write(buf, xfer->len);
++
++	return xfer->len;
++}
++
++size_t max_transfer_size(struct spi_device *spi)
++{
++	return _ENSPI_MAX_XFER;
++}
++
++int transfer_one_message(struct spi_controller *ctrl, struct spi_message *msg)
++{
++	struct spi_transfer *xfer;
++	int next_xfer_is_rx = 0;
++
++	manual_begin_cmd();
++	set_cs(0);
++	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
++		if (xfer->tx_buf) {
++			if (!list_is_last(&xfer->transfer_list, &msg->transfers)
++			    && list_next_entry(xfer, transfer_list)->rx_buf != NULL)
++				next_xfer_is_rx = 1;
++			else
++				next_xfer_is_rx = 0;
++			msg->actual_length += xfer_write(xfer, next_xfer_is_rx);
++		} else if (xfer->rx_buf) {
++			msg->actual_length += xfer_read(xfer);
++		}
++	}
++	set_cs(1);
++	manual_end_cmd();
++
++	msg->status = 0;
++	spi_finalize_current_message(ctrl);
++
++	return 0;
++}
++
++static int spi_probe(struct platform_device *pdev)
++{
++	struct spi_controller *ctrl;
++	int err;
++
++	ctrl = devm_spi_alloc_master(&pdev->dev, 0);
++	if (!ctrl) {
++		dev_err(&pdev->dev, "Error allocating SPI controller\n");
++		return -ENOMEM;
++	}
++
++	iobase = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
++	if (IS_ERR(iobase)) {
++		dev_err(&pdev->dev, "Could not map SPI register address");
++		return -ENOMEM;
++	}
++
++	init_hw();
++
++	ctrl->dev.of_node = pdev->dev.of_node;
++	ctrl->flags = SPI_CONTROLLER_HALF_DUPLEX;
++	ctrl->mode_bits = SPI_RX_DUAL | SPI_TX_DUAL;
++	ctrl->max_transfer_size = max_transfer_size;
++	ctrl->transfer_one_message = transfer_one_message;
++	err = devm_spi_register_controller(&pdev->dev, ctrl);
++	if (err) {
++		dev_err(&pdev->dev, "Could not register SPI controller\n");
++		return -ENODEV;
++	}
++
++	return 0;
++}
++
++static const struct of_device_id spi_of_ids[] = {
++	{ .compatible = "airoha,en7523-spi" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, spi_of_ids);
++
++static struct platform_driver spi_driver = {
++	.probe = spi_probe,
++	.driver = {
++		.name = "airoha-en7523-spi",
++		.of_match_table = spi_of_ids,
++	},
++};
++
++module_platform_driver(spi_driver);
++
++MODULE_LICENSE("GPL v2");
++MODULE_AUTHOR("Bert Vermeulen <bert@biot.com>");
++MODULE_DESCRIPTION("Airoha EN7523 SPI driver");

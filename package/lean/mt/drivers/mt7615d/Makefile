@@ -201,7 +201,7 @@ endef
 define KernelPackage/mt7615d_dbdc
   CATEGORY:=Kernel modules
   TITLE:=MTK wifi AP driver
-  DEPENDS:=@TARGET_ramips +kmod-mt7615d +maccalc
+  DEPENDS:=@TARGET_ramips +kmod-mt7615d +maccalc +PACKAGE_firewall:kmod-br-netfilter
   SUBMENU:=Wireless Drivers
   MENU:=1
 endef
@@ -234,7 +234,7 @@ define Build/Compile
 endef
 
 define Build/Install
-        :
+	:
 endef
 
 define KernelPackage/mt7615d/install

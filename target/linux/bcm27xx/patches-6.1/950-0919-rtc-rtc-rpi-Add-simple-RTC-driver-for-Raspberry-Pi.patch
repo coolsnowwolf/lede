@@ -1,0 +1,237 @@
+From 222dedcdc09247126d39364a614ff2019789f52a Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 7 Jul 2023 20:00:45 +0100
+Subject: [PATCH] rtc: rtc-rpi: Add simple RTC driver for Raspberry Pi
+
+This supports setting and reading the real time clock
+and supports wakeup alarms.
+
+To support wake up alarms you want this bootloader config:
+ POWER_OFF_ON_HALT=1
+ WAKE_ON_GPIO=0
+
+You can test with:
+  echo +600 | sudo tee /sys/class/rtc/rtc0/wakealarm
+  sudo halt
+
+That will halt (in an almost no power state),
+then wake and restart after 10 minutes.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/rtc/Kconfig   |  11 +++
+ drivers/rtc/Makefile  |   1 +
+ drivers/rtc/rtc-rpi.c | 177 ++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 189 insertions(+)
+ create mode 100644 drivers/rtc/rtc-rpi.c
+
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -223,6 +223,17 @@ config RTC_DRV_AC100
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-ac100.
+ 
++config RTC_DRV_RPI
++	tristate "Raspberry Pi RTC"
++	depends on ARCH_BRCMSTB || COMPILE_TEST
++	default ARCH_BRCMSTB
++	help
++	  If you say yes here you get support for the RTC found on
++	  Raspberry Pi devices.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called rtc-rpi.
++
+ config RTC_DRV_BRCMSTB
+ 	tristate "Broadcom STB wake-timer"
+ 	depends on ARCH_BRCMSTB || BMIPS_GENERIC || COMPILE_TEST
+--- a/drivers/rtc/Makefile
++++ b/drivers/rtc/Makefile
+@@ -140,6 +140,7 @@ obj-$(CONFIG_RTC_DRV_RC5T583)	+= rtc-rc5
+ obj-$(CONFIG_RTC_DRV_RC5T619)	+= rtc-rc5t619.o
+ obj-$(CONFIG_RTC_DRV_RK808)	+= rtc-rk808.o
+ obj-$(CONFIG_RTC_DRV_RP5C01)	+= rtc-rp5c01.o
++obj-$(CONFIG_RTC_DRV_RPI)	+= rtc-rpi.o
+ obj-$(CONFIG_RTC_DRV_RS5C313)	+= rtc-rs5c313.o
+ obj-$(CONFIG_RTC_DRV_RS5C348)	+= rtc-rs5c348.o
+ obj-$(CONFIG_RTC_DRV_RS5C372)	+= rtc-rs5c372.o
+--- /dev/null
++++ b/drivers/rtc/rtc-rpi.c
+@@ -0,0 +1,177 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/**
++ * rtc-rpi.c
++ *
++ * RTC driver using firmware mailbox
++ * Supports battery backed RTC and wake alarms
++ *
++ * Based on rtc-meson-vrtc by Neil Armstrong
++ *
++ * Copyright (c) 2023, Raspberry Pi Ltd.
++ */
++
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/rtc.h>
++#include <linux/of.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++struct rpi_rtc_data {
++	struct rtc_device *rtc;
++	struct rpi_firmware *fw;
++};
++
++#define RPI_FIRMWARE_GET_RTC_REG 0x00030087
++#define RPI_FIRMWARE_SET_RTC_REG 0x00038087
++enum {RTC_TIME, RTC_ALARM, RTC_ALARM_PENDING, RTC_ALARM_ENABLE};
++
++static int rpi_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_TIME};
++	int err;
++
++	err = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_GET_RTC_REG,
++				    &data, sizeof(data));
++	rtc_time64_to_tm(data[1], tm);
++	return err;
++}
++
++static int rpi_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_TIME, rtc_tm_to_time64(tm)};
++
++	return rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_SET_RTC_REG,
++				     &data, sizeof(data));
++}
++
++static int rpi_rtc_alarm_irq_is_enabled(struct device *dev, unsigned char *enabled)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_ALARM_ENABLE};
++	s32 err = 0;
++
++	err = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_GET_RTC_REG,
++				    &data, sizeof(data));
++	*enabled = data[1] & 0x1;
++	return err;
++}
++
++static int rpi_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_ALARM_ENABLE, enabled};
++
++	return rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_SET_RTC_REG,
++				     &data, sizeof(data));
++}
++
++static int rpi_rtc_alarm_clear_pending(struct device *dev)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_ALARM_PENDING, 1};
++
++	return rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_SET_RTC_REG,
++				     &data, sizeof(data));
++}
++
++static int rpi_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alarm)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_ALARM};
++	s32 err = 0;
++
++	err = rpi_rtc_alarm_irq_is_enabled(dev, &alarm->enabled);
++	if (!err)
++		err = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_GET_RTC_REG,
++					    &data, sizeof(data));
++	rtc_time64_to_tm(data[1], &alarm->time);
++
++	return err;
++}
++
++static int rpi_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
++{
++	struct rpi_rtc_data *vrtc = dev_get_drvdata(dev);
++	u32 data[2] = {RTC_ALARM, rtc_tm_to_time64(&alarm->time)};
++	int err;
++
++	err = rpi_firmware_property(vrtc->fw, RPI_FIRMWARE_SET_RTC_REG,
++				    &data, sizeof(data));
++
++	if (err == 0)
++		err = rpi_rtc_alarm_irq_enable(dev, alarm->enabled);
++
++	return err;
++}
++
++static const struct rtc_class_ops rpi_rtc_ops = {
++	.read_time = rpi_rtc_read_time,
++	.set_time = rpi_rtc_set_time,
++	.read_alarm = rpi_rtc_read_alarm,
++	.set_alarm = rpi_rtc_set_alarm,
++	.alarm_irq_enable = rpi_rtc_alarm_irq_enable,
++};
++
++static int rpi_rtc_probe(struct platform_device *pdev)
++{
++	struct rpi_rtc_data *vrtc;
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct device_node *fw_node;
++	struct rpi_firmware *fw;
++	int ret;
++
++	fw_node = of_parse_phandle(np, "firmware", 0);
++	if (!fw_node) {
++		dev_err(dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	fw = rpi_firmware_get(fw_node);
++	if (!fw)
++		return -EPROBE_DEFER;
++
++	vrtc = devm_kzalloc(&pdev->dev, sizeof(*vrtc), GFP_KERNEL);
++	if (!vrtc)
++		return -ENOMEM;
++
++	vrtc->fw = fw;
++
++	device_init_wakeup(&pdev->dev, 1);
++
++	platform_set_drvdata(pdev, vrtc);
++
++	vrtc->rtc = devm_rtc_allocate_device(&pdev->dev);
++	if (IS_ERR(vrtc->rtc))
++		return PTR_ERR(vrtc->rtc);
++
++	set_bit(RTC_FEATURE_ALARM_WAKEUP_ONLY, vrtc->rtc->features);
++	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, vrtc->rtc->features);
++
++	vrtc->rtc->ops = &rpi_rtc_ops;
++	ret = devm_rtc_register_device(vrtc->rtc);
++
++	rpi_rtc_alarm_clear_pending(dev);
++	return ret;
++}
++
++static const struct of_device_id rpi_rtc_dt_match[] = {
++	{ .compatible = "raspberrypi,rpi-rtc"},
++	{},
++};
++MODULE_DEVICE_TABLE(of, rpi_rtc_dt_match);
++
++static struct platform_driver rpi_rtc_driver = {
++	.probe = rpi_rtc_probe,
++	.driver = {
++		.name = "rpi-rtc",
++		.of_match_table = rpi_rtc_dt_match,
++	},
++};
++
++module_platform_driver(rpi_rtc_driver);
++
++MODULE_DESCRIPTION("Raspberry Pi RTC driver");
++MODULE_LICENSE("GPL");

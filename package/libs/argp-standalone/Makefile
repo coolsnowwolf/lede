@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=argp-standalone
 PKG_VERSION:=1.3
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=http://www.lysator.liu.se/~nisse/misc/
@@ -20,6 +20,7 @@ PKG_LICENSE:=LGPL-2.1
 PKG_LICENSE:=Makefile.am
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define Package/argp-standalone
   SECTION:=libs
@@ -33,8 +34,10 @@ define Package/argp-standalone/description
 endef
 
 MAKE_FLAGS += \
-	CFLAGS="$(TARGET_CFLAGS) $(FPIC)"
+	CFLAGS="$(TARGET_CFLAGS) $(FPIC) -std=gnu89"
 
+HOST_MAKE_FLAGS += \
+	CFLAGS="$(HOST_CFLAGS) $(FPIC) -std=gnu89"
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
@@ -45,4 +48,14 @@ define Build/InstallDev
 		$(1)/usr/lib/
 endef
 
+define Host/Install
+	$(INSTALL_DIR) $(1)/include
+	$(CP)   $(HOST_BUILD_DIR)/argp.h \
+		$(1)/include/
+	$(INSTALL_DIR) $(1)/lib
+	$(CP)   $(HOST_BUILD_DIR)/libargp.a \
+		$(1)/lib/
+endef
+
 $(eval $(call BuildPackage,argp-standalone))
+$(eval $(call HostBuild))

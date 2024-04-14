@@ -1,0 +1,103 @@
+From e44de90453bb2b46a523df78c39eb896bab35dcd Mon Sep 17 00:00:00 2001
+From: Govindaraj Saminathan <quic_gsaminat@quicinc.com>
+Date: Tue, 29 Nov 2022 13:04:02 +0200
+Subject: [PATCH] wifi: ath11k: Fix race condition with struct
+ htt_ppdu_stats_info
+
+A crash happens when running the traffic with multiple clients:
+
+Crash Signature : Unable to handle kernel paging request at
+virtual address ffffffd700970918 During the crash, PC points to
+"ieee80211_tx_rate_update+0x30/0x68 [mac80211]"
+LR points to "ath11k_dp_htt_htc_t2h_msg_handler+0x5a8/0x8a0 [ath11k]".
+
+Struct ppdu_stats_info is allocated and accessed from event callback via copy
+engine tasklet, this has a problem when freeing it from ath11k_mac_op_stop().
+
+Use data_lock during entire ath11k_dp_htt_get_ppdu_desc() call to protect
+struct htt_ppdu_stats_info access and to avoid race condition when accessing it
+from ath11k_mac_op_stop().
+
+Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Govindaraj Saminathan <quic_gsaminat@quicinc.com>
+Co-developed-by: Karthikeyan Kathirvel <quic_kathirve@quicinc.com>
+Signed-off-by: Karthikeyan Kathirvel <quic_kathirve@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20221124071104.22506-1-quic_kathirve@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -1535,13 +1535,12 @@ struct htt_ppdu_stats_info *ath11k_dp_ht
+ {
+ 	struct htt_ppdu_stats_info *ppdu_info;
+ 
+-	spin_lock_bh(&ar->data_lock);
++	lockdep_assert_held(&ar->data_lock);
++
+ 	if (!list_empty(&ar->ppdu_stats_info)) {
+ 		list_for_each_entry(ppdu_info, &ar->ppdu_stats_info, list) {
+-			if (ppdu_info->ppdu_id == ppdu_id) {
+-				spin_unlock_bh(&ar->data_lock);
++			if (ppdu_info->ppdu_id == ppdu_id)
+ 				return ppdu_info;
+-			}
+ 		}
+ 
+ 		if (ar->ppdu_stat_list_depth > HTT_PPDU_DESC_MAX_DEPTH) {
+@@ -1553,16 +1552,13 @@ struct htt_ppdu_stats_info *ath11k_dp_ht
+ 			kfree(ppdu_info);
+ 		}
+ 	}
+-	spin_unlock_bh(&ar->data_lock);
+ 
+ 	ppdu_info = kzalloc(sizeof(*ppdu_info), GFP_ATOMIC);
+ 	if (!ppdu_info)
+ 		return NULL;
+ 
+-	spin_lock_bh(&ar->data_lock);
+ 	list_add_tail(&ppdu_info->list, &ar->ppdu_stats_info);
+ 	ar->ppdu_stat_list_depth++;
+-	spin_unlock_bh(&ar->data_lock);
+ 
+ 	return ppdu_info;
+ }
+@@ -1586,16 +1582,17 @@ static int ath11k_htt_pull_ppdu_stats(st
+ 	ar = ath11k_mac_get_ar_by_pdev_id(ab, pdev_id);
+ 	if (!ar) {
+ 		ret = -EINVAL;
+-		goto exit;
++		goto out;
+ 	}
+ 
+ 	if (ath11k_debugfs_is_pktlog_lite_mode_enabled(ar))
+ 		trace_ath11k_htt_ppdu_stats(ar, skb->data, len);
+ 
++	spin_lock_bh(&ar->data_lock);
+ 	ppdu_info = ath11k_dp_htt_get_ppdu_desc(ar, ppdu_id);
+ 	if (!ppdu_info) {
+ 		ret = -EINVAL;
+-		goto exit;
++		goto out_unlock_data;
+ 	}
+ 
+ 	ppdu_info->ppdu_id = ppdu_id;
+@@ -1604,10 +1601,13 @@ static int ath11k_htt_pull_ppdu_stats(st
+ 				     (void *)ppdu_info);
+ 	if (ret) {
+ 		ath11k_warn(ab, "Failed to parse tlv %d\n", ret);
+-		goto exit;
++		goto out_unlock_data;
+ 	}
+ 
+-exit:
++out_unlock_data:
++	spin_unlock_bh(&ar->data_lock);
++
++out:
+ 	rcu_read_unlock();
+ 
+ 	return ret;

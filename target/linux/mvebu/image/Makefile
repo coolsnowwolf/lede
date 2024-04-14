@@ -34,7 +34,9 @@ define Build/boot-img-ext4
 	$(foreach dts,$(DEVICE_DTS), $(CP) $(KDIR)/image-$(dts).dtb $@.boot/$(dts).dtb;)
 	$(CP) $(IMAGE_KERNEL) $@.boot/$(KERNEL_NAME)
 	-$(CP) $@-boot.scr $@.boot/boot.scr
-	make_ext4fs -J -L kernel -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M $@.bootimg $@.boot
+	make_ext4fs -J -L kernel -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M \
+		$(if $(SOURCE_DATE_EPOCH),-T $(SOURCE_DATE_EPOCH)) \
+		$@.bootimg $@.boot
 endef
 
 define Build/buffalo-kernel-jffs2
@@ -49,6 +51,63 @@ define Build/buffalo-kernel-jffs2
 		--little-endian -v --squash-uids -q -f -n -x lzma -x rtime -m none \
 		--eraseblock=128KiB --pad=$(KERNEL_SIZE) -d $(KDIR)/kernel_jffs2 -o $@
 	rm -rf $(KDIR)/kernel_jffs2 $@.fakerd
+endef
+
+# Some info about Ctera firmware:
+# 1. It's simple tar file (GNU standard), but it must have ".firm" suffix.
+# 2. It contains two images: kernel and romdisk. Both are required.
+# 3. Every image has header and trailer file.
+# 4. The struct of tar firmware is: header kernel trailer header romdisk trailer
+# 5. In header file are some strings used to describe image. It was decoded from
+#    factory image.
+# 6. Version format in header file is restricted by Original FW.
+# 7. Trailer file contains MD5 sum string of header and image file.
+# 8. Firmware file must have <=24MB size.
+
+define Build/ctera-firmware
+	mkdir -p $@.tmp
+
+	# Prepare header and trailer file for kernel
+	echo "# CTera firmware information file" > $@.tmp/header
+	echo "image_type=kernel" >> $@.tmp/header
+	echo "arch=ARM" >> $@.tmp/header
+	echo "board=2Drive_A" >> $@.tmp/header
+	echo "version=5.5.165.61499" >> $@.tmp/header
+	echo "kernel_cmd=console=ttyS0,115200 earlycon" >> $@.tmp/header
+	echo "date=$$(date $(if $(SOURCE_DATE_EPOCH),-d@$(SOURCE_DATE_EPOCH)))" \
+		>> $@.tmp/header
+
+	cp $@ $@.tmp/kernel
+
+	echo "MD5=$$(cat $@.tmp/header $@.tmp/kernel | $(MKHASH) md5)" \
+		> $@.tmp/trailer
+
+	tar $(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-H gnu -C $@.tmp -cf $@.tar header kernel trailer
+
+	# Prepare header and trailer file for fake romdisk
+	echo "# CTera firmware information file" > $@.tmp/header
+	echo "image_type=romdisk" >> $@.tmp/header
+	echo "initrd=yes" >> $@.tmp/header
+	echo "arch=ARM" >> $@.tmp/header
+	echo "board=2Drive_A" >> $@.tmp/header
+	echo "version=5.5.165.61499" >> $@.tmp/header
+	echo "date=$$(date $(if $(SOURCE_DATE_EPOCH),-d@$(SOURCE_DATE_EPOCH)))" \
+		>> $@.tmp/header
+
+	rm -f $@
+	touch $@
+	$(call Build/append-uImage-fakehdr, ramdisk)
+	cp $@ $@.tmp/romdisk
+
+	echo "MD5=$$(cat $@.tmp/header $@.tmp/romdisk | $(MKHASH) md5)" \
+		> $@.tmp/trailer
+
+	tar $(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
+		-H gnu -C $@.tmp -rf $@.tar header romdisk trailer
+
+	mv $@.tar $@
+	rm -rf $@.tmp
 endef
 
 define Build/sdcard-img

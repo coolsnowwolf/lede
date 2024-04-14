@@ -82,13 +82,21 @@ define Device/methode_udpu
   DEVICE_VENDOR := Methode
   DEVICE_MODEL := micro-DPU (uDPU)
   DEVICE_DTS := armada-3720-uDPU
-  KERNEL_LOADADDR := 0x00080000
+  KERNEL_LOADADDR := 0x00800000
   KERNEL_INITRAMFS := kernel-bin | gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
   KERNEL_INITRAMFS_SUFFIX := .itb
-  DEVICE_PACKAGES += f2fs-tools fdisk kmod-i2c-pxa
+  DEVICE_PACKAGES += f2fs-tools fdisk kmod-i2c-pxa kmod-hwmon-lm75
   DEVICE_IMG_NAME = $$(DEVICE_IMG_PREFIX)-$$(2)
   IMAGES := firmware.tgz
   IMAGE/firmware.tgz := boot-scr | boot-img-ext4 | uDPU-firmware | append-metadata
   BOOT_SCRIPT := udpu
 endef
 TARGET_DEVICES += methode_udpu
+
+define Device/methode_edpu
+  $(call Device/methode_udpu)
+  DEVICE_MODEL := eDPU
+  DEVICE_DTS := armada-3720-eDPU
+  KERNEL_INITRAMFS := kernel-bin | gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
+endef
+TARGET_DEVICES += methode_edpu

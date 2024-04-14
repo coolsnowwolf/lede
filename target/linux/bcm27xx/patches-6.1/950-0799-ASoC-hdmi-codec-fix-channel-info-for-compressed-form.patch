@@ -1,0 +1,86 @@
+From 3f388718331b5ce2acd34730448db001759868aa Mon Sep 17 00:00:00 2001
+From: Matthias Reichl <hias@horus.com>
+Date: Sat, 24 Jun 2023 18:52:32 +0200
+Subject: [PATCH] ASoC: hdmi-codec: fix channel info for compressed formats
+
+commit 4e0871333661d2ec0ed3dc00a945c2160eccae77 upstream.
+
+According to CTA 861 the channel/speaker allocation info in the
+audio infoframe only applies to uncompressed (PCM) audio streams.
+
+The channel count info should indicate the number of channels
+in the transmitted audio, which usually won't match the number of
+channels used to transmit the compressed bitstream.
+
+Some devices (eg some Sony TVs) will refuse to decode compressed
+audio if these values are not set correctly.
+
+To fix this we can simply set the channel count to 0 (which means
+"refer to stream header") and set the channel/speaker allocation to 0
+as well (which would mean stereo FL/FR for PCM, a safe value all sinks
+will support) when transmitting compressed audio.
+
+Signed-off-by: Matthias Reichl <hias@horus.com>
+Link: https://lore.kernel.org/r/20230624165232.5751-1-hias@horus.com
+Signed-off-by: Takashi Iwai <tiwai@suse.de>
+---
+ sound/soc/codecs/hdmi-codec.c | 36 +++++++++++++++++++++++------------
+ 1 file changed, 24 insertions(+), 12 deletions(-)
+
+--- a/sound/soc/codecs/hdmi-codec.c
++++ b/sound/soc/codecs/hdmi-codec.c
+@@ -484,31 +484,43 @@ static int hdmi_codec_fill_codec_params(
+ 					struct hdmi_codec_params *hp)
+ {
+ 	struct hdmi_codec_priv *hcp = snd_soc_dai_get_drvdata(dai);
+-	int idx;
++	int idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
++	u8 ca_id = 0;
++	bool pcm_audio = !(hcp->iec_status[0] & IEC958_AES0_NONAUDIO);
++
++	if (pcm_audio) {
++		/* Select a channel allocation that matches with ELD and pcm channels */
++		idx = hdmi_codec_get_ch_alloc_table_idx(hcp, channels);
++
++		if (idx < 0) {
++			dev_err(dai->dev, "Not able to map channels to speakers (%d)\n",
++				idx);
++			hcp->chmap_idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
++			return idx;
++		}
+ 
+-	/* Select a channel allocation that matches with ELD and pcm channels */
+-	idx = hdmi_codec_get_ch_alloc_table_idx(hcp, channels);
+-	if (idx < 0) {
+-		dev_err(dai->dev, "Not able to map channels to speakers (%d)\n",
+-			idx);
+-		hcp->chmap_idx = HDMI_CODEC_CHMAP_IDX_UNKNOWN;
+-		return idx;
++		ca_id = hdmi_codec_channel_alloc[idx].ca_id;
+ 	}
+ 
+ 	memset(hp, 0, sizeof(*hp));
+ 
+ 	hdmi_audio_infoframe_init(&hp->cea);
+-	hp->cea.channels = channels;
++
++	if (pcm_audio)
++		hp->cea.channels = channels;
++	else
++		hp->cea.channels = 0;
++
+ 	hp->cea.coding_type = HDMI_AUDIO_CODING_TYPE_STREAM;
+ 	hp->cea.sample_size = HDMI_AUDIO_SAMPLE_SIZE_STREAM;
+ 	hp->cea.sample_frequency = HDMI_AUDIO_SAMPLE_FREQUENCY_STREAM;
+-	hp->cea.channel_allocation = hdmi_codec_channel_alloc[idx].ca_id;
++	hp->cea.channel_allocation = ca_id;
+ 
+ 	hp->sample_width = sample_width;
+ 	hp->sample_rate = sample_rate;
+ 	hp->channels = channels;
+ 
+-	hcp->chmap_idx = hdmi_codec_channel_alloc[idx].ca_id;
++	hcp->chmap_idx = idx;
+ 
+ 	return 0;
+ }

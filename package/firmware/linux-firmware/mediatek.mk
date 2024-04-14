@@ -1,9 +1,9 @@
 Package/mt7601u-firmware = $(call Package/firmware-default,MediaTek MT7601U firmware)
 define Package/mt7601u-firmware/install
-	$(INSTALL_DIR) $(1)/lib/firmware
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
 	$(INSTALL_DATA) \
-		$(PKG_BUILD_DIR)/mt7601u.bin \
-		$(1)/lib/firmware
+		$(PKG_BUILD_DIR)/mediatek/mt7601u.bin \
+		$(1)/lib/firmware/mediatek
 endef
 $(eval $(call BuildPackage,mt7601u-firmware))
 
@@ -50,3 +50,40 @@ define Package/mt7622bt-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 $(eval $(call BuildPackage,mt7622bt-firmware))
+
+Package/mt7921bt-firmware = $(call Package/firmware-default,mt7921bt firmware)
+define Package/mt7921bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/BT_RAM_CODE_MT7961_1_2_hdr.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7921bt-firmware))
+
+Package/mt7922bt-firmware = $(call Package/firmware-default,mt7922bt firmware)
+define Package/mt7922bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/BT_RAM_CODE_MT7922_1_1_hdr.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7922bt-firmware))
+
+Package/mt7981-wo-firmware = $(call Package/firmware-default,MT7981 offload firmware)
+define Package/mt7981-wo-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7981_wo.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7981-wo-firmware))
+
+Package/mt7986-wo-firmware = $(call Package/firmware-default,MT7986 offload firmware)
+define Package/mt7986-wo-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7986_wo_0.bin \
+		$(PKG_BUILD_DIR)/mediatek/mt7986_wo_1.bin \
+		$(1)/lib/firmware/mediatek
+endef
+$(eval $(call BuildPackage,mt7986-wo-firmware))

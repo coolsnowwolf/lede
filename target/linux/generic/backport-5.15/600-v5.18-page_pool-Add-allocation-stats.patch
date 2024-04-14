@@ -1,0 +1,161 @@
+commit 8610037e8106b48c79cfe0afb92b2b2466e51c3d
+Author: Joe Damato <jdamato@fastly.com>
+Date:   Tue Mar 1 23:55:47 2022 -0800
+
+    page_pool: Add allocation stats
+    
+    Add per-pool statistics counters for the allocation path of a page pool.
+    These stats are incremented in softirq context, so no locking or per-cpu
+    variables are needed.
+    
+    This code is disabled by default and a kernel config option is provided for
+    users who wish to enable them.
+    
+    The statistics added are:
+            - fast: successful fast path allocations
+            - slow: slow path order-0 allocations
+            - slow_high_order: slow path high order allocations
+            - empty: ptr ring is empty, so a slow path allocation was forced.
+            - refill: an allocation which triggered a refill of the cache
+            - waive: pages obtained from the ptr ring that cannot be added to
+              the cache due to a NUMA mismatch.
+    
+    Signed-off-by: Joe Damato <jdamato@fastly.com>
+    Acked-by: Jesper Dangaard Brouer <brouer@redhat.com>
+    Reviewed-by: Ilias Apalodimas <ilias.apalodimas@linaro.org>
+    Signed-off-by: David S. Miller <davem@davemloft.net>
+
+--- a/include/net/page_pool.h
++++ b/include/net/page_pool.h
+@@ -82,6 +82,19 @@ struct page_pool_params {
+ 	unsigned int	offset;  /* DMA addr offset */
+ };
+ 
++#ifdef CONFIG_PAGE_POOL_STATS
++struct page_pool_alloc_stats {
++	u64 fast; /* fast path allocations */
++	u64 slow; /* slow-path order 0 allocations */
++	u64 slow_high_order; /* slow-path high order allocations */
++	u64 empty; /* failed refills due to empty ptr ring, forcing
++		    * slow path allocation
++		    */
++	u64 refill; /* allocations via successful refill */
++	u64 waive;  /* failed refills due to numa zone mismatch */
++};
++#endif
++
+ struct page_pool {
+ 	struct page_pool_params p;
+ 
+@@ -132,6 +145,11 @@ struct page_pool {
+ 	refcount_t user_cnt;
+ 
+ 	u64 destroy_cnt;
++
++#ifdef CONFIG_PAGE_POOL_STATS
++	/* these stats are incremented while in softirq context */
++	struct page_pool_alloc_stats alloc_stats;
++#endif
+ };
+ 
+ struct page *page_pool_alloc_pages(struct page_pool *pool, gfp_t gfp);
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -432,6 +432,19 @@ config NET_DEVLINK
+ config PAGE_POOL
+ 	bool
+ 
++config PAGE_POOL_STATS
++	default n
++	bool "Page pool stats"
++	depends on PAGE_POOL
++	help
++	  Enable page pool statistics to track page allocation and recycling
++	  in page pools. This option incurs additional CPU cost in allocation
++	  and recycle paths and additional memory cost to store the statistics.
++	  These statistics are only available if this option is enabled and if
++	  the driver using the page pool supports exporting this data.
++
++	  If unsure, say N.
++
+ config FAILOVER
+ 	tristate "Generic failover module"
+ 	help
+--- a/net/core/page_pool.c
++++ b/net/core/page_pool.c
+@@ -49,6 +49,13 @@ static void page_pool_producer_unlock(st
+ 		spin_unlock_bh(&pool->ring.producer_lock);
+ }
+ 
++#ifdef CONFIG_PAGE_POOL_STATS
++/* alloc_stat_inc is intended to be used in softirq context */
++#define alloc_stat_inc(pool, __stat)	(pool->alloc_stats.__stat++)
++#else
++#define alloc_stat_inc(pool, __stat)
++#endif
++
+ static int page_pool_init(struct page_pool *pool,
+ 			  const struct page_pool_params *params)
+ {
+@@ -140,8 +147,10 @@ static struct page *page_pool_refill_all
+ 	int pref_nid; /* preferred NUMA node */
+ 
+ 	/* Quicker fallback, avoid locks when ring is empty */
+-	if (__ptr_ring_empty(r))
++	if (__ptr_ring_empty(r)) {
++		alloc_stat_inc(pool, empty);
+ 		return NULL;
++	}
+ 
+ 	/* Softirq guarantee CPU and thus NUMA node is stable. This,
+ 	 * assumes CPU refilling driver RX-ring will also run RX-NAPI.
+@@ -171,14 +180,17 @@ static struct page *page_pool_refill_all
+ 			 * This limit stress on page buddy alloactor.
+ 			 */
+ 			page_pool_return_page(pool, page);
++			alloc_stat_inc(pool, waive);
+ 			page = NULL;
+ 			break;
+ 		}
+ 	} while (pool->alloc.count < PP_ALLOC_CACHE_REFILL);
+ 
+ 	/* Return last page */
+-	if (likely(pool->alloc.count > 0))
++	if (likely(pool->alloc.count > 0)) {
+ 		page = pool->alloc.cache[--pool->alloc.count];
++		alloc_stat_inc(pool, refill);
++	}
+ 
+ 	spin_unlock(&r->consumer_lock);
+ 	return page;
+@@ -193,6 +205,7 @@ static struct page *__page_pool_get_cach
+ 	if (likely(pool->alloc.count)) {
+ 		/* Fast-path */
+ 		page = pool->alloc.cache[--pool->alloc.count];
++		alloc_stat_inc(pool, fast);
+ 	} else {
+ 		page = page_pool_refill_alloc_cache(pool);
+ 	}
+@@ -264,6 +277,7 @@ static struct page *__page_pool_alloc_pa
+ 		return NULL;
+ 	}
+ 
++	alloc_stat_inc(pool, slow_high_order);
+ 	page_pool_set_pp_info(pool, page);
+ 
+ 	/* Track how many pages are held 'in-flight' */
+@@ -318,10 +332,12 @@ static struct page *__page_pool_alloc_pa
+ 	}
+ 
+ 	/* Return last page */
+-	if (likely(pool->alloc.count > 0))
++	if (likely(pool->alloc.count > 0)) {
+ 		page = pool->alloc.cache[--pool->alloc.count];
+-	else
++		alloc_stat_inc(pool, slow);
++	} else {
+ 		page = NULL;
++	}
+ 
+ 	/* When page just alloc'ed is should/must have refcnt 1. */
+ 	return page;

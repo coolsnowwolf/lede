@@ -1,0 +1,506 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sun, 9 Oct 2022 20:15:46 +0200
+Subject: [PATCH] mac80211: add support for restricting netdev features per vif
+
+This can be used to selectively disable feature flags for checksum offload,
+scatter/gather or GSO by changing vif->netdev_features.
+Removing features from vif->netdev_features does not affect the netdev
+features themselves, but instead fixes up skbs in the tx path so that the
+offloads are not needed in the driver.
+
+Aside from making it easier to deal with vif type based hardware limitations,
+this also makes it possible to optimize performance on hardware without native
+GSO support by declaring GSO support in hw->netdev_features and removing it
+from vif->netdev_features. This allows mac80211 to handle GSO segmentation
+after the sta lookup, but before itxq enqueue, thus reducing the number of
+unnecessary sta lookups, as well as some other per-packet processing.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/fq_impl.h
++++ b/include/net/fq_impl.h
+@@ -200,6 +200,7 @@ static void fq_tin_enqueue(struct fq *fq
+ 			   fq_skb_free_t free_func)
+ {
+ 	struct fq_flow *flow;
++	struct sk_buff *next;
+ 	bool oom;
+ 
+ 	lockdep_assert_held(&fq->lock);
+@@ -214,11 +215,15 @@ static void fq_tin_enqueue(struct fq *fq
+ 	}
+ 
+ 	flow->tin = tin;
+-	flow->backlog += skb->len;
+-	tin->backlog_bytes += skb->len;
+-	tin->backlog_packets++;
+-	fq->memory_usage += skb->truesize;
+-	fq->backlog++;
++	skb_list_walk_safe(skb, skb, next) {
++		skb_mark_not_on_list(skb);
++		flow->backlog += skb->len;
++		tin->backlog_bytes += skb->len;
++		tin->backlog_packets++;
++		fq->memory_usage += skb->truesize;
++		fq->backlog++;
++		__skb_queue_tail(&flow->queue, skb);
++	}
+ 
+ 	if (list_empty(&flow->flowchain)) {
+ 		flow->deficit = fq->quantum;
+@@ -226,7 +231,6 @@ static void fq_tin_enqueue(struct fq *fq
+ 			      &tin->new_flows);
+ 	}
+ 
+-	__skb_queue_tail(&flow->queue, skb);
+ 	oom = (fq->memory_usage > fq->memory_limit);
+ 	while (fq->backlog > fq->limit || oom) {
+ 		flow = fq_find_fattest_flow(fq);
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -1807,6 +1807,10 @@ struct ieee80211_vif_cfg {
+  * @addr: address of this interface
+  * @p2p: indicates whether this AP or STA interface is a p2p
+  *	interface, i.e. a GO or p2p-sta respectively
++ * @netdev_features: tx netdev features supported by the hardware for this
++ *	vif. mac80211 initializes this to hw->netdev_features, and the driver
++ *	can mask out specific tx features. mac80211 will handle software fixup
++ *	for masked offloads (GSO, CSUM)
+  * @driver_flags: flags/capabilities the driver has for this interface,
+  *	these need to be set (or cleared) when the interface is added
+  *	or, if supported by the driver, the interface type is changed
+@@ -1846,6 +1850,7 @@ struct ieee80211_vif {
+ 
+ 	struct ieee80211_txq *txq;
+ 
++	netdev_features_t netdev_features;
+ 	u32 driver_flags;
+ 	u32 offload_flags;
+ 
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -2181,6 +2181,7 @@ int ieee80211_if_add(struct ieee80211_lo
+ 		ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+ 		ndev->hw_features |= ndev->features &
+ 					MAC80211_SUPPORTED_FEATURES_TX;
++		sdata->vif.netdev_features = local->hw.netdev_features;
+ 
+ 		netdev_set_default_ethtool_ops(ndev, &ieee80211_ethtool_ops);
+ 
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -1356,7 +1356,11 @@ static struct txq_info *ieee80211_get_tx
+ 
+ static void ieee80211_set_skb_enqueue_time(struct sk_buff *skb)
+ {
+-	IEEE80211_SKB_CB(skb)->control.enqueue_time = codel_get_time();
++	struct sk_buff *next;
++	codel_time_t now = codel_get_time();
++
++	skb_list_walk_safe(skb, skb, next)
++		IEEE80211_SKB_CB(skb)->control.enqueue_time = now;
+ }
+ 
+ static u32 codel_skb_len_func(const struct sk_buff *skb)
+@@ -3579,55 +3583,79 @@ ieee80211_xmit_fast_finish(struct ieee80
+ 	return TX_CONTINUE;
+ }
+ 
+-static bool ieee80211_xmit_fast(struct ieee80211_sub_if_data *sdata,
+-				struct sta_info *sta,
+-				struct ieee80211_fast_tx *fast_tx,
+-				struct sk_buff *skb)
++static netdev_features_t
++ieee80211_sdata_netdev_features(struct ieee80211_sub_if_data *sdata)
+ {
+-	struct ieee80211_local *local = sdata->local;
+-	u16 ethertype = (skb->data[12] << 8) | skb->data[13];
+-	int extra_head = fast_tx->hdr_len - (ETH_HLEN - 2);
+-	int hw_headroom = sdata->local->hw.extra_tx_headroom;
+-	struct ethhdr eth;
+-	struct ieee80211_tx_info *info;
+-	struct ieee80211_hdr *hdr = (void *)fast_tx->hdr;
+-	struct ieee80211_tx_data tx;
+-	ieee80211_tx_result r;
+-	struct tid_ampdu_tx *tid_tx = NULL;
+-	u8 tid = IEEE80211_NUM_TIDS;
++	if (sdata->vif.type != NL80211_IFTYPE_AP_VLAN)
++		return sdata->vif.netdev_features;
+ 
+-	/* control port protocol needs a lot of special handling */
+-	if (cpu_to_be16(ethertype) == sdata->control_port_protocol)
+-		return false;
++	if (!sdata->bss)
++		return 0;
+ 
+-	/* only RFC 1042 SNAP */
+-	if (ethertype < ETH_P_802_3_MIN)
+-		return false;
++	sdata = container_of(sdata->bss, struct ieee80211_sub_if_data, u.ap);
++	return sdata->vif.netdev_features;
++}
+ 
+-	/* don't handle TX status request here either */
+-	if (skb->sk && skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS)
+-		return false;
++static struct sk_buff *
++ieee80211_tx_skb_fixup(struct sk_buff *skb, netdev_features_t features)
++{
++	if (skb_is_gso(skb)) {
++		struct sk_buff *segs;
+ 
+-	if (hdr->frame_control & cpu_to_le16(IEEE80211_STYPE_QOS_DATA)) {
+-		tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+-		tid_tx = rcu_dereference(sta->ampdu_mlme.tid_tx[tid]);
+-		if (tid_tx) {
+-			if (!test_bit(HT_AGG_STATE_OPERATIONAL, &tid_tx->state))
+-				return false;
+-			if (tid_tx->timeout)
+-				tid_tx->last_tx = jiffies;
+-		}
++		segs = skb_gso_segment(skb, features);
++		if (!segs)
++			return skb;
++		if (IS_ERR(segs))
++			goto free;
++
++		consume_skb(skb);
++		return segs;
+ 	}
+ 
+-	/* after this point (skb is modified) we cannot return false */
++	if (skb_needs_linearize(skb, features) && __skb_linearize(skb))
++		goto free;
++
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++		int ofs = skb_checksum_start_offset(skb);
++
++		if (skb->encapsulation)
++			skb_set_inner_transport_header(skb, ofs);
++		else
++			skb_set_transport_header(skb, ofs);
++
++		if (skb_csum_hwoffload_help(skb, features))
++			goto free;
++	}
++
++	skb_mark_not_on_list(skb);
++	return skb;
++
++free:
++	kfree_skb(skb);
++	return NULL;
++}
++
++static void __ieee80211_xmit_fast(struct ieee80211_sub_if_data *sdata,
++				  struct sta_info *sta,
++				  struct ieee80211_fast_tx *fast_tx,
++				  struct sk_buff *skb, u8 tid, bool ampdu)
++{
++	struct ieee80211_local *local = sdata->local;
++	struct ieee80211_hdr *hdr = (void *)fast_tx->hdr;
++	struct ieee80211_tx_info *info;
++	struct ieee80211_tx_data tx;
++	ieee80211_tx_result r;
++	int hw_headroom = sdata->local->hw.extra_tx_headroom;
++	int extra_head = fast_tx->hdr_len - (ETH_HLEN - 2);
++	struct ethhdr eth;
+ 
+ 	skb = skb_share_check(skb, GFP_ATOMIC);
+ 	if (unlikely(!skb))
+-		return true;
++		return;
+ 
+ 	if ((hdr->frame_control & cpu_to_le16(IEEE80211_STYPE_QOS_DATA)) &&
+ 	    ieee80211_amsdu_aggregate(sdata, sta, fast_tx, skb))
+-		return true;
++		return;
+ 
+ 	/* will not be crypto-handled beyond what we do here, so use false
+ 	 * as the may-encrypt argument for the resize to not account for
+@@ -3636,10 +3664,8 @@ static bool ieee80211_xmit_fast(struct i
+ 	if (unlikely(ieee80211_skb_resize(sdata, skb,
+ 					  max_t(int, extra_head + hw_headroom -
+ 						     skb_headroom(skb), 0),
+-					  ENCRYPT_NO))) {
+-		kfree_skb(skb);
+-		return true;
+-	}
++					  ENCRYPT_NO)))
++		goto free;
+ 
+ 	memcpy(&eth, skb->data, ETH_HLEN - 2);
+ 	hdr = skb_push(skb, extra_head);
+@@ -3653,7 +3679,7 @@ static bool ieee80211_xmit_fast(struct i
+ 	info->control.vif = &sdata->vif;
+ 	info->flags = IEEE80211_TX_CTL_FIRST_FRAGMENT |
+ 		      IEEE80211_TX_CTL_DONTFRAG |
+-		      (tid_tx ? IEEE80211_TX_CTL_AMPDU : 0);
++		      (ampdu ? IEEE80211_TX_CTL_AMPDU : 0);
+ 	info->control.flags = IEEE80211_TX_CTRL_FAST_XMIT |
+ 			      u32_encode_bits(IEEE80211_LINK_UNSPECIFIED,
+ 					      IEEE80211_TX_CTRL_MLO_LINK);
+@@ -3677,16 +3703,14 @@ static bool ieee80211_xmit_fast(struct i
+ 	tx.key = fast_tx->key;
+ 
+ 	if (ieee80211_queue_skb(local, sdata, sta, skb))
+-		return true;
++		return;
+ 
+ 	tx.skb = skb;
+ 	r = ieee80211_xmit_fast_finish(sdata, sta, fast_tx->pn_offs,
+ 				       fast_tx->key, &tx);
+ 	tx.skb = NULL;
+-	if (r == TX_DROP) {
+-		kfree_skb(skb);
+-		return true;
+-	}
++	if (r == TX_DROP)
++		goto free;
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
+ 		sdata = container_of(sdata->bss,
+@@ -3694,6 +3718,56 @@ static bool ieee80211_xmit_fast(struct i
+ 
+ 	__skb_queue_tail(&tx.skbs, skb);
+ 	ieee80211_tx_frags(local, &sdata->vif, sta, &tx.skbs, false);
++	return;
++
++free:
++	kfree_skb(skb);
++}
++
++static bool ieee80211_xmit_fast(struct ieee80211_sub_if_data *sdata,
++				struct sta_info *sta,
++				struct ieee80211_fast_tx *fast_tx,
++				struct sk_buff *skb)
++{
++	u16 ethertype = (skb->data[12] << 8) | skb->data[13];
++	struct ieee80211_hdr *hdr = (void *)fast_tx->hdr;
++	struct tid_ampdu_tx *tid_tx = NULL;
++	struct sk_buff *next;
++	u8 tid = IEEE80211_NUM_TIDS;
++
++	/* control port protocol needs a lot of special handling */
++	if (cpu_to_be16(ethertype) == sdata->control_port_protocol)
++		return false;
++
++	/* only RFC 1042 SNAP */
++	if (ethertype < ETH_P_802_3_MIN)
++		return false;
++
++	/* don't handle TX status request here either */
++	if (skb->sk && skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS)
++		return false;
++
++	if (hdr->frame_control & cpu_to_le16(IEEE80211_STYPE_QOS_DATA)) {
++		tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
++		tid_tx = rcu_dereference(sta->ampdu_mlme.tid_tx[tid]);
++		if (tid_tx) {
++			if (!test_bit(HT_AGG_STATE_OPERATIONAL, &tid_tx->state))
++				return false;
++			if (tid_tx->timeout)
++				tid_tx->last_tx = jiffies;
++		}
++	}
++
++	/* after this point (skb is modified) we cannot return false */
++	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata));
++	if (!skb)
++		return true;
++
++	skb_list_walk_safe(skb, skb, next) {
++		skb_mark_not_on_list(skb);
++		__ieee80211_xmit_fast(sdata, sta, fast_tx, skb, tid, tid_tx);
++	}
++
+ 	return true;
+ }
+ 
+@@ -4201,31 +4275,14 @@ void __ieee80211_subif_start_xmit(struct
+ 			goto out;
+ 	}
+ 
+-	if (skb_is_gso(skb)) {
+-		struct sk_buff *segs;
+-
+-		segs = skb_gso_segment(skb, 0);
+-		if (IS_ERR(segs)) {
+-			goto out_free;
+-		} else if (segs) {
+-			consume_skb(skb);
+-			skb = segs;
+-		}
+-	} else {
+-		/* we cannot process non-linear frames on this path */
+-		if (skb_linearize(skb))
+-			goto out_free;
+-
+-		/* the frame could be fragmented, software-encrypted, and other
+-		 * things so we cannot really handle checksum offload with it -
+-		 * fix it up in software before we handle anything else.
+-		 */
+-		if (skb->ip_summed == CHECKSUM_PARTIAL) {
+-			skb_set_transport_header(skb,
+-						 skb_checksum_start_offset(skb));
+-			if (skb_checksum_help(skb))
+-				goto out_free;
+-		}
++	/* the frame could be fragmented, software-encrypted, and other
++	 * things so we cannot really handle checksum or GSO offload.
++	 * fix it up in software before we handle anything else.
++	 */
++	skb = ieee80211_tx_skb_fixup(skb, 0);
++	if (!skb) {
++		len = 0;
++		goto out;
+ 	}
+ 
+ 	skb_list_walk_safe(skb, skb, next) {
+@@ -4443,9 +4500,11 @@ normal:
+ 	return NETDEV_TX_OK;
+ }
+ 
+-static bool ieee80211_tx_8023(struct ieee80211_sub_if_data *sdata,
+-			      struct sk_buff *skb, struct sta_info *sta,
+-			      bool txpending)
++
++
++static bool __ieee80211_tx_8023(struct ieee80211_sub_if_data *sdata,
++				struct sk_buff *skb, struct sta_info *sta,
++				bool txpending)
+ {
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct ieee80211_tx_control control = {};
+@@ -4454,14 +4513,6 @@ static bool ieee80211_tx_8023(struct iee
+ 	unsigned long flags;
+ 	int q = info->hw_queue;
+ 
+-	if (sta)
+-		sk_pacing_shift_update(skb->sk, local->hw.tx_sk_pacing_shift);
+-
+-	ieee80211_tpt_led_trig_tx(local, skb->len);
+-
+-	if (ieee80211_queue_skb(local, sdata, sta, skb))
+-		return true;
+-
+ 	spin_lock_irqsave(&local->queue_stop_reason_lock, flags);
+ 
+ 	if (local->queue_stop_reasons[q] ||
+@@ -4488,6 +4539,26 @@ static bool ieee80211_tx_8023(struct iee
+ 	return true;
+ }
+ 
++static bool ieee80211_tx_8023(struct ieee80211_sub_if_data *sdata,
++			      struct sk_buff *skb, struct sta_info *sta,
++			      bool txpending)
++{
++	struct ieee80211_local *local = sdata->local;
++	struct sk_buff *next;
++	bool ret = true;
++
++	if (ieee80211_queue_skb(local, sdata, sta, skb))
++		return true;
++
++	skb_list_walk_safe(skb, skb, next) {
++		skb_mark_not_on_list(skb);
++		if (!__ieee80211_tx_8023(sdata, skb, sta, txpending))
++			ret = false;
++	}
++
++	return ret;
++}
++
+ static void ieee80211_8023_xmit(struct ieee80211_sub_if_data *sdata,
+ 				struct net_device *dev, struct sta_info *sta,
+ 				struct ieee80211_key *key, struct sk_buff *skb)
+@@ -4495,9 +4566,13 @@ static void ieee80211_8023_xmit(struct i
+ 	struct ieee80211_tx_info *info;
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct tid_ampdu_tx *tid_tx;
++	struct sk_buff *seg, *next;
++	unsigned int skbs = 0, len = 0;
++	u16 queue;
+ 	u8 tid;
+ 
+-	skb_set_queue_mapping(skb, ieee80211_select_queue(sdata, sta, skb));
++	queue = ieee80211_select_queue(sdata, sta, skb);
++	skb_set_queue_mapping(skb, queue);
+ 
+ 	if (unlikely(test_bit(SCAN_SW_SCANNING, &local->scanning)) &&
+ 	    test_bit(SDATA_STATE_OFFCHANNEL, &sdata->state))
+@@ -4507,9 +4582,6 @@ static void ieee80211_8023_xmit(struct i
+ 	if (unlikely(!skb))
+ 		return;
+ 
+-	info = IEEE80211_SKB_CB(skb);
+-	memset(info, 0, sizeof(*info));
+-
+ 	ieee80211_aggr_check(sdata, sta, skb);
+ 
+ 	tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+@@ -4523,22 +4595,20 @@ static void ieee80211_8023_xmit(struct i
+ 			return;
+ 		}
+ 
+-		info->flags |= IEEE80211_TX_CTL_AMPDU;
+ 		if (tid_tx->timeout)
+ 			tid_tx->last_tx = jiffies;
+ 	}
+ 
+-	if (unlikely(skb->sk &&
+-		     skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS))
+-		info->ack_frame_id = ieee80211_store_ack_skb(local, skb,
+-							     &info->flags, NULL);
++	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata));
++	if (!skb)
++		return;
+ 
+-	info->hw_queue = sdata->vif.hw_queue[skb_get_queue_mapping(skb)];
++	info = IEEE80211_SKB_CB(skb);
++	memset(info, 0, sizeof(*info));
++	if (tid_tx)
++		info->flags |= IEEE80211_TX_CTL_AMPDU;
+ 
+-	dev_sw_netstats_tx_add(dev, 1, skb->len);
+-
+-	sta->deflink.tx_stats.bytes[skb_get_queue_mapping(skb)] += skb->len;
+-	sta->deflink.tx_stats.packets[skb_get_queue_mapping(skb)]++;
++	info->hw_queue = sdata->vif.hw_queue[queue];
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
+ 		sdata = container_of(sdata->bss,
+@@ -4550,6 +4620,24 @@ static void ieee80211_8023_xmit(struct i
+ 	if (key)
+ 		info->control.hw_key = &key->conf;
+ 
++	skb_list_walk_safe(skb, seg, next) {
++		skbs++;
++		len += seg->len;
++		if (seg != skb)
++			memcpy(IEEE80211_SKB_CB(seg), info, sizeof(*info));
++	}
++
++	if (unlikely(skb->sk &&
++		     skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS))
++		info->ack_frame_id = ieee80211_store_ack_skb(local, skb,
++							     &info->flags, NULL);
++
++	dev_sw_netstats_tx_add(dev, skbs, len);
++	sta->deflink.tx_stats.packets[queue] += skbs;
++	sta->deflink.tx_stats.bytes[queue] += len;
++
++	ieee80211_tpt_led_trig_tx(local, len);
++
+ 	ieee80211_tx_8023(sdata, skb, sta, false);
+ 
+ 	return;
+@@ -4591,6 +4679,7 @@ netdev_tx_t ieee80211_subif_start_xmit_8
+ 		    key->conf.cipher == WLAN_CIPHER_SUITE_TKIP))
+ 		goto skip_offload;
+ 
++	sk_pacing_shift_update(skb->sk, sdata->local->hw.tx_sk_pacing_shift);
+ 	ieee80211_8023_xmit(sdata, dev, sta, key, skb);
+ 	goto out;
+ 

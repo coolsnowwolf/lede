@@ -10,7 +10,6 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=spidev-test
 PKG_RELEASE:=$(LINUX_VERSION)
-PKG_FLAGS:=nonshared
 PKG_BUILD_DIR:=$(LINUX_DIR)/tools/spi-$(TARGET_DIR_NAME)
 PKG_BUILD_PARALLEL:=1
 
@@ -19,7 +18,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/spidev-test
   SECTION:=utils
   CATEGORY:=Utilities
-  DEPENDS:=+PACKAGE_kmod-spi-dev:kmod-spi-dev @!IN_SDK
+  DEPENDS:=+kmod-spi-dev
   TITLE:=SPI testing utility
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
@@ -30,6 +29,8 @@ define Package/spidev-test/description
 endef
 
 define Build/Prepare
+	# For SDK: Sources are copied by target/sdk/Makefile's
+	# USERSPACE_UTILS(_FILES)
 	$(CP) $(LINUX_DIR)/tools/spi/* $(PKG_BUILD_DIR)/
 endef
 

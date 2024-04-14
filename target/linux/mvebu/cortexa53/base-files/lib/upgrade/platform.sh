@@ -15,7 +15,7 @@ platform_check_image() {
 	globalscale,espressobin-ultra|\
 	globalscale,espressobin-v7|\
 	globalscale,espressobin-v7-emmc)
-		platform_check_image_sdcard "$1"
+		legacy_sdcard_check_image "$1"
 		;;
 	*)
 		return 0
@@ -31,9 +31,10 @@ platform_do_upgrade() {
 	globalscale,espressobin-ultra|\
 	globalscale,espressobin-v7|\
 	globalscale,espressobin-v7-emmc)
-		platform_do_upgrade_sdcard "$1"
+		legacy_sdcard_do_upgrade "$1"
 		;;
-	methode,udpu)
+	methode,udpu|\
+	methode,edpu)
 		platform_do_upgrade_uDPU "$1"
 		;;
 	*)
@@ -49,9 +50,10 @@ platform_copy_config() {
 	globalscale,espressobin-ultra|\
 	globalscale,espressobin-v7|\
 	globalscale,espressobin-v7-emmc)
-		platform_copy_config_sdcard
+		legacy_sdcard_copy_config
 		;;
-	methode,udpu)
+	methode,udpu|\
+	methode,edpu)
 		platform_copy_config_uDPU
 		;;
 	esac

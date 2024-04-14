@@ -1,18 +1,22 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ksmbd
-PKG_VERSION:=3.4.5
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=2023.12.22
+PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/cifsd-team/cifsd/tar.gz/$(PKG_VERSION)?
-PKG_HASH:=2873c8ba1027fc5b04c5f5344804ef1469ad7019a033456c16ca4aa3f2c161f0
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/cifsd-team/ksmbd
+PKG_SOURCE_VERSION:=0590dfae7a6e0a50eda6584286b2c6215aaddea1
+PKG_MIRROR_HASH:=95415120722db35ca599ab6ca36fd6310fc11ca50acf7d6235d4b0f397c46dd4
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
+
+TAR_OPTIONS+= --strip-components 1
+TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
 define KernelPackage/fs-ksmbd
 	SUBMENU:=Filesystems
@@ -36,6 +40,7 @@ define KernelPackage/fs-ksmbd
 		+kmod-asn1-decoder \
 		+kmod-oid-registry
 endef
+
 
 # The last two DEPENDS are hacks in order to get CONFIG_ASN1 and CONFIG_OID_REGISTRY
 # which it seems can't be selected independently. Some bug in either base or upstream.

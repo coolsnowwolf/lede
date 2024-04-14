@@ -27,7 +27,8 @@ include $(INCLUDE_DIR)/nls.mk
 define Package/perf
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:= +libelf +libdw +PACKAGE_libunwind:libunwind +libpthread +librt +objdump @!IN_SDK @!TARGET_arc770 @KERNEL_PERF_EVENTS
+  DEPENDS:= +libelf +libdw +PACKAGE_libunwind:libunwind +libpthread +librt +objdump @!IN_SDK @KERNEL_PERF_EVENTS \
+	    +PACKAGE_libbfd:libbfd +PACKAGE_libopcodes:libopcodes +libtraceevent
   TITLE:=Linux performance monitoring tool
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=http://www.kernel.org
@@ -62,14 +63,19 @@ MAKE_FLAGS = \
 	LDFLAGS="$(TARGET_LDFLAGS)" \
 	KBUILD_HOSTCFLAGS="$(HOST_CFLAGS)" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
+	PKG_CONFIG="$(PKG_CONFIG)" \
+	PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" \
+	EXCLUDE_EXTLIBS="-lstdc++" \
+	EXTRA_PERFLIBS="$(shell $(TARGET_CC) -print-file-name=libstdc++.a)" \
 	WERROR=0 \
 	O=$(PKG_BUILD_DIR) \
 	prefix=/usr
 
 define Build/Compile
-	+$(MAKE_FLAGS) $(MAKE) $(PKG_JOBS) \
+	+$(MAKE) $(PKG_JOBS) $(MAKE_FLAGS) \
 		--no-print-directory \
-		-C $(LINUX_DIR)/tools/perf
+		-C $(LINUX_DIR)/tools/perf \
+		-f Makefile.perf
 endef
 
 define Package/perf/install

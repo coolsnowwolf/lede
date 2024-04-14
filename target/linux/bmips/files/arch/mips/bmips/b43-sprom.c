@@ -1119,7 +1119,6 @@ static int b43_sprom_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
 	struct b43_sprom *priv = &b43_sprom;
-	const void *mac;
 	int ret;
 
 	priv->dev = dev;
@@ -1129,9 +1128,8 @@ static int b43_sprom_probe(struct platform_device *pdev)
 	of_property_read_u32(node, "pci-bus", &priv->pci_bus);
 	of_property_read_u32(node, "pci-dev", &priv->pci_dev);
 
-	mac = of_get_mac_address(node);
-	if (!IS_ERR_OR_NULL(mac)) {
-		memcpy(priv->mac, mac, ETH_ALEN);
+	of_get_mac_address(node, priv->mac);
+	if (is_valid_ether_addr(priv->mac)) {
 		dev_info(dev, "mtd mac %pM\n", priv->mac);
 	} else {
 		random_ether_addr(priv->mac);

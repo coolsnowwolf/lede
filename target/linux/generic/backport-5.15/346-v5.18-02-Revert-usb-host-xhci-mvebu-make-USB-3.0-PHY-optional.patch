@@ -1,0 +1,166 @@
+From 8e10548f7f4814e530857d2049d6af6bc78add53 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Pali=20Roh=C3=A1r?= <pali@kernel.org>
+Date: Thu, 3 Feb 2022 22:44:43 +0100
+Subject: [PATCH 2/3] Revert "usb: host: xhci: mvebu: make USB 3.0 PHY optional
+ for Armada 3720"
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This reverts commit 3241929b67d28c83945d3191c6816a3271fd6b85.
+
+Armada 3720 phy driver (phy-mvebu-a3700-comphy.c) does not return
+-EOPNOTSUPP from phy_power_on() callback anymore.
+
+So remove XHCI_SKIP_PHY_INIT flag from xhci_mvebu_a3700_plat_setup() and
+then also whole xhci_mvebu_a3700_plat_setup() function which is there just
+to handle -EOPNOTSUPP for XHCI_SKIP_PHY_INIT.
+
+xhci plat_setup callback is not used by any other xhci plat driver, so
+remove this callback completely.
+
+Signed-off-by: Pali Rohár <pali@kernel.org>
+Signed-off-by: Marek Behún <kabel@kernel.org>
+Acked-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Acked-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Link: https://lore.kernel.org/r/20220203214444.1508-5-kabel@kernel.org
+Signed-off-by: Vinod Koul <vkoul@kernel.org>
+---
+ drivers/usb/host/xhci-mvebu.c | 42 -----------------------------------
+ drivers/usb/host/xhci-mvebu.h |  6 -----
+ drivers/usb/host/xhci-plat.c  | 20 +----------------
+ drivers/usb/host/xhci-plat.h  |  1 -
+ 4 files changed, 1 insertion(+), 68 deletions(-)
+
+--- a/drivers/usb/host/xhci-mvebu.c
++++ b/drivers/usb/host/xhci-mvebu.c
+@@ -8,7 +8,6 @@
+ #include <linux/mbus.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+-#include <linux/phy/phy.h>
+ 
+ #include <linux/usb.h>
+ #include <linux/usb/hcd.h>
+@@ -74,47 +73,6 @@ int xhci_mvebu_mbus_init_quirk(struct us
+ 
+ 	return 0;
+ }
+-
+-int xhci_mvebu_a3700_plat_setup(struct usb_hcd *hcd)
+-{
+-	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+-	struct device *dev = hcd->self.controller;
+-	struct phy *phy;
+-	int ret;
+-
+-	/* Old bindings miss the PHY handle */
+-	phy = of_phy_get(dev->of_node, "usb3-phy");
+-	if (IS_ERR(phy) && PTR_ERR(phy) == -EPROBE_DEFER)
+-		return -EPROBE_DEFER;
+-	else if (IS_ERR(phy))
+-		goto phy_out;
+-
+-	ret = phy_init(phy);
+-	if (ret)
+-		goto phy_put;
+-
+-	ret = phy_set_mode(phy, PHY_MODE_USB_HOST_SS);
+-	if (ret)
+-		goto phy_exit;
+-
+-	ret = phy_power_on(phy);
+-	if (ret == -EOPNOTSUPP) {
+-		/* Skip initializatin of XHCI PHY when it is unsupported by firmware */
+-		dev_warn(dev, "PHY unsupported by firmware\n");
+-		xhci->quirks |= XHCI_SKIP_PHY_INIT;
+-	}
+-	if (ret)
+-		goto phy_exit;
+-
+-	phy_power_off(phy);
+-phy_exit:
+-	phy_exit(phy);
+-phy_put:
+-	of_phy_put(phy);
+-phy_out:
+-
+-	return 0;
+-}
+ 
+ int xhci_mvebu_a3700_init_quirk(struct usb_hcd *hcd)
+ {
+--- a/drivers/usb/host/xhci-mvebu.h
++++ b/drivers/usb/host/xhci-mvebu.h
+@@ -12,18 +12,12 @@ struct usb_hcd;
+ 
+ #if IS_ENABLED(CONFIG_USB_XHCI_MVEBU)
+ int xhci_mvebu_mbus_init_quirk(struct usb_hcd *hcd);
+-int xhci_mvebu_a3700_plat_setup(struct usb_hcd *hcd);
+ int xhci_mvebu_a3700_init_quirk(struct usb_hcd *hcd);
+ #else
+ static inline int xhci_mvebu_mbus_init_quirk(struct usb_hcd *hcd)
+ {
+ 	return 0;
+ }
+-
+-static inline int xhci_mvebu_a3700_plat_setup(struct usb_hcd *hcd)
+-{
+-	return 0;
+-}
+ 
+ static inline int xhci_mvebu_a3700_init_quirk(struct usb_hcd *hcd)
+ {
+--- a/drivers/usb/host/xhci-plat.c
++++ b/drivers/usb/host/xhci-plat.c
+@@ -44,16 +44,6 @@ static void xhci_priv_plat_start(struct
+ 		priv->plat_start(hcd);
+ }
+ 
+-static int xhci_priv_plat_setup(struct usb_hcd *hcd)
+-{
+-	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+-
+-	if (!priv->plat_setup)
+-		return 0;
+-
+-	return priv->plat_setup(hcd);
+-}
+-
+ static int xhci_priv_init_quirk(struct usb_hcd *hcd)
+ {
+ 	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+@@ -121,7 +111,6 @@ static const struct xhci_plat_priv xhci_
+ };
+ 
+ static const struct xhci_plat_priv xhci_plat_marvell_armada3700 = {
+-	.plat_setup = xhci_mvebu_a3700_plat_setup,
+ 	.init_quirk = xhci_mvebu_a3700_init_quirk,
+ };
+ 
+@@ -344,14 +333,7 @@ static int xhci_plat_probe(struct platfo
+ 
+ 	hcd->tpl_support = of_usb_host_tpl_support(sysdev->of_node);
+ 	xhci->shared_hcd->tpl_support = hcd->tpl_support;
+-
+-	if (priv) {
+-		ret = xhci_priv_plat_setup(hcd);
+-		if (ret)
+-			goto disable_usb_phy;
+-	}
+-
+-	if ((xhci->quirks & XHCI_SKIP_PHY_INIT) || (priv && (priv->quirks & XHCI_SKIP_PHY_INIT)))
++	if (priv && (priv->quirks & XHCI_SKIP_PHY_INIT))
+ 		hcd->skip_phy_initialization = 1;
+ 
+ 	if (priv && (priv->quirks & XHCI_SG_TRB_CACHE_SIZE_QUIRK))
+--- a/drivers/usb/host/xhci-plat.h
++++ b/drivers/usb/host/xhci-plat.h
+@@ -13,7 +13,6 @@
+ struct xhci_plat_priv {
+ 	const char *firmware_name;
+ 	unsigned long long quirks;
+-	int (*plat_setup)(struct usb_hcd *);
+ 	void (*plat_start)(struct usb_hcd *);
+ 	int (*init_quirk)(struct usb_hcd *);
+ 	int (*suspend_quirk)(struct usb_hcd *);

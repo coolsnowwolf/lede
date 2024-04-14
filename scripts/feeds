@@ -14,7 +14,7 @@ chdir $ENV{TOPDIR};
 $ENV{GIT_CONFIG_PARAMETERS}="'core.autocrlf=false'";
 $ENV{GREP_OPTIONS}="";
 
-my $mk=`which gmake 2>/dev/null`;	# select the right 'make' program
+my $mk=`command -v gmake 2>/dev/null`;	# select the right 'make' program
 chomp($mk);		# trim trailing newline
 $mk or $mk = "make";	# default to 'make'
 
@@ -167,8 +167,8 @@ my %update_method = (
 		'init'          => "git clone '%s' '%s'",
 		'init_branch'   => "git clone --branch '%s' '%s' '%s'",
 		'init_commit'   => "git clone '%s' '%s' && cd '%s' && git checkout -b '%s' '%s' && cd -",
-		'update'	=> "git pull --ff",
-		'update_force'	=> "git pull --ff || (git reset --hard HEAD; git pull --ff; exit 1)",
+		'update'	=> "git pull --ff-only",
+		'update_force'	=> "git pull --ff-only || (git reset --hard HEAD; git pull --ff-only; exit 1)",
 		'post_update'	=> "git submodule update --init --recursive",
 		'controldir'	=> ".git",
 		'revision'	=> "git rev-parse --short HEAD | tr -d '\n'"},
@@ -434,14 +434,16 @@ sub do_install_target($) {
 		$path =~ s/\/Makefile$//;
 		my $name = $path;
 		$name =~ s/.*\///;
-		my $dest = "./target/linux/$name";
+		my $dest = "./target/linux/feeds/$name";
+
+		-d "./target/linux/feeds" or mkdir "./target/linux/feeds";
 
 		-e $dest and do {
 			warn "Path $dest already exists";
 			return 1;
 		};
 
-		system("ln -sf ../../$path ./target/linux/");
+		system("ln -sf ../../../$path ./target/linux/feeds/");
 	} else {
 		warn "Target is not valid\n";
 		return 1;
@@ -498,16 +500,34 @@ sub is_core_src($) {
 sub install_target {
 	my $feed = shift;
 	my $name = shift;
+	my $force = shift;
 
-	$installed_targets{$name} and return 0;
+	$feed = lookup_target($feed, $name);
+	my $feed_name = $feed->[1];
 
-	$feed = $feed_cache{$feed->[1]}->[2];
+	-e "target/linux/feeds/$name" and return 0;
+
+	# enable force flag if feed src line was declared with --force
+	if (exists($feed->[3]{force})) {
+		$force = 1;
+	}
+
+	$feed = $feed_cache{$feed_name}->[2];
 	$feed or return 0;
 
 	my $target = $feed->{$name};
 	$target or return 0;
 
-	warn "Installing target '$name'\n";
+	if (-e "target/linux/$name") {
+		if ($force) {
+			warn "Overriding target '$name' with version from '$feed_name'\n";
+		} else {
+			warn "WARNING: Not overriding core target '$name'; use -f to force\n";
+			return 0;
+		}
+	} else {
+		warn "Installing target '$name'\n";
+	}
 	return do_install_target($target);
 }
 
@@ -618,7 +638,7 @@ sub install_target_or_package {
 	my $force = shift;
 
 	lookup_target($feed, $name) and do {
-		return install_target($feed, $name);
+		return install_target($feed, $name, $force);
 	};
 
 	lookup_src($feed, $name) and do {
@@ -734,7 +754,7 @@ sub uninstall {
 		}
 		get_installed();
 		while ($name = shift @ARGV) {
-			my $target = "target/linux/$name";
+			my $target = "target/linux/feeds/$name";
 			-l "$target" and do {
 				uninstall_target($target);
 				$uninstall = 1;
@@ -901,7 +921,7 @@ my %commands = (
 	'uninstall' => \&uninstall,
 	'feed_config' => \&feed_config,
 	'clean' => sub {
-		system("rm -rf ./feeds ./package/feeds");
+		system("rm -rf ./feeds ./package/feeds ./target/linux/feeds");
 	}
 );
 

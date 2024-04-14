@@ -91,9 +91,6 @@ zyxel_do_upgrade() {
 	case "$board" in
 	zyxel,nbg6817)
 		local dualflagmtd="$(find_mtd_part 0:dual_flag)"
-		# XXX: drop upper case after kernel v5.4 is gone (qcom-smem)
-		[ -b $dualflagmtd ] || \
-			dualflagmtd="$(find_mtd_part 0:DUAL_FLAG)"
 		[ -b $dualflagmtd ] || return 1
 
 		case "$rootfs" in

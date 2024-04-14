@@ -1,0 +1,207 @@
+From f3b44eb69cc561cf05d00506dcec0dd9be003ed8 Mon Sep 17 00:00:00 2001
+From: Luka Kovacic <luka.kovacic () sartura ! hr>
+Date: Tue, 24 Aug 2021 12:44:35 +0000
+Subject: [PATCH 4/7] drivers: leds: Add the IEI WT61P803 PUZZLE LED driver
+
+Add support for the IEI WT61P803 PUZZLE LED driver.
+Currently only the front panel power LED is supported,
+since it is the only LED on this board wired through the
+MCU.
+
+The LED is wired directly to the on-board MCU controller
+and is toggled using an MCU command.
+
+Support for more LEDs is going to be added in case more
+boards implement this microcontroller, as LEDs use many
+different GPIOs.
+
+This driver depends on the IEI WT61P803 PUZZLE MFD driver.
+
+Signed-off-by: Luka Kovacic <luka.kovacic@sartura.hr>
+Signed-off-by: Pavo Banicevic <pavo.banicevic@sartura.hr>
+Cc: Luka Perkov <luka.perkov@sartura.hr>
+Cc: Robert Marko <robert.marko@sartura.hr>
+---
+ drivers/leds/Kconfig                    |   8 ++
+ drivers/leds/Makefile                   |   1 +
+ drivers/leds/leds-iei-wt61p803-puzzle.c | 147 ++++++++++++++++++++++++
+ 3 files changed, 156 insertions(+)
+ create mode 100644 drivers/leds/leds-iei-wt61p803-puzzle.c
+
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -335,6 +335,14 @@ config LEDS_IPAQ_MICRO
+ 	  Choose this option if you want to use the notification LED on
+ 	  Compaq/HP iPAQ h3100 and h3600.
+ 
++config LEDS_IEI_WT61P803_PUZZLE
++	tristate "LED Support for the IEI WT61P803 PUZZLE MCU"
++	depends on LEDS_CLASS
++	depends on MFD_IEI_WT61P803_PUZZLE
++	help
++	  This option enables support for LEDs controlled by the IEI WT61P803
++	  M801 MCU.
++
+ config LEDS_HP6XX
+ 	tristate "LED Support for the HP Jornada 6xx"
+ 	depends on LEDS_CLASS
+--- a/drivers/leds/Makefile
++++ b/drivers/leds/Makefile
+@@ -35,6 +35,7 @@ obj-$(CONFIG_LEDS_HP6XX)		+= leds-hp6xx.
+ obj-$(CONFIG_LEDS_INTEL_SS4200)		+= leds-ss4200.o
+ obj-$(CONFIG_LEDS_IP30)			+= leds-ip30.o
+ obj-$(CONFIG_LEDS_IPAQ_MICRO)		+= leds-ipaq-micro.o
++obj-$(CONFIG_LEDS_IEI_WT61P803_PUZZLE)	+= leds-iei-wt61p803-puzzle.o
+ obj-$(CONFIG_LEDS_IS31FL319X)		+= leds-is31fl319x.o
+ obj-$(CONFIG_LEDS_IS31FL32XX)		+= leds-is31fl32xx.o
+ obj-$(CONFIG_LEDS_KTD2692)		+= leds-ktd2692.o
+--- /dev/null
++++ b/drivers/leds/leds-iei-wt61p803-puzzle.c
+@@ -0,0 +1,147 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* IEI WT61P803 PUZZLE MCU LED Driver
++ *
++ * Copyright (C) 2020 Sartura Ltd.
++ * Author: Luka Kovacic <luka.kovacic@sartura.hr>
++ */
++
++#include <linux/leds.h>
++#include <linux/mfd/iei-wt61p803-puzzle.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/slab.h>
++
++enum iei_wt61p803_puzzle_led_state {
++	IEI_LED_OFF = 0x30,
++	IEI_LED_ON = 0x31,
++	IEI_LED_BLINK_5HZ = 0x32,
++	IEI_LED_BLINK_1HZ = 0x33,
++};
++
++/**
++ * struct iei_wt61p803_puzzle_led - MCU LED Driver
++ * @cdev:		LED classdev
++ * @mcu:		MCU struct pointer
++ * @response_buffer	Global MCU response buffer
++ * @lock:		General mutex lock to protect simultaneous R/W access to led_power_state
++ * @led_power_state:	State of the front panel power LED
++ */
++struct iei_wt61p803_puzzle_led {
++	struct led_classdev cdev;
++	struct iei_wt61p803_puzzle *mcu;
++	unsigned char response_buffer[IEI_WT61P803_PUZZLE_BUF_SIZE];
++	struct mutex lock; /* mutex to protect led_power_state */
++	int led_power_state;
++};
++
++static inline struct iei_wt61p803_puzzle_led *cdev_to_iei_wt61p803_puzzle_led
++	(struct led_classdev *led_cdev)
++{
++	return container_of(led_cdev, struct iei_wt61p803_puzzle_led, cdev);
++}
++
++static int iei_wt61p803_puzzle_led_brightness_set_blocking(struct led_classdev *cdev,
++							   enum led_brightness brightness)
++{
++	struct iei_wt61p803_puzzle_led *priv = cdev_to_iei_wt61p803_puzzle_led(cdev);
++	unsigned char *resp_buf = priv->response_buffer;
++	unsigned char led_power_cmd[5] = {};
++	size_t reply_size;
++	int ret;
++
++	led_power_cmd[0] = IEI_WT61P803_PUZZLE_CMD_HEADER_START;
++	led_power_cmd[1] = IEI_WT61P803_PUZZLE_CMD_LED;
++	led_power_cmd[2] = IEI_WT61P803_PUZZLE_CMD_LED_POWER;
++	led_power_cmd[3] = brightness == LED_OFF ? IEI_LED_OFF : IEI_LED_ON;
++
++	ret = iei_wt61p803_puzzle_write_command(priv->mcu, led_power_cmd,
++						sizeof(led_power_cmd),
++						resp_buf,
++						&reply_size);
++	if (ret)
++		return ret;
++
++	if (reply_size != 3)
++		return -EIO;
++
++	if (!(resp_buf[0] == IEI_WT61P803_PUZZLE_CMD_HEADER_START &&
++	      resp_buf[1] == IEI_WT61P803_PUZZLE_CMD_RESPONSE_OK &&
++	      resp_buf[2] == IEI_WT61P803_PUZZLE_CHECKSUM_RESPONSE_OK))
++		return -EIO;
++
++	mutex_lock(&priv->lock);
++	priv->led_power_state = brightness;
++	mutex_unlock(&priv->lock);
++
++	return 0;
++}
++
++static enum led_brightness iei_wt61p803_puzzle_led_brightness_get(struct led_classdev *cdev)
++{
++	struct iei_wt61p803_puzzle_led *priv = cdev_to_iei_wt61p803_puzzle_led(cdev);
++	int led_state;
++
++	mutex_lock(&priv->lock);
++	led_state = priv->led_power_state;
++	mutex_unlock(&priv->lock);
++
++	return led_state;
++}
++
++static int iei_wt61p803_puzzle_led_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct iei_wt61p803_puzzle *mcu = dev_get_drvdata(dev->parent);
++	struct iei_wt61p803_puzzle_led *priv;
++	struct led_init_data init_data = {};
++	struct fwnode_handle *child;
++	int ret;
++
++	if (device_get_child_node_count(dev) != 1)
++		return -EINVAL;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->mcu = mcu;
++	priv->led_power_state = 1;
++	mutex_init(&priv->lock);
++	dev_set_drvdata(dev, priv);
++
++	child = device_get_next_child_node(dev, NULL);
++	init_data.fwnode = child;
++
++	priv->cdev.brightness_set_blocking = iei_wt61p803_puzzle_led_brightness_set_blocking;
++	priv->cdev.brightness_get = iei_wt61p803_puzzle_led_brightness_get;
++	priv->cdev.max_brightness = 1;
++
++	ret = devm_led_classdev_register_ext(dev, &priv->cdev, &init_data);
++	if (ret)
++		dev_err(dev, "Could not register LED\n");
++
++	fwnode_handle_put(child);
++	return ret;
++}
++
++static const struct of_device_id iei_wt61p803_puzzle_led_of_match[] = {
++	{ .compatible = "iei,wt61p803-puzzle-leds" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, iei_wt61p803_puzzle_led_of_match);
++
++static struct platform_driver iei_wt61p803_puzzle_led_driver = {
++	.driver = {
++		.name = "iei-wt61p803-puzzle-led",
++		.of_match_table = iei_wt61p803_puzzle_led_of_match,
++	},
++	.probe = iei_wt61p803_puzzle_led_probe,
++};
++module_platform_driver(iei_wt61p803_puzzle_led_driver);
++
++MODULE_DESCRIPTION("IEI WT61P803 PUZZLE front panel LED driver");
++MODULE_AUTHOR("Luka Kovacic <luka.kovacic@sartura.hr>");
++MODULE_LICENSE("GPL v2");
++MODULE_ALIAS("platform:leds-iei-wt61p803-puzzle");

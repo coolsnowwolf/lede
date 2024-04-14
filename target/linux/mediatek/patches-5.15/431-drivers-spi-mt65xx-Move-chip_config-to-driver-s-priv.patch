@@ -1,0 +1,130 @@
+From bfd3acc428085742d754a6d328d1a93ebf9451df Mon Sep 17 00:00:00 2001
+From: "SkyLake.Huang" <skylake.huang@mediatek.com>
+Date: Thu, 23 Jun 2022 18:29:51 +0800
+Subject: [PATCH 1/6] drivers: spi-mt65xx: Move chip_config to driver's private
+ data
+
+Signed-off-by: SkyLake.Huang <skylake.huang@mediatek.com>
+---
+ drivers/spi/spi-mt65xx.c                 | 29 +++++++++---------------
+ include/linux/platform_data/spi-mt65xx.h | 17 --------------
+ 2 files changed, 11 insertions(+), 35 deletions(-)
+ delete mode 100644 include/linux/platform_data/spi-mt65xx.h
+
+--- a/drivers/spi/spi-mt65xx.c
++++ b/drivers/spi/spi-mt65xx.c
+@@ -14,7 +14,6 @@
+ #include <linux/of.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/platform_device.h>
+-#include <linux/platform_data/spi-mt65xx.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/spi/spi.h>
+ #include <linux/spi/spi-mem.h>
+@@ -142,6 +141,8 @@ struct mtk_spi {
+ 	struct device *dev;
+ 	dma_addr_t tx_dma;
+ 	dma_addr_t rx_dma;
++	u32 sample_sel;
++	u32 get_tick_dly;
+ };
+ 
+ static const struct mtk_spi_compatible mtk_common_compat;
+@@ -187,15 +188,6 @@ static const struct mtk_spi_compatible m
+ 	.no_need_unprepare = true,
+ };
+ 
+-/*
+- * A piece of default chip info unless the platform
+- * supplies it.
+- */
+-static const struct mtk_chip_config mtk_default_chip_info = {
+-	.sample_sel = 0,
+-	.tick_delay = 0,
+-};
+-
+ static const struct of_device_id mtk_spi_of_match[] = {
+ 	{ .compatible = "mediatek,spi-ipm",
+ 		.data = (void *)&mtk_ipm_compat,
+@@ -323,7 +315,6 @@ static int mtk_spi_hw_init(struct spi_ma
+ {
+ 	u16 cpha, cpol;
+ 	u32 reg_val;
+-	struct mtk_chip_config *chip_config = spi->controller_data;
+ 	struct mtk_spi *mdata = spi_master_get_devdata(master);
+ 
+ 	cpha = spi->mode & SPI_CPHA ? 1 : 0;
+@@ -373,7 +364,7 @@ static int mtk_spi_hw_init(struct spi_ma
+ 		else
+ 			reg_val &= ~SPI_CMD_CS_POL;
+ 
+-		if (chip_config->sample_sel)
++		if (mdata->sample_sel)
+ 			reg_val |= SPI_CMD_SAMPLE_SEL;
+ 		else
+ 			reg_val &= ~SPI_CMD_SAMPLE_SEL;
+@@ -400,20 +391,20 @@ static int mtk_spi_hw_init(struct spi_ma
+ 		if (mdata->dev_comp->ipm_design) {
+ 			reg_val = readl(mdata->base + SPI_CMD_REG);
+ 			reg_val &= ~SPI_CMD_IPM_GET_TICKDLY_MASK;
+-			reg_val |= ((chip_config->tick_delay & 0x7)
++			reg_val |= ((mdata->get_tick_dly & 0x7)
+ 				    << SPI_CMD_IPM_GET_TICKDLY_OFFSET);
+ 			writel(reg_val, mdata->base + SPI_CMD_REG);
+ 		} else {
+ 			reg_val = readl(mdata->base + SPI_CFG1_REG);
+ 			reg_val &= ~SPI_CFG1_GET_TICK_DLY_MASK;
+-			reg_val |= ((chip_config->tick_delay & 0x7)
++			reg_val |= ((mdata->get_tick_dly & 0x7)
+ 				    << SPI_CFG1_GET_TICK_DLY_OFFSET);
+ 			writel(reg_val, mdata->base + SPI_CFG1_REG);
+ 		}
+ 	} else {
+ 		reg_val = readl(mdata->base + SPI_CFG1_REG);
+ 		reg_val &= ~SPI_CFG1_GET_TICK_DLY_MASK_V1;
+-		reg_val |= ((chip_config->tick_delay & 0x3)
++		reg_val |= ((mdata->get_tick_dly & 0x3)
+ 			    << SPI_CFG1_GET_TICK_DLY_OFFSET_V1);
+ 		writel(reg_val, mdata->base + SPI_CFG1_REG);
+ 	}
+@@ -700,9 +691,6 @@ static int mtk_spi_setup(struct spi_devi
+ {
+ 	struct mtk_spi *mdata = spi_master_get_devdata(spi->master);
+ 
+-	if (!spi->controller_data)
+-		spi->controller_data = (void *)&mtk_default_chip_info;
+-
+ 	if (mdata->dev_comp->need_pad_sel && spi->cs_gpiod)
+ 		/* CS de-asserted, gpiolib will handle inversion */
+ 		gpiod_direction_output(spi->cs_gpiod, 0);
+@@ -1117,6 +1105,10 @@ static int mtk_spi_probe(struct platform
+ 	mdata = spi_master_get_devdata(master);
+ 	mdata->dev_comp = of_id->data;
+ 
++	/* Set device configs to default first. Calibrate it later. */
++	mdata->sample_sel = 0;
++	mdata->get_tick_dly = 2;
++
+ 	if (mdata->dev_comp->enhance_timing)
+ 		master->mode_bits |= SPI_CS_HIGH;
+ 
+--- a/include/linux/platform_data/spi-mt65xx.h
++++ /dev/null
+@@ -1,17 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only */
+-/*
+- *  MTK SPI bus driver definitions
+- *
+- * Copyright (c) 2015 MediaTek Inc.
+- * Author: Leilk Liu <leilk.liu@mediatek.com>
+- */
+-
+-#ifndef ____LINUX_PLATFORM_DATA_SPI_MTK_H
+-#define ____LINUX_PLATFORM_DATA_SPI_MTK_H
+-
+-/* Board specific platform_data */
+-struct mtk_chip_config {
+-	u32 sample_sel;
+-	u32 tick_delay;
+-};
+-#endif

@@ -1,0 +1,64 @@
+From 8a9c0607ce0daa91c48faefd70ea73bda54ed0ae Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 29 Nov 2022 10:09:54 +0000
+Subject: [PATCH] spi: dw: Handle combined tx and rx messages
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-dw-core.c | 12 +++++++++---
+ drivers/spi/spi-dw-mmio.c |  8 ++++++--
+ 2 files changed, 15 insertions(+), 5 deletions(-)
+
+--- a/drivers/spi/spi-dw-core.c
++++ b/drivers/spi/spi-dw-core.c
+@@ -244,8 +244,11 @@ static irqreturn_t dw_spi_transfer_handl
+ 	 */
+ 	if (irq_status & DW_SPI_INT_TXEI) {
+ 		dw_writer(dws);
+-		if (!dws->tx_len)
++		if (!dws->tx_len) {
+ 			dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
++			if (!dws->rx_len)
++				spi_finalize_current_transfer(dws->master);
++		}
+ 	}
+ 
+ 	return IRQ_HANDLED;
+@@ -372,8 +375,11 @@ static void dw_spi_irq_setup(struct dw_s
+ 
+ 	dws->transfer_handler = dw_spi_transfer_handler;
+ 
+-	imask = DW_SPI_INT_TXEI | DW_SPI_INT_TXOI |
+-		DW_SPI_INT_RXUI | DW_SPI_INT_RXOI | DW_SPI_INT_RXFI;
++	imask = 0;
++	if (dws->tx_len)
++		imask |= DW_SPI_INT_TXEI | DW_SPI_INT_TXOI;
++	if (dws->rx_len)
++		imask |= DW_SPI_INT_RXUI | DW_SPI_INT_RXOI | DW_SPI_INT_RXFI;
+ 	dw_spi_umask_intr(dws, imask);
+ }
+ 
+--- a/drivers/spi/spi-dw-mmio.c
++++ b/drivers/spi/spi-dw-mmio.c
+@@ -20,6 +20,7 @@
+ #include <linux/property.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
++#include <linux/interrupt.h>
+ 
+ #include "spi-dw.h"
+ 
+@@ -280,8 +281,11 @@ static int dw_spi_mmio_probe(struct plat
+ 	dws->paddr = mem->start;
+ 
+ 	dws->irq = platform_get_irq(pdev, 0);
+-	if (dws->irq < 0)
+-		return dws->irq; /* -ENXIO */
++	if (dws->irq < 0) {
++		if (dws->irq != -ENXIO)
++			return dws->irq; /* -ENXIO */
++		dws->irq = IRQ_NOTCONNECTED;
++	}
+ 
+ 	dwsmmio->clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(dwsmmio->clk))

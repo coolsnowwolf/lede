@@ -1,0 +1,89 @@
+From 38aa34eae8e6aa8504f97f86ac155a0ebc6a0557 Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.org>
+Date: Wed, 15 Jan 2020 13:40:38 +0000
+Subject: [PATCH] media: ov5647: Fix return codes from
+ ov5647_write/ov5647_read functions.
+
+Previously they were returning positive non-zero codes for success,
+which were getting passed up the call stack. Since release 4.19,
+do_dentry_open (fs/open.c) has been catching these and flagging an
+error. (So this driver has been broken since that date.)
+
+Fixes: 3c2472a [media] media: i2c: Add support for OV5647 sensor
+Signed-off-by: David Plowman <david.plowman@raspberrypi.org>
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 38 ++++++++++++++++++++++++++++++++------
+ 1 file changed, 32 insertions(+), 6 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -587,7 +587,13 @@ static int ov5647_write16(struct v4l2_su
+ 	int ret;
+ 
+ 	ret = i2c_master_send(client, data, 4);
+-	if (ret < 0) {
++	/*
++	 * Writing the wrong number of bytes also needs to be flagged as an
++	 * error. Success needs to produce a 0 return code.
++	 */
++	if (ret == 4) {
++		ret = 0;
++	} else {
+ 		dev_dbg(&client->dev, "%s: i2c write error, reg: %x\n",
+ 			__func__, reg);
+ 		return ret;
+@@ -603,10 +609,17 @@ static int ov5647_write(struct v4l2_subd
+ 	int ret;
+ 
+ 	ret = i2c_master_send(client, data, 3);
+-	if (ret < 0) {
++	/*
++	 * Writing the wrong number of bytes also needs to be flagged as an
++	 * error. Success needs to produce a 0 return code.
++	 */
++	if (ret == 3) {
++		ret = 0;
++	} else {
+ 		dev_dbg(&client->dev, "%s: i2c write error, reg: %x\n",
+ 				__func__, reg);
+-		return ret;
++		if (ret >= 0)
++			ret = -EINVAL;
+ 	}
+ 
+ 	return 0;
+@@ -619,17 +632,30 @@ static int ov5647_read(struct v4l2_subde
+ 	int ret;
+ 
+ 	ret = i2c_master_send(client, data_w, 2);
+-	if (ret < 0) {
++	/*
++	 * A negative return code, or sending the wrong number of bytes, both
++	 * count as an error.
++	 */
++	if (ret != 2) {
+ 		dev_dbg(&client->dev, "%s: i2c write error, reg: %x\n",
+ 			__func__, reg);
++		if (ret >= 0)
++			ret = -EINVAL;
+ 		return ret;
+ 	}
+ 
+ 	ret = i2c_master_recv(client, val, 1);
+-	if (ret < 0) {
++	/*
++	 * The only return value indicating success is 1. Anything else, even
++	 * a non-negative value, indicates something went wrong.
++	 */
++	if (ret == 1) {
++		ret = 0;
++	} else {
+ 		dev_dbg(&client->dev, "%s: i2c read error, reg: %x\n",
+ 				__func__, reg);
+-		return ret;
++		if (ret >= 0)
++			ret = -EINVAL;
+ 	}
+ 
+ 	return 0;

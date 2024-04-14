@@ -735,7 +735,11 @@ static int hnat_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENOENT;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 6, 0)
 	hnat_priv->fe_base = devm_ioremap_nocache(&pdev->dev, res->start,
+#else
+	hnat_priv->fe_base = devm_ioremap(&pdev->dev, res->start,
+#endif
 					     res->end - res->start + 1);
 	if (!hnat_priv->fe_base)
 		return -EADDRNOTAVAIL;
@@ -855,7 +859,7 @@ static int hnat_remove(struct platform_device *pdev)
 
 static const struct mtk_hnat_data hnat_data_v1 = {
 	.num_of_sch = 2,
-	.whnat = false,
+	.whnat = true,
 	.per_flow_accounting = false,
 	.mcast = false,
 	.version = MTK_HNAT_V1,

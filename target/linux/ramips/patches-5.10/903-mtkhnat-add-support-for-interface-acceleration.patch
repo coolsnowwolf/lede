@@ -1,0 +1,269 @@
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1030,6 +1030,8 @@ struct netdev_net_notifier {
+ 	struct notifier_block *nb;
+ };
+ 
++struct flow_offload_hw_path;
++
+ /*
+  * This structure defines the management hooks for network devices.
+  * The following hooks can be defined; unless noted otherwise, they are
+@@ -1571,6 +1573,7 @@ struct net_device_ops {
+ 	struct net_device *	(*ndo_get_peer_dev)(struct net_device *dev);
+ 	int                     (*ndo_fill_forward_path)(struct net_device_path_ctx *ctx,
+                                                          struct net_device_path *path);
++	int                     (*ndo_flow_offload_check)(struct flow_offload_hw_path *path);
+ };
+ 
+ /**
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -31,6 +31,7 @@ struct ppp_channel_ops {
+ 	int	(*fill_forward_path)(struct net_device_path_ctx *,
+ 				     struct net_device_path *,
+ 				     const struct ppp_channel *);
++	int	(*flow_offload_check)(struct ppp_channel *, struct flow_offload_hw_path *);
+ };
+ 
+ struct ppp_channel {
+--- /dev/null
++++ b/include/net/netfilter/nf_hnat.h
+@@ -0,0 +1,19 @@
++#define FLOW_OFFLOAD_PATH_ETHERNET	BIT(0)
++#define FLOW_OFFLOAD_PATH_VLAN		BIT(1)
++#define FLOW_OFFLOAD_PATH_PPPOE		BIT(2)
++#define FLOW_OFFLOAD_PATH_DSA		BIT(3)
++#define FLOW_OFFLOAD_PATH_DSLITE	BIT(4)
++#define FLOW_OFFLOAD_PATH_6RD		BIT(5)
++
++struct flow_offload_hw_path {
++	struct net_device *dev;
++	struct net_device *virt_dev;
++	u32 flags;
++
++	u8 eth_src[ETH_ALEN];
++	u8 eth_dest[ETH_ALEN];
++	u16 vlan_proto;
++	u16 vlan_id;
++	u16 dsa_port;
++	u16 pppoe_sid;
++};
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -52,6 +52,7 @@
+ #include <linux/nsproxy.h>
+ #include <net/net_namespace.h>
+ #include <net/netns/generic.h>
++#include <net/netfilter/nf_hnat.h>
+ 
+ #define PPP_VERSION	"2.4.2"
+ 
+@@ -1487,6 +1488,26 @@ static int ppp_fill_forward_path(struct
+ 	return chan->ops->fill_forward_path(ctx, path, chan);
+ }
+ 
++static int ppp_flow_offload_check(struct flow_offload_hw_path *path)
++{
++	struct ppp *ppp = netdev_priv(path->dev);
++	struct ppp_channel *chan;
++	struct channel *pch;
++
++	if (ppp->flags & SC_MULTILINK)
++		return -EOPNOTSUPP;
++
++	if (list_empty(&ppp->channels))
++		return -ENODEV;
++
++	pch = list_first_entry(&ppp->channels, struct channel, clist);
++	chan = pch->chan;
++	if (!chan->ops->flow_offload_check)
++		return -EOPNOTSUPP;
++
++	return chan->ops->flow_offload_check(chan, path);
++}
++
+ static const struct net_device_ops ppp_netdev_ops = {
+ 	.ndo_init	 = ppp_dev_init,
+ 	.ndo_uninit      = ppp_dev_uninit,
+@@ -1494,6 +1515,7 @@ static const struct net_device_ops ppp_n
+ 	.ndo_do_ioctl    = ppp_net_ioctl,
+ 	.ndo_get_stats64 = ppp_get_stats64,
+ 	.ndo_fill_forward_path = ppp_fill_forward_path,
++	.ndo_flow_offload_check = ppp_flow_offload_check,
+ };
+ 
+ static struct device_type ppp_type = {
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -79,6 +79,7 @@
+ #include <net/sock.h>
+ 
+ #include <linux/uaccess.h>
++#include <net/netfilter/nf_hnat.h>
+ 
+ #define PPPOE_HASH_BITS 4
+ #define PPPOE_HASH_SIZE (1 << PPPOE_HASH_BITS)
+@@ -994,9 +995,33 @@ static int pppoe_fill_forward_path(struc
+ 	return 0;
+ }
+ 
++static int pppoe_flow_offload_check(struct ppp_channel *chan,
++				     struct flow_offload_hw_path *path)
++{
++	struct sock *sk = (struct sock *)chan->private;
++	struct pppox_sock *po = pppox_sk(sk);
++	struct net_device *dev = po->pppoe_dev;
++
++	if (sock_flag(sk, SOCK_DEAD) ||
++	    !(sk->sk_state & PPPOX_CONNECTED) || !dev)
++		return -ENODEV;
++
++	path->dev = po->pppoe_dev;
++	path->flags |= FLOW_OFFLOAD_PATH_PPPOE;
++	memcpy(path->eth_src, po->pppoe_dev->dev_addr, ETH_ALEN);
++	memcpy(path->eth_dest, po->pppoe_pa.remote, ETH_ALEN);
++	path->pppoe_sid = be16_to_cpu(po->num);
++
++	if (path->dev->netdev_ops->ndo_flow_offload_check)
++		return path->dev->netdev_ops->ndo_flow_offload_check(path);
++
++	return 0;
++}
++
+ static const struct ppp_channel_ops pppoe_chan_ops = {
+ 	.start_xmit = pppoe_xmit,
+ 	.fill_forward_path = pppoe_fill_forward_path,
++	.flow_offload_check = pppoe_flow_offload_check,
+ };
+ 
+ static int pppoe_recvmsg(struct socket *sock, struct msghdr *m,
+--- a/net/dsa/slave.c
++++ b/net/dsa/slave.c
+@@ -19,6 +19,8 @@
+ #include <linux/if_bridge.h>
+ #include <linux/netpoll.h>
+ #include <linux/ptp_classify.h>
++#include <linux/netfilter.h>
++#include <net/netfilter/nf_hnat.h>
+ 
+ #include "dsa_priv.h"
+ 
+@@ -1655,6 +1657,25 @@ static int dsa_slave_fill_forward_path(s
+ 	return 0;
+ }
+ 
++static int dsa_flow_offload_check(struct flow_offload_hw_path *path)
++{
++	struct net_device *dev = path->dev;
++	struct dsa_port *dp;
++
++	if (!(path->flags & FLOW_OFFLOAD_PATH_ETHERNET))
++		return -EINVAL;
++
++	dp = dsa_slave_to_port(dev);
++	path->dsa_port = dp->index;
++	path->dev = dsa_slave_to_master(dev);
++	path->flags |= FLOW_OFFLOAD_PATH_DSA;
++
++	if (path->dev->netdev_ops->ndo_flow_offload_check)
++		return path->dev->netdev_ops->ndo_flow_offload_check(path);
++
++	return 0;
++}
++
+ static const struct net_device_ops dsa_slave_netdev_ops = {
+ 	.ndo_open	 	= dsa_slave_open,
+ 	.ndo_stop		= dsa_slave_close,
+@@ -1679,6 +1700,7 @@ static const struct net_device_ops dsa_s
+ 	.ndo_vlan_rx_add_vid	= dsa_slave_vlan_rx_add_vid,
+ 	.ndo_vlan_rx_kill_vid	= dsa_slave_vlan_rx_kill_vid,
+ 	.ndo_get_devlink_port	= dsa_slave_get_devlink_port,
++	.ndo_flow_offload_check	 = dsa_flow_offload_check,
+ 	.ndo_change_mtu		= dsa_slave_change_mtu,
+ 	.ndo_fill_forward_path	= dsa_slave_fill_forward_path,
+ };
+--- a/net/ipv6/ip6_tunnel.c
++++ b/net/ipv6/ip6_tunnel.c
+@@ -56,6 +56,7 @@
+ #include <net/net_namespace.h>
+ #include <net/netns/generic.h>
+ #include <net/dst_metadata.h>
++#include <net/netfilter/nf_hnat.h>
+ 
+ MODULE_AUTHOR("Ville Nuorvala");
+ MODULE_DESCRIPTION("IPv6 tunneling device");
+@@ -1948,6 +1949,20 @@ int ip6_tnl_change_mtu(struct net_device
+ }
+ EXPORT_SYMBOL(ip6_tnl_change_mtu);
+ 
++static int ipip6_dev_flow_offload_check(struct flow_offload_hw_path *path)
++{
++	struct net_device *dev = path->dev;
++	struct ip6_tnl *tnl = netdev_priv(dev);
++
++	if (path->flags & FLOW_OFFLOAD_PATH_DSLITE)
++		return -EEXIST;
++
++	path->flags |= FLOW_OFFLOAD_PATH_DSLITE;
++	path->dev = tnl->dev;
++
++	return 0;
++}
++
+ int ip6_tnl_get_iflink(const struct net_device *dev)
+ {
+ 	struct ip6_tnl *t = netdev_priv(dev);
+@@ -2017,6 +2032,7 @@ static const struct net_device_ops ip6_t
+ 	.ndo_change_mtu = ip6_tnl_change_mtu,
+ 	.ndo_get_stats	= ip6_get_stats,
+ 	.ndo_get_iflink = ip6_tnl_get_iflink,
++	.ndo_flow_offload_check = ipip6_dev_flow_offload_check,
+ };
+ 
+ #define IPXIPX_FEATURES (NETIF_F_SG |		\
+--- a/net/8021q/vlan_dev.c
++++ b/net/8021q/vlan_dev.c
+@@ -31,6 +31,8 @@
+ #include "vlanproc.h"
+ #include <linux/if_vlan.h>
+ #include <linux/netpoll.h>
++#include <linux/netfilter.h>
++#include <net/netfilter/nf_hnat.h>
+ 
+ /*
+  *	Create the VLAN header for an arbitrary protocol layer
+@@ -790,6 +792,25 @@ static int vlan_dev_fill_forward_path(st
+ 	return 0;
+ }
+ 
++static int vlan_dev_flow_offload_check(struct flow_offload_hw_path *path)
++{
++	struct net_device *dev = path->dev;
++	struct vlan_dev_priv *vlan = vlan_dev_priv(dev);
++
++	if (path->flags & FLOW_OFFLOAD_PATH_VLAN)
++		return -EEXIST;
++
++	path->flags |= FLOW_OFFLOAD_PATH_VLAN;
++	path->vlan_proto = vlan->vlan_proto;
++	path->vlan_id = vlan->vlan_id;
++	path->virt_dev = dev;
++	path->dev = vlan->real_dev;
++
++	if (vlan->real_dev->netdev_ops->ndo_flow_offload_check)
++		return vlan->real_dev->netdev_ops->ndo_flow_offload_check(path);
++	return 0;
++}
++
+ static const struct ethtool_ops vlan_ethtool_ops = {
+ 	.get_link_ksettings	= vlan_ethtool_get_link_ksettings,
+ 	.get_drvinfo	        = vlan_ethtool_get_drvinfo,
+@@ -829,6 +850,7 @@ static const struct net_device_ops vlan_
+ 	.ndo_fix_features	= vlan_dev_fix_features,
+ 	.ndo_get_iflink		= vlan_dev_get_iflink,
+ 	.ndo_fill_forward_path	= vlan_dev_fill_forward_path,
++	.ndo_flow_offload_check	= vlan_dev_flow_offload_check,
+ };
+ 
+ static void vlan_dev_free(struct net_device *dev)

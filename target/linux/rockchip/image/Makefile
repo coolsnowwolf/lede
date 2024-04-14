@@ -73,6 +73,10 @@ define Device/Default
   DEVICE_DTS = rockchip/$$(SOC)-$(lastword $(subst _, ,$(1)))
 endef
 
+ifndef CONFIG_LINUX_5_15
+  DTS_CPPFLAGS += -DDTS_NO_LEGACY
+endif
+
 include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

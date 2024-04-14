@@ -1,0 +1,317 @@
+From abdd0985a36189ef2cc0e393b027276e86137ace Mon Sep 17 00:00:00 2001
+From: Aditya Kumar Singh <quic_adisi@quicinc.com>
+Date: Tue, 11 Apr 2023 20:08:49 +0200
+Subject: [PATCH] ath11k: remove intersection support for regulatory rules
+
+Currently, regulatory rules from new country settings is intersected with
+rules from default country settings(during initialisation) in order to prevent
+users to bypass their default country settings such as power limits, channel
+flags, etc.
+
+However, the country setting in the BDF will take higher higher precendence
+and FW will protect it. Therefore, there is no need to handle intersection
+on the driver side now.
+
+Remove regulatory rules intersection logic support.
+
+Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/reg.c | 168 +++-----------------------
+ drivers/net/wireless/ath/ath11k/reg.h |   2 +-
+ drivers/net/wireless/ath/ath11k/wmi.c |  24 +---
+ 3 files changed, 16 insertions(+), 178 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/reg.c
++++ b/drivers/net/wireless/ath/ath11k/reg.c
+@@ -352,129 +352,6 @@ static u32 ath11k_map_fw_reg_flags(u16 r
+ 	return flags;
+ }
+ 
+-static bool
+-ath11k_reg_can_intersect(struct ieee80211_reg_rule *rule1,
+-			 struct ieee80211_reg_rule *rule2)
+-{
+-	u32 start_freq1, end_freq1;
+-	u32 start_freq2, end_freq2;
+-
+-	start_freq1 = rule1->freq_range.start_freq_khz;
+-	start_freq2 = rule2->freq_range.start_freq_khz;
+-
+-	end_freq1 = rule1->freq_range.end_freq_khz;
+-	end_freq2 = rule2->freq_range.end_freq_khz;
+-
+-	if ((start_freq1 >= start_freq2 &&
+-	     start_freq1 < end_freq2) ||
+-	    (start_freq2 > start_freq1 &&
+-	     start_freq2 < end_freq1))
+-		return true;
+-
+-	/* TODO: Should we restrict intersection feasibility
+-	 *  based on min bandwidth of the intersected region also,
+-	 *  say the intersected rule should have a  min bandwidth
+-	 * of 20MHz?
+-	 */
+-
+-	return false;
+-}
+-
+-static void ath11k_reg_intersect_rules(struct ieee80211_reg_rule *rule1,
+-				       struct ieee80211_reg_rule *rule2,
+-				       struct ieee80211_reg_rule *new_rule)
+-{
+-	u32 start_freq1, end_freq1;
+-	u32 start_freq2, end_freq2;
+-	u32 freq_diff, max_bw;
+-
+-	start_freq1 = rule1->freq_range.start_freq_khz;
+-	start_freq2 = rule2->freq_range.start_freq_khz;
+-
+-	end_freq1 = rule1->freq_range.end_freq_khz;
+-	end_freq2 = rule2->freq_range.end_freq_khz;
+-
+-	new_rule->freq_range.start_freq_khz = max_t(u32, start_freq1,
+-						    start_freq2);
+-	new_rule->freq_range.end_freq_khz = min_t(u32, end_freq1, end_freq2);
+-
+-	freq_diff = new_rule->freq_range.end_freq_khz -
+-			new_rule->freq_range.start_freq_khz;
+-	max_bw = min_t(u32, rule1->freq_range.max_bandwidth_khz,
+-		       rule2->freq_range.max_bandwidth_khz);
+-	new_rule->freq_range.max_bandwidth_khz = min_t(u32, max_bw, freq_diff);
+-
+-	new_rule->power_rule.max_antenna_gain =
+-		min_t(u32, rule1->power_rule.max_antenna_gain,
+-		      rule2->power_rule.max_antenna_gain);
+-
+-	new_rule->power_rule.max_eirp = min_t(u32, rule1->power_rule.max_eirp,
+-					      rule2->power_rule.max_eirp);
+-
+-	/* Use the flags of both the rules */
+-	new_rule->flags = rule1->flags | rule2->flags;
+-
+-	/* To be safe, lts use the max cac timeout of both rules */
+-	new_rule->dfs_cac_ms = max_t(u32, rule1->dfs_cac_ms,
+-				     rule2->dfs_cac_ms);
+-}
+-
+-static struct ieee80211_regdomain *
+-ath11k_regd_intersect(struct ieee80211_regdomain *default_regd,
+-		      struct ieee80211_regdomain *curr_regd)
+-{
+-	u8 num_old_regd_rules, num_curr_regd_rules, num_new_regd_rules;
+-	struct ieee80211_reg_rule *old_rule, *curr_rule, *new_rule;
+-	struct ieee80211_regdomain *new_regd = NULL;
+-	u8 i, j, k;
+-
+-	num_old_regd_rules = default_regd->n_reg_rules;
+-	num_curr_regd_rules = curr_regd->n_reg_rules;
+-	num_new_regd_rules = 0;
+-
+-	/* Find the number of intersecting rules to allocate new regd memory */
+-	for (i = 0; i < num_old_regd_rules; i++) {
+-		old_rule = default_regd->reg_rules + i;
+-		for (j = 0; j < num_curr_regd_rules; j++) {
+-			curr_rule = curr_regd->reg_rules + j;
+-
+-			if (ath11k_reg_can_intersect(old_rule, curr_rule))
+-				num_new_regd_rules++;
+-		}
+-	}
+-
+-	if (!num_new_regd_rules)
+-		return NULL;
+-
+-	new_regd = kzalloc(sizeof(*new_regd) + (num_new_regd_rules *
+-			sizeof(struct ieee80211_reg_rule)),
+-			GFP_ATOMIC);
+-
+-	if (!new_regd)
+-		return NULL;
+-
+-	/* We set the new country and dfs region directly and only trim
+-	 * the freq, power, antenna gain by intersecting with the
+-	 * default regdomain. Also MAX of the dfs cac timeout is selected.
+-	 */
+-	new_regd->n_reg_rules = num_new_regd_rules;
+-	memcpy(new_regd->alpha2, curr_regd->alpha2, sizeof(new_regd->alpha2));
+-	new_regd->dfs_region = curr_regd->dfs_region;
+-	new_rule = new_regd->reg_rules;
+-
+-	for (i = 0, k = 0; i < num_old_regd_rules; i++) {
+-		old_rule = default_regd->reg_rules + i;
+-		for (j = 0; j < num_curr_regd_rules; j++) {
+-			curr_rule = curr_regd->reg_rules + j;
+-
+-			if (ath11k_reg_can_intersect(old_rule, curr_rule))
+-				ath11k_reg_intersect_rules(old_rule, curr_rule,
+-							   (new_rule + k++));
+-		}
+-	}
+-	return new_regd;
+-}
+-
+ static const char *
+ ath11k_reg_get_regdom_str(enum nl80211_dfs_regions dfs_region)
+ {
+@@ -609,9 +486,9 @@ ath11k_reg_update_weather_radar_band(str
+ 
+ struct ieee80211_regdomain *
+ ath11k_reg_build_regd(struct ath11k_base *ab,
+-		      struct cur_regulatory_info *reg_info, bool intersect)
++		      struct cur_regulatory_info *reg_info)
+ {
+-	struct ieee80211_regdomain *tmp_regd, *default_regd, *new_regd = NULL;
++	struct ieee80211_regdomain *new_regd = NULL;
+ 	struct cur_reg_rule *reg_rule;
+ 	u8 i = 0, j = 0, k = 0;
+ 	u8 num_rules;
+@@ -628,26 +505,26 @@ ath11k_reg_build_regd(struct ath11k_base
+ 		num_rules += reg_info->num_6ghz_rules_ap[WMI_REG_INDOOR_AP];
+ 
+ 	if (!num_rules)
+-		goto ret;
++		return new_regd;
+ 
+ 	/* Add max additional rules to accommodate weather radar band */
+ 	if (reg_info->dfs_region == ATH11K_DFS_REG_ETSI)
+ 		num_rules += 2;
+ 
+-	tmp_regd =  kzalloc(sizeof(*tmp_regd) +
++	new_regd =  kzalloc(sizeof(*new_regd) +
+ 			(num_rules * sizeof(struct ieee80211_reg_rule)),
+ 			GFP_ATOMIC);
+-	if (!tmp_regd)
+-		goto ret;
++	if (!new_regd)
++		return new_regd;
+ 
+-	memcpy(tmp_regd->alpha2, reg_info->alpha2, REG_ALPHA2_LEN + 1);
++	memcpy(new_regd->alpha2, reg_info->alpha2, REG_ALPHA2_LEN + 1);
+ 	memcpy(alpha2, reg_info->alpha2, REG_ALPHA2_LEN + 1);
+ 	alpha2[2] = '\0';
+-	tmp_regd->dfs_region = ath11k_map_fw_dfs_region(reg_info->dfs_region);
++	new_regd->dfs_region = ath11k_map_fw_dfs_region(reg_info->dfs_region);
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_REG,
+ 		   "Country %s, CFG Regdomain %s FW Regdomain %d, num_reg_rules %d\n",
+-		   alpha2, ath11k_reg_get_regdom_str(tmp_regd->dfs_region),
++		   alpha2, ath11k_reg_get_regdom_str(new_regd->dfs_region),
+ 		   reg_info->dfs_region, num_rules);
+ 	/* Update reg_rules[] below. Firmware is expected to
+ 	 * send these rules in order(2 GHz rules first and then 5 GHz)
+@@ -686,7 +563,7 @@ ath11k_reg_build_regd(struct ath11k_base
+ 
+ 		flags |= ath11k_map_fw_reg_flags(reg_rule->flags);
+ 
+-		ath11k_reg_update_rule(tmp_regd->reg_rules + i,
++		ath11k_reg_update_rule(new_regd->reg_rules + i,
+ 				       reg_rule->start_freq,
+ 				       reg_rule->end_freq, max_bw,
+ 				       reg_rule->ant_gain, reg_rule->reg_power,
+@@ -701,7 +578,7 @@ ath11k_reg_build_regd(struct ath11k_base
+ 		    reg_info->dfs_region == ATH11K_DFS_REG_ETSI &&
+ 		    (reg_rule->end_freq > ETSI_WEATHER_RADAR_BAND_LOW &&
+ 		    reg_rule->start_freq < ETSI_WEATHER_RADAR_BAND_HIGH)){
+-			ath11k_reg_update_weather_radar_band(ab, tmp_regd,
++			ath11k_reg_update_weather_radar_band(ab, new_regd,
+ 							     reg_rule, &i,
+ 							     flags, max_bw);
+ 			continue;
+@@ -712,37 +589,20 @@ ath11k_reg_build_regd(struct ath11k_base
+ 				   "\t%d. (%d - %d @ %d) (%d, %d) (%d ms) (FLAGS %d) (%d, %d)\n",
+ 				   i + 1, reg_rule->start_freq, reg_rule->end_freq,
+ 				   max_bw, reg_rule->ant_gain, reg_rule->reg_power,
+-				   tmp_regd->reg_rules[i].dfs_cac_ms, flags,
++				   new_regd->reg_rules[i].dfs_cac_ms, flags,
+ 				   reg_rule->psd_flag, reg_rule->psd_eirp);
+ 		} else {
+ 			ath11k_dbg(ab, ATH11K_DBG_REG,
+ 				   "\t%d. (%d - %d @ %d) (%d, %d) (%d ms) (FLAGS %d)\n",
+ 				   i + 1, reg_rule->start_freq, reg_rule->end_freq,
+ 				   max_bw, reg_rule->ant_gain, reg_rule->reg_power,
+-				   tmp_regd->reg_rules[i].dfs_cac_ms,
++				   new_regd->reg_rules[i].dfs_cac_ms,
+ 				   flags);
+ 		}
+ 	}
+ 
+-	tmp_regd->n_reg_rules = i;
+-
+-	if (intersect) {
+-		default_regd = ab->default_regd[reg_info->phy_id];
+-
+-		/* Get a new regd by intersecting the received regd with
+-		 * our default regd.
+-		 */
+-		new_regd = ath11k_regd_intersect(default_regd, tmp_regd);
+-		kfree(tmp_regd);
+-		if (!new_regd) {
+-			ath11k_warn(ab, "Unable to create intersected regdomain\n");
+-			goto ret;
+-		}
+-	} else {
+-		new_regd = tmp_regd;
+-	}
++	new_regd->n_reg_rules = i;
+ 
+-ret:
+ 	return new_regd;
+ }
+ 
+--- a/drivers/net/wireless/ath/ath11k/reg.h
++++ b/drivers/net/wireless/ath/ath11k/reg.h
+@@ -30,7 +30,7 @@ void ath11k_reg_free(struct ath11k_base
+ void ath11k_regd_update_work(struct work_struct *work);
+ struct ieee80211_regdomain *
+ ath11k_reg_build_regd(struct ath11k_base *ab,
+-		      struct cur_regulatory_info *reg_info, bool intersect);
++		      struct cur_regulatory_info *reg_info);
+ int ath11k_regd_update(struct ath11k *ar);
+ int ath11k_reg_update_chan_list(struct ath11k *ar, bool wait);
+ #endif
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -6996,24 +6996,12 @@ static void ath11k_wmi_htc_tx_complete(s
+ 		wake_up(&wmi->tx_ce_desc_wq);
+ }
+ 
+-static bool ath11k_reg_is_world_alpha(char *alpha)
+-{
+-	if (alpha[0] == '0' && alpha[1] == '0')
+-		return true;
+-
+-	if (alpha[0] == 'n' && alpha[1] == 'a')
+-		return true;
+-
+-	return false;
+-}
+-
+ static int ath11k_reg_chan_list_event(struct ath11k_base *ab,
+ 				      struct sk_buff *skb,
+ 				      enum wmi_reg_chan_list_cmd_type id)
+ {
+ 	struct cur_regulatory_info *reg_info = NULL;
+ 	struct ieee80211_regdomain *regd = NULL;
+-	bool intersect = false;
+ 	int ret = 0, pdev_idx, i, j;
+ 	struct ath11k *ar;
+ 
+@@ -7075,17 +7063,7 @@ static int ath11k_reg_chan_list_event(st
+ 		    (char *)reg_info->alpha2, 2))
+ 		goto mem_free;
+ 
+-	/* Intersect new rules with default regd if a new country setting was
+-	 * requested, i.e a default regd was already set during initialization
+-	 * and the regd coming from this event has a valid country info.
+-	 */
+-	if (ab->default_regd[pdev_idx] &&
+-	    !ath11k_reg_is_world_alpha((char *)
+-		ab->default_regd[pdev_idx]->alpha2) &&
+-	    !ath11k_reg_is_world_alpha((char *)reg_info->alpha2))
+-		intersect = true;
+-
+-	regd = ath11k_reg_build_regd(ab, reg_info, intersect);
++	regd = ath11k_reg_build_regd(ab, reg_info);
+ 	if (!regd) {
+ 		ath11k_warn(ab, "failed to build regd from reg_info\n");
+ 		goto fallback;

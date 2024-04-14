@@ -1,39 +1,45 @@
-#!/bin/sh
+#!/usr/bin/lua
+-- Copyright (C) 2022 ImmortalWrt.org
 
-a=$(ls /sys/class/net/*/device/uevent | awk -F '/' '{print $5}')
-b=$(echo "$a" | wc -l)
-rm -f /tmp/state/ethinfo
+local util = require "luci.util"
+local jsonc = require "luci.jsonc"
 
-echo -n "[" > /tmp/state/ethinfo
+local eth_info = {}
+local ifname, stat
 
-for i in $(seq 1 $b)
-do
-	h=$(echo '{"name":' )
-	c=$(echo "$a" | sed -n ${i}p)
-	d=$(ethtool $c)
+for ifname, stat in pairs(util.ubus("network.device", "status")) do
+	while true do
+		if (ifname:match("^(br-.+)$")) == ifname then
+			break
+		else
+			local status, speed, duplex
 
-	e=$(echo "$d" | grep "Link detected" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-	if [ $e = yes ]; then
-		l=1
-	else
-		l=0
-	fi
+			if(stat.speed ~= nil) then
+				status = stat.carrier and 1 or 0
 
-	f=$(echo "$d" | grep "Speed" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g' | tr -d "Unknown!")
-	[ -z "$f" ] && f=" - "
+				if stat.speed:sub(1, 1) == "-" then
+					speed = " - "
+				else
+					speed = stat.speed:sub(1, -2) .. "Mb/s"
+				end
 
-	g=$(echo "$d" | grep "Duplex" | awk -F: '{printf $2}' | sed 's/^[ \t]*//g')
-	if [ "$g" == "Full" ]; then
-		x=1
-	else
-		x=0
-	fi
+				if stat.carrier and stat.speed:sub(-1) == "F" then
+					duplex = 1
+				else
+					duplex = 0
+				end
 
-	echo -n "$h \"$c\", \"status\": $l, \"speed\": \"$f\", \"duplex\": $x}," >> /tmp/state/ethinfo
-done
+				eth_info[#eth_info+1] = { name = ifname, status = status,
+							speed = speed, duplex = duplex }
+			end
+			break
+		end
+	end
+end
 
-sed -i 's/.$//' /tmp/state/ethinfo
+table.sort(eth_info,
+	function(a, b)
+		return a.name < b.name
+	end)
 
-echo -n "]" >> /tmp/state/ethinfo
-
-cat /tmp/state/ethinfo
+print(jsonc.stringify(eth_info))

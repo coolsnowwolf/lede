@@ -273,17 +273,63 @@ static int mt753x_get_port_link(struct switch_dev *dev, int port,
 	return 0;
 }
 
-static int mt753x_set_port_link(struct switch_dev *dev, int port,
+static int mt753x_set_port_link(struct switch_dev *sw_dev, int port,
 				struct switch_port_link *link)
 {
-#ifndef MODULE
-	if (port >= MT753X_NUM_PHYS)
+	if (port < 0 || port >= MT753X_NUM_PHYS)
 		return -EINVAL;
 
-	return switch_generic_set_link(dev, port, link);
-#else
-	return -ENOTSUPP;
-#endif
+	/* Setup autoneg advertise here */
+	if (link->aneg) {
+		u16 bmsr, adv, gctrl;
+		bool ercap;
+
+		sw_dev->ops->phy_read16(sw_dev, port, MII_BMSR, &bmsr);
+		/* ERCAP means we have MII_CTRL1000 register */
+		ercap = !!(bmsr | BMSR_ERCAP);
+
+		adv = ADVERTISE_CSMA | ADVERTISE_PAUSE_CAP | ADVERTISE_PAUSE_ASYM;
+		gctrl = CTL1000_ENABLE_MASTER;
+
+		switch (link->speed) {
+		case SWITCH_PORT_SPEED_10:
+			if (link->duplex)
+				adv |= ADVERTISE_10FULL;
+			else
+				adv |= ADVERTISE_10HALF;
+			break;
+		case SWITCH_PORT_SPEED_100:
+			if (link->duplex)
+				adv |= ADVERTISE_100FULL;
+			else
+				adv |= ADVERTISE_100HALF;
+			break;
+		case SWITCH_PORT_SPEED_1000:
+			if (!ercap || !link->duplex)
+				return -ENOTSUPP;
+			/* PHY only supports 1000FULL */
+			gctrl |= ADVERTISE_1000FULL;
+			break;
+		default:
+			/* For unknown input speed just enable all speed grades */
+			if (link->duplex) {
+				adv |= ADVERTISE_FULL;
+				gctrl |= ADVERTISE_1000FULL;
+			} else {
+				adv |= ADVERTISE_10HALF | ADVERTISE_100HALF;
+				gctrl = 0x0;
+			}
+			break;
+		}
+
+		sw_dev->ops->phy_write16(sw_dev, port, MII_ADVERTISE, adv);
+		if (ercap)
+			sw_dev->ops->phy_write16(sw_dev, port, MII_CTRL1000, gctrl);
+		/* Autoneg restart will be triggered in switch_generic_set_link */
+	}
+
+	/* Let switch_generic_set_link handle not autoneg case */
+	return switch_generic_set_link(sw_dev, port, link);
 }
 
 static u64 get_mib_counter(struct gsw_mt753x *gsw, int i, int port)

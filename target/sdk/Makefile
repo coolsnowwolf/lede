@@ -82,6 +82,18 @@ KERNEL_FILES_BASE := \
 
 KERNEL_FILES := $(patsubst $(TOPDIR)/%,%,$(wildcard $(addprefix $(LINUX_DIR)/,$(KERNEL_FILES_BASE))))
 
+# The kernel source hosts various userspace utilities sources.
+# These are packaged separately from the kernel and kernel modules.
+# The source has to be included here to be buildable by the SDK.
+#
+USERSPACE_UTILS_FILES := \
+	tools/build \
+	tools/scripts \
+	tools/usb/usbip \
+	tools/spi
+
+USERSPACE_FILES := $(patsubst $(TOPDIR)/%,%,$(wildcard $(addprefix $(LINUX_DIR)/,$(USERSPACE_UTILS_FILES))))
+
 all: compile
 
 $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
@@ -100,8 +112,7 @@ $(BIN_DIR)/$(SDK_NAME).tar.xz: clean
 		$(SDK_DIRS) $(KERNEL_FILES) | \
 		$(TAR) -xf - -C $(SDK_BUILD_DIR)
 
-	# Copy usbip sources, this is required for the usbip userspace packages to be buildable by the SDK.
-	$(TAR) -cf - -C $(TOPDIR) $(KDIR_BASE)/tools/usb/usbip/ | \
+	$(TAR) -cf - -C $(TOPDIR) $(USERSPACE_FILES) | \
 		$(TAR) -xf - -C $(SDK_BUILD_DIR)
 
 	(cd $(SDK_BUILD_DIR); find $(STAGING_SUBDIR_HOST)/bin $(STAGING_SUBDIR_HOST)/usr/bin \

@@ -135,8 +135,10 @@ define KernelPackage/nls-cp932
   SUBMENU:=Native Language Support
   TITLE:=Codepage 932 (Japanese)
   KCONFIG:=CONFIG_NLS_CODEPAGE_932
-  FILES:=$(LINUX_DIR)/fs/nls/nls_cp932.ko
-  AUTOLOAD:=$(call AutoLoad,25,nls_cp932)
+  FILES:= \
+	$(LINUX_DIR)/fs/nls/nls_cp932.ko \
+	$(LINUX_DIR)/fs/nls/nls_euc-jp.ko
+  AUTOLOAD:=$(call AutoLoad,25,nls_cp932 nls_euc-jp)
   $(call AddDepends/nls)
 endef
 
@@ -337,3 +339,19 @@ define KernelPackage/nls-utf8/description
 endef
 
 $(eval $(call KernelPackage,nls-utf8))
+
+define KernelPackage/nls-ucs2-utils
+  SUBMENU:=Native Language Support
+  TITLE:=UCS-2 common library
+  DEPENDS+=@LINUX_6_6
+  HIDDEN:=1
+  KCONFIG:=CONFIG_NLS_UCS2_UTILS
+  FILES:=$(LINUX_DIR)/fs/nls/nls_ucs2_utils.ko
+  $(call AddDepends/nls)
+endef
+
+define KernelPackage/nls-ucs2-utils/description
+ UCS-2 common library
+endef
+
+$(eval $(call KernelPackage,nls-ucs2-utils))

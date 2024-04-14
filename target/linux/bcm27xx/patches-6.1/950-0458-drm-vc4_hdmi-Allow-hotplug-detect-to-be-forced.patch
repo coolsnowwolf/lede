@@ -1,0 +1,58 @@
+From d75b03d83ecc46b2f0ea13b7934cf3a093914388 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 1 Jun 2022 15:43:51 +0100
+Subject: [PATCH] drm/vc4_hdmi: Allow hotplug detect to be forced
+
+See: https://forum.libreelec.tv/thread/24783-tv-avr-turns-back-on-right-after-turning-them-off
+
+While the kernel provides a :D flag for assuming device is connected,
+it doesn't stop this function from being called and generating a cec_phys_addr_invalidate
+message when hotplug is deasserted.
+
+That message provokes a flurry of CEC messages which for many users results in the TV
+switching back on again and it's very hard to get it to stay switched off.
+
+It seems to only occur with an AVR and TV connected but has been observed across a
+number of manufacturers.
+
+The issue started with https://github.com/raspberrypi/linux/pull/4371
+and this provides an optional way of getting back the old behaviour
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -41,6 +41,8 @@
+ #include <linux/component.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/moduleparam.h>
+ #include <linux/of_address.h>
+ #include <linux/of_platform.h>
+ #include <linux/pm_runtime.h>
+@@ -113,6 +115,10 @@
+ 
+ #define HDMI_14_MAX_TMDS_CLK   (340 * 1000 * 1000)
+ 
++/* bit field to force hotplug detection. bit0 = HDMI0 */
++static int force_hotplug = 0;
++module_param(force_hotplug, int, 0644);
++
+ static const char * const output_format_str[] = {
+ 	[VC4_HDMI_OUTPUT_RGB]		= "RGB",
+ 	[VC4_HDMI_OUTPUT_YUV420]	= "YUV 4:2:0",
+@@ -475,7 +481,9 @@ static int vc4_hdmi_connector_detect_ctx
+ 
+ 	WARN_ON(pm_runtime_resume_and_get(&vc4_hdmi->pdev->dev));
+ 
+-	if (vc4_hdmi->hpd_gpio) {
++	if (force_hotplug & BIT(vc4_hdmi->encoder.type - VC4_ENCODER_TYPE_HDMI0))
++		status = connector_status_connected;
++	else if (vc4_hdmi->hpd_gpio) {
+ 		if (gpiod_get_value_cansleep(vc4_hdmi->hpd_gpio))
+ 			status = connector_status_connected;
+ 	} else {

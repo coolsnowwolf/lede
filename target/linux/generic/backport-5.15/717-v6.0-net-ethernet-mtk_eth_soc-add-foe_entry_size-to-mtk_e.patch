@@ -1,0 +1,251 @@
+From e3c27d869fccc1f2b8d0b4cde4763ab223874e8c Mon Sep 17 00:00:00 2001
+Message-Id: <e3c27d869fccc1f2b8d0b4cde4763ab223874e8c.1662243796.git.lorenzo@kernel.org>
+In-Reply-To: <43a21841ce0175d29f23c34a65ceaaf9dd7eb8b7.1662243796.git.lorenzo@kernel.org>
+References: <43a21841ce0175d29f23c34a65ceaaf9dd7eb8b7.1662243796.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sun, 21 Aug 2022 17:51:17 +0200
+Subject: [PATCH net-next 3/4] net: ethernet: mtk_eth_soc: add foe_entry_size
+ to mtk_eth_soc
+
+Introduce foe_entry_size to mtk_eth_soc data structure since mt7986
+relies on a bigger mtk_foe_entry data structure.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c   |  3 +
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h   | 10 ++++
+ drivers/net/ethernet/mediatek/mtk_ppe.c       | 55 +++++++++++--------
+ drivers/net/ethernet/mediatek/mtk_ppe.h       |  2 +-
+ .../net/ethernet/mediatek/mtk_ppe_debugfs.c   |  2 +-
+ 5 files changed, 48 insertions(+), 24 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -4163,6 +4163,7 @@ static const struct mtk_soc_data mt7621_
+ 	.required_pctl = false,
+ 	.offload_version = 2,
+ 	.hash_offset = 2,
++	.foe_entry_size = sizeof(struct mtk_foe_entry),
+ 	.txrx = {
+ 		.txd_size = sizeof(struct mtk_tx_dma),
+ 		.rxd_size = sizeof(struct mtk_rx_dma),
+@@ -4182,6 +4183,7 @@ static const struct mtk_soc_data mt7622_
+ 	.required_pctl = false,
+ 	.offload_version = 2,
+ 	.hash_offset = 2,
++	.foe_entry_size = sizeof(struct mtk_foe_entry),
+ 	.txrx = {
+ 		.txd_size = sizeof(struct mtk_tx_dma),
+ 		.rxd_size = sizeof(struct mtk_rx_dma),
+@@ -4200,6 +4202,7 @@ static const struct mtk_soc_data mt7623_
+ 	.required_pctl = true,
+ 	.offload_version = 2,
+ 	.hash_offset = 2,
++	.foe_entry_size = sizeof(struct mtk_foe_entry),
+ 	.txrx = {
+ 		.txd_size = sizeof(struct mtk_tx_dma),
+ 		.rxd_size = sizeof(struct mtk_rx_dma),
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -966,6 +966,7 @@ struct mtk_reg_map {
+  * @required_pctl		A bool value to show whether the SoC requires
+  *				the extra setup for those pins used by GMAC.
+  * @hash_offset			Flow table hash offset.
++ * @foe_entry_size		Foe table entry size.
+  * @txd_size			Tx DMA descriptor size.
+  * @rxd_size			Rx DMA descriptor size.
+  * @rx_irq_done_mask		Rx irq done register mask.
+@@ -981,6 +982,7 @@ struct mtk_soc_data {
+ 	bool		required_pctl;
+ 	u8		offload_version;
+ 	u8		hash_offset;
++	u16		foe_entry_size;
+ 	netdev_features_t hw_features;
+ 	struct {
+ 		u32	txd_size;
+@@ -1141,6 +1143,14 @@ struct mtk_mac {
+ /* the struct describing the SoC. these are declared in the soc_xyz.c files */
+ extern const struct of_device_id of_mtk_match[];
+ 
++static inline struct mtk_foe_entry *
++mtk_foe_get_entry(struct mtk_ppe *ppe, u16 hash)
++{
++	const struct mtk_soc_data *soc = ppe->eth->soc;
++
++	return ppe->foe_table + hash * soc->foe_entry_size;
++}
++
+ /* read the hardware status register */
+ void mtk_stats_update_mac(struct mtk_mac *mac);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -410,9 +410,10 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
+ 
+ 	hlist_del_init(&entry->list);
+ 	if (entry->hash != 0xffff) {
+-		ppe->foe_table[entry->hash].ib1 &= ~MTK_FOE_IB1_STATE;
+-		ppe->foe_table[entry->hash].ib1 |= FIELD_PREP(MTK_FOE_IB1_STATE,
+-							      MTK_FOE_STATE_BIND);
++		struct mtk_foe_entry *hwe = mtk_foe_get_entry(ppe, entry->hash);
++
++		hwe->ib1 &= ~MTK_FOE_IB1_STATE;
++		hwe->ib1 |= FIELD_PREP(MTK_FOE_IB1_STATE, MTK_FOE_STATE_BIND);
+ 		dma_wmb();
+ 	}
+ 	entry->hash = 0xffff;
+@@ -451,7 +452,7 @@ mtk_flow_entry_update_l2(struct mtk_ppe
+ 		int cur_idle;
+ 		u32 ib1;
+ 
+-		hwe = &ppe->foe_table[cur->hash];
++		hwe = mtk_foe_get_entry(ppe, cur->hash);
+ 		ib1 = READ_ONCE(hwe->ib1);
+ 
+ 		if (FIELD_GET(MTK_FOE_IB1_STATE, ib1) != MTK_FOE_STATE_BIND) {
+@@ -473,8 +474,8 @@ mtk_flow_entry_update_l2(struct mtk_ppe
+ static void
+ mtk_flow_entry_update(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
+ {
++	struct mtk_foe_entry foe = {};
+ 	struct mtk_foe_entry *hwe;
+-	struct mtk_foe_entry foe;
+ 
+ 	spin_lock_bh(&ppe_lock);
+ 
+@@ -486,8 +487,8 @@ mtk_flow_entry_update(struct mtk_ppe *pp
+ 	if (entry->hash == 0xffff)
+ 		goto out;
+ 
+-	hwe = &ppe->foe_table[entry->hash];
+-	memcpy(&foe, hwe, sizeof(foe));
++	hwe = mtk_foe_get_entry(ppe, entry->hash);
++	memcpy(&foe, hwe, ppe->eth->soc->foe_entry_size);
+ 	if (!mtk_flow_entry_match(entry, &foe)) {
+ 		entry->hash = 0xffff;
+ 		goto out;
+@@ -511,8 +512,8 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
+ 	entry->ib1 &= ~MTK_FOE_IB1_BIND_TIMESTAMP;
+ 	entry->ib1 |= FIELD_PREP(MTK_FOE_IB1_BIND_TIMESTAMP, timestamp);
+ 
+-	hwe = &ppe->foe_table[hash];
+-	memcpy(&hwe->data, &entry->data, sizeof(hwe->data));
++	hwe = mtk_foe_get_entry(ppe, hash);
++	memcpy(&hwe->data, &entry->data, ppe->eth->soc->foe_entry_size);
+ 	wmb();
+ 	hwe->ib1 = entry->ib1;
+ 
+@@ -561,7 +562,7 @@ mtk_foe_entry_commit_subflow(struct mtk_
+ {
+ 	const struct mtk_soc_data *soc = ppe->eth->soc;
+ 	struct mtk_flow_entry *flow_info;
+-	struct mtk_foe_entry foe, *hwe;
++	struct mtk_foe_entry foe = {}, *hwe;
+ 	struct mtk_foe_mac_info *l2;
+ 	u32 ib1_mask = MTK_FOE_IB1_PACKET_TYPE | MTK_FOE_IB1_UDP;
+ 	int type;
+@@ -578,8 +579,8 @@ mtk_foe_entry_commit_subflow(struct mtk_
+ 		       &ppe->foe_flow[hash / soc->hash_offset]);
+ 	hlist_add_head(&flow_info->l2_data.list, &entry->l2_flows);
+ 
+-	hwe = &ppe->foe_table[hash];
+-	memcpy(&foe, hwe, sizeof(foe));
++	hwe = mtk_foe_get_entry(ppe, hash);
++	memcpy(&foe, hwe, soc->foe_entry_size);
+ 	foe.ib1 &= ib1_mask;
+ 	foe.ib1 |= entry->data.ib1 & ~ib1_mask;
+ 
+@@ -601,7 +602,7 @@ void __mtk_ppe_check_skb(struct mtk_ppe
+ {
+ 	const struct mtk_soc_data *soc = ppe->eth->soc;
+ 	struct hlist_head *head = &ppe->foe_flow[hash / soc->hash_offset];
+-	struct mtk_foe_entry *hwe = &ppe->foe_table[hash];
++	struct mtk_foe_entry *hwe = mtk_foe_get_entry(ppe, hash);
+ 	struct mtk_flow_entry *entry;
+ 	struct mtk_foe_bridge key = {};
+ 	struct hlist_node *n;
+@@ -686,9 +687,9 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ {
+ 	const struct mtk_soc_data *soc = eth->soc;
+ 	struct device *dev = eth->dev;
+-	struct mtk_foe_entry *foe;
+ 	struct mtk_ppe *ppe;
+ 	u32 foe_flow_size;
++	void *foe;
+ 
+ 	ppe = devm_kzalloc(dev, sizeof(*ppe), GFP_KERNEL);
+ 	if (!ppe)
+@@ -704,7 +705,8 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ 	ppe->dev = dev;
+ 	ppe->version = version;
+ 
+-	foe = dmam_alloc_coherent(ppe->dev, MTK_PPE_ENTRIES * sizeof(*foe),
++	foe = dmam_alloc_coherent(ppe->dev,
++				  MTK_PPE_ENTRIES * soc->foe_entry_size,
+ 				  &ppe->foe_phys, GFP_KERNEL);
+ 	if (!foe)
+ 		return NULL;
+@@ -727,15 +729,21 @@ static void mtk_ppe_init_foe_table(struc
+ 	static const u8 skip[] = { 12, 25, 38, 51, 76, 89, 102 };
+ 	int i, k;
+ 
+-	memset(ppe->foe_table, 0, MTK_PPE_ENTRIES * sizeof(*ppe->foe_table));
++	memset(ppe->foe_table, 0,
++	       MTK_PPE_ENTRIES * ppe->eth->soc->foe_entry_size);
+ 
+ 	if (!IS_ENABLED(CONFIG_SOC_MT7621))
+ 		return;
+ 
+ 	/* skip all entries that cross the 1024 byte boundary */
+-	for (i = 0; i < MTK_PPE_ENTRIES; i += 128)
+-		for (k = 0; k < ARRAY_SIZE(skip); k++)
+-			ppe->foe_table[i + skip[k]].ib1 |= MTK_FOE_IB1_STATIC;
++	for (i = 0; i < MTK_PPE_ENTRIES; i += 128) {
++		for (k = 0; k < ARRAY_SIZE(skip); k++) {
++			struct mtk_foe_entry *hwe;
++
++			hwe = mtk_foe_get_entry(ppe, i + skip[k]);
++			hwe->ib1 |= MTK_FOE_IB1_STATIC;
++		}
++	}
+ }
+ 
+ void mtk_ppe_start(struct mtk_ppe *ppe)
+@@ -822,9 +830,12 @@ int mtk_ppe_stop(struct mtk_ppe *ppe)
+ 	if (!ppe)
+ 		return 0;
+ 
+-	for (i = 0; i < MTK_PPE_ENTRIES; i++)
+-		ppe->foe_table[i].ib1 = FIELD_PREP(MTK_FOE_IB1_STATE,
+-						   MTK_FOE_STATE_INVALID);
++	for (i = 0; i < MTK_PPE_ENTRIES; i++) {
++		struct mtk_foe_entry *hwe = mtk_foe_get_entry(ppe, i);
++
++		hwe->ib1 = FIELD_PREP(MTK_FOE_IB1_STATE,
++				      MTK_FOE_STATE_INVALID);
++	}
+ 
+ 	mtk_ppe_cache_enable(ppe, false);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -268,7 +268,7 @@ struct mtk_ppe {
+ 	int version;
+ 	char dirname[5];
+ 
+-	struct mtk_foe_entry *foe_table;
++	void *foe_table;
+ 	dma_addr_t foe_phys;
+ 
+ 	u16 foe_check_time[MTK_PPE_ENTRIES];
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+@@ -79,7 +79,7 @@ mtk_ppe_debugfs_foe_show(struct seq_file
+ 	int i;
+ 
+ 	for (i = 0; i < MTK_PPE_ENTRIES; i++) {
+-		struct mtk_foe_entry *entry = &ppe->foe_table[i];
++		struct mtk_foe_entry *entry = mtk_foe_get_entry(ppe, i);
+ 		struct mtk_foe_mac_info *l2;
+ 		struct mtk_flow_addr_info ai = {};
+ 		unsigned char h_source[ETH_ALEN];

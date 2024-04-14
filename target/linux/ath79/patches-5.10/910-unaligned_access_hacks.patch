@@ -1,3 +1,47 @@
+From: Felix Fietkau <nbd@openwrt.org>
+Subject: [PATCH] ar71xx: fix unaligned access in a few more places
+
+SVN-Revision: 35130
+---
+ arch/mips/include/asm/checksum.h              | 83 +++---------------
+ include/uapi/linux/ip.h                       |  2 +-
+ include/uapi/linux/ipv6.h                     |  2 +-
+ include/uapi/linux/tcp.h                      |  4 ++--
+ include/uapi/linux/udp.h                      |  2 +-
+ net/netfilter/nf_conntrack_core.c             |  4 ++--
+ include/uapi/linux/icmp.h                     |  2 +-
+ include/uapi/linux/in6.h                      |  2 +-
+ net/ipv6/tcp_ipv6.c                           |  9 +++--
+ net/ipv6/datagram.c                           |  6 ++--
+ net/ipv6/exthdrs.c                            |  2 +-
+ include/linux/types.h                         |  5 +++
+ net/ipv4/af_inet.c                            |  4 ++--
+ net/ipv4/tcp_output.c                         | 69 +++++++++--------
+ include/uapi/linux/igmp.h                     |  8 +++---
+ net/core/flow_dissector.c                     |  2 +-
+ include/uapi/linux/icmpv6.h                   |  2 +-
+ include/net/ndisc.h                           | 10 ++++----
+ net/sched/cls_u32.c                           |  6 +++---
+ net/ipv6/ip6_offload.c                        |  2 +-
+ include/net/addrconf.h                        |  2 +-
+ include/net/inet_ecn.h                        |  4 ++--
+ include/net/ipv6.h                            | 23 +++++----
+ include/net/secure_seq.h                      |  1 +
+ include/uapi/linux/in.h                       |  2 +-
+ net/ipv6/ip6_fib.h                            |  2 +-
+ net/netfilter/nf_conntrack_proto_tcp.c        |  2 +-
+ net/xfrm/xfrm_input.c                         |  4 ++--
+ net/ipv4/tcp_input.c                          | 12 ++++---
+ include/uapi/linux/if_pppox.h                 |  1 +
+ net/ipv6/netfilter/nf_log_ipv6.c              |  4 ++--
+ include/net/neighbour.h                       |  6 +++--
+ include/uapi/linux/netfilter_arp/arp_tables.h |  2 +-
+ net/core/utils.c                              | 10 +++++--
+ include/linux/etherdevice.h                   | 11 ++++---
+ net/ipv4/tcp_offload.c                        |  6 +++---
+ net/ipv6/netfilter/ip6table_mangle.c          |  4 ++--
+ 37 file changed, 171 insertions(+), 141 deletions(-)
+
 --- a/arch/mips/include/asm/checksum.h
 +++ b/arch/mips/include/asm/checksum.h
 @@ -100,26 +100,30 @@ static inline __sum16 ip_fast_csum(const
@@ -42,7 +86,7 @@
  	} while (word != stop);
  
  	return csum_fold(csum);
-@@ -180,73 +184,6 @@ static inline __sum16 ip_compute_csum(co
+@@ -180,74 +184,6 @@ static inline __sum16 ip_compute_csum(co
  	return csum_fold(csum_partial(buff, len, 0));
  }
  
@@ -108,7 +152,8 @@
 -	"	.set	pop"
 -	: "=&r" (sum), "=&r" (tmp)
 -	: "r" (saddr), "r" (daddr),
--	  "0" (htonl(len)), "r" (htonl(proto)), "r" (sum));
+-	  "0" (htonl(len)), "r" (htonl(proto)), "r" (sum)
+-	: "memory");
 -
 -	return csum_fold(sum);
 -}
@@ -118,9 +163,9 @@
  
 --- a/include/uapi/linux/ip.h
 +++ b/include/uapi/linux/ip.h
-@@ -103,7 +103,7 @@ struct iphdr {
- 	__be32	saddr;
- 	__be32	daddr;
+@@ -106,7 +106,7 @@ struct iphdr {
+ 		__be32	daddr;
+ 	);
  	/*The options start here. */
 -};
 +} __attribute__((packed, aligned(2)));
@@ -129,10 +174,10 @@
  struct ip_auth_hdr {
 --- a/include/uapi/linux/ipv6.h
 +++ b/include/uapi/linux/ipv6.h
-@@ -132,7 +132,7 @@ struct ipv6hdr {
- 
- 	struct	in6_addr	saddr;
- 	struct	in6_addr	daddr;
+@@ -135,7 +135,7 @@ struct ipv6hdr {
+ 		struct	in6_addr	saddr;
+ 		struct	in6_addr	daddr;
+ 	);
 -};
 +} __attribute__((packed, aligned(2)));
  
@@ -214,7 +259,7 @@
  #include <linux/uaccess.h>
  #include <linux/ipv6.h>
  #include <linux/icmpv6.h>
-@@ -924,10 +925,10 @@ static void tcp_v6_send_response(const s
+@@ -927,10 +928,10 @@ static void tcp_v6_send_response(const s
  	topt = (__be32 *)(t1 + 1);
  
  	if (tsecr) {
@@ -229,16 +274,6 @@
  	}
  
  #ifdef CONFIG_TCP_MD5SIG
---- a/include/linux/ipv6.h
-+++ b/include/linux/ipv6.h
-@@ -6,6 +6,7 @@
- 
- #define ipv6_optlen(p)  (((p)->hdrlen+1) << 3)
- #define ipv6_authlen(p) (((p)->hdrlen+2) << 2)
-+
- /*
-  * This structure contains configuration options per IPv6 link.
-  */
 --- a/net/ipv6/datagram.c
 +++ b/net/ipv6/datagram.c
 @@ -492,7 +492,7 @@ int ipv6_recv_error(struct sock *sk, str
@@ -267,7 +302,7 @@
  		case IPV6_2292HOPOPTS:
 --- a/net/ipv6/exthdrs.c
 +++ b/net/ipv6/exthdrs.c
-@@ -948,7 +948,7 @@ static bool ipv6_hop_jumbo(struct sk_buf
+@@ -941,7 +941,7 @@ static bool ipv6_hop_jumbo(struct sk_buf
  		goto drop;
  	}
  
@@ -292,7 +327,7 @@
  #endif /* _LINUX_TYPES_H */
 --- a/net/ipv4/af_inet.c
 +++ b/net/ipv4/af_inet.c
-@@ -1470,8 +1470,8 @@ struct sk_buff *inet_gro_receive(struct
+@@ -1474,8 +1474,8 @@ struct sk_buff *inet_gro_receive(struct
  	if (unlikely(ip_fast_csum((u8 *)iph, 5)))
  		goto out_unlock;
  
@@ -305,7 +340,7 @@
  	list_for_each_entry(p, head, list) {
 --- a/net/ipv4/tcp_output.c
 +++ b/net/ipv4/tcp_output.c
-@@ -612,48 +612,53 @@ static void tcp_options_write(__be32 *pt
+@@ -608,48 +608,53 @@ static void tcp_options_write(__be32 *pt
  	u16 options = opts->options;	/* mungable copy */
  
  	if (unlikely(OPTION_MD5 & options)) {
@@ -382,7 +417,7 @@
  	}
  
  	if (unlikely(opts->num_sack_blocks)) {
-@@ -661,16 +666,17 @@ static void tcp_options_write(__be32 *pt
+@@ -657,16 +662,17 @@ static void tcp_options_write(__be32 *pt
  			tp->duplicate_sack : tp->selective_acks;
  		int this_sack;
  
@@ -406,7 +441,7 @@
  		}
  
  		tp->rx_opt.dsack = 0;
-@@ -683,13 +689,14 @@ static void tcp_options_write(__be32 *pt
+@@ -679,13 +685,14 @@ static void tcp_options_write(__be32 *pt
  
  		if (foc->exp) {
  			len = TCPOLEN_EXP_FASTOPEN_BASE + foc->len;
@@ -545,15 +580,15 @@
  		 * XXX skbs on the gro_list have all been parsed and pulled
 --- a/include/net/addrconf.h
 +++ b/include/net/addrconf.h
-@@ -47,7 +47,7 @@ struct prefix_info {
+@@ -52,7 +52,7 @@ struct prefix_info {
  	__be32			reserved2;
  
  	struct in6_addr		prefix;
 -};
 +} __attribute__((packed, aligned(2)));
  
- #include <linux/ipv6.h>
- #include <linux/netdevice.h>
+ /* rfc4861 4.6.2: IPv6 PIO is 32 bytes in size */
+ static_assert(sizeof(struct prefix_info) == 32);
 --- a/include/net/inet_ecn.h
 +++ b/include/net/inet_ecn.h
 @@ -140,9 +140,9 @@ static inline int IP6_ECN_set_ce(struct
@@ -610,7 +645,7 @@
  		return false;
  
  	return true;
-@@ -749,13 +753,13 @@ static inline void ipv6_addr_set_v4mappe
+@@ -745,13 +749,13 @@ static inline void ipv6_addr_set_v4mappe
   */
  static inline int __ipv6_addr_diff32(const void *token1, const void *token2, int addrlen)
  {
@@ -626,7 +661,7 @@
  		if (xb)
  			return i * 32 + 31 - __fls(ntohl(xb));
  	}
-@@ -941,17 +945,18 @@ static inline int ip6_multipath_hash_pol
+@@ -937,17 +941,18 @@ static inline int ip6_multipath_hash_pol
  static inline void ip6_flow_hdr(struct ipv6hdr *hdr, unsigned int tclass,
  				__be32 flowlabel)
  {
@@ -682,7 +717,7 @@
  struct fib6_info *fib6_info_alloc(gfp_t gfp_flags, bool with_fib6_nh)
 --- a/net/netfilter/nf_conntrack_proto_tcp.c
 +++ b/net/netfilter/nf_conntrack_proto_tcp.c
-@@ -415,7 +415,7 @@ static void tcp_sack(const struct sk_buf
+@@ -423,7 +423,7 @@ static void tcp_sack(const struct sk_buf
  
  	/* Fast path for timestamp-only option */
  	if (length == TCPOLEN_TSTAMP_ALIGNED
@@ -693,7 +728,7 @@
  				       | TCPOLEN_TIMESTAMP))
 --- a/net/xfrm/xfrm_input.c
 +++ b/net/xfrm/xfrm_input.c
-@@ -165,8 +165,8 @@ int xfrm_parse_spi(struct sk_buff *skb,
+@@ -166,8 +166,8 @@ int xfrm_parse_spi(struct sk_buff *skb,
  	if (!pskb_may_pull(skb, hlen))
  		return -EINVAL;
  
@@ -706,7 +741,7 @@
  EXPORT_SYMBOL(xfrm_parse_spi);
 --- a/net/ipv4/tcp_input.c
 +++ b/net/ipv4/tcp_input.c
-@@ -4087,14 +4087,16 @@ static bool tcp_parse_aligned_timestamp(
+@@ -4151,14 +4151,16 @@ static bool tcp_parse_aligned_timestamp(
  {
  	const __be32 *ptr = (const __be32 *)(th + 1);
  
@@ -754,7 +789,7 @@
  	ptr = ip6hoff + sizeof(struct ipv6hdr);
 --- a/include/net/neighbour.h
 +++ b/include/net/neighbour.h
-@@ -275,8 +275,10 @@ static inline bool neigh_key_eq128(const
+@@ -270,8 +270,10 @@ static inline bool neigh_key_eq128(const
  	const u32 *n32 = (const u32 *)n->primary_key;
  	const u32 *p32 = pkey;
  
@@ -799,7 +834,7 @@
  		*sum = csum_fold(csum_partial(diff, sizeof(diff),
 --- a/include/linux/etherdevice.h
 +++ b/include/linux/etherdevice.h
-@@ -499,7 +499,7 @@ static inline bool is_etherdev_addr(cons
+@@ -525,7 +525,7 @@ static inline bool is_etherdev_addr(cons
   * @b: Pointer to Ethernet header
   *
   * Compare two Ethernet headers, returns 0 if equal.
@@ -808,7 +843,7 @@
   * aligned OR the platform can handle unaligned access.  This is the
   * case for all packets coming into netif_receive_skb or similar
   * entry points.
-@@ -522,11 +522,12 @@ static inline unsigned long compare_ethe
+@@ -548,11 +548,12 @@ static inline unsigned long compare_ethe
  	fold |= *(unsigned long *)(a + 6) ^ *(unsigned long *)(b + 6);
  	return fold;
  #else

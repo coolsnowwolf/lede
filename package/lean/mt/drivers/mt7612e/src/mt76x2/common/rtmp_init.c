@@ -124,7 +124,7 @@ NDIS_STATUS RTMPAllocAdapterBlock(VOID *handle, VOID **ppAdapter)
 #endif /* WORKQUEUE_BH */
 		}
 		pAd->BeaconBuf = pBeaconBuf;
-		DBGPRINT(RT_DEBUG_OFF, ("\n\n=== pAd = %p, size = %d ===\n\n", pAd, sizeof(RTMP_ADAPTER)));
+		DBGPRINT(RT_DEBUG_OFF, ("\n=== pAd = %p, size = %d ===\n", pAd, sizeof(RTMP_ADAPTER)));
 
 		if (RtmpOsStatsAlloc(&pAd->iw_stats) == FALSE)
 		{

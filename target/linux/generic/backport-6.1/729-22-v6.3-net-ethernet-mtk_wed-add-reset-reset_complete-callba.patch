@@ -1,0 +1,124 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 14 Jan 2023 18:01:32 +0100
+Subject: [PATCH] net: ethernet: mtk_wed: add reset/reset_complete callbacks
+
+Introduce reset and reset_complete wlan callback to schedule WLAN driver
+reset when ethernet/wed driver is resetting.
+
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Co-developed-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -3688,6 +3688,11 @@ static void mtk_pending_work(struct work
+ 	set_bit(MTK_RESETTING, &eth->state);
+ 
+ 	mtk_prepare_for_reset(eth);
++	mtk_wed_fe_reset();
++	/* Run again reset preliminary configuration in order to avoid any
++	 * possible race during FE reset since it can run releasing RTNL lock.
++	 */
++	mtk_prepare_for_reset(eth);
+ 
+ 	/* stop all devices to make sure that dma is properly shut down */
+ 	for (i = 0; i < MTK_MAC_COUNT; i++) {
+@@ -3725,6 +3730,8 @@ static void mtk_pending_work(struct work
+ 
+ 	clear_bit(MTK_RESETTING, &eth->state);
+ 
++	mtk_wed_fe_reset_complete();
++
+ 	rtnl_unlock();
+ }
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_wed.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed.c
+@@ -205,6 +205,48 @@ mtk_wed_wo_reset(struct mtk_wed_device *
+ 	iounmap(reg);
+ }
+ 
++void mtk_wed_fe_reset(void)
++{
++	int i;
++
++	mutex_lock(&hw_lock);
++
++	for (i = 0; i < ARRAY_SIZE(hw_list); i++) {
++		struct mtk_wed_hw *hw = hw_list[i];
++		struct mtk_wed_device *dev = hw->wed_dev;
++		int err;
++
++		if (!dev || !dev->wlan.reset)
++			continue;
++
++		/* reset callback blocks until WLAN reset is completed */
++		err = dev->wlan.reset(dev);
++		if (err)
++			dev_err(dev->dev, "wlan reset failed: %d\n", err);
++	}
++
++	mutex_unlock(&hw_lock);
++}
++
++void mtk_wed_fe_reset_complete(void)
++{
++	int i;
++
++	mutex_lock(&hw_lock);
++
++	for (i = 0; i < ARRAY_SIZE(hw_list); i++) {
++		struct mtk_wed_hw *hw = hw_list[i];
++		struct mtk_wed_device *dev = hw->wed_dev;
++
++		if (!dev || !dev->wlan.reset_complete)
++			continue;
++
++		dev->wlan.reset_complete(dev);
++	}
++
++	mutex_unlock(&hw_lock);
++}
++
+ static struct mtk_wed_hw *
+ mtk_wed_assign(struct mtk_wed_device *dev)
+ {
+--- a/drivers/net/ethernet/mediatek/mtk_wed.h
++++ b/drivers/net/ethernet/mediatek/mtk_wed.h
+@@ -128,6 +128,8 @@ void mtk_wed_add_hw(struct device_node *
+ void mtk_wed_exit(void);
+ int mtk_wed_flow_add(int index);
+ void mtk_wed_flow_remove(int index);
++void mtk_wed_fe_reset(void);
++void mtk_wed_fe_reset_complete(void);
+ #else
+ static inline void
+ mtk_wed_add_hw(struct device_node *np, struct mtk_eth *eth,
+@@ -147,6 +149,13 @@ static inline void mtk_wed_flow_remove(i
+ {
+ }
+ 
++static inline void mtk_wed_fe_reset(void)
++{
++}
++
++static inline void mtk_wed_fe_reset_complete(void)
++{
++}
+ #endif
+ 
+ #ifdef CONFIG_DEBUG_FS
+--- a/include/linux/soc/mediatek/mtk_wed.h
++++ b/include/linux/soc/mediatek/mtk_wed.h
+@@ -151,6 +151,8 @@ struct mtk_wed_device {
+ 		void (*release_rx_buf)(struct mtk_wed_device *wed);
+ 		void (*update_wo_rx_stats)(struct mtk_wed_device *wed,
+ 					   struct mtk_wed_wo_rx_stats *stats);
++		int (*reset)(struct mtk_wed_device *wed);
++		void (*reset_complete)(struct mtk_wed_device *wed);
+ 	} wlan;
+ #endif
+ };

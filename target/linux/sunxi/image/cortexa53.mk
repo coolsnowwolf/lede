@@ -3,6 +3,8 @@
 # Copyright (C) 2013-2016 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 
+KERNEL_LOADADDR:=0x40008000
+
 define Device/sun50i
   SUNXI_DTS_DIR := allwinner/
   KERNEL_NAME := Image
@@ -24,6 +26,16 @@ define Device/sun50i-h6
   $(Device/sun50i)
 endef
 
+define Device/sun50i-h616
+  SOC := sun50i-h616
+  $(Device/sun50i)
+endef
+
+define Device/sun50i-h618
+  SOC := sun50i-h618
+  $(Device/sun50i)
+endef
+
 define Device/friendlyarm_nanopi-neo-plus2
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO Plus2
@@ -39,6 +51,15 @@ define Device/friendlyarm_nanopi-neo2
   $(Device/sun50i-h5)
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo2
+
+define Device/friendlyarm_nanopi-r1s-h5
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := Nanopi R1S H5
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-usb-net-rtl8152
+  SUPPORTED_DEVICES:=nanopi-r1s-h5
+  $(Device/sun50i-h5)
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r1s-h5
 
 define Device/libretech_all-h3-cc-h5
   DEVICE_VENDOR := Libre Computer
@@ -98,6 +119,20 @@ define Device/xunlong_orangepi-pc2
   $(Device/sun50i-h5)
 endef
 TARGET_DEVICES += xunlong_orangepi-pc2
+
+define Device/xunlong_orangepi-zero2
+  DEVICE_VENDOR := Xunlong
+  DEVICE_MODEL := Orange Pi Zero 2
+  $(Device/sun50i-h616)
+endef
+TARGET_DEVICES += xunlong_orangepi-zero2
+
+define Device/xunlong_orangepi-zero3
+  DEVICE_VENDOR := Xunlong
+  DEVICE_MODEL := Orange Pi Zero 3
+  $(Device/sun50i-h618)
+endef
+TARGET_DEVICES += xunlong_orangepi-zero3
 
 define Device/xunlong_orangepi-zero-plus
   DEVICE_VENDOR := Xunlong

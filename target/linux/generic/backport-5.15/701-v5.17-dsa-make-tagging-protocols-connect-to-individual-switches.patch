@@ -1,0 +1,274 @@
+From 7f2973149c22e7a6fee4c0c9fa6b8e4108e9c208 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Tue, 14 Dec 2021 03:45:36 +0200
+Subject: net: dsa: make tagging protocols connect to individual switches from
+ a tree
+
+On the NXP Bluebox 3 board which uses a multi-switch setup with sja1105,
+the mechanism through which the tagger connects to the switch tree is
+broken, due to improper DSA code design. At the time when tag_ops->connect()
+is called in dsa_port_parse_cpu(), DSA hasn't finished "touching" all
+the ports, so it doesn't know how large the tree is and how many ports
+it has. It has just seen the first CPU port by this time. As a result,
+this function will call the tagger's ->connect method too early, and the
+tagger will connect only to the first switch from the tree.
+
+This could be perhaps addressed a bit more simply by just moving the
+tag_ops->connect(dst) call a bit later (for example in dsa_tree_setup),
+but there is already a design inconsistency at present: on the switch
+side, the notification is on a per-switch basis, but on the tagger side,
+it is on a per-tree basis. Furthermore, the persistent storage itself is
+per switch (ds->tagger_data). And the tagger connect and disconnect
+procedures (at least the ones that exist currently) could see a fair bit
+of simplification if they didn't have to iterate through the switches of
+a tree.
+
+To fix the issue, this change transforms tag_ops->connect(dst) into
+tag_ops->connect(ds) and moves it somewhere where we already iterate
+over all switches of a tree. That is in dsa_switch_setup_tag_protocol(),
+which is a good placement because we already have there the connection
+call to the switch side of things.
+
+As for the dsa_tree_bind_tag_proto() method (called from the code path
+that changes the tag protocol), things are a bit more complicated
+because we receive the tree as argument, yet when we unwind on errors,
+it would be nice to not call tag_ops->disconnect(ds) where we didn't
+previously call tag_ops->connect(ds). We didn't have this problem before
+because the tag_ops connection operations passed the entire dst before,
+and this is more fine grained now. To solve the error rewind case using
+the new API, we have to create yet one more cross-chip notifier for
+disconnection, and stay connected with the old tag protocol to all the
+switches in the tree until we've succeeded to connect with the new one
+as well. So if something fails half way, the whole tree is still
+connected to the old tagger. But there may still be leaks if the tagger
+fails to connect to the 2nd out of 3 switches in a tree: somebody needs
+to tell the tagger to disconnect from the first switch. Nothing comes
+for free, and this was previously handled privately by the tagging
+protocol driver before, but now we need to emit a disconnect cross-chip
+notifier for that, because DSA has to take care of the unwind path. We
+assume that the tagging protocol has connected to a switch if it has set
+ds->tagger_data to something, otherwise we avoid calling its
+disconnection method in the error rewind path.
+
+The rest of the changes are in the tagging protocol drivers, and have to
+do with the replacement of dst with ds. The iteration is removed and the
+error unwind path is simplified, as mentioned above.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/net/dsa.h          |  5 ++--
+ net/dsa/dsa2.c             | 44 +++++++++++++-----------------
+ net/dsa/dsa_priv.h         |  1 +
+ net/dsa/switch.c           | 52 ++++++++++++++++++++++++++++++++---
+ net/dsa/tag_ocelot_8021q.c | 53 +++++++++++-------------------------
+ net/dsa/tag_sja1105.c      | 67 ++++++++++++++++------------------------------
+ 6 files changed, 109 insertions(+), 113 deletions(-)
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -80,15 +80,14 @@ enum dsa_tag_protocol {
+ };
+ 
+ struct dsa_switch;
+-struct dsa_switch_tree;
+ 
+ struct dsa_device_ops {
+ 	struct sk_buff *(*xmit)(struct sk_buff *skb, struct net_device *dev);
+ 	struct sk_buff *(*rcv)(struct sk_buff *skb, struct net_device *dev);
+ 	void (*flow_dissect)(const struct sk_buff *skb, __be16 *proto,
+ 			     int *offset);
+-	int (*connect)(struct dsa_switch_tree *dst);
+-	void (*disconnect)(struct dsa_switch_tree *dst);
++	int (*connect)(struct dsa_switch *ds);
++	void (*disconnect)(struct dsa_switch *ds);
+ 	unsigned int needed_headroom;
+ 	unsigned int needed_tailroom;
+ 	const char *name;
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -230,12 +230,8 @@ static struct dsa_switch_tree *dsa_tree_
+ 
+ static void dsa_tree_free(struct dsa_switch_tree *dst)
+ {
+-	if (dst->tag_ops) {
+-		if (dst->tag_ops->disconnect)
+-			dst->tag_ops->disconnect(dst);
+-
++	if (dst->tag_ops)
+ 		dsa_tag_driver_put(dst->tag_ops);
+-	}
+ 	list_del(&dst->list);
+ 	kfree(dst);
+ }
+@@ -826,17 +822,29 @@ static int dsa_switch_setup_tag_protocol
+ 	}
+ 
+ connect:
++	if (tag_ops->connect) {
++		err = tag_ops->connect(ds);
++		if (err)
++			return err;
++	}
++
+ 	if (ds->ops->connect_tag_protocol) {
+ 		err = ds->ops->connect_tag_protocol(ds, tag_ops->proto);
+ 		if (err) {
+ 			dev_err(ds->dev,
+ 				"Unable to connect to tag protocol \"%s\": %pe\n",
+ 				tag_ops->name, ERR_PTR(err));
+-			return err;
++			goto disconnect;
+ 		}
+ 	}
+ 
+ 	return 0;
++
++disconnect:
++	if (tag_ops->disconnect)
++		tag_ops->disconnect(ds);
++
++	return err;
+ }
+ 
+ static int dsa_switch_setup(struct dsa_switch *ds)
+@@ -1156,13 +1164,6 @@ static int dsa_tree_bind_tag_proto(struc
+ 
+ 	dst->tag_ops = tag_ops;
+ 
+-	/* Notify the new tagger about the connection to this tree */
+-	if (tag_ops->connect) {
+-		err = tag_ops->connect(dst);
+-		if (err)
+-			goto out_revert;
+-	}
+-
+ 	/* Notify the switches from this tree about the connection
+ 	 * to the new tagger
+ 	 */
+@@ -1172,16 +1173,14 @@ static int dsa_tree_bind_tag_proto(struc
+ 		goto out_disconnect;
+ 
+ 	/* Notify the old tagger about the disconnection from this tree */
+-	if (old_tag_ops->disconnect)
+-		old_tag_ops->disconnect(dst);
++	info.tag_ops = old_tag_ops;
++	dsa_tree_notify(dst, DSA_NOTIFIER_TAG_PROTO_DISCONNECT, &info);
+ 
+ 	return 0;
+ 
+ out_disconnect:
+-	/* Revert the new tagger's connection to this tree */
+-	if (tag_ops->disconnect)
+-		tag_ops->disconnect(dst);
+-out_revert:
++	info.tag_ops = tag_ops;
++	dsa_tree_notify(dst, DSA_NOTIFIER_TAG_PROTO_DISCONNECT, &info);
+ 	dst->tag_ops = old_tag_ops;
+ 
+ 	return err;
+@@ -1315,7 +1314,6 @@ static int dsa_port_parse_cpu(struct dsa
+ 	struct dsa_switch *ds = dp->ds;
+ 	struct dsa_switch_tree *dst = ds->dst;
+ 	enum dsa_tag_protocol default_proto;
+-	int err;
+ 
+ 	/* Find out which protocol the switch would prefer. */
+ 	default_proto = dsa_get_tag_protocol(dp, master);
+@@ -1370,12 +1368,6 @@ static int dsa_port_parse_cpu(struct dsa
+ 		 */
+ 		dsa_tag_driver_put(tag_ops);
+ 	} else {
+-		if (tag_ops->connect) {
+-			err = tag_ops->connect(dst);
+-			if (err)
+-				return err;
+-		}
+-
+ 		dst->tag_ops = tag_ops;
+ 	}
+ 
+--- a/net/dsa/dsa_priv.h
++++ b/net/dsa/dsa_priv.h
+@@ -38,6 +38,7 @@ enum {
+ 	DSA_NOTIFIER_MTU,
+ 	DSA_NOTIFIER_TAG_PROTO,
+ 	DSA_NOTIFIER_TAG_PROTO_CONNECT,
++	DSA_NOTIFIER_TAG_PROTO_DISCONNECT,
+ 	DSA_NOTIFIER_MRP_ADD,
+ 	DSA_NOTIFIER_MRP_DEL,
+ 	DSA_NOTIFIER_MRP_ADD_RING_ROLE,
+--- a/net/dsa/switch.c
++++ b/net/dsa/switch.c
+@@ -616,15 +616,58 @@ static int dsa_switch_change_tag_proto(s
+ 	return 0;
+ }
+ 
+-static int dsa_switch_connect_tag_proto(struct dsa_switch *ds,
+-					struct dsa_notifier_tag_proto_info *info)
++/* We use the same cross-chip notifiers to inform both the tagger side, as well
++ * as the switch side, of connection and disconnection events.
++ * Since ds->tagger_data is owned by the tagger, it isn't a hard error if the
++ * switch side doesn't support connecting to this tagger, and therefore, the
++ * fact that we don't disconnect the tagger side doesn't constitute a memory
++ * leak: the tagger will still operate with persistent per-switch memory, just
++ * with the switch side unconnected to it. What does constitute a hard error is
++ * when the switch side supports connecting but fails.
++ */
++static int
++dsa_switch_connect_tag_proto(struct dsa_switch *ds,
++			     struct dsa_notifier_tag_proto_info *info)
+ {
+ 	const struct dsa_device_ops *tag_ops = info->tag_ops;
++	int err;
++
++	/* Notify the new tagger about the connection to this switch */
++	if (tag_ops->connect) {
++		err = tag_ops->connect(ds);
++		if (err)
++			return err;
++	}
+ 
+ 	if (!ds->ops->connect_tag_protocol)
+ 		return -EOPNOTSUPP;
+ 
+-	return ds->ops->connect_tag_protocol(ds, tag_ops->proto);
++	/* Notify the switch about the connection to the new tagger */
++	err = ds->ops->connect_tag_protocol(ds, tag_ops->proto);
++	if (err) {
++		/* Revert the new tagger's connection to this tree */
++		if (tag_ops->disconnect)
++			tag_ops->disconnect(ds);
++		return err;
++	}
++
++	return 0;
++}
++
++static int
++dsa_switch_disconnect_tag_proto(struct dsa_switch *ds,
++				struct dsa_notifier_tag_proto_info *info)
++{
++	const struct dsa_device_ops *tag_ops = info->tag_ops;
++
++	/* Notify the tagger about the disconnection from this switch */
++	if (tag_ops->disconnect && ds->tagger_data)
++		tag_ops->disconnect(ds);
++
++	/* No need to notify the switch, since it shouldn't have any
++	 * resources to tear down
++	 */
++	return 0;
+ }
+ 
+ static int dsa_switch_mrp_add(struct dsa_switch *ds,
+@@ -749,6 +792,9 @@ static int dsa_switch_event(struct notif
+ 	case DSA_NOTIFIER_TAG_PROTO_CONNECT:
+ 		err = dsa_switch_connect_tag_proto(ds, info);
+ 		break;
++	case DSA_NOTIFIER_TAG_PROTO_DISCONNECT:
++		err = dsa_switch_disconnect_tag_proto(ds, info);
++		break;
+ 	case DSA_NOTIFIER_MRP_ADD:
+ 		err = dsa_switch_mrp_add(ds, info);
+ 		break;

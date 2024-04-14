@@ -1,0 +1,1358 @@
+From f24933dc175e0faf44a3cce3330c256a59649ca6 Mon Sep 17 00:00:00 2001
+From: Glenn Strauss <gstrauss@gluelogic.com>
+Date: Tue, 19 Jul 2022 23:01:17 -0400
+Subject: [PATCH 4/7] tests/Makefile make run-tests with CONFIG_TLS=...
+
+add test-crypto_module.c to run crypto_module_tests()
+
+adjust some tests/hwsim/*.py for mbed TLS (work in progress)
+
+option to build and run-tests with CONFIG_TLS=internal # (default)
+$ cd tests; make clean
+$ make run-tests
+
+option to build and run-tests with CONFIG_TLS=gnutls
+$ cd tests; make clean CONFIG_TLS=gnutls
+$ make run-tests CONFIG_TLS=gnutls
+
+option to build and run-tests with CONFIG_TLS=mbedtls
+$ cd tests; make clean CONFIG_TLS=mbedtls
+$ make run-tests CONFIG_TLS=mbedtls
+
+option to build and run-tests with CONFIG_TLS=openssl
+$ cd tests; make clean CONFIG_TLS=openssl
+$ make run-tests CONFIG_TLS=openssl
+
+option to build and run-tests with CONFIG_TLS=wolfssl
+$ cd tests; make clean CONFIG_TLS=wolfssl
+$ make run-tests CONFIG_TLS=wolfssl
+
+RFE: Makefile logic for crypto objects should be centralized
+     instead of being duplicated in hostapd/Makefile,
+     wpa_supplicant/Makefile, src/crypto/Makefile,
+     tests/Makefile, ...
+
+Signed-off-by: Glenn Strauss <gstrauss@gluelogic.com>
+---
+ hostapd/Makefile                          |   6 +
+ src/crypto/Makefile                       | 129 ++++++++++++++++++++-
+ src/crypto/crypto_module_tests.c          | 134 ++++++++++++++++++++++
+ src/tls/Makefile                          |  11 ++
+ tests/Makefile                            |  75 +++++++++---
+ tests/hwsim/example-hostapd.config        |  11 +-
+ tests/hwsim/example-wpa_supplicant.config |  12 +-
+ tests/hwsim/test_ap_eap.py                | 114 +++++++++++++-----
+ tests/hwsim/test_ap_ft.py                 |   4 +-
+ tests/hwsim/test_authsrv.py               |   9 +-
+ tests/hwsim/test_dpp.py                   |  19 ++-
+ tests/hwsim/test_erp.py                   |  16 +--
+ tests/hwsim/test_fils.py                  |   5 +-
+ tests/hwsim/test_pmksa_cache.py           |   4 +-
+ tests/hwsim/test_sae.py                   |   7 ++
+ tests/hwsim/test_suite_b.py               |   3 +
+ tests/hwsim/test_wpas_ctrl.py             |   2 +-
+ tests/hwsim/utils.py                      |   8 +-
+ tests/test-crypto_module.c                |  16 +++
+ tests/test-https.c                        |  12 +-
+ tests/test-https_server.c                 |  12 +-
+ wpa_supplicant/Makefile                   |   6 +
+ 22 files changed, 524 insertions(+), 91 deletions(-)
+ create mode 100644 tests/test-crypto_module.c
+
+--- a/hostapd/Makefile
++++ b/hostapd/Makefile
+@@ -696,6 +696,7 @@ CFLAGS += -DCONFIG_TLSV12
+ endif
+ 
+ ifeq ($(CONFIG_TLS), wolfssl)
++CFLAGS += -DCONFIG_TLS_WOLFSSL
+ CONFIG_CRYPTO=wolfssl
+ ifdef TLS_FUNCS
+ OBJS += ../src/crypto/tls_wolfssl.o
+@@ -716,6 +717,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), openssl)
++CFLAGS += -DCONFIG_TLS_OPENSSL
+ CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
+ CONFIG_CRYPTO=openssl
+ ifdef TLS_FUNCS
+@@ -746,6 +748,7 @@ CFLAGS += -DTLS_DEFAULT_CIPHERS=\"$(CONF
+ endif
+ 
+ ifeq ($(CONFIG_TLS), mbedtls)
++CFLAGS += -DCONFIG_TLS_MBEDTLS
+ ifndef CONFIG_CRYPTO
+ CONFIG_CRYPTO=mbedtls
+ endif
+@@ -776,6 +779,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), gnutls)
++CFLAGS += -DCONFIG_TLS_GNUTLS
+ ifndef CONFIG_CRYPTO
+ # default to libgcrypt
+ CONFIG_CRYPTO=gnutls
+@@ -806,6 +810,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), internal)
++CFLAGS += -DCONFIG_TLS_INTERNAL
+ ifndef CONFIG_CRYPTO
+ CONFIG_CRYPTO=internal
+ endif
+@@ -884,6 +889,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), linux)
++CFLAGS += -DCONFIG_TLS_INTERNAL
+ OBJS += ../src/crypto/crypto_linux.o
+ ifdef TLS_FUNCS
+ OBJS += ../src/crypto/crypto_internal-rsa.o
+--- a/src/crypto/Makefile
++++ b/src/crypto/Makefile
+@@ -1,10 +1,121 @@
+-CFLAGS += -DCONFIG_CRYPTO_INTERNAL
+-CFLAGS += -DCONFIG_TLS_INTERNAL_CLIENT
+-CFLAGS += -DCONFIG_TLS_INTERNAL_SERVER
+ #CFLAGS += -DALL_DH_GROUPS
+ CFLAGS += -DCONFIG_SHA256
+ CFLAGS += -DCONFIG_SHA384
++CFLAGS += -DCONFIG_HMAC_SHA256_KDF
+ CFLAGS += -DCONFIG_HMAC_SHA384_KDF
++
++# crypto_module_tests.c
++CFLAGS += -DCONFIG_MODULE_TESTS
++CFLAGS += -DCONFIG_DPP
++#CFLAGS += -DCONFIG_DPP2
++#CFLAGS += -DCONFIG_DPP3
++CFLAGS += -DCONFIG_ECC
++CFLAGS += -DCONFIG_MESH
++CFLAGS += -DEAP_PSK
++CFLAGS += -DEAP_FAST
++
++ifeq ($(CONFIG_TLS),mbedtls)
++
++# (enable features for 'cd tests; make run-tests CONFIG_TLS=mbedtls')
++CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
++CFLAGS += -DCONFIG_DES
++CFLAGS += -DEAP_IKEV2
++CFLAGS += -DEAP_MSCHAPv2
++CFLAGS += -DEAP_SIM
++
++LIB_OBJS = tls_mbedtls.o crypto_mbedtls.o
++LIB_OBJS+= \
++	aes-eax.o \
++	aes-siv.o \
++	dh_groups.o \
++	milenage.o \
++	ms_funcs.o
++
++else
++ifeq ($(CONFIG_TLS),openssl)
++
++# (enable features for 'cd tests; make run-tests CONFIG_TLS=openssl')
++ifndef CONFIG_TLS_DEFAULT_CIPHERS
++CONFIG_TLS_DEFAULT_CIPHERS = "DEFAULT:!EXP:!LOW"
++endif
++CFLAGS += -DTLS_DEFAULT_CIPHERS=\"$(CONFIG_TLS_DEFAULT_CIPHERS)\"
++CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
++CFLAGS += -DEAP_TLS_OPENSSL
++
++LIB_OBJS = tls_openssl.o fips_prf_openssl.o crypto_openssl.o
++LIB_OBJS+= \
++	aes-ctr.o \
++	aes-eax.o \
++	aes-encblock.o \
++	aes-siv.o \
++	dh_groups.o \
++	milenage.o \
++	ms_funcs.o \
++	sha1-prf.o \
++	sha1-tlsprf.o \
++	sha1-tprf.o \
++	sha256-kdf.o \
++	sha256-prf.o \
++	sha256-tlsprf.o
++
++else
++ifeq ($(CONFIG_TLS),wolfssl)
++
++# (wolfssl libraries must be built with ./configure --enable-wpas)
++# (enable features for 'cd tests; make run-tests CONFIG_TLS=wolfssl')
++CFLAGS += -DWOLFSSL_DER_LOAD
++CFLAGS += -DCONFIG_DES
++
++LIB_OBJS = tls_wolfssl.o fips_prf_wolfssl.o crypto_wolfssl.o
++LIB_OBJS+= \
++	aes-ctr.o \
++	aes-eax.o \
++	aes-encblock.o \
++	aes-siv.o \
++	dh_groups.o \
++	milenage.o \
++	ms_funcs.o \
++	sha1-prf.o \
++	sha1-tlsprf.o \
++	sha1-tprf.o \
++	sha256-kdf.o \
++	sha256-prf.o \
++	sha256-tlsprf.o
++
++else
++ifeq ($(CONFIG_TLS),gnutls)
++
++# (enable features for 'cd tests; make run-tests CONFIG_TLS=gnutls')
++LIB_OBJS = tls_gnutls.o crypto_gnutls.o
++LIB_OBJS+= \
++	aes-cbc.o \
++	aes-ctr.o \
++	aes-eax.o \
++	aes-encblock.o \
++	aes-omac1.o \
++	aes-siv.o \
++	aes-unwrap.o \
++	aes-wrap.o \
++	dh_group5.o \
++	dh_groups.o \
++	milenage.o \
++	ms_funcs.o \
++	rc4.o \
++	sha1-pbkdf2.o \
++	sha1-prf.o \
++	fips_prf_internal.o \
++	sha1-internal.o \
++	sha1-tlsprf.o \
++	sha1-tprf.o \
++	sha256-kdf.o \
++	sha256-prf.o \
++	sha256-tlsprf.o
++
++else
++
++CFLAGS += -DCONFIG_CRYPTO_INTERNAL
++CFLAGS += -DCONFIG_TLS_INTERNAL_CLIENT
++CFLAGS += -DCONFIG_TLS_INTERNAL_SERVER
+ CFLAGS += -DCONFIG_INTERNAL_SHA384
+ 
+ LIB_OBJS= \
+@@ -13,7 +124,6 @@ LIB_OBJS= \
+ 	aes-ctr.o \
+ 	aes-eax.o \
+ 	aes-encblock.o \
+-	aes-gcm.o \
+ 	aes-internal.o \
+ 	aes-internal-dec.o \
+ 	aes-internal-enc.o \
+@@ -37,6 +147,7 @@ LIB_OBJS= \
+ 	sha1-tlsprf.o \
+ 	sha1-tprf.o \
+ 	sha256.o \
++	sha256-kdf.o \
+ 	sha256-prf.o \
+ 	sha256-tlsprf.o \
+ 	sha256-internal.o \
+@@ -53,6 +164,16 @@ LIB_OBJS += crypto_internal-modexp.o
+ LIB_OBJS += crypto_internal-rsa.o
+ LIB_OBJS += tls_internal.o
+ LIB_OBJS += fips_prf_internal.o
++
++endif
++endif
++endif
++endif
++
++
++# (used by wlantest/{bip,gcmp,rx_mgmt}.c and tests/test-aes.c)
++LIB_OBJS += aes-gcm.o
++
+ ifndef TEST_FUZZ
+ LIB_OBJS += random.o
+ endif
+--- a/src/crypto/crypto_module_tests.c
++++ b/src/crypto/crypto_module_tests.c
+@@ -2469,6 +2469,139 @@ static int test_hpke(void)
+ }
+ 
+ 
++static int test_ecc(void)
++{
++#ifdef CONFIG_ECC
++#ifndef CONFIG_TLS_INTERNAL
++#ifndef CONFIG_TLS_GNUTLS
++#if defined(CONFIG_TLS_MBEDTLS) \
++ || defined(CONFIG_TLS_OPENSSL) \
++ || defined(CONFIG_TLS_WOLFSSL)
++	wpa_printf(MSG_INFO, "Testing ECC");
++	/* Note: some tests below are valid on supported Short Weierstrass
++	 * curves, but not on Montgomery curves (e.g. IKE groups 31 and 32)
++	 * (e.g. deriving and comparing y^2 test below not valid on Montgomery)
++	 */
++#ifdef CONFIG_TLS_MBEDTLS
++	const int grps[] = {19, 20, 21, 25, 26, 28};
++#endif
++#ifdef CONFIG_TLS_OPENSSL
++	const int grps[] = {19, 20, 21, 26};
++#endif
++#ifdef CONFIG_TLS_WOLFSSL
++	const int grps[] = {19, 20, 21, 26};
++#endif
++	uint32_t i;
++	struct crypto_ec *e = NULL;
++	struct crypto_ec_point *p = NULL, *q = NULL;
++	struct crypto_bignum *x = NULL, *y = NULL;
++#ifdef CONFIG_DPP
++	u8 bin[4096];
++#endif
++	for (i = 0; i < ARRAY_SIZE(grps); ++i) {
++		e = crypto_ec_init(grps[i]);
++		if (e == NULL
++		    || crypto_ec_prime_len(e) == 0
++		    || crypto_ec_prime_len_bits(e) == 0
++		    || crypto_ec_order_len(e) == 0
++		    || crypto_ec_get_prime(e) == NULL
++		    || crypto_ec_get_order(e) == NULL
++		    || crypto_ec_get_a(e) == NULL
++		    || crypto_ec_get_b(e) == NULL
++		    || crypto_ec_get_generator(e) == NULL) {
++			break;
++		}
++#ifdef CONFIG_DPP
++		struct crypto_ec_key *key = crypto_ec_key_gen(grps[i]);
++		if (key == NULL)
++			break;
++		p = crypto_ec_key_get_public_key(key);
++		q = crypto_ec_key_get_public_key(key);
++		crypto_ec_key_deinit(key);
++		if (p == NULL || q == NULL)
++			break;
++		if (!crypto_ec_point_is_on_curve(e, p))
++			break;
++
++		/* inverted point should not match original;
++		 * double-invert should match */
++		if (crypto_ec_point_invert(e, q) != 0
++		    || crypto_ec_point_cmp(e, p, q) == 0
++		    || crypto_ec_point_invert(e, q) != 0
++		    || crypto_ec_point_cmp(e, p, q) != 0) {
++			break;
++		}
++
++		/* crypto_ec_point_to_bin() and crypto_ec_point_from_bin()
++		 * imbalanced interfaces? */
++		size_t prime_len = crypto_ec_prime_len(e);
++		if (prime_len * 2 > sizeof(bin))
++			break;
++		if (crypto_ec_point_to_bin(e, p, bin, bin+prime_len) != 0)
++			break;
++		struct crypto_ec_point *tmp = crypto_ec_point_from_bin(e, bin);
++		if (tmp == NULL)
++			break;
++		if (crypto_ec_point_cmp(e, p, tmp) != 0) {
++			crypto_ec_point_deinit(tmp, 0);
++			break;
++		}
++		crypto_ec_point_deinit(tmp, 0);
++
++		x = crypto_bignum_init();
++		y = crypto_bignum_init_set(bin+prime_len, prime_len);
++		if (x == NULL || y == NULL || crypto_ec_point_x(e, p, x) != 0)
++			break;
++		struct crypto_bignum *y2 = crypto_ec_point_compute_y_sqr(e, x);
++		if (y2 == NULL)
++			break;
++		if (crypto_bignum_sqrmod(y, crypto_ec_get_prime(e), y) != 0
++		    || crypto_bignum_cmp(y, y2) != 0) {
++			crypto_bignum_deinit(y2, 0);
++			break;
++		}
++		crypto_bignum_deinit(y2, 0);
++		crypto_bignum_deinit(x, 0);
++		crypto_bignum_deinit(y, 0);
++		x = NULL;
++		y = NULL;
++
++		x = crypto_bignum_init();
++		if (x == NULL)
++			break;
++		if (crypto_bignum_rand(x, crypto_ec_get_prime(e)) != 0)
++			break;
++		crypto_bignum_deinit(x, 0);
++		x = NULL;
++
++		crypto_ec_point_deinit(p, 0);
++		p = NULL;
++		crypto_ec_point_deinit(q, 0);
++		q = NULL;
++#endif /* CONFIG_DPP */
++		crypto_ec_deinit(e);
++		e = NULL;
++	}
++	if (i != ARRAY_SIZE(grps)) {
++		crypto_bignum_deinit(x, 0);
++		crypto_bignum_deinit(y, 0);
++		crypto_ec_point_deinit(p, 0);
++		crypto_ec_point_deinit(q, 0);
++		crypto_ec_deinit(e);
++		wpa_printf(MSG_INFO,
++		           "ECC test case failed tls_id:%d", grps[i]);
++		return -1;
++	}
++
++	wpa_printf(MSG_INFO, "ECC test cases passed");
++#endif
++#endif /* !CONFIG_TLS_GNUTLS */
++#endif /* !CONFIG_TLS_INTERNAL */
++#endif /* CONFIG_ECC */
++	return 0;
++}
++
++
+ static int test_ms_funcs(void)
+ {
+ #ifndef CONFIG_FIPS
+@@ -2590,6 +2723,7 @@ int crypto_module_tests(void)
+ 	    test_fips186_2_prf() ||
+ 	    test_extract_expand_hkdf() ||
+ 	    test_hpke() ||
++	    test_ecc() ||
+ 	    test_ms_funcs())
+ 		ret = -1;
+ 
+--- a/src/tls/Makefile
++++ b/src/tls/Makefile
+@@ -1,3 +1,10 @@
++LIB_OBJS= asn1.o
++
++ifneq ($(CONFIG_TLS),gnutls)
++ifneq ($(CONFIG_TLS),mbedtls)
++ifneq ($(CONFIG_TLS),openssl)
++ifneq ($(CONFIG_TLS),wolfssl)
++
+ CFLAGS += -DCONFIG_INTERNAL_LIBTOMMATH
+ CFLAGS += -DCONFIG_CRYPTO_INTERNAL
+ CFLAGS += -DCONFIG_TLSV11
+@@ -21,5 +28,9 @@ LIB_OBJS= \
+ 	tlsv1_server_read.o \
+ 	tlsv1_server_write.o \
+ 	x509v3.o
++endif
++endif
++endif
++endif
+ 
+ include ../lib.rules
+--- a/tests/Makefile
++++ b/tests/Makefile
+@@ -1,8 +1,10 @@
+-ALL=test-base64 test-md4 test-milenage \
+-	test-rsa-sig-ver \
+-	test-sha1 \
+-	test-https test-https_server \
+-	test-sha256 test-aes test-x509v3 test-list test-rc4
++RUN_TESTS= \
++	test-list \
++	test-md4 test-rc4 test-sha1 test-sha256 \
++	test-milenage test-aes \
++	test-crypto_module
++
++ALL=$(RUN_TESTS) test-base64 test-https test-https_server
+ 
+ include ../src/build.rules
+ 
+@@ -24,13 +26,27 @@ CFLAGS += -DCONFIG_IEEE80211R_AP
+ CFLAGS += -DCONFIG_IEEE80211R
+ CFLAGS += -DCONFIG_TDLS
+ 
++# test-crypto_module
++CFLAGS += -DCONFIG_MODULE_TESTS
++CFLAGS += -DCONFIG_DPP
++#CFLAGS += -DCONFIG_DPP2
++#CFLAGS += -DCONFIG_DPP3
++CFLAGS += -DCONFIG_ECC
++CFLAGS += -DCONFIG_HMAC_SHA256_KDF
++CFLAGS += -DCONFIG_HMAC_SHA384_KDF
++CFLAGS += -DCONFIG_MESH
++CFLAGS += -DCONFIG_SHA256
++CFLAGS += -DCONFIG_SHA384
++CFLAGS += -DEAP_PSK
++CFLAGS += -DEAP_FAST
++
+ CFLAGS += -I../src
+ CFLAGS += -I../src/utils
+ 
+ SLIBS = ../src/utils/libutils.a
+ 
+-DLIBS = ../src/crypto/libcrypto.a \
+-	../src/tls/libtls.a
++DLIBS = ../src/tls/libtls.a \
++	../src/crypto/libcrypto.a
+ 
+ _OBJS_VAR := LLIBS
+ include ../src/objs.mk
+@@ -42,12 +58,43 @@ include ../src/objs.mk
+ LIBS = $(SLIBS) $(DLIBS)
+ LLIBS = -Wl,--start-group $(DLIBS) -Wl,--end-group $(SLIBS)
+ 
++ifeq ($(CONFIG_TLS),mbedtls)
++CFLAGS += -DCONFIG_TLS_MBEDTLS
++LLIBS += -lmbedtls -lmbedx509 -lmbedcrypto
++else
++ifeq ($(CONFIG_TLS),openssl)
++CFLAGS += -DCONFIG_TLS_OPENSSL
++LLIBS += -lssl -lcrypto
++else
++ifeq ($(CONFIG_TLS),gnutls)
++CFLAGS += -DCONFIG_TLS_GNUTLS
++LLIBS += -lgnutls -lgpg-error -lgcrypt
++else
++ifeq ($(CONFIG_TLS),wolfssl)
++CFLAGS += -DCONFIG_TLS_WOLFSSL
++LLIBS += -lwolfssl -lm
++else
++CFLAGS += -DCONFIG_TLS_INTERNAL
++CFLAGS += -DCONFIG_TLS_INTERNAL_SERVER
++ALL += test-rsa-sig-ver
++ALL += test-x509v3
++clean-config_tls_internal:
++	rm -f test_x509v3_nist.out.*
++	rm -f test_x509v3_nist2.out.*
++endif
++endif
++endif
++endif
++
+ # glibc < 2.17 needs -lrt for clock_gettime()
+ LLIBS += -lrt
+ 
+ test-aes: $(call BUILDOBJ,test-aes.o) $(LIBS)
+ 	$(LDO) $(LDFLAGS) -o $@ $^ $(LLIBS)
+ 
++test-crypto_module: $(call BUILDOBJ,test-crypto_module.o) $(LIBS)
++	$(LDO) $(LDFLAGS) -o $@ $< $(LLIBS)
++
+ test-base64: $(call BUILDOBJ,test-base64.o) $(LIBS)
+ 	$(LDO) $(LDFLAGS) -o $@ $^ $(LLIBS)
+ 
+@@ -83,17 +130,11 @@ test-x509v3: $(call BUILDOBJ,test-x509v3
+ 
+ 
+ run-tests: $(ALL)
+-	./test-aes
+-	./test-list
+-	./test-md4
+-	./test-milenage
+-	./test-rsa-sig-ver
+-	./test-sha1
+-	./test-sha256
++	@set -ex; for i in $(RUN_TESTS); do ./$$i; done
+ 	@echo
+ 	@echo All tests completed successfully.
+ 
+-clean: common-clean
++clean: common-clean clean-config_tls_internal
+ 	rm -f *~
+-	rm -f test_x509v3_nist.out.*
+-	rm -f test_x509v3_nist2.out.*
++
++.PHONY: run-tests clean-config_tls_internal
+--- a/tests/hwsim/example-hostapd.config
++++ b/tests/hwsim/example-hostapd.config
+@@ -34,15 +34,7 @@ CONFIG_EAP_TNC=y
+ CFLAGS += -DTNC_CONFIG_FILE=\"tnc/tnc_config\"
+ LIBS += -rdynamic
+ CONFIG_EAP_UNAUTH_TLS=y
+-ifeq ($(CONFIG_TLS), openssl)
+-CONFIG_EAP_PWD=y
+-endif
+-ifeq ($(CONFIG_TLS), wolfssl)
+-CONFIG_EAP_PWD=y
+-endif
+-ifeq ($(CONFIG_TLS), mbedtls)
+-CONFIG_EAP_PWD=y
+-endif
++CONFIG_EAP_PWD=$(if $(filter openssl wolfssl mbedtls,$(CONFIG_TLS)),y,)
+ CONFIG_EAP_EKE=y
+ CONFIG_PKCS12=y
+ CONFIG_RADIUS_SERVER=y
+@@ -89,6 +81,7 @@ CFLAGS += -DCONFIG_RADIUS_TEST
+ CONFIG_MODULE_TESTS=y
+ 
+ CONFIG_SUITEB=y
++CONFIG_SUITEB192=$(if $(filter openssl mbedtls,$(CONFIG_TLS)),y,)
+ 
+ # AddressSanitizer (ASan) can be enabled by uncommenting the following lines.
+ # This can be used as a more efficient memory error detector than valgrind
+--- a/tests/hwsim/example-wpa_supplicant.config
++++ b/tests/hwsim/example-wpa_supplicant.config
+@@ -35,16 +35,7 @@ LIBS += -rdynamic
+ CONFIG_EAP_FAST=y
+ CONFIG_EAP_TEAP=y
+ CONFIG_EAP_IKEV2=y
+-
+-ifeq ($(CONFIG_TLS), openssl)
+-CONFIG_EAP_PWD=y
+-endif
+-ifeq ($(CONFIG_TLS), wolfssl)
+-CONFIG_EAP_PWD=y
+-endif
+-ifeq ($(CONFIG_TLS), mbedtls)
+-CONFIG_EAP_PWD=y
+-endif
++CONFIG_EAP_PWD=$(if $(filter openssl wolfssl mbedtls,$(CONFIG_TLS)),y,)
+ 
+ CONFIG_USIM_SIMULATOR=y
+ CONFIG_SIM_SIMULATOR=y
+@@ -137,6 +128,7 @@ CONFIG_TESTING_OPTIONS=y
+ CONFIG_MODULE_TESTS=y
+ 
+ CONFIG_SUITEB=y
++CONFIG_SUITEB192=$(if $(filter openssl mbedtls,$(CONFIG_TLS)),y,)
+ 
+ # AddressSanitizer (ASan) can be enabled by uncommenting the following lines.
+ # This can be used as a more efficient memory error detector than valgrind
+--- a/tests/hwsim/test_ap_eap.py
++++ b/tests/hwsim/test_ap_eap.py
+@@ -42,20 +42,42 @@ def check_eap_capa(dev, method):
+     res = dev.get_capability("eap")
+     if method not in res:
+         raise HwsimSkip("EAP method %s not supported in the build" % method)
++    if method == "FAST" or method == "TEAP":
++        tls = dev.request("GET tls_library")
++        if tls.startswith("mbed TLS"):
++            raise HwsimSkip("EAP-%s not supported with this TLS library: " % method + tls)
+ 
+ def check_subject_match_support(dev):
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL") and not tls.startswith("wolfSSL"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("wolfSSL"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("subject_match not supported with this TLS library: " + tls)
+ 
+ def check_check_cert_subject_support(dev):
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL") and not tls.startswith("wolfSSL"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("wolfSSL"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("check_cert_subject not supported with this TLS library: " + tls)
+ 
+ def check_altsubject_match_support(dev):
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL") and not tls.startswith("wolfSSL"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("wolfSSL"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("altsubject_match not supported with this TLS library: " + tls)
+ 
+ def check_domain_match(dev):
+@@ -70,7 +92,13 @@ def check_domain_suffix_match(dev):
+ 
+ def check_domain_match_full(dev):
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL") and not tls.startswith("wolfSSL"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("wolfSSL"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("domain_suffix_match requires full match with this TLS library: " + tls)
+ 
+ def check_cert_probe_support(dev):
+@@ -79,8 +107,15 @@ def check_cert_probe_support(dev):
+         raise HwsimSkip("Certificate probing not supported with this TLS library: " + tls)
+ 
+ def check_ext_cert_check_support(dev):
++    if not openssl_imported:
++        raise HwsimSkip("OpenSSL python method not available")
++
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("ext_cert_check not supported with this TLS library: " + tls)
+ 
+ def check_ocsp_support(dev):
+@@ -91,14 +126,18 @@ def check_ocsp_support(dev):
+     #    raise HwsimSkip("OCSP not supported with this TLS library: " + tls)
+     #if tls.startswith("wolfSSL"):
+     #    raise HwsimSkip("OCSP not supported with this TLS library: " + tls)
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("OCSP not supported with this TLS library: " + tls)
+ 
+ def check_pkcs5_v15_support(dev):
+     tls = dev.request("GET tls_library")
+-    if "BoringSSL" in tls or "GnuTLS" in tls:
++    if "BoringSSL" in tls or "GnuTLS" in tls or "mbed TLS" in tls:
+         raise HwsimSkip("PKCS#5 v1.5 not supported with this TLS library: " + tls)
+ 
+ def check_tls13_support(dev):
+     tls = dev.request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("TLS v1.3 not supported")
+     if "run=OpenSSL 1.1.1" not in tls and "run=OpenSSL 3.0" not in tls and "wolfSSL" not in tls:
+         raise HwsimSkip("TLS v1.3 not supported")
+ 
+@@ -118,11 +157,15 @@ def check_pkcs12_support(dev):
+     #    raise HwsimSkip("PKCS#12 not supported with this TLS library: " + tls)
+     if tls.startswith("wolfSSL"):
+         raise HwsimSkip("PKCS#12 not supported with this TLS library: " + tls)
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("PKCS#12 not supported with this TLS library: " + tls)
+ 
+ def check_dh_dsa_support(dev):
+     tls = dev.request("GET tls_library")
+     if tls.startswith("internal"):
+         raise HwsimSkip("DH DSA not supported with this TLS library: " + tls)
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("DH DSA not supported with this TLS library: " + tls)
+ 
+ def check_ec_support(dev):
+     tls = dev.request("GET tls_library")
+@@ -1625,7 +1668,7 @@ def test_ap_wpa2_eap_ttls_pap_subject_ma
+     eap_connect(dev[0], hapd, "TTLS", "pap user",
+                 anonymous_identity="ttls", password="password",
+                 ca_cert="auth_serv/ca.pem", phase2="auth=PAP",
+-                subject_match="/C=FI/O=w1.fi/CN=server.w1.fi",
++                check_cert_subject="/C=FI/O=w1.fi/CN=server.w1.fi",
+                 altsubject_match="EMAIL:noone@example.com;DNS:server.w1.fi;URI:http://example.com/")
+     eap_reauth(dev[0], "TTLS")
+ 
+@@ -2860,6 +2903,7 @@ def test_ap_wpa2_eap_tls_neg_domain_matc
+ 
+ def test_ap_wpa2_eap_tls_neg_subject_match(dev, apdev):
+     """WPA2-Enterprise negative test - subject mismatch"""
++    check_subject_match_support(dev[0])
+     params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
+     hostapd.add_ap(apdev[0], params)
+     dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", eap="TTLS",
+@@ -2920,6 +2964,7 @@ def test_ap_wpa2_eap_tls_neg_subject_mat
+ 
+ def test_ap_wpa2_eap_tls_neg_altsubject_match(dev, apdev):
+     """WPA2-Enterprise negative test - altsubject mismatch"""
++    check_altsubject_match_support(dev[0])
+     params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
+     hostapd.add_ap(apdev[0], params)
+ 
+@@ -3460,7 +3505,7 @@ def test_ap_wpa2_eap_ikev2_oom(dev, apde
+             dev[0].request("REMOVE_NETWORK all")
+ 
+     tls = dev[0].request("GET tls_library")
+-    if not tls.startswith("wolfSSL"):
++    if not tls.startswith("wolfSSL") and not tls.startswith("mbed TLS"):
+         tests = [(1, "os_get_random;dh_init")]
+     else:
+         tests = [(1, "crypto_dh_init;dh_init")]
+@@ -4774,7 +4819,7 @@ def test_ap_wpa2_eap_tls_intermediate_ca
+     params["private_key"] = "auth_serv/iCA-server/server.key"
+     hostapd.add_ap(apdev[0], params)
+     tls = dev[0].request("GET tls_library")
+-    if "GnuTLS" in tls or "wolfSSL" in tls:
++    if "GnuTLS" in tls or "wolfSSL" in tls or "mbed TLS" in tls:
+         ca_cert = "auth_serv/iCA-user/ca-and-root.pem"
+         client_cert = "auth_serv/iCA-user/user_and_ica.pem"
+     else:
+@@ -4840,6 +4885,7 @@ def test_ap_wpa2_eap_tls_intermediate_ca
+     run_ap_wpa2_eap_tls_intermediate_ca_ocsp(dev, apdev, params, "-sha1")
+ 
+ def run_ap_wpa2_eap_tls_intermediate_ca_ocsp(dev, apdev, params, md):
++    check_ocsp_support(dev[0])
+     params = int_eap_server_params()
+     params["ca_cert"] = "auth_serv/iCA-server/ca-and-root.pem"
+     params["server_cert"] = "auth_serv/iCA-server/server.pem"
+@@ -4849,7 +4895,7 @@ def run_ap_wpa2_eap_tls_intermediate_ca_
+     try:
+         hostapd.add_ap(apdev[0], params)
+         tls = dev[0].request("GET tls_library")
+-        if "GnuTLS" in tls or "wolfSSL" in tls:
++        if "GnuTLS" in tls or "wolfSSL" in tls or "mbed TLS" in tls:
+             ca_cert = "auth_serv/iCA-user/ca-and-root.pem"
+             client_cert = "auth_serv/iCA-user/user_and_ica.pem"
+         else:
+@@ -4885,7 +4931,7 @@ def run_ap_wpa2_eap_tls_intermediate_ca_
+     try:
+         hostapd.add_ap(apdev[0], params)
+         tls = dev[0].request("GET tls_library")
+-        if "GnuTLS" in tls or "wolfSSL" in tls:
++        if "GnuTLS" in tls or "wolfSSL" in tls or "mbed TLS" in tls:
+             ca_cert = "auth_serv/iCA-user/ca-and-root.pem"
+             client_cert = "auth_serv/iCA-user/user_and_ica.pem"
+         else:
+@@ -4935,7 +4981,7 @@ def test_ap_wpa2_eap_tls_intermediate_ca
+     try:
+         hostapd.add_ap(apdev[0], params)
+         tls = dev[0].request("GET tls_library")
+-        if "GnuTLS" in tls or "wolfSSL" in tls:
++        if "GnuTLS" in tls or "wolfSSL" in tls or "mbed TLS" in tls:
+             ca_cert = "auth_serv/iCA-user/ca-and-root.pem"
+             client_cert = "auth_serv/iCA-user/user_and_ica.pem"
+         else:
+@@ -5002,7 +5048,7 @@ def test_ap_wpa2_eap_tls_intermediate_ca
+ 
+         hostapd.add_ap(apdev[0], params)
+         tls = dev[0].request("GET tls_library")
+-        if "GnuTLS" in tls or "wolfSSL" in tls:
++        if "GnuTLS" in tls or "wolfSSL" in tls or "mbed TLS" in tls:
+             ca_cert = "auth_serv/iCA-user/ca-and-root.pem"
+             client_cert = "auth_serv/iCA-user/user_and_ica.pem"
+         else:
+@@ -5260,6 +5306,7 @@ def test_ap_wpa2_eap_ttls_server_cert_ek
+ 
+ def test_ap_wpa2_eap_ttls_server_pkcs12(dev, apdev):
+     """WPA2-Enterprise using EAP-TTLS and server PKCS#12 file"""
++    check_pkcs12_support(dev[0])
+     skip_with_fips(dev[0])
+     params = int_eap_server_params()
+     del params["server_cert"]
+@@ -5272,6 +5319,7 @@ def test_ap_wpa2_eap_ttls_server_pkcs12(
+ 
+ def test_ap_wpa2_eap_ttls_server_pkcs12_extra(dev, apdev):
+     """EAP-TTLS and server PKCS#12 file with extra certs"""
++    check_pkcs12_support(dev[0])
+     skip_with_fips(dev[0])
+     params = int_eap_server_params()
+     del params["server_cert"]
+@@ -5294,6 +5342,7 @@ def test_ap_wpa2_eap_ttls_dh_params_serv
+ 
+ def test_ap_wpa2_eap_ttls_dh_params_dsa_server(dev, apdev):
+     """WPA2-Enterprise using EAP-TTLS and alternative server dhparams (DSA)"""
++    check_dh_dsa_support(dev[0])
+     params = int_eap_server_params()
+     params["dh_file"] = "auth_serv/dsaparam.pem"
+     hapd = hostapd.add_ap(apdev[0], params)
+@@ -5605,8 +5654,8 @@ def test_ap_wpa2_eap_non_ascii_identity2
+ def test_openssl_cipher_suite_config_wpas(dev, apdev):
+     """OpenSSL cipher suite configuration on wpa_supplicant"""
+     tls = dev[0].request("GET tls_library")
+-    if not tls.startswith("OpenSSL"):
+-        raise HwsimSkip("TLS library is not OpenSSL: " + tls)
++    if not tls.startswith("OpenSSL") and not tls.startswith("mbed TLS"):
++        raise HwsimSkip("TLS library is not OpenSSL or mbed TLS: " + tls)
+     params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
+     hapd = hostapd.add_ap(apdev[0], params)
+     eap_connect(dev[0], hapd, "TTLS", "pap user",
+@@ -5632,14 +5681,14 @@ def test_openssl_cipher_suite_config_wpa
+ def test_openssl_cipher_suite_config_hapd(dev, apdev):
+     """OpenSSL cipher suite configuration on hostapd"""
+     tls = dev[0].request("GET tls_library")
+-    if not tls.startswith("OpenSSL"):
+-        raise HwsimSkip("wpa_supplicant TLS library is not OpenSSL: " + tls)
++    if not tls.startswith("OpenSSL") and not tls.startswith("mbed TLS"):
++        raise HwsimSkip("wpa_supplicant TLS library is not OpenSSL or mbed TLS: " + tls)
+     params = int_eap_server_params()
+     params['openssl_ciphers'] = "AES256"
+     hapd = hostapd.add_ap(apdev[0], params)
+     tls = hapd.request("GET tls_library")
+-    if not tls.startswith("OpenSSL"):
+-        raise HwsimSkip("hostapd TLS library is not OpenSSL: " + tls)
++    if not tls.startswith("OpenSSL") and not tls.startswith("mbed TLS"):
++        raise HwsimSkip("hostapd TLS library is not OpenSSL or mbed TLS: " + tls)
+     eap_connect(dev[0], hapd, "TTLS", "pap user",
+                 anonymous_identity="ttls", password="password",
+                 ca_cert="auth_serv/ca.pem", phase2="auth=PAP")
+@@ -6081,13 +6130,17 @@ def test_ap_wpa2_eap_tls_versions(dev, a
+             check_tls_ver(dev[0], hapd,
+                           "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=1",
+                           "TLSv1.2")
+-    elif tls.startswith("internal"):
++    elif tls.startswith("internal") or tls.startswith("mbed TLS"):
+         check_tls_ver(dev[0], hapd,
+                       "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=1", "TLSv1.2")
+-    check_tls_ver(dev[1], hapd,
+-                  "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=0 tls_disable_tlsv1_2=1", "TLSv1.1")
+-    check_tls_ver(dev[2], hapd,
+-                  "tls_disable_tlsv1_0=0 tls_disable_tlsv1_1=1 tls_disable_tlsv1_2=1", "TLSv1")
++    if tls.startswith("mbed TLS"):
++        check_tls_ver(dev[2], hapd,
++                      "tls_disable_tlsv1_0=0 tls_disable_tlsv1_1=1 tls_disable_tlsv1_2=1", "TLSv1.0")
++    else:
++        check_tls_ver(dev[1], hapd,
++                      "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=0 tls_disable_tlsv1_2=1", "TLSv1.1")
++        check_tls_ver(dev[2], hapd,
++                      "tls_disable_tlsv1_0=0 tls_disable_tlsv1_1=1 tls_disable_tlsv1_2=1", "TLSv1")
+     if "run=OpenSSL 1.1.1" in tls or "run=OpenSSL 3.0" in tls:
+         check_tls_ver(dev[0], hapd,
+                       "tls_disable_tlsv1_0=1 tls_disable_tlsv1_1=1 tls_disable_tlsv1_2=1 tls_disable_tlsv1_3=0", "TLSv1.3")
+@@ -6109,6 +6162,11 @@ def test_ap_wpa2_eap_tls_versions_server
+     tests = [("TLSv1", "[ENABLE-TLSv1.0][DISABLE-TLSv1.1][DISABLE-TLSv1.2][DISABLE-TLSv1.3]"),
+              ("TLSv1.1", "[ENABLE-TLSv1.0][ENABLE-TLSv1.1][DISABLE-TLSv1.2][DISABLE-TLSv1.3]"),
+              ("TLSv1.2", "[ENABLE-TLSv1.0][ENABLE-TLSv1.1][ENABLE-TLSv1.2][DISABLE-TLSv1.3]")]
++    tls = dev[0].request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        tests = [#("TLSv1.0", "[ENABLE-TLSv1.0][DISABLE-TLSv1.1][DISABLE-TLSv1.2][DISABLE-TLSv1.3]"),
++                 #("TLSv1.1", "[ENABLE-TLSv1.0][ENABLE-TLSv1.1][DISABLE-TLSv1.2][DISABLE-TLSv1.3]"),
++                 ("TLSv1.2", "[ENABLE-TLSv1.0][ENABLE-TLSv1.1][ENABLE-TLSv1.2][DISABLE-TLSv1.3]")]
+     for exp, flags in tests:
+         hapd.disable()
+         hapd.set("tls_flags", flags)
+@@ -7145,6 +7203,7 @@ def test_ap_wpa2_eap_assoc_rsn(dev, apde
+ def test_eap_tls_ext_cert_check(dev, apdev):
+     """EAP-TLS and external server certification validation"""
+     # With internal server certificate chain validation
++    check_ext_cert_check_support(dev[0])
+     id = dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", eap="TLS",
+                         identity="tls user",
+                         ca_cert="auth_serv/ca.pem",
+@@ -7157,6 +7216,7 @@ def test_eap_tls_ext_cert_check(dev, apd
+ def test_eap_ttls_ext_cert_check(dev, apdev):
+     """EAP-TTLS and external server certification validation"""
+     # Without internal server certificate chain validation
++    check_ext_cert_check_support(dev[0])
+     id = dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", eap="TTLS",
+                         identity="pap user", anonymous_identity="ttls",
+                         password="password", phase2="auth=PAP",
+@@ -7167,6 +7227,7 @@ def test_eap_ttls_ext_cert_check(dev, ap
+ def test_eap_peap_ext_cert_check(dev, apdev):
+     """EAP-PEAP and external server certification validation"""
+     # With internal server certificate chain validation
++    check_ext_cert_check_support(dev[0])
+     id = dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", eap="PEAP",
+                         identity="user", anonymous_identity="peap",
+                         ca_cert="auth_serv/ca.pem",
+@@ -7177,6 +7238,7 @@ def test_eap_peap_ext_cert_check(dev, ap
+ 
+ def test_eap_fast_ext_cert_check(dev, apdev):
+     """EAP-FAST and external server certification validation"""
++    check_ext_cert_check_support(dev[0])
+     check_eap_capa(dev[0], "FAST")
+     # With internal server certificate chain validation
+     dev[0].request("SET blob fast_pac_auth_ext ")
+@@ -7191,10 +7253,6 @@ def test_eap_fast_ext_cert_check(dev, ap
+     run_ext_cert_check(dev, apdev, id)
+ 
+ def run_ext_cert_check(dev, apdev, net_id):
+-    check_ext_cert_check_support(dev[0])
+-    if not openssl_imported:
+-        raise HwsimSkip("OpenSSL python method not available")
+-
+     params = hostapd.wpa2_eap_params(ssid="test-wpa2-eap")
+     hapd = hostapd.add_ap(apdev[0], params)
+ 
+--- a/tests/hwsim/test_ap_ft.py
++++ b/tests/hwsim/test_ap_ft.py
+@@ -2347,11 +2347,11 @@ def test_ap_ft_ap_oom5(dev, apdev):
+         # This will fail to roam
+         dev[0].roam(bssid1, check_bssid=False)
+ 
+-    with fail_test(hapd1, 1, "sha256_prf_bits;wpa_pmk_r1_to_ptk;wpa_ft_process_auth_req"):
++    with fail_test(hapd1, 1, "sha256_prf;wpa_pmk_r1_to_ptk;wpa_ft_process_auth_req"):
+         # This will fail to roam
+         dev[0].roam(bssid1, check_bssid=False)
+ 
+-    with fail_test(hapd1, 3, "wpa_pmk_r1_to_ptk;wpa_ft_process_auth_req"):
++    with fail_test(hapd1, 2, "wpa_pmk_r1_to_ptk;wpa_ft_process_auth_req"):
+         # This will fail to roam
+         dev[0].roam(bssid1, check_bssid=False)
+ 
+--- a/tests/hwsim/test_authsrv.py
++++ b/tests/hwsim/test_authsrv.py
+@@ -156,9 +156,12 @@ def test_authsrv_oom(dev, apdev):
+         if "FAIL" not in authsrv.request("ENABLE"):
+             raise Exception("ENABLE succeeded during OOM")
+ 
+-    with alloc_fail(authsrv, 1, "tls_init;authsrv_init"):
+-        if "FAIL" not in authsrv.request("ENABLE"):
+-            raise Exception("ENABLE succeeded during OOM")
++    # tls_mbedtls.c:tls_init() does not alloc memory (no alloc fail trigger)
++    tls = dev[0].request("GET tls_library")
++    if not tls.startswith("mbed TLS"):
++        with alloc_fail(authsrv, 1, "tls_init;authsrv_init"):
++            if "FAIL" not in authsrv.request("ENABLE"):
++                raise Exception("ENABLE succeeded during OOM")
+ 
+     for count in range(1, 3):
+         with alloc_fail(authsrv, count, "eap_sim_db_init;authsrv_init"):
+--- a/tests/hwsim/test_dpp.py
++++ b/tests/hwsim/test_dpp.py
+@@ -39,7 +39,8 @@ def check_dpp_capab(dev, brainpool=False
+         raise HwsimSkip("DPP not supported")
+     if brainpool:
+         tls = dev.request("GET tls_library")
+-        if (not tls.startswith("OpenSSL") or "run=BoringSSL" in tls) and not tls.startswith("wolfSSL"):
++        if (not tls.startswith("OpenSSL") or "run=BoringSSL" in tls) and not tls.startswith("wolfSSL") \
++                                                                     and not tls.startswith("mbed TLS"):
+             raise HwsimSkip("Crypto library does not support Brainpool curves: " + tls)
+     capa = dev.request("GET_CAPABILITY dpp")
+     ver = 1
+@@ -3621,6 +3622,9 @@ def test_dpp_proto_auth_req_no_i_proto_k
+ 
+ def test_dpp_proto_auth_req_invalid_i_proto_key(dev, apdev):
+     """DPP protocol testing - invalid I-proto key in Auth Req"""
++    tls = dev[0].request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("mbed TLS crypto_ecdh_set_peerkey() properly detects invalid key; no response")
+     run_dpp_proto_auth_req_missing(dev, 66, "Invalid Initiator Protocol Key")
+ 
+ def test_dpp_proto_auth_req_no_i_nonce(dev, apdev):
+@@ -3716,7 +3720,12 @@ def test_dpp_proto_auth_resp_no_r_proto_
+ 
+ def test_dpp_proto_auth_resp_invalid_r_proto_key(dev, apdev):
+     """DPP protocol testing - invalid R-Proto Key in Auth Resp"""
+-    run_dpp_proto_auth_resp_missing(dev, 67, "Invalid Responder Protocol Key")
++    tls = dev[0].request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        # mbed TLS crypto_ecdh_set_peerkey() properly detects invalid key
++        run_dpp_proto_auth_resp_missing(dev, 67, "Failed to derive ECDH shared secret")
++    else:
++        run_dpp_proto_auth_resp_missing(dev, 67, "Invalid Responder Protocol Key")
+ 
+ def test_dpp_proto_auth_resp_no_r_nonce(dev, apdev):
+     """DPP protocol testing - no R-nonce in Auth Resp"""
+@@ -4078,11 +4087,17 @@ def test_dpp_proto_pkex_exchange_resp_in
+ 
+ def test_dpp_proto_pkex_cr_req_invalid_bootstrap_key(dev, apdev):
+     """DPP protocol testing - invalid Bootstrap Key in PKEX Commit-Reveal Request"""
++    tls = dev[0].request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("mbed TLS crypto_ecdh_set_peerkey() properly detects invalid key; no response")
+     run_dpp_proto_pkex_req_missing(dev, 47,
+                                    "Peer bootstrapping key is invalid")
+ 
+ def test_dpp_proto_pkex_cr_resp_invalid_bootstrap_key(dev, apdev):
+     """DPP protocol testing - invalid Bootstrap Key in PKEX Commit-Reveal Response"""
++    tls = dev[0].request("GET tls_library")
++    if tls.startswith("mbed TLS"):
++        raise HwsimSkip("mbed TLS crypto_ecdh_set_peerkey() properly detects invalid key; no response")
+     run_dpp_proto_pkex_resp_missing(dev, 48,
+                                     "Peer bootstrapping key is invalid")
+ 
+--- a/tests/hwsim/test_erp.py
++++ b/tests/hwsim/test_erp.py
+@@ -12,7 +12,7 @@ import time
+ 
+ import hostapd
+ from utils import *
+-from test_ap_eap import int_eap_server_params, check_tls13_support
++from test_ap_eap import int_eap_server_params, check_tls13_support, check_eap_capa
+ from test_ap_psk import find_wpas_process, read_process_memory, verify_not_present, get_key_locations
+ 
+ def test_erp_initiate_reauth_start(dev, apdev):
+@@ -276,6 +276,7 @@ def test_erp_radius_eap_methods(dev, apd
+     params['erp_domain'] = 'example.com'
+     params['disable_pmksa_caching'] = '1'
+     hapd = hostapd.add_ap(apdev[0], params)
++    tls = dev[0].request("GET tls_library")
+ 
+     erp_test(dev[0], hapd, eap="AKA", identity="0232010000000000@example.com",
+              password="90dca4eda45b53cf0f12d7c9c3bc6a89:cb9cccc4b9258e6dca4760379fb82581:000000000123")
+@@ -289,7 +290,7 @@ def test_erp_radius_eap_methods(dev, apd
+              password="5122250214c33e723a5dd523fc145fc0:981d464c7c52eb6e5036234984ad0bcf:000000000123")
+     erp_test(dev[0], hapd, eap="EKE", identity="erp-eke@example.com",
+              password="hello")
+-    if "FAST" in eap_methods:
++    if "FAST" in eap_methods and check_eap_capa(dev[0], "FAST"):
+         erp_test(dev[0], hapd, eap="FAST", identity="erp-fast@example.com",
+                  password="password", ca_cert="auth_serv/ca.pem",
+                  phase2="auth=GTC",
+@@ -301,13 +302,14 @@ def test_erp_radius_eap_methods(dev, apd
+              password="password")
+     erp_test(dev[0], hapd, eap="PAX", identity="erp-pax@example.com",
+              password_hex="0123456789abcdef0123456789abcdef")
+-    if "MSCHAPV2" in eap_methods:
++    if "MSCHAPV2" in eap_methods and check_eap_capa(dev[0], "MSCHAPV2"):
+         erp_test(dev[0], hapd, eap="PEAP", identity="erp-peap@example.com",
+                  password="password", ca_cert="auth_serv/ca.pem",
+                  phase2="auth=MSCHAPV2")
+-        erp_test(dev[0], hapd, eap="TEAP", identity="erp-teap@example.com",
+-                 password="password", ca_cert="auth_serv/ca.pem",
+-                 phase2="auth=MSCHAPV2", pac_file="blob://teap_pac")
++        if check_eap_capa(dev[0], "TEAP"):
++            erp_test(dev[0], hapd, eap="TEAP", identity="erp-teap@example.com",
++                     password="password", ca_cert="auth_serv/ca.pem",
++                     phase2="auth=MSCHAPV2", pac_file="blob://teap_pac")
+     erp_test(dev[0], hapd, eap="PSK", identity="erp-psk@example.com",
+              password_hex="0123456789abcdef0123456789abcdef")
+     if "PWD" in eap_methods:
+@@ -640,7 +642,7 @@ def test_erp_local_errors(dev, apdev):
+         dev[0].request("REMOVE_NETWORK all")
+         dev[0].wait_disconnected()
+ 
+-    for count in range(1, 6):
++    for count in range(1, 4):
+         dev[0].request("ERP_FLUSH")
+         with fail_test(dev[0], count, "hmac_sha256_kdf;eap_peer_erp_init"):
+             dev[0].connect("test-wpa2-eap", key_mgmt="WPA-EAP", eap="TTLS",
+--- a/tests/hwsim/test_fils.py
++++ b/tests/hwsim/test_fils.py
+@@ -1422,7 +1422,10 @@ def run_fils_sk_pfs(dev, apdev, group, p
+     check_erp_capa(dev[0])
+ 
+     tls = dev[0].request("GET tls_library")
+-    if not tls.startswith("wolfSSL"):
++    if tls.startswith("mbed TLS"):
++        if int(group) == 27:
++            raise HwsimSkip("Brainpool EC group 27 not supported by mbed TLS")
++    elif not tls.startswith("wolfSSL"):
+         if int(group) in [25]:
+             if not (tls.startswith("OpenSSL") and ("build=OpenSSL 1.0.2" in tls or "build=OpenSSL 1.1" in tls or "build=OpenSSL 3.0" in tls) and ("run=OpenSSL 1.0.2" in tls or "run=OpenSSL 1.1" in tls or "run=OpenSSL 3.0" in tls)):
+                 raise HwsimSkip("EC group not supported")
+--- a/tests/hwsim/test_pmksa_cache.py
++++ b/tests/hwsim/test_pmksa_cache.py
+@@ -954,7 +954,7 @@ def test_pmksa_cache_preauth_wpas_oom(de
+     eap_connect(dev[0], hapd, "PAX", "pax.user@example.com",
+                 password_hex="0123456789abcdef0123456789abcdef",
+                 bssid=apdev[0]['bssid'])
+-    for i in range(1, 11):
++    for i in range(1, 10):
+         with alloc_fail(dev[0], i, "rsn_preauth_init"):
+             res = dev[0].request("PREAUTH f2:11:22:33:44:55").strip()
+             logger.info("Iteration %d - PREAUTH command results: %s" % (i, res))
+@@ -962,7 +962,7 @@ def test_pmksa_cache_preauth_wpas_oom(de
+                 state = dev[0].request('GET_ALLOC_FAIL')
+                 if state.startswith('0:'):
+                     break
+-                time.sleep(0.05)
++                time.sleep(0.10)
+ 
+ def test_pmksa_cache_ctrl(dev, apdev):
+     """PMKSA cache control interface operations"""
+--- a/tests/hwsim/test_sae.py
++++ b/tests/hwsim/test_sae.py
+@@ -177,6 +177,11 @@ def test_sae_groups(dev, apdev):
+     if tls.startswith("OpenSSL") and "run=OpenSSL 1." in tls:
+         logger.info("Add Brainpool EC groups since OpenSSL is new enough")
+         sae_groups += [27, 28, 29, 30]
++    if tls.startswith("mbed TLS"):
++        # secp224k1 and secp224r1 (26) have prime p = 1 mod 4, and mbedtls
++        # does not have code to derive y from compressed format for those curves
++        sae_groups = [19, 25, 20, 21, 1, 2, 5, 14, 15, 16, 22, 23, 24]
++        sae_groups += [27, 28, 29, 30]
+     heavy_groups = [14, 15, 16]
+     suitable_groups = [15, 16, 17, 18, 19, 20, 21]
+     groups = [str(g) for g in sae_groups]
+@@ -2122,6 +2127,8 @@ def run_sae_pwe_group(dev, apdev, group)
+             logger.info("Add Brainpool EC groups since OpenSSL is new enough")
+         elif tls.startswith("wolfSSL"):
+             logger.info("Make sure Brainpool EC groups were enabled when compiling wolfSSL")
++        elif tls.startswith("mbed TLS"):
++            logger.info("Make sure Brainpool EC groups were enabled when compiling mbed TLS")
+         else:
+             raise HwsimSkip("Brainpool curve not supported")
+     start_sae_pwe_ap(apdev[0], group, 2)
+--- a/tests/hwsim/test_suite_b.py
++++ b/tests/hwsim/test_suite_b.py
+@@ -26,6 +26,8 @@ def check_suite_b_tls_lib(dev, dhe=False
+         return
+     if tls.startswith("wolfSSL"):
+         return
++    if tls.startswith("mbed TLS"):
++        return
+     if not tls.startswith("OpenSSL"):
+         raise HwsimSkip("TLS library not supported for Suite B: " + tls)
+     supported = False
+@@ -499,6 +501,7 @@ def test_suite_b_192_rsa_insufficient_dh
+ 
+     dev[0].connect("test-suite-b", key_mgmt="WPA-EAP-SUITE-B-192",
+                    ieee80211w="2",
++                   openssl_ciphers="DHE-RSA-AES256-GCM-SHA384",
+                    phase1="tls_suiteb=1",
+                    eap="TLS", identity="tls user",
+                    ca_cert="auth_serv/rsa3072-ca.pem",
+--- a/tests/hwsim/test_wpas_ctrl.py
++++ b/tests/hwsim/test_wpas_ctrl.py
+@@ -1834,7 +1834,7 @@ def _test_wpas_ctrl_oom(dev):
+     tls = dev[0].request("GET tls_library")
+     if not tls.startswith("internal"):
+         tests.append(('NFC_GET_HANDOVER_SEL NDEF P2P-CR-TAG', 'FAIL',
+-                      4, 'wpas_ctrl_nfc_get_handover_sel_p2p'))
++                      3, 'wpas_ctrl_nfc_get_handover_sel_p2p'))
+     for cmd, exp, count, func in tests:
+         with alloc_fail(dev[0], count, func):
+             res = dev[0].request(cmd)
+--- a/tests/hwsim/utils.py
++++ b/tests/hwsim/utils.py
+@@ -135,7 +135,13 @@ def check_fils_sk_pfs_capa(dev):
+ 
+ def check_tls_tod(dev):
+     tls = dev.request("GET tls_library")
+-    if not tls.startswith("OpenSSL") and not tls.startswith("internal"):
++    if tls.startswith("OpenSSL"):
++        return
++    elif tls.startswith("internal"):
++        return
++    elif tls.startswith("mbed TLS"):
++        return
++    else:
+         raise HwsimSkip("TLS TOD-TOFU/STRICT not supported with this TLS library: " + tls)
+ 
+ def vht_supported():
+--- /dev/null
++++ b/tests/test-crypto_module.c
+@@ -0,0 +1,16 @@
++/*
++ * crypto module tests - test program
++ * Copyright (c) 2022, Glenn Strauss <gstrauss@gluelogic.com>
++ *
++ * This software may be distributed under the terms of the BSD license.
++ * See README for more details.
++ */
++
++#include "utils/includes.h"
++#include "utils/module_tests.h"
++#include "crypto/crypto_module_tests.c"
++
++int main(int argc, char *argv[])
++{
++	return crypto_module_tests();
++}
+--- a/tests/test-https.c
++++ b/tests/test-https.c
+@@ -75,7 +75,7 @@ static int https_client(int s, const cha
+ 	struct tls_connection *conn;
+ 	struct wpabuf *in, *out, *appl;
+ 	int res = -1;
+-	int need_more_data;
++	int need_more_data = 0;
+ 
+ 	os_memset(&conf, 0, sizeof(conf));
+ 	conf.event_cb = https_tls_event_cb;
+@@ -93,8 +93,12 @@ static int https_client(int s, const cha
+ 
+ 	for (;;) {
+ 		appl = NULL;
++#ifdef CONFIG_TLS_INTERNAL_SERVER
+ 		out = tls_connection_handshake2(tls, conn, in, &appl,
+ 						&need_more_data);
++#else
++		out = tls_connection_handshake(tls, conn, in, &appl);
++#endif
+ 		wpabuf_free(in);
+ 		in = NULL;
+ 		if (out == NULL) {
+@@ -152,11 +156,15 @@ static int https_client(int s, const cha
+ 
+ 	wpa_printf(MSG_INFO, "Reading HTTP response");
+ 	for (;;) {
+-		int need_more_data;
++		int need_more_data = 0;
+ 		in = https_recv(s);
+ 		if (in == NULL)
+ 			goto done;
++#ifdef CONFIG_TLS_INTERNAL_SERVER
+ 		out = tls_connection_decrypt2(tls, conn, in, &need_more_data);
++#else
++		out = tls_connection_decrypt(tls, conn, in);
++#endif
+ 		if (need_more_data)
+ 			wpa_printf(MSG_DEBUG, "HTTP: Need more data");
+ 		wpabuf_free(in);
+--- a/tests/test-https_server.c
++++ b/tests/test-https_server.c
+@@ -67,10 +67,12 @@ static struct wpabuf * https_recv(int s,
+ }
+ 
+ 
++#ifdef CONFIG_TLS_INTERNAL_SERVER
+ static void https_tls_log_cb(void *ctx, const char *msg)
+ {
+ 	wpa_printf(MSG_DEBUG, "TLS: %s", msg);
+ }
++#endif
+ 
+ 
+ static int https_server(int s)
+@@ -79,7 +81,7 @@ static int https_server(int s)
+ 	void *tls;
+ 	struct tls_connection_params params;
+ 	struct tls_connection *conn;
+-	struct wpabuf *in, *out, *appl;
++	struct wpabuf *in = NULL, *out = NULL, *appl = NULL;
+ 	int res = -1;
+ 
+ 	os_memset(&conf, 0, sizeof(conf));
+@@ -106,7 +108,9 @@ static int https_server(int s)
+ 		return -1;
+ 	}
+ 
++#ifdef CONFIG_TLS_INTERNAL_SERVER
+ 	tls_connection_set_log_cb(conn, https_tls_log_cb, NULL);
++#endif
+ 
+ 	for (;;) {
+ 		in = https_recv(s, 5000);
+@@ -147,12 +151,16 @@ static int https_server(int s)
+ 
+ 	wpa_printf(MSG_INFO, "Reading HTTP request");
+ 	for (;;) {
+-		int need_more_data;
++		int need_more_data = 0;
+ 
+ 		in = https_recv(s, 5000);
+ 		if (!in)
+ 			goto done;
++#ifdef CONFIG_TLS_INTERNAL_SERVER
+ 		out = tls_connection_decrypt2(tls, conn, in, &need_more_data);
++#else
++		out = tls_connection_decrypt(tls, conn, in);
++#endif
+ 		wpabuf_free(in);
+ 		in = NULL;
+ 		if (need_more_data) {
+--- a/wpa_supplicant/Makefile
++++ b/wpa_supplicant/Makefile
+@@ -1108,6 +1108,7 @@ CFLAGS += -DCONFIG_TLSV12
+ endif
+ 
+ ifeq ($(CONFIG_TLS), wolfssl)
++CFLAGS += -DCONFIG_TLS_WOLFSSL
+ ifdef TLS_FUNCS
+ CFLAGS += -DWOLFSSL_DER_LOAD
+ OBJS += ../src/crypto/tls_wolfssl.o
+@@ -1123,6 +1124,7 @@ LIBS_p += -lwolfssl -lm
+ endif
+ 
+ ifeq ($(CONFIG_TLS), openssl)
++CFLAGS += -DCONFIG_TLS_OPENSSL
+ CFLAGS += -DCRYPTO_RSA_OAEP_SHA256
+ ifdef TLS_FUNCS
+ CFLAGS += -DEAP_TLS_OPENSSL
+@@ -1150,6 +1152,7 @@ CFLAGS += -DTLS_DEFAULT_CIPHERS=\"$(CONF
+ endif
+ 
+ ifeq ($(CONFIG_TLS), mbedtls)
++CFLAGS += -DCONFIG_TLS_MBEDTLS
+ ifndef CONFIG_CRYPTO
+ CONFIG_CRYPTO=mbedtls
+ endif
+@@ -1169,6 +1172,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), gnutls)
++CFLAGS += -DCONFIG_TLS_GNUTLS
+ ifndef CONFIG_CRYPTO
+ # default to libgcrypt
+ CONFIG_CRYPTO=gnutls
+@@ -1199,6 +1203,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), internal)
++CFLAGS += -DCONFIG_TLS_INTERNAL
+ ifndef CONFIG_CRYPTO
+ CONFIG_CRYPTO=internal
+ endif
+@@ -1279,6 +1284,7 @@ endif
+ endif
+ 
+ ifeq ($(CONFIG_TLS), linux)
++CFLAGS += -DCONFIG_TLS_INTERNAL
+ OBJS += ../src/crypto/crypto_linux.o
+ OBJS_p += ../src/crypto/crypto_linux.o
+ ifdef TLS_FUNCS

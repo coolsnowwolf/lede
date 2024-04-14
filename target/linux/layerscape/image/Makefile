@@ -36,7 +36,9 @@ endef
 define Build/ls-append-kernel
 	mkdir -p $@.tmp && \
 	cp $(IMAGE_KERNEL) $@.tmp/fitImage && \
-	make_ext4fs -J -L kernel -l "$(LS_SD_KERNELPART_SIZE)M" "$@.kernel.part" "$@.tmp" && \
+	make_ext4fs -J -L kernel -l "$(LS_SD_KERNELPART_SIZE)M" \
+		$(if $(SOURCE_DATE_EPOCH),-T $(SOURCE_DATE_EPOCH)) \
+		"$@.kernel.part" "$@.tmp" && \
 	dd if=$@.kernel.part >> $@ && \
 	rm -rf $@.tmp && \
 	rm -f $@.kernel.part

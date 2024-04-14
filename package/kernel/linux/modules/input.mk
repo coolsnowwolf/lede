@@ -11,7 +11,7 @@ define KernelPackage/hid
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=HID Devices
   DEPENDS:=+kmod-input-core +kmod-input-evdev
-  KCONFIG:=CONFIG_HID CONFIG_HIDRAW=y CONFIG_HID_BATTERY_STRENGTH=y
+  KCONFIG:=CONFIG_HID CONFIG_HID_SUPPORT=y CONFIG_HIDRAW=y CONFIG_HID_BATTERY_STRENGTH=y
   FILES:=$(LINUX_DIR)/drivers/hid/hid.ko
   AUTOLOAD:=$(call AutoLoad,61,hid)
 endef
@@ -92,7 +92,8 @@ $(eval $(call KernelPackage,input-gpio-keys))
 define KernelPackage/input-gpio-keys-polled
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=Polled GPIO key support
-  DEPENDS:=@GPIO_SUPPORT +kmod-input-polldev
+  DEPENDS:=@GPIO_SUPPORT +kmod-input-core \
+	+(LINUX_5_4||LINUX_5_10):kmod-input-polldev
   KCONFIG:= \
 	CONFIG_KEYBOARD_GPIO_POLLED \
 	CONFIG_INPUT_KEYBOARD=y
@@ -145,7 +146,7 @@ $(eval $(call KernelPackage,input-joydev))
 define KernelPackage/input-polldev
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=Polled Input device support
-  DEPENDS:=+kmod-input-core
+  DEPENDS:=+kmod-input-core @(LINUX_5_4||LINUX_5_10)
   KCONFIG:=CONFIG_INPUT_POLLDEV
   FILES:=$(LINUX_DIR)/drivers/input/input-polldev.ko
 endef
@@ -191,6 +192,27 @@ define KernelPackage/input-touchscreen-ads7846/description
 endef
 
 $(eval $(call KernelPackage,input-touchscreen-ads7846))
+
+
+define KernelPackage/input-touchscreen-edt-ft5x06
+  SUBMENU:=$(INPUT_MODULES_MENU)
+  TITLE:=EDT FT5x06 and Focaltech FT6236 based touchscreens
+  DEPENDS:=+kmod-i2c-core +kmod-input-core +LINUX_6_6:kmod-regmap-i2c
+  KCONFIG:= \
+	CONFIG_INPUT_TOUCHSCREEN=y \
+	CONFIG_TOUCHSCREEN_PROPERTIES=y@lt5.13 \
+	CONFIG_TOUCHSCREEN_EDT_FT5X06
+  FILES:=$(LINUX_DIR)/drivers/input/touchscreen/edt-ft5x06.ko \
+	$(LINUX_DIR)/drivers/input/touchscreen/of_touchscreen.ko@lt5.13
+  AUTOLOAD:=$(call AutoProbe,edt-ft5x06)
+endef
+
+define KernelPackage/input-touchscreen-edt-ft5x06/description
+  Kernel module for EDT FT5206, FT5306, FT5406, FT5506, Evervision FT5726 \
+  and Focaltech FT6236 based touchscreens
+endef
+
+$(eval $(call KernelPackage,input-touchscreen-edt-ft5x06))
 
 
 define KernelPackage/keyboard-imx

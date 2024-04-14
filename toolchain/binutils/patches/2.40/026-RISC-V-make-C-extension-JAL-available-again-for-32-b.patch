@@ -1,0 +1,115 @@
+From 27f59ec47a18277b6ea3548f405263ef558f5217 Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Tue, 31 Jan 2023 09:47:22 +0100
+Subject: [PATCH 26/50] RISC-V: make C-extension JAL available again for
+ (32-bit) assembly
+
+Along with the normal JAL alias, the C-extension one should have been
+moved as well by 839189bc932e ("RISC-V: re-arrange opcode table for
+consistent alias handling"), for the assembler to actually be able to
+use it where/when possible.
+
+Since neither this nor any other compressed branch insn was being tested
+so far, take the opportunity and introduce a new testcase covering those.
+---
+ gas/config/tc-riscv.c                 |  3 +++
+ gas/testsuite/gas/riscv/c-branch-na.d | 20 ++++++++++++++++++++
+ gas/testsuite/gas/riscv/c-branch.d    | 19 +++++++++++++++++++
+ gas/testsuite/gas/riscv/c-branch.s    | 11 +++++++++++
+ opcodes/riscv-opc.c                   |  2 +-
+ 5 files changed, 54 insertions(+), 1 deletion(-)
+ create mode 100644 gas/testsuite/gas/riscv/c-branch-na.d
+ create mode 100644 gas/testsuite/gas/riscv/c-branch.d
+ create mode 100644 gas/testsuite/gas/riscv/c-branch.s
+
+--- a/gas/config/tc-riscv.c
++++ b/gas/config/tc-riscv.c
+@@ -2762,6 +2762,8 @@ riscv_ip (char *str, struct riscv_cl_ins
+ 		case 'p':
+ 		  goto branch;
+ 		case 'a':
++		  if (oparg == insn->args + 1)
++		    goto jump_check_gpr;
+ 		  goto jump;
+ 		case 'S': /* Floating-point RS1 x8-x15.  */
+ 		  if (!reg_lookup (&asarg, RCLASS_FPR, &regno)
+@@ -3271,6 +3273,7 @@ riscv_ip (char *str, struct riscv_cl_ins
+ 		 but the 2nd (with 2 operands) might.  */
+ 	      if (oparg == insn->args)
+ 		{
++	    jump_check_gpr:
+ 		  asargStart = asarg;
+ 		  if (reg_lookup (&asarg, RCLASS_GPR, NULL)
+ 		      && (*asarg == ',' || (ISSPACE (*asarg) && asarg[1] == ',')))
+--- /dev/null
++++ b/gas/testsuite/gas/riscv/c-branch-na.d
+@@ -0,0 +1,20 @@
++#as: -march=rv32ic
++#source: c-branch.s
++#objdump: -drw -Mno-aliases
++
++.*:[ 	]+file format .*
++
++
++Disassembly of section .text:
++
++0+ <target>:
++[ 	]+[0-9a-f]+:[ 	]+c001[ 	]+c\.beqz[ 	]+s0,0 <target>[ 	]+0: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+dcfd[ 	]+c\.beqz[ 	]+s1,0 <target>[ 	]+2: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+fc75[ 	]+c\.bnez[ 	]+s0,0 <target>[ 	]+4: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+fced[ 	]+c\.bnez[ 	]+s1,0 <target>[ 	]+6: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+bfe5[ 	]+c\.j[ 	]+0 <target>[ 	]+8: R_RISCV_RVC_JUMP	.*
++[ 	]+[0-9a-f]+:[ 	]+3fdd[ 	]+c\.jal[ 	]+0 <target>[ 	]+a: R_RISCV_RVC_JUMP	.*
++[ 	]+[0-9a-f]+:[ 	]+9302[ 	]+c\.jalr[ 	]+t1
++[ 	]+[0-9a-f]+:[ 	]+8382[ 	]+c\.jr[ 	]+t2
++[ 	]+[0-9a-f]+:[ 	]+8082[ 	]+c\.jr[ 	]+ra
++#...
+--- /dev/null
++++ b/gas/testsuite/gas/riscv/c-branch.d
+@@ -0,0 +1,19 @@
++#as: -march=rv64ic
++#objdump: -drw
++
++.*:[ 	]+file format .*
++
++
++Disassembly of section .text:
++
++0+ <target>:
++[ 	]+[0-9a-f]+:[ 	]+c001[ 	]+beqz[ 	]+s0,0 <target>[ 	]+0: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+dcfd[ 	]+beqz[ 	]+s1,0 <target>[ 	]+2: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+fc75[ 	]+bnez[ 	]+s0,0 <target>[ 	]+4: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+fced[ 	]+bnez[ 	]+s1,0 <target>[ 	]+6: R_RISCV_RVC_BRANCH	.*
++[ 	]+[0-9a-f]+:[ 	]+bfe5[ 	]+j[ 	]+0 <target>[ 	]+8: R_RISCV_RVC_JUMP	.*
++[ 	]+[0-9a-f]+:[ 	]+ff7ff0ef[ 	]+jal[ 	]+0 <target>[ 	]+a: R_RISCV_JAL	.*
++[ 	]+[0-9a-f]+:[ 	]+9302[ 	]+jalr[ 	]+t1
++[ 	]+[0-9a-f]+:[ 	]+8382[ 	]+jr[ 	]+t2
++[ 	]+[0-9a-f]+:[ 	]+8082[ 	]+ret
++#...
+--- /dev/null
++++ b/gas/testsuite/gas/riscv/c-branch.s
+@@ -0,0 +1,11 @@
++	.text
++target:
++	beq	x8, x0, target
++	beqz	x9, target
++	bne	x8, x0, target
++	bnez	x9, target
++	j	target
++	jal	target
++	jalr	x6
++	jr	x7
++	ret
+--- a/opcodes/riscv-opc.c
++++ b/opcodes/riscv-opc.c
+@@ -340,9 +340,9 @@ const struct riscv_opcode riscv_opcodes[
+ {"jalr",        0, INSN_CLASS_I, "d,s,j",     MATCH_JALR, MASK_JALR, match_opcode, INSN_JSR },
+ {"j",           0, INSN_CLASS_C, "Ca",        MATCH_C_J, MASK_C_J, match_opcode, INSN_ALIAS|INSN_BRANCH },
+ {"j",           0, INSN_CLASS_I, "a",         MATCH_JAL, MASK_JAL|MASK_RD, match_opcode, INSN_ALIAS|INSN_BRANCH },
++{"jal",        32, INSN_CLASS_C, "Ca",        MATCH_C_JAL, MASK_C_JAL, match_opcode, INSN_ALIAS|INSN_JSR },
+ {"jal",         0, INSN_CLASS_I, "a",         MATCH_JAL|(X_RA << OP_SH_RD), MASK_JAL|MASK_RD, match_opcode, INSN_ALIAS|INSN_JSR },
+ {"jal",         0, INSN_CLASS_I, "d,a",       MATCH_JAL, MASK_JAL, match_opcode, INSN_JSR },
+-{"jal",        32, INSN_CLASS_C, "Ca",        MATCH_C_JAL, MASK_C_JAL, match_opcode, INSN_ALIAS|INSN_JSR },
+ {"call",        0, INSN_CLASS_I, "d,c",       (X_T1 << OP_SH_RS1), (int) M_CALL, match_never, INSN_MACRO },
+ {"call",        0, INSN_CLASS_I, "c",         (X_RA << OP_SH_RS1)|(X_RA << OP_SH_RD), (int) M_CALL, match_never, INSN_MACRO },
+ {"tail",        0, INSN_CLASS_I, "c",         (X_T1 << OP_SH_RS1), (int) M_CALL, match_never, INSN_MACRO },

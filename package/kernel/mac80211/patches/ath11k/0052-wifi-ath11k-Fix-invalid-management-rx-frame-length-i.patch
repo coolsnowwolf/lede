@@ -1,0 +1,115 @@
+From 447b0398a9cd41ca343dfd43e555af92d6214487 Mon Sep 17 00:00:00 2001
+From: Bhagavathi Perumal S <quic_bperumal@quicinc.com>
+Date: Fri, 24 Mar 2023 16:57:00 +0200
+Subject: [PATCH] wifi: ath11k: Fix invalid management rx frame length issue
+
+The WMI management rx event has multiple arrays of TLVs, however the common
+WMI TLV parser won't handle multiple TLV tags of same type.
+So the multiple array tags of WMI management rx TLV is parsed incorrectly
+and the length calculated becomes wrong when the target sends multiple
+array tags.
+
+Add separate TLV parser to handle multiple arrays for WMI management rx
+TLV. This fixes invalid length issue when the target sends multiple array
+tags.
+
+Tested-on: QCN9074 hw1.0 PCI WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Bhagavathi Perumal S <quic_bperumal@quicinc.com>
+Co-developed-by: Nagarajan Maran <quic_nmaran@quicinc.com>
+Signed-off-by: Nagarajan Maran <quic_nmaran@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20230320133840.30162-1-quic_nmaran@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/wmi.c | 45 +++++++++++++++++++++------
+ 1 file changed, 35 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -82,6 +82,12 @@ struct wmi_tlv_fw_stats_parse {
+ 	bool chain_rssi_done;
+ };
+ 
++struct wmi_tlv_mgmt_rx_parse {
++	const struct wmi_mgmt_rx_hdr *fixed;
++	const u8 *frame_buf;
++	bool frame_buf_done;
++};
++
+ static const struct wmi_tlv_policy wmi_tlv_policies[] = {
+ 	[WMI_TAG_ARRAY_BYTE]
+ 		= { .min_len = 0 },
+@@ -5633,28 +5639,49 @@ static int ath11k_pull_vdev_stopped_para
+ 	return 0;
+ }
+ 
++static int ath11k_wmi_tlv_mgmt_rx_parse(struct ath11k_base *ab,
++					u16 tag, u16 len,
++					const void *ptr, void *data)
++{
++	struct wmi_tlv_mgmt_rx_parse *parse = data;
++
++	switch (tag) {
++	case WMI_TAG_MGMT_RX_HDR:
++		parse->fixed = ptr;
++		break;
++	case WMI_TAG_ARRAY_BYTE:
++		if (!parse->frame_buf_done) {
++			parse->frame_buf = ptr;
++			parse->frame_buf_done = true;
++		}
++		break;
++	}
++	return 0;
++}
++
+ static int ath11k_pull_mgmt_rx_params_tlv(struct ath11k_base *ab,
+ 					  struct sk_buff *skb,
+ 					  struct mgmt_rx_event_params *hdr)
+ {
+-	const void **tb;
++	struct wmi_tlv_mgmt_rx_parse parse = { };
+ 	const struct wmi_mgmt_rx_hdr *ev;
+ 	const u8 *frame;
+ 	int ret;
+ 
+-	tb = ath11k_wmi_tlv_parse_alloc(ab, skb->data, skb->len, GFP_ATOMIC);
+-	if (IS_ERR(tb)) {
+-		ret = PTR_ERR(tb);
+-		ath11k_warn(ab, "failed to parse tlv: %d\n", ret);
++	ret = ath11k_wmi_tlv_iter(ab, skb->data, skb->len,
++				  ath11k_wmi_tlv_mgmt_rx_parse,
++				  &parse);
++	if (ret) {
++		ath11k_warn(ab, "failed to parse mgmt rx tlv %d\n",
++			    ret);
+ 		return ret;
+ 	}
+ 
+-	ev = tb[WMI_TAG_MGMT_RX_HDR];
+-	frame = tb[WMI_TAG_ARRAY_BYTE];
++	ev = parse.fixed;
++	frame = parse.frame_buf;
+ 
+ 	if (!ev || !frame) {
+ 		ath11k_warn(ab, "failed to fetch mgmt rx hdr");
+-		kfree(tb);
+ 		return -EPROTO;
+ 	}
+ 
+@@ -5673,7 +5700,6 @@ static int ath11k_pull_mgmt_rx_params_tl
+ 
+ 	if (skb->len < (frame - skb->data) + hdr->buf_len) {
+ 		ath11k_warn(ab, "invalid length in mgmt rx hdr ev");
+-		kfree(tb);
+ 		return -EPROTO;
+ 	}
+ 
+@@ -5685,7 +5711,6 @@ static int ath11k_pull_mgmt_rx_params_tl
+ 
+ 	ath11k_ce_byte_swap(skb->data, hdr->buf_len);
+ 
+-	kfree(tb);
+ 	return 0;
+ }
+ 

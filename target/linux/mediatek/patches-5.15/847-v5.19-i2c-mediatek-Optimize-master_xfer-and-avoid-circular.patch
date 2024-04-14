@@ -1,0 +1,101 @@
+From 2831f9a53ec3a16012d2d23590e3ebad6084b763 Mon Sep 17 00:00:00 2001
+From: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Date: Mon, 11 Apr 2022 15:21:07 +0200
+Subject: [PATCH 08/16] i2c: mediatek: Optimize master_xfer() and avoid
+ circular locking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Especially (but not only) during probe, it may happen that multiple
+devices are communicating via i2c (or multiple i2c busses) and
+sometimes while others are probing asynchronously.
+For example, a Cr50 TPM may be filling entropy (or userspace may be
+reading random data) while the rt5682 (i2c) codec driver reads/sets
+some registers, like while getting/setting a clock's rate, which
+happens both during probe and during system operation.
+
+In this driver, the mtk_i2c_transfer() function (which is the i2c
+.master_xfer() callback) was granularly managing the clocks by
+performing a clk_bulk_prepare_enable() to start them and its inverse.
+This is not only creating possible circular locking dependencies in
+the some cases (like former explanation), but it's also suboptimal,
+as clk_core prepare/unprepare operations are using mutex locking,
+which creates a bit of unwanted overhead (for example, i2c trackpads
+will call master_xfer() every few milliseconds!).
+
+With this commit, we avoid both the circular locking and additional
+overhead by changing how we handle the clocks in this driver:
+- Prepare the clocks during probe (and PM resume)
+- Enable/disable clocks in mtk_i2c_transfer()
+- Unprepare the clocks only for driver removal (and PM suspend)
+
+For the sake of providing a full explanation: during probe, the
+clocks are not only prepared but also enabled, as this is needed
+for some hardware initialization but, after that, we are disabling
+but not unpreparing them, leaving an expected state for the
+aforementioned clock handling strategy.
+
+Signed-off-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Tested-by: Nícolas F. R. A. Prado <nfraprado@collabora.com>
+Reviewed-by: Qii Wang <qii.wang@mediatek.com>
+Signed-off-by: Wolfram Sang <wsa@kernel.org>
+---
+ drivers/i2c/busses/i2c-mt65xx.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/i2c/busses/i2c-mt65xx.c
++++ b/drivers/i2c/busses/i2c-mt65xx.c
+@@ -1177,7 +1177,7 @@ static int mtk_i2c_transfer(struct i2c_a
+ 	int left_num = num;
+ 	struct mtk_i2c *i2c = i2c_get_adapdata(adap);
+ 
+-	ret = clk_bulk_prepare_enable(I2C_MT65XX_CLK_MAX, i2c->clocks);
++	ret = clk_bulk_enable(I2C_MT65XX_CLK_MAX, i2c->clocks);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1231,7 +1231,7 @@ static int mtk_i2c_transfer(struct i2c_a
+ 	ret = num;
+ 
+ err_exit:
+-	clk_bulk_disable_unprepare(I2C_MT65XX_CLK_MAX, i2c->clocks);
++	clk_bulk_disable(I2C_MT65XX_CLK_MAX, i2c->clocks);
+ 	return ret;
+ }
+ 
+@@ -1412,7 +1412,7 @@ static int mtk_i2c_probe(struct platform
+ 		return ret;
+ 	}
+ 	mtk_i2c_init_hw(i2c);
+-	clk_bulk_disable_unprepare(I2C_MT65XX_CLK_MAX, i2c->clocks);
++	clk_bulk_disable(I2C_MT65XX_CLK_MAX, i2c->clocks);
+ 
+ 	ret = devm_request_irq(&pdev->dev, irq, mtk_i2c_irq,
+ 			       IRQF_NO_SUSPEND | IRQF_TRIGGER_NONE,
+@@ -1439,6 +1439,8 @@ static int mtk_i2c_remove(struct platfor
+ 
+ 	i2c_del_adapter(&i2c->adap);
+ 
++	clk_bulk_unprepare(I2C_MT65XX_CLK_MAX, i2c->clocks);
++
+ 	return 0;
+ }
+ 
+@@ -1448,6 +1450,7 @@ static int mtk_i2c_suspend_noirq(struct
+ 	struct mtk_i2c *i2c = dev_get_drvdata(dev);
+ 
+ 	i2c_mark_adapter_suspended(&i2c->adap);
++	clk_bulk_unprepare(I2C_MT65XX_CLK_MAX, i2c->clocks);
+ 
+ 	return 0;
+ }
+@@ -1465,7 +1468,7 @@ static int mtk_i2c_resume_noirq(struct d
+ 
+ 	mtk_i2c_init_hw(i2c);
+ 
+-	clk_bulk_disable_unprepare(I2C_MT65XX_CLK_MAX, i2c->clocks);
++	clk_bulk_disable(I2C_MT65XX_CLK_MAX, i2c->clocks);
+ 
+ 	i2c_mark_adapter_resumed(&i2c->adap);
+ 

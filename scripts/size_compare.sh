@@ -7,9 +7,9 @@
 ###
 ### The script compares locally compiled package with the package indexes
 ### available upstream. This way the storage impact of optimizations or
-### feature modifiactions is easy to see.
+### feature modifications is easy to see.
 ###
-### If no environmental variables are set the scritp reads the current
+### If no environmental variables are set the script reads the current
 ### .config file. The evaluated env variables are the following:
 ###
 ###   TARGET SUBTARGET ARCH PACKAGES BIN_DIR BASE_URL CHECK_INSTALLED

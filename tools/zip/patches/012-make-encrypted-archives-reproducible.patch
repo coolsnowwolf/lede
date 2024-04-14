@@ -1,0 +1,75 @@
+From db9165814823401d57383a8f9e82642129cf4223 Mon Sep 17 00:00:00 2001
+From: Sungbo Eo <mans0n@gorani.run>
+Date: Sat, 12 Feb 2022 16:42:14 +0900
+Subject: [PATCH] make encrypted archives reproducible
+
+Zip always try to generate new encryption header depending on execution
+time and process id, which is far from being reproducible. This commit
+changes the zip srand() seed to a predictable value to generate
+reproducible random bytes for the encryption header. This will compromise
+the goal of secure archive encryption, but it would not be a big problem
+for our purpose.
+
+Signed-off-by: Sungbo Eo <mans0n@gorani.run>
+---
+ crypt.c   | 8 ++++++--
+ globals.c | 1 +
+ zip.h     | 1 +
+ zipup.c   | 2 +-
+ 4 files changed, 9 insertions(+), 3 deletions(-)
+
+--- a/crypt.c
++++ b/crypt.c
+@@ -29,7 +29,6 @@
+   version without encryption capabilities).
+  */
+ 
+-#define ZCRYPT_INTERNAL
+ #include "zip.h"
+ #include "crypt.h"
+ #include "ttyio.h"
+@@ -219,7 +218,12 @@ void crypthead(passwd, crc)
+      * often poorly implemented.
+      */
+     if (++calls == 1) {
+-        srand((unsigned)time(NULL) ^ ZCR_SEED2);
++        unsigned zcr_seed1 = (unsigned)time(NULL);
++#ifndef ZCRYPT_INTERNAL
++        if (epoch > 0)
++            zcr_seed1 = (unsigned)epoch;
++#endif
++        srand(zcr_seed1 ^ ZCR_SEED2);
+     }
+     init_keys(passwd);
+     for (n = 0; n < RAND_HEAD_LEN-2; n++) {
+--- a/globals.c
++++ b/globals.c
+@@ -206,6 +206,7 @@ int read_split_archive = 0;       /* 1=s
+ int split_method = 0;             /* 0=no splits, 1=seekable, 2=data desc, -1=no */
+ uzoff_t split_size = 0;           /* how big each split should be */
+ int split_bell = 0;               /* when pause for next split ring bell */
++time_t epoch = 0;                 /* timestamp from SOURCE_DATE_EPOCH */
+ uzoff_t bytes_prev_splits = 0;    /* total bytes written to all splits before this */
+ uzoff_t bytes_this_entry = 0;     /* bytes written for this entry across all splits */
+ int noisy_splits = 0;             /* note when splits are being created */
+--- a/zip.h
++++ b/zip.h
+@@ -502,6 +502,7 @@ extern uzoff_t bytes_this_split; /* byte
+ extern int read_split_archive;   /* 1=scanzipf_reg detected spanning signature */
+ extern int split_method;         /* 0=no splits, 1=seekable, 2=data descs, -1=no */
+ extern uzoff_t split_size;       /* how big each split should be */
++extern time_t epoch;             /* timestamp from SOURCE_DATE_EPOCH */
+ extern int split_bell;           /* when pause for next split ring bell */
+ extern uzoff_t bytes_prev_splits; /* total bytes written to all splits before this */
+ extern uzoff_t bytes_this_entry; /* bytes written for this entry across all splits */
+--- a/zipup.c
++++ b/zipup.c
+@@ -676,7 +676,7 @@ struct zlist far *z;    /* zip entry to
+   } /* strcmp(z->name, "-") == 0 */
+ 
+   if (extra_fields == 0 && (source_date_epoch = getenv("SOURCE_DATE_EPOCH")) != NULL) {
+-     time_t epoch = strtoull(source_date_epoch, NULL, 10);
++     epoch = strtoull(source_date_epoch, NULL, 10);
+      if (epoch > 0) {
+        ulg epochtim = unix2dostime(&epoch);
+        if (z->tim > epochtim) z->tim = epochtim;

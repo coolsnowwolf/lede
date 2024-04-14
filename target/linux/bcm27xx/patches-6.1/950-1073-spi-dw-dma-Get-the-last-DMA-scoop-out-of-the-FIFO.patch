@@ -1,0 +1,41 @@
+From 686fe776309fba5cad642c40177d39bf1fb320b2 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 7 Nov 2023 14:49:47 +0000
+Subject: [PATCH] spi: dw-dma: Get the last DMA scoop out of the FIFO
+
+With a DMA FIFO threshold greater than 1 (encoded as 0), it is possible
+for data in the FIFO to be inaccessible, causing the transfer to fail
+after a timeout. If the transfer includes a transmission, reduce the
+RX threshold when the TX completes, otherwise use 1 for the whole
+transfer (inefficient, but not catastrophic at SPI data rates).
+
+See: https://github.com/raspberrypi/linux/issues/5696
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-dw-dma.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+--- a/drivers/spi/spi-dw-dma.c
++++ b/drivers/spi/spi-dw-dma.c
+@@ -275,8 +275,10 @@ static void dw_spi_dma_tx_done(void *arg
+ 	struct dw_spi *dws = arg;
+ 
+ 	clear_bit(DW_SPI_TX_BUSY, &dws->dma_chan_busy);
+-	if (test_bit(DW_SPI_RX_BUSY, &dws->dma_chan_busy))
++	if (test_bit(DW_SPI_RX_BUSY, &dws->dma_chan_busy)) {
++		dw_writel(dws, DW_SPI_DMARDLR, 0);
+ 		return;
++	}
+ 
+ 	complete(&dws->dma_completion);
+ }
+@@ -602,6 +604,8 @@ static int dw_spi_dma_transfer(struct dw
+ 
+ 	nents = max(xfer->tx_sg.nents, xfer->rx_sg.nents);
+ 
++	dw_writel(dws, DW_SPI_DMARDLR, xfer->tx_buf ? (dws->rxburst - 1) : 0);
++
+ 	/*
+ 	 * Execute normal DMA-based transfer (which submits the Rx and Tx SG
+ 	 * lists directly to the DMA engine at once) if either full hardware

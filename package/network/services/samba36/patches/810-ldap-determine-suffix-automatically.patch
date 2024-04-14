@@ -1,0 +1,77 @@
+--- a/source3/param/loadparm.c
++++ b/source3/param/loadparm.c
+@@ -5508,3 +5508,17 @@
+ 	return lp_find_security(lp__server_role(),
+ 				lp__security());
+ }
++
++bool lp_ldap_suffix_initial()
++{
++	if (Globals.szLdapSuffix == NULL)
++		return true;
++	if (strlen(Globals.szLdapSuffix) == 0)
++		return true;
++	return false;
++}
++
++void lp_set_ldap_suffix(const char *suffix)
++{
++        string_set(&Globals.szLdapSuffix, suffix);
++}
+--- a/source3/include/proto.h
++++ b/source3/include/proto.h
+@@ -1486,6 +1486,8 @@
+ void widelinks_warning(int snum);
+ const char *lp_ncalrpc_dir(void);
+ void _lp_set_server_role(int server_role);
++bool lp_ldap_suffix_initial();
++void lp_set_ldap_suffix(const char *suffix);
+ 
+ /* The following definitions come from param/loadparm_ctx.c  */
+ 
+--- a/source3/passdb/pdb_ldap_util.c
++++ b/source3/passdb/pdb_ldap_util.c
+@@ -247,6 +247,34 @@
+ }
+ 
+ /**********************************************************************
++ Autodetermine LDAP suffix
++ **********************************************************************/
++void find_ldap_suffix(struct smbldap_state *ldap_state)
++{
++	const char	*namingCtx[] = { "namingContexts", NULL };
++	LDAPMessage	*entry = NULL, *result = NULL;
++	int		rc;
++
++	if (!lp_ldap_suffix_initial())
++		return;
++
++	rc = smbldap_search(ldap_state, "", LDAP_SCOPE_BASE, "(objectClass=*)", namingCtx, 0, &result);
++	if (rc != LDAP_SUCCESS)
++		return;
++
++	entry = ldap_first_entry(ldap_state->ldap_struct, result);
++	if (entry) {
++		char **values = NULL;
++		values = ldap_get_values(ldap_state->ldap_struct, entry, namingCtx[0]);
++		if (values) {
++			lp_set_ldap_suffix(values[0]);
++			ldap_value_free(values);
++		}
++	}
++	ldap_msgfree(result);
++}
++
++/**********************************************************************
+ Search for the domain info entry
+ *********************************************************************/
+ 
+@@ -261,6 +289,8 @@
+ 	int count;
+ 	char *escape_domain_name;
+ 
++	find_ldap_suffix(ldap_state);
++
+ 	escape_domain_name = escape_ldap_string(talloc_tos(), domain_name);
+ 	if (!escape_domain_name) {
+ 		DEBUG(0, ("Out of memory!\n"));

@@ -1,0 +1,180 @@
+From 5b05b1d7a2d2001d9711856608f61abaf7b9a9a5 Mon Sep 17 00:00:00 2001
+From: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Date: Fri, 23 Jun 2023 13:34:56 +0200
+Subject: [PATCH 6/8] nss_dp_main: Use a 'phy-handle' property to connect to
+ the PHY
+
+The original method of connecting a PHY to the ethernet controller
+requires the "qcom,link-poll", and "qcom,phy-mdio-addr" devicetree
+properties. This is redundant. The PHY node already contains the MDIO
+address, and attaching a PHY implies "link-poll".
+
+Allow using a "phy-handle" property. Remove the following properties,
+as they are no longer used:
+    * "qcom,link-poll"
+    * "qcom,phy-mdio-addr"
+    * "mdio-bus"
+    * "qcom,forced-speed"
+    * "qcom,forced-duplex"
+
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ include/nss_dp_dev.h |  5 +--
+ nss_dp_main.c        | 91 +++++++-------------------------------------
+ 2 files changed, 14 insertions(+), 82 deletions(-)
+
+--- a/include/nss_dp_dev.h
++++ b/include/nss_dp_dev.h
+@@ -202,13 +202,10 @@ struct nss_dp_dev {
+ 	unsigned long drv_flags;	/* Driver specific feature flags */
+ 
+ 	/* Phy related stuff */
++	struct device_node *phy_node;	/* Phy device OF node */
+ 	struct phy_device *phydev;	/* Phy device */
+ 	struct mii_bus *miibus;		/* MII bus */
+ 	uint32_t phy_mii_type;		/* RGMII/SGMII/QSGMII */
+-	uint32_t phy_mdio_addr;		/* Mdio address */
+-	bool link_poll;			/* Link polling enable? */
+-	uint32_t forced_speed;		/* Forced speed? */
+-	uint32_t forced_duplex;		/* Forced duplex? */
+ 	uint32_t link_state;		/* Current link state */
+ 	uint32_t pause;			/* Current flow control settings */
+ 
+--- a/nss_dp_main.c
++++ b/nss_dp_main.c
+@@ -418,7 +418,7 @@ static int nss_dp_open(struct net_device
+ 
+ 	netif_start_queue(netdev);
+ 
+-	if (!dp_priv->link_poll) {
++	if (!dp_priv->phydev) {
+ 		/* Notify data plane link is up */
+ 		if (dp_priv->data_plane_ops->link_state(dp_priv->dpc, 1)) {
+ 			netdev_dbg(netdev, "Data plane set link failed\n");
+@@ -615,6 +615,12 @@ static int32_t nss_dp_of_get_pdata(struc
+ 		return -EFAULT;
+ 	}
+ 
++	dp_priv->phy_node = of_parse_phandle(np, "phy-handle", 0);
++	if (!dp_priv->phy_node) {
++		pr_err("%s: error parsing phy-handle\n", np->name);
++		return -EFAULT;
++	}
++
+ 	if (of_property_read_u32(np, "qcom,mactype", &hal_pdata->mactype)) {
+ 		pr_err("%s: error reading mactype\n", np->name);
+ 		return -EFAULT;
+@@ -635,18 +641,6 @@ static int32_t nss_dp_of_get_pdata(struc
+ 		return -EFAULT;
+ #endif
+ 
+-	dp_priv->link_poll = of_property_read_bool(np, "qcom,link-poll");
+-	if (of_property_read_u32(np, "qcom,phy-mdio-addr",
+-		&dp_priv->phy_mdio_addr) && dp_priv->link_poll) {
+-		pr_err("%s: mdio addr required if link polling is enabled\n",
+-				np->name);
+-		return -EFAULT;
+-	}
+-
+-	of_property_read_u32(np, "qcom,forced-speed", &dp_priv->forced_speed);
+-	of_property_read_u32(np, "qcom,forced-duplex", &dp_priv->forced_duplex);
+-
+-
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
+ 	maddr = (uint8_t *)of_get_mac_address(np);
+ #if (LINUX_VERSION_CODE > KERNEL_VERSION(5, 4, 0))
+@@ -695,56 +689,6 @@ static int32_t nss_dp_of_get_pdata(struc
+ 	return 0;
+ }
+ 
+-/*
+- * nss_dp_mdio_attach()
+- */
+-static struct mii_bus *nss_dp_mdio_attach(struct platform_device *pdev)
+-{
+-	struct device_node *mdio_node;
+-	struct platform_device *mdio_plat;
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,1,0))
+-	struct ipq40xx_mdio_data *mdio_data;
+-#endif
+-
+-	/*
+-	 * Find mii_bus using "mdio-bus" handle.
+-	 */
+-	mdio_node = of_parse_phandle(pdev->dev.of_node, "mdio-bus", 0);
+-	if (mdio_node) {
+-		return of_mdio_find_bus(mdio_node);
+-	}
+-
+-	mdio_node = of_find_compatible_node(NULL, NULL, "qcom,qca-mdio");
+-	if (!mdio_node) {
+-		mdio_node = of_find_compatible_node(NULL, NULL,
+-							"qcom,ipq40xx-mdio");
+-		if (!mdio_node) {
+-			dev_err(&pdev->dev, "cannot find mdio node by phandle\n");
+-			return NULL;
+-		}
+-	}
+-
+-	mdio_plat = of_find_device_by_node(mdio_node);
+-	if (!mdio_plat) {
+-		dev_err(&pdev->dev, "cannot find platform device from mdio node\n");
+-		of_node_put(mdio_node);
+-		return NULL;
+-	}
+-
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0))
+-	return dev_get_drvdata(&mdio_plat->dev);
+-#else
+-	mdio_data = dev_get_drvdata(&mdio_plat->dev);
+-	if (!mdio_data) {
+-		dev_err(&pdev->dev, "cannot get mii bus reference from device data\n");
+-		of_node_put(mdio_node);
+-		return NULL;
+-	}
+-
+-	return mdio_data->mii_bus;
+-#endif
+-}
+-
+ #ifdef CONFIG_NET_SWITCHDEV
+ /*
+  * nss_dp_is_phy_dev()
+@@ -803,7 +747,6 @@ static int32_t nss_dp_probe(struct platf
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct nss_gmac_hal_platform_data gmac_hal_pdata;
+ 	int32_t ret = 0;
+-	uint8_t phy_id[MII_BUS_ID_SIZE + 3];
+ #if defined(NSS_DP_PPE_SUPPORT)
+ 	uint32_t vsi_id;
+ 	fal_port_t port_id;
+@@ -880,22 +823,14 @@ static int32_t nss_dp_probe(struct platf
+ 
+ 	dp_priv->drv_flags |= NSS_DP_PRIV_FLAG(INIT_DONE);
+ 
+-	if (dp_priv->link_poll) {
+-		dp_priv->miibus = nss_dp_mdio_attach(pdev);
+-		if (!dp_priv->miibus) {
+-			netdev_dbg(netdev, "failed to find miibus\n");
+-			goto phy_setup_fail;
+-		}
+-		snprintf(phy_id, MII_BUS_ID_SIZE + 3, PHY_ID_FMT,
+-				dp_priv->miibus->id, dp_priv->phy_mdio_addr);
+-
++	if (dp_priv->phy_node) {
+ 		SET_NETDEV_DEV(netdev, &pdev->dev);
+ 
+-		dp_priv->phydev = phy_connect(netdev, phy_id,
+-				&nss_dp_adjust_link,
+-				dp_priv->phy_mii_type);
+-		if (IS_ERR(dp_priv->phydev)) {
+-			netdev_dbg(netdev, "failed to connect to phy device\n");
++		dp_priv->phydev = of_phy_connect(netdev, dp_priv->phy_node,
++		                                 &nss_dp_adjust_link, 0,
++		                                 dp_priv->phy_mii_type);
++		if (!(dp_priv->phydev)) {
++			netdev_err(netdev, "failed to connect to phy device\n");
+ 			goto phy_setup_fail;
+ 		}
+ 	}

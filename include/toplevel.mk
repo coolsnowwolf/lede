@@ -51,11 +51,12 @@ path:=$(subst :,$(space),$(PATH))
 path:=$(filter-out .%,$(path))
 path:=$(subst $(space),:,$(path))
 export PATH:=$(path)
+export STAGING_DIR_HOST:=$(if $(STAGING_DIR),$(abspath $(STAGING_DIR)/../host),$(TOPDIR)/staging_dir/host)
 
 unexport TAR_OPTIONS
 
 ifeq ($(FORCE),)
-  .config scripts/config/conf scripts/config/mconf: staging_dir/host/.prereq-build
+  .config scripts/config/conf scripts/config/mconf: $(STAGING_DIR_HOST)/.prereq-build
 endif
 
 SCAN_COOKIE?=$(shell echo $$$$)
@@ -65,7 +66,7 @@ SUBMAKE:=umask 022; $(SUBMAKE)
 
 ULIMIT_FIX=_limit=`ulimit -n`; [ "$$_limit" = "unlimited" -o "$$_limit" -ge 1024 ] || ulimit -n 1024;
 
-prepare-mk: staging_dir/host/.prereq-build FORCE ;
+prepare-mk: $(STAGING_DIR_HOST)/.prereq-build FORCE ;
 
 ifdef SDK
   IGNORE_PACKAGES = linux
@@ -74,10 +75,10 @@ endif
 _ignore = $(foreach p,$(IGNORE_PACKAGES),--ignore $(p))
 
 prepare-tmpinfo: FORCE
-	@+$(MAKE) -r -s staging_dir/host/.prereq-build $(PREP_MK)
+	@+$(MAKE) -r -s $(STAGING_DIR_HOST)/.prereq-build $(PREP_MK)
 	mkdir -p tmp/info
 	$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f include/scan.mk SCAN_TARGET="packageinfo" SCAN_DIR="package" SCAN_NAME="package" SCAN_DEPTH=5 SCAN_EXTRA=""
-	$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f include/scan.mk SCAN_TARGET="targetinfo" SCAN_DIR="target/linux" SCAN_NAME="target" SCAN_DEPTH=2 SCAN_EXTRA="" SCAN_MAKEOPTS="TARGET_BUILD=1"
+	$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f include/scan.mk SCAN_TARGET="targetinfo" SCAN_DIR="target/linux" SCAN_NAME="target" SCAN_DEPTH=3 SCAN_EXTRA="" SCAN_MAKEOPTS="TARGET_BUILD=1"
 	for type in package target; do \
 		f=tmp/.$${type}info; t=tmp/.config-$${type}.in; \
 		[ "$$t" -nt "$$f" ] || ./scripts/$${type}-metadata.pl $(_ignore) config "$$f" > "$$t" || { rm -f "$$t"; echo "Failed to build $$t"; false; break; }; \
@@ -101,7 +102,7 @@ ifneq ($(DISTRO_PKG_CONFIG),)
 scripts/config/%onf: export PATH:=$(dir $(DISTRO_PKG_CONFIG)):$(PATH)
 endif
 scripts/config/%onf: CFLAGS+= -O2
-scripts/config/%onf:
+scripts/config/%onf: FORCE
 	@$(_SINGLE)$(SUBMAKE) $(if $(findstring s,$(OPENWRT_VERBOSE)),,-s) \
 		-C scripts/config $(notdir $@)
 
@@ -151,7 +152,7 @@ xconfig: scripts/config/qconf prepare-tmpinfo FORCE
 
 prepare_kernel_conf: .config toolchain/install FORCE
 
-ifeq ($(wildcard staging_dir/host/bin/quilt),)
+ifeq ($(wildcard $(STAGING_DIR_HOST)/bin/quilt),)
   prepare_kernel_conf:
 	@+$(SUBMAKE) -r tools/quilt/compile
 else
@@ -175,7 +176,7 @@ kernel_nconfig: prepare_kernel_conf
 kernel_xconfig: prepare_kernel_conf
 	$(_SINGLE)$(NO_TRACE_MAKE) -C target/linux xconfig
 
-staging_dir/host/.prereq-build: include/prereq-build.mk
+$(STAGING_DIR_HOST)/.prereq-build: include/prereq-build.mk
 	mkdir -p tmp
 	@$(_SINGLE)$(NO_TRACE_MAKE) -j1 -r -s -f $(TOPDIR)/include/prereq-build.mk prereq 2>/dev/null || { \
 		echo "Prerequisite check failed. Use FORCE=1 to override."; \
@@ -198,7 +199,7 @@ else
   DOWNLOAD_DIRS = package/download
 endif
 
-download: .config FORCE $(if $(wildcard $(TOPDIR)/staging_dir/host/bin/flock),,tools/flock/compile)
+download: .config FORCE $(if $(wildcard $(STAGING_DIR_HOST)/bin/flock),,tools/flock/compile)
 	@+$(foreach dir,$(DOWNLOAD_DIRS),$(SUBMAKE) $(dir);)
 
 clean dirclean: .config
@@ -262,7 +263,7 @@ distclean:
 	@$(_SINGLE)$(SUBMAKE) -C scripts/config clean
 
 ifeq ($(findstring v,$(DEBUG)),)
-  .SILENT: symlinkclean clean dirclean distclean config-clean download help tmpinfo-clean .config scripts/config/mconf scripts/config/conf menuconfig staging_dir/host/.prereq-build tmp/.prereq-package prepare-tmpinfo
+  .SILENT: symlinkclean clean dirclean distclean config-clean download help tmpinfo-clean .config scripts/config/mconf scripts/config/conf menuconfig $(STAGING_DIR_HOST)/.prereq-build tmp/.prereq-package prepare-tmpinfo
 endif
 .PHONY: help FORCE
 .NOTPARALLEL:
