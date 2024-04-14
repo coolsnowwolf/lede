@@ -3,6 +3,8 @@
 # Copyright (C) 2013-2019 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 
+KERNEL_LOADADDR:=0x40008000
+
 define Device/cubietech_cubieboard2
   DEVICE_VENDOR := Cubietech
   DEVICE_MODEL := Cubieboard2

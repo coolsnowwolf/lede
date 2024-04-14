@@ -132,6 +132,12 @@ define U-Boot/OLIMEX_A13_SOM
   BUILD_DEVICES:=olimex_a13-olimex-som
 endef
 
+define U-Boot/licheepi_nano
+  BUILD_SUBTARGET:=arm926ejs
+  NAME:=LicheePi Nano
+  BUILD_DEVICES:=licheepi-nano
+endef
+
 define U-Boot/Linksprite_pcDuino
   BUILD_SUBTARGET:=cortexa8
   NAME:=Linksprite pcDuino
@@ -241,6 +247,12 @@ define U-Boot/pangolin
   BUILD_SUBTARGET:=cortexa7
   NAME:=Theobroma A31-yQ7 devboard
   UENV:=pangolin
+endef
+
+define U-Boot/popstick
+  BUILD_SUBTARGET:=arm926ejs
+  NAME:=PopStick
+  BUILD_DEVICES:=popstick-v1.1
 endef
 
 define U-Boot/libretech_all_h3_cc_h5
@@ -397,6 +409,7 @@ UBOOT_TARGETS := \
 	Marsboard_A10 \
 	Mele_M9 \
 	OLIMEX_A13_SOM \
+	licheepi_nano \
 	Linksprite_pcDuino \
 	Linksprite_pcDuino3 \
 	Linksprite_pcDuino3_Nano \
@@ -421,6 +434,7 @@ UBOOT_TARGETS := \
 	orangepi_zero2 \
 	orangepi_zero3 \
 	pangolin \
+	popstick \
 	pine64_plus \
 	Sinovoip_BPI_M3 \
 	sopine_baseboard \
