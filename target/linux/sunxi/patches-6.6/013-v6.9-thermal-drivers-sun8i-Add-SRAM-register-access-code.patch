@@ -1,0 +1,126 @@
+From f8b54d1120b81ed57bed96cc8e814ba08886d1e5 Mon Sep 17 00:00:00 2001
+From: Andre Przywara <andre.przywara@arm.com>
+Date: Mon, 19 Feb 2024 15:36:37 +0000
+Subject: [PATCH] thermal/drivers/sun8i: Add SRAM register access code
+
+The Allwinner H616 SoC needs to clear a bit in one register in the SRAM
+controller, to report reasonable temperature values. On reset, bit 16 in
+register 0x3000000 is set, which leads to the driver reporting
+temperatures around 200C. Clearing this bit brings the values down to the
+expected range. The BSP code does a one-time write in U-Boot, with a
+comment just mentioning the effect on the THS, but offering no further
+explanation.
+
+To not rely on firmware to set things up for us, add code that queries
+the SRAM controller device via a DT phandle link, then clear just this
+single bit.
+
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Acked-by: Vasily Khoruzhick <anarsoul@gmail.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20240219153639.179814-6-andre.przywara@arm.com
+---
+ drivers/thermal/sun8i_thermal.c | 51 +++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+--- a/drivers/thermal/sun8i_thermal.c
++++ b/drivers/thermal/sun8i_thermal.c
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/nvmem-consumer.h>
+ #include <linux/of.h>
++#include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+@@ -66,6 +67,7 @@ struct tsensor {
+ struct ths_thermal_chip {
+ 	bool            has_mod_clk;
+ 	bool            has_bus_clk_reset;
++	bool		needs_sram;
+ 	int		sensor_num;
+ 	int		offset;
+ 	int		scale;
+@@ -83,12 +85,16 @@ struct ths_device {
+ 	const struct ths_thermal_chip		*chip;
+ 	struct device				*dev;
+ 	struct regmap				*regmap;
++	struct regmap_field			*sram_regmap_field;
+ 	struct reset_control			*reset;
+ 	struct clk				*bus_clk;
+ 	struct clk                              *mod_clk;
+ 	struct tsensor				sensor[MAX_SENSOR_NUM];
+ };
+ 
++/* The H616 needs to have a bit 16 in the SRAM control register cleared. */
++static const struct reg_field sun8i_ths_sram_reg_field = REG_FIELD(0x0, 16, 16);
++
+ /* Temp Unit: millidegree Celsius */
+ static int sun8i_ths_calc_temp(struct ths_device *tmdev,
+ 			       int id, int reg)
+@@ -337,6 +343,34 @@ static void sun8i_ths_reset_control_asse
+ 	reset_control_assert(data);
+ }
+ 
++static struct regmap *sun8i_ths_get_sram_regmap(struct device_node *node)
++{
++	struct device_node *sram_node;
++	struct platform_device *sram_pdev;
++	struct regmap *regmap = NULL;
++
++	sram_node = of_parse_phandle(node, "allwinner,sram", 0);
++	if (!sram_node)
++		return ERR_PTR(-ENODEV);
++
++	sram_pdev = of_find_device_by_node(sram_node);
++	if (!sram_pdev) {
++		/* platform device might not be probed yet */
++		regmap = ERR_PTR(-EPROBE_DEFER);
++		goto out_put_node;
++	}
++
++	/* If no regmap is found then the other device driver is at fault */
++	regmap = dev_get_regmap(&sram_pdev->dev, NULL);
++	if (!regmap)
++		regmap = ERR_PTR(-EINVAL);
++
++	platform_device_put(sram_pdev);
++out_put_node:
++	of_node_put(sram_node);
++	return regmap;
++}
++
+ static int sun8i_ths_resource_init(struct ths_device *tmdev)
+ {
+ 	struct device *dev = tmdev->dev;
+@@ -381,6 +415,19 @@ static int sun8i_ths_resource_init(struc
+ 	if (ret)
+ 		return ret;
+ 
++	if (tmdev->chip->needs_sram) {
++		struct regmap *regmap;
++
++		regmap = sun8i_ths_get_sram_regmap(dev->of_node);
++		if (IS_ERR(regmap))
++			return PTR_ERR(regmap);
++		tmdev->sram_regmap_field = devm_regmap_field_alloc(dev,
++						      regmap,
++						      sun8i_ths_sram_reg_field);
++		if (IS_ERR(tmdev->sram_regmap_field))
++			return PTR_ERR(tmdev->sram_regmap_field);
++	}
++
+ 	ret = sun8i_ths_calibrate(tmdev);
+ 	if (ret)
+ 		return ret;
+@@ -427,6 +474,10 @@ static int sun50i_h6_thermal_init(struct
+ {
+ 	int val;
+ 
++	/* The H616 needs to have a bit in the SRAM control register cleared. */
++	if (tmdev->sram_regmap_field)
++		regmap_field_write(tmdev->sram_regmap_field, 0);
++
+ 	/*
+ 	 * The manual recommends an overall sample frequency of 50 KHz (20us,
+ 	 * 480 cycles at 24 MHz), which provides plenty of time for both the
