@@ -3,6 +3,8 @@
 # Copyright (C) 2013-2016 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 
+KERNEL_LOADADDR:=0x40008000
+
 define Device/sun50i
   SUNXI_DTS_DIR := allwinner/
   KERNEL_NAME := Image

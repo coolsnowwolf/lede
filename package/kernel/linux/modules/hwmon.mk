@@ -82,7 +82,7 @@ define KernelPackage/hwmon-coretemp
   KCONFIG:=CONFIG_SENSORS_CORETEMP
   FILES:=$(LINUX_DIR)/drivers/hwmon/coretemp.ko
   AUTOLOAD:=$(call AutoProbe,coretemp)
-  $(call AddDepends/hwmon,)
+  $(call AddDepends/hwmon,@TARGET_x86)
 endef
 
 define KernelPackage/hwmon-coretemp/description
@@ -570,6 +570,21 @@ define KernelPackage/hwmon-sht3x/description
 endef
 
 $(eval $(call KernelPackage,hwmon-sht3x))
+
+
+define KernelPackage/hwmon-tc654
+  TITLE:=TC654 monitoring support
+  KCONFIG:=CONFIG_SENSORS_TC654
+  FILES:=$(LINUX_DIR)/drivers/hwmon/tc654.ko
+  AUTOLOAD:=$(call AutoLoad,60,tc654)
+  $(call AddDepends/hwmon,+kmod-i2c-core)
+endef
+
+define KernelPackage/hwmon-tc654/description
+ Kernel module for Microchip TC654/TC655 and compatibles
+endef
+
+$(eval $(call KernelPackage,hwmon-tc654))
 
 
 define KernelPackage/hwmon-tmp102
