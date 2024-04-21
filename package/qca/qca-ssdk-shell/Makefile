@@ -13,9 +13,10 @@ include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
 
 define Package/qca-ssdk-shell
-  SECTION:=QCA
+  SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Shell application for QCA SSDK
+  DEPENDS:=@(TARGET_qualcommax)
 endef
 
 define Package/qca-ssdk-shell/Description

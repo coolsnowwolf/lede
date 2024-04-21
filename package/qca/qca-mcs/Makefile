@@ -21,9 +21,10 @@ define KernelPackage/qca-mcs
   URL:=http://www.qca.qualcomm.com
   MAINTAINER:=Qualcomm Atheros, Inc.
   TITLE:=QCA Multicast Snooping Support
-  DEPENDS:=+@KERNEL_IPV6_MROUTE +@KERNEL_IP_MROUTE
+  DEPENDS:=@TARGET_qualcommax \
+	+@KERNEL_IPV6_MROUTE +@KERNEL_IP_MROUTE
   KCONFIG:=CONFIG_NETFILTER=y \
-           CONFIG_BRIDGE_NETFILTER=y
+	   CONFIG_BRIDGE_NETFILTER=y
   FILES:=$(PKG_BUILD_DIR)/qca-mcs.ko
   AUTOLOAD:=$(call AutoLoad,41,qca-mcs)
 endef
@@ -33,11 +34,11 @@ define KernelPackage/qca-mcs/Description
 endef
 
 QCA_MC_SNOOPING_HEADERS= \
-            $(PKG_BUILD_DIR)/mc_api.h \
-            $(PKG_BUILD_DIR)/mc_ecm.h \
+			$(PKG_BUILD_DIR)/mc_api.h \
+			$(PKG_BUILD_DIR)/mc_ecm.h \
 
 define Build/InstallDev
-  mkdir -p $(1)/usr/include/qca-mcs
+	$(INSTALL_DIR) $(1)/usr/include/qca-mcs
 	$(foreach header_file,$(QCA_MC_SNOOPING_HEADERS), $(CP) $(header_file) $(1)/usr/include/qca-mcs;)
 	$(foreach header_file,$(QCA_MC_SNOOPING_HEADERS), $(CP) $(header_file) $(1)/usr/include/;)
 endef
@@ -54,14 +55,14 @@ QCA_MC_SNOOPING_MAKE_OPTS:= \
 
 define Build/Compile
 	+$(MAKE) -C $(LINUX_DIR) \
-      $(KERNEL_MAKE_FLAGS) \
-      $(PKG_JOBS) \
-      KBUILDPATH=$(LINUX_DIR) \
-      $(PKG_MAKE_FLAGS) \
-      M=$(PKG_BUILD_DIR) \
-      EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
-      $(strip $(QCA_MC_SNOOPING_MAKE_OPTS)) \
-      modules
+		$(KERNEL_MAKE_FLAGS) \
+		$(PKG_JOBS) \
+		KBUILDPATH=$(LINUX_DIR) \
+		$(PKG_MAKE_FLAGS) \
+		M=$(PKG_BUILD_DIR) \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+		$(strip $(QCA_MC_SNOOPING_MAKE_OPTS)) \
+		modules
 endef
 
 $(eval $(call KernelPackage,qca-mcs))

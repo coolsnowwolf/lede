@@ -34,7 +34,7 @@ define KernelPackage/qca-nss-drv-gre
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - GRE
   DEPENDS:=@TARGET_qualcommax +@NSS_DRV_GRE_ENABLE +kmod-gre6 \
-  	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
+	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:= \
 	$(PKG_BUILD_DIR)/gre/qca-nss-gre.ko \
 	$(PKG_BUILD_DIR)/gre/test/qca-nss-gre-test.ko
@@ -66,7 +66,7 @@ define KernelPackage/qca-nss-drv-pptp
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - PPTP
-  DEPENDS:=+@NSS_DRV_PPTP_ENABLE +kmod-pptp \
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_PPTP_ENABLE +kmod-pptp \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/pptp/qca-nss-pptp.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-pptp)
@@ -81,8 +81,8 @@ define KernelPackage/qca-nss-drv-pppoe
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - PPPoE
-  DEPENDS:=+@NSS_DRV_PPPOE_ENABLE +kmod-ppp +kmod-pppoe \
-	   +PACKAGE_kmod-bonding:kmod-bonding \
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_PPPOE_ENABLE \
+	   +PACKAGE_kmod-bonding:kmod-bonding +kmod-pppoe \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/pppoe/qca-nss-pppoe.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-pppoe)
@@ -97,7 +97,7 @@ define KernelPackage/qca-nss-drv-map-t
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - MAP-T
-  DEPENDS:=+@NSS_DRV_MAPT_ENABLE \
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_MAPT_ENABLE \
 	   +PACKAGE_kmod-nat46:kmod-nat46 \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/map/map-t/qca-nss-map-t.ko
@@ -113,8 +113,8 @@ define KernelPackage/qca-nss-drv-tun6rd
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - tun6rd
-  DEPENDS:=+@NSS_DRV_TUN6RD_ENABLE +kmod-sit +6rd \
-	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_TUN6RD_ENABLE +6rd \
+	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv +kmod-sit
   FILES:=$(PKG_BUILD_DIR)/qca-nss-tun6rd.ko
   AUTOLOAD:=$(call AutoLoad,60,qca-nss-tun6rd)
 endef
@@ -128,8 +128,8 @@ define KernelPackage/qca-nss-drv-tunipip6
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - DS-lite and ipip6 Tunnel
-  DEPENDS:=+@NSS_DRV_TUNIPIP6_ENABLE +kmod-iptunnel6 +kmod-ip6-tunnel \
-	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_TUNIPIP6_ENABLE +kmod-iptunnel6 \
+	   +kmod-ip6-tunnel +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/tunipip6/qca-nss-tunipip6.ko
   AUTOLOAD:=$(call AutoLoad,60,qca-nss-tunipip6)
 endef
@@ -180,7 +180,7 @@ define KernelPackage/qca-nss-drv-dtlsmgr
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS (connection manager) - dtlsmgr
-  DEPENDS:=+@NSS_DRV_DTLS_ENABLE \
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_DTLS_ENABLE \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv \
 	   +PACKAGE_kmod-qca-nss-cfi-cryptoapi:kmod-qca-nss-cfi-cryptoapi
   FILES:=$(PKG_BUILD_DIR)/dtls/$(DTLSMGR_DIR)/qca-nss-dtlsmgr.ko
@@ -247,8 +247,8 @@ define KernelPackage/qca-nss-drv-ovpn-link
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for interfacing NSS OpenVPN manager with ECM
   DEPENDS:=@TARGET_qualcommax \
-  	   +kmod-qca-nss-drv-ovpn-mgr \
-  	   +@PACKAGE_kmod-qca-nss-ecm
+	   +kmod-qca-nss-drv-ovpn-mgr \
+	   +@PACKAGE_kmod-qca-nss-ecm
   FILES:=$(PKG_BUILD_DIR)/openvpn/plugins/qca-nss-ovpn-link.ko
 endef
 
@@ -260,7 +260,7 @@ define KernelPackage/qca-nss-drv-pvxlanmgr
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
-  DEPENDS:=+@NSS_DRV_PVXLAN_ENABLE \
+  DEPENDS:=@TARGET_qualcommax +@NSS_DRV_PVXLAN_ENABLE \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   TITLE:=NSS PVXLAN Manager for QCA NSS driver
   FILES:=$(PKG_BUILD_DIR)/pvxlanmgr/qca-nss-pvxlanmgr.ko
@@ -321,8 +321,9 @@ define KernelPackage/qca-nss-drv-vxlanmgr
   SECTION:=kernel
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
-  DEPENDS:=+@NSS_DRV_VXLAN_ENABLE +@NSS_DRV_PVXLAN_ENABLE +kmod-vxlan \
-  	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
+  DEPENDS:=@TARGET_qualcommax +kmod-vxlan \
+	   +@NSS_DRV_VXLAN_ENABLE +@NSS_DRV_PVXLAN_ENABLE \
+	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   TITLE:=NSS VxLAN Manager for QCA NSS driver
   FILES:=$(PKG_BUILD_DIR)/vxlanmgr/qca-nss-vxlanmgr.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-vxlanmgr)
@@ -339,7 +340,7 @@ define KernelPackage/qca-nss-drv-vlan-mgr
   TITLE:=Kernel driver for NSS vlan manager
   DEPENDS:=@TARGET_qualcommax \
 	   +@NSS_DRV_VLAN_ENABLE \
-  	   +PACKAGE_kmod-bonding:kmod-bonding \
+	   +PACKAGE_kmod-bonding:kmod-bonding \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/vlan/qca-nss-vlan.ko
   AUTOLOAD:=$(call AutoLoad,51,qca-nss-vlan)
@@ -368,7 +369,7 @@ define KernelPackage/qca-nss-drv-match
  SECTION:=kernel
  CATEGORY:=Kernel modules
  SUBMENU:=Network Devices
- DEPENDS:=+@NSS_DRV_MATCH_ENABLE \
+ DEPENDS:=@TARGET_qualcommax +@NSS_DRV_MATCH_ENABLE \
 	  +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
  TITLE:=NSS Match for QCA NSS driver
  FILES:=$(PKG_BUILD_DIR)/match/qca-nss-match.ko
@@ -398,7 +399,7 @@ define KernelPackage/qca-nss-drv-netlink
   SUBMENU:=Network Devices
   TITLE:=NSS NETLINK Manager for QCA NSS driver
   DEPENDS:=@TARGET_qualcommax +@NSS_DRV_C2C_ENABLE +@NSS_DRV_GRE_REDIR_ENABLE \
-  	   +@NSS_DRV_IPV4_REASM_ENABLE +@NSS_DRV_IPV6_ENABLE +@NSS_DRV_IPV6_REASM_ENABLE \
+	   +@NSS_DRV_IPV4_REASM_ENABLE +@NSS_DRV_IPV6_ENABLE +@NSS_DRV_IPV6_REASM_ENABLE \
 	   +@NSS_DRV_RMNET_ENABLE +@NSS_DRV_OAM_ENABLE +@NSS_DRV_QRFS_ENABLE \
 	   +kmod-pppoe +kmod-qca-nss-drv-dtlsmgr \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
@@ -414,7 +415,8 @@ define KernelPackage/qca-nss-drv-qdisc
   CATEGORY:=Kernel modules
   SUBMENU:=Network Support
   TITLE:=Qdisc for configuring shapers in NSS
-  DEPENDS:=+@NSS_DRV_SHAPER_ENABLE +@NSS_DRV_IGS_ENABLE \
+  DEPENDS:=@TARGET_qualcommax \
+	   +@NSS_DRV_SHAPER_ENABLE +@NSS_DRV_IGS_ENABLE \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
   FILES:=$(PKG_BUILD_DIR)/nss_qdisc/qca-nss-qdisc.ko
   KCONFIG:=CONFIG_NET_CLS_ACT=y
@@ -426,7 +428,7 @@ Linux qdisc that aids in configuring shapers in the NSS
 endef
 
 define Build/InstallDev
-  mkdir -p $(1)/usr/include/qca-nss-clients
+	$(INSTALL_DIR) $(1)/usr/include/qca-nss-clients
 	$(CP) $(PKG_BUILD_DIR)/netlink/include/* $(1)/usr/include/qca-nss-clients/
 	$(CP) $(PKG_BUILD_DIR)/exports/* $(1)/usr/include/qca-nss-clients/
 endef
