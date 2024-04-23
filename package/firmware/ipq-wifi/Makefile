@@ -6,9 +6,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firmware/qca-wireless.git
-PKG_SOURCE_DATE:=2024-01-06
-PKG_SOURCE_VERSION:=71f45cff8944405b7cc2bf5c19df2bd8fe7f2421
-PKG_MIRROR_HASH:=90c3c1659c54cdb4685d0a71633746c1000230e459801eb8ce12c805a994cc37
+PKG_SOURCE_DATE:=2024-04-16
+PKG_SOURCE_VERSION:=1d51799e6768a304da7840b8346e7487efd77f49
+PKG_MIRROR_HASH:=9cf0917532283c1a1708643022a5ed1ec4af6bb9ebaff57fc2f0f2c229f2469e
 
 PKG_FLAGS:=nonshared
 
@@ -38,7 +38,10 @@ ALLWIFIBOARDS:= \
 	glinet_gl-axt1800 \
 	linksys_mr7350 \
 	linksys_mx4200 \
+	linksys_mx5300 \
+	netgear_lbr20 \
 	netgear_rax120v2 \
+	netgear_wax214 \
 	netgear_wax218 \
 	netgear_wax620 \
 	netgear_wax630 \
@@ -52,9 +55,8 @@ ALLWIFIBOARDS:= \
 	xiaomi_ax9000 \
 	xiaomi_rm1800 \
 	yuncore_ax880 \
-	zn_m2 \
+	yuncore_fap650 \
 	zte_mf269 \
-	zte_mf289f \
 	zte_mf287 \
 	zte_mf287plus \
 	zyxel_nbg7815
@@ -92,7 +94,7 @@ define ipq-wifi-install-one
     $(call ipq-wifi-install-one-to,$(1),$(2),QCA99X0/hw2.0),\
   $(if $(filter $(suffix $(1)),.IPQ6018 .ipq6018),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),IPQ6018/hw1.0),\
-  $(if $(filter $(suffix $(1)),.IPQ8074 .ipq8074 .ipq8174),\
+  $(if $(filter $(suffix $(1)),.IPQ8074 .ipq8074),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),IPQ8074/hw2.0),\
   $(if $(filter $(suffix $(1)),.QCN9074 .qcn9074),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),QCN9074/hw1.0),\
@@ -143,7 +145,10 @@ $(eval $(call generate-ipq-wifi-package,glinet_gl-ax1800,GL.iNet GL-AX1800))
 $(eval $(call generate-ipq-wifi-package,glinet_gl-axt1800,GL.iNet GL-AXT1800))
 $(eval $(call generate-ipq-wifi-package,linksys_mr7350,Linksys MR7350))
 $(eval $(call generate-ipq-wifi-package,linksys_mx4200,Linksys MX4200))
+$(eval $(call generate-ipq-wifi-package,linksys_mx5300,Linksys MX5300))
+$(eval $(call generate-ipq-wifi-package,netgear_lbr20,Netgear LBR20))
 $(eval $(call generate-ipq-wifi-package,netgear_rax120v2,Netgear RAX120v2))
+$(eval $(call generate-ipq-wifi-package,netgear_wax214,Netgear WAX214))
 $(eval $(call generate-ipq-wifi-package,netgear_wax218,Netgear WAX218))
 $(eval $(call generate-ipq-wifi-package,netgear_wax620,Netgear WAX620))
 $(eval $(call generate-ipq-wifi-package,netgear_wax630,Netgear WAX630))
@@ -157,9 +162,8 @@ $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
 $(eval $(call generate-ipq-wifi-package,xiaomi_rm1800,Xiaomi RM1800))
 $(eval $(call generate-ipq-wifi-package,yuncore_ax880,Yuncore AX880))
-$(eval $(call generate-ipq-wifi-package,zn_m2,ZN M2))
+$(eval $(call generate-ipq-wifi-package,yuncore_fap650,Yuncore FAP650))
 $(eval $(call generate-ipq-wifi-package,zte_mf269,ZTE MF269))
-$(eval $(call generate-ipq-wifi-package,zte_mf289f,ZTE MF289F))
 $(eval $(call generate-ipq-wifi-package,zte_mf287,ZTE MF287))
 $(eval $(call generate-ipq-wifi-package,zte_mf287plus,ZTE MF287Plus))
 $(eval $(call generate-ipq-wifi-package,zyxel_nbg7815,Zyxel NBG7815))
