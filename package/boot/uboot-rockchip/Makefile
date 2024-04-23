@@ -178,6 +178,13 @@ define U-Boot/panther-x2-rk3566
     panther_x2
 endef
 
+define U-Boot/rock-3c-rk3566
+  $(U-Boot/rk3566/Default)
+  NAME:=ROCK 3C
+  BUILD_DEVICES:= \
+    radxa_rock-3c
+endef
+
 # RK3568 boards
 
 define U-Boot/rk3568/Default
@@ -270,6 +277,7 @@ endef
 
 UBOOT_TARGETS := \
   panther-x2-rk3566 \
+  rock-3c-rk3566 \
   lyt-t68m-rk3568 \
   mrkaio-m68s-rk3568 \
   nanopi-r5s-rk3568 \

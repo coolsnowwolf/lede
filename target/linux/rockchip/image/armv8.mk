@@ -232,13 +232,23 @@ TARGET_DEVICES += radxa_e25
 
 define Device/radxa_rock-3a
   DEVICE_VENDOR := Radxa
-  DEVICE_MODEL := ROCK3 A
+  DEVICE_MODEL := ROCK 3A
   SOC := rk3568
   SUPPORTED_DEVICES := radxa,rock3a
   UBOOT_DEVICE_NAME := rock-3a-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
 endef
 TARGET_DEVICES += radxa_rock-3a
+
+define Device/radxa_rock-3c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 3C
+  SOC := rk3566
+  UBOOT_DEVICE_NAME := rock-3c-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800 wpad-openssl
+endef
+TARGET_DEVICES += radxa_rock-3c
 
 define Device/radxa_rock-pi-4
   DEVICE_VENDOR := Radxa
