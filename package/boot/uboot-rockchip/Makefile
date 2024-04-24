@@ -188,8 +188,8 @@ define U-Boot/panther-x2-rk3566
     panther_x2
   DEPENDS:=+PACKAGE_u-boot-panther-x2-rk3566:arm-trusted-firmware-rk3566
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3566_ddr_1056MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3566_ddr_1056MHz_v1.18.bin
 endef
 
 # RK3568 boards
@@ -201,8 +201,8 @@ define U-Boot/lyt-t68m-rk3568
     lyt_t68m
   DEPENDS:=+PACKAGE_u-boot-lyt-t68m-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/mrkaio-m68s-rk3568
@@ -213,8 +213,8 @@ define U-Boot/mrkaio-m68s-rk3568
     ezpro_mrkaio-m68s-plus
   DEPENDS:=+PACKAGE_u-boot-mrkaio-m68s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/nanopi-r5s-rk3568
@@ -225,8 +225,8 @@ define U-Boot/nanopi-r5s-rk3568
     friendlyarm_nanopi-r5s
   DEPENDS:=+PACKAGE_u-boot-nanopi-r5s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/opc-h68k-rk3568
@@ -238,8 +238,8 @@ define U-Boot/opc-h68k-rk3568
     hinlink_opc-h69k
   DEPENDS:=+PACKAGE_u-boot-opc-h68k-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/photonicat-rk3568
@@ -249,8 +249,8 @@ define U-Boot/photonicat-rk3568
     ariaboard_photonicat
   DEPENDS:=+PACKAGE_u-boot-photonicat-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/radxa-e25-rk3568
@@ -260,8 +260,8 @@ define U-Boot/radxa-e25-rk3568
     radxa_e25
   DEPENDS:=+PACKAGE_u-boot-radxa-e25-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/rock-3a-rk3568
@@ -271,8 +271,8 @@ define U-Boot/rock-3a-rk3568
     radxa_rock-3a
   DEPENDS:=+PACKAGE_u-boot-rock-3a-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/r66s-rk3568
@@ -283,8 +283,8 @@ define U-Boot/r66s-rk3568
     fastrhino_r68s
   DEPENDS:=+PACKAGE_u-boot-r66s-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/seewo-sv21-rk3568
@@ -294,8 +294,8 @@ define U-Boot/seewo-sv21-rk3568
     seewo_sv21-rk3568
   DEPENDS:=+PACKAGE_u-boot-seewo-sv21-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/station-p2-rk3568
@@ -305,8 +305,8 @@ define U-Boot/station-p2-rk3568
        firefly_station-p2
   DEPENDS:=+PACKAGE_u-boot-station-p2-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 define U-Boot/advantech-rsb4810-rk3568
@@ -316,8 +316,8 @@ define U-Boot/advantech-rsb4810-rk3568
        advantech_rsb4810
   DEPENDS:=+PACKAGE_u-boot-advantech-rsb4810-rk3568:arm-trusted-firmware-rk3568
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3568_bl31_v1.44.elf
-  DDR:=rk3568_ddr_1560MHz_v1.21.bin
+  ATF:=rk3568_bl31_v1.43.elf
+  DDR:=rk3568_ddr_1560MHz_v1.18.bin
 endef
 
 UBOOT_TARGETS := \
@@ -354,12 +354,12 @@ UBOOT_MAKE_FLAGS += \
   PATH=$(STAGING_DIR_HOST)/bin:$(PATH) \
   BL31=$(STAGING_DIR_IMAGE)/$(ATF)
 
-ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3566),y)
+ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3568),y)
 UBOOT_MAKE_FLAGS += \
   ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
 endif
 
-ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3568),y)
+ifeq ($(CONFIG_PACKAGE_arm-trusted-firmware-rk3566),y)
 UBOOT_MAKE_FLAGS += \
   ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(DDR)
 endif
