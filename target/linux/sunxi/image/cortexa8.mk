@@ -45,7 +45,7 @@ define Device/olimex_a13-olimex-som
   DEVICE_PACKAGES:=kmod-rtl8192cu
   SUPPORTED_DEVICES:=olimex,a13-olinuxino
   SOC := sun5i-a13
-  SUNXI_DTS := sun5i-a13-olinuxino
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)sun5i-a13-olinuxino
 endef
 TARGET_DEVICES += olimex_a13-olimex-som
 
