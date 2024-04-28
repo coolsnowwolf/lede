@@ -11,6 +11,7 @@ FEATURES:=usb ext4 display rootfs-part rtc squashfs
 SUBTARGETS:=cortexa8 cortexa7 cortexa53 arm926ejs
 
 KERNEL_PATCHVER:=6.1
+KERNEL_TESTING_PATCHVER:=6.6
 
 KERNELNAME:=zImage dtbs
 
