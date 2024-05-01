@@ -1,0 +1,478 @@
+--- a/include/linux/if_pppox.h
++++ b/include/linux/if_pppox.h
+@@ -36,6 +36,7 @@ struct pptp_opt {
+ 	u32 ack_sent, ack_recv;
+ 	u32 seq_sent, seq_recv;
+ 	int ppp_flags;
++	bool pptp_offload_mode;
+ };
+ #include <net/sock.h>
+ 
+@@ -100,8 +101,40 @@ struct pppoe_channel_ops {
+ 	int (*get_addressing)(struct ppp_channel *, struct pppoe_opt *);
+ };
+ 
++/* PPTP client callback */
++typedef int (*pptp_gre_seq_offload_callback_t)(struct sk_buff *skb,
++					       struct net_device *pptp_dev);
++
+ /* Return PPPoE channel specific addressing information */
+ extern int pppoe_channel_addressing_get(struct ppp_channel *chan,
+ 					 struct pppoe_opt *addressing);
+ 
++/* Lookup PPTP session info and return PPTP session using sip, dip and local call id */
++extern int pptp_session_find_by_src_callid(struct pptp_opt *opt, __be16 src_call_id,
++			 __be32 daddr, __be32 saddr);
++
++/* Lookup PPTP session info and return PPTP session using dip and peer call id */
++extern int pptp_session_find(struct pptp_opt *opt, __be16 peer_call_id,
++			     __be32 peer_ip_addr);
++
++/* Return PPTP session information given the channel */
++extern void pptp_channel_addressing_get(struct pptp_opt *opt,
++					struct ppp_channel *chan);
++
++/* Enable the PPTP session offload flag */
++extern int pptp_session_enable_offload_mode(__be16 peer_call_id,
++					    __be32 peer_ip_addr);
++
++/* Disable the PPTP session offload flag */
++extern int pptp_session_disable_offload_mode(__be16 peer_call_id,
++					     __be32 peer_ip_addr);
++
++/* Register the PPTP GRE packets sequence number offload callback */
++extern int
++pptp_register_gre_seq_offload_callback(pptp_gre_seq_offload_callback_t
++				       pptp_client_cb);
++
++/* Unregister the PPTP GRE packets sequence number offload callback */
++extern void pptp_unregister_gre_seq_offload_callback(void);
++
+ #endif /* !(__LINUX_IF_PPPOX_H) */
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -2973,6 +2973,20 @@ char *ppp_dev_name(struct ppp_channel *c
+ 	return name;
+ }
+ 
++/* Return the PPP net device index */
++int ppp_dev_index(struct ppp_channel *chan)
++{
++	struct channel *pch = chan->ppp;
++	int ifindex = 0;
++
++	if (pch) {
++		read_lock_bh(&pch->upl);
++		if (pch->ppp && pch->ppp->dev)
++			ifindex = pch->ppp->dev->ifindex;
++		read_unlock_bh(&pch->upl);
++	}
++	return ifindex;
++}
+ 
+ /*
+  * Disconnect a channel from the generic layer.
+@@ -3681,6 +3695,28 @@ void ppp_update_stats(struct net_device
+ 	ppp_recv_unlock(ppp);
+ }
+ 
++/* Returns true if Compression is enabled on PPP device
++ */
++bool ppp_is_cp_enabled(struct net_device *dev)
++{
++	struct ppp *ppp;
++	bool flag = false;
++
++	if (!dev)
++		return false;
++
++	if (dev->type != ARPHRD_PPP)
++		return false;
++
++	ppp = netdev_priv(dev);
++	ppp_lock(ppp);
++	flag = !!(ppp->xstate & SC_COMP_RUN) || !!(ppp->rstate & SC_DECOMP_RUN);
++	ppp_unlock(ppp);
++
++	return flag;
++}
++EXPORT_SYMBOL(ppp_is_cp_enabled);
++
+ /* Returns >0 if the device is a multilink PPP netdevice, 0 if not or < 0 if
+  * the device is not PPP.
+  */
+@@ -3872,6 +3908,7 @@ EXPORT_SYMBOL(ppp_unregister_channel);
+ EXPORT_SYMBOL(ppp_channel_index);
+ EXPORT_SYMBOL(ppp_unit_number);
+ EXPORT_SYMBOL(ppp_dev_name);
++EXPORT_SYMBOL(ppp_dev_index);
+ EXPORT_SYMBOL(ppp_input);
+ EXPORT_SYMBOL(ppp_input_error);
+ EXPORT_SYMBOL(ppp_output_wakeup);
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -84,6 +84,9 @@ extern void ppp_unregister_channel(struc
+ /* Get the channel number for a channel */
+ extern int ppp_channel_index(struct ppp_channel *);
+ 
++/* Get the device index  associated with a channel, or 0, if none */
++extern int ppp_dev_index(struct ppp_channel *);
++
+ /* Get the unit number associated with a channel, or -1 if none */
+ extern int ppp_unit_number(struct ppp_channel *);
+ 
+@@ -116,6 +119,7 @@ extern int ppp_hold_channels(struct net_
+ /* Test if ppp xmit lock is locked */
+ extern bool ppp_is_xmit_locked(struct net_device *dev);
+ 
++bool ppp_is_cp_enabled(struct net_device *dev);
+ /* Test if the ppp device is a multi-link ppp device */
+ extern int ppp_is_multilink(struct net_device *dev);
+ 
+--- a/drivers/net/ppp/pptp.c
++++ b/drivers/net/ppp/pptp.c
+@@ -50,6 +50,8 @@ static struct proto pptp_sk_proto __read
+ static const struct ppp_channel_ops pptp_chan_ops;
+ static const struct proto_ops pptp_ops;
+ 
++static pptp_gre_seq_offload_callback_t __rcu pptp_gre_offload_xmit_cb;
++
+ static struct pppox_sock *lookup_chan(u16 call_id, __be32 s_addr)
+ {
+ 	struct pppox_sock *sock;
+@@ -91,6 +93,79 @@ static int lookup_chan_dst(u16 call_id,
+ 	return i < MAX_CALLID;
+ }
+ 
++/* Search a pptp session based on local call id, local and remote ip address */
++static int lookup_session_src(struct pptp_opt *opt, u16 call_id, __be32 daddr, __be32 saddr)
++{
++	struct pppox_sock *sock;
++	int i = 1;
++
++	rcu_read_lock();
++	for_each_set_bit_from(i, callid_bitmap, MAX_CALLID) {
++		sock = rcu_dereference(callid_sock[i]);
++		if (!sock)
++			continue;
++
++		if (sock->proto.pptp.src_addr.call_id == call_id &&
++		    sock->proto.pptp.dst_addr.sin_addr.s_addr == daddr &&
++		    sock->proto.pptp.src_addr.sin_addr.s_addr == saddr) {
++			sock_hold(sk_pppox(sock));
++			memcpy(opt, &sock->proto.pptp, sizeof(struct pptp_opt));
++			sock_put(sk_pppox(sock));
++			rcu_read_unlock();
++			return 0;
++		}
++	}
++	rcu_read_unlock();
++	return -EINVAL;
++}
++
++/* Search a pptp session based on peer call id and peer ip address */
++static int lookup_session_dst(struct pptp_opt *opt, u16 call_id, __be32 d_addr)
++{
++	struct pppox_sock *sock;
++	int i = 1;
++
++	rcu_read_lock();
++	for_each_set_bit_from(i, callid_bitmap, MAX_CALLID) {
++		sock = rcu_dereference(callid_sock[i]);
++		if (!sock)
++			continue;
++
++		if (sock->proto.pptp.dst_addr.call_id == call_id &&
++		    sock->proto.pptp.dst_addr.sin_addr.s_addr == d_addr) {
++			sock_hold(sk_pppox(sock));
++			memcpy(opt, &sock->proto.pptp, sizeof(struct pptp_opt));
++			sock_put(sk_pppox(sock));
++			rcu_read_unlock();
++			return 0;
++		}
++	}
++	rcu_read_unlock();
++	return -EINVAL;
++}
++
++/* If offload mode set then this function sends all packets to
++ * offload module instead of network stack
++ */
++static int pptp_client_skb_xmit(struct sk_buff *skb,
++				struct net_device *pptp_dev)
++{
++	pptp_gre_seq_offload_callback_t pptp_gre_offload_cb_f;
++	int ret;
++
++	rcu_read_lock();
++	pptp_gre_offload_cb_f = rcu_dereference(pptp_gre_offload_xmit_cb);
++
++	if (!pptp_gre_offload_cb_f) {
++		rcu_read_unlock();
++		return -1;
++	}
++
++	ret = pptp_gre_offload_cb_f(skb, pptp_dev);
++	rcu_read_unlock();
++	return ret;
++}
++
+ static int add_chan(struct pppox_sock *sock,
+ 		    struct pptp_addr *sa)
+ {
+@@ -136,7 +211,7 @@ static struct rtable *pptp_route_output(
+ 	struct net *net;
+ 
+ 	net = sock_net(sk);
+-	flowi4_init_output(fl4, sk->sk_bound_dev_if, sk->sk_mark, 0,
++	flowi4_init_output(fl4, 0, sk->sk_mark, 0,
+ 			   RT_SCOPE_UNIVERSE, IPPROTO_GRE, 0,
+ 			   po->proto.pptp.dst_addr.sin_addr.s_addr,
+ 			   po->proto.pptp.src_addr.sin_addr.s_addr,
+@@ -163,8 +238,11 @@ static int pptp_xmit(struct ppp_channel
+ 
+ 	struct rtable *rt;
+ 	struct net_device *tdev;
++	struct net_device *pptp_dev;
+ 	struct iphdr  *iph;
+ 	int    max_headroom;
++	int    pptp_ifindex;
++	int    ret;
+ 
+ 	if (sk_pppox(po)->sk_state & PPPOX_DEAD)
+ 		goto tx_error;
+@@ -258,7 +336,32 @@ static int pptp_xmit(struct ppp_channel
+ 	ip_select_ident(net, skb, NULL);
+ 	ip_send_check(iph);
+ 
+-	ip_local_out(net, skb->sk, skb);
++	pptp_ifindex = ppp_dev_index(chan);
++
++	/* set incoming interface as the ppp interface */
++	if (skb->skb_iif)
++		skb->skb_iif = pptp_ifindex;
++
++	/* If the PPTP GRE seq number offload module is not enabled yet
++	 * then sends all PPTP GRE packets through linux network stack
++	 */
++	if (!opt->pptp_offload_mode) {
++		ip_local_out(net, skb->sk, skb);
++		return 1;
++	}
++
++	pptp_dev = dev_get_by_index(&init_net, pptp_ifindex);
++	if (!pptp_dev)
++		goto tx_error;
++
++	 /* If PPTP offload module is enabled then forward all PPTP GRE
++	  * packets to PPTP GRE offload module
++	  */
++	ret = pptp_client_skb_xmit(skb, pptp_dev);
++	dev_put(pptp_dev);
++	if (ret < 0)
++		goto tx_error;
++
+ 	return 1;
+ 
+ tx_error:
+@@ -314,6 +417,13 @@ static int pptp_rcv_core(struct sock *sk
+ 		goto drop;
+ 
+ 	payload = skb->data + headersize;
++
++	 /* If offload is enabled, we expect the offload module
++	  * to handle PPTP GRE sequence number checks
++	  */
++	if (opt->pptp_offload_mode)
++		goto allow_packet;
++
+ 	/* check for expected sequence number */
+ 	if (seq < opt->seq_recv + 1 || WRAPPED(opt->seq_recv, seq)) {
+ 		if ((payload[0] == PPP_ALLSTATIONS) && (payload[1] == PPP_UI) &&
+@@ -371,6 +481,7 @@ static int pptp_rcv(struct sk_buff *skb)
+ 	if (po) {
+ 		skb_dst_drop(skb);
+ 		nf_reset_ct(skb);
++		skb->skb_iif = ppp_dev_index(&po->chan);
+ 		return sk_receive_skb(sk_pppox(po), skb, 0);
+ 	}
+ drop:
+@@ -473,7 +584,7 @@ static int pptp_connect(struct socket *s
+ 
+ 	opt->dst_addr = sp->sa_addr.pptp;
+ 	sk->sk_state |= PPPOX_CONNECTED;
+-
++	opt->pptp_offload_mode = false;
+  end:
+ 	release_sock(sk);
+ 	return error;
+@@ -603,9 +714,169 @@ static int pptp_ppp_ioctl(struct ppp_cha
+ 	return err;
+ }
+ 
++/* pptp_channel_addressing_get()
++ *	Return PPTP channel specific addressing information.
++ */
++void pptp_channel_addressing_get(struct pptp_opt *opt, struct ppp_channel *chan)
++{
++	struct sock *sk;
++	struct pppox_sock *po;
++
++	if (!opt)
++		return;
++
++	sk = (struct sock *)chan->private;
++	if (!sk)
++		return;
++
++	sock_hold(sk);
++
++	/* This is very unlikely, but check the socket is connected state */
++	if (unlikely(sock_flag(sk, SOCK_DEAD) ||
++		     !(sk->sk_state & PPPOX_CONNECTED))) {
++		sock_put(sk);
++		return;
++	}
++
++	po = pppox_sk(sk);
++	memcpy(opt, &po->proto.pptp, sizeof(struct pptp_opt));
++	sock_put(sk);
++}
++EXPORT_SYMBOL(pptp_channel_addressing_get);
++
++/* pptp_session_find()
++ *	Search and return a PPTP session info based on peer callid and IP
++ *	address. The function accepts the parameters in network byte order.
++ */
++int pptp_session_find(struct pptp_opt *opt, __be16 peer_call_id,
++		      __be32 peer_ip_addr)
++{
++	if (!opt)
++		return -EINVAL;
++
++	return lookup_session_dst(opt, ntohs(peer_call_id), peer_ip_addr);
++}
++EXPORT_SYMBOL(pptp_session_find);
++
++/* pptp_session_find_by_src_callid()
++ *	Search and return a PPTP session info based on src callid and IP
++ *	address. The function accepts the parameters in network byte order.
++ */
++int pptp_session_find_by_src_callid(struct pptp_opt *opt, __be16 src_call_id,
++		      __be32 daddr, __be32 saddr)
++{
++	if (!opt)
++		return -EINVAL;
++
++	return lookup_session_src(opt, ntohs(src_call_id), daddr, saddr);
++}
++EXPORT_SYMBOL(pptp_session_find_by_src_callid);
++
++ /* Function to change the offload mode true/false for a PPTP session */
++static int pptp_set_offload_mode(bool accel_mode,
++				 __be16 peer_call_id, __be32 peer_ip_addr)
++{
++	struct pppox_sock *sock;
++	int i = 1;
++
++	rcu_read_lock();
++	for_each_set_bit_from(i, callid_bitmap, MAX_CALLID) {
++		sock = rcu_dereference(callid_sock[i]);
++		if (!sock)
++			continue;
++
++		if (sock->proto.pptp.dst_addr.call_id == peer_call_id &&
++		    sock->proto.pptp.dst_addr.sin_addr.s_addr == peer_ip_addr) {
++			sock_hold(sk_pppox(sock));
++			sock->proto.pptp.pptp_offload_mode = accel_mode;
++			sock_put(sk_pppox(sock));
++			rcu_read_unlock();
++			return 0;
++		}
++	}
++	rcu_read_unlock();
++	return -EINVAL;
++}
++
++/* Enable the PPTP session offload flag */
++int pptp_session_enable_offload_mode(__be16 peer_call_id, __be32 peer_ip_addr)
++{
++	return pptp_set_offload_mode(true, peer_call_id, peer_ip_addr);
++}
++EXPORT_SYMBOL(pptp_session_enable_offload_mode);
++
++/* Disable the PPTP session offload flag */
++int pptp_session_disable_offload_mode(__be16 peer_call_id, __be32 peer_ip_addr)
++{
++	return pptp_set_offload_mode(false, peer_call_id, peer_ip_addr);
++}
++EXPORT_SYMBOL(pptp_session_disable_offload_mode);
++
++/* Register the offload callback function on behalf of the module which
++ * will own the sequence and acknowledgment number updates for all
++ * PPTP GRE packets. All PPTP GRE packets are then transmitted to this
++ * module after encapsulation in order to ensure the correct seq/ack
++ * fields are set in the packets before transmission. This is required
++ * when PPTP flows are offloaded to acceleration engines, in-order to
++ * ensure consistency in sequence and ack numbers between PPTP control
++ * (PPP LCP) and data packets
++ */
++int pptp_register_gre_seq_offload_callback(pptp_gre_seq_offload_callback_t
++					   pptp_gre_offload_cb)
++{
++	pptp_gre_seq_offload_callback_t pptp_gre_offload_cb_f;
++
++	rcu_read_lock();
++	pptp_gre_offload_cb_f = rcu_dereference(pptp_gre_offload_xmit_cb);
++
++	if (pptp_gre_offload_cb_f) {
++		rcu_read_unlock();
++		return -1;
++	}
++
++	rcu_assign_pointer(pptp_gre_offload_xmit_cb, pptp_gre_offload_cb);
++	rcu_read_unlock();
++	return 0;
++}
++EXPORT_SYMBOL(pptp_register_gre_seq_offload_callback);
++
++/* Unregister the PPTP GRE packets sequence number offload callback */
++void pptp_unregister_gre_seq_offload_callback(void)
++{
++	rcu_assign_pointer(pptp_gre_offload_xmit_cb, NULL);
++}
++EXPORT_SYMBOL(pptp_unregister_gre_seq_offload_callback);
++
++/* pptp_hold_chan() */
++static void pptp_hold_chan(struct ppp_channel *chan)
++{
++	struct sock *sk = (struct sock *)chan->private;
++
++	sock_hold(sk);
++}
++
++/* pptp_release_chan() */
++static void pptp_release_chan(struct ppp_channel *chan)
++{
++	struct sock *sk = (struct sock *)chan->private;
++
++	sock_put(sk);
++}
++
++/* pptp_get_channel_protocol()
++ *     Return the protocol type of the PPTP over PPP protocol
++ */
++static int pptp_get_channel_protocol(struct ppp_channel *chan)
++{
++	return PX_PROTO_PPTP;
++}
++
+ static const struct ppp_channel_ops pptp_chan_ops = {
+ 	.start_xmit = pptp_xmit,
+ 	.ioctl      = pptp_ppp_ioctl,
++	.get_channel_protocol = pptp_get_channel_protocol,
++	.hold = pptp_hold_chan,
++	.release = pptp_release_chan,
+ };
+ 
+ static struct proto pptp_sk_proto __read_mostly = {
