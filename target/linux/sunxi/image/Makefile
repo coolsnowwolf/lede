@@ -34,7 +34,9 @@ define Device/Default
   KERNEL := kernel-bin | uImage none
   IMAGES := sdcard.img.gz
   IMAGE/sdcard.img.gz := sunxi-sdcard | append-metadata | gzip
-  SUNXI_DTS_DIR :=
+ifdef CONFIG_LINUX_6_6
+  SUNXI_DTS_DIR :=allwinner/
+endif
   SUNXI_DTS = $$(SUNXI_DTS_DIR)$$(SOC)-$(lastword $(subst _, ,$(1)))
 endef
 
