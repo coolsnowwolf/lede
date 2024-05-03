@@ -1,0 +1,162 @@
+--- a/nss_qdisc/igs/nss_mirred.c
++++ b/nss_qdisc/igs/nss_mirred.c
+@@ -82,20 +82,24 @@ static const struct nla_policy nss_mirre
+  * nss_mirred_init()
+  *	Initialize the nss mirred action.
+  */
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0))
+ static int nss_mirred_init(struct net *net, struct nlattr *nla,
+-			   struct nlattr *est, struct tc_action *tc_act, int ovr,
+-			   int bind)
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0))
++						struct nlattr *est, struct tc_action *tc_act, int ovr,
++						int bind)
++{
++#elif (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
++						struct nlattr *est, struct tc_action **tc_act, int ovr,
++						int bind, bool rtnl_held, struct tcf_proto *tp,
++						u32 flags, struct netlink_ext_ack *extack)
+ {
+ #else
+-static int nss_mirred_init(struct net *net, struct nlattr *nla,
+-			   struct nlattr *est, struct tc_action **tc_act, int ovr,
+-			   int bind, bool rtnl_held, struct tcf_proto *tp,
+-			   struct netlink_ext_ack *extack)
++						struct nlattr *est, struct tc_action **tc_act,
++						struct tcf_proto *tp, u32 flags, struct netlink_ext_ack *extack)
+ {
++	bool bind = flags & TCA_ACT_FLAGS_BIND;
++#endif
+ 	struct tc_action_net *tn = net_generic(net, nss_mirred_net_id);
+ 	u32 index;
+-#endif
+ 	struct nlattr *arr[TC_NSS_MIRRED_MAX + 1];
+ 	struct tc_nss_mirred *parm;
+ 	struct nss_mirred_tcf *act;
+@@ -239,8 +243,13 @@ static int nss_mirred_init(struct net *n
+ 	}
+ 
+ 	if (!ret) {
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0))
+ 		ret = tcf_idr_create(tn, index, est, tc_act, &nss_mirred_act_ops,
+ 				bind, true);
++#else
++		ret = tcf_idr_create(tn, index, est, tc_act, &nss_mirred_act_ops,
++				bind, true, 0);
++#endif
+ 		if (ret) {
+ 			tcf_idr_cleanup(tn, index);
+ 			return ret;
+--- a/nss_qdisc/nss_bf.c
++++ b/nss_qdisc/nss_bf.c
+@@ -74,7 +74,7 @@ static inline struct nss_bf_class_data *
+  */
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+ static int nss_bf_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
+-		  struct nlattr **tca, unsigned long *arg)
++		  struct nlattr **tca, unsigned long *arg, struct netlink_ext_ack *extack)
+ {
+ 	struct netlink_ext_ack *extack = NULL;
+ #else
+@@ -290,7 +290,11 @@ static void nss_bf_destroy_class(struct
+  * nss_bf_delete_class()
+  *	Detaches a class from operation, but does not destroy it.
+  */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0))
++static int nss_bf_delete_class(struct Qdisc *sch, unsigned long arg, struct netlink_ext_ack *extack)
++#else
+ static int nss_bf_delete_class(struct Qdisc *sch, unsigned long arg)
++#endif
+ {
+ 	struct nss_bf_sched_data *q = qdisc_priv(sch);
+ 	struct nss_bf_class_data *cl = (struct nss_bf_class_data *)arg;
+--- a/nss_qdisc/nss_htb.c
++++ b/nss_qdisc/nss_htb.c
+@@ -282,7 +282,7 @@ static int nss_htb_ppe_change_class(stru
+  */
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+ static int nss_htb_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
+-		  struct nlattr **tca, unsigned long *arg)
++		  struct nlattr **tca, unsigned long *arg, struct netlink_ext_ack *extack)
+ {
+ 	struct netlink_ext_ack *extack = NULL;
+ #else
+@@ -516,7 +516,11 @@ static void nss_htb_destroy_class(struct
+  * nss_htb_delete_class()
+  *	Detaches a class from operation, but does not destroy it.
+  */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0))
++static int nss_htb_delete_class(struct Qdisc *sch, unsigned long arg, struct netlink_ext_ack *extack)
++#else
+ static int nss_htb_delete_class(struct Qdisc *sch, unsigned long arg)
++#endif
+ {
+ 	struct nss_htb_sched_data *q = qdisc_priv(sch);
+ 	struct nss_htb_class_data *cl = (struct nss_htb_class_data *)arg;
+--- a/nss_qdisc/nss_qdisc.c
++++ b/nss_qdisc/nss_qdisc.c
+@@ -1140,15 +1140,16 @@ unsigned int nss_qdisc_drop(struct Qdisc
+ {
+ 	struct nss_qdisc *nq = qdisc_priv(sch);
+ 	unsigned int ret;
++	struct sk_buff *to_free = qdisc_peek_head(sch);
+ 
+ 	if (!nq->is_virtual) {
+-		ret = __qdisc_queue_drop_head(sch, &sch->q);
++		ret = __qdisc_queue_drop_head(sch, &sch->q, &to_free);
+ 	} else {
+ 		spin_lock_bh(&nq->bounce_protection_lock);
+ 		/*
+ 		 * This function is safe to call within locks
+ 		 */
+-		ret = __qdisc_queue_drop_head(sch, &sch->q);
++		ret = __qdisc_queue_drop_head(sch, &sch->q, &to_free);
+ 		spin_unlock_bh(&nq->bounce_protection_lock);
+ 	}
+ 
+@@ -1209,10 +1210,10 @@ static bool nss_qdisc_iterate_fl(struct
+ 		return 0;
+ 	}
+ 
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0))
+-	status = tc_classify(skb, tcf, &res, false);
+-#else
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
+ 	status = tcf_classify(skb, tcf, &res, false);
++#else
++	status = tcf_classify(skb, NULL, tcf, &res, false);
+ #endif
+ 	if ((status == TC_ACT_STOLEN) || (status == TC_ACT_QUEUED)) {
+ 		return 1;
+@@ -2188,6 +2189,8 @@ int __nss_qdisc_init(struct Qdisc *sch,
+ 	 * This is to prevent mixing NSS and PPE qdisc with linux qdisc.
+ 	 */
+ 	if ((parent != TC_H_ROOT) && (root->ops->owner != THIS_MODULE)) {
++		nss_qdisc_warning("parent (%d) and TC_H_ROOT (%d))", parent, TC_H_ROOT);
++		nss_qdisc_warning("root->ops->owner (%px) and THIS_MODULE (%px))", root->ops->owner , THIS_MODULE);
+ 		nss_qdisc_warning("NSS qdisc %px (type %d) used along with non-nss qdiscs,"
+ 			" or the interface is currently down", nq->qdisc, nq->type);
+ 	}
+--- a/nss_qdisc/nss_wrr.c
++++ b/nss_qdisc/nss_wrr.c
+@@ -229,7 +229,7 @@ static int nss_wrr_ppe_change_class(stru
+ 
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 16, 0))
+ static int nss_wrr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
+-		  struct nlattr **tca, unsigned long *arg)
++		  struct nlattr **tca, unsigned long *arg, struct netlink_ext_ack *extack)
+ {
+ 	struct netlink_ext_ack *extack = NULL;
+ #else
+@@ -400,7 +400,11 @@ failure:
+ 	return -EINVAL;
+ }
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0))
++static int nss_wrr_delete_class(struct Qdisc *sch, unsigned long arg, struct netlink_ext_ack *extack)
++#else
+ static int nss_wrr_delete_class(struct Qdisc *sch, unsigned long arg)
++#endif
+ {
+ 	struct nss_wrr_sched_data *q = qdisc_priv(sch);
+ 	struct nss_wrr_class_data *cl = (struct nss_wrr_class_data *)arg;
