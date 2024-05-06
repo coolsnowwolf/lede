@@ -4,11 +4,11 @@
 
 include $(TOPDIR)/rules.mk
 
-ARCH:=arm
-BOARD:=meson
+BOARD:=amlogic
+BOARDNAME:=Amlogic
 BOARDNAME:=Amlogic Meson family
-FEATURES:=boot-part ext4 fpu legacy-sdcard squashfs usbgadget
-SUBTARGETS:=meson8b
+FEATURES:=boot-part ext4 audio usb fpu legacy-sdcard squashfs usbgadget display gpio fpu pci pcie
+SUBTARGETS:=meson8b mesongx
 
 KERNEL_PATCHVER:=6.1
 
@@ -25,7 +25,7 @@ DEFAULT_PACKAGES += \
 	automount \
 	resize2fs \
 	partx-utils \
-	losetup
+	losetup htop autocore-arm
 
 KERNELNAME:=Image dtbs
 
