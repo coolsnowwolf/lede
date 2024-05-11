@@ -1376,7 +1376,7 @@ define Device/phicomm_k2p
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
   DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_PACKAGES := -luci-newapi -wpad-openssl kmod-mt7615d_dbdc wireless-tools
+  DEVICE_PACKAGES := -wpad-openssl kmod-mt7615d_dbdc wireless-tools luci-oldapi
 endef
 TARGET_DEVICES += phicomm_k2p
 
