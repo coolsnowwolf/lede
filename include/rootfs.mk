@@ -43,6 +43,14 @@ opkg = \
 	--add-arch all:100 \
 	--add-arch $(if $(ARCH_PACKAGES),$(ARCH_PACKAGES),$(BOARD)):200
 
+apk = \
+  IPKG_INSTROOT=$(1) \
+  $(FAKEROOT) $(STAGING_DIR_HOST)/bin/apk \
+	--root $(1) \
+	--keys-dir $(if $(APK_KEYS),$(APK_KEYS),$(TOPDIR)) \
+	--no-logfile \
+	--preserve-env
+
 TARGET_DIR_ORIG := $(TARGET_ROOTFS_DIR)/root.orig-$(BOARD)
 
 ifdef CONFIG_CLEAN_IPKG
@@ -68,14 +76,31 @@ define prepare_rootfs
 	@mkdir -p $(1)/var/lock
 	@( \
 		cd $(1); \
-		for script in ./usr/lib/opkg/info/*.postinst; do \
+		if [ -n "$(CONFIG_USE_APK)" ]; then \
+			IPKG_POSTINST_PATH=./lib/apk/db/*.post-install; \
+			$(STAGING_DIR_HOST)/bin/gzip -d ./lib/apk/db/scripts.tar; \
+			$(STAGING_DIR_HOST)/bin/tar -C ./lib/apk/db/ -xf ./lib/apk/db/scripts.tar --wildcards "*.post-install"; \
+		else \
+			IPKG_POSTINST_PATH=./usr/lib/opkg/info/*.postinst; \
+		fi; \
+		for script in $$IPKG_POSTINST_PATH; do \
 			IPKG_INSTROOT=$(1) $$(command -v bash) $$script; \
 			ret=$$?; \
 			if [ $$ret -ne 0 ]; then \
 				echo "postinst script $$script has failed with exit code $$ret" >&2; \
 				exit 1; \
 			fi; \
+			[ -n "$(CONFIG_USE_APK)" ] && $(STAGING_DIR_HOST)/bin/tar --delete -f ./lib/apk/db/scripts.tar $$(basename $$script); \
 		done; \
+		[ -n "$(CONFIG_USE_APK)" ] && $(STAGING_DIR_HOST)/bin/gzip -f -9n -S ".gz" ./lib/apk/db/scripts.tar; \
+		if [ -z "$(CONFIG_USE_APK)" ]; then \
+			$(if $(IB),,awk -i inplace \
+				'/^Status:/ { \
+					if ($$3 == "user") { $$3 = "ok" } \
+					else { sub(/,\<user\>|\<user\>,/, "", $$3) } \
+				}1' $(1)/usr/lib/opkg/status) ; \
+			$(if $(SOURCE_DATE_EPOCH),sed -i "s/Installed-Time: .*/Installed-Time: $(SOURCE_DATE_EPOCH)/" $(1)/usr/lib/opkg/status ;) \
+		fi; \
 		for script in ./etc/init.d/*; do \
 			grep '#!/bin/sh /etc/rc.common' $$script >/dev/null || continue; \
 			if ! echo " $(3) " | grep -q " $$(basename $$script) "; then \
@@ -87,11 +112,12 @@ define prepare_rootfs
 			fi; \
 		done || true \
 	)
-	$(if $(SOURCE_DATE_EPOCH),sed -i "s/Installed-Time: .*/Installed-Time: $(SOURCE_DATE_EPOCH)/" $(1)/usr/lib/opkg/status)
+
 	@-find $(1) -name CVS -o -name .svn -o -name .git -o -name '.#*' | $(XARGS) rm -rf
 	rm -rf \
 		$(1)/boot \
 		$(1)/tmp/* \
+		$(1)/lib/apk/db/*.post-install* \
 		$(1)/usr/lib/opkg/info/*.postinst* \
 		$(1)/usr/lib/opkg/lists/* \
 		$(1)/var/lock/*.lock
