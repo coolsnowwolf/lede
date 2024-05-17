@@ -149,7 +149,7 @@ define KernelPackage/qca-nss-drv-bridge-mgr
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS bridge manager
-  DEPENDS:=@TARGET_qualcommax \
+  DEPENDS:=@TARGET_qualcommax_ipq60xx||TARGET_qualcommax_ipq807x \
 	   +kmod-qca-nss-drv-vlan-mgr \
 	   +@NSS_DRV_BRIDGE_ENABLE \
 	   +PACKAGE_kmod-bonding:kmod-bonding \
@@ -343,7 +343,7 @@ define KernelPackage/qca-nss-drv-vlan-mgr
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=Kernel driver for NSS vlan manager
-  DEPENDS:=@TARGET_qualcommax \
+  DEPENDS:=@TARGET_qualcommax_ipq60xx||TARGET_qualcommax_ipq807x \
 	   +@NSS_DRV_VLAN_ENABLE \
 	   +PACKAGE_kmod-bonding:kmod-bonding \
 	   +PACKAGE_kmod-qca-nss-drv:kmod-qca-nss-drv
