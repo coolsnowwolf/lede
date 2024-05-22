@@ -640,6 +640,7 @@ define Device/hiwifi_c526a
 	DEVICE_VENDOR := HiWiFi
 	DEVICE_MODEL := C526A
 	SOC := qcom-ipq4019
+        DEVICE_DTS := qcom-ipq4019-c526a
 	BLOCKSIZE := 128k
 	PAGESIZE := 2048
 	DEVICE_PACKAGES := ipq-wifi-hiwifi_c526a kmod-mt7615e kmod-mt7615-firmware
