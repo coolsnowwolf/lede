@@ -640,9 +640,8 @@ define Device/hiwifi_c526a
 	DEVICE_VENDOR := HiWiFi
 	DEVICE_MODEL := C526A
 	SOC := qcom-ipq4019
-        DEVICE_DTS_CONFIG := config@om.c526a
 	BLOCKSIZE := 128k
-        KERNEL = kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb | pad-to $$(BLOCKSIZE)
+        KERNEL = kernel-bin | lzma | fit lzma $$(DTS_DIR)/qcom-ipq4019-c526a.dts | pad-to $$(BLOCKSIZE)
 	PAGESIZE := 2048
 	DEVICE_PACKAGES := ipq-wifi-hiwifi_c526a kmod-mt7615e kmod-mt7615-firmware
 endef
