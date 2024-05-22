@@ -629,6 +629,30 @@ define Device/linksys_ea6350v3
 endef
 TARGET_DEVICES += linksys_ea6350v3
 
+
+
+
+
+
+define Device/hiwifi_c526a
+	$(call Device/FitzImage)
+        $(call Device/UbiFit)
+	DEVICE_VENDOR := HiWiFi
+	DEVICE_MODEL := C526A
+	SOC := qcom-ipq4019
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_PACKAGES := ipq-wifi-hiwifi_c526a kmod-mt7615e kmod-mt7615-firmware
+endef
+TARGET_DEVICES += hiwifi_c526a
+
+
+
+
+
+
+
+
 define Device/linksys_ea8300
 	$(call Device/FitzImage)
 	DEVICE_VENDOR := Linksys
