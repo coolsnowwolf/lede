@@ -190,6 +190,13 @@ static const struct mtk_gate_regs infra3_cg_regs = {
 #define GATE_INFRA3(_id, _name, _parent, _shift)                              \
 	GATE_INFRA3_FLAGS(_id, _name, _parent, _shift, 0)
 
+#define GATE_CRITICAL(_id, _name, _parent, _regs, _shift) {                   \
+		.id = _id, .name = _name, .parent_name = _parent,             \
+		.regs = _regs, .shift = _shift,                               \
+		.flags = CLK_IS_CRITICAL,                                     \
+		.ops = &mtk_clk_gate_ops_setclr,                              \
+	}
+
 static const struct mtk_gate infra_clks[] = {
 	/* INFRA0 */
 	GATE_INFRA0(CLK_INFRA_PCIE_PERI_26M_CK_P0,
@@ -271,7 +278,7 @@ static const struct mtk_gate infra_clks[] = {
 		    "sysaxi_sel", 17),
 	GATE_INFRA2(CLK_INFRA_66M_FLASHIF_AXI, "infra_hf_66m_flashif_axi",
 		    "sysaxi_sel", 18),
-	GATE_INFRA2(CLK_INFRA_RTC, "infra_f_frtc", "top_rtc_32k", 19),
+	GATE_CRITICAL(CLK_INFRA_RTC, "infra_f_frtc", "top_rtc_32k", &infra2_cg_regs, 19),
 	GATE_INFRA2(CLK_INFRA_26M_ADC_BCK, "infra_f_26m_adc_bck",
 		    "csw_infra_f26m_sel", 20),
 	GATE_INFRA2(CLK_INFRA_RC_ADC, "infra_f_frc_adc", "infra_f_26m_adc_bck",
