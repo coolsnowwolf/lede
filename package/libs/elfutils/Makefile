@@ -83,6 +83,11 @@ CONFIGURE_VARS += \
 
 TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result -Wno-format-nonliteral
 
+ifneq ($(filter $(GCC_MAJOR_VERSION),12 13),)
+TARGET_CFLAGS += \
+	-Wno-error=use-after-free
+endif
+
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
 	$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/
