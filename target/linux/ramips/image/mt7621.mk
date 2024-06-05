@@ -1030,6 +1030,15 @@ define Device/jcg_y2
 endef
 TARGET_DEVICES += jcg_y2
 
+define Device/jdcloud_re-cp-02
+  $(Device/dsa-migration)
+  IMAGE_SIZE := 16000k
+  DEVICE_VENDOR := JD-Cloud
+  DEVICE_MODEL := RE-CP-02
+  DEVICE_PACKAGES := kmod-mt7915-firmware kmod-sdhci-mt7620
+endef
+TARGET_DEVICES += jdcloud_re-cp-02
+
 define Device/jdcloud_re-sp-01b
   $(Device/dsa-migration)
   IMAGE_SIZE := 27328k
@@ -1400,6 +1409,15 @@ define Device/netis_wf2881
   DEVICE_PACKAGES := kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += netis_wf2881
+
+define Device/openfi_5pro
+  $(Device/dsa-migration)
+  IMAGE_SIZE := 63448k
+  DEVICE_VENDOR := OpenFi
+  DEVICE_MODEL := 5Pro 
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap kmod-usb3
+endef
+TARGET_DEVICES += openfi_5pro
 
 define Device/oraybox_x3a
   $(Device/dsa-migration)

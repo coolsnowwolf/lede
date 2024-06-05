@@ -78,3 +78,15 @@ define Device/iei_puzzle-m902
   SOC := cn9132
 endef
 TARGET_DEVICES += iei_puzzle-m902
+
+define Device/qnap_qhora-32x
+  $(call Device/Default-arm64)
+  SOC := cn9132
+  DEVICE_VENDOR := QNAP
+  DEVICE_MODEL := QHora-321/322
+  DEVICE_PACKAGES += kmod-rtc-ds1307
+  DEVICE_DTS := cn9131-db-A cn9131-puzzle-m901 cn9132-db-A cn9132-puzzle-m902
+  SUPPORTED_DEVICES := qnap,qhora-321 qnap,qhora-322 iei,puzzle-m901 iei,puzzle-m902
+  IMAGE/sdcard.img.gz := boot-scr | boot-qnap-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
+endef
+TARGET_DEVICES += qnap_qhora-32x
