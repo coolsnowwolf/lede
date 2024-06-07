@@ -1,0 +1,2678 @@
+From f93caa69a9af6476cd4d93944a83acd227e68fd4 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Tue, 14 Feb 2023 14:58:33 +0000
+Subject: [PATCH] drm: Add RP1 DSI driver
+
+Add support for the RP1 DSI hardware.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/Kconfig                   |    2 +
+ drivers/gpu/drm/Makefile                  |    1 +
+ drivers/gpu/drm/rp1/Kconfig               |    5 +
+ drivers/gpu/drm/rp1/Makefile              |    4 +
+ drivers/gpu/drm/rp1/rp1-dsi/Kconfig       |   15 +
+ drivers/gpu/drm/rp1/rp1-dsi/Makefile      |    5 +
+ drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.c     |  537 ++++++++
+ drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.h     |   94 ++
+ drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dma.c |  443 ++++++
+ drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dsi.c | 1504 +++++++++++++++++++++
+ 10 files changed, 2610 insertions(+)
+ create mode 100644 drivers/gpu/drm/rp1/Kconfig
+ create mode 100644 drivers/gpu/drm/rp1/Makefile
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/Kconfig
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/Makefile
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.h
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dma.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dsi.c
+
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -384,6 +384,8 @@ source "drivers/gpu/drm/v3d/Kconfig"
+ 
+ source "drivers/gpu/drm/vc4/Kconfig"
+ 
++source "drivers/gpu/drm/rp1/Kconfig"
++
+ source "drivers/gpu/drm/etnaviv/Kconfig"
+ 
+ source "drivers/gpu/drm/hisilicon/Kconfig"
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -148,3 +148,4 @@ obj-y			+= gud/
+ obj-$(CONFIG_DRM_HYPERV) += hyperv/
+ obj-y			+= solomon/
+ obj-$(CONFIG_DRM_SPRD) += sprd/
++obj-y += rp1/
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/Kconfig
+@@ -0,0 +1,5 @@
++source "drivers/gpu/drm/rp1/rp1-dsi/Kconfig"
++
++source "drivers/gpu/drm/rp1/rp1-dpi/Kconfig"
++
++source "drivers/gpu/drm/rp1/rp1-vec/Kconfig"
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/Makefile
+@@ -0,0 +1,4 @@
++obj-$(CONFIG_DRM_RP1_DSI) += rp1-dsi/
++obj-$(CONFIG_DRM_RP1_DPI) += rp1-dpi/
++obj-$(CONFIG_DRM_RP1_VEC) += rp1-vec/
++
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/Kconfig
+@@ -0,0 +1,15 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config DRM_RP1_DSI
++	tristate "DRM Support for RP1 DSI"
++	depends on DRM
++	select MFD_RP1
++	select DRM_GEM_DMA_HELPER
++	select DRM_KMS_HELPER
++	select DRM_MIPI_DSI
++	select DRM_VRAM_HELPER
++	select DRM_TTM
++	select DRM_TTM_HELPER
++	select GENERIC_PHY
++	select GENERIC_PHY_MIPI_DPHY
++	help
++	  Choose this option to enable DSI display on RP1
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++drm-rp1-dsi-y := rp1_dsi.o rp1_dsi_dma.o rp1_dsi_dsi.o
++
++obj-$(CONFIG_DRM_RP1_DSI) += drm-rp1-dsi.o
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.c
+@@ -0,0 +1,537 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/clk.h>
++#include <linux/component.h>
++#include <linux/delay.h>
++#include <linux/dma-mapping.h>
++#include <linux/errno.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/list.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/phy/phy-mipi-dphy.h>
++#include <linux/string.h>
++
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_crtc.h>
++#include <drm/drm_crtc_helper.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_encoder.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_fb_helper.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem.h>
++#include <drm/drm_gem_atomic_helper.h>
++#include <drm/drm_gem_dma_helper.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_managed.h>
++#include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_of.h>
++#include <drm/drm_print.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_vblank.h>
++
++#include "rp1_dsi.h"
++
++static inline struct rp1_dsi *
++bridge_to_rp1_dsi(struct drm_bridge *bridge)
++{
++	return container_of(bridge, struct rp1_dsi, bridge);
++}
++
++static void rp1_dsi_bridge_pre_enable(struct drm_bridge *bridge,
++				      struct drm_bridge_state *old_state)
++{
++	struct rp1_dsi *dsi = bridge_to_rp1_dsi(bridge);
++
++	rp1dsi_dsi_setup(dsi, &dsi->pipe.crtc.state->adjusted_mode);
++}
++
++static void rp1_dsi_bridge_enable(struct drm_bridge *bridge,
++				  struct drm_bridge_state *old_state)
++{
++}
++
++static void rp1_dsi_bridge_disable(struct drm_bridge *bridge,
++				   struct drm_bridge_state *state)
++{
++}
++
++static void rp1_dsi_bridge_post_disable(struct drm_bridge *bridge,
++					struct drm_bridge_state *state)
++{
++	struct rp1_dsi *dsi = bridge_to_rp1_dsi(bridge);
++
++	if (dsi->dsi_running) {
++		rp1dsi_dsi_stop(dsi);
++		dsi->dsi_running = false;
++	}
++}
++
++static int rp1_dsi_bridge_attach(struct drm_bridge *bridge,
++				 enum drm_bridge_attach_flags flags)
++{
++	struct rp1_dsi *dsi = bridge_to_rp1_dsi(bridge);
++
++	/* Attach the panel or bridge to the dsi bridge */
++	return drm_bridge_attach(bridge->encoder, dsi->out_bridge,
++				 &dsi->bridge, flags);
++	return 0;
++}
++
++static const struct drm_bridge_funcs rp1_dsi_bridge_funcs = {
++	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
++	.atomic_reset = drm_atomic_helper_bridge_reset,
++	.atomic_pre_enable = rp1_dsi_bridge_pre_enable,
++	.atomic_enable = rp1_dsi_bridge_enable,
++	.atomic_disable = rp1_dsi_bridge_disable,
++	.atomic_post_disable = rp1_dsi_bridge_post_disable,
++	.attach = rp1_dsi_bridge_attach,
++};
++
++static void rp1dsi_pipe_update(struct drm_simple_display_pipe *pipe,
++			       struct drm_plane_state *old_state)
++{
++	struct drm_pending_vblank_event *event;
++	unsigned long flags;
++	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	struct rp1_dsi *dsi = pipe->crtc.dev->dev_private;
++	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
++	struct drm_gem_dma_object *dma_obj = gem ? to_drm_gem_dma_obj(gem) : NULL;
++	bool can_update = fb && dma_obj && dsi && dsi->pipe_enabled;
++
++	/* (Re-)start DSI,DMA where required; and update FB address */
++	if (can_update) {
++		if (!dsi->dma_running || fb->format->format != dsi->cur_fmt) {
++			if (dsi->dma_running && fb->format->format != dsi->cur_fmt) {
++				rp1dsi_dma_stop(dsi);
++				dsi->dma_running = false;
++			}
++			if (!dsi->dma_running) {
++				rp1dsi_dma_setup(dsi,
++						 fb->format->format, dsi->display_format,
++						&pipe->crtc.state->adjusted_mode);
++				dsi->dma_running = true;
++			}
++			dsi->cur_fmt  = fb->format->format;
++			drm_crtc_vblank_on(&pipe->crtc);
++		}
++		rp1dsi_dma_update(dsi, dma_obj->dma_addr, fb->offsets[0], fb->pitches[0]);
++	}
++
++	/* Arm VBLANK event (or call it immediately in some error cases) */
++	spin_lock_irqsave(&pipe->crtc.dev->event_lock, flags);
++	event = pipe->crtc.state->event;
++	if (event) {
++		pipe->crtc.state->event = NULL;
++		if (can_update && drm_crtc_vblank_get(&pipe->crtc) == 0)
++			drm_crtc_arm_vblank_event(&pipe->crtc, event);
++		else
++			drm_crtc_send_vblank_event(&pipe->crtc, event);
++	}
++	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
++}
++
++static inline struct rp1_dsi *
++encoder_to_rp1_dsi(struct drm_encoder *encoder)
++{
++	struct drm_simple_display_pipe *pipe =
++		container_of(encoder, struct drm_simple_display_pipe, encoder);
++	return container_of(pipe, struct rp1_dsi, pipe);
++}
++
++static void rp1dsi_encoder_enable(struct drm_encoder *encoder)
++{
++	struct rp1_dsi *dsi = encoder_to_rp1_dsi(encoder);
++
++	/* Put DSI into video mode before starting video */
++	rp1dsi_dsi_set_cmdmode(dsi, 0);
++
++	/* Start DMA -> DPI */
++	dsi->pipe_enabled = true;
++	dsi->cur_fmt = 0xdeadbeef;
++	rp1dsi_pipe_update(&dsi->pipe, 0);
++}
++
++static void rp1dsi_encoder_disable(struct drm_encoder *encoder)
++{
++	struct rp1_dsi *dsi = encoder_to_rp1_dsi(encoder);
++
++	drm_crtc_vblank_off(&dsi->pipe.crtc);
++	if (dsi->dma_running) {
++		rp1dsi_dma_stop(dsi);
++		dsi->dma_running = false;
++	}
++	dsi->pipe_enabled = false;
++
++	/* Return to command mode after stopping video */
++	rp1dsi_dsi_set_cmdmode(dsi, 1);
++}
++
++static const struct drm_encoder_helper_funcs rp1_dsi_encoder_funcs = {
++	.enable = rp1dsi_encoder_enable,
++	.disable = rp1dsi_encoder_disable,
++};
++
++static void rp1dsi_pipe_enable(struct drm_simple_display_pipe *pipe,
++			       struct drm_crtc_state *crtc_state,
++			       struct drm_plane_state *plane_state)
++{
++}
++
++static void rp1dsi_pipe_disable(struct drm_simple_display_pipe *pipe)
++{
++}
++
++static int rp1dsi_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dsi *dsi = pipe->crtc.dev->dev_private;
++
++	if (dsi)
++		rp1dsi_dma_vblank_ctrl(dsi, 1);
++
++	return 0;
++}
++
++static void rp1dsi_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dsi *dsi = pipe->crtc.dev->dev_private;
++
++	if (dsi)
++		rp1dsi_dma_vblank_ctrl(dsi, 0);
++}
++
++static const struct drm_simple_display_pipe_funcs rp1dsi_pipe_funcs = {
++	.enable	    = rp1dsi_pipe_enable,
++	.update	    = rp1dsi_pipe_update,
++	.disable    = rp1dsi_pipe_disable,
++	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
++	.enable_vblank  = rp1dsi_pipe_enable_vblank,
++	.disable_vblank = rp1dsi_pipe_disable_vblank,
++};
++
++static const struct drm_mode_config_funcs rp1dsi_mode_funcs = {
++	.fb_create = drm_gem_fb_create,
++	.atomic_check = drm_atomic_helper_check,
++	.atomic_commit = drm_atomic_helper_commit,
++};
++
++static const u32 rp1dsi_formats[] = {
++	DRM_FORMAT_XRGB8888,
++	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_RGB888,
++	DRM_FORMAT_BGR888,
++	DRM_FORMAT_RGB565
++};
++
++static void rp1dsi_stopall(struct drm_device *drm)
++{
++	if (drm->dev_private) {
++		struct rp1_dsi *dsi = drm->dev_private;
++
++		if (dsi->dma_running || rp1dsi_dma_busy(dsi)) {
++			rp1dsi_dma_stop(dsi);
++			dsi->dma_running = false;
++		}
++		if (dsi->dsi_running) {
++			rp1dsi_dsi_stop(dsi);
++			dsi->dsi_running = false;
++		}
++		if (dsi->clocks[RP1DSI_CLOCK_CFG])
++			clk_disable_unprepare(dsi->clocks[RP1DSI_CLOCK_CFG]);
++	}
++}
++
++DEFINE_DRM_GEM_DMA_FOPS(rp1dsi_fops);
++
++static struct drm_driver rp1dsi_driver = {
++	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
++	.fops			= &rp1dsi_fops,
++	.name			= "drm-rp1-dsi",
++	.desc			= "drm-rp1-dsi",
++	.date			= "0",
++	.major			= 1,
++	.minor			= 0,
++	DRM_GEM_DMA_DRIVER_OPS,
++	.release		= rp1dsi_stopall,
++};
++
++static int rp1dsi_bind(struct rp1_dsi *dsi)
++{
++	struct platform_device *pdev = dsi->pdev;
++	struct drm_device *drm = dsi->drm;
++	int ret;
++
++	dsi->out_bridge = drmm_of_get_bridge(drm, pdev->dev.of_node, 0, 0);
++	if (IS_ERR(dsi->out_bridge))
++		return PTR_ERR(dsi->out_bridge);
++
++	ret = drmm_mode_config_init(drm);
++	if (ret)
++		goto rtn;
++
++	drm->mode_config.max_width  = 4096;
++	drm->mode_config.max_height = 4096;
++	drm->mode_config.fb_base    = 0;
++	drm->mode_config.preferred_depth = 32;
++	drm->mode_config.prefer_shadow	 = 0;
++	drm->mode_config.prefer_shadow_fbdev = 1;
++	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
++	drm->mode_config.funcs = &rp1dsi_mode_funcs;
++	drm_vblank_init(drm, 1);
++
++	ret = drm_simple_display_pipe_init(drm,
++					   &dsi->pipe,
++					   &rp1dsi_pipe_funcs,
++					   rp1dsi_formats,
++					   ARRAY_SIZE(rp1dsi_formats),
++					   NULL, NULL);
++	if (ret)
++		goto rtn;
++
++	/* We need slightly more complex encoder handling (enabling/disabling
++	 * video mode), so add encoder helper functions.
++	 */
++	drm_encoder_helper_add(&dsi->pipe.encoder, &rp1_dsi_encoder_funcs);
++
++	ret = drm_simple_display_pipe_attach_bridge(&dsi->pipe, &dsi->bridge);
++	if (ret)
++		goto rtn;
++
++	drm_bridge_add(&dsi->bridge);
++
++	drm_mode_config_reset(drm);
++
++	if (dsi->clocks[RP1DSI_CLOCK_CFG])
++		clk_prepare_enable(dsi->clocks[RP1DSI_CLOCK_CFG]);
++
++	ret = drm_dev_register(drm, 0);
++
++	if (ret == 0)
++		drm_fbdev_generic_setup(drm, 32);
++
++rtn:
++	if (ret)
++		dev_err(&pdev->dev, "%s returned %d\n", __func__, ret);
++	else
++		dev_info(&pdev->dev, "%s succeeded", __func__);
++
++	return ret;
++}
++
++static void rp1dsi_unbind(struct rp1_dsi *dsi)
++{
++	struct drm_device *drm = dsi->drm;
++
++	rp1dsi_stopall(drm);
++	drm_dev_unregister(drm);
++	drm_atomic_helper_shutdown(drm);
++}
++
++int rp1dsi_host_attach(struct mipi_dsi_host *host, struct mipi_dsi_device *dsi_dev)
++{
++	struct rp1_dsi *dsi = container_of(host, struct rp1_dsi, dsi_host);
++
++	dev_info(&dsi->pdev->dev, "%s: Attach DSI device name=%s channel=%d lanes=%d format=%d flags=0x%lx hs_rate=%lu lp_rate=%lu",
++		 __func__, dsi_dev->name, dsi_dev->channel, dsi_dev->lanes,
++		 dsi_dev->format, dsi_dev->mode_flags, dsi_dev->hs_rate,
++		 dsi_dev->lp_rate);
++	dsi->vc              = dsi_dev->channel & 3;
++	dsi->lanes           = dsi_dev->lanes;
++
++	switch (dsi_dev->format) {
++	case MIPI_DSI_FMT_RGB666:
++	case MIPI_DSI_FMT_RGB666_PACKED:
++	case MIPI_DSI_FMT_RGB565:
++	case MIPI_DSI_FMT_RGB888:
++		break;
++	default:
++		return -EINVAL;
++	}
++	dsi->display_format  = dsi_dev->format;
++	dsi->display_flags   = dsi_dev->mode_flags;
++	dsi->display_hs_rate = dsi_dev->hs_rate;
++	dsi->display_lp_rate = dsi_dev->lp_rate;
++
++	/*
++	 * Previously, we added a separate component to handle panel/bridge
++	 * discovery and DRM registration, but now it's just a function call.
++	 * The downstream/attaching device should deal with -EPROBE_DEFER
++	 */
++	return rp1dsi_bind(dsi);
++}
++
++int rp1dsi_host_detach(struct mipi_dsi_host *host, struct mipi_dsi_device *dsi_dev)
++{
++	struct rp1_dsi *dsi = container_of(host, struct rp1_dsi, dsi_host);
++
++	/*
++	 * Unregister the DRM driver.
++	 * TODO: Check we are cleaning up correctly and not doing things multiple times!
++	 */
++	rp1dsi_unbind(dsi);
++	return 0;
++}
++
++ssize_t rp1dsi_host_transfer(struct mipi_dsi_host *host, const struct mipi_dsi_msg *msg)
++{
++	struct rp1_dsi *dsi = container_of(host, struct rp1_dsi, dsi_host);
++	struct mipi_dsi_packet packet;
++	int ret = 0;
++
++	/* Write */
++	ret = mipi_dsi_create_packet(&packet, msg);
++	if (ret) {
++		dev_err(dsi->drm->dev, "RP1DSI: failed to create packet: %d\n", ret);
++		return ret;
++	}
++
++	rp1dsi_dsi_send(dsi, *(u32 *)(&packet.header), packet.payload_length, packet.payload);
++
++	/* Optional read back */
++	if (msg->rx_len && msg->rx_buf)
++		ret = rp1dsi_dsi_recv(dsi, msg->rx_len, msg->rx_buf);
++
++	return (ssize_t)ret;
++}
++
++static const struct mipi_dsi_host_ops rp1dsi_mipi_dsi_host_ops = {
++	.attach = rp1dsi_host_attach,
++	.detach = rp1dsi_host_detach,
++	.transfer = rp1dsi_host_transfer
++};
++
++static int rp1dsi_platform_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct drm_device *drm;
++	struct rp1_dsi *dsi;
++	int i, ret;
++
++	drm = drm_dev_alloc(&rp1dsi_driver, dev);
++	if (IS_ERR(drm)) {
++		ret = PTR_ERR(drm);
++		return ret;
++	}
++	dsi = drmm_kzalloc(drm, sizeof(*dsi), GFP_KERNEL);
++	if (!dsi) {
++		ret = -ENOMEM;
++		goto err_free_drm;
++	}
++	init_completion(&dsi->finished);
++	dsi->drm = drm;
++	dsi->pdev = pdev;
++	drm->dev_private = dsi;
++	platform_set_drvdata(pdev, drm);
++
++	dsi->bridge.funcs = &rp1_dsi_bridge_funcs;
++	dsi->bridge.of_node = dev->of_node;
++	dsi->bridge.type = DRM_MODE_CONNECTOR_DSI;
++
++	/* Safe default values for DSI mode */
++	dsi->lanes = 1;
++	dsi->display_format = MIPI_DSI_FMT_RGB888;
++	dsi->display_flags  = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_LPM;
++
++	/* Hardware resources */
++	for (i = 0; i < RP1DSI_NUM_CLOCKS; i++) {
++		static const char * const myclocknames[RP1DSI_NUM_CLOCKS] = {
++			"cfgclk", "dpiclk", "byteclk", "refclk"
++		};
++		dsi->clocks[i] = devm_clk_get(dev, myclocknames[i]);
++		if (IS_ERR(dsi->clocks[i])) {
++			ret = PTR_ERR(dsi->clocks[i]);
++			dev_err(dev, "Error getting clocks[%d]\n", i);
++			goto err_free_drm;
++		}
++	}
++
++	for (i = 0; i < RP1DSI_NUM_HW_BLOCKS; i++) {
++		dsi->hw_base[i] =
++			devm_ioremap_resource(dev,
++					      platform_get_resource(dsi->pdev,
++								    IORESOURCE_MEM,
++								    i));
++		if (IS_ERR(dsi->hw_base[i])) {
++			ret = PTR_ERR(dsi->hw_base[i]);
++			dev_err(dev, "Error memory mapping regs[%d]\n", i);
++			goto err_free_drm;
++		}
++	}
++	ret = platform_get_irq(dsi->pdev, 0);
++	if (ret > 0)
++		ret = devm_request_irq(dev, ret, rp1dsi_dma_isr,
++				       IRQF_SHARED, "rp1-dsi", dsi);
++	if (ret) {
++		dev_err(dev, "Unable to request interrupt\n");
++		ret = -EINVAL;
++		goto err_free_drm;
++	}
++	rp1dsi_mipicfg_setup(dsi);
++	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
++
++	/* Create the MIPI DSI Host and wait for the panel/bridge to attach to it */
++	dsi->dsi_host.ops = &rp1dsi_mipi_dsi_host_ops;
++	dsi->dsi_host.dev = dev;
++	ret = mipi_dsi_host_register(&dsi->dsi_host);
++	if (ret)
++		goto err_free_drm;
++
++	return ret;
++
++err_free_drm:
++	dev_err(dev, "%s fail %d\n", __func__, ret);
++	drm_dev_put(drm);
++	return ret;
++}
++
++static int rp1dsi_platform_remove(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++	struct rp1_dsi *dsi = drm->dev_private;
++
++	mipi_dsi_host_unregister(&dsi->dsi_host);
++	return 0;
++}
++
++static void rp1dsi_platform_shutdown(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	rp1dsi_stopall(drm);
++}
++
++static const struct of_device_id rp1dsi_of_match[] = {
++	{
++		.compatible = "raspberrypi,rp1dsi",
++	},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, rp1dsi_of_match);
++
++static struct platform_driver rp1dsi_platform_driver = {
++	.probe		= rp1dsi_platform_probe,
++	.remove		= rp1dsi_platform_remove,
++	.shutdown       = rp1dsi_platform_shutdown,
++	.driver		= {
++		.name	= DRIVER_NAME,
++		.owner  = THIS_MODULE,
++		.of_match_table = rp1dsi_of_match,
++	},
++};
++
++module_platform_driver(rp1dsi_platform_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("MIPI DSI driver for Raspberry Pi RP1");
++MODULE_AUTHOR("Nick Hollinghurst");
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi.h
+@@ -0,0 +1,94 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++#ifndef _RP1_DSI_H_
++#define _RP1_DSI_H_
++
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/types.h>
++
++#include <drm/drm_bridge.h>
++#include <drm/drm_device.h>
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_simple_kms_helper.h>
++
++#define MODULE_NAME "drm-rp1-dsi"
++#define DRIVER_NAME "drm-rp1-dsi"
++
++/* ---------------------------------------------------------------------- */
++
++#define RP1DSI_HW_BLOCK_DMA   0
++#define RP1DSI_HW_BLOCK_DSI   1
++#define RP1DSI_HW_BLOCK_CFG   2
++#define RP1DSI_NUM_HW_BLOCKS  3
++
++#define RP1DSI_CLOCK_CFG     0
++#define RP1DSI_CLOCK_DPI     1
++#define RP1DSI_CLOCK_BYTE    2
++#define RP1DSI_CLOCK_REF     3
++#define RP1DSI_NUM_CLOCKS    4
++
++/* ---------------------------------------------------------------------- */
++
++struct rp1_dsi {
++	/* DRM and platform device pointers */
++	struct drm_device *drm;
++	struct platform_device *pdev;
++
++	/* Framework and helper objects */
++	struct drm_simple_display_pipe pipe;
++	struct drm_bridge bridge;
++	struct drm_bridge *out_bridge;
++	struct mipi_dsi_host dsi_host;
++
++	/* Clocks. We need DPI clock; the others are frequency references */
++	struct clk *clocks[RP1DSI_NUM_CLOCKS];
++
++	/* Block (DSI DMA, DSI Host) base addresses, and current state */
++	void __iomem *hw_base[RP1DSI_NUM_HW_BLOCKS];
++	u32 cur_fmt;
++	bool dsi_running, dma_running, pipe_enabled;
++	struct completion finished;
++
++	/* Attached display parameters (from mipi_dsi_device) */
++	unsigned long display_flags, display_hs_rate, display_lp_rate;
++	enum mipi_dsi_pixel_format display_format;
++	u8 vc;
++	u8 lanes;
++
++	/* DPHY */
++	u8 hsfreq_index;
++};
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the DSI/DPI/DMA block				  */
++
++void rp1dsi_dma_setup(struct rp1_dsi *dsi,
++		      u32 in_format, enum mipi_dsi_pixel_format out_format,
++		      struct drm_display_mode const *mode);
++void rp1dsi_dma_update(struct rp1_dsi *dsi, dma_addr_t addr, u32 offset, u32 stride);
++void rp1dsi_dma_stop(struct rp1_dsi *dsi);
++int rp1dsi_dma_busy(struct rp1_dsi *dsi);
++irqreturn_t rp1dsi_dma_isr(int irq, void *dev);
++void rp1dsi_dma_vblank_ctrl(struct rp1_dsi *dsi, int enable);
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the MIPICFG block and check RP1 platform		  */
++
++void rp1dsi_mipicfg_setup(struct rp1_dsi *dsi);
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the SNPS D-PHY and DSI block setup		  */
++
++void rp1dsi_dsi_setup(struct rp1_dsi *dsi, struct drm_display_mode const *mode);
++void rp1dsi_dsi_send(struct rp1_dsi *dsi, u32 header, int len, const u8 *buf);
++int  rp1dsi_dsi_recv(struct rp1_dsi *dsi, int len, u8 *buf);
++void rp1dsi_dsi_set_cmdmode(struct rp1_dsi *dsi, int cmd_mode);
++void rp1dsi_dsi_stop(struct rp1_dsi *dsi);
++
++#endif
++
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dma.c
+@@ -0,0 +1,443 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++
++#include <drm/drm_fourcc.h>
++#include <drm/drm_print.h>
++#include <drm/drm_vblank.h>
++
++#include "rp1_dsi.h"
++
++// --- DPI DMA REGISTERS (derived from Argon firmware, via RP1 drivers/mipi, with corrections) ---
++
++// Control
++#define DPI_DMA_CONTROL				      0x0
++#define DPI_DMA_CONTROL_ARM_SHIFT		      0
++#define DPI_DMA_CONTROL_ARM_MASK		      BIT(DPI_DMA_CONTROL_ARM_SHIFT)
++#define DPI_DMA_CONTROL_ALIGN16_SHIFT		      2
++#define DPI_DMA_CONTROL_ALIGN16_MASK		      BIT(DPI_DMA_CONTROL_ALIGN16_SHIFT)
++#define DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT	      1
++#define DPI_DMA_CONTROL_AUTO_REPEAT_MASK	      BIT(DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT)
++#define DPI_DMA_CONTROL_HIGH_WATER_SHIFT	      3
++#define DPI_DMA_CONTROL_HIGH_WATER_MASK		      (0x1FF << DPI_DMA_CONTROL_HIGH_WATER_SHIFT)
++#define DPI_DMA_CONTROL_DEN_POL_SHIFT		      12
++#define DPI_DMA_CONTROL_DEN_POL_MASK		      BIT(DPI_DMA_CONTROL_DEN_POL_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_POL_SHIFT		      13
++#define DPI_DMA_CONTROL_HSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_POL_SHIFT		      14
++#define DPI_DMA_CONTROL_VSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_COLORM_SHIFT		      15
++#define DPI_DMA_CONTROL_COLORM_MASK		      BIT(DPI_DMA_CONTROL_COLORM_SHIFT)
++#define DPI_DMA_CONTROL_SHUTDN_SHIFT		      16
++#define DPI_DMA_CONTROL_SHUTDN_MASK		      BIT(DPI_DMA_CONTROL_SHUTDN_SHIFT)
++#define DPI_DMA_CONTROL_HBP_EN_SHIFT		      17
++#define DPI_DMA_CONTROL_HBP_EN_MASK		      BIT(DPI_DMA_CONTROL_HBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HFP_EN_SHIFT		      18
++#define DPI_DMA_CONTROL_HFP_EN_MASK		      BIT(DPI_DMA_CONTROL_HFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VBP_EN_SHIFT		      19
++#define DPI_DMA_CONTROL_VBP_EN_MASK		      BIT(DPI_DMA_CONTROL_VBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VFP_EN_SHIFT		      20
++#define DPI_DMA_CONTROL_VFP_EN_MASK		      BIT(DPI_DMA_CONTROL_VFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_EN_SHIFT		      21
++#define DPI_DMA_CONTROL_HSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_EN_SHIFT		      22
++#define DPI_DMA_CONTROL_VSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_IMMED_SHIFT	      23
++#define DPI_DMA_CONTROL_FORCE_IMMED_MASK	      BIT(DPI_DMA_CONTROL_FORCE_IMMED_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT	      24
++#define DPI_DMA_CONTROL_FORCE_DRAIN_MASK	      BIT(DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT	      25
++#define DPI_DMA_CONTROL_FORCE_EMPTY_MASK	      BIT(DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT)
++
++// IRQ_ENABLES
++#define DPI_DMA_IRQ_EN				      0x04
++#define DPI_DMA_IRQ_EN_DMA_READY_SHIFT		      0
++#define DPI_DMA_IRQ_EN_DMA_READY_MASK		      BIT(DPI_DMA_IRQ_EN_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT		      1
++#define DPI_DMA_IRQ_EN_UNDERFLOW_MASK		      BIT(DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_EN_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_EN_FRAME_START_MASK		      BIT(DPI_DMA_IRQ_EN_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_MASK		      BIT(DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_EN_TE_SHIFT			      4
++#define DPI_DMA_IRQ_EN_TE_MASK			      BIT(DPI_DMA_IRQ_EN_TE_SHIFT)
++#define DPI_DMA_IRQ_EN_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_EN_ERROR_MASK		      BIT(DPI_DMA_IRQ_EN_ERROR_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_EN_MATCH_MASK		      BIT(DPI_DMA_IRQ_EN_MATCH_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT		      16
++#define DPI_DMA_IRQ_EN_MATCH_LINE_MASK		      (0xFFF << DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT)
++
++// IRQ_FLAGS
++#define DPI_DMA_IRQ_FLAGS			      0x08
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT	      0
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT	      1
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK	      BIT(DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_MASK	      BIT(DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_TE_SHIFT		      4
++#define DPI_DMA_IRQ_FLAGS_TE_MASK		      BIT(DPI_DMA_IRQ_FLAGS_TE_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_FLAGS_ERROR_MASK		      BIT(DPI_DMA_IRQ_FLAGS_ERROR_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_FLAGS_MATCH_MASK		      BIT(DPI_DMA_IRQ_FLAGS_MATCH_SHIFT)
++
++// QOS
++#define DPI_DMA_QOS				      0xC
++#define DPI_DMA_QOS_DQOS_SHIFT			      0
++#define DPI_DMA_QOS_DQOS_MASK			      (0xF << DPI_DMA_QOS_DQOS_SHIFT)
++#define DPI_DMA_QOS_ULEV_SHIFT			      4
++#define DPI_DMA_QOS_ULEV_MASK			      (0xF << DPI_DMA_QOS_ULEV_SHIFT)
++#define DPI_DMA_QOS_UQOS_SHIFT			      8
++#define DPI_DMA_QOS_UQOS_MASK			      (0xF << DPI_DMA_QOS_UQOS_SHIFT)
++#define DPI_DMA_QOS_LLEV_SHIFT			      12
++#define DPI_DMA_QOS_LLEV_MASK			      (0xF << DPI_DMA_QOS_LLEV_SHIFT)
++#define DPI_DMA_QOS_LQOS_SHIFT			      16
++#define DPI_DMA_QOS_LQOS_MASK			      (0xF << DPI_DMA_QOS_LQOS_SHIFT)
++
++// Panics
++#define DPI_DMA_PANICS				     0x38
++#define DPI_DMA_PANICS_UPPER_COUNT_SHIFT	     0
++#define DPI_DMA_PANICS_UPPER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_UPPER_COUNT_SHIFT)
++#define DPI_DMA_PANICS_LOWER_COUNT_SHIFT	     16
++#define DPI_DMA_PANICS_LOWER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_LOWER_COUNT_SHIFT)
++
++// DMA Address Lower:
++#define DPI_DMA_DMA_ADDR_L			     0x10
++
++// DMA Address Upper:
++#define DPI_DMA_DMA_ADDR_H			     0x40
++
++// DMA stride
++#define DPI_DMA_DMA_STRIDE			     0x14
++
++// Visible Area
++#define DPI_DMA_VISIBLE_AREA			     0x18
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT     0
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT)
++#define DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT    16
++#define DPI_DMA_VISIBLE_AREA_COLSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT)
++
++// Sync width
++#define DPI_DMA_SYNC_WIDTH   0x1C
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT	 0
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT)
++#define DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT	 16
++#define DPI_DMA_SYNC_WIDTH_COLSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT)
++
++// Back porch
++#define DPI_DMA_BACK_PORCH   0x20
++#define DPI_DMA_BACK_PORCH_ROWSM1_SHIFT	 0
++#define DPI_DMA_BACK_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_BACK_PORCH_COLSM1_SHIFT	 16
++#define DPI_DMA_BACK_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_COLSM1_SHIFT)
++
++// Front porch
++#define DPI_DMA_FRONT_PORCH  0x24
++#define DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT     0
++#define DPI_DMA_FRONT_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_FRONT_PORCH_COLSM1_SHIFT     16
++#define DPI_DMA_FRONT_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_COLSM1_SHIFT)
++
++// Input masks
++#define DPI_DMA_IMASK	 0x2C
++#define DPI_DMA_IMASK_R_SHIFT	 0
++#define DPI_DMA_IMASK_R_MASK	 (0x3FF << DPI_DMA_IMASK_R_SHIFT)
++#define DPI_DMA_IMASK_G_SHIFT	 10
++#define DPI_DMA_IMASK_G_MASK	 (0x3FF << DPI_DMA_IMASK_G_SHIFT)
++#define DPI_DMA_IMASK_B_SHIFT	 20
++#define DPI_DMA_IMASK_B_MASK	 (0x3FF << DPI_DMA_IMASK_B_SHIFT)
++
++// Output Masks
++#define DPI_DMA_OMASK	 0x30
++#define DPI_DMA_OMASK_R_SHIFT	 0
++#define DPI_DMA_OMASK_R_MASK	 (0x3FF << DPI_DMA_OMASK_R_SHIFT)
++#define DPI_DMA_OMASK_G_SHIFT	 10
++#define DPI_DMA_OMASK_G_MASK	 (0x3FF << DPI_DMA_OMASK_G_SHIFT)
++#define DPI_DMA_OMASK_B_SHIFT	 20
++#define DPI_DMA_OMASK_B_MASK	 (0x3FF << DPI_DMA_OMASK_B_SHIFT)
++
++// Shifts
++#define DPI_DMA_SHIFT	 0x28
++#define DPI_DMA_SHIFT_IR_SHIFT	 0
++#define DPI_DMA_SHIFT_IR_MASK	 (0x1F << DPI_DMA_SHIFT_IR_SHIFT)
++#define DPI_DMA_SHIFT_IG_SHIFT	 5
++#define DPI_DMA_SHIFT_IG_MASK	 (0x1F << DPI_DMA_SHIFT_IG_SHIFT)
++#define DPI_DMA_SHIFT_IB_SHIFT	 10
++#define DPI_DMA_SHIFT_IB_MASK	 (0x1F << DPI_DMA_SHIFT_IB_SHIFT)
++#define DPI_DMA_SHIFT_OR_SHIFT	 15
++#define DPI_DMA_SHIFT_OR_MASK	 (0x1F << DPI_DMA_SHIFT_OR_SHIFT)
++#define DPI_DMA_SHIFT_OG_SHIFT	 20
++#define DPI_DMA_SHIFT_OG_MASK	 (0x1F << DPI_DMA_SHIFT_OG_SHIFT)
++#define DPI_DMA_SHIFT_OB_SHIFT	 25
++#define DPI_DMA_SHIFT_OB_MASK	 (0x1F << DPI_DMA_SHIFT_OB_SHIFT)
++
++// Scaling
++#define DPI_DMA_RGBSZ	 0x34
++#define DPI_DMA_RGBSZ_BPP_SHIFT	 16
++#define DPI_DMA_RGBSZ_BPP_MASK	 (0x3 << DPI_DMA_RGBSZ_BPP_SHIFT)
++#define DPI_DMA_RGBSZ_R_SHIFT	 0
++#define DPI_DMA_RGBSZ_R_MASK	 (0xF << DPI_DMA_RGBSZ_R_SHIFT)
++#define DPI_DMA_RGBSZ_G_SHIFT	 4
++#define DPI_DMA_RGBSZ_G_MASK	 (0xF << DPI_DMA_RGBSZ_G_SHIFT)
++#define DPI_DMA_RGBSZ_B_SHIFT	 8
++#define DPI_DMA_RGBSZ_B_MASK	 (0xF << DPI_DMA_RGBSZ_B_SHIFT)
++
++// Status
++#define DPI_DMA_STATUS  0x3c
++
++#define BITS(field, val) (((val) << (field ## _SHIFT)) & (field ## _MASK))
++
++static unsigned int rp1dsi_dma_read(struct rp1_dsi *dsi, unsigned int reg)
++{
++	void __iomem *addr = dsi->hw_base[RP1DSI_HW_BLOCK_DMA] + reg;
++
++	return readl(addr);
++}
++
++static void rp1dsi_dma_write(struct rp1_dsi *dsi, unsigned int reg, unsigned int val)
++{
++	void __iomem *addr = dsi->hw_base[RP1DSI_HW_BLOCK_DMA] + reg;
++
++	writel(val, addr);
++}
++
++int rp1dsi_dma_busy(struct rp1_dsi *dsi)
++{
++	return (rp1dsi_dma_read(dsi, DPI_DMA_STATUS) & 0xF8F) ? 1 : 0;
++}
++
++/* Table of supported input (in-memory/DMA) pixel formats. */
++struct rp1dsi_ipixfmt {
++	u32 format; /* DRM format code                           */
++	u32 mask;   /* RGB masks (10 bits each, left justified)  */
++	u32 shift;  /* RGB MSB positions in the memory word      */
++	u32 rgbsz;  /* Shifts used for scaling; also (BPP/8-1)   */
++};
++
++#define IMASK_RGB(r, g, b)	(BITS(DPI_DMA_IMASK_R, r) | \
++				 BITS(DPI_DMA_IMASK_G, g) |  \
++				 BITS(DPI_DMA_IMASK_B, b))
++#define ISHIFT_RGB(r, g, b)	(BITS(DPI_DMA_SHIFT_IR, r) | \
++				 BITS(DPI_DMA_SHIFT_IG, g) | \
++				 BITS(DPI_DMA_SHIFT_IB, b))
++
++static const struct rp1dsi_ipixfmt my_formats[] = {
++	{
++		.format = DRM_FORMAT_XRGB8888,
++		.mask   = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++		.shift  = ISHIFT_RGB(23, 15, 7),
++		.rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 3),
++	},
++	{
++		.format = DRM_FORMAT_XBGR8888,
++		.mask   = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++		.shift  = ISHIFT_RGB(7, 15, 23),
++		.rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 3),
++	},
++	{
++		.format = DRM_FORMAT_RGB888,
++		.mask   = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++		.shift  = ISHIFT_RGB(23, 15, 7),
++		.rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 2),
++	},
++	{
++		.format = DRM_FORMAT_BGR888,
++		.mask   = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++		.shift  = ISHIFT_RGB(7, 15, 23),
++		.rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 2),
++	},
++	{
++		.format = DRM_FORMAT_RGB565,
++		.mask   = IMASK_RGB(0x3e0, 0x3f0, 0x3e0),
++		.shift  = ISHIFT_RGB(15, 10, 4),
++		.rgbsz  = BITS(DPI_DMA_RGBSZ_R, 5) | BITS(DPI_DMA_RGBSZ_G, 6) |
++			  BITS(DPI_DMA_RGBSZ_B, 5) | BITS(DPI_DMA_RGBSZ_BPP, 1),
++	}
++};
++
++/* Choose the internal on-the-bus DPI format as expected by DSI Host. */
++static u32 get_omask_oshift(enum mipi_dsi_pixel_format fmt, u32 *oshift)
++{
++	switch (fmt) {
++	case MIPI_DSI_FMT_RGB565:
++		*oshift = BITS(DPI_DMA_SHIFT_OR, 15) |
++			  BITS(DPI_DMA_SHIFT_OG, 10) |
++			  BITS(DPI_DMA_SHIFT_OB, 4);
++		return BITS(DPI_DMA_OMASK_R, 0x3e0) |
++		       BITS(DPI_DMA_OMASK_G, 0x3f0) |
++		       BITS(DPI_DMA_OMASK_B, 0x3e0);
++	case MIPI_DSI_FMT_RGB666_PACKED:
++		*oshift = BITS(DPI_DMA_SHIFT_OR, 17) |
++			  BITS(DPI_DMA_SHIFT_OG, 11) |
++			  BITS(DPI_DMA_SHIFT_OB, 5);
++		return BITS(DPI_DMA_OMASK_R, 0x3f0) |
++		       BITS(DPI_DMA_OMASK_G, 0x3f0) |
++		       BITS(DPI_DMA_OMASK_B, 0x3f0);
++	case MIPI_DSI_FMT_RGB666:
++		*oshift = BITS(DPI_DMA_SHIFT_OR, 21) |
++			  BITS(DPI_DMA_SHIFT_OG, 13) |
++			  BITS(DPI_DMA_SHIFT_OB, 5);
++		return BITS(DPI_DMA_OMASK_R, 0x3f0) |
++		       BITS(DPI_DMA_OMASK_G, 0x3f0) |
++		       BITS(DPI_DMA_OMASK_B, 0x3f0);
++	default:
++		*oshift = BITS(DPI_DMA_SHIFT_OR, 23) |
++			  BITS(DPI_DMA_SHIFT_OG, 15) |
++			  BITS(DPI_DMA_SHIFT_OB, 7);
++		return BITS(DPI_DMA_OMASK_R, 0x3fc) |
++		       BITS(DPI_DMA_OMASK_G, 0x3fc) |
++		       BITS(DPI_DMA_OMASK_B, 0x3fc);
++	}
++}
++
++void rp1dsi_dma_setup(struct rp1_dsi *dsi,
++		      u32 in_format, enum mipi_dsi_pixel_format out_format,
++		     struct drm_display_mode const *mode)
++{
++	u32 oshift;
++	int i;
++
++	/*
++	 * Configure all DSI/DPI/DMA block registers, except base address.
++	 * DMA will not actually start until a FB base address is specified
++	 * using rp1dsi_dma_update().
++	 */
++
++	rp1dsi_dma_write(dsi, DPI_DMA_VISIBLE_AREA,
++			 BITS(DPI_DMA_VISIBLE_AREA_ROWSM1, mode->vdisplay - 1) |
++			 BITS(DPI_DMA_VISIBLE_AREA_COLSM1, mode->hdisplay - 1));
++
++	rp1dsi_dma_write(dsi, DPI_DMA_SYNC_WIDTH,
++			 BITS(DPI_DMA_SYNC_WIDTH_ROWSM1, mode->vsync_end - mode->vsync_start - 1) |
++			 BITS(DPI_DMA_SYNC_WIDTH_COLSM1, mode->hsync_end - mode->hsync_start - 1));
++
++	/* In the DPIDMA registers, "back porch" time includes sync width */
++	rp1dsi_dma_write(dsi, DPI_DMA_BACK_PORCH,
++			 BITS(DPI_DMA_BACK_PORCH_ROWSM1, mode->vtotal - mode->vsync_start - 1) |
++			 BITS(DPI_DMA_BACK_PORCH_COLSM1, mode->htotal - mode->hsync_start - 1));
++
++	rp1dsi_dma_write(dsi, DPI_DMA_FRONT_PORCH,
++			 BITS(DPI_DMA_FRONT_PORCH_ROWSM1, mode->vsync_start - mode->vdisplay - 1) |
++			 BITS(DPI_DMA_FRONT_PORCH_COLSM1, mode->hsync_start - mode->hdisplay - 1));
++
++	/* Input to output pixel format conversion */
++	for (i = 0; i < ARRAY_SIZE(my_formats); ++i) {
++		if (my_formats[i].format == in_format)
++			break;
++	}
++	if (i >= ARRAY_SIZE(my_formats)) {
++		drm_err(dsi->drm, "%s: bad input format\n", __func__);
++		i = 0;
++	}
++	rp1dsi_dma_write(dsi, DPI_DMA_IMASK, my_formats[i].mask);
++	rp1dsi_dma_write(dsi, DPI_DMA_OMASK, get_omask_oshift(out_format, &oshift));
++	rp1dsi_dma_write(dsi, DPI_DMA_SHIFT, my_formats[i].shift | oshift);
++	if (out_format == MIPI_DSI_FMT_RGB888)
++		rp1dsi_dma_write(dsi, DPI_DMA_RGBSZ, my_formats[i].rgbsz);
++	else
++		rp1dsi_dma_write(dsi, DPI_DMA_RGBSZ, my_formats[i].rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
++
++	rp1dsi_dma_write(dsi, DPI_DMA_QOS,
++			 BITS(DPI_DMA_QOS_DQOS, 0x0) |
++			 BITS(DPI_DMA_QOS_ULEV, 0xb) |
++			 BITS(DPI_DMA_QOS_UQOS, 0x2) |
++			 BITS(DPI_DMA_QOS_LLEV, 0x8) |
++			 BITS(DPI_DMA_QOS_LQOS, 0x7));
++
++	rp1dsi_dma_write(dsi, DPI_DMA_IRQ_FLAGS, -1);
++	rp1dsi_dma_vblank_ctrl(dsi, 1);
++
++	i = rp1dsi_dma_busy(dsi);
++	if (i)
++		drm_err(dsi->drm, "RP1DSI: Unexpectedly busy at start!");
++
++	rp1dsi_dma_write(dsi, DPI_DMA_CONTROL,
++			 BITS(DPI_DMA_CONTROL_ARM, (i == 0)) |
++			 BITS(DPI_DMA_CONTROL_AUTO_REPEAT, 1) |
++			 BITS(DPI_DMA_CONTROL_HIGH_WATER, 448) |
++			 BITS(DPI_DMA_CONTROL_DEN_POL, 0) |
++			 BITS(DPI_DMA_CONTROL_HSYNC_POL, 0) |
++			 BITS(DPI_DMA_CONTROL_VSYNC_POL, 0) |
++			 BITS(DPI_DMA_CONTROL_COLORM, 0) |
++			 BITS(DPI_DMA_CONTROL_SHUTDN, 0) |
++			 BITS(DPI_DMA_CONTROL_HBP_EN, 1) |
++			 BITS(DPI_DMA_CONTROL_HFP_EN, 1) |
++			 BITS(DPI_DMA_CONTROL_VBP_EN, 1) |
++			 BITS(DPI_DMA_CONTROL_VFP_EN, 1) |
++			 BITS(DPI_DMA_CONTROL_HSYNC_EN, 1) |
++			 BITS(DPI_DMA_CONTROL_VSYNC_EN, 1));
++}
++
++void rp1dsi_dma_update(struct rp1_dsi *dsi, dma_addr_t addr, u32 offset, u32 stride)
++{
++	/*
++	 * Update STRIDE, DMAH and DMAL only. When called after rp1dsi_dma_setup(),
++	 * DMA starts immediately; if already running, the buffer will flip at
++	 * the next vertical sync event.
++	 */
++	u64 a = addr + offset;
++
++	rp1dsi_dma_write(dsi, DPI_DMA_DMA_STRIDE, stride);
++	rp1dsi_dma_write(dsi, DPI_DMA_DMA_ADDR_H, a >> 32);
++	rp1dsi_dma_write(dsi, DPI_DMA_DMA_ADDR_L, a & 0xFFFFFFFFu);
++}
++
++void rp1dsi_dma_stop(struct rp1_dsi *dsi)
++{
++	/*
++	 * Stop DMA by turning off the Auto-Repeat flag, and wait up to 100ms for
++	 * the current and any queued frame to end. "Force drain" flags are not used,
++	 * as they seem to prevent DMA from re-starting properly; it's safer to wait.
++	 */
++	u32 ctrl;
++
++	reinit_completion(&dsi->finished);
++	ctrl = rp1dsi_dma_read(dsi, DPI_DMA_CONTROL);
++	ctrl &= ~(DPI_DMA_CONTROL_ARM_MASK | DPI_DMA_CONTROL_AUTO_REPEAT_MASK);
++	rp1dsi_dma_write(dsi, DPI_DMA_CONTROL, ctrl);
++	if (!wait_for_completion_timeout(&dsi->finished, HZ / 10))
++		drm_err(dsi->drm, "%s: timed out waiting for idle\n", __func__);
++	rp1dsi_dma_write(dsi, DPI_DMA_IRQ_EN, 0);
++}
++
++void rp1dsi_dma_vblank_ctrl(struct rp1_dsi *dsi, int enable)
++{
++	rp1dsi_dma_write(dsi, DPI_DMA_IRQ_EN,
++			 BITS(DPI_DMA_IRQ_EN_AFIFO_EMPTY, 1)      |
++			 BITS(DPI_DMA_IRQ_EN_UNDERFLOW, 1)        |
++			 BITS(DPI_DMA_IRQ_EN_DMA_READY, !!enable) |
++			 BITS(DPI_DMA_IRQ_EN_MATCH_LINE, 4095));
++}
++
++irqreturn_t rp1dsi_dma_isr(int irq, void *dev)
++{
++	struct rp1_dsi *dsi = dev;
++	u32 u = rp1dsi_dma_read(dsi, DPI_DMA_IRQ_FLAGS);
++
++	if (u) {
++		rp1dsi_dma_write(dsi, DPI_DMA_IRQ_FLAGS, u);
++		if (dsi) {
++			if (u & DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK)
++				drm_err_ratelimited(dsi->drm,
++						    "Underflow! (panics=0x%08x)\n",
++						    rp1dsi_dma_read(dsi, DPI_DMA_PANICS));
++			if (u & DPI_DMA_IRQ_FLAGS_DMA_READY_MASK)
++				drm_crtc_handle_vblank(&dsi->pipe.crtc);
++			if (u & DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK)
++				complete(&dsi->finished);
++		}
++	}
++	return u ? IRQ_HANDLED : IRQ_NONE;
++}
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dsi/rp1_dsi_dsi.c
+@@ -0,0 +1,1504 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/platform_device.h>
++#include <linux/rp1_platform.h>
++#include "drm/drm_print.h"
++
++#include "rp1_dsi.h"
++
++/* ------------------------------- Synopsis DSI ------------------------ */
++#define     DSI_VERSION_CFG                       0x000
++#define     DSI_PWR_UP                            0x004
++#define     DSI_CLKMGR_CFG                        0x008
++#define     DSI_DPI_VCID                          0x00C
++#define     DSI_DPI_COLOR_CODING                  0x010
++#define     DSI_DPI_CFG_POL                       0x014
++#define     DSI_DPI_LP_CMD_TIM                    0x018
++#define     DSI_DBI_VCID                          0x01C
++#define     DSI_DBI_CFG                           0x020
++#define     DSI_DBI_PARTITIONING_EN               0x024
++#define     DSI_DBI_CMDSIZE                       0x028
++#define     DSI_PCKHDL_CFG                        0x02C
++#define     DSI_GEN_VCID                          0x030
++#define     DSI_MODE_CFG                          0x034
++#define     DSI_VID_MODE_CFG                      0x038
++#define     DSI_VID_PKT_SIZE                      0x03C
++#define     DSI_VID_NUM_CHUNKS                    0x040
++#define     DSI_VID_NULL_SIZE                     0x044
++#define     DSI_VID_HSA_TIME                      0x048
++#define     DSI_VID_HBP_TIME                      0x04C
++#define     DSI_VID_HLINE_TIME                    0x050
++#define     DSI_VID_VSA_LINES                     0x054
++#define     DSI_VID_VBP_LINES                     0x058
++#define     DSI_VID_VFP_LINES                     0x05C
++#define     DSI_VID_VACTIVE_LINES                 0x060
++#define     DSI_EDPI_CMD_SIZE                     0x064
++#define     DSI_CMD_MODE_CFG                      0x068
++#define     DSI_GEN_HDR                           0x06C
++#define     DSI_GEN_PLD_DATA                      0x070
++#define     DSI_CMD_PKT_STATUS                    0x074
++#define     DSI_TO_CNT_CFG                        0x078
++#define     DSI_HS_RD_TO_CNT                      0x07C
++#define     DSI_LP_RD_TO_CNT                      0x080
++#define     DSI_HS_WR_TO_CNT                      0x084
++#define     DSI_LP_WR_TO_CNT                      0x088
++#define     DSI_BTA_TO_CNT                        0x08C
++#define     DSI_SDF_3D                            0x090
++#define     DSI_LPCLK_CTRL                        0x094
++#define     DSI_PHY_TMR_LPCLK_CFG                 0x098
++#define     DSI_PHY_TMR_HS2LP_LSB       16
++#define     DSI_PHY_TMR_LP2HS_LSB       0
++#define     DSI_PHY_TMR_CFG                       0x09C
++#define     DSI_PHY_TMR_RD_CFG                    0x0F4
++#define     DSI_PHYRSTZ                           0x0A0
++#define     DSI_PHY_IF_CFG                        0x0A4
++#define     DSI_PHY_ULPS_CTRL                     0x0A8
++#define     DSI_PHY_TX_TRIGGERS                   0x0AC
++#define     DSI_PHY_STATUS                        0x0B0
++
++#define     DSI_PHY_TST_CTRL0                     0x0B4
++#define     DSI_PHY_TST_CTRL1                     0x0B8
++#define     DSI_INT_ST0                           0x0BC
++#define     DSI_INT_ST1                           0x0C0
++#define     DSI_INT_MASK0_CFG                     0x0C4
++#define     DSI_INT_MASK1_CFG                     0x0C8
++#define     DSI_PHY_CAL                           0x0CC
++#define     DSI_HEXP_NPKT_CLR                     0x104
++#define     DSI_HEXP_NPKT_SIZE                    0x108
++#define     DSI_VID_SHADOW_CTRL                   0x100
++
++#define     DSI_DPI_VCID_ACT                      0x10C
++#define     DSI_DPI_COLOR_CODING_ACT              0x110
++#define     DSI_DPI_LP_CMD_TIM_ACT                0x118
++#define     DSI_VID_MODE_CFG_ACT                  0x138
++#define     DSI_VID_PKT_SIZE_ACT                  0x13C
++#define     DSI_VID_NUM_CHUNKS_ACT                0x140
++#define     DSI_VID_NULL_SIZE_ACT                 0x144
++#define     DSI_VID_HSA_TIME_ACT                  0x148
++#define     DSI_VID_HBP_TIME_ACT                  0x14C
++#define     DSI_VID_HLINE_TIME_ACT                0x150
++#define     DSI_VID_VSA_LINES_ACT                 0x154
++#define     DSI_VID_VBP_LINES_ACT                 0x158
++#define     DSI_VID_VFP_LINES_ACT                 0x15C
++#define     DSI_VID_VACTIVE_LINES_ACT             0x160
++#define     DSI_SDF_3D_CFG_ACT                    0x190
++
++#define     DSI_INT_FORCE0                        0x0D8
++#define     DSI_INT_FORCE1                        0x0DC
++
++#define     DSI_AUTO_ULPS_MODE                    0x0E0
++#define     DSI_AUTO_ULPS_ENTRY_DELAY             0x0E4
++#define     DSI_AUTO_ULPS_WAKEUP_TIME             0x0E8
++#define     DSI_EDPI_ADV_FEATURES                 0x0EC
++
++#define     DSI_DSC_PARAMETER                     0x0F0
++
++/* And some bitfield definitions */
++
++#define DPHY_PWR_UP_SHUTDOWNZ_LSB 0
++#define DPHY_PWR_UP_SHUTDOWNZ_BITS BIT(DPHY_PWR_UP_SHUTDOWNZ_LSB)
++
++#define DPHY_CTRL0_PHY_TESTCLK_LSB 1
++#define DPHY_CTRL0_PHY_TESTCLK_BITS BIT(DPHY_CTRL0_PHY_TESTCLK_LSB)
++#define DPHY_CTRL0_PHY_TESTCLR_LSB 0
++#define DPHY_CTRL0_PHY_TESTCLR_BITS BIT(DPHY_CTRL0_PHY_TESTCLR_LSB)
++
++#define DPHY_CTRL1_PHY_TESTDIN_LSB  0
++#define DPHY_CTRL1_PHY_TESTDIN_BITS  (0xff << DPHY_CTRL1_PHY_TESTDIN_LSB)
++#define DPHY_CTRL1_PHY_TESTDOUT_LSB 8
++#define DPHY_CTRL1_PHY_TESTDOUT_BITS (0xff << DPHY_CTRL1_PHY_TESTDOUT_LSB)
++#define DPHY_CTRL1_PHY_TESTEN_LSB 16
++#define DPHY_CTRL1_PHY_TESTEN_BITS BIT(DPHY_CTRL1_PHY_TESTEN_LSB)
++
++#define DSI_PHYRSTZ_SHUTDOWNZ_LSB  0
++#define DSI_PHYRSTZ_SHUTDOWNZ_BITS BIT(DSI_PHYRSTZ_SHUTDOWNZ_LSB)
++#define DSI_PHYRSTZ_RSTZ_LSB  1
++#define DSI_PHYRSTZ_RSTZ_BITS BIT(DSI_PHYRSTZ_RSTZ_LSB)
++#define DSI_PHYRSTZ_ENABLECLK_LSB 2
++#define DSI_PHYRSTZ_ENABLECLK_BITS BIT(DSI_PHYRSTZ_ENABLECLK_LSB)
++#define DSI_PHYRSTZ_FORCEPLL_LSB 3
++#define DSI_PHYRSTZ_FORCEPLL_BITS  BIT(DSI_PHYRSTZ_FORCEPLL_LSB)
++
++#define DPHY_HS_RX_CTRL_LANE0_OFFSET  0x44
++#define DPHY_PLL_INPUT_DIV_OFFSET 0x17
++#define DPHY_PLL_LOOP_DIV_OFFSET 0x18
++#define DPHY_PLL_DIV_CTRL_OFFSET 0x19
++
++#define DPHY_PLL_BIAS_OFFSET 0x10
++#define DPHY_PLL_BIAS_VCO_RANGE_LSB 3
++#define DPHY_PLL_BIAS_USE_PROGRAMMED_VCO_RANGE BIT(7)
++
++#define DPHY_PLL_CHARGE_PUMP_OFFSET 0x11
++#define DPHY_PLL_LPF_OFFSET 0x12
++
++#define DSI_WRITE(reg, val)  writel((val),  dsi->hw_base[RP1DSI_HW_BLOCK_DSI] + (reg))
++#define DSI_READ(reg)        readl(dsi->hw_base[RP1DSI_HW_BLOCK_DSI] + (reg))
++
++// ================================================================================
++// Register block : RPI_MIPICFG
++// Version        : 1
++// Bus type       : apb
++// Description    : Register block to control mipi DPHY
++// ================================================================================
++#define RPI_MIPICFG_REGS_RWTYPE_MSB 13
++#define RPI_MIPICFG_REGS_RWTYPE_LSB 12
++// ================================================================================
++// Register    : RPI_MIPICFG_CLK2FC
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_CLK2FC_OFFSET 0x00000000
++#define RPI_MIPICFG_CLK2FC_BITS   0x00000007
++#define RPI_MIPICFG_CLK2FC_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_CLK2FC_SEL
++// Description : select a clock to be sent to the frequency counter
++//               7 = none
++//               6 = none
++//               5 = none
++//               4 = rxbyteclkhs (187.5MHz)
++//               3 = rxclkesc0 (20MHz)
++//               2 = txbyteclkhs (187.5MHz)
++//               1 = txclkesc (125MHz)
++//               0 = none
++#define RPI_MIPICFG_CLK2FC_SEL_RESET  0x0
++#define RPI_MIPICFG_CLK2FC_SEL_BITS   0x00000007
++#define RPI_MIPICFG_CLK2FC_SEL_MSB    2
++#define RPI_MIPICFG_CLK2FC_SEL_LSB    0
++#define RPI_MIPICFG_CLK2FC_SEL_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_CFG
++// JTAG access : asynchronous
++// Description : Top level configuration
++#define RPI_MIPICFG_CFG_OFFSET 0x00000004
++#define RPI_MIPICFG_CFG_BITS   0x00000111
++#define RPI_MIPICFG_CFG_RESET  0x00000001
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_CFG_DPIUPDATE
++// Description : Indicate the DSI block that the next frame will have a new video configuration
++#define RPI_MIPICFG_CFG_DPIUPDATE_RESET  0x0
++#define RPI_MIPICFG_CFG_DPIUPDATE_BITS   0x00000100
++#define RPI_MIPICFG_CFG_DPIUPDATE_MSB    8
++#define RPI_MIPICFG_CFG_DPIUPDATE_LSB    8
++#define RPI_MIPICFG_CFG_DPIUPDATE_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_CFG_SEL_TE_EXT
++// Description : Select the TE source: 1 - ext, 0 - int
++#define RPI_MIPICFG_CFG_SEL_TE_EXT_RESET  0x0
++#define RPI_MIPICFG_CFG_SEL_TE_EXT_BITS   0x00000010
++#define RPI_MIPICFG_CFG_SEL_TE_EXT_MSB    4
++#define RPI_MIPICFG_CFG_SEL_TE_EXT_LSB    4
++#define RPI_MIPICFG_CFG_SEL_TE_EXT_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_CFG_SEL_CSI_DSI_N
++// Description : Select PHY direction: input to CSI, output from DSI. CSI 1 DSI 0
++#define RPI_MIPICFG_CFG_SEL_CSI_DSI_N_RESET  0x1
++#define RPI_MIPICFG_CFG_SEL_CSI_DSI_N_BITS   0x00000001
++#define RPI_MIPICFG_CFG_SEL_CSI_DSI_N_MSB    0
++#define RPI_MIPICFG_CFG_SEL_CSI_DSI_N_LSB    0
++#define RPI_MIPICFG_CFG_SEL_CSI_DSI_N_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_TE
++// JTAG access : synchronous
++// Description : Tearing effect processing
++#define RPI_MIPICFG_TE_OFFSET 0x00000008
++#define RPI_MIPICFG_TE_BITS   0x10ffffff
++#define RPI_MIPICFG_TE_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_TE_ARM
++// Description : Tearing effect arm
++#define RPI_MIPICFG_TE_ARM_RESET  0x0
++#define RPI_MIPICFG_TE_ARM_BITS   0x10000000
++#define RPI_MIPICFG_TE_ARM_MSB    28
++#define RPI_MIPICFG_TE_ARM_LSB    28
++#define RPI_MIPICFG_TE_ARM_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_TE_HALT_CYC
++// Description : When arm pulse has been seen, wait for te; then halt the dpi block
++//		 for this many clk_dpi cycles
++#define RPI_MIPICFG_TE_HALT_CYC_RESET  0x000000
++#define RPI_MIPICFG_TE_HALT_CYC_BITS   0x00ffffff
++#define RPI_MIPICFG_TE_HALT_CYC_MSB    23
++#define RPI_MIPICFG_TE_HALT_CYC_LSB    0
++#define RPI_MIPICFG_TE_HALT_CYC_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_MONITOR
++// JTAG access : asynchronous
++// Description : DPHY status monitors for analog DFT
++#define RPI_MIPICFG_DPHY_MONITOR_OFFSET 0x00000010
++#define RPI_MIPICFG_DPHY_MONITOR_BITS   0x00111fff
++#define RPI_MIPICFG_DPHY_MONITOR_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_MONITOR_LOCK
++// Description : None
++#define RPI_MIPICFG_DPHY_MONITOR_LOCK_RESET  0x0
++#define RPI_MIPICFG_DPHY_MONITOR_LOCK_BITS   0x00100000
++#define RPI_MIPICFG_DPHY_MONITOR_LOCK_MSB    20
++#define RPI_MIPICFG_DPHY_MONITOR_LOCK_LSB    20
++#define RPI_MIPICFG_DPHY_MONITOR_LOCK_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_MONITOR_BISTOK
++// Description : None
++#define RPI_MIPICFG_DPHY_MONITOR_BISTOK_RESET  0x0
++#define RPI_MIPICFG_DPHY_MONITOR_BISTOK_BITS   0x00010000
++#define RPI_MIPICFG_DPHY_MONITOR_BISTOK_MSB    16
++#define RPI_MIPICFG_DPHY_MONITOR_BISTOK_LSB    16
++#define RPI_MIPICFG_DPHY_MONITOR_BISTOK_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK
++// Description : None
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK_RESET  0x0
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK_BITS   0x00001000
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK_MSB    12
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK_LSB    12
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATECLK_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA
++// Description : None
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA_RESET  0x0
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA_BITS   0x00000f00
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA_MSB    11
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA_LSB    8
++#define RPI_MIPICFG_DPHY_MONITOR_STOPSTATEDATA_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_MONITOR_TESTDOUT
++// Description : None
++#define RPI_MIPICFG_DPHY_MONITOR_TESTDOUT_RESET  0x00
++#define RPI_MIPICFG_DPHY_MONITOR_TESTDOUT_BITS   0x000000ff
++#define RPI_MIPICFG_DPHY_MONITOR_TESTDOUT_MSB    7
++#define RPI_MIPICFG_DPHY_MONITOR_TESTDOUT_LSB    0
++#define RPI_MIPICFG_DPHY_MONITOR_TESTDOUT_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_CTRL_0
++// JTAG access : asynchronous
++// Description : DPHY control for analog DFT
++#define RPI_MIPICFG_DPHY_CTRL_0_OFFSET 0x00000014
++#define RPI_MIPICFG_DPHY_CTRL_0_BITS   0x0000003f
++#define RPI_MIPICFG_DPHY_CTRL_0_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE
++// Description : When set in lpmode, TXCLKESC is driven from clk_vec(driven from clocks block)
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE_BITS   0x00000020
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE_MSB    5
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE_LSB    5
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_LPMODE_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA
++// Description : When set, drive the DPHY from the test registers
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA_BITS   0x00000010
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA_MSB    4
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA_LSB    4
++#define RPI_MIPICFG_DPHY_CTRL_0_TEST_ENA_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS
++// Description : When test_ena is set, disable cfg_clk
++#define RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS_BITS   0x00000008
++#define RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS_MSB    3
++#define RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS_LSB    3
++#define RPI_MIPICFG_DPHY_CTRL_0_CFG_CLK_DIS_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS
++// Description : When test_ena is set, disable refclk
++#define RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS_BITS   0x00000004
++#define RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS_MSB    2
++#define RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS_LSB    2
++#define RPI_MIPICFG_DPHY_CTRL_0_REFCLK_DIS_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS
++// Description : When test_ena is set, disable txclkesc
++#define RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS_BITS   0x00000002
++#define RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS_MSB    1
++#define RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS_LSB    1
++#define RPI_MIPICFG_DPHY_CTRL_0_TXCLKESC_DIS_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS
++// Description : When test_ena is set, disable txbyteclkhs
++#define RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS_BITS   0x00000001
++#define RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS_MSB    0
++#define RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS_LSB    0
++#define RPI_MIPICFG_DPHY_CTRL_0_TXBYTECLKHS_DIS_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_CTRL_1
++// JTAG access : asynchronous
++// Description : DPHY control for analog DFT
++#define RPI_MIPICFG_DPHY_CTRL_1_OFFSET 0x00000018
++#define RPI_MIPICFG_DPHY_CTRL_1_BITS   0x7fffffff
++#define RPI_MIPICFG_DPHY_CTRL_1_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL_BITS   0x40000000
++#define RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL_MSB    30
++#define RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL_LSB    30
++#define RPI_MIPICFG_DPHY_CTRL_1_FORCEPLL_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ_BITS   0x20000000
++#define RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ_MSB    29
++#define RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ_LSB    29
++#define RPI_MIPICFG_DPHY_CTRL_1_SHUTDOWNZ_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_RSTZ
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_RSTZ_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_RSTZ_BITS   0x10000000
++#define RPI_MIPICFG_DPHY_CTRL_1_RSTZ_MSB    28
++#define RPI_MIPICFG_DPHY_CTRL_1_RSTZ_LSB    28
++#define RPI_MIPICFG_DPHY_CTRL_1_RSTZ_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ_BITS   0x08000000
++#define RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ_MSB    27
++#define RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ_LSB    27
++#define RPI_MIPICFG_DPHY_CTRL_1_MASTERSLAVEZ_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_BISTON
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_BISTON_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_BISTON_BITS   0x04000000
++#define RPI_MIPICFG_DPHY_CTRL_1_BISTON_MSB    26
++#define RPI_MIPICFG_DPHY_CTRL_1_BISTON_LSB    26
++#define RPI_MIPICFG_DPHY_CTRL_1_BISTON_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK_BITS   0x02000000
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK_MSB    25
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK_LSB    25
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTHSCLK_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK_BITS   0x01000000
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK_MSB    24
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK_LSB    24
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLECLK_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3_BITS   0x00800000
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3_MSB    23
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3_LSB    23
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2_BITS   0x00400000
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2_MSB    22
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2_LSB    22
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1_BITS   0x00200000
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1_MSB    21
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1_LSB    21
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0_BITS   0x00100000
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0_MSB    20
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0_LSB    20
++#define RPI_MIPICFG_DPHY_CTRL_1_ENABLE_0_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3_BITS   0x00080000
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3_MSB    19
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3_LSB    19
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2_BITS   0x00040000
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2_MSB    18
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2_LSB    18
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1_BITS   0x00020000
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1_MSB    17
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1_LSB    17
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0_BITS   0x00010000
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0_MSB    16
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0_LSB    16
++#define RPI_MIPICFG_DPHY_CTRL_1_BASEDIR_0_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3_BITS   0x00008000
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3_MSB    15
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3_LSB    15
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2_BITS   0x00004000
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2_MSB    14
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2_LSB    14
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1_BITS   0x00002000
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1_MSB    13
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1_LSB    13
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0_BITS   0x00001000
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0_MSB    12
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0_LSB    12
++#define RPI_MIPICFG_DPHY_CTRL_1_TXLPDTESC_0_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3_BITS   0x00000800
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3_MSB    11
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3_LSB    11
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2_BITS   0x00000400
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2_MSB    10
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2_LSB    10
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1_BITS   0x00000200
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1_MSB    9
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1_LSB    9
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0_BITS   0x00000100
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0_MSB    8
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0_LSB    8
++#define RPI_MIPICFG_DPHY_CTRL_1_TXVALIDESC_0_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3_BITS   0x00000080
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3_MSB    7
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3_LSB    7
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2_BITS   0x00000040
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2_MSB    6
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2_LSB    6
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1_BITS   0x00000020
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1_MSB    5
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1_LSB    5
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0_BITS   0x00000010
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0_MSB    4
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0_LSB    4
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTESC_0_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3_BITS   0x00000008
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3_MSB    3
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3_LSB    3
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2_BITS   0x00000004
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2_MSB    2
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2_LSB    2
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1_BITS   0x00000002
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1_MSB    1
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1_LSB    1
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0_BITS   0x00000001
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0_MSB    0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0_LSB    0
++#define RPI_MIPICFG_DPHY_CTRL_1_TXREQUESTDATAHS_0_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_CTRL_2
++// JTAG access : asynchronous
++// Description : DPHY control for analog DFT
++#define RPI_MIPICFG_DPHY_CTRL_2_OFFSET 0x0000001c
++#define RPI_MIPICFG_DPHY_CTRL_2_BITS   0x000007ff
++#define RPI_MIPICFG_DPHY_CTRL_2_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_2_TESTCLK
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLK_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLK_BITS   0x00000400
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLK_MSB    10
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLK_LSB    10
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLK_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_2_TESTEN
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTEN_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTEN_BITS   0x00000200
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTEN_MSB    9
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTEN_LSB    9
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTEN_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_2_TESTCLR
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLR_RESET  0x0
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLR_BITS   0x00000100
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLR_MSB    8
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLR_LSB    8
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTCLR_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_2_TESTDIN
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTDIN_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTDIN_BITS   0x000000ff
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTDIN_MSB    7
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTDIN_LSB    0
++#define RPI_MIPICFG_DPHY_CTRL_2_TESTDIN_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_CTRL_3
++// JTAG access : asynchronous
++// Description : DPHY control for analog DFT
++#define RPI_MIPICFG_DPHY_CTRL_3_OFFSET 0x00000020
++#define RPI_MIPICFG_DPHY_CTRL_3_BITS   0xffffffff
++#define RPI_MIPICFG_DPHY_CTRL_3_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3_BITS   0xff000000
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3_MSB    31
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3_LSB    24
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2_BITS   0x00ff0000
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2_MSB    23
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2_LSB    16
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1_BITS   0x0000ff00
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1_MSB    15
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1_LSB    8
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0_BITS   0x000000ff
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0_MSB    7
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0_LSB    0
++#define RPI_MIPICFG_DPHY_CTRL_3_TXDATAESC_0_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_DPHY_CTRL_4
++// JTAG access : asynchronous
++// Description : DPHY control for analog DFT
++#define RPI_MIPICFG_DPHY_CTRL_4_OFFSET 0x00000024
++#define RPI_MIPICFG_DPHY_CTRL_4_BITS   0xffffffff
++#define RPI_MIPICFG_DPHY_CTRL_4_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3_BITS   0xff000000
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3_MSB    31
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3_LSB    24
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_3_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2_BITS   0x00ff0000
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2_MSB    23
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2_LSB    16
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_2_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1_BITS   0x0000ff00
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1_MSB    15
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1_LSB    8
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_1_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0
++// Description : None
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0_RESET  0x00
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0_BITS   0x000000ff
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0_MSB    7
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0_LSB    0
++#define RPI_MIPICFG_DPHY_CTRL_4_TXDATAHS_0_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_INTR
++// JTAG access : synchronous
++// Description : Raw Interrupts
++#define RPI_MIPICFG_INTR_OFFSET 0x00000028
++#define RPI_MIPICFG_INTR_BITS   0x0000000f
++#define RPI_MIPICFG_INTR_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTR_DSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTR_DSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTR_DSI_HOST_BITS   0x00000008
++#define RPI_MIPICFG_INTR_DSI_HOST_MSB    3
++#define RPI_MIPICFG_INTR_DSI_HOST_LSB    3
++#define RPI_MIPICFG_INTR_DSI_HOST_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTR_CSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTR_CSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTR_CSI_HOST_BITS   0x00000004
++#define RPI_MIPICFG_INTR_CSI_HOST_MSB    2
++#define RPI_MIPICFG_INTR_CSI_HOST_LSB    2
++#define RPI_MIPICFG_INTR_CSI_HOST_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTR_DSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTR_DSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTR_DSI_DMA_BITS   0x00000002
++#define RPI_MIPICFG_INTR_DSI_DMA_MSB    1
++#define RPI_MIPICFG_INTR_DSI_DMA_LSB    1
++#define RPI_MIPICFG_INTR_DSI_DMA_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTR_CSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTR_CSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTR_CSI_DMA_BITS   0x00000001
++#define RPI_MIPICFG_INTR_CSI_DMA_MSB    0
++#define RPI_MIPICFG_INTR_CSI_DMA_LSB    0
++#define RPI_MIPICFG_INTR_CSI_DMA_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_INTE
++// JTAG access : synchronous
++// Description : Interrupt Enable
++#define RPI_MIPICFG_INTE_OFFSET 0x0000002c
++#define RPI_MIPICFG_INTE_BITS   0x0000000f
++#define RPI_MIPICFG_INTE_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTE_DSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTE_DSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTE_DSI_HOST_BITS   0x00000008
++#define RPI_MIPICFG_INTE_DSI_HOST_MSB    3
++#define RPI_MIPICFG_INTE_DSI_HOST_LSB    3
++#define RPI_MIPICFG_INTE_DSI_HOST_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTE_CSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTE_CSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTE_CSI_HOST_BITS   0x00000004
++#define RPI_MIPICFG_INTE_CSI_HOST_MSB    2
++#define RPI_MIPICFG_INTE_CSI_HOST_LSB    2
++#define RPI_MIPICFG_INTE_CSI_HOST_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTE_DSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTE_DSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTE_DSI_DMA_BITS   0x00000002
++#define RPI_MIPICFG_INTE_DSI_DMA_MSB    1
++#define RPI_MIPICFG_INTE_DSI_DMA_LSB    1
++#define RPI_MIPICFG_INTE_DSI_DMA_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTE_CSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTE_CSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTE_CSI_DMA_BITS   0x00000001
++#define RPI_MIPICFG_INTE_CSI_DMA_MSB    0
++#define RPI_MIPICFG_INTE_CSI_DMA_LSB    0
++#define RPI_MIPICFG_INTE_CSI_DMA_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_INTF
++// JTAG access : synchronous
++// Description : Interrupt Force
++#define RPI_MIPICFG_INTF_OFFSET 0x00000030
++#define RPI_MIPICFG_INTF_BITS   0x0000000f
++#define RPI_MIPICFG_INTF_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTF_DSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTF_DSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTF_DSI_HOST_BITS   0x00000008
++#define RPI_MIPICFG_INTF_DSI_HOST_MSB    3
++#define RPI_MIPICFG_INTF_DSI_HOST_LSB    3
++#define RPI_MIPICFG_INTF_DSI_HOST_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTF_CSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTF_CSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTF_CSI_HOST_BITS   0x00000004
++#define RPI_MIPICFG_INTF_CSI_HOST_MSB    2
++#define RPI_MIPICFG_INTF_CSI_HOST_LSB    2
++#define RPI_MIPICFG_INTF_CSI_HOST_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTF_DSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTF_DSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTF_DSI_DMA_BITS   0x00000002
++#define RPI_MIPICFG_INTF_DSI_DMA_MSB    1
++#define RPI_MIPICFG_INTF_DSI_DMA_LSB    1
++#define RPI_MIPICFG_INTF_DSI_DMA_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTF_CSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTF_CSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTF_CSI_DMA_BITS   0x00000001
++#define RPI_MIPICFG_INTF_CSI_DMA_MSB    0
++#define RPI_MIPICFG_INTF_CSI_DMA_LSB    0
++#define RPI_MIPICFG_INTF_CSI_DMA_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_INTS
++// JTAG access : synchronous
++// Description : Interrupt status after masking & forcing
++#define RPI_MIPICFG_INTS_OFFSET 0x00000034
++#define RPI_MIPICFG_INTS_BITS   0x0000000f
++#define RPI_MIPICFG_INTS_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTS_DSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTS_DSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTS_DSI_HOST_BITS   0x00000008
++#define RPI_MIPICFG_INTS_DSI_HOST_MSB    3
++#define RPI_MIPICFG_INTS_DSI_HOST_LSB    3
++#define RPI_MIPICFG_INTS_DSI_HOST_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTS_CSI_HOST
++// Description : None
++#define RPI_MIPICFG_INTS_CSI_HOST_RESET  0x0
++#define RPI_MIPICFG_INTS_CSI_HOST_BITS   0x00000004
++#define RPI_MIPICFG_INTS_CSI_HOST_MSB    2
++#define RPI_MIPICFG_INTS_CSI_HOST_LSB    2
++#define RPI_MIPICFG_INTS_CSI_HOST_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTS_DSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTS_DSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTS_DSI_DMA_BITS   0x00000002
++#define RPI_MIPICFG_INTS_DSI_DMA_MSB    1
++#define RPI_MIPICFG_INTS_DSI_DMA_LSB    1
++#define RPI_MIPICFG_INTS_DSI_DMA_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_INTS_CSI_DMA
++// Description : None
++#define RPI_MIPICFG_INTS_CSI_DMA_RESET  0x0
++#define RPI_MIPICFG_INTS_CSI_DMA_BITS   0x00000001
++#define RPI_MIPICFG_INTS_CSI_DMA_MSB    0
++#define RPI_MIPICFG_INTS_CSI_DMA_LSB    0
++#define RPI_MIPICFG_INTS_CSI_DMA_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_BLOCK_ID
++// JTAG access : asynchronous
++// Description : Block Identifier
++#define RPI_MIPICFG_BLOCK_ID_OFFSET 0x00000038
++#define RPI_MIPICFG_BLOCK_ID_BITS   0xffffffff
++#define RPI_MIPICFG_BLOCK_ID_RESET  0x4d495049
++#define RPI_MIPICFG_BLOCK_ID_MSB    31
++#define RPI_MIPICFG_BLOCK_ID_LSB    0
++#define RPI_MIPICFG_BLOCK_ID_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_INSTANCE_ID
++// JTAG access : asynchronous
++// Description : Block Instance Identifier
++#define RPI_MIPICFG_INSTANCE_ID_OFFSET 0x0000003c
++#define RPI_MIPICFG_INSTANCE_ID_BITS   0x0000000f
++#define RPI_MIPICFG_INSTANCE_ID_RESET  0x00000000
++#define RPI_MIPICFG_INSTANCE_ID_MSB    3
++#define RPI_MIPICFG_INSTANCE_ID_LSB    0
++#define RPI_MIPICFG_INSTANCE_ID_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_RSTSEQ_AUTO
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_RSTSEQ_AUTO_OFFSET 0x00000040
++#define RPI_MIPICFG_RSTSEQ_AUTO_BITS   0x00000007
++#define RPI_MIPICFG_RSTSEQ_AUTO_RESET  0x00000007
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_AUTO_CSI
++// Description : 1 = reset is controlled by the sequencer
++//               0 = reset is controlled by rstseq_ctrl
++#define RPI_MIPICFG_RSTSEQ_AUTO_CSI_RESET  0x1
++#define RPI_MIPICFG_RSTSEQ_AUTO_CSI_BITS   0x00000004
++#define RPI_MIPICFG_RSTSEQ_AUTO_CSI_MSB    2
++#define RPI_MIPICFG_RSTSEQ_AUTO_CSI_LSB    2
++#define RPI_MIPICFG_RSTSEQ_AUTO_CSI_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_AUTO_DPI
++// Description : 1 = reset is controlled by the sequencer
++//               0 = reset is controlled by rstseq_ctrl
++#define RPI_MIPICFG_RSTSEQ_AUTO_DPI_RESET  0x1
++#define RPI_MIPICFG_RSTSEQ_AUTO_DPI_BITS   0x00000002
++#define RPI_MIPICFG_RSTSEQ_AUTO_DPI_MSB    1
++#define RPI_MIPICFG_RSTSEQ_AUTO_DPI_LSB    1
++#define RPI_MIPICFG_RSTSEQ_AUTO_DPI_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER
++// Description : 1 = reset is controlled by the sequencer
++//               0 = reset is controlled by rstseq_ctrl
++#define RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER_RESET  0x1
++#define RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER_BITS   0x00000001
++#define RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER_MSB    0
++#define RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER_LSB    0
++#define RPI_MIPICFG_RSTSEQ_AUTO_BUSADAPTER_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_RSTSEQ_PARALLEL
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_OFFSET 0x00000044
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BITS   0x00000007
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_RESET  0x00000006
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_PARALLEL_CSI
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_CSI_RESET  0x1
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_CSI_BITS   0x00000004
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_CSI_MSB    2
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_CSI_LSB    2
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_CSI_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_PARALLEL_DPI
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_DPI_RESET  0x1
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_DPI_BITS   0x00000002
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_DPI_MSB    1
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_DPI_LSB    1
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_DPI_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER_BITS   0x00000001
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER_MSB    0
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER_LSB    0
++#define RPI_MIPICFG_RSTSEQ_PARALLEL_BUSADAPTER_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_RSTSEQ_CTRL
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_RSTSEQ_CTRL_OFFSET 0x00000048
++#define RPI_MIPICFG_RSTSEQ_CTRL_BITS   0x00000007
++#define RPI_MIPICFG_RSTSEQ_CTRL_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_CTRL_CSI
++// Description : 1 = keep the reset asserted
++//               0 = keep the reset deasserted
++//               This is ignored if rstseq_auto=1
++#define RPI_MIPICFG_RSTSEQ_CTRL_CSI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_CTRL_CSI_BITS   0x00000004
++#define RPI_MIPICFG_RSTSEQ_CTRL_CSI_MSB    2
++#define RPI_MIPICFG_RSTSEQ_CTRL_CSI_LSB    2
++#define RPI_MIPICFG_RSTSEQ_CTRL_CSI_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_CTRL_DPI
++// Description : 1 = keep the reset asserted
++//               0 = keep the reset deasserted
++//               This is ignored if rstseq_auto=1
++#define RPI_MIPICFG_RSTSEQ_CTRL_DPI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_CTRL_DPI_BITS   0x00000002
++#define RPI_MIPICFG_RSTSEQ_CTRL_DPI_MSB    1
++#define RPI_MIPICFG_RSTSEQ_CTRL_DPI_LSB    1
++#define RPI_MIPICFG_RSTSEQ_CTRL_DPI_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER
++// Description : 1 = keep the reset asserted
++//               0 = keep the reset deasserted
++//               This is ignored if rstseq_auto=1
++#define RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER_BITS   0x00000001
++#define RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER_MSB    0
++#define RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER_LSB    0
++#define RPI_MIPICFG_RSTSEQ_CTRL_BUSADAPTER_ACCESS "RW"
++// ================================================================================
++// Register    : RPI_MIPICFG_RSTSEQ_TRIG
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_RSTSEQ_TRIG_OFFSET 0x0000004c
++#define RPI_MIPICFG_RSTSEQ_TRIG_BITS   0x00000007
++#define RPI_MIPICFG_RSTSEQ_TRIG_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_TRIG_CSI
++// Description : Pulses the reset output
++#define RPI_MIPICFG_RSTSEQ_TRIG_CSI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_TRIG_CSI_BITS   0x00000004
++#define RPI_MIPICFG_RSTSEQ_TRIG_CSI_MSB    2
++#define RPI_MIPICFG_RSTSEQ_TRIG_CSI_LSB    2
++#define RPI_MIPICFG_RSTSEQ_TRIG_CSI_ACCESS "SC"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_TRIG_DPI
++// Description : Pulses the reset output
++#define RPI_MIPICFG_RSTSEQ_TRIG_DPI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_TRIG_DPI_BITS   0x00000002
++#define RPI_MIPICFG_RSTSEQ_TRIG_DPI_MSB    1
++#define RPI_MIPICFG_RSTSEQ_TRIG_DPI_LSB    1
++#define RPI_MIPICFG_RSTSEQ_TRIG_DPI_ACCESS "SC"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER
++// Description : Pulses the reset output
++#define RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER_BITS   0x00000001
++#define RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER_MSB    0
++#define RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER_LSB    0
++#define RPI_MIPICFG_RSTSEQ_TRIG_BUSADAPTER_ACCESS "SC"
++// ================================================================================
++// Register    : RPI_MIPICFG_RSTSEQ_DONE
++// JTAG access : synchronous
++// Description : None
++#define RPI_MIPICFG_RSTSEQ_DONE_OFFSET 0x00000050
++#define RPI_MIPICFG_RSTSEQ_DONE_BITS   0x00000007
++#define RPI_MIPICFG_RSTSEQ_DONE_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_DONE_CSI
++// Description : Indicates the current state of the reset
++#define RPI_MIPICFG_RSTSEQ_DONE_CSI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_DONE_CSI_BITS   0x00000004
++#define RPI_MIPICFG_RSTSEQ_DONE_CSI_MSB    2
++#define RPI_MIPICFG_RSTSEQ_DONE_CSI_LSB    2
++#define RPI_MIPICFG_RSTSEQ_DONE_CSI_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_DONE_DPI
++// Description : Indicates the current state of the reset
++#define RPI_MIPICFG_RSTSEQ_DONE_DPI_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_DONE_DPI_BITS   0x00000002
++#define RPI_MIPICFG_RSTSEQ_DONE_DPI_MSB    1
++#define RPI_MIPICFG_RSTSEQ_DONE_DPI_LSB    1
++#define RPI_MIPICFG_RSTSEQ_DONE_DPI_ACCESS "RO"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER
++// Description : Indicates the current state of the reset
++#define RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER_RESET  0x0
++#define RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER_BITS   0x00000001
++#define RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER_MSB    0
++#define RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER_LSB    0
++#define RPI_MIPICFG_RSTSEQ_DONE_BUSADAPTER_ACCESS "RO"
++// ================================================================================
++// Register    : RPI_MIPICFG_DFTSS
++// JTAG access : asynchronous
++// Description : None
++#define RPI_MIPICFG_DFTSS_OFFSET 0x00000054
++#define RPI_MIPICFG_DFTSS_BITS   0x0000001f
++#define RPI_MIPICFG_DFTSS_RESET  0x00000000
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DFTSS_JTAG_COPY
++// Description : None
++#define RPI_MIPICFG_DFTSS_JTAG_COPY_RESET  0x0
++#define RPI_MIPICFG_DFTSS_JTAG_COPY_BITS   0x00000010
++#define RPI_MIPICFG_DFTSS_JTAG_COPY_MSB    4
++#define RPI_MIPICFG_DFTSS_JTAG_COPY_LSB    4
++#define RPI_MIPICFG_DFTSS_JTAG_COPY_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY
++// Description : None
++#define RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY_RESET  0x0
++#define RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY_BITS   0x00000008
++#define RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY_MSB    3
++#define RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY_LSB    3
++#define RPI_MIPICFG_DFTSS_JTAG_ACCESS_ONLY_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS
++// Description : None
++#define RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS_RESET  0x0
++#define RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS_BITS   0x00000004
++#define RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS_MSB    2
++#define RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS_LSB    2
++#define RPI_MIPICFG_DFTSS_BYPASS_OUTSYNCS_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DFTSS_BYPASS_INSYNCS
++// Description : None
++#define RPI_MIPICFG_DFTSS_BYPASS_INSYNCS_RESET  0x0
++#define RPI_MIPICFG_DFTSS_BYPASS_INSYNCS_BITS   0x00000002
++#define RPI_MIPICFG_DFTSS_BYPASS_INSYNCS_MSB    1
++#define RPI_MIPICFG_DFTSS_BYPASS_INSYNCS_LSB    1
++#define RPI_MIPICFG_DFTSS_BYPASS_INSYNCS_ACCESS "RW"
++// --------------------------------------------------------------------------------
++// Field       : RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS
++// Description : None
++#define RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS_RESET  0x0
++#define RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS_BITS   0x00000001
++#define RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS_MSB    0
++#define RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS_LSB    0
++#define RPI_MIPICFG_DFTSS_BYPASS_RESETSYNCS_ACCESS "RW"
++
++#define CFG_WRITE(reg, val)  writel((val),  dsi->hw_base[RP1DSI_HW_BLOCK_CFG] + (reg ## _OFFSET))
++#define CFG_READ(reg)        readl(dsi->hw_base[RP1DSI_HW_BLOCK_CFG] + (reg ## _OFFSET))
++
++/* ------------------------------- DPHY setup stuff ------------------------ */
++
++static void dphy_transaction(struct rp1_dsi *dsi, uint8_t test_code, uint8_t test_data)
++{
++	/*
++	 * See pg 101 of mipi dphy bidir databook
++	 * Assume we start with testclk high.
++	 * Each APB write takes at least 10ns and we ignore TESTDOUT
++	 * so there is no need for extra delays between the transitions.
++	 */
++	u32 tmp;
++
++	DSI_WRITE(DSI_PHY_TST_CTRL1, test_code | DPHY_CTRL1_PHY_TESTEN_BITS);
++	DSI_WRITE(DSI_PHY_TST_CTRL0, 0);
++	tmp = (DSI_READ(DSI_PHY_TST_CTRL1) >> DPHY_CTRL1_PHY_TESTDOUT_LSB) & 0xFF;
++	DSI_WRITE(DSI_PHY_TST_CTRL1, test_data);
++	DSI_WRITE(DSI_PHY_TST_CTRL0, DPHY_CTRL0_PHY_TESTCLK_BITS);
++}
++
++static uint8_t dphy_get_div(u32 refclk_khz, u32 vco_freq_khz, u32 *ptr_m, u32 *ptr_n)
++{
++	/*
++	 * See pg 77-78 of dphy databook
++	 * fvco = m/n * refclk
++	 * with the limit
++	 * 40MHz >= fREFCLK / N >= 5MHz
++	 * M (multiplier) must be an even number between 2 and 300
++	 * N (input divider) must be an integer between 1 and 100
++	 *
++	 * In practice, given a 50MHz reference clock, it can produce any
++	 * multiple of 10MHz, 11.1111MHz, 12.5MHz, 14.286MHz or 16.667MHz
++	 * with < 1% error for all frequencies above 495MHz.
++	 */
++
++	static const u32 REF_DIVN_MAX = 40000u;
++	static const u32 REF_DIVN_MIN =  5000u;
++	u32 best_n, best_m, best_err = 0x7fffffff;
++	unsigned int n;
++
++	for (n = 1 + refclk_khz / REF_DIVN_MAX; n * REF_DIVN_MIN <= refclk_khz && n < 100; ++n) {
++		u32 half_m = (n * vco_freq_khz + refclk_khz) / (2 * refclk_khz);
++
++		if (half_m < 150) {
++			u32 f = (2 * half_m * refclk_khz) / n;
++			u32 err = (f > vco_freq_khz) ? f - vco_freq_khz : vco_freq_khz - f;
++
++			if (err < best_err) {
++				best_n = n;
++				best_m = 2 * half_m;
++				best_err = err;
++				if (err == 0)
++					break;
++			}
++		}
++	}
++
++	if (64 * best_err < vco_freq_khz) { /* tolerate small error */
++		*ptr_n = best_n;
++		*ptr_m = best_m;
++		return 1;
++	}
++	return 0;
++}
++
++struct hsfreq_range {
++	u16 mhz_max;
++	u8  hsfreqrange;
++	u8  clk_lp2hs;
++	u8  clk_hs2lp;
++	u8  data_lp2hs; /* excluding clk lane entry */
++	u8  data_hs2lp;
++};
++
++/* See Table A-3 on page 258 of dphy databook */
++static const struct hsfreq_range hsfreq_table[] = {
++	{   89, 0b000000, 32, 20, 26, 13 },
++	{   99, 0b010000, 35, 23, 28, 14 },
++	{  109, 0b100000, 32, 22, 26, 13 },
++	{  129, 0b000001, 31, 20, 27, 13 },
++	{  139, 0b010001, 33, 22, 26, 14 },
++	{  149, 0b100001, 33, 21, 26, 14 },
++	{  169, 0b000010, 32, 20, 27, 13 },
++	{  179, 0b010010, 36, 23, 30, 15 },
++	{  199, 0b100010, 40, 22, 33, 15 },
++	{  219, 0b000011, 40, 22, 33, 15 },
++	{  239, 0b010011, 44, 24, 36, 16 },
++	{  249, 0b100011, 48, 24, 38, 17 },
++	{  269, 0b000100, 48, 24, 38, 17 },
++	{  299, 0b010100, 50, 27, 41, 18 },
++	{  329, 0b000101, 56, 28, 45, 18 },
++	{  359, 0b010101, 59, 28, 48, 19 },
++	{  399, 0b100101, 61, 30, 50, 20 },
++	{  449, 0b000110, 67, 31, 55, 21 },
++	{  499, 0b010110, 73, 31, 59, 22 },
++	{  549, 0b000111, 79, 36, 63, 24 },
++	{  599, 0b010111, 83, 37, 68, 25 },
++	{  649, 0b001000, 90, 38, 73, 27 },
++	{  699, 0b011000, 95, 40, 77, 28 },
++	{  749, 0b001001, 102, 40, 84, 28 },
++	{  799, 0b011001, 106, 42, 87, 30 },
++	{  849, 0b101001, 113, 44, 93, 31 },
++	{  899, 0b111001, 118, 47, 98, 32 },
++	{  949, 0b001010, 124, 47, 102, 34 },
++	{  999, 0b011010, 130, 49, 107, 35 },
++	{ 1049, 0b101010, 135, 51, 111, 37 },
++	{ 1099, 0b111010, 139, 51, 114, 38 },
++	{ 1149, 0b001011, 146, 54, 120, 40 },
++	{ 1199, 0b011011, 153, 57, 125, 41 },
++	{ 1249, 0b101011, 158, 58, 130, 42 },
++	{ 1299, 0b111011, 163, 58, 135, 44 },
++	{ 1349, 0b001100, 168, 60, 140, 45 },
++	{ 1399, 0b011100, 172, 64, 144, 47 },
++	{ 1449, 0b101100, 176, 65, 148, 48 },
++	{ 1500, 0b111100, 181, 66, 153, 50 },
++};
++
++static void dphy_set_hsfreqrange(struct rp1_dsi *dsi, u32 freq_mhz)
++{
++	unsigned int i;
++
++	if (freq_mhz < 80 || freq_mhz > 1500)
++		drm_err(dsi->drm, "DPHY: Frequency %u MHz out of range\n",
++			freq_mhz);
++
++	for (i = 0; i < ARRAY_SIZE(hsfreq_table) - 1; i++) {
++		if (freq_mhz <= hsfreq_table[i].mhz_max)
++			break;
++	}
++
++	dsi->hsfreq_index = i;
++	dphy_transaction(dsi, DPHY_HS_RX_CTRL_LANE0_OFFSET,
++			 hsfreq_table[i].hsfreqrange << 1);
++}
++
++static void dphy_configure_pll(struct rp1_dsi *dsi, u32 refclk_khz, u32 vco_freq_khz)
++{
++	u32 m = 0;
++	u32 n = 0;
++
++	if (dphy_get_div(refclk_khz, vco_freq_khz, &m, &n)) {
++		dphy_set_hsfreqrange(dsi, vco_freq_khz / 1000);
++		/* Program m,n from registers */
++		dphy_transaction(dsi, DPHY_PLL_DIV_CTRL_OFFSET, 0x30);
++		/* N (program N-1) */
++		dphy_transaction(dsi, DPHY_PLL_INPUT_DIV_OFFSET, n - 1);
++		/* M[8:5] ?? */
++		dphy_transaction(dsi, DPHY_PLL_LOOP_DIV_OFFSET, 0x80 | ((m - 1) >> 5));
++		/* M[4:0] (program M-1) */
++		dphy_transaction(dsi, DPHY_PLL_LOOP_DIV_OFFSET, ((m - 1) & 0x1F));
++		drm_dbg_driver(dsi->drm,
++			       "DPHY: vco freq want %dkHz got %dkHz = %d * (%dkHz / %d), hsfreqrange = 0x%02x\r\n",
++			       vco_freq_khz, refclk_khz * m / n, m, refclk_khz,
++			       n, hsfreq_table[dsi->hsfreq_index].hsfreqrange);
++	} else {
++		drm_info(dsi->drm,
++			 "rp1dsi: Error configuring DPHY PLL! %dkHz = %d * (%dkHz / %d)\r\n",
++			 vco_freq_khz, m, refclk_khz, n);
++	}
++}
++
++static void dphy_init_khz(struct rp1_dsi *dsi, u32 ref_freq, u32 vco_freq)
++{
++	/* Reset the PHY */
++	DSI_WRITE(DSI_PHYRSTZ, 0);
++	DSI_WRITE(DSI_PHY_TST_CTRL0, DPHY_CTRL0_PHY_TESTCLK_BITS);
++	DSI_WRITE(DSI_PHY_TST_CTRL1, 0);
++	DSI_WRITE(DSI_PHY_TST_CTRL0, (DPHY_CTRL0_PHY_TESTCLK_BITS | DPHY_CTRL0_PHY_TESTCLR_BITS));
++	udelay(1);
++	DSI_WRITE(DSI_PHY_TST_CTRL0, DPHY_CTRL0_PHY_TESTCLK_BITS);
++	udelay(1);
++	/* Since we are in DSI (not CSI2) mode here, start the PLL */
++	dphy_configure_pll(dsi, ref_freq, vco_freq);
++	udelay(1);
++	/* Unreset */
++	DSI_WRITE(DSI_PHYRSTZ, DSI_PHYRSTZ_SHUTDOWNZ_BITS);
++	udelay(1);
++	DSI_WRITE(DSI_PHYRSTZ, (DSI_PHYRSTZ_SHUTDOWNZ_BITS | DSI_PHYRSTZ_RSTZ_BITS));
++	udelay(1); /* so we can see PLL coming up? */
++}
++
++void rp1dsi_mipicfg_setup(struct rp1_dsi *dsi)
++{
++	/* Select DSI rather than CSI-2 */
++	CFG_WRITE(RPI_MIPICFG_CFG, 0);
++	/* Enable DSIDMA interrupt only */
++	CFG_WRITE(RPI_MIPICFG_INTE, RPI_MIPICFG_INTE_DSI_DMA_BITS);
++}
++
++static unsigned long rp1dsi_refclk_freq(struct rp1_dsi *dsi)
++{
++	unsigned long u;
++
++	u = (dsi->clocks[RP1DSI_CLOCK_REF]) ? clk_get_rate(dsi->clocks[RP1DSI_CLOCK_REF]) : 0;
++	if (u < 1 || u >= (1ul << 30))
++		u = 50000000ul; /* default XOSC frequency */
++	return u;
++}
++
++static void rp1dsi_dpiclk_start(struct rp1_dsi *dsi, unsigned int bpp, unsigned int lanes)
++{
++	unsigned long u;
++
++	if (dsi->clocks[RP1DSI_CLOCK_DPI]) {
++		u = (dsi->clocks[RP1DSI_CLOCK_BYTE]) ?
++				clk_get_rate(dsi->clocks[RP1DSI_CLOCK_BYTE]) : 0;
++		drm_info(dsi->drm,
++			 "rp1dsi: Nominal byte clock %lu; scale by %u/%u",
++			 u, 4 * lanes, (bpp >> 1));
++		if (u < 1 || u >= (1ul << 28))
++			u = 72000000ul; /* default DUMMY frequency for byteclock */
++
++		clk_set_parent(dsi->clocks[RP1DSI_CLOCK_DPI], dsi->clocks[RP1DSI_CLOCK_BYTE]);
++		clk_set_rate(dsi->clocks[RP1DSI_CLOCK_DPI], (4 * lanes * u) / (bpp >> 1));
++		clk_prepare_enable(dsi->clocks[RP1DSI_CLOCK_DPI]);
++	}
++}
++
++static void rp1dsi_dpiclk_stop(struct rp1_dsi *dsi)
++{
++	if (dsi->clocks[RP1DSI_CLOCK_DPI])
++		clk_disable_unprepare(dsi->clocks[RP1DSI_CLOCK_DPI]);
++}
++
++/* Choose the internal on-the-bus DPI format, and DSI packing flag. */
++static u32 get_colorcode(enum mipi_dsi_pixel_format fmt)
++{
++	switch (fmt) {
++	case MIPI_DSI_FMT_RGB666:
++		return 0x104;
++	case MIPI_DSI_FMT_RGB666_PACKED:
++		return 0x003;
++	case MIPI_DSI_FMT_RGB565:
++		return 0x000;
++	case MIPI_DSI_FMT_RGB888:
++		return 0x005;
++	}
++
++	/* This should be impossible as the format is validated in
++	 * rp1dsi_host_attach
++	 */
++	WARN_ONCE(1, "Invalid colour format configured for DSI");
++	return 0x005;
++}
++
++void rp1dsi_dsi_setup(struct rp1_dsi *dsi, struct drm_display_mode const *mode)
++{
++	u32 timeout, mask, vid_mode_cfg;
++	u32 freq_khz;
++	unsigned int bpp = mipi_dsi_pixel_format_to_bpp(dsi->display_format);
++
++	DSI_WRITE(DSI_PHY_IF_CFG, dsi->lanes - 1);
++	DSI_WRITE(DSI_DPI_CFG_POL, 0);
++	DSI_WRITE(DSI_GEN_VCID, dsi->vc);
++	DSI_WRITE(DSI_DPI_COLOR_CODING, get_colorcode(dsi->display_format));
++	/* a conservative guess (LP escape is slow!) */
++	DSI_WRITE(DSI_DPI_LP_CMD_TIM, 0x00100000);
++
++	/* Drop to LP where possible */
++	vid_mode_cfg = 0xbf00;
++	if (!(dsi->display_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE))
++		vid_mode_cfg |= 0x01;
++	if (dsi->display_flags & MIPI_DSI_MODE_VIDEO_BURST)
++		vid_mode_cfg |= 0x02;
++	DSI_WRITE(DSI_VID_MODE_CFG, vid_mode_cfg);
++
++	/* Use LP Escape Data signalling for all commands */
++	DSI_WRITE(DSI_CMD_MODE_CFG, 0x10F7F00);
++	/* Select Command Mode */
++	DSI_WRITE(DSI_MODE_CFG, 1);
++	/* XXX magic number */
++	DSI_WRITE(DSI_TO_CNT_CFG, 0x02000200);
++	/* XXX magic number */
++	DSI_WRITE(DSI_BTA_TO_CNT, 0x800);
++
++	DSI_WRITE(DSI_VID_PKT_SIZE, mode->hdisplay);
++	DSI_WRITE(DSI_VID_NUM_CHUNKS, 0);
++	DSI_WRITE(DSI_VID_NULL_SIZE, 0);
++
++	/* Note, unlike Argon firmware, here we DON'T consider sync to be concurrent with porch */
++	DSI_WRITE(DSI_VID_HSA_TIME,
++		  (bpp * (mode->hsync_end - mode->hsync_start)) / (8 * dsi->lanes));
++	DSI_WRITE(DSI_VID_HBP_TIME,
++		  (bpp * (mode->htotal - mode->hsync_end)) / (8 * dsi->lanes));
++	DSI_WRITE(DSI_VID_HLINE_TIME, (bpp * mode->htotal) / (8 * dsi->lanes));
++	DSI_WRITE(DSI_VID_VSA_LINES, (mode->vsync_end - mode->vsync_start));
++	DSI_WRITE(DSI_VID_VBP_LINES, (mode->vtotal - mode->vsync_end));
++	DSI_WRITE(DSI_VID_VFP_LINES, (mode->vsync_start - mode->vdisplay));
++	DSI_WRITE(DSI_VID_VACTIVE_LINES, mode->vdisplay);
++
++	freq_khz = (bpp *  mode->clock) / dsi->lanes;
++
++	dphy_init_khz(dsi, rp1dsi_refclk_freq(dsi) / 1000, freq_khz);
++
++	DSI_WRITE(DSI_PHY_TMR_LPCLK_CFG,
++		  (hsfreq_table[dsi->hsfreq_index].clk_lp2hs << DSI_PHY_TMR_LP2HS_LSB) |
++		  (hsfreq_table[dsi->hsfreq_index].clk_hs2lp << DSI_PHY_TMR_HS2LP_LSB));
++	DSI_WRITE(DSI_PHY_TMR_CFG,
++		  (hsfreq_table[dsi->hsfreq_index].data_lp2hs << DSI_PHY_TMR_LP2HS_LSB) |
++		  (hsfreq_table[dsi->hsfreq_index].data_hs2lp << DSI_PHY_TMR_HS2LP_LSB));
++
++	DSI_WRITE(DSI_CLKMGR_CFG, 0x00000505);
++
++	/* Wait for PLL lock */
++	for (timeout = (1 << 14); timeout != 0; --timeout) {
++		usleep_range(10, 50);
++		if (DSI_READ(DSI_PHY_STATUS) & (1 << 0))
++			break;
++	}
++	if (timeout == 0)
++		drm_err(dsi->drm, "RP1DSI: Time out waiting for PLL\n");
++
++	DSI_WRITE(DSI_LPCLK_CTRL, 0x1);		/* configure the requesthsclk */
++	DSI_WRITE(DSI_PHY_TST_CTRL0, 0x2);
++	DSI_WRITE(DSI_PCKHDL_CFG, 1 << 2);	/* allow bus turnaround */
++	DSI_WRITE(DSI_PWR_UP, 0x1);		/* power up */
++
++	/* Now it should be safe to start the external DPI clock divider */
++	rp1dsi_dpiclk_start(dsi, bpp, dsi->lanes);
++
++	/* Wait for all lane(s) to be in Stopstate */
++	mask = (1 << 4);
++	if (dsi->lanes >= 2)
++		mask |= (1 << 7);
++	if (dsi->lanes >= 3)
++		mask |= (1 << 9);
++	if (dsi->lanes >= 4)
++		mask |= (1 << 11);
++	for (timeout = (1 << 10); timeout != 0; --timeout) {
++		usleep_range(10, 50);
++		if ((DSI_READ(DSI_PHY_STATUS) & mask) == mask)
++			break;
++	}
++	if (timeout == 0)
++		drm_err(dsi->drm, "RP1DSI: Time out waiting for lanes (%x %x)\n",
++			mask, DSI_READ(DSI_PHY_STATUS));
++}
++
++void rp1dsi_dsi_send(struct rp1_dsi *dsi, u32 hdr, int len, const u8 *buf)
++{
++	u32 val;
++
++	/* Wait for both FIFOs empty */
++	for (val = 256; val > 0; --val) {
++		if ((DSI_READ(DSI_CMD_PKT_STATUS) & 0xF) == 0x5)
++			break;
++		usleep_range(100, 150);
++	}
++
++	/* Write payload (in 32-bit words) and header */
++	for (; len > 0; len -= 4) {
++		val = *buf++;
++		if (len > 1)
++			val |= (*buf++) << 8;
++		if (len > 2)
++			val |= (*buf++) << 16;
++		if (len > 3)
++			val |= (*buf++) << 24;
++		DSI_WRITE(DSI_GEN_PLD_DATA, val);
++	}
++	DSI_WRITE(DSI_GEN_HDR, hdr);
++
++	/* Wait for both FIFOs empty */
++	for (val = 256; val > 0; --val) {
++		if ((DSI_READ(DSI_CMD_PKT_STATUS) & 0xF) == 0x5)
++			break;
++		usleep_range(100, 150);
++	}
++}
++
++int rp1dsi_dsi_recv(struct rp1_dsi *dsi, int len, u8 *buf)
++{
++	int i, j;
++	u32 val;
++
++	/* Wait until not busy and FIFO not empty */
++	for (i = 1024; i > 0; --i) {
++		val = DSI_READ(DSI_CMD_PKT_STATUS);
++		if ((val & ((1 << 6) | (1 << 4))) == 0)
++			break;
++		usleep_range(100, 150);
++	}
++	if (i == 0)
++		return -EIO;
++
++	for (i = 0; i < len; i += 4) {
++		/* Read fifo must not be empty before all bytes are read */
++		if (DSI_READ(DSI_CMD_PKT_STATUS) & (1 << 4))
++			break;
++
++		val = DSI_READ(DSI_GEN_PLD_DATA);
++		for (j = 0; j < 4 && j + i < len; j++)
++			*buf++ = val >> (8 * j);
++	}
++
++	return (i >= len) ? len : (i > 0) ? i : -EIO;
++}
++
++void rp1dsi_dsi_stop(struct rp1_dsi *dsi)
++{
++	DSI_WRITE(DSI_MODE_CFG, 1);	/* Return to Command Mode */
++	DSI_WRITE(DSI_LPCLK_CTRL, 2);	/* Stop the HS clock */
++	DSI_WRITE(DSI_PWR_UP, 0x0);     /* Power down host controller */
++	DSI_WRITE(DSI_PHYRSTZ, 0);      /* PHY into reset. */
++	rp1dsi_dpiclk_stop(dsi);
++}
++
++void rp1dsi_dsi_set_cmdmode(struct rp1_dsi *dsi, int mode)
++{
++	DSI_WRITE(DSI_MODE_CFG, mode);
++}

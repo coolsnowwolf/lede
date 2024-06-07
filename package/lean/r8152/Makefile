@@ -7,12 +7,12 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=r8152
-PKG_VERSION:=2.16.3-4
+PKG_VERSION:=2.17.1-3
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/awesometic/realtek-r8152-dkms/tar.gz/$(PKG_VERSION)?
-PKG_HASH:=a80563c6abb05f4aeab5be9d63b0497859878c86e0f72c49dd527de2adec7b68
+PKG_HASH:=3e0486d412cb05ede0571b19fa6d402c1448b0220e5ae54aa5b11af918ad9a43
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/realtek-$(PKG_NAME)-dkms-$(PKG_VERSION)
 
 PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>

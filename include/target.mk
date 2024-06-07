@@ -55,7 +55,7 @@ DEFAULT_PACKAGES.nas:=\
 DEFAULT_PACKAGES.router:=\
 	dnsmasq-full firewall iptables ppp ppp-mod-pppoe \
 	block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw kmod-tun \
-	iptables-mod-tproxy iptables-mod-extra ipset ip-full default-settings luci luci-newapi \
+	iptables-mod-tproxy iptables-mod-extra ipset ip-full default-settings luci \
 	ddns-scripts_aliyun ddns-scripts_dnspod luci-app-ddns luci-app-upnp luci-app-autoreboot \
 	luci-app-arpbind luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus luci-app-vlmcsd \
 	luci-app-accesscontrol luci-app-nlbwmon luci-app-turboacc luci-app-wol curl ca-certificates
@@ -261,6 +261,11 @@ ifeq ($(DUMP),1)
   ifeq ($(ARCH),riscv64)
     CPU_TYPE ?= riscv64
     CPU_CFLAGS_riscv64:=-mabi=lp64d -march=rv64imafdc
+  endif
+  ifeq ($(ARCH),loongarch64)
+    CPU_TYPE ?= generic
+    CPU_CFLAGS := -O2 -pipe
+    CPU_CFLAGS_generic:=-march=loongarch64
   endif
   ifneq ($(CPU_TYPE),)
     ifndef CPU_CFLAGS_$(CPU_TYPE)

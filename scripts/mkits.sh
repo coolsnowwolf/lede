@@ -108,10 +108,10 @@ if [ -n "${DTB}" ]; then
 			${DTADDR:+load = <${DTADDR}>;}
 			arch = \"${ARCH}\";
 			compression = \"none\";
-			hash@1 {
+			hash${REFERENCE_CHAR}1 {
 				algo = \"crc32\";
 			};
-			hash@2 {
+			hash${REFERENCE_CHAR}2 {
 				algo = \"${HASH}\";
 			};
 		};
@@ -128,10 +128,10 @@ if [ -n "${INITRD}" ]; then
 			type = \"ramdisk\";
 			arch = \"${ARCH}\";
 			os = \"linux\";
-			hash@1 {
+			hash${REFERENCE_CHAR}1 {
 				algo = \"crc32\";
 			};
-			hash@2 {
+			hash${REFERENCE_CHAR}2 {
 				algo = \"${HASH}\";
 			};
 		};
@@ -150,10 +150,10 @@ if [ -n "${ROOTFS}" ]; then
 			type = \"filesystem\";
 			arch = \"${ARCH}\";
 			compression = \"none\";
-			hash@1 {
+			hash${REFERENCE_CHAR}1 {
 				algo = \"crc32\";
 			};
-			hash@2 {
+			hash${REFERENCE_CHAR}2 {
 				algo = \"${HASH}\";
 			};
 		};
@@ -181,23 +181,20 @@ OVCONFIGS=""
 			arch = \"${ARCH}\";
 			load = <${DTADDR}>;
 			compression = \"none\";
-			hash@1 {
+			hash${REFERENCE_CHAR}1 {
 				algo = \"crc32\";
 			};
-			hash@2 {
+			hash${REFERENCE_CHAR}2 {
 				algo = \"${HASH}\";
 			};
 		};
 "
 	OVCONFIGS="$OVCONFIGS
 
-		config-$ovname {
-			description = \"OpenWrt ${DEVICE} with $ovname\";
-			kernel = \"kernel${REFERENCE_CHAR}1\";
-			fdt = \"fdt${REFERENCE_CHAR}$FDTNUM\", \"$ovnode\";
-			${LOADABLES:+loadables = ${LOADABLES};}
+		$ovname {
+			description = \"OpenWrt ${DEVICE} overlay $ovname\";
+			fdt = \"$ovnode\";
 			${COMPATIBLE_PROP}
-			${INITRD_PROP}
 		};
 	"
 done
@@ -219,10 +216,10 @@ DATA="/dts-v1/;
 			compression = \"${COMPRESS}\";
 			load = <${LOAD_ADDR}>;
 			entry = <${ENTRY_ADDR}>;
-			hash@1 {
+			hash${REFERENCE_CHAR}1 {
 				algo = \"crc32\";
 			};
-			hash@2 {
+			hash${REFERENCE_CHAR}2 {
 				algo = \"$HASH\";
 			};
 		};

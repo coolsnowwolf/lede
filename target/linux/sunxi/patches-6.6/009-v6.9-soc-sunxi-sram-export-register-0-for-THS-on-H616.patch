@@ -1,0 +1,98 @@
+From 898d96c5464b69af44f6407c5de81ebc349d574b Mon Sep 17 00:00:00 2001
+From: Andre Przywara <andre.przywara@arm.com>
+Date: Mon, 19 Feb 2024 15:36:33 +0000
+Subject: [PATCH] soc: sunxi: sram: export register 0 for THS on H616
+
+The Allwinner H616 SoC contains a mysterious bit at register offset 0x0
+in the SRAM control block. If bit 16 is set (the reset value), the
+temperature readings of the THS are way off, leading to reports about
+200C, at normal ambient temperatures. Clearing this bits brings the
+reported values down to the expected values.
+The BSP code clears this bit in firmware (U-Boot), and has an explicit
+comment about this, but offers no real explanation.
+
+Experiments in U-Boot show that register 0x0 has no effect on the SRAM C
+visibility: all tested bit settings still allow full read and write
+access by the CPU to the whole of SRAM C. Only bit 24 of the register at
+offset 0x4 makes all of SRAM C inaccessible by the CPU. So modelling
+the THS switch functionality as an SRAM region would not reflect reality.
+
+Since we should not rely on firmware settings, allow other code (the THS
+driver) to access this register, by exporting it through the already
+existing regmap. This mimics what we already do for the LDO control and
+the EMAC register.
+
+To avoid concurrent accesses to the same register at the same time, by
+the SRAM switch code and the regmap code, use the same lock to protect
+the access. The regmap subsystem allows to use an existing lock, so we
+just need to hook in there.
+
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Reviewed-by: Jernej Skrabec <jernej.skrabec@gmail.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20240219153639.179814-2-andre.przywara@arm.com
+---
+ drivers/soc/sunxi/sunxi_sram.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+--- a/drivers/soc/sunxi/sunxi_sram.c
++++ b/drivers/soc/sunxi/sunxi_sram.c
+@@ -287,6 +287,7 @@ EXPORT_SYMBOL(sunxi_sram_release);
+ struct sunxi_sramc_variant {
+ 	int num_emac_clocks;
+ 	bool has_ldo_ctrl;
++	bool has_ths_offset;
+ };
+ 
+ static const struct sunxi_sramc_variant sun4i_a10_sramc_variant = {
+@@ -308,8 +309,10 @@ static const struct sunxi_sramc_variant
+ 
+ static const struct sunxi_sramc_variant sun50i_h616_sramc_variant = {
+ 	.num_emac_clocks = 2,
++	.has_ths_offset = true,
+ };
+ 
++#define SUNXI_SRAM_THS_OFFSET_REG	0x0
+ #define SUNXI_SRAM_EMAC_CLOCK_REG	0x30
+ #define SUNXI_SYS_LDO_CTRL_REG		0x150
+ 
+@@ -318,6 +321,8 @@ static bool sunxi_sram_regmap_accessible
+ {
+ 	const struct sunxi_sramc_variant *variant = dev_get_drvdata(dev);
+ 
++	if (reg == SUNXI_SRAM_THS_OFFSET_REG && variant->has_ths_offset)
++		return true;
+ 	if (reg >= SUNXI_SRAM_EMAC_CLOCK_REG &&
+ 	    reg <  SUNXI_SRAM_EMAC_CLOCK_REG + variant->num_emac_clocks * 4)
+ 		return true;
+@@ -327,6 +332,20 @@ static bool sunxi_sram_regmap_accessible
+ 	return false;
+ }
+ 
++static void sunxi_sram_lock(void *_lock)
++{
++	spinlock_t *lock = _lock;
++
++	spin_lock(lock);
++}
++
++static void sunxi_sram_unlock(void *_lock)
++{
++	spinlock_t *lock = _lock;
++
++	spin_unlock(lock);
++}
++
+ static struct regmap_config sunxi_sram_regmap_config = {
+ 	.reg_bits       = 32,
+ 	.val_bits       = 32,
+@@ -336,6 +355,9 @@ static struct regmap_config sunxi_sram_r
+ 	/* other devices have no business accessing other registers */
+ 	.readable_reg	= sunxi_sram_regmap_accessible_reg,
+ 	.writeable_reg	= sunxi_sram_regmap_accessible_reg,
++	.lock		= sunxi_sram_lock,
++	.unlock		= sunxi_sram_unlock,
++	.lock_arg	= &sram_lock,
+ };
+ 
+ static int __init sunxi_sram_probe(struct platform_device *pdev)

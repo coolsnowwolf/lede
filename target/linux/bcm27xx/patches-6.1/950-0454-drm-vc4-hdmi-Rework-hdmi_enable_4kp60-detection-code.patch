@@ -1,0 +1,170 @@
+From 1f8c105adca8bcd42256602e3ef9c1dbd0715e37 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 24 Mar 2022 11:57:57 +0100
+Subject: [PATCH] drm/vc4: hdmi: Rework hdmi_enable_4kp60 detection
+ code
+
+In order to support higher HDMI frequencies, users have to set the
+hdmi_enable_4kp60 parameter in their config.txt file.
+
+This will have the side-effect of raising the maximum of the core clock,
+tied to the HVS, and managed by the HVS driver.
+
+However, we are querying this in the HDMI driver by poking into the HVS
+structure to get our struct clk handle.
+
+Let's make this part of the HVS bind implementation to have all the core
+clock related setup in the same place.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h  | 10 ++++++++++
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 15 ++++-----------
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  8 --------
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 23 +++++++++++++++++++++++
+ 4 files changed, 37 insertions(+), 19 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -331,6 +331,8 @@ struct vc4_hvs {
+ 
+ 	struct clk *core_clk;
+ 
++	unsigned long max_core_rate;
++
+ 	/* Memory manager for CRTCs to allocate space in the display
+ 	 * list.  Units are dwords.
+ 	 */
+@@ -342,6 +344,14 @@ struct vc4_hvs {
+ 	struct drm_mm_node mitchell_netravali_filter;
+ 
+ 	struct debugfs_regset32 regset;
++
++	/*
++	 * Even if HDMI0 on the RPi4 can output modes requiring a pixel
++	 * rate higher than 297MHz, it needs some adjustments in the
++	 * config.txt file to be able to do so and thus won't always be
++	 * available.
++	 */
++	bool vc5_hdmi_enable_hdmi_20;
+ };
+ 
+ struct vc4_plane {
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -46,7 +46,6 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/rational.h>
+ #include <linux/reset.h>
+-#include <soc/bcm2835/raspberrypi-clocks.h>
+ #include <sound/dmaengine_pcm.h>
+ #include <sound/hdmi-codec.h>
+ #include <sound/pcm_drm_eld.h>
+@@ -494,6 +493,7 @@ static int vc4_hdmi_connector_detect_ctx
+ static int vc4_hdmi_connector_get_modes(struct drm_connector *connector)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = connector_to_vc4_hdmi(connector);
++	struct vc4_dev *vc4 = to_vc4_dev(connector->dev);
+ 	int ret = 0;
+ 	struct edid *edid;
+ 
+@@ -517,7 +517,7 @@ static int vc4_hdmi_connector_get_modes(
+ 	ret = drm_add_edid_modes(connector, edid);
+ 	kfree(edid);
+ 
+-	if (vc4_hdmi->disable_4kp60) {
++	if (!vc4->hvs->vc5_hdmi_enable_hdmi_20) {
+ 		struct drm_device *drm = connector->dev;
+ 		const struct drm_display_mode *mode;
+ 
+@@ -1980,11 +1980,12 @@ vc4_hdmi_encoder_clock_valid(const struc
+ {
+ 	const struct drm_connector *connector = &vc4_hdmi->connector;
+ 	const struct drm_display_info *info = &connector->display_info;
++	struct vc4_dev *vc4 = to_vc4_dev(connector->dev);
+ 
+ 	if (clock > vc4_hdmi->variant->max_pixel_clock)
+ 		return MODE_CLOCK_HIGH;
+ 
+-	if (vc4_hdmi->disable_4kp60 && clock > HDMI_14_MAX_TMDS_CLK)
++	if (!vc4->hvs->vc5_hdmi_enable_hdmi_20 && clock > HDMI_14_MAX_TMDS_CLK)
+ 		return MODE_CLOCK_HIGH;
+ 
+ 	if (info->max_tmds_clock && clock > (info->max_tmds_clock * 1000))
+@@ -3694,14 +3695,6 @@ static int vc4_hdmi_bind(struct device *
+ 	vc4_hdmi->disable_wifi_frequencies =
+ 		of_property_read_bool(dev->of_node, "wifi-2.4ghz-coexistence");
+ 
+-	if (variant->max_pixel_clock == 600000000) {
+-		struct vc4_dev *vc4 = to_vc4_dev(drm);
+-		unsigned int max_rate = rpi_firmware_clk_get_max_rate(vc4->hvs->core_clk);
+-
+-		if (max_rate < 550000000)
+-			vc4_hdmi->disable_4kp60 = true;
+-	}
+-
+ 	ret = devm_pm_runtime_enable(dev);
+ 	if (ret)
+ 		return ret;
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -158,14 +158,6 @@ struct vc4_hdmi {
+ 	 */
+ 	bool disable_wifi_frequencies;
+ 
+-	/*
+-	 * Even if HDMI0 on the RPi4 can output modes requiring a pixel
+-	 * rate higher than 297MHz, it needs some adjustments in the
+-	 * config.txt file to be able to do so and thus won't always be
+-	 * available.
+-	 */
+-	bool disable_4kp60;
+-
+ 	struct cec_adapter *cec_adap;
+ 	struct cec_msg cec_rx_msg;
+ 	bool cec_tx_ok;
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -28,6 +28,8 @@
+ #include <drm/drm_drv.h>
+ #include <drm/drm_vblank.h>
+ 
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
+ #include "vc4_drv.h"
+ #include "vc4_regs.h"
+ 
+@@ -1033,12 +1035,33 @@ static int vc4_hvs_bind(struct device *d
+ 	hvs->regset.nregs = ARRAY_SIZE(hvs_regs);
+ 
+ 	if (vc4->is_vc5) {
++		struct rpi_firmware *firmware;
++		struct device_node *node;
++		unsigned int max_rate;
++
++		node = rpi_firmware_find_node();
++		if (!node)
++			return -EINVAL;
++
++		firmware = rpi_firmware_get(node);
++		of_node_put(node);
++		if (!firmware)
++			return -EPROBE_DEFER;
++
+ 		hvs->core_clk = devm_clk_get(&pdev->dev, NULL);
+ 		if (IS_ERR(hvs->core_clk)) {
+ 			dev_err(&pdev->dev, "Couldn't get core clock\n");
+ 			return PTR_ERR(hvs->core_clk);
+ 		}
+ 
++		max_rate = rpi_firmware_clk_get_max_rate(firmware,
++							 RPI_FIRMWARE_CORE_CLK_ID);
++		rpi_firmware_put(firmware);
++		if (max_rate >= 550000000)
++			hvs->vc5_hdmi_enable_hdmi_20 = true;
++
++		hvs->max_core_rate = max_rate;
++
+ 		ret = clk_prepare_enable(hvs->core_clk);
+ 		if (ret) {
+ 			dev_err(&pdev->dev, "Couldn't enable the core clock\n");

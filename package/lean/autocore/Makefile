@@ -24,7 +24,7 @@ endef
 define Package/autocore-x86
   TITLE:=x86/x64 auto core loadbalance script.
   MAINTAINER:=Lean
-  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool
+  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool +pciutils
   VARIANT:=x86
 endef
 

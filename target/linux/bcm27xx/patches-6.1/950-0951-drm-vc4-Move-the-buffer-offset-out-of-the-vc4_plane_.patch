@@ -1,0 +1,154 @@
+From 11cf37e741b439b26fe932750bde841a16a96828 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 25 Sep 2023 16:57:07 +0100
+Subject: [PATCH] drm/vc4: Move the buffer offset out of the vc4_plane_state
+
+The offset fields in vc4_plane_state are described as being
+the offset for each buffer in the bo, however it is used to
+store the complete DMA address that is then written into the
+register.
+
+The DMA address including the fb ofset  can be retrieved
+using drm_fb_dma_get_gem_addr, and the offset adjustment due to
+clipping is local to vc4_plane_mode_set.
+Drop the offset field from the state, and compute the complete
+DMA address in vc4_plane_mode_set.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h   |  5 ----
+ drivers/gpu/drm/vc4/vc4_plane.c | 51 +++++++++++++--------------------
+ 2 files changed, 20 insertions(+), 36 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -451,11 +451,6 @@ struct vc4_plane_state {
+ 	bool is_unity;
+ 	bool is_yuv;
+ 
+-	/* Offset to start scanning out from the start of the plane's
+-	 * BO.
+-	 */
+-	u32 offsets[3];
+-
+ 	/* Our allocation in LBM for temporary storage during scaling. */
+ 	struct drm_mm_node lbm;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -450,12 +450,11 @@ static int vc4_plane_setup_clipping_and_
+ {
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+ 	struct drm_framebuffer *fb = state->fb;
+-	struct drm_gem_dma_object *bo;
+ 	int num_planes = fb->format->num_planes;
+ 	struct drm_crtc_state *crtc_state;
+ 	u32 h_subsample = fb->format->hsub;
+ 	u32 v_subsample = fb->format->vsub;
+-	int i, ret;
++	int ret;
+ 
+ 	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
+ 							state->crtc);
+@@ -469,11 +468,6 @@ static int vc4_plane_setup_clipping_and_
+ 	if (ret)
+ 		return ret;
+ 
+-	for (i = 0; i < num_planes; i++) {
+-		bo = drm_fb_dma_get_gem_obj(fb, i);
+-		vc4_state->offsets[i] = bo->dma_addr + fb->offsets[i];
+-	}
+-
+ 	vc4_state->src_x = state->src.x1;
+ 	vc4_state->src_y = state->src.y1;
+ 	vc4_state->src_w[0] = state->src.x2 - vc4_state->src_x;
+@@ -896,6 +890,7 @@ static int vc4_plane_mode_set(struct drm
+ 	u32 width, height;
+ 	u32 hvs_format = format->hvs;
+ 	unsigned int rotation;
++	u32 offsets[3] = { 0 };
+ 	int ret, i;
+ 
+ 	if (vc4_state->dlist_initialized)
+@@ -943,13 +938,8 @@ static int vc4_plane_mode_set(struct drm
+ 		 * out.
+ 		 */
+ 		for (i = 0; i < num_planes; i++) {
+-			vc4_state->offsets[i] += src_y /
+-						 (i ? v_subsample : 1) *
+-						 fb->pitches[i];
+-
+-			vc4_state->offsets[i] += src_x /
+-						 (i ? h_subsample : 1) *
+-						 fb->format->cpp[i];
++			offsets[i] += src_y / (i ? v_subsample : 1) * fb->pitches[i];
++			offsets[i] += src_x / (i ? h_subsample : 1) * fb->format->cpp[i];
+ 		}
+ 
+ 		break;
+@@ -1004,19 +994,18 @@ static int vc4_plane_mode_set(struct drm
+ 			   VC4_SET_FIELD(y_off, SCALER_PITCH0_TILE_Y_OFFSET) |
+ 			   VC4_SET_FIELD(tiles_l, SCALER_PITCH0_TILE_WIDTH_L) |
+ 			   VC4_SET_FIELD(tiles_r, SCALER_PITCH0_TILE_WIDTH_R));
+-		vc4_state->offsets[0] += tiles_t * (tiles_w << tile_size_shift);
+-		vc4_state->offsets[0] += subtile_y << 8;
+-		vc4_state->offsets[0] += utile_y << 4;
++		offsets[0] += tiles_t * (tiles_w << tile_size_shift);
++		offsets[0] += subtile_y << 8;
++		offsets[0] += utile_y << 4;
+ 
+ 		/* Rows of tiles alternate left-to-right and right-to-left. */
+ 		if (tiles_t & 1) {
+ 			pitch0 |= SCALER_PITCH0_TILE_INITIAL_LINE_DIR;
+-			vc4_state->offsets[0] += (tiles_w - tiles_l) <<
+-						 tile_size_shift;
+-			vc4_state->offsets[0] -= (1 + !tile_y) << 10;
++			offsets[0] += (tiles_w - tiles_l) << tile_size_shift;
++			offsets[0] -= (1 + !tile_y) << 10;
+ 		} else {
+-			vc4_state->offsets[0] += tiles_l << tile_size_shift;
+-			vc4_state->offsets[0] += tile_y << 10;
++			offsets[0] += tiles_l << tile_size_shift;
++			offsets[0] += tile_y << 10;
+ 		}
+ 
+ 		break;
+@@ -1105,11 +1094,9 @@ static int vc4_plane_mode_set(struct drm
+ 
+ 			tile = src_x / pix_per_tile;
+ 
+-			vc4_state->offsets[i] += param * tile_w * tile;
+-			vc4_state->offsets[i] += src_y /
+-						 (i ? v_subsample : 1) *
+-						 tile_w;
+-			vc4_state->offsets[i] += x_off & ~(i ? 1 : 0);
++			offsets[i] += param * tile_w * tile;
++			offsets[i] += src_y / (i ? v_subsample : 1) * tile_w;
++			offsets[i] += x_off & ~(i ? 1 : 0);
+ 		}
+ 
+ 		pitch0 = VC4_SET_FIELD(param, SCALER_TILE_HEIGHT);
+@@ -1253,8 +1240,12 @@ static int vc4_plane_mode_set(struct drm
+ 	 * The pointers may be any byte address.
+ 	 */
+ 	vc4_state->ptr0_offset[0] = vc4_state->dlist_count;
+-	for (i = 0; i < num_planes; i++)
+-		vc4_dlist_write(vc4_state, vc4_state->offsets[i]);
++
++	for (i = 0; i < num_planes; i++) {
++		dma_addr_t paddr = drm_fb_dma_get_gem_addr(fb, state, i);
++
++		vc4_dlist_write(vc4_state, paddr + offsets[i]);
++	}
+ 
+ 	/* Pointer Context Word 0/1/2: Written by the HVS */
+ 	for (i = 0; i < num_planes; i++)
+@@ -1518,8 +1509,6 @@ static void vc4_plane_atomic_async_updat
+ 	       sizeof(vc4_state->y_scaling));
+ 	vc4_state->is_unity = new_vc4_state->is_unity;
+ 	vc4_state->is_yuv = new_vc4_state->is_yuv;
+-	memcpy(vc4_state->offsets, new_vc4_state->offsets,
+-	       sizeof(vc4_state->offsets));
+ 	vc4_state->needs_bg_fill = new_vc4_state->needs_bg_fill;
+ 
+ 	/* Update the current vc4_state pos0, pos2 and ptr0 dlist entries. */

@@ -1,0 +1,56 @@
+From c2df713569fe3bb671d1444c7bf758681081053c Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Thu, 23 Jun 2022 14:18:50 +0200
+Subject: [PATCH 7/8] nss-dp: edma-v1: use NAPI GRO by default
+
+Utilize napi_gro_receive instead of plain netif_receive_skb on EDMA v1.
+
+Usually it provides quite a lot of RX speed improvements, however in some
+cases it may lead to decreased performance as there is no checksum
+offloading implemented.
+
+In cases where reduced performance is experienced its possible to disable
+GRO by using ethtool.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c | 10 ++++++----
+ hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c      |  8 ++++++--
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_data_plane.c
+@@ -597,10 +597,12 @@ drop:
+  */
+ static void edma_if_set_features(struct nss_dp_data_plane_ctx *dpc)
+ {
+-	/*
+-	 * TODO - add flags to support HIGHMEM/cksum offload VLAN
+-	 * the features are enabled.
+-	 */
++	struct net_device *netdev = dpc->dev;
++
++	netdev->features |= NETIF_F_GRO;
++	netdev->hw_features |= NETIF_F_GRO;
++	netdev->vlan_features |= NETIF_F_GRO;
++	netdev->wanted_features |= NETIF_F_GRO;
+ }
+ 
+ /* TODO - check if this is needed */
+--- a/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
++++ b/hal/dp_ops/edma_dp/edma_v1/edma_tx_rx.c
+@@ -410,8 +410,12 @@ static uint32_t edma_clean_rx(struct edm
+ 		if (unlikely(EDMA_RXPH_SERVICE_CODE_GET(rxph) ==
+ 					NSS_PTP_EVENT_SERVICE_CODE))
+ 			nss_phy_tstamp_rx_buf(ndev, skb);
+-		else
+-			netif_receive_skb(skb);
++		else {
++			if (likely(ndev->features & NETIF_F_GRO))
++				napi_gro_receive(&ehw->napi, skb);
++			else
++				netif_receive_skb(skb);
++		}
+ 
+ next_rx_desc:
+ 		/*

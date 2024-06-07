@@ -1,0 +1,116 @@
+From baf556e423385c116217e143fe352d2b062a10e3 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Mon, 14 Nov 2022 14:00:21 +0100
+Subject: [PATCH] drm/tests: Add Kunit Helpers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+As the number of kunit tests in KMS grows further, we start to have
+multiple test suites that, for example, need to register a mock DRM
+driver to interact with the KMS function they are supposed to test.
+
+Let's add a file meant to provide those kind of helpers to avoid
+duplication.
+
+Reviewed-by: Noralf Trønnes <noralf@tronnes.org>
+Tested-by: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+Link: https://lore.kernel.org/r/20220728-rpi-analog-tv-properties-v9-2-24b168e5bcd5@cerno.tech
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/tests/Makefile            |  1 +
+ drivers/gpu/drm/tests/drm_kunit_helpers.c | 64 +++++++++++++++++++++++
+ drivers/gpu/drm/tests/drm_kunit_helpers.h |  9 ++++
+ 3 files changed, 74 insertions(+)
+ create mode 100644 drivers/gpu/drm/tests/drm_kunit_helpers.c
+ create mode 100644 drivers/gpu/drm/tests/drm_kunit_helpers.h
+
+--- a/drivers/gpu/drm/tests/Makefile
++++ b/drivers/gpu/drm/tests/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_DRM_KUNIT_TEST) += \
+ 	drm_format_helper_test.o \
+ 	drm_format_test.o \
+ 	drm_framebuffer_test.o \
++	drm_kunit_helpers.o \
+ 	drm_mm_test.o \
+ 	drm_plane_helper_test.o \
+ 	drm_rect_test.o
+--- /dev/null
++++ b/drivers/gpu/drm/tests/drm_kunit_helpers.c
+@@ -0,0 +1,64 @@
++#include <drm/drm_drv.h>
++#include <drm/drm_managed.h>
++
++#include <kunit/resource.h>
++
++#include <linux/device.h>
++
++struct kunit_dev {
++	struct drm_device base;
++};
++
++static const struct drm_mode_config_funcs drm_mode_config_funcs = {
++};
++
++static int dev_init(struct kunit_resource *res, void *ptr)
++{
++	char *name = ptr;
++	struct device *dev;
++
++	dev = root_device_register(name);
++	if (IS_ERR(dev))
++		return PTR_ERR(dev);
++
++	res->data = dev;
++	return 0;
++}
++
++static void dev_free(struct kunit_resource *res)
++{
++	struct device *dev = res->data;
++
++	root_device_unregister(dev);
++}
++
++struct drm_device *drm_kunit_device_init(struct kunit *test, u32 features, char *name)
++{
++	struct kunit_dev *kdev;
++	struct drm_device *drm;
++	struct drm_driver *driver;
++	struct device *dev;
++	int ret;
++
++	dev = kunit_alloc_resource(test, dev_init, dev_free, GFP_KERNEL, name);
++	if (!dev)
++		return ERR_PTR(-ENOMEM);
++
++	driver = kunit_kzalloc(test, sizeof(*driver), GFP_KERNEL);
++	if (!driver)
++		return ERR_PTR(-ENOMEM);
++
++	driver->driver_features = features;
++	kdev = devm_drm_dev_alloc(dev, driver, struct kunit_dev, base);
++	if (IS_ERR(kdev))
++		return ERR_CAST(kdev);
++
++	drm = &kdev->base;
++	drm->mode_config.funcs = &drm_mode_config_funcs;
++
++	ret = drmm_mode_config_init(drm);
++	if (ret)
++		return ERR_PTR(ret);
++
++	return drm;
++}
+--- /dev/null
++++ b/drivers/gpu/drm/tests/drm_kunit_helpers.h
+@@ -0,0 +1,9 @@
++#ifndef DRM_KUNIT_HELPERS_H_
++#define DRM_KUNIT_HELPERS_H_
++
++struct drm_device;
++struct kunit;
++
++struct drm_device *drm_kunit_device_init(struct kunit *test, u32 features, char *name);
++
++#endif // DRM_KUNIT_HELPERS_H_

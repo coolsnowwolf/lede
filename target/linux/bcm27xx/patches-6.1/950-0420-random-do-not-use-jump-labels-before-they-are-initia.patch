@@ -1,0 +1,86 @@
+From c577ded541087c1d21a6904020670fd59c218e04 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Tue, 7 Jun 2022 12:02:10 +0200
+Subject: [PATCH] random: do not use jump labels before they are
+ initialized
+
+[ I would like to pursue fixing this more directly first before actually
+  merging this, but I thought I'd send this to the list now anyway as a
+  the "backup" plan. If I can't figure out how to make headway on the
+  main plan in the next few days, it'll be easy to just do this. ]
+
+Stephen reported that a static key warning splat appears during early
+boot on systems that credit randomness from device trees that contain an
+"rng-seed" property, because because setup_machine_fdt() is called
+before jump_label_init() during setup_arch():
+
+ static_key_enable_cpuslocked(): static key '0xffffffe51c6fcfc0' used before call to jump_label_init()
+ WARNING: CPU: 0 PID: 0 at kernel/jump_label.c:166 static_key_enable_cpuslocked+0xb0/0xb8
+ Modules linked in:
+ CPU: 0 PID: 0 Comm: swapper Not tainted 5.18.0+ #224 44b43e377bfc84bc99bb5ab885ff694984ee09ff
+ pstate: 600001c9 (nZCv dAIF -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+ pc : static_key_enable_cpuslocked+0xb0/0xb8
+ lr : static_key_enable_cpuslocked+0xb0/0xb8
+ sp : ffffffe51c393cf0
+ x29: ffffffe51c393cf0 x28: 000000008185054c x27: 00000000f1042f10
+ x26: 0000000000000000 x25: 00000000f10302b2 x24: 0000002513200000
+ x23: 0000002513200000 x22: ffffffe51c1c9000 x21: fffffffdfdc00000
+ x20: ffffffe51c2f0831 x19: ffffffe51c6fcfc0 x18: 00000000ffff1020
+ x17: 00000000e1e2ac90 x16: 00000000000000e0 x15: ffffffe51b710708
+ x14: 0000000000000066 x13: 0000000000000018 x12: 0000000000000000
+ x11: 0000000000000000 x10: 00000000ffffffff x9 : 0000000000000000
+ x8 : 0000000000000000 x7 : 61632065726f6665 x6 : 6220646573752027
+ x5 : ffffffe51c641d25 x4 : ffffffe51c13142c x3 : ffff0a00ffffff05
+ x2 : 40000000ffffe003 x1 : 00000000000001c0 x0 : 0000000000000065
+ Call trace:
+  static_key_enable_cpuslocked+0xb0/0xb8
+  static_key_enable+0x2c/0x40
+  crng_set_ready+0x24/0x30
+  execute_in_process_context+0x80/0x90
+  _credit_init_bits+0x100/0x154
+  add_bootloader_randomness+0x64/0x78
+  early_init_dt_scan_chosen+0x140/0x184
+  early_init_dt_scan_nodes+0x28/0x4c
+  early_init_dt_scan+0x40/0x44
+  setup_machine_fdt+0x7c/0x120
+  setup_arch+0x74/0x1d8
+  start_kernel+0x84/0x44c
+  __primary_switched+0xc0/0xc8
+ ---[ end trace 0000000000000000 ]---
+ random: crng init done
+ Machine model: Google Lazor (rev1 - 2) with LTE
+
+A trivial fix went in to address this on arm64, 73e2d827a501 ("arm64:
+Initialize jump labels before setup_machine_fdt()"). But it appears that
+fixing it on other platforms might not be so trivial. Instead, defer the
+setting of the static branch until later in the boot process.
+
+Fixes: f5bda35fba61 ("random: use static branch for crng_ready()")
+Reported-by: Stephen Boyd <swboyd@chromium.org>
+Cc: Ard Biesheuvel <ardb@kernel.org>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Russell King <linux@armlinux.org.uk>
+Cc: Arnd Bergmann <arnd@arndb.de>
+Cc: Phil Elwell <phil@raspberrypi.com>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/char/random.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/drivers/char/random.c
++++ b/drivers/char/random.c
+@@ -823,6 +823,14 @@ void __init random_init_early(const char
+ 	unsigned long entropy[BLAKE2S_BLOCK_SIZE / sizeof(long)];
+ 	size_t i, longs, arch_bits;
+ 
++	/*
++	 * If we were initialized by the bootloader before jump labels are
++	 * initialized, then we should enable the static branch here, where
++	 * it's guaranteed that jump labels have been initialized.
++	 */
++	if (!static_branch_likely(&crng_is_ready) && crng_init >= CRNG_READY)
++		crng_set_ready(NULL);
++
+ #if defined(LATENT_ENTROPY_PLUGIN)
+ 	static const u8 compiletime_seed[BLAKE2S_BLOCK_SIZE] __initconst __latent_entropy;
+ 	_mix_pool_bytes(compiletime_seed, sizeof(compiletime_seed));

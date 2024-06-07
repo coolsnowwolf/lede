@@ -1,0 +1,68 @@
+From 9ac53d5532cc4bb595bbee86ccba2172ccc336c3 Mon Sep 17 00:00:00 2001
+From: Mark Brown <broonie@kernel.org>
+Date: Tue, 23 Jan 2024 23:33:07 +0000
+Subject: [PATCH] thermal/drivers/sun8i: Don't fail probe due to zone
+ registration failure
+
+Currently the sun8i thermal driver will fail to probe if any of the
+thermal zones it is registering fails to register with the thermal core.
+Since we currently do not define any trip points for the GPU thermal
+zones on at least A64 or H5 this means that we have no thermal support
+on these platforms:
+
+[    1.698703] thermal_sys: Failed to find 'trips' node
+[    1.698707] thermal_sys: Failed to find trip points for thermal-sensor id=1
+
+even though the main CPU thermal zone on both SoCs is fully configured.
+This does not seem ideal, while we may not be able to use all the zones
+it seems better to have those zones which are usable be operational.
+Instead just carry on registering zones if we get any non-deferral
+error, allowing use of those zones which are usable.
+
+This means that we also need to update the interrupt handler to not
+attempt to notify the core for events on zones which we have not
+registered, I didn't see an ability to mask individual interrupts and
+I would expect that interrupts would still be indicated in the ISR even
+if they were masked.
+
+Reviewed-by: Vasily Khoruzhick <anarsoul@gmail.com>
+Acked-by: Jernej Skrabec <jernej.skrabec@gmail.com>
+Signed-off-by: Mark Brown <broonie@kernel.org>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20240123-thermal-sun8i-registration-v3-1-3e5771b1bbdd@kernel.org
+---
+ drivers/thermal/sun8i_thermal.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+--- a/drivers/thermal/sun8i_thermal.c
++++ b/drivers/thermal/sun8i_thermal.c
+@@ -195,6 +195,9 @@ static irqreturn_t sun8i_irq_thread(int
+ 	int i;
+ 
+ 	for_each_set_bit(i, &irq_bitmap, tmdev->chip->sensor_num) {
++		/* We allow some zones to not register. */
++		if (IS_ERR(tmdev->sensor[i].tzd))
++			continue;
+ 		thermal_zone_device_update(tmdev->sensor[i].tzd,
+ 					   THERMAL_EVENT_UNSPECIFIED);
+ 	}
+@@ -531,8 +534,17 @@ static int sun8i_ths_register(struct ths
+ 						      i,
+ 						      &tmdev->sensor[i],
+ 						      &ths_ops);
+-		if (IS_ERR(tmdev->sensor[i].tzd))
+-			return PTR_ERR(tmdev->sensor[i].tzd);
++
++		/*
++		 * If an individual zone fails to register for reasons
++		 * other than probe deferral (eg, a bad DT) then carry
++		 * on, other zones might register successfully.
++		 */
++		if (IS_ERR(tmdev->sensor[i].tzd)) {
++			if (PTR_ERR(tmdev->sensor[i].tzd) == -EPROBE_DEFER)
++				return PTR_ERR(tmdev->sensor[i].tzd);
++			continue;
++		}
+ 
+ 		devm_thermal_add_hwmon_sysfs(tmdev->dev, tmdev->sensor[i].tzd);
+ 	}

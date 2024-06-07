@@ -41,6 +41,10 @@ ifeq ($(PKG_VERSION),12.2.0)
   PKG_HASH:=e549cf9cf3594a00e27b6589d4322d70e0720cdd213f39beb4181e06926230ff
 endif
 
+ifeq ($(PKG_VERSION),13.3.0)
+  PKG_HASH:=0845e9621c9543a13f484e94584a49ffc0129970e9914624235fc1d061a0c083
+endif
+
 PATCH_DIR=../patches-$(GCC_MAJOR_VERSION).x
 
 BUGURL=http://bugs.openwrt.org/
@@ -181,9 +185,13 @@ define Host/SetToolchainInfo
 	$(SED) 's,GCC_VERSION=.*,GCC_VERSION=$(GCC_VERSION),' $(TOOLCHAIN_DIR)/info.mk
 endef
 
-ifeq ($(GCC_MAJOR_VERSION),12)
-	GCC_VERSION_FILE:=gcc/genversion.cc
+ifeq ($(GCC_MAJOR_VERSION),11)
+	GCC_VERSION_FILE:=gcc/version.c
 else
+	GCC_VERSION_FILE:=gcc/genversion.cc
+endif
+
+ifeq ($(GCC_MAJOR_VERSION),8)
 	GCC_VERSION_FILE:=gcc/version.c
 endif
 

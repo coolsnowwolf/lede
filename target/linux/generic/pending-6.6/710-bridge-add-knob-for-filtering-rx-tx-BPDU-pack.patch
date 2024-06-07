@@ -1,0 +1,174 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 27 Aug 2021 12:22:32 +0200
+Subject: [PATCH] bridge: add knob for filtering rx/tx BPDU packets on a port
+
+Some devices (e.g. wireless APs) can't have devices behind them be part of
+a bridge topology with redundant links, due to address limitations.
+Additionally, broadcast traffic on these devices is somewhat expensive, due to
+the low data rate and wakeups of clients in powersave mode.
+This knob can be used to ensure that BPDU packets are never sent or forwarded
+to/from these devices
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -61,6 +61,7 @@ struct br_ip_list {
+ #define BR_PORT_LOCKED		BIT(21)
+ #define BR_PORT_MAB		BIT(22)
+ #define BR_NEIGH_VLAN_SUPPRESS	BIT(23)
++#define BR_BPDU_FILTER		BIT(24)
+ 
+ #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
+ 
+--- a/net/bridge/br_forward.c
++++ b/net/bridge/br_forward.c
+@@ -201,6 +201,7 @@ void br_flood(struct net_bridge *br, str
+ 	      enum br_pkt_type pkt_type, bool local_rcv, bool local_orig,
+ 	      u16 vid)
+ {
++	const unsigned char *dest = eth_hdr(skb)->h_dest;
+ 	struct net_bridge_port *prev = NULL;
+ 	struct net_bridge_port *p;
+ 
+@@ -218,6 +219,10 @@ void br_flood(struct net_bridge *br, str
+ 		case BR_PKT_MULTICAST:
+ 			if (!(p->flags & BR_MCAST_FLOOD) && skb->dev != br->dev)
+ 				continue;
++			if ((p->flags & BR_BPDU_FILTER) &&
++			    unlikely(is_link_local_ether_addr(dest) &&
++				     dest[5] == 0))
++				continue;
+ 			break;
+ 		case BR_PKT_BROADCAST:
+ 			if (!(p->flags & BR_BCAST_FLOOD) && skb->dev != br->dev)
+--- a/net/bridge/br_input.c
++++ b/net/bridge/br_input.c
+@@ -367,6 +367,8 @@ static rx_handler_result_t br_handle_fra
+ 		fwd_mask |= p->group_fwd_mask;
+ 		switch (dest[5]) {
+ 		case 0x00:	/* Bridge Group Address */
++			if (p->flags & BR_BPDU_FILTER)
++				goto drop;
+ 			/* If STP is turned off,
+ 			   then must forward to keep loop detection */
+ 			if (p->br->stp_enabled == BR_NO_STP ||
+--- a/net/bridge/br_sysfs_if.c
++++ b/net/bridge/br_sysfs_if.c
+@@ -240,6 +240,7 @@ BRPORT_ATTR_FLAG(multicast_flood, BR_MCA
+ BRPORT_ATTR_FLAG(broadcast_flood, BR_BCAST_FLOOD);
+ BRPORT_ATTR_FLAG(neigh_suppress, BR_NEIGH_SUPPRESS);
+ BRPORT_ATTR_FLAG(isolated, BR_ISOLATED);
++BRPORT_ATTR_FLAG(bpdu_filter, BR_BPDU_FILTER);
+ 
+ #ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+ static ssize_t show_multicast_router(struct net_bridge_port *p, char *buf)
+@@ -292,6 +293,7 @@ static const struct brport_attribute *br
+ 	&brport_attr_group_fwd_mask,
+ 	&brport_attr_neigh_suppress,
+ 	&brport_attr_isolated,
++	&brport_attr_bpdu_filter,
+ 	&brport_attr_backup_port,
+ 	NULL
+ };
+--- a/net/bridge/br_stp_bpdu.c
++++ b/net/bridge/br_stp_bpdu.c
+@@ -80,7 +80,8 @@ void br_send_config_bpdu(struct net_brid
+ {
+ 	unsigned char buf[35];
+ 
+-	if (p->br->stp_enabled != BR_KERNEL_STP)
++	if (p->br->stp_enabled != BR_KERNEL_STP ||
++	    (p->flags & BR_BPDU_FILTER))
+ 		return;
+ 
+ 	buf[0] = 0;
+@@ -127,7 +128,8 @@ void br_send_tcn_bpdu(struct net_bridge_
+ {
+ 	unsigned char buf[4];
+ 
+-	if (p->br->stp_enabled != BR_KERNEL_STP)
++	if (p->br->stp_enabled != BR_KERNEL_STP ||
++	    (p->flags & BR_BPDU_FILTER))
+ 		return;
+ 
+ 	buf[0] = 0;
+@@ -172,6 +174,9 @@ void br_stp_rcv(const struct stp_proto *
+ 	if (!(br->dev->flags & IFF_UP))
+ 		goto out;
+ 
++	if (p->flags & BR_BPDU_FILTER)
++		goto out;
++
+ 	if (p->state == BR_STATE_DISABLED)
+ 		goto out;
+ 
+--- a/include/uapi/linux/if_link.h
++++ b/include/uapi/linux/if_link.h
+@@ -571,6 +571,7 @@ enum {
+ 	IFLA_BRPORT_MCAST_MAX_GROUPS,
+ 	IFLA_BRPORT_NEIGH_VLAN_SUPPRESS,
+ 	IFLA_BRPORT_BACKUP_NHID,
++	IFLA_BRPORT_BPDU_FILTER,
+ 	__IFLA_BRPORT_MAX
+ };
+ #define IFLA_BRPORT_MAX (__IFLA_BRPORT_MAX - 1)
+--- a/net/bridge/br_netlink.c
++++ b/net/bridge/br_netlink.c
+@@ -190,6 +190,7 @@ static inline size_t br_port_info_size(v
+ 		+ nla_total_size(1)	/* IFLA_BRPORT_LOCKED */
+ 		+ nla_total_size(1)	/* IFLA_BRPORT_MAB */
+ 		+ nla_total_size(1)	/* IFLA_BRPORT_NEIGH_VLAN_SUPPRESS */
++		+ nla_total_size(1)	/* IFLA_BRPORT_BPDU_FILTER */
+ 		+ nla_total_size(sizeof(struct ifla_bridge_id))	/* IFLA_BRPORT_ROOT_ID */
+ 		+ nla_total_size(sizeof(struct ifla_bridge_id))	/* IFLA_BRPORT_BRIDGE_ID */
+ 		+ nla_total_size(sizeof(u16))	/* IFLA_BRPORT_DESIGNATED_PORT */
+@@ -282,7 +283,8 @@ static int br_port_fill_attrs(struct sk_
+ 	    nla_put_u8(skb, IFLA_BRPORT_LOCKED, !!(p->flags & BR_PORT_LOCKED)) ||
+ 	    nla_put_u8(skb, IFLA_BRPORT_MAB, !!(p->flags & BR_PORT_MAB)) ||
+ 	    nla_put_u8(skb, IFLA_BRPORT_NEIGH_VLAN_SUPPRESS,
+-		       !!(p->flags & BR_NEIGH_VLAN_SUPPRESS)))
++		       !!(p->flags & BR_NEIGH_VLAN_SUPPRESS)) ||
++	    nla_put_u8(skb, IFLA_BRPORT_BPDU_FILTER, !!(p->flags & BR_BPDU_FILTER)))
+ 		return -EMSGSIZE;
+ 
+ 	timerval = br_timer_value(&p->message_age_timer);
+@@ -902,6 +904,7 @@ static const struct nla_policy br_port_p
+ 	[IFLA_BRPORT_MCAST_MAX_GROUPS] = { .type = NLA_U32 },
+ 	[IFLA_BRPORT_NEIGH_VLAN_SUPPRESS] = NLA_POLICY_MAX(NLA_U8, 1),
+ 	[IFLA_BRPORT_BACKUP_NHID] = { .type = NLA_U32 },
++	[IFLA_BRPORT_BPDU_FILTER] = { .type = NLA_U8 },
+ };
+ 
+ /* Change the state of the port and notify spanning tree */
+@@ -970,6 +973,7 @@ static int br_setport(struct net_bridge_
+ 	br_set_port_flag(p, tb, IFLA_BRPORT_MAB, BR_PORT_MAB);
+ 	br_set_port_flag(p, tb, IFLA_BRPORT_NEIGH_VLAN_SUPPRESS,
+ 			 BR_NEIGH_VLAN_SUPPRESS);
++	br_set_port_flag(p, tb, IFLA_BRPORT_BPDU_FILTER, BR_BPDU_FILTER);
+ 
+ 	if ((p->flags & BR_PORT_MAB) &&
+ 	    (!(p->flags & BR_PORT_LOCKED) || !(p->flags & BR_LEARNING))) {
+--- a/net/core/rtnetlink.c
++++ b/net/core/rtnetlink.c
+@@ -61,7 +61,7 @@
+ #include "dev.h"
+ 
+ #define RTNL_MAX_TYPE		50
+-#define RTNL_SLAVE_MAX_TYPE	44
++#define RTNL_SLAVE_MAX_TYPE	45
+ 
+ struct rtnl_link {
+ 	rtnl_doit_func		doit;
+@@ -4949,7 +4949,9 @@ int ndo_dflt_bridge_getlink(struct sk_bu
+ 	    brport_nla_put_flag(skb, flags, mask,
+ 				IFLA_BRPORT_MCAST_FLOOD, BR_MCAST_FLOOD) ||
+ 	    brport_nla_put_flag(skb, flags, mask,
+-				IFLA_BRPORT_BCAST_FLOOD, BR_BCAST_FLOOD)) {
++				IFLA_BRPORT_BCAST_FLOOD, BR_BCAST_FLOOD) ||
++	    brport_nla_put_flag(skb, flags, mask,
++				IFLA_BRPORT_BPDU_FILTER, BR_BPDU_FILTER)) {
+ 		nla_nest_cancel(skb, protinfo);
+ 		goto nla_put_failure;
+ 	}

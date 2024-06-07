@@ -1,0 +1,69 @@
+From c14550658832026e82111f2a89b3f7bf567afc1c Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Tue, 17 Oct 2023 09:35:44 +0100
+Subject: [PATCH] drivers: media: rp1_cfe: Fix link validate test for pixel
+ format
+
+Now that we have removed unique PISP media bus codes, the cfe format
+table has multiple entries with the same media bus code for 16-bit
+formats. The test in cfe_video_link_validate() did not account for this.
+Fix it by testing the media bus code and the V4L2 pixelformat 4cc
+together.
+
+As a drive-by, ensure we have a valid CSI2 datatype id when programming
+the hardware block.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -786,6 +786,9 @@ static void cfe_start_channel(struct cfe
+ 		width = source_fmt->width;
+ 		height = source_fmt->height;
+ 
++		/* Must have a valid CSI2 datatype. */
++		WARN_ON(!fmt->csi_dt);
++
+ 		/*
+ 		 * Start the associated CSI2 Channel as well.
+ 		 *
+@@ -809,6 +812,9 @@ static void cfe_start_channel(struct cfe
+ 			node_desc[node->id].link_pad - CSI2_NUM_CHANNELS);
+ 		fmt = find_format_by_code(source_fmt->code);
+ 
++		/* Must have a valid CSI2 datatype. */
++		WARN_ON(!fmt->csi_dt);
++
+ 		if (is_image_output_node(node)) {
+ 			width = source_fmt->width;
+ 			height = source_fmt->height;
+@@ -1504,7 +1510,8 @@ static int cfe_video_link_validate(struc
+ 
+ 	if (is_image_output_node(node)) {
+ 		struct v4l2_pix_format *pix_fmt = &node->fmt.fmt.pix;
+-		const struct cfe_fmt *fmt;
++		const struct cfe_fmt *fmt = NULL;
++		unsigned int i;
+ 
+ 		if (source_fmt->width != pix_fmt->width ||
+ 		    source_fmt->height != pix_fmt->height) {
+@@ -1516,8 +1523,14 @@ static int cfe_video_link_validate(struc
+ 			goto out;
+ 		}
+ 
+-		fmt = find_format_by_code(source_fmt->code);
+-		if (!fmt || fmt->fourcc != pix_fmt->pixelformat) {
++		for (i = 0; i < ARRAY_SIZE(formats); i++) {
++			if (formats[i].code == source_fmt->code &&
++			    formats[i].fourcc == pix_fmt->pixelformat) {
++				fmt = &formats[i];
++				break;
++			}
++		}
++		if (!fmt) {
+ 			cfe_err("Format mismatch!\n");
+ 			ret = -EINVAL;
+ 			goto out;

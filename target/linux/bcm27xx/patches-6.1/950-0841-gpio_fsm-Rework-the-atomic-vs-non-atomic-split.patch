@@ -1,0 +1,192 @@
+From f0061ffc98c6e027c5774e2a24ceadcfee4167ea Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 5 Sep 2023 12:01:13 +0100
+Subject: [PATCH] gpio_fsm: Rework the atomic-vs-non-atomic split
+
+Partition the code to separate atomic and non-atomic methods so that
+none of them have to handle both cases. The result avoids using deferred
+work unless necessary, and should be easier to understand.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/gpio/gpio-fsm.c | 84 ++++++++++++++++++++---------------------
+ 1 file changed, 41 insertions(+), 43 deletions(-)
+
+--- a/drivers/gpio/gpio-fsm.c
++++ b/drivers/gpio/gpio-fsm.c
+@@ -193,9 +193,6 @@ static void free_symbols(struct symtab_e
+ 	}
+ }
+ 
+-static void gpio_fsm_go_to_state(struct gpio_fsm *gf,
+-				 struct fsm_state *new_state);
+-
+ static void gpio_fsm_set_soft(struct gpio_fsm *gf,
+ 			      unsigned int off, int val);
+ 
+@@ -213,6 +210,7 @@ static void gpio_fsm_enter_state(struct
+ 	dev_dbg(gf->dev, "enter_state(%s)\n", state->name);
+ 
+ 	gf->current_state = state;
++	gf->delay_target_state = NULL;
+ 
+ 	// 1. Apply any listed signals
+ 	for (i = 0; i < state->num_signals; i++) {
+@@ -271,7 +269,7 @@ static void gpio_fsm_enter_state(struct
+ 				dev_info(gf->dev,
+ 					 "GF_SOFT %d=%d -> %s\n", event->index,
+ 					 event->value, event->target->name);
+-			gpio_fsm_go_to_state(gf, event->target);
++			gpio_fsm_enter_state(gf, event->target);
+ 			return;
+ 		}
+ 	}
+@@ -284,7 +282,7 @@ static void gpio_fsm_enter_state(struct
+ 		inp_state->value = event->value;
+ 		inp_state->enabled = true;
+ 
+-		value = gpiod_get_value(gf->input_gpios->desc[event->index]);
++		value = gpiod_get_value_cansleep(gf->input_gpios->desc[event->index]);
+ 
+ 		// Clear stale event state
+ 		disable_irq(inp_state->irq);
+@@ -299,7 +297,7 @@ static void gpio_fsm_enter_state(struct
+ 				dev_info(gf->dev,
+ 					 "GF_IN %d=%d -> %s\n", event->index,
+ 					 event->value, event->target->name);
+-			gpio_fsm_go_to_state(gf, event->target);
++			gpio_fsm_enter_state(gf, event->target);
+ 			return;
+ 		}
+ 	}
+@@ -325,6 +323,33 @@ static void gpio_fsm_go_to_state(struct
+ 	dev_dbg(gf->dev, "go_to_state(%s)\n",
+ 		  new_state ? new_state->name : "<unset>");
+ 
++	state = gf->current_state;
++
++	/* Disable any enabled GPIO IRQs */
++	for (i = 0; i < state->num_gpio_events; i++) {
++		gp_ev = &state->gpio_events[i];
++		inp_state = &gf->input_gpio_states[gp_ev->index];
++		if (inp_state->enabled) {
++			inp_state->enabled = false;
++			irq_set_irq_type(inp_state->irq,
++					 IRQF_TRIGGER_NONE);
++		}
++	}
++
++	gpio_fsm_enter_state(gf, new_state);
++}
++
++static void gpio_fsm_go_to_state_deferred(struct gpio_fsm *gf,
++					  struct fsm_state *new_state)
++{
++	struct input_gpio_state *inp_state;
++	struct gpio_event *gp_ev;
++	struct fsm_state *state;
++	int i;
++
++	dev_dbg(gf->dev, "go_to_state_deferred(%s)\n",
++		  new_state ? new_state->name : "<unset>");
++
+ 	spin_lock(&gf->spinlock);
+ 
+ 	if (gf->next_state) {
+@@ -335,57 +360,31 @@ static void gpio_fsm_go_to_state(struct
+ 
+ 	gf->next_state = new_state;
+ 	state = gf->current_state;
+-	gf->delay_target_state = NULL;
+ 
+-	if (state) {
+-		/* Disarm any GPIO IRQs */
+-		for (i = 0; i < state->num_gpio_events; i++) {
+-			gp_ev = &state->gpio_events[i];
+-			inp_state = &gf->input_gpio_states[gp_ev->index];
+-			inp_state->target = NULL;
+-		}
++	/* Disarm any GPIO IRQs */
++	for (i = 0; i < state->num_gpio_events; i++) {
++		gp_ev = &state->gpio_events[i];
++		inp_state = &gf->input_gpio_states[gp_ev->index];
++		inp_state->target = NULL;
+ 	}
+ 
+ 	spin_unlock(&gf->spinlock);
+ 
+-	if (new_state)
+-		schedule_work(&gf->work);
++	schedule_work(&gf->work);
+ }
+ 
+ static void gpio_fsm_work(struct work_struct *work)
+ {
+-	struct input_gpio_state *inp_state;
+ 	struct fsm_state *new_state;
+-	struct fsm_state *state;
+-	struct gpio_event *gp_ev;
+ 	struct gpio_fsm *gf;
+-	int i;
+ 
+ 	gf = container_of(work, struct gpio_fsm, work);
+ 	spin_lock(&gf->spinlock);
+-	state = gf->current_state;
+ 	new_state = gf->next_state;
+-	if (!new_state)
+-		new_state = gf->delay_target_state;
+ 	gf->next_state = NULL;
+-	gf->delay_target_state = NULL;
+ 	spin_unlock(&gf->spinlock);
+ 
+-	if (state) {
+-		/* Disable any enabled GPIO IRQs */
+-		for (i = 0; i < state->num_gpio_events; i++) {
+-			gp_ev = &state->gpio_events[i];
+-			inp_state = &gf->input_gpio_states[gp_ev->index];
+-			if (inp_state->enabled) {
+-				inp_state->enabled = false;
+-				irq_set_irq_type(inp_state->irq,
+-						 IRQF_TRIGGER_NONE);
+-			}
+-		}
+-	}
+-
+-	if (new_state)
+-		gpio_fsm_enter_state(gf, new_state);
++	gpio_fsm_go_to_state(gf, new_state);
+ }
+ 
+ static irqreturn_t gpio_fsm_gpio_irq_handler(int irq, void *dev_id)
+@@ -404,7 +403,7 @@ static irqreturn_t gpio_fsm_gpio_irq_han
+ 	if (gf->debug)
+ 		dev_info(gf->dev, "GF_IN %d->%d -> %s\n",
+ 			 inp_state->index, inp_state->value, target->name);
+-	gpio_fsm_go_to_state(gf, target);
++	gpio_fsm_go_to_state_deferred(gf, target);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -416,12 +415,11 @@ static void gpio_fsm_timer(struct timer_
+ 	target = gf->delay_target_state;
+ 	if (!target)
+ 		return;
+-
+ 	if (gf->debug)
+ 		dev_info(gf->dev, "GF_DELAY %d -> %s\n", gf->delay_ms,
+ 			 target->name);
+ 
+-	gpio_fsm_go_to_state(gf, target);
++	gpio_fsm_go_to_state_deferred(gf, target);
+ }
+ 
+ int gpio_fsm_parse_signals(struct gpio_fsm *gf, struct fsm_state *state,
+@@ -1119,7 +1117,7 @@ static int gpio_fsm_probe(struct platfor
+ 	if (gf->debug)
+ 		dev_info(gf->dev, "Start -> %s\n", gf->start_state->name);
+ 
+-	gpio_fsm_go_to_state(gf, gf->start_state);
++	gpio_fsm_enter_state(gf, gf->start_state);
+ 
+ 	return devm_gpiochip_add_data(dev, &gf->gc, gf);
+ }

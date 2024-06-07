@@ -1,0 +1,293 @@
+From 3238d5c89f86bc368fcbbc77d0380710b0db376c Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 1 Sep 2020 18:15:27 +0100
+Subject: [PATCH] staging/fbtft: Add support for display variants
+
+Display variants are intended as a replacement for the now-deleted
+fbtft_device drivers. Drivers can register additional compatible
+strings with a custom callback that can make the required changes
+to the fbtft_display structure.
+
+Start the ball rolling by adding adafruit18, adafruit18_green and
+sainsmart18 displays.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/staging/fbtft/fb_st7735r.c |  38 +++++++++-
+ drivers/staging/fbtft/fbtft-core.c |  16 ++++-
+ drivers/staging/fbtft/fbtft.h      | 112 +++++++++++++++++++----------
+ 3 files changed, 126 insertions(+), 40 deletions(-)
+
+--- a/drivers/staging/fbtft/fb_st7735r.c
++++ b/drivers/staging/fbtft/fb_st7735r.c
+@@ -16,6 +16,10 @@
+ #define DEFAULT_GAMMA   "0F 1A 0F 18 2F 28 20 22 1F 1B 23 37 00 07 02 10\n" \
+ 			"0F 1B 0F 17 33 2C 29 2E 30 30 39 3F 00 07 03 10"
+ 
++#define ADAFRUIT18_GAMMA \
++			"02 1c 07 12 37 32 29 2d 29 25 2B 39 00 01 03 10\n" \
++			"03 1d 07 06 2E 2C 29 2D 2E 2E 37 3F 00 00 02 10"
++
+ static const s16 default_init_sequence[] = {
+ 	-1, MIPI_DCS_SOFT_RESET,
+ 	-2, 150,                               /* delay */
+@@ -94,6 +98,14 @@ static void set_addr_win(struct fbtft_pa
+ 	write_reg(par, MIPI_DCS_WRITE_MEMORY_START);
+ }
+ 
++static void adafruit18_green_tab_set_addr_win(struct fbtft_par *par,
++					      int xs, int ys, int xe, int ye)
++{
++	write_reg(par, 0x2A, 0, xs + 2, 0, xe + 2);
++	write_reg(par, 0x2B, 0, ys + 1, 0, ye + 1);
++	write_reg(par, 0x2C);
++}
++
+ #define MY BIT(7)
+ #define MX BIT(6)
+ #define MV BIT(5)
+@@ -174,12 +186,36 @@ static struct fbtft_display display = {
+ 	},
+ };
+ 
+-FBTFT_REGISTER_DRIVER(DRVNAME, "sitronix,st7735r", &display);
++int variant_adafruit18(struct fbtft_display *display)
++{
++	display->gamma = ADAFRUIT18_GAMMA;
++	return 0;
++}
++
++int variant_adafruit18_green(struct fbtft_display *display)
++{
++	display->gamma = ADAFRUIT18_GAMMA;
++	display->fbtftops.set_addr_win = adafruit18_green_tab_set_addr_win;
++	return 0;
++}
++
++FBTFT_REGISTER_DRIVER_START(&display)
++FBTFT_COMPATIBLE("sitronix,st7735r")
++FBTFT_COMPATIBLE("fbtft,sainsmart18")
++FBTFT_VARIANT_COMPATIBLE("fbtft,adafruit18", variant_adafruit18)
++FBTFT_VARIANT_COMPATIBLE("fbtft,adafruit18_green", variant_adafruit18_green)
++FBTFT_REGISTER_DRIVER_END(DRVNAME, &display);
+ 
+ MODULE_ALIAS("spi:" DRVNAME);
+ MODULE_ALIAS("platform:" DRVNAME);
+ MODULE_ALIAS("spi:st7735r");
+ MODULE_ALIAS("platform:st7735r");
++MODULE_ALIAS("spi:sainsmart18");
++MODULE_ALIAS("platform:sainsmart");
++MODULE_ALIAS("spi:adafruit18");
++MODULE_ALIAS("platform:adafruit18");
++MODULE_ALIAS("spi:adafruit18_green");
++MODULE_ALIAS("platform:adafruit18_green");
+ 
+ MODULE_DESCRIPTION("FB driver for the ST7735R LCD Controller");
+ MODULE_AUTHOR("Noralf Tronnes");
+--- a/drivers/staging/fbtft/fbtft-core.c
++++ b/drivers/staging/fbtft/fbtft-core.c
+@@ -24,6 +24,8 @@
+ #include <linux/platform_device.h>
+ #include <linux/property.h>
+ #include <linux/spinlock.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
+ 
+ #include <video/mipi_display.h>
+ 
+@@ -1183,6 +1185,7 @@ static struct fbtft_platform_data *fbtft
+  * @display: Display properties
+  * @sdev: SPI device
+  * @pdev: Platform device
++ * @dt_ids: Compatible string table
+  *
+  * Allocates, initializes and registers a framebuffer
+  *
+@@ -1192,12 +1195,15 @@ static struct fbtft_platform_data *fbtft
+  */
+ int fbtft_probe_common(struct fbtft_display *display,
+ 		       struct spi_device *sdev,
+-		       struct platform_device *pdev)
++		       struct platform_device *pdev,
++		       const struct of_device_id *dt_ids)
+ {
+ 	struct device *dev;
+ 	struct fb_info *info;
+ 	struct fbtft_par *par;
+ 	struct fbtft_platform_data *pdata;
++	const struct of_device_id *match;
++	int (*variant)(struct fbtft_display *);
+ 	int ret;
+ 
+ 	if (sdev)
+@@ -1213,6 +1219,14 @@ int fbtft_probe_common(struct fbtft_disp
+ 		pdata = fbtft_properties_read(dev);
+ 		if (IS_ERR(pdata))
+ 			return PTR_ERR(pdata);
++		match = of_match_device(dt_ids, dev);
++		if (match && match->data) {
++			/* apply the variant */
++			variant = match->data;
++			ret = (*variant)(display);
++			if (ret)
++				return ret;
++		}
+ 	}
+ 
+ 	info = fbtft_framebuffer_alloc(display, dev, pdata);
+--- a/drivers/staging/fbtft/fbtft.h
++++ b/drivers/staging/fbtft/fbtft.h
+@@ -251,7 +251,8 @@ void fbtft_register_backlight(struct fbt
+ void fbtft_unregister_backlight(struct fbtft_par *par);
+ int fbtft_init_display(struct fbtft_par *par);
+ int fbtft_probe_common(struct fbtft_display *display, struct spi_device *sdev,
+-		       struct platform_device *pdev);
++		       struct platform_device *pdev,
++		       const struct of_device_id *dt_ids);
+ void fbtft_remove_common(struct device *dev, struct fb_info *info);
+ 
+ /* fbtft-io.c */
+@@ -272,42 +273,25 @@ void fbtft_write_reg8_bus9(struct fbtft_
+ void fbtft_write_reg16_bus8(struct fbtft_par *par, int len, ...);
+ void fbtft_write_reg16_bus16(struct fbtft_par *par, int len, ...);
+ 
+-#define FBTFT_DT_TABLE(_compatible)						\
+-static const struct of_device_id dt_ids[] = {					\
+-	{ .compatible = _compatible },						\
+-	{},									\
+-};										\
+-MODULE_DEVICE_TABLE(of, dt_ids);
+-
+-#define FBTFT_SPI_DRIVER(_name, _compatible, _display, _spi_ids)		\
+-										\
+-static int fbtft_driver_probe_spi(struct spi_device *spi)			\
+-{										\
+-	return fbtft_probe_common(_display, spi, NULL);				\
+-}										\
+-										\
+-static void fbtft_driver_remove_spi(struct spi_device *spi)			\
+-{										\
+-	struct fb_info *info = spi_get_drvdata(spi);				\
+-										\
+-	fbtft_remove_common(&spi->dev, info);					\
+-}										\
+-										\
+-static struct spi_driver fbtft_driver_spi_driver = {				\
+-	.driver = {								\
+-		.name = _name,							\
+-		.of_match_table = dt_ids,					\
+-	},									\
+-	.id_table = _spi_ids,							\
+-	.probe = fbtft_driver_probe_spi,					\
+-	.remove = fbtft_driver_remove_spi,					\
+-};
+-
+-#define FBTFT_REGISTER_DRIVER(_name, _compatible, _display)                \
++#define FBTFT_REGISTER_DRIVER_START(_display)                              \
++									   \
++static const struct of_device_id dt_ids[];                                 \
++									   \
++static int fbtft_driver_probe_spi(struct spi_device *spi)                  \
++{                                                                          \
++	return fbtft_probe_common(_display, spi, NULL, dt_ids);	           \
++}                                                                          \
++									   \
++static void fbtft_driver_remove_spi(struct spi_device *spi)                 \
++{                                                                          \
++	struct fb_info *info = spi_get_drvdata(spi);                       \
++									   \
++	fbtft_remove_common(&spi->dev, info);                              \
++}                                                                          \
+ 									   \
+ static int fbtft_driver_probe_pdev(struct platform_device *pdev)           \
+ {                                                                          \
+-	return fbtft_probe_common(_display, NULL, pdev);                   \
++	return fbtft_probe_common(_display, NULL, pdev, dt_ids);           \
+ }                                                                          \
+ 									   \
+ static int fbtft_driver_remove_pdev(struct platform_device *pdev)          \
+@@ -318,9 +302,30 @@ static int fbtft_driver_remove_pdev(stru
+ 	return 0;                                                          \
+ }                                                                          \
+ 									   \
+-FBTFT_DT_TABLE(_compatible)						   \
++static const struct of_device_id dt_ids[] = {
++
++#define FBTFT_COMPATIBLE(_compatible)                                      \
++	{ .compatible = _compatible },
++
++#define FBTFT_VARIANT_COMPATIBLE(_compatible, _variant)                    \
++	{ .compatible = _compatible, .data = _variant },
++
++#define FBTFT_REGISTER_DRIVER_END(_name, _display)                         \
+ 									   \
+-FBTFT_SPI_DRIVER(_name, _compatible, _display, NULL)			   \
++	{},                                                                \
++};                                                                         \
++									   \
++MODULE_DEVICE_TABLE(of, dt_ids);                                           \
++									   \
++									   \
++static struct spi_driver fbtft_driver_spi_driver = {                       \
++	.driver = {                                                        \
++		.name   = _name,                                           \
++		.of_match_table = dt_ids,                                  \
++	},                                                                 \
++	.probe  = fbtft_driver_probe_spi,                                  \
++	.remove = fbtft_driver_remove_spi,                                 \
++};                                                                         \
+ 									   \
+ static struct platform_driver fbtft_driver_platform_driver = {             \
+ 	.driver = {                                                        \
+@@ -356,18 +361,49 @@ module_exit(fbtft_driver_module_exit);
+ 
+ #define FBTFT_REGISTER_SPI_DRIVER(_name, _comp_vend, _comp_dev, _display)	\
+ 										\
+-FBTFT_DT_TABLE(_comp_vend "," _comp_dev)					\
++static const struct of_device_id dt_ids[] = {					\
++	{ .compatible = _comp_vend "," _comp_dev },				\
++	{},									\
++};										\
++										\
++static int fbtft_driver_probe_spi(struct spi_device *spi)			\
++{										\
++	return fbtft_probe_common(_display, spi, NULL, dt_ids);			\
++}										\
++										\
++static void fbtft_driver_remove_spi(struct spi_device *spi)			\
++{										\
++	struct fb_info *info = spi_get_drvdata(spi);				\
++										\
++	fbtft_remove_common(&spi->dev, info);					\
++}										\
++										\
++MODULE_DEVICE_TABLE(of, dt_ids);						\
+ 										\
+ static const struct spi_device_id spi_ids[] = {					\
+ 	{ .name = _comp_dev },							\
+ 	{},									\
+ };										\
++										\
+ MODULE_DEVICE_TABLE(spi, spi_ids);						\
+ 										\
+-FBTFT_SPI_DRIVER(_name, _comp_vend "," _comp_dev, _display, spi_ids)		\
++static struct spi_driver fbtft_driver_spi_driver = {				\
++	.driver = {								\
++		.name  = _name,							\
++		.of_match_table = dt_ids,					\
++	},									\
++	.id_table = spi_ids,							\
++	.probe  = fbtft_driver_probe_spi,					\
++	.remove = fbtft_driver_remove_spi,					\
++};										\
+ 										\
+ module_spi_driver(fbtft_driver_spi_driver);
+ 
++#define FBTFT_REGISTER_DRIVER(_name, _compatible, _display)                \
++	FBTFT_REGISTER_DRIVER_START(_display)                              \
++	FBTFT_COMPATIBLE(_compatible)                                      \
++	FBTFT_REGISTER_DRIVER_END(_name, _display)
++
+ /* Debug macros */
+ 
+ /* shorthand debug levels */

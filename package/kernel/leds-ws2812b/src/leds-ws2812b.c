@@ -17,6 +17,7 @@
 #include <linux/property.h>
 #include <linux/spi/spi.h>
 #include <linux/mutex.h>
+#include <linux/version.h>
 
 #define WS2812B_BYTES_PER_COLOR 3
 #define WS2812B_NUM_COLORS 3
@@ -191,7 +192,11 @@ ERR_UNREG_LEDS:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,18,0)
+static void ws2812b_remove(struct spi_device *spi)
+#else
 static int ws2812b_remove(struct spi_device *spi)
+#endif
 {
 	struct ws2812b_priv *priv = spi_get_drvdata(spi);
 	int cur_led;
@@ -201,7 +206,9 @@ static int ws2812b_remove(struct spi_device *spi)
 	kfree(priv->data_buf);
 	mutex_destroy(&priv->mutex);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
 	return 0;
+#endif
 }
 
 static const struct spi_device_id ws2812b_spi_ids[] = {

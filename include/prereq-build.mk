@@ -229,4 +229,4 @@ prereq: $(STAGING_DIR_HOST)/bin/mkhash $(STAGING_DIR_HOST)/bin/xxd
 
 # Install ldconfig stub
 $(eval $(call TestHostCommand,ldconfig-stub,Failed to install stub, \
-	$(LN) $(firstword $(wildcard /bin/true /usr/bin/true)) $(STAGING_DIR_HOST)/bin/ldconfig))
+	$(LN) $(SCRIPT_DIR)/noop.sh $(STAGING_DIR_HOST)/bin/ldconfig))

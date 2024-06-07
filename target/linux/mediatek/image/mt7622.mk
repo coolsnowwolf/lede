@@ -70,6 +70,7 @@ define Device/bananapi_bpi-r64
   DEVICE_DTS := mt7622-bananapi-bpi-r64
   DEVICE_DTS_OVERLAY := mt7622-bananapi-bpi-r64-pcie1 mt7622-bananapi-bpi-r64-sata
   DEVICE_PACKAGES := kmod-ata-ahci-mtk kmod-btmtkuart kmod-usb3 e2fsprogs mkf2fs f2fsck
+  DEVICE_DTC_FLAGS := --pad 4096
   ARTIFACTS := emmc-preloader.bin emmc-bl31-uboot.fip sdcard.img.gz snand-preloader.bin snand-bl31-uboot.fip
   IMAGES := sysupgrade.itb
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
@@ -88,13 +89,16 @@ define Device/bananapi_bpi-r64
 				   pad-to 40960k | bl31-uboot bananapi_bpi-r64-emmc |\
 				   pad-to 43008k | bl2 snand-2ddr |\
 				   pad-to 43520k | bl31-uboot bananapi_bpi-r64-snand |\
-				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
-				   pad-to 46080k | append-image squashfs-sysupgrade.itb | check-size | gzip \
-				)
+				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS), \
+				   pad-to 46080k | append-image squashfs-sysupgrade.itb | check-size |\
+				) \
+				  gzip
   IMAGE_SIZE := $$(shell expr 45 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
   KERNEL			:= kernel-bin | gzip
   KERNEL_INITRAMFS		:= kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb with-initrd | pad-to 128k
   IMAGE/sysupgrade.itb		:= append-kernel | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb external-static-with-rootfs | append-metadata
+  DEVICE_COMPAT_VERSION := 1.1
+  DEVICE_COMPAT_MESSAGE := Device tree overlay mechanism needs bootloader update
 endef
 TARGET_DEVICES += bananapi_bpi-r64
 

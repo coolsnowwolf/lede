@@ -8,6 +8,7 @@
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 #if 1
 static inline void *ipc_log_context_create(int max_num_pages,
         const char *modname, uint16_t user_version)
@@ -96,6 +97,44 @@ module_param( uci_msg_lvl, uint, S_IRUGO | S_IWUSR);
 
 #define MAX_UCI_DEVICES (64)
 #define QUEC_MHI_UCI_ALWAYS_OPEN //by now, sdx20 can not handle "start-reset-start" operation, so the simply solution is keep start state
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+#ifdef TCGETS2
+__weak int user_termios_to_kernel_termios(struct ktermios *k,
+						 struct termios2 __user *u)
+{
+	return copy_from_user(k, u, sizeof(struct termios2));
+}
+__weak int kernel_termios_to_user_termios(struct termios2 __user *u,
+						 struct ktermios *k)
+{
+	return copy_to_user(u, k, sizeof(struct termios2));
+}
+__weak int user_termios_to_kernel_termios_1(struct ktermios *k,
+						   struct termios __user *u)
+{
+	return copy_from_user(k, u, sizeof(struct termios));
+}
+__weak int kernel_termios_to_user_termios_1(struct termios __user *u,
+						   struct ktermios *k)
+{
+	return copy_to_user(u, k, sizeof(struct termios));
+}
+
+#else
+
+__weak int user_termios_to_kernel_termios(struct ktermios *k,
+						 struct termios __user *u)
+{
+	return copy_from_user(k, u, sizeof(struct termios));
+}
+__weak int kernel_termios_to_user_termios(struct termios __user *u,
+						 struct ktermios *k)
+{
+	return copy_to_user(u, k, sizeof(struct termios));
+}
+#endif /* TCGETS2 */
+#endif
 
 static DECLARE_BITMAP(uci_minors, MAX_UCI_DEVICES);
 static struct mhi_uci_drv mhi_uci_drv;
@@ -256,7 +295,8 @@ static unsigned int mhi_uci_poll(struct file *file, poll_table *wait)
 	unsigned int mask = 0;
 
 	poll_wait(file, &uci_dev->dl_chan.wq, wait);
-	poll_wait(file, &uci_dev->ul_chan.wq, wait);
+	// ADPL and QDSS do not need poll write. xingduo.du 2023-02-16
+	// poll_wait(file, &uci_dev->ul_chan.wq, wait);
 
 	uci_chan = &uci_dev->dl_chan;
 	spin_lock_bh(&uci_chan->lock);
@@ -268,21 +308,25 @@ static unsigned int mhi_uci_poll(struct file *file, poll_table *wait)
 	}
 	spin_unlock_bh(&uci_chan->lock);
 
-	uci_chan = &uci_dev->ul_chan;
-	spin_lock_bh(&uci_chan->lock);
-	if (!uci_dev->enabled) {
-		mask |= POLLERR;
-	} else if (mhi_get_no_free_descriptors(mhi_dev, DMA_TO_DEVICE) > 0) {
-		MSG_VERB("Client can write to node\n");
-		mask |= POLLOUT | POLLWRNORM;
+	// ADPL and QDSS are single channel, ul_chan not be initilized. xingduo.du 2023-02-27
+	if (mhi_dev->ul_chan) {
+		poll_wait(file, &uci_dev->ul_chan.wq, wait);
+		uci_chan = &uci_dev->ul_chan;
+		spin_lock_bh(&uci_chan->lock);
+		if (!uci_dev->enabled) {
+			mask |= POLLERR;
+		} else if (mhi_get_no_free_descriptors(mhi_dev, DMA_TO_DEVICE) > 0) {
+			MSG_VERB("Client can write to node\n");
+			mask |= POLLOUT | POLLWRNORM;
+		}
+
+		if (!uci_dev->enabled)
+			mask |= POLLHUP;
+		if (uci_dev->rx_error)
+			mask |= POLLERR;
+
+		spin_unlock_bh(&uci_chan->lock);
 	}
-
-	if (!uci_dev->enabled)
-		mask |= POLLHUP;
-	if (uci_dev->rx_error)
-		mask |= POLLERR;
-
-	spin_unlock_bh(&uci_chan->lock);
 
 	MSG_LOG("Client attempted to poll, returning mask 0x%x\n", mask);
 
@@ -778,6 +822,10 @@ static void mhi_dl_xfer_cb(struct mhi_device *mhi_dev,
 	unsigned nr_trb = uci_dev->nr_trb;
 
 	buf = &uci_dev->uci_buf[nr_trb];
+	if (buf == NULL) {
+		MSG_ERR("buf = NULL");
+		return;
+	}
 	if (buf->nr_trb != nr_trb || buf->data != mhi_result->buf_addr)
 	{
 		uci_dev->rx_error++;
@@ -860,7 +908,8 @@ static void mhi_dl_xfer_cb(struct mhi_device *mhi_dev,
 	wake_up(&uci_chan->wq);
 }
 
-#define DIAG_MAX_PCIE_PKT_SZ	2048 //define by module
+// repaire sdx6x module can not read qdb file. xingduo.du 2023-01-18
+#define DIAG_MAX_PCIE_PKT_SZ	8192 //define by module
 
 /* .driver_data stores max mtu */
 static const struct mhi_device_id mhi_uci_match_table[] = {
@@ -872,6 +921,12 @@ static const struct mhi_device_id mhi_uci_match_table[] = {
 	{ .chan = "QMI0", .driver_data = 0x1000 },
 	{ .chan = "QMI1", .driver_data = 0x1000 },
 	{ .chan = "DUN", .driver_data = 0x1000 },
+#ifdef ENABLE_ADPL
+	{ .chan = "ADPL", .driver_data = 0x1000 },
+#endif
+#ifdef ENABLE_QDSS
+	{ .chan = "QDSS", .driver_data = 0x1000 },
+#endif
 	{},
 };
 
@@ -896,7 +951,11 @@ int mhi_device_uci_init(void)
 		return ret;
 
 	mhi_uci_drv.major = ret;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+	mhi_uci_drv.class = class_create(MHI_UCI_DRIVER_NAME);
+#else
 	mhi_uci_drv.class = class_create(THIS_MODULE, MHI_UCI_DRIVER_NAME);
+#endif
 	if (IS_ERR(mhi_uci_drv.class)) {
 		unregister_chrdev(mhi_uci_drv.major, MHI_UCI_DRIVER_NAME);
 		return -ENODEV;

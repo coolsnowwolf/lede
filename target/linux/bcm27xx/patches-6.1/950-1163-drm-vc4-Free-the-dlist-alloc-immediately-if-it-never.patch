@@ -1,0 +1,56 @@
+From 51712a6493bf8824419f51ca7950e7d88f48b699 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 22 Nov 2023 18:36:54 +0000
+Subject: [PATCH] drm: vc4: Free the dlist alloc immediately if it never hit
+ the hw
+
+atomic_check creates a state, and allocates the dlist memory for
+it such that atomic_flush can not fail.
+
+On destroy that dlist allocation was being put in the stale list,
+even though it had never been programmed into the hardware,
+therefore doing lots of atomic_checks could consume all the dlist
+memory and fail.
+
+If the dlist has never been programmed into the hardware, then
+free it immediately.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h | 1 +
+ drivers/gpu/drm/vc4/vc4_hvs.c | 6 +++++-
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -696,6 +696,7 @@ struct vc4_hvs_dlist_allocation {
+ 	struct drm_mm_node mm_node;
+ 	unsigned int channel;
+ 	u8 target_frame_count;
++	bool dlist_programmed;
+ };
+ 
+ struct vc4_crtc_state {
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -697,8 +697,11 @@ void vc4_hvs_mark_dlist_entry_stale(stru
+ 	 * Kunit tests run with a mock device and we consider any hardware
+ 	 * access a test failure. Let's free the dlist allocation right away if
+ 	 * we're running under kunit, we won't risk a dlist corruption anyway.
++	 *
++	 * Likewise if the allocation was only checked and never programmed, we
++	 * can destroy the allocation immediately.
+ 	 */
+-	if (kunit_get_current_test()) {
++	if (kunit_get_current_test() || !alloc->dlist_programmed) {
+ 		spin_lock_irqsave(&hvs->mm_lock, flags);
+ 		vc4_hvs_free_dlist_entry_locked(hvs, alloc);
+ 		spin_unlock_irqrestore(&hvs->mm_lock, flags);
+@@ -1201,6 +1204,7 @@ static void vc4_hvs_install_dlist(struct
+ 		return;
+ 
+ 	WARN_ON(!vc4_state->mm);
++	vc4_state->mm->dlist_programmed = true;
+ 
+ 	if (vc4->gen >= VC4_GEN_6)
+ 		HVS_WRITE(SCALER6_DISPX_LPTRS(vc4_state->assigned_channel),

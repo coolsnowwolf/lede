@@ -1,0 +1,368 @@
+From 97ec6aeb265df0bfe7193f00c249b38873fb0fb7 Mon Sep 17 00:00:00 2001
+From: Kieran Bingham <kieran.bingham@ideasonboard.com>
+Date: Wed, 13 Sep 2023 17:53:54 +0100
+Subject: [PATCH] media: i2c: Add ROHM BU64754 Camera Autofocus Actuator
+
+Add support for the ROHM BU64754 Motor Driver for Camera Autofocus. A
+V4L2 Subdevice is registered and provides a single
+V4L2_CID_FOCUS_ABSOLUTE control.
+
+Signed-off-by: Kieran Bingham <kieran.bingham@ideasonboard.com>
+Signed-off-by: Jacopo Mondi <jacopo.mondi@ideasonboard.com>
+---
+ drivers/media/i2c/Kconfig   |  13 ++
+ drivers/media/i2c/Makefile  |   1 +
+ drivers/media/i2c/bu64754.c | 315 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 329 insertions(+)
+ create mode 100644 drivers/media/i2c/bu64754.c
+
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -917,6 +917,19 @@ config VIDEO_AK7375
+ 	  capability. This is designed for linear control of
+ 	  voice coil motors, controlled via I2C serial interface.
+ 
++config VIDEO_BU64754
++	tristate "BU64754 Motor Driver for Camera Autofocus"
++	depends on I2C && VIDEO_DEV
++	select MEDIA_CONTROLLER
++	select VIDEO_V4L2_SUBDEV_API
++	select V4L2_ASYNC
++	select V4L2_CCI_I2C
++	help
++	  This is a driver for the BU64754 Motor Driver for Camera
++	  Autofocus. The BU64754GWZ is an actuator driver IC which
++	  can be controlled the actuator position precisely using
++	  with internal Hall Sensor.
++
+ config VIDEO_DW9714
+ 	tristate "DW9714 lens voice coil support"
+ 	depends on I2C && VIDEO_DEV
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -26,6 +26,7 @@ obj-$(CONFIG_VIDEO_ARDUCAM_PIVARIETY) +=
+ obj-$(CONFIG_VIDEO_BT819) += bt819.o
+ obj-$(CONFIG_VIDEO_BT856) += bt856.o
+ obj-$(CONFIG_VIDEO_BT866) += bt866.o
++obj-$(CONFIG_VIDEO_BU64754) += bu64754.o
+ obj-$(CONFIG_VIDEO_CCS) += ccs/
+ obj-$(CONFIG_VIDEO_CCS_PLL) += ccs-pll.o
+ obj-$(CONFIG_VIDEO_CS3308) += cs3308.o
+--- /dev/null
++++ b/drivers/media/i2c/bu64754.c
+@@ -0,0 +1,315 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * The BU64754GWZ is an actuator driver IC which can control the
++ * actuator position precisely using an internal Hall Sensor.
++ */
++
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++
++#include <media/v4l2-cci.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++
++#define BU64754_REG_ACTIVE	CCI_REG16(0x07)
++#define BU64754_ACTIVE_MODE	0x8080
++
++#define BU64754_REG_SERVE	CCI_REG16(0xd9)
++#define BU64754_SERVE_ON	0x0404
++
++#define BU64754_REG_POSITION	CCI_REG16(0x45)
++#define BU64753_POSITION_MAX	1023 /* 0x3ff */
++#define BU64753_POSITION_STEPS	1
++
++#define BU64754_POWER_ON_DELAY	800 /* uS : t1, t3 */
++
++struct bu64754 {
++	struct device *dev;
++
++	struct v4l2_ctrl_handler ctrls_vcm;
++	struct v4l2_subdev sd;
++	struct regmap *cci;
++
++	u16 current_val;
++	struct regulator *vdd;
++	struct notifier_block notifier;
++};
++
++static inline struct bu64754 *sd_to_bu64754(struct v4l2_subdev *subdev)
++{
++	return container_of(subdev, struct bu64754, sd);
++}
++
++static int bu64754_set(struct bu64754 *bu64754, u16 position)
++{
++	int ret;
++
++	position &= 0x3ff; /* BU64753_POSITION_MAX */
++	ret = cci_write(bu64754->cci, BU64754_REG_POSITION, position, NULL);
++	if (ret) {
++		dev_err(bu64754->dev, "Set position failed ret=%d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int bu64754_active(struct bu64754 *bu64754)
++{
++	int ret;
++
++	/* Power on */
++	ret = cci_write(bu64754->cci, BU64754_REG_ACTIVE, BU64754_ACTIVE_MODE, NULL);
++	if (ret < 0) {
++		dev_err(bu64754->dev, "Failed to set active mode ret = %d\n",
++			ret);
++		return ret;
++	}
++
++	/* Serve on */
++	ret = cci_write(bu64754->cci, BU64754_REG_SERVE, BU64754_SERVE_ON, NULL);
++	if (ret < 0) {
++		dev_err(bu64754->dev, "Failed to enable serve ret = %d\n",
++			ret);
++		return ret;
++	}
++
++	return bu64754_set(bu64754, bu64754->current_val);
++}
++
++static int bu64754_standby(struct bu64754 *bu64754)
++{
++	int ret;
++
++	ret = cci_write(bu64754->cci, BU64754_REG_ACTIVE, 0, NULL);
++	if (ret < 0)
++		dev_err(bu64754->dev, "Failed to enter standby mode ret = %d\n",
++			ret);
++
++	return ret;
++}
++
++static int bu64754_regulator_event(struct notifier_block *nb,
++				   unsigned long action, void *data)
++{
++	struct bu64754 *bu64754 = container_of(nb, struct bu64754, notifier);
++
++	if (action & REGULATOR_EVENT_ENABLE) {
++		/*
++		 * Initialisation delay between VDD low->high and availability
++		 * i2c operation.
++		 */
++		usleep_range(BU64754_POWER_ON_DELAY,
++			     BU64754_POWER_ON_DELAY + 100);
++
++		bu64754_active(bu64754);
++	} else if (action & REGULATOR_EVENT_PRE_DISABLE) {
++		bu64754_standby(bu64754);
++	}
++
++	return 0;
++}
++
++static int bu64754_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct bu64754 *bu64754 = container_of(ctrl->handler,
++		struct bu64754, ctrls_vcm);
++
++	if (ctrl->id == V4L2_CID_FOCUS_ABSOLUTE) {
++		bu64754->current_val = ctrl->val;
++		return bu64754_set(bu64754, ctrl->val);
++	}
++
++	return -EINVAL;
++}
++
++static const struct v4l2_ctrl_ops bu64754_vcm_ctrl_ops = {
++	.s_ctrl = bu64754_set_ctrl,
++};
++
++static int bu64754_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	return pm_runtime_resume_and_get(sd->dev);
++}
++
++static int bu64754_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	pm_runtime_put(sd->dev);
++	return 0;
++}
++
++static const struct v4l2_subdev_internal_ops bu64754_int_ops = {
++	.open = bu64754_open,
++	.close = bu64754_close,
++};
++
++static const struct v4l2_subdev_ops bu64754_ops = { };
++
++static void bu64754_subdev_cleanup(struct bu64754 *bu64754)
++{
++	v4l2_async_unregister_subdev(&bu64754->sd);
++	v4l2_ctrl_handler_free(&bu64754->ctrls_vcm);
++	media_entity_cleanup(&bu64754->sd.entity);
++}
++
++static int bu64754_init_controls(struct bu64754 *bu64754)
++{
++	struct v4l2_ctrl_handler *hdl = &bu64754->ctrls_vcm;
++	const struct v4l2_ctrl_ops *ops = &bu64754_vcm_ctrl_ops;
++
++	v4l2_ctrl_handler_init(hdl, 1);
++
++	v4l2_ctrl_new_std(hdl, ops, V4L2_CID_FOCUS_ABSOLUTE,
++			  0, BU64753_POSITION_MAX, BU64753_POSITION_STEPS,
++			  0);
++
++	bu64754->current_val = 0;
++
++	bu64754->sd.ctrl_handler = hdl;
++	if (hdl->error) {
++		dev_err(bu64754->dev, "%s fail error: 0x%x\n",
++			__func__, hdl->error);
++		return hdl->error;
++	}
++
++	return 0;
++}
++
++static int bu64754_probe(struct i2c_client *client)
++{
++	struct bu64754 *bu64754;
++	int ret;
++
++	bu64754 = devm_kzalloc(&client->dev, sizeof(*bu64754), GFP_KERNEL);
++	if (!bu64754)
++		return -ENOMEM;
++
++	bu64754->dev = &client->dev;
++
++	bu64754->cci = devm_cci_regmap_init_i2c(client, 8);
++	if (IS_ERR(bu64754->cci)) {
++		dev_err(bu64754->dev, "Failed to initialize CCI\n");
++		return PTR_ERR(bu64754->cci);
++	}
++
++	bu64754->vdd = devm_regulator_get_optional(&client->dev, "vdd");
++	if (IS_ERR(bu64754->vdd)) {
++		if (PTR_ERR(bu64754->vdd) != -ENODEV)
++			return PTR_ERR(bu64754->vdd);
++
++		bu64754->vdd = NULL;
++	} else {
++		bu64754->notifier.notifier_call = bu64754_regulator_event;
++
++		ret = regulator_register_notifier(bu64754->vdd,
++						  &bu64754->notifier);
++		if (ret) {
++			dev_err(bu64754->dev,
++				"could not register regulator notifier\n");
++			return ret;
++		}
++	}
++
++	v4l2_i2c_subdev_init(&bu64754->sd, client, &bu64754_ops);
++	bu64754->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	bu64754->sd.internal_ops = &bu64754_int_ops;
++	bu64754->sd.entity.function = MEDIA_ENT_F_LENS;
++
++	ret = bu64754_init_controls(bu64754);
++	if (ret)
++		goto err_cleanup;
++
++	ret = media_entity_pads_init(&bu64754->sd.entity, 0, NULL);
++	if (ret < 0)
++		goto err_cleanup;
++
++	bu64754->sd.entity.function = MEDIA_ENT_F_LENS;
++
++	ret = v4l2_async_register_subdev(&bu64754->sd);
++	if (ret < 0)
++		goto err_cleanup;
++
++	if (!bu64754->vdd)
++		pm_runtime_set_active(&client->dev);
++
++	pm_runtime_enable(&client->dev);
++	pm_runtime_idle(&client->dev);
++
++	return 0;
++
++err_cleanup:
++	v4l2_ctrl_handler_free(&bu64754->ctrls_vcm);
++	media_entity_cleanup(&bu64754->sd.entity);
++
++	return ret;
++}
++
++static void bu64754_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct bu64754 *bu64754 = sd_to_bu64754(sd);
++
++	if (bu64754->vdd)
++		regulator_unregister_notifier(bu64754->vdd,
++					      &bu64754->notifier);
++
++	pm_runtime_disable(&client->dev);
++
++	bu64754_subdev_cleanup(bu64754);
++}
++
++static int __maybe_unused bu64754_vcm_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct bu64754 *bu64754 = sd_to_bu64754(sd);
++
++	if (bu64754->vdd)
++		return regulator_disable(bu64754->vdd);
++
++	return bu64754_standby(bu64754);
++}
++
++static int  __maybe_unused bu64754_vcm_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct bu64754 *bu64754 = sd_to_bu64754(sd);
++
++	if (bu64754->vdd)
++		return regulator_enable(bu64754->vdd);
++
++	return bu64754_active(bu64754);
++}
++
++static const struct of_device_id bu64754_of_table[] = {
++	{ .compatible = "rohm,bu64754", },
++	{ /* sentinel */ }
++};
++
++MODULE_DEVICE_TABLE(of, bu64754_of_table);
++
++static const struct dev_pm_ops bu64754_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(bu64754_vcm_suspend, bu64754_vcm_resume)
++	SET_RUNTIME_PM_OPS(bu64754_vcm_suspend, bu64754_vcm_resume, NULL)
++};
++
++static struct i2c_driver bu64754_i2c_driver = {
++	.driver = {
++		.name = "bu64754",
++		.pm = &bu64754_pm_ops,
++		.of_match_table = bu64754_of_table,
++	},
++	.probe_new = bu64754_probe,
++	.remove = bu64754_remove,
++};
++
++module_i2c_driver(bu64754_i2c_driver);
++
++MODULE_AUTHOR("Kieran Bingham");
++MODULE_DESCRIPTION("BU64754 VCM driver");
++MODULE_LICENSE("GPL");
++

@@ -1,0 +1,171 @@
+From 86356a59b7688f8080aab516f1723f2ffbf15090 Mon Sep 17 00:00:00 2001
+From: Mark Williams <mwp@mwp.id.au>
+Date: Thu, 8 Dec 2022 04:58:05 -0700
+Subject: [PATCH] overlays: Add crystalfontz-cfa050_pi_m
+
+Add support for the Crystalfontz CFA050-PI-M series of Raspberry Pi
+CM4-based modules using the CFAF7201280A0_050Tx TFT LCD displays.
+
+Signed-off-by: Mark Williams <mwp@mwp.id.au>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |   9 ++
+ .../crystalfontz-cfa050_pi_m-overlay.dts      | 124 ++++++++++++++++++
+ 3 files changed, 134 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/crystalfontz-cfa050_pi_m-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -40,6 +40,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	chipdip-dac.dtbo \
+ 	cirrus-wm5102.dtbo \
+ 	cma.dtbo \
++	crystalfontz-cfa050_pi_m.dtbo \
+ 	cutiepi-panel.dtbo \
+ 	dacberry400.dtbo \
+ 	dht11.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -804,6 +804,15 @@ Params: cma-512                 CMA is 5
+         cma-default             Use upstream's default value
+ 
+ 
++Name:   crystalfontz-cfa050_pi_m
++Info:   Configures the Crystalfontz CFA050-PI-M series of Raspberry Pi CM4
++        based modules using the CFA7201280A0_050Tx 7" TFT LCD displays,
++        with or without capacitive touch screen.
++        Requires use of vc4-kms-v3d.
++Load:   dtoverlay=crystalfontz-cfa050_pi_m,<param>=<val>
++Params: captouch                Enable capacitive touch display
++
++
+ Name:   cutiepi-panel
+ Info:   8" TFT LCD display and touch panel used by cutiepi.io
+ Load:   dtoverlay=cutiepi-panel
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/crystalfontz-cfa050_pi_m-overlay.dts
+@@ -0,0 +1,124 @@
++/*
++ * crystalfontz-cfa050_pi_m-overlay.dts
++ * Configures the Crystalfontz CFA050-PI-M series of modules
++ * using CFAF7201280A0-050TC/TN panels with RaspberryPi CM4 DSI1
++ */
++/dts-v1/;
++/plugin/;
++/{
++// RaspberryPi CM4
++	compatible = "brcm,bcm2835";
++// PCF8574 I2C GPIO EXPANDER
++	fragment@0 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++			pcf8574a: pcf8574a@38 {
++				reg = <0x38>;
++				compatible = "nxp,pcf8574";
++				gpio-controller;
++				#gpio-cells = <2>;
++				ngpios = <8>;
++				gpio-line-names = "TFT_RESET", "TOUCH_RESET", "EXT_P2", "EXT_P3",
++					"EXT_P4", "EXT_P5", "EXT_P6", "EXT_P7";
++			};
++		};
++	};
++// LM3630a BACKLIGHT LED CONTROLLER
++	fragment@1 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++			lm3630a: backlight@36 {
++				reg = <0x36>;
++				compatible = "ti,lm3630a";
++				#address-cells = <1>;
++				#size-cells = <0>;
++				led@0 {
++					reg = <0>;
++					led-sources = <0 1>;
++					label = "lcd-backlight";
++					default-brightness = <128>;
++					max-brightness = <255>;
++				};
++			};
++		};
++	};
++// CFAF7201280A0_050Tx TFT DSI PANEL
++	fragment@2 {
++		target = <&dsi1>;
++		__overlay__  {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++			port {
++				dsi_out: endpoint {
++					remote-endpoint = <&panel_in>;
++				};
++			};
++			dsi_panel: dsi_panel@0 {
++				compatible = "crystalfontz,cfaf7201280a0_050tx";
++				reg = <0>;
++				reset-gpios = <&pcf8574a 0 1>;
++				backlight = <&lm3630a>;
++				fps = <60>;
++				port {
++					panel_in: endpoint {
++						remote-endpoint = <&dsi_out>;
++					};
++				};
++			};
++		};
++	};
++// rPI GPIO INPUT FOR TOUCH IC IRQ
++	fragment@3 {
++		target = <&gpio>;
++		__dormant__ {
++			gt928intpins: gt928intpins {
++				brcm,pins = <26>;
++				brcm,function = <0>;
++				brcm,pull = <1>;
++			};
++		};
++	};
++// GT928 TOUCH CONTROLLER IC
++	fragment@4 {
++		target = <&i2c_csi_dsi>;
++		__dormant__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++			gt928@5d {
++				compatible = "goodix,gt928";
++				reg = <0x5d>;
++				interrupt-parent = <&gpio>;
++				interrupts = <26 2>;
++				irq-gpios = <&gpio 26 0>;
++				reset-gpios = <&pcf8574a 1 1>;
++				touchscreen-inverted-x;
++				touchscreen-inverted-y;
++			};
++		};
++	};
++// PCF85063A RTC on I2C
++	fragment@5 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++			pcf85063a@51 {
++				compatible = "nxp,pcf85063a";
++				reg = <0x51>;
++			};
++		};
++	};
++// CAPACITIVE TOUCH OPTION FOR TFT PANEL
++	__overrides__ {
++		captouch = <0>,"+3+4";
++	};
++};

@@ -1,0 +1,240 @@
+From bb0839405b61da6e6ae7141f7433f6a121725e6f Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 31 Aug 2023 11:45:38 +0100
+Subject: [PATCH] drm/vc4: Assign LBM memory during atomic_flush.
+
+Avoid double buffering LBM allocations by making the
+allocation a single alloc per crtc at atomic_flush.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c |  2 +-
+ drivers/gpu/drm/vc4/vc4_drv.h                 |  8 ++--
+ drivers/gpu/drm/vc4/vc4_hvs.c                 | 47 ++++++++++++++++++-
+ drivers/gpu/drm/vc4/vc4_plane.c               | 38 +++------------
+ 4 files changed, 58 insertions(+), 37 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
+@@ -248,7 +248,7 @@ static void drm_vc4_test_vc4_lbm_size(st
+ 	ret = drm_atomic_check_only(state);
+ 	KUNIT_ASSERT_EQ(test, ret, 0);
+ 
+-	KUNIT_EXPECT_EQ(test, vc4_plane_state->lbm.size, params->expected_lbm_size);
++	KUNIT_EXPECT_EQ(test, vc4_plane_state->lbm_size, params->expected_lbm_size);
+ 
+ 	for (i = 0; i < 2; i++) {
+ 		KUNIT_EXPECT_EQ(test,
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -437,6 +437,8 @@ struct vc4_plane_state {
+ 	u32 dlist_size; /* Number of dwords allocated for the display list */
+ 	u32 dlist_count; /* Number of used dwords in the display list. */
+ 
++	u32 lbm_size; /* LBM requirements for this plane */
++
+ 	/* Offset in the dlist to various words, for pageflip or
+ 	 * cursor updates.
+ 	 */
+@@ -462,9 +464,6 @@ struct vc4_plane_state {
+ 	bool is_unity;
+ 	bool is_yuv;
+ 
+-	/* Our allocation in LBM for temporary storage during scaling. */
+-	struct drm_mm_node lbm;
+-
+ 	/* Our allocation in UPM for prefetching. */
+ 	struct drm_mm_node upm[DRM_FORMAT_MAX_PLANES];
+ 
+@@ -661,6 +660,9 @@ struct vc4_crtc {
+ 	 * access to that value.
+ 	 */
+ 	unsigned int current_hvs_channel;
++
++	/* @lbm: Our allocation in LBM for temporary storage during scaling. */
++	struct drm_mm_node lbm;
+ };
+ 
+ static inline struct vc4_crtc *
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1103,6 +1103,7 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ 	struct drm_plane *plane;
+ 	const struct drm_plane_state *plane_state;
+ 	u32 dlist_count = 0;
++	u32 lbm_count = 0;
+ 
+ 	/* The pixelvalve can only feed one encoder (and encoders are
+ 	 * 1:1 with connectors.)
+@@ -1111,6 +1112,8 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ 		return -EINVAL;
+ 
+ 	drm_atomic_crtc_state_for_each_plane_state(plane, plane_state, crtc_state) {
++		const struct vc4_plane_state *vc4_plane_state =
++						to_vc4_plane_state(plane_state);
+ 		u32 plane_dlist_count = vc4_plane_dlist_size(plane_state);
+ 
+ 		drm_dbg_driver(dev, "[CRTC:%d:%s] Found [PLANE:%d:%s] with DLIST size: %u\n",
+@@ -1119,6 +1122,7 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ 			       plane_dlist_count);
+ 
+ 		dlist_count += plane_dlist_count;
++		lbm_count += vc4_plane_state->lbm_size;
+ 	}
+ 
+ 	dlist_count++; /* Account for SCALER_CTL0_END. */
+@@ -1132,6 +1136,8 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ 
+ 	vc4_state->mm = alloc;
+ 
++	/* FIXME: Check total lbm allocation here */
++
+ 	return vc4_hvs_gamma_check(crtc, state);
+ }
+ 
+@@ -1246,7 +1252,10 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	bool debug_dump_regs = false;
+ 	bool enable_bg_fill = false;
+ 	u32 __iomem *dlist_start, *dlist_next;
++	unsigned long irqflags;
+ 	unsigned int zpos = 0;
++	u32 lbm_offset = 0;
++	u32 lbm_size = 0;
+ 	bool found = false;
+ 	int idx;
+ 
+@@ -1265,6 +1274,35 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		vc4_hvs_dump_state(hvs);
+ 	}
+ 
++	drm_atomic_crtc_for_each_plane(plane, crtc) {
++		vc4_plane_state = to_vc4_plane_state(plane->state);
++		lbm_size += vc4_plane_state->lbm_size;
++	}
++
++	if (drm_mm_node_allocated(&vc4_crtc->lbm)) {
++		spin_lock_irqsave(&vc4_crtc->irq_lock, irqflags);
++		drm_mm_remove_node(&vc4_crtc->lbm);
++		spin_unlock_irqrestore(&vc4_crtc->irq_lock, irqflags);
++	}
++
++	if (lbm_size) {
++		int ret;
++
++		spin_lock_irqsave(&vc4_crtc->irq_lock, irqflags);
++		ret = drm_mm_insert_node_generic(&vc4->hvs->lbm_mm,
++						 &vc4_crtc->lbm,
++						 lbm_size, 1,
++						 0, 0);
++		spin_unlock_irqrestore(&vc4_crtc->irq_lock, irqflags);
++
++		if (ret) {
++			pr_err("Failed to allocate LBM ret %d\n", ret);
++			return;
++		}
++	}
++
++	lbm_offset = vc4_crtc->lbm.start;
++
+ 	dlist_start = vc4->hvs->dlist + vc4_state->mm->mm_node.start;
+ 	dlist_next = dlist_start;
+ 
+@@ -1276,6 +1314,8 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 			if (plane->state->normalized_zpos != zpos)
+ 				continue;
+ 
++			vc4_plane_state = to_vc4_plane_state(plane->state);
++
+ 			/* Is this the first active plane? */
+ 			if (dlist_next == dlist_start) {
+ 				/* We need to enable background fill when a plane
+@@ -1286,10 +1326,15 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 				 * already needs it or all planes on top blend from
+ 				 * the first or a lower plane.
+ 				 */
+-				vc4_plane_state = to_vc4_plane_state(plane->state);
+ 				enable_bg_fill = vc4_plane_state->needs_bg_fill;
+ 			}
+ 
++			if (vc4_plane_state->lbm_size) {
++				vc4_plane_state->dlist[vc4_plane_state->lbm_offset] =
++								lbm_offset;
++				lbm_offset += vc4_plane_state->lbm_size;
++			}
++
+ 			dlist_next += vc4_plane_write_dlist(plane, dlist_next);
+ 
+ 			found = true;
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -288,7 +288,6 @@ struct drm_plane_state *vc4_plane_duplic
+ 	if (!vc4_state)
+ 		return NULL;
+ 
+-	memset(&vc4_state->lbm, 0, sizeof(vc4_state->lbm));
+ 	memset(&vc4_state->upm, 0, sizeof(vc4_state->upm));
+ 
+ 	for (i = 0; i < DRM_FORMAT_MAX_PLANES; i++)
+@@ -320,14 +319,6 @@ void vc4_plane_destroy_state(struct drm_
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+ 	unsigned int i;
+ 
+-	if (drm_mm_node_allocated(&vc4_state->lbm)) {
+-		unsigned long irqflags;
+-
+-		spin_lock_irqsave(&hvs->mm_lock, irqflags);
+-		drm_mm_remove_node(&vc4_state->lbm);
+-		spin_unlock_irqrestore(&hvs->mm_lock, irqflags);
+-	}
+-
+ 	for (i = 0; i < DRM_FORMAT_MAX_PLANES; i++) {
+ 		unsigned long irqflags;
+ 
+@@ -903,12 +894,13 @@ static int vc4_plane_allocate_lbm(struct
+ 	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	struct drm_plane *plane = state->plane;
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+-	unsigned long irqflags;
+ 	u32 lbm_size;
+ 
+ 	lbm_size = vc4_lbm_size(state);
+-	if (!lbm_size)
++	if (!lbm_size) {
++		vc4_state->lbm_size = 0;
+ 		return 0;
++	}
+ 
+ 	/*
+ 	 * NOTE: BCM2712 doesn't need to be aligned, since the size
+@@ -925,28 +917,10 @@ static int vc4_plane_allocate_lbm(struct
+ 	if (WARN_ON(!vc4_state->lbm_offset))
+ 		return -EINVAL;
+ 
+-	/* Allocate the LBM memory that the HVS will use for temporary
+-	 * storage due to our scaling/format conversion.
++	/* FIXME: Add loop here that ensures that the total LBM assigned in this
++	 *  state is less than the total lbm size
+ 	 */
+-	if (!drm_mm_node_allocated(&vc4_state->lbm)) {
+-		int ret;
+-
+-		spin_lock_irqsave(&vc4->hvs->mm_lock, irqflags);
+-		ret = drm_mm_insert_node_generic(&vc4->hvs->lbm_mm,
+-						 &vc4_state->lbm,
+-						 lbm_size, 1,
+-						 0, 0);
+-		spin_unlock_irqrestore(&vc4->hvs->mm_lock, irqflags);
+-
+-		if (ret) {
+-			drm_err(drm, "Failed to allocate LBM entry: %d\n", ret);
+-			return ret;
+-		}
+-	} else {
+-		WARN_ON_ONCE(lbm_size != vc4_state->lbm.size);
+-	}
+-
+-	vc4_state->dlist[vc4_state->lbm_offset] = vc4_state->lbm.start;
++	vc4_state->lbm_size = lbm_size;
+ 
+ 	return 0;
+ }

@@ -30,9 +30,16 @@
 #include <net/ipv6.h>
 #include <net/tcp.h>
 #include <linux/usb/cdc.h>
-#include "../core/mhi.h"
 
+//#define CONFIG_IPQ5018_RATE_CONTROL //Only used with spf11.5 for IPQ5018
+#if defined(CONFIG_IPQ5018_RATE_CONTROL)
+//#include <linux/jiffies.h>
+#include <asm/arch_timer.h>
+#endif
+
+#include "../core/mhi.h"
 //#define MHI_NETDEV_ONE_CARD_MODE
+//#define ANDROID_gki //some fuction not allow used in this TEST
 
 #ifndef ETH_P_MAP
 #define ETH_P_MAP 0xDA1A
@@ -61,13 +68,15 @@ struct rmnet_nss_cb {
 	int (*nss_tx)(struct sk_buff *skb);
 };
 static struct rmnet_nss_cb __read_mostly *nss_cb = NULL;
-#if defined(CONFIG_PINCTRL_IPQ807x) || defined(CONFIG_PINCTRL_IPQ5018)
-#ifdef CONFIG_RMNET_DATA
+#if defined(CONFIG_PINCTRL_IPQ807x) || defined(CONFIG_PINCTRL_IPQ5018) || defined(CONFIG_PINCTRL_IPQ8074)
+//#ifdef CONFIG_RMNET_DATA //spf12.x have no macro defined, just for spf11.x
 #define CONFIG_QCA_NSS_DRV
-/* define at qsdk/qca/src/linux-4.4/net/rmnet_data/rmnet_data_main.c */
+/* define at qsdk/qca/src/linux-4.4/net/rmnet_data/rmnet_data_main.c */ //for spf11.x
+/* define at qsdk/qca/src/datarmnet/core/rmnet_config.c */ //for spf12.x
 /* set at qsdk/qca/src/data-kernel/drivers/rmnet-nss/rmnet_nss.c */
+/* need add DEPENDS:= kmod-rmnet-core in feeds/makefile */
 extern struct rmnet_nss_cb *rmnet_nss_callbacks __rcu __read_mostly;
-#endif
+//#endif
 #endif
 
 static const unsigned char node_id[ETH_ALEN] = {0x02, 0x50, 0xf4, 0x00, 0x00, 0x00};
@@ -311,6 +320,7 @@ struct mhi_netdev {
 	MHI_MBIM_CTX mbim_ctx;
 
 	u32 mru;
+	u32 max_mtu;
 	const char *interface_name;
 	struct napi_struct napi;
 	struct net_device *ndev;
@@ -342,7 +352,7 @@ struct mhi_netdev {
 	uint use_rmnet_usb;
 	RMNET_INFO rmnet_info;
 
-#if defined(CONFIG_PINCTRL_IPQ5018)
+#if defined(CONFIG_IPQ5018_RATE_CONTROL)
 	u64 first_jiffy;
 	u64 bytes_received_1;
 	u64 bytes_received_2;
@@ -441,16 +451,21 @@ static int bridge_arp_reply(struct net_device *net, struct sk_buff *skb, uint br
 		pr_info("%s sip = %d.%d.%d.%d, tip=%d.%d.%d.%d, ipv4=%d.%d.%d.%d\n", netdev_name(net),
 		sip[0], sip[1], sip[2], sip[3], tip[0], tip[1], tip[2], tip[3], ipv4[0], ipv4[1], ipv4[2], ipv4[3]);
 		//wwan0 sip = 10.151.137.255, tip=10.151.138.0, ipv4=10.151.137.255
+#ifndef ANDROID_gki
 		if (tip[0] == ipv4[0] && tip[1] == ipv4[1] && (tip[2]&0xFC) == (ipv4[2]&0xFC) && tip[3] != ipv4[3])
 			reply = arp_create(ARPOP_REPLY, ETH_P_ARP, *((__be32 *)sip), net, *((__be32 *)tip), sha, default_modem_addr, sha);
+#endif
 
 		if (reply) {
 			skb_reset_mac_header(reply);
 			__skb_pull(reply, skb_network_offset(reply));
 			reply->ip_summed = CHECKSUM_UNNECESSARY;
 			reply->pkt_type = PACKET_HOST;
-
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0))
+			netif_rx(reply);
+#else
 			netif_rx_ni(reply);
+#endif
 		}
 		return 1;
 	}
@@ -840,8 +855,13 @@ static void rmnet_vnd_upate_rx_stats(struct net_device *net,
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(dev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 	stats64->rx_packets += rx_packets;
 	stats64->rx_bytes += rx_bytes;
+#else
+	u64_stats_add(&stats64->rx_packets, rx_packets);
+	u64_stats_add(&stats64->rx_bytes, rx_bytes);
+#endif
 	u64_stats_update_end(&stats64->syncp);
 #else
 	priv->self_dev->stats.rx_packets += rx_packets;
@@ -856,8 +876,13 @@ static void rmnet_vnd_upate_tx_stats(struct net_device *net,
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(dev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 	stats64->tx_packets += tx_packets;
 	stats64->tx_bytes += tx_bytes;
+#else
+	u64_stats_add(&stats64->tx_packets, tx_packets);
+	u64_stats_add(&stats64->tx_bytes, tx_bytes);
+#endif
 	u64_stats_update_end(&stats64->syncp);
 #else
 	net->stats.rx_packets += tx_packets;
@@ -866,13 +891,44 @@ static void rmnet_vnd_upate_tx_stats(struct net_device *net,
 }
 
 #if defined(MHI_NETDEV_STATUS64)
+#ifdef ANDROID_gki
+static void _netdev_stats_to_stats64(struct rtnl_link_stats64 *stats64,
+			     const struct net_device_stats *netdev_stats)
+{
+#if BITS_PER_LONG == 64
+	BUILD_BUG_ON(sizeof(*stats64) < sizeof(*netdev_stats));
+	memcpy(stats64, netdev_stats, sizeof(*netdev_stats));
+	/* zero out counters that only exist in rtnl_link_stats64 */
+	memset((char *)stats64 + sizeof(*netdev_stats), 0,
+	       sizeof(*stats64) - sizeof(*netdev_stats));
+#else
+	size_t i, n = sizeof(*netdev_stats) / sizeof(unsigned long);
+	const unsigned long *src = (const unsigned long *)netdev_stats;
+	u64 *dst = (u64 *)stats64;
+
+	BUILD_BUG_ON(n > sizeof(*stats64) / sizeof(u64));
+	for (i = 0; i < n; i++)
+		dst[i] = src[i];
+	/* zero out counters that only exist in rtnl_link_stats64 */
+	memset((char *)stats64 + n * sizeof(u64), 0,
+	       sizeof(*stats64) - n * sizeof(u64));
+#endif
+}
+#else
+static void my_netdev_stats_to_stats64(struct rtnl_link_stats64 *stats64,
+			     const struct net_device_stats *netdev_stats)
+{
+	netdev_stats_to_stats64(stats64, netdev_stats);
+}
+#endif
+
 static struct rtnl_link_stats64 *_rmnet_vnd_get_stats64(struct net_device *net, struct rtnl_link_stats64 *stats)
 {
 	struct qmap_priv *dev = netdev_priv(net);
 	unsigned int start;
 	int cpu;
 
-	netdev_stats_to_stats64(stats, &net->stats);
+	my_netdev_stats_to_stats64(stats, &net->stats);
 
 	if (nss_cb && dev->use_qca_nss) { // rmnet_nss.c:rmnet_nss_tx() will update rx stats
 		stats->rx_packets = 0;
@@ -881,6 +937,7 @@ static struct rtnl_link_stats64 *_rmnet_vnd_get_stats64(struct net_device *net, 
 
 	for_each_possible_cpu(cpu) {
 		struct pcpu_sw_netstats *stats64;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 		u64 rx_packets, rx_bytes;
 		u64 tx_packets, tx_bytes;
 
@@ -898,6 +955,25 @@ static struct rtnl_link_stats64 *_rmnet_vnd_get_stats64(struct net_device *net, 
 		stats->rx_bytes += rx_bytes;
 		stats->tx_packets += tx_packets;
 		stats->tx_bytes += tx_bytes;
+#else
+		u64_stats_t rx_packets, rx_bytes;
+		u64_stats_t tx_packets, tx_bytes;
+
+		stats64 = per_cpu_ptr(dev->stats64, cpu);
+
+		do {
+			start = u64_stats_fetch_begin(&stats64->syncp);
+			rx_packets = stats64->rx_packets;
+			rx_bytes = stats64->rx_bytes;
+			tx_packets = stats64->tx_packets;
+			tx_bytes = stats64->tx_bytes;
+		} while (u64_stats_fetch_retry(&stats64->syncp, start));
+
+		stats->rx_packets += u64_stats_read(&rx_packets);
+		stats->rx_bytes += u64_stats_read(&rx_bytes);
+		stats->tx_packets += u64_stats_read(&tx_packets);
+		stats->tx_bytes += u64_stats_read(&tx_bytes);
+#endif
 	}
 
 	return stats;
@@ -1035,8 +1111,22 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 
 static int rmnet_vnd_change_mtu(struct net_device *rmnet_dev, int new_mtu)
 {
-	if (new_mtu < 0 || new_mtu > 1500)
+	struct mhi_netdev *mhi_netdev;
+
+	mhi_netdev = (struct mhi_netdev *)ndev_to_mhi(rmnet_dev);
+	
+	if (mhi_netdev == NULL) {
+		printk("warning, mhi_netdev == null\n");
 		return -EINVAL;
+	}
+
+	if (new_mtu < 0 )	
+		return -EINVAL;
+
+	if (new_mtu > mhi_netdev->max_mtu) {
+		printk("warning, set mtu=%d greater than max mtu=%d\n", new_mtu, mhi_netdev->max_mtu);
+		return -EINVAL;
+	}
 
 	rmnet_dev->mtu = new_mtu;
 	return 0;
@@ -1188,7 +1278,7 @@ static void rmnet_mbim_rx_handler(void *dev, struct sk_buff *skb_in)
 			MSG_ERR("unsupported tci %d by now\n", tci);
 			goto error;
 		}
-
+		tci = abs(tci);
 		qmap_net = pQmapDev->mpQmapNetDev[qmap_mode == 1 ? 0 : tci - 1];
 
 		dpe16 = ndp16->dpe16;
@@ -1317,8 +1407,21 @@ static void rmnet_qmi_rx_handler(void *dev, struct sk_buff *skb_in)
 		}
 #endif
 		skb_len -= dl_minimum_padding;
-		if (skb_len > 1500) {
-			netdev_info(ndev, "drop skb_len=%x larger than 1500\n", skb_len);
+
+		mux_id = map_header->mux_id - QUECTEL_QMAP_MUX_ID;
+		if (mux_id >= pQmapDev->qmap_mode) {
+			netdev_info(ndev, "drop qmap unknow mux_id %x\n", map_header->mux_id);
+			goto error_pkt;
+		}
+		mux_id = abs(mux_id);
+		qmap_net = pQmapDev->mpQmapNetDev[mux_id];
+		if (qmap_net == NULL) {
+			netdev_info(ndev, "drop qmap unknow mux_id %x\n", map_header->mux_id);
+			goto skip_pkt;
+		}
+
+		if (skb_len > qmap_net->mtu) {
+			netdev_info(ndev, "drop skb_len=%x larger than qmap mtu=%d\n", skb_len, qmap_net->mtu);
 			goto error_pkt;
 		}
 
@@ -1358,19 +1461,6 @@ static void rmnet_qmi_rx_handler(void *dev, struct sk_buff *skb_in)
 			default:
 				netdev_info(ndev, "unknow skb->protocol %02x\n", skb_in->data[hdr_size]);
 				goto error_pkt;
-		}
-		
-		mux_id = map_header->mux_id - QUECTEL_QMAP_MUX_ID;
-		if (mux_id >= pQmapDev->qmap_mode) {
-			netdev_info(ndev, "drop qmap unknow mux_id %x\n", map_header->mux_id);
-			goto error_pkt;
-		}
-
-		qmap_net = pQmapDev->mpQmapNetDev[mux_id];
-
-		if (qmap_net == NULL) {
-			netdev_info(ndev, "drop qmap unknow mux_id %x\n", map_header->mux_id);
-			goto skip_pkt;
 		}
 
 //for Qualcomm's SFE, do not use skb_clone(), or SFE 's performace is very bad.
@@ -1485,6 +1575,7 @@ static struct net_device * rmnet_vnd_register_device(struct mhi_netdev *pQmapDev
 	struct qmap_priv *priv;
 	int err;
 	int use_qca_nss = !!nss_cb;
+	unsigned char temp_addr[ETH_ALEN];
 
 	qmap_net = alloc_etherdev(sizeof(*priv));
 	if (!qmap_net)
@@ -1498,10 +1589,21 @@ static struct net_device * rmnet_vnd_register_device(struct mhi_netdev *pQmapDev
 	priv->pQmapDev = pQmapDev;
 	priv->qmap_version = pQmapDev->qmap_version;
 	priv->mux_id = mux_id;
-	sprintf(qmap_net->name, "%s.%d", real_dev->name, offset_id + 1);
+	sprintf(qmap_net->name, "%.12s.%d", real_dev->name, offset_id + 1);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	__dev_addr_set(qmap_net, real_dev->dev_addr, ETH_ALEN);
+#else
 	memcpy (qmap_net->dev_addr, real_dev->dev_addr, ETH_ALEN);
-	qmap_net->dev_addr[5] = offset_id + 1;
-	//eth_random_addr(qmap_net->dev_addr);
+#endif
+	//qmap_net->dev_addr[5] = offset_id + 1;
+	//eth_random_addr(qmap_net->dev_addr);	
+	memcpy(temp_addr, qmap_net->dev_addr, ETH_ALEN);
+	temp_addr[5] = offset_id + 1;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	__dev_addr_set(qmap_net, temp_addr, ETH_ALEN);
+#else
+	memcpy(qmap_net->dev_addr, temp_addr, ETH_ALEN);
+#endif
 #if defined(MHI_NETDEV_STATUS64)
 	priv->stats64 = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
 	if (!priv->stats64)
@@ -1528,11 +1630,16 @@ static struct net_device * rmnet_vnd_register_device(struct mhi_netdev *pQmapDev
 	qmap_net->netdev_ops = &rmnet_vnd_ops;
 	qmap_net->flags |= IFF_NOARP;
 	qmap_net->flags &= ~(IFF_BROADCAST | IFF_MULTICAST);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+	qmap_net->max_mtu = pQmapDev->max_mtu;
+#endif
 
 	if (nss_cb && use_qca_nss) {
 		rmnet_vnd_rawip_setup(qmap_net);
 	}
-
+#ifdef CONFIG_PINCTRL_IPQ9574
+	rmnet_vnd_rawip_setup(qmap_net);
+#endif
 	if (pQmapDev->net_type == MHI_NET_MBIM) {
 		qmap_net->needed_headroom = sizeof(struct mhi_mbim_hdr);
 	}
@@ -1705,8 +1812,13 @@ static void mhi_netdev_upate_rx_stats(struct mhi_netdev *mhi_netdev,
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(mhi_netdev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 	stats64->rx_packets += rx_packets;
 	stats64->rx_bytes += rx_bytes;
+#else
+	u64_stats_add(&stats64->rx_packets, rx_packets);
+	u64_stats_add(&stats64->rx_bytes, rx_bytes);
+#endif	
 	u64_stats_update_begin(&stats64->syncp);
 #else
 	mhi_netdev->ndev->stats.rx_packets += rx_packets;
@@ -1720,8 +1832,13 @@ static void mhi_netdev_upate_tx_stats(struct mhi_netdev *mhi_netdev,
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(mhi_netdev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 	stats64->tx_packets += tx_packets;
 	stats64->tx_bytes += tx_bytes;
+#else
+	u64_stats_add(&stats64->tx_packets, tx_packets);
+	u64_stats_add(&stats64->tx_bytes, tx_bytes);
+#endif
 	u64_stats_update_begin(&stats64->syncp);
 #else
 	mhi_netdev->ndev->stats.tx_packets += tx_packets;
@@ -1973,7 +2090,9 @@ static netdev_tx_t mhi_netdev_xmit(struct sk_buff *skb, struct net_device *dev)
 	//qmap_hex_dump(__func__, skb->data, 32);
 	
 #ifdef MHI_NETDEV_ONE_CARD_MODE
-	if (dev->type == ARPHRD_ETHER) {
+	//printk("%s dev->type=%d\n", __func__, dev->type);
+
+	if (dev->type == ARPHRD_ETHER) {		
 		skb_reset_mac_header(skb);
 
 #ifdef QUECTEL_BRIDGE_MODE
@@ -2035,6 +2154,8 @@ static netdev_tx_t mhi_netdev_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	res = mhi_queue_transfer(mhi_dev, DMA_TO_DEVICE, skb, skb->len,
 				 MHI_EOT);
+
+	//printk("%s transfer res=%d\n", __func__, res);
 	if (unlikely(res)) {
 		dev_kfree_skb_any(skb);
 		dev->stats.tx_errors++;
@@ -2057,6 +2178,7 @@ static struct rtnl_link_stats64 * _mhi_netdev_get_stats64(struct net_device *nde
 
 	for_each_possible_cpu(cpu) {
 		struct pcpu_sw_netstats *stats64;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))	
 		u64 rx_packets, rx_bytes;
 		u64 tx_packets, tx_bytes;
 
@@ -2074,6 +2196,25 @@ static struct rtnl_link_stats64 * _mhi_netdev_get_stats64(struct net_device *nde
 		stats->rx_bytes += rx_bytes;
 		stats->tx_packets += tx_packets;
 		stats->tx_bytes += tx_bytes;
+#else
+		u64_stats_t rx_packets, rx_bytes;
+		u64_stats_t tx_packets, tx_bytes;
+
+		stats64 = per_cpu_ptr(mhi_netdev->stats64, cpu);
+
+		do {
+			start = u64_stats_fetch_begin(&stats64->syncp);
+			rx_packets = stats64->rx_packets;
+			rx_bytes = stats64->rx_bytes;
+			tx_packets = stats64->tx_packets;
+			tx_bytes = stats64->tx_bytes;
+		} while (u64_stats_fetch_retry(&stats64->syncp, start));
+
+		stats->rx_packets += u64_stats_read(&rx_packets);
+		stats->rx_bytes += u64_stats_read(&rx_bytes);
+		stats->tx_packets += u64_stats_read(&tx_packets);
+		stats->tx_bytes += u64_stats_read(&tx_bytes);
+#endif			
 	}
 
 	return stats;
@@ -2182,7 +2323,11 @@ static void mhi_netdev_setup(struct net_device *dev)
 	ether_setup(dev);
 
 	dev->ethtool_ops = &mhi_netdev_ethtool_ops;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+	__dev_addr_set (dev, node_id, sizeof node_id);
+#else
 	memcpy (dev->dev_addr, node_id, sizeof node_id);
+#endif
 	/* set this after calling ether_setup */
 	dev->header_ops = 0;  /* No header */
 	dev->hard_header_len = 0;
@@ -2269,8 +2414,15 @@ static int mhi_netdev_enable_iface(struct mhi_netdev *mhi_netdev)
 			mhi_netdev->ndev->mtu = mhi_netdev->mru;
 		}
 		rtnl_unlock();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,10,0)
+		mhi_netdev->ndev->max_mtu = mhi_netdev->max_mtu; //first net card
+#endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+		netif_napi_add_weight(mhi_netdev->ndev, &mhi_netdev->napi, mhi_netdev_poll, poll_weight);
+#else
 		netif_napi_add(mhi_netdev->ndev, &mhi_netdev->napi, mhi_netdev_poll, poll_weight);
+#endif
 		ret = register_netdev(mhi_netdev->ndev);
 		if (ret) {
 			MSG_ERR("Network device registration failed\n");
@@ -2367,7 +2519,7 @@ static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 		return;
 	}
 
-#if defined(CONFIG_PINCTRL_IPQ5018)
+#if defined(CONFIG_IPQ5018_RATE_CONTROL)
 	if (likely(mhi_netdev->mhi_rate_control)) {
 		u32 time_interval = 0;
 		u32 time_difference = 0;
@@ -2377,7 +2529,11 @@ static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 		struct net_device *ndev = mhi_netdev->ndev;
 
 		if (mhi_netdev->first_jiffy) {
+			#if LINUX_VERSION_CODE < KERNEL_VERSION(5,2,0)
 			second_jiffy = arch_counter_get_cntvct();
+			#else
+			second_jiffy = __arch_counter_get_cntvct();
+			#endif
 			bytes_received_2 = mhi_netdev->bytes_received_2;
 			if ((second_jiffy > mhi_netdev->first_jiffy) &&
 					(bytes_received_2 > mhi_netdev->bytes_received_1)) {
@@ -2418,7 +2574,12 @@ static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 				mhi_netdev->bytes_received_1 = bytes_received_2;
 			}
 		} else {
+			#if LINUX_VERSION_CODE < KERNEL_VERSION(5,2,0)
 			mhi_netdev->first_jiffy = arch_counter_get_cntvct();
+			#else
+			mhi_netdev->first_jiffy = __arch_counter_get_cntvct();
+			#endif
+
 			cntfrq = arch_timer_get_cntfrq();
 			mhi_netdev->cntfrq_per_msec = cntfrq / 1000;
 		}
@@ -2668,7 +2829,11 @@ static void mhi_netdev_remove(struct mhi_device *mhi_dev)
 		}
 		
 		rtnl_lock();
+#ifdef ANDROID_gki
+		if (mhi_netdev->ndev && rtnl_dereference(mhi_netdev->ndev->rx_handler))
+#else
 		if (netdev_is_rx_handler_busy(mhi_netdev->ndev))
+#endif
 			netdev_rx_handler_unregister(mhi_netdev->ndev);
 		rtnl_unlock();
 #endif
@@ -2726,13 +2891,16 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 	mhi_netdev->mhi_dev = mhi_dev;
 	mhi_device_set_devdata(mhi_dev, mhi_netdev);
 
-	mhi_netdev->mru = 15360; ///etc/data/qnicorn_config.xml dataformat_agg_dl_size 15*1024
+	mhi_netdev->mru = (15*1024); ///etc/data/qnicorn_config.xml dataformat_agg_dl_size 15*1024
+	mhi_netdev->max_mtu = mhi_netdev->mru - (sizeof(struct rmnet_map_v5_csum_header) + sizeof(struct rmnet_map_header));
 	if (mhi_netdev->net_type == MHI_NET_MBIM) {
 		mhi_netdev->mru = ncmNTBParams.dwNtbInMaxSize;
 		mhi_netdev->mbim_ctx.rx_max = mhi_netdev->mru;
+		mhi_netdev->max_mtu = mhi_netdev->mru - sizeof(struct mhi_mbim_hdr);
 	}
 	else if (mhi_netdev->net_type == MHI_NET_ETHER) {
 		mhi_netdev->mru = 8*1024;
+		mhi_netdev->max_mtu = mhi_netdev->mru;
 	}
 	mhi_netdev->qmap_size = mhi_netdev->mru;
 
@@ -2815,7 +2983,7 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 #endif
 	}
 
-#if defined(CONFIG_PINCTRL_IPQ5018)
+#if defined(CONFIG_IPQ5018_RATE_CONTROL)
 	mhi_netdev->mhi_rate_control = 1;
 #endif
 
@@ -2825,7 +2993,8 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 static const struct mhi_device_id mhi_netdev_match_table[] = {
 	{ .chan = "IP_HW0" },
 	{ .chan = "IP_SW0" },
-	{ .chan = "IP_HW_ADPL" },
+	// ADPL do not register as a netcard. xingduo.du 2023-02-20
+	// { .chan = "IP_HW_ADPL" },
 	{ },
 };
 
@@ -2850,7 +3019,7 @@ int __init mhi_device_netdev_init(struct dentry *parent)
 		printk(KERN_ERR "mhi_device_netdev_init: driver load must after '/etc/modules.d/42-rmnet-nss'\n");
 	}
 #endif
-	
+
 	mhi_netdev_create_debugfs_dir(parent);
 
 	return mhi_driver_register(&mhi_netdev_driver);

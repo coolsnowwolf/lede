@@ -9,7 +9,7 @@
   None.
 
   ---------------------------------------------------------------------------
-  Copyright (c) 2016 - 2020 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
+  Copyright (c) 2016 - 2023 Quectel Wireless Solution, Co., Ltd.  All Rights Reserved.
   Quectel Wireless Solution Proprietary and Confidential.
   ---------------------------------------------------------------------------
 ******************************************************************************/
@@ -36,9 +36,9 @@
 
 #include "qendian.h"
 #include "qlist.h"
-#include "MPQMI.h"
-#include "MPQCTL.h"
-#include "MPQMUX.h"
+#include "QCQMI.h"
+#include "QCQCTL.h"
+#include "QCQMUX.h"
 
 static const char * get_time(void) {
     static char time_buf[128];

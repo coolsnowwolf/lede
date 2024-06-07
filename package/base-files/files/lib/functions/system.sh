@@ -61,17 +61,10 @@ find_mtd_chardev() {
 	echo "${INDEX:+$PREFIX$INDEX}"
 }
 
-mtd_get_mac_ascii() {
-	local mtdname="$1"
+get_mac_ascii() {
+	local part="$1"
 	local key="$2"
-	local part
 	local mac_dirty
-
-	part=$(find_mtd_part "$mtdname")
-	if [ -z "$part" ]; then
-		echo "mtd_get_mac_ascii: partition $mtdname not found!" >&2
-		return
-	fi
 
 	mac_dirty=$(strings "$part" | sed -n 's/^'"$key"'=//p')
 
@@ -79,22 +72,18 @@ mtd_get_mac_ascii() {
 	[ -n "$mac_dirty" ] && macaddr_canonicalize "$mac_dirty"
 }
 
-mtd_get_mac_ascii_mmc() {
+mtd_get_mac_ascii() {
 	local mtdname="$1"
 	local key="$2"
 	local part
-	local mac_dirty
 
-	part=$(find_mmc_part "$mtdname")
+	part=$(find_mtd_part "$mtdname")
 	if [ -z "$part" ]; then
 		echo "mtd_get_mac_ascii: partition $mtdname not found!" >&2
 		return
 	fi
 
-	mac_dirty=$(strings "$part" | sed -n 's/^'"$key"'=//p')
-
-	# "canonicalize" mac
-	[ -n "$mac_dirty" ] && macaddr_canonicalize "$mac_dirty"
+	get_mac_ascii "$part" "$key"
 }
 
 mtd_get_mac_text() {
@@ -160,6 +149,29 @@ mtd_get_part_size() {
 			break
 		fi
 	done < /proc/mtd
+}
+
+mmc_get_mac_ascii() {
+	local part_name="$1"
+	local key="$2"
+	local part
+
+	part=$(find_mmc_part "$part_name")
+	if [ -z "$part" ]; then
+		echo "mmc_get_mac_ascii: partition $part_name not found!" >&2
+		return
+	fi
+
+	get_mac_ascii "$part" "$key"
+}
+
+mmc_get_mac_binary() {
+	local part_name="$1"
+	local offset="$2"
+	local part
+
+	part=$(find_mmc_part "$part_name")
+	get_mac_binary "$part" "$offset"
 }
 
 macaddr_add() {

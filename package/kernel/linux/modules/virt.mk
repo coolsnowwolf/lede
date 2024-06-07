@@ -20,9 +20,10 @@ define KernelPackage/kvm-x86
   TITLE:=Kernel-based Virtual Machine (KVM) support
   DEPENDS:=@TARGET_x86_generic||TARGET_x86_64 +kmod-irqbypass
   KCONFIG:=\
-	CONFIG_KVM \
-	CONFIG_KVM_MMU_AUDIT=n \
-	CONFIG_VIRTUALIZATION=y
+	  CONFIG_KVM \
+	  CONFIG_KVM_MMU_AUDIT=n \
+	  CONFIG_KVM_SMM=y@ge6.6 \
+	  CONFIG_VIRTUALIZATION=y
   FILES:= $(LINUX_DIR)/arch/$(LINUX_KARCH)/kvm/kvm.ko
   AUTOLOAD:=$(call AutoProbe,kvm.ko)
 endef
@@ -73,19 +74,19 @@ endef
 
 $(eval $(call KernelPackage,kvm-amd))
 
+
 define KernelPackage/vfio
   SUBMENU:=Virtualization
   TITLE:=VFIO Non-Privileged userspace driver framework
-  DEPENDS:=@TARGET_x86_64
+  DEPENDS:=@TARGET_x86_64||TARGET_armvirt_64
   KCONFIG:= \
 	CONFIG_VFIO \
 	CONFIG_VFIO_NOIOMMU=n \
 	CONFIG_VFIO_MDEV=n
-  MODPARAMS.vfio:=\
-	enable_unsafe_noiommu_mode=n
+  MODPARAMS.vfio:=enable_unsafe_noiommu_mode=n
   FILES:= \
 	$(LINUX_DIR)/drivers/vfio/vfio.ko \
-	$(LINUX_DIR)/drivers/vfio/vfio_virqfd.ko \
+	$(LINUX_DIR)/drivers/vfio/vfio_virqfd.ko@lt6.2 \
 	$(LINUX_DIR)/drivers/vfio/vfio_iommu_type1.ko
   AUTOLOAD:=$(call AutoProbe,vfio vfio_iommu_type1 vfio_virqfd)
 endef
@@ -116,6 +117,30 @@ define KernelPackage/vfio-pci/description
 endef
 
 $(eval $(call KernelPackage,vfio-pci))
+
+
+define KernelPackage/vhost
+  SUBMENU:=Virtualization
+  TITLE:=Host kernel accelerator for virtio (base)
+  KCONFIG:=CONFIG_VHOST
+  FILES:=$(LINUX_DIR)/drivers/vhost/vhost.ko \
+    $(LINUX_DIR)/drivers/vhost/vhost_iotlb.ko
+  AUTOLOAD:=$(call AutoProbe,vhost vhost_iotlb)
+endef
+
+$(eval $(call KernelPackage,vhost))
+
+
+define KernelPackage/vhost-net
+  SUBMENU:=Virtualization
+  TITLE:=Host kernel accelerator for virtio-net
+  DEPENDS:=+kmod-tun +kmod-vhost
+  KCONFIG:=CONFIG_VHOST_NET
+  FILES:=$(LINUX_DIR)/drivers/vhost/vhost_net.ko
+  AUTOLOAD:=$(call AutoProbe,vhost_net)
+endef
+
+$(eval $(call KernelPackage,vhost-net))
 
 define KernelPackage/iommu_v2
   SUBMENU:=Virtualization

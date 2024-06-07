@@ -1,0 +1,117 @@
+From a68e8ffc3314612b0d00d491c8cdd61ae1d9af4e Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Tue, 25 Apr 2023 10:12:32 +0200
+Subject: [PATCH] drm/vc4: txp: Introduce structure to deal with revision
+ differences
+
+The BCM2712 will have several TXP with small differences. Let's add a
+structure tied to the compatible to deal with those differences.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/tests/vc4_mock.c |  4 ++--
+ drivers/gpu/drm/vc4/vc4_drv.h        |  6 +++++-
+ drivers/gpu/drm/vc4/vc4_txp.c        | 23 ++++++++++++++++-------
+ 3 files changed, 23 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_mock.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_mock.c
+@@ -51,7 +51,7 @@ struct vc4_mock_desc {
+ 
+ static const struct vc4_mock_desc vc4_mock =
+ 	VC4_MOCK_DESC(
+-		VC4_MOCK_CRTC_DESC(&vc4_txp_crtc_data,
++		VC4_MOCK_CRTC_DESC(&vc4_txp_data.base,
+ 				   VC4_MOCK_OUTPUT_DESC(VC4_ENCODER_TYPE_TXP,
+ 							DRM_MODE_ENCODER_VIRTUAL,
+ 							DRM_MODE_CONNECTOR_WRITEBACK)),
+@@ -77,7 +77,7 @@ static const struct vc4_mock_desc vc4_mo
+ 
+ static const struct vc4_mock_desc vc5_mock =
+ 	VC4_MOCK_DESC(
+-		VC4_MOCK_CRTC_DESC(&vc4_txp_crtc_data,
++		VC4_MOCK_CRTC_DESC(&vc4_txp_data.base,
+ 				   VC4_MOCK_OUTPUT_DESC(VC4_ENCODER_TYPE_TXP,
+ 							DRM_MODE_ENCODER_VIRTUAL,
+ 							DRM_MODE_CONNECTOR_WRITEBACK)),
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -561,7 +561,11 @@ struct vc4_crtc_data {
+ 	int hvs_output;
+ };
+ 
+-extern const struct vc4_crtc_data vc4_txp_crtc_data;
++struct vc4_txp_data {
++	struct vc4_crtc_data	base;
++};
++
++extern const struct vc4_txp_data vc4_txp_data;
+ 
+ struct vc4_pv_data {
+ 	struct vc4_crtc_data	base;
+--- a/drivers/gpu/drm/vc4/vc4_txp.c
++++ b/drivers/gpu/drm/vc4/vc4_txp.c
+@@ -159,6 +159,7 @@
+ 
+ struct vc4_txp {
+ 	struct vc4_crtc	base;
++	const struct vc4_txp_data *data;
+ 
+ 	struct platform_device *pdev;
+ 
+@@ -488,17 +489,20 @@ static irqreturn_t vc4_txp_interrupt(int
+ 	return IRQ_HANDLED;
+ }
+ 
+-const struct vc4_crtc_data vc4_txp_crtc_data = {
+-	.name = "txp",
+-	.debugfs_name = "txp_regs",
+-	.hvs_available_channels = BIT(2),
+-	.hvs_output = 2,
++const struct vc4_txp_data vc4_txp_data = {
++	.base = {
++		.name = "txp",
++		.debugfs_name = "txp_regs",
++		.hvs_available_channels = BIT(2),
++		.hvs_output = 2,
++	},
+ };
+ 
+ static int vc4_txp_bind(struct device *dev, struct device *master, void *data)
+ {
+ 	struct platform_device *pdev = to_platform_device(dev);
+ 	struct drm_device *drm = dev_get_drvdata(master);
++	const struct vc4_txp_data *txp_data;
+ 	struct vc4_encoder *vc4_encoder;
+ 	struct drm_encoder *encoder;
+ 	struct vc4_crtc *vc4_crtc;
+@@ -513,6 +517,11 @@ static int vc4_txp_bind(struct device *d
+ 	if (!txp)
+ 		return -ENOMEM;
+ 
++	txp_data = of_device_get_match_data(dev);
++	if (!txp_data)
++		return -ENODEV;
++
++	txp->data = txp_data;
+ 	txp->pdev = pdev;
+ 	txp->regs = vc4_ioremap_regs(pdev, 0);
+ 	if (IS_ERR(txp->regs))
+@@ -523,7 +532,7 @@ static int vc4_txp_bind(struct device *d
+ 	vc4_crtc->regset.regs = txp_regs;
+ 	vc4_crtc->regset.nregs = ARRAY_SIZE(txp_regs);
+ 
+-	ret = vc4_crtc_init(drm, pdev, vc4_crtc, &vc4_txp_crtc_data,
++	ret = vc4_crtc_init(drm, pdev, vc4_crtc, &txp_data->base,
+ 			    &vc4_txp_crtc_funcs, &vc4_txp_crtc_helper_funcs, true);
+ 	if (ret)
+ 		return ret;
+@@ -584,7 +593,7 @@ static int vc4_txp_remove(struct platfor
+ }
+ 
+ static const struct of_device_id vc4_txp_dt_match[] = {
+-	{ .compatible = "brcm,bcm2835-txp" },
++	{ .compatible = "brcm,bcm2835-txp", .data = &vc4_txp_data },
+ 	{ /* sentinel */ },
+ };
+ 
