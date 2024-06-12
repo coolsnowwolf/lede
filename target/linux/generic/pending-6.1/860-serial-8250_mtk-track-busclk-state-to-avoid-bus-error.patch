@@ -1,0 +1,61 @@
+From 629c701fc39f1ada9416e0766a86729e83bde86c Mon Sep 17 00:00:00 2001
+Message-ID: <629c701fc39f1ada9416e0766a86729e83bde86c.1694465766.git.daniel@makrotopia.org>
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 11 Sep 2023 21:27:44 +0100
+Subject: [PATCH] serial: 8250_mtk: track busclk state to avoid bus error
+To: Greg Kroah-Hartman <gregkh@linuxfoundation.org>,
+    Jiri Slaby <jirislaby@kernel.org>,
+    Matthias Brugger <matthias.bgg@gmail.com>,
+    AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>,
+    Daniel Golle <daniel@makrotopia.org>,
+    John Ogness <john.ogness@linutronix.de>,
+    Chen-Yu Tsai <wenst@chromium.org>,
+    Changqi Hu <changqi.hu@mediatek.com>,
+    linux-kernel@vger.kernel.org,
+    linux-serial@vger.kernel.org,
+    linux-arm-kernel@lists.infradead.org,
+    linux-mediatek@lists.infradead.org
+
+Commit e32a83c70cf9 ("serial: 8250-mtk: modify mtk uart power and
+clock management") introduced polling a debug register to make sure
+the UART is idle before disabling the bus clock. However, at least on
+some MediaTek SoCs access to that very debug register requires the bus
+clock being enabled. Hence calling the suspend function while already
+in suspended state results in that register access triggering a bus
+error. In order to avoid that, track the state of the bus clock and
+only poll the debug register if not already in suspended state.
+
+Fixes: e32a83c70cf9 ("serial: 8250-mtk: modify mtk uart power and clock management")
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/tty/serial/8250/8250_mtk.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/drivers/tty/serial/8250/8250_mtk.c
++++ b/drivers/tty/serial/8250/8250_mtk.c
+@@ -32,7 +32,7 @@
+ #define MTK_UART_RXTRI_AD	0x14	/* RX Trigger address */
+ #define MTK_UART_FRACDIV_L	0x15	/* Fractional divider LSB address */
+ #define MTK_UART_FRACDIV_M	0x16	/* Fractional divider MSB address */
+-#define MTK_UART_DEBUG0	0x18
++#define MTK_UART_DEBUG0		0x18
+ #define MTK_UART_IER_XOFFI	0x20	/* Enable XOFF character interrupt */
+ #define MTK_UART_IER_RTSI	0x40	/* Enable RTS Modem status interrupt */
+ #define MTK_UART_IER_CTSI	0x80	/* Enable CTS Modem status interrupt */
+@@ -418,13 +418,12 @@ static int __maybe_unused mtk8250_runtim
+ 	struct mtk8250_data *data = dev_get_drvdata(dev);
+ 	struct uart_8250_port *up = serial8250_get_port(data->line);
+ 
+-	/* wait until UART in idle status */
+-	while
+-		(serial_in(up, MTK_UART_DEBUG0));
+-
+ 	if (data->clk_count == 0U) {
+ 		dev_dbg(dev, "%s clock count is 0\n", __func__);
+ 	} else {
++		/* wait until UART in idle status */
++		while
++			(serial_in(up, MTK_UART_DEBUG0));
+ 		clk_disable_unprepare(data->bus_clk);
+ 		data->clk_count--;
+ 	}
