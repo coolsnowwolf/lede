@@ -16,7 +16,7 @@ DEFAULT_PACKAGES += \
 	kmod-leds-gpio kmod-gpio-button-hotplug \
 	kmod-qca-nss-dp kmod-qca-nss-drv kmod-qca-ssdk kmod-ath11k-ahb \
 	kmod-qca-nss-ecm kmod-qca-nss-drv-bridge-mgr kmod-qca-nss-drv-vlan kmod-qca-nss-drv-pppoe \
-	wpad-openssl uboot-envtools \
+	wpad-openssl uboot-envtools htop autocore-arm\
 	e2fsprogs kmod-fs-ext4 losetup
 
 $(eval $(call BuildTarget))
