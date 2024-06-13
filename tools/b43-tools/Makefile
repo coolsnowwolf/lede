@@ -23,7 +23,7 @@ define Host/Compile
 		$(HOST_MAKE_FLAGS) \
 		$(1) QUIET_SPARSE=:
 	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR)/assembler \
-		CFLAGS="$(HOST_CFLAGS) -include endian.h" \
+		CFLAGS="$(HOST_CFLAGS) -include endian.h -Wno-error=int-conversion" \
 		$(HOST_MAKE_FLAGS) \
 		LDFLAGS= \
 		$(1) QUIET_SPARSE=:
