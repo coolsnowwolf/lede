@@ -98,7 +98,10 @@ define Device/redmi_ax5-jdcloud
 	DEVICE_MODEL := AX5 JDCloud
 	DEVICE_DTS_CONFIG := config@cp03-c1
 	SOC := ipq6000
-	DEVICE_PACKAGES := ipq-wifi-redmi_ax5-jdcloud
+	KERNEL_SIZE := 6144k
+	BLOCKSIZE := 64k
+	IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) |  append-rootfs | append-metadata
+	DEVICE_PACKAGES := ipq-wifi-redmi_ax5-jdcloud kmod-fs-ext4 mkf2fs f2fsck kmod-fs-f2fs
 endef
 TARGET_DEVICES += redmi_ax5-jdcloud
 
