@@ -1,0 +1,107 @@
+From 603ea5e7ffa73c7fac07d8713d97285990695213 Mon Sep 17 00:00:00 2001
+From: Yan Cangang <nalanzeyu@gmail.com>
+Date: Sun, 20 Nov 2022 13:52:59 +0800
+Subject: [PATCH] net: ethernet: mtk_eth_soc: fix memory leak in error path
+
+In mtk_ppe_init(), when dmam_alloc_coherent() or devm_kzalloc() failed,
+the rhashtable ppe->l2_flows isn't destroyed. Fix it.
+
+In mtk_probe(), when mtk_ppe_init() or mtk_eth_offload_init() or
+register_netdev() failed, have the same problem. Fix it.
+
+Fixes: 33fc42de3327 ("net: ethernet: mtk_eth_soc: support creating mac address based offload entries")
+Signed-off-by: Yan Cangang <nalanzeyu@gmail.com>
+Reviewed-by: Leon Romanovsky <leonro@nvidia.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c |  9 +++++----
+ drivers/net/ethernet/mediatek/mtk_ppe.c     | 19 +++++++++++++++++--
+ drivers/net/ethernet/mediatek/mtk_ppe.h     |  1 +
+ 3 files changed, 23 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -4087,13 +4087,13 @@ static int mtk_probe(struct platform_dev
+ 						   eth->soc->offload_version, i);
+ 			if (!eth->ppe[i]) {
+ 				err = -ENOMEM;
+-				goto err_deinit_mdio;
++				goto err_deinit_ppe;
+ 			}
+ 		}
+ 
+ 		err = mtk_eth_offload_init(eth);
+ 		if (err)
+-			goto err_deinit_mdio;
++			goto err_deinit_ppe;
+ 	}
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+@@ -4103,7 +4103,7 @@ static int mtk_probe(struct platform_dev
+ 		err = register_netdev(eth->netdev[i]);
+ 		if (err) {
+ 			dev_err(eth->dev, "error bringing up device\n");
+-			goto err_deinit_mdio;
++			goto err_deinit_ppe;
+ 		} else
+ 			netif_info(eth, probe, eth->netdev[i],
+ 				   "mediatek frame engine at 0x%08lx, irq %d\n",
+@@ -4123,7 +4123,8 @@ static int mtk_probe(struct platform_dev
+ 
+ 	return 0;
+ 
+-err_deinit_mdio:
++err_deinit_ppe:
++	mtk_ppe_deinit(eth);
+ 	mtk_mdio_cleanup(eth);
+ err_free_dev:
+ 	mtk_free_dev(eth);
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -743,7 +743,7 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ 				  MTK_PPE_ENTRIES * soc->foe_entry_size,
+ 				  &ppe->foe_phys, GFP_KERNEL);
+ 	if (!foe)
+-		return NULL;
++		goto err_free_l2_flows;
+ 
+ 	ppe->foe_table = foe;
+ 
+@@ -751,11 +751,26 @@ struct mtk_ppe *mtk_ppe_init(struct mtk_
+ 			sizeof(*ppe->foe_flow);
+ 	ppe->foe_flow = devm_kzalloc(dev, foe_flow_size, GFP_KERNEL);
+ 	if (!ppe->foe_flow)
+-		return NULL;
++		goto err_free_l2_flows;
+ 
+ 	mtk_ppe_debugfs_init(ppe, index);
+ 
+ 	return ppe;
++
++err_free_l2_flows:
++	rhashtable_destroy(&ppe->l2_flows);
++	return NULL;
++}
++
++void mtk_ppe_deinit(struct mtk_eth *eth)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(eth->ppe); i++) {
++		if (!eth->ppe[i])
++			return;
++		rhashtable_destroy(&eth->ppe[i]->l2_flows);
++	}
+ }
+ 
+ static void mtk_ppe_init_foe_table(struct mtk_ppe *ppe)
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -304,6 +304,7 @@ struct mtk_ppe {
+ 
+ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base,
+ 			     int version, int index);
++void mtk_ppe_deinit(struct mtk_eth *eth);
+ void mtk_ppe_start(struct mtk_ppe *ppe);
+ int mtk_ppe_stop(struct mtk_ppe *ppe);
+ 
