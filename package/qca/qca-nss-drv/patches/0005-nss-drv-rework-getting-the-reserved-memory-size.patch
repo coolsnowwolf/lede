@@ -1,0 +1,114 @@
+From 1c2b564d7b29644765925a784d468f40555ded8a Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Fri, 10 Feb 2023 12:50:51 +0100
+Subject: [PATCH] nss-drv: rework getting the reserved-memory size
+
+Currently, the way NSS DRV gets the reserved memory node strictly depends
+on the nss@40000000 node being present so it can find it after globaly
+looking for the reserved-memory node and then going through its children.
+
+After that its evaluation the address and size cells manually in order to
+properly calculate the size of reserved-memory.
+
+We can make this way more reliable and generic, so lets pass the memory
+region wia the NSS common DTS node, match it via its compatible and then
+get the memory region phandle and simply convert it to a resource.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ nss_core.c | 70 +++++++++++++++++++++++-------------------------------
+ 1 file changed, 30 insertions(+), 40 deletions(-)
+
+--- a/nss_core.c
++++ b/nss_core.c
+@@ -26,6 +26,8 @@
+ #include <linux/module.h>
+ #include <linux/mm.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/sizes.h>
+ #include <nss_hal.h>
+ #include <net/dst.h>
+ #ifdef CONFIG_BRIDGE_NETFILTER
+@@ -492,50 +494,38 @@ static void nss_core_handle_crypto_pkt(s
+  */
+ static uint32_t nss_soc_mem_info(void)
+ {
+-	struct device_node *node;
+-	struct device_node *snode;
+-	int addr_cells;
+-	int size_cells;
+-	int n_items;
+-	uint32_t nss_msize = 8 << 20;	/* default: 8MB */
+-	const __be32 *ppp;
+-
+-	node = of_find_node_by_name(NULL, "reserved-memory");
+-	if (!node) {
+-		nss_info_always("reserved-memory not found\n");
+-		return nss_msize;
+-	}
+-
+-	ppp = (__be32 *)of_get_property(node, "#address-cells", NULL);
+-	addr_cells = ppp ? be32_to_cpup(ppp) : 2;
+-	nss_info("%px addr cells %d\n", ppp, addr_cells);
+-	ppp = (__be32 *)of_get_property(node, "#size-cells", NULL);
+-	size_cells = ppp ? be32_to_cpup(ppp) : 2;
+-	nss_info("%px size cells %d\n", ppp, size_cells);
+-
+-	for_each_child_of_node(node, snode) {
+-		/*
+-		 * compare (snode->full_name, "/reserved-memory/nss@40000000") may be safer
+-		 */
+-		nss_info("%px snode %s fn %s\n", snode, snode->name, snode->full_name);
+-		if (strcmp(snode->name, "nss") == 0)
+-			break;
+-	}
+-	of_node_put(node);
+-	if (!snode) {
+-		nss_info_always("nss@node not found: needed to determine NSS reserved DDR\n");
+-		return nss_msize;
+-	}
+-
+-	ppp = (__be32 *)of_get_property(snode, "reg", &n_items);
+-	if (ppp) {
+-		n_items /= sizeof(ppp[0]);
+-		nss_msize = be32_to_cpup(ppp + addr_cells + size_cells - 1);
+-		nss_info("addr/size storage words %d %d # words %d in DTS, ddr size %x\n",
+-				addr_cells, size_cells, n_items, nss_msize);
++	struct device_node *common_node, *memory_node;
++	struct resource r;
++	int ret;
++
++	common_node = of_find_compatible_node(NULL, NULL, "qcom,nss-common");
++	if (!common_node) {
++		nss_info_always("NSS common node not found!\n");
++		goto err_use_default_memsize;
++	}
++
++	memory_node = of_parse_phandle(common_node, "memory-region", 0);
++	if (!memory_node) {
++		nss_info_always("NSS reserved-memory node not found!\n");
++		goto err_use_default_memsize;
++	}
++
++	ret = of_address_to_resource(memory_node, 0, &r);
++	of_node_put(common_node);
++	of_node_put(memory_node);
++	if (ret) {
++		nss_info_always("NSS reserved-memory resource not found!\n");
++		goto err_use_default_memsize;
+ 	}
+-	of_node_put(snode);
+-	return nss_msize;
++
++	nss_info_always("NSS DDR size is 0x%x\n", (uint32_t) resource_size(&r));
++
++	return resource_size(&r);
++
++err_use_default_memsize:
++	nss_info_always("Using default NSS reserved-memory size of 0x%x !\n", SZ_8M);
++
++	return SZ_8M;
+ }
+ 
+ /*

@@ -1,0 +1,186 @@
+From 856be974290f28d7943be2ac5a382c4139486196 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 25 Jul 2023 01:52:44 +0100
+Subject: [PATCH 101/250] net: ethernet: mtk_eth_soc: rely on MTK_MAX_DEVS and
+ remove MTK_MAC_COUNT
+
+Get rid of MTK_MAC_COUNT since it is a duplicated of MTK_MAX_DEVS.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Link: https://lore.kernel.org/r/1856f4266f2fc80677807b1bad867659e7b00c65.1690246066.git.daniel@makrotopia.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 49 ++++++++++++---------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  1 -
+ 2 files changed, 27 insertions(+), 23 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -838,7 +838,7 @@ static void mtk_stats_update(struct mtk_
+ {
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->mac[i] || !eth->mac[i]->hw_stats)
+ 			continue;
+ 		if (spin_trylock(&eth->mac[i]->hw_stats->stats_lock)) {
+@@ -1341,7 +1341,7 @@ static int mtk_queue_stopped(struct mtk_
+ {
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+ 		if (netif_queue_stopped(eth->netdev[i]))
+@@ -1355,7 +1355,7 @@ static void mtk_wake_queue(struct mtk_et
+ {
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+ 		netif_tx_wake_all_queues(eth->netdev[i]);
+@@ -1812,7 +1812,7 @@ static int mtk_poll_rx(struct napi_struc
+ 			 !(trxd.rxd4 & RX_DMA_SPECIAL_TAG))
+ 			mac = RX_DMA_GET_SPORT(trxd.rxd4) - 1;
+ 
+-		if (unlikely(mac < 0 || mac >= MTK_MAC_COUNT ||
++		if (unlikely(mac < 0 || mac >= MTK_MAX_DEVS ||
+ 			     !eth->netdev[mac]))
+ 			goto release_desc;
+ 
+@@ -2841,7 +2841,7 @@ static void mtk_dma_free(struct mtk_eth
+ 	const struct mtk_soc_data *soc = eth->soc;
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++)
++	for (i = 0; i < MTK_MAX_DEVS; i++)
+ 		if (eth->netdev[i])
+ 			netdev_reset_queue(eth->netdev[i]);
+ 	if (eth->scratch_ring) {
+@@ -2995,8 +2995,13 @@ static void mtk_gdm_config(struct mtk_et
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628))
+ 		return;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
+-		u32 val = mtk_r32(eth, MTK_GDMA_FWD_CFG(i));
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		u32 val;
++
++		if (!eth->netdev[i])
++			continue;
++
++		val = mtk_r32(eth, MTK_GDMA_FWD_CFG(i));
+ 
+ 		/* default setup the forward port to send frame to PDMA */
+ 		val &= ~0xffff;
+@@ -3006,7 +3011,7 @@ static void mtk_gdm_config(struct mtk_et
+ 
+ 		val |= config;
+ 
+-		if (eth->netdev[i] && netdev_uses_dsa(eth->netdev[i]))
++		if (netdev_uses_dsa(eth->netdev[i]))
+ 			val |= MTK_GDMA_SPECIAL_TAG;
+ 
+ 		mtk_w32(eth, val, MTK_GDMA_FWD_CFG(i));
+@@ -3605,15 +3610,15 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	 * up with the more appropriate value when mtk_mac_config call is being
+ 	 * invoked.
+ 	 */
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		struct net_device *dev = eth->netdev[i];
+ 
+-		mtk_w32(eth, MAC_MCR_FORCE_LINK_DOWN, MTK_MAC_MCR(i));
+-		if (dev) {
+-			struct mtk_mac *mac = netdev_priv(dev);
++		if (!dev)
++			continue;
+ 
+-			mtk_set_mcr_max_rx(mac, dev->mtu + MTK_RX_ETH_HLEN);
+-		}
++		mtk_w32(eth, MAC_MCR_FORCE_LINK_DOWN, MTK_MAC_MCR(i));
++		mtk_set_mcr_max_rx(netdev_priv(dev),
++				   dev->mtu + MTK_RX_ETH_HLEN);
+ 	}
+ 
+ 	/* Indicates CDM to parse the MTK special tag from CPU
+@@ -3793,7 +3798,7 @@ static void mtk_pending_work(struct work
+ 	mtk_prepare_for_reset(eth);
+ 
+ 	/* stop all devices to make sure that dma is properly shut down */
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i] || !netif_running(eth->netdev[i]))
+ 			continue;
+ 
+@@ -3809,8 +3814,8 @@ static void mtk_pending_work(struct work
+ 	mtk_hw_init(eth, true);
+ 
+ 	/* restart DMA and enable IRQs */
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
+-		if (!test_bit(i, &restart))
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i] || !test_bit(i, &restart))
+ 			continue;
+ 
+ 		if (mtk_open(eth->netdev[i])) {
+@@ -3837,7 +3842,7 @@ static int mtk_free_dev(struct mtk_eth *
+ {
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+ 		free_netdev(eth->netdev[i]);
+@@ -3856,7 +3861,7 @@ static int mtk_unreg_dev(struct mtk_eth
+ {
+ 	int i;
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		struct mtk_mac *mac;
+ 		if (!eth->netdev[i])
+ 			continue;
+@@ -4157,7 +4162,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	}
+ 
+ 	id = be32_to_cpup(_id);
+-	if (id >= MTK_MAC_COUNT) {
++	if (id >= MTK_MAX_DEVS) {
+ 		dev_err(eth->dev, "%d is not a valid mac id\n", id);
+ 		return -EINVAL;
+ 	}
+@@ -4302,7 +4307,7 @@ void mtk_eth_set_dma_device(struct mtk_e
+ 
+ 	rtnl_lock();
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		dev = eth->netdev[i];
+ 
+ 		if (!dev || !(dev->flags & IFF_UP))
+@@ -4610,7 +4615,7 @@ static int mtk_remove(struct platform_de
+ 	int i;
+ 
+ 	/* stop all devices to make sure that dma is properly shut down */
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+ 		mtk_stop(eth->netdev[i]);
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -33,7 +33,6 @@
+ #define MTK_TX_DMA_BUF_LEN_V2	0xffff
+ #define MTK_QDMA_RING_SIZE	2048
+ #define MTK_DMA_SIZE		512
+-#define MTK_MAC_COUNT		2
+ #define MTK_RX_ETH_HLEN		(VLAN_ETH_HLEN + ETH_FCS_LEN)
+ #define MTK_RX_HLEN		(NET_SKB_PAD + MTK_RX_ETH_HLEN + NET_IP_ALIGN)
+ #define MTK_DMA_DUMMY_DESC	0xffffffff

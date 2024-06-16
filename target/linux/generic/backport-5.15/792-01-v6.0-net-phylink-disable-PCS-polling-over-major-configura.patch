@@ -1,0 +1,81 @@
+From bfac8c490d605bea03b1f1927582b6f396462164 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Mon, 27 Jun 2022 12:44:43 +0100
+Subject: [PATCH] net: phylink: disable PCS polling over major configuration
+
+While we are performing a major configuration, there is no point having
+the PCS polling timer running. Stop it before we begin preparing for
+the configuration change, and restart it only once we've successfully
+completed the change.
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 30 ++++++++++++++++++++----------
+ 1 file changed, 20 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -756,6 +756,18 @@ static void phylink_resolve_flow(struct
+ 	}
+ }
+ 
++static void phylink_pcs_poll_stop(struct phylink *pl)
++{
++	if (pl->cfg_link_an_mode == MLO_AN_INBAND)
++		del_timer(&pl->link_poll);
++}
++
++static void phylink_pcs_poll_start(struct phylink *pl)
++{
++	if (pl->pcs->poll && pl->cfg_link_an_mode == MLO_AN_INBAND)
++		mod_timer(&pl->link_poll, jiffies + HZ);
++}
++
+ static void phylink_mac_config(struct phylink *pl,
+ 			       const struct phylink_link_state *state)
+ {
+@@ -787,6 +799,7 @@ static void phylink_major_config(struct
+ 				  const struct phylink_link_state *state)
+ {
+ 	struct phylink_pcs *pcs = NULL;
++	bool pcs_changed = false;
+ 	int err;
+ 
+ 	phylink_dbg(pl, "major config %s\n", phy_modes(state->interface));
+@@ -799,8 +812,12 @@ static void phylink_major_config(struct
+ 				    pcs);
+ 			return;
+ 		}
++
++		pcs_changed = pcs && pl->pcs != pcs;
+ 	}
+ 
++	phylink_pcs_poll_stop(pl);
++
+ 	if (pl->mac_ops->mac_prepare) {
+ 		err = pl->mac_ops->mac_prepare(pl->config, pl->cur_link_an_mode,
+ 					       state->interface);
+@@ -814,8 +831,10 @@ static void phylink_major_config(struct
+ 	/* If we have a new PCS, switch to the new PCS after preparing the MAC
+ 	 * for the change.
+ 	 */
+-	if (pcs)
+-		phylink_set_pcs(pl, pcs);
++	if (pcs_changed) {
++		pl->pcs = pcs;
++		pl->pcs_ops = pcs->ops;
++	}
+ 
+ 	phylink_mac_config(pl, state);
+ 
+@@ -841,6 +860,8 @@ static void phylink_major_config(struct
+ 			phylink_err(pl, "mac_finish failed: %pe\n",
+ 				    ERR_PTR(err));
+ 	}
++
++	phylink_pcs_poll_start(pl);
+ }
+ 
+ /*
