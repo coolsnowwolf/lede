@@ -1,0 +1,78 @@
+From 0c024632c1e7ff69914329bfd87bec749b9c0aed Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 2 Aug 2023 04:31:09 +0100
+Subject: [PATCH 108/250] net: ethernet: mtk_eth_soc: support per-flow
+ accounting on MT7988
+
+NETSYS_V3 uses 64 bits for each counters while older SoCs are using
+48/40 bits for each counter.
+Support reading per-flow byte and package counters on NETSYS_V3.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://lore.kernel.org/r/37a0928fa8c1253b197884c68ce1f54239421ac5.1690946442.git.daniel@makrotopia.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c  |  1 +
+ drivers/net/ethernet/mediatek/mtk_ppe.c      | 21 +++++++++++++-------
+ drivers/net/ethernet/mediatek/mtk_ppe_regs.h |  2 ++
+ 3 files changed, 17 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -5030,6 +5030,7 @@ static const struct mtk_soc_data mt7988_
+ 	.version = 3,
+ 	.offload_version = 2,
+ 	.hash_offset = 4,
++	.has_accounting = true,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V3_SIZE,
+ 	.txrx = {
+ 		.txd_size = sizeof(struct mtk_tx_dma_v2),
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -91,7 +91,6 @@ static int mtk_ppe_mib_wait_busy(struct
+ 
+ static int mtk_mib_entry_read(struct mtk_ppe *ppe, u16 index, u64 *bytes, u64 *packets)
+ {
+-	u32 byte_cnt_low, byte_cnt_high, pkt_cnt_low, pkt_cnt_high;
+ 	u32 val, cnt_r0, cnt_r1, cnt_r2;
+ 	int ret;
+ 
+@@ -106,12 +105,20 @@ static int mtk_mib_entry_read(struct mtk
+ 	cnt_r1 = readl(ppe->base + MTK_PPE_MIB_SER_R1);
+ 	cnt_r2 = readl(ppe->base + MTK_PPE_MIB_SER_R2);
+ 
+-	byte_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R0_BYTE_CNT_LOW, cnt_r0);
+-	byte_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R1_BYTE_CNT_HIGH, cnt_r1);
+-	pkt_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R1_PKT_CNT_LOW, cnt_r1);
+-	pkt_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R2_PKT_CNT_HIGH, cnt_r2);
+-	*bytes = ((u64)byte_cnt_high << 32) | byte_cnt_low;
+-	*packets = (pkt_cnt_high << 16) | pkt_cnt_low;
++	if (mtk_is_netsys_v3_or_greater(ppe->eth)) {
++		/* 64 bit for each counter */
++		u32 cnt_r3 = readl(ppe->base + MTK_PPE_MIB_SER_R3);
++		*bytes = ((u64)cnt_r1 << 32) | cnt_r0;
++		*packets = ((u64)cnt_r3 << 32) | cnt_r2;
++	} else {
++		/* 48 bit byte counter, 40 bit packet counter */
++		u32 byte_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R0_BYTE_CNT_LOW, cnt_r0);
++		u32 byte_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R1_BYTE_CNT_HIGH, cnt_r1);
++		u32 pkt_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R1_PKT_CNT_LOW, cnt_r1);
++		u32 pkt_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R2_PKT_CNT_HIGH, cnt_r2);
++		*bytes = ((u64)byte_cnt_high << 32) | byte_cnt_low;
++		*packets = (pkt_cnt_high << 16) | pkt_cnt_low;
++	}
+ 
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_regs.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_regs.h
+@@ -163,6 +163,8 @@ enum {
+ #define MTK_PPE_MIB_SER_R2			0x348
+ #define MTK_PPE_MIB_SER_R2_PKT_CNT_HIGH		GENMASK(23, 0)
+ 
++#define MTK_PPE_MIB_SER_R3			0x34c
++
+ #define MTK_PPE_MIB_CACHE_CTL			0x350
+ #define MTK_PPE_MIB_CACHE_CTL_EN		BIT(0)
+ #define MTK_PPE_MIB_CACHE_CTL_FLUSH		BIT(2)

@@ -1,0 +1,227 @@
+From b3a302b171f73425b41de8d3357fae3fa7057322 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Wed, 27 Jul 2022 13:35:18 +0200
+Subject: [PATCH 09/14] net: dsa: qca8k: move set age/MTU/port enable/disable
+ functions to common code
+
+The same set age, MTU and port enable/disable function are used by
+driver based on qca8k family switch.
+Move them to common code to make them accessible also by other drivers.
+While at it also drop unnecessary qca8k_priv cast for void pointers.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/qca/qca8k-8xxx.c   | 88 ------------------------------
+ drivers/net/dsa/qca/qca8k-common.c | 85 +++++++++++++++++++++++++++++
+ drivers/net/dsa/qca/qca8k.h        | 12 ++++
+ 3 files changed, 97 insertions(+), 88 deletions(-)
+
+--- a/drivers/net/dsa/qca/qca8k-8xxx.c
++++ b/drivers/net/dsa/qca/qca8k-8xxx.c
+@@ -2059,94 +2059,6 @@ qca8k_port_fast_age(struct dsa_switch *d
+ }
+ 
+ static int
+-qca8k_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
+-{
+-	struct qca8k_priv *priv = ds->priv;
+-	unsigned int secs = msecs / 1000;
+-	u32 val;
+-
+-	/* AGE_TIME reg is set in 7s step */
+-	val = secs / 7;
+-
+-	/* Handle case with 0 as val to NOT disable
+-	 * learning
+-	 */
+-	if (!val)
+-		val = 1;
+-
+-	return regmap_update_bits(priv->regmap, QCA8K_REG_ATU_CTRL, QCA8K_ATU_AGE_TIME_MASK,
+-				  QCA8K_ATU_AGE_TIME(val));
+-}
+-
+-static int
+-qca8k_port_enable(struct dsa_switch *ds, int port,
+-		  struct phy_device *phy)
+-{
+-	struct qca8k_priv *priv = (struct qca8k_priv *)ds->priv;
+-
+-	qca8k_port_set_status(priv, port, 1);
+-	priv->port_enabled_map |= BIT(port);
+-
+-	if (dsa_is_user_port(ds, port))
+-		phy_support_asym_pause(phy);
+-
+-	return 0;
+-}
+-
+-static void
+-qca8k_port_disable(struct dsa_switch *ds, int port)
+-{
+-	struct qca8k_priv *priv = (struct qca8k_priv *)ds->priv;
+-
+-	qca8k_port_set_status(priv, port, 0);
+-	priv->port_enabled_map &= ~BIT(port);
+-}
+-
+-static int
+-qca8k_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
+-{
+-	struct qca8k_priv *priv = ds->priv;
+-	int ret;
+-
+-	/* We have only have a general MTU setting.
+-	 * DSA always set the CPU port's MTU to the largest MTU of the slave
+-	 * ports.
+-	 * Setting MTU just for the CPU port is sufficient to correctly set a
+-	 * value for every port.
+-	 */
+-	if (!dsa_is_cpu_port(ds, port))
+-		return 0;
+-
+-	/* To change the MAX_FRAME_SIZE the cpu ports must be off or
+-	 * the switch panics.
+-	 * Turn off both cpu ports before applying the new value to prevent
+-	 * this.
+-	 */
+-	if (priv->port_enabled_map & BIT(0))
+-		qca8k_port_set_status(priv, 0, 0);
+-
+-	if (priv->port_enabled_map & BIT(6))
+-		qca8k_port_set_status(priv, 6, 0);
+-
+-	/* Include L2 header / FCS length */
+-	ret = qca8k_write(priv, QCA8K_MAX_FRAME_SIZE, new_mtu + ETH_HLEN + ETH_FCS_LEN);
+-
+-	if (priv->port_enabled_map & BIT(0))
+-		qca8k_port_set_status(priv, 0, 1);
+-
+-	if (priv->port_enabled_map & BIT(6))
+-		qca8k_port_set_status(priv, 6, 1);
+-
+-	return ret;
+-}
+-
+-static int
+-qca8k_port_max_mtu(struct dsa_switch *ds, int port)
+-{
+-	return QCA8K_MAX_MTU;
+-}
+-
+-static int
+ qca8k_port_fdb_insert(struct qca8k_priv *priv, const u8 *addr,
+ 		      u16 port_mask, u16 vid)
+ {
+--- a/drivers/net/dsa/qca/qca8k-common.c
++++ b/drivers/net/dsa/qca/qca8k-common.c
+@@ -367,3 +367,88 @@ void qca8k_port_bridge_leave(struct dsa_
+ 	qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(port),
+ 		  QCA8K_PORT_LOOKUP_MEMBER, BIT(cpu_port));
+ }
++
++int qca8k_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
++{
++	struct qca8k_priv *priv = ds->priv;
++	unsigned int secs = msecs / 1000;
++	u32 val;
++
++	/* AGE_TIME reg is set in 7s step */
++	val = secs / 7;
++
++	/* Handle case with 0 as val to NOT disable
++	 * learning
++	 */
++	if (!val)
++		val = 1;
++
++	return regmap_update_bits(priv->regmap, QCA8K_REG_ATU_CTRL,
++				  QCA8K_ATU_AGE_TIME_MASK,
++				  QCA8K_ATU_AGE_TIME(val));
++}
++
++int qca8k_port_enable(struct dsa_switch *ds, int port,
++		      struct phy_device *phy)
++{
++	struct qca8k_priv *priv = ds->priv;
++
++	qca8k_port_set_status(priv, port, 1);
++	priv->port_enabled_map |= BIT(port);
++
++	if (dsa_is_user_port(ds, port))
++		phy_support_asym_pause(phy);
++
++	return 0;
++}
++
++void qca8k_port_disable(struct dsa_switch *ds, int port)
++{
++	struct qca8k_priv *priv = ds->priv;
++
++	qca8k_port_set_status(priv, port, 0);
++	priv->port_enabled_map &= ~BIT(port);
++}
++
++int qca8k_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu)
++{
++	struct qca8k_priv *priv = ds->priv;
++	int ret;
++
++	/* We have only have a general MTU setting.
++	 * DSA always set the CPU port's MTU to the largest MTU of the slave
++	 * ports.
++	 * Setting MTU just for the CPU port is sufficient to correctly set a
++	 * value for every port.
++	 */
++	if (!dsa_is_cpu_port(ds, port))
++		return 0;
++
++	/* To change the MAX_FRAME_SIZE the cpu ports must be off or
++	 * the switch panics.
++	 * Turn off both cpu ports before applying the new value to prevent
++	 * this.
++	 */
++	if (priv->port_enabled_map & BIT(0))
++		qca8k_port_set_status(priv, 0, 0);
++
++	if (priv->port_enabled_map & BIT(6))
++		qca8k_port_set_status(priv, 6, 0);
++
++	/* Include L2 header / FCS length */
++	ret = qca8k_write(priv, QCA8K_MAX_FRAME_SIZE, new_mtu +
++			  ETH_HLEN + ETH_FCS_LEN);
++
++	if (priv->port_enabled_map & BIT(0))
++		qca8k_port_set_status(priv, 0, 1);
++
++	if (priv->port_enabled_map & BIT(6))
++		qca8k_port_set_status(priv, 6, 1);
++
++	return ret;
++}
++
++int qca8k_port_max_mtu(struct dsa_switch *ds, int port)
++{
++	return QCA8K_MAX_MTU;
++}
+--- a/drivers/net/dsa/qca/qca8k.h
++++ b/drivers/net/dsa/qca/qca8k.h
+@@ -453,4 +453,16 @@ int qca8k_port_bridge_join(struct dsa_sw
+ void qca8k_port_bridge_leave(struct dsa_switch *ds, int port,
+ 			     struct net_device *br);
+ 
++/* Common port enable/disable function */
++int qca8k_port_enable(struct dsa_switch *ds, int port,
++		      struct phy_device *phy);
++void qca8k_port_disable(struct dsa_switch *ds, int port);
++
++/* Common MTU function */
++int qca8k_port_change_mtu(struct dsa_switch *ds, int port, int new_mtu);
++int qca8k_port_max_mtu(struct dsa_switch *ds, int port);
++
++/* Common fast age function */
++int qca8k_set_ageing_time(struct dsa_switch *ds, unsigned int msecs);
++
+ #endif /* __QCA8K_H */

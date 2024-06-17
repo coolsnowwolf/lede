@@ -1,0 +1,1199 @@
+From 1b30927548c2498c76b815b87f604f9a1de40a48 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 22 Jan 2023 23:31:09 +0100
+Subject: [PATCH] cryptoapi: v2.0: convert to skcipher
+
+Finally convert the driver from ablkcipher that was dropped in v5.5 to
+skcipher.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ cryptoapi/v2.0/Makefile                       |   6 +-
+ cryptoapi/v2.0/nss_cryptoapi.c                | 200 ++++++++----------
+ cryptoapi/v2.0/nss_cryptoapi_private.h        |  14 +-
+ ...ptoapi_ablk.c => nss_cryptoapi_skcipher.c} | 116 +++++-----
+ 4 files changed, 145 insertions(+), 191 deletions(-)
+ rename cryptoapi/v2.0/{nss_cryptoapi_ablk.c => nss_cryptoapi_skcipher.c} (74%)
+
+--- a/cryptoapi/v2.0/Makefile
++++ b/cryptoapi/v2.0/Makefile
+@@ -5,9 +5,9 @@ NSS_CRYPTOAPI_MOD_NAME=qca-nss-cfi-crypt
+ obj-m += $(NSS_CRYPTOAPI_MOD_NAME).o
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs = nss_cryptoapi.o
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_aead.o
+-ifneq "$(NSS_CRYPTOAPI_ABLK)" "n"
+-$(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_ablk.o
+-ccflags-y += -DNSS_CRYPTOAPI_ABLK
++ifneq "$(NSS_CRYPTOAPI_SKCIPHER)" "n"
++$(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_skcipher.o
++ccflags-y += -DNSS_CRYPTOAPI_SKCIPHER
+ endif
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_ahash.o
+ 
+--- a/cryptoapi/v2.0/nss_cryptoapi.c
++++ b/cryptoapi/v2.0/nss_cryptoapi.c
+@@ -1367,104 +1367,78 @@ struct aead_alg cryptoapi_aead_algs[] =
+ /*
+  * ABLK cipher algorithms
+  */
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-static struct crypto_alg cryptoapi_ablkcipher_algs[] = {
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++static struct skcipher_alg cryptoapi_skcipher_algs[] = {
+ 	{
+-		.cra_name = "cbc(aes)",
+-		.cra_driver_name = "nss-cbc-aes",
+-		.cra_priority = 10000,
+-		.cra_flags = CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
+-		.cra_blocksize = AES_BLOCK_SIZE,
+-		.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
+-		.cra_alignmask = 0,
+-		.cra_type = &crypto_ablkcipher_type,
+-		.cra_module = THIS_MODULE,
+-		.cra_init = nss_cryptoapi_ablkcipher_init,
+-		.cra_exit = nss_cryptoapi_ablkcipher_exit,
+-		.cra_u = {
+-			.ablkcipher = {
+-				.ivsize = AES_BLOCK_SIZE,
+-				.min_keysize = AES_MIN_KEY_SIZE,
+-				.max_keysize = AES_MAX_KEY_SIZE,
+-				.setkey = nss_cryptoapi_ablk_setkey,
+-				.encrypt = nss_cryptoapi_ablk_encrypt,
+-				.decrypt = nss_cryptoapi_ablk_decrypt,
+-			},
+-		},
+-	},
+-	{
+-		.cra_name       = "rfc3686(ctr(aes))",
+-		.cra_driver_name = "nss-rfc3686-ctr-aes",
+-		.cra_priority   = 30000,
+-		.cra_flags      = CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
+-		.cra_blocksize  = AES_BLOCK_SIZE,
+-		.cra_ctxsize    = sizeof(struct nss_cryptoapi_ctx),
+-		.cra_alignmask  = 0,
+-		.cra_type       = &crypto_ablkcipher_type,
+-		.cra_module     = THIS_MODULE,
+-		.cra_init       = nss_cryptoapi_ablkcipher_init,
+-		.cra_exit       = nss_cryptoapi_ablkcipher_exit,
+-		.cra_u          = {
+-			.ablkcipher = {
+-				.ivsize         = CTR_RFC3686_IV_SIZE,
+-/*
+- * geniv deprecated from kernel version 5.0 and above
+- */
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
+-				.geniv          = "seqiv",
+-#endif
+-				.min_keysize    = AES_MIN_KEY_SIZE + CTR_RFC3686_NONCE_SIZE,
+-				.max_keysize    = AES_MAX_KEY_SIZE + CTR_RFC3686_NONCE_SIZE,
+-				.setkey         = nss_cryptoapi_ablk_setkey,
+-				.encrypt        = nss_cryptoapi_ablk_encrypt,
+-				.decrypt        = nss_cryptoapi_ablk_decrypt,
+-			},
+-		},
+-	},
+-	{
+-		.cra_name = "ecb(aes)",
+-		.cra_driver_name = "nss-ecb-aes",
+-		.cra_priority = 10000,
+-		.cra_flags = CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
+-		.cra_blocksize = AES_BLOCK_SIZE,
+-		.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
+-		.cra_alignmask = 0,
+-		.cra_type = &crypto_ablkcipher_type,
+-		.cra_module = THIS_MODULE,
+-		.cra_init = nss_cryptoapi_ablkcipher_init,
+-		.cra_exit = nss_cryptoapi_ablkcipher_exit,
+-		.cra_u = {
+-			.ablkcipher = {
+-				.min_keysize = AES_MIN_KEY_SIZE,
+-				.max_keysize = AES_MAX_KEY_SIZE,
+-				.setkey = nss_cryptoapi_ablk_setkey,
+-				.encrypt = nss_cryptoapi_ablk_encrypt,
+-				.decrypt = nss_cryptoapi_ablk_decrypt,
+-			},
+-		},
+-	},
+-	{
+-		.cra_name = "cbc(des3_ede)",
+-		.cra_driver_name = "nss-cbc-des-ede",
+-		.cra_priority = 10000,
+-		.cra_flags = CRYPTO_ALG_TYPE_ABLKCIPHER | CRYPTO_ALG_ASYNC,
+-		.cra_blocksize = DES3_EDE_BLOCK_SIZE,
+-		.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
+-		.cra_alignmask = 0,
+-		.cra_type = &crypto_ablkcipher_type,
+-		.cra_module = THIS_MODULE,
+-		.cra_init = nss_cryptoapi_ablkcipher_init,
+-		.cra_exit = nss_cryptoapi_ablkcipher_exit,
+-		.cra_u = {
+-			.ablkcipher = {
+-				.ivsize = DES3_EDE_BLOCK_SIZE,
+-				.min_keysize = DES3_EDE_KEY_SIZE,
+-				.max_keysize = DES3_EDE_KEY_SIZE,
+-				.setkey = nss_cryptoapi_ablk_setkey,
+-				.encrypt = nss_cryptoapi_ablk_encrypt,
+-				.decrypt = nss_cryptoapi_ablk_decrypt,
+-			},
+-		},
++		.base.cra_name = "cbc(aes)",
++		.base.cra_driver_name = "nss-cbc-aes",
++		.base.cra_priority = 10000,
++		.base.cra_flags = CRYPTO_ALG_ASYNC,
++		.base.cra_blocksize = AES_BLOCK_SIZE,
++		.base.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
++		.base.cra_alignmask = 0,
++		.base.cra_module = THIS_MODULE,
++		.init = nss_cryptoapi_skcipher_init,
++		.exit = nss_cryptoapi_skcipher_exit,
++		.ivsize = AES_BLOCK_SIZE,
++		.min_keysize = AES_MIN_KEY_SIZE,
++		.max_keysize = AES_MAX_KEY_SIZE,
++		.setkey = nss_cryptoapi_skcipher_setkey,
++		.encrypt = nss_cryptoapi_skcipher_encrypt,
++		.decrypt = nss_cryptoapi_skcipher_decrypt,
++	},
++	{
++		.base.cra_name       = "rfc3686(ctr(aes))",
++		.base.cra_driver_name = "nss-rfc3686-ctr-aes",
++		.base.cra_priority   = 30000,
++		.base.cra_flags      = CRYPTO_ALG_ASYNC,
++		.base.cra_blocksize  = AES_BLOCK_SIZE,
++		.base.cra_ctxsize    = sizeof(struct nss_cryptoapi_ctx),
++		.base.cra_alignmask  = 0,
++		.base.cra_module     = THIS_MODULE,
++		.init       = nss_cryptoapi_skcipher_init,
++		.exit       = nss_cryptoapi_skcipher_exit,
++		.ivsize         = CTR_RFC3686_IV_SIZE,
++		.min_keysize    = AES_MIN_KEY_SIZE + CTR_RFC3686_NONCE_SIZE,
++		.max_keysize    = AES_MAX_KEY_SIZE + CTR_RFC3686_NONCE_SIZE,
++		.setkey         = nss_cryptoapi_skcipher_setkey,
++		.encrypt        = nss_cryptoapi_skcipher_encrypt,
++		.decrypt        = nss_cryptoapi_skcipher_decrypt,
++	},
++	{
++		.base.cra_name = "ecb(aes)",
++		.base.cra_driver_name = "nss-ecb-aes",
++		.base.cra_priority = 10000,
++		.base.cra_flags = CRYPTO_ALG_ASYNC,
++		.base.cra_blocksize = AES_BLOCK_SIZE,
++		.base.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
++		.base.cra_alignmask = 0,
++		.base.cra_module = THIS_MODULE,
++		.init = nss_cryptoapi_skcipher_init,
++		.exit = nss_cryptoapi_skcipher_exit,
++		.min_keysize = AES_MIN_KEY_SIZE,
++		.max_keysize = AES_MAX_KEY_SIZE,
++		.setkey = nss_cryptoapi_skcipher_setkey,
++		.encrypt = nss_cryptoapi_skcipher_encrypt,
++		.decrypt = nss_cryptoapi_skcipher_decrypt,
++	},
++	{
++		.base.cra_name = "cbc(des3_ede)",
++		.base.cra_driver_name = "nss-cbc-des-ede",
++		.base.cra_priority = 10000,
++		.base.cra_flags = CRYPTO_ALG_ASYNC,
++		.base.cra_blocksize = DES3_EDE_BLOCK_SIZE,
++		.base.cra_ctxsize = sizeof(struct nss_cryptoapi_ctx),
++		.base.cra_alignmask = 0,
++		.base.cra_module = THIS_MODULE,
++		.init = nss_cryptoapi_skcipher_init,
++		.exit = nss_cryptoapi_skcipher_exit,
++		.ivsize = DES3_EDE_BLOCK_SIZE,
++		.min_keysize = DES3_EDE_KEY_SIZE,
++		.max_keysize = DES3_EDE_KEY_SIZE,
++		.setkey = nss_cryptoapi_skcipher_setkey,
++		.encrypt = nss_cryptoapi_skcipher_encrypt,
++		.decrypt = nss_cryptoapi_skcipher_decrypt,
+ 	}
+ };
+ #endif
+@@ -2215,8 +2189,8 @@ void nss_cryptoapi_add_ctx2debugfs(struc
+  */
+ void nss_cryptoapi_attach_user(void *app_data, struct nss_crypto_user *user)
+ {
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-	struct crypto_alg *ablk = cryptoapi_ablkcipher_algs;
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++	struct skcipher_alg *ablk = cryptoapi_skcipher_algs;
+ #endif
+ 	struct aead_alg *aead = cryptoapi_aead_algs;
+ 	struct ahash_alg *ahash = cryptoapi_ahash_algs;
+@@ -2240,15 +2214,15 @@ void nss_cryptoapi_attach_user(void *app
+ 		      g_cryptoapi.user = user;
+ 	}
+ 
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_ablkcipher_algs)); i++, ablk++) {
+-		info = nss_cryptoapi_cra_name_lookup(ablk->cra_name);
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_skcipher_algs)); i++, ablk++) {
++		info = nss_cryptoapi_cra_name_lookup(ablk->base.cra_name);
+ 		if(!info || !nss_crypto_algo_is_supp(info->algo))
+ 			continue;
+ 
+-		if (crypto_register_alg(ablk)) {
+-			nss_cfi_err("%px: ABLK registration failed(%s)\n", sc, ablk->cra_name);
+-			ablk->cra_flags = 0;
++		if (crypto_register_skcipher(ablk)) {
++			nss_cfi_err("%px: skcipher registration failed(%s)\n", sc, ablk->base.cra_name);
++			ablk->base.cra_flags = 0;
+ 		}
+ 	}
+ #endif
+@@ -2287,8 +2261,8 @@ void nss_cryptoapi_attach_user(void *app
+  */
+ void nss_cryptoapi_detach_user(void *app_data, struct nss_crypto_user *user)
+ {
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-	struct crypto_alg *ablk = cryptoapi_ablkcipher_algs;
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++	struct skcipher_alg *ablk = cryptoapi_skcipher_algs;
+ #endif
+ 	struct aead_alg *aead = cryptoapi_aead_algs;
+ 	struct ahash_alg *ahash = cryptoapi_ahash_algs;
+@@ -2302,13 +2276,13 @@ void nss_cryptoapi_detach_user(void *app
+ 	 */
+ 	atomic_set(&g_cryptoapi.registered, 0);
+ 
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_ablkcipher_algs)); i++, ablk++) {
+-		if (!ablk->cra_flags)
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_skcipher_algs)); i++, ablk++) {
++		if (!ablk->base.cra_flags)
+ 			continue;
+ 
+-		crypto_unregister_alg(ablk);
+-		nss_cfi_info("%px: ABLK unregister succeeded, algo: %s\n", sc, ablk->cra_name);
++		crypto_unregister_skcipher(ablk);
++		nss_cfi_info("%px: skcipher unregister succeeded, algo: %s\n", sc, ablk->base.cra_name);
+ 	}
+ #endif
+ 
+--- a/cryptoapi/v2.0/nss_cryptoapi_private.h
++++ b/cryptoapi/v2.0/nss_cryptoapi_private.h
+@@ -248,14 +248,14 @@ extern void nss_cryptoapi_aead_tx_proc(s
+ 				struct nss_cryptoapi_info *info, bool encrypt);
+ 
+ /*
+- * ABLKCIPHER
++ * SKCIPHER
+  */
+-#if defined(NSS_CRYPTOAPI_ABLK)
+-extern int nss_cryptoapi_ablkcipher_init(struct crypto_tfm *tfm);
+-extern void nss_cryptoapi_ablkcipher_exit(struct crypto_tfm *tfm);
+-extern int nss_cryptoapi_ablk_setkey(struct crypto_ablkcipher *cipher, const u8 *key, unsigned int len);
+-extern int nss_cryptoapi_ablk_encrypt(struct ablkcipher_request *req);
+-extern int nss_cryptoapi_ablk_decrypt(struct ablkcipher_request *req);
++#if defined(NSS_CRYPTOAPI_SKCIPHER)
++extern int nss_cryptoapi_skcipher_init(struct crypto_skcipher *tfm);
++extern void nss_cryptoapi_skcipher_exit(struct crypto_skcipher *tfm);
++extern int nss_cryptoapi_skcipher_setkey(struct crypto_skcipher *cipher, const u8 *key, unsigned int len);
++extern int nss_cryptoapi_skcipher_encrypt(struct skcipher_request *req);
++extern int nss_cryptoapi_skcipher_decrypt(struct skcipher_request *req);
+ extern void nss_cryptoapi_copy_iv(struct nss_cryptoapi_ctx *ctx, struct scatterlist *sg, uint8_t *iv, uint8_t iv_len);
+ #endif
+ 
+--- a/cryptoapi/v2.0/nss_cryptoapi_ablk.c
++++ /dev/null
+@@ -1,458 +0,0 @@
+-/* Copyright (c) 2015-2020 The Linux Foundation. All rights reserved.
+- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+- *
+- * Permission to use, copy, modify, and/or distribute this software for any
+- * purpose with or without fee is hereby granted, provided that the above
+- * copyright notice and this permission notice appear in all copies.
+- *
+- *
+- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+- * AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT
+- * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+- * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
+- * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+- * PERFORMANCE OF THIS SOFTWARE.
+- *
+- *
+- */
+-
+-/**
+- * nss_cryptoapi_ablk.c
+- * 	Interface to communicate Native Linux crypto framework specific data
+- * 	to Crypto core specific data
+- */
+-
+-#include <linux/version.h>
+-#include <linux/module.h>
+-#include <linux/init.h>
+-#include <linux/random.h>
+-#include <linux/moduleparam.h>
+-#include <linux/spinlock.h>
+-#include <asm/cmpxchg.h>
+-#include <linux/delay.h>
+-#include <linux/crypto.h>
+-#include <linux/debugfs.h>
+-#include <linux/completion.h>
+-
+-#include <crypto/aes.h>
+-#include <crypto/des.h>
+-#include <crypto/sha.h>
+-#include <crypto/hash.h>
+-#include <crypto/algapi.h>
+-#include <crypto/aead.h>
+-#include <crypto/authenc.h>
+-#include <crypto/ctr.h>
+-#include <crypto/internal/skcipher.h>
+-
+-#include <nss_api_if.h>
+-#include <nss_crypto_cmn.h>
+-#include <nss_cfi_if.h>
+-#include <nss_crypto_api.h>
+-#include <nss_crypto_hdr.h>
+-#include <nss_crypto_defines.h>
+-#include <nss_cryptoapi.h>
+-#include "nss_cryptoapi_private.h"
+-
+-extern struct nss_cryptoapi g_cryptoapi;
+-
+-/*
+- * nss_cryptoapi_skcipher_ctx2session()
+- *	Cryptoapi function to get the session ID for an skcipher
+- */
+-int nss_cryptoapi_skcipher_ctx2session(struct crypto_skcipher *sk, uint32_t *sid)
+-{
+-	struct crypto_tfm *tfm = crypto_skcipher_tfm(sk);
+-	struct crypto_ablkcipher **actx, *ablk;
+-	struct ablkcipher_tfm *ablk_tfm;
+-	struct nss_cryptoapi_ctx *ctx;
+-
+-	if (strncmp("nss-", crypto_tfm_alg_driver_name(tfm), 4))
+-		return -EINVAL;
+-
+-	/* Get the ablkcipher from the skcipher */
+-	actx = crypto_skcipher_ctx(sk);
+-	if (!actx || !(*actx))
+-		return -EINVAL;
+-
+-	/*
+-	 * The ablkcipher now obtained is a wrapper around the actual
+-	 * ablkcipher that is created when the skcipher is created.
+-	 * Hence we derive the required ablkcipher through ablkcipher_tfm.
+-	 */
+-	ablk_tfm = crypto_ablkcipher_crt(*actx);
+-	if (!ablk_tfm)
+-		return -EINVAL;
+-
+-	ablk = ablk_tfm->base;
+-	if (!ablk)
+-		return -EINVAL;
+-
+-	/* Get the nss_cryptoapi context stored in the ablkcipher */
+-	ctx = crypto_ablkcipher_ctx(ablk);
+-
+-	BUG_ON(!ctx);
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	*sid = ctx->sid;
+-	return 0;
+-}
+-EXPORT_SYMBOL(nss_cryptoapi_skcipher_ctx2session);
+-
+-/*
+- * nss_cryptoapi_ablkcipher_init()
+- * 	Cryptoapi ablkcipher init function.
+- */
+-int nss_cryptoapi_ablkcipher_init(struct crypto_tfm *tfm)
+-{
+-	struct nss_cryptoapi_ctx *ctx = crypto_tfm_ctx(tfm);
+-
+-	BUG_ON(!ctx);
+-	NSS_CRYPTOAPI_SET_MAGIC(ctx);
+-
+-	memset(ctx, 0, sizeof(struct nss_cryptoapi_ctx));
+-
+-	ctx->user = g_cryptoapi.user;
+-	ctx->stats.init++;
+-	ctx->sid = NSS_CRYPTO_SESSION_MAX;
+-	init_completion(&ctx->complete);
+-
+-	return 0;
+-}
+-
+-/*
+- * nss_cryptoapi_ablkcipher_exit()
+- * 	Cryptoapi ablkcipher exit function.
+- */
+-void nss_cryptoapi_ablkcipher_exit(struct crypto_tfm *tfm)
+-{
+-	struct nss_cryptoapi_ctx *ctx = crypto_tfm_ctx(tfm);
+-	int ret;
+-
+-	BUG_ON(!ctx);
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	ctx->stats.exit++;
+-
+-	/*
+-	 * When fallback_req is set, it means that fallback tfm was used
+-	 * we didn't create any sessions.
+-	 */
+-	if (ctx->fallback_req) {
+-		ctx->stats.failed_fallback++;
+-		return;
+-	}
+-
+-	if (!atomic_read(&ctx->active)) {
+-		ctx->stats.failed_exit++;
+-		return;
+-	}
+-
+-	/*
+-	 * Mark cryptoapi context as inactive
+-	 */
+-	atomic_set(&ctx->active, 0);
+-
+-	if (!atomic_sub_and_test(1, &ctx->refcnt)) {
+-		/*
+-		 * We need to wait for any outstanding packet using this ctx.
+-		 * Once the last packet get processed, reference count will become
+-		 * 0 this ctx. We will wait for the reference to go down to 0.
+-		 */
+-		ret = wait_for_completion_timeout(&ctx->complete, NSS_CRYPTOAPI_REQ_TIMEOUT_TICKS);
+-		WARN_ON(!ret);
+-	}
+-
+-	if (ctx->sid != NSS_CRYPTO_SESSION_MAX) {
+-		nss_crypto_session_free(ctx->user, ctx->sid);
+-		debugfs_remove_recursive(ctx->dentry);
+-		ctx->sid = NSS_CRYPTO_SESSION_MAX;
+-	}
+-
+-	NSS_CRYPTOAPI_CLEAR_MAGIC(ctx);
+-}
+-
+-/*
+- * nss_cryptoapi_ablk_setkey()
+- * 	Cryptoapi setkey routine for aes.
+- */
+-int nss_cryptoapi_ablk_setkey(struct crypto_ablkcipher *cipher, const u8 *key, unsigned int keylen)
+-{
+-	struct crypto_tfm *tfm = crypto_ablkcipher_tfm(cipher);
+-	struct nss_cryptoapi_ctx *ctx = crypto_tfm_ctx(tfm);
+-	struct nss_crypto_session_data data = {0};
+-	int status;
+-
+-	/*
+-	 * Validate magic number - init should be called before setkey
+-	 */
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	ctx->info = nss_cryptoapi_cra_name2info(crypto_tfm_alg_name(tfm), keylen, 0);
+-	if (!ctx->info) {
+-		crypto_ablkcipher_set_flags(cipher, CRYPTO_TFM_RES_BAD_KEY_LEN);
+-		return -EINVAL;
+-	}
+-
+-	ctx->iv_size = crypto_ablkcipher_ivsize(cipher);
+-
+-	if (ctx->info->cipher_mode == NSS_CRYPTOAPI_CIPHER_MODE_CTR_RFC3686) {
+-		keylen = keylen - CTR_RFC3686_NONCE_SIZE;
+-		memcpy(ctx->ctx_iv, key + keylen, CTR_RFC3686_NONCE_SIZE);
+-		ctx->ctx_iv[3] = ntohl(0x1);
+-		ctx->iv_size += CTR_RFC3686_NONCE_SIZE + sizeof(uint32_t);
+-	}
+-
+-	/*
+-	 * Fill NSS crypto session data
+-	 */
+-	data.algo = ctx->info->algo;
+-	data.cipher_key = key;
+-
+-	if (data.algo >= NSS_CRYPTO_CMN_ALGO_MAX)
+-		return -ERANGE;
+-
+-	if (ctx->sid != NSS_CRYPTO_SESSION_MAX) {
+-		nss_crypto_session_free(ctx->user, ctx->sid);
+-		debugfs_remove_recursive(ctx->dentry);
+-		ctx->sid = NSS_CRYPTO_SESSION_MAX;
+-	}
+-
+-	status = nss_crypto_session_alloc(ctx->user, &data, &ctx->sid);
+-	if (status < 0) {
+-		nss_cfi_err("%px: Unable to allocate crypto session(%d)\n", ctx, status);
+-		crypto_ablkcipher_set_flags(cipher, CRYPTO_TFM_RES_BAD_FLAGS);
+-		return status;
+-	}
+-
+-	nss_cryptoapi_add_ctx2debugfs(ctx);
+-	atomic_set(&ctx->active, 1);
+-	atomic_set(&ctx->refcnt, 1);
+-	return 0;
+-}
+-
+-/*
+- * nss_cryptoapi_ablkcipher_done()
+- * 	Cipher operation completion callback function
+- */
+-void nss_cryptoapi_ablkcipher_done(void *app_data, struct nss_crypto_hdr *ch, uint8_t status)
+-{
+-	struct ablkcipher_request *req = app_data;
+-	struct nss_cryptoapi_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+-	int error;
+-
+-	BUG_ON(!ch);
+-
+-	/*
+-	 * Check cryptoapi context magic number.
+-	 */
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	/*
+-	 * For skcipher decryption case, the last block of encrypted data is used as
+-	 * an IV for the next data
+-	 */
+-	if (ch->op == NSS_CRYPTO_OP_DIR_ENC) {
+-		nss_cryptoapi_copy_iv(ctx, req->dst, req->info, ch->iv_len);
+-	}
+-
+-	/*
+-	 * Free crypto hdr
+-	 */
+-	nss_crypto_hdr_free(ctx->user, ch);
+-
+-	nss_cfi_dbg("data dump after transformation\n");
+-	nss_cfi_dbg_data(sg_virt(req->dst), req->nbytes, ' ');
+-
+-	/*
+-	 * Check if there is any error reported by hardware
+-	 */
+-	error = nss_cryptoapi_status2error(ctx, status);
+-	ctx->stats.completed++;
+-
+-	/*
+-	 * Decrement cryptoapi reference
+-	 */
+-	nss_cryptoapi_ref_dec(ctx);
+-	req->base.complete(&req->base, error);
+-}
+-
+-/*
+- * nss_cryptoapi_ablk_encrypt()
+- * 	Crytoapi encrypt for AES and 3DES algorithms.
+- */
+-int nss_cryptoapi_ablk_encrypt(struct ablkcipher_request *req)
+-{
+-	struct nss_cryptoapi_info info = {.op_dir = NSS_CRYPTO_OP_DIR_ENC};
+-	struct crypto_ablkcipher *cipher = crypto_ablkcipher_reqtfm(req);
+-	struct nss_cryptoapi_ctx *ctx = crypto_ablkcipher_ctx(cipher);
+-	struct crypto_tfm *tfm = req->base.tfm;
+-	struct scatterlist *cur;
+-	int tot_len = 0;
+-	int i;
+-
+-	/*
+-	 * Check cryptoapi context magic number.
+-	 */
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	/*
+-	 * Check if cryptoapi context is active or not
+-	 */
+-	if (!atomic_read(&ctx->active))
+-		return -EINVAL;
+-
+-	if (sg_nents(req->src) != sg_nents(req->dst)) {
+-		ctx->stats.failed_req++;
+-		return -EINVAL;
+-	}
+-
+-	/*
+-	 * Block size not aligned.
+-	 * AES-CTR requires only a one-byte block size alignment.
+-	 */
+-	if (!IS_ALIGNED(req->nbytes, crypto_tfm_alg_blocksize(tfm)) && ctx->info->blk_align) {
+-		ctx->stats.failed_align++;
+-		crypto_ablkcipher_set_flags(cipher, CRYPTO_TFM_RES_BAD_BLOCK_LEN);
+-		return -EFAULT;
+-	}
+-
+-	/*
+-	 * Fill the request information structure
+-	 */
+-	info.iv = req->info;
+-	info.src.nsegs = sg_nents(req->src);
+-	info.dst.nsegs = sg_nents(req->dst);
+-	info.op_dir = NSS_CRYPTO_OP_DIR_ENC;
+-	info.cb = nss_cryptoapi_ablkcipher_done;
+-	info.iv_size = ctx->iv_size;
+-	info.src.first_sg = req->src;
+-	info.dst.first_sg = req->dst;
+-	info.dst.last_sg = sg_last(req->dst, info.dst.nsegs);
+-
+-	/* out and in length will be same as ablk does only encrypt/decryt operation */
+-	info.total_in_len = info.total_out_len = req->nbytes;
+-	info.in_place = (req->src == req->dst) ? true : false;
+-
+-	/*
+-	 * The exact length of data that needs to be ciphered for an ABLK
+-	 * request is stored in req->nbytes. Hence we may have to reduce
+-	 * the DMA length to what is specified in req->nbytes and later
+-	 * restore the length of scatterlist back to its original value.
+-	 */
+-	for_each_sg(req->src, cur, info.src.nsegs, i) {
+-		if (!cur)
+-			break;
+-
+-		tot_len += cur->length;
+-		if (!sg_next(cur))
+-			break;
+-	}
+-
+-	/*
+-	 * We only support (2^16 - 1) length.
+-	 */
+-	if (tot_len > U16_MAX) {
+-		ctx->stats.failed_len++;
+-		return -EFBIG;
+-	}
+-
+-	info.src.last_sg = cur;
+-	info.ahash_skip = tot_len - req->nbytes;
+-
+-	if (!atomic_inc_not_zero(&ctx->refcnt))
+-		return -ENOENT;
+-
+-	return nss_cryptoapi_transform(ctx, &info, (void *)req, false);
+-}
+-
+-/*
+- * nss_cryptoapi_ablk_decrypt()
+- * 	Crytoapi decrypt for AES and 3DES CBC algorithms.
+- */
+-int nss_cryptoapi_ablk_decrypt(struct ablkcipher_request *req)
+-{
+-	struct nss_cryptoapi_info info = {.op_dir = NSS_CRYPTO_OP_DIR_DEC};
+-	struct crypto_ablkcipher *cipher = crypto_ablkcipher_reqtfm(req);
+-	struct nss_cryptoapi_ctx *ctx = crypto_ablkcipher_ctx(cipher);
+-	struct crypto_tfm *tfm = req->base.tfm;
+-	struct scatterlist *cur;
+-	int tot_len = 0;
+-	int i;
+-
+-	/*
+-	 * Check cryptoapi context magic number.
+-	 */
+-	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
+-
+-	/*
+-	 * Check if cryptoapi context is active or not
+-	 */
+-	if (!atomic_read(&ctx->active))
+-		return -EINVAL;
+-
+-	if (sg_nents(req->src) != sg_nents(req->dst)) {
+-		ctx->stats.failed_req++;
+-		return -EINVAL;
+-	}
+-
+-	/*
+-	 * Block size not aligned
+-	 */
+-	if (!IS_ALIGNED(req->nbytes, crypto_tfm_alg_blocksize(tfm)) && ctx->info->blk_align) {
+-		ctx->stats.failed_align++;
+-		crypto_ablkcipher_set_flags(cipher, CRYPTO_TFM_RES_BAD_BLOCK_LEN);
+-		return -EFAULT;
+-	}
+-
+-	/*
+-	 * Fill the request information structure
+-	 * Note: For CTR mode, IV size will be set to AES_BLOCK_SIZE.
+-	 * This is because linux gives iv size as 8 while we need to alloc 16 bytes
+-	 * in crypto hdr to accomodate
+-	 * - 4 bytes of nonce
+-	 * - 8 bytes of IV
+-	 * - 4 bytes of initial counter
+-	 */
+-	info.iv = req->info;
+-	info.src.nsegs = sg_nents(req->src);
+-	info.dst.nsegs = sg_nents(req->dst);
+-	info.iv_size = ctx->iv_size;
+-	info.op_dir = NSS_CRYPTO_OP_DIR_DEC;
+-	info.cb = nss_cryptoapi_ablkcipher_done;
+-	info.src.first_sg = req->src;
+-	info.dst.first_sg = req->dst;
+-	info.dst.last_sg = sg_last(req->dst, info.dst.nsegs);
+-
+-	/* out and in length will be same as ablk does only encrypt/decryt operation */
+-	info.total_in_len = info.total_out_len = req->nbytes;
+-	info.in_place = (req->src == req->dst) ? true : false;
+-
+-	/*
+-	 * The exact length of data that needs to be ciphered for an ABLK
+-	 * request is stored in req->nbytes. Hence we may have to reduce
+-	 * the DMA length to what is specified in req->nbytes and later
+-	 * restore the length of scatterlist back to its original value.
+-	 */
+-	for_each_sg(req->src, cur, info.src.nsegs, i) {
+-		tot_len += cur->length;
+-		if (!sg_next(cur))
+-			break;
+-	}
+-
+-	/*
+-	 * We only support (2^16 - 1) length.
+-	 */
+-	if (tot_len > U16_MAX) {
+-		ctx->stats.failed_len++;
+-		return -EFBIG;
+-	}
+-
+-	info.ahash_skip = tot_len - req->nbytes;
+-	info.src.last_sg = cur;
+-
+-	if (!atomic_inc_not_zero(&ctx->refcnt))
+-		return -ENOENT;
+-
+-	return nss_cryptoapi_transform(ctx, &info, (void *)req, false);
+-}
+--- /dev/null
++++ b/cryptoapi/v2.0/nss_cryptoapi_skcipher.c
+@@ -0,0 +1,438 @@
++/* Copyright (c) 2015-2020 The Linux Foundation. All rights reserved.
++ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
++ *
++ * Permission to use, copy, modify, and/or distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
++ * AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT
++ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
++ * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE
++ * OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
++ * PERFORMANCE OF THIS SOFTWARE.
++ *
++ *
++ */
++
++/**
++ * nss_cryptoapi_ablk.c
++ * 	Interface to communicate Native Linux crypto framework specific data
++ * 	to Crypto core specific data
++ */
++
++#include <linux/version.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/random.h>
++#include <linux/moduleparam.h>
++#include <linux/spinlock.h>
++#include <asm/cmpxchg.h>
++#include <linux/delay.h>
++#include <linux/crypto.h>
++#include <linux/debugfs.h>
++#include <linux/completion.h>
++
++#include <crypto/aes.h>
++#include <crypto/des.h>
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++#include <crypto/sha.h>
++#else
++#include <crypto/sha1.h>
++#include <crypto/sha2.h>
++#endif
++#include <crypto/hash.h>
++#include <crypto/algapi.h>
++#include <crypto/aead.h>
++#include <crypto/authenc.h>
++#include <crypto/ctr.h>
++#include <crypto/internal/skcipher.h>
++
++#include <nss_api_if.h>
++#include <nss_crypto_cmn.h>
++#include <nss_cfi_if.h>
++#include <nss_crypto_api.h>
++#include <nss_crypto_hdr.h>
++#include <nss_crypto_defines.h>
++#include <nss_cryptoapi.h>
++#include "nss_cryptoapi_private.h"
++
++extern struct nss_cryptoapi g_cryptoapi;
++
++/*
++ * nss_cryptoapi_skcipher_ctx2session()
++ *	Cryptoapi function to get the session ID for an skcipher
++ */
++int nss_cryptoapi_skcipher_ctx2session(struct crypto_skcipher *sk, uint32_t *sid)
++{
++	struct crypto_tfm *tfm = crypto_skcipher_tfm(sk);
++	struct nss_cryptoapi_ctx *ctx;
++
++	if (strncmp("nss-", crypto_tfm_alg_driver_name(tfm), 4))
++		return -EINVAL;
++
++	/* Get the nss_cryptoapi context stored in skcipher */
++	ctx = crypto_skcipher_ctx(sk);
++	BUG_ON(!ctx);
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	*sid = ctx->sid;
++	return 0;
++}
++EXPORT_SYMBOL(nss_cryptoapi_skcipher_ctx2session);
++
++/*
++ * nss_cryptoapi_skcipher_init()
++ * 	Cryptoapi skcipher init function.
++ */
++int nss_cryptoapi_skcipher_init(struct crypto_skcipher *tfm)
++{
++	struct nss_cryptoapi_ctx *ctx = crypto_skcipher_ctx(tfm);
++
++	BUG_ON(!ctx);
++	NSS_CRYPTOAPI_SET_MAGIC(ctx);
++
++	memset(ctx, 0, sizeof(struct nss_cryptoapi_ctx));
++
++	ctx->user = g_cryptoapi.user;
++	ctx->stats.init++;
++	ctx->sid = NSS_CRYPTO_SESSION_MAX;
++	init_completion(&ctx->complete);
++
++	return 0;
++}
++
++/*
++ * nss_cryptoapi_skcipher_exit()
++ * 	Cryptoapi skcipher exit function.
++ */
++void nss_cryptoapi_skcipher_exit(struct crypto_skcipher *tfm)
++{
++	struct nss_cryptoapi_ctx *ctx = crypto_skcipher_ctx(tfm);
++	int ret;
++
++	BUG_ON(!ctx);
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	ctx->stats.exit++;
++
++	/*
++	 * When fallback_req is set, it means that fallback tfm was used
++	 * we didn't create any sessions.
++	 */
++	if (ctx->fallback_req) {
++		ctx->stats.failed_fallback++;
++		return;
++	}
++
++	if (!atomic_read(&ctx->active)) {
++		ctx->stats.failed_exit++;
++		return;
++	}
++
++	/*
++	 * Mark cryptoapi context as inactive
++	 */
++	atomic_set(&ctx->active, 0);
++
++	if (!atomic_sub_and_test(1, &ctx->refcnt)) {
++		/*
++		 * We need to wait for any outstanding packet using this ctx.
++		 * Once the last packet get processed, reference count will become
++		 * 0 this ctx. We will wait for the reference to go down to 0.
++		 */
++		ret = wait_for_completion_timeout(&ctx->complete, NSS_CRYPTOAPI_REQ_TIMEOUT_TICKS);
++		WARN_ON(!ret);
++	}
++
++	if (ctx->sid != NSS_CRYPTO_SESSION_MAX) {
++		nss_crypto_session_free(ctx->user, ctx->sid);
++		debugfs_remove_recursive(ctx->dentry);
++		ctx->sid = NSS_CRYPTO_SESSION_MAX;
++	}
++
++	NSS_CRYPTOAPI_CLEAR_MAGIC(ctx);
++}
++
++/*
++ * nss_cryptoapi_skcipher_setkey()
++ * 	Cryptoapi setkey routine for aes.
++ */
++int nss_cryptoapi_skcipher_setkey(struct crypto_skcipher *cipher, const u8 *key, unsigned int keylen)
++{
++	struct crypto_tfm *tfm = crypto_skcipher_tfm(cipher);
++	struct nss_cryptoapi_ctx *ctx = crypto_skcipher_ctx(cipher);
++	struct nss_crypto_session_data data = {0};
++	int status;
++
++	/*
++	 * Validate magic number - init should be called before setkey
++	 */
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	ctx->info = nss_cryptoapi_cra_name2info(crypto_tfm_alg_name(tfm), keylen, 0);
++	if (!ctx->info) {
++		return -EINVAL;
++	}
++
++	ctx->iv_size = crypto_skcipher_ivsize(cipher);
++
++	if (ctx->info->cipher_mode == NSS_CRYPTOAPI_CIPHER_MODE_CTR_RFC3686) {
++		keylen = keylen - CTR_RFC3686_NONCE_SIZE;
++		memcpy(ctx->ctx_iv, key + keylen, CTR_RFC3686_NONCE_SIZE);
++		ctx->ctx_iv[3] = ntohl(0x1);
++		ctx->iv_size += CTR_RFC3686_NONCE_SIZE + sizeof(uint32_t);
++	}
++
++	/*
++	 * Fill NSS crypto session data
++	 */
++	data.algo = ctx->info->algo;
++	data.cipher_key = key;
++
++	if (data.algo >= NSS_CRYPTO_CMN_ALGO_MAX)
++		return -ERANGE;
++
++	if (ctx->sid != NSS_CRYPTO_SESSION_MAX) {
++		nss_crypto_session_free(ctx->user, ctx->sid);
++		debugfs_remove_recursive(ctx->dentry);
++		ctx->sid = NSS_CRYPTO_SESSION_MAX;
++	}
++
++	status = nss_crypto_session_alloc(ctx->user, &data, &ctx->sid);
++	if (status < 0) {
++		nss_cfi_err("%px: Unable to allocate crypto session(%d)\n", ctx, status);
++		return status;
++	}
++
++	nss_cryptoapi_add_ctx2debugfs(ctx);
++	atomic_set(&ctx->active, 1);
++	atomic_set(&ctx->refcnt, 1);
++	return 0;
++}
++
++/*
++ * nss_cryptoapi_skcipher_done()
++ * 	Cipher operation completion callback function
++ */
++void nss_cryptoapi_skcipher_done(void *app_data, struct nss_crypto_hdr *ch, uint8_t status)
++{
++	struct skcipher_request *req = app_data;
++	struct nss_cryptoapi_ctx *ctx = skcipher_request_ctx(req);
++	int error;
++
++	BUG_ON(!ch);
++
++	/*
++	 * Check cryptoapi context magic number.
++	 */
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	/*
++	 * For skcipher decryption case, the last block of encrypted data is used as
++	 * an IV for the next data
++	 */
++	if (ch->op == NSS_CRYPTO_OP_DIR_ENC) {
++		nss_cryptoapi_copy_iv(ctx, req->dst, req->iv, ch->iv_len);
++	}
++
++	/*
++	 * Free crypto hdr
++	 */
++	nss_crypto_hdr_free(ctx->user, ch);
++
++	nss_cfi_dbg("data dump after transformation\n");
++	nss_cfi_dbg_data(sg_virt(req->dst), req->cryptlen, ' ');
++
++	/*
++	 * Check if there is any error reported by hardware
++	 */
++	error = nss_cryptoapi_status2error(ctx, status);
++	ctx->stats.completed++;
++
++	/*
++	 * Decrement cryptoapi reference
++	 */
++	nss_cryptoapi_ref_dec(ctx);
++	req->base.complete(&req->base, error);
++}
++
++/*
++ * nss_cryptoapi_skcipher_encrypt()
++ * 	Crytoapi encrypt for AES and 3DES algorithms.
++ */
++int nss_cryptoapi_skcipher_encrypt(struct skcipher_request *req)
++{
++	struct nss_cryptoapi_info info = {.op_dir = NSS_CRYPTO_OP_DIR_ENC};
++	struct crypto_skcipher *cipher = crypto_skcipher_reqtfm(req);
++	struct nss_cryptoapi_ctx *ctx = crypto_skcipher_ctx(cipher);
++	struct crypto_tfm *tfm = req->base.tfm;
++	struct scatterlist *cur;
++	int tot_len = 0;
++	int i;
++
++	/*
++	 * Check cryptoapi context magic number.
++	 */
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	/*
++	 * Check if cryptoapi context is active or not
++	 */
++	if (!atomic_read(&ctx->active))
++		return -EINVAL;
++
++	if (sg_nents(req->src) != sg_nents(req->dst)) {
++		ctx->stats.failed_req++;
++		return -EINVAL;
++	}
++
++	/*
++	 * Block size not aligned.
++	 * AES-CTR requires only a one-byte block size alignment.
++	 */
++	if (!IS_ALIGNED(req->cryptlen, crypto_tfm_alg_blocksize(tfm)) && ctx->info->blk_align) {
++		ctx->stats.failed_align++;
++		return -EFAULT;
++	}
++
++	/*
++	 * Fill the request information structure
++	 */
++	info.iv = req->iv;
++	info.src.nsegs = sg_nents(req->src);
++	info.dst.nsegs = sg_nents(req->dst);
++	info.op_dir = NSS_CRYPTO_OP_DIR_ENC;
++	info.cb = nss_cryptoapi_skcipher_done;
++	info.iv_size = ctx->iv_size;
++	info.src.first_sg = req->src;
++	info.dst.first_sg = req->dst;
++	info.dst.last_sg = sg_last(req->dst, info.dst.nsegs);
++
++	/* out and in length will be same as ablk does only encrypt/decryt operation */
++	info.total_in_len = info.total_out_len = req->cryptlen;
++	info.in_place = (req->src == req->dst) ? true : false;
++
++	/*
++	 * The exact length of data that needs to be ciphered for an ABLK
++	 * request is stored in req->cryptlen. Hence we may have to reduce
++	 * the DMA length to what is specified in req->cryptlen and later
++	 * restore the length of scatterlist back to its original value.
++	 */
++	for_each_sg(req->src, cur, info.src.nsegs, i) {
++		if (!cur)
++			break;
++
++		tot_len += cur->length;
++		if (!sg_next(cur))
++			break;
++	}
++
++	/*
++	 * We only support (2^16 - 1) length.
++	 */
++	if (tot_len > U16_MAX) {
++		ctx->stats.failed_len++;
++		return -EFBIG;
++	}
++
++	info.src.last_sg = cur;
++	info.ahash_skip = tot_len - req->cryptlen;
++
++	if (!atomic_inc_not_zero(&ctx->refcnt))
++		return -ENOENT;
++
++	return nss_cryptoapi_transform(ctx, &info, (void *)req, false);
++}
++
++/*
++ * nss_cryptoapi_skcipher_decrypt()
++ * 	Crytoapi decrypt for AES and 3DES CBC algorithms.
++ */
++int nss_cryptoapi_skcipher_decrypt(struct skcipher_request *req)
++{
++	struct nss_cryptoapi_info info = {.op_dir = NSS_CRYPTO_OP_DIR_DEC};
++	struct crypto_skcipher *cipher = crypto_skcipher_reqtfm(req);
++	struct nss_cryptoapi_ctx *ctx = crypto_skcipher_ctx(cipher);
++	struct crypto_tfm *tfm = req->base.tfm;
++	struct scatterlist *cur;
++	int tot_len = 0;
++	int i;
++
++	/*
++	 * Check cryptoapi context magic number.
++	 */
++	NSS_CRYPTOAPI_VERIFY_MAGIC(ctx);
++
++	/*
++	 * Check if cryptoapi context is active or not
++	 */
++	if (!atomic_read(&ctx->active))
++		return -EINVAL;
++
++	if (sg_nents(req->src) != sg_nents(req->dst)) {
++		ctx->stats.failed_req++;
++		return -EINVAL;
++	}
++
++	/*
++	 * Block size not aligned
++	 */
++	if (!IS_ALIGNED(req->cryptlen, crypto_tfm_alg_blocksize(tfm)) && ctx->info->blk_align) {
++		ctx->stats.failed_align++;
++		return -EFAULT;
++	}
++
++	/*
++	 * Fill the request information structure
++	 * Note: For CTR mode, IV size will be set to AES_BLOCK_SIZE.
++	 * This is because linux gives iv size as 8 while we need to alloc 16 bytes
++	 * in crypto hdr to accomodate
++	 * - 4 bytes of nonce
++	 * - 8 bytes of IV
++	 * - 4 bytes of initial counter
++	 */
++	info.iv = req->iv;
++	info.src.nsegs = sg_nents(req->src);
++	info.dst.nsegs = sg_nents(req->dst);
++	info.iv_size = ctx->iv_size;
++	info.op_dir = NSS_CRYPTO_OP_DIR_DEC;
++	info.cb = nss_cryptoapi_skcipher_done;
++	info.src.first_sg = req->src;
++	info.dst.first_sg = req->dst;
++	info.dst.last_sg = sg_last(req->dst, info.dst.nsegs);
++
++	/* out and in length will be same as ablk does only encrypt/decryt operation */
++	info.total_in_len = info.total_out_len = req->cryptlen;
++	info.in_place = (req->src == req->dst) ? true : false;
++
++	/*
++	 * The exact length of data that needs to be ciphered for an ABLK
++	 * request is stored in req->cryptlen. Hence we may have to reduce
++	 * the DMA length to what is specified in req->cryptlen and later
++	 * restore the length of scatterlist back to its original value.
++	 */
++	for_each_sg(req->src, cur, info.src.nsegs, i) {
++		tot_len += cur->length;
++		if (!sg_next(cur))
++			break;
++	}
++
++	/*
++	 * We only support (2^16 - 1) length.
++	 */
++	if (tot_len > U16_MAX) {
++		ctx->stats.failed_len++;
++		return -EFBIG;
++	}
++
++	info.ahash_skip = tot_len - req->cryptlen;
++	info.src.last_sg = cur;
++
++	if (!atomic_inc_not_zero(&ctx->refcnt))
++		return -ENOENT;
++
++	return nss_cryptoapi_transform(ctx, &info, (void *)req, false);
++}

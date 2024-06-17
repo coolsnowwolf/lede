@@ -1,0 +1,166 @@
+From 0b0d606eb9650fa01dd5621e072aa29a10544399 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 22 Aug 2023 17:33:12 +0100
+Subject: [PATCH 113/250] net: ethernet: mtk_eth_soc: support 36-bit DMA
+ addressing on MT7988
+
+Systems having 4 GiB of RAM and more require DMA addressing beyond the
+current 32-bit limit. Starting from MT7988 the hardware now supports
+36-bit DMA addressing, let's use that new capability in the driver to
+avoid running into swiotlb on systems with 4 GiB of RAM or more.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Link: https://lore.kernel.org/r/95b919c98876c9e49761e44662e7c937479eecb8.1692721443.git.daniel@makrotopia.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 30 +++++++++++++++++++--
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h | 22 +++++++++++++--
+ 2 files changed, 48 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1311,6 +1311,10 @@ static void mtk_tx_set_dma_desc_v2(struc
+ 	data = TX_DMA_PLEN0(info->size);
+ 	if (info->last)
+ 		data |= TX_DMA_LS0;
++
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA))
++		data |= TX_DMA_PREP_ADDR64(info->addr);
++
+ 	WRITE_ONCE(desc->txd3, data);
+ 
+ 	 /* set forward port */
+@@ -1980,6 +1984,7 @@ static int mtk_poll_rx(struct napi_struc
+ 	bool xdp_flush = false;
+ 	int idx;
+ 	struct sk_buff *skb;
++	u64 addr64 = 0;
+ 	u8 *data, *new_data;
+ 	struct mtk_rx_dma_v2 *rxd, trxd;
+ 	int done = 0, bytes = 0;
+@@ -2095,7 +2100,10 @@ static int mtk_poll_rx(struct napi_struc
+ 				goto release_desc;
+ 			}
+ 
+-			dma_unmap_single(eth->dma_dev, trxd.rxd1,
++			if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA))
++				addr64 = RX_DMA_GET_ADDR64(trxd.rxd2);
++
++			dma_unmap_single(eth->dma_dev, ((u64)trxd.rxd1 | addr64),
+ 					 ring->buf_size, DMA_FROM_DEVICE);
+ 
+ 			skb = build_skb(data, ring->frag_size);
+@@ -2161,6 +2169,9 @@ release_desc:
+ 		else
+ 			rxd->rxd2 = RX_DMA_PREP_PLEN0(ring->buf_size);
+ 
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA))
++			rxd->rxd2 |= RX_DMA_PREP_ADDR64(dma_addr);
++
+ 		ring->calc_idx = idx;
+ 		done++;
+ 	}
+@@ -2653,6 +2664,9 @@ static int mtk_rx_alloc(struct mtk_eth *
+ 		else
+ 			rxd->rxd2 = RX_DMA_PREP_PLEN0(ring->buf_size);
+ 
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA))
++			rxd->rxd2 |= RX_DMA_PREP_ADDR64(dma_addr);
++
+ 		rxd->rxd3 = 0;
+ 		rxd->rxd4 = 0;
+ 		if (mtk_is_netsys_v2_or_greater(eth)) {
+@@ -2699,6 +2713,7 @@ static int mtk_rx_alloc(struct mtk_eth *
+ 
+ static void mtk_rx_clean(struct mtk_eth *eth, struct mtk_rx_ring *ring, bool in_sram)
+ {
++	u64 addr64 = 0;
+ 	int i;
+ 
+ 	if (ring->data && ring->dma) {
+@@ -2712,7 +2727,10 @@ static void mtk_rx_clean(struct mtk_eth
+ 			if (!rxd->rxd1)
+ 				continue;
+ 
+-			dma_unmap_single(eth->dma_dev, rxd->rxd1,
++			if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA))
++				addr64 = RX_DMA_GET_ADDR64(rxd->rxd2);
++
++			dma_unmap_single(eth->dma_dev, ((u64)rxd->rxd1 | addr64),
+ 					 ring->buf_size, DMA_FROM_DEVICE);
+ 			mtk_rx_put_buff(ring, ring->data[i], false);
+ 		}
+@@ -4699,6 +4717,14 @@ static int mtk_probe(struct platform_dev
+ 		}
+ 	}
+ 
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_36BIT_DMA)) {
++		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(36));
++		if (err) {
++			dev_err(&pdev->dev, "Wrong DMA config\n");
++			return -EINVAL;
++		}
++	}
++
+ 	spin_lock_init(&eth->page_lock);
+ 	spin_lock_init(&eth->tx_irq_lock);
+ 	spin_lock_init(&eth->rx_irq_lock);
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -331,6 +331,14 @@
+ #define TX_DMA_PLEN1(x)		((x) & eth->soc->txrx.dma_max_len)
+ #define TX_DMA_SWC		BIT(14)
+ #define TX_DMA_PQID		GENMASK(3, 0)
++#define TX_DMA_ADDR64_MASK	GENMASK(3, 0)
++#if IS_ENABLED(CONFIG_64BIT)
++# define TX_DMA_GET_ADDR64(x)	(((u64)FIELD_GET(TX_DMA_ADDR64_MASK, (x))) << 32)
++# define TX_DMA_PREP_ADDR64(x)	FIELD_PREP(TX_DMA_ADDR64_MASK, ((x) >> 32))
++#else
++# define TX_DMA_GET_ADDR64(x)	(0)
++# define TX_DMA_PREP_ADDR64(x)	(0)
++#endif
+ 
+ /* PDMA on MT7628 */
+ #define TX_DMA_DONE		BIT(31)
+@@ -343,6 +351,14 @@
+ #define RX_DMA_PREP_PLEN0(x)	(((x) & eth->soc->txrx.dma_max_len) << eth->soc->txrx.dma_len_offset)
+ #define RX_DMA_GET_PLEN0(x)	(((x) >> eth->soc->txrx.dma_len_offset) & eth->soc->txrx.dma_max_len)
+ #define RX_DMA_VTAG		BIT(15)
++#define RX_DMA_ADDR64_MASK	GENMASK(3, 0)
++#if IS_ENABLED(CONFIG_64BIT)
++# define RX_DMA_GET_ADDR64(x)	(((u64)FIELD_GET(RX_DMA_ADDR64_MASK, (x))) << 32)
++# define RX_DMA_PREP_ADDR64(x)	FIELD_PREP(RX_DMA_ADDR64_MASK, ((x) >> 32))
++#else
++# define RX_DMA_GET_ADDR64(x)	(0)
++# define RX_DMA_PREP_ADDR64(x)	(0)
++#endif
+ 
+ /* QDMA descriptor rxd3 */
+ #define RX_DMA_VID(x)		((x) & VLAN_VID_MASK)
+@@ -942,6 +958,7 @@ enum mkt_eth_capabilities {
+ 	MTK_RSTCTRL_PPE2_BIT,
+ 	MTK_U3_COPHY_V2_BIT,
+ 	MTK_SRAM_BIT,
++	MTK_36BIT_DMA_BIT,
+ 
+ 	/* MUX BITS*/
+ 	MTK_ETH_MUX_GDM1_TO_GMAC1_ESW_BIT,
+@@ -978,6 +995,7 @@ enum mkt_eth_capabilities {
+ #define MTK_RSTCTRL_PPE2	BIT_ULL(MTK_RSTCTRL_PPE2_BIT)
+ #define MTK_U3_COPHY_V2		BIT_ULL(MTK_U3_COPHY_V2_BIT)
+ #define MTK_SRAM		BIT_ULL(MTK_SRAM_BIT)
++#define MTK_36BIT_DMA	BIT_ULL(MTK_36BIT_DMA_BIT)
+ 
+ #define MTK_ETH_MUX_GDM1_TO_GMAC1_ESW		\
+ 	BIT_ULL(MTK_ETH_MUX_GDM1_TO_GMAC1_ESW_BIT)
+@@ -1059,8 +1077,8 @@ enum mkt_eth_capabilities {
+ 		      MTK_MUX_GMAC12_TO_GEPHY_SGMII | MTK_QDMA | \
+ 		      MTK_RSTCTRL_PPE1 | MTK_SRAM)
+ 
+-#define MT7988_CAPS  (MTK_GDM1_ESW | MTK_QDMA | MTK_RSTCTRL_PPE1 | \
+-		      MTK_RSTCTRL_PPE2 | MTK_SRAM)
++#define MT7988_CAPS  (MTK_36BIT_DMA | MTK_GDM1_ESW | MTK_QDMA | \
++		      MTK_RSTCTRL_PPE1 | MTK_RSTCTRL_PPE2 | MTK_SRAM)
+ 
+ struct mtk_tx_dma_desc_info {
+ 	dma_addr_t	addr;
