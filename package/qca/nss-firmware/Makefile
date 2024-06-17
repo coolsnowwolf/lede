@@ -43,7 +43,7 @@ endef
 define Package/nss-firmware-ipq8074
 $(Package/nss-firmware-default)
   TITLE:=NSS firmware for IPQ8074 devices
-  NSS_ARCHIVE:=$(VERSION_PATH)/IPQ8074.ATH.12.0.0/BIN-NSS.FW.12.0.r1-002-HK.R.tar.bz2
+  NSS_ARCHIVE:=$(VERSION_PATH)/IPQ8074.ATH.12.0.0/BIN-NSS.FW.12.1-022-HK.R.tar.bz2
 endef
 
 define Build/Compile
