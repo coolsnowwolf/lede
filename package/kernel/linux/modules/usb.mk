@@ -656,6 +656,22 @@ endef
 $(eval $(call KernelPackage,usb-serial-ch341))
 
 
+define KernelPackage/usb-serial-ch348
+  TITLE:=Support for CH348 devices
+  KCONFIG:=CONFIG_USB_SERIAL_CH348
+  FILES:=$(LINUX_DIR)/drivers/usb/serial/ch348.ko
+  AUTOLOAD:=$(call AutoProbe,ch348)
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6)
+  $(call AddDepends/usb-serial)
+endef
+
+define KernelPackage/usb-serial-ch348/description
+ Kernel support for Winchiphead CH348 USB-to-8x-Serial converters
+endef
+
+$(eval $(call KernelPackage,usb-serial-ch348))
+
+
 define KernelPackage/usb-serial-edgeport
   TITLE:=Support for Digi Edgeport devices
   KCONFIG:=CONFIG_USB_SERIAL_EDGEPORT
