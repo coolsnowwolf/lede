@@ -1,0 +1,41 @@
+From b35cdbcc3966e61b87d1e89f3ac8e172f15be4ff Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 14 Mar 2024 21:32:32 +0000
+Subject: [PATCH 0967/1085] dmaengine: dw-axi-dmac: Fix a non-atomic update
+
+dw_axi_dma_interrupt disables interrupts for the duration of the channel
+handling. It does so by clearing a bit in the DMA_CFG register - an
+action that involves a read-modify-write. That in itself would be safe
+because there will be no further interrupts, hence no reentrancy, were
+it the only bit of code accessing that register.
+
+The only neighbour of INT_EN is DMAC_EN - the main enable for the block.
+That's not the sort of thing you would expect to be modified during the
+normal course of operation, but bizarrely it is set at the start of the
+transfer of every block, in axi_chan_block_xfer_star, by a call to
+axi_dma_enable. This can lead to INT_EN being accidentally cleared,
+which causes all DMA transfers to time out.
+
+One might think that the enabling was being delayed until the first
+transfer, but the probe function calls axi_dma_resume which in turn
+calls axi_dma_enable, so that isn't the case.
+
+Fix the atomicity problem by removing the spurious call to
+axi_dma_enable.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -389,8 +389,6 @@ static void axi_chan_block_xfer_start(st
+ 		return;
+ 	}
+ 
+-	axi_dma_enable(chan->chip);
+-
+ 	config.dst_multblk_type = DWAXIDMAC_MBLK_TYPE_LL;
+ 	config.src_multblk_type = DWAXIDMAC_MBLK_TYPE_LL;
+ 	config.tt_fc = DWAXIDMAC_TT_FC_MEM_TO_MEM_DMAC;

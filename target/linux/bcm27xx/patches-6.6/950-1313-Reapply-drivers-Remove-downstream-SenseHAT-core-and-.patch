@@ -1,0 +1,608 @@
+From 9fb57f6b8920a8aceb74ceb3e171a7e5769205a5 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Thu, 10 Oct 2024 17:18:39 +0100
+Subject: [PATCH 1313/1350] Reapply "drivers: Remove downstream SenseHAT core
+ and joystick drivers"
+
+This reverts commit e6493e2d6a1f572fbb4a1d724e54715cb748b424.
+---
+ drivers/input/joystick/Kconfig           |   8 --
+ drivers/input/joystick/Makefile          |   1 -
+ drivers/input/joystick/rpisense-js.c     | 153 ---------------------
+ drivers/mfd/Kconfig                      |   8 --
+ drivers/mfd/Makefile                     |   1 -
+ drivers/mfd/rpisense-core.c              | 163 -----------------------
+ drivers/video/fbdev/Kconfig              |   4 +-
+ drivers/video/fbdev/rpisense-fb.c        |  53 ++++----
+ include/linux/mfd/rpisense/core.h        |  47 -------
+ include/linux/mfd/rpisense/framebuffer.h |   5 +-
+ 10 files changed, 32 insertions(+), 411 deletions(-)
+ delete mode 100644 drivers/input/joystick/rpisense-js.c
+ delete mode 100644 drivers/mfd/rpisense-core.c
+ delete mode 100644 include/linux/mfd/rpisense/core.h
+
+--- a/drivers/input/joystick/Kconfig
++++ b/drivers/input/joystick/Kconfig
+@@ -412,12 +412,4 @@ config JOYSTICK_SENSEHAT
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called sensehat_joystick.
+ 
+-config JOYSTICK_RPISENSE
+-	tristate "Raspberry Pi Sense HAT joystick"
+-	depends on GPIOLIB && INPUT
+-	select MFD_RPISENSE_CORE
+-
+-	help
+-	  This is the joystick driver for the Raspberry Pi Sense HAT
+-
+ endif
+--- a/drivers/input/joystick/Makefile
++++ b/drivers/input/joystick/Makefile
+@@ -40,4 +40,3 @@ obj-$(CONFIG_JOYSTICK_WARRIOR)		+= warri
+ obj-$(CONFIG_JOYSTICK_WALKERA0701)	+= walkera0701.o
+ obj-$(CONFIG_JOYSTICK_XPAD)		+= xpad.o
+ obj-$(CONFIG_JOYSTICK_ZHENHUA)		+= zhenhua.o
+-obj-$(CONFIG_JOYSTICK_RPISENSE)		+= rpisense-js.o
+--- a/drivers/input/joystick/rpisense-js.c
++++ /dev/null
+@@ -1,153 +0,0 @@
+-/*
+- * Raspberry Pi Sense HAT joystick driver
+- * http://raspberrypi.org
+- *
+- * Copyright (C) 2015 Raspberry Pi
+- *
+- * Author: Serge Schneider
+- *
+- *  This program is free software; you can redistribute  it and/or modify it
+- *  under  the terms of  the GNU General  Public License as published by the
+- *  Free Software Foundation;  either version 2 of the  License, or (at your
+- *  option) any later version.
+- *
+- */
+-
+-#include <linux/module.h>
+-
+-#include <linux/mfd/rpisense/joystick.h>
+-#include <linux/mfd/rpisense/core.h>
+-
+-static struct rpisense *rpisense;
+-static unsigned char keymap[5] = {KEY_DOWN, KEY_RIGHT, KEY_UP, KEY_ENTER, KEY_LEFT,};
+-
+-static void keys_work_fn(struct work_struct *work)
+-{
+-	int i;
+-	static s32 prev_keys;
+-	struct rpisense_js *rpisense_js = &rpisense->joystick;
+-	s32 keys = rpisense_reg_read(rpisense, RPISENSE_KEYS);
+-	s32 changes = keys ^ prev_keys;
+-
+-	prev_keys = keys;
+-	for (i = 0; i < 5; i++) {
+-		if (changes & 1) {
+-			input_report_key(rpisense_js->keys_dev,
+-					 keymap[i], keys & 1);
+-		}
+-		changes >>= 1;
+-		keys >>= 1;
+-	}
+-	input_sync(rpisense_js->keys_dev);
+-}
+-
+-static irqreturn_t keys_irq_handler(int irq, void *pdev)
+-{
+-	struct rpisense_js *rpisense_js = &rpisense->joystick;
+-
+-	schedule_work(&rpisense_js->keys_work_s);
+-	return IRQ_HANDLED;
+-}
+-
+-static int rpisense_js_probe(struct platform_device *pdev)
+-{
+-	int ret;
+-	int i;
+-	struct rpisense_js *rpisense_js;
+-
+-	rpisense = rpisense_get_dev();
+-	rpisense_js = &rpisense->joystick;
+-
+-	INIT_WORK(&rpisense_js->keys_work_s, keys_work_fn);
+-
+-	rpisense_js->keys_dev = input_allocate_device();
+-	if (!rpisense_js->keys_dev) {
+-		dev_err(&pdev->dev, "Could not allocate input device.\n");
+-		return -ENOMEM;
+-	}
+-
+-	rpisense_js->keys_dev->evbit[0] = BIT_MASK(EV_KEY);
+-	for (i = 0; i < ARRAY_SIZE(keymap); i++) {
+-		set_bit(keymap[i],
+-			rpisense_js->keys_dev->keybit);
+-	}
+-
+-	rpisense_js->keys_dev->name = "Raspberry Pi Sense HAT Joystick";
+-	rpisense_js->keys_dev->phys = "rpi-sense-joy/input0";
+-	rpisense_js->keys_dev->id.bustype = BUS_I2C;
+-	rpisense_js->keys_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
+-	rpisense_js->keys_dev->keycode = keymap;
+-	rpisense_js->keys_dev->keycodesize = sizeof(unsigned char);
+-	rpisense_js->keys_dev->keycodemax = ARRAY_SIZE(keymap);
+-
+-	ret = input_register_device(rpisense_js->keys_dev);
+-	if (ret) {
+-		dev_err(&pdev->dev, "Could not register input device.\n");
+-		goto err_keys_alloc;
+-	}
+-
+-	ret = gpiod_direction_input(rpisense_js->keys_desc);
+-	if (ret) {
+-		dev_err(&pdev->dev, "Could not set keys-int direction.\n");
+-		goto err_keys_reg;
+-	}
+-
+-	rpisense_js->keys_irq = gpiod_to_irq(rpisense_js->keys_desc);
+-	if (rpisense_js->keys_irq < 0) {
+-		dev_err(&pdev->dev, "Could not determine keys-int IRQ.\n");
+-		ret = rpisense_js->keys_irq;
+-		goto err_keys_reg;
+-	}
+-
+-	ret = devm_request_irq(&pdev->dev, rpisense_js->keys_irq,
+-			       keys_irq_handler, IRQF_TRIGGER_RISING,
+-			       "keys", &pdev->dev);
+-	if (ret) {
+-		dev_err(&pdev->dev, "IRQ request failed.\n");
+-		goto err_keys_reg;
+-	}
+-	return 0;
+-err_keys_reg:
+-	input_unregister_device(rpisense_js->keys_dev);
+-err_keys_alloc:
+-	input_free_device(rpisense_js->keys_dev);
+-	return ret;
+-}
+-
+-static int rpisense_js_remove(struct platform_device *pdev)
+-{
+-	struct rpisense_js *rpisense_js = &rpisense->joystick;
+-
+-	input_unregister_device(rpisense_js->keys_dev);
+-	input_free_device(rpisense_js->keys_dev);
+-	return 0;
+-}
+-
+-#ifdef CONFIG_OF
+-static const struct of_device_id rpisense_js_id[] = {
+-	{ .compatible = "rpi,rpi-sense-js" },
+-	{ },
+-};
+-MODULE_DEVICE_TABLE(of, rpisense_js_id);
+-#endif
+-
+-static struct platform_device_id rpisense_js_device_id[] = {
+-	{ .name = "rpi-sense-js" },
+-	{ },
+-};
+-MODULE_DEVICE_TABLE(platform, rpisense_js_device_id);
+-
+-static struct platform_driver rpisense_js_driver = {
+-	.probe = rpisense_js_probe,
+-	.remove = rpisense_js_remove,
+-	.driver = {
+-		.name = "rpi-sense-js",
+-		.owner = THIS_MODULE,
+-	},
+-};
+-
+-module_platform_driver(rpisense_js_driver);
+-
+-MODULE_DESCRIPTION("Raspberry Pi Sense HAT joystick driver");
+-MODULE_AUTHOR("Serge Schneider <serge@raspberrypi.org>");
+-MODULE_LICENSE("GPL");
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -11,14 +11,6 @@ config MFD_CORE
+ 	select IRQ_DOMAIN
+ 	default n
+ 
+-config MFD_RPISENSE_CORE
+-	tristate "Raspberry Pi Sense HAT core functions"
+-	depends on I2C
+-	select MFD_CORE
+-	help
+-	  This is the core driver for the Raspberry Pi Sense HAT. This provides
+-	  the necessary functions to communicate with the hardware.
+-
+ config MFD_CS5535
+ 	tristate "AMD CS5535 and CS5536 southbridge core functions"
+ 	select MFD_CORE
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -268,7 +268,6 @@ obj-$(CONFIG_MFD_STMFX) 	+= stmfx.o
+ obj-$(CONFIG_MFD_KHADAS_MCU) 	+= khadas-mcu.o
+ obj-$(CONFIG_MFD_ACER_A500_EC)	+= acer-ec-a500.o
+ obj-$(CONFIG_MFD_QCOM_PM8008)	+= qcom-pm8008.o
+-obj-$(CONFIG_MFD_RPISENSE_CORE)	+= rpisense-core.o
+ 
+ obj-$(CONFIG_SGI_MFD_IOC3)	+= ioc3.o
+ obj-$(CONFIG_MFD_SIMPLE_MFD_I2C)	+= simple-mfd-i2c.o
+--- a/drivers/mfd/rpisense-core.c
++++ /dev/null
+@@ -1,163 +0,0 @@
+-/*
+- * Raspberry Pi Sense HAT core driver
+- * http://raspberrypi.org
+- *
+- * Copyright (C) 2015 Raspberry Pi
+- *
+- * Author: Serge Schneider
+- *
+- *  This program is free software; you can redistribute  it and/or modify it
+- *  under  the terms of  the GNU General  Public License as published by the
+- *  Free Software Foundation;  either version 2 of the  License, or (at your
+- *  option) any later version.
+- *
+- *  This driver is based on wm8350 implementation.
+- */
+-
+-#include <linux/module.h>
+-#include <linux/moduleparam.h>
+-#include <linux/err.h>
+-#include <linux/init.h>
+-#include <linux/i2c.h>
+-#include <linux/platform_device.h>
+-#include <linux/mfd/rpisense/core.h>
+-#include <linux/slab.h>
+-
+-static struct rpisense *rpisense;
+-
+-static void rpisense_client_dev_register(struct rpisense *rpisense,
+-					 const char *name,
+-					 struct platform_device **pdev)
+-{
+-	int ret;
+-
+-	*pdev = platform_device_alloc(name, -1);
+-	if (*pdev == NULL) {
+-		dev_err(rpisense->dev, "Failed to allocate %s\n", name);
+-		return;
+-	}
+-
+-	(*pdev)->dev.parent = rpisense->dev;
+-	platform_set_drvdata(*pdev, rpisense);
+-	ret = platform_device_add(*pdev);
+-	if (ret != 0) {
+-		dev_err(rpisense->dev, "Failed to register %s: %d\n",
+-			name, ret);
+-		platform_device_put(*pdev);
+-		*pdev = NULL;
+-	}
+-}
+-
+-static int rpisense_probe(struct i2c_client *i2c)
+-{
+-	int ret;
+-	struct rpisense_js *rpisense_js;
+-
+-	rpisense = devm_kzalloc(&i2c->dev, sizeof(struct rpisense), GFP_KERNEL);
+-	if (rpisense == NULL)
+-		return -ENOMEM;
+-
+-	i2c_set_clientdata(i2c, rpisense);
+-	rpisense->dev = &i2c->dev;
+-	rpisense->i2c_client = i2c;
+-
+-	ret = rpisense_reg_read(rpisense, RPISENSE_WAI);
+-	if (ret > 0) {
+-		if (ret != 's')
+-			return -EINVAL;
+-	} else {
+-		return ret;
+-	}
+-	ret = rpisense_reg_read(rpisense, RPISENSE_VER);
+-	if (ret < 0)
+-		return ret;
+-
+-	dev_info(rpisense->dev,
+-		 "Raspberry Pi Sense HAT firmware version %i\n", ret);
+-
+-	rpisense_js = &rpisense->joystick;
+-	rpisense_js->keys_desc = devm_gpiod_get(&i2c->dev,
+-						"keys-int", GPIOD_IN);
+-	if (IS_ERR(rpisense_js->keys_desc)) {
+-		dev_warn(&i2c->dev, "Failed to get keys-int descriptor.\n");
+-		rpisense_js->keys_desc = gpio_to_desc(23);
+-		if (rpisense_js->keys_desc == NULL) {
+-			dev_err(&i2c->dev, "GPIO23 fallback failed.\n");
+-			return PTR_ERR(rpisense_js->keys_desc);
+-		}
+-	}
+-	rpisense_client_dev_register(rpisense, "rpi-sense-js",
+-				     &(rpisense->joystick.pdev));
+-	rpisense_client_dev_register(rpisense, "rpi-sense-fb",
+-				     &(rpisense->framebuffer.pdev));
+-
+-	return 0;
+-}
+-
+-static void rpisense_remove(struct i2c_client *i2c)
+-{
+-	struct rpisense *rpisense = i2c_get_clientdata(i2c);
+-
+-	platform_device_unregister(rpisense->joystick.pdev);
+-}
+-
+-struct rpisense *rpisense_get_dev(void)
+-{
+-	return rpisense;
+-}
+-EXPORT_SYMBOL_GPL(rpisense_get_dev);
+-
+-s32 rpisense_reg_read(struct rpisense *rpisense, int reg)
+-{
+-	int ret = i2c_smbus_read_byte_data(rpisense->i2c_client, reg);
+-
+-	if (ret < 0)
+-		dev_err(rpisense->dev, "Read from reg %d failed\n", reg);
+-	/* Due to the BCM270x I2C clock stretching bug, some values
+-	 * may have MSB set. Clear it to avoid incorrect values.
+-	 * */
+-	return ret & 0x7F;
+-}
+-EXPORT_SYMBOL_GPL(rpisense_reg_read);
+-
+-int rpisense_block_write(struct rpisense *rpisense, const char *buf, int count)
+-{
+-	int ret = i2c_master_send(rpisense->i2c_client, buf, count);
+-
+-	if (ret < 0)
+-		dev_err(rpisense->dev, "Block write failed\n");
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(rpisense_block_write);
+-
+-static const struct i2c_device_id rpisense_i2c_id[] = {
+-	{ "rpi-sense", 0 },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(i2c, rpisense_i2c_id);
+-
+-#ifdef CONFIG_OF
+-static const struct of_device_id rpisense_core_id[] = {
+-	{ .compatible = "rpi,rpi-sense" },
+-	{ },
+-};
+-MODULE_DEVICE_TABLE(of, rpisense_core_id);
+-#endif
+-
+-
+-static struct i2c_driver rpisense_driver = {
+-	.driver = {
+-		   .name = "rpi-sense",
+-		   .owner = THIS_MODULE,
+-	},
+-	.probe = rpisense_probe,
+-	.remove = rpisense_remove,
+-	.id_table = rpisense_i2c_id,
+-};
+-
+-module_i2c_driver(rpisense_driver);
+-
+-MODULE_DESCRIPTION("Raspberry Pi Sense HAT core driver");
+-MODULE_AUTHOR("Serge Schneider <serge@raspberrypi.org>");
+-MODULE_LICENSE("GPL");
+-
+--- a/drivers/video/fbdev/Kconfig
++++ b/drivers/video/fbdev/Kconfig
+@@ -1967,8 +1967,8 @@ config FB_SM712
+ 
+ config FB_RPISENSE
+ 	tristate "Raspberry Pi Sense HAT framebuffer"
+-	depends on FB
+-	select MFD_RPISENSE_CORE
++	depends on FB && I2C
++	select MFD_SIMPLE_MFD_I2C
+ 	select FB_SYS_FOPS
+ 	select FB_SYS_FILLRECT
+ 	select FB_SYS_COPYAREA
+--- a/drivers/video/fbdev/rpisense-fb.c
++++ b/drivers/video/fbdev/rpisense-fb.c
+@@ -23,16 +23,14 @@
+ #include <linux/delay.h>
+ #include <linux/fb.h>
+ #include <linux/init.h>
++#include <linux/platform_device.h>
+ 
+ #include <linux/mfd/rpisense/framebuffer.h>
+-#include <linux/mfd/rpisense/core.h>
+ 
+ static bool lowlight;
+ module_param(lowlight, bool, 0);
+ MODULE_PARM_DESC(lowlight, "Reduce LED matrix brightness to one third");
+ 
+-static struct rpisense *rpisense;
+-
+ struct rpisense_fb_param {
+ 	char __iomem *vmem;
+ 	u8 *vmem_work;
+@@ -116,26 +114,26 @@ static void rpisense_fb_imageblit(struct
+ }
+ 
+ static void rpisense_fb_deferred_io(struct fb_info *info,
+-				struct list_head *pagelist)
++				    struct list_head *pagelist)
+ {
+ 	int i;
+ 	int j;
+ 	u8 *vmem_work = rpisense_fb_param.vmem_work;
+ 	u16 *mem = (u16 *)rpisense_fb_param.vmem;
+ 	u8 *gamma = rpisense_fb_param.gamma;
++	struct rpisense_fb *rpisense_fb = info->par;
+ 
+-	vmem_work[0] = 0;
+ 	for (j = 0; j < 8; j++) {
+ 		for (i = 0; i < 8; i++) {
+-			vmem_work[(j * 24) + i + 1] =
++			vmem_work[(j * 24) + i] =
+ 				gamma[(mem[(j * 8) + i] >> 11) & 0x1F];
+-			vmem_work[(j * 24) + (i + 8) + 1] =
++			vmem_work[(j * 24) + (i + 8)] =
+ 				gamma[(mem[(j * 8) + i] >> 6) & 0x1F];
+-			vmem_work[(j * 24) + (i + 16) + 1] =
++			vmem_work[(j * 24) + (i + 16)] =
+ 				gamma[(mem[(j * 8) + i]) & 0x1F];
+ 		}
+ 	}
+-	rpisense_block_write(rpisense, vmem_work, 193);
++	regmap_bulk_write(rpisense_fb->regmap, 0, vmem_work, 192);
+ }
+ 
+ static struct fb_deferred_io rpisense_fb_defio = {
+@@ -200,8 +198,22 @@ static int rpisense_fb_probe(struct plat
+ 	int ret = -ENOMEM;
+ 	struct rpisense_fb *rpisense_fb;
+ 
+-	rpisense = rpisense_get_dev();
+-	rpisense_fb = &rpisense->framebuffer;
++	info = framebuffer_alloc(sizeof(*rpisense_fb), &pdev->dev);
++	if (!info) {
++		dev_err(&pdev->dev, "Could not allocate framebuffer.\n");
++		goto err_malloc;
++	}
++
++	rpisense_fb = info->par;
++	platform_set_drvdata(pdev, rpisense_fb);
++
++	rpisense_fb->pdev = pdev;
++	rpisense_fb->regmap = dev_get_regmap(pdev->dev.parent, NULL);
++	if (!rpisense_fb->regmap) {
++		dev_err(&pdev->dev,
++			"unable to get sensehat regmap");
++		return -ENODEV;
++	}
+ 
+ 	rpisense_fb_param.vmem = vzalloc(rpisense_fb_param.vmemsize);
+ 	if (!rpisense_fb_param.vmem)
+@@ -211,12 +223,6 @@ static int rpisense_fb_probe(struct plat
+ 	if (!rpisense_fb_param.vmem_work)
+ 		goto err_malloc;
+ 
+-	info = framebuffer_alloc(0, &pdev->dev);
+-	if (!info) {
+-		dev_err(&pdev->dev, "Could not allocate framebuffer.\n");
+-		goto err_malloc;
+-	}
+-	rpisense_fb->info = info;
+ 
+ 	rpisense_fb_fix.smem_start = (unsigned long)rpisense_fb_param.vmem;
+ 	rpisense_fb_fix.smem_len = rpisense_fb_param.vmemsize;
+@@ -253,7 +259,7 @@ err_malloc:
+ 
+ static int rpisense_fb_remove(struct platform_device *pdev)
+ {
+-	struct rpisense_fb *rpisense_fb = &rpisense->framebuffer;
++	struct rpisense_fb *rpisense_fb = platform_get_drvdata(pdev);
+ 	struct fb_info *info = rpisense_fb->info;
+ 
+ 	if (info) {
+@@ -266,19 +272,11 @@ static int rpisense_fb_remove(struct pla
+ 	return 0;
+ }
+ 
+-#ifdef CONFIG_OF
+ static const struct of_device_id rpisense_fb_id[] = {
+-	{ .compatible = "rpi,rpi-sense-fb" },
++	{ .compatible = "raspberrypi,rpi-sense-fb" },
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(of, rpisense_fb_id);
+-#endif
+-
+-static struct platform_device_id rpisense_fb_device_id[] = {
+-	{ .name = "rpi-sense-fb" },
+-	{ },
+-};
+-MODULE_DEVICE_TABLE(platform, rpisense_fb_device_id);
+ 
+ static struct platform_driver rpisense_fb_driver = {
+ 	.probe = rpisense_fb_probe,
+@@ -286,6 +284,7 @@ static struct platform_driver rpisense_f
+ 	.driver = {
+ 		.name = "rpi-sense-fb",
+ 		.owner = THIS_MODULE,
++		.of_match_table = rpisense_fb_id,
+ 	},
+ };
+ 
+--- a/include/linux/mfd/rpisense/core.h
++++ /dev/null
+@@ -1,47 +0,0 @@
+-/*
+- * Raspberry Pi Sense HAT core driver
+- * http://raspberrypi.org
+- *
+- * Copyright (C) 2015 Raspberry Pi
+- *
+- * Author: Serge Schneider
+- *
+- *  This program is free software; you can redistribute  it and/or modify it
+- *  under  the terms of  the GNU General  Public License as published by the
+- *  Free Software Foundation;  either version 2 of the  License, or (at your
+- *  option) any later version.
+- *
+- */
+-
+-#ifndef __LINUX_MFD_RPISENSE_CORE_H_
+-#define __LINUX_MFD_RPISENSE_CORE_H_
+-
+-#include <linux/mfd/rpisense/joystick.h>
+-#include <linux/mfd/rpisense/framebuffer.h>
+-
+-/*
+- * Register values.
+- */
+-#define RPISENSE_FB			0x00
+-#define RPISENSE_WAI			0xF0
+-#define RPISENSE_VER			0xF1
+-#define RPISENSE_KEYS			0xF2
+-#define RPISENSE_EE_WP			0xF3
+-
+-#define RPISENSE_ID			's'
+-
+-struct rpisense {
+-	struct device *dev;
+-	struct i2c_client *i2c_client;
+-
+-	/* Client devices */
+-	struct rpisense_js joystick;
+-	struct rpisense_fb framebuffer;
+-};
+-
+-struct rpisense *rpisense_get_dev(void);
+-s32 rpisense_reg_read(struct rpisense *rpisense, int reg);
+-int rpisense_reg_write(struct rpisense *rpisense, int reg, u16 val);
+-int rpisense_block_write(struct rpisense *rpisense, const char *buf, int count);
+-
+-#endif
+--- a/include/linux/mfd/rpisense/framebuffer.h
++++ b/include/linux/mfd/rpisense/framebuffer.h
+@@ -16,6 +16,8 @@
+ #ifndef __LINUX_RPISENSE_FB_H_
+ #define __LINUX_RPISENSE_FB_H_
+ 
++#include <linux/regmap.h>
++
+ #define SENSEFB_FBIO_IOC_MAGIC 0xF1
+ 
+ #define SENSEFB_FBIOGET_GAMMA _IO(SENSEFB_FBIO_IOC_MAGIC, 0)
+@@ -25,8 +27,9 @@
+ struct rpisense;
+ 
+ struct rpisense_fb {
+-	struct platform_device *pdev;
+ 	struct fb_info *info;
++	struct platform_device *pdev;
++	struct regmap *regmap;
+ };
+ 
+ #endif

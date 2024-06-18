@@ -1,0 +1,70 @@
+From f1a2a9a675899c166a75c6e398af8aa5445e5e5f Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 17 May 2024 14:27:59 +0100
+Subject: [PATCH 1092/1135] regulator: rpi_panel_v2: Add delay on I2C reads
+
+As with many microcontrollers, the panel wants to use clock
+stretching during a read so that the appropriate return value
+can be generated and programmed into the hardware.
+With Pi0-3 really not supporting clock stretching, this resulted
+in the panel firmware dying.
+
+Insert a delay between the write and the read to give the firmware
+a chance to generate the relevant return value.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/regulator/rpi-panel-v2-regulator.c | 35 +++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+
+--- a/drivers/regulator/rpi-panel-v2-regulator.c
++++ b/drivers/regulator/rpi-panel-v2-regulator.c
+@@ -87,6 +87,39 @@ static const struct backlight_ops rpi_pa
+ 	.update_status	= rpi_panel_v2_update_status,
+ };
+ 
++static int rpi_panel_v2_i2c_read(struct i2c_client *client, u8 reg, unsigned int *buf)
++{
++	struct i2c_msg msgs[1];
++	u8 addr_buf[1] = { reg };
++	u8 data_buf[1] = { 0, };
++	int ret;
++
++	/* Write register address */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = 0;
++	msgs[0].len = ARRAY_SIZE(addr_buf);
++	msgs[0].buf = addr_buf;
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	usleep_range(5000, 10000);
++
++	/* Read data from register */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = I2C_M_RD;
++	msgs[0].len = 1;
++	msgs[0].buf = data_buf;
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	*buf = data_buf[0];
++	return 0;
++}
++
+ /*
+  * I2C driver interface functions
+  */
+@@ -114,7 +147,7 @@ static int rpi_panel_v2_i2c_probe(struct
+ 		goto error;
+ 	}
+ 
+-	ret = regmap_read(regmap, REG_ID, &data);
++	ret = rpi_panel_v2_i2c_read(i2c, REG_ID, &data);
+ 	if (ret < 0) {
+ 		dev_err(&i2c->dev, "Failed to read REG_ID reg: %d\n", ret);
+ 		goto error;

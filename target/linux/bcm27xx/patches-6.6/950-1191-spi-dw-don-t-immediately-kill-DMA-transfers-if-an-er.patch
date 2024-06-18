@@ -1,0 +1,41 @@
+From 3af7822df36e36b5a74d877df7654695c0e0d34a Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Mon, 22 Jul 2024 15:27:51 +0100
+Subject: [PATCH 1191/1215] spi: dw: don't immediately kill DMA transfers if an
+ error occurs
+
+Disabling the peripheral resets controller state which has a dangerous
+side-effect of disabling the DMA handshake interface while it is active.
+This can cause DMA channels to hang.
+
+The error recovery pathway will wait for DMA to stop and reset the chip
+anyway, so mask further FIFO interrupts and let the transfer finish
+gracefully.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/spi/spi-dw-core.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- a/drivers/spi/spi-dw-core.c
++++ b/drivers/spi/spi-dw-core.c
+@@ -200,7 +200,18 @@ int dw_spi_check_status(struct dw_spi *d
+ 
+ 	/* Generically handle the erroneous situation */
+ 	if (ret) {
+-		dw_spi_reset_chip(dws);
++		/*
++		 * Forcibly halting the controller can cause DMA to hang.
++		 * Defer to dw_spi_handle_err outside of interrupt context
++		 * and mask further interrupts for the current transfer.
++		 */
++		if (dws->dma_mapped) {
++			dw_spi_mask_intr(dws, 0xff);
++			dw_readl(dws, DW_SPI_ICR);
++		} else {
++			dw_spi_reset_chip(dws);
++		}
++
+ 		if (dws->host->cur_msg)
+ 			dws->host->cur_msg->status = ret;
+ 	}

@@ -1,0 +1,52 @@
+From 475cddaba6b02584157e1c128a5a6858770a3d06 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 10 Jul 2024 14:47:17 +0100
+Subject: [PATCH 1166/1215] dmaengine: dw-axi-dmac: Honour snps,block-size
+
+The snps,block-size DT property declares the maximum block size for each
+channel of the dw-axi-dmac. However, the driver ignores these when
+setting max_seg_size and uses MAX_BLOCK_SIZE (4096) instead.
+
+To take advantage of the efficiencies of larger blocks, calculate the
+minimum block size across all channels and use that instead.
+
+See: https://github.com/raspberrypi/linux/issues/6256
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -1470,6 +1470,7 @@ static int dw_probe(struct platform_devi
+ 	struct dw_axi_dma *dw;
+ 	struct dw_axi_dma_hcfg *hdata;
+ 	struct reset_control *resets;
++	unsigned int max_seg_size;
+ 	unsigned int flags;
+ 	u32 i;
+ 	int ret;
+@@ -1585,9 +1586,21 @@ static int dw_probe(struct platform_devi
+ 	 * Synopsis DesignWare AxiDMA datasheet mentioned Maximum
+ 	 * supported blocks is 1024. Device register width is 4 bytes.
+ 	 * Therefore, set constraint to 1024 * 4.
++	 * However, if all channels specify a greater value, use that instead.
+ 	 */
++
+ 	dw->dma.dev->dma_parms = &dw->dma_parms;
+-	dma_set_max_seg_size(&pdev->dev, MAX_BLOCK_SIZE);
++	max_seg_size = UINT_MAX;
++	for (i = 0; i < dw->hdata->nr_channels; i++) {
++		unsigned int block_size = chip->dw->hdata->block_size[i];
++
++		if (!block_size)
++			block_size = MAX_BLOCK_SIZE;
++		max_seg_size = min(block_size, max_seg_size);
++	}
++
++	dma_set_max_seg_size(&pdev->dev, max_seg_size);
++
+ 	platform_set_drvdata(pdev, chip);
+ 
+ 	pm_runtime_enable(chip->dev);

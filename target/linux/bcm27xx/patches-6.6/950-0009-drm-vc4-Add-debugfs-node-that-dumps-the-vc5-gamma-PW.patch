@@ -1,0 +1,122 @@
+From 3931aecb383046dab3f43a4530fe527f7c50a4d5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 28 Apr 2021 12:32:10 +0200
+Subject: [PATCH 0009/1085] drm/vc4: Add debugfs node that dumps the vc5 gamma
+ PWL entries
+
+This helps with debugging the conversion from a 256 point gamma LUT to
+16 point PWL entries as used by the BCM2711.
+
+Co-developed-by: Juerg Haefliger <juergh@canonical.com>
+Signed-off-by: Juerg Haefliger <juergh@canonical.com>
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 85 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 84 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -143,6 +143,85 @@ static int vc4_hvs_debugfs_dlist(struct
+ 	return 0;
+ }
+ 
++static int vc5_hvs_debugfs_gamma(struct seq_file *m, void *data)
++{
++	struct drm_info_node *node = m->private;
++	struct drm_device *dev = node->minor->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hvs *hvs = vc4->hvs;
++	struct drm_printer p = drm_seq_file_printer(m);
++	unsigned int i, chan;
++	u32 dispstat, dispbkgndx;
++
++	for (chan = 0; chan < SCALER_CHANNELS_COUNT; chan++) {
++		u32 x_c, grad;
++		u32 offset = SCALER5_DSPGAMMA_START +
++			chan * SCALER5_DSPGAMMA_CHAN_OFFSET;
++
++		dispstat = VC4_GET_FIELD(HVS_READ(SCALER_DISPSTATX(chan)),
++					 SCALER_DISPSTATX_MODE);
++		if (dispstat == SCALER_DISPSTATX_MODE_DISABLED ||
++		    dispstat == SCALER_DISPSTATX_MODE_EOF) {
++			drm_printf(&p, "HVS channel %u: Channel disabled\n", chan);
++			continue;
++		}
++
++		dispbkgndx = HVS_READ(SCALER_DISPBKGNDX(chan));
++		if (!(dispbkgndx & SCALER_DISPBKGND_GAMMA)) {
++			drm_printf(&p, "HVS channel %u: Gamma disabled\n", chan);
++			continue;
++		}
++
++		drm_printf(&p, "HVS channel %u:\n", chan);
++		drm_printf(&p, "  red:\n");
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8) {
++			x_c = HVS_READ(offset);
++			grad = HVS_READ(offset + 4);
++			drm_printf(&p, "  %08x %08x - x %u, c %u, grad %u\n",
++				   x_c, grad,
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_X),
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_C),
++				   grad);
++		}
++		drm_printf(&p, "  green:\n");
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8) {
++			x_c = HVS_READ(offset);
++			grad = HVS_READ(offset + 4);
++			drm_printf(&p, "  %08x %08x - x %u, c %u, grad %u\n",
++				   x_c, grad,
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_X),
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_C),
++				   grad);
++		}
++		drm_printf(&p, "  blue:\n");
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8) {
++			x_c = HVS_READ(offset);
++			grad = HVS_READ(offset + 4);
++			drm_printf(&p, "  %08x %08x - x %u, c %u, grad %u\n",
++				   x_c, grad,
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_X),
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_C),
++				   grad);
++		}
++
++		/* Alpha only valid on channel 2 */
++		if (chan != 2)
++			continue;
++
++		drm_printf(&p, "  alpha:\n");
++		for (i = 0; i < SCALER5_DSPGAMMA_NUM_POINTS; i++, offset += 8) {
++			x_c = HVS_READ(offset);
++			grad = HVS_READ(offset + 4);
++			drm_printf(&p, "  %08x %08x - x %u, c %u, grad %u\n",
++				   x_c, grad,
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_X),
++				   VC4_GET_FIELD(x_c, SCALER5_DSPGAMMA_OFF_C),
++				   grad);
++		}
++	}
++	return 0;
++}
++
+ /* The filter kernel is composed of dwords each containing 3 9-bit
+  * signed integers packed next to each other.
+  */
+@@ -850,11 +929,15 @@ int vc4_hvs_debugfs_init(struct drm_mino
+ 	if (!vc4->hvs)
+ 		return -ENODEV;
+ 
+-	if (!vc4->is_vc5)
++	if (!vc4->is_vc5) {
+ 		debugfs_create_bool("hvs_load_tracker", S_IRUGO | S_IWUSR,
+ 				    minor->debugfs_root,
+ 				    &vc4->load_tracker_enabled);
+ 
++		drm_debugfs_add_file(drm, "hvs_gamma", vc5_hvs_debugfs_gamma,
++				     NULL);
++	}
++
+ 	drm_debugfs_add_file(drm, "hvs_dlists", vc4_hvs_debugfs_dlist, NULL);
+ 
+ 	drm_debugfs_add_file(drm, "hvs_underrun", vc4_hvs_debugfs_underrun, NULL);

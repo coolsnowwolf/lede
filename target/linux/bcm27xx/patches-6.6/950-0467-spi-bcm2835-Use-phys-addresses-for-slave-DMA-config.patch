@@ -1,0 +1,87 @@
+From 383c5d7461002d945e31b1b1e542950f8f9bdaf8 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 11 May 2023 16:27:06 +0100
+Subject: [PATCH 0467/1085] spi: bcm2835: Use phys addresses for slave DMA
+ config
+
+Contrary to what struct snd_dmaengine_dai_dma_data suggests, the
+configuration of addresses of DMA slave interfaces should be done in
+CPU physical addresses.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-bcm2835.c | 22 +++++++---------------
+ 1 file changed, 7 insertions(+), 15 deletions(-)
+
+--- a/drivers/spi/spi-bcm2835.c
++++ b/drivers/spi/spi-bcm2835.c
+@@ -116,6 +116,7 @@ MODULE_PARM_DESC(polling_limit_us,
+  */
+ struct bcm2835_spi {
+ 	void __iomem *regs;
++	phys_addr_t phys_addr;
+ 	struct clk *clk;
+ 	unsigned long clk_hz;
+ 	int irq;
+@@ -887,19 +888,8 @@ static int bcm2835_dma_init(struct spi_c
+ 			    struct bcm2835_spi *bs)
+ {
+ 	struct dma_slave_config slave_config;
+-	const __be32 *addr;
+-	dma_addr_t dma_reg_base;
+ 	int ret;
+ 
+-	/* base address in dma-space */
+-	addr = of_get_address(ctlr->dev.of_node, 0, NULL, NULL);
+-	if (!addr) {
+-		dev_err(dev, "could not get DMA-register address - not using dma mode\n");
+-		/* Fall back to interrupt mode */
+-		return 0;
+-	}
+-	dma_reg_base = be32_to_cpup(addr);
+-
+ 	/* get tx/rx dma */
+ 	ctlr->dma_tx = dma_request_chan(dev, "tx");
+ 	if (IS_ERR(ctlr->dma_tx)) {
+@@ -921,7 +911,7 @@ static int bcm2835_dma_init(struct spi_c
+ 	 * or, in case of an RX-only transfer, cyclically copies from the zero
+ 	 * page to the FIFO using a preallocated, reusable descriptor.
+ 	 */
+-	slave_config.dst_addr = (u32)(dma_reg_base + BCM2835_SPI_FIFO);
++	slave_config.dst_addr = bs->phys_addr + BCM2835_SPI_FIFO;
+ 	slave_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+ 
+ 	ret = dmaengine_slave_config(ctlr->dma_tx, &slave_config);
+@@ -960,9 +950,9 @@ static int bcm2835_dma_init(struct spi_c
+ 	 * RX FIFO or, in case of a TX-only transfer, cyclically writes a
+ 	 * precalculated value to the CS register to clear the RX FIFO.
+ 	 */
+-	slave_config.src_addr = (u32)(dma_reg_base + BCM2835_SPI_FIFO);
++	slave_config.src_addr = bs->phys_addr + BCM2835_SPI_FIFO;
+ 	slave_config.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+-	slave_config.dst_addr = (u32)(dma_reg_base + BCM2835_SPI_CS);
++	slave_config.dst_addr = bs->phys_addr + BCM2835_SPI_CS;
+ 	slave_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+ 
+ 	ret = dmaengine_slave_config(ctlr->dma_rx, &slave_config);
+@@ -1336,6 +1326,7 @@ static int bcm2835_spi_probe(struct plat
+ {
+ 	struct spi_controller *ctlr;
+ 	struct bcm2835_spi *bs;
++	struct resource *iomem;
+ 	int err;
+ 
+ 	ctlr = devm_spi_alloc_host(&pdev->dev, sizeof(*bs));
+@@ -1358,10 +1349,11 @@ static int bcm2835_spi_probe(struct plat
+ 	bs = spi_controller_get_devdata(ctlr);
+ 	bs->ctlr = ctlr;
+ 
+-	bs->regs = devm_platform_ioremap_resource(pdev, 0);
++	bs->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &iomem);
+ 	if (IS_ERR(bs->regs))
+ 		return PTR_ERR(bs->regs);
+ 
++	bs->phys_addr = iomem->start;
+ 	bs->clk = devm_clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(bs->clk))
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(bs->clk),

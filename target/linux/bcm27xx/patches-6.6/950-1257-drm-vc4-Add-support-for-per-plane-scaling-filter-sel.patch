@@ -1,0 +1,170 @@
+From d6a3a3f106010d9576a700148220842cac4c5739 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 25 Jul 2024 15:42:41 +0100
+Subject: [PATCH 1257/1350] drm/vc4: Add support for per plane scaling filter
+ selection
+
+Seeing as the HVS can be configured with regard the scaling filter,
+and DRM now supports selecting scaling filters at a per CRTC or
+per plane level, we can implement it.
+
+Default remains as the Mitchell/Netravali filter, but nearest
+neighbour is now also implemented.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h   |  1 +
+ drivers/gpu/drm/vc4/vc4_hvs.c   | 14 ++++++++--
+ drivers/gpu/drm/vc4/vc4_plane.c | 48 ++++++++++++++++++++++++++-------
+ 3 files changed, 52 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -358,6 +358,7 @@ struct vc4_hvs {
+ 	struct work_struct free_dlist_work;
+ 
+ 	struct drm_mm_node mitchell_netravali_filter;
++	struct drm_mm_node nearest_neighbour_filter;
+ 
+ 	struct debugfs_regset32 regset;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -469,6 +469,9 @@ static int vc4_hvs_debugfs_dlist_allocs(
+ static const u32 mitchell_netravali_1_3_1_3_kernel[] =
+ 	VC4_LINEAR_PHASE_KERNEL(0, -2, -6, -8, -10, -8, -3, 2, 18,
+ 				50, 82, 119, 155, 187, 213, 227);
++static const u32 nearest_neighbour_kernel[] =
++	VC4_LINEAR_PHASE_KERNEL(0, 0, 0, 0, 0, 0, 0, 0,
++				1, 1, 1, 1, 255, 255, 255, 255);
+ 
+ static int vc4_hvs_upload_linear_kernel(struct vc4_hvs *hvs,
+ 					struct drm_mm_node *space,
+@@ -2255,14 +2258,19 @@ static int vc4_hvs_bind(struct device *d
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Upload filter kernels.  We only have the one for now, so we
+-	 * keep it around for the lifetime of the driver.
++	/* Upload filter kernels.  We only have the two for now, so we
++	 * keep them around for the lifetime of the driver.
+ 	 */
+ 	ret = vc4_hvs_upload_linear_kernel(hvs,
+ 					   &hvs->mitchell_netravali_filter,
+ 					   mitchell_netravali_1_3_1_3_kernel);
+ 	if (ret)
+ 		return ret;
++	ret = vc4_hvs_upload_linear_kernel(hvs,
++					   &hvs->nearest_neighbour_filter,
++					   nearest_neighbour_kernel);
++	if (ret)
++		return ret;
+ 
+ 	ret = vc4_hvs_cob_init(hvs);
+ 	if (ret)
+@@ -2288,6 +2296,8 @@ static void vc4_hvs_unbind(struct device
+ 
+ 	if (drm_mm_node_allocated(&vc4->hvs->mitchell_netravali_filter))
+ 		drm_mm_remove_node(&vc4->hvs->mitchell_netravali_filter);
++	if (drm_mm_node_allocated(&vc4->hvs->nearest_neighbour_filter))
++		drm_mm_remove_node(&vc4->hvs->nearest_neighbour_filter);
+ 
+ 	drm_mm_for_each_node_safe(node, next, &vc4->hvs->dlist_mm)
+ 		drm_mm_remove_node(node);
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -582,7 +582,9 @@ static void vc4_write_tpz(struct vc4_pla
+ /* phase magnitude bits */
+ #define PHASE_BITS 6
+ 
+-static void vc4_write_ppf(struct vc4_plane_state *vc4_state, u32 src, u32 dst, u32 xy, int channel, int chroma_offset)
++static void vc4_write_ppf(struct vc4_plane_state *vc4_state, u32 src, u32 dst,
++			  u32 xy, int channel, int chroma_offset,
++			  bool no_interpolate)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(vc4_state->base.plane->dev);
+ 	u32 scale = src / dst;
+@@ -621,6 +623,7 @@ static void vc4_write_ppf(struct vc4_pla
+ 	phase &= SCALER_PPF_IPHASE_MASK;
+ 
+ 	vc4_dlist_write(vc4_state,
++			no_interpolate ? SCALER_PPF_NOINTERP : 0 |
+ 			SCALER_PPF_AGC |
+ 			VC4_SET_FIELD(scale, SCALER_PPF_SCALE) |
+ 			/*
+@@ -815,15 +818,17 @@ static void vc4_write_scaling_parameters
+ 	/* Ch0 H-PPF Word 0: Scaling Parameters */
+ 	if (vc4_state->x_scaling[channel] == VC4_SCALING_PPF) {
+ 		vc4_write_ppf(vc4_state,
+-			      vc4_state->src_w[channel], vc4_state->crtc_w, vc4_state->src_x, channel,
+-			      state->chroma_siting_h);
++			      vc4_state->src_w[channel], vc4_state->crtc_w, vc4_state->src_x,
++			      channel, state->chroma_siting_h,
++			      state->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR);
+ 	}
+ 
+ 	/* Ch0 V-PPF Words 0-1: Scaling Parameters, Context */
+ 	if (vc4_state->y_scaling[channel] == VC4_SCALING_PPF) {
+ 		vc4_write_ppf(vc4_state,
+-			      vc4_state->src_h[channel], vc4_state->crtc_h, vc4_state->src_y, channel,
+-			      state->chroma_siting_v);
++			      vc4_state->src_h[channel], vc4_state->crtc_h, vc4_state->src_y,
++			      channel, state->chroma_siting_v,
++			      state->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR);
+ 		vc4_dlist_write(vc4_state, 0xc0c0c0c0);
+ 	}
+ 
+@@ -1573,7 +1578,18 @@ static int vc4_plane_mode_set(struct drm
+ 		    vc4_state->y_scaling[0] == VC4_SCALING_PPF ||
+ 		    vc4_state->x_scaling[1] == VC4_SCALING_PPF ||
+ 		    vc4_state->y_scaling[1] == VC4_SCALING_PPF) {
+-			u32 kernel = VC4_SET_FIELD(vc4->hvs->mitchell_netravali_filter.start,
++			struct drm_mm_node *filter;
++
++			switch (state->scaling_filter) {
++			case DRM_SCALING_FILTER_DEFAULT:
++			default:
++				filter = &vc4->hvs->mitchell_netravali_filter;
++				break;
++			case DRM_SCALING_FILTER_NEAREST_NEIGHBOR:
++				filter = &vc4->hvs->nearest_neighbour_filter;
++				break;
++			}
++			u32 kernel = VC4_SET_FIELD(filter->start,
+ 						   SCALER_PPF_KERNEL_OFFSET);
+ 
+ 			/* HPPF plane 0 */
+@@ -1984,9 +2000,19 @@ static int vc6_plane_mode_set(struct drm
+ 		    vc4_state->y_scaling[0] == VC4_SCALING_PPF ||
+ 		    vc4_state->x_scaling[1] == VC4_SCALING_PPF ||
+ 		    vc4_state->y_scaling[1] == VC4_SCALING_PPF) {
+-			u32 kernel =
+-				VC4_SET_FIELD(vc4->hvs->mitchell_netravali_filter.start,
+-					      SCALER_PPF_KERNEL_OFFSET);
++			struct drm_mm_node *filter;
++
++			switch (state->scaling_filter) {
++			case DRM_SCALING_FILTER_DEFAULT:
++			default:
++				filter = &vc4->hvs->mitchell_netravali_filter;
++				break;
++			case DRM_SCALING_FILTER_NEAREST_NEIGHBOR:
++				filter = &vc4->hvs->nearest_neighbour_filter;
++				break;
++			}
++			u32 kernel = VC4_SET_FIELD(filter->start,
++						   SCALER_PPF_KERNEL_OFFSET);
+ 
+ 			/* HPPF plane 0 */
+ 			vc4_dlist_write(vc4_state, kernel);
+@@ -2468,6 +2494,10 @@ struct drm_plane *vc4_plane_init(struct
+ 					  DRM_COLOR_YCBCR_BT709,
+ 					  DRM_COLOR_YCBCR_LIMITED_RANGE);
+ 
++	drm_plane_create_scaling_filter_property(plane,
++						 BIT(DRM_SCALING_FILTER_DEFAULT) |
++						 BIT(DRM_SCALING_FILTER_NEAREST_NEIGHBOR));
++
+ 	drm_plane_create_chroma_siting_properties(plane, 0, 0);
+ 
+ 	if (type == DRM_PLANE_TYPE_PRIMARY)

@@ -1,0 +1,52 @@
+From 5c0f94088e0694220a2f0d8ad6e8216b50a80f2e Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 13 Jun 2024 15:01:02 +0100
+Subject: [PATCH 1133/1145] drivers: mmc: sdhci-brcmstb: improve bcm2712 card
+ removal handling
+
+If the controller is being reset, then the CQE needs to be reset as well.
+
+For removable cards, CQHCI_SSC1 must specify a polling mode (CBC=0)
+otherwise it's possible that the controller stops emitting periodic
+CMD13s on card removal, without raising an error status interrupt.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/sdhci-brcmstb.c | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+--- a/drivers/mmc/host/sdhci-brcmstb.c
++++ b/drivers/mmc/host/sdhci-brcmstb.c
+@@ -366,8 +366,21 @@ static void sdhci_brcmstb_cqe_enable(str
+ 
+ 	sdhci_cqe_enable(mmc);
+ 
+-	/* Reset CMD13 polling timer back to eMMC specification default */
+-	cqhci_writel(cq_host, 0x00011000, CQHCI_SSC1);
++	/*
++	 * The controller resets this register to a very short default interval
++	 * whenever CQHCI is disabled.
++	 *
++	 * For removable cards CBC needs to be clear or card removal can hang
++	 * the CQE. In polling mode, a CIT of 0x4000 "cycles" seems to produce the best
++	 * throughput.
++	 *
++	 * For nonremovable cards, the specification default of CBC=1 CIT=0x1000
++	 * suffices.
++	 */
++	if (mmc->caps & MMC_CAP_NONREMOVABLE)
++		cqhci_writel(cq_host, 0x00011000, CQHCI_SSC1);
++	else
++		cqhci_writel(cq_host, 0x00004000, CQHCI_SSC1);
+ }
+ 
+ static const struct cqhci_host_ops sdhci_brcmstb_cqhci_ops = {
+@@ -387,7 +400,7 @@ static struct sdhci_ops sdhci_brcmstb_op
+ 	.set_clock = sdhci_bcm2712_set_clock,
+ 	.set_power = sdhci_brcmstb_set_power,
+ 	.set_bus_width = sdhci_set_bus_width,
+-	.reset = sdhci_reset,
++	.reset = brcmstb_reset,
+ 	.set_uhs_signaling = sdhci_set_uhs_signaling,
+ 	.init_sd_express = bcm2712_init_sd_express,
+ };

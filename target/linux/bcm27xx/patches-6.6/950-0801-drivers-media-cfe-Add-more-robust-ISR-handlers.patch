@@ -1,0 +1,207 @@
+From 431153e3a934899f89772de44c11a073bbd42673 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Mon, 18 Dec 2023 09:52:45 +0000
+Subject: [PATCH 0801/1085] drivers: media: cfe: Add more robust ISR handlers
+
+Update the ISR logic to be more robust to sensors in problematic states
+where interrupts may start arriving overlapped and/or missing.
+
+1) Test for cur_frame in the FE handler, and if present, dequeue it in
+an error state so that it does not get orphaned.
+
+2) Move the sequence counter and timestamp variables to the node
+structures.  This allows the ISR to track channels running ahead when
+interrupts arrive unordered.
+
+3) Add a test to ensure we don't have a spurios (but harmlesS) call to
+the FE handler in some circumstances.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 92 ++++++++++---------
+ 1 file changed, 49 insertions(+), 43 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -272,6 +272,8 @@ struct cfe_node {
+ 	/* Pointer to the parent handle */
+ 	struct cfe_device *cfe;
+ 	struct media_pad pad;
++	unsigned int fs_count;
++	u64 ts;
+ };
+ 
+ struct cfe_device {
+@@ -311,9 +313,6 @@ struct cfe_device {
+ 	struct pisp_fe_device fe;
+ 
+ 	int fe_csi2_channel;
+-
+-	unsigned int sequence;
+-	u64 ts;
+ };
+ 
+ static inline bool is_fe_enabled(struct cfe_device *cfe)
+@@ -393,17 +392,6 @@ static bool test_all_nodes(struct cfe_de
+ 	return true;
+ }
+ 
+-static void clear_all_nodes(struct cfe_device *cfe, unsigned long precond,
+-			    unsigned long state)
+-{
+-	unsigned int i;
+-
+-	for (i = 0; i < NUM_NODES; i++) {
+-		if (check_state(cfe, precond, i))
+-			clear_state(cfe, state, i);
+-	}
+-}
+-
+ static int mipi_cfg_regs_show(struct seq_file *s, void *data)
+ {
+ 	struct cfe_device *cfe = s->private;
+@@ -656,22 +644,22 @@ static void cfe_prepare_next_job(struct
+ }
+ 
+ static void cfe_process_buffer_complete(struct cfe_node *node,
+-					unsigned int sequence)
++					enum vb2_buffer_state state)
+ {
+ 	struct cfe_device *cfe = node->cfe;
+ 
+ 	cfe_dbg_verbose("%s: [%s] buffer:%p\n", __func__,
+ 			node_desc[node->id].name, &node->cur_frm->vb.vb2_buf);
+ 
+-	node->cur_frm->vb.sequence = sequence;
+-	vb2_buffer_done(&node->cur_frm->vb.vb2_buf, VB2_BUF_STATE_DONE);
++	node->cur_frm->vb.sequence = node->fs_count - 1;
++	vb2_buffer_done(&node->cur_frm->vb.vb2_buf, state);
+ }
+ 
+ static void cfe_queue_event_sof(struct cfe_node *node)
+ {
+ 	struct v4l2_event event = {
+ 		.type = V4L2_EVENT_FRAME_SYNC,
+-		.u.frame_sync.frame_sequence = node->cfe->sequence,
++		.u.frame_sync.frame_sequence = node->fs_count - 1,
+ 	};
+ 
+ 	v4l2_event_queue(&node->video_dev, &event);
+@@ -680,28 +668,53 @@ static void cfe_queue_event_sof(struct c
+ static void cfe_sof_isr_handler(struct cfe_node *node)
+ {
+ 	struct cfe_device *cfe = node->cfe;
++	bool matching_fs = true;
++	unsigned int i;
+ 
+ 	cfe_dbg_verbose("%s: [%s] seq %u\n", __func__, node_desc[node->id].name,
+-			cfe->sequence);
+-
+-	node->cur_frm = node->next_frm;
+-	node->next_frm = NULL;
++			node->fs_count);
+ 
+ 	/*
+-	 * If this is the first node to see a frame start,  sample the
+-	 * timestamp to use for all frames across all channels.
++	 * If the sensor is producing unexpected frame event ordering over a
++	 * sustained period of time, guard against the possibility of coming
++	 * here and orphaning the cur_frm if it's not been dequeued already.
++	 * Unfortunately, there is not enough hardware state to tell if this
++	 * may have occurred.
+ 	 */
+-	if (!test_any_node(cfe, NODE_STREAMING | FS_INT))
+-		cfe->ts = ktime_get_ns();
++	if (WARN(node->cur_frm, "%s: [%s] Orphanded frame at seq %u\n",
++		 __func__, node_desc[node->id].name, node->fs_count))
++		cfe_process_buffer_complete(node, VB2_BUF_STATE_ERROR);
+ 
+-	set_state(cfe, FS_INT, node->id);
++	node->cur_frm = node->next_frm;
++	node->next_frm = NULL;
++	node->fs_count++;
+ 
+-	/* If all nodes have seen a frame start, we can queue another job. */
+-	if (test_all_nodes(cfe, NODE_STREAMING, FS_INT))
++	node->ts = ktime_get_ns();
++	for (i = 0; i < NUM_NODES; i++) {
++		if (!check_state(cfe, NODE_STREAMING, i) || i == node->id)
++			continue;
++		/*
++		 * This checks if any other node has seen a FS. If yes, use the
++		 * same timestamp, eventually across all node buffers.
++		 */
++		if (cfe->node[i].fs_count >= node->fs_count)
++			node->ts = cfe->node[i].ts;
++		/*
++		 * This checks if all other node have seen a matching FS. If
++		 * yes, we can flag another job to be queued.
++		 */
++		if (matching_fs && cfe->node[i].fs_count != node->fs_count)
++			matching_fs = false;
++	}
++
++	if (matching_fs)
+ 		cfe->job_queued = false;
+ 
+ 	if (node->cur_frm)
+-		node->cur_frm->vb.vb2_buf.timestamp = cfe->ts;
++		node->cur_frm->vb.vb2_buf.timestamp = node->ts;
++
++	set_state(cfe, FS_INT, node->id);
++	clear_state(cfe, FE_INT, node->id);
+ 
+ 	if (is_image_output_node(node))
+ 		cfe_queue_event_sof(node);
+@@ -712,22 +725,14 @@ static void cfe_eof_isr_handler(struct c
+ 	struct cfe_device *cfe = node->cfe;
+ 
+ 	cfe_dbg_verbose("%s: [%s] seq %u\n", __func__, node_desc[node->id].name,
+-			cfe->sequence);
++			node->fs_count - 1);
+ 
+ 	if (node->cur_frm)
+-		cfe_process_buffer_complete(node, cfe->sequence);
++		cfe_process_buffer_complete(node, VB2_BUF_STATE_DONE);
+ 
+ 	node->cur_frm = NULL;
+ 	set_state(cfe, FE_INT, node->id);
+-
+-	/*
+-	 * If all nodes have seen a frame end, we can increment
+-	 * the sequence counter now.
+-	 */
+-	if (test_all_nodes(cfe, NODE_STREAMING, FE_INT)) {
+-		cfe->sequence++;
+-		clear_all_nodes(cfe, NODE_STREAMING, FE_INT | FS_INT);
+-	}
++	clear_state(cfe, FS_INT, node->id);
+ }
+ 
+ static irqreturn_t cfe_isr(int irq, void *dev)
+@@ -794,7 +799,8 @@ static irqreturn_t cfe_isr(int irq, void
+ 			 * frame first before the FS handler for the current
+ 			 * frame.
+ 			 */
+-			if (check_state(cfe, FS_INT, node->id)) {
++			if (check_state(cfe, FS_INT, node->id) &&
++			    !check_state(cfe, FE_INT, node->id)) {
+ 				cfe_dbg("%s: [%s] Handling missing previous FE interrupt\n",
+ 					__func__, node_desc[node->id].name);
+ 				cfe_eof_isr_handler(node);
+@@ -1131,6 +1137,7 @@ static int cfe_start_streaming(struct vb
+ 
+ 	clear_state(cfe, FS_INT | FE_INT, node->id);
+ 	set_state(cfe, NODE_STREAMING, node->id);
++	node->fs_count = 0;
+ 	cfe_start_channel(node);
+ 
+ 	if (!test_all_nodes(cfe, NODE_ENABLED, NODE_STREAMING)) {
+@@ -1166,7 +1173,6 @@ static int cfe_start_streaming(struct vb
+ 	csi2_open_rx(&cfe->csi2);
+ 
+ 	cfe_dbg("Starting sensor streaming\n");
+-	cfe->sequence = 0;
+ 	ret = v4l2_subdev_call(cfe->sensor, video, s_stream, 1);
+ 	if (ret < 0) {
+ 		cfe_err("stream on failed in subdev\n");

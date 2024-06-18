@@ -1,0 +1,83 @@
+From 322c9b81910e75c89c5d42a7e357a687d6df1d93 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 16 Jan 2024 15:54:22 +0000
+Subject: [PATCH 0863/1085] i2c: designware: Use SCL rise and fall times in DT
+
+Calculate the HCNT and LCNT values for all modes using the rise and
+fall times of SCL, the aim being a 50/50 mark/space ratio.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/i2c/busses/i2c-designware-master.c | 26 ++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+--- a/drivers/i2c/busses/i2c-designware-master.c
++++ b/drivers/i2c/busses/i2c-designware-master.c
+@@ -38,6 +38,22 @@ static void i2c_dw_configure_fifo_master
+ 	regmap_write(dev->map, DW_IC_CON, dev->master_cfg);
+ }
+ 
++static u16 clock_calc(struct dw_i2c_dev *dev, bool want_high)
++{
++	struct i2c_timings *t = &dev->timings;
++	u32 wanted_speed = t->bus_freq_hz;
++	u32 clk_khz = i2c_dw_clk_rate(dev);
++	u32 extra_ns = want_high ? t->scl_fall_ns : t->scl_rise_ns;
++	u32 extra_cycles = (u32)div_u64((u64)clk_khz * extra_ns, 1000000);
++	u32 period = div_u64((u64)clk_khz * 1000 + wanted_speed - 1, wanted_speed);
++	u32 cycles = (period + want_high)/2 - extra_cycles;
++
++	if (cycles > 0xffff)
++		cycles = 0xffff;
++
++	return (u16)cycles;
++}
++
+ static int i2c_dw_set_timings_master(struct dw_i2c_dev *dev)
+ {
+ 	unsigned int comp_param1;
+@@ -45,6 +61,7 @@ static int i2c_dw_set_timings_master(str
+ 	struct i2c_timings *t = &dev->timings;
+ 	const char *fp_str = "";
+ 	u32 ic_clk;
++	u32 hcnt, lcnt;
+ 	int ret;
+ 
+ 	ret = i2c_dw_acquire_lock(dev);
+@@ -60,6 +77,9 @@ static int i2c_dw_set_timings_master(str
+ 	sda_falling_time = t->sda_fall_ns ?: 300; /* ns */
+ 	scl_falling_time = t->scl_fall_ns ?: 300; /* ns */
+ 
++	hcnt = clock_calc(dev, true);
++	lcnt = clock_calc(dev, false);
++
+ 	/* Calculate SCL timing parameters for standard mode if not set */
+ 	if (!dev->ss_hcnt || !dev->ss_lcnt) {
+ 		ic_clk = i2c_dw_clk_rate(dev);
+@@ -75,6 +95,8 @@ static int i2c_dw_set_timings_master(str
+ 					scl_falling_time,
+ 					0);	/* No offset */
+ 	}
++	dev->ss_hcnt = hcnt;
++	dev->ss_lcnt = lcnt;
+ 	dev_dbg(dev->dev, "Standard Mode HCNT:LCNT = %d:%d\n",
+ 		dev->ss_hcnt, dev->ss_lcnt);
+ 
+@@ -125,6 +147,8 @@ static int i2c_dw_set_timings_master(str
+ 					scl_falling_time,
+ 					0);	/* No offset */
+ 	}
++	dev->fs_hcnt = hcnt;
++	dev->fs_lcnt = lcnt;
+ 	dev_dbg(dev->dev, "Fast Mode%s HCNT:LCNT = %d:%d\n",
+ 		fp_str, dev->fs_hcnt, dev->fs_lcnt);
+ 
+@@ -153,6 +177,8 @@ static int i2c_dw_set_timings_master(str
+ 						scl_falling_time,
+ 						0);	/* No offset */
+ 		}
++		dev->hs_hcnt = hcnt;
++		dev->hs_lcnt = lcnt;
+ 		dev_dbg(dev->dev, "High Speed Mode HCNT:LCNT = %d:%d\n",
+ 			dev->hs_hcnt, dev->hs_lcnt);
+ 	}

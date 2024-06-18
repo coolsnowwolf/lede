@@ -1,0 +1,147 @@
+From b039a10b277af6aeb245e3b791e2dd4ab161698c Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 11 Jan 2024 16:33:22 +0000
+Subject: [PATCH 0849/1085] drivers: w1-gpio: add flag to force read-polling
+ while delaying
+
+On Pi 5, the link to RP1 will bounce in and out of L1 depending on
+inactivity timers at both the RC and EP end. Unfortunately for
+bitbashing 1-wire, this means that on an otherwise idle Pi 5 many of the
+reads/writes to GPIO registers are delayed by up to 8us which causes
+mis-sampling of read data and trashes write bits.
+
+By issuing dummy reads at a rate greater than the link inactivity
+timeout while spinning on a delay, PCIe stays in L0 which does not incur
+additional latency.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/w1/masters/w1-gpio.c |  3 +++
+ drivers/w1/w1_io.c           | 37 ++++++++++++++++++++++++------------
+ include/linux/w1.h           |  5 +++++
+ 3 files changed, 33 insertions(+), 12 deletions(-)
+
+--- a/drivers/w1/masters/w1-gpio.c
++++ b/drivers/w1/masters/w1-gpio.c
+@@ -90,6 +90,9 @@ static int w1_gpio_probe(struct platform
+ 		if (of_property_present(np, "linux,open-drain"))
+ 			gflags = GPIOD_OUT_LOW;
+ 
++		if (of_property_present(np, "raspberrypi,delay-needs-poll"))
++			master->delay_needs_poll = true;
++
+ 		pdev->dev.platform_data = pdata;
+ 	}
+ 	pdata = dev_get_platdata(dev);
+--- a/drivers/w1/w1_io.c
++++ b/drivers/w1/w1_io.c
+@@ -6,6 +6,7 @@
+ #include <asm/io.h>
+ 
+ #include <linux/delay.h>
++#include <linux/ktime.h>
+ #include <linux/moduleparam.h>
+ #include <linux/module.h>
+ 
+@@ -36,9 +37,21 @@ static u8 w1_crc8_table[] = {
+ 	116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53
+ };
+ 
+-static void w1_delay(unsigned long tm)
++static void w1_delay(struct w1_master *dev, unsigned long tm)
+ {
+-	udelay(tm * w1_delay_parm);
++	ktime_t start, delta;
++
++	if (!dev->bus_master->delay_needs_poll) {
++		udelay(tm * w1_delay_parm);
++		return;
++	}
++
++	start = ktime_get();
++	delta = ktime_add(start, ns_to_ktime(1000 * tm * w1_delay_parm));
++	do {
++		dev->bus_master->read_bit(dev->bus_master->data);
++		udelay(1);
++	} while (ktime_before(ktime_get(), delta));
+ }
+ 
+ static void w1_write_bit(struct w1_master *dev, int bit);
+@@ -77,14 +90,14 @@ static void w1_write_bit(struct w1_maste
+ 
+ 	if (bit) {
+ 		dev->bus_master->write_bit(dev->bus_master->data, 0);
+-		w1_delay(6);
++		w1_delay(dev, 6);
+ 		dev->bus_master->write_bit(dev->bus_master->data, 1);
+-		w1_delay(64);
++		w1_delay(dev, 64);
+ 	} else {
+ 		dev->bus_master->write_bit(dev->bus_master->data, 0);
+-		w1_delay(60);
++		w1_delay(dev, 60);
+ 		dev->bus_master->write_bit(dev->bus_master->data, 1);
+-		w1_delay(10);
++		w1_delay(dev, 10);
+ 	}
+ 
+ 	if(w1_disable_irqs) local_irq_restore(flags);
+@@ -164,14 +177,14 @@ static u8 w1_read_bit(struct w1_master *
+ 	/* sample timing is critical here */
+ 	local_irq_save(flags);
+ 	dev->bus_master->write_bit(dev->bus_master->data, 0);
+-	w1_delay(6);
++	w1_delay(dev, 6);
+ 	dev->bus_master->write_bit(dev->bus_master->data, 1);
+-	w1_delay(9);
++	w1_delay(dev, 9);
+ 
+ 	result = dev->bus_master->read_bit(dev->bus_master->data);
+ 	local_irq_restore(flags);
+ 
+-	w1_delay(55);
++	w1_delay(dev, 55);
+ 
+ 	return result & 0x1;
+ }
+@@ -333,16 +346,16 @@ int w1_reset_bus(struct w1_master *dev)
+ 		 * cpu for such a short amount of time AND get it back in
+ 		 * the maximum amount of time.
+ 		 */
+-		w1_delay(500);
++		w1_delay(dev, 500);
+ 		dev->bus_master->write_bit(dev->bus_master->data, 1);
+-		w1_delay(70);
++		w1_delay(dev, 70);
+ 
+ 		result = dev->bus_master->read_bit(dev->bus_master->data) & 0x1;
+ 		/* minimum 70 (above) + 430 = 500 us
+ 		 * There aren't any timing requirements between a reset and
+ 		 * the following transactions.  Sleeping is safe here.
+ 		 */
+-		/* w1_delay(430); min required time */
++		/* w1_delay(dev, 430); min required time */
+ 		msleep(1);
+ 	}
+ 
+--- a/include/linux/w1.h
++++ b/include/linux/w1.h
+@@ -121,6 +121,9 @@ typedef void (*w1_slave_found_callback)(
+  * @dev_id: Optional device id string, which w1 slaves could use for
+  * creating names, which then give a connection to the w1 master
+  *
++ * @delay_needs_poll: work around jitter introduced with GPIO controllers
++ * accessed over PCIe (RP1)
++ *
+  * Note: read_bit and write_bit are very low level functions and should only
+  * be used with hardware that doesn't really support 1-wire operations,
+  * like a parallel/serial port.
+@@ -155,6 +158,8 @@ struct w1_bus_master {
+ 		u8, w1_slave_found_callback);
+ 
+ 	char		*dev_id;
++
++	bool		delay_needs_poll;
+ };
+ 
+ /**

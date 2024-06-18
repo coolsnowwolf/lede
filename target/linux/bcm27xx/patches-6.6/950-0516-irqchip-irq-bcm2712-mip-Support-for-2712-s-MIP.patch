@@ -1,0 +1,384 @@
+From 92fdf5a5817d3dbfff2e6df7f079e8199ed51763 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 28 Jul 2021 11:13:39 +0100
+Subject: [PATCH 0516/1085] irqchip: irq-bcm2712-mip: Support for 2712's MIP
+
+irqchip: irq-bcm2712-mip: specify bitmap search size as ilog2(N) not N
+
+Freeing also has the same interface.
+
+irqchip: irq-bcm2712-mip: Fix build warnings
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+irqchip: bcm2712-mip: add a quick hack to optionally shift MSI vectors
+
+There are two MIP peripherals in bcm2712, the first gets a first-class
+treatment where 64 consecutive GIC SPIs are assigned to all 64 output
+vectors. The second gets an agglomeration of 17 GIC SPIs, but only 8 of
+these are consecutive starting at the 8th output vector.
+
+For now, allow the use of this smaller contiguous range within a larger
+whole.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/irqchip/Kconfig           |   8 +
+ drivers/irqchip/Makefile          |   1 +
+ drivers/irqchip/irq-bcm2712-mip.c | 323 ++++++++++++++++++++++++++++++
+ 3 files changed, 332 insertions(+)
+ create mode 100644 drivers/irqchip/irq-bcm2712-mip.c
+
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -111,6 +111,14 @@ config I8259
+ 	bool
+ 	select IRQ_DOMAIN
+ 
++config BCM2712_MIP
++	bool "Broadcom 2712 MSI-X Interrupt Peripheral support"
++	depends on ARM_GIC
++	select GENERIC_IRQ_CHIP
++	select IRQ_DOMAIN
++	help
++	  Enable support for the Broadcom BCM2712 MSI-X target peripheral.
++
+ config BCM6345_L1_IRQ
+ 	bool
+ 	select GENERIC_IRQ_CHIP
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -62,6 +62,7 @@ obj-$(CONFIG_XTENSA_MX)			+= irq-xtensa-
+ obj-$(CONFIG_XILINX_INTC)		+= irq-xilinx-intc.o
+ obj-$(CONFIG_IRQ_CROSSBAR)		+= irq-crossbar.o
+ obj-$(CONFIG_SOC_VF610)			+= irq-vf610-mscm-ir.o
++obj-$(CONFIG_BCM2712_MIP)		+= irq-bcm2712-mip.o
+ obj-$(CONFIG_BCM6345_L1_IRQ)		+= irq-bcm6345-l1.o
+ obj-$(CONFIG_BCM7038_L1_IRQ)		+= irq-bcm7038-l1.o
+ obj-$(CONFIG_BCM7120_L2_IRQ)		+= irq-bcm7120-l2.o
+--- /dev/null
++++ b/drivers/irqchip/irq-bcm2712-mip.c
+@@ -0,0 +1,323 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2021 Raspberry Pi Ltd., All Rights Reserved.
++ */
++
++#include <linux/pci.h>
++#include <linux/msi.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/of_pci.h>
++
++#include <linux/irqchip.h>
++
++#define MIP_INT_RAISED		0x00
++#define MIP_INT_CLEARED		0x10
++#define MIP_INT_CFGL_HOST	0x20
++#define MIP_INT_CFGH_HOST	0x30
++#define MIP_INT_MASKL_HOST	0x40
++#define MIP_INT_MASKH_HOST	0x50
++#define MIP_INT_MASKL_VPU	0x60
++#define MIP_INT_MASKH_VPU	0x70
++#define MIP_INT_STATUSL_HOST	0x80
++#define MIP_INT_STATUSH_HOST	0x90
++#define MIP_INT_STATUSL_VPU	0xa0
++#define MIP_INT_STATUSH_VPU	0xb0
++
++struct mip_priv {
++	spinlock_t msi_map_lock;
++	spinlock_t hw_lock;
++	void * __iomem base;
++	phys_addr_t msg_addr;
++	u32 msi_base;		/* The SGI number that MSIs start */
++	u32 num_msis;		/* The number of SGIs for MSIs */
++	u32 msi_offset;		/* Shift the allocated msi up by N */
++	unsigned long *msi_map;
++};
++
++static void mip_mask_msi_irq(struct irq_data *d)
++{
++	pci_msi_mask_irq(d);
++	irq_chip_mask_parent(d);
++}
++
++static void mip_unmask_msi_irq(struct irq_data *d)
++{
++	pci_msi_unmask_irq(d);
++	irq_chip_unmask_parent(d);
++}
++
++static void mip_compose_msi_msg(struct irq_data *d, struct msi_msg *msg)
++{
++	struct mip_priv *priv = irq_data_get_irq_chip_data(d);
++
++	msg->address_hi = upper_32_bits(priv->msg_addr);
++	msg->address_lo = lower_32_bits(priv->msg_addr);
++	msg->data = d->hwirq;
++}
++
++// The "bus-specific" irq_chip (the MIP doesn't _have_ to be used with PCIe)
++
++static struct irq_chip mip_msi_irq_chip = {
++	.name			= "MIP-MSI",
++	.irq_unmask		= mip_unmask_msi_irq,
++	.irq_mask		= mip_mask_msi_irq,
++	.irq_eoi		= irq_chip_eoi_parent,
++	.irq_set_affinity	= irq_chip_set_affinity_parent,
++};
++
++static struct msi_domain_info mip_msi_domain_info = {
++	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS |
++		   MSI_FLAG_PCI_MSIX),
++	.chip	= &mip_msi_irq_chip,
++};
++
++// The "middle" irq_chip (the hardware control part)
++
++static struct irq_chip mip_irq_chip = {
++	.name			= "MIP",
++	.irq_mask		= irq_chip_mask_parent,
++	.irq_unmask		= irq_chip_unmask_parent,
++	.irq_eoi		= irq_chip_eoi_parent,
++	.irq_set_affinity	= irq_chip_set_affinity_parent,
++	.irq_set_type		= irq_chip_set_type_parent,
++	.irq_compose_msi_msg	= mip_compose_msi_msg,
++};
++
++
++// And a domain to connect it to its parent (the GIC)
++
++static int mip_irq_domain_alloc(struct irq_domain *domain,
++				unsigned int virq, unsigned int nr_irqs,
++				void *args)
++{
++	struct mip_priv *priv = domain->host_data;
++	struct irq_fwspec fwspec;
++	struct irq_data *irqd;
++	int hwirq, ret, i;
++
++	spin_lock(&priv->msi_map_lock);
++
++	hwirq = bitmap_find_free_region(priv->msi_map, priv->num_msis, ilog2(nr_irqs));
++
++	spin_unlock(&priv->msi_map_lock);
++
++	if (hwirq < 0)
++		return -ENOSPC;
++
++	hwirq += priv->msi_offset;
++	fwspec.fwnode = domain->parent->fwnode;
++	fwspec.param_count = 3;
++	fwspec.param[0] = 0;
++	fwspec.param[1] = hwirq + priv->msi_base;
++	fwspec.param[2] = IRQ_TYPE_EDGE_RISING;
++
++	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, &fwspec);
++	if (ret)
++	    return ret;
++
++	for (i = 0; i < nr_irqs; i++) {
++		irqd = irq_domain_get_irq_data(domain->parent, virq + i);
++		irqd->chip->irq_set_type(irqd, IRQ_TYPE_EDGE_RISING);
++
++		irq_domain_set_hwirq_and_chip(domain, virq + i, hwirq + i,
++					      &mip_irq_chip, priv);
++		irqd = irq_get_irq_data(virq + i);
++		irqd_set_single_target(irqd);
++		irqd_set_affinity_on_activate(irqd);
++	}
++
++	return 0;
++}
++
++static void mip_irq_domain_free(struct irq_domain *domain,
++				unsigned int virq, unsigned int nr_irqs)
++{
++	struct irq_data *d = irq_domain_get_irq_data(domain, virq);
++	struct mip_priv *priv = irq_data_get_irq_chip_data(d);
++
++	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
++	d->hwirq -= priv->msi_offset;
++
++	spin_lock(&priv->msi_map_lock);
++
++	bitmap_release_region(priv->msi_map, d->hwirq, ilog2(nr_irqs));
++
++	spin_unlock(&priv->msi_map_lock);
++}
++
++#if 0
++static int mip_irq_domain_activate(struct irq_domain *domain,
++				   struct irq_data *d, bool reserve)
++{
++	struct mip_priv *priv = irq_data_get_irq_chip_data(d);
++	unsigned long flags;
++	unsigned int irq = d->hwirq;
++	void *__iomem reg = priv->base +
++		((irq < 32) ? MIP_INT_MASKL_HOST : MIP_INT_MASKH_HOST);
++	u32 val;
++
++	spin_lock_irqsave(&priv->hw_lock, flags);
++	val = readl(reg);
++	val &= ~(1 << (irq % 32)); // Clear the mask
++	writel(val, reg);
++	spin_unlock_irqrestore(&priv->hw_lock, flags);
++	return 0;
++}
++
++static void mip_irq_domain_deactivate(struct irq_domain *domain,
++				      struct irq_data *d)
++{
++	struct mip_priv *priv = irq_data_get_irq_chip_data(d);
++	unsigned long flags;
++	unsigned int irq = d->hwirq - priv->msi_base;
++	void *__iomem reg = priv->base +
++		((irq < 32) ? MIP_INT_MASKL_HOST : MIP_INT_MASKH_HOST);
++	u32 val;
++
++	spin_lock_irqsave(&priv->hw_lock, flags);
++	val = readl(reg);
++	val |= (1 << (irq % 32)); // Mask it out
++	writel(val, reg);
++	spin_unlock_irqrestore(&priv->hw_lock, flags);
++}
++#endif
++
++static const struct irq_domain_ops mip_irq_domain_ops = {
++	.alloc		= mip_irq_domain_alloc,
++	.free		= mip_irq_domain_free,
++	//.activate	= mip_irq_domain_activate,
++	//.deactivate	= mip_irq_domain_deactivate,
++};
++
++static int mip_init_domains(struct mip_priv *priv,
++			    struct device_node *node)
++{
++	struct irq_domain *middle_domain, *msi_domain, *gic_domain;
++	struct device_node *gic_node;
++
++	gic_node = of_irq_find_parent(node);
++	if (!gic_node) {
++		pr_err("Failed to find the GIC node\n");
++		return -ENODEV;
++	}
++
++	gic_domain = irq_find_host(gic_node);
++	if (!gic_domain) {
++		pr_err("Failed to find the GIC domain\n");
++		return -ENXIO;
++	}
++
++	middle_domain = irq_domain_add_hierarchy(gic_domain, 0, 0, NULL,
++						 &mip_irq_domain_ops,
++						 priv);
++	if (!middle_domain) {
++		pr_err("Failed to create the MIP middle domain\n");
++		return -ENOMEM;
++	}
++
++	msi_domain = pci_msi_create_irq_domain(of_node_to_fwnode(node),
++					       &mip_msi_domain_info,
++					       middle_domain);
++	if (!msi_domain) {
++		pr_err("Failed to create MSI domain\n");
++		irq_domain_remove(middle_domain);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static int __init mip_of_msi_init(struct device_node *node,
++				  struct device_node *parent)
++{
++	struct mip_priv *priv;
++	struct resource res;
++	int ret;
++
++	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	spin_lock_init(&priv->msi_map_lock);
++	spin_lock_init(&priv->hw_lock);
++
++	ret = of_address_to_resource(node, 0, &res);
++	if (ret) {
++		pr_err("Failed to allocate resource\n");
++		goto err_priv;
++	}
++
++	if (of_property_read_u32(node, "brcm,msi-base-spi", &priv->msi_base)) {
++		pr_err("Unable to parse MSI base\n");
++		ret = -EINVAL;
++		goto err_priv;
++	}
++
++	if (of_property_read_u32(node, "brcm,msi-num-spis", &priv->num_msis)) {
++		pr_err("Unable to parse MSI numbers\n");
++		ret = -EINVAL;
++		goto err_priv;
++	}
++
++	if (of_property_read_u32(node, "brcm,msi-offset", &priv->msi_offset))
++		priv->msi_offset = 0;
++
++	if (of_property_read_u64(node, "brcm,msi-pci-addr", &priv->msg_addr)) {
++		pr_err("Unable to parse MSI address\n");
++		ret = -EINVAL;
++		goto err_priv;
++	}
++
++	priv->base = ioremap(res.start, resource_size(&res));
++	if (!priv->base) {
++		pr_err("Failed to ioremap regs\n");
++		ret = -ENOMEM;
++		goto err_priv;
++	}
++
++	priv->msi_map = kcalloc(BITS_TO_LONGS(priv->num_msis),
++				sizeof(*priv->msi_map),
++				GFP_KERNEL);
++	if (!priv->msi_map) {
++		ret = -ENOMEM;
++		goto err_base;
++	}
++
++	pr_debug("Registering %d msixs, starting at %d\n",
++		 priv->num_msis, priv->msi_base);
++
++	/*
++	 * Begin with all MSI-Xs masked in for the host, masked out for the
++	 * VPU, and edge-triggered.
++	 */
++	writel(0, priv->base + MIP_INT_MASKL_HOST);
++	writel(0, priv->base + MIP_INT_MASKH_HOST);
++	writel(~0, priv->base + MIP_INT_MASKL_VPU);
++	writel(~0, priv->base + MIP_INT_MASKH_VPU);
++	writel(~0, priv->base + MIP_INT_CFGL_HOST);
++	writel(~0, priv->base + MIP_INT_CFGH_HOST);
++
++	ret = mip_init_domains(priv, node);
++	if (ret) {
++		pr_err("Failed to allocate msi_map\n");
++		goto err_map;
++	}
++
++	return 0;
++
++err_map:
++	kfree(priv->msi_map);
++
++err_base:
++	iounmap(priv->base);
++
++err_priv:
++	kfree(priv);
++
++	pr_err("%s: failed - err %d\n", __func__, ret);
++
++	return ret;
++}
++IRQCHIP_DECLARE(bcm_mip, "brcm,bcm2712-mip-intc", mip_of_msi_init);

@@ -1,0 +1,69 @@
+From e33f46eba97edbaff7744bfd5c5a093cd2c567d3 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 17 Jan 2024 18:36:11 +0000
+Subject: [PATCH 0837/1085] drm/vc4: Flush stale dlist entries if allocation
+ fails
+
+This is largely for debug at present.
+For reasons unknown we are not getting the end of frame interrupts
+that should trigger a sweep of stale dlist entries.
+
+On allocation failure clear out ALL stale entries, and retry the
+allocation. Log the interrupt status so we have debug regarding
+whether the HVS believes the interrupt is enabled.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 27 ++++++++++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -693,6 +693,9 @@ static void vc4_hvs_irq_clear_eof(struct
+ 	hvs->eof_irq[channel].enabled = false;
+ }
+ 
++static void vc4_hvs_free_dlist_entry_locked(struct vc4_hvs *hvs,
++					    struct vc4_hvs_dlist_allocation *alloc);
++
+ static struct vc4_hvs_dlist_allocation *
+ vc4_hvs_alloc_dlist_entry(struct vc4_hvs *hvs,
+ 			  unsigned int channel,
+@@ -701,6 +704,7 @@ vc4_hvs_alloc_dlist_entry(struct vc4_hvs
+ 	struct vc4_dev *vc4 = hvs->vc4;
+ 	struct drm_device *dev = &vc4->base;
+ 	struct vc4_hvs_dlist_allocation *alloc;
++	struct vc4_hvs_dlist_allocation *cur, *next;
+ 	unsigned long flags;
+ 	int ret;
+ 
+@@ -718,9 +722,26 @@ vc4_hvs_alloc_dlist_entry(struct vc4_hvs
+ 				 dlist_count);
+ 	spin_unlock_irqrestore(&hvs->mm_lock, flags);
+ 	if (ret) {
+-		drm_err(dev, "Failed to allocate DLIST entry. Requested size=%zu. ret=%d\n",
+-			dlist_count, ret);
+-		return ERR_PTR(ret);
++		drm_err(dev, "Failed to allocate DLIST entry. Requested size=%zu. ret=%d. DISPCTRL is %08x\n",
++			dlist_count, ret, HVS_READ(SCALER_DISPCTRL));
++
++		/* This should never happen as stale entries should get released
++		 * as the frame counter interrupt triggers.
++		 * However we've seen this fail for reasons currently unknown.
++		 * Free all stale entries now so we should be able to complete
++		 * this allocation.
++		 */
++		spin_lock_irqsave(&hvs->mm_lock, flags);
++		list_for_each_entry_safe(cur, next, &hvs->stale_dlist_entries, node) {
++			vc4_hvs_free_dlist_entry_locked(hvs, cur);
++		}
++
++		ret = drm_mm_insert_node(&hvs->dlist_mm, &alloc->mm_node,
++					 dlist_count);
++		spin_unlock_irqrestore(&hvs->mm_lock, flags);
++
++		if (ret)
++			return ERR_PTR(ret);
+ 	}
+ 
+ 	alloc->channel = channel;

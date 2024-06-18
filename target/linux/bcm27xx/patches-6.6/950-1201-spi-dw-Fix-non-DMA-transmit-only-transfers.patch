@@ -1,0 +1,143 @@
+From 199e611183de09ad91fe01fc79da78cc9d11ccb6 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 29 Jul 2024 11:12:38 +0100
+Subject: [PATCH 1201/1215] spi: dw: Fix non-DMA transmit-only transfers
+
+Ensure the transmit FIFO has emptied before ending the transfer by
+dropping the TX threshold to 0 when the last byte has been pushed into
+the FIFO. Include a similar fix for the non-IRQ paths.
+
+See: https://github.com/raspberrypi/linux/issues/6285
+Fixes: 6014649de765 ("spi: dw: Save bandwidth with the TMOD_TO feature")
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-dw-core.c | 62 +++++++++++++++++++++++++++++++++------
+ drivers/spi/spi-dw.h      |  3 ++
+ 2 files changed, 56 insertions(+), 9 deletions(-)
+
+--- a/drivers/spi/spi-dw-core.c
++++ b/drivers/spi/spi-dw-core.c
+@@ -220,6 +220,32 @@ int dw_spi_check_status(struct dw_spi *d
+ }
+ EXPORT_SYMBOL_NS_GPL(dw_spi_check_status, SPI_DW_CORE);
+ 
++static inline bool dw_spi_ctlr_busy(struct dw_spi *dws)
++{
++	return dw_readl(dws, DW_SPI_SR) & DW_SPI_SR_BUSY;
++}
++
++static enum hrtimer_restart dw_spi_hrtimer_handler(struct hrtimer *hr)
++{
++	struct dw_spi *dws = container_of(hr, struct dw_spi, hrtimer);
++
++	if (!dw_spi_ctlr_busy(dws)) {
++		spi_finalize_current_transfer(dws->host);
++		return HRTIMER_NORESTART;
++	}
++
++	if (!dws->idle_wait_retries) {
++		dev_err(&dws->host->dev, "controller stuck at busy\n");
++		spi_finalize_current_transfer(dws->host);
++		return HRTIMER_NORESTART;
++	}
++
++	dws->idle_wait_retries--;
++	hrtimer_forward_now(hr, dws->idle_wait_interval);
++
++	return HRTIMER_RESTART;
++}
++
+ static irqreturn_t dw_spi_transfer_handler(struct dw_spi *dws)
+ {
+ 	u16 irq_status = dw_readl(dws, DW_SPI_ISR);
+@@ -246,7 +272,22 @@ static irqreturn_t dw_spi_transfer_handl
+ 		}
+ 	} else if (!dws->tx_len) {
+ 		dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
+-		spi_finalize_current_transfer(dws->host);
++		if (dw_spi_ctlr_busy(dws)) {
++			ktime_t period = ns_to_ktime(DIV_ROUND_UP(NSEC_PER_SEC, dws->current_freq));
++
++			/*
++			 * Make the initial wait an underestimate of how long the transfer
++			 * should take, then poll rapidly to reduce the delay
++			 */
++			hrtimer_start(&dws->hrtimer,
++				      period * (8 * dws->n_bytes - 1),
++				      HRTIMER_MODE_REL);
++			dws->idle_wait_retries = 10;
++			dws->idle_wait_interval = period;
++		} else {
++			spi_finalize_current_transfer(dws->host);
++		}
++		return IRQ_HANDLED;
+ 	}
+ 
+ 	/*
+@@ -255,9 +296,13 @@ static irqreturn_t dw_spi_transfer_handl
+ 	 * have the TXE IRQ flood at the final stage of the transfer.
+ 	 */
+ 	if (irq_status & DW_SPI_INT_TXEI) {
+-		if (!dws->tx_len)
+-			dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
+ 		dw_writer(dws);
++		if (!dws->tx_len) {
++			if (dws->rx_len)
++				dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
++			else
++				dw_writel(dws, DW_SPI_TXFTLR, 0);
++		}
+ 	}
+ 
+ 	return IRQ_HANDLED;
+@@ -428,7 +473,7 @@ static int dw_spi_poll_transfer(struct d
+ 		ret = dw_spi_check_status(dws, true);
+ 		if (ret)
+ 			return ret;
+-	} while (dws->rx_len);
++	} while (dws->rx_len || dws->tx_len || dw_spi_ctlr_busy(dws));
+ 
+ 	return 0;
+ }
+@@ -652,11 +697,6 @@ static int dw_spi_write_then_read(struct
+ 	return 0;
+ }
+ 
+-static inline bool dw_spi_ctlr_busy(struct dw_spi *dws)
+-{
+-	return dw_readl(dws, DW_SPI_SR) & DW_SPI_SR_BUSY;
+-}
+-
+ static int dw_spi_wait_mem_op_done(struct dw_spi *dws)
+ {
+ 	int retry = DW_SPI_WAIT_RETRIES;
+@@ -993,6 +1033,9 @@ int dw_spi_add_host(struct device *dev,
+ 		}
+ 	}
+ 
++	hrtimer_init(&dws->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
++	dws->hrtimer.function = dw_spi_hrtimer_handler;
++
+ 	ret = spi_register_controller(host);
+ 	if (ret) {
+ 		dev_err_probe(dev, ret, "problem registering spi host\n");
+@@ -1018,6 +1061,7 @@ void dw_spi_remove_host(struct dw_spi *d
+ {
+ 	dw_spi_debugfs_remove(dws);
+ 
++	hrtimer_cancel(&dws->hrtimer);
+ 	spi_unregister_controller(dws->host);
+ 
+ 	if (dws->dma_ops && dws->dma_ops->dma_exit)
+--- a/drivers/spi/spi-dw.h
++++ b/drivers/spi/spi-dw.h
+@@ -180,6 +180,9 @@ struct dw_spi {
+ 	u32			current_freq;	/* frequency in hz */
+ 	u32			cur_rx_sample_dly;
+ 	u32			def_rx_sample_dly_ns;
++	struct hrtimer		hrtimer;
++	ktime_t			idle_wait_interval;
++	int			idle_wait_retries;
+ 
+ 	/* Custom memory operations */
+ 	struct spi_controller_mem_ops mem_ops;

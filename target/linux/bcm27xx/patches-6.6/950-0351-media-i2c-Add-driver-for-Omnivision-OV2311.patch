@@ -1,0 +1,1236 @@
+From ca5bc6b5ee5b1e86a391cd9bbda7b336d135165b Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 25 Feb 2022 18:16:13 +0000
+Subject: [PATCH 0351/1085] media/i2c: Add driver for Omnivision OV2311
+
+Omnivision OV2311 is a CSI2 1600x1300 global shutter image sensor.
+Add a driver for it.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+media: i2c: Update ov2311 Kconfig entry
+
+Bring the OV2311 Kconfig declaration in line with upstream entries.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+media: i2c: ov2311: Fix uninitialized variable usage
+
+Signed-off-by: Alexander Winkowski <dereference23@outlook.com>
+---
+ drivers/media/i2c/Kconfig  |   10 +
+ drivers/media/i2c/Makefile |    1 +
+ drivers/media/i2c/ov2311.c | 1178 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 1189 insertions(+)
+ create mode 100644 drivers/media/i2c/ov2311.c
+
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -323,6 +323,16 @@ config VIDEO_OV13B10
+ 	  This is a Video4Linux2 sensor driver for the OmniVision
+ 	  OV13B10 camera.
+ 
++config VIDEO_OV2311
++	tristate "OmniVision OV2311 sensor support"
++	depends on I2C && VIDEO_DEV
++	help
++	  This is a Video4Linux2 sensor-level driver for the OmniVision
++	  OV2311 camera.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called ov2311.
++
+ config VIDEO_OV2640
+ 	tristate "OmniVision OV2640 sensor support"
+ 	help
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -80,6 +80,7 @@ obj-$(CONFIG_VIDEO_OV08D10) += ov08d10.o
+ obj-$(CONFIG_VIDEO_OV08X40) += ov08x40.o
+ obj-$(CONFIG_VIDEO_OV13858) += ov13858.o
+ obj-$(CONFIG_VIDEO_OV13B10) += ov13b10.o
++obj-$(CONFIG_VIDEO_OV2311) += ov2311.o
+ obj-$(CONFIG_VIDEO_OV2640) += ov2640.o
+ obj-$(CONFIG_VIDEO_OV2659) += ov2659.o
+ obj-$(CONFIG_VIDEO_OV2680) += ov2680.o
+--- /dev/null
++++ b/drivers/media/i2c/ov2311.c
+@@ -0,0 +1,1178 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Omnivision OV2311 1600x1300 global shutter image sensor driver
++ * Copyright (C) 2022, Raspberry Pi (Trading) Ltd
++ *
++ * This driver is based on the OV9281 driver.
++ * Copyright (C) 2017 Fuzhou Rockchip Electronics Co., Ltd.
++ * Register configuration from
++ * https://github.com/ArduCAM/ArduCAM_USB_Camera_Shield/tree/master/Config/USB3.0_UC-425_Rev.C%2BUC-628_Rev.B/OV2311
++ * with additional exposure and gain register information from
++ * https://github.com/renesas-rcar/linux-bsp/tree/0cf6e36f5bf49e1c2aab87139ec5b588623c56f8/drivers/media/i2c/imagers
++ */
++
++#include <linux/clk.h>
++#include <linux/device.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++#include <media/media-entity.h>
++#include <media/v4l2-async.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-event.h>
++#include <media/v4l2-fwnode.h>
++#include <media/v4l2-subdev.h>
++
++#define OV2311_LINK_FREQ		400000000
++#define OV2311_LANES			2
++
++/* pixel rate = link frequency * 2 * lanes / BITS_PER_SAMPLE */
++#define OV2311_PIXEL_RATE_10BIT		(OV2311_LINK_FREQ * 2 * \
++					 OV2311_LANES / 10)
++#define OV2311_PIXEL_RATE_8BIT		(OV2311_LINK_FREQ * 2 * \
++					 OV2311_LANES / 8)
++#define OV2311_XVCLK_FREQ		24000000
++
++#define CHIP_ID				0x2311
++#define OV2311_REG_CHIP_ID		0x300a
++
++#define OV2311_REG_CTRL_MODE		0x0100
++#define OV2311_MODE_SW_STANDBY		0x0
++#define OV2311_MODE_STREAMING		BIT(0)
++
++#define OV2311_REG_V_FLIP		0x3820
++#define OV2311_REG_H_FLIP		0x3821
++#define OV2311_FLIP_BIT			BIT(2)
++
++#define OV2311_REG_EXPOSURE		0x3501
++#define	OV2311_EXPOSURE_MIN		4
++#define	OV2311_EXPOSURE_STEP		1
++#define OV2311_VTS_MAX			0xffff
++
++#define OV2311_REG_GAIN_H		0x3508
++#define OV2311_REG_GAIN_L		0x3509
++#define OV2311_GAIN_H_MASK		0x07
++#define OV2311_GAIN_H_SHIFT		8
++#define OV2311_GAIN_L_MASK		0xff
++#define OV2311_GAIN_MIN			0x100
++#define OV2311_GAIN_MAX			0x780
++#define OV2311_GAIN_STEP		1
++#define OV2311_GAIN_DEFAULT		OV2311_GAIN_MIN
++
++#define OV2311_REG_TEST_PATTERN		0x5e00
++#define OV2311_TEST_PATTERN_ENABLE	0x80
++#define OV2311_TEST_PATTERN_DISABLE	0x0
++
++#define OV2311_REG_VTS			0x380e
++
++/*
++ * OV2311 native and active pixel array size.
++ * Datasheet not available to confirm these values. renesas-rcar linux-bsp tree
++ * has these values.
++ */
++#define OV2311_NATIVE_WIDTH		1616U
++#define OV2311_NATIVE_HEIGHT		1316U
++#define OV2311_PIXEL_ARRAY_LEFT		8U
++#define OV2311_PIXEL_ARRAY_TOP		8U
++#define OV2311_PIXEL_ARRAY_WIDTH	1600U
++#define OV2311_PIXEL_ARRAY_HEIGHT	1300U
++
++#define REG_NULL			0xFFFF
++
++#define OV2311_REG_VALUE_08BIT		1
++#define OV2311_REG_VALUE_16BIT		2
++#define OV2311_REG_VALUE_24BIT		3
++
++#define OV2311_NAME			"ov2311"
++
++static const char * const ov2311_supply_names[] = {
++	"avdd",		/* Analog power */
++	"dovdd",	/* Digital I/O power */
++	"dvdd",		/* Digital core power */
++};
++
++#define OV2311_NUM_SUPPLIES ARRAY_SIZE(ov2311_supply_names)
++
++struct regval {
++	u16 addr;
++	u8 val;
++};
++
++struct ov2311_mode {
++	u32 width;
++	u32 height;
++	u32 hts_def;
++	u32 vts_def;
++	u32 exp_def;
++	struct v4l2_rect crop;
++	const struct regval *reg_list;
++};
++
++struct ov2311 {
++	struct i2c_client	*client;
++	struct clk		*xvclk;
++	struct gpio_desc	*reset_gpio;
++	struct gpio_desc	*pwdn_gpio;
++	struct regulator_bulk_data supplies[OV2311_NUM_SUPPLIES];
++
++	struct v4l2_subdev	subdev;
++	struct media_pad	pad;
++	struct v4l2_ctrl_handler ctrl_handler;
++	struct v4l2_ctrl	*exposure;
++	struct v4l2_ctrl	*hblank;
++	struct v4l2_ctrl	*vblank;
++	struct v4l2_ctrl	*pixel_rate;
++	/*
++	 * Mutex for serialized access:
++	 * Protect sensor module set pad format and start/stop streaming safely.
++	 */
++	struct mutex		mutex;
++
++	/* Streaming on/off */
++	bool streaming;
++
++	const struct ov2311_mode *cur_mode;
++	u32			code;
++};
++
++#define to_ov2311(sd) container_of(sd, struct ov2311, subdev)
++
++/*
++ * Xclk 24Mhz
++ * max_framerate 60fps for 10 bit, 74.6fps for 8 bit.
++ */
++static const struct regval ov2311_common_regs[] = {
++	{ 0x0103, 0x01 },
++	{ 0x0100, 0x00 },
++	{ 0x0300, 0x01 },
++	{ 0x0302, 0x32 },
++	{ 0x0303, 0x00 },
++	{ 0x0304, 0x03 },
++	{ 0x0305, 0x02 },
++	{ 0x0306, 0x01 },
++	{ 0x030e, 0x04 },
++	{ 0x3001, 0x02 },
++	{ 0x3004, 0x00 },
++	{ 0x3005, 0x00 },
++	{ 0x3006, 0x00 },
++	{ 0x3011, 0x0d },
++	{ 0x3014, 0x04 },
++	{ 0x301c, 0xf0 },
++	{ 0x3020, 0x00 },
++	{ 0x302c, 0x00 },
++	{ 0x302d, 0x12 },
++	{ 0x302e, 0x4c },
++	{ 0x302f, 0x8c },
++	{ 0x3030, 0x10 },
++	{ 0x303f, 0x03 },
++	{ 0x3103, 0x00 },
++	{ 0x3106, 0x08 },
++	{ 0x31ff, 0x01 },
++	{ 0x3501, 0x05 },
++	{ 0x3502, 0xba },
++	{ 0x3506, 0x00 },
++	{ 0x3507, 0x00 },
++	{ 0x3620, 0x67 },
++	{ 0x3633, 0x78 },
++	{ 0x3666, 0x00 },
++	{ 0x3670, 0x68 },
++	{ 0x3674, 0x10 },
++	{ 0x3675, 0x00 },
++	{ 0x3680, 0x84 },
++	{ 0x36a2, 0x04 },
++	{ 0x36a3, 0x80 },
++	{ 0x36b0, 0x00 },
++	{ 0x3700, 0x35 },
++	{ 0x3704, 0x59 },
++	{ 0x3712, 0x00 },
++	{ 0x3713, 0x02 },
++	{ 0x379b, 0x01 },
++	{ 0x379c, 0x10 },
++	{ 0x3800, 0x00 },
++	{ 0x3801, 0x00 },
++	{ 0x3804, 0x06 },
++	{ 0x3805, 0x4f },
++	{ 0x3810, 0x00 },
++	{ 0x3811, 0x08 },
++	{ 0x3812, 0x00 },
++	{ 0x3813, 0x08 },
++	{ 0x3814, 0x11 },
++	{ 0x3815, 0x11 },
++	{ 0x3816, 0x00 },
++	{ 0x3817, 0x00 },
++	{ 0x3818, 0x04 },
++	{ 0x3819, 0x00 },
++	{ 0x382b, 0x5a },
++	{ 0x382c, 0x09 },
++	{ 0x382d, 0x9a },
++	{ 0x3882, 0x02 },
++	{ 0x3883, 0x6c },
++	{ 0x3885, 0x07 },
++	{ 0x389d, 0x03 },
++	{ 0x38a6, 0x00 },
++	{ 0x38a7, 0x01 },
++	{ 0x38b3, 0x07 },
++	{ 0x38b1, 0x00 },
++	{ 0x38e5, 0x02 },
++	{ 0x38e7, 0x00 },
++	{ 0x38e8, 0x00 },
++	{ 0x3910, 0xff },
++	{ 0x3911, 0xff },
++	{ 0x3912, 0x08 },
++	{ 0x3913, 0x00 },
++	{ 0x3914, 0x00 },
++	{ 0x3915, 0x00 },
++	{ 0x391c, 0x00 },
++	{ 0x3920, 0xa5 },
++	{ 0x3921, 0x00 },
++	{ 0x3922, 0x00 },
++	{ 0x3923, 0x00 },
++	{ 0x3924, 0x05 },
++	{ 0x3925, 0x00 },
++	{ 0x3926, 0x00 },
++	{ 0x3927, 0x00 },
++	{ 0x3928, 0x1a },
++	{ 0x392d, 0x05 },
++	{ 0x392e, 0xf2 },
++	{ 0x392f, 0x40 },
++	{ 0x4001, 0x00 },
++	{ 0x4003, 0x40 },
++	{ 0x4008, 0x12 },
++	{ 0x4009, 0x1b },
++	{ 0x400c, 0x0c },
++	{ 0x400d, 0x13 },
++	{ 0x4010, 0xf0 },
++	{ 0x4011, 0x00 },
++	{ 0x4016, 0x00 },
++	{ 0x4017, 0x04 },
++	{ 0x4042, 0x11 },
++	{ 0x4043, 0x70 },
++	{ 0x4045, 0x00 },
++	{ 0x4409, 0x5f },
++	{ 0x450b, 0x00 },
++	{ 0x4600, 0x00 },
++	{ 0x4601, 0xa0 },
++	{ 0x4708, 0x09 },
++	{ 0x470c, 0x81 },
++	{ 0x4710, 0x06 },
++	{ 0x4711, 0x00 },
++	{ 0x4800, 0x00 },
++	{ 0x481f, 0x30 },
++	{ 0x4837, 0x14 },
++	{ 0x4f00, 0x00 },
++	{ 0x4f07, 0x00 },
++	{ 0x4f08, 0x03 },
++	{ 0x4f09, 0x08 },
++	{ 0x4f0c, 0x06 },
++	{ 0x4f0d, 0x02 },
++	{ 0x4f10, 0x00 },
++	{ 0x4f11, 0x00 },
++	{ 0x4f12, 0x07 },
++	{ 0x4f13, 0xe2 },
++	{ 0x5000, 0x9f },
++	{ 0x5001, 0x20 },
++	{ 0x5026, 0x00 },
++	{ 0x5c00, 0x00 },
++	{ 0x5c01, 0x2c },
++	{ 0x5c02, 0x00 },
++	{ 0x5c03, 0x7f },
++	{ 0x5e00, 0x00 },
++	{ 0x5e01, 0x41 },
++	{REG_NULL, 0x00},
++};
++
++static const struct regval ov2311_1600x1300_regs[] = {
++	{ 0x3802, 0x00 },
++	{ 0x3803, 0x00 },
++	{ 0x3806, 0x05 },
++	{ 0x3807, 0x23 },
++	{ 0x3808, 0x06 },
++	{ 0x3809, 0x40 },
++	{ 0x380a, 0x05 },
++	{ 0x380b, 0x14 },
++	{ 0x380c, 0x03 },
++	{ 0x380d, 0x88 },
++	{REG_NULL, 0x00},
++};
++
++static const struct regval ov2311_1600x1080_regs[] = {
++	{ 0x3802, 0x00 },
++	{ 0x3803, 0x6e },
++	{ 0x3806, 0x04 },
++	{ 0x3807, 0xae },
++	{ 0x3808, 0x06 },
++	{ 0x3809, 0x40 },
++	{ 0x380a, 0x04 },
++	{ 0x380b, 0x38 },
++	{ 0x380c, 0x03 },
++	{ 0x380d, 0x88 },
++
++	{ 0x5d01, 0x00 },
++	{ 0x5d02, 0x04 },
++	{ 0x5d03, 0x00 },
++	{ 0x5d04, 0x04 },
++	{ 0x5d05, 0x00 },
++	{REG_NULL, 0x00},
++};
++
++static const struct regval op_10bit[] = {
++	{ 0x030d, 0x5a },
++	{ 0x3662, 0x65 },
++	{REG_NULL, 0x00},
++};
++
++static const struct regval op_8bit[] = {
++	{ 0x030d, 0x70 },
++	{ 0x3662, 0x67 },
++	{REG_NULL, 0x00},
++};
++
++static const struct ov2311_mode supported_modes[] = {
++	{
++		.width = 1600,
++		.height = 1300,
++		.exp_def = 0x0320,
++		.hts_def = (0x0388 * 2),/* Registers 0x380c / 0x380d  * 2 */
++		.vts_def = 0x5c2,	/* Registers 0x380e / 0x380f
++					 * 60fps for 10bpp
++					 */
++		.crop = {
++			.left = OV2311_PIXEL_ARRAY_LEFT,
++			.top = OV2311_PIXEL_ARRAY_TOP,
++			.width = 1600,
++			.height = 1300
++		},
++		.reg_list = ov2311_1600x1300_regs,
++	},
++	{
++		.width = 1600,
++		.height = 1080,
++		.exp_def = 0x0320,
++		.hts_def = (0x0388 * 2),/* Registers 0x380c / 0x380d  * 2 */
++		.vts_def = 0x5c2,	/* Registers 0x380e / 0x380f
++					 * 60fps for 10bpp
++					 */
++		.crop = {
++			.left = OV2311_PIXEL_ARRAY_LEFT,
++			.top = 110 + OV2311_PIXEL_ARRAY_TOP,
++			.width = 1600,
++			.height = 1080
++		},
++		.reg_list = ov2311_1600x1080_regs,
++	},
++};
++
++static const s64 link_freq_menu_items[] = {
++	OV2311_LINK_FREQ
++};
++
++static const char * const ov2311_test_pattern_menu[] = {
++	"Disabled",
++	"Vertical Color Bar Type 1",
++	"Vertical Color Bar Type 2",
++	"Vertical Color Bar Type 3",
++	"Vertical Color Bar Type 4"
++};
++
++/* Write registers up to 4 at a time */
++static int ov2311_write_reg(struct i2c_client *client, u16 reg,
++			    u32 len, u32 val)
++{
++	u32 buf_i, val_i;
++	u8 buf[6];
++	u8 *val_p;
++	__be32 val_be;
++
++	if (len > 4)
++		return -EINVAL;
++
++	buf[0] = reg >> 8;
++	buf[1] = reg & 0xff;
++
++	val_be = cpu_to_be32(val);
++	val_p = (u8 *)&val_be;
++	buf_i = 2;
++	val_i = 4 - len;
++
++	while (val_i < 4)
++		buf[buf_i++] = val_p[val_i++];
++
++	if (i2c_master_send(client, buf, len + 2) != len + 2)
++		return -EIO;
++
++	return 0;
++}
++
++static int ov2311_write_array(struct i2c_client *client,
++			      const struct regval *regs)
++{
++	u32 i;
++	int ret = 0;
++
++	for (i = 0; ret == 0 && regs[i].addr != REG_NULL; i++)
++		ret = ov2311_write_reg(client, regs[i].addr,
++				       OV2311_REG_VALUE_08BIT, regs[i].val);
++
++	return ret;
++}
++
++/* Read registers up to 4 at a time */
++static int ov2311_read_reg(struct i2c_client *client, u16 reg, unsigned int len,
++			   u32 *val)
++{
++	struct i2c_msg msgs[2];
++	u8 *data_be_p;
++	__be32 data_be = 0;
++	__be16 reg_addr_be = cpu_to_be16(reg);
++	int ret;
++
++	if (len > 4 || !len)
++		return -EINVAL;
++
++	data_be_p = (u8 *)&data_be;
++	/* Write register address */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = 0;
++	msgs[0].len = 2;
++	msgs[0].buf = (u8 *)&reg_addr_be;
++
++	/* Read data from register */
++	msgs[1].addr = client->addr;
++	msgs[1].flags = I2C_M_RD;
++	msgs[1].len = len;
++	msgs[1].buf = &data_be_p[4 - len];
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	*val = be32_to_cpu(data_be);
++
++	return 0;
++}
++
++static int ov2311_set_fmt(struct v4l2_subdev *sd,
++			  struct v4l2_subdev_state *sd_state,
++			  struct v4l2_subdev_format *fmt)
++{
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	const struct ov2311_mode *mode;
++	s64 h_blank, vblank_def, pixel_rate;
++
++	mutex_lock(&ov2311->mutex);
++
++	mode = v4l2_find_nearest_size(supported_modes,
++				      ARRAY_SIZE(supported_modes),
++				      width, height,
++				      fmt->format.width,
++				      fmt->format.height);
++	if (fmt->format.code != MEDIA_BUS_FMT_Y8_1X8)
++		fmt->format.code = MEDIA_BUS_FMT_Y10_1X10;
++	fmt->format.width = mode->width;
++	fmt->format.height = mode->height;
++	fmt->format.field = V4L2_FIELD_NONE;
++	fmt->format.colorspace = V4L2_COLORSPACE_RAW;
++	fmt->format.ycbcr_enc =
++			V4L2_MAP_YCBCR_ENC_DEFAULT(fmt->format.colorspace);
++	fmt->format.quantization =
++		V4L2_MAP_QUANTIZATION_DEFAULT(true, fmt->format.colorspace,
++					      fmt->format.ycbcr_enc);
++	fmt->format.xfer_func =
++		V4L2_MAP_XFER_FUNC_DEFAULT(fmt->format.colorspace);
++
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) =
++								fmt->format;
++	} else {
++		ov2311->cur_mode = mode;
++		ov2311->code = fmt->format.code;
++		h_blank = mode->hts_def - mode->width;
++		__v4l2_ctrl_modify_range(ov2311->hblank, h_blank,
++					 h_blank, 1, h_blank);
++		__v4l2_ctrl_s_ctrl(ov2311->hblank, h_blank);
++		vblank_def = mode->vts_def - mode->height;
++		__v4l2_ctrl_modify_range(ov2311->vblank, vblank_def,
++					 OV2311_VTS_MAX - mode->height,
++					 1, vblank_def);
++		__v4l2_ctrl_s_ctrl(ov2311->vblank, vblank_def);
++
++		pixel_rate = (fmt->format.code == MEDIA_BUS_FMT_Y10_1X10) ?
++			OV2311_PIXEL_RATE_10BIT : OV2311_PIXEL_RATE_8BIT;
++		__v4l2_ctrl_modify_range(ov2311->pixel_rate, pixel_rate,
++					 pixel_rate, 1, pixel_rate);
++	}
++
++	mutex_unlock(&ov2311->mutex);
++
++	return 0;
++}
++
++static int ov2311_get_fmt(struct v4l2_subdev *sd,
++			  struct v4l2_subdev_state *sd_state,
++			  struct v4l2_subdev_format *fmt)
++{
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	const struct ov2311_mode *mode = ov2311->cur_mode;
++
++	mutex_lock(&ov2311->mutex);
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		fmt->format = *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
++	} else {
++		fmt->format.width = mode->width;
++		fmt->format.height = mode->height;
++		fmt->format.code = ov2311->code;
++		fmt->format.field = V4L2_FIELD_NONE;
++		fmt->format.colorspace = V4L2_COLORSPACE_SRGB;
++		fmt->format.ycbcr_enc =
++			V4L2_MAP_YCBCR_ENC_DEFAULT(fmt->format.colorspace);
++		fmt->format.quantization =
++			V4L2_MAP_QUANTIZATION_DEFAULT(true,
++						      fmt->format.colorspace,
++						      fmt->format.ycbcr_enc);
++		fmt->format.xfer_func =
++			V4L2_MAP_XFER_FUNC_DEFAULT(fmt->format.colorspace);
++	}
++	mutex_unlock(&ov2311->mutex);
++
++	return 0;
++}
++
++static int ov2311_enum_mbus_code(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_mbus_code_enum *code)
++{
++	switch (code->index) {
++	default:
++		return -EINVAL;
++	case 0:
++		code->code = MEDIA_BUS_FMT_Y10_1X10;
++		break;
++	case 1:
++		code->code = MEDIA_BUS_FMT_Y8_1X8;
++		break;
++	}
++
++	return 0;
++}
++
++static int ov2311_enum_frame_sizes(struct v4l2_subdev *sd,
++				   struct v4l2_subdev_state *sd_state,
++				   struct v4l2_subdev_frame_size_enum *fse)
++{
++	if (fse->index >= ARRAY_SIZE(supported_modes))
++		return -EINVAL;
++
++	if (fse->code != MEDIA_BUS_FMT_Y10_1X10 &&
++	    fse->code != MEDIA_BUS_FMT_Y8_1X8)
++		return -EINVAL;
++
++	fse->min_width  = supported_modes[fse->index].width;
++	fse->max_width  = supported_modes[fse->index].width;
++	fse->max_height = supported_modes[fse->index].height;
++	fse->min_height = supported_modes[fse->index].height;
++
++	return 0;
++}
++
++static int ov2311_enable_test_pattern(struct ov2311 *ov2311, u32 pattern)
++{
++	u32 val;
++
++	if (pattern)
++		val = (pattern - 1) | OV2311_TEST_PATTERN_ENABLE;
++	else
++		val = OV2311_TEST_PATTERN_DISABLE;
++
++	return ov2311_write_reg(ov2311->client, OV2311_REG_TEST_PATTERN,
++				OV2311_REG_VALUE_08BIT, val);
++}
++
++static const struct v4l2_rect *
++__ov2311_get_pad_crop(struct ov2311 *ov2311, struct v4l2_subdev_state *sd_state,
++		      unsigned int pad, enum v4l2_subdev_format_whence which)
++{
++	switch (which) {
++	case V4L2_SUBDEV_FORMAT_TRY:
++		return v4l2_subdev_get_try_crop(&ov2311->subdev, sd_state, pad);
++	case V4L2_SUBDEV_FORMAT_ACTIVE:
++		return &ov2311->cur_mode->crop;
++	}
++
++	return NULL;
++}
++
++static int ov2311_get_selection(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *sd_state,
++				struct v4l2_subdev_selection *sel)
++{
++	switch (sel->target) {
++	case V4L2_SEL_TGT_CROP: {
++		struct ov2311 *ov2311 = to_ov2311(sd);
++
++		mutex_lock(&ov2311->mutex);
++		sel->r = *__ov2311_get_pad_crop(ov2311, sd_state, sel->pad,
++						sel->which);
++		mutex_unlock(&ov2311->mutex);
++
++		return 0;
++	}
++
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++		sel->r.top = 0;
++		sel->r.left = 0;
++		sel->r.width = OV2311_NATIVE_WIDTH;
++		sel->r.height = OV2311_NATIVE_HEIGHT;
++
++		return 0;
++
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++		sel->r.top = OV2311_PIXEL_ARRAY_TOP;
++		sel->r.left = OV2311_PIXEL_ARRAY_LEFT;
++		sel->r.width = OV2311_PIXEL_ARRAY_WIDTH;
++		sel->r.height = OV2311_PIXEL_ARRAY_HEIGHT;
++
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
++static int ov2311_start_stream(struct ov2311 *ov2311)
++{
++	int ret;
++
++	ret = ov2311_write_array(ov2311->client, ov2311_common_regs);
++	if (ret)
++		return ret;
++
++	ret = ov2311_write_array(ov2311->client, ov2311->cur_mode->reg_list);
++	if (ret)
++		return ret;
++
++	if (ov2311->code == MEDIA_BUS_FMT_Y10_1X10)
++		ret = ov2311_write_array(ov2311->client, op_10bit);
++	else
++		ret = ov2311_write_array(ov2311->client, op_8bit);
++	if (ret)
++		return ret;
++
++	/* In case these controls are set before streaming */
++	mutex_unlock(&ov2311->mutex);
++	ret = v4l2_ctrl_handler_setup(&ov2311->ctrl_handler);
++	mutex_lock(&ov2311->mutex);
++	if (ret)
++		return ret;
++
++	return ov2311_write_reg(ov2311->client, OV2311_REG_CTRL_MODE,
++				OV2311_REG_VALUE_08BIT, OV2311_MODE_STREAMING);
++}
++
++static int ov2311_stop_stream(struct ov2311 *ov2311)
++{
++	return ov2311_write_reg(ov2311->client, OV2311_REG_CTRL_MODE,
++				OV2311_REG_VALUE_08BIT, OV2311_MODE_SW_STANDBY);
++}
++
++static int ov2311_s_stream(struct v4l2_subdev *sd, int enable)
++{
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	struct i2c_client *client = ov2311->client;
++	int ret = 0;
++
++	mutex_lock(&ov2311->mutex);
++	if (ov2311->streaming == enable) {
++		mutex_unlock(&ov2311->mutex);
++		return 0;
++	}
++
++	if (enable) {
++		ret = pm_runtime_resume_and_get(&client->dev);
++		if (ret < 0)
++			goto unlock_and_return;
++
++		ret = ov2311_start_stream(ov2311);
++		if (ret) {
++			v4l2_err(sd, "start stream failed while write regs\n");
++			pm_runtime_put(&client->dev);
++			goto unlock_and_return;
++		}
++	} else {
++		ov2311_stop_stream(ov2311);
++		pm_runtime_put(&client->dev);
++	}
++
++	ov2311->streaming = enable;
++
++unlock_and_return:
++	mutex_unlock(&ov2311->mutex);
++
++	return ret;
++}
++
++static int ov2311_power_on(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	int ret;
++
++	ret = clk_set_rate(ov2311->xvclk, OV2311_XVCLK_FREQ);
++	if (ret < 0)
++		dev_warn(dev, "Failed to set xvclk rate (24MHz)\n");
++	if (clk_get_rate(ov2311->xvclk) != OV2311_XVCLK_FREQ)
++		dev_warn(dev, "xvclk mismatched, modes are based on 24MHz - rate is %lu\n",
++			 clk_get_rate(ov2311->xvclk));
++
++	ret = clk_prepare_enable(ov2311->xvclk);
++	if (ret < 0) {
++		dev_err(dev, "Failed to enable xvclk\n");
++		return ret;
++	}
++
++	gpiod_set_value_cansleep(ov2311->reset_gpio, 0);
++
++	ret = regulator_bulk_enable(OV2311_NUM_SUPPLIES, ov2311->supplies);
++	if (ret < 0) {
++		dev_err(dev, "Failed to enable regulators\n");
++		goto disable_clk;
++	}
++
++	gpiod_set_value_cansleep(ov2311->reset_gpio, 1);
++
++	usleep_range(500, 1000);
++	gpiod_set_value_cansleep(ov2311->pwdn_gpio, 1);
++
++	usleep_range(1000, 2000);
++
++	return 0;
++
++disable_clk:
++	clk_disable_unprepare(ov2311->xvclk);
++
++	return ret;
++}
++
++static int ov2311_power_off(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov2311 *ov2311 = to_ov2311(sd);
++
++	gpiod_set_value_cansleep(ov2311->pwdn_gpio, 0);
++	clk_disable_unprepare(ov2311->xvclk);
++	gpiod_set_value_cansleep(ov2311->reset_gpio, 0);
++	regulator_bulk_disable(OV2311_NUM_SUPPLIES, ov2311->supplies);
++
++	return 0;
++}
++
++static int ov2311_runtime_resume(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	int ret;
++
++	if (ov2311->streaming) {
++		ret = ov2311_start_stream(ov2311);
++		if (ret)
++			goto error;
++	}
++	return 0;
++
++error:
++	ov2311_stop_stream(ov2311);
++	ov2311->streaming = 0;
++	return ret;
++}
++
++static int ov2311_runtime_suspend(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov2311 *ov2311 = to_ov2311(sd);
++
++	if (ov2311->streaming)
++		ov2311_stop_stream(ov2311);
++
++	return 0;
++}
++
++static int ov2311_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct ov2311 *ov2311 = to_ov2311(sd);
++	struct v4l2_mbus_framefmt *try_fmt =
++				v4l2_subdev_get_try_format(sd, fh->state, 0);
++	const struct ov2311_mode *def_mode = &supported_modes[0];
++
++	mutex_lock(&ov2311->mutex);
++	/* Initialize try_fmt */
++	try_fmt->width = def_mode->width;
++	try_fmt->height = def_mode->height;
++	try_fmt->code = MEDIA_BUS_FMT_Y10_1X10;
++	try_fmt->field = V4L2_FIELD_NONE;
++	try_fmt->colorspace = V4L2_COLORSPACE_RAW;
++	try_fmt->ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(try_fmt->colorspace);
++	try_fmt->quantization =
++		V4L2_MAP_QUANTIZATION_DEFAULT(true, try_fmt->colorspace,
++					      try_fmt->ycbcr_enc);
++	try_fmt->xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(try_fmt->colorspace);
++
++	mutex_unlock(&ov2311->mutex);
++	/* No crop or compose */
++
++	return 0;
++}
++
++static const struct dev_pm_ops ov2311_pm_ops = {
++	SET_RUNTIME_PM_OPS(ov2311_runtime_suspend, ov2311_runtime_resume, NULL)
++	SET_RUNTIME_PM_OPS(ov2311_power_off, ov2311_power_on, NULL)
++};
++
++static const struct v4l2_subdev_internal_ops ov2311_internal_ops = {
++	.open = ov2311_open,
++};
++
++static const struct v4l2_subdev_core_ops ov2311_core_ops = {
++	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
++	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
++};
++
++static const struct v4l2_subdev_video_ops ov2311_video_ops = {
++	.s_stream = ov2311_s_stream,
++};
++
++static const struct v4l2_subdev_pad_ops ov2311_pad_ops = {
++	.enum_mbus_code = ov2311_enum_mbus_code,
++	.enum_frame_size = ov2311_enum_frame_sizes,
++	.get_fmt = ov2311_get_fmt,
++	.set_fmt = ov2311_set_fmt,
++	.get_selection = ov2311_get_selection,
++};
++
++static const struct v4l2_subdev_ops ov2311_subdev_ops = {
++	.core	= &ov2311_core_ops,
++	.video	= &ov2311_video_ops,
++	.pad	= &ov2311_pad_ops,
++};
++
++static int ov2311_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct ov2311 *ov2311 = container_of(ctrl->handler,
++					     struct ov2311, ctrl_handler);
++	struct i2c_client *client = ov2311->client;
++	s64 max;
++	int ret = 0;
++
++	/* Propagate change of current control to all related controls */
++	switch (ctrl->id) {
++	case V4L2_CID_VBLANK:
++		/* Update max exposure while meeting expected vblanking */
++		max = ov2311->cur_mode->height + ctrl->val - 4;
++		__v4l2_ctrl_modify_range(ov2311->exposure,
++					 ov2311->exposure->minimum, max,
++					 ov2311->exposure->step,
++					 ov2311->exposure->default_value);
++		break;
++	}
++
++	if (pm_runtime_get(&client->dev) <= 0)
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_EXPOSURE:
++		ret = ov2311_write_reg(ov2311->client, OV2311_REG_EXPOSURE,
++				       OV2311_REG_VALUE_16BIT, ctrl->val);
++		break;
++	case V4L2_CID_ANALOGUE_GAIN:
++		ret = ov2311_write_reg(ov2311->client, OV2311_REG_GAIN_H,
++				       OV2311_REG_VALUE_08BIT,
++				       (ctrl->val >> OV2311_GAIN_H_SHIFT) &
++							OV2311_GAIN_H_MASK);
++		ret |= ov2311_write_reg(ov2311->client, OV2311_REG_GAIN_L,
++				       OV2311_REG_VALUE_08BIT,
++				       ctrl->val & OV2311_GAIN_L_MASK);
++		break;
++	case V4L2_CID_VBLANK:
++		ret = ov2311_write_reg(ov2311->client, OV2311_REG_VTS,
++				       OV2311_REG_VALUE_16BIT,
++				       ctrl->val + ov2311->cur_mode->height);
++		break;
++	case V4L2_CID_TEST_PATTERN:
++		ret = ov2311_enable_test_pattern(ov2311, ctrl->val);
++		break;
++	case V4L2_CID_HFLIP:
++		ret = ov2311_write_reg(ov2311->client, OV2311_REG_H_FLIP,
++				       OV2311_REG_VALUE_08BIT,
++				       ctrl->val ? OV2311_FLIP_BIT : 0);
++		break;
++	case V4L2_CID_VFLIP:
++		ret = ov2311_write_reg(ov2311->client, OV2311_REG_V_FLIP,
++				       OV2311_REG_VALUE_08BIT,
++				       ctrl->val ? OV2311_FLIP_BIT : 0);
++		break;
++	default:
++		dev_warn(&client->dev, "%s Unhandled id:0x%x, val:0x%x\n",
++			 __func__, ctrl->id, ctrl->val);
++		break;
++	}
++
++	pm_runtime_put(&client->dev);
++
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops ov2311_ctrl_ops = {
++	.s_ctrl = ov2311_set_ctrl,
++};
++
++static int ov2311_initialize_controls(struct ov2311 *ov2311)
++{
++	struct v4l2_fwnode_device_properties props;
++	const struct ov2311_mode *mode;
++	struct v4l2_ctrl_handler *handler;
++	struct v4l2_ctrl *ctrl;
++	s64 exposure_max, vblank_def;
++	u32 h_blank;
++	int ret;
++
++	handler = &ov2311->ctrl_handler;
++	mode = ov2311->cur_mode;
++	ret = v4l2_ctrl_handler_init(handler, 11);
++	if (ret)
++		return ret;
++	handler->lock = &ov2311->mutex;
++
++	ctrl = v4l2_ctrl_new_int_menu(handler, NULL, V4L2_CID_LINK_FREQ,
++				      0, 0, link_freq_menu_items);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	ov2311->pixel_rate = v4l2_ctrl_new_std(handler, NULL,
++					       V4L2_CID_PIXEL_RATE,
++					       OV2311_PIXEL_RATE_10BIT,
++					       OV2311_PIXEL_RATE_10BIT, 1,
++					       OV2311_PIXEL_RATE_10BIT);
++
++	h_blank = mode->hts_def - mode->width;
++	ov2311->hblank = v4l2_ctrl_new_std(handler, NULL, V4L2_CID_HBLANK,
++					   h_blank, h_blank, 1, h_blank);
++	if (ov2311->hblank)
++		ov2311->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	vblank_def = mode->vts_def - mode->height;
++	ov2311->vblank = v4l2_ctrl_new_std(handler, &ov2311_ctrl_ops,
++					   V4L2_CID_VBLANK, vblank_def,
++					   OV2311_VTS_MAX - mode->height, 1,
++					   vblank_def);
++
++	exposure_max = mode->vts_def - 4;
++	ov2311->exposure = v4l2_ctrl_new_std(handler, &ov2311_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     OV2311_EXPOSURE_MIN, exposure_max,
++					     OV2311_EXPOSURE_STEP,
++					     mode->exp_def);
++
++	v4l2_ctrl_new_std(handler, &ov2311_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
++			  OV2311_GAIN_MIN, OV2311_GAIN_MAX, OV2311_GAIN_STEP,
++			  OV2311_GAIN_DEFAULT);
++
++	v4l2_ctrl_new_std_menu_items(handler, &ov2311_ctrl_ops,
++				     V4L2_CID_TEST_PATTERN,
++				     ARRAY_SIZE(ov2311_test_pattern_menu) - 1,
++				     0, 0, ov2311_test_pattern_menu);
++
++	v4l2_ctrl_new_std(handler, &ov2311_ctrl_ops,
++			  V4L2_CID_HFLIP, 0, 1, 1, 0);
++
++	v4l2_ctrl_new_std(handler, &ov2311_ctrl_ops,
++			  V4L2_CID_VFLIP, 0, 1, 1, 0);
++
++	ret = v4l2_fwnode_device_parse(&ov2311->client->dev, &props);
++	if (ret)
++		goto err_free_handler;
++
++	ret = v4l2_ctrl_new_fwnode_properties(handler, &ov2311_ctrl_ops,
++					      &props);
++	if (ret)
++		goto err_free_handler;
++
++	if (handler->error) {
++		ret = handler->error;
++		dev_err(&ov2311->client->dev,
++			"Failed to init controls(%d)\n", ret);
++		goto err_free_handler;
++	}
++
++	ov2311->subdev.ctrl_handler = handler;
++
++	return 0;
++
++err_free_handler:
++	v4l2_ctrl_handler_free(handler);
++
++	return ret;
++}
++
++static int ov2311_check_sensor_id(struct ov2311 *ov2311,
++				  struct i2c_client *client)
++{
++	struct device *dev = &ov2311->client->dev;
++	u32 id = 0, id_msb = 0;
++	int ret;
++
++	ret = ov2311_read_reg(client, OV2311_REG_CHIP_ID + 1,
++			      OV2311_REG_VALUE_08BIT, &id);
++	if (!ret)
++		ret = ov2311_read_reg(client, OV2311_REG_CHIP_ID,
++				      OV2311_REG_VALUE_08BIT, &id_msb);
++	id |= (id_msb << 8);
++	if (ret || id != CHIP_ID) {
++		dev_err(dev, "Unexpected sensor id(%04x), ret(%d)\n", id, ret);
++		return -ENODEV;
++	}
++
++	dev_info(dev, "Detected OV%06x sensor\n", CHIP_ID);
++
++	return 0;
++}
++
++static int ov2311_configure_regulators(struct ov2311 *ov2311)
++{
++	unsigned int i;
++
++	for (i = 0; i < OV2311_NUM_SUPPLIES; i++)
++		ov2311->supplies[i].supply = ov2311_supply_names[i];
++
++	return devm_regulator_bulk_get(&ov2311->client->dev,
++				       OV2311_NUM_SUPPLIES,
++				       ov2311->supplies);
++}
++
++static int ov2311_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct ov2311 *ov2311;
++	struct v4l2_subdev *sd;
++	int ret;
++
++	ov2311 = devm_kzalloc(dev, sizeof(*ov2311), GFP_KERNEL);
++	if (!ov2311)
++		return -ENOMEM;
++
++	ov2311->client = client;
++	ov2311->cur_mode = &supported_modes[0];
++
++	ov2311->xvclk = devm_clk_get(dev, "xvclk");
++	if (IS_ERR(ov2311->xvclk)) {
++		dev_err(dev, "Failed to get xvclk\n");
++		return -EINVAL;
++	}
++
++	ov2311->reset_gpio = devm_gpiod_get_optional(dev, "reset",
++						     GPIOD_OUT_LOW);
++	if (IS_ERR(ov2311->reset_gpio))
++		dev_warn(dev, "Failed to get reset-gpios\n");
++
++	ov2311->pwdn_gpio = devm_gpiod_get_optional(dev, "pwdn", GPIOD_OUT_LOW);
++	if (IS_ERR(ov2311->pwdn_gpio))
++		dev_warn(dev, "Failed to get pwdn-gpios\n");
++
++	ret = ov2311_configure_regulators(ov2311);
++	if (ret) {
++		dev_err(dev, "Failed to get power regulators\n");
++		return ret;
++	}
++
++	mutex_init(&ov2311->mutex);
++
++	sd = &ov2311->subdev;
++	v4l2_i2c_subdev_init(sd, client, &ov2311_subdev_ops);
++	ret = ov2311_initialize_controls(ov2311);
++	if (ret)
++		goto err_destroy_mutex;
++
++	ret = ov2311_power_on(&client->dev);
++	if (ret)
++		goto err_free_handler;
++
++	ret = ov2311_check_sensor_id(ov2311, client);
++	if (ret)
++		goto err_power_off;
++
++	sd->internal_ops = &ov2311_internal_ops;
++	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++
++	ov2311->pad.flags = MEDIA_PAD_FL_SOURCE;
++	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
++	ret = media_entity_pads_init(&sd->entity, 1, &ov2311->pad);
++	if (ret < 0)
++		goto err_power_off;
++
++	ret = v4l2_async_register_subdev(sd);
++	if (ret) {
++		dev_err(dev, "v4l2 async register subdev failed\n");
++		goto err_clean_entity;
++	}
++
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_idle(dev);
++
++	return 0;
++
++err_clean_entity:
++	media_entity_cleanup(&sd->entity);
++err_power_off:
++	ov2311_power_off(&client->dev);
++err_free_handler:
++	v4l2_ctrl_handler_free(&ov2311->ctrl_handler);
++err_destroy_mutex:
++	mutex_destroy(&ov2311->mutex);
++
++	return ret;
++}
++
++static void ov2311_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct ov2311 *ov2311 = to_ov2311(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(&ov2311->ctrl_handler);
++	mutex_destroy(&ov2311->mutex);
++
++	pm_runtime_disable(&client->dev);
++	if (!pm_runtime_status_suspended(&client->dev))
++		ov2311_power_off(&client->dev);
++	pm_runtime_set_suspended(&client->dev);
++}
++
++static const struct of_device_id ov2311_of_match[] = {
++	{ .compatible = "ovti,ov2311" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, ov2311_of_match);
++
++static const struct i2c_device_id ov2311_match_id[] = {
++	{ "ovti,ov2311", 0 },
++	{ },
++};
++
++static struct i2c_driver ov2311_i2c_driver = {
++	.driver = {
++		.name = OV2311_NAME,
++		.pm = &ov2311_pm_ops,
++		.of_match_table = of_match_ptr(ov2311_of_match),
++	},
++	.probe		= &ov2311_probe,
++	.remove		= &ov2311_remove,
++	.id_table	= ov2311_match_id,
++};
++
++module_i2c_driver(ov2311_i2c_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com");
++MODULE_DESCRIPTION("OmniVision OV2311 sensor driver");
++MODULE_LICENSE("GPL v2");

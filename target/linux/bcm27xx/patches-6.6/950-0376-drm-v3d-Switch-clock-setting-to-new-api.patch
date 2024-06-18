@@ -1,0 +1,87 @@
+From 8b5e0051abd32065a1a8a6357546478bf5839571 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 20 Apr 2022 18:08:38 +0100
+Subject: [PATCH 0376/1085] drm/v3d: Switch clock setting to new api
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+
+drm/v3d: Convert to new clock range API
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c | 22 ++++++++++++++++++++--
+ drivers/gpu/drm/v3d/v3d_gem.c |  4 ++--
+ 2 files changed, 22 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -23,6 +23,9 @@
+ 
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
++
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
+ #include <uapi/drm/v3d_drm.h>
+ 
+ #include "v3d_drv.h"
+@@ -203,6 +206,8 @@ map_regs(struct v3d_dev *v3d, void __iom
+ static int v3d_platform_drm_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
++	struct rpi_firmware *firmware;
++	struct device_node *node;
+ 	struct drm_device *drm;
+ 	struct v3d_dev *v3d;
+ 	int ret;
+@@ -262,7 +267,20 @@ static int v3d_platform_drm_probe(struct
+ 			dev_err(dev, "Failed to get clock (%ld)\n", PTR_ERR(v3d->clk));
+ 		return PTR_ERR(v3d->clk);
+ 	}
+-	v3d->clk_up_rate = clk_get_rate(v3d->clk);
++
++	node = rpi_firmware_find_node();
++	if (!node)
++		return -EINVAL;
++
++	firmware = rpi_firmware_get(node);
++	of_node_put(node);
++	if (!firmware)
++		return -EPROBE_DEFER;
++
++	v3d->clk_up_rate = rpi_firmware_clk_get_max_rate(firmware,
++							 RPI_FIRMWARE_V3D_CLK_ID);
++	rpi_firmware_put(firmware);
++
+ 	/* For downclocking, drop it to the minimum frequency we can get from
+ 	 * the CPRMAN clock generator dividing off our parent.  The divider is
+ 	 * 4 bits, but ask for just higher than that so that rounding doesn't
+@@ -296,7 +314,7 @@ static int v3d_platform_drm_probe(struct
+ 	if (ret)
+ 		goto irq_disable;
+ 
+-	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
++	ret = clk_set_min_rate(v3d->clk, v3d->clk_down_rate);
+ 	WARN_ON_ONCE(ret != 0);
+ 
+ 	return 0;
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -26,7 +26,7 @@ v3d_clock_down_work(struct work_struct *
+ 		container_of(work, struct v3d_dev, clk_down_work.work);
+ 	int ret;
+ 
+-	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
++	ret = clk_set_min_rate(v3d->clk, v3d->clk_down_rate);
+ 	v3d->clk_up = false;
+ 	WARN_ON_ONCE(ret != 0);
+ }
+@@ -40,7 +40,7 @@ v3d_clock_up_get(struct v3d_dev *v3d)
+ 		if (!v3d->clk_up)  {
+ 			int ret;
+ 
+-			ret = clk_set_rate(v3d->clk, v3d->clk_up_rate);
++			ret = clk_set_min_rate(v3d->clk, v3d->clk_up_rate);
+ 			WARN_ON_ONCE(ret != 0);
+ 			v3d->clk_up = true;
+ 		}

@@ -1,0 +1,90 @@
+From eb1df34db2a9a5b752eba40ee298c4ae87e26e87 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 6 Jul 2021 09:45:36 +0100
+Subject: [PATCH 0514/1085] sdhci: Add SD Express hook
+
+sdhci: remove PYA0_INTR_BUG quirk. Add quirks to disable some of the higher SDR speeds at 1.8v.
+---
+ drivers/mmc/host/sdhci-of-dwcmshc.c |  5 ++++-
+ drivers/mmc/host/sdhci.c            | 19 +++++++++++++++++++
+ drivers/mmc/host/sdhci.h            |  6 ++++++
+ 3 files changed, 29 insertions(+), 1 deletion(-)
+
+--- a/drivers/mmc/host/sdhci-of-dwcmshc.c
++++ b/drivers/mmc/host/sdhci-of-dwcmshc.c
+@@ -376,7 +376,10 @@ static const struct sdhci_pltfm_data sdh
+ 	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
+ 		  SDHCI_QUIRK_BROKEN_TIMEOUT_VAL,
+ 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+-		   SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
++		   SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN |
++	            SDHCI_QUIRK2_NO_SDR50 |
++	            SDHCI_QUIRK2_NO_SDR104 |
++	            SDHCI_QUIRK2_NO_SDR25,
+ };
+ 
+ static int dwcmshc_rk35xx_init(struct sdhci_host *host, struct dwcmshc_priv *dwc_priv)
+--- a/drivers/mmc/host/sdhci.c
++++ b/drivers/mmc/host/sdhci.c
+@@ -3050,6 +3050,15 @@ static void sdhci_card_event(struct mmc_
+ 	spin_unlock_irqrestore(&host->lock, flags);
+ }
+ 
++static int sdhci_init_sd_express(struct mmc_host *mmc, struct mmc_ios *ios)
++{
++	struct sdhci_host *host = mmc_priv(mmc);
++
++	if (!host->ops->init_sd_express)
++		return -EOPNOTSUPP;
++	return host->ops->init_sd_express(host, ios);
++}
++
+ static const struct mmc_host_ops sdhci_ops = {
+ 	.request	= sdhci_request,
+ 	.post_req	= sdhci_post_req,
+@@ -3065,6 +3074,7 @@ static const struct mmc_host_ops sdhci_o
+ 	.execute_tuning			= sdhci_execute_tuning,
+ 	.card_event			= sdhci_card_event,
+ 	.card_busy	= sdhci_card_busy,
++	.init_sd_express = sdhci_init_sd_express,
+ };
+ 
+ /*****************************************************************************\
+@@ -4583,6 +4593,15 @@ int sdhci_setup_host(struct sdhci_host *
+ 	    !(host->quirks2 & SDHCI_QUIRK2_BROKEN_DDR50))
+ 		mmc->caps |= MMC_CAP_UHS_DDR50;
+ 
++	if (host->quirks2 & SDHCI_QUIRK2_NO_SDR25)
++		mmc->caps &= ~MMC_CAP_UHS_SDR25;
++
++	if (host->quirks2 & SDHCI_QUIRK2_NO_SDR50)
++		mmc->caps &= ~MMC_CAP_UHS_SDR50;
++
++	if (host->quirks2 & SDHCI_QUIRK2_NO_SDR104)
++		mmc->caps &= ~MMC_CAP_UHS_SDR104;
++
+ 	/* Does the host need tuning for SDR50? */
+ 	if (host->caps1 & SDHCI_USE_SDR50_TUNING)
+ 		host->flags |= SDHCI_SDR50_NEEDS_TUNING;
+--- a/drivers/mmc/host/sdhci.h
++++ b/drivers/mmc/host/sdhci.h
+@@ -487,6 +487,11 @@ struct sdhci_host {
+ /* Issue CMD and DATA reset together */
+ #define SDHCI_QUIRK2_ISSUE_CMD_DAT_RESET_TOGETHER	(1<<19)
+ 
++/* Quirks to ignore a speed if a that speed is unreliable */
++#define SDHCI_QUIRK2_NO_SDR25	(1<<19)
++#define SDHCI_QUIRK2_NO_SDR50  (1<<20)
++#define SDHCI_QUIRK2_NO_SDR104	(1<<21)
++
+ 	int irq;		/* Device IRQ */
+ 	void __iomem *ioaddr;	/* Mapped address */
+ 	phys_addr_t mapbase;	/* physical address base */
+@@ -669,6 +674,7 @@ struct sdhci_ops {
+ 	void	(*request_done)(struct sdhci_host *host,
+ 				struct mmc_request *mrq);
+ 	void    (*dump_vendor_regs)(struct sdhci_host *host);
++	int	(*init_sd_express)(struct sdhci_host *host, struct mmc_ios *ios);
+ };
+ 
+ #ifdef CONFIG_MMC_SDHCI_IO_ACCESSORS

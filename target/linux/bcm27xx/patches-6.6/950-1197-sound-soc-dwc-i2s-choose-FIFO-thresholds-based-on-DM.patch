@@ -1,0 +1,99 @@
+From b6b4260fa546d1dc7421c7cfed059052dae04227 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 18 Jul 2024 09:40:03 +0100
+Subject: [PATCH 1197/1215] sound/soc: dwc-i2s: choose FIFO thresholds based on
+ DMA burst constraints
+
+Valid ranges for the I2S peripheral's FIFO configuration include a depth
+of 16 - unconditionally setting the burst length to 16 with a fifo
+threshold of size/2 will cause under/overflows.
+
+For DMA engines with restricted capabilities the requested burst length
+and FIFO thresholds need to be adjusted downward accordingly.
+
+Both the RX and TX FIFOs operate on "less-than" thresholds. Setting the
+TX threshold to fifo_size minus burst means the FIFO is kept nearly-full.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ sound/soc/dwc/dwc-i2s.c | 21 ++++++++++++++++-----
+ sound/soc/dwc/local.h   |  1 +
+ 2 files changed, 17 insertions(+), 5 deletions(-)
+
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -236,6 +236,8 @@ static void dw_i2s_config(struct dw_i2s_
+ 	u32 ch_reg;
+ 	struct i2s_clk_config_data *config = &dev->config;
+ 	u32 dmacr;
++	u32 comp1 = i2s_read_reg(dev->i2s_base, dev->i2s_reg_comp1);
++	u32 fifo_depth = 1 << (1 + COMP1_FIFO_DEPTH_GLOBAL(comp1));
+ 
+ 	i2s_disable_channels(dev, stream);
+ 
+@@ -251,7 +253,7 @@ static void dw_i2s_config(struct dw_i2s_
+ 			i2s_write_reg(dev->i2s_base, TCR(ch_reg),
+ 				      dev->xfer_resolution);
+ 			i2s_write_reg(dev->i2s_base, TFCR(ch_reg),
+-				      dev->fifo_th - 1);
++				      fifo_depth - dev->fifo_th - 1);
+ 			i2s_write_reg(dev->i2s_base, TER(ch_reg), TER_TXCHEN |
+ 				      dev->tdm_mask << TER_TXSLOT_SHIFT);
+ 			dmacr |= (DMACR_DMAEN_TXCH0 << ch_reg);
+@@ -783,8 +785,8 @@ static int dw_configure_dai_by_pd(struct
+ 		dev->capture_dma_data.pd.data = pdata->capture_dma_data;
+ 		dev->play_dma_data.pd.addr = res->start + I2S_TXDMA;
+ 		dev->capture_dma_data.pd.addr = res->start + I2S_RXDMA;
+-		dev->play_dma_data.pd.max_burst = 16;
+-		dev->capture_dma_data.pd.max_burst = 16;
++		dev->play_dma_data.pd.max_burst = dev->fifo_th;
++		dev->capture_dma_data.pd.max_burst = dev->fifo_th;
+ 		dev->play_dma_data.pd.addr_width = bus_widths[idx];
+ 		dev->capture_dma_data.pd.addr_width = bus_widths[idx];
+ 		dev->play_dma_data.pd.filter = pdata->filter;
+@@ -815,7 +817,10 @@ static int dw_configure_dai_by_dt(struct
+ 		dev->play_dma_data.dt.addr = res->start + I2S_TXDMA;
+ 		dev->play_dma_data.dt.fifo_size = fifo_depth *
+ 			(fifo_width[idx2]) >> 8;
+-		dev->play_dma_data.dt.maxburst = 16;
++		if (dev->max_dma_burst)
++			dev->play_dma_data.dt.maxburst = dev->max_dma_burst;
++		else
++			dev->play_dma_data.dt.maxburst = fifo_depth / 2;
+ 	}
+ 	if (COMP1_RX_ENABLED(comp1)) {
+ 		idx2 = COMP2_RX_WORDSIZE_0(comp2);
+@@ -824,9 +829,14 @@ static int dw_configure_dai_by_dt(struct
+ 		dev->capture_dma_data.dt.addr = res->start + I2S_RXDMA;
+ 		dev->capture_dma_data.dt.fifo_size = fifo_depth *
+ 			(fifo_width[idx2] >> 8);
+-		dev->capture_dma_data.dt.maxburst = 16;
++		if (dev->max_dma_burst)
++			dev->capture_dma_data.dt.maxburst = dev->max_dma_burst;
++		else
++			dev->capture_dma_data.dt.maxburst = fifo_depth / 2;
+ 	}
+ 
++	if (dev->max_dma_burst)
++		dev->fifo_th = min(dev->max_dma_burst, dev->fifo_th);
+ 	return 0;
+ 
+ }
+@@ -1070,6 +1080,7 @@ static int dw_i2s_probe(struct platform_
+ 		}
+ 	}
+ 
++	of_property_read_u32(pdev->dev.of_node, "dma-maxburst", &dev->max_dma_burst);
+ 	dev->bclk_ratio = 0;
+ 	dev->i2s_reg_comp1 = I2S_COMP_PARAM_1;
+ 	dev->i2s_reg_comp2 = I2S_COMP_PARAM_2;
+--- a/sound/soc/dwc/local.h
++++ b/sound/soc/dwc/local.h
+@@ -133,6 +133,7 @@ struct dw_i2s_dev {
+ 	u32 ccr;
+ 	u32 xfer_resolution;
+ 	u32 fifo_th;
++	u32 max_dma_burst;
+ 	u32 l_reg;
+ 	u32 r_reg;
+ 	bool is_jh7110; /* Flag for StarFive JH7110 SoC */

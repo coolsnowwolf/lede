@@ -1,0 +1,55 @@
+From 73ddacb555c5ef1f063f44b4ec3268da899ff8b5 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Fri, 18 Oct 2024 13:11:11 +0100
+Subject: [PATCH 1334/1350] mmc: block: disable CQ on SD cards when doing
+ non-Discard erase
+
+Only CMD38 with Arg=0x1 (Discard) is supported when in CQ mode, so
+turn it off before issuing a non-discard erase op.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/block.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -1177,12 +1177,26 @@ static void mmc_blk_issue_erase_rq(struc
+ 	unsigned int from, nr;
+ 	int err = 0;
+ 	blk_status_t status = BLK_STS_OK;
++	bool restart_cmdq = false;
+ 
+ 	if (!mmc_can_erase(card)) {
+ 		status = BLK_STS_NOTSUPP;
+ 		goto fail;
+ 	}
+ 
++	/*
++	 * Only Discard ops are supported with SD cards in CQ mode
++	 * (SD Physical Spec v9.00 4.19.2)
++	 */
++	if (mmc_card_sd(card) && card->ext_csd.cmdq_en && erase_arg != SD_DISCARD_ARG) {
++		restart_cmdq = true;
++		err = mmc_sd_cmdq_disable(card);
++		if (err) {
++			status = BLK_STS_IOERR;
++			goto fail;
++		}
++	}
++
+ 	from = blk_rq_pos(req);
+ 	nr = blk_rq_sectors(req);
+ 
+@@ -1203,6 +1217,11 @@ static void mmc_blk_issue_erase_rq(struc
+ 		status = BLK_STS_IOERR;
+ 	else
+ 		mmc_blk_reset_success(md, type);
++
++	if (restart_cmdq)
++		err = mmc_sd_cmdq_enable(card);
++	if (err)
++		status = BLK_STS_IOERR;
+ fail:
+ 	blk_mq_end_request(req, status);
+ }

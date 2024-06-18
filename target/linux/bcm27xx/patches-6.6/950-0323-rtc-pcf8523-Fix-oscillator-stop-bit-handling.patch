@@ -1,0 +1,56 @@
+From 0729d7f79a0c2296a095ffa980b89068638c1645 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 29 Oct 2018 14:45:45 +0000
+Subject: [PATCH 0323/1085] rtc: pcf8523: Fix oscillator stop bit handling
+
+See: https://github.com/raspberrypi/firmware/issues/1065
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/rtc/rtc-pcf8523.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+--- a/drivers/rtc/rtc-pcf8523.c
++++ b/drivers/rtc/rtc-pcf8523.c
+@@ -100,6 +100,7 @@ static int pcf8523_rtc_read_time(struct
+ {
+ 	struct pcf8523 *pcf8523 = dev_get_drvdata(dev);
+ 	u8 regs[10];
++	u32 value;
+ 	int err;
+ 
+ 	err = regmap_bulk_read(pcf8523->regmap, PCF8523_REG_CONTROL1, regs,
+@@ -110,6 +111,33 @@ static int pcf8523_rtc_read_time(struct
+ 	if ((regs[0] & PCF8523_CONTROL1_STOP) || (regs[3] & PCF8523_SECONDS_OS))
+ 		return -EINVAL;
+ 
++	if (regs[0] & PCF8523_SECONDS_OS) {
++		/*
++		 * If the oscillator was stopped, try to clear the flag. Upon
++		 * power-up the flag is always set, but if we cannot clear it
++		 * the oscillator isn't running properly for some reason. The
++		 * sensible thing therefore is to return an error, signalling
++		 * that the clock cannot be assumed to be correct.
++		 */
++
++		regs[0] &= ~PCF8523_SECONDS_OS;
++
++		err = regmap_write(pcf8523->regmap, PCF8523_REG_SECONDS,
++				   regs[0]);
++		if (err < 0)
++			return err;
++
++		err = regmap_read(pcf8523->regmap, PCF8523_REG_SECONDS,
++				  &value);
++		if (err < 0)
++			return err;
++
++		if (value & PCF8523_SECONDS_OS)
++			return -EAGAIN;
++
++		regs[0] = value;
++	}
++
+ 	tm->tm_sec = bcd2bin(regs[3] & 0x7f);
+ 	tm->tm_min = bcd2bin(regs[4] & 0x7f);
+ 	tm->tm_hour = bcd2bin(regs[5] & 0x3f);

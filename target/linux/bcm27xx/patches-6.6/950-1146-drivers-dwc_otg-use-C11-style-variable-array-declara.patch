@@ -1,0 +1,260 @@
+From 65fddc7301f52470fd846acede96d240a1902e67 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Fri, 5 Jul 2024 14:00:38 +0100
+Subject: [PATCH 1146/1215] drivers: dwc_otg: use C11 style variable array
+ declarations
+
+The kernel C standard changed in 5.18.
+
+Remove a layer of indirection around the FIQ bounce buffers, be consistent
+with pointers to FIQ bounce buffers, and remove open-coded 32-bit clamping
+of DMA addresses.
+
+Also remove a pointless fiq_state initialisation loop.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c  | 12 ++++----
+ drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h  |  8 ++---
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.c      | 34 ++++++++++-----------
+ drivers/usb/host/dwc_otg/dwc_otg_hcd.h      |  4 +--
+ drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c |  4 +--
+ 5 files changed, 28 insertions(+), 34 deletions(-)
+
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.c
+@@ -240,8 +240,8 @@ static int notrace fiq_increment_dma_buf
+ 	hcdma_data_t hcdma;
+ 	int i = st->channel[n].dma_info.index;
+ 	int len;
+-	struct fiq_dma_blob *blob =
+-		(struct fiq_dma_blob *)(uintptr_t)st->dma_base;
++	struct fiq_dma_channel *split_dma =
++		(struct fiq_dma_channel *)(uintptr_t)st->dma_base;
+ 
+ 	len = fiq_get_xfer_len(st, n);
+ 	fiq_print(FIQDBG_INT, st, "LEN: %03d", len);
+@@ -250,7 +250,7 @@ static int notrace fiq_increment_dma_buf
+ 	if (i > 6)
+ 		BUG();
+ 
+-	hcdma.d32 = (u32)(uintptr_t)&blob->channel[n].index[i].buf[0];
++	hcdma.d32 = lower_32_bits((uintptr_t)&split_dma[n].index[i].buf[0]);
+ 	FIQ_WRITE(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA, hcdma.d32);
+ 	st->channel[n].dma_info.index = i;
+ 	return 0;
+@@ -290,8 +290,8 @@ static int notrace fiq_iso_out_advance(s
+ 	hcsplt_data_t hcsplt;
+ 	hctsiz_data_t hctsiz;
+ 	hcdma_data_t hcdma;
+-	struct fiq_dma_blob *blob =
+-		(struct fiq_dma_blob *)(uintptr_t)st->dma_base;
++	struct fiq_dma_channel *split_dma =
++		(struct fiq_dma_channel *)(uintptr_t)st->dma_base;
+ 	int last = 0;
+ 	int i = st->channel[n].dma_info.index;
+ 
+@@ -303,7 +303,7 @@ static int notrace fiq_iso_out_advance(s
+ 		last = 1;
+ 
+ 	/* New DMA address - address of bounce buffer referred to in index */
+-	hcdma.d32 = (u32)(uintptr_t)blob->channel[n].index[i].buf;
++	hcdma.d32 = lower_32_bits((uintptr_t)&split_dma[n].index[i].buf[0]);
+ 	//hcdma.d32 = FIQ_READ(st->dwc_regs_base + HC_START + (HC_OFFSET * n) + HC_DMA);
+ 	//hcdma.d32 += st->channel[n].dma_info.slot_len[i];
+ 	fiq_print(FIQDBG_INT, st, "LAST: %01d ", last);
+--- a/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h
++++ b/drivers/usb/host/dwc_otg/dwc_otg_fiq_fsm.h
+@@ -263,10 +263,6 @@ struct fiq_dma_channel {
+ 	struct fiq_split_dma_slot index[6];
+ } __attribute__((packed));
+ 
+-struct fiq_dma_blob {
+-	struct fiq_dma_channel channel[0];
+-} __attribute__((packed));
+-
+ /**
+  * struct fiq_hs_isoc_info - USB2.0 isochronous data
+  * @iso_frame:	Pointer to the array of OTG URB iso_frame_descs.
+@@ -352,7 +348,7 @@ struct fiq_state {
+ 	mphi_regs_t mphi_regs;
+ 	void *dwc_regs_base;
+ 	dma_addr_t dma_base;
+-	struct fiq_dma_blob *fiq_dmab;
++	struct fiq_dma_channel *fiq_dmab;
+ 	void *dummy_send;
+ 	dma_addr_t dummy_send_dma;
+ 	gintmsk_data_t gintmsk_saved;
+@@ -365,7 +361,7 @@ struct fiq_state {
+ 	char * buffer;
+ 	unsigned int bufsiz;
+ #endif
+-	struct fiq_channel_state channel[0];
++	struct fiq_channel_state channel[];
+ };
+ 
+ #ifdef CONFIG_ARM64
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.c
+@@ -58,6 +58,7 @@ static int last_sel_trans_num_avail_hc_a
+ static int last_sel_trans_num_avail_hc_at_end = 0;
+ #endif /* DEBUG_HOST_CHANNELS */
+ 
++static_assert(FIQ_PASSTHROUGH == 0);
+ 
+ dwc_otg_hcd_t *dwc_otg_hcd_alloc_hcd(void)
+ {
+@@ -876,7 +877,7 @@ void dwc_otg_hcd_power_up(void *ptr)
+ void dwc_otg_cleanup_fiq_channel(dwc_otg_hcd_t *hcd, uint32_t num)
+ {
+ 	struct fiq_channel_state *st = &hcd->fiq_state->channel[num];
+-	struct fiq_dma_blob *blob = hcd->fiq_dmab;
++	struct fiq_dma_channel *split_dma = hcd->fiq_dmab;
+ 	int i;
+ 
+ 	st->fsm = FIQ_PASSTHROUGH;
+@@ -898,7 +899,7 @@ void dwc_otg_cleanup_fiq_channel(dwc_otg
+ 	st->hs_isoc_info.iso_desc = NULL;
+ 	st->hs_isoc_info.nrframes = 0;
+ 
+-	DWC_MEMSET(&blob->channel[num].index[0], 0x6b, 1128);
++	DWC_MEMSET(&split_dma[num].index[0], 0x6b, 1128);
+ }
+ 
+ /**
+@@ -1045,9 +1046,6 @@ int dwc_otg_hcd_init(dwc_otg_hcd_t * hcd
+ 		spin_lock_init(&hcd->fiq_state->lock);
+ #endif
+ 
+-		for (i = 0; i < num_channels; i++) {
+-			hcd->fiq_state->channel[i].fsm = FIQ_PASSTHROUGH;
+-		}
+ 		hcd->fiq_state->dummy_send = DWC_DMA_ALLOC_ATOMIC(dev, 16,
+ 							 &hcd->fiq_state->dummy_send_dma);
+ 
+@@ -1561,7 +1559,7 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 	int frame_length, i = 0;
+ 	uint8_t *ptr = NULL;
+ 	dwc_hc_t *hc = qh->channel;
+-	struct fiq_dma_blob *blob;
++	struct fiq_dma_channel *split_dma;
+ 	struct dwc_otg_hcd_iso_packet_desc *frame_desc;
+ 
+ 	for (i = 0; i < 6; i++) {
+@@ -1576,10 +1574,10 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 		 * Pointer arithmetic on hcd->fiq_state->dma_base (a dma_addr_t)
+ 		 * to point it to the correct offset in the allocated buffers.
+ 		 */
+-		blob = (struct fiq_dma_blob *)
++		split_dma = (struct fiq_dma_channel *)
+ 			(uintptr_t)hcd->fiq_state->dma_base;
+-		st->hcdma_copy.d32 =(u32)(uintptr_t)
+-			blob->channel[hc->hc_num].index[0].buf;
++		st->hcdma_copy.d32 = lower_32_bits((uintptr_t)
++			&split_dma[hc->hc_num].index[0].buf[0]);
+ 
+ 		/* Calculate the max number of CSPLITS such that the FIQ can time out
+ 		 * a transaction if it fails.
+@@ -1600,7 +1598,7 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 			frame_length = frame_desc->length;
+ 
+ 			/* Virtual address for bounce buffers */
+-			blob = hcd->fiq_dmab;
++			split_dma = hcd->fiq_dmab;
+ 
+ 			ptr = qtd->urb->buf + frame_desc->offset;
+ 			if (frame_length == 0) {
+@@ -1613,11 +1611,11 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 			} else {
+ 				do {
+ 					if (frame_length <= 188) {
+-						dwc_memcpy(&blob->channel[hc->hc_num].index[i].buf[0], ptr, frame_length);
++						dwc_memcpy(&split_dma[hc->hc_num].index[i].buf[0], ptr, frame_length);
+ 						st->dma_info.slot_len[i] = frame_length;
+ 						ptr += frame_length;
+ 					} else {
+-						dwc_memcpy(&blob->channel[hc->hc_num].index[i].buf[0], ptr, 188);
++						dwc_memcpy(&split_dma[hc->hc_num].index[i].buf[0], ptr, 188);
+ 						st->dma_info.slot_len[i] = 188;
+ 						ptr += 188;
+ 					}
+@@ -1634,10 +1632,10 @@ int fiq_fsm_setup_periodic_dma(dwc_otg_h
+ 			 * dma_addr_t) to point it to the correct offset in the
+ 			 * allocated buffers.
+ 			 */
+-			blob = (struct fiq_dma_blob *)
++			split_dma = (struct fiq_dma_channel *)
+ 				(uintptr_t)hcd->fiq_state->dma_base;
+-			st->hcdma_copy.d32 = (u32)(uintptr_t)
+-				blob->channel[hc->hc_num].index[0].buf;
++			st->hcdma_copy.d32 = lower_32_bits((uintptr_t)
++				&split_dma[hc->hc_num].index[0].buf[0]);
+ 
+ 			/* fixup xfersize to the actual packet size */
+ 			st->hctsiz_copy.b.pid = 0;
+@@ -1917,14 +1915,14 @@ int fiq_fsm_queue_split_transaction(dwc_
+ 			if (hc->align_buff) {
+ 				st->hcdma_copy.d32 = hc->align_buff;
+ 			} else {
+-				st->hcdma_copy.d32 = ((unsigned long) hc->xfer_buff & 0xFFFFFFFF);
++				st->hcdma_copy.d32 = lower_32_bits((uintptr_t)hc->xfer_buff);
+ 			}
+ 		}
+ 	} else {
+ 		if (hc->align_buff) {
+ 			st->hcdma_copy.d32 = hc->align_buff;
+ 		} else {
+-			st->hcdma_copy.d32 = ((unsigned long) hc->xfer_buff & 0xFFFFFFFF);
++			st->hcdma_copy.d32 = lower_32_bits((uintptr_t)hc->xfer_buff);
+ 		}
+ 	}
+ 	/* The FIQ depends upon no other interrupts being enabled except channel halt.
+@@ -1944,7 +1942,7 @@ int fiq_fsm_queue_split_transaction(dwc_
+ 		if (hc->align_buff) {
+ 			st->hcdma_copy.d32 = hc->align_buff;
+ 		} else {
+-			st->hcdma_copy.d32 = ((unsigned long) hc->xfer_buff & 0xFFFFFFFF);
++			st->hcdma_copy.d32 = lower_32_bits((uintptr_t)hc->xfer_buff);
+ 		}
+ 	}
+ 	DWC_WRITE_REG32(&hc_regs->hcdma, st->hcdma_copy.d32);
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd.h
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd.h
+@@ -88,7 +88,7 @@ struct dwc_otg_hcd_urb {
+ 	uint32_t flags;
+ 	uint16_t interval;
+ 	struct dwc_otg_hcd_pipe_info pipe_info;
+-	struct dwc_otg_hcd_iso_packet_desc iso_descs[0];
++	struct dwc_otg_hcd_iso_packet_desc iso_descs[];
+ };
+ 
+ static inline uint8_t dwc_otg_hcd_get_ep_num(struct dwc_otg_hcd_pipe_info *pipe)
+@@ -592,7 +592,7 @@ struct dwc_otg_hcd {
+ 	struct fiq_state *fiq_state;
+ 
+ 	/** Virtual address for split transaction DMA bounce buffers */
+-	struct fiq_dma_blob *fiq_dmab;
++	struct fiq_dma_channel *fiq_dmab;
+ 
+ #ifdef DEBUG
+ 	uint32_t frrem_samples;
+--- a/drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c
++++ b/drivers/usb/host/dwc_otg/dwc_otg_hcd_intr.c
+@@ -2332,7 +2332,7 @@ void dwc_otg_fiq_unmangle_isoc(dwc_otg_h
+ int dwc_otg_fiq_unsetup_per_dma(dwc_otg_hcd_t *hcd, dwc_otg_qh_t *qh, dwc_otg_qtd_t *qtd, uint32_t num)
+ {
+ 	dwc_hc_t *hc = qh->channel;
+-	struct fiq_dma_blob *blob = hcd->fiq_dmab;
++	struct fiq_dma_channel *split_dma = hcd->fiq_dmab;
+ 	struct fiq_channel_state *st = &hcd->fiq_state->channel[num];
+ 	uint8_t *ptr = NULL;
+ 	int index = 0, len = 0;
+@@ -2352,7 +2352,7 @@ int dwc_otg_fiq_unsetup_per_dma(dwc_otg_
+ 
+ 		for (i = 0; i < st->dma_info.index; i++) {
+ 			len += st->dma_info.slot_len[i];
+-			dwc_memcpy(ptr, &blob->channel[num].index[i].buf[0], st->dma_info.slot_len[i]);
++			dwc_memcpy(ptr, &split_dma[num].index[i].buf[0], st->dma_info.slot_len[i]);
+ 			ptr += st->dma_info.slot_len[i];
+ 		}
+ 		return len;

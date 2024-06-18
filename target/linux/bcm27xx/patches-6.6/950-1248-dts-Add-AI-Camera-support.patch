@@ -1,0 +1,389 @@
+From 4113b1097fe40ff3a64ee7a9ade7c258e9ecdb5b Mon Sep 17 00:00:00 2001
+From: Richard Oliver <richard.oliver@raspberrypi.com>
+Date: Mon, 3 Jun 2024 14:10:27 +0100
+Subject: [PATCH 1248/1350] dts: Add 'AI Camera' support
+
+The AI Camera combines an IMX500 and a RP2040 GPIO bridge on a single
+module. The Raspberry Pi camera regulator is used for both IMX500 and
+RP2040. SPI, clocks, and reset (required by IMX500) are provided by the
+RP2040 GPIO bridge.
+
+Signed-off-by: Richard Oliver <richard.oliver@raspberrypi.com>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   2 +
+ arch/arm/boot/dts/overlays/README             |  21 +++
+ arch/arm/boot/dts/overlays/imx500-overlay.dts | 119 +++++++++++++++++
+ .../boot/dts/overlays/imx500-pi5-overlay.dts  | 124 ++++++++++++++++++
+ arch/arm/boot/dts/overlays/imx500.dtsi        |  28 ++++
+ arch/arm/boot/dts/overlays/overlay_map.dts    |  10 ++
+ .../dts/overlays/rpi-rp2040-gpio-bridge.dtsi  |  21 +++
+ 7 files changed, 325 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/imx500-overlay.dts
+ create mode 100644 arch/arm/boot/dts/overlays/imx500-pi5-overlay.dts
+ create mode 100644 arch/arm/boot/dts/overlays/imx500.dtsi
+ create mode 100644 arch/arm/boot/dts/overlays/rpi-rp2040-gpio-bridge.dtsi
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -136,6 +136,8 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	imx378.dtbo \
+ 	imx462.dtbo \
+ 	imx477.dtbo \
++	imx500.dtbo \
++	imx500-pi5.dtbo \
+ 	imx519.dtbo \
+ 	imx708.dtbo \
+ 	interludeaudio-analog.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2818,6 +2818,27 @@ Params: rotation                Mounting
+         sync-sink               Configure as vsync sink
+ 
+ 
++Name:   imx500
++Info:   Sony IMX500 camera module.
++        Uses Unicam 1, which is the standard camera connector on most Pi
++        variants.
++Load:   dtoverlay=imx500,<param>=<val>
++Params: rotation                Mounting rotation of the camera sensor (0 or
++                                180, default 0)
++        orientation             Sensor orientation (0 = front, 1 = rear,
++                                2 = external, default external)
++        media-controller        Configure use of Media Controller API for
++                                configuring the sensor (default on)
++        cam0                    Adopt the default configuration for CAM0 on a
++                                Compute Module (CSI0, i2c_vc, and cam0_reg).
++        bypass-cache            Do save blocks of data to flash when using
++                                rp2040-gpio-bridge for SPI transfers.
++
++
++Name:   imx500-pi5
++Info:   See imx500 (this is the Pi 5 version)
++
++
+ Name:   imx519
+ Info:   Sony IMX519 camera module.
+         Uses Unicam 1, which is the standard camera connector on most Pi
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx500-overlay.dts
+@@ -0,0 +1,119 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Definitions for IMX500 camera module on VC I2C bus
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++/{
++	compatible = "brcm,bcm2835";
++
++	fragment@0 {
++		target = <&i2c0if>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	fragment@1 {
++		target = <&i2c0mux>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	reg_frag: fragment@2 {
++		target = <&cam1_reg>;
++		cam_reg: __overlay__ {
++			startup-delay-us = <300000>;
++		};
++	};
++
++	i2c_frag: fragment@100 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++
++			#include "imx500.dtsi"
++			#include "rpi-rp2040-gpio-bridge.dtsi"
++		};
++	};
++
++	csi_frag: fragment@101 {
++		target = <&csi1>;
++		csi: __overlay__ {
++			status = "okay";
++			brcm,media-controller;
++
++			port {
++				csi_ep: endpoint {
++					remote-endpoint = <&cam_endpoint>;
++					clock-lanes = <0>;
++					data-lanes = <1 2>;
++					clock-noncontinuous;
++				};
++			};
++		};
++	};
++
++	spi_frag: fragment@102 {
++		target = <&spi_bridgedev0>;
++		__overlay__ {
++			compatible = "sony,imx500";
++		};
++	};
++
++	chosen_frag: fragment@103 {
++		target = <&chosen>;
++		__overlay__ {
++			core_freq_fixed;
++		};
++	};
++
++	clocks_frag: fragment@104 {
++		target-path = "/clocks";
++		__overlay__ {
++			clk_aicam: clk-aicam {
++				compatible = "fixed-clock";
++				#clock-cells = <0>;
++				clock-frequency = <24000000>;
++			};
++
++			clk_aicam_gated: clk-aicam-gated {
++				compatible = "gpio-gate-clock";
++				clocks = <&clk_aicam>;
++				#clock-cells = <0>;
++				enable-gpios = <&spi_bridge 21 GPIO_ACTIVE_HIGH>;
++			};
++		};
++	};
++
++	__overrides__ {
++		rotation = <&cam_node>,"rotation:0";
++		orientation = <&cam_node>,"orientation:0";
++		media-controller = <&csi>,"brcm,media-controller?";
++		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
++		       <&csi_frag>, "target:0=",<&csi0>,
++			   <&spi_bridge>, "power-supply:0=",<&cam0_reg>,
++		       <&reg_frag>, "target:0=",<&cam0_reg>,
++		       <&cam_node>, "VANA-supply:0=",<&cam0_reg>;
++		bypass-cache = <&spi_bridge>,"bypass-cache?";
++	};
++};
++
++&cam_node {
++	status = "okay";
++	reset-gpios = <&spi_bridge 20 GPIO_ACTIVE_HIGH>;
++	clocks = <&clk_aicam_gated>;
++	spi = <&spi_bridgedev0>;
++};
++
++&spi_bridge {
++	status = "okay";
++};
++
++&cam_endpoint {
++	remote-endpoint = <&csi_ep>;
++};
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx500-pi5-overlay.dts
+@@ -0,0 +1,124 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Definitions for IMX500 camera module on VC I2C bus
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++/{
++	compatible = "brcm,bcm2712";
++
++	fragment@0 {
++		target = <&i2c0if>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	fragment@1 {
++		target = <&i2c0mux>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	reg_frag: fragment@2 {
++		target = <&cam1_reg>;
++		cam_reg: __overlay__ {
++			startup-delay-us = <300000>;
++		};
++	};
++
++	i2c_frag: fragment@100 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++
++			#include "imx500.dtsi"
++			#include "rpi-rp2040-gpio-bridge.dtsi"
++		};
++	};
++
++	csi_frag: fragment@101 {
++		target = <&csi1>;
++		csi: __overlay__ {
++			status = "okay";
++			brcm,media-controller;
++
++			port {
++				csi_ep: endpoint {
++					remote-endpoint = <&cam_endpoint>;
++					clock-lanes = <0>;
++					data-lanes = <1 2>;
++					clock-noncontinuous;
++				};
++			};
++		};
++	};
++
++	spi_frag: fragment@102 {
++		target = <&spi_bridge>;
++		spi_frag_overlay: __overlay__ {
++			fast_xfer_requires_i2c_lock = <1>;
++			fast_xfer_recv_gpio_base = <11>;
++			fast_xfer-gpios = <&rp1_gpio 40 0>, // CD1_SDA (used as data)
++					  <&rp1_gpio 48 0>; // CD1_IO1_MICDAT1 (clock)
++		};
++	};
++
++	spi_bridge_frag: fragment@103 {
++		target = <&spi_bridgedev0>;
++		__overlay__ {
++			compatible = "sony,imx500";
++		};
++	};
++
++	clocks_frag: fragment@104 {
++		target-path = "/clocks";
++		__overlay__ {
++			clk_aicam: clk-aicam {
++				compatible = "fixed-clock";
++				#clock-cells = <0>;
++				clock-frequency = <24000000>;
++			};
++
++			clk_aicam_gated: clk-aicam-gated {
++				compatible = "gpio-gate-clock";
++				clocks = <&clk_aicam>;
++				#clock-cells = <0>;
++				enable-gpios = <&spi_bridge 21 GPIO_ACTIVE_HIGH>;
++			};
++		};
++	};
++
++	__overrides__ {
++		rotation = <&cam_node>,"rotation:0";
++		orientation = <&cam_node>,"orientation:0";
++		media-controller = <&csi>,"brcm,media-controller?";
++		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
++		       <&csi_frag>, "target:0=",<&csi0>,
++			   <&spi_frag_overlay>, "fast_xfer-gpios:4=38", // CD0_SDA (data)
++			   <&spi_frag_overlay>, "fast_xfer-gpios:16=35", // CD0_IO1_MICDAT0 (clock)
++			   <&spi_bridge>, "power-supply:0=",<&cam0_reg>,
++		       <&reg_frag>, "target:0=",<&cam0_reg>,
++		       <&cam_node>, "VANA-supply:0=",<&cam0_reg>;
++		bypass-cache = <&spi_bridge>,"bypass-cache?";
++	};
++};
++
++&cam_node {
++	status = "okay";
++	reset-gpios = <&spi_bridge 20 GPIO_ACTIVE_HIGH>;
++	clocks = <&clk_aicam_gated>;
++	spi = <&spi_bridgedev0>;
++};
++
++&spi_bridge {
++	status = "okay";
++};
++
++&cam_endpoint {
++	remote-endpoint = <&csi_ep>;
++};
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx500.dtsi
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: GPL-2.0-only
++cam_node: imx500@1a {
++	reg = <0x1a>;
++	compatible = "sony,imx500";
++	status = "disabled";
++
++	clocks = <&cam1_clk>;
++	clock-names = "inck";
++
++	vana-supply = <&cam1_reg>;	/* 2.7v */
++	vdig-supply = <&cam_dummy_reg>;	/* 0.84v */
++	vif-supply = <&cam_dummy_reg>;	/* 1.8v */
++
++	reset-gpios = <&gpio 255 GPIO_ACTIVE_HIGH>;
++
++	rotation = <0>;
++	orientation = <2>;
++
++	port {
++		cam_endpoint: endpoint {
++			clock-lanes = <0>;
++			data-lanes = <1 2>;
++			clock-noncontinuous;
++			link-frequencies =
++				/bits/ 64 <444000000>;
++		};
++	};
++};
+--- a/arch/arm/boot/dts/overlays/overlay_map.dts
++++ b/arch/arm/boot/dts/overlays/overlay_map.dts
+@@ -118,6 +118,16 @@
+ 		bcm2711;
+ 	};
+ 
++	imx500 {
++		bcm2835;
++		bcm2711;
++		bcm2712 = "imx500-pi5";
++	};
++
++	imx500-pi5 {
++		bcm2712;
++	};
++
+ 	lirc-rpi {
+ 		deprecated = "use gpio-ir";
+ 	};
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/rpi-rp2040-gpio-bridge.dtsi
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-2.0-only
++spi_bridge: spi@40 {
++	reg = <0x40>;
++	compatible = "raspberrypi,rp2040-gpio-bridge";
++	status = "disabled";
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	power-supply = <&cam1_reg>;
++
++	#gpio-cells = <2>;
++	gpio-controller;
++
++	spi_bridgedev0: spidev@0{
++		compatible = "spidev";
++		reg = <0>;	/* CE0 */
++		#address-cells = <1>;
++		#size-cells = <0>;
++		spi-max-frequency = <35000000>;
++	};
++};

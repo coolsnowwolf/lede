@@ -1,0 +1,398 @@
+From 7b5e845f3243afd393ede5ca0e5de310115ccf30 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Thu, 8 Jun 2023 11:33:08 +0100
+Subject: [PATCH 0910/1085] perf/raspberry: Add support for 2712 axi
+ performance monitors
+
+Also handle 2711 correctly which has a different configuration
+from 2835.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/perf/raspberrypi_axi_monitor.c | 257 ++++++++++++++++++++++---
+ 1 file changed, 225 insertions(+), 32 deletions(-)
+
+--- a/drivers/perf/raspberrypi_axi_monitor.c
++++ b/drivers/perf/raspberrypi_axi_monitor.c
+@@ -33,7 +33,7 @@
+ #define MAX_BUSES 16
+ #define DEFAULT_SAMPLE_TIME 100
+ 
+-#define NUM_BUS_WATCHER_RESULTS 9
++#define NUM_BUS_WATCHER_RESULTS 11
+ 
+ struct bus_watcher_data {
+ 	union	{
+@@ -48,6 +48,8 @@ struct bus_watcher_data {
+ 			u32 rtrans;
+ 			u32 rtwait;
+ 			u32 rmax;
++			u32 rpend;
++			u32 ratrans;
+ 		};
+ 	};
+ };
+@@ -65,6 +67,9 @@ struct rpi_axiperf {
+ 	/* Sample time spent on for each bus */
+ 	int sample_time;
+ 
++	/* chip specific bus config */
++	const struct bwconfig_config *config;
++
+ 	/* Now storage for the per monitor settings and the resulting
+ 	 * performance figures
+ 	 */
+@@ -107,6 +112,7 @@ const int GEN_CTRL;
+ 
+ const int GEN_CTL_ENABLE_BIT	= BIT(0);
+ const int GEN_CTL_RESET_BIT	= BIT(1);
++const int GEN_CTL_WATCH_BIT	= BIT(2);
+ 
+ /* Bus watcher registers */
+ const int BW_PITCH		= 0x40;
+@@ -136,7 +142,7 @@ const int BW_CTRL_BUS_WATCH_SHIFT;
+ const int BW_CTRL_BUS_WATCH_MASK = GENMASK(5, 0); // 6 bits
+ const int BW_CTRL_BUS_FILTER_SHIFT = 8;
+ 
+-const static char *bus_filter_strings[] = {
++static const char *bus_filter_strings[] = {
+ 	"",
+ 	"CORE0_V",
+ 	"ICACHE0",
+@@ -171,9 +177,96 @@ const static char *bus_filter_strings[]
+ 	"M30"
+ };
+ 
+-const int num_bus_filters = ARRAY_SIZE(bus_filter_strings);
++static const char * const bus_filter_strings_2711[] = {
++	"AIO",
++	"CORE0_V",
++	"ICACHE0",
++	"DCACHE0",
++	"CORE1_V",
++	"ICACHE1",
++	"DCACHE1",
++	"L2_MAIN",
++	"ARGON",
++	"PCIE",
++	"HVS",
++	"ISP",
++	"VIDEO_DCT",
++	"VIDEO_SD2AXI",
++	"CAM0",
++	"CAM1",
++	"DMA0",
++	"DMA1",
++	"DMA2",
++	"JPEG",
++	"VIDEO_CME",
++	"TRANSPOSER",
++	"VIDEO_FME",
++	"GIGE",
++	"USB",
++	"V3D0",
++	"V3D1",
++	"V3D2",
++	"GISB_AXI",
++	"DEBUG",
++	"ARM",
++	"EMMCSTB",
++};
+ 
+-const static char *system_bus_string[] = {
++static const char * const bus_filter_strings_2712[] = {
++	"",
++	"VPU_UC0",
++	"VPU_IC0",
++	"VPU_DC0",
++	"VPU_UC1",
++	"VPU_IC1",
++	"VPU_DC1",
++	"VPU_L2",
++	"DMA2",
++	"VPU_DEBUG",
++	"ARM",
++	"DMA0",
++	"DMA1",
++	"RAAGA",
++	"BBSI",
++	"PCIE0",
++	"PCIE1",
++	"PCIE2",
++	"UMR",
++	"SAGE",
++	"HVDP",
++	"BSP",
++	"HVS",
++	"HVS_WMK",
++	"MOP0",
++	"MOP1",
++	"MBVN",
++	"DSI",
++	"XPT",
++	"EMMC0",
++	"GENET",
++	"USB",
++	"ARGON",
++	"UNICAM",
++	"PISP",
++	"PISPFE",
++	"JPEG",
++	"EMMC1",
++	"EMMC2",
++	"TRC",
++	"BSTM0",
++	"BSTM1",
++	"BSTM0_SEC",
++	"BSTM1_SEC",
++	"AIO",
++	"MAP",
++	"SYS_DMA",
++	"MMUCACHE0",
++	"MMUCACHE1",
++	"MPUCACHE0",
++	"MPUCACHE1",
++};
++
++static const char *system_bus_string[] = {
+ 	"DMA_L2",
+ 	"TRANS",
+ 	"JPEG",
+@@ -192,9 +285,38 @@ const static char *system_bus_string[] =
+ 	"CPU_L2"
+ };
+ 
+-const int num_system_buses = ARRAY_SIZE(system_bus_string);
++static const char * const system_bus_string_2711[] = {
++	"DMA_L2",
++	"TRANS",
++	"JPEG",
++	"VPU_UC",
++	"DMA_UC",
++	"SYSTEM_L2",
++	"HVS",
++	"ARGON",
++	"H264",
++	"PERIPHERAL",
++	"ARM_UC",
++	"ARM_L2",
++};
++
++static const char * const system_bus_string_2712[] = {
++	"VPU_UC",
++	"DISPLAY_TOP",
++	"V3D",
++	"ARM",
++	"XPT",
++	"BSTM_TOP",
++	"PCIE_01",
++	"ARGON_TOP",
++	"ARB3",
++	"SRC",
++	"HVDP",
++	"PER",
++	"SYSTEM_L2",
++};
+ 
+-const static char *vpu_bus_string[] = {
++static const char *vpu_bus_string[] = {
+ 	"VPU1_D_L2",
+ 	"VPU0_D_L2",
+ 	"VPU1_I_L2",
+@@ -213,7 +335,66 @@ const static char *vpu_bus_string[] = {
+ 	"L2_IN"
+ };
+ 
+-const int num_vpu_buses = ARRAY_SIZE(vpu_bus_string);
++static const char * const vpu_bus_string_2711[] = {
++	"VPU1_D_L2",
++	"VPU0_D_L2",
++	"VPU1_I_L2",
++	"VPU0_I_L2",
++	"SYSTEM_L2",
++	"DMA_L2",
++	"VPU1_D_UC",
++	"VPU0_D_UC",
++	"VPU1_I_UC",
++	"VPU0_I_UC",
++	"VPU_UC",
++	"L2_OUT",
++	"DMA_UC",
++	"L2_IN"
++};
++
++static const char * const vpu_bus_string_2712[] = {
++	"VPU1_D_L2",
++	"VPU0_D_L2",
++	"VPU1_I_L2",
++	"VPU0_I_L2",
++	"SYSTEM_L2",
++	"DMA_L2",
++	"VPU1_D_UC",
++	"VPU0_D_UC",
++	"VPU1_I_UC",
++	"VPU0_I_UC",
++	"VPU_UC",
++	"L2_OUT",
++	"DMA_UC",
++	"L2_IN"
++};
++
++struct bwconfig_config {
++	const char * const *bus_filter_strings;
++	const int num_bus_filters;
++	const char * const *system_bus_string;
++	const int num_system_buses;
++	const char * const *vpu_bus_string;
++	const int num_vpu_buses;
++};
++
++static const struct bwconfig_config config_2835 = {
++	bus_filter_strings, ARRAY_SIZE(bus_filter_strings),
++	system_bus_string, ARRAY_SIZE(system_bus_string),
++	vpu_bus_string, ARRAY_SIZE(vpu_bus_string),
++};
++
++static const struct bwconfig_config config_2711 = {
++	bus_filter_strings_2711, ARRAY_SIZE(bus_filter_strings_2711),
++	system_bus_string_2711, ARRAY_SIZE(system_bus_string_2711),
++	vpu_bus_string_2711, ARRAY_SIZE(vpu_bus_string_2711),
++};
++
++static const struct bwconfig_config config_2712 = {
++	bus_filter_strings_2712, ARRAY_SIZE(bus_filter_strings_2712),
++	system_bus_string_2712, ARRAY_SIZE(system_bus_string_2712),
++	vpu_bus_string_2712, ARRAY_SIZE(vpu_bus_string_2712),
++};
+ 
+ const static char *monitor_name[] = {
+ 	"System",
+@@ -233,10 +414,10 @@ static inline u32 read_reg(int monitor,
+ static void read_bus_watcher(int monitor, int watcher, u32 *results)
+ {
+ 	if (state->monitor[monitor].use_mailbox_interface) {
+-		/* We have 9 results, plus the overheads of start address and
+-		 * length So 11 u32 to define
++		/* We have NUM_BUS_WATCHER_RESULTS results, plus the overheads
++		 * of start address and length
+ 		 */
+-		u32 tmp[11];
++		u32 tmp[NUM_BUS_WATCHER_RESULTS+2];
+ 		int err;
+ 
+ 		tmp[0] = (u32)(uintptr_t)(state->monitor[monitor].base_address + watcher
+@@ -352,7 +533,7 @@ static void monitor(struct rpi_axiperf *
+ 		}
+ 
+ 		/* start monitoring */
+-		set_monitor_control(monitor, GEN_CTL_ENABLE_BIT);
++		set_monitor_control(monitor, GEN_CTL_ENABLE_BIT | GEN_CTL_WATCH_BIT);
+ 	}
+ 
+ 	mutex_unlock(&state->lock);
+@@ -409,11 +590,12 @@ static ssize_t myreader(struct file *fp,
+ 	int buff_size = INIT_BUFF_SIZE;
+ 	char *p;
+ 	typeof(state->monitor[0]) *mon = &(state->monitor[idx]);
++	const struct bwconfig_config *config = state->config;
+ 
+ 	if (idx < 0 || idx > NUM_MONITORS)
+ 		idx = 0;
+ 
+-	num_buses = idx == SYSTEM_MONITOR ? num_system_buses : num_vpu_buses;
++	num_buses = idx == SYSTEM_MONITOR ? config->num_system_buses : config->num_vpu_buses;
+ 
+ 	string_buffer = kmalloc(buff_size, GFP_KERNEL);
+ 
+@@ -428,17 +610,17 @@ static ssize_t myreader(struct file *fp,
+ 	mutex_lock(&state->lock);
+ 
+ 	if (mon->bus_filter) {
+-		int filt = min(mon->bus_filter & 0x1f, num_bus_filters);
++		int filt = min(mon->bus_filter & 0x1f, config->num_bus_filters);
+ 
+ 		cnt = snprintf(p, buff_size,
+ 			       "\nMonitoring transactions from %s only\n",
+-			       bus_filter_strings[filt]);
++			       config->bus_filter_strings[filt]);
+ 		p += cnt;
+ 		buff_size -= cnt;
+ 	}
+ 
+-	cnt = snprintf(p, buff_size, "     Bus   |    Atrans    Atwait      AMax    Wtrans    Wtwait      WMax    Rtrans    Rtwait      RMax\n"
+-				     "======================================================================================================\n");
++	cnt = snprintf(p, buff_size, "     Bus    |    Atrans    Atwait      AMax    Wtrans    Wtwait      WMax    Rtrans    Rtwait      RMax     RPend   RAtrans\n"
++				     "===========================================================================================================================\n");
+ 
+ 	if (cnt >= buff_size)
+ 		goto done;
+@@ -446,25 +628,29 @@ static ssize_t myreader(struct file *fp,
+ 	p += cnt;
+ 	buff_size -= cnt;
+ 
++#define M(x) ((x) >= 1000000000 ? (x)/1000000 : (x) >= 1000 ? (x)/1000 : (x))
++#define N(x) ((x) >= 1000000000 ? 'M' : (x) >= 1000 ? 'K' : ' ')
++
+ 	for (i = 0; i < num_buses; i++) {
+ 		if (mon->bus_enabled & (1 << i)) {
+-#define DIVIDER (1024)
+ 			typeof(mon->results[0]) *res = &(mon->results[i]);
+ 
+ 			cnt = snprintf(p, buff_size,
+-					"%10s | %8uK %8uK %8uK %8uK %8uK %8uK %8uK %8uK %8uK\n",
++					"%11s | %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c %8u%c\n",
+ 					idx == SYSTEM_MONITOR ?
+-						system_bus_string[i] :
+-						vpu_bus_string[i],
+-					res->atrans/DIVIDER,
+-					res->atwait/DIVIDER,
+-					res->amax/DIVIDER,
+-					res->wtrans/DIVIDER,
+-					res->wtwait/DIVIDER,
+-					res->wmax/DIVIDER,
+-					res->rtrans/DIVIDER,
+-					res->rtwait/DIVIDER,
+-					res->rmax/DIVIDER
++						config->system_bus_string[i] :
++						config->vpu_bus_string[i],
++					M(res->atrans), N(res->atrans),
++					M(res->atwait), N(res->atwait),
++					M(res->amax), N(res->amax),
++					M(res->wtrans), N(res->wtrans),
++					M(res->wtwait), N(res->wtwait),
++					M(res->wmax), N(res->wmax),
++					M(res->rtrans), N(res->rtrans),
++					M(res->rtwait), N(res->rtwait),
++					M(res->rmax), N(res->rmax),
++					M(res->rpend), N(res->rpend),
++					M(res->ratrans), N(res->ratrans)
+ 					);
+ 			if (cnt >= buff_size)
+ 				goto done;
+@@ -526,6 +712,10 @@ static int rpi_axiperf_probe(struct plat
+ 	if (!state)
+ 		return -ENOMEM;
+ 
++	state->config = of_device_get_match_data(dev);
++	if (!state->config)
++		return -EINVAL;
++
+ 	/* Get the firmware handle for future rpi-firmware-xxx calls */
+ 	fw_node = of_parse_phandle(np, "firmware", 0);
+ 	if (!fw_node) {
+@@ -612,9 +802,12 @@ static int rpi_axiperf_remove(struct pla
+ }
+ 
+ static const struct of_device_id rpi_axiperf_match[] = {
+-	{
+-		.compatible = "brcm,bcm2835-axiperf",
+-	},
++	{ .compatible = "brcm,bcm2835-axiperf",
++	  .data = &config_2835 },
++	{ .compatible = "brcm,bcm2711-axiperf",
++	  .data = &config_2711 },
++	{ .compatible = "brcm,bcm2712-axiperf",
++	  .data = &config_2712 },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, rpi_axiperf_match);

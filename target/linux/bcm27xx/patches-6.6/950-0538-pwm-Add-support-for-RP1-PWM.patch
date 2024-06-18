@@ -1,0 +1,292 @@
+From 15d1815d753583c53d0d19e57123657d0a7a6706 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 14 Feb 2023 14:03:54 +0000
+Subject: [PATCH 0538/1085] pwm: Add support for RP1 PWM
+
+Add a driver for the RP1 PWM block.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../devicetree/bindings/pwm/pwm-rp1.yaml      |  38 ++++
+ drivers/pwm/Kconfig                           |   9 +
+ drivers/pwm/Makefile                          |   1 +
+ drivers/pwm/pwm-rp1.c                         | 203 ++++++++++++++++++
+ 4 files changed, 251 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/pwm/pwm-rp1.yaml
+ create mode 100644 drivers/pwm/pwm-rp1.c
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/pwm/pwm-rp1.yaml
+@@ -0,0 +1,38 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/pwm/pwm-rp1.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Raspberry Pi RP1 PWM controller
++
++maintainers:
++  - Naushir Patuck <naush@raspberrypi.com>
++
++properties:
++  compatible:
++    enum:
++      - raspberrypi,rp1-pwm
++
++  reg:
++    maxItems: 1
++
++  "#pwm-cells":
++    const: 3
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - "#pwm-cells"
++
++additionalProperties: false
++
++examples:
++  - |
++    pwm0: pwm@98000 {
++      compatible = "raspberrypi,rp1-pwm";
++      reg = <0x0 0x98000  0x0 0x100>;
++      clocks = <&rp1_sys>;
++      #pwm-cells = <3>;
++    };
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -473,6 +473,15 @@ config PWM_RASPBERRYPI_POE
+ 	  Enable Raspberry Pi firmware controller PWM bus used to control the
+ 	  official RPI PoE hat
+ 
++config PWM_RP1
++	tristate "RP1 PWM support"
++	depends on ARCH_BCM2835 || COMPILE_TEST
++	help
++	  PWM framework driver for Raspberry Pi RP1 controller
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called pwm-rp1.
++
+ config PWM_RCAR
+ 	tristate "Renesas R-Car PWM support"
+ 	depends on ARCH_RENESAS || COMPILE_TEST
+--- a/drivers/pwm/Makefile
++++ b/drivers/pwm/Makefile
+@@ -43,6 +43,7 @@ obj-$(CONFIG_PWM_OMAP_DMTIMER)	+= pwm-om
+ obj-$(CONFIG_PWM_PCA9685)	+= pwm-pca9685.o
+ obj-$(CONFIG_PWM_PXA)		+= pwm-pxa.o
+ obj-$(CONFIG_PWM_RASPBERRYPI_POE)	+= pwm-raspberrypi-poe.o
++obj-$(CONFIG_PWM_RP1)		+= pwm-rp1.o
+ obj-$(CONFIG_PWM_RCAR)		+= pwm-rcar.o
+ obj-$(CONFIG_PWM_RENESAS_TPU)	+= pwm-renesas-tpu.o
+ obj-$(CONFIG_PWM_ROCKCHIP)	+= pwm-rockchip.o
+--- /dev/null
++++ b/drivers/pwm/pwm-rp1.c
+@@ -0,0 +1,203 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * pwm-rp1.c
++ *
++ * Raspberry Pi RP1 PWM.
++ *
++ * Copyright © 2023 Raspberry Pi Ltd.
++ *
++ * Author: Naushir Patuck (naush@raspberrypi.com)
++ *
++ * Based on the pwm-bcm2835 driver by:
++ * Bart Tanghe <bart.tanghe@thomasmore.be>
++ */
++
++#include <linux/bitops.h>
++#include <linux/clk.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pwm.h>
++
++#define PWM_GLOBAL_CTRL		0x000
++#define PWM_CHANNEL_CTRL(x)	(0x014 + ((x) * 16))
++#define PWM_RANGE(x)		(0x018 + ((x) * 16))
++#define PWM_DUTY(x)		(0x020 + ((x) * 16))
++
++/* 8:FIFO_POP_MASK + 0:Trailing edge M/S modulation */
++#define PWM_CHANNEL_DEFAULT	(BIT(8) + BIT(0))
++#define PWM_CHANNEL_ENABLE(x)	BIT(x)
++#define PWM_POLARITY		BIT(3)
++#define SET_UPDATE		BIT(31)
++#define PWM_MODE_MASK		GENMASK(1, 0)
++
++struct rp1_pwm {
++	struct pwm_chip chip;
++	struct device *dev;
++	void __iomem *base;
++	struct clk *clk;
++};
++
++static inline struct rp1_pwm *to_rp1_pwm(struct pwm_chip *chip)
++{
++	return container_of(chip, struct rp1_pwm, chip);
++}
++
++static void rp1_pwm_apply_config(struct pwm_chip *chip, struct pwm_device *pwm)
++{
++	struct rp1_pwm *pc = to_rp1_pwm(chip);
++	u32 value;
++
++	value = readl(pc->base + PWM_GLOBAL_CTRL);
++	value |= SET_UPDATE;
++	writel(value, pc->base + PWM_GLOBAL_CTRL);
++}
++
++static int rp1_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
++{
++	struct rp1_pwm *pc = to_rp1_pwm(chip);
++
++	writel(PWM_CHANNEL_DEFAULT, pc->base + PWM_CHANNEL_CTRL(pwm->hwpwm));
++	return 0;
++}
++
++static void rp1_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
++{
++	struct rp1_pwm *pc = to_rp1_pwm(chip);
++	u32 value;
++
++	value = readl(pc->base + PWM_CHANNEL_CTRL(pwm->hwpwm));
++	value &= ~PWM_MODE_MASK;
++	writel(value, pc->base + PWM_CHANNEL_CTRL(pwm->hwpwm));
++	rp1_pwm_apply_config(chip, pwm);
++}
++
++static int rp1_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
++			 const struct pwm_state *state)
++{
++	struct rp1_pwm *pc = to_rp1_pwm(chip);
++	unsigned long clk_rate = clk_get_rate(pc->clk);
++	unsigned long clk_period;
++	u32 value;
++
++	if (!clk_rate) {
++		dev_err(pc->dev, "failed to get clock rate\n");
++		return -EINVAL;
++	}
++
++	/* set period */
++	clk_period = DIV_ROUND_CLOSEST(NSEC_PER_SEC, clk_rate);
++
++	writel(DIV_ROUND_CLOSEST(state->duty_cycle, clk_period),
++	       pc->base + PWM_DUTY(pwm->hwpwm));
++
++	/* set duty cycle */
++	writel(DIV_ROUND_CLOSEST(state->period, clk_period),
++	       pc->base + PWM_RANGE(pwm->hwpwm));
++
++	/* set polarity */
++	value = readl(pc->base + PWM_CHANNEL_CTRL(pwm->hwpwm));
++	if (state->polarity == PWM_POLARITY_NORMAL)
++		value &= ~PWM_POLARITY;
++	else
++		value |= PWM_POLARITY;
++	writel(value, pc->base + PWM_CHANNEL_CTRL(pwm->hwpwm));
++
++	/* enable/disable */
++	value = readl(pc->base + PWM_GLOBAL_CTRL);
++	if (state->enabled)
++		value |= PWM_CHANNEL_ENABLE(pwm->hwpwm);
++	else
++		value &= ~PWM_CHANNEL_ENABLE(pwm->hwpwm);
++	writel(value, pc->base + PWM_GLOBAL_CTRL);
++
++	rp1_pwm_apply_config(chip, pwm);
++
++	return 0;
++}
++
++static const struct pwm_ops rp1_pwm_ops = {
++	.request = rp1_pwm_request,
++	.free = rp1_pwm_free,
++	.apply = rp1_pwm_apply,
++	.owner = THIS_MODULE,
++};
++
++static int rp1_pwm_probe(struct platform_device *pdev)
++{
++	struct rp1_pwm *pc;
++	struct resource *res;
++	int ret;
++
++	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
++	if (!pc)
++		return -ENOMEM;
++
++	pc->dev = &pdev->dev;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	pc->base = devm_ioremap_resource(&pdev->dev, res);
++	if (IS_ERR(pc->base))
++		return PTR_ERR(pc->base);
++
++	pc->clk = devm_clk_get(&pdev->dev, NULL);
++	if (IS_ERR(pc->clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(pc->clk),
++				     "clock not found\n");
++
++	ret = clk_prepare_enable(pc->clk);
++	if (ret)
++		return ret;
++
++	pc->chip.dev = &pdev->dev;
++	pc->chip.ops = &rp1_pwm_ops;
++	pc->chip.base = -1;
++	pc->chip.npwm = 4;
++	pc->chip.of_xlate = of_pwm_xlate_with_flags;
++	pc->chip.of_pwm_n_cells = 3;
++
++	platform_set_drvdata(pdev, pc);
++
++	ret = pwmchip_add(&pc->chip);
++	if (ret < 0)
++		goto add_fail;
++
++	return 0;
++
++add_fail:
++	clk_disable_unprepare(pc->clk);
++	return ret;
++}
++
++static int rp1_pwm_remove(struct platform_device *pdev)
++{
++	struct rp1_pwm *pc = platform_get_drvdata(pdev);
++
++	clk_disable_unprepare(pc->clk);
++
++	pwmchip_remove(&pc->chip);
++
++	return 0;
++}
++
++static const struct of_device_id rp1_pwm_of_match[] = {
++	{ .compatible = "raspberrypi,rp1-pwm" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, rp1_pwm_of_match);
++
++static struct platform_driver rp1_pwm_driver = {
++	.driver = {
++		.name = "rpi-pwm",
++		.of_match_table = rp1_pwm_of_match,
++	},
++	.probe = rp1_pwm_probe,
++	.remove = rp1_pwm_remove,
++};
++module_platform_driver(rp1_pwm_driver);
++
++MODULE_AUTHOR("Naushir Patuck <naush@raspberrypi.com");
++MODULE_DESCRIPTION("RP1 PWM driver");
++MODULE_LICENSE("GPL");

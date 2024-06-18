@@ -1,0 +1,196 @@
+From 27c0799ff9e02ef9606801eb149f64d413503593 Mon Sep 17 00:00:00 2001
+From: Ben Payne <ben@bluerocksoft.com>
+Date: Tue, 13 Feb 2024 14:55:14 -0800
+Subject: [PATCH 0899/1085] Impliment driver support for Interlude Audio
+ Digital Hat
+
+Implementing driver support for
+Interlude audio's WM8805 based digital hat
+by leveraging existing drivers
+---
+ sound/soc/bcm/rpi-wm8804-soundcard.c | 139 +++++++++++++++++++++++++++
+ 1 file changed, 139 insertions(+)
+
+--- a/sound/soc/bcm/rpi-wm8804-soundcard.c
++++ b/sound/soc/bcm/rpi-wm8804-soundcard.c
+@@ -34,6 +34,7 @@
+ #include <linux/gpio/consumer.h>
+ #include <linux/platform_device.h>
+ #include <linux/module.h>
++#include <linux/delay.h>
+ 
+ #include <sound/core.h>
+ #include <sound/pcm.h>
+@@ -65,6 +66,10 @@ struct snd_rpi_wm8804_drvdata {
+ static struct gpio_desc *snd_clk44gpio;
+ static struct gpio_desc *snd_clk48gpio;
+ static int wm8804_samplerate = 0;
++static struct gpio_desc *led_gpio_1;
++static struct gpio_desc *led_gpio_2;
++static struct gpio_desc *led_gpio_3;
++static struct gpio_desc *custom_reset;
+ 
+ /* Forward declarations */
+ static struct snd_soc_dai_link snd_allo_digione_dai[];
+@@ -74,6 +79,37 @@ static struct snd_soc_card snd_rpi_wm880
+ #define CLK_44EN_RATE 22579200UL
+ #define CLK_48EN_RATE 24576000UL
+ 
++static const char * const wm8805_input_select_text[] = {
++	"Rx 0",
++	"Rx 1",
++	"Rx 2",
++	"Rx 3",
++	"Rx 4",
++	"Rx 5",
++	"Rx 6",
++	"Rx 7"
++};
++
++static const unsigned int wm8805_input_channel_select_value[] = {
++	0, 1, 2, 3, 4, 5, 6, 7
++};
++
++static const struct soc_enum wm8805_input_channel_sel[] = {
++	SOC_VALUE_ENUM_SINGLE(WM8804_PLL6, 0, 7, ARRAY_SIZE(wm8805_input_select_text),
++	wm8805_input_select_text, wm8805_input_channel_select_value),
++};
++
++static const struct snd_kcontrol_new wm8805_input_controls_card[] = {
++	SOC_ENUM("Select Input Channel", wm8805_input_channel_sel[0]),
++};
++
++static int wm8805_add_input_controls(struct snd_soc_component *component)
++{
++	snd_soc_add_component_controls(component, wm8805_input_controls_card,
++	ARRAY_SIZE(wm8805_input_controls_card));
++	return 0;
++}
++
+ static unsigned int snd_rpi_wm8804_enable_clock(unsigned int samplerate)
+ {
+ 	switch (samplerate) {
+@@ -187,6 +223,53 @@ static struct snd_soc_ops snd_rpi_wm8804
+ 	.hw_params = snd_rpi_wm8804_hw_params,
+ };
+ 
++static int snd_interlude_audio_hw_params(struct snd_pcm_substream *substream,
++		struct snd_pcm_hw_params *params)
++{
++	int ret = snd_rpi_wm8804_hw_params(substream, params);
++	int samplerate = params_rate(params);
++
++	switch (samplerate) {
++	case 44100:
++		gpiod_set_value_cansleep(led_gpio_1, 1);
++		gpiod_set_value_cansleep(led_gpio_2, 0);
++		gpiod_set_value_cansleep(led_gpio_3, 0);
++		break;
++	case 48000:
++		gpiod_set_value_cansleep(led_gpio_1, 1);
++		gpiod_set_value_cansleep(led_gpio_2, 0);
++		gpiod_set_value_cansleep(led_gpio_3, 0);
++		break;
++	case 88200:
++		gpiod_set_value_cansleep(led_gpio_1, 0);
++		gpiod_set_value_cansleep(led_gpio_2, 1);
++		gpiod_set_value_cansleep(led_gpio_3, 0);
++		break;
++	case 96000:
++		gpiod_set_value_cansleep(led_gpio_1, 0);
++		gpiod_set_value_cansleep(led_gpio_2, 1);
++		gpiod_set_value_cansleep(led_gpio_3, 0);
++		break;
++	case 176400:
++		gpiod_set_value_cansleep(led_gpio_1, 0);
++		gpiod_set_value_cansleep(led_gpio_2, 0);
++		gpiod_set_value_cansleep(led_gpio_3, 1);
++		break;
++	case 192000:
++		gpiod_set_value_cansleep(led_gpio_1, 0);
++		gpiod_set_value_cansleep(led_gpio_2, 0);
++		gpiod_set_value_cansleep(led_gpio_3, 1);
++		break;
++	default:
++		break;
++	}
++	return ret;
++}
++
++const struct snd_soc_ops interlude_audio_digital_dai_ops = {
++	.hw_params = snd_interlude_audio_hw_params,
++};
++
+ SND_SOC_DAILINK_DEFS(justboom_digi,
+ 	DAILINK_COMP_ARRAY(COMP_EMPTY()),
+ 	DAILINK_COMP_ARRAY(COMP_EMPTY()),
+@@ -287,6 +370,60 @@ static struct snd_rpi_wm8804_drvdata drv
+ 	.probe     = snd_hifiberry_digi_probe,
+ };
+ 
++SND_SOC_DAILINK_DEFS(interlude_audio_digital,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static int snd_interlude_audio_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
++	int ret;
++
++	ret = wm8805_add_input_controls(component);
++	if (ret != 0)
++		pr_err("failed to add input controls");
++
++	return 0;
++}
++
++
++static struct snd_soc_dai_link snd_interlude_audio_digital_dai[] = {
++{
++	.name        = "Interlude Audio Digital",
++	.stream_name = "Interlude Audio Digital HiFi",
++	.init        = snd_interlude_audio_init,
++	.ops		 = &interlude_audio_digital_dai_ops,
++	SND_SOC_DAILINK_REG(interlude_audio_digital),
++},
++};
++
++
++static int snd_interlude_audio_digital_probe(struct platform_device *pdev)
++{
++	if (IS_ERR(snd_clk44gpio) || IS_ERR(snd_clk48gpio))
++		return 0;
++
++	custom_reset = devm_gpiod_get(&pdev->dev, "reset", GPIOD_OUT_LOW);
++	gpiod_set_value_cansleep(custom_reset, 0);
++	mdelay(10);
++	gpiod_set_value_cansleep(custom_reset, 1);
++
++	snd_interlude_audio_digital_dai->name = "Interlude Audio Digital";
++	snd_interlude_audio_digital_dai->stream_name = "Interlude Audio Digital HiFi";
++	led_gpio_1 = devm_gpiod_get(&pdev->dev, "led1", GPIOD_OUT_LOW);
++	led_gpio_2 = devm_gpiod_get(&pdev->dev, "led2", GPIOD_OUT_LOW);
++	led_gpio_3 = devm_gpiod_get(&pdev->dev, "led3", GPIOD_OUT_LOW);
++	return 0;
++}
++
++
++static struct snd_rpi_wm8804_drvdata drvdata_interlude_audio_digital = {
++	.card_name = "snd_IA_Digital_Hat",
++	.dai       = snd_interlude_audio_digital_dai,
++	.probe     = snd_interlude_audio_digital_probe,
++};
++
+ static const struct of_device_id snd_rpi_wm8804_of_match[] = {
+ 	{ .compatible = "justboom,justboom-digi",
+ 		.data = (void *) &drvdata_justboom_digi },
+@@ -296,6 +433,8 @@ static const struct of_device_id snd_rpi
+ 		.data = (void *) &drvdata_allo_digione },
+ 	{ .compatible = "hifiberry,hifiberry-digi",
+ 		.data = (void *) &drvdata_hifiberry_digi },
++	{ .compatible = "interludeaudio,interludeaudio-digital",
++		.data = (void *) &drvdata_interlude_audio_digital },
+ 	{},
+ };
+ 

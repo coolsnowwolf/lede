@@ -1,0 +1,247 @@
+From 41d7a5a226cc5a649b08d7f9ba3997730d878dbb Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 10 Mar 2023 17:43:57 +0000
+Subject: [PATCH 0500/1085] media: imx219: Advertise embedded data node on
+ media pad 1
+
+This commit updates the imx219 driver to adverise support for embedded
+data streams.  This can then be used by the bcm2835-unicam driver, which
+has recently been updated to expose the embedded data stream to
+userland.
+
+The imx219 sensor subdevice overloads the media pad to differentiate
+between image stream (pad 0) and embedded data stream (pad 1) when
+performing the v4l2_subdev_pad_ops functions.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx219.c | 167 ++++++++++++++++++++++++-------------
+ 1 file changed, 111 insertions(+), 56 deletions(-)
+
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -161,6 +161,21 @@
+ #define IMX219_PIXEL_ARRAY_WIDTH	3280U
+ #define IMX219_PIXEL_ARRAY_HEIGHT	2464U
+ 
++/* Embedded metadata stream structure */
++#define IMX219_EMBEDDED_LINE_WIDTH 16384
++#define IMX219_NUM_EMBEDDED_LINES 1
++
++enum pad_types {
++	IMAGE_PAD,
++	METADATA_PAD,
++	NUM_PADS
++};
++
++struct imx219_reg {
++	u16 address;
++	u8 val;
++};
++
+ struct imx219_reg_list {
+ 	unsigned int num_of_regs;
+ 	const struct cci_reg_sequence *regs;
+@@ -445,7 +460,7 @@ static const struct imx219_mode supporte
+ 
+ struct imx219 {
+ 	struct v4l2_subdev sd;
+-	struct media_pad pad;
++	struct media_pad pad[NUM_PADS];
+ 
+ 	struct regmap *regmap;
+ 	struct clk *xclk; /* system clock to IMX219 */
+@@ -620,6 +635,13 @@ static int imx219_init_cfg(struct v4l2_s
+ 	crop->width = IMX219_PIXEL_ARRAY_WIDTH;
+ 	crop->height = IMX219_PIXEL_ARRAY_HEIGHT;
+ 
++	/* Initialize try_fmt for the embedded metadata pad */
++	format = v4l2_subdev_get_pad_format(sd, state, 1);
++	format->code = MEDIA_BUS_FMT_SENSOR_DATA;
++	format->width = IMX219_EMBEDDED_LINE_WIDTH;
++	format->height = IMX219_NUM_EMBEDDED_LINES;
++	format->field = V4L2_FIELD_NONE;
++
+ 	return 0;
+ }
+ 
+@@ -629,10 +651,20 @@ static int imx219_enum_mbus_code(struct
+ {
+ 	struct imx219 *imx219 = to_imx219(sd);
+ 
+-	if (code->index >= (ARRAY_SIZE(imx219_mbus_formats) / 4))
++	if (code->pad >= NUM_PADS)
+ 		return -EINVAL;
+ 
+-	code->code = imx219_get_format_code(imx219, imx219_mbus_formats[code->index * 4]);
++	if (code->pad == IMAGE_PAD) {
++		if (code->index >= (ARRAY_SIZE(imx219_mbus_formats) / 4))
++			return -EINVAL;
++
++		code->code = imx219_get_format_code(imx219, imx219_mbus_formats[code->index * 4]);
++	} else {
++		if (code->index > 0)
++			return -EINVAL;
++
++		code->code = MEDIA_BUS_FMT_SENSOR_DATA;
++	}
+ 
+ 	return 0;
+ }
+@@ -644,17 +676,30 @@ static int imx219_enum_frame_size(struct
+ 	struct imx219 *imx219 = to_imx219(sd);
+ 	u32 code;
+ 
+-	if (fse->index >= ARRAY_SIZE(supported_modes))
++	if (fse->pad >= NUM_PADS)
+ 		return -EINVAL;
+ 
+-	code = imx219_get_format_code(imx219, fse->code);
+-	if (fse->code != code)
+-		return -EINVAL;
++	if (fse->pad == IMAGE_PAD) {
++		if (fse->index >= ARRAY_SIZE(supported_modes))
++			return -EINVAL;
++
++		code = imx219_get_format_code(imx219, fse->code);
++		if (fse->code != code)
++			return -EINVAL;
++
++		fse->min_width = supported_modes[fse->index].width;
++		fse->max_width = fse->min_width;
++		fse->min_height = supported_modes[fse->index].height;
++		fse->max_height = fse->min_height;
++	} else {
++		if (fse->code != MEDIA_BUS_FMT_SENSOR_DATA || fse->index > 0)
++			return -EINVAL;
+ 
+-	fse->min_width = supported_modes[fse->index].width;
+-	fse->max_width = fse->min_width;
+-	fse->min_height = supported_modes[fse->index].height;
+-	fse->max_height = fse->min_height;
++		fse->min_width = IMX219_EMBEDDED_LINE_WIDTH;
++		fse->max_width = fse->min_width;
++		fse->min_height = IMX219_NUM_EMBEDDED_LINES;
++		fse->max_height = fse->min_height;
++	}
+ 
+ 	return 0;
+ }
+@@ -669,50 +714,59 @@ static int imx219_set_pad_format(struct
+ 	struct v4l2_mbus_framefmt *format;
+ 	struct v4l2_rect *crop;
+ 
+-	mode = v4l2_find_nearest_size(supported_modes,
+-				      ARRAY_SIZE(supported_modes),
+-				      width, height,
+-				      fmt->format.width, fmt->format.height);
+-
+-	imx219_update_pad_format(imx219, mode, &fmt->format, fmt->format.code);
+-
+-	format = v4l2_subdev_get_pad_format(sd, sd_state, 0);
+-	crop = v4l2_subdev_get_pad_crop(sd, sd_state, 0);
+-
+-	*format = fmt->format;
+-	*crop = mode->crop;
+-
+-	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+-		u32 prev_hts = imx219->mode->width + imx219->hblank->val;
+-
+-		imx219->mode = mode;
+-		/* Update limits and set FPS to default */
+-		__v4l2_ctrl_modify_range(imx219->vblank, IMX219_VBLANK_MIN,
+-					 IMX219_VTS_MAX - mode->height, 1,
+-					 mode->vts_def - mode->height);
+-		__v4l2_ctrl_s_ctrl(imx219->vblank,
+-				   mode->vts_def - mode->height);
+-		/* Update max exposure while meeting expected vblanking */
+-		exposure_max = mode->vts_def - 4;
+-		exposure_def = (exposure_max < IMX219_EXPOSURE_DEFAULT) ?
+-			exposure_max : IMX219_EXPOSURE_DEFAULT;
+-		__v4l2_ctrl_modify_range(imx219->exposure,
+-					 imx219->exposure->minimum,
+-					 exposure_max, imx219->exposure->step,
+-					 exposure_def);
+-		/*
+-		 * Retain PPL setting from previous mode so that the
+-		 * line time does not change on a mode change.
+-		 * Limits have to be recomputed as the controls define
+-		 * the blanking only, so PPL values need to have the
+-		 * mode width subtracted.
+-		 */
+-		hblank = prev_hts - mode->width;
+-		__v4l2_ctrl_modify_range(imx219->hblank,
+-					 IMX219_PPL_MIN - mode->width,
+-					 IMX219_PPL_MAX - mode->width,
+-					 1, IMX219_PPL_MIN - mode->width);
+-		__v4l2_ctrl_s_ctrl(imx219->hblank, hblank);
++	if (fmt->pad >= NUM_PADS)
++		return -EINVAL;
++
++	if (fmt->pad == IMAGE_PAD) {
++		mode = v4l2_find_nearest_size(supported_modes,
++					      ARRAY_SIZE(supported_modes),
++					      width, height,
++					      fmt->format.width, fmt->format.height);
++
++		imx219_update_pad_format(imx219, mode, &fmt->format, fmt->format.code);
++
++		format = v4l2_subdev_get_pad_format(sd, sd_state, 0);
++		crop = v4l2_subdev_get_pad_crop(sd, sd_state, 0);
++		
++		*format = fmt->format;
++		*crop = mode->crop;
++
++		if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
++			u32 prev_hts = imx219->mode->width + imx219->hblank->val;
++
++			imx219->mode = mode;
++			/* Update limits and set FPS to default */
++			__v4l2_ctrl_modify_range(imx219->vblank, IMX219_VBLANK_MIN,
++						 IMX219_VTS_MAX - mode->height, 1,
++						 mode->vts_def - mode->height);
++			__v4l2_ctrl_s_ctrl(imx219->vblank,
++					   mode->vts_def - mode->height);
++			/* Update max exposure while meeting expected vblanking */
++			exposure_max = mode->vts_def - 4;
++			exposure_def = (exposure_max < IMX219_EXPOSURE_DEFAULT) ?
++				exposure_max : IMX219_EXPOSURE_DEFAULT;
++			__v4l2_ctrl_modify_range(imx219->exposure,
++						 imx219->exposure->minimum,
++						 exposure_max, imx219->exposure->step,
++						 exposure_def);
++			/*
++			 * Retain PPL setting from previous mode so that the
++			 * line time does not change on a mode change.
++			 * Limits have to be recomputed as the controls define
++			 * the blanking only, so PPL values need to have the
++			 * mode width subtracted.
++			 */
++			hblank = prev_hts - mode->width;
++			__v4l2_ctrl_modify_range(imx219->hblank,
++						 IMX219_PPL_MIN - mode->width,
++						 IMX219_PPL_MAX - mode->width,
++						 1, IMX219_PPL_MIN - mode->width);
++			__v4l2_ctrl_s_ctrl(imx219->hblank, hblank);
++		}
++	} else {
++		format = v4l2_subdev_get_pad_format(sd, sd_state, 1);
++		/* Don't allow the embedded data format to be changed */
++		fmt->format = *format;
+ 	}
+ 
+ 	return 0;
+@@ -1331,9 +1385,10 @@ static int imx219_probe(struct i2c_clien
+ 	imx219->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+ 
+ 	/* Initialize source pad */
+-	imx219->pad.flags = MEDIA_PAD_FL_SOURCE;
++	imx219->pad[IMAGE_PAD].flags = MEDIA_PAD_FL_SOURCE;
++	imx219->pad[METADATA_PAD].flags = MEDIA_PAD_FL_SOURCE;
+ 
+-	ret = media_entity_pads_init(&imx219->sd.entity, 1, &imx219->pad);
++	ret = media_entity_pads_init(&imx219->sd.entity, NUM_PADS, imx219->pad);
+ 	if (ret) {
+ 		dev_err(dev, "failed to init entity pads: %d\n", ret);
+ 		goto error_handler_free;

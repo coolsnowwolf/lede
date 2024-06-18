@@ -1,0 +1,66 @@
+From 6a0ae67b699bef301e835b814a416067567ecd39 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 3 Apr 2024 16:06:08 +0100
+Subject: [PATCH 1039/1085] media: bcm2835-unicam: Add option for a GPIO to
+ reflect FS/FE timing
+
+The legacy stack had an option to have a GPIO track frame start and
+end events to give basic synchronisation to the incoming image stream.
+https://forums.raspberrypi.com/viewtopic.php?t=190314
+
+Replicate this in the kernel Unicam driver.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/platform/bcm2835/bcm2835-unicam.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -49,6 +49,7 @@
+ #include <linux/device.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -543,6 +544,8 @@ struct unicam_device {
+ 	struct v4l2_device v4l2_dev;
+ 	struct media_device mdev;
+ 
++	struct gpio_desc *sync_gpio;
++
+ 	/* parent device */
+ 	struct platform_device *pdev;
+ 	/* subdevice async Notifier */
+@@ -943,6 +946,8 @@ static irqreturn_t unicam_isr(int irq, v
+ 	if (fe) {
+ 		bool inc_seq = unicam->frame_started;
+ 
++		if (unicam->sync_gpio)
++			gpiod_set_value(unicam->sync_gpio, 0);
+ 		/*
+ 		 * Ensure we have swapped buffers already as we can't
+ 		 * stop the peripheral. If no buffer is available, use a
+@@ -1003,6 +1008,10 @@ static irqreturn_t unicam_isr(int irq, v
+ 		 * aka frame start.
+ 		 */
+ 		ts = ktime_get_ns();
++
++		if (unicam->sync_gpio)
++			gpiod_set_value(unicam->sync_gpio, 1);
++
+ 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
+ 			if (!unicam->node[i].streaming)
+ 				continue;
+@@ -3407,6 +3416,9 @@ static int unicam_probe(struct platform_
+ 		goto err_unicam_put;
+ 	}
+ 
++	unicam->sync_gpio = devm_gpiod_get_optional(&pdev->dev, "sync",
++						    GPIOD_OUT_LOW);
++
+ 	ret = platform_get_irq(pdev, 0);
+ 	if (ret <= 0) {
+ 		dev_err(&pdev->dev, "No IRQ resource\n");

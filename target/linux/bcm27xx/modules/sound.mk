@@ -45,7 +45,8 @@ $(eval $(call KernelPackage,sound-soc-bcm2835-i2s))
 define KernelPackage/sound-soc-rpi-simple-soundcard
   TITLE:=Support for Raspberry Pi simple soundcards
   KCONFIG:= \
-    CONFIG_SND_RPI_SIMPLE_SOUNDCARD
+    CONFIG_SND_RPI_SIMPLE_SOUNDCARD \
+    CONFIG_SND_BCM2708_SOC_HIFIBERRY_ADC8X
   FILES:= \
     $(LINUX_DIR)/sound/soc/bcm/snd-soc-rpi-simple-soundcard.ko
   AUTOLOAD:=$(call AutoLoad,68,snd-soc-rpi-simple-soundcard)
@@ -524,6 +525,32 @@ define KernelPackage/sound-soc-googlevoicehat/description
 endef
 
 $(eval $(call KernelPackage,sound-soc-googlevoicehat))
+
+
+define KernelPackage/sound-soc-hifiberry-adc
+  TITLE:=Support for HifiBerry ADC
+  KCONFIG:= \
+    CONFIG_SND_BCM2708_SOC_HIFIBERRY_ADC \
+    CONFIG_SND_RPI_HIFIBERRY_ADC \
+    CONFIG_SND_SOC_PCM186X_I2C
+  FILES:= \
+    $(LINUX_DIR)/sound/soc/bcm/snd-soc-hifiberry-adc.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm186x.ko \
+    $(LINUX_DIR)/sound/soc/codecs/snd-soc-pcm186x-i2c.ko
+  AUTOLOAD:=$(call AutoLoad,68,snd-soc-pcm186x snd-soc-pcm186x-i2c \
+    snd-soc-hifiberry-adc)
+  DEPENDS:= \
+    kmod-sound-soc-bcm2835-i2s \
+    +kmod-i2c-bcm2835 \
+    +kmod-regmap-i2c
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-soc-hifiberry-adc/description
+  This package contains support for HifiBerry ADC
+endef
+
+$(eval $(call KernelPackage,sound-soc-hifiberry-adc))
 
 
 define KernelPackage/sound-soc-hifiberry-dac

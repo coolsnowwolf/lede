@@ -1,0 +1,99 @@
+From 3e7d0d9be5353186136c661e551ad442bba50e45 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 21 Dec 2023 18:03:34 +0000
+Subject: [PATCH 0814/1085] media: i2c: adv7180: Add support for
+ V4L2_CID_LINK_FREQ
+
+For CSI2 receivers that need to know the link frequency,
+add it as a control to the driver.
+Interlaced modes are 216Mbp/s or 108MHz, whilst going through
+the I2P to deinterlace gives 432Mb/s or 216MHz.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/adv7180.c | 32 +++++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+--- a/drivers/media/i2c/adv7180.c
++++ b/drivers/media/i2c/adv7180.c
+@@ -188,6 +188,16 @@
+ /* Initial number of frames to skip to avoid possible garbage */
+ #define ADV7180_NUM_OF_SKIP_FRAMES       2
+ 
++enum adv7180_link_freq_idx {
++	INTERLACED_IDX,
++	I2P_IDX,
++};
++
++static const s64 adv7180_link_freqs[] = {
++	[INTERLACED_IDX] = 108000000,
++	[I2P_IDX] = 216000000,
++};
++
+ static int dbg_input;
+ module_param(dbg_input, int, 0644);
+ MODULE_PARM_DESC(dbg_input, "Input number (0-31)");
+@@ -227,6 +237,7 @@ struct adv7180_state {
+ 	const struct adv7180_chip_info *chip_info;
+ 	enum v4l2_field		field;
+ 	bool			force_bt656_4;
++	struct v4l2_ctrl	*link_freq;
+ };
+ #define to_adv7180_sd(_ctrl) (&container_of(_ctrl->handler,		\
+ 					    struct adv7180_state,	\
+@@ -620,6 +631,9 @@ static int adv7180_s_ctrl(struct v4l2_ct
+ 
+ 	if (ret)
+ 		return ret;
++	if (ctrl->flags & V4L2_CTRL_FLAG_READ_ONLY)
++		goto unlock;
++
+ 	val = ctrl->val;
+ 	switch (ctrl->id) {
+ 	case V4L2_CID_BRIGHTNESS:
+@@ -661,6 +675,7 @@ static int adv7180_s_ctrl(struct v4l2_ct
+ 		ret = -EINVAL;
+ 	}
+ 
++unlock:
+ 	mutex_unlock(&state->mutex);
+ 	return ret;
+ }
+@@ -681,7 +696,7 @@ static const struct v4l2_ctrl_config adv
+ 
+ static int adv7180_init_controls(struct adv7180_state *state)
+ {
+-	v4l2_ctrl_handler_init(&state->ctrl_hdl, 4);
++	v4l2_ctrl_handler_init(&state->ctrl_hdl, 5);
+ 
+ 	v4l2_ctrl_new_std(&state->ctrl_hdl, &adv7180_ctrl_ops,
+ 			  V4L2_CID_BRIGHTNESS, ADV7180_BRI_MIN,
+@@ -703,6 +718,17 @@ static int adv7180_init_controls(struct
+ 				      0, ARRAY_SIZE(test_pattern_menu) - 1,
+ 				      test_pattern_menu);
+ 
++	if (state->chip_info->flags & ADV7180_FLAG_MIPI_CSI2) {
++		state->link_freq =
++			v4l2_ctrl_new_int_menu(&state->ctrl_hdl,
++					       &adv7180_ctrl_ops,
++					       V4L2_CID_LINK_FREQ,
++					       ARRAY_SIZE(adv7180_link_freqs) - 1,
++					       0, adv7180_link_freqs);
++		if (state->link_freq)
++			state->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	}
++
+ 	state->sd.ctrl_handler = &state->ctrl_hdl;
+ 	if (state->ctrl_hdl.error) {
+ 		int err = state->ctrl_hdl.error;
+@@ -835,6 +861,10 @@ static int adv7180_set_pad_format(struct
+ 			adv7180_set_power(state, false);
+ 			adv7180_set_field_mode(state);
+ 			adv7180_set_power(state, true);
++			if (state->chip_info->flags & ADV7180_FLAG_MIPI_CSI2)
++				__v4l2_ctrl_s_ctrl(state->link_freq,
++						   (state->field == V4L2_FIELD_NONE) ?
++						   I2P_IDX : INTERLACED_IDX);
+ 		}
+ 	} else {
+ 		framefmt = v4l2_subdev_get_try_format(sd, sd_state, 0);

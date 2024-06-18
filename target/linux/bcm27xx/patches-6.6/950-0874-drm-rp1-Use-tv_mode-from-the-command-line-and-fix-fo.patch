@@ -1,0 +1,328 @@
+From 272ac64c598d83c4025393398b431db0a4656a74 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Tue, 23 Jan 2024 18:45:51 +0000
+Subject: [PATCH 0874/1085] drm: rp1: Use tv_mode from the command line and fix
+ for Linux 6.6
+
+Use the standard enum drm_connector_tv_mode instead of a private
+enum and switch from the legacy to the standard tv_mode property.
+
+Remove the module parameter "tv_norm". Instead, get tv_mode from
+the command line and make this the connector's default TV mode.
+
+Don't restrict the choice of modes based on tv_mode, but interpret
+nonstandard combinations as NTSC or PAL, depending on resolution.
+Thus the default tv_mode=NTSC effectively means "Auto".
+
+Tweak the advertised horizontal timings for 625/50 to match Rec.601
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c    | 134 ++++++++---------------
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h    |  24 ++--
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c |  15 +--
+ 3 files changed, 63 insertions(+), 110 deletions(-)
+
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c
+@@ -48,52 +48,6 @@
+ 
+ #include "rp1_vec.h"
+ 
+-/*
+- * Default TV standard parameter; it may be overridden by the OF
+- * property "tv_norm" (which should be one of the strings below).
+- *
+- * The default (empty string) supports various 60Hz and 50Hz modes,
+- * and will automatically select NTSC[-M] or PAL[-BDGHIKL]; the two
+- * "fake" 60Hz standards NTSC-443 and PAL60 also support 50Hz PAL.
+- * Other values will restrict the set of video modes offered.
+- *
+- * Finally, the DRM connector property "mode" (which is an integer)
+- * can be used to override this value, but it does not prevent the
+- * selection of an inapplicable video mode.
+- */
+-
+-static char *rp1vec_tv_norm_str;
+-module_param_named(tv_norm, rp1vec_tv_norm_str, charp, 0600);
+-MODULE_PARM_DESC(tv_norm, "Default TV norm.\n"
+-		 "\t\tSupported: NTSC, NTSC-J, NTSC-443, PAL, PAL-M, PAL-N,\n"
+-		 "\t\t\tPAL60.\n"
+-		 "\t\tDefault: empty string: infer PAL for a 50 Hz mode,\n"
+-		 "\t\t\tNTSC otherwise");
+-
+-const char * const rp1vec_tvstd_names[] = {
+-	[RP1VEC_TVSTD_NTSC]     = "NTSC",
+-	[RP1VEC_TVSTD_NTSC_J]   = "NTSC-J",
+-	[RP1VEC_TVSTD_NTSC_443] = "NTSC-443",
+-	[RP1VEC_TVSTD_PAL]      = "PAL",
+-	[RP1VEC_TVSTD_PAL_M]    = "PAL-M",
+-	[RP1VEC_TVSTD_PAL_N]    = "PAL-N",
+-	[RP1VEC_TVSTD_PAL60]    = "PAL60",
+-	[RP1VEC_TVSTD_DEFAULT]  = "",
+-};
+-
+-static int rp1vec_parse_tv_norm(const char *str)
+-{
+-	int i;
+-
+-	if (str && *str) {
+-		for (i = 0; i < ARRAY_SIZE(rp1vec_tvstd_names); ++i) {
+-			if (strcasecmp(str, rp1vec_tvstd_names[i]) == 0)
+-				return i;
+-		}
+-	}
+-	return RP1VEC_TVSTD_DEFAULT;
+-}
+-
+ static void rp1vec_pipe_update(struct drm_simple_display_pipe *pipe,
+ 			       struct drm_plane_state *old_state)
+ {
+@@ -143,7 +97,7 @@ static void rp1vec_pipe_update(struct dr
+ 
+ static void rp1vec_pipe_enable(struct drm_simple_display_pipe *pipe,
+ 			       struct drm_crtc_state *crtc_state,
+-			      struct drm_plane_state *plane_state)
++			       struct drm_plane_state *plane_state)
+ {
+ 	struct rp1_vec *vec = pipe->crtc.dev->dev_private;
+ 
+@@ -219,48 +173,64 @@ static const struct drm_display_mode rp1
+ 	},
+ 	{ /* Full size 625/50i with Rec.601 pixel rate */
+ 		DRM_MODE("720x576i", DRM_MODE_TYPE_DRIVER, 13500,
+-			 720, 720 + 20, 720 + 20 + 64, 864, 0,
++			 720, 720 + 12, 720 + 12 + 64, 864, 0,
+ 			 576, 576 + 5, 576 + 5 + 5, 625, 0,
+ 			 DRM_MODE_FLAG_INTERLACE)
+ 	},
+ 	{ /* Cropped and squashed, for square(ish) pixels */
+ 		DRM_MODE("704x512i", DRM_MODE_TYPE_DRIVER, 15429,
+-			 704, 704 + 80, 704 + 80 + 72, 987, 0,
++			 704, 704 + 72, 704 + 72 + 72, 987, 0,
+ 			 512, 512 + 37, 512 + 37 + 5, 625, 0,
+ 			 DRM_MODE_FLAG_INTERLACE)
+ 	}
+ };
+ 
++/*
++ * Advertise standard and preferred video modes.
++ *
++ * From each interlaced mode in the table above, derive a progressive one.
++ *
++ * This driver always supports all 50Hz and 60Hz video modes, regardless
++ * of connector's tv_mode; nonstandard combinations generally default
++ * to PAL[-BDGHIKL] or NTSC[-M] depending on resolution and field-rate
++ * (except that "PAL" with 525/60 will be implemented as "PAL60").
++ * However, the preferred mode will depend on the default TV mode.
++ */
++
+ static int rp1vec_connector_get_modes(struct drm_connector *connector)
+ {
+-	struct rp1_vec *vec = container_of(connector, struct rp1_vec, connector);
+-	bool ok525 = RP1VEC_TVSTD_SUPPORT_525(vec->tv_norm);
+-	bool ok625 = RP1VEC_TVSTD_SUPPORT_625(vec->tv_norm);
++	u64 val;
+ 	int i, prog, n = 0;
++	bool prefer625 = false;
++
++	if (!drm_object_property_get_default_value(&connector->base,
++						   connector->dev->mode_config.tv_mode_property,
++						   &val))
++		prefer625 = (val == DRM_MODE_TV_MODE_PAL   ||
++			     val == DRM_MODE_TV_MODE_PAL_N ||
++			     val == DRM_MODE_TV_MODE_SECAM);
+ 
+ 	for (i = 0; i < ARRAY_SIZE(rp1vec_modes); i++) {
+-		if ((rp1vec_modes[i].vtotal == 625) ? ok625 : ok525) {
+-			for (prog = 0; prog < 2; prog++) {
+-				struct drm_display_mode *mode =
+-					drm_mode_duplicate(connector->dev,
+-							   &rp1vec_modes[i]);
+-
+-				if (prog) {
+-					mode->flags &= ~DRM_MODE_FLAG_INTERLACE;
+-					mode->vdisplay	  >>= 1;
+-					mode->vsync_start >>= 1;
+-					mode->vsync_end	  >>= 1;
+-					mode->vtotal	  >>= 1;
+-				}
+-
+-				if (mode->hdisplay == 704 &&
+-				    mode->vtotal == ((ok525) ? 525 : 625))
+-					mode->type |= DRM_MODE_TYPE_PREFERRED;
+-
+-				drm_mode_set_name(mode);
+-				drm_mode_probed_add(connector, mode);
+-				n++;
++		for (prog = 0; prog < 2; prog++) {
++			struct drm_display_mode *mode =
++				drm_mode_duplicate(connector->dev,
++						   &rp1vec_modes[i]);
++
++			if (prog) {
++				mode->flags &= ~DRM_MODE_FLAG_INTERLACE;
++				mode->vdisplay	  >>= 1;
++				mode->vsync_start >>= 1;
++				mode->vsync_end	  >>= 1;
++				mode->vtotal	  >>= 1;
+ 			}
++
++			if (mode->hdisplay == 704 &&
++			    mode->vtotal == (prefer625 ? 625 : 525))
++				mode->type |= DRM_MODE_TYPE_PREFERRED;
++
++			drm_mode_set_name(mode);
++			drm_mode_probed_add(connector, mode);
++			n++;
+ 		}
+ 	}
+ 
+@@ -269,11 +239,8 @@ static int rp1vec_connector_get_modes(st
+ 
+ static void rp1vec_connector_reset(struct drm_connector *connector)
+ {
+-	struct rp1_vec *vec = container_of(connector, struct rp1_vec, connector);
+-
+ 	drm_atomic_helper_connector_reset(connector);
+-	if (connector->state)
+-		connector->state->tv.mode = vec->tv_norm;
++	drm_atomic_helper_connector_tv_reset(connector);
+ }
+ 
+ static int rp1vec_connector_atomic_check(struct drm_connector *conn,
+@@ -396,7 +363,6 @@ static int rp1vec_platform_probe(struct
+ 	struct device *dev = &pdev->dev;
+ 	struct drm_device *drm;
+ 	struct rp1_vec *vec;
+-	const char *str;
+ 	int i, ret;
+ 
+ 	dev_info(dev, __func__);
+@@ -419,10 +385,6 @@ static int rp1vec_platform_probe(struct
+ 	drm->dev_private = vec;
+ 	platform_set_drvdata(pdev, drm);
+ 
+-	str = rp1vec_tv_norm_str;
+-	of_property_read_string(dev->of_node, "tv_norm", &str);
+-	vec->tv_norm = rp1vec_parse_tv_norm(str);
+-
+ 	for (i = 0; i < RP1VEC_NUM_HW_BLOCKS; i++) {
+ 		vec->hw_base[i] =
+ 			devm_ioremap_resource(dev,
+@@ -463,9 +425,7 @@ static int rp1vec_platform_probe(struct
+ 	drm->mode_config.funcs = &rp1vec_mode_funcs;
+ 	drm_vblank_init(drm, 1);
+ 
+-	ret = drm_mode_create_tv_properties_legacy(drm,
+-						   ARRAY_SIZE(rp1vec_tvstd_names),
+-						   rp1vec_tvstd_names);
++	ret = drm_mode_create_tv_properties(drm, RP1VEC_SUPPORTED_TV_MODES);
+ 	if (ret)
+ 		goto err_free_drm;
+ 
+@@ -479,7 +439,9 @@ static int rp1vec_platform_probe(struct
+ 
+ 	drm_object_attach_property(&vec->connector.base,
+ 				   drm->mode_config.tv_mode_property,
+-				   vec->tv_norm);
++				   (vec->connector.cmdline_mode.tv_mode_specified) ?
++					   vec->connector.cmdline_mode.tv_mode :
++					   DRM_MODE_TV_MODE_NTSC);
+ 
+ 	ret = drm_simple_display_pipe_init(drm,
+ 					   &vec->pipe,
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h
+@@ -20,20 +20,13 @@
+ #define RP1VEC_HW_BLOCK_CFG   1
+ #define RP1VEC_NUM_HW_BLOCKS  2
+ 
+-enum {
+-	RP1VEC_TVSTD_NTSC = 0,	/* +525 => NTSC       625 => PAL   */
+-	RP1VEC_TVSTD_NTSC_J,	/* +525 => NTSC-J     625 => PAL   */
+-	RP1VEC_TVSTD_NTSC_443,	/* +525 => NTSC-443  +625 => PAL   */
+-	RP1VEC_TVSTD_PAL,	/*  525 => NTSC      +625 => PAL   */
+-	RP1VEC_TVSTD_PAL_M,	/* +525 => PAL-M      625 => PAL   */
+-	RP1VEC_TVSTD_PAL_N,	/*  525 => NTSC      +625 => PAL-N */
+-	RP1VEC_TVSTD_PAL60,	/* +525 => PAL60     +625 => PAL   */
+-	RP1VEC_TVSTD_DEFAULT,	/* +525 => NTSC      +625 => PAL   */
+-};
+-
+-/* Which standards support which modes? Those marked with + above */
+-#define RP1VEC_TVSTD_SUPPORT_525(n) ((0xD7 >> (n)) & 1)
+-#define RP1VEC_TVSTD_SUPPORT_625(n) ((0xEC >> (n)) & 1)
++#define RP1VEC_SUPPORTED_TV_MODES	  \
++	(BIT(DRM_MODE_TV_MODE_NTSC)     | \
++	 BIT(DRM_MODE_TV_MODE_NTSC_443) | \
++	 BIT(DRM_MODE_TV_MODE_NTSC_J)   | \
++	 BIT(DRM_MODE_TV_MODE_PAL)      | \
++	 BIT(DRM_MODE_TV_MODE_PAL_M)    | \
++	 BIT(DRM_MODE_TV_MODE_PAL_N))
+ 
+ /* ---------------------------------------------------------------------- */
+ 
+@@ -52,13 +45,10 @@ struct rp1_vec {
+ 	/* Block (VCC, CFG) base addresses, and current state */
+ 	void __iomem *hw_base[RP1VEC_NUM_HW_BLOCKS];
+ 	u32 cur_fmt;
+-	int tv_norm;
+ 	bool vec_running, pipe_enabled;
+ 	struct completion finished;
+ };
+ 
+-extern const char * const rp1vec_tvstd_names[];
+-
+ /* ---------------------------------------------------------------------- */
+ /* Functions to control the VEC/DMA block				  */
+ 
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c
+@@ -337,16 +337,17 @@ void rp1vec_hw_setup(struct rp1_vec *vec
+ 	mode_ilaced = !!(mode->flags & DRM_MODE_FLAG_INTERLACE);
+ 	if (mode->vtotal >= 272 * (1 + mode_ilaced))
+ 		mode_family = 1;
++	else if (tvstd == DRM_MODE_TV_MODE_PAL_M || tvstd == DRM_MODE_TV_MODE_PAL)
++		mode_family = 2;
+ 	else
+-		mode_family = (tvstd == RP1VEC_TVSTD_PAL_M || tvstd == RP1VEC_TVSTD_PAL60) ? 2 : 0;
++		mode_family = 0;
+ 	mode_narrow = (mode->clock >= 14336);
+ 	hwm = &rp1vec_hwmodes[mode_family][mode_ilaced][mode_narrow];
+ 	dev_info(&vec->pdev->dev,
+-		 "%s: in_fmt=\'%c%c%c%c\' mode=%dx%d%s [%d%d%d] tvstd=%d (%s)",
++		 "%s: in_fmt=\'%c%c%c%c\' mode=%dx%d%s [%d%d%d] tvstd=%d",
+ 		__func__, in_format, in_format >> 8, in_format >> 16, in_format >> 24,
+ 		mode->hdisplay, mode->vdisplay, (mode_ilaced) ? "i" : "",
+-		mode_family, mode_ilaced, mode_narrow,
+-		tvstd, rp1vec_tvstd_names[tvstd]);
++		mode_family, mode_ilaced, mode_narrow, tvstd);
+ 
+ 	w = mode->hdisplay;
+ 	h = mode->vdisplay >> mode_ilaced;
+@@ -405,7 +406,7 @@ void rp1vec_hw_setup(struct rp1_vec *vec
+ 	}
+ 
+ 	/* Apply modifications */
+-	if (tvstd == RP1VEC_TVSTD_NTSC_J && mode_family == 0) {
++	if (tvstd == DRM_MODE_TV_MODE_NTSC_J && mode_family == 0) {
+ 		/* Reduce pedestal (not quite to zero, for FIR overshoot); increase gain */
+ 		VEC_WRITE(VEC_DAC_BC,
+ 			  BITS(VEC_DAC_BC_S11_PEDESTAL, 10) |
+@@ -414,14 +415,14 @@ void rp1vec_hw_setup(struct rp1_vec *vec
+ 			  BITS(VEC_DAC_C8_U16_SCALE_LUMA, 0x9400) |
+ 			  (hwm->back_end_regs[(0xC8 - 0x80) / 4] &
+ 							~VEC_DAC_C8_U16_SCALE_LUMA_BITS));
+-	} else if ((tvstd == RP1VEC_TVSTD_NTSC_443 || tvstd == RP1VEC_TVSTD_PAL60) &&
++	} else if ((tvstd == DRM_MODE_TV_MODE_NTSC_443 || tvstd == DRM_MODE_TV_MODE_PAL) &&
+ 		   mode_family != 1) {
+ 		/* Change colour carrier frequency to 4433618.75 Hz; disable hard sync */
+ 		VEC_WRITE(VEC_DAC_D4, 0xcc48c1d1);
+ 		VEC_WRITE(VEC_DAC_D8, 0x0a8262b2);
+ 		VEC_WRITE(VEC_DAC_EC,
+ 			  hwm->back_end_regs[(0xEC - 0x80) / 4] & ~VEC_DAC_EC_SEQ_EN_BITS);
+-	} else if (tvstd == RP1VEC_TVSTD_PAL_N && mode_family == 1) {
++	} else if (tvstd == DRM_MODE_TV_MODE_PAL_N && mode_family == 1) {
+ 		/* Change colour carrier frequency to 3582056.25 Hz */
+ 		VEC_WRITE(VEC_DAC_D4, 0x9ce075f7);
+ 		VEC_WRITE(VEC_DAC_D8, 0x087da511);

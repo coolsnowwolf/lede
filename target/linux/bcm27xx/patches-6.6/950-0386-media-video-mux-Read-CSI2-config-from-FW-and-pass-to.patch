@@ -1,0 +1,159 @@
+From 04a0aa6bc230d50a393db7bf4449ddb0c4813212 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 29 Jul 2022 17:46:49 +0100
+Subject: [PATCH 0386/1085] media: video-mux: Read CSI2 config from FW, and
+ pass to receiver
+
+There is no obligation for all source devices on a video-mux to
+require the same bus configuration, so read the configuration
+from the sink ports, and relay via get_mbus_config on the source
+port.
+If the sources support get_mbus_config, then call that first.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/platform/video-mux.c | 73 ++++++++++++++++++++++++++++--
+ 1 file changed, 69 insertions(+), 4 deletions(-)
+
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -20,10 +20,27 @@
+ #include <media/v4l2-mc.h>
+ #include <media/v4l2-subdev.h>
+ 
++struct video_mux_asd {
++	struct v4l2_async_connection base;
++	unsigned int port;
++};
++
++static inline struct video_mux_asd *to_video_mux_asd(struct v4l2_async_connection *asd)
++{
++	return container_of(asd, struct video_mux_asd, base);
++}
++
++struct video_mux_pad_cfg {
++	unsigned int num_lanes;
++	bool non_continuous;
++	struct v4l2_subdev *source;
++};
++
+ struct video_mux {
+ 	struct v4l2_subdev subdev;
+ 	struct v4l2_async_notifier notifier;
+ 	struct media_pad *pads;
++	struct video_mux_pad_cfg *cfg;
+ 	struct mux_control *mux;
+ 	struct mutex lock;
+ 	int active;
+@@ -301,10 +318,34 @@ static int video_mux_init_cfg(struct v4l
+ 	return 0;
+ }
+ 
++static int video_mux_get_mbus_config(struct v4l2_subdev *sd,
++				     unsigned int pad,
++				     struct v4l2_mbus_config *cfg)
++{
++	struct video_mux *vmux = v4l2_subdev_to_video_mux(sd);
++	int ret;
++
++	ret = v4l2_subdev_call(vmux->cfg[vmux->active].source, pad, get_mbus_config,
++			       0, cfg);
++
++	if (ret != -ENOIOCTLCMD)
++		return ret;
++
++	cfg->type = V4L2_MBUS_CSI2_DPHY;
++	cfg->bus.mipi_csi2.num_data_lanes = vmux->cfg[vmux->active].num_lanes;
++
++	/* Support for non-continuous CSI-2 clock is missing in pdate mode */
++	if (vmux->cfg[vmux->active].non_continuous)
++		cfg->bus.mipi_csi2.flags |= V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK;
++
++	return 0;
++};
++
+ static const struct v4l2_subdev_pad_ops video_mux_pad_ops = {
+ 	.init_cfg = video_mux_init_cfg,
+ 	.get_fmt = v4l2_subdev_get_fmt,
+ 	.set_fmt = video_mux_set_format,
++	.get_mbus_config = video_mux_get_mbus_config,
+ };
+ 
+ static const struct v4l2_subdev_ops video_mux_subdev_ops = {
+@@ -317,6 +358,9 @@ static int video_mux_notify_bound(struct
+ 				  struct v4l2_async_connection *asd)
+ {
+ 	struct video_mux *vmux = notifier_to_video_mux(notifier);
++	unsigned int port = to_video_mux_asd(asd)->port;
++
++	vmux->cfg[port].source = sd;
+ 
+ 	return v4l2_create_fwnode_links(sd, &vmux->subdev);
+ }
+@@ -334,7 +378,7 @@ static int video_mux_async_register(stru
+ 	v4l2_async_subdev_nf_init(&vmux->notifier, &vmux->subdev);
+ 
+ 	for (i = 0; i < num_input_pads; i++) {
+-		struct v4l2_async_connection *asd;
++		struct video_mux_asd *asd;
+ 		struct fwnode_handle *ep, *remote_ep;
+ 
+ 		ep = fwnode_graph_get_endpoint_by_id(
+@@ -352,8 +396,7 @@ static int video_mux_async_register(stru
+ 		fwnode_handle_put(remote_ep);
+ 
+ 		asd = v4l2_async_nf_add_fwnode_remote(&vmux->notifier, ep,
+-						      struct v4l2_async_connection);
+-
++						      struct video_mux_asd);
+ 		fwnode_handle_put(ep);
+ 
+ 		if (IS_ERR(asd)) {
+@@ -362,6 +405,8 @@ static int video_mux_async_register(stru
+ 			if (ret != -EEXIST)
+ 				goto err_nf_cleanup;
+ 		}
++
++		asd->port = i;
+ 	}
+ 
+ 	vmux->notifier.ops = &video_mux_notify_ops;
+@@ -387,6 +432,9 @@ static int video_mux_probe(struct platfo
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct device *dev = &pdev->dev;
++	struct v4l2_fwnode_endpoint fwnode_ep = {
++		.bus_type = V4L2_MBUS_CSI2_DPHY
++	};
+ 	struct device_node *ep;
+ 	struct video_mux *vmux;
+ 	unsigned int num_pads = 0;
+@@ -433,10 +481,27 @@ static int video_mux_probe(struct platfo
+ 	if (!vmux->pads)
+ 		return -ENOMEM;
+ 
+-	for (i = 0; i < num_pads; i++)
++	vmux->cfg = devm_kcalloc(dev, num_pads, sizeof(*vmux->cfg), GFP_KERNEL);
++	if (!vmux->cfg)
++		return -ENOMEM;
++
++	for (i = 0; i < num_pads; i++) {
+ 		vmux->pads[i].flags = (i < num_pads - 1) ? MEDIA_PAD_FL_SINK
+ 							 : MEDIA_PAD_FL_SOURCE;
+ 
++		ep = of_graph_get_endpoint_by_regs(pdev->dev.of_node, i, 0);
++		if (ep) {
++			ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep), &fwnode_ep);
++			if (!ret) {
++				/* Get number of data lanes */
++				vmux->cfg[i].num_lanes = fwnode_ep.bus.mipi_csi2.num_data_lanes;
++				vmux->cfg[i].non_continuous = fwnode_ep.bus.mipi_csi2.flags &
++							V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK;
++			}
++			of_node_put(ep);
++		}
++	}
++
+ 	vmux->subdev.entity.function = MEDIA_ENT_F_VID_MUX;
+ 	ret = media_entity_pads_init(&vmux->subdev.entity, num_pads,
+ 				     vmux->pads);

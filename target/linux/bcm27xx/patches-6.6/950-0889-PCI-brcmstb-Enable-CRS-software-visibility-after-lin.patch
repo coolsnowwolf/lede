@@ -1,0 +1,49 @@
+From db92246eeab5c5e3d42baac8da32c7d2e38238ef Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 24 Jan 2024 13:55:45 +0000
+Subject: [PATCH 0889/1085] PCI: brcmstb: Enable CRS software visibility after
+ linkup
+
+It appears that bits in the Root Control Register are reset with
+perst_n, which means the PCI layer's call to enable CRS prior to
+adding/scanning the bus has no effect. Open-code the enable in
+brcm_pcie_start_link as a workaround.
+
+Without CRS visibility, configuration reads issued by the CPU don't
+retire if the endpoint returns a CRS response - the RC will poll until a
+(large) timeout is reached. This means the core can stall for a long
+time during boot.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/pci/controller/pcie-brcmstb.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+--- a/drivers/pci/controller/pcie-brcmstb.c
++++ b/drivers/pci/controller/pcie-brcmstb.c
+@@ -1385,7 +1385,7 @@ static int brcm_pcie_start_link(struct b
+ {
+ 	struct device *dev = pcie->dev;
+ 	void __iomem *base = pcie->base;
+-	u16 nlw, cls, lnksta;
++	u16 nlw, cls, lnksta, tmp16;
+ 	bool ssc_good = false;
+ 	int ret, i;
+ 	u32 tmp;
+@@ -1449,6 +1449,16 @@ static int brcm_pcie_start_link(struct b
+ 		 pci_speed_string(pcie_link_speed[cls]), nlw,
+ 		 ssc_good ? "(SSC)" : "(!SSC)");
+ 
++	/*
++	 * RootCtl bits are reset by perst_n, which undoes pci_enable_crs()
++	 * called prior to pci_add_new_bus() during probe. Re-enable here.
++	 */
++	tmp16 = readw(base + BRCM_PCIE_CAP_REGS + PCI_EXP_RTCAP);
++	if (tmp16 & PCI_EXP_RTCAP_CRSVIS) {
++		tmp16 = readw(base + BRCM_PCIE_CAP_REGS + PCI_EXP_RTCTL);
++		u16p_replace_bits(&tmp16, 1, PCI_EXP_RTCTL_CRSSVE);
++		writew(tmp16, base + BRCM_PCIE_CAP_REGS + PCI_EXP_RTCTL);
++	}
+ 	return 0;
+ }
+ 

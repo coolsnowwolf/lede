@@ -27,7 +27,7 @@ define KernelPackage/codec-bcm2835
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-codec/bcm2835-codec.ko
   AUTOLOAD:=$(call AutoLoad,67,bcm2835-codec)
-  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-dma +kmod-video-mem2mem)
+  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-dma-contig +kmod-video-mem2mem)
 endef
 
 define KernelPackage/codec-bcm2835/description
@@ -72,7 +72,7 @@ define KernelPackage/isp-bcm2835
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-isp/bcm2835-isp.ko
   AUTOLOAD:=$(call AutoLoad,67,bcm2835-isp)
-  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-dma)
+  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-dma-contig)
 endef
 
 define KernelPackage/isp-bcm2835/description

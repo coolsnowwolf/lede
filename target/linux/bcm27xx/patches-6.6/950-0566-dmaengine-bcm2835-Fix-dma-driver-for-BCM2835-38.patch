@@ -1,0 +1,77 @@
+From c4a150395456251faafdb3aa8d726db7b1c74d17 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 24 May 2023 19:32:16 +0100
+Subject: [PATCH 0566/1085] dmaengine: bcm2835: Fix dma driver for BCM2835-38
+
+The previous commit broke support on older devices.
+Make the breaking parts of patch conditional on
+the device being used.
+
+Fixes: 6e1856ac7c39 ("dmaengine: bcm2835: HACK: Support DMA-Lite channels")
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/dma/bcm2835-dma.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+--- a/drivers/dma/bcm2835-dma.c
++++ b/drivers/dma/bcm2835-dma.c
+@@ -102,6 +102,7 @@ struct bcm2835_chan {
+ 
+ 	bool is_lite_channel;
+ 	bool is_40bit_channel;
++	bool is_2712;
+ };
+ 
+ struct bcm2835_desc {
+@@ -550,7 +551,11 @@ static struct bcm2835_desc *bcm2835_dma_
+ 			control_block->info = info;
+ 			control_block->src = src;
+ 			control_block->dst = dst;
+-			control_block->stride = (upper_32_bits(dst) << 8) | upper_32_bits(src);
++			if (c->is_2712)
++				control_block->stride = (upper_32_bits(dst) << 8) |
++							upper_32_bits(src);
++			else
++				control_block->stride = 0;
+ 			control_block->next = 0;
+ 		}
+ 
+@@ -575,7 +580,8 @@ static struct bcm2835_desc *bcm2835_dma_
+ 			 d->cb_list[frame - 1].cb)->next_cb =
+ 				to_40bit_cbaddr(cb_entry->paddr);
+ 		if (frame && !c->is_40bit_channel)
+-			d->cb_list[frame - 1].cb->next = to_40bit_cbaddr(cb_entry->paddr);
++			d->cb_list[frame - 1].cb->next = c->is_2712 ?
++			to_40bit_cbaddr(cb_entry->paddr) : cb_entry->paddr;
+ 
+ 		/* update src and dst and length */
+ 		if (src && (info & BCM2835_DMA_S_INC)) {
+@@ -762,7 +768,7 @@ static void bcm2835_dma_start_desc(struc
+ 	} else {
+ 		writel(BIT(31), c->chan_base + BCM2835_DMA_CS);
+ 
+-		writel(to_40bit_cbaddr(d->cb_list[0].paddr),
++		writel(c->is_2712 ? to_40bit_cbaddr(d->cb_list[0].paddr) : d->cb_list[0].paddr,
+ 		       c->chan_base + BCM2835_DMA_ADDR);
+ 		writel(BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(c->dreq),
+ 		       c->chan_base + BCM2835_DMA_CS);
+@@ -1132,7 +1138,8 @@ static struct dma_async_tx_descriptor *b
+ 		 d->cb_list[frames - 1].cb)->next_cb =
+ 			to_40bit_cbaddr(d->cb_list[0].paddr);
+ 	else
+-		d->cb_list[d->frames - 1].cb->next = to_40bit_cbaddr(d->cb_list[0].paddr);
++		d->cb_list[d->frames - 1].cb->next = c->is_2712 ?
++		to_40bit_cbaddr(d->cb_list[0].paddr) : d->cb_list[0].paddr;
+ 
+ 	return vchan_tx_prep(&c->vc, &d->vd, flags);
+ }
+@@ -1199,6 +1206,8 @@ static int bcm2835_dma_chan_init(struct
+ 	else if (readl(c->chan_base + BCM2835_DMA_DEBUG) &
+ 		 BCM2835_DMA_DEBUG_LITE)
+ 		c->is_lite_channel = true;
++	if (d->cfg_data->dma_mask == DMA_BIT_MASK(40))
++		c->is_2712 = true;
+ 
+ 	return 0;
+ }

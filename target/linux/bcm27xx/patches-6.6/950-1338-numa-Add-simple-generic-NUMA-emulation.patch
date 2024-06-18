@@ -1,0 +1,182 @@
+From b1a0f9c705912ec0434645f2d2bcf914c635564d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Fri, 17 May 2024 11:40:23 -0300
+Subject: [PATCH 1338/1350] numa: Add simple generic NUMA emulation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add some common code for splitting the memory into N emulated NUMA memory
+nodes.
+
+Individual architecture can then enable selecting this option and use the
+existing numa=fake=<N> kernel argument to enable it.
+
+Memory is always split into equally sized chunks.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+Co-developed-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Signed-off-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Cc: Catalin Marinas <catalin.marinas@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Cc: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+Cc: “Rafael J. Wysocki" <rafael@kernel.org>
+---
+ drivers/base/Kconfig          |  7 ++++
+ drivers/base/Makefile         |  1 +
+ drivers/base/arch_numa.c      |  6 ++++
+ drivers/base/numa_emulation.c | 67 +++++++++++++++++++++++++++++++++++
+ drivers/base/numa_emulation.h | 21 +++++++++++
+ 5 files changed, 102 insertions(+)
+ create mode 100644 drivers/base/numa_emulation.c
+ create mode 100644 drivers/base/numa_emulation.h
+
+--- a/drivers/base/Kconfig
++++ b/drivers/base/Kconfig
+@@ -230,6 +230,13 @@ config GENERIC_ARCH_NUMA
+ 	  Enable support for generic NUMA implementation. Currently, RISC-V
+ 	  and ARM64 use it.
+ 
++config GENERIC_ARCH_NUMA_EMULATION
++	bool
++	depends on GENERIC_ARCH_NUMA
++	help
++	  Enable NUMA emulation. Note that NUMA emulation will only be used if
++	  the machine has no NUMA node.
++
+ config FW_DEVLINK_SYNC_STATE_TIMEOUT
+ 	bool "sync_state() behavior defaults to timeout instead of strict"
+ 	help
+--- a/drivers/base/Makefile
++++ b/drivers/base/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_DEV_COREDUMP) += devcoredum
+ obj-$(CONFIG_GENERIC_MSI_IRQ) += platform-msi.o
+ obj-$(CONFIG_GENERIC_ARCH_TOPOLOGY) += arch_topology.o
+ obj-$(CONFIG_GENERIC_ARCH_NUMA) += arch_numa.o
++obj-$(CONFIG_GENERIC_ARCH_NUMA_EMULATION) += numa_emulation.o
+ obj-$(CONFIG_ACPI) += physical_location.o
+ 
+ obj-y			+= test/
+--- a/drivers/base/arch_numa.c
++++ b/drivers/base/arch_numa.c
+@@ -15,6 +15,8 @@
+ 
+ #include <asm/sections.h>
+ 
++#include "numa_emulation.h"
++
+ struct pglist_data *node_data[MAX_NUMNODES] __read_mostly;
+ EXPORT_SYMBOL(node_data);
+ nodemask_t numa_nodes_parsed __initdata;
+@@ -30,6 +32,8 @@ static __init int numa_parse_early_param
+ 		return -EINVAL;
+ 	if (str_has_prefix(opt, "off"))
+ 		numa_off = true;
++	if (str_has_prefix(opt, "fake="))
++		return numa_emu_cmdline(opt + 5);
+ 
+ 	return 0;
+ }
+@@ -471,6 +475,8 @@ void __init arch_numa_init(void)
+ 			return;
+ 		if (acpi_disabled && !numa_init(of_numa_init))
+ 			return;
++		if (!numa_init(numa_emu_init))
++			return;
+ 	}
+ 
+ 	numa_init(dummy_numa_init);
+--- /dev/null
++++ b/drivers/base/numa_emulation.c
+@@ -0,0 +1,67 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Simple NUMA emulation.
++ *
++ * Copyright © 2024 Raspberry Pi Ltd
++ *
++ * Author: Maíra Canal <mcanal@igalia.com>
++ * Author: Tvrtko Ursulin <tursulin@igalia.com>
++ */
++#include <linux/memblock.h>
++
++#include "numa_emulation.h"
++
++static unsigned int emu_nodes;
++
++int __init numa_emu_cmdline(char *str)
++{
++	int ret;
++
++	ret = kstrtouint(str, 10, &emu_nodes);
++	if (ret)
++		return ret;
++
++	if (emu_nodes > MAX_NUMNODES) {
++		pr_notice("numa=fake=%u too large, reducing to %u\n",
++			  emu_nodes, MAX_NUMNODES);
++		emu_nodes = MAX_NUMNODES;
++	}
++
++	return 0;
++}
++
++int __init numa_emu_init(void)
++{
++	phys_addr_t start, end;
++	unsigned long size;
++	unsigned int i;
++	int ret;
++
++	if (!emu_nodes)
++		return -EINVAL;
++
++	start = memblock_start_of_DRAM();
++	end = memblock_end_of_DRAM() - 1;
++
++	size = DIV_ROUND_DOWN_ULL(end - start + 1, emu_nodes);
++	size = PAGE_ALIGN_DOWN(size);
++
++	for (i = 0; i < emu_nodes; i++) {
++		u64 s, e;
++
++		s = start + i * size;
++		e = s + size - 1;
++
++		if (i == (emu_nodes - 1) && e != end)
++			e = end;
++
++		pr_info("Faking a node at [mem %pap-%pap]\n", &s, &e);
++		ret = numa_add_memblk(i, s, e + 1);
++		if (ret) {
++			pr_err("Failed to add fake NUMA node %d!\n", i);
++			break;
++		}
++	}
++
++	return ret;
++}
+--- /dev/null
++++ b/drivers/base/numa_emulation.h
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * NUMA emulation header
++ *
++ * Copyright © 2024 Raspberry Pi Ltd
++ */
++
++#ifdef CONFIG_GENERIC_ARCH_NUMA_EMULATION
++int numa_emu_cmdline(char *str);
++int __init numa_emu_init(void);
++#else
++static inline int numa_emu_cmdline(char *str)
++{
++	return -EINVAL;
++}
++
++static int __init numa_emu_init(void)
++{
++	return -EOPNOTSUPP;
++}
++#endif /* CONFIG_NUMA_EMU */

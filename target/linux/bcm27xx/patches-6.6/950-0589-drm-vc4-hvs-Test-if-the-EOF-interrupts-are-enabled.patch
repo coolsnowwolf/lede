@@ -1,0 +1,101 @@
+From d4c16b547686eafb0a1231ecbb05978c29e8a631 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 27 Apr 2023 13:46:53 +0200
+Subject: [PATCH 0589/1085] drm/vc4: hvs: Test if the EOF interrupts are
+ enabled
+
+We currently enable the EOF interrupts through the CRTC destroy_state
+implementation.
+
+However, nothing guarantees that we can't call destroy_state multiple
+times in a row, and therefore before the EOF interrupt even happens.
+
+This means we would enable the interrupt multiple times but disable it
+only once. It wasn't an issue so far since the interrupts were only
+enabled by setting a bit in a register, but with BCM2712 we will use an
+external interrupt controller, with a refcounted interrupt.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h |  8 ++++++--
+ drivers/gpu/drm/vc4/vc4_hvs.c | 14 ++++++++++++--
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -319,6 +319,8 @@ struct vc4_v3d {
+ 	struct debugfs_regset32 regset;
+ };
+ 
++#define HVS_NUM_CHANNELS 3
++
+ struct vc4_hvs {
+ 	struct vc4_dev *vc4;
+ 	struct platform_device *pdev;
+@@ -327,6 +329,10 @@ struct vc4_hvs {
+ 
+ 	struct clk *core_clk;
+ 
++	struct {
++		unsigned int enabled: 1;
++	} eof_irq[HVS_NUM_CHANNELS];
++
+ 	unsigned long max_core_rate;
+ 
+ 	/* Memory manager for CRTCs to allocate space in the display
+@@ -359,8 +365,6 @@ struct vc4_hvs {
+ 	bool vc5_hdmi_enable_4096by2160;
+ };
+ 
+-#define HVS_NUM_CHANNELS 3
+-
+ struct vc4_hvs_state {
+ 	struct drm_private_state base;
+ 	unsigned long core_clock_rate;
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -412,11 +412,14 @@ static void vc5_hvs_update_gamma_lut(str
+ 	vc5_hvs_lut_load(hvs, vc4_crtc);
+ }
+ 
+-static void vc4_hvs_irq_enable_eof(const struct vc4_hvs *hvs,
++static void vc4_hvs_irq_enable_eof(struct vc4_hvs *hvs,
+ 				   unsigned int channel)
+ {
+ 	struct vc4_dev *vc4 = hvs->vc4;
+ 
++	if (hvs->eof_irq[channel].enabled)
++		return;
++
+ 	switch (vc4->gen) {
+ 	case VC4_GEN_4:
+ 		HVS_WRITE(SCALER_DISPCTRL,
+@@ -433,13 +436,18 @@ static void vc4_hvs_irq_enable_eof(const
+ 	default:
+ 		break;
+ 	}
++
++	hvs->eof_irq[channel].enabled = true;
+ }
+ 
+-static void vc4_hvs_irq_clear_eof(const struct vc4_hvs *hvs,
++static void vc4_hvs_irq_clear_eof(struct vc4_hvs *hvs,
+ 				  unsigned int channel)
+ {
+ 	struct vc4_dev *vc4 = hvs->vc4;
+ 
++	if (!hvs->eof_irq[channel].enabled)
++		return;
++
+ 	switch (vc4->gen) {
+ 	case VC4_GEN_4:
+ 		HVS_WRITE(SCALER_DISPCTRL,
+@@ -456,6 +464,8 @@ static void vc4_hvs_irq_clear_eof(const
+ 	default:
+ 		break;
+ 	}
++
++	hvs->eof_irq[channel].enabled = false;
+ }
+ 
+ static struct vc4_hvs_dlist_allocation *

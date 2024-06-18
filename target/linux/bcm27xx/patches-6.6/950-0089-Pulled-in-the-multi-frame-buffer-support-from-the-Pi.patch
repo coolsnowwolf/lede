@@ -1,0 +1,778 @@
+From 63fb0fcc095dcca2e3f8d801b3a8d48bee343e81 Mon Sep 17 00:00:00 2001
+From: James Hughes <james.hughes@raspberrypi.org>
+Date: Thu, 14 Mar 2019 13:27:54 +0000
+Subject: [PATCH 0089/1085] Pulled in the multi frame buffer support from the
+ Pi3 repo
+
+---
+ drivers/video/fbdev/bcm2708_fb.c | 457 ++++++++++++++++++++++---------
+ 1 file changed, 324 insertions(+), 133 deletions(-)
+
+--- a/drivers/video/fbdev/bcm2708_fb.c
++++ b/drivers/video/fbdev/bcm2708_fb.c
+@@ -2,6 +2,7 @@
+  *  linux/drivers/video/bcm2708_fb.c
+  *
+  * Copyright (C) 2010 Broadcom
++ * Copyright (C) 2018 Raspberry Pi (Trading) Ltd
+  *
+  * This file is subject to the terms and conditions of the GNU General Public
+  * License.  See the file COPYING in the main directory of this archive
+@@ -13,6 +14,7 @@
+  * Copyright 1999-2001 Jeff Garzik <jgarzik@pobox.com>
+  *
+  */
++
+ #include <linux/module.h>
+ #include <linux/kernel.h>
+ #include <linux/errno.h>
+@@ -33,6 +35,7 @@
+ #include <linux/io.h>
+ #include <linux/dma-mapping.h>
+ #include <soc/bcm2835/raspberrypi-firmware.h>
++#include <linux/mutex.h>
+ 
+ //#define BCM2708_FB_DEBUG
+ #define MODULE_NAME "bcm2708_fb"
+@@ -79,64 +82,150 @@ struct bcm2708_fb_stats {
+ 	u32 dma_irqs;
+ };
+ 
++struct vc4_display_settings_t {
++	u32 display_num;
++	u32 width;
++	u32 height;
++	u32 depth;
++	u32 pitch;
++	u32 virtual_width;
++	u32 virtual_height;
++	u32 virtual_width_offset;
++	u32 virtual_height_offset;
++	unsigned long fb_bus_address;
++};
++
++struct bcm2708_fb_dev;
++
+ struct bcm2708_fb {
+ 	struct fb_info fb;
+ 	struct platform_device *dev;
+-	struct rpi_firmware *fw;
+ 	u32 cmap[16];
+ 	u32 gpu_cmap[256];
+-	int dma_chan;
+-	int dma_irq;
+-	void __iomem *dma_chan_base;
+-	void *cb_base;		/* DMA control blocks */
+-	dma_addr_t cb_handle;
+ 	struct dentry *debugfs_dir;
+-	wait_queue_head_t dma_waitq;
+-	struct bcm2708_fb_stats stats;
++	struct dentry *debugfs_subdir;
+ 	unsigned long fb_bus_address;
+-	bool disable_arm_alloc;
++	struct { u32 base, length; } gpu;
++	struct vc4_display_settings_t display_settings;
++	struct debugfs_regset32 screeninfo_regset;
++	struct bcm2708_fb_dev *fbdev;
+ 	unsigned int image_size;
+ 	dma_addr_t dma_addr;
+ 	void *cpuaddr;
+ };
+ 
++#define MAX_FRAMEBUFFERS 3
++
++struct bcm2708_fb_dev {
++	int firmware_supports_multifb;
++	/* Protects the DMA system from multiple FB access */
++	struct mutex dma_mutex;
++	int dma_chan;
++	int dma_irq;
++	void __iomem *dma_chan_base;
++	wait_queue_head_t dma_waitq;
++	bool disable_arm_alloc;
++	struct bcm2708_fb_stats dma_stats;
++	void *cb_base;	/* DMA control blocks */
++	dma_addr_t cb_handle;
++	int instance_count;
++	int num_displays;
++	struct rpi_firmware *fw;
++	struct bcm2708_fb displays[MAX_FRAMEBUFFERS];
++};
++
+ #define to_bcm2708(info)	container_of(info, struct bcm2708_fb, fb)
+ 
+ static void bcm2708_fb_debugfs_deinit(struct bcm2708_fb *fb)
+ {
+-	debugfs_remove_recursive(fb->debugfs_dir);
+-	fb->debugfs_dir = NULL;
++	debugfs_remove_recursive(fb->debugfs_subdir);
++	fb->debugfs_subdir = NULL;
++
++	fb->fbdev->instance_count--;
++
++	if (!fb->fbdev->instance_count) {
++		debugfs_remove_recursive(fb->debugfs_dir);
++		fb->debugfs_dir = NULL;
++	}
+ }
+ 
+ static int bcm2708_fb_debugfs_init(struct bcm2708_fb *fb)
+ {
++	char buf[3];
++	struct bcm2708_fb_dev *fbdev = fb->fbdev;
++
+ 	static struct debugfs_reg32 stats_registers[] = {
+-		{
+-			"dma_copies",
+-			offsetof(struct bcm2708_fb_stats, dma_copies)
+-		},
+-		{
+-			"dma_irqs",
+-			offsetof(struct bcm2708_fb_stats, dma_irqs)
+-		},
++	{"dma_copies", offsetof(struct bcm2708_fb_stats, dma_copies)},
++	{"dma_irqs",   offsetof(struct bcm2708_fb_stats, dma_irqs)},
+ 	};
+ 
+-	fb->debugfs_dir = debugfs_create_dir(DRIVER_NAME, NULL);
++	static struct debugfs_reg32 screeninfo[] = {
++	{"width",	 offsetof(struct fb_var_screeninfo, xres)},
++	{"height",	 offsetof(struct fb_var_screeninfo, yres)},
++	{"bpp",		 offsetof(struct fb_var_screeninfo, bits_per_pixel)},
++	{"xres_virtual", offsetof(struct fb_var_screeninfo, xres_virtual)},
++	{"yres_virtual", offsetof(struct fb_var_screeninfo, yres_virtual)},
++	{"xoffset",	 offsetof(struct fb_var_screeninfo, xoffset)},
++	{"yoffset",	 offsetof(struct fb_var_screeninfo, yoffset)},
++	};
++
++	fb->debugfs_dir = debugfs_lookup(DRIVER_NAME, NULL);
++
++	if (!fb->debugfs_dir)
++		fb->debugfs_dir = debugfs_create_dir(DRIVER_NAME, NULL);
++
+ 	if (!fb->debugfs_dir) {
+-		pr_warn("%s: could not create debugfs entry\n",
+-			__func__);
++		dev_warn(fb->fb.dev, "%s: could not create debugfs folder\n",
++			 __func__);
+ 		return -EFAULT;
+ 	}
+ 
+-	fb->stats.regset.regs = stats_registers;
+-	fb->stats.regset.nregs = ARRAY_SIZE(stats_registers);
+-	fb->stats.regset.base = &fb->stats;
++	snprintf(buf, sizeof(buf), "%u", fb->display_settings.display_num);
++
++	fb->debugfs_subdir = debugfs_create_dir(buf, fb->debugfs_dir);
+ 
+ 	debugfs_create_regset32("stats", 0444, fb->debugfs_dir,
+ 				&fb->stats.regset);
++
++	if (!fb->debugfs_subdir) {
++		dev_warn(fb->fb.dev, "%s: could not create debugfs entry %u\n",
++			 __func__, fb->display_settings.display_num);
++		return -EFAULT;
++	}
++
++	fbdev->dma_stats.regset.regs = stats_registers;
++	fbdev->dma_stats.regset.nregs = ARRAY_SIZE(stats_registers);
++	fbdev->dma_stats.regset.base = &fbdev->dma_stats;
++
++	debugfs_create_regset32("dma_stats", 0444, fb->debugfs_subdir,
++				&fbdev->dma_stats.regset);
++
++	fb->screeninfo_regset.regs = screeninfo;
++	fb->screeninfo_regset.nregs = ARRAY_SIZE(screeninfo);
++	fb->screeninfo_regset.base = &fb->fb.var;
++
++	debugfs_create_regset32("screeninfo", 0444, fb->debugfs_subdir,
++				&fb->screeninfo_regset);
++
++	fbdev->instance_count++;
++
+ 	return 0;
+ }
+ 
++static void set_display_num(struct bcm2708_fb *fb)
++{
++	if (fb && fb->fbdev && fb->fbdev->firmware_supports_multifb) {
++		u32 tmp = fb->display_settings.display_num;
++
++		if (rpi_firmware_property(fb->fbdev->fw,
++					  RPI_FIRMWARE_FRAMEBUFFER_SET_DISPLAY_NUM,
++					  &tmp,
++					  sizeof(tmp)))
++			dev_warn_once(fb->fb.dev,
++				      "Set display number call failed. Old GPU firmware?");
++	}
++}
++
+ static int bcm2708_fb_set_bitfields(struct fb_var_screeninfo *var)
+ {
+ 	int ret = 0;
+@@ -214,11 +303,11 @@ static int bcm2708_fb_check_var(struct f
+ 				struct fb_info *info)
+ {
+ 	/* info input, var output */
+-	print_debug("%s(%p) %dx%d (%dx%d), %d, %d\n",
++	print_debug("%s(%p) %ux%u (%ux%u), %ul, %u\n",
+ 		    __func__, info, info->var.xres, info->var.yres,
+ 		    info->var.xres_virtual, info->var.yres_virtual,
+-		    (int)info->screen_size, info->var.bits_per_pixel);
+-	print_debug("%s(%p) %dx%d (%dx%d), %d\n", __func__, var, var->xres,
++		    info->screen_size, info->var.bits_per_pixel);
++	print_debug("%s(%p) %ux%u (%ux%u), %u\n", __func__, var, var->xres,
+ 		    var->yres, var->xres_virtual, var->yres_virtual,
+ 		    var->bits_per_pixel);
+ 
+@@ -281,17 +370,24 @@ static int bcm2708_fb_set_par(struct fb_
+ 	};
+ 	int ret, image_size;
+ 
+-
+-	print_debug("%s(%p) %dx%d (%dx%d), %d, %d\n", __func__, info,
++	print_debug("%s(%p) %dx%d (%dx%d), %d, %d (display %d)\n", __func__,
++		    info,
+ 		    info->var.xres, info->var.yres, info->var.xres_virtual,
+ 		    info->var.yres_virtual, (int)info->screen_size,
+-		    info->var.bits_per_pixel);
++		    info->var.bits_per_pixel, value);
++
++	/* Need to set the display number to act on first
++	 * Cannot do it in the tag list because on older firmware the call
++	 * will fail and stop the rest of the list being executed.
++	 * We can ignore this call failing as the default at other end is 0
++	 */
++	set_display_num(fb);
+ 
+ 	/* Try allocating our own buffer. We can specify all the parameters */
+ 	image_size = ((info->var.xres * info->var.yres) *
+ 		      info->var.bits_per_pixel) >> 3;
+ 
+-	if (!fb->disable_arm_alloc &&
++	if (!fb->fbdev->disable_arm_alloc &&
+ 	    (image_size != fb->image_size || !fb->dma_addr)) {
+ 		if (fb->dma_addr) {
+ 			dma_free_coherent(info->device, fb->image_size,
+@@ -306,7 +402,7 @@ static int bcm2708_fb_set_par(struct fb_
+ 
+ 		if (!fb->cpuaddr) {
+ 			fb->dma_addr = 0;
+-			fb->disable_arm_alloc = true;
++			fb->fbdev->disable_arm_alloc = true;
+ 		} else {
+ 			fb->image_size = image_size;
+ 		}
+@@ -317,7 +413,7 @@ static int bcm2708_fb_set_par(struct fb_
+ 		fbinfo.screen_size = image_size;
+ 		fbinfo.pitch = (info->var.xres * info->var.bits_per_pixel) >> 3;
+ 
+-		ret = rpi_firmware_property_list(fb->fw, &fbinfo,
++		ret = rpi_firmware_property_list(fb->fbdev->fw, &fbinfo,
+ 						 sizeof(fbinfo));
+ 		if (ret || fbinfo.base != fb->dma_addr) {
+ 			/* Firmware either failed, or assigned a different base
+@@ -330,7 +426,7 @@ static int bcm2708_fb_set_par(struct fb_
+ 			fb->image_size = 0;
+ 			fb->cpuaddr = NULL;
+ 			fb->dma_addr = 0;
+-			fb->disable_arm_alloc = true;
++			fb->fbdev->disable_arm_alloc = true;
+ 		}
+ 	} else {
+ 		/* Our allocation failed - drop into the old scheme of
+@@ -349,7 +445,7 @@ static int bcm2708_fb_set_par(struct fb_
+ 		fbinfo.tag6.tag = RPI_FIRMWARE_FRAMEBUFFER_GET_PITCH;
+ 		fbinfo.pitch = 0;
+ 
+-		ret = rpi_firmware_property_list(fb->fw, &fbinfo,
++		ret = rpi_firmware_property_list(fb->fbdev->fw, &fbinfo,
+ 						 sizeof(fbinfo));
+ 		if (ret) {
+ 			dev_err(info->device,
+@@ -439,7 +535,10 @@ static int bcm2708_fb_setcolreg(unsigned
+ 			packet->length = regno + 1;
+ 			memcpy(packet->cmap, fb->gpu_cmap,
+ 			       sizeof(packet->cmap));
+-			ret = rpi_firmware_property(fb->fw,
++
++			set_display_num(fb);
++
++			ret = rpi_firmware_property(fb->fbdev->fw,
+ 						    RPI_FIRMWARE_FRAMEBUFFER_SET_PALETTE,
+ 						    packet,
+ 						    (2 + packet->length) * sizeof(u32));
+@@ -478,8 +577,11 @@ static int bcm2708_fb_blank(int blank_mo
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = rpi_firmware_property(fb->fw, RPI_FIRMWARE_FRAMEBUFFER_BLANK,
++	set_display_num(fb);
++
++	ret = rpi_firmware_property(fb->fbdev->fw, RPI_FIRMWARE_FRAMEBUFFER_BLANK,
+ 				    &value, sizeof(value));
++
+ 	if (ret)
+ 		dev_err(info->device, "%s(%d) failed: %d\n", __func__,
+ 			blank_mode, ret);
+@@ -496,12 +598,14 @@ static int bcm2708_fb_pan_display(struct
+ 	info->var.yoffset = var->yoffset;
+ 	result = bcm2708_fb_set_par(info);
+ 	if (result != 0)
+-		pr_err("%s(%d,%d) returns=%d\n", __func__, var->xoffset,
++		pr_err("%s(%u,%u) returns=%d\n", __func__, var->xoffset,
+ 		       var->yoffset, result);
+ 	return result;
+ }
+ 
+ static int bcm2708_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
++static int bcm2708_ioctl(struct fb_info *info, unsigned int cmd,
++			 unsigned long arg)
+ {
+ 	struct bcm2708_fb *fb = to_bcm2708(info);
+ 	u32 dummy = 0;
+@@ -509,7 +613,9 @@ static int bcm2708_ioctl(struct fb_info
+ 
+ 	switch (cmd) {
+ 	case FBIO_WAITFORVSYNC:
+-		ret = rpi_firmware_property(fb->fw,
++		set_display_num(fb);
++
++		ret = rpi_firmware_property(fb->fbdev->fw,
+ 					    RPI_FIRMWARE_FRAMEBUFFER_SET_VSYNC,
+ 					    &dummy, sizeof(dummy));
+ 		break;
+@@ -526,23 +632,22 @@ static int bcm2708_ioctl(struct fb_info
+ static void bcm2708_fb_fillrect(struct fb_info *info,
+ 				const struct fb_fillrect *rect)
+ {
+-	/* (is called) print_debug("bcm2708_fb_fillrect\n"); */
+ 	cfb_fillrect(info, rect);
+ }
+ 
+ /* A helper function for configuring dma control block */
+ static void set_dma_cb(struct bcm2708_dma_cb *cb,
+-		       int        burst_size,
+-		       dma_addr_t dst,
+-		       int        dst_stride,
+-		       dma_addr_t src,
+-		       int        src_stride,
+-		       int        w,
+-		       int        h)
++		int        burst_size,
++		dma_addr_t dst,
++		int        dst_stride,
++		dma_addr_t src,
++		int        src_stride,
++		int        w,
++		int        h)
+ {
+ 	cb->info = BCM2708_DMA_BURST(burst_size) | BCM2708_DMA_S_WIDTH |
+-		   BCM2708_DMA_S_INC | BCM2708_DMA_D_WIDTH |
+-		   BCM2708_DMA_D_INC | BCM2708_DMA_TDMODE;
++		BCM2708_DMA_S_INC | BCM2708_DMA_D_WIDTH |
++		BCM2708_DMA_D_INC | BCM2708_DMA_TDMODE;
+ 	cb->dst = dst;
+ 	cb->src = src;
+ 	/*
+@@ -560,15 +665,19 @@ static void bcm2708_fb_copyarea(struct f
+ 				const struct fb_copyarea *region)
+ {
+ 	struct bcm2708_fb *fb = to_bcm2708(info);
+-	struct bcm2708_dma_cb *cb = fb->cb_base;
++	struct bcm2708_fb_dev *fbdev = fb->fbdev;
++	struct bcm2708_dma_cb *cb = fbdev->cb_base;
+ 	int bytes_per_pixel = (info->var.bits_per_pixel + 7) >> 3;
+ 
+ 	/* Channel 0 supports larger bursts and is a bit faster */
+-	int burst_size = (fb->dma_chan == 0) ? 8 : 2;
++	int burst_size = (fbdev->dma_chan == 0) ? 8 : 2;
+ 	int pixels = region->width * region->height;
+ 
+-	/* Fallback to cfb_copyarea() if we don't like something */
+-	if (bytes_per_pixel > 4 ||
++	/* If DMA is currently in use (ie being used on another FB), then
++	 * rather than wait for it to finish, just use the cfb_copyarea
++	 */
++	if (!mutex_trylock(&fbdev->dma_mutex) ||
++	    bytes_per_pixel > 4 ||
+ 	    info->var.xres * info->var.yres > 1920 * 1200 ||
+ 	    region->width <= 0 || region->width > info->var.xres ||
+ 	    region->height <= 0 || region->height > info->var.yres ||
+@@ -595,8 +704,8 @@ static void bcm2708_fb_copyarea(struct f
+ 		 * 1920x1200 resolution at 32bpp pixel depth.
+ 		 */
+ 		int y;
+-		dma_addr_t control_block_pa = fb->cb_handle;
+-		dma_addr_t scratchbuf = fb->cb_handle + 16 * 1024;
++		dma_addr_t control_block_pa = fbdev->cb_handle;
++		dma_addr_t scratchbuf = fbdev->cb_handle + 16 * 1024;
+ 		int scanline_size = bytes_per_pixel * region->width;
+ 		int scanlines_per_cb = (64 * 1024 - 16 * 1024) / scanline_size;
+ 
+@@ -646,10 +755,10 @@ static void bcm2708_fb_copyarea(struct f
+ 		}
+ 		set_dma_cb(cb, burst_size,
+ 			   fb->fb_bus_address + dy * fb->fb.fix.line_length +
+-						   bytes_per_pixel * region->dx,
++			   bytes_per_pixel * region->dx,
+ 			   stride,
+ 			   fb->fb_bus_address + sy * fb->fb.fix.line_length +
+-						   bytes_per_pixel * region->sx,
++			   bytes_per_pixel * region->sx,
+ 			   stride,
+ 			   region->width * bytes_per_pixel,
+ 			   region->height);
+@@ -659,32 +768,33 @@ static void bcm2708_fb_copyarea(struct f
+ 	cb->next = 0;
+ 
+ 	if (pixels < dma_busy_wait_threshold) {
+-		bcm_dma_start(fb->dma_chan_base, fb->cb_handle);
+-		bcm_dma_wait_idle(fb->dma_chan_base);
++		bcm_dma_start(fbdev->dma_chan_base, fbdev->cb_handle);
++		bcm_dma_wait_idle(fbdev->dma_chan_base);
+ 	} else {
+-		void __iomem *dma_chan = fb->dma_chan_base;
++		void __iomem *local_dma_chan = fbdev->dma_chan_base;
+ 
+ 		cb->info |= BCM2708_DMA_INT_EN;
+-		bcm_dma_start(fb->dma_chan_base, fb->cb_handle);
+-		while (bcm_dma_is_busy(dma_chan)) {
+-			wait_event_interruptible(fb->dma_waitq,
+-						 !bcm_dma_is_busy(dma_chan));
++		bcm_dma_start(fbdev->dma_chan_base, fbdev->cb_handle);
++		while (bcm_dma_is_busy(local_dma_chan)) {
++			wait_event_interruptible(fbdev->dma_waitq,
++						 !bcm_dma_is_busy(local_dma_chan));
+ 		}
+-		fb->stats.dma_irqs++;
++		fbdev->dma_stats.dma_irqs++;
+ 	}
+-	fb->stats.dma_copies++;
++	fbdev->dma_stats.dma_copies++;
++
++	mutex_unlock(&fbdev->dma_mutex);
+ }
+ 
+ static void bcm2708_fb_imageblit(struct fb_info *info,
+ 				 const struct fb_image *image)
+ {
+-	/* (is called) print_debug("bcm2708_fb_imageblit\n"); */
+ 	cfb_imageblit(info, image);
+ }
+ 
+ static irqreturn_t bcm2708_fb_dma_irq(int irq, void *cxt)
+ {
+-	struct bcm2708_fb *fb = cxt;
++	struct bcm2708_fb_dev *fbdev = cxt;
+ 
+ 	/* FIXME: should read status register to check if this is
+ 	 * actually interrupting us or not, in case this interrupt
+@@ -694,9 +804,9 @@ static irqreturn_t bcm2708_fb_dma_irq(in
+ 	 */
+ 
+ 	/* acknowledge the interrupt */
+-	writel(BCM2708_DMA_INT, fb->dma_chan_base + BCM2708_DMA_CS);
++	writel(BCM2708_DMA_INT, fbdev->dma_chan_base + BCM2708_DMA_CS);
+ 
+-	wake_up(&fb->dma_waitq);
++	wake_up(&fbdev->dma_waitq);
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -729,11 +839,23 @@ static int bcm2708_fb_register(struct bc
+ 	fb->fb.fix.ywrapstep = 0;
+ 	fb->fb.fix.accel = FB_ACCEL_NONE;
+ 
+-	fb->fb.var.xres = fbwidth;
+-	fb->fb.var.yres = fbheight;
+-	fb->fb.var.xres_virtual = fbwidth;
+-	fb->fb.var.yres_virtual = fbheight;
+-	fb->fb.var.bits_per_pixel = fbdepth;
++	/* If we have data from the VC4 on FB's, use that, otherwise use the
++	 * module parameters
++	 */
++	if (fb->display_settings.width) {
++		fb->fb.var.xres = fb->display_settings.width;
++		fb->fb.var.yres = fb->display_settings.height;
++		fb->fb.var.xres_virtual = fb->fb.var.xres;
++		fb->fb.var.yres_virtual = fb->fb.var.yres;
++		fb->fb.var.bits_per_pixel = fb->display_settings.depth;
++	} else {
++		fb->fb.var.xres = fbwidth;
++		fb->fb.var.yres = fbheight;
++		fb->fb.var.xres_virtual = fbwidth;
++		fb->fb.var.yres_virtual = fbheight;
++		fb->fb.var.bits_per_pixel = fbdepth;
++	}
++
+ 	fb->fb.var.vmode = FB_VMODE_NONINTERLACED;
+ 	fb->fb.var.activate = FB_ACTIVATE_NOW;
+ 	fb->fb.var.nonstd = 0;
+@@ -749,26 +871,23 @@ static int bcm2708_fb_register(struct bc
+ 	fb->fb.monspecs.dclkmax = 100000000;
+ 
+ 	bcm2708_fb_set_bitfields(&fb->fb.var);
+-	init_waitqueue_head(&fb->dma_waitq);
+ 
+ 	/*
+ 	 * Allocate colourmap.
+ 	 */
+-
+ 	fb_set_var(&fb->fb, &fb->fb.var);
++
+ 	ret = bcm2708_fb_set_par(&fb->fb);
++
+ 	if (ret)
+ 		return ret;
+ 
+-	print_debug("BCM2708FB: registering framebuffer (%dx%d@%d) (%d)\n",
+-		    fbwidth, fbheight, fbdepth, fbswap);
+-
+ 	ret = register_framebuffer(&fb->fb);
+-	print_debug("BCM2708FB: register framebuffer (%d)\n", ret);
++
+ 	if (ret == 0)
+ 		goto out;
+ 
+-	print_debug("BCM2708FB: cannot register framebuffer (%d)\n", ret);
++	dev_warn(fb->fb.dev, "Unable to register framebuffer (%d)\n", ret);
+ out:
+ 	return ret;
+ }
+@@ -777,10 +896,18 @@ static int bcm2708_fb_probe(struct platf
+ {
+ 	struct device_node *fw_np;
+ 	struct rpi_firmware *fw;
+-	struct bcm2708_fb *fb;
+-	int ret;
++	int ret, i;
++	u32 num_displays;
++	struct bcm2708_fb_dev *fbdev;
++	struct { u32 base, length; } gpu_mem;
++
++	fbdev = devm_kzalloc(&dev->dev, sizeof(*fbdev), GFP_KERNEL);
++
++	if (!fbdev)
++		return -ENOMEM;
+ 
+ 	fw_np = of_parse_phandle(dev->dev.of_node, "firmware", 0);
++
+ /* Remove comment when booting without Device Tree is no longer supported
+  *	if (!fw_np) {
+  *		dev_err(&dev->dev, "Missing firmware node\n");
+@@ -788,90 +915,154 @@ static int bcm2708_fb_probe(struct platf
+  *	}
+  */
+ 	fw = rpi_firmware_get(fw_np);
++	fbdev->fw = fw;
++
+ 	if (!fw)
+ 		return -EPROBE_DEFER;
+ 
+-	fb = kzalloc(sizeof(*fb), GFP_KERNEL);
+-	if (!fb) {
+-		ret = -ENOMEM;
+-		goto free_region;
++	ret = rpi_firmware_property(fw,
++				    RPI_FIRMWARE_FRAMEBUFFER_GET_NUM_DISPLAYS,
++				    &num_displays, sizeof(u32));
++
++	/* If we fail to get the number of displays, or it returns 0, then
++	 * assume old firmware that doesn't have the mailbox call, so just
++	 * set one display
++	 */
++	if (ret || num_displays == 0) {
++		num_displays = 1;
++		dev_err(&dev->dev,
++			"Unable to determine number of FB's. Assuming 1\n");
++		ret = 0;
++	} else {
++		fbdev->firmware_supports_multifb = 1;
++	}
++
++	if (num_displays > MAX_FRAMEBUFFERS) {
++		dev_warn(&dev->dev,
++			 "More displays reported from firmware than supported in driver (%u vs %u)",
++			 num_displays, MAX_FRAMEBUFFERS);
++		num_displays = MAX_FRAMEBUFFERS;
+ 	}
+ 
+-	fb->fw = fw;
+-	bcm2708_fb_debugfs_init(fb);
++	dev_info(&dev->dev, "FB found %d display(s)\n", num_displays);
++
++	/* Set up the DMA information. Note we have just one set of DMA
++	 * parameters to work with all the FB's so requires synchronising when
++	 * being used
++	 */
++
++	mutex_init(&fbdev->dma_mutex);
+ 
+-	fb->cb_base = dma_alloc_wc(&dev->dev, SZ_64K,
+-					     &fb->cb_handle, GFP_KERNEL);
+-	if (!fb->cb_base) {
++	fbdev->cb_base = dma_alloc_wc(&dev->dev, SZ_64K,
++						&fbdev->cb_handle,
++						GFP_KERNEL);
++	if (!fbdev->cb_base) {
+ 		dev_err(&dev->dev, "cannot allocate DMA CBs\n");
+ 		ret = -ENOMEM;
+ 		goto free_fb;
+ 	}
+ 
+-	pr_info("BCM2708FB: allocated DMA memory %pad\n", &fb->cb_handle);
+-
+ 	ret = bcm_dma_chan_alloc(BCM_DMA_FEATURE_BULK,
+-				 &fb->dma_chan_base, &fb->dma_irq);
++				 &fbdev->dma_chan_base,
++				 &fbdev->dma_irq);
+ 	if (ret < 0) {
+-		dev_err(&dev->dev, "couldn't allocate a DMA channel\n");
++		dev_err(&dev->dev, "Couldn't allocate a DMA channel\n");
+ 		goto free_cb;
+ 	}
+-	fb->dma_chan = ret;
++	fbdev->dma_chan = ret;
+ 
+-	ret = request_irq(fb->dma_irq, bcm2708_fb_dma_irq,
+-			  0, "bcm2708_fb dma", fb);
++	ret = request_irq(fbdev->dma_irq, bcm2708_fb_dma_irq,
++			  0, "bcm2708_fb DMA", fbdev);
+ 	if (ret) {
+-		pr_err("%s: failed to request DMA irq\n", __func__);
++		dev_err(&dev->dev,
++			"Failed to request DMA irq\n");
+ 		goto free_dma_chan;
+ 	}
+ 
+-	pr_info("BCM2708FB: allocated DMA channel %d\n", fb->dma_chan);
++	rpi_firmware_property(fbdev->fw,
++			      RPI_FIRMWARE_GET_VC_MEMORY,
++			      &gpu_mem, sizeof(gpu_mem));
++
++	for (i = 0; i < num_displays; i++) {
++		struct bcm2708_fb *fb = &fbdev->displays[i];
++
++		fb->display_settings.display_num = i;
++		fb->dev = dev;
++		fb->fb.device = &dev->dev;
++		fb->fbdev = fbdev;
++
++		fb->gpu.base = gpu_mem.base;
++		fb->gpu.length = gpu_mem.length;
++
++		if (fbdev->firmware_supports_multifb) {
++			ret = rpi_firmware_property(fw,
++						    RPI_FIRMWARE_FRAMEBUFFER_GET_DISPLAY_SETTINGS,
++						    &fb->display_settings,
++						    GET_DISPLAY_SETTINGS_PAYLOAD_SIZE);
++		} else {
++			memset(&fb->display_settings, 0,
++			       sizeof(fb->display_settings));
++		}
+ 
+-	fb->dev = dev;
+-	fb->fb.device = &dev->dev;
++		ret = bcm2708_fb_register(fb);
+ 
+-	/* failure here isn't fatal, but we'll fail in vc_mem_copy if
+-	 * fb->gpu is not valid
+-	 */
+-	rpi_firmware_property(fb->fw, RPI_FIRMWARE_GET_VC_MEMORY, &fb->gpu,
+-			      sizeof(fb->gpu));
++		if (ret == 0) {
++			bcm2708_fb_debugfs_init(fb);
+ 
+-	ret = bcm2708_fb_register(fb);
+-	if (ret == 0) {
+-		platform_set_drvdata(dev, fb);
+-		goto out;
++			fbdev->num_displays++;
++
++			dev_info(&dev->dev,
++				 "Registered framebuffer for display %u, size %ux%u\n",
++				 fb->display_settings.display_num,
++				 fb->fb.var.xres,
++				 fb->fb.var.yres);
++		} else {
++			// Use this to flag if this FB entry is in use.
++			fb->fbdev = NULL;
++		}
++	}
++
++	// Did we actually successfully create any FB's?
++	if (fbdev->num_displays) {
++		init_waitqueue_head(&fbdev->dma_waitq);
++		platform_set_drvdata(dev, fbdev);
++		return ret;
+ 	}
+ 
+ free_dma_chan:
+-	bcm_dma_chan_free(fb->dma_chan);
++	bcm_dma_chan_free(fbdev->dma_chan);
+ free_cb:
+-	dma_free_wc(&dev->dev, SZ_64K, fb->cb_base, fb->cb_handle);
++	dma_free_wc(&dev->dev, SZ_64K, fbdev->cb_base,
++			      fbdev->cb_handle);
+ free_fb:
+-	kfree(fb);
+-free_region:
+ 	dev_err(&dev->dev, "probe failed, err %d\n", ret);
+-out:
++
+ 	return ret;
+ }
+ 
+ static int bcm2708_fb_remove(struct platform_device *dev)
+ {
+-	struct bcm2708_fb *fb = platform_get_drvdata(dev);
++	struct bcm2708_fb_dev *fbdev = platform_get_drvdata(dev);
++	int i;
+ 
+ 	platform_set_drvdata(dev, NULL);
+ 
+-	if (fb->fb.screen_base)
+-		iounmap(fb->fb.screen_base);
+-	unregister_framebuffer(&fb->fb);
+-
+-	dma_free_wc(&dev->dev, SZ_64K, fb->cb_base, fb->cb_handle);
+-	bcm_dma_chan_free(fb->dma_chan);
+-
+-	bcm2708_fb_debugfs_deinit(fb);
++	for (i = 0; i < fbdev->num_displays; i++) {
++		if (fbdev->displays[i].fb.screen_base)
++			iounmap(fbdev->displays[i].fb.screen_base);
++
++		if (fbdev->displays[i].fbdev) {
++			unregister_framebuffer(&fbdev->displays[i].fb);
++			bcm2708_fb_debugfs_deinit(&fbdev->displays[i]);
++		}
++	}
+ 
+-	free_irq(fb->dma_irq, fb);
++	dma_free_wc(&dev->dev, SZ_64K, fbdev->cb_base,
++			      fbdev->cb_handle);
++	bcm_dma_chan_free(fbdev->dma_chan);
++	free_irq(fbdev->dma_irq, fbdev);
+ 
+-	kfree(fb);
++	mutex_destroy(&fbdev->dma_mutex);
+ 
+ 	return 0;
+ }
+@@ -886,10 +1077,10 @@ static struct platform_driver bcm2708_fb
+ 	.probe = bcm2708_fb_probe,
+ 	.remove = bcm2708_fb_remove,
+ 	.driver = {
+-		   .name = DRIVER_NAME,
+-		   .owner = THIS_MODULE,
+-		   .of_match_table = bcm2708_fb_of_match_table,
+-		   },
++		  .name = DRIVER_NAME,
++		  .owner = THIS_MODULE,
++		  .of_match_table = bcm2708_fb_of_match_table,
++		  },
+ };
+ 
+ static int __init bcm2708_fb_init(void)

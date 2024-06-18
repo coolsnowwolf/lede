@@ -1,0 +1,1288 @@
+From 99ae83f1944f47d4338ef7a6f02536927fc6ce57 Mon Sep 17 00:00:00 2001
+From: Richard Oliver <richard.oliver@raspberrypi.com>
+Date: Tue, 21 May 2024 13:47:23 +0100
+Subject: [PATCH 1165/1215] spi: Add a driver for the RPI RP2040 GPIO bridge
+
+The Raspberry Pi RP2040 GPIO bridge is an I2C-attached device exposing
+both a Tx-only SPI controller, and a GPIO controller.
+
+Due to the relative difference in transfer rates between standard-mode
+I2C and SPI, the GPIO bridge makes use of 12 MiB of non-volatile storage
+to cache repeated transfers. This cache is arranged in ~8 KiB blocks and
+is addressed by the MD5 digest of the data contained therein.
+
+Optionally, this driver is able to take advantage of Raspberry Pi RP1
+GPIOs to achieve faster than I2C data transfer rates.
+
+Signed-off-by: Richard Oliver <richard.oliver@raspberrypi.com>
+---
+ MAINTAINERS                          |    1 +
+ drivers/spi/Kconfig                  |   12 +
+ drivers/spi/Makefile                 |    1 +
+ drivers/spi/spi-rp2040-gpio-bridge.c | 1219 ++++++++++++++++++++++++++
+ 4 files changed, 1233 insertions(+)
+ create mode 100644 drivers/spi/spi-rp2040-gpio-bridge.c
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -18031,6 +18031,7 @@ RASPBERRY PI RP2040 GPIO BRIDGE DRIVER
+ M:	Raspberry Pi Kernel Maintenance <kernel-list@raspberrypi.com>
+ S:	Maintained
+ F:	Documentation/devicetree/bindings/spi/raspberrypi,rp2040-gpio-bridge.yaml
++F:	drivers/spi/spi-rp2040-gpio-bridge.c
+ 
+ RAYLINK/WEBGEAR 802.11 WIRELESS LAN DRIVER
+ L:	linux-wireless@vger.kernel.org
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -846,6 +846,18 @@ config SPI_RB4XX
+ 	help
+ 	  SPI controller driver for the Mikrotik RB4xx series boards.
+ 
++config SPI_RP2040_GPIO_BRIDGE
++	tristate "Raspberry Pi RP2040 GPIO Bridge"
++	depends on I2C && SPI && GPIOLIB
++	help
++	  Support for the Raspberry Pi RP2040 GPIO bridge.
++
++	  This driver provides support for the Raspberry Pi PR2040 GPIO bridge.
++	  It can be used as a GPIO expander and a Tx-only SPI master.
++
++	  Optionally, this driver is able to take advantage of Raspberry Pi RP1
++	  GPIOs to achieve faster than I2C data transfer rates.
++
+ config SPI_RPCIF
+ 	tristate "Renesas RPC-IF SPI driver"
+ 	depends on RENESAS_RPCIF
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -115,6 +115,7 @@ obj-$(CONFIG_SPI_ROCKCHIP)		+= spi-rockc
+ obj-$(CONFIG_SPI_ROCKCHIP_SFC)		+= spi-rockchip-sfc.o
+ obj-$(CONFIG_SPI_RB4XX)			+= spi-rb4xx.o
+ obj-$(CONFIG_MACH_REALTEK_RTL)		+= spi-realtek-rtl.o
++obj-$(CONFIG_SPI_RP2040_GPIO_BRIDGE)	+= spi-rp2040-gpio-bridge.o
+ obj-$(CONFIG_SPI_RPCIF)			+= spi-rpc-if.o
+ obj-$(CONFIG_SPI_RSPI)			+= spi-rspi.o
+ obj-$(CONFIG_SPI_RZV2M_CSI)		+= spi-rzv2m-csi.o
+--- /dev/null
++++ b/drivers/spi/spi-rp2040-gpio-bridge.c
+@@ -0,0 +1,1219 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * RP2040 GPIO Bridge
++ *
++ * Copyright (C) 2023, 2024, Raspberry Pi Ltd
++ */
++
++#include <crypto/hash.h>
++#include <linux/crypto.h>
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/gpio/driver.h>
++#include <linux/i2c.h>
++#include <linux/kernel.h>
++#include <linux/minmax.h>
++#include <linux/of_address.h>
++#include <linux/pm_runtime.h>
++#include <linux/spi/spi.h>
++#include <linux/stddef.h>
++#include <linux/types.h>
++
++#define MODULE_NAME "rp2040-gpio-bridge"
++
++#define I2C_RETRIES 4U
++
++#define ONE_KIB 1024U
++#define MD5_SUFFIX_SIZE 9U
++
++#define RP2040_GBDG_FLASH_BLOCK_SIZE (8U * ONE_KIB)
++#define RP2040_GBDG_BLOCK_SIZE (RP2040_GBDG_FLASH_BLOCK_SIZE - MD5_SUFFIX_SIZE)
++
++/*
++ * 1MiB transfer size is an arbitrary limit
++ * Max value is 4173330 (using a single manifest)
++ */
++#define MAX_TRANSFER_SIZE (1024U * ONE_KIB)
++
++#define HALF_BUFFER (4U * ONE_KIB)
++
++#define STATUS_SIZE 4
++#define MD5_DIGEST_SIZE 16
++#define VERSION_SIZE 4
++#define ID_SIZE 8
++#define TOTAL_RD_HDR_SIZE \
++	(STATUS_SIZE + MD5_DIGEST_SIZE + VERSION_SIZE + ID_SIZE)
++
++struct rp2040_gbdg_device_info {
++	u8 md5[MD5_DIGEST_SIZE];
++	u64 id;
++	u32 version;
++	u32 status;
++};
++
++static_assert(sizeof(struct rp2040_gbdg_device_info) == TOTAL_RD_HDR_SIZE);
++
++#define MANIFEST_UNIT_SIZE 16
++static_assert(MD5_DIGEST_SIZE == MANIFEST_UNIT_SIZE);
++#define MANIFEST_HEADER_UNITS 1
++#define MANIFEST_DATA_UNITS \
++	DIV_ROUND_UP(MAX_TRANSFER_SIZE, RP2040_GBDG_BLOCK_SIZE)
++
++#define STATUS_BUSY 0x01
++
++#define DIRECT_PREFIX 0x00
++#define DIRECT_CMD_CS 0x07
++#define DIRECT_CMD_EMIT 0x08
++
++#define WRITE_DATA_PREFIX 0x80
++#define WRITE_DATA_PREFIX_SIZE 1
++
++#define FIXED_SIZE_CMD_PREFIX 0x81
++
++#define WRITE_DATA_UPPER_PREFIX 0x82
++#define WRITE_DATA_UPPER_PREFIX_SIZE 1
++
++#define NUM_GPIO 24
++
++enum rp2040_gbdg_fixed_size_commands {
++	/* 10-byte commands */
++	CMD_SAVE_CACHE = 0x07,
++	CMD_SEND_RB = 0x08,
++	CMD_GPIO_ST_CL = 0x0b,
++	CMD_GPIO_OE = 0x0c,
++	CMD_DAT_RECV = 0x0d,
++	CMD_DAT_EMIT = 0x0e,
++	/* 18-byte commands */
++	CMD_READ_CSUM = 0x11,
++	CMD_SEND_MANI = 0x13,
++};
++
++struct rp2040_gbdg {
++	struct spi_controller *controller;
++
++	struct i2c_client *client;
++	struct crypto_shash *shash;
++	struct shash_desc *shash_desc;
++
++	struct regulator *regulator;
++
++	struct gpio_chip gc;
++	u32 gpio_requested;
++	u32 gpio_direction;
++
++	bool fast_xfer_requires_i2c_lock;
++	struct gpio_descs *fast_xfer_gpios;
++	u32 fast_xfer_recv_gpio_base;
++	u8 fast_xfer_data_index;
++	u8 fast_xfer_clock_index;
++	void __iomem *gpio_base;
++	void __iomem *rio_base;
++
++	bool bypass_cache;
++
++	u8 buffer[2 + HALF_BUFFER];
++	u8 manifest_prep[(MANIFEST_HEADER_UNITS + MANIFEST_DATA_UNITS) *
++			 MANIFEST_UNIT_SIZE];
++};
++
++static int rp2040_gbdg_gpio_dir_in(struct gpio_chip *gc, unsigned int offset);
++static void rp2040_gbdg_gpio_set(struct gpio_chip *gc, unsigned int offset,
++				 int value);
++static int rp2040_gbdg_fast_xfer(struct rp2040_gbdg *priv_data, const u8 *data,
++				 size_t len);
++
++static int rp2040_gbdg_rp1_calc_offsets(u8 gpio, size_t *bank_offset,
++					u8 *shift_offset)
++{
++	if (!bank_offset || !shift_offset || gpio >= 54)
++		return -EINVAL;
++	if (gpio < 28) {
++		*bank_offset = 0x0000;
++		*shift_offset = gpio;
++	} else if (gpio < 34) {
++		*bank_offset = 0x4000;
++		*shift_offset = gpio - 28;
++	} else {
++		*bank_offset = 0x8000;
++		*shift_offset = gpio - 34;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_calc_mux_offset(u8 gpio, size_t *offset)
++{
++	size_t bank_offset;
++	u8 shift_offset;
++	int ret;
++
++	ret = rp2040_gbdg_rp1_calc_offsets(gpio, &bank_offset, &shift_offset);
++	if (ret)
++		return ret;
++	*offset = bank_offset + shift_offset * 8 + 0x4;
++
++	return 0;
++}
++
++static int rp2040_gbdg_rp1_read_mux(struct rp2040_gbdg *priv_data, u8 gpio,
++				    u32 *data)
++{
++	size_t offset;
++	int ret;
++
++	ret = rp2040_gbdg_calc_mux_offset(gpio, &offset);
++	if (ret)
++		return ret;
++
++	*data = readl(priv_data->gpio_base + offset);
++
++	return 0;
++}
++
++static int rp2040_gbdg_rp1_write_mux(struct rp2040_gbdg *priv_data, u8 gpio,
++				     u32 val)
++{
++	size_t offset;
++	int ret;
++
++	ret = rp2040_gbdg_calc_mux_offset(gpio, &offset);
++	if (ret)
++		return ret;
++
++	writel(val, priv_data->gpio_base + offset);
++
++	return 0;
++}
++
++static size_t rp2040_gbdg_max_transfer_size(struct spi_device *spi)
++{
++	return MAX_TRANSFER_SIZE;
++}
++
++static int rp2040_gbdg_get_device_info(struct i2c_client *client,
++				       struct rp2040_gbdg_device_info *info)
++{
++	u8 buf[TOTAL_RD_HDR_SIZE];
++	u8 retries = I2C_RETRIES;
++	u8 *read_pos = buf;
++	size_t field_size;
++	int ret;
++
++	do {
++		ret = i2c_master_recv(client, buf, sizeof(buf));
++		if (!retries--)
++			break;
++	} while (ret == -ETIMEDOUT);
++
++	if (ret != sizeof(buf))
++		return ret < 0 ? ret : -EIO;
++
++	field_size = sizeof_field(struct rp2040_gbdg_device_info, status);
++	memcpy(&info->status, read_pos, field_size);
++	read_pos += field_size;
++
++	field_size = sizeof_field(struct rp2040_gbdg_device_info, md5);
++	memcpy(&info->md5, read_pos, field_size);
++	read_pos += field_size;
++
++	field_size = sizeof_field(struct rp2040_gbdg_device_info, version);
++	memcpy(&info->version, read_pos, field_size);
++	read_pos += field_size;
++
++	field_size = sizeof_field(struct rp2040_gbdg_device_info, id);
++	memcpy(&info->id, read_pos, field_size);
++
++	return 0;
++}
++
++static int rp2040_gbdg_poll_device_info(struct i2c_client *client,
++					struct rp2040_gbdg_device_info *info)
++{
++	struct rp2040_gbdg_device_info itnl;
++	int ret;
++
++	itnl.status = STATUS_BUSY;
++
++	while (itnl.status & STATUS_BUSY) {
++		ret = rp2040_gbdg_get_device_info(client, &itnl);
++		if (ret)
++			return ret;
++	}
++	memcpy(info, &itnl, sizeof(itnl));
++
++	return 0;
++}
++
++static int rp2040_gbdg_get_buffer_hash(struct i2c_client *client, u8 *md5)
++{
++	struct rp2040_gbdg_device_info info;
++	int ret;
++
++	ret = rp2040_gbdg_poll_device_info(client, &info);
++	if (ret)
++		return ret;
++
++	memcpy(md5, info.md5, MD5_DIGEST_SIZE);
++
++	return 0;
++}
++
++static int rp2040_gbdg_wait_until_free(struct i2c_client *client, u8 *status)
++{
++	struct rp2040_gbdg_device_info info;
++	int ret;
++
++	ret = rp2040_gbdg_poll_device_info(client, &info);
++	if (ret)
++		return ret;
++
++	if (status)
++		*status = info.status;
++
++	return 0;
++}
++
++static int rp2040_gbdg_i2c_send(struct i2c_client *client, const u8 *buf,
++				size_t len)
++{
++	u8 retries = I2C_RETRIES;
++	int ret;
++
++	ret = rp2040_gbdg_wait_until_free(client, NULL);
++	if (ret) {
++		dev_err(&client->dev,
++			"%s() rp2040_gbdg_wait_until_free failed\n", __func__);
++		return ret;
++	}
++
++	do {
++		ret = i2c_master_send(client, buf, len);
++		if (!retries--)
++			break;
++	} while (ret == -ETIMEDOUT);
++
++	if (ret != len) {
++		dev_err(&client->dev, "%s() i2c_master_send returned %d\n",
++			__func__, ret);
++		return ret < 0 ? ret : -EIO;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_10byte_cmd(struct i2c_client *client, u8 cmd, u32 addr,
++				  u32 len)
++{
++	u8 buffer[10];
++
++	buffer[0] = FIXED_SIZE_CMD_PREFIX;
++	buffer[1] = cmd;
++	memcpy(&buffer[2], &addr, sizeof(addr));
++	memcpy(&buffer[6], &len, sizeof(len));
++
++	return rp2040_gbdg_i2c_send(client, buffer, sizeof(buffer));
++}
++
++static int rp2040_gbdg_18byte_cmd(struct i2c_client *client, u8 cmd,
++				  const u8 *digest)
++{
++	u8 buffer[18];
++
++	buffer[0] = FIXED_SIZE_CMD_PREFIX;
++	buffer[1] = cmd;
++	memcpy(&buffer[2], digest, MD5_DIGEST_SIZE);
++
++	return rp2040_gbdg_i2c_send(client, buffer, sizeof(buffer));
++}
++
++static int rp2040_gbdg_block_hash(struct rp2040_gbdg *priv_data, const u8 *data,
++				  size_t len, u8 *out)
++{
++	size_t remaining = RP2040_GBDG_BLOCK_SIZE;
++	size_t pad;
++	int ret;
++
++	static const u8 padding[64] = {
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		0xFF, 0xFF, 0xFF, 0xFF,
++	};
++
++	if (len > RP2040_GBDG_BLOCK_SIZE) {
++		return -EMSGSIZE;
++	} else if (len == RP2040_GBDG_BLOCK_SIZE) {
++		return crypto_shash_digest(priv_data->shash_desc, data, len,
++					   out);
++	} else {
++		ret = crypto_shash_init(priv_data->shash_desc);
++		if (ret)
++			return ret;
++
++		ret = crypto_shash_update(priv_data->shash_desc, data, len);
++		if (ret)
++			return ret;
++		remaining -= len;
++
++		/* Pad up-to a 64-byte boundary, unless that takes us over. */
++		pad = round_up(len, 64);
++		if (pad != len && pad < RP2040_GBDG_BLOCK_SIZE) {
++			ret = crypto_shash_update(priv_data->shash_desc,
++						  padding, pad - len);
++			if (ret)
++				return ret;
++			remaining -= (pad - len);
++		}
++
++		/* Pad up-to RP2040_GBDG_BLOCK_SIZE in, preferably, 64-byte chunks */
++		while (remaining) {
++			pad = min_t(size_t, remaining, (size_t)64U);
++			ret = crypto_shash_update(priv_data->shash_desc,
++						  padding, pad);
++			if (ret)
++				return ret;
++			remaining -= pad;
++		}
++		return crypto_shash_final(priv_data->shash_desc, out);
++	}
++}
++
++static int rp2040_gbdg_set_remote_buffer_fast(struct rp2040_gbdg *priv_data,
++					      const u8 *data, unsigned int len)
++{
++	struct i2c_client *client = priv_data->client;
++	int ret;
++
++	if (len > RP2040_GBDG_BLOCK_SIZE)
++		return -EMSGSIZE;
++	if (!priv_data->fast_xfer_gpios)
++		return -EIO;
++
++	ret = rp2040_gbdg_10byte_cmd(client, CMD_DAT_RECV,
++				     priv_data->fast_xfer_recv_gpio_base, len);
++	if (ret) {
++		dev_err(&client->dev, "%s() failed to enter fast data mode\n",
++			__func__);
++		return ret;
++	}
++
++	return rp2040_gbdg_fast_xfer(priv_data, data, len);
++}
++
++static int rp2040_gbdg_set_remote_buffer_i2c(struct rp2040_gbdg *priv_data,
++					     const u8 *data, unsigned int len)
++{
++	struct i2c_client *client = priv_data->client;
++	unsigned int write_len;
++	int ret;
++
++	if (len > RP2040_GBDG_BLOCK_SIZE)
++		return -EMSGSIZE;
++
++	priv_data->buffer[0] = WRITE_DATA_PREFIX;
++	write_len = min(len, HALF_BUFFER);
++	memcpy(&priv_data->buffer[1], data, write_len);
++
++	ret = rp2040_gbdg_i2c_send(client, priv_data->buffer, write_len + 1);
++	if (ret)
++		return ret;
++
++	len -= write_len;
++	data += write_len;
++
++	if (!len)
++		return 0;
++
++	priv_data->buffer[0] = WRITE_DATA_UPPER_PREFIX;
++	memcpy(&priv_data->buffer[1], data, len);
++	ret = rp2040_gbdg_i2c_send(client, priv_data->buffer, len + 1);
++
++	return ret;
++}
++
++static int rp2040_gbdg_set_remote_buffer(struct rp2040_gbdg *priv_data,
++					 const u8 *data, unsigned int len)
++{
++	if (priv_data->fast_xfer_gpios)
++		return rp2040_gbdg_set_remote_buffer_fast(priv_data, data, len);
++	else
++		return rp2040_gbdg_set_remote_buffer_i2c(priv_data, data, len);
++}
++
++/* Loads data by checksum if available or resorts to sending byte-by-byte */
++static int rp2040_gbdg_load_block_remote(struct rp2040_gbdg *priv_data,
++					 const void *data, unsigned int len,
++					 u8 *digest, bool persist)
++{
++	u8 ascii_digest[MD5_DIGEST_SIZE * 2 + 1] = { 0 };
++	struct i2c_client *client = priv_data->client;
++	u8 remote_digest[MD5_DIGEST_SIZE];
++	u8 local_digest[MD5_DIGEST_SIZE];
++	int ret;
++
++	if (len > RP2040_GBDG_BLOCK_SIZE)
++		return -EMSGSIZE;
++
++	ret = rp2040_gbdg_block_hash(priv_data, data, len, local_digest);
++	if (ret)
++		return ret;
++
++	if (digest)
++		memcpy(digest, local_digest, MD5_DIGEST_SIZE);
++
++	/* Check if the RP2040 has the data already */
++	ret = rp2040_gbdg_18byte_cmd(client, CMD_READ_CSUM, local_digest);
++	if (ret)
++		return ret;
++
++	ret = rp2040_gbdg_get_buffer_hash(client, remote_digest);
++	if (ret)
++		return ret;
++
++	if (memcmp(local_digest, remote_digest, MD5_DIGEST_SIZE)) {
++		bin2hex(ascii_digest, local_digest, MD5_DIGEST_SIZE);
++		dev_info(&client->dev, "%s() device missing data: %s\n",
++			 __func__, ascii_digest);
++		/*
++		 * N.B. We're fine to send (the potentially shorter) transfer->len
++		 * number of bytes here as the RP2040 will pad with 0xFF up to buffer
++		 * size once we stop sending.
++		 */
++		ret = rp2040_gbdg_set_remote_buffer(priv_data, data, len);
++		if (ret)
++			return ret;
++
++		/* Make sure the data actually arrived. */
++		ret = rp2040_gbdg_get_buffer_hash(client, remote_digest);
++		if (memcmp(local_digest, remote_digest, MD5_DIGEST_SIZE)) {
++			dev_err(&priv_data->client->dev,
++				"%s() unable to send data to device\n",
++				__func__);
++			return -EREMOTEIO;
++		}
++
++		if (persist) {
++			dev_info(&client->dev,
++				 "%s() sent missing data to device, saving\n",
++				 __func__);
++			ret = rp2040_gbdg_10byte_cmd(client, CMD_SAVE_CACHE, 0,
++						     0);
++			if (ret)
++				return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_transfer_block(struct rp2040_gbdg *priv_data,
++				      const void *data, unsigned int len)
++{
++	struct i2c_client *client = priv_data->client;
++	int ret;
++
++	if (len > RP2040_GBDG_BLOCK_SIZE)
++		return -EMSGSIZE;
++
++	ret = rp2040_gbdg_load_block_remote(priv_data, data, len, NULL, true);
++	if (ret)
++		return ret;
++
++	/* Remote rambuffer now has correct contents, send it */
++	ret = rp2040_gbdg_10byte_cmd(client, CMD_SEND_RB, 0, len);
++	if (ret)
++		return ret;
++
++	/*
++	 * Wait for data to have actually completed sending as we may be de-asserting CS too quickly
++	 * otherwise.
++	 */
++	ret = rp2040_gbdg_wait_until_free(client, NULL);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int rp2040_gbdg_transfer_manifest(struct rp2040_gbdg *priv_data,
++					 const u8 *data, unsigned int len)
++{
++	struct i2c_client *client = priv_data->client;
++	static const char magic[] = "DATA_MANFST";
++	unsigned int remaining = len;
++	const u32 data_length = len;
++	u8 digest[MD5_DIGEST_SIZE];
++	u8 *digest_write_pos;
++	u8 status;
++	int ret;
++
++	memcpy(priv_data->manifest_prep, magic, sizeof(magic));
++	memcpy(priv_data->manifest_prep + sizeof(magic), &data_length,
++	       sizeof(data_length));
++	digest_write_pos =
++		priv_data->manifest_prep + sizeof(magic) + sizeof(data_length);
++
++	while (remaining) {
++		unsigned int size = min(remaining, RP2040_GBDG_BLOCK_SIZE);
++
++		ret = rp2040_gbdg_block_hash(priv_data, data, size,
++					     digest_write_pos);
++		if (ret)
++			return ret;
++
++		remaining -= size;
++		data += size;
++		digest_write_pos += MD5_DIGEST_SIZE;
++	}
++
++	ret = rp2040_gbdg_load_block_remote(
++		priv_data, priv_data->manifest_prep,
++		digest_write_pos - priv_data->manifest_prep, digest, true);
++	if (ret)
++		return ret;
++
++	dev_info(&client->dev, "%s() issue CMD_SEND_MANI\n", __func__);
++	ret = rp2040_gbdg_18byte_cmd(client, CMD_SEND_MANI, digest);
++	if (ret)
++		return ret;
++
++	ret = rp2040_gbdg_wait_until_free(client, &status);
++	if (ret)
++		return ret;
++
++	dev_info(&client->dev, "%s() SEND_MANI response: %02x\n", __func__,
++		 status);
++
++	return status;
++}
++
++/* Precondition: correctly initialised fast_xfer_*, gpio_base, rio_base */
++static int rp2040_gbdg_fast_xfer(struct rp2040_gbdg *priv_data, const u8 *data,
++				 size_t len)
++{
++	struct i2c_client *client = priv_data->client;
++	void __iomem *clock_toggle;
++	void __iomem *data_set;
++	size_t clock_bank;
++	size_t data_bank;
++	u8 clock_offset;
++	u8 data_offset;
++	u32 clock_mux;
++	u32 data_mux;
++
++	if (priv_data->fast_xfer_requires_i2c_lock)
++		i2c_lock_bus(client->adapter, I2C_LOCK_ROOT_ADAPTER);
++
++	rp2040_gbdg_rp1_read_mux(priv_data, priv_data->fast_xfer_data_index,
++				 &data_mux);
++	rp2040_gbdg_rp1_read_mux(priv_data, priv_data->fast_xfer_clock_index,
++				 &clock_mux);
++
++	gpiod_direction_output(priv_data->fast_xfer_gpios->desc[0], 1);
++	gpiod_direction_output(priv_data->fast_xfer_gpios->desc[1], 0);
++
++	rp2040_gbdg_rp1_calc_offsets(priv_data->fast_xfer_data_index,
++				     &data_bank, &data_offset);
++	rp2040_gbdg_rp1_calc_offsets(priv_data->fast_xfer_clock_index,
++				     &clock_bank, &clock_offset);
++
++	data_set = priv_data->rio_base + data_bank + 0x2000; /* SET offset */
++	clock_toggle =
++		priv_data->rio_base + clock_bank + 0x1000; /* XOR offset */
++
++	while (len--) {
++		/* MSB first ordering */
++		u32 d = ~(*data++) << 4U;
++		/*
++		 * Clock out each bit of data, LSB first
++		 * (DDR, achieves approx 5 Mbps)
++		 */
++		for (size_t i = 0; i < 8; i++) {
++			/* Branchless set/clr data */
++			writel(1 << data_offset,
++			       data_set + ((d <<= 1) & 0x1000) /* CLR offset */
++			);
++
++			/* Toggle the clock */
++			writel(1 << clock_offset, clock_toggle);
++		}
++	}
++
++	rp2040_gbdg_rp1_write_mux(priv_data, priv_data->fast_xfer_data_index,
++				  data_mux);
++	rp2040_gbdg_rp1_write_mux(priv_data, priv_data->fast_xfer_clock_index,
++				  clock_mux);
++
++	if (priv_data->fast_xfer_requires_i2c_lock)
++		i2c_unlock_bus(client->adapter, I2C_LOCK_ROOT_ADAPTER);
++
++	return 0;
++}
++
++static int rp2040_gbdg_transfer_bypass(struct rp2040_gbdg *priv_data,
++				       const u8 *data, unsigned int length)
++{
++	int ret;
++	u8 *buf;
++
++	if (priv_data->fast_xfer_gpios) {
++		ret = rp2040_gbdg_10byte_cmd(
++			priv_data->client, CMD_DAT_EMIT,
++			priv_data->fast_xfer_recv_gpio_base, length);
++		return ret ? ret :
++			     rp2040_gbdg_fast_xfer(priv_data, data, length);
++	}
++
++	buf = priv_data->buffer;
++
++	while (length) {
++		unsigned int xfer = min(length, HALF_BUFFER);
++
++		buf[0] = DIRECT_PREFIX;
++		buf[1] = DIRECT_CMD_EMIT;
++		memcpy(&buf[2], data, xfer);
++		ret = rp2040_gbdg_i2c_send(priv_data->client, buf, xfer + 2);
++		if (ret)
++			return ret;
++		length -= xfer;
++		data += xfer;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_transfer_cached(struct rp2040_gbdg *priv_data,
++				       const u8 *data, unsigned int length)
++{
++	int ret;
++
++	/*
++	 * Caching mechanism divides data into '8KiB - 9' (8183 byte)
++	 * 'RP2040_GBDG_BLOCK_SIZE' blocks.
++	 *
++	 * If there's a large amount of data to send, instead, attempt to make use
++	 * of a manifest.
++	 */
++	if (length > (2 * RP2040_GBDG_BLOCK_SIZE)) {
++		if (!rp2040_gbdg_transfer_manifest(priv_data, data, length))
++			return 0;
++	}
++
++	while (length) {
++		unsigned int xfer = min(length, RP2040_GBDG_BLOCK_SIZE);
++
++		ret = rp2040_gbdg_transfer_block(priv_data, data, xfer);
++		if (ret)
++			return ret;
++		length -= xfer;
++		data += xfer;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_transfer_one(struct spi_controller *ctlr,
++				    struct spi_device *spi,
++				    struct spi_transfer *transfer)
++{
++	/* All transfers are performed in a synchronous manner. As such, return '0'
++	 * on success or -ve on failure. (Returning +ve indicates async xfer)
++	 */
++
++	struct rp2040_gbdg *priv_data = spi_controller_get_devdata(ctlr);
++
++	if (priv_data->bypass_cache) {
++		return rp2040_gbdg_transfer_bypass(priv_data, transfer->tx_buf,
++						   transfer->len);
++	} else {
++		return rp2040_gbdg_transfer_cached(priv_data, transfer->tx_buf,
++						   transfer->len);
++	}
++}
++
++static void rp2040_gbdg_set_cs(struct spi_device *spi, bool enable)
++{
++	static const char disable_cs[] = { DIRECT_PREFIX, DIRECT_CMD_CS, 0x00 };
++	static const char enable_cs[] = { DIRECT_PREFIX, DIRECT_CMD_CS, 0x10 };
++	struct rp2040_gbdg *p_data;
++
++	p_data = spi_controller_get_devdata(spi->controller);
++
++	/*
++	 * 'enable' is inverted and instead describes the logic level of an
++	 * active-low CS.
++	 */
++	rp2040_gbdg_i2c_send(p_data->client, enable ? disable_cs : enable_cs,
++			     3);
++}
++
++static int rp2040_gbdg_gpio_request(struct gpio_chip *gc, unsigned int offset)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	u32 pattern;
++	int ret;
++
++	if (offset >= NUM_GPIO)
++		return -EINVAL;
++
++	pattern = (1 << (offset + 8));
++	if (pattern & priv_data->gpio_requested)
++		return -EBUSY;
++
++	/* Resume if previously no gpio requested */
++	if (!priv_data->gpio_requested) {
++		ret = pm_runtime_resume_and_get(&priv_data->client->dev);
++		if (ret) {
++			dev_err(&priv_data->client->dev,
++				"%s(%u) unable to resume\n", __func__, offset);
++			return ret;
++		}
++	}
++
++	priv_data->gpio_requested |= pattern;
++
++	return 0;
++}
++
++static void rp2040_gbdg_gpio_free(struct gpio_chip *gc, unsigned int offset)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	u32 pattern;
++	int ret;
++
++	if (offset >= NUM_GPIO || !priv_data->gpio_requested)
++		return;
++
++	pattern = (1 << (offset + 8));
++
++	priv_data->gpio_requested &= ~pattern;
++	rp2040_gbdg_gpio_dir_in(gc, offset);
++	rp2040_gbdg_gpio_set(gc, offset, 0);
++
++	if (!priv_data->gpio_requested) {
++		ret = pm_runtime_put_autosuspend(&priv_data->client->dev);
++		if (ret) {
++			dev_err(&priv_data->client->dev,
++				"%s(%u) unable to put_autosuspend\n", __func__,
++				offset);
++		}
++	}
++}
++
++static int rp2040_gbdg_gpio_get_direction(struct gpio_chip *gc,
++					  unsigned int offset)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++
++	if (offset >= NUM_GPIO)
++		return -EINVAL;
++
++	return (priv_data->gpio_direction & (1 << (offset + 8))) ?
++		       GPIO_LINE_DIRECTION_IN :
++		       GPIO_LINE_DIRECTION_OUT;
++}
++
++static int rp2040_gbdg_gpio_dir_in(struct gpio_chip *gc, unsigned int offset)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	struct i2c_client *client = priv_data->client;
++
++	if (offset >= NUM_GPIO)
++		return -EINVAL;
++
++	priv_data->gpio_direction |= (1 << (offset + 8));
++
++	return rp2040_gbdg_10byte_cmd(client, CMD_GPIO_OE,
++				      ~priv_data->gpio_direction,
++				      priv_data->gpio_direction);
++}
++
++static int rp2040_gbdg_gpio_dir_out(struct gpio_chip *gc, unsigned int offset,
++				    int value)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	struct i2c_client *client = priv_data->client;
++	u32 pattern;
++	int ret;
++
++	if (offset >= NUM_GPIO)
++		return -EINVAL;
++
++	pattern = (1 << (offset + 8));
++
++	ret = rp2040_gbdg_10byte_cmd(client, CMD_GPIO_ST_CL,
++				     value ? pattern : 0, !value ? pattern : 0);
++	if (ret) {
++		dev_err(&client->dev, "%s(%u, %d) could not ST_CL\n", __func__,
++			offset, value);
++		return ret;
++	}
++
++	priv_data->gpio_direction &= ~pattern;
++	ret = rp2040_gbdg_10byte_cmd(client, CMD_GPIO_OE,
++				     ~priv_data->gpio_direction,
++				     priv_data->gpio_direction);
++
++	return ret;
++}
++
++static int rp2040_gbdg_gpio_get(struct gpio_chip *gc, unsigned int offset)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	struct i2c_client *client = priv_data->client;
++	struct rp2040_gbdg_device_info info;
++	int ret;
++
++	if (offset >= NUM_GPIO)
++		return -EINVAL;
++
++	ret = rp2040_gbdg_get_device_info(client, &info);
++	if (ret)
++		return ret;
++
++	return info.status & (1 << (offset + 8)) ? 1 : 0;
++}
++
++static void rp2040_gbdg_gpio_set(struct gpio_chip *gc, unsigned int offset,
++				 int value)
++{
++	struct rp2040_gbdg *priv_data = gpiochip_get_data(gc);
++	struct i2c_client *client = priv_data->client;
++	u32 pattern;
++
++	if (offset >= NUM_GPIO)
++		return;
++
++	pattern = (1 << (offset + 8));
++	rp2040_gbdg_10byte_cmd(client, CMD_GPIO_ST_CL, value ? pattern : 0,
++			       !value ? pattern : 0);
++}
++
++static int rp2040_gbdg_get_regulator(struct device *dev,
++				     struct rp2040_gbdg *rp2040_gbdg)
++{
++	struct regulator *reg = devm_regulator_get(dev, "power");
++
++	if (IS_ERR(reg))
++		return PTR_ERR(reg);
++
++	rp2040_gbdg->regulator = reg;
++
++	return 0;
++}
++
++static void rp2040_gbdg_parse_dt(struct rp2040_gbdg *rp2040_gbdg)
++{
++	struct i2c_client *client = rp2040_gbdg->client;
++	struct of_phandle_args of_args[2] = { 0 };
++	struct device *dev = &client->dev;
++	struct device_node *dn;
++
++	rp2040_gbdg->bypass_cache =
++		of_property_read_bool(client->dev.of_node, "bypass-cache");
++
++	/* Optionally configure fast_xfer if RP1 is being used */
++	if (of_parse_phandle_with_args(client->dev.of_node, "fast_xfer-gpios",
++				       "#gpio-cells", 0, &of_args[0]) ||
++	    of_parse_phandle_with_args(client->dev.of_node, "fast_xfer-gpios",
++				       "#gpio-cells", 1, &of_args[1])) {
++		dev_info(dev, "Could not parse fast_xfer-gpios phandles\n");
++		goto node_put;
++	}
++
++	if (of_args[0].np != of_args[1].np) {
++		dev_info(
++			dev,
++			"fast_xfer-gpios are not provided by the same controller\n");
++		goto node_put;
++	}
++	dn = of_args[0].np;
++	if (!of_device_is_compatible(dn, "raspberrypi,rp1-gpio")) {
++		dev_info(dev, "fast_xfer-gpios controller is not an rp1\n");
++		goto node_put;
++	}
++	if (of_args[0].args_count != 2 || of_args[1].args_count != 2) {
++		dev_info(dev, "of_args count is %d\n", of_args[0].args_count);
++		goto node_put;
++	}
++
++	if (of_property_read_u32_index(
++		    client->dev.of_node, "fast_xfer_recv_gpio_base", 0,
++		    &rp2040_gbdg->fast_xfer_recv_gpio_base)) {
++		dev_info(dev, "Could not read fast_xfer_recv_gpio_base\n");
++		goto node_put;
++	}
++
++	rp2040_gbdg->fast_xfer_gpios =
++		devm_gpiod_get_array_optional(dev, "fast_xfer", GPIOD_ASIS);
++	if (!rp2040_gbdg->fast_xfer_gpios) {
++		dev_info(dev, "Could not acquire fast_xfer-gpios\n");
++		goto node_put;
++	}
++
++	rp2040_gbdg->fast_xfer_data_index = of_args[0].args[0];
++	rp2040_gbdg->fast_xfer_clock_index = of_args[1].args[0];
++	rp2040_gbdg->fast_xfer_requires_i2c_lock = of_property_read_bool(
++		client->dev.of_node, "fast_xfer_requires_i2c_lock");
++
++	rp2040_gbdg->gpio_base = of_iomap(dn, 0);
++	if (IS_ERR_OR_NULL(rp2040_gbdg->gpio_base)) {
++		dev_info(&client->dev, "%s() unable to map gpio_base\n",
++			 __func__);
++		rp2040_gbdg->gpio_base = NULL;
++		devm_gpiod_put_array(dev, rp2040_gbdg->fast_xfer_gpios);
++		rp2040_gbdg->fast_xfer_gpios = NULL;
++		goto node_put;
++	}
++
++	rp2040_gbdg->rio_base = of_iomap(dn, 1);
++	if (IS_ERR_OR_NULL(rp2040_gbdg->rio_base)) {
++		dev_info(&client->dev, "%s() unable to map rio_base\n",
++			 __func__);
++		rp2040_gbdg->rio_base = NULL;
++		iounmap(rp2040_gbdg->gpio_base);
++		rp2040_gbdg->gpio_base = NULL;
++		devm_gpiod_put_array(dev, rp2040_gbdg->fast_xfer_gpios);
++		rp2040_gbdg->fast_xfer_gpios = NULL;
++		goto node_put;
++	}
++
++node_put:
++	if (of_args[0].np)
++		of_node_put(of_args[0].np);
++	if (of_args[1].np)
++		of_node_put(of_args[1].np);
++}
++
++static int rp2040_gbdg_power_off(struct rp2040_gbdg *rp2040_gbdg)
++{
++	struct device *dev = &rp2040_gbdg->client->dev;
++	int ret;
++
++	ret = regulator_disable(rp2040_gbdg->regulator);
++	if (ret) {
++		dev_err(dev, "%s: Could not disable regulator\n", __func__);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_power_on(struct rp2040_gbdg *rp2040_gbdg)
++{
++	struct device *dev = &rp2040_gbdg->client->dev;
++	int ret;
++
++	ret = regulator_enable(rp2040_gbdg->regulator);
++	if (ret) {
++		dev_err(dev, "%s: Could not enable regulator\n", __func__);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int rp2040_gbdg_probe(struct i2c_client *client)
++{
++	struct rp2040_gbdg_device_info info;
++	struct spi_controller *controller;
++	struct device *dev = &client->dev;
++	struct rp2040_gbdg *rp2040_gbdg;
++	struct device_node *np;
++	int ret;
++
++	np = dev->of_node;
++
++	controller = devm_spi_alloc_master(dev, sizeof(struct rp2040_gbdg));
++	if (!controller)
++		return dev_err_probe(dev, ENOMEM,
++				     "could not alloc spi controller\n");
++
++	rp2040_gbdg = spi_controller_get_devdata(controller);
++	i2c_set_clientdata(client, rp2040_gbdg);
++	rp2040_gbdg->controller = controller;
++	rp2040_gbdg->client = client;
++
++	ret = rp2040_gbdg_get_regulator(dev, rp2040_gbdg);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "Cannot get regulator\n");
++
++	ret = rp2040_gbdg_power_on(rp2040_gbdg);
++	if (ret)
++		return dev_err_probe(dev, ret, "Could not power on device\n");
++
++	pm_runtime_set_active(dev);
++	pm_runtime_get_noresume(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_set_autosuspend_delay(dev, 1000);
++	pm_runtime_use_autosuspend(dev);
++
++	ret = rp2040_gbdg_get_device_info(client, &info);
++	if (ret) {
++		dev_err(dev, "Could not get device info\n");
++		goto err_pm;
++	}
++
++	dev_info(dev, "%s() found dev ID: %llx, fw ver. %u\n", __func__,
++		 info.id, info.version);
++
++	rp2040_gbdg->shash = crypto_alloc_shash("md5", 0, 0);
++	if (IS_ERR(rp2040_gbdg->shash)) {
++		ret = PTR_ERR(rp2040_gbdg->shash);
++		dev_err(dev, "Could not allocate shash\n");
++		goto err_pm;
++	}
++
++	if (crypto_shash_digestsize(rp2040_gbdg->shash) != MD5_DIGEST_SIZE) {
++		ret = -EINVAL;
++		dev_err(dev, "error: Unexpected hash digest size\n");
++		goto err_shash;
++	}
++
++	rp2040_gbdg->shash_desc =
++		devm_kmalloc(dev,
++			     sizeof(struct shash_desc) +
++				     crypto_shash_descsize(rp2040_gbdg->shash),
++			     0);
++
++	if (!rp2040_gbdg->shash_desc) {
++		ret = -ENOMEM;
++		dev_err(dev,
++			"error: Could not allocate memory for shash_desc\n");
++		goto err_shash;
++	}
++	rp2040_gbdg->shash_desc->tfm = rp2040_gbdg->shash;
++
++	controller->bus_num = -1;
++	controller->num_chipselect = 1;
++	controller->mode_bits = SPI_CPOL | SPI_CPHA;
++	controller->bits_per_word_mask = SPI_BPW_MASK(8);
++	controller->min_speed_hz = 35000000;
++	controller->max_speed_hz = 35000000;
++	controller->max_transfer_size = rp2040_gbdg_max_transfer_size;
++	controller->max_message_size = rp2040_gbdg_max_transfer_size;
++	controller->transfer_one = rp2040_gbdg_transfer_one;
++	controller->set_cs = rp2040_gbdg_set_cs;
++
++	controller->dev.of_node = np;
++	controller->auto_runtime_pm = true;
++
++	ret = devm_spi_register_controller(dev, controller);
++	if (ret) {
++		dev_err(dev, "error: Could not register SPI controller\n");
++		goto err_shash;
++	}
++
++	memset(&rp2040_gbdg->gc, 0, sizeof(struct gpio_chip));
++	rp2040_gbdg->gc.parent = dev;
++	rp2040_gbdg->gc.label = MODULE_NAME;
++	rp2040_gbdg->gc.owner = THIS_MODULE;
++	rp2040_gbdg->gc.base = -1;
++	rp2040_gbdg->gc.ngpio = NUM_GPIO;
++
++	rp2040_gbdg->gc.request = rp2040_gbdg_gpio_request;
++	rp2040_gbdg->gc.free = rp2040_gbdg_gpio_free;
++	rp2040_gbdg->gc.get_direction = rp2040_gbdg_gpio_get_direction;
++	rp2040_gbdg->gc.direction_input = rp2040_gbdg_gpio_dir_in;
++	rp2040_gbdg->gc.direction_output = rp2040_gbdg_gpio_dir_out;
++	rp2040_gbdg->gc.get = rp2040_gbdg_gpio_get;
++	rp2040_gbdg->gc.set = rp2040_gbdg_gpio_set;
++	rp2040_gbdg->gc.can_sleep = true;
++
++	rp2040_gbdg->gpio_requested = 0;
++
++	/* Coming out of reset, all GPIOs are inputs */
++	rp2040_gbdg->gpio_direction = ~0;
++
++	ret = devm_gpiochip_add_data(dev, &rp2040_gbdg->gc, rp2040_gbdg);
++	if (ret) {
++		dev_err(dev, "error: Could not add data to gpiochip\n");
++		goto err_shash;
++	}
++
++	rp2040_gbdg_parse_dt(rp2040_gbdg);
++
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
++	return 0;
++
++err_shash:
++	crypto_free_shash(rp2040_gbdg->shash);
++err_pm:
++	pm_runtime_disable(dev);
++	pm_runtime_put_noidle(dev);
++	rp2040_gbdg_power_off(rp2040_gbdg);
++
++	return ret;
++}
++
++static void rp2040_gbdg_remove(struct i2c_client *client)
++{
++	struct rp2040_gbdg *priv_data = i2c_get_clientdata(client);
++
++	crypto_free_shash(priv_data->shash);
++
++	if (priv_data->gpio_base) {
++		iounmap(priv_data->gpio_base);
++		priv_data->gpio_base = NULL;
++	}
++	if (priv_data->rio_base) {
++		iounmap(priv_data->rio_base);
++		priv_data->rio_base = NULL;
++	}
++
++	pm_runtime_disable(&client->dev);
++	if (!pm_runtime_status_suspended(&client->dev))
++		rp2040_gbdg_power_off(priv_data);
++	pm_runtime_set_suspended(&client->dev);
++}
++
++static const struct i2c_device_id rp2040_gbdg_id[] = {
++	{ "rp2040-gpio-bridge", 0 },
++	{},
++};
++MODULE_DEVICE_TABLE(i2c, rp2040_gbdg_id);
++
++static const struct of_device_id rp2040_gbdg_of_match[] = {
++	{ .compatible = "raspberrypi,rp2040-gpio-bridge" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rp2040_gbdg_of_match);
++
++static int rp2040_gbdg_runtime_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++
++	return rp2040_gbdg_power_off(i2c_get_clientdata(client));
++}
++
++static int rp2040_gbdg_runtime_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++
++	return rp2040_gbdg_power_on(i2c_get_clientdata(client));
++}
++
++static const struct dev_pm_ops rp2040_gbdg_pm_ops = { SET_RUNTIME_PM_OPS(
++	rp2040_gbdg_runtime_suspend, rp2040_gbdg_runtime_resume, NULL) };
++
++static struct i2c_driver rp2040_gbdg_driver = {
++	.driver = {
++		.name = MODULE_NAME,
++		.of_match_table = of_match_ptr(rp2040_gbdg_of_match),
++		.pm = &rp2040_gbdg_pm_ops,
++	},
++	.probe = rp2040_gbdg_probe,
++	.remove = rp2040_gbdg_remove,
++	.id_table = rp2040_gbdg_id,
++};
++
++module_i2c_driver(rp2040_gbdg_driver);
++
++MODULE_AUTHOR("Richard Oliver <richard.oliver@raspberrypi.com>");
++MODULE_DESCRIPTION("Raspberry Pi RP2040 GPIO Bridge");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,110 @@
+From 84b781cb3722120bd0f54de194832378e547fe02 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 9 Feb 2024 18:52:02 +0000
+Subject: [PATCH 0888/1085] media: rp1: cfe: Actually use the number of lanes
+ configured
+
+The driver was calling get_mbus_config to ask the sensor subdev
+how many CSI2 data lanes it wished to use and with what other
+properties, but then failed to pass that to the DPHY configuration.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 21 ++++++++-----------
+ .../media/platform/raspberrypi/rp1_cfe/csi2.h |  1 -
+ .../media/platform/raspberrypi/rp1_cfe/dphy.c |  2 +-
+ .../media/platform/raspberrypi/rp1_cfe/dphy.h |  3 ++-
+ 4 files changed, 12 insertions(+), 15 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -1086,7 +1086,7 @@ static u64 sensor_link_rate(struct cfe_d
+ 	}
+ 
+ 	link_freq = v4l2_get_link_freq(subdev->ctrl_handler, fmt->depth,
+-				       cfe->csi2.active_data_lanes * 2);
++				       cfe->csi2.dphy.active_lanes * 2);
+ 	if (link_freq < 0)
+ 		goto err;
+ 
+@@ -1149,9 +1149,6 @@ static int cfe_start_streaming(struct vb
+ 	cfg_reg_write(cfe, MIPICFG_CFG, MIPICFG_CFG_SEL_CSI);
+ 	cfg_reg_write(cfe, MIPICFG_INTE, MIPICFG_INT_CSI_DMA | MIPICFG_INT_PISP_FE);
+ 
+-	cfe->csi2.active_data_lanes = cfe->csi2.dphy.num_lanes;
+-	cfe_dbg("Running with %u data lanes\n", cfe->csi2.active_data_lanes);
+-
+ 	ret = v4l2_subdev_call(cfe->sensor, pad, get_mbus_config, 0,
+ 			       &mbus_config);
+ 	if (ret < 0 && ret != -ENOIOCTLCMD) {
+@@ -1159,17 +1156,17 @@ static int cfe_start_streaming(struct vb
+ 		goto err_pm_put;
+ 	}
+ 
+-	cfe->csi2.active_data_lanes = mbus_config.bus.mipi_csi2.num_data_lanes;
+-	if (!cfe->csi2.active_data_lanes)
+-		cfe->csi2.active_data_lanes = cfe->csi2.dphy.num_lanes;
+-	if (cfe->csi2.active_data_lanes > cfe->csi2.dphy.num_lanes) {
++	cfe->csi2.dphy.active_lanes = mbus_config.bus.mipi_csi2.num_data_lanes;
++	if (!cfe->csi2.dphy.active_lanes)
++		cfe->csi2.dphy.active_lanes = cfe->csi2.dphy.max_lanes;
++	if (cfe->csi2.dphy.active_lanes > cfe->csi2.dphy.max_lanes) {
+ 		cfe_err("Device has requested %u data lanes, which is >%u configured in DT\n",
+-			cfe->csi2.active_data_lanes, cfe->csi2.dphy.num_lanes);
++			cfe->csi2.dphy.active_lanes, cfe->csi2.dphy.max_lanes);
+ 		ret = -EINVAL;
+ 		goto err_disable_cfe;
+ 	}
+ 
+-	cfe_dbg("Configuring CSI-2 block\n");
++	cfe_dbg("Configuring CSI-2 block - %u data lanes\n", cfe->csi2.dphy.active_lanes);
+ 	cfe->csi2.dphy.dphy_rate = sensor_link_rate(cfe) / 1000000UL;
+ 	csi2_open_rx(&cfe->csi2);
+ 
+@@ -2167,11 +2164,11 @@ static int of_cfe_connect_subdevs(struct
+ 		}
+ 	}
+ 
+-	cfe->csi2.dphy.num_lanes = ep.bus.mipi_csi2.num_data_lanes;
++	cfe->csi2.dphy.max_lanes = ep.bus.mipi_csi2.num_data_lanes;
+ 	cfe->csi2.bus_flags = ep.bus.mipi_csi2.flags;
+ 
+ 	cfe_dbg("subdevice %pOF: %u data lanes, flags=0x%08x, multipacket_line=%u\n",
+-		sensor_node, cfe->csi2.dphy.num_lanes, cfe->csi2.bus_flags,
++		sensor_node, cfe->csi2.dphy.max_lanes, cfe->csi2.bus_flags,
+ 		cfe->csi2.multipacket_line);
+ 
+ 	/* Initialize and register the async notifier. */
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
+@@ -57,7 +57,6 @@ struct csi2_device {
+ 
+ 	enum v4l2_mbus_type bus_type;
+ 	unsigned int bus_flags;
+-	u32 active_data_lanes;
+ 	bool multipacket_line;
+ 	unsigned int num_lines[CSI2_NUM_CHANNELS];
+ 
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/dphy.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/dphy.c
+@@ -149,7 +149,7 @@ static void dphy_init(struct dphy_data *
+ 
+ void dphy_start(struct dphy_data *dphy)
+ {
+-	dw_csi2_host_write(dphy, N_LANES, (dphy->num_lanes - 1));
++	dw_csi2_host_write(dphy, N_LANES, (dphy->active_lanes - 1));
+ 	dphy_init(dphy);
+ 	dw_csi2_host_write(dphy, RESETN, 0xffffffff);
+ 	usleep_range(10, 50);
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/dphy.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/dphy.h
+@@ -16,7 +16,8 @@ struct dphy_data {
+ 	void __iomem *base;
+ 
+ 	u32 dphy_rate;
+-	u32 num_lanes;
++	u32 max_lanes;
++	u32 active_lanes;
+ };
+ 
+ void dphy_probe(struct dphy_data *dphy);

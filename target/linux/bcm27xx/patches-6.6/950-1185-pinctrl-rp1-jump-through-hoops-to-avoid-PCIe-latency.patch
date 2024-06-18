@@ -1,0 +1,288 @@
+From d24229dcef58e0162780ceffa02eb5f6a01b9a4d Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 16 Jul 2024 16:47:08 +0100
+Subject: [PATCH 1185/1215] pinctrl: rp1: jump through hoops to avoid PCIe
+ latency issues
+
+Automatic link power saving plus the ability of a root complex to buffer
+pending posted write transfers (and consider them complete before being
+transmitted on the wire) causes compression of updates to GPIO state.
+
+The large bandwidth of a Gen 2 x4 link means the writes toggle state
+inside RP1 as fast as it can go (~20MHz), which is bad for applications
+wanting bitbash with at least a few microseconds of delay between
+updates.
+
+By tailoring IO access patterns to a special Root Complex register,
+writes to GPIOs can be stalled until the link wakes - meaning all writes
+end up with a reasonably consistent minimum pacing (~200ns).
+
+Additionally, write barriers have no effect other than to arbitrarily
+delay some writes by a small, variable amount - so remove the vast
+majority of these in areas that could be hot-paths.
+
+Although the IO memory is mapped with Device strongly-ordered semantics,
+this doesn't prevent the splitter inside BCM2712 from letting an MMIO
+read request to a GPIO register get ahead of the pacing writes to the
+Root Complex register. So each pin state read must flush writes out to
+the Outer-Shareable domain.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/pinctrl/pinctrl-rp1.c | 120 +++++++++++++++++++++++++++++-----
+ 1 file changed, 105 insertions(+), 15 deletions(-)
+
+--- a/drivers/pinctrl/pinctrl-rp1.c
++++ b/drivers/pinctrl/pinctrl-rp1.c
+@@ -197,6 +197,7 @@ struct rp1_pin_info {
+ 	void __iomem *inte;
+ 	void __iomem *ints;
+ 	void __iomem *pad;
++	void __iomem *dummy;
+ };
+ 
+ enum funcs {
+@@ -276,6 +277,7 @@ struct rp1_pinctrl {
+ 	void __iomem *gpio_base;
+ 	void __iomem *rio_base;
+ 	void __iomem *pads_base;
++	void __iomem *dummy_base;
+ 	int irq[RP1_NUM_BANKS];
+ 	struct rp1_pin_info pins[RP1_NUM_GPIOS];
+ 
+@@ -577,6 +579,42 @@ static bool persist_gpio_outputs = true;
+ module_param(persist_gpio_outputs, bool, 0644);
+ MODULE_PARM_DESC(persist_gpio_outputs, "Enable GPIO_OUT persistence when pin is freed");
+ 
++static bool pace_pin_updates = true;
++module_param(pace_pin_updates, bool, 0644);
++MODULE_PARM_DESC(pace_pin_updates, "Update pin states with guaranteed monotonicity if PCIe ASPM is enabled");
++
++static inline void rp1_pin_writel(u32 val, void __iomem *dummy, void __iomem *reg)
++{
++	unsigned long flags;
++
++	local_irq_save(flags);
++	/*
++	 * Issuing 6 pipelined writes to the RC's Slot Control register will stall the
++	 * peripheral bus inside 2712 if the link is in L1. This acts as a lightweight
++	 * "fence" operation preventing back-to-back writes arriving at RP1 on a wake.
++	 */
++	if (dummy) {
++		writel_relaxed(0, dummy);
++		writel_relaxed(0, dummy);
++		writel_relaxed(0, dummy);
++		writel_relaxed(0, dummy);
++		writel_relaxed(0, dummy);
++		writel_relaxed(0, dummy);
++	}
++	writel_relaxed(val, reg);
++	local_irq_restore(flags);
++}
++
++static inline u32 rp1_pin_readl(const void __iomem *ioaddr)
++{
++	/*
++	 * Prior posted writes may not yet have been emitted by the CPU - do a store-flush
++	 * before reading GPIO state, as this will serialise writes versus the next issued read.
++	 */
++	__dma_wmb();
++	return readl(ioaddr);
++}
++
+ static int rp1_pinconf_set(struct pinctrl_dev *pctldev,
+ 			   unsigned int offset, unsigned long *configs,
+ 			   unsigned int num_configs);
+@@ -603,12 +641,12 @@ static struct rp1_pin_info *rp1_get_pin_
+ 
+ static void rp1_pad_update(struct rp1_pin_info *pin, u32 clr, u32 set)
+ {
+-	u32 padctrl = readl(pin->pad);
++	u32 padctrl = rp1_pin_readl(pin->pad);
+ 
+ 	padctrl &= ~clr;
+ 	padctrl |= set;
+ 
+-	writel(padctrl, pin->pad);
++	rp1_pin_writel(padctrl, pin->dummy, pin->pad);
+ }
+ 
+ static void rp1_input_enable(struct rp1_pin_info *pin, int value)
+@@ -625,7 +663,7 @@ static void rp1_output_enable(struct rp1
+ 
+ static u32 rp1_get_fsel(struct rp1_pin_info *pin)
+ {
+-	u32 ctrl = readl(pin->gpio + RP1_GPIO_CTRL);
++	u32 ctrl = rp1_pin_readl(pin->gpio + RP1_GPIO_CTRL);
+ 	u32 oeover = FLD_GET(ctrl, RP1_GPIO_CTRL_OEOVER);
+ 	u32 fsel = FLD_GET(ctrl, RP1_GPIO_CTRL_FUNCSEL);
+ 
+@@ -637,7 +675,7 @@ static u32 rp1_get_fsel(struct rp1_pin_i
+ 
+ static void rp1_set_fsel(struct rp1_pin_info *pin, u32 fsel)
+ {
+-	u32 ctrl = readl(pin->gpio + RP1_GPIO_CTRL);
++	u32 ctrl = rp1_pin_readl(pin->gpio + RP1_GPIO_CTRL);
+ 
+ 	if (fsel >= RP1_FSEL_COUNT)
+ 		fsel = RP1_FSEL_NONE_HW;
+@@ -652,12 +690,12 @@ static void rp1_set_fsel(struct rp1_pin_
+ 		FLD_SET(ctrl, RP1_GPIO_CTRL_OEOVER, RP1_OEOVER_PERI);
+ 	}
+ 	FLD_SET(ctrl, RP1_GPIO_CTRL_FUNCSEL, fsel);
+-	writel(ctrl, pin->gpio + RP1_GPIO_CTRL);
++	rp1_pin_writel(ctrl, pin->dummy, pin->gpio + RP1_GPIO_CTRL);
+ }
+ 
+ static int rp1_get_dir(struct rp1_pin_info *pin)
+ {
+-	return !(readl(pin->rio + RP1_RIO_OE) & (1 << pin->offset)) ?
++	return !(rp1_pin_readl(pin->rio + RP1_RIO_OE) & (1 << pin->offset)) ?
+ 		RP1_DIR_INPUT : RP1_DIR_OUTPUT;
+ }
+ 
+@@ -665,19 +703,19 @@ static void rp1_set_dir(struct rp1_pin_i
+ {
+ 	int offset = is_input ? RP1_CLR_OFFSET : RP1_SET_OFFSET;
+ 
+-	writel(1 << pin->offset, pin->rio + RP1_RIO_OE + offset);
++	rp1_pin_writel(1 << pin->offset, pin->dummy, pin->rio + RP1_RIO_OE + offset);
+ }
+ 
+ static int rp1_get_value(struct rp1_pin_info *pin)
+ {
+-	return !!(readl(pin->rio + RP1_RIO_IN) & (1 << pin->offset));
++	return !!(rp1_pin_readl(pin->rio + RP1_RIO_IN) & (1 << pin->offset));
+ }
+ 
+ static void rp1_set_value(struct rp1_pin_info *pin, int value)
+ {
+ 	/* Assume the pin is already an output */
+-	writel(1 << pin->offset,
+-	       pin->rio + RP1_RIO_OUT + (value ? RP1_SET_OFFSET : RP1_CLR_OFFSET));
++	rp1_pin_writel(1 << pin->offset, pin->dummy,
++		       pin->rio + RP1_RIO_OUT + (value ? RP1_SET_OFFSET : RP1_CLR_OFFSET));
+ }
+ 
+ static int rp1_gpio_get(struct gpio_chip *chip, unsigned offset)
+@@ -1298,7 +1336,7 @@ static const struct pinmux_ops rp1_pmx_o
+ 
+ static void rp1_pull_config_set(struct rp1_pin_info *pin, unsigned int arg)
+ {
+-	u32 padctrl = readl(pin->pad);
++	u32 padctrl = rp1_pin_readl(pin->pad);
+ 
+ 	FLD_SET(padctrl, RP1_PAD_PULL, arg & 0x3);
+ 
+@@ -1398,7 +1436,7 @@ static int rp1_pinconf_get(struct pinctr
+ 	if (!pin)
+ 		return -EINVAL;
+ 
+-	padctrl = readl(pin->pad);
++	padctrl = rp1_pin_readl(pin->pad);
+ 
+ 	switch (param) {
+ 	case PIN_CONFIG_INPUT_ENABLE:
+@@ -1493,6 +1531,7 @@ static int rp1_pinctrl_probe(struct plat
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct device_node *np = dev->of_node;
++	struct device_node *rp1_node = NULL;
+ 	struct rp1_pinctrl *pc;
+ 	struct gpio_irq_chip *girq;
+ 	int err, i;
+@@ -1528,6 +1567,40 @@ static int rp1_pinctrl_probe(struct plat
+ 	pc->gpio_chip = rp1_gpio_chip;
+ 	pc->gpio_chip.parent = dev;
+ 
++	/*
++	 * Workaround for the vagaries of PCIe on BCM2712
++	 *
++	 * If the link to RP1 is in L1, then the BRCMSTB RC will buffer many
++	 * outbound writes - and generate write responses for them, despite the
++	 * fact that the link is not yet active. This has the effect of compressing
++	 * multiple writes to GPIOs together, destroying any pacing that an application
++	 * may require in the 1-10us range.
++	 *
++	 * The RC Slot Control configuration register is special. It emits a
++	 * MsgD for every write to it, will stall further writes until the message
++	 * goes out on the wire. This can be (ab)used to force CPU stalls when the
++	 * link is inactive, at the cost of a small amount of downstream bandwidth
++	 * and some 200ns of added latency for each write.
++	 *
++	 * Several back-to-back configuration writes are necessary to "fill the pipe",
++	 * otherwise the outbound MAC can consume a pending MMIO write and reorder
++	 * it with respect to the config writes - undoing the intent.
++	 *
++	 * of_iomap() is used directly here as the address overlaps with the RC driver's
++	 * usage.
++	 */
++	rp1_node = of_find_node_by_name(NULL, "rp1");
++	if (!rp1_node)
++		dev_err(&pdev->dev, "failed to find RP1 DT node\n");
++	else if (pace_pin_updates &&
++		 of_device_is_compatible(rp1_node->parent, "brcm,bcm2712-pcie")) {
++		pc->dummy_base = of_iomap(rp1_node->parent, 0);
++		if (IS_ERR(pc->dummy_base)) {
++			dev_warn(&pdev->dev, "could not map bcm2712 root complex registers\n");
++			pc->dummy_base = NULL;
++		}
++	}
++
+ 	for (i = 0; i < RP1_NUM_BANKS; i++) {
+ 		const struct rp1_iobank_desc *bank = &rp1_iobanks[i];
+ 		int j;
+@@ -1547,14 +1620,17 @@ static int rp1_pinctrl_probe(struct plat
+ 			pin->rio  = pc->rio_base + bank->rio_offset;
+ 			pin->pad  = pc->pads_base + bank->pads_offset +
+ 				    j * sizeof(u32);
++			pin->dummy = pc->dummy_base ? pc->dummy_base + 0xc0 : NULL;
+ 		}
+ 
+ 		raw_spin_lock_init(&pc->irq_lock[i]);
+ 	}
+ 
+ 	pc->pctl_dev = devm_pinctrl_register(dev, &rp1_pinctrl_desc, pc);
+-	if (IS_ERR(pc->pctl_dev))
+-		return PTR_ERR(pc->pctl_dev);
++	if (IS_ERR(pc->pctl_dev)) {
++		err = PTR_ERR(pc->pctl_dev);
++		goto out_iounmap;
++	}
+ 
+ 	girq = &pc->gpio_chip.irq;
+ 	girq->chip = &rp1_gpio_irq_chip;
+@@ -1583,7 +1659,7 @@ static int rp1_pinctrl_probe(struct plat
+ 	err = devm_gpiochip_add_data(dev, &pc->gpio_chip, pc);
+ 	if (err) {
+ 		dev_err(dev, "could not add GPIO chip\n");
+-		return err;
++		goto out_iounmap;
+ 	}
+ 
+ 	pc->gpio_range = rp1_pinctrl_gpio_range;
+@@ -1592,10 +1668,24 @@ static int rp1_pinctrl_probe(struct plat
+ 	pinctrl_add_gpio_range(pc->pctl_dev, &pc->gpio_range);
+ 
+ 	return 0;
++
++out_iounmap:
++	if (pc->dummy_base)
++		iounmap(pc->dummy_base);
++	return err;
++}
++
++static void rp1_pinctrl_remove(struct platform_device *pdev)
++{
++	struct rp1_pinctrl *pc = platform_get_drvdata(pdev);
++
++	if (pc->dummy_base)
++		iounmap(pc->dummy_base);
+ }
+ 
+ static struct platform_driver rp1_pinctrl_driver = {
+ 	.probe = rp1_pinctrl_probe,
++	.remove_new = rp1_pinctrl_remove,
+ 	.driver = {
+ 		.name = MODULE_NAME,
+ 		.of_match_table = rp1_pinctrl_match,

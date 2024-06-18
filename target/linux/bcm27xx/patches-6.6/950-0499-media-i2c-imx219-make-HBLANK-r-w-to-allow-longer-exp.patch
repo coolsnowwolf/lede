@@ -1,0 +1,96 @@
+From 1ca6523a7173ac73f612c4633fc6308c6b5aade9 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 14 Sep 2023 12:23:05 +0100
+Subject: [PATCH 0499/1085] media: i2c: imx219: make HBLANK r/w to allow longer
+ exposures
+
+The HBLANK control was read-only, and always configured such
+that the sensor HTS register was 3448. This limited the maximum
+exposure time that could be achieved to around 1.26 secs.
+
+Make HBLANK read/write so that the line time can be extended,
+and thereby allow longer exposures (and slower frame rates).
+Retain the overall HTS setting when changing modes rather than
+resetting it to a default.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx219.c | 36 ++++++++++++++++++++++++------------
+ 1 file changed, 24 insertions(+), 12 deletions(-)
+
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -85,8 +85,10 @@
+ #define IMX219_FLL_STEP			1
+ #define IMX219_FLL_DEFAULT		0x0c98
+ 
+-/* HBLANK control - read only */
+-#define IMX219_PPL_DEFAULT		3448
++/* HBLANK control range */
++#define IMX219_PPL_MIN			3448
++#define IMX219_PPL_MAX			0x7ff0
++#define IMX219_REG_HTS			0x0162
+ 
+ #define IMX219_REG_LINE_LENGTH_A	CCI_REG16(0x0162)
+ #define IMX219_REG_X_ADD_STA_A		CCI_REG16(0x0164)
+@@ -548,6 +550,10 @@ static int imx219_set_ctrl(struct v4l2_c
+ 		cci_write(imx219->regmap, IMX219_REG_VTS,
+ 			  imx219->mode->height + ctrl->val, &ret);
+ 		break;
++	case V4L2_CID_HBLANK:
++		cci_write(imx219->regmap, IMX219_REG_HTS,
++			  imx219->mode->width + ctrl->val, &ret);
++		break;
+ 	case V4L2_CID_TEST_PATTERN_RED:
+ 		cci_write(imx219->regmap, IMX219_REG_TESTP_RED,
+ 			  ctrl->val, &ret);
+@@ -677,6 +683,8 @@ static int imx219_set_pad_format(struct
+ 	*crop = mode->crop;
+ 
+ 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
++		u32 prev_hts = imx219->mode->width + imx219->hblank->val;
++
+ 		imx219->mode = mode;
+ 		/* Update limits and set FPS to default */
+ 		__v4l2_ctrl_modify_range(imx219->vblank, IMX219_VBLANK_MIN,
+@@ -693,13 +701,18 @@ static int imx219_set_pad_format(struct
+ 					 exposure_max, imx219->exposure->step,
+ 					 exposure_def);
+ 		/*
+-		 * Currently PPL is fixed to IMX219_PPL_DEFAULT, so hblank
+-		 * depends on mode->width only, and is not changeble in any
+-		 * way other than changing the mode.
++		 * Retain PPL setting from previous mode so that the
++		 * line time does not change on a mode change.
++		 * Limits have to be recomputed as the controls define
++		 * the blanking only, so PPL values need to have the
++		 * mode width subtracted.
+ 		 */
+-		hblank = IMX219_PPL_DEFAULT - mode->width;
+-		__v4l2_ctrl_modify_range(imx219->hblank, hblank, hblank, 1,
+-					 hblank);
++		hblank = prev_hts - mode->width;
++		__v4l2_ctrl_modify_range(imx219->hblank,
++					 IMX219_PPL_MIN - mode->width,
++					 IMX219_PPL_MAX - mode->width,
++					 1, IMX219_PPL_MIN - mode->width);
++		__v4l2_ctrl_s_ctrl(imx219->hblank, hblank);
+ 	}
+ 
+ 	return 0;
+@@ -1094,12 +1107,11 @@ static int imx219_init_controls(struct i
+ 					   V4L2_CID_VBLANK, IMX219_VBLANK_MIN,
+ 					   IMX219_VTS_MAX - height, 1,
+ 					   imx219->mode->vts_def - height);
+-	hblank = IMX219_PPL_DEFAULT - imx219->mode->width;
++	hblank = IMX219_PPL_MIN - imx219->mode->width;
+ 	imx219->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx219_ctrl_ops,
+-					   V4L2_CID_HBLANK, hblank, hblank,
++					   V4L2_CID_HBLANK, hblank,
++					   IMX219_PPL_MIN - imx219->mode->width,
+ 					   1, hblank);
+-	if (imx219->hblank)
+-		imx219->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 	exposure_max = imx219->mode->vts_def - 4;
+ 	exposure_def = (exposure_max < IMX219_EXPOSURE_DEFAULT) ?
+ 		exposure_max : IMX219_EXPOSURE_DEFAULT;

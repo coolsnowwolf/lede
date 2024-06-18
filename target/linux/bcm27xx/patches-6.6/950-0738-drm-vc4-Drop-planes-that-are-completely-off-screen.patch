@@ -1,0 +1,63 @@
+From f73b18eb0d489d17fb032bf15da74bc44f922321 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 17 Nov 2023 14:43:44 +0000
+Subject: [PATCH 0738/1085] drm/vc4: Drop planes that are completely off-screen
+
+It is permitted for a plane to be configured such that none
+of it is on-screen via either negative dest rectangle X,Y
+offset, or just an offset that is greater than the crtc
+dimensions.
+
+These planes were resized via drm_atomic_helper_check_plane_state
+such that the source rectangle had a zero width or height, but
+they still created a dlist entry even though they contributed
+no pixels. In the case of vc6_plane_mode_set, that it could result
+in negative values being written into registers, which caused
+incorrect behaviour.
+
+Drop planes that result in a source width or height of 0 pixels
+to avoid the incorrect rendering.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -1134,6 +1134,12 @@ static int vc4_plane_mode_set(struct drm
+ 	width = vc4_state->src_w[0] >> 16;
+ 	height = vc4_state->src_h[0] >> 16;
+ 
++	if (!width || !height) {
++		/* 0 source size probably means the plane is offscreen */
++		vc4_state->dlist_initialized = 1;
++		return 0;
++	}
++
+ 	/* SCL1 is used for Cb/Cr scaling of planar formats.  For RGB
+ 	 * and 4:4:4, scl1 should be set to scl0 so both channels of
+ 	 * the scaler do the same thing.  For YUV, the Y plane needs
+@@ -1649,6 +1655,12 @@ static int vc6_plane_mode_set(struct drm
+ 	width = vc4_state->src_w[0] >> 16;
+ 	height = vc4_state->src_h[0] >> 16;
+ 
++	if (!width || !height) {
++		/* 0 source size probably means the plane is offscreen */
++		vc4_state->dlist_initialized = 1;
++		return 0;
++	}
++
+ 	/* SCL1 is used for Cb/Cr scaling of planar formats.  For RGB
+ 	 * and 4:4:4, scl1 should be set to scl0 so both channels of
+ 	 * the scaler do the same thing.  For YUV, the Y plane needs
+@@ -2020,6 +2032,9 @@ int vc4_plane_atomic_check(struct drm_pl
+ 	if (ret)
+ 		return ret;
+ 
++	if (!vc4_state->src_w[0] || !vc4_state->src_h[0])
++		return 0;
++
+ 	ret = vc4_plane_allocate_lbm(new_plane_state);
+ 	if (ret)
+ 		return ret;

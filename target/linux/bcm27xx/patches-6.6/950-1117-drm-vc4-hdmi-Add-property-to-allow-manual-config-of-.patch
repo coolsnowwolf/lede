@@ -1,0 +1,175 @@
+From 5ba39f5b08d6df4aadbe60768b82b5e2d405c0d5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 14 Nov 2022 19:32:10 +0000
+Subject: [PATCH 1117/1135] drm/vc4: hdmi: Add property to allow manual config
+ of RGB or YCbCr
+
+Add a custom property "Output format" that allows the overriding
+of the default colourspace choice in the way that the old
+firmware hdmi_pixel_encoding property did. If the chosen format is not
+supported, then it will still drop back to the older behaviour.
+
+This won't be acceptable to upstream, but it adds back the missing
+functionality of hdmi_pixel_encoding.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 59 ++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vc4/vc4_hdmi.h |  8 +++++
+ 2 files changed, 67 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -605,6 +605,7 @@ static int vc4_hdmi_connector_atomic_che
+ 
+ 	if (old_state->colorspace != new_state->colorspace ||
+ 	    old_vc4_state->broadcast_rgb != new_vc4_state->broadcast_rgb ||
++	    old_vc4_state->requested_output_format != new_vc4_state->requested_output_format ||
+ 	    !drm_connector_atomic_hdr_metadata_equal(old_state, new_state)) {
+ 		struct drm_crtc_state *crtc_state;
+ 
+@@ -631,6 +632,8 @@ static int vc4_hdmi_connector_get_proper
+ 
+ 	if (property == vc4_hdmi->broadcast_rgb_property) {
+ 		*val = vc4_conn_state->broadcast_rgb;
++	} else if (property == vc4_hdmi->output_format_property) {
++		*val = vc4_conn_state->requested_output_format;
+ 	} else {
+ 		drm_dbg(drm, "Unknown property [PROP:%d:%s]\n",
+ 			property->base.id, property->name);
+@@ -654,6 +657,9 @@ static int vc4_hdmi_connector_set_proper
+ 	if (property == vc4_hdmi->broadcast_rgb_property) {
+ 		vc4_conn_state->broadcast_rgb = val;
+ 		return 0;
++	} else if (property == vc4_hdmi->output_format_property) {
++		vc4_conn_state->requested_output_format = val;
++		return 0;
+ 	}
+ 
+ 	drm_dbg(drm, "Unknown property [PROP:%d:%s]\n",
+@@ -698,6 +704,7 @@ vc4_hdmi_connector_duplicate_state(struc
+ 	new_state->tmds_char_rate = vc4_state->tmds_char_rate;
+ 	new_state->output_bpc = vc4_state->output_bpc;
+ 	new_state->output_format = vc4_state->output_format;
++	new_state->requested_output_format = vc4_state->requested_output_format;
+ 	new_state->broadcast_rgb = vc4_state->broadcast_rgb;
+ 	__drm_atomic_helper_connector_duplicate_state(connector, &new_state->base);
+ 
+@@ -746,6 +753,33 @@ vc4_hdmi_attach_broadcast_rgb_property(s
+ 				   VC4_HDMI_BROADCAST_RGB_AUTO);
+ }
+ 
++static const struct drm_prop_enum_list output_format_names[] = {
++	{ VC4_HDMI_OUTPUT_AUTO, "Automatic" },
++	{ VC4_HDMI_OUTPUT_RGB, "RGB" },
++	{ VC4_HDMI_OUTPUT_YUV422, "YCbCr 4:2:2" },
++	{ VC4_HDMI_OUTPUT_YUV444, "YCbCr 4:4:4" },
++};
++
++static void
++vc4_hdmi_attach_output_format_property(struct drm_device *dev,
++				       struct vc4_hdmi *vc4_hdmi)
++{
++	struct drm_property *prop = vc4_hdmi->output_format_property;
++
++	if (!prop) {
++		prop = drm_property_create_enum(dev, DRM_MODE_PROP_ENUM,
++						"Output format",
++						output_format_names,
++						ARRAY_SIZE(output_format_names));
++		if (!prop)
++			return;
++
++		vc4_hdmi->output_format_property = prop;
++	}
++
++	drm_object_attach_property(&vc4_hdmi->connector.base, prop, 0);
++}
++
+ static int vc4_hdmi_connector_init(struct drm_device *dev,
+ 				   struct vc4_hdmi *vc4_hdmi)
+ {
+@@ -796,6 +830,7 @@ static int vc4_hdmi_connector_init(struc
+ 	}
+ 
+ 	vc4_hdmi_attach_broadcast_rgb_property(dev, vc4_hdmi);
++	vc4_hdmi_attach_output_format_property(dev, vc4_hdmi);
+ 
+ 	drm_connector_attach_encoder(connector, encoder);
+ 
+@@ -1966,6 +2001,10 @@ static void vc4_hdmi_encoder_atomic_mode
+ 		      &crtc_state->adjusted_mode);
+ 	vc4_hdmi->output_bpc = vc4_state->output_bpc;
+ 	vc4_hdmi->output_format = vc4_state->output_format;
++	vc4_hdmi->requested_output_format = vc4_state->requested_output_format;
++	memcpy(&vc4_hdmi->saved_adjusted_mode,
++	       &crtc_state->adjusted_mode,
++	       sizeof(vc4_hdmi->saved_adjusted_mode));
+ 	mutex_unlock(&vc4_hdmi->mutex);
+ }
+ 
+@@ -2124,6 +2163,26 @@ vc4_hdmi_encoder_compute_format(const st
+ 	const struct drm_display_info *info = &connector->display_info;
+ 	unsigned int format;
+ 
++	if (vc4_state->requested_output_format != VC4_HDMI_OUTPUT_AUTO) {
++		drm_dbg(dev, "Trying with user requested output %u\n",
++			vc4_state->requested_output_format);
++
++		format = vc4_state->requested_output_format;
++		if (vc4_hdmi_sink_supports_format_bpc(vc4_hdmi, info, mode,
++						      format, bpc)) {
++			int ret;
++
++			ret = vc4_hdmi_encoder_compute_clock(vc4_hdmi, vc4_state,
++							     mode, bpc, format);
++			if (!ret) {
++				vc4_state->output_format = format;
++				return 0;
++			}
++		}
++
++		return -EINVAL;
++	}
++
+ 	drm_dbg(dev, "Trying with an RGB output\n");
+ 
+ 	format = VC4_HDMI_OUTPUT_RGB;
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.h
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.h
+@@ -113,6 +113,7 @@ struct vc4_hdmi_audio {
+ };
+ 
+ enum vc4_hdmi_output_format {
++	VC4_HDMI_OUTPUT_AUTO,
+ 	VC4_HDMI_OUTPUT_RGB,
+ 	VC4_HDMI_OUTPUT_YUV422,
+ 	VC4_HDMI_OUTPUT_YUV444,
+@@ -138,6 +139,7 @@ struct vc4_hdmi {
+ 	struct delayed_work scrambling_work;
+ 
+ 	struct drm_property *broadcast_rgb_property;
++	struct drm_property *output_format_property;
+ 
+ 	struct i2c_adapter *ddc;
+ 	void __iomem *hdmicore_regs;
+@@ -230,6 +232,11 @@ struct vc4_hdmi {
+ 	 * for use outside of KMS hooks. Protected by @mutex.
+ 	 */
+ 	enum vc4_hdmi_output_format output_format;
++	/**
++	 * @requested_output_format: Copy of @vc4_connector_state.requested_output_format
++	 * for use outside of KMS hooks. Protected by @mutex.
++	 */
++	enum vc4_hdmi_output_format requested_output_format;
+ 
+ 	/**
+ 	 * @plugged_cb: Callback provided by hdmi-codec to indicate that an
+@@ -273,6 +280,7 @@ struct vc4_hdmi_connector_state {
+ 	unsigned int 			output_bpc;
+ 	enum vc4_hdmi_output_format	output_format;
+ 	enum vc4_hdmi_broadcast_rgb	broadcast_rgb;
++	enum vc4_hdmi_output_format	requested_output_format;
+ };
+ 
+ #define conn_state_to_vc4_hdmi_conn_state(_state)			\

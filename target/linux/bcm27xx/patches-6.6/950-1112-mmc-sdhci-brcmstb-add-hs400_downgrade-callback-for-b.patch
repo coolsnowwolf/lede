@@ -1,0 +1,49 @@
+From fd051511cd5e7e38315adfe728b1481cbe480331 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 4 Jun 2024 09:51:17 +0100
+Subject: [PATCH 1112/1135] mmc: sdhci-brcmstb: add hs400_downgrade callback
+ for bcm2712
+
+The attached PHY performs parameter validation, so the switch from HS200
+to HS (before selecting HS400/HS400es) with a 200MHz clock fails to
+update pad timings and results in CRC errors from the card.
+
+Underclocking the interface is safe, so do that in the downgrade callback.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/sdhci-brcmstb.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+--- a/drivers/mmc/host/sdhci-brcmstb.c
++++ b/drivers/mmc/host/sdhci-brcmstb.c
+@@ -198,6 +198,20 @@ static void sdhci_brcmstb_set_uhs_signal
+ 	sdhci_writew(host, ctrl_2, SDHCI_HOST_CONTROL2);
+ }
+ 
++static void sdhci_bcm2712_hs400_downgrade(struct mmc_host *mmc)
++{
++	struct sdhci_host *host = mmc_priv(mmc);
++	/*
++	 * The eMMC PHY and its internal controller parses and validates
++	 * the uhs_mode, divisor, pin_sel, and sampling clock select
++	 * output from the SD controller. It will refuse to update its
++	 * config if HS timings are selected while the clock is >52MHz.
++	 * so bump the clock down now before card/controller setup is
++	 * performed.
++	 */
++	sdhci_bcm2712_set_clock(host, 52000000);
++}
++
+ static void sdhci_brcmstb_cfginit_2712(struct sdhci_host *host)
+ {
+ 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+@@ -216,6 +230,8 @@ static void sdhci_brcmstb_cfginit_2712(s
+ 		reg &= ~SDIO_CFG_MAX_50MHZ_MODE_ENABLE;
+ 		reg |= SDIO_CFG_MAX_50MHZ_MODE_STRAP_OVERRIDE;
+ 		writel(reg, brcmstb_priv->cfg_regs + SDIO_CFG_MAX_50MHZ_MODE);
++
++		host->mmc_host_ops.hs400_downgrade = sdhci_bcm2712_hs400_downgrade;
+ 	}
+ 
+ 	if ((host->mmc->caps & MMC_CAP_NONREMOVABLE) ||

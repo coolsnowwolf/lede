@@ -1,0 +1,79 @@
+From 382e6f9ec8c66b99657922073f5b9b312925dc1f Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 26 Mar 2024 13:36:23 +0000
+Subject: [PATCH 0995/1085] drivers: mmc: be more cautious when manipulating
+ Command Queue enable
+
+Don't attempt to turn on CQ if the other mandatory features are not
+indicated as supported by the card. Also make sure that the register write
+actually stuck, as some cards claim support but never report back that
+the queue engine is enabled.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/sd.c     |  8 ++++++--
+ drivers/mmc/core/sd_ops.c | 22 ++++++++++++++++++++++
+ 2 files changed, 28 insertions(+), 2 deletions(-)
+
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -1089,8 +1089,12 @@ static int sd_parse_ext_reg_perf(struct
+ 	if ((reg_buf[4] & BIT(0)) && !mmc_card_broken_sd_cache(card))
+ 		card->ext_perf.feature_support |= SD_EXT_PERF_CACHE;
+ 
+-	/* Command queue support indicated via queue depth bits (0 to 4). */
+-	if (reg_buf[6] & 0x1f) {
++	/*
++	 * Command queue support indicated via queue depth bits (0 to 4).
++	 * Qualify this with the other mandatory required features.
++	 */
++	if (reg_buf[6] & 0x1f && card->ext_power.feature_support & SD_EXT_POWER_OFF_NOTIFY &&
++	    card->ext_perf.feature_support & SD_EXT_PERF_CACHE) {
+ 		card->ext_perf.feature_support |= SD_EXT_PERF_CMD_QUEUE;
+ 		card->ext_csd.cmdq_depth = reg_buf[6] & 0x1f;
+ 		card->ext_csd.cmdq_support = true;
+--- a/drivers/mmc/core/sd_ops.c
++++ b/drivers/mmc/core/sd_ops.c
+@@ -8,6 +8,7 @@
+ #include <linux/slab.h>
+ #include <linux/types.h>
+ #include <linux/export.h>
++#include <linux/ktime.h>
+ #include <linux/scatterlist.h>
+ 
+ #include <linux/mmc/host.h>
+@@ -448,6 +449,8 @@ static int mmc_sd_cmdq_switch(struct mmc
+ {
+ 	int err;
+ 	u8 reg = 0;
++	u8 *reg_buf = card->ext_reg_buf;
++	ktime_t timeout;
+ 	/*
+ 	 * SD offers two command queueing modes - sequential (in-order) and
+ 	 * voluntary (out-of-order). Apps Class A2 performance is only
+@@ -460,6 +463,25 @@ static int mmc_sd_cmdq_switch(struct mmc
+ 	/* Performance enhancement register byte 262 controls command queueing */
+ 	err = mmc_sd_write_ext_reg(card, card->ext_perf.fno, card->ext_perf.page,
+ 				   card->ext_perf.offset + 262, reg);
++	if (err)
++		goto out;
++
++	/* Poll the register - cards may have a lazy init/deinit sequence. */
++	timeout = ktime_add_ms(ktime_get(), 10);
++	while (1) {
++		err = mmc_sd_read_ext_reg(card, card->ext_perf.fno, card->ext_perf.page,
++					  card->ext_perf.offset + 262, 1, reg_buf);
++		if (err)
++			break;
++		if ((reg_buf[0] & BIT(0)) == reg)
++			break;
++		if (ktime_after(ktime_get(), timeout)) {
++			err = -EBADMSG;
++			break;
++		}
++		usleep_range(100, 200);
++	}
++out:
+ 	if (!err)
+ 		card->ext_csd.cmdq_en = enable;
+ 

@@ -1,0 +1,66 @@
+From d631e7354399aa2fb6079b72f515acd6d080c203 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 13 Jul 2023 14:43:21 +0100
+Subject: [PATCH 0481/1085] xhci: Use more event ring segment table entries
+
+Users have reported log spam created by "Event Ring Full" xHC event
+TRBs. These are caused by interrupt latency in conjunction with a very
+busy set of devices on the bus. The errors are benign, but throughput
+will suffer as the xHC will pause processing of transfers until the
+event ring is drained by the kernel. Expand the number of event TRB slots
+available by increasing the number of event ring segments in the ERST.
+
+Controllers have a hardware-defined limit as to the number of ERST
+entries they can process, so make the actual number in use
+min(ERST_MAX_SEGS, hw_max).
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-mem.c | 9 +++++++--
+ drivers/usb/host/xhci.h     | 5 +++--
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+--- a/drivers/usb/host/xhci-mem.c
++++ b/drivers/usb/host/xhci-mem.c
+@@ -2241,12 +2241,17 @@ xhci_alloc_interrupter(struct xhci_hcd *
+ 	struct device *dev = xhci_to_hcd(xhci)->self.sysdev;
+ 	struct xhci_interrupter *ir;
+ 	int ret;
++	unsigned int nr_event_segs;
+ 
+ 	ir = kzalloc_node(sizeof(*ir), flags, dev_to_node(dev));
+ 	if (!ir)
+ 		return NULL;
+ 
+-	ir->event_ring = xhci_ring_alloc(xhci, ERST_NUM_SEGS, 1, TYPE_EVENT,
++	nr_event_segs = min_t(unsigned int,
++			      1 << HCS_ERST_MAX(xhci->hcs_params2),
++			      ERST_MAX_SEGS);
++
++	ir->event_ring = xhci_ring_alloc(xhci, nr_event_segs, 1, TYPE_EVENT,
+ 					0, flags);
+ 	if (!ir->event_ring) {
+ 		xhci_warn(xhci, "Failed to allocate interrupter event ring\n");
+@@ -2283,7 +2288,7 @@ xhci_add_interrupter(struct xhci_hcd *xh
+ 	/* set ERST count with the number of entries in the segment table */
+ 	erst_size = readl(&ir->ir_set->erst_size);
+ 	erst_size &= ERST_SIZE_MASK;
+-	erst_size |= ERST_NUM_SEGS;
++	erst_size |= ir->event_ring->num_segs;
+ 	writel(erst_size, &ir->ir_set->erst_size);
+ 
+ 	erst_base = xhci_read_64(xhci, &ir->ir_set->erst_base);
+--- a/drivers/usb/host/xhci.h
++++ b/drivers/usb/host/xhci.h
+@@ -1425,8 +1425,9 @@ struct urb_priv {
+  * Each segment table entry is 4*32bits long.  1K seems like an ok size:
+  * (1K bytes * 8bytes/bit) / (4*32 bits) = 64 segment entries in the table,
+  * meaning 64 ring segments.
+- * Initial allocated size of the ERST, in number of entries */
+-#define	ERST_NUM_SEGS	1
++ */
++/* Maximum number of segments in the ERST */
++#define	ERST_MAX_SEGS	8
+ /* Poll every 60 seconds */
+ #define	POLL_TIMEOUT	60
+ /* Stop endpoint command timeout (secs) for URB cancellation watchdog timer */

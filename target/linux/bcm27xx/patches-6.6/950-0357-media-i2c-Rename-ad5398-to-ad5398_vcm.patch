@@ -1,0 +1,717 @@
+From dc49fe193be8eaf6d406052b904f3c8caae35bae Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 17 Mar 2022 15:13:10 +0000
+Subject: [PATCH 0357/1085] media: i2c: Rename ad5398 to ad5398_vcm
+
+There's already a regulator module called ad5398 that exposes
+this device through the regulator API. That is meaningless in
+the terms that it uses and how it maps to V4L2, so a new driver
+was added. However the module name collision wasn't noted, so
+rename it now.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/Makefile                   | 2 +-
+ drivers/media/i2c/{ad5398.c => ad5398_vcm.c} | 0
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+ rename drivers/media/i2c/{ad5398.c => ad5398_vcm.c} (100%)
+
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -3,7 +3,7 @@
+ msp3400-objs	:=	msp3400-driver.o msp3400-kthreads.o
+ 
+ obj-$(CONFIG_SDR_MAX2175) += max2175.o
+-obj-$(CONFIG_VIDEO_AD5398)  += ad5398.o
++obj-$(CONFIG_VIDEO_AD5398) += ad5398_vcm.o
+ obj-$(CONFIG_VIDEO_AD5820) += ad5820.o
+ obj-$(CONFIG_VIDEO_ADP1653) += adp1653.o
+ obj-$(CONFIG_VIDEO_ADV7170) += adv7170.o
+--- a/drivers/media/i2c/ad5398.c
++++ /dev/null
+@@ -1,341 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * AD5398 DAC driver for camera voice coil focus.
+- * Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
+- *
+- * Based on AD5820 DAC driver by Nokia and TI.
+- *
+- * This driver uses the regulator framework notification hooks on the
+- * assumption that the VCM and sensor share a regulator. This means the VCM
+- * position will be restored when either the sensor or VCM subdevices are opened
+- * or powered up. The client can therefore choose to ignore the VCM subdevice,
+- * and the lens position will be as previously requested. Without that, there
+- * is a hard requirement to have the VCM subdevice open in order for the VCM
+- * to be powered and at the requested position.
+- */
+-
+-#include <linux/errno.h>
+-#include <linux/i2c.h>
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/regulator/consumer.h>
+-#include <linux/gpio/consumer.h>
+-
+-#include <media/v4l2-ctrls.h>
+-#include <media/v4l2-device.h>
+-#include <media/v4l2-subdev.h>
+-
+-/* Register definitions */
+-#define AD5398_POWER_DOWN		BIT(15)
+-#define AD5398_DAC_SHIFT		4
+-
+-#define to_ad5398_device(sd)	container_of(sd, struct ad5398_device, subdev)
+-
+-struct ad5398_device {
+-	struct v4l2_subdev subdev;
+-	struct ad5398_platform_data *platform_data;
+-	struct regulator *vana;
+-	struct notifier_block nb;
+-
+-	struct v4l2_ctrl_handler ctrls;
+-	u32 focus_absolute;
+-
+-	bool standby;
+-};
+-
+-static int ad5398_write(struct ad5398_device *coil, u16 data)
+-{
+-	struct i2c_client *client = v4l2_get_subdevdata(&coil->subdev);
+-	struct i2c_msg msg;
+-	__be16 be_data;
+-	int r;
+-
+-	if (!client->adapter)
+-		return -ENODEV;
+-
+-	be_data = cpu_to_be16(data);
+-	msg.addr  = client->addr;
+-	msg.flags = 0;
+-	msg.len   = 2;
+-	msg.buf   = (u8 *)&be_data;
+-
+-	r = i2c_transfer(client->adapter, &msg, 1);
+-	if (r < 0) {
+-		dev_err(&client->dev, "write failed, error %d\n", r);
+-		return r;
+-	}
+-
+-	return 0;
+-}
+-
+-/*
+- * Calculate status word and write it to the device based on current
+- * values of V4L2 controls. It is assumed that the stored V4L2 control
+- * values are properly limited and rounded.
+- */
+-static int ad5398_update_hw(struct ad5398_device *coil)
+-{
+-	u16 status;
+-
+-	status = coil->focus_absolute << AD5398_DAC_SHIFT;
+-
+-	if (coil->standby)
+-		status |= AD5398_POWER_DOWN;
+-
+-	return ad5398_write(coil, status);
+-}
+-
+-/*
+- * Power handling
+- */
+-static int ad5398_power_off(struct ad5398_device *coil)
+-{
+-	int ret = 0;
+-
+-	coil->standby = true;
+-	ret = ad5398_update_hw(coil);
+-
+-	return ret;
+-}
+-
+-static int ad5398_power_on(struct ad5398_device *coil)
+-{
+-	int ret;
+-
+-	/* Restore the hardware settings. */
+-	coil->standby = false;
+-	ret = ad5398_update_hw(coil);
+-	if (ret)
+-		goto fail;
+-
+-	return 0;
+-
+-fail:
+-	coil->standby = true;
+-
+-	return ret;
+-}
+-
+-/*
+- * V4L2 controls
+- */
+-static int ad5398_set_ctrl(struct v4l2_ctrl *ctrl)
+-{
+-	struct ad5398_device *coil =
+-		container_of(ctrl->handler, struct ad5398_device, ctrls);
+-
+-	switch (ctrl->id) {
+-	case V4L2_CID_FOCUS_ABSOLUTE:
+-		coil->focus_absolute = ctrl->val;
+-		return ad5398_update_hw(coil);
+-	}
+-
+-	return 0;
+-}
+-
+-static const struct v4l2_ctrl_ops ad5398_ctrl_ops = {
+-	.s_ctrl = ad5398_set_ctrl,
+-};
+-
+-static int ad5398_init_controls(struct ad5398_device *coil)
+-{
+-	v4l2_ctrl_handler_init(&coil->ctrls, 1);
+-
+-	/*
+-	 * V4L2_CID_FOCUS_ABSOLUTE
+-	 *
+-	 * Minimum current is 0 mA, maximum is 120 mA. Thus, 1 code is
+-	 * equivalent to 120/1023 = 0.1173 mA. Nevertheless, we do not use [mA]
+-	 * for focus position, because it is meaningless for user. Meaningful
+-	 * would be to use focus distance or even its inverse, but since the
+-	 * driver doesn't have sufficient knowledge to do the conversion, we
+-	 * will just use abstract codes here. In any case, smaller value = focus
+-	 * position farther from camera. The default zero value means focus at
+-	 * infinity, and also least current consumption.
+-	 */
+-	v4l2_ctrl_new_std(&coil->ctrls, &ad5398_ctrl_ops,
+-			  V4L2_CID_FOCUS_ABSOLUTE, 0, 1023, 1, 0);
+-
+-	if (coil->ctrls.error)
+-		return coil->ctrls.error;
+-
+-	coil->focus_absolute = 0;
+-
+-	coil->subdev.ctrl_handler = &coil->ctrls;
+-
+-	return 0;
+-}
+-
+-/*
+- * V4L2 subdev operations
+- */
+-static int ad5398_registered(struct v4l2_subdev *subdev)
+-{
+-	struct ad5398_device *coil = to_ad5398_device(subdev);
+-
+-	return ad5398_init_controls(coil);
+-}
+-
+-static int
+-ad5398_set_power(struct v4l2_subdev *subdev, int on)
+-{
+-	struct ad5398_device *coil = to_ad5398_device(subdev);
+-	int ret;
+-
+-	if (on)
+-		ret = regulator_enable(coil->vana);
+-	else
+-		ret = regulator_disable(coil->vana);
+-
+-	return ret;
+-}
+-
+-static int ad5398_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+-{
+-	struct ad5398_device *coil = to_ad5398_device(sd);
+-
+-	return regulator_enable(coil->vana);
+-}
+-
+-static int ad5398_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+-{
+-	struct ad5398_device *coil = to_ad5398_device(sd);
+-
+-	return regulator_disable(coil->vana);
+-}
+-
+-static const struct v4l2_subdev_core_ops ad5398_core_ops = {
+-	.s_power = ad5398_set_power,
+-};
+-
+-static const struct v4l2_subdev_ops ad5398_ops = {
+-	.core = &ad5398_core_ops,
+-};
+-
+-static const struct v4l2_subdev_internal_ops ad5398_internal_ops = {
+-	.registered = ad5398_registered,
+-	.open = ad5398_open,
+-	.close = ad5398_close,
+-};
+-
+-/*
+- * I2C driver
+- */
+-static int __maybe_unused ad5398_suspend(struct device *dev)
+-{
+-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+-	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
+-	struct ad5398_device *coil = to_ad5398_device(subdev);
+-
+-	return regulator_enable(coil->vana);
+-}
+-
+-static int __maybe_unused ad5398_resume(struct device *dev)
+-{
+-	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+-	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
+-	struct ad5398_device *coil = to_ad5398_device(subdev);
+-
+-	return regulator_disable(coil->vana);
+-}
+-
+-static int ad5398_regulator_notifier(struct notifier_block *nb,
+-				     unsigned long event,
+-				     void *ignored)
+-{
+-	struct ad5398_device *coil = container_of(nb, struct ad5398_device, nb);
+-
+-	if (event == REGULATOR_EVENT_ENABLE)
+-		ad5398_power_on(coil);
+-	else if (event == REGULATOR_EVENT_PRE_DISABLE)
+-		ad5398_power_off(coil);
+-
+-	return NOTIFY_OK;
+-}
+-
+-static int ad5398_probe(struct i2c_client *client,
+-			const struct i2c_device_id *devid)
+-{
+-	struct ad5398_device *coil;
+-	int ret;
+-
+-	coil = devm_kzalloc(&client->dev, sizeof(*coil), GFP_KERNEL);
+-	if (!coil)
+-		return -ENOMEM;
+-
+-	coil->vana = devm_regulator_get(&client->dev, "VANA");
+-	if (IS_ERR(coil->vana)) {
+-		ret = PTR_ERR(coil->vana);
+-		if (ret != -EPROBE_DEFER)
+-			dev_err(&client->dev, "could not get regulator for vana\n");
+-		return ret;
+-	}
+-
+-	v4l2_i2c_subdev_init(&coil->subdev, client, &ad5398_ops);
+-	coil->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+-	coil->subdev.internal_ops = &ad5398_internal_ops;
+-	coil->subdev.entity.function = MEDIA_ENT_F_LENS;
+-	strscpy(coil->subdev.name, "ad5398 focus", sizeof(coil->subdev.name));
+-
+-	coil->nb.notifier_call = &ad5398_regulator_notifier;
+-	ret = regulator_register_notifier(coil->vana, &coil->nb);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = media_entity_pads_init(&coil->subdev.entity, 0, NULL);
+-	if (ret < 0)
+-		goto cleanup2;
+-
+-	ret = v4l2_async_register_subdev(&coil->subdev);
+-	if (ret < 0)
+-		goto cleanup;
+-
+-	return ret;
+-
+-cleanup:
+-	media_entity_cleanup(&coil->subdev.entity);
+-cleanup2:
+-	regulator_unregister_notifier(coil->vana, &coil->nb);
+-	return ret;
+-}
+-
+-static void ad5398_remove(struct i2c_client *client)
+-{
+-	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
+-	struct ad5398_device *coil = to_ad5398_device(subdev);
+-
+-	v4l2_async_unregister_subdev(&coil->subdev);
+-	v4l2_ctrl_handler_free(&coil->ctrls);
+-	media_entity_cleanup(&coil->subdev.entity);
+-}
+-
+-static const struct i2c_device_id ad5398_id_table[] = {
+-	{ "ad5398", 0 },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(i2c, ad5398_id_table);
+-
+-static const struct of_device_id ad5398_of_table[] = {
+-	{ .compatible = "adi,ad5398" },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(of, ad5398_of_table);
+-
+-static SIMPLE_DEV_PM_OPS(ad5398_pm, ad5398_suspend, ad5398_resume);
+-
+-static struct i2c_driver ad5398_i2c_driver = {
+-	.driver		= {
+-		.name	= "ad5398",
+-		.pm	= &ad5398_pm,
+-		.of_match_table = ad5398_of_table,
+-	},
+-	.probe		= ad5398_probe,
+-	.remove		= ad5398_remove,
+-	.id_table	= ad5398_id_table,
+-};
+-
+-module_i2c_driver(ad5398_i2c_driver);
+-
+-MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
+-MODULE_DESCRIPTION("AD5398 camera lens driver");
+-MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/media/i2c/ad5398_vcm.c
+@@ -0,0 +1,341 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * AD5398 DAC driver for camera voice coil focus.
++ * Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
++ *
++ * Based on AD5820 DAC driver by Nokia and TI.
++ *
++ * This driver uses the regulator framework notification hooks on the
++ * assumption that the VCM and sensor share a regulator. This means the VCM
++ * position will be restored when either the sensor or VCM subdevices are opened
++ * or powered up. The client can therefore choose to ignore the VCM subdevice,
++ * and the lens position will be as previously requested. Without that, there
++ * is a hard requirement to have the VCM subdevice open in order for the VCM
++ * to be powered and at the requested position.
++ */
++
++#include <linux/errno.h>
++#include <linux/i2c.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/regulator/consumer.h>
++#include <linux/gpio/consumer.h>
++
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-subdev.h>
++
++/* Register definitions */
++#define AD5398_POWER_DOWN		BIT(15)
++#define AD5398_DAC_SHIFT		4
++
++#define to_ad5398_device(sd)	container_of(sd, struct ad5398_device, subdev)
++
++struct ad5398_device {
++	struct v4l2_subdev subdev;
++	struct ad5398_platform_data *platform_data;
++	struct regulator *vana;
++	struct notifier_block nb;
++
++	struct v4l2_ctrl_handler ctrls;
++	u32 focus_absolute;
++
++	bool standby;
++};
++
++static int ad5398_write(struct ad5398_device *coil, u16 data)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&coil->subdev);
++	struct i2c_msg msg;
++	__be16 be_data;
++	int r;
++
++	if (!client->adapter)
++		return -ENODEV;
++
++	be_data = cpu_to_be16(data);
++	msg.addr  = client->addr;
++	msg.flags = 0;
++	msg.len   = 2;
++	msg.buf   = (u8 *)&be_data;
++
++	r = i2c_transfer(client->adapter, &msg, 1);
++	if (r < 0) {
++		dev_err(&client->dev, "write failed, error %d\n", r);
++		return r;
++	}
++
++	return 0;
++}
++
++/*
++ * Calculate status word and write it to the device based on current
++ * values of V4L2 controls. It is assumed that the stored V4L2 control
++ * values are properly limited and rounded.
++ */
++static int ad5398_update_hw(struct ad5398_device *coil)
++{
++	u16 status;
++
++	status = coil->focus_absolute << AD5398_DAC_SHIFT;
++
++	if (coil->standby)
++		status |= AD5398_POWER_DOWN;
++
++	return ad5398_write(coil, status);
++}
++
++/*
++ * Power handling
++ */
++static int ad5398_power_off(struct ad5398_device *coil)
++{
++	int ret = 0;
++
++	coil->standby = true;
++	ret = ad5398_update_hw(coil);
++
++	return ret;
++}
++
++static int ad5398_power_on(struct ad5398_device *coil)
++{
++	int ret;
++
++	/* Restore the hardware settings. */
++	coil->standby = false;
++	ret = ad5398_update_hw(coil);
++	if (ret)
++		goto fail;
++
++	return 0;
++
++fail:
++	coil->standby = true;
++
++	return ret;
++}
++
++/*
++ * V4L2 controls
++ */
++static int ad5398_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct ad5398_device *coil =
++		container_of(ctrl->handler, struct ad5398_device, ctrls);
++
++	switch (ctrl->id) {
++	case V4L2_CID_FOCUS_ABSOLUTE:
++		coil->focus_absolute = ctrl->val;
++		return ad5398_update_hw(coil);
++	}
++
++	return 0;
++}
++
++static const struct v4l2_ctrl_ops ad5398_ctrl_ops = {
++	.s_ctrl = ad5398_set_ctrl,
++};
++
++static int ad5398_init_controls(struct ad5398_device *coil)
++{
++	v4l2_ctrl_handler_init(&coil->ctrls, 1);
++
++	/*
++	 * V4L2_CID_FOCUS_ABSOLUTE
++	 *
++	 * Minimum current is 0 mA, maximum is 120 mA. Thus, 1 code is
++	 * equivalent to 120/1023 = 0.1173 mA. Nevertheless, we do not use [mA]
++	 * for focus position, because it is meaningless for user. Meaningful
++	 * would be to use focus distance or even its inverse, but since the
++	 * driver doesn't have sufficient knowledge to do the conversion, we
++	 * will just use abstract codes here. In any case, smaller value = focus
++	 * position farther from camera. The default zero value means focus at
++	 * infinity, and also least current consumption.
++	 */
++	v4l2_ctrl_new_std(&coil->ctrls, &ad5398_ctrl_ops,
++			  V4L2_CID_FOCUS_ABSOLUTE, 0, 1023, 1, 0);
++
++	if (coil->ctrls.error)
++		return coil->ctrls.error;
++
++	coil->focus_absolute = 0;
++
++	coil->subdev.ctrl_handler = &coil->ctrls;
++
++	return 0;
++}
++
++/*
++ * V4L2 subdev operations
++ */
++static int ad5398_registered(struct v4l2_subdev *subdev)
++{
++	struct ad5398_device *coil = to_ad5398_device(subdev);
++
++	return ad5398_init_controls(coil);
++}
++
++static int
++ad5398_set_power(struct v4l2_subdev *subdev, int on)
++{
++	struct ad5398_device *coil = to_ad5398_device(subdev);
++	int ret;
++
++	if (on)
++		ret = regulator_enable(coil->vana);
++	else
++		ret = regulator_disable(coil->vana);
++
++	return ret;
++}
++
++static int ad5398_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct ad5398_device *coil = to_ad5398_device(sd);
++
++	return regulator_enable(coil->vana);
++}
++
++static int ad5398_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct ad5398_device *coil = to_ad5398_device(sd);
++
++	return regulator_disable(coil->vana);
++}
++
++static const struct v4l2_subdev_core_ops ad5398_core_ops = {
++	.s_power = ad5398_set_power,
++};
++
++static const struct v4l2_subdev_ops ad5398_ops = {
++	.core = &ad5398_core_ops,
++};
++
++static const struct v4l2_subdev_internal_ops ad5398_internal_ops = {
++	.registered = ad5398_registered,
++	.open = ad5398_open,
++	.close = ad5398_close,
++};
++
++/*
++ * I2C driver
++ */
++static int __maybe_unused ad5398_suspend(struct device *dev)
++{
++	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
++	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
++	struct ad5398_device *coil = to_ad5398_device(subdev);
++
++	return regulator_enable(coil->vana);
++}
++
++static int __maybe_unused ad5398_resume(struct device *dev)
++{
++	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
++	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
++	struct ad5398_device *coil = to_ad5398_device(subdev);
++
++	return regulator_disable(coil->vana);
++}
++
++static int ad5398_regulator_notifier(struct notifier_block *nb,
++				     unsigned long event,
++				     void *ignored)
++{
++	struct ad5398_device *coil = container_of(nb, struct ad5398_device, nb);
++
++	if (event == REGULATOR_EVENT_ENABLE)
++		ad5398_power_on(coil);
++	else if (event == REGULATOR_EVENT_PRE_DISABLE)
++		ad5398_power_off(coil);
++
++	return NOTIFY_OK;
++}
++
++static int ad5398_probe(struct i2c_client *client,
++			const struct i2c_device_id *devid)
++{
++	struct ad5398_device *coil;
++	int ret;
++
++	coil = devm_kzalloc(&client->dev, sizeof(*coil), GFP_KERNEL);
++	if (!coil)
++		return -ENOMEM;
++
++	coil->vana = devm_regulator_get(&client->dev, "VANA");
++	if (IS_ERR(coil->vana)) {
++		ret = PTR_ERR(coil->vana);
++		if (ret != -EPROBE_DEFER)
++			dev_err(&client->dev, "could not get regulator for vana\n");
++		return ret;
++	}
++
++	v4l2_i2c_subdev_init(&coil->subdev, client, &ad5398_ops);
++	coil->subdev.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	coil->subdev.internal_ops = &ad5398_internal_ops;
++	coil->subdev.entity.function = MEDIA_ENT_F_LENS;
++	strscpy(coil->subdev.name, "ad5398 focus", sizeof(coil->subdev.name));
++
++	coil->nb.notifier_call = &ad5398_regulator_notifier;
++	ret = regulator_register_notifier(coil->vana, &coil->nb);
++	if (ret < 0)
++		return ret;
++
++	ret = media_entity_pads_init(&coil->subdev.entity, 0, NULL);
++	if (ret < 0)
++		goto cleanup2;
++
++	ret = v4l2_async_register_subdev(&coil->subdev);
++	if (ret < 0)
++		goto cleanup;
++
++	return ret;
++
++cleanup:
++	media_entity_cleanup(&coil->subdev.entity);
++cleanup2:
++	regulator_unregister_notifier(coil->vana, &coil->nb);
++	return ret;
++}
++
++static void ad5398_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *subdev = i2c_get_clientdata(client);
++	struct ad5398_device *coil = to_ad5398_device(subdev);
++
++	v4l2_async_unregister_subdev(&coil->subdev);
++	v4l2_ctrl_handler_free(&coil->ctrls);
++	media_entity_cleanup(&coil->subdev.entity);
++}
++
++static const struct i2c_device_id ad5398_id_table[] = {
++	{ "ad5398", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, ad5398_id_table);
++
++static const struct of_device_id ad5398_of_table[] = {
++	{ .compatible = "adi,ad5398" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ad5398_of_table);
++
++static SIMPLE_DEV_PM_OPS(ad5398_pm, ad5398_suspend, ad5398_resume);
++
++static struct i2c_driver ad5398_i2c_driver = {
++	.driver		= {
++		.name	= "ad5398",
++		.pm	= &ad5398_pm,
++		.of_match_table = ad5398_of_table,
++	},
++	.probe		= ad5398_probe,
++	.remove		= ad5398_remove,
++	.id_table	= ad5398_id_table,
++};
++
++module_i2c_driver(ad5398_i2c_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("AD5398 camera lens driver");
++MODULE_LICENSE("GPL");

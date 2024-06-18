@@ -1,0 +1,3352 @@
+From a44f17d8193b69aedb1beebf5ad885a88b1c6615 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 2 Aug 2024 11:01:24 +0100
+Subject: [PATCH 1235/1350] drivers: media: pci: Update Hailo accelerator
+ device driver to v4.18.0
+
+Sourced from https://github.com/hailo-ai/hailort-drivers/
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/pci/hailo/Makefile              |   2 +
+ drivers/media/pci/hailo/common/fw_operation.c |   2 +-
+ drivers/media/pci/hailo/common/fw_operation.h |   2 +-
+ .../media/pci/hailo/common/fw_validation.c    |  10 +-
+ .../media/pci/hailo/common/fw_validation.h    |   5 +-
+ .../pci/hailo/common/hailo_ioctl_common.h     | 240 +++++++----
+ .../media/pci/hailo/common/hailo_resource.c   |   2 +-
+ .../media/pci/hailo/common/hailo_resource.h   |   2 +-
+ drivers/media/pci/hailo/common/pcie_common.c  | 367 +++++++++++++----
+ drivers/media/pci/hailo/common/pcie_common.h  |  42 +-
+ drivers/media/pci/hailo/common/utils.h        |  24 +-
+ drivers/media/pci/hailo/common/vdma_common.c  | 371 +++++++++++++-----
+ drivers/media/pci/hailo/common/vdma_common.h  |  34 +-
+ drivers/media/pci/hailo/src/fops.c            | 104 +++--
+ drivers/media/pci/hailo/src/fops.h            |   1 +
+ drivers/media/pci/hailo/src/pci_soc_ioctl.c   | 155 ++++++++
+ drivers/media/pci/hailo/src/pci_soc_ioctl.h   |  19 +
+ drivers/media/pci/hailo/src/pcie.c            |  93 ++++-
+ drivers/media/pci/hailo/src/pcie.h            |   2 +
+ drivers/media/pci/hailo/src/sysfs.c           |   9 +
+ drivers/media/pci/hailo/src/utils.c           |   1 -
+ .../pci/hailo/utils/integrated_nnc_utils.c    | 101 +++++
+ .../pci/hailo/utils/integrated_nnc_utils.h    |  30 ++
+ drivers/media/pci/hailo/vdma/ioctl.c          |  53 ++-
+ drivers/media/pci/hailo/vdma/ioctl.h          |   6 +-
+ drivers/media/pci/hailo/vdma/memory.c         | 148 ++++++-
+ drivers/media/pci/hailo/vdma/memory.h         |   4 +-
+ drivers/media/pci/hailo/vdma/vdma.c           |  80 ++--
+ drivers/media/pci/hailo/vdma/vdma.h           |  30 +-
+ 29 files changed, 1536 insertions(+), 403 deletions(-)
+ create mode 100755 drivers/media/pci/hailo/src/pci_soc_ioctl.c
+ create mode 100755 drivers/media/pci/hailo/src/pci_soc_ioctl.h
+ create mode 100755 drivers/media/pci/hailo/utils/integrated_nnc_utils.c
+ create mode 100755 drivers/media/pci/hailo/utils/integrated_nnc_utils.h
+
+--- a/drivers/media/pci/hailo/Makefile
++++ b/drivers/media/pci/hailo/Makefile
+@@ -10,6 +10,7 @@ hailo_pci-objs += src/pcie.o
+ hailo_pci-objs += src/fops.o
+ hailo_pci-objs += src/utils.o
+ hailo_pci-objs += src/sysfs.o
++hailo_pci-objs += src/pci_soc_ioctl.o
+ 
+ hailo_pci-objs += $(COMMON_SRC_DIRECTORY)/fw_validation.o
+ hailo_pci-objs += $(COMMON_SRC_DIRECTORY)/fw_operation.o
+@@ -18,6 +19,7 @@ hailo_pci-objs += $(COMMON_SRC_DIRECTORY
+ hailo_pci-objs += $(COMMON_SRC_DIRECTORY)/hailo_resource.o
+ 
+ hailo_pci-objs += $(UTILS_SRC_DIRECTORY)/logs.o
++hailo_pci-objs += $(UTILS_SRC_DIRECTORY)/integrated_nnc_utils.o
+ 
+ hailo_pci-objs += $(VDMA_SRC_DIRECTORY)/vdma.o
+ hailo_pci-objs += $(VDMA_SRC_DIRECTORY)/memory.o
+--- a/drivers/media/pci/hailo/common/fw_operation.c
++++ b/drivers/media/pci/hailo/common/fw_operation.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2022 Hailo Technologies Ltd. All rights reserved.
+ **/
+--- a/drivers/media/pci/hailo/common/fw_operation.h
++++ b/drivers/media/pci/hailo/common/fw_operation.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2022 Hailo Technologies Ltd. All rights reserved.
+ **/
+--- a/drivers/media/pci/hailo/common/fw_validation.c
++++ b/drivers/media/pci/hailo/common/fw_validation.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -28,16 +28,18 @@ int FW_VALIDATION__validate_fw_header(ui
+     firmware_header_t *firmware_header = NULL;
+     u32 consumed_firmware_offset = *outer_consumed_firmware_offset;
+     u32 expected_firmware_magic = 0;
+- 
++
+     firmware_header = (firmware_header_t *) (firmware_base_address + consumed_firmware_offset);
+     CONSUME_FIRMWARE(sizeof(firmware_header_t), -EINVAL);
+ 
+     switch (board_type) {
+     case HAILO_BOARD_TYPE_HAILO8:
+-        expected_firmware_magic = FIRMWARE_HEADER_MAGIC_HAILO8; 
++        expected_firmware_magic = FIRMWARE_HEADER_MAGIC_HAILO8;
+         break;
++    case HAILO_BOARD_TYPE_HAILO10H_LEGACY:
+     case HAILO_BOARD_TYPE_HAILO15:
+-        expected_firmware_magic = FIRMWARE_HEADER_MAGIC_HAILO15; 
++    case HAILO_BOARD_TYPE_HAILO10H:
++        expected_firmware_magic = FIRMWARE_HEADER_MAGIC_HAILO15;
+         break;
+     case HAILO_BOARD_TYPE_PLUTO:
+         expected_firmware_magic = FIRMWARE_HEADER_MAGIC_PLUTO;
+--- a/drivers/media/pci/hailo/common/fw_validation.h
++++ b/drivers/media/pci/hailo/common/fw_validation.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -11,8 +11,7 @@
+ 
+ #define FIRMWARE_HEADER_MAGIC_HAILO8 (0x1DD89DE0)
+ #define FIRMWARE_HEADER_MAGIC_HAILO15 (0xE905DAAB)
+-// TODO - HRT-11344 : change fw magic to pluto specific
+-#define FIRMWARE_HEADER_MAGIC_PLUTO (0xE905DAAB)
++#define FIRMWARE_HEADER_MAGIC_PLUTO (0xF94739AB)
+ 
+ #ifndef HAILO_EMULATOR
+ #define FIRMWARE_WAIT_TIMEOUT_MS (5000)
+--- a/drivers/media/pci/hailo/common/hailo_ioctl_common.h
++++ b/drivers/media/pci/hailo/common/hailo_ioctl_common.h
+@@ -6,6 +6,14 @@
+ #ifndef _HAILO_IOCTL_COMMON_H_
+ #define _HAILO_IOCTL_COMMON_H_
+ 
++#define HAILO_DRV_VER_MAJOR 4
++#define HAILO_DRV_VER_MINOR 18
++#define HAILO_DRV_VER_REVISION 0
++
++#define _STRINGIFY_EXPANDED( x ) #x
++#define _STRINGIFY_NUMBER( x ) _STRINGIFY_EXPANDED(x)
++#define HAILO_DRV_VER _STRINGIFY_NUMBER(HAILO_DRV_VER_MAJOR) "." _STRINGIFY_NUMBER(HAILO_DRV_VER_MINOR) "."  _STRINGIFY_NUMBER(HAILO_DRV_VER_REVISION)
++
+ 
+ // This value is not easily changeable.
+ // For example: the channel interrupts ioctls assume we have up to 32 channels
+@@ -23,14 +31,17 @@
+ #define INVALID_DRIVER_HANDLE_VALUE     ((uintptr_t)-1)
+ 
+ // Used by windows and unix driver to raise the right CPU control handle to the FW. The same as in pcie_service FW
+-#define FW_ACCESS_CORE_CPU_CONTROL_SHIFT (1)
+-#define FW_ACCESS_CORE_CPU_CONTROL_MASK  (1 << FW_ACCESS_CORE_CPU_CONTROL_SHIFT)
+-#define FW_ACCESS_CONTROL_INTERRUPT_SHIFT (0)
+-#define FW_ACCESS_APP_CPU_CONTROL_MASK (1 << FW_ACCESS_CONTROL_INTERRUPT_SHIFT)
+-#define FW_ACCESS_DRIVER_SHUTDOWN_SHIFT (2)
+-#define FW_ACCESS_DRIVER_SHUTDOWN_MASK (1 << FW_ACCESS_DRIVER_SHUTDOWN_SHIFT)
++#define FW_ACCESS_CORE_CPU_CONTROL_SHIFT    (1)
++#define FW_ACCESS_CORE_CPU_CONTROL_MASK     (1 << FW_ACCESS_CORE_CPU_CONTROL_SHIFT)
++#define FW_ACCESS_CONTROL_INTERRUPT_SHIFT   (0)
++#define FW_ACCESS_APP_CPU_CONTROL_MASK      (1 << FW_ACCESS_CONTROL_INTERRUPT_SHIFT)
++#define FW_ACCESS_DRIVER_SHUTDOWN_SHIFT     (2)
++#define FW_ACCESS_DRIVER_SHUTDOWN_MASK      (1 << FW_ACCESS_DRIVER_SHUTDOWN_SHIFT)
++#define FW_ACCESS_SOC_CONNECT_SHIFT         (3)
++#define FW_ACCESS_SOC_CONNECT_MASK          (1 << FW_ACCESS_SOC_CONNECT_SHIFT)
++
++#define INVALID_VDMA_CHANNEL                (0xff)
+ 
+-#define INVALID_VDMA_CHANNEL (0xff)
+ 
+ #if !defined(__cplusplus) && defined(NTDDI_VERSION)
+ #include <wdm.h>
+@@ -53,14 +64,23 @@ typedef uint8_t bool;
+ #define INT_MAX 0x7FFFFFFF
+ #endif // !defined(INT_MAX)
+ 
++#if !defined(ECONNRESET)
++#define	ECONNRESET	104	/* Connection reset by peer */
++#endif // !defined(ECONNRESET)
+ 
+ // {d88d31f1-fede-4e71-ac2a-6ce0018c1501}
+-DEFINE_GUID (GUID_DEVINTERFACE_HailoKM,
++DEFINE_GUID (GUID_DEVINTERFACE_HailoKM_NNC,
+     0xd88d31f1,0xfede,0x4e71,0xac,0x2a,0x6c,0xe0,0x01,0x8c,0x15,0x01);
+ 
+-#define HAILO_GENERAL_IOCTL_MAGIC 0
+-#define HAILO_VDMA_IOCTL_MAGIC    1
+-#define HAILO_NON_LINUX_IOCTL_MAGIC 2
++// {7f16047d-64b8-207a-0092-e970893970a2}
++DEFINE_GUID (GUID_DEVINTERFACE_HailoKM_SOC,
++    0x7f16047d,0x64b8,0x207a,0x00,0x92,0xe9,0x70,0x89,0x39,0x70,0xa2);
++
++#define HAILO_GENERAL_IOCTL_MAGIC   0
++#define HAILO_VDMA_IOCTL_MAGIC      1
++#define HAILO_SOC_IOCTL_MAGIC       2
++#define HAILO_PCI_EP_IOCTL_MAGIC    3
++#define HAILO_NNC_IOCTL_MAGIC       4
+ 
+ #define HAILO_IOCTL_COMPATIBLE                  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+ 
+@@ -114,9 +134,11 @@ static ULONG FORCEINLINE _IOC_(ULONG nr,
+ #define _IOWR_      _IOWR
+ #define _IO_        _IO
+ 
+-#define HAILO_GENERAL_IOCTL_MAGIC 'g'
+-#define HAILO_VDMA_IOCTL_MAGIC 'v'
+-#define HAILO_NON_LINUX_IOCTL_MAGIC 'w'
++#define HAILO_GENERAL_IOCTL_MAGIC   'g'
++#define HAILO_VDMA_IOCTL_MAGIC      'v'
++#define HAILO_SOC_IOCTL_MAGIC       's'
++#define HAILO_NNC_IOCTL_MAGIC       'n'
++#define HAILO_PCI_EP_IOCTL_MAGIC    'p'
+ 
+ #elif defined(__QNX__) // #ifdef _MSC_VER
+ #include <devctl.h>
+@@ -132,7 +154,6 @@ static ULONG FORCEINLINE _IOC_(ULONG nr,
+ #define _IO_    __DION
+ #define HAILO_GENERAL_IOCTL_MAGIC   _DCMD_ALL
+ #define HAILO_VDMA_IOCTL_MAGIC      _DCMD_MISC
+-#define HAILO_NON_LINUX_IOCTL_MAGIC _DCMD_PROC
+ 
+ #else // #ifdef _MSC_VER
+ #error "unsupported platform!"
+@@ -161,6 +182,16 @@ enum hailo_dma_data_direction {
+     HAILO_DMA_MAX_ENUM = INT_MAX,
+ };
+ 
++// Enum that states what type of buffer we are working with in the driver
++// TODO: HRT-13580 - Add specific type for user allocated and for driver allocated
++enum hailo_dma_buffer_type {
++    HAILO_DMA_USER_PTR_BUFFER = 0,
++    HAILO_DMA_DMABUF_BUFFER = 1,
++
++    /** Max enum value to maintain ABI Integrity */
++    HAILO_DMA_BUFFER_MAX_ENUM = INT_MAX,
++};
++
+ // Enum that determines if buffer should be allocated from user space or from driver
+ enum hailo_allocation_mode {
+     HAILO_ALLOCATION_MODE_USERSPACE = 0,
+@@ -170,10 +201,19 @@ enum hailo_allocation_mode {
+     HAILO_ALLOCATION_MODE_MAX_ENUM = INT_MAX,
+ };
+ 
++enum hailo_vdma_interrupts_domain {
++    HAILO_VDMA_INTERRUPTS_DOMAIN_NONE   = 0,
++    HAILO_VDMA_INTERRUPTS_DOMAIN_DEVICE = (1 << 0),
++    HAILO_VDMA_INTERRUPTS_DOMAIN_HOST   = (1 << 1),
++
++    /** Max enum value to maintain ABI Integrity */
++    HAILO_VDMA_INTERRUPTS_DOMAIN_MAX_ENUM = INT_MAX,
++};
++
+ /* structure used in ioctl HAILO_VDMA_BUFFER_MAP */
+ struct hailo_vdma_buffer_map_params {
+ #if defined(__linux__) || defined(_MSC_VER)
+-    void* user_address;                             // in
++    uintptr_t user_address;                         // in
+ #elif defined(__QNX__)
+     shm_handle_t shared_memory_handle;              // in
+ #else
+@@ -181,6 +221,7 @@ struct hailo_vdma_buffer_map_params {
+ #endif // __linux__
+     size_t size;                                    // in
+     enum hailo_dma_data_direction data_direction;   // in
++    enum hailo_dma_buffer_type buffer_type;         // in
+     uintptr_t allocated_buffer_handle;              // in
+     size_t mapped_handle;                           // out
+ };
+@@ -204,31 +245,27 @@ struct hailo_desc_list_release_params {
+     uintptr_t desc_handle;      // in
+ };
+ 
+-/* structure used in ioctl HAILO_NON_LINUX_DESC_LIST_MMAP */
+-struct hailo_non_linux_desc_list_mmap_params {
+-    uintptr_t desc_handle;  // in
+-    size_t size;            // in
+-    void* user_address;     // out
+-};
+-
+ /* structure used in ioctl HAILO_DESC_LIST_BIND_VDMA_BUFFER */
+-struct hailo_desc_list_bind_vdma_buffer_params {
++struct hailo_desc_list_program_params {
+     size_t buffer_handle;       // in
+     size_t buffer_size;         // in
+     size_t buffer_offset;       // in
+     uintptr_t desc_handle;      // in
+     uint8_t channel_index;      // in
+     uint32_t starting_desc;     // in
++    bool should_bind;           // in
++    enum hailo_vdma_interrupts_domain last_interrupts_domain;  // in
++    bool is_debug;              // in
+ };
+ 
+-/* structure used in ioctl HAILO_VDMA_INTERRUPTS_ENABLE */
+-struct hailo_vdma_interrupts_enable_params {
++/* structure used in ioctl HAILO_VDMA_ENABLE_CHANNELS */
++struct hailo_vdma_enable_channels_params {
+     uint32_t channels_bitmap_per_engine[MAX_VDMA_ENGINES];  // in
+     bool enable_timestamps_measure;                         // in
+ };
+ 
+-/* structure used in ioctl HAILO_VDMA_INTERRUPTS_DISABLE */
+-struct hailo_vdma_interrupts_disable_params {
++/* structure used in ioctl HAILO_VDMA_DISABLE_CHANNELS */
++struct hailo_vdma_disable_channels_params {
+     uint32_t channels_bitmap_per_engine[MAX_VDMA_ENGINES];  // in
+ };
+ 
+@@ -237,7 +274,7 @@ struct hailo_vdma_interrupts_channel_dat
+     uint8_t engine_index;
+     uint8_t channel_index;
+     bool is_active;                 // If not activate, num_processed is ignored.
+-    uint16_t host_num_processed;
++    uint8_t transfers_completed;    // Number of transfers completed.
+     uint8_t host_error;             // Channel errors bits on source side
+     uint8_t device_error;           // Channel errors bits on dest side
+     bool validation_success;        // If the validation of the channel was successful
+@@ -312,6 +349,10 @@ enum hailo_transfer_memory_type {
+     HAILO_TRANSFER_MEMORY_DMA_ENGINE1,
+     HAILO_TRANSFER_MEMORY_DMA_ENGINE2,
+ 
++    // PCIe EP driver memories
++    HAILO_TRANSFER_MEMORY_PCIE_EP_CONFIG = 0x400,
++    HAILO_TRANSFER_MEMORY_PCIE_EP_BRIDGE,
++
+     /** Max enum value to maintain ABI Integrity */
+     HAILO_TRANSFER_MEMORY_MAX_ENUM = INT_MAX,
+ };
+@@ -352,15 +393,26 @@ enum hailo_board_type {
+     HAILO_BOARD_TYPE_HAILO8 = 0,
+     HAILO_BOARD_TYPE_HAILO15,
+     HAILO_BOARD_TYPE_PLUTO,
++    HAILO_BOARD_TYPE_HAILO10H,
++    HAILO_BOARD_TYPE_HAILO10H_LEGACY,
+     HAILO_BOARD_TYPE_COUNT,
+ 
+     /** Max enum value to maintain ABI Integrity */
+     HAILO_BOARD_TYPE_MAX_ENUM = INT_MAX
+ };
+ 
++enum hailo_accelerator_type {
++    HAILO_ACCELERATOR_TYPE_NNC,
++    HAILO_ACCELERATOR_TYPE_SOC,
++
++    /** Max enum value to maintain ABI Integrity */
++    HAILO_ACCELERATOR_TYPE_MAX_ENUM = INT_MAX
++};
++
+ enum hailo_dma_type {
+     HAILO_DMA_TYPE_PCIE,
+     HAILO_DMA_TYPE_DRAM,
++    HAILO_DMA_TYPE_PCI_EP,
+ 
+     /** Max enum value to maintain ABI Integrity */
+     HAILO_DMA_TYPE_MAX_ENUM = INT_MAX,
+@@ -428,15 +480,6 @@ struct hailo_vdma_transfer_buffer {
+     uint32_t size;                     // in
+ };
+ 
+-enum hailo_vdma_interrupts_domain {
+-    HAILO_VDMA_INTERRUPTS_DOMAIN_NONE   = 0,
+-    HAILO_VDMA_INTERRUPTS_DOMAIN_DEVICE = (1 << 0),
+-    HAILO_VDMA_INTERRUPTS_DOMAIN_HOST   = (1 << 1),
+-
+-    /** Max enum value to maintain ABI Integrity */
+-    HAILO_VDMA_INTERRUPTS_DOMAIN_MAX_ENUM = INT_MAX,
+-};
+-
+ // We allow maximum 2 buffers per transfer since we may have an extra buffer 
+ // to make sure each buffer is aligned to page size.
+ #define HAILO_MAX_BUFFERS_PER_SINGLE_TRANSFER (2)
+@@ -460,6 +503,35 @@ struct hailo_vdma_launch_transfer_params
+                                                                         // more info (e.g desc complete status)
+ 
+     uint32_t descs_programed;                                           // out, amount of descriptors programed.
++    int launch_transfer_status;                                         // out, status of the launch transfer call. (only used in case of error)
++};
++
++/* structure used in ioctl HAILO_SOC_CONNECT */
++struct hailo_soc_connect_params {
++    uint8_t input_channel_index;    // out
++    uint8_t output_channel_index;   // out
++    uintptr_t input_desc_handle;    // in
++    uintptr_t output_desc_handle;   // in
++};
++
++/* structure used in ioctl HAILO_SOC_CLOSE */
++struct hailo_soc_close_params {
++    uint8_t input_channel_index;    // in
++    uint8_t output_channel_index;   // in
++};
++
++/* structure used in ioctl HAILO_PCI_EP_ACCEPT */
++struct hailo_pci_ep_accept_params {
++    uint8_t input_channel_index;    // out
++    uint8_t output_channel_index;   // out
++    uintptr_t input_desc_handle;    // in
++    uintptr_t output_desc_handle;   // in
++};
++
++/* structure used in ioctl HAILO_PCI_EP_CLOSE */
++struct hailo_pci_ep_close_params {
++    uint8_t input_channel_index;    // in
++    uint8_t output_channel_index;   // in
+ };
+ 
+ #ifdef _MSC_VER
+@@ -469,8 +541,8 @@ struct tCompatibleHailoIoctlData
+     ULONG_PTR Value;
+     union {
+         struct hailo_memory_transfer_params MemoryTransfer;
+-        struct hailo_vdma_interrupts_enable_params VdmaInterruptsEnable;
+-        struct hailo_vdma_interrupts_disable_params VdmaInterruptsDisable;
++        struct hailo_vdma_enable_channels_params VdmaEnableChannels;
++        struct hailo_vdma_disable_channels_params VdmaDisableChannels;
+         struct hailo_vdma_interrupts_read_timestamp_params VdmaInterruptsReadTimestamps;
+         struct hailo_vdma_interrupts_wait_params VdmaInterruptsWait;
+         struct hailo_vdma_buffer_sync_params VdmaBufferSync;
+@@ -479,14 +551,17 @@ struct tCompatibleHailoIoctlData
+         struct hailo_vdma_buffer_unmap_params VdmaBufferUnmap;
+         struct hailo_desc_list_create_params DescListCreate;
+         struct hailo_desc_list_release_params DescListReleaseParam;
+-        struct hailo_desc_list_bind_vdma_buffer_params DescListBind;
++        struct hailo_desc_list_program_params DescListProgram;
+         struct hailo_d2h_notification D2HNotification;
+         struct hailo_device_properties DeviceProperties;
+         struct hailo_driver_info DriverInfo;
+-        struct hailo_non_linux_desc_list_mmap_params DescListMmap;
+         struct hailo_read_log_params ReadLog;
+         struct hailo_mark_as_in_use_params MarkAsInUse;
+         struct hailo_vdma_launch_transfer_params LaunchTransfer;
++        struct hailo_soc_connect_params ConnectParams;
++        struct hailo_soc_close_params SocCloseParams;
++        struct hailo_pci_ep_accept_params AcceptParams;
++        struct hailo_pci_ep_close_params PciEpCloseParams;
+     } Buffer;
+ };
+ #endif // _MSC_VER
+@@ -495,30 +570,20 @@ struct tCompatibleHailoIoctlData
+ 
+ enum hailo_general_ioctl_code {
+     HAILO_MEMORY_TRANSFER_CODE,
+-    HAILO_FW_CONTROL_CODE,
+-    HAILO_READ_NOTIFICATION_CODE,
+-    HAILO_DISABLE_NOTIFICATION_CODE,
+     HAILO_QUERY_DEVICE_PROPERTIES_CODE,
+     HAILO_QUERY_DRIVER_INFO_CODE,
+-    HAILO_READ_LOG_CODE,
+-    HAILO_RESET_NN_CORE_CODE,
+ 
+     // Must be last
+     HAILO_GENERAL_IOCTL_MAX_NR,
+ };
+ 
+ #define HAILO_MEMORY_TRANSFER           _IOWR_(HAILO_GENERAL_IOCTL_MAGIC,  HAILO_MEMORY_TRANSFER_CODE,            struct hailo_memory_transfer_params)
+-#define HAILO_FW_CONTROL                _IOWR_(HAILO_GENERAL_IOCTL_MAGIC,  HAILO_FW_CONTROL_CODE,                 struct hailo_fw_control)
+-#define HAILO_READ_NOTIFICATION         _IOW_(HAILO_GENERAL_IOCTL_MAGIC,   HAILO_READ_NOTIFICATION_CODE,          struct hailo_d2h_notification)
+-#define HAILO_DISABLE_NOTIFICATION      _IO_(HAILO_GENERAL_IOCTL_MAGIC,    HAILO_DISABLE_NOTIFICATION_CODE)
+ #define HAILO_QUERY_DEVICE_PROPERTIES   _IOW_(HAILO_GENERAL_IOCTL_MAGIC,   HAILO_QUERY_DEVICE_PROPERTIES_CODE,    struct hailo_device_properties)
+ #define HAILO_QUERY_DRIVER_INFO         _IOW_(HAILO_GENERAL_IOCTL_MAGIC,   HAILO_QUERY_DRIVER_INFO_CODE,          struct hailo_driver_info)
+-#define HAILO_READ_LOG                  _IOWR_(HAILO_GENERAL_IOCTL_MAGIC,  HAILO_READ_LOG_CODE,                   struct hailo_read_log_params)
+-#define HAILO_RESET_NN_CORE             _IO_(HAILO_GENERAL_IOCTL_MAGIC,    HAILO_RESET_NN_CORE_CODE)
+ 
+ enum hailo_vdma_ioctl_code {
+-    HAILO_VDMA_INTERRUPTS_ENABLE_CODE,
+-    HAILO_VDMA_INTERRUPTS_DISABLE_CODE,
++    HAILO_VDMA_ENABLE_CHANNELS_CODE,
++    HAILO_VDMA_DISABLE_CHANNELS_CODE,
+     HAILO_VDMA_INTERRUPTS_WAIT_CODE,
+     HAILO_VDMA_INTERRUPTS_READ_TIMESTAMPS_CODE,
+     HAILO_VDMA_BUFFER_MAP_CODE,
+@@ -526,7 +591,7 @@ enum hailo_vdma_ioctl_code {
+     HAILO_VDMA_BUFFER_SYNC_CODE,
+     HAILO_DESC_LIST_CREATE_CODE,
+     HAILO_DESC_LIST_RELEASE_CODE,
+-    HAILO_DESC_LIST_BIND_VDMA_BUFFER_CODE,
++    HAILO_DESC_LIST_PROGRAM_CODE,
+     HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC_CODE,
+     HAILO_VDMA_LOW_MEMORY_BUFFER_FREE_CODE,
+     HAILO_MARK_AS_IN_USE_CODE,
+@@ -538,38 +603,67 @@ enum hailo_vdma_ioctl_code {
+     HAILO_VDMA_IOCTL_MAX_NR,
+ };
+ 
+-#define HAILO_VDMA_INTERRUPTS_ENABLE          _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_INTERRUPTS_ENABLE_CODE,            struct hailo_vdma_interrupts_enable_params)
+-#define HAILO_VDMA_INTERRUPTS_DISABLE         _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_INTERRUPTS_DISABLE_CODE,           struct hailo_vdma_interrupts_disable_params)
++#define HAILO_VDMA_ENABLE_CHANNELS            _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_ENABLE_CHANNELS_CODE,              struct hailo_vdma_enable_channels_params)
++#define HAILO_VDMA_DISABLE_CHANNELS           _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_DISABLE_CHANNELS_CODE,             struct hailo_vdma_disable_channels_params)
+ #define HAILO_VDMA_INTERRUPTS_WAIT            _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_INTERRUPTS_WAIT_CODE,              struct hailo_vdma_interrupts_wait_params)
+ #define HAILO_VDMA_INTERRUPTS_READ_TIMESTAMPS _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_INTERRUPTS_READ_TIMESTAMPS_CODE,   struct hailo_vdma_interrupts_read_timestamp_params)
+ 
+-#define HAILO_VDMA_BUFFER_MAP                 _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_BUFFER_MAP_CODE,                    struct hailo_vdma_buffer_map_params)
+-#define HAILO_VDMA_BUFFER_UNMAP               _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_BUFFER_UNMAP_CODE,                  struct hailo_vdma_buffer_unmap_params)
+-#define HAILO_VDMA_BUFFER_SYNC                _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_BUFFER_SYNC_CODE,                   struct hailo_vdma_buffer_sync_params)
++#define HAILO_VDMA_BUFFER_MAP                 _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_BUFFER_MAP_CODE,                   struct hailo_vdma_buffer_map_params)
++#define HAILO_VDMA_BUFFER_UNMAP               _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_BUFFER_UNMAP_CODE,                 struct hailo_vdma_buffer_unmap_params)
++#define HAILO_VDMA_BUFFER_SYNC                _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_BUFFER_SYNC_CODE,                  struct hailo_vdma_buffer_sync_params)
++
++#define HAILO_DESC_LIST_CREATE                _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_DESC_LIST_CREATE_CODE,                  struct hailo_desc_list_create_params)
++#define HAILO_DESC_LIST_RELEASE               _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_DESC_LIST_RELEASE_CODE,                 struct hailo_desc_list_release_params)
++#define HAILO_DESC_LIST_PROGRAM               _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_DESC_LIST_PROGRAM_CODE,                 struct hailo_desc_list_program_params)
+ 
+-#define HAILO_DESC_LIST_CREATE                _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_DESC_LIST_CREATE_CODE,                   struct hailo_desc_list_create_params)
+-#define HAILO_DESC_LIST_RELEASE               _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_DESC_LIST_RELEASE_CODE,                  struct hailo_desc_list_release_params)
+-#define HAILO_DESC_LIST_BIND_VDMA_BUFFER      _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_DESC_LIST_BIND_VDMA_BUFFER_CODE,         struct hailo_desc_list_bind_vdma_buffer_params)
++#define HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC    _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC_CODE,      struct hailo_allocate_low_memory_buffer_params)
++#define HAILO_VDMA_LOW_MEMORY_BUFFER_FREE     _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_LOW_MEMORY_BUFFER_FREE_CODE,       struct hailo_free_low_memory_buffer_params)
+ 
+-#define HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC    _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC_CODE,       struct hailo_allocate_low_memory_buffer_params)
+-#define HAILO_VDMA_LOW_MEMORY_BUFFER_FREE     _IOR_(HAILO_VDMA_IOCTL_MAGIC,   HAILO_VDMA_LOW_MEMORY_BUFFER_FREE_CODE,       struct hailo_free_low_memory_buffer_params)
++#define HAILO_MARK_AS_IN_USE                  _IOW_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_MARK_AS_IN_USE_CODE,                    struct hailo_mark_as_in_use_params)
+ 
+-#define HAILO_MARK_AS_IN_USE                  _IOW_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_MARK_AS_IN_USE_CODE,                     struct hailo_mark_as_in_use_params)
++#define HAILO_VDMA_CONTINUOUS_BUFFER_ALLOC    _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_CONTINUOUS_BUFFER_ALLOC_CODE,      struct hailo_allocate_continuous_buffer_params)
++#define HAILO_VDMA_CONTINUOUS_BUFFER_FREE     _IOR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_CONTINUOUS_BUFFER_FREE_CODE,       struct hailo_free_continuous_buffer_params)
+ 
+-#define HAILO_VDMA_CONTINUOUS_BUFFER_ALLOC    _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_CONTINUOUS_BUFFER_ALLOC_CODE,       struct hailo_allocate_continuous_buffer_params)
+-#define HAILO_VDMA_CONTINUOUS_BUFFER_FREE     _IOR_(HAILO_VDMA_IOCTL_MAGIC,   HAILO_VDMA_CONTINUOUS_BUFFER_FREE_CODE,       struct hailo_free_continuous_buffer_params)
++#define HAILO_VDMA_LAUNCH_TRANSFER           _IOWR_(HAILO_VDMA_IOCTL_MAGIC,  HAILO_VDMA_LAUNCH_TRANSFER_CODE,              struct hailo_vdma_launch_transfer_params)
+ 
+-#define HAILO_VDMA_LAUNCH_TRANSFER           _IOWR_(HAILO_VDMA_IOCTL_MAGIC, HAILO_VDMA_LAUNCH_TRANSFER_CODE,                struct hailo_vdma_launch_transfer_params)
++enum hailo_nnc_ioctl_code {
++    HAILO_FW_CONTROL_CODE,
++    HAILO_READ_NOTIFICATION_CODE,
++    HAILO_DISABLE_NOTIFICATION_CODE,
++    HAILO_READ_LOG_CODE,
++    HAILO_RESET_NN_CORE_CODE,
+ 
++    // Must be last
++    HAILO_NNC_IOCTL_MAX_NR
++};
+ 
+-enum hailo_non_linux_ioctl_code {
+-    HAILO_NON_LINUX_DESC_LIST_MMAP_CODE,
++#define HAILO_FW_CONTROL                _IOWR_(HAILO_NNC_IOCTL_MAGIC,  HAILO_FW_CONTROL_CODE,                 struct hailo_fw_control)
++#define HAILO_READ_NOTIFICATION         _IOW_(HAILO_NNC_IOCTL_MAGIC,   HAILO_READ_NOTIFICATION_CODE,          struct hailo_d2h_notification)
++#define HAILO_DISABLE_NOTIFICATION      _IO_(HAILO_NNC_IOCTL_MAGIC,    HAILO_DISABLE_NOTIFICATION_CODE)
++#define HAILO_READ_LOG                  _IOWR_(HAILO_NNC_IOCTL_MAGIC,  HAILO_READ_LOG_CODE,                   struct hailo_read_log_params)
++#define HAILO_RESET_NN_CORE             _IO_(HAILO_NNC_IOCTL_MAGIC,    HAILO_RESET_NN_CORE_CODE)
++
++enum hailo_soc_ioctl_code {
++    HAILO_SOC_IOCTL_CONNECT_CODE,
++    HAILO_SOC_IOCTL_CLOSE_CODE,
+ 
+     // Must be last
+-    HAILO_NON_LINUX_IOCTL_MAX_NR,
++    HAILO_SOC_IOCTL_MAX_NR,
+ };
+ 
+-#define HAILO_NON_LINUX_DESC_LIST_MMAP _IOWR_(HAILO_NON_LINUX_IOCTL_MAGIC, HAILO_NON_LINUX_DESC_LIST_MMAP_CODE, struct hailo_non_linux_desc_list_mmap_params)
++#define HAILO_SOC_CONNECT       _IOWR_(HAILO_SOC_IOCTL_MAGIC, HAILO_SOC_IOCTL_CONNECT_CODE, struct hailo_soc_connect_params)
++#define HAILO_SOC_CLOSE         _IOR_(HAILO_SOC_IOCTL_MAGIC,  HAILO_SOC_IOCTL_CLOSE_CODE,   struct hailo_soc_close_params)
++
++
++enum hailo_pci_ep_ioctl_code {
++    HAILO_PCI_EP_ACCEPT_CODE,
++    HAILO_PCI_EP_CLOSE_CODE,
++
++    // Must be last
++    HAILO_PCI_EP_IOCTL_MAX_NR,
++};
+ 
++#define HAILO_PCI_EP_ACCEPT         _IOWR_(HAILO_PCI_EP_IOCTL_MAGIC,  HAILO_PCI_EP_ACCEPT_CODE,  struct hailo_pci_ep_accept_params)
++#define HAILO_PCI_EP_CLOSE          _IOR_(HAILO_PCI_EP_IOCTL_MAGIC,   HAILO_PCI_EP_CLOSE_CODE,   struct hailo_pci_ep_close_params)
+ 
+ #endif /* _HAILO_IOCTL_COMMON_H_ */
+--- a/drivers/media/pci/hailo/common/hailo_resource.c
++++ b/drivers/media/pci/hailo/common/hailo_resource.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+--- a/drivers/media/pci/hailo/common/hailo_resource.h
++++ b/drivers/media/pci/hailo/common/hailo_resource.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+--- a/drivers/media/pci/hailo/common/pcie_common.c
++++ b/drivers/media/pci/hailo/common/pcie_common.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -10,6 +10,8 @@
+ #include <linux/bug.h>
+ #include <linux/delay.h>
+ #include <linux/kernel.h>
++#include <linux/printk.h>
++#include <linux/device.h>
+ 
+ 
+ #define BSC_IMASK_HOST (0x0188)
+@@ -19,14 +21,13 @@
+ 
+ #define PO2_ROUND_UP(size, alignment) ((size + alignment-1) & ~(alignment-1))
+ 
+-#define ATR0_PARAM (0x17)
+-#define ATR0_SRC_ADDR (0x0)
+-#define ATR0_TRSL_ADDR2 (0x0)
+-#define ATR0_TRSL_PARAM (6)
++#define ATR_PARAM               (0x17)
++#define ATR_SRC_ADDR            (0x0)
++#define ATR_TRSL_PARAM          (6)
++#define ATR_TABLE_SIZE          (0x1000u)
++#define ATR_TABLE_SIZE_MASK     (0x1000u - 1)
+ 
+ #define ATR0_PCIE_BRIDGE_OFFSET (0x700)
+-#define ATR0_TABLE_SIZE (0x1000u)
+-#define ATR0_TABLE_SIZE_MASK (0x1000u - 1)
+ 
+ #define MAXIMUM_APP_FIRMWARE_CODE_SIZE (0x40000)
+ #define MAXIMUM_CORE_FIRMWARE_CODE_SIZE (0x20000)
+@@ -45,8 +46,13 @@
+ #define HAILO_PCIE_HOST_DMA_DATA_ID (0)
+ #define HAILO_PCIE_DMA_DEVICE_INTERRUPTS_BITMASK    (1 << 4)
+ #define HAILO_PCIE_DMA_HOST_INTERRUPTS_BITMASK      (1 << 5)
++#define HAILO_PCIE_DMA_SRC_CHANNELS_BITMASK         (0x0000FFFF)
+ 
+-typedef u32 hailo_ptr_t;
++#define HAILO_PCIE_MAX_ATR_TABLE_INDEX (3)
++
++#define MAX_FILES_PER_STAGE (4)
++
++#define BOOT_STATUS_UNINITIALIZED (0x1)
+ 
+ struct hailo_fw_addresses {
+     u32 boot_fw_header;
+@@ -58,14 +64,11 @@ struct hailo_fw_addresses {
+     u32 core_fw_header;
+     u32 atr0_trsl_addr1;
+     u32 raise_ready_offset;
++    u32 boot_status;
+ };
+ 
+-struct hailo_atr_config {
+-    u32 atr_param;
+-    u32 atr_src;
+-    u32 atr_trsl_addr_1;
+-    u32 atr_trsl_addr_2;
+-    u32 atr_trsl_param;
++struct loading_stage {
++    const struct hailo_file_batch *batch;
+ };
+ 
+ struct hailo_board_compatibility {
+@@ -73,6 +76,69 @@ struct hailo_board_compatibility {
+     const char *fw_filename;
+     const struct hailo_config_constants board_cfg;
+     const struct hailo_config_constants fw_cfg;
++    const struct loading_stage stages[MAX_LOADING_STAGES];
++};
++
++static const struct hailo_file_batch hailo10h_files_stg1[] = {
++    {
++        .filename = "hailo/hailo10h/customer_certificate.bin",
++        .address = 0xA0000,
++        .max_size = 0x8004,
++        .is_mandatory = true,
++        .has_header = false
++    },
++    {
++        .filename = "hailo/hailo10h/u-boot.dtb.signed",
++        .address = 0xA8004,
++        .max_size = 0x20000,
++        .is_mandatory = true,
++        .has_header = false
++    },
++    {
++        .filename = "hailo/hailo10h/scu_fw.bin",
++        .address = 0x20000,
++        .max_size = 0x40000,
++        .is_mandatory = true,
++        .has_header = true
++    },
++    {
++        .filename = NULL,
++        .address = 0x00,
++        .max_size = 0x00,
++        .is_mandatory = false,
++        .has_header = false
++    }
++};
++
++static const struct hailo_file_batch hailo10h_files_stg2[] = {
++    {
++        .filename = "hailo/hailo10h/u-boot-spl.bin",
++        .address = 0x85000000,
++        .max_size = 0x1000000,
++        .is_mandatory = true,
++        .has_header = false
++    },
++    {
++        .filename = "hailo/hailo10h/u-boot-tfa.itb",
++        .address = 0x86000000,
++        .max_size = 0x1000000,
++        .is_mandatory = true,
++        .has_header = false
++    },
++    {
++        .filename = "hailo/hailo10h/fitImage",
++        .address = 0x87000000,
++        .max_size = 0x1000000,
++        .is_mandatory = true,
++        .has_header = false
++    },
++    {
++        .filename = "hailo/hailo10h/core-image-minimal-hailo10-m2.ext4.gz",
++        .address = 0x88000000,
++        .max_size = 0x20000000, // Max size 512MB
++        .is_mandatory = true,
++        .has_header = false
++    },
+ };
+ 
+ static const struct hailo_board_compatibility compat[HAILO_BOARD_TYPE_COUNT] = {
+@@ -87,6 +153,7 @@ static const struct hailo_board_compatib
+             .core_fw_header = 0xA0000,
+             .atr0_trsl_addr1 = 0x60000000,
+             .raise_ready_offset = 0x1684,
++            .boot_status = 0xe0000,
+         },
+         .fw_filename = "hailo/hailo8_fw.bin",
+         .board_cfg = {
+@@ -100,7 +167,7 @@ static const struct hailo_board_compatib
+             .max_size = PCIE_HAILO8_FW_CFG_MAX_SIZE,
+         },
+     },
+-    [HAILO_BOARD_TYPE_HAILO15] = {
++    [HAILO_BOARD_TYPE_HAILO10H_LEGACY] = {
+         .fw_addresses = {
+             .boot_fw_header = 0x88000,
+             .boot_fw_trigger = 0x88c98,
+@@ -111,6 +178,7 @@ static const struct hailo_board_compatib
+             .core_fw_header = 0xC0000,
+             .atr0_trsl_addr1 = 0x000BE000,
+             .raise_ready_offset = 0x1754,
++            .boot_status = 0x80000,
+         },
+         .fw_filename = "hailo/hailo15_fw.bin",
+         .board_cfg = {
+@@ -124,6 +192,39 @@ static const struct hailo_board_compatib
+             .max_size = 0,
+         },
+     },
++    [HAILO_BOARD_TYPE_HAILO10H] = {
++        .fw_addresses = {
++            .boot_fw_header = 0x88000,
++            .boot_fw_trigger = 0x88c98,
++            .boot_key_cert = 0x88018,
++            .boot_cont_cert = 0x886a8,
++            .app_fw_code_ram_base = 0x20000,
++            .core_code_ram_base = 0,
++            .core_fw_header = 0,
++            .atr0_trsl_addr1 = 0x000BE000,
++            .raise_ready_offset = 0x1754,
++            .boot_status = 0x80000,
++        },
++        .fw_filename = NULL,
++        .board_cfg = {
++            .filename = NULL,
++            .address = 0,
++            .max_size = 0,
++        },
++        .fw_cfg = {
++            .filename = NULL,
++            .address = 0,
++            .max_size = 0,
++        },
++        .stages = {
++            {
++                .batch = hailo10h_files_stg1,
++            },
++            {
++                .batch = hailo10h_files_stg2,
++            },
++        },
++    },
+     // HRT-11344 : none of these matter except raise_ready_offset seeing as we load fw seperately - not through driver
+     // After implementing bootloader put correct values here
+     [HAILO_BOARD_TYPE_PLUTO] = {
+@@ -138,6 +239,7 @@ static const struct hailo_board_compatib
+             .atr0_trsl_addr1 = 0x000BE000,
+             // NOTE: After they update hw consts - check register fw_access_interrupt_w1s of pcie_config
+             .raise_ready_offset = 0x174c,
++            .boot_status = 0x80000,
+         },
+         .fw_filename = "hailo/pluto_fw.bin",
+         .board_cfg = {
+@@ -225,7 +327,7 @@ int hailo_pcie_read_firmware_control(str
+     // Copy response buffer
+     hailo_resource_read_buffer(&resources->fw_access, PCIE_REQUEST_SIZE_OFFSET + (size_t)response_header_size,
+         command->buffer_len, &command->buffer);
+-    
++
+     return 0;
+ }
+ 
+@@ -253,93 +355,111 @@ int hailo_pcie_read_firmware_notificatio
+     return hailo_read_firmware_notification(&notification_resource, notification);
+ }
+ 
+-static void write_atr_table(struct hailo_pcie_resources *resources,
+-    struct hailo_atr_config *atr)
++int hailo_pcie_configure_atr_table(struct hailo_resource *bridge_config, u64 trsl_addr, u32 atr_index)
+ {
+-    hailo_resource_write_buffer(&resources->config, ATR0_PCIE_BRIDGE_OFFSET,
+-        sizeof(*atr), (void*)atr);
+-}
++    size_t offset = 0;
++    struct hailo_atr_config atr = {
++        .atr_param = (ATR_PARAM | (atr_index << 12)),
++        .atr_src = ATR_SRC_ADDR,
++        .atr_trsl_addr_1 = (u32)(trsl_addr & 0xFFFFFFFF),
++        .atr_trsl_addr_2 = (u32)(trsl_addr >> 32),
++        .atr_trsl_param = ATR_TRSL_PARAM
++    };
+ 
+-static void read_atr_table(struct hailo_pcie_resources *resources,
+-    struct hailo_atr_config *atr)
+-{
+-    hailo_resource_read_buffer(&resources->config, ATR0_PCIE_BRIDGE_OFFSET,
+-        sizeof(*atr), (void*)atr);
++    BUG_ON(HAILO_PCIE_MAX_ATR_TABLE_INDEX < atr_index);
++    offset = ATR0_PCIE_BRIDGE_OFFSET + (atr_index * 0x20);
++
++    return hailo_resource_write_buffer(bridge_config, offset, sizeof(atr), (void*)&atr);
+ }
+ 
+-static void configure_atr_table(struct hailo_pcie_resources *resources,
+-    hailo_ptr_t base_address)
++void hailo_pcie_read_atr_table(struct hailo_resource *bridge_config, struct hailo_atr_config *atr, u32 atr_index)
+ {
+-    struct hailo_atr_config atr = {
+-        .atr_param = ATR0_PARAM,
+-        .atr_src = ATR0_SRC_ADDR,
+-        .atr_trsl_addr_1 = (u32)base_address,
+-        .atr_trsl_addr_2 = ATR0_TRSL_ADDR2,
+-        .atr_trsl_param = ATR0_TRSL_PARAM
+-    };
+-    write_atr_table(resources, &atr);
++    size_t offset = 0;
++
++    BUG_ON(HAILO_PCIE_MAX_ATR_TABLE_INDEX < atr_index);
++    offset = ATR0_PCIE_BRIDGE_OFFSET + (atr_index * 0x20);
++    
++    hailo_resource_read_buffer(bridge_config, offset, sizeof(*atr), (void*)atr);
+ }
+ 
+ static void write_memory_chunk(struct hailo_pcie_resources *resources,
+     hailo_ptr_t dest, u32 dest_offset, const void *src, u32 len)
+ {
++    u32 ATR_INDEX = 0;
+     BUG_ON(dest_offset + len > (u32)resources->fw_access.size);
+ 
+-    configure_atr_table(resources, dest);
++    (void)hailo_pcie_configure_atr_table(&resources->config, (u64)dest, ATR_INDEX);
+     (void)hailo_resource_write_buffer(&resources->fw_access, dest_offset, len, src);
+ }
+ 
+ static void read_memory_chunk(
+     struct hailo_pcie_resources *resources, hailo_ptr_t src, u32 src_offset, void *dest, u32 len)
+ {
++    u32 ATR_INDEX = 0;
+     BUG_ON(src_offset + len > (u32)resources->fw_access.size);
+ 
+-    configure_atr_table(resources, src);
++    (void)hailo_pcie_configure_atr_table(&resources->config, (u64)src, ATR_INDEX);
+     (void)hailo_resource_read_buffer(&resources->fw_access, src_offset, len, dest);
+ }
+ 
+ // Note: this function modify the device ATR table (that is also used by the firmware for control and vdma).
+ // Use with caution, and restore the original atr if needed.
+-static void write_memory(struct hailo_pcie_resources *resources, hailo_ptr_t dest, const void *src, u32 len)
++void write_memory(struct hailo_pcie_resources *resources, hailo_ptr_t dest, const void *src, u32 len)
+ {
+-    hailo_ptr_t base_address = dest & ~ATR0_TABLE_SIZE_MASK;
++    struct hailo_atr_config previous_atr = {0};
++    hailo_ptr_t base_address = (dest & ~ATR_TABLE_SIZE_MASK);
+     u32 chunk_len = 0;
+     u32 offset = 0;
++    u32 ATR_INDEX = 0;
++
++    // Store previous ATR (Read/write modify the ATR).
++    hailo_pcie_read_atr_table(&resources->config, &previous_atr, ATR_INDEX);
+ 
+     if (base_address != dest) {
+         // Data is not aligned, write the first chunk
+-        chunk_len = min(base_address + ATR0_TABLE_SIZE - dest, len);
++        chunk_len = min(base_address + ATR_TABLE_SIZE - dest, len);
+         write_memory_chunk(resources, base_address, dest - base_address, src, chunk_len);
+         offset += chunk_len;
+     }
+ 
+     while (offset < len) {
+-        chunk_len = min(len - offset, ATR0_TABLE_SIZE);
++        chunk_len = min(len - offset, ATR_TABLE_SIZE);
+         write_memory_chunk(resources, dest + offset, 0, (const u8*)src + offset, chunk_len);
+         offset += chunk_len;
+     }
++
++    (void)hailo_pcie_configure_atr_table(&resources->config,
++        (((u64)(previous_atr.atr_trsl_addr_2) << 32) | previous_atr.atr_trsl_addr_1), ATR_INDEX);
+ }
+ 
+ // Note: this function modify the device ATR table (that is also used by the firmware for control and vdma).
+ // Use with caution, and restore the original atr if needed.
+ static void read_memory(struct hailo_pcie_resources *resources, hailo_ptr_t src, void *dest, u32 len)
+ {
+-    hailo_ptr_t base_address = src & ~ATR0_TABLE_SIZE_MASK;
++    struct hailo_atr_config previous_atr = {0};
++    hailo_ptr_t base_address = (src & ~ATR_TABLE_SIZE_MASK);
+     u32 chunk_len = 0;
+     u32 offset = 0;
++    u32 ATR_INDEX = 0;
++
++    // Store previous ATR (Read/write modify the ATR).
++    hailo_pcie_read_atr_table(&resources->config, &previous_atr, ATR_INDEX);
+ 
+     if (base_address != src) {
+         // Data is not aligned, write the first chunk
+-        chunk_len = min(base_address + ATR0_TABLE_SIZE - src, len);
++        chunk_len = min(base_address + ATR_TABLE_SIZE - src, len);
+         read_memory_chunk(resources, base_address, src - base_address, dest, chunk_len);
+         offset += chunk_len;
+     }
+ 
+     while (offset < len) {
+-        chunk_len = min(len - offset, ATR0_TABLE_SIZE);
++        chunk_len = min(len - offset, ATR_TABLE_SIZE);
+         read_memory_chunk(resources, src + offset, 0, (u8*)dest + offset, chunk_len);
+         offset += chunk_len;
+     }
++
++    (void)hailo_pcie_configure_atr_table(&resources->config,
++        (((u64)(previous_atr.atr_trsl_addr_2) << 32) | previous_atr.atr_trsl_addr_1), ATR_INDEX);
+ }
+ 
+ static void hailo_write_app_firmware(struct hailo_pcie_resources *resources, firmware_header_t *fw_header,
+@@ -367,7 +487,7 @@ static void hailo_write_core_firmware(st
+     write_memory(resources, fw_addresses->core_fw_header, fw_header, sizeof(firmware_header_t));
+ }
+ 
+-static void hailo_trigger_firmware_boot(struct hailo_pcie_resources *resources)
++void hailo_trigger_firmware_boot(struct hailo_pcie_resources *resources)
+ {
+     const struct hailo_fw_addresses *fw_addresses = &(compat[resources->board_type].fw_addresses);
+     u32 pcie_finished = 1;
+@@ -376,6 +496,17 @@ static void hailo_trigger_firmware_boot(
+         (void*)&pcie_finished, sizeof(pcie_finished));
+ }
+ 
++u32 hailo_get_boot_status(struct hailo_pcie_resources *resources)
++{
++    u32 boot_status = 0;
++    const struct hailo_fw_addresses *fw_addresses = &(compat[resources->board_type].fw_addresses);
++
++    read_memory(resources, fw_addresses->boot_status,
++        &boot_status, sizeof(boot_status));
++
++    return boot_status;
++}
++
+ /**
+ * Validates the FW headers.
+ * @param[in] address                    Address of the firmware.
+@@ -408,11 +539,14 @@ static int FW_VALIDATION__validate_fw_he
+         goto exit;
+     }
+ 
+-    err = FW_VALIDATION__validate_fw_header(firmware_base_address, firmware_size, MAXIMUM_CORE_FIRMWARE_CODE_SIZE,
+-        &consumed_firmware_offset, &core_firmware_header, board_type);
+-    if (0 != err) {
+-        err = -EINVAL;
+-        goto exit;
++    // Not validating with HAILO10H since core firmware doesn't loaded over pcie
++    if (HAILO_BOARD_TYPE_HAILO10H != board_type) {
++        err = FW_VALIDATION__validate_fw_header(firmware_base_address, firmware_size, MAXIMUM_CORE_FIRMWARE_CODE_SIZE,
++            &consumed_firmware_offset, &core_firmware_header, board_type);
++        if (0 != err) {
++            err = -EINVAL;
++            goto exit;
++        }
+     }
+ 
+     if (consumed_firmware_offset != firmware_size) {
+@@ -437,6 +571,70 @@ exit:
+     return err;
+ }
+ 
++static int write_single_file(struct hailo_pcie_resources *resources, const struct hailo_file_batch *files_batch, struct device *dev)
++{
++    const struct firmware *firmware = NULL;
++    firmware_header_t *app_firmware_header = NULL;
++    secure_boot_certificate_t *firmware_cert = NULL;
++    firmware_header_t *core_firmware_header = NULL;
++    int err = 0;
++
++    err = request_firmware_direct(&firmware, files_batch->filename, dev);
++    if (err < 0) {
++        return err;
++    }
++
++    if (firmware->size > files_batch->max_size) {
++        release_firmware(firmware);
++        return -EFBIG;
++    }
++
++    if (files_batch->has_header) {
++        err = FW_VALIDATION__validate_fw_headers((uintptr_t)firmware->data, firmware->size,
++            &app_firmware_header, &core_firmware_header, &firmware_cert, resources->board_type);
++        if (err < 0) {
++            release_firmware(firmware);
++            return err;
++        }
++
++        hailo_write_app_firmware(resources, app_firmware_header, firmware_cert);
++    } else {
++        write_memory(resources, files_batch->address, (void*)firmware->data, firmware->size);
++    }
++
++    release_firmware(firmware);
++
++    return 0;
++}
++
++int hailo_pcie_write_firmware_batch(struct device *dev, struct hailo_pcie_resources *resources, u32 stage)
++{
++    const struct hailo_file_batch *files_batch = compat[resources->board_type].stages[stage].batch;
++    int file_index = 0;
++    int err = 0;
++
++    for (file_index = 0; file_index < MAX_FILES_PER_STAGE; file_index++)
++    {
++        if (NULL == files_batch[file_index].filename) {
++            break;
++        }
++
++        dev_notice(dev, "Writing file %s\n", files_batch[file_index].filename);
++
++        err = write_single_file(resources, &files_batch[file_index], dev);
++        if (err < 0) {
++            pr_warn("Failed to write file %s\n", files_batch[file_index].filename);
++            if (files_batch[file_index].is_mandatory) {
++                return err;
++            }
++        }
++
++        dev_notice(dev, "File %s written successfully\n", files_batch[file_index].filename);
++    }
++
++    return 0;
++}
++
+ int hailo_pcie_write_firmware(struct hailo_pcie_resources *resources, const void *fw_data, size_t fw_size)
+ {
+     firmware_header_t *app_firmware_header = NULL;
+@@ -457,10 +655,25 @@ int hailo_pcie_write_firmware(struct hai
+     return 0;
+ }
+ 
++// TODO: HRT-14147 - remove this function
++bool hailo_pcie_is_device_ready_for_boot(struct hailo_pcie_resources *resources)
++{
++    return hailo_get_boot_status(resources) == BOOT_STATUS_UNINITIALIZED;
++}
++
+ bool hailo_pcie_is_firmware_loaded(struct hailo_pcie_resources *resources)
+ {
+-    u32 offset = ATR0_PCIE_BRIDGE_OFFSET + offsetof(struct hailo_atr_config, atr_trsl_addr_1);
+-    u32 atr_value = hailo_resource_read32(&resources->config, offset);
++    u32 offset;
++    u32 atr_value;
++
++    // TODO: HRT-14147
++    if (HAILO_BOARD_TYPE_HAILO10H == resources->board_type) {
++        return !hailo_pcie_is_device_ready_for_boot(resources);
++    }
++
++    offset = ATR0_PCIE_BRIDGE_OFFSET + offsetof(struct hailo_atr_config, atr_trsl_addr_1);
++    atr_value = hailo_resource_read32(&resources->config, offset);
++
+     return atr_value == compat[resources->board_type].fw_addresses.atr0_trsl_addr1;
+ }
+ 
+@@ -516,7 +729,7 @@ void hailo_pcie_update_channel_interrupt
+     for (i = 0; i < MAX_VDMA_CHANNELS_PER_ENGINE; ++i) {
+         if (hailo_test_bit(i, &channels_bitmap)) {
+             // based on 18.5.2 "vDMA Interrupt Registers" in PLDA documentation
+-            u32 offset = (i < VDMA_DEST_CHANNELS_START) ? 0 : 8;
++            u32 offset = (i & 16) ? 8 : 0;
+             hailo_set_bit((((int)i*8) / MAX_VDMA_CHANNELS_PER_ENGINE) + offset, &mask);
+         }
+     }
+@@ -531,7 +744,8 @@ void hailo_pcie_enable_interrupts(struct
+     hailo_resource_write32(&resources->config, BCS_DESTINATION_INTERRUPT_PER_CHANNEL, 0xFFFFFFFF);
+     hailo_resource_write32(&resources->config, BCS_SOURCE_INTERRUPT_PER_CHANNEL, 0xFFFFFFFF);
+ 
+-    mask |= BCS_ISTATUS_HOST_FW_IRQ_CONTROL_MASK | BCS_ISTATUS_HOST_FW_IRQ_NOTIFICATION | BCS_ISTATUS_HOST_DRIVER_DOWN;
++    mask |= (BCS_ISTATUS_HOST_FW_IRQ_CONTROL_MASK | BCS_ISTATUS_HOST_FW_IRQ_NOTIFICATION |
++        BCS_ISTATUS_HOST_DRIVER_DOWN | BCS_ISTATUS_SOC_CONNECT_ACCEPTED);
+     hailo_resource_write32(&resources->config, BSC_IMASK_HOST, mask);
+ }
+ 
+@@ -569,16 +783,10 @@ long hailo_pcie_read_firmware_log(struct
+ static int direct_memory_transfer(struct hailo_pcie_resources *resources,
+     struct hailo_memory_transfer_params *params)
+ {
+-    int err = -EINVAL;
+-    struct hailo_atr_config previous_atr = {0};
+-
+     if (params->address > U32_MAX) {
+         return -EFAULT;
+     }
+ 
+-    // Store previous ATR (Read/write modify the ATR).
+-    read_atr_table(resources, &previous_atr);
+-
+     switch (params->transfer_direction) {
+     case TRANSFER_READ:
+         read_memory(resources, (u32)params->address, params->buffer, (u32)params->count);
+@@ -587,14 +795,10 @@ static int direct_memory_transfer(struct
+         write_memory(resources, (u32)params->address, params->buffer, (u32)params->count);
+         break;
+     default:
+-        err = -EINVAL;
+-        goto restore_atr;
++        return -EINVAL;
+     }
+ 
+-    err = 0;
+-restore_atr:
+-    write_atr_table(resources, &previous_atr);
+-    return err;
++    return 0;
+ }
+ 
+ int hailo_pcie_memory_transfer(struct hailo_pcie_resources *resources, struct hailo_memory_transfer_params *params)
+@@ -623,6 +827,24 @@ bool hailo_pcie_is_device_connected(stru
+     return PCI_VENDOR_ID_HAILO == hailo_resource_read16(&resources->config, PCIE_CONFIG_VENDOR_OFFSET);
+ }
+ 
++int hailo_set_device_type(struct hailo_pcie_resources *resources)
++{
++    switch(resources->board_type) {
++    case HAILO_BOARD_TYPE_HAILO8:
++    case HAILO_BOARD_TYPE_HAILO10H_LEGACY:
++    case HAILO_BOARD_TYPE_PLUTO:
++        resources->accelerator_type = HAILO_ACCELERATOR_TYPE_NNC;
++        break;
++    case HAILO_BOARD_TYPE_HAILO10H:
++        resources->accelerator_type = HAILO_ACCELERATOR_TYPE_SOC;
++        break;
++    default:
++        return -EINVAL;
++    }
++
++    return 0;
++}
++
+ // On PCIe, just return the address
+ static u64 encode_dma_address(dma_addr_t dma_address, u8 channel_id)
+ {
+@@ -637,5 +859,14 @@ struct hailo_vdma_hw hailo_pcie_vdma_hw
+     .ddr_data_id = HAILO_PCIE_HOST_DMA_DATA_ID,
+     .device_interrupts_bitmask = HAILO_PCIE_DMA_DEVICE_INTERRUPTS_BITMASK,
+     .host_interrupts_bitmask = HAILO_PCIE_DMA_HOST_INTERRUPTS_BITMASK,
++    .src_channels_bitmask = HAILO_PCIE_DMA_SRC_CHANNELS_BITMASK,
++};
+ 
+-};
+\ No newline at end of file
++void hailo_soc_write_soc_connect(struct hailo_pcie_resources *resources)
++{
++    const struct hailo_fw_addresses *fw_addresses = &(compat[resources->board_type].fw_addresses);
++    const u32 soc_connect_value = FW_ACCESS_SOC_CONNECT_MASK;
++
++    // Write shutdown flag to FW
++    hailo_resource_write32(&resources->fw_access, fw_addresses->raise_ready_offset, soc_connect_value);
++}
+\ No newline at end of file
+--- a/drivers/media/pci/hailo/common/pcie_common.h
++++ b/drivers/media/pci/hailo/common/pcie_common.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -14,11 +14,13 @@
+ #include "vdma_common.h"
+ 
+ #include <linux/types.h>
++#include <linux/firmware.h>
+ 
+ 
+ #define BCS_ISTATUS_HOST_FW_IRQ_CONTROL_MASK (0x04000000)
+ #define BCS_ISTATUS_HOST_FW_IRQ_NOTIFICATION (0x02000000)
+ #define BCS_ISTATUS_HOST_DRIVER_DOWN         (0x08000000)
++#define BCS_ISTATUS_SOC_CONNECT_ACCEPTED     (0x10000000)
+ #define BCS_ISTATUS_HOST_VDMA_SRC_IRQ_MASK   (0x000000FF)
+ #define BCS_ISTATUS_HOST_VDMA_DEST_IRQ_MASK  (0x0000FF00)
+ 
+@@ -40,17 +42,35 @@
+ #define PCI_DEVICE_ID_HAILO_HAILO15   0x45C4
+ #define PCI_DEVICE_ID_HAILO_PLUTO     0x43a2
+ 
++typedef u32 hailo_ptr_t;
++
+ struct hailo_pcie_resources {
+     struct hailo_resource config;               // BAR0
+     struct hailo_resource vdma_registers;       // BAR2
+     struct hailo_resource fw_access;            // BAR4
+     enum hailo_board_type board_type;
++    enum hailo_accelerator_type accelerator_type;
++};
++
++struct hailo_atr_config {
++    u32 atr_param;
++    u32 atr_src;
++    u32 atr_trsl_addr_1;
++    u32 atr_trsl_addr_2;
++    u32 atr_trsl_param;
++};
++
++enum loading_stages {
++    FIRST_STAGE = 0,
++    SECOND_STAGE = 1,
++    MAX_LOADING_STAGES = 2
+ };
+ 
+ enum hailo_pcie_interrupt_masks {
+     FW_CONTROL = BCS_ISTATUS_HOST_FW_IRQ_CONTROL_MASK,
+     FW_NOTIFICATION = BCS_ISTATUS_HOST_FW_IRQ_NOTIFICATION,
+     DRIVER_DOWN = BCS_ISTATUS_HOST_DRIVER_DOWN,
++    SOC_CONNECT_ACCEPTED = BCS_ISTATUS_SOC_CONNECT_ACCEPTED,
+     VDMA_SRC_IRQ_MASK = BCS_ISTATUS_HOST_VDMA_SRC_IRQ_MASK,
+     VDMA_DEST_IRQ_MASK = BCS_ISTATUS_HOST_VDMA_DEST_IRQ_MASK
+ };
+@@ -66,6 +86,14 @@ struct hailo_config_constants {
+     size_t max_size;
+ };
+ 
++struct hailo_file_batch {
++    const char *filename;
++    u32 address;
++    size_t max_size;
++    bool is_mandatory;
++    bool has_header;
++};
++
+ // TODO: HRT-6144 - Align Windows/Linux to QNX
+ #ifdef __QNX__
+ enum hailo_bar_index {
+@@ -103,6 +131,7 @@ int hailo_pcie_write_firmware_control(st
+ int hailo_pcie_read_firmware_control(struct hailo_pcie_resources *resources, struct hailo_fw_control *command);
+ 
+ int hailo_pcie_write_firmware(struct hailo_pcie_resources *resources, const void *fw_data, size_t fw_size);
++int hailo_pcie_write_firmware_batch(struct device *dev, struct hailo_pcie_resources *resources, u32 stage);
+ bool hailo_pcie_is_firmware_loaded(struct hailo_pcie_resources *resources);
+ bool hailo_pcie_wait_for_firmware(struct hailo_pcie_resources *resources);
+ 
+@@ -120,6 +149,17 @@ int hailo_pcie_memory_transfer(struct ha
+ 
+ bool hailo_pcie_is_device_connected(struct hailo_pcie_resources *resources);
+ void hailo_pcie_write_firmware_driver_shutdown(struct hailo_pcie_resources *resources);
++void write_memory(struct hailo_pcie_resources *resources, hailo_ptr_t dest, const void *src, u32 len);
++void hailo_trigger_firmware_boot(struct hailo_pcie_resources *resources);
++
++int hailo_set_device_type(struct hailo_pcie_resources *resources);
++
++u32 hailo_get_boot_status(struct hailo_pcie_resources *resources);
++
++int hailo_pcie_configure_atr_table(struct hailo_resource *bridge_config, u64 trsl_addr, u32 atr_index);
++void hailo_pcie_read_atr_table(struct hailo_resource *bridge_config, struct hailo_atr_config *atr, u32 atr_index);
++
++void hailo_soc_write_soc_connect(struct hailo_pcie_resources *resources);
+ 
+ #ifdef __cplusplus
+ }
+--- a/drivers/media/pci/hailo/common/utils.h
++++ b/drivers/media/pci/hailo/common/utils.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -11,6 +11,12 @@
+ #define hailo_clear_bit(bit, pval)  { *(pval) &= ~(1 << bit); }
+ #define hailo_test_bit(pos,var_addr)  ((*var_addr) & (1<<(pos)))
+ 
++#define READ_BITS_AT_OFFSET(amount_bits, offset, initial_value) \
++    (((initial_value) >> (offset)) & ((1 << (amount_bits)) - 1))
++#define WRITE_BITS_AT_OFFSET(amount_bits, offset, initial_value, value) \
++    (((initial_value) & ~(((1 << (amount_bits)) - 1) << (offset))) | \
++    (((value) & ((1 << (amount_bits)) - 1)) << (offset)))
++
+ #ifdef __cplusplus
+ extern "C"
+ {
+@@ -28,6 +34,22 @@ static inline void hailo_set_bit(int nr,
+ 	*p  |= mask;
+ }
+ 
++static inline uint8_t ceil_log2(uint32_t n)
++{
++    uint8_t result = 0;
++
++    if (n <= 1) {
++        return 0;
++    }
++
++    while (n > 1) {
++        result++;
++        n = (n + 1) >> 1;
++    }
++
++    return result;
++}
++
+ #ifndef DIV_ROUND_UP
+ #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+ #endif
+--- a/drivers/media/pci/hailo/common/vdma_common.c
++++ b/drivers/media/pci/hailo/common/vdma_common.c
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -17,25 +17,37 @@
+ 
+ 
+ #define CHANNEL_BASE_OFFSET(channel_index) ((channel_index) << 5)
+-#define CHANNEL_HOST_OFFSET(channel_index) CHANNEL_BASE_OFFSET(channel_index) + \
+-    (channel_index < VDMA_DEST_CHANNELS_START ? 0 : 0x10)
+-#define CHANNEL_DEVICE_OFFSET(channel_index) CHANNEL_BASE_OFFSET(channel_index) + \
+-    (channel_index < VDMA_DEST_CHANNELS_START ? 0x10 : 0)
+ 
+ #define CHANNEL_CONTROL_OFFSET      (0x0)
++#define CHANNEL_DEPTH_ID_OFFSET     (0x1)
+ #define CHANNEL_NUM_AVAIL_OFFSET    (0x2)
+ #define CHANNEL_NUM_PROC_OFFSET     (0x4)
+ #define CHANNEL_ERROR_OFFSET        (0x8)
++#define CHANNEL_DEST_REGS_OFFSET    (0x10)
+ 
+ #define VDMA_CHANNEL_CONTROL_START (0x1)
+ #define VDMA_CHANNEL_CONTROL_ABORT (0b00)
+ #define VDMA_CHANNEL_CONTROL_ABORT_PAUSE (0b10)
+ #define VDMA_CHANNEL_CONTROL_START_ABORT_PAUSE_RESUME_BITMASK (0x3)
+ #define VDMA_CHANNEL_CONTROL_START_ABORT_BITMASK (0x1)
++#define VDMA_CHANNEL_CONTROL_MASK (0xFC)
++#define VDMA_CHANNEL_CONTROL_START_RESUME (0b01)
++#define VDMA_CHANNEL_CONTROL_START_PAUSE (0b11)
++#define VDMA_CHANNEL_CONTROL_ABORT (0b00)
++#define VDMA_CHANNEL_CONTROL_ABORT_PAUSE (0b10)
++#define VDMA_CHANNEL_CONTROL_START_ABORT_PAUSE_RESUME_BITMASK (0x3)
++#define VDMA_CHANNEL_DESC_DEPTH_WIDTH (4)
++#define VDMA_CHANNEL_DESC_DEPTH_SHIFT (11)
++#define VDMA_CHANNEL_DATA_ID_SHIFT (8)
++#define VDMA_CHANNEL__MAX_CHECKS_CHANNEL_IS_IDLE (10000)
++#define VDMA_CHANNEL__ADDRESS_L_OFFSET          (0x0A)
++#define VDMA_CHANNEL__ALIGNED_ADDRESS_L_OFFSET  (0x8)
++#define VDMA_CHANNEL__ADDRESS_H_OFFSET          (0x0C)
+ 
+ #define DESCRIPTOR_PAGE_SIZE_SHIFT (8)
+ #define DESCRIPTOR_DESC_CONTROL (0x2)
+ #define DESCRIPTOR_ADDR_L_MASK (0xFFFFFFC0)
++#define DESCRIPTOR_LIST_MAX_DEPTH (16)
+ 
+ #define DESCRIPTOR_DESC_STATUS_DONE_BIT  (0x0)
+ #define DESCRIPTOR_DESC_STATUS_ERROR_BIT (0x1)
+@@ -46,10 +58,14 @@
+ #define DESC_REQUEST_IRQ_PROCESSED            (1 << 2)
+ #define DESC_REQUEST_IRQ_ERR                  (1 << 3)
+ 
++#define VDMA_CHANNEL_NUM_PROCESSED_WIDTH (16)
++#define VDMA_CHANNEL_NUM_PROCESSED_MASK ((1 << VDMA_CHANNEL_NUM_PROCESSED_WIDTH) - 1)
++#define VDMA_CHANNEL_NUM_ONGOING_MASK VDMA_CHANNEL_NUM_PROCESSED_MASK
+ 
+ #define DWORD_SIZE                  (4)
+ #define WORD_SIZE                   (2)
+ #define BYTE_SIZE                   (1)
++#define BITS_IN_BYTE                (8)
+ 
+ #define TIMESTAMPS_CIRC_SPACE(timestamp_list) \
+     CIRC_SPACE((timestamp_list).head, (timestamp_list).tail, CHANNEL_IRQ_TIMESTAMPS_SIZE)
+@@ -146,18 +162,7 @@ void hailo_vdma_program_descriptor(struc
+ 
+ static u8 get_channel_id(u8 channel_index)
+ {
+-    if (channel_index < VDMA_DEST_CHANNELS_START) {
+-        // H2D channel
+-        return channel_index;
+-    }
+-    else if ((channel_index >= VDMA_DEST_CHANNELS_START) &&
+-             (channel_index < MAX_VDMA_CHANNELS_PER_ENGINE)) {
+-        // D2H channel
+-        return channel_index - VDMA_DEST_CHANNELS_START;
+-    }
+-    else {
+-        return INVALID_VDMA_CHANNEL;
+-    }
++    return (channel_index < MAX_VDMA_CHANNELS_PER_ENGINE) ? (channel_index & 0xF) : INVALID_VDMA_CHANNEL;
+ }
+ 
+ static int program_descriptors_in_chunk(
+@@ -198,12 +203,36 @@ static int program_descriptors_in_chunk(
+     return (int)desc_per_chunk;
+ }
+ 
+-int hailo_vdma_program_descriptors_list(
++static unsigned long get_interrupts_bitmask(struct hailo_vdma_hw *vdma_hw,
++    enum hailo_vdma_interrupts_domain interrupts_domain, bool is_debug)
++{
++    unsigned long bitmask = 0;
++
++    if (0 != (HAILO_VDMA_INTERRUPTS_DOMAIN_DEVICE & interrupts_domain)) {
++        bitmask |= vdma_hw->device_interrupts_bitmask;
++    }
++    if (0 != (HAILO_VDMA_INTERRUPTS_DOMAIN_HOST & interrupts_domain)) {
++        bitmask |= vdma_hw->host_interrupts_bitmask;
++    }
++
++    if (bitmask != 0) {
++        bitmask |= DESC_REQUEST_IRQ_PROCESSED | DESC_REQUEST_IRQ_ERR;
++        if (is_debug) {
++            bitmask |= DESC_STATUS_REQ | DESC_STATUS_REQ_ERR;
++        }
++    }
++
++    return bitmask;
++}
++
++static int bind_and_program_descriptors_list(
+     struct hailo_vdma_hw *vdma_hw,
+     struct hailo_vdma_descriptors_list *desc_list,
+     u32 starting_desc,
+     struct hailo_vdma_mapped_transfer_buffer *buffer,
+-    u8 channel_index)
++    u8 channel_index,
++    enum hailo_vdma_interrupts_domain last_desc_interrupts,
++    bool is_debug)
+ {
+     const u8 channel_id = get_channel_id(channel_index);
+     int desc_programmed = 0;
+@@ -260,9 +289,49 @@ int hailo_vdma_program_descriptors_list(
+         return -EFAULT;
+     }
+ 
++    desc_list->desc_list[(starting_desc - 1) % desc_list->desc_count].PageSize_DescControl |=
++        get_interrupts_bitmask(vdma_hw, last_desc_interrupts, is_debug);
++
+     return desc_programmed;
+ }
+ 
++static int program_last_desc(
++    struct hailo_vdma_hw *vdma_hw,
++    struct hailo_vdma_descriptors_list *desc_list,
++    u32 starting_desc,
++    struct hailo_vdma_mapped_transfer_buffer *transfer_buffer,
++    enum hailo_vdma_interrupts_domain last_desc_interrupts,
++    bool is_debug)
++{
++    u8 control = (u8)(DESCRIPTOR_DESC_CONTROL | get_interrupts_bitmask(vdma_hw, last_desc_interrupts, is_debug));
++    u32 total_descs = DIV_ROUND_UP(transfer_buffer->size, desc_list->desc_page_size);
++    u32 last_desc = (starting_desc + total_descs - 1) % desc_list->desc_count;
++    u32 last_desc_size = transfer_buffer->size - (total_descs - 1) * desc_list->desc_page_size;
++
++    // Configure only last descriptor with residue size
++    desc_list->desc_list[last_desc].PageSize_DescControl = (u32)
++        ((last_desc_size << DESCRIPTOR_PAGE_SIZE_SHIFT) + control);
++    return (int)total_descs;
++}
++
++int hailo_vdma_program_descriptors_list(
++    struct hailo_vdma_hw *vdma_hw,
++    struct hailo_vdma_descriptors_list *desc_list,
++    u32 starting_desc,
++    struct hailo_vdma_mapped_transfer_buffer *buffer,
++    bool should_bind,
++    u8 channel_index,
++    enum hailo_vdma_interrupts_domain last_desc_interrupts,
++    bool is_debug)
++{
++    return should_bind ?
++        bind_and_program_descriptors_list(vdma_hw, desc_list, starting_desc,
++            buffer, channel_index, last_desc_interrupts, is_debug) :
++        program_last_desc(vdma_hw, desc_list, starting_desc, buffer,
++            last_desc_interrupts, is_debug);
++}
++
++
+ static bool channel_control_reg_is_active(u8 control)
+ {
+     return (control & VDMA_CHANNEL_CONTROL_START_ABORT_BITMASK) == VDMA_CHANNEL_CONTROL_START;
+@@ -270,12 +339,12 @@ static bool channel_control_reg_is_activ
+ 
+ static int validate_channel_state(struct hailo_vdma_channel *channel)
+ {
+-    const u8 control = ioread8(channel->host_regs + CHANNEL_CONTROL_OFFSET);
+-    const u16 hw_num_avail = ioread16(channel->host_regs + CHANNEL_NUM_AVAIL_OFFSET);
++    u32 host_regs_value = ioread32(channel->host_regs);
++    const u8 control = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, host_regs_value);
++    const u16 hw_num_avail = READ_BITS_AT_OFFSET(WORD_SIZE * BITS_IN_BYTE, CHANNEL_NUM_AVAIL_OFFSET * BITS_IN_BYTE, host_regs_value);
+ 
+     if (!channel_control_reg_is_active(control)) {
+-        pr_err("Channel %d is not active\n", channel->index);
+-        return -EBUSY;
++        return -ECONNRESET;
+     }
+ 
+     if (hw_num_avail != channel->state.num_avail) {
+@@ -287,51 +356,16 @@ static int validate_channel_state(struct
+     return 0;
+ }
+ 
+-static unsigned long get_interrupts_bitmask(struct hailo_vdma_hw *vdma_hw,
+-    enum hailo_vdma_interrupts_domain interrupts_domain, bool is_debug)
+-{
+-    unsigned long bitmask = 0;
+-
+-    if (0 != (HAILO_VDMA_INTERRUPTS_DOMAIN_DEVICE & interrupts_domain)) {
+-        bitmask |= vdma_hw->device_interrupts_bitmask;
+-    }
+-    if (0 != (HAILO_VDMA_INTERRUPTS_DOMAIN_HOST & interrupts_domain)) {
+-        bitmask |= vdma_hw->host_interrupts_bitmask;
+-    }
+-
+-    if (bitmask != 0) {
+-        bitmask |= DESC_REQUEST_IRQ_PROCESSED | DESC_REQUEST_IRQ_ERR;
+-        if (is_debug) {
+-            bitmask |= DESC_STATUS_REQ | DESC_STATUS_REQ_ERR;
+-        }
+-    }
+-
+-    return bitmask;
+-}
+-
+ static void set_num_avail(u8 __iomem *host_regs, u16 num_avail)
+ {
+-    iowrite16(num_avail, host_regs + CHANNEL_NUM_AVAIL_OFFSET);
++    u32 host_regs_val = ioread32(host_regs);
++    iowrite32(WRITE_BITS_AT_OFFSET(WORD_SIZE * BITS_IN_BYTE, CHANNEL_NUM_AVAIL_OFFSET * BITS_IN_BYTE, host_regs_val, num_avail),
++        host_regs);
+ }
+ 
+ static u16 get_num_proc(u8 __iomem *host_regs)
+ {
+-    return ioread16(host_regs + CHANNEL_NUM_PROC_OFFSET);
+-}
+-
+-static int program_last_desc(
+-    struct hailo_vdma_descriptors_list *desc_list,
+-    u32 starting_desc,
+-    struct hailo_vdma_mapped_transfer_buffer *transfer_buffer)
+-{
+-    u32 total_descs = DIV_ROUND_UP(transfer_buffer->size, desc_list->desc_page_size);
+-    u32 last_desc = (starting_desc + total_descs - 1) % desc_list->desc_count;
+-    u32 last_desc_size = transfer_buffer->size - (total_descs - 1) * desc_list->desc_page_size;
+-
+-    // Configure only last descriptor with residue size
+-    desc_list->desc_list[last_desc].PageSize_DescControl = (u32)
+-        ((last_desc_size << DESCRIPTOR_PAGE_SIZE_SHIFT) + DESCRIPTOR_DESC_CONTROL);
+-    return (int)total_descs;
++    return READ_BITS_AT_OFFSET(WORD_SIZE * BITS_IN_BYTE, 0, ioread32(host_regs + CHANNEL_NUM_PROC_OFFSET));
+ }
+ 
+ int hailo_vdma_launch_transfer(
+@@ -365,6 +399,11 @@ int hailo_vdma_launch_transfer(
+         return -EINVAL;
+     }
+ 
++    ret = validate_channel_state(channel);
++    if (ret < 0) {
++        return ret;
++    }
++
+     if (channel->state.num_avail != (u16)starting_desc) {
+         pr_err("Channel %d state out of sync. num available is %d, expected %d\n",
+             channel->index, channel->state.num_avail, (u16)starting_desc);
+@@ -376,25 +415,17 @@ int hailo_vdma_launch_transfer(
+         return -EINVAL;
+     }
+ 
+-    if (is_debug) {
+-        ret = validate_channel_state(channel);
+-        if (ret < 0) {
+-            return ret;
+-        }
+-    }
+-
+     BUILD_BUG_ON_MSG((HAILO_MAX_BUFFERS_PER_SINGLE_TRANSFER + 1) != ARRAY_SIZE(ongoing_transfer.dirty_descs),
+         "Unexpected amount of dirty descriptors");
+     ongoing_transfer.dirty_descs_count = buffers_count + 1;
+     ongoing_transfer.dirty_descs[0] = (u16)starting_desc;
+ 
+     for (i = 0; i < buffers_count; i++) {
+-        ret = should_bind ?
+-            hailo_vdma_program_descriptors_list(vdma_hw, desc_list, starting_desc, &buffers[i], channel->index) :
+-            program_last_desc(desc_list, starting_desc, &buffers[i]);
+-        if (ret < 0) {
+-            return ret;
+-        }
++        ret = hailo_vdma_program_descriptors_list(vdma_hw, desc_list,
++            starting_desc, &buffers[i], should_bind, channel->index,
++            (i == (buffers_count - 1) ? last_desc_interrupts : HAILO_VDMA_INTERRUPTS_DOMAIN_NONE),
++            is_debug);
++
+         total_descs += ret;
+         last_desc = (starting_desc + ret - 1) % desc_list->desc_count;
+         starting_desc = (starting_desc + ret) % desc_list->desc_count;
+@@ -406,8 +437,6 @@ int hailo_vdma_launch_transfer(
+ 
+     desc_list->desc_list[first_desc].PageSize_DescControl |=
+         get_interrupts_bitmask(vdma_hw, first_interrupts_domain, is_debug);
+-    desc_list->desc_list[last_desc].PageSize_DescControl |=
+-        get_interrupts_bitmask(vdma_hw, last_desc_interrupts, is_debug);
+ 
+     ongoing_transfer.last_desc = (u16)last_desc;
+     ongoing_transfer.is_debug = is_debug;
+@@ -477,8 +506,21 @@ static void channel_state_init(struct ha
+     state->desc_count_mask = U32_MAX;
+ }
+ 
++static u8 __iomem *get_channel_regs(u8 __iomem *regs_base, u8 channel_index, bool is_host_side, u32 src_channels_bitmask)
++{
++    // Check if getting host side regs or device side
++    u8 __iomem *channel_regs_base = regs_base + CHANNEL_BASE_OFFSET(channel_index);
++    if (is_host_side) {
++        return hailo_test_bit(channel_index, &src_channels_bitmask) ? channel_regs_base :
++            (channel_regs_base + CHANNEL_DEST_REGS_OFFSET);
++    } else {
++        return hailo_test_bit(channel_index, &src_channels_bitmask) ? (channel_regs_base + CHANNEL_DEST_REGS_OFFSET) :
++            channel_regs_base;
++    }
++}
++
+ void hailo_vdma_engine_init(struct hailo_vdma_engine *engine, u8 engine_index,
+-    const struct hailo_resource *channel_registers)
++    const struct hailo_resource *channel_registers, u32 src_channels_bitmask)
+ {
+     u8 channel_index = 0;
+     struct hailo_vdma_channel *channel;
+@@ -489,8 +531,8 @@ void hailo_vdma_engine_init(struct hailo
+ 
+     for_each_vdma_channel(engine, channel, channel_index) {
+         u8 __iomem *regs_base = (u8 __iomem *)channel_registers->address;
+-        channel->host_regs = regs_base + CHANNEL_HOST_OFFSET(channel_index);
+-        channel->device_regs = regs_base + CHANNEL_DEVICE_OFFSET(channel_index);
++        channel->host_regs = get_channel_regs(regs_base, channel_index, true, src_channels_bitmask);
++        channel->device_regs = get_channel_regs(regs_base, channel_index, false, src_channels_bitmask);
+         channel->index = channel_index;
+         channel->timestamp_measure_enabled = false;
+ 
+@@ -502,7 +544,15 @@ void hailo_vdma_engine_init(struct hailo
+     }
+ }
+ 
+-void hailo_vdma_engine_enable_channel_interrupts(struct hailo_vdma_engine *engine, u32 bitmap,
++/**
++ * Enables the given channels bitmap in the given engine. Allows launching transfer
++ * and reading interrupts from the channels.
++ *
++ * @param engine - dma engine.
++ * @param bitmap - channels bitmap to enable.
++ * @param measure_timestamp - if set, allow interrupts timestamp measure.
++ */
++void hailo_vdma_engine_enable_channels(struct hailo_vdma_engine *engine, u32 bitmap,
+     bool measure_timestamp)
+ {
+     struct hailo_vdma_channel *channel = NULL;
+@@ -518,7 +568,14 @@ void hailo_vdma_engine_enable_channel_in
+     engine->enabled_channels |= bitmap;
+ }
+ 
+-void hailo_vdma_engine_disable_channel_interrupts(struct hailo_vdma_engine *engine, u32 bitmap)
++/**
++ * Disables the given channels bitmap in the given engine.
++ *
++ * @param engine - dma engine.
++ * @param bitmap - channels bitmap to enable.
++ * @param measure_timestamp - if set, allow interrupts timestamp measure.
++ */
++void hailo_vdma_engine_disable_channels(struct hailo_vdma_engine *engine, u32 bitmap)
+ {
+     struct hailo_vdma_channel *channel = NULL;
+     u8 channel_index = 0;
+@@ -582,11 +639,11 @@ void hailo_vdma_engine_set_channel_inter
+ }
+ 
+ static void fill_channel_irq_data(struct hailo_vdma_interrupts_channel_data *irq_data,
+-    struct hailo_vdma_engine *engine, struct hailo_vdma_channel *channel, u16 num_proc,
++    struct hailo_vdma_engine *engine, struct hailo_vdma_channel *channel, u8 transfers_completed,
+     bool validation_success)
+ {
+-    u8 host_control = ioread8(channel->host_regs + CHANNEL_CONTROL_OFFSET);
+-    u8 device_control = ioread8(channel->device_regs + CHANNEL_CONTROL_OFFSET);
++    u8 host_control = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, ioread32(channel->host_regs));
++    u8 device_control = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, ioread32(channel->device_regs));
+ 
+     irq_data->engine_index = engine->index;
+     irq_data->channel_index = channel->index;
+@@ -594,9 +651,9 @@ static void fill_channel_irq_data(struct
+     irq_data->is_active = channel_control_reg_is_active(host_control) &&
+         channel_control_reg_is_active(device_control);
+ 
+-    irq_data->host_num_processed = num_proc;
+-    irq_data->host_error = ioread8(channel->host_regs + CHANNEL_ERROR_OFFSET);
+-    irq_data->device_error = ioread8(channel->device_regs + CHANNEL_ERROR_OFFSET);
++    irq_data->transfers_completed = transfers_completed;
++    irq_data->host_error = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, 0, ioread32(channel->host_regs + CHANNEL_ERROR_OFFSET));
++    irq_data->device_error = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, 0, ioread32(channel->device_regs + CHANNEL_ERROR_OFFSET));
+     irq_data->validation_success = validation_success;
+ }
+ 
+@@ -635,7 +692,12 @@ int hailo_vdma_engine_fill_irq_data(stru
+     bool validation_success = true;
+ 
+     for_each_vdma_channel(engine, channel, channel_index) {
++        u8 transfers_completed = 0;
+         u16 hw_num_proc = U16_MAX;
++
++        BUILD_BUG_ON_MSG(HAILO_VDMA_MAX_ONGOING_TRANSFERS >= U8_MAX,
++            "HAILO_VDMA_MAX_ONGOING_TRANSFERS must be less than U8_MAX to use transfers_completed as u8");
++
+         if (!hailo_test_bit(channel->index, &irq_channels_bitmap)) {
+             continue;
+         }
+@@ -673,12 +735,143 @@ int hailo_vdma_engine_fill_irq_data(stru
+             channel->state.num_proc = (u16)((cur_transfer->last_desc + 1) & channel->state.desc_count_mask);
+ 
+             ongoing_transfer_pop(channel, NULL);
++            transfers_completed++;
+         }
+ 
+         fill_channel_irq_data(&irq_data->irq_data[irq_data->channels_count],
+-            engine, channel, hw_num_proc, validation_success);
++            engine, channel, transfers_completed, validation_success);
+         irq_data->channels_count++;
+     }
+ 
+     return 0;
++}
++
++// For all these functions - best way to optimize might be to not call the function when need to pause and then abort,
++// Rather read value once and maybe save 
++// This function reads and writes the register - should try to make more optimized in future
++static void start_vdma_control_register(u8 __iomem *host_regs)
++{
++    u32 host_regs_value = ioread32(host_regs);
++    iowrite32(WRITE_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, host_regs_value,
++        VDMA_CHANNEL_CONTROL_START_RESUME), host_regs);
++}
++
++static void hailo_vdma_channel_pause(u8 __iomem *host_regs)
++{
++    u32 host_regs_value = ioread32(host_regs);
++    iowrite32(WRITE_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, host_regs_value,
++        VDMA_CHANNEL_CONTROL_START_PAUSE), host_regs);
++}
++
++// This function reads and writes the register - should try to make more optimized in future
++static void hailo_vdma_channel_abort(u8 __iomem *host_regs)
++{
++    u32 host_regs_value = ioread32(host_regs);
++    iowrite32(WRITE_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, host_regs_value,
++        VDMA_CHANNEL_CONTROL_ABORT), host_regs);
++}
++
++int hailo_vdma_start_channel(u8 __iomem *host_regs, uint64_t desc_dma_address, uint8_t desc_depth,
++    uint8_t data_id)
++{
++    u16 dma_address_l = 0;
++    u32 dma_address_h = 0;
++    u32 desc_depth_data_id = 0;
++
++    if (((desc_dma_address & 0xFFFF) != 0) || 
++         (desc_depth > DESCRIPTOR_LIST_MAX_DEPTH)) {
++        return -EINVAL;
++    }
++
++    // According to spec, depth 16 is equivalent to depth 0.
++    if (DESCRIPTOR_LIST_MAX_DEPTH == desc_depth) {
++        desc_depth = 0;
++    }
++
++    // Stop old channel state
++    hailo_vdma_stop_channel(host_regs);
++
++    // Configure address, depth and id
++    dma_address_l = (uint16_t)((desc_dma_address >> 16) & 0xFFFF);
++    iowrite32(WRITE_BITS_AT_OFFSET(WORD_SIZE * BITS_IN_BYTE, (VDMA_CHANNEL__ADDRESS_L_OFFSET -
++        VDMA_CHANNEL__ALIGNED_ADDRESS_L_OFFSET) * BITS_IN_BYTE, ioread32(host_regs +
++        VDMA_CHANNEL__ALIGNED_ADDRESS_L_OFFSET), dma_address_l), host_regs + VDMA_CHANNEL__ALIGNED_ADDRESS_L_OFFSET);
++
++    dma_address_h = (uint32_t)(desc_dma_address >> 32);
++    iowrite32(dma_address_h, host_regs + VDMA_CHANNEL__ADDRESS_H_OFFSET);
++
++    desc_depth_data_id = (uint32_t)(desc_depth << VDMA_CHANNEL_DESC_DEPTH_SHIFT) | 
++        (data_id << VDMA_CHANNEL_DATA_ID_SHIFT);
++    iowrite32(desc_depth_data_id, host_regs);
++
++    start_vdma_control_register(host_regs);
++
++    return 0;
++}
++
++static bool hailo_vdma_channel_is_idle(u8 __iomem *host_regs, size_t host_side_max_desc_count)
++{
++    // Num processed and ongoing are next to each other in the memory. 
++    // Reading them both in order to save BAR reads.
++    u32 host_side_num_processed_ongoing = ioread32(host_regs + CHANNEL_NUM_PROC_OFFSET);
++    u16 host_side_num_processed = (host_side_num_processed_ongoing & VDMA_CHANNEL_NUM_PROCESSED_MASK);
++    u16 host_side_num_ongoing = (host_side_num_processed_ongoing >> VDMA_CHANNEL_NUM_PROCESSED_WIDTH) &
++        VDMA_CHANNEL_NUM_ONGOING_MASK;
++
++    if ((host_side_num_processed % host_side_max_desc_count) == (host_side_num_ongoing % host_side_max_desc_count)) {
++        return true;
++    }
++
++    return false;
++}
++
++static int hailo_vdma_wait_until_channel_idle(u8 __iomem *host_regs)
++{
++    bool is_idle = false;
++    uint32_t check_counter = 0;
++
++    u8 depth = (uint8_t)(READ_BITS_AT_OFFSET(VDMA_CHANNEL_DESC_DEPTH_WIDTH, VDMA_CHANNEL_DESC_DEPTH_SHIFT,
++        ioread32(host_regs)));
++    size_t host_side_max_desc_count = (size_t)(1 << depth);
++
++    for (check_counter = 0; check_counter < VDMA_CHANNEL__MAX_CHECKS_CHANNEL_IS_IDLE; check_counter++) {
++        is_idle = hailo_vdma_channel_is_idle(host_regs, host_side_max_desc_count);
++        if (is_idle) {
++            return 0;
++        }
++    }
++
++    return -ETIMEDOUT;
++}
++
++void hailo_vdma_stop_channel(u8 __iomem *host_regs)
++{
++    int err = 0;
++    u8 host_side_channel_regs = READ_BITS_AT_OFFSET(BYTE_SIZE * BITS_IN_BYTE, CHANNEL_CONTROL_OFFSET * BITS_IN_BYTE, ioread32(host_regs));
++
++    if ((host_side_channel_regs & VDMA_CHANNEL_CONTROL_START_ABORT_PAUSE_RESUME_BITMASK) == VDMA_CHANNEL_CONTROL_ABORT_PAUSE) {
++        // The channel is aborted (we set the channel to VDMA_CHANNEL_CONTROL_ABORT_PAUSE at the end of this function)
++        return;
++    }
++
++    // Pause the channel
++    // The channel is paused to allow for "all transfers from fetched descriptors..." to be "...completed"
++    // (from PLDA PCIe refernce manual, "9.2.5 Starting a Channel and Transferring Data")
++    hailo_vdma_channel_pause(host_regs);
++
++    // Even if channel is stuck and not idle, force abort and return error in the end
++    err = hailo_vdma_wait_until_channel_idle(host_regs);
++    // Success oriented - if error occured print error but still abort channel
++    if (err < 0) {
++        pr_err("Timeout occured while waiting for channel to become idle\n");
++    }
++
++    // Abort the channel (even of hailo_vdma_wait_until_channel_idle function fails)
++    hailo_vdma_channel_abort(host_regs);
++}
++
++bool hailo_check_channel_index(u8 channel_index, u32 src_channels_bitmask, bool is_input_channel)
++{
++    return is_input_channel ? hailo_test_bit(channel_index, &src_channels_bitmask) :
++        (!hailo_test_bit(channel_index, &src_channels_bitmask));
+ }
+\ No newline at end of file
+--- a/drivers/media/pci/hailo/common/vdma_common.h
++++ b/drivers/media/pci/hailo/common/vdma_common.h
+@@ -1,4 +1,4 @@
+-// SPDX-License-Identifier: GPL-2.0
++// SPDX-License-Identifier: MIT
+ /**
+  * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
+  **/
+@@ -30,8 +30,8 @@ struct hailo_vdma_descriptor {
+ 
+ struct hailo_vdma_descriptors_list {
+     struct hailo_vdma_descriptor *desc_list;
+-    u32                      desc_count;  // Must be power of 2 if is_circular is set.
+-    u16                      desc_page_size;
++    u32                           desc_count;  // Must be power of 2 if is_circular is set.
++    u16                           desc_page_size;
+     bool                          is_circular;
+ };
+ 
+@@ -127,6 +127,9 @@ struct hailo_vdma_hw {
+     // Bitmask needed to set on each descriptor to enable interrupts (either host/device).
+     unsigned long host_interrupts_bitmask;
+     unsigned long device_interrupts_bitmask;
++
++    // Bitmask for each vdma hw, which channels are src side by index (on pcie/dram - 0x0000FFFF, pci ep - 0xFFFF0000)
++    u32 src_channels_bitmask;
+ };
+ 
+ #define _for_each_element_array(array, size, element, index) \
+@@ -147,7 +150,11 @@ void hailo_vdma_program_descriptor(struc
+  * @param starting_desc index of the first descriptor to program. If the list
+  *                      is circular, this function may wrap around the list.
+  * @param buffer buffer to program to the descriptors list.
++ * @param should_bind If false, assumes the buffer was already bound to the
++ *                    desc list. Used for optimization.
+  * @param channel_index channel index of the channel attached.
++ * @param last_desc_interrupts - interrupts settings on last descriptor.
++ * @param is_debug program descriptors for debug run.
+  *
+  * @return On success - the amount of descriptors programmed, negative value on error.
+  */
+@@ -156,7 +163,10 @@ int hailo_vdma_program_descriptors_list(
+     struct hailo_vdma_descriptors_list *desc_list,
+     u32 starting_desc,
+     struct hailo_vdma_mapped_transfer_buffer *buffer,
+-    u8 channel_index);
++    bool should_bind,
++    u8 channel_index,
++    enum hailo_vdma_interrupts_domain last_desc_interrupts,
++    bool is_debug);
+ 
+ /**
+  * Launch a transfer on some vdma channel. Includes:
+@@ -191,14 +201,12 @@ int hailo_vdma_launch_transfer(
+     bool is_debug);
+ 
+ void hailo_vdma_engine_init(struct hailo_vdma_engine *engine, u8 engine_index,
+-    const struct hailo_resource *channel_registers);
++    const struct hailo_resource *channel_registers, u32 src_channels_bitmask);
+ 
+-// enable/disable channels interrupt (does not update interrupts mask because the
+-// implementation is different between PCIe and DRAM DMA. To support it we
+-// can add some ops struct to the engine).
+-void hailo_vdma_engine_enable_channel_interrupts(struct hailo_vdma_engine *engine, u32 bitmap,
++void hailo_vdma_engine_enable_channels(struct hailo_vdma_engine *engine, u32 bitmap,
+     bool measure_timestamp);
+-void hailo_vdma_engine_disable_channel_interrupts(struct hailo_vdma_engine *engine, u32 bitmap);
++
++void hailo_vdma_engine_disable_channels(struct hailo_vdma_engine *engine, u32 bitmap);
+ 
+ void hailo_vdma_engine_push_timestamps(struct hailo_vdma_engine *engine, u32 bitmap);
+ int hailo_vdma_engine_read_timestamps(struct hailo_vdma_engine *engine,
+@@ -237,6 +245,12 @@ int hailo_vdma_engine_fill_irq_data(stru
+     struct hailo_vdma_engine *engine, u32 irq_channels_bitmap,
+     transfer_done_cb_t transfer_done, void *transfer_done_opaque);
+ 
++int hailo_vdma_start_channel(u8 __iomem *host_regs, uint64_t desc_dma_address, uint8_t desc_depth, uint8_t data_id);
++
++void hailo_vdma_stop_channel(u8 __iomem *host_regs);
++
++bool hailo_check_channel_index(u8 channel_index, u32 src_channels_bitmask, bool is_input_channel);
++
+ #ifdef __cplusplus
+ }
+ #endif
+--- a/drivers/media/pci/hailo/src/fops.c
++++ b/drivers/media/pci/hailo/src/fops.c
+@@ -19,7 +19,6 @@
+ #include <linux/sched/signal.h>
+ #endif
+ 
+-#include "hailo_pcie_version.h"
+ #include "utils.h"
+ #include "fops.h"
+ #include "vdma_common.h"
+@@ -27,6 +26,7 @@
+ #include "vdma/memory.h"
+ #include "vdma/ioctl.h"
+ #include "utils/compact.h"
++#include "pci_soc_ioctl.h"
+ 
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION( 4, 13, 0 )
+@@ -210,69 +210,66 @@ l_exit:
+ 
+ int hailo_pcie_fops_release(struct inode *inode, struct file *filp)
+ {
+-    struct hailo_pcie_board *pBoard = (struct hailo_pcie_board *)filp->private_data;
++    struct hailo_pcie_board *board = (struct hailo_pcie_board *)filp->private_data;
+     struct hailo_file_context *context = NULL;
+ 
+     u32 major = MAJOR(inode->i_rdev);
+     u32 minor = MINOR(inode->i_rdev);
+ 
+-    if (pBoard) {
+-        hailo_info(pBoard, "(%d: %d-%d): fops_release\n", current->tgid, major, minor);
++    if (board) {
++        hailo_info(board, "(%d: %d-%d): fops_release\n", current->tgid, major, minor);
+ 
+-        if (down_interruptible(&pBoard->mutex)) {
+-            hailo_err(pBoard, "fops_release down_interruptible failed");
+-            return -ERESTARTSYS;
+-        }
+ 
+-        context = find_file_context(pBoard, filp);
++        down(&board->mutex);
++
++        context = find_file_context(board, filp);
+         if (NULL == context) {
+-            hailo_err(pBoard, "Invalid driver state, file context does not exist\n");
+-            up(&pBoard->mutex);
++            hailo_err(board, "Invalid driver state, file context does not exist\n");
++            up(&board->mutex);
+             return -EINVAL;
+         }
+ 
+         if (false == context->is_valid) {
+             // File context is invalid, but open. It's OK to continue finalize and release it.
+-            hailo_err(pBoard, "Invalid file context\n");
++            hailo_err(board, "Invalid file context\n");
+         }
+ 
+-        hailo_pcie_clear_notification_wait_list(pBoard, filp);
++        hailo_pcie_clear_notification_wait_list(board, filp);
+ 
+-        if (filp == pBoard->vdma.used_by_filp) {
+-            if (hailo_pcie_driver_down(pBoard)) {
+-                hailo_err(pBoard, "Failed sending FW shutdown event");
++        if (filp == board->vdma.used_by_filp) {
++            if (hailo_pcie_driver_down(board)) {
++                hailo_err(board, "Failed sending FW shutdown event");
+             }
+         }
+ 
+-        hailo_vdma_file_context_finalize(&context->vdma_context, &pBoard->vdma, filp);
++        hailo_vdma_file_context_finalize(&context->vdma_context, &board->vdma, filp);
+         release_file_context(context);
+ 
+-        if (atomic_dec_and_test(&pBoard->ref_count)) {
++        if (atomic_dec_and_test(&board->ref_count)) {
+             // Disable interrupts
+-            hailo_disable_interrupts(pBoard);
++            hailo_disable_interrupts(board);
+ 
+             if (power_mode_enabled()) {
+-                if (pBoard->pDev && pci_set_power_state(pBoard->pDev, PCI_D3hot) < 0) {
+-                    hailo_err(pBoard, "Failed setting power state to D3hot");
++                if (board->pDev && pci_set_power_state(board->pDev, PCI_D3hot) < 0) {
++                    hailo_err(board, "Failed setting power state to D3hot");
+                 }
+             }
+ 
+             // deallocate board if already removed
+-            if (!pBoard->pDev) {
+-                hailo_dbg(pBoard, "fops_close, freed board\n");
+-                up(&pBoard->mutex);
+-                kfree(pBoard);
+-                pBoard = NULL;
++            if (!board->pDev) {
++                hailo_dbg(board, "fops_release, freed board\n");
++                up(&board->mutex);
++                kfree(board);
++                board = NULL;
+             } else {
+-
+-                hailo_dbg(pBoard, "fops_close, released resources for board\n");
+-                up(&pBoard->mutex);
++                hailo_dbg(board, "fops_release, released resources for board\n");
++                up(&board->mutex);
+             }
+         } else {
+-            up(&pBoard->mutex);
++            up(&board->mutex);
+         }
+ 
+-        hailo_dbg(pBoard, "(%d: %d-%d): fops_close: SUCCESS on /dev/hailo%d\n", current->tgid,
++        hailo_dbg(board, "(%d: %d-%d): fops_release: SUCCESS on /dev/hailo%d\n", current->tgid,
+             major, minor, minor);
+     }
+ 
+@@ -394,6 +391,10 @@ irqreturn_t hailo_irqhandler(int irq, vo
+             }
+         }
+ 
++        if (irq_source.interrupt_bitmask & SOC_CONNECT_ACCEPTED) {
++            complete_all(&board->soc_connect_accepted);
++        }
++
+         if (0 != irq_source.vdma_channels_bitmap) {
+             hailo_vdma_irq_handler(&board->vdma, DEFAULT_VDMA_ENGINE_INDEX,
+                 irq_source.vdma_channels_bitmap);
+@@ -602,26 +603,35 @@ static long hailo_query_driver_info(stru
+     return 0;
+ }
+ 
+-static long hailo_general_ioctl(struct hailo_file_context *context, struct hailo_pcie_board *board,
+-    unsigned int cmd, unsigned long arg, struct file *filp, bool *should_up_board_mutex)
++static long hailo_general_ioctl(struct hailo_pcie_board *board, unsigned int cmd, unsigned long arg)
+ {
+     switch (cmd) {
+     case HAILO_MEMORY_TRANSFER:
+         return hailo_memory_transfer_ioctl(board, arg);
++    case HAILO_QUERY_DEVICE_PROPERTIES:
++        return hailo_query_device_properties(board, arg);
++    case HAILO_QUERY_DRIVER_INFO:
++        return hailo_query_driver_info(board, arg);
++    default:
++        hailo_err(board, "Invalid general ioctl code 0x%x (nr: %d)\n", cmd, _IOC_NR(cmd));
++        return -ENOTTY;
++    }
++}
++
++static long hailo_nnc_ioctl(struct hailo_pcie_board *board, unsigned int cmd, unsigned long arg,
++    struct file *filp, bool *should_up_board_mutex)
++{
++    switch (cmd) {
+     case HAILO_FW_CONTROL:
+         return hailo_fw_control(board, arg, should_up_board_mutex);
+     case HAILO_READ_NOTIFICATION:
+         return hailo_read_notification_ioctl(board, arg, filp, should_up_board_mutex);
+     case HAILO_DISABLE_NOTIFICATION:
+         return hailo_disable_notification(board, filp);
+-    case HAILO_QUERY_DEVICE_PROPERTIES:
+-        return hailo_query_device_properties(board, arg);
+-    case HAILO_QUERY_DRIVER_INFO:
+-        return hailo_query_driver_info(board, arg);
+     case HAILO_READ_LOG:
+         return hailo_read_log_ioctl(board, arg);
+     default:
+-        hailo_err(board, "Invalid general ioctl code 0x%x (nr: %d)\n", cmd, _IOC_NR(cmd));
++        hailo_err(board, "Invalid nnc ioctl code 0x%x (nr: %d)\n", cmd, _IOC_NR(cmd));
+         return -ENOTTY;
+     }
+ }
+@@ -673,12 +683,28 @@ long hailo_pcie_fops_unlockedioctl(struc
+ 
+     switch (_IOC_TYPE(cmd)) {
+     case HAILO_GENERAL_IOCTL_MAGIC:
+-        err = hailo_general_ioctl(context, board, cmd, arg, filp, &should_up_board_mutex);
++        err = hailo_general_ioctl(board, cmd, arg);
+         break;
+     case HAILO_VDMA_IOCTL_MAGIC:
+         err = hailo_vdma_ioctl(&context->vdma_context, &board->vdma, cmd, arg, filp, &board->mutex,
+             &should_up_board_mutex);
+         break;
++    case HAILO_SOC_IOCTL_MAGIC:
++        if (HAILO_ACCELERATOR_TYPE_SOC != board->pcie_resources.accelerator_type) {
++            hailo_err(board, "Ioctl %d is not supported on this accelerator type\n", _IOC_TYPE(cmd));
++            err = -EINVAL;
++        } else {
++            err = hailo_soc_ioctl(board, &context->vdma_context, &board->vdma, cmd, arg);
++        }
++        break;
++    case HAILO_NNC_IOCTL_MAGIC:
++        if (HAILO_ACCELERATOR_TYPE_NNC != board->pcie_resources.accelerator_type) {
++            hailo_err(board, "Ioctl %d is not supported on this accelerator type\n", _IOC_TYPE(cmd));
++            err = -EINVAL;
++        } else {
++            err = hailo_nnc_ioctl(board, cmd, arg, filp, &should_up_board_mutex);
++        }
++        break;
+     default:
+         hailo_err(board, "Invalid ioctl type %d\n", _IOC_TYPE(cmd));
+         err = -ENOTTY;
+--- a/drivers/media/pci/hailo/src/fops.h
++++ b/drivers/media/pci/hailo/src/fops.h
+@@ -11,6 +11,7 @@ int hailo_pcie_fops_release(struct inode
+ long hailo_pcie_fops_unlockedioctl(struct file* filp, unsigned int cmd, unsigned long arg);
+ int hailo_pcie_fops_mmap(struct file* filp, struct vm_area_struct *vma);
+ int hailo_pcie_driver_down(struct hailo_pcie_board *board);
++void hailo_pcie_ep_init(struct hailo_pcie_board *board);
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
+ irqreturn_t hailo_irqhandler(int irq, void* dev_id, struct pt_regs *regs);
+--- /dev/null
++++ b/drivers/media/pci/hailo/src/pci_soc_ioctl.c
+@@ -0,0 +1,155 @@
++// SPDX-License-Identifier: GPL-2.0
++/**
++ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
++ **/
++#include "pci_soc_ioctl.h"
++
++#include "utils.h"
++#include "vdma_common.h"
++#include "utils/logs.h"
++#include "vdma/memory.h"
++
++#define PCI_SOC_VDMA_ENGINE_INDEX           (0)
++#define PCI_SOC_WAIT_FOR_CONNECT_TIMEOUT_MS (10000)
++
++long hailo_soc_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_file_context *context,
++    struct hailo_vdma_controller *controller, unsigned int cmd, unsigned long arg)
++{
++    switch (cmd) {
++    case HAILO_SOC_CONNECT:
++        return hailo_soc_connect_ioctl(board, context, controller, arg);
++    case HAILO_SOC_CLOSE:
++        return hailo_soc_close_ioctl(board, controller, arg);
++    default:
++        hailo_err(board, "Invalid pcie EP ioctl code 0x%x (nr: %d)\n", cmd, _IOC_NR(cmd));
++        return -ENOTTY;
++    }
++}
++
++long hailo_soc_connect_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_file_context *context,
++    struct hailo_vdma_controller *controller, unsigned long arg)
++{
++    struct hailo_soc_connect_params params;
++    struct hailo_vdma_channel *input_channel = NULL;
++    struct hailo_vdma_channel *output_channel = NULL;
++    struct hailo_vdma_engine *vdma_engine = NULL;
++    struct hailo_descriptors_list_buffer *input_descriptors_buffer = NULL;
++    struct hailo_descriptors_list_buffer *output_descriptors_buffer = NULL;
++    uint8_t depth = 0;
++    int err = 0;
++    long completion_result = 0;
++
++    if (copy_from_user(&params, (void *)arg, sizeof(params))) {
++        hailo_err(board, "copy_from_user fail\n");
++        return -ENOMEM;
++    }
++
++    // TODO: have pci_ep choose the channel indexes the soc will use - for now use 0 and 16
++    params.input_channel_index = 0;
++    params.output_channel_index = 16;
++
++    reinit_completion(&board->soc_connect_accepted);
++    hailo_soc_write_soc_connect(&board->pcie_resources);
++
++    // Wait for completion
++    completion_result = wait_for_completion_interruptible_timeout(&board->soc_connect_accepted,
++        msecs_to_jiffies(PCI_SOC_WAIT_FOR_CONNECT_TIMEOUT_MS));
++    if (0 > completion_result) {
++        if (0 == completion_result) {
++            hailo_err(board, "Timeout waiting for connect to be accepted (timeout_ms=%d)\n", PCI_SOC_WAIT_FOR_CONNECT_TIMEOUT_MS);
++            return -ETIMEDOUT;
++        } else {
++            hailo_info(board, "soc connect failed with err=%ld (process was interrupted or killed)\n",
++                completion_result);
++            return -EINTR;
++        }
++    }
++
++    vdma_engine = &controller->vdma_engines[PCI_SOC_VDMA_ENGINE_INDEX];
++    input_channel = &vdma_engine->channels[params.input_channel_index];
++    output_channel = &vdma_engine->channels[params.output_channel_index];
++
++    input_descriptors_buffer = hailo_vdma_find_descriptors_buffer(context, params.input_desc_handle);
++    output_descriptors_buffer = hailo_vdma_find_descriptors_buffer(context, params.output_desc_handle);
++    if (NULL == input_descriptors_buffer || NULL == output_descriptors_buffer) {
++        hailo_dev_err(&board->pDev->dev, "input / output descriptors buffer not found \n");
++        return -EINVAL;
++    }
++
++    // Make sure channels that we are accepting are not already enabled
++    if (0 != (vdma_engine->enabled_channels & params.input_channel_index) ||
++        0 != (vdma_engine->enabled_channels & params.output_channel_index)) {
++        hailo_dev_err(&board->pDev->dev, "Trying to accept already enabled channels\n");
++        return -EINVAL;
++    }
++
++    if (!is_powerof2((size_t)input_descriptors_buffer->desc_list.desc_count) ||
++        !is_powerof2((size_t)output_descriptors_buffer->desc_list.desc_count)) {
++        hailo_dev_err(&board->pDev->dev, "Invalid desc list size\n");
++        return -EINVAL;
++    }
++
++    // configure and start input channel
++    depth = ceil_log2(input_descriptors_buffer->desc_list.desc_count);
++    // DMA Direction is only to get channel index - so 
++    err = hailo_vdma_start_channel(input_channel->host_regs, input_descriptors_buffer->dma_address, depth,
++        board->vdma.hw->ddr_data_id);
++    if (err < 0) {
++        hailo_dev_err(&board->pDev->dev, "Error starting vdma input channel index %u\n", params.input_channel_index);
++        return -EINVAL;
++    }
++    
++    // configure and start output channel
++    depth = ceil_log2(output_descriptors_buffer->desc_list.desc_count);
++    // DMA Direction is only to get channel index - so 
++    err = hailo_vdma_start_channel(output_channel->host_regs, output_descriptors_buffer->dma_address, depth,
++        board->vdma.hw->ddr_data_id);
++    if (err < 0) {
++        hailo_dev_err(&board->pDev->dev, "Error starting vdma output channel index %u\n", params.output_channel_index);
++        // Close input channel
++        hailo_vdma_stop_channel(input_channel->host_regs);
++        return -EINVAL;
++    }
++
++    if (copy_to_user((void *)arg, &params, sizeof(params))) {
++        hailo_dev_err(&board->pDev->dev, "copy_to_user fail\n");
++        return -ENOMEM;
++    }
++
++    return 0;
++}
++
++long hailo_soc_close_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_controller *controller, unsigned long arg)
++{
++    struct hailo_soc_close_params params;
++    struct hailo_vdma_channel *input_channel = NULL;
++    struct hailo_vdma_channel *output_channel = NULL;
++    struct hailo_vdma_engine *vdma_engine = NULL;
++
++    if (copy_from_user(&params, (void *)arg, sizeof(params))) {
++        hailo_dev_err(&board->pDev->dev, "copy_from_user fail\n");
++        return -ENOMEM;
++    }
++
++    vdma_engine = &controller->vdma_engines[PCI_SOC_VDMA_ENGINE_INDEX];
++
++    if (!hailo_check_channel_index(params.input_channel_index, controller->hw->src_channels_bitmask, true)) {
++        hailo_dev_err(&board->pDev->dev, "Invalid input channel index %u\n", params.input_channel_index);
++        return -EINVAL;
++    }
++
++    if (!hailo_check_channel_index(params.output_channel_index, controller->hw->src_channels_bitmask, false)) {
++        hailo_dev_err(&board->pDev->dev, "Invalid output channel index %u\n", params.output_channel_index);
++        return -EINVAL;
++    }
++
++    input_channel = &vdma_engine->channels[params.input_channel_index];
++    output_channel = &vdma_engine->channels[params.output_channel_index];
++
++    // Close channels
++    hailo_vdma_stop_channel(input_channel->host_regs);
++    hailo_vdma_stop_channel(output_channel->host_regs);
++
++    hailo_pcie_write_firmware_driver_shutdown(&board->pcie_resources);
++    return 0;
++}
+\ No newline at end of file
+--- /dev/null
++++ b/drivers/media/pci/hailo/src/pci_soc_ioctl.h
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: GPL-2.0
++/**
++ * Copyright (c) 2019-2024 Hailo Technologies Ltd. All rights reserved.
++ **/
++
++#ifndef _HAILO_PCI_SOC_IOCTL_H_
++#define _HAILO_PCI_SOC_IOCTL_H_
++
++#include "vdma/ioctl.h"
++#include "pcie.h"
++
++
++long hailo_soc_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_file_context *context,
++    struct hailo_vdma_controller *controller, unsigned int cmd, unsigned long arg);
++long hailo_soc_connect_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_file_context *context,
++    struct hailo_vdma_controller *controller, unsigned long arg);
++long hailo_soc_close_ioctl(struct hailo_pcie_board *board, struct hailo_vdma_controller *controller, unsigned long arg);
++
++#endif // _HAILO_PCI_SOC_IOCTL_H_
+\ No newline at end of file
+--- a/drivers/media/pci/hailo/src/pcie.c
++++ b/drivers/media/pci/hailo/src/pcie.c
+@@ -20,7 +20,6 @@
+ 
+ #define KERNEL_CODE	1
+ 
+-#include "hailo_pcie_version.h"
+ #include "hailo_ioctl_common.h"
+ #include "pcie.h"
+ #include "fops.h"
+@@ -45,6 +44,7 @@ enum hailo_allocate_driver_buffer_driver
+ static int force_desc_page_size = 0;
+ static bool g_is_power_mode_enabled = true;
+ static int force_allocation_from_driver = HAILO_NO_FORCE_BUFFER;
++static bool force_hailo15_legacy_mode = false;
+ 
+ #define DEVICE_NODE_NAME "hailo"
+ static int char_major = 0;
+@@ -322,7 +322,7 @@ static int hailo_write_config(struct hai
+ 
+ static bool wait_for_firmware_completion(struct completion *fw_load_completion)
+ {
+-    return (0 != wait_for_completion_timeout(fw_load_completion, FIRMWARE_WAIT_TIMEOUT_MS));
++    return (0 != wait_for_completion_timeout(fw_load_completion, msecs_to_jiffies(FIRMWARE_WAIT_TIMEOUT_MS)));
+ }
+ 
+ static int hailo_load_firmware(struct hailo_pcie_resources *resources,
+@@ -330,6 +330,7 @@ static int hailo_load_firmware(struct ha
+ {
+     const struct firmware *firmware = NULL;
+     int err = 0;
++    u32 boot_status = 0;
+ 
+     if (hailo_pcie_is_firmware_loaded(resources)) {
+         hailo_dev_warn(dev, "Firmware was already loaded\n");
+@@ -368,7 +369,8 @@ static int hailo_load_firmware(struct ha
+     release_firmware(firmware);
+ 
+     if (!wait_for_firmware_completion(fw_load_completion)) {
+-        hailo_dev_err(dev, "Timeout waiting for firmware..\n");
++        boot_status = hailo_get_boot_status(resources);
++        hailo_dev_err(dev, "Timeout waiting for firmware file, boot status %u\n", boot_status);
+         return -ETIMEDOUT;
+     }
+ 
+@@ -376,6 +378,55 @@ static int hailo_load_firmware(struct ha
+     return 0;
+ }
+ 
++static int hailo_load_firmware_batch(struct hailo_pcie_resources *resources,
++    struct device *dev, struct completion *fw_load_completion)
++{
++    u32 boot_status = 0;
++    u32 pcie_finished = 1;
++    int err = 0;
++
++    if (hailo_pcie_is_firmware_loaded(resources)) {
++        hailo_dev_warn(dev, "Firmware batch was already loaded\n");
++        return 0;
++    }
++
++    init_completion(fw_load_completion);
++
++    err = hailo_pcie_write_firmware_batch(dev, resources, FIRST_STAGE);
++    if (err < 0) {
++        hailo_dev_err(dev, "Failed writing firmware files. err %d\n", err);
++        return err;
++    }
++
++    hailo_trigger_firmware_boot(resources);
++
++    if (!wait_for_firmware_completion(fw_load_completion)) {
++        boot_status = hailo_get_boot_status(resources);
++        hailo_dev_err(dev, "Timeout waiting for firmware file, boot status %u\n", boot_status);
++        return -ETIMEDOUT;
++    }
++    reinit_completion(fw_load_completion);
++
++    err = hailo_pcie_write_firmware_batch(dev, resources, SECOND_STAGE);
++    if (err < 0) {
++        hailo_dev_err(dev, "Failed writing firmware files. err %d\n", err);
++        return err;
++    }
++
++    // TODO: HRT-13838 - Remove, move address to compat, make write_memory static
++    write_memory(resources, 0x84000000, (void*)&pcie_finished, sizeof(pcie_finished));
++
++    if (!wait_for_firmware_completion(fw_load_completion)) {
++        boot_status = hailo_get_boot_status(resources);
++        hailo_dev_err(dev, "Timeout waiting for firmware file, boot status %u\n", boot_status);
++        return -ETIMEDOUT;
++    }
++
++    hailo_dev_notice(dev, "Firmware Batch loaded successfully\n");
++
++    return 0;
++}
++
+ static int hailo_activate_board(struct hailo_pcie_board *board)
+ {
+     int err = 0;
+@@ -388,8 +439,21 @@ static int hailo_activate_board(struct h
+         return err;
+     }
+ 
+-    err = hailo_load_firmware(&board->pcie_resources, &board->pDev->dev,
+-        &board->fw_loaded_completion);
++    switch (board->pcie_resources.board_type) {
++    case HAILO_BOARD_TYPE_HAILO10H:
++        err = hailo_load_firmware_batch(&board->pcie_resources, &board->pDev->dev,
++            &board->fw_loaded_completion);
++        break;
++    case HAILO_BOARD_TYPE_HAILO10H_LEGACY:
++    case HAILO_BOARD_TYPE_PLUTO:
++    case HAILO_BOARD_TYPE_HAILO8:
++        err = hailo_load_firmware(&board->pcie_resources, &board->pDev->dev,
++            &board->fw_loaded_completion);
++        break;
++    default:
++        hailo_err(board, "Invalid board type");
++        err = -EINVAL;
++    }
+     if (err < 0) {
+         hailo_err(board, "Firmware load failed\n");
+         hailo_disable_interrupts(board);
+@@ -513,8 +577,23 @@ static int pcie_resources_init(struct pc
+         goto failure_release_vdma_regs;
+     }
+ 
++
++    // There is no HAILO15 as mercury through pcie unless it's legacy mode (H15 as accelerator) or HAILO-10H
++    if (HAILO_BOARD_TYPE_HAILO15 == board_type){
++        if (true == force_hailo15_legacy_mode) {
++            board_type = HAILO_BOARD_TYPE_HAILO10H_LEGACY;
++        } else {
++            board_type = HAILO_BOARD_TYPE_HAILO10H;
++        }
++    }
++
+     resources->board_type = board_type;
+ 
++    err = hailo_set_device_type(resources);
++    if (err < 0) {
++        goto failure_release_fw_access;
++    }
++
+     if (!hailo_pcie_is_device_connected(resources)) {
+         pci_err(pdev, "Probing: Failed reading device BARs, device may be disconnected\n");
+         err = -ENODEV;
+@@ -676,6 +755,7 @@ static int hailo_pcie_probe(struct pci_d
+ 
+     pBoard->interrupts_enabled = false;
+     init_completion(&pBoard->fw_loaded_completion);
++    init_completion(&pBoard->soc_connect_accepted);
+ 
+     sema_init(&pBoard->mutex, 1);
+     atomic_set(&pBoard->ref_count, 0);
+@@ -1005,6 +1085,9 @@ MODULE_PARM_DESC(force_allocation_from_d
+ module_param(force_desc_page_size, int, S_IRUGO);
+ MODULE_PARM_DESC(force_desc_page_size, "Determines the maximum DMA descriptor page size (must be a power of 2)");
+ 
++module_param(force_hailo15_legacy_mode, bool, S_IRUGO);
++MODULE_PARM_DESC(force_hailo15_legacy_mode, "Forces work with Hailo15 in legacy mode(relevant for emulators)");
++
+ MODULE_AUTHOR("Hailo Technologies Ltd.");
+ MODULE_DESCRIPTION("Hailo PCIe driver");
+ MODULE_LICENSE("GPL v2");
+--- a/drivers/media/pci/hailo/src/pcie.h
++++ b/drivers/media/pci/hailo/src/pcie.h
+@@ -70,6 +70,8 @@ struct hailo_pcie_board {
+     enum hailo_allocation_mode allocation_mode;
+     struct completion fw_loaded_completion;
+     bool interrupts_enabled;
++    // Only needed in accelerator type soc
++    struct completion soc_connect_accepted;
+ };
+ 
+ bool power_mode_enabled(void);
+--- a/drivers/media/pci/hailo/src/sysfs.c
++++ b/drivers/media/pci/hailo/src/sysfs.c
+@@ -26,9 +26,18 @@ static ssize_t device_id_show(struct dev
+ }
+ static DEVICE_ATTR_RO(device_id);
+ 
++static ssize_t accelerator_type_show(struct device *dev, struct device_attribute *_attr,
++    char *buf)
++{
++    struct hailo_pcie_board *board = (struct hailo_pcie_board *)dev_get_drvdata(dev);
++    return sprintf(buf, "%d", board->pcie_resources.accelerator_type);
++}
++static DEVICE_ATTR_RO(accelerator_type);
++
+ static struct attribute *hailo_dev_attrs[] = {
+     &dev_attr_board_location.attr,
+     &dev_attr_device_id.attr,
++    &dev_attr_accelerator_type.attr,
+     NULL
+ };
+ 
+--- a/drivers/media/pci/hailo/src/utils.c
++++ b/drivers/media/pci/hailo/src/utils.c
+@@ -8,7 +8,6 @@
+ #include <linux/module.h>
+ #include <linux/pci.h>
+ 
+-#include "hailo_pcie_version.h"
+ #include "pcie.h"
+ #include "utils.h"
+ #include "utils/logs.h"
+--- /dev/null
++++ b/drivers/media/pci/hailo/utils/integrated_nnc_utils.c
+@@ -0,0 +1,101 @@
++// SPDX-License-Identifier: GPL-2.0
++/**
++ * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
++ **/
++
++#include "integrated_nnc_utils.h"
++#include "utils/logs.h"
++
++#include <linux/uaccess.h>
++#include <asm/io.h>
++#include <linux/of_address.h>
++#include <linux/cdev.h>
++
++int hailo_ioremap_resource(struct platform_device *pdev, struct hailo_resource *resource,
++    const char *name)
++{
++    void __iomem *address;
++    struct resource *platform_resource = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
++    if (NULL == platform_resource) {
++        return -ENOENT;
++    }
++
++    address = devm_ioremap_resource(&pdev->dev, platform_resource);
++    if (IS_ERR(address)) {
++        return PTR_ERR(address);
++    }
++
++    resource->address = (uintptr_t)address;
++    resource->size = resource_size(platform_resource);
++
++    hailo_dev_dbg(&pdev->dev, "resource[%s]: remap %pr of %zx bytes to virtual start address %lx\n",
++        platform_resource->name, platform_resource, resource->size, (uintptr_t)address);
++
++    return 0;
++}
++
++// TODO: HRT-8475 - change to name instead of index
++int hailo_ioremap_shmem(struct platform_device *pdev, int index, struct hailo_resource *resource)
++{
++    int ret;
++    struct resource res;
++    struct device_node *shmem;
++    void __iomem * remap_ptr;
++
++    shmem = of_parse_phandle(pdev->dev.of_node, "shmem", index);
++    ret = of_address_to_resource(shmem, 0, &res);
++    if (ret) {
++        hailo_dev_err(&pdev->dev, "hailo_ioremap_shmem, failed to get memory (index: %d)\n", index);
++        return ret;
++    }
++    of_node_put(shmem);
++
++    remap_ptr = devm_ioremap(&pdev->dev, res.start, resource_size(&res));
++    if (!remap_ptr) {
++        hailo_dev_err(&pdev->dev, "hailo_ioremap_shmem, failed to ioremap shmem (index: %d)\n", index);
++        return -EADDRNOTAVAIL;
++    }
++
++    resource->address = (uintptr_t)remap_ptr;
++    resource->size = resource_size(&res);
++
++    return 0;
++}
++
++int direct_memory_transfer(struct platform_device *pdev, struct hailo_memory_transfer_params *params)
++{
++    int err = -EINVAL;
++    void __iomem *mem = ioremap(params->address, params->count);
++    if (NULL == mem) {
++        hailo_dev_err(&pdev->dev, "Failed ioremap %llu %zu\n", params->address, params->count);
++        return -ENOMEM;
++    }
++
++    switch (params->transfer_direction) {
++    case TRANSFER_READ:
++        memcpy_fromio(params->buffer, mem, params->count);
++        err = 0;
++        break;
++    case TRANSFER_WRITE:
++        memcpy_toio(mem, params->buffer, params->count);
++        err = 0;
++        break;
++    default:
++        hailo_dev_err(&pdev->dev, "Invalid transfer direction %d\n", (int)params->transfer_direction);
++        err = -EINVAL;
++    }
++
++    iounmap(mem);
++    return err;
++}
++
++int hailo_get_resource_physical_addr(struct platform_device *pdev, const char *name, u64 *address)
++{
++    struct resource *platform_resource = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
++    if (NULL == platform_resource) {
++        return -ENOENT;
++    }
++
++    *address = (u64)(platform_resource->start);
++    return 0;
++}
+\ No newline at end of file
+--- /dev/null
++++ b/drivers/media/pci/hailo/utils/integrated_nnc_utils.h
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-2.0
++/**
++ * Copyright (c) 2019-2022 Hailo Technologies Ltd. All rights reserved.
++ **/
++
++#ifndef _INTEGRATED_NNC_UTILS_H_
++#define _INTEGRATED_NNC_UTILS_H_
++
++#include <linux/platform_device.h>
++#include "hailo_resource.h"
++
++#define HAILO15_CORE_CONTROL_MAILBOX_INDEX (0)
++#define HAILO15_CORE_NOTIFICATION_MAILBOX_INDEX (1)
++#define HAILO15_CORE_DRIVER_DOWN_MAILBOX_INDEX (2)
++
++#define HAILO15_CORE_CONTROL_MAILBOX_TX_SHMEM_INDEX (0)
++#define HAILO15_CORE_CONTROL_MAILBOX_RX_SHMEM_INDEX (1)
++#define HAILO15_CORE_NOTIFICATION_MAILBOX_RX_SHMEM_INDEX (2)
++
++int hailo_ioremap_resource(struct platform_device *pdev, struct hailo_resource *resource,
++    const char *name);
++
++// TODO: HRT-8475 - change to name instead of index
++int hailo_ioremap_shmem(struct platform_device *pdev, int index, struct hailo_resource *resource);
++
++int direct_memory_transfer(struct platform_device *pDev, struct hailo_memory_transfer_params *params);
++
++int hailo_get_resource_physical_addr(struct platform_device *pdev, const char *name, u64 *address);
++
++#endif /* _INTEGRATED_NNC_UTILS_H_ */
+--- a/drivers/media/pci/hailo/vdma/ioctl.c
++++ b/drivers/media/pci/hailo/vdma/ioctl.c
+@@ -12,9 +12,9 @@
+ #include <linux/uaccess.h>
+ 
+ 
+-long hailo_vdma_interrupts_enable_ioctl(struct hailo_vdma_controller *controller, unsigned long arg)
++long hailo_vdma_enable_channels_ioctl(struct hailo_vdma_controller *controller, unsigned long arg)
+ {
+-    struct hailo_vdma_interrupts_enable_params input;
++    struct hailo_vdma_enable_channels_params input;
+     struct hailo_vdma_engine *engine = NULL;
+     u8 engine_index = 0;
+     u32 channels_bitmap = 0;
+@@ -35,7 +35,7 @@ long hailo_vdma_interrupts_enable_ioctl(
+ 
+     for_each_vdma_engine(controller, engine, engine_index) {
+         channels_bitmap = input.channels_bitmap_per_engine[engine_index];
+-        hailo_vdma_engine_enable_channel_interrupts(engine, channels_bitmap,
++        hailo_vdma_engine_enable_channels(engine, channels_bitmap,
+             input.enable_timestamps_measure);
+         hailo_vdma_update_interrupts_mask(controller, engine_index);
+         hailo_dev_info(controller->dev, "Enabled interrupts for engine %u, channels bitmap 0x%x\n",
+@@ -45,12 +45,13 @@ long hailo_vdma_interrupts_enable_ioctl(
+     return 0;
+ }
+ 
+-long hailo_vdma_interrupts_disable_ioctl(struct hailo_vdma_controller *controller, unsigned long arg)
++long hailo_vdma_disable_channels_ioctl(struct hailo_vdma_controller *controller, unsigned long arg)
+ {
+-    struct hailo_vdma_interrupts_disable_params input;
++    struct hailo_vdma_disable_channels_params input;
+     struct hailo_vdma_engine *engine = NULL;
+     u8 engine_index = 0;
+     u32 channels_bitmap = 0;
++    unsigned long irq_saved_flags = 0;
+ 
+     if (copy_from_user(&input, (void*)arg, sizeof(input))) {
+         hailo_dev_err(controller->dev, "copy_from_user fail\n");
+@@ -61,15 +62,21 @@ long hailo_vdma_interrupts_disable_ioctl
+     for_each_vdma_engine(controller, engine, engine_index) {
+         channels_bitmap = input.channels_bitmap_per_engine[engine_index];
+         if (channels_bitmap != (channels_bitmap & engine->enabled_channels)) {
+-            hailo_dev_err(controller->dev, "Trying to disable channels that were not enabled\n");
+-            return -EINVAL;
++            hailo_dev_warn(controller->dev, "Trying to disable channels that were not enabled\n");
+         }
+     }
+ 
+     for_each_vdma_engine(controller, engine, engine_index) {
+         channels_bitmap = input.channels_bitmap_per_engine[engine_index];
+-        hailo_vdma_engine_interrupts_disable(controller, engine, engine_index,
+-            channels_bitmap);
++        hailo_vdma_engine_disable_channels(engine, channels_bitmap);
++        hailo_vdma_update_interrupts_mask(controller, engine_index);
++
++        spin_lock_irqsave(&controller->interrupts_lock, irq_saved_flags);
++        hailo_vdma_engine_clear_channel_interrupts(engine, channels_bitmap);
++        spin_unlock_irqrestore(&controller->interrupts_lock, irq_saved_flags);
++
++        hailo_dev_info(controller->dev, "Disabled channels for engine %u, bitmap 0x%x\n",
++            engine_index, channels_bitmap);
+     }
+ 
+     // Wake up threads waiting
+@@ -197,7 +204,7 @@ long hailo_vdma_buffer_map_ioctl(struct
+         return -EFAULT;
+     }
+ 
+-    hailo_dev_info(controller->dev, "address %px tgid %d size: %zu\n",
++    hailo_dev_info(controller->dev, "address %lx tgid %d size: %zu\n",
+         buf_info.user_address, current->tgid, buf_info.size);
+ 
+     direction = get_dma_direction(buf_info.data_direction);
+@@ -209,10 +216,9 @@ long hailo_vdma_buffer_map_ioctl(struct
+     low_memory_buffer = hailo_vdma_find_low_memory_buffer(context, buf_info.allocated_buffer_handle);
+ 
+     mapped_buffer = hailo_vdma_buffer_map(controller->dev,
+-        buf_info.user_address, buf_info.size, direction, low_memory_buffer);
++        buf_info.user_address, buf_info.size, direction, buf_info.buffer_type, low_memory_buffer);
+     if (IS_ERR(mapped_buffer)) {
+-        hailo_dev_err(controller->dev, "failed map buffer %px\n",
+-            buf_info.user_address);
++        hailo_dev_err(controller->dev, "failed map buffer %lx\n", buf_info.user_address);
+         return PTR_ERR(mapped_buffer);
+     }
+ 
+@@ -225,7 +231,7 @@ long hailo_vdma_buffer_map_ioctl(struct
+     }
+ 
+     list_add(&mapped_buffer->mapped_user_buffer_list, &context->mapped_user_buffer_list);
+-    hailo_dev_info(controller->dev, "buffer %px (handle %zu) is mapped\n",
++    hailo_dev_info(controller->dev, "buffer %lx (handle %zu) is mapped\n",
+         buf_info.user_address, buf_info.mapped_handle);
+     return 0;
+ }
+@@ -374,10 +380,10 @@ long hailo_desc_list_release_ioctl(struc
+     return 0;
+ }
+ 
+-long hailo_desc_list_bind_vdma_buffer(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller,
++long hailo_desc_list_program_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller,
+     unsigned long arg)
+ {
+-    struct hailo_desc_list_bind_vdma_buffer_params configure_info;
++    struct hailo_desc_list_program_params configure_info;
+     struct hailo_vdma_buffer *mapped_buffer = NULL;
+     struct hailo_descriptors_list_buffer *descriptors_buffer = NULL;
+     struct hailo_vdma_mapped_transfer_buffer transfer_buffer = {0};
+@@ -410,7 +416,10 @@ long hailo_desc_list_bind_vdma_buffer(st
+         &descriptors_buffer->desc_list,
+         configure_info.starting_desc,
+         &transfer_buffer,
+-        configure_info.channel_index
++        configure_info.should_bind,
++        configure_info.channel_index,
++        configure_info.last_interrupts_domain,
++        configure_info.is_debug
+     );
+ }
+ 
+@@ -683,11 +692,19 @@ long hailo_vdma_launch_transfer_ioctl(st
+         params.is_debug
+     );
+     if (ret < 0) {
+-        hailo_dev_err(controller->dev, "Failed launch transfer %d\n", ret);
++        params.launch_transfer_status = ret;
++        if (-ECONNRESET != ret) {
++            hailo_dev_err(controller->dev, "Failed launch transfer %d\n", ret);
++        }
++        // Still need to copy fail status back to userspace - success oriented
++        if (copy_to_user((void __user*)arg, &params, sizeof(params))) {
++            hailo_dev_err(controller->dev, "copy_to_user fail\n");
++        }
+         return ret;
+     }
+ 
+     params.descs_programed = ret;
++    params.launch_transfer_status = 0;
+ 
+     if (copy_to_user((void __user*)arg, &params, sizeof(params))) {
+         hailo_dev_err(controller->dev, "copy_to_user fail\n");
+--- a/drivers/media/pci/hailo/vdma/ioctl.h
++++ b/drivers/media/pci/hailo/vdma/ioctl.h
+@@ -8,8 +8,8 @@
+ 
+ #include "vdma/vdma.h"
+ 
+-long hailo_vdma_interrupts_enable_ioctl(struct hailo_vdma_controller *controller, unsigned long arg);
+-long hailo_vdma_interrupts_disable_ioctl(struct hailo_vdma_controller *controller, unsigned long arg);
++long hailo_vdma_enable_channels_ioctl(struct hailo_vdma_controller *controller, unsigned long arg);
++long hailo_vdma_disable_channels_ioctl(struct hailo_vdma_controller *controller, unsigned long arg);
+ long hailo_vdma_interrupts_wait_ioctl(struct hailo_vdma_controller *controller, unsigned long arg,
+     struct semaphore *mutex, bool *should_up_board_mutex);
+ 
+@@ -19,7 +19,7 @@ long hailo_vdma_buffer_sync_ioctl(struct
+ 
+ long hailo_desc_list_create_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
+ long hailo_desc_list_release_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
+-long hailo_desc_list_bind_vdma_buffer(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
++long hailo_desc_list_program_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
+ 
+ long hailo_vdma_low_memory_buffer_alloc_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
+ long hailo_vdma_low_memory_buffer_free_ioctl(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller, unsigned long arg);
+--- a/drivers/media/pci/hailo/vdma/memory.c
++++ b/drivers/media/pci/hailo/vdma/memory.c
+@@ -11,27 +11,107 @@
+ #include <linux/slab.h>
+ #include <linux/scatterlist.h>
+ #include <linux/sched.h>
++#include <linux/module.h>
+ 
+ 
+ #define SGL_MAX_SEGMENT_SIZE 	(0x10000)
+ // See linux/mm.h
+ #define MMIO_AND_NO_PAGES_VMA_MASK (VM_IO | VM_PFNMAP)
+ 
+-static int map_mmio_address(void __user* user_address, u32 size, struct vm_area_struct *vma,
++static int map_mmio_address(uintptr_t user_address, u32 size, struct vm_area_struct *vma,
+     struct sg_table *sgt);
+-static int prepare_sg_table(struct sg_table *sg_table, void __user* user_address, u32 size,
++static int prepare_sg_table(struct sg_table *sg_table, uintptr_t user_address, u32 size,
+     struct hailo_vdma_low_memory_buffer *low_mem_driver_allocated_buffer);
+ static void clear_sg_table(struct sg_table *sgt);
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION( 3, 3, 0 )
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
++// Import DMA_BUF namespace for needed kernels
++MODULE_IMPORT_NS(DMA_BUF);
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0) */
++
++static int hailo_map_dmabuf(struct device *dev, int dmabuf_fd, enum dma_data_direction direction, struct sg_table *sgt,
++    struct hailo_dmabuf_info *dmabuf_info)
++{
++    int ret = -EINVAL;
++    struct dma_buf *dmabuf = NULL;
++    struct dma_buf_attachment *dmabuf_attachment = NULL;
++    struct sg_table *res_sgt = NULL;
++
++    dmabuf = dma_buf_get(dmabuf_fd);
++    if (IS_ERR(dmabuf)) {
++        dev_err(dev, "dma_buf_get failed, err=%ld\n", PTR_ERR(dmabuf));
++        ret = -EINVAL;
++        goto cleanup;
++    }
++
++    dmabuf_attachment = dma_buf_attach(dmabuf, dev);
++    if (IS_ERR(dmabuf_attachment)) {
++        dev_err(dev, "dma_buf_attach failed, err=%ld\n", PTR_ERR(dmabuf_attachment));
++        ret = -EINVAL;
++        goto l_buf_get;
++    }
++
++    res_sgt = dma_buf_map_attachment(dmabuf_attachment, direction);
++    if (IS_ERR(res_sgt)) {
++        dev_err(dev, "dma_buf_map_attachment failed, err=%ld\n", PTR_ERR(res_sgt));
++        goto l_buf_attach;
++    }
++
++    *sgt = *res_sgt;
++
++    dmabuf_info->dmabuf = dmabuf;
++    dmabuf_info->dmabuf_attachment = dmabuf_attachment;
++    dmabuf_info->dmabuf_sg_table = res_sgt;
++    return 0;
++
++l_buf_attach:
++    dma_buf_detach(dmabuf, dmabuf_attachment);
++l_buf_get:
++    dma_buf_put(dmabuf);
++cleanup:
++    return ret;
++}
++
++static void hailo_unmap_dmabuf(struct hailo_vdma_buffer *vdma_buffer)
++{
++    dma_buf_unmap_attachment(vdma_buffer->dmabuf_info.dmabuf_attachment, vdma_buffer->dmabuf_info.dmabuf_sg_table, vdma_buffer->data_direction);
++    dma_buf_detach(vdma_buffer->dmabuf_info.dmabuf, vdma_buffer->dmabuf_info.dmabuf_attachment);
++    dma_buf_put(vdma_buffer->dmabuf_info.dmabuf);
++}
++
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION( 3, 3, 0 ) */
++
++static int hailo_map_dmabuf(struct device *dev, int dmabuf_fd, enum dma_data_direction direction, struct sg_table *sgt,
++    struct hailo_dmabuf_info *dmabuf_info)
++{
++    (void) dmabuf_fd;
++    (void) direction;
++    (void) sgt;
++    (void) mapped_buffer;
++    dev_err(dev, "dmabuf not supported in kernel versions lower than 3.3.0\n");
++    return -EINVAL;
++}
++
++static void hailo_unmap_dmabuf(struct hailo_vdma_buffer *vdma_buffer)
++{
++    dev_err(vdma_buffer->device, "dmabuf not supported in kernel versions lower than 3.3.0\n");
++    return -EINVAL;
++}
++
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION( 3, 3, 0 ) */
++
+ struct hailo_vdma_buffer *hailo_vdma_buffer_map(struct device *dev,
+-    void __user *user_address, size_t size, enum dma_data_direction direction,
+-    struct hailo_vdma_low_memory_buffer *low_mem_driver_allocated_buffer)
++    uintptr_t user_address, size_t size, enum dma_data_direction direction,
++    enum hailo_dma_buffer_type buffer_type, struct hailo_vdma_low_memory_buffer *low_mem_driver_allocated_buffer)
+ {
+     int ret = -EINVAL;
+     struct hailo_vdma_buffer *mapped_buffer = NULL;
+     struct sg_table sgt = {0};
+     struct vm_area_struct *vma = NULL;
+     bool is_mmio = false;
++    struct hailo_dmabuf_info dmabuf_info = {0}; 
+ 
+     mapped_buffer = kzalloc(sizeof(*mapped_buffer), GFP_KERNEL);
+     if (NULL == mapped_buffer) {
+@@ -40,17 +120,19 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+         goto cleanup;
+     }
+ 
+-    if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING)) {
+-        vma = find_vma(current->mm, (uintptr_t)user_address);
++    if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING) && (HAILO_DMA_DMABUF_BUFFER != buffer_type)) {
++        vma = find_vma(current->mm, user_address);
+         if (NULL == vma) {
+-            dev_err(dev, "no vma for virt_addr/size = 0x%08lx/0x%08zx\n", (uintptr_t)user_address, size);
++            dev_err(dev, "no vma for virt_addr/size = 0x%08lx/0x%08zx\n", user_address, size);
+             ret = -EFAULT;
+             goto cleanup;
+         }
+     }
+ 
++    // TODO: is MMIO DMA MAPPINGS STILL needed after dmabuf
+     if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING) &&
+-            (MMIO_AND_NO_PAGES_VMA_MASK == (vma->vm_flags & MMIO_AND_NO_PAGES_VMA_MASK))) {
++            (MMIO_AND_NO_PAGES_VMA_MASK == (vma->vm_flags & MMIO_AND_NO_PAGES_VMA_MASK)) && 
++            (HAILO_DMA_DMABUF_BUFFER != buffer_type)) {
+         // user_address represents memory mapped I/O and isn't backed by 'struct page' (only by pure pfn)
+         if (NULL != low_mem_driver_allocated_buffer) {
+             // low_mem_driver_allocated_buffer are backed by regular 'struct page' addresses, just in low memory
+@@ -66,6 +148,14 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+         }
+ 
+         is_mmio = true;
++
++    } else if (HAILO_DMA_DMABUF_BUFFER == buffer_type) {
++        // Content user_address in case of dmabuf is fd - for now
++        ret = hailo_map_dmabuf(dev, user_address, direction, &sgt, &dmabuf_info);
++        if (ret < 0) {
++            dev_err(dev, "Failed mapping dmabuf\n");
++            goto cleanup;
++        }
+     } else {
+         // user_address is a standard 'struct page' backed memory address
+         ret = prepare_sg_table(&sgt, user_address, size, low_mem_driver_allocated_buffer);
+@@ -88,6 +178,7 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+     mapped_buffer->data_direction = direction;
+     mapped_buffer->sg_table = sgt;
+     mapped_buffer->is_mmio = is_mmio;
++    mapped_buffer->dmabuf_info = dmabuf_info;
+ 
+     return mapped_buffer;
+ 
+@@ -103,11 +194,16 @@ static void unmap_buffer(struct kref *kr
+ {
+     struct hailo_vdma_buffer *buf = container_of(kref, struct hailo_vdma_buffer, kref);
+ 
+-    if (!buf->is_mmio) {
+-        dma_unmap_sg(buf->device, buf->sg_table.sgl, buf->sg_table.orig_nents, buf->data_direction);
+-    }
++    // If dmabuf - unmap and detatch dmabuf
++    if (NULL != buf->dmabuf_info.dmabuf) {
++        hailo_unmap_dmabuf(buf);
++    } else {
++        if (!buf->is_mmio) {
++            dma_unmap_sg(buf->device, buf->sg_table.sgl, buf->sg_table.orig_nents, buf->data_direction);
++        }
+ 
+-    clear_sg_table(&buf->sg_table);
++        clear_sg_table(&buf->sg_table);
++    }
+     kfree(buf);
+ }
+ 
+@@ -164,8 +260,9 @@ void hailo_vdma_buffer_sync(struct hailo
+     struct hailo_vdma_buffer *mapped_buffer, enum hailo_vdma_buffer_sync_type sync_type,
+     size_t offset, size_t size)
+ {
+-    if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING) && mapped_buffer->is_mmio) {
+-        // MMIO buffers don't need to be sync'd
++    if ((IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING) && mapped_buffer->is_mmio) || 
++        (NULL != mapped_buffer->dmabuf_info.dmabuf)) {
++        // MMIO buffers and dmabufs don't need to be sync'd
+         return;
+     }
+ 
+@@ -404,7 +501,8 @@ void hailo_vdma_clear_continuous_buffer_
+ 
+ // Assumes the provided user_address belongs to the vma and that MMIO_AND_NO_PAGES_VMA_MASK bits are set under
+ // vma->vm_flags. This is validated in hailo_vdma_buffer_map, and won't be checked here
+-static int map_mmio_address(void __user* user_address, u32 size, struct vm_area_struct *vma,
++#if defined(HAILO_SUPPORT_MMIO_DMA_MAPPING)
++static int map_mmio_address(uintptr_t user_address, u32 size, struct vm_area_struct *vma,
+     struct sg_table *sgt)
+ {
+     int ret = -EINVAL;
+@@ -413,7 +511,7 @@ static int map_mmio_address(void __user*
+     unsigned long next_pfn = 0;
+     phys_addr_t phys_addr = 0;
+     dma_addr_t mmio_dma_address = 0;
+-    const uintptr_t virt_addr = (uintptr_t)user_address;
++    const uintptr_t virt_addr = user_address;
+     const u32 vma_size = vma->vm_end - vma->vm_start + 1;
+     const uintptr_t num_pages = PFN_UP(virt_addr + size) - PFN_DOWN(virt_addr);
+ 
+@@ -462,8 +560,21 @@ static int map_mmio_address(void __user*
+ 
+     return 0;
+ }
++#else /* defined(HAILO_SUPPORT_MMIO_DMA_MAPPING) */
++static int map_mmio_address(uintptr_t user_address, u32 size, struct vm_area_struct *vma,
++    struct sg_table *sgt)
++{
++    (void) user_address;
++    (void) size;
++    (void) vma;
++    (void) sgt;
++    pr_err("MMIO DMA MAPPINGS are not supported in this kernel version\n");
++    return -EINVAL;
++}
++#endif /* defined(HAILO_SUPPORT_MMIO_DMA_MAPPING) */
++
+ 
+-static int prepare_sg_table(struct sg_table *sg_table, void __user *user_address, u32 size,
++static int prepare_sg_table(struct sg_table *sg_table, uintptr_t user_address, u32 size,
+     struct hailo_vdma_low_memory_buffer *low_mem_driver_allocated_buffer)
+ {
+     int ret = -EINVAL;
+@@ -482,8 +593,7 @@ static int prepare_sg_table(struct sg_ta
+     // Check whether mapping user allocated buffer or driver allocated low memory buffer
+     if (NULL == low_mem_driver_allocated_buffer) {
+         mmap_read_lock(current->mm);
+-        pinned_pages = get_user_pages_compact((unsigned long)user_address,
+-            npages, FOLL_WRITE | FOLL_FORCE, pages);
++        pinned_pages = get_user_pages_compact(user_address, npages, FOLL_WRITE | FOLL_FORCE, pages);
+         mmap_read_unlock(current->mm);
+ 
+         if (pinned_pages < 0) {
+--- a/drivers/media/pci/hailo/vdma/memory.h
++++ b/drivers/media/pci/hailo/vdma/memory.h
+@@ -11,8 +11,8 @@
+ 
+ #include "vdma/vdma.h"
+ 
+-struct hailo_vdma_buffer *hailo_vdma_buffer_map(struct device *dev,
+-    void __user *user_address, size_t size, enum dma_data_direction direction,
++struct hailo_vdma_buffer *hailo_vdma_buffer_map(struct device *dev, uintptr_t user_address, size_t size,
++    enum dma_data_direction direction, enum hailo_dma_buffer_type buffer_type,
+     struct hailo_vdma_low_memory_buffer *low_mem_driver_allocated_buffer);
+ void hailo_vdma_buffer_get(struct hailo_vdma_buffer *buf);
+ void hailo_vdma_buffer_put(struct hailo_vdma_buffer *buf);
+--- a/drivers/media/pci/hailo/vdma/vdma.c
++++ b/drivers/media/pci/hailo/vdma/vdma.c
+@@ -21,7 +21,7 @@
+ 
+ 
+ static struct hailo_vdma_engine* init_vdma_engines(struct device *dev,
+-    struct hailo_resource *channel_registers_per_engine, size_t engines_count)
++    struct hailo_resource *channel_registers_per_engine, size_t engines_count, u32 src_channels_bitmask)
+ {
+     struct hailo_vdma_engine *engines = NULL;
+     u8 i = 0;
+@@ -33,7 +33,7 @@ static struct hailo_vdma_engine* init_vd
+     }
+ 
+     for (i = 0; i < engines_count; i++) {
+-        hailo_vdma_engine_init(&engines[i], i, &channel_registers_per_engine[i]);
++        hailo_vdma_engine_init(&engines[i], i, &channel_registers_per_engine[i], src_channels_bitmask);
+     }
+ 
+     return engines;
+@@ -72,7 +72,8 @@ int hailo_vdma_controller_init(struct ha
+     controller->dev = dev;
+ 
+     controller->vdma_engines_count = engines_count;
+-    controller->vdma_engines = init_vdma_engines(dev, channel_registers_per_engine, engines_count);
++    controller->vdma_engines = init_vdma_engines(dev, channel_registers_per_engine, engines_count,
++        vdma_hw->src_channels_bitmask);
+     if (IS_ERR(controller->vdma_engines)) {
+         dev_err(dev, "Failed initialized vdma engines\n");
+         return PTR_ERR(controller->vdma_engines);
+@@ -113,36 +114,27 @@ void hailo_vdma_update_interrupts_mask(s
+     controller->ops->update_channel_interrupts(controller, engine_index, engine->enabled_channels);
+ }
+ 
+-void hailo_vdma_engine_interrupts_disable(struct hailo_vdma_controller *controller,
+-    struct hailo_vdma_engine *engine, u8 engine_index, u32 channels_bitmap)
+-{
+-    unsigned long irq_saved_flags = 0;
+-    // In case of FLR, the vdma registers will be NULL
+-    const bool is_device_up = (NULL != controller->dev);
+-
+-    hailo_vdma_engine_disable_channel_interrupts(engine, channels_bitmap);
+-    if (is_device_up) {
+-        hailo_vdma_update_interrupts_mask(controller, engine_index);
+-    }
+-
+-    spin_lock_irqsave(&controller->interrupts_lock, irq_saved_flags);
+-    hailo_vdma_engine_clear_channel_interrupts(engine, channels_bitmap);
+-    spin_unlock_irqrestore(&controller->interrupts_lock, irq_saved_flags);
+-
+-    hailo_dev_info(controller->dev, "Disabled interrupts for engine %u, channels bitmap 0x%x\n",
+-        engine_index, channels_bitmap);
+-}
+-
+ void hailo_vdma_file_context_finalize(struct hailo_vdma_file_context *context,
+     struct hailo_vdma_controller *controller, struct file *filp)
+ {
+     size_t engine_index = 0;
+     struct hailo_vdma_engine *engine = NULL;
+     const u32 channels_bitmap = 0xFFFFFFFF; // disable all channel interrupts
++    unsigned long irq_saved_flags = 0;
++    // In case of FLR, the vdma registers will be NULL
++    const bool is_device_up = (NULL != controller->dev);
+ 
+     if (filp == controller->used_by_filp) {
+         for_each_vdma_engine(controller, engine, engine_index) {
+-            hailo_vdma_engine_interrupts_disable(controller, engine, engine_index, channels_bitmap);
++            hailo_vdma_engine_disable_channels(engine, channels_bitmap);
++
++            if (is_device_up) {
++                hailo_vdma_update_interrupts_mask(controller, engine_index);
++            }
++
++            spin_lock_irqsave(&controller->interrupts_lock, irq_saved_flags);
++            hailo_vdma_engine_clear_channel_interrupts(engine, channels_bitmap);
++            spin_unlock_irqrestore(&controller->interrupts_lock, irq_saved_flags);
+         }
+     }
+ 
+@@ -178,10 +170,10 @@ long hailo_vdma_ioctl(struct hailo_vdma_
+     unsigned int cmd, unsigned long arg, struct file *filp, struct semaphore *mutex, bool *should_up_board_mutex)
+ {
+     switch (cmd) {
+-    case HAILO_VDMA_INTERRUPTS_ENABLE:
+-        return hailo_vdma_interrupts_enable_ioctl(controller, arg);
+-    case HAILO_VDMA_INTERRUPTS_DISABLE:
+-        return hailo_vdma_interrupts_disable_ioctl(controller, arg);
++    case HAILO_VDMA_ENABLE_CHANNELS:
++        return hailo_vdma_enable_channels_ioctl(controller, arg);
++    case HAILO_VDMA_DISABLE_CHANNELS:
++        return hailo_vdma_disable_channels_ioctl(controller, arg);
+     case HAILO_VDMA_INTERRUPTS_WAIT:
+         return hailo_vdma_interrupts_wait_ioctl(controller, arg, mutex, should_up_board_mutex);
+     case HAILO_VDMA_INTERRUPTS_READ_TIMESTAMPS:
+@@ -196,8 +188,8 @@ long hailo_vdma_ioctl(struct hailo_vdma_
+         return hailo_desc_list_create_ioctl(context, controller, arg);
+     case HAILO_DESC_LIST_RELEASE:
+         return hailo_desc_list_release_ioctl(context, controller, arg);
+-    case HAILO_DESC_LIST_BIND_VDMA_BUFFER:
+-        return hailo_desc_list_bind_vdma_buffer(context, controller, arg);
++    case HAILO_DESC_LIST_PROGRAM:
++        return hailo_desc_list_program_ioctl(context, controller, arg);
+     case HAILO_VDMA_LOW_MEMORY_BUFFER_ALLOC:
+         return hailo_vdma_low_memory_buffer_alloc_ioctl(context, controller, arg);
+     case HAILO_VDMA_LOW_MEMORY_BUFFER_FREE:
+@@ -216,28 +208,6 @@ long hailo_vdma_ioctl(struct hailo_vdma_
+     }
+ }
+ 
+-static int desc_list_mmap(struct hailo_vdma_controller *controller,
+-    struct hailo_descriptors_list_buffer *vdma_descriptors_buffer, struct vm_area_struct *vma)
+-{
+-    int err = 0;
+-    unsigned long vsize = vma->vm_end - vma->vm_start;
+-
+-    if (vsize > vdma_descriptors_buffer->buffer_size) {
+-        hailo_dev_err(controller->dev, "Requested size to map (%lx) is larger than the descriptor list size(%x)\n",
+-            vsize, vdma_descriptors_buffer->buffer_size);
+-        return -EINVAL;
+-    }
+-
+-    err = dma_mmap_coherent(controller->dev, vma, vdma_descriptors_buffer->kernel_address,
+-        vdma_descriptors_buffer->dma_address, vsize);
+-    if (err != 0) {
+-        hailo_dev_err(controller->dev, " Failed mmap descriptors %d\n", err);
+-        return err;
+-    }
+-
+-    return 0;
+-}
+-
+ static int low_memory_buffer_mmap(struct hailo_vdma_controller *controller,
+     struct hailo_vdma_low_memory_buffer *vdma_buffer, struct vm_area_struct *vma)
+ {
+@@ -300,15 +270,11 @@ static int continuous_buffer_mmap(struct
+ int hailo_vdma_mmap(struct hailo_vdma_file_context *context, struct hailo_vdma_controller *controller,
+     struct vm_area_struct *vma, uintptr_t vdma_handle)
+ {
+-    struct hailo_descriptors_list_buffer *vdma_descriptors_buffer = NULL;
+     struct hailo_vdma_low_memory_buffer *low_memory_buffer = NULL;
+     struct hailo_vdma_continuous_buffer *continuous_buffer = NULL;
+ 
+     hailo_dev_info(controller->dev, "Map vdma_handle %llu\n", (u64)vdma_handle);
+-    if (NULL != (vdma_descriptors_buffer = hailo_vdma_find_descriptors_buffer(context, vdma_handle))) {
+-        return desc_list_mmap(controller, vdma_descriptors_buffer, vma);
+-    }
+-    else if (NULL != (low_memory_buffer = hailo_vdma_find_low_memory_buffer(context, vdma_handle))) {
++    if (NULL != (low_memory_buffer = hailo_vdma_find_low_memory_buffer(context, vdma_handle))) {
+         return low_memory_buffer_mmap(controller, low_memory_buffer, vma);
+     }
+     else if (NULL != (continuous_buffer = hailo_vdma_find_continuous_buffer(context, vdma_handle))) {
+--- a/drivers/media/pci/hailo/vdma/vdma.h
++++ b/drivers/media/pci/hailo/vdma/vdma.h
+@@ -16,6 +16,8 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/types.h>
+ #include <linux/semaphore.h>
++#include <linux/dma-buf.h>
++#include <linux/version.h>
+ 
+ #define VDMA_CHANNEL_CONTROL_REG_OFFSET(channel_index, direction) (((direction) == DMA_TO_DEVICE) ? \
+             (((channel_index) << 5) + 0x0) : (((channel_index) << 5) + 0x10))
+@@ -28,6 +30,22 @@
+     ((u8*)((vdma_registers)->address) + VDMA_CHANNEL_NUM_PROC_OFFSET(channel_index, direction))
+ 
+ 
++// dmabuf is supported from linux kernel version 3.3
++#if LINUX_VERSION_CODE < KERNEL_VERSION( 3, 3, 0 )
++// Make dummy struct with one byte (C standards does not allow empty struct) - in order to not have to ifdef everywhere
++struct hailo_dmabuf_info {
++    uint8_t dummy;
++};
++#else
++// dmabuf_sg_table is needed because in dma_buf_unmap_attachment() the sg_table's address has to match the
++// The one returned from dma_buf_map_attachment() - otherwise we would need to malloc each time
++struct hailo_dmabuf_info {
++    struct dma_buf *dmabuf;
++    struct dma_buf_attachment *dmabuf_attachment;
++    struct sg_table *dmabuf_sg_table;
++};
++#endif // LINUX_VERSION_CODE < KERNEL_VERSION( 3, 3, 0 )
++
+ struct hailo_vdma_buffer {
+     struct list_head            mapped_user_buffer_list;
+     size_t                      handle;
+@@ -35,7 +53,7 @@ struct hailo_vdma_buffer {
+     struct kref                 kref;
+     struct device               *device;
+ 
+-    void __user                 *user_address;
++    uintptr_t                   user_address;
+     u32                         size;
+     enum dma_data_direction     data_direction;
+     struct sg_table             sg_table;
+@@ -44,7 +62,10 @@ struct hailo_vdma_buffer {
+     // 'struct page' (only by pure pfn). On this case, accessing to the page,
+     // or calling APIs that access the page (e.g. dma_sync_sg_for_cpu) is not
+     // allowed.
+-    bool                       is_mmio;
++    bool                        is_mmio;
++
++    // Relevant paramaters that need to be saved in case of dmabuf - otherwise struct pointers will be NULL
++    struct hailo_dmabuf_info  dmabuf_info;
+ };
+ 
+ // Continuous buffer that holds a descriptor list.
+@@ -53,7 +74,7 @@ struct hailo_descriptors_list_buffer {
+     uintptr_t                          handle;
+     void                               *kernel_address;
+     dma_addr_t                         dma_address;
+-    u32                           buffer_size;
++    u32                                buffer_size;
+     struct hailo_vdma_descriptors_list desc_list;
+ };
+ 
+@@ -120,9 +141,6 @@ int hailo_vdma_controller_init(struct ha
+ void hailo_vdma_update_interrupts_mask(struct hailo_vdma_controller *controller,
+     size_t engine_index);
+ 
+-void hailo_vdma_engine_interrupts_disable(struct hailo_vdma_controller *controller,
+-    struct hailo_vdma_engine *engine, u8 engine_index, u32 channels_bitmap);
+-
+ void hailo_vdma_file_context_init(struct hailo_vdma_file_context *context);
+ void hailo_vdma_file_context_finalize(struct hailo_vdma_file_context *context,
+     struct hailo_vdma_controller *controller, struct file *filp);

@@ -85,15 +85,46 @@ platform_do_upgrade() {
 	get_image "$@" | dd of="/dev/$diskdev" bs=1 skip=440 count=4 seek=440 conv=fsync
 }
 
+bcm27xx_set_root_part() {
+	local root_part
+
+	if [ -f "/boot/partuuid.txt" ]; then
+		root_part="PARTUUID=$(cat "/boot/partuuid.txt")-02"
+	else
+		root_part="/dev/mmcblk0p2"
+	fi
+
+	sed -i "s#\broot=[^ ]*#root=${root_part}#g" "/boot/cmdline.txt"
+}
+
 platform_copy_config() {
 	local partdev
 
 	if export_partdevice partdev 1; then
 		mkdir -p /boot
-		[ -f "/boot/kernel*.img" ] || mount -t vfat -o rw,noatime "/dev/$partdev" /boot
-		cp -af "$UPGRADE_BACKUP" "/boot/$BACKUP_FILE"
+		[ -f /boot/kernel*.img ] || mount -t vfat -o rw,noatime "/dev/$partdev" /boot
+
 		tar -C / -zxvf "$UPGRADE_BACKUP" boot/cmdline.txt boot/config.txt
+		bcm27xx_set_root_part
+
+		local backup_tmp="/tmp/backup-update"
+		mkdir -p $backup_tmp
+		tar -C $backup_tmp -zxvf $UPGRADE_BACKUP
+		cp -af /boot/cmdline.txt $backup_tmp/boot/
+
+		local work_dir=$(pwd)
+		cd $backup_tmp
+		tar -C $backup_tmp -zcvf /boot/$BACKUP_FILE *
+		cd $work_dir
+
 		sync
 		umount /boot
 	fi
+}
+
+platform_restore_backup() {
+	local TAR_V=$1
+
+	tar -C / -x${TAR_V}zf "$CONF_RESTORE"
+	bcm27xx_set_root_part
 }

@@ -1,0 +1,157 @@
+From e6c1e862b2b8150a419f4208e5bd7749662b16a1 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 20 Jun 2024 14:31:20 +0100
+Subject: [PATCH 1167/1215] mmc: restrict posted write counts for SD cards in
+ CQ mode
+
+Command Queueing requires Write Cache and Power off Notification support
+from the card - but using the write cache forms a contract with the host
+whereby the card expects to be told about impending power-down.
+
+The implication is that (for performance) the card can do unsafe things
+with pending write data - including reordering what gets committed to
+nonvolatile storage at what time.
+
+Exposed SD slots and platforms powered by hotpluggable means (i.e.
+Raspberry Pis) can't guarantee that surprise removal won't happen.
+
+To limit the scope for cards to invent new ways to trash filesystems,
+limit pending writes to 1 (equivalent to the non-CQ behaviour).
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/block.c | 11 +++++++++--
+ drivers/mmc/core/mmc.c   |  1 +
+ drivers/mmc/core/queue.c |  9 +++++++++
+ drivers/mmc/core/queue.h |  1 +
+ drivers/mmc/core/sd.c    |  8 ++++++++
+ include/linux/mmc/card.h |  2 ++
+ 6 files changed, 30 insertions(+), 2 deletions(-)
+
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -1555,6 +1555,8 @@ static void mmc_blk_cqe_complete_rq(stru
+ 
+ 	spin_lock_irqsave(&mq->lock, flags);
+ 
++	if (req_op(req) == REQ_OP_WRITE)
++		mq->pending_writes--;
+ 	mq->in_flight[issue_type] -= 1;
+ 
+ 	put_card = (mmc_tot_in_flight(mq) == 0);
+@@ -2071,6 +2073,8 @@ static void mmc_blk_mq_complete_rq(struc
+ 	struct mmc_queue_req *mqrq = req_to_mmc_queue_req(req);
+ 	unsigned int nr_bytes = mqrq->brq.data.bytes_xfered;
+ 
++	if (req_op(req) == REQ_OP_WRITE)
++		mq->pending_writes--;
+ 	if (nr_bytes) {
+ 		if (blk_update_request(req, BLK_STS_OK, nr_bytes))
+ 			blk_mq_requeue_request(req, true);
+@@ -2165,13 +2169,16 @@ static void mmc_blk_mq_poll_completion(s
+ 	mmc_blk_urgent_bkops(mq, mqrq);
+ }
+ 
+-static void mmc_blk_mq_dec_in_flight(struct mmc_queue *mq, enum mmc_issue_type issue_type)
++static void mmc_blk_mq_dec_in_flight(struct mmc_queue *mq, enum mmc_issue_type issue_type,
++				     struct request *req)
+ {
+ 	unsigned long flags;
+ 	bool put_card;
+ 
+ 	spin_lock_irqsave(&mq->lock, flags);
+ 
++	if (req_op(req) == REQ_OP_WRITE)
++		mq->pending_writes--;
+ 	mq->in_flight[issue_type] -= 1;
+ 
+ 	put_card = (mmc_tot_in_flight(mq) == 0);
+@@ -2205,7 +2212,7 @@ static void mmc_blk_mq_post_req(struct m
+ 			blk_mq_complete_request(req);
+ 	}
+ 
+-	mmc_blk_mq_dec_in_flight(mq, issue_type);
++	mmc_blk_mq_dec_in_flight(mq, issue_type, req);
+ }
+ 
+ void mmc_blk_mq_recovery(struct mmc_queue *mq)
+--- a/drivers/mmc/core/mmc.c
++++ b/drivers/mmc/core/mmc.c
+@@ -1922,6 +1922,7 @@ static int mmc_init_card(struct mmc_host
+ 				pr_info("%s: Host Software Queue enabled\n",
+ 					mmc_hostname(host));
+ 			}
++			card->max_posted_writes = card->ext_csd.cmdq_depth;
+ 		}
+ 	}
+ 
+--- a/drivers/mmc/core/queue.c
++++ b/drivers/mmc/core/queue.c
+@@ -268,6 +268,11 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 			spin_unlock_irq(&mq->lock);
+ 			return BLK_STS_RESOURCE;
+ 		}
++		if (host->cqe_enabled && req_op(req) == REQ_OP_WRITE &&
++		    mq->pending_writes >= card->max_posted_writes) {
++			spin_unlock_irq(&mq->lock);
++			return BLK_STS_RESOURCE;
++		}
+ 		break;
+ 	default:
+ 		/*
+@@ -284,6 +289,8 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 	/* Parallel dispatch of requests is not supported at the moment */
+ 	mq->busy = true;
+ 
++	if (req_op(req) == REQ_OP_WRITE)
++		mq->pending_writes++;
+ 	mq->in_flight[issue_type] += 1;
+ 	get_card = (mmc_tot_in_flight(mq) == 1);
+ 	cqe_retune_ok = (mmc_cqe_qcnt(mq) == 1);
+@@ -323,6 +330,8 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 		bool put_card = false;
+ 
+ 		spin_lock_irq(&mq->lock);
++		if (req_op(req) == REQ_OP_WRITE)
++			mq->pending_writes--;
+ 		mq->in_flight[issue_type] -= 1;
+ 		if (mmc_tot_in_flight(mq) == 0)
+ 			put_card = true;
+--- a/drivers/mmc/core/queue.h
++++ b/drivers/mmc/core/queue.h
+@@ -79,6 +79,7 @@ struct mmc_queue {
+ 	struct request_queue	*queue;
+ 	spinlock_t		lock;
+ 	int			in_flight[MMC_ISSUE_MAX];
++	int			pending_writes;
+ 	unsigned int		cqe_busy;
+ #define MMC_CQE_DCMD_BUSY	BIT(0)
+ 	bool			busy;
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -1104,6 +1104,14 @@ static int sd_parse_ext_reg_perf(struct
+ 		pr_debug("%s: Command Queue supported depth %u\n",
+ 			 mmc_hostname(card->host),
+ 			 card->ext_csd.cmdq_depth);
++		/*
++		 * If CQ is enabled, there is a contract between host and card such that VDD will
++		 * be maintained and removed only if a power off notification is provided.
++		 * An SD card in an accessible slot means surprise removal is a possibility.
++		 * As a middle ground, limit max posted writes to 1 unless the card is "hardwired".
++		 */
++		if (mmc_card_is_removable(card->host))
++			card->max_posted_writes = 1;
+ 	}
+ 
+ 	card->ext_perf.fno = fno;
+--- a/include/linux/mmc/card.h
++++ b/include/linux/mmc/card.h
+@@ -343,6 +343,8 @@ struct mmc_card {
+ 	unsigned int    nr_parts;
+ 
+ 	struct workqueue_struct *complete_wq;	/* Private workqueue */
++
++	unsigned int		max_posted_writes; /* command queue posted write limit */
+ };
+ 
+ static inline bool mmc_large_sector(struct mmc_card *card)

@@ -1,0 +1,189 @@
+From c05fbbc4a530ebf11ed647a94d97352bed910dae Mon Sep 17 00:00:00 2001
+From: David Plowman <david.plowman@raspberrypi.com>
+Date: Mon, 22 Nov 2021 13:10:39 +0000
+Subject: [PATCH 0317/1085] media: i2c: ov5647: Support HFLIP and VFLIP
+
+Add these missing V4L2 controls. Tested binned and full resolution
+modes in all four orientations using Raspberry Pi running libcamera.
+
+Signed-off-by: David Plowman <david.plowman@raspberrypi.com>
+---
+ drivers/media/i2c/ov5647.c | 76 +++++++++++++++++++++++++++++++++++---
+ 1 file changed, 70 insertions(+), 6 deletions(-)
+
+--- a/drivers/media/i2c/ov5647.c
++++ b/drivers/media/i2c/ov5647.c
+@@ -54,6 +54,8 @@
+ #define OV5647_REG_GAIN_LO		0x350b
+ #define OV5647_REG_VTS_HI		0x380e
+ #define OV5647_REG_VTS_LO		0x380f
++#define OV5647_REG_VFLIP		0x3820
++#define OV5647_REG_HFLIP		0x3821
+ #define OV5647_REG_FRAME_OFF_NUMBER	0x4202
+ #define OV5647_REG_MIPI_CTRL00		0x4800
+ #define OV5647_REG_MIPI_CTRL14		0x4814
+@@ -109,6 +111,8 @@ struct ov5647 {
+ 	struct v4l2_ctrl		*hblank;
+ 	struct v4l2_ctrl		*vblank;
+ 	struct v4l2_ctrl		*exposure;
++	struct v4l2_ctrl		*hflip;
++	struct v4l2_ctrl		*vflip;
+ 	bool				streaming;
+ };
+ 
+@@ -151,7 +155,7 @@ static struct regval_list ov5647_2592x19
+ 	{0x3036, 0x69},
+ 	{0x303c, 0x11},
+ 	{0x3106, 0xf5},
+-	{0x3821, 0x06},
++	{0x3821, 0x00},
+ 	{0x3820, 0x00},
+ 	{0x3827, 0xec},
+ 	{0x370c, 0x03},
+@@ -240,7 +244,7 @@ static struct regval_list ov5647_1080p30
+ 	{0x3036, 0x62},
+ 	{0x303c, 0x11},
+ 	{0x3106, 0xf5},
+-	{0x3821, 0x06},
++	{0x3821, 0x00},
+ 	{0x3820, 0x00},
+ 	{0x3827, 0xec},
+ 	{0x370c, 0x03},
+@@ -404,7 +408,7 @@ static struct regval_list ov5647_2x2binn
+ 	{0x4800, 0x24},
+ 	{0x3503, 0x03},
+ 	{0x3820, 0x41},
+-	{0x3821, 0x07},
++	{0x3821, 0x01},
+ 	{0x350a, 0x00},
+ 	{0x350b, 0x10},
+ 	{0x3500, 0x00},
+@@ -420,7 +424,7 @@ static struct regval_list ov5647_640x480
+ 	{0x3035, 0x11},
+ 	{0x3036, 0x46},
+ 	{0x303c, 0x11},
+-	{0x3821, 0x07},
++	{0x3821, 0x01},
+ 	{0x3820, 0x41},
+ 	{0x370c, 0x03},
+ 	{0x3612, 0x59},
+@@ -954,6 +958,25 @@ static const struct v4l2_subdev_video_op
+ 	.s_stream =		ov5647_s_stream,
+ };
+ 
++/* This function returns the mbus code for the current settings of the
++   HFLIP and VFLIP controls. */
++
++static u32 ov5647_get_mbus_code(struct v4l2_subdev *sd)
++{
++	struct ov5647 *sensor = to_sensor(sd);
++	/* The control values are only 0 or 1. */
++	int index =  sensor->hflip->val | (sensor->vflip->val << 1);
++
++	static const u32 codes[4] = {
++		MEDIA_BUS_FMT_SGBRG10_1X10,
++		MEDIA_BUS_FMT_SBGGR10_1X10,
++		MEDIA_BUS_FMT_SRGGB10_1X10,
++		MEDIA_BUS_FMT_SGRBG10_1X10
++	};
++
++	return codes[index];
++}
++
+ static int ov5647_enum_mbus_code(struct v4l2_subdev *sd,
+ 				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_mbus_code_enum *code)
+@@ -961,7 +984,7 @@ static int ov5647_enum_mbus_code(struct
+ 	if (code->index > 0)
+ 		return -EINVAL;
+ 
+-	code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	code->code = ov5647_get_mbus_code(sd);
+ 
+ 	return 0;
+ }
+@@ -972,7 +995,7 @@ static int ov5647_enum_frame_size(struct
+ {
+ 	const struct v4l2_mbus_framefmt *fmt;
+ 
+-	if (fse->code != MEDIA_BUS_FMT_SBGGR10_1X10 ||
++	if (fse->code != ov5647_get_mbus_code(sd) ||
+ 	    fse->index >= ARRAY_SIZE(ov5647_modes))
+ 		return -EINVAL;
+ 
+@@ -1005,6 +1028,8 @@ static int ov5647_get_pad_fmt(struct v4l
+ 	}
+ 
+ 	*fmt = *sensor_format;
++	/* The code we pass back must reflect the current h/vflips. */
++	fmt->code = ov5647_get_mbus_code(sd);
+ 	mutex_unlock(&sensor->lock);
+ 
+ 	return 0;
+@@ -1052,6 +1077,8 @@ static int ov5647_set_pad_fmt(struct v4l
+ 					 exposure_def);
+ 	}
+ 	*fmt = mode->format;
++	/* The code we pass back must reflect the current h/vflips. */
++	fmt->code = ov5647_get_mbus_code(sd);
+ 	mutex_unlock(&sensor->lock);
+ 
+ 	return 0;
+@@ -1227,6 +1254,25 @@ static int ov5647_s_exposure(struct v4l2
+ 	return ov5647_write(sd, OV5647_REG_EXP_LO, (val & 0xf) << 4);
+ }
+ 
++static int ov5647_s_flip( struct v4l2_subdev *sd, u16 reg, u32 ctrl_val)
++{
++	int ret;
++	u8 reg_val;
++
++	/* Set or clear bit 1 and leave everything else alone. */
++	ret = ov5647_read(sd, reg, &reg_val);
++	if (ret == 0) {
++		if (ctrl_val)
++			reg_val |= 2;
++		else
++			reg_val &= ~2;
++
++		ret = ov5647_write(sd, reg, reg_val);
++	}
++
++	return ret;
++}
++
+ static int ov5647_s_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct ov5647 *sensor = container_of(ctrl->handler,
+@@ -1289,6 +1335,14 @@ static int ov5647_s_ctrl(struct v4l2_ctr
+ 		/* Read-only, but we adjust it based on mode. */
+ 		break;
+ 
++	case V4L2_CID_HFLIP:
++		/* There's an in-built hflip in the sensor, so account for that here. */
++		ov5647_s_flip(sd, OV5647_REG_HFLIP, !ctrl->val);
++		break;
++	case V4L2_CID_VFLIP:
++		ov5647_s_flip(sd, OV5647_REG_VFLIP, ctrl->val);
++		break;
++
+ 	default:
+ 		dev_info(&client->dev,
+ 			 "Control (id:0x%x, val:0x%x) not supported\n",
+@@ -1360,6 +1414,16 @@ static int ov5647_init_controls(struct o
+ 				     ARRAY_SIZE(ov5647_test_pattern_menu) - 1,
+ 				     0, 0, ov5647_test_pattern_menu);
+ 
++	sensor->hflip = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++					  V4L2_CID_HFLIP, 0, 1, 1, 0);
++	if (sensor->hflip)
++		sensor->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
++	sensor->vflip = v4l2_ctrl_new_std(&sensor->ctrls, &ov5647_ctrl_ops,
++					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++	if (sensor->vflip)
++		sensor->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
+ 	v4l2_fwnode_device_parse(dev, &props);
+ 
+ 	v4l2_ctrl_new_fwnode_properties(&sensor->ctrls, &ov5647_ctrl_ops,
