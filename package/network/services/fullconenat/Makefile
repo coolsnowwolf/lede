@@ -28,7 +28,7 @@ define Package/iptables-mod-fullconenat
   SECTION:=net
   CATEGORY:=Network
   TITLE:=FULLCONENAT iptables extension
-  DEPENDS:=+iptables +kmod-ipt-fullconenat
+  DEPENDS:=+kmod-ipt-fullconenat
 endef
 
 define Package/iptables-mod-fullconenat/install
