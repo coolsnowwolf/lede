@@ -28,10 +28,11 @@ define KernelPackage/qca-nss-ecm
 		   +@NSS_DRV_VIRT_IF_ENABLE \
 		   +@NSS_DRV_WIFI_ENABLE \
 		   +kmod-qca-nss-drv \
-    	 +kmod-bonding +kmod-nf-conntrack +kmod-nat46 \
+    	   +kmod-bonding +kmod-nf-conntrack \
 		   +kmod-ppp +kmod-pppoe +kmod-pptp \
 		   +PACKAGE_kmod-pppol2tp:kmod-pppol2tp \
 		   +PACKAGE_kmod-qca-mcs:kmod-qca-mcs \
+		   +PACKAGE_kmod-nat46:kmod-nat46 \
 		   +PACKAGE_kmod-vxlan:kmod-vxlan
   TITLE:=QCA NSS Enhanced Connection Manager (ECM)
   FILES:=$(PKG_BUILD_DIR)/ecm.ko
