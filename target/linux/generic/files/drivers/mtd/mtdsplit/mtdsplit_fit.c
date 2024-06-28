@@ -278,7 +278,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 
 		parts[0].name = KERNEL_PART_NAME;
 		parts[0].offset = fit_offset;
-		parts[0].size = mtd_rounddown_to_eb(fit_size + offset_start, mtd) + mtd->erasesize;
+		parts[0].size = mtd_roundup_to_eb(fit_size + offset_start, mtd);
 
 		if (type == MTDSPLIT_PART_TYPE_UBI)
 			parts[1].name = UBI_PART_NAME;
@@ -327,7 +327,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 			return -ENOMEM;
 
 		parts[0].name = ROOTFS_SPLIT_NAME;
-		parts[0].offset = fit_offset + mtd_rounddown_to_eb(max_size, mtd) + mtd->erasesize;
+		parts[0].offset = fit_offset + mtd_roundup_to_eb(max_size, mtd);
 		parts[0].size = mtd->size - parts[0].offset;
 
 		*pparts = parts;
