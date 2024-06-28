@@ -161,7 +161,7 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 	config = fdt_path_offset(fit, FIT_CONFS_PATH);
 	if (config < 0) {
-		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", FIT_CONFS_PATH, images);
+		printk(KERN_ERR "FIT: Cannot find %s node: %d\n", FIT_CONFS_PATH, config);
 		ret = -ENOENT;
 		goto ret_out;
 	}
