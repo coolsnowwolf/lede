@@ -1,15 +1,42 @@
-From 7f4c9c534aabe1315669e076d3fe0af0fd374cda Mon Sep 17 00:00:00 2001
+From patchwork Tue Jul 30 19:25:59 2024
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: Daniel Golle <daniel@makrotopia.org>
+X-Patchwork-Id: 13747816
+Date: Tue, 30 Jul 2024 20:25:59 +0100
 From: Daniel Golle <daniel@makrotopia.org>
-Date: Thu, 30 May 2024 03:13:19 +0100
-Subject: [PATCH 2/9] block: partitions: populate fwnode
+To: Rob Herring <robh@kernel.org>, Krzysztof Kozlowski <krzk+dt@kernel.org>,
+ Conor Dooley <conor+dt@kernel.org>, Jens Axboe <axboe@kernel.dk>,
+ Daniel Golle <daniel@makrotopia.org>, Christian Brauner <brauner@kernel.org>,
+ Al Viro <viro@zeniv.linux.org.uk>, Li Lingfeng <lilingfeng3@huawei.com>,
+ Ming Lei <ming.lei@redhat.com>, Christian Heusel <christian@heusel.eu>,
+	=?utf-8?b?UmFmYcWCIE1pxYJlY2tp?= <rafal@milecki.pl>,
+ Felix Fietkau <nbd@nbd.name>, John Crispin <john@phrozen.org>,
+ Chad Monroe <chad.monroe@adtran.com>, Yangyu Chen <cyy@cyyself.name>,
+ Tianling Shen <cnsztl@immortalwrt.org>, Chuanhong Guo <gch981213@gmail.com>,
+ Chen Minqiang <ptpt52@gmail.com>, devicetree@vger.kernel.org,
+ linux-kernel@vger.kernel.org, linux-block@vger.kernel.org
+Subject: [PATCH v5 2/4] block: partitions: populate fwnode
+Message-ID: 
+ <3051ac090ad3b3e2f5adb6b67c923261ead729a5.1722365899.git.daniel@makrotopia.org>
+References: <cover.1722365899.git.daniel@makrotopia.org>
+Precedence: bulk
+X-Mailing-List: linux-block@vger.kernel.org
+List-Id: <linux-block.vger.kernel.org>
+List-Subscribe: <mailto:linux-block+subscribe@vger.kernel.org>
+List-Unsubscribe: <mailto:linux-block+unsubscribe@vger.kernel.org>
+MIME-Version: 1.0
+Content-Disposition: inline
+In-Reply-To: <cover.1722365899.git.daniel@makrotopia.org>
 
-Let block partitions to be represented by a firmware node and hence
-allow them to being referenced e.g. for use with blk-nvmem.
+Assign matching firmware nodes to block partitions in order to allow
+them to be referenced e.g. as NVMEM providers.
 
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 ---
- block/partitions/core.c | 41 +++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 41 insertions(+)
+ block/partitions/core.c | 72 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 72 insertions(+)
 
 --- a/block/partitions/core.c
 +++ b/block/partitions/core.c
@@ -22,36 +49,70 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #include "check.h"
  
  static int (*const check_part[])(struct parsed_partitions *) = {
-@@ -292,6 +294,40 @@ static ssize_t whole_disk_show(struct de
+@@ -292,6 +294,74 @@ static ssize_t whole_disk_show(struct de
  }
  static const DEVICE_ATTR(whole_disk, 0444, whole_disk_show, NULL);
  
++static bool part_meta_match(const char *attr, const char *member, size_t length)
++{
++	/* check if length of attr exceeds specified maximum length */
++	if (strnlen(attr, length) == length)
++		return false;
++
++	/* return true if strings match */
++	return !strncmp(attr, member, length);
++}
++
 +static struct fwnode_handle *find_partition_fwnode(struct block_device *bdev)
 +{
 +	struct fwnode_handle *fw_parts, *fw_part;
 +	struct device *ddev = disk_to_dev(bdev->bd_disk);
 +	const char *partname, *uuid;
 +	u32 partno;
++	bool got_uuid, got_partname, got_partno;
 +
 +	fw_parts = device_get_named_child_node(ddev, "partitions");
 +	if (!fw_parts)
 +		return NULL;
 +
 +	fwnode_for_each_child_node(fw_parts, fw_part) {
-+		if (!fwnode_property_read_string(fw_part, "uuid", &uuid) &&
-+		    (!bdev->bd_meta_info || strncmp(uuid,
-+						    bdev->bd_meta_info->uuid,
-+						    PARTITION_META_INFO_UUIDLTH)))
++		got_uuid = false;
++		got_partname = false;
++		got_partno = false;
++		/*
++		 * In case 'uuid' is defined in the partitions firmware node
++		 * require partition meta info being present and the specified
++		 * uuid to match.
++		 */
++		got_uuid = !fwnode_property_read_string(fw_part, "uuid", &uuid);
++		if (got_uuid && (!bdev->bd_meta_info ||
++				 !part_meta_match(uuid, bdev->bd_meta_info->uuid,
++						  PARTITION_META_INFO_UUIDLTH)))
 +			continue;
 +
-+		if (!fwnode_property_read_string(fw_part, "partname", &partname) &&
-+		    (!bdev->bd_meta_info || strncmp(partname,
-+						    bdev->bd_meta_info->volname,
-+						    PARTITION_META_INFO_VOLNAMELTH)))
++		/*
++		 * In case 'partname' is defined in the partitions firmware node
++		 * require partition meta info being present and the specified
++		 * volname to match.
++		 */
++		got_partname = !fwnode_property_read_string(fw_part, "partname",
++							    &partname);
++		if (got_partname && (!bdev->bd_meta_info ||
++				     !part_meta_match(partname,
++						      bdev->bd_meta_info->volname,
++						      PARTITION_META_INFO_VOLNAMELTH)))
 +			continue;
 +
-+		if (!fwnode_property_read_u32(fw_part, "partno", &partno) &&
-+		    bdev->bd_partno != partno)
++		/*
++		 * In case 'partno' is defined in the partitions firmware node
++		 * the specified partno needs to match.
++		 */
++		got_partno = !fwnode_property_read_u32(fw_part, "partno", &partno);
++		if (got_partno && bdev->bd_partno != partno)
++			continue;
++
++		/* Skip if no matching criteria is present in firmware node */
++		if (!got_uuid && !got_partname && !got_partno)
 +			continue;
 +
 +		return fw_part;
@@ -63,7 +124,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  /*
   * Must be called either with open_mutex held, before a disk can be opened or
   * after all disk users are gone.
-@@ -374,6 +410,8 @@ static struct block_device *add_partitio
+@@ -374,6 +444,8 @@ static struct block_device *add_partitio
  			goto out_put;
  	}
  
