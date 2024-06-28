@@ -1,0 +1,94 @@
+From de16cf680331cd0bd7db97c3f8d376f5eac39cae Mon Sep 17 00:00:00 2001
+From: Justin Swartz <justin.swartz@risingedge.co.za>
+Date: Tue, 5 Mar 2024 06:39:51 +0200
+Subject: [PATCH 28/30] net: dsa: mt7530: disable LEDs before reset
+
+Disable LEDs just before resetting the MT7530 to avoid
+situations where the ESW_P4_LED_0 and ESW_P3_LED_0 pin
+states may cause an unintended external crystal frequency
+to be selected.
+
+The HT_XTAL_FSEL (External Crystal Frequency Selection)
+field of HWTRAP (the Hardware Trap register) stores a
+2-bit value that represents the state of the ESW_P4_LED_0
+and ESW_P4_LED_0 pins (seemingly) sampled just after the
+MT7530 has been reset, as:
+
+    ESW_P4_LED_0    ESW_P3_LED_0    Frequency
+    -----------------------------------------
+    0               1               20MHz
+    1               0               40MHz
+    1               1               25MHz
+
+The value of HT_XTAL_FSEL is bootstrapped by pulling
+ESW_P4_LED_0 and ESW_P3_LED_0 up or down accordingly,
+but:
+
+  if a 40MHz crystal has been selected and
+  the ESW_P3_LED_0 pin is high during reset,
+
+  or a 20MHz crystal has been selected and
+  the ESW_P4_LED_0 pin is high during reset,
+
+  then the value of HT_XTAL_FSEL will indicate
+  that a 25MHz crystal is present.
+
+By default, the state of the LED pins is PHY controlled
+to reflect the link state.
+
+To illustrate, if a board has:
+
+  5 ports with active low LED control,
+  and HT_XTAL_FSEL bootstrapped for 40MHz.
+
+When the MT7530 is powered up without any external
+connection, only the LED associated with Port 3 is
+illuminated as ESW_P3_LED_0 is low.
+
+In this state, directly after mt7530_setup()'s reset
+is performed, the HWTRAP register (0x7800) reflects
+the intended HT_XTAL_FSEL (HWTRAP bits 10:9) of 40MHz:
+
+  mt7530-mdio mdio-bus:1f: mt7530_read: 00007800 == 00007dcf
+
+  >>> bin(0x7dcf >> 9 & 0b11)
+  '0b10'
+
+But if a cable is connected to Port 3 and the link
+is active before mt7530_setup()'s reset takes place,
+then HT_XTAL_FSEL seems to be set for 25MHz:
+
+  mt7530-mdio mdio-bus:1f: mt7530_read: 00007800 == 00007fcf
+
+  >>> bin(0x7fcf >> 9 & 0b11)
+  '0b11'
+
+Once HT_XTAL_FSEL reflects 25MHz, none of the ports
+are functional until the MT7621 (or MT7530 itself)
+is reset.
+
+By disabling the LED pins just before reset, the chance
+of an unintended HT_XTAL_FSEL value is reduced.
+
+Signed-off-by: Justin Swartz <justin.swartz@risingedge.co.za>
+Link: https://lore.kernel.org/r/20240305043952.21590-1-justin.swartz@risingedge.co.za
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mt7530.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -2391,6 +2391,12 @@ mt7530_setup(struct dsa_switch *ds)
+ 		}
+ 	}
+ 
++	/* Disable LEDs before reset to prevent the MT7530 sampling a
++	 * potentially incorrect HT_XTAL_FSEL value.
++	 */
++	mt7530_write(priv, MT7530_LED_EN, 0);
++	usleep_range(1000, 1100);
++
+ 	/* Reset whole chip through gpio pin or memory-mapped registers for
+ 	 * different type of hardware
+ 	 */

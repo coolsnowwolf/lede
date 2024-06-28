@@ -1,0 +1,91 @@
+From 5f5997322584b6257543d4d103f81484b8006d84 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 17 Nov 2023 17:42:59 +0100
+Subject: [PATCH 4/5] net: ethernet: mtk_wed: add support for devices with more
+ than 4GB of dram
+
+Introduce WED offloading support for boards with more than 4GB of
+memory.
+
+Co-developed-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Sujuan Chen <sujuan.chen@mediatek.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://lore.kernel.org/r/1c7efdf5d384ea7af3c0209723e40b2ee0f956bf.1700239272.git.lorenzo@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 5 ++++-
+ drivers/net/ethernet/mediatek/mtk_wed.c     | 8 +++++---
+ drivers/net/ethernet/mediatek/mtk_wed_wo.c  | 3 ++-
+ 3 files changed, 11 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1158,15 +1158,18 @@ static int mtk_init_fq_dma(struct mtk_et
+ 	phy_ring_tail = eth->phy_scratch_ring + soc->tx.desc_size * (cnt - 1);
+ 
+ 	for (i = 0; i < cnt; i++) {
++		dma_addr_t addr = dma_addr + i * MTK_QDMA_PAGE_SIZE;
+ 		struct mtk_tx_dma_v2 *txd;
+ 
+ 		txd = eth->scratch_ring + i * soc->tx.desc_size;
+-		txd->txd1 = dma_addr + i * MTK_QDMA_PAGE_SIZE;
++		txd->txd1 = addr;
+ 		if (i < cnt - 1)
+ 			txd->txd2 = eth->phy_scratch_ring +
+ 				    (i + 1) * soc->tx.desc_size;
+ 
+ 		txd->txd3 = TX_DMA_PLEN0(MTK_QDMA_PAGE_SIZE);
++		if (MTK_HAS_CAPS(soc->caps, MTK_36BIT_DMA))
++			txd->txd3 |= TX_DMA_PREP_ADDR64(addr);
+ 		txd->txd4 = 0;
+ 		if (mtk_is_netsys_v2_or_greater(eth)) {
+ 			txd->txd5 = 0;
+--- a/drivers/net/ethernet/mediatek/mtk_wed.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed.c
+@@ -691,10 +691,11 @@ mtk_wed_tx_buffer_alloc(struct mtk_wed_d
+ 
+ 		for (s = 0; s < MTK_WED_BUF_PER_PAGE; s++) {
+ 			struct mtk_wdma_desc *desc = desc_ptr;
++			u32 ctrl;
+ 
+ 			desc->buf0 = cpu_to_le32(buf_phys);
+ 			if (!mtk_wed_is_v3_or_greater(dev->hw)) {
+-				u32 txd_size, ctrl;
++				u32 txd_size;
+ 
+ 				txd_size = dev->wlan.init_buf(buf, buf_phys,
+ 							      token++);
+@@ -708,11 +709,11 @@ mtk_wed_tx_buffer_alloc(struct mtk_wed_d
+ 					ctrl |= MTK_WDMA_DESC_CTRL_LAST_SEG0 |
+ 						FIELD_PREP(MTK_WDMA_DESC_CTRL_LEN1_V2,
+ 							   MTK_WED_BUF_SIZE - txd_size);
+-				desc->ctrl = cpu_to_le32(ctrl);
+ 				desc->info = 0;
+ 			} else {
+-				desc->ctrl = cpu_to_le32(token << 16);
++				ctrl = token << 16 | TX_DMA_PREP_ADDR64(buf_phys);
+ 			}
++			desc->ctrl = cpu_to_le32(ctrl);
+ 
+ 			desc_ptr += desc_size;
+ 			buf += MTK_WED_BUF_SIZE;
+@@ -811,6 +812,7 @@ mtk_wed_hwrro_buffer_alloc(struct mtk_we
+ 		buf_phys = page_phys;
+ 		for (s = 0; s < MTK_WED_RX_BUF_PER_PAGE; s++) {
+ 			desc->buf0 = cpu_to_le32(buf_phys);
++			desc->token = cpu_to_le32(RX_DMA_PREP_ADDR64(buf_phys));
+ 			buf_phys += MTK_WED_PAGE_BUF_SIZE;
+ 			desc++;
+ 		}
+--- a/drivers/net/ethernet/mediatek/mtk_wed_wo.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed_wo.c
+@@ -142,7 +142,8 @@ mtk_wed_wo_queue_refill(struct mtk_wed_w
+ 		dma_addr_t addr;
+ 		void *buf;
+ 
+-		buf = page_frag_alloc(&q->cache, q->buf_size, GFP_ATOMIC);
++		buf = page_frag_alloc(&q->cache, q->buf_size,
++				      GFP_ATOMIC | GFP_DMA32);
+ 		if (!buf)
+ 			break;
+ 

@@ -1,0 +1,51 @@
+From 65033574ade97afccba074d837fd269903a83a9a Mon Sep 17 00:00:00 2001
+From: Catalin Marinas <catalin.marinas@arm.com>
+Date: Thu, 5 Oct 2023 16:40:30 +0100
+Subject: [PATCH] arm64: swiotlb: Reduce the default size if no ZONE_DMA
+ bouncing needed
+
+With CONFIG_DMA_BOUNCE_UNALIGNED_KMALLOC enabled, the arm64 kernel still
+allocates the default SWIOTLB buffer (64MB) even if ZONE_DMA is disabled
+or all the RAM fits into this zone. However, this potentially wastes a
+non-negligible amount of memory on platforms with little RAM.
+
+Reduce the SWIOTLB size to 1MB per 1GB of RAM if only needed for
+kmalloc() buffer bouncing.
+
+Signed-off-by: Catalin Marinas <catalin.marinas@arm.com>
+Suggested-by: Ross Burton <ross.burton@arm.com>
+Cc: Ross Burton <ross.burton@arm.com>
+Cc: Will Deacon <will@kernel.org>
+Reviewed-by: Robin Murphy <robin.murphy@arm.com>
+---
+ arch/arm64/mm/init.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/arch/arm64/mm/init.c
++++ b/arch/arm64/mm/init.c
+@@ -16,6 +16,7 @@
+ #include <linux/nodemask.h>
+ #include <linux/initrd.h>
+ #include <linux/gfp.h>
++#include <linux/math.h>
+ #include <linux/memblock.h>
+ #include <linux/sort.h>
+ #include <linux/of.h>
+@@ -493,8 +494,16 @@ void __init mem_init(void)
+ {
+ 	bool swiotlb = max_pfn > PFN_DOWN(arm64_dma_phys_limit);
+ 
+-	if (IS_ENABLED(CONFIG_DMA_BOUNCE_UNALIGNED_KMALLOC))
++	if (IS_ENABLED(CONFIG_DMA_BOUNCE_UNALIGNED_KMALLOC) && !swiotlb) {
++		/*
++		 * If no bouncing needed for ZONE_DMA, reduce the swiotlb
++		 * buffer for kmalloc() bouncing to 1MB per 1GB of RAM.
++		 */
++		unsigned long size =
++			DIV_ROUND_UP(memblock_phys_mem_size(), 1024);
++		swiotlb_adjust_size(min(swiotlb_size_or_default(), size));
+ 		swiotlb = true;
++	}
+ 
+ 	swiotlb_init(swiotlb, SWIOTLB_VERBOSE);
+ 
