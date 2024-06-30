@@ -8,7 +8,7 @@ linksys_get_target_firmware() {
 
 	cur_boot_part=$(/usr/sbin/fw_printenv -n boot_part)
 	if [ -z "${cur_boot_part}" ] ; then
-		mtd_ubi0=$(cat /sys/devices/virtual/ubi/ubi0/mtd_num)
+		mtd_ubi0=$(cat /sys/class/ubi/ubi0/mtd_num)
 		case $(grep -E ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
 		kernel1|rootfs1)
 			cur_boot_part=1
