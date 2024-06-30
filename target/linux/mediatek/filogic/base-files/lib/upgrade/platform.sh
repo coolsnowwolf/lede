@@ -1,4 +1,5 @@
 REQUIRE_IMAGE_METADATA=1
+RAMFS_COPY_BIN='fitblk'
 
 asus_initial_setup()
 {
@@ -9,6 +10,21 @@ asus_initial_setup()
 	ubirmvol /dev/ubi0 -N rootfs_data
 	ubirmvol /dev/ubi0 -N jffs2
 	ubimkvol /dev/ubi0 -N jffs2 -s 0x3e000
+}
+
+platform_get_bootdev() {
+	local rootdisk="$(cat /sys/firmware/devicetree/base/chosen/rootdisk)"
+	local handle bootdev
+	for handle in /sys/class/block/*/of_node/phandle /sys/class/block/*/device/of_node/phandle; do
+		[ ! -e "$handle" ] && continue
+		if [ "$rootdisk" = "$(cat $handle)" ]; then
+			bootdev="${handle%/of_node/phandle}"
+			bootdev="${bootdev%/device}"
+			bootdev="${bootdev#/sys/class/block/}"
+			echo "$bootdev"
+			break
+		fi
+	done
 }
 
 platform_do_upgrade() {
@@ -40,6 +56,21 @@ platform_do_upgrade() {
 			;;
 		esac
 		;;
+	bananapi,bpi-r4)
+		[ -e /dev/fit0 ] && fitblk /dev/fit0
+		[ -e /dev/fitrw ] && fitblk /dev/fitrw
+		bootdev="$(platform_get_bootdev)"
+		case "$bootdev" in
+		mmcblk*)
+			EMMC_KERN_DEV="/dev/$bootdev"
+			emmc_do_upgrade "$1"
+			;;
+		ubiblock*)
+			CI_KERNPART="fit"
+			nand_do_upgrade "$1"
+			;;
+		esac
+		;;
 	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
@@ -63,7 +94,8 @@ platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	case "$board" in
-	bananapi,bpi-r3)
+	bananapi,bpi-r3|\
+	bananapi,bpi-r4)
 		[ "$magic" != "d00dfeed" ] && {
 			echo "Invalid image type."
 			return 1
@@ -84,6 +116,13 @@ platform_copy_config() {
 	bananapi,bpi-r3)
 		case "$(cmdline_get_var root)" in
 		/dev/mmc*)
+			emmc_copy_config
+			;;
+		esac
+		;;
+	bananapi,bpi-r4)
+		case "$(platform_get_bootdev)" in
+		mmcblk*)
 			emmc_copy_config
 			;;
 		esac
