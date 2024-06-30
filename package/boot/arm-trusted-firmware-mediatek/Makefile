@@ -32,6 +32,7 @@ define Trusted-Firmware-A/Default
   NAND_TYPE:=
   BOARD_QFN:=
   DRAM_USE_COMB:=
+  USE_UBI:=
 endef
 
 define Trusted-Firmware-A/mt7622-nor-1ddr
