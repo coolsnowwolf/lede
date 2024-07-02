@@ -1,0 +1,341 @@
+From 9eea577eb1155fe4a183bc5e7bf269b0b2e7a6ba Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 15 Dec 2023 14:15:32 +0100
+Subject: [PATCH 2/4] net: phy: extend PHY package API to support multiple
+ global address
+
+Current API for PHY package are limited to single address to configure
+global settings for the PHY package.
+
+It was found that some PHY package (for example the qca807x, a PHY
+package that is shipped with a bundle of 5 PHY) requires multiple PHY
+address to configure global settings. An example scenario is a PHY that
+have a dedicated PHY for PSGMII/serdes calibrarion and have a specific
+PHY in the package where the global PHY mode is set and affects every
+other PHY in the package.
+
+Change the API in the following way:
+- Change phy_package_join() to take the base addr of the PHY package
+  instead of the global PHY addr.
+- Make __/phy_package_write/read() require an additional arg that
+  select what global PHY address to use by passing the offset from the
+  base addr passed on phy_package_join().
+
+Each user of this API is updated to follow this new implementation
+following a pattern where an enum is defined to declare the offset of the
+addr.
+
+We also drop the check if shared is defined as any user of the
+phy_package_read/write is expected to use phy_package_join first. Misuse
+of this will correctly trigger a kernel panic for NULL pointer
+exception.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/bcm54140.c       | 16 ++++++--
+ drivers/net/phy/mscc/mscc.h      |  5 +++
+ drivers/net/phy/mscc/mscc_main.c |  4 +-
+ drivers/net/phy/phy_device.c     | 35 +++++++++--------
+ include/linux/phy.h              | 64 +++++++++++++++++++++-----------
+ 5 files changed, 80 insertions(+), 44 deletions(-)
+
+--- a/drivers/net/phy/bcm54140.c
++++ b/drivers/net/phy/bcm54140.c
+@@ -128,6 +128,10 @@
+ #define BCM54140_DEFAULT_DOWNSHIFT 5
+ #define BCM54140_MAX_DOWNSHIFT 9
+ 
++enum bcm54140_global_phy {
++	BCM54140_BASE_ADDR = 0,
++};
++
+ struct bcm54140_priv {
+ 	int port;
+ 	int base_addr;
+@@ -429,11 +433,13 @@ static int bcm54140_base_read_rdb(struct
+ 	int ret;
+ 
+ 	phy_lock_mdio_bus(phydev);
+-	ret = __phy_package_write(phydev, MII_BCM54XX_RDB_ADDR, rdb);
++	ret = __phy_package_write(phydev, BCM54140_BASE_ADDR,
++				  MII_BCM54XX_RDB_ADDR, rdb);
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	ret = __phy_package_read(phydev, MII_BCM54XX_RDB_DATA);
++	ret = __phy_package_read(phydev, BCM54140_BASE_ADDR,
++				 MII_BCM54XX_RDB_DATA);
+ 
+ out:
+ 	phy_unlock_mdio_bus(phydev);
+@@ -446,11 +452,13 @@ static int bcm54140_base_write_rdb(struc
+ 	int ret;
+ 
+ 	phy_lock_mdio_bus(phydev);
+-	ret = __phy_package_write(phydev, MII_BCM54XX_RDB_ADDR, rdb);
++	ret = __phy_package_write(phydev, BCM54140_BASE_ADDR,
++				  MII_BCM54XX_RDB_ADDR, rdb);
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	ret = __phy_package_write(phydev, MII_BCM54XX_RDB_DATA, val);
++	ret = __phy_package_write(phydev, BCM54140_BASE_ADDR,
++				  MII_BCM54XX_RDB_DATA, val);
+ 
+ out:
+ 	phy_unlock_mdio_bus(phydev);
+--- a/drivers/net/phy/mscc/mscc.h
++++ b/drivers/net/phy/mscc/mscc.h
+@@ -414,6 +414,11 @@ struct vsc8531_private {
+  * gpio_lock: used for PHC operations. Common for all PHYs as the load/save GPIO
+  * is shared.
+  */
++
++enum vsc85xx_global_phy {
++	VSC88XX_BASE_ADDR = 0,
++};
++
+ struct vsc85xx_shared_private {
+ 	struct mutex gpio_lock;
+ };
+--- a/drivers/net/phy/mscc/mscc_main.c
++++ b/drivers/net/phy/mscc/mscc_main.c
+@@ -700,7 +700,7 @@ int phy_base_write(struct phy_device *ph
+ 		dump_stack();
+ 	}
+ 
+-	return __phy_package_write(phydev, regnum, val);
++	return __phy_package_write(phydev, VSC88XX_BASE_ADDR, regnum, val);
+ }
+ 
+ /* phydev->bus->mdio_lock should be locked when using this function */
+@@ -711,7 +711,7 @@ int phy_base_read(struct phy_device *phy
+ 		dump_stack();
+ 	}
+ 
+-	return __phy_package_read(phydev, regnum);
++	return __phy_package_read(phydev, VSC88XX_BASE_ADDR, regnum);
+ }
+ 
+ u32 vsc85xx_csr_read(struct phy_device *phydev,
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -1602,20 +1602,22 @@ EXPORT_SYMBOL_GPL(phy_driver_is_genphy_1
+ /**
+  * phy_package_join - join a common PHY group
+  * @phydev: target phy_device struct
+- * @addr: cookie and PHY address for global register access
++ * @base_addr: cookie and base PHY address of PHY package for offset
++ *   calculation of global register access
+  * @priv_size: if non-zero allocate this amount of bytes for private data
+  *
+  * This joins a PHY group and provides a shared storage for all phydevs in
+  * this group. This is intended to be used for packages which contain
+  * more than one PHY, for example a quad PHY transceiver.
+  *
+- * The addr parameter serves as a cookie which has to have the same value
+- * for all members of one group and as a PHY address to access generic
+- * registers of a PHY package. Usually, one of the PHY addresses of the
+- * different PHYs in the package provides access to these global registers.
++ * The base_addr parameter serves as cookie which has to have the same values
++ * for all members of one group and as the base PHY address of the PHY package
++ * for offset calculation to access generic registers of a PHY package.
++ * Usually, one of the PHY addresses of the different PHYs in the package
++ * provides access to these global registers.
+  * The address which is given here, will be used in the phy_package_read()
+- * and phy_package_write() convenience functions. If your PHY doesn't have
+- * global registers you can just pick any of the PHY addresses.
++ * and phy_package_write() convenience functions as base and added to the
++ * passed offset in those functions.
+  *
+  * This will set the shared pointer of the phydev to the shared storage.
+  * If this is the first call for a this cookie the shared storage will be
+@@ -1625,17 +1627,17 @@ EXPORT_SYMBOL_GPL(phy_driver_is_genphy_1
+  * Returns < 1 on error, 0 on success. Esp. calling phy_package_join()
+  * with the same cookie but a different priv_size is an error.
+  */
+-int phy_package_join(struct phy_device *phydev, int addr, size_t priv_size)
++int phy_package_join(struct phy_device *phydev, int base_addr, size_t priv_size)
+ {
+ 	struct mii_bus *bus = phydev->mdio.bus;
+ 	struct phy_package_shared *shared;
+ 	int ret;
+ 
+-	if (addr < 0 || addr >= PHY_MAX_ADDR)
++	if (base_addr < 0 || base_addr >= PHY_MAX_ADDR)
+ 		return -EINVAL;
+ 
+ 	mutex_lock(&bus->shared_lock);
+-	shared = bus->shared[addr];
++	shared = bus->shared[base_addr];
+ 	if (!shared) {
+ 		ret = -ENOMEM;
+ 		shared = kzalloc(sizeof(*shared), GFP_KERNEL);
+@@ -1647,9 +1649,9 @@ int phy_package_join(struct phy_device *
+ 				goto err_free;
+ 			shared->priv_size = priv_size;
+ 		}
+-		shared->addr = addr;
++		shared->base_addr = base_addr;
+ 		refcount_set(&shared->refcnt, 1);
+-		bus->shared[addr] = shared;
++		bus->shared[base_addr] = shared;
+ 	} else {
+ 		ret = -EINVAL;
+ 		if (priv_size && priv_size != shared->priv_size)
+@@ -1687,7 +1689,7 @@ void phy_package_leave(struct phy_device
+ 		return;
+ 
+ 	if (refcount_dec_and_mutex_lock(&shared->refcnt, &bus->shared_lock)) {
+-		bus->shared[shared->addr] = NULL;
++		bus->shared[shared->base_addr] = NULL;
+ 		mutex_unlock(&bus->shared_lock);
+ 		kfree(shared->priv);
+ 		kfree(shared);
+@@ -1706,7 +1708,8 @@ static void devm_phy_package_leave(struc
+  * devm_phy_package_join - resource managed phy_package_join()
+  * @dev: device that is registering this PHY package
+  * @phydev: target phy_device struct
+- * @addr: cookie and PHY address for global register access
++ * @base_addr: cookie and base PHY address of PHY package for offset
++ *   calculation of global register access
+  * @priv_size: if non-zero allocate this amount of bytes for private data
+  *
+  * Managed phy_package_join(). Shared storage fetched by this function,
+@@ -1714,7 +1717,7 @@ static void devm_phy_package_leave(struc
+  * phy_package_join() for more information.
+  */
+ int devm_phy_package_join(struct device *dev, struct phy_device *phydev,
+-			  int addr, size_t priv_size)
++			  int base_addr, size_t priv_size)
+ {
+ 	struct phy_device **ptr;
+ 	int ret;
+@@ -1724,7 +1727,7 @@ int devm_phy_package_join(struct device
+ 	if (!ptr)
+ 		return -ENOMEM;
+ 
+-	ret = phy_package_join(phydev, addr, priv_size);
++	ret = phy_package_join(phydev, base_addr, priv_size);
+ 
+ 	if (!ret) {
+ 		*ptr = phydev;
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -319,7 +319,8 @@ struct mdio_bus_stats {
+ 
+ /**
+  * struct phy_package_shared - Shared information in PHY packages
+- * @addr: Common PHY address used to combine PHYs in one package
++ * @base_addr: Base PHY address of PHY package used to combine PHYs
++ *   in one package and for offset calculation of phy_package_read/write
+  * @refcnt: Number of PHYs connected to this shared data
+  * @flags: Initialization of PHY package
+  * @priv_size: Size of the shared private data @priv
+@@ -330,7 +331,7 @@ struct mdio_bus_stats {
+  * phy_package_leave().
+  */
+ struct phy_package_shared {
+-	u8 addr;
++	u8 base_addr;
+ 	refcount_t refcnt;
+ 	unsigned long flags;
+ 	size_t priv_size;
+@@ -1763,10 +1764,10 @@ int phy_ethtool_get_link_ksettings(struc
+ int phy_ethtool_set_link_ksettings(struct net_device *ndev,
+ 				   const struct ethtool_link_ksettings *cmd);
+ int phy_ethtool_nway_reset(struct net_device *ndev);
+-int phy_package_join(struct phy_device *phydev, int addr, size_t priv_size);
++int phy_package_join(struct phy_device *phydev, int base_addr, size_t priv_size);
+ void phy_package_leave(struct phy_device *phydev);
+ int devm_phy_package_join(struct device *dev, struct phy_device *phydev,
+-			  int addr, size_t priv_size);
++			  int base_addr, size_t priv_size);
+ 
+ #if IS_ENABLED(CONFIG_PHYLIB)
+ int __init mdio_bus_init(void);
+@@ -1778,46 +1779,65 @@ int phy_ethtool_get_sset_count(struct ph
+ int phy_ethtool_get_stats(struct phy_device *phydev,
+ 			  struct ethtool_stats *stats, u64 *data);
+ 
+-static inline int phy_package_read(struct phy_device *phydev, u32 regnum)
++static inline int phy_package_address(struct phy_device *phydev,
++				      unsigned int addr_offset)
+ {
+ 	struct phy_package_shared *shared = phydev->shared;
++	u8 base_addr = shared->base_addr;
+ 
+-	if (!shared)
++	if (addr_offset >= PHY_MAX_ADDR - base_addr)
+ 		return -EIO;
+ 
+-	return mdiobus_read(phydev->mdio.bus, shared->addr, regnum);
++	/* we know that addr will be in the range 0..31 and thus the
++	 * implicit cast to a signed int is not a problem.
++	 */
++	return base_addr + addr_offset;
+ }
+ 
+-static inline int __phy_package_read(struct phy_device *phydev, u32 regnum)
++static inline int phy_package_read(struct phy_device *phydev,
++				   unsigned int addr_offset, u32 regnum)
+ {
+-	struct phy_package_shared *shared = phydev->shared;
++	int addr = phy_package_address(phydev, addr_offset);
+ 
+-	if (!shared)
+-		return -EIO;
++	if (addr < 0)
++		return addr;
++
++	return mdiobus_read(phydev->mdio.bus, addr, regnum);
++}
++
++static inline int __phy_package_read(struct phy_device *phydev,
++				     unsigned int addr_offset, u32 regnum)
++{
++	int addr = phy_package_address(phydev, addr_offset);
++
++	if (addr < 0)
++		return addr;
+ 
+-	return __mdiobus_read(phydev->mdio.bus, shared->addr, regnum);
++	return __mdiobus_read(phydev->mdio.bus, addr, regnum);
+ }
+ 
+ static inline int phy_package_write(struct phy_device *phydev,
+-				    u32 regnum, u16 val)
++				    unsigned int addr_offset, u32 regnum,
++				    u16 val)
+ {
+-	struct phy_package_shared *shared = phydev->shared;
++	int addr = phy_package_address(phydev, addr_offset);
+ 
+-	if (!shared)
+-		return -EIO;
++	if (addr < 0)
++		return addr;
+ 
+-	return mdiobus_write(phydev->mdio.bus, shared->addr, regnum, val);
++	return mdiobus_write(phydev->mdio.bus, addr, regnum, val);
+ }
+ 
+ static inline int __phy_package_write(struct phy_device *phydev,
+-				      u32 regnum, u16 val)
++				      unsigned int addr_offset, u32 regnum,
++				      u16 val)
+ {
+-	struct phy_package_shared *shared = phydev->shared;
++	int addr = phy_package_address(phydev, addr_offset);
+ 
+-	if (!shared)
+-		return -EIO;
++	if (addr < 0)
++		return addr;
+ 
+-	return __mdiobus_write(phydev->mdio.bus, shared->addr, regnum, val);
++	return __mdiobus_write(phydev->mdio.bus, addr, regnum, val);
+ }
+ 
+ static inline bool __phy_package_set_once(struct phy_device *phydev,

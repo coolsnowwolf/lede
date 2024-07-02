@@ -23,15 +23,15 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 
 --- a/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
 +++ b/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
-@@ -18,12 +18,23 @@
+@@ -34,12 +34,23 @@ static struct mtk_wed_wo_memory_region m
  
  static u32 wo_r32(struct mtk_wed_wo *wo, u32 reg)
  {
--	return readl(wo->boot.addr + reg);
+-	return readl(mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
 +	u32 val;
 +
 +	if (!wo->boot_regmap)
-+		return readl(wo->boot.addr + reg);
++		return readl(mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
 +
 +	if (regmap_read(wo->boot_regmap, reg, &val))
 +		val = ~0;
@@ -41,49 +41,41 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  
  static void wo_w32(struct mtk_wed_wo *wo, u32 reg, u32 val)
  {
--	writel(val, wo->boot.addr + reg);
+-	writel(val, mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
 +	if (wo->boot_regmap)
 +		regmap_write(wo->boot_regmap, reg, val);
 +	else
-+		writel(val, wo->boot.addr + reg);
++		writel(val, mem_region[MTK_WED_WO_REGION_BOOT].addr + reg);
  }
  
  static struct sk_buff *
-@@ -316,10 +327,21 @@ mtk_wed_mcu_load_firmware(struct mtk_wed
- 			return ret;
- 	}
+@@ -313,6 +324,9 @@ mtk_wed_mcu_load_firmware(struct mtk_wed
+ 	u32 val, boot_cr;
+ 	int ret, i;
  
--	wo->boot.name = "wo-boot";
--	ret = mtk_wed_get_reserved_memory_region(wo, &wo->boot);
--	if (ret)
--		return ret;
 +	wo->boot_regmap = syscon_regmap_lookup_by_phandle(wo->hw->node,
 +							  "mediatek,wo-cpuboot");
-+	if (IS_ERR(wo->boot_regmap)) {
-+		if (wo->boot_regmap != ERR_PTR(-ENODEV))
-+			return PTR_ERR(wo->boot_regmap);
 +
-+		/* For backward compatibility, we need to check if cpu_boot
-+		 * is defined through reserved memory property.
-+		 */
-+		wo->boot_regmap = NULL;
-+		wo->boot.name = "wo-boot";
-+		ret = mtk_wed_get_reserved_memory_region(wo, &wo->boot);
-+		if (ret)
-+			return ret;
-+	}
+ 	/* load firmware region metadata */
+ 	for (i = 0; i < ARRAY_SIZE(mem_region); i++) {
+ 		int index = of_property_match_string(wo->hw->node,
+@@ -321,6 +335,9 @@ mtk_wed_mcu_load_firmware(struct mtk_wed
+ 		if (index < 0)
+ 			continue;
  
- 	/* set dummy cr */
- 	wed_w32(wo->hw->wed_dev, MTK_WED_SCR0 + 4 * MTK_WED_DUMMY_CR_FWDL,
++		if (index == MTK_WED_WO_REGION_BOOT && !IS_ERR(wo->boot_regmap))
++			continue;
++
+ 		ret = mtk_wed_get_reserved_memory_region(wo->hw, index, &mem_region[i]);
+ 		if (ret)
+ 			return ret;
 --- a/drivers/net/ethernet/mediatek/mtk_wed_wo.h
 +++ b/drivers/net/ethernet/mediatek/mtk_wed_wo.h
-@@ -228,7 +228,8 @@ struct mtk_wed_wo_queue {
- 
+@@ -231,6 +231,7 @@ struct mtk_wed_wo_queue {
  struct mtk_wed_wo {
  	struct mtk_wed_hw *hw;
--	struct mtk_wed_wo_memory_region boot;
-+	struct mtk_wed_wo_memory_region boot; /* backward compatibility */
-+	struct regmap *boot_regmap;
  
++	struct regmap *boot_regmap;
  	struct mtk_wed_wo_queue q_tx;
  	struct mtk_wed_wo_queue q_rx;
+ 

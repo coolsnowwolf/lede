@@ -1,0 +1,136 @@
+From: Andy Ren <andy.ren@getcruise.com>
+Date: Mon, 7 Nov 2022 09:42:42 -0800
+Subject: [PATCH] net/core: Allow live renaming when an interface is up
+
+Allow a network interface to be renamed when the interface
+is up.
+
+As described in the netconsole documentation [1], when netconsole is
+used as a built-in, it will bring up the specified interface as soon as
+possible. As a result, user space will not be able to rename the
+interface since the kernel disallows renaming of interfaces that are
+administratively up unless the 'IFF_LIVE_RENAME_OK' private flag was set
+by the kernel.
+
+The original solution [2] to this problem was to add a new parameter to
+the netconsole configuration parameters that allows renaming of
+the interface used by netconsole while it is administratively up.
+However, during the discussion that followed, it became apparent that we
+have no reason to keep the current restriction and instead we should
+allow user space to rename interfaces regardless of their administrative
+state:
+
+1. The restriction was put in place over 20 years ago when renaming was
+only possible via IOCTL and before rtnetlink started notifying user
+space about such changes like it does today.
+
+2. The 'IFF_LIVE_RENAME_OK' flag was added over 3 years ago in version
+5.2 and no regressions were reported.
+
+3. In-kernel listeners to 'NETDEV_CHANGENAME' do not seem to care about
+the administrative state of interface.
+
+Therefore, allow user space to rename running interfaces by removing the
+restriction and the associated 'IFF_LIVE_RENAME_OK' flag. Help in
+possible triage by emitting a message to the kernel log that an
+interface was renamed while UP.
+
+[1] https://www.kernel.org/doc/Documentation/networking/netconsole.rst
+[2] https://lore.kernel.org/netdev/20221102002420.2613004-1-andy.ren@getcruise.com/
+
+Signed-off-by: Andy Ren <andy.ren@getcruise.com>
+Reviewed-by: Ido Schimmel <idosch@nvidia.com>
+Reviewed-by: David Ahern <dsahern@kernel.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1691,7 +1691,6 @@ struct net_device_ops {
+  * @IFF_FAILOVER: device is a failover master device
+  * @IFF_FAILOVER_SLAVE: device is lower dev of a failover master device
+  * @IFF_L3MDEV_RX_HANDLER: only invoke the rx handler of L3 master device
+- * @IFF_LIVE_RENAME_OK: rename is allowed while device is up and running
+  * @IFF_TX_SKB_NO_LINEAR: device/driver is capable of xmitting frames with
+  *	skb_headlen(skb) == 0 (data starts from frag0)
+  * @IFF_CHANGE_PROTO_DOWN: device supports setting carrier via IFLA_PROTO_DOWN
+@@ -1727,7 +1726,7 @@ enum netdev_priv_flags {
+ 	IFF_FAILOVER			= 1<<27,
+ 	IFF_FAILOVER_SLAVE		= 1<<28,
+ 	IFF_L3MDEV_RX_HANDLER		= 1<<29,
+-	IFF_LIVE_RENAME_OK		= 1<<30,
++	/* was IFF_LIVE_RENAME_OK */
+ 	IFF_TX_SKB_NO_LINEAR		= BIT_ULL(31),
+ 	IFF_CHANGE_PROTO_DOWN		= BIT_ULL(32),
+ };
+@@ -1762,7 +1761,6 @@ enum netdev_priv_flags {
+ #define IFF_FAILOVER			IFF_FAILOVER
+ #define IFF_FAILOVER_SLAVE		IFF_FAILOVER_SLAVE
+ #define IFF_L3MDEV_RX_HANDLER		IFF_L3MDEV_RX_HANDLER
+-#define IFF_LIVE_RENAME_OK		IFF_LIVE_RENAME_OK
+ #define IFF_TX_SKB_NO_LINEAR		IFF_TX_SKB_NO_LINEAR
+ 
+ /* Specifies the type of the struct net_device::ml_priv pointer */
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -1188,22 +1188,6 @@ int dev_change_name(struct net_device *d
+ 
+ 	net = dev_net(dev);
+ 
+-	/* Some auto-enslaved devices e.g. failover slaves are
+-	 * special, as userspace might rename the device after
+-	 * the interface had been brought up and running since
+-	 * the point kernel initiated auto-enslavement. Allow
+-	 * live name change even when these slave devices are
+-	 * up and running.
+-	 *
+-	 * Typically, users of these auto-enslaving devices
+-	 * don't actually care about slave name change, as
+-	 * they are supposed to operate on master interface
+-	 * directly.
+-	 */
+-	if (dev->flags & IFF_UP &&
+-	    likely(!(dev->priv_flags & IFF_LIVE_RENAME_OK)))
+-		return -EBUSY;
+-
+ 	down_write(&devnet_rename_sem);
+ 
+ 	if (strncmp(newname, dev->name, IFNAMSIZ) == 0) {
+@@ -1220,7 +1204,8 @@ int dev_change_name(struct net_device *d
+ 	}
+ 
+ 	if (oldname[0] && !strchr(oldname, '%'))
+-		netdev_info(dev, "renamed from %s\n", oldname);
++		netdev_info(dev, "renamed from %s%s\n", oldname,
++			    dev->flags & IFF_UP ? " (while UP)" : "");
+ 
+ 	old_assign_type = dev->name_assign_type;
+ 	dev->name_assign_type = NET_NAME_RENAMED;
+--- a/net/core/failover.c
++++ b/net/core/failover.c
+@@ -80,14 +80,14 @@ static int failover_slave_register(struc
+ 		goto err_upper_link;
+ 	}
+ 
+-	slave_dev->priv_flags |= (IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
++	slave_dev->priv_flags |= IFF_FAILOVER_SLAVE;
+ 
+ 	if (fops && fops->slave_register &&
+ 	    !fops->slave_register(slave_dev, failover_dev))
+ 		return NOTIFY_OK;
+ 
+ 	netdev_upper_dev_unlink(slave_dev, failover_dev);
+-	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
++	slave_dev->priv_flags &= ~IFF_FAILOVER_SLAVE;
+ err_upper_link:
+ 	netdev_rx_handler_unregister(slave_dev);
+ done:
+@@ -121,7 +121,7 @@ int failover_slave_unregister(struct net
+ 
+ 	netdev_rx_handler_unregister(slave_dev);
+ 	netdev_upper_dev_unlink(slave_dev, failover_dev);
+-	slave_dev->priv_flags &= ~(IFF_FAILOVER_SLAVE | IFF_LIVE_RENAME_OK);
++	slave_dev->priv_flags &= ~IFF_FAILOVER_SLAVE;
+ 
+ 	if (fops && fops->slave_unregister &&
+ 	    !fops->slave_unregister(slave_dev, failover_dev))

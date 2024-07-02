@@ -891,11 +891,7 @@ ar8216_phy_write(struct ar8xxx_priv *priv, int addr, int regnum, u16 val)
 static int
 ar8229_hw_init(struct ar8xxx_priv *priv)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 5, 0)
 	phy_interface_t phy_if_mode;
-#else
-	int phy_if_mode;
-#endif
 
 	if (priv->initialized)
 		return 0;
@@ -903,11 +899,7 @@ ar8229_hw_init(struct ar8xxx_priv *priv)
 	ar8xxx_write(priv, AR8216_REG_CTRL, AR8216_CTRL_RESET);
 	ar8xxx_reg_wait(priv, AR8216_REG_CTRL, AR8216_CTRL_RESET, 0, 1000);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 5, 0)
 	of_get_phy_mode(priv->pdev->of_node, &phy_if_mode);
-#else
-	phy_if_mode = of_get_phy_mode(priv->pdev->of_node);
-#endif
 
 	if (phy_if_mode == PHY_INTERFACE_MODE_GMII) {
 		ar8xxx_write(priv, AR8229_REG_OPER_MODE0,
@@ -1427,8 +1419,7 @@ ar8xxx_sw_reset_switch(struct switch_dev *dev)
 	int i;
 
 	mutex_lock(&priv->reg_mutex);
-	memset(&priv->vlan, 0, sizeof(struct ar8xxx_priv) -
-		offsetof(struct ar8xxx_priv, vlan));
+	memset(&priv->ar8xxx_priv_volatile, 0, sizeof(priv->ar8xxx_priv_volatile));
 
 	for (i = 0; i < dev->vlans; i++)
 		priv->vlan_id[i] = i;
@@ -2433,7 +2424,9 @@ static int
 ar8xxx_phy_config_init(struct phy_device *phydev)
 {
 	struct ar8xxx_priv *priv = phydev->priv;
+#ifdef CONFIG_ETHERNET_PACKET_MANGLE
 	struct net_device *dev = phydev->attached_dev;
+#endif
 	int ret;
 
 	if (WARN_ON(!priv))
@@ -2465,7 +2458,11 @@ ar8xxx_phy_config_init(struct phy_device *phydev)
 	/* VID fixup only needed on ar8216 */
 	if (chip_is_ar8216(priv)) {
 		dev->phy_ptr = priv;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 		dev->priv_flags |= IFF_NO_IP_ALIGN;
+#else
+		dev->extra_priv_flags |= IFF_NO_IP_ALIGN;
+#endif
 		dev->eth_mangle_rx = ar8216_mangle_rx;
 		dev->eth_mangle_tx = ar8216_mangle_tx;
 	}
@@ -2700,7 +2697,11 @@ ar8xxx_phy_detach(struct phy_device *phydev)
 
 #ifdef CONFIG_ETHERNET_PACKET_MANGLE
 	dev->phy_ptr = NULL;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 	dev->priv_flags &= ~IFF_NO_IP_ALIGN;
+#else
+	dev->extra_priv_flags &= ~IFF_NO_IP_ALIGN;
+#endif
 	dev->eth_mangle_rx = NULL;
 	dev->eth_mangle_tx = NULL;
 #endif

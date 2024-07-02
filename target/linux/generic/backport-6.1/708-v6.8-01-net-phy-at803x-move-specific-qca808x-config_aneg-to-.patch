@@ -1,0 +1,116 @@
+From 8e732f1c6f2dc5e18f766d0f1b11df9db2dd044a Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 14 Dec 2023 01:44:31 +0100
+Subject: [PATCH 1/2] net: phy: at803x: move specific qca808x config_aneg to
+ dedicated function
+
+Move specific qca808x config_aneg to dedicated function to permit easier
+split of qca808x portion from at803x driver.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/at803x.c | 66 ++++++++++++++++++++++++----------------
+ 1 file changed, 40 insertions(+), 26 deletions(-)
+
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -1045,9 +1045,8 @@ static int at803x_config_mdix(struct phy
+ 			  FIELD_PREP(AT803X_SFC_MDI_CROSSOVER_MODE_M, val));
+ }
+ 
+-static int at803x_config_aneg(struct phy_device *phydev)
++static int at803x_prepare_config_aneg(struct phy_device *phydev)
+ {
+-	struct at803x_priv *priv = phydev->priv;
+ 	int ret;
+ 
+ 	ret = at803x_config_mdix(phydev, phydev->mdix_ctrl);
+@@ -1064,33 +1063,22 @@ static int at803x_config_aneg(struct phy
+ 			return ret;
+ 	}
+ 
+-	if (priv->is_1000basex)
+-		return genphy_c37_config_aneg(phydev);
+-
+-	/* Do not restart auto-negotiation by setting ret to 0 defautly,
+-	 * when calling __genphy_config_aneg later.
+-	 */
+-	ret = 0;
+-
+-	if (phydev->drv->phy_id == QCA8081_PHY_ID) {
+-		int phy_ctrl = 0;
++	return 0;
++}
+ 
+-		/* The reg MII_BMCR also needs to be configured for force mode, the
+-		 * genphy_config_aneg is also needed.
+-		 */
+-		if (phydev->autoneg == AUTONEG_DISABLE)
+-			genphy_c45_pma_setup_forced(phydev);
++static int at803x_config_aneg(struct phy_device *phydev)
++{
++	struct at803x_priv *priv = phydev->priv;
++	int ret;
+ 
+-		if (linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT, phydev->advertising))
+-			phy_ctrl = MDIO_AN_10GBT_CTRL_ADV2_5G;
++	ret = at803x_prepare_config_aneg(phydev);
++	if (ret)
++		return ret;
+ 
+-		ret = phy_modify_mmd_changed(phydev, MDIO_MMD_AN, MDIO_AN_10GBT_CTRL,
+-				MDIO_AN_10GBT_CTRL_ADV2_5G, phy_ctrl);
+-		if (ret < 0)
+-			return ret;
+-	}
++	if (priv->is_1000basex)
++		return genphy_c37_config_aneg(phydev);
+ 
+-	return __genphy_config_aneg(phydev, ret);
++	return genphy_config_aneg(phydev);
+ }
+ 
+ static int at803x_get_downshift(struct phy_device *phydev, u8 *d)
+@@ -2118,6 +2106,32 @@ static int qca808x_get_features(struct p
+ 	return 0;
+ }
+ 
++static int qca808x_config_aneg(struct phy_device *phydev)
++{
++	int phy_ctrl = 0;
++	int ret;
++
++	ret = at803x_prepare_config_aneg(phydev);
++	if (ret)
++		return ret;
++
++	/* The reg MII_BMCR also needs to be configured for force mode, the
++	 * genphy_config_aneg is also needed.
++	 */
++	if (phydev->autoneg == AUTONEG_DISABLE)
++		genphy_c45_pma_setup_forced(phydev);
++
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT, phydev->advertising))
++		phy_ctrl = MDIO_AN_10GBT_CTRL_ADV2_5G;
++
++	ret = phy_modify_mmd_changed(phydev, MDIO_MMD_AN, MDIO_AN_10GBT_CTRL,
++				     MDIO_AN_10GBT_CTRL_ADV2_5G, phy_ctrl);
++	if (ret < 0)
++		return ret;
++
++	return __genphy_config_aneg(phydev, ret);
++}
++
+ static void qca808x_link_change_notify(struct phy_device *phydev)
+ {
+ 	/* Assert interface sgmii fifo on link down, deassert it on link up,
+@@ -2295,7 +2309,7 @@ static struct phy_driver at803x_driver[]
+ 	.set_wol		= at803x_set_wol,
+ 	.get_wol		= at803x_get_wol,
+ 	.get_features		= qca808x_get_features,
+-	.config_aneg		= at803x_config_aneg,
++	.config_aneg		= qca808x_config_aneg,
+ 	.suspend		= genphy_suspend,
+ 	.resume			= genphy_resume,
+ 	.read_status		= qca808x_read_status,
