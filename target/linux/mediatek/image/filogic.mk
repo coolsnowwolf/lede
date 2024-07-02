@@ -479,9 +479,23 @@ define Device/mediatek_mt7988a-rfb
 endef
 TARGET_DEVICES += mediatek_mt7988a-rfb
 
+define Device/hf_m7986r1-emmc
+  DEVICE_VENDOR := HF
+  DEVICE_MODEL := M7986R1 (eMMC version)
+  DEVICE_DTS := mt7986a-hf-m7986r1-emmc
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-serial-option kmod-usb-net-rndis f2fsck mkf2fs
+  SUPPORTED_DEVICES += HF-M7986R1
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES +=hf_m7986r1-emmc
+
 define Device/hf_m7986r1-nand
   DEVICE_VENDOR := HF
-  DEVICE_MODEL := M7986R1
+  DEVICE_MODEL := M7986R1 (NAND version)
   DEVICE_DTS := mt7986a-hf-m7986r1-nand
   DEVICE_DTS_DIR := ../dts
   UBINIZE_OPTS := -E 5
