@@ -16,7 +16,7 @@ define Package/fitblk
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=fitblk firmware release tool
-  DEPENDS:=@LINUX_6_1
+  DEPENDS:=@!LINUX_5_15
 endef
 
 define Package/fitblk/description
