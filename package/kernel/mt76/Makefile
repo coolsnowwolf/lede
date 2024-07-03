@@ -14,14 +14,11 @@ PKG_SOURCE_DATE:=2022-12-22
 PKG_SOURCE_VERSION:=5b509e80384ab019ac11aa90c81ec0dbb5b0d7f2
 PKG_MIRROR_HASH:=6fc25df4d28becd010ff4971b23731c08b53e69381a9e4c868091899712f78a9
 PATCH_DIR:=./patches-5.4
-else ifdef CONFIG_LINUX_6_1
-PKG_SOURCE_DATE:=2024-02-03
-PKG_SOURCE_VERSION:=9827df56b241601f29bf496b62545713c67afb61
-PKG_MIRROR_HASH:=d758db4228eed55c93fff8f87ec92d482b8507a68698b28dcf273e12b02ddf5f
-else ifdef CONFIG_LINUX_6_6
-PKG_SOURCE_DATE:=2024-02-03
-PKG_SOURCE_VERSION:=9827df56b241601f29bf496b62545713c67afb61
-PKG_MIRROR_HASH:=d758db4228eed55c93fff8f87ec92d482b8507a68698b28dcf273e12b02ddf5f
+else ifndef ($(filter on,$(CONFIG_LINUX_6_1) $(CONFIG_LINUX_6_6)),)
+PKG_SOURCE_DATE:=2024-04-19
+PKG_SOURCE_VERSION:=1d0bd57e58899d9c526c7c25cbaa04dc4a0559bf
+PKG_MIRROR_HASH:=09e2256ca6efcc8375f96722f0aabe539b83e35fc93d4fec44b71a0efe3f7914
+PATCH_DIR:=./patches-6.x
 else
 PKG_SOURCE_DATE:=2023-08-14
 PKG_SOURCE_VERSION:=b14c2351ddb8601c322576d84029e463d456caef
@@ -582,9 +579,9 @@ define KernelPackage/mt7922-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 
-define Package/mt76-test/install
-	mkdir -p $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tools/mt76-test $(1)/usr/sbin
+define Build/InstallDev
+	mkdir -p $(STAGING_DIR_IMAGE)
+	$(CP) $(PKG_BUILD_DIR)/firmware/mt7981_eeprom_mt7976_dbdc.bin $(STAGING_DIR_IMAGE)/
 endef
 
 $(eval $(call KernelPackage,mt76-core))
