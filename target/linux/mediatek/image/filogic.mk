@@ -503,7 +503,7 @@ define Device/hf_m7986r1-nand
   PAGESIZE := 2048
   IMAGE_SIZE := 116736k
   KERNEL_IN_UBI := 1
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-serial-option kmod-usb-net-rndis
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-serial-option kmod-usb-net-rndis mmc-utils
   SUPPORTED_DEVICES += HF-M7986R1
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
