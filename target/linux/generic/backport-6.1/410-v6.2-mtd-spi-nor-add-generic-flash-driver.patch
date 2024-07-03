@@ -1,0 +1,117 @@
+From 773bbe10449731c9525457873e0c2342e5cf883b Mon Sep 17 00:00:00 2001
+From: Michael Walle <michael@walle.cc>
+Date: Thu, 11 Aug 2022 00:06:53 +0200
+Subject: [PATCH] mtd: spi-nor: add generic flash driver
+
+Our SFDP parsing is everything we need to support all basic operations
+of a flash device. If the flash isn't found in our in-kernel flash
+database, gracefully fall back to a driver described solely by its SFDP
+tables.
+
+Signed-off-by: Michael Walle <michael@walle.cc>
+Signed-off-by: Tudor Ambarus <tudor.ambarus@microchip.com>
+Tested-by: Tudor Ambarus <tudor.ambarus@microchip.com>
+Reviewed-by: Takahiro Kuwano <Takahiro.Kuwano@infineon.com>
+Link: https://lore.kernel.org/r/20220810220654.1297699-7-michael@walle.cc
+---
+ drivers/mtd/spi-nor/core.c | 26 ++++++++++++++++++++++++--
+ drivers/mtd/spi-nor/core.h |  1 +
+ drivers/mtd/spi-nor/sfdp.c | 27 +++++++++++++++++++++++++++
+ 3 files changed, 52 insertions(+), 2 deletions(-)
+
+--- a/drivers/mtd/spi-nor/core.c
++++ b/drivers/mtd/spi-nor/core.c
+@@ -1636,6 +1636,16 @@ static const struct spi_nor_manufacturer
+ 	&spi_nor_xmc,
+ };
+ 
++static const struct flash_info spi_nor_generic_flash = {
++	.name = "spi-nor-generic",
++	/*
++	 * JESD216 rev A doesn't specify the page size, therefore we need a
++	 * sane default.
++	 */
++	.page_size = 256,
++	.parse_sfdp = true,
++};
++
+ static const struct flash_info *spi_nor_match_id(struct spi_nor *nor,
+ 						 const u8 *id)
+ {
+@@ -1669,6 +1679,14 @@ static const struct flash_info *spi_nor_
+ 	}
+ 
+ 	info = spi_nor_match_id(nor, id);
++
++	/* Fallback to a generic flash described only by its SFDP data. */
++	if (!info) {
++		ret = spi_nor_check_sfdp_signature(nor);
++		if (!ret)
++			info = &spi_nor_generic_flash;
++	}
++
+ 	if (!info) {
+ 		dev_err(nor->dev, "unrecognized JEDEC id bytes: %*ph\n",
+ 			SPI_NOR_MAX_ID_LEN, id);
+@@ -2105,8 +2123,12 @@ static int spi_nor_select_pp(struct spi_
+  * spi_nor_select_uniform_erase() - select optimum uniform erase type
+  * @map:		the erase map of the SPI NOR
+  * @wanted_size:	the erase type size to search for. Contains the value of
+- *			info->sector_size or of the "small sector" size in case
+- *			CONFIG_MTD_SPI_NOR_USE_4K_SECTORS is defined.
++ *			info->sector_size, the "small sector" size in case
++ *			CONFIG_MTD_SPI_NOR_USE_4K_SECTORS is defined or 0 if
++ *			there is no information about the sector size. The
++ *			latter is the case if the flash parameters are parsed
++ *			solely by SFDP, then the largest supported erase type
++ *			is selected.
+  *
+  * Once the optimum uniform sector erase command is found, disable all the
+  * other.
+--- a/drivers/mtd/spi-nor/core.h
++++ b/drivers/mtd/spi-nor/core.h
+@@ -708,6 +708,8 @@ int spi_nor_controller_ops_read_reg(stru
+ int spi_nor_controller_ops_write_reg(struct spi_nor *nor, u8 opcode,
+ 				     const u8 *buf, size_t len);
+ 
++int spi_nor_check_sfdp_signature(struct spi_nor *nor);
++
+ static inline struct spi_nor *mtd_to_spi_nor(struct mtd_info *mtd)
+ {
+ 	return container_of(mtd, struct spi_nor, mtd);
+--- a/drivers/mtd/spi-nor/sfdp.c
++++ b/drivers/mtd/spi-nor/sfdp.c
+@@ -1250,6 +1250,33 @@ static void spi_nor_post_sfdp_fixups(str
+ }
+ 
+ /**
++ * spi_nor_check_sfdp_signature() - check for a valid SFDP signature
++ * @nor:	pointer to a 'struct spi_nor'
++ *
++ * Used to detect if the flash supports the RDSFDP command as well as the
++ * presence of a valid SFDP table.
++ *
++ * Return: 0 on success, -errno otherwise.
++ */
++int spi_nor_check_sfdp_signature(struct spi_nor *nor)
++{
++	u32 signature;
++	int err;
++
++	/* Get the SFDP header. */
++	err = spi_nor_read_sfdp_dma_unsafe(nor, 0, sizeof(signature),
++					   &signature);
++	if (err < 0)
++		return err;
++
++	/* Check the SFDP signature. */
++	if (le32_to_cpu(signature) != SFDP_SIGNATURE)
++		return -EINVAL;
++
++	return 0;
++}
++
++/**
+  * spi_nor_parse_sfdp() - parse the Serial Flash Discoverable Parameters.
+  * @nor:		pointer to a 'struct spi_nor'
+  *

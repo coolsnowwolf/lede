@@ -1583,6 +1583,13 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 
 	dev_info(smi->parent, "RTL%s chip found\n", chip_name);
 
+	if (of_property_present(smi->parent->of_node, "realtek,extif2"))
+		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 2;
+	else if (of_property_present(smi->parent->of_node, "realtek,extif1") && (chip_ver != 0x1010)) /* for the RTL8367R-VB chip, extif1 corresponds to cpu_port 5 */ 
+		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 1;
+
+	dev_info(smi->parent, "CPU port: %u\n", smi->cpu_port);
+
 	return 0;
 }
 
@@ -1621,9 +1628,7 @@ static int  rtl8367b_probe(struct platform_device *pdev)
 	smi->cmd_write = 0xb8;
 	smi->ops = &rtl8367b_smi_ops;
 	smi->num_ports = RTL8367B_NUM_PORTS;
-	if (of_property_read_u32(pdev->dev.of_node, "cpu_port", &smi->cpu_port)
-	    || smi->cpu_port >= smi->num_ports)
-		smi->cpu_port = RTL8367B_CPU_PORT_NUM;
+	smi->cpu_port = RTL8367B_CPU_PORT_NUM;
 	smi->num_vlan_mc = RTL8367B_NUM_VLANS;
 	smi->mib_counters = rtl8367b_mib_counters;
 	smi->num_mib_counters = ARRAY_SIZE(rtl8367b_mib_counters);

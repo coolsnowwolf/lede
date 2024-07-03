@@ -1,0 +1,342 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 23 Mar 2023 11:05:22 +0100
+Subject: [PATCH] net: ethernet: mediatek: fix ppe flow accounting for L2
+ flows
+
+For L2 flows, the packet/byte counters should report the sum of the
+counters of their subflows, both current and expired.
+In order to make this work, change the way that accounting data is tracked.
+Reset counters when a flow enters bind. Once it expires (or enters unbind),
+store the last counter value in struct mtk_flow_entry.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.c
+@@ -79,9 +79,9 @@ static int mtk_ppe_mib_wait_busy(struct
+ 	int ret;
+ 	u32 val;
+ 
+-	ret = readl_poll_timeout(ppe->base + MTK_PPE_MIB_SER_CR, val,
+-				 !(val & MTK_PPE_MIB_SER_CR_ST),
+-				 20, MTK_PPE_WAIT_TIMEOUT_US);
++	ret = readl_poll_timeout_atomic(ppe->base + MTK_PPE_MIB_SER_CR, val,
++					!(val & MTK_PPE_MIB_SER_CR_ST),
++					20, MTK_PPE_WAIT_TIMEOUT_US);
+ 
+ 	if (ret)
+ 		dev_err(ppe->dev, "MIB table busy");
+@@ -89,17 +89,31 @@ static int mtk_ppe_mib_wait_busy(struct
+ 	return ret;
+ }
+ 
+-static int mtk_mib_entry_read(struct mtk_ppe *ppe, u16 index, u64 *bytes, u64 *packets)
++static inline struct mtk_foe_accounting *
++mtk_ppe_acct_data(struct mtk_ppe *ppe, u16 index)
++{
++	if (!ppe->acct_table)
++		return NULL;
++
++	return ppe->acct_table + index * sizeof(struct mtk_foe_accounting);
++}
++
++struct mtk_foe_accounting *mtk_ppe_mib_entry_read(struct mtk_ppe *ppe, u16 index)
+ {
+ 	u32 val, cnt_r0, cnt_r1, cnt_r2;
++	struct mtk_foe_accounting *acct;
+ 	int ret;
+ 
+ 	val = FIELD_PREP(MTK_PPE_MIB_SER_CR_ADDR, index) | MTK_PPE_MIB_SER_CR_ST;
+ 	ppe_w32(ppe, MTK_PPE_MIB_SER_CR, val);
+ 
++	acct = mtk_ppe_acct_data(ppe, index);
++	if (!acct)
++		return NULL;
++
+ 	ret = mtk_ppe_mib_wait_busy(ppe);
+ 	if (ret)
+-		return ret;
++		return acct;
+ 
+ 	cnt_r0 = readl(ppe->base + MTK_PPE_MIB_SER_R0);
+ 	cnt_r1 = readl(ppe->base + MTK_PPE_MIB_SER_R1);
+@@ -108,19 +122,19 @@ static int mtk_mib_entry_read(struct mtk
+ 	if (mtk_is_netsys_v3_or_greater(ppe->eth)) {
+ 		/* 64 bit for each counter */
+ 		u32 cnt_r3 = readl(ppe->base + MTK_PPE_MIB_SER_R3);
+-		*bytes = ((u64)cnt_r1 << 32) | cnt_r0;
+-		*packets = ((u64)cnt_r3 << 32) | cnt_r2;
++		acct->bytes += ((u64)cnt_r1 << 32) | cnt_r0;
++		acct->packets += ((u64)cnt_r3 << 32) | cnt_r2;
+ 	} else {
+ 		/* 48 bit byte counter, 40 bit packet counter */
+ 		u32 byte_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R0_BYTE_CNT_LOW, cnt_r0);
+ 		u32 byte_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R1_BYTE_CNT_HIGH, cnt_r1);
+ 		u32 pkt_cnt_low = FIELD_GET(MTK_PPE_MIB_SER_R1_PKT_CNT_LOW, cnt_r1);
+ 		u32 pkt_cnt_high = FIELD_GET(MTK_PPE_MIB_SER_R2_PKT_CNT_HIGH, cnt_r2);
+-		*bytes = ((u64)byte_cnt_high << 32) | byte_cnt_low;
+-		*packets = (pkt_cnt_high << 16) | pkt_cnt_low;
++		acct->bytes += ((u64)byte_cnt_high << 32) | byte_cnt_low;
++		acct->packets += (pkt_cnt_high << 16) | pkt_cnt_low;
+ 	}
+ 
+-	return 0;
++	return acct;
+ }
+ 
+ static void mtk_ppe_cache_clear(struct mtk_ppe *ppe)
+@@ -519,13 +533,6 @@ __mtk_foe_entry_clear(struct mtk_ppe *pp
+ 		hwe->ib1 |= FIELD_PREP(MTK_FOE_IB1_STATE, MTK_FOE_STATE_INVALID);
+ 		dma_wmb();
+ 		mtk_ppe_cache_clear(ppe);
+-		if (ppe->accounting) {
+-			struct mtk_foe_accounting *acct;
+-
+-			acct = ppe->acct_table + entry->hash * sizeof(*acct);
+-			acct->packets = 0;
+-			acct->bytes = 0;
+-		}
+ 	}
+ 	entry->hash = 0xffff;
+ 
+@@ -550,11 +557,14 @@ static int __mtk_foe_entry_idle_time(str
+ }
+ 
+ static bool
+-mtk_flow_entry_update(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
++mtk_flow_entry_update(struct mtk_ppe *ppe, struct mtk_flow_entry *entry,
++		      u64 *packets, u64 *bytes)
+ {
++	struct mtk_foe_accounting *acct;
+ 	struct mtk_foe_entry foe = {};
+ 	struct mtk_foe_entry *hwe;
+ 	u16 hash = entry->hash;
++	bool ret = false;
+ 	int len;
+ 
+ 	if (hash == 0xffff)
+@@ -565,18 +575,35 @@ mtk_flow_entry_update(struct mtk_ppe *pp
+ 	memcpy(&foe, hwe, len);
+ 
+ 	if (!mtk_flow_entry_match(ppe->eth, entry, &foe, len) ||
+-	    FIELD_GET(MTK_FOE_IB1_STATE, foe.ib1) != MTK_FOE_STATE_BIND)
+-		return false;
++	    FIELD_GET(MTK_FOE_IB1_STATE, foe.ib1) != MTK_FOE_STATE_BIND) {
++		acct = mtk_ppe_acct_data(ppe, hash);
++		if (acct) {
++			entry->prev_packets += acct->packets;
++			entry->prev_bytes += acct->bytes;
++		}
++
++		goto out;
++	}
+ 
+ 	entry->data.ib1 = foe.ib1;
++	acct = mtk_ppe_mib_entry_read(ppe, hash);
++	ret = true;
++
++out:
++	if (acct) {
++		*packets += acct->packets;
++		*bytes += acct->bytes;
++	}
+ 
+-	return true;
++	return ret;
+ }
+ 
+ static void
+ mtk_flow_entry_update_l2(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
+ {
+ 	u32 ib1_ts_mask = mtk_get_ib1_ts_mask(ppe->eth);
++	u64 *packets = &entry->packets;
++	u64 *bytes = &entry->bytes;
+ 	struct mtk_flow_entry *cur;
+ 	struct hlist_node *tmp;
+ 	int idle;
+@@ -585,7 +612,9 @@ mtk_flow_entry_update_l2(struct mtk_ppe
+ 	hlist_for_each_entry_safe(cur, tmp, &entry->l2_flows, l2_list) {
+ 		int cur_idle;
+ 
+-		if (!mtk_flow_entry_update(ppe, cur)) {
++		if (!mtk_flow_entry_update(ppe, cur, packets, bytes)) {
++			entry->prev_packets += cur->prev_packets;
++			entry->prev_bytes += cur->prev_bytes;
+ 			__mtk_foe_entry_clear(ppe, entry, false);
+ 			continue;
+ 		}
+@@ -600,10 +629,29 @@ mtk_flow_entry_update_l2(struct mtk_ppe
+ 	}
+ }
+ 
++void mtk_foe_entry_get_stats(struct mtk_ppe *ppe, struct mtk_flow_entry *entry,
++			     int *idle)
++{
++	entry->packets = entry->prev_packets;
++	entry->bytes = entry->prev_bytes;
++
++	spin_lock_bh(&ppe_lock);
++
++	if (entry->type == MTK_FLOW_TYPE_L2)
++		mtk_flow_entry_update_l2(ppe, entry);
++	else
++		mtk_flow_entry_update(ppe, entry, &entry->packets, &entry->bytes);
++
++	*idle = __mtk_foe_entry_idle_time(ppe, entry->data.ib1);
++
++	spin_unlock_bh(&ppe_lock);
++}
++
+ static void
+ __mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_foe_entry *entry,
+ 		       u16 hash)
+ {
++	struct mtk_foe_accounting *acct;
+ 	struct mtk_eth *eth = ppe->eth;
+ 	u16 timestamp = mtk_eth_timestamp(eth);
+ 	struct mtk_foe_entry *hwe;
+@@ -634,6 +682,12 @@ __mtk_foe_entry_commit(struct mtk_ppe *p
+ 
+ 	dma_wmb();
+ 
++	acct = mtk_ppe_mib_entry_read(ppe, hash);
++	if (acct) {
++		acct->packets = 0;
++		acct->bytes = 0;
++	}
++
+ 	mtk_ppe_cache_clear(ppe);
+ }
+ 
+@@ -796,21 +850,6 @@ out:
+ 	spin_unlock_bh(&ppe_lock);
+ }
+ 
+-int mtk_foe_entry_idle_time(struct mtk_ppe *ppe, struct mtk_flow_entry *entry)
+-{
+-	int idle;
+-
+-	spin_lock_bh(&ppe_lock);
+-	if (entry->type == MTK_FLOW_TYPE_L2)
+-		mtk_flow_entry_update_l2(ppe, entry);
+-	else
+-		mtk_flow_entry_update(ppe, entry);
+-	idle = __mtk_foe_entry_idle_time(ppe, entry->data.ib1);
+-	spin_unlock_bh(&ppe_lock);
+-
+-	return idle;
+-}
+-
+ int mtk_ppe_prepare_reset(struct mtk_ppe *ppe)
+ {
+ 	if (!ppe)
+@@ -838,32 +877,6 @@ int mtk_ppe_prepare_reset(struct mtk_ppe
+ 	return mtk_ppe_wait_busy(ppe);
+ }
+ 
+-struct mtk_foe_accounting *mtk_foe_entry_get_mib(struct mtk_ppe *ppe, u32 index,
+-						 struct mtk_foe_accounting *diff)
+-{
+-	struct mtk_foe_accounting *acct;
+-	int size = sizeof(struct mtk_foe_accounting);
+-	u64 bytes, packets;
+-
+-	if (!ppe->accounting)
+-		return NULL;
+-
+-	if (mtk_mib_entry_read(ppe, index, &bytes, &packets))
+-		return NULL;
+-
+-	acct = ppe->acct_table + index * size;
+-
+-	acct->bytes += bytes;
+-	acct->packets += packets;
+-
+-	if (diff) {
+-		diff->bytes = bytes;
+-		diff->packets = packets;
+-	}
+-
+-	return acct;
+-}
+-
+ struct mtk_ppe *mtk_ppe_init(struct mtk_eth *eth, void __iomem *base, int index)
+ {
+ 	bool accounting = eth->soc->has_accounting;
+--- a/drivers/net/ethernet/mediatek/mtk_ppe.h
++++ b/drivers/net/ethernet/mediatek/mtk_ppe.h
+@@ -304,6 +304,8 @@ struct mtk_flow_entry {
+ 	struct mtk_foe_entry data;
+ 	struct rhash_head node;
+ 	unsigned long cookie;
++	u64 prev_packets, prev_bytes;
++	u64 packets, bytes;
+ };
+ 
+ struct mtk_mib_entry {
+@@ -348,6 +350,7 @@ void mtk_ppe_deinit(struct mtk_eth *eth)
+ void mtk_ppe_start(struct mtk_ppe *ppe);
+ int mtk_ppe_stop(struct mtk_ppe *ppe);
+ int mtk_ppe_prepare_reset(struct mtk_ppe *ppe);
++struct mtk_foe_accounting *mtk_ppe_mib_entry_read(struct mtk_ppe *ppe, u16 index);
+ 
+ void __mtk_ppe_check_skb(struct mtk_ppe *ppe, struct sk_buff *skb, u16 hash);
+ 
+@@ -396,9 +399,8 @@ int mtk_foe_entry_set_queue(struct mtk_e
+ 			    unsigned int queue);
+ int mtk_foe_entry_commit(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
+ void mtk_foe_entry_clear(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
+-int mtk_foe_entry_idle_time(struct mtk_ppe *ppe, struct mtk_flow_entry *entry);
+ int mtk_ppe_debugfs_init(struct mtk_ppe *ppe, int index);
+-struct mtk_foe_accounting *mtk_foe_entry_get_mib(struct mtk_ppe *ppe, u32 index,
+-						 struct mtk_foe_accounting *diff);
++void mtk_foe_entry_get_stats(struct mtk_ppe *ppe, struct mtk_flow_entry *entry,
++			     int *idle);
+ 
+ #endif
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_debugfs.c
+@@ -96,7 +96,7 @@ mtk_ppe_debugfs_foe_show(struct seq_file
+ 		if (bind && state != MTK_FOE_STATE_BIND)
+ 			continue;
+ 
+-		acct = mtk_foe_entry_get_mib(ppe, i, NULL);
++		acct = mtk_ppe_mib_entry_read(ppe, i);
+ 
+ 		type = mtk_get_ib1_pkt_type(ppe->eth, entry->ib1);
+ 		seq_printf(m, "%05x %s %7s", i,
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -501,24 +501,21 @@ static int
+ mtk_flow_offload_stats(struct mtk_eth *eth, struct flow_cls_offload *f)
+ {
+ 	struct mtk_flow_entry *entry;
+-	struct mtk_foe_accounting diff;
+-	u32 idle;
++	u64 packets, bytes;
++	int idle;
+ 
+ 	entry = rhashtable_lookup(&eth->flow_table, &f->cookie,
+ 				  mtk_flow_ht_params);
+ 	if (!entry)
+ 		return -ENOENT;
+ 
+-	idle = mtk_foe_entry_idle_time(eth->ppe[entry->ppe_index], entry);
++	packets = entry->packets;
++	bytes = entry->bytes;
++	mtk_foe_entry_get_stats(eth->ppe[entry->ppe_index], entry, &idle);
++	f->stats.pkts += entry->packets - packets;
++	f->stats.bytes += entry->bytes - bytes;
+ 	f->stats.lastused = jiffies - idle * HZ;
+ 
+-	if (entry->hash != 0xFFFF &&
+-	    mtk_foe_entry_get_mib(eth->ppe[entry->ppe_index], entry->hash,
+-				  &diff)) {
+-		f->stats.pkts += diff.packets;
+-		f->stats.bytes += diff.bytes;
+-	}
+-
+ 	return 0;
+ }
+ 

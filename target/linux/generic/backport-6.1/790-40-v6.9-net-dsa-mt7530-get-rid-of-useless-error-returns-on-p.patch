@@ -1,0 +1,217 @@
+From bb20b1b4d832de4eb98ec7c22906db7c04e3f7c5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ar=C4=B1n=C3=A7=20=C3=9CNAL?= <arinc.unal@arinc9.com>
+Date: Fri, 1 Mar 2024 12:43:00 +0200
+Subject: [PATCH 40/48] net: dsa: mt7530: get rid of useless error returns on
+ phylink code path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Remove error returns on the cases where they are already handled with the
+function the mac_port_get_caps member in mt753x_table points to.
+
+mt7531_mac_config() is also called from mt7531_cpu_port_config() outside of
+phylink but the port and interface modes are already handled there.
+
+Change the functions and the mac_port_config function pointer to void now
+that there're no error returns anymore.
+
+Remove mt753x_is_mac_port() that used to help the said error returns.
+
+On mt7531_mac_config(), switch to if statements to simplify the code.
+
+Remove internal phy cases from mt753x_phylink_mac_config(), there is no
+need to check the interface mode as that's already handled with the
+function the mac_port_get_caps member in mt753x_table points to.
+
+Acked-by: Daniel Golle <daniel@makrotopia.org>
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Signed-off-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+Reviewed-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/dsa/mt7530.c | 81 ++++++++--------------------------------
+ drivers/net/dsa/mt7530.h |  6 +--
+ 2 files changed, 19 insertions(+), 68 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -2803,7 +2803,7 @@ static void mt7988_mac_port_get_caps(str
+ 	}
+ }
+ 
+-static int
++static void
+ mt7530_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
+ 		  phy_interface_t interface)
+ {
+@@ -2813,22 +2813,14 @@ mt7530_mac_config(struct dsa_switch *ds,
+ 		mt7530_setup_port5(priv->ds, interface);
+ 	else if (port == 6)
+ 		mt7530_setup_port6(priv->ds, interface);
+-
+-	return 0;
+ }
+ 
+-static int mt7531_rgmii_setup(struct mt7530_priv *priv, u32 port,
+-			      phy_interface_t interface,
+-			      struct phy_device *phydev)
++static void mt7531_rgmii_setup(struct mt7530_priv *priv, u32 port,
++			       phy_interface_t interface,
++			       struct phy_device *phydev)
+ {
+ 	u32 val;
+ 
+-	if (priv->p5_sgmii) {
+-		dev_err(priv->dev, "RGMII mode is not available for port %d\n",
+-			port);
+-		return -EINVAL;
+-	}
+-
+ 	val = mt7530_read(priv, MT7531_CLKGEN_CTRL);
+ 	val |= GP_CLK_EN;
+ 	val &= ~GP_MODE_MASK;
+@@ -2856,20 +2848,14 @@ static int mt7531_rgmii_setup(struct mt7
+ 		case PHY_INTERFACE_MODE_RGMII_ID:
+ 			break;
+ 		default:
+-			return -EINVAL;
++			break;
+ 		}
+ 	}
+-	mt7530_write(priv, MT7531_CLKGEN_CTRL, val);
+ 
+-	return 0;
+-}
+-
+-static bool mt753x_is_mac_port(u32 port)
+-{
+-	return (port == 5 || port == 6);
++	mt7530_write(priv, MT7531_CLKGEN_CTRL, val);
+ }
+ 
+-static int
++static void
+ mt7531_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
+ 		  phy_interface_t interface)
+ {
+@@ -2877,42 +2863,21 @@ mt7531_mac_config(struct dsa_switch *ds,
+ 	struct phy_device *phydev;
+ 	struct dsa_port *dp;
+ 
+-	if (!mt753x_is_mac_port(port)) {
+-		dev_err(priv->dev, "port %d is not a MAC port\n", port);
+-		return -EINVAL;
+-	}
+-
+-	switch (interface) {
+-	case PHY_INTERFACE_MODE_RGMII:
+-	case PHY_INTERFACE_MODE_RGMII_ID:
+-	case PHY_INTERFACE_MODE_RGMII_RXID:
+-	case PHY_INTERFACE_MODE_RGMII_TXID:
++	if (phy_interface_mode_is_rgmii(interface)) {
+ 		dp = dsa_to_port(ds, port);
+ 		phydev = dp->slave->phydev;
+-		return mt7531_rgmii_setup(priv, port, interface, phydev);
+-	case PHY_INTERFACE_MODE_SGMII:
+-	case PHY_INTERFACE_MODE_NA:
+-	case PHY_INTERFACE_MODE_1000BASEX:
+-	case PHY_INTERFACE_MODE_2500BASEX:
+-		/* handled in SGMII PCS driver */
+-		return 0;
+-	default:
+-		return -EINVAL;
++		mt7531_rgmii_setup(priv, port, interface, phydev);
+ 	}
+-
+-	return -EINVAL;
+ }
+ 
+-static int
++static void
+ mt753x_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
+ 		  const struct phylink_link_state *state)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+ 
+-	if (!priv->info->mac_port_config)
+-		return 0;
+-
+-	return priv->info->mac_port_config(ds, port, mode, state->interface);
++	if (priv->info->mac_port_config)
++		priv->info->mac_port_config(ds, port, mode, state->interface);
+ }
+ 
+ static struct phylink_pcs *
+@@ -2941,17 +2906,11 @@ mt753x_phylink_mac_config(struct dsa_swi
+ 	u32 mcr_cur, mcr_new;
+ 
+ 	switch (port) {
+-	case 0 ... 4:
+-		if (state->interface != PHY_INTERFACE_MODE_GMII &&
+-		    state->interface != PHY_INTERFACE_MODE_INTERNAL)
+-			goto unsupported;
+-		break;
+ 	case 5:
+ 		if (priv->p5_interface == state->interface)
+ 			break;
+ 
+-		if (mt753x_mac_config(ds, port, mode, state) < 0)
+-			goto unsupported;
++		mt753x_mac_config(ds, port, mode, state);
+ 
+ 		if (priv->p5_intf_sel != P5_DISABLED)
+ 			priv->p5_interface = state->interface;
+@@ -2960,16 +2919,10 @@ mt753x_phylink_mac_config(struct dsa_swi
+ 		if (priv->p6_interface == state->interface)
+ 			break;
+ 
+-		if (mt753x_mac_config(ds, port, mode, state) < 0)
+-			goto unsupported;
++		mt753x_mac_config(ds, port, mode, state);
+ 
+ 		priv->p6_interface = state->interface;
+ 		break;
+-	default:
+-unsupported:
+-		dev_err(ds->dev, "%s: unsupported %s port: %i\n",
+-			__func__, phy_modes(state->interface), port);
+-		return;
+ 	}
+ 
+ 	mcr_cur = mt7530_read(priv, MT7530_PMCR_P(port));
+@@ -3052,7 +3005,6 @@ mt7531_cpu_port_config(struct dsa_switch
+ 	struct mt7530_priv *priv = ds->priv;
+ 	phy_interface_t interface;
+ 	int speed;
+-	int ret;
+ 
+ 	switch (port) {
+ 	case 5:
+@@ -3077,9 +3029,8 @@ mt7531_cpu_port_config(struct dsa_switch
+ 	else
+ 		speed = SPEED_1000;
+ 
+-	ret = mt7531_mac_config(ds, port, MLO_AN_FIXED, interface);
+-	if (ret)
+-		return ret;
++	mt7531_mac_config(ds, port, MLO_AN_FIXED, interface);
++
+ 	mt7530_write(priv, MT7530_PMCR_P(port),
+ 		     PMCR_CPU_PORT_SETTING(priv->id));
+ 	mt753x_phylink_mac_link_up(ds, port, MLO_AN_FIXED, interface, NULL,
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -753,9 +753,9 @@ struct mt753x_info {
+ 	void (*mac_port_validate)(struct dsa_switch *ds, int port,
+ 				  phy_interface_t interface,
+ 				  unsigned long *supported);
+-	int (*mac_port_config)(struct dsa_switch *ds, int port,
+-			       unsigned int mode,
+-			       phy_interface_t interface);
++	void (*mac_port_config)(struct dsa_switch *ds, int port,
++				unsigned int mode,
++				phy_interface_t interface);
+ };
+ 
+ /* struct mt7530_priv -	This is the main data structure for holding the state

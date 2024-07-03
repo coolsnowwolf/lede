@@ -1,0 +1,149 @@
+From 0100d1c5789018ba77bf2f4fab3bd91ecece7b3b Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Wed, 17 May 2023 11:38:12 +0100
+Subject: [PATCH 14/21] net: sfp: add support for setting signalling rate
+
+Add support to the SFP layer to allow phylink to set the signalling
+rate for a SFP module. The rate given will be in units of kilo-baud
+(1000 baud).
+
+Reviewed-by: Simon Horman <simon.horman@corigine.com>
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 24 ++++++++++++++++++++++++
+ drivers/net/phy/sfp-bus.c | 20 ++++++++++++++++++++
+ drivers/net/phy/sfp.c     |  5 +++++
+ drivers/net/phy/sfp.h     |  1 +
+ include/linux/sfp.h       |  6 ++++++
+ 5 files changed, 56 insertions(+)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -156,6 +156,23 @@ static const char *phylink_an_mode_str(u
+ 	return mode < ARRAY_SIZE(modestr) ? modestr[mode] : "unknown";
+ }
+ 
++static unsigned int phylink_interface_signal_rate(phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX: /* 1.25Mbd */
++		return 1250;
++	case PHY_INTERFACE_MODE_2500BASEX: /* 3.125Mbd */
++		return 3125;
++	case PHY_INTERFACE_MODE_5GBASER: /* 5.15625Mbd */
++		return 5156;
++	case PHY_INTERFACE_MODE_10GBASER: /* 10.3125Mbd */
++		return 10313;
++	default:
++		return 0;
++	}
++}
++
+ /**
+  * phylink_interface_max_speed() - get the maximum speed of a phy interface
+  * @interface: phy interface mode defined by &typedef phy_interface_t
+@@ -1024,6 +1041,7 @@ static void phylink_major_config(struct
+ {
+ 	struct phylink_pcs *pcs = NULL;
+ 	bool pcs_changed = false;
++	unsigned int rate_kbd;
+ 	int err;
+ 
+ 	phylink_dbg(pl, "major config %s\n", phy_modes(state->interface));
+@@ -1083,6 +1101,12 @@ static void phylink_major_config(struct
+ 				    ERR_PTR(err));
+ 	}
+ 
++	if (pl->sfp_bus) {
++		rate_kbd = phylink_interface_signal_rate(state->interface);
++		if (rate_kbd)
++			sfp_upstream_set_signal_rate(pl->sfp_bus, rate_kbd);
++	}
++
+ 	phylink_pcs_poll_start(pl);
+ }
+ 
+--- a/drivers/net/phy/sfp-bus.c
++++ b/drivers/net/phy/sfp-bus.c
+@@ -586,6 +586,26 @@ static void sfp_upstream_clear(struct sf
+ }
+ 
+ /**
++ * sfp_upstream_set_signal_rate() - set data signalling rate
++ * @bus: a pointer to the &struct sfp_bus structure for the sfp module
++ * @rate_kbd: signalling rate in units of 1000 baud
++ *
++ * Configure the rate select settings on the SFP module for the signalling
++ * rate (not the same as the data rate).
++ *
++ * Locks that may be held:
++ *  Phylink's state_mutex
++ *  rtnl lock
++ *  SFP's sm_mutex
++ */
++void sfp_upstream_set_signal_rate(struct sfp_bus *bus, unsigned int rate_kbd)
++{
++	if (bus->registered)
++		bus->socket_ops->set_signal_rate(bus->sfp, rate_kbd);
++}
++EXPORT_SYMBOL_GPL(sfp_upstream_set_signal_rate);
++
++/**
+  * sfp_bus_find_fwnode() - parse and locate the SFP bus from fwnode
+  * @fwnode: firmware node for the parent device (MAC or PHY)
+  *
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -2473,6 +2473,10 @@ static void sfp_stop(struct sfp *sfp)
+ 	sfp_sm_event(sfp, SFP_E_DEV_DOWN);
+ }
+ 
++static void sfp_set_signal_rate(struct sfp *sfp, unsigned int rate_kbd)
++{
++}
++
+ static int sfp_module_info(struct sfp *sfp, struct ethtool_modinfo *modinfo)
+ {
+ 	/* locking... and check module is present */
+@@ -2551,6 +2555,7 @@ static const struct sfp_socket_ops sfp_m
+ 	.detach = sfp_detach,
+ 	.start = sfp_start,
+ 	.stop = sfp_stop,
++	.set_signal_rate = sfp_set_signal_rate,
+ 	.module_info = sfp_module_info,
+ 	.module_eeprom = sfp_module_eeprom,
+ 	.module_eeprom_by_page = sfp_module_eeprom_by_page,
+--- a/drivers/net/phy/sfp.h
++++ b/drivers/net/phy/sfp.h
+@@ -19,6 +19,7 @@ struct sfp_socket_ops {
+ 	void (*detach)(struct sfp *sfp);
+ 	void (*start)(struct sfp *sfp);
+ 	void (*stop)(struct sfp *sfp);
++	void (*set_signal_rate)(struct sfp *sfp, unsigned int rate_kbd);
+ 	int (*module_info)(struct sfp *sfp, struct ethtool_modinfo *modinfo);
+ 	int (*module_eeprom)(struct sfp *sfp, struct ethtool_eeprom *ee,
+ 			     u8 *data);
+--- a/include/linux/sfp.h
++++ b/include/linux/sfp.h
+@@ -547,6 +547,7 @@ int sfp_get_module_eeprom_by_page(struct
+ 				  struct netlink_ext_ack *extack);
+ void sfp_upstream_start(struct sfp_bus *bus);
+ void sfp_upstream_stop(struct sfp_bus *bus);
++void sfp_upstream_set_signal_rate(struct sfp_bus *bus, unsigned int rate_kbd);
+ void sfp_bus_put(struct sfp_bus *bus);
+ struct sfp_bus *sfp_bus_find_fwnode(const struct fwnode_handle *fwnode);
+ int sfp_bus_add_upstream(struct sfp_bus *bus, void *upstream,
+@@ -606,6 +607,11 @@ static inline void sfp_upstream_stop(str
+ {
+ }
+ 
++static inline void sfp_upstream_set_signal_rate(struct sfp_bus *bus,
++						unsigned int rate_kbd)
++{
++}
++
+ static inline void sfp_bus_put(struct sfp_bus *bus)
+ {
+ }

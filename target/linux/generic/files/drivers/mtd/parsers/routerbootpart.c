@@ -167,7 +167,7 @@ static void routerboot_find_dynparts(struct mtd_info *master)
 	while (offset < master->size) {
 		err = mtd_read(master, offset, sizeof(buf), &bytes_read, (u8 *)&buf);
 		if (err) {
-			pr_err("%s: mtd_read error while parsing (offset: 0x%X): %d\n",
+			pr_err("%s: mtd_read error while parsing (offset: 0x%zX): %d\n",
 			       master->name, offset, err);
 			continue;
 		}
