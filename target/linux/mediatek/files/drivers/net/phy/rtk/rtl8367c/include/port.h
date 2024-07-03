@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes port module high-layer API defination
+ * Feature : The file includes port module high-layer API definition
  *
  */
 
@@ -222,7 +222,7 @@ typedef struct rtk_rtctResult_s
 /* Function Name:
  *      rtk_port_phyAutoNegoAbility_set
  * Description:
- *      Set ethernet PHY auto-negotiation desired ability.
+ *      Set Ethernet PHY auto-negotiation desired ability.
  * Input:
  *      port        - port id.
  *      pAbility    - Ability structure
@@ -259,7 +259,7 @@ extern rtk_api_ret_t rtk_port_phyAutoNegoAbility_set(rtk_port_t port, rtk_port_p
  *      RT_ERR_INPUT            - Invalid input parameters.
  *      RT_ERR_BUSYWAIT_TIMEOUT - PHY access busy
  * Note:
- *      Get the capablity of specified PHY.
+ *      Get the capability of specified PHY.
  */
 extern rtk_api_ret_t rtk_port_phyAutoNegoAbility_get(rtk_port_t port, rtk_port_phy_ability_t *pAbility);
 
@@ -303,14 +303,14 @@ extern rtk_api_ret_t rtk_port_phyForceModeAbility_set(rtk_port_t port, rtk_port_
  *      RT_ERR_INPUT            - Invalid input parameters.
  *      RT_ERR_BUSYWAIT_TIMEOUT - PHY access busy
  * Note:
- *      Get the capablity of specified PHY.
+ *      Get the capability of specified PHY.
  */
 extern rtk_api_ret_t rtk_port_phyForceModeAbility_get(rtk_port_t port, rtk_port_phy_ability_t *pAbility);
 
 /* Function Name:
  *      rtk_port_phyStatus_get
  * Description:
- *      Get ethernet PHY linking status
+ *      Get Ethernet PHY linking status
  * Input:
  *      port - Port id.
  * Output:
@@ -459,7 +459,7 @@ extern rtk_api_ret_t rtk_port_macStatus_get(rtk_port_t port, rtk_port_mac_abilit
  *      For UTP port, This API will also enable the digital
  *      loopback bit in PHY register for sync of speed between
  *      PHY and MAC. For EXT port, users need to force the
- *      link state by themself.
+ *      link state by themselves.
  */
 extern rtk_api_ret_t rtk_port_macLocalLoopbackEnable_set(rtk_port_t port, rtk_enable_t enable);
 
@@ -527,7 +527,7 @@ extern rtk_api_ret_t rtk_port_phyReg_get(rtk_port_t port, rtk_port_phy_reg_t reg
 /* Function Name:
  *      rtk_port_backpressureEnable_set
  * Description:
- *      Set the half duplex backpressure enable status of the specific port.
+ *      Set the half duplex back-pressure enable status of the specific port.
  * Input:
  *      port    - port id.
  *      enable  - Back pressure status.
@@ -540,8 +540,8 @@ extern rtk_api_ret_t rtk_port_phyReg_get(rtk_port_t port, rtk_port_phy_reg_t reg
  *      RT_ERR_PORT_ID      - Invalid port number.
  *      RT_ERR_ENABLE       - Invalid enable input.
  * Note:
- *      This API can set the half duplex backpressure enable status of the specific port.
- *      The half duplex backpressure enable status of the port is as following:
+ *      This API can set the half duplex back-pressure enable status of the specific port.
+ *      The half duplex back-pressure enable status of the port is as following:
  *      - DISABLE
  *      - ENABLE
  */
@@ -550,7 +550,7 @@ extern rtk_api_ret_t rtk_port_backpressureEnable_set(rtk_port_t port, rtk_enable
 /* Function Name:
  *      rtk_port_backpressureEnable_get
  * Description:
- *      Get the half duplex backpressure enable status of the specific port.
+ *      Get the half duplex back-pressure enable status of the specific port.
  * Input:
  *      port - Port id.
  * Output:
@@ -561,8 +561,8 @@ extern rtk_api_ret_t rtk_port_backpressureEnable_set(rtk_port_t port, rtk_enable
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_PORT_ID      - Invalid port number.
  * Note:
- *      This API can get the half duplex backpressure enable status of the specific port.
- *      The half duplex backpressure enable status of the port is as following:
+ *      This API can get the half duplex back-pressure enable status of the specific port.
+ *      The half duplex back-pressure enable status of the port is as following:
  *      - DISABLE
  *      - ENABLE
  */
@@ -594,7 +594,7 @@ extern rtk_api_ret_t rtk_port_adminEnable_set(rtk_port_t port, rtk_enable_t enab
 /* Function Name:
  *      rtk_port_adminEnable_get
  * Description:
- *      Get port admin configurationof the specific port.
+ *      Get port admin configuration of the specific port.
  * Input:
  *      port - Port id.
  * Output:
@@ -628,7 +628,7 @@ extern rtk_api_ret_t rtk_port_adminEnable_get(rtk_port_t port, rtk_enable_t *pEn
  *      RT_ERR_PORT_ID      - Invalid port number.
  *      RT_ERR_PORT_MASK    - Invalid portmask.
  * Note:
- *      This API set the port mask that a port can trasmit packet to of each port
+ *      This API set the port mask that a port can transmit packet to of each port
  *      A port can only transmit packet to ports included in permitted portmask
  */
 extern rtk_api_ret_t rtk_port_isolation_set(rtk_port_t port, rtk_portmask_t *pPortmask);
@@ -647,7 +647,7 @@ extern rtk_api_ret_t rtk_port_isolation_set(rtk_port_t port, rtk_portmask_t *pPo
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_PORT_ID      - Invalid port number.
  * Note:
- *      This API get the port mask that a port can trasmit packet to of each port
+ *      This API get the port mask that a port can transmit packet to of each port
  *      A port can only transmit packet to ports included in permitted portmask
  */
 extern rtk_api_ret_t rtk_port_isolation_get(rtk_port_t port, rtk_portmask_t *pPortmask);
@@ -669,7 +669,7 @@ extern rtk_api_ret_t rtk_port_isolation_get(rtk_port_t port, rtk_portmask_t *pPo
  * Note:
  *      This API can set external interface 2 RGMII delay.
  *      In TX delay, there are 2 selection: no-delay and 2ns delay.
- *      In RX dekay, there are 8 steps for delay tunning. 0 for no-delay, and 7 for maximum delay.
+ *      In RX delay, there are 8 steps for delay tuning. 0 for no-delay, and 7 for maximum delay.
  */
 extern rtk_api_ret_t rtk_port_rgmiiDelayExt_set(rtk_port_t port, rtk_data_t txDelay, rtk_data_t rxDelay);
 
@@ -690,7 +690,7 @@ extern rtk_api_ret_t rtk_port_rgmiiDelayExt_set(rtk_port_t port, rtk_data_t txDe
  * Note:
  *      This API can set external interface 2 RGMII delay.
  *      In TX delay, there are 2 selection: no-delay and 2ns delay.
- *      In RX dekay, there are 8 steps for delay tunning. 0 for n0-delay, and 7 for maximum delay.
+ *      In RX delay, there are 8 steps for delay tuning. 0 for n0-delay, and 7 for maximum delay.
  */
 extern rtk_api_ret_t rtk_port_rgmiiDelayExt_get(rtk_port_t port, rtk_data_t *pTxDelay, rtk_data_t *pRxDelay);
 

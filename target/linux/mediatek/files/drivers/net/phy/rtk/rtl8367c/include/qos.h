@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes QoS module high-layer API defination
+ * Feature : The file includes QoS module high-layer API definition
  *
  */
 
@@ -123,7 +123,7 @@ typedef rtk_uint32  rtk_queue_num_t;    /* queue number*/
 /* Function Name:
  *      rtk_qos_init
  * Description:
- *      Configure Qos default settings with queue number assigment to each port.
+ *      Configure QoS default settings with queue number assignment to each port.
  * Input:
  *      queueNum - Queue number of each port.
  * Output:
@@ -135,7 +135,7 @@ typedef rtk_uint32  rtk_queue_num_t;    /* queue number*/
  *      RT_ERR_QUEUE_NUM    - Invalid queue number.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This API will initialize related Qos setting with queue number assigment.
+ *      This API will initialize related QoS setting with queue number assignment.
  *      The queue number is from 1 to 8.
  */
 extern rtk_api_ret_t rtk_qos_init(rtk_queue_num_t queueNum);
@@ -235,7 +235,7 @@ extern rtk_api_ret_t rtk_qos_1pPriRemap_set(rtk_pri_t dot1p_pri, rtk_pri_t int_p
  *      RT_ERR_VLAN_PRIORITY    - Invalid priority.
  *      RT_ERR_QOS_INT_PRIORITY - Invalid priority.
  * Note:
- *      Priority of 802.1Q assigment for internal asic priority, and it is uesed for queue usage and packet scheduling.
+ *      Priority of 802.1Q assignment for internal asic priority, and it is used for queue usage and packet scheduling.
  */
 extern rtk_api_ret_t rtk_qos_1pPriRemap_get(rtk_pri_t dot1p_pri, rtk_pri_t *pInt_pri);
 

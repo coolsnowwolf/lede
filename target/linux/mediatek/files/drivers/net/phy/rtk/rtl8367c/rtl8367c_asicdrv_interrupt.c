@@ -99,10 +99,10 @@ ret_t rtl8367c_getAsicInterruptMask(rtk_uint32* pImr)
  *      RT_ERR_OK   - Success
  *      RT_ERR_SMI  - SMI access error
  * Note:
- *      This API can be used to clear ASIC interrupt status and register will be cleared by writting 1.
+ *      This API can be used to clear ASIC interrupt status and register will be cleared by writing 1.
  *      [0]:Link change,
  *      [1]:Share meter exceed,
- *      [2]:Learn number overed,
+ *      [2]:Learn number over,
  *      [3]:Speed Change,
  *      [4]:Tx special congestion
  *      [5]:1 second green feature

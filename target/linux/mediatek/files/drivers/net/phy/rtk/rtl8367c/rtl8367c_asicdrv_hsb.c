@@ -30,7 +30,7 @@
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_OUT_OF_RANGE - input parameter out of range
  * Note:
- *      System support 16 user defined field selctors.
+ *      System support 16 user defined field selectors.
  *      Each selector can be enabled or disable. User can defined retrieving 16-bits in many predefiend
  *      standard l2/l3/l4 payload.
  */

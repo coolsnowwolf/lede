@@ -1,0 +1,78 @@
+From 681b652c9dfc4037d4a55b2733e091a4e1a5de18 Mon Sep 17 00:00:00 2001
+From: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Date: Wed, 19 Apr 2023 08:11:46 +0200
+Subject: [PATCH 17/42] thermal/drivers/mediatek: Add temperature constraints
+ to validate read
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The AUXADC thermal v1 allows reading temperature range between -20°C to
+150°C and any value out of this range is invalid.
+
+Add new definitions for MT8173_TEMP_{MIN_MAX} and a new small helper
+mtk_thermal_temp_is_valid() to check if new readings are in range: if
+not, we tell to the API that the reading is invalid by returning
+THERMAL_TEMP_INVALID.
+
+It was chosen to introduce the helper function because, even though this
+temperature range is realistically ok for all, it comes from a downstream
+kernel driver for version 1, but here we also support v2 and v3 which may
+may have wider constraints.
+
+Signed-off-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20230419061146.22246-3-angelogioacchino.delregno@collabora.com
+---
+ drivers/thermal/mediatek/auxadc_thermal.c | 24 +++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+--- a/drivers/thermal/mediatek/auxadc_thermal.c
++++ b/drivers/thermal/mediatek/auxadc_thermal.c
+@@ -116,6 +116,10 @@
+ /* The calibration coefficient of sensor  */
+ #define MT8173_CALIBRATION	165
+ 
++/* Valid temperatures range */
++#define MT8173_TEMP_MIN		-20000
++#define MT8173_TEMP_MAX		150000
++
+ /*
+  * Layout of the fuses providing the calibration data
+  * These macros could be used for MT8183, MT8173, MT2701, and MT2712.
+@@ -689,6 +693,11 @@ static const struct mtk_thermal_data mt7
+ 	.version = MTK_THERMAL_V3,
+ };
+ 
++static bool mtk_thermal_temp_is_valid(int temp)
++{
++	return (temp >= MT8173_TEMP_MIN) && (temp <= MT8173_TEMP_MAX);
++}
++
+ /**
+  * raw_to_mcelsius_v1 - convert a raw ADC value to mcelsius
+  * @mt:	The thermal controller
+@@ -815,14 +824,17 @@ static int mtk_thermal_bank_temperature(
+ 		temp = mt->raw_to_mcelsius(
+ 			mt, conf->bank_data[bank->id].sensors[i], raw);
+ 
+-
+ 		/*
+-		 * The first read of a sensor often contains very high bogus
+-		 * temperature value. Filter these out so that the system does
+-		 * not immediately shut down.
++		 * Depending on the filt/sen intervals and ADC polling time,
++		 * we may need up to 60 milliseconds after initialization: this
++		 * will result in the first reading containing an out of range
++		 * temperature value.
++		 * Validate the reading to both address the aforementioned issue
++		 * and to eventually avoid bogus readings during runtime in the
++		 * event that the AUXADC gets unstable due to high EMI, etc.
+ 		 */
+-		if (temp > 200000)
+-			temp = 0;
++		if (!mtk_thermal_temp_is_valid(temp))
++			temp = THERMAL_TEMP_INVALID;
+ 
+ 		if (temp > max)
+ 			max = temp;

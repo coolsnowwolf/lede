@@ -22,7 +22,7 @@
  *      Reset global/queue manage or per-port MIB counter
  * Input:
  *      greset  - Global reset
- *      qmreset - Queue maganement reset
+ *      qmreset - Queue management reset
  *      portmask    - Port reset mask
  * Output:
  *      None
@@ -59,7 +59,7 @@ ret_t rtl8367c_setAsicMIBsCounterReset(rtk_uint32 greset, rtk_uint32 qmreset, rt
  * Input:
  *      port        - Physical port number (0~7)
  *      mibIdx      - MIB counter index
- *      pCounter    - MIB retrived counter
+ *      pCounter    - MIB retrieved counter
  * Output:
  *      None
  * Return:
@@ -69,9 +69,9 @@ ret_t rtl8367c_setAsicMIBsCounterReset(rtk_uint32 greset, rtk_uint32 qmreset, rt
  *      RT_ERR_BUSYWAIT_TIMEOUT - MIB is busy at retrieving
  *      RT_ERR_STAT_CNTR_FAIL   - MIB is resetting
  * Note:
- *      Before MIBs counter retrieving, writting accessing address to ASIC at first and check the MIB
+ *      Before MIBs counter retrieving, writing accessing address to ASIC at first and check the MIB
  *      control register status. If busy bit of MIB control is set, that means MIB counter have been
- *      waiting for preparing, then software must wait atfer this busy flag reset by ASIC. This driver
+ *      waiting for preparing, then software must wait after this busy flag reset by ASIC. This driver
  *      did not recycle reading user desired counter. Software must use driver again to get MIB counter
  *      if return value is not RT_ERR_OK.
  */
@@ -124,7 +124,7 @@ ret_t rtl8367c_getAsicMIBsCounter(rtk_uint32 port, RTL8367C_MIBCOUNTER mibIdx, r
 
     /*writing access counter address first*/
     /*This address is SRAM address, and SRAM address = MIB register address >> 2*/
-    /*then ASIC will prepare 64bits counter wait for being retrived*/
+    /*then ASIC will prepare 64bits counter wait for being retrieved*/
     /*Write Mib related address to access control register*/
     retVal = rtl8367c_setAsicReg(RTL8367C_REG_MIB_ADDRESS, (mibAddr >> 2));
     if(retVal != RT_ERR_OK)
@@ -183,7 +183,7 @@ ret_t rtl8367c_getAsicMIBsCounter(rtk_uint32 port, RTL8367C_MIBCOUNTER mibIdx, r
 /* Function Name:
  *      rtl8367c_getAsicMIBsLogCounter
  * Description:
- *      Get MIBs Loggin counter
+ *      Get MIBs Logging counter
  * Input:
  *      index       - The index of 32 logging counter (0 ~ 31)
  * Output:
@@ -260,7 +260,7 @@ ret_t rtl8367c_getAsicMIBsLogCounter(rtk_uint32 index, rtk_uint32 *pCounter)
  *      RT_ERR_OK               - Success
  *      RT_ERR_SMI              - SMI access error
  * Note:
- *      Software need to check this control register atfer doing port resetting or global resetting
+ *      Software need to check this control register after doing port resetting or global resetting
  */
 ret_t rtl8367c_getAsicMIBsControl(rtk_uint32* pMask)
 {
@@ -513,7 +513,7 @@ ret_t rtl8367c_setAsicMIBsResetLoggingCounter(rtk_uint32 index)
 /* Function Name:
  *      rtl8367c_setAsicMIBsLength
  * Description:
- *      Set MIB length couting mode
+ *      Set MIB length counting mode
  * Input:
  *      txLengthMode    - 0: tag length doesn't be counted. 1: tag length is counted.
  *      rxLengthMode    - 0: tag length doesn't be counted. 1: tag length is counted.
@@ -542,7 +542,7 @@ ret_t rtl8367c_setAsicMIBsLength(rtk_uint32 txLengthMode, rtk_uint32 rxLengthMod
 /* Function Name:
  *      rtl8367c_setAsicMIBsLength
  * Description:
- *      Set MIB length couting mode
+ *      Set MIB length counting mode
  * Input:
  *      None.
  * Output:

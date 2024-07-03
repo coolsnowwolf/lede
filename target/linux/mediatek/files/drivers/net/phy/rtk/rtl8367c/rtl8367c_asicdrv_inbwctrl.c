@@ -128,7 +128,7 @@ ret_t rtl8367c_getAsicPortIngressBandwidth(rtk_uint32 port, rtk_uint32* pBandwid
 /* Function Name:
  *      rtl8367c_setAsicPortIngressBandwidthBypass
  * Description:
- *      Set ingress bandwidth control bypasss 8899, RMA 01-80-C2-00-00-xx and IGMP
+ *      Set ingress bandwidth control bypass 8899, RMA 01-80-C2-00-00-xx and IGMP
  * Input:
  *      enabled - 1: enabled, 0: disabled
  * Output:
@@ -146,7 +146,7 @@ ret_t rtl8367c_setAsicPortIngressBandwidthBypass(rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicPortIngressBandwidthBypass
  * Description:
- *      Set ingress bandwidth control bypasss 8899, RMA 01-80-C2-00-00-xx and IGMP
+ *      Set ingress bandwidth control bypass 8899, RMA 01-80-C2-00-00-xx and IGMP
  * Input:
  *      pEnabled - 1: enabled, 0: disabled
  * Output:

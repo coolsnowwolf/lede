@@ -66,7 +66,7 @@ rtk_api_ret_t rtk_mirror_portBased_set(rtk_port_t mirroring_port, rtk_portmask_t
 
     RTK_CHK_PORTMASK_VALID(pMirrored_tx_portmask);
 
-    /*Mirror Sorce Port Mask Check*/
+    /*Mirror Source Port Mask Check*/
     if (pMirrored_tx_portmask->bits[0]!=pMirrored_rx_portmask->bits[0]&&pMirrored_tx_portmask->bits[0]!=0&&pMirrored_rx_portmask->bits[0]!=0)
         return RT_ERR_PORT_MASK;
 
@@ -353,7 +353,7 @@ rtk_api_ret_t rtk_mirror_vlanLeaky_get(rtk_enable_t *pTxenable, rtk_enable_t *pR
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_ENABLE       - Invalid enable input
  * Note:
- *      The API is to set mirror VLAN leaky function forwarding packets to miror port.
+ *      The API is to set mirror VLAN leaky function forwarding packets to mirror port.
  */
 rtk_api_ret_t rtk_mirror_isolationLeaky_set(rtk_enable_t txenable, rtk_enable_t rxenable)
 {

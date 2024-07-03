@@ -1,0 +1,70 @@
+From bd1ccf9408e6155564530af5e09b53ae497fe332 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?N=C3=ADcolas=20F=2E=20R=2E=20A=2E=20Prado?=
+ <nfraprado@collabora.com>
+Date: Thu, 6 Jul 2023 11:37:36 -0400
+Subject: [PATCH 29/42] thermal/drivers/mediatek/lvts_thermal: Don't leave
+ threshold zeroed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The thermal framework might leave the low threshold unset if there
+aren't any lower trip points. This leaves the register zeroed, which
+translates to a very high temperature for the low threshold. The
+interrupt for this threshold is then immediately triggered, and the
+state machine gets stuck, preventing any other temperature monitoring
+interrupts to ever trigger.
+
+(The same happens by not setting the Cold or Hot to Normal thresholds
+when using those)
+
+Set the unused threshold to a valid low value. This value was chosen so
+that for any valid golden temperature read from the efuse, when the
+value is converted to raw and back again to milliCelsius, the result
+doesn't underflow.
+
+Fixes: f5f633b18234 ("thermal/drivers/mediatek: Add the Low Voltage Thermal Sensor driver")
+Signed-off-by: Nícolas F. R. A. Prado <nfraprado@collabora.com>
+Reviewed-by: Alexandre Mergnat <amergnat@baylibre.com>
+Reviewed-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+Link: https://lore.kernel.org/r/20230706153823.201943-6-nfraprado@collabora.com
+---
+ drivers/thermal/mediatek/lvts_thermal.c | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+--- a/drivers/thermal/mediatek/lvts_thermal.c
++++ b/drivers/thermal/mediatek/lvts_thermal.c
+@@ -83,6 +83,8 @@
+ 
+ #define LVTS_HW_SHUTDOWN_MT8195		105000
+ 
++#define LVTS_MINIMUM_THRESHOLD		20000
++
+ static int golden_temp = LVTS_GOLDEN_TEMP_DEFAULT;
+ static int coeff_b = LVTS_COEFF_B;
+ 
+@@ -294,7 +296,7 @@ static int lvts_set_trips(struct thermal
+ {
+ 	struct lvts_sensor *lvts_sensor = thermal_zone_device_priv(tz);
+ 	void __iomem *base = lvts_sensor->base;
+-	u32 raw_low = lvts_temp_to_raw(low);
++	u32 raw_low = lvts_temp_to_raw(low != -INT_MAX ? low : LVTS_MINIMUM_THRESHOLD);
+ 	u32 raw_high = lvts_temp_to_raw(high);
+ 
+ 	/*
+@@ -306,11 +308,9 @@ static int lvts_set_trips(struct thermal
+ 	 *
+ 	 * 14-0 : Raw temperature for threshold
+ 	 */
+-	if (low != -INT_MAX) {
+-		pr_debug("%s: Setting low limit temperature interrupt: %d\n",
+-			 thermal_zone_device_type(tz), low);
+-		writel(raw_low, LVTS_OFFSETL(base));
+-	}
++	pr_debug("%s: Setting low limit temperature interrupt: %d\n",
++		 thermal_zone_device_type(tz), low);
++	writel(raw_low, LVTS_OFFSETL(base));
+ 
+ 	/*
+ 	 * High offset temperature threshold

@@ -73,11 +73,7 @@
 
 int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, u64 sectors, int *slot, int add_remain)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
 	struct block_device *bdev = state->disk->part0;
-#else
-	struct block_device *bdev = state->bdev;
-#endif
 	struct address_space *mapping = bdev->bd_inode->i_mapping;
 	struct page *page;
 	void *fit, *init_fit;
@@ -104,8 +100,11 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 		return -ERANGE;
 
 	page = read_mapping_page(mapping, fit_start_sector >> (PAGE_SHIFT - SECTOR_SHIFT), NULL);
-	if (!page)
-		return -ENOMEM;
+	if (IS_ERR(page))
+		return -EFAULT;
+
+	if (PageError(page))
+		return -EFAULT;
 
 	init_fit = page_address(page);
 
@@ -224,8 +223,8 @@ int parse_fit_partitions(struct parsed_partitions *state, u64 fit_start_sector, 
 
 		image_description = fdt_getprop(fit, node, FIT_DESC_PROP, &image_description_len);
 
-		printk(KERN_DEBUG "FIT: %16s sub-image 0x%08x - 0x%08x \"%s\" %s%s%s\n",
-			image_type, image_pos, image_pos + image_len, image_name,
+		printk(KERN_DEBUG "FIT: %16s sub-image 0x%08x..0x%08x \"%s\" %s%s%s\n",
+			image_type, image_pos, image_pos + image_len - 1, image_name,
 			image_description?"(":"", image_description?:"", image_description?") ":"");
 
 		if (strcmp(image_type, FIT_FILESYSTEM_PROP))
