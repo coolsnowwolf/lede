@@ -21,6 +21,7 @@ define Device/EmmcImage
 	IMAGES := factory.bin recovery.bin sysupgrade.bin
 	IMAGE/factory.bin := append-kernel | pad-to 12288k | append-rootfs | append-metadata
 	IMAGE/recovery.bin := append-kernel | pad-to 6144k | append-rootfs | append-metadata
+	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to 64k | sysupgrade-tar rootfs=$$$$@ | append-metadata
 endef
 
 define Device/cmiot_ax18
