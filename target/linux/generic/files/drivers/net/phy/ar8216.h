@@ -506,22 +506,20 @@ struct ar8xxx_priv {
 	unsigned int use_count;
 
 	/* all fields below are cleared on reset */
-	struct_group(ar8xxx_priv_volatile,
-		bool vlan;
+	bool vlan;
 
-		u16 vlan_id[AR8XXX_MAX_VLANS];
-		u8 vlan_table[AR8XXX_MAX_VLANS];
-		u8 vlan_tagged;
-		u16 pvid[AR8X16_MAX_PORTS];
-		int arl_age_time;
+	u16 vlan_id[AR8XXX_MAX_VLANS];
+	u8 vlan_table[AR8XXX_MAX_VLANS];
+	u8 vlan_tagged;
+	u16 pvid[AR8X16_MAX_PORTS];
+	int arl_age_time;
 
-		/* mirroring */
-		bool mirror_rx;
-		bool mirror_tx;
-		int source_port;
-		int monitor_port;
-		u8 port_vlan_prio[AR8X16_MAX_PORTS];
-	);
+	/* mirroring */
+	bool mirror_rx;
+	bool mirror_tx;
+	int source_port;
+	int monitor_port;
+	u8 port_vlan_prio[AR8X16_MAX_PORTS];
 };
 
 u32
