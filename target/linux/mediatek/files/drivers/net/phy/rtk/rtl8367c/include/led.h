@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes LED module high-layer API defination
+ * Feature : The file includes LED module high-layer API definition
  *
  */
 
@@ -107,7 +107,7 @@ typedef enum rtk_led_serialOutput_e
 /* Function Name:
  *      rtk_led_enable_set
  * Description:
- *      Set Led enable congiuration
+ *      Set Led enable configuration
  * Input:
  *      group       - LED group id.
  *      pPortmask    - LED enable port mask.
@@ -126,7 +126,7 @@ extern rtk_api_ret_t rtk_led_enable_set(rtk_led_group_t group, rtk_portmask_t *p
 /* Function Name:
  *      rtk_led_enable_get
  * Description:
- *      Get Led enable congiuration
+ *      Get Led enable configuration
  * Input:
  *      group - LED group id.
  * Output:
@@ -188,7 +188,7 @@ extern rtk_api_ret_t rtk_led_operation_get(rtk_led_operation_t *pMode);
 /* Function Name:
  *      rtk_led_modeForce_set
  * Description:
- *      Set Led group to congiuration force mode
+ *      Set Led group to configuration force mode
  * Input:
  *      port    - port ID
  *      group   - Support LED group id.
@@ -214,7 +214,7 @@ extern rtk_api_ret_t rtk_led_modeForce_set(rtk_port_t port, rtk_led_group_t grou
 /* Function Name:
  *      rtk_led_modeForce_get
  * Description:
- *      Get Led group to congiuration force mode
+ *      Get Led group to configuration force mode
  * Input:
  *      port  - port ID
  *      group - Support LED group id.
@@ -276,7 +276,7 @@ extern rtk_api_ret_t rtk_led_blinkRate_get(rtk_led_blink_rate_t *pBlinkRate);
 /* Function Name:
  *      rtk_led_groupConfig_set
  * Description:
- *      Set per group Led to congiuration mode
+ *      Set per group Led to configuration mode
  * Input:
  *      group   - LED group.
  *      config  - LED configuration
@@ -312,7 +312,7 @@ extern rtk_api_ret_t rtk_led_groupConfig_set(rtk_led_group_t group, rtk_led_cong
 /* Function Name:
  *      rtk_led_groupConfig_get
  * Description:
- *      Get Led group congiuration mode
+ *      Get Led group configuration mode
  * Input:
  *      group - LED group.
  * Output:
@@ -370,7 +370,7 @@ extern rtk_api_ret_t rtk_led_groupAbility_get(rtk_led_group_t group, rtk_led_abi
 /* Function Name:
  *      rtk_led_serialMode_set
  * Description:
- *      Set Led serial mode active congiuration
+ *      Set Led serial mode active configuration
  * Input:
  *      active - LED group.
  * Output:
@@ -381,14 +381,14 @@ extern rtk_api_ret_t rtk_led_groupAbility_get(rtk_led_group_t group, rtk_led_abi
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      The API can set LED serial mode active congiuration.
+ *      The API can set LED serial mode active configuration.
  */
 extern rtk_api_ret_t rtk_led_serialMode_set(rtk_led_active_t active);
 
 /* Function Name:
  *      rtk_led_serialMode_get
  * Description:
- *      Get Led group congiuration mode
+ *      Get Led group configuration mode
  * Input:
  *      group - LED group.
  * Output:

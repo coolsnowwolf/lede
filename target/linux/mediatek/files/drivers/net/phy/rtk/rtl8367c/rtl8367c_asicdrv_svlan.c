@@ -140,7 +140,7 @@ ret_t rtl8367c_getAsicSvlanUplinkPortMask(rtk_uint32* pPortmask)
  *      RT_ERR_SMI  - SMI access error
  * Note:
  *      Ether type of S-tag in 802.1ad is 0x88a8 and there are existed ether type 0x9100 and 0x9200
- *      for Q-in-Q SLAN design. User can set mathced ether type as service provider supported protocol
+ *      for Q-in-Q SLAN design. User can set matched ether type as service provider supported protocol
  */
 ret_t rtl8367c_setAsicSvlanTpid(rtk_uint32 protocolType)
 {
@@ -344,7 +344,7 @@ ret_t rtl8367c_getAsicSvlanDefaultVlan(rtk_uint32 port, rtk_uint32* pIndex)
 /* Function Name:
  *      rtl8367c_setAsicSvlanIngressUntag
  * Description:
- *      Set action received un-Stag frame from unplink port
+ *      Set action received un-Stag frame from uplink port
  * Input:
  *      mode        - 0:Drop 1:Trap 2:Assign SVLAN
  * Output:
@@ -362,7 +362,7 @@ ret_t rtl8367c_setAsicSvlanIngressUntag(rtk_uint32 mode)
 /* Function Name:
  *      rtl8367c_getAsicSvlanIngressUntag
  * Description:
- *      Get action received un-Stag frame from unplink port
+ *      Get action received un-Stag frame from uplink port
  * Input:
  *      pMode       - 0:Drop 1:Trap 2:Assign SVLAN
  * Output:
@@ -380,7 +380,7 @@ ret_t rtl8367c_getAsicSvlanIngressUntag(rtk_uint32* pMode)
 /* Function Name:
  *      rtl8367c_setAsicSvlanIngressUnmatch
  * Description:
- *      Set action received unmatched Stag frame from unplink port
+ *      Set action received unmatched Stag frame from uplink port
  * Input:
  *      mode        - 0:Drop 1:Trap 2:Assign SVLAN
  * Output:
@@ -398,7 +398,7 @@ ret_t rtl8367c_setAsicSvlanIngressUnmatch(rtk_uint32 mode)
 /* Function Name:
  *      rtl8367c_getAsicSvlanIngressUnmatch
  * Description:
- *      Get action received unmatched Stag frame from unplink port
+ *      Get action received unmatched Stag frame from uplink port
  * Input:
  *      pMode       - 0:Drop 1:Trap 2:Assign SVLAN
  * Output:
@@ -417,7 +417,7 @@ ret_t rtl8367c_getAsicSvlanIngressUnmatch(rtk_uint32* pMode)
 /* Function Name:
  *      rtl8367c_setAsicSvlanEgressUnassign
  * Description:
- *      Set unplink stream without egress SVID action
+ *      Set uplink stream without egress SVID action
  * Input:
  *      enabled     - 1:Trap egress unassigned frames to CPU, 0: Use SVLAN setup in VS_CPSVIDX as egress SVID
  * Output:
@@ -435,7 +435,7 @@ ret_t rtl8367c_setAsicSvlanEgressUnassign(rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicSvlanEgressUnassign
  * Description:
- *      Get unplink stream without egress SVID action
+ *      Get uplink stream without egress SVID action
  * Input:
  *      pEnabled    - 1:Trap egress unassigned frames to CPU, 0: Use SVLAN setup in VS_CPSVIDX as egress SVID
  * Output:
@@ -580,7 +580,7 @@ ret_t rtl8367c_getAsicSvlanMemberConfiguration(rtk_uint32 index,rtl8367c_svlan_m
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_ENTRY_INDEX  - Invalid entry index
  * Note:
- *      ASIC will check upstream's VID and assign related SVID to mathed packet
+ *      ASIC will check upstream's VID and assign related SVID to matched packet
  */
 ret_t rtl8367c_setAsicSvlanC2SConf(rtk_uint32 index, rtk_uint32 evid, rtk_uint32 portmask, rtk_uint32 svidx)
 {

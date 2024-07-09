@@ -429,8 +429,8 @@ ret_t rtl8367c_setAsicIGMPRobVar(rtk_uint32 rob_var)
     if(rob_var > RTL8367C_MAX_ROB_VAR)
         return RT_ERR_OUT_OF_RANGE;
 
-    /* Bourstness variable */
-    retVal = rtl8367c_setAsicRegBits(RTL8367C_REG_IGMP_MLD_CFG0, RTL8367C_ROBURSTNESS_VAR_MASK, rob_var);
+    /* Robustness variable */
+    retVal = rtl8367c_setAsicRegBits(RTL8367C_REG_IGMP_MLD_CFG0, RTL8367C_ROBUSTNESS_VAR_MASK, rob_var);
     if(retVal != RT_ERR_OK)
         return retVal;
 
@@ -456,8 +456,8 @@ ret_t rtl8367c_getAsicIGMPRobVar(rtk_uint32 *prob_var)
     ret_t   retVal;
     rtk_uint32  value;
 
-    /* Bourstness variable */
-    retVal = rtl8367c_getAsicRegBits(RTL8367C_REG_IGMP_MLD_CFG0, RTL8367C_ROBURSTNESS_VAR_MASK, &value);
+    /* Robustness variable */
+    retVal = rtl8367c_getAsicRegBits(RTL8367C_REG_IGMP_MLD_CFG0, RTL8367C_ROBUSTNESS_VAR_MASK, &value);
     if(retVal != RT_ERR_OK)
         return retVal;
 
@@ -1813,7 +1813,7 @@ ret_t rtl8367c_getAsicIGMPReportLeaveFlood(rtk_uint32 *pFlood)
 /* Function Name:
  *      rtl8367c_setAsicIGMPDropLeaveZero
  * Description:
- *      Set the function of droppping Leave packet with group IP = 0.0.0.0
+ *      Set the function of dropping Leave packet with group IP = 0.0.0.0
  * Input:
  *      drop    - 1: Drop, 0:Bypass
  * Output:
@@ -1838,7 +1838,7 @@ ret_t rtl8367c_setAsicIGMPDropLeaveZero(rtk_uint32 drop)
 /* Function Name:
  *      rtl8367c_getAsicIGMPDropLeaveZero
  * Description:
- *      Get the function of droppping Leave packet with group IP = 0.0.0.0
+ *      Get the function of dropping Leave packet with group IP = 0.0.0.0
  * Input:
  *      None
  * Output:
@@ -1865,7 +1865,7 @@ ret_t rtl8367c_getAsicIGMPDropLeaveZero(rtk_uint32 *pDrop)
 /* Function Name:
  *      rtl8367c_setAsicIGMPBypassStormCTRL
  * Description:
- *      Set the function of bypass strom control for IGMP/MLD packet
+ *      Set the function of bypass storm control for IGMP/MLD packet
  * Input:
  *      bypass    - 1: Bypass, 0:not bypass
  * Output:
@@ -1890,7 +1890,7 @@ ret_t rtl8367c_setAsicIGMPBypassStormCTRL(rtk_uint32 bypass)
 /* Function Name:
  *      rtl8367c_getAsicIGMPBypassStormCTRL
  * Description:
- *      Set the function of bypass strom control for IGMP/MLD packet
+ *      Set the function of bypass storm control for IGMP/MLD packet
  * Input:
  *      None
  * Output:
@@ -1944,7 +1944,7 @@ ret_t rtl8367c_setAsicIGMPIsoLeaky(rtk_uint32 leaky)
  * Description:
  *      Get Port Isolation leaky for IGMP/MLD packet
  * Input:
- *      Noen
+ *      None
  * Output:
  *      pLeaky    - 1: Leaky, 0:not leaky
  * Return:
@@ -1996,7 +1996,7 @@ ret_t rtl8367c_setAsicIGMPVLANLeaky(rtk_uint32 leaky)
  * Description:
  *      Get VLAN leaky for IGMP/MLD packet
  * Input:
- *      Noen
+ *      None
  * Output:
  *      pLeaky    - 1: Leaky, 0:not leaky
  * Return:

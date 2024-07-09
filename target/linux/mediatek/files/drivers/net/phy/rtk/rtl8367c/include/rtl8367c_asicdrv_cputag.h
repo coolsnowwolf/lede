@@ -38,7 +38,7 @@ extern ret_t rtl8367c_setAsicCputagInsertMode(rtk_uint32 mode);
 extern ret_t rtl8367c_getAsicCputagInsertMode(rtk_uint32 *pMode);
 extern ret_t rtl8367c_setAsicCputagPriorityRemapping(rtk_uint32 srcPri, rtk_uint32 newPri);
 extern ret_t rtl8367c_getAsicCputagPriorityRemapping(rtk_uint32 srcPri, rtk_uint32 *pNewPri);
-extern ret_t rtl8367c_setAsicCputagPosition(rtk_uint32 postion);
+extern ret_t rtl8367c_setAsicCputagPosition(rtk_uint32 position);
 extern ret_t rtl8367c_getAsicCputagPosition(rtk_uint32* pPostion);
 extern ret_t rtl8367c_setAsicCputagMode(rtk_uint32 mode);
 extern ret_t rtl8367c_getAsicCputagMode(rtk_uint32 *pMode);

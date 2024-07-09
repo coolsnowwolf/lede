@@ -28,7 +28,7 @@
 /* Function Name:
  *      rtk_qos_init
  * Description:
- *      Configure Qos default settings with queue number assigment to each port.
+ *      Configure QoS default settings with queue number assignment to each port.
  * Input:
  *      queueNum - Queue number of each port.
  * Output:
@@ -40,7 +40,7 @@
  *      RT_ERR_QUEUE_NUM    - Invalid queue number.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This API will initialize related Qos setting with queue number assigment.
+ *      This API will initialize related QoS setting with queue number assignment.
  *      The queue number is from 1 to 8.
  */
 rtk_api_ret_t rtk_qos_init(rtk_queue_num_t queueNum)
@@ -143,7 +143,7 @@ rtk_api_ret_t rtk_qos_init(rtk_queue_num_t queueNum)
             return retVal;
     }
 
-    /* Finetune B/T value */
+    /* Fine-tune B/T value */
     if((retVal = rtl8367c_setAsicReg(0x1722, 0x1158)) != RT_ERR_OK)
         return retVal;
 
@@ -455,7 +455,7 @@ rtk_api_ret_t rtk_qos_1pPriRemap_set(rtk_pri_t dot1p_pri, rtk_pri_t int_pri)
  *      RT_ERR_VLAN_PRIORITY    - Invalid priority.
  *      RT_ERR_QOS_INT_PRIORITY - Invalid priority.
  * Note:
- *      Priority of 802.1Q assigment for internal asic priority, and it is uesed for queue usage and packet scheduling.
+ *      Priority of 802.1Q assignment for internal asic priority, and it is used for queue usage and packet scheduling.
  */
 rtk_api_ret_t rtk_qos_1pPriRemap_get(rtk_pri_t dot1p_pri, rtk_pri_t *pInt_pri)
 {

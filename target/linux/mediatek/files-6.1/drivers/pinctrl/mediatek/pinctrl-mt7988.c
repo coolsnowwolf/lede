@@ -596,6 +596,51 @@ static const struct mtk_pin_field_calc mt7988_pin_r1_range[] = {
 	PIN_FIELD_BASE(83, 83, 1, 0x90, 0x10, 15, 1),
 };
 
+static const unsigned int mt7988_pull_type[] = {
+	MTK_PULL_PUPD_R1R0_TYPE,/*0*/ MTK_PULL_PUPD_R1R0_TYPE,/*1*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*2*/ MTK_PULL_PUPD_R1R0_TYPE,/*3*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*4*/ MTK_PULL_PUPD_R1R0_TYPE,/*5*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*6*/ MTK_PULL_PU_PD_TYPE,    /*7*/
+	MTK_PULL_PU_PD_TYPE,    /*8*/ MTK_PULL_PU_PD_TYPE,    /*9*/
+	MTK_PULL_PU_PD_TYPE,    /*10*/ MTK_PULL_PUPD_R1R0_TYPE,/*11*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*12*/ MTK_PULL_PU_PD_TYPE,    /*13*/
+	MTK_PULL_PU_PD_TYPE,    /*14*/ MTK_PULL_PD_TYPE,       /*15*/
+	MTK_PULL_PD_TYPE,       /*16*/ MTK_PULL_PD_TYPE,       /*17*/
+	MTK_PULL_PD_TYPE,       /*18*/ MTK_PULL_PUPD_R1R0_TYPE,/*19*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*20*/ MTK_PULL_PUPD_R1R0_TYPE,/*21*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*22*/ MTK_PULL_PUPD_R1R0_TYPE,/*23*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*24*/ MTK_PULL_PUPD_R1R0_TYPE,/*25*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*26*/ MTK_PULL_PUPD_R1R0_TYPE,/*27*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*28*/ MTK_PULL_PUPD_R1R0_TYPE,/*29*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*30*/ MTK_PULL_PUPD_R1R0_TYPE,/*31*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*32*/ MTK_PULL_PUPD_R1R0_TYPE,/*33*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*34*/ MTK_PULL_PUPD_R1R0_TYPE,/*35*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*36*/ MTK_PULL_PUPD_R1R0_TYPE,/*37*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*38*/ MTK_PULL_PUPD_R1R0_TYPE,/*39*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*40*/ MTK_PULL_PUPD_R1R0_TYPE,/*41*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*42*/ MTK_PULL_PUPD_R1R0_TYPE,/*43*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*44*/ MTK_PULL_PUPD_R1R0_TYPE,/*45*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*46*/ MTK_PULL_PUPD_R1R0_TYPE,/*47*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*48*/ MTK_PULL_PUPD_R1R0_TYPE,/*49*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*50*/ MTK_PULL_PUPD_R1R0_TYPE,/*51*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*52*/ MTK_PULL_PUPD_R1R0_TYPE,/*53*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*54*/ MTK_PULL_PUPD_R1R0_TYPE,/*55*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*56*/ MTK_PULL_PUPD_R1R0_TYPE,/*57*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*58*/ MTK_PULL_PUPD_R1R0_TYPE,/*59*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*60*/ MTK_PULL_PUPD_R1R0_TYPE,/*61*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*62*/ MTK_PULL_PU_PD_TYPE,    /*63*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*64*/ MTK_PULL_PUPD_R1R0_TYPE,/*65*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*66*/ MTK_PULL_PUPD_R1R0_TYPE,/*67*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*68*/ MTK_PULL_PUPD_R1R0_TYPE,/*69*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*70*/ MTK_PULL_PD_TYPE,       /*71*/
+	MTK_PULL_PD_TYPE,       /*72*/ MTK_PULL_PUPD_R1R0_TYPE,/*73*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*74*/ MTK_PULL_PU_PD_TYPE,    /*75*/
+	MTK_PULL_PU_PD_TYPE,    /*76*/ MTK_PULL_PU_PD_TYPE,    /*77*/
+	MTK_PULL_PU_PD_TYPE,    /*78*/ MTK_PULL_PU_PD_TYPE,    /*79*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*80*/ MTK_PULL_PUPD_R1R0_TYPE,/*81*/
+	MTK_PULL_PUPD_R1R0_TYPE,/*82*/ MTK_PULL_PUPD_R1R0_TYPE,/*83*/
+};
+
 static const struct mtk_pin_reg_calc mt7988_reg_cals[] = {
 	[PINCTRL_PIN_REG_MODE] = MTK_RANGE(mt7988_pin_mode_range),
 	[PINCTRL_PIN_REG_DIR] = MTK_RANGE(mt7988_pin_dir_range),
@@ -992,11 +1037,11 @@ static int mt7988_uart2_3_funcs[] = { 3, 3, 3, 3 };
 static int mt7988_uart1_2_pins[] = { 80, 81, 82, 83 };
 static int mt7988_uart1_2_funcs[] = { 1, 1, 1, 1 };
 
+static int mt7988_uart1_2_lite_pins[] = { 80, 81 };
+static int mt7988_uart1_2_lite_funcs[] = { 1, 1 };
+
 static int mt7988_tops_uart1_2_pins[] = { 80, 81 };
-static int mt7988_tops_uart1_2_funcs[] = {
-	4,
-	4,
-};
+static int mt7988_tops_uart1_2_funcs[] = { 4, 4, };
 
 static int mt7988_net_wo0_uart_txd_1_pins[] = { 80 };
 static int mt7988_net_wo0_uart_txd_1_funcs[] = { 3 };
@@ -1254,6 +1299,8 @@ static const struct group_desc mt7988_groups[] = {
 	PINCTRL_PIN_GROUP("pcie_wake_n2_1", mt7988_pcie_wake_n2_1),
 	/*  @GPIO(80,81,82,83) uart1_2 */
 	PINCTRL_PIN_GROUP("uart1_2", mt7988_uart1_2),
+	/*  @GPIO(80,81) uart1_2_lite */
+	PINCTRL_PIN_GROUP("uart1_2_lite", mt7988_uart1_2_lite),
 	/*  @GPIO(80) pwm2 */
 	PINCTRL_PIN_GROUP("pwm2", mt7988_pwm2),
 	/*  @GPIO(81) pwm3 */
@@ -1363,6 +1410,7 @@ static const char * const mt7988_uart_groups[] = {
 	"uart1_1",
 	"uart2_3",
 	"uart1_2",
+	"uart1_2_lite",
 	"tops_uart1_2",
 	"net_wo0_uart_txd_1",
 	"net_wo1_uart_txd_1",
@@ -1433,6 +1481,9 @@ static struct mtk_pin_soc mt7988_data = {
 	.bias_disable_get = mtk_pinconf_bias_disable_get,
 	.bias_set = mtk_pinconf_bias_set,
 	.bias_get = mtk_pinconf_bias_get,
+	.pull_type = mt7988_pull_type,
+	.bias_set_combo = mtk_pinconf_bias_set_combo,
+	.bias_get_combo = mtk_pinconf_bias_get_combo,
 	.drive_set = mtk_pinconf_drive_set_rev1,
 	.drive_get = mtk_pinconf_drive_get_rev1,
 	.adv_pull_get = mtk_pinconf_adv_pull_get,

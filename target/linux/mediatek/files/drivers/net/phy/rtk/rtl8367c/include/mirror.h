@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes Mirror module high-layer API defination
+ * Feature : The file includes Mirror module high-layer API definition
  *
  */
 
@@ -81,7 +81,7 @@ extern rtk_api_ret_t rtk_mirror_portBased_get(rtk_port_t* pMirroring_port, rtk_p
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_ENABLE       - Invalid enable input
  * Note:
- *      The API is to set mirror isolation function that prevent normal forwarding packets to miror port.
+ *      The API is to set mirror isolation function that prevent normal forwarding packets to mirror port.
  */
 extern rtk_api_ret_t rtk_mirror_portIso_set(rtk_enable_t enable);
 
@@ -118,7 +118,7 @@ extern rtk_api_ret_t rtk_mirror_portIso_get(rtk_enable_t *pEnable);
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_ENABLE       - Invalid enable input
  * Note:
- *      The API is to set mirror VLAN leaky function forwarding packets to miror port.
+ *      The API is to set mirror VLAN leaky function forwarding packets to mirror port.
  */
 extern rtk_api_ret_t rtk_mirror_vlanLeaky_set(rtk_enable_t txenable, rtk_enable_t rxenable);
 
@@ -157,7 +157,7 @@ extern rtk_api_ret_t rtk_mirror_vlanLeaky_get(rtk_enable_t *pTxenable, rtk_enabl
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_ENABLE       - Invalid enable input
  * Note:
- *      The API is to set mirror VLAN leaky function forwarding packets to miror port.
+ *      The API is to set mirror VLAN leaky function forwarding packets to mirror port.
  */
 extern rtk_api_ret_t rtk_mirror_isolationLeaky_set(rtk_enable_t txenable, rtk_enable_t rxenable);
 

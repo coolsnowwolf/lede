@@ -19,7 +19,7 @@
 /* Function Name:
  *      rtl8367c_setAsicLeakyBucketParameter
  * Description:
- *      Set Leaky Bucket Paramters
+ *      Set Leaky Bucket Parameters
  * Input:
  *      tick    - Tick is used for time slot size unit
  *      token   - Token is used for adding budget in each time slot
@@ -55,7 +55,7 @@ ret_t rtl8367c_setAsicLeakyBucketParameter(rtk_uint32 tick, rtk_uint32 token)
 /* Function Name:
  *      rtl8367c_getAsicLeakyBucketParameter
  * Description:
- *      Get Leaky Bucket Paramters
+ *      Get Leaky Bucket Parameters
  * Input:
  *      tick    - Tick is used for time slot size unit
  *      token   - Token is used for adding budget in each time slot
@@ -166,7 +166,7 @@ ret_t rtl8367c_getAsicAprMeter(rtk_uint32 port, rtk_uint32 qid, rtk_uint32 *apri
  *      Set per-port APR enable
  * Input:
  *      port        - Physical port number (0~7)
- *      aprEnable   - APR enable seting 1:enable 0:disable
+ *      aprEnable   - APR enable setting 1:enable 0:disable
  * Output:
  *      None
  * Return:
@@ -193,7 +193,7 @@ ret_t rtl8367c_setAsicAprEnable(rtk_uint32 port, rtk_uint32 aprEnable)
  *      Get per-port APR enable
  * Input:
  *      port        - Physical port number (0~7)
- *      aprEnable   - APR enable seting 1:enable 0:disable
+ *      aprEnable   - APR enable setting 1:enable 0:disable
  * Output:
  *      None
  * Return:

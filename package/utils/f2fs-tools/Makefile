@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=f2fs-tools
 PKG_VERSION:=1.16.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://git.kernel.org/pub/scm/linux/kernel/git/jaegeuk/f2fs-tools.git/snapshot/
@@ -137,6 +137,7 @@ define Package/f2fsck/install
 	$(LN) ../sbin/fsck.f2fs $(1)/usr/sbin/dump.f2fs
 	$(LN) ../sbin/fsck.f2fs $(1)/usr/sbin/sload.f2fs
 	$(LN) ../sbin/fsck.f2fs $(1)/usr/sbin/resize.f2fs
+	$(LN) ../sbin/fsck.f2fs $(1)/usr/sbin/f2fslabel
 endef
 
 Package/f2fsck-selinux/install = $(Package/f2fsck/install)

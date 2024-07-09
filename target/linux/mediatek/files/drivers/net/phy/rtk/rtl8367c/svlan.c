@@ -41,7 +41,7 @@ rtk_svlan_lookupType_t  svlan_lookupType;
  *      RT_ERR_SMI          - SMI access error
  * Note:
  *      Ether type of S-tag in 802.1ad is 0x88a8 and there are existed ether type 0x9100 and 0x9200 for Q-in-Q SLAN design.
- *      User can set mathced ether type as service provider supported protocol.
+ *      User can set matched ether type as service provider supported protocol.
  */
 rtk_api_ret_t rtk_svlan_init(void)
 {
@@ -250,7 +250,7 @@ rtk_api_ret_t rtk_svlan_servicePort_del(rtk_port_t port)
  *      RT_ERR_INPUT        - Invalid input parameter.
  * Note:
  *      Ether type of S-tag in 802.1ad is 0x88a8 and there are existed ether type 0x9100 and 0x9200 for Q-in-Q SLAN design.
- *      User can set mathced ether type as service provider supported protocol.
+ *      User can set matched ether type as service provider supported protocol.
  */
 rtk_api_ret_t rtk_svlan_tpidEntry_set(rtk_svlan_tpid_t svlan_tag_id)
 {
@@ -391,8 +391,8 @@ rtk_api_ret_t rtk_svlan_priorityRef_get(rtk_svlan_pri_ref_t *pRef)
  *      RT_ERR_PORT_MASK        - Invalid portmask.
  *      RT_ERR_SVLAN_TABLE_FULL - SVLAN configuration is full.
  * Note:
- *      The API can set system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accpeted
- *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be droped by default setup.
+ *      The API can set system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accepted
+ *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be dropped by default setup.
  *      - rtk_svlan_memberCfg_t->svid is SVID of SVLAN member configuration.
  *      - rtk_svlan_memberCfg_t->memberport is member port mask of SVLAN member configuration.
  *      - rtk_svlan_memberCfg_t->fid is filtering database of SVLAN member configuration.
@@ -626,8 +626,8 @@ rtk_api_ret_t rtk_svlan_memberPortEntry_set(rtk_vlan_t svid, rtk_svlan_memberCfg
  *      RT_ERR_SVLAN_ENTRY_NOT_FOUND    - specified svlan entry not found.
  *      RT_ERR_INPUT                    - Invalid input parameters.
  * Note:
- *      The API can get system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accpeted
- *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be droped.
+ *      The API can get system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accepted
+ *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be dropped.
  */
 rtk_api_ret_t rtk_svlan_memberPortEntry_get(rtk_vlan_t svid, rtk_svlan_memberCfg_t *pSvlan_cfg)
 {
@@ -794,8 +794,8 @@ rtk_api_ret_t rtk_svlan_memberPortEntry_adv_set(rtk_uint32 idx, rtk_svlan_member
  *      RT_ERR_SVLAN_ENTRY_NOT_FOUND    - specified svlan entry not found.
  *      RT_ERR_INPUT                    - Invalid input parameters.
  * Note:
- *      The API can get system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accpeted
- *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be droped.
+ *      The API can get system 64 accepted s-tag frame format. Only 64 SVID S-tag frame will be accepted
+ *      to receiving from uplink ports. Other SVID S-tag frame or S-untagged frame will be dropped.
  */
 rtk_api_ret_t rtk_svlan_memberPortEntry_adv_get(rtk_uint32 idx, rtk_svlan_memberCfg_t *pSvlan_cfg)
 {
@@ -948,7 +948,7 @@ rtk_api_ret_t rtk_svlan_defaultSvlan_get(rtk_port_t port, rtk_vlan_t *pSvid)
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
  *      The API can set system C2S configuration. ASIC will check upstream's VID and assign related
- *      SVID to mathed packet. There are 128 SVLAN C2S configurations.
+ *      SVID to matched packet. There are 128 SVLAN C2S configurations.
  */
 rtk_api_ret_t rtk_svlan_c2s_add(rtk_vlan_t vid, rtk_port_t src_port, rtk_vlan_t svid)
 {
@@ -1011,7 +1011,7 @@ rtk_api_ret_t rtk_svlan_c2s_add(rtk_vlan_t vid, rtk_port_t src_port, rtk_vlan_t 
                 }
                 else
                 {
-                    /* New svidx, remove src_port and find a new slot to add a new enrty */
+                    /* New svidx, remove src_port and find a new slot to add a new entry */
                     pmsk = pmsk & ~(1 << phyPort);
                     if(pmsk == 0)
                         c2s_svidx = 0;
@@ -1263,7 +1263,7 @@ rtk_api_ret_t rtk_svlan_untag_action_set(rtk_svlan_untag_action_t action, rtk_vl
  * Note:
  *      The API can Get action of downstream Un-Stag packet. A SVID assigned
  *      to the un-stag is also retrieved by this API. The parameter pSvid is
- *      only refernced when the action is UNTAG_ASSIGN
+ *      only referenced when the action is UNTAG_ASSIGN
  */
 rtk_api_ret_t rtk_svlan_untag_action_get(rtk_svlan_untag_action_t *pAction, rtk_vlan_t *pSvid)
 {
@@ -1313,8 +1313,8 @@ rtk_api_ret_t rtk_svlan_untag_action_get(rtk_svlan_untag_action_t *pAction, rtk_
  *      RT_ERR_INPUT                    - Invalid input parameters.
  * Note:
  *      The API can configure action of downstream Un-match packet. A SVID assigned
- *      to the un-match is also supported by this API. The parameter od svid is
- *      only refernced when the action is set to UNMATCH_ASSIGN
+ *      to the un-match is also supported by this API. The parameter of svid is
+ *      only referenced when the action is set to UNMATCH_ASSIGN
  */
 rtk_api_ret_t rtk_svlan_unmatch_action_set(rtk_svlan_unmatch_action_t action, rtk_vlan_t svid)
 {
@@ -1379,7 +1379,7 @@ rtk_api_ret_t rtk_svlan_unmatch_action_set(rtk_svlan_unmatch_action_t action, rt
  * Note:
  *      The API can Get action of downstream Un-match packet. A SVID assigned
  *      to the un-match is also retrieved by this API. The parameter pSvid is
- *      only refernced when the action is UNMATCH_ASSIGN
+ *      only referenced when the action is UNMATCH_ASSIGN
  */
 rtk_api_ret_t rtk_svlan_unmatch_action_get(rtk_svlan_unmatch_action_t *pAction, rtk_vlan_t *pSvid)
 {
@@ -1567,7 +1567,7 @@ rtk_api_ret_t rtk_svlan_dmac_vidsel_get(rtk_port_t port, rtk_enable_t *pEnable)
  *      RT_ERR_OUT_OF_RANGE             - input out of range.
  *      RT_ERR_INPUT                    - Invalid input parameters.
  * Note:
- *      The API can set IP mutlicast to SVID configuration. If upstream packet is IPv4 multicast
+ *      The API can set IP multicast to SVID configuration. If upstream packet is IPv4 multicast
  *      packet and DIP is matched MC2S configuration, ASIC will assign egress SVID to the packet.
  *      There are 32 SVLAN multicast configurations for IP and L2 multicast.
  */
@@ -1662,7 +1662,7 @@ rtk_api_ret_t rtk_svlan_ipmc2s_add(ipaddr_t ipmc, ipaddr_t ipmcMsk,rtk_vlan_t sv
  *      RT_ERR_SVLAN_VID        - Invalid SVLAN VID parameter.
  *      RT_ERR_OUT_OF_RANGE     - input out of range.
  * Note:
- *      The API can delete IP mutlicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
+ *      The API can delete IP multicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
  */
 rtk_api_ret_t rtk_svlan_ipmc2s_del(ipaddr_t ipmc, ipaddr_t ipmcMsk)
 {
@@ -1714,7 +1714,7 @@ rtk_api_ret_t rtk_svlan_ipmc2s_del(ipaddr_t ipmc, ipaddr_t ipmcMsk)
  *      RT_ERR_INPUT        - Invalid input parameters.
  *      RT_ERR_OUT_OF_RANGE - input out of range.
  * Note:
- *      The API can get IP mutlicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
+ *      The API can get IP multicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
  */
 rtk_api_ret_t rtk_svlan_ipmc2s_get(ipaddr_t ipmc, ipaddr_t ipmcMsk, rtk_vlan_t *pSvid)
 {
@@ -1771,7 +1771,7 @@ rtk_api_ret_t rtk_svlan_ipmc2s_get(ipaddr_t ipmc, ipaddr_t ipmcMsk, rtk_vlan_t *
  *      RT_ERR_OUT_OF_RANGE             - input out of range.
  *      RT_ERR_INPUT                    - Invalid input parameters.
  * Note:
- *      The API can set L2 Mutlicast to SVID configuration. If upstream packet is L2 multicast
+ *      The API can set L2 Multicast to SVID configuration. If upstream packet is L2 multicast
  *      packet and DMAC is matched, ASIC will assign egress SVID to the packet. There are 32
  *      SVLAN multicast configurations for IP and L2 multicast.
  */
@@ -1868,7 +1868,7 @@ rtk_api_ret_t rtk_svlan_l2mc2s_add(rtk_mac_t mac, rtk_mac_t macMsk, rtk_vlan_t s
  *      RT_ERR_SVLAN_VID        - Invalid SVLAN VID parameter.
  *      RT_ERR_OUT_OF_RANGE     - input out of range.
  * Note:
- *      The API can delete Mutlicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
+ *      The API can delete Multicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
  */
 rtk_api_ret_t rtk_svlan_l2mc2s_del(rtk_mac_t mac, rtk_mac_t macMsk)
 {
@@ -1924,7 +1924,7 @@ rtk_api_ret_t rtk_svlan_l2mc2s_del(rtk_mac_t mac, rtk_mac_t macMsk)
  *      RT_ERR_INPUT            - Invalid input parameters.
  *      RT_ERR_OUT_OF_RANGE     - input out of range.
  * Note:
- *      The API can get L2 mutlicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
+ *      The API can get L2 multicast to SVID configuration. There are 32 SVLAN multicast configurations for IP and L2 multicast.
  */
 rtk_api_ret_t rtk_svlan_l2mc2s_get(rtk_mac_t mac, rtk_mac_t macMsk, rtk_vlan_t *pSvid)
 {

@@ -1,0 +1,195 @@
+From aa868357891cf4be8e7a1ca43edd1e335aa10710 Mon Sep 17 00:00:00 2001
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Date: Thu, 4 Jul 2024 13:24:22 +0800
+Subject: [PATCH] Revert "wifi: mt76: mt7925: add EHT radiotap support in
+ monitor mode"
+
+This reverts commit 1d6e4f7de8a6c93540bd8d616cb6b917d2ac400e.
+---
+ mt76_connac.h      |  2 --
+ mt76_connac3_mac.c | 85 ----------------------------------------------
+ mt76_connac3_mac.h | 22 ------------
+ mt7925/mac.c       | 15 ++------
+ 4 files changed, 2 insertions(+), 122 deletions(-)
+
+diff --git a/mt76_connac.h b/mt76_connac.h
+index 445d0f0a..91987bdf 100644
+--- a/mt76_connac.h
++++ b/mt76_connac.h
+@@ -451,6 +451,4 @@ void mt76_connac2_tx_token_put(struct mt76_dev *dev);
+ /* connac3 */
+ void mt76_connac3_mac_decode_he_radiotap(struct sk_buff *skb, __le32 *rxv,
+ 					 u8 mode);
+-void mt76_connac3_mac_decode_eht_radiotap(struct sk_buff *skb, __le32 *rxv,
+-					  u8 mode);
+ #endif /* __MT76_CONNAC_H */
+diff --git a/mt76_connac3_mac.c b/mt76_connac3_mac.c
+index 92ad1ecf..73e9f283 100644
+--- a/mt76_connac3_mac.c
++++ b/mt76_connac3_mac.c
+@@ -6,11 +6,8 @@
+ #include "dma.h"
+ 
+ #define HE_BITS(f)		cpu_to_le16(IEEE80211_RADIOTAP_HE_##f)
+-#define EHT_BITS(f)		cpu_to_le32(IEEE80211_RADIOTAP_EHT_##f)
+ #define HE_PREP(f, m, v)	le16_encode_bits(le32_get_bits(v, MT_CRXV_HE_##m),\
+ 						 IEEE80211_RADIOTAP_HE_##f)
+-#define EHT_PREP(f, m, v)	le32_encode_bits(le32_get_bits(v, MT_CRXV_EHT_##m),\
+-						 IEEE80211_RADIOTAP_EHT_##f)
+ 
+ static void
+ mt76_connac3_mac_decode_he_radiotap_ru(struct mt76_rx_status *status,
+@@ -183,85 +180,3 @@ void mt76_connac3_mac_decode_he_radiotap(struct sk_buff *skb, __le32 *rxv,
+ 	}
+ }
+ EXPORT_SYMBOL_GPL(mt76_connac3_mac_decode_he_radiotap);
+-
+-static void *
+-mt76_connac3_mac_radiotap_push_tlv(struct sk_buff *skb, u16 type, u16 len)
+-{
+-	struct ieee80211_radiotap_tlv *tlv;
+-
+-	tlv = skb_push(skb, sizeof(*tlv) + len);
+-	tlv->type = cpu_to_le16(type);
+-	tlv->len = cpu_to_le16(len);
+-	memset(tlv->data, 0, len);
+-
+-	return tlv->data;
+-}
+-
+-void mt76_connac3_mac_decode_eht_radiotap(struct sk_buff *skb, __le32 *rxv,
+-					  u8 mode)
+-{
+-	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
+-	struct ieee80211_radiotap_eht_usig *usig;
+-	struct ieee80211_radiotap_eht *eht;
+-	u32 ltf_size = le32_get_bits(rxv[4], MT_CRXV_HE_LTF_SIZE) + 1;
+-	u8 bw = FIELD_GET(MT_PRXV_FRAME_MODE, le32_to_cpu(rxv[2]));
+-
+-	if (WARN_ONCE(skb_mac_header(skb) != skb->data,
+-		      "Should push tlv at the top of mac hdr"))
+-		return;
+-
+-	eht = mt76_connac3_mac_radiotap_push_tlv(skb, IEEE80211_RADIOTAP_EHT,
+-						 sizeof(*eht) + sizeof(u32));
+-	usig = mt76_connac3_mac_radiotap_push_tlv(skb, IEEE80211_RADIOTAP_EHT_USIG,
+-						  sizeof(*usig));
+-
+-	status->flag |= RX_FLAG_RADIOTAP_TLV_AT_END;
+-
+-	eht->known |= EHT_BITS(KNOWN_SPATIAL_REUSE) |
+-		      EHT_BITS(KNOWN_GI) |
+-		      EHT_BITS(KNOWN_EHT_LTF) |
+-		      EHT_BITS(KNOWN_LDPC_EXTRA_SYM_OM) |
+-		      EHT_BITS(KNOWN_PE_DISAMBIGUITY_OM) |
+-		      EHT_BITS(KNOWN_NSS_S);
+-
+-	eht->data[0] |=
+-		EHT_PREP(DATA0_SPATIAL_REUSE, SR_MASK, rxv[13]) |
+-		cpu_to_le32(FIELD_PREP(IEEE80211_RADIOTAP_EHT_DATA0_GI, status->eht.gi) |
+-			    FIELD_PREP(IEEE80211_RADIOTAP_EHT_DATA0_LTF, ltf_size)) |
+-		EHT_PREP(DATA0_PE_DISAMBIGUITY_OM, PE_DISAMBIG, rxv[5]) |
+-		EHT_PREP(DATA0_LDPC_EXTRA_SYM_OM, LDPC_EXT_SYM, rxv[4]);
+-
+-	eht->data[7] |= le32_encode_bits(status->nss, IEEE80211_RADIOTAP_EHT_DATA7_NSS_S);
+-
+-	eht->user_info[0] |=
+-		EHT_BITS(USER_INFO_MCS_KNOWN) |
+-		EHT_BITS(USER_INFO_CODING_KNOWN) |
+-		EHT_BITS(USER_INFO_NSS_KNOWN_O) |
+-		EHT_BITS(USER_INFO_BEAMFORMING_KNOWN_O) |
+-		EHT_BITS(USER_INFO_DATA_FOR_USER) |
+-		le32_encode_bits(status->rate_idx, IEEE80211_RADIOTAP_EHT_USER_INFO_MCS) |
+-		le32_encode_bits(status->nss, IEEE80211_RADIOTAP_EHT_USER_INFO_NSS_O);
+-
+-	if (le32_to_cpu(rxv[0]) & MT_PRXV_TXBF)
+-		eht->user_info[0] |= EHT_BITS(USER_INFO_BEAMFORMING_O);
+-
+-	if (le32_to_cpu(rxv[0]) & MT_PRXV_HT_AD_CODE)
+-		eht->user_info[0] |= EHT_BITS(USER_INFO_CODING);
+-
+-	if (mode == MT_PHY_TYPE_EHT_MU)
+-		eht->user_info[0] |= EHT_BITS(USER_INFO_STA_ID_KNOWN) |
+-				     EHT_PREP(USER_INFO_STA_ID, MU_AID, rxv[8]);
+-
+-	usig->common |=
+-		EHT_BITS(USIG_COMMON_PHY_VER_KNOWN) |
+-		EHT_BITS(USIG_COMMON_BW_KNOWN) |
+-		EHT_BITS(USIG_COMMON_UL_DL_KNOWN) |
+-		EHT_BITS(USIG_COMMON_BSS_COLOR_KNOWN) |
+-		EHT_BITS(USIG_COMMON_TXOP_KNOWN) |
+-		le32_encode_bits(0, IEEE80211_RADIOTAP_EHT_USIG_COMMON_PHY_VER) |
+-		le32_encode_bits(bw, IEEE80211_RADIOTAP_EHT_USIG_COMMON_BW) |
+-		EHT_PREP(USIG_COMMON_UL_DL, UPLINK, rxv[5]) |
+-		EHT_PREP(USIG_COMMON_BSS_COLOR, BSS_COLOR, rxv[9]) |
+-		EHT_PREP(USIG_COMMON_TXOP, TXOP_DUR, rxv[9]);
+-}
+-EXPORT_SYMBOL_GPL(mt76_connac3_mac_decode_eht_radiotap);
+diff --git a/mt76_connac3_mac.h b/mt76_connac3_mac.h
+index 353e6606..83dcd964 100644
+--- a/mt76_connac3_mac.h
++++ b/mt76_connac3_mac.h
+@@ -142,28 +142,6 @@ enum {
+ #define MT_CRXV_HE_RU3_L		GENMASK(31, 27)
+ #define MT_CRXV_HE_RU3_H		GENMASK(3, 0)
+ 
+-#define MT_CRXV_EHT_NUM_USER		GENMASK(26, 20)
+-#define MT_CRXV_EHT_LTF_SIZE		GENMASK(28, 27)
+-#define MT_CRXV_EHT_LDPC_EXT_SYM	BIT(30)
+-#define MT_CRXV_EHT_PE_DISAMBIG		BIT(1)
+-#define MT_CRXV_EHT_UPLINK		BIT(2)
+-#define MT_CRXV_EHT_MU_AID		GENMASK(27, 17)
+-#define MT_CRXV_EHT_BEAM_CHNG		BIT(29)
+-#define MT_CRXV_EHT_DOPPLER		BIT(0)
+-#define MT_CRXV_EHT_BSS_COLOR		GENMASK(15, 10)
+-#define MT_CRXV_EHT_TXOP_DUR		GENMASK(23, 17)
+-#define MT_CRXV_EHT_SR_MASK		GENMASK(11, 8)
+-#define MT_CRXV_EHT_SR1_MASK		GENMASK(15, 12)
+-#define MT_CRXV_EHT_SR2_MASK		GENMASK(19, 16)
+-#define MT_CRXV_EHT_SR3_MASK		GENMASK(23, 20)
+-#define MT_CRXV_EHT_RU0			GENMASK(8, 0)
+-#define MT_CRXV_EHT_RU1			GENMASK(17, 9)
+-#define MT_CRXV_EHT_RU2			GENMASK(26, 18)
+-#define MT_CRXV_EHT_RU3_L		GENMASK(31, 27)
+-#define MT_CRXV_EHT_RU3_H		GENMASK(3, 0)
+-#define MT_CRXV_EHT_SIG_MCS		GENMASK(19, 18)
+-#define MT_CRXV_EHT_LTF_SYM		GENMASK(22, 20)
+-
+ enum tx_header_format {
+ 	MT_HDR_FORMAT_802_3,
+ 	MT_HDR_FORMAT_CMD,
+diff --git a/mt7925/mac.c b/mt7925/mac.c
+index c2460ef4..1b9fbd9a 100644
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -590,25 +590,14 @@ mt7925_mac_fill_rx(struct mt792x_dev *dev, struct sk_buff *skb)
+ 			seq_ctrl = le16_to_cpu(hdr->seq_ctrl);
+ 			qos_ctl = *ieee80211_get_qos_ctl(hdr);
+ 		}
+-		skb_set_mac_header(skb, (unsigned char *)hdr - skb->data);
+ 	} else {
+ 		status->flag |= RX_FLAG_8023;
+ 	}
+ 
+ 	mt792x_mac_assoc_rssi(dev, skb);
+ 
+-	if (rxv && !(status->flag & RX_FLAG_8023)) {
+-		switch (status->encoding) {
+-		case RX_ENC_EHT:
+-			mt76_connac3_mac_decode_eht_radiotap(skb, rxv, mode);
+-			break;
+-		case RX_ENC_HE:
+-			mt76_connac3_mac_decode_he_radiotap(skb, rxv, mode);
+-			break;
+-		default:
+-			break;
+-		}
+-	}
++	if (rxv && mode >= MT_PHY_TYPE_HE_SU && !(status->flag & RX_FLAG_8023))
++		mt76_connac3_mac_decode_he_radiotap(skb, rxv, mode);
+ 
+ 	if (!status->wcid || !ieee80211_is_data_qos(fc))
+ 		return 0;
+-- 
+2.43.2
+
