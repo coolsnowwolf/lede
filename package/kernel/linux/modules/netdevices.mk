@@ -96,7 +96,8 @@ $(eval $(call KernelPackage,atl1e))
 define KernelPackage/libphy
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=PHY library
-  KCONFIG:=CONFIG_PHYLIB
+  KCONFIG:=CONFIG_PHYLIB \
+	   CONFIG_PHYLIB_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/libphy.ko
   AUTOLOAD:=$(call AutoLoad,15,libphy,1)
 endef
@@ -487,7 +488,8 @@ define KernelPackage/swconfig
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=switch configuration API
   DEPENDS:=+kmod-libphy
-  KCONFIG:=CONFIG_SWCONFIG
+  KCONFIG:=CONFIG_SWCONFIG \
+	   CONFIG_SWCONFIG_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/swconfig.ko
   AUTOLOAD:=$(call AutoLoad,41,swconfig)
 endef
@@ -645,7 +647,8 @@ define KernelPackage/switch-ar8xxx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Atheros AR8216/8327 switch support
   DEPENDS:=+kmod-swconfig +!LINUX_5_4:kmod-mdio-devres
-  KCONFIG:=CONFIG_AR8216_PHY
+  KCONFIG:=CONFIG_AR8216_PHY \
+	   CONFIG_AR8216_PHY_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/ar8xxx.ko
   AUTOLOAD:=$(call AutoLoad,43,ar8xxx,1)
 endef
