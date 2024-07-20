@@ -15,9 +15,9 @@ PKG_SOURCE_VERSION:=5b509e80384ab019ac11aa90c81ec0dbb5b0d7f2
 PKG_MIRROR_HASH:=6fc25df4d28becd010ff4971b23731c08b53e69381a9e4c868091899712f78a9
 PATCH_DIR:=./patches-5.4
 else ifndef ($(filter on,$(CONFIG_LINUX_6_1) $(CONFIG_LINUX_6_6)),)
-PKG_SOURCE_DATE:=2024-05-17
-PKG_SOURCE_VERSION:=513c131c6309712a51502870b041f45b4bd6a6d4
-PKG_MIRROR_HASH:=9f5d7a846912e7deafa216c2aabb038ec58666ecbf8a394e947b144001994d78
+PKG_SOURCE_DATE:=2024-04-04
+PKG_SOURCE_VERSION:=8f301a5c5fe3d998b50666bde1d35d412833be89
+PKG_MIRROR_HASH:=49291145ccceeac2964c9a43a46bed88298e5c1da63c6f3c2c1f6b3c1902a61e
 PATCH_DIR:=./patches-6.x
 else
 PKG_SOURCE_DATE:=2023-08-14
@@ -643,11 +643,6 @@ endef
 define Package/mt76-test/install
 	mkdir -p $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tools/mt76-test $(1)/usr/sbin
-endef
-
-define Build/InstallDev
-	mkdir -p $(STAGING_DIR_IMAGE)
-	$(CP) $(PKG_BUILD_DIR)/firmware/mt7981_eeprom_mt7976_dbdc.bin $(STAGING_DIR_IMAGE)/
 endef
 
 $(eval $(call KernelPackage,mt76-core))
