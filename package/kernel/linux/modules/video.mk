@@ -241,6 +241,23 @@ endef
 
 $(eval $(call KernelPackage,fb-tft-ili9486))
 
+
+define KernelPackage/fb-tft-st7789v
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=FB driver for the ST7789V LCD Controller
+  DEPENDS:=+kmod-fb-tft
+  KCONFIG:=CONFIG_FB_TFT_ST7789V
+  FILES:=$(LINUX_DIR)/drivers/staging/fbtft/fb_st7789v.ko
+  AUTOLOAD:=$(call AutoLoad,09,fb_st7789v)
+endef
+
+define KernelPackage/fb-tft-st7789v/description
+  FB driver for the ST7789V LCD Controller
+endef
+
+$(eval $(call KernelPackage,fb-tft-st7789v))
+
+
 define KernelPackage/media-core
   SUBMENU:=$(VIDEO_MENU)
   TITLE=Multimedia support
