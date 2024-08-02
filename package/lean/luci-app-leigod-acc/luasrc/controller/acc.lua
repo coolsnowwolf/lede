@@ -5,6 +5,7 @@ function index()
   entry({ "admin", "services", "acc" }, alias("admin", "services", "acc", "service"), translate("Leigod Acc"), 50)
   entry({ "admin", "services", "acc", "service" }, cbi("leigod/service"), translate("Leigod Service"), 30).i18n = "acc"
   entry({ "admin", "services", "acc", "device" }, cbi("leigod/device"), translate("Leigod Device"), 50).i18n = "acc"
+  entry({ "admin", "services", "acc", "app" }, cbi("leigod/app"), translate("Leigod App"), 60).i18n = "acc"
   entry({ "admin", "services", "acc", "notice" }, cbi("leigod/notice"), translate("Leigod Notice"), 80).i18n = "acc"
   entry({ "admin", "services", "acc", "status" }, call("get_acc_status")).leaf = true
   entry({ "admin", "services", "acc", "start_acc_service" }, call("start_acc_service"))
