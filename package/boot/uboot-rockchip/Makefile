@@ -179,6 +179,17 @@ define U-Boot/xiaobao-nas-v1-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/sv901-eaio-rk3399
+  BUILD_SUBTARGET:=armv8
+  NAME:=SV901 EAIO
+  BUILD_DEVICES:= \
+    scensmart_sv901-eaio
+  DEPENDS:=+PACKAGE_u-boot-sv901-eaio-rk3399:arm-trusted-firmware-rk3399
+  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
+  ATF:=rk3399_bl31_v1.36.elf
+  USE_RKBIN:=1
+endef
+
 # RK3566 boards
 
 define U-Boot/panther-x2-rk3566
@@ -332,7 +343,7 @@ UBOOT_TARGETS := \
   seewo-sv21-rk3568 \
   station-p2-rk3568 \
   panther-x2-rk3566 \
-  sharevdi-h3399pc-rk3399 \
+  sv901-eaio-rk3399 \
   guangmiao-g4c-rk3399 \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
@@ -341,6 +352,7 @@ UBOOT_TARGETS := \
   rockpro64-rk3399 \
   rongpin-king3399-rk3399 \
   rocktech-mpc1903-rk3399 \
+  sharevdi-h3399pc-rk3399 \
   dilusense-dlfr100-rk3399 \
   xiaobao-nas-v1-rk3399 \
   nanopi-r2c-rk3328 \
