@@ -382,8 +382,8 @@ define KernelPackage/phy-aquantia
   TITLE:=Aquantia Ethernet PHYs
   DEPENDS:=+kmod-libphy +kmod-hwmon-core +kmod-lib-crc-ccitt
   KCONFIG:=CONFIG_AQUANTIA_PHY
-  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko@lt6.6 \
-	$(LINUX_DIR)/drivers/net/phy/aquantia/aquantia.ko@ge6.6
+  FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko@lt6.1 \
+	$(LINUX_DIR)/drivers/net/phy/aquantia/aquantia.ko@ge6.1
   AUTOLOAD:=$(call AutoLoad,18,aquantia,1)
 endef
 
@@ -731,8 +731,7 @@ define KernelPackage/r8169
   DEPENDS:=@PCI_SUPPORT +kmod-mii +r8169-firmware +kmod-phy-realtek +!LINUX_5_4:kmod-mdio-devres
   KCONFIG:= \
     CONFIG_R8169 \
-    CONFIG_R8169_NAPI=y \
-    CONFIG_R8169_VLAN=n
+    CONFIG_R8169_LEDS=y@ge6.6
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/realtek/r8169.ko
   AUTOLOAD:=$(call AutoProbe,r8169)
 endef

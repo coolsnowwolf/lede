@@ -18,7 +18,7 @@
 /* Function Name:
  *      rtl8367c_setAsicCputagEnable
  * Description:
- *      Set cpu tag function enable/disable
+ *      Set CPU tag function enable/disable
  * Input:
  *      enabled - 1: enabled, 0: disabled
  * Output:
@@ -41,7 +41,7 @@ ret_t rtl8367c_setAsicCputagEnable(rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicCputagEnable
  * Description:
- *      Get cpu tag function enable/disable
+ *      Get CPU tag function enable/disable
  * Input:
  *      pEnabled - 1: enabled, 0: disabled
  * Output:
@@ -59,7 +59,7 @@ ret_t rtl8367c_getAsicCputagEnable(rtk_uint32 *pEnabled)
 /* Function Name:
  *      rtl8367c_setAsicCputagTrapPort
  * Description:
- *      Set cpu tag trap port
+ *      Set CPU tag trap port
  * Input:
  *      port - port number
  * Output:
@@ -91,7 +91,7 @@ ret_t rtl8367c_setAsicCputagTrapPort(rtk_uint32 port)
 /* Function Name:
  *      rtl8367c_getAsicCputagTrapPort
  * Description:
- *      Get cpu tag trap port
+ *      Get CPU tag trap port
  * Input:
  *      pPort - port number
  * Output:
@@ -248,9 +248,9 @@ ret_t rtl8367c_getAsicCputagPriorityRemapping(rtk_uint32 srcPri, rtk_uint32 *pNe
 /* Function Name:
  *      rtl8367c_setAsicCputagPosition
  * Description:
- *      Set cpu tag insert position
+ *      Set CPU tag insert position
  * Input:
- *      postion - 1: After entire packet(before CRC field), 0: After MAC_SA (Default)
+ *      position - 1: After entire packet(before CRC field), 0: After MAC_SA (Default)
  * Output:
  *      None
  * Return:
@@ -259,14 +259,14 @@ ret_t rtl8367c_getAsicCputagPriorityRemapping(rtk_uint32 srcPri, rtk_uint32 *pNe
  * Note:
  *     None
  */
-ret_t rtl8367c_setAsicCputagPosition(rtk_uint32 postion)
+ret_t rtl8367c_setAsicCputagPosition(rtk_uint32 position)
 {
-    return rtl8367c_setAsicRegBit(RTL8367C_REG_CPU_CTRL, RTL8367C_CPU_TAG_POSITION_OFFSET, postion);
+    return rtl8367c_setAsicRegBit(RTL8367C_REG_CPU_CTRL, RTL8367C_CPU_TAG_POSITION_OFFSET, position);
 }
 /* Function Name:
  *      rtl8367c_getAsicCputagPosition
  * Description:
- *      Get cpu tag insert position
+ *      Get CPU tag insert position
  * Input:
  *      pPostion - 1: After entire packet(before CRC field), 0: After MAC_SA (Default)
  * Output:
@@ -285,7 +285,7 @@ ret_t rtl8367c_getAsicCputagPosition(rtk_uint32* pPostion)
 /* Function Name:
  *      rtl8367c_setAsicCputagMode
  * Description:
- *      Set cpu tag mode
+ *      Set CPU tag mode
  * Input:
  *      mode - 1: 4bytes mode, 0: 8bytes mode
  * Output:
@@ -308,7 +308,7 @@ ret_t rtl8367c_setAsicCputagMode(rtk_uint32 mode)
 /* Function Name:
  *      rtl8367c_getAsicCputagMode
  * Description:
- *      Get cpu tag mode
+ *      Get CPU tag mode
  * Input:
  *      pMode - 1: 4bytes mode, 0: 8bytes mode
  * Output:
@@ -326,7 +326,7 @@ ret_t rtl8367c_getAsicCputagMode(rtk_uint32 *pMode)
 /* Function Name:
  *      rtl8367c_setAsicCputagRxMinLength
  * Description:
- *      Set cpu tag mode
+ *      Set CPU tag mode
  * Input:
  *      mode - 1: 64bytes, 0: 72bytes
  * Output:
@@ -349,7 +349,7 @@ ret_t rtl8367c_setAsicCputagRxMinLength(rtk_uint32 mode)
 /* Function Name:
  *      rtl8367c_getAsicCputagRxMinLength
  * Description:
- *      Get cpu tag mode
+ *      Get CPU tag mode
  * Input:
  *      pMode - 1: 64bytes, 0: 72bytes
  * Output:

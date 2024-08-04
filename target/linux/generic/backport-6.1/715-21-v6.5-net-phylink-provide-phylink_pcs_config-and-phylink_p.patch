@@ -1,0 +1,100 @@
+From 796d709363135a6bd6a8ccc07b509c939e5b855f Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 23 May 2023 16:31:50 +0100
+Subject: [PATCH 19/21] net: phylink: provide phylink_pcs_config() and
+ phylink_pcs_link_up()
+
+Add two helper functions for calling PCS methods. phylink_pcs_config()
+allows us to handle PCS configuration specifics in one location, rather
+than the two call sites. phylink_pcs_link_up() gives us consistency.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Link: https://lore.kernel.org/r/E1q1TzK-007Exd-Rs@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 53 ++++++++++++++++++++++++---------------
+ 1 file changed, 33 insertions(+), 20 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -991,6 +991,25 @@ static void phylink_resolve_an_pause(str
+ 	}
+ }
+ 
++static int phylink_pcs_config(struct phylink_pcs *pcs, unsigned int mode,
++			      const struct phylink_link_state *state,
++			      bool permit_pause_to_mac)
++{
++	if (!pcs)
++		return 0;
++
++	return pcs->ops->pcs_config(pcs, mode, state->interface,
++				    state->advertising, permit_pause_to_mac);
++}
++
++static void phylink_pcs_link_up(struct phylink_pcs *pcs, unsigned int mode,
++				phy_interface_t interface, int speed,
++				int duplex)
++{
++	if (pcs && pcs->ops->pcs_link_up)
++		pcs->ops->pcs_link_up(pcs, mode, interface, speed, duplex);
++}
++
+ static void phylink_pcs_poll_stop(struct phylink *pl)
+ {
+ 	if (pl->cfg_link_an_mode == MLO_AN_INBAND)
+@@ -1074,18 +1093,15 @@ static void phylink_major_config(struct
+ 
+ 	phylink_mac_config(pl, state);
+ 
+-	if (pl->pcs) {
+-		err = pl->pcs->ops->pcs_config(pl->pcs, pl->cur_link_an_mode,
+-					       state->interface,
+-					       state->advertising,
+-					       !!(pl->link_config.pause &
+-						  MLO_PAUSE_AN));
+-		if (err < 0)
+-			phylink_err(pl, "pcs_config failed: %pe\n",
+-				    ERR_PTR(err));
+-		if (err > 0)
+-			restart = true;
+-	}
++	err = phylink_pcs_config(pl->pcs, pl->cur_link_an_mode, state,
++				 !!(pl->link_config.pause &
++				    MLO_PAUSE_AN));
++	if (err < 0)
++		phylink_err(pl, "pcs_config failed: %pe\n",
++			    ERR_PTR(err));
++	else if (err > 0)
++		restart = true;
++
+ 	if (restart)
+ 		phylink_mac_pcs_an_restart(pl);
+ 
+@@ -1136,11 +1152,9 @@ static int phylink_change_inband_advert(
+ 	 * restart negotiation if the pcs_config() helper indicates that
+ 	 * the programmed advertisement has changed.
+ 	 */
+-	ret = pl->pcs->ops->pcs_config(pl->pcs, pl->cur_link_an_mode,
+-				       pl->link_config.interface,
+-				       pl->link_config.advertising,
+-				       !!(pl->link_config.pause &
+-					  MLO_PAUSE_AN));
++	ret = phylink_pcs_config(pl->pcs, pl->cur_link_an_mode,
++				 &pl->link_config,
++				 !!(pl->link_config.pause & MLO_PAUSE_AN));
+ 	if (ret < 0)
+ 		return ret;
+ 
+@@ -1272,9 +1286,8 @@ static void phylink_link_up(struct phyli
+ 
+ 	pl->cur_interface = link_state.interface;
+ 
+-	if (pl->pcs && pl->pcs->ops->pcs_link_up)
+-		pl->pcs->ops->pcs_link_up(pl->pcs, pl->cur_link_an_mode,
+-					  pl->cur_interface, speed, duplex);
++	phylink_pcs_link_up(pl->pcs, pl->cur_link_an_mode, pl->cur_interface,
++			    speed, duplex);
+ 
+ 	pl->mac_ops->mac_link_up(pl->config, pl->phydev, pl->cur_link_an_mode,
+ 				 pl->cur_interface, speed, duplex,

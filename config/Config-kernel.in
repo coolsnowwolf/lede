@@ -47,8 +47,13 @@ config KERNEL_MIPS_FP_SUPPORT
 
 config KERNEL_ARM_PMU
 	bool
-	default n
+	default y if TARGET_armvirt
 	depends on (arm || aarch64)
+
+config KERNEL_ARM_PMUV3
+	bool
+	default y if TARGET_armvirt
+	depends on (arm_v7 || aarch64) && LINUX_6_6
 
 config KERNEL_RISCV_PMU
 	bool
@@ -81,6 +86,7 @@ config KERNEL_PERF_EVENTS
 	bool "Compile the kernel with performance events and counters"
 	default n
 	select KERNEL_ARM_PMU if (arm || aarch64)
+	select KERNEL_ARM_PMUV3 if (arm_v7 || aarch64) && LINUX_6_6
 	select KERNEL_RISCV_PMU if riscv64
 
 config KERNEL_PROFILING
@@ -157,7 +163,7 @@ config KERNEL_UBSAN_TRAP
 config KERNEL_KASAN
 	bool "Compile the kernel with KASan: runtime memory debugger"
 	select KERNEL_SLUB_DEBUG
-	depends on (x86_64 || aarch64)
+	depends on (x86_64 || aarch64 || arm || powerpc || riscv64)
 	help
 	  Enables kernel address sanitizer - runtime memory debugger,
 	  designed to find out-of-bounds accesses and use-after-free bugs.
@@ -169,16 +175,6 @@ config KERNEL_KASAN
 	  For better error detection enable CONFIG_STACKTRACE.
 	  Currently CONFIG_KASAN doesn't work with CONFIG_DEBUG_SLAB
 	  (the resulting kernel does not boot).
-
-config KERNEL_KASAN_EXTRA
-	bool "KAsan: extra checks"
-	depends on KERNEL_KASAN && KERNEL_DEBUG_KERNEL
-	help
-	  This enables further checks in the kernel address sanitizer, for now
-	  it only includes the address-use-after-scope check that can lead
-	  to excessive kernel stack usage, frame size warnings and longer
-	  compile time.
-	  https://gcc.gnu.org/bugzilla/show_bug.cgi?id=81715 has more
 
 config KERNEL_KASAN_VMALLOC
 	bool "Back mappings in vmalloc space with real shadow memory"
@@ -198,16 +194,73 @@ config KERNEL_KASAN_VMALLOC
 	  will have no effect.
 
 if KERNEL_KASAN
-	config KERNEL_KASAN_GENERIC
-	def_bool y
+choice
+	prompt "KASAN mode"
+	depends on KERNEL_KASAN
+	default KERNEL_KASAN_GENERIC
+	help
+	  KASAN has three modes:
 
-	config KERNEL_KASAN_SW_TAGS
-	def_bool n
+	  1. Generic KASAN (supported by many architectures, enabled with
+	     CONFIG_KASAN_GENERIC, similar to userspace ASan),
+	  2. Software Tag-Based KASAN (arm64 only, based on software memory
+	     tagging, enabled with CONFIG_KASAN_SW_TAGS, similar to userspace
+	     HWASan), and
+	  3. Hardware Tag-Based KASAN (arm64 only, based on hardware memory
+	     tagging, enabled with CONFIG_KASAN_HW_TAGS).
+
+config KERNEL_KASAN_GENERIC
+	bool "Generic KASAN"
+	select KERNEL_SLUB_DEBUG
+	help
+	  Enables Generic KASAN.
+
+	  Consumes about 1/8th of available memory at kernel start and adds an
+	  overhead of ~50% for dynamic allocations.
+	  The performance slowdown is ~x3.
+
+config KERNEL_KASAN_SW_TAGS
+	bool "Software Tag-Based KASAN"
+	depends on aarch64
+	select KERNEL_SLUB_DEBUG
+	help
+	  Enables Software Tag-Based KASAN.
+
+	  Supported only on arm64 CPUs and relies on Top Byte Ignore.
+
+	  Consumes about 1/16th of available memory at kernel start and
+	  add an overhead of ~20% for dynamic allocations.
+
+	  May potentially introduce problems related to pointer casting and
+	  comparison, as it embeds a tag into the top byte of each pointer.
+
+config KERNEL_KASAN_HW_TAGS
+	bool "Hardware Tag-Based KASAN"
+	depends on aarch64
+	select KERNEL_SLUB_DEBUG
+	select KERNEL_ARM64_MTE
+	help
+	  Enables Hardware Tag-Based KASAN.
+
+	  Supported only on arm64 CPUs starting from ARMv8.5 and relies on
+	  Memory Tagging Extension and Top Byte Ignore.
+
+	  Consumes about 1/32nd of available memory.
+
+	  May potentially introduce problems related to pointer casting and
+	  comparison, as it embeds a tag into the top byte of each pointer.
+
+endchoice
+
+	config KERNEL_ARM64_MTE
+		def_bool n
+
 endif
 
 choice
 	prompt "Instrumentation type"
 	depends on KERNEL_KASAN
+	depends on !KERNEL_KASAN_HW_TAGS
 	default KERNEL_KASAN_OUTLINE
 
 config KERNEL_KASAN_OUTLINE
@@ -384,7 +437,6 @@ config KERNEL_DEBUG_INFO
 	  This will compile your kernel and modules with debug information.
 
 config KERNEL_DEBUG_INFO_BTF
-
 	bool "Enable additional BTF type information"
 	default n
 	depends on !HOST_OS_MACOS
@@ -396,6 +448,20 @@ config KERNEL_DEBUG_INFO_BTF
 	  DWARF type info into equivalent deduplicated BTF type info.
 
 	  Required to run BPF CO-RE applications.
+
+config KERNEL_DEBUG_INFO_BTF_MODULES
+	def_bool y
+	depends on KERNEL_DEBUG_INFO_BTF
+
+config KERNEL_MODULE_ALLOW_BTF_MISMATCH
+	bool "Allow loading modules with non-matching BTF type info"
+	depends on KERNEL_DEBUG_INFO_BTF_MODULES
+	help
+	  For modules whose split BTF does not match vmlinux, load without
+	  BTF rather than refusing to load. The default behavior with
+	  module BTF enabled is to reject modules with such mismatches;
+	  this option will still load module BTF where possible but ignore
+	  it when a mismatch is found.
 
 config KERNEL_DEBUG_INFO_REDUCED
 	bool "Reduce debugging information"
@@ -422,6 +488,10 @@ config KERNEL_FRAME_WARN
 	  Setting this too low will cause a lot of warnings.
 	  Setting it to 0 disables the warning.
 
+# KERNEL_DEBUG_LL symbols must have the default value set as otherwise
+# KConfig wont evaluate them unless KERNEL_EARLY_PRINTK is selected
+# which means that buildroot wont override the DEBUG_LL symbols in target
+# kernel configurations and lead to devices that dont have working console
 config KERNEL_DEBUG_LL_UART_NONE
 	bool
 	default n
@@ -496,8 +566,8 @@ config KERNEL_BPF_EVENTS
 
 config KERNEL_BPF_KPROBE_OVERRIDE
 	bool
-	default n
 	depends on KERNEL_KPROBES
+	default n
 
 config KERNEL_AIO
 	bool "Compile the kernel with asynchronous IO support"
@@ -505,7 +575,8 @@ config KERNEL_AIO
 
 config KERNEL_IO_URING
 	bool "Compile the kernel with io_uring support"
-	default y if !SMALL_FLASH
+	depends on !SMALL_FLASH
+	default y if (x86_64 || aarch64)
 
 config KERNEL_FHANDLE
 	bool "Compile the kernel with support for fhandle syscalls"
@@ -580,6 +651,18 @@ config KERNEL_SOFTLOCKUP_DETECTOR
 	  chance to run.  The current stack trace is displayed upon
 	  detection and the system will stay locked up.
 
+config KERNEL_HARDLOCKUP_DETECTOR
+	bool "Compile the kernel with detect Hard Lockups"
+	depends on KERNEL_DEBUG_KERNEL
+	help
+	  Say Y here to enable the kernel to act as a watchdog to detect
+	  hard lockups.
+
+	  Hardlockups are bugs that cause the CPU to loop in kernel mode
+	  for more than 10 seconds, without letting other interrupts have a
+	  chance to run.  The current stack trace is displayed upon detection
+	  and the system will stay locked up.
+
 config KERNEL_DETECT_HUNG_TASK
 	bool "Compile the kernel with detect Hung Tasks"
 	depends on KERNEL_DEBUG_KERNEL
@@ -629,10 +712,23 @@ config KERNEL_PRINTK_TIME
 	default y
 
 config KERNEL_SLUB_DEBUG
-	bool
+	bool "Enable SLUB debugging support"
+	help
+	  This enables various debugging features:
+	    - Accepts "slub_debug" kernel parameter
+	    - Provides caches debugging options (e.g. tracing, validating)
+	    - Adds /sys/kernel/slab/ attrs for reading amounts of *objects*
+	    - Enables /proc/slabinfo support
+	    - Prints info when running out of memory
+
+	  Enabling this can result in a significant increase of code size.
 
 config KERNEL_SLUB_DEBUG_ON
-	bool
+	depends on KERNEL_SLUB_DEBUG
+	bool "Boot kernel with basic caches debugging enabled"
+	help
+	  This enables by default sanity_checks, red_zone, poison and store_user
+	  debugging options for all caches.
 
 config KERNEL_SLABINFO
 	select KERNEL_SLUB_DEBUG
@@ -1077,13 +1173,6 @@ if KERNEL_IP_MROUTE
 
 endif
 
-config KERNEL_MPTCP
-	bool "Enable IPv4 MultiPath TCP support"
-	default y
-	depends on !(LINUX_4_4||LINUX_5_4)
-	help
-	  IPv4 MultiPath TCP to kernel support.
-
 #
 # IPv6 configuration
 #
@@ -1125,14 +1214,6 @@ if KERNEL_IPV6
 	config KERNEL_LWTUNNEL_BPF
 		def_bool n
 
-	config KERNEL_MPTCP_IPV6
-		bool "Enable IPv6 MultiPath TCP support"
-		default y
-		depends on KERNEL_MPTCP
-		depends on !(LINUX_4_4||LINUX_5_4)
-		help
-		  IPv6 MultiPath TCP to kernel support.
-
 endif
 
 #
@@ -1144,6 +1225,12 @@ config KERNEL_NET_L3_MASTER_DEV
 	help
 	  This module provides glue between core networking code and device
 	  drivers to support L3 master devices like VRF.
+
+config KERNEL_XDP_SOCKETS
+	bool "XDP sockets support"
+	help
+	  XDP sockets allows a channel between XDP programs and
+	  userspace applications.
 
 config KERNEL_PAGE_POOL
 	def_bool n

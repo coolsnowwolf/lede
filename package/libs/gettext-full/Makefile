@@ -64,6 +64,7 @@ HOST_CONFIGURE_ARGS += \
 	--disable-rpath \
 	--disable-java \
 	--disable-openmp \
+	--disable-curses \
 	--without-emacs \
 	--without-libxml2-prefix
 

@@ -1,0 +1,149 @@
+From 1dcc03c9a7a824a31eaaecdfaa03542fb25feb6c Mon Sep 17 00:00:00 2001
+From: Andrew Lunn <andrew@lunn.ch>
+Date: Tue, 8 Aug 2023 23:04:34 +0200
+Subject: [PATCH 2/4] net: phy: phy_device: Call into the PHY driver to set LED
+ offload
+
+Linux LEDs can be requested to perform hardware accelerated blinking
+to indicate link, RX, TX etc. Pass the rules for blinking to the PHY
+driver, if it implements the ops needed to determine if a given
+pattern can be offloaded, to offload it, and what the current offload
+is. Additionally implement the op needed to get what device the LED is
+for.
+
+Reviewed-by: Simon Horman <simon.horman@corigine.com>
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Link: https://lore.kernel.org/r/20230808210436.838995-3-andrew@lunn.ch
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phy_device.c | 68 ++++++++++++++++++++++++++++++++++++
+ include/linux/phy.h          | 33 +++++++++++++++++
+ 2 files changed, 101 insertions(+)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -3068,6 +3068,61 @@ static int phy_led_blink_set(struct led_
+ 	return err;
+ }
+ 
++static __maybe_unused struct device *
++phy_led_hw_control_get_device(struct led_classdev *led_cdev)
++{
++	struct phy_led *phyled = to_phy_led(led_cdev);
++	struct phy_device *phydev = phyled->phydev;
++
++	if (phydev->attached_dev)
++		return &phydev->attached_dev->dev;
++	return NULL;
++}
++
++static int __maybe_unused
++phy_led_hw_control_get(struct led_classdev *led_cdev,
++		       unsigned long *rules)
++{
++	struct phy_led *phyled = to_phy_led(led_cdev);
++	struct phy_device *phydev = phyled->phydev;
++	int err;
++
++	mutex_lock(&phydev->lock);
++	err = phydev->drv->led_hw_control_get(phydev, phyled->index, rules);
++	mutex_unlock(&phydev->lock);
++
++	return err;
++}
++
++static int __maybe_unused
++phy_led_hw_control_set(struct led_classdev *led_cdev,
++		       unsigned long rules)
++{
++	struct phy_led *phyled = to_phy_led(led_cdev);
++	struct phy_device *phydev = phyled->phydev;
++	int err;
++
++	mutex_lock(&phydev->lock);
++	err = phydev->drv->led_hw_control_set(phydev, phyled->index, rules);
++	mutex_unlock(&phydev->lock);
++
++	return err;
++}
++
++static __maybe_unused int phy_led_hw_is_supported(struct led_classdev *led_cdev,
++						  unsigned long rules)
++{
++	struct phy_led *phyled = to_phy_led(led_cdev);
++	struct phy_device *phydev = phyled->phydev;
++	int err;
++
++	mutex_lock(&phydev->lock);
++	err = phydev->drv->led_hw_is_supported(phydev, phyled->index, rules);
++	mutex_unlock(&phydev->lock);
++
++	return err;
++}
++
+ static void phy_leds_unregister(struct phy_device *phydev)
+ {
+ 	struct phy_led *phyled;
+@@ -3105,6 +3160,19 @@ static int of_phy_led(struct phy_device
+ 		cdev->brightness_set_blocking = phy_led_set_brightness;
+ 	if (phydev->drv->led_blink_set)
+ 		cdev->blink_set = phy_led_blink_set;
++
++#ifdef CONFIG_LEDS_TRIGGERS
++	if (phydev->drv->led_hw_is_supported &&
++	    phydev->drv->led_hw_control_set &&
++	    phydev->drv->led_hw_control_get) {
++		cdev->hw_control_is_supported = phy_led_hw_is_supported;
++		cdev->hw_control_set = phy_led_hw_control_set;
++		cdev->hw_control_get = phy_led_hw_control_get;
++		cdev->hw_control_trigger = "netdev";
++	}
++
++	cdev->hw_control_get_device = phy_led_hw_control_get_device;
++#endif
+ 	cdev->max_brightness = 1;
+ 	init_data.devicename = dev_name(&phydev->mdio.dev);
+ 	init_data.fwnode = of_fwnode_handle(led);
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -1026,6 +1026,39 @@ struct phy_driver {
+ 	int (*led_blink_set)(struct phy_device *dev, u8 index,
+ 			     unsigned long *delay_on,
+ 			     unsigned long *delay_off);
++	/**
++	 * @led_hw_is_supported: Can the HW support the given rules.
++	 * @dev: PHY device which has the LED
++	 * @index: Which LED of the PHY device
++	 * @rules The core is interested in these rules
++	 *
++	 * Return 0 if yes,  -EOPNOTSUPP if not, or an error code.
++	 */
++	int (*led_hw_is_supported)(struct phy_device *dev, u8 index,
++				   unsigned long rules);
++	/**
++	 * @led_hw_control_set: Set the HW to control the LED
++	 * @dev: PHY device which has the LED
++	 * @index: Which LED of the PHY device
++	 * @rules The rules used to control the LED
++	 *
++	 * Returns 0, or a an error code.
++	 */
++	int (*led_hw_control_set)(struct phy_device *dev, u8 index,
++				  unsigned long rules);
++	/**
++	 * @led_hw_control_get: Get how the HW is controlling the LED
++	 * @dev: PHY device which has the LED
++	 * @index: Which LED of the PHY device
++	 * @rules Pointer to the rules used to control the LED
++	 *
++	 * Set *@rules to how the HW is currently blinking. Returns 0
++	 * on success, or a error code if the current blinking cannot
++	 * be represented in rules, or some other error happens.
++	 */
++	int (*led_hw_control_get)(struct phy_device *dev, u8 index,
++				  unsigned long *rules);
++
+ };
+ #define to_phy_driver(d) container_of(to_mdio_common_driver(d),		\
+ 				      struct phy_driver, mdiodrv)

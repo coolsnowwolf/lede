@@ -1,0 +1,132 @@
+From fa5aec9561cfc4f4370983ca5818c90227c9d90e Mon Sep 17 00:00:00 2001
+From: Andre Przywara <andre.przywara@arm.com>
+Date: Thu, 18 Apr 2024 16:44:05 +0100
+Subject: [PATCH] cpufreq: sun50i: Add support for opp_supported_hw
+
+The opp_supported_hw DT property allows the DT to specify a mask of chip
+revisions that a certain OPP is eligible for. This allows for easy
+limiting of maximum frequencies, for instance.
+
+Add support for that in the sun50i-cpufreq-nvmem driver. We support both
+the existing opp-microvolt suffix properties as well as the
+opp-supported-hw property, the generic code figures out which is needed
+automatically.
+However if none of the DT OPP nodes contain an opp-supported-hw
+property, the core code will ignore all OPPs and the driver will fail
+probing. So check the DT's eligibility first before using that feature.
+
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Reviewed-by: Jernej Skrabec <jernej.skrabec@gmail.com>
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+---
+ drivers/cpufreq/sun50i-cpufreq-nvmem.c | 62 ++++++++++++++++++++++----
+ 1 file changed, 54 insertions(+), 8 deletions(-)
+
+--- a/drivers/cpufreq/sun50i-cpufreq-nvmem.c
++++ b/drivers/cpufreq/sun50i-cpufreq-nvmem.c
+@@ -58,6 +58,41 @@ static const struct of_device_id cpu_opp
+ };
+ 
+ /**
++ * dt_has_supported_hw() - Check if any OPPs use opp-supported-hw
++ *
++ * If we ask the cpufreq framework to use the opp-supported-hw feature, it
++ * will ignore every OPP node without that DT property. If none of the OPPs
++ * have it, the driver will fail probing, due to the lack of OPPs.
++ *
++ * Returns true if we have at least one OPP with the opp-supported-hw property.
++ */
++static bool dt_has_supported_hw(void)
++{
++	bool has_opp_supported_hw = false;
++	struct device_node *np, *opp;
++	struct device *cpu_dev;
++
++	cpu_dev = get_cpu_device(0);
++	if (!cpu_dev)
++		return -ENODEV;
++
++	np = dev_pm_opp_of_get_opp_desc_node(cpu_dev);
++	if (!np)
++		return -ENOENT;
++
++	for_each_child_of_node(np, opp) {
++		if (of_find_property(opp, "opp-supported-hw", NULL)) {
++			has_opp_supported_hw = true;
++			break;
++		}
++	}
++
++	of_node_put(np);
++
++	return has_opp_supported_hw;
++}
++
++/**
+  * sun50i_cpufreq_get_efuse() - Determine speed grade from efuse value
+  *
+  * Returns non-negative speed bin index on success, a negative error
+@@ -110,7 +145,8 @@ static int sun50i_cpufreq_nvmem_probe(st
+ {
+ 	int *opp_tokens;
+ 	char name[MAX_NAME_LEN];
+-	unsigned int cpu;
++	unsigned int cpu, supported_hw;
++	struct dev_pm_opp_config config = {};
+ 	int speed;
+ 	int ret;
+ 
+@@ -125,7 +161,18 @@ static int sun50i_cpufreq_nvmem_probe(st
+ 		return speed;
+ 	}
+ 
++	/*
++	 * We need at least one OPP with the "opp-supported-hw" property,
++	 * or else the upper layers will ignore every OPP and will bail out.
++	 */
++	if (dt_has_supported_hw()) {
++		supported_hw = 1U << speed;
++		config.supported_hw = &supported_hw;
++		config.supported_hw_count = 1;
++	}
++
+ 	snprintf(name, MAX_NAME_LEN, "speed%d", speed);
++	config.prop_name = name;
+ 
+ 	for_each_possible_cpu(cpu) {
+ 		struct device *cpu_dev = get_cpu_device(cpu);
+@@ -135,12 +182,11 @@ static int sun50i_cpufreq_nvmem_probe(st
+ 			goto free_opp;
+ 		}
+ 
+-		opp_tokens[cpu] = dev_pm_opp_set_prop_name(cpu_dev, name);
+-		if (opp_tokens[cpu] < 0) {
+-			ret = opp_tokens[cpu];
+-			pr_err("Failed to set prop name\n");
++		ret = dev_pm_opp_set_config(cpu_dev, &config);
++		if (ret < 0)
+ 			goto free_opp;
+-		}
++
++		opp_tokens[cpu] = ret;
+ 	}
+ 
+ 	cpufreq_dt_pdev = platform_device_register_simple("cpufreq-dt", -1,
+@@ -155,7 +201,7 @@ static int sun50i_cpufreq_nvmem_probe(st
+ 
+ free_opp:
+ 	for_each_possible_cpu(cpu)
+-		dev_pm_opp_put_prop_name(opp_tokens[cpu]);
++		dev_pm_opp_clear_config(opp_tokens[cpu]);
+ 	kfree(opp_tokens);
+ 
+ 	return ret;
+@@ -169,7 +215,7 @@ static void sun50i_cpufreq_nvmem_remove(
+ 	platform_device_unregister(cpufreq_dt_pdev);
+ 
+ 	for_each_possible_cpu(cpu)
+-		dev_pm_opp_put_prop_name(opp_tokens[cpu]);
++		dev_pm_opp_clear_config(opp_tokens[cpu]);
+ 
+ 	kfree(opp_tokens);
+ }

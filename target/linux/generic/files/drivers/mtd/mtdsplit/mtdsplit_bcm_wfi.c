@@ -31,6 +31,7 @@
 
 #define CFERAM_NAME		"cferam"
 #define CFERAM_NAME_LEN		(sizeof(CFERAM_NAME) - 1)
+#define CFERAM_NAME_MAX_LEN	32
 #define KERNEL_NAME		"vmlinux.lz"
 #define KERNEL_NAME_LEN		(sizeof(KERNEL_NAME) - 1)
 #define OPENWRT_NAME		"1-openwrt"
@@ -157,17 +158,28 @@ static int parse_bcm_wfi(struct mtd_info *master,
 			 const struct mtd_partition **pparts,
 			 uint8_t *buf, loff_t off, loff_t size, bool cfe_part)
 {
+	struct device_node *mtd_node;
 	struct mtd_partition *parts;
 	loff_t cfe_off, kernel_off, rootfs_off;
 	unsigned int num_parts = BCM_WFI_PARTS, cur_part = 0;
+	const char *cferam_name = CFERAM_NAME;
+	size_t cferam_name_len;
 	int ret;
+
+	mtd_node = mtd_get_of_node(master);
+	if (mtd_node)
+		of_property_read_string(mtd_node, "brcm,cferam", &cferam_name);
+
+	cferam_name_len = strnlen(cferam_name, CFERAM_NAME_MAX_LEN);
+	if (cferam_name_len > 0)
+		cferam_name_len--;
 
 	if (cfe_part) {
 		num_parts++;
 		cfe_off = off;
 
-		ret = jffs2_find_file(master, buf, CFERAM_NAME,
-				      CFERAM_NAME_LEN, &cfe_off,
+		ret = jffs2_find_file(master, buf, cferam_name,
+				      cferam_name_len, &cfe_off,
 				      size - (cfe_off - off), NULL, NULL);
 		if (ret)
 			return ret;

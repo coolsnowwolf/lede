@@ -152,7 +152,7 @@ static rtk_switch_halCtrl_t rtl8370b_hal_Ctrl =
     /* Minimum physical port number */
     0,
 
-    /* Maxmum physical port number */
+    /* Maximum physical port number */
     10,
 
     /* Physical port mask */
@@ -221,7 +221,7 @@ static rtk_switch_halCtrl_t rtl8364b_hal_Ctrl =
     /* Minimum physical port number */
     0,
 
-    /* Maxmum physical port number */
+    /* Maximum physical port number */
     7,
 
     /* Physical port mask */
@@ -290,7 +290,7 @@ static rtk_switch_halCtrl_t rtl8363sc_vb_hal_Ctrl =
     /* Minimum physical port number */
     0,
 
-    /* Maxmum physical port number */
+    /* Maximum physical port number */
     7,
 
     /* Physical port mask */
@@ -1215,7 +1215,7 @@ rtk_api_ret_t rtk_switch_isPortMaskExt(rtk_portmask_t *pPmask)
 /* Function Name:
  *      rtk_switch_portmask_L2P_get
  * Description:
- *      Get physicl portmask from logical portmask
+ *      Get physical portmask from logical portmask
  * Input:
  *      pLogicalPmask       - logical port mask
  * Output:
@@ -1351,7 +1351,7 @@ rtk_api_ret_t rtk_switch_logPortMask_get(rtk_portmask_t *pPortmask)
 /* Function Name:
  *      rtk_switch_init
  * Description:
- *      Set chip to default configuration enviroment
+ *      Set chip to default configuration environment
  * Input:
  *      None
  * Output:

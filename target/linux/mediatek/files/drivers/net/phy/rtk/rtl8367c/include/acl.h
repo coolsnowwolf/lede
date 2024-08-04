@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes ACL module high-layer API defination
+ * Feature : The file includes ACL module high-layer API definition
  *
  */
 
@@ -566,7 +566,7 @@ typedef enum rtk_filter_portrange_e
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_NULL_POINTER - Pointer pFilter_field or pFilter_cfg point to NULL.
  * Note:
- *      This function enable and intialize ACL function
+ *      This function enable and initialize ACL function
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_init(void);
 
@@ -589,7 +589,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_init(void);
  *      This function add a comparison rule (*pFilter_field) to an ACL configuration (*pFilter_cfg).
  *      Pointer pFilter_cfg points to an ACL configuration structure, this structure keeps multiple ACL
  *      comparison rules by means of linked list. Pointer pFilter_field will be added to linked
- *      list keeped by structure that pFilter_cfg points to.
+ *      list kept by structure that pFilter_cfg points to.
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_field_add(rtk_filter_cfg_t *pFilter_cfg, rtk_filter_field_t *pFilter_field);
 
@@ -602,7 +602,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_field_add(rtk_filter_cfg_t *pFilter_cfg, 
  *      pFilter_cfg     - The ACL configuration that this function will add comparison rule
  *      pFilter_action  - Action(s) of ACL configuration.
  * Output:
- *      ruleNum - number of rules written in acl table
+ *      ruleNum - number of rules written in ACL table
  * Return:
  *      RT_ERR_OK                               - OK
  *      RT_ERR_FAILED                           - Failed
@@ -657,12 +657,12 @@ extern rtk_api_ret_t rtk_filter_igrAcl_cfg_delAll(void);
 /* Function Name:
  *      rtk_filter_igrAcl_cfg_get
  * Description:
- *      Get one ingress acl configuration from ASIC.
+ *      Get one ingress ACL configuration from ASIC.
  * Input:
  *      filter_id       - Start index of ACL configuration.
  * Output:
- *      pFilter_cfg     - buffer pointer of ingress acl data
- *      pFilter_action  - buffer pointer of ingress acl action
+ *      pFilter_cfg     - buffer pointer of ingress ACL data
+ *      pFilter_action  - buffer pointer of ingress ACL action
  * Return:
  *      RT_ERR_OK               - OK
  *      RT_ERR_FAILED           - Failed
@@ -690,7 +690,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_cfg_get(rtk_filter_id_t filter_id, rtk_fi
  *      RT_ERR_PORT_ID      - Invalid port id.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This function sets action of packets when no ACL configruation matches.
+ *      This function sets action of packets when no ACL configuration matches.
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_unmatchAction_set(rtk_port_t port, rtk_filter_unmatch_action_t action);
 
@@ -709,7 +709,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_unmatchAction_set(rtk_port_t port, rtk_fi
  *      RT_ERR_PORT_ID      - Invalid port id.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This function gets action of packets when no ACL configruation matches.
+ *      This function gets action of packets when no ACL configuration matches.
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_unmatchAction_get(rtk_port_t port, rtk_filter_unmatch_action_t* action);
 
@@ -729,7 +729,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_unmatchAction_get(rtk_port_t port, rtk_fi
  *      RT_ERR_PORT_ID      - Invalid port id.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This function gets action of packets when no ACL configruation matches.
+ *      This function gets action of packets when no ACL configuration matches.
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_state_set(rtk_port_t port, rtk_filter_state_t state);
 
@@ -748,7 +748,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_state_set(rtk_port_t port, rtk_filter_sta
  *      RT_ERR_PORT_ID      - Invalid port id.
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This function gets action of packets when no ACL configruation matches.
+ *      This function gets action of packets when no ACL configuration matches.
  */
 extern rtk_api_ret_t rtk_filter_igrAcl_state_get(rtk_port_t port, rtk_filter_state_t* state);
 
@@ -802,7 +802,7 @@ extern rtk_api_ret_t rtk_filter_igrAcl_template_get(rtk_filter_template_t *aclTe
  *      RT_ERR_FAILED          - Failed
  *      RT_ERR_SMI             - SMI access error
  * Note:
- *      System support 16 user defined field selctors.
+ *      System support 16 user defined field selectors.
  *      Each selector can be enabled or disable.
  *      User can defined retrieving 16-bits in many predefiend
  *      standard l2/l3/l4 payload.
@@ -917,7 +917,7 @@ extern rtk_api_ret_t rtk_filter_vidrange_get(rtk_uint32 index, rtk_filter_vidran
  *      Set Port Range check
  * Input:
  *      index       - index of Port Range 0-15
- *      type        - IP Range check type, 0:Delete a entry, 1: Source Port, 2: Destnation Port
+ *      type        - IP Range check type, 0:Delete a entry, 1: Source Port, 2: Destination Port
  *      upperPort   - The upper bound of Port range
  *      lowerPort   - The lower Bound of Port range
  * Output:
@@ -940,7 +940,7 @@ extern rtk_api_ret_t rtk_filter_portrange_set(rtk_uint32 index, rtk_filter_portr
  * Input:
  *      index       - index of Port Range 0-15
  * Output:
- *      pType       - IP Range check type, 0:Delete a entry, 1: Source Port, 2: Destnation Port
+ *      pType       - IP Range check type, 0:Delete a entry, 1: Source Port, 2: Destination Port
  *      pUpperPort  - The upper bound of Port range
  *      pLowerPort  - The lower Bound of Port range
  * Return:
@@ -957,7 +957,7 @@ extern rtk_api_ret_t rtk_filter_portrange_get(rtk_uint32 index, rtk_filter_portr
 /* Function Name:
  *      rtk_filter_igrAclPolarity_set
  * Description:
- *      Set ACL Goip control palarity
+ *      Set ACL Goip control polarity
  * Input:
  *      polarity - 1: High, 0: Low
  * Output:
@@ -973,7 +973,7 @@ extern rtk_api_ret_t rtk_filter_igrAclPolarity_set(rtk_uint32 polarity);
 /* Function Name:
  *      rtk_filter_igrAclPolarity_get
  * Description:
- *      Get ACL Goip control palarity
+ *      Get ACL Goip control polarity
  * Input:
  *      pPolarity - 1: High, 0: Low
  * Output:

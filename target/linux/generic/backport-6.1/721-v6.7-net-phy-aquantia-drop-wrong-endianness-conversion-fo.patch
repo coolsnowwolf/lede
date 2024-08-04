@@ -1,0 +1,92 @@
+From 7edce370d87a23e8ed46af5b76a9fef1e341b67b Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 28 Nov 2023 14:59:28 +0100
+Subject: [PATCH] net: phy: aquantia: drop wrong endianness conversion for addr
+ and CRC
+
+On further testing on BE target with kernel test robot, it was notice
+that the endianness conversion for addr and CRC in fw_load_memory was
+wrong.
+
+Drop the cpu_to_le32 conversion for addr load as it's not needed.
+
+Use get_unaligned_le32 instead of get_unaligned for FW data word load to
+correctly convert data in the correct order to follow system endian.
+
+Also drop the cpu_to_be32 for CRC calculation as it's wrong and would
+cause different CRC on BE system.
+The loaded word is swapped internally and MAILBOX calculates the CRC on
+the swapped word. To correctly calculate the CRC to be later matched
+with the one from MAILBOX, use an u8 struct and swap the word there to
+keep the same order on both LE and BE for crc_ccitt_false function.
+Also add additional comments on how the CRC verification for the loaded
+section works.
+
+CRC is calculated as we load the section and verified with the MAILBOX
+only after the entire section is loaded to skip additional slowdown by
+loop the section data again.
+
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202311210414.sEJZjlcD-lkp@intel.com/
+Fixes: e93984ebc1c8 ("net: phy: aquantia: add firmware load support")
+Tested-by: Robert Marko <robimarko@gmail.com> # ipq8072 LE device
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Link: https://lore.kernel.org/r/20231128135928.9841-1-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/aquantia/aquantia_firmware.c | 24 ++++++++++++--------
+ 1 file changed, 14 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/phy/aquantia/aquantia_firmware.c
++++ b/drivers/net/phy/aquantia/aquantia_firmware.c
+@@ -93,9 +93,6 @@ static int aqr_fw_load_memory(struct phy
+ 	u16 crc = 0, up_crc;
+ 	size_t pos;
+ 
+-	/* PHY expect addr in LE */
+-	addr = (__force u32)cpu_to_le32(addr);
+-
+ 	phy_write_mmd(phydev, MDIO_MMD_VEND1,
+ 		      VEND1_GLOBAL_MAILBOX_INTERFACE1,
+ 		      VEND1_GLOBAL_MAILBOX_INTERFACE1_CRC_RESET);
+@@ -110,10 +107,11 @@ static int aqr_fw_load_memory(struct phy
+ 	 * If a firmware that is not word aligned is found, please report upstream.
+ 	 */
+ 	for (pos = 0; pos < len; pos += sizeof(u32)) {
++		u8 crc_data[4];
+ 		u32 word;
+ 
+ 		/* FW data is always stored in little-endian */
+-		word = get_unaligned((const u32 *)(data + pos));
++		word = get_unaligned_le32((const u32 *)(data + pos));
+ 
+ 		phy_write_mmd(phydev, MDIO_MMD_VEND1, VEND1_GLOBAL_MAILBOX_INTERFACE5,
+ 			      VEND1_GLOBAL_MAILBOX_INTERFACE5_MSW_DATA(word));
+@@ -124,15 +122,21 @@ static int aqr_fw_load_memory(struct phy
+ 			      VEND1_GLOBAL_MAILBOX_INTERFACE1_EXECUTE |
+ 			      VEND1_GLOBAL_MAILBOX_INTERFACE1_WRITE);
+ 
+-		/* calculate CRC as we load data to the mailbox.
+-		 * We convert word to big-endian as PHY is BE and mailbox will
+-		 * return a BE CRC.
++		/* Word is swapped internally and MAILBOX CRC is calculated
++		 * using big-endian order. Mimic what the PHY does to have a
++		 * matching CRC...
+ 		 */
+-		word = (__force u32)cpu_to_be32(word);
+-		crc = crc_ccitt_false(crc, (u8 *)&word, sizeof(word));
+-	}
++		crc_data[0] = word >> 24;
++		crc_data[1] = word >> 16;
++		crc_data[2] = word >> 8;
++		crc_data[3] = word;
+ 
++		/* ...calculate CRC as we load data... */
++		crc = crc_ccitt_false(crc, crc_data, sizeof(crc_data));
++	}
++	/* ...gets CRC from MAILBOX after we have loaded the entire section... */
+ 	up_crc = phy_read_mmd(phydev, MDIO_MMD_VEND1, VEND1_GLOBAL_MAILBOX_INTERFACE2);
++	/* ...and make sure it does match our calculated CRC */
+ 	if (crc != up_crc) {
+ 		phydev_err(phydev, "CRC mismatch: calculated 0x%04x PHY 0x%04x\n",
+ 			   crc, up_crc);

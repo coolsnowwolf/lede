@@ -607,7 +607,7 @@ ret_t rtl8367c_getAsicLedSerialModeConfig(rtk_uint32 *active, rtk_uint32 *serimo
 
 /*
 @func ret_t | rtl8367c_setAsicLedOutputEnable | Set LED output enable
-@parm rtk_uint32 | enabled | enable or disalbe.
+@parm rtk_uint32 | enabled | enable or disable.
 @rvalue RT_ERR_OK | Success.
 @rvalue RT_ERR_SMI | SMI access error.
 @rvalue RT_ERR_INPUT | Invalid input value.

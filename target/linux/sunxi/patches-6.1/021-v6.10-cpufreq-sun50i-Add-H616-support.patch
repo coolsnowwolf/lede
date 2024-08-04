@@ -1,0 +1,122 @@
+From e2e2dcd2e944fe6167cb731864f8a1343f1bbee7 Mon Sep 17 00:00:00 2001
+From: Martin Botka <martin.botka@somainline.org>
+Date: Thu, 18 Apr 2024 16:44:06 +0100
+Subject: [PATCH] cpufreq: sun50i: Add H616 support
+
+The Allwinner H616/H618 SoCs have different OPP tables per SoC version
+and die revision. The SoC version is stored in NVMEM, as before, though
+encoded differently. The die revision is in a different register, in the
+SRAM controller. Firmware already exports that value in a standardised
+way, through the SMCCC SoCID mechanism. We need both values, as some chips
+have the same SoC version, but they don't support the same frequencies and
+they get differentiated by the die revision.
+
+Add the new compatible string and tie the new translation function to
+it. This mechanism not only covers the original H616 SoC, but also its
+very close sibling SoCs H618 and H700, so add them to the list as well.
+
+Signed-off-by: Martin Botka <martin.botka@somainline.org>
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+---
+ drivers/cpufreq/sun50i-cpufreq-nvmem.c | 67 ++++++++++++++++++++++++++
+ 1 file changed, 67 insertions(+)
+
+--- a/drivers/cpufreq/sun50i-cpufreq-nvmem.c
++++ b/drivers/cpufreq/sun50i-cpufreq-nvmem.c
+@@ -10,6 +10,7 @@
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/arm-smccc.h>
+ #include <linux/module.h>
+ #include <linux/nvmem-consumer.h>
+ #include <linux/of_device.h>
+@@ -45,14 +46,77 @@ static u32 sun50i_h6_efuse_xlate(u32 spe
+ 		return 0;
+ }
+ 
++static int get_soc_id_revision(void)
++{
++#ifdef CONFIG_HAVE_ARM_SMCCC_DISCOVERY
++	return arm_smccc_get_soc_id_revision();
++#else
++	return SMCCC_RET_NOT_SUPPORTED;
++#endif
++}
++
++/*
++ * Judging by the OPP tables in the vendor BSP, the quality order of the
++ * returned speedbin index is 4 -> 0/2 -> 3 -> 1, from worst to best.
++ * 0 and 2 seem identical from the OPP tables' point of view.
++ */
++static u32 sun50i_h616_efuse_xlate(u32 speedbin)
++{
++	int ver_bits = get_soc_id_revision();
++	u32 value = 0;
++
++	switch (speedbin & 0xffff) {
++	case 0x2000:
++		value = 0;
++		break;
++	case 0x2400:
++	case 0x7400:
++	case 0x2c00:
++	case 0x7c00:
++		if (ver_bits != SMCCC_RET_NOT_SUPPORTED && ver_bits <= 1) {
++			/* ic version A/B */
++			value = 1;
++		} else {
++			/* ic version C and later version */
++			value = 2;
++		}
++		break;
++	case 0x5000:
++	case 0x5400:
++	case 0x6000:
++		value = 3;
++		break;
++	case 0x5c00:
++		value = 4;
++		break;
++	case 0x5d00:
++		value = 0;
++		break;
++	default:
++		pr_warn("sun50i-cpufreq-nvmem: unknown speed bin 0x%x, using default bin 0\n",
++			speedbin & 0xffff);
++		value = 0;
++		break;
++	}
++
++	return value;
++}
++
+ static struct sunxi_cpufreq_data sun50i_h6_cpufreq_data = {
+ 	.efuse_xlate = sun50i_h6_efuse_xlate,
+ };
+ 
++static struct sunxi_cpufreq_data sun50i_h616_cpufreq_data = {
++	.efuse_xlate = sun50i_h616_efuse_xlate,
++};
++
+ static const struct of_device_id cpu_opp_match_list[] = {
+ 	{ .compatible = "allwinner,sun50i-h6-operating-points",
+ 	  .data = &sun50i_h6_cpufreq_data,
+ 	},
++	{ .compatible = "allwinner,sun50i-h616-operating-points",
++	  .data = &sun50i_h616_cpufreq_data,
++	},
+ 	{}
+ };
+ 
+@@ -231,6 +295,9 @@ static struct platform_driver sun50i_cpu
+ 
+ static const struct of_device_id sun50i_cpufreq_match_list[] = {
+ 	{ .compatible = "allwinner,sun50i-h6" },
++	{ .compatible = "allwinner,sun50i-h616" },
++	{ .compatible = "allwinner,sun50i-h618" },
++	{ .compatible = "allwinner,sun50i-h700" },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, sun50i_cpufreq_match_list);

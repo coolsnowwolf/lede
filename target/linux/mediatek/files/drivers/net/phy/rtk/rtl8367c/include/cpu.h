@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes CPU module high-layer API defination
+ * Feature : The file includes CPU module high-layer API definition
  *
  */
 
@@ -107,7 +107,7 @@ extern rtk_api_ret_t rtk_cpu_enable_get(rtk_enable_t *pEnable);
  * Note:
  *      The API can set CPU port and inserting proprietary CPU tag mode (Length/Type 0x8899)
  *      to the frame that transmitting to CPU port.
- *      The inset cpu tag mode is as following:
+ *      The insert CPU tag mode is as following:
  *      - CPU_INSERT_TO_ALL
  *      - CPU_INSERT_TO_TRAPPING
  *      - CPU_INSERT_TO_NONE
@@ -131,7 +131,7 @@ extern rtk_api_ret_t rtk_cpu_tagPort_set(rtk_port_t port, rtk_cpu_insert_t mode)
  *      RT_ERR_L2_NO_CPU_PORT   - CPU port is not exist
  * Note:
  *      The API can get configured CPU port and its setting.
- *      The inset cpu tag mode is as following:
+ *      The insert CPU tag mode is as following:
  *      - CPU_INSERT_TO_ALL
  *      - CPU_INSERT_TO_TRAPPING
  *      - CPU_INSERT_TO_NONE

@@ -79,6 +79,7 @@ define KernelPackage/fb
   DEPENDS:=@DISPLAY_SUPPORT
   KCONFIG:= \
 	CONFIG_FB \
+	CONFIG_FB_DEVICE=y \
 	CONFIG_FB_MXS=n \
 	CONFIG_FB_SM750=n \
 	CONFIG_FRAMEBUFFER_CONSOLE=y \
@@ -101,7 +102,8 @@ define KernelPackage/fb
 	CONFIG_VT_CONSOLE=y \
 	CONFIG_VT_HW_CONSOLE_BINDING=y
   FILES:=$(LINUX_DIR)/drivers/video/fbdev/core/fb.ko \
-	$(LINUX_DIR)/lib/fonts/font.ko
+	$(LINUX_DIR)/lib/fonts/font.ko \
+	$(LINUX_DIR)/drivers/video/fbdev/core/fb_io_fops.ko@ge6.6
   AUTOLOAD:=$(call AutoLoad,06,fb font)
 endef
 

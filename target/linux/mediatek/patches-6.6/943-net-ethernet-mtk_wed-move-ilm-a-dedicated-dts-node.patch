@@ -1,0 +1,86 @@
+From f3565e6c2276411275e707a5442d3f69cc111273 Mon Sep 17 00:00:00 2001
+Message-Id: <f3565e6c2276411275e707a5442d3f69cc111273.1678718888.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sun, 12 Mar 2023 18:51:47 +0100
+Subject: [PATCH net-next 1/3] net: ethernet: mtk_wed: move ilm a dedicated dts
+ node
+
+Since the ilm memory region is not part of the RAM SoC, move ilm in a
+deidicated syscon node.
+This patch helps to keep backward-compatibility with older version of
+uboot codebase where we have a limit of 8 reserved-memory dts child
+nodes.
+Keep backward-compatibility with older dts version where ilm was defined
+as reserved-memory child node.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/mediatek/mtk_wed_mcu.c | 55 ++++++++++++++++++---
+ 1 file changed, 49 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed_mcu.c
+@@ -320,6 +320,39 @@ next:
+ }
+ 
+ static int
++mtk_wed_mcu_load_ilm(struct mtk_wed_wo *wo)
++{
++	struct mtk_wed_wo_memory_region *ilm_region;
++	struct resource res;
++	struct device_node *np;
++	int ret;
++
++	np = of_parse_phandle(wo->hw->node, "mediatek,wo-ilm", 0);
++	if (!np)
++		return 0;
++
++	ret = of_address_to_resource(np, 0, &res);
++	of_node_put(np);
++
++	if (ret < 0)
++		return ret;
++
++	ilm_region = &mem_region[MTK_WED_WO_REGION_ILM];
++	ilm_region->phy_addr = res.start;
++	ilm_region->size = resource_size(&res);
++	ilm_region->addr = devm_ioremap(wo->hw->dev, res.start,
++					resource_size(&res));
++
++	if (!IS_ERR(ilm_region->addr))
++		return 0;
++
++	ret = PTR_ERR(ilm_region->addr);
++	ilm_region->addr = NULL;
++
++	return ret;
++}
++
++static int
+ mtk_wed_mcu_load_firmware(struct mtk_wed_wo *wo)
+ {
+ 	const struct mtk_wed_fw_trailer *trailer;
+@@ -328,14 +361,20 @@ mtk_wed_mcu_load_firmware(struct mtk_wed
+ 	u32 val, boot_cr;
+ 	int ret, i;
+ 
++	mtk_wed_mcu_load_ilm(wo);
+ 	wo->boot_regmap = syscon_regmap_lookup_by_phandle(wo->hw->node,
+ 							  "mediatek,wo-cpuboot");
+ 
+ 	/* load firmware region metadata */
+ 	for (i = 0; i < ARRAY_SIZE(mem_region); i++) {
+-		int index = of_property_match_string(wo->hw->node,
+-						     "memory-region-names",
+-						     mem_region[i].name);
++		int index;
++
++		if (mem_region[i].addr)
++			continue;
++
++		index = of_property_match_string(wo->hw->node,
++						 "memory-region-names",
++						 mem_region[i].name);
+ 		if (index < 0)
+ 			continue;
+ 

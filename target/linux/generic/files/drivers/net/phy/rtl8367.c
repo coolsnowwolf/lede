@@ -1641,7 +1641,7 @@ static int rtl8367_switch_init(struct rtl8366_smi *smi)
 	int err;
 
 	dev->name = "RTL8367";
-	dev->cpu_port = RTL8367_CPU_PORT_NUM;
+	dev->cpu_port = smi->cpu_port;
 	dev->ports = RTL8367_NUM_PORTS;
 	dev->vlans = RTL8367_NUM_VIDS;
 	dev->ops = &rtl8367_sw_ops;
@@ -1721,6 +1721,11 @@ static int rtl8367_detect(struct rtl8366_smi *smi)
 
 	dev_info(smi->parent, "RTL%s ver. %u chip found\n",
 		 chip_name, rtl_ver & RTL8367_RTL_VER_MASK);
+
+	if (of_property_present(smi->parent->of_node, "realtek,extif1"))
+		smi->cpu_port = RTL8367_CPU_PORT_NUM - 1;
+
+	dev_info(smi->parent, "CPU port: %u\n", smi->cpu_port);
 
 	return 0;
 }

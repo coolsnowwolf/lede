@@ -1,0 +1,99 @@
+From 6470986f037880ce76960c369d6e5a5270e7ce32 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sun, 10 Mar 2024 15:39:07 +0000
+Subject: [PATCH 2/3] mediatek: snfi: adjust pin drive strength for Fidelix
+ SPI-NAND
+
+It seems like we might need to adjust the pin driver strength to 12mA
+for Fidelix SPI-NAND chip on MT7622 to avoid SPI data corruption on
+some devices.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../apsoc_common/drivers/snfi/mtk-snand-def.h |  7 +++++
+ .../apsoc_common/drivers/snfi/mtk-snand-ids.c |  4 ++-
+ .../apsoc_common/drivers/snfi/mtk-snand.c     | 30 +++++++++++++++++++
+ 3 files changed, 40 insertions(+), 1 deletion(-)
+
+--- a/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand-def.h
++++ b/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand-def.h
+@@ -86,6 +86,12 @@ struct snand_mem_org {
+ 
+ typedef int (*snand_select_die_t)(struct mtk_snand *snf, uint32_t dieidx);
+ 
++enum snand_drv {
++	SNAND_DRV_NO_CHANGE = 0,
++	SNAND_DRV_8mA = 8,
++	SNAND_DRV_12mA = 12,
++};
++
+ struct snand_flash_info {
+ 	const char *model;
+ 	struct snand_id id;
+@@ -93,6 +99,7 @@ struct snand_flash_info {
+ 	const struct snand_io_cap *cap_rd;
+ 	const struct snand_io_cap *cap_pl;
+ 	snand_select_die_t select_die;
++	enum snand_drv drv;
+ };
+ 
+ #define SNAND_INFO(_model, _id, _memorg, _cap_rd, _cap_pl, ...) \
+--- a/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand-ids.c
++++ b/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand-ids.c
+@@ -424,7 +424,9 @@ static const struct snand_flash_info sna
+ 	SNAND_INFO("FM35Q1GA", SNAND_ID(SNAND_ID_DYMMY, 0xe5, 0x71),
+ 		   SNAND_MEMORG_1G_2K_64,
+ 		   &snand_cap_read_from_cache_x4_only,
+-		   &snand_cap_program_load_x4),
++		   &snand_cap_program_load_x4,
++		   NULL,
++		   SNAND_DRV_12mA),
+ 
+ 	SNAND_INFO("PN26G01A", SNAND_ID(SNAND_ID_DYMMY, 0xa1, 0xe1),
+ 		   SNAND_MEMORG_1G_2K_128,
+--- a/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand.c
++++ b/plat/mediatek/apsoc_common/drivers/snfi/mtk-snand.c
+@@ -1845,6 +1845,33 @@ static int mtk_snand_id_probe(struct mtk
+ 	return -EINVAL;
+ }
+ 
++#define MT7622_GPIO_BASE    (void *)0x10211000
++#define MT7622_GPIO_DRIV(x) (MT7622_GPIO_BASE + 0x900 + 0x10 * x)
++
++void mtk_mt7622_snand_adjust_drive(void *dev, enum snand_drv drv)
++{
++	uint32_t e4, e8;
++
++	e4 = readl(MT7622_GPIO_DRIV(6)) & ~(0x3f00);
++	e8 = readl(MT7622_GPIO_DRIV(7)) & ~(0x3f00);
++
++	switch (drv) {
++	case SNAND_DRV_8mA:
++		e4 |= 0x3f00;
++		break;
++	case SNAND_DRV_12mA:
++		e8 |= 0x3f00;
++		break;
++	default:
++		return;
++	}
++
++	snand_log_chip(dev, "adjusting SPI-NAND pin drive strength to %umA\n", drv);
++
++	writel(e4, MT7622_GPIO_DRIV(6));
++	writel(e8, MT7622_GPIO_DRIV(7));
++}
++
+ int mtk_snand_init(void *dev, const struct mtk_snand_platdata *pdata,
+ 		   struct mtk_snand **psnf)
+ {
+@@ -1888,6 +1915,9 @@ int mtk_snand_init(void *dev, const stru
+ 	if (ret)
+ 		return ret;
+ 
++	if (pdata->soc == SNAND_SOC_MT7622 && snand_info->drv)
++		mtk_mt7622_snand_adjust_drive(dev, snand_info->drv);
++
+ 	rawpage_size = snand_info->memorg.pagesize +
+ 		       snand_info->memorg.sparesize;
+ 

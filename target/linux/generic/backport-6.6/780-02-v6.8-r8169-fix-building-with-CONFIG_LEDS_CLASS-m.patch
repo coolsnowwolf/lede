@@ -1,0 +1,75 @@
+From a2634a5ffcafc31c343c6153ae487eb184c433a6 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 3 Jan 2024 16:52:04 +0100
+Subject: [PATCH] r8169: fix building with CONFIG_LEDS_CLASS=m
+
+When r8169 is built-in but LED support is a loadable module, the new
+code to drive the LED causes a link failure:
+
+ld: drivers/net/ethernet/realtek/r8169_leds.o: in function `rtl8168_init_leds':
+r8169_leds.c:(.text+0x36c): undefined reference to `devm_led_classdev_register_ext'
+
+LED support is an optional feature, so fix this issue by adding a Kconfig
+symbol R8169_LEDS that is guaranteed to be false if r8169 is built-in
+and LED core support is a module. As a positive side effect of this change
+r8169_leds.o no longer is built under this configuration.
+
+Fixes: 18764b883e15 ("r8169: add support for LED's on RTL8168/RTL8101")
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202312281159.9TPeXbNd-lkp@intel.com/
+Suggested-by: Arnd Bergmann <arnd@arndb.de>
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Tested-by: Simon Horman <horms@kernel.org> # build-tested
+Tested-by: Arnd Bergmann <arnd@arndb.de>
+Link: https://lore.kernel.org/r/d055aeb5-fe5c-4ccf-987f-5af93a17537b@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/Kconfig      | 7 +++++++
+ drivers/net/ethernet/realtek/Makefile     | 6 ++----
+ drivers/net/ethernet/realtek/r8169_main.c | 5 ++---
+ 3 files changed, 11 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/Kconfig
++++ b/drivers/net/ethernet/realtek/Kconfig
+@@ -113,4 +113,11 @@ config R8169
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called r8169.  This is recommended.
+ 
++config R8169_LEDS
++	def_bool R8169 && LEDS_TRIGGER_NETDEV
++	depends on !(R8169=y && LEDS_CLASS=m)
++	help
++	  Optional support for controlling the NIC LED's with the netdev
++	  LED trigger.
++
+ endif # NET_VENDOR_REALTEK
+--- a/drivers/net/ethernet/realtek/Makefile
++++ b/drivers/net/ethernet/realtek/Makefile
+@@ -6,8 +6,6 @@
+ obj-$(CONFIG_8139CP) += 8139cp.o
+ obj-$(CONFIG_8139TOO) += 8139too.o
+ obj-$(CONFIG_ATP) += atp.o
+-r8169-objs += r8169_main.o r8169_firmware.o r8169_phy_config.o
+-ifdef CONFIG_LEDS_TRIGGER_NETDEV
+-r8169-objs += r8169_leds.o
+-endif
++r8169-y += r8169_main.o r8169_firmware.o r8169_phy_config.o
++r8169-$(CONFIG_R8169_LEDS) += r8169_leds.o
+ obj-$(CONFIG_R8169) += r8169.o
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -5473,11 +5473,10 @@ static int rtl_init_one(struct pci_dev *
+ 	if (rc)
+ 		return rc;
+ 
+-#if IS_REACHABLE(CONFIG_LEDS_CLASS) && IS_ENABLED(CONFIG_LEDS_TRIGGER_NETDEV)
+-	if (tp->mac_version > RTL_GIGA_MAC_VER_06 &&
++	if (IS_ENABLED(CONFIG_R8169_LEDS) &&
++	    tp->mac_version > RTL_GIGA_MAC_VER_06 &&
+ 	    tp->mac_version < RTL_GIGA_MAC_VER_61)
+ 		rtl8168_init_leds(dev);
+-#endif
+ 
+ 	netdev_info(dev, "%s, %pM, XID %03x, IRQ %d\n",
+ 		    rtl_chip_infos[chipset].name, dev->dev_addr, xid, tp->irq);

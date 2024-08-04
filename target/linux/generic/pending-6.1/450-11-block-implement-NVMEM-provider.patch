@@ -1,0 +1,235 @@
+From b9936aa8a3775c2027f655d91a206d0e6e1c7ec0 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 11 Jul 2023 00:17:31 +0100
+Subject: [PATCH 11/15] block: implement NVMEM provider
+
+On embedded devices using an eMMC it is common that one or more partitions
+on the eMMC are used to store MAC addresses and Wi-Fi calibration EEPROM
+data. Allow referencing the partition in device tree for the kernel and
+Wi-Fi drivers accessing it via the NVMEM layer.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ block/Kconfig     |   9 +++
+ block/Makefile    |   1 +
+ block/blk-nvmem.c | 186 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 196 insertions(+)
+ create mode 100644 block/blk-nvmem.c
+
+--- a/block/Kconfig
++++ b/block/Kconfig
+@@ -203,6 +203,15 @@ config BLK_INLINE_ENCRYPTION_FALLBACK
+ 	  by falling back to the kernel crypto API when inline
+ 	  encryption hardware is not present.
+ 
++config BLK_NVMEM
++	bool "Block device NVMEM provider"
++	depends on OF
++	depends on NVMEM
++	help
++	  Allow block devices (or partitions) to act as NVMEM prodivers,
++	  typically used with eMMC to store MAC addresses or Wi-Fi
++	  calibration data on embedded devices.
++
+ source "block/partitions/Kconfig"
+ 
+ config BLOCK_COMPAT
+--- a/block/Makefile
++++ b/block/Makefile
+@@ -35,6 +35,7 @@ obj-$(CONFIG_BLK_DEV_ZONED)	+= blk-zoned
+ obj-$(CONFIG_BLK_WBT)		+= blk-wbt.o
+ obj-$(CONFIG_BLK_DEBUG_FS)	+= blk-mq-debugfs.o
+ obj-$(CONFIG_BLK_DEBUG_FS_ZONED)+= blk-mq-debugfs-zoned.o
++obj-$(CONFIG_BLK_NVMEM)		+= blk-nvmem.o
+ obj-$(CONFIG_BLK_SED_OPAL)	+= sed-opal.o
+ obj-$(CONFIG_BLK_PM)		+= blk-pm.o
+ obj-$(CONFIG_BLK_INLINE_ENCRYPTION)	+= blk-crypto.o blk-crypto-profile.o \
+--- /dev/null
++++ b/block/blk-nvmem.c
+@@ -0,0 +1,186 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * block device NVMEM provider
++ *
++ * Copyright (c) 2023 Daniel Golle <daniel@makrotopia.org>
++ *
++ * Useful on devices using a partition on an eMMC for MAC addresses or
++ * Wi-Fi calibration EEPROM data.
++ */
++
++#include "blk.h"
++#include <linux/nvmem-provider.h>
++#include <linux/of.h>
++#include <linux/pagemap.h>
++#include <linux/property.h>
++
++/* List of all NVMEM devices */
++static LIST_HEAD(nvmem_devices);
++static DEFINE_MUTEX(devices_mutex);
++
++struct blk_nvmem {
++	struct nvmem_device *nvmem;
++	struct block_device *bdev;
++	struct list_head list;
++};
++
++static int blk_nvmem_reg_read(void *priv, unsigned int from,
++			      void *val, size_t bytes)
++{
++	unsigned long offs = from & ~PAGE_MASK, to_read;
++	pgoff_t f_index = from >> PAGE_SHIFT;
++	struct address_space *mapping;
++	struct blk_nvmem *bnv = priv;
++	size_t bytes_left = bytes;
++	struct folio *folio;
++	void *p;
++	int ret;
++
++	if (!bnv->bdev)
++		return -ENODEV;
++
++	if (!bnv->bdev->bd_disk)
++		return -EINVAL;
++
++	if (!bnv->bdev->bd_disk->fops)
++		return -EIO;
++
++	if (!bnv->bdev->bd_disk->fops->open)
++		return -EIO;
++
++	ret = bnv->bdev->bd_disk->fops->open(bnv->bdev, FMODE_READ);
++	if (ret)
++		return ret;
++
++	mapping = bnv->bdev->bd_inode->i_mapping;
++
++	while (bytes_left) {
++		folio = read_mapping_folio(mapping, f_index++, NULL);
++		if (IS_ERR(folio)) {
++			ret = PTR_ERR(folio);
++			goto err_release_bdev;
++		}
++		to_read = min_t(unsigned long, bytes_left, PAGE_SIZE - offs);
++		p = folio_address(folio) + offset_in_folio(folio, offs);
++		memcpy(val, p, to_read);
++		offs = 0;
++		bytes_left -= to_read;
++		val += to_read;
++		folio_put(folio);
++	}
++
++err_release_bdev:
++	bnv->bdev->bd_disk->fops->release(bnv->bdev->bd_disk, FMODE_READ);
++
++	return ret;
++}
++
++static int blk_nvmem_register(struct device *dev, struct class_interface *iface)
++{
++	struct device_node *np = dev_of_node(dev);
++	struct block_device *bdev = dev_to_bdev(dev);
++	struct nvmem_config config = {};
++	struct blk_nvmem *bnv;
++
++	/* skip devices which do not have a device tree node */
++	if (!np)
++		return 0;
++
++	/* skip devices without an nvmem layout defined */
++	if (!of_get_child_by_name(np, "nvmem-layout"))
++		return 0;
++
++	/*
++	 * skip devices which don't have GENHD_FL_NVMEM set
++	 *
++	 * This flag is used for mtdblock and ubiblock devices because
++	 * both, MTD and UBI already implement their own NVMEM provider.
++	 * To avoid registering multiple NVMEM providers for the same
++	 * device node, don't register the block NVMEM provider for them.
++	 */
++	if (!(bdev->bd_disk->flags & GENHD_FL_NVMEM))
++		return 0;
++
++	/*
++	 * skip block device too large to be represented as NVMEM devices
++	 * which are using an 'int' as address
++	 */
++	if (bdev_nr_bytes(bdev) > INT_MAX)
++		return -EFBIG;
++
++	bnv = kzalloc(sizeof(struct blk_nvmem), GFP_KERNEL);
++	if (!bnv)
++		return -ENOMEM;
++
++	config.id = NVMEM_DEVID_NONE;
++	config.dev = &bdev->bd_device;
++	config.name = dev_name(&bdev->bd_device);
++	config.owner = THIS_MODULE;
++	config.priv = bnv;
++	config.reg_read = blk_nvmem_reg_read;
++	config.size = bdev_nr_bytes(bdev);
++	config.word_size = 1;
++	config.stride = 1;
++	config.read_only = true;
++	config.root_only = true;
++	config.ignore_wp = true;
++	config.of_node = to_of_node(dev->fwnode);
++
++	bnv->bdev = bdev;
++	bnv->nvmem = nvmem_register(&config);
++	if (IS_ERR(bnv->nvmem)) {
++		dev_err_probe(&bdev->bd_device, PTR_ERR(bnv->nvmem),
++			      "Failed to register NVMEM device\n");
++
++		kfree(bnv);
++		return PTR_ERR(bnv->nvmem);
++	}
++
++	mutex_lock(&devices_mutex);
++	list_add_tail(&bnv->list, &nvmem_devices);
++	mutex_unlock(&devices_mutex);
++
++	return 0;
++}
++
++static void blk_nvmem_unregister(struct device *dev, struct class_interface *iface)
++{
++	struct block_device *bdev = dev_to_bdev(dev);
++	struct blk_nvmem *bnv_c, *bnv = NULL;
++
++	mutex_lock(&devices_mutex);
++	list_for_each_entry(bnv_c, &nvmem_devices, list) {
++		if (bnv_c->bdev == bdev) {
++			bnv = bnv_c;
++			break;
++		}
++	}
++
++	if (!bnv) {
++		mutex_unlock(&devices_mutex);
++		return;
++	}
++
++	list_del(&bnv->list);
++	mutex_unlock(&devices_mutex);
++	nvmem_unregister(bnv->nvmem);
++	kfree(bnv);
++}
++
++static struct class_interface blk_nvmem_bus_interface __refdata = {
++	.class = &block_class,
++	.add_dev = &blk_nvmem_register,
++	.remove_dev = &blk_nvmem_unregister,
++};
++
++static int __init blk_nvmem_init(void)
++{
++	int ret;
++
++	ret = class_interface_register(&blk_nvmem_bus_interface);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++device_initcall(blk_nvmem_init);

@@ -15,7 +15,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
  
  #include "gpiolib.h"
  #include "gpiolib-of.h"
-@@ -1030,3 +1032,72 @@ void of_gpio_dev_init(struct gpio_chip *
+@@ -1030,3 +1032,100 @@ void of_gpio_dev_init(struct gpio_chip *
  	else
  		gc->of_node = gdev->dev.of_node;
  }
@@ -47,6 +47,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			max_gpio = of_gpio_count(cnp);
 +
 +		for (i = 0; i < max_gpio; i++) {
++			struct gpio_desc *desc;
 +			unsigned flags = 0;
 +			enum of_gpio_flags of_flags;
 +
@@ -54,16 +55,43 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			if (!gpio_is_valid(gpio))
 +				return gpio;
 +
-+			if (of_flags == OF_GPIO_ACTIVE_LOW)
++			if (of_flags & OF_GPIO_ACTIVE_LOW)
 +				flags |= GPIOF_ACTIVE_LOW;
 +
-+			if (!of_property_read_u32(cnp, "gpio-export,output", &val))
-+				flags |= val ? GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
-+			else
++			if (!of_property_read_u32(cnp, "gpio-export,output", &val)) {
++				if (of_flags & OF_GPIO_SINGLE_ENDED) {
++					/*
++					 * As gpiod_direction_output_raw() is used, we
++					 * need to emulate open drain or open source here.
++					 */
++					if (of_flags & OF_GPIO_OPEN_DRAIN) {
++						flags |= GPIOF_OPEN_DRAIN;
++						flags |= val ? GPIOF_IN : GPIOF_OUT_INIT_LOW;
++					} else {
++						flags |= GPIOF_OPEN_SOURCE;
++						flags |= val ? GPIOF_OUT_INIT_HIGH : GPIOF_IN;
++					}
++				} else {
++					flags |= val ? GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
++				}
++			} else {
 +				flags |= GPIOF_IN;
++			}
 +
 +			if (devm_gpio_request_one(&pdev->dev, gpio, flags, name ? name : of_node_full_name(np)))
 +				continue;
++
++			/*
++			 * When emulating open-source or open-drain functionalities by not
++			 * actively driving the line (setting mode to input) we still need to
++			 * set the IS_OUT flag or otherwise we won't be able to set the line
++			 * value anymore.
++			 */
++			if ((flags & GPIOF_IN) &&
++			    ((flags & GPIOF_OPEN_DRAIN) || (flags & GPIOF_OPEN_SOURCE))) {
++				desc = gpio_to_desc(gpio);
++				set_bit(FLAG_IS_OUT, &desc->flags);
++			}
 +
 +			dmc = of_property_read_bool(cnp, "gpio-export,direction_may_change");
 +			gpio_export_with_name(gpio, dmc, name);

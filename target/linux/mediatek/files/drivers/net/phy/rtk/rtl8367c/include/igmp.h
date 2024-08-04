@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes IGMP module high-layer API defination
+ * Feature : The file includes IGMP module high-layer API definition
  *
  */
 
@@ -205,7 +205,7 @@ extern rtk_api_ret_t rtk_igmp_static_router_port_get(rtk_portmask_t *pPortmask);
  * Input:
  *      port        - Port ID
  *      protocol    - IGMP/MLD protocol
- *      action      - Per-port and per-protocol IGMP action seeting
+ *      action      - Per-port and per-protocol IGMP action setting
  * Output:
  *      None.
  * Return:
@@ -225,7 +225,7 @@ extern rtk_api_ret_t rtk_igmp_protocol_set(rtk_port_t port, rtk_igmp_protocol_t 
  * Input:
  *      port        - Port ID
  *      protocol    - IGMP/MLD protocol
- *      action      - Per-port and per-protocol IGMP action seeting
+ *      action      - Per-port and per-protocol IGMP action setting
  * Output:
  *      None.
  * Return:
@@ -640,7 +640,7 @@ extern rtk_api_ret_t rtk_igmp_portRxPktEnable_get(rtk_port_t port, rtk_igmp_rxPk
  * Description:
  *      Get IGMP/MLD Group database
  * Input:
- *      indes       - Index (0~255)
+ *      index       - Index (0~255)
  * Output:
  *      pGroup      - Group database information.
  * Return:
@@ -694,7 +694,7 @@ extern rtk_api_ret_t rtk_igmp_ReportLeaveFwdAction_get(rtk_igmp_ReportLeaveFwdAc
 /* Function Name:
  *      rtk_igmp_dropLeaveZeroEnable_set
  * Description:
- *      Set the function of droppping Leave packet with group IP = 0.0.0.0
+ *      Set the function of dropping Leave packet with group IP = 0.0.0.0
  * Input:
  *      enabled      - Action 1: drop, 0:pass
  * Output:
@@ -712,7 +712,7 @@ extern rtk_api_ret_t rtk_igmp_dropLeaveZeroEnable_set(rtk_enable_t enabled);
 /* Function Name:
  *      rtk_igmp_dropLeaveZeroEnable_get
  * Description:
- *      Get the function of droppping Leave packet with group IP = 0.0.0.0
+ *      Get the function of dropping Leave packet with group IP = 0.0.0.0
  * Input:
  *      None
  * Output:

@@ -40,7 +40,7 @@ typedef enum rt_error_code_e
     RT_ERR_NULL_POINTER,                            /* 0x00000007, input parameter is null pointer                                      */
     RT_ERR_QUEUE_ID,                                /* 0x00000008, invalid queue id                                                     */
     RT_ERR_QUEUE_NUM,                               /* 0x00000009, invalid queue number                                                 */
-    RT_ERR_BUSYWAIT_TIMEOUT,                        /* 0x0000000a, busy watting time out                                                */
+    RT_ERR_BUSYWAIT_TIMEOUT,                        /* 0x0000000a, busy waiting time out                                                */
     RT_ERR_MAC,                                     /* 0x0000000b, invalid mac address                                                  */
     RT_ERR_OUT_OF_RANGE,                            /* 0x0000000c, input parameter out of range                                         */
     RT_ERR_CHIP_NOT_SUPPORTED,                      /* 0x0000000d, functions not supported by this chip model                           */
@@ -57,7 +57,7 @@ typedef enum rt_error_code_e
     /* 0x0001xxxx for vlan */
     RT_ERR_VLAN_VID = 0x00010000,                   /* 0x00010000, invalid vid                                                          */
     RT_ERR_VLAN_PRIORITY,                           /* 0x00010001, invalid 1p priority                                                  */
-    RT_ERR_VLAN_EMPTY_ENTRY,                        /* 0x00010002, emtpy entry of vlan table                                            */
+    RT_ERR_VLAN_EMPTY_ENTRY,                        /* 0x00010002, empty entry of vlan table                                            */
     RT_ERR_VLAN_ACCEPT_FRAME_TYPE,                  /* 0x00010003, invalid accept frame type                                            */
     RT_ERR_VLAN_EXIST,                              /* 0x00010004, vlan is exist                                                        */
     RT_ERR_VLAN_ENTRY_NOT_FOUND,                    /* 0x00010005, specified vlan entry not found                                       */
@@ -165,7 +165,7 @@ typedef enum rt_error_code_e
     RT_ERR_INBW_TOKEN_AMOUNT,                       /* 0x000c0001, invalid amount of token for input bandwidth control                  */
     RT_ERR_INBW_FCON_VALUE,                         /* 0x000c0002, invalid flow control ON threshold value for input bandwidth control  */
     RT_ERR_INBW_FCOFF_VALUE,                        /* 0x000c0003, invalid flow control OFF threshold value for input bandwidth control */
-    RT_ERR_INBW_FC_ALLOWANCE,                       /* 0x000c0004, invalid allowance of incomming packet for input bandwidth control    */
+    RT_ERR_INBW_FC_ALLOWANCE,                       /* 0x000c0004, invalid allowance of incoming packet for input bandwidth control    */
     RT_ERR_INBW_RATE,                               /* 0x000c0005, invalid input bandwidth                                              */
 
     /* 0x000dxxxx for QoS */
@@ -220,7 +220,7 @@ typedef enum rt_error_code_e
     RT_ERR_DOT1X_PROC,                              /* 0x00110006, unauthorized behavior error                                          */
     RT_ERR_DOT1X_GVLANIDX,                          /* 0x00110007, guest vlan index error                                               */
     RT_ERR_DOT1X_GVLANTALK,                         /* 0x00110008, guest vlan OPDIR error                                               */
-    RT_ERR_DOT1X_MAC_PORT_MISMATCH,                 /* 0x00110009, Auth MAC and port mismatch eror                                      */
+    RT_ERR_DOT1X_MAC_PORT_MISMATCH,                 /* 0x00110009, Auth MAC and port mismatch error                                     */
 
     RT_ERR_END                                       /* The symbol is the latest symbol                                                  */
 } rt_error_code_t;

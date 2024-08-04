@@ -1,0 +1,147 @@
+From b84acdb07222a701bfc6403b374249c86f97d18d Mon Sep 17 00:00:00 2001
+From: Russell King <rmk+kernel@armlinux.org.uk>
+Date: Fri, 19 May 2023 14:03:59 +0100
+Subject: [PATCH 15/21] net: phy: add helpers for comparing phy IDs
+
+There are several places which open code comparing PHY IDs. Provide a
+couple of helpers to assist with this, using a slightly simpler test
+than the original:
+
+- phy_id_compare() compares two arbitary PHY IDs and a mask of the
+  significant bits in the ID.
+- phydev_id_compare() compares the bound phydev with the specified
+  PHY ID, using the bound driver's mask.
+
+Signed-off-by: Russell King <rmk+kernel@armlinux.org.uk>
+Reviewed-by: Simon Horman <simon.horman@corigine.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/micrel.c     |  6 +++---
+ drivers/net/phy/phy_device.c | 16 +++++++---------
+ drivers/net/phy/phylink.c    |  4 ++--
+ include/linux/phy.h          | 28 ++++++++++++++++++++++++++++
+ 4 files changed, 40 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/phy/micrel.c
++++ b/drivers/net/phy/micrel.c
+@@ -620,7 +620,7 @@ static int ksz8051_ksz8795_match_phy_dev
+ {
+ 	int ret;
+ 
+-	if ((phydev->phy_id & MICREL_PHY_ID_MASK) != PHY_ID_KSZ8051)
++	if (!phy_id_compare(phydev->phy_id, PHY_ID_KSZ8051, MICREL_PHY_ID_MASK))
+ 		return 0;
+ 
+ 	ret = phy_read(phydev, MII_BMSR);
+@@ -1455,7 +1455,7 @@ static int ksz9x31_cable_test_fault_leng
+ 	 *
+ 	 * distance to fault = (VCT_DATA - 22) * 4 / cable propagation velocity
+ 	 */
+-	if ((phydev->phy_id & MICREL_PHY_ID_MASK) == PHY_ID_KSZ9131)
++	if (phydev_id_compare(phydev, PHY_ID_KSZ9131))
+ 		dt = clamp(dt - 22, 0, 255);
+ 
+ 	return (dt * 400) / 10;
+@@ -1887,7 +1887,7 @@ static __always_inline int ksz886x_cable
+ 	 */
+ 	dt = FIELD_GET(data_mask, status);
+ 
+-	if ((phydev->phy_id & MICREL_PHY_ID_MASK) == PHY_ID_LAN8814)
++	if (phydev_id_compare(phydev, PHY_ID_LAN8814))
+ 		return ((dt - 22) * 800) / 10;
+ 	else
+ 		return (dt * 400) / 10;
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -422,8 +422,7 @@ int phy_unregister_fixup(const char *bus
+ 		fixup = list_entry(pos, struct phy_fixup, list);
+ 
+ 		if ((!strcmp(fixup->bus_id, bus_id)) &&
+-		    ((fixup->phy_uid & phy_uid_mask) ==
+-		     (phy_uid & phy_uid_mask))) {
++		    phy_id_compare(fixup->phy_uid, phy_uid, phy_uid_mask)) {
+ 			list_del(&fixup->list);
+ 			kfree(fixup);
+ 			ret = 0;
+@@ -459,8 +458,8 @@ static int phy_needs_fixup(struct phy_de
+ 		if (strcmp(fixup->bus_id, PHY_ANY_ID) != 0)
+ 			return 0;
+ 
+-	if ((fixup->phy_uid & fixup->phy_uid_mask) !=
+-	    (phydev->phy_id & fixup->phy_uid_mask))
++	if (!phy_id_compare(phydev->phy_id, fixup->phy_uid,
++			    fixup->phy_uid_mask))
+ 		if (fixup->phy_uid != PHY_ANY_UID)
+ 			return 0;
+ 
+@@ -507,15 +506,14 @@ static int phy_bus_match(struct device *
+ 			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
+ 				continue;
+ 
+-			if ((phydrv->phy_id & phydrv->phy_id_mask) ==
+-			    (phydev->c45_ids.device_ids[i] &
+-			     phydrv->phy_id_mask))
++			if (phy_id_compare(phydev->c45_ids.device_ids[i],
++					   phydrv->phy_id, phydrv->phy_id_mask))
+ 				return 1;
+ 		}
+ 		return 0;
+ 	} else {
+-		return (phydrv->phy_id & phydrv->phy_id_mask) ==
+-			(phydev->phy_id & phydrv->phy_id_mask);
++		return phy_id_compare(phydev->phy_id, phydrv->phy_id,
++				      phydrv->phy_id_mask);
+ 	}
+ }
+ 
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -3151,8 +3151,8 @@ static void phylink_sfp_link_up(void *up
+  */
+ static bool phylink_phy_no_inband(struct phy_device *phy)
+ {
+-	return phy->is_c45 &&
+-		(phy->c45_ids.device_ids[1] & 0xfffffff0) == 0xae025150;
++	return phy->is_c45 && phy_id_compare(phy->c45_ids.device_ids[1],
++					     0xae025150, 0xfffffff0);
+ }
+ 
+ static int phylink_sfp_connect_phy(void *upstream, struct phy_device *phy)
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -993,6 +993,34 @@ struct phy_driver {
+ #define PHY_ID_MATCH_MODEL(id) .phy_id = (id), .phy_id_mask = GENMASK(31, 4)
+ #define PHY_ID_MATCH_VENDOR(id) .phy_id = (id), .phy_id_mask = GENMASK(31, 10)
+ 
++/**
++ * phy_id_compare - compare @id1 with @id2 taking account of @mask
++ * @id1: first PHY ID
++ * @id2: second PHY ID
++ * @mask: the PHY ID mask, set bits are significant in matching
++ *
++ * Return true if the bits from @id1 and @id2 specified by @mask match.
++ * This uses an equivalent test to (@id & @mask) == (@phy_id & @mask).
++ */
++static inline bool phy_id_compare(u32 id1, u32 id2, u32 mask)
++{
++	return !((id1 ^ id2) & mask);
++}
++
++/**
++ * phydev_id_compare - compare @id with the PHY's Clause 22 ID
++ * @phydev: the PHY device
++ * @id: the PHY ID to be matched
++ *
++ * Compare the @phydev clause 22 ID with the provided @id and return true or
++ * false depending whether it matches, using the bound driver mask. The
++ * @phydev must be bound to a driver.
++ */
++static inline bool phydev_id_compare(struct phy_device *phydev, u32 id)
++{
++	return phy_id_compare(id, phydev->phy_id, phydev->drv->phy_id_mask);
++}
++
+ /* A Structure for boards to register fixups with the PHY Lib */
+ struct phy_fixup {
+ 	struct list_head list;

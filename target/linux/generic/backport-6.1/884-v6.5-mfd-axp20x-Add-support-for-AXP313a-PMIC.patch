@@ -1,0 +1,256 @@
+From 75c8cb2f4cb218aaf4ea68cab08d6dbc96eeae15 Mon Sep 17 00:00:00 2001
+From: Martin Botka <martin.botka@somainline.org>
+Date: Wed, 24 May 2023 01:00:10 +0100
+Subject: [PATCH] mfd: axp20x: Add support for AXP313a PMIC
+
+The AXP313a is a PMIC chip produced by X-Powers, it can be connected via
+an I2C bus.
+The name AXP1530 seems to appear as well, and this is what is used in
+the BSP driver. From all we know it's the same chip, just a different
+name. However we have only seen AXP313a chips in the wild, so go with
+this name.
+
+Compared to the other AXP PMICs it's a rather simple affair: just three
+DCDC converters, three LDOs, and no battery charging support.
+
+Describe the regmap and the MFD bits, along with the registers exposed
+via I2C. Aside from the various regulators, also describe the power key
+interrupts, and adjust the shutdown handler routine to use a different
+register than the other PMICs.
+Eventually advertise the device using the new compatible string.
+
+Signed-off-by: Martin Botka <martin.botka@somainline.org>
+Signed-off-by: Andre Przywara <andre.przywara@arm.com>
+Reviewed-by: Chen-Yu Tsai <wens@csie.org>
+Link: https://lore.kernel.org/r/20230524000012.15028-2-andre.przywara@arm.com
+Signed-off-by: Lee Jones <lee@kernel.org>
+---
+ drivers/mfd/axp20x-i2c.c   |  2 +
+ drivers/mfd/axp20x.c       | 78 +++++++++++++++++++++++++++++++++++++-
+ include/linux/mfd/axp20x.h | 32 ++++++++++++++++
+ 3 files changed, 111 insertions(+), 1 deletion(-)
+
+--- a/drivers/mfd/axp20x-i2c.c
++++ b/drivers/mfd/axp20x-i2c.c
+@@ -64,6 +64,7 @@ static const struct of_device_id axp20x_
+ 	{ .compatible = "x-powers,axp209", .data = (void *)AXP209_ID },
+ 	{ .compatible = "x-powers,axp221", .data = (void *)AXP221_ID },
+ 	{ .compatible = "x-powers,axp223", .data = (void *)AXP223_ID },
++	{ .compatible = "x-powers,axp313a", .data = (void *)AXP313A_ID },
+ 	{ .compatible = "x-powers,axp803", .data = (void *)AXP803_ID },
+ 	{ .compatible = "x-powers,axp806", .data = (void *)AXP806_ID },
+ 	{ .compatible = "x-powers,axp15060", .data = (void *)AXP15060_ID },
+@@ -78,6 +79,7 @@ static const struct i2c_device_id axp20x
+ 	{ "axp209", 0 },
+ 	{ "axp221", 0 },
+ 	{ "axp223", 0 },
++	{ "axp313a", 0 },
+ 	{ "axp803", 0 },
+ 	{ "axp806", 0 },
+ 	{ "axp15060", 0 },
+--- a/drivers/mfd/axp20x.c
++++ b/drivers/mfd/axp20x.c
+@@ -39,6 +39,7 @@ static const char * const axp20x_model_n
+ 	"AXP221",
+ 	"AXP223",
+ 	"AXP288",
++	"AXP313a",
+ 	"AXP803",
+ 	"AXP806",
+ 	"AXP809",
+@@ -156,6 +157,25 @@ static const struct regmap_range axp806_
+ 	regmap_reg_range(AXP806_REG_ADDR_EXT, AXP806_REG_ADDR_EXT),
+ };
+ 
++static const struct regmap_range axp313a_writeable_ranges[] = {
++	regmap_reg_range(AXP313A_ON_INDICATE, AXP313A_IRQ_STATE),
++};
++
++static const struct regmap_range axp313a_volatile_ranges[] = {
++	regmap_reg_range(AXP313A_SHUTDOWN_CTRL, AXP313A_SHUTDOWN_CTRL),
++	regmap_reg_range(AXP313A_IRQ_STATE, AXP313A_IRQ_STATE),
++};
++
++static const struct regmap_access_table axp313a_writeable_table = {
++	.yes_ranges = axp313a_writeable_ranges,
++	.n_yes_ranges = ARRAY_SIZE(axp313a_writeable_ranges),
++};
++
++static const struct regmap_access_table axp313a_volatile_table = {
++	.yes_ranges = axp313a_volatile_ranges,
++	.n_yes_ranges = ARRAY_SIZE(axp313a_volatile_ranges),
++};
++
+ static const struct regmap_range axp806_volatile_ranges[] = {
+ 	regmap_reg_range(AXP20X_IRQ1_STATE, AXP20X_IRQ2_STATE),
+ };
+@@ -248,6 +268,11 @@ static const struct resource axp288_fuel
+ 	DEFINE_RES_IRQ(AXP288_IRQ_WL1),
+ };
+ 
++static const struct resource axp313a_pek_resources[] = {
++	DEFINE_RES_IRQ_NAMED(AXP313A_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
++	DEFINE_RES_IRQ_NAMED(AXP313A_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
++};
++
+ static const struct resource axp803_pek_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(AXP803_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
+ 	DEFINE_RES_IRQ_NAMED(AXP803_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+@@ -304,6 +329,15 @@ static const struct regmap_config axp288
+ 	.cache_type	= REGCACHE_RBTREE,
+ };
+ 
++static const struct regmap_config axp313a_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.wr_table = &axp313a_writeable_table,
++	.volatile_table = &axp313a_volatile_table,
++	.max_register = AXP313A_IRQ_STATE,
++	.cache_type = REGCACHE_RBTREE,
++};
++
+ static const struct regmap_config axp806_regmap_config = {
+ 	.reg_bits	= 8,
+ 	.val_bits	= 8,
+@@ -456,6 +490,16 @@ static const struct regmap_irq axp288_re
+ 	INIT_REGMAP_IRQ(AXP288, BC_USB_CHNG,            5, 1),
+ };
+ 
++static const struct regmap_irq axp313a_regmap_irqs[] = {
++	INIT_REGMAP_IRQ(AXP313A, PEK_RIS_EDGE,		0, 7),
++	INIT_REGMAP_IRQ(AXP313A, PEK_FAL_EDGE,		0, 6),
++	INIT_REGMAP_IRQ(AXP313A, PEK_SHORT,		0, 5),
++	INIT_REGMAP_IRQ(AXP313A, PEK_LONG,		0, 4),
++	INIT_REGMAP_IRQ(AXP313A, DCDC3_V_LOW,		0, 3),
++	INIT_REGMAP_IRQ(AXP313A, DCDC2_V_LOW,		0, 2),
++	INIT_REGMAP_IRQ(AXP313A, DIE_TEMP_HIGH,		0, 0),
++};
++
+ static const struct regmap_irq axp803_regmap_irqs[] = {
+ 	INIT_REGMAP_IRQ(AXP803, ACIN_OVER_V,		0, 7),
+ 	INIT_REGMAP_IRQ(AXP803, ACIN_PLUGIN,		0, 6),
+@@ -610,6 +654,17 @@ static const struct regmap_irq_chip axp2
+ 
+ };
+ 
++static const struct regmap_irq_chip axp313a_regmap_irq_chip = {
++	.name			= "axp313a_irq_chip",
++	.status_base		= AXP313A_IRQ_STATE,
++	.ack_base		= AXP313A_IRQ_STATE,
++	.unmask_base		= AXP313A_IRQ_EN,
++	.init_ack_masked	= true,
++	.irqs			= axp313a_regmap_irqs,
++	.num_irqs		= ARRAY_SIZE(axp313a_regmap_irqs),
++	.num_regs		= 1,
++};
++
+ static const struct regmap_irq_chip axp803_regmap_irq_chip = {
+ 	.name			= "axp803",
+ 	.status_base		= AXP20X_IRQ1_STATE,
+@@ -752,6 +807,11 @@ static const struct mfd_cell axp152_cell
+ 	},
+ };
+ 
++static struct mfd_cell axp313a_cells[] = {
++	MFD_CELL_NAME("axp20x-regulator"),
++	MFD_CELL_RES("axp313a-pek", axp313a_pek_resources),
++};
++
+ static const struct resource axp288_adc_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(AXP288_IRQ_GPADC, "GPADC"),
+ };
+@@ -921,8 +981,18 @@ static const struct mfd_cell axp_regulat
+ static int axp20x_power_off(struct sys_off_data *data)
+ {
+ 	struct axp20x_dev *axp20x = data->cb_data;
++	unsigned int shutdown_reg;
+ 
+-	regmap_write(axp20x->regmap, AXP20X_OFF_CTRL, AXP20X_OFF);
++	switch (axp20x->variant) {
++	case AXP313A_ID:
++		shutdown_reg = AXP313A_SHUTDOWN_CTRL;
++		break;
++	default:
++		shutdown_reg = AXP20X_OFF_CTRL;
++		break;
++	}
++
++	regmap_write(axp20x->regmap, shutdown_reg, AXP20X_OFF);
+ 
+ 	/* Give capacitors etc. time to drain to avoid kernel panic msg. */
+ 	mdelay(500);
+@@ -985,6 +1055,12 @@ int axp20x_match_device(struct axp20x_de
+ 		axp20x->regmap_irq_chip = &axp288_regmap_irq_chip;
+ 		axp20x->irq_flags = IRQF_TRIGGER_LOW;
+ 		break;
++	case AXP313A_ID:
++		axp20x->nr_cells = ARRAY_SIZE(axp313a_cells);
++		axp20x->cells = axp313a_cells;
++		axp20x->regmap_cfg = &axp313a_regmap_config;
++		axp20x->regmap_irq_chip = &axp313a_regmap_irq_chip;
++		break;
+ 	case AXP803_ID:
+ 		axp20x->nr_cells = ARRAY_SIZE(axp803_cells);
+ 		axp20x->cells = axp803_cells;
+--- a/include/linux/mfd/axp20x.h
++++ b/include/linux/mfd/axp20x.h
+@@ -17,6 +17,7 @@ enum axp20x_variants {
+ 	AXP221_ID,
+ 	AXP223_ID,
+ 	AXP288_ID,
++	AXP313A_ID,
+ 	AXP803_ID,
+ 	AXP806_ID,
+ 	AXP809_ID,
+@@ -92,6 +93,17 @@ enum axp20x_variants {
+ #define AXP22X_ALDO3_V_OUT		0x2a
+ #define AXP22X_CHRG_CTRL3		0x35
+ 
++#define AXP313A_ON_INDICATE		0x00
++#define AXP313A_OUTPUT_CONTROL		0x10
++#define AXP313A_DCDC1_CONRTOL		0x13
++#define AXP313A_DCDC2_CONRTOL		0x14
++#define AXP313A_DCDC3_CONRTOL		0x15
++#define AXP313A_ALDO1_CONRTOL		0x16
++#define AXP313A_DLDO1_CONRTOL		0x17
++#define AXP313A_SHUTDOWN_CTRL		0x1a
++#define AXP313A_IRQ_EN			0x20
++#define AXP313A_IRQ_STATE		0x21
++
+ #define AXP806_STARTUP_SRC		0x00
+ #define AXP806_CHIP_ID			0x03
+ #define AXP806_PWR_OUT_CTRL1		0x10
+@@ -364,6 +376,16 @@ enum {
+ };
+ 
+ enum {
++	AXP313A_DCDC1 = 0,
++	AXP313A_DCDC2,
++	AXP313A_DCDC3,
++	AXP313A_ALDO1,
++	AXP313A_DLDO1,
++	AXP313A_RTC_LDO,
++	AXP313A_REG_ID_MAX,
++};
++
++enum {
+ 	AXP806_DCDCA = 0,
+ 	AXP806_DCDCB,
+ 	AXP806_DCDCC,
+@@ -616,6 +638,16 @@ enum axp288_irqs {
+ 	AXP288_IRQ_BC_USB_CHNG,
+ };
+ 
++enum axp313a_irqs {
++	AXP313A_IRQ_DIE_TEMP_HIGH,
++	AXP313A_IRQ_DCDC2_V_LOW = 2,
++	AXP313A_IRQ_DCDC3_V_LOW,
++	AXP313A_IRQ_PEK_LONG,
++	AXP313A_IRQ_PEK_SHORT,
++	AXP313A_IRQ_PEK_FAL_EDGE,
++	AXP313A_IRQ_PEK_RIS_EDGE,
++};
++
+ enum axp803_irqs {
+ 	AXP803_IRQ_ACIN_OVER_V = 1,
+ 	AXP803_IRQ_ACIN_PLUGIN,

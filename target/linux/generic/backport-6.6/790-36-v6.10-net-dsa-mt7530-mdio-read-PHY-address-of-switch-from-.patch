@@ -1,0 +1,238 @@
+From 5053a6cf1d50d785078562470d2a63695a9f3bf2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ar=C4=B1n=C3=A7=20=C3=9CNAL?= <arinc.unal@arinc9.com>
+Date: Thu, 18 Apr 2024 08:35:30 +0300
+Subject: [PATCH 4/5] net: dsa: mt7530-mdio: read PHY address of switch from
+ device tree
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Read the PHY address the switch listens on from the reg property of the
+switch node on the device tree. This change brings support for MT7530
+switches on boards with such bootstrapping configuration where the switch
+listens on a different PHY address than the hardcoded PHY address on the
+driver, 31.
+
+As described on the "MT7621 Programming Guide v0.4" document, the MT7530
+switch and its PHYs can be configured to listen on the range of 7-12,
+15-20, 23-28, and 31 and 0-4 PHY addresses.
+
+There are operations where the switch PHY registers are used. For the PHY
+address of the control PHY, transform the MT753X_CTRL_PHY_ADDR constant
+into a macro and use it. The PHY address for the control PHY is 0 when the
+switch listens on 31. In any other case, it is one greater than the PHY
+address the switch listens on.
+
+Reviewed-by: Daniel Golle <daniel@makrotopia.org>
+Tested-by: Daniel Golle <daniel@makrotopia.org>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Signed-off-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/dsa/mt7530-mdio.c | 28 +++++++++++++-------------
+ drivers/net/dsa/mt7530.c      | 37 +++++++++++++++++++++++------------
+ drivers/net/dsa/mt7530.h      |  4 +++-
+ 3 files changed, 41 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/dsa/mt7530-mdio.c
++++ b/drivers/net/dsa/mt7530-mdio.c
+@@ -18,7 +18,8 @@
+ static int
+ mt7530_regmap_write(void *context, unsigned int reg, unsigned int val)
+ {
+-	struct mii_bus *bus = context;
++	struct mt7530_priv *priv = context;
++	struct mii_bus *bus = priv->bus;
+ 	u16 page, r, lo, hi;
+ 	int ret;
+ 
+@@ -27,36 +28,35 @@ mt7530_regmap_write(void *context, unsig
+ 	lo = val & 0xffff;
+ 	hi = val >> 16;
+ 
+-	/* MT7530 uses 31 as the pseudo port */
+-	ret = bus->write(bus, 0x1f, 0x1f, page);
++	ret = bus->write(bus, priv->mdiodev->addr, 0x1f, page);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = bus->write(bus, 0x1f, r,  lo);
++	ret = bus->write(bus, priv->mdiodev->addr, r, lo);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = bus->write(bus, 0x1f, 0x10, hi);
++	ret = bus->write(bus, priv->mdiodev->addr, 0x10, hi);
+ 	return ret;
+ }
+ 
+ static int
+ mt7530_regmap_read(void *context, unsigned int reg, unsigned int *val)
+ {
+-	struct mii_bus *bus = context;
++	struct mt7530_priv *priv = context;
++	struct mii_bus *bus = priv->bus;
+ 	u16 page, r, lo, hi;
+ 	int ret;
+ 
+ 	page = (reg >> 6) & 0x3ff;
+ 	r = (reg >> 2) & 0xf;
+ 
+-	/* MT7530 uses 31 as the pseudo port */
+-	ret = bus->write(bus, 0x1f, 0x1f, page);
++	ret = bus->write(bus, priv->mdiodev->addr, 0x1f, page);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	lo = bus->read(bus, 0x1f, r);
+-	hi = bus->read(bus, 0x1f, 0x10);
++	lo = bus->read(bus, priv->mdiodev->addr, r);
++	hi = bus->read(bus, priv->mdiodev->addr, 0x10);
+ 
+ 	*val = (hi << 16) | (lo & 0xffff);
+ 
+@@ -107,8 +107,7 @@ mt7531_create_sgmii(struct mt7530_priv *
+ 		mt7531_pcs_config[i]->unlock = mt7530_mdio_regmap_unlock;
+ 		mt7531_pcs_config[i]->lock_arg = &priv->bus->mdio_lock;
+ 
+-		regmap = devm_regmap_init(priv->dev,
+-					  &mt7530_regmap_bus, priv->bus,
++		regmap = devm_regmap_init(priv->dev, &mt7530_regmap_bus, priv,
+ 					  mt7531_pcs_config[i]);
+ 		if (IS_ERR(regmap)) {
+ 			ret = PTR_ERR(regmap);
+@@ -153,6 +152,7 @@ mt7530_probe(struct mdio_device *mdiodev
+ 
+ 	priv->bus = mdiodev->bus;
+ 	priv->dev = &mdiodev->dev;
++	priv->mdiodev = mdiodev;
+ 
+ 	ret = mt7530_probe_common(priv);
+ 	if (ret)
+@@ -203,8 +203,8 @@ mt7530_probe(struct mdio_device *mdiodev
+ 	regmap_config->reg_stride = 4;
+ 	regmap_config->max_register = MT7530_CREV;
+ 	regmap_config->disable_locking = true;
+-	priv->regmap = devm_regmap_init(priv->dev, &mt7530_regmap_bus,
+-					priv->bus, regmap_config);
++	priv->regmap = devm_regmap_init(priv->dev, &mt7530_regmap_bus, priv,
++					regmap_config);
+ 	if (IS_ERR(priv->regmap))
+ 		return PTR_ERR(priv->regmap);
+ 
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -86,22 +86,26 @@ core_read_mmd_indirect(struct mt7530_pri
+ 	int value, ret;
+ 
+ 	/* Write the desired MMD Devad */
+-	ret = bus->write(bus, 0, MII_MMD_CTRL, devad);
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_CTRL, devad);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Write the desired MMD register address */
+-	ret = bus->write(bus, 0, MII_MMD_DATA, prtad);
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_DATA, prtad);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Select the Function : DATA with no post increment */
+-	ret = bus->write(bus, 0, MII_MMD_CTRL, (devad | MII_MMD_CTRL_NOINCR));
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_CTRL, devad | MII_MMD_CTRL_NOINCR);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Read the content of the MMD's selected register */
+-	value = bus->read(bus, 0, MII_MMD_DATA);
++	value = bus->read(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			  MII_MMD_DATA);
+ 
+ 	return value;
+ err:
+@@ -118,22 +122,26 @@ core_write_mmd_indirect(struct mt7530_pr
+ 	int ret;
+ 
+ 	/* Write the desired MMD Devad */
+-	ret = bus->write(bus, 0, MII_MMD_CTRL, devad);
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_CTRL, devad);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Write the desired MMD register address */
+-	ret = bus->write(bus, 0, MII_MMD_DATA, prtad);
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_DATA, prtad);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Select the Function : DATA with no post increment */
+-	ret = bus->write(bus, 0, MII_MMD_CTRL, (devad | MII_MMD_CTRL_NOINCR));
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_CTRL, devad | MII_MMD_CTRL_NOINCR);
+ 	if (ret < 0)
+ 		goto err;
+ 
+ 	/* Write the data into MMD's selected register */
+-	ret = bus->write(bus, 0, MII_MMD_DATA, data);
++	ret = bus->write(bus, MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++			 MII_MMD_DATA, data);
+ err:
+ 	if (ret < 0)
+ 		dev_err(&bus->dev,
+@@ -2679,16 +2687,19 @@ mt7531_setup(struct dsa_switch *ds)
+ 	 * phy_[read,write]_mmd_indirect is called, we provide our own
+ 	 * mt7531_ind_mmd_phy_[read,write] to complete this function.
+ 	 */
+-	val = mt7531_ind_c45_phy_read(priv, MT753X_CTRL_PHY_ADDR,
++	val = mt7531_ind_c45_phy_read(priv,
++				      MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
+ 				      MDIO_MMD_VEND2, CORE_PLL_GROUP4);
+ 	val |= MT7531_RG_SYSPLL_DMY2 | MT7531_PHY_PLL_BYPASS_MODE;
+ 	val &= ~MT7531_PHY_PLL_OFF;
+-	mt7531_ind_c45_phy_write(priv, MT753X_CTRL_PHY_ADDR, MDIO_MMD_VEND2,
+-				 CORE_PLL_GROUP4, val);
++	mt7531_ind_c45_phy_write(priv,
++				 MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr),
++				 MDIO_MMD_VEND2, CORE_PLL_GROUP4, val);
+ 
+ 	/* Disable EEE advertisement on the switch PHYs. */
+-	for (i = MT753X_CTRL_PHY_ADDR;
+-	     i < MT753X_CTRL_PHY_ADDR + MT7530_NUM_PHYS; i++) {
++	for (i = MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr);
++	     i < MT753X_CTRL_PHY_ADDR(priv->mdiodev->addr) + MT7530_NUM_PHYS;
++	     i++) {
+ 		mt7531_ind_c45_phy_write(priv, i, MDIO_MMD_AN, MDIO_AN_EEE_ADV,
+ 					 0);
+ 	}
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -629,7 +629,7 @@ enum mt7531_clk_skew {
+ #define  MT7531_PHY_PLL_OFF		BIT(5)
+ #define  MT7531_PHY_PLL_BYPASS_MODE	BIT(4)
+ 
+-#define MT753X_CTRL_PHY_ADDR		0
++#define MT753X_CTRL_PHY_ADDR(addr)	((addr + 1) & 0x1f)
+ 
+ #define CORE_PLL_GROUP5			0x404
+ #define  RG_LCDDS_PCW_NCPO1(x)		((x) & 0xffff)
+@@ -778,6 +778,7 @@ struct mt753x_info {
+  * @irq_enable:		IRQ enable bits, synced to SYS_INT_EN
+  * @create_sgmii:	Pointer to function creating SGMII PCS instance(s)
+  * @active_cpu_ports:	Holding the active CPU ports
++ * @mdiodev:		The pointer to the MDIO device structure
+  */
+ struct mt7530_priv {
+ 	struct device		*dev;
+@@ -804,6 +805,7 @@ struct mt7530_priv {
+ 	u32 irq_enable;
+ 	int (*create_sgmii)(struct mt7530_priv *priv);
+ 	u8 active_cpu_ports;
++	struct mdio_device *mdiodev;
+ };
+ 
+ struct mt7530_hw_vlan_entry {

@@ -1,0 +1,201 @@
+From 1dbc1bdc2869e6d2929235c70d64e393aa5a5fa2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ar=C4=B1n=C3=A7=20=C3=9CNAL?= <arinc.unal@arinc9.com>
+Date: Mon, 22 Apr 2024 10:15:12 +0300
+Subject: [PATCH 05/15] net: dsa: mt7530: refactor MT7530_MFC and MT7531_CFC,
+ add MT7531_QRY_FFP
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The MT7530_MFC register is on MT7530, MT7531, and the switch on the MT7988
+SoC. Rename it to MT753X_MFC. Bit 7 to 0 differs between MT7530 and
+MT7531/MT7988. Add MT7530 prefix to these definitions, and define the
+IGMP/MLD Query Frame Flooding Ports mask for MT7531.
+
+Rename the cases of MIRROR_MASK to MIRROR_PORT_MASK.
+
+Move mt753x_mirror_port_get() and mt753x_port_mirror_set() to mt7530.h as
+macros.
+
+Signed-off-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+---
+ drivers/net/dsa/mt7530.c | 38 ++++++++--------------
+ drivers/net/dsa/mt7530.h | 69 +++++++++++++++++++++++++---------------
+ 2 files changed, 57 insertions(+), 50 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1154,7 +1154,7 @@ mt753x_cpu_port_enable(struct dsa_switch
+ 		     PORT_SPEC_TAG);
+ 
+ 	/* Enable flooding on the CPU port */
+-	mt7530_set(priv, MT7530_MFC, BC_FFP(BIT(port)) | UNM_FFP(BIT(port)) |
++	mt7530_set(priv, MT753X_MFC, BC_FFP(BIT(port)) | UNM_FFP(BIT(port)) |
+ 		   UNU_FFP(BIT(port)));
+ 
+ 	/* Add the CPU port to the CPU port bitmap for MT7531. Trapped frames
+@@ -1318,15 +1318,15 @@ mt7530_port_bridge_flags(struct dsa_swit
+ 			   flags.val & BR_LEARNING ? 0 : SA_DIS);
+ 
+ 	if (flags.mask & BR_FLOOD)
+-		mt7530_rmw(priv, MT7530_MFC, UNU_FFP(BIT(port)),
++		mt7530_rmw(priv, MT753X_MFC, UNU_FFP(BIT(port)),
+ 			   flags.val & BR_FLOOD ? UNU_FFP(BIT(port)) : 0);
+ 
+ 	if (flags.mask & BR_MCAST_FLOOD)
+-		mt7530_rmw(priv, MT7530_MFC, UNM_FFP(BIT(port)),
++		mt7530_rmw(priv, MT753X_MFC, UNM_FFP(BIT(port)),
+ 			   flags.val & BR_MCAST_FLOOD ? UNM_FFP(BIT(port)) : 0);
+ 
+ 	if (flags.mask & BR_BCAST_FLOOD)
+-		mt7530_rmw(priv, MT7530_MFC, BC_FFP(BIT(port)),
++		mt7530_rmw(priv, MT753X_MFC, BC_FFP(BIT(port)),
+ 			   flags.val & BR_BCAST_FLOOD ? BC_FFP(BIT(port)) : 0);
+ 
+ 	return 0;
+@@ -1862,20 +1862,6 @@ mt7530_port_vlan_del(struct dsa_switch *
+ 	return 0;
+ }
+ 
+-static int mt753x_mirror_port_get(unsigned int id, u32 val)
+-{
+-	return (id == ID_MT7531 || id == ID_MT7988) ?
+-		       MT7531_MIRROR_PORT_GET(val) :
+-		       MIRROR_PORT(val);
+-}
+-
+-static int mt753x_mirror_port_set(unsigned int id, u32 val)
+-{
+-	return (id == ID_MT7531 || id == ID_MT7988) ?
+-		       MT7531_MIRROR_PORT_SET(val) :
+-		       MIRROR_PORT(val);
+-}
+-
+ static int mt753x_port_mirror_add(struct dsa_switch *ds, int port,
+ 				  struct dsa_mall_mirror_tc_entry *mirror,
+ 				  bool ingress, struct netlink_ext_ack *extack)
+@@ -1891,14 +1877,14 @@ static int mt753x_port_mirror_add(struct
+ 	val = mt7530_read(priv, MT753X_MIRROR_REG(priv->id));
+ 
+ 	/* MT7530 only supports one monitor port */
+-	monitor_port = mt753x_mirror_port_get(priv->id, val);
++	monitor_port = MT753X_MIRROR_PORT_GET(priv->id, val);
+ 	if (val & MT753X_MIRROR_EN(priv->id) &&
+ 	    monitor_port != mirror->to_local_port)
+ 		return -EEXIST;
+ 
+ 	val |= MT753X_MIRROR_EN(priv->id);
+-	val &= ~MT753X_MIRROR_MASK(priv->id);
+-	val |= mt753x_mirror_port_set(priv->id, mirror->to_local_port);
++	val &= ~MT753X_MIRROR_PORT_MASK(priv->id);
++	val |= MT753X_MIRROR_PORT_SET(priv->id, mirror->to_local_port);
+ 	mt7530_write(priv, MT753X_MIRROR_REG(priv->id), val);
+ 
+ 	val = mt7530_read(priv, MT7530_PCR_P(port));
+@@ -2538,7 +2524,7 @@ mt7531_setup_common(struct dsa_switch *d
+ 	mt7530_mib_reset(ds);
+ 
+ 	/* Disable flooding on all ports */
+-	mt7530_clear(priv, MT7530_MFC, BC_FFP_MASK | UNM_FFP_MASK |
++	mt7530_clear(priv, MT753X_MFC, BC_FFP_MASK | UNM_FFP_MASK |
+ 		     UNU_FFP_MASK);
+ 
+ 	for (i = 0; i < MT7530_NUM_PORTS; i++) {
+@@ -3100,10 +3086,12 @@ mt753x_conduit_state_change(struct dsa_s
+ 	else
+ 		priv->active_cpu_ports &= ~mask;
+ 
+-	if (priv->active_cpu_ports)
+-		val = CPU_EN | CPU_PORT(__ffs(priv->active_cpu_ports));
++	if (priv->active_cpu_ports) {
++		val = MT7530_CPU_EN |
++		      MT7530_CPU_PORT(__ffs(priv->active_cpu_ports));
++	}
+ 
+-	mt7530_rmw(priv, MT7530_MFC, CPU_EN | CPU_PORT_MASK, val);
++	mt7530_rmw(priv, MT753X_MFC, MT7530_CPU_EN | MT7530_CPU_PORT_MASK, val);
+ }
+ 
+ static int mt7988_setup(struct dsa_switch *ds)
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -36,36 +36,55 @@ enum mt753x_id {
+ #define MT753X_AGC			0xc
+ #define  LOCAL_EN			BIT(7)
+ 
+-/* Registers to mac forward control for unknown frames */
+-#define MT7530_MFC			0x10
+-#define  BC_FFP(x)			(((x) & 0xff) << 24)
+-#define  BC_FFP_MASK			BC_FFP(~0)
+-#define  UNM_FFP(x)			(((x) & 0xff) << 16)
+-#define  UNM_FFP_MASK			UNM_FFP(~0)
+-#define  UNU_FFP(x)			(((x) & 0xff) << 8)
+-#define  UNU_FFP_MASK			UNU_FFP(~0)
+-#define  CPU_EN				BIT(7)
+-#define  CPU_PORT_MASK			GENMASK(6, 4)
+-#define  CPU_PORT(x)			FIELD_PREP(CPU_PORT_MASK, x)
+-#define  MIRROR_EN			BIT(3)
+-#define  MIRROR_PORT(x)			((x) & 0x7)
+-#define  MIRROR_MASK			0x7
++/* Register for MAC forward control */
++#define MT753X_MFC			0x10
++#define  BC_FFP_MASK			GENMASK(31, 24)
++#define  BC_FFP(x)			FIELD_PREP(BC_FFP_MASK, x)
++#define  UNM_FFP_MASK			GENMASK(23, 16)
++#define  UNM_FFP(x)			FIELD_PREP(UNM_FFP_MASK, x)
++#define  UNU_FFP_MASK			GENMASK(15, 8)
++#define  UNU_FFP(x)			FIELD_PREP(UNU_FFP_MASK, x)
++#define  MT7530_CPU_EN			BIT(7)
++#define  MT7530_CPU_PORT_MASK		GENMASK(6, 4)
++#define  MT7530_CPU_PORT(x)		FIELD_PREP(MT7530_CPU_PORT_MASK, x)
++#define  MT7530_MIRROR_EN		BIT(3)
++#define  MT7530_MIRROR_PORT_MASK	GENMASK(2, 0)
++#define  MT7530_MIRROR_PORT_GET(x)	FIELD_GET(MT7530_MIRROR_PORT_MASK, x)
++#define  MT7530_MIRROR_PORT_SET(x)	FIELD_PREP(MT7530_MIRROR_PORT_MASK, x)
++#define  MT7531_QRY_FFP_MASK		GENMASK(7, 0)
++#define  MT7531_QRY_FFP(x)		FIELD_PREP(MT7531_QRY_FFP_MASK, x)
+ 
+-/* Registers for CPU forward control */
++/* Register for CPU forward control */
+ #define MT7531_CFC			0x4
+ #define  MT7531_MIRROR_EN		BIT(19)
+-#define  MT7531_MIRROR_MASK		(MIRROR_MASK << 16)
+-#define  MT7531_MIRROR_PORT_GET(x)	(((x) >> 16) & MIRROR_MASK)
+-#define  MT7531_MIRROR_PORT_SET(x)	(((x) & MIRROR_MASK) << 16)
++#define  MT7531_MIRROR_PORT_MASK	GENMASK(18, 16)
++#define  MT7531_MIRROR_PORT_GET(x)	FIELD_GET(MT7531_MIRROR_PORT_MASK, x)
++#define  MT7531_MIRROR_PORT_SET(x)	FIELD_PREP(MT7531_MIRROR_PORT_MASK, x)
+ #define  MT7531_CPU_PMAP_MASK		GENMASK(7, 0)
+ #define  MT7531_CPU_PMAP(x)		FIELD_PREP(MT7531_CPU_PMAP_MASK, x)
+ 
+-#define MT753X_MIRROR_REG(id)		((((id) == ID_MT7531) || ((id) == ID_MT7988)) ?	\
+-					 MT7531_CFC : MT7530_MFC)
+-#define MT753X_MIRROR_EN(id)		((((id) == ID_MT7531) || ((id) == ID_MT7988)) ?	\
+-					 MT7531_MIRROR_EN : MIRROR_EN)
+-#define MT753X_MIRROR_MASK(id)		((((id) == ID_MT7531) || ((id) == ID_MT7988)) ?	\
+-					 MT7531_MIRROR_MASK : MIRROR_MASK)
++#define MT753X_MIRROR_REG(id)		((id == ID_MT7531 || \
++					  id == ID_MT7988) ? \
++					 MT7531_CFC : MT753X_MFC)
++
++#define MT753X_MIRROR_EN(id)		((id == ID_MT7531 || \
++					  id == ID_MT7988) ? \
++					 MT7531_MIRROR_EN : MT7530_MIRROR_EN)
++
++#define MT753X_MIRROR_PORT_MASK(id)	((id == ID_MT7531 || \
++					  id == ID_MT7988) ? \
++					 MT7531_MIRROR_PORT_MASK : \
++					 MT7530_MIRROR_PORT_MASK)
++
++#define MT753X_MIRROR_PORT_GET(id, val)	((id == ID_MT7531 || \
++					  id == ID_MT7988) ? \
++					 MT7531_MIRROR_PORT_GET(val) : \
++					 MT7530_MIRROR_PORT_GET(val))
++
++#define MT753X_MIRROR_PORT_SET(id, val)	((id == ID_MT7531 || \
++					  id == ID_MT7988) ? \
++					 MT7531_MIRROR_PORT_SET(val) : \
++					 MT7530_MIRROR_PORT_SET(val))
+ 
+ /* Register for BPDU and PAE frame control */
+ #define MT753X_BPC			0x24
