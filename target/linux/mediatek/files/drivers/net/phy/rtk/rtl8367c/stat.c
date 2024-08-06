@@ -140,7 +140,7 @@ rtk_api_ret_t rtk_stat_global_get(rtk_stat_global_type_t cntr_idx, rtk_stat_coun
     if (cntr_idx!=DOT1D_TP_LEARNED_ENTRY_DISCARDS_INDEX)
         return RT_ERR_STAT_INVALID_GLOBAL_CNTR;
 
-    if ((retVal = rtl8367c_getAsicMIBsCounter(0, cntr_idx, pCntr)) != RT_ERR_OK)
+    if ((retVal = rtl8367c_getAsicMIBsCounter(0, (RTL8367C_MIBCOUNTER)cntr_idx, pCntr)) != RT_ERR_OK)
         return retVal;
 
     return RT_ERR_OK;
@@ -172,7 +172,7 @@ rtk_api_ret_t rtk_stat_global_getAll(rtk_stat_global_cntr_t *pGlobal_cntrs)
     if(NULL == pGlobal_cntrs)
         return RT_ERR_NULL_POINTER;
 
-    if ((retVal = rtl8367c_getAsicMIBsCounter(0,DOT1D_TP_LEARNED_ENTRY_DISCARDS_INDEX, &pGlobal_cntrs->dot1dTpLearnedEntryDiscards)) != RT_ERR_OK)
+    if ((retVal = rtl8367c_getAsicMIBsCounter(0, dot1dTpLearnedEntryDiscards, &pGlobal_cntrs->dot1dTpLearnedEntryDiscards)) != RT_ERR_OK)
         return retVal;
 
     return RT_ERR_OK;
@@ -265,7 +265,7 @@ static rtk_api_ret_t _get_asic_mib_idx(rtk_stat_port_type_t cnt_idx, RTL8367C_MI
  *      port        - port id.
  *      cntr_idx    - port counter index.
  * Output:
- *      pCntr - MIB retrived counter.
+ *      pCntr - MIB retrieved counter.
  * Return:
  *      RT_ERR_OK           - OK
  *      RT_ERR_FAILED       - Failed
@@ -592,7 +592,7 @@ rtk_api_ret_t rtk_stat_lengthMode_set(rtk_stat_lengthMode_t txMode, rtk_stat_len
 /* Function Name:
  *      rtk_stat_lengthMode_get
  * Description:
- *      Get Legnth mode.
+ *      Get Length mode.
  * Input:
  *      None.
  * Output:

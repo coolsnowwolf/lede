@@ -1,0 +1,78 @@
+From 2c39dd025da489cf87d26469d9f5ff19715324a0 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Mon, 24 Jul 2023 05:25:28 +0200
+Subject: [PATCH 1/4] net: dsa: qca8k: enable use_single_write for qca8xxx
+
+The qca8xxx switch supports 2 way to write reg values, a slow way using
+mdio and a fast way by sending specially crafted mgmt packet to
+read/write reg.
+
+The fast way can support up to 32 bytes of data as eth packet are used
+to send/receive.
+
+This correctly works for almost the entire regmap of the switch but with
+the use of some kernel selftests for dsa drivers it was found a funny
+and interesting hw defect/limitation.
+
+For some specific reg, bulk write won't work and will result in writing
+only part of the requested regs resulting in half data written. This was
+especially hard to track and discover due to the total strangeness of
+the problem and also by the specific regs where this occurs.
+
+This occurs in the specific regs of the ATU table, where multiple entry
+needs to be written to compose the entire entry.
+It was discovered that with a bulk write of 12 bytes on
+QCA8K_REG_ATU_DATA0 only QCA8K_REG_ATU_DATA0 and QCA8K_REG_ATU_DATA2
+were written, but QCA8K_REG_ATU_DATA1 was always zero.
+Tcpdump was used to make sure the specially crafted packet was correct
+and this was confirmed.
+
+The problem was hard to track as the lack of QCA8K_REG_ATU_DATA1
+resulted in an entry somehow possible as the first bytes of the mac
+address are set in QCA8K_REG_ATU_DATA0 and the entry type is set in
+QCA8K_REG_ATU_DATA2.
+
+Funlly enough writing QCA8K_REG_ATU_DATA1 results in the same problem
+with QCA8K_REG_ATU_DATA2 empty and QCA8K_REG_ATU_DATA1 and
+QCA8K_REG_ATU_FUNC correctly written.
+A speculation on the problem might be that there are some kind of
+indirection internally when accessing these regs and they can't be
+accessed all together, due to the fact that it's really a table mapped
+somewhere in the switch SRAM.
+
+Even more funny is the fact that every other reg was tested with all
+kind of combination and they are not affected by this problem. Read
+operation was also tested and always worked so it's not affected by this
+problem.
+
+The problem is not present if we limit writing a single reg at times.
+
+To handle this hardware defect, enable use_single_write so that bulk
+api can correctly split the write in multiple different operation
+effectively reverting to a non-bulk write.
+
+Cc: Mark Brown <broonie@kernel.org>
+Fixes: c766e077d927 ("net: dsa: qca8k: convert to regmap read/write API")
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Cc: stable@vger.kernel.org
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca/qca8k-8xxx.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/dsa/qca/qca8k-8xxx.c
++++ b/drivers/net/dsa/qca/qca8k-8xxx.c
+@@ -575,8 +575,11 @@ static struct regmap_config qca8k_regmap
+ 	.rd_table = &qca8k_readable_table,
+ 	.disable_locking = true, /* Locking is handled by qca8k read/write */
+ 	.cache_type = REGCACHE_NONE, /* Explicitly disable CACHE */
+-	.max_raw_read = 32, /* mgmt eth can read/write up to 8 registers at time */
+-	.max_raw_write = 32,
++	.max_raw_read = 32, /* mgmt eth can read up to 8 registers at time */
++	/* ATU regs suffer from a bug where some data are not correctly
++	 * written. Disable bulk write to correctly write ATU entry.
++	 */
++	.use_single_write = true,
+ };
+ 
+ static int

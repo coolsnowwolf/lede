@@ -17,6 +17,7 @@
 +CONFIG_DEBUG_UART_CLOCK=25000000
 +CONFIG_DEFAULT_DEVICE_TREE="mt7622-bananapi-bpi-r64"
 +CONFIG_OF_LIBFDT_OVERLAY=y
++CONFIG_OF_SYSTEM_SETUP=y
 +CONFIG_DEBUG_UART=y
 +CONFIG_DEFAULT_ENV_FILE="bananapi_bpi-r64-sdmmc_env"
 +CONFIG_NET_RANDOM_ETHADDR=y
@@ -126,7 +127,6 @@
 +CONFIG_PCI=y
 +CONFIG_MTD=y
 +CONFIG_MTD_UBI_FASTMAP=y
-+CONFIG_MTDPARTS_DEFAULT="mtdparts=spi-nand0:512k(bl2),2048k(fip),-(ubi)"
 +CONFIG_DM_PCI=y
 +CONFIG_PCIE_MEDIATEK=y
 +CONFIG_PINCTRL=y
@@ -167,11 +167,11 @@
 +CONFIG_SERVERIP="192.168.1.254"
 --- /dev/null
 +++ b/bananapi_bpi-r64-sdmmc_env
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,81 @@
 +ipaddr=192.168.1.1
 +serverip=192.168.1.254
 +loadaddr=0x48000000
-+bootargs=root=/dev/mmcblk1p65
++bootargs=root=/dev/fit0 rootwait
 +bootcmd=if pstore check ; then run boot_recovery ; else run boot_sdmmc ; fi
 +bootconf=config-1#mt7622-bananapi-bpi-r64-pcie1
 +bootconf_pcie=config-1#mt7622-bananapi-bpi-r64-pcie1
@@ -210,7 +210,6 @@
 +boot_ubi=ubi part ubi && setenv bootargs && run boot_ubi_production ; run boot_ubi_recovery
 +boot_ubi_production=led $bootled_pwr on ; run ubi_read_production && bootm $loadaddr ; led $bootled_pwr off
 +boot_ubi_recovery=led $bootled_rec on ; run ubi_read_recovery ; bootm $loadaddr#$bootconf ; ubi remove recovery ; led $bootled_rec off
-+check_ubi=ubi part ubi || run ubi_format
 +emmc_init=run emmc_init_bl && run emmc_init_openwrt ; env default bootcmd ; saveenv ; saveenv
 +emmc_init_bl=run sdmmc_read_emmc_bl2 && run emmc_write_bl2 && run sdmmc_read_emmc_hdr && run emmc_write_hdr && run sdmmc_read_emmc_fip && run emmc_write_fip
 +emmc_init_openwrt=run sdmmc_read_recovery && iminfo $loadaddr && run emmc_write_recovery ; run sdmmc_read_production && iminfo $loadaddr && run emmc_write_production
@@ -220,7 +219,7 @@
 +emmc_write_production=mmc dev 0 && part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_write_vol
 +emmc_write_recovery=mmc dev 0 && part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_write_vol
 +mmc_write_vol=imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc erase 0x$part_addr 0x$image_size && mmc write $loadaddr 0x$part_addr 0x$image_size
-+mmc_read_vol=mmc read $loadaddr $part_addr 0x8 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size && setexpr filesize $image_size * 0x200
++mmc_read_vol=mmc read $loadaddr $part_addr 0x100 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size && setexpr filesize $image_size * 0x200
 +part_default=production
 +part_recovery=recovery
 +reset_factory=eraseenv && reset
@@ -233,26 +232,26 @@
 +sdmmc_read_snand_fip=mmc dev 1 && part start mmc 1 install part_addr && setexpr offset $part_addr + 0x2400 && mmc read $loadaddr $offset 0x1000
 +sdmmc_write_production=mmc dev 1 && part start mmc 1 $part_default part_addr && part size mmc 1 $part_default part_size && run mmc_write_vol
 +sdmmc_write_recovery=mmc dev 1 && part start mmc 1 $part_recovery part_addr && part size mmc 1 $part_recovery part_size && run mmc_write_vol
-+snand_write_fip=mtd erase fip && mtd write fip $loadaddr
-+snand_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
-+ubi_create_env=ubi create ubootenv 0x100000 dynamic 0 ; ubi create ubootenv2 0x100000 dynamic 1 ; ubi create fit 0x100000 dynamic 2 ; ubi create recovery 0x100000 dynamic 3
-+ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
-+ubi_init=run ubi_init_bl && ubi detach && mtd erase ubi && ubi part ubi && run ubi_create_env && run ubi_init_openwrt
++snand_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x0 0x20000 && mtd write bl2 $loadaddr 0x20000 0x20000 && mtd write bl2 $loadaddr 0x40000 0x20000 && mtd write bl2 $loadaddr 0x60000 0x20000
++ubi_create_env=ubi create ubootenv 0x1f000 dynamic ; ubi create ubootenv2 0x1f000 dynamic
++ubi_format=ubi detach ; mtd erase ubi && ubi part ubi
++ubi_init=run ubi_format && run ubi_init_bl && run ubi_create_env && run ubi_init_openwrt
 +ubi_init_openwrt=run sdmmc_read_recovery && iminfo $loadaddr && run ubi_write_recovery ; run sdmmc_read_production && iminfo $loadaddr && run ubi_write_production
-+ubi_init_bl=run sdmmc_read_snand_bl2 && run snand_write_bl2 && run sdmmc_read_snand_fip && run snand_write_fip
++ubi_init_bl=run sdmmc_read_snand_bl2 && run snand_write_bl2 && run sdmmc_read_snand_fip && run ubi_write_fip
 +ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
 +ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
 +ubi_read_recovery=ubi check recovery && ubi read $loadaddr recovery
 +ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
-+ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic 2 && ubi write $loadaddr fit $filesize
-+ubi_write_recovery=ubi check recovery && ubi remove recovery ; run ubi_remove_rootfs ; ubi create recovery $filesize dynamic 3 && ubi write $loadaddr recovery $filesize
++ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; ubi create fip 0x200000 static ; ubi write $loadaddr fip 0x200000
++ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
++ubi_write_recovery=ubi check recovery && ubi remove recovery ; run ubi_remove_rootfs ; ubi create recovery $filesize dynamic && ubi write $loadaddr recovery $filesize
 +_init_env=setenv _init_env ; setenv _create_env ; saveenv ; saveenv
 +_firstboot=setenv _firstboot ; run _switch_to_menu ; run _init_env ; run boot_first
 +_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
 +_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"
 --- /dev/null
 +++ b/configs/mt7622_bananapi_bpi-r64-emmc_defconfig
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,152 @@
 +CONFIG_ARM=y
 +CONFIG_POSITION_INDEPENDENT=y
 +CONFIG_ARCH_MEDIATEK=y
@@ -269,6 +268,7 @@
 +CONFIG_DEBUG_UART_CLOCK=25000000
 +CONFIG_DEFAULT_DEVICE_TREE="mt7622-bananapi-bpi-r64"
 +CONFIG_OF_LIBFDT_OVERLAY=y
++CONFIG_OF_SYSTEM_SETUP=y
 +CONFIG_DEBUG_UART=y
 +CONFIG_DEFAULT_ENV_FILE="bananapi_bpi-r64-emmc_env"
 +CONFIG_NET_RANDOM_ETHADDR=y
@@ -411,7 +411,7 @@
 +serverip=192.168.1.254
 +loadaddr=0x48000000
 +bootcmd=if pstore check ; then run boot_recovery ; else run boot_emmc ; fi
-+bootargs=root=/dev/mmcblk0p65
++bootargs=root=/dev/fit0 rootwait
 +bootconf=config-1#mt7622-bananapi-bpi-r64-pcie1
 +bootconf_pcie=config-1#mt7622-bananapi-bpi-r64-pcie1
 +bootconf_sata=config-1#mt7622-bananapi-bpi-r64-sata
@@ -455,7 +455,7 @@
 +emmc_read_production=mmc dev 0 && part start mmc 0 $part_default part_addr && part size mmc 0 $part_default part_size && run mmc_read_vol
 +emmc_read_recovery=mmc dev 0 && part start mmc 0 $part_recovery part_addr && part size mmc 0 $part_recovery part_size && run mmc_read_vol
 +mmc_write_vol=imszb $fileaddr image_size && test 0x$image_size -le 0x$part_size && mmc erase 0x$part_addr 0x$image_size && mmc write $fileaddr 0x$part_addr 0x$image_size
-+mmc_read_vol=mmc read $loadaddr $part_addr 0x8 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size
++mmc_read_vol=mmc read $loadaddr $part_addr 0x100 && imszb $loadaddr image_size && test 0x$image_size -le 0x$part_size && mmc read $loadaddr 0x$part_addr 0x$image_size
 +part_default=production
 +part_recovery=recovery
 +reset_factory=eraseenv && reset
@@ -481,6 +481,7 @@
 +CONFIG_DEBUG_UART_CLOCK=25000000
 +CONFIG_DEFAULT_DEVICE_TREE="mt7622-bananapi-bpi-r64"
 +CONFIG_OF_LIBFDT_OVERLAY=y
++CONFIG_OF_SYSTEM_SETUP=y
 +CONFIG_DEBUG_UART=y
 +CONFIG_DEFAULT_ENV_FILE="bananapi_bpi-r64-snand_env"
 +CONFIG_DISTRO_DEFAULTS=y
@@ -574,7 +575,6 @@
 +CONFIG_PCI=y
 +CONFIG_MTD=y
 +CONFIG_MTD_UBI_FASTMAP=y
-+CONFIG_MTDPARTS_DEFAULT="mtdparts=spi-nand0:512k(bl2),2048k(fip),-(ubi)"
 +CONFIG_DM_PCI=y
 +CONFIG_PCIE_MEDIATEK=y
 +CONFIG_PINCTRL=y
@@ -613,11 +613,11 @@
 +CONFIG_SERVERIP="192.168.1.3"
 --- /dev/null
 +++ b/bananapi_bpi-r64-snand_env
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,56 @@
 +ipaddr=192.168.1.1
 +serverip=192.168.1.254
 +loadaddr=0x48000000
-+bootargs=root=/dev/ubiblock0_2p1
++bootargs=ubi.block=0,fit root=/dev/fit0 rootwait
 +bootcmd=if pstore check ; then run boot_recovery ; else run boot_ubi ; fi
 +bootconf=config-1#mt7622-bananapi-bpi-r64-pcie1
 +bootconf_pcie=config-1#mt7622-bananapi-bpi-r64-pcie1
@@ -652,22 +652,21 @@
 +boot_tftp_forever=led $bootled_rec on ; while true ; do run boot_tftp_recovery ; sleep 1 ; done
 +boot_tftp_production=tftpboot $loadaddr $bootfile_upg && iminfo $loadaddr && ubi part ubi && run ubi_write_production ubi_prepare_rootfs ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
 +boot_tftp_recovery=tftpboot $loadaddr $bootfile && iminfo $loadaddr && ubi part ubi && run ubi_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
-+boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run boot_write_bl2
-+boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run boot_write_fip
++boot_tftp_write_bl2=tftpboot $loadaddr $bootfile_bl2 && run snand_write_bl2
++boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip
 +boot_ubi=ubi part ubi && run boot_production ; run boot_recovery
-+boot_write_bl2=mtd erase bl2 && mtd write spi-nand0 $loadaddr 0x0 0x20000 && mtd write spi-nand0 $loadaddr 0x20000 0x20000 && mtd write spi-nand0 $loadaddr 0x40000 0x20000 && mtd write spi-nand0 $loadaddr 0x60000 0x20000
-+boot_write_fip=mtd erase fip && mtd write fip $loadaddr
++snand_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x0 0x20000 && mtd write bl2 $loadaddr 0x20000 0x20000 && mtd write bl2 $loadaddr 0x40000 0x20000 && mtd write bl2 $loadaddr 0x60000 0x20000
 +check_ubi=ubi part ubi || run ubi_format
-+reset_factory=mw $loadaddr 0x0 0x100000 ; ubi part ubi ; ubi write $loadaddr ubootenv 0x100000 ; ubi write $loadaddr ubootenv2 0x100000 ; ubi remove rootfs_data
-+ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
++reset_factory=mw $loadaddr 0x0 0x1f000 ; ubi part ubi ; ubi write $loadaddr ubootenv 0x1f000 ; ubi write $loadaddr ubootenv2 0x1f000 ; ubi remove rootfs_data
 +ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
 +ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
 +ubi_read_recovery=ubi check recovery && ubi read $loadaddr recovery
 +ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
++ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; ubi create fip 0x200000 static ; ubi write $loadaddr fip 0x200000
 +ubi_write_production=ubi check fit && env exists replacevol && ubi remove fit ; if ubi check fit ; then else run ubi_remove_rootfs ; ubi create fit $filesize dynamic 2 && ubi write $loadaddr fit $filesize ; fi
 +ubi_write_recovery=ubi check recovery && env exists replacevol && ubi remove recovery ; if ubi check recovery ; then else run ubi_remove_rootfs ; ubi create recovery $filesize dynamic 3 && ubi write $loadaddr recovery $filesize ; fi
-+_create_env=ubi create ubootenv 0x100000 dynamic 0 ; ubi create ubootenv2 0x100000 dynamic 1 ; ubi create fit 0x100000 dynamic 2 ; ubi create recovery 0x100000 dynamic 3
-+_init_env=setenv _init_env ; if ubi check ubootenv && ubi check ubootenv2 ; then else run _create_env ; fi ; setenv _create_env ; saveenv || run ubi_format ; saveenv || run ubi_format
-+_firstboot=setenv _firstboot ; run _switch_to_menu ; run check_ubi ; run _init_env ; run boot_first
++_create_env=ubi create ubootenv 0x1f000 dynamic ; ubi create ubootenv2 0x1f000 dynamic
++_init_env=setenv _init_env ; if ubi check ubootenv && ubi check ubootenv2 ; then else run _create_env ; fi ; setenv _create_env ; saveenv ; saveenv
++_firstboot=setenv _firstboot ; run _switch_to_menu ; run _init_env ; run boot_first
 +_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
 +_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"

@@ -346,15 +346,6 @@ define U-Boot/orangepi_zero3
   ATF:=h616
 endef
 
-define U-Boot/hechuang_x98h
-  BUILD_SUBTARGET:=cortexa53
-  NAME:=Hechuang X98H
-  BUILD_DEVICES:=hechuang_x98h
-  DEPENDS:=+PACKAGE_u-boot-hechuang_x98h:trusted-firmware-a-sunxi-h616
-  UENV:=h616
-  ATF:=h616
-endef
-
 define U-Boot/Bananapi_M2_Ultra
   BUILD_SUBTARGET:=cortexa7
   NAME:=Bananapi M2 Ultra
@@ -392,7 +383,6 @@ UBOOT_TARGETS := \
 	Cubieboard \
 	Cubieboard2 \
 	Cubietruck \
-	hechuang_x98h \
 	Hummingbird_A31 \
 	Marsboard_A10 \
 	Mele_M9 \

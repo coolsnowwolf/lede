@@ -25,11 +25,11 @@
 int routerboot_tag_find(const u8 *bufhead, const size_t buflen, const u16 tag_id, u16 *pld_ofs, u16 *pld_len);
 int routerboot_rle_decode(const u8 *in, size_t inlen, u8 *out, size_t *outlen);
 
-int __init rb_hardconfig_init(struct kobject *rb_kobj);
-void __exit rb_hardconfig_exit(void);
+int rb_hardconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd);
+void rb_hardconfig_exit(void);
 
-int __init rb_softconfig_init(struct kobject *rb_kobj);
-void __exit rb_softconfig_exit(void);
+int rb_softconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd);
+void rb_softconfig_exit(void);
 
 ssize_t routerboot_tag_show_string(const u8 *pld, u16 pld_len, char *buf);
 ssize_t routerboot_tag_show_u32s(const u8 *pld, u16 pld_len, char *buf);

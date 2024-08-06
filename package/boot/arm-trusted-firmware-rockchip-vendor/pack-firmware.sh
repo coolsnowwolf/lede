@@ -17,6 +17,10 @@ case "$VARIANT" in
 	DDR="rk33/rk3399_ddr_800MHz_v1.30.bin"
 	LOADER="rk33/rk3399_miniloader_v1.30.bin"
 	;;
+"rk3528")
+	ATF="rk35/rk3528_bl31_v1.16.elf"
+	DDR="rk35/rk3528_ddr_1056MHz_v1.06.bin"
+	;;
 "rk3566")
 	ATF="rk35/rk3568_bl31_v1.43.elf"
 	DDR="rk35/rk3566_ddr_1056MHz_v1.18.bin"

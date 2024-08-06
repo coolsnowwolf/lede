@@ -23,6 +23,7 @@ PKG_LICENSE:=GPL-2.0
 PKG_CONFIG_DEPENDS += \
 	CONFIG_SIGNED_PACKAGES CONFIG_TARGET_INIT_PATH CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE \
 	CONFIG_NAND_SUPPORT \
+	CONFIG_LEGACY_SDCARD_SUPPORT \
 	CONFIG_EMMC_SUPPORT \
 	CONFIG_CLEAN_IPKG \
 	CONFIG_PER_FEED_REPO \
@@ -89,6 +90,19 @@ define ImageConfigOptions
 	echo 'pi_preinit_net_messages="$(CONFIG_TARGET_PREINIT_SHOW_NETMSG)"' >>$(1)/lib/preinit/00_preinit.conf
 	echo 'pi_preinit_no_failsafe_netmsg="$(CONFIG_TARGET_PREINIT_SUPPRESS_FAILSAFE_NETMSG)"' >>$(1)/lib/preinit/00_preinit.conf
 	echo 'pi_preinit_no_failsafe="$(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE)"' >>$(1)/lib/preinit/00_preinit.conf
+ifeq ($(CONFIG_TARGET_DEFAULT_LAN_IP_FROM_PREINIT),y)
+	mkdir -p $(1)/etc/board.d
+	echo '. /lib/functions/uci-defaults.sh' >$(1)/etc/board.d/99-lan-ip
+	echo 'logger -t 99-lan-ip "setting custom default LAN IP"' >>$(1)/etc/board.d/99-lan-ip
+	echo 'board_config_update' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_select network' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_select lan' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_add_string ipaddr $(if $(CONFIG_TARGET_PREINIT_IP),$(CONFIG_TARGET_PREINIT_IP),"192.168.1.1")' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_add_string netmask $(if $(CONFIG_TARGET_PREINIT_NETMASK),$(CONFIG_TARGET_PREINIT_NETMASK),"255.255.255.0")' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_select ..' >>$(1)/etc/board.d/99-lan-ip
+	echo 'json_select ..' >>$(1)/etc/board.d/99-lan-ip
+	echo 'board_config_flush' >>$(1)/etc/board.d/99-lan-ip
+endif
 endef
 
 define Build/Prepare
@@ -125,6 +139,12 @@ ifeq ($(CONFIG_NAND_SUPPORT),)
   endef
 endif
 
+ifeq ($(CONFIG_LEGACY_SDCARD_SUPPORT),)
+  define Package/base-files/legacy-sdcard-support
+	rm -f $(1)/lib/upgrade/legacy-sdcard.sh
+  endef
+endif
+
 ifeq ($(CONFIG_EMMC_SUPPORT),)
   define Package/base-files/emmc-support
 	rm -f $(1)/lib/upgrade/emmc.sh
@@ -135,6 +155,7 @@ define Package/base-files/install
 	$(CP) ./files/* $(1)/
 	$(Package/base-files/install-key)
 	$(Package/base-files/nand-support)
+	$(Package/base-files/legacy-sdcard-support)
 	$(Package/base-files/emmc-support)
 	if [ -d $(GENERIC_PLATFORM_DIR)/base-files/. ]; then \
 		$(CP) $(GENERIC_PLATFORM_DIR)/base-files/* $(1)/; \

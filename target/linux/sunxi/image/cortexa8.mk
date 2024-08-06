@@ -3,6 +3,8 @@
 # Copyright (C) 2013-2016 OpenWrt.org
 # Copyright (C) 2016 Yousong Zhou
 
+KERNEL_LOADADDR:=0x40008000
+
 define Device/cubietech_a10-cubieboard
   DEVICE_VENDOR := Cubietech
   DEVICE_MODEL := Cubieboard
@@ -43,7 +45,7 @@ define Device/olimex_a13-olimex-som
   DEVICE_PACKAGES:=kmod-rtl8192cu
   SUPPORTED_DEVICES:=olimex,a13-olinuxino
   SOC := sun5i-a13
-  SUNXI_DTS := sun5i-a13-olinuxino
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)sun5i-a13-olinuxino
 endef
 TARGET_DEVICES += olimex_a13-olimex-som
 

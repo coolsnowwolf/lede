@@ -401,7 +401,7 @@ rtk_api_ret_t rtk_ptp_portEnable_get(rtk_port_t port, rtk_enable_t *pEnable)
 /* Function Name:
  *      rtk_ptp_portTimestamp_get
  * Description:
- *      Get PTP timstamp according to the PTP identifier on the dedicated port from the specified device.
+ *      Get PTP timestamp according to the PTP identifier on the dedicated port from the specified device.
  * Input:
  *      unit       - unit id
  *      port       - port id

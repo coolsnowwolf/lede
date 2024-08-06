@@ -1,0 +1,76 @@
+From b7f824141f4163c64a940f3a69bf6d8b76f77c7f Mon Sep 17 00:00:00 2001
+From: Niklas Cassel <cassel@kernel.org>
+Date: Wed, 17 Apr 2024 18:42:26 +0200
+Subject: [PATCH] PCI: dw-rockchip: Fix initial PERST# GPIO value
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PERST# is active low according to the PCIe specification.
+
+However, the existing pcie-dw-rockchip.c driver does:
+
+  gpiod_set_value(..., 0); msleep(100); gpiod_set_value(..., 1);
+
+when asserting + deasserting PERST#.
+
+This is of course wrong, but because all the device trees for this
+compatible string have also incorrectly marked this GPIO as ACTIVE_HIGH:
+
+  $ git grep -B 10 reset-gpios arch/arm64/boot/dts/rockchip/rk3568*
+  $ git grep -B 10 reset-gpios arch/arm64/boot/dts/rockchip/rk3588*
+
+The actual toggling of PERST# is correct, and we cannot change it anyway,
+since that would break device tree compatibility.
+
+However, this driver does request the GPIO to be initialized as
+GPIOD_OUT_HIGH, which does cause a silly sequence where PERST# gets
+toggled back and forth for no good reason.
+
+Fix this by requesting the GPIO to be initialized as GPIOD_OUT_LOW (which
+for this driver means PERST# asserted).
+
+This will avoid an unnecessary signal change where PERST# gets deasserted
+(by devm_gpiod_get_optional()) and then gets asserted (by
+rockchip_pcie_start_link()) just a few instructions later.
+
+Before patch, debug prints on EP side, when booting RC:
+
+  [  845.606810] pci: PERST# asserted by host!
+  [  852.483985] pci: PERST# de-asserted by host!
+  [  852.503041] pci: PERST# asserted by host!
+  [  852.610318] pci: PERST# de-asserted by host!
+
+After patch, debug prints on EP side, when booting RC:
+
+  [  125.107921] pci: PERST# asserted by host!
+  [  132.111429] pci: PERST# de-asserted by host!
+
+This extra, very short, PERST# assertion + deassertion has been reported to
+cause issues with certain WLAN controllers, e.g. RTL8822CE.
+
+Fixes: 0e898eb8df4e ("PCI: rockchip-dwc: Add Rockchip RK356X host controller driver")
+Link: https://lore.kernel.org/linux-pci/20240417164227.398901-1-cassel@kernel.org
+Tested-by: Heiko Stuebner <heiko@sntech.de>
+Tested-by: Jianfeng Liu <liujianfeng1994@gmail.com>
+Signed-off-by: Niklas Cassel <cassel@kernel.org>
+Signed-off-by: Krzysztof Wilczyński <kwilczynski@kernel.org>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Reviewed-by: Heiko Stuebner <heiko@sntech.de>
+Reviewed-by: Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>
+Cc: stable@vger.kernel.org	# v5.15+
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -240,7 +240,7 @@ static int rockchip_pcie_resource_get(st
+ 		return PTR_ERR(rockchip->apb_base);
+ 
+ 	rockchip->rst_gpio = devm_gpiod_get_optional(&pdev->dev, "reset",
+-						     GPIOD_OUT_HIGH);
++						     GPIOD_OUT_LOW);
+ 	if (IS_ERR(rockchip->rst_gpio))
+ 		return PTR_ERR(rockchip->rst_gpio);
+ 

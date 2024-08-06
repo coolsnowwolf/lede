@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes rate module high-layer API defination
+ * Feature : The file includes rate module high-layer API definition
  *
  */
 

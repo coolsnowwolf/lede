@@ -56,13 +56,13 @@ typedef enum rtk_enable_e
 #define ETHER_ADDR_LEN      6
 #endif
 
-/* ethernet address type */
+/* Ethernet address type */
 typedef struct  rtk_mac_s
 {
     rtk_uint8 octet[ETHER_ADDR_LEN];
 } rtk_mac_t;
 
-typedef rtk_uint32  rtk_pri_t;      /* priority vlaue */
+typedef rtk_uint32  rtk_pri_t;      /* priority value */
 typedef rtk_uint32  rtk_qid_t;      /* queue id type */
 typedef rtk_uint32  rtk_data_t;
 typedef rtk_uint32  rtk_dscp_t;     /* dscp vlaue */

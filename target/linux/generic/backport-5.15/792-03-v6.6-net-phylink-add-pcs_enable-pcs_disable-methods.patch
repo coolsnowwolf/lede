@@ -1,0 +1,172 @@
+From 90ef0a7b0622c62758b2638604927867775479ea Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Thu, 13 Jul 2023 09:42:07 +0100
+Subject: [PATCH] net: phylink: add pcs_enable()/pcs_disable() methods
+
+Add phylink PCS enable/disable callbacks that will allow us to place
+IEEE 802.3 register compliant PCS in power-down mode while not being
+used.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/phylink.c | 48 +++++++++++++++++++++++++++++++--------
+ include/linux/phylink.h   | 16 +++++++++++++
+ 2 files changed, 55 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -34,6 +34,10 @@ enum {
+ 	PHYLINK_DISABLE_STOPPED,
+ 	PHYLINK_DISABLE_LINK,
+ 	PHYLINK_DISABLE_MAC_WOL,
++
++	PCS_STATE_DOWN = 0,
++	PCS_STATE_STARTING,
++	PCS_STATE_STARTED,
+ };
+ 
+ /**
+@@ -72,6 +76,7 @@ struct phylink {
+ 	struct mutex state_mutex;
+ 	struct phylink_link_state phy_state;
+ 	struct work_struct resolve;
++	unsigned int pcs_state;
+ 
+ 	bool mac_link_dropped;
+ 	bool using_mac_select_pcs;
+@@ -806,6 +811,22 @@ static void phylink_mac_pcs_an_restart(s
+ 	}
+ }
+ 
++static void phylink_pcs_disable(struct phylink_pcs *pcs)
++{
++	if (pcs && pcs->ops->pcs_disable)
++		pcs->ops->pcs_disable(pcs);
++}
++
++static int phylink_pcs_enable(struct phylink_pcs *pcs)
++{
++	int err = 0;
++
++	if (pcs && pcs->ops->pcs_enable)
++		err = pcs->ops->pcs_enable(pcs);
++
++	return err;
++}
++
+ static void phylink_major_config(struct phylink *pl, bool restart,
+ 				  const struct phylink_link_state *state)
+ {
+@@ -843,12 +864,16 @@ static void phylink_major_config(struct
+ 	 * for the change.
+ 	 */
+ 	if (pcs_changed) {
++		phylink_pcs_disable(pl->pcs);
+ 		pl->pcs = pcs;
+ 		pl->pcs_ops = pcs->ops;
+ 	}
+ 
+ 	phylink_mac_config(pl, state);
+ 
++	if (pl->pcs_state == PCS_STATE_STARTING || pcs_changed)
++		phylink_pcs_enable(pl->pcs);
++
+ 	if (pl->pcs_ops) {
+ 		err = pl->pcs_ops->pcs_config(pl->pcs, pl->cur_link_an_mode,
+ 					      state->interface,
+@@ -1272,6 +1297,7 @@ struct phylink *phylink_create(struct ph
+ 	pl->link_config.speed = SPEED_UNKNOWN;
+ 	pl->link_config.duplex = DUPLEX_UNKNOWN;
+ 	pl->link_config.an_enabled = true;
++	pl->pcs_state = PCS_STATE_DOWN;
+ 	pl->mac_ops = mac_ops;
+ 	__set_bit(PHYLINK_DISABLE_STOPPED, &pl->phylink_disable_state);
+ 	timer_setup(&pl->link_poll, phylink_fixed_poll, 0);
+@@ -1663,6 +1689,8 @@ void phylink_start(struct phylink *pl)
+ 	if (pl->netdev)
+ 		netif_carrier_off(pl->netdev);
+ 
++	pl->pcs_state = PCS_STATE_STARTING;
++
+ 	/* Apply the link configuration to the MAC when starting. This allows
+ 	 * a fixed-link to start with the correct parameters, and also
+ 	 * ensures that we set the appropriate advertisement for Serdes links.
+@@ -1673,6 +1701,8 @@ void phylink_start(struct phylink *pl)
+ 	 */
+ 	phylink_mac_initial_config(pl, true);
+ 
++	pl->pcs_state = PCS_STATE_STARTED;
++
+ 	clear_bit(PHYLINK_DISABLE_STOPPED, &pl->phylink_disable_state);
+ 	phylink_run_resolve(pl);
+ 
+@@ -1692,16 +1722,9 @@ void phylink_start(struct phylink *pl)
+ 			poll = true;
+ 	}
+ 
+-	switch (pl->cfg_link_an_mode) {
+-	case MLO_AN_FIXED:
++	if (pl->cfg_link_an_mode == MLO_AN_FIXED)
+ 		poll |= pl->config->poll_fixed_state;
+-		break;
+-	case MLO_AN_INBAND:
+-		poll |= pl->config->pcs_poll;
+-		if (pl->pcs)
+-			poll |= pl->pcs->poll;
+-		break;
+-	}
++
+ 	if (poll)
+ 		mod_timer(&pl->link_poll, jiffies + HZ);
+ 	if (pl->phydev)
+@@ -1738,6 +1761,10 @@ void phylink_stop(struct phylink *pl)
+ 	}
+ 
+ 	phylink_run_resolve_and_disable(pl, PHYLINK_DISABLE_STOPPED);
++
++	pl->pcs_state = PCS_STATE_DOWN;
++
++	phylink_pcs_disable(pl->pcs);
+ }
+ EXPORT_SYMBOL_GPL(phylink_stop);
+ 
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -419,6 +419,8 @@ struct phylink_pcs {
+ /**
+  * struct phylink_pcs_ops - MAC PCS operations structure.
+  * @pcs_validate: validate the link configuration.
++ * @pcs_enable: enable the PCS.
++ * @pcs_disable: disable the PCS.
+  * @pcs_get_state: read the current MAC PCS link state from the hardware.
+  * @pcs_config: configure the MAC PCS for the selected mode and state.
+  * @pcs_an_restart: restart 802.3z BaseX autonegotiation.
+@@ -428,6 +430,8 @@ struct phylink_pcs {
+ struct phylink_pcs_ops {
+ 	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
+ 			    const struct phylink_link_state *state);
++	int (*pcs_enable)(struct phylink_pcs *pcs);
++	void (*pcs_disable)(struct phylink_pcs *pcs);
+ 	void (*pcs_get_state)(struct phylink_pcs *pcs,
+ 			      struct phylink_link_state *state);
+ 	int (*pcs_config)(struct phylink_pcs *pcs, unsigned int mode,
+@@ -458,6 +462,18 @@ int pcs_validate(struct phylink_pcs *pcs
+ 		 const struct phylink_link_state *state);
+ 
+ /**
++ * pcs_enable() - enable the PCS.
++ * @pcs: a pointer to a &struct phylink_pcs.
++ */
++int pcs_enable(struct phylink_pcs *pcs);
++
++/**
++ * pcs_disable() - disable the PCS.
++ * @pcs: a pointer to a &struct phylink_pcs.
++ */
++void pcs_disable(struct phylink_pcs *pcs);
++
++/**
+  * pcs_get_state() - Read the current inband link state from the hardware
+  * @pcs: a pointer to a &struct phylink_pcs.
+  * @state: a pointer to a &struct phylink_link_state.

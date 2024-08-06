@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2012  Bjørn Mork <bjorn@mork.no>
  *

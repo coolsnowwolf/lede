@@ -1,0 +1,368 @@
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -61,6 +61,51 @@ struct ppp_channel {
+ };
+ 
+ #ifdef __KERNEL__
++/* Call this to obtain the underlying protocol of the PPP channel,
++ * e.g. PX_PROTO_OE
++ */
++extern int ppp_channel_get_protocol(struct ppp_channel *);
++
++/* Call this to hold a channel */
++extern bool ppp_channel_hold(struct ppp_channel *);
++
++/* Call this to release a hold you have upon a channel */
++extern void ppp_channel_release(struct ppp_channel *);
++
++/* Release hold on PPP channels */
++extern void ppp_release_channels(struct ppp_channel *channels[],
++                                 unsigned int chan_sz);
++
++/* Test if ppp xmit lock is locked */
++extern bool ppp_is_xmit_locked(struct net_device *dev);
++
++/* Call this get protocol version */
++extern int ppp_channel_get_proto_version(struct ppp_channel *);
++
++/* Get the device index  associated with a channel, or 0, if none */
++extern int ppp_dev_index(struct ppp_channel *);
++
++/* Hold PPP channels for the PPP device */
++extern int ppp_hold_channels(struct net_device *dev,
++                             struct ppp_channel *channels[],
++                             unsigned int chan_sz);
++extern int __ppp_hold_channels(struct net_device *dev,
++ 				struct ppp_channel *channels[],
++ 				unsigned int chan_sz);
++
++/* Test if the ppp device is a multi-link ppp device */
++extern int ppp_is_multilink(struct net_device *dev);
++extern int __ppp_is_multilink(struct net_device *dev);
++
++/* Update statistics of the PPP net_device by incrementing related
++ * statistics field value with corresponding parameter
++ */
++extern void ppp_update_stats(struct net_device *dev, unsigned long rx_packets,
++                             unsigned long rx_bytes, unsigned long tx_packets,
++                             unsigned long tx_bytes, unsigned long rx_errors,
++                             unsigned long tx_errors, unsigned long rx_dropped,
++                             unsigned long tx_dropped);
++
+ /* Called by the channel when it can send some more data. */
+ extern void ppp_output_wakeup(struct ppp_channel *);
+ 
+@@ -148,5 +193,17 @@ extern void ppp_update_stats(struct net_
+  * that ppp_unregister_channel returns.
+  */
+ 
++/* QCA NSS Clients Support - Start */
++/* PPP channel connection event types */
++#define PPP_CHANNEL_DISCONNECT  0
++#define PPP_CHANNEL_CONNECT     1
++
++/* Register the PPP channel connect notifier */
++extern void ppp_channel_connection_register_notify(struct notifier_block *nb);
++
++/* Unregister the PPP channel connect notifier */
++extern void ppp_channel_connection_unregister_notify(struct notifier_block *nb);
++/* QCA NSS Clients Support - End */
++
+ #endif /* __KERNEL__ */
+ #endif
+--- a/include/linux/if_pppol2tp.h
++++ b/include/linux/if_pppol2tp.h
+@@ -12,4 +12,30 @@
+ #include <linux/in6.h>
+ #include <uapi/linux/if_pppol2tp.h>
+ 
++/* QCA NSS ECM support - Start */
++/*
++ * Holds L2TP channel info
++ */
++struct  pppol2tp_common_addr {
++	int tunnel_version;				/* v2 or v3 */
++	__u32 local_tunnel_id, remote_tunnel_id;	/* tunnel id */
++	__u32 local_session_id, remote_session_id;	/* session id */
++	struct sockaddr_in local_addr, remote_addr; /* ip address and port */
++};
++
++/*
++ * L2TP channel operations
++ */
++struct pppol2tp_channel_ops {
++	struct ppp_channel_ops ops; /* ppp channel ops */
++};
++
++/*
++ * exported function which calls pppol2tp channel's get addressing
++ * function
++ */
++extern int pppol2tp_channel_addressing_get(struct ppp_channel *,
++					   struct pppol2tp_common_addr *);
++/* QCA NSS ECM support - End */
++
+ #endif
+--- a/net/l2tp/l2tp_ppp.c
++++ b/net/l2tp/l2tp_ppp.c
+@@ -123,9 +123,17 @@ struct pppol2tp_session {
+ };
+ 
+ static int pppol2tp_xmit(struct ppp_channel *chan, struct sk_buff *skb);
+-
+-static const struct ppp_channel_ops pppol2tp_chan_ops = {
+-	.start_xmit =  pppol2tp_xmit,
++static int pppol2tp_get_channel_protocol(struct ppp_channel *);
++static int pppol2tp_get_channel_protocol_ver(struct ppp_channel *);
++static void pppol2tp_hold_chan(struct ppp_channel *);
++static void pppol2tp_release_chan(struct ppp_channel *);
++
++static const struct pppol2tp_channel_ops pppol2tp_chan_ops = {
++	.ops.start_xmit =  pppol2tp_xmit,
++	.ops.get_channel_protocol = pppol2tp_get_channel_protocol,
++	.ops.get_channel_protocol_ver = pppol2tp_get_channel_protocol_ver,
++	.ops.hold = pppol2tp_hold_chan,
++	.ops.release = pppol2tp_release_chan,
+ };
+ 
+ static const struct proto_ops pppol2tp_ops;
+@@ -373,6 +381,13 @@ static int pppol2tp_xmit(struct ppp_chan
+ 	skb->data[0] = PPP_ALLSTATIONS;
+ 	skb->data[1] = PPP_UI;
+ 
++	/* QCA NSS ECM support - start */
++	/* set incoming interface as the ppp interface */
++	if ((skb->protocol == htons(ETH_P_IP)) ||
++	    (skb->protocol == htons(ETH_P_IPV6)))
++		skb->skb_iif = ppp_dev_index(chan);
++	/* QCA NSS ECM support - End */
++
+ 	local_bh_disable();
+ 	l2tp_xmit_skb(session, skb);
+ 	local_bh_enable();
+@@ -818,7 +833,7 @@ static int pppol2tp_connect(struct socke
+ 	po->chan.hdrlen = PPPOL2TP_L2TP_HDR_SIZE_NOSEQ;
+ 
+ 	po->chan.private = sk;
+-	po->chan.ops	 = &pppol2tp_chan_ops;
++	po->chan.ops	 = (struct ppp_channel_ops *)&pppol2tp_chan_ops.ops;
+ 	po->chan.mtu	 = pppol2tp_tunnel_mtu(tunnel);
+ 
+ 	error = ppp_register_net_channel(sock_net(sk), &po->chan);
+@@ -1732,6 +1747,109 @@ static void __exit pppol2tp_exit(void)
+ 	unregister_pernet_device(&pppol2tp_net_ops);
+ }
+ 
++/* QCA NSS ECM support - Start */
++/* pppol2tp_hold_chan() */
++static void pppol2tp_hold_chan(struct ppp_channel *chan)
++{
++	struct sock *sk = (struct sock *)chan->private;
++
++	sock_hold(sk);
++}
++
++/* pppol2tp_release_chan() */
++static void pppol2tp_release_chan(struct ppp_channel *chan)
++{
++	struct sock *sk = (struct sock *)chan->private;
++
++	sock_put(sk);
++}
++
++/* pppol2tp_get_channel_protocol()
++ * Return the protocol type of the L2TP over PPP protocol
++ */
++static int pppol2tp_get_channel_protocol(struct ppp_channel *chan)
++{
++	return PX_PROTO_OL2TP;
++}
++
++/* pppol2tp_get_channel_protocol_ver()
++ * Return the protocol version of the L2TP over PPP protocol
++ */
++static int pppol2tp_get_channel_protocol_ver(struct ppp_channel *chan)
++{
++	struct sock *sk;
++	struct l2tp_session *session;
++	struct l2tp_tunnel *tunnel;
++	int version = 0;
++
++	if (chan && chan->private)
++		sk = (struct sock *)chan->private;
++	else
++		return -1;
++
++	/* Get session and tunnel contexts from the socket */
++	session = pppol2tp_sock_to_session(sk);
++	if (!session)
++		return -1;
++
++	tunnel = session->tunnel;
++	if (!tunnel) {
++		sock_put(sk);
++		return -1;
++	}
++
++	version = tunnel->version;
++
++	sock_put(sk);
++
++	return version;
++}
++
++/* pppol2tp_get_addressing() */
++static int pppol2tp_get_addressing(struct ppp_channel *chan,
++				   struct pppol2tp_common_addr *addr)
++{
++	struct sock *sk = (struct sock *)chan->private;
++	struct l2tp_session *session;
++	struct l2tp_tunnel *tunnel;
++	struct inet_sock *isk = NULL;
++	int err = -ENXIO;
++
++	/* Get session and tunnel contexts from the socket */
++	session = pppol2tp_sock_to_session(sk);
++	if (!session)
++		return err;
++
++	tunnel = session->tunnel;
++	if (!tunnel) {
++		sock_put(sk);
++		return err;
++	}
++	isk = inet_sk(tunnel->sock);
++
++	addr->local_tunnel_id = tunnel->tunnel_id;
++	addr->remote_tunnel_id = tunnel->peer_tunnel_id;
++	addr->local_session_id = session->session_id;
++	addr->remote_session_id = session->peer_session_id;
++
++	addr->local_addr.sin_port = isk->inet_sport;
++	addr->remote_addr.sin_port = isk->inet_dport;
++	addr->local_addr.sin_addr.s_addr = isk->inet_saddr;
++	addr->remote_addr.sin_addr.s_addr = isk->inet_daddr;
++
++	sock_put(sk);
++	return 0;
++}
++
++/* pppol2tp_channel_addressing_get() */
++int pppol2tp_channel_addressing_get(struct ppp_channel *chan,
++				    struct pppol2tp_common_addr *addr)
++{
++	return pppol2tp_get_addressing(chan, addr);
++}
++EXPORT_SYMBOL(pppol2tp_channel_addressing_get);
++/* QCA NSS ECM support - End */
++
+ module_init(pppol2tp_init);
+ module_exit(pppol2tp_exit);
+ 
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -3743,6 +3743,32 @@ int ppp_is_multilink(struct net_device *
+ }
+ EXPORT_SYMBOL(ppp_is_multilink);
+ 
++/* __ppp_is_multilink()
++ *      Returns >0 if the device is a multilink PPP netdevice, 0 if not or < 0
++ *      if the device is not PPP. Caller should acquire ppp_lock before calling
++ *      this function
++ */
++int __ppp_is_multilink(struct net_device *dev)
++{
++	struct ppp *ppp;
++	unsigned int flags;
++
++	if (!dev)
++		return -1;
++
++	if (dev->type != ARPHRD_PPP)
++		return -1;
++
++	ppp = netdev_priv(dev);
++	flags = ppp->flags;
++
++	if (flags & SC_MULTILINK)
++		return 1;
++
++	return 0;
++}
++EXPORT_SYMBOL(__ppp_is_multilink);
++
+ /* ppp_channel_get_protocol()
+  *	Call this to obtain the underlying protocol of the PPP channel,
+  *	e.g. PX_PROTO_OE
+@@ -3881,6 +3907,59 @@ int ppp_hold_channels(struct net_device
+ }
+ EXPORT_SYMBOL(ppp_hold_channels);
+ 
++/* __ppp_hold_channels()
++ *	Returns the PPP channels of the PPP device, storing each one into
++ *	channels[].
++ *
++ * channels[] has chan_sz elements.
++ * This function returns the number of channels stored, up to chan_sz.
++ * It will return < 0 if the device is not PPP.
++ *
++ * You MUST release the channels using ppp_release_channels().
++ */
++int __ppp_hold_channels(struct net_device *dev, struct ppp_channel *channels[],
++		      unsigned int chan_sz)
++{
++	struct ppp *ppp;
++	int c;
++	struct channel *pch;
++
++	if (!dev)
++		return -1;
++
++	if (dev->type != ARPHRD_PPP)
++		return -1;
++
++	ppp = netdev_priv(dev);
++
++	c = 0;
++	list_for_each_entry(pch, &ppp->channels, clist) {
++		struct ppp_channel *chan;
++
++		if (!pch->chan) {
++			/* Channel is going / gone away */
++			continue;
++		}
++
++		if (c == chan_sz) {
++			/* No space to record channel */
++			return c;
++		}
++
++		/* Hold the channel, if supported */
++		chan = pch->chan;
++		if (!chan->ops->hold)
++			continue;
++
++		chan->ops->hold(chan);
++
++		 /* Record the channel */
++		channels[c++] = chan;
++	}
++	return c;
++}
++EXPORT_SYMBOL(__ppp_hold_channels);
++
+ /* ppp_release_channels()
+  *	Releases channels
+  */
+--- a/net/l2tp/l2tp_core.h
++++ b/net/l2tp/l2tp_core.h
+@@ -235,6 +235,9 @@ struct l2tp_session *l2tp_session_get_by
+ void l2tp_stats_update(struct l2tp_tunnel *tunnel, struct l2tp_session *session,
+                        struct l2tp_stats *stats);
+ 
++void l2tp_stats_update(struct l2tp_tunnel *tunnel, struct l2tp_session *session,
++                       struct l2tp_stats *stats);
++
+ /* Tunnel and session lifetime management.
+  * Creation of a new instance is a two-step process: create, then register.
+  * Destruction is triggered using the *_delete functions, and completes asynchronously.

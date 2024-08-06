@@ -27,7 +27,7 @@
 /* Function Name:
  *      rtk_led_enable_set
  * Description:
- *      Set Led enable congiuration
+ *      Set Led enable configuration
  * Input:
  *      group       - LED group id.
  *      pPortmask   - LED enable port mask.
@@ -74,7 +74,7 @@ rtk_api_ret_t rtk_led_enable_set(rtk_led_group_t group, rtk_portmask_t *pPortmas
 /* Function Name:
  *      rtk_led_enable_get
  * Description:
- *      Get Led enable congiuration
+ *      Get Led enable configuration
  * Input:
  *      group - LED group id.
  * Output:
@@ -205,7 +205,7 @@ rtk_api_ret_t rtk_led_operation_get(rtk_led_operation_t *pMode)
 /* Function Name:
  *      rtk_led_modeForce_set
  * Description:
- *      Set Led group to congiuration force mode
+ *      Set Led group to configuration force mode
  * Input:
  *      port    - port ID
  *      group   - Support LED group id.
@@ -255,7 +255,7 @@ rtk_api_ret_t rtk_led_modeForce_set(rtk_port_t port, rtk_led_group_t group, rtk_
 /* Function Name:
  *      rtk_led_modeForce_get
  * Description:
- *      Get Led group to congiuration force mode
+ *      Get Led group to configuration force mode
  * Input:
  *      port  - port ID
  *      group - Support LED group id.
@@ -369,7 +369,7 @@ rtk_api_ret_t rtk_led_blinkRate_get(rtk_led_blink_rate_t *pBlinkRate)
 /* Function Name:
  *      rtk_led_groupConfig_set
  * Description:
- *      Set per group Led to congiuration mode
+ *      Set per group Led to configuration mode
  * Input:
  *      group   - LED group.
  *      config  - LED configuration
@@ -422,7 +422,7 @@ rtk_api_ret_t rtk_led_groupConfig_set(rtk_led_group_t group, rtk_led_congig_t co
 /* Function Name:
  *      rtk_led_groupConfig_get
  * Description:
- *      Get Led group congiuration mode
+ *      Get Led group configuration mode
  * Input:
  *      group - LED group.
  * Output:
@@ -583,7 +583,7 @@ rtk_api_ret_t rtk_led_groupAbility_get(rtk_led_group_t group, rtk_led_ability_t 
 /* Function Name:
  *      rtk_led_serialMode_set
  * Description:
- *      Set Led serial mode active congiuration
+ *      Set Led serial mode active configuration
  * Input:
  *      active - LED group.
  * Output:
@@ -594,7 +594,7 @@ rtk_api_ret_t rtk_led_groupAbility_get(rtk_led_group_t group, rtk_led_ability_t 
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      The API can set LED serial mode active congiuration.
+ *      The API can set LED serial mode active configuration.
  */
 rtk_api_ret_t rtk_led_serialMode_set(rtk_led_active_t active)
 {

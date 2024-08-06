@@ -12,15 +12,16 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
-PKG_MIRROR_HASH:=edda9151c73c1adfe369f5e315347344727a540ad57d3e2b41b9f57f9d4313fe
-PKG_SOURCE_DATE:=2023-01-22
-PKG_SOURCE_VERSION:=1ea5855e980cd88766dd9f615e78e7dd6edfbb74
+PKG_MIRROR_HASH:=32e39891455b602e9deb367c9ce2d099dc72353fad0bf0433307416925f7b393
+PKG_SOURCE_DATE:=2024-01-22
+PKG_SOURCE_VERSION:=08cd7083cac4bddf88459efa0881ee52858e7d0a
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=
 
 PKG_USE_MIPS16:=0
+PKG_BUILD_FLAGS:=no-mips16
 PKG_FLAGS:=nonshared
 
 PKG_BUILD_DEPENDS := util-linux
@@ -48,7 +49,7 @@ define Package/fstools/config
 		depends on PACKAGE_fstools
 		depends on NAND_SUPPORT
 		bool "Support extroot functionality with UBIFS"
-		default n
+		default y
 		help
 			This option makes it possible to use extroot functionality if the root filesystem resides on an UBIFS partition
 
@@ -82,7 +83,7 @@ define Package/block-mount
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=Block device mounting and checking
-  DEPENDS:=+fstools +ubox +libubox +libuci +libblobmsg-json +libjson-c
+  DEPENDS:=+ubox +libubox +libuci +libblobmsg-json +libjson-c
 endef
 
 define Package/blockd

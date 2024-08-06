@@ -199,6 +199,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	struct fdt_header hdr;
 	size_t hdr_len, retlen;
 	size_t offset;
+	u32 offset_start = 0;
 	size_t fit_offset, fit_size;
 	size_t rootfs_offset, rootfs_size;
 	size_t data_size, img_total, max_size = 0;
@@ -211,11 +212,13 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	if (cmdline_match && !strstr(saved_command_line, cmdline_match))
 		return -ENODEV;
 
+	of_property_read_u32(np, "openwrt,fit-offset", &offset_start);
+
 	hdr_len = sizeof(struct fdt_header);
 
 	/* Parse the MTD device & search for the FIT image location */
 	for(offset = 0; offset + hdr_len <= mtd->size; offset += mtd->erasesize) {
-		ret = mtd_read(mtd, offset, hdr_len, &retlen, (void*) &hdr);
+		ret = mtd_read(mtd, offset + offset_start, hdr_len, &retlen, (void*) &hdr);
 		if (ret) {
 			pr_err("read error in \"%s\" at offset 0x%llx\n",
 			       mtd->name, (unsigned long long) offset);
@@ -256,9 +259,11 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	 * last external data refernced.
 	 */
 	if (fit_size > 0x1000) {
+		enum mtdsplit_part_type type;
+
 		/* Search for the rootfs partition after the FIT image */
-		ret = mtd_find_rootfs_from(mtd, fit_offset + fit_size, mtd->size,
-					   &rootfs_offset, NULL);
+		ret = mtd_find_rootfs_from(mtd, fit_offset + fit_size + offset_start, mtd->size,
+					   &rootfs_offset, &type);
 		if (ret) {
 			pr_info("no rootfs found after FIT image in \"%s\"\n",
 				mtd->name);
@@ -273,9 +278,12 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 
 		parts[0].name = KERNEL_PART_NAME;
 		parts[0].offset = fit_offset;
-		parts[0].size = mtd_rounddown_to_eb(fit_size, mtd) + mtd->erasesize;
+		parts[0].size = mtd_roundup_to_eb(fit_size + offset_start, mtd);
 
-		parts[1].name = ROOTFS_PART_NAME;
+		if (type == MTDSPLIT_PART_TYPE_UBI)
+			parts[1].name = UBI_PART_NAME;
+		else
+			parts[1].name = ROOTFS_PART_NAME;
 		parts[1].offset = rootfs_offset;
 		parts[1].size = rootfs_size;
 
@@ -285,7 +293,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	} else {
 		/* Search for rootfs_data after FIT external data */
 		fit = kzalloc(fit_size, GFP_KERNEL);
-		ret = mtd_read(mtd, offset, fit_size, &retlen, fit);
+		ret = mtd_read(mtd, offset, fit_size + offset_start, &retlen, fit);
 		if (ret) {
 			pr_err("read error in \"%s\" at offset 0x%llx\n",
 			       mtd->name, (unsigned long long) offset);
@@ -319,7 +327,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 			return -ENOMEM;
 
 		parts[0].name = ROOTFS_SPLIT_NAME;
-		parts[0].offset = fit_offset + mtd_rounddown_to_eb(max_size, mtd) + mtd->erasesize;
+		parts[0].offset = fit_offset + mtd_roundup_to_eb(max_size, mtd);
 		parts[0].size = mtd->size - parts[0].offset;
 
 		*pparts = parts;

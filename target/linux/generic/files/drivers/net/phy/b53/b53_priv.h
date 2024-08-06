@@ -183,12 +183,12 @@ static inline struct b53_device *sw_to_b53(struct switch_dev *sw)
 	return container_of(sw, struct b53_device, sw_dev);
 }
 
-struct b53_device *b53_switch_alloc(struct device *base, struct b53_io_ops *ops,
-				    void *priv);
+struct b53_device *b53_swconfig_switch_alloc(struct device *base, struct b53_io_ops *ops,
+					     void *priv);
 
-int b53_switch_detect(struct b53_device *dev);
+int b53_swconfig_switch_detect(struct b53_device *dev);
 
-int b53_switch_register(struct b53_device *dev);
+int b53_swconfig_switch_register(struct b53_device *dev);
 
 static inline void b53_switch_remove(struct b53_device *dev)
 {

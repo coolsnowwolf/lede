@@ -1,0 +1,107 @@
+From 7c145a34ba6e380616af93262fcab9fc7261d851 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Mon, 29 May 2023 18:32:38 +0200
+Subject: [PATCH 08/13] leds: trigger: netdev: add support for LED hw control
+
+Add support for LED hw control for the netdev trigger.
+
+The trigger on calling set_baseline_state to configure a new mode, will
+do various check to verify if hw control can be used for the requested
+mode in can_hw_control() function.
+
+It will first check if the LED driver supports hw control for the netdev
+trigger, then will use hw_control_is_supported() and finally will call
+hw_control_set() to apply the requested mode.
+
+To use such mode, interval MUST be set to the default value and net_dev
+MUST be set. If one of these 2 value are not valid, hw control will
+never be used and normal software fallback is used.
+
+The default interval value is moved to a define to make sure they are
+always synced.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/leds/trigger/ledtrig-netdev.c | 43 +++++++++++++++++++++++++--
+ 1 file changed, 41 insertions(+), 2 deletions(-)
+
+--- a/drivers/leds/trigger/ledtrig-netdev.c
++++ b/drivers/leds/trigger/ledtrig-netdev.c
+@@ -24,6 +24,8 @@
+ #include <linux/timer.h>
+ #include "../leds.h"
+ 
++#define NETDEV_LED_DEFAULT_INTERVAL	50
++
+ /*
+  * Configurable sysfs attributes:
+  *
+@@ -68,6 +70,13 @@ static void set_baseline_state(struct le
+ 	int current_brightness;
+ 	struct led_classdev *led_cdev = trigger_data->led_cdev;
+ 
++	/* Already validated, hw control is possible with the requested mode */
++	if (trigger_data->hw_control) {
++		led_cdev->hw_control_set(led_cdev, trigger_data->mode);
++
++		return;
++	}
++
+ 	current_brightness = led_cdev->brightness;
+ 	if (current_brightness)
+ 		led_cdev->blink_brightness = current_brightness;
+@@ -103,12 +112,42 @@ static bool supports_hw_control(struct l
+ 
+ static bool can_hw_control(struct led_netdev_data *trigger_data)
+ {
++	unsigned long default_interval = msecs_to_jiffies(NETDEV_LED_DEFAULT_INTERVAL);
++	unsigned int interval = atomic_read(&trigger_data->interval);
+ 	struct led_classdev *led_cdev = trigger_data->led_cdev;
++	int ret;
+ 
+ 	if (!supports_hw_control(led_cdev))
+ 		return false;
+ 
+-	return false;
++	/*
++	 * Interval must be set to the default
++	 * value. Any different value is rejected if in hw
++	 * control.
++	 */
++	if (interval != default_interval)
++		return false;
++
++	/*
++	 * net_dev must be set with hw control, otherwise no
++	 * blinking can be happening and there is nothing to
++	 * offloaded.
++	 */
++	if (!trigger_data->net_dev)
++		return false;
++
++	/* Check if the requested mode is supported */
++	ret = led_cdev->hw_control_is_supported(led_cdev, trigger_data->mode);
++	/* Fall back to software blinking if not supported */
++	if (ret == -EOPNOTSUPP)
++		return false;
++	if (ret) {
++		dev_warn(led_cdev->dev,
++			 "Current mode check failed with error %d\n", ret);
++		return false;
++	}
++
++	return true;
+ }
+ 
+ static ssize_t device_name_show(struct device *dev,
+@@ -413,7 +452,7 @@ static int netdev_trig_activate(struct l
+ 	trigger_data->device_name[0] = 0;
+ 
+ 	trigger_data->mode = 0;
+-	atomic_set(&trigger_data->interval, msecs_to_jiffies(50));
++	atomic_set(&trigger_data->interval, msecs_to_jiffies(NETDEV_LED_DEFAULT_INTERVAL));
+ 	trigger_data->last_activity = 0;
+ 
+ 	led_set_trigger_data(led_cdev, trigger_data);

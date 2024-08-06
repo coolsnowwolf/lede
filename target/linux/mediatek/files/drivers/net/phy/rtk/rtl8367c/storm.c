@@ -279,7 +279,7 @@ rtk_api_ret_t rtk_rate_stormControlPortEnable_get(rtk_port_t port, rtk_rate_stor
  *      RT_ERR_ENABLE       - Invalid IFG parameter
  * Note:
  *
- *      This API can set per-port bypass stomr filter control frame type including RMA and igmp.
+ *      This API can set per-port bypass storm filter control frame type including RMA and IGMP.
  *      The bypass frame type is as following:
  *      - BYPASS_BRG_GROUP,
  *      - BYPASS_FD_PAUSE,
@@ -414,7 +414,7 @@ rtk_api_ret_t rtk_storm_bypass_set(rtk_storm_bypass_t type, rtk_enable_t enable)
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_INPUT        - Invalid input parameters.
  * Note:
- *      This API can get per-port bypass stomr filter control frame type including RMA and igmp.
+ *      This API can get per-port bypass storm filter control frame type including RMA and IGMP.
  *      The bypass frame type is as following:
  *      - BYPASS_BRG_GROUP,
  *      - BYPASS_FD_PAUSE,
@@ -526,7 +526,7 @@ rtk_api_ret_t rtk_storm_bypass_get(rtk_storm_bypass_t type, rtk_enable_t *pEnabl
 /* Function Name:
  *      rtk_rate_stormControlExtPortmask_set
  * Description:
- *      Set externsion storm control port mask
+ *      Set extension storm control port mask
  * Input:
  *      pPortmask  - port mask
  * Output:
@@ -562,7 +562,7 @@ rtk_api_ret_t rtk_rate_stormControlExtPortmask_set(rtk_portmask_t *pPortmask)
 /* Function Name:
  *      rtk_rate_stormControlExtPortmask_get
  * Description:
- *      Set externsion storm control port mask
+ *      Set extension storm control port mask
  * Input:
  *      None
  * Output:
@@ -598,10 +598,10 @@ rtk_api_ret_t rtk_rate_stormControlExtPortmask_get(rtk_portmask_t *pPortmask)
 /* Function Name:
  *      rtk_rate_stormControlExtEnable_set
  * Description:
- *      Set externsion storm control state
+ *      Set extension storm control state
  * Input:
  *      stormType   - storm group type
- *      enable      - externsion storm control state
+ *      enable      - extension storm control state
  * Output:
  *      None
  * Return:
@@ -653,11 +653,11 @@ rtk_api_ret_t rtk_rate_stormControlExtEnable_set(rtk_rate_storm_group_t stormTyp
 /* Function Name:
  *      rtk_rate_stormControlExtEnable_get
  * Description:
- *      Get externsion storm control state
+ *      Get extension storm control state
  * Input:
  *      stormType   - storm group type
  * Output:
- *      pEnable     - externsion storm control state
+ *      pEnable     - extension storm control state
  * Return:
  *      RT_ERR_OK
  *      RT_ERR_FAILED
@@ -707,10 +707,10 @@ rtk_api_ret_t rtk_rate_stormControlExtEnable_get(rtk_rate_storm_group_t stormTyp
 /* Function Name:
  *      rtk_rate_stormControlExtMeterIdx_set
  * Description:
- *      Set externsion storm control meter index
+ *      Set extension storm control meter index
  * Input:
  *      stormType   - storm group type
- *      index       - externsion storm control state
+ *      index       - extension storm control state
  * Output:
  *      None
  * Return:
@@ -762,10 +762,10 @@ rtk_api_ret_t rtk_rate_stormControlExtMeterIdx_set(rtk_rate_storm_group_t stormT
 /* Function Name:
  *      rtk_rate_stormControlExtMeterIdx_get
  * Description:
- *      Get externsion storm control meter index
+ *      Get extension storm control meter index
  * Input:
  *      stormType   - storm group type
- *      pIndex      - externsion storm control state
+ *      pIndex      - extension storm control state
  * Output:
  *      None
  * Return:

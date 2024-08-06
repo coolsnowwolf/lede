@@ -100,7 +100,7 @@ ret_t rtl8367c_getAsicEavMacAddress(ether_addr_t *pMac)
  * Description:
  *      Set PTP parser tag TPID.
  * Input:
- *       outerTag - outter tag TPID
+ *       outerTag - outer tag TPID
  *       innerTag  - inner tag TPID
  * Output:
  *      None
@@ -128,7 +128,7 @@ ret_t rtl8367c_setAsicEavTpid(rtk_uint32 outerTag, rtk_uint32 innerTag)
  * Input:
  *      None
  * Output:
- *       pOuterTag - outter tag TPID
+ *       pOuterTag - outer tag TPID
  *       pInnerTag  - inner tag TPID
  * Return:
  *      RT_ERR_OK   - Success
@@ -161,7 +161,7 @@ ret_t rtl8367c_getAsicEavTpid(rtk_uint32* pOuterTag, rtk_uint32* pInnerTag)
  *      RT_ERR_OK     - Success
  *      RT_ERR_SMI  - SMI access error
  * Note:
- *      The time granuality is 8 nano seconds.
+ *      The time granularity is 8 nano seconds.
  */
 ret_t rtl8367c_setAsicEavSysTime(rtk_uint32 second, rtk_uint32 nanoSecond)
 {
@@ -218,7 +218,7 @@ ret_t rtl8367c_setAsicEavSysTime(rtk_uint32 second, rtk_uint32 nanoSecond)
  *      RT_ERR_OK     - Success
  *      RT_ERR_SMI  - SMI access error
  * Note:
- *      The time granuality is 8 nano seconds.
+ *      The time granularity is 8 nano seconds.
  */
 ret_t rtl8367c_getAsicEavSysTime(rtk_uint32* pSecond, rtk_uint32* pNanoSecond)
 {
@@ -265,7 +265,7 @@ ret_t rtl8367c_getAsicEavSysTime(rtk_uint32* pSecond, rtk_uint32* pNanoSecond)
  * Description:
  *      Set PTP system time adjust
  * Input:
- *      type - incresae or decrease
+ *      type - increase or decrease
  *      second - seconds
  *      nanoSecond - nano seconds
  * Output:
@@ -481,7 +481,7 @@ ret_t rtl8367c_getAsicEavInterruptStatus(rtk_uint32* pIms)
  *      RT_ERR_OK   - Success
  *      RT_ERR_SMI  - SMI access error
  * Note:
- *      This API can be used to clear ASIC interrupt status and register will be cleared by writting 1.
+ *      This API can be used to clear ASIC interrupt status and register will be cleared by writing 1.
  *      [0]:TX_SYNC,
  *      [1]:TX_DELAY,
  *      [2]:TX_PDELAY_REQ,
@@ -570,7 +570,7 @@ ret_t rtl8367c_getAsicEavPortInterruptStatus(rtk_uint32 port, rtk_uint32* pIms)
  *      RT_ERR_SMI      - SMI access error
  *      RT_ERR_PORT_ID  - Invalid port number
  * Note:
- *      If EAV function is enabled, PTP event messgae packet will be attached PTP timestamp for trapping
+ *      If EAV function is enabled, PTP event message packet will be attached PTP timestamp for trapping
  */
 ret_t rtl8367c_setAsicEavPortEnable(rtk_uint32 port, rtk_uint32 enabled)
 {
@@ -646,7 +646,7 @@ ret_t rtl8367c_getAsicEavPortEnable(rtk_uint32 port, rtk_uint32 *pEnabled)
  *      RT_ERR_OK     - Success
  *      RT_ERR_SMI  - SMI access error
  * Note:
- *      The time granuality is 8 nano seconds.
+ *      The time granularity is 8 nano seconds.
  */
 ret_t rtl8367c_getAsicEavPortTimeStamp(rtk_uint32 port, rtk_uint32 type, rtl8367c_ptp_time_stamp_t* timeStamp)
 {
@@ -796,7 +796,7 @@ ret_t rtl8367c_getAsicEavTrap(rtk_uint32 port, rtk_uint32 *pEnabled)
  *      RT_ERR_SMI      - SMI access error
  *      RT_ERR_PORT_ID  - Invalid port number
  * Note:
- *      If EAV function is enabled, PTP event messgae packet will be attached PTP timestamp for trapping
+ *      If EAV function is enabled, PTP event message packet will be attached PTP timestamp for trapping
  */
 ret_t rtl8367c_setAsicEavEnable(rtk_uint32 port, rtk_uint32 enabled)
 {

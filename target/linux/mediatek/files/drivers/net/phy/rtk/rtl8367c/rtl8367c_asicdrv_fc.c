@@ -55,7 +55,7 @@ ret_t rtl8367c_getAsicFlowControlSelect(rtk_uint32 *pSelect)
 /* Function Name:
  *      rtl8367c_setAsicFlowControlJumboMode
  * Description:
- *      Set Jumbo threhsold for flow control
+ *      Set Jumbo threshold for flow control
  * Input:
  *      enabled         - Jumbo mode flow control 1: Enable 0:Disable
  * Output:
@@ -73,7 +73,7 @@ ret_t rtl8367c_setAsicFlowControlJumboMode(rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicFlowControlJumboMode
  * Description:
- *      Get Jumbo threhsold for flow control
+ *      Get Jumbo threshold for flow control
  * Input:
  *      pEnabled        - Jumbo mode flow control 1: Enable 0:Disable
  * Output:
