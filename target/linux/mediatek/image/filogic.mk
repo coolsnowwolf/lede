@@ -147,6 +147,36 @@ define Device/bananapi_bpi-r3
 endef
 TARGET_DEVICES += bananapi_bpi-r3
 
+define Device/bananapi_bpi-r3-common
+  DEVICE_VENDOR := Bananapi
+  DEVICE_MODEL := BPI-R3 Mini
+  DEVICE_DTS_DIR := $(DTS_DIR)/
+  DEVICE_PACKAGES := e2fsprogs f2fsck mkf2fs \
+	kmod-hwmon-pwmfan kmod-mt7915e kmod-mt7986-firmware \
+	kmod-phy-airoha-en8811h kmod-usb3 mt7986-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+
+define Device/bananapi_bpi-r3-mini-emmc
+  $(call Device/bananapi_bpi-r3-common)
+  DEVICE_MODEL := BPI-R3 Mini (eMMC)
+  DEVICE_DTS := mt7986a-bananapi-bpi-r3mini-emmc
+  SUPPORTED_DEVICES += bananapi,bpi-r3-mini
+endef
+TARGET_DEVICES += bananapi_bpi-r3-mini-emmc
+
+define Device/bananapi_bpi-r3-mini-nand
+  $(call Device/bananapi_bpi-r3-common)
+  DEVICE_MODEL := BPI-R3 Mini (NAND)
+  DEVICE_DTS := mt7986a-bananapi-bpi-r3mini-nand
+  SUPPORTED_DEVICES += bananapi,bpi-r3-mini
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+endef
+TARGET_DEVICES += bananapi_bpi-r3-mini-nand
+
 define Device/bananapi_bpi-r4-common
   DEVICE_VENDOR := Bananapi
   DEVICE_DTS_DIR := $(DTS_DIR)/
