@@ -1,0 +1,59 @@
+From 3da41fe88ff52c578f3155550bcbe0ecf388f079 Mon Sep 17 00:00:00 2001
+From: Zheng Zhang <everything411@qq.com>
+Date: Sat, 10 Aug 2024 12:01:56 +0800
+Subject: [PATCH] net: ethernet: mtk_wed: fix use-after-free panic in
+ mtk_wed_setup_tc_block_cb()
+
+When there are multiple ap interfaces on one band and with WED on,
+turning the interface down will cause a kernel panic on MT798X.
+
+Previously, cb_priv was freed in mtk_wed_setup_tc_block() without
+marking NULL,and mtk_wed_setup_tc_block_cb() didn't check the value, too.
+
+Assign NULL after free cb_priv in mtk_wed_setup_tc_block() and check NULL
+in mtk_wed_setup_tc_block_cb().
+
+----------
+Unable to handle kernel paging request at virtual address 0072460bca32b4f5
+Call trace:
+ mtk_wed_setup_tc_block_cb+0x4/0x38
+ 0xffffffc0794084bc
+ tcf_block_playback_offloads+0x70/0x1e8
+ tcf_block_unbind+0x6c/0xc8
+...
+---------
+
+Fixes: 799684448e3e ("net: ethernet: mtk_wed: introduce wed wo support")
+Signed-off-by: Zheng Zhang <everything411@qq.com>
+---
+ drivers/net/ethernet/mediatek/mtk_wed.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_wed.c
++++ b/drivers/net/ethernet/mediatek/mtk_wed.c
+@@ -2685,14 +2685,15 @@ mtk_wed_setup_tc_block_cb(enum tc_setup_
+ {
+ 	struct mtk_wed_flow_block_priv *priv = cb_priv;
+ 	struct flow_cls_offload *cls = type_data;
+-	struct mtk_wed_hw *hw = priv->hw;
++	struct mtk_wed_hw *hw = NULL;
+ 
+-	if (!tc_can_offload(priv->dev))
++	if (!priv || !tc_can_offload(priv->dev))
+ 		return -EOPNOTSUPP;
+ 
+ 	if (type != TC_SETUP_CLSFLOWER)
+ 		return -EOPNOTSUPP;
+ 
++	hw = priv->hw;
+ 	return mtk_flow_offload_cmd(hw->eth, cls, hw->index);
+ }
+ 
+@@ -2748,6 +2749,7 @@ mtk_wed_setup_tc_block(struct mtk_wed_hw
+ 			flow_block_cb_remove(block_cb, f);
+ 			list_del(&block_cb->driver_list);
+ 			kfree(block_cb->cb_priv);
++			block_cb->cb_priv = NULL;
+ 		}
+ 		return 0;
+ 	default:
