@@ -21,25 +21,23 @@ tun.description = translate("Turning Leigod into Tunnel mode can make some proxy
 schedule_enabled = s:option(Flag, "schedule_enabled", translate("Scheduled Pause"))
 schedule_enabled.rmempty = false
 schedule_enabled.default = 0
-schedule_enabled.description = translate("夜猫子选项")
+schedule_enabled.description = translate("Enable scheduled pause for Leigod Accelerator")
 
 pause_time = s:option(ListValue, "pause_time", translate("Pause Time"))
 pause_time:depends("schedule_enabled", 1)
 for i = 0, 23 do
     pause_time:value(string.format("%02d:00", i), string.format("%02d:00", i))
 end
-pause_time.rmempty = false
-pause_time.description = translate("选择好时间雷神加速器会定时暂停，请避开你的游戏时间以免影响游戏体验")
-
+pause_time.rmempty = true
 
 username = s:option(Value, "username", translate("Phone Number"))
 username:depends("schedule_enabled", 1)
-username.rmempty = false
+username.rmempty = true
 
 password = s:option(Value, "password", translate("Leigod Password"))
 password:depends("schedule_enabled", 1)
 password.password = true
-password.rmempty = false
+password.rmempty = true
 
 m:section(SimpleSection).template = "leigod/service"
 
