@@ -8,7 +8,7 @@ ARCH:=i386
 BOARD:=x86
 BOARDNAME:=x86
 FEATURES:=squashfs vdi vmdk vhdx pcmcia fpu boot-part rootfs-part
-SUBTARGETS:=64 generic legacy geode 
+SUBTARGETS:=64 generic geode legacy
 
 KERNEL_PATCHVER:=6.6
 KERNEL_TESTING_PATCHVER:=6.1
@@ -17,8 +17,8 @@ KERNELNAME:=bzImage
 
 include $(INCLUDE_DIR)/target.mk
 
-DEFAULT_PACKAGES += partx-utils mkf2fs e2fsprogs kmod-button-hotplug kmod-usb-hid kmod-mmc kmod-sdhci kmod-fs-f2fs amd64-microcode intel-microcode cfdisk usbutils pciutils \
-kmod-alx kmod-e1000e kmod-igb kmod-igc kmod-igbvf kmod-iavf kmod-bnx2x kmod-pcnet32 kmod-tulip kmod-via-velocity kmod-vmxnet3 kmod-i40e kmod-i40evf \
+DEFAULT_PACKAGES += partx-utils mkf2fs e2fsprogs kmod-button-hotplug kmod-fs-f2fs kmod-mmc kmod-sdhci kmod-usb-hid amd64-microcode intel-microcode cfdisk \
+kmod-alx kmod-bnx2x kmod-i40e kmod-i40evf kmod-iavf kmod-igb kmod-igbvf kmod-igc kmod-e1000e kmod-pcnet32 kmod-tulip kmod-via-velocity kmod-vmxnet3 \
 kmod-sound-hda-core kmod-sound-hda-codec-realtek kmod-sound-hda-codec-via kmod-sound-via82xx kmod-sound-hda-intel kmod-sound-hda-codec-hdmi kmod-sound-i8x0 \
 kmod-usb-net kmod-usb-net-asix-ax88179 kmod-usb-net-rtl8150 kmod-usb-net-aqc111 kmod-mlx4-core kmod-mlx5-core kmod-drm-i915 kmod-drm-amdgpu kmod-usb-audio \
 kmod-usb-net-rtl8152-vendor kmod-r8125 kmod-r8126 kmod-r8168 kmod-8139cp kmod-8139too kmod-tg3 htop lm-sensors autocore-x86 automount autosamba ca-bundle
