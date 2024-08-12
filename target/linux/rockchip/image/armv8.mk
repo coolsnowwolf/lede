@@ -272,6 +272,17 @@ define Device/rocktech_mpc1903
 endef
 TARGET_DEVICES += rocktech_mpc1903
 
+define Device/scensmart_sv901-eaio
+  DEVICE_VENDOR := ScenSmart
+  DEVICE_MODEL := SV901 EAIO
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := sv901-eaio-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := brcmfmac-nvram-4356-sdio cypress-firmware-4356-sdio kmod-brcmfmac \
+	kmod-switch-rtl8367b swconfig wpad -urngd
+endef
+TARGET_DEVICES += scensmart_sv901-eaio
+
 define Device/seewo_sv21-rk3568
   DEVICE_VENDOR := Seewo
   DEVICE_MODEL := sv21
