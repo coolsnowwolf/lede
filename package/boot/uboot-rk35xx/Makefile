@@ -35,7 +35,16 @@ define U-Boot/rk3528-evb
   SOC:=rk3528
 endef
 
-UBOOT_TARGETS := rk3528-evb
+# RK3588 boards
+define U-Boot/rk3588-evb
+  NAME:=RK3588 EVB Board
+  DEPENDS:=+PACKAGE_u-boot-$(1):arm-trusted-firmware-rk3588
+  ATF:=rk3588_bl31_v1.40.elf
+  DDR:=rk3588_ddr_lp4_2112MHz_lp5_2736MHz_v1.12.bin
+  SOC:=rk3588
+endef
+
+UBOOT_TARGETS := rk3528-evb rk3588-evb
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
