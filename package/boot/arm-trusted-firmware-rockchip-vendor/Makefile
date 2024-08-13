@@ -27,31 +27,31 @@ endef
 
 define Package/arm-trusted-firmware-rk3328
     $(Package/arm-trusted-firmware-rockchip-vendor)
-    DEPENDS:=@TARGET_rockchip_armv8
+    DEPENDS:=@TARGET_rockchip
     VARIANT:=rk3328
 endef
 
 define Package/arm-trusted-firmware-rk3399
     $(Package/arm-trusted-firmware-rockchip-vendor)
-    DEPENDS:=@TARGET_rockchip_armv8
+    DEPENDS:=@TARGET_rockchip
     VARIANT:=rk3399
 endef
 
 define Package/arm-trusted-firmware-rk3528
     $(Package/arm-trusted-firmware-rockchip-vendor)
-    DEPENDS:=@TARGET_rockchip_armv8
+    DEPENDS:=@TARGET_rockchip
     VARIANT:=rk3528
 endef
 
 define Package/arm-trusted-firmware-rk3566
     $(Package/arm-trusted-firmware-rockchip-vendor)
-    DEPENDS:=@TARGET_rockchip_armv8
+    DEPENDS:=@TARGET_rockchip
     VARIANT:=rk3566
 endef
 
 define Package/arm-trusted-firmware-rk3568
     $(Package/arm-trusted-firmware-rockchip-vendor)
-    DEPENDS:=@TARGET_rockchip_armv8
+    DEPENDS:=@TARGET_rockchip
     VARIANT:=rk3568
 endef
 
