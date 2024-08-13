@@ -1,0 +1,1105 @@
+From 22b12f9cd659bde2b9f21ae1ea87bf258cc3f31f Mon Sep 17 00:00:00 2001
+From: jjm2473 <1129525450@qq.com>
+Date: Thu, 11 May 2023 17:31:34 +0800
+Subject: [PATCH 39/42] drivers: drm patches for rockchip
+
+---
+ drivers/gpu/drm/drm_atomic_helper.c       |   3 +
+ drivers/gpu/drm/drm_atomic_state_helper.c |   7 +
+ drivers/gpu/drm/drm_atomic_uapi.c         |  14 +
+ drivers/gpu/drm/drm_color_mgmt.c          |  41 +-
+ drivers/gpu/drm/drm_fourcc.c              |  10 +
+ drivers/gpu/drm/drm_mode_config.c         |  16 +
+ drivers/gpu/drm/drm_prime.c               |  23 +
+ drivers/gpu/drm/panel/panel-simple.c      | 515 +++++++++++++++++++++-
+ include/drm/drm_crtc.h                    |  11 +-
+ include/drm/drm_drv.h                     |  10 +
+ include/drm/drm_mode_config.h             |  13 +
+ include/drm/drm_mode_object.h             |   2 +-
+ include/drm/drm_prime.h                   |   1 +
+ include/uapi/drm/drm_fourcc.h             |  12 +
+ 14 files changed, 645 insertions(+), 33 deletions(-)
+
+--- a/drivers/gpu/drm/drm_atomic_helper.c
++++ b/drivers/gpu/drm/drm_atomic_helper.c
+@@ -3563,6 +3563,9 @@ int drm_atomic_helper_legacy_gamma_set(s
+ 	replaced  = drm_property_replace_blob(&crtc_state->degamma_lut, NULL);
+ 	replaced |= drm_property_replace_blob(&crtc_state->ctm, NULL);
+ 	replaced |= drm_property_replace_blob(&crtc_state->gamma_lut, blob);
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	replaced |= drm_property_replace_blob(&crtc_state->cubic_lut, NULL);
++#endif
+ 	crtc_state->color_mgmt_changed |= replaced;
+ 
+ 	ret = drm_atomic_commit(state);
+--- a/drivers/gpu/drm/drm_atomic_state_helper.c
++++ b/drivers/gpu/drm/drm_atomic_state_helper.c
+@@ -141,6 +141,10 @@ void __drm_atomic_helper_crtc_duplicate_
+ 		drm_property_blob_get(state->ctm);
+ 	if (state->gamma_lut)
+ 		drm_property_blob_get(state->gamma_lut);
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	if (state->cubic_lut)
++		drm_property_blob_get(state->cubic_lut);
++#endif
+ 	state->mode_changed = false;
+ 	state->active_changed = false;
+ 	state->planes_changed = false;
+@@ -213,6 +217,9 @@ void __drm_atomic_helper_crtc_destroy_st
+ 	drm_property_blob_put(state->degamma_lut);
+ 	drm_property_blob_put(state->ctm);
+ 	drm_property_blob_put(state->gamma_lut);
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	drm_property_blob_put(state->cubic_lut);
++#endif
+ }
+ EXPORT_SYMBOL(__drm_atomic_helper_crtc_destroy_state);
+ 
+--- a/drivers/gpu/drm/drm_atomic_uapi.c
++++ b/drivers/gpu/drm/drm_atomic_uapi.c
+@@ -461,6 +461,16 @@ static int drm_atomic_crtc_set_property(
+ 					&replaced);
+ 		state->color_mgmt_changed |= replaced;
+ 		return ret;
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	} else if (property == config->cubic_lut_property) {
++		ret = drm_atomic_replace_property_blob_from_id(dev,
++					&state->cubic_lut,
++					val,
++					-1, sizeof(struct drm_color_lut),
++					&replaced);
++		state->color_mgmt_changed |= replaced;
++		return ret;
++#endif
+ 	} else if (property == config->prop_out_fence_ptr) {
+ 		s32 __user *fence_ptr = u64_to_user_ptr(val);
+ 
+@@ -503,6 +513,10 @@ drm_atomic_crtc_get_property(struct drm_
+ 		*val = (state->ctm) ? state->ctm->base.id : 0;
+ 	else if (property == config->gamma_lut_property)
+ 		*val = (state->gamma_lut) ? state->gamma_lut->base.id : 0;
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	else if (property == config->cubic_lut_property)
++		*val = (state->cubic_lut) ? state->cubic_lut->base.id : 0;
++#endif
+ 	else if (property == config->prop_out_fence_ptr)
+ 		*val = 0;
+ 	else if (crtc->funcs->atomic_get_property)
+--- a/drivers/gpu/drm/drm_color_mgmt.c
++++ b/drivers/gpu/drm/drm_color_mgmt.c
+@@ -33,7 +33,7 @@
+ /**
+  * DOC: overview
+  *
+- * Color management or color space adjustments is supported through a set of 5
++ * Color management or color space adjustments is supported through a set of 7
+  * properties on the &drm_crtc object. They are set up by calling
+  * drm_crtc_enable_color_mgmt().
+  *
+@@ -60,7 +60,7 @@
+  * “CTM”:
+  *	Blob property to set the current transformation matrix (CTM) apply to
+  *	pixel data after the lookup through the degamma LUT and before the
+- *	lookup through the gamma LUT. The data is interpreted as a struct
++ *	lookup through the cubic LUT. The data is interpreted as a struct
+  *	&drm_color_ctm.
+  *
+  *	Setting this to NULL (blob property value set to 0) means a
+@@ -68,13 +68,40 @@
+  *	boot-up state too. Drivers can access the blob for the color conversion
+  *	matrix through &drm_crtc_state.ctm.
+  *
++ * ”CUBIC_LUT”:
++ *	Blob property to set the cubic (3D) lookup table performing color
++ *	mapping after the transformation matrix and before the lookup through
++ *	the gamma LUT. Unlike the degamma and gamma LUTs that map color
++ *	components independently, the 3D LUT converts an input color to an
++ *	output color by indexing into the 3D table using the color components
++ *	as a 3D coordinate. The LUT is subsampled as 8-bit (or more) precision
++ *	would require too much storage space in the hardware, so the precision
++ *	of the color components is reduced before the look up, and the low
++ *	order bits may be used to interpolate between the nearest points in 3D
++ *	space.
++ *
++ *	The data is interpreted as an array of &struct drm_color_lut elements.
++ *	Hardware might choose not to use the full precision of the LUT
++ *	elements.
++ *
++ *	Setting this to NULL (blob property value set to 0) means the output
++ *	color is identical to the input color. This is generally the driver
++ *	boot-up state too. Drivers can access this blob through
++ *	&drm_crtc_state.cubic_lut.
++ *
++ * ”CUBIC_LUT_SIZE”:
++ *	Unsigned range property to give the size of the lookup table to be set
++ *	on the CUBIC_LUT property (the size depends on the underlying hardware).
++ *	If drivers support multiple LUT sizes then they should publish the
++ *	largest size, and sub-sample smaller sized LUTs appropriately.
++ *
+  * “GAMMA_LUT”:
+  *	Blob property to set the gamma lookup table (LUT) mapping pixel data
+- *	after the transformation matrix to data sent to the connector. The
+- *	data is interpreted as an array of &struct drm_color_lut elements.
+- *	Hardware might choose not to use the full precision of the LUT elements
+- *	nor use all the elements of the LUT (for example the hardware might
+- *	choose to interpolate between LUT[0] and LUT[4]).
++ *	after the cubic LUT to data sent to the connector. The data is
++ *	interpreted as an array of &struct drm_color_lut elements. Hardware
++ *	might choose not to use the full precision of the LUT elements nor use
++ *	all the elements of the LUT (for example the hardware might choose to
++ *	interpolate between LUT[0] and LUT[4]).
+  *
+  *	Setting this to NULL (blob property value set to 0) means a
+  *	linear/pass-thru gamma table should be used. This is generally the
+--- a/drivers/gpu/drm/drm_fourcc.c
++++ b/drivers/gpu/drm/drm_fourcc.c
+@@ -282,6 +282,16 @@ const struct drm_format_info *__drm_form
+ 		  .num_planes = 2, .char_per_block = { 5, 5, 0 },
+ 		  .block_w = { 4, 2, 0 }, .block_h = { 1, 1, 0 }, .hsub = 2,
+ 		  .vsub = 2, .is_yuv = true },
++#ifdef CONFIG_NO_GKI
++		{ .format = DRM_FORMAT_NV20,		.depth = 0,
++		  .num_planes = 2, .char_per_block = { 5, 5, 0 },
++		  .block_w = { 4, 2, 0 }, .block_h = { 1, 1, 0 }, .hsub = 2,
++		  .vsub = 1, .is_yuv = true },
++		{ .format = DRM_FORMAT_NV30,		.depth = 0,
++		  .num_planes = 2, .char_per_block = { 5, 5, 0 },
++		  .block_w = { 4, 2, 0 }, .block_h = { 1, 1, 0 }, .hsub = 1,
++		  .vsub = 1, .is_yuv = true },
++#endif
+ 		{ .format = DRM_FORMAT_Q410,		.depth = 0,
+ 		  .num_planes = 3, .char_per_block = { 2, 2, 2 },
+ 		  .block_w = { 1, 1, 1 }, .block_h = { 1, 1, 1 }, .hsub = 1,
+--- a/drivers/gpu/drm/drm_mode_config.c
++++ b/drivers/gpu/drm/drm_mode_config.c
+@@ -364,6 +364,22 @@ static int drm_mode_create_standard_prop
+ 		return -ENOMEM;
+ 	dev->mode_config.gamma_lut_size_property = prop;
+ 
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	prop = drm_property_create(dev,
++			DRM_MODE_PROP_BLOB,
++			"CUBIC_LUT", 0);
++	if (!prop)
++		return -ENOMEM;
++	dev->mode_config.cubic_lut_property = prop;
++
++	prop = drm_property_create_range(dev,
++			DRM_MODE_PROP_IMMUTABLE,
++			"CUBIC_LUT_SIZE", 0, UINT_MAX);
++	if (!prop)
++		return -ENOMEM;
++	dev->mode_config.cubic_lut_size_property = prop;
++#endif
++
+ 	prop = drm_property_create(dev,
+ 				   DRM_MODE_PROP_IMMUTABLE | DRM_MODE_PROP_BLOB,
+ 				   "IN_FORMATS", 0);
+--- a/drivers/gpu/drm/drm_prime.c
++++ b/drivers/gpu/drm/drm_prime.c
+@@ -784,6 +784,28 @@ int drm_gem_dmabuf_mmap(struct dma_buf *
+ }
+ EXPORT_SYMBOL(drm_gem_dmabuf_mmap);
+ 
++/**
++ * drm_gem_dmabuf_get_uuid - dma_buf get_uuid implementation for GEM
++ * @dma_buf: buffer to query
++ * @uuid: uuid outparam
++ *
++ * Queries the buffer's virtio UUID. This can be used as the
++ * &dma_buf_ops.get_uuid callback. Calls into &drm_driver.gem_prime_get_uuid.
++ *
++ * Returns 0 on success or a negative error code on failure.
++ */
++int drm_gem_dmabuf_get_uuid(struct dma_buf *dma_buf, uuid_t *uuid)
++{
++	struct drm_gem_object *obj = dma_buf->priv;
++	struct drm_device *dev = obj->dev;
++
++	if (!dev->driver->gem_prime_get_uuid)
++		return -ENODEV;
++
++	return dev->driver->gem_prime_get_uuid(obj, uuid);
++}
++EXPORT_SYMBOL(drm_gem_dmabuf_get_uuid);
++
+ static const struct dma_buf_ops drm_gem_prime_dmabuf_ops =  {
+ 	.cache_sgt_mapping = true,
+ 	.attach = drm_gem_map_attach,
+@@ -794,6 +816,7 @@ static const struct dma_buf_ops drm_gem_
+ 	.mmap = drm_gem_dmabuf_mmap,
+ 	.vmap = drm_gem_dmabuf_vmap,
+ 	.vunmap = drm_gem_dmabuf_vunmap,
++	.get_uuid = drm_gem_dmabuf_get_uuid,
+ };
+ 
+ /**
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -30,6 +30,7 @@
+ #include <linux/regulator/consumer.h>
+ 
+ #include <video/display_timing.h>
++#include <video/mipi_display.h>
+ #include <video/of_display_timing.h>
+ #include <video/videomode.h>
+ 
+@@ -37,6 +38,25 @@
+ #include <drm/drm_device.h>
+ #include <drm/drm_mipi_dsi.h>
+ #include <drm/drm_panel.h>
++#include <drm/drm_dsc.h>
++
++#include "panel-simple.h"
++
++struct panel_cmd_header {
++	u8 data_type;
++	u8 delay;
++	u8 payload_length;
++} __packed;
++
++struct panel_cmd_desc {
++	struct panel_cmd_header header;
++	u8 *payload;
++};
++
++struct panel_cmd_seq {
++	struct panel_cmd_desc *cmds;
++	unsigned int cmd_cnt;
++};
+ 
+ /**
+  * @modes: Pointer to array of fixed modes appropriate for this panel.  If
+@@ -83,6 +103,10 @@ struct panel_desc {
+ 	 *           turn the display off (no content is visible)
+ 	 * @unprepare: the time (in milliseconds) that it takes for the panel
+ 	 *             to power itself down completely
++	 * @reset: the time (in milliseconds) that it takes for the panel
++	 *         to reset itself completely
++	 * @init: the time (in milliseconds) that it takes for the panel to
++	 *	  send init command sequence after reset deassert
+ 	 */
+ 	struct {
+ 		unsigned int prepare;
+@@ -90,17 +114,24 @@ struct panel_desc {
+ 		unsigned int enable;
+ 		unsigned int disable;
+ 		unsigned int unprepare;
++		unsigned int reset;
++		unsigned int init;
+ 	} delay;
+ 
+ 	u32 bus_format;
+ 	u32 bus_flags;
+ 	int connector_type;
++
++	struct panel_cmd_seq *init_seq;
++	struct panel_cmd_seq *exit_seq;
+ };
+ 
+ struct panel_simple {
+ 	struct drm_panel base;
++	struct mipi_dsi_device *dsi;
+ 	bool prepared;
+ 	bool enabled;
++	bool power_invert;
+ 	bool no_hpd;
+ 
+ 	const struct panel_desc *desc;
+@@ -109,10 +140,12 @@ struct panel_simple {
+ 	struct i2c_adapter *ddc;
+ 
+ 	struct gpio_desc *enable_gpio;
++	struct gpio_desc *reset_gpio;
+ 	struct gpio_desc *hpd_gpio;
+ 
+ 	struct drm_display_mode override_mode;
+ 
++	struct drm_dsc_picture_parameter_set *pps;
+ 	enum drm_panel_orientation orientation;
+ };
+ 
+@@ -121,6 +154,124 @@ static inline struct panel_simple *to_pa
+ 	return container_of(panel, struct panel_simple, base);
+ }
+ 
++static int panel_simple_parse_cmd_seq(struct device *dev,
++				      const u8 *data, int length,
++				      struct panel_cmd_seq *seq)
++{
++	struct panel_cmd_header *header;
++	struct panel_cmd_desc *desc;
++	char *buf, *d;
++	unsigned int i, cnt, len;
++
++	if (!seq)
++		return -EINVAL;
++
++	buf = devm_kmemdup(dev, data, length, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	d = buf;
++	len = length;
++	cnt = 0;
++	while (len > sizeof(*header)) {
++		header = (struct panel_cmd_header *)d;
++
++		d += sizeof(*header);
++		len -= sizeof(*header);
++
++		if (header->payload_length > len)
++			return -EINVAL;
++
++		d += header->payload_length;
++		len -= header->payload_length;
++		cnt++;
++	}
++
++	if (len)
++		return -EINVAL;
++
++	seq->cmd_cnt = cnt;
++	seq->cmds = devm_kcalloc(dev, cnt, sizeof(*desc), GFP_KERNEL);
++	if (!seq->cmds)
++		return -ENOMEM;
++
++	d = buf;
++	len = length;
++	for (i = 0; i < cnt; i++) {
++		header = (struct panel_cmd_header *)d;
++		len -= sizeof(*header);
++		d += sizeof(*header);
++
++		desc = &seq->cmds[i];
++		desc->header = *header;
++		desc->payload = d;
++
++		d += header->payload_length;
++		len -= header->payload_length;
++	}
++
++	return 0;
++}
++
++static int panel_simple_xfer_dsi_cmd_seq(struct panel_simple *panel,
++					 struct panel_cmd_seq *seq)
++{
++	struct device *dev = panel->base.dev;
++	struct mipi_dsi_device *dsi = panel->dsi;
++	unsigned int i;
++	int err;
++
++	if (!IS_ENABLED(CONFIG_DRM_MIPI_DSI))
++		return -EINVAL;
++	if (!seq)
++		return -EINVAL;
++
++	for (i = 0; i < seq->cmd_cnt; i++) {
++		struct panel_cmd_desc *cmd = &seq->cmds[i];
++
++		switch (cmd->header.data_type) {
++		case MIPI_DSI_COMPRESSION_MODE:
++			err = mipi_dsi_compression_mode(dsi, cmd->payload[0]);
++			break;
++		case MIPI_DSI_GENERIC_SHORT_WRITE_0_PARAM:
++		case MIPI_DSI_GENERIC_SHORT_WRITE_1_PARAM:
++		case MIPI_DSI_GENERIC_SHORT_WRITE_2_PARAM:
++		case MIPI_DSI_GENERIC_LONG_WRITE:
++			err = mipi_dsi_generic_write(dsi, cmd->payload,
++						     cmd->header.payload_length);
++			break;
++		case MIPI_DSI_DCS_SHORT_WRITE:
++		case MIPI_DSI_DCS_SHORT_WRITE_PARAM:
++		case MIPI_DSI_DCS_LONG_WRITE:
++			err = mipi_dsi_dcs_write_buffer(dsi, cmd->payload,
++							cmd->header.payload_length);
++			break;
++		case MIPI_DSI_PICTURE_PARAMETER_SET:
++			if (!panel->pps) {
++				panel->pps = devm_kzalloc(dev, sizeof(*panel->pps),
++							  GFP_KERNEL);
++				if (!panel->pps)
++					return -ENOMEM;
++
++				memcpy(panel->pps, cmd->payload, cmd->header.payload_length);
++			}
++
++			err = mipi_dsi_picture_parameter_set(dsi, panel->pps);
++			break;
++		default:
++			return -EINVAL;
++		}
++
++		if (err < 0)
++			dev_err(dev, "failed to write dcs cmd: %d\n", err);
++
++		if (cmd->header.delay)
++			msleep(cmd->header.delay);
++	}
++
++	return 0;
++}
++
+ static unsigned int panel_simple_get_timings_modes(struct panel_simple *panel,
+ 						   struct drm_connector *connector)
+ {
+@@ -219,17 +370,72 @@ static int panel_simple_get_non_edid_mod
+ 	if (num == 0)
+ 		num = panel_simple_get_display_modes(panel, connector);
+ 
+-	connector->display_info.bpc = panel->desc->bpc;
+-	connector->display_info.width_mm = panel->desc->size.width;
+-	connector->display_info.height_mm = panel->desc->size.height;
++	if (panel->desc->bpc)
++		connector->display_info.bpc = panel->desc->bpc;
++	if (panel->desc->size.width)
++		connector->display_info.width_mm = panel->desc->size.width;
++	if (panel->desc->size.height)
++		connector->display_info.height_mm = panel->desc->size.height;
+ 	if (panel->desc->bus_format)
+ 		drm_display_info_set_bus_formats(&connector->display_info,
+ 						 &panel->desc->bus_format, 1);
+-	connector->display_info.bus_flags = panel->desc->bus_flags;
++	if (panel->desc->bus_flags)
++		connector->display_info.bus_flags = panel->desc->bus_flags;
+ 
+ 	return num;
+ }
+ 
++static int panel_simple_regulator_enable(struct panel_simple *p)
++{
++	int err;
++
++	if (p->power_invert) {
++		if (regulator_is_enabled(p->supply) > 0)
++			regulator_disable(p->supply);
++	} else {
++		err = regulator_enable(p->supply);
++		if (err < 0)
++			return err;
++	}
++
++	return 0;
++}
++
++static int panel_simple_regulator_disable(struct panel_simple *p)
++{
++	int err;
++
++	if (p->power_invert) {
++		if (!regulator_is_enabled(p->supply)) {
++			err = regulator_enable(p->supply);
++			if (err < 0)
++				return err;
++		}
++	} else {
++		regulator_disable(p->supply);
++	}
++
++	return 0;
++}
++
++int panel_simple_loader_protect(struct drm_panel *panel)
++{
++	struct panel_simple *p = to_panel_simple(panel);
++	int err;
++
++	err = panel_simple_regulator_enable(p);
++	if (err < 0) {
++		dev_err(panel->dev, "failed to enable supply: %d\n", err);
++		return err;
++	}
++
++	p->prepared = true;
++	p->enabled = true;
++
++	return 0;
++}
++EXPORT_SYMBOL(panel_simple_loader_protect);
++
+ static int panel_simple_disable(struct drm_panel *panel)
+ {
+ 	struct panel_simple *p = to_panel_simple(panel);
+@@ -252,9 +458,14 @@ static int panel_simple_unprepare(struct
+ 	if (!p->prepared)
+ 		return 0;
+ 
+-	gpiod_set_value_cansleep(p->enable_gpio, 0);
++	if (p->desc->exit_seq)
++		if (p->dsi)
++			panel_simple_xfer_dsi_cmd_seq(p, p->desc->exit_seq);
++
++	gpiod_direction_output(p->reset_gpio, 1);
++	gpiod_direction_output(p->enable_gpio, 0);
+ 
+-	regulator_disable(p->supply);
++	panel_simple_regulator_disable(p);
+ 
+ 	if (p->desc->delay.unprepare)
+ 		msleep(p->desc->delay.unprepare);
+@@ -299,13 +510,13 @@ static int panel_simple_prepare(struct d
+ 	if (p->prepared)
+ 		return 0;
+ 
+-	err = regulator_enable(p->supply);
++	err = panel_simple_regulator_enable(p);
+ 	if (err < 0) {
+ 		dev_err(panel->dev, "failed to enable supply: %d\n", err);
+ 		return err;
+ 	}
+ 
+-	gpiod_set_value_cansleep(p->enable_gpio, 1);
++	gpiod_direction_output(p->enable_gpio, 1);
+ 
+ 	delay = p->desc->delay.prepare;
+ 	if (p->no_hpd)
+@@ -333,6 +544,20 @@ static int panel_simple_prepare(struct d
+ 		}
+ 	}
+ 
++	gpiod_direction_output(p->reset_gpio, 1);
++
++	if (p->desc->delay.reset)
++		msleep(p->desc->delay.reset);
++
++	gpiod_direction_output(p->reset_gpio, 0);
++
++	if (p->desc->delay.init)
++		msleep(p->desc->delay.init);
++
++	if (p->desc->init_seq)
++		if (p->dsi)
++			panel_simple_xfer_dsi_cmd_seq(p, p->desc->init_seq);
++
+ 	p->prepared = true;
+ 
+ 	return 0;
+@@ -500,6 +725,52 @@ static void panel_simple_parse_panel_tim
+ 		dev_err(dev, "Reject override mode: No display_timing found\n");
+ }
+ 
++static int dcs_bl_update_status(struct backlight_device *bl)
++{
++	struct panel_simple *p = bl_get_data(bl);
++	struct mipi_dsi_device *dsi = p->dsi;
++	int ret;
++
++	if (!p->prepared)
++		return 0;
++
++	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++
++	ret = mipi_dsi_dcs_set_display_brightness(dsi, bl->props.brightness);
++	if (ret < 0)
++		return ret;
++
++	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	return 0;
++}
++
++static int dcs_bl_get_brightness(struct backlight_device *bl)
++{
++	struct panel_simple *p = bl_get_data(bl);
++	struct mipi_dsi_device *dsi = p->dsi;
++	u16 brightness = bl->props.brightness;
++	int ret;
++
++	if (!p->prepared)
++		return 0;
++
++	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++
++	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
++	if (ret < 0)
++		return ret;
++
++	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	return brightness & 0xff;
++}
++
++static const struct backlight_ops dcs_bl_ops = {
++	.update_status = dcs_bl_update_status,
++	.get_brightness = dcs_bl_get_brightness,
++};
++
+ static int panel_simple_probe(struct device *dev, const struct panel_desc *desc)
+ {
+ 	struct panel_simple *panel;
+@@ -525,15 +796,25 @@ static int panel_simple_probe(struct dev
+ 	}
+ 
+ 	panel->supply = devm_regulator_get(dev, "power");
+-	if (IS_ERR(panel->supply))
+-		return PTR_ERR(panel->supply);
++	if (IS_ERR(panel->supply)) {
++		err = PTR_ERR(panel->supply);
++		dev_err(dev, "failed to get power regulator: %d\n", err);
++		return err;
++	}
+ 
+-	panel->enable_gpio = devm_gpiod_get_optional(dev, "enable",
+-						     GPIOD_OUT_LOW);
++	panel->enable_gpio = devm_gpiod_get_optional(dev, "enable", GPIOD_ASIS);
+ 	if (IS_ERR(panel->enable_gpio)) {
+ 		err = PTR_ERR(panel->enable_gpio);
+ 		if (err != -EPROBE_DEFER)
+-			dev_err(dev, "failed to request GPIO: %d\n", err);
++			dev_err(dev, "failed to get enable GPIO: %d\n", err);
++		return err;
++	}
++
++	panel->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_ASIS);
++	if (IS_ERR(panel->reset_gpio)) {
++		err = PTR_ERR(panel->reset_gpio);
++		if (err != -EPROBE_DEFER)
++			dev_err(dev, "failed to get reset GPIO: %d\n", err);
+ 		return err;
+ 	}
+ 
+@@ -543,13 +824,18 @@ static int panel_simple_probe(struct dev
+ 		return err;
+ 	}
+ 
++	panel->power_invert = of_property_read_bool(dev->of_node, "power-invert");
++
+ 	ddc = of_parse_phandle(dev->of_node, "ddc-i2c-bus", 0);
+ 	if (ddc) {
+ 		panel->ddc = of_find_i2c_adapter_by_node(ddc);
+ 		of_node_put(ddc);
+ 
+-		if (!panel->ddc)
+-			return -EPROBE_DEFER;
++		if (!panel->ddc) {
++			err = -EPROBE_DEFER;
++			dev_err(dev, "failed to find ddc-i2c-bus: %d\n", err);
++			return err;
++		}
+ 	}
+ 
+ 	if (desc == &panel_dpi) {
+@@ -567,7 +853,7 @@ static int panel_simple_probe(struct dev
+ 	/* Catch common mistakes for panels. */
+ 	switch (connector_type) {
+ 	case 0:
+-		dev_warn(dev, "Specify missing connector_type\n");
++		dev_dbg(dev, "Specify missing connector_type\n");
+ 		connector_type = DRM_MODE_CONNECTOR_DPI;
+ 		break;
+ 	case DRM_MODE_CONNECTOR_LVDS:
+@@ -622,8 +908,10 @@ static int panel_simple_probe(struct dev
+ 	drm_panel_init(&panel->base, dev, &panel_simple_funcs, connector_type);
+ 
+ 	err = drm_panel_of_backlight(&panel->base);
+-	if (err)
++	if (err) {
++		dev_err(dev, "failed to find backlight: %d\n", err);
+ 		goto free_ddc;
++	}
+ 
+ 	drm_panel_add(&panel->base);
+ 
+@@ -676,7 +964,7 @@ static const struct drm_display_mode amp
+ static const struct panel_desc ampire_am_1280800n3tzqw_t00h = {
+ 	.modes = &ampire_am_1280800n3tzqw_t00h_mode,
+ 	.num_modes = 1,
+-	.bpc = 8,
++	.bpc = 6,
+ 	.size = {
+ 		.width = 217,
+ 		.height = 136,
+@@ -2147,7 +2435,6 @@ static const struct panel_desc innolux_g
+ 		.unprepare = 800,
+ 	},
+ 	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+-	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+ 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
+ };
+ 
+@@ -2204,7 +2491,7 @@ static const struct panel_desc innolux_g
+ 		.enable = 200,
+ 		.disable = 20,
+ 	},
+-	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
++	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+ 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
+ };
+ 
+@@ -2658,7 +2945,6 @@ static const struct display_timing logic
+ static const struct panel_desc logictechno_lt161010_2nh = {
+ 	.timings = &logictechno_lt161010_2nh_timing,
+ 	.num_timings = 1,
+-	.bpc = 6,
+ 	.size = {
+ 		.width = 154,
+ 		.height = 86,
+@@ -2688,7 +2974,6 @@ static const struct display_timing logic
+ static const struct panel_desc logictechno_lt170410_2whc = {
+ 	.timings = &logictechno_lt170410_2whc_timing,
+ 	.num_timings = 1,
+-	.bpc = 8,
+ 	.size = {
+ 		.width = 217,
+ 		.height = 136,
+@@ -3910,6 +4195,9 @@ static const struct panel_desc arm_rtsm
+ 
+ static const struct of_device_id platform_of_match[] = {
+ 	{
++		.compatible = "simple-panel",
++		.data = NULL,
++	}, {
+ 		.compatible = "ampire,am-1280800n3tzqw-t00h",
+ 		.data = &ampire_am_1280800n3tzqw_t00h,
+ 	}, {
+@@ -4318,15 +4606,132 @@ static const struct of_device_id platfor
+ };
+ MODULE_DEVICE_TABLE(of, platform_of_match);
+ 
++static bool of_child_node_is_present(const struct device_node *node,
++				     const char *name)
++{
++	struct device_node *child;
++
++	child = of_get_child_by_name(node, name);
++	of_node_put(child);
++
++	return !!child;
++}
++
++static int panel_simple_of_get_desc_data(struct device *dev,
++					 struct panel_desc *desc)
++{
++	struct device_node *np = dev->of_node;
++	u32 bus_flags;
++	const void *data;
++	int len;
++	int err;
++
++	if (of_child_node_is_present(np, "display-timings")) {
++		struct drm_display_mode *mode;
++
++		mode = devm_kzalloc(dev, sizeof(*mode), GFP_KERNEL);
++		if (!mode)
++			return -ENOMEM;
++
++		if (!of_get_drm_display_mode(np, mode, &bus_flags,
++					     OF_USE_NATIVE_MODE)) {
++			desc->modes = mode;
++			desc->num_modes = 1;
++			desc->bus_flags = bus_flags;
++		}
++	} else if (of_child_node_is_present(np, "panel-timing")) {
++		struct display_timing *timing;
++		struct videomode vm;
++
++		timing = devm_kzalloc(dev, sizeof(*timing), GFP_KERNEL);
++		if (!timing)
++			return -ENOMEM;
++
++		if (!of_get_display_timing(np, "panel-timing", timing)) {
++			desc->timings = timing;
++			desc->num_timings = 1;
++
++			bus_flags = 0;
++			vm.flags = timing->flags;
++			drm_bus_flags_from_videomode(&vm, &bus_flags);
++			desc->bus_flags = bus_flags;
++		}
++	}
++
++	if (desc->num_modes || desc->num_timings) {
++		of_property_read_u32(np, "bpc", &desc->bpc);
++		of_property_read_u32(np, "bus-format", &desc->bus_format);
++		of_property_read_u32(np, "width-mm", &desc->size.width);
++		of_property_read_u32(np, "height-mm", &desc->size.height);
++	}
++
++	of_property_read_u32(np, "prepare-delay-ms", &desc->delay.prepare);
++	of_property_read_u32(np, "enable-delay-ms", &desc->delay.enable);
++	of_property_read_u32(np, "disable-delay-ms", &desc->delay.disable);
++	of_property_read_u32(np, "unprepare-delay-ms", &desc->delay.unprepare);
++	of_property_read_u32(np, "reset-delay-ms", &desc->delay.reset);
++	of_property_read_u32(np, "init-delay-ms", &desc->delay.init);
++
++	data = of_get_property(np, "panel-init-sequence", &len);
++	if (data) {
++		desc->init_seq = devm_kzalloc(dev, sizeof(*desc->init_seq),
++					      GFP_KERNEL);
++		if (!desc->init_seq)
++			return -ENOMEM;
++
++		err = panel_simple_parse_cmd_seq(dev, data, len,
++						 desc->init_seq);
++		if (err) {
++			dev_err(dev, "failed to parse init sequence\n");
++			return err;
++		}
++	}
++
++	data = of_get_property(np, "panel-exit-sequence", &len);
++	if (data) {
++		desc->exit_seq = devm_kzalloc(dev, sizeof(*desc->exit_seq),
++					      GFP_KERNEL);
++		if (!desc->exit_seq)
++			return -ENOMEM;
++
++		err = panel_simple_parse_cmd_seq(dev, data, len,
++						 desc->exit_seq);
++		if (err) {
++			dev_err(dev, "failed to parse exit sequence\n");
++			return err;
++		}
++	}
++
++	return 0;
++}
++
+ static int panel_simple_platform_probe(struct platform_device *pdev)
+ {
++	struct device *dev = &pdev->dev;
+ 	const struct of_device_id *id;
++	const struct panel_desc *desc;
++	struct panel_desc *d;
++	int err;
+ 
+ 	id = of_match_node(platform_of_match, pdev->dev.of_node);
+ 	if (!id)
+ 		return -ENODEV;
+ 
+-	return panel_simple_probe(&pdev->dev, id->data);
++	if (!id->data) {
++		d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
++		if (!d)
++			return -ENOMEM;
++
++		err = panel_simple_of_get_desc_data(dev, d);
++		if (err) {
++			dev_err(dev, "failed to get desc data: %d\n", err);
++			return err;
++		}
++	}
++
++	desc = id->data ? id->data : d;
++
++	return panel_simple_probe(&pdev->dev, desc);
+ }
+ 
+ static int panel_simple_platform_remove(struct platform_device *pdev)
+@@ -4561,6 +4966,9 @@ static const struct panel_desc_dsi osd10
+ 
+ static const struct of_device_id dsi_of_match[] = {
+ 	{
++		.compatible = "simple-panel-dsi",
++		.data = NULL,
++	}, {
+ 		.compatible = "auo,b080uan01",
+ 		.data = &auo_b080uan01
+ 	}, {
+@@ -4587,9 +4995,33 @@ static const struct of_device_id dsi_of_
+ };
+ MODULE_DEVICE_TABLE(of, dsi_of_match);
+ 
++static int panel_simple_dsi_of_get_desc_data(struct device *dev,
++					     struct panel_desc_dsi *desc)
++{
++	struct device_node *np = dev->of_node;
++	u32 val;
++	int err;
++
++	err = panel_simple_of_get_desc_data(dev, &desc->desc);
++	if (err)
++		return err;
++
++	if (!of_property_read_u32(np, "dsi,flags", &val))
++		desc->flags = val;
++	if (!of_property_read_u32(np, "dsi,format", &val))
++		desc->format = val;
++	if (!of_property_read_u32(np, "dsi,lanes", &val))
++		desc->lanes = val;
++
++	return 0;
++}
++
+ static int panel_simple_dsi_probe(struct mipi_dsi_device *dsi)
+ {
++	struct panel_simple *panel;
++	struct device *dev = &dsi->dev;
+ 	const struct panel_desc_dsi *desc;
++	struct panel_desc_dsi *d;
+ 	const struct of_device_id *id;
+ 	int err;
+ 
+@@ -4597,12 +5029,47 @@ static int panel_simple_dsi_probe(struct
+ 	if (!id)
+ 		return -ENODEV;
+ 
+-	desc = id->data;
++	if (!id->data) {
++		d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
++		if (!d)
++			return -ENOMEM;
++
++		err = panel_simple_dsi_of_get_desc_data(dev, d);
++		if (err) {
++			dev_err(dev, "failed to get desc data: %d\n", err);
++			return err;
++		}
++	}
++
++	desc = id->data ? id->data : d;
+ 
+ 	err = panel_simple_probe(&dsi->dev, &desc->desc);
+ 	if (err < 0)
+ 		return err;
+ 
++	panel = dev_get_drvdata(dev);
++	panel->dsi = dsi;
++
++	if (!panel->base.backlight) {
++		struct backlight_properties props;
++
++		memset(&props, 0, sizeof(props));
++		props.type = BACKLIGHT_RAW;
++		props.brightness = 255;
++		props.max_brightness = 255;
++
++		panel->base.backlight =
++			devm_backlight_device_register(dev, "dcs-backlight",
++						       dev, panel, &dcs_bl_ops,
++						       &props);
++		if (IS_ERR(panel->base.backlight)) {
++			err = PTR_ERR(panel->base.backlight);
++			dev_err(dev, "failed to register dcs backlight: %d\n",
++				err);
++			return err;
++		}
++	}
++
+ 	dsi->mode_flags = desc->flags;
+ 	dsi->format = desc->format;
+ 	dsi->lanes = desc->lanes;
+--- a/include/drm/drm_crtc.h
++++ b/include/drm/drm_crtc.h
+@@ -287,7 +287,16 @@ struct drm_crtc_state {
+ 	 * NULL) is an array of &struct drm_color_lut.
+ 	 */
+ 	struct drm_property_blob *gamma_lut;
+-
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	/**
++	 * @cubic_lut:
++	 *
++	 * Cubic Lookup table for converting pixel data. See
++	 * drm_crtc_enable_color_mgmt(). The blob (if not NULL) is a 3D array
++	 * of &struct drm_color_lut.
++	 */
++	struct drm_property_blob *cubic_lut;
++#endif
+ 	/**
+ 	 * @target_vblank:
+ 	 *
+--- a/include/drm/drm_drv.h
++++ b/include/drm/drm_drv.h
+@@ -29,6 +29,7 @@
+ 
+ #include <linux/list.h>
+ #include <linux/irqreturn.h>
++#include <linux/uuid.h>
+ 
+ #include <drm/drm_device.h>
+ 
+@@ -461,6 +462,15 @@ struct drm_driver {
+ 				struct vm_area_struct *vma);
+ 
+ 	/**
++	 * @gem_prime_get_uuid
++	 *
++	 * get_uuid hook for GEM drivers. Retrieves the virtio uuid of the
++	 * given GEM buffer.
++	 */
++	int (*gem_prime_get_uuid)(struct drm_gem_object *obj,
++				  uuid_t *uuid);
++
++	/**
+ 	 * @dumb_create:
+ 	 *
+ 	 * This creates a new dumb buffer in the driver's backing storage manager (GEM,
+--- a/include/drm/drm_mode_config.h
++++ b/include/drm/drm_mode_config.h
+@@ -794,6 +794,19 @@ struct drm_mode_config {
+ 	 */
+ 	struct drm_property *gamma_lut_size_property;
+ 
++#if defined(CONFIG_ROCKCHIP_DRM_CUBIC_LUT)
++	/**
++	 * @cubic_lut_property: Optional CRTC property to set the 3D LUT used to
++	 * convert color spaces.
++	 */
++	struct drm_property *cubic_lut_property;
++	/**
++	 * @cubic_lut_size_property: Optional CRTC property for the size of the
++	 * 3D LUT as supported by the driver (read-only).
++	 */
++	struct drm_property *cubic_lut_size_property;
++#endif
++
+ 	/**
+ 	 * @suggested_x_property: Optional connector property with a hint for
+ 	 * the position of the output on the host's screen.
+--- a/include/drm/drm_mode_object.h
++++ b/include/drm/drm_mode_object.h
+@@ -60,7 +60,7 @@ struct drm_mode_object {
+ 	void (*free_cb)(struct kref *kref);
+ };
+ 
+-#define DRM_OBJECT_MAX_PROPERTY 24
++#define DRM_OBJECT_MAX_PROPERTY 64
+ /**
+  * struct drm_object_properties - property tracking for &drm_mode_object
+  */
+--- a/include/drm/drm_prime.h
++++ b/include/drm/drm_prime.h
+@@ -107,5 +107,6 @@ void drm_prime_gem_destroy(struct drm_ge
+ int drm_prime_sg_to_page_addr_arrays(struct sg_table *sgt, struct page **pages,
+ 				     dma_addr_t *addrs, int max_pages);
+ 
++int drm_gem_dmabuf_get_uuid(struct dma_buf *dma_buf, uuid_t *uuid);
+ 
+ #endif /* __DRM_PRIME_H__ */
+--- a/include/uapi/drm/drm_fourcc.h
++++ b/include/uapi/drm/drm_fourcc.h
+@@ -242,6 +242,8 @@ extern "C" {
+  * index 1 = Cr:Cb plane, [39:0] Cr1:Cb1:Cr0:Cb0 little endian
+  */
+ #define DRM_FORMAT_NV15		fourcc_code('N', 'V', '1', '5') /* 2x2 subsampled Cr:Cb plane */
++#define DRM_FORMAT_NV20		fourcc_code('N', 'V', '2', '0') /* 2x1 subsampled Cr:Cb plane */
++#define DRM_FORMAT_NV30		fourcc_code('N', 'V', '3', '0') /* non-subsampled Cr:Cb plane */
+ 
+ /*
+  * 2 plane YCbCr MSB aligned
+@@ -339,6 +341,7 @@ extern "C" {
+ #define DRM_FORMAT_MOD_VENDOR_ARM     0x08
+ #define DRM_FORMAT_MOD_VENDOR_ALLWINNER 0x09
+ #define DRM_FORMAT_MOD_VENDOR_AMLOGIC 0x0a
++#define DRM_FORMAT_MOD_VENDOR_ROCKCHIP 0x0b
+ 
+ /* add more to the end as needed */
+ 
+@@ -1067,6 +1070,15 @@ drm_fourcc_canonicalize_nvidia_format_mo
+  */
+ #define AMLOGIC_FBC_OPTION_MEM_SAVING		(1ULL << 0)
+ 
++#define ROCKCHIP_TILED_BLOCK_SIZE_MASK		0xf
++#define ROCKCHIP_TILED_BLOCK_SIZE_8x8		(1ULL)
++#define ROCKCHIP_TILED_BLOCK_SIZE_4x4_MODE0	(2ULL)
++#define ROCKCHIP_TILED_BLOCK_SIZE_4x4_MODE1	(3ULL)
++
++#define DRM_FORMAT_MOD_ROCKCHIP_TILED(_mode) fourcc_mod_code(ROCKCHIP, _mode)
++
++#define IS_ROCKCHIP_TILED_MOD(val) (((val) >> 56) == DRM_FORMAT_MOD_VENDOR_ROCKCHIP)
++
+ #if defined(__cplusplus)
+ }
+ #endif
