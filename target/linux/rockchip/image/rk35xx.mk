@@ -16,6 +16,15 @@ $(call Device/rk3528)
 endef
 TARGET_DEVICES += armsom_sige1
 
+define Device/mangopi_m28k
+$(call Device/rk3528)
+  DEVICE_VENDOR := MangoPi
+  DEVICE_MODEL := M28K / M28K Pro
+  SUPPORTED_DEVICES := mangopi,m28k widora,mangopi-m28k
+  DEVICE_PACKAGES := kmod-r8168 kmod-r8125 kmod-thermal
+endef
+TARGET_DEVICES += mangopi_m28k
+
 define Device/radxa_e20c
 $(call Device/rk3528)
   DEVICE_VENDOR := Radxa
