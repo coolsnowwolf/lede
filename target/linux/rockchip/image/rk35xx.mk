@@ -77,3 +77,12 @@ $(call Device/rk3528)
   DEVICE_PACKAGES := kmod-r8168 kmod-r8125 kmod-thermal
 endef
 TARGET_DEVICES += radxa_e20c
+
+define Device/radxa_rock-5c
+$(call Device/rk3588)
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5C / 5C Lite
+  DEVICE_DTS := rk3588-rock-5c
+  DEVICE_PACKAGES := kmod-r8125 kmod-nvme kmod-thermal
+endef
+TARGET_DEVICES += radxa_rock-5c
