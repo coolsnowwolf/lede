@@ -17,7 +17,7 @@ define Build/boot-common
 	rm -fR $@.boot
 	mkdir -p $@.boot
 
-	$(CP) $(KDIR)/image-$(firstword $(DEVICE_DTS)).dtb $@.boot/rockchip.dtb
+	$(CP) $(KDIR)/image-$(firstword $(notdir $(DEVICE_DTS))).dtb $@.boot/rockchip.dtb
 	$(CP) $(IMAGE_KERNEL) $@.boot/kernel.img
 endef
 
