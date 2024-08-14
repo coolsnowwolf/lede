@@ -35,6 +35,14 @@ $(call Device/rk3588)
 endef
 TARGET_DEVICES += armsom_sige7
 
+define Device/friendlyarm_nanopi-r6s
+$(call Device/rk3588)
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R6S
+  DEVICE_PACKAGES := kmod-r8125 kmod-nvme kmod-thermal 
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r6s
+
 define Device/mangopi_m28k
 $(call Device/rk3528)
   DEVICE_VENDOR := MangoPi
