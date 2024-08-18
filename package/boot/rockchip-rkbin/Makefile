@@ -25,54 +25,54 @@ define Trusted-Firmware-A/Default
   BUILD_TARGET:=rockchip
 endef
 
-define Trusted-Firmware-A/rk3328
+define Trusted-Firmware-A/rk3328-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk33/rk322xh_bl31_v1.49.elf
   TPL:=rk33/rk3328_ddr_333MHz_v1.19.bin
   SPL:=rk33/rk322xh_miniloader_v2.50.bin
 endef
 
-define Trusted-Firmware-A/rk3399
+define Trusted-Firmware-A/rk3399-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk33/rk3399_bl31_v1.36.elf
   TPL:=rk33/rk3399_ddr_800MHz_v1.30.bin
   SPL:=rk33/rk3399_miniloader_v1.30.bin
 endef
 
-define Trusted-Firmware-A/rk3528
+define Trusted-Firmware-A/rk3528-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk35/rk3528_bl31_v1.17.elf
   TPL:=rk35/rk3528_ddr_1056MHz_v1.09.bin
 endef
 
-define Trusted-Firmware-A/rk3566
+define Trusted-Firmware-A/rk3566-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk35/rk3568_bl31_v1.44.elf
   TPL:=rk35/rk3566_ddr_1056MHz_v1.21.bin
 endef
 
-define Trusted-Firmware-A/rk3568
+define Trusted-Firmware-A/rk3568-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk35/rk3568_bl31_v1.44.elf
   TPL:=rk35/rk3568_ddr_1560MHz_v1.21.bin
 endef
 
-define Trusted-Firmware-A/rk3588
+define Trusted-Firmware-A/rk3588-bin
   BUILD_SUBTARGET:=armv8
   ATF:=rk35/rk3588_bl31_v1.45.elf
   TPL:=rk35/rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
 endef
 
 TFA_TARGETS:= \
-	rk3328 \
-	rk3399 \
-	rk3528 \
-	rk3566 \
-	rk3568 \
-	rk3588
+	rk3328-bin \
+	rk3399-bin \
+	rk3528-bin \
+	rk3566-bin \
+	rk3568-bin \
+	rk3588-bin
 
 define Build/Compile
-	# workaround for "extraneous 'endif'" error
+	@echo Building idbLoader from Rockchip rkbin project...
 ifneq ($(SPL),)
 	( \
 		pushd $(PKG_BUILD_DIR) ; \
