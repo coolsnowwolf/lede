@@ -22,6 +22,16 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/armsom_sige1
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := Sige1
+  DEVICE_DTS := rockchip/rk3528-armsom-sige1
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := brcmfmac-firmware-43752-sdio kmod-brcmfmac kmod-r8125 wpad -urngd
+endef
+TARGET_DEVICES += armsom_sige1
+
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
   DEVICE_MODEL := XiaoBao NAS-I
@@ -168,6 +178,16 @@ define Device/hinlink_common
   DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-drm-rockchip kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125-rss wpad-openssl
 endef
 
+define Device/hinlink_opc-h28k
+  DEVICE_VENDOR := HINLINK
+  DEVICE_MODEL := OPC-H28K
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += hinlink_opc-h28k
+
 define Device/hinlink_opc-h66k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H66K
@@ -189,6 +209,16 @@ $(call Device/hinlink_common)
   DEVICE_PACKAGES += kmod-mt7916-firmware kmod-usb-serial-option uqmi
 endef
 TARGET_DEVICES += hinlink_opc-h69k
+
+define Device/hinlink_opc-ht2
+  DEVICE_VENDOR := HINLINK
+  DEVICE_MODEL := OPC-HT2
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800 wpad-openssl -urngd
+endef
+TARGET_DEVICES += hinlink_opc-ht2
 
 define Device/lyt_t68m
   DEVICE_VENDOR := LYT
@@ -219,6 +249,16 @@ define Device/pine64_rockpro64
   DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += pine64_rockpro64
+
+define Device/radxa_e20c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := E20C
+  DEVICE_DTS := rockchip/rk3528-radxa-e20c
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += radxa_e20c
 
 define Device/radxa_e25
   DEVICE_VENDOR := Radxa
@@ -341,3 +381,20 @@ define Device/xunlong_orangepi-r1-plus-lts
   DEVICE_PACKAGES := kmod-usb-net-rtl8152
 endef
 TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
+
+define Device/widora_mangopi-m28k
+  DEVICE_VENDOR := Widora
+  DEVICE_MODEL := MangoPi M28K
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800 kmod-r8168 wpad-openssl -urngd
+endef
+TARGET_DEVICES += widora_mangopi-m28k
+
+define Device/widora_mangopi-m28k-pro
+$(call Device/widora_mangopi-m28k)
+  DEVICE_MODEL := MangoPi M28K Pro
+  DEVICE_PACKAGES := kmod-aic8800 kmod-r8125 wpad-openssl -urngd
+endef
+TARGET_DEVICES += widora_mangopi-m28k-pro
