@@ -1,0 +1,209 @@
+From 3c05195fc2c232cd853fc8cebf55310c4605111d Mon Sep 17 00:00:00 2001
+From: "SkyLake.Huang" <skylake.huang@mediatek.com>
+Date: Mon, 1 Jul 2024 18:54:14 +0800
+Subject: [PATCH 10/13] net: phy: mediatek: Extend 1G TX/RX link pulse time
+
+We observe that some 10G devices' (mostly Marvell's chips inside) 1G
+training time violates specification, which may last 2230ms and affect
+later TX/RX link pulse time. This will invalidate MediaTek series
+gigabit Ethernet PHYs' hardware auto downshift mechanism.
+
+Without this patch, if someone is trying to use "4-wire" cable to
+connect above devices, MediaTek' gigabit Ethernet PHYs may fail
+to downshift to 100Mbps. (If partner 10G devices' downshift mechanism
+stops at 1G)
+
+This patch extends our 1G TX/RX link pulse time so that we can still
+link up with those 10G devices.
+
+Tested device:
+- Netgear GS110EMX's 10G port (Marvell 88X3340P)
+- QNAP QSW-M408-4C
+
+Signed-off-by: SkyLake.Huang <skylake.huang@mediatek.com>
+---
+ drivers/net/phy/mediatek/mtk-ge-soc.c  |  2 +
+ drivers/net/phy/mediatek/mtk-ge.c      |  5 +-
+ drivers/net/phy/mediatek/mtk-phy-lib.c | 92 ++++++++++++++++++++++++++
+ drivers/net/phy/mediatek/mtk.h         | 21 ++++++
+ 4 files changed, 116 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/phy/mediatek/mtk-ge-soc.c
++++ b/drivers/net/phy/mediatek/mtk-ge-soc.c
+@@ -1396,6 +1396,7 @@ static struct phy_driver mtk_socphy_driv
+ 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_MT7981),
+ 		.name		= "MediaTek MT7981 PHY",
+ 		.config_init	= mt798x_phy_config_init,
++		.read_status	= mtk_gphy_cl22_read_status,
+ 		.config_intr	= genphy_no_config_intr,
+ 		.handle_interrupt = genphy_handle_interrupt_no_ack,
+ 		.probe		= mt7981_phy_probe,
+@@ -1413,6 +1414,7 @@ static struct phy_driver mtk_socphy_driv
+ 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_MT7988),
+ 		.name		= "MediaTek MT7988 PHY",
+ 		.config_init	= mt798x_phy_config_init,
++		.read_status	= mtk_gphy_cl22_read_status,
+ 		.config_intr	= genphy_no_config_intr,
+ 		.handle_interrupt = genphy_handle_interrupt_no_ack,
+ 		.probe		= mt7988_phy_probe,
+--- a/drivers/net/phy/mediatek/mtk-ge.c
++++ b/drivers/net/phy/mediatek/mtk-ge.c
+@@ -9,10 +9,6 @@
+ #define MTK_GPHY_ID_MT7530		0x03a29412
+ #define MTK_GPHY_ID_MT7531		0x03a29441
+ 
+-#define MTK_PHY_PAGE_EXTENDED_1			0x0001
+-#define MTK_PHY_AUX_CTRL_AND_STATUS		0x14
+-#define   MTK_PHY_ENABLE_DOWNSHIFT		BIT(4)
+-
+ #define MTK_PHY_PAGE_EXTENDED_2			0x0002
+ #define MTK_PHY_PAGE_EXTENDED_3			0x0003
+ #define MTK_PHY_RG_LPI_PCS_DSP_CTRL_REG11	0x11
+@@ -251,6 +247,7 @@ static struct phy_driver mtk_gephy_drive
+ 		.name		= "MediaTek MT7531 PHY",
+ 		.probe		= mt7531_phy_probe,
+ 		.config_init	= mt7531_phy_config_init,
++		.read_status	= mtk_gphy_cl22_read_status,
+ 		/* Interrupts are handled by the switch, not the PHY
+ 		 * itself.
+ 		 */
+--- a/drivers/net/phy/mediatek/mtk-phy-lib.c
++++ b/drivers/net/phy/mediatek/mtk-phy-lib.c
+@@ -109,6 +109,98 @@ int mtk_phy_write_page(struct phy_device
+ }
+ EXPORT_SYMBOL_GPL(mtk_phy_write_page);
+ 
++/* This function deals with the case that 1G AN starts but isn't completed. We
++ * set AN_NEW_LP_CNT_LIMIT with different values time after time to let our
++ * 1G->100Mbps hardware automatic downshift to fit more partner devices.
++ */
++static int extend_an_new_lp_cnt_limit(struct phy_device *phydev)
++{
++	int mmd_read_ret;
++	u32 reg_val;
++	int timeout;
++
++	/* According to table 28-9 & Figure 28-18 in IEEE 802.3,
++	 * link_fail_inhibit_timer of 10/100/1000 Mbps devices ranges from 750
++	 * to "1000ms". Once MTK_PHY_FINAL_SPEED_1000 is set, it means that we
++	 * enter "FLP LINK GOOD CHECK" state, link_fail_inhibit_timer starts and
++	 * this PHY's 1G training starts. If 1G training never starts, we do
++	 * nothing but leave.
++	 */
++	timeout = read_poll_timeout(mmd_read_ret = phy_read_mmd, reg_val,
++				    (mmd_read_ret < 0) ||
++				    reg_val & MTK_PHY_FINAL_SPEED_1000,
++				    10000, 1000000, false, phydev,
++				    MDIO_MMD_VEND1, MTK_PHY_LINK_STATUS_MISC);
++	if (mmd_read_ret < 0)
++		return mmd_read_ret;
++
++	if (!timeout) {
++		/* Once we found MTK_PHY_FINAL_SPEED_1000 is set, no matter 1G
++		 * AN is completed or not, we'll set AN_NEW_LP_CNT_LIMIT again
++		 * and again.
++		 */
++		mtk_tr_modify(phydev, 0x0, 0xf, 0x3c, AN_NEW_LP_CNT_LIMIT_MASK,
++			      FIELD_PREP(AN_NEW_LP_CNT_LIMIT_MASK, 0xf));
++		mdelay(1500);
++
++		timeout = read_poll_timeout(mtk_tr_read, reg_val,
++					    (reg_val & AN_STATE_MASK) !=
++					    (AN_STATE_TX_DISABLE <<
++					     AN_STATE_SHIFT),
++					    10000, 1000000, false, phydev,
++					    0x0, 0xf, 0x2);
++		if (!timeout) {
++			mdelay(625);
++			mtk_tr_modify(phydev, 0x0, 0xf, 0x3c,
++				      AN_NEW_LP_CNT_LIMIT_MASK,
++				      FIELD_PREP(AN_NEW_LP_CNT_LIMIT_MASK,
++						 0x8));
++			mdelay(500);
++			mtk_tr_modify(phydev, 0x0, 0xf, 0x3c,
++				      AN_NEW_LP_CNT_LIMIT_MASK,
++				      FIELD_PREP(AN_NEW_LP_CNT_LIMIT_MASK,
++						 0xf));
++		} else {
++			return -ETIMEDOUT;
++		}
++	}
++
++	return 0;
++}
++
++int mtk_gphy_cl22_read_status(struct phy_device *phydev)
++{
++	int ret;
++
++	ret = genphy_read_status(phydev);
++	if (ret)
++		return ret;
++
++	if (phydev->autoneg == AUTONEG_ENABLE && !phydev->autoneg_complete) {
++		ret = phy_read_paged(phydev, MTK_PHY_PAGE_EXTENDED_1,
++				     MTK_PHY_AUX_CTRL_AND_STATUS);
++		if (ret < 0)
++			return ret;
++
++		/* Once LP_DETECTED is set, it means that"ability_match" in
++		 * IEEE 802.3 Figure 28-18 is set. This happens after we plug in
++		 * cable. Also, LP_DETECTED will be cleared after AN complete.
++		 */
++		if (!FIELD_GET(MTK_PHY_LP_DETECTED_MASK, ret))
++			return 0;
++
++		ret = phy_read(phydev, MII_CTRL1000);
++		if (ret & (ADVERTISE_1000FULL | ADVERTISE_1000HALF)) {
++			ret = extend_an_new_lp_cnt_limit(phydev);
++			if (ret < 0)
++				return ret;
++		}
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(mtk_gphy_cl22_read_status);
++
+ int mtk_phy_led_hw_is_supported(struct phy_device *phydev, u8 index,
+ 				unsigned long rules,
+ 				unsigned long supported_triggers)
+--- a/drivers/net/phy/mediatek/mtk.h
++++ b/drivers/net/phy/mediatek/mtk.h
+@@ -10,8 +10,28 @@
+ 
+ #define MTK_EXT_PAGE_ACCESS			0x1f
+ #define MTK_PHY_PAGE_STANDARD			0x0000
++#define MTK_PHY_PAGE_EXTENDED_1			0x0001
++#define MTK_PHY_AUX_CTRL_AND_STATUS		0x14
++/* suprv_media_select_RefClk */
++#define   MTK_PHY_LP_DETECTED_MASK		GENMASK(7, 6)
++#define   MTK_PHY_ENABLE_DOWNSHIFT		BIT(4)
++
+ #define MTK_PHY_PAGE_EXTENDED_52B5		0x52b5
+ 
++/* Registers on Token Ring debug nodes */
++/* ch_addr = 0x0, node_addr = 0xf, data_addr = 0x2 */
++#define   AN_STATE_MASK			GENMASK(22, 19)
++#define   AN_STATE_SHIFT		19
++#define   AN_STATE_TX_DISABLE		1
++
++/* ch_addr = 0x0, node_addr = 0xf, data_addr = 0x3c */
++#define AN_NEW_LP_CNT_LIMIT_MASK		GENMASK(23, 20)
++#define AUTO_NP_10XEN				BIT(6)
++
++/* Registers on MDIO_MMD_VEND1 */
++#define MTK_PHY_LINK_STATUS_MISC	(0xa2)
++#define   MTK_PHY_FINAL_SPEED_1000	BIT(3)
++
+ /* Registers on MDIO_MMD_VEND2 */
+ #define MTK_PHY_LED0_ON_CTRL			0x24
+ #define MTK_PHY_LED1_ON_CTRL			0x26
+@@ -78,6 +98,7 @@ void __mtk_tr_clr_bits(struct phy_device
+ int mtk_phy_read_page(struct phy_device *phydev);
+ int mtk_phy_write_page(struct phy_device *phydev, int page);
+ 
++int mtk_gphy_cl22_read_status(struct phy_device *phydev);
+ int mtk_phy_led_hw_is_supported(struct phy_device *phydev, u8 index,
+ 				unsigned long rules,
+ 				unsigned long supported_triggers);
