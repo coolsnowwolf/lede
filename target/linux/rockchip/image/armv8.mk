@@ -395,6 +395,6 @@ TARGET_DEVICES += widora_mangopi-m28k
 define Device/widora_mangopi-m28k-pro
 $(call Device/widora_mangopi-m28k)
   DEVICE_MODEL := MangoPi M28K Pro
-  DEVICE_PACKAGES := kmod-aic8800 kmod-r8125 wpad-openssl -urngd
+  DEVICE_PACKAGES := kmod-aic8800 kmod-i2c-gpio kmod-r8125 wpad-openssl -urngd
 endef
 TARGET_DEVICES += widora_mangopi-m28k-pro
