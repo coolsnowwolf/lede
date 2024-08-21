@@ -499,10 +499,9 @@ static int rk_rng_probe(struct platform_device *pdev)
 		rk_rng->mem += rk_rng->soc_data->default_offset;
 
 	rk_rng->clk_num = devm_clk_bulk_get_all(&pdev->dev, &rk_rng->clk_bulks);
-	if (rk_rng->clk_num < 0) {
-		dev_err(&pdev->dev, "failed to get clks property\n");
-		return -ENODEV;
-	}
+	if (rk_rng->clk_num < 0)
+		return dev_err_probe(&pdev->dev, rk_rng->clk_num,
+				     "failed to get clks property\n");
 
 	platform_set_drvdata(pdev, rk_rng);
 
