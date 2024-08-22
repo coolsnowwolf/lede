@@ -27,6 +27,7 @@ endef
 
 define KernelPackage/r8126-rss
 $(call KernelPackage/r8126)
+  CONFLICTS:=kmod-r8126
   TITLE+= (RSS)
   VARIANT:=rss
 endef
