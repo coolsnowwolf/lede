@@ -26,7 +26,7 @@ endef
 
 define U-Boot/rk3328/Default
   BUILD_SUBTARGET:=armv8
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3328-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3328
   ATF:=rk322xh_bl31_v1.49.elf
   USE_RKBIN:=1
 endef
@@ -109,7 +109,7 @@ define U-Boot/nanopi-r4s-rk3399
   NAME:=NanoPi R4S
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r4s
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3399-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3399
   ATF:=rk3399_bl31_v1.36.elf
   USE_RKBIN:=1
 endef
@@ -119,7 +119,7 @@ define U-Boot/nanopi-r4se-rk3399
   NAME:=NanoPi R4SE
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r4se
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3399-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3399
   ATF:=rk3399_bl31_v1.36.elf
   USE_RKBIN:=1
 endef
@@ -157,7 +157,7 @@ define U-Boot/sv901-eaio-rk3399
   NAME:=SV901 EAIO
   BUILD_DEVICES:= \
     scensmart_sv901-eaio
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3399-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3399
   ATF:=rk3399_bl31_v1.36.elf
   USE_RKBIN:=1
 endef
@@ -166,7 +166,7 @@ endef
 
 define U-Boot/rk3566/Default
   BUILD_SUBTARGET:=armv8
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3566-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3566
   ATF:=rk3568_bl31_v1.44.elf
   TPL:=rk3566_ddr_1056MHz_v1.21.bin
 endef
@@ -189,7 +189,7 @@ endef
 
 define U-Boot/rk3568/Default
   BUILD_SUBTARGET:=armv8
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3568-bin
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3568
   ATF:=rk3568_bl31_v1.44.elf
   TPL:=rk3568_ddr_1560MHz_v1.21.bin
 endef

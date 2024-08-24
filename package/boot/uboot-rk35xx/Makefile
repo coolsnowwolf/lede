@@ -36,7 +36,7 @@ define U-Boot/evb-rk3528
     radxa_e20c \
     widora_mangopi-m28k \
     widora_mangopi-m28k-pro
-  DEPENDS:=+PACKAGE_u-boot-evb-rk3528:trusted-firmware-a-rk3528-bin
+  DEPENDS:=+PACKAGE_u-boot-evb-rk3528:rkbin-rk3528
   ATF:=rk3528_bl31_v1.17.elf
   DDR:=rk3528_ddr_1056MHz_v1.09.bin
   UBOOT_CONFIG:=rk3528
