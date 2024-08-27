@@ -524,6 +524,23 @@ define Device/radxa_rock-5b
 endef
 TARGET_DEVICES += radxa_rock-5b
 
+define Device/radxa_zero-3e
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ZERO 3E
+  DEVICE_DTS := rockchip/rk3566-radxa-zero-3e
+  UBOOT_DEVICE_NAME := radxa-zero-3-rk3566
+endef
+TARGET_DEVICES += radxa_zero-3e
+
+define Device/radxa_zero-3w
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ZERO 3W
+  DEVICE_DTS := rockchip/rk3566-radxa-zero-3w
+  DEVICE_PACKAGES := kmod-aic8800s wpad-openssl
+  UBOOT_DEVICE_NAME := radxa-zero-3-rk3566
+endef
+TARGET_DEVICES += radxa_zero-3w
+
 define Device/rocktech_mpc1903
   DEVICE_VENDOR := Rocktech
   DEVICE_MODEL := MPC1903

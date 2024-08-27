@@ -236,6 +236,14 @@ define U-Boot/panther-x2-rk3566
     panther_x2
 endef
 
+define U-Boot/radxa-zero-3-rk3566
+  $(U-Boot/rk3566/Default)
+  NAME:=ZERO 3E/3W
+  BUILD_DEVICES:= \
+    radxa_zero-3e \
+    radxa_zero-3w
+endef
+
 define U-Boot/rock-3c-rk3566
   $(U-Boot/rk3566/Default)
   NAME:=ROCK 3C
@@ -456,6 +464,7 @@ UBOOT_TARGETS := \
   radxa-e20c-rk3528 \
   nanopi-r3s-rk3566 \
   panther-x2-rk3566 \
+  radxa-zero-3-rk3566 \
   rock-3c-rk3566 \
   bpi-r2-pro-rk3568 \
   generic-rk3568 \
