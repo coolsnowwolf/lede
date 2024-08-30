@@ -22,6 +22,17 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/armsom_sige3
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := Sige3
+  SOC := rk3568
+  DEVICE_DTS := rockchip/rk3568-armsom-sige3
+  UBOOT_DEVICE_NAME := sige3-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-r8125 wpad-openssl brcmfmac-firmware-43752-sdio brcmfmac-nvram-43752-sdio
+endef
+TARGET_DEVICES += armsom_sige3
+
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
   DEVICE_MODEL := XiaoBao NAS-I
