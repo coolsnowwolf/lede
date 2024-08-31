@@ -35,6 +35,15 @@ $(call Device/rk3588)
 endef
 TARGET_DEVICES += armsom_sige7
 
+define Device/cyber_cyber3588-aib
+$(call Device/rk3588)
+  DEVICE_VENDOR := Cyber
+  DEVICE_MODEL := 3588 AIB
+  DEVICE_DTS := rk3588-cyber3588-aib
+  DEVICE_PACKAGES := kmod-switch-rtl8367b kmod-r8125 kmod-nvme kmod-thermal swconfig
+endef
+TARGET_DEVICES += cyber_cyber3588-aib
+
 define Device/friendlyarm_nanopi-r6c
 $(call Device/rk3588)
   DEVICE_VENDOR := FriendlyARM
