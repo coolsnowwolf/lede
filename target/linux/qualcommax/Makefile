@@ -18,6 +18,6 @@ DEFAULT_PACKAGES += \
 	kmod-qca-nss-ecm kmod-qca-nss-drv-bridge-mgr \
 	kmod-qca-nss-drv-vlan kmod-qca-nss-drv-pppoe \
 	kmod-ath11k-ahb wpad-openssl uboot-envtools \
-	e2fsprogs kmod-fs-ext4 losetup autocore-arm
+	e2fsprogs f2fsck mkf2fs losetup automount
 
 $(eval $(call BuildTarget))
