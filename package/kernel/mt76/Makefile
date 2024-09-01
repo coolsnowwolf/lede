@@ -341,7 +341,8 @@ endef
 define KernelPackage/mt7996e
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7996E wireless driver
-  DEPENDS+=@PCI_SUPPORT +kmod-mt76-connac +kmod-hwmon-core +@DRIVER_11AX_SUPPORT +@KERNEL_RELAY
+  DEPENDS+=@PCI_SUPPORT +kmod-mt76-connac +kmod-hwmon-core \
+  	   +@KERNEL_RELAY +@DRIVER_11AX_SUPPORT +@DRIVER_11BE_SUPPORT
   FILES:= $(PKG_BUILD_DIR)/mt7996/mt7996e.ko
   AUTOLOAD:=$(call AutoProbe,mt7996e)
 endef
