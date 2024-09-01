@@ -1,0 +1,206 @@
+From 8cd2accb71f5eb8e92d775fc1978d3779875c2e5 Mon Sep 17 00:00:00 2001
+From: Baoquan He <bhe@redhat.com>
+Date: Fri, 8 Dec 2023 15:30:34 +0800
+Subject: [PATCH] mips, kexec: fix the incorrect ifdeffery and dependency of
+ CONFIG_KEXEC
+
+The select of KEXEC for CRASH_DUMP in kernel/Kconfig.kexec will be
+dropped, then compiling errors will be triggered if below config items are
+set:
+
+===
+CONFIG_CRASH_CORE=y
+CONFIG_KEXEC_CORE=y
+CONFIG_CRASH_DUMP=y
+===
+
+--------------------------------------------------------------------
+mipsel-linux-ld: kernel/kexec_core.o: in function `kimage_free':
+kernel/kexec_core.c:(.text+0x2200): undefined reference to `machine_kexec_cleanup'
+mipsel-linux-ld: kernel/kexec_core.o: in function `__crash_kexec':
+kernel/kexec_core.c:(.text+0x2480): undefined reference to `machine_crash_shutdown'
+mipsel-linux-ld: kernel/kexec_core.c:(.text+0x2488): undefined reference to `machine_kexec'
+mipsel-linux-ld: kernel/kexec_core.o: in function `kernel_kexec':
+kernel/kexec_core.c:(.text+0x29b8): undefined reference to `machine_shutdown'
+mipsel-linux-ld: kernel/kexec_core.c:(.text+0x29c0): undefined reference to `machine_kexec'
+--------------------------------------------------------------------
+
+Here, change the dependency of building kexec_core related object files,
+and the ifdeffery in mips from CONFIG_KEXEC to CONFIG_KEXEC_CORE.
+
+Link: https://lkml.kernel.org/r/20231208073036.7884-4-bhe@redhat.com
+Signed-off-by: Baoquan He <bhe@redhat.com>
+Reported-by: kernel test robot <lkp@intel.com>
+Closes: https://lore.kernel.org/oe-kbuild-all/202311302042.sn8cDPIX-lkp@intel.com/
+Cc: Eric DeVolder <eric_devolder@yahoo.com>
+Cc: Ignat Korchagin <ignat@cloudflare.com>
+Cc: Stephen Rothwell <sfr@canb.auug.org.au>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/mips/cavium-octeon/smp.c   |  4 ++--
+ arch/mips/include/asm/kexec.h   |  2 +-
+ arch/mips/include/asm/smp-ops.h |  2 +-
+ arch/mips/include/asm/smp.h     |  2 +-
+ arch/mips/kernel/Makefile       |  2 +-
+ arch/mips/kernel/smp-bmips.c    |  4 ++--
+ arch/mips/kernel/smp-cps.c      | 10 +++++-----
+ arch/mips/loongson64/reset.c    |  4 ++--
+ arch/mips/loongson64/smp.c      |  2 +-
+ 9 files changed, 16 insertions(+), 16 deletions(-)
+
+--- a/arch/mips/cavium-octeon/smp.c
++++ b/arch/mips/cavium-octeon/smp.c
+@@ -422,7 +422,7 @@ static const struct plat_smp_ops octeon_
+ 	.cpu_disable		= octeon_cpu_disable,
+ 	.cpu_die		= octeon_cpu_die,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
+ #endif
+ };
+@@ -502,7 +502,7 @@ static const struct plat_smp_ops octeon_
+ 	.cpu_disable		= octeon_cpu_disable,
+ 	.cpu_die		= octeon_cpu_die,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
+ #endif
+ };
+--- a/arch/mips/include/asm/kexec.h
++++ b/arch/mips/include/asm/kexec.h
+@@ -31,7 +31,7 @@ static inline void crash_setup_regs(stru
+ 		prepare_frametrace(newregs);
+ }
+ 
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ struct kimage;
+ extern unsigned long kexec_args[4];
+ extern int (*_machine_kexec_prepare)(struct kimage *);
+--- a/arch/mips/include/asm/smp-ops.h
++++ b/arch/mips/include/asm/smp-ops.h
+@@ -35,7 +35,7 @@ struct plat_smp_ops {
+ 	void (*cpu_die)(unsigned int cpu);
+ 	void (*cleanup_dead_cpu)(unsigned cpu);
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	void (*kexec_nonboot_cpu)(void);
+ #endif
+ };
+--- a/arch/mips/include/asm/smp.h
++++ b/arch/mips/include/asm/smp.h
+@@ -93,7 +93,7 @@ static inline void __cpu_die(unsigned in
+ extern void __noreturn play_dead(void);
+ #endif
+ 
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ static inline void kexec_nonboot_cpu(void)
+ {
+ 	extern const struct plat_smp_ops *mp_ops;	/* private */
+--- a/arch/mips/kernel/Makefile
++++ b/arch/mips/kernel/Makefile
+@@ -90,7 +90,7 @@ obj-$(CONFIG_GPIO_TXX9)		+= gpio_txx9.o
+ 
+ obj-$(CONFIG_RELOCATABLE)	+= relocate.o
+ 
+-obj-$(CONFIG_KEXEC)		+= machine_kexec.o relocate_kernel.o crash.o
++obj-$(CONFIG_KEXEC_CORE)	+= machine_kexec.o relocate_kernel.o crash.o
+ obj-$(CONFIG_CRASH_DUMP)	+= crash_dump.o
+ obj-$(CONFIG_EARLY_PRINTK)	+= early_printk.o
+ obj-$(CONFIG_EARLY_PRINTK_8250)	+= early_printk_8250.o
+--- a/arch/mips/kernel/smp-bmips.c
++++ b/arch/mips/kernel/smp-bmips.c
+@@ -434,7 +434,7 @@ const struct plat_smp_ops bmips43xx_smp_
+ 	.cpu_disable		= bmips_cpu_disable,
+ 	.cpu_die		= bmips_cpu_die,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
+ #endif
+ };
+@@ -451,7 +451,7 @@ const struct plat_smp_ops bmips5000_smp_
+ 	.cpu_disable		= bmips_cpu_disable,
+ 	.cpu_die		= bmips_cpu_die,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu	= kexec_nonboot_cpu_jump,
+ #endif
+ };
+--- a/arch/mips/kernel/smp-cps.c
++++ b/arch/mips/kernel/smp-cps.c
+@@ -395,7 +395,7 @@ static void cps_smp_finish(void)
+ 	local_irq_enable();
+ }
+ 
+-#if defined(CONFIG_HOTPLUG_CPU) || defined(CONFIG_KEXEC)
++#if defined(CONFIG_HOTPLUG_CPU) || defined(CONFIG_KEXEC_CORE)
+ 
+ enum cpu_death {
+ 	CPU_DEATH_HALT,
+@@ -432,7 +432,7 @@ static void cps_shutdown_this_cpu(enum c
+ 	}
+ }
+ 
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 
+ static void cps_kexec_nonboot_cpu(void)
+ {
+@@ -442,9 +442,9 @@ static void cps_kexec_nonboot_cpu(void)
+ 		cps_shutdown_this_cpu(CPU_DEATH_POWER);
+ }
+ 
+-#endif /* CONFIG_KEXEC */
++#endif /* CONFIG_KEXEC_CORE */
+ 
+-#endif /* CONFIG_HOTPLUG_CPU || CONFIG_KEXEC */
++#endif /* CONFIG_HOTPLUG_CPU || CONFIG_KEXEC_CORE */
+ 
+ #ifdef CONFIG_HOTPLUG_CPU
+ 
+@@ -613,7 +613,7 @@ static const struct plat_smp_ops cps_smp
+ 	.cpu_die		= cps_cpu_die,
+ 	.cleanup_dead_cpu	= cps_cleanup_dead_cpu,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu	= cps_kexec_nonboot_cpu,
+ #endif
+ };
+--- a/arch/mips/loongson64/reset.c
++++ b/arch/mips/loongson64/reset.c
+@@ -39,7 +39,7 @@ static int firmware_poweroff(struct sys_
+ 	return NOTIFY_DONE;
+ }
+ 
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 
+ /* 0X80000000~0X80200000 is safe */
+ #define MAX_ARGS	64
+@@ -152,7 +152,7 @@ static int __init mips_reboot_setup(void
+ 				 firmware_poweroff, NULL);
+ 	}
+ 
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	kexec_argv = kmalloc(KEXEC_ARGV_SIZE, GFP_KERNEL);
+ 	if (WARN_ON(!kexec_argv))
+ 		return -ENOMEM;
+--- a/arch/mips/loongson64/smp.c
++++ b/arch/mips/loongson64/smp.c
+@@ -883,7 +883,7 @@ const struct plat_smp_ops loongson3_smp_
+ 	.cpu_disable = loongson3_cpu_disable,
+ 	.cpu_die = loongson3_cpu_die,
+ #endif
+-#ifdef CONFIG_KEXEC
++#ifdef CONFIG_KEXEC_CORE
+ 	.kexec_nonboot_cpu = kexec_nonboot_cpu_jump,
+ #endif
+ };

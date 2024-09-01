@@ -13,7 +13,7 @@ define Package/r8169-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/rtl_nic
 	$(CP) \
 		$(PKG_BUILD_DIR)/rtl_nic/rtl810* \
-		$(PKG_BUILD_DIR)/rtl_nic/rtl8125* \
+		$(PKG_BUILD_DIR)/rtl_nic/rtl812* \
 		$(PKG_BUILD_DIR)/rtl_nic/rtl8168* \
 		$(PKG_BUILD_DIR)/rtl_nic/rtl84* \
 		$(1)/lib/firmware/rtl_nic

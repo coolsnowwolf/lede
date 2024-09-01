@@ -8,7 +8,7 @@ define Device/advantech_rsb4810
   SOC := rk3568
   UBOOT_DEVICE_NAME := advantech-rsb4810-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci kmod-ata-ahci-platform -urngd
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc -urngd
 endef
 TARGET_DEVICES += advantech_rsb4810
 
@@ -21,6 +21,17 @@ define Device/ariaboard_photonicat
   DEVICE_PACKAGES := photonicat-firmware kmod-drm-rockchip kmod-ath10k kmod-ath10k-sdio pcat-manager wpad
 endef
 TARGET_DEVICES += ariaboard_photonicat
+
+define Device/armsom_sige3
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := Sige3
+  SOC := rk3568
+  DEVICE_DTS := rockchip/rk3568-armsom-sige3
+  UBOOT_DEVICE_NAME := sige3-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-r8125 wpad-openssl brcmfmac-firmware-43752-sdio brcmfmac-nvram-43752-sdio
+endef
+TARGET_DEVICES += armsom_sige3
 
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
@@ -48,7 +59,7 @@ define Device/ezpro_mrkaio-m68s
   SOC := rk3568
   UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci kmod-ata-ahci-platform kmod-drm-rockchip
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-drm-rockchip
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s
 
@@ -58,7 +69,7 @@ define Device/ezpro_mrkaio-m68s-plus
   SOC := rk3568
   UBOOT_DEVICE_NAME := mrkaio-m68s-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8125 kmod-ata-ahci kmod-ata-ahci-platform kmod-drm-rockchip
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-drm-rockchip kmod-r8125
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s-plus
 
@@ -157,7 +168,7 @@ define Device/firefly_station-p2
   DEVICE_DTS := rockchip/rk3568-roc-pc
   UBOOT_DEVICE_NAME := station-p2-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig kmod-ata-ahci-platform station-p2-firmware wpad-openssl
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-brcmfmac kmod-ikconfig wpad-openssl
 endef
 TARGET_DEVICES += firefly_station-p2
 
@@ -165,7 +176,7 @@ define Device/hinlink_common
   DEVICE_VENDOR := HINLINK
   UBOOT_DEVICE_NAME := opc-h68k-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-drm-rockchip kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-drm-rockchip kmod-hwmon-pwmfan kmod-mt7921e kmod-r8125 wpad-openssl
 endef
 
 define Device/hinlink_opc-h66k
@@ -206,7 +217,7 @@ define Device/panther_x2
   DEVICE_DTS := rockchip/rk3566-panther-x2
   UBOOT_DEVICE_NAME := panther-x2-rk3566
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig panther-x2-firmware wpad-openssl
+  DEVICE_PACKAGES := kmod-brcmfmac kmod-ikconfig brcmfmac-nvram-43430-sdio wpad-openssl
 endef
 TARGET_DEVICES += panther_x2
 
@@ -226,7 +237,7 @@ define Device/radxa_e25
   DEVICE_DTS := rockchip/rk3568-radxa-e25
   UBOOT_DEVICE_NAME := radxa-e25-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-ata-ahci-platform kmod-r8125
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-r8125
 endef
 TARGET_DEVICES += radxa_e25
 
@@ -257,7 +268,7 @@ define Device/rongpin_king3399
   SOC := rk3399
   UBOOT_DEVICE_NAME := rongpin-king3399-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 -urngd kmod-brcmfmac cypress-firmware-4356-sdio rongpin-king3399-firmware wpad-openssl
+  DEVICE_PACKAGES := kmod-r8168 -urngd kmod-brcmfmac cypress-firmware-4356-sdio wpad-openssl
 endef
 TARGET_DEVICES += rongpin_king3399
 
@@ -272,13 +283,24 @@ define Device/rocktech_mpc1903
 endef
 TARGET_DEVICES += rocktech_mpc1903
 
+define Device/scensmart_sv901-eaio
+  DEVICE_VENDOR := ScenSmart
+  DEVICE_MODEL := SV901 EAIO
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := sv901-eaio-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := brcmfmac-nvram-4356-sdio cypress-firmware-4356-sdio kmod-brcmfmac \
+	kmod-switch-rtl8367b swconfig wpad -urngd
+endef
+TARGET_DEVICES += scensmart_sv901-eaio
+
 define Device/seewo_sv21-rk3568
   DEVICE_VENDOR := Seewo
   DEVICE_MODEL := sv21
   DEVICE_DTS := rockchip/rk3568-seewo-sv21
   UBOOT_DEVICE_NAME := seewo-sv21-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-ata-ahci kmod-ata-ahci-platform
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-ata-ahci-dwc
 endef
 TARGET_DEVICES += seewo_sv21-rk3568
 

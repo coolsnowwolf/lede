@@ -1,0 +1,395 @@
+From 61578f67937881abf54c8bd258eb913312dbe4c1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 1 Jun 2024 01:35:03 +0200
+Subject: [PATCH 2/2] net: phy: aquantia: add support for PHY LEDs
+
+Aquantia Ethernet PHYs got 3 LED output pins which are typically used
+to indicate link status and activity.
+Add a minimal LED controller driver supporting the most common uses
+with the 'netdev' trigger as well as software-driven forced control of
+the LEDs.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+[ rework indentation, fix checkpatch error and improve some functions ]
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/aquantia/Makefile        |   2 +-
+ drivers/net/phy/aquantia/aquantia.h      |  40 ++++++
+ drivers/net/phy/aquantia/aquantia_leds.c | 150 +++++++++++++++++++++++
+ drivers/net/phy/aquantia/aquantia_main.c |  63 +++++++++-
+ 4 files changed, 252 insertions(+), 3 deletions(-)
+ create mode 100644 drivers/net/phy/aquantia/aquantia_leds.c
+
+--- a/drivers/net/phy/aquantia/Makefile
++++ b/drivers/net/phy/aquantia/Makefile
+@@ -1,5 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0
+-aquantia-objs			+= aquantia_main.o aquantia_firmware.o
++aquantia-objs			+= aquantia_main.o aquantia_firmware.o aquantia_leds.o
+ ifdef CONFIG_HWMON
+ aquantia-objs			+= aquantia_hwmon.o
+ endif
+--- a/drivers/net/phy/aquantia/aquantia.h
++++ b/drivers/net/phy/aquantia/aquantia.h
+@@ -58,6 +58,28 @@
+ #define VEND1_GLOBAL_CONTROL2_UP_RUN_STALL_OVD	BIT(6)
+ #define VEND1_GLOBAL_CONTROL2_UP_RUN_STALL	BIT(0)
+ 
++#define VEND1_GLOBAL_LED_PROV			0xc430
++#define AQR_LED_PROV(x)				(VEND1_GLOBAL_LED_PROV + (x))
++#define VEND1_GLOBAL_LED_PROV_LINK2500		BIT(14)
++#define VEND1_GLOBAL_LED_PROV_LINK5000		BIT(15)
++#define VEND1_GLOBAL_LED_PROV_FORCE_ON		BIT(8)
++#define VEND1_GLOBAL_LED_PROV_LINK10000		BIT(7)
++#define VEND1_GLOBAL_LED_PROV_LINK1000		BIT(6)
++#define VEND1_GLOBAL_LED_PROV_LINK100		BIT(5)
++#define VEND1_GLOBAL_LED_PROV_RX_ACT		BIT(3)
++#define VEND1_GLOBAL_LED_PROV_TX_ACT		BIT(2)
++#define VEND1_GLOBAL_LED_PROV_ACT_STRETCH	GENMASK(0, 1)
++
++#define VEND1_GLOBAL_LED_PROV_LINK_MASK		(VEND1_GLOBAL_LED_PROV_LINK100 | \
++						 VEND1_GLOBAL_LED_PROV_LINK1000 | \
++						 VEND1_GLOBAL_LED_PROV_LINK10000 | \
++						 VEND1_GLOBAL_LED_PROV_LINK5000 | \
++						 VEND1_GLOBAL_LED_PROV_LINK2500)
++
++#define VEND1_GLOBAL_LED_DRIVE			0xc438
++#define VEND1_GLOBAL_LED_DRIVE_VDD		BIT(1)
++#define AQR_LED_DRIVE(x)			(VEND1_GLOBAL_LED_DRIVE + (x))
++
+ #define VEND1_THERMAL_PROV_HIGH_TEMP_FAIL	0xc421
+ #define VEND1_THERMAL_PROV_LOW_TEMP_FAIL	0xc422
+ #define VEND1_THERMAL_PROV_HIGH_TEMP_WARN	0xc423
+@@ -120,6 +142,8 @@
+ #define VEND1_GLOBAL_INT_VEND_MASK_GLOBAL2	BIT(1)
+ #define VEND1_GLOBAL_INT_VEND_MASK_GLOBAL3	BIT(0)
+ 
++#define AQR_MAX_LEDS				3
++
+ struct aqr107_hw_stat {
+ 	const char *name;
+ 	int reg;
+@@ -144,6 +168,7 @@ static const struct aqr107_hw_stat aqr10
+ 
+ struct aqr107_priv {
+ 	u64 sgmii_stats[AQR107_SGMII_STAT_SZ];
++	unsigned long leds_active_low;
+ };
+ 
+ #if IS_REACHABLE(CONFIG_HWMON)
+@@ -153,3 +178,18 @@ static inline int aqr_hwmon_probe(struct
+ #endif
+ 
+ int aqr_firmware_load(struct phy_device *phydev);
++
++int aqr_phy_led_blink_set(struct phy_device *phydev, u8 index,
++			  unsigned long *delay_on,
++			  unsigned long *delay_off);
++int aqr_phy_led_brightness_set(struct phy_device *phydev,
++			       u8 index, enum led_brightness value);
++int aqr_phy_led_hw_is_supported(struct phy_device *phydev, u8 index,
++				unsigned long rules);
++int aqr_phy_led_hw_control_get(struct phy_device *phydev, u8 index,
++			       unsigned long *rules);
++int aqr_phy_led_hw_control_set(struct phy_device *phydev, u8 index,
++			       unsigned long rules);
++int aqr_phy_led_active_low_set(struct phy_device *phydev, int index, bool enable);
++int aqr_phy_led_polarity_set(struct phy_device *phydev, int index,
++			     unsigned long modes);
+--- /dev/null
++++ b/drivers/net/phy/aquantia/aquantia_leds.c
+@@ -0,0 +1,150 @@
++// SPDX-License-Identifier: GPL-2.0
++/* LED driver for Aquantia PHY
++ *
++ * Author: Daniel Golle <daniel@makrotopia.org>
++ */
++
++#include <linux/phy.h>
++
++#include "aquantia.h"
++
++int aqr_phy_led_brightness_set(struct phy_device *phydev,
++			       u8 index, enum led_brightness value)
++{
++	if (index >= AQR_MAX_LEDS)
++		return -EINVAL;
++
++	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, AQR_LED_PROV(index),
++			      VEND1_GLOBAL_LED_PROV_LINK_MASK |
++			      VEND1_GLOBAL_LED_PROV_FORCE_ON |
++			      VEND1_GLOBAL_LED_PROV_RX_ACT |
++			      VEND1_GLOBAL_LED_PROV_TX_ACT,
++			      value ? VEND1_GLOBAL_LED_PROV_FORCE_ON : 0);
++}
++
++static const unsigned long supported_triggers = (BIT(TRIGGER_NETDEV_LINK) |
++						 BIT(TRIGGER_NETDEV_LINK_100) |
++						 BIT(TRIGGER_NETDEV_LINK_1000) |
++						 BIT(TRIGGER_NETDEV_LINK_2500) |
++						 BIT(TRIGGER_NETDEV_LINK_5000) |
++						 BIT(TRIGGER_NETDEV_LINK_10000)  |
++						 BIT(TRIGGER_NETDEV_RX) |
++						 BIT(TRIGGER_NETDEV_TX));
++
++int aqr_phy_led_hw_is_supported(struct phy_device *phydev, u8 index,
++				unsigned long rules)
++{
++	if (index >= AQR_MAX_LEDS)
++		return -EINVAL;
++
++	/* All combinations of the supported triggers are allowed */
++	if (rules & ~supported_triggers)
++		return -EOPNOTSUPP;
++
++	return 0;
++}
++
++int aqr_phy_led_hw_control_get(struct phy_device *phydev, u8 index,
++			       unsigned long *rules)
++{
++	int val;
++
++	if (index >= AQR_MAX_LEDS)
++		return -EINVAL;
++
++	val = phy_read_mmd(phydev, MDIO_MMD_VEND1, AQR_LED_PROV(index));
++	if (val < 0)
++		return val;
++
++	*rules = 0;
++	if (val & VEND1_GLOBAL_LED_PROV_LINK100)
++		*rules |= BIT(TRIGGER_NETDEV_LINK_100);
++
++	if (val & VEND1_GLOBAL_LED_PROV_LINK1000)
++		*rules |= BIT(TRIGGER_NETDEV_LINK_1000);
++
++	if (val & VEND1_GLOBAL_LED_PROV_LINK2500)
++		*rules |= BIT(TRIGGER_NETDEV_LINK_2500);
++
++	if (val & VEND1_GLOBAL_LED_PROV_LINK5000)
++		*rules |= BIT(TRIGGER_NETDEV_LINK_5000);
++
++	if (val & VEND1_GLOBAL_LED_PROV_LINK10000)
++		*rules |= BIT(TRIGGER_NETDEV_LINK_10000);
++
++	if (val & VEND1_GLOBAL_LED_PROV_RX_ACT)
++		*rules |= BIT(TRIGGER_NETDEV_RX);
++
++	if (val & VEND1_GLOBAL_LED_PROV_TX_ACT)
++		*rules |= BIT(TRIGGER_NETDEV_TX);
++
++	return 0;
++}
++
++int aqr_phy_led_hw_control_set(struct phy_device *phydev, u8 index,
++			       unsigned long rules)
++{
++	u16 val = 0;
++
++	if (index >= AQR_MAX_LEDS)
++		return -EINVAL;
++
++	if (rules & (BIT(TRIGGER_NETDEV_LINK_100) | BIT(TRIGGER_NETDEV_LINK)))
++		val |= VEND1_GLOBAL_LED_PROV_LINK100;
++
++	if (rules & (BIT(TRIGGER_NETDEV_LINK_1000) | BIT(TRIGGER_NETDEV_LINK)))
++		val |= VEND1_GLOBAL_LED_PROV_LINK1000;
++
++	if (rules & (BIT(TRIGGER_NETDEV_LINK_2500) | BIT(TRIGGER_NETDEV_LINK)))
++		val |= VEND1_GLOBAL_LED_PROV_LINK2500;
++
++	if (rules & (BIT(TRIGGER_NETDEV_LINK_5000) | BIT(TRIGGER_NETDEV_LINK)))
++		val |= VEND1_GLOBAL_LED_PROV_LINK5000;
++
++	if (rules & (BIT(TRIGGER_NETDEV_LINK_10000) | BIT(TRIGGER_NETDEV_LINK)))
++		val |= VEND1_GLOBAL_LED_PROV_LINK10000;
++
++	if (rules & BIT(TRIGGER_NETDEV_RX))
++		val |= VEND1_GLOBAL_LED_PROV_RX_ACT;
++
++	if (rules & BIT(TRIGGER_NETDEV_TX))
++		val |= VEND1_GLOBAL_LED_PROV_TX_ACT;
++
++	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, AQR_LED_PROV(index),
++			      VEND1_GLOBAL_LED_PROV_LINK_MASK |
++			      VEND1_GLOBAL_LED_PROV_FORCE_ON |
++			      VEND1_GLOBAL_LED_PROV_RX_ACT |
++			      VEND1_GLOBAL_LED_PROV_TX_ACT, val);
++}
++
++int aqr_phy_led_active_low_set(struct phy_device *phydev, int index, bool enable)
++{
++	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, AQR_LED_DRIVE(index),
++			      VEND1_GLOBAL_LED_DRIVE_VDD, enable);
++}
++
++int aqr_phy_led_polarity_set(struct phy_device *phydev, int index, unsigned long modes)
++{
++	struct aqr107_priv *priv = phydev->priv;
++	bool active_low = false;
++	u32 mode;
++
++	if (index >= AQR_MAX_LEDS)
++		return -EINVAL;
++
++	for_each_set_bit(mode, &modes, __PHY_LED_MODES_NUM) {
++		switch (mode) {
++		case PHY_LED_ACTIVE_LOW:
++			active_low = true;
++			break;
++		default:
++			return -EINVAL;
++		}
++	}
++
++	/* Save LED driver vdd state to restore on SW reset */
++	if (active_low)
++		priv->leds_active_low |= BIT(index);
++
++	return aqr_phy_led_active_low_set(phydev, index, active_low);
++}
+--- a/drivers/net/phy/aquantia/aquantia_main.c
++++ b/drivers/net/phy/aquantia/aquantia_main.c
+@@ -475,7 +475,9 @@ static void aqr107_chip_info(struct phy_
+ 
+ static int aqr107_config_init(struct phy_device *phydev)
+ {
+-	int ret;
++	struct aqr107_priv *priv = phydev->priv;
++	u32 led_active_low;
++	int ret, index = 0;
+ 
+ 	/* Check that the PHY interface type is compatible */
+ 	if (phydev->interface != PHY_INTERFACE_MODE_SGMII &&
+@@ -496,7 +498,19 @@ static int aqr107_config_init(struct phy
+ 	if (!ret)
+ 		aqr107_chip_info(phydev);
+ 
+-	return aqr107_set_downshift(phydev, MDIO_AN_VEND_PROV_DOWNSHIFT_DFLT);
++	ret = aqr107_set_downshift(phydev, MDIO_AN_VEND_PROV_DOWNSHIFT_DFLT);
++	if (ret)
++		return ret;
++
++	/* Restore LED polarity state after reset */
++	for_each_set_bit(led_active_low, &priv->leds_active_low, AQR_MAX_LEDS) {
++		ret = aqr_phy_led_active_low_set(phydev, index, led_active_low);
++		if (ret)
++			return ret;
++		index++;
++	}
++
++	return 0;
+ }
+ 
+ static int aqcs109_config_init(struct phy_device *phydev)
+@@ -703,6 +717,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQCS109),
+@@ -722,6 +741,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR111),
+@@ -741,6 +765,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR111B0),
+@@ -760,6 +789,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR405),
+@@ -786,6 +820,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR412),
+@@ -823,6 +862,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings    = aqr107_get_strings,
+ 	.get_stats      = aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR113C),
+@@ -842,6 +886,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings    = aqr107_get_strings,
+ 	.get_stats      = aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR114C),
+@@ -861,6 +910,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings    = aqr107_get_strings,
+ 	.get_stats      = aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ {
+ 	PHY_ID_MATCH_MODEL(PHY_ID_AQR813),
+@@ -880,6 +934,11 @@ static struct phy_driver aqr_driver[] =
+ 	.get_strings	= aqr107_get_strings,
+ 	.get_stats	= aqr107_get_stats,
+ 	.link_change_notify = aqr107_link_change_notify,
++	.led_brightness_set = aqr_phy_led_brightness_set,
++	.led_hw_is_supported = aqr_phy_led_hw_is_supported,
++	.led_hw_control_set = aqr_phy_led_hw_control_set,
++	.led_hw_control_get = aqr_phy_led_hw_control_get,
++	.led_polarity_set = aqr_phy_led_polarity_set,
+ },
+ };
+ 

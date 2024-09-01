@@ -529,7 +529,7 @@ static int b53_configure_ports_of(struct b53_device *dev)
 						po |= PORT_OVERRIDE_SPEED_2000M;
 					else
 						po |= GMII_PO_SPEED_2000M;
-					__attribute__((__fallthrough__));
+					fallthrough;
 				case 1000:
 					po |= GMII_PO_SPEED_1000M;
 					break;
@@ -1617,8 +1617,8 @@ static int b53_switch_init(struct b53_device *dev)
 	return b53_switch_reset(dev);
 }
 
-struct b53_device *b53_switch_alloc(struct device *base, struct b53_io_ops *ops,
-				    void *priv)
+struct b53_device *b53_swconfig_switch_alloc(struct device *base, struct b53_io_ops *ops,
+					     void *priv)
 {
 	struct b53_device *dev;
 
@@ -1633,9 +1633,9 @@ struct b53_device *b53_switch_alloc(struct device *base, struct b53_io_ops *ops,
 
 	return dev;
 }
-EXPORT_SYMBOL(b53_switch_alloc);
+EXPORT_SYMBOL(b53_swconfig_switch_alloc);
 
-int b53_switch_detect(struct b53_device *dev)
+int b53_swconfig_switch_detect(struct b53_device *dev)
 {
 	u32 id32;
 	u16 tmp;
@@ -1700,9 +1700,9 @@ int b53_switch_detect(struct b53_device *dev)
 		return b53_read8(dev, B53_MGMT_PAGE, B53_REV_ID,
 				 &dev->core_rev);
 }
-EXPORT_SYMBOL(b53_switch_detect);
+EXPORT_SYMBOL(b53_swconfig_switch_detect);
 
-int b53_switch_register(struct b53_device *dev)
+int b53_swconfig_switch_register(struct b53_device *dev)
 {
 	int ret;
 
@@ -1712,7 +1712,7 @@ int b53_switch_register(struct b53_device *dev)
 		dev->sw_dev.alias = dev->pdata->alias;
 	}
 
-	if (!dev->chip_id && b53_switch_detect(dev))
+	if (!dev->chip_id && b53_swconfig_switch_detect(dev))
 		return -EINVAL;
 
 	ret = b53_switch_init(dev);
@@ -1723,7 +1723,7 @@ int b53_switch_register(struct b53_device *dev)
 
 	return register_switch(&dev->sw_dev, NULL);
 }
-EXPORT_SYMBOL(b53_switch_register);
+EXPORT_SYMBOL(b53_swconfig_switch_register);
 
 MODULE_AUTHOR("Jonas Gorski <jogo@openwrt.org>");
 MODULE_DESCRIPTION("B53 switch library");

@@ -1,0 +1,92 @@
+From e3ab3267a0bbedc37725bb845a332ec33b247263 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Tue, 27 Feb 2024 18:54:22 +0100
+Subject: [PATCH 2/2] net: dsa: mv88e6xxx: add Amethyst specific SMI GPIO
+ function
+
+The existing mv88e6390_g2_scratch_gpio_set_smi() cannot be used on the
+88E6393X as it requires certain P0_MODE, it also checks the CPU mode
+as it impacts the bit setting value.
+
+This is all irrelevant for Amethyst (MV88E6191X/6193X/6393X) as only
+the default value of the SMI_PHY Config bit is set to CPU_MGD bootstrap
+pin value but it can be changed without restrictions so that GPIO pins
+9 and 10 are used as SMI pins.
+
+So, introduce Amethyst specific function and call that if the Amethyst
+family wants to setup the external PHY.
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/dsa/mv88e6xxx/chip.c            |  5 +++-
+ drivers/net/dsa/mv88e6xxx/global2.h         |  2 ++
+ drivers/net/dsa/mv88e6xxx/global2_scratch.c | 31 +++++++++++++++++++++
+ 3 files changed, 37 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/mv88e6xxx/chip.c
++++ b/drivers/net/dsa/mv88e6xxx/chip.c
+@@ -3669,7 +3669,10 @@ static int mv88e6xxx_mdio_register(struc
+ 
+ 	if (external) {
+ 		mv88e6xxx_reg_lock(chip);
+-		err = mv88e6390_g2_scratch_gpio_set_smi(chip, true);
++		if (chip->info->family == MV88E6XXX_FAMILY_6393)
++			err = mv88e6393x_g2_scratch_gpio_set_smi(chip, true);
++		else
++			err = mv88e6390_g2_scratch_gpio_set_smi(chip, true);
+ 		mv88e6xxx_reg_unlock(chip);
+ 
+ 		if (err)
+--- a/drivers/net/dsa/mv88e6xxx/global2.h
++++ b/drivers/net/dsa/mv88e6xxx/global2.h
+@@ -380,6 +380,8 @@ extern const struct mv88e6xxx_gpio_ops m
+ 
+ int mv88e6390_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
+ 				      bool external);
++int mv88e6393x_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
++				       bool external);
+ int mv88e6352_g2_scratch_port_has_serdes(struct mv88e6xxx_chip *chip, int port);
+ int mv88e6xxx_g2_atu_stats_set(struct mv88e6xxx_chip *chip, u16 kind, u16 bin);
+ int mv88e6xxx_g2_atu_stats_get(struct mv88e6xxx_chip *chip, u16 *stats);
+--- a/drivers/net/dsa/mv88e6xxx/global2_scratch.c
++++ b/drivers/net/dsa/mv88e6xxx/global2_scratch.c
+@@ -291,6 +291,37 @@ int mv88e6390_g2_scratch_gpio_set_smi(st
+ }
+ 
+ /**
++ * mv88e6393x_g2_scratch_gpio_set_smi - set gpio muxing for external smi
++ * @chip: chip private data
++ * @external: set mux for external smi, or free for gpio usage
++ *
++ * MV88E6191X/6193X/6393X GPIO pins 9 and 10 can be configured as an
++ * external SMI interface or as regular GPIO-s.
++ *
++ * They however have a different register layout then the existing
++ * function.
++ */
++
++int mv88e6393x_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
++				       bool external)
++{
++	int misc_cfg = MV88E6352_G2_SCRATCH_MISC_CFG;
++	int err;
++	u8 val;
++
++	err = mv88e6xxx_g2_scratch_read(chip, misc_cfg, &val);
++	if (err)
++		return err;
++
++	if (external)
++		val &= ~MV88E6352_G2_SCRATCH_MISC_CFG_NORMALSMI;
++	else
++		val |= MV88E6352_G2_SCRATCH_MISC_CFG_NORMALSMI;
++
++	return mv88e6xxx_g2_scratch_write(chip, misc_cfg, val);
++}
++
++/**
+  * mv88e6352_g2_scratch_port_has_serdes - indicate if a port can have a serdes
+  * @chip: chip private data
+  * @port: port number to check for serdes

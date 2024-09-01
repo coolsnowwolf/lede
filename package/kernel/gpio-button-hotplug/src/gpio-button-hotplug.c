@@ -100,6 +100,7 @@ static struct bh_map button_map[] = {
 	BH_MAP(KEY_WIMAX,		"wwan"),
 	BH_MAP(KEY_WLAN,		"wlan"),
 	BH_MAP(KEY_WPS_BUTTON,		"wps"),
+	BH_MAP(KEY_VENDOR,		"vendor"),
 };
 
 /* -------------------------------------------------------------------------*/

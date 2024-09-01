@@ -1,0 +1,100 @@
+From 9b1d5e055508393561e26bd1720f4c2639b03b1a Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 6 Feb 2024 18:31:09 +0100
+Subject: [PATCH 06/10] net: phy: provide whether link has changed in
+ c37_read_status
+
+Some PHY driver might require additional regs call after
+genphy_c37_read_status() is called.
+
+Expand genphy_c37_read_status to provide a bool wheather the link has
+changed or not to permit PHY driver to skip additional regs call if
+nothing has changed.
+
+Every user of genphy_c37_read_status() is updated with the new
+additional bool.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/phy/broadcom.c    |  3 ++-
+ drivers/net/phy/phy_device.c  | 11 +++++++++--
+ drivers/net/phy/qcom/at803x.c |  3 ++-
+ include/linux/phy.h           |  2 +-
+ 4 files changed, 14 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/phy/broadcom.c
++++ b/drivers/net/phy/broadcom.c
+@@ -609,10 +609,11 @@ static int bcm54616s_config_aneg(struct
+ static int bcm54616s_read_status(struct phy_device *phydev)
+ {
+ 	struct bcm54616s_phy_priv *priv = phydev->priv;
++	bool changed;
+ 	int err;
+ 
+ 	if (priv->mode_1000bx_en)
+-		err = genphy_c37_read_status(phydev);
++		err = genphy_c37_read_status(phydev, &changed);
+ 	else
+ 		err = genphy_read_status(phydev);
+ 
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -2549,12 +2549,15 @@ EXPORT_SYMBOL(genphy_read_status);
+ /**
+  * genphy_c37_read_status - check the link status and update current link state
+  * @phydev: target phy_device struct
++ * @changed: pointer where to store if link changed
+  *
+  * Description: Check the link, then figure out the current state
+  *   by comparing what we advertise with what the link partner
+  *   advertises. This function is for Clause 37 1000Base-X mode.
++ *
++ *   If link has changed, @changed is set to true, false otherwise.
+  */
+-int genphy_c37_read_status(struct phy_device *phydev)
++int genphy_c37_read_status(struct phy_device *phydev, bool *changed)
+ {
+ 	int lpa, err, old_link = phydev->link;
+ 
+@@ -2564,9 +2567,13 @@ int genphy_c37_read_status(struct phy_de
+ 		return err;
+ 
+ 	/* why bother the PHY if nothing can have changed */
+-	if (phydev->autoneg == AUTONEG_ENABLE && old_link && phydev->link)
++	if (phydev->autoneg == AUTONEG_ENABLE && old_link && phydev->link) {
++		*changed = false;
+ 		return 0;
++	}
+ 
++	/* Signal link has changed */
++	*changed = true;
+ 	phydev->duplex = DUPLEX_UNKNOWN;
+ 	phydev->pause = 0;
+ 	phydev->asym_pause = 0;
+--- a/drivers/net/phy/qcom/at803x.c
++++ b/drivers/net/phy/qcom/at803x.c
+@@ -912,9 +912,10 @@ static int at8031_config_intr(struct phy
+ static int at8031_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_priv *priv = phydev->priv;
++	bool changed;
+ 
+ 	if (priv->is_1000basex)
+-		return genphy_c37_read_status(phydev);
++		return genphy_c37_read_status(phydev, &changed);
+ 
+ 	return at803x_read_status(phydev);
+ }
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -1688,7 +1688,7 @@ int genphy_write_mmd_unsupported(struct
+ 
+ /* Clause 37 */
+ int genphy_c37_config_aneg(struct phy_device *phydev);
+-int genphy_c37_read_status(struct phy_device *phydev);
++int genphy_c37_read_status(struct phy_device *phydev, bool *changed);
+ 
+ /* Clause 45 PHY */
+ int genphy_c45_restart_aneg(struct phy_device *phydev);

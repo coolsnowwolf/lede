@@ -11,7 +11,7 @@
  * $Date: 2017-03-08 15:13:58 +0800 (週三, 08 三月 2017) $
  *
  * Purpose : RTL8367C switch high-level API for RTL8367C
- * Feature : Green ethernet related functions
+ * Feature : Green Ethernet related functions
  *
  */
 #include <rtl8367c_asicdrv_green.h>
@@ -22,7 +22,7 @@
  *      Get per-Port ingress page usage per second
  * Input:
  *      port    - Physical port number (0~7)
- *      pPage   - page number of ingress packet occuping per second
+ *      pPage   - page number of ingress packet occurring per second
  * Output:
  *      None
  * Return:
@@ -30,7 +30,7 @@
  *      RT_ERR_SMI      - SMI access error
  *      RT_ERR_PORT_ID  - Invalid port number
  * Note:
- *      Ingress traffic occuping page number per second for high layer green feature usage
+ *      Ingress traffic occurring page number per second for high layer green feature usage
  */
 ret_t rtl8367c_getAsicGreenPortPage(rtk_uint32 port, rtk_uint32* pPage)
 {
@@ -134,7 +134,7 @@ ret_t rtl8367c_setAsicGreenHighPriorityTraffic(rtk_uint32 port)
  *      Get indicator which ASIC had received high priority traffic or not
  * Input:
  *      port        - Physical port number (0~7)
- *      pIndicator  - Have received high priority traffic indicator. If 1 means ASCI had received high priority in 1second checking priod
+ *      pIndicator  - Have received high priority traffic indicator. If 1 means ASCI had received high priority in 1second checking period
  * Output:
  *      None
  * Return:
@@ -153,14 +153,14 @@ ret_t rtl8367c_getAsicGreenHighPriorityTraffic(rtk_uint32 port, rtk_uint32* pInd
 }
 
 /*
-@func rtk_int32 | rtl8367c_setAsicGreenEthernet | Set green ethernet function.
+@func rtk_int32 | rtl8367c_setAsicGreenEthernet | Set green Ethernet function.
 @parm rtk_uint32 | green | Green feature function usage 1:enable 0:disable.
 @rvalue RT_ERR_OK | Success.
 @rvalue RT_ERR_SMI | SMI access error.
 @comm
     The API can set Green Ethernet function to reduce power consumption. While green feature is enabled, ASIC will automatic
  detect the cable length and then select different power mode for best performance with minimums power consumption. Link down
- ports will enter power savining mode in 10 seconds after the cable disconnected if power saving function is enabled.
+ ports will enter power saving mode in 10 seconds after the cable disconnected if power saving function is enabled.
 */
 ret_t rtl8367c_setAsicGreenEthernet(rtk_uint32 port, rtk_uint32 green)
 {
@@ -286,14 +286,14 @@ ret_t rtl8367c_setAsicGreenEthernet(rtk_uint32 port, rtk_uint32 green)
 }
 
 /*
-@func rtk_int32 | rtl8367c_getAsicGreenEthernet | Get green ethernet function.
+@func rtk_int32 | rtl8367c_getAsicGreenEthernet | Get green Ethernet function.
 @parm rtk_uint32 | *green | Green feature function usage 1:enable 0:disable.
 @rvalue RT_ERR_OK | Success.
 @rvalue RT_ERR_SMI | SMI access error.
 @comm
     The API can set Green Ethernet function to reduce power consumption. While green feature is enabled, ASIC will automatic
  detect the cable length and then select different power mode for best performance with minimums power consumption. Link down
- ports will enter power savining mode in 10 seconds after the cable disconnected if power saving function is enabled.
+ ports will enter power saving mode in 10 seconds after the cable disconnected if power saving function is enabled.
 */
 ret_t rtl8367c_getAsicGreenEthernet(rtk_uint32 port, rtk_uint32* green)
 {

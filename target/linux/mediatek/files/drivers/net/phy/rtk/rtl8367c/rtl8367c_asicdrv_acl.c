@@ -173,7 +173,7 @@ static void _rtl8367c_aclActStUser2Smi(rtl8367c_acl_act_t *pAclUser, rtk_uint16 
 /* Function Name:
  *      rtl8367c_setAsicAcl
  * Description:
- *      Set port acl function enable/disable
+ *      Set port ACL function enable/disable
  * Input:
  *      port    - Physical port number (0~10)
  *      enabled - 1: enabled, 0: disabled
@@ -196,7 +196,7 @@ ret_t rtl8367c_setAsicAcl(rtk_uint32 port, rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicAcl
  * Description:
- *      Get port acl function enable/disable
+ *      Get port ACL function enable/disable
  * Input:
  *      port    - Physical port number (0~10)
  *      enabled - 1: enabled, 0: disabled
@@ -219,7 +219,7 @@ ret_t rtl8367c_getAsicAcl(rtk_uint32 port, rtk_uint32* pEnabled)
 /* Function Name:
  *      rtl8367c_setAsicAclUnmatchedPermit
  * Description:
- *      Set port acl function unmatched permit action
+ *      Set port ACL function unmatched permit action
  * Input:
  *      port    - Physical port number (0~10)
  *      enabled - 1: enabled, 0: disabled
@@ -242,7 +242,7 @@ ret_t rtl8367c_setAsicAclUnmatchedPermit(rtk_uint32 port, rtk_uint32 enabled)
 /* Function Name:
  *      rtl8367c_getAsicAclUnmatchedPermit
  * Description:
- *      Get port acl function unmatched permit action
+ *      Get port ACL function unmatched permit action
  * Input:
  *      port    - Physical port number (0~10)
  *      enabled - 1: enabled, 0: disabled
@@ -266,10 +266,10 @@ ret_t rtl8367c_getAsicAclUnmatchedPermit(rtk_uint32 port, rtk_uint32* pEnabled)
 /* Function Name:
  *      rtl8367c_setAsicAclRule
  * Description:
- *      Set acl rule content
+ *      Set ACL rule content
  * Input:
  *      index   - ACL rule index (0-95) of 96 ACL rules
- *      pAclRule - ACL rule stucture for setting
+ *      pAclRule - ACL rule structure for setting
  * Output:
  *      None
  * Return:
@@ -278,8 +278,8 @@ ret_t rtl8367c_getAsicAclUnmatchedPermit(rtk_uint32 port, rtk_uint32* pEnabled)
  *      RT_ERR_OUT_OF_RANGE     - Invalid ACL rule index (0-95)
  * Note:
  *      System supported 95 shared 289-bit ACL ingress rule. Index was available at range 0-95 only.
- *      If software want to modify ACL rule, the ACL function should be disable at first or unspecify
- *      acl action will be executed.
+ *      If software want to modify ACL rule, the ACL function should be disabled at first or unspecified
+ *      ACL action will be executed.
  *      One ACL rule structure has three parts setting:
  *      Bit 0-147       Data Bits of this Rule
  *      Bit 148     Valid Bit
@@ -410,10 +410,10 @@ ret_t rtl8367c_setAsicAclRule(rtk_uint32 index, rtl8367c_aclrule* pAclRule)
 /* Function Name:
  *      rtl8367c_getAsicAclRule
  * Description:
- *      Get acl rule content
+ *      Get ACL rule content
  * Input:
  *      index   - ACL rule index (0-63) of 64 ACL rules
- *      pAclRule - ACL rule stucture for setting
+ *      pAclRule - ACL rule structure for setting
  * Output:
  *      None
  * Return:
@@ -588,7 +588,7 @@ ret_t rtl8367c_getAsicAclNot(rtk_uint32 index, rtk_uint32* pNot)
  *      Set fields of a ACL Template
  * Input:
  *      index   - ACL template index(0~4)
- *      pAclType - ACL type stucture for setting
+ *      pAclType - ACL type structure for setting
  * Output:
  *      None
  * Return:
@@ -598,7 +598,7 @@ ret_t rtl8367c_getAsicAclNot(rtk_uint32 index, rtk_uint32* pNot)
  * Note:
  *      The API can set type field of the 5 ACL rule templates.
  *      Each type has 8 fields. One field means what data in one field of a ACL rule means
- *      8 fields of ACL rule 0~95 is descripted by one type in ACL group
+ *      8 fields of ACL rule 0~95 is described by one type in ACL group
  */
 ret_t rtl8367c_setAsicAclTemplate(rtk_uint32 index, rtl8367c_acltemplate_t* pAclType)
 {
@@ -630,7 +630,7 @@ ret_t rtl8367c_setAsicAclTemplate(rtk_uint32 index, rtl8367c_acltemplate_t* pAcl
  *      Get fields of a ACL Template
  * Input:
  *      index   - ACL template index(0~4)
- *      pAclType - ACL type stucture for setting
+ *      pAclType - ACL type structure for setting
  * Output:
  *      None
  * Return:
@@ -669,7 +669,7 @@ ret_t rtl8367c_getAsicAclTemplate(rtk_uint32 index, rtl8367c_acltemplate_t *pAcl
  *      Set ACL rule matched Action
  * Input:
  *      index   - ACL rule index (0-95) of 96 ACL rules
- *      pAclAct     - ACL action stucture for setting
+ *      pAclAct     - ACL action structure for setting
  * Output:
  *      None
  * Return:
@@ -734,7 +734,7 @@ ret_t rtl8367c_setAsicAclAct(rtk_uint32 index, rtl8367c_acl_act_t* pAclAct)
  *      Get ACL rule matched Action
  * Input:
  *      index   - ACL rule index (0-95) of 96 ACL rules
- *      pAclAct     - ACL action stucture for setting
+ *      pAclAct     - ACL action structure for setting
  * Output:
  *      None
  * Return:
@@ -1137,7 +1137,7 @@ ret_t rtl8367c_getAsicAclIpRange(rtk_uint32 index, rtk_uint32* pType, ipaddr_t* 
 /* Function Name:
  *      rtl8367c_setAsicAclGpioPolarity
  * Description:
- *      Set ACL Goip control palarity
+ *      Set ACL Goip control polarity
  * Input:
  *      polarity - 1: High, 0: Low
  * Output:
@@ -1155,7 +1155,7 @@ ret_t rtl8367c_setAsicAclGpioPolarity(rtk_uint32 polarity)
 /* Function Name:
  *      rtl8367c_getAsicAclGpioPolarity
  * Description:
- *      Get ACL Goip control palarity
+ *      Get ACL Goip control polarity
  * Input:
  *      pPolarity - 1: High, 0: Low
  * Output:

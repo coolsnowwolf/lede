@@ -1,0 +1,88 @@
+From 856e8954a0a88d1a4d2b43e9002b9249131a156f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ar=C4=B1n=C3=A7=20=C3=9CNAL?= <arinc.unal@arinc9.com>
+Date: Mon, 22 Apr 2024 10:15:08 +0300
+Subject: [PATCH 01/15] net: dsa: mt7530: disable EEE abilities on failure on
+ MT7531 and MT7988
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The MT7531_FORCE_EEE1G and MT7531_FORCE_EEE100 bits let the
+PMCR_FORCE_EEE1G and PMCR_FORCE_EEE100 bits determine the 1G/100 EEE
+abilities of the MAC. If MT7531_FORCE_EEE1G and MT7531_FORCE_EEE100 are
+unset, the abilities are left to be determined by PHY auto polling.
+
+The commit 40b5d2f15c09 ("net: dsa: mt7530: Add support for EEE features")
+made it so that the PMCR_FORCE_EEE1G and PMCR_FORCE_EEE100 bits are set on
+mt753x_phylink_mac_link_up(). But it did not set the MT7531_FORCE_EEE1G and
+MT7531_FORCE_EEE100 bits. Because of this, the EEE abilities will be
+determined by PHY auto polling, regardless of the result of phy_init_eee().
+
+Define these bits and add them to the MT7531_FORCE_MODE mask which is set
+in mt7531_setup_common(). With this, there won't be any EEE abilities set
+when phy_init_eee() returns a negative value.
+
+Thanks to Russell for explaining when phy_init_eee() could return a
+negative value below.
+
+Looking at phy_init_eee(), it could return a negative value when:
+
+1. phydev->drv is NULL
+2. if genphy_c45_eee_is_active() returns negative
+3. if genphy_c45_eee_is_active() returns zero, it returns -EPROTONOSUPPORT
+4. if phy_set_bits_mmd() fails (e.g. communication error with the PHY)
+
+If we then look at genphy_c45_eee_is_active(), then:
+
+genphy_c45_read_eee_adv() and genphy_c45_read_eee_lpa() propagate their
+non-zero return values, otherwise this function returns zero or positive
+integer.
+
+If we then look at genphy_c45_read_eee_adv(), then a failure of
+phy_read_mmd() would cause a negative value to be returned.
+
+Looking at genphy_c45_read_eee_lpa(), the same is true.
+
+So, it can be summarised as:
+
+- phydev->drv is NULL
+- there is a communication error accessing the PHY
+- EEE is not active
+
+otherwise, it returns zero on success.
+
+If one wishes to determine whether an error occurred vs EEE not being
+supported through negotiation for the negotiated speed, if it returns
+-EPROTONOSUPPORT in the latter case. Other error codes mean either the
+driver has been unloaded or communication error.
+
+In conclusion, determining the EEE abilities by PHY auto polling shouldn't
+result in having any EEE abilities enabled, when one of the last two
+situations in the summary happens. And it seems that if phydev->drv is
+NULL, there would be bigger problems with the device than a broken link. So
+this is not a bugfix.
+
+Signed-off-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+---
+ drivers/net/dsa/mt7530.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -328,11 +328,15 @@ enum mt7530_vlan_port_acc_frm {
+ #define  MT7531_FORCE_DPX		BIT(29)
+ #define  MT7531_FORCE_RX_FC		BIT(28)
+ #define  MT7531_FORCE_TX_FC		BIT(27)
++#define  MT7531_FORCE_EEE100		BIT(26)
++#define  MT7531_FORCE_EEE1G		BIT(25)
+ #define  MT7531_FORCE_MODE		(MT7531_FORCE_LNK | \
+ 					 MT7531_FORCE_SPD | \
+ 					 MT7531_FORCE_DPX | \
+ 					 MT7531_FORCE_RX_FC | \
+-					 MT7531_FORCE_TX_FC)
++					 MT7531_FORCE_TX_FC | \
++					 MT7531_FORCE_EEE100 | \
++					 MT7531_FORCE_EEE1G)
+ #define  PMCR_LINK_SETTINGS_MASK	(PMCR_TX_EN | PMCR_FORCE_SPEED_1000 | \
+ 					 PMCR_RX_EN | PMCR_FORCE_SPEED_100 | \
+ 					 PMCR_TX_FC_EN | PMCR_RX_FC_EN | \

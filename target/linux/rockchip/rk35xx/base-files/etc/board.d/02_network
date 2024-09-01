@@ -1,0 +1,172 @@
+#!/bin/sh
+#
+# Copyright (C) 2013-2015 OpenWrt.org
+#
+
+. /lib/functions/uci-defaults.sh
+. /lib/functions/system.sh
+
+rockchip_setup_interfaces()
+{
+	local board="$1"
+
+	case "$board" in
+	ariaboard,photonicat|\
+	armsom,sige1-v1|\
+	armsom,sige5|\
+	armsom,sige7-v1|\
+	friendlyelec,nanopc-t6|\
+	friendlyelec,nanopi-r5c|\
+	friendlyelec,nanopi-r6c|\
+	hinlink,h88k-v2|\
+	hinlink,h88k|\
+	hinlink,opc-h66k|\
+	hinlink,hnas|\
+	jsy,h1|\
+	nlnet,xgp|\
+	fastrhino,r66s|\
+	firefly,rk3568-roc-pc)
+		ucidef_set_interfaces_lan_wan 'eth1' 'eth0'
+		;;
+	cyber,cyber3588-aib)
+		ucidef_set_interfaces_lan_wan 'eth0 eth1' 'eth2'
+		ucidef_add_switch 'switch0' \
+			'1:lan' '2:lan' '3:lan' '4:lan' '5:lan' '7u@eth0'
+		;;
+	hinlink,opc-h69k|\
+	friendlyelec,nanopi-r5s|\
+	friendlyelec,nanopi-r5s-c1)
+		ucidef_set_interfaces_lan_wan "eth1 eth2" "eth0"
+		;;
+	lyt,t68m|\
+	linkfog,ala1|\
+	fastrhino,r68s|\
+	hinlink,opc-h68k)
+		ucidef_set_interfaces_lan_wan 'eth1 eth2 eth3' 'eth0'
+		;;
+	friendlyelec,nanopi-r6s)
+		ucidef_set_interfaces_lan_wan 'eth0 eth1' 'eth2'
+		;;
+	hinlink,h88k-v3)
+		ucidef_set_interfaces_lan_wan 'eth1 eth2 eth3 eth4' 'eth0'
+		;;
+	radxa,e20c|\
+	radxa,e52c|\
+	xunlong,orangepi-5-plus|\
+	mangopi,m28k|\
+	hlink,h28k|\
+	hinlink,ht2)
+		ucidef_set_interfaces_lan_wan 'eth0' 'eth1'
+		;;
+	umi,um3568m2)
+		ucidef_set_interfaces_lan_wan 'eth0' 'eth1'
+		ucidef_set_interface 'wan2' ifname 'eth2' protocol 'dhcp'
+		ucidef_set_interface 'wan3' ifname 'eth3' protocol 'dhcp'
+		uci add_list firewall.@zone[1].network='wan2'
+		uci add_list firewall.@zone[1].network='wan26'
+		uci add_list firewall.@zone[1].network='wan3'
+		uci add_list firewall.@zone[1].network='wan36'
+		;;
+	*)
+		ucidef_set_interface_lan 'eth0'
+		;;
+	esac
+}
+
+generate_mac_from_mmc()
+{
+	local sd_hash
+	local bootdisk=$(
+		. /lib/upgrade/common.sh
+		export_bootdevice && export_partdevice bootdisk 0 && echo $bootdisk
+	)
+	if echo "$bootdisk" | grep -q '^mmcblk' && [ -f "/sys/class/block/$bootdisk/device/cid" ]; then
+		sd_hash=$(sha256sum /sys/class/block/$bootdisk/device/cid | head -n 1)
+	else
+		sd_hash=$(sha256sum /sys/class/block/mmcblk*/device/cid | head -n 1)
+	fi
+	local mac_base=$(macaddr_canonicalize "$(echo "${sd_hash}" | dd bs=1 count=12 2>/dev/null)")
+	echo "$(macaddr_unsetbit_mc "$(macaddr_setbit_la "${mac_base}")")"
+}
+
+rockchip_setup_macs()
+{
+	local board="$1"
+	local lan_mac=""
+	local wan_mac=""
+
+	case "$board" in
+	armsom,sige1-v1|\
+	armsom,sige7-v1|\
+	ariaboard,photonicat|\
+	cyber,cyber3588-aib|\
+	firefly,rk3568-roc-pc|\
+	friendlyelec,nanopc-t6|\
+	friendlyelec,nanopi-r5s|\
+	friendlyelec,nanopi-r5s-c1|\
+	friendlyelec,nanopi-r5c|\
+	friendlyelec,nanopi-r6s|\
+	friendlyelec,nanopi-r6c|\
+	hlink,h28k|\
+	hinlink,h88k-*|\
+	hinlink,h88k|\
+	hinlink,opc-h69k|\
+	hinlink,opc-h68k|\
+	hinlink,opc-h66k|\
+	hinlink,hnas|\
+	jsy,h1|\
+	yyy,h1|\
+	idiskk,h1|\
+	jp,tvbox|\
+	panther,x2|\
+	lyt,t68m|\
+	mangopi,m28k|\
+	nlnet,xgp|\
+	xunlong,orangepi-5-plus|\
+	fastrhino,r66s|\
+	fastrhino,r68s|\
+	radxa,rock-5c|\
+	radxa,e52c|\
+	umi,um3568m2)
+		wan_mac=$(generate_mac_from_mmc)
+		lan_mac=$(macaddr_add "$wan_mac" 1)
+		;;
+	*)
+		lan_mac=$(generate_mac_from_mmc)
+		;;
+	esac
+
+	[ -n "$wan_mac" ] && ucidef_set_interface_macaddr "wan" $wan_mac
+	[ -n "$lan_mac" ] && ucidef_set_interface_macaddr "lan" $lan_mac
+}
+
+generate_wwan_uci()
+{
+	local device="$1"
+	ucidef_set_interface "wwan" device "$device" protocol "modemmanager" metric "100"
+	[ -f /rom/note -o -f /etc/config/network ] || uci get firewall.@zone[1].network | grep -qFw wwan || uci add_list firewall.@zone[1].network='wwan'
+}
+
+rockchip_setup_wwan()
+{
+	local board="$1"
+
+	case "$board" in
+	hinlink,opc-h69k)
+		generate_wwan_uci "/sys/devices/platform/usbhost/fd000000.dwc3/xhci-hcd.0.auto/usb4/4-1"
+		;;
+	hinlink,h88k-*|\
+	hinlink,h88k)
+		generate_wwan_uci "/sys/devices/platform/usbdrd3_1/fc400000.usb/xhci-hcd.4.auto/usb6/6-1/6-1.1"
+		;;
+	esac
+}
+
+board_config_update
+board=$(board_name)
+rockchip_setup_interfaces $board
+rockchip_setup_macs $board
+rockchip_setup_wwan $board
+board_config_flush
+
+exit 0

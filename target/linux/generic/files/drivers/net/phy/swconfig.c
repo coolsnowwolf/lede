@@ -1054,6 +1054,9 @@ static struct genl_family switch_fam = {
 	.module = THIS_MODULE,
 	.ops = swconfig_ops,
 	.n_ops = ARRAY_SIZE(swconfig_ops),
+#if LINUX_VERSION_CODE > KERNEL_VERSION(6,0,0)
+	.resv_start_op = SWITCH_CMD_SET_VLAN + 1,
+#endif
 };
 
 #ifdef CONFIG_OF

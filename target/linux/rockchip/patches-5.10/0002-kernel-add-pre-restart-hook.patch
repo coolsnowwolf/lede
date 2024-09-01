@@ -1,0 +1,81 @@
+From 259205a44d3f8f3e7995ae37072fc67ac5612ae0 Mon Sep 17 00:00:00 2001
+From: jjm2473 <1129525450@qq.com>
+Date: Thu, 11 May 2023 17:01:33 +0800
+Subject: [PATCH 02/42] kernel: add pre restart hook
+
+---
+ arch/arm64/kernel/process.c |  2 ++
+ include/linux/reboot.h      | 20 ++++++++++++++++++++
+ kernel/reboot.c             | 21 +++++++++++++++++++++
+ 3 files changed, 43 insertions(+)
+
+--- a/arch/arm64/kernel/process.c
++++ b/arch/arm64/kernel/process.c
+@@ -191,6 +191,8 @@ void machine_restart(char *cmd)
+ 	local_irq_disable();
+ 	smp_send_stop();
+ 
++	do_kernel_pre_restart(cmd);
++
+ 	/*
+ 	 * UpdateCapsule() depends on the system being reset via
+ 	 * ResetSystem().
+--- a/include/linux/reboot.h
++++ b/include/linux/reboot.h
+@@ -49,6 +49,26 @@ extern int register_restart_handler(stru
+ extern int unregister_restart_handler(struct notifier_block *);
+ extern void do_kernel_restart(char *cmd);
+ 
++#ifdef CONFIG_NO_GKI
++extern int register_pre_restart_handler(struct notifier_block *nb);
++extern int unregister_pre_restart_handler(struct notifier_block *nb);
++extern void do_kernel_pre_restart(char *cmd);
++#else
++static inline int register_pre_restart_handler(struct notifier_block *nb)
++{
++	return 0;
++}
++
++static inline int unregister_pre_restart_handler(struct notifier_block *nb)
++{
++	return 0;
++}
++
++static inline void do_kernel_pre_restart(char *cmd)
++{
++}
++#endif
++
+ /*
+  * Architecture-specific implementations of sys_reboot commands.
+  */
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -215,6 +215,27 @@ void do_kernel_restart(char *cmd)
+ 	atomic_notifier_call_chain(&restart_handler_list, reboot_mode, cmd);
+ }
+ 
++#ifdef CONFIG_NO_GKI
++static ATOMIC_NOTIFIER_HEAD(pre_restart_handler_list);
++
++int register_pre_restart_handler(struct notifier_block *nb)
++{
++	return atomic_notifier_chain_register(&pre_restart_handler_list, nb);
++}
++EXPORT_SYMBOL(register_pre_restart_handler);
++
++int unregister_pre_restart_handler(struct notifier_block *nb)
++{
++	return atomic_notifier_chain_unregister(&pre_restart_handler_list, nb);
++}
++EXPORT_SYMBOL(unregister_pre_restart_handler);
++
++void do_kernel_pre_restart(char *cmd)
++{
++	atomic_notifier_call_chain(&pre_restart_handler_list, reboot_mode, cmd);
++}
++#endif
++
+ void migrate_to_reboot_cpu(void)
+ {
+ 	/* The boot cpu is always logical cpu 0 */

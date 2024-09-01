@@ -9,7 +9,7 @@
  *
  * Purpose : RTL8367/RTL8367C switch high-level API
  *
- * Feature : The file includes L2 module high-layer API defination
+ * Feature : The file includes L2 module high-layer API definition
  *
  */
 
@@ -209,7 +209,7 @@ extern rtk_api_ret_t rtk_l2_init(void);
  *      RT_ERR_L2_INDEXTBL_FULL - hashed index is full of entries.
  *      RT_ERR_INPUT            - Invalid input parameters.
  * Note:
- *      If the unicast mac address already existed in LUT, it will udpate the status of the entry.
+ *      If the unicast mac address already existed in LUT, it will update the status of the entry.
  *      Otherwise, it will find an empty or asic auto learned entry to write. If all the entries
  *      with the same hash value can't be replaced, ASIC will return a RT_ERR_L2_INDEXTBL_FULL error.
  */
@@ -307,7 +307,7 @@ extern rtk_api_ret_t rtk_l2_addr_del(rtk_mac_t *pMac, rtk_l2_ucastAddr_t *pL2_da
  *      RT_ERR_PORT_MASK        - Invalid portmask.
  *      RT_ERR_INPUT            - Invalid input parameters.
  * Note:
- *      If the multicast mac address already existed in the LUT, it will udpate the
+ *      If the multicast mac address already existed in the LUT, it will update the
  *      port mask of the entry. Otherwise, it will find an empty or asic auto learned
  *      entry to write. If all the entries with the same hash value can't be replaced,
  *      ASIC will return a RT_ERR_L2_INDEXTBL_FULL error.
@@ -383,7 +383,7 @@ extern rtk_api_ret_t rtk_l2_mcastAddr_del(rtk_l2_mcastAddr_t *pMcastAddr);
 /* Function Name:
  *      rtk_l2_ipMcastAddr_add
  * Description:
- *      Add Lut IP multicast entry
+ *      Add LUT IP multicast entry
  * Input:
  *      pIpMcastAddr    - IP Multicast entry
  * Output:
@@ -418,7 +418,7 @@ extern rtk_api_ret_t rtk_l2_ipMcastAddr_add(rtk_l2_ipMcastAddr_t *pIpMcastAddr);
  *      RT_ERR_L2_ENTRY_NOTFOUND    - No such LUT entry.
  *      RT_ERR_INPUT                - Invalid input parameters.
  * Note:
- *      The API can get Lut table of IP multicast entry.
+ *      The API can get LUT table of IP multicast entry.
  */
 extern rtk_api_ret_t rtk_l2_ipMcastAddr_get(rtk_l2_ipMcastAddr_t *pIpMcastAddr);
 
@@ -465,7 +465,7 @@ extern rtk_api_ret_t rtk_l2_ipMcastAddr_del(rtk_l2_ipMcastAddr_t *pIpMcastAddr);
 /* Function Name:
  *      rtk_l2_ipVidMcastAddr_add
  * Description:
- *      Add Lut IP multicast+VID entry
+ *      Add LUT IP multicast+VID entry
  * Input:
  *      pIpVidMcastAddr - IP & VID multicast Entry
  * Output:
@@ -913,7 +913,7 @@ extern rtk_api_ret_t rtk_l2_learningCnt_get(rtk_port_t port, rtk_mac_cnt_t *pMac
  *      Set flooding portmask
  * Input:
  *      type - flooding type.
- *      pFlood_portmask - flooding porkmask
+ *      pFlood_portmask - flooding portmask
  * Output:
  *      None
  * Return:
@@ -938,7 +938,7 @@ extern rtk_api_ret_t rtk_l2_floodPortMask_set(rtk_l2_flood_type_t floood_type, r
  * Input:
  *      type - flooding type.
  * Output:
- *      pFlood_portmask - flooding porkmask
+ *      pFlood_portmask - flooding portmask
  * Return:
  *      RT_ERR_OK           - OK
  *      RT_ERR_FAILED       - Failed
@@ -956,10 +956,10 @@ extern rtk_api_ret_t rtk_l2_floodPortMask_get(rtk_l2_flood_type_t floood_type, r
 /* Function Name:
  *      rtk_l2_localPktPermit_set
  * Description:
- *      Set permittion of frames if source port and destination port are the same.
+ *      Set permission of frames if source port and destination port are the same.
  * Input:
  *      port - Port id.
- *      permit - permittion status
+ *      permit - permission status
  * Output:
  *      None
  * Return:
@@ -969,34 +969,34 @@ extern rtk_api_ret_t rtk_l2_floodPortMask_get(rtk_l2_flood_type_t floood_type, r
  *      RT_ERR_PORT_ID      - Invalid port number.
  *      RT_ERR_ENABLE       - Invalid permit value.
  * Note:
- *      This API is setted to permit frame if its source port is equal to destination port.
+ *      This API is set to permit frame if its source port is equal to destination port.
  */
 extern rtk_api_ret_t rtk_l2_localPktPermit_set(rtk_port_t port, rtk_enable_t permit);
 
 /* Function Name:
  *      rtk_l2_localPktPermit_get
  * Description:
- *      Get permittion of frames if source port and destination port are the same.
+ *      Get permission of frames if source port and destination port are the same.
  * Input:
  *      port - Port id.
  * Output:
- *      pPermit - permittion status
+ *      pPermit - permission status
  * Return:
  *      RT_ERR_OK           - OK
  *      RT_ERR_FAILED       - Failed
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_PORT_ID      - Invalid port number.
  * Note:
- *      This API is to get permittion status for frames if its source port is equal to destination port.
+ *      This API is to get permission status for frames if its source port is equal to destination port.
  */
 extern rtk_api_ret_t rtk_l2_localPktPermit_get(rtk_port_t port, rtk_enable_t *pPermit);
 
 /* Function Name:
  *      rtk_l2_aging_set
  * Description:
- *      Set LUT agging out speed
+ *      Set LUT ageing out speed
  * Input:
- *      aging_time - Agging out time.
+ *      aging_time - Ageing out time.
  * Output:
  *      None
  * Return:
@@ -1005,14 +1005,14 @@ extern rtk_api_ret_t rtk_l2_localPktPermit_get(rtk_port_t port, rtk_enable_t *pP
  *      RT_ERR_SMI              - SMI access error
  *      RT_ERR_OUT_OF_RANGE     - input out of range.
  * Note:
- *      The API can set LUT agging out period for each entry and the range is from 14s to 800s.
+ *      The API can set LUT ageing out period for each entry and the range is from 14s to 800s.
  */
 extern rtk_api_ret_t rtk_l2_aging_set(rtk_l2_age_time_t aging_time);
 
 /* Function Name:
  *      rtk_l2_aging_get
  * Description:
- *      Get LUT agging out time
+ *      Get LUT ageing out time
  * Input:
  *      None
  * Output:
@@ -1023,14 +1023,14 @@ extern rtk_api_ret_t rtk_l2_aging_set(rtk_l2_age_time_t aging_time);
  *      RT_ERR_SMI          - SMI access error
  *      RT_ERR_PORT_ID      - Invalid port number.
  * Note:
- *      The API can get LUT agging out period for each entry.
+ *      The API can get LUT ageing out period for each entry.
  */
 extern rtk_api_ret_t rtk_l2_aging_get(rtk_l2_age_time_t *pAging_time);
 
 /* Function Name:
  *      rtk_l2_ipMcastAddrLookup_set
  * Description:
- *      Set Lut IP multicast lookup function
+ *      Set LUT IP multicast lookup function
  * Input:
  *      type - Lookup type for IPMC packet.
  * Output:
@@ -1051,7 +1051,7 @@ extern rtk_api_ret_t rtk_l2_ipMcastAddrLookup_set(rtk_l2_ipmc_lookup_type_t type
 /* Function Name:
  *      rtk_l2_ipMcastAddrLookup_get
  * Description:
- *      Get Lut IP multicast lookup function
+ *      Get LUT IP multicast lookup function
  * Input:
  *      None.
  * Output:
@@ -1068,9 +1068,9 @@ extern rtk_api_ret_t rtk_l2_ipMcastAddrLookup_get(rtk_l2_ipmc_lookup_type_t *pTy
 /* Function Name:
  *      rtk_l2_ipMcastForwardRouterPort_set
  * Description:
- *      Set IPMC packet forward to rounter port also or not
+ *      Set IPMC packet forward to router port also or not
  * Input:
- *      enabled - 1: Inlcude router port, 0, exclude router port
+ *      enabled - 1: Include router port, 0, exclude router port
  * Output:
  *      None.
  * Return:
@@ -1085,11 +1085,11 @@ extern rtk_api_ret_t rtk_l2_ipMcastForwardRouterPort_set(rtk_enable_t enabled);
 /* Function Name:
  *      rtk_l2_ipMcastForwardRouterPort_get
  * Description:
- *      Get IPMC packet forward to rounter port also or not
+ *      Get IPMC packet forward to router port also or not
  * Input:
  *      None.
  * Output:
- *      pEnabled    - 1: Inlcude router port, 0, exclude router port
+ *      pEnabled    - 1: Include router port, 0, exclude router port
  * Return:
  *      RT_ERR_OK           - OK
  *      RT_ERR_FAILED       - Failed

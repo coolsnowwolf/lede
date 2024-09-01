@@ -1,0 +1,119 @@
+From c22d8240fcd73a1c3ec8dcb055bd583fb970c375 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Wed, 10 Apr 2024 20:42:43 +0100
+Subject: [PATCH 2/2] net: dsa: allow DSA switch drivers to provide their own
+ phylink mac ops
+
+Rather than having a shim for each and every phylink MAC operation,
+allow DSA switch drivers to provide their own ops structure. When a
+DSA driver provides the phylink MAC operations, the shimmed ops must
+not be provided, so fail an attempt to register a switch with both
+the phylink_mac_ops in struct dsa_switch and the phylink_mac_*
+operations populated in dsa_switch_ops populated.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://lore.kernel.org/r/E1rudqF-006K9H-Cc@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ include/net/dsa.h |  5 +++++
+ net/dsa/dsa.c     | 11 +++++++++++
+ net/dsa/port.c    | 26 ++++++++++++++++++++------
+ 3 files changed, 36 insertions(+), 6 deletions(-)
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -458,6 +458,11 @@ struct dsa_switch {
+ 	const struct dsa_switch_ops	*ops;
+ 
+ 	/*
++	 * Allow a DSA switch driver to override the phylink MAC ops
++	 */
++	const struct phylink_mac_ops	*phylink_mac_ops;
++
++	/*
+ 	 * Slave mii_bus and devices for the individual ports.
+ 	 */
+ 	u32			phys_mii_mask;
+--- a/net/dsa/dsa.c
++++ b/net/dsa/dsa.c
+@@ -1510,6 +1510,17 @@ static int dsa_switch_probe(struct dsa_s
+ 	if (!ds->num_ports)
+ 		return -EINVAL;
+ 
++	if (ds->phylink_mac_ops) {
++		if (ds->ops->phylink_mac_select_pcs ||
++		    ds->ops->phylink_mac_prepare ||
++		    ds->ops->phylink_mac_config ||
++		    ds->ops->phylink_mac_finish ||
++		    ds->ops->phylink_mac_link_down ||
++		    ds->ops->phylink_mac_link_up ||
++		    ds->ops->adjust_link)
++			return -EINVAL;
++	}
++
+ 	if (np) {
+ 		err = dsa_switch_parse_of(ds, np);
+ 		if (err)
+--- a/net/dsa/port.c
++++ b/net/dsa/port.c
+@@ -1677,6 +1677,7 @@ static const struct phylink_mac_ops dsa_
+ 
+ int dsa_port_phylink_create(struct dsa_port *dp)
+ {
++	const struct phylink_mac_ops *mac_ops;
+ 	struct dsa_switch *ds = dp->ds;
+ 	phy_interface_t mode;
+ 	struct phylink *pl;
+@@ -1700,8 +1701,12 @@ int dsa_port_phylink_create(struct dsa_p
+ 		}
+ 	}
+ 
+-	pl = phylink_create(&dp->pl_config, of_fwnode_handle(dp->dn),
+-			    mode, &dsa_port_phylink_mac_ops);
++	mac_ops = &dsa_port_phylink_mac_ops;
++	if (ds->phylink_mac_ops)
++		mac_ops = ds->phylink_mac_ops;
++
++	pl = phylink_create(&dp->pl_config, of_fwnode_handle(dp->dn), mode,
++			    mac_ops);
+ 	if (IS_ERR(pl)) {
+ 		pr_err("error creating PHYLINK: %ld\n", PTR_ERR(pl));
+ 		return PTR_ERR(pl);
+@@ -1967,12 +1972,23 @@ static void dsa_shared_port_validate_of(
+ 		dn, dsa_port_is_cpu(dp) ? "CPU" : "DSA", dp->index);
+ }
+ 
++static void dsa_shared_port_link_down(struct dsa_port *dp)
++{
++	struct dsa_switch *ds = dp->ds;
++
++	if (ds->phylink_mac_ops && ds->phylink_mac_ops->mac_link_down)
++		ds->phylink_mac_ops->mac_link_down(&dp->pl_config, MLO_AN_FIXED,
++						   PHY_INTERFACE_MODE_NA);
++	else if (ds->ops->phylink_mac_link_down)
++		ds->ops->phylink_mac_link_down(ds, dp->index, MLO_AN_FIXED,
++					       PHY_INTERFACE_MODE_NA);
++}
++
+ int dsa_shared_port_link_register_of(struct dsa_port *dp)
+ {
+ 	struct dsa_switch *ds = dp->ds;
+ 	bool missing_link_description;
+ 	bool missing_phy_mode;
+-	int port = dp->index;
+ 
+ 	dsa_shared_port_validate_of(dp, &missing_phy_mode,
+ 				    &missing_link_description);
+@@ -1988,9 +2004,7 @@ int dsa_shared_port_link_register_of(str
+ 				 "Skipping phylink registration for %s port %d\n",
+ 				 dsa_port_is_cpu(dp) ? "CPU" : "DSA", dp->index);
+ 		} else {
+-			if (ds->ops->phylink_mac_link_down)
+-				ds->ops->phylink_mac_link_down(ds, port,
+-					MLO_AN_FIXED, PHY_INTERFACE_MODE_NA);
++			dsa_shared_port_link_down(dp);
+ 
+ 			return dsa_shared_port_phylink_register(dp);
+ 		}

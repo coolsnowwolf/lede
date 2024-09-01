@@ -8,7 +8,7 @@
  * available at https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
  *
  * $Revision: 76306 $
- * $Date: 2017-03-08 15:13:58 +0800 (¶g¤T, 08 ¤T¤ë 2017) $
+ * $Date: 2017-03-08 15:13:58 +0800 (é€±ä¸‰, 08 ä¸‰æœˆ 2017) $
  *
  * Purpose : Declaration of RLDP and RLPP API
  *
@@ -404,7 +404,7 @@ rtk_api_ret_t rtk_rldp_portStatus_get(rtk_port_t port, rtk_rldp_portStatus_t *pP
  *      RT_ERR_NULL_POINTER
  * Note:
  *      Clear operation effect loop_enter and loop_leave only, other field in
- *      the structure are don't care. Loop status cab't be clean.
+ *      the structure are don't care. Loop status can't be clean.
  */
 rtk_api_ret_t rtk_rldp_portStatus_set(rtk_port_t port, rtk_rldp_portStatus_t *pPortStatus)
 {

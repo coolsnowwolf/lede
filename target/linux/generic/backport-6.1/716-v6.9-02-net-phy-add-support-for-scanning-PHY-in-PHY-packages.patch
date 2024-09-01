@@ -1,0 +1,211 @@
+From 385ef48f468696d6d172eb367656a3466fa0408d Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 6 Feb 2024 18:31:05 +0100
+Subject: [PATCH 02/10] net: phy: add support for scanning PHY in PHY packages
+ nodes
+
+Add support for scanning PHY in PHY package nodes. PHY packages nodes
+are just container for actual PHY on the MDIO bus.
+
+Their PHY address defined in the PHY package node are absolute and
+reflect the address on the MDIO bus.
+
+mdio_bus.c and of_mdio.c is updated to now support and parse also
+PHY package subnode by checking if the node name match
+"ethernet-phy-package".
+
+As PHY package reg is mandatory and each PHY in the PHY package must
+have a reg, every invalid PHY Package node is ignored and will be
+skipped by the autoscan fallback.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/mdio/of_mdio.c | 79 +++++++++++++++++++++++++++-----------
+ drivers/net/phy/mdio_bus.c | 44 +++++++++++++++++----
+ 2 files changed, 92 insertions(+), 31 deletions(-)
+
+--- a/drivers/net/mdio/of_mdio.c
++++ b/drivers/net/mdio/of_mdio.c
+@@ -138,6 +138,53 @@ bool of_mdiobus_child_is_phy(struct devi
+ }
+ EXPORT_SYMBOL(of_mdiobus_child_is_phy);
+ 
++static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
++				   bool *scanphys)
++{
++	struct device_node *child;
++	int addr, rc = 0;
++
++	/* Loop over the child nodes and register a phy_device for each phy */
++	for_each_available_child_of_node(np, child) {
++		if (of_node_name_eq(child, "ethernet-phy-package")) {
++			/* Ignore invalid ethernet-phy-package node */
++			if (!of_find_property(child, "reg", NULL))
++				continue;
++
++			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
++			if (rc && rc != -ENODEV)
++				goto exit;
++
++			continue;
++		}
++
++		addr = of_mdio_parse_addr(&mdio->dev, child);
++		if (addr < 0) {
++			/* Skip scanning for invalid ethernet-phy-package node */
++			if (scanphys)
++				*scanphys = true;
++			continue;
++		}
++
++		if (of_mdiobus_child_is_phy(child))
++			rc = of_mdiobus_register_phy(mdio, child, addr);
++		else
++			rc = of_mdiobus_register_device(mdio, child, addr);
++
++		if (rc == -ENODEV)
++			dev_err(&mdio->dev,
++				"MDIO device at address %d is missing.\n",
++				addr);
++		else if (rc)
++			goto exit;
++	}
++
++	return 0;
++exit:
++	of_node_put(child);
++	return rc;
++}
++
+ /**
+  * __of_mdiobus_register - Register mii_bus and create PHYs from the device tree
+  * @mdio: pointer to mii_bus structure
+@@ -179,33 +226,18 @@ int __of_mdiobus_register(struct mii_bus
+ 		return rc;
+ 
+ 	/* Loop over the child nodes and register a phy_device for each phy */
+-	for_each_available_child_of_node(np, child) {
+-		addr = of_mdio_parse_addr(&mdio->dev, child);
+-		if (addr < 0) {
+-			scanphys = true;
+-			continue;
+-		}
+-
+-		if (of_mdiobus_child_is_phy(child))
+-			rc = of_mdiobus_register_phy(mdio, child, addr);
+-		else
+-			rc = of_mdiobus_register_device(mdio, child, addr);
+-
+-		if (rc == -ENODEV)
+-			dev_err(&mdio->dev,
+-				"MDIO device at address %d is missing.\n",
+-				addr);
+-		else if (rc)
+-			goto unregister;
+-	}
++	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
++	if (rc)
++		goto unregister;
+ 
+ 	if (!scanphys)
+ 		return 0;
+ 
+ 	/* auto scan for PHYs with empty reg property */
+ 	for_each_available_child_of_node(np, child) {
+-		/* Skip PHYs with reg property set */
+-		if (of_find_property(child, "reg", NULL))
++		/* Skip PHYs with reg property set or ethernet-phy-package node */
++		if (of_find_property(child, "reg", NULL) ||
++		    of_node_name_eq(child, "ethernet-phy-package"))
+ 			continue;
+ 
+ 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
+@@ -226,15 +258,16 @@ int __of_mdiobus_register(struct mii_bus
+ 				if (!rc)
+ 					break;
+ 				if (rc != -ENODEV)
+-					goto unregister;
++					goto put_unregister;
+ 			}
+ 		}
+ 	}
+ 
+ 	return 0;
+ 
+-unregister:
++put_unregister:
+ 	of_node_put(child);
++unregister:
+ 	mdiobus_unregister(mdio);
+ 	return rc;
+ }
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -448,19 +448,34 @@ EXPORT_SYMBOL(of_mdio_find_bus);
+  * found, set the of_node pointer for the mdio device. This allows
+  * auto-probed phy devices to be supplied with information passed in
+  * via DT.
++ * If a PHY package is found, PHY is searched also there.
+  */
+-static void of_mdiobus_link_mdiodev(struct mii_bus *bus,
+-				    struct mdio_device *mdiodev)
++static int of_mdiobus_find_phy(struct device *dev, struct mdio_device *mdiodev,
++			       struct device_node *np)
+ {
+-	struct device *dev = &mdiodev->dev;
+ 	struct device_node *child;
+ 
+-	if (dev->of_node || !bus->dev.of_node)
+-		return;
+-
+-	for_each_available_child_of_node(bus->dev.of_node, child) {
++	for_each_available_child_of_node(np, child) {
+ 		int addr;
+ 
++		if (of_node_name_eq(child, "ethernet-phy-package")) {
++			/* Validate PHY package reg presence */
++			if (!of_find_property(child, "reg", NULL)) {
++				of_node_put(child);
++				return -EINVAL;
++			}
++
++			if (!of_mdiobus_find_phy(dev, mdiodev, child)) {
++				/* The refcount for the PHY package will be
++				 * incremented later when PHY join the Package.
++				 */
++				of_node_put(child);
++				return 0;
++			}
++
++			continue;
++		}
++
+ 		addr = of_mdio_parse_addr(dev, child);
+ 		if (addr < 0)
+ 			continue;
+@@ -470,9 +485,22 @@ static void of_mdiobus_link_mdiodev(stru
+ 			/* The refcount on "child" is passed to the mdio
+ 			 * device. Do _not_ use of_node_put(child) here.
+ 			 */
+-			return;
++			return 0;
+ 		}
+ 	}
++
++	return -ENODEV;
++}
++
++static void of_mdiobus_link_mdiodev(struct mii_bus *bus,
++				    struct mdio_device *mdiodev)
++{
++	struct device *dev = &mdiodev->dev;
++
++	if (dev->of_node || !bus->dev.of_node)
++		return;
++
++	of_mdiobus_find_phy(dev, mdiodev, bus->dev.of_node);
+ }
+ #else /* !IS_ENABLED(CONFIG_OF_MDIO) */
+ static inline void of_mdiobus_link_mdiodev(struct mii_bus *mdio,

@@ -951,7 +951,7 @@ rtk_uint8 Sgmii_Init[SGMII_INIT_SIZE] = {
  *      Set UNDA behavior
  * Input:
  *      port        - port ID
- *      behavior    - 0: flooding to unknwon DA portmask; 1: drop; 2:trap; 3: flooding
+ *      behavior    - 0: flooding to unknown DA portmask; 1: drop; 2:trap; 3: flooding
  * Output:
  *      None
  * Return:
@@ -981,7 +981,7 @@ ret_t rtl8367c_setAsicPortUnknownDaBehavior(rtk_uint32 port, rtk_uint32 behavior
  * Input:
  *      port        - port ID
  * Output:
- *      pBehavior   - 0: flooding to unknwon DA portmask; 1: drop; 2:trap; 3: flooding
+ *      pBehavior   - 0: flooding to unknown DA portmask; 1: drop; 2:trap; 3: flooding
  * Return:
  *      RT_ERR_OK   - Success
  *      RT_ERR_SMI  - SMI access error
@@ -3724,7 +3724,7 @@ ret_t rtl8367c_setAsicPortExtMode(rtk_uint32 id, rtk_uint32 mode)
                     return retVal;
                 /*
                 1: MAC link = SGMII SerDes link
-                0: MAC link = SGMII config link £¨cfg_sgmii_link£©
+                0: MAC link = SGMII config link (cfg_sgmii_link)
                 */
                 if ((retVal = rtl8367c_setAsicRegBit(0x1d95, 2, 0)) != RT_ERR_OK)
                     return retVal;
@@ -4032,7 +4032,7 @@ ret_t rtl8367c_setAsicPortExtMode(rtk_uint32 id, rtk_uint32 mode)
                 if ((retVal = rtl8367c_setAsicRegBits(0x1d95, 0x1f00, 0x2)) != RT_ERR_OK)
                     return retVal;
 
-                /*select MAC link source when port6/7 be set sgmii mode £¨cfg_sgmii_link£©*/
+                /*select MAC link source when port6/7 be set sgmii mode (cfg_sgmii_link)*/
                 if ((retVal = rtl8367c_setAsicRegBit(0x1d95, 2, 0)) != RT_ERR_OK)
                     return retVal;
             }

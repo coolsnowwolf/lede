@@ -191,36 +191,6 @@ static u16 get_bmt_index(struct bbmt *bmt)
 	return 0;
 }
 
-static int
-read_bmt(u16 block, unsigned char *dat, unsigned char *fdm, int fdm_len)
-{
-	u32 len = bmtd.bmt_pgs << bmtd.pg_shift;
-
-	return bbt_nand_read(blk_pg(block), dat, len, fdm, fdm_len);
-}
-
-static struct bbbt *scan_bmt(u16 block)
-{
-	u8 fdm[4];
-
-	if (block < bmtd.pool_lba)
-		return NULL;
-
-	if (read_bmt(block, bmtd.bbt_buf, fdm, sizeof(fdm)))
-		return scan_bmt(block - 1);
-
-	if (is_valid_bmt(bmtd.bbt_buf, fdm)) {
-		bmtd.bmt_blk_idx = get_bmt_index(bmt_tbl((struct bbbt *)bmtd.bbt_buf));
-		if (bmtd.bmt_blk_idx == 0) {
-			pr_info("[BBT] FATAL ERR: bmt block index is wrong!\n");
-			return NULL;
-		}
-		pr_info("[BBT] BMT.v2 is found at 0x%x\n", block);
-		return (struct bbbt *)bmtd.bbt_buf;
-	} else
-		return scan_bmt(block - 1);
-}
-
 /* Write the Burner Bad Block Table to Nand Flash
  * n - write BMT to bmt_tbl[n]
  */
@@ -472,7 +442,30 @@ static int mtk_bmt_init_v2(struct device_node *np)
 	/* Scanning start from the first page of the last block
 	 * of whole flash
 	 */
-	bmtd.bbt = scan_bmt(bmtd.total_blks - 1);
+	bmtd.bbt = NULL;
+	for (block = bmtd.total_blks - 1; !bmtd.bbt && block >= bmtd.pool_lba; block--) {
+		u8 fdm[4];
+
+		if (bbt_nand_read(blk_pg(block), bmtd.bbt_buf, bufsz, fdm, sizeof(fdm))) {
+			/* Read failed, try the previous block */
+			continue;
+		}
+
+		if (!is_valid_bmt(bmtd.bbt_buf, fdm)) {
+			/* No valid BMT found, try the previous block */
+			continue;
+		}
+
+		bmtd.bmt_blk_idx = get_bmt_index(bmt_tbl((struct bbbt *)bmtd.bbt_buf));
+		if (bmtd.bmt_blk_idx == 0) {
+			pr_info("[BBT] FATAL ERR: bmt block index is wrong!\n");
+			break;
+		}
+
+		pr_info("[BBT] BMT.v2 is found at 0x%x\n", block);
+		bmtd.bbt = (struct bbbt *)bmtd.bbt_buf;
+	}
+
 	if (!bmtd.bbt) {
 		/* BMT not found */
 		if (bmtd.total_blks > BB_TABLE_MAX + BMT_TABLE_MAX) {

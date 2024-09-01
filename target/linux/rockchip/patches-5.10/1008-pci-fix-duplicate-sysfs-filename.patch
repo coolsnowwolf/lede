@@ -1,0 +1,108 @@
+From a74fc5b70d808aee44a75d3f2237f6017a3d0046 Mon Sep 17 00:00:00 2001
+From: Korneliusz Osmenda <korneliuszo@gmail.com>
+Date: Tue, 7 Feb 2023 10:59:16 +0800
+Subject: [PATCH] BACKPORT: FROMLIST: PCI: sysfs: Guard
+ pci_create_sysfs_dev_files with atomic value
+
+There is a race contition seen in rockchip platform which seems expose a long
+existing bug in PCI sysfs code.
+
+1. pci_bus_add_device() called pcibios_bus_add_device() or
+pci_fixup_device() but have not called pci_create_sysfs_dev_files() yet.
+Meanwhile pci_sysfs_init() is running and pci_create_sysfs_dev_files()
+was called for newly registered device. In this case function
+pci_create_sysfs_dev_files() is called two times, ones from
+pci_bus_add_device() and once from pci_sysfs_init().
+
+2. pci_sysfs_init() is called. It first sets sysfs_initialized to 1
+which unblock calling pci_create_sysfs_dev_files(). Then another bus
+registers new PCI device and calls pci_bus_add_device() which calls
+pci_create_sysfs_dev_files() and registers sysfs files. Function
+pci_sysfs_init() continues execution and calls function
+pci_create_sysfs_dev_files() also for this newly registered device. So
+pci_create_sysfs_dev_files() is again called two times.
+
+The call trace looks like:
+
+[    2.822232] [  T143] sysfs: cannot create duplicate filename '/devices/platform/fe170000.pcie/pci0002:20/0002:20:00.0/0002:21:00.0/config'
+[    2.822240] [  T143] CPU: 1 PID: 143 Comm: rk-pcie Not tainted 5.10.66 #56
+[    2.822245] [  T143] Hardware name: Telpo RK3588 F206 Board (DT)
+[    2.822251] [  T143] Call trace:
+[    2.822262] [  T143]  dump_backtrace+0x0/0x1c8
+[    2.822269] [  T143]  show_stack+0x1c/0x2c
+[    2.822276] [  T143]  dump_stack_lvl+0xdc/0x12c
+[    2.822282] [  T143]  dump_stack+0x1c/0x64
+[    2.822289] [  T143]  sysfs_warn_dup+0x6c/0x8c
+[    2.822296] [  T143]  sysfs_create_bin_file+0xe4/0x130
+[    2.822303] [  T143]  pci_create_sysfs_dev_files+0x50/0x210
+[    2.822310] [  T143]  pci_bus_add_device+0x30/0xac
+[    2.822316] [  T143]  pci_bus_add_devices+0x44/0x88
+[    2.822321] [  T143]  pci_bus_add_devices+0x70/0x88
+[    2.822327] [  T143]  pci_host_probe+0x78/0xb0
+[    2.822335] [  T143]  dw_pcie_host_init+0x308/0x3f8
+[    2.822340] [  T143]  rk_pcie_really_probe+0x954/0xe04
+[    2.822347] [  T143]  kthread+0x13c/0x344
+[    2.822353] [  T143]  ret_from_fork+0x10/0x30
+
+There are continuous reporting about this bug[1] can be found here[1].
+
+The above link leads me to the fix[2]. Upstream kernel has contained the fix:
+0ad52e381d85eb86906749e2b8073cdc2265844b ("Convert "config" to static attribute")
+However there are still corner bugs around directory create. So Bijorn created
+a Bugzilla item[3] for it. After a long time, Korneliusz Osmenda pushed a new
+patch to fix it. Then we wait for another long period of time without any update.
+IMO, [4] is better than other proposes. So just backport the better fix into vendor
+tree.
+
+[1] https: //lore.kernel.org/all/m3eebg9puj.fsf@t19.piap.pl/
+[2] https: //patchwork.kernel.org/project/linux-pci/patch/20210416205856.3234481-2-kw@linux.com/
+[3] Bug: https://bugzilla.kernel.org/show_bug.cgi?id=215515
+[4] https: //patchwork.kernel.org/project/linux-pci/patch/4469eba2-188b-aab7-07d1-5c77313fc42f@gmail.com/
+Signed-off-by: Korneliusz Osmenda <korneliuszo@gmail.com>
+Signed-off-by: Shawn Lin <shawn.lin@rock-chips.com>
+[Shawn: backport and reword to explain what happened]
+Change-Id: Ib0a54bc2204afa7d9136e8d3156b00ec6aa4d8b3
+(cherry-picked from https: //patchwork.kernel.org/project/linux-pci/patch/4469eba2-188b-aab7-07d1-5c77313fc42f@gmail.com/)
+---
+ drivers/pci/pci-sysfs.c | 10 ++++++++++
+ include/linux/pci.h     |  3 +++
+ 2 files changed, 13 insertions(+)
+
+--- a/drivers/pci/pci-sysfs.c
++++ b/drivers/pci/pci-sysfs.c
+@@ -1343,6 +1343,11 @@ int __must_check pci_create_sysfs_dev_fi
+ 	if (!sysfs_initialized)
+ 		return -EACCES;
+ 
++#ifdef CONFIG_NO_GKI
++	if (atomic_cmpxchg(&pdev->sysfs_init_cnt, 0, 1) == 1)
++		return 0; /* already added */
++#endif
++
+ 	if (pdev->cfg_size > PCI_CFG_SPACE_SIZE)
+ 		retval = sysfs_create_bin_file(&pdev->dev.kobj, &pcie_config_attr);
+ 	else
+@@ -1422,6 +1427,11 @@ void pci_remove_sysfs_dev_files(struct p
+ 	if (!sysfs_initialized)
+ 		return;
+ 
++#ifdef CONFIG_NO_GKI
++	if (atomic_cmpxchg(&pdev->sysfs_init_cnt, 1, 0) == 0)
++		return;	/* already removed */
++#endif
++
+ 	pci_remove_capabilities_sysfs(pdev);
+ 
+ 	if (pdev->cfg_size > PCI_CFG_SPACE_SIZE)
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -452,6 +452,9 @@ struct pci_dev {
+ 	pci_dev_flags_t dev_flags;
+ 	atomic_t	enable_cnt;	/* pci_enable_device has been called */
+ 
++#ifdef CONFIG_NO_GKI
++	atomic_t	sysfs_init_cnt;		/* pci_create_sysfs_dev_files has been called */
++#endif
+ 	u32		saved_config_space[16]; /* Config space saved at suspend time */
+ 	struct hlist_head saved_cap_space;
+ 	struct bin_attribute *rom_attr;		/* Attribute descriptor for sysfs ROM entry */

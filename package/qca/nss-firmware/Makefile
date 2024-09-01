@@ -22,9 +22,6 @@ PKG_MAINTAINER:=Robert Marko <robimarko@gmail.com>
 
 include $(INCLUDE_DIR)/package.mk
 
-RSTRIP:=:
-STRIP:=:
-
 VERSION_PATH=$(PKG_BUILD_DIR)/QCA_Networking_2022.SPF_12.0.0/ED1
 
 define Package/nss-firmware-default
@@ -32,6 +29,12 @@ define Package/nss-firmware-default
   CATEGORY:=Firmware
   URL:=$(PKG_SOURCE_URL)
   DEPENDS:=@TARGET_qualcommax
+endef
+
+define Package/nss-firmware-ipq5018
+$(Package/nss-firmware-default)
+  TITLE:=NSS firmware for IPQ5018 devices
+  NSS_ARCHIVE:=$(VERSION_PATH)/IPQ5018.ATH.12.0.0/BIN-NSS.FW.12.1-022-MP.R.tar.bz2
 endef
 
 define Package/nss-firmware-ipq6018
@@ -43,11 +46,20 @@ endef
 define Package/nss-firmware-ipq8074
 $(Package/nss-firmware-default)
   TITLE:=NSS firmware for IPQ8074 devices
-  NSS_ARCHIVE:=$(VERSION_PATH)/IPQ8074.ATH.12.0.0/BIN-NSS.FW.12.0.r1-002-HK.R.tar.bz2
+  NSS_ARCHIVE:=$(VERSION_PATH)/IPQ8074.ATH.12.0.0/BIN-NSS.FW.12.1-022-HK.R.tar.bz2
 endef
 
 define Build/Compile
+	true
+endef
 
+define Package/nss-firmware-ipq5018/install
+	mkdir -p $(PKG_BUILD_DIR)/IPQ5018
+	$(TAR) -C $(PKG_BUILD_DIR)/IPQ5018 -xf $(NSS_ARCHIVE) --strip-components=1
+	$(INSTALL_DIR) $(1)/lib/firmware/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/IPQ5018/retail_router0.bin \
+		$(1)/lib/firmware/qca-nss0.bin
 endef
 
 define Package/nss-firmware-ipq6018/install
@@ -56,7 +68,7 @@ define Package/nss-firmware-ipq6018/install
 	$(INSTALL_DIR) $(1)/lib/firmware/
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/IPQ6018/retail_router0.bin \
-		$(1)/lib/firmware/qca-nss0-retail.bin
+		$(1)/lib/firmware/qca-nss0.bin
 endef
 
 define Package/nss-firmware-ipq8074/install
@@ -65,11 +77,12 @@ define Package/nss-firmware-ipq8074/install
 	$(INSTALL_DIR) $(1)/lib/firmware/
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/IPQ8074/retail_router0.bin \
-		$(1)/lib/firmware/qca-nss0-retail.bin
+		$(1)/lib/firmware/qca-nss0.bin
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/IPQ8074/retail_router1.bin \
-		$(1)/lib/firmware/qca-nss1-retail.bin
+		$(1)/lib/firmware/qca-nss1.bin
 endef
 
+$(eval $(call BuildPackage,nss-firmware-ipq5018))
 $(eval $(call BuildPackage,nss-firmware-ipq6018))
 $(eval $(call BuildPackage,nss-firmware-ipq8074))
