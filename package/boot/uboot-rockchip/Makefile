@@ -77,8 +77,8 @@ define U-Boot/guangmiao-g4c-rk3399
   NAME:=GuangMiao G4C
   BUILD_DEVICES:= \
     sharevdi_guangmiao-g4c
-  DEPENDS:=+PACKAGE_u-boot-guangmiao-g4c-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
+  DEPENDS:=+PACKAGE_u-boot-guangmiao-g4c-rk3399:trusted-firmware-a-rk3399
+  PKG_BUILD_DEPENDS:=trusted-firmware-a-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
@@ -109,8 +109,8 @@ define U-Boot/rock-pi-4-rk3399
   NAME:=Rock Pi 4
   BUILD_DEVICES:= \
     radxa_rock-pi-4
-  DEPENDS:=+PACKAGE_u-boot-rock-pi-4-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
+  DEPENDS:=+PACKAGE_u-boot-rock-pi-4-rk3399:trusted-firmware-a-rk3399
+  PKG_BUILD_DEPENDS:=trusted-firmware-a-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
@@ -119,8 +119,8 @@ define U-Boot/rockpro64-rk3399
   NAME:=RockPro64
   BUILD_DEVICES:= \
     pine64_rockpro64
-  DEPENDS:=+PACKAGE_u-boot-rockpro64-rk3399:arm-trusted-firmware-rockchip
-  PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip
+  DEPENDS:=+PACKAGE_u-boot-rockpro64-rk3399:trusted-firmware-a-rk3399
+  PKG_BUILD_DEPENDS:=trusted-firmware-a-rk3399
   ATF:=rk3399_bl31.elf
 endef
 
