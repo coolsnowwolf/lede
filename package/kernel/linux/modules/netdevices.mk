@@ -1592,7 +1592,7 @@ define KernelPackage/igc
   DEPENDS:=@PCI_SUPPORT +kmod-ptp
   KCONFIG:=CONFIG_IGC
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
-  AUTOLOAD:=$(call AutoProbe,igc)
+  AUTOLOAD:=$(call AutoLoad,35,igc)
 endef
 
 define KernelPackage/igc/description
@@ -1743,7 +1743,7 @@ define KernelPackage/atlantic
   DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +kmod-macsec
   KCONFIG:=CONFIG_AQTION
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/aquantia/atlantic/atlantic.ko
-  AUTOLOAD:=$(call AutoProbe,atlantic)
+  AUTOLOAD:=$(call AutoLoad,36,atlantic)
 endef
 
 define KernelPackage/atlantic/description
