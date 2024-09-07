@@ -1,0 +1,63 @@
+From 26cd9bafc1d25e602952ee86cd2a5b8c3a995490 Mon Sep 17 00:00:00 2001
+From: Stijn Tintel <stijn@linux-ipv6.be>
+Date: Fri, 28 Jul 2023 16:27:47 +0300
+Subject: [PATCH] Revert "Do prune_association only after the STA is
+ authorized"
+
+Commit e978072baaca ("Do prune_association only after the STA is
+authorized") causes issues when an STA roams from one interface to
+another interface on the same PHY. The mt7915 driver is not able to
+handle this properly. While the commits fixes a DoS, there are other
+devices and drivers with the same limitation, so revert to the orginal
+behavior for now, until we have a better solution in place.
+
+Ref: https://github.com/openwrt/openwrt/issues/13156
+Signed-off-by: Stijn Tintel <stijn@linux-ipv6.be>
+---
+ src/ap/hostapd.c  | 14 +++++++++++---
+ src/ap/sta_info.c |  3 ---
+ 2 files changed, 11 insertions(+), 6 deletions(-)
+
+--- a/src/ap/hostapd.c
++++ b/src/ap/hostapd.c
+@@ -4055,6 +4055,8 @@ int hostapd_remove_iface(struct hapd_int
+ void hostapd_new_assoc_sta(struct hostapd_data *hapd, struct sta_info *sta,
+ 			   int reassoc)
+ {
++	int mld_assoc_link_id = -1;
++
+ 	if (hapd->tkip_countermeasures) {
+ 		hostapd_drv_sta_deauth(hapd, sta->addr,
+ 				       WLAN_REASON_MICHAEL_MIC_FAILURE);
+@@ -4062,10 +4064,16 @@ void hostapd_new_assoc_sta(struct hostap
+ 	}
+ 
+ #ifdef CONFIG_IEEE80211BE
+-	if (ap_sta_is_mld(hapd, sta) &&
+-	    sta->mld_assoc_link_id != hapd->mld_link_id)
+-		return;
++	if (ap_sta_is_mld(hapd, sta)) {
++		if (sta->mld_assoc_link_id == hapd->mld_link_id) {
++			mld_assoc_link_id = sta->mld_assoc_link_id;
++		} else {
++			return;
++		}
++	}
+ #endif /* CONFIG_IEEE80211BE */
++        if (mld_assoc_link_id != -2)
++		hostapd_prune_associations(hapd, sta->addr, mld_assoc_link_id);
+ 
+ 	ap_sta_clear_disconnect_timeouts(hapd, sta);
+ 	sta->post_csa_sa_query = 0;
+--- a/src/ap/sta_info.c
++++ b/src/ap/sta_info.c
+@@ -1485,9 +1485,6 @@ bool ap_sta_set_authorized_flag(struct h
+ 				mld_assoc_link_id = -2;
+ 		}
+ #endif /* CONFIG_IEEE80211BE */
+-		if (mld_assoc_link_id != -2)
+-			hostapd_prune_associations(hapd, sta->addr,
+-						   mld_assoc_link_id);
+ 		sta->flags |= WLAN_STA_AUTHORIZED;
+ 	} else {
+ 		sta->flags &= ~WLAN_STA_AUTHORIZED;

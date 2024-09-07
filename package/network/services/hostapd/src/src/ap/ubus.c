@@ -879,7 +879,8 @@ hostapd_switch_chan(struct ubus_context *ctx, struct ubus_object *obj,
 				mode ? &mode->he_capab[IEEE80211_MODE_AP] :
 				NULL,
 				mode ? &mode->eht_capab[IEEE80211_MODE_AP] :
-				NULL);
+				NULL,
+				hostapd_get_punct_bitmap(hapd));
 
 	for (i = 0; i < hapd->iface->num_bss; i++) {
 		struct hostapd_data *bss = hapd->iface->bss[i];

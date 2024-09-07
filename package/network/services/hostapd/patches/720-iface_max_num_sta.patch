@@ -1,6 +1,14 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 26 May 2021 14:34:46 +0200
+Subject: [PATCH] hostapd: add support for specifying the maxassoc parameter as
+ a device option
+
+It allows enforcing a limit on associated stations to be enforced for the
+full device, e.g. in order to deal with hardware/driver limitations
+
 --- a/hostapd/config_file.c
 +++ b/hostapd/config_file.c
-@@ -2850,6 +2850,14 @@ static int hostapd_config_fill(struct ho
+@@ -3092,6 +3092,14 @@ static int hostapd_config_fill(struct ho
  				   line, bss->max_num_sta, MAX_STA_COUNT);
  			return 1;
  		}
@@ -15,21 +23,33 @@
  	} else if (os_strcmp(buf, "wpa") == 0) {
  		bss->wpa = atoi(pos);
  	} else if (os_strcmp(buf, "extended_key_id") == 0) {
---- a/src/ap/hostapd.h
-+++ b/src/ap/hostapd.h
-@@ -734,6 +734,7 @@ void hostapd_cleanup_cs_params(struct ho
- void hostapd_periodic_iface(struct hostapd_iface *iface);
- int hostapd_owe_trans_get_info(struct hostapd_data *hapd);
- void hostapd_ocv_check_csa_sa_query(void *eloop_ctx, void *timeout_ctx);
-+int hostapd_check_max_sta(struct hostapd_data *hapd);
+--- a/src/ap/ap_config.h
++++ b/src/ap/ap_config.h
+@@ -1087,6 +1087,8 @@ struct hostapd_config {
+ 	unsigned int track_sta_max_num;
+ 	unsigned int track_sta_max_age;
  
- void hostapd_switch_color(struct hostapd_data *hapd, u64 bitmap);
- void hostapd_cleanup_cca_params(struct hostapd_data *hapd);
++	int max_num_sta;
++
+ 	char country[3]; /* first two octets: country code as described in
+ 			  * ISO/IEC 3166-1. Third octet:
+ 			  * ' ' (ascii 32): all environments
+--- a/src/ap/beacon.c
++++ b/src/ap/beacon.c
+@@ -1634,7 +1634,7 @@ void handle_probe_req(struct hostapd_dat
+ 	if (hapd->conf->no_probe_resp_if_max_sta &&
+ 	    is_multicast_ether_addr(mgmt->da) &&
+ 	    is_multicast_ether_addr(mgmt->bssid) &&
+-	    hapd->num_sta >= hapd->conf->max_num_sta &&
++	    hostapd_check_max_sta(hapd) &&
+ 	    !ap_get_sta(hapd, mgmt->sa)) {
+ 		wpa_printf(MSG_MSGDUMP, "%s: Ignore Probe Request from " MACSTR
+ 			   " since no room for additional STA",
 --- a/src/ap/hostapd.c
 +++ b/src/ap/hostapd.c
-@@ -272,6 +272,30 @@ static int hostapd_iface_conf_changed(st
+@@ -243,6 +243,29 @@ static void hostapd_clear_old_bss(struct
+ #endif /* CONFIG_NO_RADIUS */
  }
- 
  
 +static inline int hostapd_iface_num_sta(struct hostapd_iface *iface)
 +{
@@ -54,29 +74,16 @@
 +
 +	return 0;
 +}
-+
- int hostapd_reload_config(struct hostapd_iface *iface, int reconf)
- {
- 	struct hapd_interfaces *interfaces = iface->interfaces;
---- a/src/ap/beacon.c
-+++ b/src/ap/beacon.c
-@@ -1252,7 +1252,7 @@ void handle_probe_req(struct hostapd_dat
- 	if (hapd->conf->no_probe_resp_if_max_sta &&
- 	    is_multicast_ether_addr(mgmt->da) &&
- 	    is_multicast_ether_addr(mgmt->bssid) &&
--	    hapd->num_sta >= hapd->conf->max_num_sta &&
-+	    hostapd_check_max_sta(hapd) &&
- 	    !ap_get_sta(hapd, mgmt->sa)) {
- 		wpa_printf(MSG_MSGDUMP, "%s: Ignore Probe Request from " MACSTR
- 			   " since no room for additional STA",
---- a/src/ap/ap_config.h
-+++ b/src/ap/ap_config.h
-@@ -1037,6 +1037,8 @@ struct hostapd_config {
- 	unsigned int track_sta_max_num;
- 	unsigned int track_sta_max_age;
  
-+	int max_num_sta;
-+
- 	char country[3]; /* first two octets: country code as described in
- 			  * ISO/IEC 3166-1. Third octet:
- 			  * ' ' (ascii 32): all environments
+ static void hostapd_clear_old(struct hostapd_iface *iface)
+ {
+--- a/src/ap/hostapd.h
++++ b/src/ap/hostapd.h
+@@ -818,6 +818,7 @@ void hostapd_cleanup_cs_params(struct ho
+ void hostapd_periodic_iface(struct hostapd_iface *iface);
+ int hostapd_owe_trans_get_info(struct hostapd_data *hapd);
+ void hostapd_ocv_check_csa_sa_query(void *eloop_ctx, void *timeout_ctx);
++int hostapd_check_max_sta(struct hostapd_data *hapd);
+ 
+ void hostapd_switch_color(struct hostapd_data *hapd, u64 bitmap);
+ void hostapd_cleanup_cca_params(struct hostapd_data *hapd);

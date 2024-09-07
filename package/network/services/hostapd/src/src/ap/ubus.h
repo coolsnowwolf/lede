@@ -27,6 +27,7 @@ struct hostapd_iface;
 struct hostapd_data;
 struct hapd_interfaces;
 struct rrm_measurement_beacon_report;
+struct sta_info;
 
 #ifdef UBUS_SUPPORT
 
