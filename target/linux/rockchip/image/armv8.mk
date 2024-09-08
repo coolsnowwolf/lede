@@ -283,6 +283,17 @@ define Device/rocktech_mpc1903
 endef
 TARGET_DEVICES += rocktech_mpc1903
 
+define Device/rumu3f_fine-3399
+  DEVICE_VENDOR := RUMU3F
+  DEVICE_MODEL := FINE 3399
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := fine-3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 -urngd
+endef
+TARGET_DEVICES += rumu3f_fine-3399
+
+
 define Device/scensmart_sv901-eaio
   DEVICE_VENDOR := ScenSmart
   DEVICE_MODEL := SV901 EAIO
