@@ -1,0 +1,263 @@
+From b345f0637c0042f9e6b78378a32256d90f485774 Mon Sep 17 00:00:00 2001
+From: Aloka Dixit <quic_alokad@quicinc.com>
+Date: Mon, 30 Jan 2023 16:12:26 -0800
+Subject: [PATCH] wifi: cfg80211: include puncturing bitmap in channel switch
+ events
+
+Add puncturing bitmap in channel switch notifications
+and corresponding trace functions.
+
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+Link: https://lore.kernel.org/r/20230131001227.25014-4-quic_alokad@quicinc.com
+[fix qtnfmac]
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ drivers/net/wireless/ath/ath6kl/cfg80211.c    |  2 +-
+ drivers/net/wireless/marvell/mwifiex/11h.c    |  2 +-
+ .../net/wireless/quantenna/qtnfmac/event.c    |  2 +-
+ include/net/cfg80211.h                        |  6 +++--
+ net/mac80211/cfg.c                            |  5 ++--
+ net/mac80211/mlme.c                           |  4 ++--
+ net/wireless/nl80211.c                        | 20 ++++++++++------
+ net/wireless/trace.h                          | 24 ++++++++++++-------
+ 8 files changed, 41 insertions(+), 24 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath6kl/cfg80211.c
++++ b/drivers/net/wireless/ath/ath6kl/cfg80211.c
+@@ -1119,7 +1119,7 @@ void ath6kl_cfg80211_ch_switch_notify(st
+ 					NL80211_CHAN_HT20 : NL80211_CHAN_NO_HT);
+ 
+ 	mutex_lock(&vif->wdev.mtx);
+-	cfg80211_ch_switch_notify(vif->ndev, &chandef, 0);
++	cfg80211_ch_switch_notify(vif->ndev, &chandef, 0, 0);
+ 	mutex_unlock(&vif->wdev.mtx);
+ }
+ 
+--- a/drivers/net/wireless/marvell/mwifiex/11h.c
++++ b/drivers/net/wireless/marvell/mwifiex/11h.c
+@@ -292,6 +292,6 @@ void mwifiex_dfs_chan_sw_work_queue(stru
+ 	mwifiex_dbg(priv->adapter, MSG,
+ 		    "indicating channel switch completion to kernel\n");
+ 	mutex_lock(&priv->wdev.mtx);
+-	cfg80211_ch_switch_notify(priv->netdev, &priv->dfs_chandef, 0);
++	cfg80211_ch_switch_notify(priv->netdev, &priv->dfs_chandef, 0, 0);
+ 	mutex_unlock(&priv->wdev.mtx);
+ }
+--- a/drivers/net/wireless/quantenna/qtnfmac/event.c
++++ b/drivers/net/wireless/quantenna/qtnfmac/event.c
+@@ -478,7 +478,7 @@ qtnf_event_handle_freq_change(struct qtn
+ 			continue;
+ 
+ 		mutex_lock(&vif->wdev.mtx);
+-		cfg80211_ch_switch_notify(vif->netdev, &chandef, 0);
++		cfg80211_ch_switch_notify(vif->netdev, &chandef, 0, 0);
+ 		mutex_unlock(&vif->wdev.mtx);
+ 	}
+ 
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -8441,13 +8441,14 @@ bool cfg80211_reg_can_beacon_relax(struc
+  * @dev: the device which switched channels
+  * @chandef: the new channel definition
+  * @link_id: the link ID for MLO, must be 0 for non-MLO
++ * @punct_bitmap: the new puncturing bitmap
+  *
+  * Caller must acquire wdev_lock, therefore must only be called from sleepable
+  * driver context!
+  */
+ void cfg80211_ch_switch_notify(struct net_device *dev,
+ 			       struct cfg80211_chan_def *chandef,
+-			       unsigned int link_id);
++			       unsigned int link_id, u16 punct_bitmap);
+ 
+ /*
+  * cfg80211_ch_switch_started_notify - notify channel switch start
+@@ -8456,6 +8457,7 @@ void cfg80211_ch_switch_notify(struct ne
+  * @link_id: the link ID for MLO, must be 0 for non-MLO
+  * @count: the number of TBTTs until the channel switch happens
+  * @quiet: whether or not immediate quiet was requested by the AP
++ * @punct_bitmap: the future puncturing bitmap
+  *
+  * Inform the userspace about the channel switch that has just
+  * started, so that it can take appropriate actions (eg. starting
+@@ -8464,7 +8466,7 @@ void cfg80211_ch_switch_notify(struct ne
+ void cfg80211_ch_switch_started_notify(struct net_device *dev,
+ 				       struct cfg80211_chan_def *chandef,
+ 				       unsigned int link_id, u8 count,
+-				       bool quiet);
++				       bool quiet, u16 punct_bitmap);
+ 
+ /**
+  * ieee80211_operating_class_to_band - convert operating class to band
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -3612,7 +3612,8 @@ static int __ieee80211_csa_finalize(stru
+ 	if (err)
+ 		return err;
+ 
+-	cfg80211_ch_switch_notify(sdata->dev, &sdata->deflink.csa_chandef, 0);
++	cfg80211_ch_switch_notify(sdata->dev, &sdata->deflink.csa_chandef, 0,
++				  0);
+ 
+ 	return 0;
+ }
+@@ -3884,7 +3885,7 @@ __ieee80211_channel_switch(struct wiphy
+ 
+ 	cfg80211_ch_switch_started_notify(sdata->dev,
+ 					  &sdata->deflink.csa_chandef, 0,
+-					  params->count, params->block_tx);
++					  params->count, params->block_tx, 0);
+ 
+ 	if (changed) {
+ 		ieee80211_link_info_change_notify(sdata, &sdata->deflink,
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -1784,7 +1784,7 @@ static void ieee80211_chswitch_post_beac
+ 		return;
+ 	}
+ 
+-	cfg80211_ch_switch_notify(sdata->dev, &link->reserved_chandef, 0);
++	cfg80211_ch_switch_notify(sdata->dev, &link->reserved_chandef, 0, 0);
+ }
+ 
+ void ieee80211_chswitch_done(struct ieee80211_vif *vif, bool success)
+@@ -1994,7 +1994,7 @@ ieee80211_sta_process_chanswitch(struct
+ 	mutex_unlock(&local->mtx);
+ 
+ 	cfg80211_ch_switch_started_notify(sdata->dev, &csa_ie.chandef, 0,
+-					  csa_ie.count, csa_ie.mode);
++					  csa_ie.count, csa_ie.mode, 0);
+ 
+ 	if (local->ops->channel_switch) {
+ 		/* use driver's channel switch callback */
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -19093,7 +19093,7 @@ static void nl80211_ch_switch_notify(str
+ 				     struct cfg80211_chan_def *chandef,
+ 				     gfp_t gfp,
+ 				     enum nl80211_commands notif,
+-				     u8 count, bool quiet)
++				     u8 count, bool quiet, u16 punct_bitmap)
+ {
+ 	struct wireless_dev *wdev = netdev->ieee80211_ptr;
+ 	struct sk_buff *msg;
+@@ -19127,6 +19127,9 @@ static void nl80211_ch_switch_notify(str
+ 			goto nla_put_failure;
+ 	}
+ 
++	if (nla_put_u32(msg, NL80211_ATTR_PUNCT_BITMAP, punct_bitmap))
++		goto nla_put_failure;
++
+ 	genlmsg_end(msg, hdr);
+ 
+ 	genlmsg_multicast_netns(&nl80211_fam, wiphy_net(&rdev->wiphy), msg, 0,
+@@ -19139,7 +19142,7 @@ static void nl80211_ch_switch_notify(str
+ 
+ void cfg80211_ch_switch_notify(struct net_device *dev,
+ 			       struct cfg80211_chan_def *chandef,
+-			       unsigned int link_id)
++			       unsigned int link_id, u16 punct_bitmap)
+ {
+ 	struct wireless_dev *wdev = dev->ieee80211_ptr;
+ 	struct wiphy *wiphy = wdev->wiphy;
+@@ -19148,7 +19151,7 @@ void cfg80211_ch_switch_notify(struct ne
+ 	ASSERT_WDEV_LOCK(wdev);
+ 	WARN_INVALID_LINK_ID(wdev, link_id);
+ 
+-	trace_cfg80211_ch_switch_notify(dev, chandef, link_id);
++	trace_cfg80211_ch_switch_notify(dev, chandef, link_id, punct_bitmap);
+ 
+ 	switch (wdev->iftype) {
+ 	case NL80211_IFTYPE_STATION:
+@@ -19176,14 +19179,15 @@ void cfg80211_ch_switch_notify(struct ne
+ 	cfg80211_sched_dfs_chan_update(rdev);
+ 
+ 	nl80211_ch_switch_notify(rdev, dev, link_id, chandef, GFP_KERNEL,
+-				 NL80211_CMD_CH_SWITCH_NOTIFY, 0, false);
++				 NL80211_CMD_CH_SWITCH_NOTIFY, 0, false,
++				 punct_bitmap);
+ }
+ EXPORT_SYMBOL(cfg80211_ch_switch_notify);
+ 
+ void cfg80211_ch_switch_started_notify(struct net_device *dev,
+ 				       struct cfg80211_chan_def *chandef,
+ 				       unsigned int link_id, u8 count,
+-				       bool quiet)
++				       bool quiet, u16 punct_bitmap)
+ {
+ 	struct wireless_dev *wdev = dev->ieee80211_ptr;
+ 	struct wiphy *wiphy = wdev->wiphy;
+@@ -19192,11 +19196,13 @@ void cfg80211_ch_switch_started_notify(s
+ 	ASSERT_WDEV_LOCK(wdev);
+ 	WARN_INVALID_LINK_ID(wdev, link_id);
+ 
+-	trace_cfg80211_ch_switch_started_notify(dev, chandef, link_id);
++	trace_cfg80211_ch_switch_started_notify(dev, chandef, link_id,
++						punct_bitmap);
++
+ 
+ 	nl80211_ch_switch_notify(rdev, dev, link_id, chandef, GFP_KERNEL,
+ 				 NL80211_CMD_CH_SWITCH_STARTED_NOTIFY,
+-				 count, quiet);
++				 count, quiet, punct_bitmap);
+ }
+ EXPORT_SYMBOL(cfg80211_ch_switch_started_notify);
+ 
+--- a/net/wireless/trace.h
++++ b/net/wireless/trace.h
+@@ -3245,39 +3245,47 @@ TRACE_EVENT(cfg80211_chandef_dfs_require
+ TRACE_EVENT(cfg80211_ch_switch_notify,
+ 	TP_PROTO(struct net_device *netdev,
+ 		 struct cfg80211_chan_def *chandef,
+-		 unsigned int link_id),
+-	TP_ARGS(netdev, chandef, link_id),
++		 unsigned int link_id,
++		 u16 punct_bitmap),
++	TP_ARGS(netdev, chandef, link_id, punct_bitmap),
+ 	TP_STRUCT__entry(
+ 		NETDEV_ENTRY
+ 		CHAN_DEF_ENTRY
+ 		__field(unsigned int, link_id)
++		__field(u16, punct_bitmap)
+ 	),
+ 	TP_fast_assign(
+ 		NETDEV_ASSIGN;
+ 		CHAN_DEF_ASSIGN(chandef);
+ 		__entry->link_id = link_id;
++		__entry->punct_bitmap = punct_bitmap;
+ 	),
+-	TP_printk(NETDEV_PR_FMT ", " CHAN_DEF_PR_FMT ", link:%d",
+-		  NETDEV_PR_ARG, CHAN_DEF_PR_ARG, __entry->link_id)
++	TP_printk(NETDEV_PR_FMT ", " CHAN_DEF_PR_FMT ", link:%d, punct_bitmap:%u",
++		  NETDEV_PR_ARG, CHAN_DEF_PR_ARG, __entry->link_id,
++		  __entry->punct_bitmap)
+ );
+ 
+ TRACE_EVENT(cfg80211_ch_switch_started_notify,
+ 	TP_PROTO(struct net_device *netdev,
+ 		 struct cfg80211_chan_def *chandef,
+-		 unsigned int link_id),
+-	TP_ARGS(netdev, chandef, link_id),
++		 unsigned int link_id,
++		 u16 punct_bitmap),
++	TP_ARGS(netdev, chandef, link_id, punct_bitmap),
+ 	TP_STRUCT__entry(
+ 		NETDEV_ENTRY
+ 		CHAN_DEF_ENTRY
+ 		__field(unsigned int, link_id)
++		__field(u16, punct_bitmap)
+ 	),
+ 	TP_fast_assign(
+ 		NETDEV_ASSIGN;
+ 		CHAN_DEF_ASSIGN(chandef);
+ 		__entry->link_id = link_id;
++		__entry->punct_bitmap = punct_bitmap;
+ 	),
+-	TP_printk(NETDEV_PR_FMT ", " CHAN_DEF_PR_FMT ", link:%d",
+-		  NETDEV_PR_ARG, CHAN_DEF_PR_ARG, __entry->link_id)
++	TP_printk(NETDEV_PR_FMT ", " CHAN_DEF_PR_FMT ", link:%d, punct_bitmap:%u",
++		  NETDEV_PR_ARG, CHAN_DEF_PR_ARG, __entry->link_id,
++		  __entry->punct_bitmap)
+ );
+ 
+ TRACE_EVENT(cfg80211_radar_event,

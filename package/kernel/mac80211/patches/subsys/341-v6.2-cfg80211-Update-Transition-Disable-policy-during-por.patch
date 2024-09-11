@@ -1,0 +1,189 @@
+From 0ff57171d6d225558c81a69439d5323e35b40549 Mon Sep 17 00:00:00 2001
+From: Vinayak Yadawad <vinayak.yadawad@broadcom.com>
+Date: Wed, 7 Sep 2022 18:14:48 +0530
+Subject: [PATCH] cfg80211: Update Transition Disable policy during port
+ authorization
+
+In case of 4way handshake offload, transition disable policy
+updated by the AP during EAPOL 3/4 is not updated to the upper layer.
+This results in mismatch between transition disable policy
+between the upper layer and the driver. This patch addresses this
+issue by updating transition disable policy as part of port
+authorization indication.
+
+Signed-off-by: Vinayak Yadawad <vinayak.yadawad@broadcom.com>
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/cfg80211.c  |  2 +-
+ include/net/cfg80211.h                               |  4 +++-
+ include/uapi/linux/nl80211.h                         |  3 +++
+ net/wireless/core.h                                  |  5 ++++-
+ net/wireless/nl80211.c                               |  8 +++++++-
+ net/wireless/nl80211.h                               |  3 ++-
+ net/wireless/sme.c                                   | 12 ++++++++----
+ net/wireless/util.c                                  |  4 +++-
+ 8 files changed, 31 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -6010,7 +6010,7 @@ done:
+ 	brcmf_dbg(CONN, "Report roaming result\n");
+ 
+ 	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_1X && profile->is_ft) {
+-		cfg80211_port_authorized(ndev, profile->bssid, GFP_KERNEL);
++		cfg80211_port_authorized(ndev, profile->bssid, NULL, 0, GFP_KERNEL);
+ 		brcmf_dbg(CONN, "Report port authorized\n");
+ 	}
+ 
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -7836,6 +7836,8 @@ void cfg80211_roamed(struct net_device *
+  *
+  * @dev: network device
+  * @bssid: the BSSID of the AP
++ * @td_bitmap: transition disable policy
++ * @td_bitmap_len: Length of transition disable policy
+  * @gfp: allocation flags
+  *
+  * This function should be called by a driver that supports 4 way handshake
+@@ -7846,7 +7848,7 @@ void cfg80211_roamed(struct net_device *
+  * indicate the 802.11 association.
+  */
+ void cfg80211_port_authorized(struct net_device *dev, const u8 *bssid,
+-			      gfp_t gfp);
++			      const u8* td_bitmap, u8 td_bitmap_len, gfp_t gfp);
+ 
+ /**
+  * cfg80211_disconnected - notify cfg80211 that connection was dropped
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -2749,6 +2749,8 @@ enum nl80211_commands {
+  *	When used with %NL80211_CMD_FRAME_TX_STATUS, indicates the ack RX
+  *	timestamp. When used with %NL80211_CMD_FRAME RX notification, indicates
+  *	the incoming frame RX timestamp.
++ * @NL80211_ATTR_TD_BITMAP: Transition Disable bitmap, for subsequent
++ *	(re)associations.
+  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
+  * @NL80211_ATTR_MAX: highest attribute number currently defined
+  * @__NL80211_ATTR_AFTER_LAST: internal use
+@@ -3276,6 +3278,7 @@ enum nl80211_attrs {
+ 
+ 	NL80211_ATTR_TX_HW_TIMESTAMP,
+ 	NL80211_ATTR_RX_HW_TIMESTAMP,
++	NL80211_ATTR_TD_BITMAP,
+ 
+ 	/* add attributes here, update the policy in nl80211.c */
+ 
+--- a/net/wireless/core.h
++++ b/net/wireless/core.h
+@@ -283,6 +283,8 @@ struct cfg80211_event {
+ 		} ij;
+ 		struct {
+ 			u8 bssid[ETH_ALEN];
++			const u8 *td_bitmap;
++			u8 td_bitmap_len;
+ 		} pa;
+ 	};
+ };
+@@ -427,7 +429,8 @@ int cfg80211_disconnect(struct cfg80211_
+ 			bool wextev);
+ void __cfg80211_roamed(struct wireless_dev *wdev,
+ 		       struct cfg80211_roam_info *info);
+-void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid);
++void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid,
++				const u8 *td_bitmap, u8 td_bitmap_len);
+ int cfg80211_mgd_wext_connect(struct cfg80211_registered_device *rdev,
+ 			      struct wireless_dev *wdev);
+ void cfg80211_autodisconnect_wk(struct work_struct *work);
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -18034,7 +18034,8 @@ void nl80211_send_roamed(struct cfg80211
+ }
+ 
+ void nl80211_send_port_authorized(struct cfg80211_registered_device *rdev,
+-				  struct net_device *netdev, const u8 *bssid)
++				  struct net_device *netdev, const u8 *bssid,
++				  const u8 *td_bitmap, u8 td_bitmap_len)
+ {
+ 	struct sk_buff *msg;
+ 	void *hdr;
+@@ -18054,6 +18055,11 @@ void nl80211_send_port_authorized(struct
+ 	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid))
+ 		goto nla_put_failure;
+ 
++	if ((td_bitmap_len > 0) && td_bitmap)
++		if (nla_put(msg, NL80211_ATTR_TD_BITMAP,
++			    td_bitmap_len, td_bitmap))
++			goto nla_put_failure;
++
+ 	genlmsg_end(msg, hdr);
+ 
+ 	genlmsg_multicast_netns(&nl80211_fam, wiphy_net(&rdev->wiphy), msg, 0,
+--- a/net/wireless/nl80211.h
++++ b/net/wireless/nl80211.h
+@@ -83,7 +83,8 @@ void nl80211_send_roamed(struct cfg80211
+ 			 struct net_device *netdev,
+ 			 struct cfg80211_roam_info *info, gfp_t gfp);
+ void nl80211_send_port_authorized(struct cfg80211_registered_device *rdev,
+-				  struct net_device *netdev, const u8 *bssid);
++				  struct net_device *netdev, const u8 *bssid,
++				  const u8 *td_bitmap, u8 td_bitmap_len);
+ void nl80211_send_disconnected(struct cfg80211_registered_device *rdev,
+ 			       struct net_device *netdev, u16 reason,
+ 			       const u8 *ie, size_t ie_len, bool from_ap);
+--- a/net/wireless/sme.c
++++ b/net/wireless/sme.c
+@@ -1266,7 +1266,8 @@ out:
+ }
+ EXPORT_SYMBOL(cfg80211_roamed);
+ 
+-void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid)
++void __cfg80211_port_authorized(struct wireless_dev *wdev, const u8 *bssid,
++					const u8 *td_bitmap, u8 td_bitmap_len)
+ {
+ 	ASSERT_WDEV_LOCK(wdev);
+ 
+@@ -1279,11 +1280,11 @@ void __cfg80211_port_authorized(struct w
+ 		return;
+ 
+ 	nl80211_send_port_authorized(wiphy_to_rdev(wdev->wiphy), wdev->netdev,
+-				     bssid);
++				     bssid, td_bitmap, td_bitmap_len);
+ }
+ 
+ void cfg80211_port_authorized(struct net_device *dev, const u8 *bssid,
+-			      gfp_t gfp)
++			      const u8 *td_bitmap, u8 td_bitmap_len, gfp_t gfp)
+ {
+ 	struct wireless_dev *wdev = dev->ieee80211_ptr;
+ 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
+@@ -1293,12 +1294,15 @@ void cfg80211_port_authorized(struct net
+ 	if (WARN_ON(!bssid))
+ 		return;
+ 
+-	ev = kzalloc(sizeof(*ev), gfp);
++	ev = kzalloc(sizeof(*ev) + td_bitmap_len, gfp);
+ 	if (!ev)
+ 		return;
+ 
+ 	ev->type = EVENT_PORT_AUTHORIZED;
+ 	memcpy(ev->pa.bssid, bssid, ETH_ALEN);
++	ev->pa.td_bitmap = ((u8 *)ev) + sizeof(*ev);
++	ev->pa.td_bitmap_len = td_bitmap_len;
++	memcpy((void *)ev->pa.td_bitmap, td_bitmap, td_bitmap_len);
+ 
+ 	/*
+ 	 * Use the wdev event list so that if there are pending
+--- a/net/wireless/util.c
++++ b/net/wireless/util.c
+@@ -1065,7 +1065,9 @@ void cfg80211_process_wdev_events(struct
+ 			__cfg80211_leave(wiphy_to_rdev(wdev->wiphy), wdev);
+ 			break;
+ 		case EVENT_PORT_AUTHORIZED:
+-			__cfg80211_port_authorized(wdev, ev->pa.bssid);
++			__cfg80211_port_authorized(wdev, ev->pa.bssid,
++						   ev->pa.td_bitmap,
++						   ev->pa.td_bitmap_len);
+ 			break;
+ 		}
+ 		wdev_unlock(wdev);

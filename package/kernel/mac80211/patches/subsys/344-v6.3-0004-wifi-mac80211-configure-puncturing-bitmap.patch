@@ -1,0 +1,107 @@
+From 2cc25e4b2a04cdd90dbb2916678745565cc4aeed Mon Sep 17 00:00:00 2001
+From: Aloka Dixit <quic_alokad@quicinc.com>
+Date: Mon, 30 Jan 2023 16:12:27 -0800
+Subject: [PATCH] wifi: mac80211: configure puncturing bitmap
+
+- Configure the bitmap in link_conf and notify the driver.
+- Modify 'change' in ieee80211_start_ap() from u32 to u64 to support
+BSS_CHANGED_EHT_PUNCTURING.
+- Propagate the bitmap in channel switch events to userspace.
+
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+Signed-off-by: Muna Sinada <quic_msinada@quicinc.com>
+Link: https://lore.kernel.org/r/20230131001227.25014-5-quic_alokad@quicinc.com
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ include/net/mac80211.h |  3 +++
+ net/mac80211/cfg.c     | 22 +++++++++++++++++++---
+ 2 files changed, 22 insertions(+), 3 deletions(-)
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -645,6 +645,7 @@ struct ieee80211_fils_discovery {
+  * @csa_active: marks whether a channel switch is going on. Internally it is
+  *	write-protected by sdata_lock and local->mtx so holding either is fine
+  *	for read access.
++ * @csa_punct_bitmap: new puncturing bitmap for channel switch
+  * @mu_mimo_owner: indicates interface owns MU-MIMO capability
+  * @chanctx_conf: The channel context this interface is assigned to, or %NULL
+  *	when it is not assigned. This pointer is RCU-protected due to the TX
+@@ -744,6 +745,8 @@ struct ieee80211_bss_conf {
+ 	u16 eht_puncturing;
+ 
+ 	bool csa_active;
++	u16 csa_punct_bitmap;
++
+ 	bool mu_mimo_owner;
+ 	struct ieee80211_chanctx_conf __rcu *chanctx_conf;
+ 
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -1223,7 +1223,7 @@ static int ieee80211_start_ap(struct wip
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct beacon_data *old;
+ 	struct ieee80211_sub_if_data *vlan;
+-	u32 changed = BSS_CHANGED_BEACON_INT |
++	u64 changed = BSS_CHANGED_BEACON_INT |
+ 		      BSS_CHANGED_BEACON_ENABLED |
+ 		      BSS_CHANGED_BEACON |
+ 		      BSS_CHANGED_P2P_PS |
+@@ -1310,6 +1310,11 @@ static int ieee80211_start_ap(struct wip
+ 				IEEE80211_HE_PHY_CAP2_UL_MU_FULL_MU_MIMO;
+ 	}
+ 
++	if (params->eht_cap) {
++		link_conf->eht_puncturing = params->punct_bitmap;
++		changed |= BSS_CHANGED_EHT_PUNCTURING;
++	}
++
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP &&
+ 	    params->mbssid_config.tx_wdev) {
+ 		err = ieee80211_set_ap_mbssid_options(sdata,
+@@ -3571,6 +3576,12 @@ static int __ieee80211_csa_finalize(stru
+ 	lockdep_assert_held(&local->mtx);
+ 	lockdep_assert_held(&local->chanctx_mtx);
+ 
++	if (sdata->vif.bss_conf.eht_puncturing != sdata->vif.bss_conf.csa_punct_bitmap) {
++		sdata->vif.bss_conf.eht_puncturing =
++					sdata->vif.bss_conf.csa_punct_bitmap;
++		changed |= BSS_CHANGED_EHT_PUNCTURING;
++	}
++
+ 	/*
+ 	 * using reservation isn't immediate as it may be deferred until later
+ 	 * with multi-vif. once reservation is complete it will re-schedule the
+@@ -3613,7 +3624,7 @@ static int __ieee80211_csa_finalize(stru
+ 		return err;
+ 
+ 	cfg80211_ch_switch_notify(sdata->dev, &sdata->deflink.csa_chandef, 0,
+-				  0);
++				  sdata->vif.bss_conf.eht_puncturing);
+ 
+ 	return 0;
+ }
+@@ -3875,9 +3886,13 @@ __ieee80211_channel_switch(struct wiphy
+ 		goto out;
+ 	}
+ 
++	if (params->punct_bitmap && !sdata->vif.bss_conf.eht_support)
++		goto out;
++
+ 	sdata->deflink.csa_chandef = params->chandef;
+ 	sdata->deflink.csa_block_tx = params->block_tx;
+ 	sdata->vif.bss_conf.csa_active = true;
++	sdata->vif.bss_conf.csa_punct_bitmap = params->punct_bitmap;
+ 
+ 	if (sdata->deflink.csa_block_tx)
+ 		ieee80211_stop_vif_queues(local, sdata,
+@@ -3885,7 +3900,8 @@ __ieee80211_channel_switch(struct wiphy
+ 
+ 	cfg80211_ch_switch_started_notify(sdata->dev,
+ 					  &sdata->deflink.csa_chandef, 0,
+-					  params->count, params->block_tx, 0);
++					  params->count, params->block_tx,
++					  sdata->vif.bss_conf.csa_punct_bitmap);
+ 
+ 	if (changed) {
+ 		ieee80211_link_info_change_notify(sdata, &sdata->deflink,

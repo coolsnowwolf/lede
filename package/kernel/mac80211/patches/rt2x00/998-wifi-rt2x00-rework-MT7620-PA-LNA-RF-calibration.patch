@@ -1,0 +1,413 @@
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Tue, 25 Jul 2023 20:05:06 +0800
+Subject: [PATCH] wifi: rt2x00: rework MT7620 PA/LNA RF calibration
+
+1. Move MT7620 PA/LNA calibration code to dedicated functions.
+2. For external PA/LNA devices, restore RF and BBP registers before
+   R-Calibration.
+3. Do Rx DCOC calibration again before RXIQ calibration.
+4. Correct MAC_SYS_CTRL register RX mask to 0x08 in R-Calibration
+   function. For MAC_SYS_CTRL register, Bit[2] controls MAC_TX_EN
+   and Bit[3] controls MAC_RX_EN (Bit index starts from 0).
+5. Move the channel configuration code from rt2800_vco_calibration()
+   to the rt2800_config_channel().
+6. Use MT7620 SOC specific AGC initial LNA value instead of the
+   RT5592's value.
+7. Adjust the register operation sequence according to the vendor
+   driver code. This may not be useful, but it can make things
+   clearer when developers try to review it.
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ .../net/wireless/ralink/rt2x00/rt2800lib.c    | 306 ++++++++++--------
+ drivers/net/wireless/ralink/rt2x00/rt2x00.h   |   6 +
+ 2 files changed, 182 insertions(+), 130 deletions(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
+@@ -3881,14 +3881,6 @@ static void rt2800_config_channel_rf7620
+ 		rfcsr |= tx_agc_fc;
+ 		rt2800_rfcsr_write_bank(rt2x00dev, 7, 59, rfcsr);
+ 	}
+-
+-	if (conf_is_ht40(conf)) {
+-		rt2800_bbp_glrt_write(rt2x00dev, 141, 0x10);
+-		rt2800_bbp_glrt_write(rt2x00dev, 157, 0x2f);
+-	} else {
+-		rt2800_bbp_glrt_write(rt2x00dev, 141, 0x1a);
+-		rt2800_bbp_glrt_write(rt2x00dev, 157, 0x40);
+-	}
+ }
+ 
+ static void rt2800_config_alc(struct rt2x00_dev *rt2x00dev,
+@@ -4438,89 +4430,63 @@ static void rt2800_config_channel(struct
+ 		usleep_range(1000, 1500);
+ 	}
+ 
+-	if (rt2x00_rt(rt2x00dev, RT5592) || rt2x00_rt(rt2x00dev, RT6352)) {
++	if (rt2x00_rt(rt2x00dev, RT5592)) {
+ 		reg = 0x10;
+-		if (!conf_is_ht40(conf)) {
+-			if (rt2x00_rt(rt2x00dev, RT6352) &&
+-			    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
+-				reg |= 0x5;
+-			} else {
+-				reg |= 0xa;
+-			}
+-		}
++		if (!conf_is_ht40(conf))
++			reg |= 0xa;
+ 		rt2800_bbp_write(rt2x00dev, 195, 141);
+ 		rt2800_bbp_write(rt2x00dev, 196, reg);
+ 
+-		/* AGC init.
+-		 * Despite the vendor driver using different values here for
+-		 * RT6352 chip, we use 0x1c for now. This may have to be changed
+-		 * once TSSI got implemented.
+-		 */
+ 		reg = (rf->channel <= 14 ? 0x1c : 0x24) + 2*rt2x00dev->lna_gain;
+ 		rt2800_bbp_write_with_rx_chain(rt2x00dev, 66, reg);
+-
+-		if (rt2x00_rt(rt2x00dev, RT5592))
+-			rt2800_iq_calibrate(rt2x00dev, rf->channel);
++	
++		rt2800_iq_calibrate(rt2x00dev, rf->channel);
+ 	}
+ 
+ 	if (rt2x00_rt(rt2x00dev, RT6352)) {
+-		if (test_bit(CAPABILITY_EXTERNAL_PA_TX0,
+-			     &rt2x00dev->cap_flags)) {
+-			reg = rt2800_register_read(rt2x00dev, RF_CONTROL3);
+-			reg |= 0x00000101;
+-			rt2800_register_write(rt2x00dev, RF_CONTROL3, reg);
+-
+-			reg = rt2800_register_read(rt2x00dev, RF_BYPASS3);
+-			reg |= 0x00000101;
+-			rt2800_register_write(rt2x00dev, RF_BYPASS3, reg);
+-
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 43, 0x73);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 44, 0x73);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 45, 0x73);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 46, 0x27);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 47, 0xC8);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 48, 0xA4);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 49, 0x05);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 54, 0x27);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 55, 0xC8);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 56, 0xA4);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 57, 0x05);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 58, 0x27);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 59, 0xC8);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 60, 0xA4);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 61, 0x05);
+-			rt2800_rfcsr_write_dccal(rt2x00dev, 05, 0x00);
++		/* BBP for GLRT BW */
++		if (conf_is_ht40(conf)) {
++			rt2800_bbp_glrt_write(rt2x00dev, 141, 0x10);
++			rt2800_bbp_glrt_write(rt2x00dev, 157, 0x2f);
++		} else {
++			rt2800_bbp_glrt_write(rt2x00dev, 141, 0x1a);
++			rt2800_bbp_glrt_write(rt2x00dev, 157, 0x40);
+ 
+-			rt2800_register_write(rt2x00dev, TX0_RF_GAIN_CORRECT,
+-					      0x36303636);
+-			rt2800_register_write(rt2x00dev, TX0_RF_GAIN_ATTEN,
+-					      0x6C6C6B6C);
+-			rt2800_register_write(rt2x00dev, TX1_RF_GAIN_ATTEN,
+-					      0x6C6C6B6C);
++			if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++				rt2x00_has_cap_external_lna_bg(rt2x00dev))
++				rt2800_bbp_glrt_write(rt2x00dev, 141, 0x15);
+ 		}
+ 
+-		if (rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
+-			reg = rt2800_register_read(rt2x00dev, RF_CONTROL3);
+-			reg |= 0x00000101;
+-			rt2800_register_write(rt2x00dev, RF_CONTROL3, reg);
+-
+-			reg = rt2800_register_read(rt2x00dev, RF_BYPASS3);
+-			reg |= 0x00000101;
+-			rt2800_register_write(rt2x00dev, RF_BYPASS3, reg);
+-
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 14, 0x66);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 17, 0x20);
+-			rt2800_rfcsr_write_chanreg(rt2x00dev, 18, 0x42);
+-			rt2800_bbp_write(rt2x00dev, 75, 0x68);
+-			rt2800_bbp_write(rt2x00dev, 76, 0x4C);
+-			rt2800_bbp_write(rt2x00dev, 79, 0x1C);
+-			rt2800_bbp_write(rt2x00dev, 80, 0x0C);
+-			rt2800_bbp_write(rt2x00dev, 82, 0xB6);
+-			/* bank 0 RF reg 42 and glrt BBP reg 141 will be set in
+-			 * config channel function in dependence of channel and
+-			 * HT20/HT40 so don't touch it
+-			 */
++		if (rt2x00dev->default_ant.rx_chain_num == 1) {
++			rt2800_bbp_write(rt2x00dev, 91, 0x07);
++			rt2800_bbp_write(rt2x00dev, 95, 0x1A);
++			rt2800_bbp_write(rt2x00dev, 195, 128);
++			rt2800_bbp_write(rt2x00dev, 196, 0xA0);
++			rt2800_bbp_write(rt2x00dev, 195, 170);
++			rt2800_bbp_write(rt2x00dev, 196, 0x12);
++			rt2800_bbp_write(rt2x00dev, 195, 171);
++			rt2800_bbp_write(rt2x00dev, 196, 0x10);
++		} else {
++			rt2800_bbp_write(rt2x00dev, 91, 0x06);
++			rt2800_bbp_write(rt2x00dev, 95, 0x9A);
++			rt2800_bbp_write(rt2x00dev, 195, 128);
++			rt2800_bbp_write(rt2x00dev, 196, 0xE0);
++			rt2800_bbp_write(rt2x00dev, 195, 170);
++			rt2800_bbp_write(rt2x00dev, 196, 0x30);
++			rt2800_bbp_write(rt2x00dev, 195, 171);
++			rt2800_bbp_write(rt2x00dev, 196, 0x30);
+ 		}
++
++		/* AGC init */
++		reg = rf->channel <= 14 ? 0x04 + 2 * rt2x00dev->lna_gain : 0;
++		rt2800_bbp_write_with_rx_chain(rt2x00dev, 66, reg);
++
++		/* On 11A, We should delay and wait RF/BBP to be stable
++		 * and the appropriate time should be 1000 micro seconds
++		 * 2005/06/05 - On 11G, we also need this delay time.
++		 * Otherwise it's difficult to pass the WHQL.
++		 */
++		usleep_range(1000, 1500);
+ 	}
+ 
+ 	bbp = rt2800_bbp_read(rt2x00dev, 4);
+@@ -5630,43 +5596,6 @@ void rt2800_vco_calibration(struct rt2x0
+ 		}
+ 	}
+ 	rt2800_register_write(rt2x00dev, TX_PIN_CFG, tx_pin);
+-
+-	if (rt2x00_rt(rt2x00dev, RT6352)) {
+-		if (rt2x00dev->default_ant.rx_chain_num == 1) {
+-			rt2800_bbp_write(rt2x00dev, 91, 0x07);
+-			rt2800_bbp_write(rt2x00dev, 95, 0x1A);
+-			rt2800_bbp_write(rt2x00dev, 195, 128);
+-			rt2800_bbp_write(rt2x00dev, 196, 0xA0);
+-			rt2800_bbp_write(rt2x00dev, 195, 170);
+-			rt2800_bbp_write(rt2x00dev, 196, 0x12);
+-			rt2800_bbp_write(rt2x00dev, 195, 171);
+-			rt2800_bbp_write(rt2x00dev, 196, 0x10);
+-		} else {
+-			rt2800_bbp_write(rt2x00dev, 91, 0x06);
+-			rt2800_bbp_write(rt2x00dev, 95, 0x9A);
+-			rt2800_bbp_write(rt2x00dev, 195, 128);
+-			rt2800_bbp_write(rt2x00dev, 196, 0xE0);
+-			rt2800_bbp_write(rt2x00dev, 195, 170);
+-			rt2800_bbp_write(rt2x00dev, 196, 0x30);
+-			rt2800_bbp_write(rt2x00dev, 195, 171);
+-			rt2800_bbp_write(rt2x00dev, 196, 0x30);
+-		}
+-
+-		if (rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
+-			rt2800_bbp_write(rt2x00dev, 75, 0x68);
+-			rt2800_bbp_write(rt2x00dev, 76, 0x4C);
+-			rt2800_bbp_write(rt2x00dev, 79, 0x1C);
+-			rt2800_bbp_write(rt2x00dev, 80, 0x0C);
+-			rt2800_bbp_write(rt2x00dev, 82, 0xB6);
+-		}
+-
+-		/* On 11A, We should delay and wait RF/BBP to be stable
+-		 * and the appropriate time should be 1000 micro seconds
+-		 * 2005/06/05 - On 11G, we also need this delay time.
+-		 * Otherwise it's difficult to pass the WHQL.
+-		 */
+-		usleep_range(1000, 1500);
+-	}
+ }
+ EXPORT_SYMBOL_GPL(rt2800_vco_calibration);
+ 
+@@ -8631,7 +8560,7 @@ static void rt2800_r_calibration(struct
+ 		rt2x00_warn(rt2x00dev, "Wait MAC Tx Status to MAX !!!\n");
+ 
+ 	maccfg = rt2800_register_read(rt2x00dev, MAC_SYS_CTRL);
+-	maccfg &= (~0x04);
++	maccfg &= (~0x08);
+ 	rt2800_register_write(rt2x00dev, MAC_SYS_CTRL, maccfg);
+ 
+ 	if (unlikely(rt2800_wait_bbp_rf_ready(rt2x00dev, MAC_STATUS_CFG_BBP_RF_BUSY_RX)))
+@@ -10669,30 +10598,143 @@ static void rt2800_init_rfcsr_6352(struc
+ 		rt2800_rfcsr_write_dccal(rt2x00dev, 5, 0x00);
+ 		rt2800_rfcsr_write_dccal(rt2x00dev, 17, 0x7C);
+ 	}
++}
+ 
+-	rt6352_enable_pa_pin(rt2x00dev, 0);
+-	rt2800_r_calibration(rt2x00dev);
+-	rt2800_rf_self_txdc_cal(rt2x00dev);
+-	rt2800_rxdcoc_calibration(rt2x00dev);
+-	rt2800_bw_filter_calibration(rt2x00dev, true);
+-	rt2800_bw_filter_calibration(rt2x00dev, false);
+-	rt2800_loft_iq_calibration(rt2x00dev);
+-	rt2800_rxiq_calibration(rt2x00dev);
+-	rt6352_enable_pa_pin(rt2x00dev, 1);
++static void rt2800_init_palna_rt6352(struct rt2x00_dev *rt2x00dev)
++{
++	u32 reg;
++
++	if (rt2x00_has_cap_external_pa(rt2x00dev)) {
++		reg = rt2800_register_read(rt2x00dev, RF_CONTROL3);
++		reg |= 0x00000101;
++		rt2800_register_write(rt2x00dev, RF_CONTROL3, reg);
++
++		reg = rt2800_register_read(rt2x00dev, RF_BYPASS3);
++		reg |= 0x00000101;
++		rt2800_register_write(rt2x00dev, RF_BYPASS3, reg);
++	}
+ 
+-	if (rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
+ 		rt2800_rfcsr_write_chanreg(rt2x00dev, 14, 0x66);
+ 		rt2800_rfcsr_write_chanreg(rt2x00dev, 17, 0x20);
+ 		rt2800_rfcsr_write_chanreg(rt2x00dev, 18, 0x42);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_pa(rt2x00dev)) {
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 43, 0x73);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 44, 0x73);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 45, 0x73);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 46, 0x27);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 47, 0xC8);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 48, 0xA4);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 49, 0x05);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 54, 0x27);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 55, 0xC8);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 56, 0xA4);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 57, 0x05);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 58, 0x27);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 59, 0xC8);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 60, 0xA4);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 61, 0x05);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_pa(rt2x00dev))
++		rt2800_rfcsr_write_dccal(rt2x00dev, 05, 0x00);
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
+ 		rt2800_bbp_write(rt2x00dev, 75, 0x68);
+ 		rt2800_bbp_write(rt2x00dev, 76, 0x4C);
+ 		rt2800_bbp_write(rt2x00dev, 79, 0x1C);
+ 		rt2800_bbp_write(rt2x00dev, 80, 0x0C);
+ 		rt2800_bbp_write(rt2x00dev, 82, 0xB6);
+-		/* bank 0 RF reg 42 and glrt BBP reg 141 will be set in config
+-		 * channel function in dependence of channel and HT20/HT40,
+-		 * so don't touch them here.
+-		 */
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_pa(rt2x00dev)) {
++		rt2800_register_write(rt2x00dev, TX0_RF_GAIN_CORRECT, 0x36303636);
++		rt2800_register_write(rt2x00dev, TX0_RF_GAIN_ATTEN, 0x6C6C6B6C);
++		rt2800_register_write(rt2x00dev, TX1_RF_GAIN_ATTEN, 0x6C6C6B6C);
++	}
++}
++
++static void rt2800_restore_rf_bbp_rt6352(struct rt2x00_dev *rt2x00dev)
++{
++	if (rt2x00_has_cap_external_pa(rt2x00dev)) {
++		rt2800_register_write(rt2x00dev, RF_CONTROL3, 0x0);
++		rt2800_register_write(rt2x00dev, RF_BYPASS3, 0x0);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 14, 0x16);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 17, 0x23);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 18, 0x02);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_pa(rt2x00dev)) {
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 43, 0xD3);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 44, 0xB3);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 45, 0xD5);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 46, 0x27);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 47, 0x6C);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 48, 0xFC);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 49, 0x1F);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 54, 0x27);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 55, 0x66);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 56, 0xFF);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 57, 0x1C);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 58, 0x20);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 59, 0x6B);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 60, 0xF7);
++		rt2800_rfcsr_write_chanreg(rt2x00dev, 61, 0x09);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++		rt2800_bbp_write(rt2x00dev, 75, 0x60);
++		rt2800_bbp_write(rt2x00dev, 76, 0x44);
++		rt2800_bbp_write(rt2x00dev, 79, 0x1C);
++		rt2800_bbp_write(rt2x00dev, 80, 0x0C);
++		rt2800_bbp_write(rt2x00dev, 82, 0xB6);
++	}
++
++	if (rt2800_hw_get_chippkg(rt2x00dev) == 1 &&
++	    rt2x00_has_cap_external_pa(rt2x00dev)) {
++		rt2800_register_write(rt2x00dev, TX0_RF_GAIN_CORRECT, 0x3630363A);
++		rt2800_register_write(rt2x00dev, TX0_RF_GAIN_ATTEN, 0x6C6C666C);
++		rt2800_register_write(rt2x00dev, TX1_RF_GAIN_ATTEN, 0x6C6C666C);
++	}
++}
++
++static void rt2800_calibration_rt6352(struct rt2x00_dev *rt2x00dev)
++{
++	if (rt2x00_has_cap_external_pa(rt2x00dev) ||
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++		rt6352_enable_pa_pin(rt2x00dev, 0);
++		rt2800_restore_rf_bbp_rt6352(rt2x00dev);
++	}
++
++	rt2800_r_calibration(rt2x00dev);
++	rt2800_rf_self_txdc_cal(rt2x00dev);
++	rt2800_rxdcoc_calibration(rt2x00dev);
++	rt2800_bw_filter_calibration(rt2x00dev, true);
++	rt2800_bw_filter_calibration(rt2x00dev, false);
++	rt2800_loft_iq_calibration(rt2x00dev);
++
++	/* missing DPD Calibration for devices using internal PA */
++
++	rt2800_rxdcoc_calibration(rt2x00dev);
++	rt2800_rxiq_calibration(rt2x00dev);
++
++	if (rt2x00_has_cap_external_pa(rt2x00dev) ||
++	   rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++		rt6352_enable_pa_pin(rt2x00dev, 1);
++		rt2800_init_palna_rt6352(rt2x00dev);
+ 	}
+ }
+ 
+@@ -10785,6 +10827,10 @@ int rt2800_enable_radio(struct rt2x00_de
+ 	rt2800_init_bbp(rt2x00dev);
+ 	rt2800_init_rfcsr(rt2x00dev);
+ 
++	/* Do calibration and init PA/LNA for RT6352 */
++	if (rt2x00_rt(rt2x00dev, RT6352))
++		rt2800_calibration_rt6352(rt2x00dev);
++
+ 	if (rt2x00_is_usb(rt2x00dev) &&
+ 	    (rt2x00_rt(rt2x00dev, RT3070) ||
+ 	     rt2x00_rt(rt2x00dev, RT3071) ||
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00.h
+@@ -1277,6 +1277,12 @@ rt2x00_has_cap_external_lna_bg(struct rt
+ }
+ 
+ static inline bool
++rt2x00_has_cap_external_pa(struct rt2x00_dev *rt2x00dev)
++{
++	return rt2x00_has_cap_flag(rt2x00dev, CAPABILITY_EXTERNAL_PA_TX0);
++}
++
++static inline bool
+ rt2x00_has_cap_double_antenna(struct rt2x00_dev *rt2x00dev)
+ {
+ 	return rt2x00_has_cap_flag(rt2x00dev, CAPABILITY_DOUBLE_ANTENNA);
