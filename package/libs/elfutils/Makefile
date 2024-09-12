@@ -7,12 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=elfutils
-PKG_VERSION:=0.188
+PKG_VERSION:=0.191
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://sourceware.org/$(PKG_NAME)/ftp/$(PKG_VERSION)
-PKG_HASH:=fb8b0e8d0802005b9a309c60c1d8de32dd2951b56f0c3a3cb56d21ce01595dff
+PKG_HASH:=df76db71366d1d708365fc7a6c60ca48398f14367eb2b8954efc8897147ad871
 
 PKG_MAINTAINER:=Luiz Angelo Daros de Luca <luizluca@gmail.com>
 PKG_LICENSE:=GPL-3.0-or-later
@@ -65,6 +65,7 @@ HOST_CONFIGURE_ARGS += \
 	--disable-nls \
 	--disable-debuginfod \
 	--disable-libdebuginfod \
+	--without-bzlib \
 	--without-lzma \
 	--without-zstd
 
@@ -72,6 +73,7 @@ CONFIGURE_ARGS += \
 	--program-prefix=eu- \
 	--disable-debuginfod \
 	--disable-libdebuginfod \
+	--without-bzlib \
 	--without-lzma \
 	--without-zstd
 
@@ -81,9 +83,12 @@ HOST_CONFIGURE_VARS += \
 CONFIGURE_VARS += \
 	ac_cv_search__obstack_free=yes
 
-TARGET_CFLAGS += -D_GNU_SOURCE -Wno-unused-result -Wno-format-nonliteral
+TARGET_CFLAGS += \
+	-D_GNU_SOURCE \
+	-Wno-unused-result \
+	-Wno-format-nonliteral
 
-ifneq ($(filter $(GCC_MAJOR_VERSION),12 13),)
+ifneq ($(CONFIG_GCC_USE_VERSION_11),y)
 TARGET_CFLAGS += \
 	-Wno-error=use-after-free
 endif
