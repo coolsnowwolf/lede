@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020 Tony Ambardar <itugrok@yahoo.com>
+# Copyright (C) 2020-2024 Tony Ambardar <itugrok@yahoo.com>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -7,24 +7,26 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=bpftools
+PKG_NAME:=bpftool
+PKG_VERSION:=7.4.0
 PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=https://github.com/libbpf/bpftool
+PKG_MIRROR_HASH:=18e22f72e67ff402b5ecaf314445f25c40bfe23299cb783b5834a496297c51ed
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-03-08
-PKG_SOURCE_VERSION:=04c465fd1f561f67796dc68bbfe1aa7cfa956c3c
-PKG_MIRROR_HASH:=e22a954cd186f43228a96586bbdc120b11e6c87360ab88ae96ba37afb9c7cb58
-PKG_ABI_VERSION:=$(call abi_version_str,$(PKG_SOURCE_DATE))
+PKG_SOURCE_VERSION:=v7.4.0
 
 PKG_MAINTAINER:=Tony Ambardar <itugrok@yahoo.com>
 
-PKG_USE_MIPS16:=0
+PKG_BUILD_FLAGS:=no-mips16 gc-sections lto
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
 
+HOST_BUILD_PARALLEL:=1
+
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/nls.mk
+include $(INCLUDE_DIR)/host-build.mk
 
 define Package/bpftool/Default
   SECTION:=net
@@ -63,75 +65,25 @@ define Package/bpftool-full/description
   eBPF programs and jited code.
 endef
 
-define Package/libbpf
-  SECTION:=libs
-  CATEGORY:=Libraries
-  TITLE:=libbpf - eBPF helper library
-  VARIANT:=lib
-  LICENSE:=LGPL-2.1 OR BSD-2-Clause
-  ABI_VERSION:=$(PKG_ABI_VERSION)
-  URL:=http://www.kernel.org
-  DEPENDS:=+libelf
-endef
-
-define Package/libbpf/description
-  libbpf is a library for loading eBPF programs and reading and manipulating eBPF objects from user-space.
-endef
-
-
-# LTO not compatible with DSO using PIC
-ifneq ($(BUILD_VARIANT),lib)
-  TARGET_CFLAGS += -ffunction-sections -fdata-sections -flto
-  TARGET_LDFLAGS += -Wl,--gc-sections
-endif
-
 ifeq ($(BUILD_VARIANT),full)
   full:=1
 else
   full:=0
 endif
 
-MAKE_VARS = \
-	EXTRA_CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
-	LDFLAGS="$(TARGET_LDFLAGS)"
-
 MAKE_FLAGS += \
 	OUTPUT="$(PKG_BUILD_DIR)/" \
 	prefix="/usr" \
 	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
-	LIBSUBDIR=lib \
 	check_feat=0 \
 	feature-clang-bpf-co-re=0 \
-	feature-reallocarray=1 \
-	feature-zlib=1 \
 	feature-libbfd=$(full) \
+	feature-llvm=0 \
 	feature-libcap=0 \
-	feature-disassembler-four-args=$(full)
+	feature-disassembler-four-args=1 \
+	feature-disassembler-init-styled=1
 
-ifeq ($(BUILD_VARIANT),lib)
-  MAKE_PATH = libbpf/src
-else
-  MAKE_PATH = src
-endif
-
-define Build/InstallDev/libbpf
-	$(INSTALL_DIR) $(1)/usr/include/bpf
-	$(CP) $(PKG_INSTALL_DIR)/usr/include/bpf/*.h $(1)/usr/include/bpf/
-	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libbpf.{a,so*} \
-		$(1)/usr/lib/
-	$(INSTALL_DIR) $(1)/usr/lib/pkgconfig
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/libbpf.pc \
-		$(1)/usr/lib/pkgconfig/
-	$(SED) 's,/usr/include,$$$${prefix}/include,g' \
-		$(1)/usr/lib/pkgconfig/libbpf.pc
-	$(SED) 's,/usr/lib,$$$${exec_prefix}/lib,g' \
-		$(1)/usr/lib/pkgconfig/libbpf.pc
-endef
-
-ifeq ($(BUILD_VARIANT),lib)
-  Build/InstallDev=$(Build/InstallDev/libbpf)
-endif
+MAKE_PATH = src
 
 define Package/bpftool-$(BUILD_VARIANT)/install
 	$(INSTALL_DIR) $(1)/usr/libexec
@@ -139,11 +91,30 @@ define Package/bpftool-$(BUILD_VARIANT)/install
 		$(1)/usr/libexec/bpftool-$(BUILD_VARIANT)
 endef
 
-define Package/libbpf/install
-	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libbpf.so.* $(1)/usr/lib/
+HOST_MAKE_FLAGS += \
+	OUTPUT="$(HOST_BUILD_DIR)/" \
+	prefix="/usr" \
+	$(if $(findstring c,$(OPENWRT_VERBOSE)),V=1,V='') \
+	check_feat=0 \
+	feature-clang-bpf-co-re=0 \
+	feature-libbfd=1 \
+	feature-llvm=0 \
+	feature-libcap=0 \
+	feature-disassembler-four-args=1 \
+	feature-disassembler-init-styled=1
+
+HOST_MAKE_PATH = src
+
+define Host/Install
+	$(INSTALL_DIR) $(STAGING_DIR_HOST)/usr/sbin
+	$(INSTALL_BIN) $(HOST_BUILD_DIR)/bpftool \
+		$(STAGING_DIR_HOST)/usr/sbin/bpftool
 endef
 
-$(eval $(call BuildPackage,libbpf))
+define Host/Clean
+	rm -f $(STAGING_DIR_HOST)/usr/sbin/bpftool
+endef
+
 $(eval $(call BuildPackage,bpftool-full))
 $(eval $(call BuildPackage,bpftool-minimal))
+$(eval $(call HostBuild))

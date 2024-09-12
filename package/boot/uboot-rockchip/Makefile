@@ -77,9 +77,9 @@ define U-Boot/fine-3399-rk3399
   NAME:=Fine 3399
   BUILD_DEVICES:= \
     rumu3f_fine-3399
-  DEPENDS:=+PACKAGE_u-boot-fine-3399-rk3399:trusted-firmware-a-rk3399
+  DEPENDS:=+PACKAGE_u-boot-fine-3399-rk3399:arm-trusted-firmware-rk3399
   PKG_BUILD_DEPENDS:=arm-trusted-firmware-rockchip-vendor
-  ATF:=rk3399_bl31.elf
+  ATF:=rk3399_bl31_v1.36.elf
   USE_RKBIN:=1
 endef
 
