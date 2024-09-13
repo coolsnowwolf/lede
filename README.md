@@ -119,7 +119,7 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 2. 安装 Homebrew：
 
    ```bash
-   /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
 
 3. 使用 Homebrew 安装工具链、依赖与基础软件包:
