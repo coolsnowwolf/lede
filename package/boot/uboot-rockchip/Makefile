@@ -282,6 +282,22 @@ define U-Boot/station-p2-rk3568
     firefly_station-p2
 endef
 
+# RK3588 boards
+
+define U-Boot/Default/rk3588
+  BUILD_SUBTARGET:=armv8
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3588
+  ATF:=rk3588_bl31_v1.45.elf
+  TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
+endef
+
+define U-Boot/sige7-rk3588
+  $(U-Boot/Default/rk3588)
+  NAME:=Sige7
+  BUILD_DEVICES:= \
+    armsom_sige7
+endef
+
 UBOOT_TARGETS := \
   panther-x2-rk3566 \
   rock-3c-rk3566 \
@@ -312,7 +328,8 @@ UBOOT_TARGETS := \
   nanopi-r2c-rk3328 \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
-  orangepi-r1-plus-lts-rk3328
+  orangepi-r1-plus-lts-rk3328 \
+  sige7-rk3588
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
 
