@@ -347,6 +347,12 @@ define KernelPackage/mt7996-firmware
   DEPENDS+=+kmod-mt7996e
 endef
 
+define KernelPackage/mt7925-firmware
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7925 firmware
+  DEPENDS+=+kmod-mt7925e
+endef
+
 define KernelPackage/mt7925-common
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7925 wireless driver common code
@@ -360,7 +366,7 @@ define KernelPackage/mt7925u
   TITLE:=MediaTek MT7925U wireless driver
   DEPENDS+=+kmod-mt792x-usb +kmod-mt7925-common
   FILES:= $(PKG_BUILD_DIR)/mt7925/mt7925u.ko
-  AUTOLOAD:=$(call AutoProbe,mt7921u)
+  AUTOLOAD:=$(call AutoProbe,mt7925u)
 endef
 
 define KernelPackage/mt7925e
@@ -368,7 +374,7 @@ define KernelPackage/mt7925e
   TITLE:=MediaTek MT7925e wireless driver
   DEPENDS+=@PCI_SUPPORT +kmod-mt7925-common
   FILES:= $(PKG_BUILD_DIR)/mt7925/mt7925e.ko
-  AUTOLOAD:=$(call AutoProbe,mt7921e)
+  AUTOLOAD:=$(call AutoProbe,mt7925e)
 endef
 
 define Package/mt76-test
@@ -634,6 +640,14 @@ define KernelPackage/mt7922-firmware/install
 		$(1)/lib/firmware/mediatek
 endef
 
+define KernelPackage/mt7925-firmware/install
+        $(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7925
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin \
+		$(1)/lib/firmware/mediatek/mt7925
+endef
+
 define KernelPackage/mt7996-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
 	cp \
@@ -679,6 +693,7 @@ $(eval $(call KernelPackage,mt7981-firmware))
 $(eval $(call KernelPackage,mt7986-firmware))
 $(eval $(call KernelPackage,mt7921-firmware))
 $(eval $(call KernelPackage,mt7922-firmware))
+$(eval $(call KernelPackage,mt7925-firmware))
 $(eval $(call KernelPackage,mt792x-common))
 $(eval $(call KernelPackage,mt792x-usb))
 $(eval $(call KernelPackage,mt7921-common))

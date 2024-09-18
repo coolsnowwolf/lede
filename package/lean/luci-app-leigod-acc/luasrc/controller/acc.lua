@@ -62,7 +62,7 @@ function start_acc_service()
   luci.http.write_json(resp)  
 end
 
--- stop_acc_service
+-- start_acc_service
 function stop_acc_service()
   -- util module
   local util      = require "luci.util"
@@ -72,30 +72,4 @@ function stop_acc_service()
   resp.result = "OK"
   luci.http.prepare_content("application/json")
   luci.http.write_json(resp)  
-end
-
--- schedule_pause
-function schedule_pause()
-  local util = require "luci.util"
-  local uci = require "luci.model.uci".cursor()
-  local schedule_enabled = uci:get("accelerator", "system", "schedule_enabled") or "0"
-  local pause_time = uci:get("accelerator", "system", "pause_time") or "01:00"
-  local username = uci:get("accelerator", "system", "username") or ""
-  local password = uci:get("accelerator", "system", "password") or ""
-
-  -- Remove existing cron jobs related to leigod_helper.sh
-  util.exec("sed -i '/usr/sbin/leigod/leigod_helper.sh/d' /etc/crontabs/root")
-
-  if schedule_enabled == "1" then
-      -- Set the new cron job
-      local hour, minute = pause_time:match("(%d+):(%d+)")
-      local cron_time = string.format("%d %d * * * USERNAME=%s PASSWORD=%s /usr/sbin/leigod/leigod_helper.sh", tonumber(minute), tonumber(hour), username, password)
-      util.exec(string.format('echo "%s" >> /etc/crontabs/root', cron_time))
-      util.exec("/etc/init.d/cron restart")
-  end
-
-  local resp = {}
-  resp.result = "OK"
-  luci.http.prepare_content("application/json")
-  luci.http.write_json(resp)
 end
