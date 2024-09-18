@@ -268,6 +268,13 @@ define U-Boot/seewo-sv21-rk3568
     seewo_sv21-rk3568
 endef
 
+define U-Boot/sige3-rk3568
+  $(U-Boot/rk3568/Default)
+  NAME:=Sige3
+  BUILD_DEVICES:= \
+    armsom_sige3
+endef
+
 define U-Boot/station-p2-rk3568
   $(U-Boot/rk3568/Default)
   NAME:=StationP2
@@ -288,6 +295,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   rsb4810-rk3568 \
   seewo-sv21-rk3568 \
+  sige3-rk3568 \
   station-p2-rk3568 \
   dlfr100-rk3399 \
   h3399pc-rk3399 \
