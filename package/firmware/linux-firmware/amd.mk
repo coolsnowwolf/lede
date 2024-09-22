@@ -1,4 +1,4 @@
-Package/amd64-microcode = $(call Package/firmware-default,AMD64 CPU microcode,,LICENSE.amd-ucode)
+Package/amd64-microcode = $(call Package/firmware-default,AMD64 CPU microcode)
 define Package/amd64-microcode/install
 	$(INSTALL_DIR) $(1)/lib/firmware/amd-ucode
 	$(CP) \
@@ -8,7 +8,7 @@ endef
 
 $(eval $(call BuildPackage,amd64-microcode))
 
-Package/amdgpu-firmware = $(call Package/firmware-default,AMDGPU Video Driver firmware,,LICENSE.amdgpura)
+Package/amdgpu-firmware = $(call Package/firmware-default,AMDGPU Video Driver firmware)
 define Package/amdgpu-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/amdgpu
 	$(CP) \
@@ -18,7 +18,7 @@ endef
 
 $(eval $(call BuildPackage,amdgpu-firmware))
 
-Package/radeon-firmware = $(call Package/firmware-default,Radeon Video Driver firmware,,LICENSE.radeon)
+Package/radeon-firmware = $(call Package/firmware-default,Radeon Video Driver firmware)
 define Package/radeon-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/radeon
 	$(CP) \
