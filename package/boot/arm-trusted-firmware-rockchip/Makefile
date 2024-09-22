@@ -6,11 +6,13 @@
 #
 
 include $(TOPDIR)/rules.mk
-
-PKG_VERSION:=2.10
 PKG_RELEASE:=1
 
-PKG_HASH:=88215a62291b9ba87da8e50b077741103cdc08fb6c9e1ebd34dfaace746d3201
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL=https://github.com/ARM-software/arm-trusted-firmware
+PKG_SOURCE_DATE:=2024-09-09
+PKG_SOURCE_VERSION:=0631d68d85881d4b8ffa571f49eb8b767c005f6a
+PKG_MIRROR_HASH:=6e8a83c6ee64faab46e1531948180199fa70194bb2ffec4d4a521c2b2d136cf3
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -33,9 +35,21 @@ define Trusted-Firmware-A/rk3399
   PLAT:=rk3399
 endef
 
+define Trusted-Firmware-A/rk3568
+  BUILD_SUBTARGET:=armv8
+  PLAT:=rk3568
+endef
+
+define Trusted-Firmware-A/rk3588
+  BUILD_SUBTARGET:=armv8
+  PLAT:=rk3588
+endef
+
 TFA_TARGETS:= \
 	rk3328 \
-	rk3399
+	rk3399 \
+	rk3568 \
+	rk3588
 
 ifeq ($(BUILD_VARIANT),rk3399)
   M0_GCC_NAME:=gcc-arm
@@ -63,6 +77,15 @@ ifeq ($(BUILD_VARIANT),rk3399)
   TFA_MAKE_FLAGS+= \
     M0_CROSS_COMPILE=$(PKG_BUILD_DIR)/$(M0_GCC_NAME)-$(M0_GCC_RELEASE)-$(M0_GCC_VERSION)/bin/arm-none-eabi-
 endif
+
+define Build/Compile
+	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \
+		CROSS_COMPILE=$(TARGET_CROSS) \
+		OPENSSL_DIR=$(STAGING_DIR_HOST) \
+		$(if $(DTC),DTC="$(DTC)") \
+		PLAT=$(PLAT) \
+		$(TFA_MAKE_FLAGS)
+endef
 
 define Package/trusted-firmware-a/install
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
