@@ -29,6 +29,15 @@ define Package/rtl8188eu-firmware/install
 endef
 $(eval $(call BuildPackage,rtl8188eu-firmware))
 
+Package/rtl8188fu-firmware = $(call Package/firmware-default,RealTek RTL8188FU firmware)
+define Package/rtl8188fu-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/rtlwifi
+	$(CP) \
+		$(PKG_BUILD_DIR)/rtlwifi/rtl8188fufw.bin \
+		$(1)/lib/firmware/rtlwifi
+endef
+$(eval $(call BuildPackage,rtl8188fu-firmware))
+
 Package/rtl8192ce-firmware = $(call Package/firmware-default,RealTek RTL8192CE firmware)
 define Package/rtl8192ce-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/rtlwifi
@@ -77,6 +86,14 @@ define Package/rtl8723au-firmware/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtlwifi/rtl8723aufw_B_NoBT.bin $(1)/lib/firmware/rtlwifi
 endef
 $(eval $(call BuildPackage,rtl8723au-firmware))
+
+Package/rtl8723be-firmware = $(call Package/firmware-default,RealTek RTL8723BE firmware)
+define Package/rtl8723be-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/rtlwifi
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtlwifi/rtl8723befw_36.bin $(1)/lib/firmware/rtlwifi
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/rtlwifi/rtl8723befw.bin $(1)/lib/firmware/rtlwifi
+endef
+$(eval $(call BuildPackage,rtl8723be-firmware))
 
 Package/rtl8723bu-firmware = $(call Package/firmware-default,RealTek RTL8723BU firmware)
 define Package/rtl8723bu-firmware/install
