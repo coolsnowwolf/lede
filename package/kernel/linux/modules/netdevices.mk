@@ -96,7 +96,8 @@ $(eval $(call KernelPackage,atl1e))
 define KernelPackage/libphy
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=PHY library
-  KCONFIG:=CONFIG_PHYLIB
+  KCONFIG:=CONFIG_PHYLIB \
+	   CONFIG_PHYLIB_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/libphy.ko
   AUTOLOAD:=$(call AutoLoad,15,libphy,1)
 endef
@@ -226,6 +227,19 @@ endef
 $(eval $(call KernelPackage,phylib-broadcom))
 
 
+define KernelPackage/phylib-qcom
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Qualcomm Ethernet PHY library
+   KCONFIG:=CONFIG_QCOM_NET_PHYLIB
+   HIDDEN:=1
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/qcom/qcom-phy-lib.ko
+   AUTOLOAD:=$(call AutoLoad,17,qcom-phy-lib)
+endef
+
+$(eval $(call KernelPackage,phylib-qcom))
+
+
 define KernelPackage/phy-amd
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=AMD PHY driver
@@ -240,6 +254,18 @@ define KernelPackage/phy-amd/description
 endef
 
 $(eval $(call KernelPackage,phy-amd))
+
+
+define KernelPackage/phy-at803x
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Qualcomm Atheros 8337 internal PHY
+   KCONFIG:=CONFIG_AT803X_PHY
+   DEPENDS:=+kmod-phylib-qcom
+   FILES:=$(LINUX_DIR)/drivers/net/phy/qcom/at803x.ko
+   AUTOLOAD:=$(call AutoLoad,18,at803x,1)
+endef
+
+$(eval $(call KernelPackage,phy-at803x))
 
 
 define KernelPackage/phy-ax88796b
@@ -290,6 +316,37 @@ define KernelPackage/phy-bcm84881/description
 endef
 
 $(eval $(call KernelPackage,phy-bcm84881))
+
+
+define KernelPackage/phy-intel-xway
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Intel XWAY PHYs
+   KCONFIG:=CONFIG_INTEL_XWAY_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/intel-xway.ko
+   AUTOLOAD:=$(call AutoLoad,18,intel-xway,1)
+endef
+
+define KernelPackage/phy-intel-xway/description
+   Supports the Intel XWAY (former Lantiq) 11G and 22E PHYs.
+   These PHYs are marked as standalone chips under the names
+   PEF 7061, PEF 7071 and PEF 7072 or integrated into the Intel
+   SoCs xRX200, xRX300, xRX330, xRX350 and xRX550.
+endef
+
+$(eval $(call KernelPackage,phy-intel-xway))
+
+
+define KernelPackage/phy-qca83xx
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Qualcomm Atheros QCA833x PHY driver
+   KCONFIG:=CONFIG_QCA83XX_PHY
+   DEPENDS:=+kmod-phylib-qcom
+   FILES:=$(LINUX_DIR)/drivers/net/phy/qcom/qca83xx.ko
+   AUTOLOAD:=$(call AutoLoad,18,qca83xx,1)
+endef
+
+$(eval $(call KernelPackage,phy-qca83xx))
 
 
 define KernelPackage/phy-marvell
@@ -345,6 +402,23 @@ endef
 
 $(eval $(call KernelPackage,phy-marvell-10g))
 
+
+define KernelPackage/phy-micrel
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Micrel PHYs
+   KCONFIG:=CONFIG_MICREL_PHY
+   DEPENDS:=+kmod-libphy +kmod-ptp
+   FILES:=$(LINUX_DIR)/drivers/net/phy/micrel.ko
+   AUTOLOAD:=$(call AutoLoad,18,micrel,1)
+endef
+
+define KernelPackage/phy-micrel/description
+   Supports the KSZ9021, VSC8201, KS8001 PHYs.
+endef
+
+$(eval $(call KernelPackage,phy-micrel))
+
+
 define KernelPackage/phy-realtek
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Realtek Ethernet PHY driver
@@ -377,6 +451,22 @@ endef
 $(eval $(call KernelPackage,phy-smsc))
 
 
+define KernelPackage/phy-vitesse
+   SUBMENU:=$(NETWORK_DEVICES_MENU)
+   TITLE:=Vitesse PHYs
+   KCONFIG:=CONFIG_VITESSE_PHY
+   DEPENDS:=+kmod-libphy
+   FILES:=$(LINUX_DIR)/drivers/net/phy/vitesse.ko
+   AUTOLOAD:=$(call AutoLoad,18,vitesse,1)
+endef
+
+define KernelPackage/phy-vitesse/description
+   Currently supports the vsc8244
+endef
+
+$(eval $(call KernelPackage,phy-vitesse))
+
+
 define KernelPackage/phy-aquantia
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aquantia Ethernet PHYs
@@ -393,12 +483,79 @@ endef
 
 $(eval $(call KernelPackage,phy-aquantia))
 
+define KernelPackage/dsa
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Distributed Switch Architecture support
+  DEPENDS:=+kmod-mdio-devres +kmod-net-selftests +kmod-phylink
+  KCONFIG:=CONFIG_NET_DSA
+  FILES:=$(LINUX_DIR)/net/dsa/dsa_core.ko
+endef
+
+define KernelPackage/dsa/description
+  Kernel module support for Distributed Switch Architecture
+endef
+
+$(eval $(call KernelPackage,dsa))
+
+define KernelPackage/dsa-tag-dsa
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Marvell DSA type DSA and EDSA taggers
+  DEPENDS:=+kmod-dsa
+  KCONFIG:= CONFIG_NET_DSA_TAG_DSA_COMMON \
+	CONFIG_NET_DSA_TAG_DSA \
+	CONFIG_NET_DSA_TAG_EDSA
+  FILES:=$(LINUX_DIR)/net/dsa/tag_dsa.ko
+  AUTOLOAD:=$(call AutoLoad,40,tag_dsa,1)
+endef
+
+define KernelPackage/dsa-tag-dsa/description
+  Kernel modules for Marvell DSA and EDSA tagging
+endef
+
+$(eval $(call KernelPackage,dsa-tag-dsa))
+
+define KernelPackage/dsa-mv88e6xxx
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Marvell MV88E6XXX DSA Switch
+  DEPENDS:=+kmod-dsa +kmod-ptp +kmod-phy-marvell +kmod-dsa-tag-dsa
+  KCONFIG:=CONFIG_NET_DSA_MV88E6XXX \
+	CONFIG_NET_DSA_MV88E6XXX_PTP=y
+  FILES:=$(LINUX_DIR)/drivers/net/dsa/mv88e6xxx/mv88e6xxx.ko
+  AUTOLOAD:=$(call AutoLoad,41,mv88e6xxx,1)
+endef
+
+define KernelPackage/dsa-mv88e6xxx/description
+  Kernel modules for MV88E6XXX DSA switches
+endef
+
+$(eval $(call KernelPackage,dsa-mv88e6xxx))
+
+define KernelPackage/dsa-qca8k
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Qualcomm Atheros QCA8xxx switch family DSA support
+  DEPENDS:=+kmod-dsa +kmod-regmap-core
+  KCONFIG:= \
+	CONFIG_NET_DSA_QCA8K \
+	CONFIG_NET_DSA_QCA8K_LEDS_SUPPORT=y \
+	CONFIG_NET_DSA_TAG_QCA
+  FILES:= \
+	$(LINUX_DIR)/drivers/net/dsa/qca/qca8k.ko \
+	$(LINUX_DIR)/net/dsa/tag_qca.ko
+  AUTOLOAD:=$(call AutoLoad,42,qca8k,1)
+endef
+
+define KernelPackage/dsa-qca8k/description
+  DSA based kernel modules for the Qualcomm Atheros QCA8xxx switch family
+endef
+
+$(eval $(call KernelPackage,dsa-qca8k))
 
 define KernelPackage/swconfig
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=switch configuration API
   DEPENDS:=+kmod-libphy
-  KCONFIG:=CONFIG_SWCONFIG
+  KCONFIG:=CONFIG_SWCONFIG \
+	   CONFIG_SWCONFIG_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/swconfig.ko
   AUTOLOAD:=$(call AutoLoad,41,swconfig)
 endef
@@ -556,7 +713,8 @@ define KernelPackage/switch-ar8xxx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Atheros AR8216/8327 switch support
   DEPENDS:=+kmod-swconfig +!LINUX_5_4:kmod-mdio-devres
-  KCONFIG:=CONFIG_AR8216_PHY
+  KCONFIG:=CONFIG_AR8216_PHY \
+	   CONFIG_AR8216_PHY_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/ar8xxx.ko
   AUTOLOAD:=$(call AutoLoad,43,ar8xxx,1)
 endef

@@ -109,7 +109,8 @@ define KernelPackage/gpio-pca953x
   SUBMENU:=$(GPIO_MENU)
   DEPENDS:=@GPIO_SUPPORT +kmod-i2c-core +kmod-regmap-i2c
   TITLE:=PCA95xx, TCA64xx, and MAX7310 I/O ports
-  KCONFIG:=CONFIG_GPIO_PCA953X
+  KCONFIG:=CONFIG_GPIO_PCA953X \
+	   CONFIG_GPIO_PCA953X_IRQ=y
   FILES:=$(LINUX_DIR)/drivers/gpio/gpio-pca953x.ko
   AUTOLOAD:=$(call AutoLoad,55,gpio-pca953x)
 endef
