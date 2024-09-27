@@ -318,6 +318,35 @@ define Device/dlink_dwr-960
 endef
 TARGET_DEVICES += dlink_dwr-960
 
+define Device/domywifi_dm202
+  SOC := mt7620a
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := DomyWifi
+  DEVICE_MODEL := DM202
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-mmc-mtk kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += domywifi_dm202
+
+define Device/domywifi_dm203
+  SOC := mt7620a
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := DomyWifi
+  DEVICE_MODEL := DM203
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-mmc-mtk kmod-usb2 kmod-usb-ohci
+endef
+TARGET_DEVICES += domywifi_dm203
+
+define Device/domywifi_dw22d
+  SOC := mt7620a
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := DomyWifi
+  DEVICE_MODEL := DW22D
+  DEVICE_PACKAGES := kmod-mt76x0e kmod-usb2 kmod-usb-ohci kmod-sdhci-mt7620 \
+	kmod-usb-ledtrig-usbport
+  SUPPORTED_DEVICES += hc5761
+endef
+TARGET_DEVICES += domywifi_dw22d
+
 define Device/dovado_tiny-ac
   SOC := mt7620a
   IMAGE_SIZE := 7872k
