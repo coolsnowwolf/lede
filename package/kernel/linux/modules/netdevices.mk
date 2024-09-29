@@ -1511,7 +1511,7 @@ define KernelPackage/mlx4-core
 	CONFIG_MLX4_CORE=y \
 	CONFIG_MLX4_CORE_GEN2=y \
 	CONFIG_MLX4_DEBUG=n
-  AUTOLOAD:=$(call AutoProbe,mlx4_core mlx4_en)
+  AUTOLOAD:=$(call AutoLoad,36,mlx4_core mlx4_en,1)
 endef
 
 define KernelPackage/mlx4-core/description
@@ -1542,7 +1542,7 @@ define KernelPackage/mlx5-core
 	CONFIG_MLX5_TC_CT=n \
 	CONFIG_MLX5_TLS=n \
 	CONFIG_MLX5_VFIO_PCI=n
-  AUTOLOAD:=$(call AutoProbe,mlx5_core)
+  AUTOLOAD:=$(call AutoLoad,36,mlx5_core,1)
 endef
 
 define KernelPackage/mlx5-core/description
@@ -1750,7 +1750,7 @@ define KernelPackage/igc
   DEPENDS:=@PCI_SUPPORT +kmod-ptp
   KCONFIG:=CONFIG_IGC
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
-  AUTOLOAD:=$(call AutoLoad,35,igc)
+  AUTOLOAD:=$(call AutoLoad,34,igc,1)
 endef
 
 define KernelPackage/igc/description
