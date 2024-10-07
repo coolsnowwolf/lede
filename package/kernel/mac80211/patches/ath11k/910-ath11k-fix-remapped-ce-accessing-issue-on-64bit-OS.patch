@@ -1,0 +1,153 @@
+From: Ziyang Huang <hzyitc@outlook.com>
+Date: Thu,  2 May 2024 00:14:31 +0800
+Subject: [PATCH] wifi: ath11k: fix remapped ce accessing issue on 64bit OS
+
+On 64bit OS, when ab->mem_ce is lower than or 4G far away from ab->mem,
+u32 is not enough to store the offsets, which makes ath11k_ahb_read32()
+and ath11k_ahb_write32() access incorrect address and causes Data Abort
+Exception.
+
+Let's use the high bits of offsets to decide where to access, which is
+similar as ath11k_pci_get_window_start() done. In the future, we can merge
+these functions for unified regs accessing.
+
+Signed-off-by: Ziyang Huang <hzyitc@outlook.com>
+---
+
+--- a/drivers/net/wireless/ath/ath11k/ahb.c
++++ b/drivers/net/wireless/ath/ath11k/ahb.c
+@@ -197,12 +197,18 @@ static const struct ath11k_pci_ops ath11
+ 
+ static inline u32 ath11k_ahb_read32(struct ath11k_base *ab, u32 offset)
+ {
+-	return ioread32(ab->mem + offset);
++	if ((offset & ATH11K_REG_TYPE_MASK) == ATH11K_REG_TYPE_CE)
++		return ioread32(ab->mem_ce + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
++	else
++		return ioread32(ab->mem + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+ }
+ 
+ static inline void ath11k_ahb_write32(struct ath11k_base *ab, u32 offset, u32 value)
+ {
+-	iowrite32(value, ab->mem + offset);
++	if ((offset & ATH11K_REG_TYPE_MASK) == ATH11K_REG_TYPE_CE)
++		iowrite32(value, ab->mem_ce + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
++	else
++		iowrite32(value, ab->mem + FIELD_GET(ATH11K_REG_OFFSET_MASK, offset));
+ }
+ 
+ static void ath11k_ahb_kill_tasklets(struct ath11k_base *ab)
+@@ -274,9 +280,9 @@ static void ath11k_ahb_ce_irq_enable(str
+ 	const struct ce_ie_addr *ce_ie_addr = ab->hw_params.ce_ie_addr;
+ 	u32 ie1_reg_addr, ie2_reg_addr, ie3_reg_addr;
+ 
+-	ie1_reg_addr = ce_ie_addr->ie1_reg_addr + ATH11K_CE_OFFSET(ab);
+-	ie2_reg_addr = ce_ie_addr->ie2_reg_addr + ATH11K_CE_OFFSET(ab);
+-	ie3_reg_addr = ce_ie_addr->ie3_reg_addr + ATH11K_CE_OFFSET(ab);
++	ie1_reg_addr = ce_ie_addr->ie1_reg_addr;
++	ie2_reg_addr = ce_ie_addr->ie2_reg_addr;
++	ie3_reg_addr = ce_ie_addr->ie3_reg_addr;
+ 
+ 	ce_attr = &ab->hw_params.host_ce_config[ce_id];
+ 	if (ce_attr->src_nentries)
+@@ -295,9 +301,9 @@ static void ath11k_ahb_ce_irq_disable(st
+ 	const struct ce_ie_addr *ce_ie_addr = ab->hw_params.ce_ie_addr;
+ 	u32 ie1_reg_addr, ie2_reg_addr, ie3_reg_addr;
+ 
+-	ie1_reg_addr = ce_ie_addr->ie1_reg_addr + ATH11K_CE_OFFSET(ab);
+-	ie2_reg_addr = ce_ie_addr->ie2_reg_addr + ATH11K_CE_OFFSET(ab);
+-	ie3_reg_addr = ce_ie_addr->ie3_reg_addr + ATH11K_CE_OFFSET(ab);
++	ie1_reg_addr = ce_ie_addr->ie1_reg_addr;
++	ie2_reg_addr = ce_ie_addr->ie2_reg_addr;
++	ie3_reg_addr = ce_ie_addr->ie3_reg_addr;
+ 
+ 	ce_attr = &ab->hw_params.host_ce_config[ce_id];
+ 	if (ce_attr->src_nentries)
+--- a/drivers/net/wireless/ath/ath11k/hal.c
++++ b/drivers/net/wireless/ath/ath11k/hal.c
+@@ -1218,20 +1218,16 @@ static int ath11k_hal_srng_create_config
+ 	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_TCL_REG + HAL_TCL_STATUS_RING_HP;
+ 
+ 	s = &hal->srng_config[HAL_CE_SRC];
+-	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_BASE_LSB +
+-		ATH11K_CE_OFFSET(ab);
+-	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_HP +
+-		ATH11K_CE_OFFSET(ab);
++	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_BASE_LSB;
++	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab) + HAL_CE_DST_RING_HP;
+ 	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_SRC_REG(ab) -
+ 		HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab);
+ 	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_SRC_REG(ab) -
+ 		HAL_SEQ_WCSS_UMAC_CE0_SRC_REG(ab);
+ 
+ 	s = &hal->srng_config[HAL_CE_DST];
+-	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_BASE_LSB +
+-		ATH11K_CE_OFFSET(ab);
+-	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_HP +
+-		ATH11K_CE_OFFSET(ab);
++	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_BASE_LSB;
++	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_RING_HP;
+ 	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+ 		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+ 	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+@@ -1239,9 +1235,8 @@ static int ath11k_hal_srng_create_config
+ 
+ 	s = &hal->srng_config[HAL_CE_DST_STATUS];
+ 	s->reg_start[0] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) +
+-		HAL_CE_DST_STATUS_RING_BASE_LSB + ATH11K_CE_OFFSET(ab);
+-	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_STATUS_RING_HP +
+-		ATH11K_CE_OFFSET(ab);
++		HAL_CE_DST_STATUS_RING_BASE_LSB;
++	s->reg_start[1] = HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab) + HAL_CE_DST_STATUS_RING_HP;
+ 	s->reg_size[0] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+ 		HAL_SEQ_WCSS_UMAC_CE0_DST_REG(ab);
+ 	s->reg_size[1] = HAL_SEQ_WCSS_UMAC_CE1_DST_REG(ab) -
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -2268,9 +2268,9 @@ const struct ce_ie_addr ath11k_ce_ie_add
+ };
+ 
+ const struct ce_ie_addr ath11k_ce_ie_addr_ipq5018 = {
+-	.ie1_reg_addr = CE_HOST_IPQ5018_IE_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
+-	.ie2_reg_addr = CE_HOST_IPQ5018_IE_2_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
+-	.ie3_reg_addr = CE_HOST_IPQ5018_IE_3_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
++	.ie1_reg_addr = ATH11K_REG_TYPE_CE + CE_HOST_IPQ5018_IE_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
++	.ie2_reg_addr = ATH11K_REG_TYPE_CE + CE_HOST_IPQ5018_IE_2_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
++	.ie3_reg_addr = ATH11K_REG_TYPE_CE + CE_HOST_IPQ5018_IE_3_ADDRESS - HAL_IPQ5018_CE_WFSS_REG_BASE,
+ };
+ 
+ const struct ce_remap ath11k_ce_remap_ipq5018 = {
+@@ -2801,13 +2801,13 @@ const struct ath11k_hw_regs ipq5018_regs
+ 	.hal_reo_status_hp = 0x00003070,
+ 
+ 	/* WCSS relative address */
+-	.hal_seq_wcss_umac_ce0_src_reg = 0x08400000
++	.hal_seq_wcss_umac_ce0_src_reg = ATH11K_REG_TYPE_CE + 0x08400000
+ 		- HAL_IPQ5018_CE_WFSS_REG_BASE,
+-	.hal_seq_wcss_umac_ce0_dst_reg = 0x08401000
++	.hal_seq_wcss_umac_ce0_dst_reg = ATH11K_REG_TYPE_CE + 0x08401000
+ 		- HAL_IPQ5018_CE_WFSS_REG_BASE,
+-	.hal_seq_wcss_umac_ce1_src_reg = 0x08402000
++	.hal_seq_wcss_umac_ce1_src_reg = ATH11K_REG_TYPE_CE + 0x08402000
+ 		- HAL_IPQ5018_CE_WFSS_REG_BASE,
+-	.hal_seq_wcss_umac_ce1_dst_reg = 0x08403000
++	.hal_seq_wcss_umac_ce1_dst_reg = ATH11K_REG_TYPE_CE + 0x08403000
+ 		- HAL_IPQ5018_CE_WFSS_REG_BASE,
+ 
+ 	/* WBM Idle address */
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -81,7 +81,12 @@
+ #define ATH11K_M3_FILE			"m3.bin"
+ #define ATH11K_REGDB_FILE_NAME		"regdb.bin"
+ 
+-#define ATH11K_CE_OFFSET(ab)	(ab->mem_ce - ab->mem)
++#define ATH11K_REG_TYPE_MASK		GENMASK(31, 28)
++#define  ATH11K_REG_TYPE(x)		FIELD_PREP_CONST(ATH11K_REG_TYPE_MASK, x)
++#define  ATH11K_REG_TYPE_NORMAL		ATH11K_REG_TYPE(0)
++#define  ATH11K_REG_TYPE_DP		ATH11K_REG_TYPE(1)
++#define  ATH11K_REG_TYPE_CE		ATH11K_REG_TYPE(2)
++#define ATH11K_REG_OFFSET_MASK		GENMASK(27, 0)
+ 
+ enum ath11k_hw_rate_cck {
+ 	ATH11K_HW_RATE_CCK_LP_11M = 0,
