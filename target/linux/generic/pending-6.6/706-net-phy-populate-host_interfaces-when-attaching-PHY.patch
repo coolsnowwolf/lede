@@ -1,0 +1,57 @@
+From 4e432e530db0056450fbc4a3cee793f16adc39a7 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 8 Oct 2024 23:58:41 +0100
+Subject: [PATCH] net: phy: populate host_interfaces when attaching PHY
+
+Use bitmask of interfaces supported by the MAC for the PHY to choose
+from if the declared interface mode is among those using a single pair
+of SerDes lanes.
+This will allow 2500Base-T PHYs to switch to SGMII on most hosts, which
+results in half-duplex being supported in case the MAC supports them.
+Without this change, 2500Base-T PHYs will always operate in 2500Base-X
+mode with rate-matching, which is not only wasteful in terms of energy
+consumption, but also limits the supported interface modes to
+full-duplex only.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/phy/phylink.c | 21 ++++++++++++++++++++-
+ 1 file changed, 20 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -2017,7 +2017,7 @@ int phylink_fwnode_phy_connect(struct ph
+ {
+ 	struct fwnode_handle *phy_fwnode;
+ 	struct phy_device *phy_dev;
+-	int ret;
++	int i, ret;
+ 
+ 	/* Fixed links and 802.3z are handled without needing a PHY */
+ 	if (pl->cfg_link_an_mode == MLO_AN_FIXED ||
+@@ -2044,6 +2044,25 @@ int phylink_fwnode_phy_connect(struct ph
+ 		pl->link_config.interface = pl->link_interface;
+ 	}
+ 
++	/* Assume single-lane SerDes interface modes share the same
++	 * lanes and allow the PHY to switch to slower also supported modes
++	 */
++	for (i = ARRAY_SIZE(phylink_sfp_interface_preference) - 1; i >= 0; i--) {
++		/* skip unsupported modes */
++		if (!test_bit(phylink_sfp_interface_preference[i], pl->config->supported_interfaces))
++			continue;
++
++		__set_bit(phylink_sfp_interface_preference[i], phy_dev->host_interfaces);
++
++		/* skip all faster modes */
++		if (phylink_sfp_interface_preference[i] == pl->link_interface)
++			break;
++	}
++
++	if (test_bit(pl->link_interface, phylink_sfp_interfaces))
++		phy_interface_and(phy_dev->host_interfaces, phylink_sfp_interfaces,
++				  pl->config->supported_interfaces);
++
+ 	ret = phy_attach_direct(pl->netdev, phy_dev, flags,
+ 				pl->link_interface);
+ 	phy_device_free(phy_dev);
