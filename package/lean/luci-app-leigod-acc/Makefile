@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=Luci for Leigod Game Accelerater
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+libpcap +iptables +kmod-ipt-nat +iptables-mod-tproxy +kmod-ipt-tproxy +kmod-tun +kmod-netem +tc-full +kmod-ipt-ipset +ipset +curl +miniupnpd +conntrack +conntrackd +leigod-acc
+LUCI_DEPENDS:=+libpcap +iptables +kmod-ipt-nat +iptables-mod-tproxy +kmod-ipt-tproxy +kmod-tun +kmod-netem +tc-full +kmod-ipt-ipset +ipset +curl +miniupnpd +conntrack +conntrackd +leigod-acc +jq
 PKG_VERSION:=1
 PKG_RELEASE:=3
 
