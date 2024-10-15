@@ -1,5 +1,6 @@
 /*
- * Platform driver for the Realtek RTL8367R-VB ethernet switches
+ * Platform driver for Realtek RTL8367B family chips, i.e. RTL8367RB and RTL8367R-VB
+ * extended with support for RTL8367C family chips, i.e. RTL8367RB-VB and RTL8367S
  *
  * Copyright (C) 2012 Gabor Juhos <juhosg@openwrt.org>
  *
@@ -515,28 +516,19 @@ static int rtl8367b_write_phy_reg(struct rtl8366_smi *smi,
 static int rtl8367b_init_regs(struct rtl8366_smi *smi)
 {
 	const struct rtl8367b_initval *initvals;
-	u32 chip_num;
-	u32 chip_ver;
 	int count;
-	int err;
 
-	REG_WR(smi, RTL8367B_RTL_MAGIC_ID_REG, RTL8367B_RTL_MAGIC_ID_VAL);
-	REG_RD(smi, RTL8367B_CHIP_NUMBER_REG, &chip_num);
-	REG_RD(smi, RTL8367B_CHIP_VER_REG, &chip_ver);
-
-	switch (chip_ver) {
-	case 0x1000:
-	case 0x1010:
+	switch (smi->rtl8367b_chip) {
+	case RTL8367B_CHIP_RTL8367RB:
+	case RTL8367B_CHIP_RTL8367R_VB:
 		initvals = rtl8367b_initvals;
 		count = ARRAY_SIZE(rtl8367b_initvals);
 		break;
-	case 0x0020:
-	case 0x00A0: 
-		if (chip_num == 0x6367)  {
-			initvals = rtl8367c_initvals;
-			count = ARRAY_SIZE(rtl8367c_initvals);
-		} else 	return -ENODEV;
-		break
+	case RTL8367B_CHIP_RTL8367RB_VB:
+	case RTL8367B_CHIP_RTL8367S:
+		initvals = rtl8367c_initvals;
+		count = ARRAY_SIZE(rtl8367c_initvals);
+		break;
 	default:
 		return -ENODEV;
 	}
@@ -1308,10 +1300,10 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 	const char *chip_name = NULL;
 	u32 chip_num;
 	u32 chip_ver;
-	u32 chip_mode;
 	int ret;
 
-	/* TODO: improve chip detection */
+	smi->rtl8367b_chip = RTL8367B_CHIP_UNKNOWN;
+
 	rtl8366_smi_write_reg(smi, RTL8367B_RTL_MAGIC_ID_REG,
 			      RTL8367B_RTL_MAGIC_ID_VAL);
 
@@ -1329,41 +1321,41 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 		return ret;
 	}
 
-	ret = rtl8366_smi_read_reg(smi, RTL8367B_CHIP_MODE_REG, &chip_mode);
-	if (ret) {
-		dev_err(smi->parent, "unable to read %s register\n",
-			"chip mode");
-		return ret;
-	}
-
 	switch (chip_ver) {
 	case 0x0020:
-		if (chip_num == 0x6367)
+		if (chip_num == 0x6367) {
 			chip_name = "8367RB-VB";
+			smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367RB_VB;
+		}
 		break;
 	case 0x00A0:
-		if (chip_num == 0x6367)
+		if (chip_num == 0x6367) {
 			chip_name = "8367S";
+			smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367S;
+		}
 		break;
 	case 0x1000:
 		chip_name = "8367RB";
+		smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367RB;
 		break;
 	case 0x1010:
 		chip_name = "8367R-VB";
+		smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367R_VB;
 	}
 
 	if (!chip_name) {
 		dev_err(smi->parent,
-			"unknown chip num:%04x ver:%04x, mode:%04x\n",
-			chip_num, chip_ver, chip_mode);
+			"unknown chip (num:%04x ver:%04x)\n",
+			chip_num, chip_ver);
 		return -ENODEV;
 	}
 
-	dev_info(smi->parent, "RTL%s chip found\n", chip_name);
+	dev_info(smi->parent, "RTL%s chip found (num:%04x ver:%04x)\n", chip_name, chip_num, chip_ver);
 
+	/* for the RTL8367R-VB chip, extif1 corresponds to cpu_port 5 */
 	if (of_property_present(smi->parent->of_node, "realtek,extif2"))
 		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 2;
-	else if (of_property_present(smi->parent->of_node, "realtek,extif1") && (chip_ver != 0x1010)) /* for the RTL8367R-VB chip, extif1 corresponds to cpu_port 5 */ 
+	else if (of_property_present(smi->parent->of_node, "realtek,extif1") && (smi->rtl8367b_chip != RTL8367B_CHIP_RTL8367R_VB))
 		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 1;
 
 	dev_info(smi->parent, "CPU port: %u\n", smi->cpu_port);

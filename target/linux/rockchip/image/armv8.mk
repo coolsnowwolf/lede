@@ -347,8 +347,8 @@ define Device/rumu3f_fine-3399
   DEVICE_VENDOR := RUMU3F
   DEVICE_MODEL := FINE 3399
   SOC := rk3399
-  UBOOT_DEVICE_NAME := fine-3399-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  UBOOT_DEVICE_NAME := fine3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += rumu3f_fine-3399
@@ -364,15 +364,15 @@ define Device/scensmart_sv901-eaio
 endef
 TARGET_DEVICES += scensmart_sv901-eaio
 
-define Device/seewo_sv21-rk3568
+define Device/seewo_sv21
   DEVICE_VENDOR := Seewo
-  DEVICE_MODEL := sv21
+  DEVICE_MODEL := SV21
   DEVICE_DTS := rockchip/rk3568-seewo-sv21
   UBOOT_DEVICE_NAME := seewo-sv21-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-usb-net-rtl8152 kmod-ata-ahci-dwc
 endef
-TARGET_DEVICES += seewo_sv21-rk3568
+TARGET_DEVICES += seewo_sv21
 
 define Device/sharevdi_h3399pc
   DEVICE_VENDOR := SHAREVDI
