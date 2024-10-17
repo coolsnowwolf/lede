@@ -51,6 +51,7 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_BIN) ./files/acc-gw.linux.$(acc-arch) $(1)/usr/sbin/leigod/acc-gw.linux.$(acc-arch)
 	$(INSTALL_BIN) ./files/leigod_uninstall.sh $(1)/usr/sbin/leigod/leigod_uninstall.sh
 	$(INSTALL_BIN) ./files/plugin_common.sh $(1)/usr/sbin/leigod/plugin_common.sh
+	$(INSTALL_BIN) ./files/leigod-helper.sh $(1)/usr/sbin/leigod/leigod-helper.sh
 	$(INSTALL_BIN) ./files/update_plugin $(1)/usr/sbin/leigod/update_plugin
 	$(INSTALL_DATA) ./files/version $(1)/usr/sbin/leigod/version
 endef
