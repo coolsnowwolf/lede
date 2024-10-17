@@ -238,6 +238,10 @@ endif
 
 	$(if $(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE), \
 		rm -f $(1)/etc/banner.failsafe,)
+		
+	if [ -f $(TOPDIR)/feeds/luci/package.json ]; then \
+		$(CP) ./luci2/* $(1)/; \
+	fi
 endef
 
 ifneq ($(DUMP),1)
