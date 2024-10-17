@@ -11,7 +11,7 @@ PKG_FLAGS:=essential
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://www.busybox.net/downloads \
-		http://sources.buildroot.net
+		https://sources.buildroot.net/$(PKG_NAME)
 PKG_HASH:=542750c8af7cb2630e201780b4f99f3dcceeb06f505b479ec68241c1e6af61a5
 
 PKG_BUILD_DEPENDS:=BUSYBOX_CONFIG_PAM:libpam
