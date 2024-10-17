@@ -39,9 +39,9 @@ switch_to_ramfs() {
 	for binary in \
 		/bin/busybox /bin/ash /bin/sh /bin/mount /bin/umount	\
 		pivot_root mount_root reboot sync kill sleep		\
-		md5sum hexdump cat zcat bzcat dd tar			\
+		md5sum hexdump cat zcat dd tar gzip			\
 		ls basename find cp mv rm mkdir rmdir mknod touch chmod \
-		'[' printf wc grep awk sed cut				\
+		'[' printf wc grep awk sed cut sort tail		\
 		mtd partx losetup mkfs.ext4 nandwrite flash_erase	\
 		ubiupdatevol ubiattach ubiblock ubiformat		\
 		ubidetach ubirsvol ubirmvol ubimkvol			\
@@ -53,7 +53,12 @@ switch_to_ramfs() {
 		local file="$(command -v "$binary" 2>/dev/null)"
 		[ -n "$file" ] && install_bin "$file"
 	done
-	install_file /etc/resolv.conf /lib/*.sh /lib/functions/*.sh /lib/upgrade/*.sh /lib/upgrade/do_stage2 /usr/share/libubox/jshn.sh $RAMFS_COPY_DATA
+	install_file /etc/resolv.conf /lib/*.sh /lib/functions/*.sh	\
+		/lib/upgrade/*.sh /lib/upgrade/do_stage2 		\
+		/usr/share/libubox/jshn.sh /usr/sbin/fw_setenv		\
+		/etc/fw_env.config $RAMFS_COPY_DATA
+
+	mkdir -p $RAM_ROOT/var/lock
 
 	[ -L "/lib64" ] && ln -s /lib $RAM_ROOT/lib64
 
@@ -64,6 +69,10 @@ switch_to_ramfs() {
 
 	/bin/mount -o remount,ro /mnt
 	/bin/umount -l /mnt
+
+	grep -e "^/dev/dm-.*" -e "^/dev/loop.*" /proc/mounts | while read bdev mp _r; do
+		umount $mp
+	done
 
 	[ "$RAMFS_COPY_LOSETUP" ] && losetup -D
 	[ "$RAMFS_COPY_LVM" ] && {
@@ -94,11 +103,14 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 			[ -f "$stat" ] || continue
 
 			local pid name state ppid rest
-			read pid name state ppid rest < $stat
-			name="${name#(}"; name="${name%)}"
+			read pid rest < $stat
+			name="${rest#\(}" ; rest="${name##*\) }" ; name="${name%\)*}"
+			set -- $rest ; state="$1" ; ppid="$2"
 
 			# Skip PID1, our parent, ourself and our children
 			[ $pid -ne 1 -a $pid -ne $proc_ppid -a $pid -ne $$ -a $ppid -ne $$ ] || continue
+
+			[ -f "/proc/$pid/cmdline" ] || continue
 
 			local cmdline
 			read cmdline < /proc/$pid/cmdline
@@ -109,7 +121,7 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 			v "Sending signal $sig to $name ($pid)"
 			kill -$sig $pid 2>/dev/null
 
-			[ $loop -eq 1 ] && run=true
+			[ $loop -eq 1 ] && sleep 2 && run=true
 		done
 
 		let loop_limit--
@@ -122,15 +134,31 @@ kill_remaining() { # [ <signal> [ <loop> ] ]
 
 indicate_upgrade
 
-killall -9 telnetd
-killall -9 dropbear
-killall -9 ash
+while read -r a b c; do
+	case "$a" in
+		MemT*) mem="$b" ;; esac
+done < /proc/meminfo
+
+[ "$mem" -gt 32768 ] && \
+	skip_services="dnsmasq log network"
+for service in /etc/init.d/*; do
+	service=${service##*/}
+
+	case " $skip_services " in
+		*" $service "*) continue ;; esac
+
+	ubus call service delete '{ "name": "'"$service"'" }' 2>/dev/null
+done
+
+killall -9 telnetd 2>/dev/null
+killall -9 dropbear 2>/dev/null
+killall -9 ash 2>/dev/null
 
 kill_remaining TERM
-sleep 3
+sleep 4
 kill_remaining KILL 1
 
-sleep 1
+sleep 6
 
 echo 3 > /proc/sys/vm/drop_caches
 
