@@ -1,0 +1,170 @@
+From ca46c5834ba3a74595a93d7a491fa9c943be7c30 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sun, 28 Jul 2024 12:15:53 +0200
+Subject: [PATCH 3/3] mtd: parser: add support for Airoha parser
+
+Add support for Airoha parser based on a post parse ofpart function.
+
+Airoha partition table follow normal fixed-partition implementation
+with a special implementation for the ART partition. This is always the
+past partition and is placed from the end of the flash - the partition
+size.
+
+To enable this special implementation for ART partition, the relevant
+node require the "airoha,dynamic-art" compatible. With that declared,
+offset value is ignored and real offset is updated with the calculated
+value.
+
+Due to usage of specific bad block management driver, the MTD size might
+vary hence the ART partition offset needs to be dynamically parsed and
+can't be declared statically.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/mtd/parsers/Kconfig         | 10 ++++++
+ drivers/mtd/parsers/Makefile        |  1 +
+ drivers/mtd/parsers/ofpart_airoha.c | 56 +++++++++++++++++++++++++++++
+ drivers/mtd/parsers/ofpart_airoha.h | 18 ++++++++++
+ drivers/mtd/parsers/ofpart_core.c   |  6 ++++
+ 5 files changed, 91 insertions(+)
+ create mode 100644 drivers/mtd/parsers/ofpart_airoha.c
+ create mode 100644 drivers/mtd/parsers/ofpart_airoha.h
+
+--- a/drivers/mtd/parsers/Kconfig
++++ b/drivers/mtd/parsers/Kconfig
+@@ -93,6 +93,16 @@ config MTD_OF_PARTS
+ 	  flash memory node, as described in
+ 	  Documentation/devicetree/bindings/mtd/mtd.yaml.
+ 
++config MTD_OF_PARTS_AIROHA
++	bool "Airoha EN7815 partitioning support"
++	depends on MTD_OF_PARTS && (ARCH_AIROHA || COMPILE_TEST)
++	default ARCH_AIROHA
++	help
++	  This provides partitions parser for Airoha EN7815 family devices
++	  that can have dynamic "ART" partition at the end of the flash.
++	  It takes care of finding the correct offset and update property
++	  with it.
++
+ config MTD_OF_PARTS_BCM4908
+ 	bool "BCM4908 partitioning support"
+ 	depends on MTD_OF_PARTS && (ARCH_BCMBCA || COMPILE_TEST)
+--- a/drivers/mtd/parsers/Makefile
++++ b/drivers/mtd/parsers/Makefile
+@@ -7,6 +7,7 @@ obj-$(CONFIG_MTD_CMDLINE_PARTS)		+= cmdl
+ obj-$(CONFIG_MTD_MYLOADER_PARTS)		+= myloader.o
+ obj-$(CONFIG_MTD_OF_PARTS)		+= ofpart.o
+ ofpart-y				+= ofpart_core.o
++ofpart-$(CONFIG_MTD_OF_PARTS_AIROHA)	+= ofpart_airoha.o
+ ofpart-$(CONFIG_MTD_OF_PARTS_BCM4908)	+= ofpart_bcm4908.o
+ ofpart-$(CONFIG_MTD_OF_PARTS_LINKSYS_NS)+= ofpart_linksys_ns.o
+ obj-$(CONFIG_MTD_PARSER_IMAGETAG)	+= parser_imagetag.o
+--- /dev/null
++++ b/drivers/mtd/parsers/ofpart_airoha.c
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2024 Christian Marangi <ansuelsmth@gmail.com>
++ */
++
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/partitions.h>
++
++#include "ofpart_airoha.h"
++
++int airoha_partitions_post_parse(struct mtd_info *mtd,
++				 struct mtd_partition *parts,
++				 int nr_parts)
++{
++	struct mtd_partition *part;
++	int len, a_cells, s_cells;
++	struct device_node *pp;
++	struct property *prop;
++	const __be32 *reg;
++	__be32 *new_reg;
++
++	part = &parts[nr_parts - 1];
++	pp = part->of_node;
++
++	/* Skip if ART partition have a valid offset instead of a dynamic one */
++	if (!of_device_is_compatible(pp, "airoha,dynamic-art"))
++		return 0;
++
++	/* ART partition is set at the end of flash - size */
++	part->offset = mtd->size - part->size;
++
++	/* Update the offset with the new calculate value in DT */
++	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
++	if (!prop)
++		return -ENOMEM;
++
++	/* Reg already validated by fixed-partition parser */
++	reg = of_get_property(pp, "reg", &len);
++
++	/* Fixed partition */
++	a_cells = of_n_addr_cells(pp);
++	s_cells = of_n_size_cells(pp);
++
++	prop->name = "reg";
++	prop->length = (a_cells + s_cells) * sizeof(__be32);
++	prop->value = kmemdup(reg, (a_cells + s_cells) * sizeof(__be32),
++			      GFP_KERNEL);
++	new_reg = prop->value;
++	memset(new_reg, 0, a_cells * sizeof(__be32));
++	new_reg[a_cells - 1] = cpu_to_be32(part->offset);
++	if (a_cells > 1)
++		new_reg[0] = cpu_to_be32(part->offset >> 32);
++	of_update_property(pp, prop);
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/mtd/parsers/ofpart_airoha.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __OFPART_AIROHA_H
++#define __OFPART_AIROHA_H
++
++#ifdef CONFIG_MTD_OF_PARTS_AIROHA
++int airoha_partitions_post_parse(struct mtd_info *mtd,
++				 struct mtd_partition *parts,
++				 int nr_parts);
++#else
++static inline int airoha_partitions_post_parse(struct mtd_info *mtd,
++					       struct mtd_partition *parts,
++					       int nr_parts)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
++#endif
+--- a/drivers/mtd/parsers/ofpart_core.c
++++ b/drivers/mtd/parsers/ofpart_core.c
+@@ -16,6 +16,7 @@
+ #include <linux/slab.h>
+ #include <linux/mtd/partitions.h>
+ 
++#include "ofpart_airoha.h"
+ #include "ofpart_bcm4908.h"
+ #include "ofpart_linksys_ns.h"
+ 
+@@ -23,6 +24,10 @@ struct fixed_partitions_quirks {
+ 	int (*post_parse)(struct mtd_info *mtd, struct mtd_partition *parts, int nr_parts);
+ };
+ 
++static struct fixed_partitions_quirks airoha_partitions_quirks = {
++	.post_parse = airoha_partitions_post_parse,
++};
++
+ static struct fixed_partitions_quirks bcm4908_partitions_quirks = {
+ 	.post_parse = bcm4908_partitions_post_parse,
+ };
+@@ -192,6 +197,7 @@ static const struct of_device_id parse_o
+ 	/* Generic */
+ 	{ .compatible = "fixed-partitions" },
+ 	/* Customized */
++	{ .compatible = "airoha,fixed-partitions", .data = &airoha_partitions_quirks, },
+ 	{ .compatible = "brcm,bcm4908-partitions", .data = &bcm4908_partitions_quirks, },
+ 	{ .compatible = "linksys,ns-partitions", .data = &linksys_ns_partitions_quirks, },
+ 	{},
