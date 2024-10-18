@@ -49,7 +49,7 @@ define Package/autocore-arm/install
 	$(INSTALL_BIN) ./files/arm/sbin/cpuinfo $(1)/sbin/cpuinfo
 	$(INSTALL_BIN) ./files/arm/sbin/ethinfo $(1)/sbin/ethinfo
 	$(INSTALL_BIN) ./files/arm/sbin/usage $(1)/sbin/usage
-	$(INSTALL_BIN) ./files/arm/tempinfo $(1)/sbin/tempinfo
+	$(INSTALL_BIN) ./files/arm/sbin/tempinfo $(1)/sbin/tempinfo
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
