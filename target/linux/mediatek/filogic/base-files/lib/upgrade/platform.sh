@@ -45,6 +45,8 @@ platform_do_upgrade() {
 	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
+	glinet,gl-x3000|\
+	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
 	jdcloud,re-cs-05)
 		CI_KERNPART="kernel"
@@ -98,6 +100,8 @@ platform_copy_config() {
 	cmcc,rax3000m-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
+	glinet,gl-x3000|\
+	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
 	jdcloud,re-cs-05)
 		emmc_copy_config
