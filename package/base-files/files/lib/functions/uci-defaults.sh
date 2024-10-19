@@ -418,6 +418,15 @@ ucidef_set_led_default() {
 	json_select ..
 }
 
+ucidef_set_led_heartbeat() {
+	_ucidef_set_led_common "$1" "$2" "$3"
+
+	json_add_string trigger heartbeat
+	json_select ..
+
+	json_select ..
+}
+
 ucidef_set_led_gpio() {
 	local gpio="$4"
 	local inverted="$5"

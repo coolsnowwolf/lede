@@ -43,11 +43,15 @@ define Package/autocore-arm/install
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_DATA) ./files/arm/index.htm $(1)/etc/index.htm
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/60-autocore-reload-rpcd $(1)/etc/uci-defaults/
 	$(INSTALL_BIN) ./files/arm/090-cover-index_htm $(1)/etc/uci-defaults/
 	$(INSTALL_DIR) $(1)/sbin
 	$(INSTALL_BIN) ./files/arm/sbin/cpuinfo $(1)/sbin/cpuinfo
 	$(INSTALL_BIN) ./files/arm/sbin/ethinfo $(1)/sbin/ethinfo
 	$(INSTALL_BIN) ./files/arm/sbin/usage $(1)/sbin/usage
+	$(INSTALL_BIN) ./files/arm/sbin/tempinfo $(1)/sbin/tempinfo
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
 
 define Package/autocore-x86/install
@@ -55,8 +59,12 @@ define Package/autocore-x86/install
 	$(INSTALL_BIN) ./files/x86/autocore $(1)/etc/init.d/autocore
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_DATA) ./files/x86/index.htm $(1)/etc/index.htm
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) ./files/60-autocore-reload-rpcd $(1)/etc/uci-defaults/
 	$(INSTALL_DIR) $(1)/sbin
 	$(CP) ./files/x86/sbin/* $(1)/sbin
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
 
 $(eval $(call BuildPackage,autocore-arm))
