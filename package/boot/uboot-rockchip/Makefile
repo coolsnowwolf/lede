@@ -305,6 +305,15 @@ define U-Boot/sige7-rk3588
     armsom_sige7
 endef
 
+# RK3588S boards
+
+define U-Boot/nanopi-r6s-rk3588s
+  $(U-Boot/Default/rk3588)
+  NAME:=NanoPi R6S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r6s
+endef
+
 UBOOT_TARGETS := \
   panther-x2-rk3566 \
   rock-3c-rk3566 \
@@ -337,6 +346,7 @@ UBOOT_TARGETS := \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
   orangepi-r1-plus-lts-rk3328 \
+  nanopi-r6s-rk3588s \
   sige7-rk3588
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
