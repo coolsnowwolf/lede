@@ -71,6 +71,7 @@ define Device/jdcloud_re-cs-02
 	BLOCKSIZE := 64k
 	KERNEL_SIZE := 6144k
 	DEVICE_DTS_CONFIG := config@cp03-c3
+	SUPPORTED_DEVICES += jdcloud,ax6600
 	DEVICE_PACKAGES := ipq-wifi-jdcloud_ax6600 kmod-ath11k-pci ath11k-firmware-qcn9074
 endef
 TARGET_DEVICES += jdcloud_re-cs-02
@@ -84,6 +85,7 @@ define Device/jdcloud_re-ss-01
 	BLOCKSIZE := 64k
 	KERNEL_SIZE := 6144k
 	DEVICE_DTS_CONFIG := config@cp03-c2
+	SUPPORTED_DEVICES += jdcloud,ax1800-pro
 	DEVICE_PACKAGES := ipq-wifi-jdcloud_ax1800pro
 endef
 TARGET_DEVICES += jdcloud_re-ss-01
