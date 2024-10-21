@@ -333,6 +333,16 @@ define Device/radxa_rock-pi-4
 endef
 TARGET_DEVICES += radxa_rock-pi-4
 
+define Device/radxa_rock-5b
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5B
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := rock5b-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss kmod-hwmon-pwmfan
+endef
+TARGET_DEVICES += radxa_rock-5b
+
 define Device/rongpin_king3399
   DEVICE_VENDOR := Rongpin
   DEVICE_MODEL := King3399
