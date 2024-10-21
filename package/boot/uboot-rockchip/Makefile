@@ -298,6 +298,13 @@ define U-Boot/Default/rk3588
   TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
 endef
 
+define U-Boot/rock5b-rk3588
+  $(U-Boot/Default/rk3588)
+  NAME:=ROCK 5B
+  BUILD_DEVICES:= \
+    radxa_rock-5b
+endef
+
 define U-Boot/sige7-rk3588
   $(U-Boot/Default/rk3588)
   NAME:=Sige7
@@ -347,6 +354,7 @@ UBOOT_TARGETS := \
   orangepi-r1-plus-rk3328 \
   orangepi-r1-plus-lts-rk3328 \
   nanopi-r6s-rk3588s \
+  rock5b-rk3588 \
   sige7-rk3588
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
