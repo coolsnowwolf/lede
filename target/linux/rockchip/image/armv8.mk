@@ -164,6 +164,16 @@ define Device/friendlyarm_nanopi-r2s
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r2s
 
+define Device/friendlyarm_nanopi-r3s
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R3S
+  SOC := rk3566
+  UBOOT_DEVICE_NAME := nanopi-r3s-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r3s
+
 define Device/friendlyarm_nanopi-r4s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R4S

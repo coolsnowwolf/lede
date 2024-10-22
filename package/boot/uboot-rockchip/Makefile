@@ -178,6 +178,13 @@ define U-Boot/rk3566/Default
   TPL:=rk3566_ddr_1056MHz_v1.21.bin
 endef
 
+define U-Boot/nanopi-r3s-rk3566
+  $(U-Boot/rk3566/Default)
+  NAME:=NanoPi R3S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r3s
+endef
+
 define U-Boot/panther-x2-rk3566
   $(U-Boot/rk3566/Default)
   NAME:=Panther X2
@@ -335,6 +342,7 @@ define U-Boot/nanopi-r6s-rk3588s
 endef
 
 UBOOT_TARGETS := \
+  nanopi-r3s-rk3566 \
   panther-x2-rk3566 \
   rock-3c-rk3566 \
   bpi-r2-pro-rk3568 \
