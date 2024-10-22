@@ -341,6 +341,13 @@ define U-Boot/nanopi-r6s-rk3588s
     friendlyarm_nanopi-r6s
 endef
 
+define U-Boot/orangepi-5-rk3588s
+  $(U-Boot/rk3588/Default)
+  NAME:=OrangePi 5
+  BUILD_DEVICES:= \
+    xunlong_orangepi-5
+endef
+
 UBOOT_TARGETS := \
   nanopi-r3s-rk3566 \
   panther-x2-rk3566 \
@@ -361,6 +368,7 @@ UBOOT_TARGETS := \
   sige7-rk3588 \
   nanopi-r6c-rk3588s \
   nanopi-r6s-rk3588s \
+  orangepi-5-rk3588s \
   dlfr100-rk3399 \
   h3399pc-rk3399 \
   fine3399-rk3399 \

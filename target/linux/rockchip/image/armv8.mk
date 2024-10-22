@@ -462,6 +462,16 @@ define Device/sharevdi_guangmiao-g4c
 endef
 TARGET_DEVICES += sharevdi_guangmiao-g4c
 
+define Device/xunlong_orangepi-5
+  DEVICE_VENDOR := Xunlong
+  DEVICE_MODEL := Orange Pi 5
+  SOC := rk3588s
+  UBOOT_DEVICE_NAME := orangepi-5-rk3588s
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss
+endef
+TARGET_DEVICES += xunlong_orangepi-5
+
 define Device/xunlong_orangepi-r1-plus
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi R1 Plus
