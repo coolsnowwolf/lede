@@ -299,7 +299,9 @@ define U-Boot/generic-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=Generic RK3588
   BUILD_DEVICES:= \
-    hinlink_owl-h88k
+    hinlink_owl-h88k \
+    seewo_srcm3588-io \
+    seewo_srcm3588-sw
 endef
 
 define U-Boot/nanopc-t6-rk3588
