@@ -472,6 +472,16 @@ define Device/xunlong_orangepi-5
 endef
 TARGET_DEVICES += xunlong_orangepi-5
 
+define Device/xunlong_orangepi-5-plus
+  DEVICE_VENDOR := Xunlong
+  DEVICE_MODEL := Orange Pi 5 Plus
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := orangepi-5-plus-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss
+endef
+TARGET_DEVICES += xunlong_orangepi-5-plus
+
 define Device/xunlong_orangepi-r1-plus
   DEVICE_VENDOR := Xunlong
   DEVICE_MODEL := Orange Pi R1 Plus

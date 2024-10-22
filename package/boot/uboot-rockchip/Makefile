@@ -318,6 +318,13 @@ define U-Boot/nanopc-t6-rk3588
     friendlyarm_nanopc-t6
 endef
 
+define U-Boot/orangepi-5-plus-rk3588
+  $(U-Boot/rk3588/Default)
+  NAME:=OrangePi 5 Plus
+  BUILD_DEVICES:= \
+    xunlong_orangepi-5-plus
+endef
+
 define U-Boot/sige7-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=Sige7
@@ -365,6 +372,7 @@ UBOOT_TARGETS := \
   station-p2-rk3568 \
   generic-rk3588 \
   nanopc-t6-rk3588 \
+  orangepi-5-plus-rk3588 \
   sige7-rk3588 \
   nanopi-r6c-rk3588s \
   nanopi-r6s-rk3588s \
