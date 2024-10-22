@@ -123,6 +123,16 @@ define Device/friendlyarm_nanopi-neo3
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo3
 
+define Device/friendlyarm_nanopc-t6
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPC T6
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := nanopc-t6-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss 
+endef
+TARGET_DEVICES += friendlyarm_nanopc-t6
+
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2C
@@ -182,6 +192,16 @@ define Device/friendlyarm_nanopi-r5s
   DEVICE_PACKAGES := kmod-r8125-rss
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r5s
+
+define Device/friendlyarm_nanopi-r6c
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R6C
+  SOC := rk3588s
+  UBOOT_DEVICE_NAME := nanopi-r6c-rk3588s
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss 
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r6c
 
 define Device/friendlyarm_nanopi-r6s
   DEVICE_VENDOR := FriendlyARM
@@ -332,6 +352,16 @@ define Device/radxa_rock-pi-4
   DEVICE_PACKAGES := -urngd
 endef
 TARGET_DEVICES += radxa_rock-pi-4
+
+define Device/radxa_rock-5b
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5B
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := rock5b-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss kmod-hwmon-pwmfan
+endef
+TARGET_DEVICES += radxa_rock-5b
 
 define Device/rongpin_king3399
   DEVICE_VENDOR := Rongpin

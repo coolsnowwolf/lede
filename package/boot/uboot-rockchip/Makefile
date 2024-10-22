@@ -298,6 +298,13 @@ define U-Boot/Default/rk3588
   TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
 endef
 
+define U-Boot/rock5b-rk3588
+  $(U-Boot/Default/rk3588)
+  NAME:=ROCK 5B
+  BUILD_DEVICES:= \
+    radxa_rock-5b
+endef
+
 define U-Boot/sige7-rk3588
   $(U-Boot/Default/rk3588)
   NAME:=Sige7
@@ -305,7 +312,21 @@ define U-Boot/sige7-rk3588
     armsom_sige7
 endef
 
+define U-Boot/nanopc-t6-rk3588
+  $(U-Boot/Default/rk3588)
+  NAME:=NanoPC T6
+  BUILD_DEVICES:= \
+    friendlyarm_nanopc-t6
+endef
+
 # RK3588S boards
+
+define U-Boot/nanopi-r6c-rk3588s
+  $(U-Boot/Default/rk3588)
+  NAME:=NanoPi R6C
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r6c
+endef
 
 define U-Boot/nanopi-r6s-rk3588s
   $(U-Boot/Default/rk3588)
@@ -346,7 +367,10 @@ UBOOT_TARGETS := \
   nanopi-r2s-rk3328 \
   orangepi-r1-plus-rk3328 \
   orangepi-r1-plus-lts-rk3328 \
+  nanopc-t6-rk3588 \
+  nanopi-r6c-rk3588s \
   nanopi-r6s-rk3588s \
+  rock5b-rk3588 \
   sige7-rk3588
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
