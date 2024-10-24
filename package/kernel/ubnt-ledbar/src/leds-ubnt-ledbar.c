@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
+#include <linux/version.h>
 
 /**
  * Driver for the Ubiquiti RGB LED controller (LEDBAR).
@@ -160,7 +161,12 @@ static int ubnt_ledbar_init_led(struct device_node *np, struct ubnt_ledbar *ledb
 	return devm_led_classdev_register_ext(&ledbar->client->dev, led_cdev, &init_data);
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+static int ubnt_ledbar_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
+#else
 static int ubnt_ledbar_probe(struct i2c_client *client)
+#endif
 {
 	struct device_node *np = client->dev.of_node;
 	struct ubnt_ledbar *ledbar;
