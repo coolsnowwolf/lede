@@ -1,0 +1,91 @@
+From 2ce30993831041b9dcd31eb12896be6611e8b7e2 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Mon, 12 Feb 2024 19:57:46 +0100
+Subject: [PATCH] r8169: add generic rtl_set_eee_txidle_timer function
+
+Add a generic setter for the EEE tx idle timer and use it with all
+RTL8125/RTL8126 chip versions, in line with the vendor driver.
+This prepares for adding EEE tx idle timer support for additional
+chip versions.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://lore.kernel.org/r/39beed72-0dc4-4c45-8899-b72c43ab62a7@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 34 +++++++++++++----------
+ 1 file changed, 20 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -646,6 +646,7 @@ struct rtl8169_private {
+ 	struct page *Rx_databuff[NUM_RX_DESC];	/* Rx data buffers */
+ 	struct ring_info tx_skb[NUM_TX_DESC];	/* Tx data buffers */
+ 	u16 cp_cmd;
++	u16 tx_lpi_timer;
+ 	u32 irq_mask;
+ 	int irq;
+ 	struct clk *clk;
+@@ -2081,6 +2082,22 @@ static int rtl_set_coalesce(struct net_d
+ 	return 0;
+ }
+ 
++static void rtl_set_eee_txidle_timer(struct rtl8169_private *tp)
++{
++	unsigned int timer_val = READ_ONCE(tp->dev->mtu) + ETH_HLEN + 0x20;
++
++	switch (tp->mac_version) {
++	case RTL_GIGA_MAC_VER_61:
++	case RTL_GIGA_MAC_VER_63:
++	case RTL_GIGA_MAC_VER_65:
++		tp->tx_lpi_timer = timer_val;
++		RTL_W16(tp, EEE_TXIDLE_TIMER_8125, timer_val);
++		break;
++	default:
++		break;
++	}
++}
++
+ static int rtl8169_get_eee(struct net_device *dev, struct ethtool_eee *data)
+ {
+ 	struct rtl8169_private *tp = netdev_priv(dev);
+@@ -2339,14 +2356,8 @@ static void rtl8125a_config_eee_mac(stru
+ 	r8168_mac_ocp_modify(tp, 0xeb62, 0, BIT(2) | BIT(1));
+ }
+ 
+-static void rtl8125_set_eee_txidle_timer(struct rtl8169_private *tp)
+-{
+-	RTL_W16(tp, EEE_TXIDLE_TIMER_8125, tp->dev->mtu + ETH_HLEN + 0x20);
+-}
+-
+ static void rtl8125b_config_eee_mac(struct rtl8169_private *tp)
+ {
+-	rtl8125_set_eee_txidle_timer(tp);
+ 	r8168_mac_ocp_modify(tp, 0xe040, 0, BIT(1) | BIT(0));
+ }
+ 
+@@ -3879,6 +3890,8 @@ static void rtl_hw_start(struct  rtl8169
+ 	rtl_hw_aspm_clkreq_enable(tp, false);
+ 	RTL_W16(tp, CPlusCmd, tp->cp_cmd);
+ 
++	rtl_set_eee_txidle_timer(tp);
++
+ 	if (tp->mac_version <= RTL_GIGA_MAC_VER_06)
+ 		rtl_hw_start_8169(tp);
+ 	else if (rtl_is_8125(tp))
+@@ -3912,14 +3925,7 @@ static int rtl8169_change_mtu(struct net
+ 	dev->mtu = new_mtu;
+ 	netdev_update_features(dev);
+ 	rtl_jumbo_config(tp);
+-
+-	switch (tp->mac_version) {
+-	case RTL_GIGA_MAC_VER_61 ... RTL_GIGA_MAC_VER_65:
+-		rtl8125_set_eee_txidle_timer(tp);
+-		break;
+-	default:
+-		break;
+-	}
++	rtl_set_eee_txidle_timer(tp);
+ 
+ 	return 0;
+ }

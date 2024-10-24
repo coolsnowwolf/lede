@@ -58,7 +58,7 @@ emmc_copy_config() {
 }
 
 emmc_do_upgrade() {
-	local file_type=$(identify $1)
+	local file_type=$(identify_magic_long "$(get_magic_long "$1")")
 
 	case "$file_type" in
 		"fit")  emmc_upgrade_fit $1;;

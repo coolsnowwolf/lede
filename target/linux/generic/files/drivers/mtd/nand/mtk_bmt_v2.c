@@ -443,7 +443,7 @@ static int mtk_bmt_init_v2(struct device_node *np)
 	 * of whole flash
 	 */
 	bmtd.bbt = NULL;
-	for (u16 block = bmtd.total_blks - 1; !bmtd.bbt && block >= bmtd.pool_lba; block--) {
+	for (block = bmtd.total_blks - 1; !bmtd.bbt && block >= bmtd.pool_lba; block--) {
 		u8 fdm[4];
 
 		if (bbt_nand_read(blk_pg(block), bmtd.bbt_buf, bufsz, fdm, sizeof(fdm))) {

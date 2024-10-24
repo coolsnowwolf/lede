@@ -1,0 +1,107 @@
+--- a/drivers/mmc/host/sdhci-of-dwcmshc.c
++++ b/drivers/mmc/host/sdhci-of-dwcmshc.c
+@@ -295,19 +295,20 @@ static void dwcmshc_rk3568_set_clock(str
+ 		0x3 << 19;  /* post-change delay */
+ 	sdhci_writel(host, extra, dwc_priv->vendor_specific_area1 + DWCMSHC_EMMC_ATCTRL);
+ 
+-	if (host->mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
+-	    host->mmc->ios.timing == MMC_TIMING_MMC_HS400)
++	if (host->mmc->ios.timing == MMC_TIMING_MMC_HS200)
+ 		txclk_tapnum = priv->txclk_tapnum;
+ 
+-	if ((priv->devtype == DWCMSHC_RK3588) && host->mmc->ios.timing == MMC_TIMING_MMC_HS400) {
++	if (host->mmc->ios.timing == MMC_TIMING_MMC_HS400) {
+ 		txclk_tapnum = DLL_TXCLK_TAPNUM_90_DEGREES;
+ 
+-		extra = DLL_CMDOUT_SRC_CLK_NEG |
+-			DLL_CMDOUT_EN_SRC_CLK_NEG |
+-			DWCMSHC_EMMC_DLL_DLYENA |
+-			DLL_CMDOUT_TAPNUM_90_DEGREES |
+-			DLL_CMDOUT_TAPNUM_FROM_SW;
+-		sdhci_writel(host, extra, DECMSHC_EMMC_DLL_CMDOUT);
++		if (priv->devtype != DWCMSHC_RK3568) {
++			extra = DLL_CMDOUT_SRC_CLK_NEG |
++				DLL_CMDOUT_EN_SRC_CLK_NEG |
++				DWCMSHC_EMMC_DLL_DLYENA |
++				DLL_CMDOUT_TAPNUM_90_DEGREES |
++				DLL_CMDOUT_TAPNUM_FROM_SW;
++			sdhci_writel(host, extra, DECMSHC_EMMC_DLL_CMDOUT);
++		}
+ 	}
+ 
+ 	extra = DWCMSHC_EMMC_DLL_DLYENA |
+@@ -355,6 +356,15 @@ static const struct sdhci_ops sdhci_dwcm
+ 	.adma_write_desc	= dwcmshc_adma_write_desc,
+ };
+ 
++static const struct sdhci_ops sdhci_dwcmshc_rk3528_ops = {
++	.set_clock		= dwcmshc_rk3568_set_clock,
++	.set_bus_width		= sdhci_set_bus_width,
++	.set_uhs_signaling	= dwcmshc_set_uhs_signaling,
++	.get_max_clock		= sdhci_pltfm_clk_get_max_clock,
++	.reset			= rk35xx_sdhci_reset,
++	.adma_write_desc	= dwcmshc_adma_write_desc,
++};
++
+ static const struct sdhci_pltfm_data sdhci_dwcmshc_pdata = {
+ 	.ops = &sdhci_dwcmshc_ops,
+ 	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
+@@ -378,6 +388,14 @@ static const struct sdhci_pltfm_data sdh
+ 		   SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
+ };
+ 
++static const struct sdhci_pltfm_data sdhci_dwcmshc_rk3528_pdata = {
++	.ops = &sdhci_dwcmshc_rk3528_ops,
++	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
++		  SDHCI_QUIRK_BROKEN_TIMEOUT_VAL,
++	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
++		   SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
++};
++
+ static int dwcmshc_rk35xx_init(struct sdhci_host *host, struct dwcmshc_priv *dwc_priv)
+ {
+ 	int err;
+@@ -443,6 +461,10 @@ static const struct of_device_id sdhci_d
+ 		.data = &sdhci_dwcmshc_rk35xx_pdata,
+ 	},
+ 	{
++		.compatible = "rockchip,rk3528-dwcmshc",
++		.data = &sdhci_dwcmshc_rk3528_pdata,
++	},
++	{
+ 		.compatible = "snps,dwcmshc-sdhci",
+ 		.data = &sdhci_dwcmshc_pdata,
+ 	},
+@@ -521,17 +543,18 @@ static int dwcmshc_probe(struct platform
+ 	host->mmc_host_ops.request = dwcmshc_request;
+ 	host->mmc_host_ops.hs400_enhanced_strobe = dwcmshc_hs400_enhanced_strobe;
+ 
+-	if (pltfm_data == &sdhci_dwcmshc_rk35xx_pdata) {
++	if ((pltfm_data == &sdhci_dwcmshc_rk35xx_pdata) ||
++	    (pltfm_data == &sdhci_dwcmshc_rk3528_pdata)) {
+ 		rk_priv = devm_kzalloc(&pdev->dev, sizeof(struct rk35xx_priv), GFP_KERNEL);
+ 		if (!rk_priv) {
+ 			err = -ENOMEM;
+ 			goto err_clk;
+ 		}
+ 
+-		if (of_device_is_compatible(pdev->dev.of_node, "rockchip,rk3588-dwcmshc"))
+-			rk_priv->devtype = DWCMSHC_RK3588;
+-		else
++		if (of_device_is_compatible(pdev->dev.of_node, "rockchip,rk3568-dwcmshc"))
+ 			rk_priv->devtype = DWCMSHC_RK3568;
++		else
++			rk_priv->devtype = DWCMSHC_RK3588;
+ 
+ 		priv->priv = rk_priv;
+ 
+--- a/drivers/pci/controller/dwc/Makefile
++++ b/drivers/pci/controller/dwc/Makefile
+@@ -16,6 +16,7 @@ obj-$(CONFIG_PCIE_QCOM_EP) += pcie-qcom-
+ obj-$(CONFIG_PCIE_ARMADA_8K) += pcie-armada8k.o
+ obj-$(CONFIG_PCIE_ARTPEC6) += pcie-artpec6.o
+ obj-$(CONFIG_PCIE_ROCKCHIP_DW_HOST) += pcie-dw-rockchip.o
++obj-$(CONFIG_PCIE_ROCKCHIP_DW_HOST) += pcie-dw-rkvendor.o
+ obj-$(CONFIG_PCIE_INTEL_GW) += pcie-intel-gw.o
+ obj-$(CONFIG_PCIE_KEEMBAY) += pcie-keembay.o
+ obj-$(CONFIG_PCIE_KIRIN) += pcie-kirin.o

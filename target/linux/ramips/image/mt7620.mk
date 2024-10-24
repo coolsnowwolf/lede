@@ -135,7 +135,8 @@ define Device/bolt_bl201
   IMAGE_SIZE := 15872k
   DEVICE_VENDOR := Bolt
   DEVICE_MODEL := BL201
-  DEVICE_PACKAGES := kmod-mt76x2
+  DEVICE_PACKAGES := kmod-mt76x2 kmod-usb2 kmod-usb-ohci
+  UIMAGE_MAGIC := 0x26112015
 endef
 TARGET_DEVICES += bolt_bl201
 

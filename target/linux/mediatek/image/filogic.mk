@@ -241,8 +241,7 @@ define Device/cmcc_rax3000m-emmc
   DEVICE_MODEL := RAX3000M (eMMC version)
   DEVICE_DTS := mt7981b-cmcc-rax3000m-emmc
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 \
-	automount f2fsck mkf2fs
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 f2fsck mkf2fs
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
@@ -255,7 +254,7 @@ define Device/cmcc_rax3000m-nand
   DEVICE_MODEL := RAX3000M (NAND version)
   DEVICE_DTS := mt7981b-cmcc-rax3000m-nand
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 automount
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -325,6 +324,31 @@ define Device/glinet_gl-mt6000
 endef
 TARGET_DEVICES += glinet_gl-mt6000
 
+define Device/glinet_gl-x3000-xe3000-common
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware mkf2fs \
+    kmod-fs-f2fs kmod-hwmon-pwmfan kmod-usb3 kmod-usb-serial-option \
+    kmod-usb-storage kmod-usb-net-qmi-wwan uqmi
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+
+define Device/glinet_gl-x3000
+  DEVICE_MODEL := GL-X3000
+  DEVICE_DTS := mt7981a-glinet-gl-x3000
+  SUPPORTED_DEVICES := glinet,gl-x3000
+  $(call Device/glinet_gl-x3000-xe3000-common)
+endef
+TARGET_DEVICES += glinet_gl-x3000
+
+define Device/glinet_gl-xe3000
+  DEVICE_MODEL := GL-XE3000
+  DEVICE_DTS := mt7981a-glinet-gl-xe3000
+  SUPPORTED_DEVICES := glinet,gl-xe3000
+  $(call Device/glinet_gl-x3000-xe3000-common)
+endef
+TARGET_DEVICES += glinet_gl-xe3000
+
 define Device/h3c_magic-nx30-pro
   DEVICE_VENDOR := H3C
   DEVICE_MODEL := Magic NX30 Pro
@@ -339,6 +363,35 @@ define Device/h3c_magic-nx30-pro
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
 endef
 TARGET_DEVICES += h3c_magic-nx30-pro
+
+define Device/hf_m7986r1-emmc
+  DEVICE_VENDOR := HF
+  DEVICE_MODEL := M7986R1 (eMMC)
+  DEVICE_DTS := mt7986a-hf-m7986r1-emmc
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-net-rndis kmod-usb-serial-option f2fsck mkf2fs
+  SUPPORTED_DEVICES += HF-M7986R1
+  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += hf_m7986r1-emmc
+
+define Device/hf_m7986r1-nand
+  DEVICE_VENDOR := HF
+  DEVICE_MODEL := M7986R1 (NAND)
+  DEVICE_DTS := mt7986a-hf-m7986r1-nand
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-net-rndis kmod-usb-serial-option
+  SUPPORTED_DEVICES += HF-M7986R1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += hf_m7986r1-nand
 
 define Device/imou_lc-hx3001
   DEVICE_VENDOR := IMOU
@@ -479,36 +532,6 @@ define Device/mediatek_mt7988a-rfb
 endef
 TARGET_DEVICES += mediatek_mt7988a-rfb
 
-define Device/hf_m7986r1-emmc
-  DEVICE_VENDOR := HF
-  DEVICE_MODEL := M7986R1 (eMMC version)
-  DEVICE_DTS := mt7986a-hf-m7986r1-emmc
-  DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-serial-option kmod-usb-net-rndis f2fsck mkf2fs
-  SUPPORTED_DEVICES += HF-M7986R1
-  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
-  KERNEL_INITRAMFS := kernel-bin | lzma | \
-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES +=hf_m7986r1-emmc
-
-define Device/hf_m7986r1-nand
-  DEVICE_VENDOR := HF
-  DEVICE_MODEL := M7986R1 (NAND version)
-  DEVICE_DTS := mt7986a-hf-m7986r1-nand
-  DEVICE_DTS_DIR := ../dts
-  UBINIZE_OPTS := -E 5
-  BLOCKSIZE := 128k
-  PAGESIZE := 2048
-  IMAGE_SIZE := 116736k
-  KERNEL_IN_UBI := 1
-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-serial-option kmod-usb-net-rndis mmc-utils
-  SUPPORTED_DEVICES += HF-M7986R1
-  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-endef
-TARGET_DEVICES +=hf_m7986r1-nand
-
 define Device/netcore_n60
   DEVICE_VENDOR := Netcore
   DEVICE_MODEL := N60
@@ -536,6 +559,26 @@ define Device/nokia_ea0326gmp
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += nokia_ea0326gmp
+
+
+define Device/openembed_som7981
+  DEVICE_VENDOR := OpenEmbed
+  DEVICE_MODEL := SOM7981
+  DEVICE_DTS := mt7981b-openembed-som7981
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3 \
+	kmod-crypto-hw-atmel kmod-eeprom-at24 kmod-gpio-beeper kmod-rtc-pcf8563 \
+	kmod-usb-net-cdc-mbim kmod-usb-net-qmi-wwan kmod-usb-serial-option uqmi
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 244224k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += openembed_som7981
 
 define Device/qihoo_360t7
   DEVICE_VENDOR := Qihoo

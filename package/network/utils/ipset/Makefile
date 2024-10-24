@@ -9,15 +9,16 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ipset
-PKG_VERSION:=7.17
+PKG_VERSION:=7.21
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://ipset.netfilter.org
-PKG_HASH:=be49c9ff489dd6610cad6541e743c3384eac96e9f24707da7b3929d8f2ac64d8
+PKG_HASH:=e2c6ce4fcf3acb3893ca5d35c86935f80ad76fc5ccae601185842df760e0bc69
 
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
 PKG_LICENSE:=GPL-2.0
+PKG_CPE_ID:=cpe:/a:netfilter:ipset
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1

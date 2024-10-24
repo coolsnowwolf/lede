@@ -1,0 +1,88 @@
+From f9e17c264d316611c26b98ad1a3ca01c289c67b4 Mon Sep 17 00:00:00 2001
+From: Yangyu Chen <cyy@cyyself.name>
+Date: Sun, 23 Apr 2023 20:06:41 +0800
+Subject: [PATCH] net: phy: realtek: add led-link-select for RTL8221
+
+RTL8221B PHYs will select the different speeds for 3 LEDs to 10M/100M/1G
+respectively by default. Some devices like TP-Link TL-XDR6088/TL-XDR6086
+have only one LED connects to the PHY chip LED0. If we didn't change the
+default settings, the LED will only blink at 10M speed.
+
+This patch allows configuring LED link select bitmask from DT. And it
+has been tested with TP-Link XDR6088 with different DT configurations.
+
+Signed-off-by: Yangyu Chen <cyy@cyyself.name>
+---
+ drivers/net/phy/realtek.c | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/realtek.c
++++ b/drivers/net/phy/realtek.c
+@@ -86,6 +86,12 @@
+ #define RTL8221B_PHYCR1_ALDPS_EN		BIT(2)
+ #define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
+ 
++#define RTL8221B_NR_LEDS				3
++#define RTL8221B_LED_LINK_SELECT		0xd032
++#define RTL8221B_LED_LINK_SELECT_OFFSET	0x2
++#define RTL8221B_LED_ACT_SELECT		0xd040
++#define RTL8221B_LED_POLARITY_SELECT		0xd044
++
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+ 
+@@ -787,6 +793,45 @@ static int rtl822x_write_mmd(struct phy_
+ 	return ret;
+ }
+ 
++static int rtl822xb_config_led(struct phy_device *phydev) {
++	struct device_node *node = phydev->mdio.dev.of_node;
++	u32 link_select[RTL8221B_NR_LEDS];
++	u32 act_select, polarity_select;
++	int i, val;
++
++	val = of_property_read_u32_array(node, "realtek,led-link-select",
++					 link_select, RTL8221B_NR_LEDS);
++	if (!val) {
++		for (i = 0; i < RTL8221B_NR_LEDS; i++) {
++			val = phy_write_mmd(phydev, MDIO_MMD_VEND2,
++				RTL8221B_LED_LINK_SELECT + i * RTL8221B_LED_LINK_SELECT_OFFSET,
++				link_select[i]);
++			if (val < 0)
++				return val;
++		}
++	}
++
++	val = of_property_read_u32(node, "realtek,led-act-select",
++				   &act_select);
++	if (!val) {
++		val = phy_write_mmd(phydev, MDIO_MMD_VEND2,
++				RTL8221B_LED_ACT_SELECT, act_select);
++		if (val < 0)
++			return val;
++	}
++
++	val = of_property_read_u32(node, "realtek,led-polarity-select",
++				   &polarity_select);
++	if (!val) {
++		val = phy_write_mmd(phydev, MDIO_MMD_VEND2,
++				RTL8221B_LED_POLARITY_SELECT, polarity_select);
++		if (val < 0)
++			return val;
++	}
++
++	return 0;
++}
++
+ static int rtl822xb_config_init(struct phy_device *phydev)
+ {
+ 	bool has_2500, has_sgmii;
+@@ -863,7 +908,7 @@ static int rtl822xb_config_init(struct p
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	return 0;
++	return rtl822xb_config_led(phydev);
+ }
+ 
+ static int rtl822xb_get_rate_matching(struct phy_device *phydev,
