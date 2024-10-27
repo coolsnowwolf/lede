@@ -1477,6 +1477,23 @@ endef
 $(eval $(call KernelPackage,inet-diag))
 
 
+define KernelPackage/inet-mptcp-diag
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=INET diag support for MultiPath TCP
+  DEPENDS:=@KERNEL_MPTCP +kmod-inet-diag
+  KCONFIG:=CONFIG_INET_MPTCP_DIAG
+  FILES:=$(LINUX_DIR)/net/mptcp/mptcp_diag.ko
+  AUTOLOAD:=$(call AutoProbe,mptcp_diag)
+endef
+
+define KernelPackage/inet-mptcp-diag/description
+Support for INET (MultiPath TCP) socket monitoring interface used by
+native Linux tools such as ss.
+endef
+
+$(eval $(call KernelPackage,inet-mptcp-diag))
+
+
 define KernelPackage/xdp-sockets-diag
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=PF_XDP sockets monitoring interface support for ss utility
