@@ -28,7 +28,6 @@ define Build/Configure
 endef
 
 define Build/Compile
-	$(CP) ./*.sh $(PKG_BUILD_DIR)
 endef
 
 define Package/ddns-scripts_dnspod/preinst
@@ -39,8 +38,9 @@ define Package/ddns-scripts_dnspod/preinst
 endef
 
 define Package/ddns-scripts_dnspod/install
-	$(INSTALL_DIR) $(1)/usr/lib/ddns
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/*.sh $(1)/usr/lib/ddns
+	$(INSTALL_DIR) $(1)/usr/lib/ddns $(1)/usr/share/ddns/default
+	$(INSTALL_BIN) $(CURDIR)/*.sh $(1)/usr/lib/ddns
+	$(INSTALL_DATA) $(CURDIR)/*.json $(1)/usr/share/ddns/default
 endef
 
 define Package/ddns-scripts_dnspod/postinst
