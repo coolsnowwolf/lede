@@ -420,7 +420,7 @@ define Device/seewo_srcm3588-io
   DEVICE_MODEL := 3588 IO Board
   SOC := rk3588
   UBOOT_DEVICE_NAME := generic-rk3588
-  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-r8125-rss kmod-rfkill
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-hwmon-pwmfan kmod-r8125-rss kmod-rfkill
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
 endef
 TARGET_DEVICES += seewo_srcm3588-io
