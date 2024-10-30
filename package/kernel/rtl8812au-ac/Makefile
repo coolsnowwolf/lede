@@ -1,20 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Copyright (C) 2020 stepheny
+# <https://github.com/aircrack-ng/rtl8812au/pull/619>
+#
+
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=rtl8812au-ac
-PKG_RELEASE:=2
-
-PKG_LICENSE:=GPLv2
-PKG_LICENSE_FILES:=
+PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=https://github.com/aircrack-ng/rtl8812au.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-01-23
-PKG_SOURCE_VERSION:=e72dacdc4af7cf421484ce9567ef2cc995a16f3a
-PKG_MIRROR_HASH:=4e2168712f62a6d736fbc3422f651c6738a37a40d226617f7d8248ad8abd2433
+PKG_SOURCE_DATE:=2024-05-10
+PKG_SOURCE_VERSION:=b44d288f423ede0fc7cdbf92d07a7772cd727de4
+PKG_MIRROR_HASH:=dd27206739be50517dff9fccca6724b5aae6e7b4d9fa06bddfc9bdacc325b25b
 
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=LICENSE
-# PKG_MAINTAINER:=
+PKG_MAINTAINER:=Marty Jones <mj8263788@gmail.com>
 
 PKG_BUILD_PARALLEL:=1
 
@@ -26,7 +29,7 @@ include $(INCLUDE_DIR)/package.mk
 define KernelPackage/rtl8812au-ac
   SUBMENU:=Wireless Drivers
   TITLE:=Realtek RTL8812AU/21AU wireless drivers
-  DEPENDS:=+kmod-cfg80211 +kmod-usb-core +@DRIVER_11AC_SUPPORT
+  DEPENDS:=@!(LINUX_6_6) +kmod-cfg80211 +kmod-usb-core +@DRIVER_11AC_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/rtl8812au.ko
   AUTOLOAD:=$(call AutoProbe,rtl8812au)
   CONFLICTS:=kmod-rtl8812au-ct
