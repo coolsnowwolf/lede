@@ -8,11 +8,11 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libtool
 PKG_CPE_ID:=cpe:/a:gnu:libtool
-PKG_VERSION:=2.4.6
+PKG_VERSION:=2.4.2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=7c87a8c2c8c0fc9cd5019e402bed4292462d00a718a7cd5f11218153bf28b26f
+PKG_HASH:=1d7b6862c1ed162e327f083a6f78f40eae29218f0db8c38393d61dab764c4407
 
 HOST_BUILD_PARALLEL:=1
 
@@ -24,12 +24,7 @@ HOST_CONFIGURE_VARS += \
 define Host/Prepare
 	$(call Host/Prepare/Default)
 	(cd $(STAGING_DIR_HOST)/share/aclocal/ && rm -f libtool.m4 ltdl.m4 lt~obsolete.m4 ltoptions.m4 ltsugar.m4 ltversion.m4)
-	$(if $(QUILT),,(cd $(HOST_BUILD_DIR); touch README-release; $(AM_TOOL_PATHS) ./bootstrap --skip-git --skip-po --force))
-endef
-
-define Host/Configure
-	$(if $(QUILT),(cd $(HOST_BUILD_DIR); touch README-release; $(AM_TOOL_PATHS) ./bootstrap --skip-git --skip-po --force))
-	$(call Host/Configure/Default)
+	(cd $(HOST_BUILD_DIR); $(AM_TOOL_PATHS) ./bootstrap)
 endef
 
 define Host/Install
