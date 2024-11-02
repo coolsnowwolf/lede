@@ -43,6 +43,7 @@ define KernelPackage/rtl8723du
   TITLE:=Realtek RTL8723DU support
   DEPENDS+=+kmod-rtw88-usb +rtl8723du-firmware
   FILES:= \
+	$(PKG_BUILD_DIR)/rtw88_8723x.ko \
 	$(PKG_BUILD_DIR)/rtw_8723d.ko \
 	$(PKG_BUILD_DIR)/rtw_8723du.ko
   AUTOLOAD:=$(call AutoProbe,rtw_8723du)

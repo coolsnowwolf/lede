@@ -1,0 +1,103 @@
+From cffac22c9215f1883d3848c788f9b03656dced27 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 11 Feb 2024 18:39:19 +0100
+Subject: [PATCH] net: phy: aquantia: clear PMD Global Transmit Disable bit
+ during init
+
+PMD Global Transmit Disable bit should be cleared for normal operation.
+This should be HW default, however I found that on Asus RT-AX89X that uses
+AQR113C PHY and firmware 5.4 this bit is set by default.
+
+With this bit set the AQR cannot achieve a link with its link-partner and
+it took me multiple hours of digging through the vendor GPL source to find
+this out, so lets always clear this bit during .config_init() to avoid a
+situation like this in the future.
+
+aqr107_wait_processor_intensive_op() is moved up because datasheet notes
+that any changes to this bit are processor intensive.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ drivers/net/phy/aquantia/aquantia_main.c | 57 ++++++++++++++----------
+ 1 file changed, 33 insertions(+), 24 deletions(-)
+
+--- a/drivers/net/phy/aquantia/aquantia_main.c
++++ b/drivers/net/phy/aquantia/aquantia_main.c
+@@ -473,6 +473,30 @@ static void aqr107_chip_info(struct phy_
+ 		   fw_major, fw_minor, build_id, prov_id);
+ }
+ 
++static int aqr107_wait_processor_intensive_op(struct phy_device *phydev)
++{
++	int val, err;
++
++	/* The datasheet notes to wait at least 1ms after issuing a
++	 * processor intensive operation before checking.
++	 * We cannot use the 'sleep_before_read' parameter of read_poll_timeout
++	 * because that just determines the maximum time slept, not the minimum.
++	 */
++	usleep_range(1000, 5000);
++
++	err = phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
++					VEND1_GLOBAL_GEN_STAT2, val,
++					!(val & VEND1_GLOBAL_GEN_STAT2_OP_IN_PROG),
++					AQR107_OP_IN_PROG_SLEEP,
++					AQR107_OP_IN_PROG_TIMEOUT, false);
++	if (err) {
++		phydev_err(phydev, "timeout: processor-intensive MDIO operation\n");
++		return err;
++	}
++
++	return 0;
++}
++
+ static int aqr107_config_init(struct phy_device *phydev)
+ {
+ 	struct aqr107_priv *priv = phydev->priv;
+@@ -498,6 +522,15 @@ static int aqr107_config_init(struct phy
+ 	if (!ret)
+ 		aqr107_chip_info(phydev);
+ 
++	ret = phy_clear_bits_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_PMA_TXDIS,
++				 MDIO_PMD_TXDIS_GLOBAL);
++	if (ret)
++		return ret;
++
++	ret = aqr107_wait_processor_intensive_op(phydev);
++	if (ret)
++		return ret;
++
+ 	ret = aqr107_set_downshift(phydev, MDIO_AN_VEND_PROV_DOWNSHIFT_DFLT);
+ 	if (ret)
+ 		return ret;
+@@ -580,30 +613,6 @@ static void aqr107_link_change_notify(st
+ 		phydev_info(phydev, "Aquantia 1000Base-T2 mode active\n");
+ }
+ 
+-static int aqr107_wait_processor_intensive_op(struct phy_device *phydev)
+-{
+-	int val, err;
+-
+-	/* The datasheet notes to wait at least 1ms after issuing a
+-	 * processor intensive operation before checking.
+-	 * We cannot use the 'sleep_before_read' parameter of read_poll_timeout
+-	 * because that just determines the maximum time slept, not the minimum.
+-	 */
+-	usleep_range(1000, 5000);
+-
+-	err = phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
+-					VEND1_GLOBAL_GEN_STAT2, val,
+-					!(val & VEND1_GLOBAL_GEN_STAT2_OP_IN_PROG),
+-					AQR107_OP_IN_PROG_SLEEP,
+-					AQR107_OP_IN_PROG_TIMEOUT, false);
+-	if (err) {
+-		phydev_err(phydev, "timeout: processor-intensive MDIO operation\n");
+-		return err;
+-	}
+-
+-	return 0;
+-}
+-
+ static int aqr107_get_rate_matching(struct phy_device *phydev,
+ 				    phy_interface_t iface)
+ {
