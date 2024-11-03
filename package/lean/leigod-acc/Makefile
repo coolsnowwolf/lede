@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=leigod-acc
 PKG_VERSION:=1.3.0.30
-PKG_RELEASE:=3
+PKG_RELEASE:=2
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -53,7 +53,6 @@ define Build/Prepare
 	wget -O $(PKG_BUILD_DIR)/bin/acc-gw.linux.$(acc-arch) $(PKG_SOURCE_URL)$(PKG_SOURCE)
 	chmod +x $(PKG_BUILD_DIR)/bin/acc-gw.linux.$(acc-arch)
 endef
-
 
 define Build/Configure
 endef
