@@ -49,7 +49,6 @@ define Package/base-files/conffiles
 /etc/config/
 /etc/config/network
 /etc/config/system
-/etc/crontabs/
 /etc/dropbear/
 /etc/ethers
 /etc/group
@@ -239,6 +238,10 @@ endif
 
 	$(if $(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE), \
 		rm -f $(1)/etc/banner.failsafe,)
+		
+	if [ -f $(TOPDIR)/feeds/luci/package.json ]; then \
+		$(CP) ./luci2/* $(1)/; \
+	fi
 endef
 
 ifneq ($(DUMP),1)

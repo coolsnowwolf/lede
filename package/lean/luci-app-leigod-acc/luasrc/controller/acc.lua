@@ -10,6 +10,7 @@ function index()
   entry({ "admin", "services", "acc", "status" }, call("get_acc_status")).leaf = true
   entry({ "admin", "services", "acc", "start_acc_service" }, call("start_acc_service"))
   entry({ "admin", "services", "acc", "stop_acc_service" }, call("stop_acc_service"))
+  entry({ "admin", "services", "acc", "schedule_pause" }, call("schedule_pause"))
 end
 
 -- get_acc_status get acc status
@@ -62,7 +63,7 @@ function start_acc_service()
   luci.http.write_json(resp)  
 end
 
--- start_acc_service
+-- stop_acc_service
 function stop_acc_service()
   -- util module
   local util      = require "luci.util"
@@ -72,4 +73,32 @@ function stop_acc_service()
   resp.result = "OK"
   luci.http.prepare_content("application/json")
   luci.http.write_json(resp)  
+end
+
+-- schedule_pause
+function schedule_pause()
+  local util = require "luci.util"
+  local uci = require "luci.model.uci".cursor()
+
+  local schedule_enabled = uci:get("accelerator", "system", "schedule_enabled") or "0"
+  local pause_time = uci:get("accelerator", "system", "pause_time") or "01:00"
+  local username = uci:get("accelerator", "system", "username") or ""
+  local password = uci:get("accelerator", "system", "password") or ""
+
+  -- Remove existing cron jobs related to leigod-helper.sh
+  util.exec("sed -i '/\\/usr\\/sbin\\/leigod\\/leigod-helper.sh/d' /etc/crontabs/root")
+
+  if schedule_enabled == "1" then
+    local hour, minute = pause_time:match("(%d+):(%d+)")
+    local cron_time = string.format("%s %s * * * USERNAME='%s' PASSWORD='%s' /usr/sbin/leigod/leigod-helper.sh", tonumber(minute), tonumber(hour), username, password)
+    
+    -- Add new cron job
+    local cron_command = string.format('echo "%s" >> /etc/crontabs/root', cron_time)
+    util.exec(cron_command)
+    util.exec("/etc/init.d/cron restart")
+  end
+
+  local resp = { result = "OK" }
+  luci.http.prepare_content("application/json")
+  luci.http.write_json(resp)
 end

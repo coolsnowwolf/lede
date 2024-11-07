@@ -33,6 +33,19 @@ define Build/wax6xx-netgear-tar
 	rm -rf $@.tmp
 endef
 
+define Device/aliyun_ap8220
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Aliyun
+	DEVICE_MODEL := AP8220
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@ac02
+	SOC := ipq8071
+	IMAGE/factory.ubi := append-ubi | qsdk-ipq-factory-nand
+endef
+TARGET_DEVICES += aliyun_ap8220
+
 define Device/buffalo_wxr-5950ax12
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Buffalo

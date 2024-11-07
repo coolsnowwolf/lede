@@ -1,0 +1,207 @@
+# Copyright (C) 2006 OpenWrt.org
+# Copyright (C) 2010 Vertical Communications
+
+preinit_ip_config() {
+	local netdev vid
+
+	netdev=${1%\.*}
+	vid=${1#*\.}
+
+	if [ "$vid" = "$netdev" ]; then
+		vid=
+	fi
+
+	grep -q "$netdev" /proc/net/dev || return
+
+	if [ -n "$vid" ]; then
+		ip link add link $netdev name $1 type vlan id $vid
+	fi
+
+	ip link set dev $netdev up
+	if [ -n "$vid" ]; then
+		ip link set dev $1 up
+	fi
+	ip -4 address add $pi_ip/$pi_netmask broadcast $pi_broadcast dev $1
+}
+
+preinit_config_switch() {
+	local role roles ports device enable reset
+
+	local name=$1
+	local lan_if=$2
+
+	json_select switch
+	json_select $name
+
+	json_get_vars enable reset
+
+	if [ "$reset" -eq "1" ]; then
+		swconfig dev $name set reset
+	fi
+	swconfig dev $name set enable_vlan $enable
+
+	if json_is_a roles array; then
+		json_get_keys roles roles
+		json_select roles
+
+		for role in $roles; do
+			json_select "$role"
+			json_get_vars ports device
+			json_select ..
+
+			if [ "$device" = "$lan_if" ]; then
+				swconfig dev $name vlan $role set ports "$ports"
+			fi
+		done
+
+		json_select ..
+	fi
+
+	swconfig dev $name set apply
+
+	json_select ..
+	json_select ..
+}
+
+preinit_config_port() {
+	local original
+
+	local netdev="$1"
+	local path="$2"
+
+	[ -d "/sys/devices/$path/net" ] || return
+	original="$(ls "/sys/devices/$path/net" | head -1)"
+
+	[ "$netdev" = "$original" ] && return
+
+	ip link set "$original" name "$netdev"
+}
+
+preinit_config_board() {
+	/bin/board_detect /tmp/board.json
+
+	[ -f "/tmp/board.json" ] || return
+
+	. /usr/share/libubox/jshn.sh
+
+	json_init
+	json_load "$(cat /tmp/board.json)"
+
+	# Find the current highest eth*
+	max_eth=$(grep -o '^ *eth[0-9]*:' /proc/net/dev | tr -dc '[0-9]\n' | sort -n | tail -1)
+	# Find and move netdevs using eth*s we are configuring
+	json_get_keys keys "network_device"
+	for netdev in $keys; do
+		json_select "network_device"
+			json_select "$netdev"
+				json_get_vars path path
+				if [ -n "$path" -a -h "/sys/class/net/$netdev" ]; then
+					ip link set "$netdev" down
+					ip link set "$netdev" name eth$((++max_eth))
+				fi
+			json_select ..
+		json_select ..
+	done
+
+	# Move interfaces by path to their netdev name
+	json_get_keys keys "network_device"
+	for netdev in $keys; do
+		json_select "network_device"
+			json_select "$netdev"
+				json_get_vars path path
+				[ -n "$path" ] && preinit_config_port "$netdev" "$path"
+			json_select ..
+		json_select ..
+	done
+
+	json_select network
+		json_select "lan"
+			json_get_vars device
+			json_get_values ports ports
+		json_select ..
+	json_select ..
+
+	[ -n "$device" -o -n "$ports" ] || return
+
+	# swconfig uses $device and DSA uses ports
+	[ -z "$ports" ] && {
+		ports="$device"
+	}
+
+	# only use the first one
+	ifname=${ports%% *}
+
+	if [ -x /sbin/swconfig ]; then
+		# configure the switch, if present
+
+		json_get_keys keys switch
+		for key in $keys; do
+			preinit_config_switch $key $ifname
+		done
+	else
+		# trim any vlan ids
+		ifname=${ifname%\.*}
+		# trim any vlan modifiers like :t
+		ifname=${ifname%\:*}
+	fi
+
+	pi_ifname=$ifname
+
+	preinit_ip_config $pi_ifname
+}
+
+preinit_ip() {
+	[ "$pi_preinit_no_failsafe" = "y" ] && return
+
+	# if the preinit interface isn't specified and ifname is set in
+	# preinit.arch use that interface
+	if [ -z "$pi_ifname" ]; then
+		pi_ifname=$ifname
+	fi
+
+	if [ -n "$pi_ifname" ]; then
+		preinit_ip_config $pi_ifname
+	elif [ -d "/etc/board.d/" ]; then
+		preinit_config_board
+	fi
+
+	preinit_net_echo "Doing OpenWrt Preinit\n"
+}
+
+preinit_ip_deconfig() {
+	[ -n "$pi_ifname" ] && grep -q "$pi_ifname" /proc/net/dev && {
+		local netdev vid
+
+		netdev=${pi_ifname%\.*}
+		vid=${pi_ifname#*\.}
+
+		if [ "$vid" = "$netdev" ]; then
+			vid=
+		fi
+
+		ip -4 address flush dev $pi_ifname
+		ip link set dev $netdev down
+
+		if [ -n "$vid" ]; then
+			ip link delete $pi_ifname
+		fi
+	}
+}
+
+preinit_net_echo() {
+	[ -n "$pi_ifname" ] && grep -q "$pi_ifname" /proc/net/dev && {
+		{
+			[ "$pi_preinit_net_messages" = "y" ] || {
+				[ "$pi_failsafe_net_message" = "true" ] &&
+					[ "$pi_preinit_no_failsafe_netmsg" != "y" ]
+			}
+		} && netmsg $pi_broadcast "$1"
+	}
+}
+
+pi_indicate_preinit() {
+	set_state preinit
+}
+
+boot_hook_add preinit_main preinit_ip
+boot_hook_add preinit_main pi_indicate_preinit
