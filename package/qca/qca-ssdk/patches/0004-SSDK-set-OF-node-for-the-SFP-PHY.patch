@@ -1,0 +1,94 @@
+From 00d3c54c611143f57b632e4cd3b42b0a94d82307 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 25 Jun 2023 11:24:09 +0200
+Subject: [PATCH 3/3] SSDK: set OF node for the SFP PHY
+
+Currently, SSDK is creating a fake SFP PHY which has no OF node populated,
+thus making it impossible to pass it to NSS-DP so port can actually work.
+
+We eliminated QCA-s connecting of the PHY by manually creating a string
+and then matching by name and instead only support passing the PHY as
+phandle via phy-handle.
+
+So, lets just use the switch port node to which the SFP is connected to
+anyway and set it as the PHY device OF node so we can pass it to NSS-DP.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ include/hsl/phy/hsl_phy.h |  6 ++++++
+ src/hsl/phy/hsl_phy.c     | 14 ++++++++++++++
+ src/hsl/phy/sfp_phy.c     |  7 +++++++
+ src/init/ssdk_dts.c       |  7 +++++++
+ 4 files changed, 34 insertions(+)
+
+--- a/include/hsl/phy/hsl_phy.h
++++ b/include/hsl/phy/hsl_phy.h
+@@ -584,6 +584,7 @@ typedef struct {
+ 	a_bool_t port_link_status[SW_MAX_NR_PORT];
+ 	a_uint32_t port_mode[SW_MAX_NR_PORT];
+ 	a_uint32_t combo_phy_type[SW_MAX_NR_PORT];
++	struct device_node *port_node[SW_MAX_NR_PORT];
+ } phy_info_t;
+ /*qca808x_end*/
+ #define MALIBU5PORT_PHY         0x004DD0B1
+@@ -1038,3 +1039,8 @@ hsl_phydev_eee_update(a_uint32_t dev_id,
+ #endif				/* __cplusplus */
+ #endif				/* _HSL_PHY_H_ */
+ /*qca808x_end*/
++
++struct device_node*
++hsl_port_node_get(a_uint32_t dev_id, a_uint32_t port_id);
++void
++hsl_port_node_set(a_uint32_t dev_id, a_uint32_t port_id, struct device_node *port_node);
+--- a/src/hsl/phy/hsl_phy.c
++++ b/src/hsl/phy/hsl_phy.c
+@@ -3433,3 +3433,17 @@ hsl_phy_modify_debug(a_uint32_t dev_id,
+ 	return rv;
+ }
+ /*qca808x_end*/
++
++struct device_node*
++hsl_port_node_get(a_uint32_t dev_id, a_uint32_t port_id)
++{
++	return phy_info[dev_id]->port_node[port_id];
++}
++
++void
++hsl_port_node_set(a_uint32_t dev_id, a_uint32_t port_id, struct device_node *port_node)
++{
++	phy_info[dev_id]->port_node[port_id] = port_node;
++
++	return;
++}
+--- a/src/hsl/phy/sfp_phy.c
++++ b/src/hsl/phy/sfp_phy.c
+@@ -335,6 +335,13 @@ int sfp_phy_device_setup(a_uint32_t dev_
+ 	phy_device_register(phydev);
+ 
+ 	phydev->priv = priv;
++	/*
++	 * Set the PHY OF node in order to be able to later connect the
++	 * fake SFP PHY by passing it as a phandle in phy-handle.
++	 */
++	phydev->mdio.dev.of_node = hsl_port_node_get(dev_id, port);
++	if (!phydev->mdio.dev.of_node)
++		return SW_NOT_FOUND;
+ #if defined(IN_PHY_I2C_MODE)
+ 	if (hsl_port_phy_access_type_get(dev_id, port) == PHY_I2C_ACCESS) {
+ 		if(phydev->drv)
+--- a/src/init/ssdk_dts.c
++++ b/src/init/ssdk_dts.c
+@@ -784,6 +784,13 @@ static sw_error_t ssdk_dt_parse_phy_info
+ 			}
+ 		}
+ 		hsl_port_feature_set(dev_id, port_id, phy_features | PHY_F_INIT);
++
++		/*
++		* Save the port node so it can be passed as the
++		* fake SFP PHY OF node in order to be able to
++		* pass the SFP phy via phy-handle
++		*/
++		hsl_port_node_set(dev_id, port_id, port_node);
+ 	}
+ 
+ 	return rv;
