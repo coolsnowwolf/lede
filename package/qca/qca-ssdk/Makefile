@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qca-ssdk
-PKG_RELEASE:=3
+PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-ssdk.git
 PKG_SOURCE_PROTO:=git
@@ -47,10 +47,8 @@ MAKE_FLAGS+= \
 	SoC=$(CONFIG_TARGET_SUBTARGET) \
 	SHELL="$(BASH)" \
 	PTP_FEATURE=disable SWCONFIG_FEATURE=disable \
-	IN_MP_PHY=FALSE \
 	ISISC_ENABLE=disable MHT_ENABLE=disable \
-	IN_QCA803X_PHY=FALSE IN_QCA808X_PHY=FALSE \
-	IN_MALIBU_PHY=FALSE \
+	IN_MP_PHY=FALSE IN_QCA803X_PHY=FALSE \
 	$(LNX_CONFIG_OPTS)
 
 ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")

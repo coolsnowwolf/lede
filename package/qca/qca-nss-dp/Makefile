@@ -47,7 +47,8 @@ define Build/Compile
 	+$(KERNEL_MAKE) $(PKG_JOBS) \
 		-C "$(LINUX_DIR)" \
 		M="$(PKG_BUILD_DIR)" \
-		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" SoC="$(CONFIG_TARGET_SUBTARGET)" \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+		SoC="$(CONFIG_TARGET_SUBTARGET)" \
 		modules
 endef
 
