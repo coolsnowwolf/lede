@@ -75,6 +75,19 @@ define Device/jdcloud_re-cs-02
 endef
 TARGET_DEVICES += jdcloud_re-cs-02
 
+define Device/jdcloud_re-cs-07
+	$(call Device/FitImage)
+	$(call Device/EmmcImage)
+	DEVICE_VENDOR := JDCloud
+	DEVICE_MODEL := RE-CS-07
+	SOC := ipq6010
+	BLOCKSIZE := 64k
+	KERNEL_SIZE := 6144k
+	DEVICE_DTS_CONFIG := config@cp03-c4
+	DEVICE_PACKAGES := -kmod-ath11k-ahb -ath11k-firmware-ipq6018
+endef
+TARGET_DEVICES += jdcloud_re-cs-07
+
 define Device/jdcloud_re-ss-01
 	$(call Device/FitImage)
 	$(call Device/EmmcImage)
