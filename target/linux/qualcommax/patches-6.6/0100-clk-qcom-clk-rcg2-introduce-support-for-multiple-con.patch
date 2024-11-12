@@ -1,0 +1,203 @@
+From 032be4f49dda786fea9e1501212f6cd09a7ded96 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 3 Nov 2022 14:49:43 +0100
+Subject: [PATCH] clk: qcom: clk-rcg2: introduce support for multiple conf for
+ same freq
+
+Some RCG frequency can be reached by multiple configuration.
+
+We currently declare multiple configuration for the same frequency but
+that is not supported and always the first configuration will be taken.
+
+These multiple configuration are needed as based on the current parent
+configuration, it may be needed to use a different configuration to
+reach the same frequency.
+
+To handle this introduce 2 new macro, FM and C.
+
+- FM is used to declare an empty freq_tbl with just the frequency and an
+  array of confs to insert all the config for the provided frequency.
+
+- C is used to declare a fre_conf where src, pre_div, m and n are
+  provided.
+
+The driver is changed to handle this special freq_tbl and select the
+correct config by calculating the final rate and deciding based on the
+one that is less different than the requested one.
+
+Tested-by: Robert Marko <robimarko@gmail.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/clk/qcom/clk-rcg.h  | 14 ++++++-
+ drivers/clk/qcom/clk-rcg2.c | 84 +++++++++++++++++++++++++++++++++----
+ 2 files changed, 88 insertions(+), 10 deletions(-)
+
+--- a/drivers/clk/qcom/clk-rcg.h
++++ b/drivers/clk/qcom/clk-rcg.h
+@@ -7,7 +7,17 @@
+ #include <linux/clk-provider.h>
+ #include "clk-regmap.h"
+ 
+-#define F(f, s, h, m, n) { (f), (s), (2 * (h) - 1), (m), (n) }
++#define F(f, s, h, m, n) { (f), (s), (2 * (h) - 1), (m), (n), 0, NULL }
++
++#define FM(_f, _confs) { .freq = (_f), .confs_num = ARRAY_SIZE(_confs), .confs = (_confs) }
++#define C(s, h, m, n) { (s), (2 * (h) - 1), (m), (n) }
++
++struct freq_conf {
++	u8 src;
++	u8 pre_div;
++	u16 m;
++	u16 n;
++};
+ 
+ struct freq_tbl {
+ 	unsigned long freq;
+@@ -15,6 +25,8 @@ struct freq_tbl {
+ 	u8 pre_div;
+ 	u16 m;
+ 	u16 n;
++	int confs_num;
++	const struct freq_conf *confs;
+ };
+ 
+ /**
+--- a/drivers/clk/qcom/clk-rcg2.c
++++ b/drivers/clk/qcom/clk-rcg2.c
+@@ -203,11 +203,60 @@ clk_rcg2_recalc_rate(struct clk_hw *hw,
+ 	return __clk_rcg2_recalc_rate(hw, parent_rate, cfg);
+ }
+ 
++static void
++clk_rcg2_select_conf(struct clk_hw *hw, struct freq_tbl *f_tbl,
++		     const struct freq_tbl *f, unsigned long req_rate)
++{
++	unsigned long best_rate = 0, parent_rate, rate;
++	const struct freq_conf *conf, *best_conf;
++	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
++	struct clk_hw *p;
++	int index, i;
++
++	/* Search in each provided config the one that is near the wanted rate */
++	for (i = 0, conf = f->confs; i < f->confs_num; i++, conf++) {
++		index = qcom_find_src_index(hw, rcg->parent_map, conf->src);
++		if (index < 0)
++			continue;
++
++		p = clk_hw_get_parent_by_index(hw, index);
++		if (!p)
++			continue;
++
++		parent_rate =  clk_hw_get_rate(p);
++		rate = calc_rate(parent_rate, conf->n, conf->m, conf->n, conf->pre_div);
++
++		if (rate == req_rate) {
++			best_conf = conf;
++			break;
++		}
++
++		if (abs(req_rate - rate) < abs(best_rate - rate)) {
++			best_rate = rate;
++			best_conf = conf;
++		}
++	}
++
++	/*
++	 * Very unlikely.
++	 * Force the first conf if we can't find a correct config.
++	 */
++	if (unlikely(i == f->confs_num))
++		best_conf = f->confs;
++
++	/* Apply the config */
++	f_tbl->src = best_conf->src;
++	f_tbl->pre_div = best_conf->pre_div;
++	f_tbl->m = best_conf->m;
++	f_tbl->n = best_conf->n;
++}
++
+ static int _freq_tbl_determine_rate(struct clk_hw *hw, const struct freq_tbl *f,
+ 				    struct clk_rate_request *req,
+ 				    enum freq_policy policy)
+ {
+ 	unsigned long clk_flags, rate = req->rate;
++	struct freq_tbl f_tbl;
+ 	struct clk_hw *p;
+ 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+ 	int index;
+@@ -226,7 +275,15 @@ static int _freq_tbl_determine_rate(stru
+ 	if (!f)
+ 		return -EINVAL;
+ 
+-	index = qcom_find_src_index(hw, rcg->parent_map, f->src);
++	f_tbl = *f;
++	/*
++	 * A single freq may be reached by multiple configuration.
++	 * Try to find the bast one if we have this kind of freq_table.
++	 */
++	if (f->confs)
++		clk_rcg2_select_conf(hw, &f_tbl, f, rate);
++
++	index = qcom_find_src_index(hw, rcg->parent_map, f_tbl.src);
+ 	if (index < 0)
+ 		return index;
+ 
+@@ -236,18 +293,18 @@ static int _freq_tbl_determine_rate(stru
+ 		return -EINVAL;
+ 
+ 	if (clk_flags & CLK_SET_RATE_PARENT) {
+-		rate = f->freq;
+-		if (f->pre_div) {
++		rate = f_tbl.freq;
++		if (f_tbl.pre_div) {
+ 			if (!rate)
+ 				rate = req->rate;
+ 			rate /= 2;
+-			rate *= f->pre_div + 1;
++			rate *= f_tbl.pre_div + 1;
+ 		}
+ 
+-		if (f->n) {
++		if (f_tbl.n) {
+ 			u64 tmp = rate;
+-			tmp = tmp * f->n;
+-			do_div(tmp, f->m);
++			tmp = tmp * f_tbl.n;
++			do_div(tmp, f_tbl.m);
+ 			rate = tmp;
+ 		}
+ 	} else {
+@@ -255,7 +312,7 @@ static int _freq_tbl_determine_rate(stru
+ 	}
+ 	req->best_parent_hw = p;
+ 	req->best_parent_rate = rate;
+-	req->rate = f->freq;
++	req->rate = f_tbl.freq;
+ 
+ 	return 0;
+ }
+@@ -353,6 +410,7 @@ static int __clk_rcg2_set_rate(struct cl
+ {
+ 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
+ 	const struct freq_tbl *f;
++	struct freq_tbl f_tbl;
+ 
+ 	switch (policy) {
+ 	case FLOOR:
+@@ -368,7 +426,15 @@ static int __clk_rcg2_set_rate(struct cl
+ 	if (!f)
+ 		return -EINVAL;
+ 
+-	return clk_rcg2_configure(rcg, f);
++	f_tbl = *f;
++	/*
++	 * A single freq may be reached by multiple configuration.
++	 * Try to find the best one if we have this kind of freq_table.
++	 */
++	if (f->confs)
++		clk_rcg2_select_conf(hw, &f_tbl, f, rate);
++
++	return clk_rcg2_configure(rcg, &f_tbl);
+ }
+ 
+ static int clk_rcg2_set_rate(struct clk_hw *hw, unsigned long rate,

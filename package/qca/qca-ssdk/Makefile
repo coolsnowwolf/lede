@@ -5,11 +5,12 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-ssdk.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-06-06
-PKG_SOURCE_VERSION:=74caf88aa3b6793c300f676e4fb1c62da7507be9
-PKG_MIRROR_HASH:=6bdb90919b773f5fb432c8b374c9419feac32ba6583ad82dfec5e41628a32dd9
+PKG_SOURCE_DATE:=2024-06-13
+PKG_SOURCE_VERSION:=c451136ba69d51d60f770365b6d6d60ff2801998
+PKG_MIRROR_HASH:=dad29c6fa3887782e57cbe169f3e2ee739a4c62dc09ec88eeab1109214cd4820
 
 PKG_FLAGS:=nonshared
+PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-lto
 
 include $(INCLUDE_DIR)/kernel.mk
@@ -21,7 +22,7 @@ define KernelPackage/qca-ssdk
   SUBMENU:=Network Devices
   TITLE:=Qualcom SSDK switch driver
   DEPENDS:=@(TARGET_qualcommax)
-  FILES:=$(PKG_BUILD_DIR)/build/bin/qca-ssdk.ko
+  FILES:=$(PKG_BUILD_DIR)/qca-ssdk.ko
   AUTOLOAD:=$(call AutoLoad,30,qca-ssdk)
 endef
 
@@ -31,7 +32,7 @@ endef
 
 GCC_VERSION=$(shell echo "$(CONFIG_GCC_VERSION)" | sed 's/[^0-9.]*\([0-9.]*\).*/\1/')
 
-LNX_CONFIG_OPTS = LNX_MAKEOPTS='$(KERNEL_MAKEOPTS)' MODULE_TYPE=KSLIB modules
+LNX_CONFIG_OPTS = LNX_MAKEOPTS='$(KERNEL_MAKEOPTS)' PRJ_PATH=$(PKG_BUILD_DIR) MODULE_TYPE=KSLIB modules
 
 MAKE_FLAGS+= \
 	TARGET_NAME=$(CONFIG_TARGET_NAME) \
@@ -42,15 +43,29 @@ MAKE_FLAGS+= \
 	ARCH=$(LINUX_KARCH) \
 	TARGET_SUFFIX=$(CONFIG_TARGET_SUFFIX) \
 	GCC_VERSION=$(GCC_VERSION) \
-	EXTRA_CFLAGS=-fno-stack-protector -I$(STAGING_DIR)/usr/include \
+	EXTRA_CFLAGS="-fno-stack-protector -I$(STAGING_DIR)/usr/include" \
+	SoC=$(CONFIG_TARGET_SUBTARGET) \
+	SHELL="$(BASH)" \
 	PTP_FEATURE=disable SWCONFIG_FEATURE=disable \
+	ISISC_ENABLE=disable MHT_ENABLE=disable \
+	IN_MP_PHY=FALSE IN_QCA803X_PHY=FALSE \
 	$(LNX_CONFIG_OPTS)
+
+ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
+    MAKE_FLAGS+= CHIP_TYPE=HPPE
+endif
 
 ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq60xx")
     MAKE_FLAGS+= CHIP_TYPE=CPPE
-else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
-    MAKE_FLAGS+= CHIP_TYPE=HPPE
 endif
+
+ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")
+    MAKE_FLAGS+= CHIP_TYPE=MP
+endif
+
+define Build/Compile
+	+$(MAKE) $(PKG_JOBS) $(MAKE_FLAGS) -C $(PKG_BUILD_DIR) $(LNX_CONFIG_OPTS)
+endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/qca-ssdk

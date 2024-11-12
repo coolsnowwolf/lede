@@ -1,0 +1,135 @@
+From 0116bb7359bd99c09bcad1b2051652cd1a04be3f Mon Sep 17 00:00:00 2001
+From: Mantas Pucka <mantas@8devices.com>
+Date: Mon, 12 Feb 2024 14:23:04 +0200
+Subject: [PATCH] qca-ssdk: support selecting PCS channel for PORT3 on IPQ6018
+
+When QCA8072 is used in PSGMII mode with IPQ6018, PCS used for second
+PHY port would overlap with one used by SGMII+ port. SoC has register
+to select different PCS in such case.
+
+Original code used PHY_ID for this decision, which also had other
+issues, but is no longer viable since we moved to upstream QCA807x
+driver.
+
+Introduce DT property port3_pcs_channel to allow describing this in DT.
+Default value is <2>, and for some QCA8072 designs <4> would be needed.
+
+Signed-off-by: Mantas Pucka <mantas@8devices.com>
+---
+ include/init/ssdk_dts.h            |  2 ++
+ src/adpt/cppe/adpt_cppe_portctrl.c |  4 ++--
+ src/adpt/hppe/adpt_hppe_uniphy.c   |  7 +------
+ src/init/ssdk_dts.c                | 27 +++++++++++++++++++++++++++
+ 4 files changed, 32 insertions(+), 8 deletions(-)
+
+--- a/include/init/ssdk_dts.h
++++ b/include/init/ssdk_dts.h
+@@ -99,6 +99,7 @@ typedef struct
+ 	a_uint32_t emu_chip_ver; /*only valid when is_emulation is true*/
+ 	a_uint32_t clk_mode;
+ 	a_uint32_t pcie_hw_base;
++	a_uint32_t port3_pcs_channel;
+ 	led_ctrl_pattern_t source_pattern[SSDK_MAX_PORT_NUM][PORT_LED_SOURCE_MAX];
+ } ssdk_dt_cfg;
+ 
+@@ -161,6 +162,7 @@ a_uint32_t ssdk_device_id_get(a_uint32_t
+ struct device_node *ssdk_dts_node_get(a_uint32_t dev_id);
+ struct clk *ssdk_dts_essclk_get(a_uint32_t dev_id);
+ struct clk *ssdk_dts_cmnclk_get(a_uint32_t dev_id);
++a_uint32_t ssdk_dts_port3_pcs_channel_get(a_uint32_t dev_id);
+ 
+ int ssdk_switch_device_num_init(void);
+ void ssdk_switch_device_num_exit(void);
+--- a/src/adpt/cppe/adpt_cppe_portctrl.c
++++ b/src/adpt/cppe/adpt_cppe_portctrl.c
+@@ -33,6 +33,7 @@
+ #include "hsl_phy.h"
+ #include "hsl_port_prop.h"
+ #include "hppe_init.h"
++#include "ssdk_dts.h"
+ #include "adpt.h"
+ #include "adpt_hppe.h"
+ #include "adpt_cppe_portctrl.h"
+@@ -60,8 +61,7 @@ _adpt_cppe_port_mux_mac_set(a_uint32_t d
+ 		case SSDK_PHYSICAL_PORT3:
+ 		case SSDK_PHYSICAL_PORT4:
+ 			if (mode0 == PORT_WRAPPER_PSGMII) {
+-				if (hsl_port_phyid_get(dev_id,
+-					SSDK_PHYSICAL_PORT3) == MALIBU2PORT_PHY) {
++				if (ssdk_dts_port3_pcs_channel_get(dev_id) == 4) {
+ 					cppe_port_mux_ctrl.bf.port3_pcs_sel =
+ 						CPPE_PORT3_PCS_SEL_PCS0_CHANNEL4;
+ 					cppe_port_mux_ctrl.bf.port4_pcs_sel =
+--- a/src/adpt/hppe/adpt_hppe_uniphy.c
++++ b/src/adpt/hppe/adpt_hppe_uniphy.c
+@@ -1160,9 +1160,6 @@ __adpt_hppe_uniphy_psgmii_mode_set(a_uin
+ {
+ 	a_uint32_t i;
+ 	sw_error_t rv = SW_OK;
+-#if defined(CPPE)
+-	a_uint32_t phy_type = 0;
+-#endif
+ 
+ 	union uniphy_mode_ctrl_u uniphy_mode_ctrl;
+ 
+@@ -1172,9 +1169,7 @@ __adpt_hppe_uniphy_psgmii_mode_set(a_uin
+ 	SSDK_DEBUG("uniphy %d is psgmii mode\n", uniphy_index);
+ #if defined(CPPE)
+ 	if (adpt_ppe_type_get(dev_id) == CPPE_TYPE) {
+-		phy_type = hsl_port_phyid_get(dev_id,
+-				SSDK_PHYSICAL_PORT3);
+-		if (phy_type == MALIBU2PORT_PHY) {
++		if (ssdk_dts_port3_pcs_channel_get(dev_id) == 4) {
+ 			SSDK_INFO("cypress uniphy %d is qca8072 psgmii mode\n", uniphy_index);
+ 			rv = __adpt_cppe_uniphy_mode_set(dev_id, uniphy_index,
+ 				PORT_WRAPPER_PSGMII);
+--- a/src/init/ssdk_dts.c
++++ b/src/init/ssdk_dts.c
+@@ -272,6 +272,13 @@ struct clk *ssdk_dts_cmnclk_get(a_uint32
+ 	return cfg->cmnblk_clk;
+ }
+ 
++a_uint32_t ssdk_dts_port3_pcs_channel_get(a_uint32_t dev_id)
++{
++	ssdk_dt_cfg* cfg = ssdk_dt_global.ssdk_dt_switch_nodes[dev_id];
++
++	return cfg->port3_pcs_channel;
++}
++
+ #if defined(CONFIG_OF) && (LINUX_VERSION_CODE >= KERNEL_VERSION(3,14,0))
+ static void ssdk_dt_parse_mac_mode(a_uint32_t dev_id,
+ 		struct device_node *switch_node, ssdk_init_cfg *cfg)
+@@ -305,6 +312,25 @@ static void ssdk_dt_parse_mac_mode(a_uin
+ 
+ 	return;
+ }
++
++static void ssdk_dt_parse_port3_pcs_channel(a_uint32_t dev_id,
++		struct device_node *switch_node, ssdk_init_cfg *cfg)
++{
++	const __be32 *port3_pcs_channel;
++	a_uint32_t len = 0;
++
++	port3_pcs_channel = of_get_property(switch_node, "port3_pcs_channel", &len);
++	if (!port3_pcs_channel) {
++		ssdk_dt_global.ssdk_dt_switch_nodes[dev_id]->port3_pcs_channel = 2;
++	}
++	else {
++		ssdk_dt_global.ssdk_dt_switch_nodes[dev_id]->port3_pcs_channel =
++			be32_to_cpup(port3_pcs_channel);
++	}
++
++	return;
++}
++
+ #ifdef IN_UNIPHY
+ static void ssdk_dt_parse_uniphy(a_uint32_t dev_id)
+ {
+@@ -1354,6 +1380,7 @@ sw_error_t ssdk_dt_parse(ssdk_init_cfg *
+ 	rv = ssdk_dt_parse_access_mode(switch_node, ssdk_dt_priv);
+ 	SW_RTN_ON_ERROR(rv);
+ 	ssdk_dt_parse_mac_mode(*dev_id, switch_node, cfg);
++	ssdk_dt_parse_port3_pcs_channel(*dev_id, switch_node, cfg);
+ 	ssdk_dt_parse_mdio(*dev_id, switch_node, cfg);
+ 	ssdk_dt_parse_port_bmp(*dev_id, switch_node, cfg);
+ 	ssdk_dt_parse_interrupt(*dev_id, switch_node);
