@@ -20,7 +20,7 @@ define KernelPackage/leds-ubnt-ledbar
   FILES:= \
 	$(PKG_BUILD_DIR)/leds-ubnt-ledbar.ko
   AUTOLOAD:=$(call AutoProbe,leds-ubnt-ledbar,1)
-  DEPENDS:=+kmod-i2c-core
+  DEPENDS:=@TARGET_mediatek_mt7622||TARGET_ramips_mt7621 +kmod-i2c-core
 endef
 
 define KernelPackage/leds-ubnt-ledbar/description
