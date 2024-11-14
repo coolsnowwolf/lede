@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2006-2020 OpenWrt.org
+# Copyright (C) 2006-2020 LEDE.org
 
 override TARGET_BUILD=
 include $(INCLUDE_DIR)/prereq.mk
