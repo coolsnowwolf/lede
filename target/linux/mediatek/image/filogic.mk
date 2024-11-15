@@ -407,6 +407,20 @@ define Device/imou_lc-hx3001
 endef
 TARGET_DEVICES += imou_lc-hx3001
 
+define Device/konka_komi-a31
+  DEVICE_VENDOR := KONKA
+  DEVICE_MODEL := KOMI A31
+  DEVICE_DTS := mt7981b-konka-komi-a31
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += konka_komi-a31
+
 define Device/jcg_q30-pro
   DEVICE_VENDOR := JCG
   DEVICE_MODEL := Q30 PRO
