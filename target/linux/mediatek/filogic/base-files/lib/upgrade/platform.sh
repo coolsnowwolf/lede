@@ -22,6 +22,7 @@ platform_do_upgrade() {
 		nand_do_upgrade "$1"
 		;;
 	bananapi,bpi-r3|\
+	bananapi,bpi-r3-mini|\
 	bananapi,bpi-r4|\
 	bananapi,bpi-r4-poe)
 		[ -e /dev/fit0 ] && fitblk /dev/fit0

@@ -12,15 +12,16 @@ err=""
 ubinize_seq=""
 
 ubivol() {
-	volid=$1
-	name=$2
-	image=$3
-	autoresize=$4
-	size="$5"
+	local volid="$1"
+	local name="$2"
+	local image="$3"
+	local autoresize="$4"
+	local size="$5"
+	local voltype="${6:-dynamic}"
 	echo "[$name]"
 	echo "mode=ubi"
 	echo "vol_id=$volid"
-	echo "vol_type=dynamic"
+	echo "vol_type=$voltype"
 	echo "vol_name=$name"
 	if [ "$image" ]; then
 		echo "image=$image"
@@ -35,35 +36,47 @@ ubivol() {
 
 ubilayout() {
 	local vol_id=0
-	local rootsize=
-	local autoresize=
-	local rootfs_type="$( get_fs_type "$2" )"
+	local rootsize
+	local autoresize
+	local rootfs_type
+	local voltype
 
+	rootfs_type="$( get_fs_type "$2" )"
 	if [ "$1" = "ubootenv" ]; then
 		ubivol $vol_id ubootenv
-		vol_id=$(( $vol_id + 1 ))
+		vol_id=$(( vol_id + 1 ))
 		ubivol $vol_id ubootenv2
-		vol_id=$(( $vol_id + 1 ))
+		vol_id=$(( vol_id + 1 ))
 	fi
 	for part in $parts; do
 		name="${part%%=*}"
 		prev="$part"
 		part="${part#*=}"
+		voltype=dynamic
 		[ "$prev" = "$part" ] && part=
 
 		image="${part%%=*}"
+		if [ "${image#:}" != "$image" ]; then
+			voltype=static
+			image="${image#:}"
+		fi
 		prev="$part"
 		part="${part#*=}"
 		[ "$prev" = "$part" ] && part=
 
 		size="$part"
+		if [ -z "$size" ]; then
+			size="$( round_up "$( stat -c%s "$image" )" 1024 )"
+		else
+			size="${size}MiB"
+		fi
 
-		ubivol $vol_id "$name" "$image" "" "${size}MiB"
-		vol_id=$(( $vol_id + 1 ))
+		ubivol $vol_id "$name" "$image" "" "${size}" "$voltype"
+		vol_id=$(( vol_id + 1 ))
 	done
 	if [ "$3" ]; then
 		ubivol $vol_id kernel "$3"
-		vol_id=$(( $vol_id + 1 ))
+		vol_id=$(( vol_id + 1 ))
 	fi
 
 	if [ "$2" ]; then
@@ -79,7 +92,7 @@ ubilayout() {
 		esac
 		ubivol $vol_id rootfs "$2" "$autoresize" "$rootsize"
 
-		vol_id=$(( $vol_id + 1 ))
+		vol_id=$(( vol_id + 1 ))
 		[ "$rootfs_type" = "ubifs" ] || ubivol $vol_id rootfs_data "" 1
 	fi
 }
@@ -116,7 +129,7 @@ while [ "$1" ]; do
 		continue
 		;;
 	"-"*)
-		ubinize_param="$@"
+		ubinize_param="$*"
 		break
 		;;
 	*)
@@ -129,7 +142,7 @@ while [ "$1" ]; do
 	esac
 done
 
-if [ ! -r "$rootfs" -a ! -r "$kernel" -a ! "$outfile" ]; then
+if [ ! -r "$rootfs" ] && [ ! -r "$kernel" ] && [ ! "$parts" ] && [ ! "$outfile" ]; then
 	echo "syntax: $0 [--uboot-env] [--part <name>=<file>] [--kernel kernelimage] [--rootfs rootfsimage] out [ubinize opts]"
 	exit 1
 fi
