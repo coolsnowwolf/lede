@@ -135,6 +135,14 @@ define U-Boot/mt7622_ubnt_unifi-6-lr
   FIP_COMPRESS:=1
 endef
 
+define U-Boot/mt7622_xiaomi_redmi-router-ax6s-ubi-loader
+  NAME:=Xiaomi Redmi Router AX6S (as UBI loader)
+  UBOOT_CONFIG:=mt7622_xiaomi_redmi-router-ax6s-ubi-loader
+  BUILD_DEVICES:=xiaomi_redmi-router-ax6s
+  BUILD_SUBTARGET:=mt7622
+  UBOOT_IMAGE:=u-boot.bin
+endef
+
 define U-Boot/mt7623a_unielec_u7623
   NAME:=UniElec U7623 (mt7623)
   BUILD_DEVICES:=unielec_u7623-02
@@ -464,6 +472,7 @@ UBOOT_TARGETS := \
 	mt7622_linksys_e8450 \
 	mt7622_rfb1 \
 	mt7622_ubnt_unifi-6-lr \
+	mt7622_xiaomi_redmi-router-ax6s-ubi-loader \
 	mt7623n_bpir2 \
 	mt7623a_unielec_u7623 \
 	mt7628_rfb \

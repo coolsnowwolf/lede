@@ -37,7 +37,6 @@ platform_do_upgrade() {
 	mediatek,mt7622-rfb1-ubi|\
 	netgear,wax206|\
 	totolink,a8000ru|\
-	xiaomi,redmi-router-ax6s)
 		nand_do_upgrade "$1"
 		;;
 	linksys,e8450-ubi)
@@ -51,6 +50,25 @@ platform_do_upgrade() {
 			PART_NAME=firmware1
 		fi
 		default_do_upgrade "$1"
+		;;
+	xiaomi,redmi-router-ax6s)
+		[ -e /dev/fit0 ] && fitblk /dev/fit0
+		[ -e /dev/fitrw ] && fitblk /dev/fitrw
+		bootdev="$(fitblk_get_bootdev)"
+		case "$bootdev" in
+		mmcblk*)
+			EMMC_KERN_DEV="/dev/$bootdev"
+			emmc_do_upgrade "$1"
+			;;
+		mtdblock*)
+			PART_NAME="/dev/mtd${bootdev:8}"
+			default_do_upgrade "$1"
+			;;
+		ubiblock*)
+			CI_KERNPART="fit"
+			nand_do_upgrade "$1"
+			;;
+		esac
 		;;
 	*)
 		default_do_upgrade "$1"
