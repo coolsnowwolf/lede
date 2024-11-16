@@ -154,7 +154,7 @@ define Device/thinkplus_fogpod800
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := thinkplus
 	DEVICE_MODEL := FogPOD800
-	DEVICE_DTS := qcom-ipq4028-fogpod800
+	SOC := qcom-ipq4028
 	DEVICE_DTS_CONFIG := config@ap.dk01.1-c2
 	KERNEL_INSTALL := 1
 	KERNEL_SIZE := 4096k
@@ -171,7 +171,7 @@ define Device/alibaba_ap4220
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := Alibaba
 	DEVICE_MODEL := AP4220
-	DEVICE_DTS := qcom-ipq4018-ap4220
+	SOC := qcom-ipq4018
 	KERNEL_INSTALL := 1
 	KERNEL_SIZE := 4096k
 	BLOCKSIZE := 128k
@@ -187,7 +187,7 @@ define Device/alibaba_ap4220-48m
 	$(call Device/UbiFit)
 	DEVICE_VENDOR := Alibaba
 	DEVICE_MODEL := AP4220-48m
-	DEVICE_DTS := qcom-ipq4018-ap4220-48m
+	SOC := qcom-ipq4018
 	KERNEL_INSTALL := 1
 	KERNEL_SIZE := 4096k
 	BLOCKSIZE := 128k
