@@ -149,6 +149,55 @@ define Device/8dev_jalapeno
 endef
 TARGET_DEVICES += 8dev_jalapeno
 
+define Device/thinkplus_fogpod800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := thinkplus
+	DEVICE_MODEL := FogPOD800
+	DEVICE_DTS := qcom-ipq4028-fogpod800
+	DEVICE_DTS_CONFIG := config@ap.dk01.1-c2
+	KERNEL_INSTALL := 1
+	KERNEL_SIZE := 4096k
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 131072k
+	FILESYSTEMS := squashfs
+	DEVICE_PACKAGES += ipq-wifi-thinkplus_fogpod800
+endef
+TARGET_DEVICES += thinkplus_fogpod800
+
+define Device/alibaba_ap4220
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Alibaba
+	DEVICE_MODEL := AP4220
+	DEVICE_DTS := qcom-ipq4018-ap4220
+	KERNEL_INSTALL := 1
+	KERNEL_SIZE := 4096k
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 131072k
+	DEVICE_PACKAGES += ipq-wifi-alibaba_ap4220
+	FILESYSTEMS := squashfs
+endef
+TARGET_DEVICES += alibaba_ap4220
+
+define Device/alibaba_ap4220-48m
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Alibaba
+	DEVICE_MODEL := AP4220-48m
+	DEVICE_DTS := qcom-ipq4018-ap4220-48m
+	KERNEL_INSTALL := 1
+	KERNEL_SIZE := 4096k
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	IMAGE_SIZE := 49152k
+	DEVICE_PACKAGES += ipq-wifi-alibaba_ap4220
+	FILESYSTEMS := squashfs
+endef
+TARGET_DEVICES += alibaba_ap4220-48m
+
 define Device/alfa-network_ap120c-ac
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
