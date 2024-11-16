@@ -709,7 +709,6 @@ define Device/zyxel_ex5700-telenor
 endef
 TARGET_DEVICES += zyxel_ex5700-telenor
 
-
 define Device/tplink_tl-xtr8488
   DEVICE_MODEL := TL-XTR8488
   DEVICE_DTS := mt7986a-tplink-tl-xtr8488
