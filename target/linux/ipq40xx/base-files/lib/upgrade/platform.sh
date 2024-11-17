@@ -232,6 +232,9 @@ platform_do_upgrade() {
 	netgear,wac510 |\
 	p2w,r619ac-64m |\
 	p2w,r619ac-128m |\
+	alibaba,ap4220 |\
+	alibaba,ap4220-48m |\
+	thinkplus,fogpod800 |\
 	qxwlan,e2600ac-c2)
 		nand_do_upgrade "$1"
 		;;
