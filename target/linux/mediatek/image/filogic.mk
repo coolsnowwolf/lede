@@ -695,6 +695,20 @@ define Device/tplink_tl-xdr6088
 endef
 TARGET_DEVICES += tplink_tl-xdr6088
 
+define Device/zyxel_ex5700-telenor
+  DEVICE_VENDOR := ZyXEL
+  DEVICE_MODEL := EX5700 (Telenor)
+  DEVICE_DTS := mt7986a-zyxel-ex5700-telenor
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-ubootenv-nvram kmod-usb3 kmod-mt7915e kmod-mt7916-firmware kmod-mt7986-firmware mt7986-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256k
+  PAGESIZE := 4096
+  IMAGE_SIZE := 65536k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += zyxel_ex5700-telenor
+
 define Device/tplink_tl-xtr8488
   DEVICE_MODEL := TL-XTR8488
   DEVICE_DTS := mt7986a-tplink-tl-xtr8488
