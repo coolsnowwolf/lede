@@ -5,27 +5,24 @@
 . /lib/functions.sh
 . /lib/functions/leds.sh
 
+status_led_restore_trigger() {
+	local led_lc=$(echo "$status_led" | awk '{print tolower($0)}')
+	local led_path="/proc/device-tree/leds/led-$led_lc"
+	local led_trigger
+
+	[ -d "$led_path" ] && \
+		led_trigger=$(cat "$led_path/linux,default-trigger" 2>/dev/null)
+
+	[ -n "$led_trigger" ] && \
+		led_set_attr $status_led "trigger" "$led_trigger"
+}
+
 set_state() {
-	case "$(board_name)" in
-	raspberrypi,2-model-b |\
-	raspberrypi,2-model-b-rev2 |\
-	raspberrypi,3-model-b |\
-	raspberrypi,3-model-b-plus |\
-	raspberrypi,400 |\
-	raspberrypi,4-compute-module |\
-	raspberrypi,4-model-b |\
-	raspberrypi,5-model-b |\
-	raspberrypi,model-b-plus)
-		status_led="led1"
-		;;
-	raspberrypi,3-compute-module |\
-	raspberrypi,model-b |\
-	raspberrypi,model-zero |\
-	raspberrypi,model-zero-2 |\
-	raspberrypi,model-zero-w)
-		status_led="led0"
-		;;
-	esac
+	if [ -d "/sys/class/leds/ACT" ]; then
+		status_led="ACT"
+	else
+		return
+	fi
 
 	case "$1" in
 	preinit)
@@ -37,8 +34,11 @@ set_state() {
 	preinit_regular)
 		status_led_blink_preinit_regular
 		;;
+	upgrade)
+		status_led_blink_preinit_regular
+		;;
 	done)
-		status_led_on
+		status_led_restore_trigger
 		;;
 	esac
 }

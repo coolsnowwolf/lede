@@ -1,0 +1,48 @@
+From e546f85606dcf2cdff94ff32a0756e2541bccb05 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Wed, 25 Jan 2023 13:05:26 +0100
+Subject: [PATCH 0033/1085] drm/vc4: hvs: Destroy dlist allocations immediately
+ when running a test
+
+When running a kunit test, the driver runs with a mock device. As such,
+any attempt to read or write to a hardware register will fail the
+current test immediately.
+
+The dlist allocation management recently introduced will read the
+current frame count from the HVS to defer its destruction until a
+subsequent frame has been output. This obviously involves a register
+read that fails the Kunit tests.
+
+Change the destruction deferral function to destroy the allocation
+immediately if we run under kunit. This is essentially harmless since
+the main reason for that deferall is to prevent any access to the
+hardware dlist while a frame described by that list is rendered. On our
+mock driver, we have neither a hardware dlist nor a rendering, so it
+doesn't matter.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -490,6 +490,18 @@ void vc4_hvs_mark_dlist_entry_stale(stru
+ 	if (!drm_mm_node_allocated(&alloc->mm_node))
+ 		return;
+ 
++	/*
++	 * Kunit tests run with a mock device and we consider any hardware
++	 * access a test failure. Let's free the dlist allocation right away if
++	 * we're running under kunit, we won't risk a dlist corruption anyway.
++	 */
++	if (kunit_get_current_test()) {
++		spin_lock_irqsave(&hvs->mm_lock, flags);
++		vc4_hvs_free_dlist_entry_locked(hvs, alloc);
++		spin_unlock_irqrestore(&hvs->mm_lock, flags);
++		return;
++	}
++
+ 	frcnt = vc4_hvs_get_fifo_frame_count(hvs, alloc->channel);
+ 	alloc->target_frame_count = (frcnt + 1) & ((1 << 6) - 1);
+ 

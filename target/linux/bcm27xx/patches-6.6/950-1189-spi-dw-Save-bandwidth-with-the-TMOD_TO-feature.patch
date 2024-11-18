@@ -1,0 +1,66 @@
+From 6014649de765a8a1f95c146ca72214ff0ba4ba89 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 1 Jul 2024 15:49:14 +0100
+Subject: [PATCH 1189/1215] spi: dw: Save bandwidth with the TMOD_TO feature
+
+TMOD_TO is the transmit-only mode that doesn't put data into the receive
+FIFO. Using TMOD_TO when the user doesn't want the received data saves
+CPU time and memory bandwidth.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-dw-core.c | 27 +++++++++++++++++----------
+ 1 file changed, 17 insertions(+), 10 deletions(-)
+
+--- a/drivers/spi/spi-dw-core.c
++++ b/drivers/spi/spi-dw-core.c
+@@ -225,12 +225,17 @@ static irqreturn_t dw_spi_transfer_handl
+ 	 * final stage of the transfer. By doing so we'll get the next IRQ
+ 	 * right when the leftover incoming data is received.
+ 	 */
+-	dw_reader(dws);
+-	if (!dws->rx_len) {
+-		dw_spi_mask_intr(dws, 0xff);
++	if (dws->rx_len) {
++		dw_reader(dws);
++		if (!dws->rx_len) {
++			dw_spi_mask_intr(dws, 0xff);
++			spi_finalize_current_transfer(dws->host);
++		} else if (dws->rx_len <= dw_readl(dws, DW_SPI_RXFTLR)) {
++			dw_writel(dws, DW_SPI_RXFTLR, dws->rx_len - 1);
++		}
++	} else if (!dws->tx_len) {
++		dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
+ 		spi_finalize_current_transfer(dws->host);
+-	} else if (dws->rx_len <= dw_readl(dws, DW_SPI_RXFTLR)) {
+-		dw_writel(dws, DW_SPI_RXFTLR, dws->rx_len - 1);
+ 	}
+ 
+ 	/*
+@@ -239,12 +244,9 @@ static irqreturn_t dw_spi_transfer_handl
+ 	 * have the TXE IRQ flood at the final stage of the transfer.
+ 	 */
+ 	if (irq_status & DW_SPI_INT_TXEI) {
+-		dw_writer(dws);
+-		if (!dws->tx_len) {
++		if (!dws->tx_len)
+ 			dw_spi_mask_intr(dws, DW_SPI_INT_TXEI);
+-			if (!dws->rx_len)
+-				spi_finalize_current_transfer(dws->host);
+-		}
++		dw_writer(dws);
+ 	}
+ 
+ 	return IRQ_HANDLED;
+@@ -437,6 +439,11 @@ static int dw_spi_transfer_one(struct sp
+ 	dws->rx = transfer->rx_buf;
+ 	dws->rx_len = dws->tx_len;
+ 
++	if (!dws->rx) {
++		dws->rx_len = 0;
++		cfg.tmode = DW_SPI_CTRLR0_TMOD_TO;
++	}
++
+ 	/* Ensure the data above is visible for all CPUs */
+ 	smp_mb();
+ 

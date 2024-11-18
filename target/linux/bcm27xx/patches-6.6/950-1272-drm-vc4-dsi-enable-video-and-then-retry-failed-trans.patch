@@ -1,0 +1,111 @@
+From 6da70162dd1e729c04e2dc25472b39390868af79 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 20 Sep 2024 12:05:18 +0100
+Subject: [PATCH 1272/1350] drm: vc4: dsi: enable video and then retry failed
+ transfers
+
+The DSI block appears to be able to come up stuck in a condition where
+it leaves the lanes in HS mode or just jabbering. This stops LP
+transfers from completing as there is no LP time available. This is
+signalled via the LP1 contention error.
+
+Enabling video briefly clears that condition, so if we detect the
+error condition, enable video mode and then retry.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_dsi.c | 54 +++++++++++++++++++++++++++++------
+ 1 file changed, 46 insertions(+), 8 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_dsi.c
++++ b/drivers/gpu/drm/vc4/vc4_dsi.c
+@@ -286,6 +286,8 @@
+ 					 DSI1_INT_PR_TO)
+ 
+ #define DSI0_STAT		0x2c
++# define DSI0_STAT_ERR_CONT_LP1		BIT(6)
++# define DSI0_STAT_ERR_CONT_LP0		BIT(5)
+ #define DSI0_HSTX_TO_CNT	0x30
+ #define DSI0_LPRX_TO_CNT	0x34
+ #define DSI0_TA_TO_CNT		0x38
+@@ -1203,10 +1205,9 @@ static int vc4_dsi_bridge_attach(struct
+ 				 &dsi->bridge, flags);
+ }
+ 
+-static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
+-				     const struct mipi_dsi_msg *msg)
++static ssize_t vc4_dsi_transfer(struct vc4_dsi *dsi,
++				const struct mipi_dsi_msg *msg, bool log_error)
+ {
+-	struct vc4_dsi *dsi = host_to_dsi(host);
+ 	struct mipi_dsi_packet packet;
+ 	u32 pkth = 0, pktc = 0;
+ 	int i, ret;
+@@ -1315,10 +1316,12 @@ static ssize_t vc4_dsi_host_transfer(str
+ 	DSI_PORT_WRITE(TXPKT1C, pktc);
+ 
+ 	if (!wait_for_completion_timeout(&dsi->xfer_completion,
+-					 msecs_to_jiffies(1000))) {
+-		dev_err(&dsi->pdev->dev, "transfer interrupt wait timeout");
+-		dev_err(&dsi->pdev->dev, "instat: 0x%08x\n",
+-			DSI_PORT_READ(INT_STAT));
++					 msecs_to_jiffies(500))) {
++		if (log_error) {
++			dev_err(&dsi->pdev->dev, "transfer interrupt wait timeout");
++			dev_err(&dsi->pdev->dev, "instat: 0x%08x, stat: 0x%08x\n",
++				DSI_PORT_READ(INT_STAT), DSI_PORT_READ(INT_STAT));
++		}
+ 		ret = -ETIMEDOUT;
+ 	} else {
+ 		ret = dsi->xfer_result;
+@@ -1361,7 +1364,8 @@ static ssize_t vc4_dsi_host_transfer(str
+ 	return ret;
+ 
+ reset_fifo_and_return:
+-	DRM_ERROR("DSI transfer failed, resetting: %d\n", ret);
++	if (log_error)
++		DRM_ERROR("DSI transfer failed, resetting: %d\n", ret);
+ 
+ 	DSI_PORT_WRITE(TXPKT1C, DSI_PORT_READ(TXPKT1C) & ~DSI_TXPKT1C_CMD_EN);
+ 	udelay(1);
+@@ -1374,6 +1378,40 @@ reset_fifo_and_return:
+ 	return ret;
+ }
+ 
++static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
++				     const struct mipi_dsi_msg *msg)
++{
++	struct vc4_dsi *dsi = host_to_dsi(host);
++	u32 stat, disp0_ctrl;
++	int ret;
++
++	ret = vc4_dsi_transfer(dsi, msg, false);
++
++	if (ret == -ETIMEDOUT) {
++		stat = DSI_PORT_READ(STAT);
++		disp0_ctrl = DSI_PORT_READ(DISP0_CTRL);
++
++		DSI_PORT_WRITE(STAT, DSI_PORT_BIT(STAT_ERR_CONT_LP1));
++		if (!(disp0_ctrl & DSI_DISP0_ENABLE)) {
++			/* If video mode not enabled, then try recovering by
++			 * enabling it briefly to clear FIFOs and the state.
++			 */
++			disp0_ctrl |= DSI_DISP0_ENABLE;
++			DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl);
++			msleep(30);
++			disp0_ctrl &= ~DSI_DISP0_ENABLE;
++			DSI_PORT_WRITE(DISP0_CTRL, disp0_ctrl);
++			msleep(30);
++
++			ret = vc4_dsi_transfer(dsi, msg, true);
++		} else {
++			DRM_ERROR("DSI transfer failed whilst in HS mode stat: 0x%08x\n",
++				  stat);
++		}
++	}
++	return ret;
++}
++
+ static const struct component_ops vc4_dsi_ops;
+ static int vc4_dsi_host_attach(struct mipi_dsi_host *host,
+ 			       struct mipi_dsi_device *device)

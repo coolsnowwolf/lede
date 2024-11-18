@@ -1,0 +1,58 @@
+From 570c6d60fcc997e0c520c46010974021c8550500 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 23 Apr 2020 10:17:18 +0100
+Subject: [PATCH 0263/1085] drm/panel/raspberrypi-touchscreen: Use independent
+ I2C actions with delay.
+
+We now have the hardware I2C controller pinmuxed to the drive the
+display I2C, but this controller does not support clock stretching.
+The Atmel micro-controller in the panel requires clock stretching
+to allow it to prepare any data to be read.
+
+Split the rpi_touchscreen_i2c_read into two independent transactions with
+a delay between them for the Atmel to prepare the data.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../drm/panel/panel-raspberrypi-touchscreen.c | 30 ++++++++++++++++++-
+ 1 file changed, 29 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/panel/panel-raspberrypi-touchscreen.c
++++ b/drivers/gpu/drm/panel/panel-raspberrypi-touchscreen.c
+@@ -218,7 +218,35 @@ static struct rpi_touchscreen *panel_to_
+ 
+ static int rpi_touchscreen_i2c_read(struct rpi_touchscreen *ts, u8 reg)
+ {
+-	return i2c_smbus_read_byte_data(ts->i2c, reg);
++	struct i2c_client *client = ts->i2c;
++	struct i2c_msg msgs[1];
++	u8 addr_buf[1] = { reg };
++	u8 data_buf[1] = { 0, };
++	int ret;
++
++	/* Write register address */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = 0;
++	msgs[0].len = ARRAY_SIZE(addr_buf);
++	msgs[0].buf = addr_buf;
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	usleep_range(100, 300);
++
++	/* Read data from register */
++	msgs[0].addr = client->addr;
++	msgs[0].flags = I2C_M_RD;
++	msgs[0].len = 1;
++	msgs[0].buf = data_buf;
++
++	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
++	if (ret != ARRAY_SIZE(msgs))
++		return -EIO;
++
++	return data_buf[0];
+ }
+ 
+ static void rpi_touchscreen_i2c_write(struct rpi_touchscreen *ts,

@@ -1,0 +1,114 @@
+From 13c5b9ca0aacaff8bb1201521ece99d34f958582 Mon Sep 17 00:00:00 2001
+From: Joerg Schambacher <joerg@hifiberry.com>
+Date: Fri, 19 Jan 2024 10:58:39 +0100
+Subject: [PATCH 0877/1085] ASoC: adds support for AMP4 Pro to the DAC Plus
+ driver
+
+The AMP4 Pro is a I2S master mode capable amplifier with
+clean onboard clock generators.
+We can share the card driver between TAS575x amplifiers
+and the PCM512x DACs as they are SW compatible.
+From a HW perspective though we need to limit the sample
+rates to the standard audio rates to avoid running the
+onboard clocks through the PLL. Using the PLL would require
+even a different HW.
+DAI/stream name are also set accordingly to allow the user
+a convenient identification of the soundcard
+
+Needs the pcm512x driver with TAS575x support (already in
+upstream kernel).
+
+Signed-off-by: Joerg Schambacher <joerg@hifiberry.com>
+---
+ sound/soc/bcm/hifiberry_dacplus.c | 41 ++++++++++++++++++++++++++++---
+ 1 file changed, 38 insertions(+), 3 deletions(-)
+
+--- a/sound/soc/bcm/hifiberry_dacplus.c
++++ b/sound/soc/bcm/hifiberry_dacplus.c
+@@ -58,10 +58,21 @@ static bool leds_off;
+ static bool auto_mute;
+ static int mute_ext_ctl;
+ static int mute_ext;
++static bool tas_device;
+ static struct gpio_desc *snd_mute_gpio;
+ static struct gpio_desc *snd_reset_gpio;
+ static struct snd_soc_card snd_rpi_hifiberry_dacplus;
+ 
++static const u32 master_dai_rates[] = {
++	44100, 48000, 88200, 96000,
++	176400, 192000, 352800, 384000,
++};
++
++static const struct snd_pcm_hw_constraint_list constraints_master = {
++	.count = ARRAY_SIZE(master_dai_rates),
++	.list  = master_dai_rates,
++};
++
+ static int snd_rpi_hifiberry_dacplus_mute_set(int mute)
+ {
+ 	gpiod_set_value_cansleep(snd_mute_gpio, mute);
+@@ -197,8 +208,13 @@ static int snd_rpi_hifiberry_dacplus_ini
+ 	if (snd_rpi_hifiberry_is_dacpro) {
+ 		struct snd_soc_dai_link *dai = rtd->dai_link;
+ 
+-		dai->name = "HiFiBerry DAC+ Pro";
+-		dai->stream_name = "HiFiBerry DAC+ Pro HiFi";
++		if (tas_device) {
++			dai->name = "HiFiBerry AMP4 Pro";
++			dai->stream_name = "HiFiBerry AMP4 Pro HiFi";
++		} else {
++			dai->name = "HiFiBerry DAC+ Pro";
++			dai->stream_name = "HiFiBerry DAC+ Pro HiFi";
++		}
+ 		dai->dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
+ 			| SND_SOC_DAIFMT_CBM_CFM;
+ 
+@@ -303,6 +319,18 @@ static int snd_rpi_hifiberry_dacplus_sta
+ {
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
++	int ret;
++
++	if (tas_device && !slave) {
++		ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
++					  SNDRV_PCM_HW_PARAM_RATE,
++					  &constraints_master);
++		if (ret < 0) {
++			dev_err(rtd->card->dev,
++				"Cannot apply constraints for sample rates\n");
++			return ret;
++		}
++	}
+ 
+ 	if (auto_mute)
+ 		gpiod_set_value_cansleep(snd_mute_gpio, 0);
+@@ -324,7 +352,7 @@ static void snd_rpi_hifiberry_dacplus_sh
+ }
+ 
+ /* machine stream operations */
+-static struct snd_soc_ops snd_rpi_hifiberry_dacplus_ops = {
++static const struct snd_soc_ops snd_rpi_hifiberry_dacplus_ops = {
+ 	.hw_params = snd_rpi_hifiberry_dacplus_hw_params,
+ 	.startup = snd_rpi_hifiberry_dacplus_startup,
+ 	.shutdown = snd_rpi_hifiberry_dacplus_shutdown,
+@@ -394,6 +422,7 @@ static int snd_rpi_hifiberry_dacplus_pro
+ 	struct snd_soc_card *card = &snd_rpi_hifiberry_dacplus;
+ 	int len;
+ 	struct device_node *tpa_node;
++	struct device_node *tas_node;
+ 	struct property *tpa_prop;
+ 	struct of_changeset ocs;
+ 	struct property *pp;
+@@ -430,6 +459,12 @@ static int snd_rpi_hifiberry_dacplus_pro
+ 		}
+ 	}
+ 
++	tas_node = of_find_compatible_node(NULL, NULL, "ti,tas5756");
++	if (tas_node) {
++		tas_device = true;
++		dev_info(&pdev->dev, "TAS5756 device found!\n");
++	};
++
+ 	snd_rpi_hifiberry_dacplus.dev = &pdev->dev;
+ 	if (pdev->dev.of_node) {
+ 		struct device_node *i2s_node;

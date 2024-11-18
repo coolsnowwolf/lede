@@ -1,0 +1,85 @@
+From cd6af13c35957c6052696d8e0080f0a7c25ea68f Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Wed, 6 Dec 2023 14:27:57 +0000
+Subject: [PATCH 0797/1085] drivers: media: i2c: imx296,imx477: Configure
+ tigger_mode every time
+
+Don't assume the camera has been reset each time we start streaming,
+but always write registers relating to trigger_mode, even in mode 0.
+
+IMX477: Stop driving XVS on stop streaming, to avoid spurious pulses.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/media/i2c/imx296.c |  9 +++++----
+ drivers/media/i2c/imx477.c | 29 ++++++++++++++---------------
+ 2 files changed, 19 insertions(+), 19 deletions(-)
+
+--- a/drivers/media/i2c/imx296.c
++++ b/drivers/media/i2c/imx296.c
+@@ -583,10 +583,11 @@ static int imx296_stream_on(struct imx29
+ 	imx296_write(sensor, IMX296_CTRL00, 0, &ret);
+ 	usleep_range(2000, 5000);
+ 
+-	if (trigger_mode == 1) {
+-		imx296_write(sensor, IMX296_CTRL0B, IMX296_CTRL0B_TRIGEN, &ret);
+-		imx296_write(sensor, IMX296_LOWLAGTRG,  IMX296_LOWLAGTRG_FAST, &ret);
+-	}
++	/* external trigger mode: 0=normal, 1=triggered */
++	imx296_write(sensor, IMX296_CTRL0B,
++		     (trigger_mode == 1) ? IMX296_CTRL0B_TRIGEN : 0, &ret);
++	imx296_write(sensor, IMX296_LOWLAGTRG,
++		     (trigger_mode == 1) ? IMX296_LOWLAGTRG_FAST : 0, &ret);
+ 
+ 	imx296_write(sensor, IMX296_CTRL0A, 0, &ret);
+ 
+--- a/drivers/media/i2c/imx477.c
++++ b/drivers/media/i2c/imx477.c
+@@ -1742,26 +1742,21 @@ static int imx477_start_streaming(struct
+ 	imx477_write_reg(imx477, 0x0b05, IMX477_REG_VALUE_08BIT, !!dpc_enable);
+ 	imx477_write_reg(imx477, 0x0b06, IMX477_REG_VALUE_08BIT, !!dpc_enable);
+ 
+-	/* Set vsync trigger mode */
+-	if (trigger_mode != 0) {
+-		/* trigger_mode == 1 for source, 2 for sink */
+-		const u32 val = (trigger_mode == 1) ? 1 : 0;
+-
+-		imx477_write_reg(imx477, IMX477_REG_MC_MODE,
+-				 IMX477_REG_VALUE_08BIT, 1);
+-		imx477_write_reg(imx477, IMX477_REG_MS_SEL,
+-				 IMX477_REG_VALUE_08BIT, val);
+-		imx477_write_reg(imx477, IMX477_REG_XVS_IO_CTRL,
+-				 IMX477_REG_VALUE_08BIT, val);
+-		imx477_write_reg(imx477, IMX477_REG_EXTOUT_EN,
+-				 IMX477_REG_VALUE_08BIT, val);
+-	}
+-
+ 	/* Apply customized values from user */
+ 	ret =  __v4l2_ctrl_handler_setup(imx477->sd.ctrl_handler);
+ 	if (ret)
+ 		return ret;
+ 
++	/* Set vsync trigger mode: 0=standalone, 1=source, 2=sink */
++	imx477_write_reg(imx477, IMX477_REG_MC_MODE,
++			 IMX477_REG_VALUE_08BIT, (trigger_mode > 0) ? 1 : 0);
++	imx477_write_reg(imx477, IMX477_REG_MS_SEL,
++			 IMX477_REG_VALUE_08BIT, (trigger_mode <= 1) ? 1 : 0);
++	imx477_write_reg(imx477, IMX477_REG_XVS_IO_CTRL,
++			 IMX477_REG_VALUE_08BIT, (trigger_mode == 1) ? 1 : 0);
++	imx477_write_reg(imx477, IMX477_REG_EXTOUT_EN,
++			 IMX477_REG_VALUE_08BIT, (trigger_mode == 1) ? 1 : 0);
++
+ 	/* set stream on register */
+ 	return imx477_write_reg(imx477, IMX477_REG_MODE_SELECT,
+ 				IMX477_REG_VALUE_08BIT, IMX477_MODE_STREAMING);
+@@ -1778,6 +1773,10 @@ static void imx477_stop_streaming(struct
+ 			       IMX477_REG_VALUE_08BIT, IMX477_MODE_STANDBY);
+ 	if (ret)
+ 		dev_err(&client->dev, "%s failed to set stream\n", __func__);
++
++	/* Stop driving XVS out (there is still a weak pull-up) */
++	imx477_write_reg(imx477, IMX477_REG_EXTOUT_EN,
++			 IMX477_REG_VALUE_08BIT, 0);
+ }
+ 
+ static int imx477_set_stream(struct v4l2_subdev *sd, int enable)

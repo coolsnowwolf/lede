@@ -1,0 +1,64 @@
+From 9c7ea3de5ffea4240e97deaa376265d82eaacac1 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Mon, 8 Aug 2022 10:01:41 +0100
+Subject: [PATCH 0384/1085] media: bcm2835-unicam: Correctly handle FS + FE ISR
+ condtion
+
+If we get a simultaneous FS + FE interrupt for the same frame, it cannot be
+marked as completed and returned to userland as the framebuffer will be refilled
+by Unicam on the next sensor frame. Additionally, the timestamp will be set to 0
+as the FS interrupt handling code will not have run yet.
+
+To avoid these problems, the frame is considered dropped in the FE handler,
+and will be returned to userland on the subsequent sensor frame.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../media/platform/bcm2835/bcm2835-unicam.c   | 28 +++++++++++++------
+ 1 file changed, 20 insertions(+), 8 deletions(-)
+
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -919,7 +919,9 @@ static irqreturn_t unicam_isr(int irq, v
+ 		 * to use.
+ 		 */
+ 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
+-			if (!unicam->node[i].streaming)
++			struct unicam_node *node = &unicam->node[i];
++
++			if (!node->streaming)
+ 				continue;
+ 
+ 			/*
+@@ -929,14 +931,24 @@ static irqreturn_t unicam_isr(int irq, v
+ 			 * + FS + LS). In this case, we cannot signal the buffer
+ 			 * as complete, as the HW will reuse that buffer.
+ 			 */
+-			if (unicam->node[i].cur_frm &&
+-			    unicam->node[i].cur_frm != unicam->node[i].next_frm) {
+-				unicam_process_buffer_complete(&unicam->node[i],
+-							       sequence);
+-				unicam->node[i].cur_frm = unicam->node[i].next_frm;
+-				unicam->node[i].next_frm = NULL;
++			if (node->cur_frm && node->cur_frm != node->next_frm) {
++				/*
++				 * This condition checks if FE + FS for the same
++				 * frame has occurred. In such cases, we cannot
++				 * return out the frame, as no buffer handling
++				 * or timestamping has yet been done as part of
++				 * the FS handler.
++				 */
++				if (!node->cur_frm->vb.vb2_buf.timestamp) {
++					unicam_dbg(2, unicam, "ISR: FE without FS, dropping frame\n");
++					continue;
++				}
++
++				unicam_process_buffer_complete(node, sequence);
++				node->cur_frm = node->next_frm;
++				node->next_frm = NULL;
+ 			} else {
+-				unicam->node[i].cur_frm = unicam->node[i].next_frm;
++				node->cur_frm = node->next_frm;
+ 			}
+ 		}
+ 		unicam->sequence++;

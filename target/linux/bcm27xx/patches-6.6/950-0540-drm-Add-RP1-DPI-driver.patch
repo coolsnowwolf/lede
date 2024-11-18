@@ -1,0 +1,1550 @@
+From 2c5bd926dd949fdf842cb21f15ce45e4b7e3bdb1 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Tue, 19 Sep 2023 17:51:49 +0100
+Subject: [PATCH 0540/1085] drm: Add RP1 DPI driver
+
+Add support for the RP1 DPI hardware.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-dpi/Kconfig       |  12 +
+ drivers/gpu/drm/rp1/rp1-dpi/Makefile      |   5 +
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c     | 427 ++++++++++++++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h     |  69 +++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c | 510 ++++++++++++++++++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c  | 486 +++++++++++++++++++++
+ 6 files changed, 1509 insertions(+)
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/Kconfig
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/Makefile
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/Kconfig
+@@ -0,0 +1,12 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config DRM_RP1_DPI
++	tristate "DRM Support for RP1 DPI"
++	depends on DRM
++	select MFD_RP1
++	select DRM_GEM_DMA_HELPER
++	select DRM_KMS_HELPER
++	select DRM_VRAM_HELPER
++	select DRM_TTM
++	select DRM_TTM_HELPER
++	help
++	  Choose this option to enable Video Out on RP1
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++drm-rp1-dpi-y := rp1_dpi.o rp1_dpi_hw.o rp1_dpi_cfg.o
++
++obj-$(CONFIG_DRM_RP1_DPI) += drm-rp1-dpi.o
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+@@ -0,0 +1,427 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++#include <linux/slab.h>
++#include <linux/mm.h>
++#include <linux/fb.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/ioport.h>
++#include <linux/list.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <linux/printk.h>
++#include <linux/console.h>
++#include <linux/debugfs.h>
++#include <linux/uaccess.h>
++#include <linux/io.h>
++#include <linux/dma-mapping.h>
++#include <linux/cred.h>
++#include <linux/media-bus-format.h>
++#include <linux/pinctrl/consumer.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_mm.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_gem_atomic_helper.h>
++#include <drm/drm_gem_dma_helper.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_managed.h>
++#include <drm/drm_crtc.h>
++#include <drm/drm_crtc_helper.h>
++#include <drm/drm_encoder.h>
++#include <drm/drm_fb_helper.h>
++#include <drm/drm_fbdev_generic.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_vblank.h>
++#include <drm/drm_of.h>
++
++#include "rp1_dpi.h"
++
++/*
++ * Default bus format, where not specified by a connector/bridge
++ * and not overridden by the OF property "default_bus_fmt".
++ * This value is for compatibility with vc4 and VGA666-style boards,
++ * even though RP1 hardware cannot achieve the full 18-bit depth
++ * with that pinout (MEDIA_BUS_FMT_RGB666_1X24_CPADHI is preferred).
++ */
++static unsigned int default_bus_fmt = MEDIA_BUS_FMT_RGB666_1X18;
++module_param(default_bus_fmt, uint, 0644);
++
++/* -------------------------------------------------------------- */
++
++static void rp1dpi_pipe_update(struct drm_simple_display_pipe *pipe,
++			       struct drm_plane_state *old_state)
++{
++	struct drm_pending_vblank_event *event;
++	unsigned long flags;
++	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
++	struct drm_gem_dma_object *dma_obj = gem ? to_drm_gem_dma_obj(gem) : NULL;
++	bool can_update = fb && dma_obj && dpi && dpi->pipe_enabled;
++
++	/* (Re-)start DPI-DMA where required; and update FB address */
++	if (can_update) {
++		if (!dpi->dpi_running || fb->format->format != dpi->cur_fmt) {
++			if (dpi->dpi_running &&
++			    fb->format->format != dpi->cur_fmt) {
++				rp1dpi_hw_stop(dpi);
++				dpi->dpi_running = false;
++			}
++			if (!dpi->dpi_running) {
++				rp1dpi_hw_setup(dpi,
++						fb->format->format,
++						dpi->bus_fmt,
++						dpi->de_inv,
++						&pipe->crtc.state->mode);
++				dpi->dpi_running = true;
++			}
++			dpi->cur_fmt = fb->format->format;
++			drm_crtc_vblank_on(&pipe->crtc);
++		}
++		rp1dpi_hw_update(dpi, dma_obj->dma_addr, fb->offsets[0], fb->pitches[0]);
++	}
++
++	/* Arm VBLANK event (or call it immediately in some error cases) */
++	spin_lock_irqsave(&pipe->crtc.dev->event_lock, flags);
++	event = pipe->crtc.state->event;
++	if (event) {
++		pipe->crtc.state->event = NULL;
++		if (can_update && drm_crtc_vblank_get(&pipe->crtc) == 0)
++			drm_crtc_arm_vblank_event(&pipe->crtc, event);
++		else
++			drm_crtc_send_vblank_event(&pipe->crtc, event);
++	}
++	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
++}
++
++static void rp1dpi_pipe_enable(struct drm_simple_display_pipe *pipe,
++			       struct drm_crtc_state *crtc_state,
++			      struct drm_plane_state *plane_state)
++{
++	static const unsigned int M = 1000000;
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++	struct drm_connector *conn;
++	struct drm_connector_list_iter conn_iter;
++	unsigned int fpix, fdiv, fvco;
++	int ret;
++
++	/* Look up the connector attached to DPI so we can get the
++	 * bus_format.  Ideally the bridge would tell us the
++	 * bus_format we want, but it doesn't yet, so assume that it's
++	 * uniform throughout the bridge chain.
++	 */
++	dev_info(&dpi->pdev->dev, __func__);
++	drm_connector_list_iter_begin(pipe->encoder.dev, &conn_iter);
++	drm_for_each_connector_iter(conn, &conn_iter) {
++		if (conn->encoder == &pipe->encoder) {
++			dpi->de_inv = !!(conn->display_info.bus_flags &
++							DRM_BUS_FLAG_DE_LOW);
++			dpi->clk_inv = !!(conn->display_info.bus_flags &
++						DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE);
++			if (conn->display_info.num_bus_formats)
++				dpi->bus_fmt = conn->display_info.bus_formats[0];
++			break;
++		}
++	}
++	drm_connector_list_iter_end(&conn_iter);
++
++	/* Set DPI clock to desired frequency. Currently (experimentally)
++	 * we take control of the VideoPLL, to ensure we can generate it
++	 * accurately. NB: this prevents concurrent use of DPI and VEC!
++	 * Magic numbers ensure the parent clock is within [100MHz, 200MHz]
++	 * with VCO in [1GHz, 1.33GHz]. The initial divide is by 6, 8 or 10.
++	 */
++	fpix = 1000 * pipe->crtc.state->mode.clock;
++	fpix = clamp(fpix, 1 * M, 200 * M);
++	fdiv = fpix;
++	while (fdiv < 100 * M)
++		fdiv *= 2;
++	fvco = fdiv * 2 * DIV_ROUND_UP(500 * M, fdiv);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_PLLCORE], fvco);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set PLL VCO to %u (%d)", fvco, ret);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_PLLDIV], fdiv);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set PLL output to %u (%d)", fdiv, ret);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_DPI], fpix);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set DPI clock to %u (%d)", fpix, ret);
++
++	rp1dpi_vidout_setup(dpi, dpi->clk_inv);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_PLLCORE]);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_PLLDIV]);
++	pinctrl_pm_select_default_state(&dpi->pdev->dev);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_DPI]);
++	dev_info(&dpi->pdev->dev, "Want %u /%u %u /%u %u; got VCO=%lu DIV=%lu DPI=%lu",
++		 fvco, fvco / fdiv, fdiv, fdiv / fpix, fpix,
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_PLLCORE]),
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_PLLDIV]),
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]));
++
++	/* Start DPI-DMA. pipe already has the new crtc and plane state. */
++	dpi->pipe_enabled = true;
++	dpi->cur_fmt = 0xdeadbeef;
++	rp1dpi_pipe_update(pipe, 0);
++}
++
++static void rp1dpi_pipe_disable(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	dev_info(&dpi->pdev->dev, __func__);
++	drm_crtc_vblank_off(&pipe->crtc);
++	if (dpi->dpi_running) {
++		rp1dpi_hw_stop(dpi);
++		dpi->dpi_running = false;
++	}
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_DPI]);
++	pinctrl_pm_select_sleep_state(&dpi->pdev->dev);
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_PLLDIV]);
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_PLLCORE]);
++	dpi->pipe_enabled = false;
++}
++
++static int rp1dpi_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	if (dpi)
++		rp1dpi_hw_vblank_ctrl(dpi, 1);
++
++	return 0;
++}
++
++static void rp1dpi_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	if (dpi)
++		rp1dpi_hw_vblank_ctrl(dpi, 0);
++}
++
++static const struct drm_simple_display_pipe_funcs rp1dpi_pipe_funcs = {
++	.enable	    = rp1dpi_pipe_enable,
++	.update	    = rp1dpi_pipe_update,
++	.disable    = rp1dpi_pipe_disable,
++	.enable_vblank	= rp1dpi_pipe_enable_vblank,
++	.disable_vblank = rp1dpi_pipe_disable_vblank,
++};
++
++static const struct drm_mode_config_funcs rp1dpi_mode_funcs = {
++	.fb_create = drm_gem_fb_create,
++	.atomic_check = drm_atomic_helper_check,
++	.atomic_commit = drm_atomic_helper_commit,
++};
++
++static void rp1dpi_stopall(struct drm_device *drm)
++{
++	if (drm->dev_private) {
++		struct rp1_dpi *dpi = drm->dev_private;
++
++		if (dpi->dpi_running || rp1dpi_hw_busy(dpi)) {
++			rp1dpi_hw_stop(dpi);
++			clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_DPI]);
++			dpi->dpi_running = false;
++		}
++		rp1dpi_vidout_poweroff(dpi);
++		pinctrl_pm_select_sleep_state(&dpi->pdev->dev);
++	}
++}
++
++DEFINE_DRM_GEM_DMA_FOPS(rp1dpi_fops);
++
++static struct drm_driver rp1dpi_driver = {
++	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
++	.fops			= &rp1dpi_fops,
++	.name			= "drm-rp1-dpi",
++	.desc			= "drm-rp1-dpi",
++	.date			= "0",
++	.major			= 1,
++	.minor			= 0,
++	DRM_GEM_DMA_DRIVER_OPS,
++	.release		= rp1dpi_stopall,
++};
++
++static const u32 rp1dpi_formats[] = {
++	DRM_FORMAT_XRGB8888,
++	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_RGB888,
++	DRM_FORMAT_BGR888,
++	DRM_FORMAT_RGB565
++};
++
++static int rp1dpi_platform_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct drm_device *drm;
++	struct rp1_dpi *dpi;
++	struct drm_bridge *bridge = NULL;
++	struct drm_panel *panel;
++	int i, ret;
++
++	dev_info(dev, __func__);
++	ret = drm_of_find_panel_or_bridge(pdev->dev.of_node, 0, 0,
++					  &panel, &bridge);
++	if (ret) {
++		dev_info(dev, "%s: bridge not found\n", __func__);
++		return -EPROBE_DEFER;
++	}
++	if (panel) {
++		bridge = devm_drm_panel_bridge_add(dev, panel);
++		if (IS_ERR(bridge))
++			return PTR_ERR(bridge);
++	}
++
++	drm = drm_dev_alloc(&rp1dpi_driver, dev);
++	if (IS_ERR(drm)) {
++		dev_info(dev, "%s %d", __func__, (int)__LINE__);
++		ret = PTR_ERR(drm);
++		return ret;
++	}
++	dpi = drmm_kzalloc(drm, sizeof(*dpi), GFP_KERNEL);
++	if (!dpi) {
++		dev_info(dev, "%s %d", __func__, (int)__LINE__);
++		drm_dev_put(drm);
++		return -ENOMEM;
++	}
++
++	init_completion(&dpi->finished);
++	dpi->drm = drm;
++	dpi->pdev = pdev;
++	drm->dev_private = dpi;
++	platform_set_drvdata(pdev, drm);
++
++	dpi->bus_fmt = default_bus_fmt;
++	ret = of_property_read_u32(dev->of_node, "default_bus_fmt", &dpi->bus_fmt);
++
++	for (i = 0; i < RP1DPI_NUM_HW_BLOCKS; i++) {
++		dpi->hw_base[i] =
++			devm_ioremap_resource(dev,
++					      platform_get_resource(dpi->pdev, IORESOURCE_MEM, i));
++		if (IS_ERR(dpi->hw_base[i])) {
++			ret = PTR_ERR(dpi->hw_base[i]);
++			dev_err(dev, "Error memory mapping regs[%d]\n", i);
++			goto err_free_drm;
++		}
++	}
++	ret = platform_get_irq(dpi->pdev, 0);
++	if (ret > 0)
++		ret = devm_request_irq(dev, ret, rp1dpi_hw_isr,
++				       IRQF_SHARED, "rp1-dpi", dpi);
++	if (ret) {
++		dev_err(dev, "Unable to request interrupt\n");
++		ret = -EINVAL;
++		goto err_free_drm;
++	}
++	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
++
++	for (i = 0; i < RP1DPI_NUM_CLOCKS; i++) {
++		static const char * const myclocknames[RP1DPI_NUM_CLOCKS] = {
++			"dpiclk", "plldiv", "pllcore"
++		};
++		dpi->clocks[i] = devm_clk_get(dev, myclocknames[i]);
++		if (IS_ERR(dpi->clocks[i])) {
++			ret = PTR_ERR(dpi->clocks[i]);
++			goto err_free_drm;
++		}
++	}
++
++	ret = drmm_mode_config_init(drm);
++	if (ret)
++		goto err_free_drm;
++
++	drm->mode_config.max_width  = 4096;
++	drm->mode_config.max_height = 4096;
++	drm->mode_config.preferred_depth = 32;
++	drm->mode_config.prefer_shadow	 = 0;
++	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
++	drm->mode_config.funcs = &rp1dpi_mode_funcs;
++	drm_vblank_init(drm, 1);
++
++	ret = drm_simple_display_pipe_init(drm,
++					   &dpi->pipe,
++					   &rp1dpi_pipe_funcs,
++					   rp1dpi_formats,
++					   ARRAY_SIZE(rp1dpi_formats),
++					   NULL, NULL);
++	if (!ret)
++		ret = drm_simple_display_pipe_attach_bridge(&dpi->pipe, bridge);
++	if (ret)
++		goto err_free_drm;
++
++	drm_mode_config_reset(drm);
++
++	ret = drm_dev_register(drm, 0);
++	if (ret)
++		goto err_free_drm;
++
++	drm_fbdev_generic_setup(drm, 32);
++
++	dev_info(dev, "%s success\n", __func__);
++	return ret;
++
++err_free_drm:
++	dev_err(dev, "%s fail %d\n", __func__, ret);
++	drm_dev_put(drm);
++	return ret;
++}
++
++static int rp1dpi_platform_remove(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	rp1dpi_stopall(drm);
++	drm_dev_unregister(drm);
++	drm_atomic_helper_shutdown(drm);
++	drm_dev_put(drm);
++
++	return 0;
++}
++
++static void rp1dpi_platform_shutdown(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	rp1dpi_stopall(drm);
++}
++
++static const struct of_device_id rp1dpi_of_match[] = {
++	{
++		.compatible = "raspberrypi,rp1dpi",
++	},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, rp1dpi_of_match);
++
++static struct platform_driver rp1dpi_platform_driver = {
++	.probe		= rp1dpi_platform_probe,
++	.remove		= rp1dpi_platform_remove,
++	.shutdown	= rp1dpi_platform_shutdown,
++	.driver		= {
++		.name	= DRIVER_NAME,
++		.owner	= THIS_MODULE,
++		.of_match_table = rp1dpi_of_match,
++	},
++};
++
++module_platform_driver(rp1dpi_platform_driver);
++
++MODULE_AUTHOR("Nick Hollinghurst");
++MODULE_DESCRIPTION("DRM driver for DPI output on Raspberry Pi RP1");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+@@ -0,0 +1,69 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/types.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <drm/drm_device.h>
++#include <drm/drm_simple_kms_helper.h>
++
++#define MODULE_NAME "drm-rp1-dpi"
++#define DRIVER_NAME "drm-rp1-dpi"
++
++/* ---------------------------------------------------------------------- */
++
++#define RP1DPI_HW_BLOCK_DPI   0
++#define RP1DPI_HW_BLOCK_CFG   1
++#define RP1DPI_NUM_HW_BLOCKS  2
++
++#define RP1DPI_CLK_DPI      0
++#define RP1DPI_CLK_PLLDIV   1
++#define RP1DPI_CLK_PLLCORE  2
++#define RP1DPI_NUM_CLOCKS   3
++
++/* ---------------------------------------------------------------------- */
++
++struct rp1_dpi {
++	/* DRM and platform device pointers */
++	struct drm_device *drm;
++	struct platform_device *pdev;
++
++	/* Framework and helper objects */
++	struct drm_simple_display_pipe pipe;
++	struct drm_connector connector;
++
++	/* Clocks: Video PLL, its primary divider, and DPI clock. */
++	struct clk *clocks[RP1DPI_NUM_CLOCKS];
++
++	/* Block (DPI, VOCFG) base addresses, and current state */
++	void __iomem *hw_base[RP1DPI_NUM_HW_BLOCKS];
++	u32 cur_fmt;
++	u32 bus_fmt;
++	bool de_inv, clk_inv;
++	bool dpi_running, pipe_enabled;
++	struct completion finished;
++};
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the DPI/DMA block				  */
++
++void rp1dpi_hw_setup(struct rp1_dpi *dpi,
++		     u32 in_format,
++		     u32 bus_format,
++		     bool de_inv,
++		     struct drm_display_mode const *mode);
++void rp1dpi_hw_update(struct rp1_dpi *dpi, dma_addr_t addr, u32 offset, u32 stride);
++void rp1dpi_hw_stop(struct rp1_dpi *dpi);
++int rp1dpi_hw_busy(struct rp1_dpi *dpi);
++irqreturn_t rp1dpi_hw_isr(int irq, void *dev);
++void rp1dpi_hw_vblank_ctrl(struct rp1_dpi *dpi, int enable);
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the VIDEO OUT CFG block and check RP1 platform	  */
++
++void rp1dpi_vidout_setup(struct rp1_dpi *dpi, bool drive_negedge);
++void rp1dpi_vidout_poweroff(struct rp1_dpi *dpi);
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c
+@@ -0,0 +1,510 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/mm.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <linux/rp1_platform.h>
++
++#include "rp1_dpi.h"
++
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_SEL
++// JTAG access : synchronous
++// Description : Selects source: VEC or DPI
++#define VIDEO_OUT_CFG_SEL_OFFSET 0x00000000
++#define VIDEO_OUT_CFG_SEL_BITS	 0x00000013
++#define VIDEO_OUT_CFG_SEL_RESET	 0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_SEL_PCLK_INV
++// Description : Select dpi_pclk output port polarity inversion.
++#define VIDEO_OUT_CFG_SEL_PCLK_INV_RESET  0x0
++#define VIDEO_OUT_CFG_SEL_PCLK_INV_BITS	  0x00000010
++#define VIDEO_OUT_CFG_SEL_PCLK_INV_MSB	  4
++#define VIDEO_OUT_CFG_SEL_PCLK_INV_LSB	  4
++#define VIDEO_OUT_CFG_SEL_PCLK_INV_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_SEL_PAD_MUX
++// Description : VEC 1 DPI 0
++#define VIDEO_OUT_CFG_SEL_PAD_MUX_RESET	 0x0
++#define VIDEO_OUT_CFG_SEL_PAD_MUX_BITS	 0x00000002
++#define VIDEO_OUT_CFG_SEL_PAD_MUX_MSB	 1
++#define VIDEO_OUT_CFG_SEL_PAD_MUX_LSB	 1
++#define VIDEO_OUT_CFG_SEL_PAD_MUX_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_SEL_VDAC_MUX
++// Description : VEC 1 DPI 0
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX_RESET  0x0
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX_BITS	  0x00000001
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX_MSB	  0
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX_LSB	  0
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_VDAC_CFG
++// JTAG access : synchronous
++// Description : Configure SNPS VDAC
++#define VIDEO_OUT_CFG_VDAC_CFG_OFFSET 0x00000004
++#define VIDEO_OUT_CFG_VDAC_CFG_BITS   0x1fffffff
++#define VIDEO_OUT_CFG_VDAC_CFG_RESET  0x0003ffff
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_ENCTR
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR_RESET  0x0
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR_BITS   0x1c000000
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR_MSB    28
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR_LSB    26
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_ENSC
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC_RESET  0x0
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC_BITS   0x03800000
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC_MSB	   25
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC_LSB	   23
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_ENDAC
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC_RESET  0x0
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC_BITS   0x00700000
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC_MSB    22
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC_LSB    20
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_ENVBG
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG_RESET  0x0
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG_BITS   0x00080000
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG_MSB    19
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG_LSB    19
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF_RESET  0x0
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF_BITS   0x00040000
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF_MSB    18
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF_LSB    18
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_DAC2GC
++// Description : dac2 gain control
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC_RESET  0x3f
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC_BITS   0x0003f000
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC_MSB    17
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC_LSB    12
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_DAC1GC
++// Description : dac1 gain control
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC_RESET  0x3f
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC_BITS   0x00000fc0
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC_MSB    11
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC_LSB    6
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_CFG_DAC0GC
++// Description : dac0 gain control
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC_RESET  0x3f
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC_BITS   0x0000003f
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC_MSB    5
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC_LSB    0
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_VDAC_STATUS
++// JTAG access : synchronous
++// Description : Read VDAC status
++#define VIDEO_OUT_CFG_VDAC_STATUS_OFFSET 0x00000008
++#define VIDEO_OUT_CFG_VDAC_STATUS_BITS	 0x00000017
++#define VIDEO_OUT_CFG_VDAC_STATUS_RESET	 0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3_RESET	0x0
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3_BITS	0x00000010
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3_MSB	4
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3_LSB	4
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT
++// Description : None
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT_RESET  "-"
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT_BITS	  0x00000007
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT_MSB	  2
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT_LSB	  0
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_MEM_PD
++// JTAG access : synchronous
++// Description : Control memory power down
++#define VIDEO_OUT_CFG_MEM_PD_OFFSET 0x0000000c
++#define VIDEO_OUT_CFG_MEM_PD_BITS   0x00000003
++#define VIDEO_OUT_CFG_MEM_PD_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_MEM_PD_VEC
++// Description : None
++#define VIDEO_OUT_CFG_MEM_PD_VEC_RESET	0x0
++#define VIDEO_OUT_CFG_MEM_PD_VEC_BITS	0x00000002
++#define VIDEO_OUT_CFG_MEM_PD_VEC_MSB	1
++#define VIDEO_OUT_CFG_MEM_PD_VEC_LSB	1
++#define VIDEO_OUT_CFG_MEM_PD_VEC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_MEM_PD_DPI
++// Description : None
++#define VIDEO_OUT_CFG_MEM_PD_DPI_RESET	0x0
++#define VIDEO_OUT_CFG_MEM_PD_DPI_BITS	0x00000001
++#define VIDEO_OUT_CFG_MEM_PD_DPI_MSB	0
++#define VIDEO_OUT_CFG_MEM_PD_DPI_LSB	0
++#define VIDEO_OUT_CFG_MEM_PD_DPI_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_TEST_OVERRIDE
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_OFFSET 0x00000010
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_BITS   0xffffffff
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_TEST_OVERRIDE_PAD
++// Description : None
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD_RESET  0x0
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD_BITS   0x80000000
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD_MSB    31
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD_LSB    31
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC
++// Description : None
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_RESET	0x0
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_BITS	0x40000000
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_MSB	30
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_LSB	30
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL
++// Description : None
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL_RESET  0x00000000
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL_BITS	  0x3fffffff
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL_MSB	  29
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL_LSB	  0
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTR
++// JTAG access : synchronous
++// Description : Raw Interrupts
++#define VIDEO_OUT_CFG_INTR_OFFSET 0x00000014
++#define VIDEO_OUT_CFG_INTR_BITS	  0x00000003
++#define VIDEO_OUT_CFG_INTR_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTR_DPI
++// Description : None
++#define VIDEO_OUT_CFG_INTR_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_INTR_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_INTR_DPI_MSB    1
++#define VIDEO_OUT_CFG_INTR_DPI_LSB    1
++#define VIDEO_OUT_CFG_INTR_DPI_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTR_VEC
++// Description : None
++#define VIDEO_OUT_CFG_INTR_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_INTR_VEC_BITS   0x00000001
++#define VIDEO_OUT_CFG_INTR_VEC_MSB    0
++#define VIDEO_OUT_CFG_INTR_VEC_LSB    0
++#define VIDEO_OUT_CFG_INTR_VEC_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTE
++// JTAG access : synchronous
++// Description : Interrupt Enable
++#define VIDEO_OUT_CFG_INTE_OFFSET 0x00000018
++#define VIDEO_OUT_CFG_INTE_BITS	  0x00000003
++#define VIDEO_OUT_CFG_INTE_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTE_DPI
++// Description : None
++#define VIDEO_OUT_CFG_INTE_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_INTE_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_INTE_DPI_MSB    1
++#define VIDEO_OUT_CFG_INTE_DPI_LSB    1
++#define VIDEO_OUT_CFG_INTE_DPI_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTE_VEC
++// Description : None
++#define VIDEO_OUT_CFG_INTE_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_INTE_VEC_BITS   0x00000001
++#define VIDEO_OUT_CFG_INTE_VEC_MSB    0
++#define VIDEO_OUT_CFG_INTE_VEC_LSB    0
++#define VIDEO_OUT_CFG_INTE_VEC_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTF
++// JTAG access : synchronous
++// Description : Interrupt Force
++#define VIDEO_OUT_CFG_INTF_OFFSET 0x0000001c
++#define VIDEO_OUT_CFG_INTF_BITS	  0x00000003
++#define VIDEO_OUT_CFG_INTF_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTF_DPI
++// Description : None
++#define VIDEO_OUT_CFG_INTF_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_INTF_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_INTF_DPI_MSB    1
++#define VIDEO_OUT_CFG_INTF_DPI_LSB    1
++#define VIDEO_OUT_CFG_INTF_DPI_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTF_VEC
++// Description : None
++#define VIDEO_OUT_CFG_INTF_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_INTF_VEC_BITS   0x00000001
++#define VIDEO_OUT_CFG_INTF_VEC_MSB    0
++#define VIDEO_OUT_CFG_INTF_VEC_LSB    0
++#define VIDEO_OUT_CFG_INTF_VEC_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTS
++// JTAG access : synchronous
++// Description : Interrupt status after masking & forcing
++#define VIDEO_OUT_CFG_INTS_OFFSET 0x00000020
++#define VIDEO_OUT_CFG_INTS_BITS	  0x00000003
++#define VIDEO_OUT_CFG_INTS_RESET  0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTS_DPI
++// Description : None
++#define VIDEO_OUT_CFG_INTS_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_INTS_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_INTS_DPI_MSB    1
++#define VIDEO_OUT_CFG_INTS_DPI_LSB    1
++#define VIDEO_OUT_CFG_INTS_DPI_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_INTS_VEC
++// Description : None
++#define VIDEO_OUT_CFG_INTS_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_INTS_VEC_BITS   0x00000001
++#define VIDEO_OUT_CFG_INTS_VEC_MSB    0
++#define VIDEO_OUT_CFG_INTS_VEC_LSB    0
++#define VIDEO_OUT_CFG_INTS_VEC_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_BLOCK_ID
++// JTAG access : synchronous
++// Description : Block Identifier
++//		 Hexadecimal representation of "VOCF"
++#define VIDEO_OUT_CFG_BLOCK_ID_OFFSET 0x00000024
++#define VIDEO_OUT_CFG_BLOCK_ID_BITS   0xffffffff
++#define VIDEO_OUT_CFG_BLOCK_ID_RESET  0x564f4346
++#define VIDEO_OUT_CFG_BLOCK_ID_MSB    31
++#define VIDEO_OUT_CFG_BLOCK_ID_LSB    0
++#define VIDEO_OUT_CFG_BLOCK_ID_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INSTANCE_ID
++// JTAG access : synchronous
++// Description : Block Instance Identifier
++#define VIDEO_OUT_CFG_INSTANCE_ID_OFFSET 0x00000028
++#define VIDEO_OUT_CFG_INSTANCE_ID_BITS	 0x0000000f
++#define VIDEO_OUT_CFG_INSTANCE_ID_RESET	 0x00000000
++#define VIDEO_OUT_CFG_INSTANCE_ID_MSB	 3
++#define VIDEO_OUT_CFG_INSTANCE_ID_LSB	 0
++#define VIDEO_OUT_CFG_INSTANCE_ID_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_AUTO
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_OFFSET 0x0000002c
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BITS	 0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_RESET	 0x00000007
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC
++// Description : 1 = reset is controlled by the sequencer
++//		 0 = reset is controlled by rstseq_ctrl
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC_RESET  0x1
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC_BITS   0x00000004
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC_MSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC_LSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI
++// Description : 1 = reset is controlled by the sequencer
++//		 0 = reset is controlled by rstseq_ctrl
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI_RESET  0x1
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI_MSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI_LSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER
++// Description : 1 = reset is controlled by the sequencer
++//		 0 = reset is controlled by rstseq_ctrl
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER_RESET  0x1
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER_BITS   0x00000001
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER_MSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER_LSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_PARALLEL
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_OFFSET 0x00000030
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BITS   0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_RESET  0x00000006
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC_RESET	 0x1
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC_BITS	 0x00000004
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC_MSB	 2
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC_LSB	 2
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI_RESET	 0x1
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI_BITS	 0x00000002
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI_MSB	 1
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI_LSB	 1
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER
++// Description : Is this reset parallel (i.e. not part of the sequence)
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER_RESET	0x0
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER_BITS	0x00000001
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER_MSB	0
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER_LSB	0
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER_ACCESS "RO"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_CTRL
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_OFFSET 0x00000034
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BITS	 0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_RESET	 0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC
++// Description : 1 = keep the reset asserted
++//		 0 = keep the reset deasserted
++//		 This is ignored if rstseq_auto=1
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC_BITS   0x00000004
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC_MSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC_LSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI
++// Description : 1 = keep the reset asserted
++//		 0 = keep the reset deasserted
++//		 This is ignored if rstseq_auto=1
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI_MSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI_LSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI_ACCESS "RW"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER
++// Description : 1 = keep the reset asserted
++//		 0 = keep the reset deasserted
++//		 This is ignored if rstseq_auto=1
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER_BITS   0x00000001
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER_MSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER_LSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER_ACCESS "RW"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_TRIG
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_OFFSET 0x00000038
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BITS	 0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_RESET	 0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC
++// Description : Pulses the reset output
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC_BITS   0x00000004
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC_MSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC_LSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC_ACCESS "SC"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI
++// Description : Pulses the reset output
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI_MSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI_LSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI_ACCESS "SC"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER
++// Description : Pulses the reset output
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER_BITS   0x00000001
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER_MSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER_LSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER_ACCESS "SC"
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_DONE
++// JTAG access : synchronous
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_OFFSET 0x0000003c
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BITS	 0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_RESET	 0x00000000
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_DONE_VEC
++// Description : Indicates the current state of the reset
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC_BITS   0x00000004
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC_MSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC_LSB    2
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_DONE_DPI
++// Description : Indicates the current state of the reset
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI_BITS   0x00000002
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI_MSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI_LSB    1
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI_ACCESS "RO"
++// -----------------------------------------------------------------------------
++// Field       : VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER
++// Description : Indicates the current state of the reset
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER_RESET  0x0
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER_BITS   0x00000001
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER_MSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER_LSB    0
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER_ACCESS "RO"
++// =============================================================================
++
++#define CFG_WRITE(reg, val)  writel((val),  dpi->hw_base[RP1DPI_HW_BLOCK_CFG] + (reg ## _OFFSET))
++#define CFG_READ(reg)	     readl(dpi->hw_base[RP1DPI_HW_BLOCK_CFG] + (reg ## _OFFSET))
++
++void rp1dpi_vidout_setup(struct rp1_dpi *dpi, bool drive_negedge)
++{
++	/*
++	 * We assume DPI and VEC can't be used at the same time (due to
++	 * clashing requirements for PLL_VIDEO, and potentially for VDAC).
++	 * We therefore leave VEC memories powered down.
++	 */
++	CFG_WRITE(VIDEO_OUT_CFG_MEM_PD, VIDEO_OUT_CFG_MEM_PD_VEC_BITS);
++	CFG_WRITE(VIDEO_OUT_CFG_TEST_OVERRIDE,
++		  VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC_BITS);
++
++	/* DPI->Pads; DPI->VDAC; optionally flip PCLK polarity */
++	CFG_WRITE(VIDEO_OUT_CFG_SEL,
++		  drive_negedge ? VIDEO_OUT_CFG_SEL_PCLK_INV_BITS : 0);
++
++	/* configure VDAC for 3 channels, bandgap on, 710mV swing */
++	CFG_WRITE(VIDEO_OUT_CFG_VDAC_CFG, 0);
++
++	/* enable DPI interrupt */
++	CFG_WRITE(VIDEO_OUT_CFG_INTE, VIDEO_OUT_CFG_INTE_DPI_BITS);
++}
++
++void rp1dpi_vidout_poweroff(struct rp1_dpi *dpi)
++{
++	/* disable DPI interrupt */
++	CFG_WRITE(VIDEO_OUT_CFG_INTE, 0);
++
++	/* Ensure VDAC is turned off; power down DPI,VEC memories */
++	CFG_WRITE(VIDEO_OUT_CFG_VDAC_CFG, 0);
++	CFG_WRITE(VIDEO_OUT_CFG_MEM_PD, VIDEO_OUT_CFG_MEM_PD_BITS);
++}
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+@@ -0,0 +1,486 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/mm.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/media-bus-format.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_print.h>
++#include <drm/drm_vblank.h>
++
++#include "rp1_dpi.h"
++
++// --- DPI DMA REGISTERS ---
++
++// Control
++#define DPI_DMA_CONTROL				      0x0
++#define DPI_DMA_CONTROL_ARM_SHIFT		      0
++#define DPI_DMA_CONTROL_ARM_MASK		      BIT(DPI_DMA_CONTROL_ARM_SHIFT)
++#define DPI_DMA_CONTROL_ALIGN16_SHIFT		      2
++#define DPI_DMA_CONTROL_ALIGN16_MASK		      BIT(DPI_DMA_CONTROL_ALIGN16_SHIFT)
++#define DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT	      1
++#define DPI_DMA_CONTROL_AUTO_REPEAT_MASK	      BIT(DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT)
++#define DPI_DMA_CONTROL_HIGH_WATER_SHIFT	      3
++#define DPI_DMA_CONTROL_HIGH_WATER_MASK		      (0x1FF << DPI_DMA_CONTROL_HIGH_WATER_SHIFT)
++#define DPI_DMA_CONTROL_DEN_POL_SHIFT		      12
++#define DPI_DMA_CONTROL_DEN_POL_MASK		      BIT(DPI_DMA_CONTROL_DEN_POL_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_POL_SHIFT		      13
++#define DPI_DMA_CONTROL_HSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_POL_SHIFT		      14
++#define DPI_DMA_CONTROL_VSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_COLORM_SHIFT		      15
++#define DPI_DMA_CONTROL_COLORM_MASK		      BIT(DPI_DMA_CONTROL_COLORM_SHIFT)
++#define DPI_DMA_CONTROL_SHUTDN_SHIFT		      16
++#define DPI_DMA_CONTROL_SHUTDN_MASK		      BIT(DPI_DMA_CONTROL_SHUTDN_SHIFT)
++#define DPI_DMA_CONTROL_HBP_EN_SHIFT		      17
++#define DPI_DMA_CONTROL_HBP_EN_MASK		      BIT(DPI_DMA_CONTROL_HBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HFP_EN_SHIFT		      18
++#define DPI_DMA_CONTROL_HFP_EN_MASK		      BIT(DPI_DMA_CONTROL_HFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VBP_EN_SHIFT		      19
++#define DPI_DMA_CONTROL_VBP_EN_MASK		      BIT(DPI_DMA_CONTROL_VBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VFP_EN_SHIFT		      20
++#define DPI_DMA_CONTROL_VFP_EN_MASK		      BIT(DPI_DMA_CONTROL_VFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_EN_SHIFT		      21
++#define DPI_DMA_CONTROL_HSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_EN_SHIFT		      22
++#define DPI_DMA_CONTROL_VSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_IMMED_SHIFT	      23
++#define DPI_DMA_CONTROL_FORCE_IMMED_MASK	      BIT(DPI_DMA_CONTROL_FORCE_IMMED_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT	      24
++#define DPI_DMA_CONTROL_FORCE_DRAIN_MASK	      BIT(DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT	      25
++#define DPI_DMA_CONTROL_FORCE_EMPTY_MASK	      BIT(DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT)
++
++// IRQ_ENABLES
++#define DPI_DMA_IRQ_EN				      0x04
++#define DPI_DMA_IRQ_EN_DMA_READY_SHIFT		      0
++#define DPI_DMA_IRQ_EN_DMA_READY_MASK		      BIT(DPI_DMA_IRQ_EN_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT		      1
++#define DPI_DMA_IRQ_EN_UNDERFLOW_MASK		      BIT(DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_EN_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_EN_FRAME_START_MASK		      BIT(DPI_DMA_IRQ_EN_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_MASK		      BIT(DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_EN_TE_SHIFT			      4
++#define DPI_DMA_IRQ_EN_TE_MASK			      BIT(DPI_DMA_IRQ_EN_TE_SHIFT)
++#define DPI_DMA_IRQ_EN_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_EN_ERROR_MASK		      BIT(DPI_DMA_IRQ_EN_ERROR_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_EN_MATCH_MASK		      BIT(DPI_DMA_IRQ_EN_MATCH_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT		      16
++#define DPI_DMA_IRQ_EN_MATCH_LINE_MASK		      (0xFFF << DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT)
++
++// IRQ_FLAGS
++#define DPI_DMA_IRQ_FLAGS			      0x08
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT	      0
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT	      1
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK	      BIT(DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_MASK	      BIT(DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_TE_SHIFT		      4
++#define DPI_DMA_IRQ_FLAGS_TE_MASK		      BIT(DPI_DMA_IRQ_FLAGS_TE_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_FLAGS_ERROR_MASK		      BIT(DPI_DMA_IRQ_FLAGS_ERROR_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_FLAGS_MATCH_MASK		      BIT(DPI_DMA_IRQ_FLAGS_MATCH_SHIFT)
++
++// QOS
++#define DPI_DMA_QOS				      0xC
++#define DPI_DMA_QOS_DQOS_SHIFT			      0
++#define DPI_DMA_QOS_DQOS_MASK			      (0xF << DPI_DMA_QOS_DQOS_SHIFT)
++#define DPI_DMA_QOS_ULEV_SHIFT			      4
++#define DPI_DMA_QOS_ULEV_MASK			      (0xF << DPI_DMA_QOS_ULEV_SHIFT)
++#define DPI_DMA_QOS_UQOS_SHIFT			      8
++#define DPI_DMA_QOS_UQOS_MASK			      (0xF << DPI_DMA_QOS_UQOS_SHIFT)
++#define DPI_DMA_QOS_LLEV_SHIFT			      12
++#define DPI_DMA_QOS_LLEV_MASK			      (0xF << DPI_DMA_QOS_LLEV_SHIFT)
++#define DPI_DMA_QOS_LQOS_SHIFT			      16
++#define DPI_DMA_QOS_LQOS_MASK			      (0xF << DPI_DMA_QOS_LQOS_SHIFT)
++
++// Panics
++#define DPI_DMA_PANICS				     0x38
++#define DPI_DMA_PANICS_UPPER_COUNT_SHIFT	     0
++#define DPI_DMA_PANICS_UPPER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_UPPER_COUNT_SHIFT)
++#define DPI_DMA_PANICS_LOWER_COUNT_SHIFT	     16
++#define DPI_DMA_PANICS_LOWER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_LOWER_COUNT_SHIFT)
++
++// DMA Address Lower:
++#define DPI_DMA_DMA_ADDR_L			     0x10
++
++// DMA Address Upper:
++#define DPI_DMA_DMA_ADDR_H			     0x40
++
++// DMA stride
++#define DPI_DMA_DMA_STRIDE			     0x14
++
++// Visible Area
++#define DPI_DMA_VISIBLE_AREA			     0x18
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT     0
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT)
++#define DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT    16
++#define DPI_DMA_VISIBLE_AREA_COLSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT)
++
++// Sync width
++#define DPI_DMA_SYNC_WIDTH   0x1C
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT	 0
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT)
++#define DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT	 16
++#define DPI_DMA_SYNC_WIDTH_COLSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT)
++
++// Back porch
++#define DPI_DMA_BACK_PORCH   0x20
++#define DPI_DMA_BACK_PORCH_ROWSM1_SHIFT	 0
++#define DPI_DMA_BACK_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_BACK_PORCH_COLSM1_SHIFT	 16
++#define DPI_DMA_BACK_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_COLSM1_SHIFT)
++
++// Front porch
++#define DPI_DMA_FRONT_PORCH  0x24
++#define DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT     0
++#define DPI_DMA_FRONT_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_FRONT_PORCH_COLSM1_SHIFT     16
++#define DPI_DMA_FRONT_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_COLSM1_SHIFT)
++
++// Input masks
++#define DPI_DMA_IMASK	 0x2C
++#define DPI_DMA_IMASK_R_SHIFT	 0
++#define DPI_DMA_IMASK_R_MASK	 (0x3FF << DPI_DMA_IMASK_R_SHIFT)
++#define DPI_DMA_IMASK_G_SHIFT	 10
++#define DPI_DMA_IMASK_G_MASK	 (0x3FF << DPI_DMA_IMASK_G_SHIFT)
++#define DPI_DMA_IMASK_B_SHIFT	 20
++#define DPI_DMA_IMASK_B_MASK	 (0x3FF << DPI_DMA_IMASK_B_SHIFT)
++
++// Output Masks
++#define DPI_DMA_OMASK	 0x30
++#define DPI_DMA_OMASK_R_SHIFT	 0
++#define DPI_DMA_OMASK_R_MASK	 (0x3FF << DPI_DMA_OMASK_R_SHIFT)
++#define DPI_DMA_OMASK_G_SHIFT	 10
++#define DPI_DMA_OMASK_G_MASK	 (0x3FF << DPI_DMA_OMASK_G_SHIFT)
++#define DPI_DMA_OMASK_B_SHIFT	 20
++#define DPI_DMA_OMASK_B_MASK	 (0x3FF << DPI_DMA_OMASK_B_SHIFT)
++
++// Shifts
++#define DPI_DMA_SHIFT	 0x28
++#define DPI_DMA_SHIFT_IR_SHIFT	 0
++#define DPI_DMA_SHIFT_IR_MASK	 (0x1F << DPI_DMA_SHIFT_IR_SHIFT)
++#define DPI_DMA_SHIFT_IG_SHIFT	 5
++#define DPI_DMA_SHIFT_IG_MASK	 (0x1F << DPI_DMA_SHIFT_IG_SHIFT)
++#define DPI_DMA_SHIFT_IB_SHIFT	 10
++#define DPI_DMA_SHIFT_IB_MASK	 (0x1F << DPI_DMA_SHIFT_IB_SHIFT)
++#define DPI_DMA_SHIFT_OR_SHIFT	 15
++#define DPI_DMA_SHIFT_OR_MASK	 (0x1F << DPI_DMA_SHIFT_OR_SHIFT)
++#define DPI_DMA_SHIFT_OG_SHIFT	 20
++#define DPI_DMA_SHIFT_OG_MASK	 (0x1F << DPI_DMA_SHIFT_OG_SHIFT)
++#define DPI_DMA_SHIFT_OB_SHIFT	 25
++#define DPI_DMA_SHIFT_OB_MASK	 (0x1F << DPI_DMA_SHIFT_OB_SHIFT)
++
++// Scaling
++#define DPI_DMA_RGBSZ	 0x34
++#define DPI_DMA_RGBSZ_BPP_SHIFT	 16
++#define DPI_DMA_RGBSZ_BPP_MASK	 (0x3 << DPI_DMA_RGBSZ_BPP_SHIFT)
++#define DPI_DMA_RGBSZ_R_SHIFT	 0
++#define DPI_DMA_RGBSZ_R_MASK	 (0xF << DPI_DMA_RGBSZ_R_SHIFT)
++#define DPI_DMA_RGBSZ_G_SHIFT	 4
++#define DPI_DMA_RGBSZ_G_MASK	 (0xF << DPI_DMA_RGBSZ_G_SHIFT)
++#define DPI_DMA_RGBSZ_B_SHIFT	 8
++#define DPI_DMA_RGBSZ_B_MASK	 (0xF << DPI_DMA_RGBSZ_B_SHIFT)
++
++// Status
++#define DPI_DMA_STATUS  0x3c
++
++#define BITS(field, val) (((val) << (field ## _SHIFT)) & (field ## _MASK))
++
++static unsigned int rp1dpi_hw_read(struct rp1_dpi *dpi, unsigned int reg)
++{
++	void __iomem *addr = dpi->hw_base[RP1DPI_HW_BLOCK_DPI] + reg;
++
++	return readl(addr);
++}
++
++static void rp1dpi_hw_write(struct rp1_dpi *dpi, unsigned int reg, unsigned int val)
++{
++	void __iomem *addr = dpi->hw_base[RP1DPI_HW_BLOCK_DPI] + reg;
++
++	writel(val, addr);
++}
++
++int rp1dpi_hw_busy(struct rp1_dpi *dpi)
++{
++	return (rp1dpi_hw_read(dpi, DPI_DMA_STATUS) & 0xF8F) ? 1 : 0;
++}
++
++/* Table of supported input (in-memory/DMA) pixel formats. */
++struct rp1dpi_ipixfmt {
++	u32 format; /* DRM format code                           */
++	u32 mask;   /* RGB masks (10 bits each, left justified)  */
++	u32 shift;  /* RGB MSB positions in the memory word      */
++	u32 rgbsz;  /* Shifts used for scaling; also (BPP/8-1)   */
++};
++
++#define IMASK_RGB(r, g, b)	(BITS(DPI_DMA_IMASK_R, r)  | \
++				 BITS(DPI_DMA_IMASK_G, g)  | \
++				 BITS(DPI_DMA_IMASK_B, b))
++#define OMASK_RGB(r, g, b)	(BITS(DPI_DMA_OMASK_R, r)  | \
++				 BITS(DPI_DMA_OMASK_G, g)  | \
++				 BITS(DPI_DMA_OMASK_B, b))
++#define ISHIFT_RGB(r, g, b)	(BITS(DPI_DMA_SHIFT_IR, r) | \
++				 BITS(DPI_DMA_SHIFT_IG, g) | \
++				 BITS(DPI_DMA_SHIFT_IB, b))
++#define OSHIFT_RGB(r, g, b)	(BITS(DPI_DMA_SHIFT_OR, r) | \
++				 BITS(DPI_DMA_SHIFT_OG, g) | \
++				 BITS(DPI_DMA_SHIFT_OB, b))
++
++static const struct rp1dpi_ipixfmt my_formats[] = {
++	{
++	  .format = DRM_FORMAT_XRGB8888,
++	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++	  .shift  = ISHIFT_RGB(23, 15, 7),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 3),
++	},
++	{
++	  .format = DRM_FORMAT_XBGR8888,
++	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++	  .shift  = ISHIFT_RGB(7, 15, 23),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 3),
++	},
++	{
++	  .format = DRM_FORMAT_RGB888,
++	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++	  .shift  = ISHIFT_RGB(23, 15, 7),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 2),
++	},
++	{
++	  .format = DRM_FORMAT_BGR888,
++	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
++	  .shift  = ISHIFT_RGB(7, 15, 23),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_BPP, 2),
++	},
++	{
++	  .format = DRM_FORMAT_RGB565,
++	  .mask	  = IMASK_RGB(0x3e0, 0x3f0, 0x3e0),
++	  .shift  = ISHIFT_RGB(15, 10, 4),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_R, 5) | BITS(DPI_DMA_RGBSZ_G, 6) |
++		    BITS(DPI_DMA_RGBSZ_B, 5) | BITS(DPI_DMA_RGBSZ_BPP, 1),
++	},
++	{
++	  .format = DRM_FORMAT_BGR565,
++	  .mask	  = IMASK_RGB(0x3e0, 0x3f0, 0x3e0),
++	  .shift  = ISHIFT_RGB(4, 10, 15),
++	  .rgbsz  = BITS(DPI_DMA_RGBSZ_R, 5) | BITS(DPI_DMA_RGBSZ_G, 6) |
++		    BITS(DPI_DMA_RGBSZ_B, 5) | BITS(DPI_DMA_RGBSZ_BPP, 1),
++	}
++};
++
++static u32 set_output_format(u32 bus_format, u32 *shift, u32 *imask, u32 *rgbsz)
++{
++	switch (bus_format) {
++	case MEDIA_BUS_FMT_RGB565_1X16:
++		if (*shift == ISHIFT_RGB(15, 10, 4)) {
++			/* When framebuffer is RGB565, we can output RGB565 */
++			*shift = ISHIFT_RGB(15, 7, 0) | OSHIFT_RGB(19, 9, 0);
++			*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
++			return OMASK_RGB(0x3fc, 0x3fc, 0);
++		}
++
++		/* due to a HW limitation, bit-depth is effectively RGB535 */
++		*shift |= OSHIFT_RGB(19, 14, 6);
++		*imask &= IMASK_RGB(0x3e0, 0x380, 0x3e0);
++		*rgbsz = BITS(DPI_DMA_RGBSZ_G, 5) | (*rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
++		return OMASK_RGB(0x3e0, 0x39c, 0x3e0);
++
++	case MEDIA_BUS_FMT_RGB666_1X18:
++	case MEDIA_BUS_FMT_BGR666_1X18:
++		/* due to a HW limitation, bit-depth is effectively RGB444 */
++		*shift |= OSHIFT_RGB(23, 15, 7);
++		*imask &= IMASK_RGB(0x3c0, 0x3c0, 0x3c0);
++		*rgbsz = BITS(DPI_DMA_RGBSZ_R, 2) | (*rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
++		return OMASK_RGB(0x330, 0x3c0, 0x3c0);
++
++	case MEDIA_BUS_FMT_RGB888_1X24:
++	case MEDIA_BUS_FMT_BGR888_1X24:
++	case MEDIA_BUS_FMT_RGB101010_1X30:
++		/* The full 24 bits can be output. Note that RP1's internal wiring means
++		 * that 8.8.8 to GPIO pads can share with 10.10.10 to the onboard VDAC.
++		 */
++		*shift |= OSHIFT_RGB(29, 19, 9);
++		return OMASK_RGB(0x3fc, 0x3fc, 0x3fc);
++
++	default:
++		/* RGB666_1x24_CPADHI, BGR666_1X24_CPADHI and "RGB565_666" formats */
++		*shift |= OSHIFT_RGB(27, 17, 7);
++		*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
++		return OMASK_RGB(0x3f0, 0x3f0, 0x3f0);
++	}
++}
++
++#define BUS_FMT_IS_BGR(fmt) (				       \
++		((fmt) == MEDIA_BUS_FMT_BGR666_1X18)        || \
++		((fmt) == MEDIA_BUS_FMT_BGR666_1X24_CPADHI) || \
++		((fmt) == MEDIA_BUS_FMT_BGR888_1X24))
++
++void rp1dpi_hw_setup(struct rp1_dpi *dpi,
++		     u32 in_format, u32 bus_format, bool de_inv,
++		    struct drm_display_mode const *mode)
++{
++	u32 shift, imask, omask, rgbsz;
++	int i;
++
++	pr_info("%s: in_fmt=\'%c%c%c%c\' bus_fmt=0x%x mode=%dx%d total=%dx%d %dkHz %cH%cV%cD%cC",
++		__func__, in_format, in_format >> 8, in_format >> 16, in_format >> 24, bus_format,
++		mode->hdisplay, mode->vdisplay,
++		mode->htotal, mode->vtotal,
++		mode->clock,
++		(mode->flags & DRM_MODE_FLAG_NHSYNC) ? '-' : '+',
++		(mode->flags & DRM_MODE_FLAG_NVSYNC) ? '-' : '+',
++		de_inv ? '-' : '+',
++		dpi->clk_inv ? '-' : '+');
++
++	/*
++	 * Configure all DPI/DMA block registers, except base address.
++	 * DMA will not actually start until a FB base address is specified
++	 * using rp1dpi_hw_update().
++	 */
++	rp1dpi_hw_write(dpi, DPI_DMA_VISIBLE_AREA,
++			BITS(DPI_DMA_VISIBLE_AREA_ROWSM1, mode->vdisplay - 1) |
++			BITS(DPI_DMA_VISIBLE_AREA_COLSM1, mode->hdisplay - 1));
++
++	rp1dpi_hw_write(dpi, DPI_DMA_SYNC_WIDTH,
++			BITS(DPI_DMA_SYNC_WIDTH_ROWSM1, mode->vsync_end - mode->vsync_start - 1) |
++			BITS(DPI_DMA_SYNC_WIDTH_COLSM1, mode->hsync_end - mode->hsync_start - 1));
++
++	/* In these registers, "back porch" time includes sync width */
++	rp1dpi_hw_write(dpi, DPI_DMA_BACK_PORCH,
++			BITS(DPI_DMA_BACK_PORCH_ROWSM1, mode->vtotal - mode->vsync_start - 1) |
++			BITS(DPI_DMA_BACK_PORCH_COLSM1, mode->htotal - mode->hsync_start - 1));
++
++	rp1dpi_hw_write(dpi, DPI_DMA_FRONT_PORCH,
++			BITS(DPI_DMA_FRONT_PORCH_ROWSM1, mode->vsync_start - mode->vdisplay - 1) |
++			BITS(DPI_DMA_FRONT_PORCH_COLSM1, mode->hsync_start - mode->hdisplay - 1));
++
++	/* Input to output pixel format conversion */
++	for (i = 0; i < ARRAY_SIZE(my_formats); ++i) {
++		if (my_formats[i].format == in_format)
++			break;
++	}
++	if (i >= ARRAY_SIZE(my_formats)) {
++		pr_err("%s: bad input format\n", __func__);
++		i = 4;
++	}
++	if (BUS_FMT_IS_BGR(bus_format))
++		i ^= 1;
++	shift = my_formats[i].shift;
++	imask = my_formats[i].mask;
++	rgbsz = my_formats[i].rgbsz;
++	omask = set_output_format(bus_format, &shift, &imask, &rgbsz);
++
++	rp1dpi_hw_write(dpi, DPI_DMA_IMASK, imask);
++	rp1dpi_hw_write(dpi, DPI_DMA_OMASK, omask);
++	rp1dpi_hw_write(dpi, DPI_DMA_SHIFT, shift);
++	rp1dpi_hw_write(dpi, DPI_DMA_RGBSZ, rgbsz);
++
++	rp1dpi_hw_write(dpi, DPI_DMA_QOS,
++			BITS(DPI_DMA_QOS_DQOS, 0x0) |
++			BITS(DPI_DMA_QOS_ULEV, 0xb) |
++			BITS(DPI_DMA_QOS_UQOS, 0x2) |
++			BITS(DPI_DMA_QOS_LLEV, 0x8) |
++			BITS(DPI_DMA_QOS_LQOS, 0x7));
++
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_FLAGS, -1);
++	rp1dpi_hw_vblank_ctrl(dpi, 1);
++
++	i = rp1dpi_hw_busy(dpi);
++	if (i)
++		pr_warn("%s: Unexpectedly busy at start!", __func__);
++
++	rp1dpi_hw_write(dpi, DPI_DMA_CONTROL,
++			BITS(DPI_DMA_CONTROL_ARM,          !i) |
++			BITS(DPI_DMA_CONTROL_AUTO_REPEAT,   1) |
++			BITS(DPI_DMA_CONTROL_HIGH_WATER,  448) |
++			BITS(DPI_DMA_CONTROL_DEN_POL,  de_inv) |
++			BITS(DPI_DMA_CONTROL_HSYNC_POL, !!(mode->flags & DRM_MODE_FLAG_NHSYNC)) |
++			BITS(DPI_DMA_CONTROL_VSYNC_POL, !!(mode->flags & DRM_MODE_FLAG_NVSYNC)) |
++			BITS(DPI_DMA_CONTROL_COLORM,	   0) |
++			BITS(DPI_DMA_CONTROL_SHUTDN,	   0) |
++			BITS(DPI_DMA_CONTROL_HBP_EN,    (mode->htotal != mode->hsync_end))      |
++			BITS(DPI_DMA_CONTROL_HFP_EN,    (mode->hsync_start != mode->hdisplay))  |
++			BITS(DPI_DMA_CONTROL_VBP_EN,    (mode->vtotal != mode->vsync_end))      |
++			BITS(DPI_DMA_CONTROL_VFP_EN,    (mode->vsync_start != mode->vdisplay))  |
++			BITS(DPI_DMA_CONTROL_HSYNC_EN,  (mode->hsync_end != mode->hsync_start)) |
++			BITS(DPI_DMA_CONTROL_VSYNC_EN,  (mode->vsync_end != mode->vsync_start)));
++}
++
++void rp1dpi_hw_update(struct rp1_dpi *dpi, dma_addr_t addr, u32 offset, u32 stride)
++{
++	u64 a = addr + offset;
++
++	/*
++	 * Update STRIDE, DMAH and DMAL only. When called after rp1dpi_hw_setup(),
++	 * DMA starts immediately; if already running, the buffer will flip at
++	 * the next vertical sync event.
++	 */
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_STRIDE, stride);
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_H, a >> 32);
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_L, a & 0xFFFFFFFFu);
++}
++
++void rp1dpi_hw_stop(struct rp1_dpi *dpi)
++{
++	u32 ctrl;
++
++	/*
++	 * Stop DMA by turning off the Auto-Repeat flag, and wait up to 100ms for
++	 * the current and any queued frame to end. "Force drain" flags are not used,
++	 * as they seem to prevent DMA from re-starting properly; it's safer to wait.
++	 */
++	reinit_completion(&dpi->finished);
++	ctrl = rp1dpi_hw_read(dpi, DPI_DMA_CONTROL);
++	ctrl &= ~(DPI_DMA_CONTROL_ARM_MASK | DPI_DMA_CONTROL_AUTO_REPEAT_MASK);
++	rp1dpi_hw_write(dpi, DPI_DMA_CONTROL, ctrl);
++	if (!wait_for_completion_timeout(&dpi->finished, HZ / 10))
++		drm_err(dpi->drm, "%s: timed out waiting for idle\n", __func__);
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_EN, 0);
++}
++
++void rp1dpi_hw_vblank_ctrl(struct rp1_dpi *dpi, int enable)
++{
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_EN,
++			BITS(DPI_DMA_IRQ_EN_AFIFO_EMPTY, 1)      |
++			BITS(DPI_DMA_IRQ_EN_UNDERFLOW, 1)        |
++			BITS(DPI_DMA_IRQ_EN_DMA_READY, !!enable) |
++			BITS(DPI_DMA_IRQ_EN_MATCH_LINE, 4095));
++}
++
++irqreturn_t rp1dpi_hw_isr(int irq, void *dev)
++{
++	struct rp1_dpi *dpi = dev;
++	u32 u = rp1dpi_hw_read(dpi, DPI_DMA_IRQ_FLAGS);
++
++	if (u) {
++		rp1dpi_hw_write(dpi, DPI_DMA_IRQ_FLAGS, u);
++		if (dpi) {
++			if (u & DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK)
++				drm_err_ratelimited(dpi->drm,
++						    "Underflow! (panics=0x%08x)\n",
++						    rp1dpi_hw_read(dpi, DPI_DMA_PANICS));
++			if (u & DPI_DMA_IRQ_FLAGS_DMA_READY_MASK)
++				drm_crtc_handle_vblank(&dpi->pipe.crtc);
++			if (u & DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK)
++				complete(&dpi->finished);
++		}
++	}
++	return u ? IRQ_HANDLED : IRQ_NONE;
++}

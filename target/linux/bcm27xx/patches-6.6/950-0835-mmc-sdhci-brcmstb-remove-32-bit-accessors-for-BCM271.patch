@@ -1,0 +1,166 @@
+From d0f6e84d284870eda4a544002eb5ed0dce3d8680 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Mon, 8 Jan 2024 17:10:44 +0000
+Subject: [PATCH 0835/1085] mmc: sdhci-brcmstb: remove 32-bit accessors for
+ BCM2712
+
+The reason for adding these are lost to the mists of time (and for a
+previous chip revision). Removing these accessors appears to have no ill
+effect on production chips, so get rid of the unnecessary RMW cycles.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/Kconfig         |   1 -
+ drivers/mmc/host/sdhci-brcmstb.c | 117 -------------------------------
+ 2 files changed, 118 deletions(-)
+
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -1039,7 +1039,6 @@ config MMC_SDHCI_BRCMSTB
+ 	tristate "Broadcom SDIO/SD/MMC support"
+ 	depends on ARCH_BRCMSTB || BMIPS_GENERIC || COMPILE_TEST
+ 	depends on MMC_SDHCI_PLTFM
+-	select MMC_SDHCI_IO_ACCESSORS
+ 	select MMC_CQHCI
+ 	select OF_DYNAMIC
+ 	default ARCH_BRCMSTB || BMIPS_GENERIC
+--- a/drivers/mmc/host/sdhci-brcmstb.c
++++ b/drivers/mmc/host/sdhci-brcmstb.c
+@@ -50,10 +50,6 @@ struct sdhci_brcmstb_priv {
+ 	unsigned int flags;
+ 	struct clk *base_clk;
+ 	u32 base_freq_hz;
+-	u32 shadow_cmd;
+-	u32 shadow_blk;
+-	bool is_cmd_shadowed;
+-	bool is_blk_shadowed;
+ 	struct regulator *sde_1v8;
+ 	struct device_node *sde_pcie;
+ 	void *__iomem sde_ioaddr;
+@@ -122,113 +118,6 @@ static void sdhci_brcmstb_set_clock(stru
+ 	sdhci_enable_clk(host, clk);
+ }
+ 
+-#define REG_OFFSET_IN_BITS(reg) ((reg) << 3 & 0x18)
+-
+-static inline u32 sdhci_brcmstb_32only_readl(struct sdhci_host *host, int reg)
+-{
+-	u32 val = readl(host->ioaddr + reg);
+-
+-	pr_debug("%s: readl [0x%02x] 0x%08x\n",
+-		 mmc_hostname(host->mmc), reg, val);
+-	return val;
+-}
+-
+-static u16 sdhci_brcmstb_32only_readw(struct sdhci_host *host, int reg)
+-{
+-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+-	struct sdhci_brcmstb_priv *brcmstb_priv = sdhci_pltfm_priv(pltfm_host);
+-	u32 val;
+-	u16 word;
+-
+-	if ((reg == SDHCI_TRANSFER_MODE) && brcmstb_priv->is_cmd_shadowed) {
+-		/* Get the saved transfer mode */
+-		val = brcmstb_priv->shadow_cmd;
+-	} else if ((reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) &&
+-		   brcmstb_priv->is_blk_shadowed) {
+-		/* Get the saved block info */
+-		val = brcmstb_priv->shadow_blk;
+-	} else {
+-		val = sdhci_brcmstb_32only_readl(host, (reg & ~3));
+-	}
+-	word = val >> REG_OFFSET_IN_BITS(reg) & 0xffff;
+-	return word;
+-}
+-
+-static u8 sdhci_brcmstb_32only_readb(struct sdhci_host *host, int reg)
+-{
+-	u32 val = sdhci_brcmstb_32only_readl(host, (reg & ~3));
+-	u8 byte = val >> REG_OFFSET_IN_BITS(reg) & 0xff;
+-	return byte;
+-}
+-
+-static inline void sdhci_brcmstb_32only_writel(struct sdhci_host *host, u32 val, int reg)
+-{
+-	pr_debug("%s: writel [0x%02x] 0x%08x\n",
+-		 mmc_hostname(host->mmc), reg, val);
+-
+-	writel(val, host->ioaddr + reg);
+-}
+-
+-/*
+- * BCM2712 unfortunately carries with it a perennial bug with the SD controller
+- * register interface present on previous chips (2711/2709/2708). Accesses must
+- * be dword-sized and a read-modify-write cycle to the 32-bit registers
+- * containing the COMMAND, TRANSFER_MODE, BLOCK_SIZE and BLOCK_COUNT registers
+- * tramples the upper/lower 16 bits of data written. BCM2712 does not seem to
+- * need the extreme delay between each write as on previous chips, just the
+- * serialisation of writes to these registers in a single 32-bit operation.
+- */
+-static void sdhci_brcmstb_32only_writew(struct sdhci_host *host, u16 val, int reg)
+-{
+-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+-	struct sdhci_brcmstb_priv *brcmstb_priv = sdhci_pltfm_priv(pltfm_host);
+-	u32 word_shift = REG_OFFSET_IN_BITS(reg);
+-	u32 mask = 0xffff << word_shift;
+-	u32 oldval, newval;
+-
+-	if (reg == SDHCI_COMMAND) {
+-		/* Write the block now as we are issuing a command */
+-		if (brcmstb_priv->is_blk_shadowed) {
+-			sdhci_brcmstb_32only_writel(host, brcmstb_priv->shadow_blk,
+-				SDHCI_BLOCK_SIZE);
+-			brcmstb_priv->is_blk_shadowed = false;
+-		}
+-		oldval = brcmstb_priv->shadow_cmd;
+-		brcmstb_priv->is_cmd_shadowed = false;
+-	} else if ((reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) &&
+-		   brcmstb_priv->is_blk_shadowed) {
+-		/* Block size and count are stored in shadow reg */
+-		oldval = brcmstb_priv->shadow_blk;
+-	} else {
+-		/* Read reg, all other registers are not shadowed */
+-		oldval = sdhci_brcmstb_32only_readl(host, (reg & ~3));
+-	}
+-	newval = (oldval & ~mask) | (val << word_shift);
+-
+-	if (reg == SDHCI_TRANSFER_MODE) {
+-		/* Save the transfer mode until the command is issued */
+-		brcmstb_priv->shadow_cmd = newval;
+-		brcmstb_priv->is_cmd_shadowed = true;
+-	} else if (reg == SDHCI_BLOCK_SIZE || reg == SDHCI_BLOCK_COUNT) {
+-		/* Save the block info until the command is issued */
+-		brcmstb_priv->shadow_blk = newval;
+-		brcmstb_priv->is_blk_shadowed = true;
+-	} else {
+-		/* Command or other regular 32-bit write */
+-		sdhci_brcmstb_32only_writel(host, newval, reg & ~3);
+-	}
+-}
+-
+-static void sdhci_brcmstb_32only_writeb(struct sdhci_host *host, u8 val, int reg)
+-{
+-	u32 oldval = sdhci_brcmstb_32only_readl(host, (reg & ~3));
+-	u32 byte_shift = REG_OFFSET_IN_BITS(reg);
+-	u32 mask = 0xff << byte_shift;
+-	u32 newval = (oldval & ~mask) | (val << byte_shift);
+-
+-	sdhci_brcmstb_32only_writel(host, newval, reg & ~3);
+-}
+-
+ static void sdhci_brcmstb_set_power(struct sdhci_host *host, unsigned char mode,
+ 				  unsigned short vdd)
+ {
+@@ -442,12 +331,6 @@ static struct sdhci_ops sdhci_brcmstb_op
+ };
+ 
+ static struct sdhci_ops sdhci_brcmstb_ops_2712 = {
+-	.read_l = sdhci_brcmstb_32only_readl,
+-	.read_w = sdhci_brcmstb_32only_readw,
+-	.read_b = sdhci_brcmstb_32only_readb,
+-	.write_l = sdhci_brcmstb_32only_writel,
+-	.write_w = sdhci_brcmstb_32only_writew,
+-	.write_b = sdhci_brcmstb_32only_writeb,
+ 	.set_clock = sdhci_set_clock,
+ 	.set_power = sdhci_brcmstb_set_power,
+ 	.set_bus_width = sdhci_set_bus_width,

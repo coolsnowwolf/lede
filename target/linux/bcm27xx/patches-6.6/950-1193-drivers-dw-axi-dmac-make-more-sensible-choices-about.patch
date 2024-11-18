@@ -1,0 +1,124 @@
+From ce56098eb4dc2985f27f30ad7b7f5aed6bcf7fb1 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Fri, 19 Jul 2024 15:55:56 +0100
+Subject: [PATCH 1193/1215] drivers: dw-axi-dmac: make more sensible choices
+ about memory accesses
+
+There's no real need to constrain MEM access widths to 32-bit (or
+narrower), as the DMAC is intelligent enough to size memory accesses
+appropriately. Wider accesses are more efficient.
+
+Similarly, MEM burst lengths don't need to be a function of DEV burst
+lengths - the DMAC packs/unpacks data into/from its internal channel
+FIFOs appropriately. Longer accesses are more efficient.
+
+However, the DMAC doesn't have complete support for unaligned accesses,
+and blocks are always defined in integer multiples of SRC_WIDTH, so odd
+source lengths or buffer alignments will prevent wide accesses being
+used, as before.
+
+There is an implicit requirement to limit requested DEV read burst
+lengths to less than the hardware's maximum configured MSIZE - otherwise
+RX data will be left over at the end of a block. There is no config
+register that reports this value, so the AXI burst length parameter is
+used to produce a facsimile of it. Warn if such a request arrives that
+doesn't respect this.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ .../dma/dw-axi-dmac/dw-axi-dmac-platform.c    | 38 ++++++++++++-------
+ 1 file changed, 25 insertions(+), 13 deletions(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -261,6 +261,15 @@ static u32 axi_chan_get_xfer_width(struc
+ 	return __ffs(src | dst | len | BIT(max_width));
+ }
+ 
++static u32 axi_dma_encode_msize(u32 max_burst)
++{
++	if (max_burst <= 1)
++		return DWAXIDMAC_BURST_TRANS_LEN_1;
++	if (max_burst > 1024)
++		return DWAXIDMAC_BURST_TRANS_LEN_1024;
++	return fls(max_burst) - 2;
++}
++
+ static inline const char *axi_chan_name(struct axi_dma_chan *chan)
+ {
+ 	return dma_chan_name(&chan->vc.chan);
+@@ -685,41 +694,41 @@ static int dw_axi_dma_set_hw_desc(struct
+ 	size_t axi_block_ts;
+ 	size_t block_ts;
+ 	u32 ctllo, ctlhi;
+-	u32 burst_len;
++	u32 burst_len = 0, mem_burst_msize, reg_burst_msize;
+ 
+ 	axi_block_ts = chan->chip->dw->hdata->block_size[chan->id];
+ 
+ 	mem_width = __ffs(data_width | mem_addr | len);
+-	if (mem_width > DWAXIDMAC_TRANS_WIDTH_32)
+-		mem_width = DWAXIDMAC_TRANS_WIDTH_32;
+ 
+ 	if (!IS_ALIGNED(mem_addr, 4)) {
+ 		dev_err(chan->chip->dev, "invalid buffer alignment\n");
+ 		return -EINVAL;
+ 	}
+ 
++	/* Use a reasonable upper limit otherwise residue reporting granularity grows large */
++	mem_burst_msize = axi_dma_encode_msize(16);
++
+ 	switch (chan->direction) {
+ 	case DMA_MEM_TO_DEV:
++		reg_burst_msize = axi_dma_encode_msize(chan->config.dst_maxburst);
+ 		reg_width = __ffs(chan->config.dst_addr_width);
+ 		device_addr = phys_to_dma(chan->chip->dev, chan->config.dst_addr);
+ 		ctllo = reg_width << CH_CTL_L_DST_WIDTH_POS |
+ 			mem_width << CH_CTL_L_SRC_WIDTH_POS |
+-			DWAXIDMAC_BURST_TRANS_LEN_1 << CH_CTL_L_DST_MSIZE_POS |
+-			DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_SRC_MSIZE_POS |
++			reg_burst_msize << CH_CTL_L_DST_MSIZE_POS |
++			mem_burst_msize << CH_CTL_L_SRC_MSIZE_POS |
+ 			DWAXIDMAC_CH_CTL_L_NOINC << CH_CTL_L_DST_INC_POS |
+ 			DWAXIDMAC_CH_CTL_L_INC << CH_CTL_L_SRC_INC_POS;
+ 		block_ts = len >> mem_width;
+ 		break;
+ 	case DMA_DEV_TO_MEM:
++		reg_burst_msize = axi_dma_encode_msize(chan->config.src_maxburst);
+ 		reg_width = __ffs(chan->config.src_addr_width);
+-		/* Prevent partial access units getting lost */
+-		if (mem_width > reg_width)
+-			mem_width = reg_width;
+ 		device_addr = phys_to_dma(chan->chip->dev, chan->config.src_addr);
+ 		ctllo = reg_width << CH_CTL_L_SRC_WIDTH_POS |
+ 			mem_width << CH_CTL_L_DST_WIDTH_POS |
+-			DWAXIDMAC_BURST_TRANS_LEN_4 << CH_CTL_L_DST_MSIZE_POS |
+-			DWAXIDMAC_BURST_TRANS_LEN_1 << CH_CTL_L_SRC_MSIZE_POS |
++			mem_burst_msize << CH_CTL_L_DST_MSIZE_POS |
++			reg_burst_msize << CH_CTL_L_SRC_MSIZE_POS |
+ 			DWAXIDMAC_CH_CTL_L_INC << CH_CTL_L_DST_INC_POS |
+ 			DWAXIDMAC_CH_CTL_L_NOINC << CH_CTL_L_SRC_INC_POS;
+ 		block_ts = len >> reg_width;
+@@ -760,6 +769,12 @@ static int dw_axi_dma_set_hw_desc(struct
+ 	set_desc_src_master(hw_desc);
+ 
+ 	hw_desc->len = len;
++
++	if (burst_len && (chan->config.src_maxburst > burst_len))
++		dev_warn_ratelimited(chan2dev(chan),
++				     "%s: requested source burst length %u exceeds supported burst length %u - data may be lost\n",
++				     axi_chan_name(chan), chan->config.src_maxburst, burst_len);
++
+ 	return 0;
+ }
+ 
+@@ -776,9 +791,6 @@ static size_t calculate_block_len(struct
+ 	case DMA_MEM_TO_DEV:
+ 		data_width = BIT(chan->chip->dw->hdata->m_data_width);
+ 		mem_width = __ffs(data_width | dma_addr | buf_len);
+-		if (mem_width > DWAXIDMAC_TRANS_WIDTH_32)
+-			mem_width = DWAXIDMAC_TRANS_WIDTH_32;
+-
+ 		block_len = axi_block_ts << mem_width;
+ 		break;
+ 	case DMA_DEV_TO_MEM:

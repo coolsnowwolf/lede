@@ -1,0 +1,84 @@
+From 5171a96d17e35b7af7efbf6e9c9667f93fbd828f Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Wed, 11 Oct 2023 15:14:59 +0100
+Subject: [PATCH 0669/1085] input: touchscreen: edt-ft5x06: Suppress bogus data
+ on startup
+
+When polled without the use of IRQ, FT5x06 registers may return
+undefined initial data, causing unwanted touches or event spamming.
+A simple way to filter this out is to suppress touches until the
+TD_STATUS register changes for the first time.
+
+Increase the delay before first polling to 300ms, to avoid
+transient I2C read flakiness that seems to occur after reset.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/input/touchscreen/edt-ft5x06.c | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+--- a/drivers/input/touchscreen/edt-ft5x06.c
++++ b/drivers/input/touchscreen/edt-ft5x06.c
+@@ -80,6 +80,8 @@
+ #define M06_REG_CMD(factory) ((factory) ? 0xf3 : 0xfc)
+ #define M06_REG_ADDR(factory, addr) ((factory) ? (addr) & 0x7f : (addr) & 0x3f)
+ 
++#define RESET_DELAY_MS			300	/* reset deassert to I2C */
++#define FIRST_POLL_DELAY_MS		300	/* in addition to the above */
+ #define POLL_INTERVAL_MS		17	/* 17ms = 60fps */
+ 
+ enum edt_pmode {
+@@ -145,6 +147,7 @@ struct edt_ft5x06_ts_data {
+ 
+ 	char name[EDT_NAME_LEN];
+ 	char fw_version[EDT_NAME_LEN];
++	int init_td_status;
+ 
+ 	struct edt_reg_addr reg_addr;
+ 	enum edt_ver version;
+@@ -324,6 +327,21 @@ static irqreturn_t edt_ft5x06_ts_isr(int
+ 		 * points.
+ 		 */
+ 		num_points = min(rdbuf[2] & 0xf, tsdata->max_support_points);
++
++		/* When polling FT5x06 without IRQ: initial register contents
++		 * could be stale or undefined; discard all readings until
++		 * TD_STATUS changes for the first time (or num_points is 0).
++		 */
++		if (tsdata->init_td_status) {
++			if (tsdata->init_td_status < 0)
++				tsdata->init_td_status = rdbuf[2];
++
++			if (num_points && rdbuf[2] == tsdata->init_td_status)
++				goto out;
++
++			tsdata->init_td_status = 0;
++		}
++
+ 		if (!error && num_points)
+ 			error = regmap_bulk_read(tsdata->regmap,
+ 						 tsdata->tdata_offset,
+@@ -1318,7 +1336,7 @@ static int edt_ft5x06_ts_probe(struct i2
+ 	if (tsdata->reset_gpio) {
+ 		usleep_range(5000, 6000);
+ 		gpiod_set_value_cansleep(tsdata->reset_gpio, 0);
+-		msleep(300);
++		msleep(RESET_DELAY_MS);
+ 	}
+ 
+ 	input = devm_input_allocate_device(&client->dev);
+@@ -1407,11 +1425,12 @@ static int edt_ft5x06_ts_probe(struct i2
+ 			return error;
+ 		}
+ 	} else {
++		tsdata->init_td_status = -1; /* filter bogus initial data */
+ 		INIT_WORK(&tsdata->work_i2c_poll,
+ 			  edt_ft5x06_ts_work_i2c_poll);
+ 		timer_setup(&tsdata->timer, edt_ft5x06_ts_irq_poll_timer, 0);
+-		tsdata->timer.expires = jiffies +
+-					msecs_to_jiffies(POLL_INTERVAL_MS);
++		tsdata->timer.expires =
++			jiffies + msecs_to_jiffies(FIRST_POLL_DELAY_MS);
+ 		add_timer(&tsdata->timer);
+ 	}
+ 

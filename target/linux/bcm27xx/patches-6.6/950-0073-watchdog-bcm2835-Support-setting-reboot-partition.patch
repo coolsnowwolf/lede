@@ -1,0 +1,102 @@
+From 45d9fa5c9a92c2b5595f41be8a04752dbdae9001 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Noralf=20Tr=C3=B8nnes?= <noralf@tronnes.org>
+Date: Fri, 7 Oct 2016 16:50:59 +0200
+Subject: [PATCH 0073/1085] watchdog: bcm2835: Support setting reboot partition
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Raspberry Pi firmware looks at the RSTS register to know which
+partition to boot from. The reboot syscall command
+LINUX_REBOOT_CMD_RESTART2 supports passing in a string argument.
+
+Add support for passing in a partition number 0..63 to boot from.
+Partition 63 is a special partiton indicating halt.
+If the partition doesn't exist, the firmware falls back to partition 0.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+---
+ drivers/watchdog/bcm2835_wdt.c | 49 +++++++++++++++++++---------------
+ 1 file changed, 27 insertions(+), 22 deletions(-)
+
+--- a/drivers/watchdog/bcm2835_wdt.c
++++ b/drivers/watchdog/bcm2835_wdt.c
+@@ -32,13 +32,7 @@
+ #define PM_RSTC_WRCFG_SET		0x00000030
+ #define PM_RSTC_WRCFG_FULL_RESET	0x00000020
+ #define PM_RSTC_RESET			0x00000102
+-
+-/*
+- * The Raspberry Pi firmware uses the RSTS register to know which partition
+- * to boot from. The partition value is spread into bits 0, 2, 4, 6, 8, 10.
+- * Partition 63 is a special partition used by the firmware to indicate halt.
+- */
+-#define PM_RSTS_RASPBERRYPI_HALT	0x555
++#define PM_RSTS_PARTITION_CLR          0xfffffaaa
+ 
+ #define SECS_TO_WDOG_TICKS(x) ((x) << 16)
+ #define WDOG_TICKS_TO_SECS(x) ((x) >> 16)
+@@ -98,9 +92,24 @@ static unsigned int bcm2835_wdt_get_time
+ 	return WDOG_TICKS_TO_SECS(ret & PM_WDOG_TIME_SET);
+ }
+ 
+-static void __bcm2835_restart(struct bcm2835_wdt *wdt)
++/*
++ * The Raspberry Pi firmware uses the RSTS register to know which partiton
++ * to boot from. The partiton value is spread into bits 0, 2, 4, 6, 8, 10.
++ * Partiton 63 is a special partition used by the firmware to indicate halt.
++ */
++
++static void __bcm2835_restart(struct bcm2835_wdt *wdt, u8 partition)
+ {
+-	u32 val;
++	u32 val, rsts;
++
++	rsts = (partition & BIT(0)) | ((partition & BIT(1)) << 1) |
++	       ((partition & BIT(2)) << 2) | ((partition & BIT(3)) << 3) |
++	       ((partition & BIT(4)) << 4) | ((partition & BIT(5)) << 5);
++
++	val = readl_relaxed(wdt->base + PM_RSTS);
++	val &= PM_RSTS_PARTITION_CLR;
++	val |= PM_PASSWORD | rsts;
++	writel_relaxed(val, wdt->base + PM_RSTS);
+ 
+ 	/* use a timeout of 10 ticks (~150us) */
+ 	writel_relaxed(10 | PM_PASSWORD, wdt->base + PM_WDOG);
+@@ -118,7 +127,13 @@ static int bcm2835_restart(struct watchd
+ {
+ 	struct bcm2835_wdt *wdt = watchdog_get_drvdata(wdog);
+ 
+-	__bcm2835_restart(wdt);
++	unsigned long long val;
++	u8 partition = 0;
++
++	if (data && !kstrtoull(data, 0, &val) && val <= 63)
++		partition = val;
++
++	__bcm2835_restart(wdt, partition);
+ 
+ 	return 0;
+ }
+@@ -153,19 +168,9 @@ static struct watchdog_device bcm2835_wd
+ static void bcm2835_power_off(void)
+ {
+ 	struct bcm2835_wdt *wdt = bcm2835_power_off_wdt;
+-	u32 val;
+-
+-	/*
+-	 * We set the watchdog hard reset bit here to distinguish this reset
+-	 * from the normal (full) reset. bootcode.bin will not reboot after a
+-	 * hard reset.
+-	 */
+-	val = readl_relaxed(wdt->base + PM_RSTS);
+-	val |= PM_PASSWORD | PM_RSTS_RASPBERRYPI_HALT;
+-	writel_relaxed(val, wdt->base + PM_RSTS);
+ 
+-	/* Continue with normal reset mechanism */
+-	__bcm2835_restart(wdt);
++	/* Partition 63 tells the firmware that this is a halt */
++	__bcm2835_restart(wdt, 63);
+ }
+ 
+ static int bcm2835_wdt_probe(struct platform_device *pdev)

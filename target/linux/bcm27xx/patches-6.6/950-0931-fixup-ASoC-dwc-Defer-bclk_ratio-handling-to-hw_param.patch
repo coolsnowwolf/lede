@@ -1,0 +1,116 @@
+From 6f2a136f210d0e4178fbb5dc3fb5f765ef4c431d Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 29 Feb 2024 11:53:44 +0000
+Subject: [PATCH 0931/1085] fixup! ASoC: dwc: Defer bclk_ratio handling to
+ hw_params
+
+See: https://github.com/raspberrypi/linux/issues/5743#issuecomment-1962740328
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/dwc/dwc-i2s.c | 51 ++++++++++++++++++++---------------------
+ 1 file changed, 25 insertions(+), 26 deletions(-)
+
+--- a/sound/soc/dwc/dwc-i2s.c
++++ b/sound/soc/dwc/dwc-i2s.c
+@@ -288,21 +288,18 @@ static int dw_i2s_hw_params(struct snd_p
+ 	case SNDRV_PCM_FORMAT_S16_LE:
+ 		config->data_width = 16;
+ 		dma_data->dt.addr_width = 2;
+-		dev->ccr = 0x00;
+ 		dev->xfer_resolution = 0x02;
+ 		break;
+ 
+ 	case SNDRV_PCM_FORMAT_S24_LE:
+ 		config->data_width = 24;
+ 		dma_data->dt.addr_width = 4;
+-		dev->ccr = 0x08;
+ 		dev->xfer_resolution = 0x04;
+ 		break;
+ 
+ 	case SNDRV_PCM_FORMAT_S32_LE:
+ 		config->data_width = 32;
+ 		dma_data->dt.addr_width = 4;
+-		dev->ccr = 0x10;
+ 		dev->xfer_resolution = 0x05;
+ 		break;
+ 
+@@ -314,25 +311,6 @@ static int dw_i2s_hw_params(struct snd_p
+ 	if (dev->tdm_slots)
+ 		config->data_width = 32;
+ 
+-	if ((dev->capability & DW_I2S_MASTER) && dev->bclk_ratio) {
+-		switch (dev->bclk_ratio) {
+-		case 32:
+-			dev->ccr = 0x00;
+-			break;
+-
+-		case 48:
+-			dev->ccr = 0x08;
+-			break;
+-
+-		case 64:
+-			dev->ccr = 0x10;
+-			break;
+-
+-		default:
+-			return -EINVAL;
+-		}
+-	}
+-
+ 	config->chan_nr = params_channels(params);
+ 
+ 	switch (config->chan_nr) {
+@@ -348,11 +326,31 @@ static int dw_i2s_hw_params(struct snd_p
+ 
+ 	dw_i2s_config(dev, substream->stream);
+ 
+-	i2s_write_reg(dev->i2s_base, CCR, dev->ccr);
+-
+ 	config->sample_rate = params_rate(params);
+ 
+ 	if (dev->capability & DW_I2S_MASTER) {
++		u32 frame_length = config->data_width * 2;
++
++		if (dev->bclk_ratio)
++			frame_length = dev->bclk_ratio;
++
++		switch (frame_length) {
++		case 32:
++			dev->ccr = 0x00;
++			break;
++
++		case 48:
++			dev->ccr = 0x08;
++			break;
++
++		case 64:
++			dev->ccr = 0x10;
++			break;
++
++		default:
++			return -EINVAL;
++		}
++
+ 		if (dev->i2s_clk_cfg) {
+ 			ret = dev->i2s_clk_cfg(config);
+ 			if (ret < 0) {
+@@ -360,8 +358,7 @@ static int dw_i2s_hw_params(struct snd_p
+ 				return ret;
+ 			}
+ 		} else {
+-			u32 bitclk = config->sample_rate *
+-					config->data_width * 2;
++			u32 bitclk = config->sample_rate * frame_length;
+ 
+ 			ret = clk_set_rate(dev->clk, bitclk);
+ 			if (ret) {
+@@ -370,6 +367,8 @@ static int dw_i2s_hw_params(struct snd_p
+ 				return ret;
+ 			}
+ 		}
++
++		i2s_write_reg(dev->i2s_base, CCR, dev->ccr);
+ 	}
+ 	return 0;
+ }

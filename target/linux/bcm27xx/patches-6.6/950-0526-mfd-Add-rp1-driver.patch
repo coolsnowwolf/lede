@@ -1,0 +1,440 @@
+From 21828e7d13bab9afea59ccec21ba9f9a73559881 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 10 Oct 2022 14:21:50 +0100
+Subject: [PATCH 0526/1085] mfd: Add rp1 driver
+
+RP1 is a multifunction PCIe device that exposes a range of
+peripherals.
+Add the parent driver to manage these.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/mfd/Kconfig          |  11 ++
+ drivers/mfd/Makefile         |   2 +
+ drivers/mfd/rp1.c            | 367 +++++++++++++++++++++++++++++++++++
+ include/linux/rp1_platform.h |  20 ++
+ 4 files changed, 400 insertions(+)
+ create mode 100644 drivers/mfd/rp1.c
+ create mode 100644 include/linux/rp1_platform.h
+
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -2323,6 +2323,17 @@ config MFD_INTEL_M10_BMC_PMCI
+ 	  additional drivers must be enabled in order to use the functionality
+ 	  of the device.
+ 
++config MFD_RP1
++	tristate "RP1 MFD driver"
++	depends on PCI
++	select MFD_CORE
++	help
++	  Support for the RP1 peripheral chip.
++
++	  This driver provides support for the Raspberry Pi RP1 peripheral chip.
++	  It is responsible for enabling the Device Tree node once the PCIe endpoint
++	  has been configured, and handling interrupts.
++
+ config MFD_RSMU_I2C
+ 	tristate "Renesas Synchronization Management Unit with I2C"
+ 	depends on I2C && OF
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -283,3 +283,5 @@ obj-$(CONFIG_MFD_ATC260X_I2C)	+= atc260x
+ 
+ obj-$(CONFIG_MFD_RSMU_I2C)	+= rsmu_i2c.o rsmu_core.o
+ obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o rsmu_core.o
++
++obj-$(CONFIG_MFD_RP1)		+= rp1.o
+--- /dev/null
++++ b/drivers/mfd/rp1.c
+@@ -0,0 +1,367 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2018-22 Raspberry Pi Ltd.
++ * All rights reserved.
++ */
++
++#include <linux/clk.h>
++#include <linux/clkdev.h>
++#include <linux/clk-provider.h>
++#include <linux/completion.h>
++#include <linux/etherdevice.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/irqdomain.h>
++#include <linux/mfd/core.h>
++#include <linux/mmc/host.h>
++#include <linux/module.h>
++#include <linux/msi.h>
++#include <linux/of_platform.h>
++#include <linux/pci.h>
++#include <linux/platform_device.h>
++#include <linux/rp1_platform.h>
++#include <linux/reset.h>
++#include <linux/slab.h>
++
++#include <dt-bindings/mfd/rp1.h>
++
++/* TO DO:
++ * 1. Occasional shutdown crash - RP1 being closed before its children?
++ * 2. DT mode interrupt handling.
++ */
++
++#define RP1_DRIVER_NAME "rp1"
++
++#define PCI_VENDOR_ID_RPI 0x1de4
++#define PCI_DEVICE_ID_RP1_C0 0x0001
++#define PCI_DEVICE_REV_RP1_C0 2
++
++#define RP1_ACTUAL_IRQS		RP1_INT_END
++#define RP1_IRQS		RP1_ACTUAL_IRQS
++
++#define RP1_SYSCLK_RATE		200000000
++#define RP1_SYSCLK_FPGA_RATE	60000000
++
++// Don't want to include the whole sysinfo reg header
++#define SYSINFO_CHIP_ID_OFFSET	0x00000000
++#define SYSINFO_PLATFORM_OFFSET	0x00000004
++
++#define REG_RW          0x000
++#define REG_SET         0x800
++#define REG_CLR         0xc00
++
++// MSIX CFG registers start at 0x8
++#define MSIX_CFG(x) (0x8 + (4 * (x)))
++
++#define MSIX_CFG_IACK_EN        BIT(3)
++#define MSIX_CFG_IACK           BIT(2)
++#define MSIX_CFG_TEST           BIT(1)
++#define MSIX_CFG_ENABLE         BIT(0)
++
++#define INTSTATL		0x108
++#define INTSTATH		0x10c
++
++struct rp1_dev {
++	struct pci_dev *pdev;
++	struct device *dev;
++	resource_size_t bar_start;
++	resource_size_t bar_end;
++	struct clk *sys_clk;
++	struct irq_domain *domain;
++	struct irq_data *pcie_irqds[64];
++	void __iomem *msix_cfg_regs;
++};
++
++static bool rp1_level_triggered_irq[RP1_ACTUAL_IRQS] = { 0 };
++
++static struct rp1_dev *g_rp1;
++static u32 g_chip_id, g_platform;
++
++static void dump_bar(struct pci_dev *pdev, unsigned int bar)
++{
++	dev_info(&pdev->dev,
++		 "bar%d len 0x%llx, start 0x%llx, end 0x%llx, flags, 0x%lx\n",
++		 bar,
++		 pci_resource_len(pdev, bar),
++		 pci_resource_start(pdev, bar),
++		 pci_resource_end(pdev, bar),
++		 pci_resource_flags(pdev, bar));
++}
++
++static void msix_cfg_set(struct rp1_dev *rp1, unsigned int hwirq, u32 value)
++{
++	writel(value, rp1->msix_cfg_regs + REG_SET + MSIX_CFG(hwirq));
++}
++
++static void msix_cfg_clr(struct rp1_dev *rp1, unsigned int hwirq, u32 value)
++{
++	writel(value, rp1->msix_cfg_regs + REG_CLR + MSIX_CFG(hwirq));
++}
++
++static void rp1_mask_irq(struct irq_data *irqd)
++{
++	struct rp1_dev *rp1 = irqd->domain->host_data;
++	struct irq_data *pcie_irqd = rp1->pcie_irqds[irqd->hwirq];
++
++	pci_msi_mask_irq(pcie_irqd);
++}
++
++static void rp1_unmask_irq(struct irq_data *irqd)
++{
++	struct rp1_dev *rp1 = irqd->domain->host_data;
++	struct irq_data *pcie_irqd = rp1->pcie_irqds[irqd->hwirq];
++
++	pci_msi_unmask_irq(pcie_irqd);
++}
++
++static int rp1_irq_set_type(struct irq_data *irqd, unsigned int type)
++{
++	struct rp1_dev *rp1 = irqd->domain->host_data;
++	unsigned int hwirq = (unsigned int)irqd->hwirq;
++	int ret = 0;
++
++	switch (type) {
++	case IRQ_TYPE_LEVEL_HIGH:
++		dev_dbg(rp1->dev, "MSIX IACK EN for irq %d\n", hwirq);
++		msix_cfg_set(rp1, hwirq, MSIX_CFG_IACK_EN);
++		rp1_level_triggered_irq[hwirq] = true;
++	break;
++	case IRQ_TYPE_EDGE_RISING:
++		msix_cfg_clr(rp1, hwirq, MSIX_CFG_IACK_EN);
++		rp1_level_triggered_irq[hwirq] = false;
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++	return ret;
++}
++
++static struct irq_chip rp1_irq_chip = {
++	.name            = "rp1_irq_chip",
++	.irq_mask        = rp1_mask_irq,
++	.irq_unmask      = rp1_unmask_irq,
++	.irq_set_type    = rp1_irq_set_type,
++};
++
++static void rp1_chained_handle_irq(struct irq_desc *desc)
++{
++	struct irq_chip *chip = irq_desc_get_chip(desc);
++	struct rp1_dev *rp1 = desc->irq_data.chip_data;
++	unsigned int hwirq = desc->irq_data.hwirq & 0x3f;
++	int new_irq;
++
++	rp1 = g_rp1;
++
++	chained_irq_enter(chip, desc);
++
++	new_irq = irq_linear_revmap(rp1->domain, hwirq);
++	generic_handle_irq(new_irq);
++	if (rp1_level_triggered_irq[hwirq])
++		msix_cfg_set(rp1, hwirq, MSIX_CFG_IACK);
++
++	chained_irq_exit(chip, desc);
++}
++
++static int rp1_irq_xlate(struct irq_domain *d, struct device_node *node,
++			 const u32 *intspec, unsigned int intsize,
++			 unsigned long *out_hwirq, unsigned int *out_type)
++{
++	struct rp1_dev *rp1 = d->host_data;
++	struct irq_data *pcie_irqd;
++	unsigned long hwirq;
++	int pcie_irq;
++	int ret;
++
++	ret = irq_domain_xlate_twocell(d, node, intspec, intsize,
++				       &hwirq, out_type);
++	if (!ret) {
++		pcie_irq = pci_irq_vector(rp1->pdev, hwirq);
++		pcie_irqd = irq_get_irq_data(pcie_irq);
++		rp1->pcie_irqds[hwirq] = pcie_irqd;
++		*out_hwirq = hwirq;
++	}
++	return ret;
++}
++
++static int rp1_irq_activate(struct irq_domain *d, struct irq_data *irqd,
++			    bool reserve)
++{
++	struct rp1_dev *rp1 = d->host_data;
++	struct irq_data *pcie_irqd;
++
++	pcie_irqd = rp1->pcie_irqds[irqd->hwirq];
++	msix_cfg_set(rp1, (unsigned int)irqd->hwirq, MSIX_CFG_ENABLE);
++	return irq_domain_activate_irq(pcie_irqd, reserve);
++}
++
++static void rp1_irq_deactivate(struct irq_domain *d, struct irq_data *irqd)
++{
++	struct rp1_dev *rp1 = d->host_data;
++	struct irq_data *pcie_irqd;
++
++	pcie_irqd = rp1->pcie_irqds[irqd->hwirq];
++	msix_cfg_clr(rp1, (unsigned int)irqd->hwirq, MSIX_CFG_ENABLE);
++	return irq_domain_deactivate_irq(pcie_irqd);
++}
++
++static const struct irq_domain_ops rp1_domain_ops = {
++	.xlate      = rp1_irq_xlate,
++	.activate   = rp1_irq_activate,
++	.deactivate = rp1_irq_deactivate,
++};
++
++static inline dma_addr_t rp1_io_to_phys(struct rp1_dev *rp1, unsigned int offset)
++{
++	return rp1->bar_start + offset;
++}
++
++static u32 rp1_reg_read(struct rp1_dev *rp1, unsigned int base_addr, u32 offset)
++{
++	dma_addr_t phys = rp1_io_to_phys(rp1, base_addr);
++	void __iomem *regblock = ioremap(phys, 0x1000);
++	u32 value = readl(regblock + offset);
++
++	iounmap(regblock);
++	return value;
++}
++
++void rp1_get_platform(u32 *chip_id, u32 *platform)
++{
++	if (chip_id)
++		*chip_id = g_chip_id;
++	if (platform)
++		*platform = g_platform;
++}
++EXPORT_SYMBOL_GPL(rp1_get_platform);
++
++static int rp1_probe(struct pci_dev *pdev, const struct pci_device_id *id)
++{
++	struct reset_control *reset;
++	struct platform_device *pcie_pdev;
++	struct device_node *rp1_node;
++	struct rp1_dev *rp1;
++	int err  = 0;
++	int i;
++
++	reset = devm_reset_control_get_optional_exclusive(&pdev->dev, NULL);
++	if (IS_ERR(reset))
++		return PTR_ERR(reset);
++	reset_control_reset(reset);
++
++	dump_bar(pdev, 0);
++	dump_bar(pdev, 1);
++
++	if (pci_resource_len(pdev, 1) <= 0x10000) {
++		dev_err(&pdev->dev,
++			"Not initialised - is the firmware running?\n");
++		return -EINVAL;
++	}
++
++	/* enable pci device */
++	err = pcim_enable_device(pdev);
++	if (err < 0) {
++		dev_err(&pdev->dev, "Enabling PCI device has failed: %d",
++			err);
++		return err;
++	}
++
++	pci_set_master(pdev);
++
++	err = pci_alloc_irq_vectors(pdev, RP1_IRQS, RP1_IRQS,
++				    PCI_IRQ_MSIX);
++	if (err != RP1_IRQS) {
++		dev_err(&pdev->dev, "pci_alloc_irq_vectors failed - %d\n", err);
++		return err;
++	}
++
++	rp1 = devm_kzalloc(&pdev->dev, sizeof(*rp1), GFP_KERNEL);
++	if (!rp1)
++		return -ENOMEM;
++
++	rp1->pdev = pdev;
++	rp1->dev = &pdev->dev;
++
++	pci_set_drvdata(pdev, rp1);
++
++	rp1->bar_start = pci_resource_start(pdev, 1);
++	rp1->bar_end = pci_resource_end(pdev, 1);
++
++	// Get chip id
++	g_chip_id = rp1_reg_read(rp1, RP1_SYSINFO_BASE, SYSINFO_CHIP_ID_OFFSET);
++	g_platform = rp1_reg_read(rp1, RP1_SYSINFO_BASE, SYSINFO_PLATFORM_OFFSET);
++	dev_info(&pdev->dev, "chip_id 0x%x%s\n", g_chip_id,
++		 (g_platform & RP1_PLATFORM_FPGA) ? " FPGA" : "");
++	if (g_chip_id != RP1_C0_CHIP_ID) {
++		dev_err(&pdev->dev, "wrong chip id (%x)\n", g_chip_id);
++		return -EINVAL;
++	}
++
++	rp1_node = of_find_node_by_name(NULL, "rp1");
++	if (!rp1_node) {
++		dev_err(&pdev->dev, "failed to find RP1 DT node\n");
++		return -EINVAL;
++	}
++
++	pcie_pdev = of_find_device_by_node(rp1_node->parent);
++	rp1->domain = irq_domain_add_linear(rp1_node, RP1_IRQS,
++					    &rp1_domain_ops, rp1);
++
++	g_rp1 = rp1;
++
++	/* TODO can this go in the rp1 device tree entry? */
++	rp1->msix_cfg_regs = ioremap(rp1_io_to_phys(rp1, RP1_PCIE_APBS_BASE), 0x1000);
++
++	for (i = 0; i < RP1_IRQS; i++) {
++		int irq = irq_create_mapping(rp1->domain, i);
++
++		if (irq < 0) {
++			dev_err(&pdev->dev, "failed to create irq mapping\n");
++			return irq;
++		}
++
++		irq_set_chip_data(irq, rp1);
++		irq_set_chip_and_handler(irq, &rp1_irq_chip, handle_level_irq);
++		irq_set_probe(irq);
++		irq_set_chained_handler(pci_irq_vector(pdev, i),
++					rp1_chained_handle_irq);
++	}
++
++	if (rp1_node)
++		of_platform_populate(rp1_node, NULL, NULL, &pcie_pdev->dev);
++
++	of_node_put(rp1_node);
++
++	return 0;
++}
++
++static void rp1_remove(struct pci_dev *pdev)
++{
++	struct rp1_dev *rp1 = pci_get_drvdata(pdev);
++
++	mfd_remove_devices(&pdev->dev);
++
++	clk_unregister(rp1->sys_clk);
++}
++
++static const struct pci_device_id dev_id_table[] = {
++	{ PCI_DEVICE(PCI_VENDOR_ID_RPI, PCI_DEVICE_ID_RP1_C0), },
++	{ 0, }
++};
++
++static struct pci_driver rp1_driver = {
++	.name		= RP1_DRIVER_NAME,
++	.id_table	= dev_id_table,
++	.probe		= rp1_probe,
++	.remove		= rp1_remove,
++};
++
++module_pci_driver(rp1_driver);
++
++MODULE_AUTHOR("Phil Elwell <phil@raspberrypi.com>");
++MODULE_DESCRIPTION("RP1 wrapper");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/include/linux/rp1_platform.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2021-2022 Raspberry Pi Ltd.
++ * All rights reserved.
++ */
++
++#ifndef _RP1_PLATFORM_H
++#define _RP1_PLATFORM_H
++
++#include <vdso/bits.h>
++
++#define RP1_B0_CHIP_ID 0x10001927
++#define RP1_C0_CHIP_ID 0x20001927
++
++#define RP1_PLATFORM_ASIC BIT(1)
++#define RP1_PLATFORM_FPGA BIT(0)
++
++void rp1_get_platform(u32 *chip_id, u32 *platform);
++
++#endif

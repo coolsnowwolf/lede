@@ -1,0 +1,80 @@
+From 955c38a14328e8ddfe2cecaae9544fa0f19f8024 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 10 Jun 2024 16:28:23 +0100
+Subject: [PATCH 1118/1135] ASoC: da7213: Add a set_bclk_ratio method
+
+Following [1], it becomes harder for the CPU DAI to know the correct
+BCLK ratio. We can either bake the same knowledge into the sound card
+driver, or implement and use set_bclk_ratio on the codec. This commit
+does the latter.
+
+[1] commit c89e652e84f6 ("ASoC: da7213: Add support for mono, set
+frame width to 32 when possible")
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/codecs/da7213.c | 21 +++++++++++++++++++++
+ sound/soc/codecs/da7213.h |  1 +
+ 2 files changed, 22 insertions(+)
+
+--- a/sound/soc/codecs/da7213.c
++++ b/sound/soc/codecs/da7213.c
+@@ -1181,6 +1181,8 @@ static int da7213_hw_params(struct snd_p
+ 	switch (params_width(params)) {
+ 	case 16:
+ 		dai_ctrl |= DA7213_DAI_WORD_LENGTH_S16_LE;
++		if (da7213->bclk_ratio == 64)
++			break;
+ 		dai_clk_mode = DA7213_DAI_BCLKS_PER_WCLK_32; /* 32bit for 1ch and 2ch */
+ 		break;
+ 	case 20:
+@@ -1196,6 +1198,9 @@ static int da7213_hw_params(struct snd_p
+ 		return -EINVAL;
+ 	}
+ 
++	if (da7213->bclk_ratio == 32 && params_width(params) != 16)
++		return -EINVAL;
++
+ 	/* Set sampling rate */
+ 	switch (params_rate(params)) {
+ 	case 8000:
+@@ -1358,6 +1363,21 @@ static int da7213_set_dai_fmt(struct snd
+ 	return 0;
+ }
+ 
++static int da7213_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
++{
++	struct snd_soc_component *component = dai->component;
++	struct da7213_priv *da7213 = snd_soc_component_get_drvdata(component);
++
++	if (ratio != 32 && ratio != 64) {
++		dev_err(component->dev, "Invalid bclk ratio %d\n", ratio);
++		return -EINVAL;
++	}
++
++	da7213->bclk_ratio = ratio;
++
++	return 0;
++}
++
+ static int da7213_mute(struct snd_soc_dai *dai, int mute, int direction)
+ {
+ 	struct snd_soc_component *component = dai->component;
+@@ -1554,6 +1574,7 @@ static int da7213_set_component_pll(stru
+ static const struct snd_soc_dai_ops da7213_dai_ops = {
+ 	.hw_params	= da7213_hw_params,
+ 	.set_fmt	= da7213_set_dai_fmt,
++	.set_bclk_ratio	= da7213_set_bclk_ratio,
+ 	.mute_stream	= da7213_mute,
+ 	.no_capture_mute = 1,
+ };
+--- a/sound/soc/codecs/da7213.h
++++ b/sound/soc/codecs/da7213.h
+@@ -538,6 +538,7 @@ struct da7213_priv {
+ 	struct clk *mclk;
+ 	unsigned int mclk_rate;
+ 	unsigned int out_rate;
++	unsigned int bclk_ratio;
+ 	int clk_src;
+ 	bool master;
+ 	bool alc_calib_auto;

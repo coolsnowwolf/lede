@@ -1,0 +1,53 @@
+From b16e3d359b99c5771f9a22f74cbd193c7f14f895 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 26 Mar 2024 14:58:58 +0000
+Subject: [PATCH 0997/1085] drivers: mmc: handle 1024-byte SD General Info
+ lengths
+
+The spec allows for up to two 512-byte pages to be allocated for the
+Extension Register General Info block, so allocate accordingly.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/sd.c | 19 ++++++++++++++-----
+ 1 file changed, 14 insertions(+), 5 deletions(-)
+
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -1177,7 +1177,7 @@ static int mmc_sd_read_ext_regs(struct m
+ 	if (!(card->scr.cmds & SD_SCR_CMD48_SUPPORT))
+ 		return 0;
+ 
+-	gen_info_buf = kzalloc(512, GFP_KERNEL);
++	gen_info_buf = kzalloc(1024, GFP_KERNEL);
+ 	if (!gen_info_buf)
+ 		return -ENOMEM;
+ 
+@@ -1208,14 +1208,23 @@ static int mmc_sd_read_ext_regs(struct m
+ 	num_ext = gen_info_buf[4];
+ 
+ 	/*
+-	 * We only support revision 0 and limit it to 512 bytes for simplicity.
++	 * We only support revision 0 and up to the spec-defined maximum of 1K.
+ 	 * No matter what, let's return zero to allow us to continue using the
+ 	 * card, even if we can't support the features from the SD function
+ 	 * extensions registers.
+ 	 */
+-	if (rev != 0 || len > 512) {
+-		pr_warn("%s: non-supported SD ext reg layout\n",
+-			mmc_hostname(card->host));
++	if (rev != 0 || len > 1024) {
++		pr_warn("%s: non-supported SD ext reg layout rev %u length %u\n",
++			mmc_hostname(card->host), rev, len);
++		goto out;
++	}
++
++	/* If the General Information block spills into the next page, read the rest */
++	if (len > 512)
++		err = mmc_sd_read_ext_reg(card, 0, 1, 0, 512, &gen_info_buf[512]);
++	if (err) {
++		pr_err("%s: error %d reading page 1 of general info of SD ext reg\n",
++			mmc_hostname(card->host), err);
+ 		goto out;
+ 	}
+ 

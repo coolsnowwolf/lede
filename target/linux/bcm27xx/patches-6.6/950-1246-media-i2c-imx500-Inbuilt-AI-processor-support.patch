@@ -1,0 +1,1631 @@
+From 97f4ec49828877642e4a87f9c2f47c7a9dd10b90 Mon Sep 17 00:00:00 2001
+From: Richard Oliver <richard.oliver@raspberrypi.com>
+Date: Wed, 24 Jul 2024 13:06:16 +0100
+Subject: [PATCH 1246/1350] media: i2c: imx500: Inbuilt AI processor support
+
+Add support for the IMX500's inbuilt AI processor. The IMX500 program
+loader, AI processor firmware, DNN weights are accessed via the kernel's
+firmware interface on 'open' and are transferred to the IMX500 over SPI.
+
+Signed-off-by: Richard Oliver <richard.oliver@raspberrypi.com>
+---
+ drivers/media/i2c/imx500.c         | 1322 +++++++++++++++++++++++++++-
+ include/uapi/linux/v4l2-controls.h |    6 +
+ 2 files changed, 1290 insertions(+), 38 deletions(-)
+
+--- a/drivers/media/i2c/imx500.c
++++ b/drivers/media/i2c/imx500.c
+@@ -5,9 +5,14 @@
+  */
+ #include <asm/unaligned.h>
+ #include <linux/clk.h>
++#include <linux/debugfs.h>
+ #include <linux/delay.h>
++#include <linux/earlycpio.h>
++#include <linux/firmware.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
++#include <linux/kernel_read_file.h>
++#include <linux/limits.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+ #include <linux/pm_runtime.h>
+@@ -67,6 +72,138 @@
+ #define IMX500_ANA_GAIN_STEP 1
+ #define IMX500_ANA_GAIN_DEFAULT 0x0
+ 
++/* Inference windows */
++#define IMX500_REG_DWP_AP_VC_VOFF CCI_REG16(0xD500)
++#define IMX500_REG_DWP_AP_VC_HOFF CCI_REG16(0xD502)
++#define IMX500_REG_DWP_AP_VC_VSIZE CCI_REG16(0xD504)
++#define IMX500_REG_DWP_AP_VC_HSIZE CCI_REG16(0xD506)
++
++#define IMX500_REG_DD_CH06_X_OUT_SIZE \
++	CCI_REG16(0x3054) /* Output pixel count for KPI */
++#define IMX500_REG_DD_CH07_X_OUT_SIZE \
++	CCI_REG16(0x3056) /* Output pixel count for Input Tensor */
++#define IMX500_REG_DD_CH08_X_OUT_SIZE \
++	CCI_REG16(0x3058) /* Output pixel count for Output Tensor */
++#define IMX500_REG_DD_CH09_X_OUT_SIZE \
++	CCI_REG16(0x305A) /* Output pixel count for PQ Settings */
++
++#define IMX500_REG_DD_CH06_Y_OUT_SIZE \
++	CCI_REG16(0x305C) /* Output line count for KPI */
++#define IMX500_REG_DD_CH07_Y_OUT_SIZE \
++	CCI_REG16(0x305E) /* Output line count for Input Tensor */
++#define IMX500_REG_DD_CH08_Y_OUT_SIZE \
++	CCI_REG16(0x3060) /* Output line count for Output Tensor */
++#define IMX500_REG_DD_CH09_Y_OUT_SIZE \
++	CCI_REG16(0x3062) /* Output line count for PQ Settings */
++
++#define IMX500_REG_DD_CH06_VCID \
++	CCI_REG8(0x3064) /* Virtual channel ID for KPI */
++#define IMX500_REG_DD_CH07_VCID \
++	CCI_REG8(0x3065) /* Virtual channel ID for Input Tensor */
++#define IMX500_REG_DD_CH08_VCID \
++	CCI_REG8(0x3066) /* Virtual channel ID for Output Tensor */
++#define IMX500_REG_DD_CH09_VCID \
++	CCI_REG8(0x3067) /* Virtual channel ID for PQ Settings */
++
++#define IMX500_REG_DD_CH06_DT CCI_REG8(0x3068) /* Data Type for KPI */
++#define IMX500_REG_DD_CH07_DT CCI_REG8(0x3069) /* Data Type for Input Tensor */
++#define IMX500_REG_DD_CH08_DT CCI_REG8(0x306A) /* Data Type for Output Tensor */
++#define IMX500_REG_DD_CH09_DT CCI_REG8(0x306B) /* Data Type for PQ Settings */
++
++#define IMX500_REG_DD_CH06_PACKING \
++	CCI_REG8(0x306C) /* Pixel/byte packing for KPI */
++#define IMX500_REG_DD_CH07_PACKING \
++	CCI_REG8(0x306D) /* Pixel/byte packing for Input Tensor */
++#define IMX500_REG_DD_CH08_PACKING \
++	CCI_REG8(0x306E) /* Pixel/byte packing for Output Tensor */
++#define IMX500_REG_DD_CH09_PACKING \
++	CCI_REG8(0x306F) /* Pixel/byte packing for PQ Settings */
++#define IMX500_DD_PACKING_8BPP 2 /* 8 bits/pixel */
++#define IMX500_DD_PACKING_10BPP 3 /* 10 bits/pixel */
++
++/* Interrupt command (start processing command inside IMX500 CPU) */
++#define IMX500_REG_DD_CMD_INT CCI_REG8(0x3080)
++#define IMX500_DD_CMD_INT_ST_TRANS 0
++#define IMX500_DD_CMD_INT_UPDATE 1
++#define IMX500_DD_CMD_INT_FLASH_ERASE 2
++
++/* State transition command type */
++#define IMX500_REG_DD_ST_TRANS_CMD CCI_REG8(0xD000)
++#define IMX500_DD_ST_TRANS_CMD_LOADER_FW 0
++#define IMX500_DD_ST_TRANS_CMD_MAIN_FW 1
++#define IMX500_DD_ST_TRANS_CMD_NW_WEIGHTS 2
++#define IMX500_DD_ST_TRANS_CMD_CLEAR_WEIGHTS 3
++
++/* Network weights update command */
++#define IMX500_REG_DD_UPDATE_CMD CCI_REG8(0xD001)
++#define IMX500_DD_UPDATE_CMD_SRAM 0
++#define IMX500_DD_UPDATE_CMD_FLASH 1
++
++/* Transfer source when loading into RAM */
++#define IMX500_REG_DD_LOAD_MODE CCI_REG8(0xD002)
++#define IMX500_DD_LOAD_MODE_AP 0
++#define IMX500_DD_LOAD_MODE_FLASH 1
++
++/* Image type to transfer */
++#define IMX500_REG_DD_IMAGE_TYPE CCI_REG8(0xD003)
++#define IMX500_DD_IMAGE_TYPE_LOADER_FW 0
++#define IMX500_DD_IMAGE_TYPE_MAIN_FW 1
++#define IMX500_DD_IMAGE_TYPE_NETWORK_WEIGHTS 2
++
++/* Number of divisions of download image file */
++#define IMX500_REG_DD_DOWNLOAD_DIV_NUM CCI_REG8(0xD004)
++
++#define IMX500_REG_DD_FLASH_TYPE CCI_REG8(0xD005)
++
++/* total size of download file (4-byte) */
++#define IMX500_REG_DD_DOWNLOAD_FILE_SIZE CCI_REG32(0xD008)
++
++/* Status notification (4-byte) */
++#define IMX500_REG_DD_REF_STS CCI_REG32(0xD010)
++#define IMX500_DD_REF_STS_FATAL 0xFF
++#define IMX500_DD_REF_STS_DETECT_CNT 0xFF00
++#define IMX500_DD_REF_STS_ERR_CNT 0xFF0000
++#define IMX500_DD_REF_CMD_REPLY_CNT 0xFF000000
++
++/* Command reply status */
++#define IMX500_REG_DD_CMD_REPLY_STS CCI_REG8(0xD014)
++#define IMX500_DD_CMD_REPLY_STS_TRANS_READY 0x00
++#define IMX500_DD_CMD_REPLY_STS_TRANS_DONE 0x01
++#define IMX500_DD_CMD_REPLY_STS_UPDATE_READY 0x10
++#define IMX500_DD_CMD_REPLY_STS_UPDATE_DONE 0x11
++#define IMX500_DD_CMD_REPLY_STS_UPDATE_CANCEL_DONE 0x12
++#define IMX500_DD_CMD_REPLY_STS_STATUS_ERROR 0xFF
++#define IMX500_DD_CMD_REPLY_STS_MAC_AUTH_ERROR 0xFE
++#define IMX500_DD_CMD_REPLY_STS_TIMEOUT_ERROR 0xFD
++#define IMX500_DD_CMD_REPLY_STS_PARAMETER_ERROR 0xFC
++#define IMX500_DD_CMD_REPLY_STS_INTERNAL_ERROR 0xFB
++#define IMX500_DD_CMD_REPLY_STS_PACKET_FMT_ERROR 0xFA
++
++/* Download status */
++#define IMX500_REG_DD_DOWNLOAD_STS CCI_REG8(0xD015)
++#define IMX500_DD_DOWNLOAD_STS_READY 0
++#define IMX500_DD_DOWNLOAD_STS_DOWNLOADING 1
++
++/* Update cancel */
++#define IMX500_REG_DD_UPDATE_CANCEL CCI_REG8(0xD016)
++#define IMX500_DD_UPDATE_CANCEL_NOT_CANCEL 0
++#define IMX500_DD_UPDATE_CANCEL_DO_CANCEL 1
++
++/* Notify error status */
++#define IMX500_REG_DD_ERR_STS CCI_REG8(0xD020)
++#define IMX500_DD_ERR_STS_STATUS_ERROR_BIT 0x1
++#define IMX500_DD_ERR_STS_INTERNAL_ERROR_BIT 0x2
++#define IMX500_DD_ERR_STS_PARAMETER_ERROR_BIT 0x4
++
++/* System state */
++#define IMX500_REG_DD_SYS_STATE CCI_REG8(0xD02A)
++#define IMX500_DD_SYS_STATE_STANDBY_NO_NETWORK 0
++#define IMX500_DD_SYS_STATE_STEAMING_NO_NETWORK 1
++#define IMX500_DD_SYS_STATE_STANDBY_WITH_NETWORK 2
++#define IMX500_DD_SYS_STATE_STREAMING_WITH_NETWORK 3
++
++#define IMX500_REG_MAIN_FW_VERSION CCI_REG32(0xD07C)
++
+ /* Colour balance controls */
+ #define IMX500_REG_COLOUR_BALANCE_R CCI_REG16(0xd804)
+ #define IMX500_REG_COLOUR_BALANCE_GR CCI_REG16(0xd806)
+@@ -81,6 +218,11 @@
+ #define IMX500_MAX_EMBEDDED_SIZE \
+ 	(2 * ((((IMX500_PIXEL_ARRAY_WIDTH * 10) >> 3) + 15) & ~15))
+ 
++/* Inference sizes */
++#define IMX500_INFERENCE_LINE_WIDTH 2560
++#define IMX500_NUM_KPI_LINES 1
++#define IMX500_NUM_PQ_LINES 1
++
+ /* IMX500 native and active pixel array size. */
+ #define IMX500_NATIVE_WIDTH 4072U
+ #define IMX500_NATIVE_HEIGHT 3176U
+@@ -89,7 +231,12 @@
+ #define IMX500_PIXEL_ARRAY_WIDTH 4056U
+ #define IMX500_PIXEL_ARRAY_HEIGHT 3040U
+ 
+-#define NUM_PADS 1
++enum pad_types { IMAGE_PAD, METADATA_PAD, NUM_PADS };
++
++#define V4L2_CID_USER_IMX500_INFERENCE_WINDOW (V4L2_CID_USER_IMX500_BASE + 0)
++#define V4L2_CID_USER_IMX500_NETWORK_FW_FD (V4L2_CID_USER_IMX500_BASE + 1)
++
++#define ONE_MIB (1024 * 1024)
+ 
+ /* regulator supplies */
+ static const char *const imx500_supply_name[] = {
+@@ -101,6 +248,13 @@ static const char *const imx500_supply_n
+ 
+ #define IMX500_NUM_SUPPLIES ARRAY_SIZE(imx500_supply_name)
+ 
++enum imx500_image_type {
++	TYPE_LOADER = 0,
++	TYPE_MAIN = 1,
++	TYPE_NW_WEIGHTS = 2,
++	TYPE_MAX
++};
++
+ struct imx500_reg_list {
+ 	unsigned int num_of_regs;
+ 	const struct cci_reg_sequence *regs;
+@@ -135,10 +289,19 @@ static const struct cci_reg_sequence mod
+ 	{ CCI_REG8(0x0106), 0x01 }, /* FAST_STANDBY_CTL */
+ 	{ CCI_REG8(0x0136), 0x1b }, /* EXCLK_FREQ */
+ 	{ CCI_REG8(0x0137), 0x00 },
+-	{ CCI_REG8(0x0138), 0x01 }, /* TEMP_SENS_CTL */
+ 	{ CCI_REG8(0x0112), 0x0a },
+ 	{ CCI_REG8(0x0113), 0x0a },
+ 	{ CCI_REG8(0x0114), 0x01 }, /* CSI_LANE_MODE */
++	{ CCI_REG16(0x3054), IMX500_INFERENCE_LINE_WIDTH },
++	{ CCI_REG16(0x3056), IMX500_INFERENCE_LINE_WIDTH },
++	{ CCI_REG16(0x3058), IMX500_INFERENCE_LINE_WIDTH },
++	{ CCI_REG16(0x305A), IMX500_INFERENCE_LINE_WIDTH }, /* X_OUT */
++	{ CCI_REG16(0x305C), IMX500_NUM_KPI_LINES }, /* KPI Y_OUT */
++	{ CCI_REG16(0x3062), IMX500_NUM_PQ_LINES }, /* PQ Y_OUT */
++	{ CCI_REG8(0x3068), 0x30 },
++	{ CCI_REG8(0x3069), 0x31 },
++	{ CCI_REG8(0x306A), 0x32 },
++	{ CCI_REG8(0x306B), 0x33 }, /* Data Types */
+ };
+ 
+ /* 12 mpix 15fps */
+@@ -624,6 +787,111 @@ static const struct cci_reg_sequence mod
+ 	{ CCI_REG8(0x0215), 0x00 },
+ };
+ 
++static const struct cci_reg_sequence metadata_output[] = {
++	{ CCI_REG8(0x3050), 1 }, /* MIPI Output enabled */
++	{ CCI_REG8(0x3051), 1 }, /* MIPI output frame includes pixels data */
++	{ CCI_REG8(0x3052), 1 }, /* MIPI output frame includes meta data */
++	{ IMX500_REG_DD_CH06_VCID, 0 },
++	{ IMX500_REG_DD_CH07_VCID, 0 },
++	{ IMX500_REG_DD_CH08_VCID, 0 },
++	{ IMX500_REG_DD_CH09_VCID, 0 },
++	{ IMX500_REG_DD_CH06_DT,
++	  0x12 }, /* KPI - User Defined 8-bit Data Type 1 */
++	{ IMX500_REG_DD_CH07_DT, 0x12 }, /* Input Tensor - U.D. 8-bit type 2 */
++	{ IMX500_REG_DD_CH08_DT, 0x12 }, /* Output Tensor - U.D. 8-bit type 3 */
++	{ IMX500_REG_DD_CH09_DT, 0x12 }, /* PQ - U.D. 8-bit type 4 */
++	{ IMX500_REG_DD_CH06_PACKING, IMX500_DD_PACKING_8BPP },
++	{ IMX500_REG_DD_CH07_PACKING, IMX500_DD_PACKING_8BPP },
++	{ IMX500_REG_DD_CH08_PACKING, IMX500_DD_PACKING_8BPP },
++	{ IMX500_REG_DD_CH09_PACKING, IMX500_DD_PACKING_8BPP },
++};
++
++static const struct cci_reg_sequence dnn_regs[] = {
++	{ CCI_REG8(0xd960), 0x52 },
++	{ CCI_REG8(0xd961), 0x52 },
++	{ CCI_REG8(0xd962), 0x52 },
++	{ CCI_REG8(0xd963), 0x52 },
++	{ CCI_REG8(0xd96c), 0x44 },
++	{ CCI_REG8(0xd96d), 0x44 },
++	{ CCI_REG8(0xd96e), 0x44 },
++	{ CCI_REG8(0xd96f), 0x44 },
++	{ CCI_REG8(0xd600), 0x20 },
++	/* Black level */
++	{ CCI_REG16(0xd80c), 0x100 },
++	{ CCI_REG16(0xd80e), 0x100 },
++	{ CCI_REG16(0xd810), 0x100 },
++	{ CCI_REG16(0xd812), 0x100 },
++	/* Gamma */
++	{ CCI_REG8(0xd814), 1 },
++	{ CCI_REG32(0xd850), 0x10000 },
++	{ CCI_REG32(0xd854), 0x40002 },
++	{ CCI_REG32(0xd858), 0x60005 },
++	{ CCI_REG32(0xd85c), 0x90008 },
++	{ CCI_REG32(0xd860), 0xc000a },
++	{ CCI_REG32(0xd864), 0x12000f },
++	{ CCI_REG32(0xd868), 0x1c0014 },
++	{ CCI_REG32(0xd86c), 0x2a0024 },
++	{ CCI_REG32(0xd870), 0x360030 },
++	{ CCI_REG32(0xd874), 0x46003c },
++	{ CCI_REG32(0xd878), 0x5a0051 },
++	{ CCI_REG32(0xd87c), 0x750064 },
++	{ CCI_REG32(0xd880), 0x920084 },
++	{ CCI_REG32(0xd884), 0xa9009e },
++	{ CCI_REG32(0xd888), 0xba00b2 },
++	{ CCI_REG32(0xd88c), 0xc700c1 },
++	{ CCI_REG32(0xd890), 0xd100cd },
++	{ CCI_REG32(0xd894), 0xde00d6 },
++	{ CCI_REG32(0xd898), 0xe900e4 },
++	{ CCI_REG32(0xd89c), 0xf300ee },
++	{ CCI_REG32(0xd8a0), 0xfb00f7 },
++	{ CCI_REG16(0xd8a4), 0xff },
++	{ CCI_REG32(0xd8a8), 0x10000 },
++	{ CCI_REG32(0xd8ac), 0x40002 },
++	{ CCI_REG32(0xd8b0), 0x60005 },
++	{ CCI_REG32(0xd8b4), 0x90008 },
++	{ CCI_REG32(0xd8b8), 0xc000a },
++	{ CCI_REG32(0xd8bc), 0x12000f },
++	{ CCI_REG32(0xd8c0), 0x1c0014 },
++	{ CCI_REG32(0xd8c4), 0x2a0024 },
++	{ CCI_REG32(0xd8c8), 0x360030 },
++	{ CCI_REG32(0xd8cc), 0x46003c },
++	{ CCI_REG32(0xd8d0), 0x5a0051 },
++	{ CCI_REG32(0xd8d4), 0x750064 },
++	{ CCI_REG32(0xd8d8), 0x920084 },
++	{ CCI_REG32(0xd8dc), 0xa9009e },
++	{ CCI_REG32(0xd8e0), 0xba00b2 },
++	{ CCI_REG32(0xd8e4), 0xc700c1 },
++	{ CCI_REG32(0xd8e8), 0xd100cd },
++	{ CCI_REG32(0xd8ec), 0xde00d6 },
++	{ CCI_REG32(0xd8f0), 0xe900e4 },
++	{ CCI_REG32(0xd8f4), 0xf300ee },
++	{ CCI_REG32(0xd8f8), 0xfb00f7 },
++	{ CCI_REG16(0xd8fc), 0xff },
++	{ CCI_REG32(0xd900), 0x10000 },
++	{ CCI_REG32(0xd904), 0x40002 },
++	{ CCI_REG32(0xd908), 0x60005 },
++	{ CCI_REG32(0xd90c), 0x90008 },
++	{ CCI_REG32(0xd910), 0xc000a },
++	{ CCI_REG32(0xd914), 0x12000f },
++	{ CCI_REG32(0xd918), 0x1c0014 },
++	{ CCI_REG32(0xd91c), 0x2a0024 },
++	{ CCI_REG32(0xd920), 0x360030 },
++	{ CCI_REG32(0xd924), 0x46003c },
++	{ CCI_REG32(0xd928), 0x5a0051 },
++	{ CCI_REG32(0xd92c), 0x750064 },
++	{ CCI_REG32(0xd930), 0x920084 },
++	{ CCI_REG32(0xd934), 0xa9009e },
++	{ CCI_REG32(0xd938), 0xba00b2 },
++	{ CCI_REG32(0xd93c), 0xc700c1 },
++	{ CCI_REG32(0xd940), 0xd100cd },
++	{ CCI_REG32(0xd944), 0xde00d6 },
++	{ CCI_REG32(0xd948), 0xe900e4 },
++	{ CCI_REG32(0xd94c), 0xf300ee },
++	{ CCI_REG32(0xd950), 0xfb00f7 },
++	{ CCI_REG16(0xd954), 0xff },
++	{ CCI_REG8(0xd826), 1 },
++};
++
+ /* Mode configs */
+ static const struct imx500_mode imx500_supported_modes[] = {
+ 	{
+@@ -679,9 +947,17 @@ static const u32 codes[] = {
+ 	MEDIA_BUS_FMT_SBGGR10_1X10,
+ };
+ 
++enum imx500_state {
++	IMX500_STATE_RESET = 0,
++	IMX500_STATE_PROGRAM_EMPTY,
++	IMX500_STATE_WITHOUT_NETWORK,
++	IMX500_STATE_WITH_NETWORK,
++};
++
+ struct imx500 {
++	struct dentry *debugfs;
+ 	struct v4l2_subdev sd;
+-	struct media_pad pad;
++	struct media_pad pad[NUM_PADS];
+ 	struct regmap *regmap;
+ 
+ 	unsigned int fmt_code;
+@@ -701,6 +977,9 @@ struct imx500 {
+ 	struct v4l2_ctrl *hflip;
+ 	struct v4l2_ctrl *vblank;
+ 	struct v4l2_ctrl *hblank;
++	struct v4l2_ctrl *network_fw_ctrl;
++
++	struct v4l2_rect inference_window;
+ 
+ 	/* Current mode */
+ 	const struct imx500_mode *mode;
+@@ -717,8 +996,24 @@ struct imx500 {
+ 	/* Rewrite common registers on stream on? */
+ 	bool common_regs_written;
+ 
++	bool loader_and_main_written;
++	bool network_written;
++
+ 	/* Current long exposure factor in use. Set through V4L2_CID_VBLANK */
+ 	unsigned int long_exp_shift;
++
++	struct spi_device *spi_device;
++
++	const struct firmware *fw_loader;
++	const struct firmware *fw_main;
++	const u8 *fw_network;
++	size_t fw_network_size;
++	size_t fw_progress;
++	unsigned int fw_stage;
++
++	enum imx500_state fsm_state;
++
++	u32 num_inference_lines;
+ };
+ 
+ static inline struct imx500 *to_imx500(struct v4l2_subdev *_sd)
+@@ -726,6 +1021,188 @@ static inline struct imx500 *to_imx500(s
+ 	return container_of(_sd, struct imx500, sd);
+ }
+ 
++static bool validate_normalization_yuv(u16 reg, uint8_t size,
++				       uint32_t value)
++{
++	/* Some regs are 9-bit, some 8-bit, some 1-bit */
++	switch (reg) {
++	case 0xD62A:
++	case 0xD632:
++	case 0xD63A:
++	case 0xD644:
++	case 0xD648:
++	case 0xD64C:
++	case 0xD650:
++	case 0xD654:
++	case 0xD658:
++		return size == 2 && !(value & ~0x1FF);
++	case 0xD600:
++	case 0xD601:
++	case 0xD602:
++		return size == 1 && !(value & ~0xFF);
++	case 0xD629:
++	case 0xD630:
++	case 0xD638:
++	case 0xD643:
++	case 0xD647:
++	case 0xD64B:
++	case 0xD64F:
++	case 0xD653:
++	case 0xD657:
++		return size == 1 && !(value & ~0x01);
++	default:
++		return false;
++	}
++}
++
++/* Common function as bayer rgb + normalization use the same repeating register
++ * layout
++ */
++static bool validate_bit_pattern(u8 offset, uint8_t size, uint32_t value)
++{
++	/* There are no odd register addresses */
++	if (offset & 1)
++		return false;
++
++	/* Valid register sizes/patterns repeat every 4 */
++	offset = (offset >> 1) & 3;
++
++	if (offset == 1)
++		return size == 1 && !(value & ~1);
++	else
++		return size == 2 && !(value & ~0x1FF);
++}
++
++static bool validate_bayer_rgb_normalization(u16 reg, uint8_t size,
++					     uint32_t value)
++{
++	if (reg < 0xD684 || reg >= 0xD6E4)
++		return false;
++	return validate_bit_pattern(reg - 0xD684, size, value);
++}
++
++static bool validate_normalization_registers(u16 reg, uint8_t size,
++					     uint32_t value)
++{
++	if (reg < 0xD708 || reg >= 0xD750)
++		return false;
++	return validate_bit_pattern(reg - 0xD708, size, value);
++}
++
++static bool validate_image_format_selection(u16 reg, uint8_t size,
++					    uint32_t value)
++{
++	if (size != 1 || value > 5)
++		return false;
++	if (reg < 0xD750 || reg > 0xd752)
++		return false;
++	return true;
++}
++
++static bool validate_yc_conversion_factor(u16 reg, uint8_t size,
++					  uint32_t value)
++{
++	static const u32 allowed[9] = {
++		0x0FFF0FFF, 0x0FFF1FFF, 0x0FFF0FFF, 0x0FFF1FFF, 0x0FFF0FFF,
++		0x0FFF1FFF, 0x01FF01FF, 0x01FF01FF, 0x01FF01FF,
++	};
++
++	if (size > 4 || size & 1 || reg & 1 || reg < 0x76C || reg > 0xD7FA)
++		return false;
++
++	if (size == 2) {
++		if (reg & 2)
++			reg -= 2;
++		else
++			value <<= 16;
++	}
++
++	/* High registers (clip values) are all 2x 9-bit */
++	if (reg >= 0xD7D8)
++		return !(value & ~0x01FF01FF);
++
++	/* Early registers follow a repeating pattern */
++	reg -= 0xD76C;
++	reg >>= 2;
++	return !(value & ~allowed[reg % sizeof(allowed)]);
++}
++
++static bool validate_dnn_output_setting(u16 reg, uint8_t size,
++					uint32_t value)
++{
++	/* Only Y_OUT_SIZE for Input Tensor / Output Tensor is configurable from
++	 * userspace
++	 */
++	return (size == 2) && (value < 2046) &&
++	       ((reg == CCI_REG_ADDR(IMX500_REG_DD_CH07_Y_OUT_SIZE)) ||
++		(reg == CCI_REG_ADDR(IMX500_REG_DD_CH08_Y_OUT_SIZE)));
++}
++
++static bool __must_check
++imx500_validate_inference_register(const struct cci_reg_sequence *reg)
++{
++	unsigned int i;
++
++	static bool (*const checks[])(uint16_t, uint8_t, uint32_t) = {
++		validate_normalization_yuv,
++		validate_bayer_rgb_normalization,
++		validate_normalization_registers,
++		validate_image_format_selection,
++		validate_yc_conversion_factor,
++		validate_dnn_output_setting,
++	};
++
++	if (!reg)
++		return false;
++
++	for (i = 0; i < ARRAY_SIZE(checks); i++) {
++		if (checks[i](CCI_REG_ADDR(reg->reg),
++			      CCI_REG_WIDTH_BYTES(reg->reg), reg->val))
++			return true;
++	}
++
++	return false;
++}
++
++static int imx500_set_inference_window(struct imx500 *imx500)
++{
++	u16 left, top, width, height;
++
++	if (!imx500->inference_window.width ||
++	    !imx500->inference_window.height) {
++		width = 4056;
++		height = 3040;
++		left = 0;
++		top = 0;
++	} else {
++		width = min_t(u16, imx500->inference_window.width, 4056);
++		height = min_t(u16, imx500->inference_window.height, 3040);
++		left = min_t(u16, imx500->inference_window.left, 4056);
++		top = min_t(u16, imx500->inference_window.top, 3040);
++	}
++
++	const struct cci_reg_sequence window_regs[] = {
++		{ IMX500_REG_DWP_AP_VC_HOFF, left },
++		{ IMX500_REG_DWP_AP_VC_VOFF, top },
++		{ IMX500_REG_DWP_AP_VC_HSIZE, width },
++		{ IMX500_REG_DWP_AP_VC_VSIZE, height },
++	};
++
++	return cci_multi_reg_write(imx500->regmap, window_regs,
++				   ARRAY_SIZE(window_regs), NULL);
++}
++
++static int imx500_reg_val_write_cbk(void *arg,
++				    const struct cci_reg_sequence *reg)
++{
++	struct imx500 *imx500 = arg;
++
++	if (!imx500_validate_inference_register(reg))
++		return -EINVAL;
++
++	return cci_write(imx500->regmap, reg->reg, reg->val, NULL);
++}
++
+ /* Get bayer order based on flip setting. */
+ static u32 imx500_get_format_code(struct imx500 *imx500)
+ {
+@@ -745,6 +1222,144 @@ static void imx500_set_default_format(st
+ 	imx500->fmt_code = MEDIA_BUS_FMT_SRGGB10_1X10;
+ }
+ 
++/* -1 on fail, block size on success */
++static int imx500_validate_fw_block(const char *data, size_t maxlen)
++{
++	const size_t header_size = 32;
++	static const char header_id[] = { '9', '4', '6', '4' };
++
++	const size_t footer_size = 64;
++	static const char footer_id[] = { '3', '6', '9', '5' };
++
++	u32 data_size;
++
++	const char *end = data + maxlen;
++
++	if (!data)
++		return -1;
++
++	if (maxlen < header_size)
++		return -1;
++
++	if (memcmp(data, &header_id, sizeof(header_id)))
++		return -1;
++
++	/* data_size is size of header + body */
++	memcpy(&data_size, data + sizeof(header_id), sizeof(data_size));
++	data_size = ___constant_swab32(data_size);
++
++	if (end - data_size - footer_size < data)
++		return -1;
++	if (memcmp(data + data_size + footer_size - sizeof(footer_id),
++		   &footer_id, sizeof(footer_id)))
++		return -1;
++
++	return data_size + footer_size;
++}
++
++/* Parse fw block by block, returning total valid fw size */
++static size_t imx500_valid_fw_bytes(const u8 *fw,
++				    const size_t fw_size)
++{
++	int i;
++	size_t bytes = 0;
++
++	const u8 *data = fw;
++	size_t size = fw_size;
++
++	while ((i = imx500_validate_fw_block(data, size)) > 0) {
++		bytes += i;
++		data += i;
++		size -= i;
++	}
++
++	return bytes;
++}
++
++static int imx500_iterate_nw_regs(
++	const u8 *fw, size_t fw_size, void *arg,
++	int (*cbk)(void *arg, const struct cci_reg_sequence *reg))
++{
++	struct cpio_data cd = { NULL, 0, "" };
++	const u8 *read_pos;
++	size_t entries;
++	size_t size;
++
++	if (!fw || !cbk)
++		return -EINVAL;
++
++	size = imx500_valid_fw_bytes(fw, fw_size);
++	cd = find_cpio_data("imx500_regs", (void *)(fw + size),
++			    fw_size - size, NULL);
++	if (!cd.data || cd.size % 7)
++		return -EINVAL;
++
++	read_pos = cd.data;
++	entries = cd.size / 7;
++
++	while (entries--) {
++		struct cci_reg_sequence reg = { 0, 0 };
++		u16 addr;
++		u8 len;
++		u32 val;
++		int ret;
++
++		memcpy(&addr, read_pos, sizeof(addr));
++		read_pos += sizeof(addr);
++		memcpy(&len, read_pos, sizeof(len));
++		read_pos += sizeof(len);
++		memcpy(&val, read_pos, sizeof(val));
++		read_pos += sizeof(val);
++
++		reg.reg = ((len << CCI_REG_WIDTH_SHIFT) | addr);
++		reg.val = val;
++
++		ret = cbk(arg, &reg);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int imx500_reg_tensor_lines_cbk(void *arg,
++				       const struct cci_reg_sequence *reg)
++{
++	u16 *tensor_lines = arg;
++
++	if (reg->val < 2046) {
++		switch (reg->reg) {
++		case IMX500_REG_DD_CH07_Y_OUT_SIZE:
++			tensor_lines[0] = reg->val;
++			break;
++		case IMX500_REG_DD_CH08_Y_OUT_SIZE:
++			tensor_lines[1] = reg->val;
++			break;
++		}
++	}
++
++	return 0;
++}
++
++static void imx500_calc_inference_lines(struct imx500 *imx500)
++{
++	u16 tensor_lines[2] = { 0, 0 };
++
++	if (!imx500->fw_network) {
++		imx500->num_inference_lines = 0;
++		return;
++	}
++
++	imx500_iterate_nw_regs(imx500->fw_network, imx500->fw_network_size,
++			       tensor_lines, imx500_reg_tensor_lines_cbk);
++
++	/* Full-res mode, embedded lines are actually slightly shorter than inference
++	 * lines 2544 vs 2560 (over-allocate with inf. width)
++	 */
++	imx500->num_inference_lines = IMX500_NUM_KPI_LINES +
++				      IMX500_NUM_PQ_LINES + tensor_lines[0] +
++				      tensor_lines[1];
++}
++
+ static void imx500_adjust_exposure_range(struct imx500 *imx500)
+ {
+ 	int exposure_max, exposure_def;
+@@ -777,6 +1392,99 @@ static int imx500_set_frame_length(struc
+ 			 imx500->long_exp_shift, NULL);
+ }
+ 
++/* reg is both input and output:
++ * reg->val is the value we're polling until we're NEQ to
++ * It is then populated with the updated value.
++ */
++static int __must_check imx500_poll_status_reg(struct imx500 *state,
++					       struct cci_reg_sequence *reg,
++					       u8 timeout)
++{
++	u64 read_value;
++	int ret;
++
++	while (timeout) {
++		ret = cci_read(state->regmap, reg->reg, &read_value, NULL);
++		if (ret)
++			return ret;
++
++		if (read_value != reg->val) {
++			reg->val = read_value;
++			return 0;
++		}
++
++		timeout--;
++		mdelay(50);
++	}
++	return -EAGAIN;
++}
++
++static int imx500_prepare_poll_cmd_reply_sts(struct imx500 *imx500,
++					     struct cci_reg_sequence *cmd_reply)
++{
++	/* Perform single-byte read of 4-byte IMX500_REG_DD_REF_STS register to
++	 * target CMD_REPLY_STS_CNT sub-register
++	 */
++	cmd_reply->reg = CCI_REG8(CCI_REG_ADDR(IMX500_REG_DD_REF_STS));
++
++	return cci_read(imx500->regmap, cmd_reply->reg, &cmd_reply->val, NULL);
++}
++
++static int imx500_clear_weights(struct imx500 *imx500)
++{
++	struct cci_reg_sequence cmd_reply_sts_cnt_reg;
++	u64 imx500_fsm_state;
++	u64 cmd_reply;
++	int ret;
++
++	static const struct cci_reg_sequence request_clear[] = {
++		{ IMX500_REG_DD_ST_TRANS_CMD,
++		  IMX500_DD_ST_TRANS_CMD_CLEAR_WEIGHTS },
++		{ IMX500_REG_DD_CMD_INT, IMX500_DD_CMD_INT_ST_TRANS },
++	};
++
++	if (imx500->fsm_state != IMX500_STATE_WITH_NETWORK)
++		return -EINVAL;
++
++	ret = cci_read(imx500->regmap, IMX500_REG_DD_SYS_STATE,
++		       &imx500_fsm_state, NULL);
++	if (ret || imx500_fsm_state != IMX500_DD_SYS_STATE_STANDBY_WITH_NETWORK)
++		return ret ? ret : -EREMOTEIO;
++
++	ret = imx500_prepare_poll_cmd_reply_sts(imx500, &cmd_reply_sts_cnt_reg);
++	if (ret)
++		return ret;
++
++	ret = cci_multi_reg_write(imx500->regmap, request_clear,
++				  ARRAY_SIZE(request_clear), NULL);
++	if (ret)
++		return ret;
++
++	ret = imx500_poll_status_reg(imx500, &cmd_reply_sts_cnt_reg, 5);
++	if (ret)
++		return ret;
++
++	ret = cci_read(imx500->regmap, IMX500_REG_DD_CMD_REPLY_STS, &cmd_reply,
++		       NULL);
++	if (ret || cmd_reply != IMX500_DD_CMD_REPLY_STS_TRANS_DONE)
++		return ret ? ret : -EREMOTEIO;
++
++	imx500->fsm_state = IMX500_STATE_WITHOUT_NETWORK;
++	imx500->network_written = false;
++	return 0;
++}
++
++static void imx500_clear_fw_network(struct imx500 *imx500)
++{
++	/* Remove any previous firmware blob. */
++	if (imx500->fw_network)
++		vfree(imx500->fw_network);
++
++	imx500->fw_network = NULL;
++	imx500->network_written = false;
++	imx500->fw_progress = 0;
++}
++
+ static int imx500_set_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct imx500 *imx500 =
+@@ -784,6 +1492,53 @@ static int imx500_set_ctrl(struct v4l2_c
+ 	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
+ 	int ret = 0;
+ 
++	if (ctrl->id == V4L2_CID_USER_IMX500_NETWORK_FW_FD) {
++		/* Reset state of the control. */
++		if (ctrl->val < 0) {
++			return 0;
++		} else if (ctrl->val == S32_MAX) {
++			ctrl->val = -1;
++			if (pm_runtime_get_if_in_use(&client->dev) == 0)
++				return 0;
++
++			if (imx500->network_written)
++				ret = imx500_clear_weights(imx500);
++			imx500_clear_fw_network(imx500);
++
++			pm_runtime_mark_last_busy(&client->dev);
++			pm_runtime_put_autosuspend(&client->dev);
++
++			return ret;
++		}
++
++		imx500_clear_fw_network(imx500);
++		ret = kernel_read_file_from_fd(ctrl->val, 0,
++					       (void **)&imx500->fw_network, INT_MAX,
++					       &imx500->fw_network_size,
++					       1);
++		/*
++		 * Back to reset state, the FD cannot be considered valid after
++		 * this IOCTL completes.
++		 */
++		ctrl->val = -1;
++
++		if (ret < 0) {
++			dev_err(&client->dev, "%s failed to read fw image: %d\n",
++				__func__, ret);
++			imx500_clear_fw_network(imx500);
++			return ret;
++		}
++		if (ret != imx500->fw_network_size) {
++			dev_err(&client->dev, "%s read fw image size mismatich: got %u, expected %zu\n",
++				__func__, ret, imx500->fw_network_size);
++			imx500_clear_fw_network(imx500);
++			return -EIO;
++		}
++
++		imx500_calc_inference_lines(imx500);
++		return 0;
++	}
++
+ 	/*
+ 	 * The VBLANK control may change the limits of usable exposure, so check
+ 	 * and adjust if necessary.
+@@ -831,6 +1586,11 @@ static int imx500_set_ctrl(struct v4l2_c
+ 		cci_write(imx500->regmap, IMX500_REG_COLOUR_BALANCE_R,
+ 			  ctrl->p_new.p_u32[3], &ret);
+ 		break;
++	case V4L2_CID_USER_IMX500_INFERENCE_WINDOW:
++		memcpy(&imx500->inference_window, ctrl->p_new.p_u32,
++		       sizeof(struct v4l2_rect));
++		ret = imx500_set_inference_window(imx500);
++		break;
+ 	default:
+ 		dev_info(&client->dev,
+ 			 "ctrl(id:0x%x,val:0x%x) is not handled\n", ctrl->id,
+@@ -870,10 +1630,17 @@ static int imx500_enum_mbus_code(struct
+ 	if (code->pad >= NUM_PADS)
+ 		return -EINVAL;
+ 
+-	if (code->index != 0)
+-		return -EINVAL;
++	if (code->pad == IMAGE_PAD) {
++		if (code->index != 0)
++			return -EINVAL;
+ 
+-	code->code = imx500_get_format_code(imx500);
++		code->code = imx500_get_format_code(imx500);
++	} else {
++		if (code->index > 0)
++			return -EINVAL;
++
++		code->code = MEDIA_BUS_FMT_SENSOR_DATA;
++	}
+ 
+ 	return 0;
+ }
+@@ -887,19 +1654,31 @@ static int imx500_enum_frame_size(struct
+ 	if (fse->pad >= NUM_PADS)
+ 		return -EINVAL;
+ 
+-	const struct imx500_mode *mode_list = imx500_supported_modes;
+-	unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
+-
+-	if (fse->index >= num_modes)
+-		return -EINVAL;
+-
+-	if (fse->code != imx500_get_format_code(imx500))
+-		return -EINVAL;
++	if (fse->pad == IMAGE_PAD) {
++		const struct imx500_mode *mode_list = imx500_supported_modes;
++		unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
++
++		if (fse->index >= num_modes)
++			return -EINVAL;
++
++		if (fse->code != imx500_get_format_code(imx500))
++			return -EINVAL;
++
++		fse->min_width = mode_list[fse->index].width;
++		fse->max_width = fse->min_width;
++		fse->min_height = mode_list[fse->index].height;
++		fse->max_height = fse->min_height;
++	} else {
++		if (fse->code != MEDIA_BUS_FMT_SENSOR_DATA || fse->index > 0)
++			return -EINVAL;
+ 
+-	fse->min_width = mode_list[fse->index].width;
+-	fse->max_width = fse->min_width;
+-	fse->min_height = mode_list[fse->index].height;
+-	fse->max_height = fse->min_height;
++		fse->min_width = IMX500_MAX_EMBEDDED_SIZE +
++				 imx500->num_inference_lines *
++					 IMX500_INFERENCE_LINE_WIDTH;
++		fse->max_width = fse->min_width;
++		fse->min_height = 1;
++		fse->max_height = fse->min_height;
++	}
+ 
+ 	return 0;
+ }
+@@ -920,6 +1699,17 @@ static void imx500_update_image_pad_form
+ 		V4L2_MAP_XFER_FUNC_DEFAULT(fmt->format.colorspace);
+ }
+ 
++static void imx500_update_metadata_pad_format(const struct imx500 *imx500,
++					      struct v4l2_subdev_format *fmt)
++{
++	fmt->format.width =
++		IMX500_MAX_EMBEDDED_SIZE +
++		imx500->num_inference_lines * IMX500_INFERENCE_LINE_WIDTH;
++	fmt->format.height = 1;
++	fmt->format.code = MEDIA_BUS_FMT_SENSOR_DATA;
++	fmt->format.field = V4L2_FIELD_NONE;
++}
++
+ static int imx500_get_pad_format(struct v4l2_subdev *sd,
+ 				 struct v4l2_subdev_state *sd_state,
+ 				 struct v4l2_subdev_format *fmt)
+@@ -935,11 +1725,18 @@ static int imx500_get_pad_format(struct
+ 		struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_get_try_format(
+ 			&imx500->sd, sd_state, fmt->pad);
+ 		/* update the code which could change due to vflip or hflip */
+-		try_fmt->code = imx500_get_format_code(imx500);
++		try_fmt->code = fmt->pad == IMAGE_PAD ?
++					imx500_get_format_code(imx500) :
++					MEDIA_BUS_FMT_SENSOR_DATA;
+ 		fmt->format = *try_fmt;
+ 	} else {
+-		imx500_update_image_pad_format(imx500, imx500->mode, fmt);
+-		fmt->format.code = imx500_get_format_code(imx500);
++		if (fmt->pad == IMAGE_PAD) {
++			imx500_update_image_pad_format(imx500, imx500->mode,
++						       fmt);
++			fmt->format.code = imx500_get_format_code(imx500);
++		} else {
++			imx500_update_metadata_pad_format(imx500, fmt);
++		}
+ 	}
+ 
+ 	mutex_unlock(&imx500->mutex);
+@@ -1000,22 +1797,35 @@ static int imx500_set_pad_format(struct
+ 
+ 	mutex_lock(&imx500->mutex);
+ 
+-	const struct imx500_mode *mode_list = imx500_supported_modes;
+-	unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
++	if (fmt->pad == IMAGE_PAD) {
++		const struct imx500_mode *mode_list = imx500_supported_modes;
++		unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
+ 
+-	/* Bayer order varies with flips */
+-	fmt->format.code = imx500_get_format_code(imx500);
++		/* Bayer order varies with flips */
++		fmt->format.code = imx500_get_format_code(imx500);
+ 
+-	mode = v4l2_find_nearest_size(mode_list, num_modes, width, height,
+-				      fmt->format.width, fmt->format.height);
+-	imx500_update_image_pad_format(imx500, mode, fmt);
+-	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
+-		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+-		*framefmt = fmt->format;
+-	} else if (imx500->mode != mode) {
+-		imx500->mode = mode;
+-		imx500->fmt_code = fmt->format.code;
+-		imx500_set_framing_limits(imx500);
++		mode = v4l2_find_nearest_size(mode_list, num_modes, width,
++					      height, fmt->format.width,
++					      fmt->format.height);
++		imx500_update_image_pad_format(imx500, mode, fmt);
++		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
++							      fmt->pad);
++			*framefmt = fmt->format;
++		} else if (imx500->mode != mode) {
++			imx500->mode = mode;
++			imx500->fmt_code = fmt->format.code;
++			imx500_set_framing_limits(imx500);
++		}
++	} else {
++		if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++			framefmt = v4l2_subdev_get_try_format(sd, sd_state,
++							      fmt->pad);
++			*framefmt = fmt->format;
++		} else {
++			/* Only one embedded data mode is supported */
++			imx500_update_metadata_pad_format(imx500, fmt);
++		}
+ 	}
+ 
+ 	mutex_unlock(&imx500->mutex);
+@@ -1074,6 +1884,243 @@ static int imx500_get_selection(struct v
+ 	return -EINVAL;
+ }
+ 
++static int __must_check imx500_spi_write(struct imx500 *state, const u8 *data,
++					 size_t size)
++{
++	if (size % 4 || size > ONE_MIB)
++		return -EINVAL;
++
++	if (!state->spi_device)
++		return -ENODEV;
++
++	return spi_write(state->spi_device, data, size);
++}
++
++/* Moves the IMX500 internal state machine between states or updates.
++ *
++ * Prerequisites: Sensor is powered on and not currently streaming
++ */
++static int imx500_state_transition(struct imx500 *imx500, const u8 *fw,
++				   size_t fw_size, enum imx500_image_type type,
++				   bool update)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	struct cci_reg_sequence cmd_reply_sts_cnt_reg;
++	size_t valid_size;
++	int ret;
++	u64 tmp;
++
++	if (!imx500 || !fw || type >= TYPE_MAX)
++		return -EINVAL;
++
++	if (!update && (int)type != (int)imx500->fsm_state)
++		return -EINVAL;
++
++	/* Validate firmware */
++	valid_size = imx500_valid_fw_bytes(fw, fw_size);
++	if (!valid_size)
++		return -EINVAL;
++
++	ret = imx500_prepare_poll_cmd_reply_sts(imx500, &cmd_reply_sts_cnt_reg);
++	if (ret)
++		return ret;
++
++	struct cci_reg_sequence common_regs[] = {
++		{ IMX500_REG_DD_FLASH_TYPE, 0x02 },
++		{ IMX500_REG_DD_LOAD_MODE, IMX500_DD_LOAD_MODE_AP },
++		{ IMX500_REG_DD_IMAGE_TYPE, type },
++		{ IMX500_REG_DD_DOWNLOAD_DIV_NUM, (valid_size - 1) / ONE_MIB },
++		{ IMX500_REG_DD_DOWNLOAD_FILE_SIZE, valid_size },
++	};
++
++	struct cci_reg_sequence state_transition_regs[] = {
++		{ IMX500_REG_DD_ST_TRANS_CMD, type },
++		{ IMX500_REG_DD_CMD_INT, IMX500_DD_CMD_INT_ST_TRANS },
++	};
++
++	struct cci_reg_sequence update_regs[] = {
++		{ IMX500_REG_DD_UPDATE_CMD, IMX500_DD_UPDATE_CMD_SRAM },
++		{ IMX500_REG_DD_CMD_INT, IMX500_DD_CMD_INT_UPDATE },
++	};
++
++	ret = cci_multi_reg_write(imx500->regmap, common_regs,
++				  ARRAY_SIZE(common_regs), NULL);
++
++	cci_multi_reg_write(imx500->regmap,
++			    update ? update_regs : state_transition_regs, 2,
++			    &ret);
++	if (ret)
++		return ret;
++
++	/* Poll CMD_REPLY_STS_CNT until a response is available */
++	ret = imx500_poll_status_reg(imx500, &cmd_reply_sts_cnt_reg, 5);
++	if (ret) {
++		dev_err(&client->dev, "DD_REF_STS register did not update\n");
++		return ret;
++	}
++
++	/* Read response to state transition / update request */
++	ret = cci_read(imx500->regmap, IMX500_REG_DD_CMD_REPLY_STS, &tmp, NULL);
++	if (ret || tmp != (update ? IMX500_DD_CMD_REPLY_STS_UPDATE_READY :
++				    IMX500_DD_CMD_REPLY_STS_TRANS_READY))
++		return ret ? ret : -EBUSY;
++
++	imx500->fw_stage = type;
++	imx500->fw_progress = 0;
++
++	for (size_t i = 0; i <= valid_size / ONE_MIB; i++) {
++		const u8 *data = fw + (i * ONE_MIB);
++		size_t size = valid_size - (i * ONE_MIB);
++		struct cci_reg_sequence download_sts_reg = {
++			IMX500_REG_DD_DOWNLOAD_STS,
++			IMX500_DD_DOWNLOAD_STS_DOWNLOADING,
++		};
++
++		/* Calculate SPI xfer size avoiding 0-sized TXNs */
++		size = min_t(size_t, size, ONE_MIB);
++		if (!size)
++			break;
++
++		/* Poll until device is ready for download */
++		ret = imx500_poll_status_reg(imx500, &download_sts_reg, 100);
++		if (ret) {
++			dev_err(&client->dev,
++				"DD_DOWNLOAD_STS was never ready\n");
++			return ret;
++		}
++
++		/* Do SPI transfer */
++		ret = imx500_spi_write(imx500, data, size);
++		imx500->fw_progress += size;
++
++		if (ret < 0)
++			return ret;
++	}
++
++	/* Poll until another response is available */
++	ret = imx500_poll_status_reg(imx500, &cmd_reply_sts_cnt_reg, 5);
++	if (ret) {
++		dev_err(&client->dev,
++			"DD_REF_STS register did not update after SPI write(s)\n");
++		return ret;
++	}
++
++	/* Verify that state transition / update completed successfully */
++	ret = cci_read(imx500->regmap, IMX500_REG_DD_CMD_REPLY_STS, &tmp, NULL);
++	if (ret || tmp != (update ? IMX500_DD_CMD_REPLY_STS_UPDATE_DONE :
++				    IMX500_DD_CMD_REPLY_STS_TRANS_DONE))
++		return ret ? ret : -EREMOTEIO;
++
++	if (!update && imx500->fsm_state < IMX500_STATE_WITH_NETWORK)
++		imx500->fsm_state++;
++
++	imx500->fw_progress = fw_size;
++
++	return 0;
++}
++
++static int imx500_transition_to_standby_wo_network(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	const struct firmware *firmware;
++	u64 fw_ver;
++	int ret;
++
++	firmware = imx500->fw_loader;
++	ret = imx500_state_transition(imx500, firmware->data, firmware->size,
++				      TYPE_LOADER, false);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to load loader firmware\n",
++			__func__);
++		return ret;
++	}
++
++	firmware = imx500->fw_main;
++	ret = imx500_state_transition(imx500, firmware->data, firmware->size,
++				      TYPE_MAIN, false);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to load main firmware\n",
++			__func__);
++		return ret;
++	}
++
++	ret = cci_read(imx500->regmap, IMX500_REG_MAIN_FW_VERSION, &fw_ver,
++		       NULL);
++	if (ret) {
++		dev_err(&client->dev,
++			"%s: could not read main firmware version\n", __func__);
++		return ret;
++	}
++
++	dev_info(&client->dev,
++		 "main firmware version: %llu%llu.%llu%llu.%llu%llu\n",
++		 (fw_ver >> 20) & 0xF, (fw_ver >> 16) & 0xF,
++		 (fw_ver >> 12) & 0xF, (fw_ver >> 8) & 0xF, (fw_ver >> 4) & 0xF,
++		 fw_ver & 0xF);
++
++	ret = cci_multi_reg_write(imx500->regmap, metadata_output,
++				  ARRAY_SIZE(metadata_output), NULL);
++	if (ret) {
++		dev_err(&client->dev,
++			"%s: failed to configure MIPI output for DNN\n",
++			__func__);
++		return ret;
++	}
++
++	ret = cci_multi_reg_write(imx500->regmap, dnn_regs,
++				  ARRAY_SIZE(dnn_regs), NULL);
++	if (ret) {
++		dev_err(&client->dev, "%s: unable to write DNN regs\n",
++			__func__);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int imx500_transition_to_network(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	u64 imx500_fsm_state;
++	int ret;
++
++	ret = imx500_iterate_nw_regs(imx500->fw_network,
++				     imx500->fw_network_size, imx500,
++				     imx500_reg_val_write_cbk);
++	if (ret) {
++		dev_err(&client->dev,
++			"%s: unable to apply register writes from firmware\n",
++			__func__);
++		return ret;
++	}
++
++	/* Read IMX500 state to determine whether transition or update is required */
++	ret = cci_read(imx500->regmap, IMX500_REG_DD_SYS_STATE,
++		       &imx500_fsm_state, NULL);
++	if (ret || imx500_fsm_state & 1)
++		return ret ? ret : -EREMOTEIO;
++
++	ret = imx500_state_transition(
++		imx500, imx500->fw_network, imx500->fw_network_size,
++		TYPE_NW_WEIGHTS,
++		imx500_fsm_state == IMX500_DD_SYS_STATE_STANDBY_WITH_NETWORK);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to load network weights\n",
++			__func__);
++		return ret;
++	}
++
++	/* Select network 0 */
++	ret = cci_write(imx500->regmap, CCI_REG8(0xD701), 0, NULL);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to select network 0\n",
++			__func__);
++		return ret;
++	}
++
++	return ret;
++}
++
+ /* Start streaming */
+ static int imx500_start_streaming(struct imx500 *imx500)
+ {
+@@ -1086,7 +2133,8 @@ static int imx500_start_streaming(struct
+ 		return ret;
+ 
+ 	ret = cci_write(imx500->regmap, IMX500_REG_IMAGE_ONLY_MODE,
+-			IMX500_IMAGE_ONLY_TRUE,
++			imx500->fw_network ? IMX500_IMAGE_ONLY_FALSE :
++					     IMX500_IMAGE_ONLY_TRUE,
+ 			NULL);
+ 	if (ret) {
+ 		dev_err(&client->dev, "%s failed to set image mode\n",
+@@ -1094,6 +2142,30 @@ static int imx500_start_streaming(struct
+ 		return ret;
+ 	}
+ 
++	/* Acquire loader and main firmware if needed */
++	if (imx500->fw_network) {
++		if (!imx500->fw_loader) {
++			ret = request_firmware(&imx500->fw_loader,
++					       "imx500_loader.fpk",
++					       &client->dev);
++			if (ret) {
++				dev_err(&client->dev,
++					"Unable to acquire firmware loader\n");
++				return ret;
++			}
++		}
++		if (!imx500->fw_main) {
++			ret = request_firmware(&imx500->fw_main,
++					       "imx500_firmware.fpk",
++					       &client->dev);
++			if (ret) {
++				dev_err(&client->dev,
++					"Unable to acquire main firmware\n");
++				return ret;
++			}
++		}
++	}
++
+ 	if (!imx500->common_regs_written) {
+ 		ret = cci_multi_reg_write(imx500->regmap, mode_common_regs,
+ 					  ARRAY_SIZE(mode_common_regs), NULL);
+@@ -1107,6 +2179,38 @@ static int imx500_start_streaming(struct
+ 		imx500->common_regs_written = true;
+ 	}
+ 
++	if (imx500->fw_network && !imx500->loader_and_main_written) {
++		ret = imx500_transition_to_standby_wo_network(imx500);
++		if (ret) {
++			dev_err(&client->dev,
++				"%s failed to transition from program empty state\n",
++				__func__);
++			return ret;
++		}
++		imx500->loader_and_main_written = true;
++	}
++
++	if (imx500->fw_network && !imx500->network_written) {
++		ret = imx500_transition_to_network(imx500);
++		if (ret) {
++			dev_err(&client->dev,
++				"%s failed to transition to network loaded\n",
++				__func__);
++			return ret;
++		}
++		imx500->network_written = true;
++	}
++
++	/* Enable DNN */
++	if (imx500->fw_network) {
++		ret = cci_write(imx500->regmap, CCI_REG8(0xD100), 4, NULL);
++		if (ret) {
++			dev_err(&client->dev, "%s failed to enable DNN\n",
++				__func__);
++			return ret;
++		}
++	}
++
+ 	/* Apply default values of current mode */
+ 	reg_list = &imx500->mode->reg_list;
+ 	ret = cci_multi_reg_write(imx500->regmap, reg_list->regs,
+@@ -1141,6 +2245,11 @@ static void imx500_stop_streaming(struct
+ 	if (ret)
+ 		dev_err(&client->dev, "%s failed to set stream\n", __func__);
+ 
++	/* Disable DNN */
++	ret = cci_write(imx500->regmap, CCI_REG8(0xD100), 0, NULL);
++	if (ret)
++		dev_err(&client->dev, "%s failed to disable DNN\n", __func__);
++
+ 	pm_runtime_mark_last_busy(&client->dev);
+ 	pm_runtime_put_autosuspend(&client->dev);
+ }
+@@ -1173,6 +2282,7 @@ static int imx500_set_stream(struct v4l2
+ 	/* vflip and hflip cannot change during streaming */
+ 	__v4l2_ctrl_grab(imx500->vflip, enable);
+ 	__v4l2_ctrl_grab(imx500->hflip, enable);
++	__v4l2_ctrl_grab(imx500->network_fw_ctrl, enable);
+ 
+ 	mutex_unlock(&imx500->mutex);
+ 
+@@ -1247,7 +2357,10 @@ static int imx500_power_off(struct devic
+ 	regulator_bulk_disable(IMX500_NUM_SUPPLIES, imx500->supplies);
+ 
+ 	/* Force reprogramming of the common registers when powered up again. */
++	imx500->fsm_state = IMX500_STATE_RESET;
+ 	imx500->common_regs_written = false;
++	imx500->loader_and_main_written = false;
++	imx500_clear_fw_network(imx500);
+ 
+ 	return 0;
+ }
+@@ -1317,6 +2430,36 @@ static const s64 imx500_link_freq_menu[]
+ 	IMX500_DEFAULT_LINK_FREQ,
+ };
+ 
++/* Custom control for inference window */
++static const struct v4l2_ctrl_config inf_window_ctrl = {
++	.name		= "IMX500 Inference Windows",
++	.id		= V4L2_CID_USER_IMX500_INFERENCE_WINDOW,
++	.dims[0]	= 4,
++	.ops		= &imx500_ctrl_ops,
++	.type		= V4L2_CTRL_TYPE_U32,
++	.elem_size	= sizeof(u32),
++	.flags		= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE |
++			  V4L2_CTRL_FLAG_HAS_PAYLOAD,
++	.def		= 0,
++	.min		= 0x00,
++	.max		= 4032,
++	.step		= 1,
++};
++
++/* Custom control for network firmware file FD */
++static const struct v4l2_ctrl_config network_fw_fd = {
++	.name		= "IMX500 Network Firmware File FD",
++	.id		= V4L2_CID_USER_IMX500_NETWORK_FW_FD,
++	.ops		= &imx500_ctrl_ops,
++	.type		= V4L2_CTRL_TYPE_INTEGER,
++	.flags		= V4L2_CTRL_FLAG_EXECUTE_ON_WRITE |
++			  V4L2_CTRL_FLAG_WRITE_ONLY,
++	.min		= -1,
++	.max		= S32_MAX,
++	.step		= 1,
++	.def		= -1,
++};
++
+ /* Initialize control handlers */
+ static int imx500_init_controls(struct imx500 *imx500)
+ {
+@@ -1376,6 +2519,9 @@ static int imx500_init_controls(struct i
+ 		imx500->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+ 
+ 	v4l2_ctrl_new_custom(ctrl_hdlr, &imx500_notify_gains_ctrl, NULL);
++	v4l2_ctrl_new_custom(ctrl_hdlr, &inf_window_ctrl, NULL);
++	imx500->network_fw_ctrl =
++		v4l2_ctrl_new_custom(ctrl_hdlr, &network_fw_fd, NULL);
+ 
+ 	if (ctrl_hdlr->error) {
+ 		ret = ctrl_hdlr->error;
+@@ -1459,12 +2605,35 @@ error_out:
+ 	return ret;
+ }
+ 
++static int fw_progress_show(struct seq_file *s, void *data)
++{
++	struct imx500 *imx500 = s->private;
++
++	seq_printf(s, "%d %zu %zu\n", imx500->fw_stage, imx500->fw_progress,
++		   imx500->fw_network_size);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(fw_progress);
++
+ static int imx500_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
++	struct spi_device *spi = NULL;
++	char debugfs_name[128];
+ 	struct imx500 *imx500;
+ 	int ret;
+ 
++	struct device_node *spi_node = of_parse_phandle(dev->of_node, "spi", 0);
++
++	if (spi_node) {
++		struct device *tmp =
++			bus_find_device_by_of_node(&spi_bus_type, spi_node);
++		of_node_put(spi_node);
++		spi = tmp ? to_spi_device(tmp) : NULL;
++		if (!spi)
++			return -EPROBE_DEFER;
++	}
++
+ 	imx500 = devm_kzalloc(&client->dev, sizeof(*imx500), GFP_KERNEL);
+ 	if (!imx500)
+ 		return -ENOMEM;
+@@ -1474,6 +2643,8 @@ static int imx500_probe(struct i2c_clien
+ 		return dev_err_probe(dev, PTR_ERR(imx500->regmap),
+ 				     "failed to initialise CCI\n");
+ 
++	imx500->spi_device = spi;
++
+ 	v4l2_i2c_subdev_init(&imx500->sd, client, &imx500_subdev_ops);
+ 
+ 	/* Check the hardware configuration in device tree */
+@@ -1534,10 +2705,10 @@ static int imx500_probe(struct i2c_clien
+ 	imx500->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+ 
+ 	/* Initialize source pads */
+-	imx500->pad.flags = MEDIA_PAD_FL_SOURCE;
++	imx500->pad[IMAGE_PAD].flags = MEDIA_PAD_FL_SOURCE;
++	imx500->pad[METADATA_PAD].flags = MEDIA_PAD_FL_SOURCE;
+ 
+-	ret = media_entity_pads_init(&imx500->sd.entity, NUM_PADS,
+-				     &imx500->pad);
++	ret = media_entity_pads_init(&imx500->sd.entity, NUM_PADS, imx500->pad);
+ 	if (ret) {
+ 		dev_err(dev, "failed to init entity pads: %d\n", ret);
+ 		goto error_handler_free;
+@@ -1549,6 +2720,12 @@ static int imx500_probe(struct i2c_clien
+ 		goto error_media_entity;
+ 	}
+ 
++	snprintf(debugfs_name, sizeof(debugfs_name), "imx500-fw:%s",
++		 dev_name(dev));
++	imx500->debugfs = debugfs_create_dir(debugfs_name, NULL);
++	debugfs_create_file("fw_progress", 0444, imx500->debugfs, imx500,
++			    &fw_progress_fops);
++
+ 	pm_runtime_mark_last_busy(&client->dev);
+ 	pm_runtime_put_autosuspend(&client->dev);
+ 
+@@ -1573,10 +2750,23 @@ static void imx500_remove(struct i2c_cli
+ 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+ 	struct imx500 *imx500 = to_imx500(sd);
+ 
++	if (imx500->spi_device)
++		put_device(&imx500->spi_device->dev);
++
+ 	v4l2_async_unregister_subdev(sd);
+ 	media_entity_cleanup(&sd->entity);
+ 	imx500_free_controls(imx500);
+ 
++	if (imx500->fw_loader)
++		release_firmware(imx500->fw_loader);
++
++	if (imx500->fw_main)
++		release_firmware(imx500->fw_main);
++
++	imx500->fw_loader = NULL;
++	imx500->fw_main = NULL;
++	imx500_clear_fw_network(imx500);
++
+ 	pm_runtime_disable(&client->dev);
+ 	if (!pm_runtime_status_suspended(&client->dev))
+ 		imx500_power_off(&client->dev);
+@@ -1603,7 +2793,63 @@ static struct i2c_driver imx500_i2c_driv
+ 	.remove = imx500_remove,
+ };
+ 
+-module_i2c_driver(imx500_i2c_driver);
++static int imx500_spi_probe(struct spi_device *spi)
++{
++	int result;
++
++	spi->bits_per_word = 8;
++	spi->max_speed_hz = 35000000;
++	spi->mode = SPI_MODE_3;
++
++	result = spi_setup(spi);
++	if (result < 0)
++		return dev_err_probe(&spi->dev, result, "spi_setup() failed");
++
++	return 0;
++}
++
++static void imx500_spi_remove(struct spi_device *spi)
++{
++}
++
++static const struct spi_device_id imx500_spi_id[] = {
++	{ "imx500", 0 },
++	{},
++};
++MODULE_DEVICE_TABLE(spi, imx500_spi_id);
++
++static struct spi_driver imx500_spi_driver = {
++	.driver = {
++		.name = "imx500",
++		.of_match_table = imx500_dt_ids,
++	},
++	.probe = imx500_spi_probe,
++	.remove = imx500_spi_remove,
++	.id_table = imx500_spi_id,
++};
++
++static int __init imx500_driver_init(void)
++{
++	int ret;
++
++	ret = spi_register_driver(&imx500_spi_driver);
++	if (ret)
++		return ret;
++
++	ret = i2c_add_driver(&imx500_i2c_driver);
++	if (ret)
++		spi_unregister_driver(&imx500_spi_driver);
++
++	return ret;
++}
++module_init(imx500_driver_init);
++
++static void __exit imx500_driver_exit(void)
++{
++	i2c_del_driver(&imx500_i2c_driver);
++	spi_unregister_driver(&imx500_spi_driver);
++}
++module_exit(imx500_driver_exit);
+ 
+ MODULE_AUTHOR("Naushir Patuck <naush@raspberrypi.com>");
+ MODULE_DESCRIPTION("Sony IMX500 sensor driver");
+--- a/include/uapi/linux/v4l2-controls.h
++++ b/include/uapi/linux/v4l2-controls.h
+@@ -207,6 +207,12 @@ enum v4l2_colorfx {
+  * We reserve 16 controls for this driver. */
+ #define V4L2_CID_USER_BCM2835_ISP_BASE		(V4L2_CID_USER_BASE + 0x10e0)
+ 
++/*
++ * The base for IMX500 driver controls.
++ * We reserve 16 controls for this driver.
++ */
++#define V4L2_CID_USER_IMX500_BASE		(V4L2_CID_USER_BASE + 0x2000)
++
+ /* MPEG-class control IDs */
+ /* The MPEG controls are applicable to all codec controls
+  * and the 'MPEG' part of the define is historical */

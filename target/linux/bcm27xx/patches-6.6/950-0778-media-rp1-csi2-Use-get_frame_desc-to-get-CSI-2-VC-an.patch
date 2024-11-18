@@ -1,0 +1,147 @@
+From 01b54d6f1393f19c7a2676e5e443e0c96fb6ac38 Mon Sep 17 00:00:00 2001
+From: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+Date: Thu, 21 Sep 2023 15:28:20 +0300
+Subject: [PATCH 0778/1085] media: rp1: csi2: Use get_frame_desc to get CSI-2
+ VC and DT
+
+Use get_frame_desc pad op for asking the CSI-2 VC and DT from the source
+device driver, instead of hardcoding to VC 0, and getting the DT from a
+formats table. To keep backward compatibility with sources that do not
+implement get_frame_desc, implement a fallback mechanism that always
+uses VC 0, and gets the DT from the formats table, based on the CSI2's
+sink pad's format.
+
+Signed-off-by: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  |  4 +-
+ .../media/platform/raspberrypi/rp1_cfe/csi2.c | 75 ++++++++++++++++++-
+ .../media/platform/raspberrypi/rp1_cfe/csi2.h |  2 +-
+ 3 files changed, 77 insertions(+), 4 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -838,7 +838,7 @@ static void cfe_start_channel(struct cfe
+ 		 * this is handled by the CSI2 AUTO_ARM mode.
+ 		 */
+ 		csi2_start_channel(&cfe->csi2, cfe->fe_csi2_channel,
+-				   fmt->csi_dt, CSI2_MODE_FE_STREAMING,
++				   CSI2_MODE_FE_STREAMING,
+ 				   true, false, width, height);
+ 		csi2_set_buffer(&cfe->csi2, cfe->fe_csi2_channel, 0, 0, -1);
+ 		pisp_fe_start(&cfe->fe);
+@@ -872,7 +872,7 @@ static void cfe_start_channel(struct cfe
+ 			}
+ 		}
+ 		/* Unconditionally start this CSI2 channel. */
+-		csi2_start_channel(&cfe->csi2, node->id, fmt->csi_dt,
++		csi2_start_channel(&cfe->csi2, node->id,
+ 				   mode,
+ 				   /* Auto arm */
+ 				   false,
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/csi2.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/csi2.c
+@@ -324,12 +324,84 @@ void csi2_set_compression(struct csi2_de
+ 	csi2_reg_write(csi2, CSI2_CH_COMP_CTRL(channel), compression);
+ }
+ 
++static int csi2_get_vc_dt_fallback(struct csi2_device *csi2,
++				   unsigned int channel, u8 *vc, u8 *dt)
++{
++	struct v4l2_subdev *sd = &csi2->sd;
++	struct v4l2_subdev_state *state;
++	struct v4l2_mbus_framefmt *fmt;
++	const struct cfe_fmt *cfe_fmt;
++
++	state = v4l2_subdev_get_locked_active_state(sd);
++
++	/* Without Streams API, the channel number matches the sink pad */
++	fmt = v4l2_subdev_get_pad_format(sd, state, channel);
++	if (!fmt)
++		return -EINVAL;
++
++	cfe_fmt = find_format_by_code(fmt->code);
++	if (!cfe_fmt)
++		return -EINVAL;
++
++	*vc = 0;
++	*dt = cfe_fmt->csi_dt;
++
++	return 0;
++}
++
++static int csi2_get_vc_dt(struct csi2_device *csi2, unsigned int channel,
++			  u8 *vc, u8 *dt)
++{
++	struct v4l2_mbus_frame_desc remote_desc;
++	const struct media_pad *remote_pad;
++	struct v4l2_subdev *source_sd;
++	int ret;
++
++	/* Without Streams API, the channel number matches the sink pad */
++	remote_pad = media_pad_remote_pad_first(&csi2->pad[channel]);
++	if (!remote_pad)
++		return -EPIPE;
++
++	source_sd = media_entity_to_v4l2_subdev(remote_pad->entity);
++
++	ret = v4l2_subdev_call(source_sd, pad, get_frame_desc,
++			       remote_pad->index, &remote_desc);
++	if (ret == -ENOIOCTLCMD) {
++		csi2_dbg("source does not support get_frame_desc, use fallback\n");
++		return csi2_get_vc_dt_fallback(csi2, channel, vc, dt);
++	} else if (ret) {
++		csi2_err("Failed to get frame descriptor\n");
++		return ret;
++	}
++
++	if (remote_desc.type != V4L2_MBUS_FRAME_DESC_TYPE_CSI2) {
++		csi2_err("Frame descriptor does not describe CSI-2 link");
++		return -EINVAL;
++	}
++
++	if (remote_desc.num_entries != 1) {
++		csi2_err("Frame descriptor does not have a single entry");
++		return -EINVAL;
++	}
++
++	*vc = remote_desc.entry[0].bus.csi2.vc;
++	*dt = remote_desc.entry[0].bus.csi2.dt;
++
++	return 0;
++}
++
+ void csi2_start_channel(struct csi2_device *csi2, unsigned int channel,
+-			u16 dt, enum csi2_mode mode, bool auto_arm,
++			enum csi2_mode mode, bool auto_arm,
+ 			bool pack_bytes, unsigned int width,
+ 			unsigned int height)
+ {
+ 	u32 ctrl;
++	int ret;
++	u8 vc, dt;
++
++	ret = csi2_get_vc_dt(csi2, channel, &vc, &dt);
++	if (ret)
++		return;
+ 
+ 	csi2_dbg("%s [%u]\n", __func__, channel);
+ 
+@@ -369,6 +441,7 @@ void csi2_start_channel(struct csi2_devi
+ 		csi2_reg_write(csi2, CSI2_CH_FRAME_SIZE(channel), 0);
+ 	}
+ 
++	set_field(&ctrl, vc, VC_MASK);
+ 	set_field(&ctrl, dt, DT_MASK);
+ 	csi2_reg_write(csi2, CSI2_CH_CTRL(channel), ctrl);
+ 	csi2->num_lines[channel] = height;
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
+@@ -79,7 +79,7 @@ void csi2_set_compression(struct csi2_de
+ 			  enum csi2_compression_mode mode, unsigned int shift,
+ 			  unsigned int offset);
+ void csi2_start_channel(struct csi2_device *csi2, unsigned int channel,
+-			u16 dt, enum csi2_mode mode, bool auto_arm,
++			enum csi2_mode mode, bool auto_arm,
+ 			bool pack_bytes, unsigned int width,
+ 			unsigned int height);
+ void csi2_stop_channel(struct csi2_device *csi2, unsigned int channel);

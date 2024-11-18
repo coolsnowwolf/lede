@@ -1,0 +1,114 @@
+From 273ee28efedfdfc546906da067581ba9d86edfc9 Mon Sep 17 00:00:00 2001
+From: Michael Zoran <mzoran@crowfest.net>
+Date: Sat, 14 Jan 2017 21:43:57 -0800
+Subject: [PATCH 0112/1085] ARM64: Round-Robin dispatch IRQs between CPUs.
+
+IRQ-CPU mapping is round robined on ARM64 to increase
+concurrency and allow multiple interrupts to be serviced
+at a time.  This reduces the need for FIQ.
+
+Signed-off-by: Michael Zoran <mzoran@crowfest.net>
+
+drivers: irqchip: irq-bcm2835: Concurrency fix
+
+The commit shown in Fixes: aims to improve interrupt throughput by
+getting the handlers invoked on different CPU cores. It does so (*) by
+using an irq_ack hook to change the interrupt routing.
+
+Unfortunately, the IRQ status bits must be cleared at source, which only
+happens once the interrupt handler has run - there is no easy way for
+one core to claim one of the IRQs before sending the remainder to the
+next core on the list, so waking another core immediately results in a
+race with a chance of both cores handling the same IRQ. It is probably
+for this reason that the routing change is deferred to irq_ack, but that
+doesn't guarantee no clashes - after irq_ack is called, control returns
+to bcm2836_chained_handler_irq which proceeds to check for other pending
+IRQs at a time when the next core is probably doing the same thing.
+
+Since the whole point of the original commit is to distribute the IRQ
+handling, there is no reason to attempt to handle multiple IRQs in one
+interrupt callback, so the problem can be solved (or at least made much
+harder to reproduce) by changing a "while" into an "if", so that each
+invocation only handles one IRQ.
+
+(*) I'm not convinced it's as effective as claimed since irq_ack is
+called _after_ the interrupt handler, but the author thought it made a
+difference.
+
+See: https://github.com/raspberrypi/linux/issues/5214
+     https://github.com/raspberrypi/linux/pull/1794
+
+Fixes: fd4c9785bde8 ("ARM64: Round-Robin dispatch IRQs between CPUs.")
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/irqchip/irq-bcm2835.c | 18 ++++++++++++++++--
+ drivers/irqchip/irq-bcm2836.c | 21 +++++++++++++++++++++
+ 2 files changed, 37 insertions(+), 2 deletions(-)
+
+--- a/drivers/irqchip/irq-bcm2835.c
++++ b/drivers/irqchip/irq-bcm2835.c
+@@ -154,10 +154,23 @@ static void armctrl_unmask_irq(struct ir
+ 	}
+ }
+ 
++#ifdef CONFIG_ARM64
++void bcm2836_arm_irqchip_spin_gpu_irq(void);
++
++static void armctrl_ack_irq(struct irq_data *d)
++{
++	bcm2836_arm_irqchip_spin_gpu_irq();
++}
++
++#endif
++
+ static struct irq_chip armctrl_chip = {
+ 	.name = "ARMCTRL-level",
+ 	.irq_mask = armctrl_mask_irq,
+-	.irq_unmask = armctrl_unmask_irq
++	.irq_unmask = armctrl_unmask_irq,
++#ifdef CONFIG_ARM64
++	.irq_ack    = armctrl_ack_irq
++#endif
+ };
+ 
+ static int armctrl_xlate(struct irq_domain *d, struct device_node *ctrlr,
+@@ -330,7 +343,8 @@ static void bcm2836_chained_handle_irq(s
+ {
+ 	u32 hwirq;
+ 
+-	while ((hwirq = get_next_armctrl_hwirq()) != ~0)
++	hwirq = get_next_armctrl_hwirq();
++	if (hwirq != ~0)
+ 		generic_handle_domain_irq(intc.domain, hwirq);
+ }
+ 
+--- a/drivers/irqchip/irq-bcm2836.c
++++ b/drivers/irqchip/irq-bcm2836.c
+@@ -87,6 +87,27 @@ static void bcm2836_arm_irqchip_unmask_g
+ {
+ }
+ 
++#ifdef CONFIG_ARM64
++
++void bcm2836_arm_irqchip_spin_gpu_irq(void)
++{
++	u32 i;
++	void __iomem *gpurouting = (intc.base + LOCAL_GPU_ROUTING);
++	u32 routing_val = readl(gpurouting);
++
++	for (i = 1; i <= 3; i++) {
++		u32 new_routing_val = (routing_val + i) & 3;
++
++		if (cpu_active(new_routing_val)) {
++			writel(new_routing_val, gpurouting);
++			return;
++		}
++	}
++}
++EXPORT_SYMBOL(bcm2836_arm_irqchip_spin_gpu_irq);
++
++#endif
++
+ static struct irq_chip bcm2836_arm_irqchip_gpu = {
+ 	.name		= "bcm2836-gpu",
+ 	.irq_mask	= bcm2836_arm_irqchip_mask_gpu_irq,

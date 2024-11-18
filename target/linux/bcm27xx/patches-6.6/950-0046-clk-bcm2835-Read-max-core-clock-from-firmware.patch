@@ -1,0 +1,115 @@
+From 7029b92f5fdba739ad2698dc9546e7be03002c51 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.org>
+Date: Mon, 6 Mar 2017 09:06:18 +0000
+Subject: [PATCH 0046/1085] clk-bcm2835: Read max core clock from firmware
+
+The VPU is responsible for managing the core clock, usually under
+direction from the bcm2835-cpufreq driver but not via the clk-bcm2835
+driver. Since the core frequency can change without warning, it is
+safer to report the maximum clock rate to users of the core clock -
+I2C, SPI and the mini UART - to err on the safe side when calculating
+clock divisors.
+
+If the DT node for the clock driver includes a reference to the
+firmware node, use the firmware API to query the maximum core clock
+instead of reading the divider registers.
+
+Prior to this patch, a "100KHz" I2C bus was sometimes clocked at about
+160KHz. In particular, switching to the 4.9 kernel was likely to break
+SenseHAT usage on a Pi3.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.org>
+---
+ drivers/clk/bcm/clk-bcm2835.c | 39 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+--- a/drivers/clk/bcm/clk-bcm2835.c
++++ b/drivers/clk/bcm/clk-bcm2835.c
+@@ -36,6 +36,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ #include <dt-bindings/clock/bcm2835.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
+ 
+ #define CM_PASSWORD		0x5a000000
+ 
+@@ -296,6 +297,8 @@
+ #define SOC_BCM2711		BIT(1)
+ #define SOC_ALL			(SOC_BCM2835 | SOC_BCM2711)
+ 
++#define VCMSG_ID_CORE_CLOCK     4
++
+ /*
+  * Names of clocks used within the driver that need to be replaced
+  * with an external parent's name.  This array is in the order that
+@@ -314,6 +317,7 @@ static const char *const cprman_parent_n
+ struct bcm2835_cprman {
+ 	struct device *dev;
+ 	void __iomem *regs;
++	struct rpi_firmware *fw;
+ 	spinlock_t regs_lock; /* spinlock for all clocks */
+ 	unsigned int soc;
+ 
+@@ -1039,6 +1043,30 @@ static unsigned long bcm2835_clock_get_r
+ 	return rate;
+ }
+ 
++static unsigned long bcm2835_clock_get_rate_vpu(struct clk_hw *hw,
++						unsigned long parent_rate)
++{
++	struct bcm2835_clock *clock = bcm2835_clock_from_hw(hw);
++	struct bcm2835_cprman *cprman = clock->cprman;
++
++	if (cprman->fw) {
++		struct {
++			u32 id;
++			u32 val;
++		} packet;
++
++		packet.id = VCMSG_ID_CORE_CLOCK;
++		packet.val = 0;
++
++		if (!rpi_firmware_property(cprman->fw,
++					   RPI_FIRMWARE_GET_MAX_CLOCK_RATE,
++					   &packet, sizeof(packet)))
++			return packet.val;
++	}
++
++	return bcm2835_clock_get_rate(hw, parent_rate);
++}
++
+ static void bcm2835_clock_wait_busy(struct bcm2835_clock *clock)
+ {
+ 	struct bcm2835_cprman *cprman = clock->cprman;
+@@ -1327,7 +1355,7 @@ static int bcm2835_vpu_clock_is_on(struc
+  */
+ static const struct clk_ops bcm2835_vpu_clock_clk_ops = {
+ 	.is_prepared = bcm2835_vpu_clock_is_on,
+-	.recalc_rate = bcm2835_clock_get_rate,
++	.recalc_rate = bcm2835_clock_get_rate_vpu,
+ 	.set_rate = bcm2835_clock_set_rate,
+ 	.determine_rate = bcm2835_clock_determine_rate,
+ 	.set_parent = bcm2835_clock_set_parent,
+@@ -2303,6 +2331,7 @@ static int bcm2835_clk_probe(struct plat
+ 	const struct bcm2835_clk_desc *desc;
+ 	const size_t asize = ARRAY_SIZE(clk_desc_array);
+ 	const struct cprman_plat_data *pdata;
++	struct device_node *fw_node;
+ 	size_t i;
+ 	u32 clk_id;
+ 	int ret;
+@@ -2323,6 +2352,14 @@ static int bcm2835_clk_probe(struct plat
+ 	if (IS_ERR(cprman->regs))
+ 		return PTR_ERR(cprman->regs);
+ 
++	fw_node = of_parse_phandle(dev->of_node, "firmware", 0);
++	if (fw_node) {
++		struct rpi_firmware *fw = rpi_firmware_get(NULL);
++		if (!fw)
++			return -EPROBE_DEFER;
++		cprman->fw = fw;
++	}
++
+ 	memset(bcm2835_clk_claimed, 0, sizeof(bcm2835_clk_claimed));
+ 	for (i = 0;
+ 	     !of_property_read_u32_index(pdev->dev.of_node, "claim-clocks",

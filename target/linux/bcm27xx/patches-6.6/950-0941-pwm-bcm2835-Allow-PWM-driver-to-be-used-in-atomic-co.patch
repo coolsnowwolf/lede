@@ -1,0 +1,112 @@
+From 4df4f114c9a91d94e0e9356261e1b149146852ea Mon Sep 17 00:00:00 2001
+From: Sean Young <sean@mess.org>
+Date: Wed, 20 Dec 2023 14:24:25 +0000
+Subject: [PATCH 0941/1085] pwm: bcm2835: Allow PWM driver to be used in atomic
+ context
+
+commit fcc76072935935082efa127b97c7ddd880d2d793 upstream.
+
+clk_get_rate() may do a mutex lock. Fetch the clock rate once, and prevent
+rate changes using clk_rate_exclusive_get().
+
+Signed-off-by: Sean Young <sean@mess.org>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Signed-off-by: Thierry Reding <thierry.reding@gmail.com>
+---
+ drivers/pwm/pwm-bcm2835.c | 38 +++++++++++++++++++++++++++++---------
+ 1 file changed, 29 insertions(+), 9 deletions(-)
+
+--- a/drivers/pwm/pwm-bcm2835.c
++++ b/drivers/pwm/pwm-bcm2835.c
+@@ -28,6 +28,7 @@ struct bcm2835_pwm {
+ 	struct device *dev;
+ 	void __iomem *base;
+ 	struct clk *clk;
++	unsigned long rate;
+ };
+ 
+ static inline struct bcm2835_pwm *to_bcm2835_pwm(struct pwm_chip *chip)
+@@ -63,17 +64,11 @@ static int bcm2835_pwm_apply(struct pwm_
+ {
+ 
+ 	struct bcm2835_pwm *pc = to_bcm2835_pwm(chip);
+-	unsigned long rate = clk_get_rate(pc->clk);
+ 	unsigned long long period_cycles;
+ 	u64 max_period;
+ 
+ 	u32 val;
+ 
+-	if (!rate) {
+-		dev_err(pc->dev, "failed to get clock rate\n");
+-		return -EINVAL;
+-	}
+-
+ 	/*
+ 	 * period_cycles must be a 32 bit value, so period * rate / NSEC_PER_SEC
+ 	 * must be <= U32_MAX. As U32_MAX * NSEC_PER_SEC < U64_MAX the
+@@ -88,13 +83,13 @@ static int bcm2835_pwm_apply(struct pwm_
+ 	 * <=> period < ((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate
+ 	 * <=> period <= ceil((U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC/2) / rate) - 1
+ 	 */
+-	max_period = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC / 2, rate) - 1;
++	max_period = DIV_ROUND_UP_ULL((u64)U32_MAX * NSEC_PER_SEC + NSEC_PER_SEC / 2, pc->rate) - 1;
+ 
+ 	if (state->period > max_period)
+ 		return -EINVAL;
+ 
+ 	/* set period */
+-	period_cycles = DIV_ROUND_CLOSEST_ULL(state->period * rate, NSEC_PER_SEC);
++	period_cycles = DIV_ROUND_CLOSEST_ULL(state->period * pc->rate, NSEC_PER_SEC);
+ 
+ 	/* don't accept a period that is too small */
+ 	if (period_cycles < PERIOD_MIN)
+@@ -103,7 +98,7 @@ static int bcm2835_pwm_apply(struct pwm_
+ 	writel(period_cycles, pc->base + PERIOD(pwm->hwpwm));
+ 
+ 	/* set duty cycle */
+-	val = DIV_ROUND_CLOSEST_ULL(state->duty_cycle * rate, NSEC_PER_SEC);
++	val = DIV_ROUND_CLOSEST_ULL(state->duty_cycle * pc->rate, NSEC_PER_SEC);
+ 	writel(val, pc->base + DUTY(pwm->hwpwm));
+ 
+ 	/* set polarity */
+@@ -132,6 +127,13 @@ static const struct pwm_ops bcm2835_pwm_
+ 	.owner = THIS_MODULE,
+ };
+ 
++static void devm_clk_rate_exclusive_put(void *data)
++{
++	struct clk *clk = data;
++
++	clk_rate_exclusive_put(clk);
++}
++
+ static int bcm2835_pwm_probe(struct platform_device *pdev)
+ {
+ 	struct bcm2835_pwm *pc;
+@@ -152,8 +154,26 @@ static int bcm2835_pwm_probe(struct plat
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(pc->clk),
+ 				     "clock not found\n");
+ 
++	ret = clk_rate_exclusive_get(pc->clk);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret,
++				     "fail to get exclusive rate\n");
++
++	ret = devm_add_action_or_reset(&pdev->dev, devm_clk_rate_exclusive_put,
++				       pc->clk);
++	if (ret) {
++		clk_rate_exclusive_put(pc->clk);
++		return ret;
++	}
++
++	pc->rate = clk_get_rate(pc->clk);
++	if (!pc->rate)
++		return dev_err_probe(&pdev->dev, -EINVAL,
++				     "failed to get clock rate\n");
++
+ 	pc->chip.dev = &pdev->dev;
+ 	pc->chip.ops = &bcm2835_pwm_ops;
++	pc->chip.atomic = true;
+ 	pc->chip.npwm = 2;
+ 
+ 	ret = devm_pwmchip_add(&pdev->dev, &pc->chip);

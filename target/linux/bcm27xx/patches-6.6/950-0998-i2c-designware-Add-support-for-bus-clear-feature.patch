@@ -1,0 +1,157 @@
+From 24cb07b0c0724a22e474d12e7c2d5b834bf3b076 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 26 Mar 2024 15:57:46 +0000
+Subject: [PATCH 0998/1085] i2c: designware: Add support for bus clear feature
+
+Newer versions of the DesignWare I2C block support the detection of
+stuck signals, and a mechanism to recover from them. Add the required
+software support to the driver.
+
+This change was prompted by the observation that reading a single byte
+from register 0 of a VEML7700 seems to cause it to issue an ACK too
+early, and the controller to complain about losing arbitration. There
+is a suspicion that this may be a more widespread problem, but at least
+this patch prevents the bus from locking up.
+
+See: https://github.com/raspberrypi/linux/issues/6057
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/i2c/busses/i2c-designware-common.c | 12 ++++++++++++
+ drivers/i2c/busses/i2c-designware-core.h   |  8 ++++++++
+ drivers/i2c/busses/i2c-designware-master.c | 19 ++++++++++++++++++-
+ 3 files changed, 38 insertions(+), 1 deletion(-)
+
+--- a/drivers/i2c/busses/i2c-designware-common.c
++++ b/drivers/i2c/busses/i2c-designware-common.c
+@@ -57,6 +57,8 @@ static char *abort_sources[] = {
+ 		"slave lost the bus while transmitting data to a remote master",
+ 	[ABRT_SLAVE_RD_INTX] =
+ 		"incorrect slave-transmitter mode configuration",
++	[ABRT_SLAVE_SDA_STUCK_AT_LOW] =
++		"SDA stuck at low",
+ };
+ 
+ static int dw_reg_read(void *context, unsigned int reg, unsigned int *val)
+@@ -609,8 +611,16 @@ int i2c_dw_wait_bus_not_busy(struct dw_i
+ int i2c_dw_handle_tx_abort(struct dw_i2c_dev *dev)
+ {
+ 	unsigned long abort_source = dev->abort_source;
++	unsigned int reg;
+ 	int i;
+ 
++	if (abort_source & DW_IC_TX_ABRT_SLAVE_SDA_STUCK_AT_LOW) {
++		regmap_write(dev->map, DW_IC_ENABLE,
++			     DW_IC_ENABLE_ENABLE | DW_IC_ENABLE_BUS_RECOVERY);
++		regmap_read_poll_timeout(dev->map, DW_IC_ENABLE, reg,
++					 !(reg & DW_IC_ENABLE_BUS_RECOVERY),
++					 1100, 200000);
++	}
+ 	if (abort_source & DW_IC_TX_ABRT_NOACK) {
+ 		for_each_set_bit(i, &abort_source, ARRAY_SIZE(abort_sources))
+ 			dev_dbg(dev->dev,
+@@ -625,6 +635,8 @@ int i2c_dw_handle_tx_abort(struct dw_i2c
+ 		return -EAGAIN;
+ 	else if (abort_source & DW_IC_TX_ABRT_GCALL_READ)
+ 		return -EINVAL; /* wrong msgs[] data */
++	else if (abort_source & DW_IC_TX_ABRT_SLAVE_SDA_STUCK_AT_LOW)
++		return -EREMOTEIO;
+ 	else
+ 		return -EIO;
+ }
+--- a/drivers/i2c/busses/i2c-designware-core.h
++++ b/drivers/i2c/busses/i2c-designware-core.h
+@@ -79,9 +79,12 @@
+ #define DW_IC_TX_ABRT_SOURCE			0x80
+ #define DW_IC_ENABLE_STATUS			0x9c
+ #define DW_IC_CLR_RESTART_DET			0xa8
++#define DW_IC_SCL_STUCK_AT_LOW_TIMEOUT		0xac
++#define DW_IC_SDA_STUCK_AT_LOW_TIMEOUT		0xb0
+ #define DW_IC_COMP_PARAM_1			0xf4
+ #define DW_IC_COMP_VERSION			0xf8
+ #define DW_IC_SDA_HOLD_MIN_VERS			0x3131312A /* "111*" == v1.11* */
++#define DW_IC_BUS_CLEAR_MIN_VERS		0x3230302A /* "200*" == v2.00* */
+ #define DW_IC_COMP_TYPE				0xfc
+ #define DW_IC_COMP_TYPE_VALUE			0x44570140 /* "DW" + 0x0140 */
+ 
+@@ -111,6 +114,7 @@
+ 
+ #define DW_IC_ENABLE_ENABLE			BIT(0)
+ #define DW_IC_ENABLE_ABORT			BIT(1)
++#define DW_IC_ENABLE_BUS_RECOVERY		BIT(3)
+ 
+ #define DW_IC_STATUS_ACTIVITY			BIT(0)
+ #define DW_IC_STATUS_TFE			BIT(2)
+@@ -118,6 +122,7 @@
+ #define DW_IC_STATUS_MASTER_ACTIVITY		BIT(5)
+ #define DW_IC_STATUS_SLAVE_ACTIVITY		BIT(6)
+ #define DW_IC_STATUS_MASTER_HOLD_TX_FIFO_EMPTY	BIT(7)
++#define DW_IC_STATUS_SDA_STUCK_NOT_RECOVERED	BIT(11)
+ 
+ #define DW_IC_SDA_HOLD_RX_SHIFT			16
+ #define DW_IC_SDA_HOLD_RX_MASK			GENMASK(23, 16)
+@@ -165,6 +170,7 @@
+ #define ABRT_SLAVE_FLUSH_TXFIFO			13
+ #define ABRT_SLAVE_ARBLOST			14
+ #define ABRT_SLAVE_RD_INTX			15
++#define ABRT_SLAVE_SDA_STUCK_AT_LOW		17
+ 
+ #define DW_IC_TX_ABRT_7B_ADDR_NOACK		BIT(ABRT_7B_ADDR_NOACK)
+ #define DW_IC_TX_ABRT_10ADDR1_NOACK		BIT(ABRT_10ADDR1_NOACK)
+@@ -180,6 +186,7 @@
+ #define DW_IC_RX_ABRT_SLAVE_RD_INTX		BIT(ABRT_SLAVE_RD_INTX)
+ #define DW_IC_RX_ABRT_SLAVE_ARBLOST		BIT(ABRT_SLAVE_ARBLOST)
+ #define DW_IC_RX_ABRT_SLAVE_FLUSH_TXFIFO	BIT(ABRT_SLAVE_FLUSH_TXFIFO)
++#define DW_IC_TX_ABRT_SLAVE_SDA_STUCK_AT_LOW	BIT(ABRT_SLAVE_SDA_STUCK_AT_LOW)
+ 
+ #define DW_IC_TX_ABRT_NOACK			(DW_IC_TX_ABRT_7B_ADDR_NOACK | \
+ 						 DW_IC_TX_ABRT_10ADDR1_NOACK | \
+--- a/drivers/i2c/busses/i2c-designware-master.c
++++ b/drivers/i2c/busses/i2c-designware-master.c
+@@ -212,6 +212,7 @@ static int i2c_dw_set_timings_master(str
+  */
+ static int i2c_dw_init_master(struct dw_i2c_dev *dev)
+ {
++	unsigned int timeout = 0;
+ 	int ret;
+ 
+ 	ret = i2c_dw_acquire_lock(dev);
+@@ -235,6 +236,17 @@ static int i2c_dw_init_master(struct dw_
+ 		regmap_write(dev->map, DW_IC_HS_SCL_LCNT, dev->hs_lcnt);
+ 	}
+ 
++	if (dev->master_cfg & DW_IC_CON_BUS_CLEAR_CTRL) {
++		/* Set a sensible timeout if not already configured */
++		regmap_read(dev->map, DW_IC_SDA_STUCK_AT_LOW_TIMEOUT, &timeout);
++		if (timeout == ~0) {
++			/* Use 10ms as a timeout, which is 1000 cycles at 100kHz */
++			timeout = i2c_dw_clk_rate(dev) * 10; /* clock rate is in kHz */
++			regmap_write(dev->map, DW_IC_SDA_STUCK_AT_LOW_TIMEOUT, timeout);
++			regmap_write(dev->map, DW_IC_SCL_STUCK_AT_LOW_TIMEOUT, timeout);
++		}
++	}
++
+ 	/* Write SDA hold time if supported */
+ 	if (dev->sda_hold_time)
+ 		regmap_write(dev->map, DW_IC_SDA_HOLD, dev->sda_hold_time);
+@@ -1071,6 +1083,7 @@ int i2c_dw_probe_master(struct dw_i2c_de
+ 	struct i2c_adapter *adap = &dev->adapter;
+ 	unsigned long irq_flags;
+ 	unsigned int ic_con;
++	unsigned int id_ver;
+ 	int ret;
+ 
+ 	init_completion(&dev->cmd_complete);
+@@ -1106,7 +1119,11 @@ int i2c_dw_probe_master(struct dw_i2c_de
+ 	if (ret)
+ 		return ret;
+ 
+-	if (ic_con & DW_IC_CON_BUS_CLEAR_CTRL)
++	ret = regmap_read(dev->map, DW_IC_COMP_VERSION, &id_ver);
++	if (ret)
++		return ret;
++
++	if (ic_con & DW_IC_CON_BUS_CLEAR_CTRL || id_ver >= DW_IC_BUS_CLEAR_MIN_VERS)
+ 		dev->master_cfg |= DW_IC_CON_BUS_CLEAR_CTRL;
+ 
+ 	ret = dev->init(dev);

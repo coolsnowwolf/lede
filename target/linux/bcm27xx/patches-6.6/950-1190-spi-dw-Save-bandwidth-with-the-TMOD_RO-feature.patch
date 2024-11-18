@@ -1,0 +1,186 @@
+From cd9084ceb606a2f06c3429c2d3beae2d7c3ebd23 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 1 Jul 2024 16:41:04 +0100
+Subject: [PATCH 1190/1215] spi: dw: Save bandwidth with the TMOD_RO feature
+
+TMOD_RO is the receive-only mode that doesn't require data in the
+transmit FIFO in order to generate clock cycles. Using TMOD_RO when the
+device doesn't care about the data sent to it saves CPU time and memory
+bandwidth.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/spi/spi-dw-core.c | 31 +++++++++++++++++++++-------
+ drivers/spi/spi-dw-dma.c  | 43 +++++++++++++++++++++++++--------------
+ 2 files changed, 52 insertions(+), 22 deletions(-)
+
+--- a/drivers/spi/spi-dw-core.c
++++ b/drivers/spi/spi-dw-core.c
+@@ -367,18 +367,18 @@ static void dw_spi_irq_setup(struct dw_s
+ 	 * will be adjusted at the final stage of the IRQ-based SPI transfer
+ 	 * execution so not to lose the leftover of the incoming data.
+ 	 */
+-	level = min_t(unsigned int, dws->fifo_len / 2, dws->tx_len);
++	level = min_t(unsigned int, dws->fifo_len / 2, dws->tx_len ? dws->tx_len : dws->rx_len);
+ 	dw_writel(dws, DW_SPI_TXFTLR, level);
+ 	dw_writel(dws, DW_SPI_RXFTLR, level - 1);
+ 
+ 	dws->transfer_handler = dw_spi_transfer_handler;
+ 
+-	imask = 0;
+-	if (dws->tx_len)
+-		imask |= DW_SPI_INT_TXEI | DW_SPI_INT_TXOI;
++	imask = DW_SPI_INT_TXEI | DW_SPI_INT_TXOI;
+ 	if (dws->rx_len)
+ 		imask |= DW_SPI_INT_RXUI | DW_SPI_INT_RXOI | DW_SPI_INT_RXFI;
+ 	dw_spi_umask_intr(dws, imask);
++	if (!dws->tx_len)
++		dw_writel(dws, DW_SPI_DR, 0);
+ }
+ 
+ /*
+@@ -401,13 +401,18 @@ static int dw_spi_poll_transfer(struct d
+ 	delay.unit = SPI_DELAY_UNIT_SCK;
+ 	nbits = dws->n_bytes * BITS_PER_BYTE;
+ 
++	if (!dws->tx_len)
++		dw_writel(dws, DW_SPI_DR, 0);
++
+ 	do {
+-		dw_writer(dws);
++		if (dws->tx_len)
++			dw_writer(dws);
+ 
+ 		delay.value = nbits * (dws->rx_len - dws->tx_len);
+ 		spi_delay_exec(&delay, transfer);
+ 
+-		dw_reader(dws);
++		if (dws->rx_len)
++			dw_reader(dws);
+ 
+ 		ret = dw_spi_check_status(dws, true);
+ 		if (ret)
+@@ -427,6 +432,7 @@ static int dw_spi_transfer_one(struct sp
+ 		.dfs = transfer->bits_per_word,
+ 		.freq = transfer->speed_hz,
+ 	};
++	int buswidth;
+ 	int ret;
+ 
+ 	dws->dma_mapped = 0;
+@@ -444,6 +450,18 @@ static int dw_spi_transfer_one(struct sp
+ 		cfg.tmode = DW_SPI_CTRLR0_TMOD_TO;
+ 	}
+ 
++	if (!dws->rx) {
++		dws->rx_len = 0;
++		cfg.tmode = DW_SPI_CTRLR0_TMOD_TO;
++	}
++	if (!dws->tx) {
++		dws->tx_len = 0;
++		cfg.tmode = DW_SPI_CTRLR0_TMOD_RO;
++		cfg.ndf = dws->rx_len;
++	}
++	buswidth = transfer->rx_buf ? transfer->rx_nbits :
++		  (transfer->tx_buf ? transfer->tx_nbits : 1);
++
+ 	/* Ensure the data above is visible for all CPUs */
+ 	smp_mb();
+ 
+@@ -961,7 +979,6 @@ int dw_spi_add_host(struct device *dev,
+ 			dev_warn(dev, "DMA init failed\n");
+ 		} else {
+ 			host->can_dma = dws->dma_ops->can_dma;
+-			host->flags |= SPI_CONTROLLER_MUST_TX;
+ 		}
+ 	}
+ 
+--- a/drivers/spi/spi-dw-dma.c
++++ b/drivers/spi/spi-dw-dma.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/completion.h>
++#include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/dmaengine.h>
+ #include <linux/irqreturn.h>
+@@ -470,13 +471,12 @@ static int dw_spi_dma_setup(struct dw_sp
+ 	u16 imr, dma_ctrl;
+ 	int ret;
+ 
+-	if (!xfer->tx_buf)
+-		return -EINVAL;
+-
+ 	/* Setup DMA channels */
+-	ret = dw_spi_dma_config_tx(dws);
+-	if (ret)
+-		return ret;
++	if (xfer->tx_buf) {
++		ret = dw_spi_dma_config_tx(dws);
++		if (ret)
++			return ret;
++	}
+ 
+ 	if (xfer->rx_buf) {
+ 		ret = dw_spi_dma_config_rx(dws);
+@@ -485,13 +485,17 @@ static int dw_spi_dma_setup(struct dw_sp
+ 	}
+ 
+ 	/* Set the DMA handshaking interface */
+-	dma_ctrl = DW_SPI_DMACR_TDMAE;
++	dma_ctrl = 0;
++	if (xfer->tx_buf)
++		dma_ctrl |= DW_SPI_DMACR_TDMAE;
+ 	if (xfer->rx_buf)
+ 		dma_ctrl |= DW_SPI_DMACR_RDMAE;
+ 	dw_writel(dws, DW_SPI_DMACR, dma_ctrl);
+ 
+ 	/* Set the interrupt mask */
+-	imr = DW_SPI_INT_TXOI;
++	imr = 0;
++	if (xfer->tx_buf)
++		imr |= DW_SPI_INT_TXOI;
+ 	if (xfer->rx_buf)
+ 		imr |= DW_SPI_INT_RXUI | DW_SPI_INT_RXOI;
+ 	dw_spi_umask_intr(dws, imr);
+@@ -508,15 +512,16 @@ static int dw_spi_dma_transfer_all(struc
+ {
+ 	int ret;
+ 
+-	/* Submit the DMA Tx transfer */
+-	ret = dw_spi_dma_submit_tx(dws, xfer->tx_sg.sgl, xfer->tx_sg.nents);
+-	if (ret)
+-		goto err_clear_dmac;
++	/* Submit the DMA Tx transfer if required */
++	if (xfer->tx_buf) {
++		ret = dw_spi_dma_submit_tx(dws, xfer->tx_sg.sgl, xfer->tx_sg.nents);
++		if (ret)
++			goto err_clear_dmac;
++	}
+ 
+ 	/* Submit the DMA Rx transfer if required */
+ 	if (xfer->rx_buf) {
+-		ret = dw_spi_dma_submit_rx(dws, xfer->rx_sg.sgl,
+-					   xfer->rx_sg.nents);
++		ret = dw_spi_dma_submit_rx(dws, xfer->rx_sg.sgl, xfer->rx_sg.nents);
+ 		if (ret)
+ 			goto err_clear_dmac;
+ 
+@@ -524,7 +529,15 @@ static int dw_spi_dma_transfer_all(struc
+ 		dma_async_issue_pending(dws->rxchan);
+ 	}
+ 
+-	dma_async_issue_pending(dws->txchan);
++	if (xfer->tx_buf) {
++		dma_async_issue_pending(dws->txchan);
++	} else {
++		/* Pause to allow DMA channel to fetch RX descriptor */
++		usleep_range(5, 10);
++
++		/* Write something to the TX FIFO to start the transfer */
++		dw_writel(dws, DW_SPI_DR, 0);
++	}
+ 
+ 	ret = dw_spi_dma_wait(dws, xfer->len, xfer->effective_speed_hz);
+ 

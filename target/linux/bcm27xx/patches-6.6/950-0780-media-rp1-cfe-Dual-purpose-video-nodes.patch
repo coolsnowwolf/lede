@@ -1,0 +1,621 @@
+From 8afc1d4b219e924c40b5c4acc86813b6d58d348e Mon Sep 17 00:00:00 2001
+From: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+Date: Wed, 27 Sep 2023 17:18:09 +0300
+Subject: [PATCH 0780/1085] media: rp1: cfe: Dual purpose video nodes
+
+The RP1 CSI-2 DMA can capture both video and metadata just fine, but at
+the moment the video nodes are only set to support either video or
+metadata.
+
+Make the changes to support both video and metadata. This mostly means
+tracking both video format and metadata format separately for each video
+node, and using vb2_queue_change_type() to change the vb2 queue type
+when needed.
+
+Briefly, this means that the user can get/set both video and meta
+formats to a single video node. The vb2 queue buffer type will be
+changed when the user calls REQBUFS or CREATE_BUFS ioctls. This buffer
+type will be then used as the "mode" for the video node when the user
+starts the streaming, and based on that either the video or the meta
+format will be used.
+
+A bunch of macros are added (node_supports_xxx()), which tell if a node
+can support a particular mode, whereas the existing macros
+(is_xxx_node()) will tell if the node is currently in a particular mode.
+Note that the latter will only work correctly between the start of the
+streaming and the end of the streaming, and thus should be only used in
+those code paths.
+
+However, as the userspace (libcamera) does not support dual purpose
+video nodes, for the time being let's keep the second video node as
+V4L2_CAP_META_CAPTURE only to keep the userspace working.
+
+Signed-off-by: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 271 ++++++++++++------
+ 1 file changed, 182 insertions(+), 89 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -116,7 +116,7 @@ const struct v4l2_mbus_framefmt cfe_defa
+ enum node_ids {
+ 	/* CSI2 HW output nodes first. */
+ 	CSI2_CH0,
+-	CSI2_CH1_EMBEDDED,
++	CSI2_CH1,
+ 	CSI2_CH2,
+ 	CSI2_CH3,
+ 	/* FE only nodes from here on. */
+@@ -130,8 +130,7 @@ enum node_ids {
+ struct node_description {
+ 	unsigned int id;
+ 	const char *name;
+-	enum v4l2_buf_type buf_type;
+-	unsigned int cap;
++	unsigned int caps;
+ 	unsigned int pad_flags;
+ 	unsigned int link_pad;
+ };
+@@ -140,58 +139,55 @@ struct node_description {
+ static const struct node_description node_desc[NUM_NODES] = {
+ 	[CSI2_CH0] = {
+ 		.name = "csi2_ch0",
+-		.buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+-		.cap = V4L2_CAP_VIDEO_CAPTURE,
++		.caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_META_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = CSI2_NUM_CHANNELS + 0
+ 	},
+-	/* This node is assigned for the embedded data channel! */
+-	[CSI2_CH1_EMBEDDED] = {
++	/*
++	 * TODO: This node should be named "csi2_ch1" and the caps should be set
++	 * to both video and meta capture. However, to keep compatibility with
++	 * the current libcamera, keep the name as "embedded" and support
++	 * only meta capture.
++	 */
++	[CSI2_CH1] = {
+ 		.name = "embedded",
+-		.buf_type = V4L2_BUF_TYPE_META_CAPTURE,
+-		.cap = V4L2_CAP_META_CAPTURE,
++		.caps = V4L2_CAP_META_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = CSI2_NUM_CHANNELS + 1
+ 	},
+ 	[CSI2_CH2] = {
+ 		.name = "csi2_ch2",
+-		.buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+-		.cap = V4L2_CAP_META_CAPTURE,
++		.caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_META_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = CSI2_NUM_CHANNELS + 2
+ 	},
+ 	[CSI2_CH3] = {
+ 		.name = "csi2_ch3",
+-		.buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+-		.cap = V4L2_CAP_META_CAPTURE,
++		.caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_META_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = CSI2_NUM_CHANNELS + 3
+ 	},
+ 	[FE_OUT0] = {
+ 		.name = "fe_image0",
+-		.buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+-		.cap = V4L2_CAP_VIDEO_CAPTURE,
++		.caps = V4L2_CAP_VIDEO_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = FE_OUTPUT0_PAD
+ 	},
+ 	[FE_OUT1] = {
+ 		.name = "fe_image1",
+-		.buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+-		.cap = V4L2_CAP_VIDEO_CAPTURE,
++		.caps = V4L2_CAP_VIDEO_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = FE_OUTPUT1_PAD
+ 	},
+ 	[FE_STATS] = {
+ 		.name = "fe_stats",
+-		.buf_type = V4L2_BUF_TYPE_META_CAPTURE,
+-		.cap = V4L2_CAP_META_CAPTURE,
++		.caps = V4L2_CAP_META_CAPTURE,
+ 		.pad_flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = FE_STATS_PAD
+ 	},
+ 	[FE_CONFIG] = {
+ 		.name = "fe_config",
+-		.buf_type = V4L2_BUF_TYPE_META_OUTPUT,
+-		.cap = V4L2_CAP_META_OUTPUT,
++		.caps = V4L2_CAP_META_OUTPUT,
+ 		.pad_flags = MEDIA_PAD_FL_SOURCE | MEDIA_PAD_FL_MUST_CONNECT,
+ 		.link_pad = FE_CONFIG_PAD
+ 	},
+@@ -200,17 +196,29 @@ static const struct node_description nod
+ #define is_fe_node(node) (((node)->id) >= FE_OUT0)
+ #define is_csi2_node(node) (!is_fe_node(node))
+ 
++#define node_supports_image_output(node) \
++	(!!(node_desc[(node)->id].caps & V4L2_CAP_VIDEO_CAPTURE))
++#define node_supports_meta_output(node) \
++	(!!(node_desc[(node)->id].caps & V4L2_CAP_META_CAPTURE))
++#define node_supports_image_input(node) \
++	(!!(node_desc[(node)->id].caps & V4L2_CAP_VIDEO_OUTPUT))
++#define node_supports_meta_input(node) \
++	(!!(node_desc[(node)->id].caps & V4L2_CAP_META_OUTPUT))
++#define node_supports_image(node) \
++	(node_supports_image_output(node) || node_supports_image_input(node))
++#define node_supports_meta(node) \
++	(node_supports_meta_output(node) || node_supports_meta_input(node))
++
+ #define is_image_output_node(node) \
+-	(node_desc[(node)->id].buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
++	((node)->buffer_queue.type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
+ #define is_image_input_node(node) \
+-	(node_desc[(node)->id].buf_type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
++	((node)->buffer_queue.type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+ #define is_image_node(node) \
+ 	(is_image_output_node(node) || is_image_input_node(node))
+-
+ #define is_meta_output_node(node) \
+-	(node_desc[(node)->id].buf_type == V4L2_BUF_TYPE_META_CAPTURE)
++	((node)->buffer_queue.type == V4L2_BUF_TYPE_META_CAPTURE)
+ #define is_meta_input_node(node) \
+-	(node_desc[(node)->id].buf_type == V4L2_BUF_TYPE_META_OUTPUT)
++	((node)->buffer_queue.type == V4L2_BUF_TYPE_META_OUTPUT)
+ #define is_meta_node(node) \
+ 	(is_meta_output_node(node) || is_meta_input_node(node))
+ 
+@@ -250,7 +258,9 @@ struct cfe_node {
+ 	/* Pointer pointing to next v4l2_buffer */
+ 	struct cfe_buffer *next_frm;
+ 	/* Used to store current pixel format */
+-	struct v4l2_format fmt;
++	struct v4l2_format vid_fmt;
++	/* Used to store current meta format */
++	struct v4l2_format meta_fmt;
+ 	/* Buffer queue used in video-buf */
+ 	struct vb2_queue buffer_queue;
+ 	/* Queue of filled frames */
+@@ -433,20 +443,21 @@ static int format_show(struct seq_file *
+ 		seq_printf(s, "\nNode %u (%s) state: 0x%lx\n", i,
+ 			   node_desc[i].name, state);
+ 
+-		if (is_image_node(node))
++		if (node_supports_image(node))
+ 			seq_printf(s, "format: " V4L2_FOURCC_CONV " 0x%x\n"
+ 				      "resolution: %ux%u\nbpl: %u\nsize: %u\n",
+-				   V4L2_FOURCC_CONV_ARGS(node->fmt.fmt.pix.pixelformat),
+-				   node->fmt.fmt.pix.pixelformat,
+-				   node->fmt.fmt.pix.width,
+-				   node->fmt.fmt.pix.height,
+-				   node->fmt.fmt.pix.bytesperline,
+-				   node->fmt.fmt.pix.sizeimage);
+-		else
++				   V4L2_FOURCC_CONV_ARGS(node->vid_fmt.fmt.pix.pixelformat),
++				   node->vid_fmt.fmt.pix.pixelformat,
++				   node->vid_fmt.fmt.pix.width,
++				   node->vid_fmt.fmt.pix.height,
++				   node->vid_fmt.fmt.pix.bytesperline,
++				   node->vid_fmt.fmt.pix.sizeimage);
++
++		if (node_supports_meta(node))
+ 			seq_printf(s, "format: " V4L2_FOURCC_CONV " 0x%x\nsize: %u\n",
+-				   V4L2_FOURCC_CONV_ARGS(node->fmt.fmt.meta.dataformat),
+-				   node->fmt.fmt.meta.dataformat,
+-				   node->fmt.fmt.meta.buffersize);
++				   V4L2_FOURCC_CONV_ARGS(node->meta_fmt.fmt.meta.dataformat),
++				   node->meta_fmt.fmt.meta.dataformat,
++				   node->meta_fmt.fmt.meta.buffersize);
+ 	}
+ 
+ 	return 0;
+@@ -571,11 +582,11 @@ static void cfe_schedule_next_csi2_job(s
+ 				node_desc[node->id].name, &buf->vb.vb2_buf);
+ 
+ 		if (is_meta_node(node)) {
+-			size = node->fmt.fmt.meta.buffersize;
++			size = node->meta_fmt.fmt.meta.buffersize;
+ 			stride = 0;
+ 		} else {
+-			size = node->fmt.fmt.pix.sizeimage;
+-			stride = node->fmt.fmt.pix.bytesperline;
++			size = node->vid_fmt.fmt.pix.sizeimage;
++			stride = node->vid_fmt.fmt.pix.bytesperline;
+ 		}
+ 
+ 		addr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
+@@ -867,10 +878,10 @@ static void cfe_start_channel(struct cfe
+ 			width = source_fmt->width;
+ 			height = source_fmt->height;
+ 
+-			if (node->fmt.fmt.pix.pixelformat ==
++			if (node->vid_fmt.fmt.pix.pixelformat ==
+ 					fmt->remap[CFE_REMAP_16BIT])
+ 				mode = CSI2_MODE_REMAP;
+-			else if (node->fmt.fmt.pix.pixelformat ==
++			else if (node->vid_fmt.fmt.pix.pixelformat ==
+ 					fmt->remap[CFE_REMAP_COMPRESSED]) {
+ 				mode = CSI2_MODE_COMPRESSED;
+ 				csi2_set_compression(&cfe->csi2, node->id,
+@@ -884,7 +895,7 @@ static void cfe_start_channel(struct cfe
+ 				   /* Auto arm */
+ 				   false,
+ 				   /* Pack bytes */
+-				   node->id == CSI2_CH1_EMBEDDED ? true : false,
++				   is_meta_node(node) ? true : false,
+ 				   width, height);
+ 	}
+ 
+@@ -947,10 +958,11 @@ static int cfe_queue_setup(struct vb2_qu
+ {
+ 	struct cfe_node *node = vb2_get_drv_priv(vq);
+ 	struct cfe_device *cfe = node->cfe;
+-	unsigned int size = is_image_node(node) ? node->fmt.fmt.pix.sizeimage :
+-						  node->fmt.fmt.meta.buffersize;
++	unsigned int size = is_image_node(node) ? node->vid_fmt.fmt.pix.sizeimage :
++						  node->meta_fmt.fmt.meta.buffersize;
+ 
+-	cfe_dbg("%s: [%s]\n", __func__, node_desc[node->id].name);
++	cfe_dbg("%s: [%s] type:%u\n", __func__, node_desc[node->id].name,
++		node->buffer_queue.type);
+ 
+ 	if (vq->num_buffers + *nbuffers < 3)
+ 		*nbuffers = 3 - vq->num_buffers;
+@@ -979,8 +991,8 @@ static int cfe_buffer_prepare(struct vb2
+ 	cfe_dbg_verbose("%s: [%s] buffer:%p\n", __func__,
+ 			node_desc[node->id].name, vb);
+ 
+-	size = is_image_node(node) ? node->fmt.fmt.pix.sizeimage :
+-				     node->fmt.fmt.meta.buffersize;
++	size = is_image_node(node) ? node->vid_fmt.fmt.pix.sizeimage :
++				     node->meta_fmt.fmt.meta.buffersize;
+ 	if (vb2_plane_size(vb, 0) < size) {
+ 		cfe_err("data will not fit into plane (%lu < %lu)\n",
+ 			vb2_plane_size(vb, 0), size);
+@@ -995,8 +1007,8 @@ static int cfe_buffer_prepare(struct vb2
+ 
+ 		memcpy(&b->config, addr, sizeof(struct pisp_fe_config));
+ 		return pisp_fe_validate_config(&cfe->fe, &b->config,
+-					       &cfe->node[FE_OUT0].fmt,
+-					       &cfe->node[FE_OUT1].fmt);
++					       &cfe->node[FE_OUT0].vid_fmt,
++					       &cfe->node[FE_OUT1].vid_fmt);
+ 	}
+ 
+ 	return 0;
+@@ -1256,7 +1268,7 @@ static int cfe_enum_fmt_vid_cap(struct f
+ 	struct cfe_device *cfe = node->cfe;
+ 	unsigned int i, j;
+ 
+-	if (!is_image_output_node(node))
++	if (!node_supports_image_output(node))
+ 		return -EINVAL;
+ 
+ 	cfe_dbg("%s: [%s]\n", __func__, node_desc[node->id].name);
+@@ -1292,10 +1304,10 @@ static int cfe_g_fmt(struct file *file,
+ 
+ 	cfe_dbg("%s: [%s]\n", __func__, node_desc[node->id].name);
+ 
+-	if (f->type != node->buffer_queue.type)
++	if (!node_supports_image(node))
+ 		return -EINVAL;
+ 
+-	*f = node->fmt;
++	*f = node->vid_fmt;
+ 
+ 	return 0;
+ }
+@@ -1310,7 +1322,7 @@ static int try_fmt_vid_cap(struct cfe_no
+ 		f->fmt.pix.width, f->fmt.pix.height,
+ 		V4L2_FOURCC_CONV_ARGS(f->fmt.pix.pixelformat));
+ 
+-	if (!is_image_output_node(node))
++	if (!node_supports_image_output(node))
+ 		return -EINVAL;
+ 
+ 	/*
+@@ -1351,11 +1363,11 @@ static int cfe_s_fmt_vid_cap(struct file
+ 	if (ret)
+ 		return ret;
+ 
+-	node->fmt = *f;
++	node->vid_fmt = *f;
+ 
+ 	cfe_dbg("%s: Set %ux%u, V4L2 pix " V4L2_FOURCC_CONV "\n", __func__,
+-		node->fmt.fmt.pix.width, node->fmt.fmt.pix.height,
+-		V4L2_FOURCC_CONV_ARGS(node->fmt.fmt.pix.pixelformat));
++		node->vid_fmt.fmt.pix.width, node->vid_fmt.fmt.pix.height,
++		V4L2_FOURCC_CONV_ARGS(node->vid_fmt.fmt.pix.pixelformat));
+ 
+ 	return 0;
+ }
+@@ -1379,11 +1391,11 @@ static int cfe_enum_fmt_meta(struct file
+ 
+ 	cfe_dbg("%s: [%s]\n", __func__, node_desc[node->id].name);
+ 
+-	if (!is_meta_node(node) || f->index != 0)
++	if (!node_supports_meta(node) || f->index != 0)
+ 		return -EINVAL;
+ 
+ 	switch (node->id) {
+-	case CSI2_CH1_EMBEDDED:
++	case CSI2_CH0...CSI2_CH3:
+ 		f->pixelformat = V4L2_META_FMT_SENSOR_DATA;
+ 		return 0;
+ 	case FE_STATS:
+@@ -1399,8 +1411,11 @@ static int cfe_enum_fmt_meta(struct file
+ 
+ static int try_fmt_meta(struct cfe_node *node, struct v4l2_format *f)
+ {
++	if (!node_supports_meta(node))
++		return -EINVAL;
++
+ 	switch (node->id) {
+-	case CSI2_CH1_EMBEDDED:
++	case CSI2_CH0...CSI2_CH3:
+ 		f->fmt.meta.dataformat = V4L2_META_FMT_SENSOR_DATA;
+ 		if (!f->fmt.meta.buffersize)
+ 			f->fmt.meta.buffersize = DEFAULT_EMBEDDED_SIZE;
+@@ -1422,6 +1437,21 @@ static int try_fmt_meta(struct cfe_node
+ 	return -EINVAL;
+ }
+ 
++static int cfe_g_fmt_meta(struct file *file, void *priv, struct v4l2_format *f)
++{
++	struct cfe_node *node = video_drvdata(file);
++	struct cfe_device *cfe = node->cfe;
++
++	cfe_dbg("%s: [%s]\n", __func__, node_desc[node->id].name);
++
++	if (!node_supports_meta(node))
++		return -EINVAL;
++
++	*f = node->meta_fmt;
++
++	return 0;
++}
++
+ static int cfe_s_fmt_meta(struct file *file, void *priv, struct v4l2_format *f)
+ {
+ 	struct cfe_node *node = video_drvdata(file);
+@@ -1434,17 +1464,17 @@ static int cfe_s_fmt_meta(struct file *f
+ 	if (vb2_is_busy(q))
+ 		return -EBUSY;
+ 
+-	if (f->type != node->buffer_queue.type)
++	if (!node_supports_meta(node))
+ 		return -EINVAL;
+ 
+ 	ret = try_fmt_meta(node, f);
+ 	if (ret)
+ 		return ret;
+ 
+-	node->fmt = *f;
++	node->meta_fmt = *f;
+ 
+ 	cfe_dbg("%s: Set " V4L2_FOURCC_CONV "\n", __func__,
+-		V4L2_FOURCC_CONV_ARGS(node->fmt.fmt.meta.dataformat));
++		V4L2_FOURCC_CONV_ARGS(node->meta_fmt.fmt.meta.dataformat));
+ 
+ 	return 0;
+ }
+@@ -1491,6 +1521,52 @@ static int cfe_enum_framesizes(struct fi
+ 	return 0;
+ }
+ 
++static int cfe_vb2_ioctl_reqbufs(struct file *file, void *priv,
++				 struct v4l2_requestbuffers *p)
++{
++	struct video_device *vdev = video_devdata(file);
++	struct cfe_node *node = video_get_drvdata(vdev);
++	struct cfe_device *cfe = node->cfe;
++	int ret;
++
++	cfe_dbg("%s: [%s] type:%u\n", __func__, node_desc[node->id].name,
++		p->type);
++
++	if (p->type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
++	    p->type != V4L2_BUF_TYPE_META_CAPTURE &&
++	    p->type != V4L2_BUF_TYPE_META_OUTPUT)
++		return -EINVAL;
++
++	ret = vb2_queue_change_type(vdev->queue, p->type);
++	if (ret)
++		return ret;
++
++	return vb2_ioctl_reqbufs(file, priv, p);
++}
++
++static int cfe_vb2_ioctl_create_bufs(struct file *file, void *priv,
++				     struct v4l2_create_buffers *p)
++{
++	struct video_device *vdev = video_devdata(file);
++	struct cfe_node *node = video_get_drvdata(vdev);
++	struct cfe_device *cfe = node->cfe;
++	int ret;
++
++	cfe_dbg("%s: [%s] type:%u\n", __func__, node_desc[node->id].name,
++		p->format.type);
++
++	if (p->format.type != V4L2_BUF_TYPE_VIDEO_CAPTURE &&
++	    p->format.type != V4L2_BUF_TYPE_META_CAPTURE &&
++	    p->format.type != V4L2_BUF_TYPE_META_OUTPUT)
++		return -EINVAL;
++
++	ret = vb2_queue_change_type(vdev->queue, p->format.type);
++	if (ret)
++		return ret;
++
++	return vb2_ioctl_create_bufs(file, priv, p);
++}
++
+ static int cfe_subscribe_event(struct v4l2_fh *fh,
+ 			       const struct v4l2_event_subscription *sub)
+ {
+@@ -1498,12 +1574,13 @@ static int cfe_subscribe_event(struct v4
+ 
+ 	switch (sub->type) {
+ 	case V4L2_EVENT_FRAME_SYNC:
+-		if (!is_image_output_node(node))
++		if (!node_supports_image_output(node))
+ 			break;
+ 
+ 		return v4l2_event_subscribe(fh, sub, 2, NULL);
+ 	case V4L2_EVENT_SOURCE_CHANGE:
+-		if (is_meta_input_node(node))
++		if (!node_supports_image_output(node) &&
++		    !node_supports_meta_output(node))
+ 			break;
+ 
+ 		return v4l2_event_subscribe(fh, sub, 4, NULL);
+@@ -1520,19 +1597,19 @@ static const struct v4l2_ioctl_ops cfe_i
+ 	.vidioc_try_fmt_vid_cap = cfe_try_fmt_vid_cap,
+ 
+ 	.vidioc_enum_fmt_meta_cap = cfe_enum_fmt_meta,
+-	.vidioc_g_fmt_meta_cap = cfe_g_fmt,
++	.vidioc_g_fmt_meta_cap = cfe_g_fmt_meta,
+ 	.vidioc_s_fmt_meta_cap = cfe_s_fmt_meta,
+ 	.vidioc_try_fmt_meta_cap = cfe_try_fmt_meta,
+ 
+ 	.vidioc_enum_fmt_meta_out = cfe_enum_fmt_meta,
+-	.vidioc_g_fmt_meta_out = cfe_g_fmt,
++	.vidioc_g_fmt_meta_out = cfe_g_fmt_meta,
+ 	.vidioc_s_fmt_meta_out = cfe_s_fmt_meta,
+ 	.vidioc_try_fmt_meta_out = cfe_try_fmt_meta,
+ 
+ 	.vidioc_enum_framesizes = cfe_enum_framesizes,
+ 
+-	.vidioc_reqbufs = vb2_ioctl_reqbufs,
+-	.vidioc_create_bufs = vb2_ioctl_create_bufs,
++	.vidioc_reqbufs = cfe_vb2_ioctl_reqbufs,
++	.vidioc_create_bufs = cfe_vb2_ioctl_create_bufs,
+ 	.vidioc_prepare_buf = vb2_ioctl_prepare_buf,
+ 	.vidioc_querybuf = vb2_ioctl_querybuf,
+ 	.vidioc_qbuf = vb2_ioctl_qbuf,
+@@ -1610,7 +1687,7 @@ static int cfe_video_link_validate(struc
+ 	}
+ 
+ 	if (is_image_output_node(node)) {
+-		struct v4l2_pix_format *pix_fmt = &node->fmt.fmt.pix;
++		struct v4l2_pix_format *pix_fmt = &node->vid_fmt.fmt.pix;
+ 		const struct cfe_fmt *fmt = NULL;
+ 		unsigned int i;
+ 
+@@ -1636,8 +1713,8 @@ static int cfe_video_link_validate(struc
+ 			ret = -EINVAL;
+ 			goto out;
+ 		}
+-	} else if (node->id == CSI2_CH1_EMBEDDED) {
+-		struct v4l2_meta_format *meta_fmt = &node->fmt.fmt.meta;
++	} else if (is_csi2_node(node) && is_meta_output_node(node)) {
++		struct v4l2_meta_format *meta_fmt = &node->meta_fmt.fmt.meta;
+ 
+ 		if (source_fmt->width * source_fmt->height !=
+ 							meta_fmt->buffersize ||
+@@ -1698,15 +1775,17 @@ static int cfe_video_link_notify(struct
+ 
+ 	if (link->source->entity != csi2)
+ 		return 0;
+-	if (link->sink->index != 0)
++	if (link->sink->entity != fe)
+ 		return 0;
+-	if (link->source->index == node_desc[CSI2_CH1_EMBEDDED].link_pad)
++	if (link->sink->index != 0)
+ 		return 0;
+ 
+ 	cfe->fe_csi2_channel = -1;
+-	if (link->sink->entity == fe && (link->flags & MEDIA_LNK_FL_ENABLED)) {
++	if (link->flags & MEDIA_LNK_FL_ENABLED) {
+ 		if (link->source->index == node_desc[CSI2_CH0].link_pad)
+ 			cfe->fe_csi2_channel = CSI2_CH0;
++		else if (link->source->index == node_desc[CSI2_CH1].link_pad)
++			cfe->fe_csi2_channel = CSI2_CH1;
+ 		else if (link->source->index == node_desc[CSI2_CH2].link_pad)
+ 			cfe->fe_csi2_channel = CSI2_CH2;
+ 		else if (link->source->index == node_desc[CSI2_CH3].link_pad)
+@@ -1763,30 +1842,42 @@ static int cfe_register_node(struct cfe_
+ 	node->cfe = cfe;
+ 	node->id = id;
+ 
+-	if (is_image_node(node)) {
++	if (node_supports_image(node)) {
++		if (node_supports_image_output(node))
++			node->vid_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++		else
++			node->vid_fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
++
+ 		fmt = find_format_by_code(cfe_default_format.code);
+ 		if (!fmt) {
+ 			cfe_err("Failed to find format code\n");
+ 			return -EINVAL;
+ 		}
+ 
+-		node->fmt.fmt.pix.pixelformat = fmt->fourcc;
+-		v4l2_fill_pix_format(&node->fmt.fmt.pix, &cfe_default_format);
++		node->vid_fmt.fmt.pix.pixelformat = fmt->fourcc;
++		v4l2_fill_pix_format(&node->vid_fmt.fmt.pix, &cfe_default_format);
+ 
+-		ret = try_fmt_vid_cap(node, &node->fmt);
++		ret = try_fmt_vid_cap(node, &node->vid_fmt);
+ 		if (ret)
+ 			return ret;
+-	} else {
+-		ret = try_fmt_meta(node, &node->fmt);
++	}
++
++	if (node_supports_meta(node)) {
++		if (node_supports_meta_output(node))
++			node->meta_fmt.type = V4L2_BUF_TYPE_META_CAPTURE;
++		else
++			node->meta_fmt.type = V4L2_BUF_TYPE_META_OUTPUT;
++
++		ret = try_fmt_meta(node, &node->meta_fmt);
+ 		if (ret)
+ 			return ret;
+ 	}
+-	node->fmt.type = node_desc[id].buf_type;
+ 
+ 	mutex_init(&node->lock);
+ 
+ 	q = &node->buffer_queue;
+-	q->type = node_desc[id].buf_type;
++	q->type = node_supports_image(node) ? node->vid_fmt.type :
++					      node->meta_fmt.type;
+ 	q->io_modes = VB2_MMAP | VB2_DMABUF;
+ 	q->drv_priv = node;
+ 	q->ops = &cfe_video_qops;
+@@ -1812,11 +1903,13 @@ static int cfe_register_node(struct cfe_
+ 	vdev->ioctl_ops = &cfe_ioctl_ops;
+ 	vdev->entity.ops = &cfe_media_entity_ops;
+ 	vdev->v4l2_dev = &cfe->v4l2_dev;
+-	vdev->vfl_dir = (is_image_output_node(node) || is_meta_output_node(node))
+-				? VFL_DIR_RX : VFL_DIR_TX;
++	vdev->vfl_dir = (node_supports_image_output(node) ||
++			 node_supports_meta_output(node)) ?
++				VFL_DIR_RX :
++				VFL_DIR_TX;
+ 	vdev->queue = q;
+ 	vdev->lock = &node->lock;
+-	vdev->device_caps = node_desc[id].cap;
++	vdev->device_caps = node_desc[id].caps;
+ 	vdev->device_caps |= V4L2_CAP_STREAMING | V4L2_CAP_IO_MC;
+ 
+ 	/* Define the device names */
+@@ -1829,7 +1922,7 @@ static int cfe_register_node(struct cfe_
+ 	node->pad.flags = node_desc[id].pad_flags;
+ 	media_entity_pads_init(&vdev->entity, 1, &node->pad);
+ 
+-	if (is_meta_node(node)) {
++	if (!node_supports_image(node)) {
+ 		v4l2_disable_ioctl(&node->video_dev,
+ 				   VIDIOC_ENUM_FRAMEINTERVALS);
+ 		v4l2_disable_ioctl(&node->video_dev,
+@@ -1907,7 +2000,7 @@ static int cfe_link_node_pads(struct cfe
+ 		if (ret)
+ 			return ret;
+ 
+-		if (node->id != CSI2_CH1_EMBEDDED) {
++		if (node_supports_image(node)) {
+ 			/* CSI2 channel # -> FE Input */
+ 			ret = media_create_pad_link(&cfe->csi2.sd.entity,
+ 						    node_desc[i].link_pad,

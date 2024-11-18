@@ -1,0 +1,67 @@
+From 337caf7170e9cd721c0903c46e56bc05fb5b625d Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 20 Mar 2024 10:59:10 +0000
+Subject: [PATCH 0981/1085] drivers: sdhci-brcmstb: set CQE timer clock
+ frequency
+
+CQHCI keeps track of tags in flight with internal timers, so the clock
+frequency driving the timer needs to be specified. The config registers
+default to 0 (100kHz) which means timeouts will be significantly shorter
+than they should be. Assume the timer clock comes from the controller
+base clock.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/sdhci-brcmstb.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+--- a/drivers/mmc/host/sdhci-brcmstb.c
++++ b/drivers/mmc/host/sdhci-brcmstb.c
+@@ -42,6 +42,9 @@
+ #define  SDIO_CFG_SD_PIN_SEL_SD			BIT(1)
+ #define  SDIO_CFG_SD_PIN_SEL_MMC		BIT(0)
+ 
++#define SDIO_CFG_CQ_CAPABILITY			0x4c
++#define  SDIO_CFG_CQ_CAPABILITY_FMUL_SHIFT	12
++
+ #define SDIO_CFG_MAX_50MHZ_MODE			0x1ac
+ #define  SDIO_CFG_MAX_50MHZ_MODE_STRAP_OVERRIDE	BIT(31)
+ #define  SDIO_CFG_MAX_50MHZ_MODE_ENABLE		BIT(0)
+@@ -202,7 +205,7 @@ static void sdhci_brcmstb_cfginit_2712(s
+ 	u32 uhs_mask = (MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR104);
+ 	u32 hsemmc_mask = (MMC_CAP2_HS200_1_8V_SDR | MMC_CAP2_HS200_1_2V_SDR |
+ 			   MMC_CAP2_HS400_1_8V | MMC_CAP2_HS400_1_2V);
+-	u32 reg;
++	u32 reg, base_clk_mhz;
+ 
+ 	/*
+ 	* If we support a speed that requires tuning,
+@@ -223,6 +226,11 @@ static void sdhci_brcmstb_cfginit_2712(s
+ 		reg |= SDIO_CFG_CTRL_SDCD_N_TEST_EN;
+ 		writel(reg, brcmstb_priv->cfg_regs + SDIO_CFG_CTRL);
+ 	}
++
++	/* Guesstimate the timer frequency (controller base clock) */
++	base_clk_mhz = max_t(u32, clk_get_rate(pltfm_host->clk) / (1000 * 1000), 1);
++	reg = (3 << SDIO_CFG_CQ_CAPABILITY_FMUL_SHIFT) | base_clk_mhz;
++	writel(reg, brcmstb_priv->cfg_regs + SDIO_CFG_CQ_CAPABILITY);
+ }
+ 
+ static int bcm2712_init_sd_express(struct sdhci_host *host, struct mmc_ios *ios)
+@@ -494,6 +502,8 @@ static int sdhci_brcmstb_probe(struct pl
+ 		return PTR_ERR(host);
+ 
+ 	pltfm_host = sdhci_priv(host);
++	pltfm_host->clk = clk;
++
+ 	priv = sdhci_pltfm_priv(pltfm_host);
+ 	if (device_property_read_bool(&pdev->dev, "supports-cqe")) {
+ 		priv->flags |= BRCMSTB_PRIV_FLAGS_HAS_CQE;
+@@ -627,7 +637,6 @@ add_host:
+ 	if (res)
+ 		goto err;
+ 
+-	pltfm_host->clk = clk;
+ 	return res;
+ 
+ err:

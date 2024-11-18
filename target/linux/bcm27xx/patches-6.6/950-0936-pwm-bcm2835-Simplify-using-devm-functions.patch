@@ -1,0 +1,80 @@
+From d765936e530124d438ae5b265891d1280097455d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Uwe=20Kleine-K=C3=B6nig?= <u.kleine-koenig@pengutronix.de>
+Date: Fri, 29 Sep 2023 18:19:09 +0200
+Subject: [PATCH 0936/1085] pwm: bcm2835: Simplify using devm functions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 2ce7b7f6704c9a8040fb12eb2b682986d9129e68 upstream.
+
+With devm_clk_get_enabled() the call to clk_disable_unprepare() can be
+dropped from the error path and the remove callback. With
+devm_pwmchip_add() pwmchip_remove() can be dropped. Then the remove
+callback is empty and can go away, too. With bcm2835_pwm_remove() the only
+user of platform_get_drvdata() is gone and so platform_set_drvdata() can
+be dropped from .probe(), too.
+
+Also use dev_err_probe() for simplified (and improved) error reporting.
+
+Link: https://lore.kernel.org/r/20230929161918.2410424-3-u.kleine-koenig@pengutronix.de
+Signed-off-by: Uwe Kleine-König <u.kleine-koenig@pengutronix.de>
+Signed-off-by: Thierry Reding <thierry.reding@gmail.com>
+---
+ drivers/pwm/pwm-bcm2835.c | 27 ++++-----------------------
+ 1 file changed, 4 insertions(+), 23 deletions(-)
+
+--- a/drivers/pwm/pwm-bcm2835.c
++++ b/drivers/pwm/pwm-bcm2835.c
+@@ -147,39 +147,21 @@ static int bcm2835_pwm_probe(struct plat
+ 	if (IS_ERR(pc->base))
+ 		return PTR_ERR(pc->base);
+ 
+-	pc->clk = devm_clk_get(&pdev->dev, NULL);
++	pc->clk = devm_clk_get_enabled(&pdev->dev, NULL);
+ 	if (IS_ERR(pc->clk))
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(pc->clk),
+ 				     "clock not found\n");
+ 
+-	ret = clk_prepare_enable(pc->clk);
+-	if (ret)
+-		return ret;
+-
+ 	pc->chip.dev = &pdev->dev;
+ 	pc->chip.ops = &bcm2835_pwm_ops;
+ 	pc->chip.npwm = 2;
+ 
+-	platform_set_drvdata(pdev, pc);
+-
+-	ret = pwmchip_add(&pc->chip);
++	ret = devm_pwmchip_add(&pdev->dev, &pc->chip);
+ 	if (ret < 0)
+-		goto add_fail;
++		return dev_err_probe(&pdev->dev, ret,
++				     "failed to add pwmchip\n");
+ 
+ 	return 0;
+-
+-add_fail:
+-	clk_disable_unprepare(pc->clk);
+-	return ret;
+-}
+-
+-static void bcm2835_pwm_remove(struct platform_device *pdev)
+-{
+-	struct bcm2835_pwm *pc = platform_get_drvdata(pdev);
+-
+-	pwmchip_remove(&pc->chip);
+-
+-	clk_disable_unprepare(pc->clk);
+ }
+ 
+ static const struct of_device_id bcm2835_pwm_of_match[] = {
+@@ -194,7 +176,6 @@ static struct platform_driver bcm2835_pw
+ 		.of_match_table = bcm2835_pwm_of_match,
+ 	},
+ 	.probe = bcm2835_pwm_probe,
+-	.remove_new = bcm2835_pwm_remove,
+ };
+ module_platform_driver(bcm2835_pwm_driver);
+ 

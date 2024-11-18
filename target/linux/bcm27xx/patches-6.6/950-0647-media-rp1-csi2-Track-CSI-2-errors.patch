@@ -1,0 +1,245 @@
+From dd2f4f5ac861ac255ddd5bb9474e423d6c76000f Mon Sep 17 00:00:00 2001
+From: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+Date: Thu, 21 Sep 2023 18:18:53 +0300
+Subject: [PATCH 0647/1085] media: rp1: csi2: Track CSI-2 errors
+
+Track the errors from the CSI-2 receiver: overflows and discards. These
+are recorded in a table which can be read by the userspace via debugfs.
+
+As tracking the errors may cause much more interrupt load, the tracking
+needs to be enabled with a module parameter.
+
+Note that the recording is not perfect: we only record the last
+discarded DT for each discard type, instead of recording all of them.
+This means that e.g. if the device is discarding two unmatched DTs, the
+debugfs file only shows the last one recorded. Recording all of them
+would need a more sophisticated recording system to avoid the need of a
+very large table, or dynamic allocation.
+
+Signed-off-by: Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/csi2.c | 123 ++++++++++++++++++
+ .../media/platform/raspberrypi/rp1_cfe/csi2.h |  16 +++
+ 2 files changed, 139 insertions(+)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/csi2.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/csi2.c
+@@ -16,6 +16,10 @@
+ #include "csi2.h"
+ #include "cfe.h"
+ 
++static bool csi2_track_errors;
++module_param_named(track_csi2_errors, csi2_track_errors, bool, 0);
++MODULE_PARM_DESC(track_csi2_errors, "track csi-2 errors");
++
+ #define csi2_dbg_verbose(fmt, arg...)                             \
+ 	do {                                                      \
+ 		if (cfe_debug_verbose)                            \
+@@ -32,9 +36,28 @@
+ #define CSI2_DISCARDS_INACTIVE	0x00c
+ #define CSI2_DISCARDS_UNMATCHED	0x010
+ #define CSI2_DISCARDS_LEN_LIMIT	0x014
++
++#define CSI2_DISCARDS_AMOUNT_SHIFT	0
++#define CSI2_DISCARDS_AMOUNT_MASK	GENMASK(23, 0)
++#define CSI2_DISCARDS_DT_SHIFT		24
++#define CSI2_DISCARDS_DT_MASK		GENMASK(29, 24)
++#define CSI2_DISCARDS_VC_SHIFT		30
++#define CSI2_DISCARDS_VC_MASK		GENMASK(31, 30)
++
+ #define CSI2_LLEV_PANICS	0x018
+ #define CSI2_ULEV_PANICS	0x01c
+ #define CSI2_IRQ_MASK		0x020
++#define CSI2_IRQ_MASK_IRQ_OVERFLOW		BIT(0)
++#define CSI2_IRQ_MASK_IRQ_DISCARD_OVERFLOW	BIT(1)
++#define CSI2_IRQ_MASK_IRQ_DISCARD_LENGTH_LIMIT	BIT(2)
++#define CSI2_IRQ_MASK_IRQ_DISCARD_UNMATCHED	BIT(3)
++#define CSI2_IRQ_MASK_IRQ_DISCARD_INACTIVE	BIT(4)
++#define CSI2_IRQ_MASK_IRQ_ALL                                              \
++	(CSI2_IRQ_MASK_IRQ_OVERFLOW | CSI2_IRQ_MASK_IRQ_DISCARD_OVERFLOW | \
++	 CSI2_IRQ_MASK_IRQ_DISCARD_LENGTH_LIMIT |                          \
++	 CSI2_IRQ_MASK_IRQ_DISCARD_UNMATCHED |                             \
++	 CSI2_IRQ_MASK_IRQ_DISCARD_INACTIVE)
++
+ #define CSI2_CTRL		0x024
+ #define CSI2_CH_CTRL(x)		((x) * 0x40 + 0x28)
+ #define CSI2_CH_ADDR0(x)	((x) * 0x40 + 0x2c)
+@@ -149,6 +172,92 @@ static int csi2_regs_show(struct seq_fil
+ 
+ DEFINE_SHOW_ATTRIBUTE(csi2_regs);
+ 
++static int csi2_errors_show(struct seq_file *s, void *data)
++{
++	struct csi2_device *csi2 = s->private;
++	unsigned long flags;
++	u32 discards_table[DISCARDS_TABLE_NUM_VCS][DISCARDS_TABLE_NUM_ENTRIES];
++	u32 discards_dt_table[DISCARDS_TABLE_NUM_ENTRIES];
++	u32 overflows;
++
++	spin_lock_irqsave(&csi2->errors_lock, flags);
++
++	memcpy(discards_table, csi2->discards_table, sizeof(discards_table));
++	memcpy(discards_dt_table, csi2->discards_dt_table,
++	       sizeof(discards_dt_table));
++	overflows = csi2->overflows;
++
++	csi2->overflows = 0;
++	memset(csi2->discards_table, 0, sizeof(discards_table));
++	memset(csi2->discards_dt_table, 0, sizeof(discards_dt_table));
++
++	spin_unlock_irqrestore(&csi2->errors_lock, flags);
++
++	seq_printf(s, "Overflows %u\n", overflows);
++	seq_puts(s, "Discards:\n");
++	seq_puts(s, "VC            OVLF        LEN  UNMATCHED   INACTIVE\n");
++
++	for (unsigned int vc = 0; vc < DISCARDS_TABLE_NUM_VCS; ++vc) {
++		seq_printf(s, "%u       %10u %10u %10u %10u\n", vc,
++			   discards_table[vc][DISCARDS_TABLE_OVERFLOW],
++			   discards_table[vc][DISCARDS_TABLE_LENGTH_LIMIT],
++			   discards_table[vc][DISCARDS_TABLE_UNMATCHED],
++			   discards_table[vc][DISCARDS_TABLE_INACTIVE]);
++	}
++
++	seq_printf(s, "Last DT %10u %10u %10u %10u\n",
++		   discards_dt_table[DISCARDS_TABLE_OVERFLOW],
++		   discards_dt_table[DISCARDS_TABLE_LENGTH_LIMIT],
++		   discards_dt_table[DISCARDS_TABLE_UNMATCHED],
++		   discards_dt_table[DISCARDS_TABLE_INACTIVE]);
++
++	return 0;
++}
++
++DEFINE_SHOW_ATTRIBUTE(csi2_errors);
++
++static void csi2_isr_handle_errors(struct csi2_device *csi2, u32 status)
++{
++	spin_lock(&csi2->errors_lock);
++
++	if (status & IRQ_OVERFLOW)
++		csi2->overflows++;
++
++	for (unsigned int i = 0; i < DISCARDS_TABLE_NUM_ENTRIES; ++i) {
++		static const u32 discard_bits[] = {
++			IRQ_DISCARD_OVERFLOW,
++			IRQ_DISCARD_LEN_LIMIT,
++			IRQ_DISCARD_UNMATCHED,
++			IRQ_DISCARD_INACTIVE,
++		};
++		static const u8 discard_regs[] = {
++			CSI2_DISCARDS_OVERFLOW,
++			CSI2_DISCARDS_LEN_LIMIT,
++			CSI2_DISCARDS_UNMATCHED,
++			CSI2_DISCARDS_INACTIVE,
++		};
++		u32 amount;
++		u8 dt, vc;
++		u32 v;
++
++		if (!(status & discard_bits[i]))
++			continue;
++
++		v = csi2_reg_read(csi2, discard_regs[i]);
++		csi2_reg_write(csi2, discard_regs[i], 0);
++
++		amount = (v & CSI2_DISCARDS_AMOUNT_MASK) >>
++			 CSI2_DISCARDS_AMOUNT_SHIFT;
++		dt = (v & CSI2_DISCARDS_DT_MASK) >> CSI2_DISCARDS_DT_SHIFT;
++		vc = (v & CSI2_DISCARDS_VC_MASK) >> CSI2_DISCARDS_VC_SHIFT;
++
++		csi2->discards_table[vc][i] += amount;
++		csi2->discards_dt_table[i] = dt;
++	}
++
++	spin_unlock(&csi2->errors_lock);
++}
++
+ void csi2_isr(struct csi2_device *csi2, bool *sof, bool *eof, bool *lci)
+ {
+ 	unsigned int i;
+@@ -183,6 +292,9 @@ void csi2_isr(struct csi2_device *csi2,
+ 		eof[i] = !!(status & IRQ_FE_ACK(i));
+ 		lci[i] = !!(status & IRQ_LE_ACK(i));
+ 	}
++
++	if (csi2_track_errors)
++		csi2_isr_handle_errors(csi2, status);
+ }
+ 
+ void csi2_set_buffer(struct csi2_device *csi2, unsigned int channel,
+@@ -277,6 +389,9 @@ void csi2_stop_channel(struct csi2_devic
+ 
+ void csi2_open_rx(struct csi2_device *csi2)
+ {
++	csi2_reg_write(csi2, CSI2_IRQ_MASK,
++		       csi2_track_errors ? CSI2_IRQ_MASK_IRQ_ALL : 0);
++
+ 	dphy_start(&csi2->dphy);
+ 
+ 	csi2_reg_write(csi2, CSI2_CTRL,
+@@ -286,6 +401,8 @@ void csi2_open_rx(struct csi2_device *cs
+ void csi2_close_rx(struct csi2_device *csi2)
+ {
+ 	dphy_stop(&csi2->dphy);
++
++	csi2_reg_write(csi2, CSI2_IRQ_MASK, 0);
+ }
+ 
+ static struct csi2_device *to_csi2_device(struct v4l2_subdev *subdev)
+@@ -398,11 +515,17 @@ int csi2_init(struct csi2_device *csi2,
+ {
+ 	unsigned int i, ret;
+ 
++	spin_lock_init(&csi2->errors_lock);
++
+ 	csi2->dphy.dev = csi2->v4l2_dev->dev;
+ 	dphy_probe(&csi2->dphy);
+ 
+ 	debugfs_create_file("csi2_regs", 0444, debugfs, csi2, &csi2_regs_fops);
+ 
++	if (csi2_track_errors)
++		debugfs_create_file("csi2_errors", 0444, debugfs, csi2,
++				    &csi2_errors_fops);
++
+ 	for (i = 0; i < CSI2_NUM_CHANNELS * 2; i++)
+ 		csi2->pad[i].flags = i < CSI2_NUM_CHANNELS ?
+ 				     MEDIA_PAD_FL_SINK : MEDIA_PAD_FL_SOURCE;
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/csi2.h
+@@ -17,6 +17,8 @@
+ 
+ #define CSI2_NUM_CHANNELS 4
+ 
++#define DISCARDS_TABLE_NUM_VCS 4
++
+ enum csi2_mode {
+ 	CSI2_MODE_NORMAL,
+ 	CSI2_MODE_REMAP,
+@@ -37,6 +39,14 @@ struct csi2_cfg {
+ 	u32 buffer_size;
+ };
+ 
++enum discards_table_index {
++	DISCARDS_TABLE_OVERFLOW = 0,
++	DISCARDS_TABLE_LENGTH_LIMIT,
++	DISCARDS_TABLE_UNMATCHED,
++	DISCARDS_TABLE_INACTIVE,
++	DISCARDS_TABLE_NUM_ENTRIES,
++};
++
+ struct csi2_device {
+ 	/* Parent V4l2 device */
+ 	struct v4l2_device *v4l2_dev;
+@@ -53,6 +63,12 @@ struct csi2_device {
+ 
+ 	struct media_pad pad[CSI2_NUM_CHANNELS * 2];
+ 	struct v4l2_subdev sd;
++
++	/* lock for csi2 errors counters */
++	spinlock_t errors_lock;
++	u32 overflows;
++	u32 discards_table[DISCARDS_TABLE_NUM_VCS][DISCARDS_TABLE_NUM_ENTRIES];
++	u32 discards_dt_table[DISCARDS_TABLE_NUM_ENTRIES];
+ };
+ 
+ void csi2_isr(struct csi2_device *csi2, bool *sof, bool *eof, bool *lci);

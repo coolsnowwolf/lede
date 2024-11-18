@@ -1,0 +1,111 @@
+From a6f14ebd60346418df6cb750c9e36563bd887720 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 18 Jan 2024 14:32:16 +0000
+Subject: [PATCH 0843/1085] mmc: bcm2835-sdhost: use Host Software Queueing
+ mechanism
+
+See commit 511ce378e16f ("mmc: Add MMC host software queue support")
+
+Introduced in 5.8, this feature lets the block layer issue up to 2
+pending requests to the MMC layer which in certain cases can improve
+throughput, but in the case of this driver can significantly reduce
+context switching when performing random reads.
+
+On bcm2837 with a performant class A1 card, context switches under FIO
+random 4k reads go from ~8800 per second to ~5800, with a reduction in
+hardIRQs per second from ~5800 to ~4000. There is no appreciable
+difference in throughput.
+
+For bcm2835, and for workloads other than random read, HSQ is a wash in
+terms of throughput and CPU load.
+
+So, use it by default.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/Kconfig          |  1 +
+ drivers/mmc/host/bcm2835-sdhost.c | 27 ++++++++++++++++++++++-----
+ 2 files changed, 23 insertions(+), 5 deletions(-)
+
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -37,6 +37,7 @@ config MMC_BCM2835_PIO_DMA_BARRIER
+ config MMC_BCM2835_SDHOST
+ 	tristate "Support for the SDHost controller on BCM2708/9"
+ 	depends on ARCH_BCM2835
++	select MMC_HSQ
+ 	help
+ 	  This selects the SDHost controller on BCM2835/6.
+ 
+--- a/drivers/mmc/host/bcm2835-sdhost.c
++++ b/drivers/mmc/host/bcm2835-sdhost.c
+@@ -57,6 +57,7 @@
+ 
+ /* For mmc_card_blockaddr */
+ #include "../core/card.h"
++#include "mmc_hsq.h"
+ 
+ #define DRIVER_NAME "sdhost-bcm2835"
+ 
+@@ -1891,13 +1892,16 @@ static void bcm2835_sdhost_tasklet_finis
+ 				mmc_hostname(host->mmc));
+ 	}
+ 
+-	mmc_request_done(host->mmc, mrq);
++	if (!mmc_hsq_finalize_request(host->mmc, mrq))
++		mmc_request_done(host->mmc, mrq);
+ 	log_event("TSK>", mrq, 0);
+ }
+ 
+-int bcm2835_sdhost_add_host(struct bcm2835_host *host)
++int bcm2835_sdhost_add_host(struct platform_device *pdev)
+ {
++	struct bcm2835_host *host = platform_get_drvdata(pdev);
+ 	struct mmc_host *mmc;
++	struct mmc_hsq *hsq;
+ 	struct dma_slave_config cfg;
+ 	char pio_limit_string[20];
+ 	int ret;
+@@ -1992,6 +1996,16 @@ int bcm2835_sdhost_add_host(struct bcm28
+ 		goto untasklet;
+ 	}
+ 
++	hsq = devm_kzalloc(&pdev->dev, sizeof(*hsq), GFP_KERNEL);
++	if (!hsq) {
++		ret = -ENOMEM;
++		goto free_irq;
++	}
++
++	ret = mmc_hsq_init(hsq, host->mmc);
++	if (ret)
++		goto free_irq;
++
+ 	mmc_add_host(mmc);
+ 
+ 	pio_limit_string[0] = '\0';
+@@ -2004,6 +2018,9 @@ int bcm2835_sdhost_add_host(struct bcm28
+ 
+ 	return 0;
+ 
++free_irq:
++	free_irq(host->irq, host);
++
+ untasklet:
+ 	tasklet_kill(&host->finish_tasklet);
+ 
+@@ -2134,12 +2151,12 @@ static int bcm2835_sdhost_probe(struct p
+ 
+ 	host->firmware_sets_cdiv = (msg[1] != ~0);
+ 
+-	ret = bcm2835_sdhost_add_host(host);
++	platform_set_drvdata(pdev, host);
++
++	ret = bcm2835_sdhost_add_host(pdev);
+ 	if (ret)
+ 		goto err;
+ 
+-	platform_set_drvdata(pdev, host);
+-
+ 	pr_debug("bcm2835_sdhost_probe -> OK\n");
+ 
+ 	return 0;

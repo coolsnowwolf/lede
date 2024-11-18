@@ -1,0 +1,191 @@
+From 7be3d49d5abbffe3d16d98c823b5228b4a07eb13 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 31 Mar 2023 10:33:51 +0100
+Subject: [PATCH 0433/1085] drivers: media: imx708: Tidy-ups to address
+ upstream review comments
+
+This commit addresses vaious tidy-ups requesed for upstreaming the
+IMX708 driver. Notably:
+
+- Remove #define IMX708_NUM_SUPPLIES and use ARRAY_SIZE() directly
+- Use dev_err_probe where possible in imx708_probe()
+- Fix error handling paths in imx708_probe()
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/imx708.c | 61 +++++++++++++++++---------------------
+ 1 file changed, 28 insertions(+), 33 deletions(-)
+
+--- a/drivers/media/i2c/imx708.c
++++ b/drivers/media/i2c/imx708.c
+@@ -792,8 +792,6 @@ static const char * const imx708_supply_
+ 	"VDDL",  /* IF (1.8V) supply */
+ };
+ 
+-#define IMX708_NUM_SUPPLIES ARRAY_SIZE(imx708_supply_name)
+-
+ /*
+  * Initialisation delay between XCLR low->high and the moment when the sensor
+  * can start capture (i.e. can leave software standby), given by T7 in the
+@@ -815,7 +813,7 @@ struct imx708 {
+ 	u32 xclk_freq;
+ 
+ 	struct gpio_desc *reset_gpio;
+-	struct regulator_bulk_data supplies[IMX708_NUM_SUPPLIES];
++	struct regulator_bulk_data supplies[ARRAY_SIZE(imx708_supply_name)];
+ 
+ 	struct v4l2_ctrl_handler ctrl_handler;
+ 	/* V4L2 Controls */
+@@ -935,9 +933,10 @@ static int imx708_write_regs(struct imx7
+ {
+ 	struct i2c_client *client = v4l2_get_subdevdata(&imx708->sd);
+ 	unsigned int i;
+-	int ret;
+ 
+ 	for (i = 0; i < len; i++) {
++		int ret;
++
+ 		ret = imx708_write_reg(imx708, regs[i].address, 1, regs[i].val);
+ 		if (ret) {
+ 			dev_err_ratelimited(&client->dev,
+@@ -1025,8 +1024,6 @@ static int imx708_open(struct v4l2_subde
+ 
+ static int imx708_set_exposure(struct imx708 *imx708, unsigned int val)
+ {
+-	int ret;
+-
+ 	val = max(val, imx708->mode->exposure_lines_min);
+ 	val -= val % imx708->mode->exposure_lines_step;
+ 
+@@ -1034,11 +1031,9 @@ static int imx708_set_exposure(struct im
+ 	 * In HDR mode this will set the longest exposure. The sensor
+ 	 * will automatically divide the medium and short ones by 4,16.
+ 	 */
+-	ret = imx708_write_reg(imx708, IMX708_REG_EXPOSURE,
+-			       IMX708_REG_VALUE_16BIT,
+-			       val >> imx708->long_exp_shift);
+-
+-	return ret;
++	return imx708_write_reg(imx708, IMX708_REG_EXPOSURE,
++				IMX708_REG_VALUE_16BIT,
++				val >> imx708->long_exp_shift);
+ }
+ 
+ static void imx708_adjust_exposure_range(struct imx708 *imx708,
+@@ -1071,7 +1066,7 @@ static int imx708_set_analogue_gain(stru
+ 
+ static int imx708_set_frame_length(struct imx708 *imx708, unsigned int val)
+ {
+-	int ret = 0;
++	int ret;
+ 
+ 	imx708->long_exp_shift = 0;
+ 
+@@ -1091,8 +1086,8 @@ static int imx708_set_frame_length(struc
+ 
+ static void imx708_set_framing_limits(struct imx708 *imx708)
+ {
+-	unsigned int hblank;
+ 	const struct imx708_mode *mode = imx708->mode;
++	unsigned int hblank;
+ 
+ 	__v4l2_ctrl_modify_range(imx708->pixel_rate,
+ 				 mode->pixel_rate, mode->pixel_rate,
+@@ -1599,7 +1594,7 @@ static int imx708_power_on(struct device
+ 	struct imx708 *imx708 = to_imx708(sd);
+ 	int ret;
+ 
+-	ret = regulator_bulk_enable(IMX708_NUM_SUPPLIES,
++	ret = regulator_bulk_enable(ARRAY_SIZE(imx708_supply_name),
+ 				    imx708->supplies);
+ 	if (ret) {
+ 		dev_err(&client->dev, "%s: failed to enable regulators\n",
+@@ -1621,7 +1616,8 @@ static int imx708_power_on(struct device
+ 	return 0;
+ 
+ reg_off:
+-	regulator_bulk_disable(IMX708_NUM_SUPPLIES, imx708->supplies);
++	regulator_bulk_disable(ARRAY_SIZE(imx708_supply_name),
++			       imx708->supplies);
+ 	return ret;
+ }
+ 
+@@ -1632,7 +1628,8 @@ static int imx708_power_off(struct devic
+ 	struct imx708 *imx708 = to_imx708(sd);
+ 
+ 	gpiod_set_value_cansleep(imx708->reset_gpio, 0);
+-	regulator_bulk_disable(IMX708_NUM_SUPPLIES, imx708->supplies);
++	regulator_bulk_disable(ARRAY_SIZE(imx708_supply_name),
++			       imx708->supplies);
+ 	clk_disable_unprepare(imx708->xclk);
+ 
+ 	/* Force reprogramming of the common registers when powered up again. */
+@@ -1679,11 +1676,11 @@ static int imx708_get_regulators(struct
+ 	struct i2c_client *client = v4l2_get_subdevdata(&imx708->sd);
+ 	unsigned int i;
+ 
+-	for (i = 0; i < IMX708_NUM_SUPPLIES; i++)
++	for (i = 0; i < ARRAY_SIZE(imx708_supply_name); i++)
+ 		imx708->supplies[i].supply = imx708_supply_name[i];
+ 
+ 	return devm_regulator_bulk_get(&client->dev,
+-				       IMX708_NUM_SUPPLIES,
++				       ARRAY_SIZE(imx708_supply_name),
+ 				       imx708->supplies);
+ }
+ 
+@@ -1956,23 +1953,19 @@ static int imx708_probe(struct i2c_clien
+ 
+ 	/* Get system clock (xclk) */
+ 	imx708->xclk = devm_clk_get(dev, NULL);
+-	if (IS_ERR(imx708->xclk)) {
+-		dev_err(dev, "failed to get xclk\n");
+-		return PTR_ERR(imx708->xclk);
+-	}
++	if (IS_ERR(imx708->xclk))
++		return dev_err_probe(dev, PTR_ERR(imx708->xclk),
++				     "failed to get xclk\n");
+ 
+ 	imx708->xclk_freq = clk_get_rate(imx708->xclk);
+-	if (imx708->xclk_freq != IMX708_XCLK_FREQ) {
+-		dev_err(dev, "xclk frequency not supported: %d Hz\n",
+-			imx708->xclk_freq);
+-		return -EINVAL;
+-	}
++	if (imx708->xclk_freq != IMX708_XCLK_FREQ)
++		return dev_err_probe(dev, -EINVAL,
++				     "xclk frequency not supported: %d Hz\n",
++				     imx708->xclk_freq);
+ 
+ 	ret = imx708_get_regulators(imx708);
+-	if (ret) {
+-		dev_err(dev, "failed to get regulators\n");
+-		return ret;
+-	}
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get regulators\n");
+ 
+ 	/* Request optional enable pin */
+ 	imx708->reset_gpio = devm_gpiod_get_optional(dev, "reset",
+@@ -2001,7 +1994,7 @@ static int imx708_probe(struct i2c_clien
+ 	/* This needs the pm runtime to be registered. */
+ 	ret = imx708_init_controls(imx708);
+ 	if (ret)
+-		goto error_power_off;
++		goto error_pm_runtime;
+ 
+ 	/* Initialize subdev */
+ 	imx708->sd.internal_ops = &imx708_internal_ops;
+@@ -2033,9 +2026,11 @@ error_media_entity:
+ error_handler_free:
+ 	imx708_free_controls(imx708);
+ 
+-error_power_off:
++error_pm_runtime:
+ 	pm_runtime_disable(&client->dev);
+ 	pm_runtime_set_suspended(&client->dev);
++
++error_power_off:
+ 	imx708_power_off(&client->dev);
+ 
+ 	return ret;

@@ -1,0 +1,93 @@
+From 7842c69dc55c25e47ed1b940ba7d8c89a06687cb Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 24 Mar 2023 15:45:50 +0100
+Subject: [PATCH 0595/1085] drm/vc4: hvs: Change prototype of __vc4_hvs_alloc
+ to pass registers
+
+The BCM2712 HVS has registers to report the size of the various SRAM the
+driver uses, and their size actually differ depending on the stepping.
+
+The initialisation of the memory pools happen in the __vc4_hvs_alloc()
+function that also allocates the main HVS structure, that will then hold
+the pointer to the memory mapping of the registers.
+
+This creates some kind of circular dependency that we can break by
+passing the mapping pointer as an argument for __vc4_hvs_alloc() to use
+to query to get the SRAM sizes and initialise the memory pools
+accordingly.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/tests/vc4_mock.c |  2 +-
+ drivers/gpu/drm/vc4/vc4_drv.h        |  4 +++-
+ drivers/gpu/drm/vc4/vc4_hvs.c        | 16 ++++++++++------
+ 3 files changed, 14 insertions(+), 8 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_mock.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_mock.c
+@@ -180,7 +180,7 @@ static struct vc4_dev *__mock_device(str
+ 	vc4->dev = dev;
+ 	vc4->gen = gen;
+ 
+-	vc4->hvs = __vc4_hvs_alloc(vc4, NULL);
++	vc4->hvs = __vc4_hvs_alloc(vc4, NULL, NULL);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, vc4->hvs);
+ 
+ 	drm = &vc4->base;
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -1047,7 +1047,9 @@ void vc4_irq_reset(struct drm_device *de
+ 
+ /* vc4_hvs.c */
+ extern struct platform_driver vc4_hvs_driver;
+-struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4, struct platform_device *pdev);
++struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4,
++				void __iomem *regs,
++				struct platform_device *pdev);
+ void vc4_hvs_stop_channel(struct vc4_hvs *hvs, unsigned int output);
+ int vc4_hvs_get_fifo_from_output(struct vc4_hvs *hvs, unsigned int output);
+ u8 vc4_hvs_get_fifo_frame_count(struct vc4_hvs *hvs, unsigned int fifo);
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1238,7 +1238,9 @@ int vc4_hvs_debugfs_init(struct drm_mino
+ 	return 0;
+ }
+ 
+-struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4, struct platform_device *pdev)
++struct vc4_hvs *__vc4_hvs_alloc(struct vc4_dev *vc4,
++				void __iomem *regs,
++				struct platform_device *pdev)
+ {
+ 	struct drm_device *drm = &vc4->base;
+ 	struct vc4_hvs *hvs;
+@@ -1248,6 +1250,7 @@ struct vc4_hvs *__vc4_hvs_alloc(struct v
+ 		return ERR_PTR(-ENOMEM);
+ 
+ 	hvs->vc4 = vc4;
++	hvs->regs = regs;
+ 	hvs->pdev = pdev;
+ 
+ 	spin_lock_init(&hvs->mm_lock);
+@@ -1446,16 +1449,17 @@ static int vc4_hvs_bind(struct device *d
+ 	struct drm_device *drm = dev_get_drvdata(master);
+ 	struct vc4_dev *vc4 = to_vc4_dev(drm);
+ 	struct vc4_hvs *hvs = NULL;
++	void __iomem *regs;
+ 	int ret;
+ 
+-	hvs = __vc4_hvs_alloc(vc4, NULL);
++	regs = vc4_ioremap_regs(pdev, 0);
++	if (IS_ERR(regs))
++		return PTR_ERR(regs);
++
++	hvs = __vc4_hvs_alloc(vc4, regs, pdev);
+ 	if (IS_ERR(hvs))
+ 		return PTR_ERR(hvs);
+ 
+-	hvs->regs = vc4_ioremap_regs(pdev, 0);
+-	if (IS_ERR(hvs->regs))
+-		return PTR_ERR(hvs->regs);
+-
+ 	hvs->regset.base = hvs->regs;
+ 	hvs->regset.regs = vc4_hvs_regs;
+ 	hvs->regset.nregs = ARRAY_SIZE(vc4_hvs_regs);

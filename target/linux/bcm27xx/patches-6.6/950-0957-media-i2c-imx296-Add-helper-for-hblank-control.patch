@@ -1,0 +1,84 @@
+From 898e5687a8e9f506d0c62afe5ca995a527ffd25a Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Tue, 14 Mar 2023 12:56:14 +0000
+Subject: [PATCH 0957/1085] media: i2c: imx296: Add helper for hblank control
+
+Add a helper function to setup the horizontal blanking control. Update
+the control limits on set_format as the horizontal blanking time must
+remain constant regardless of sensor output width.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/imx296.c | 44 ++++++++++++++++++++++++++------------
+ 1 file changed, 30 insertions(+), 14 deletions(-)
+
+--- a/drivers/media/i2c/imx296.c
++++ b/drivers/media/i2c/imx296.c
+@@ -388,10 +388,36 @@ static const struct v4l2_ctrl_ops imx296
+ 	.s_ctrl = imx296_s_ctrl,
+ };
+ 
++static void imx296_setup_hblank(struct imx296 *sensor, unsigned int width)
++{
++	/*
++	 * Horizontal blanking is controlled through the HMAX register, which
++	 * contains a line length in contains a line length in units of an
++	 * internal 74.25 MHz clock derived from the INCLK. The HMAX value is
++	 * currently fixed to 1100, convert it to a number of pixels based on
++	 * the nominal pixel rate.
++	 *
++	 * Horizontal blanking is fixed, regardless of the crop width, so
++	 * ensure the hblank limits are adjusted to account for this.
++	 */
++	unsigned int hblank = 1100 * 1188000000ULL / 10 / 74250000 - width;
++
++	if (!sensor->hblank) {
++		sensor->hblank = v4l2_ctrl_new_std(&sensor->ctrls,
++						   &imx296_ctrl_ops,
++						   V4L2_CID_HBLANK, hblank,
++						   hblank, 1, hblank);
++		if (sensor->hblank)
++			sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	} else {
++		__v4l2_ctrl_modify_range(sensor->hblank, hblank, hblank, 1,
++					 hblank);
++	}
++}
++
+ static int imx296_ctrls_init(struct imx296 *sensor)
+ {
+ 	struct v4l2_fwnode_device_properties props;
+-	unsigned int hblank;
+ 	int ret;
+ 
+ 	ret = v4l2_fwnode_device_parse(sensor->dev, &props);
+@@ -406,19 +432,7 @@ static int imx296_ctrls_init(struct imx2
+ 			  V4L2_CID_ANALOGUE_GAIN, IMX296_GAIN_MIN,
+ 			  IMX296_GAIN_MAX, 1, IMX296_GAIN_MIN);
+ 
+-	/*
+-	 * Horizontal blanking is controlled through the HMAX register, which
+-	 * contains a line length in INCK clock units. The INCK frequency is
+-	 * fixed to 74.25 MHz. The HMAX value is currently fixed to 1100,
+-	 * convert it to a number of pixels based on the nominal pixel rate.
+-	 */
+-	hblank = 1100 * 1188000000ULL / 10 / 74250000
+-	       - IMX296_PIXEL_ARRAY_WIDTH;
+-	sensor->hblank = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+-					   V4L2_CID_HBLANK, hblank, hblank, 1,
+-					   hblank);
+-	if (sensor->hblank)
+-		sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	imx296_setup_hblank(sensor, IMX296_PIXEL_ARRAY_WIDTH);
+ 
+ 	sensor->vblank = v4l2_ctrl_new_std(&sensor->ctrls, &imx296_ctrl_ops,
+ 					   V4L2_CID_VBLANK, 30,
+@@ -718,6 +732,8 @@ static int imx296_set_format(struct v4l2
+ 	format->width = crop->width;
+ 	format->height = crop->height;
+ 
++	imx296_setup_hblank(sensor, format->width);
++
+ 	format->code = sensor->mono ? MEDIA_BUS_FMT_Y10_1X10
+ 		     : MEDIA_BUS_FMT_SBGGR10_1X10;
+ 	format->field = V4L2_FIELD_NONE;

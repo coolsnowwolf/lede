@@ -1,0 +1,71 @@
+From b80d5d1d5148a89121e3759bb4caa27e7ee1cf05 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 15 Oct 2024 11:22:53 +0100
+Subject: [PATCH 1331/1350] mmc: don't reference requests after finishing them
+
+Posted write tracking introduced in the commit below raced with re-use
+of the requests between completion and submission, potentially causing
+underflow of the pending write count.
+
+Fixes: e6c1e862b2b8 ("mmc: restrict posted write counts for SD cards in CQ mode")
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/block.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -1524,6 +1524,7 @@ static void mmc_blk_cqe_complete_rq(stru
+ 	struct request_queue *q = req->q;
+ 	struct mmc_host *host = mq->card->host;
+ 	enum mmc_issue_type issue_type = mmc_issue_type(mq, req);
++	bool write = req_op(req) == REQ_OP_WRITE;
+ 	unsigned long flags;
+ 	bool put_card;
+ 	int err;
+@@ -1555,7 +1556,7 @@ static void mmc_blk_cqe_complete_rq(stru
+ 
+ 	spin_lock_irqsave(&mq->lock, flags);
+ 
+-	if (req_op(req) == REQ_OP_WRITE)
++	if (write)
+ 		mq->pending_writes--;
+ 	mq->in_flight[issue_type] -= 1;
+ 
+@@ -2170,15 +2171,16 @@ static void mmc_blk_mq_poll_completion(s
+ }
+ 
+ static void mmc_blk_mq_dec_in_flight(struct mmc_queue *mq, enum mmc_issue_type issue_type,
+-				     struct request *req)
++				     bool write)
+ {
+ 	unsigned long flags;
+ 	bool put_card;
+ 
+ 	spin_lock_irqsave(&mq->lock, flags);
+ 
+-	if (req_op(req) == REQ_OP_WRITE)
++	if (write)
+ 		mq->pending_writes--;
++
+ 	mq->in_flight[issue_type] -= 1;
+ 
+ 	put_card = (mmc_tot_in_flight(mq) == 0);
+@@ -2193,6 +2195,7 @@ static void mmc_blk_mq_post_req(struct m
+ 				bool can_sleep)
+ {
+ 	enum mmc_issue_type issue_type = mmc_issue_type(mq, req);
++	bool write = req_op(req) == REQ_OP_WRITE;
+ 	struct mmc_queue_req *mqrq = req_to_mmc_queue_req(req);
+ 	struct mmc_request *mrq = &mqrq->brq.mrq;
+ 	struct mmc_host *host = mq->card->host;
+@@ -2212,7 +2215,7 @@ static void mmc_blk_mq_post_req(struct m
+ 			blk_mq_complete_request(req);
+ 	}
+ 
+-	mmc_blk_mq_dec_in_flight(mq, issue_type, req);
++	mmc_blk_mq_dec_in_flight(mq, issue_type, write);
+ }
+ 
+ void mmc_blk_mq_recovery(struct mmc_queue *mq)

@@ -1,0 +1,78 @@
+From 27aa35221819fec513ce1b886fba3b0ab6504245 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 22 Nov 2023 19:17:44 +0000
+Subject: [PATCH 0743/1085] drm: vc4: Block swiotlb bounce buffers being
+ imported as dmabuf
+
+The dmabuf import already checks that the backing buffer is contiguous
+and rejects it if it isn't. vc4 also requires that the buffer is
+in the bottom 1GB of RAM, and this is all correctly defined via
+dma-ranges.
+
+However the kernel silently uses swiotlb to bounce dma buffers
+around if they are in the wrong region. This relies on dma sync
+functions to be called in order to copy the data to/from the
+bounce buffer.
+
+DRM is based on all memory allocations being coherent with the
+GPU so that any updates to a framebuffer will be acted on without
+the need for any additional update. This is fairly fundamentally
+incompatible with needing to call dma_sync_ to handle the bounce
+buffer copies, and therefore we have to detect and reject mappings
+that use bounce buffers.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.c
++++ b/drivers/gpu/drm/vc4/vc4_drv.c
+@@ -29,6 +29,7 @@
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/dma-direct.h>
+ 
+ #include <drm/drm_aperture.h>
+ #include <drm/drm_atomic_helper.h>
+@@ -175,6 +176,19 @@ static void vc4_close(struct drm_device
+ 	kfree(vc4file);
+ }
+ 
++struct drm_gem_object *
++vc4_prime_import_sg_table(struct drm_device *dev,
++			  struct dma_buf_attachment *attach,
++			  struct sg_table *sgt)
++{
++	phys_addr_t phys = dma_to_phys(dev->dev, sg_dma_address(sgt->sgl));
++
++	if (is_swiotlb_buffer(dev->dev, phys))
++		return ERR_PTR(-EINVAL);
++
++	return drm_gem_dma_prime_import_sg_table(dev, attach, sgt);
++}
++
+ DEFINE_DRM_GEM_FOPS(vc4_drm_fops);
+ 
+ static const struct drm_ioctl_desc vc4_drm_ioctls[] = {
+@@ -211,7 +225,8 @@ const struct drm_driver vc4_drm_driver =
+ 
+ 	.gem_create_object = vc4_create_object,
+ 
+-	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(vc4_bo_dumb_create),
++	.dumb_create		= vc4_bo_dumb_create,
++	.gem_prime_import_sg_table = vc4_prime_import_sg_table,
+ 
+ 	.ioctls = vc4_drm_ioctls,
+ 	.num_ioctls = ARRAY_SIZE(vc4_drm_ioctls),
+@@ -234,7 +249,8 @@ const struct drm_driver vc5_drm_driver =
+ 	.debugfs_init = vc4_debugfs_init,
+ #endif
+ 
+-	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(vc5_dumb_create),
++	.dumb_create		= vc5_dumb_create,
++	.gem_prime_import_sg_table = vc4_prime_import_sg_table,
+ 
+ 	.fops = &vc4_drm_fops,
+ 

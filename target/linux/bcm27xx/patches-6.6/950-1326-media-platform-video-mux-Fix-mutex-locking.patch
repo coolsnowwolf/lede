@@ -1,0 +1,59 @@
+From cc0c868b51941f0ff2676970b70d388f1722e7fe Mon Sep 17 00:00:00 2001
+From: Paul Elder <paul.elder@ideasonboard.com>
+Date: Thu, 10 Oct 2024 14:52:53 +0100
+Subject: [PATCH 1326/1350] media: platform: video-mux: Fix mutex locking
+
+The current order of locking between the driver mutex and the v4l2
+subdev state lock causes a circuluar locking dependency when trying to
+set up a link. Fix this.
+
+Signed-off-by: Paul Elder <paul.elder@ideasonboard.com>
+Reviewed-by: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+Signed-off-by: Kieran Bingham <kieran.bingham@ideasonboard.com>
+---
+ drivers/media/platform/video-mux.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/platform/video-mux.c
++++ b/drivers/media/platform/video-mux.c
+@@ -70,6 +70,7 @@ static int video_mux_link_setup(struct m
+ {
+ 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
+ 	struct v4l2_subdev *source_sd;
++	struct v4l2_subdev_state *sd_state;
+ 	struct video_mux *vmux = v4l2_subdev_to_video_mux(sd);
+ 	u16 source_pad = entity->num_pads - 1;
+ 	int ret = 0;
+@@ -85,10 +86,10 @@ static int video_mux_link_setup(struct m
+ 		remote->entity->name, remote->index, local->entity->name,
+ 		local->index, flags & MEDIA_LNK_FL_ENABLED);
+ 
++	sd_state = v4l2_subdev_lock_and_get_active_state(sd);
+ 	mutex_lock(&vmux->lock);
+ 
+ 	if (flags & MEDIA_LNK_FL_ENABLED) {
+-		struct v4l2_subdev_state *sd_state;
+ 		struct v4l2_mbus_framefmt *source_mbusformat;
+ 
+ 		if (vmux->active == local->index)
+@@ -106,12 +107,10 @@ static int video_mux_link_setup(struct m
+ 		vmux->active = local->index;
+ 
+ 		/* Propagate the active format to the source */
+-		sd_state = v4l2_subdev_lock_and_get_active_state(sd);
+ 		source_mbusformat = v4l2_subdev_get_pad_format(sd, sd_state,
+ 							       source_pad);
+ 		*source_mbusformat = *v4l2_subdev_get_pad_format(sd, sd_state,
+ 								 vmux->active);
+-		v4l2_subdev_unlock_state(sd_state);
+ 
+ 		source_sd = media_entity_to_v4l2_subdev(remote->entity);
+ 		vmux->subdev.ctrl_handler = source_sd->ctrl_handler;
+@@ -129,6 +128,7 @@ static int video_mux_link_setup(struct m
+ 
+ out:
+ 	mutex_unlock(&vmux->lock);
++	v4l2_subdev_unlock_state(sd_state);
+ 	return ret;
+ }
+ 

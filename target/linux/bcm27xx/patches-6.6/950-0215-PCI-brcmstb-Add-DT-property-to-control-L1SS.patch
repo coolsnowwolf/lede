@@ -1,0 +1,75 @@
+From 871d0b3de72f8af11a41696a375972a38b408ec9 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 11 Jun 2020 09:57:03 +0100
+Subject: [PATCH 0215/1085] PCI: brcmstb: Add DT property to control L1SS
+
+The BRCM PCIe block has controls to enable control of the CLKREQ#
+signal by the L1SS, and to gate the refclk with the CLKREQ# input.
+These controls are mutually exclusive - the upstream code sets the
+latter, but some use cases require the former.
+
+Add a Device Tree property - brcm,enable-l1ss - to switch to the
+L1SS configuration.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/pci/controller/pcie-brcmstb.c | 26 +++++++++++++++++++++-----
+ 1 file changed, 21 insertions(+), 5 deletions(-)
+
+--- a/drivers/pci/controller/pcie-brcmstb.c
++++ b/drivers/pci/controller/pcie-brcmstb.c
+@@ -123,6 +123,7 @@
+ #define  PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_DEBUG_ENABLE_MASK	0x2
+ #define  PCIE_MISC_HARD_PCIE_HARD_DEBUG_SERDES_IDDQ_MASK		0x08000000
+ #define  PCIE_BMIPS_MISC_HARD_PCIE_HARD_DEBUG_SERDES_IDDQ_MASK		0x00800000
++#define  PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_L1SS_ENABLE_MASK		0x00200000
+ 
+ 
+ #define PCIE_INTR2_CPU_BASE		0x4300
+@@ -252,6 +253,7 @@ struct brcm_pcie {
+ 	struct clk		*clk;
+ 	struct device_node	*np;
+ 	bool			ssc;
++	bool			l1ss;
+ 	int			gen;
+ 	u64			msi_target_addr;
+ 	struct brcm_msi		*msi;
+@@ -1077,12 +1079,25 @@ static int brcm_pcie_start_link(struct b
+ 		 pci_speed_string(pcie_link_speed[cls]), nlw,
+ 		 ssc_good ? "(SSC)" : "(!SSC)");
+ 
+-	/*
+-	 * Refclk from RC should be gated with CLKREQ# input when ASPM L0s,L1
+-	 * is enabled => setting the CLKREQ_DEBUG_ENABLE field to 1.
+-	 */
+ 	tmp = readl(base + PCIE_MISC_HARD_PCIE_HARD_DEBUG);
+-	tmp |= PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_DEBUG_ENABLE_MASK;
++	if (pcie->l1ss) {
++		/*
++		 * Enable CLKREQ# signalling include L1 Substate control of
++		 * the CLKREQ# signal and the external reference clock buffer.
++		 * meet requirement for Endpoints that require CLKREQ#
++		 * assertion to clock active within 400ns.
++		 */
++		tmp &= ~PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_DEBUG_ENABLE_MASK;
++		tmp |= PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_L1SS_ENABLE_MASK;
++	} else {
++		/*
++		 * Refclk from RC should be gated with CLKREQ# input when
++		 * ASPM L0s,L1 is enabled => setting the CLKREQ_DEBUG_ENABLE
++		 * field to 1.
++		 */
++		tmp &= ~PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_L1SS_ENABLE_MASK;
++		tmp |= PCIE_MISC_HARD_PCIE_HARD_DEBUG_CLKREQ_DEBUG_ENABLE_MASK;
++	}
+ 	writel(tmp, base + PCIE_MISC_HARD_PCIE_HARD_DEBUG);
+ 
+ 	return 0;
+@@ -1536,6 +1551,7 @@ static int brcm_pcie_probe(struct platfo
+ 	pcie->gen = (ret < 0) ? 0 : ret;
+ 
+ 	pcie->ssc = of_property_read_bool(np, "brcm,enable-ssc");
++	pcie->l1ss = of_property_read_bool(np, "brcm,enable-l1ss");
+ 
+ 	ret = clk_prepare_enable(pcie->clk);
+ 	if (ret) {

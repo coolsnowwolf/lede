@@ -1,0 +1,60 @@
+From 8a35f69cced9537584043aba6bf4d48434852aa2 Mon Sep 17 00:00:00 2001
+From: alessandromrc <66976091+alessandromrc@users.noreply.github.com>
+Date: Tue, 26 Mar 2024 23:13:37 +0100
+Subject: [PATCH 0991/1085] allo-boss-dac mute output when changing parameters
+
+Since I noticed that sometimes changing sample rates causes some digital
+quirks and noises, I've changed the function to mute the output before
+performing the changes and then unmute it when an error occurs or the
+parameters got set.
+
+Signed-off-by: Alessandro Marcon <marconalessandro04@gmail.com>
+---
+ sound/soc/bcm/allo-boss-dac.c | 27 +++++++++++++++++++--------
+ 1 file changed, 19 insertions(+), 8 deletions(-)
+
+--- a/sound/soc/bcm/allo-boss-dac.c
++++ b/sound/soc/bcm/allo-boss-dac.c
+@@ -275,23 +275,34 @@ static int snd_allo_boss_hw_params(
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	int channels = params_channels(params);
+ 	int width = snd_pcm_format_width(params_format(params));
++	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
++	struct snd_soc_card *card = rtd->card;
+ 
+-	if (snd_soc_allo_boss_master) {
+-		struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
++	/* Mute before changing sample rate */
++	snd_allo_boss_gpio_mute(card);
+ 
+-		snd_allo_boss_set_sclk(component,
+-			params_rate(params));
++	if (snd_soc_allo_boss_master) {
++		snd_allo_boss_set_sclk(component, params_rate(params));
+ 
+-		ret = snd_allo_boss_update_rate_den(
+-			substream, params);
++		ret = snd_allo_boss_update_rate_den(substream, params);
+ 		if (ret)
+-			return ret;
++			goto error;
+ 	}
+ 
+ 	ret = snd_soc_dai_set_bclk_ratio(asoc_rtd_to_cpu(rtd, 0), channels * width);
++
+ 	if (ret)
+-		return ret;
++		goto error;
++
+ 	ret = snd_soc_dai_set_bclk_ratio(asoc_rtd_to_codec(rtd, 0), channels * width);
++
++	if (ret)
++		goto error;
++
++	/* Unmute after setting parameters or having an error */
++error:
++	snd_allo_boss_gpio_unmute(card);
++
+ 	return ret;
+ }
+ 

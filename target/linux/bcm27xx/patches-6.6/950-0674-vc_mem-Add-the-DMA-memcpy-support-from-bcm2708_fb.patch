@@ -1,0 +1,345 @@
+From 76e509fd83156e96156e089eccfd49e2ebda5ec5 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Sat, 14 Oct 2023 14:57:49 +0100
+Subject: [PATCH 0674/1085] vc_mem: Add the DMA memcpy support from bcm2708_fb
+
+bcm2708_fb is disabled by the vc4-kms-v3d overlay, which means that the
+DMA memcpy support it provides is not available to allow vclog to read
+the VC logs from the top 16MB on Pi 2 and Pi 3. Add the code to the
+vc_mem driver, which will still be enabled.
+
+It ought to be possible to do a proper DMA_MEM_TO_MEM copy via the
+generic DMA customer API, but that can be a later step.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/char/broadcom/vc_mem.c | 259 +++++++++++++++++++++++++++++++++
+ 1 file changed, 259 insertions(+)
+
+--- a/drivers/char/broadcom/vc_mem.c
++++ b/drivers/char/broadcom/vc_mem.c
+@@ -23,9 +23,21 @@
+ #include <linux/uaccess.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/broadcom/vc_mem.h>
++#include <linux/compat.h>
++#include <linux/platform_data/dma-bcm2708.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
+ 
+ #define DRIVER_NAME  "vc-mem"
+ 
++/* N.B. These use a different magic value for compatibility with bmc7208_fb */
++#define VC_MEM_IOC_DMACOPY   _IOW('z', 0x22, struct vc_mem_dmacopy)
++#define VC_MEM_IOC_DMACOPY32 _IOW('z', 0x22, struct vc_mem_dmacopy32)
++
++/* address with no aliases */
++#define INTALIAS_NORMAL(x) ((x) & ~0xc0000000)
++/* cache coherent but non-allocating in L1 and L2 */
++#define INTALIAS_L1L2_NONALLOCATING(x) (((x) & ~0xc0000000) | 0x80000000)
++
+ /* Device (/dev) related variables */
+ static dev_t vc_mem_devnum;
+ static struct class *vc_mem_class;
+@@ -36,6 +48,20 @@ static int vc_mem_inited;
+ static struct dentry *vc_mem_debugfs_entry;
+ #endif
+ 
++struct vc_mem_dmacopy {
++	void *dst;
++	__u32 src;
++	__u32 length;
++};
++
++#ifdef CONFIG_COMPAT
++struct vc_mem_dmacopy32 {
++	compat_uptr_t dst;
++	__u32 src;
++	__u32 length;
++};
++#endif
++
+ /*
+  * Videocore memory addresses and size
+  *
+@@ -62,6 +88,20 @@ static uint phys_addr;
+ static uint mem_size;
+ static uint mem_base;
+ 
++struct vc_mem_dma {
++	struct device *dev;
++	int dma_chan;
++	int dma_irq;
++	void __iomem *dma_chan_base;
++	wait_queue_head_t dma_waitq;
++	void *cb_base;	/* DMA control blocks */
++	dma_addr_t cb_handle;
++};
++
++struct { u32 base, length; } gpu_mem;
++static struct mutex dma_mutex;
++static struct vc_mem_dma vc_mem_dma;
++
+ static int
+ vc_mem_open(struct inode *inode, struct file *file)
+ {
+@@ -99,6 +139,189 @@ vc_mem_get_current_size(void)
+ }
+ EXPORT_SYMBOL_GPL(vc_mem_get_current_size);
+ 
++static int
++vc_mem_dma_init(void)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++	struct platform_device *pdev;
++	struct device_node *fwnode;
++	struct rpi_firmware *fw;
++	struct device *dev;
++	u32 revision;
++	int rc;
++
++	if (vcdma->dev)
++		return 0;
++
++	fwnode = of_find_node_by_path("/system");
++	rc = of_property_read_u32(fwnode, "linux,revision", &revision);
++	revision = (revision >> 12) & 0xf;
++	if (revision != 1 && revision != 2) {
++		/* Only BCM2709 and BCM2710 may have logs where the ARMs
++		 * can't see them.
++		 */
++		return -ENXIO;
++	}
++
++	fwnode = rpi_firmware_find_node();
++	if (!fwnode)
++		return -ENXIO;
++
++	pdev = of_find_device_by_node(fwnode);
++	dev = &pdev->dev;
++
++	rc = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (rc)
++		return rc;
++
++	fw = rpi_firmware_get(fwnode);
++	if (!fw)
++		return -ENXIO;
++	rc = rpi_firmware_property(fw, RPI_FIRMWARE_GET_VC_MEMORY,
++				   &gpu_mem, sizeof(gpu_mem));
++	if (rc)
++		return rc;
++
++	gpu_mem.base = INTALIAS_NORMAL(gpu_mem.base);
++
++	if (!gpu_mem.base || !gpu_mem.length) {
++		dev_err(dev, "%s: unable to determine gpu memory (%x,%x)\n",
++			__func__, gpu_mem.base, gpu_mem.length);
++		return -EFAULT;
++	}
++
++	vcdma->cb_base = dma_alloc_wc(dev, SZ_4K, &vcdma->cb_handle, GFP_KERNEL);
++	if (!vcdma->cb_base) {
++		dev_err(dev, "failed to allocate DMA CBs\n");
++		return -ENOMEM;
++	}
++
++	rc = bcm_dma_chan_alloc(BCM_DMA_FEATURE_BULK,
++				&vcdma->dma_chan_base,
++				&vcdma->dma_irq);
++	if (rc < 0) {
++		dev_err(dev, "failed to allocate a DMA channel\n");
++		goto free_cb;
++	}
++
++	vcdma->dma_chan = rc;
++
++	init_waitqueue_head(&vcdma->dma_waitq);
++
++	vcdma->dev = dev;
++
++	return 0;
++
++free_cb:
++	dma_free_wc(dev, SZ_4K, vcdma->cb_base, vcdma->cb_handle);
++
++	return rc;
++}
++
++static void
++vc_mem_dma_uninit(void)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++
++	if (vcdma->dev) {
++		bcm_dma_chan_free(vcdma->dma_chan);
++		dma_free_wc(vcdma->dev, SZ_4K, vcdma->cb_base, vcdma->cb_handle);
++		vcdma->dev = NULL;
++	}
++}
++
++static int dma_memcpy(struct vc_mem_dma *vcdma, dma_addr_t dst, dma_addr_t src,
++		      int size)
++{
++	struct bcm2708_dma_cb *cb = vcdma->cb_base;
++	int burst_size = (vcdma->dma_chan == 0) ? 8 : 2;
++
++	cb->info = BCM2708_DMA_BURST(burst_size) | BCM2708_DMA_S_WIDTH |
++		   BCM2708_DMA_S_INC | BCM2708_DMA_D_WIDTH |
++		   BCM2708_DMA_D_INC;
++	cb->dst = dst;
++	cb->src = src;
++	cb->length = size;
++	cb->stride = 0;
++	cb->pad[0] = 0;
++	cb->pad[1] = 0;
++	cb->next = 0;
++
++	bcm_dma_start(vcdma->dma_chan_base, vcdma->cb_handle);
++	bcm_dma_wait_idle(vcdma->dma_chan_base);
++
++	return 0;
++}
++
++static long vc_mem_copy(struct vc_mem_dmacopy *ioparam)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++	size_t size = PAGE_SIZE;
++	const u32 dma_xfer_chunk = 256;
++	u32 *buf = NULL;
++	dma_addr_t bus_addr;
++	long rc = 0;
++	size_t offset;
++
++	/* restrict this to root user */
++	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID))
++		return -EFAULT;
++
++	if (mutex_lock_interruptible(&dma_mutex))
++		return -EINTR;
++
++	rc = vc_mem_dma_init();
++	if (rc)
++		goto out;
++
++	vcdma = &vc_mem_dma;
++
++	if (INTALIAS_NORMAL(ioparam->src) < gpu_mem.base ||
++	    INTALIAS_NORMAL(ioparam->src) >= gpu_mem.base + gpu_mem.length) {
++		pr_err("%s: invalid memory access %x (%x-%x)", __func__,
++		       INTALIAS_NORMAL(ioparam->src), gpu_mem.base,
++		       gpu_mem.base + gpu_mem.length);
++		rc = -EFAULT;
++		goto out;
++	}
++
++	buf = dma_alloc_coherent(vcdma->dev, PAGE_ALIGN(size), &bus_addr,
++				 GFP_ATOMIC);
++	if (!buf) {
++		rc = -ENOMEM;
++		goto out;
++	}
++
++	for (offset = 0; offset < ioparam->length; offset += size) {
++		size_t remaining = ioparam->length - offset;
++		size_t s = min(size, remaining);
++		u8 *p = (u8 *)((uintptr_t)ioparam->src + offset);
++		u8 *q = (u8 *)ioparam->dst + offset;
++
++		rc = dma_memcpy(vcdma, bus_addr,
++				INTALIAS_L1L2_NONALLOCATING((u32)(uintptr_t)p),
++				(s + dma_xfer_chunk - 1) & ~(dma_xfer_chunk - 1));
++		if (rc) {
++			dev_err(vcdma->dev, "dma_memcpy failed\n");
++			break;
++		}
++		if (copy_to_user(q, buf, s) != 0) {
++			pr_err("%s: copy_to_user failed\n", __func__);
++			rc = -EFAULT;
++			break;
++		}
++	}
++
++out:
++	if (buf)
++		dma_free_coherent(vcdma->dev, PAGE_ALIGN(size), buf,
++				  bus_addr);
++
++	mutex_unlock(&dma_mutex);
++
++	return rc;
++}
++
+ static long
+ vc_mem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+@@ -163,6 +386,21 @@ vc_mem_ioctl(struct file *file, unsigned
+ 			}
+ 			break;
+ 		}
++	case VC_MEM_IOC_DMACOPY:
++		{
++			struct vc_mem_dmacopy ioparam;
++			/* Get the parameter data.
++			 */
++			if (copy_from_user
++			    (&ioparam, (void *)arg, sizeof(ioparam))) {
++				pr_err("%s: copy_from_user failed\n", __func__);
++				rc = -EFAULT;
++				break;
++			}
++
++			rc = vc_mem_copy(&ioparam);
++			break;
++		}
+ 	default:
+ 		{
+ 			return -ENOTTY;
+@@ -193,6 +431,24 @@ vc_mem_compat_ioctl(struct file *file, u
+ 
+ 		break;
+ 
++	case VC_MEM_IOC_DMACOPY32:
++	{
++		struct vc_mem_dmacopy32 param32;
++		struct vc_mem_dmacopy param;
++		/* Get the parameter data.
++		 */
++		if (copy_from_user(&param32, (void *)arg, sizeof(param32))) {
++			pr_err("%s: copy_from_user failed\n", __func__);
++			rc = -EFAULT;
++			break;
++		}
++		param.dst = compat_ptr(param32.dst);
++		param.src = param32.src;
++		param.length = param32.length;
++		rc = vc_mem_copy(&param);
++		break;
++	}
++
+ 	default:
+ 		rc = vc_mem_ioctl(file, cmd, arg);
+ 		break;
+@@ -330,6 +586,7 @@ vc_mem_init(void)
+ 	vc_mem_debugfs_init(dev);
+ #endif
+ 
++	mutex_init(&dma_mutex);
+ 	vc_mem_inited = 1;
+ 	return 0;
+ 
+@@ -352,6 +609,7 @@ vc_mem_exit(void)
+ {
+ 	pr_debug("%s: called\n", __func__);
+ 
++	vc_mem_dma_uninit();
+ 	if (vc_mem_inited) {
+ #ifdef CONFIG_DEBUG_FS
+ 		vc_mem_debugfs_deinit();
+@@ -360,6 +618,7 @@ vc_mem_exit(void)
+ 		class_destroy(vc_mem_class);
+ 		cdev_del(&vc_mem_cdev);
+ 		unregister_chrdev_region(vc_mem_devnum, 1);
++		vc_mem_inited = 0;
+ 	}
+ }
+ 

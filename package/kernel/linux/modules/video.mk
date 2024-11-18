@@ -1263,28 +1263,44 @@ endef
 
 $(eval $(call KernelPackage,video-mem2mem))
 
-define KernelPackage/video-dma
+define KernelPackage/video-dma-contig
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Video DMA support
   HIDDEN:=1
   DEPENDS:=+kmod-video-videobuf2
-  KCONFIG:= \
-	CONFIG_VIDEOBUF2_DMA_CONTIG \
-	CONFIG_VIDEOBUF2_DMA_SG
-  FILES:= $(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-dma-*.ko
-  AUTOLOAD:=$(call AutoLoad,66,videobuf2-dma-contig videobuf2-dma-sg)
+  KCONFIG:=CONFIG_VIDEOBUF2_DMA_CONTIG
+  FILES:=$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-dma-contig.ko
+  AUTOLOAD:=$(call AutoLoad,66,videobuf2-dma-contig)
   $(call AddDepends/video)
 endef
 
-define KernelPackage/video-dma/description
-  Video DMA support
+define KernelPackage/video-dma-contig/description
+  Video DMA support Contig
 endef
 
-$(eval $(call KernelPackage,video-dma))
+
+$(eval $(call KernelPackage,video-dma-contig))
+
+define KernelPackage/video-dma-sg
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Video DMA support
+  HIDDEN:=1
+  DEPENDS:=+kmod-video-videobuf2
+  KCONFIG:=CONFIG_VIDEOBUF2_DMA_SG
+  FILES:=$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-dma-sg.ko
+  AUTOLOAD:=$(call AutoLoad,66,videobuf2-dma-sg)
+  $(call AddDepends/video)
+endef
+
+define KernelPackage/video-dma-sg/description
+  Video DMA support SG
+endef
+
+$(eval $(call KernelPackage,video-dma-sg))
 
 define KernelPackage/video-coda
   TITLE:=i.MX VPU support
-  DEPENDS:=@(TARGET_imx&&TARGET_imx_cortexa9) +kmod-video-mem2mem +kmod-video-dma
+  DEPENDS:=@(TARGET_imx&&TARGET_imx_cortexa9) +kmod-video-mem2mem +kmod-video-dma-contig
   KCONFIG:= \
   	CONFIG_VIDEO_CODA \
   	CONFIG_VIDEO_IMX_VDOA
@@ -1306,7 +1322,7 @@ $(eval $(call KernelPackage,video-coda))
 
 define KernelPackage/video-pxp
   TITLE:=i.MX PXP support
-  DEPENDS:=@TARGET_imx +kmod-video-mem2mem +kmod-video-dma
+  DEPENDS:=@TARGET_imx +kmod-video-mem2mem +kmod-video-dma-contig
   KCONFIG:= CONFIG_VIDEO_IMX_PXP
   FILES:= $(LINUX_DIR)/drivers/media/$(V4L2_MEM2MEM_DIR)/imx-pxp.ko@lt6.1 \
 	$(LINUX_DIR)/drivers/media/platform/nxp/imx-pxp.ko@ge6.1
@@ -1324,7 +1340,7 @@ $(eval $(call KernelPackage,video-pxp))
 
 define KernelPackage/video-tw686x
   TITLE:=TW686x support
-  DEPENDS:=@PCIE_SUPPORT +kmod-video-dma +kmod-sound-core
+  DEPENDS:=@PCIE_SUPPORT +kmod-video-dma-contig +kmod-video-dma-sg +kmod-sound-core
   KCONFIG:= CONFIG_VIDEO_TW686X
   FILES:= $(LINUX_DIR)/drivers/media/pci/tw686x/tw686x.ko
   AUTOLOAD:=$(call AutoProbe,tw686x)

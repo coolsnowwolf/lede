@@ -1,0 +1,162 @@
+From d68e76260316002869aea1b0edf4be399bb592b8 Mon Sep 17 00:00:00 2001
+From: Jacopo Mondi <jacopo.mondi@ideasonboard.com>
+Date: Mon, 29 Jan 2024 17:23:55 +0100
+Subject: [PATCH 1153/1215] media: admin-guide: Document the Raspberry Pi PiSP
+ BE
+
+Add documentation for the PiSP Back End memory-to-memory ISP.
+
+Signed-off-by: Jacopo Mondi <jacopo.mondi@ideasonboard.com>
+---
+ .../admin-guide/media/raspberrypi-pisp-be.dot |  20 ++++
+ .../admin-guide/media/raspberrypi-pisp-be.rst | 109 ++++++++++++++++++
+ .../admin-guide/media/v4l-drivers.rst         |   1 +
+ 3 files changed, 130 insertions(+)
+ create mode 100644 Documentation/admin-guide/media/raspberrypi-pisp-be.dot
+ create mode 100644 Documentation/admin-guide/media/raspberrypi-pisp-be.rst
+
+--- /dev/null
++++ b/Documentation/admin-guide/media/raspberrypi-pisp-be.dot
+@@ -0,0 +1,20 @@
++digraph board {
++	rankdir=TB
++	n00000001 [label="{{<port0> 0 | <port1> 1 | <port2> 2 | <port7> 7} | pispbe\n | {<port3> 3 | <port4> 4 | <port5> 5 | <port6> 6}}", shape=Mrecord, style=filled, fillcolor=green]
++	n00000001:port3 -> n0000001c [style=bold]
++	n00000001:port4 -> n00000022 [style=bold]
++	n00000001:port5 -> n00000028 [style=bold]
++	n00000001:port6 -> n0000002e [style=bold]
++	n0000000a [label="pispbe-input\n/dev/video0", shape=box, style=filled, fillcolor=yellow]
++	n0000000a -> n00000001:port0 [style=bold]
++	n00000010 [label="pispbe-tdn_input\n/dev/video1", shape=box, style=filled, fillcolor=yellow]
++	n00000010 -> n00000001:port1 [style=bold]
++	n00000016 [label="pispbe-stitch_input\n/dev/video2", shape=box, style=filled, fillcolor=yellow]
++	n00000016 -> n00000001:port2 [style=bold]
++	n0000001c [label="pispbe-output0\n/dev/video3", shape=box, style=filled, fillcolor=yellow]
++	n00000022 [label="pispbe-output1\n/dev/video4", shape=box, style=filled, fillcolor=yellow]
++	n00000028 [label="pispbe-tdn_output\n/dev/video5", shape=box, style=filled, fillcolor=yellow]
++	n0000002e [label="pispbe-stitch_output\n/dev/video6", shape=box, style=filled, fillcolor=yellow]
++	n00000034 [label="pispbe-config\n/dev/video7", shape=box, style=filled, fillcolor=yellow]
++	n00000034 -> n00000001:port7 [style=bold]
++}
+--- /dev/null
++++ b/Documentation/admin-guide/media/raspberrypi-pisp-be.rst
+@@ -0,0 +1,109 @@
++.. SPDX-License-Identifier: GPL-2.0
++
++=========================================================
++Raspberry Pi PiSP Back End Memory-to-Memory ISP (pisp-be)
++=========================================================
++
++The PiSP Back End
++=================
++
++The PiSP Back End is a memory-to-memory Image Signal Processor (ISP) which reads
++image data from DRAM memory and performs image processing as specified by the
++application through the parameters in a configuration buffer, before writing
++pixel data back to memory through two distinct output channels.
++
++The ISP registers and programming model are documented in the `Raspberry Pi
++Image Signal Processor (PiSP) Specification document`_
++
++The PiSP Back End ISP processes images in tiles. The handling of image
++tessellation and the computation of low-level configuration parameters is
++realized by a free software library called `libpisp
++<https://github.com/raspberrypi/libpisp>`_.
++
++The full image processing pipeline, which involves capturing RAW Bayer data from
++an image sensor through a MIPI CSI-2 compatible capture interface, storing them
++in DRAM memory and processing them in the PiSP Back End to obtain images usable
++by an application is implemented in `libcamera <https://libcamera.org>`_ as
++part of the Raspberry Pi platform support.
++
++The pisp-be driver
++==================
++
++The Raspberry Pi PiSP Back End (pisp-be) driver is located under
++drivers/media/platform/raspberrypi/pisp-be. It uses the `V4L2 API` to register
++a number of video capture and output devices, the `V4L2 subdev API` to register
++a subdevice for the ISP that connects the video devices in a single media graph
++realized using the `Media Controller (MC) API`.
++
++The media topology registered by the `pisp-be` driver is represented below:
++
++.. _pips-be-topology:
++
++.. kernel-figure:: raspberrypi-pisp-be.dot
++    :alt:   Diagram of the default media pipeline topology
++    :align: center
++
++
++The media graph registers the following video device nodes:
++
++- pispbe-input: output device for images to be submitted to the ISP for
++  processing.
++- pispbe-tdn_input: output device for temporal denoise.
++- pispbe-stitch_input: output device for image stitching (HDR).
++- pispbe-output0: first capture device for processed images.
++- pispbe-output1: second capture device for processed images.
++- pispbe-tdn_output: capture device for temporal denoise.
++- pispbe-stitch_output: capture device for image stitching (HDR).
++- pispbe-config: output device for ISP configuration parameters.
++
++pispbe-input
++------------
++
++Images to be processed by the ISP are queued to the `pispbe-input` output device
++node. For a list of image formats supported as input to the ISP refer to the
++`Raspberry Pi Image Signal Processor (PiSP) Specification document`_.
++
++pispbe-tdn_input, pispbe-tdn_output
++-----------------------------------
++
++The `pispbe-tdn_input` output video device receives images to be processed by
++the temporal denoise block which are captured from the `pispbe-tdn_output`
++capture video device. Userspace is responsible for maintaining queues on both
++devices, and ensuring that buffers completed on the output are queued to the
++input.
++
++pispbe-stitch_input, pispbe-stitch_output
++-----------------------------------------
++
++To realize HDR (high dynamic range) image processing the image stitching and
++tonemapping blocks are used. The `pispbe-stitch_output` writes images to memory
++and the `pispbe-stitch_input` receives the previously written frame to process
++it along with the current input image. Userspace is responsible for maintaining
++queues on both devices, and ensuring that buffers completed on the output are
++queued to the input.
++
++pispbe-output0, pispbe-output1
++------------------------------
++
++The two capture devices write to memory the pixel data as processed by the ISP.
++
++pispbe-config
++-------------
++
++The `pispbe-config` output video devices receives a buffer of configuration
++parameters that define the desired image processing to be performed by the ISP.
++
++The format of the ISP configuration parameter is defined by
++:c:type:`pisp_be_tiles_config` C structure and the meaning of each parameter is
++described in the `Raspberry Pi Image Signal Processor (PiSP) Specification
++document`_.
++
++ISP configuration
++=================
++
++The ISP configuration is described solely by the content of the parameters
++buffer. The only parameter that userspace needs to configure using the V4L2 API
++is the image format on the output and capture video devices for validation of
++the content of the parameters buffer.
++
++.. _Raspberry Pi Image Signal Processor (PiSP) Specification document: https://datasheets.raspberrypi.com/camera/raspberry-pi-image-signal-processor-specification.pdf
+--- a/Documentation/admin-guide/media/v4l-drivers.rst
++++ b/Documentation/admin-guide/media/v4l-drivers.rst
+@@ -21,6 +21,7 @@ Video4Linux (V4L) driver-specific docume
+ 	omap4_camera
+ 	philips
+ 	qcom_camss
++	raspberrypi-pisp-be
+ 	rcar-fdp1
+ 	rkisp1
+ 	saa7134

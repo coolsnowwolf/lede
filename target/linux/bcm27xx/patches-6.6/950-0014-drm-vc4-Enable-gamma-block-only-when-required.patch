@@ -1,0 +1,66 @@
+From c0e4a6b67c9e9c1be98e9e83708b04ca7ed34989 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 8 Nov 2021 17:32:45 +0000
+Subject: [PATCH 0014/1085] drm/vc4: Enable gamma block only when required.
+
+With HVS5 the gamma block is now only reprogrammed with
+a disable/enable. Loading the table from vc4_hvs_init_channel
+(called from vc4_hvs_atomic_enable) appears to be at an
+invalid point in time and so isn't applied.
+
+Switch to enabling and disabling the gamma table instead. This
+isn't safe if the pipeline is running, but it isn't now.
+For HVS4 it is safe to enable and disable dynamically, so
+adopt that approach there too.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -548,8 +548,11 @@ static int vc4_hvs_init_channel(struct v
+ 	dispbkgndx &= ~SCALER_DISPBKGND_GAMMA;
+ 	dispbkgndx &= ~SCALER_DISPBKGND_INTERLACE;
+ 
++	if (crtc->state->gamma_lut)
++		/* Enable gamma on if required */
++		dispbkgndx |= SCALER_DISPBKGND_GAMMA;
++
+ 	HVS_WRITE(SCALER_DISPBKGNDX(chan), dispbkgndx |
+-		  ((!vc4->is_vc5) ? SCALER_DISPBKGND_GAMMA : 0) |
+ 		  (interlace ? SCALER_DISPBKGND_INTERLACE : 0));
+ 
+ 	/* Reload the LUT, since the SRAMs would have been disabled if
+@@ -834,18 +837,25 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		u32 dispbkgndx = HVS_READ(SCALER_DISPBKGNDX(channel));
+ 
+ 		if (crtc->state->gamma_lut) {
+-			if (!vc4->is_vc5)
++			if (!vc4->is_vc5) {
+ 				vc4_hvs_update_gamma_lut(hvs, vc4_crtc);
+-			else
++				dispbkgndx |= SCALER_DISPBKGND_GAMMA;
++			} else {
+ 				vc5_hvs_update_gamma_lut(hvs, vc4_crtc);
+-
+-			dispbkgndx |= SCALER_DISPBKGND_GAMMA;
++			}
+ 		} else {
+ 			/* Unsetting DISPBKGND_GAMMA skips the gamma lut step
+ 			 * in hardware, which is the same as a linear lut that
+ 			 * DRM expects us to use in absence of a user lut.
++			 *
++			 * Do NOT change state dynamically for hvs5 as it
++			 * inserts a delay in the pipeline that will cause
++			 * stalls if enabled/disabled whilst running. The other
++			 * should already be disabling/enabling the pipeline
++			 * when gamma changes.
+ 			 */
+-			dispbkgndx &= ~SCALER_DISPBKGND_GAMMA;
++			if (!vc4->is_vc5)
++				dispbkgndx &= ~SCALER_DISPBKGND_GAMMA;
+ 		}
+ 		HVS_WRITE(SCALER_DISPBKGNDX(channel), dispbkgndx);
+ 	}

@@ -1,0 +1,42 @@
+From 0a19b5256303d2f35be9272832b01a170c9a039b Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 22 May 2024 09:46:54 +0100
+Subject: [PATCH 1100/1135] drivers: pcie-brcmstb: add best-effort workaround
+ for QoS bug on bcm2712
+
+If a set of read requests are issued by an endpoint, they are streamed
+into a resynchronisation FIFO prior to exiting the RC. This FIFO has an
+edge case where it can drop QoS for a request to 0 if there's a single
+outstanding read request in the FIFO, and another is pushed when the
+FIFO is popped. Requests with a QoS of 0 can take hundreds of
+microseconds to complete.
+
+By adding an experimentally-determined amount of backpressure on the pop
+side, the critical level transition can largely be avoided.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/pci/controller/pcie-brcmstb.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+--- a/drivers/pci/controller/pcie-brcmstb.c
++++ b/drivers/pci/controller/pcie-brcmstb.c
+@@ -568,6 +568,18 @@ static void brcm_pcie_set_tc_qos(struct
+ 		AXI_DIS_QOS_GATING_IN_MASTER;
+ 	writel(reg, pcie->base + PCIE_MISC_AXI_INTF_CTRL);
+ 
++	/*
++	 * If the QOS_UPDATE_TIMING_FIX bit is Reserved-0, then this is a
++	 * 2712C1 chip, or a single-lane RC. Use the best-effort alternative
++	 * which is to partially throttle AXI requests in-flight to the SDC.
++	 */
++	reg = readl(pcie->base + PCIE_MISC_AXI_INTF_CTRL);
++	if (!(reg & AXI_EN_QOS_UPDATE_TIMING_FIX)) {
++		reg &= ~AXI_MASTER_MAX_OUTSTANDING_REQUESTS_MASK;
++		reg |= 15;
++		writel(reg, pcie->base + PCIE_MISC_AXI_INTF_CTRL);
++	}
++
+ 	/* Disable VDM reception by default - QoS map defaults to 0 */
+ 	reg = readl(pcie->base + PCIE_MISC_CTRL_1);
+ 	reg &= ~PCIE_MISC_CTRL_1_EN_VDM_QOS_CONTROL_MASK;

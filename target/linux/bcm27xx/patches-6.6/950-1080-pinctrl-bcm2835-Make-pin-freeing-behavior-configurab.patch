@@ -1,0 +1,79 @@
+From 19b18f44e438ed1322718067b4feff30691f201f Mon Sep 17 00:00:00 2001
+From: Stefan Wahren <wahrenst@gmx.net>
+Date: Fri, 3 May 2024 08:27:45 +0200
+Subject: [PATCH 1080/1085] pinctrl: bcm2835: Make pin freeing behavior
+ configurable
+
+commit 8ff05989b44e1a8f7d2bbe67320990ebc2fbb5e5 upstream.
+
+Until now after a bcm2835 pin was freed its pinmux was set to GPIO_IN.
+So in case it was configured as GPIO_OUT before the configured output
+level also get lost. As long as GPIO sysfs was used this wasn't
+actually a problem because the pins and their possible output level
+were kept by sysfs.
+
+Since more and more Raspberry Pi users start using libgpiod they are
+confused about this behavior. So make the pin freeing behavior of
+GPIO_OUT configurable via module parameter. In case
+pinctrl-bcm2835.persist_gpio_outputs is set to 1, the output level is
+kept.
+
+This patch based on the downstream work of Phil Elwell.
+
+Link: https://github.com/raspberrypi/linux/pull/6117
+Signed-off-by: Stefan Wahren <wahrenst@gmx.net>
+Message-ID: <20240503062745.11298-1-wahrenst@gmx.net>
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+---
+ drivers/pinctrl/bcm/pinctrl-bcm2835.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+--- a/drivers/pinctrl/bcm/pinctrl-bcm2835.c
++++ b/drivers/pinctrl/bcm/pinctrl-bcm2835.c
+@@ -244,6 +244,10 @@ static const char * const irq_type_names
+ 	[IRQ_TYPE_LEVEL_LOW] = "level-low",
+ };
+ 
++static bool persist_gpio_outputs;
++module_param(persist_gpio_outputs, bool, 0644);
++MODULE_PARM_DESC(persist_gpio_outputs, "Enable GPIO_OUT persistence when pin is freed");
++
+ static inline u32 bcm2835_gpio_rd(struct bcm2835_pinctrl *pc, unsigned reg)
+ {
+ 	return readl(pc->base + reg);
+@@ -939,6 +943,13 @@ static int bcm2835_pmx_free(struct pinct
+ 		unsigned offset)
+ {
+ 	struct bcm2835_pinctrl *pc = pinctrl_dev_get_drvdata(pctldev);
++	enum bcm2835_fsel fsel = bcm2835_pinctrl_fsel_get(pc, offset);
++
++	if (fsel == BCM2835_FSEL_GPIO_IN)
++		return 0;
++
++	if (persist_gpio_outputs && fsel == BCM2835_FSEL_GPIO_OUT)
++		return 0;
+ 
+ 	/* disable by setting to GPIO_IN */
+ 	bcm2835_pinctrl_fsel_set(pc, offset, BCM2835_FSEL_GPIO_IN);
+@@ -983,10 +994,7 @@ static void bcm2835_pmx_gpio_disable_fre
+ 		struct pinctrl_gpio_range *range,
+ 		unsigned offset)
+ {
+-	struct bcm2835_pinctrl *pc = pinctrl_dev_get_drvdata(pctldev);
+-
+-	/* disable by setting to GPIO_IN */
+-	bcm2835_pinctrl_fsel_set(pc, offset, BCM2835_FSEL_GPIO_IN);
++	bcm2835_pmx_free(pctldev, offset);
+ }
+ 
+ static int bcm2835_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
+@@ -1374,6 +1382,9 @@ static int bcm2835_pinctrl_probe(struct
+ 		goto out_remove;
+ 	}
+ 
++	dev_info(dev, "GPIO_OUT persistence: %s\n",
++		 persist_gpio_outputs ? "yes" : "no");
++
+ 	return 0;
+ 
+ out_remove:

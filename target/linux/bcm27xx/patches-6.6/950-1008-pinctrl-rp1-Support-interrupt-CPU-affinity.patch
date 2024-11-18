@@ -1,0 +1,52 @@
+From 086480cc43b9d967647b237a84623b27b8850a64 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 3 Apr 2024 23:16:47 +0100
+Subject: [PATCH 1008/1085] pinctrl: rp1: Support interrupt CPU affinity
+
+See: https://github.com/raspberrypi/linux/issues/6077
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/pinctrl/pinctrl-rp1.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+--- a/drivers/pinctrl/pinctrl-rp1.c
++++ b/drivers/pinctrl/pinctrl-rp1.c
+@@ -894,6 +894,29 @@ static void rp1_gpio_irq_ack(struct irq_
+ 	writel(RP1_GPIO_CTRL_IRQRESET, pin->gpio + RP1_SET_OFFSET + RP1_GPIO_CTRL);
+ }
+ 
++static int rp1_gpio_irq_set_affinity(struct irq_data *data, const struct cpumask *dest, bool force)
++{
++	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
++	struct rp1_pinctrl *pc = gpiochip_get_data(chip);
++	const struct rp1_iobank_desc *bank;
++	struct irq_data *parent_data = NULL;
++	int i;
++
++	for (i = 0; i < 3; i++) {
++		bank = &rp1_iobanks[i];
++		if (data->hwirq >= bank->min_gpio &&
++		    data->hwirq < bank->min_gpio + bank->num_gpios) {
++			parent_data = irq_get_irq_data(pc->irq[i]);
++			break;
++		}
++	}
++
++	if (parent_data && parent_data->chip->irq_set_affinity)
++		return parent_data->chip->irq_set_affinity(parent_data, dest, force);
++
++	return -EINVAL;
++}
++
+ static struct irq_chip rp1_gpio_irq_chip = {
+ 	.name = MODULE_NAME,
+ 	.irq_enable = rp1_gpio_irq_enable,
+@@ -902,6 +925,7 @@ static struct irq_chip rp1_gpio_irq_chip
+ 	.irq_ack = rp1_gpio_irq_ack,
+ 	.irq_mask = rp1_gpio_irq_disable,
+ 	.irq_unmask = rp1_gpio_irq_enable,
++	.irq_set_affinity = rp1_gpio_irq_set_affinity,
+ 	.flags = IRQCHIP_IMMUTABLE,
+ };
+ 

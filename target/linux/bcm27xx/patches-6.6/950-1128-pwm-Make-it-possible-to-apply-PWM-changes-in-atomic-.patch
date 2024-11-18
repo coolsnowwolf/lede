@@ -1,0 +1,216 @@
+From 8b5840b077e3b51ccdf840010600aec211a8990b Mon Sep 17 00:00:00 2001
+From: Sean Young <sean@mess.org>
+Date: Tue, 19 Dec 2023 16:30:27 +0000
+Subject: [PATCH 1128/1135] pwm: Make it possible to apply PWM changes in
+ atomic context
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 7170d3beafc2373dd76b6b5d6e617d89e4e42b8b upstream.
+
+Some PWM devices require sleeping, for example if the pwm device is
+connected over I2C. However, many PWM devices could be used from atomic
+context, e.g. memory mapped PWM. This is useful for, for example, the
+pwm-ir-tx driver which requires precise timing. Sleeping causes havoc
+with the generated IR signal.
+
+Since not all PWM devices can support atomic context, we also add a
+pwm_might_sleep() function to check if is not supported.
+
+Signed-off-by: Sean Young <sean@mess.org>
+Reviewed-by: Uwe Kleine-König <u.kleine-koenig@pengutronix.de>
+Signed-off-by: Thierry Reding <thierry.reding@gmail.com>
+---
+ Documentation/driver-api/pwm.rst |  9 +++++
+ MAINTAINERS                      |  2 +-
+ drivers/pwm/core.c               | 62 ++++++++++++++++++++++++++------
+ include/linux/pwm.h              | 25 +++++++++++++
+ 4 files changed, 86 insertions(+), 12 deletions(-)
+
+--- a/Documentation/driver-api/pwm.rst
++++ b/Documentation/driver-api/pwm.rst
+@@ -46,6 +46,15 @@ After being requested, a PWM has to be c
+ This API controls both the PWM period/duty_cycle config and the
+ enable/disable state.
+ 
++PWM devices can be used from atomic context, if the PWM does not sleep. You
++can check if this the case with::
++
++        bool pwm_might_sleep(struct pwm_device *pwm);
++
++If false, the PWM can also be configured from atomic context with::
++
++	int pwm_apply_atomic(struct pwm_device *pwm, struct pwm_state *state);
++
+ As a consumer, don't rely on the output's state for a disabled PWM. If it's
+ easily possible, drivers are supposed to emit the inactive state, but some
+ drivers cannot. If you rely on getting the inactive state, use .duty_cycle=0,
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -17437,7 +17437,7 @@ F:	drivers/video/backlight/pwm_bl.c
+ F:	include/dt-bindings/pwm/
+ F:	include/linux/pwm.h
+ F:	include/linux/pwm_backlight.h
+-K:	pwm_(config|apply_might_sleep|ops)
++K:	pwm_(config|apply_might_sleep|apply_atomic|ops)
+ 
+ PXA GPIO DRIVER
+ M:	Robert Jarzmik <robert.jarzmik@free.fr>
+--- a/drivers/pwm/core.c
++++ b/drivers/pwm/core.c
+@@ -489,24 +489,15 @@ static void pwm_apply_debug(struct pwm_d
+ }
+ 
+ /**
+- * pwm_apply_might_sleep() - atomically apply a new state to a PWM device
++ * __pwm_apply() - atomically apply a new state to a PWM device
+  * @pwm: PWM device
+  * @state: new state to apply
+  */
+-int pwm_apply_might_sleep(struct pwm_device *pwm, const struct pwm_state *state)
++static int __pwm_apply(struct pwm_device *pwm, const struct pwm_state *state)
+ {
+ 	struct pwm_chip *chip;
+ 	int err;
+ 
+-	/*
+-	 * Some lowlevel driver's implementations of .apply() make use of
+-	 * mutexes, also with some drivers only returning when the new
+-	 * configuration is active calling pwm_apply_might_sleep() from atomic context
+-	 * is a bad idea. So make it explicit that calling this function might
+-	 * sleep.
+-	 */
+-	might_sleep();
+-
+ 	if (!pwm || !state || !state->period ||
+ 	    state->duty_cycle > state->period)
+ 		return -EINVAL;
+@@ -535,9 +526,58 @@ int pwm_apply_might_sleep(struct pwm_dev
+ 
+ 	return 0;
+ }
++
++/**
++ * pwm_apply_might_sleep() - atomically apply a new state to a PWM device
++ * Cannot be used in atomic context.
++ * @pwm: PWM device
++ * @state: new state to apply
++ */
++int pwm_apply_might_sleep(struct pwm_device *pwm, const struct pwm_state *state)
++{
++	int err;
++
++	/*
++	 * Some lowlevel driver's implementations of .apply() make use of
++	 * mutexes, also with some drivers only returning when the new
++	 * configuration is active calling pwm_apply_might_sleep() from atomic context
++	 * is a bad idea. So make it explicit that calling this function might
++	 * sleep.
++	 */
++	might_sleep();
++
++	if (IS_ENABLED(CONFIG_PWM_DEBUG) && pwm->chip->atomic) {
++		/*
++		 * Catch any drivers that have been marked as atomic but
++		 * that will sleep anyway.
++		 */
++		non_block_start();
++		err = __pwm_apply(pwm, state);
++		non_block_end();
++	} else {
++		err = __pwm_apply(pwm, state);
++	}
++
++	return err;
++}
+ EXPORT_SYMBOL_GPL(pwm_apply_might_sleep);
+ 
+ /**
++ * pwm_apply_atomic() - apply a new state to a PWM device from atomic context
++ * Not all PWM devices support this function, check with pwm_might_sleep().
++ * @pwm: PWM device
++ * @state: new state to apply
++ */
++int pwm_apply_atomic(struct pwm_device *pwm, const struct pwm_state *state)
++{
++	WARN_ONCE(!pwm->chip->atomic,
++		  "sleeping PWM driver used in atomic context\n");
++
++	return __pwm_apply(pwm, state);
++}
++EXPORT_SYMBOL_GPL(pwm_apply_atomic);
++
++/**
+  * pwm_capture() - capture and report a PWM signal
+  * @pwm: PWM device
+  * @result: structure to fill with capture result
+--- a/include/linux/pwm.h
++++ b/include/linux/pwm.h
+@@ -289,6 +289,7 @@ struct pwm_ops {
+  * @npwm: number of PWMs controlled by this chip
+  * @of_xlate: request a PWM device given a device tree PWM specifier
+  * @of_pwm_n_cells: number of cells expected in the device tree PWM specifier
++ * @atomic: can the driver's ->apply() be called in atomic context
+  * @list: list node for internal use
+  * @pwms: array of PWM devices allocated by the framework
+  */
+@@ -301,6 +302,7 @@ struct pwm_chip {
+ 	struct pwm_device * (*of_xlate)(struct pwm_chip *chip,
+ 					const struct of_phandle_args *args);
+ 	unsigned int of_pwm_n_cells;
++	bool atomic;
+ 
+ 	/* only used internally by the PWM framework */
+ 	struct list_head list;
+@@ -310,6 +312,7 @@ struct pwm_chip {
+ #if IS_ENABLED(CONFIG_PWM)
+ /* PWM user APIs */
+ int pwm_apply_might_sleep(struct pwm_device *pwm, const struct pwm_state *state);
++int pwm_apply_atomic(struct pwm_device *pwm, const struct pwm_state *state);
+ int pwm_adjust_config(struct pwm_device *pwm);
+ 
+ /**
+@@ -380,6 +383,17 @@ static inline void pwm_disable(struct pw
+ 	pwm_apply_might_sleep(pwm, &state);
+ }
+ 
++/**
++ * pwm_might_sleep() - is pwm_apply_atomic() supported?
++ * @pwm: PWM device
++ *
++ * Returns: false if pwm_apply_atomic() can be called from atomic context.
++ */
++static inline bool pwm_might_sleep(struct pwm_device *pwm)
++{
++	return !pwm->chip->atomic;
++}
++
+ /* PWM provider APIs */
+ int pwm_capture(struct pwm_device *pwm, struct pwm_capture *result,
+ 		unsigned long timeout);
+@@ -408,6 +422,11 @@ struct pwm_device *devm_fwnode_pwm_get(s
+ 				       struct fwnode_handle *fwnode,
+ 				       const char *con_id);
+ #else
++static inline bool pwm_might_sleep(struct pwm_device *pwm)
++{
++	return true;
++}
++
+ static inline int pwm_apply_might_sleep(struct pwm_device *pwm,
+ 					const struct pwm_state *state)
+ {
+@@ -415,6 +434,12 @@ static inline int pwm_apply_might_sleep(
+ 	return -EOPNOTSUPP;
+ }
+ 
++static inline int pwm_apply_atomic(struct pwm_device *pwm,
++				   const struct pwm_state *state)
++{
++	return -EOPNOTSUPP;
++}
++
+ static inline int pwm_adjust_config(struct pwm_device *pwm)
+ {
+ 	return -EOPNOTSUPP;

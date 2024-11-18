@@ -1,0 +1,118 @@
+From 190dbd1ba72a8501c9c2a5d572b50459630660f7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Tue, 13 Feb 2024 15:26:44 -0300
+Subject: [PATCH 0905/1085] drm/v3d: Enable V3D to use different PAGE_SIZE
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Currently, the V3D driver uses PAGE_SHIFT over the assumption that
+PAGE_SHIFT = 12, as the PAGE_SIZE = 4KB. But, the RPi 5 is using
+PAGE_SIZE = 16KB, so the MMU PAGE_SHIFT is different than the system's
+PAGE_SHIFT.
+
+Enable V3D to be used in system's with any PAGE_SIZE by making sure that
+everything MMU-related uses the MMU page shift.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_bo.c      | 12 ++++++------
+ drivers/gpu/drm/v3d/v3d_debugfs.c |  2 +-
+ drivers/gpu/drm/v3d/v3d_drv.h     |  2 ++
+ drivers/gpu/drm/v3d/v3d_irq.c     |  2 +-
+ drivers/gpu/drm/v3d/v3d_mmu.c     |  2 --
+ 5 files changed, 10 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_bo.c
++++ b/drivers/gpu/drm/v3d/v3d_bo.c
+@@ -37,7 +37,7 @@ void v3d_free_object(struct drm_gem_obje
+ 
+ 	mutex_lock(&v3d->bo_lock);
+ 	v3d->bo_stats.num_allocated--;
+-	v3d->bo_stats.pages_allocated -= obj->size >> PAGE_SHIFT;
++	v3d->bo_stats.pages_allocated -= obj->size >> V3D_MMU_PAGE_SHIFT;
+ 	mutex_unlock(&v3d->bo_lock);
+ 
+ 	spin_lock(&v3d->mm_lock);
+@@ -106,8 +106,8 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	 * lifetime of the BO.
+ 	 */
+ 	ret = drm_mm_insert_node_generic(&v3d->mm, &bo->node,
+-					 obj->size >> PAGE_SHIFT,
+-					 GMP_GRANULARITY >> PAGE_SHIFT, 0, 0);
++					 obj->size >> V3D_MMU_PAGE_SHIFT,
++					 GMP_GRANULARITY >> V3D_MMU_PAGE_SHIFT, 0, 0);
+ 	spin_unlock(&v3d->mm_lock);
+ 	if (ret)
+ 		return ret;
+@@ -115,7 +115,7 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	/* Track stats for /debug/dri/n/bo_stats. */
+ 	mutex_lock(&v3d->bo_lock);
+ 	v3d->bo_stats.num_allocated++;
+-	v3d->bo_stats.pages_allocated += obj->size >> PAGE_SHIFT;
++	v3d->bo_stats.pages_allocated += obj->size >> V3D_MMU_PAGE_SHIFT;
+ 	mutex_unlock(&v3d->bo_lock);
+ 
+ 	v3d_mmu_insert_ptes(bo);
+@@ -183,7 +183,7 @@ int v3d_create_bo_ioctl(struct drm_devic
+ 	if (IS_ERR(bo))
+ 		return PTR_ERR(bo);
+ 
+-	args->offset = bo->node.start << PAGE_SHIFT;
++	args->offset = bo->node.start << V3D_MMU_PAGE_SHIFT;
+ 
+ 	ret = drm_gem_handle_create(file_priv, &bo->base.base, &args->handle);
+ 	drm_gem_object_put(&bo->base.base);
+@@ -228,7 +228,7 @@ int v3d_get_bo_offset_ioctl(struct drm_d
+ 	}
+ 	bo = to_v3d_bo(gem_obj);
+ 
+-	args->offset = bo->node.start << PAGE_SHIFT;
++	args->offset = bo->node.start << V3D_MMU_PAGE_SHIFT;
+ 
+ 	drm_gem_object_put(gem_obj);
+ 	return 0;
+--- a/drivers/gpu/drm/v3d/v3d_debugfs.c
++++ b/drivers/gpu/drm/v3d/v3d_debugfs.c
+@@ -220,7 +220,7 @@ static int v3d_debugfs_bo_stats(struct s
+ 	seq_printf(m, "allocated bos:          %d\n",
+ 		   v3d->bo_stats.num_allocated);
+ 	seq_printf(m, "allocated bo size (kb): %ld\n",
+-		   (long)v3d->bo_stats.pages_allocated << (PAGE_SHIFT - 10));
++		   (long)v3d->bo_stats.pages_allocated << (V3D_MMU_PAGE_SHIFT - 10));
+ 	mutex_unlock(&v3d->bo_lock);
+ 
+ 	return 0;
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -19,6 +19,8 @@ struct reset_control;
+ 
+ #define GMP_GRANULARITY (128 * 1024)
+ 
++#define V3D_MMU_PAGE_SHIFT 12
++
+ #define V3D_MAX_QUEUES (V3D_CACHE_CLEAN + 1)
+ 
+ static inline char *
+--- a/drivers/gpu/drm/v3d/v3d_irq.c
++++ b/drivers/gpu/drm/v3d/v3d_irq.c
+@@ -70,7 +70,7 @@ v3d_overflow_mem_work(struct work_struct
+ 	list_add_tail(&bo->unref_head, &v3d->bin_job->render->unref_list);
+ 	spin_unlock_irqrestore(&v3d->job_lock, irqflags);
+ 
+-	V3D_CORE_WRITE(0, V3D_PTB_BPOA, bo->node.start << PAGE_SHIFT);
++	V3D_CORE_WRITE(0, V3D_PTB_BPOA, bo->node.start << V3D_MMU_PAGE_SHIFT);
+ 	V3D_CORE_WRITE(0, V3D_PTB_BPOS, obj->size);
+ 
+ out:
+--- a/drivers/gpu/drm/v3d/v3d_mmu.c
++++ b/drivers/gpu/drm/v3d/v3d_mmu.c
+@@ -21,8 +21,6 @@
+ #include "v3d_drv.h"
+ #include "v3d_regs.h"
+ 
+-#define V3D_MMU_PAGE_SHIFT 12
+-
+ /* Note: All PTEs for the 1MB superpage must be filled with the
+  * superpage bit set.
+  */

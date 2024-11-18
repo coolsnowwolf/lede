@@ -1,0 +1,273 @@
+From c06f4c20c2f65539c7f50a05396d5eca9a4ad5e8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Noralf=20Tr=C3=B8nnes?= <noralf@tronnes.org>
+Date: Fri, 26 Jun 2015 14:27:06 +0200
+Subject: [PATCH 0099/1085] char: broadcom: Add vcio module
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add module for accessing the mailbox property channel through
+/dev/vcio. Was previously in bcm2708-vcio.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+char: vcio: Add compat ioctl handling
+
+There was no compat ioctl handler, so 32 bit userspace on a
+64 bit kernel failed as IOCTL_MBOX_PROPERTY used the size
+of char*.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+char: vcio: Fail probe if rpi_firmware is not found.
+
+Device Tree is now the only supported config mechanism, therefore
+uncomment the block of code that fails the probe if the
+firmware node can't be found.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+drivers: char: vcio: Use common compat header
+
+The definition of compat_ptr is now common for most platforms, but
+requires the inclusion of <linux/compat.h>.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+char: vcio: Rewrite as a firmware node child
+
+The old vcio driver is a simple character device that manually locates
+the firmware driver. Initialising it before the firmware driver causes
+a failure, and no retries are attempted.
+
+Rewrite vcio as a platform driver that depends on a DT node for its
+instantiation and the location of the firmware driver, making use of
+the miscdevice framework to reduce the code size.
+
+N.B. Using miscdevice changes the udev SUBSYSTEM string, so a change
+to the companion udev rule is required in order to continue to set
+the correct device permissions, e.g.:
+
+    KERNEL="vcio", GROUP="video", MODE="0660"
+
+See: https://github.com/raspberrypi/linux/issues/4620
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/char/broadcom/Kconfig  |   6 ++
+ drivers/char/broadcom/Makefile |   1 +
+ drivers/char/broadcom/vcio.c   | 186 +++++++++++++++++++++++++++++++++
+ 3 files changed, 193 insertions(+)
+ create mode 100644 drivers/char/broadcom/vcio.c
+
+--- a/drivers/char/broadcom/Kconfig
++++ b/drivers/char/broadcom/Kconfig
+@@ -15,6 +15,12 @@ config BCM2708_VCMEM
+         help
+           Helper for videocore memory access and total size allocation.
+ 
++config BCM_VCIO
++	tristate "Mailbox userspace access"
++	depends on BCM2835_MBOX
++	help
++	  Gives access to the mailbox property channel from userspace.
++
+ endif
+ 
+ config BCM2835_DEVGPIOMEM
+--- a/drivers/char/broadcom/Makefile
++++ b/drivers/char/broadcom/Makefile
+@@ -1,3 +1,4 @@
+ obj-$(CONFIG_BCM2708_VCMEM)	+= vc_mem.o
++obj-$(CONFIG_BCM_VCIO)		+= vcio.o
+ obj-$(CONFIG_BCM2835_DEVGPIOMEM)+= bcm2835-gpiomem.o
+ obj-$(CONFIG_BCM2835_SMI_DEV)	+= bcm2835_smi_dev.o
+--- /dev/null
++++ b/drivers/char/broadcom/vcio.c
+@@ -0,0 +1,186 @@
++/*
++ *  Copyright (C) 2010 Broadcom
++ *  Copyright (C) 2015 Noralf Trønnes
++ *  Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/init.h>
++#include <linux/ioctl.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/compat.h>
++#include <linux/miscdevice.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++#define MODULE_NAME "vcio"
++#define VCIO_IOC_MAGIC 100
++#define IOCTL_MBOX_PROPERTY _IOWR(VCIO_IOC_MAGIC, 0, char *)
++#ifdef CONFIG_COMPAT
++#define IOCTL_MBOX_PROPERTY32 _IOWR(VCIO_IOC_MAGIC, 0, compat_uptr_t)
++#endif
++
++struct vcio_data {
++	struct rpi_firmware *fw;
++	struct miscdevice misc_dev;
++};
++
++static int vcio_user_property_list(struct vcio_data *vcio, void *user)
++{
++	u32 *buf, size;
++	int ret;
++
++	/* The first 32-bit is the size of the buffer */
++	if (copy_from_user(&size, user, sizeof(size)))
++		return -EFAULT;
++
++	buf = kmalloc(size, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	if (copy_from_user(buf, user, size)) {
++		kfree(buf);
++		return -EFAULT;
++	}
++
++	/* Strip off protocol encapsulation */
++	ret = rpi_firmware_property_list(vcio->fw, &buf[2], size - 12);
++	if (ret) {
++		kfree(buf);
++		return ret;
++	}
++
++	buf[1] = RPI_FIRMWARE_STATUS_SUCCESS;
++	if (copy_to_user(user, buf, size))
++		ret = -EFAULT;
++
++	kfree(buf);
++
++	return ret;
++}
++
++static int vcio_device_open(struct inode *inode, struct file *file)
++{
++	try_module_get(THIS_MODULE);
++
++	return 0;
++}
++
++static int vcio_device_release(struct inode *inode, struct file *file)
++{
++	module_put(THIS_MODULE);
++
++	return 0;
++}
++
++static long vcio_device_ioctl(struct file *file, unsigned int ioctl_num,
++			      unsigned long ioctl_param)
++{
++	struct vcio_data *vcio = container_of(file->private_data,
++					      struct vcio_data, misc_dev);
++
++	switch (ioctl_num) {
++	case IOCTL_MBOX_PROPERTY:
++		return vcio_user_property_list(vcio, (void *)ioctl_param);
++	default:
++		pr_err("unknown ioctl: %x\n", ioctl_num);
++		return -EINVAL;
++	}
++}
++
++#ifdef CONFIG_COMPAT
++static long vcio_device_compat_ioctl(struct file *file, unsigned int ioctl_num,
++				     unsigned long ioctl_param)
++{
++	struct vcio_data *vcio = container_of(file->private_data,
++					      struct vcio_data, misc_dev);
++
++	switch (ioctl_num) {
++	case IOCTL_MBOX_PROPERTY32:
++		return vcio_user_property_list(vcio, compat_ptr(ioctl_param));
++	default:
++		pr_err("unknown ioctl: %x\n", ioctl_num);
++		return -EINVAL;
++	}
++}
++#endif
++
++const struct file_operations vcio_fops = {
++	.unlocked_ioctl = vcio_device_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl = vcio_device_compat_ioctl,
++#endif
++	.open = vcio_device_open,
++	.release = vcio_device_release,
++};
++
++static int vcio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct device_node *fw_node;
++	struct rpi_firmware *fw;
++	struct vcio_data *vcio;
++
++	fw_node = of_get_parent(np);
++	if (!fw_node) {
++		dev_err(dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	fw = rpi_firmware_get(fw_node);
++	of_node_put(fw_node);
++	if (!fw)
++		return -EPROBE_DEFER;
++
++	vcio = devm_kzalloc(dev, sizeof(struct vcio_data), GFP_KERNEL);
++	if (!vcio)
++		return -ENOMEM;
++
++	vcio->fw = fw;
++	vcio->misc_dev.fops = &vcio_fops;
++	vcio->misc_dev.minor = MISC_DYNAMIC_MINOR;
++	vcio->misc_dev.name = "vcio";
++	vcio->misc_dev.parent = dev;
++
++	return misc_register(&vcio->misc_dev);
++}
++
++static int vcio_remove(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++
++	misc_deregister(dev_get_drvdata(dev));
++	return 0;
++}
++
++static const struct of_device_id vcio_ids[] = {
++	{ .compatible = "raspberrypi,vcio" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, vcio_ids);
++
++static struct platform_driver vcio_driver = {
++	.driver	= {
++		.name		= MODULE_NAME,
++		.of_match_table	= of_match_ptr(vcio_ids),
++	},
++	.probe	= vcio_probe,
++	.remove = vcio_remove,
++};
++
++module_platform_driver(vcio_driver);
++
++MODULE_AUTHOR("Gray Girling");
++MODULE_AUTHOR("Noralf Trønnes");
++MODULE_DESCRIPTION("Mailbox userspace access");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:rpi-vcio");

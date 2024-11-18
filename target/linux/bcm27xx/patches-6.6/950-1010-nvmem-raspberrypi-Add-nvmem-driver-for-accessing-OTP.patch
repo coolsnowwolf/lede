@@ -1,0 +1,187 @@
+From 1210adfe7b9d9f251c7c0e2c25ef96ebbf329830 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 23 Feb 2024 19:25:55 +0000
+Subject: [PATCH 1010/1085] nvmem: raspberrypi: Add nvmem driver for accessing
+ OTP data
+
+This supports reading and writing OTP using the firmware
+mailbox interface.
+
+It needs supporting firmware to run.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/nvmem/Kconfig           |  12 +++
+ drivers/nvmem/Makefile          |   2 +
+ drivers/nvmem/raspberrypi-otp.c | 133 ++++++++++++++++++++++++++++++++
+ 3 files changed, 147 insertions(+)
+ create mode 100644 drivers/nvmem/raspberrypi-otp.c
+
+--- a/drivers/nvmem/Kconfig
++++ b/drivers/nvmem/Kconfig
+@@ -52,6 +52,18 @@ config NVMEM_BLOCK
+ 	  typically used with eMMC to store MAC addresses or Wi-Fi
+ 	  calibration data on embedded devices.
+ 
++config NVMEM_RASPBERRYPI_OTP
++	tristate "Raspberry Pi OTP support"
++	depends on (ARCH_BCM && RASPBERRYPI_FIRMWARE) || COMPILE_TEST
++	default ARCH_BCM && RASPBERRYPI_FIRMWARE
++	help
++	  Say y here to enable support for accessing OTP on Raspberry Pi boards.
++	  These are used to store non-volatile information such as serial number,
++	  board revision and customer stored data.
++
++	  This driver can also be built as a module. If so, the module will
++	  be called nvmem-raspberrypi-otp.
++
+ config NVMEM_BCM_OCOTP
+ 	tristate "Broadcom On-Chip OTP Controller support"
+ 	depends on ARCH_BCM_IPROC || COMPILE_TEST
+--- a/drivers/nvmem/Makefile
++++ b/drivers/nvmem/Makefile
+@@ -12,6 +12,8 @@ obj-y				+= layouts/
+ # Devices
+ obj-$(CONFIG_NVMEM_APPLE_EFUSES)	+= nvmem-apple-efuses.o
+ nvmem-apple-efuses-y 			:= apple-efuses.o
++obj-$(CONFIG_NVMEM_RASPBERRYPI_OTP)	+= nvmem-raspberrypi-otp.o
++nvmem-raspberrypi-otp-y			:= raspberrypi-otp.o
+ obj-$(CONFIG_NVMEM_BCM_OCOTP)		+= nvmem-bcm-ocotp.o
+ nvmem-bcm-ocotp-y			:= bcm-ocotp.o
+ obj-$(CONFIG_NVMEM_BLOCK)		+= nvmem-block.o
+--- /dev/null
++++ b/drivers/nvmem/raspberrypi-otp.c
+@@ -0,0 +1,133 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/**
++ * raspberrypi-otp.c
++ *
++ * nvmem driver using firmware mailbox to access otp
++ *
++ * Copyright (c) 2024, Raspberry Pi Ltd.
++ */
++
++#include <linux/nvmem-provider.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++struct rpi_otp_priv {
++	struct rpi_firmware *fw;
++	u32 block;
++};
++
++#define MAX_ROWS 192
++
++#define RPI_FIRMWARE_GET_USER_OTP 0x00030024
++#define RPI_FIRMWARE_SET_USER_OTP 0x00038024
++
++static int rpi_otp_read(void *context, unsigned int offset, void *val,
++			     size_t bytes)
++{
++	struct rpi_otp_priv *priv = context;
++	int words = bytes / sizeof(u32);
++	int index = offset / sizeof(u32);
++	u32 data[3 + MAX_ROWS] = {priv->block, index, words};
++	int err = 0;
++
++	if (words > MAX_ROWS)
++		return -EINVAL;
++
++	err = rpi_firmware_property(priv->fw, RPI_FIRMWARE_GET_USER_OTP,
++				    &data, sizeof(data));
++	if (err == 0)
++		memcpy(val, data + 3, bytes);
++	else
++		memset(val, 0xee, bytes);
++	return err;
++}
++
++static int rpi_otp_write(void *context, unsigned int offset, void *val,
++			     size_t bytes)
++{
++	struct rpi_otp_priv *priv = context;
++	int words = bytes / sizeof(u32);
++	int index = offset / sizeof(u32);
++	u32 data[3 + MAX_ROWS] = {priv->block, index, words};
++
++	if (bytes > MAX_ROWS * sizeof(u32))
++		return -EINVAL;
++
++	memcpy(data + 3, val, bytes);
++	return rpi_firmware_property(priv->fw, RPI_FIRMWARE_SET_USER_OTP,
++				    &data, sizeof(data));
++}
++
++static int rpi_otp_probe(struct platform_device *pdev)
++{
++	struct rpi_otp_priv *priv;
++	struct nvmem_config config = {
++		.dev = &pdev->dev,
++		.reg_read = rpi_otp_read,
++		.reg_write = rpi_otp_write,
++		.stride = sizeof(u32),
++		.word_size = sizeof(u32),
++		.type = NVMEM_TYPE_OTP,
++		.root_only = true,
++	};
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct device_node *fw_node;
++	struct rpi_firmware *fw;
++	u32 reg[2];
++	const char *pname;
++
++	if (of_property_read_u32_array(np, "reg", reg, ARRAY_SIZE(reg))) {
++		dev_err(dev, "Failed to parse \"reg\" property\n");
++		return -EINVAL;
++	}
++
++	pname = of_get_property(np, "name", NULL);
++	if (!pname) {
++		dev_err(dev, "Failed to parse \"name\" property\n");
++		return -ENOENT;
++	}
++
++	config.name = pname;
++	config.size = reg[1] * sizeof(u32);
++	config.read_only = !of_property_read_bool(np, "rw");
++
++	fw_node = of_parse_phandle(np, "firmware", 0);
++	if (!fw_node) {
++		dev_err(dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	fw = rpi_firmware_get(fw_node);
++	if (!fw)
++		return -EPROBE_DEFER;
++
++	priv = devm_kzalloc(config.dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->fw = fw;
++	priv->block = reg[0];
++	config.priv = priv;
++
++	return PTR_ERR_OR_ZERO(devm_nvmem_register(config.dev, &config));
++}
++
++static const struct of_device_id rpi_otp_of_match[] = {
++	{ .compatible = "raspberrypi,rpi-otp", },
++	{}
++};
++
++MODULE_DEVICE_TABLE(of, rpi_otp_of_match);
++
++static struct platform_driver rpi_otp_driver = {
++	.driver = {
++		.name = "rpi_otp",
++		.of_match_table = rpi_otp_of_match,
++	},
++	.probe = rpi_otp_probe,
++};
++
++module_platform_driver(rpi_otp_driver);
++
++MODULE_AUTHOR("Dom Cobley <popcornmix@gmail.com>");
++MODULE_LICENSE("GPL");

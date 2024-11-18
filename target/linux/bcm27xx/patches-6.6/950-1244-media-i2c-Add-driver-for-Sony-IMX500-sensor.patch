@@ -1,0 +1,1675 @@
+From f9b1e0ffdd9b5134d9356d7e09e9c1a065fdfa13 Mon Sep 17 00:00:00 2001
+From: Richard Oliver <richard.oliver@raspberrypi.com>
+Date: Thu, 27 Jun 2024 10:11:44 +0100
+Subject: [PATCH 1244/1350] media: i2c: Add driver for Sony IMX500 sensor
+
+The Sony IMX500 is a stacked 1/2.3-inch CMOS digital image sensor and
+inbuilt AI processor with an active array CNN (Convolutional Neural
+Network) inference engine.  The native sensor size is 4056H x 3040V, and
+the module also contains an in-built ISP for the CNN. The module is
+programmable through an I2C interface with firmware and neural network
+uploads being made over SPI. This driver supports imaging only.
+
+Signed-off-by: Richard Oliver <richard.oliver@raspberrypi.com>
+---
+ MAINTAINERS                |    1 +
+ drivers/media/i2c/Kconfig  |   12 +
+ drivers/media/i2c/Makefile |    1 +
+ drivers/media/i2c/imx500.c | 1610 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 1624 insertions(+)
+ create mode 100644 drivers/media/i2c/imx500.c
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -20133,6 +20133,7 @@ L:	linux-media@vger.kernel.org
+ S:	Maintained
+ T:	git git://linuxtv.org/media_tree.git
+ F:	Documentation/devicetree/bindings/media/i2c/sony,imx500.yaml
++F:	drivers/media/i2c/imx500.c
+ 
+ SONY IMX519 SENSOR DRIVER
+ M:	Arducam Kernel Maintenance <info@arducam.com>
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -236,6 +236,18 @@ config VIDEO_IMX477
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called imx477.
+ 
++config VIDEO_IMX500
++	tristate "Sony IMX500 sensor support"
++	depends on I2C && VIDEO_DEV
++	select VIDEO_V4L2_SUBDEV_API
++	select V4L2_CCI_I2C
++	help
++	  This is a Video4Linux2 sensor driver for the Sony
++	  IMX500 camera.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called IMX500.
++
+ config VIDEO_IMX519
+ 	tristate "Arducam IMX519 sensor support"
+ 	depends on I2C && VIDEO_DEV
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -58,6 +58,7 @@ obj-$(CONFIG_VIDEO_IMX355) += imx355.o
+ obj-$(CONFIG_VIDEO_IMX412) += imx412.o
+ obj-$(CONFIG_VIDEO_IMX415) += imx415.o
+ obj-$(CONFIG_VIDEO_IMX477) += imx477.o
++obj-$(CONFIG_VIDEO_IMX500) += imx500.o
+ obj-$(CONFIG_VIDEO_IMX519) += imx519.o
+ obj-$(CONFIG_VIDEO_IMX708) += imx708.o
+ obj-$(CONFIG_VIDEO_IR_I2C) += ir-kbd-i2c.o
+--- /dev/null
++++ b/drivers/media/i2c/imx500.c
+@@ -0,0 +1,1610 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * A V4L2 driver for Sony IMX500 cameras.
++ * Copyright (C) 2024, Raspberry Pi Ltd
++ */
++#include <asm/unaligned.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/of_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++#include <media/v4l2-cci.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-event.h>
++#include <media/v4l2-fwnode.h>
++#include <media/v4l2-mediabus.h>
++
++/* Chip ID */
++#define IMX500_REG_CHIP_ID CCI_REG16(0x0016)
++#define IMX500_CHIP_ID 0x0500
++
++#define IMX500_REG_MODE_SELECT CCI_REG8(0x0100)
++#define IMX500_MODE_STANDBY 0x00
++#define IMX500_MODE_STREAMING 0x01
++
++#define IMX500_REG_IMAGE_ONLY_MODE CCI_REG8(0xa700)
++#define IMX500_IMAGE_ONLY_FALSE 0x00
++#define IMX500_IMAGE_ONLY_TRUE 0x01
++
++#define IMX500_REG_ORIENTATION CCI_REG8(0x101)
++
++#define IMX500_XCLK_FREQ 24000000
++
++#define IMX500_DEFAULT_LINK_FREQ 444000000
++
++#define IMX500_PIXEL_RATE 744000000
++
++/* V_TIMING internal */
++#define IMX500_REG_FRAME_LENGTH CCI_REG16(0x0340)
++#define IMX500_FRAME_LENGTH_MAX 0xffdc
++#define IMX500_VBLANK_MIN 4
++
++/* H_TIMING internal */
++#define IMX500_REG_LINE_LENGTH CCI_REG16(0x0342)
++#define IMX500_LINE_LENGTH_MAX 0xfff0
++
++/* Long exposure multiplier */
++#define IMX500_LONG_EXP_SHIFT_MAX 7
++#define IMX500_LONG_EXP_SHIFT_REG CCI_REG8(0x3210)
++
++/* Exposure control */
++#define IMX500_REG_EXPOSURE CCI_REG16(0x0202)
++#define IMX500_EXPOSURE_OFFSET 22
++#define IMX500_EXPOSURE_MIN 8
++#define IMX500_EXPOSURE_STEP 1
++#define IMX500_EXPOSURE_DEFAULT 0x640
++#define IMX500_EXPOSURE_MAX (IMX500_FRAME_LENGTH_MAX - IMX500_EXPOSURE_OFFSET)
++
++/* Analog gain control */
++#define IMX500_REG_ANALOG_GAIN CCI_REG16(0x0204)
++#define IMX500_ANA_GAIN_MIN 0
++#define IMX500_ANA_GAIN_MAX 978
++#define IMX500_ANA_GAIN_STEP 1
++#define IMX500_ANA_GAIN_DEFAULT 0x0
++
++/* Colour balance controls */
++#define IMX500_REG_COLOUR_BALANCE_R CCI_REG16(0xd804)
++#define IMX500_REG_COLOUR_BALANCE_GR CCI_REG16(0xd806)
++#define IMX500_REG_COLOUR_BALANCE_GB CCI_REG16(0xd808)
++#define IMX500_REG_COLOUR_BALANCE_B CCI_REG16(0xd80a)
++#define IMX500_COLOUR_BALANCE_MIN 0x0001
++#define IMX500_COLOUR_BALANCE_MAX 0x0fff
++#define IMX500_COLOUR_BALANCE_STEP 0x0001
++#define IMX500_COLOUR_BALANCE_DEFAULT 0x0100
++
++/* Embedded sizes */
++#define IMX500_MAX_EMBEDDED_SIZE \
++	(2 * ((((IMX500_PIXEL_ARRAY_WIDTH * 10) >> 3) + 15) & ~15))
++
++/* IMX500 native and active pixel array size. */
++#define IMX500_NATIVE_WIDTH 4072U
++#define IMX500_NATIVE_HEIGHT 3176U
++#define IMX500_PIXEL_ARRAY_LEFT 8U
++#define IMX500_PIXEL_ARRAY_TOP 16U
++#define IMX500_PIXEL_ARRAY_WIDTH 4056U
++#define IMX500_PIXEL_ARRAY_HEIGHT 3040U
++
++#define NUM_PADS 1
++
++/* regulator supplies */
++static const char *const imx500_supply_name[] = {
++	/* Supplies can be enabled in any order */
++	"vana", /* Analog (2.7V) supply */
++	"vdig", /* Digital Core (0.84V) supply */
++	"vif", /* Interface (1.8V) supply */
++};
++
++#define IMX500_NUM_SUPPLIES ARRAY_SIZE(imx500_supply_name)
++
++struct imx500_reg_list {
++	unsigned int num_of_regs;
++	const struct cci_reg_sequence *regs;
++};
++
++/* Mode : resolution and related config&values */
++struct imx500_mode {
++	/* Frame width */
++	unsigned int width;
++
++	/* Frame height */
++	unsigned int height;
++
++	/* H-timing in pixels */
++	unsigned int line_length_pix;
++
++	/* Analog crop rectangle. */
++	struct v4l2_rect crop;
++
++	/* Default framerate. */
++	unsigned int framerate_default;
++
++	/* Default register values */
++	struct imx500_reg_list reg_list;
++};
++
++static const struct cci_reg_sequence mode_common_regs[] = {
++	{ CCI_REG8(0x0305), 0x02 },
++	{ CCI_REG8(0x0306), 0x00 },
++	{ CCI_REG8(0x030d), 0x02 },
++	{ CCI_REG8(0x030e), 0x00 },
++	{ CCI_REG8(0x0106), 0x01 }, /* FAST_STANDBY_CTL */
++	{ CCI_REG8(0x0136), 0x1b }, /* EXCLK_FREQ */
++	{ CCI_REG8(0x0137), 0x00 },
++	{ CCI_REG8(0x0138), 0x01 }, /* TEMP_SENS_CTL */
++	{ CCI_REG8(0x0112), 0x0a },
++	{ CCI_REG8(0x0113), 0x0a },
++	{ CCI_REG8(0x0114), 0x01 }, /* CSI_LANE_MODE */
++};
++
++/* 12 mpix 15fps */
++static const struct cci_reg_sequence mode_4056x3040_regs[] = {
++	{ CCI_REG8(0x0340), 0x12 },
++	{ CCI_REG8(0x0341), 0x42 },
++	{ CCI_REG8(0x0342), 0x45 },
++	{ CCI_REG8(0x0343), 0xec },
++	{ CCI_REG8(0x3210), 0x00 },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x00 },
++	{ CCI_REG8(0x0347), 0x00 },
++	{ CCI_REG8(0x0348), 0x0f },
++	{ CCI_REG8(0x0349), 0xd7 },
++	{ CCI_REG8(0x0350), 0x00 },
++	{ CCI_REG8(0x034a), 0x0b },
++	{ CCI_REG8(0x034b), 0xdf },
++	{ CCI_REG8(0x3f58), 0x01 },
++	{ CCI_REG8(0x0381), 0x01 },
++	{ CCI_REG8(0x0383), 0x01 },
++	{ CCI_REG8(0x0385), 0x01 },
++	{ CCI_REG8(0x0387), 0x01 },
++	{ CCI_REG8(0x0900), 0x00 },
++	{ CCI_REG8(0x0901), 0x11 },
++	{ CCI_REG8(0x0902), 0x00 },
++	{ CCI_REG8(0x3241), 0x11 },
++	{ CCI_REG8(0x3242), 0x01 },
++	{ CCI_REG8(0x3250), 0x00 },
++	{ CCI_REG8(0x3f0f), 0x00 },
++	{ CCI_REG8(0x3f40), 0x00 },
++	{ CCI_REG8(0x3f41), 0x00 },
++	{ CCI_REG8(0x3f42), 0x00 },
++	{ CCI_REG8(0x3f43), 0x00 },
++	{ CCI_REG8(0xb34e), 0x00 },
++	{ CCI_REG8(0xb351), 0x20 },
++	{ CCI_REG8(0xb35c), 0x00 },
++	{ CCI_REG8(0xb35e), 0x08 },
++	{ CCI_REG8(0x0401), 0x00 },
++	{ CCI_REG8(0x0404), 0x00 },
++	{ CCI_REG8(0x0405), 0x10 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x0f },
++	{ CCI_REG8(0x040d), 0xd8 },
++	{ CCI_REG8(0x040e), 0x0b },
++	{ CCI_REG8(0x040f), 0xe0 },
++	{ CCI_REG8(0x034c), 0x0f },
++	{ CCI_REG8(0x034d), 0xd8 },
++	{ CCI_REG8(0x034e), 0x0b },
++	{ CCI_REG8(0x034f), 0xe0 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0307), 0x9b },
++	{ CCI_REG8(0x0309), 0x0a },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030f), 0x4a },
++	{ CCI_REG8(0x0310), 0x01 },
++	{ CCI_REG8(0x0820), 0x07 },
++	{ CCI_REG8(0x0821), 0xce },
++	{ CCI_REG8(0x0822), 0x00 },
++	{ CCI_REG8(0x0823), 0x00 },
++	{ CCI_REG8(0x3e20), 0x01 },
++	{ CCI_REG8(0x3e35), 0x01 },
++	{ CCI_REG8(0x3e36), 0x01 },
++	{ CCI_REG8(0x3e37), 0x00 },
++	{ CCI_REG8(0x3e3a), 0x01 },
++	{ CCI_REG8(0x3e3b), 0x00 },
++	{ CCI_REG8(0x00e3), 0x00 },
++	{ CCI_REG8(0x00e4), 0x00 },
++	{ CCI_REG8(0x00e6), 0x00 },
++	{ CCI_REG8(0x00e7), 0x00 },
++	{ CCI_REG8(0x00e8), 0x00 },
++	{ CCI_REG8(0x00e9), 0x00 },
++	{ CCI_REG8(0x3f50), 0x00 },
++	{ CCI_REG8(0x3f56), 0x02 },
++	{ CCI_REG8(0x3f57), 0x42 },
++	{ CCI_REG8(0x3606), 0x01 },
++	{ CCI_REG8(0x3607), 0x01 },
++	{ CCI_REG8(0x3f26), 0x00 },
++	{ CCI_REG8(0x3f4a), 0x00 },
++	{ CCI_REG8(0x3f4b), 0x00 },
++	{ CCI_REG8(0x4bc0), 0x16 },
++	{ CCI_REG8(0x7ba8), 0x00 },
++	{ CCI_REG8(0x7ba9), 0x00 },
++	{ CCI_REG8(0x886b), 0x00 },
++	{ CCI_REG8(0x579a), 0x00 },
++	{ CCI_REG8(0x579b), 0x0a },
++	{ CCI_REG8(0x579c), 0x01 },
++	{ CCI_REG8(0x579d), 0x2a },
++	{ CCI_REG8(0x57ac), 0x00 },
++	{ CCI_REG8(0x57ad), 0x00 },
++	{ CCI_REG8(0x57ae), 0x00 },
++	{ CCI_REG8(0x57af), 0x81 },
++	{ CCI_REG8(0x57be), 0x00 },
++	{ CCI_REG8(0x57bf), 0x00 },
++	{ CCI_REG8(0x57c0), 0x00 },
++	{ CCI_REG8(0x57c1), 0x81 },
++	{ CCI_REG8(0x57d0), 0x00 },
++	{ CCI_REG8(0x57d1), 0x00 },
++	{ CCI_REG8(0x57d2), 0x00 },
++	{ CCI_REG8(0x57d3), 0x81 },
++	{ CCI_REG8(0x5324), 0x00 },
++	{ CCI_REG8(0x5325), 0x26 },
++	{ CCI_REG8(0x5326), 0x00 },
++	{ CCI_REG8(0x5327), 0x6b },
++	{ CCI_REG8(0xbca7), 0x00 },
++	{ CCI_REG8(0x5fcc), 0x28 },
++	{ CCI_REG8(0x5fd7), 0x2d },
++	{ CCI_REG8(0x5fe2), 0x2d },
++	{ CCI_REG8(0x5fed), 0x2d },
++	{ CCI_REG8(0x5ff8), 0x2d },
++	{ CCI_REG8(0x6003), 0x2d },
++	{ CCI_REG8(0x5d0b), 0x01 },
++	{ CCI_REG8(0x6f6d), 0x00 },
++	{ CCI_REG8(0x61c9), 0x00 },
++	{ CCI_REG8(0x5352), 0x00 },
++	{ CCI_REG8(0x5353), 0x49 },
++	{ CCI_REG8(0x5356), 0x00 },
++	{ CCI_REG8(0x5357), 0x30 },
++	{ CCI_REG8(0x5358), 0x00 },
++	{ CCI_REG8(0x5359), 0x3b },
++	{ CCI_REG8(0x535c), 0x00 },
++	{ CCI_REG8(0x535d), 0xb0 },
++	{ CCI_REG8(0x6187), 0x18 },
++	{ CCI_REG8(0x6189), 0x18 },
++	{ CCI_REG8(0x618b), 0x18 },
++	{ CCI_REG8(0x618d), 0x1d },
++	{ CCI_REG8(0x618f), 0x1d },
++	{ CCI_REG8(0x5414), 0x01 },
++	{ CCI_REG8(0x5415), 0x0c },
++	{ CCI_REG8(0xbca8), 0x0a },
++	{ CCI_REG8(0x5fcf), 0x1e },
++	{ CCI_REG8(0x5fda), 0x1e },
++	{ CCI_REG8(0x5fe5), 0x1e },
++	{ CCI_REG8(0x5ff0), 0x1e },
++	{ CCI_REG8(0x5ffb), 0x1e },
++	{ CCI_REG8(0x6006), 0x1e },
++	{ CCI_REG8(0x616e), 0x04 },
++	{ CCI_REG8(0x616f), 0x04 },
++	{ CCI_REG8(0x6170), 0x04 },
++	{ CCI_REG8(0x6171), 0x06 },
++	{ CCI_REG8(0x6172), 0x06 },
++	{ CCI_REG8(0x6173), 0x0c },
++	{ CCI_REG8(0x6174), 0x0c },
++	{ CCI_REG8(0x6175), 0x0c },
++	{ CCI_REG8(0x6176), 0x00 },
++	{ CCI_REG8(0x6177), 0x10 },
++	{ CCI_REG8(0x6178), 0x00 },
++	{ CCI_REG8(0x6179), 0x1a },
++	{ CCI_REG8(0x617a), 0x00 },
++	{ CCI_REG8(0x617b), 0x1a },
++	{ CCI_REG8(0x617c), 0x00 },
++	{ CCI_REG8(0x617d), 0x27 },
++	{ CCI_REG8(0x617e), 0x00 },
++	{ CCI_REG8(0x617f), 0x27 },
++	{ CCI_REG8(0x6180), 0x00 },
++	{ CCI_REG8(0x6181), 0x44 },
++	{ CCI_REG8(0x6182), 0x00 },
++	{ CCI_REG8(0x6183), 0x44 },
++	{ CCI_REG8(0x6184), 0x00 },
++	{ CCI_REG8(0x6185), 0x44 },
++	{ CCI_REG8(0x5dfc), 0x0a },
++	{ CCI_REG8(0x5e00), 0x0a },
++	{ CCI_REG8(0x5e04), 0x0a },
++	{ CCI_REG8(0x5e08), 0x0a },
++	{ CCI_REG8(0x5dfd), 0x0a },
++	{ CCI_REG8(0x5e01), 0x0a },
++	{ CCI_REG8(0x5e05), 0x0a },
++	{ CCI_REG8(0x5e09), 0x0a },
++	{ CCI_REG8(0x5dfe), 0x0a },
++	{ CCI_REG8(0x5e02), 0x0a },
++	{ CCI_REG8(0x5e06), 0x0a },
++	{ CCI_REG8(0x5e0a), 0x0a },
++	{ CCI_REG8(0x5dff), 0x0a },
++	{ CCI_REG8(0x5e03), 0x0a },
++	{ CCI_REG8(0x5e07), 0x0a },
++	{ CCI_REG8(0x5e0b), 0x0a },
++	{ CCI_REG8(0x5dec), 0x12 },
++	{ CCI_REG8(0x5df0), 0x12 },
++	{ CCI_REG8(0x5df4), 0x21 },
++	{ CCI_REG8(0x5df8), 0x31 },
++	{ CCI_REG8(0x5ded), 0x12 },
++	{ CCI_REG8(0x5df1), 0x12 },
++	{ CCI_REG8(0x5df5), 0x21 },
++	{ CCI_REG8(0x5df9), 0x31 },
++	{ CCI_REG8(0x5dee), 0x12 },
++	{ CCI_REG8(0x5df2), 0x12 },
++	{ CCI_REG8(0x5df6), 0x21 },
++	{ CCI_REG8(0x5dfa), 0x31 },
++	{ CCI_REG8(0x5def), 0x12 },
++	{ CCI_REG8(0x5df3), 0x12 },
++	{ CCI_REG8(0x5df7), 0x21 },
++	{ CCI_REG8(0x5dfb), 0x31 },
++	{ CCI_REG8(0x5ddc), 0x0d },
++	{ CCI_REG8(0x5de0), 0x0d },
++	{ CCI_REG8(0x5de4), 0x0d },
++	{ CCI_REG8(0x5de8), 0x0d },
++	{ CCI_REG8(0x5ddd), 0x0d },
++	{ CCI_REG8(0x5de1), 0x0d },
++	{ CCI_REG8(0x5de5), 0x0d },
++	{ CCI_REG8(0x5de9), 0x0d },
++	{ CCI_REG8(0x5dde), 0x0d },
++	{ CCI_REG8(0x5de2), 0x0d },
++	{ CCI_REG8(0x5de6), 0x0d },
++	{ CCI_REG8(0x5dea), 0x0d },
++	{ CCI_REG8(0x5ddf), 0x0d },
++	{ CCI_REG8(0x5de3), 0x0d },
++	{ CCI_REG8(0x5de7), 0x0d },
++	{ CCI_REG8(0x5deb), 0x0d },
++	{ CCI_REG8(0x5dcc), 0x55 },
++	{ CCI_REG8(0x5dd0), 0x50 },
++	{ CCI_REG8(0x5dd4), 0x4b },
++	{ CCI_REG8(0x5dd8), 0x4b },
++	{ CCI_REG8(0x5dcd), 0x55 },
++	{ CCI_REG8(0x5dd1), 0x50 },
++	{ CCI_REG8(0x5dd5), 0x4b },
++	{ CCI_REG8(0x5dd9), 0x4b },
++	{ CCI_REG8(0x5dce), 0x55 },
++	{ CCI_REG8(0x5dd2), 0x50 },
++	{ CCI_REG8(0x5dd6), 0x4b },
++	{ CCI_REG8(0x5dda), 0x4b },
++	{ CCI_REG8(0x5dcf), 0x55 },
++	{ CCI_REG8(0x5dd3), 0x50 },
++	{ CCI_REG8(0x5dd7), 0x4b },
++	{ CCI_REG8(0x5ddb), 0x4b },
++	{ CCI_REG8(0x0202), 0x12 },
++	{ CCI_REG8(0x0203), 0x2c },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0210), 0x01 },
++	{ CCI_REG8(0x0211), 0x00 },
++	{ CCI_REG8(0x0212), 0x01 },
++	{ CCI_REG8(0x0213), 0x00 },
++	{ CCI_REG8(0x0214), 0x01 },
++	{ CCI_REG8(0x0215), 0x00 },
++};
++
++/* 2x2 binned. 56fps */
++static const struct cci_reg_sequence mode_2028x1520_regs[] = {
++	{ CCI_REG8(0x0112), 0x0a },
++	{ CCI_REG8(0x0113), 0x0a },
++	{ CCI_REG8(0x0114), 0x01 },
++	{ CCI_REG8(0x0342), 0x24 },
++	{ CCI_REG8(0x0343), 0xb6 },
++	{ CCI_REG8(0x0340), 0x0b },
++	{ CCI_REG8(0x0341), 0x9c },
++	{ CCI_REG8(0x3210), 0x00 },
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x00 },
++	{ CCI_REG8(0x0347), 0x00 },
++	{ CCI_REG8(0x0348), 0x0f },
++	{ CCI_REG8(0x0349), 0xd7 },
++	{ CCI_REG8(0x0350), 0x00 },
++	{ CCI_REG8(0x034a), 0x0b },
++	{ CCI_REG8(0x034b), 0xdf },
++	{ CCI_REG8(0x3f58), 0x01 },
++	{ CCI_REG8(0x0381), 0x01 },
++	{ CCI_REG8(0x0383), 0x01 },
++	{ CCI_REG8(0x0385), 0x01 },
++	{ CCI_REG8(0x0387), 0x01 },
++	{ CCI_REG8(0x0900), 0x01 },
++	{ CCI_REG8(0x0901), 0x22 },
++	{ CCI_REG8(0x0902), 0x02 },
++	{ CCI_REG8(0x3241), 0x11 },
++	{ CCI_REG8(0x3242), 0x01 },
++	{ CCI_REG8(0x3250), 0x03 },
++	{ CCI_REG8(0x3f0f), 0x00 },
++	{ CCI_REG8(0x3f40), 0x00 },
++	{ CCI_REG8(0x3f41), 0x00 },
++	{ CCI_REG8(0x3f42), 0x00 },
++	{ CCI_REG8(0x3f43), 0x00 },
++	{ CCI_REG8(0xb34e), 0x00 },
++	{ CCI_REG8(0xb351), 0x20 },
++	{ CCI_REG8(0xb35c), 0x00 },
++	{ CCI_REG8(0xb35e), 0x08 },
++	{ CCI_REG8(0x0401), 0x00 },
++	{ CCI_REG8(0x0404), 0x00 },
++	{ CCI_REG8(0x0405), 0x10 },
++	{ CCI_REG8(0x0408), 0x00 },
++	{ CCI_REG8(0x0409), 0x00 },
++	{ CCI_REG8(0x040a), 0x00 },
++	{ CCI_REG8(0x040b), 0x00 },
++	{ CCI_REG8(0x040c), 0x07 },
++	{ CCI_REG8(0x040d), 0xec },
++	{ CCI_REG8(0x040e), 0x05 },
++	{ CCI_REG8(0x040f), 0xf0 },
++	{ CCI_REG8(0x034c), 0x07 },
++	{ CCI_REG8(0x034d), 0xec },
++	{ CCI_REG8(0x034e), 0x05 },
++	{ CCI_REG8(0x034f), 0xf0 },
++	{ CCI_REG8(0x0301), 0x05 },
++	{ CCI_REG8(0x0303), 0x02 },
++	{ CCI_REG8(0x0307), 0x9b },
++	{ CCI_REG8(0x0309), 0x0a },
++	{ CCI_REG8(0x030b), 0x01 },
++	{ CCI_REG8(0x030f), 0x4a },
++	{ CCI_REG8(0x0310), 0x01 },
++	{ CCI_REG8(0x0820), 0x07 },
++	{ CCI_REG8(0x0821), 0xce },
++	{ CCI_REG8(0x0822), 0x00 },
++	{ CCI_REG8(0x0823), 0x00 },
++	{ CCI_REG8(0x3e20), 0x01 },
++	{ CCI_REG8(0x3e35), 0x01 },
++	{ CCI_REG8(0x3e36), 0x01 },
++	{ CCI_REG8(0x3e37), 0x00 },
++	{ CCI_REG8(0x3e3a), 0x01 },
++	{ CCI_REG8(0x3e3b), 0x00 },
++	{ CCI_REG8(0x00e3), 0x00 },
++	{ CCI_REG8(0x00e4), 0x00 },
++	{ CCI_REG8(0x00e6), 0x00 },
++	{ CCI_REG8(0x00e7), 0x00 },
++	{ CCI_REG8(0x00e8), 0x00 },
++	{ CCI_REG8(0x00e9), 0x00 },
++	{ CCI_REG8(0x3f50), 0x00 },
++	{ CCI_REG8(0x3f56), 0x01 },
++	{ CCI_REG8(0x3f57), 0x30 },
++	{ CCI_REG8(0x3606), 0x01 },
++	{ CCI_REG8(0x3607), 0x01 },
++	{ CCI_REG8(0x3f26), 0x00 },
++	{ CCI_REG8(0x3f4a), 0x00 },
++	{ CCI_REG8(0x3f4b), 0x00 },
++	{ CCI_REG8(0x4bc0), 0x16 },
++	{ CCI_REG8(0x7ba8), 0x00 },
++	{ CCI_REG8(0x7ba9), 0x00 },
++	{ CCI_REG8(0x886b), 0x00 },
++	{ CCI_REG8(0x579a), 0x00 },
++	{ CCI_REG8(0x579b), 0x0a },
++	{ CCI_REG8(0x579c), 0x01 },
++	{ CCI_REG8(0x579d), 0x2a },
++	{ CCI_REG8(0x57ac), 0x00 },
++	{ CCI_REG8(0x57ad), 0x00 },
++	{ CCI_REG8(0x57ae), 0x00 },
++	{ CCI_REG8(0x57af), 0x81 },
++	{ CCI_REG8(0x57be), 0x00 },
++	{ CCI_REG8(0x57bf), 0x00 },
++	{ CCI_REG8(0x57c0), 0x00 },
++	{ CCI_REG8(0x57c1), 0x81 },
++	{ CCI_REG8(0x57d0), 0x00 },
++	{ CCI_REG8(0x57d1), 0x00 },
++	{ CCI_REG8(0x57d2), 0x00 },
++	{ CCI_REG8(0x57d3), 0x81 },
++	{ CCI_REG8(0x5324), 0x00 },
++	{ CCI_REG8(0x5325), 0x31 },
++	{ CCI_REG8(0x5326), 0x00 },
++	{ CCI_REG8(0x5327), 0x60 },
++	{ CCI_REG8(0xbca7), 0x08 },
++	{ CCI_REG8(0x5fcc), 0x1e },
++	{ CCI_REG8(0x5fd7), 0x1e },
++	{ CCI_REG8(0x5fe2), 0x1e },
++	{ CCI_REG8(0x5fed), 0x1e },
++	{ CCI_REG8(0x5ff8), 0x1e },
++	{ CCI_REG8(0x6003), 0x1e },
++	{ CCI_REG8(0x5d0b), 0x02 },
++	{ CCI_REG8(0x6f6d), 0x01 },
++	{ CCI_REG8(0x61c9), 0x68 },
++	{ CCI_REG8(0x5352), 0x00 },
++	{ CCI_REG8(0x5353), 0x3f },
++	{ CCI_REG8(0x5356), 0x00 },
++	{ CCI_REG8(0x5357), 0x1c },
++	{ CCI_REG8(0x5358), 0x00 },
++	{ CCI_REG8(0x5359), 0x3d },
++	{ CCI_REG8(0x535c), 0x00 },
++	{ CCI_REG8(0x535d), 0xa6 },
++	{ CCI_REG8(0x6187), 0x1d },
++	{ CCI_REG8(0x6189), 0x1d },
++	{ CCI_REG8(0x618b), 0x1d },
++	{ CCI_REG8(0x618d), 0x23 },
++	{ CCI_REG8(0x618f), 0x23 },
++	{ CCI_REG8(0x5414), 0x01 },
++	{ CCI_REG8(0x5415), 0x12 },
++	{ CCI_REG8(0xbca8), 0x00 },
++	{ CCI_REG8(0x5fcf), 0x28 },
++	{ CCI_REG8(0x5fda), 0x2d },
++	{ CCI_REG8(0x5fe5), 0x2d },
++	{ CCI_REG8(0x5ff0), 0x2d },
++	{ CCI_REG8(0x5ffb), 0x2d },
++	{ CCI_REG8(0x6006), 0x2d },
++	{ CCI_REG8(0x616e), 0x04 },
++	{ CCI_REG8(0x616f), 0x04 },
++	{ CCI_REG8(0x6170), 0x04 },
++	{ CCI_REG8(0x6171), 0x06 },
++	{ CCI_REG8(0x6172), 0x06 },
++	{ CCI_REG8(0x6173), 0x0c },
++	{ CCI_REG8(0x6174), 0x0c },
++	{ CCI_REG8(0x6175), 0x0c },
++	{ CCI_REG8(0x6176), 0x00 },
++	{ CCI_REG8(0x6177), 0x10 },
++	{ CCI_REG8(0x6178), 0x00 },
++	{ CCI_REG8(0x6179), 0x1a },
++	{ CCI_REG8(0x617a), 0x00 },
++	{ CCI_REG8(0x617b), 0x1a },
++	{ CCI_REG8(0x617c), 0x00 },
++	{ CCI_REG8(0x617d), 0x27 },
++	{ CCI_REG8(0x617e), 0x00 },
++	{ CCI_REG8(0x617f), 0x27 },
++	{ CCI_REG8(0x6180), 0x00 },
++	{ CCI_REG8(0x6181), 0x44 },
++	{ CCI_REG8(0x6182), 0x00 },
++	{ CCI_REG8(0x6183), 0x44 },
++	{ CCI_REG8(0x6184), 0x00 },
++	{ CCI_REG8(0x6185), 0x44 },
++	{ CCI_REG8(0x5dfc), 0x0a },
++	{ CCI_REG8(0x5e00), 0x0a },
++	{ CCI_REG8(0x5e04), 0x0a },
++	{ CCI_REG8(0x5e08), 0x0a },
++	{ CCI_REG8(0x5dfd), 0x0a },
++	{ CCI_REG8(0x5e01), 0x0a },
++	{ CCI_REG8(0x5e05), 0x0a },
++	{ CCI_REG8(0x5e09), 0x0a },
++	{ CCI_REG8(0x5dfe), 0x0a },
++	{ CCI_REG8(0x5e02), 0x0a },
++	{ CCI_REG8(0x5e06), 0x0a },
++	{ CCI_REG8(0x5e0a), 0x0a },
++	{ CCI_REG8(0x5dff), 0x0a },
++	{ CCI_REG8(0x5e03), 0x0a },
++	{ CCI_REG8(0x5e07), 0x0a },
++	{ CCI_REG8(0x5e0b), 0x0a },
++	{ CCI_REG8(0x5dec), 0x12 },
++	{ CCI_REG8(0x5df0), 0x12 },
++	{ CCI_REG8(0x5df4), 0x21 },
++	{ CCI_REG8(0x5df8), 0x31 },
++	{ CCI_REG8(0x5ded), 0x12 },
++	{ CCI_REG8(0x5df1), 0x12 },
++	{ CCI_REG8(0x5df5), 0x21 },
++	{ CCI_REG8(0x5df9), 0x31 },
++	{ CCI_REG8(0x5dee), 0x12 },
++	{ CCI_REG8(0x5df2), 0x12 },
++	{ CCI_REG8(0x5df6), 0x21 },
++	{ CCI_REG8(0x5dfa), 0x31 },
++	{ CCI_REG8(0x5def), 0x12 },
++	{ CCI_REG8(0x5df3), 0x12 },
++	{ CCI_REG8(0x5df7), 0x21 },
++	{ CCI_REG8(0x5dfb), 0x31 },
++	{ CCI_REG8(0x5ddc), 0x0d },
++	{ CCI_REG8(0x5de0), 0x0d },
++	{ CCI_REG8(0x5de4), 0x0d },
++	{ CCI_REG8(0x5de8), 0x0d },
++	{ CCI_REG8(0x5ddd), 0x0d },
++	{ CCI_REG8(0x5de1), 0x0d },
++	{ CCI_REG8(0x5de5), 0x0d },
++	{ CCI_REG8(0x5de9), 0x0d },
++	{ CCI_REG8(0x5dde), 0x0d },
++	{ CCI_REG8(0x5de2), 0x0d },
++	{ CCI_REG8(0x5de6), 0x0d },
++	{ CCI_REG8(0x5dea), 0x0d },
++	{ CCI_REG8(0x5ddf), 0x0d },
++	{ CCI_REG8(0x5de3), 0x0d },
++	{ CCI_REG8(0x5de7), 0x0d },
++	{ CCI_REG8(0x5deb), 0x0d },
++	{ CCI_REG8(0x5dcc), 0x55 },
++	{ CCI_REG8(0x5dd0), 0x50 },
++	{ CCI_REG8(0x5dd4), 0x4b },
++	{ CCI_REG8(0x5dd8), 0x4b },
++	{ CCI_REG8(0x5dcd), 0x55 },
++	{ CCI_REG8(0x5dd1), 0x50 },
++	{ CCI_REG8(0x5dd5), 0x4b },
++	{ CCI_REG8(0x5dd9), 0x4b },
++	{ CCI_REG8(0x5dce), 0x55 },
++	{ CCI_REG8(0x5dd2), 0x50 },
++	{ CCI_REG8(0x5dd6), 0x4b },
++	{ CCI_REG8(0x5dda), 0x4b },
++	{ CCI_REG8(0x5dcf), 0x55 },
++	{ CCI_REG8(0x5dd3), 0x50 },
++	{ CCI_REG8(0x5dd7), 0x4b },
++	{ CCI_REG8(0x5ddb), 0x4b },
++	{ CCI_REG8(0x0202), 0x0b },
++	{ CCI_REG8(0x0203), 0x86 },
++	{ CCI_REG8(0x0204), 0x00 },
++	{ CCI_REG8(0x0205), 0x00 },
++	{ CCI_REG8(0x020e), 0x01 },
++	{ CCI_REG8(0x020f), 0x00 },
++	{ CCI_REG8(0x0210), 0x01 },
++	{ CCI_REG8(0x0211), 0x00 },
++	{ CCI_REG8(0x0212), 0x01 },
++	{ CCI_REG8(0x0213), 0x00 },
++	{ CCI_REG8(0x0214), 0x01 },
++	{ CCI_REG8(0x0215), 0x00 },
++};
++
++/* Mode configs */
++static const struct imx500_mode imx500_supported_modes[] = {
++	{
++		/* 12MPix 10fps mode */
++		.width = 4056,
++		.height = 3040,
++		.line_length_pix = 17900,
++		.crop = {
++			.left = IMX500_PIXEL_ARRAY_LEFT,
++			.top = IMX500_PIXEL_ARRAY_TOP,
++			.width = 4056,
++			.height = 3040,
++		},
++		.framerate_default = 10,
++		.reg_list = {
++			.num_of_regs = ARRAY_SIZE(mode_4056x3040_regs),
++			.regs = mode_4056x3040_regs,
++		},
++	},
++	{
++		/* 2x2 binned 40fps mode */
++		.width = 2028,
++		.height = 1520,
++		.line_length_pix = 9398,
++		.crop = {
++			.left = IMX500_PIXEL_ARRAY_LEFT,
++			.top = IMX500_PIXEL_ARRAY_TOP,
++			.width = 4056,
++			.height = 3040,
++		},
++		.framerate_default = 40,
++		.reg_list = {
++			.num_of_regs = ARRAY_SIZE(mode_2028x1520_regs),
++			.regs = mode_2028x1520_regs,
++		},
++	},
++};
++
++/*
++ * The supported formats.
++ * This table MUST contain 4 entries per format, to cover the various flip
++ * combinations in the order
++ * - no flip
++ * - h flip
++ * - v flip
++ * - h&v flips
++ */
++static const u32 codes[] = {
++	/* 10-bit modes. */
++	MEDIA_BUS_FMT_SRGGB10_1X10,
++	MEDIA_BUS_FMT_SGRBG10_1X10,
++	MEDIA_BUS_FMT_SGBRG10_1X10,
++	MEDIA_BUS_FMT_SBGGR10_1X10,
++};
++
++struct imx500 {
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++	struct regmap *regmap;
++
++	unsigned int fmt_code;
++
++	struct clk *xclk;
++	u32 xclk_freq;
++
++	struct gpio_desc *reset_gpio;
++	struct regulator_bulk_data supplies[IMX500_NUM_SUPPLIES];
++
++	struct v4l2_ctrl_handler ctrl_handler;
++	/* V4L2 Controls */
++	struct v4l2_ctrl *pixel_rate;
++	struct v4l2_ctrl *link_freq;
++	struct v4l2_ctrl *exposure;
++	struct v4l2_ctrl *vflip;
++	struct v4l2_ctrl *hflip;
++	struct v4l2_ctrl *vblank;
++	struct v4l2_ctrl *hblank;
++
++	/* Current mode */
++	const struct imx500_mode *mode;
++
++	/*
++	 * Mutex for serialized access:
++	 * Protect sensor module set pad format and start/stop streaming safely.
++	 */
++	struct mutex mutex;
++
++	/* Streaming on/off */
++	bool streaming;
++
++	/* Rewrite common registers on stream on? */
++	bool common_regs_written;
++
++	/* Current long exposure factor in use. Set through V4L2_CID_VBLANK */
++	unsigned int long_exp_shift;
++};
++
++static inline struct imx500 *to_imx500(struct v4l2_subdev *_sd)
++{
++	return container_of(_sd, struct imx500, sd);
++}
++
++/* Get bayer order based on flip setting. */
++static u32 imx500_get_format_code(struct imx500 *imx500)
++{
++	unsigned int i;
++
++	lockdep_assert_held(&imx500->mutex);
++
++	i = (imx500->vflip->val ? 2 : 0) | (imx500->hflip->val ? 1 : 0);
++
++	return codes[i];
++}
++
++static void imx500_set_default_format(struct imx500 *imx500)
++{
++	/* Set default mode to max resolution */
++	imx500->mode = &imx500_supported_modes[0];
++	imx500->fmt_code = MEDIA_BUS_FMT_SRGGB10_1X10;
++}
++
++static void imx500_adjust_exposure_range(struct imx500 *imx500)
++{
++	int exposure_max, exposure_def;
++
++	/* Honour the VBLANK limits when setting exposure. */
++	exposure_max = imx500->mode->height + imx500->vblank->val -
++		       IMX500_EXPOSURE_OFFSET;
++	exposure_def = min(exposure_max, imx500->exposure->val);
++	__v4l2_ctrl_modify_range(imx500->exposure, imx500->exposure->minimum,
++				 exposure_max, imx500->exposure->step,
++				 exposure_def);
++}
++
++static int imx500_set_frame_length(struct imx500 *imx500, unsigned int val)
++{
++	int ret = 0;
++
++	imx500->long_exp_shift = 0;
++
++	while (val > IMX500_FRAME_LENGTH_MAX) {
++		imx500->long_exp_shift++;
++		val >>= 1;
++	}
++
++	ret = cci_write(imx500->regmap, IMX500_REG_FRAME_LENGTH, val, NULL);
++	if (ret)
++		return ret;
++
++	return cci_write(imx500->regmap, IMX500_LONG_EXP_SHIFT_REG,
++			 imx500->long_exp_shift, NULL);
++}
++
++static int imx500_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct imx500 *imx500 =
++		container_of(ctrl->handler, struct imx500, ctrl_handler);
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	int ret = 0;
++
++	/*
++	 * The VBLANK control may change the limits of usable exposure, so check
++	 * and adjust if necessary.
++	 */
++	if (ctrl->id == V4L2_CID_VBLANK)
++		imx500_adjust_exposure_range(imx500);
++
++	/*
++	 * Applying V4L2 control value only happens
++	 * when power is up for streaming
++	 */
++	if (pm_runtime_get_if_in_use(&client->dev) == 0)
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_ANALOGUE_GAIN:
++		ret = cci_write(imx500->regmap, IMX500_REG_ANALOG_GAIN,
++				ctrl->val, NULL);
++		break;
++	case V4L2_CID_EXPOSURE:
++		ret = cci_write(imx500->regmap, IMX500_REG_EXPOSURE,
++				ctrl->val >> imx500->long_exp_shift, NULL);
++		break;
++	case V4L2_CID_HFLIP:
++	case V4L2_CID_VFLIP:
++		ret = cci_write(imx500->regmap, IMX500_REG_ORIENTATION,
++				imx500->hflip->val | imx500->vflip->val << 1,
++				NULL);
++		break;
++	case V4L2_CID_VBLANK:
++		ret = imx500_set_frame_length(imx500,
++					      imx500->mode->height + ctrl->val);
++		break;
++	case V4L2_CID_HBLANK:
++		ret = cci_write(imx500->regmap, IMX500_REG_LINE_LENGTH,
++				imx500->mode->width + ctrl->val, NULL);
++		break;
++	case V4L2_CID_NOTIFY_GAINS:
++		ret = cci_write(imx500->regmap, IMX500_REG_COLOUR_BALANCE_B,
++				ctrl->p_new.p_u32[0], NULL);
++		cci_write(imx500->regmap, IMX500_REG_COLOUR_BALANCE_GB,
++			  ctrl->p_new.p_u32[1], &ret);
++		cci_write(imx500->regmap, IMX500_REG_COLOUR_BALANCE_GR,
++			  ctrl->p_new.p_u32[2], &ret);
++		cci_write(imx500->regmap, IMX500_REG_COLOUR_BALANCE_R,
++			  ctrl->p_new.p_u32[3], &ret);
++		break;
++	default:
++		dev_info(&client->dev,
++			 "ctrl(id:0x%x,val:0x%x) is not handled\n", ctrl->id,
++			 ctrl->val);
++		ret = -EINVAL;
++		break;
++	}
++
++	pm_runtime_mark_last_busy(&client->dev);
++	pm_runtime_put_autosuspend(&client->dev);
++
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops imx500_ctrl_ops = {
++	.s_ctrl = imx500_set_ctrl,
++};
++
++static const struct v4l2_ctrl_config imx500_notify_gains_ctrl = {
++	.ops = &imx500_ctrl_ops,
++	.id = V4L2_CID_NOTIFY_GAINS,
++	.type = V4L2_CTRL_TYPE_U32,
++	.min = IMX500_COLOUR_BALANCE_MIN,
++	.max = IMX500_COLOUR_BALANCE_MAX,
++	.step = IMX500_COLOUR_BALANCE_STEP,
++	.def = IMX500_COLOUR_BALANCE_DEFAULT,
++	.dims = { 4 },
++	.elem_size = sizeof(u32),
++};
++
++static int imx500_enum_mbus_code(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_mbus_code_enum *code)
++{
++	struct imx500 *imx500 = to_imx500(sd);
++
++	if (code->pad >= NUM_PADS)
++		return -EINVAL;
++
++	if (code->index != 0)
++		return -EINVAL;
++
++	code->code = imx500_get_format_code(imx500);
++
++	return 0;
++}
++
++static int imx500_enum_frame_size(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_frame_size_enum *fse)
++{
++	struct imx500 *imx500 = to_imx500(sd);
++
++	if (fse->pad >= NUM_PADS)
++		return -EINVAL;
++
++	const struct imx500_mode *mode_list = imx500_supported_modes;
++	unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
++
++	if (fse->index >= num_modes)
++		return -EINVAL;
++
++	if (fse->code != imx500_get_format_code(imx500))
++		return -EINVAL;
++
++	fse->min_width = mode_list[fse->index].width;
++	fse->max_width = fse->min_width;
++	fse->min_height = mode_list[fse->index].height;
++	fse->max_height = fse->min_height;
++
++	return 0;
++}
++
++static void imx500_update_image_pad_format(struct imx500 *imx500,
++					   const struct imx500_mode *mode,
++					   struct v4l2_subdev_format *fmt)
++{
++	fmt->format.width = mode->width;
++	fmt->format.height = mode->height;
++	fmt->format.field = V4L2_FIELD_NONE;
++	fmt->format.colorspace = V4L2_COLORSPACE_RAW;
++	fmt->format.ycbcr_enc =
++		V4L2_MAP_YCBCR_ENC_DEFAULT(fmt->format.colorspace);
++	fmt->format.quantization = V4L2_MAP_QUANTIZATION_DEFAULT(
++		true, fmt->format.colorspace, fmt->format.ycbcr_enc);
++	fmt->format.xfer_func =
++		V4L2_MAP_XFER_FUNC_DEFAULT(fmt->format.colorspace);
++}
++
++static int imx500_get_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct imx500 *imx500 = to_imx500(sd);
++
++	if (fmt->pad >= NUM_PADS)
++		return -EINVAL;
++
++	mutex_lock(&imx500->mutex);
++
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		struct v4l2_mbus_framefmt *try_fmt = v4l2_subdev_get_try_format(
++			&imx500->sd, sd_state, fmt->pad);
++		/* update the code which could change due to vflip or hflip */
++		try_fmt->code = imx500_get_format_code(imx500);
++		fmt->format = *try_fmt;
++	} else {
++		imx500_update_image_pad_format(imx500, imx500->mode, fmt);
++		fmt->format.code = imx500_get_format_code(imx500);
++	}
++
++	mutex_unlock(&imx500->mutex);
++	return 0;
++}
++
++static unsigned int imx500_get_frame_length(const struct imx500_mode *mode,
++					    unsigned int framerate_default)
++{
++	u64 frame_length;
++
++	frame_length = IMX500_PIXEL_RATE;
++	do_div(frame_length, (u64)framerate_default * mode->line_length_pix);
++
++	if (WARN_ON(frame_length > IMX500_FRAME_LENGTH_MAX))
++		frame_length = IMX500_FRAME_LENGTH_MAX;
++
++	return max_t(unsigned int, frame_length, mode->height);
++}
++
++static void imx500_set_framing_limits(struct imx500 *imx500)
++{
++	unsigned int frm_length_default, hblank_min;
++	const struct imx500_mode *mode = imx500->mode;
++
++	frm_length_default =
++		imx500_get_frame_length(mode, mode->framerate_default);
++
++	/* Default to no long exposure multiplier. */
++	imx500->long_exp_shift = 0;
++
++	/* Update limits and set FPS to default */
++	__v4l2_ctrl_modify_range(
++		imx500->vblank, 1,
++		((1 << IMX500_LONG_EXP_SHIFT_MAX) * IMX500_FRAME_LENGTH_MAX) -
++			mode->height,
++		IMX500_VBLANK_MIN, frm_length_default - mode->height);
++
++	/* Setting this will adjust the exposure limits as well. */
++	__v4l2_ctrl_s_ctrl(imx500->vblank, frm_length_default - mode->height);
++
++	hblank_min = mode->line_length_pix - mode->width;
++	__v4l2_ctrl_modify_range(imx500->hblank, hblank_min, hblank_min, 1,
++				 hblank_min);
++	__v4l2_ctrl_s_ctrl(imx500->hblank, hblank_min);
++}
++
++static int imx500_set_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct v4l2_mbus_framefmt *framefmt;
++	const struct imx500_mode *mode;
++	struct imx500 *imx500 = to_imx500(sd);
++
++	if (fmt->pad >= NUM_PADS)
++		return -EINVAL;
++
++	mutex_lock(&imx500->mutex);
++
++	const struct imx500_mode *mode_list = imx500_supported_modes;
++	unsigned int num_modes = ARRAY_SIZE(imx500_supported_modes);
++
++	/* Bayer order varies with flips */
++	fmt->format.code = imx500_get_format_code(imx500);
++
++	mode = v4l2_find_nearest_size(mode_list, num_modes, width, height,
++				      fmt->format.width, fmt->format.height);
++	imx500_update_image_pad_format(imx500, mode, fmt);
++	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
++		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
++		*framefmt = fmt->format;
++	} else if (imx500->mode != mode) {
++		imx500->mode = mode;
++		imx500->fmt_code = fmt->format.code;
++		imx500_set_framing_limits(imx500);
++	}
++
++	mutex_unlock(&imx500->mutex);
++
++	return 0;
++}
++
++static const struct v4l2_rect *
++__imx500_get_pad_crop(struct imx500 *imx500, struct v4l2_subdev_state *sd_state,
++		      unsigned int pad, enum v4l2_subdev_format_whence which)
++{
++	switch (which) {
++	case V4L2_SUBDEV_FORMAT_TRY:
++		return v4l2_subdev_get_try_crop(&imx500->sd, sd_state, pad);
++	case V4L2_SUBDEV_FORMAT_ACTIVE:
++		return &imx500->mode->crop;
++	}
++
++	return NULL;
++}
++
++static int imx500_get_selection(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *sd_state,
++				struct v4l2_subdev_selection *sel)
++{
++	switch (sel->target) {
++	case V4L2_SEL_TGT_CROP: {
++		struct imx500 *imx500 = to_imx500(sd);
++
++		mutex_lock(&imx500->mutex);
++		sel->r = *__imx500_get_pad_crop(imx500, sd_state, sel->pad,
++						sel->which);
++		mutex_unlock(&imx500->mutex);
++
++		return 0;
++	}
++
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++		sel->r.left = 0;
++		sel->r.top = 0;
++		sel->r.width = IMX500_NATIVE_WIDTH;
++		sel->r.height = IMX500_NATIVE_HEIGHT;
++
++		return 0;
++
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++		sel->r.left = IMX500_PIXEL_ARRAY_LEFT;
++		sel->r.top = IMX500_PIXEL_ARRAY_TOP;
++		sel->r.width = IMX500_PIXEL_ARRAY_WIDTH;
++		sel->r.height = IMX500_PIXEL_ARRAY_HEIGHT;
++
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
++/* Start streaming */
++static int imx500_start_streaming(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	const struct imx500_reg_list *reg_list;
++	int ret;
++
++	ret = pm_runtime_resume_and_get(&client->dev);
++	if (ret < 0)
++		return ret;
++
++	ret = cci_write(imx500->regmap, IMX500_REG_IMAGE_ONLY_MODE,
++			IMX500_IMAGE_ONLY_TRUE,
++			NULL);
++	if (ret) {
++		dev_err(&client->dev, "%s failed to set image mode\n",
++			__func__);
++		return ret;
++	}
++
++	if (!imx500->common_regs_written) {
++		ret = cci_multi_reg_write(imx500->regmap, mode_common_regs,
++					  ARRAY_SIZE(mode_common_regs), NULL);
++
++		if (ret) {
++			dev_err(&client->dev,
++				"%s failed to set common settings\n", __func__);
++			return ret;
++		}
++
++		imx500->common_regs_written = true;
++	}
++
++	/* Apply default values of current mode */
++	reg_list = &imx500->mode->reg_list;
++	ret = cci_multi_reg_write(imx500->regmap, reg_list->regs,
++				  reg_list->num_of_regs, NULL);
++	if (ret) {
++		dev_err(&client->dev, "%s failed to set mode\n", __func__);
++		return ret;
++	}
++
++	/* Apply customized values from user */
++	ret = __v4l2_ctrl_handler_setup(imx500->sd.ctrl_handler);
++
++	/* Disable any sensor startup frame drops. This must be written here! */
++	cci_write(imx500->regmap, CCI_REG8(0xD405), 0, &ret);
++
++	/* set stream on register */
++	cci_write(imx500->regmap, IMX500_REG_MODE_SELECT, IMX500_MODE_STREAMING,
++		  &ret);
++
++	return ret;
++}
++
++/* Stop streaming */
++static void imx500_stop_streaming(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	int ret;
++
++	/* set stream off register */
++	ret = cci_write(imx500->regmap, IMX500_REG_MODE_SELECT,
++			IMX500_MODE_STANDBY, NULL);
++	if (ret)
++		dev_err(&client->dev, "%s failed to set stream\n", __func__);
++
++	pm_runtime_mark_last_busy(&client->dev);
++	pm_runtime_put_autosuspend(&client->dev);
++}
++
++static int imx500_set_stream(struct v4l2_subdev *sd, int enable)
++{
++	struct imx500 *imx500 = to_imx500(sd);
++	int ret = 0;
++
++	mutex_lock(&imx500->mutex);
++	if (imx500->streaming == enable) {
++		mutex_unlock(&imx500->mutex);
++		return 0;
++	}
++
++	if (enable) {
++		/*
++		 * Apply default & customized values
++		 * and then start streaming.
++		 */
++		ret = imx500_start_streaming(imx500);
++		if (ret)
++			goto err_start_streaming;
++	} else {
++		imx500_stop_streaming(imx500);
++	}
++
++	imx500->streaming = enable;
++
++	/* vflip and hflip cannot change during streaming */
++	__v4l2_ctrl_grab(imx500->vflip, enable);
++	__v4l2_ctrl_grab(imx500->hflip, enable);
++
++	mutex_unlock(&imx500->mutex);
++
++	return ret;
++
++err_start_streaming:
++	mutex_unlock(&imx500->mutex);
++
++	return ret;
++}
++
++/* Power/clock management functions */
++static int imx500_power_on(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct imx500 *imx500 = to_imx500(sd);
++	int ret;
++
++	ret = regulator_bulk_enable(IMX500_NUM_SUPPLIES, imx500->supplies);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to enable regulators\n",
++			__func__);
++		return ret;
++	}
++
++	/* T4 - 1us
++	 * Ambiguous: Regulators rising to INCK start is specified by the datasheet
++	 * but also "Presence of INCK during Power off is acceptable"
++	 */
++	udelay(2);
++
++	ret = clk_prepare_enable(imx500->xclk);
++	if (ret) {
++		dev_err(&client->dev, "%s: failed to enable clock\n", __func__);
++		goto reg_off;
++	}
++
++	/* T5 - 0ms
++	 * Ambiguous: Regulators rising to XCLR rising is specified by the datasheet
++	 * as 0ms but also "XCLR pin should be set to 'High' after INCK supplied.".
++	 * T4 and T5 are shown as overlapping.
++	 */
++	gpiod_set_value_cansleep(imx500->reset_gpio, 1);
++
++	/* T7 - 9ms
++	 * "INCK start and CXLR rising till Send Streaming Command wait time"
++	 */
++	usleep_range(9000, 12000);
++
++	return 0;
++
++reg_off:
++	regulator_bulk_disable(IMX500_NUM_SUPPLIES, imx500->supplies);
++	return ret;
++}
++
++static int imx500_power_off(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct imx500 *imx500 = to_imx500(sd);
++
++	/* Datasheet specifies power down sequence as INCK disable, XCLR low,
++	 * regulator disable.  T1 (XCLR neg-edge to regulator disable) is specified
++	 * as 0us.
++	 *
++	 * Note, this is not the reverse order of power up.
++	 */
++	clk_disable_unprepare(imx500->xclk);
++	gpiod_set_value_cansleep(imx500->reset_gpio, 0);
++	regulator_bulk_disable(IMX500_NUM_SUPPLIES, imx500->supplies);
++
++	/* Force reprogramming of the common registers when powered up again. */
++	imx500->common_regs_written = false;
++
++	return 0;
++}
++
++static int imx500_get_regulators(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	unsigned int i;
++
++	for (i = 0; i < IMX500_NUM_SUPPLIES; i++)
++		imx500->supplies[i].supply = imx500_supply_name[i];
++
++	return devm_regulator_bulk_get(&client->dev, IMX500_NUM_SUPPLIES,
++				       imx500->supplies);
++}
++
++/* Verify chip ID */
++static int imx500_identify_module(struct imx500 *imx500)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	int ret;
++	u64 val;
++
++	ret = cci_read(imx500->regmap, IMX500_REG_CHIP_ID, &val, NULL);
++	if (ret) {
++		dev_err(&client->dev,
++			"failed to read chip id %x, with error %d\n",
++			IMX500_CHIP_ID, ret);
++		return ret;
++	}
++
++	if (val != IMX500_CHIP_ID) {
++		dev_err(&client->dev, "chip id mismatch: %x!=%llx\n",
++			IMX500_CHIP_ID, val);
++		return -EIO;
++	}
++
++	dev_info(&client->dev, "Device found is imx%llx\n", val);
++
++	return 0;
++}
++
++static const struct v4l2_subdev_core_ops imx500_core_ops = {
++	.subscribe_event = v4l2_ctrl_subdev_subscribe_event,
++	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
++};
++
++static const struct v4l2_subdev_video_ops imx500_video_ops = {
++	.s_stream = imx500_set_stream,
++};
++
++static const struct v4l2_subdev_pad_ops imx500_pad_ops = {
++	.enum_mbus_code = imx500_enum_mbus_code,
++	.get_fmt = imx500_get_pad_format,
++	.set_fmt = imx500_set_pad_format,
++	.get_selection = imx500_get_selection,
++	.enum_frame_size = imx500_enum_frame_size,
++};
++
++static const struct v4l2_subdev_ops imx500_subdev_ops = {
++	.core = &imx500_core_ops,
++	.video = &imx500_video_ops,
++	.pad = &imx500_pad_ops,
++};
++
++static const s64 imx500_link_freq_menu[] = {
++	IMX500_DEFAULT_LINK_FREQ,
++};
++
++/* Initialize control handlers */
++static int imx500_init_controls(struct imx500 *imx500)
++{
++	struct v4l2_ctrl_handler *ctrl_hdlr;
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++	struct v4l2_fwnode_device_properties props;
++	int ret;
++
++	ctrl_hdlr = &imx500->ctrl_handler;
++	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 16);
++	if (ret)
++		return ret;
++
++	mutex_init(&imx500->mutex);
++	ctrl_hdlr->lock = &imx500->mutex;
++
++	/* By default, PIXEL_RATE is read only */
++	imx500->pixel_rate = v4l2_ctrl_new_std(
++		ctrl_hdlr, &imx500_ctrl_ops, V4L2_CID_PIXEL_RATE,
++		IMX500_PIXEL_RATE, IMX500_PIXEL_RATE, 1, IMX500_PIXEL_RATE);
++
++	/* LINK_FREQ is also read only */
++	imx500->link_freq =
++		v4l2_ctrl_new_int_menu(ctrl_hdlr, &imx500_ctrl_ops,
++				       V4L2_CID_LINK_FREQ,
++				       ARRAY_SIZE(imx500_link_freq_menu) - 1, 0,
++				       imx500_link_freq_menu);
++	if (imx500->link_freq)
++		imx500->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	/*
++	 * Create the controls here, but mode specific limits are setup
++	 * in the imx500_set_framing_limits() call below.
++	 */
++	imx500->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx500_ctrl_ops,
++					   V4L2_CID_VBLANK, 0, 0xffff, 1, 0);
++	imx500->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx500_ctrl_ops,
++					   V4L2_CID_HBLANK, 0, 0xffff, 1, 0);
++
++	imx500->exposure = v4l2_ctrl_new_std(
++		ctrl_hdlr, &imx500_ctrl_ops, V4L2_CID_EXPOSURE,
++		IMX500_EXPOSURE_MIN, IMX500_EXPOSURE_MAX, IMX500_EXPOSURE_STEP,
++		IMX500_EXPOSURE_DEFAULT);
++
++	v4l2_ctrl_new_std(ctrl_hdlr, &imx500_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
++			  IMX500_ANA_GAIN_MIN, IMX500_ANA_GAIN_MAX,
++			  IMX500_ANA_GAIN_STEP, IMX500_ANA_GAIN_DEFAULT);
++
++	imx500->hflip = v4l2_ctrl_new_std(ctrl_hdlr, &imx500_ctrl_ops,
++					  V4L2_CID_HFLIP, 0, 1, 1, 0);
++	if (imx500->hflip)
++		imx500->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
++	imx500->vflip = v4l2_ctrl_new_std(ctrl_hdlr, &imx500_ctrl_ops,
++					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++	if (imx500->vflip)
++		imx500->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
++	v4l2_ctrl_new_custom(ctrl_hdlr, &imx500_notify_gains_ctrl, NULL);
++
++	if (ctrl_hdlr->error) {
++		ret = ctrl_hdlr->error;
++		dev_err(&client->dev, "%s control init failed (%d)\n", __func__,
++			ret);
++		goto error;
++	}
++
++	ret = v4l2_fwnode_device_parse(&client->dev, &props);
++	if (ret)
++		goto error;
++
++	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &imx500_ctrl_ops,
++					      &props);
++	if (ret)
++		goto error;
++
++	imx500->sd.ctrl_handler = ctrl_hdlr;
++
++	/* Setup exposure and frame/line length limits. */
++	imx500_set_framing_limits(imx500);
++
++	return 0;
++
++error:
++	v4l2_ctrl_handler_free(ctrl_hdlr);
++	mutex_destroy(&imx500->mutex);
++
++	return ret;
++}
++
++static void imx500_free_controls(struct imx500 *imx500)
++{
++	v4l2_ctrl_handler_free(imx500->sd.ctrl_handler);
++	mutex_destroy(&imx500->mutex);
++}
++
++static int imx500_check_hwcfg(struct device *dev)
++{
++	struct fwnode_handle *endpoint;
++	struct v4l2_fwnode_endpoint ep_cfg = { .bus_type =
++						       V4L2_MBUS_CSI2_DPHY };
++	int ret = -EINVAL;
++
++	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
++	if (!endpoint) {
++		dev_err(dev, "endpoint node not found\n");
++		return -EINVAL;
++	}
++
++	if (v4l2_fwnode_endpoint_alloc_parse(endpoint, &ep_cfg)) {
++		dev_err(dev, "could not parse endpoint\n");
++		goto error_out;
++	}
++
++	/* Check the number of MIPI CSI2 data lanes */
++	if (ep_cfg.bus.mipi_csi2.num_data_lanes != 2) {
++		dev_err(dev, "only 2 data lanes are currently supported\n");
++		goto error_out;
++	}
++
++	/* Check the link frequency set in device tree */
++	if (!ep_cfg.nr_of_link_frequencies) {
++		dev_err(dev, "link-frequency property not found in DT\n");
++		goto error_out;
++	}
++
++	if (ep_cfg.nr_of_link_frequencies != 1 ||
++	    ep_cfg.link_frequencies[0] != IMX500_DEFAULT_LINK_FREQ) {
++		dev_err(dev, "Link frequency not supported: %lld\n",
++			ep_cfg.link_frequencies[0]);
++		goto error_out;
++	}
++
++	ret = 0;
++
++error_out:
++	v4l2_fwnode_endpoint_free(&ep_cfg);
++	fwnode_handle_put(endpoint);
++
++	return ret;
++}
++
++static int imx500_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct imx500 *imx500;
++	int ret;
++
++	imx500 = devm_kzalloc(&client->dev, sizeof(*imx500), GFP_KERNEL);
++	if (!imx500)
++		return -ENOMEM;
++
++	imx500->regmap = devm_cci_regmap_init_i2c(client, 16);
++	if (IS_ERR(imx500->regmap))
++		return dev_err_probe(dev, PTR_ERR(imx500->regmap),
++				     "failed to initialise CCI\n");
++
++	v4l2_i2c_subdev_init(&imx500->sd, client, &imx500_subdev_ops);
++
++	/* Check the hardware configuration in device tree */
++	if (imx500_check_hwcfg(dev))
++		return -EINVAL;
++
++	/* Get system clock (xclk) */
++	imx500->xclk = devm_clk_get(dev, NULL);
++	if (IS_ERR(imx500->xclk))
++		return dev_err_probe(dev, PTR_ERR(imx500->xclk),
++				     "failed to get xclk\n");
++
++	imx500->xclk_freq = clk_get_rate(imx500->xclk);
++	if (imx500->xclk_freq != IMX500_XCLK_FREQ) {
++		dev_err(dev, "xclk frequency not supported: %d Hz\n",
++			imx500->xclk_freq);
++		return -EINVAL;
++	}
++
++	ret = imx500_get_regulators(imx500);
++	if (ret) {
++		dev_err(dev, "failed to get regulators\n");
++		return ret;
++	}
++
++	imx500->reset_gpio =
++		devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
++
++	/*
++	 * The sensor must be powered for imx500_identify_module()
++	 * to be able to read the CHIP_ID register
++	 */
++	ret = imx500_power_on(dev);
++	if (ret)
++		return ret;
++
++	pm_runtime_set_active(dev);
++	pm_runtime_get_noresume(dev);
++	pm_runtime_enable(dev);
++	pm_runtime_set_autosuspend_delay(dev, 5000);
++	pm_runtime_use_autosuspend(dev);
++
++	ret = imx500_identify_module(imx500);
++	if (ret)
++		goto error_power_off;
++
++	/* Initialize default format */
++	imx500_set_default_format(imx500);
++
++	/* This needs the pm runtime to be registered. */
++	ret = imx500_init_controls(imx500);
++	if (ret)
++		goto error_power_off;
++
++	/* Initialize subdev */
++	imx500->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
++			    V4L2_SUBDEV_FL_HAS_EVENTS;
++	imx500->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++
++	/* Initialize source pads */
++	imx500->pad.flags = MEDIA_PAD_FL_SOURCE;
++
++	ret = media_entity_pads_init(&imx500->sd.entity, NUM_PADS,
++				     &imx500->pad);
++	if (ret) {
++		dev_err(dev, "failed to init entity pads: %d\n", ret);
++		goto error_handler_free;
++	}
++
++	ret = v4l2_async_register_subdev_sensor(&imx500->sd);
++	if (ret < 0) {
++		dev_err(dev, "failed to register sensor sub-device: %d\n", ret);
++		goto error_media_entity;
++	}
++
++	pm_runtime_mark_last_busy(&client->dev);
++	pm_runtime_put_autosuspend(&client->dev);
++
++	return 0;
++
++error_media_entity:
++	media_entity_cleanup(&imx500->sd.entity);
++
++error_handler_free:
++	imx500_free_controls(imx500);
++
++error_power_off:
++	pm_runtime_disable(&client->dev);
++	pm_runtime_put_noidle(&client->dev);
++	imx500_power_off(&client->dev);
++
++	return ret;
++}
++
++static void imx500_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct imx500 *imx500 = to_imx500(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	media_entity_cleanup(&sd->entity);
++	imx500_free_controls(imx500);
++
++	pm_runtime_disable(&client->dev);
++	if (!pm_runtime_status_suspended(&client->dev))
++		imx500_power_off(&client->dev);
++	pm_runtime_set_suspended(&client->dev);
++}
++
++static const struct of_device_id imx500_dt_ids[] = {
++	{ .compatible = "sony,imx500" },
++	{ /* sentinel */ }
++};
++
++MODULE_DEVICE_TABLE(of, imx500_dt_ids);
++
++static const struct dev_pm_ops imx500_pm_ops = { SET_RUNTIME_PM_OPS(
++	imx500_power_off, imx500_power_on, NULL) };
++
++static struct i2c_driver imx500_i2c_driver = {
++	.driver = {
++		.name = "imx500",
++		.of_match_table	= imx500_dt_ids,
++		.pm = &imx500_pm_ops,
++	},
++	.probe = imx500_probe,
++	.remove = imx500_remove,
++};
++
++module_i2c_driver(imx500_i2c_driver);
++
++MODULE_AUTHOR("Naushir Patuck <naush@raspberrypi.com>");
++MODULE_DESCRIPTION("Sony IMX500 sensor driver");
++MODULE_LICENSE("GPL");

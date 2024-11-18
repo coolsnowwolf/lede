@@ -1,0 +1,187 @@
+From 980949f0ac79dc94a10ecacdfef7d2dc23b0c1d1 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 3 Jan 2023 16:35:59 +0000
+Subject: [PATCH 0405/1085] media: dw9807-vcm: Add regulator support to the
+ driver
+
+Uses the regulator notifier framework so that the current
+focus position will be restored whenever any user of the
+regulator powers it up. This means that should the VCM
+and sensor share a common regulator then starting the sensor
+will automatically restore the default position. If they
+have independent regulators then it will behave be powered
+up when the VCM subdev is opened.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/dw9807-vcm.c | 113 ++++++++++++++++++++++++++-------
+ 1 file changed, 90 insertions(+), 23 deletions(-)
+
+--- a/drivers/media/i2c/dw9807-vcm.c
++++ b/drivers/media/i2c/dw9807-vcm.c
+@@ -15,6 +15,7 @@
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
+ #include <media/v4l2-ctrls.h>
+ #include <media/v4l2-device.h>
+ 
+@@ -46,6 +47,9 @@
+ 
+ #define MAX_RETRY		10
+ 
++#define DW9807_PW_MIN_DELAY_US		100
++#define DW9807_PW_DELAY_RANGE_US	10
++
+ struct dw9807_cfg {
+ 	unsigned int idle_pos;
+ 	unsigned int default_pos;
+@@ -56,6 +60,8 @@ struct dw9807_device {
+ 	struct v4l2_subdev sd;
+ 	u16 current_val;
+ 	u16 idle_pos;
++	struct regulator *vdd;
++	struct notifier_block notifier;
+ };
+ 
+ static inline struct dw9807_device *sd_to_dw9807_vcm(
+@@ -157,6 +163,66 @@ static int dw9807_ramp(struct i2c_client
+ 	return ret;
+ }
+ 
++static int dw9807_active(struct dw9807_device *dw9807_dev)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&dw9807_dev->sd);
++	const char tx_data[2] = { DW9807_CTL_ADDR, 0x00 };
++	int ret;
++
++	/* Power on */
++	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
++	if (ret < 0) {
++		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
++		return ret;
++	}
++
++	return dw9807_ramp(client, dw9807_dev->idle_pos, dw9807_dev->current_val);
++}
++
++static int dw9807_standby(struct dw9807_device *dw9807_dev)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&dw9807_dev->sd);
++	const char tx_data[2] = { DW9807_CTL_ADDR, 0x01 };
++	int ret;
++
++	if (abs(dw9807_dev->current_val - dw9807_dev->idle_pos) > DW9807_CTRL_STEPS)
++		dw9807_ramp(client, dw9807_dev->current_val, dw9807_dev->idle_pos);
++
++	/* Power down */
++	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
++	if (ret < 0) {
++		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++static int dw9807_regulator_event(struct notifier_block *nb,
++				  unsigned long action, void *data)
++{
++	struct dw9807_device *dw9807_dev =
++		container_of(nb, struct dw9807_device, notifier);
++
++	if (action & REGULATOR_EVENT_ENABLE) {
++		/*
++		 * Initialisation delay between VDD low->high and the moment
++		 * when the i2c command is available.
++		 * From the datasheet, it should be 10ms + 2ms (max power
++		 * up sequence duration)
++		 */
++		usleep_range(DW9807_PW_MIN_DELAY_US,
++			     DW9807_PW_MIN_DELAY_US +
++			     DW9807_PW_DELAY_RANGE_US);
++
++		dw9807_active(dw9807_dev);
++	} else if (action & REGULATOR_EVENT_PRE_DISABLE) {
++		dw9807_standby(dw9807_dev);
++	}
++
++	return 0;
++}
++
+ static int dw9807_set_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct dw9807_device *dev_vcm = container_of(ctrl->handler,
+@@ -257,6 +323,24 @@ static int dw9807_probe(struct i2c_clien
+ 	if (dw9807_dev == NULL)
+ 		return -ENOMEM;
+ 
++	dw9807_dev->vdd = devm_regulator_get_optional(&client->dev, "VDD");
++	if (IS_ERR(dw9807_dev->vdd)) {
++		if (PTR_ERR(dw9807_dev->vdd) != -ENODEV)
++			return PTR_ERR(dw9807_dev->vdd);
++
++		dw9807_dev->vdd = NULL;
++	} else {
++		dw9807_dev->notifier.notifier_call = dw9807_regulator_event;
++
++		rval = regulator_register_notifier(dw9807_dev->vdd,
++						   &dw9807_dev->notifier);
++		if (rval) {
++			dev_err(&client->dev,
++				"could not register regulator notifier\n");
++			return rval;
++		}
++	}
++
+ 	match = i2c_of_match_device(dw9807_of_table, client);
+ 	if (match) {
+ 		cfg = (const struct dw9807_cfg *)match->data;
+@@ -320,20 +404,11 @@ static int __maybe_unused dw9807_vcm_sus
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+ 	struct dw9807_device *dw9807_dev = sd_to_dw9807_vcm(sd);
+-	const char tx_data[2] = { DW9807_CTL_ADDR, 0x01 };
+-	int ret;
+-
+-	if (abs(dw9807_dev->current_val - dw9807_dev->idle_pos) > DW9807_CTRL_STEPS)
+-		dw9807_ramp(client, dw9807_dev->current_val, dw9807_dev->idle_pos);
+ 
+-	/* Power down */
+-	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
+-	if (ret < 0) {
+-		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+-		return ret;
+-	}
++	if (dw9807_dev->vdd)
++		return regulator_disable(dw9807_dev->vdd);
+ 
+-	return 0;
++	return dw9807_standby(dw9807_dev);
+ }
+ 
+ /*
+@@ -347,19 +422,11 @@ static int  __maybe_unused dw9807_vcm_re
+ 	struct i2c_client *client = to_i2c_client(dev);
+ 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+ 	struct dw9807_device *dw9807_dev = sd_to_dw9807_vcm(sd);
+-	const char tx_data[2] = { DW9807_CTL_ADDR, 0x00 };
+-	int ret;
+-
+-	/* Power on */
+-	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
+-	if (ret < 0) {
+-		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
+-		return ret;
+-	}
+ 
+-	dw9807_ramp(client, dw9807_dev->idle_pos, dw9807_dev->current_val);
++	if (dw9807_dev->vdd)
++		return regulator_enable(dw9807_dev->vdd);
+ 
+-	return 0;
++	return dw9807_active(dw9807_dev);
+ }
+ 
+ MODULE_DEVICE_TABLE(of, dw9807_of_table);

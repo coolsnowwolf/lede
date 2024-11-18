@@ -1,0 +1,86 @@
+From 9c02b7cd40a89ba1339d32a46b6694276902b81a Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 26 Oct 2023 18:23:31 +0100
+Subject: [PATCH 0710/1085] drm/vc4: Free all stale dlists if channel is
+ disabled
+
+The code handling freeing stale dlists had 2 issues:
+- it disabled the interrupt as soon as the first EOF interrupt
+  occurred, even if it didn't clear all stale allocations, thus
+  leading to stale entries
+- It didn't free stale entries from disabled channels, so eg
+  "kmstest -c 0" could leave a stale alloc on channel 1 floating
+  around.
+
+Keep the interrupt enabled whilst there are any outstanding
+allocs, and discard those on disabled channels. This second
+channel does require us to call vc4_hvs_stop_channel from
+vc4_crtc_atomic_disable so that the channel actually gets stopped.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  2 ++
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 27 +++++++++++++++++++++++++--
+ 2 files changed, 27 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -661,6 +661,8 @@ static void vc4_crtc_atomic_disable(stru
+ 
+ 	vc4_crtc_disable(crtc, encoder, state, old_vc4_state->assigned_channel);
+ 
++	vc4_hvs_atomic_disable(crtc, state);
++
+ 	/*
+ 	 * Make sure we issue a vblank event after disabling the CRTC if
+ 	 * someone was waiting it.
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -697,7 +697,8 @@ static void vc4_hvs_schedule_dlist_sweep
+ 	if (!list_empty(&hvs->stale_dlist_entries))
+ 		queue_work(system_unbound_wq, &hvs->free_dlist_work);
+ 
+-	vc4_hvs_irq_clear_eof(hvs, channel);
++	if (list_empty(&hvs->stale_dlist_entries))
++		vc4_hvs_irq_clear_eof(hvs, channel);
+ 
+ 	spin_unlock_irqrestore(&hvs->mm_lock, flags);
+ }
+@@ -712,6 +713,27 @@ static bool vc4_hvs_frcnt_lte(u8 cnt1, u
+ 	return (s8)((cnt1 << 2) - (cnt2 << 2)) <= 0;
+ }
+ 
++bool vc4_hvs_check_channel_active(struct vc4_hvs *hvs, unsigned int fifo)
++{
++	struct vc4_dev *vc4 = hvs->vc4;
++	struct drm_device *drm = &vc4->base;
++	bool enabled = false;
++	int idx;
++
++	WARN_ON_ONCE(vc4->gen > VC4_GEN_6);
++
++	if (!drm_dev_enter(drm, &idx))
++		return 0;
++
++	if (vc4->gen >= VC4_GEN_6)
++		enabled = HVS_READ(SCALER6_DISPX_CTRL0(fifo)) & SCALER6_DISPX_CTRL0_ENB;
++	else
++		enabled = HVS_READ(SCALER_DISPCTRLX(fifo)) & SCALER_DISPCTRLX_ENABLE;
++
++	drm_dev_exit(idx);
++	return enabled;
++}
++
+ /*
+  * Some atomic commits (legacy cursor updates, mostly) will not wait for
+  * the next vblank and will just return once the commit has been pushed
+@@ -746,7 +768,8 @@ static void vc4_hvs_dlist_free_work(stru
+ 		u8 frcnt;
+ 
+ 		frcnt = vc4_hvs_get_fifo_frame_count(hvs, cur->channel);
+-		if (!vc4_hvs_frcnt_lte(cur->target_frame_count, frcnt))
++		if (vc4_hvs_check_channel_active(hvs, cur->channel) &&
++		    !vc4_hvs_frcnt_lte(cur->target_frame_count, frcnt))
+ 			continue;
+ 
+ 		vc4_hvs_free_dlist_entry_locked(hvs, cur);

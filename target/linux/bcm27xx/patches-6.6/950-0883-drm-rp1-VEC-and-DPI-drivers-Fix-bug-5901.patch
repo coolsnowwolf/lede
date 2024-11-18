@@ -1,0 +1,359 @@
+From 5f391cd6c90a53c7095bf22a308081d19a6cb8e2 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Sat, 3 Feb 2024 12:04:00 +0000
+Subject: [PATCH 0883/1085] drm: rp1: VEC and DPI drivers: Fix bug #5901
+
+Rework probe() to use devm_drm_dev_alloc(), embedding the DRM
+device in the DPI or VEC device as now seems to be recommended.
+
+Change order of resource allocation and driver initialization.
+This prevents it trying to write to an unmapped register during
+clean-up, which previously could crash.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c    | 74 +++++++++------------
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h    |  4 +-
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c |  4 +-
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c    | 82 +++++++++++-------------
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h    |  4 +-
+ drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c |  2 +-
+ 6 files changed, 75 insertions(+), 95 deletions(-)
+
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+@@ -268,7 +268,6 @@ static const u32 rp1dpi_formats[] = {
+ static int rp1dpi_platform_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+-	struct drm_device *drm;
+ 	struct rp1_dpi *dpi;
+ 	struct drm_bridge *bridge = NULL;
+ 	struct drm_panel *panel;
+@@ -287,24 +286,13 @@ static int rp1dpi_platform_probe(struct
+ 			return PTR_ERR(bridge);
+ 	}
+ 
+-	drm = drm_dev_alloc(&rp1dpi_driver, dev);
+-	if (IS_ERR(drm)) {
+-		dev_info(dev, "%s %d", __func__, (int)__LINE__);
+-		ret = PTR_ERR(drm);
++	dpi = devm_drm_dev_alloc(dev, &rp1dpi_driver, struct rp1_dpi, drm);
++	if (IS_ERR(dpi)) {
++		ret = PTR_ERR(dpi);
++		dev_err(dev, "%s devm_drm_dev_alloc %d", __func__, ret);
+ 		return ret;
+ 	}
+-	dpi = drmm_kzalloc(drm, sizeof(*dpi), GFP_KERNEL);
+-	if (!dpi) {
+-		dev_info(dev, "%s %d", __func__, (int)__LINE__);
+-		drm_dev_put(drm);
+-		return -ENOMEM;
+-	}
+-
+-	init_completion(&dpi->finished);
+-	dpi->drm = drm;
+ 	dpi->pdev = pdev;
+-	drm->dev_private = dpi;
+-	platform_set_drvdata(pdev, drm);
+ 
+ 	dpi->bus_fmt = default_bus_fmt;
+ 	ret = of_property_read_u32(dev->of_node, "default_bus_fmt", &dpi->bus_fmt);
+@@ -314,9 +302,8 @@ static int rp1dpi_platform_probe(struct
+ 			devm_ioremap_resource(dev,
+ 					      platform_get_resource(dpi->pdev, IORESOURCE_MEM, i));
+ 		if (IS_ERR(dpi->hw_base[i])) {
+-			ret = PTR_ERR(dpi->hw_base[i]);
+ 			dev_err(dev, "Error memory mapping regs[%d]\n", i);
+-			goto err_free_drm;
++			return PTR_ERR(dpi->hw_base[i]);
+ 		}
+ 	}
+ 	ret = platform_get_irq(dpi->pdev, 0);
+@@ -325,10 +312,8 @@ static int rp1dpi_platform_probe(struct
+ 				       IRQF_SHARED, "rp1-dpi", dpi);
+ 	if (ret) {
+ 		dev_err(dev, "Unable to request interrupt\n");
+-		ret = -EINVAL;
+-		goto err_free_drm;
++		return -EINVAL;
+ 	}
+-	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
+ 
+ 	for (i = 0; i < RP1DPI_NUM_CLOCKS; i++) {
+ 		static const char * const myclocknames[RP1DPI_NUM_CLOCKS] = {
+@@ -336,24 +321,30 @@ static int rp1dpi_platform_probe(struct
+ 		};
+ 		dpi->clocks[i] = devm_clk_get(dev, myclocknames[i]);
+ 		if (IS_ERR(dpi->clocks[i])) {
+-			ret = PTR_ERR(dpi->clocks[i]);
+-			goto err_free_drm;
++			dev_err(dev, "Unable to request clock %s\n", myclocknames[i]);
++			return PTR_ERR(dpi->clocks[i]);
+ 		}
+ 	}
+ 
+-	ret = drmm_mode_config_init(drm);
++	ret = drmm_mode_config_init(&dpi->drm);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+-	drm->mode_config.max_width  = 4096;
+-	drm->mode_config.max_height = 4096;
+-	drm->mode_config.preferred_depth = 32;
+-	drm->mode_config.prefer_shadow	 = 0;
+-	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
+-	drm->mode_config.funcs = &rp1dpi_mode_funcs;
+-	drm_vblank_init(drm, 1);
++	/* Now we have all our resources, finish driver initialization */
++	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
++	init_completion(&dpi->finished);
++	dpi->drm.dev_private = dpi;
++	platform_set_drvdata(pdev, &dpi->drm);
++
++	dpi->drm.mode_config.max_width  = 4096;
++	dpi->drm.mode_config.max_height = 4096;
++	dpi->drm.mode_config.preferred_depth = 32;
++	dpi->drm.mode_config.prefer_shadow   = 0;
++	dpi->drm.mode_config.quirk_addfb_prefer_host_byte_order = true;
++	dpi->drm.mode_config.funcs = &rp1dpi_mode_funcs;
++	drm_vblank_init(&dpi->drm, 1);
+ 
+-	ret = drm_simple_display_pipe_init(drm,
++	ret = drm_simple_display_pipe_init(&dpi->drm,
+ 					   &dpi->pipe,
+ 					   &rp1dpi_pipe_funcs,
+ 					   rp1dpi_formats,
+@@ -362,22 +353,19 @@ static int rp1dpi_platform_probe(struct
+ 	if (!ret)
+ 		ret = drm_simple_display_pipe_attach_bridge(&dpi->pipe, bridge);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+-	drm_mode_config_reset(drm);
++	drm_mode_config_reset(&dpi->drm);
+ 
+-	ret = drm_dev_register(drm, 0);
++	ret = drm_dev_register(&dpi->drm, 0);
+ 	if (ret)
+-		goto err_free_drm;
+-
+-	drm_fbdev_generic_setup(drm, 32);
++		return ret;
+ 
+-	dev_info(dev, "%s success\n", __func__);
++	drm_fbdev_generic_setup(&dpi->drm, 32);
+ 	return ret;
+ 
+-err_free_drm:
++done_err:
+ 	dev_err(dev, "%s fail %d\n", __func__, ret);
+-	drm_dev_put(drm);
+ 	return ret;
+ }
+ 
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+@@ -28,8 +28,8 @@
+ /* ---------------------------------------------------------------------- */
+ 
+ struct rp1_dpi {
+-	/* DRM and platform device pointers */
+-	struct drm_device *drm;
++	/* DRM base and platform device pointer */
++	struct drm_device drm;
+ 	struct platform_device *pdev;
+ 
+ 	/* Framework and helper objects */
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+@@ -451,7 +451,7 @@ void rp1dpi_hw_stop(struct rp1_dpi *dpi)
+ 	ctrl &= ~(DPI_DMA_CONTROL_ARM_MASK | DPI_DMA_CONTROL_AUTO_REPEAT_MASK);
+ 	rp1dpi_hw_write(dpi, DPI_DMA_CONTROL, ctrl);
+ 	if (!wait_for_completion_timeout(&dpi->finished, HZ / 10))
+-		drm_err(dpi->drm, "%s: timed out waiting for idle\n", __func__);
++		drm_err(&dpi->drm, "%s: timed out waiting for idle\n", __func__);
+ 	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_EN, 0);
+ }
+ 
+@@ -473,7 +473,7 @@ irqreturn_t rp1dpi_hw_isr(int irq, void
+ 		rp1dpi_hw_write(dpi, DPI_DMA_IRQ_FLAGS, u);
+ 		if (dpi) {
+ 			if (u & DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK)
+-				drm_err_ratelimited(dpi->drm,
++				drm_err_ratelimited(&dpi->drm,
+ 						    "Underflow! (panics=0x%08x)\n",
+ 						    rp1dpi_hw_read(dpi, DPI_DMA_PANICS));
+ 			if (u & DPI_DMA_IRQ_FLAGS_DMA_READY_MASK)
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.c
+@@ -361,29 +361,17 @@ static struct drm_driver rp1vec_driver =
+ static int rp1vec_platform_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+-	struct drm_device *drm;
+ 	struct rp1_vec *vec;
+ 	int i, ret;
+ 
+ 	dev_info(dev, __func__);
+-	drm = drm_dev_alloc(&rp1vec_driver, dev);
+-	if (IS_ERR(drm)) {
+-		ret = PTR_ERR(drm);
+-		dev_err(dev, "%s drm_dev_alloc %d", __func__, ret);
++	vec = devm_drm_dev_alloc(dev, &rp1vec_driver, struct rp1_vec, drm);
++	if (IS_ERR(vec)) {
++		ret = PTR_ERR(vec);
++		dev_err(dev, "%s devm_drm_dev_alloc %d", __func__, ret);
+ 		return ret;
+ 	}
+-
+-	vec = drmm_kzalloc(drm, sizeof(*vec), GFP_KERNEL);
+-	if (!vec) {
+-		dev_err(dev, "%s drmm_kzalloc failed", __func__);
+-		ret = -ENOMEM;
+-		goto err_free_drm;
+-	}
+-	init_completion(&vec->finished);
+-	vec->drm = drm;
+ 	vec->pdev = pdev;
+-	drm->dev_private = vec;
+-	platform_set_drvdata(pdev, drm);
+ 
+ 	for (i = 0; i < RP1VEC_NUM_HW_BLOCKS; i++) {
+ 		vec->hw_base[i] =
+@@ -392,7 +380,7 @@ static int rp1vec_platform_probe(struct
+ 		if (IS_ERR(vec->hw_base[i])) {
+ 			ret = PTR_ERR(vec->hw_base[i]);
+ 			dev_err(dev, "Error memory mapping regs[%d]\n", i);
+-			goto err_free_drm;
++			goto done_err;
+ 		}
+ 	}
+ 	ret = platform_get_irq(vec->pdev, 0);
+@@ -402,48 +390,53 @@ static int rp1vec_platform_probe(struct
+ 	if (ret) {
+ 		dev_err(dev, "Unable to request interrupt\n");
+ 		ret = -EINVAL;
+-		goto err_free_drm;
++		goto done_err;
+ 	}
+-	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
+ 
+ 	vec->vec_clock = devm_clk_get(dev, NULL);
+ 	if (IS_ERR(vec->vec_clock)) {
+ 		ret = PTR_ERR(vec->vec_clock);
+-		goto err_free_drm;
++		goto done_err;
+ 	}
+ 	ret = clk_prepare_enable(vec->vec_clock);
+ 
+-	ret = drmm_mode_config_init(drm);
++	ret = drmm_mode_config_init(&vec->drm);
+ 	if (ret)
+-		goto err_free_drm;
+-	drm->mode_config.max_width  = 800;
+-	drm->mode_config.max_height = 576;
+-	drm->mode_config.preferred_depth = 32;
+-	drm->mode_config.prefer_shadow	 = 0;
+-	//drm->mode_config.fbdev_use_iomem = false;
+-	drm->mode_config.quirk_addfb_prefer_host_byte_order = true;
+-	drm->mode_config.funcs = &rp1vec_mode_funcs;
+-	drm_vblank_init(drm, 1);
++		goto done_err;
++
++	/* Now we have all our resources, finish driver initialization */
++	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
++	init_completion(&vec->finished);
++	vec->drm.dev_private = vec;
++	platform_set_drvdata(pdev, &vec->drm);
++
++	vec->drm.mode_config.max_width  = 800;
++	vec->drm.mode_config.max_height = 576;
++	vec->drm.mode_config.preferred_depth = 32;
++	vec->drm.mode_config.prefer_shadow   = 0;
++	vec->drm.mode_config.quirk_addfb_prefer_host_byte_order = true;
++	vec->drm.mode_config.funcs = &rp1vec_mode_funcs;
++	drm_vblank_init(&vec->drm, 1);
+ 
+-	ret = drm_mode_create_tv_properties(drm, RP1VEC_SUPPORTED_TV_MODES);
++	ret = drm_mode_create_tv_properties(&vec->drm, RP1VEC_SUPPORTED_TV_MODES);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+-	drm_connector_init(drm, &vec->connector, &rp1vec_connector_funcs,
++	drm_connector_init(&vec->drm, &vec->connector, &rp1vec_connector_funcs,
+ 			   DRM_MODE_CONNECTOR_Composite);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+ 	vec->connector.interlace_allowed = true;
+ 	drm_connector_helper_add(&vec->connector, &rp1vec_connector_helper_funcs);
+ 
+ 	drm_object_attach_property(&vec->connector.base,
+-				   drm->mode_config.tv_mode_property,
++				   vec->drm.mode_config.tv_mode_property,
+ 				   (vec->connector.cmdline_mode.tv_mode_specified) ?
+ 					   vec->connector.cmdline_mode.tv_mode :
+ 					   DRM_MODE_TV_MODE_NTSC);
+ 
+-	ret = drm_simple_display_pipe_init(drm,
++	ret = drm_simple_display_pipe_init(&vec->drm,
+ 					   &vec->pipe,
+ 					   &rp1vec_pipe_funcs,
+ 					   rp1vec_formats,
+@@ -451,20 +444,19 @@ static int rp1vec_platform_probe(struct
+ 					   NULL,
+ 					   &vec->connector);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+-	drm_mode_config_reset(drm);
++	drm_mode_config_reset(&vec->drm);
+ 
+-	ret = drm_dev_register(drm, 0);
++	ret = drm_dev_register(&vec->drm, 0);
+ 	if (ret)
+-		goto err_free_drm;
++		goto done_err;
+ 
+-	drm_fbdev_generic_setup(drm, 32); /* the "32" is preferred BPP */
++	drm_fbdev_generic_setup(&vec->drm, 32);
+ 	return ret;
+ 
+-err_free_drm:
+-	dev_info(dev, "%s fail %d", __func__, ret);
+-	drm_dev_put(drm);
++done_err:
++	dev_err(dev, "%s fail %d", __func__, ret);
+ 	return ret;
+ }
+ 
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec.h
+@@ -31,8 +31,8 @@
+ /* ---------------------------------------------------------------------- */
+ 
+ struct rp1_vec {
+-	/* DRM and platform device pointers */
+-	struct drm_device *drm;
++	/* DRM base and platform device pointer */
++	struct drm_device drm;
+ 	struct platform_device *pdev;
+ 
+ 	/* Framework and helper objects */
+--- a/drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c
++++ b/drivers/gpu/drm/rp1/rp1-vec/rp1_vec_hw.c
+@@ -480,7 +480,7 @@ void rp1vec_hw_stop(struct rp1_vec *vec)
+ 	reinit_completion(&vec->finished);
+ 	VEC_WRITE(VEC_CONTROL, 0);
+ 	if (!wait_for_completion_timeout(&vec->finished, HZ / 10))
+-		drm_err(vec->drm, "%s: timed out waiting for idle\n", __func__);
++		drm_err(&vec->drm, "%s: timed out waiting for idle\n", __func__);
+ 	VEC_WRITE(VEC_IRQ_ENABLES, 0);
+ }
+ 

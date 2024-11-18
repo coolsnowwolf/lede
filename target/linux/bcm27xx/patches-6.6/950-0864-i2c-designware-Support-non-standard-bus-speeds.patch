@@ -1,0 +1,80 @@
+From cea76e589d797371e4259027451bc279a10d550a Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 16 Jan 2024 16:03:14 +0000
+Subject: [PATCH 0864/1085] i2c: designware: Support non-standard bus speeds
+
+Add support for non-standard bus speeds by treating them as detuned
+versions of the slowest standard speed not less than the requested
+speed.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/i2c/busses/i2c-designware-common.c | 27 ++++++++++++++++++++++
+ drivers/i2c/busses/i2c-designware-core.h   |  1 +
+ drivers/i2c/busses/i2c-designware-master.c |  2 +-
+ 3 files changed, 29 insertions(+), 1 deletion(-)
+
+--- a/drivers/i2c/busses/i2c-designware-common.c
++++ b/drivers/i2c/busses/i2c-designware-common.c
+@@ -318,6 +318,9 @@ void i2c_dw_adjust_bus_speed(struct dw_i
+ {
+ 	u32 acpi_speed = i2c_dw_acpi_round_bus_speed(dev->dev);
+ 	struct i2c_timings *t = &dev->timings;
++	u32 wanted_speed;
++	u32 legal_speed = 0;
++	int i;
+ 
+ 	/*
+ 	 * Find bus speed from the "clock-frequency" device property, ACPI
+@@ -329,6 +332,30 @@ void i2c_dw_adjust_bus_speed(struct dw_i
+ 		t->bus_freq_hz = max(t->bus_freq_hz, acpi_speed);
+ 	else
+ 		t->bus_freq_hz = I2C_MAX_FAST_MODE_FREQ;
++
++	wanted_speed = t->bus_freq_hz;
++
++	/* For unsupported speeds, scale down the lowest speed which is faster. */
++	for (i = 0; i < ARRAY_SIZE(supported_speeds); i++) {
++		/* supported speeds is in decreasing order */
++		if (wanted_speed == supported_speeds[i]) {
++			legal_speed = 0;
++			break;
++		}
++		if (wanted_speed > supported_speeds[i])
++			break;
++
++		legal_speed = supported_speeds[i];
++	}
++
++	if (legal_speed) {
++		/*
++		 * Pretend this was the requested speed, but preserve the preferred
++		 * speed so the clock counts can be scaled.
++		 */
++		t->bus_freq_hz = legal_speed;
++		dev->wanted_bus_speed = wanted_speed;
++	}
+ }
+ EXPORT_SYMBOL_GPL(i2c_dw_adjust_bus_speed);
+ 
+--- a/drivers/i2c/busses/i2c-designware-core.h
++++ b/drivers/i2c/busses/i2c-designware-core.h
+@@ -293,6 +293,7 @@ struct dw_i2c_dev {
+ 	u16			fp_lcnt;
+ 	u16			hs_hcnt;
+ 	u16			hs_lcnt;
++	u32			wanted_bus_speed;
+ 	int			(*acquire_lock)(void);
+ 	void			(*release_lock)(void);
+ 	int			semaphore_idx;
+--- a/drivers/i2c/busses/i2c-designware-master.c
++++ b/drivers/i2c/busses/i2c-designware-master.c
+@@ -41,7 +41,7 @@ static void i2c_dw_configure_fifo_master
+ static u16 clock_calc(struct dw_i2c_dev *dev, bool want_high)
+ {
+ 	struct i2c_timings *t = &dev->timings;
+-	u32 wanted_speed = t->bus_freq_hz;
++	u32 wanted_speed = dev->wanted_bus_speed ?: t->bus_freq_hz;
+ 	u32 clk_khz = i2c_dw_clk_rate(dev);
+ 	u32 extra_ns = want_high ? t->scl_fall_ns : t->scl_rise_ns;
+ 	u32 extra_cycles = (u32)div_u64((u64)clk_khz * extra_ns, 1000000);

@@ -1,0 +1,247 @@
+From d8d078e82e4aff1f1a9427ce7a0841c283e0dc53 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Fri, 15 Mar 2024 13:06:13 +0000
+Subject: [PATCH 0980/1085] drivers: mmc: add SD support for Command Queueing
+
+Application class A2 cards require CQ to be enabled to realise their
+stated performance figures. Add support to enable/disable card CQ via
+the Performance Enhancement extension register, and cater for the slight
+differences in command set versus eMMC.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/block.c  | 26 +++++++++++++++++-----
+ drivers/mmc/core/core.c   |  6 ++++-
+ drivers/mmc/core/sd.c     | 46 ++++++++++++++++++++++++++++++++++-----
+ drivers/mmc/core/sd_ops.c | 37 +++++++++++++++++++++++++++++++
+ drivers/mmc/core/sd_ops.h |  2 ++
+ include/linux/mmc/sd.h    | 12 ++++++++++
+ 6 files changed, 116 insertions(+), 13 deletions(-)
+
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -887,7 +887,10 @@ static int mmc_blk_part_switch_pre(struc
+ 
+ 	if ((part_type & mask) == rpmb) {
+ 		if (card->ext_csd.cmdq_en) {
+-			ret = mmc_cmdq_disable(card);
++			if (mmc_card_sd(card))
++				ret = mmc_sd_cmdq_disable(card);
++			else
++				ret = mmc_cmdq_disable(card);
+ 			if (ret)
+ 				return ret;
+ 		}
+@@ -906,8 +909,12 @@ static int mmc_blk_part_switch_post(stru
+ 
+ 	if ((part_type & mask) == rpmb) {
+ 		mmc_retune_unpause(card->host);
+-		if (card->reenable_cmdq && !card->ext_csd.cmdq_en)
+-			ret = mmc_cmdq_enable(card);
++		if (card->reenable_cmdq && !card->ext_csd.cmdq_en) {
++			if (mmc_card_sd(card))
++				ret = mmc_sd_cmdq_enable(card);
++			else
++				ret = mmc_cmdq_enable(card);
++		}
+ 	}
+ 
+ 	return ret;
+@@ -1103,7 +1110,10 @@ static void mmc_blk_issue_drv_op(struct
+ 	switch (mq_rq->drv_op) {
+ 	case MMC_DRV_OP_IOCTL:
+ 		if (card->ext_csd.cmdq_en) {
+-			ret = mmc_cmdq_disable(card);
++			if (mmc_card_sd(card))
++				ret = mmc_sd_cmdq_disable(card);
++			else
++				ret = mmc_cmdq_disable(card);
+ 			if (ret)
+ 				break;
+ 		}
+@@ -1121,8 +1131,12 @@ static void mmc_blk_issue_drv_op(struct
+ 		/* Always switch back to main area after RPMB access */
+ 		if (rpmb_ioctl)
+ 			mmc_blk_part_switch(card, 0);
+-		else if (card->reenable_cmdq && !card->ext_csd.cmdq_en)
+-			mmc_cmdq_enable(card);
++		else if (card->reenable_cmdq && !card->ext_csd.cmdq_en) {
++			if (mmc_card_sd(card))
++				mmc_sd_cmdq_enable(card);
++			else
++				mmc_cmdq_enable(card);
++		}
+ 		break;
+ 	case MMC_DRV_OP_BOOT_WP:
+ 		ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_BOOT_WP,
+--- a/drivers/mmc/core/core.c
++++ b/drivers/mmc/core/core.c
+@@ -556,7 +556,11 @@ int mmc_cqe_recovery(struct mmc_host *ho
+ 	mmc_poll_for_busy(host->card, MMC_CQE_RECOVERY_TIMEOUT, true, MMC_BUSY_IO);
+ 
+ 	memset(&cmd, 0, sizeof(cmd));
+-	cmd.opcode       = MMC_CMDQ_TASK_MGMT;
++	if (mmc_card_sd(host->card))
++		cmd.opcode = SD_CMDQ_TASK_MGMT;
++	else
++		cmd.opcode = MMC_CMDQ_TASK_MGMT;
++
+ 	cmd.arg          = 1; /* Discard entire queue */
+ 	cmd.flags        = MMC_RSP_R1B | MMC_CMD_AC;
+ 	cmd.flags       &= ~MMC_RSP_CRC; /* Ignore CRC */
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -1016,8 +1016,8 @@ static bool mmc_sd_card_using_v18(struct
+ 	       (SD_MODE_UHS_SDR50 | SD_MODE_UHS_SDR104 | SD_MODE_UHS_DDR50);
+ }
+ 
+-static int sd_write_ext_reg(struct mmc_card *card, u8 fno, u8 page, u16 offset,
+-			    u8 reg_data)
++int sd_write_ext_reg(struct mmc_card *card, u8 fno, u8 page, u16 offset,
++		     u8 reg_data)
+ {
+ 	struct mmc_host *host = card->host;
+ 	struct mmc_request mrq = {};
+@@ -1175,8 +1175,14 @@ static int sd_parse_ext_reg_perf(struct
+ 		card->ext_perf.feature_support |= SD_EXT_PERF_CACHE;
+ 
+ 	/* Command queue support indicated via queue depth bits (0 to 4). */
+-	if (reg_buf[6] & 0x1f)
++	if (reg_buf[6] & 0x1f) {
+ 		card->ext_perf.feature_support |= SD_EXT_PERF_CMD_QUEUE;
++		card->ext_csd.cmdq_depth = reg_buf[6] & 0x1f;
++		card->ext_csd.cmdq_support = true;
++		pr_debug("%s: Command Queue supported depth %u\n",
++			 mmc_hostname(card->host),
++			 card->ext_csd.cmdq_depth);
++	}
+ 
+ 	card->ext_perf.fno = fno;
+ 	card->ext_perf.page = page;
+@@ -1563,13 +1569,41 @@ cont:
+ 			goto free_card;
+ 	}
+ 
++	/* Enable command queueing if supported */
++	if (card->ext_csd.cmdq_support && host->caps2 & MMC_CAP2_CQE) {
++		/*
++		 * Right now the MMC block layer uses DCMDs to issue
++		 * cache-flush commands specific to eMMC devices.
++		 * Turning off DCMD support avoids generating Illegal Command
++		 * errors on SD, and flushing is instead done synchronously
++		 * by mmc_blk_issue_flush().
++		 */
++		host->caps2 &= ~MMC_CAP2_CQE_DCMD;
++		err = mmc_sd_cmdq_enable(card);
++		if (err && err != -EBADMSG)
++			goto free_card;
++		if (err) {
++			pr_warn("%s: Enabling CMDQ failed\n",
++				mmc_hostname(card->host));
++			card->ext_csd.cmdq_support = false;
++			card->ext_csd.cmdq_depth = 0;
++		}
++	}
++	card->reenable_cmdq = card->ext_csd.cmdq_en;
++
+ 	if (host->cqe_ops && !host->cqe_enabled) {
+ 		err = host->cqe_ops->cqe_enable(host, card);
+ 		if (!err) {
+ 			host->cqe_enabled = true;
+-			host->hsq_enabled = true;
+-			pr_info("%s: Host Software Queue enabled\n",
+-				mmc_hostname(host));
++
++			if (card->ext_csd.cmdq_en) {
++				pr_info("%s: Command Queue Engine enabled\n",
++					mmc_hostname(host));
++			} else {
++				host->hsq_enabled = true;
++				pr_info("%s: Host Software Queue enabled\n",
++					mmc_hostname(host));
++			}
+ 		}
+ 	}
+ 
+--- a/drivers/mmc/core/sd_ops.c
++++ b/drivers/mmc/core/sd_ops.c
+@@ -365,3 +365,40 @@ int mmc_app_sd_status(struct mmc_card *c
+ 
+ 	return 0;
+ }
++
++int sd_write_ext_reg(struct mmc_card *card, u8 fno, u8 page, u16 offset,
++		     u8 reg_data);
++
++static int mmc_sd_cmdq_switch(struct mmc_card *card, bool enable)
++{
++	int err;
++	u8 reg = 0;
++	/*
++	 * SD offers two command queueing modes - sequential (in-order) and
++	 * voluntary (out-of-order). Apps Class A2 performance is only
++	 * guaranteed for voluntary CQ (bit 1 = 0), so use that in preference
++	 * to sequential.
++	 */
++	if (enable)
++		reg = BIT(0);
++
++	/* Performance enhancement register byte 262 controls command queueing */
++	err = sd_write_ext_reg(card, card->ext_perf.fno, card->ext_perf.page,
++			       card->ext_perf.offset + 262, reg);
++	if (!err)
++		card->ext_csd.cmdq_en = enable;
++
++	return err;
++}
++
++int mmc_sd_cmdq_enable(struct mmc_card *card)
++{
++	return mmc_sd_cmdq_switch(card, true);
++}
++EXPORT_SYMBOL_GPL(mmc_sd_cmdq_enable);
++
++int mmc_sd_cmdq_disable(struct mmc_card *card)
++{
++	return mmc_sd_cmdq_switch(card, false);
++}
++EXPORT_SYMBOL_GPL(mmc_sd_cmdq_disable);
+--- a/drivers/mmc/core/sd_ops.h
++++ b/drivers/mmc/core/sd_ops.h
+@@ -21,6 +21,8 @@ int mmc_send_relative_addr(struct mmc_ho
+ int mmc_app_send_scr(struct mmc_card *card);
+ int mmc_app_sd_status(struct mmc_card *card, void *ssr);
+ int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card);
++int mmc_sd_cmdq_enable(struct mmc_card *card);
++int mmc_sd_cmdq_disable(struct mmc_card *card);
+ 
+ #endif
+ 
+--- a/include/linux/mmc/sd.h
++++ b/include/linux/mmc/sd.h
+@@ -29,6 +29,9 @@
+ #define SD_APP_OP_COND           41   /* bcr  [31:0] OCR         R3  */
+ #define SD_APP_SEND_SCR          51   /* adtc                    R1  */
+ 
++  /* class 1 */
++#define SD_CMDQ_TASK_MGMT        43   /* ac   See below          R1b */
++
+   /* class 11 */
+ #define SD_READ_EXTR_SINGLE      48   /* adtc [31:0]             R1  */
+ #define SD_WRITE_EXTR_SINGLE     49   /* adtc [31:0]             R1  */
+@@ -61,6 +64,15 @@
+  */
+ 
+ /*
++ * SD_CMDQ_TASK_MGMT argument format:
++ *
++ * [31:21] Reserved (0)
++ * [20:16] Task ID
++ * [15:4] Reserved (0)
++ * [3:0] Operation - 0x1 = abort all tasks, 0x2 = abort Task ID
++ */
++
++/*
+  * SCR field definitions
+  */
+ 

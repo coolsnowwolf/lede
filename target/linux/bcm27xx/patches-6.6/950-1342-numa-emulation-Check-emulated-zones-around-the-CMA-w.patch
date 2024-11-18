@@ -1,0 +1,95 @@
+From a27d76f4517d56a6471def2f76687e83fd2a7923 Mon Sep 17 00:00:00 2001
+From: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Date: Mon, 29 Jul 2024 16:53:18 +0100
+Subject: [PATCH 1342/1350] numa/emulation: Check emulated zones around the CMA
+ window
+
+... Make sure CMA zones do not straddle the emulated NUMA nodes ...
+
+Signed-off-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+---
+ drivers/base/numa_emulation.c |  5 +++++
+ include/linux/cma.h           | 10 ++++++++++
+ mm/cma.c                      | 36 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+)
+
+--- a/drivers/base/numa_emulation.c
++++ b/drivers/base/numa_emulation.c
+@@ -7,6 +7,7 @@
+  * Author: Maíra Canal <mcanal@igalia.com>
+  * Author: Tvrtko Ursulin <tursulin@igalia.com>
+  */
++#include <linux/cma.h>
+ #include <linux/memblock.h>
+ 
+ #include "numa_emulation.h"
+@@ -55,6 +56,10 @@ int __init numa_emu_init(void)
+ 		if (i == (emu_nodes - 1) && e != end)
+ 			e = end;
+ 
++		ret = cma_check_range(&s, &e);
++		if (ret)
++			return ret;
++
+ 		pr_info("Faking a node at [mem %pap-%pap]\n", &s, &e);
+ 		ret = numa_add_memblk(i, s, e + 1);
+ 		if (ret) {
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -56,4 +56,14 @@ extern bool cma_release(struct cma *cma,
+ extern int cma_for_each_area(int (*it)(struct cma *cma, void *data), void *data);
+ 
+ extern void cma_reserve_pages_on_error(struct cma *cma);
++
++#ifdef CONFIG_CMA
++extern int cma_check_range(u64 *start, u64 *end);
++#else
++static inline int cma_check_range(u64 *start, u64 *end)
++{
++	return 0;
++}
++#endif
++
+ #endif
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -587,3 +587,39 @@ int cma_for_each_area(int (*it)(struct c
+ 
+ 	return 0;
+ }
++
++struct cma_check_range_data {
++	u64 start, end;
++};
++
++static int check_range(struct cma *cma_, void *data)
++{
++	struct cma_check_range_data *range = data;
++	struct cma_check_range_data cma;
++	bool starts_in_range;
++	bool ends_in_range;
++
++	cma.start = cma_get_base(cma_);
++	cma.end = cma.start + cma_get_size(cma_) - 1;
++
++	starts_in_range = cma.start >= range->start && cma.start <= range->end;
++	ends_in_range = cma.end >= range->start && cma.end <= range->end;
++
++	if (starts_in_range == ends_in_range)
++		return 0;
++
++	pr_notice("CMA %s [%llx-%llx] straddles range [%llx-%llx]\n",
++		  cma_->name, cma.start, cma.end, range->start, range->end);
++
++	return -EINVAL;
++}
++
++int cma_check_range(u64 *start, u64 *end)
++{
++	struct cma_check_range_data range = {
++		.start = *start,
++		.end = *end,
++	};
++
++	return cma_for_each_area(check_range, &range);
++}

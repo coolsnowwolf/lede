@@ -1,0 +1,210 @@
+From 4fac21e3a4d37667a86c762064dad5f76c42c235 Mon Sep 17 00:00:00 2001
+From: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+Date: Thu, 15 Jul 2021 01:08:01 +0200
+Subject: [PATCH 0006/1085] drm/vc4: Allow setting the TV norm via module
+ parameter
+
+Similar to the ch7006 and nouveau drivers, introduce a "tv_mode" module
+parameter that allow setting the TV norm by specifying vc4.tv_norm= on
+the kernel command line.
+
+If that is not specified, try inferring one of the most popular norms
+(PAL or NTSC) from the video mode specified on the command line. On
+Raspberry Pis, this causes the most common cases of the sdtv_mode
+setting in config.txt to be respected.
+
+Signed-off-by: Mateusz Kwiatkowski <kfyatek+publicgit@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_vec.c | 108 +++++++++++++++++++++++++---------
+ 1 file changed, 81 insertions(+), 27 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_vec.c
++++ b/drivers/gpu/drm/vc4/vc4_vec.c
+@@ -67,7 +67,7 @@
+ #define VEC_CONFIG0_YCDELAY		BIT(4)
+ #define VEC_CONFIG0_RAMPEN		BIT(2)
+ #define VEC_CONFIG0_YCDIS		BIT(2)
+-#define VEC_CONFIG0_STD_MASK		GENMASK(1, 0)
++#define VEC_CONFIG0_STD_MASK		(VEC_CONFIG0_SECAM_STD | GENMASK(1, 0))
+ #define VEC_CONFIG0_NTSC_STD		0
+ #define VEC_CONFIG0_PAL_BDGHI_STD	1
+ #define VEC_CONFIG0_PAL_M_STD		2
+@@ -186,6 +186,8 @@
+ #define VEC_DAC_MISC_DAC_RST_N		BIT(0)
+ 
+ 
++static char *vc4_vec_tv_norm;
++
+ struct vc4_vec_variant {
+ 	u32 dac_config;
+ };
+@@ -353,6 +355,33 @@ static const struct drm_prop_enum_list l
+ 	{ VC4_VEC_TV_MODE_SECAM, "SECAM", },
+ };
+ 
++enum drm_connector_tv_mode
++vc4_vec_get_default_mode(struct drm_connector *connector)
++{
++	if (vc4_vec_tv_norm) {
++		int ret;
++
++		ret = drm_get_tv_mode_from_name(vc4_vec_tv_norm, strlen(vc4_vec_tv_norm));
++		if (ret >= 0)
++			return ret;
++	} else if (connector->cmdline_mode.specified &&
++		   ((connector->cmdline_mode.refresh_specified &&
++		     (connector->cmdline_mode.refresh == 25 ||
++		      connector->cmdline_mode.refresh == 50)) ||
++		    (!connector->cmdline_mode.refresh_specified &&
++		     (connector->cmdline_mode.yres == 288 ||
++		      connector->cmdline_mode.yres == 576)))) {
++		/*
++		 * no explicitly specified TV norm; use PAL if a mode that
++		 * looks like PAL has been specified on the command line
++		 */
++		return DRM_MODE_TV_MODE_PAL;
++	}
++
++	/* in all other cases, default to NTSC */
++	return DRM_MODE_TV_MODE_NTSC;
++}
++
+ static enum drm_connector_status
+ vc4_vec_connector_detect(struct drm_connector *connector, bool force)
+ {
+@@ -363,6 +392,10 @@ static void vc4_vec_connector_reset(stru
+ {
+ 	drm_atomic_helper_connector_reset(connector);
+ 	drm_atomic_helper_connector_tv_reset(connector);
++
++	/* preserve TV standard */
++	if (connector->state)
++		connector->state->tv.mode = vc4_vec_get_default_mode(connector);
+ }
+ 
+ static int
+@@ -414,48 +447,52 @@ vc4_vec_connector_set_property(struct dr
+ }
+ 
+ static int
+-vc4_vec_connector_get_property(struct drm_connector *connector,
+-			       const struct drm_connector_state *state,
+-			       struct drm_property *property,
+-			       uint64_t *val)
++vc4_vec_generic_tv_mode_to_legacy(enum drm_connector_tv_mode tv_mode)
+ {
+-	struct vc4_vec *vec = connector_to_vc4_vec(connector);
+-
+-	if (property != vec->legacy_tv_mode_property)
+-		return -EINVAL;
+-
+-	switch (state->tv.mode) {
++	switch (tv_mode) {
+ 	case DRM_MODE_TV_MODE_NTSC:
+-		*val = VC4_VEC_TV_MODE_NTSC;
+-		break;
++		return VC4_VEC_TV_MODE_NTSC;
+ 
+ 	case DRM_MODE_TV_MODE_NTSC_443:
+-		*val = VC4_VEC_TV_MODE_NTSC_443;
+-		break;
++		return VC4_VEC_TV_MODE_NTSC_443;
+ 
+ 	case DRM_MODE_TV_MODE_NTSC_J:
+-		*val = VC4_VEC_TV_MODE_NTSC_J;
+-		break;
++		return VC4_VEC_TV_MODE_NTSC_J;
+ 
+ 	case DRM_MODE_TV_MODE_PAL:
+-		*val = VC4_VEC_TV_MODE_PAL;
+-		break;
++		return VC4_VEC_TV_MODE_PAL;
+ 
+ 	case DRM_MODE_TV_MODE_PAL_M:
+-		*val = VC4_VEC_TV_MODE_PAL_M;
+-		break;
++		return VC4_VEC_TV_MODE_PAL_M;
+ 
+ 	case DRM_MODE_TV_MODE_PAL_N:
+-		*val = VC4_VEC_TV_MODE_PAL_N;
+-		break;
++		return VC4_VEC_TV_MODE_PAL_N;
+ 
+ 	case DRM_MODE_TV_MODE_SECAM:
+-		*val = VC4_VEC_TV_MODE_SECAM;
+-		break;
++		return VC4_VEC_TV_MODE_SECAM;
+ 
+ 	default:
+ 		return -EINVAL;
+ 	}
++}
++
++static int
++vc4_vec_connector_get_property(struct drm_connector *connector,
++			       const struct drm_connector_state *state,
++			       struct drm_property *property,
++			       uint64_t *val)
++{
++	struct vc4_vec *vec = connector_to_vc4_vec(connector);
++	enum vc4_vec_tv_mode_id legacy_mode;
++
++	if (property != vec->legacy_tv_mode_property)
++		return -EINVAL;
++
++	legacy_mode = vc4_vec_generic_tv_mode_to_legacy(state->tv.mode);
++	if (legacy_mode < 0)
++		return legacy_mode;
++
++	*val = legacy_mode;
+ 
+ 	return 0;
+ }
+@@ -478,6 +515,8 @@ static const struct drm_connector_helper
+ static int vc4_vec_connector_init(struct drm_device *dev, struct vc4_vec *vec)
+ {
+ 	struct drm_connector *connector = &vec->connector;
++	enum vc4_vec_tv_mode_id legacy_default_mode;
++	enum drm_connector_tv_mode default_mode;
+ 	struct drm_property *prop;
+ 	int ret;
+ 
+@@ -490,9 +529,17 @@ static int vc4_vec_connector_init(struct
+ 
+ 	drm_connector_helper_add(connector, &vc4_vec_connector_helper_funcs);
+ 
++	default_mode = vc4_vec_get_default_mode(connector);
++	if (default_mode < 0)
++		return default_mode;
++
+ 	drm_object_attach_property(&connector->base,
+ 				   dev->mode_config.tv_mode_property,
+-				   DRM_MODE_TV_MODE_NTSC);
++				   default_mode);
++
++	legacy_default_mode = vc4_vec_generic_tv_mode_to_legacy(default_mode);
++	if (legacy_default_mode < 0)
++		return legacy_default_mode;
+ 
+ 	prop = drm_property_create_enum(dev, 0, "mode",
+ 					legacy_tv_mode_names,
+@@ -501,7 +548,7 @@ static int vc4_vec_connector_init(struct
+ 		return -ENOMEM;
+ 	vec->legacy_tv_mode_property = prop;
+ 
+-	drm_object_attach_property(&connector->base, prop, VC4_VEC_TV_MODE_NTSC);
++	drm_object_attach_property(&connector->base, prop, legacy_default_mode);
+ 
+ 	drm_connector_attach_encoder(connector, &vec->encoder.base);
+ 
+@@ -825,3 +872,10 @@ struct platform_driver vc4_vec_driver =
+ 		.of_match_table = vc4_vec_dt_match,
+ 	},
+ };
++
++module_param_named(tv_norm, vc4_vec_tv_norm, charp, 0600);
++MODULE_PARM_DESC(tv_norm, "Default TV norm.\n"
++		 "\t\tSupported: NTSC, NTSC-J, NTSC-443, PAL, PAL-M, PAL-N,\n"
++		 "\t\t\tPAL60, SECAM.\n"
++		 "\t\tDefault: PAL if a 50 Hz mode has been set via video=,\n"
++		 "\t\t\tNTSC otherwise");

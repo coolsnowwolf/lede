@@ -1,0 +1,43 @@
+From 22b6295e3b0818583bf523d4b14ca7e0308d6861 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Thu, 13 Jun 2024 15:05:40 +0100
+Subject: [PATCH 1134/1135] drivers: mmc: core: handle card-removal when
+ running CQE recovery
+
+Recovery claims the MMC card so the card-detect work gets significantly
+delayed - leading to lots of error recovery loops that can never do
+anything but fail.
+
+Explicitly detect the card after CQE has halted and bail if it's not
+there.
+
+Also ratelimit a not-very-descriptive warning - one occurrence in dmesg
+is enough to signal that something is amiss.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/core.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/mmc/core/core.c
++++ b/drivers/mmc/core/core.c
+@@ -543,10 +543,18 @@ int mmc_cqe_recovery(struct mmc_host *ho
+ 	 * Recovery is expected seldom, if at all, but it reduces performance,
+ 	 * so make sure it is not completely silent.
+ 	 */
+-	pr_warn("%s: running CQE recovery\n", mmc_hostname(host));
++	pr_warn_ratelimited("%s: running CQE recovery\n", mmc_hostname(host));
+ 
+ 	host->cqe_ops->cqe_recovery_start(host);
+ 
++	err = mmc_detect_card_removed(host);
++	if (err) {
++		host->cqe_ops->cqe_recovery_finish(host);
++		host->cqe_ops->cqe_off(host);
++		mmc_retune_release(host);
++		return err;
++	}
++
+ 	memset(&cmd, 0, sizeof(cmd));
+ 	cmd.opcode       = MMC_STOP_TRANSMISSION;
+ 	cmd.flags        = MMC_RSP_R1B | MMC_CMD_AC;
