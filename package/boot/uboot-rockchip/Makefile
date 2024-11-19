@@ -1,3 +1,4 @@
+
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -36,6 +37,13 @@ define U-Boot/nanopi-r2c-rk3328
   NAME:=NanoPi R2C
   BUILD_DEVICES:= \
     friendlyarm_nanopi-r2c
+endef
+
+define U-Boot/nanopi-r2c-plus-rk3328
+  $(U-Boot/rk3328/Default)
+  NAME:=NanoPi R2C Plus
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r2c-plus
 endef
 
 define U-Boot/nanopi-r2s-rk3328
@@ -406,6 +414,7 @@ UBOOT_TARGETS := \
   guangmiao-g4c-rk3399 \
   xiaobao-nas-v1-rk3399 \
   nanopi-r2c-rk3328 \
+  nanopi-r2c-plus-rk3328 \
   nanopi-r2s-rk3328 \
   nanopi-r2s-plus-rk3328 \
   orangepi-r1-plus-rk3328 \
