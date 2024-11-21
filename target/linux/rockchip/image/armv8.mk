@@ -154,6 +154,16 @@ define Device/friendlyarm_nanopi-r2c
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r2c
 
+define Device/friendlyarm_nanopi-r2c-plus
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R2C Plus
+  SOC := rk3328
+  UBOOT_DEVICE_NAME := nanopi-r2c-plus-rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-rtl8152
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r2c-plus
+
 define Device/friendlyarm_nanopi-r2s
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2S
@@ -270,6 +280,16 @@ define Device/hinlink_opc-h28k
   DEVICE_PACKAGES := kmod-r8168 -urngd
 endef
 TARGET_DEVICES += hinlink_opc-h28k
+
+define Device/hinlink_opc-h29k
+  DEVICE_VENDOR := HINLINK
+  DEVICE_MODEL := OPC-H29K
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := evb-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800 kmod-fb-tft-st7789v wpad-openssl -urngd
+endef
+TARGET_DEVICES += hinlink_opc-h29k
 
 define Device/hinlink_opc-h66k
 $(call Device/hinlink_common)

@@ -23,7 +23,7 @@ define KernelPackage/usb-net-rtl8152-vendor
   VERSION:=$(LINUX_VERSION)+$(PKG_VERSION)-$(BOARD)-$(PKG_RELEASE)
   TITLE:=Realtek RTL8152/RTL8153/RTL8154/RTL8156/RTL8157 driver
   SUBMENU:=USB Support
-  DEPENDS:=+kmod-usb-net
+  DEPENDS:=+kmod-usb-net +LINUX_6_12:kmod-libphy
   FILES:=$(PKG_BUILD_DIR)/r8152.ko
   AUTOLOAD:=$(call AutoProbe,r8152)
   CONFLICTS:=kmod-usb-net-rtl8152

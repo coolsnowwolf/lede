@@ -32,6 +32,7 @@ define U-Boot/evb-rk3528
   BUILD_DEVICES:= \
     armsom_sige1 \
     hinlink_opc-h28k \
+    hinlink_opc-h29k \
     hinlink_opc-ht2 \
     radxa_e20c \
     widora_mangopi-m28k \

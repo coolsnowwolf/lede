@@ -1,0 +1,134 @@
+From 0d37e6edc09c99e683dd91ca0e83bbc0df8477b3 Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sun, 16 Jul 2017 16:56:10 +0200
+Subject: lib: add uevent_next_seqnum()
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ include/linux/kobject.h |  5 +++++
+ lib/kobject_uevent.c    | 37 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+--- a/include/linux/kobject.h
++++ b/include/linux/kobject.h
+@@ -38,7 +38,7 @@ extern char uevent_helper[];
+ #endif
+ 
+ /* counter to tag the uevent, read only except for the kobject core */
+-extern atomic64_t uevent_seqnum;
++extern u64 uevent_seqnum;
+ 
+ /*
+  * The actions here must match the index to the string array
+--- a/kernel/ksysfs.c
++++ b/kernel/ksysfs.c
+@@ -39,7 +39,7 @@ static struct kobj_attribute _name##_att
+ static ssize_t uevent_seqnum_show(struct kobject *kobj,
+ 				  struct kobj_attribute *attr, char *buf)
+ {
+-	return sysfs_emit(buf, "%llu\n", (u64)atomic64_read(&uevent_seqnum));
++	return sysfs_emit(buf, "%llu\n", (unsigned long long)uevent_seqnum);
+ }
+ KERNEL_ATTR_RO(uevent_seqnum);
+ 
+--- a/lib/kobject_uevent.c
++++ b/lib/kobject_uevent.c
+@@ -30,7 +30,7 @@
+ #include <net/net_namespace.h>
+ 
+ 
+-atomic64_t uevent_seqnum;
++u64 uevent_seqnum;
+ #ifdef CONFIG_UEVENT_HELPER
+ char uevent_helper[UEVENT_HELPER_PATH_LEN] = CONFIG_UEVENT_HELPER_PATH;
+ #endif
+@@ -42,10 +42,11 @@ struct uevent_sock {
+ 
+ #ifdef CONFIG_NET
+ static LIST_HEAD(uevent_sock_list);
+-/* This lock protects uevent_sock_list */
+-static DEFINE_MUTEX(uevent_sock_mutex);
+ #endif
+ 
++/* This lock protects uevent_seqnum and uevent_sock_list */
++static DEFINE_MUTEX(uevent_sock_mutex);
++
+ /* the strings here must match the enum in include/linux/kobject.h */
+ static const char *kobject_actions[] = {
+ 	[KOBJ_ADD] =		"add",
+@@ -178,6 +179,18 @@ out:
+ 	return r;
+ }
+ 
++u64 uevent_next_seqnum(void)
++{
++	u64 seq;
++
++	mutex_lock(&uevent_sock_mutex);
++	seq = ++uevent_seqnum;
++	mutex_unlock(&uevent_sock_mutex);
++
++	return seq;
++}
++EXPORT_SYMBOL_GPL(uevent_next_seqnum);
++
+ /**
+  * kobject_synth_uevent - send synthetic uevent with arguments
+  *
+@@ -314,7 +327,6 @@ static int uevent_net_broadcast_untagged
+ 	int retval = 0;
+ 
+ 	/* send netlink message */
+-	mutex_lock(&uevent_sock_mutex);
+ 	list_for_each_entry(ue_sk, &uevent_sock_list, list) {
+ 		struct sock *uevent_sock = ue_sk->sk;
+ 
+@@ -334,7 +346,6 @@ static int uevent_net_broadcast_untagged
+ 		if (retval == -ENOBUFS || retval == -ESRCH)
+ 			retval = 0;
+ 	}
+-	mutex_unlock(&uevent_sock_mutex);
+ 	consume_skb(skb);
+ 
+ 	return retval;
+@@ -599,14 +610,16 @@ int kobject_uevent_env(struct kobject *k
+ 		break;
+ 	}
+ 
++	mutex_lock(&uevent_sock_mutex);
+ 	/* we will send an event, so request a new sequence number */
+-	retval = add_uevent_var(env, "SEQNUM=%llu",
+-				atomic64_inc_return(&uevent_seqnum));
+-	if (retval)
++	retval = add_uevent_var(env, "SEQNUM=%llu", ++uevent_seqnum);
++	if (retval) {
++		mutex_unlock(&uevent_sock_mutex);
+ 		goto exit;
+-
++	}
+ 	retval = kobject_uevent_net_broadcast(kobj, env, action_string,
+ 					      devpath);
++	mutex_unlock(&uevent_sock_mutex);
+ 
+ #ifdef CONFIG_UEVENT_HELPER
+ 	/* call uevent_helper, usually only enabled during early boot */
+@@ -702,8 +715,7 @@ static int uevent_net_broadcast(struct s
+ 	int ret;
+ 
+ 	/* bump and prepare sequence number */
+-	ret = snprintf(buf, sizeof(buf), "SEQNUM=%llu",
+-		       atomic64_inc_return(&uevent_seqnum));
++	ret = snprintf(buf, sizeof(buf), "SEQNUM=%llu", ++uevent_seqnum);
+ 	if (ret < 0 || (size_t)ret >= sizeof(buf))
+ 		return -ENOMEM;
+ 	ret++;
+@@ -757,7 +769,9 @@ static int uevent_net_rcv_skb(struct sk_
+ 		return -EPERM;
+ 	}
+ 
++	mutex_lock(&uevent_sock_mutex);
+ 	ret = uevent_net_broadcast(net->uevent_sock->sk, skb, extack);
++	mutex_unlock(&uevent_sock_mutex);
+ 
+ 	return ret;
+ }
