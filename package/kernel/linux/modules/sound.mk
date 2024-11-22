@@ -355,13 +355,15 @@ define KernelPackage/sound-hda-core
 	CONFIG_SND_HDA_CORE \
 	CONFIG_SND_HDA_HWDEP=y \
 	CONFIG_SND_HDA_RECONFIG=n \
+	CONFIG_SND_HDA_SCODEC_COMPONENT=y \
 	CONFIG_SND_HDA_INPUT_BEEP=n \
 	CONFIG_SND_HDA_PATCH_LOADER=n \
 	CONFIG_SND_HDA_GENERIC
   FILES:= \
 	$(LINUX_DIR)/sound/hda/snd-hda-core.ko \
 	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec.ko \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko \
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-scodec-component.ko@ge6.12
   AUTOLOAD:=$(call AutoProbe,snd-hda-core snd-hda-codec snd-hda-codec-generic)
   $(call AddDepends/sound,+kmod-regmap-core)
 endef
