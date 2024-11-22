@@ -343,7 +343,7 @@ $(eval $(call KernelPackage,nls-utf8))
 define KernelPackage/nls-ucs2-utils
   SUBMENU:=Native Language Support
   TITLE:=UCS-2 common library
-  DEPENDS+=@LINUX_6_6
+  DEPENDS+=@LINUX_6_6||LINUX_6_12
   HIDDEN:=1
   KCONFIG:=CONFIG_NLS_UCS2_UTILS
   FILES:=$(LINUX_DIR)/fs/nls/nls_ucs2_utils.ko
