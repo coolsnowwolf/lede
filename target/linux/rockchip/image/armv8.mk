@@ -43,6 +43,16 @@ define Device/armsom_sige3
 endef
 TARGET_DEVICES += armsom_sige3
 
+define Device/armsom_sige5
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := Sige5
+  SOC := rk3576
+  DEVICE_DTS := rockchip/rk3576-armsom-sige5
+  UBOOT_DEVICE_NAME := evb-rk3576
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += armsom_sige5
+
 define Device/armsom_sige7
   DEVICE_VENDOR := ArmSoM
   DEVICE_MODEL := Sige7

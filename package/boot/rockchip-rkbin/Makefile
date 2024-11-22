@@ -9,9 +9,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/rockchip-linux/rkbin.git
-PKG_SOURCE_DATE:=2024-02-22
-PKG_SOURCE_VERSION:=a2a0b89b6c8c612dca5ed9ed8a68db8a07f68bc0
-PKG_MIRROR_HASH:=49ffeae00fd5b6f53c94ae43d5377325e9284bd6ec5be3ab388512cccae7babd
+PKG_SOURCE_DATE:=2024-10-23
+PKG_SOURCE_VERSION:=7c35e21a8529b3758d1f051d1a5dc62aae934b2b
+PKG_MIRROR_HASH:=f1713c9d329ee2d6610dafd079f842d43ab2a5e8b55e0eb449a777fdaf6d8720
 
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
@@ -38,7 +38,7 @@ endef
 define rkbin/rk3328
   DEPENDS:=@TARGET_rockchip_armv8
   ATF:=rk33/rk322xh_bl31_v1.49.elf
-  TPL:=rk33/rk3328_ddr_333MHz_v1.19.bin
+  TPL:=rk33/rk3328_ddr_333MHz_v1.20.bin
   SPL:=rk33/rk322xh_miniloader_v2.50.bin
 endef
 
@@ -52,25 +52,31 @@ endef
 define rkbin/rk3528
   DEPENDS:=@TARGET_rockchip_armv8
   ATF:=rk35/rk3528_bl31_v1.17.elf
-  TPL:=rk35/rk3528_ddr_1056MHz_v1.09.bin
+  TPL:=rk35/rk3528_ddr_1056MHz_v1.10.bin
 endef
 
 define rkbin/rk3566
   DEPENDS:=@TARGET_rockchip_armv8
   ATF:=rk35/rk3568_bl31_v1.44.elf
-  TPL:=rk35/rk3566_ddr_1056MHz_v1.21.bin
+  TPL:=rk35/rk3566_ddr_1056MHz_v1.23.bin
 endef
 
 define rkbin/rk3568
   DEPENDS:=@TARGET_rockchip_armv8
   ATF:=rk35/rk3568_bl31_v1.44.elf
-  TPL:=rk35/rk3568_ddr_1560MHz_v1.21.bin
+  TPL:=rk35/rk3568_ddr_1560MHz_v1.23.bin
+endef
+
+define rkbin/rk3576
+  DEPENDS:=@TARGET_rockchip_armv8
+  ATF:=rk35/rk3576_bl31_v1.12.elf
+  TPL:=rk35/rk3576_ddr_lp4_2112MHz_lp5_2736MHz_v1.08.bin
 endef
 
 define rkbin/rk3588
   DEPENDS:=@TARGET_rockchip_armv8
-  ATF:=rk35/rk3588_bl31_v1.45.elf
-  TPL:=rk35/rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
+  ATF:=rk35/rk3588_bl31_v1.47.elf
+  TPL:=rk35/rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.18.bin
 endef
 
 VARIANTS:= \
@@ -79,6 +85,7 @@ VARIANTS:= \
 	rk3528 \
 	rk3566 \
 	rk3568 \
+	rk3576 \
 	rk3588
 
 define Build/Compile
