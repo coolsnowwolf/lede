@@ -259,6 +259,13 @@ define U-Boot/generic-rk3568
     seewo_sv21
 endef
 
+define U-Boot/mmbox-anas3035-rk3568
+  $(U-Boot/rk3568/Default)
+  NAME:=MMBOX ANAS3035
+  BUILD_DEVICES:= \
+    mmbox_anas3035
+endef
+
 define U-Boot/nanopi-r5c-rk3568
   $(U-Boot/rk3568/Default)
   NAME:=NanoPi R5C
@@ -385,6 +392,7 @@ UBOOT_TARGETS := \
   generic-rk3568 \
   fastrhino-r66s-rk3568 \
   fastrhino-r68s-rk3568 \
+  mmbox-anas3035-rk3568 \
   nanopi-r5c-rk3568 \
   nanopi-r5s-rk3568 \
   photonicat-rk3568 \
