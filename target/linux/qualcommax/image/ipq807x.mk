@@ -46,6 +46,20 @@ define Device/aliyun_ap8220
 endef
 TARGET_DEVICES += aliyun_ap8220
 
+define Device/arcadyan_aw1000
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Arcadyan
+	DEVICE_MODEL := AW1000
+	BLOCKSIZE := 256k
+	PAGESIZE := 4096
+	DEVICE_DTS_CONFIG := config@hk09
+	SOC := ipq8072
+	DEVICE_PACKAGES := ipq-wifi-arcadyan_aw1000 kmod-spi-gpio \
+		kmod-gpio-nxp-74hc164 kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += arcadyan_aw1000
+
 define Device/buffalo_wxr-5950ax12
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Buffalo
