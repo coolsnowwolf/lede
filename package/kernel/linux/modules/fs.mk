@@ -577,6 +577,7 @@ define KernelPackage/fs-ntfs
   KCONFIG:=CONFIG_NTFS_FS
   FILES:=$(LINUX_DIR)/fs/ntfs/ntfs.ko
   AUTOLOAD:=$(call AutoLoad,30,ntfs)
+  DEPENDS+=@!LINUX_6_12
   $(call AddDepends/nls)
 endef
 
