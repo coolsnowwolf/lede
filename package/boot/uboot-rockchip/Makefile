@@ -190,7 +190,7 @@ define U-Boot/rk3566/Default
   BUILD_SUBTARGET:=armv8
   DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3566
   ATF:=rk3568_bl31_v1.44.elf
-  TPL:=rk3566_ddr_1056MHz_v1.21.bin
+  TPL:=rk3566_ddr_1056MHz_v1.23.bin
 endef
 
 define U-Boot/nanopi-r3s-rk3566
@@ -220,7 +220,7 @@ define U-Boot/rk3568/Default
   BUILD_SUBTARGET:=armv8
   DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3568
   ATF:=rk3568_bl31_v1.44.elf
-  TPL:=rk3568_ddr_1560MHz_v1.21.bin
+  TPL:=rk3568_ddr_1560MHz_v1.23.bin
 endef
 
 define U-Boot/bpi-r2-pro-rk3568
@@ -313,8 +313,8 @@ endef
 define U-Boot/rk3588/Default
   BUILD_SUBTARGET:=armv8
   DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3588
-  ATF:=rk3588_bl31_v1.45.elf
-  TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.16.bin
+  ATF:=rk3588_bl31_v1.47.elf
+  TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.18.bin
 endef
 
 define U-Boot/generic-rk3588
