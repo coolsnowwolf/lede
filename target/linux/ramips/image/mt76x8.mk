@@ -156,6 +156,15 @@ define Device/hak5_wifi-pineapple-mk7
 endef
 TARGET_DEVICES += hak5_wifi-pineapple-mk7
 
+define Device/huasifei_shf283
+  IMAGE_SIZE := 16064k
+  DEVICE_VENDOR := Huasifei
+  DEVICE_MODEL := SHF283
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ohci kmod-usb-ledtrig-usbport kmod-usb-net-cdc-mbim \
+		kmod-usb-net-qmi-wwan kmod-usb-net-rndis kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += huasifei_shf283
+
 define Device/hilink_hlk-7628n
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := HILINK
