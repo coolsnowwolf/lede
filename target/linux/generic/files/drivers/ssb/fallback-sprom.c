@@ -16,6 +16,7 @@
 #include <linux/of_net.h>
 #include <linux/of_platform.h>
 #include <linux/ssb/ssb.h>
+#include "fallback-sprom.h"
 
 #define SSB_FBS_MAX_SIZE 440
 
