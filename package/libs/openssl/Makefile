@@ -401,7 +401,9 @@ define Package/libopenssl/install
 	chmod 0700 $(1)/etc/ssl/private
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libcrypto.so.* $(1)/usr/lib/
+	$(LN) libcrypto.so.3 $(1)/usr/lib/libcrypto.so.1.1
 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/libssl.so.* $(1)/usr/lib/
+	$(LN) libssl.so.3 $(1)/usr/lib/libssl.so.1.1
 	$(if $(CONFIG_OPENSSL_ENGINE),$(INSTALL_DIR) $(1)/usr/lib/$(ENGINES_DIR))
 endef
 
