@@ -88,7 +88,7 @@ define Package/mt7986-wo-firmware/install
 endef
 $(eval $(call BuildPackage,mt7986-wo-firmware))
 
-Package/mt7988-2p5g-phy-firmware = $(call Package/firmware-default,MT7988 built-in 2.5G Ethernet PHY firmware,,LICENCE.mediatek)
+Package/mt7988-2p5g-phy-firmware = $(call Package/firmware-default,MT7988 built-in 2.5G Ethernet PHY firmware)
 define Package/mt7988-2p5g-phy-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7988
 	$(INSTALL_DATA) \
@@ -97,7 +97,7 @@ define Package/mt7988-2p5g-phy-firmware/install
 endef
 $(eval $(call BuildPackage,mt7988-2p5g-phy-firmware))
 
-Package/mt7988-wo-firmware = $(call Package/firmware-default,MT7988 offload firmware,,LICENCE.mediatek)
+Package/mt7988-wo-firmware = $(call Package/firmware-default,MT7988 offload firmware)
 define Package/mt7988-wo-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7988
 	$(INSTALL_DATA) \
@@ -106,4 +106,3 @@ define Package/mt7988-wo-firmware/install
 		$(1)/lib/firmware/mediatek/mt7988
 endef
 $(eval $(call BuildPackage,mt7988-wo-firmware))
-

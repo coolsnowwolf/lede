@@ -190,7 +190,8 @@ $(eval $(call SetupHostCommand,python3,Please install Python >= 3.6, \
 
 $(eval $(call TestHostCommand,python3-distutils, \
 	Please install the Python3 distutils module, \
-	$(STAGING_DIR_HOST)/bin/python3 -c 'from distutils import util'))
+	printf 'from sys import version_info\nif version_info < (3, 12):\n\tfrom distutils import util' | \
+		$(STAGING_DIR_HOST)/bin/python3 -))
 
 $(eval $(call TestHostCommand,python3-stdlib, \
 	Please install the Python3 stdlib module, \

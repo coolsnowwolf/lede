@@ -33,7 +33,9 @@ $(call KernelPackage/r8125)
 endef
 
 ifeq ($(BUILD_VARIANT),rss)
-  PKG_MAKE_FLAGS += ENABLE_RSS_SUPPORT=y
+  PKG_MAKE_FLAGS += \
+    ENABLE_RSS_SUPPORT=y \
+    ENABLE_MULTIPLE_TX_QUEUE=y
 endif
 
 PKG_MAKE_FLAGS += CONFIG_ASPM=n

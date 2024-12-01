@@ -15,7 +15,7 @@ I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_J
 
 ArmSoM-Sige 系列：软路由、单板计算机、小型服务器与智能家居的全能之选。
 
-[商品介绍页面 - ArmSom 品牌店 ](https://shop518100695.taobao.com/)
+[商品介绍页面 - ArmSom 品牌店](https://shop518100695.taobao.com/)
 
 购买链接：
 
@@ -29,7 +29,7 @@ ArmSoM-Sige 系列：软路由、单板计算机、小型服务器与智能家�
 
 ## 编译命令
 
-1. 首先装好 Linux 系统，推荐 Debian 11 或 Ubuntu LTS
+1. 首先装好 Linux 系统，推荐 Debian 或 Ubuntu LTS
 
 2. 安装编译依赖
 
@@ -37,10 +37,10 @@ ArmSoM-Sige 系列：软路由、单板计算机、小型服务器与智能家�
    sudo apt update -y
    sudo apt full-upgrade -y
    sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-   bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
+   bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
    libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
-   libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 \
+   libssl-dev libtool llvm lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 \
    python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
    uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
    ```
@@ -109,7 +109,7 @@ Build dependency: OpenWrt can only be built on a case-sensitive filesystem
 # 以管理员身份打开终端
 PS > fsutil.exe file setCaseSensitiveInfo <your_local_lede_path> enable
 # 将本项目 git clone 到开启了大小写敏感的目录 <your_local_lede_path> 中
-PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
+PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
 ```
 
 > 对已经 `git clone` 完成的项目目录执行 `fsutil.exe` 命令无法生效，大小写敏感只对新增的文件变更有效。
@@ -162,7 +162,7 @@ PS > git clone git@github.com:coolsnowwolf/lede.git <your_local_lede_path>
 
 ## 特别提示
 
-1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒。安全干净才是固件应该做到的；
+1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒，安全干净才是固件应该做到的。
 
 2. 想学习 OpenWrt 开发，但是摸不着门道？自学没毅力？基础太差？怕太难学不会？跟着佐大学 OpenWrt 开发入门培训班助你能学有所成
 报名地址：[点击报名](http://forgotfun.org/2018/04/openwrt-training-2018.html "报名")
