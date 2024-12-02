@@ -1,0 +1,126 @@
+From f1f1ae369a4cefd3474b3528e8d1847b18750605 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 6 Apr 2024 14:41:54 +0200
+Subject: [PATCH] Provide variant pkg-config file for multi-threaded static lib
+
+Multi-threaded static library require -pthread to correctly link and works.
+The pkg-config we provide tho only works with dynamic multi-threaded library
+and won't provide the correct libs and cflags values if lib-mt is used.
+
+To handle this, introduce an env variable MT to permit advanced user to
+install and generate a correct pkg-config file for lib-mt or detect if
+lib-mt target is called.
+
+With MT env set on calling make install-pc, libzstd.pc.in is a
+pkg-config file for a multi-threaded static library.
+
+On calling make lib-mt, a libzstd.pc is generated for a multi-threaded
+static library as it's what asked by the user by forcing it.
+
+libzstd.pc is changed to PHONY to force regeneration of it on calling
+lib targets or install-pc to handle case where the same directory is
+used for mixed compilation.
+
+This was notice while migrating from meson to make build system where
+meson generates a correct .pc file while make doesn't.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ lib/Makefile      | 20 +++++++++++++++++++-
+ lib/README.md     |  4 ++++
+ lib/libzstd.pc.in |  4 ++--
+ 3 files changed, 25 insertions(+), 3 deletions(-)
+
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -63,6 +63,8 @@ CPPFLAGS_DYNLIB  += -DZSTD_MULTITHREAD #
+ LDFLAGS_DYNLIB   += -pthread
+ CPPFLAGS_STATICLIB +=                  # static library build defaults to single-threaded
+ 
++# pkg-config Libs.private points to LDFLAGS_DYNLIB
++PCLIB := $(LDFLAGS_DYNLIB)
+ 
+ ifeq ($(findstring GCC,$(CCVER)),GCC)
+ decompress/zstd_decompress_block.o : CFLAGS+=-fno-tree-vectorize
+@@ -186,12 +188,15 @@ lib : libzstd.a libzstd
+ %-mt : CPPFLAGS_DYNLIB  := -DZSTD_MULTITHREAD
+ %-mt : CPPFLAGS_STATICLIB := -DZSTD_MULTITHREAD
+ %-mt : LDFLAGS_DYNLIB   := -pthread
++%-mt : PCLIB :=
++%-mt : PCMTLIB := $(LDFLAGS_DYNLIB)
+ %-mt : %
+ 	@echo multi-threaded build completed
+ 
+ %-nomt : CPPFLAGS_DYNLIB  :=
+ %-nomt : LDFLAGS_DYNLIB   :=
+ %-nomt : CPPFLAGS_STATICLIB :=
++%-nomt : PCLIB :=
+ %-nomt : %
+ 	@echo single-threaded build completed
+ 
+@@ -292,6 +297,14 @@ PCLIBPREFIX := $(if $(findstring $(LIBDI
+ # to PREFIX, rather than as a resolved value.
+ PCEXEC_PREFIX := $(if $(HAS_EXPLICIT_EXEC_PREFIX),$(EXEC_PREFIX),$${prefix})
+ 
++
++ifneq ($(MT),)
++  PCLIB :=
++  PCMTLIB := $(LDFLAGS_DYNLIB)
++else
++  PCLIB := $(LDFLAGS_DYNLIB)
++endif
++
+ ifneq (,$(filter $(UNAME),FreeBSD NetBSD DragonFly))
+   PKGCONFIGDIR ?= $(PREFIX)/libdata/pkgconfig
+ else
+@@ -308,6 +321,10 @@ INSTALL_PROGRAM ?= $(INSTALL)
+ INSTALL_DATA    ?= $(INSTALL) -m 644
+ 
+ 
++# pkg-config library define.
++# For static single-threaded library declare -pthread in Libs.private
++# For static multi-threaded library declare -pthread in Libs and Cflags
++.PHONY: libzstd.pc
+ libzstd.pc: libzstd.pc.in
+ 	@echo creating pkgconfig
+ 	@sed \
+@@ -316,7 +333,8 @@ libzstd.pc: libzstd.pc.in
+ 	        -e 's|@INCLUDEDIR@|$(PCINCPREFIX)$(PCINCDIR)|' \
+ 	        -e 's|@LIBDIR@|$(PCLIBPREFIX)$(PCLIBDIR)|' \
+ 	        -e 's|@VERSION@|$(VERSION)|' \
+-	        -e 's|@LIBS_PRIVATE@|$(LDFLAGS_DYNLIB)|' \
++	        -e 's|@LIBS_MT@|$(PCMTLIB)|' \
++	        -e 's|@LIBS_PRIVATE@|$(PCLIB)|' \
+ 	        $< >$@
+ 
+ .PHONY: install
+--- a/lib/README.md
++++ b/lib/README.md
+@@ -27,12 +27,16 @@ Enabling multithreading requires 2 condi
+ 
+ For convenience, we provide a build target to generate multi and single threaded libraries:
+ - Force enable multithreading on both dynamic and static libraries by appending `-mt` to the target, e.g. `make lib-mt`.
++  Note that the `.pc` generated on calling `make lib-mt` will already include the require Libs and Cflags.
+ - Force disable multithreading on both dynamic and static libraries by appending `-nomt` to the target, e.g. `make lib-nomt`.
+ - By default, as mentioned before, dynamic library is multithreaded, and static library is single-threaded, e.g. `make lib`.
+ 
+ When linking a POSIX program with a multithreaded version of `libzstd`,
+ note that it's necessary to invoke the `-pthread` flag during link stage.
+ 
++The `.pc` generated from `make install` or `make install-pc` always assume a single-threaded static library
++is compiled. To correctly generate a `.pc` for the multi-threaded static library, set `MT=1` as ENV variable.
++
+ Multithreading capabilities are exposed
+ via the [advanced API defined in `lib/zstd.h`](https://github.com/facebook/zstd/blob/v1.4.3/lib/zstd.h#L351).
+ 
+--- a/lib/libzstd.pc.in
++++ b/lib/libzstd.pc.in
+@@ -11,6 +11,6 @@ Name: zstd
+ Description: fast lossless compression algorithm library
+ URL: https://facebook.github.io/zstd/
+ Version: @VERSION@
+-Libs: -L${libdir} -lzstd
++Libs: -L${libdir} -lzstd @LIBS_MT@
+ Libs.private: @LIBS_PRIVATE@
+-Cflags: -I${includedir}
++Cflags: -I${includedir} @LIBS_MT@

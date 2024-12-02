@@ -1,0 +1,289 @@
+--- a/lib/yaffs2/direct/yportenv.h
++++ b/lib/yaffs2/direct/yportenv.h
+@@ -32,10 +32,13 @@
+ #define CONFIG_YAFFS_DEFINES_TYPES 1
+ #define CONFIG_YAFFS_USE_32_BIT_TIME_T 1
+ #define NO_Y_INLINE 1
+-#define loff_t off_t
+ 
+ #endif /* __rtems__ */
+ 
++#ifndef linux
++#define loff_t off_t
++#endif
++
+ /* Definition of types */
+ #ifdef CONFIG_YAFFS_DEFINES_TYPES
+ typedef unsigned char u8;
+--- a/src/ioctl.c
++++ b/src/ioctl.c
+@@ -21,5 +21,9 @@
+  * integer overflow when building against e.g. musl.
+  */
+ int linux_ioctl(int fd, unsigned long request, void *ptr) {
++#ifdef linux
+ 	return syscall(SYS_ioctl, fd, request, ptr);
++#else
++	return -1;
++#endif
+ }
+--- a/src/ioctl.h
++++ b/src/ioctl.h
+@@ -12,7 +12,9 @@ int linux_ioctl(int fd, unsigned long re
+  * time, as the definition of the MEMREAD ioctl trickles down into kernel
+  * headers distributed out there.
+  */
++#ifdef linux
+ #include <mtd/mtd-user.h>
++
+ #ifndef MEMREAD
+ #include <sys/ioctl.h>
+ 
+@@ -35,3 +37,4 @@ struct mtd_read_req {
+ 
+ #define MEMREAD _IOWR('M', 26, struct mtd_read_req)
+ #endif /* MEMREAD */
++#endif
+--- a/src/mtd.c
++++ b/src/mtd.c
+@@ -4,7 +4,9 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#ifdef linux
+ #include <mtd/mtd-user.h>
++#endif
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdio.h>
+@@ -82,6 +84,7 @@ static void mtd_debug_location(const cha
+ 	va_end(args);
+ }
+ 
++#ifdef linux
+ /*
+  * Read the raw contents of the sysfs attribute at the provided 'sysfs_path'
+  * into 'buf', which is 'buf_len' bytes large.  The given sysfs attribute is
+@@ -179,6 +182,7 @@ static int discover_mtd_parameters(const
+ 
+ 	return 0;
+ }
++#endif
+ 
+ /*
+  * Initialize 'geometry' with 'chunk_size' and 'block_size' set to the default
+@@ -203,6 +207,7 @@ static void init_yaffs_geometry_default(
+  * Initialize 'geometry' with 'chunk_size' and 'block_size' set to the relevant
+  * MTD parameters provided in 'mtd' and 'mtd_type' set to the provided value.
+  */
++#ifdef linux
+ static void init_yaffs_geometry_autodetected(const struct mtd_ctx *ctx,
+ 					     const struct mtd_info_user *mtd,
+ 					     struct mtd_geometry *geometry,
+@@ -217,6 +222,7 @@ static void init_yaffs_geometry_autodete
+ 		.block_size = mtd->erasesize,
+ 	};
+ }
++#endif
+ 
+ /*
+  * Update 'chunk_size' and 'block_size' in 'geometry' to the values provided in
+@@ -280,6 +286,7 @@ static int init_yaffs_geometry_file(cons
+  *  2. If -C and/or -B were used, override any default values with those
+  *     provided on the command line.
+  */
++#ifdef linux
+ static void init_yaffs_geometry_nand_or_nor(const struct mtd_ctx *ctx,
+ 					    const struct mtd_info_user *mtd,
+ 					    const struct opts *opts,
+@@ -297,6 +304,7 @@ static void init_yaffs_geometry_nand_or_
+ 
+ 	geometry->block_count = mtd->size / geometry->block_size;
+ }
++#endif
+ 
+ /*
+  * Determine the type of the provided MTD (which can be either NAND/NOR flash
+@@ -317,6 +325,7 @@ static int init_yaffs_geometry(const str
+ 		geometry->oob_size = 0;
+ 		geometry->oobavail = 0;
+ 	} else {
++#ifdef linux
+ 		struct mtd_info_user mtd;
+ 		unsigned int oobavail;
+ 
+@@ -329,6 +338,9 @@ static int init_yaffs_geometry(const str
+ 
+ 		geometry->oob_size = mtd.oobsize;
+ 		geometry->oobavail = oobavail;
++#else
++		return -1;
++#endif
+ 	}
+ 
+ 	return 0;
+--- a/src/ydrv.c
++++ b/src/ydrv.c
+@@ -3,7 +3,9 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
+ #include <errno.h>
++#ifdef linux
+ #include <mtd/mtd-user.h>
++#endif
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -122,6 +124,7 @@ static long long ydrv_get_data_offset_fo
+ /*
+  * Check whether the given MTD block is a bad one on NAND or NOR flash.
+  */
++#ifdef linux
+ static int ydrv_check_bad_nand_or_nor(const struct ydrv_ctx *ctx,
+ 				      int block_no) {
+ 	long long offset = block_no * ctx->block_size;
+@@ -139,6 +142,7 @@ static int ydrv_check_bad_nand_or_nor(co
+ 
+ 	return (ret == 0 ? YAFFS_OK : YAFFS_FAIL);
+ }
++#endif
+ 
+ /*
+  * Check whether the given MTD block is a bad one.
+@@ -154,9 +158,11 @@ static int ydrv_check_bad(struct yaffs_d
+ 	}
+ 
+ 	switch (ctx->mtd_type) {
++#ifdef linux
+ 	case MTD_TYPE_NAND:
+ 	case MTD_TYPE_NOR:
+ 		return ydrv_check_bad_nand_or_nor(ctx, block_no);
++#endif
+ 	case MTD_TYPE_FILE:
+ 		ydrv_debug("file is assumed to only contain good blocks");
+ 		return YAFFS_OK;
+@@ -169,6 +175,7 @@ static int ydrv_check_bad(struct yaffs_d
+ /*
+  * Erase the given MTD block on NAND or NOR flash.
+  */
++#ifdef linux
+ static int ydrv_erase_block_nand_or_nor(const struct ydrv_ctx *ctx,
+ 					int block_no) {
+ 	long long offset = block_no * ctx->block_size;
+@@ -196,6 +203,7 @@ static int ydrv_erase_block_nand_or_nor(
+ 
+ 	return YAFFS_OK;
+ }
++#endif
+ 
+ /*
+  * Erase the given MTD block in a file.
+@@ -247,9 +255,11 @@ static int ydrv_erase_block(struct yaffs
+ 	}
+ 
+ 	switch (ctx->mtd_type) {
++#ifdef linux
+ 	case MTD_TYPE_NAND:
+ 	case MTD_TYPE_NOR:
+ 		return ydrv_erase_block_nand_or_nor(ctx, block_no);
++#endif
+ 	case MTD_TYPE_FILE:
+ 		return ydrv_erase_block_file(ctx, block_no);
+ 	default:
+@@ -261,6 +271,7 @@ static int ydrv_erase_block(struct yaffs
+ /*
+  * Mark the given MTD block as bad on NAND or NOR flash.
+  */
++#ifdef linux
+ static int ydrv_mark_bad_nand_or_nor(const struct ydrv_ctx *ctx, int block_no) {
+ 	long long offset = block_no * ctx->block_size;
+ 	int err = 0;
+@@ -281,6 +292,7 @@ static int ydrv_mark_bad_nand_or_nor(con
+ 
+ 	return YAFFS_OK;
+ }
++#endif
+ 
+ /*
+  * Mark the given MTD block as bad.
+@@ -296,9 +308,11 @@ static int ydrv_mark_bad(struct yaffs_de
+ 	}
+ 
+ 	switch (ctx->mtd_type) {
++#ifdef linux
+ 	case MTD_TYPE_NAND:
+ 	case MTD_TYPE_NOR:
+ 		return ydrv_mark_bad_nand_or_nor(ctx, block_no);
++#endif
+ 	case MTD_TYPE_FILE:
+ 		ydrv_debug("file is assumed to only contain good blocks");
+ 		return YAFFS_FAIL;
+@@ -315,9 +329,11 @@ static int ydrv_mark_bad(struct yaffs_de
+  */
+ static int ydrv_ecc_result(int read_result, enum yaffs_ecc_result *ecc_result) {
+ 	switch (read_result) {
++#ifdef linux
+ 	case -EUCLEAN:
+ 		*ecc_result = YAFFS_ECC_RESULT_FIXED;
+ 		return YAFFS_OK;
++#endif
+ 	case -EBADMSG:
+ 		*ecc_result = YAFFS_ECC_RESULT_UNFIXED;
+ 		return YAFFS_FAIL;
+@@ -333,6 +349,7 @@ static int ydrv_ecc_result(int read_resu
+ /*
+  * Read a data+OOB chunk from NAND flash.
+  */
++#ifdef linux
+ static int ydrv_read_chunk_nand(const struct ydrv_ctx *ctx, int chunk, u8 *data,
+ 				int data_len, u8 *oob, int oob_len,
+ 				enum yaffs_ecc_result *ecc_result_out,
+@@ -371,6 +388,7 @@ static int ydrv_read_chunk_nand(const st
+ 
+ 	return ret;
+ }
++#endif
+ 
+ /*
+  * Read a data chunk from NOR flash.
+@@ -420,10 +438,12 @@ static int ydrv_read_chunk(struct yaffs_
+ 	}
+ 
+ 	switch (ctx->mtd_type) {
++#ifdef linux
+ 	case MTD_TYPE_NAND:
+ 		return ydrv_read_chunk_nand(ctx, chunk, data, data_len, oob,
+ 					    oob_len, ecc_result_out,
+ 					    dev->param.is_yaffs2);
++#endif
+ 	case MTD_TYPE_NOR:
+ 	case MTD_TYPE_FILE:
+ 		return ydrv_read_chunk_nor_or_file(ctx, chunk, data, data_len,
+@@ -438,6 +458,7 @@ static int ydrv_read_chunk(struct yaffs_
+ /*
+  * Write a data+OOB chunk to NAND flash.
+  */
++#ifdef linux
+ static int ydrv_write_chunk_nand(const struct ydrv_ctx *ctx, int chunk,
+ 				 const u8 *data, int data_len, const u8 *oob,
+ 				 int oob_len, bool is_yaffs2) {
+@@ -472,6 +493,7 @@ static int ydrv_write_chunk_nand(const s
+ 
+ 	return YAFFS_OK;
+ }
++#endif
+ 
+ /*
+  * Write a data chunk to NOR flash.
+@@ -516,9 +538,11 @@ static int ydrv_write_chunk(struct yaffs
+ 	}
+ 
+ 	switch (ctx->mtd_type) {
++#ifdef linux
+ 	case MTD_TYPE_NAND:
+ 		return ydrv_write_chunk_nand(ctx, chunk, data, data_len, oob,
+ 					     oob_len, dev->param.is_yaffs2);
++#endif
+ 	case MTD_TYPE_NOR:
+ 	case MTD_TYPE_FILE:
+ 		return ydrv_write_chunk_nor_or_file(ctx, chunk, data, data_len);

@@ -1,0 +1,187 @@
+From dcb976fe4ee40e4bac8ae0dcc836629c625a6fd4 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 14 Oct 2022 15:59:16 +0200
+Subject: [PATCH] xz_wrapper: support multiple lzma configuration options
+
+Add option to configure preset, lc, lp and pb lzma parameters.
+-Xpreset can be used to set the compression level.
+-Xe can be used to set the 'EXTREME' flag to use the lzma compression
+options tweaking additional settings on top of the compression level set.
+
+New option added:
+ -Xpreset
+ -Xe
+ -Xlc
+ -Xlp
+ -Xpb
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ squashfs-tools/xz_wrapper.c | 119 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 115 insertions(+), 4 deletions(-)
+
+--- a/squashfs-tools/xz_wrapper.c
++++ b/squashfs-tools/xz_wrapper.c
+@@ -44,7 +44,10 @@ static struct bcj bcj[] = {
+ static int filter_count = 1;
+ static int dictionary_size = 0;
+ static float dictionary_percent = 0;
+-
++static int preset = LZMA_PRESET_DEFAULT;
++static int lc = -1;
++static int lp = -1;
++static int pb = -1;
+ 
+ /*
+  * This function is called by the options parsing code in mksquashfs.c
+@@ -53,6 +56,11 @@ static float dictionary_percent = 0;
+  * Two specific options are supported:
+  *	-Xbcj
+  *	-Xdict-size
++ *	-Xpreset
++ *	-Xe
++ *	-Xlc
++ *	-Xlp
++ *	-Xpb
+  *
+  * This function returns:
+  *	>=0 (number of additional args parsed) on success
+@@ -141,6 +149,85 @@ static int xz_options(char *argv[], int
+ 		}
+ 
+ 		return 1;
++	} else if(strcmp(argv[0], "-Xpreset") == 0) {
++		char *b;
++		long val;
++
++		if(argc < 2) {
++			fprintf(stderr, "xz: -Xpreset missing preset-level "
++				"(valid value 0-9)\n");
++			goto failed;
++		}
++
++		val = strtol(argv[1], &b, 10);
++		if (*b != '\0' || (int) val < 0 || (int) val & ~LZMA_PRESET_LEVEL_MASK) {
++			fprintf(stderr, "xz: -Xpreset can't be "
++				"negative or more than the max preset\n");
++			goto failed;
++		}
++
++		preset &= ~LZMA_PRESET_LEVEL_MASK;
++		preset |= (int) val;
++
++		return 1;
++	} else if(strcmp(argv[0], "-Xe") == 0) {
++		preset |= LZMA_PRESET_EXTREME;
++
++		return 0;
++	} else if(strcmp(argv[0], "-Xlc") == 0) {
++		char *b;
++		long val;
++
++		if(argc < 2) {
++			fprintf(stderr, "xz: -Xlc missing value\n");
++			goto failed;
++		}
++
++		val = strtol(argv[1], &b, 10);
++		if (*b != '\0' || (int) val < LZMA_LCLP_MIN || (int) val > LZMA_LCLP_MAX) {
++			fprintf(stderr, "xz: -Xlc invalid value\n");
++			goto failed;
++		}
++
++		lc = (int) val;
++
++		return 1;
++	} else if(strcmp(argv[0], "-Xlp") == 0) {
++		char *b;
++		long val;
++
++		if(argc < 2) {
++			fprintf(stderr, "xz: -Xlp missing value\n");
++			goto failed;
++		}
++
++		val = strtol(argv[1], &b, 10);
++		if (*b != '\0' || (int) val < LZMA_LCLP_MIN || (int) val > LZMA_LCLP_MAX) {
++			fprintf(stderr, "xz: -Xlp invalid value\n");
++			goto failed;
++		}
++
++		lp = (int) val;
++
++		return 1;
++	} else if(strcmp(argv[0], "-Xpb") == 0) {
++		char *b;
++		long val;
++
++		if(argc < 2) {
++			fprintf(stderr, "xz: -Xpb missing value\n");
++			goto failed;
++		}
++
++		val = strtol(argv[1], &b, 10);
++		if (*b != '\0' || (int) val < LZMA_PB_MIN || (int) val > LZMA_PB_MAX) {
++			fprintf(stderr, "xz: -Xpb invalid value\n");
++			goto failed;
++		}
++
++		pb = (int) val;
++
++		return 1;
+ 	}
+ 
+ 	return -1;
+@@ -446,11 +533,20 @@ static int xz_compress(void *strm, void
+ 	for(i = 0; i < stream->filters; i++) {
+ 		struct filter *filter = &stream->filter[i];
+ 
+-        	if(lzma_lzma_preset(&stream->opt, LZMA_PRESET_DEFAULT))
+-                	goto failed;
++		if(lzma_lzma_preset(&stream->opt, preset))
++			goto failed;
+ 
+ 		stream->opt.dict_size = stream->dictionary_size;
+ 
++		if (lc >= 0)
++			stream->opt.lc = lc;
++
++		if (lp >= 0)
++			stream->opt.lp = lp;
++
++		if (pb >= 0)
++			stream->opt.pb = pb;
++
+ 		filter->length = 0;
+ 		res = lzma_stream_buffer_encode(filter->filter,
+ 			LZMA_CHECK_CRC32, NULL, src, size, filter->buffer,
+@@ -521,13 +617,28 @@ static void xz_usage(FILE *stream)
+ 	fprintf(stream, " header as either 2^n or as 2^n+2^(n+1).\n\t\t");
+ 	fprintf(stream, "Example dict-sizes are 75%%, 50%%, 37.5%%, 25%%, or");
+ 	fprintf(stream, " 32K, 16K, 8K\n\t\tetc.\n");
++	fprintf(stream, "\t  -Xpreset <preset-level>\n");
++	fprintf(stream, "\t\tUse <preset-value> as the custom preset to use");
++	fprintf(stream, " on compress.\n\t\t<preset-level> should be 0 .. 9");
++	fprintf(stream, " (default 6)\n");
++	fprintf(stream, "\t  -Xe\n");
++	fprintf(stream, "\t\tEnable additional compression settings by passing");
++	fprintf(stream, " the EXTREME\n\t\tflag to the compression flags.\n");
++	fprintf(stream, "\t  -Xlc <value>\n");
++	fprintf(stream, "\t  -Xlp <value>\n");
++	fprintf(stream, "\t  -Xpb <value>\n");
+ }
+ 
+ 
+ static int option_args(char *option)
+ {
+ 	if(strcmp(option, "-Xbcj") == 0 ||
+-				strcmp(option, "-Xdict-size") == 0)
++	   strcmp(option, "-Xdict-size") == 0 ||
++	   strcmp(option, "-Xpreset") == 0 ||
++	   strcmp(option, "-Xe") == 0 ||
++	   strcmp(option, "-Xlc") == 0 ||
++	   strcmp(option, "-Xlp") == 0 ||
++	   strcmp(option, "-Xpb") == 0)
+ 		return 1;
+ 
+ 	return 0;

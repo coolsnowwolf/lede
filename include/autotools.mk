@@ -23,7 +23,8 @@ AM_TOOL_PATHS:= \
 	LIBTOOLIZE=$(STAGING_DIR_HOST)/bin/libtoolize \
 	LIBTOOL=$(STAGING_DIR_HOST)/bin/libtool \
 	M4=$(STAGING_DIR_HOST)/bin/m4 \
-	AUTOPOINT=true
+	AUTOPOINT=true \
+	GTKDOCIZE=true
 
 # 1: build dir
 # 2: remove files

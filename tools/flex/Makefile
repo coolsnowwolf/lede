@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=flex
-PKG_CPE_ID:=cpe:/a:flex_project:flex
+PKG_CPE_ID:=cpe:/a:westes:flex
 PKG_VERSION:=2.6.4
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
@@ -21,13 +21,17 @@ include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CONFIGURE_ARGS += --disable-shared
 
+define Host/Compile
+	$(call Host/Compile/Default,SUBDIRS='src tools')
+endef
+
 define Host/Install
-	$(call Host/Install/Default)
+	$(call Host/Compile/Default,install SUBDIRS='src tools')
 	$(LN) flex $(STAGING_DIR_HOST)/bin/lex
 endef
 
 define Host/Uninstall
-	-$(call Host/Compile/Default,uninstall)
+	-$(call Host/Compile/Default,uninstall SUBDIRS='src tools')
 endef
 
 define Host/Clean

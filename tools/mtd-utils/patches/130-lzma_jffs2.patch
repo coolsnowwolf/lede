@@ -1,25 +1,9 @@
 --- a/jffsX-utils/Makemodule.am
 +++ b/jffsX-utils/Makemodule.am
-@@ -4,7 +4,10 @@ mkfs_jffs2_SOURCES = \
- 	jffsX-utils/compr_zlib.c \
- 	jffsX-utils/compr.h \
- 	jffsX-utils/rbtree.c \
--	jffsX-utils/compr_lzo.c \
-+	jffsX-utils/compr_lzma.c \
-+	jffsX-utils/lzma/LzFind.c \
-+	jffsX-utils/lzma/LzmaEnc.c \
-+	jffsX-utils/lzma/LzmaDec.c \
- 	jffsX-utils/compr.c \
- 	jffsX-utils/compr_rtime.c \
- 	jffsX-utils/compr.h \
-@@ -12,8 +15,13 @@ mkfs_jffs2_SOURCES = \
- 	jffsX-utils/summary.h \
- 	include/linux/jffs2.h \
- 	include/mtd/jffs2-user.h
-+
-+if !WITHOUT_LZO
-+mkfs_jffs2_SOURCES += jffsX-utils/compr_lzo.c
-+endif
+@@ -9,8 +9,9 @@ mkfs_jffs2_SOURCES = \
+ 	include/mtd/jffs2-user.h \
+ 	include/list.h \
+ 	include/rbtree.h
 +
  mkfs_jffs2_LDADD = libmtd.a $(ZLIB_LIBS) $(LZO_LIBS)
 -mkfs_jffs2_CPPFLAGS = $(AM_CPPFLAGS) $(ZLIB_CFLAGS) $(LZO_CFLAGS)
@@ -27,36 +11,45 @@
  
  jffs2reader_SOURCES = jffsX-utils/jffs2reader.c	include/mtd/jffs2-user.h
  jffs2reader_LDADD = libmtd.a $(ZLIB_LIBS) $(LZO_LIBS)
+@@ -32,6 +33,14 @@ if WITH_ZLIB
+ mkfs_jffs2_SOURCES += jffsX-utils/compr_zlib.c
+ endif
+ 
++if WITH_LZMA
++mkfs_jffs2_SOURCES += \
++	jffsX-utils/compr_lzma.c \
++	jffsX-utils/lzma/LzFind.c \
++	jffsX-utils/lzma/LzmaEnc.c \
++	jffsX-utils/lzma/LzmaDec.c
++endif
++
+ EXTRA_DIST += jffsX-utils/device_table.txt jffsX-utils/mkfs.jffs2.1
+ 
+ dist_man1_MANS += jffsX-utils/mkfs.jffs2.1
 --- a/jffsX-utils/compr.c
 +++ b/jffsX-utils/compr.c
-@@ -520,6 +520,9 @@ int jffs2_compressors_init(void)
- #ifdef CONFIG_JFFS2_LZO
+@@ -471,6 +471,9 @@ int jffs2_compressors_init(void)
+ #ifdef WITH_LZO
  	jffs2_lzo_init();
  #endif
-+#ifdef CONFIG_JFFS2_LZMA
++#ifdef WITH_LZMA
 +	jffs2_lzma_init();
 +#endif
  	return 0;
  }
  
-@@ -534,5 +537,8 @@ int jffs2_compressors_exit(void)
- #ifdef CONFIG_JFFS2_LZO
+@@ -485,5 +488,8 @@ int jffs2_compressors_exit(void)
+ #ifdef WITH_LZO
  	jffs2_lzo_exit();
  #endif
-+#ifdef CONFIG_JFFS2_LZMA
++#ifdef WITH_LZMA
 +	jffs2_lzma_exit();
 +#endif
  	return 0;
  }
 --- a/jffsX-utils/compr.h
 +++ b/jffsX-utils/compr.h
-@@ -18,13 +18,14 @@
- 
- #define CONFIG_JFFS2_ZLIB
- #define CONFIG_JFFS2_RTIME
--#define CONFIG_JFFS2_LZO
-+#define CONFIG_JFFS2_LZMA
- 
+@@ -22,8 +22,9 @@
  #define JFFS2_RUBINMIPS_PRIORITY 10
  #define JFFS2_DYNRUBIN_PRIORITY  20
  #define JFFS2_RTIME_PRIORITY     50
@@ -68,11 +61,11 @@
  
  #define JFFS2_COMPR_MODE_NONE       0
  #define JFFS2_COMPR_MODE_PRIORITY   1
-@@ -115,5 +116,10 @@ void jffs2_rtime_exit(void);
+@@ -110,5 +111,10 @@ void jffs2_rtime_exit(void);
  int jffs2_lzo_init(void);
  void jffs2_lzo_exit(void);
  #endif
-+#ifdef CONFIG_JFFS2_LZMA
++#ifdef WITH_LZMA
 +int jffs2_lzma_init(void);
 +void jffs2_lzma_exit(void);
 +#endif
@@ -5036,3 +5029,45 @@
  						  }
  						  break;
  					  }
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -19,6 +19,10 @@ if WITH_ZSTD
+ AM_CPPFLAGS += -DWITH_ZSTD
+ endif
+ 
++if WITH_LZMA
++AM_CPPFLAGS += -DWITH_LZMA
++endif
++
+ if WITH_SELINUX
+ AM_CPPFLAGS += -DWITH_SELINUX
+ endif
+--- a/configure.ac
++++ b/configure.ac
+@@ -96,6 +96,10 @@ AC_ARG_WITH([zstd],
+ 	[AS_HELP_STRING([--with-zstd], [Support for ZSTD compression])],
+ 	[], [with_zstd="check"])
+ 
++AC_ARG_WITH([lzma],
++	[AS_HELP_STRING([--with-lzma], [Support for LZMA compression])],
++	[], [with_lzma="check"])
++
+ AC_ARG_WITH([selinux],
+ 	[AS_HELP_STRING([--with-selinux],
+ 		[Support for selinux extended attributes])],
+@@ -269,6 +273,7 @@ fi
+ AM_CONDITIONAL([WITH_LZO], [test "x$with_lzo" = "xyes"])
+ AM_CONDITIONAL([WITH_ZLIB], [test "x$with_zlib" = "xyes"])
+ AM_CONDITIONAL([WITH_ZSTD], [test "x$with_zstd" = "xyes"])
++AM_CONDITIONAL([WITH_LZMA], [test "x$with_lzma" = "xyes"])
+ AM_CONDITIONAL([WITH_XATTR], [test "x$with_xattr" = "xyes"])
+ AM_CONDITIONAL([WITH_SELINUX], [test "x$with_selinux" = "xyes"])
+ AM_CONDITIONAL([WITH_CRYPTO], [test "x$with_crypto" = "xyes"])
+@@ -313,6 +318,7 @@ AC_MSG_RESULT([
+ 	lzo support:       ${with_lzo}
+ 	zlib support:      ${with_zlib}
+ 	zstd support:      ${with_zstd}
++	lzma support:      ${with_lzma}
+ 	xattr/acl support: ${with_xattr}
+ 	SELinux support:   ${with_selinux}
+ 	fscrypt support:   ${with_crypto}
