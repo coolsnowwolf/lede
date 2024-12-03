@@ -89,7 +89,7 @@ TARGET_CFLAGS += \
 	-Wno-unused-result \
 	-Wno-format-nonliteral
 
-ifneq ($(CONFIG_GCC_USE_VERSION_11),y)
+ifneq ($(filter $(GCC_MAJOR_VERSION),12 13),)
 TARGET_CFLAGS += \
 	-Wno-error=use-after-free
 endif
