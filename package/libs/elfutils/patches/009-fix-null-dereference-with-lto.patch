@@ -1,0 +1,193 @@
+From 8707194a9f2f0b13e53041b03ebfdbdbd2942e43 Mon Sep 17 00:00:00 2001
+From: Mark Wielaard <mark@klomp.org>
+Date: Tue, 5 Nov 2024 23:31:14 +0100
+Subject: [PATCH 1/1] libelf: Only fetch shdr once in elf_compress[_gnu]
+
+Some compilers assume the second call to elf[32|64]_getshdr can fail
+and produce error: potential null pointer dereference. Just store the
+result of the first call and reuse (when not NULL).
+
+       * libelf/elf_compress.c (elf_compress): Store getshdr result in
+       a shdr union var.
+       * libelf/elf_compress_gnu.c (): Likewise
+
+https://sourceware.org/bugzilla/show_bug.cgi?id=32311
+
+Signed-off-by: Mark Wielaard <mark@klomp.org>
+---
+ libelf/elf_compress.c     | 55 +++++++++++++++++++++------------------
+ libelf/elf_compress_gnu.c | 45 ++++++++++++++------------------
+ 2 files changed, 48 insertions(+), 52 deletions(-)
+
+--- a/libelf/elf_compress.c
++++ b/libelf/elf_compress.c
+@@ -584,25 +584,30 @@ elf_compress (Elf_Scn *scn, int type, un
+   Elf64_Xword sh_flags;
+   Elf64_Word sh_type;
+   Elf64_Xword sh_addralign;
++  union shdr
++  {
++    Elf32_Shdr *s32;
++    Elf64_Shdr *s64;
++  } shdr;
+   if (elfclass == ELFCLASS32)
+     {
+-      Elf32_Shdr *shdr = elf32_getshdr (scn);
+-      if (shdr == NULL)
++      shdr.s32 = elf32_getshdr (scn);
++      if (shdr.s32 == NULL)
+ 	return -1;
+ 
+-      sh_flags = shdr->sh_flags;
+-      sh_type = shdr->sh_type;
+-      sh_addralign = shdr->sh_addralign;
++      sh_flags = shdr.s32->sh_flags;
++      sh_type = shdr.s32->sh_type;
++      sh_addralign = shdr.s32->sh_addralign;
+     }
+   else
+     {
+-      Elf64_Shdr *shdr = elf64_getshdr (scn);
+-      if (shdr == NULL)
++      shdr.s64 = elf64_getshdr (scn);
++      if (shdr.s64 == NULL)
+ 	return -1;
+ 
+-      sh_flags = shdr->sh_flags;
+-      sh_type = shdr->sh_type;
+-      sh_addralign = shdr->sh_addralign;
++      sh_flags = shdr.s64->sh_flags;
++      sh_type = shdr.s64->sh_type;
++      sh_addralign = shdr.s64->sh_addralign;
+     }
+ 
+   if ((sh_flags & SHF_ALLOC) != 0)
+@@ -679,17 +684,17 @@ elf_compress (Elf_Scn *scn, int type, un
+ 	 correctly and ignored when SHF_COMPRESSED is set.  */
+       if (elfclass == ELFCLASS32)
+ 	{
+-	  Elf32_Shdr *shdr = elf32_getshdr (scn);
+-	  shdr->sh_size = new_size;
+-	  shdr->sh_addralign = __libelf_type_align (ELFCLASS32, ELF_T_CHDR);
+-	  shdr->sh_flags |= SHF_COMPRESSED;
++	  shdr.s32->sh_size = new_size;
++	  shdr.s32->sh_addralign = __libelf_type_align (ELFCLASS32,
++							ELF_T_CHDR);
++	  shdr.s32->sh_flags |= SHF_COMPRESSED;
+ 	}
+       else
+ 	{
+-	  Elf64_Shdr *shdr = elf64_getshdr (scn);
+-	  shdr->sh_size = new_size;
+-	  shdr->sh_addralign = __libelf_type_align (ELFCLASS64, ELF_T_CHDR);
+-	  shdr->sh_flags |= SHF_COMPRESSED;
++	  shdr.s64->sh_size = new_size;
++	  shdr.s64->sh_addralign = __libelf_type_align (ELFCLASS64,
++							ELF_T_CHDR);
++	  shdr.s64->sh_flags |= SHF_COMPRESSED;
+ 	}
+ 
+       __libelf_reset_rawdata (scn, out_buf, new_size, 1, ELF_T_CHDR);
+@@ -731,17 +736,15 @@ elf_compress (Elf_Scn *scn, int type, un
+ 	 correctly and ignored when SHF_COMPRESSED is set.  */
+       if (elfclass == ELFCLASS32)
+ 	{
+-	  Elf32_Shdr *shdr = elf32_getshdr (scn);
+-	  shdr->sh_size = scn->zdata_size;
+-	  shdr->sh_addralign = scn->zdata_align;
+-	  shdr->sh_flags &= ~SHF_COMPRESSED;
++	  shdr.s32->sh_size = scn->zdata_size;
++	  shdr.s32->sh_addralign = scn->zdata_align;
++	  shdr.s32->sh_flags &= ~SHF_COMPRESSED;
+ 	}
+       else
+ 	{
+-	  Elf64_Shdr *shdr = elf64_getshdr (scn);
+-	  shdr->sh_size = scn->zdata_size;
+-	  shdr->sh_addralign = scn->zdata_align;
+-	  shdr->sh_flags &= ~SHF_COMPRESSED;
++	  shdr.s64->sh_size = scn->zdata_size;
++	  shdr.s64->sh_addralign = scn->zdata_align;
++	  shdr.s64->sh_flags &= ~SHF_COMPRESSED;
+ 	}
+ 
+       __libelf_reset_rawdata (scn, scn->zdata_base,
+--- a/libelf/elf_compress_gnu.c
++++ b/libelf/elf_compress_gnu.c
+@@ -59,25 +59,30 @@ elf_compress_gnu (Elf_Scn *scn, int infl
+   Elf64_Xword sh_flags;
+   Elf64_Word sh_type;
+   Elf64_Xword sh_addralign;
++  union shdr
++  {
++    Elf32_Shdr *s32;
++    Elf64_Shdr *s64;
++  } shdr;
+   if (elfclass == ELFCLASS32)
+     {
+-      Elf32_Shdr *shdr = elf32_getshdr (scn);
+-      if (shdr == NULL)
++      shdr.s32 = elf32_getshdr (scn);
++      if (shdr.s32 == NULL)
+ 	return -1;
+ 
+-      sh_flags = shdr->sh_flags;
+-      sh_type = shdr->sh_type;
+-      sh_addralign = shdr->sh_addralign;
++      sh_flags = shdr.s32->sh_flags;
++      sh_type = shdr.s32->sh_type;
++      sh_addralign = shdr.s32->sh_addralign;
+     }
+   else
+     {
+-      Elf64_Shdr *shdr = elf64_getshdr (scn);
+-      if (shdr == NULL)
++      shdr.s64 = elf64_getshdr (scn);
++      if (shdr.s64 == NULL)
+ 	return -1;
+ 
+-      sh_flags = shdr->sh_flags;
+-      sh_type = shdr->sh_type;
+-      sh_addralign = shdr->sh_addralign;
++      sh_flags = shdr.s64->sh_flags;
++      sh_type = shdr.s64->sh_type;
++      sh_addralign = shdr.s64->sh_addralign;
+     }
+ 
+   /* Allocated sections, or sections that are already are compressed
+@@ -122,15 +127,9 @@ elf_compress_gnu (Elf_Scn *scn, int infl
+ 	 sh_flags won't have a SHF_COMPRESSED hint in the GNU format.
+ 	 Just adjust the sh_size.  */
+       if (elfclass == ELFCLASS32)
+-	{
+-	  Elf32_Shdr *shdr = elf32_getshdr (scn);
+-	  shdr->sh_size = new_size;
+-	}
++	  shdr.s32->sh_size = new_size;
+       else
+-	{
+-	  Elf64_Shdr *shdr = elf64_getshdr (scn);
+-	  shdr->sh_size = new_size;
+-	}
++	  shdr.s64->sh_size = new_size;
+ 
+       __libelf_reset_rawdata (scn, out_buf, new_size, 1, ELF_T_BYTE);
+ 
+@@ -187,15 +186,9 @@ elf_compress_gnu (Elf_Scn *scn, int infl
+ 	 sh_flags won't have a SHF_COMPRESSED hint in the GNU format.
+ 	 Just adjust the sh_size.  */
+       if (elfclass == ELFCLASS32)
+-	{
+-	  Elf32_Shdr *shdr = elf32_getshdr (scn);
+-	  shdr->sh_size = size;
+-	}
++	shdr.s32->sh_size = size;
+       else
+-	{
+-	  Elf64_Shdr *shdr = elf64_getshdr (scn);
+-	  shdr->sh_size = size;
+-	}
++	shdr.s64->sh_size = size;
+ 
+       __libelf_reset_rawdata (scn, buf_out, size, sh_addralign,
+ 			      __libelf_data_type (&ehdr, sh_type,
