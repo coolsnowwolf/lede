@@ -8,7 +8,7 @@ I18N: [English](README_EN.md) | [简体中文](README.md) | [日本語](README_J
 
 如有技术问题需要讨论或者交流，欢迎加入以下群：
 
-1. QQ 讨论群：Op 固件技术研究群，号码 891659613，加群链接：[点击加入](https://jq.qq.com/?_wv=1027&k=XL8SK5aC "Op固件技术研究群")
+1. QQ 讨论群：Op 固件技术研究群，号码 891659613，加群链接：[点击加入](https://qm.qq.com/q/IMa6Yf2SgC "Op固件技术研究群")
 2. TG 讨论群：OP 编译官方大群，加群链接：[点击加入](https://t.me/JhKgAA6Hx1 "OP 编译官方大群")
 
 ## 软路由 ArmSoM Sige 系列介绍
@@ -39,8 +39,8 @@ ArmSoM-Sige 系列：软路由、单板计算机、小型服务器与智能家�
    sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
    bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gettext gcc-multilib g++-multilib \
    git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
-   libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
-   libssl-dev libtool llvm lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 \
+   libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libncurses-dev libpython3-dev libreadline-dev \
+   libssl-dev libtool llvm lrzsz genisoimage msmtp ninja-build p7zip p7zip-full patch pkgconf python3 \
    python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
    uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
    ```
@@ -63,7 +63,7 @@ ArmSoM-Sige 系列：软路由、单板计算机、小型服务器与智能家�
    make V=s -j1
    ```
 
-本套代码保证肯定可以编译成功。里面包括了 R23 所有源代码，包括 IPK 的。
+本套代码保证肯定可以编译成功。里面包括了 R24 所有源代码，包括 IPK 的。
 
 你可以自由使用，但源码编译二次发布请注明我的 GitHub 仓库链接。谢谢合作！
 

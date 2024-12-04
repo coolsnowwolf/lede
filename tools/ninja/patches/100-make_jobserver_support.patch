@@ -18,22 +18,9 @@ Documentation for GNU make jobserver
 
   http://make.mad-scientist.net/papers/jobserver-implementation/
 
-Fixes https://github.com/ninja-build/ninja/issues/1139
----
- configure.py              |   2 +
- src/build.cc              |  63 ++++++++----
- src/build.h               |   3 +
- src/tokenpool-gnu-make.cc | 211 ++++++++++++++++++++++++++++++++++++++
- src/tokenpool-none.cc     |  27 +++++
- src/tokenpool.h           |  26 +++++
- 6 files changed, 310 insertions(+), 22 deletions(-)
- create mode 100644 src/tokenpool-gnu-make.cc
- create mode 100644 src/tokenpool-none.cc
- create mode 100644 src/tokenpool.h
-
 --- a/configure.py
 +++ b/configure.py
-@@ -517,11 +517,13 @@ for name in ['build',
+@@ -543,11 +543,13 @@ for name in ['build',
               'state',
               'status',
               'string_piece_util',
@@ -47,7 +34,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
                   'includes_normalize-win32',
                   'msvc_helper-win32',
                   'msvc_helper_main-win32']:
-@@ -530,7 +532,9 @@ if platform.is_windows():
+@@ -556,7 +558,9 @@ if platform.is_windows():
          objs += cxx('minidump-win32', variables=cxxvariables)
      objs += cc('getopt')
  else:
@@ -58,17 +45,17 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  if platform.is_aix():
      objs += cc('getopt')
  if platform.is_msvc():
-@@ -588,6 +592,7 @@ for name in ['build_log_test',
-              'string_piece_util_test',
-              'subprocess_test',
-              'test',
-+             'tokenpool_test',
-              'util_test']:
-     objs += cxx(name, variables=cxxvariables)
- if platform.is_windows():
+@@ -639,6 +643,7 @@ if gtest_src_dir:
+         'string_piece_util_test',
+         'subprocess_test',
+         'test',
++        'tokenpool_test',
+         'util_test',
+     ]
+     if platform.is_windows():
 --- a/src/build.cc
 +++ b/src/build.cc
-@@ -35,6 +35,7 @@
+@@ -39,6 +39,7 @@
  #include "state.h"
  #include "status.h"
  #include "subprocess.h"
@@ -76,10 +63,12 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  #include "util.h"
  
  using namespace std;
-@@ -47,8 +48,9 @@ struct DryRunCommandRunner : public Comm
+@@ -50,24 +51,29 @@ struct DryRunCommandRunner : public Comm
+   virtual ~DryRunCommandRunner() {}
  
    // Overridden from CommandRunner:
-   virtual bool CanRunMore() const;
+-  virtual size_t CanRunMore() const;
++  virtual size_t CanRunMore();
 +  virtual bool AcquireToken();
    virtual bool StartCommand(Edge* edge);
 -  virtual bool WaitForCommand(Result* result);
@@ -87,8 +76,11 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  
   private:
    queue<Edge*> finished_;
-@@ -58,12 +60,16 @@ bool DryRunCommandRunner::CanRunMore() c
-   return true;
+ };
+ 
+-size_t DryRunCommandRunner::CanRunMore() const {
++size_t DryRunCommandRunner::CanRunMore() {
+   return SIZE_MAX;
  }
  
 +bool DryRunCommandRunner::AcquireToken() {
@@ -105,24 +97,25 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
     if (finished_.empty())
       return false;
  
-@@ -149,7 +155,7 @@ void Plan::EdgeWanted(const Edge* edge)
+@@ -160,7 +166,7 @@ void Plan::EdgeWanted(const Edge* edge)
  }
  
  Edge* Plan::FindWork() {
 -  if (ready_.empty())
 +  if (!more_ready())
      return NULL;
-   EdgeSet::iterator e = ready_.begin();
-   Edge* edge = *e;
-@@ -448,19 +454,39 @@ void Plan::Dump() const {
+ 
+   Edge* work = ready_.top();
+@@ -595,19 +601,39 @@ void Plan::Dump() const {
  }
  
  struct RealCommandRunner : public CommandRunner {
 -  explicit RealCommandRunner(const BuildConfig& config) : config_(config) {}
 -  virtual ~RealCommandRunner() {}
+-  virtual size_t CanRunMore() const;
 +  explicit RealCommandRunner(const BuildConfig& config);
 +  virtual ~RealCommandRunner();
-   virtual bool CanRunMore() const;
++  virtual size_t CanRunMore();
 +  virtual bool AcquireToken();
    virtual bool StartCommand(Edge* edge);
 -  virtual bool WaitForCommand(Result* result);
@@ -157,7 +150,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  vector<Edge*> RealCommandRunner::GetActiveEdges() {
    vector<Edge*> edges;
    for (map<const Subprocess*, Edge*>::iterator e = subproc_to_edge_.begin();
-@@ -471,14 +497,23 @@ vector<Edge*> RealCommandRunner::GetActi
+@@ -618,9 +644,11 @@ vector<Edge*> RealCommandRunner::GetActi
  
  void RealCommandRunner::Abort() {
    subprocs_.Clear();
@@ -165,28 +158,35 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +    tokens_->Clear();
  }
  
- bool RealCommandRunner::CanRunMore() const {
--  size_t subproc_number =
--      subprocs_.running_.size() + subprocs_.finished_.size();
--  return (int)subproc_number < config_.parallelism
--    && ((subprocs_.running_.empty() || config_.max_load_average <= 0.0f)
--        || GetLoadAverage() < config_.max_load_average);
-+  bool parallelism_limit_not_reached =
-+    tokens_ || // ignore config_.parallelism
-+    ((int) (subprocs_.running_.size() +
-+            subprocs_.finished_.size()) < config_.parallelism);
-+  return parallelism_limit_not_reached
-+    && (subprocs_.running_.empty() ||
-+        (max_load_average_ <= 0.0f ||
-+         GetLoadAverage() < max_load_average_));
-+}
+-size_t RealCommandRunner::CanRunMore() const {
++size_t RealCommandRunner::CanRunMore() {
+   size_t subproc_number =
+       subprocs_.running_.size() + subprocs_.finished_.size();
+ 
+@@ -635,6 +663,13 @@ size_t RealCommandRunner::CanRunMore() c
+   if (capacity < 0)
+     capacity = 0;
+ 
++  if (tokens_) {
++    if (AcquireToken())
++      return SIZE_MAX;
++    else
++      capacity = 0;
++  }
 +
-+bool RealCommandRunner::AcquireToken() {
-+  return (!tokens_ || tokens_->Acquire());
+   if (capacity == 0 && subprocs_.running_.empty())
+     // Ensure that we make progress.
+     capacity = 1;
+@@ -642,24 +677,42 @@ size_t RealCommandRunner::CanRunMore() c
+   return capacity;
  }
  
++bool RealCommandRunner::AcquireToken() {
++  return (!tokens_ || tokens_->Acquire());
++}
++
  bool RealCommandRunner::StartCommand(Edge* edge) {
-@@ -486,19 +521,33 @@ bool RealCommandRunner::StartCommand(Edg
+   string command = edge->EvaluateCommand();
    Subprocess* subproc = subprocs_.Add(command, edge->use_console());
    if (!subproc)
      return false;
@@ -223,61 +223,17 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
    result->status = subproc->Finish();
    result->output = subproc->GetOutput();
  
-@@ -620,38 +669,43 @@ bool Builder::Build(string* err) {
-   // command runner.
+@@ -790,7 +843,8 @@ bool Builder::Build(string* err) {
    // Second, we attempt to wait for / reap the next finished command.
    while (plan_.more_to_do()) {
--    // See if we can start any more commands.
--    if (failures_allowed && command_runner_->CanRunMore()) {
--      if (Edge* edge = plan_.FindWork()) {
--        if (edge->GetBindingBool("generator")) {
-+    // See if we can start any more commands...
-+    bool can_run_more =
-+        failures_allowed   &&
-+        plan_.more_ready() &&
-+        command_runner_->CanRunMore();
-+
-+    // ... but we also need a token to do that.
-+    if (can_run_more && command_runner_->AcquireToken()) {
-+      Edge* edge = plan_.FindWork();
-+      if (edge->GetBindingBool("generator")) {
-           scan_.build_log()->Close();
-         }
- 
--        if (!StartEdge(edge, err)) {
-+      if (!StartEdge(edge, err)) {
-+        Cleanup();
-+        status_->BuildFinished();
-+        return false;
-+      }
-+
-+      if (edge->is_phony()) {
-+        if (!plan_.EdgeFinished(edge, Plan::kEdgeSucceeded, err)) {
-           Cleanup();
-           status_->BuildFinished();
-           return false;
-         }
--
--        if (edge->is_phony()) {
--          if (!plan_.EdgeFinished(edge, Plan::kEdgeSucceeded, err)) {
--            Cleanup();
--            status_->BuildFinished();
--            return false;
--          }
--        } else {
--          ++pending_commands;
--        }
--
--        // We made some progress; go back to the main loop.
--        continue;
-+      } else {
-+        ++pending_commands;
-       }
-+
-+      // We made some progress; go back to the main loop.
-+      continue;
-     }
- 
+     // See if we can start any more commands.
+-    if (failures_allowed) {
++    bool can_run_more = failures_allowed && plan_.more_ready();
++    if (can_run_more) {
+       size_t capacity = command_runner_->CanRunMore();
+       while (capacity > 0) {
+         Edge* edge = plan_.FindWork();
+@@ -833,7 +887,7 @@ bool Builder::Build(string* err) {
      // See if we can reap any finished commands.
      if (pending_commands) {
        CommandRunner::Result result;
@@ -286,7 +242,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
            result.status == ExitInterrupted) {
          Cleanup();
          status_->BuildFinished();
-@@ -659,6 +713,10 @@ bool Builder::Build(string* err) {
+@@ -841,6 +895,10 @@ bool Builder::Build(string* err) {
          return false;
        }
  
@@ -299,7 +255,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
          Cleanup();
 --- a/src/build.h
 +++ b/src/build.h
-@@ -52,6 +52,9 @@ struct Plan {
+@@ -51,6 +51,9 @@ struct Plan {
    /// Returns true if there's more work to be done.
    bool more_to_do() const { return wanted_edges_ > 0 && command_edges_ > 0; }
  
@@ -309,15 +265,17 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
    /// Dumps the current state of the plan.
    void Dump() const;
  
-@@ -136,6 +139,7 @@ private:
+@@ -145,7 +148,8 @@ private:
+ /// RealCommandRunner is an implementation that actually runs commands.
  struct CommandRunner {
    virtual ~CommandRunner() {}
-   virtual bool CanRunMore() const = 0;
+-  virtual size_t CanRunMore() const = 0;
++  virtual size_t CanRunMore() = 0;
 +  virtual bool AcquireToken() = 0;
    virtual bool StartCommand(Edge* edge) = 0;
  
    /// The result of waiting for a command.
-@@ -147,7 +151,9 @@ struct CommandRunner {
+@@ -157,7 +161,9 @@ struct CommandRunner {
      bool success() const { return status == ExitSuccess; }
    };
    /// Wait for a command to complete, or return false if interrupted.
@@ -328,7 +286,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  
    virtual std::vector<Edge*> GetActiveEdges() { return std::vector<Edge*>(); }
    virtual void Abort() {}
-@@ -155,7 +161,8 @@ struct CommandRunner {
+@@ -165,7 +171,8 @@ struct CommandRunner {
  
  /// Options (e.g. verbosity, parallelism) passed to a build.
  struct BuildConfig {
@@ -338,7 +296,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
                    failures_allowed(1), max_load_average(-0.0f) {}
  
    enum Verbosity {
-@@ -167,6 +174,7 @@ struct BuildConfig {
+@@ -177,6 +184,7 @@ struct BuildConfig {
    Verbosity verbosity;
    bool dry_run;
    int parallelism;
@@ -509,13 +467,15 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  
  #include <assert.h>
 +#include <stdarg.h>
+ #include <climits>
+ #include <stdint.h>
  
- #include "build_log.h"
- #include "deps_log.h"
-@@ -474,8 +475,9 @@ struct FakeCommandRunner : public Comman
+@@ -521,9 +522,10 @@ struct FakeCommandRunner : public Comman
+       max_active_edges_(1), fs_(fs) {}
  
    // CommandRunner impl
-   virtual bool CanRunMore() const;
+-  virtual size_t CanRunMore() const;
++  virtual size_t CanRunMore();
 +  virtual bool AcquireToken();
    virtual bool StartCommand(Edge* edge);
 -  virtual bool WaitForCommand(Result* result);
@@ -523,8 +483,16 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
    virtual vector<Edge*> GetActiveEdges();
    virtual void Abort();
  
-@@ -578,6 +580,10 @@ bool FakeCommandRunner::CanRunMore() con
-   return active_edges_.size() < max_active_edges_;
+@@ -622,13 +624,17 @@ void BuildTest::RebuildTarget(const stri
+   builder.command_runner_.release();
+ }
+ 
+-size_t FakeCommandRunner::CanRunMore() const {
++size_t FakeCommandRunner::CanRunMore() {
+   if (active_edges_.size() < max_active_edges_)
+     return SIZE_MAX;
+ 
+   return 0;
  }
  
 +bool FakeCommandRunner::AcquireToken() {
@@ -534,7 +502,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  bool FakeCommandRunner::StartCommand(Edge* edge) {
    assert(active_edges_.size() < max_active_edges_);
    assert(find(active_edges_.begin(), active_edges_.end(), edge)
-@@ -649,7 +655,7 @@ bool FakeCommandRunner::StartCommand(Edg
+@@ -720,7 +726,7 @@ bool FakeCommandRunner::StartCommand(Edg
    return true;
  }
  
@@ -543,7 +511,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
    if (active_edges_.empty())
      return false;
  
-@@ -3985,3 +3991,356 @@ TEST_F(BuildTest, ValidationWithCircular
+@@ -4380,3 +4386,355 @@ TEST_F(BuildTest, ValidationWithCircular
    EXPECT_FALSE(builder_.AddTarget("out", &err));
    EXPECT_EQ("dependency cycle: validate -> validate_in -> validate", err);
  }
@@ -557,7 +525,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +  explicit FakeTokenCommandRunner() {}
 +
 +  // CommandRunner impl
-+  virtual bool CanRunMore() const;
++  virtual bool CanRunMore();
 +  virtual bool AcquireToken();
 +  virtual bool StartCommand(Edge* edge);
 +  virtual bool WaitForCommand(Result* result, bool more_ready);
@@ -572,7 +540,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +  vector<bool> wait_for_command_;
 +};
 +
-+bool FakeTokenCommandRunner::CanRunMore() const {
++bool FakeTokenCommandRunner::CanRunMore() {
 +  if (can_run_more_.size() == 0) {
 +    EXPECT_FALSE("unexpected call to CommandRunner::CanRunMore()");
 +    return false;
@@ -580,9 +548,8 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +
 +  bool result = can_run_more_[0];
 +
-+  // Unfortunately CanRunMore() isn't "const" for tests
-+  const_cast<FakeTokenCommandRunner*>(this)->can_run_more_.erase(
-+    const_cast<FakeTokenCommandRunner*>(this)->can_run_more_.begin()
++  can_run_more_.erase(
++    can_run_more_.begin()
 +  );
 +
 +  return result;
@@ -1345,7 +1312,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +}
 --- a/src/ninja.cc
 +++ b/src/ninja.cc
-@@ -1447,6 +1447,7 @@ int ReadFlags(int* argc, char*** argv,
+@@ -1466,6 +1466,7 @@ int ReadFlags(int* argc, char*** argv,
          // We want to run N jobs in parallel. For N = 0, INT_MAX
          // is close enough to infinite for most sane builds.
          config->parallelism = value > 0 ? value : INT_MAX;
@@ -2139,7 +2106,7 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
 +};
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -112,6 +112,7 @@ add_library(libninja OBJECT
+@@ -142,6 +142,7 @@ add_library(libninja OBJECT
  	src/state.cc
  	src/status.cc
  	src/string_piece_util.cc
@@ -2147,22 +2114,26 @@ Fixes https://github.com/ninja-build/ninja/issues/1139
  	src/util.cc
  	src/version.cc
  )
-@@ -123,9 +124,14 @@ if(WIN32)
+@@ -153,13 +154,17 @@ if(WIN32)
  		src/msvc_helper_main-win32.cc
  		src/getopt.c
  		src/minidump-win32.cc
 +		src/tokenpool-gnu-make-win32.cc
  	)
+ 	# Build getopt.c, which can be compiled as either C or C++, as C++
+ 	# so that build environments which lack a C compiler, but have a C++
+ 	# compiler may build ninja.
+ 	set_source_files_properties(src/getopt.c PROPERTIES LANGUAGE CXX)
  else()
- 	target_sources(libninja PRIVATE src/subprocess-posix.cc)
+-	target_sources(libninja PRIVATE src/subprocess-posix.cc)
 +	target_sources(libninja PRIVATE
 +		src/subprocess-posix.cc
 +		src/tokenpool-gnu-make-posix.cc
 +	)
  	if(CMAKE_SYSTEM_NAME STREQUAL "OS400" OR CMAKE_SYSTEM_NAME STREQUAL "AIX")
  		target_sources(libninja PRIVATE src/getopt.c)
- 	endif()
-@@ -204,6 +210,7 @@ if(BUILD_TESTING)
+ 		# Build getopt.c, which can be compiled as either C or C++, as C++
+@@ -286,6 +291,7 @@ if(BUILD_TESTING)
      src/string_piece_util_test.cc
      src/subprocess_test.cc
      src/test.cc

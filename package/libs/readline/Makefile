@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=readline
 PKG_VERSION:=8.2
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@GNU/readline
@@ -48,9 +48,13 @@ endef
 HOST_CONFIGURE_ARGS += --disable-shared --with-pic
 CONFIGURE_ARGS += --with-curses --disable-install-examples
 
+HOST_CONFIGURE_VARS += \
+	bash_cv_termcap_lib=libncurses
+
 CONFIGURE_VARS += \
 	bash_cv_wcwidth_broken=no \
 	bash_cv_func_sigsetjmp=yes \
+	bash_cv_termcap_lib=libncursesw
 
 TARGET_CFLAGS += $(FPIC)
 HOST_CFLAGS += $(FPIC)
@@ -65,7 +69,7 @@ endef
 
 define Package/libreadline/install
 	$(INSTALL_DIR) $(1)/usr/lib
-	$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib{history,readline}.so.* $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib{history,readline}.so* $(1)/usr/lib/
 endef
 
 $(eval $(call HostBuild))
