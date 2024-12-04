@@ -359,42 +359,6 @@ endef
 
 $(eval $(call KernelPackage,fs-jfs))
 
-define KernelPackage/fs-ksmbd
-  SUBMENU:=$(FS_MENU)
-  TITLE:=SMB kernel server support
-  DEPENDS:= \
-	  +kmod-nls-base \
-	  +kmod-nls-utf8 \
-	  +kmod-crypto-md5 \
-	  +kmod-crypto-hmac \
-	  +kmod-crypto-ecb \
-	  +kmod-crypto-des \
-	  +kmod-crypto-sha256 \
-	  +kmod-crypto-cmac \
-	  +kmod-crypto-sha512 \
-	  +kmod-crypto-aead \
-	  +kmod-crypto-ccm \
-	  +kmod-crypto-gcm \
-	  +kmod-asn1-decoder \
-	  +kmod-oid-registry \
-	  +kmod-fs-smbfs-common
-  KCONFIG:= \
-	CONFIG_SMB_SERVER \
-	CONFIG_SMB_SERVER_SMBDIRECT=n \
-	CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN=n \
-	CONFIG_SMB_SERVER_KERBEROS5=n
-  FILES:= \
-	 $(LINUX_DIR)/fs/smb/server/ksmbd.ko
-  AUTOLOAD:=$(call AutoLoad,41,ksmbd)
-endef
-
-define KernelPackage/fs-ksmbd/description
- Kernel module for SMB kernel server support
-endef
-
-$(eval $(call KernelPackage,fs-ksmbd))
-
-
 define KernelPackage/fs-minix
   SUBMENU:=$(FS_MENU)
   TITLE:=Minix filesystem support
