@@ -42,8 +42,27 @@ endef
 # The last two DEPENDS are hacks in order to get CONFIG_ASN1 and CONFIG_OID_REGISTRY
 # which it seems can't be selected independently. Some bug in either base or upstream.
 
+define KernelPackage/fs-ksmbd/description
+  Ksmbd is an In-kernel SMBv(1)2/3 fileserver.
+  It's an implementation of the SMB protocol in kernel space for sharing files and IPC services over network.
+endef
+define KernelPackage/fs-ksmbd/config
+config KSMBD_SMB_INSECURE_SERVER
+	bool "Support for insecure SMB1/CIFS and SMB2.0 protocols"
+	depends on PACKAGE_kmod-fs-ksmbd
+	help
+		This enables deprecated insecure protocols dialects: SMB1/CIFS and SMB2.0.
+	default n
+endef
+ifeq ($(CONFIG_KSMBD_SMB_INSECURE_SERVER),y)
+PKG_EXTRA_KCONFIG:=CONFIG_SMB_INSECURE_SERVER=y
+EXTRA_CFLAGS += -DCONFIG_SMB_INSECURE_SERVER=1
+endif
+
 define Build/Compile
 	$(KERNEL_MAKE) M="$(PKG_BUILD_DIR)" \
+	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+	$(PKG_EXTRA_KCONFIG) \
 	CONFIG_SMB_SERVER=m \
 	modules
 endef
