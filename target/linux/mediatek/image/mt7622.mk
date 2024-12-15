@@ -345,7 +345,7 @@ define Device/xiaomi_redmi-router-ax6s
   IMAGES += factory.bin
   BLOCKSIZE := 128k
   PAGESIZE := 2048
-  KERNEL_SIZE := 4096k
+  KERNEL_SIZE := 6144k
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
