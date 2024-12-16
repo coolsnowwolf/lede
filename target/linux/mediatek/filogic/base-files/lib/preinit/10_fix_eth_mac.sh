@@ -9,6 +9,15 @@ preinit_set_mac_address() {
 		ip link set dev eth0 address "$addr"
 		ip link set dev eth1 address "$addr"
 		;;
+ 	nradio,c8-668gl|\
+	nradio,c8-660)
+		lan_mac=$(mmc_get_mac_ascii bdinfo "fac_mac ")
+		test -n "$lan_mac" || lan_mac=$(mtd_get_mac_ascii bdinfo "fac_mac ")
+		wan_mac=$(macaddr_add "$lan_mac" -1)
+		ip link set dev eth0 address "$lan_mac"
+		ip link set dev eth1 address "$wan_mac"
+		;;
+	*) 
 	esac
 }
 
