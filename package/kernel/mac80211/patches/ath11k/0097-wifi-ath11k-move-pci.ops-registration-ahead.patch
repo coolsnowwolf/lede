@@ -1,0 +1,96 @@
+From 515bcdf587f9911f2d5de51524cb7e048d295052 Mon Sep 17 00:00:00 2001
+From: Baochen Qiang <quic_bqiang@quicinc.com>
+Date: Tue, 9 Jan 2024 10:13:35 +0800
+Subject: [PATCH] wifi: ath11k: move pci.ops registration ahead
+
+In ath11k_pci_probe() there is a switch statement that, based
+upon the PCI device ID, assigns pci_ops. After the switch,
+ath11k_pcic_register_pci_ops() is called to register the pci_ops.
+
+Unfortunately, this registration is too late if any of the cases
+in the switch need to perform operations that require the pci_ops
+to already be registered. In particular, an upcoming patch for
+QCA2066 needs to call ath11k_pcic_read32().
+
+To address this issue, call ath11k_pcic_register_pci_ops() from
+each case instead of doing so after the switch. That way the ops
+will be registered if any subsequent operations within the case
+processing require the ops to be present.
+
+Tested-on: WCN6855 hw2.1 PCI WLAN.HSP.1.1-03125-QCAHSPSWPL_V1_V2_SILICONZ_LITE-3
+
+Signed-off-by: Baochen Qiang <quic_bqiang@quicinc.com>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://msgid.link/20240109021336.4143-2-quic_bqiang@quicinc.com
+---
+ drivers/net/wireless/ath/ath11k/pci.c | 26 ++++++++++++++++----------
+ 1 file changed, 16 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -729,7 +729,6 @@ static int ath11k_pci_probe(struct pci_d
+ 	struct ath11k_base *ab;
+ 	struct ath11k_pci *ab_pci;
+ 	u32 soc_hw_version_major, soc_hw_version_minor, addr;
+-	const struct ath11k_pci_ops *pci_ops;
+ 	int ret;
+ 
+ 	ab = ath11k_core_alloc(&pdev->dev, sizeof(*ab_pci), ATH11K_BUS_PCI);
+@@ -775,6 +774,12 @@ static int ath11k_pci_probe(struct pci_d
+ 
+ 	switch (pci_dev->device) {
+ 	case QCA6390_DEVICE_ID:
++		ret = ath11k_pcic_register_pci_ops(ab, &ath11k_pci_ops_qca6390);
++		if (ret) {
++			ath11k_err(ab, "failed to register PCI ops: %d\n", ret);
++			goto err_pci_free_region;
++		}
++
+ 		ath11k_pci_read_hw_version(ab, &soc_hw_version_major,
+ 					   &soc_hw_version_minor);
+ 		switch (soc_hw_version_major) {
+@@ -788,13 +793,21 @@ static int ath11k_pci_probe(struct pci_d
+ 			goto err_pci_free_region;
+ 		}
+ 
+-		pci_ops = &ath11k_pci_ops_qca6390;
+ 		break;
+ 	case QCN9074_DEVICE_ID:
+-		pci_ops = &ath11k_pci_ops_qcn9074;
++		ret = ath11k_pcic_register_pci_ops(ab, &ath11k_pci_ops_qcn9074);
++		if (ret) {
++			ath11k_err(ab, "failed to register PCI ops: %d\n", ret);
++			goto err_pci_free_region;
++		}
+ 		ab->hw_rev = ATH11K_HW_QCN9074_HW10;
+ 		break;
+ 	case WCN6855_DEVICE_ID:
++		ret = ath11k_pcic_register_pci_ops(ab, &ath11k_pci_ops_qca6390);
++		if (ret) {
++			ath11k_err(ab, "failed to register PCI ops: %d\n", ret);
++			goto err_pci_free_region;
++		}
+ 		ab->id.bdf_search = ATH11K_BDF_SEARCH_BUS_AND_BOARD;
+ 		ath11k_pci_read_hw_version(ab, &soc_hw_version_major,
+ 					   &soc_hw_version_minor);
+@@ -821,7 +834,6 @@ unsupported_wcn6855_soc:
+ 			goto err_pci_free_region;
+ 		}
+ 
+-		pci_ops = &ath11k_pci_ops_qca6390;
+ 		break;
+ 	default:
+ 		dev_err(&pdev->dev, "Unknown PCI device found: 0x%x\n",
+@@ -830,12 +842,6 @@ unsupported_wcn6855_soc:
+ 		goto err_pci_free_region;
+ 	}
+ 
+-	ret = ath11k_pcic_register_pci_ops(ab, pci_ops);
+-	if (ret) {
+-		ath11k_err(ab, "failed to register PCI ops: %d\n", ret);
+-		goto err_pci_free_region;
+-	}
+-
+ 	ret = ath11k_pcic_init_msi_config(ab);
+ 	if (ret) {
+ 		ath11k_err(ab, "failed to init msi config: %d\n", ret);

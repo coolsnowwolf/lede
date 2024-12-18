@@ -1,3 +1,11 @@
+Package/ath11k-firmware-qca2066 = $(call Package/firmware-default,QCA2066 ath11k firmware)
+define Package/ath11k-firmware-qca2066/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA2066/hw2.1
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/QCA2066/hw2.1/* $(1)/lib/firmware/ath11k/QCA2066/hw2.1/
+endef
+$(eval $(call BuildPackage,ath11k-firmware-qca2066))
+
 Package/ath11k-firmware-qca6390 = $(call Package/firmware-default,QCA6390 ath11k firmware)
 define Package/ath11k-firmware-qca6390/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA6390/hw2.0

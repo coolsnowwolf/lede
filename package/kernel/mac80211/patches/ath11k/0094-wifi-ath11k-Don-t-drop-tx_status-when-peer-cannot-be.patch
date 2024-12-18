@@ -1,0 +1,53 @@
+From 400ece6c7f346b0a30867bd00b03b5b2563d4357 Mon Sep 17 00:00:00 2001
+From: Sven Eckelmann <sven@narfation.org>
+Date: Tue, 22 Aug 2023 16:42:24 +0300
+Subject: [PATCH] wifi: ath11k: Don't drop tx_status when peer cannot be found
+
+When a station idles for a long time, hostapd will try to send a QoS Null
+frame to the station as "poll". NL80211_CMD_PROBE_CLIENT is used for this
+purpose. And the skb will be added to ack_status_frame - waiting for a
+completion via ieee80211_report_ack_skb().
+
+But when the peer was already removed before the tx_complete arrives, the
+peer will be missing. And when using dev_kfree_skb_any (instead of going
+through mac80211), the entry will stay inside ack_status_frames. This IDR
+will therefore run full after 8K request were generated for such clients.
+At this point, the access point will then just stall and not allow any new
+clients because idr_alloc() for ack_status_frame will fail.
+
+ieee80211_free_txskb() on the other hand will (when required) call
+ieee80211_report_ack_skb() and make sure that (when required) remove the
+entry from the ack_status_frame.
+
+Tested-on: IPQ6018 hw1.0 WLAN.HK.2.5.0.1-01100-QCAHKSWPL_SILICONZ-1
+
+Fixes: 6257c702264c ("wifi: ath11k: fix tx status reporting in encap offload mode")
+Fixes: 94739d45c388 ("ath11k: switch to using ieee80211_tx_status_ext()")
+Cc: stable@vger.kernel.org
+Signed-off-by: Sven Eckelmann <sven@narfation.org>
+Signed-off-by: Kalle Valo <quic_kvalo@quicinc.com>
+Link: https://lore.kernel.org/r/20230802-ath11k-ack_status_leak-v2-1-c0af729d6229@narfation.org
+---
+ drivers/net/wireless/ath/ath11k/dp_tx.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -369,7 +369,7 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 			   "dp_tx: failed to find the peer with peer_id %d\n",
+ 			    ts->peer_id);
+ 		spin_unlock_bh(&ab->base_lock);
+-		dev_kfree_skb_any(msdu);
++		ieee80211_free_txskb(ar->hw, msdu);
+ 		return;
+ 	}
+ 	spin_unlock_bh(&ab->base_lock);
+@@ -624,7 +624,7 @@ static void ath11k_dp_tx_complete_msdu(s
+ 			   "dp_tx: failed to find the peer with peer_id %d\n",
+ 			    ts->peer_id);
+ 		spin_unlock_bh(&ab->base_lock);
+-		dev_kfree_skb_any(msdu);
++		ieee80211_free_txskb(ar->hw, msdu);
+ 		return;
+ 	}
+ 	arsta = (struct ath11k_sta *)peer->sta->drv_priv;
