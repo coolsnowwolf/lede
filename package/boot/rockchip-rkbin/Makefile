@@ -9,9 +9,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/rockchip-linux/rkbin.git
-PKG_SOURCE_DATE:=2024-10-23
-PKG_SOURCE_VERSION:=7c35e21a8529b3758d1f051d1a5dc62aae934b2b
-PKG_MIRROR_HASH:=f1713c9d329ee2d6610dafd079f842d43ab2a5e8b55e0eb449a777fdaf6d8720
+PKG_SOURCE_DATE:=2024-10-18
+PKG_SOURCE_VERSION:=12660714c81be85350a4092542e2ff599aa5adcb
+PKG_MIRROR_HASH:=30f8ba3ca250dac4c60d1b642e7b3436daf091ace67f600a3bfdd5983bfa98a6
 
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Tianling Shen <cnsztl@immortalwrt.org>
@@ -38,7 +38,7 @@ endef
 define rkbin/rk3328
   DEPENDS:=@TARGET_rockchip_armv8
   ATF:=rk33/rk322xh_bl31_v1.49.elf
-  TPL:=rk33/rk3328_ddr_333MHz_v1.20.bin
+  TPL:=rk33/rk3328_ddr_333MHz_v1.19.bin
   SPL:=rk33/rk322xh_miniloader_v2.50.bin
 endef
 
