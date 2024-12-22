@@ -103,7 +103,7 @@ define KernelPackage/fb
 	CONFIG_VT_HW_CONSOLE_BINDING=y
   FILES:=$(LINUX_DIR)/drivers/video/fbdev/core/fb.ko \
 	$(LINUX_DIR)/lib/fonts/font.ko \
-	$(LINUX_DIR)/drivers/video/fbdev/core/fb_io_fops.ko@ge6.6
+	$(LINUX_DIR)/drivers/video/fbdev/core/fb_io_fops.ko@eq6.6
   AUTOLOAD:=$(call AutoLoad,06,fb font)
 endef
 
@@ -170,7 +170,9 @@ define KernelPackage/fb-sys-fops
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Framebuffer software sys ops support
   DEPENDS:=+kmod-fb
-  KCONFIG:=CONFIG_FB_SYS_FOPS
+  KCONFIG:= \
+	CONFIG_FB_SYS_FOPS@lt6.8 \
+	CONFIG_FB_SYSMEM_FOPS@ge6.8
   FILES:=$(LINUX_DIR)/drivers/video/fbdev/core/fb_sys_fops.ko
   AUTOLOAD:=$(call AutoLoad,07,fb_sys_fops)
 endef
@@ -578,7 +580,7 @@ $(eval $(call KernelPackage,drm-radeon))
 define KernelPackage/drm-sched
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM helper for ARM GPUs
-  DEPENDS:=+kmod-drm
+  DEPENDS:=+kmod-drm +LINUX_6_12:kmod-drm-kms-helper
   HIDDEN:=1
   KCONFIG:=CONFIG_DRM_SCHED
   FILES:= \
