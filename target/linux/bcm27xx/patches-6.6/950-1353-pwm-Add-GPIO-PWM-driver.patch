@@ -1,0 +1,330 @@
+From 3ab72fc21ea8576e59f6aad10bd6b1a0eae6e5eb Mon Sep 17 00:00:00 2001
+From: Vincent Whitchurch <vincent.whitchurch@axis.com>
+Date: Tue, 4 Jun 2024 23:00:41 +0200
+Subject: [PATCH] pwm: Add GPIO PWM driver
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 7f61257cd6e1ad4769b4b819668cab00f68f2556 upstream.
+
+Add a software PWM which toggles a GPIO from a high-resolution timer.
+
+This will naturally not be as accurate or as efficient as a hardware
+PWM, but it is useful in some cases.  I have for example used it for
+evaluating LED brightness handling (via leds-pwm) on a board where the
+LED was just hooked up to a GPIO, and for a simple verification of the
+timer frequency on another platform.
+
+Since high-resolution timers are used, sleeping GPIO chips are not
+supported and are rejected in the probe function.
+
+Signed-off-by: Vincent Whitchurch <vincent.whitchurch@axis.com>
+Co-developed-by: Stefan Wahren <wahrenst@gmx.net>
+Signed-off-by: Stefan Wahren <wahrenst@gmx.net>
+Co-developed-by: Linus Walleij <linus.walleij@linaro.org>
+Reviewed-by: Andy Shevchenko <andy@kernel.org>
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+Reviewed-by: Dhruva Gole <d-gole@ti.com>
+Link: https://lore.kernel.org/r/20240604-pwm-gpio-v7-2-6b67cf60db92@linaro.org
+Signed-off-by: Uwe Kleine-König <ukleinek@kernel.org>
+Signed-off-by: Tim Gover <tim.gover@raspberrypi.com>
+
+pwm: Backport pwm-gpio.c to rpi-6.6.y
+---
+ .../driver-api/gpio/drivers-on-gpio.rst       |   7 +-
+ drivers/pwm/Kconfig                           |  11 +
+ drivers/pwm/Makefile                          |   1 +
+ drivers/pwm/pwm-gpio.c                        | 240 ++++++++++++++++++
+ 4 files changed, 258 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/pwm/pwm-gpio.c
+
+--- a/Documentation/driver-api/gpio/drivers-on-gpio.rst
++++ b/Documentation/driver-api/gpio/drivers-on-gpio.rst
+@@ -27,7 +27,12 @@ hardware descriptions such as device tre
+   to the lines for a more permanent solution of this type.
+ 
+ - gpio-beeper: drivers/input/misc/gpio-beeper.c is used to provide a beep from
+-  an external speaker connected to a GPIO line.
++  an external speaker connected to a GPIO line. (If the beep is controlled by
++  off/on, for an actual PWM waveform, see pwm-gpio below.)
++
++- pwm-gpio: drivers/pwm/pwm-gpio.c is used to toggle a GPIO with a high
++  resolution timer producing a PWM waveform on the GPIO line, as well as
++  Linux high resolution timers can do.
+ 
+ - extcon-gpio: drivers/extcon/extcon-gpio.c is used when you need to read an
+   external connector status, such as a headset line for an audio driver or an
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -217,6 +217,17 @@ config PWM_FSL_FTM
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called pwm-fsl-ftm.
+ 
++config PWM_GPIO
++	tristate "GPIO PWM support"
++	depends on GPIOLIB
++	depends on HIGH_RES_TIMERS
++	help
++	  Generic PWM framework driver for software PWM toggling a GPIO pin
++	  from kernel high-resolution timers.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called pwm-gpio.
++
+ config PWM_HIBVT
+ 	tristate "HiSilicon BVT PWM support"
+ 	depends on ARCH_HISI || COMPILE_TEST
+--- a/drivers/pwm/Makefile
++++ b/drivers/pwm/Makefile
+@@ -18,6 +18,7 @@ obj-$(CONFIG_PWM_CROS_EC)	+= pwm-cros-ec
+ obj-$(CONFIG_PWM_DWC)		+= pwm-dwc.o
+ obj-$(CONFIG_PWM_EP93XX)	+= pwm-ep93xx.o
+ obj-$(CONFIG_PWM_FSL_FTM)	+= pwm-fsl-ftm.o
++obj-$(CONFIG_PWM_GPIO)		+= pwm-gpio.o
+ obj-$(CONFIG_PWM_HIBVT)		+= pwm-hibvt.o
+ obj-$(CONFIG_PWM_IMG)		+= pwm-img.o
+ obj-$(CONFIG_PWM_IMX1)		+= pwm-imx1.o
+--- /dev/null
++++ b/drivers/pwm/pwm-gpio.c
+@@ -0,0 +1,240 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Generic software PWM for modulating GPIOs
++ *
++ * Copyright (C) 2020 Axis Communications AB
++ * Copyright (C) 2020 Nicola Di Lieto
++ * Copyright (C) 2024 Stefan Wahren
++ * Copyright (C) 2024 Linus Walleij
++ */
++
++#include <linux/cleanup.h>
++#include <linux/container_of.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/gpio/consumer.h>
++#include <linux/hrtimer.h>
++#include <linux/math.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/pwm.h>
++#include <linux/spinlock.h>
++#include <linux/time.h>
++#include <linux/types.h>
++
++struct pwm_gpio {
++	struct hrtimer gpio_timer;
++	struct gpio_desc *gpio;
++	struct pwm_state state;
++	struct pwm_state next_state;
++
++	/* Protect internal state between pwm_ops and hrtimer */
++	spinlock_t lock;
++
++	bool changing;
++	bool running;
++	bool level;
++	struct pwm_chip chip;
++};
++
++static void pwm_gpio_round(struct pwm_state *dest, const struct pwm_state *src)
++{
++	u64 dividend;
++	u32 remainder;
++
++	*dest = *src;
++
++	/* Round down to hrtimer resolution */
++	dividend = dest->period;
++	remainder = do_div(dividend, hrtimer_resolution);
++	dest->period -= remainder;
++
++	dividend = dest->duty_cycle;
++	remainder = do_div(dividend, hrtimer_resolution);
++	dest->duty_cycle -= remainder;
++}
++
++static u64 pwm_gpio_toggle(struct pwm_gpio *gpwm, bool level)
++{
++	const struct pwm_state *state = &gpwm->state;
++	bool invert = state->polarity == PWM_POLARITY_INVERSED;
++
++	gpwm->level = level;
++	gpiod_set_value(gpwm->gpio, gpwm->level ^ invert);
++
++	if (!state->duty_cycle || state->duty_cycle == state->period) {
++		gpwm->running = false;
++		return 0;
++	}
++
++	gpwm->running = true;
++	return level ? state->duty_cycle : state->period - state->duty_cycle;
++}
++
++static enum hrtimer_restart pwm_gpio_timer(struct hrtimer *gpio_timer)
++{
++	struct pwm_gpio *gpwm = container_of(gpio_timer, struct pwm_gpio,
++					     gpio_timer);
++	u64 next_toggle;
++	bool new_level;
++
++	guard(spinlock_irqsave)(&gpwm->lock);
++
++	/* Apply new state at end of current period */
++	if (!gpwm->level && gpwm->changing) {
++		gpwm->changing = false;
++		gpwm->state = gpwm->next_state;
++		new_level = !!gpwm->state.duty_cycle;
++	} else {
++		new_level = !gpwm->level;
++	}
++
++	next_toggle = pwm_gpio_toggle(gpwm, new_level);
++	if (next_toggle)
++		hrtimer_forward(gpio_timer, hrtimer_get_expires(gpio_timer),
++				ns_to_ktime(next_toggle));
++
++	return next_toggle ? HRTIMER_RESTART : HRTIMER_NORESTART;
++}
++
++static int pwm_gpio_apply(struct pwm_chip *chip, struct pwm_device *pwm,
++			  const struct pwm_state *state)
++{
++	struct pwm_gpio *gpwm = container_of(chip, struct pwm_gpio, chip);
++	bool invert = state->polarity == PWM_POLARITY_INVERSED;
++
++	if (state->duty_cycle && state->duty_cycle < hrtimer_resolution)
++		return -EINVAL;
++
++	if (state->duty_cycle != state->period &&
++	    (state->period - state->duty_cycle < hrtimer_resolution))
++		return -EINVAL;
++
++	if (!state->enabled) {
++		hrtimer_cancel(&gpwm->gpio_timer);
++	} else if (!gpwm->running) {
++		int ret;
++
++		/*
++		 * This just enables the output, but pwm_gpio_toggle()
++		 * really starts the duty cycle.
++		 */
++		ret = gpiod_direction_output(gpwm->gpio, invert);
++		if (ret)
++			return ret;
++	}
++
++	guard(spinlock_irqsave)(&gpwm->lock);
++
++	if (!state->enabled) {
++		pwm_gpio_round(&gpwm->state, state);
++		gpwm->running = false;
++		gpwm->changing = false;
++
++		gpiod_set_value(gpwm->gpio, invert);
++	} else if (gpwm->running) {
++		pwm_gpio_round(&gpwm->next_state, state);
++		gpwm->changing = true;
++	} else {
++		unsigned long next_toggle;
++
++		pwm_gpio_round(&gpwm->state, state);
++		gpwm->changing = false;
++
++		next_toggle = pwm_gpio_toggle(gpwm, !!state->duty_cycle);
++		if (next_toggle)
++			hrtimer_start(&gpwm->gpio_timer, next_toggle,
++				      HRTIMER_MODE_REL);
++	}
++
++	return 0;
++}
++
++static int pwm_gpio_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
++			       struct pwm_state *state)
++{
++	struct pwm_gpio *gpwm = container_of(chip, struct pwm_gpio, chip);
++
++	guard(spinlock_irqsave)(&gpwm->lock);
++
++	if (gpwm->changing)
++		*state = gpwm->next_state;
++	else
++		*state = gpwm->state;
++
++	return 0;
++}
++
++static const struct pwm_ops pwm_gpio_ops = {
++	.apply = pwm_gpio_apply,
++	.get_state = pwm_gpio_get_state,
++};
++
++static void pwm_gpio_disable_hrtimer(void *data)
++{
++	struct pwm_gpio *gpwm = data;
++
++	hrtimer_cancel(&gpwm->gpio_timer);
++}
++
++static int pwm_gpio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct pwm_chip *chip;
++	struct pwm_gpio *gpwm;
++	int ret;
++
++	gpwm = devm_kzalloc(&pdev->dev, sizeof(*gpwm), GFP_KERNEL);
++	if (IS_ERR(gpwm))
++		return PTR_ERR(gpwm);
++
++	chip = &gpwm->chip;
++
++	spin_lock_init(&gpwm->lock);
++
++	gpwm->gpio = devm_gpiod_get(dev, NULL, GPIOD_ASIS);
++	if (IS_ERR(gpwm->gpio))
++		return dev_err_probe(dev, PTR_ERR(gpwm->gpio),
++				     "%pfw: could not get gpio\n",
++				     dev_fwnode(dev));
++
++	if (gpiod_cansleep(gpwm->gpio))
++		return dev_err_probe(dev, -EINVAL,
++				     "%pfw: sleeping GPIO not supported\n",
++				     dev_fwnode(dev));
++
++	chip->dev = dev;
++	chip->ops = &pwm_gpio_ops;
++	chip->atomic = true;
++	chip->npwm = 1;
++
++	hrtimer_init(&gpwm->gpio_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	ret = devm_add_action_or_reset(dev, pwm_gpio_disable_hrtimer, gpwm);
++	if (ret)
++		return ret;
++
++	gpwm->gpio_timer.function = pwm_gpio_timer;
++
++	return devm_pwmchip_add(dev, chip);
++}
++
++static const struct of_device_id pwm_gpio_dt_ids[] = {
++	{ .compatible = "pwm-gpio" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, pwm_gpio_dt_ids);
++
++static struct platform_driver pwm_gpio_driver = {
++	.driver = {
++		.name = "pwm-gpio",
++		.of_match_table = pwm_gpio_dt_ids,
++	},
++	.probe = pwm_gpio_probe,
++};
++module_platform_driver(pwm_gpio_driver);
++
++MODULE_DESCRIPTION("PWM GPIO driver");
++MODULE_AUTHOR("Vincent Whitchurch");
++MODULE_LICENSE("GPL");

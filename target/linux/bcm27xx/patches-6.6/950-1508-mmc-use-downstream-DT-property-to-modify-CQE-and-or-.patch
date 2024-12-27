@@ -1,0 +1,94 @@
+From e72f42ebc9a236c023f8027a37c9351d58e28b05 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 8 Jan 2025 16:02:27 +0000
+Subject: [PATCH] mmc: use downstream DT property to modify CQE and/or SD CQ
+ behaviour
+
+Implement a tristate-style option for "supports-cqe". If the property is
+absent or zero, disable CQ completely. For 1, enable CQ unconditionally
+for eMMC cards, and known-good SD cards. For 2, enable for eMMC cards,
+and all SD cards that are not known-bad.
+
+The sdhci-brcmstb driver needs to know about the tristate as its probe
+sequence would otherwise override a disable in mmc_of_parse().
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/core/host.c          | 11 ++++++++++-
+ drivers/mmc/core/sd.c            |  4 ++--
+ drivers/mmc/host/sdhci-brcmstb.c |  6 ++++--
+ include/linux/mmc/host.h         |  1 +
+ 4 files changed, 17 insertions(+), 5 deletions(-)
+
+--- a/drivers/mmc/core/host.c
++++ b/drivers/mmc/core/host.c
+@@ -275,7 +275,7 @@ EXPORT_SYMBOL(mmc_of_parse_clk_phase);
+ int mmc_of_parse(struct mmc_host *host)
+ {
+ 	struct device *dev = host->parent;
+-	u32 bus_width, drv_type, cd_debounce_delay_ms;
++	u32 bus_width, drv_type, cd_debounce_delay_ms, cq_allow;
+ 	int ret;
+ 
+ 	if (!dev || !dev_fwnode(dev))
+@@ -410,6 +410,15 @@ int mmc_of_parse(struct mmc_host *host)
+ 		host->caps2 &= ~(MMC_CAP2_HS400_1_8V | MMC_CAP2_HS400_1_2V |
+ 				 MMC_CAP2_HS400_ES);
+ 
++	cq_allow = 0;
++	/*
++	 * Downstream property - if a u32 and 2 instead of a bool,
++	 * trust most A2 SD cards claiming CQ support.
++	 */
++	device_property_read_u32(dev, "supports-cqe", &cq_allow);
++	if (cq_allow == 2)
++		host->caps2 |= MMC_CAP2_SD_CQE_PERMISSIVE;
++
+ 	/* Must be after "non-removable" check */
+ 	if (device_property_read_u32(dev, "fixed-emmc-driver-type", &drv_type) == 0) {
+ 		if (host->caps & MMC_CAP_NONREMOVABLE)
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -1506,8 +1506,8 @@ cont:
+ 			goto free_card;
+ 	}
+ 
+-	/* Disallow command queueing on unvetted cards */
+-	if (!mmc_card_working_sd_cq(card))
++	/* Disallow command queueing on unvetted cards unless overridden */
++	if (!(host->caps2 & MMC_CAP2_SD_CQE_PERMISSIVE) && !mmc_card_working_sd_cq(card))
+ 		card->ext_csd.cmdq_support = false;
+ 
+ 	/* Enable command queueing if supported */
+--- a/drivers/mmc/host/sdhci-brcmstb.c
++++ b/drivers/mmc/host/sdhci-brcmstb.c
+@@ -511,7 +511,7 @@ static int sdhci_brcmstb_probe(struct pl
+ 	struct sdhci_pltfm_host *pltfm_host;
+ 	const struct of_device_id *match;
+ 	struct sdhci_brcmstb_priv *priv;
+-	u32 actual_clock_mhz;
++	u32 actual_clock_mhz, cqe;
+ 	struct sdhci_host *host;
+ 	struct resource *iomem;
+ 	bool no_pinctrl = false;
+@@ -540,7 +540,9 @@ static int sdhci_brcmstb_probe(struct pl
+ 	pltfm_host->clk = clk;
+ 
+ 	priv = sdhci_pltfm_priv(pltfm_host);
+-	if (device_property_read_bool(&pdev->dev, "supports-cqe")) {
++	cqe = 0;
++	device_property_read_u32(&pdev->dev, "supports-cqe", &cqe);
++	if (cqe > 0) {
+ 		priv->flags |= BRCMSTB_PRIV_FLAGS_HAS_CQE;
+ 		match_priv->ops->irq = sdhci_brcmstb_cqhci_irq;
+ 	}
+--- a/include/linux/mmc/host.h
++++ b/include/linux/mmc/host.h
+@@ -427,6 +427,7 @@ struct mmc_host {
+ #define MMC_CAP2_CRYPTO		0
+ #endif
+ #define MMC_CAP2_ALT_GPT_TEGRA	(1 << 28)	/* Host with eMMC that has GPT entry at a non-standard location */
++#define MMC_CAP2_SD_CQE_PERMISSIVE	(1 << 31)	/* Ignore allow-list for CQ capable SD card detection */
+ 
+ 	int			fixed_drv_type;	/* fixed driver type for non-removable media */
+ 

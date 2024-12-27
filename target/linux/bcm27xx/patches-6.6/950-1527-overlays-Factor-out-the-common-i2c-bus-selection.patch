@@ -1,0 +1,1630 @@
+From a320d39840745502d420f56b3d49b3723a12058f Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Sun, 26 Jan 2025 22:08:16 +0000
+Subject: [PATCH] overlays: Factor out the common i2c bus selection
+
+Create an i2c-buses.dtsi to hold all of the common I2C bus selection
+logic, and refactor existing overlays to use it. This patch should
+have no functional change overall except to increase the range of
+options for some overlays.
+
+There is a slightly ugly mechanism for overriding the default bus, where
+the mux nodes may or may not need to be enabled.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ arch/arm/boot/dts/overlays/README             | 264 ++++-------------
+ .../arm/boot/dts/overlays/ads1115-overlay.dts |  39 +--
+ .../boot/dts/overlays/edt-ft5406-overlay.dts  |  39 +--
+ arch/arm/boot/dts/overlays/edt-ft5406.dtsi    |   5 +-
+ arch/arm/boot/dts/overlays/i2c-buses.dtsi     |  67 +++++
+ .../arm/boot/dts/overlays/i2c-fan-overlay.dts |  45 +--
+ .../arm/boot/dts/overlays/i2c-mux-overlay.dts |  42 +--
+ .../dts/overlays/i2c-pwm-pca9685a-overlay.dts |  41 +--
+ .../arm/boot/dts/overlays/i2c-rtc-overlay.dts |  43 +--
+ .../boot/dts/overlays/i2c-sensor-overlay.dts  |  43 +--
+ .../boot/dts/overlays/mcp23017-overlay.dts    |  47 +--
+ .../arm/boot/dts/overlays/pca953x-overlay.dts | 277 +++---------------
+ .../arm/boot/dts/overlays/pcf857x-overlay.dts |  38 +--
+ .../dts/overlays/sc16is750-i2c-overlay.dts    |  37 +--
+ .../dts/overlays/sc16is752-i2c-overlay.dts    |  37 +--
+ .../overlays/seeed-can-fd-hat-v2-overlay.dts  |   9 +-
+ .../overlays/vc4-kms-dsi-7inch-overlay.dts    |  17 +-
+ .../vc4-kms-dsi-waveshare-800x480-overlay.dts |  15 +-
+ 18 files changed, 202 insertions(+), 903 deletions(-)
+ create mode 100644 arch/arm/boot/dts/overlays/i2c-buses.dtsi
+
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -568,6 +568,8 @@ Load:   dtoverlay=ads1115,<param>[=<val>
+ Params: addr                    I2C bus address of device. Set based on how the
+                                 addr pin is wired. (default=0x48 assumes addr
+                                 is pulled to GND)
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+         cha_enable              Enable virtual channel a.
+         cha_cfg                 Set the configuration for virtual channel a.
+                                 (default=4 configures this channel for the
+@@ -577,22 +579,6 @@ Params: addr                    I2C bus
+         cha_gain                Set the gain of the Programmable Gain
+                                 Amplifier for this channel. (Default 1 sets the
+                                 full scale of the channel to 4.096 Volts)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C4 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c5
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+         Channel parameters can be set for each enabled channel.
+         A maximum of 4 channels can be enabled (letters a thru d).
+@@ -1263,20 +1249,11 @@ Params: sizex                   Touchscr
+         invx                    Touchscreen inverted x axis
+         invy                    Touchscreen inverted y axis
+         swapxy                  Touchscreen swapped x y axis
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c1                    Choose the I2C1 bus on GPIOs 2&3
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C4 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c5
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+         addr                    Sets the address for the touch controller. Note
+                                 that the device must be configured to use the
+                                 specified address.
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+ 
+ 
+ Name:   enc28j60
+@@ -2114,37 +2091,41 @@ Load:   dtoverlay=i2c-bcm2708
+ Params: <None>
+ 
+ 
+-Name:   i2c-fan
+-Info:   Adds support for a number of I2C fan controllers
+-Load:   dtoverlay=i2c-fan,<param>=<val>
+-Params: addr                    Sets the address for the fan controller. Note
+-                                that the device must be configured to use the
+-                                specified address.
+-
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-
++Name:   i2c-bus
++Info:   This is not a real overlay. Many overlays support the use of a variety
++        of I2C buses, and this is where the relevant parameters are documented.
++Load:   <Documentation>
++Params: i2c0                    Choose the I2C0 bus on GPIOs 0&1
++        i2c1                    Choose the I2C1 bus on GPIOs 2&3
++        i2c2                    Choose the I2C2 bus (configure with the i2c2
++                                overlay - BCM2711 only)
+         i2c3                    Choose the I2C3 bus (configure with the i2c3
+                                 overlay - BCM2711 only)
+-
+         i2c4                    Choose the I2C4 bus (configure with the i2c4
+                                 overlay - BCM2711 only)
+-
+         i2c5                    Choose the I2C5 bus (configure with the i2c5
+                                 overlay - BCM2711 only)
+-
+         i2c6                    Choose the I2C6 bus (configure with the i2c6
+                                 overlay - BCM2711 only)
+-
++        i2c_csi_dsi             Choose the I2C bus connected to the main
++                                camera/display connector.
++                                See "dtparam -h i2c_csi_dsi" for details.
++        i2c_csi_dsi0            Choose the I2C bus connected to the second
++                                camera/display connector, if present.
++                                See "dtparam -h i2c_csi_dsi0" for details.
+         i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
++
++Name:   i2c-fan
++Info:   Adds support for a number of I2C fan controllers
++Load:   dtoverlay=i2c-fan,<param>=<val>
++Params: addr                    Sets the address for the fan controller. Note
++                                that the device must be configured to use the
++                                specified address.
++
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
++
+         minpwm                  PWM setting for the fan when the SoC is below
+                                 mintemp (range 0-255. default 0)
+         maxpwm                  PWM setting for the fan when the SoC is above
+@@ -2196,33 +2177,12 @@ Params: pca9542                 Select t
+ 
+         addr                    Change I2C address of the device (default 0x70)
+ 
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
++
+         base                    Set an explicit base value for the channel bus
+                                 numbers
+ 
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+-
+         disconnect_on_idle      Force the mux to disconnect all child buses
+                                 after every transaction.
+ 
+@@ -2234,22 +2194,8 @@ Name:   i2c-pwm-pca9685a
+ Info:   Adds support for an NXP PCA9685A I2C PWM controller on i2c_arm
+ Load:   dtoverlay=i2c-pwm-pca9685a,<param>=<val>
+ Params: addr                    I2C address of PCA9685A (default 0x40)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+ 
+ 
+ Name:   i2c-rtc
+@@ -2303,29 +2249,8 @@ Params: abx80x                  Select o
+ 
+         s35390a                 Select the ABLIC S35390A device
+ 
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+ 
+         addr                    Sets the address for the RTC. Note that the
+                                 device must be configured to use the specified
+@@ -2451,6 +2376,9 @@ Params: addr                    Set the
+                                 JC42, LM75, MCP980x, MPU6050, MPU9250, MS5637,
+                                 MS5803, MS5805, MS5837, MS8607, SHT3x or TMP102
+ 
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
++
+         adt7410                 Select the Analog Devices ADT7410 and ADT7420
+                                 temperature sensors
+                                 Valid address 0x48-0x4b, default 0x48
+@@ -2591,29 +2519,6 @@ Params: addr                    Set the
+         veml6070                Select the Vishay VEML6070 ultraviolet light
+                                 sensor
+ 
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+-
+ 
+ Name:   i2c0
+ Info:   Change i2c0 pin usage. Not all pin combinations are usable on all
+@@ -3255,24 +3160,11 @@ Params: gpiopin                 Gpio pin
+ 
+         addr                    I2C address of the MCP23017 (default: 0x20)
+ 
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
++
+         mcp23008                Configure an MCP23008 instead.
+         noints                  Disable the interrupt GPIO line.
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C4 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c5
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+ 
+ Name:   mcp23s17
+@@ -3692,6 +3584,8 @@ Name:   pca953x
+ Info:   TI PCA953x family of I2C GPIO expanders. Default is for NXP PCA9534.
+ Load:   dtoverlay=pca953x,<param>=<val>
+ Params: addr                    I2C address of expander. Default 0x20.
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+         pca6416                 Select the NXP PCA6416 (16 bit)
+         pca9505                 Select the NXP PCA9505 (40 bit)
+         pca9535                 Select the NXP PCA9535 (16 bit)
+@@ -3722,22 +3616,6 @@ Params: addr                    I2C addr
+         cat9554                 Select the Onnn CAT9554 (8 bit)
+         pca9654                 Select the Onnn PCA9654 (8 bit)
+         xra1202                 Select the Exar XRA1202 (8 bit)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+ 
+ Name:   pcf857x
+@@ -3745,26 +3623,12 @@ Info:   NXP PCF857x family of I2C GPIO e
+ Load:   dtoverlay=pcf857x,<param>=<val>
+ Params: addr                    I2C address of expander. Default
+                                 depends on model selected.
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+         pcf8574                 Select the NXP PCF8574 (8 bit)
+         pcf8574a                Select the NXP PCF8574A (8 bit)
+         pcf8575                 Select the NXP PCF8575 (16 bit)
+         pca8574                 Select the NXP PCA8574 (8 bit)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+ 
+ Name:   pcie-32bit-dma
+@@ -4463,23 +4327,9 @@ Info:   Overlay for the NXP SC16IS750 UA
+ Load:   dtoverlay=sc16is750-i2c,<param>=<val>
+ Params: int_pin                 GPIO used for IRQ (default 24)
+         addr                    Address (default 0x48)
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+         xtal                    On-board crystal frequency (default 14745600)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C4 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c5
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+ 
+ Name:   sc16is750-spi0
+@@ -4497,23 +4347,9 @@ Info:   Overlay for the NXP SC16IS752 du
+ Load:   dtoverlay=sc16is752-i2c,<param>=<val>
+ Params: int_pin                 GPIO used for IRQ (default 24)
+         addr                    Address (default 0x48)
++        i2c-bus                 Supports all the standard I2C bus selection
++                                parameters - see "dtoverlay -h i2c-bus"
+         xtal                    On-board crystal frequency (default 14745600)
+-        i2c0                    Choose the I2C0 bus on GPIOs 0&1
+-        i2c_csi_dsi             Choose the I2C bus connected to the main
+-                                camera/display connector.
+-                                See "dtparam -h i2c_csi_dsi" for details.
+-        i2c_csi_dsi0            Choose the I2C bus connected to the second
+-                                camera/display connector, if present.
+-                                See "dtparam -h i2c_csi_dsi0" for details.
+-        i2c3                    Choose the I2C3 bus (configure with the i2c3
+-                                overlay - BCM2711 only)
+-        i2c4                    Choose the I2C4 bus (configure with the i2c4
+-                                overlay - BCM2711 only)
+-        i2c5                    Choose the I2C5 bus (configure with the i2c5
+-                                overlay - BCM2711 only)
+-        i2c6                    Choose the I2C6 bus (configure with the i2c6
+-                                overlay - BCM2711 only)
+-        i2c-path                Override I2C path to allow for i2c-gpio buses
+ 
+ 
+ Name:   sc16is752-spi0
+--- a/arch/arm/boot/dts/overlays/ads1115-overlay.dts
++++ b/arch/arm/boot/dts/overlays/ads1115-overlay.dts
+@@ -5,6 +5,8 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+@@ -81,27 +83,6 @@
+ 		};
+ 	};
+ 
+-	frag100: fragment@100 {
+-		target = <&i2c1>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		addr =            <&ads1115>,"reg:0";
+ 		cha_enable =      <0>,"=0";
+@@ -120,21 +101,5 @@
+ 		chd_cfg =         <&channel_d>,"reg:0";
+ 		chd_gain =        <&channel_d>,"ti,gain:0";
+ 		chd_datarate =    <&channel_d>,"ti,datarate:0";
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/edt-ft5406-overlay.dts
++++ b/arch/arm/boot/dts/overlays/edt-ft5406-overlay.dts
+@@ -7,43 +7,16 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#define ENABLE_I2C0_MUX
++#include "i2c-buses.dtsi"
+ #include "edt-ft5406.dtsi"
+ 
+-/ {
+-	fragment@0 {
+-		target = <&i2c0if>;
+-		__overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@1 {
+-		target = <&i2c0mux>;
+-		__overlay__ {
+-			status = "okay";
+-		};
+-	};
++&busfrag {
++	target = <&i2c_csi_dsi>;
++};
+ 
++/ {
+ 	__overrides__ {
+-		i2c0 = <&ts_i2c_frag>,"target:0=",<&i2c0>;
+-		i2c1 = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path=i2c1",
+-		       <0>,"-0-1";
+-		i2c3 = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path=i2c3",
+-		       <0>,"-0-1";
+-		i2c4 = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path=i2c4",
+-		       <0>,"-0-1";
+-		i2c5 = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path=i2c5",
+-		       <0>,"-0-1";
+-		i2c6 = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path=i2c6",
+-		       <0>,"-0-1";
+-		i2c-path = <&ts_i2c_frag>, "target?=0",
+-		       <&ts_i2c_frag>, "target-path",
+-		       <0>,"-0-1";
+ 		addr = <&ft5406>,"reg:0";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/edt-ft5406.dtsi
++++ b/arch/arm/boot/dts/overlays/edt-ft5406.dtsi
+@@ -22,12 +22,11 @@
+ 		};
+ 	};
+ 
+-	ts_i2c_frag: fragment@12 {
+-		target = <&i2c_csi_dsi>;
++	fragment@12 {
++		target = <&i2cbus>;
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			ft5406: ts@38 {
+ 				compatible = "edt,edt-ft5506";
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/i2c-buses.dtsi
+@@ -0,0 +1,67 @@
++// Common i2c buses, and dtparams to select them
++
++/ {
++	compatible = "brcm,bcm2835";
++
++	busfrag: fragment@100 {
++		target = <&i2c_arm>;
++		i2cbus: __overlay__ {
++			status = "okay";
++		};
++	};
++
++	fragment@101 {
++		target = <&i2c0if>;
++#ifdef ENABLE_I2C0_MUX
++		__overlay__ {
++#else
++		__dormant__ {
++#endif
++			status = "okay";
++		};
++	};
++
++	fragment@102 {
++		target = <&i2c0mux>;
++#ifdef ENABLE_I2C0_MUX
++		__overlay__ {
++#else
++		__dormant__ {
++#endif
++			status = "okay";
++		};
++	};
++
++	__overrides__ {
++		i2c0 = <&busfrag>,"target:0=",<&i2c0>,
++			      <&busfrag>, "target-path?=0",
++			      <0>,"+101+102";
++		i2c_csi_dsi = <&busfrag>,"target:0=",<&i2c_csi_dsi>,
++			      <&busfrag>, "target-path?=0",
++			      <0>,"+101+102";
++		i2c_csi_dsi0 = <&busfrag>, "target:0=",<&i2c_csi_dsi0>,
++			       <&busfrag>, "target-path?=0",
++			       <0>,"+101+102";
++		i2c1 = <&busfrag>,"target:0=",<&i2c1>,
++		       <&busfrag>, "target-path?=0",
++		       <0>,"-101-102";
++		i2c2 = <&busfrag>, "target?=0",
++		       <&busfrag>, "target-path=i2c2",
++		       <0>,"-101-102";
++		i2c3 = <&busfrag>, "target?=0",
++		       <&busfrag>, "target-path=i2c3",
++		       <0>,"-101-102";
++		i2c4 = <&busfrag>, "target?=0",
++		       <&busfrag>, "target-path=i2c4",
++		       <0>,"-101-102";
++		i2c5 = <&busfrag>, "target?=0",
++		       <&busfrag>, "target-path=i2c5",
++		       <0>,"-101-102";
++		i2c6 = <&busfrag>, "target?=0",
++		       <&busfrag>, "target-path=i2c6",
++		       <0>,"-101-102";
++		i2c-path = <&busfrag>, "target?=0",
++			   <&busfrag>, "target-path",
++			   <0>,"-101-102";
++	};
++};
+--- a/arch/arm/boot/dts/overlays/i2c-fan-overlay.dts
++++ b/arch/arm/boot/dts/overlays/i2c-fan-overlay.dts
+@@ -4,6 +4,8 @@
+ 
+ #include <dt-bindings/thermal/thermal.h>
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+@@ -22,35 +24,14 @@
+ 		};
+ 	};
+ 
+-	frag100: fragment@100 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@103 {
++	fragment@1 {
+ 		target = <&cpu_thermal>;
+ 		__overlay__ {
+ 			polling-delay = <2000>; /* milliseconds */
+ 		};
+ 	};
+ 
+-	fragment@104 {
++	fragment@2 {
+ 		target = <&thermal_trips>;
+ 		__overlay__ {
+ 			fanmid0: fanmid0 {
+@@ -66,7 +47,7 @@
+ 		};
+ 	};
+ 
+-	fragment@105 {
++	fragment@3 {
+ 		target = <&cooling_maps>;
+ 		__overlay__ {
+ 			map0: map0 {
+@@ -81,22 +62,6 @@
+ 	};
+ 
+ 	__overrides__ {
+-		i2c0 =		<&frag100>,"target:0=",<&i2c0>,
+-				<0>,"+101+102";
+-		i2c_csi_dsi =	<&frag100>,"target:0=",<&i2c_csi_dsi>,
+-				<0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-			   <&frag100>, "target-path";
+ 		addr =		<&emc2301>,"reg:0";
+ 		minpwm =	<&emc2301>,"emc2305,pwm-min.0";
+ 		maxpwm =	<&emc2301>,"emc2305,pwm-max.0";
+--- a/arch/arm/boot/dts/overlays/i2c-mux-overlay.dts
++++ b/arch/arm/boot/dts/overlays/i2c-mux-overlay.dts
+@@ -5,6 +5,8 @@
+ 
+ #include <dt-bindings/mux/mux.h>
+ 
++#include "i2c-buses.dtsi"
++
+ /{
+ 	compatible = "brcm,bcm2835";
+ 
+@@ -13,7 +15,6 @@
+ 		__dormant__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			pca9542: mux@70 {
+ 				compatible = "nxp,pca9542";
+@@ -40,7 +41,6 @@
+ 		__dormant__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			pca9545: mux@70 {
+ 				compatible = "nxp,pca9545";
+@@ -77,7 +77,6 @@
+ 		__dormant__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			pca9548: mux@70 {
+ 				compatible = "nxp,pca9548";
+@@ -129,27 +128,6 @@
+ 		};
+ 	};
+ 
+-	frag100: fragment@100 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		pca9542 = <0>, "+0";
+ 		pca9545 = <0>, "+1";
+@@ -163,22 +141,6 @@
+ 			<&pca9545>,"base-nr:0",
+ 			<&pca9548>,"base-nr:0";
+ 
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-			   <&frag100>, "target-path";
+ 		disconnect_on_idle =
+ 			<&pca9542>,"idle-state:0=", <MUX_IDLE_DISCONNECT>,
+ 			<&pca9545>,"idle-state:0=", <MUX_IDLE_DISCONNECT>,
+--- a/arch/arm/boot/dts/overlays/i2c-pwm-pca9685a-overlay.dts
++++ b/arch/arm/boot/dts/overlays/i2c-pwm-pca9685a-overlay.dts
+@@ -2,6 +2,8 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ /{
+ 	compatible = "brcm,bcm2835";
+ 
+@@ -10,7 +12,6 @@
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			pca: pca@40 {
+ 				compatible = "nxp,pca9685-pwm";
+@@ -21,45 +22,7 @@
+ 		};
+ 	};
+ 
+-
+-	frag100: fragment@100 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		addr = <&pca>,"reg:0";
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-			   <&frag100>, "target-path";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/i2c-rtc-overlay.dts
++++ b/arch/arm/boot/dts/overlays/i2c-rtc-overlay.dts
+@@ -3,45 +3,4 @@
+ /plugin/;
+ 
+ #include "i2c-rtc-common.dtsi"
+-
+-/ {
+-	frag100: fragment@100 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	__overrides__ {
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-			   <&frag100>, "target-path";
+-	};
+-};
++#include "i2c-buses.dtsi"
+--- a/arch/arm/boot/dts/overlays/i2c-sensor-overlay.dts
++++ b/arch/arm/boot/dts/overlays/i2c-sensor-overlay.dts
+@@ -3,45 +3,4 @@
+ /plugin/;
+ 
+ #include "i2c-sensor-common.dtsi"
+-
+-/ {
+-	frag100: fragment@100 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@102 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	__overrides__ {
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-			   <&frag100>, "target-path";
+-	};
+-};
++#include "i2c-buses.dtsi"
+--- a/arch/arm/boot/dts/overlays/mcp23017-overlay.dts
++++ b/arch/arm/boot/dts/overlays/mcp23017-overlay.dts
+@@ -3,16 +3,11 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+-	fragment@0 {
+-		target = <&i2cbus>;
+-		__overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	fragment@1 {
+ 		target = <&gpio>;
+ 		__overlay__ {
+@@ -60,49 +55,11 @@
+ 		};
+ 	};
+ 
+-	frag100: fragment@100 {
+-		target = <&i2c1>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 { 
+-		target = <&i2c0if>; 
+-		__dormant__ { 
+-			status = "okay"; 
+-		}; 
+-	};
+-
+-	fragment@102 { 
+-		target = <&i2c0mux>; 
+-		__dormant__ { 
+-			status = "okay"; 
+-		}; 
+-	};
+-
+ 	__overrides__ {
+ 		gpiopin = <&mcp23017_pins>,"brcm,pins:0",
+ 				<&mcp23017_irq>,"interrupts:0";
+ 		addr = <&mcp23017>,"reg:0", <&mcp23017_pins>,"reg:0";
+ 		mcp23008 = <0>,"=2";
+ 		noints = <0>,"!1!3";
+-		i2c0 = <&frag100>, "target:0=",<&i2c0>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi = <&frag100>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+101+102";
+-		i2c_csi_dsi0 = <&frag100>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+101+102";
+-		i2c3 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c3";
+-		i2c4 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c4";
+-		i2c5 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c5";
+-		i2c6 = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path=i2c6";
+-		i2c-path = <&frag100>, "target?=0",
+-		       <&frag100>, "target-path";
+ 	};
+ };
+-
+--- a/arch/arm/boot/dts/overlays/pca953x-overlay.dts
++++ b/arch/arm/boot/dts/overlays/pca953x-overlay.dts
+@@ -2,11 +2,13 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ /{
+ 	compatible = "brcm,bcm2835";
+ 
+-	frag0: fragment@0 {
+-		target = <&i2c_arm>;
++	fragment@0 {
++		target = <&i2cbus>;
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+@@ -21,248 +23,37 @@
+ 		};
+ 	};
+ 
+-	fragment@1 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca6416";
+-		};
+-	};
+-	fragment@2 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9505";
+-		};
+-	};
+-	fragment@3 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9535";
+-		};
+-	};
+-	fragment@4 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9536";
+-		};
+-	};
+-	fragment@5 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9537";
+-		};
+-	};
+-	fragment@6 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9538";
+-		};
+-	};
+-	fragment@7 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9539";
+-		};
+-	};
+-	fragment@8 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9554";
+-		};
+-	};
+-	fragment@9 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9555";
+-		};
+-	};
+-	fragment@10 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9556";
+-		};
+-	};
+-	fragment@11 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9557";
+-		};
+-	};
+-	fragment@12 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9574";
+-		};
+-	};
+-	fragment@13 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9575";
+-		};
+-	};
+-	fragment@14 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pca9698";
+-		};
+-	};
+-	fragment@15 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pcal6416";
+-		};
+-	};
+-	fragment@16 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pcal6524";
+-		};
+-	};
+-	fragment@17 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "nxp,pcal9555a";
+-		};
+-	};
+-	fragment@18 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "maxim,max7310";
+-		};
+-	};
+-	fragment@19 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "maxim,max7312";
+-		};
+-	};
+-	fragment@20 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "maxim,max7313";
+-		};
+-	};
+-	fragment@21 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "maxim,max7315";
+-		};
+-	};
+-	fragment@22 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,pca6107";
+-		};
+-	};
+-	fragment@23 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,tca6408";
+-		};
+-	};
+-	fragment@24 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,tca6416";
+-		};
+-	};
+-	fragment@25 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,tca6424";
+-		};
+-	};
+-	fragment@26 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,tca9539";
+-		};
+-	};
+-	fragment@27 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "ti,tca9554";
+-		};
+-	};
+-	fragment@28 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "onnn,cat9554";
+-		};
+-	};
+-	fragment@29 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "onnn,pca9654";
+-		};
+-	};
+-	fragment@30 {
+-		target = <&pca>;
+-		__dormant__ {
+-			compatible = "exar,xra1202";
+-		};
+-	};
+-
+-	fragment@100 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		addr = <&pca>,"reg:0";
+-		pca6416 = <0>, "+1";
+-		pca9505 = <0>, "+2";
+-		pca9535 = <0>, "+3";
+-		pca9536 = <0>, "+4";
+-		pca9537 = <0>, "+5";
+-		pca9538 = <0>, "+6";
+-		pca9539 = <0>, "+7";
+-		pca9554 = <0>, "+8";
+-		pca9555 = <0>, "+9";
+-		pca9556 = <0>, "+10";
+-		pca9557 = <0>, "+11";
+-		pca9574 = <0>, "+12";
+-		pca9575 = <0>, "+13";
+-		pca9698 = <0>, "+14";
+-		pcal6416 = <0>, "+15";
+-		pcal6524 = <0>, "+16";
+-		pcal9555a = <0>, "+17";
+-		max7310 = <0>, "+18";
+-		max7312 = <0>, "+19";
+-		max7313 = <0>, "+20";
+-		max7315 = <0>, "+21";
+-		pca6107 = <0>, "+22";
+-		tca6408 = <0>, "+23";
+-		tca6416 = <0>, "+24";
+-		tca6424 = <0>, "+25";
+-		tca9539 = <0>, "+26";
+-		tca9554 = <0>, "+27";
+-		cat9554 = <0>, "+28";
+-		pca9654 = <0>, "+29";
+-		xra1202 = <0>, "+30";
+-		i2c0 = <&frag0>, "target:0=",<&i2c0>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi = <&frag0>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi0 = <&frag0>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+100+101";
+-		i2c3 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c3";
+-		i2c4 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c4";
+-		i2c5 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c5";
+-		i2c6 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c6";
+-		i2c-path = <&frag0>, "target?=0",
+-			   <&frag0>, "target-path";
++		pca6416 = <&pca>,"compatible=nxp,pca6416";
++		pca9505 = <&pca>,"compatible=nxp,pca9505";
++		pca9535 = <&pca>,"compatible=nxp,pca9535";
++		pca9536 = <&pca>,"compatible=nxp,pca9536";
++		pca9537 = <&pca>,"compatible=nxp,pca9537";
++		pca9538 = <&pca>,"compatible=nxp,pca9538";
++		pca9539 = <&pca>,"compatible=nxp,pca9539";
++		pca9554 = <&pca>,"compatible=nxp,pca9554";
++		pca9555 = <&pca>,"compatible=nxp,pca9555";
++		pca9556 = <&pca>,"compatible=nxp,pca9556";
++		pca9557 = <&pca>,"compatible=nxp,pca9557";
++		pca9574 = <&pca>,"compatible=nxp,pca9574";
++		pca9575 = <&pca>,"compatible=nxp,pca9575";
++		pca9698 = <&pca>,"compatible=nxp,pca9698";
++		pcal6416 = <&pca>,"compatible=nxp,pcal6416";
++		pcal6524 = <&pca>,"compatible=nxp,pcal6524";
++		pcal9555a = <&pca>,"compatible=nxp,pcal9555a";
++		max7310 = <&pca>,"compatible=maxim,max7310";
++		max7312 = <&pca>,"compatible=maxim,max7312";
++		max7313 = <&pca>,"compatible=maxim,max7313";
++		max7315 = <&pca>,"compatible=maxim,max7315";
++		pca6107 = <&pca>,"compatible=ti,pca6107";
++		tca6408 = <&pca>,"compatible=ti,tca6408";
++		tca6416 = <&pca>,"compatible=ti,tca6416";
++		tca6424 = <&pca>,"compatible=ti,tca6424";
++		tca9539 = <&pca>,"compatible=ti,tca9539";
++		tca9554 = <&pca>,"compatible=ti,tca9554";
++		cat9554 = <&pca>,"compatible=onnn,cat9554";
++		pca9654 = <&pca>,"compatible=onnn,pca9654";
++		xra1202 = <&pca>,"compatible=exar,xra1202";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/pcf857x-overlay.dts
++++ b/arch/arm/boot/dts/overlays/pcf857x-overlay.dts
+@@ -3,11 +3,13 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+-	frag0: fragment@0 {
+-		target = <&i2c_arm>;
++	fragment@0 {
++		target = <&i2cbus>;
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+@@ -22,41 +24,11 @@
+ 		};
+ 	};
+ 
+-	fragment@100 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		pcf8574  = <&pcf857x>,"compatible=nxp,pcf8574",  <&pcf857x>,"reg:0=0x20";
+ 		pcf8574a = <&pcf857x>,"compatible=nxp,pcf8574a", <&pcf857x>,"reg:0=0x38";
+ 		pcf8575  = <&pcf857x>,"compatible=nxp,pcf8575",  <&pcf857x>,"reg:0=0x20";
+-		pca8574  = <&pcf857x>,"compatible=nxp,pca8574", <&pcf857x>,"reg:0=0x20";
++		pca8574  = <&pcf857x>,"compatible=nxp,pca8574",  <&pcf857x>,"reg:0=0x20";
+ 		addr = <&pcf857x>,"reg:0";
+-		i2c0 = <&frag0>, "target:0=",<&i2c0>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi = <&frag0>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi0 = <&frag0>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+100+101";
+-		i2c3 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c3";
+-		i2c4 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c4";
+-		i2c5 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c5";
+-		i2c6 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c6";
+-		i2c-path = <&frag0>, "target?=0",
+-			   <&frag0>, "target-path";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/sc16is750-i2c-overlay.dts
++++ b/arch/arm/boot/dts/overlays/sc16is750-i2c-overlay.dts
+@@ -1,15 +1,16 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+-	frag0: fragment@0 {
+-		target = <&i2c_arm>;
++	fragment@0 {
++		target = <&i2cbus>;
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			sc16is750: sc16is750@48 {
+ 				compatible = "nxp,sc16is750";
+@@ -48,40 +49,10 @@
+ 		};
+ 	};
+ 
+-	fragment@100 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		int_pin = <&sc16is750>,"interrupts:0", <&int_pins>,"brcm,pins:0",
+ 			  <&int_pins>,"reg:0";
+ 		addr = <&sc16is750>,"reg:0", <&sc16is750_clk>,"name";
+ 		xtal = <&sc16is750_clk>,"clock-frequency:0";
+-		i2c0 = <&frag0>, "target:0=",<&i2c0>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi = <&frag0>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi0 = <&frag0>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+100+101";
+-		i2c3 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c3";
+-		i2c4 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c4";
+-		i2c5 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c5";
+-		i2c6 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c6";
+-		i2c-path = <&frag0>, "target?=0",
+-			   <&frag0>, "target-path";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/sc16is752-i2c-overlay.dts
++++ b/arch/arm/boot/dts/overlays/sc16is752-i2c-overlay.dts
+@@ -1,15 +1,16 @@
+ /dts-v1/;
+ /plugin/;
+ 
++#include "i2c-buses.dtsi"
++
+ / {
+ 	compatible = "brcm,bcm2835";
+ 
+-	frag0: fragment@0 {
+-		target = <&i2c_arm>;
++	fragment@0 {
++		target = <&i2cbus>;
+ 		__overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-			status = "okay";
+ 
+ 			sc16is752: sc16is752@48 {
+ 				compatible = "nxp,sc16is752";
+@@ -48,40 +49,10 @@
+ 		};
+ 	};
+ 
+-	fragment@100 {
+-		target = <&i2c0if>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+-	fragment@101 {
+-		target = <&i2c0mux>;
+-		__dormant__ {
+-			status = "okay";
+-		};
+-	};
+-
+ 	__overrides__ {
+ 		int_pin = <&sc16is752>,"interrupts:0", <&int_pins>,"brcm,pins:0",
+ 			  <&int_pins>,"reg:0";
+ 		addr = <&sc16is752>,"reg:0",<&sc16is752_clk>,"name";
+ 		xtal = <&sc16is752_clk>,"clock-frequency:0";
+-		i2c0 = <&frag0>, "target:0=",<&i2c0>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi = <&frag0>, "target:0=",<&i2c_csi_dsi>,
+-			      <0>,"+100+101";
+-		i2c_csi_dsi0 = <&frag0>, "target:0=",<&i2c_csi_dsi0>,
+-			      <0>,"+100+101";
+-		i2c3 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c3";
+-		i2c4 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c4";
+-		i2c5 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c5";
+-		i2c6 = <&frag0>, "target?=0",
+-		       <&frag0>, "target-path=i2c6";
+-		i2c-path = <&frag0>, "target?=0",
+-			   <&frag0>, "target-path";
+ 	};
+ };
+--- a/arch/arm/boot/dts/overlays/seeed-can-fd-hat-v2-overlay.dts
++++ b/arch/arm/boot/dts/overlays/seeed-can-fd-hat-v2-overlay.dts
+@@ -98,8 +98,9 @@
+ 		};
+ 	};
+ 	fragment@8 {
+-		target = <&i2cbus>;
++		target = <&i2c_arm>;
+ 		__overlay__ {
++			status = "okay";
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 			pcf85063@51 {
+@@ -108,10 +109,4 @@
+ 			};
+ 		};
+ 	};
+-	fragment@9 {
+-		target = <&i2c_arm>;
+-		i2cbus: __overlay__ {
+-			status = "okay";
+-		};
+-	};
+ };
+--- a/arch/arm/boot/dts/overlays/vc4-kms-dsi-7inch-overlay.dts
++++ b/arch/arm/boot/dts/overlays/vc4-kms-dsi-7inch-overlay.dts
+@@ -1,4 +1,4 @@
+-/*
++ /*
+  * Device Tree overlay for RaspberryPi 7" Touchscreen panel
+  *
+  */
+@@ -8,6 +8,11 @@
+ 
+ #include "edt-ft5406.dtsi"
+ 
++&ft5406 {
++	vcc-supply = <&reg_display>;
++	reset-gpio = <&reg_display 1 1>;
++};
++
+ / {
+ 	/* No compatible as it will have come from edt-ft5406.dtsi */
+ 
+@@ -77,7 +82,7 @@
+ 
+ 	i2c_frag: fragment@2 {
+ 		target = <&i2c_csi_dsi>;
+-		__overlay__ {
++		i2cbus: __overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 			status = "okay";
+@@ -104,18 +109,10 @@
+ 			status = "okay";
+ 		};
+ 	};
+-	fragment@5 {
+-		target = <&ft5406>;
+-		__overlay__ {
+-			vcc-supply = <&reg_display>;
+-			reset-gpio = <&reg_display 1 1>;
+-		};
+-	};
+ 
+ 	__overrides__ {
+ 		dsi0 = <&dsi_frag>, "target:0=",<&dsi0>,
+ 		       <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+-		       <&ts_i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+ 		       <&panel_disp>, "reg:0=0",
+ 		       <&reg_bridge>, "reg:0=0",
+ 		       <&reg_bridge>, "regulator-name=bridge_reg_0";
+--- a/arch/arm/boot/dts/overlays/vc4-kms-dsi-waveshare-800x480-overlay.dts
++++ b/arch/arm/boot/dts/overlays/vc4-kms-dsi-waveshare-800x480-overlay.dts
+@@ -9,6 +9,11 @@
+ 
+ #include "edt-ft5406.dtsi"
+ 
++&ft5406 {
++	vcc-supply = <&reg_display>;
++	reset-gpio = <&reg_display 1 1>;
++};
++
+ / {
+ 	/* No compatible as it will have come from edt-ft5406.dtsi */
+ 
+@@ -73,7 +78,7 @@
+ 
+ 	i2c_frag: fragment@2 {
+ 		target = <&i2c_csi_dsi>;
+-		__overlay__ {
++		i2cbus: __overlay__ {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 			status = "okay";
+@@ -100,18 +105,10 @@
+ 			status = "okay";
+ 		};
+ 	};
+-	fragment@5 {
+-		target = <&ft5406>;
+-		__overlay__ {
+-			vcc-supply = <&reg_display>;
+-			reset-gpio = <&reg_display 1 1>;
+-		};
+-	};
+ 
+ 	__overrides__ {
+ 		dsi0 = <&dsi_frag>, "target:0=",<&dsi0>,
+ 		       <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+-		       <&ts_i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+ 		       <&reg_bridge>, "reg:0=0",
+ 		       <&reg_bridge>, "regulator-name=bridge_reg_0";
+ 		disable_touch = <&ft5406>, "status=disabled";

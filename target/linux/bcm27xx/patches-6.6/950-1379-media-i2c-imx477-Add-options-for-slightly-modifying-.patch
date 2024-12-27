@@ -1,0 +1,199 @@
+From 35e50ee3d66e014d869f0d7a3468bef964d26d32 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 14 Nov 2024 13:14:02 +0000
+Subject: [PATCH] media: i2c: imx477: Add options for slightly modifying the
+ link freq
+
+The default link frequency of 450MHz has been noted to interfere
+with GPS if they are in close proximty.
+Add the option for 453 and 456MHz to move the signal slightly out
+of the band. (447MHz can not be offered as corruption is then observed
+on the 133x992 10bit mode).
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+fixup imx477 gps
+---
+ drivers/media/i2c/imx477.c | 86 +++++++++++++++++++++++++++++---------
+ 1 file changed, 67 insertions(+), 19 deletions(-)
+
+--- a/drivers/media/i2c/imx477.c
++++ b/drivers/media/i2c/imx477.c
+@@ -164,8 +164,48 @@ struct imx477_mode {
+ 	struct imx477_reg_list reg_list;
+ };
+ 
+-static const s64 imx477_link_freq_menu[] = {
+-	IMX477_DEFAULT_LINK_FREQ,
++/* Link frequency setup */
++enum {
++	IMX477_LINK_FREQ_450MHZ,
++	IMX477_LINK_FREQ_453MHZ,
++	IMX477_LINK_FREQ_456MHZ,
++};
++
++static const s64 link_freqs[] = {
++	[IMX477_LINK_FREQ_450MHZ] = 450000000,
++	[IMX477_LINK_FREQ_453MHZ] = 453000000,
++	[IMX477_LINK_FREQ_456MHZ] = 456000000,
++};
++
++/* 450MHz is the nominal "default" link frequency */
++static const struct imx477_reg link_450Mhz_regs[] = {
++	{0x030E, 0x00},
++	{0x030F, 0x96},
++};
++
++static const struct imx477_reg link_453Mhz_regs[] = {
++	{0x030E, 0x00},
++	{0x030F, 0x97},
++};
++
++static const struct imx477_reg link_456Mhz_regs[] = {
++	{0x030E, 0x00},
++	{0x030F, 0x98},
++};
++
++static const struct imx477_reg_list link_freq_regs[] = {
++	[IMX477_LINK_FREQ_450MHZ] = {
++		.regs = link_450Mhz_regs,
++		.num_of_regs = ARRAY_SIZE(link_450Mhz_regs)
++	},
++	[IMX477_LINK_FREQ_453MHZ] = {
++		.regs = link_453Mhz_regs,
++		.num_of_regs = ARRAY_SIZE(link_453Mhz_regs)
++	},
++	[IMX477_LINK_FREQ_456MHZ] = {
++		.regs = link_456Mhz_regs,
++		.num_of_regs = ARRAY_SIZE(link_456Mhz_regs)
++	},
+ };
+ 
+ static const struct imx477_reg mode_common_regs[] = {
+@@ -558,8 +598,6 @@ static const struct imx477_reg mode_4056
+ 	{0x0309, 0x0c},
+ 	{0x030b, 0x02},
+ 	{0x030d, 0x02},
+-	{0x030e, 0x00},
+-	{0x030f, 0x96},
+ 	{0x0310, 0x01},
+ 	{0x0820, 0x07},
+ 	{0x0821, 0x08},
+@@ -659,8 +697,6 @@ static const struct imx477_reg mode_2028
+ 	{0x0309, 0x0c},
+ 	{0x030b, 0x02},
+ 	{0x030d, 0x02},
+-	{0x030e, 0x00},
+-	{0x030f, 0x96},
+ 	{0x0310, 0x01},
+ 	{0x0820, 0x07},
+ 	{0x0821, 0x08},
+@@ -760,8 +796,6 @@ static const struct imx477_reg mode_2028
+ 	{0x0309, 0x0c},
+ 	{0x030b, 0x02},
+ 	{0x030d, 0x02},
+-	{0x030e, 0x00},
+-	{0x030f, 0x96},
+ 	{0x0310, 0x01},
+ 	{0x0820, 0x07},
+ 	{0x0821, 0x08},
+@@ -890,8 +924,6 @@ static const struct imx477_reg mode_1332
+ 	{0x0309, 0x0a},
+ 	{0x030b, 0x02},
+ 	{0x030d, 0x02},
+-	{0x030e, 0x00},
+-	{0x030f, 0x96},
+ 	{0x0310, 0x01},
+ 	{0x0820, 0x07},
+ 	{0x0821, 0x08},
+@@ -1121,6 +1153,8 @@ struct imx477 {
+ 	struct v4l2_ctrl *vblank;
+ 	struct v4l2_ctrl *hblank;
+ 
++	unsigned int link_freq_idx;
++
+ 	/* Current mode */
+ 	const struct imx477_mode *mode;
+ 
+@@ -1712,7 +1746,7 @@ static int imx477_get_selection(struct v
+ static int imx477_start_streaming(struct imx477 *imx477)
+ {
+ 	struct i2c_client *client = v4l2_get_subdevdata(&imx477->sd);
+-	const struct imx477_reg_list *reg_list;
++	const struct imx477_reg_list *reg_list, *freq_regs;
+ 	const struct imx477_reg_list *extra_regs;
+ 	int ret, tm;
+ 
+@@ -1725,6 +1759,13 @@ static int imx477_start_streaming(struct
+ 						extra_regs->num_of_regs);
+ 		}
+ 
++		if (!ret) {
++			/* Update the link frequency registers */
++			freq_regs = &link_freq_regs[imx477->link_freq_idx];
++			ret = imx477_write_regs(imx477, freq_regs->regs,
++						freq_regs->num_of_regs);
++		}
++
+ 		if (ret) {
+ 			dev_err(&client->dev, "%s failed to set common settings\n",
+ 				__func__);
+@@ -2010,9 +2051,8 @@ static int imx477_init_controls(struct i
+ 	/* LINK_FREQ is also read only */
+ 	imx477->link_freq =
+ 		v4l2_ctrl_new_int_menu(ctrl_hdlr, &imx477_ctrl_ops,
+-				       V4L2_CID_LINK_FREQ,
+-				       ARRAY_SIZE(imx477_link_freq_menu) - 1, 0,
+-				       imx477_link_freq_menu);
++				       V4L2_CID_LINK_FREQ, 1, 0,
++				       &link_freqs[imx477->link_freq_idx]);
+ 	if (imx477->link_freq)
+ 		imx477->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 
+@@ -2110,13 +2150,14 @@ static void imx477_free_controls(struct
+ 	mutex_destroy(&imx477->mutex);
+ }
+ 
+-static int imx477_check_hwcfg(struct device *dev)
++static int imx477_check_hwcfg(struct device *dev, struct imx477 *imx477)
+ {
+ 	struct fwnode_handle *endpoint;
+ 	struct v4l2_fwnode_endpoint ep_cfg = {
+ 		.bus_type = V4L2_MBUS_CSI2_DPHY
+ 	};
+ 	int ret = -EINVAL;
++	int i;
+ 
+ 	endpoint = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
+ 	if (!endpoint) {
+@@ -2141,11 +2182,18 @@ static int imx477_check_hwcfg(struct dev
+ 		goto error_out;
+ 	}
+ 
+-	if (ep_cfg.nr_of_link_frequencies != 1 ||
+-	    ep_cfg.link_frequencies[0] != IMX477_DEFAULT_LINK_FREQ) {
++	for (i = 0; i < ARRAY_SIZE(link_freqs); i++) {
++		if (link_freqs[i] == ep_cfg.link_frequencies[0]) {
++			imx477->link_freq_idx = i;
++			break;
++		}
++	}
++
++	if (i == ARRAY_SIZE(link_freqs)) {
+ 		dev_err(dev, "Link frequency not supported: %lld\n",
+ 			ep_cfg.link_frequencies[0]);
+-		goto error_out;
++			ret = -EINVAL;
++			goto error_out;
+ 	}
+ 
+ 	ret = 0;
+@@ -2206,7 +2254,7 @@ static int imx477_probe(struct i2c_clien
+ 		(const struct imx477_compatible_data *)match->data;
+ 
+ 	/* Check the hardware configuration in device tree */
+-	if (imx477_check_hwcfg(dev))
++	if (imx477_check_hwcfg(dev, imx477))
+ 		return -EINVAL;
+ 
+ 	/* Default the trigger mode from OF to -1, which means invalid */

@@ -1,0 +1,98 @@
+From 80533a952218696c0ef1b346bab50dc401e6b74c Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Thu, 12 Dec 2024 11:58:12 +0000
+Subject: [PATCH] drm: rp1: rp1-dpi: Fix optional dependency on RP1_PIO
+
+Add optional dependency to Kconfig, and conditionally compile
+PIO-dependent code. Add a mode validation function to reject
+interlaced modes when RP1_PIO is not present.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-dpi/Kconfig       |  7 ++++++-
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c     | 16 ++++++++++++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c | 18 +++++++++++++++++-
+ 3 files changed, 39 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/rp1/rp1-dpi/Kconfig
++++ b/drivers/gpu/drm/rp1/rp1-dpi/Kconfig
+@@ -7,5 +7,10 @@ config DRM_RP1_DPI
+ 	select DRM_VRAM_HELPER
+ 	select DRM_TTM
+ 	select DRM_TTM_HELPER
++	depends on RP1_PIO || !RP1_PIO
+ 	help
+-	  Choose this option to enable Video Out on RP1
++	  Choose this option to enable DPI output on Raspberry Pi RP1
++
++	  There is an optional dependency on RP1_PIO, as the PIO block
++	  must be used to fix up interlaced sync. Interlaced DPI modes
++	  will be unavailable when RP1_PIO is not selected.
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+@@ -217,12 +217,28 @@ static void rp1dpi_pipe_disable_vblank(s
+ 		rp1dpi_hw_vblank_ctrl(dpi, 0);
+ }
+ 
++static enum drm_mode_status rp1dpi_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
++						   const struct drm_display_mode *mode)
++{
++#if !IS_REACHABLE(CONFIG_RP1_PIO)
++	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
++		return MODE_NO_INTERLACE;
++#endif
++	if (mode->clock < 1000) /* 1 MHz */
++		return MODE_CLOCK_LOW;
++	if (mode->clock > 200000) /* 200 MHz */
++		return MODE_CLOCK_HIGH;
++
++	return MODE_OK;
++}
++
+ static const struct drm_simple_display_pipe_funcs rp1dpi_pipe_funcs = {
+ 	.enable	    = rp1dpi_pipe_enable,
+ 	.update	    = rp1dpi_pipe_update,
+ 	.disable    = rp1dpi_pipe_disable,
+ 	.enable_vblank	= rp1dpi_pipe_enable_vblank,
+ 	.disable_vblank = rp1dpi_pipe_disable_vblank,
++	.mode_valid = rp1dpi_pipe_mode_valid,
+ };
+ 
+ static const struct drm_mode_config_funcs rp1dpi_mode_funcs = {
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
+@@ -18,13 +18,16 @@
+ #include <linux/kernel.h>
+ #include <linux/errno.h>
+ #include <linux/of.h>
+-#include <linux/pio_rp1.h>
+ #include <linux/pinctrl/consumer.h>
+ #include <linux/platform_device.h>
+ #include <drm/drm_print.h>
+ 
+ #include "rp1_dpi.h"
+ 
++#if IS_REACHABLE(CONFIG_RP1_PIO)
++
++#include <linux/pio_rp1.h>
++
+ /*
+  * Start a PIO SM to generate an interrupt just after HSYNC onset, then another
+  * after a fixed delay (during which we assume HSYNC will have been deasserted).
+@@ -223,3 +226,16 @@ void rp1dpi_pio_stop(struct rp1_dpi *dpi
+ 		dpi->pio = NULL;
+ 	}
+ }
++
++#else /* !IS_REACHABLE(CONFIG_RP1_PIO) */
++
++int rp1dpi_pio_start(struct rp1_dpi *dpi, const struct drm_display_mode *mode)
++{
++	return -ENODEV;
++}
++
++void rp1dpi_pio_stop(struct rp1_dpi *dpi)
++{
++}
++
++#endif

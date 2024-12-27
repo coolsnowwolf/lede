@@ -1,0 +1,252 @@
+From 0d58d8cfb6f989f290d983552fcaa116e582e84a Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 31 Oct 2024 17:33:38 +0000
+Subject: [PATCH] mailbox: Add RP1 mailbox support
+
+The Raspberry Pi RP1 includes 2 M3 cores running firmware. This driver
+adds a mailbox communication channel to them via a doorbell and some
+shared memory.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/mailbox/Kconfig       |   9 ++
+ drivers/mailbox/Makefile      |   2 +
+ drivers/mailbox/rp1-mailbox.c | 208 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 219 insertions(+)
+ create mode 100644 drivers/mailbox/rp1-mailbox.c
+
+--- a/drivers/mailbox/Kconfig
++++ b/drivers/mailbox/Kconfig
+@@ -295,4 +295,13 @@ config QCOM_IPCC
+ 	  acts as an interrupt controller for receiving interrupts from clients.
+ 	  Say Y here if you want to build this driver.
+ 
++config MBOX_RP1
++	tristate "RP1 Mailbox"
++	depends on MFD_RP1
++	help
++	  An implementation of a mailbox interface to the Raspberry Pi RP1 I/O
++	  interface. Although written as a mailbox driver, the hardware only
++	  provides an array of 32 doorbells.
++	  Say Y here if you want to use the RP1 Mailbox.
++
+ endif
+--- a/drivers/mailbox/Makefile
++++ b/drivers/mailbox/Makefile
+@@ -62,3 +62,5 @@ obj-$(CONFIG_SPRD_MBOX)		+= sprd-mailbox
+ obj-$(CONFIG_QCOM_IPCC)		+= qcom-ipcc.o
+ 
+ obj-$(CONFIG_APPLE_MAILBOX)	+= apple-mailbox.o
++
++obj-$(CONFIG_MBOX_RP1)		+= rp1-mailbox.o
+--- /dev/null
++++ b/drivers/mailbox/rp1-mailbox.c
+@@ -0,0 +1,208 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ *  Copyright (C) 2023 Raspberry Pi Ltd.
++ *
++ * Parts of this driver are based on:
++ *  - bcm2835-mailbox.c
++ *    Copyright (C) 2010,2015 Broadcom
++ *    Copyright (C) 2013-2014 Lubomir Rintel
++ *    Copyright (C) 2013 Craig McGeachie
++ */
++
++#include <linux/compat.h>
++#include <linux/device.h>
++#include <linux/dma-mapping.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/kernel.h>
++#include <linux/mailbox_controller.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++
++/*
++ * RP1's PROC_EVENTS register can generate interrupts on the M3 cores (when
++ * enabled). The 32-bit register is treated as 32 events, all of which share a
++ * common interrupt. HOST_EVENTS is the same in the reverse direction.
++ */
++#define SYSCFG_PROC_EVENTS		0x00000008
++#define SYSCFG_HOST_EVENTS		0x0000000c
++#define SYSCFG_HOST_EVENT_IRQ_EN	0x00000010
++#define SYSCFG_HOST_EVENT_IRQ		0x00000014
++
++#define HW_SET_BITS			0x00002000
++#define HW_CLR_BITS			0x00003000
++
++#define MAX_CHANS	4 /* 32 is the hardware limit */
++
++struct rp1_mbox {
++	void __iomem *regs;
++	unsigned int irq;
++	struct mbox_controller controller;
++};
++
++static struct rp1_mbox *rp1_chan_mbox(struct mbox_chan *chan)
++{
++	return container_of(chan->mbox, struct rp1_mbox, controller);
++}
++
++static unsigned int rp1_chan_event(struct mbox_chan *chan)
++{
++	return (unsigned int)(uintptr_t)chan->con_priv;
++}
++
++static irqreturn_t rp1_mbox_irq(int irq, void *dev_id)
++{
++	struct rp1_mbox *mbox = dev_id;
++	struct mbox_chan *chan;
++	unsigned int doorbell;
++	unsigned int evs;
++
++	evs = readl(mbox->regs + SYSCFG_HOST_EVENT_IRQ);
++	writel(evs, mbox->regs + SYSCFG_HOST_EVENTS + HW_CLR_BITS);
++
++	while (evs) {
++		doorbell = __ffs(evs);
++		chan = &mbox->controller.chans[doorbell];
++		mbox_chan_received_data(chan, NULL);
++		evs &= ~(1 << doorbell);
++	}
++	return IRQ_HANDLED;
++}
++
++static int rp1_send_data(struct mbox_chan *chan, void *data)
++{
++	struct rp1_mbox *mbox = rp1_chan_mbox(chan);
++	unsigned int event = rp1_chan_event(chan);
++
++	writel(event, mbox->regs + SYSCFG_PROC_EVENTS + HW_SET_BITS);
++
++	return 0;
++}
++
++static int rp1_startup(struct mbox_chan *chan)
++{
++	struct rp1_mbox *mbox = rp1_chan_mbox(chan);
++	unsigned int event = rp1_chan_event(chan);
++
++	writel(event, mbox->regs + SYSCFG_HOST_EVENT_IRQ_EN + HW_SET_BITS);
++
++	return 0;
++}
++
++static void rp1_shutdown(struct mbox_chan *chan)
++{
++	struct rp1_mbox *mbox = rp1_chan_mbox(chan);
++	unsigned int event = rp1_chan_event(chan);
++
++	writel(event, mbox->regs + SYSCFG_HOST_EVENT_IRQ_EN + HW_CLR_BITS);
++}
++
++static bool rp1_last_tx_done(struct mbox_chan *chan)
++{
++	struct rp1_mbox *mbox = rp1_chan_mbox(chan);
++	unsigned int event = rp1_chan_event(chan);
++	unsigned int evs;
++
++	evs = readl(mbox->regs + SYSCFG_HOST_EVENT_IRQ);
++
++	return !(evs & event);
++}
++
++static const struct mbox_chan_ops rp1_mbox_chan_ops = {
++	.send_data	= rp1_send_data,
++	.startup	= rp1_startup,
++	.shutdown	= rp1_shutdown,
++	.last_tx_done	= rp1_last_tx_done
++};
++
++static struct mbox_chan *rp1_mbox_xlate(struct mbox_controller *mbox,
++					const struct of_phandle_args *spec)
++{
++	struct mbox_chan *chan;
++	unsigned int doorbell;
++
++	if (spec->args_count != 1)
++		return ERR_PTR(-EINVAL);
++
++	doorbell = spec->args[0];
++	if (doorbell >= MAX_CHANS)
++		return ERR_PTR(-EINVAL);
++
++	chan = &mbox->chans[doorbell];
++	if (chan->con_priv)
++		return ERR_PTR(-EBUSY);
++
++	chan->con_priv = (void *)(uintptr_t)(1 << doorbell);
++
++	return chan;
++}
++
++static int rp1_mbox_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mbox_chan *chans;
++	struct rp1_mbox *mbox;
++	int ret = 0;
++
++	mbox = devm_kzalloc(dev, sizeof(*mbox), GFP_KERNEL);
++	if (mbox == NULL)
++		return -ENOMEM;
++
++	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
++			       rp1_mbox_irq, 0, dev_name(dev), mbox);
++	if (ret) {
++		dev_err(dev, "Failed to register a mailbox IRQ handler: %d\n",
++			ret);
++		return -ENODEV;
++	}
++
++	mbox->regs = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(mbox->regs)) {
++		ret = PTR_ERR(mbox->regs);
++		return ret;
++	}
++
++	chans = devm_kcalloc(dev, MAX_CHANS, sizeof(*chans), GFP_KERNEL);
++	if (!chans)
++		return -ENOMEM;
++
++	mbox->controller.txdone_poll = true;
++	mbox->controller.txpoll_period = 5;
++	mbox->controller.ops = &rp1_mbox_chan_ops;
++	mbox->controller.of_xlate = &rp1_mbox_xlate;
++	mbox->controller.dev = dev;
++	mbox->controller.num_chans = MAX_CHANS;
++	mbox->controller.chans = chans;
++
++	ret = devm_mbox_controller_register(dev, &mbox->controller);
++	if (ret)
++		return ret;
++
++	platform_set_drvdata(pdev, mbox);
++
++	return 0;
++}
++
++static const struct of_device_id rp1_mbox_of_match[] = {
++	{ .compatible = "raspberrypi,rp1-mbox", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rp1_mbox_of_match);
++
++static struct platform_driver rp1_mbox_driver = {
++	.driver = {
++		.name = "rp1-mbox",
++		.of_match_table = rp1_mbox_of_match,
++	},
++	.probe = rp1_mbox_probe,
++};
++
++module_platform_driver(rp1_mbox_driver);
++
++MODULE_AUTHOR("Phil Elwell <phil@raspberrypi.com>");
++MODULE_DESCRIPTION("RP1 mailbox IPC driver");
++MODULE_LICENSE("GPL v2");

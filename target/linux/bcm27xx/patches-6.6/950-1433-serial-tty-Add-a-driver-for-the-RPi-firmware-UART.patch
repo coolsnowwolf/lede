@@ -1,0 +1,630 @@
+From 2548d954d78bca44c5cf430f8ea6de7c771312d7 Mon Sep 17 00:00:00 2001
+From: Tim Gover <tim.gover@raspberrypi.com>
+Date: Wed, 28 Aug 2024 09:46:50 +0100
+Subject: [PATCH] serial: tty: Add a driver for the RPi firmware UART
+
+On Raspberry Pi 4 and earlier models the firmware provides
+a low speed (up to 115200 baud) bit-bashed UART on arbitrary
+GPIOs using the second VPU core.
+
+The firmware driver is designed to support 19200 baud. Higher
+rates up to 115200 seem to work but there may be more jitter.
+
+This can be useful for debug or managing additional low
+speed peripherals if the hardware PL011 and 8250 hardware
+UARTs are already used for console / bluetooth.
+
+The firmware driver requires a fixed core clock frequency
+and also requires the VPU PWM audio driver to be disabled
+(dtparam=audio=off)
+
+Runtime configuration is handled via the vc-mailbox APIs
+with the FIFO buffers being allocated in uncached VPU
+addressable memory. The FIFO pointers are stored in spare
+VideoCore multi-core sync registers in order to reduce the number
+of uncached SDRAM accesses thereby reducing jitter.
+
+Signed-off-by: Tim Gover <tim.gover@raspberrypi.com>
+---
+ drivers/tty/serial/Kconfig       |  11 +
+ drivers/tty/serial/Makefile      |   1 +
+ drivers/tty/serial/rpi-fw-uart.c | 563 +++++++++++++++++++++++++++++++
+ 3 files changed, 575 insertions(+)
+ create mode 100644 drivers/tty/serial/rpi-fw-uart.c
+
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1578,6 +1578,17 @@ config SERIAL_NUVOTON_MA35D1_CONSOLE
+ 	  but you can alter that using a kernel command line option such as
+ 	  "console=ttyNVTx".
+ 
++config SERIAL_RPI_FW
++	tristate "Raspberry Pi Firmware software UART support"
++	depends on ARM_AMBA || COMPILE_TEST
++	select SERIAL_CORE
++	help
++	  This selects the Raspberry Pi firmware UART. This is a bit-bashed
++	  implementation running on the Raspbery Pi VPU core.
++	  This is not supported on Raspberry Pi 5 or newer platforms.
++
++	  If unsure, say N.
++
+ endmenu
+ 
+ config SERIAL_MCTRL_GPIO
+--- a/drivers/tty/serial/Makefile
++++ b/drivers/tty/serial/Makefile
+@@ -88,6 +88,7 @@ obj-$(CONFIG_SERIAL_MILBEAUT_USIO) += mi
+ obj-$(CONFIG_SERIAL_SIFIVE)	+= sifive.o
+ obj-$(CONFIG_SERIAL_LITEUART) += liteuart.o
+ obj-$(CONFIG_SERIAL_SUNPLUS)	+= sunplus-uart.o
++obj-$(CONFIG_SERIAL_RPI_FW) += rpi-fw-uart.o
+ 
+ # GPIOLIB helpers for modem control lines
+ obj-$(CONFIG_SERIAL_MCTRL_GPIO)	+= serial_mctrl_gpio.o
+--- /dev/null
++++ b/drivers/tty/serial/rpi-fw-uart.c
+@@ -0,0 +1,563 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2024, Raspberry Pi Ltd.  All rights reserved.
++ */
++
++#include <linux/console.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/gpio/consumer.h>
++#include <linux/platform_device.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include <linux/slab.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++#include <linux/dma-mapping.h>
++
++#define RPI_FW_UART_RX_FIFO_RD	0xb0
++#define RPI_FW_UART_RX_FIFO_WR	0xb4
++#define RPI_FW_UART_TX_FIFO_RD	0xb8
++#define RPI_FW_UART_TX_FIFO_WR	0xbc
++
++#define RPI_FW_UART_FIFO_SIZE		32
++#define RPI_FW_UART_FIFO_SIZE_MASK	(RPI_FW_UART_FIFO_SIZE - 1)
++
++#define RPI_FW_UART_MIN_VERSION	3
++
++struct rpi_fw_uart_params {
++	u32 start;
++	u32 baud;
++	u32 data_bits;
++	u32 stop_bits;
++	u32 gpio_rx;
++	u32 gpio_tx;
++	u32 flags;
++	u32 fifosize;
++	u32 rx_buffer;
++	u32 tx_buffer;
++	u32 version;
++	u32 fifo_reg_base;
++};
++
++struct rpi_fw_uart {
++	struct uart_driver	driver;
++	struct uart_port	port;
++	struct rpi_firmware	*firmware;
++	struct gpio_desc	*rx_gpiod;
++	struct gpio_desc	*tx_gpiod;
++	unsigned int		rx_gpio;
++	unsigned int		tx_gpio;
++	unsigned int		baud;
++	unsigned int		data_bits;
++	unsigned int		stop_bits;
++	unsigned char __iomem	*base;
++	size_t			dma_buffer_size;
++
++	struct hrtimer		trigger_start_rx;
++	ktime_t			rx_poll_delay;
++	void			*rx_buffer;
++	dma_addr_t		rx_buffer_dma_addr;
++	int			rx_stop;
++
++	void			*tx_buffer;
++	dma_addr_t		tx_buffer_dma_addr;
++};
++
++static unsigned int rpi_fw_uart_tx_is_full(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	u32 rd, wr;
++
++	rd = readl(rfu->base + RPI_FW_UART_TX_FIFO_RD);
++	wr = readl(rfu->base + RPI_FW_UART_TX_FIFO_WR);
++	return ((wr + 1) & RPI_FW_UART_FIFO_SIZE_MASK) == rd;
++}
++
++static unsigned int rpi_fw_uart_tx_is_empty(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	u32 rd, wr;
++
++	if (!rfu->tx_buffer)
++		return 1;
++
++	rd = readl(rfu->base + RPI_FW_UART_TX_FIFO_RD);
++	wr = readl(rfu->base + RPI_FW_UART_TX_FIFO_WR);
++
++	return rd == wr;
++}
++
++unsigned int rpi_fw_uart_rx_is_empty(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	u32 rd, wr;
++
++	if (!rfu->rx_buffer)
++		return 1;
++
++	rd = readl(rfu->base + RPI_FW_UART_RX_FIFO_RD);
++	wr = readl(rfu->base + RPI_FW_UART_RX_FIFO_WR);
++
++	return rd == wr;
++}
++
++static unsigned int rpi_fw_uart_tx_empty(struct uart_port *port)
++{
++	return rpi_fw_uart_tx_is_empty(port) ? TIOCSER_TEMT : 0;
++}
++
++static void rpi_fw_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
++{
++	/*
++	 * No hardware flow control, firmware automatically configures
++	 * TX to output high and RX to input low.
++	 */
++	dev_dbg(port->dev, "%s mctrl %u\n", __func__, mctrl);
++}
++
++static unsigned int rpi_fw_uart_get_mctrl(struct uart_port *port)
++{
++	/* No hardware flow control */
++	return TIOCM_CTS;
++}
++
++static void rpi_fw_uart_stop(struct uart_port *port)
++{
++	struct rpi_fw_uart_params msg = {.start = 0};
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++
++	hrtimer_cancel(&rfu->trigger_start_rx);
++
++	if (rpi_firmware_property(rfu->firmware,
++				RPI_FIRMWARE_SET_SW_UART,
++				&msg, sizeof(msg)))
++		dev_warn(port->dev,
++			 "Failed to shutdown rpi-fw uart. Firmware not configured?");
++}
++
++static void rpi_fw_uart_stop_tx(struct uart_port *port)
++{
++	/* No supported by the current firmware APIs. */
++}
++
++static void rpi_fw_uart_stop_rx(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++
++	rfu->rx_stop = 1;
++}
++
++static unsigned int rpi_fw_write(struct uart_port *port, const char *s,
++				unsigned int count)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	u8 *out = rfu->tx_buffer;
++	unsigned int consumed = 0;
++
++	while (consumed < count && !rpi_fw_uart_tx_is_full(port)) {
++		u32 wp = readl(rfu->base + RPI_FW_UART_TX_FIFO_WR)
++			& RPI_FW_UART_FIFO_SIZE_MASK;
++		out[wp] = s[consumed++];
++		wp = (wp + 1) & RPI_FW_UART_FIFO_SIZE_MASK;
++		writel(wp, rfu->base + RPI_FW_UART_TX_FIFO_WR);
++	}
++	return consumed;
++}
++
++/* Called with port.lock taken */
++static void rpi_fw_uart_start_tx(struct uart_port *port)
++{
++	struct circ_buf *xmit;
++
++	xmit = &port->state->xmit;
++	for (;;) {
++		unsigned int consumed;
++		unsigned long count = CIRC_CNT_TO_END(xmit->head, xmit->tail,
++				UART_XMIT_SIZE);
++		if (!count)
++			break;
++
++		consumed = rpi_fw_write(port, &xmit->buf[xmit->tail], count);
++		uart_xmit_advance(port, consumed);
++	}
++	uart_write_wakeup(port);
++}
++
++/* Called with port.lock taken */
++static void rpi_fw_uart_start_rx(struct uart_port *port)
++{
++	struct tty_port *tty_port = &port->state->port;
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	int count = 0;
++
++	/*
++	 * RX is polled, read up to a full buffer of data before trying again
++	 * so that this can be interrupted if the firmware is filling the
++	 * buffer too fast
++	 */
++	while (!rpi_fw_uart_rx_is_empty(port) && count < port->fifosize) {
++		const u8 *in = rfu->rx_buffer;
++		u32 rp = readl(rfu->base + RPI_FW_UART_RX_FIFO_RD)
++			& RPI_FW_UART_FIFO_SIZE_MASK;
++
++		tty_insert_flip_char(tty_port, in[rp], TTY_NORMAL);
++		rp = (rp + 1) & RPI_FW_UART_FIFO_SIZE_MASK;
++		writel(rp, rfu->base + RPI_FW_UART_RX_FIFO_RD);
++		count++;
++	}
++	if (count)
++		tty_flip_buffer_push(tty_port);
++}
++
++static enum hrtimer_restart rpi_fw_uart_trigger_rx(struct hrtimer *t)
++{
++	unsigned long flags;
++	struct rpi_fw_uart *rfu = container_of(t, struct rpi_fw_uart,
++					      trigger_start_rx);
++
++	spin_lock_irqsave(&rfu->port.lock, flags);
++	if (rfu->rx_stop) {
++		spin_unlock_irqrestore(&rfu->port.lock, flags);
++		return HRTIMER_NORESTART;
++	}
++
++	rpi_fw_uart_start_rx(&rfu->port);
++	spin_unlock_irqrestore(&rfu->port.lock, flags);
++	hrtimer_forward_now(t, rfu->rx_poll_delay);
++	return HRTIMER_RESTART;
++}
++
++static void rpi_fw_uart_break_ctl(struct uart_port *port, int ctl)
++{
++	dev_dbg(port->dev, "%s ctl %d\n", __func__, ctl);
++}
++
++static int rpi_fw_uart_configure(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++	struct rpi_fw_uart_params msg;
++	unsigned long flags;
++	int rc;
++
++	rpi_fw_uart_stop(port);
++
++	memset(&msg, 0, sizeof(msg));
++	msg.start = 1;
++	msg.gpio_rx = rfu->rx_gpio;
++	msg.gpio_tx = rfu->tx_gpio;
++	msg.data_bits = rfu->data_bits;
++	msg.stop_bits = rfu->stop_bits;
++	msg.baud = rfu->baud;
++	msg.fifosize = RPI_FW_UART_FIFO_SIZE;
++	msg.rx_buffer = (u32) rfu->rx_buffer_dma_addr;
++	msg.tx_buffer = (u32) rfu->tx_buffer_dma_addr;
++
++	rfu->rx_poll_delay = ms_to_ktime(50);
++
++	/*
++	 * Reconfigures the firmware UART with the new settings. On the first
++	 * call retrieve the addresses of the FIFO buffers. The buffers are
++	 * allocated at startup and are not de-allocated.
++	 * NB rpi_firmware_property can block
++	 */
++	rc = rpi_firmware_property(rfu->firmware,
++				RPI_FIRMWARE_SET_SW_UART,
++				&msg, sizeof(msg));
++	if (rc)
++		goto fail;
++
++	rc = rpi_firmware_property(rfu->firmware,
++			RPI_FIRMWARE_GET_SW_UART,
++			&msg, sizeof(msg));
++	if (rc)
++		goto fail;
++
++	dev_dbg(port->dev, "version %08x, reg addr %x\n", msg.version,
++		msg.fifo_reg_base);
++
++	dev_info(port->dev, "started %d baud %u data %u stop %u rx %u tx %u flags %u fifosize %u\n",
++			msg.start, msg.baud, msg.data_bits, msg.stop_bits,
++			msg.gpio_rx, msg.gpio_tx, msg.flags, msg.fifosize);
++
++	if (msg.fifosize != port->fifosize) {
++		dev_err(port->dev, "Expected fifo size %u actual %u",
++				port->fifosize, msg.fifosize);
++		rc = -EINVAL;
++		goto fail;
++	}
++
++	if (!msg.start) {
++		dev_err(port->dev, "Firmware service not running\n");
++		rc = -EINVAL;
++	}
++
++	spin_lock_irqsave(&rfu->port.lock, flags);
++	rfu->rx_stop = 0;
++	hrtimer_start(&rfu->trigger_start_rx,
++		      rfu->rx_poll_delay, HRTIMER_MODE_REL);
++	spin_unlock_irqrestore(&rfu->port.lock, flags);
++	return 0;
++fail:
++	dev_err(port->dev, "Failed to configure rpi-fw uart. Firmware not configured?");
++	return rc;
++}
++
++static void rpi_fw_uart_free_buffers(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++
++	if (rfu->rx_buffer)
++		dma_free_coherent(port->dev, rfu->dma_buffer_size,
++				rfu->rx_buffer, GFP_ATOMIC);
++
++	if (rfu->tx_buffer)
++		dma_free_coherent(port->dev, rfu->dma_buffer_size,
++				rfu->tx_buffer, GFP_ATOMIC);
++
++	rfu->rx_buffer = NULL;
++	rfu->tx_buffer = NULL;
++	rfu->rx_buffer_dma_addr = 0;
++	rfu->tx_buffer_dma_addr = 0;
++}
++
++static int rpi_fw_uart_alloc_buffers(struct uart_port *port)
++{
++	struct rpi_fw_uart *rfu = container_of(port, struct rpi_fw_uart, port);
++
++	if (rfu->tx_buffer)
++		return 0;
++
++	rfu->dma_buffer_size = PAGE_ALIGN(RPI_FW_UART_FIFO_SIZE);
++
++	rfu->rx_buffer = dma_alloc_coherent(port->dev, rfu->dma_buffer_size,
++		&rfu->rx_buffer_dma_addr, GFP_ATOMIC);
++
++	if (!rfu->rx_buffer)
++		goto alloc_fail;
++
++	rfu->tx_buffer = dma_alloc_coherent(port->dev, rfu->dma_buffer_size,
++		&rfu->tx_buffer_dma_addr, GFP_ATOMIC);
++
++	if (!rfu->tx_buffer)
++		goto alloc_fail;
++
++	dev_dbg(port->dev, "alloc-buffers %p %x %p %x\n",
++		rfu->rx_buffer, (u32) rfu->rx_buffer_dma_addr,
++		rfu->tx_buffer, (u32) rfu->tx_buffer_dma_addr);
++	return 0;
++
++alloc_fail:
++	dev_err(port->dev, "%s uart buffer allocation failed\n", __func__);
++	rpi_fw_uart_free_buffers(port);
++	return -ENOMEM;
++}
++
++static int rpi_fw_uart_startup(struct uart_port *port)
++{
++	int rc;
++
++	rc = rpi_fw_uart_alloc_buffers(port);
++	if (rc)
++		dev_err(port->dev, "Failed to start\n");
++	return rc;
++}
++
++static void rpi_fw_uart_shutdown(struct uart_port *port)
++{
++	rpi_fw_uart_stop(port);
++	rpi_fw_uart_free_buffers(port);
++}
++
++static void rpi_fw_uart_set_termios(struct uart_port *port,
++				       struct ktermios *new,
++				       const struct ktermios *old)
++{
++	struct rpi_fw_uart *rfu =
++		container_of(port, struct rpi_fw_uart, port);
++	rfu->baud = uart_get_baud_rate(port, new, old, 50, 115200);
++	rfu->stop_bits = (new->c_cflag & CSTOPB) ? 2 : 1;
++
++	rpi_fw_uart_configure(port);
++}
++
++static const struct uart_ops rpi_fw_uart_ops = {
++	.tx_empty = rpi_fw_uart_tx_empty,
++	.set_mctrl = rpi_fw_uart_set_mctrl,
++	.get_mctrl = rpi_fw_uart_get_mctrl,
++	.stop_rx = rpi_fw_uart_stop_rx,
++	.stop_tx = rpi_fw_uart_stop_tx,
++	.start_tx = rpi_fw_uart_start_tx,
++	.break_ctl = rpi_fw_uart_break_ctl,
++	.startup = rpi_fw_uart_startup,
++	.shutdown = rpi_fw_uart_shutdown,
++	.set_termios = rpi_fw_uart_set_termios,
++};
++
++static int rpi_fw_uart_get_gpio_offset(struct device *dev, const char *name)
++{
++	struct of_phandle_args of_args = { 0 };
++	bool is_bcm28xx;
++
++	/* This really shouldn't fail, given that we have a gpiod */
++	if (of_parse_phandle_with_args(dev->of_node, name, "#gpio-cells", 0, &of_args))
++		return dev_err_probe(dev, -EINVAL, "can't find gpio declaration\n");
++
++	is_bcm28xx = of_device_is_compatible(of_args.np, "brcm,bcm2835-gpio") ||
++		     of_device_is_compatible(of_args.np, "brcm,bcm2711-gpio");
++	of_node_put(of_args.np);
++	if (!is_bcm28xx || of_args.args_count != 2)
++		return dev_err_probe(dev, -EINVAL, "not a BCM28xx gpio\n");
++
++	return of_args.args[0];
++}
++
++static int rpi_fw_uart_probe(struct platform_device *pdev)
++{
++	struct device_node *firmware_node;
++	struct device *dev = &pdev->dev;
++	struct rpi_firmware *firmware;
++	struct uart_port *port;
++	struct rpi_fw_uart *rfu;
++	struct rpi_fw_uart_params msg;
++	int version_major;
++	int err;
++
++	dev_dbg(dev, "%s of_node %p\n", __func__, dev->of_node);
++
++	/*
++	 * We can be probed either through the an old-fashioned
++	 * platform device registration or through a DT node that is a
++	 * child of the firmware node. Handle both cases.
++	 */
++	if (dev->of_node)
++		firmware_node = of_parse_phandle(dev->of_node, "firmware", 0);
++	else
++		firmware_node = of_find_compatible_node(NULL, NULL,
++				"raspberrypi,bcm2835-firmware");
++	if (!firmware_node) {
++		dev_err(dev, "Missing firmware node\n");
++		return -ENOENT;
++	}
++
++	firmware = devm_rpi_firmware_get(dev, firmware_node);
++	of_node_put(firmware_node);
++	if (!firmware)
++		return -EPROBE_DEFER;
++
++	rfu = devm_kzalloc(dev, sizeof(*rfu), GFP_KERNEL);
++	if (!rfu)
++		return -ENOMEM;
++
++	rfu->firmware = firmware;
++
++	err = rpi_firmware_property(rfu->firmware, RPI_FIRMWARE_GET_SW_UART,
++			&msg, sizeof(msg));
++	if (err) {
++		dev_err(dev, "VC firmware does not support rpi-fw-uart\n");
++		return err;
++	}
++
++	version_major = msg.version >> 16;
++	if (msg.version < RPI_FW_UART_MIN_VERSION) {
++		dev_err(dev, "rpi-fw-uart fw version %d is too old min version %d\n",
++				version_major, RPI_FW_UART_MIN_VERSION);
++		return -EINVAL;
++	}
++
++	rfu->rx_gpiod = devm_gpiod_get(dev, "rx", GPIOD_IN);
++	if (IS_ERR(rfu->rx_gpiod))
++		return PTR_ERR(rfu->rx_gpiod);
++
++	rfu->tx_gpiod = devm_gpiod_get(dev, "tx", GPIOD_OUT_HIGH);
++	if (IS_ERR(rfu->tx_gpiod))
++		return PTR_ERR(rfu->tx_gpiod);
++
++	rfu->rx_gpio = rpi_fw_uart_get_gpio_offset(dev, "rx-gpios");
++	if (rfu->rx_gpio < 0)
++		return rfu->rx_gpio;
++	rfu->tx_gpio = rpi_fw_uart_get_gpio_offset(dev, "tx-gpios");
++	if (rfu->tx_gpio < 0)
++		return rfu->tx_gpio;
++
++	rfu->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(rfu->base))
++		return PTR_ERR(rfu->base);
++
++	/* setup the driver */
++	rfu->driver.owner = THIS_MODULE;
++	rfu->driver.driver_name = "ttyRFU";
++	rfu->driver.dev_name = "ttyRFU";
++	rfu->driver.nr = 1;
++	rfu->data_bits = 8;
++
++	/* RX is polled */
++	hrtimer_init(&rfu->trigger_start_rx, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
++	rfu->trigger_start_rx.function = rpi_fw_uart_trigger_rx;
++
++	err = uart_register_driver(&rfu->driver);
++	if (err) {
++		dev_err(dev, "failed to register UART driver: %d\n",
++			err);
++		return err;
++	}
++
++	/* setup the port */
++	port = &rfu->port;
++	spin_lock_init(&port->lock);
++	port->dev = &pdev->dev;
++	port->type = PORT_RPI_FW;
++	port->ops = &rpi_fw_uart_ops;
++	port->fifosize = RPI_FW_UART_FIFO_SIZE;
++	port->iotype = UPIO_MEM;
++	port->flags = UPF_BOOT_AUTOCONF;
++	port->private_data = rfu;
++
++	err = uart_add_one_port(&rfu->driver, port);
++	if (err) {
++		dev_err(dev, "failed to add UART port: %d\n", err);
++		goto unregister_uart;
++	}
++	platform_set_drvdata(pdev, rfu);
++
++	dev_info(dev, "version %d.%d gpios tx %u rx %u\n",
++			msg.version >> 16, msg.version & 0xffff,
++			rfu->tx_gpio, rfu->rx_gpio);
++	return 0;
++
++unregister_uart:
++	uart_unregister_driver(&rfu->driver);
++
++	return err;
++}
++
++static int rpi_fw_uart_remove(struct platform_device *pdev)
++{
++	struct rpi_fw_uart *rfu = platform_get_drvdata(pdev);
++
++	uart_remove_one_port(&rfu->driver, &rfu->port);
++	uart_unregister_driver(&rfu->driver);
++
++	return 0;
++}
++
++static const struct of_device_id rpi_fw_match[] = {
++	{ .compatible = "raspberrypi,firmware-uart" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, rpi_fw_match);
++
++static struct platform_driver rpi_fw_driver = {
++	.driver = {
++		.name = "rpi_fw-uart",
++		.of_match_table = rpi_fw_match,
++	},
++	.probe = rpi_fw_uart_probe,
++	.remove = rpi_fw_uart_remove,
++};
++module_platform_driver(rpi_fw_driver);
++
++MODULE_AUTHOR("Tim Gover <tim.gover@rasberrypi.com>");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Raspberry Pi Firmware Software UART driver");

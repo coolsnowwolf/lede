@@ -1,0 +1,447 @@
+From 97988373018e7fa7ff33b7774f88d30e48f71509 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Tue, 25 Feb 2025 20:44:59 -0300
+Subject: [PATCH] drm/v3d: Associate a V3D tech revision to all supported
+ devices
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The V3D driver currently determines the GPU tech version (33, 41...)
+by reading a register. This approach has worked so far since this
+information wasn’t needed before powering on the GPU.
+
+V3D 7.1 introduces new registers that must be written to power on the
+GPU, requiring us to know the V3D version beforehand. To address this,
+associate each supported SoC with the corresponding VideoCore GPU version
+as part of the device data.
+
+To prevent possible mistakes, add an assertion to verify that the version
+specified in the device data matches the one reported by the hardware.
+If there is a mismatch, the kernel will trigger a warning.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_debugfs.c | 128 +++++++++++++++---------------
+ drivers/gpu/drm/v3d/v3d_drv.c     |  22 +++--
+ drivers/gpu/drm/v3d/v3d_drv.h     |  11 ++-
+ drivers/gpu/drm/v3d/v3d_gem.c     |  12 +--
+ drivers/gpu/drm/v3d/v3d_irq.c     |  10 +--
+ drivers/gpu/drm/v3d/v3d_sched.c   |  12 +--
+ 6 files changed, 106 insertions(+), 89 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_debugfs.c
++++ b/drivers/gpu/drm/v3d/v3d_debugfs.c
+@@ -22,74 +22,74 @@ struct v3d_reg_def {
+ };
+ 
+ static const struct v3d_reg_def v3d_hub_reg_defs[] = {
+-	REGDEF(33, 42, V3D_HUB_AXICFG),
+-	REGDEF(33, 71, V3D_HUB_UIFCFG),
+-	REGDEF(33, 71, V3D_HUB_IDENT0),
+-	REGDEF(33, 71, V3D_HUB_IDENT1),
+-	REGDEF(33, 71, V3D_HUB_IDENT2),
+-	REGDEF(33, 71, V3D_HUB_IDENT3),
+-	REGDEF(33, 71, V3D_HUB_INT_STS),
+-	REGDEF(33, 71, V3D_HUB_INT_MSK_STS),
+-
+-	REGDEF(33, 71, V3D_MMU_CTL),
+-	REGDEF(33, 71, V3D_MMU_VIO_ADDR),
+-	REGDEF(33, 71, V3D_MMU_VIO_ID),
+-	REGDEF(33, 71, V3D_MMU_DEBUG_INFO),
+-
+-	REGDEF(71, 71, V3D_V7_GMP_STATUS),
+-	REGDEF(71, 71, V3D_V7_GMP_CFG),
+-	REGDEF(71, 71, V3D_V7_GMP_VIO_ADDR),
++	REGDEF(V3D_GEN_33, V3D_GEN_42, V3D_HUB_AXICFG),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_UIFCFG),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_IDENT0),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_IDENT1),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_IDENT2),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_IDENT3),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_INT_STS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_HUB_INT_MSK_STS),
++
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_MMU_CTL),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_MMU_VIO_ADDR),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_MMU_VIO_ID),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_MMU_DEBUG_INFO),
++
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_GMP_STATUS),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_GMP_CFG),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_GMP_VIO_ADDR),
+ };
+ 
+ static const struct v3d_reg_def v3d_gca_reg_defs[] = {
+-	REGDEF(33, 33, V3D_GCA_SAFE_SHUTDOWN),
+-	REGDEF(33, 33, V3D_GCA_SAFE_SHUTDOWN_ACK),
++	REGDEF(V3D_GEN_33, V3D_GEN_33, V3D_GCA_SAFE_SHUTDOWN),
++	REGDEF(V3D_GEN_33, V3D_GEN_33, V3D_GCA_SAFE_SHUTDOWN_ACK),
+ };
+ 
+ static const struct v3d_reg_def v3d_core_reg_defs[] = {
+-	REGDEF(33, 71, V3D_CTL_IDENT0),
+-	REGDEF(33, 71, V3D_CTL_IDENT1),
+-	REGDEF(33, 71, V3D_CTL_IDENT2),
+-	REGDEF(33, 71, V3D_CTL_MISCCFG),
+-	REGDEF(33, 71, V3D_CTL_INT_STS),
+-	REGDEF(33, 71, V3D_CTL_INT_MSK_STS),
+-	REGDEF(33, 71, V3D_CLE_CT0CS),
+-	REGDEF(33, 71, V3D_CLE_CT0CA),
+-	REGDEF(33, 71, V3D_CLE_CT0EA),
+-	REGDEF(33, 71, V3D_CLE_CT1CS),
+-	REGDEF(33, 71, V3D_CLE_CT1CA),
+-	REGDEF(33, 71, V3D_CLE_CT1EA),
+-
+-	REGDEF(33, 71, V3D_PTB_BPCA),
+-	REGDEF(33, 71, V3D_PTB_BPCS),
+-
+-	REGDEF(33, 41, V3D_GMP_STATUS),
+-	REGDEF(33, 41, V3D_GMP_CFG),
+-	REGDEF(33, 41, V3D_GMP_VIO_ADDR),
+-
+-	REGDEF(33, 71, V3D_ERR_FDBGO),
+-	REGDEF(33, 71, V3D_ERR_FDBGB),
+-	REGDEF(33, 71, V3D_ERR_FDBGS),
+-	REGDEF(33, 71, V3D_ERR_STAT),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_IDENT0),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_IDENT1),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_IDENT2),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_MISCCFG),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_INT_STS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CTL_INT_MSK_STS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT0CS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT0CA),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT0EA),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT1CS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT1CA),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_CLE_CT1EA),
++
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_PTB_BPCA),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_PTB_BPCS),
++
++	REGDEF(V3D_GEN_33, V3D_GEN_41, V3D_GMP_STATUS),
++	REGDEF(V3D_GEN_33, V3D_GEN_41, V3D_GMP_CFG),
++	REGDEF(V3D_GEN_33, V3D_GEN_41, V3D_GMP_VIO_ADDR),
++
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_ERR_FDBGO),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_ERR_FDBGB),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_ERR_FDBGS),
++	REGDEF(V3D_GEN_33, V3D_GEN_71, V3D_ERR_STAT),
+ };
+ 
+ static const struct v3d_reg_def v3d_csd_reg_defs[] = {
+-	REGDEF(41, 71, V3D_CSD_STATUS),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG0),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG1),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG2),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG3),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG4),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG5),
+-	REGDEF(41, 41, V3D_CSD_CURRENT_CFG6),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG0),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG1),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG2),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG3),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG4),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG5),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG6),
+-	REGDEF(71, 71, V3D_V7_CSD_CURRENT_CFG7),
++	REGDEF(V3D_GEN_41, V3D_GEN_71, V3D_CSD_STATUS),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG0),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG1),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG2),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG3),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG4),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG5),
++	REGDEF(V3D_GEN_41, V3D_GEN_41, V3D_CSD_CURRENT_CFG6),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG0),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG1),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG2),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG3),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG4),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG5),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG6),
++	REGDEF(V3D_GEN_71, V3D_GEN_71, V3D_V7_CSD_CURRENT_CFG7),
+ };
+ 
+ static int v3d_v3d_debugfs_regs(struct seq_file *m, void *unused)
+@@ -165,7 +165,7 @@ static int v3d_v3d_debugfs_ident(struct
+ 		   str_yes_no(ident2 & V3D_HUB_IDENT2_WITH_MMU));
+ 	seq_printf(m, "TFU:        %s\n",
+ 		   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_TFU));
+-	if (v3d->ver <= 42) {
++	if (v3d->ver <= V3D_GEN_42) {
+ 		seq_printf(m, "TSY:        %s\n",
+ 			   str_yes_no(ident1 & V3D_HUB_IDENT1_WITH_TSY));
+ 	}
+@@ -197,11 +197,11 @@ static int v3d_v3d_debugfs_ident(struct
+ 		seq_printf(m, "  QPUs:         %d\n", nslc * qups);
+ 		seq_printf(m, "  Semaphores:   %d\n",
+ 			   V3D_GET_FIELD(ident1, V3D_IDENT1_NSEM));
+-		if (v3d->ver <= 42) {
++		if (v3d->ver <= V3D_GEN_42) {
+ 			seq_printf(m, "  BCG int:      %d\n",
+ 				   (ident2 & V3D_IDENT2_BCG_INT) != 0);
+ 		}
+-		if (v3d->ver < 40) {
++		if (v3d->ver < V3D_GEN_41) {
+ 			seq_printf(m, "  Override TMU: %d\n",
+ 				   (misccfg & V3D_MISCCFG_OVRTMUOUT) != 0);
+ 		}
+@@ -311,8 +311,8 @@ static int v3d_measure_clock(struct seq_
+ 	int core = 0;
+ 	int measure_ms = 1000;
+ 
+-	if (v3d->ver >= 40) {
+-		int cycle_count_reg = v3d->ver < 71 ?
++	if (v3d->ver >= V3D_GEN_41) {
++		int cycle_count_reg = v3d->ver < V3D_GEN_71 ?
+ 			V3D_PCTR_CYCLE_COUNT : V3D_V7_PCTR_CYCLE_COUNT;
+ 		V3D_CORE_WRITE(core, V3D_V4_PCTR_0_SRC_0_3,
+ 			       V3D_SET_FIELD(cycle_count_reg,
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -17,6 +17,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/io.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/reset.h>
+@@ -88,7 +89,7 @@ static int v3d_get_param_ioctl(struct dr
+ 		args->value = 1;
+ 		return 0;
+ 	case DRM_V3D_PARAM_SUPPORTS_PERFMON:
+-		args->value = (v3d->ver >= 40);
++		args->value = (v3d->ver >= V3D_GEN_41);
+ 		return 0;
+ 	case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
+ 		args->value = 1;
+@@ -189,10 +190,10 @@ static const struct drm_driver v3d_drm_d
+ };
+ 
+ static const struct of_device_id v3d_of_match[] = {
+-	{ .compatible = "brcm,2712-v3d" },
+-	{ .compatible = "brcm,2711-v3d" },
+-	{ .compatible = "brcm,7268-v3d" },
+-	{ .compatible = "brcm,7278-v3d" },
++	{ .compatible = "brcm,2711-v3d", .data = (void *)V3D_GEN_42 },
++	{ .compatible = "brcm,2712-v3d", .data = (void *)V3D_GEN_71 },
++	{ .compatible = "brcm,7268-v3d", .data = (void *)V3D_GEN_33 },
++	{ .compatible = "brcm,7278-v3d", .data = (void *)V3D_GEN_41 },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, v3d_of_match);
+@@ -211,6 +212,7 @@ static int v3d_platform_drm_probe(struct
+ 	struct device_node *node;
+ 	struct drm_device *drm;
+ 	struct v3d_dev *v3d;
++	enum v3d_gen gen;
+ 	int ret;
+ 	u32 mmu_debug;
+ 	u32 ident1;
+@@ -224,6 +226,9 @@ static int v3d_platform_drm_probe(struct
+ 
+ 	platform_set_drvdata(pdev, drm);
+ 
++	gen = (enum v3d_gen)of_device_get_match_data(dev);
++	v3d->ver = gen;
++
+ 	ret = map_regs(v3d, &v3d->hub_regs, "hub");
+ 	if (ret)
+ 		return ret;
+@@ -253,6 +258,11 @@ static int v3d_platform_drm_probe(struct
+ 	ident1 = V3D_READ(V3D_HUB_IDENT1);
+ 	v3d->ver = (V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_TVER) * 10 +
+ 		    V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_REV));
++	/* Make sure that the V3D tech version retrieved from the HW is equal
++	 * to the one advertised by the device tree.
++	 */
++	WARN_ON(v3d->ver != gen);
++
+ 	v3d->cores = V3D_GET_FIELD(ident1, V3D_HUB_IDENT1_NCORES);
+ 	WARN_ON(v3d->cores > 1); /* multicore not yet implemented */
+ 
+@@ -297,7 +307,7 @@ static int v3d_platform_drm_probe(struct
+ 	v3d->clk_down_rate =
+ 		(clk_get_rate(clk_get_parent(v3d->clk)) / (1 << 4)) + 10000;
+ 
+-	if (v3d->ver < 41) {
++	if (v3d->ver < V3D_GEN_41) {
+ 		ret = map_regs(v3d, &v3d->gca_regs, "gca");
+ 		if (ret)
+ 			goto clk_disable;
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -115,13 +115,20 @@ struct v3d_perfmon {
+ 	u64 values[];
+ };
+ 
++enum v3d_gen {
++	V3D_GEN_33 = 33,
++	V3D_GEN_41 = 41,
++	V3D_GEN_42 = 42,
++	V3D_GEN_71 = 71,
++};
++
+ struct v3d_dev {
+ 	struct drm_device drm;
+ 
+ 	/* Short representation (e.g. 33, 41) of the V3D tech version
+ 	 * and revision.
+ 	 */
+-	int ver;
++	enum v3d_gen ver;
+ 	bool single_irq_line;
+ 
+ 	void __iomem *hub_regs;
+@@ -213,7 +220,7 @@ to_v3d_dev(struct drm_device *dev)
+ static inline bool
+ v3d_has_csd(struct v3d_dev *v3d)
+ {
+-	return v3d->ver >= 41;
++	return v3d->ver >= V3D_GEN_41;
+ }
+ 
+ #define v3d_to_pdev(v3d) to_platform_device((v3d)->drm.dev)
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -69,7 +69,7 @@ v3d_init_core(struct v3d_dev *v3d, int c
+ 	 * type.  If you want the default behavior, you can still put
+ 	 * "2" in the indirect texture state's output_type field.
+ 	 */
+-	if (v3d->ver < 40)
++	if (v3d->ver < V3D_GEN_41)
+ 		V3D_CORE_WRITE(core, V3D_CTL_MISCCFG, V3D_MISCCFG_OVRTMUOUT);
+ 
+ 	/* Whenever we flush the L2T cache, we always want to flush
+@@ -89,7 +89,7 @@ v3d_init_hw_state(struct v3d_dev *v3d)
+ static void
+ v3d_idle_axi(struct v3d_dev *v3d, int core)
+ {
+-	if (v3d->ver >= 71)
++	if (v3d->ver >= V3D_GEN_71)
+ 		return;
+ 
+ 	V3D_CORE_WRITE(core, V3D_GMP_CFG, V3D_GMP_CFG_STOP_REQ);
+@@ -105,7 +105,7 @@ v3d_idle_axi(struct v3d_dev *v3d, int co
+ static void
+ v3d_idle_gca(struct v3d_dev *v3d)
+ {
+-	if (v3d->ver >= 41)
++	if (v3d->ver >= V3D_GEN_41)
+ 		return;
+ 
+ 	V3D_GCA_WRITE(V3D_GCA_SAFE_SHUTDOWN, V3D_GCA_SAFE_SHUTDOWN_EN);
+@@ -179,13 +179,13 @@ v3d_reset(struct v3d_dev *v3d)
+ static void
+ v3d_flush_l3(struct v3d_dev *v3d)
+ {
+-	if (v3d->ver < 41) {
++	if (v3d->ver < V3D_GEN_41) {
+ 		u32 gca_ctrl = V3D_GCA_READ(V3D_GCA_CACHE_CTRL);
+ 
+ 		V3D_GCA_WRITE(V3D_GCA_CACHE_CTRL,
+ 			      gca_ctrl | V3D_GCA_CACHE_CTRL_FLUSH);
+ 
+-		if (v3d->ver < 33) {
++		if (v3d->ver < V3D_GEN_33) {
+ 			V3D_GCA_WRITE(V3D_GCA_CACHE_CTRL,
+ 				      gca_ctrl & ~V3D_GCA_CACHE_CTRL_FLUSH);
+ 		}
+@@ -198,7 +198,7 @@ v3d_flush_l3(struct v3d_dev *v3d)
+ static void
+ v3d_invalidate_l2c(struct v3d_dev *v3d, int core)
+ {
+-	if (v3d->ver > 32)
++	if (v3d->ver >= V3D_GEN_33)
+ 		return;
+ 
+ 	V3D_CORE_WRITE(core, V3D_CTL_L2CACTL,
+--- a/drivers/gpu/drm/v3d/v3d_irq.c
++++ b/drivers/gpu/drm/v3d/v3d_irq.c
+@@ -125,8 +125,8 @@ v3d_irq(int irq, void *arg)
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+-	if ((v3d->ver < 71 && (intsts & V3D_INT_CSDDONE)) ||
+-	    (v3d->ver >= 71 && (intsts & V3D_V7_INT_CSDDONE))) {
++	if ((v3d->ver < V3D_GEN_71 && (intsts & V3D_INT_CSDDONE)) ||
++	    (v3d->ver >= V3D_GEN_71 && (intsts & V3D_V7_INT_CSDDONE))) {
+ 		struct v3d_fence *fence =
+ 			to_v3d_fence(v3d->csd_job->base.irq_fence);
+ 		v3d->gpu_queue_stats[V3D_CSD].last_exec_end = local_clock();
+@@ -142,7 +142,7 @@ v3d_irq(int irq, void *arg)
+ 	/* We shouldn't be triggering these if we have GMP in
+ 	 * always-allowed mode.
+ 	 */
+-	if (v3d->ver < 71 && (intsts & V3D_INT_GMPV))
++	if (v3d->ver < V3D_GEN_71 && (intsts & V3D_INT_GMPV))
+ 		dev_err(v3d->drm.dev, "GMP violation\n");
+ 
+ 	/* V3D 4.2 wires the hub and core IRQs together, so if we &
+@@ -200,7 +200,7 @@ v3d_hub_irq(int irq, void *arg)
+ 
+ 		V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL));
+ 
+-		if (v3d->ver >= 41) {
++		if (v3d->ver >= V3D_GEN_41) {
+ 			axi_id = axi_id >> 5;
+ 			if (axi_id < ARRAY_SIZE(v3d41_axi_ids))
+ 				client = v3d41_axi_ids[axi_id];
+@@ -219,7 +219,7 @@ v3d_hub_irq(int irq, void *arg)
+ 		status = IRQ_HANDLED;
+ 	}
+ 
+-	if (v3d->ver >= 71 && intsts & V3D_V7_HUB_INT_GMPV) {
++	if (v3d->ver >= V3D_GEN_71 && intsts & V3D_V7_HUB_INT_GMPV) {
+ 		dev_err(v3d->drm.dev, "GMP Violation\n");
+ 		status = IRQ_HANDLED;
+ 	}
+--- a/drivers/gpu/drm/v3d/v3d_sched.c
++++ b/drivers/gpu/drm/v3d/v3d_sched.c
+@@ -288,7 +288,7 @@ static struct dma_fence *v3d_render_job_
+ 	return fence;
+ }
+ 
+-#define V3D_TFU_REG(name) ((v3d->ver < 71) ? V3D_TFU_ ## name : V3D_V7_TFU_ ## name)
++#define V3D_TFU_REG(name) ((v3d->ver < V3D_GEN_71) ? V3D_TFU_ ## name : V3D_V7_TFU_ ## name)
+ 
+ static struct dma_fence *
+ v3d_tfu_job_run(struct drm_sched_job *sched_job)
+@@ -321,11 +321,11 @@ v3d_tfu_job_run(struct drm_sched_job *sc
+ 	V3D_WRITE(V3D_TFU_REG(ICA), job->args.ica);
+ 	V3D_WRITE(V3D_TFU_REG(IUA), job->args.iua);
+ 	V3D_WRITE(V3D_TFU_REG(IOA), job->args.ioa);
+-	if (v3d->ver >= 71)
++	if (v3d->ver >= V3D_GEN_71)
+ 		V3D_WRITE(V3D_V7_TFU_IOC, job->args.v71.ioc);
+ 	V3D_WRITE(V3D_TFU_REG(IOS), job->args.ios);
+ 	V3D_WRITE(V3D_TFU_REG(COEF0), job->args.coef[0]);
+-	if (v3d->ver >= 71 || (job->args.coef[0] & V3D_TFU_COEF0_USECOEF)) {
++	if (v3d->ver >= V3D_GEN_71 || (job->args.coef[0] & V3D_TFU_COEF0_USECOEF)) {
+ 		V3D_WRITE(V3D_TFU_REG(COEF1), job->args.coef[1]);
+ 		V3D_WRITE(V3D_TFU_REG(COEF2), job->args.coef[2]);
+ 		V3D_WRITE(V3D_TFU_REG(COEF3), job->args.coef[3]);
+@@ -367,8 +367,8 @@ v3d_csd_job_run(struct drm_sched_job *sc
+ 	v3d_sched_stats_add_job(&v3d->gpu_queue_stats[V3D_CSD], sched_job);
+ 	v3d_switch_perfmon(v3d, &job->base);
+ 
+-	csd_cfg0_reg = v3d->ver < 71 ? V3D_CSD_QUEUED_CFG0 : V3D_V7_CSD_QUEUED_CFG0;
+-	csd_cfg_reg_count = v3d->ver < 71 ? 6 : 7;
++	csd_cfg0_reg = v3d->ver < V3D_GEN_71 ? V3D_CSD_QUEUED_CFG0 : V3D_V7_CSD_QUEUED_CFG0;
++	csd_cfg_reg_count = v3d->ver < V3D_GEN_71 ? 6 : 7;
+ 	for (i = 1; i <= csd_cfg_reg_count; i++)
+ 		V3D_CORE_WRITE(0, csd_cfg0_reg + 4 * i, job->args.cfg[i]);
+ 	/* CFG0 write kicks off the job. */
+@@ -475,7 +475,7 @@ v3d_csd_job_timedout(struct drm_sched_jo
+ {
+ 	struct v3d_csd_job *job = to_csd_job(sched_job);
+ 	struct v3d_dev *v3d = job->base.v3d;
+-	u32 batches = V3D_CORE_READ(0, (v3d->ver < 71 ? V3D_CSD_CURRENT_CFG4 :
++	u32 batches = V3D_CORE_READ(0, (v3d->ver < V3D_GEN_71 ? V3D_CSD_CURRENT_CFG4 :
+ 							V3D_V7_CSD_CURRENT_CFG4));
+ 
+ 	/* If we've made progress, skip reset and let the timer get

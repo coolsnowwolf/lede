@@ -1,0 +1,1385 @@
+From 55fd5c9018e1520d45f08cf08630a493ec7dedea Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 31 Oct 2024 18:26:00 +0000
+Subject: [PATCH] misc: Add RP1 PIO driver
+
+Provide remote access to the PIO hardware in RP1. There is a single
+instance, with 4 state machines.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/Kconfig           |    8 +
+ drivers/misc/Makefile          |    1 +
+ drivers/misc/rp1-fw-pio.h      |   53 ++
+ drivers/misc/rp1-pio.c         | 1064 ++++++++++++++++++++++++++++++++
+ include/uapi/misc/rp1_pio_if.h |  212 +++++++
+ 5 files changed, 1338 insertions(+)
+ create mode 100644 drivers/misc/rp1-fw-pio.h
+ create mode 100644 drivers/misc/rp1-pio.c
+ create mode 100644 include/uapi/misc/rp1_pio_if.h
+
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -17,6 +17,14 @@ config BCM2835_SMI
+ 		Driver for enabling and using Broadcom's Secondary/Slow Memory Interface.
+ 		Appears as /dev/bcm2835_smi. For ioctl interface see drivers/misc/bcm2835_smi.h
+ 
++config RP1_PIO
++	tristate "Raspberry Pi RP1 PIO driver"
++	select FIRMWARE_RP1
++	default n
++	help
++		Driver providing control of the Raspberry Pi PIO block, as found in
++		RP1.
++
+ config AD525X_DPOT
+ 	tristate "Analog Devices Digital Potentiometers"
+ 	depends on (I2C || SPI) && SYSFS
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -18,6 +18,7 @@ obj-$(CONFIG_TIFM_7XX1)       	+= tifm_7
+ obj-$(CONFIG_PHANTOM)		+= phantom.o
+ obj-$(CONFIG_QCOM_COINCELL)	+= qcom-coincell.o
+ obj-$(CONFIG_QCOM_FASTRPC)	+= fastrpc.o
++obj-$(CONFIG_RP1_PIO)		+= rp1-pio.o
+ obj-$(CONFIG_SENSORS_BH1770)	+= bh1770glc.o
+ obj-$(CONFIG_SENSORS_APDS990X)	+= apds990x.o
+ obj-$(CONFIG_ENCLOSURE_SERVICES) += enclosure.o
+--- /dev/null
++++ b/drivers/misc/rp1-fw-pio.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ *  Copyright (C) 2023 2023-2024 Raspberry Pi Ltd.
++ */
++
++#ifndef __SOC_RP1_FIRMWARE_OPS_H__
++#define __SOC_RP1_FIRMWARE_OPS_H__
++
++#include <linux/rp1-firmware.h>
++
++#define FOURCC_PIO RP1_FOURCC("PIO ")
++
++enum rp1_pio_ops {
++	PIO_CAN_ADD_PROGRAM,	// u16 num_instrs, u16 origin -> origin
++	PIO_ADD_PROGRAM,	// u16 num_instrs, u16 origin, u16 prog[] -> rc
++	PIO_REMOVE_PROGRAM,	// u16 num_instrs, u16 origin
++	PIO_CLEAR_INSTR_MEM,	// -
++
++	PIO_SM_CLAIM,		// u16 mask -> sm
++	PIO_SM_UNCLAIM,		// u16 mask
++	PIO_SM_IS_CLAIMED,	// u16 mask -> claimed
++
++	PIO_SM_INIT,		// u16 sm, u16 initial_pc, u32 sm_config[4]
++	PIO_SM_SET_CONFIG,	// u16 sm, u16 rsvd, u32 sm_config[4]
++	PIO_SM_EXEC,		// u16 sm, u16 instr, u8 blocking, u8 rsvd
++	PIO_SM_CLEAR_FIFOS,	// u16 sm
++	PIO_SM_SET_CLKDIV,	// u16 sm, u16 div_int, u8 div_frac, u8 rsvd
++	PIO_SM_SET_PINS,	// u16 sm, u16 rsvd, u32 values, u32 mask
++	PIO_SM_SET_PINDIRS,	// u16 sm, u16 rsvd, u32 dirs, u32 mask
++	PIO_SM_SET_ENABLED,	// u16 mask, u8 enable, u8 rsvd
++	PIO_SM_RESTART,		// u16 mask
++	PIO_SM_CLKDIV_RESTART,	// u16 mask
++	PIO_SM_ENABLE_SYNC,	// u16 mask
++	PIO_SM_PUT,		// u16 sm, u8 blocking, u8 rsvd, u32 data
++	PIO_SM_GET,		// u16 sm, u8 blocking, u8 rsvd -> u32 data
++	PIO_SM_SET_DMACTRL,	// u16 sm, u16 is_tx, u32 ctrl
++
++	GPIO_INIT,		// u16 gpio
++	GPIO_SET_FUNCTION,	// u16 gpio, u16 fn
++	GPIO_SET_PULLS,		// u16 gpio, u8 up, u8 down
++	GPIO_SET_OUTOVER,	// u16 gpio, u16 value
++	GPIO_SET_INOVER,	// u16 gpio, u16 value
++	GPIO_SET_OEOVER,	// u16 gpio, u16 value
++	GPIO_SET_INPUT_ENABLED,	// u16 gpio, u16 value
++	GPIO_SET_DRIVE_STRENGTH,	// u16 gpio, u16 value
++
++	READ_HW,		// src address, len -> data bytes
++	WRITE_HW,		// dst address, data
++
++	PIO_COUNT
++};
++
++#endif
+--- /dev/null
++++ b/drivers/misc/rp1-pio.c
+@@ -0,0 +1,1064 @@
++// SPDX-License-Identifier: GPL-2.0
++// PIO driver for RP1
++//
++//  Copyright (C) 2023-2024 Raspberry Pi Ltd.
++//
++// Parts of this driver are based on:
++//  - vcio.c, by Noralf Trønnes
++//    Copyright (C) 2010 Broadcom
++//    Copyright (C) 2015 Noralf Trønnes
++//    Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
++//  - bcm2835_smi.c & bcm2835_smi_dev.c by Luke Wren
++//    Copyright (c) 2015 Raspberry Pi (Trading) Ltd.
++
++#include <linux/cdev.h>
++#include <linux/compat.h>
++#include <linux/device.h>
++#include <linux/dmaengine.h>
++#include <linux/dma-mapping.h>
++#include <linux/fs.h>
++#include <linux/init.h>
++#include <linux/ioctl.h>
++#include <linux/module.h>
++#include <linux/rp1-firmware.h>
++#include <linux/semaphore.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <uapi/misc/rp1_pio_if.h>
++
++#include "rp1-fw-pio.h"
++
++#define DRIVER_NAME		"rp1-pio"
++
++#define RP1_PIO_SMS_COUNT	4
++#define RP1_PIO_INSTR_COUNT	32
++
++#define MAX_ARG_SIZE		256
++
++#define RP1_PIO_FIFO_TX0	0x00
++#define RP1_PIO_FIFO_TX1	0x04
++#define RP1_PIO_FIFO_TX2	0x08
++#define RP1_PIO_FIFO_TX3	0x0c
++#define RP1_PIO_FIFO_RX0	0x10
++#define RP1_PIO_FIFO_RX1	0x14
++#define RP1_PIO_FIFO_RX2	0x18
++#define RP1_PIO_FIFO_RX3	0x1c
++
++#define RP1_PIO_DMACTRL_DEFAULT	0x80000104
++
++#define HANDLER(_n, _f) \
++	[_IOC_NR(PIO_IOC_ ## _n)] = { #_n, rp1_pio_ ## _f, _IOC_SIZE(PIO_IOC_ ## _n) }
++
++
++#define ROUND_UP(x, y) (((x) + (y) - 1) - (((x) + (y) - 1) % (y)))
++
++#define DMA_BOUNCE_BUFFER_SIZE 0x1000
++#define DMA_BOUNCE_BUFFER_COUNT 4
++
++struct dma_buf_info {
++	void *buf;
++	dma_addr_t phys;
++	struct scatterlist sgl;
++};
++
++struct dma_info {
++	struct semaphore buf_sem;
++	struct dma_chan *chan;
++	size_t buf_size;
++	size_t buf_count;
++	unsigned int head_idx;
++	unsigned int tail_idx;
++	struct dma_buf_info bufs[DMA_BOUNCE_BUFFER_COUNT];
++};
++
++struct rp1_pio_device {
++	struct platform_device *pdev;
++	struct rp1_firmware *fw;
++	uint16_t fw_pio_base;
++	uint16_t fw_pio_count;
++	dev_t dev_num;
++	struct class *dev_class;
++	struct cdev cdev;
++	phys_addr_t phys_addr;
++	uint32_t claimed_sms;
++	uint32_t claimed_dmas;
++	spinlock_t lock;
++	struct mutex instr_mutex;
++	struct dma_info dma_configs[RP1_PIO_SMS_COUNT][RP1_PIO_DIR_COUNT];
++	uint32_t used_instrs;
++	uint8_t instr_refcounts[RP1_PIO_INSTR_COUNT];
++	uint16_t instrs[RP1_PIO_INSTR_COUNT];
++	uint client_count;
++};
++
++struct rp1_pio_client {
++	struct rp1_pio_device *pio;
++	uint32_t claimed_sms;
++	uint32_t claimed_instrs;
++	uint32_t claimed_dmas;
++};
++
++static struct rp1_pio_device *g_pio;
++
++static int rp1_pio_message(struct rp1_pio_device *pio,
++			   uint16_t op, const void *data, unsigned int data_len)
++{
++	uint32_t rc;
++	int ret;
++
++	if (op >= pio->fw_pio_count)
++		return -EOPNOTSUPP;
++	ret = rp1_firmware_message(pio->fw, pio->fw_pio_base + op,
++				   data, data_len,
++				   &rc, sizeof(rc));
++	if (ret == 4)
++		ret = rc;
++	return ret;
++}
++
++static int rp1_pio_message_resp(struct rp1_pio_device *pio,
++				uint16_t op, const void *data, unsigned int data_len,
++				void *resp, void __user *userbuf, unsigned int resp_len)
++{
++	uint32_t resp_buf[1 + 32];
++	int ret;
++
++	if (op >= pio->fw_pio_count)
++		return -EOPNOTSUPP;
++	if (resp_len + 4 >= sizeof(resp_buf))
++		return -EINVAL;
++	if (!resp && !userbuf)
++		return -EINVAL;
++	ret = rp1_firmware_message(pio->fw, pio->fw_pio_base + op,
++				   data, data_len,
++				   resp_buf, resp_len + 4);
++	if (ret >= 4 && !resp_buf[0]) {
++		ret -= 4;
++		if (resp)
++			memcpy(resp, &resp_buf[1], ret);
++		else if (copy_to_user(userbuf, &resp_buf[1], ret))
++			ret = -EFAULT;
++	} else if (ret >= 0) {
++		ret = -EIO;
++	}
++	return ret;
++}
++
++static int rp1_pio_read_hw(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_device *pio = client->pio;
++	struct rp1_access_hw_args *args = param;
++
++	return rp1_pio_message_resp(pio, READ_HW,
++				    args, 8, NULL, args->data, args->len);
++}
++
++static int rp1_pio_write_hw(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_device *pio = client->pio;
++	struct rp1_access_hw_args *args = param;
++	uint32_t write_buf[32 + 1];
++	int len;
++
++	len = min(args->len, sizeof(write_buf) - 4);
++	write_buf[0] = args->addr;
++	if (copy_from_user(&write_buf[1], args->data, len))
++		return -EFAULT;
++	return rp1_firmware_message(pio->fw, pio->fw_pio_base + WRITE_HW,
++				    write_buf, 4 + len, NULL, 0);
++}
++
++static int rp1_pio_find_program(struct rp1_pio_device *pio,
++				struct rp1_pio_add_program_args *prog)
++{
++	uint start, end, prog_size;
++	uint32_t used_mask;
++	uint i;
++
++	start = (prog->origin != RP1_PIO_ORIGIN_ANY) ? prog->origin : 0;
++	end = (prog->origin != RP1_PIO_ORIGIN_ANY) ? prog->origin :
++			(RP1_PIO_INSTRUCTION_COUNT - prog->num_instrs);
++	prog_size = sizeof(prog->instrs[0]) * prog->num_instrs;
++	used_mask = (uint32_t)(~0) >> (32 - prog->num_instrs);
++
++	/* Find the best match */
++	for (i = start; i <= end; i++) {
++		uint32_t mask = used_mask << i;
++
++		if ((pio->used_instrs & mask) != mask)
++			continue;
++		if (!memcmp(pio->instrs + i, prog->instrs, prog_size))
++			return i;
++	}
++
++	return -1;
++}
++
++static int rp1_pio_can_add_program(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_add_program_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	int offset;
++
++	if (args->num_instrs > RP1_PIO_INSTR_COUNT ||
++		((args->origin != RP1_PIO_ORIGIN_ANY) &&
++		 (args->origin >= RP1_PIO_INSTR_COUNT ||
++		  ((args->origin + args->num_instrs) > RP1_PIO_INSTR_COUNT))))
++		return -EINVAL;
++
++	mutex_lock(&pio->instr_mutex);
++	offset = rp1_pio_find_program(pio, args);
++	mutex_unlock(&pio->instr_mutex);
++	if (offset >= 0)
++		return offset;
++
++	/* Don't send the instructions, just the header */
++	return rp1_pio_message(pio, PIO_CAN_ADD_PROGRAM, args,
++			       offsetof(struct rp1_pio_add_program_args, instrs));
++}
++
++static int rp1_pio_add_program(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_add_program_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	int offset;
++	uint i;
++
++	if (args->num_instrs > RP1_PIO_INSTR_COUNT ||
++		((args->origin != RP1_PIO_ORIGIN_ANY) &&
++		 (args->origin >= RP1_PIO_INSTR_COUNT ||
++		  ((args->origin + args->num_instrs) > RP1_PIO_INSTR_COUNT))))
++		return -EINVAL;
++
++	mutex_lock(&pio->instr_mutex);
++	offset = rp1_pio_find_program(pio, args);
++	if (offset < 0)
++		offset = rp1_pio_message(client->pio, PIO_ADD_PROGRAM, args, sizeof(*args));
++
++	if (offset >= 0) {
++		uint32_t used_mask;
++		uint prog_size;
++
++		used_mask = ((uint32_t)(~0) >> (-args->num_instrs & 0x1f)) << offset;
++		prog_size = sizeof(args->instrs[0]) * args->num_instrs;
++
++		if ((pio->used_instrs & used_mask) != used_mask) {
++			pio->used_instrs |= used_mask;
++			memcpy(pio->instrs + offset, args->instrs, prog_size);
++		}
++		client->claimed_instrs |= used_mask;
++		for (i = 0; i < args->num_instrs; i++)
++			pio->instr_refcounts[offset + i]++;
++	}
++	mutex_unlock(&pio->instr_mutex);
++	return offset;
++}
++
++static void rp1_pio_remove_instrs(struct rp1_pio_device *pio, uint32_t mask)
++{
++	struct rp1_pio_remove_program_args args;
++	uint i;
++
++	mutex_lock(&pio->instr_mutex);
++	args.num_instrs = 0;
++	for (i = 0; ; i++, mask >>= 1) {
++		if ((mask & 1) && pio->instr_refcounts[i] && !--pio->instr_refcounts[i]) {
++			pio->used_instrs &= ~(1 << i);
++			args.num_instrs++;
++		} else if (args.num_instrs) {
++			args.origin = i - args.num_instrs;
++			rp1_pio_message(pio, PIO_REMOVE_PROGRAM, &args, sizeof(args));
++			args.num_instrs = 0;
++		}
++		if (!mask)
++			break;
++	}
++	mutex_unlock(&pio->instr_mutex);
++}
++
++static int rp1_pio_remove_program(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_remove_program_args *args = param;
++	uint32_t used_mask;
++	int ret = -ENOENT;
++
++	if (args->num_instrs > RP1_PIO_INSTR_COUNT ||
++		args->origin >= RP1_PIO_INSTR_COUNT ||
++		(args->origin + args->num_instrs) > RP1_PIO_INSTR_COUNT)
++		return -EINVAL;
++
++	used_mask = ((uint32_t)(~0) >> (32 - args->num_instrs)) << args->origin;
++	if ((client->claimed_instrs & used_mask) == used_mask) {
++		client->claimed_instrs &= ~used_mask;
++		rp1_pio_remove_instrs(client->pio, used_mask);
++		ret = 0;
++	}
++	return ret;
++}
++
++static int rp1_pio_clear_instr_mem(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_device *pio = client->pio;
++
++	mutex_lock(&pio->instr_mutex);
++	(void)rp1_pio_message(client->pio, PIO_CLEAR_INSTR_MEM, NULL, 0);
++	memset(pio->instr_refcounts, 0, sizeof(pio->instr_refcounts));
++	pio->used_instrs = 0;
++	client->claimed_instrs = 0;
++	mutex_unlock(&pio->instr_mutex);
++	return 0;
++}
++
++static int rp1_pio_sm_claim(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_claim_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	int ret;
++
++	mutex_lock(&pio->instr_mutex);
++	ret = rp1_pio_message(client->pio, PIO_SM_CLAIM, args, sizeof(*args));
++	if (ret >= 0) {
++		if (args->mask)
++			client->claimed_sms |= args->mask;
++		else
++			client->claimed_sms |= (1 << ret);
++		pio->claimed_sms |= client->claimed_sms;
++	}
++	mutex_unlock(&pio->instr_mutex);
++	return ret;
++}
++
++static int rp1_pio_sm_unclaim(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_claim_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++
++	mutex_lock(&pio->instr_mutex);
++	(void)rp1_pio_message(client->pio, PIO_SM_UNCLAIM, args, sizeof(*args));
++	client->claimed_sms &= ~args->mask;
++	pio->claimed_sms &= ~args->mask;
++	mutex_unlock(&pio->instr_mutex);
++	return 0;
++}
++
++static int rp1_pio_sm_is_claimed(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_claim_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_IS_CLAIMED, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_init(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_init_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_INIT, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_set_config(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_config_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_CONFIG, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_exec(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_exec_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_EXEC, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_clear_fifos(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_clear_fifos_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_CLEAR_FIFOS, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_set_clkdiv(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_clkdiv_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_CLKDIV, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_set_pins(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_pins_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_PINS, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_set_pindirs(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_pindirs_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_PINDIRS, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_set_enabled(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_enabled_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_ENABLED, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_restart(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_restart_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_RESTART, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_clkdiv_restart(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_restart_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_CLKDIV_RESTART, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_enable_sync(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_enable_sync_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_ENABLE_SYNC, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_put(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_put_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_PUT, args, sizeof(*args));
++}
++
++static int rp1_pio_sm_get(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_get_args *args = param;
++	int ret;
++
++	ret = rp1_pio_message_resp(client->pio, PIO_SM_GET, args, sizeof(*args),
++				   &args->data, NULL, sizeof(args->data));
++	if (ret >= 0)
++		return offsetof(struct rp1_pio_sm_get_args, data) + ret;
++	return ret;
++}
++
++static int rp1_pio_sm_set_dmactrl(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_set_dmactrl_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_SET_DMACTRL, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_init_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_INIT, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_function(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_function_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_FUNCTION, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_pulls(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_pulls_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_PULLS, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_outover(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_OUTOVER, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_inover(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_INOVER, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_oeover(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_OEOVER, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_input_enabled(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_INPUT_ENABLED, args, sizeof(*args));
++}
++
++static int rp1_pio_gpio_set_drive_strength(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_gpio_set_args *args = param;
++
++	return rp1_pio_message(client->pio, GPIO_SET_DRIVE_STRENGTH, args, sizeof(*args));
++}
++
++static void rp1_pio_sm_dma_callback(void *param)
++{
++	struct dma_info *dma = param;
++
++	up(&dma->buf_sem);
++}
++
++static void rp1_pio_sm_dma_free(struct device *dev, struct dma_info *dma)
++{
++	dmaengine_terminate_all(dma->chan);
++	while (dma->buf_count > 0) {
++		dma->buf_count--;
++		dma_free_coherent(dev, ROUND_UP(dma->buf_size, PAGE_SIZE),
++				  dma->bufs[dma->buf_count].buf, dma->bufs[dma->buf_count].phys);
++	}
++
++	dma_release_channel(dma->chan);
++}
++
++static int rp1_pio_sm_config_xfer(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_config_xfer_args *args = param;
++	struct rp1_pio_sm_set_dmactrl_args set_dmactrl_args;
++	struct rp1_pio_device *pio = client->pio;
++	struct platform_device *pdev = pio->pdev;
++	struct device *dev = &pdev->dev;
++	struct dma_slave_config config = {};
++	phys_addr_t fifo_addr;
++	struct dma_info *dma;
++	uint32_t dma_mask;
++	char chan_name[4];
++	uint buf_size;
++	int ret = 0;
++
++	if (args->sm >= RP1_PIO_SMS_COUNT || args->dir >= RP1_PIO_DIR_COUNT ||
++	    !args->buf_size || (args->buf_size & 3) ||
++	    !args->buf_count || args->buf_count > DMA_BOUNCE_BUFFER_COUNT)
++		return -EINVAL;
++
++	dma_mask = 1 << (args->sm * 2 + args->dir);
++
++	dma = &pio->dma_configs[args->sm][args->dir];
++
++	spin_lock(&pio->lock);
++	if (pio->claimed_dmas & dma_mask)
++		rp1_pio_sm_dma_free(dev, dma);
++	pio->claimed_dmas |= dma_mask;
++	client->claimed_dmas |= dma_mask;
++	spin_unlock(&pio->lock);
++
++	dma->buf_size = args->buf_size;
++	/* Round up the allocations */
++	buf_size = ROUND_UP(args->buf_size, PAGE_SIZE);
++	sema_init(&dma->buf_sem, 0);
++
++	/* Allocate and configure a DMA channel */
++	/* Careful - each SM FIFO has its own DREQ value */
++	chan_name[0] = (args->dir == RP1_PIO_DIR_TO_SM) ? 't' : 'r';
++	chan_name[1] = 'x';
++	chan_name[2] = '0' + args->sm;
++	chan_name[3] = '\0';
++
++	dma->chan = dma_request_chan(dev, chan_name);
++	if (IS_ERR(dma->chan))
++		return PTR_ERR(dma->chan);
++
++	/* Alloc and map bounce buffers */
++	for (dma->buf_count = 0; dma->buf_count < args->buf_count; dma->buf_count++) {
++		struct dma_buf_info *dbi = &dma->bufs[dma->buf_count];
++
++		dbi->buf = dma_alloc_coherent(dma->chan->device->dev, buf_size,
++					      &dbi->phys, GFP_KERNEL);
++		if (!dbi->buf) {
++			ret = -ENOMEM;
++			goto err_dma_free;
++		}
++		sg_init_table(&dbi->sgl, 1);
++		sg_dma_address(&dbi->sgl) = dbi->phys;
++	}
++
++	fifo_addr = pio->phys_addr;
++	fifo_addr += args->sm * (RP1_PIO_FIFO_TX1 - RP1_PIO_FIFO_TX0);
++	fifo_addr += (args->dir == RP1_PIO_DIR_TO_SM) ? RP1_PIO_FIFO_TX0 : RP1_PIO_FIFO_RX0;
++
++	config.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	config.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	config.src_addr = fifo_addr;
++	config.dst_addr = fifo_addr;
++	config.direction = (args->dir == RP1_PIO_DIR_TO_SM) ? DMA_MEM_TO_DEV : DMA_DEV_TO_MEM;
++
++	ret = dmaengine_slave_config(dma->chan, &config);
++	if (ret)
++		goto err_dma_free;
++
++	set_dmactrl_args.sm = args->sm;
++	set_dmactrl_args.is_tx = (args->dir == RP1_PIO_DIR_TO_SM);
++	set_dmactrl_args.ctrl = RP1_PIO_DMACTRL_DEFAULT;
++	if (args->dir == RP1_PIO_DIR_FROM_SM)
++		set_dmactrl_args.ctrl = (RP1_PIO_DMACTRL_DEFAULT & ~0x1f) | 1;
++
++	ret = rp1_pio_sm_set_dmactrl(client, &set_dmactrl_args);
++	if (ret)
++		goto err_dma_free;
++
++	return 0;
++
++err_dma_free:
++	rp1_pio_sm_dma_free(dev, dma);
++
++	spin_lock(&pio->lock);
++	client->claimed_dmas &= ~dma_mask;
++	pio->claimed_dmas &= ~dma_mask;
++	spin_unlock(&pio->lock);
++
++	return ret;
++}
++
++static int rp1_pio_sm_tx_user(struct rp1_pio_device *pio, struct dma_info *dma,
++			      const void __user *userbuf, size_t bytes)
++{
++	struct platform_device *pdev = pio->pdev;
++	struct dma_async_tx_descriptor *desc;
++	struct device *dev = &pdev->dev;
++	int ret = 0;
++
++	// Clean the slate - we're running synchronously
++	dma->head_idx = 0;
++	dma->tail_idx = 0;
++
++	while (bytes > 0) {
++		size_t copy_bytes = min(bytes, dma->buf_size);
++		struct dma_buf_info *dbi;
++
++		/* grab the next free buffer, waiting if they're all full */
++		if (dma->head_idx - dma->tail_idx == dma->buf_count) {
++			if (down_timeout(&dma->buf_sem,
++				msecs_to_jiffies(1000))) {
++				dev_err(dev, "DMA bounce timed out\n");
++				break;
++			}
++			dma->tail_idx++;
++		}
++
++		dbi = &dma->bufs[dma->head_idx % dma->buf_count];
++
++		sg_dma_len(&dbi->sgl) = copy_bytes;
++
++		ret = copy_from_user(dbi->buf, userbuf, copy_bytes);
++		if (ret < 0)
++			break;
++
++		userbuf += copy_bytes;
++
++		desc = dmaengine_prep_slave_sg(dma->chan, &dbi->sgl, 1,
++					       DMA_MEM_TO_DEV,
++					       DMA_PREP_INTERRUPT | DMA_CTRL_ACK |
++					       DMA_PREP_FENCE);
++		if (!desc) {
++			dev_err(dev, "DMA preparation failedzn");
++			ret = -EIO;
++			break;
++		}
++
++		desc->callback = rp1_pio_sm_dma_callback;
++		desc->callback_param = dma;
++
++		/* Submit the buffer - the callback will kick the semaphore */
++		ret = dmaengine_submit(desc);
++		if (ret < 0)
++			break;
++		ret = 0;
++
++		dma_async_issue_pending(dma->chan);
++
++		dma->head_idx++;
++		bytes -= copy_bytes;
++	}
++
++	// Block for completion
++	while (dma->tail_idx != dma->head_idx) {
++		if (down_timeout(&dma->buf_sem, msecs_to_jiffies(1000))) {
++			dev_err(dev, "DMA wait timed out\n");
++			ret = -ETIMEDOUT;
++			break;
++		}
++		dma->tail_idx++;
++	}
++
++	return ret;
++}
++
++static int rp1_pio_sm_rx_user(struct rp1_pio_device *pio, struct dma_info *dma,
++			      void __user *userbuf, size_t bytes)
++{
++	struct platform_device *pdev = pio->pdev;
++	struct dma_async_tx_descriptor *desc;
++	struct device *dev = &pdev->dev;
++	int ret = 0;
++
++	/* Clean the slate - we're running synchronously */
++	dma->head_idx = 0;
++	dma->tail_idx = 0;
++
++	while (bytes || dma->tail_idx != dma->head_idx) {
++		size_t copy_bytes = min(bytes, dma->buf_size);
++		struct dma_buf_info *dbi;
++
++		/*
++		 * wait for the next RX to complete if all the buffers are
++		 * outstanding or we're finishing up.
++		 */
++		if (!bytes || dma->head_idx - dma->tail_idx == dma->buf_count) {
++			if (down_timeout(&dma->buf_sem,
++				msecs_to_jiffies(1000))) {
++				dev_err(dev, "DMA wait timed out");
++				ret = -ETIMEDOUT;
++				break;
++			}
++
++			dbi = &dma->bufs[dma->tail_idx++ % dma->buf_count];
++			ret = copy_to_user(userbuf, dbi->buf, sg_dma_len(&dbi->sgl));
++			if (ret < 0)
++				break;
++			userbuf += sg_dma_len(&dbi->sgl);
++
++			if (!bytes)
++				continue;
++		}
++
++		dbi = &dma->bufs[dma->head_idx % dma->buf_count];
++		sg_dma_len(&dbi->sgl) = copy_bytes;
++		desc = dmaengine_prep_slave_sg(dma->chan, &dbi->sgl, 1,
++					       DMA_DEV_TO_MEM,
++					       DMA_PREP_INTERRUPT | DMA_CTRL_ACK |
++					       DMA_PREP_FENCE);
++		if (!desc) {
++			dev_err(dev, "DMA preparation failed");
++			ret = -EIO;
++			break;
++		}
++
++		desc->callback = rp1_pio_sm_dma_callback;
++		desc->callback_param = dma;
++
++		// Submit the buffer - the callback will kick the semaphore
++
++		ret = dmaengine_submit(desc);
++		if (ret < 0)
++			break;
++
++		dma_async_issue_pending(dma->chan);
++
++		dma->head_idx++;
++		bytes -= copy_bytes;
++	}
++
++	return ret;
++}
++
++static int rp1_pio_sm_xfer_data(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_xfer_data_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	struct dma_info *dma;
++
++	if (args->sm >= RP1_PIO_SMS_COUNT || args->dir >= RP1_PIO_DIR_COUNT ||
++	    !args->data_bytes || !args->data)
++		return -EINVAL;
++
++	dma = &pio->dma_configs[args->sm][args->dir];
++
++	if (args->dir == RP1_PIO_DIR_TO_SM)
++		return rp1_pio_sm_tx_user(pio, dma, args->data, args->data_bytes);
++	else
++		return rp1_pio_sm_rx_user(pio, dma, args->data, args->data_bytes);
++}
++
++struct handler_info {
++	const char *name;
++	int (*func)(struct rp1_pio_client *client, void *param);
++	int argsize;
++} ioctl_handlers[] = {
++	HANDLER(SM_CONFIG_XFER, sm_config_xfer),
++	HANDLER(SM_XFER_DATA, sm_xfer_data),
++
++	HANDLER(CAN_ADD_PROGRAM, can_add_program),
++	HANDLER(ADD_PROGRAM, add_program),
++	HANDLER(REMOVE_PROGRAM, remove_program),
++	HANDLER(CLEAR_INSTR_MEM, clear_instr_mem),
++
++	HANDLER(SM_CLAIM, sm_claim),
++	HANDLER(SM_UNCLAIM, sm_unclaim),
++	HANDLER(SM_IS_CLAIMED, sm_is_claimed),
++
++	HANDLER(SM_INIT, sm_init),
++	HANDLER(SM_SET_CONFIG, sm_set_config),
++	HANDLER(SM_EXEC, sm_exec),
++	HANDLER(SM_CLEAR_FIFOS, sm_clear_fifos),
++	HANDLER(SM_SET_CLKDIV, sm_set_clkdiv),
++	HANDLER(SM_SET_PINS, sm_set_pins),
++	HANDLER(SM_SET_PINDIRS, sm_set_pindirs),
++	HANDLER(SM_SET_ENABLED, sm_set_enabled),
++	HANDLER(SM_RESTART, sm_restart),
++	HANDLER(SM_CLKDIV_RESTART, sm_clkdiv_restart),
++	HANDLER(SM_ENABLE_SYNC, sm_enable_sync),
++	HANDLER(SM_PUT, sm_put),
++	HANDLER(SM_GET, sm_get),
++	HANDLER(SM_SET_DMACTRL, sm_set_dmactrl),
++
++	HANDLER(GPIO_INIT, gpio_init),
++	HANDLER(GPIO_SET_FUNCTION, gpio_set_function),
++	HANDLER(GPIO_SET_PULLS, gpio_set_pulls),
++	HANDLER(GPIO_SET_OUTOVER, gpio_set_outover),
++	HANDLER(GPIO_SET_INOVER, gpio_set_inover),
++	HANDLER(GPIO_SET_OEOVER, gpio_set_oeover),
++	HANDLER(GPIO_SET_INPUT_ENABLED, gpio_set_input_enabled),
++	HANDLER(GPIO_SET_DRIVE_STRENGTH, gpio_set_drive_strength),
++
++	HANDLER(READ_HW, read_hw),
++	HANDLER(WRITE_HW, write_hw),
++};
++
++static int rp1_pio_open(struct inode *inode, struct file *filp)
++{
++	struct rp1_pio_device *pio = g_pio;
++	struct rp1_pio_client *client;
++
++	client = kzalloc(sizeof(*client), GFP_KERNEL);
++
++	client->pio = pio;
++	filp->private_data = client;
++
++	return 0;
++}
++
++static int rp1_pio_release(struct inode *inode, struct file *filp)
++{
++	struct rp1_pio_client *client = filp->private_data;
++	struct rp1_pio_device *pio = client->pio;
++	uint claimed_dmas = client->claimed_dmas;
++	int i;
++
++	/* Free any allocated resources */
++
++	for (i = 0; claimed_dmas; i++) {
++		uint mask = (1 << i);
++
++		if (claimed_dmas & mask) {
++			struct dma_info *dma = &pio->dma_configs[i >> 1][i & 1];
++
++			claimed_dmas &= ~mask;
++			rp1_pio_sm_dma_free(&pio->pdev->dev, dma);
++		}
++	}
++
++	spin_lock(&pio->lock);
++	pio->claimed_dmas &= ~client->claimed_dmas;
++	spin_unlock(&pio->lock);
++
++	if (client->claimed_sms) {
++		struct rp1_pio_sm_set_enabled_args se_args = {
++			.mask = client->claimed_sms, .enable = 0
++		};
++		struct rp1_pio_sm_claim_args uc_args = {
++			.mask = client->claimed_sms
++		};
++
++		rp1_pio_sm_set_enabled(client, &se_args);
++		rp1_pio_sm_unclaim(client, &uc_args);
++	}
++
++	if (client->claimed_instrs)
++		rp1_pio_remove_instrs(pio, client->claimed_instrs);
++
++	/* Reinitialise the SM? */
++
++	kfree(client);
++
++	return 0;
++}
++
++static long rp1_pio_ioctl(struct file *filp, unsigned int ioctl_num,
++			  unsigned long ioctl_param)
++{
++	struct rp1_pio_client *client = filp->private_data;
++	struct device *dev = &client->pio->pdev->dev;
++	void __user *argp = (void __user *)ioctl_param;
++	int nr = _IOC_NR(ioctl_num);
++	int sz = _IOC_SIZE(ioctl_num);
++	struct handler_info *hdlr = &ioctl_handlers[nr];
++	uint32_t argbuf[MAX_ARG_SIZE/sizeof(uint32_t)];
++	int ret;
++
++	if (nr >= ARRAY_SIZE(ioctl_handlers) || !hdlr->func) {
++		dev_err(dev, "unknown ioctl: %x\n", ioctl_num);
++		return -EOPNOTSUPP;
++	}
++
++	if (sz != hdlr->argsize) {
++		dev_err(dev, "wrong %s argsize (expected %d, got %d)\n",
++			hdlr->name, hdlr->argsize, sz);
++		return -EINVAL;
++	}
++
++	if (copy_from_user(argbuf, argp, sz))
++		return -EFAULT;
++
++	ret = (hdlr->func)(client, argbuf);
++	dev_dbg(dev, "%s: %s -> %d\n", __func__, hdlr->name, ret);
++	if (ret > 0) {
++		if (copy_to_user(argp, argbuf, ret))
++			ret = -EFAULT;
++	}
++
++	return ret;
++}
++
++const struct file_operations rp1_pio_fops = {
++	.owner =	THIS_MODULE,
++	.open =		rp1_pio_open,
++	.release =	rp1_pio_release,
++	.unlocked_ioctl = rp1_pio_ioctl,
++};
++
++static int rp1_pio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct resource *ioresource;
++	struct rp1_pio_device *pio;
++	struct rp1_firmware *fw;
++	uint32_t op_count = 0;
++	uint32_t op_base = 0;
++	struct device *cdev;
++	char dev_name[16];
++	void *p;
++	int ret;
++	int i;
++
++	/* Run-time check for a build-time misconfiguration */
++	for (i = 0; i < ARRAY_SIZE(ioctl_handlers); i++) {
++		struct handler_info *hdlr = &ioctl_handlers[i];
++
++		if (WARN_ON(hdlr->argsize > MAX_ARG_SIZE))
++			return -EINVAL;
++	}
++
++	fw = devm_rp1_firmware_get(dev, dev->of_node);
++	if (IS_ERR(fw))
++		return PTR_ERR(fw);
++
++	ret = rp1_firmware_get_feature(fw, FOURCC_PIO, &op_base, &op_count);
++	if (ret < 0)
++		return ret;
++
++	pio = devm_kzalloc(&pdev->dev, sizeof(*pio), GFP_KERNEL);
++	if (!pio)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, pio);
++	pio->fw_pio_base = op_base;
++	pio->fw_pio_count = op_count;
++	pio->pdev = pdev;
++	pio->fw = fw;
++	spin_lock_init(&pio->lock);
++	mutex_init(&pio->instr_mutex);
++
++	p = devm_platform_get_and_ioremap_resource(pdev, 0, &ioresource);
++	if (IS_ERR(p))
++		return PTR_ERR(p);
++
++	pio->phys_addr = ioresource->start;
++
++	ret = alloc_chrdev_region(&pio->dev_num, 0, 1, DRIVER_NAME);
++	if (ret < 0) {
++		dev_err(dev, "alloc_chrdev_region failed (rc=%d)\n", ret);
++		goto out_err;
++	}
++
++	cdev_init(&pio->cdev, &rp1_pio_fops);
++	ret = cdev_add(&pio->cdev, pio->dev_num, 1);
++	if (ret) {
++		dev_err(dev, "cdev_add failed (err %d)\n", ret);
++		goto out_unregister;
++	}
++
++	pio->dev_class = class_create(DRIVER_NAME);
++	if (IS_ERR(pio->dev_class)) {
++		ret = PTR_ERR(pio->dev_class);
++		dev_err(dev, "class_create failed (err %d)\n", ret);
++		goto out_cdev_del;
++	}
++	pdev->id = of_alias_get_id(pdev->dev.of_node, "pio");
++	if (pdev->id < 0) {
++		dev_err(dev, "alias is missing\n");
++		return -EINVAL;
++		goto out_class_destroy;
++	}
++	sprintf(dev_name, "pio%d", pdev->id);
++	cdev = device_create(pio->dev_class, NULL, pio->dev_num, NULL, dev_name);
++	if (IS_ERR(cdev)) {
++		ret = PTR_ERR(cdev);
++		dev_err(dev, "%s: device_create failed (err %d)\n", __func__, ret);
++		goto out_class_destroy;
++	}
++
++	g_pio = pio;
++
++	dev_info(dev, "Created instance as %s\n", dev_name);
++	return 0;
++
++out_class_destroy:
++	class_destroy(pio->dev_class);
++
++out_cdev_del:
++	cdev_del(&pio->cdev);
++
++out_unregister:
++	unregister_chrdev_region(pio->dev_num, 1);
++
++out_err:
++	return ret;
++}
++
++static void rp1_pio_remove(struct platform_device *pdev)
++{
++	struct rp1_pio_device *pio = platform_get_drvdata(pdev);
++
++	/* There should be no clients */
++
++	if (g_pio == pio)
++		g_pio = NULL;
++}
++
++static const struct of_device_id rp1_pio_ids[] = {
++	{ .compatible = "raspberrypi,rp1-pio" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, rp1_pio_ids);
++
++static struct platform_driver rp1_pio_driver = {
++	.driver	= {
++		.name		= "rp1-pio",
++		.of_match_table	= of_match_ptr(rp1_pio_ids),
++	},
++	.probe		= rp1_pio_probe,
++	.remove_new	= rp1_pio_remove,
++	.shutdown	= rp1_pio_remove,
++};
++
++module_platform_driver(rp1_pio_driver);
++
++MODULE_DESCRIPTION("PIO controller driver for Raspberry Pi RP1");
++MODULE_AUTHOR("Phil Elwell");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/include/uapi/misc/rp1_pio_if.h
+@@ -0,0 +1,212 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2023-24 Raspberry Pi Ltd.
++ * All rights reserved.
++ */
++#ifndef _PIO_RP1_IF_H
++#define _PIO_RP1_IF_H
++
++#include <linux/ioctl.h>
++
++#define RP1_PIO_INSTRUCTION_COUNT   32
++#define RP1_PIO_SM_COUNT            4
++#define RP1_PIO_GPIO_COUNT          28
++#define RP1_GPIO_FUNC_PIO           7
++
++#define RP1_PIO_ORIGIN_ANY          ((uint16_t)(~0))
++
++#define RP1_PIO_DIR_TO_SM           0
++#define RP1_PIO_DIR_FROM_SM         1
++#define RP1_PIO_DIR_COUNT           2
++
++typedef struct {
++	uint32_t clkdiv;
++	uint32_t execctrl;
++	uint32_t shiftctrl;
++	uint32_t pinctrl;
++} rp1_pio_sm_config;
++
++struct rp1_pio_add_program_args {
++	uint16_t num_instrs;
++	uint16_t origin;
++	uint16_t instrs[RP1_PIO_INSTRUCTION_COUNT];
++};
++
++struct rp1_pio_remove_program_args {
++	uint16_t num_instrs;
++	uint16_t origin;
++};
++
++struct rp1_pio_sm_claim_args {
++	uint16_t mask;
++};
++
++struct rp1_pio_sm_init_args {
++	uint16_t sm;
++	uint16_t initial_pc;
++	rp1_pio_sm_config config;
++};
++
++struct rp1_pio_sm_set_config_args {
++	uint16_t sm;
++	uint16_t rsvd;
++	rp1_pio_sm_config config;
++};
++
++struct rp1_pio_sm_exec_args {
++	uint16_t sm;
++	uint16_t instr;
++	uint8_t blocking;
++	uint8_t rsvd;
++};
++
++struct rp1_pio_sm_clear_fifos_args {
++	uint16_t sm;
++};
++
++struct rp1_pio_sm_set_clkdiv_args {
++	uint16_t sm;
++	uint16_t div_int;
++	uint8_t div_frac;
++	uint8_t rsvd;
++};
++
++struct rp1_pio_sm_set_pins_args {
++	uint16_t sm;
++	uint16_t rsvd;
++	uint32_t values;
++	uint32_t mask;
++};
++
++struct rp1_pio_sm_set_pindirs_args {
++	uint16_t sm;
++	uint16_t rsvd;
++	uint32_t dirs;
++	uint32_t mask;
++};
++
++struct rp1_pio_sm_set_enabled_args {
++	uint16_t mask;
++	uint8_t enable;
++	uint8_t rsvd;
++};
++
++struct rp1_pio_sm_restart_args {
++	uint16_t mask;
++};
++
++struct rp1_pio_sm_clkdiv_restart_args {
++	uint16_t mask;
++};
++
++struct rp1_pio_sm_enable_sync_args {
++	uint16_t mask;
++};
++
++struct rp1_pio_sm_put_args {
++	uint16_t sm;
++	uint8_t blocking;
++	uint8_t rsvd;
++	uint32_t data;
++};
++
++struct rp1_pio_sm_get_args {
++	uint16_t sm;
++	uint8_t blocking;
++	uint8_t rsvd;
++	uint32_t data; /* IN/OUT */
++};
++
++struct rp1_pio_sm_set_dmactrl_args {
++	uint16_t sm;
++	uint8_t is_tx;
++	uint8_t rsvd;
++	uint32_t ctrl;
++};
++
++struct rp1_gpio_init_args {
++	uint16_t gpio;
++};
++
++struct rp1_gpio_set_function_args {
++	uint16_t gpio;
++	uint16_t fn;
++};
++
++struct rp1_gpio_set_pulls_args {
++	uint16_t gpio;
++	uint8_t up;
++	uint8_t down;
++};
++
++struct rp1_gpio_set_args {
++	uint16_t gpio;
++	uint16_t value;
++};
++
++struct rp1_pio_sm_config_xfer_args {
++	uint16_t sm;
++	uint16_t dir;
++	uint16_t buf_size;
++	uint16_t buf_count;
++};
++
++struct rp1_pio_sm_xfer_data_args {
++	uint16_t sm;
++	uint16_t dir;
++	uint16_t data_bytes;
++	void *data;
++};
++
++struct rp1_access_hw_args {
++	uint32_t addr;
++	uint32_t len;
++	void *data;
++};
++
++#define PIO_IOC_MAGIC 102
++
++#define PIO_IOC_SM_CONFIG_XFER _IOW(PIO_IOC_MAGIC, 0, struct rp1_pio_sm_config_xfer_args)
++#define PIO_IOC_SM_XFER_DATA _IOW(PIO_IOC_MAGIC, 1, struct rp1_pio_sm_xfer_data_args)
++
++#ifdef CONFIG_COMPAT
++//XXX #define PIO_IOC_SM_XFER_DATA32 _IOW(PIO_IOC_MAGIC, 2, struct pio_sm_xfer_data_args)
++#endif
++
++#define PIO_IOC_READ_HW _IOW(PIO_IOC_MAGIC, 8, struct rp1_access_hw_args)
++#define PIO_IOC_WRITE_HW _IOW(PIO_IOC_MAGIC, 9, struct rp1_access_hw_args)
++
++#define PIO_IOC_CAN_ADD_PROGRAM _IOW(PIO_IOC_MAGIC, 10, struct rp1_pio_add_program_args)
++#define PIO_IOC_ADD_PROGRAM _IOW(PIO_IOC_MAGIC, 11, struct rp1_pio_add_program_args)
++#define PIO_IOC_REMOVE_PROGRAM _IOW(PIO_IOC_MAGIC, 12, struct rp1_pio_remove_program_args)
++#define PIO_IOC_CLEAR_INSTR_MEM _IO(PIO_IOC_MAGIC, 13)
++
++#define PIO_IOC_SM_CLAIM _IOW(PIO_IOC_MAGIC, 20, struct rp1_pio_sm_claim_args)
++#define PIO_IOC_SM_UNCLAIM _IOW(PIO_IOC_MAGIC, 21, struct rp1_pio_sm_claim_args)
++#define PIO_IOC_SM_IS_CLAIMED _IOW(PIO_IOC_MAGIC, 22, struct rp1_pio_sm_claim_args)
++
++#define PIO_IOC_SM_INIT _IOW(PIO_IOC_MAGIC, 30, struct rp1_pio_sm_init_args)
++#define PIO_IOC_SM_SET_CONFIG _IOW(PIO_IOC_MAGIC, 31, struct rp1_pio_sm_set_config_args)
++#define PIO_IOC_SM_EXEC _IOW(PIO_IOC_MAGIC, 32, struct rp1_pio_sm_exec_args)
++#define PIO_IOC_SM_CLEAR_FIFOS _IOW(PIO_IOC_MAGIC, 33, struct rp1_pio_sm_clear_fifos_args)
++#define PIO_IOC_SM_SET_CLKDIV _IOW(PIO_IOC_MAGIC, 34, struct rp1_pio_sm_set_clkdiv_args)
++#define PIO_IOC_SM_SET_PINS _IOW(PIO_IOC_MAGIC, 35, struct rp1_pio_sm_set_pins_args)
++#define PIO_IOC_SM_SET_PINDIRS _IOW(PIO_IOC_MAGIC, 36, struct rp1_pio_sm_set_pindirs_args)
++#define PIO_IOC_SM_SET_ENABLED _IOW(PIO_IOC_MAGIC, 37, struct rp1_pio_sm_set_enabled_args)
++#define PIO_IOC_SM_RESTART _IOW(PIO_IOC_MAGIC, 38, struct rp1_pio_sm_restart_args)
++#define PIO_IOC_SM_CLKDIV_RESTART _IOW(PIO_IOC_MAGIC, 39, struct rp1_pio_sm_restart_args)
++#define PIO_IOC_SM_ENABLE_SYNC _IOW(PIO_IOC_MAGIC, 40, struct rp1_pio_sm_enable_sync_args)
++#define PIO_IOC_SM_PUT _IOW(PIO_IOC_MAGIC, 41, struct rp1_pio_sm_put_args)
++#define PIO_IOC_SM_GET _IOWR(PIO_IOC_MAGIC, 42, struct rp1_pio_sm_get_args)
++#define PIO_IOC_SM_SET_DMACTRL _IOW(PIO_IOC_MAGIC, 43, struct rp1_pio_sm_set_dmactrl_args)
++
++#define PIO_IOC_GPIO_INIT _IOW(PIO_IOC_MAGIC, 50, struct rp1_gpio_init_args)
++#define PIO_IOC_GPIO_SET_FUNCTION _IOW(PIO_IOC_MAGIC, 51, struct rp1_gpio_set_function_args)
++#define PIO_IOC_GPIO_SET_PULLS _IOW(PIO_IOC_MAGIC, 52, struct rp1_gpio_set_pulls_args)
++#define PIO_IOC_GPIO_SET_OUTOVER _IOW(PIO_IOC_MAGIC, 53, struct rp1_gpio_set_args)
++#define PIO_IOC_GPIO_SET_INOVER _IOW(PIO_IOC_MAGIC, 54, struct rp1_gpio_set_args)
++#define PIO_IOC_GPIO_SET_OEOVER _IOW(PIO_IOC_MAGIC, 55, struct rp1_gpio_set_args)
++#define PIO_IOC_GPIO_SET_INPUT_ENABLED _IOW(PIO_IOC_MAGIC, 56, struct rp1_gpio_set_args)
++#define PIO_IOC_GPIO_SET_DRIVE_STRENGTH _IOW(PIO_IOC_MAGIC, 57, struct rp1_gpio_set_args)
++
++#endif

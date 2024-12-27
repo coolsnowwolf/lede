@@ -1,0 +1,56 @@
+From 66aef6ce3557edd9d58d794e4a800c5be49ca0e7 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Mon, 11 Nov 2024 10:30:38 +0000
+Subject: [PATCH] drivers: usb: xhci: set HID bit in streaming endpoint
+ contexts
+
+The xHC may commence Host Initiated Data Moves for streaming endpoints -
+see USB3.2 spec s8.12.1.4.2.4. However, this behaviour is typically
+counterproductive as the submission of UAS URBs in {Status, Data,
+Command} order and 1 outstanding IO per stream ID means the device never
+enters Move Data after a HIMD for Status or Data stages with the same
+stream ID. For OUT transfers this is especially inefficient as the host
+will start transmitting multiple bulk packets as a burst, all of which
+get NAKed by the device - wasting bandwidth.
+
+Also, some buggy UAS adapters don't properly handle the EP flow control
+state this creates - e.g. RTL9210.
+
+Set Host Initiated Data Move Disable to always defer stream selection to
+the device. xHC implementations may treat this field as "don't care,
+forced to 1" anyway - xHCI 1.2 s4.12.1.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-mem.c | 8 ++++++++
+ drivers/usb/host/xhci.h     | 2 ++
+ 2 files changed, 10 insertions(+)
+
+--- a/drivers/usb/host/xhci-mem.c
++++ b/drivers/usb/host/xhci-mem.c
+@@ -716,6 +716,14 @@ void xhci_setup_streams_ep_input_ctx(str
+ 	ep_ctx->ep_info &= cpu_to_le32(~EP_MAXPSTREAMS_MASK);
+ 	ep_ctx->ep_info |= cpu_to_le32(EP_MAXPSTREAMS(max_primary_streams)
+ 				       | EP_HAS_LSA);
++
++	/*
++	 * Set Host Initiated Data Move Disable to always defer stream
++	 * selection to the device. xHC implementations may treat this
++	 * field as "don't care, forced to 1" anyway - xHCI 1.2 s4.12.1.
++	 */
++	ep_ctx->ep_info2 |= EP_HID;
++
+ 	ep_ctx->deq  = cpu_to_le64(stream_info->ctx_array_dma);
+ }
+ 
+--- a/drivers/usb/host/xhci.h
++++ b/drivers/usb/host/xhci.h
+@@ -492,6 +492,8 @@ struct xhci_ep_ctx {
+ #define CTX_TO_EP_MAXPSTREAMS(p)	(((p) & EP_MAXPSTREAMS_MASK) >> 10)
+ /* Endpoint is set up with a Linear Stream Array (vs. Secondary Stream Array) */
+ #define	EP_HAS_LSA		(1 << 15)
++/* Host initiated data move disable in info2 */
++#define EP_HID			(1 << 7)
+ /* hosts with LEC=1 use bits 31:24 as ESIT high bits. */
+ #define CTX_TO_MAX_ESIT_PAYLOAD_HI(p)	(((p) >> 24) & 0xff)
+ 

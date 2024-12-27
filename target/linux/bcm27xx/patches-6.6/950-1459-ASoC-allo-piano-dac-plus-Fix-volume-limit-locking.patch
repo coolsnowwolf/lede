@@ -1,0 +1,79 @@
+From ac0cd73932aa1e371ffaf0b974855ed3cd22937f Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 11 Dec 2024 13:47:30 +0000
+Subject: [PATCH] ASoC: allo-piano-dac-plus: Fix volume limit locking
+
+Calling snd_soc_limit_volume from within a kcontrol put handler seems
+to cause a deadlock as it attempts to claim a write lock that is already
+held. Call snd_soc_limit_volume from the main initialisation code
+instead, to avoid the recursive locking.
+
+See: https://github.com/raspberrypi/linux/issues/6527
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ sound/soc/bcm/allo-piano-dac-plus.c | 32 +++++++++++++----------------
+ 1 file changed, 14 insertions(+), 18 deletions(-)
+
+--- a/sound/soc/bcm/allo-piano-dac-plus.c
++++ b/sound/soc/bcm/allo-piano-dac-plus.c
+@@ -452,14 +452,6 @@ static int pcm512x_set_reg_sub(struct sn
+ 
+ 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
+ 
+-	if (digital_gain_0db_limit) {
+-		ret = snd_soc_limit_volume(card, "Subwoofer Playback Volume",
+-					207);
+-		if (ret < 0)
+-			dev_warn(card->dev, "Failed to set volume limit: %d\n",
+-				ret);
+-	}
+-
+ 	// When in Dual Mono, Sub vol control should not set anything.
+ 	if (glb_ptr->dual_mode != 1) { //Not in Dual Mono mode
+ 
+@@ -562,14 +554,6 @@ static int pcm512x_set_reg_master(struct
+ 
+ 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
+ 
+-	if (digital_gain_0db_limit) {
+-		ret = snd_soc_limit_volume(card, "Master Playback Volume",
+-					207);
+-		if (ret < 0)
+-			dev_warn(card->dev, "Failed to set volume limit: %d\n",
+-				ret);
+-	}
+-
+ 	if (glb_ptr->dual_mode == 1) { //in Dual Mono Mode
+ 
+ 		ret = snd_soc_component_write(asoc_rtd_to_codec(rtd, 0)->component,
+@@ -750,6 +734,18 @@ static int snd_allo_piano_dac_init(struc
+ 	if (digital_gain_0db_limit) {
+ 		int ret;
+ 
++		ret = snd_soc_limit_volume(card, "Master Playback Volume",
++					207);
++		if (ret < 0)
++			dev_warn(card->dev, "Failed to set master volume limit: %d\n",
++				ret);
++
++		ret = snd_soc_limit_volume(card, "Subwoofer Playback Volume",
++					207);
++		if (ret < 0)
++			dev_warn(card->dev, "Failed to set subwoofer volume limit: %d\n",
++				ret);
++
+ 		//Set volume limit on both dacs
+ 		for (i = 0; i < ARRAY_SIZE(codec_ctl_pfx); i++) {
+ 			char cname[256];
+@@ -757,8 +753,8 @@ static int snd_allo_piano_dac_init(struc
+ 			sprintf(cname, "%s %s", codec_ctl_pfx[i], codec_ctl_name[0]);
+ 			ret = snd_soc_limit_volume(card, cname, 207);
+ 			if (ret < 0)
+-				dev_warn(card->dev, "Failed to set volume limit: %d\n",
+-					ret);
++				dev_warn(card->dev, "Failed to set %s volume limit: %d\n",
++					 cname, ret);
+ 		}
+ 	}
+ 

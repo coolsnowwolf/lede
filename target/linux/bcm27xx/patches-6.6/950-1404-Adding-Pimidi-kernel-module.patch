@@ -1,0 +1,1167 @@
+From 8a6f640708627ac8ebf79f88793038933f169198 Mon Sep 17 00:00:00 2001
+From: Giedrius <giedrius@blokas.io>
+Date: Thu, 21 Nov 2024 08:04:02 +0000
+Subject: [PATCH] Adding Pimidi kernel module.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Giedrius Trainavičius <giedrius@blokas.io>
+---
+ sound/drivers/Kconfig  |   10 +
+ sound/drivers/Makefile |    2 +
+ sound/drivers/pimidi.c | 1113 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 1125 insertions(+)
+ create mode 100644 sound/drivers/pimidi.c
+
+--- a/sound/drivers/Kconfig
++++ b/sound/drivers/Kconfig
+@@ -263,4 +263,14 @@ config SND_AC97_POWER_SAVE_DEFAULT
+ 
+ 	  See SND_AC97_POWER_SAVE for more details.
+ 
++config SND_PIMIDI
++	tristate "Pimidi driver"
++	depends on SND_SEQUENCER && CRC8
++	select SND_RAWMIDI
++	help
++	  Say Y here to include support for Blokas Pimidi.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called snd-pimidi.
++
+ endif	# SND_DRIVERS
+--- a/sound/drivers/Makefile
++++ b/sound/drivers/Makefile
+@@ -9,6 +9,7 @@ snd-aloop-objs := aloop.o
+ snd-mtpav-objs := mtpav.o
+ snd-mts64-objs := mts64.o
+ snd-pcmtest-objs := pcmtest.o
++snd-pimidi-objs := pimidi.o
+ snd-portman2x4-objs := portman2x4.o
+ snd-serial-u16550-objs := serial-u16550.o
+ snd-serial-generic-objs := serial-generic.o
+@@ -23,6 +24,7 @@ obj-$(CONFIG_SND_SERIAL_U16550) += snd-s
+ obj-$(CONFIG_SND_SERIAL_GENERIC) += snd-serial-generic.o
+ obj-$(CONFIG_SND_MTPAV) += snd-mtpav.o
+ obj-$(CONFIG_SND_MTS64) += snd-mts64.o
++obj-$(CONFIG_SND_PIMIDI) += snd-pimidi.o
+ obj-$(CONFIG_SND_PORTMAN2X4) += snd-portman2x4.o
+ 
+ obj-$(CONFIG_SND) += opl3/ opl4/ mpu401/ vx/ pcsp/
+--- /dev/null
++++ b/sound/drivers/pimidi.c
+@@ -0,0 +1,1113 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Pimidi Linux kernel module.
++ * Copyright (C) 2017-2024  Vilniaus Blokas UAB, https://blokas.io/
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * as published by the Free Software Foundation; version 2 of the
++ * License.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/completion.h>
++#include <linux/module.h>
++#include <linux/i2c.h>
++#include <linux/irq.h>
++#include <linux/irqdesc.h>
++#include <linux/bitops.h>
++#include <linux/of_irq.h>
++#include <linux/kfifo.h>
++#include <linux/list.h>
++#include <linux/workqueue.h>
++#include <linux/gpio.h>
++#include <linux/gpio/consumer.h>
++#include <linux/interrupt.h>
++#include <linux/mutex.h>
++#include <linux/refcount.h>
++#include <linux/crc8.h>
++#include <linux/delay.h>
++
++#include <sound/core.h>
++#include <sound/initval.h>
++#include <sound/rawmidi.h>
++#include <sound/asequencer.h>
++#include <sound/info.h>
++
++#define PIMIDI_LOG_IMPL(instance, log_func, msg, ...) log_func("pimidi(%s)[%c]: " msg "\n", \
++	__func__, (instance) ? (instance)->d + '0' : 'G', ## __VA_ARGS__)
++
++#ifdef PIMIDI_DEBUG
++#	define printd(instance, ...) PIMIDI_LOG_IMPL(instance, pr_alert, __VA_ARGS__)
++#	define printd_rl(instance, ...) PIMIDI_LOG_IMPL(instance, pr_alert_ratelimited, __VA_ARGS__)
++#	define printd_g(...) printd((struct pimidi_instance *)NULL, __VA_ARGS__)
++#else
++#	define printd(instance, ...) do {} while (0)
++#	define printd_rl(instance, ...) do {} while (0)
++#	define printd_g(...) do {} while (0)
++#endif
++
++#define printe(instance, ...) PIMIDI_LOG_IMPL(instance, pr_err, __VA_ARGS__)
++#define printe_rl(instance, ...) PIMIDI_LOG_IMPL(instance, pr_err_ratelimited, __VA_ARGS__)
++#define printi(instance, ...) PIMIDI_LOG_IMPL(instance, pr_info, __VA_ARGS__)
++#define printw(instance, ...) PIMIDI_LOG_IMPL(instance, pr_warn, __VA_ARGS__)
++#define printw_rl(instance, ...) PIMIDI_LOG_IMPL(instance, pr_warn_ratelimited, __VA_ARGS__)
++
++#define printe_g(...) printe((struct pimidi_instance *)NULL, __VA_ARGS__)
++#define printi_g(...) printi((struct pimidi_instance *)NULL, __VA_ARGS__)
++
++DECLARE_CRC8_TABLE(pimidi_crc8_table);
++enum { PIMIDI_CRC8_POLYNOMIAL = 0x83 };
++enum { PIMIDI_MAX_DEVICES = 4 };
++enum { PIMIDI_MAX_PACKET_SIZE = 17 };
++enum { PIMIDI_PORTS = 2 };
++
++struct pimidi_shared {
++	// lock protects the shared reset_gpio and devices list.
++	struct mutex            lock;
++	struct gpio_desc        *reset_gpio;
++	struct workqueue_struct *work_queue;
++	struct list_head        devices;
++};
++
++static struct pimidi_shared pimidi_global = {
++	.devices = LIST_HEAD_INIT(pimidi_global.devices),
++};
++
++struct pimidi_version_t {
++	u8 hwrev;
++	u8 major;
++	u8 minor;
++	u8 build;
++};
++
++enum { PIMIDI_IN_FIFO_SIZE = 4096 };
++
++struct pimidi_midi_port {
++	// in_lock protects the input substream.
++	struct mutex                      in_lock;
++	// out_lock protects the output substream.
++	struct mutex                      out_lock;
++	DECLARE_KFIFO(in_fifo, uint8_t, PIMIDI_IN_FIFO_SIZE);
++	unsigned int                      last_output_at;
++	unsigned int                      output_buffer_used_in_millibytes;
++	struct work_struct                in_handler;
++	struct delayed_work               out_handler;
++	unsigned long                     enabled_streams;
++	unsigned int                      tx_cnt;
++	unsigned int                      rx_cnt;
++};
++
++struct pimidi_instance {
++	struct list_head                  list;
++	struct i2c_client                 *i2c_client;
++	struct pimidi_version_t           version;
++	char                              serial[11];
++	char                              d;
++	struct gpio_desc                  *data_ready_gpio;
++
++	struct work_struct                drdy_handler;
++
++	// comm_lock serializes I2C communication.
++	struct mutex                      comm_lock;
++	char                              *rx_buf;
++	size_t                            rx_len;
++	int                               rx_status;
++	struct completion                 *rx_completion;
++
++	struct snd_rawmidi                *rawmidi;
++	struct pimidi_midi_port           midi_port[PIMIDI_PORTS];
++	bool                              stopping;
++};
++
++static struct snd_rawmidi_substream *pimidi_find_substream(struct snd_rawmidi *rawmidi,
++							   int stream,
++							   int number
++	)
++{
++	struct snd_rawmidi_substream *substream;
++
++	list_for_each_entry(substream, &rawmidi->streams[stream].substreams, list) {
++		if (substream->number == number)
++			return substream;
++	}
++	return NULL;
++}
++
++static void pimidi_midi_in_handler(struct pimidi_instance *instance, int port)
++{
++	int i, n, err;
++
++	printd(instance, "(%d)", port);
++
++	struct pimidi_midi_port *midi_port = &instance->midi_port[port];
++
++	if (!test_bit(SNDRV_RAWMIDI_STREAM_INPUT, &midi_port->enabled_streams)) {
++		printd(instance, "Input not enabled for %d", port);
++		return;
++	}
++
++	u8 data[512];
++
++	n = kfifo_out_peek(&midi_port->in_fifo, data, sizeof(data));
++	printd(instance, "Peeked %d MIDI bytes", n);
++
++	mutex_lock(&midi_port->in_lock);
++	struct snd_rawmidi_substream *substream =
++		pimidi_find_substream(instance->rawmidi,
++				      SNDRV_RAWMIDI_STREAM_INPUT,
++				      port);
++
++	err = snd_rawmidi_receive(substream, data, n);
++	if (err > 0)
++		midi_port->rx_cnt += err;
++	mutex_unlock(&midi_port->in_lock);
++
++	for (i = 0; i < err; ++i)
++		kfifo_skip(&midi_port->in_fifo);
++
++	if (n != err)
++		printw_rl(instance,
++			  "Not all MIDI data consumed for port %d: %d / %d", port, err, n);
++
++	if (!kfifo_is_empty(&midi_port->in_fifo) && !instance->stopping)
++		queue_work(pimidi_global.work_queue, &midi_port->in_handler);
++
++	printd(instance, "Done");
++}
++
++static void pimidi_midi_in_handler_0(struct work_struct *work)
++{
++	pimidi_midi_in_handler(container_of(work, struct pimidi_instance, midi_port[0].in_handler),
++			       0);
++}
++
++static void pimidi_midi_in_handler_1(struct work_struct *work)
++{
++	pimidi_midi_in_handler(container_of(work, struct pimidi_instance, midi_port[1].in_handler),
++			       1);
++}
++
++static void pimidi_midi_out_handler(struct pimidi_instance *instance, int port)
++{
++	printd(instance, "(%d)", port);
++	if (!test_bit(SNDRV_RAWMIDI_STREAM_OUTPUT, &instance->midi_port[port].enabled_streams)) {
++		printd(instance, "Output not enabled for %d", port);
++		return;
++	}
++
++	struct pimidi_midi_port *midi_port = &instance->midi_port[port];
++
++	struct snd_rawmidi_substream *substream =
++		pimidi_find_substream(instance->rawmidi, SNDRV_RAWMIDI_STREAM_OUTPUT, port);
++
++	mutex_lock(&midi_port->out_lock);
++
++	enum { MIDI_MILLI_BYTES_PER_JIFFY = 3125000 / HZ };
++	enum { MIDI_MAX_OUTPUT_BUFFER_SIZE_IN_MILLIBYTES =
++		(512 - PIMIDI_MAX_PACKET_SIZE - 1) * 1000 };
++
++	unsigned int now = jiffies;
++	unsigned int millibytes_became_available =
++		(MIDI_MILLI_BYTES_PER_JIFFY) * (now - midi_port->last_output_at);
++
++	midi_port->output_buffer_used_in_millibytes =
++		midi_port->output_buffer_used_in_millibytes <=
++		millibytes_became_available ? 0 : midi_port->output_buffer_used_in_millibytes -
++		millibytes_became_available;
++
++	unsigned int output_buffer_available =
++		(MIDI_MAX_OUTPUT_BUFFER_SIZE_IN_MILLIBYTES
++		- midi_port->output_buffer_used_in_millibytes)
++		/ 1000;
++
++	u8 buffer[PIMIDI_MAX_PACKET_SIZE];
++	int n, batch, err;
++
++	for (batch = 0; batch < 3; ++batch) {
++		if (output_buffer_available == 0)
++			printd(instance, "Buffer full");
++
++		printd(instance, "Buffer available: %u (%u +%u, %u -> %u, dt %u) (%u) @ %u",
++		       output_buffer_available, midi_port->output_buffer_used_in_millibytes,
++		       millibytes_became_available, midi_port->last_output_at, now,
++		       now - midi_port->last_output_at, midi_port->tx_cnt, HZ);
++		midi_port->last_output_at = now;
++
++		n = output_buffer_available
++			? snd_rawmidi_transmit_peek(substream, buffer + 1,
++						    min(output_buffer_available,
++							sizeof(buffer) - 2))
++			: 0;
++		if (n > 0) {
++			printd(instance, "Peeked: %d", n);
++			snd_rawmidi_transmit_ack(substream, n);
++
++			buffer[0] = (port << 4) | n;
++			buffer[n + 1] = ~crc8(pimidi_crc8_table, buffer, n + 1, CRC8_INIT_VALUE);
++
++#ifdef PIMIDI_DEBUG
++			pr_debug("%s[%d]: Sending %d bytes:", __func__, instance->d, n + 2);
++			int i;
++
++			for (i = 0; i < n + 2; ++i)
++				pr_cont(" %02x", buffer[i]);
++
++			pr_cont("\n");
++#endif
++			mutex_lock(&instance->comm_lock);
++			err = i2c_master_send(instance->i2c_client, buffer, n + 2);
++			mutex_unlock(&instance->comm_lock);
++
++			if (err < 0) {
++				printe(instance,
++				       "Error occurred when sending MIDI data over I2C! (%d)",
++				       err);
++				goto cleanup;
++			}
++
++			midi_port->tx_cnt += n;
++			midi_port->output_buffer_used_in_millibytes += n * 1000;
++			output_buffer_available -= n;
++		} else if (n < 0) {
++			err = n;
++			printe(instance, "snd_rawmidi_transmit_peek returned error %d!", err);
++			goto cleanup;
++		} else {
++			break;
++		}
++	}
++
++	printd(instance, "Checking if empty %p", substream);
++	if (!snd_rawmidi_transmit_empty(substream) && !instance->stopping) {
++		unsigned int delay = 1;
++
++		if (output_buffer_available == 0)
++			delay = 125000 / MIDI_MILLI_BYTES_PER_JIFFY;
++		printd(instance, "Queue more work after %u jiffies", delay);
++		mod_delayed_work(pimidi_global.work_queue, &midi_port->out_handler, delay);
++	}
++
++cleanup:
++	mutex_unlock(&midi_port->out_lock);
++	printd(instance, "Done");
++}
++
++static void pimidi_midi_out_handler_0(struct work_struct *work)
++{
++	pimidi_midi_out_handler(container_of(work, struct pimidi_instance,
++					     midi_port[0].out_handler.work), 0);
++}
++
++static void pimidi_midi_out_handler_1(struct work_struct *work)
++{
++	pimidi_midi_out_handler(container_of(work, struct pimidi_instance,
++					     midi_port[1].out_handler.work), 1);
++}
++
++static void pimidi_midi_output_trigger(struct snd_rawmidi_substream *substream, int up)
++{
++	struct pimidi_instance *instance = substream->rmidi->private_data;
++
++	printd(instance, "(%d, %d, %d)", substream->stream, substream->number, up);
++
++	if (up == 0) {
++		clear_bit(substream->stream,
++			  &instance->midi_port[substream->number].enabled_streams);
++	} else {
++		set_bit(substream->stream,
++			&instance->midi_port[substream->number].enabled_streams);
++		if (!delayed_work_pending(&instance->midi_port[substream->number].out_handler)) {
++			printd(instance, "Queueing work");
++			queue_delayed_work(pimidi_global.work_queue,
++					   &instance->midi_port[substream->number].out_handler, 0);
++		}
++	}
++}
++
++static void pimidi_midi_output_drain(struct snd_rawmidi_substream *substream)
++{
++	struct pimidi_instance *instance = substream->rmidi->private_data;
++
++	printd(instance, "(%d, %d)", substream->stream, substream->number);
++
++	printd(instance, "Begin draining!");
++
++	queue_delayed_work(pimidi_global.work_queue,
++			   &instance->midi_port[substream->number].out_handler, 0);
++
++	unsigned long deadline = jiffies + 5 * HZ;
++
++	do {
++		printd(instance, "Before flush");
++		while (delayed_work_pending(&instance->midi_port[substream->number].out_handler))
++			flush_delayed_work(&instance->midi_port[substream->number].out_handler);
++		printd(instance, "Flushed");
++	} while (!snd_rawmidi_transmit_empty(substream) && time_before(jiffies, deadline));
++
++	printd(instance, "Done!");
++}
++
++static int pimidi_midi_output_close(struct snd_rawmidi_substream *substream)
++{
++	struct pimidi_instance *instance = substream->rmidi->private_data;
++	struct pimidi_midi_port *midi_port = &instance->midi_port[substream->number];
++
++	mutex_lock(&midi_port->out_lock);
++	clear_bit(substream->stream, &midi_port->enabled_streams);
++	mutex_unlock(&midi_port->out_lock);
++	return 0;
++}
++
++static int pimidi_midi_input_close(struct snd_rawmidi_substream *substream)
++{
++	struct pimidi_instance *instance = substream->rmidi->private_data;
++	struct pimidi_midi_port *midi_port = &instance->midi_port[substream->number];
++
++	mutex_lock(&midi_port->in_lock);
++	clear_bit(substream->stream, &midi_port->enabled_streams);
++	mutex_unlock(&midi_port->in_lock);
++	return 0;
++}
++
++static void pimidi_midi_input_trigger(struct snd_rawmidi_substream *substream, int up)
++{
++	struct pimidi_instance *instance = substream->rmidi->private_data;
++
++	printd(instance, "(%d, %d, %d)", substream->stream, substream->number, up);
++
++	if (up == 0) {
++		clear_bit(substream->stream,
++			  &instance->midi_port[substream->number].enabled_streams);
++		cancel_work_sync(&instance->midi_port[substream->number].in_handler);
++	} else {
++		set_bit(substream->stream,
++			&instance->midi_port[substream->number].enabled_streams);
++		if (!instance->stopping)
++			queue_work(pimidi_global.work_queue,
++				   &instance->midi_port[substream->number].in_handler);
++	}
++}
++
++static void pimidi_get_port_info(struct snd_rawmidi *rmidi, int number,
++				 struct snd_seq_port_info *seq_port_info)
++{
++	printd_g("%p, %d, %p", rmidi, number, seq_port_info);
++	seq_port_info->type =
++		SNDRV_SEQ_PORT_TYPE_MIDI_GENERIC |
++		SNDRV_SEQ_PORT_TYPE_HARDWARE |
++		SNDRV_SEQ_PORT_TYPE_PORT;
++	strscpy(seq_port_info->name, number == 0 ? "a" : "b",
++		sizeof(seq_port_info->name));
++	seq_port_info->midi_voices = 0;
++}
++
++static const struct snd_rawmidi_global_ops pimidi_midi_ops = {
++	.get_port_info = pimidi_get_port_info,
++};
++
++static int pimidi_midi_open(struct snd_rawmidi_substream *substream)
++{
++	printd_g("(%p) stream=%d number=%d", substream, substream->stream, substream->number);
++	return 0;
++}
++
++static const struct snd_rawmidi_ops pimidi_midi_output_ops = {
++	.open = pimidi_midi_open,
++	.close = pimidi_midi_output_close,
++	.trigger = pimidi_midi_output_trigger,
++	.drain = pimidi_midi_output_drain,
++};
++
++static const struct snd_rawmidi_ops pimidi_midi_input_ops = {
++	.open = pimidi_midi_open,
++	.close = pimidi_midi_input_close,
++	.trigger = pimidi_midi_input_trigger,
++};
++
++static int pimidi_register(struct pimidi_instance *instance)
++{
++	int err = 0;
++
++	mutex_lock(&pimidi_global.lock);
++	printd(instance, "Registering...");
++	if (!pimidi_global.reset_gpio) {
++		printd_g("Getting reset pin.");
++		pimidi_global.reset_gpio = gpiod_get(&instance->i2c_client->dev, "reset",
++						     GPIOD_OUT_LOW);
++		if (IS_ERR(pimidi_global.reset_gpio)) {
++			err = PTR_ERR(pimidi_global.reset_gpio);
++			printe_g("gpiod_get failed: %d", err);
++			pimidi_global.reset_gpio = NULL;
++			mutex_unlock(&pimidi_global.lock);
++			return err;
++		}
++	}
++	list_add_tail(&instance->list, &pimidi_global.devices);
++	mutex_unlock(&pimidi_global.lock);
++	return err;
++}
++
++static void pimidi_unregister(struct pimidi_instance *instance)
++{
++	mutex_lock(&pimidi_global.lock);
++	printd(instance, "Unregistering...");
++	list_del(&instance->list);
++	if (list_empty(&pimidi_global.devices)) {
++		printd_g("Releasing reset pin");
++		gpiod_put(pimidi_global.reset_gpio);
++		pimidi_global.reset_gpio = NULL;
++	}
++	mutex_unlock(&pimidi_global.lock);
++}
++
++static void pimidi_perform_reset(void)
++{
++	mutex_lock(&pimidi_global.lock);
++
++	printd_g("Performing reset.");
++
++	struct list_head *p;
++
++	list_for_each(p, &pimidi_global.devices) {
++		struct pimidi_instance *instance = list_entry(p, struct pimidi_instance, list);
++
++		printd(instance, "Pausing...");
++		instance->stopping = true;
++		disable_irq(instance->i2c_client->irq);
++		cancel_work(&instance->drdy_handler);
++
++		int i;
++
++		for (i = 0; i < PIMIDI_PORTS; ++i) {
++			cancel_work(&instance->midi_port[i].in_handler);
++			cancel_delayed_work(&instance->midi_port[i].out_handler);
++		}
++
++		drain_workqueue(pimidi_global.work_queue);
++	}
++
++	printd_g("Reset = low");
++	gpiod_set_value(pimidi_global.reset_gpio, 1);
++
++	list_for_each(p, &pimidi_global.devices) {
++		struct pimidi_instance *instance = list_entry(p, struct pimidi_instance, list);
++
++		if (gpiod_is_active_low(instance->data_ready_gpio))
++			gpiod_toggle_active_low(instance->data_ready_gpio);
++		gpiod_direction_output(instance->data_ready_gpio, 1);
++		printd(instance, "DRDY high");
++	}
++
++	usleep_range(1000, 5000);
++	printd_g("Reset = high");
++	gpiod_set_value(pimidi_global.reset_gpio, 0);
++	msleep(30);
++
++	int i;
++
++	for (i = 0; i < PIMIDI_MAX_DEVICES; ++i) {
++		usleep_range(1000, 3000);
++		list_for_each(p, &pimidi_global.devices) {
++			struct pimidi_instance *instance = list_entry(p, struct pimidi_instance,
++								      list);
++
++			if (instance->d < i)
++				continue;
++			printd(instance, "DRDY -> %d", !gpiod_get_value(instance->data_ready_gpio));
++			gpiod_set_value(instance->data_ready_gpio,
++					!gpiod_get_value(instance->data_ready_gpio));
++		}
++	}
++	usleep_range(16000, 20000);
++
++	list_for_each(p, &pimidi_global.devices) {
++		struct pimidi_instance *instance = list_entry(p, struct pimidi_instance, list);
++
++		if (!gpiod_is_active_low(instance->data_ready_gpio))
++			gpiod_toggle_active_low(instance->data_ready_gpio);
++
++		printd(instance, "DRDY input");
++		gpiod_direction_input(instance->data_ready_gpio);
++
++		printd(instance, "Resume...");
++		instance->stopping = false;
++		enable_irq(instance->i2c_client->irq);
++	}
++
++	printd_g("Reset done.");
++	usleep_range(16000, 20000);
++
++	mutex_unlock(&pimidi_global.lock);
++}
++
++static int pimidi_read_version(struct pimidi_version_t *version, struct pimidi_instance *instance)
++{
++	memset(version, 0, sizeof(*version));
++
++	const char cmd[4] = { 0xb2, 0x01, 0x01, 0x95 };
++
++	char result[9];
++
++	memset(result, 0, sizeof(result));
++
++	DECLARE_COMPLETION_ONSTACK(done);
++
++	mutex_lock(&instance->comm_lock);
++	int err = i2c_master_send(instance->i2c_client, cmd, sizeof(cmd));
++
++	if (err < 0) {
++		mutex_unlock(&instance->comm_lock);
++		return err;
++	}
++	instance->rx_buf = result;
++	instance->rx_len = sizeof(result);
++	instance->rx_completion = &done;
++	mutex_unlock(&instance->comm_lock);
++
++	printd(instance, "Waiting for drdy");
++	wait_for_completion_io_timeout(&done, msecs_to_jiffies(1000u));
++	printd(instance, "Done waiting");
++
++	if (!completion_done(&done)) {
++		mutex_lock(&instance->comm_lock);
++		instance->rx_buf = NULL;
++		instance->rx_len = 0;
++		instance->rx_status = -ETIMEDOUT;
++		instance->rx_completion = NULL;
++		mutex_unlock(&instance->comm_lock);
++		return -ETIMEDOUT;
++	}
++
++	if (CRC8_GOOD_VALUE(pimidi_crc8_table) != crc8(pimidi_crc8_table, result, sizeof(result),
++						       CRC8_INIT_VALUE))
++		return -EIO;
++
++	const char expected[4] = { 0xb7, 0x81, 0x01, 0x00 };
++
++	if (memcmp(result, expected, sizeof(expected)) != 0)
++		return -EPROTO;
++
++	u32 v = ntohl(*(uint32_t *)(result + 4));
++
++	version->hwrev = v >> 24;
++	version->major = (v & 0x00ff0000) >> 16;
++	version->minor = (v & 0x0000ff00) >> 8;
++	version->build = v & 0x000000ff;
++
++	return 0;
++}
++
++static int pimidi_read_serial(char serial[11], struct pimidi_instance *instance)
++{
++	memset(serial, 0, sizeof(char[11]));
++
++	const char cmd[4] = { 0xb2, 0x03, 0x04, 0x97 };
++
++	char result[PIMIDI_MAX_PACKET_SIZE];
++
++	memset(result, 0, sizeof(result));
++
++	DECLARE_COMPLETION_ONSTACK(done);
++
++	mutex_lock(&instance->comm_lock);
++	int err = i2c_master_send(instance->i2c_client, cmd, sizeof(cmd));
++
++	if (err < 0) {
++		mutex_unlock(&instance->comm_lock);
++		return err;
++	}
++	instance->rx_buf = result;
++	instance->rx_len = sizeof(result);
++	instance->rx_completion = &done;
++	mutex_unlock(&instance->comm_lock);
++
++	printd(instance, "Waiting for drdy");
++	wait_for_completion_io_timeout(&done, msecs_to_jiffies(1000u));
++	printd(instance, "Done waiting");
++
++	if (!completion_done(&done)) {
++		mutex_lock(&instance->comm_lock);
++		instance->rx_buf = NULL;
++		instance->rx_len = 0;
++		instance->rx_status = -ETIMEDOUT;
++		instance->rx_completion = NULL;
++		mutex_unlock(&instance->comm_lock);
++		printe(instance, "Timed out");
++		return -ETIMEDOUT;
++	}
++
++	if (CRC8_GOOD_VALUE(pimidi_crc8_table) != crc8(pimidi_crc8_table, result,
++						       (result[0] & 0x0f) + 2, CRC8_INIT_VALUE))
++		return -EIO;
++
++	const char expected[4] = { 0xbd, 0x83, 0x04, 0x0a };
++
++	if (memcmp(result, expected, sizeof(expected)) != 0) {
++		printe(instance, "Unexpected response: %02x %02x %02x %02x", result[0], result[1],
++		       result[2], result[3]);
++		return -EPROTO;
++	}
++
++	memcpy(serial, result + 4, 10);
++
++	if (strspn(serial, "\xff") == 10)
++		strscpy(serial, "(unset)", 8);
++
++	return 0;
++}
++
++static void pimidi_handle_midi_data(struct pimidi_instance *instance, int port, const uint8_t *data,
++				    unsigned int n)
++{
++	printd(instance, "Handling MIDI data for port %d (%u bytes)", port, n);
++	if (n == 0)
++		return;
++
++	struct pimidi_midi_port *midi_port = &instance->midi_port[port];
++
++	kfifo_in(&midi_port->in_fifo, data, n);
++
++	if (!instance->stopping)
++		queue_work(pimidi_global.work_queue, &midi_port->in_handler);
++
++	printd(instance, "Done");
++}
++
++static void pimidi_drdy_continue(struct pimidi_instance *instance)
++{
++	if (instance->stopping) {
++		printd(instance, "Refusing to queue work / enable IRQ due to stopping.");
++		return;
++	}
++
++	if (gpiod_get_value(instance->data_ready_gpio)) {
++		printd_rl(instance, "Queue work due to DRDY line still low");
++		queue_work(pimidi_global.work_queue, &instance->drdy_handler);
++	} else {
++		printd_rl(instance, "Enabling irq for more data");
++		enable_irq(gpiod_to_irq(instance->data_ready_gpio));
++	}
++}
++
++static void pimidi_drdy_handler(struct work_struct *work)
++{
++	struct pimidi_instance *instance = container_of(work, struct pimidi_instance, drdy_handler);
++
++	printd(instance, "(%p)", work);
++
++	mutex_lock(&instance->comm_lock);
++	if (!instance->rx_completion) {
++		u8 data[PIMIDI_MAX_PACKET_SIZE];
++		int n = i2c_master_recv(instance->i2c_client, data, 3);
++
++		if (n < 0) {
++			printe(instance, "Error reading from device: %d", n);
++			mutex_unlock(&instance->comm_lock);
++			pimidi_drdy_continue(instance);
++			return;
++		}
++
++		if (data[0] == 0xfe) {
++			printe_rl(instance, "Invalid packet 0x%02x 0x%02x 0x%02x", data[0], data[1],
++				  data[2]);
++			mutex_unlock(&instance->comm_lock);
++			pimidi_drdy_continue(instance);
++			return;
++		}
++
++		int len = (data[0] & 0x0f) + 2;
++
++		if (len > n) {
++			printd(instance, "Need %d more bytes", len - n);
++			int err = i2c_master_recv(instance->i2c_client, data + n, len - n);
++
++			if (err < 0) {
++				printe(instance, "Error reading remainder from device: %d", err);
++				mutex_unlock(&instance->comm_lock);
++				pimidi_drdy_continue(instance);
++				return;
++#ifdef PIMIDI_DEBUG
++			} else {
++				pr_debug("Recv_2:");
++				int i;
++
++				for (i = n; i < len; ++i)
++					pr_cont(" %02x", data[i]);
++				pr_cont("\n");
++#endif
++			}
++		}
++
++		if (CRC8_GOOD_VALUE(pimidi_crc8_table) == crc8(pimidi_crc8_table, data, len,
++							       CRC8_INIT_VALUE)) {
++			switch (data[0] & 0xf0) {
++			case 0x00:
++				pimidi_handle_midi_data(instance, 0, data + 1, len - 2);
++				break;
++			case 0x10:
++				pimidi_handle_midi_data(instance, 1, data + 1, len - 2);
++				break;
++			default:
++				printd(instance, "Unhandled command %02x", data[0]);
++				break;
++			}
++		} else {
++			printe(instance, "I2C rx corruption detected.");
++			pr_info("Packet [%d]:", len);
++			int i;
++
++			for (i = 0; i < len; ++i)
++				pr_cont(" %02x", data[i]);
++			pr_cont("\n");
++		}
++
++		mutex_unlock(&instance->comm_lock);
++	} else {
++		printd(instance, "Completing drdy");
++		instance->rx_status = i2c_master_recv(instance->i2c_client, instance->rx_buf, 3);
++		printd(instance, "Recv_1 %02x %02x %02x", instance->rx_buf[0], instance->rx_buf[1],
++		       instance->rx_buf[2]);
++		if (instance->rx_len > 3 && instance->rx_status == 3) {
++			instance->rx_status = i2c_master_recv(instance->i2c_client,
++							      instance->rx_buf + 3,
++							      instance->rx_len - 3);
++			if (instance->rx_status >= 0)
++				instance->rx_status += 3;
++#ifdef PIMIDI_DEBUG
++			pr_debug("Recv_2:");
++			int i;
++
++			for (i = 3; i < instance->rx_len; ++i)
++				pr_cont(" %02x", instance->rx_buf[i]);
++			pr_cont("\n");
++#endif
++		}
++		struct completion *done = instance->rx_completion;
++
++		instance->rx_buf = NULL;
++		instance->rx_len = 0;
++		instance->rx_completion = NULL;
++		complete_all(done);
++		mutex_unlock(&instance->comm_lock);
++	}
++
++	pimidi_drdy_continue(instance);
++}
++
++static irqreturn_t pimidi_drdy_interrupt_handler(int irq, void *dev_id)
++{
++	struct pimidi_instance *instance = (struct pimidi_instance *)dev_id;
++
++	if (instance->stopping) {
++		printd(instance, "DRDY interrupt, but stopping, ignoring...");
++		return IRQ_HANDLED;
++	}
++
++	printd(instance, "DRDY interrupt, masking");
++	disable_irq_nosync(irq);
++
++	printd(instance, "Queue work due to DRDY interrupt");
++	queue_work(pimidi_global.work_queue, &instance->drdy_handler);
++
++	return IRQ_HANDLED;
++}
++
++static void pimidi_proc_stat_show(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
++{
++	const unsigned int *d = entry->private_data;
++
++	snd_iprintf(buffer, "%u\n", *d);
++}
++
++static void pimidi_proc_serial_show(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
++{
++	struct pimidi_instance *instance = entry->private_data;
++
++	snd_iprintf(buffer, "%s\n", instance->serial);
++}
++
++static void pimidi_proc_version_show(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
++{
++	struct pimidi_instance *instance = entry->private_data;
++
++	snd_iprintf(buffer, "%u.%u.%u\n", instance->version.major, instance->version.minor,
++		    instance->version.build);
++}
++
++static void pimidi_proc_hwrev_show(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
++{
++	struct pimidi_instance *instance = entry->private_data;
++
++	snd_iprintf(buffer, "%u\n", instance->version.hwrev);
++}
++
++static int pimidi_i2c_probe(struct i2c_client *client)
++{
++	struct snd_card *card = NULL;
++	int err, d, i;
++
++	d = client->addr - 0x20;
++
++	if (d < 0 || d >= 8) {
++		printe_g("Unexpected device address: %d", client->addr);
++		err = -EINVAL;
++		goto finalize;
++	}
++
++	err = snd_card_new(&client->dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1, THIS_MODULE,
++			   sizeof(struct pimidi_instance), &card);
++
++	if (err) {
++		printe_g("snd_card_new failed: %d", err);
++		return err;
++	}
++
++	struct pimidi_instance *instance = (struct pimidi_instance *)card->private_data;
++
++	instance->i2c_client = client;
++	instance->d = d;
++
++	struct snd_rawmidi *rawmidi;
++
++	err = snd_rawmidi_new(card, card->shortname, 0, 2, 2, &rawmidi);
++	if (err < 0) {
++		printe(instance, "snd_rawmidi_new failed: %d", err);
++		goto finalize;
++	}
++
++	instance->rawmidi = rawmidi;
++	strscpy(rawmidi->name, "pimidi", sizeof(rawmidi->name));
++
++	rawmidi->info_flags =
++		SNDRV_RAWMIDI_INFO_OUTPUT | SNDRV_RAWMIDI_INFO_INPUT | SNDRV_RAWMIDI_INFO_DUPLEX;
++	rawmidi->private_data = instance;
++	rawmidi->ops = &pimidi_midi_ops;
++
++	snd_rawmidi_set_ops(rawmidi, SNDRV_RAWMIDI_STREAM_OUTPUT, &pimidi_midi_output_ops);
++	snd_rawmidi_set_ops(rawmidi, SNDRV_RAWMIDI_STREAM_INPUT, &pimidi_midi_input_ops);
++
++	instance->data_ready_gpio = devm_gpiod_get(&client->dev, "data-ready", GPIOD_OUT_HIGH);
++	if (IS_ERR(instance->data_ready_gpio)) {
++		err = PTR_ERR(instance->data_ready_gpio);
++		printe(instance, "devm_gpiod_get failed: %d", err);
++		goto finalize;
++	}
++
++	err = pimidi_register(instance);
++	if (err < 0) {
++		printe(instance, "pimidi_register failed: %d", err);
++		goto finalize;
++	}
++
++	pimidi_perform_reset();
++
++	INIT_WORK(&instance->drdy_handler, pimidi_drdy_handler);
++	mutex_init(&instance->comm_lock);
++
++	err = devm_request_irq(&client->dev, client->irq, pimidi_drdy_interrupt_handler,
++			       IRQF_SHARED | IRQF_TRIGGER_LOW, "data_ready_int", instance);
++
++	if (err != 0) {
++		printe(instance, "data_available IRQ request failed! %d", err);
++		goto finalize;
++	}
++
++	err = pimidi_read_version(&instance->version, instance);
++	if (err < 0) {
++		printe(instance, "pimidi_read_version failed: %d", err);
++		goto finalize;
++	}
++
++	err = pimidi_read_serial(instance->serial, instance);
++	if (err < 0) {
++		printe(instance, "pimidi_read_serial failed: %d", err);
++		goto finalize;
++	} else if (instance->serial[0] != 'P' || instance->serial[1] != 'M' ||
++		   strlen(instance->serial) != 10) {
++		printe(instance, "Unexpected serial number: %s", instance->serial);
++		err = -EIO;
++		goto finalize;
++	}
++
++	printi(instance, "pimidi%d hw:%d version %u.%u.%u-%u, serial %s",
++	       d,
++	       card->number,
++	       instance->version.major,
++	       instance->version.minor,
++	       instance->version.build,
++	       instance->version.hwrev,
++	       instance->serial
++	       );
++
++	strscpy(card->driver, "snd-pimidi", sizeof(card->driver));
++	snprintf(card->shortname, sizeof(card->shortname), "pimidi%d", d);
++	snprintf(card->longname, sizeof(card->longname), "pimidi%d %s", d, instance->serial);
++	snprintf(card->id, sizeof(card->id), "pimidi%d", d);
++
++	snprintf(pimidi_find_substream(rawmidi, SNDRV_RAWMIDI_STREAM_OUTPUT, 0)->name,
++		 10u, "pimidi%d-a", d);
++	snprintf(pimidi_find_substream(rawmidi, SNDRV_RAWMIDI_STREAM_INPUT,  0)->name,
++		 10u, "pimidi%d-a", d);
++	snprintf(pimidi_find_substream(rawmidi, SNDRV_RAWMIDI_STREAM_OUTPUT, 1)->name,
++		 10u, "pimidi%d-b", d);
++	snprintf(pimidi_find_substream(rawmidi, SNDRV_RAWMIDI_STREAM_INPUT,  1)->name,
++		 10u, "pimidi%d-b", d);
++
++	err = snd_card_ro_proc_new(card, "a-tx", &instance->midi_port[0].tx_cnt,
++				   pimidi_proc_stat_show);
++	err = snd_card_ro_proc_new(card, "a-rx", &instance->midi_port[0].rx_cnt,
++				   pimidi_proc_stat_show);
++	err = snd_card_ro_proc_new(card, "b-tx", &instance->midi_port[1].tx_cnt,
++				   pimidi_proc_stat_show);
++	err = snd_card_ro_proc_new(card, "b-rx", &instance->midi_port[1].rx_cnt,
++				   pimidi_proc_stat_show);
++	err = snd_card_ro_proc_new(card, "serial", instance, pimidi_proc_serial_show);
++	err = snd_card_ro_proc_new(card, "version", instance, pimidi_proc_version_show);
++	err = snd_card_ro_proc_new(card, "hwrev", instance, pimidi_proc_hwrev_show);
++	if (err < 0) {
++		printe(instance, "snd_card_ro_proc_new failed: %d", err);
++		goto finalize;
++	}
++
++	err = snd_card_register(card);
++	if (err < 0) {
++		printe(instance, "snd_card_register failed: %d", err);
++		goto finalize;
++	}
++
++finalize:
++	if (err) {
++		instance->stopping = true;
++		cancel_work_sync(&instance->drdy_handler);
++		mutex_destroy(&instance->comm_lock);
++		pimidi_unregister(instance);
++		snd_card_free(card);
++		return err;
++	}
++
++	for (i = 0; i < PIMIDI_PORTS; ++i) {
++		struct pimidi_midi_port *port = &instance->midi_port[i];
++
++		mutex_init(&port->in_lock);
++		mutex_init(&port->out_lock);
++		INIT_WORK(&port->in_handler,
++			  i == 0 ? pimidi_midi_in_handler_0 : pimidi_midi_in_handler_1);
++		INIT_DELAYED_WORK(&port->out_handler,
++				  i == 0 ? pimidi_midi_out_handler_0 : pimidi_midi_out_handler_1);
++		INIT_KFIFO(port->in_fifo);
++		port->last_output_at = jiffies;
++	}
++
++	i2c_set_clientdata(client, card);
++	return 0;
++}
++
++static void pimidi_i2c_remove(struct i2c_client *client)
++{
++	printd_g("(%p)", client);
++
++	int i;
++	struct snd_card *card = i2c_get_clientdata(client);
++
++	if (card) {
++		printi_g("Unloading hw:%d %s", card->number, card->longname);
++		struct pimidi_instance *instance = (struct pimidi_instance *)card->private_data;
++
++		instance->stopping = true;
++		i2c_set_clientdata(client, NULL);
++		devm_free_irq(&client->dev, client->irq, instance);
++		cancel_work_sync(&instance->drdy_handler);
++
++		for (i = 0; i < PIMIDI_PORTS; ++i) {
++			cancel_work_sync(&instance->midi_port[i].in_handler);
++			cancel_delayed_work_sync(&instance->midi_port[i].out_handler);
++			mutex_destroy(&instance->midi_port[i].out_lock);
++			mutex_destroy(&instance->midi_port[i].in_lock);
++			kfifo_free(&instance->midi_port[i].in_fifo);
++		}
++
++		mutex_destroy(&instance->comm_lock);
++		pimidi_unregister(instance);
++		snd_card_free(card);
++	}
++}
++
++static const struct i2c_device_id pimidi_i2c_ids[] = {
++	{ "pimidi", 0 },
++	{}
++};
++MODULE_DEVICE_TABLE(i2c, pimidi_i2c_ids);
++
++static const struct of_device_id pimidi_i2c_dt_ids[] = {
++	{ .compatible = "blokaslabs,pimidi", },
++	{}
++};
++MODULE_DEVICE_TABLE(of, pimidi_i2c_dt_ids);
++
++static struct i2c_driver pimidi_i2c_driver = {
++	.driver = {
++		.name = "pimidi",
++		.owner = THIS_MODULE,
++		.of_match_table = of_match_ptr(pimidi_i2c_dt_ids),
++	},
++	.probe = pimidi_i2c_probe,
++	.remove = pimidi_i2c_remove,
++	.id_table = pimidi_i2c_ids,
++};
++
++int pimidi_module_init(void)
++{
++	int err = 0;
++
++	mutex_init(&pimidi_global.lock);
++
++	INIT_LIST_HEAD(&pimidi_global.devices);
++
++	pimidi_global.work_queue = create_singlethread_workqueue("pimidi");
++	if (!pimidi_global.work_queue) {
++		err = -ENOMEM;
++		goto cleanup;
++	}
++
++	err = i2c_add_driver(&pimidi_i2c_driver);
++	if (err < 0)
++		goto cleanup;
++
++	crc8_populate_msb(pimidi_crc8_table, PIMIDI_CRC8_POLYNOMIAL);
++
++	return 0;
++
++cleanup:
++	mutex_destroy(&pimidi_global.lock);
++	return err;
++}
++
++void pimidi_module_exit(void)
++{
++	i2c_del_driver(&pimidi_i2c_driver);
++	mutex_lock(&pimidi_global.lock);
++	if (pimidi_global.reset_gpio) {
++		gpiod_put(pimidi_global.reset_gpio);
++		pimidi_global.reset_gpio = NULL;
++	}
++	mutex_unlock(&pimidi_global.lock);
++
++	destroy_workqueue(pimidi_global.work_queue);
++	pimidi_global.work_queue = NULL;
++
++	mutex_destroy(&pimidi_global.lock);
++}
++
++module_init(pimidi_module_init);
++module_exit(pimidi_module_exit);
++
++MODULE_AUTHOR("Giedrius Trainavi\xc4\x8dius <giedrius@blokas.io>");
++MODULE_DESCRIPTION("MIDI driver for Blokas Pimidi, https://blokas.io/");
++MODULE_LICENSE("GPL");
++
++/* vim: set ts=8 sw=8 noexpandtab: */

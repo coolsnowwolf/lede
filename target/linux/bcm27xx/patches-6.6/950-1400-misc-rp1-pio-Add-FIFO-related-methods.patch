@@ -1,0 +1,215 @@
+From dd2394360860d15146c96635796a75b05bb32b61 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 19 Nov 2024 09:25:34 +0000
+Subject: [PATCH] misc: rp1-pio: Add FIFO-related methods
+
+Add support for querying the FIFO status and clearing the TX FIFO.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-fw-pio.h      |  3 ++
+ drivers/misc/rp1-pio.c         | 24 +++++++++
+ include/linux/pio_rp1.h        | 89 ++++++++++++++++++++++++++++++++++
+ include/uapi/misc/rp1_pio_if.h | 13 ++++-
+ 4 files changed, 128 insertions(+), 1 deletion(-)
+
+--- a/drivers/misc/rp1-fw-pio.h
++++ b/drivers/misc/rp1-fw-pio.h
+@@ -47,6 +47,9 @@ enum rp1_pio_ops {
+ 	READ_HW,		// src address, len -> data bytes
+ 	WRITE_HW,		// dst address, data
+ 
++	PIO_SM_FIFO_STATE,	// u16 sm, u8 tx -> u16 level, u8 empty, u8 full
++	PIO_SM_DRAIN_TX,	// u16 sm
++
+ 	PIO_COUNT
+ };
+ 
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -476,6 +476,28 @@ int rp1_pio_sm_set_dmactrl(struct rp1_pi
+ }
+ EXPORT_SYMBOL_GPL(rp1_pio_sm_set_dmactrl);
+ 
++int rp1_pio_sm_fifo_state(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_fifo_state_args *args = param;
++	const int level_offset = offsetof(struct rp1_pio_sm_fifo_state_args, level);
++	int ret;
++
++	ret = rp1_pio_message_resp(client->pio, PIO_SM_FIFO_STATE, args, sizeof(*args),
++				   &args->level, NULL, sizeof(*args) - level_offset);
++	if (ret >= 0)
++		return level_offset + ret;
++	return ret;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_sm_fifo_state);
++
++int rp1_pio_sm_drain_tx(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_sm_clear_fifos_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SM_DRAIN_TX, args, sizeof(*args));
++}
++EXPORT_SYMBOL_GPL(rp1_pio_sm_drain_tx);
++
+ int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_init_args *args = param;
+@@ -848,6 +870,8 @@ struct handler_info {
+ 	HANDLER(SM_PUT, sm_put),
+ 	HANDLER(SM_GET, sm_get),
+ 	HANDLER(SM_SET_DMACTRL, sm_set_dmactrl),
++	HANDLER(SM_FIFO_STATE, sm_fifo_state),
++	HANDLER(SM_DRAIN_TX, sm_drain_tx),
+ 
+ 	HANDLER(GPIO_INIT, gpio_init),
+ 	HANDLER(GPIO_SET_FUNCTION, gpio_set_function),
+--- a/include/linux/pio_rp1.h
++++ b/include/linux/pio_rp1.h
+@@ -200,6 +200,8 @@ int rp1_pio_sm_enable_sync(struct rp1_pi
+ int rp1_pio_sm_put(struct rp1_pio_client *client, void *param);
+ int rp1_pio_sm_get(struct rp1_pio_client *client, void *param);
+ int rp1_pio_sm_set_dmactrl(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_fifo_state(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_drain_tx(struct rp1_pio_client *client, void *param);
+ int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param);
+ int rp1_pio_gpio_set_function(struct rp1_pio_client *client, void *param);
+ int rp1_pio_gpio_set_pulls(struct rp1_pio_client *client, void *param);
+@@ -551,6 +553,15 @@ static inline int pio_sm_set_dmactrl(str
+ 	return rp1_pio_sm_set_dmactrl(client, &args);
+ };
+ 
++static inline int pio_sm_drain_tx_fifo(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_clear_fifos_args args = { .sm = sm };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_drain_tx(client, &args);
++};
++
+ static inline int pio_sm_put(struct rp1_pio_client *client, uint sm, uint32_t data)
+ {
+ 	struct rp1_pio_sm_put_args args = { .sm = (uint16_t)sm, .blocking = false, .data = data };
+@@ -587,6 +598,84 @@ static inline uint32_t pio_sm_get_blocki
+ 	return args.data;
+ }
+ 
++static inline int pio_sm_is_rx_fifo_empty(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = false };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.empty;
++	return ret;
++};
++
++static inline int pio_sm_is_rx_fifo_full(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = false };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.full;
++	return ret;
++};
++
++static inline int pio_sm_rx_fifo_level(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = false };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.level;
++	return ret;
++};
++
++static inline int pio_sm_is_tx_fifo_empty(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = true };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.empty;
++	return ret;
++};
++
++static inline int pio_sm_is_tx_fifo_full(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = true };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.full;
++	return ret;
++};
++
++static inline int pio_sm_tx_fifo_level(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_fifo_state_args args = { .sm = sm, .tx = true };
++	int ret;
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	ret = rp1_pio_sm_fifo_state(client, &args);
++	if (ret == sizeof(args))
++		ret = args.level;
++	return ret;
++};
++
+ static inline void sm_config_set_out_pins(pio_sm_config *c, uint out_base, uint out_count)
+ {
+ 	if (bad_params_if(NULL, out_base >= RP1_PIO_GPIO_COUNT ||
+--- a/include/uapi/misc/rp1_pio_if.h
++++ b/include/uapi/misc/rp1_pio_if.h
+@@ -114,7 +114,7 @@ struct rp1_pio_sm_get_args {
+ 	uint16_t sm;
+ 	uint8_t blocking;
+ 	uint8_t rsvd;
+-	uint32_t data; /* IN/OUT */
++	uint32_t data; /* OUT */
+ };
+ 
+ struct rp1_pio_sm_set_dmactrl_args {
+@@ -124,6 +124,15 @@ struct rp1_pio_sm_set_dmactrl_args {
+ 	uint32_t ctrl;
+ };
+ 
++struct rp1_pio_sm_fifo_state_args {
++	uint16_t sm;
++	uint8_t tx;
++	uint8_t rsvd;
++	uint16_t level; /* OUT */
++	uint8_t empty; /* OUT */
++	uint8_t full; /* OUT */
++};
++
+ struct rp1_gpio_init_args {
+ 	uint16_t gpio;
+ };
+@@ -195,6 +204,8 @@ struct rp1_access_hw_args {
+ #define PIO_IOC_SM_PUT _IOW(PIO_IOC_MAGIC, 41, struct rp1_pio_sm_put_args)
+ #define PIO_IOC_SM_GET _IOWR(PIO_IOC_MAGIC, 42, struct rp1_pio_sm_get_args)
+ #define PIO_IOC_SM_SET_DMACTRL _IOW(PIO_IOC_MAGIC, 43, struct rp1_pio_sm_set_dmactrl_args)
++#define PIO_IOC_SM_FIFO_STATE _IOW(PIO_IOC_MAGIC, 44, struct rp1_pio_sm_fifo_state_args)
++#define PIO_IOC_SM_DRAIN_TX _IOW(PIO_IOC_MAGIC, 45, struct rp1_pio_sm_clear_fifos_args)
+ 
+ #define PIO_IOC_GPIO_INIT _IOW(PIO_IOC_MAGIC, 50, struct rp1_gpio_init_args)
+ #define PIO_IOC_GPIO_SET_FUNCTION _IOW(PIO_IOC_MAGIC, 51, struct rp1_gpio_set_function_args)

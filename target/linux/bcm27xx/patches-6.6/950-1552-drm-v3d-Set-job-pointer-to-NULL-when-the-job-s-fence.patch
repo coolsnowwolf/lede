@@ -1,0 +1,84 @@
+From 131564261399a36a5cf2ac2731ed1ceffba93d10 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Sat, 22 Feb 2025 14:56:46 -0300
+Subject: [PATCH] drm/v3d: Set job pointer to NULL when the job's fence has an
+ error
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Similar to commit e4b5ccd392b9 ("drm/v3d: Ensure job pointer is set to
+NULL after job completion"), ensure the job pointer is set to `NULL` when
+a job's fence has an error. Failing to do so can trigger kernel warnings
+in specific scenarios, such as:
+
+1. v3d_csd_job_run() assigns `v3d->csd_job = job`
+2. CSD job exceeds hang limit, causing a timeout → v3d_gpu_reset_for_timeout()
+3. GPU reset
+4. drm_sched_resubmit_jobs() sets the job's fence to `-ECANCELED`.
+5. v3d_csd_job_run() detects the fence error and returns NULL, not
+   submitting the job to the GPU
+6. User-space runs `modprobe -r v3d`
+7. v3d_gem_destroy()
+
+v3d_gem_destroy() triggers a warning indicating that the CSD job never
+ended, as we didn't set `v3d->csd_job` to NULL after the timeout. The same
+can also happen to BIN, RENDER, and TFU jobs.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_sched.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_sched.c
++++ b/drivers/gpu/drm/v3d/v3d_sched.c
+@@ -189,8 +189,12 @@ static struct dma_fence *v3d_bin_job_run
+ 	struct dma_fence *fence;
+ 	unsigned long irqflags;
+ 
+-	if (unlikely(job->base.base.s_fence->finished.error))
++	if (unlikely(job->base.base.s_fence->finished.error)) {
++		spin_lock_irqsave(&v3d->job_lock, irqflags);
++		v3d->bin_job = NULL;
++		spin_unlock_irqrestore(&v3d->job_lock, irqflags);
+ 		return NULL;
++	}
+ 
+ 	/* Lock required around bin_job update vs
+ 	 * v3d_overflow_mem_work().
+@@ -244,8 +248,10 @@ static struct dma_fence *v3d_render_job_
+ 	struct drm_device *dev = &v3d->drm;
+ 	struct dma_fence *fence;
+ 
+-	if (unlikely(job->base.base.s_fence->finished.error))
++	if (unlikely(job->base.base.s_fence->finished.error)) {
++		v3d->render_job = NULL;
+ 		return NULL;
++	}
+ 
+ 	v3d->render_job = job;
+ 
+@@ -292,8 +298,10 @@ v3d_tfu_job_run(struct drm_sched_job *sc
+ 	struct drm_device *dev = &v3d->drm;
+ 	struct dma_fence *fence;
+ 
+-	if (unlikely(job->base.base.s_fence->finished.error))
++	if (unlikely(job->base.base.s_fence->finished.error)) {
++		v3d->tfu_job = NULL;
+ 		return NULL;
++	}
+ 
+ 	v3d->tfu_job = job;
+ 
+@@ -337,8 +345,10 @@ v3d_csd_job_run(struct drm_sched_job *sc
+ 	struct dma_fence *fence;
+ 	int i, csd_cfg0_reg, csd_cfg_reg_count;
+ 
+-	if (unlikely(job->base.base.s_fence->finished.error))
++	if (unlikely(job->base.base.s_fence->finished.error)) {
++		v3d->csd_job = NULL;
+ 		return NULL;
++	}
+ 
+ 	v3d->csd_job = job;
+ 

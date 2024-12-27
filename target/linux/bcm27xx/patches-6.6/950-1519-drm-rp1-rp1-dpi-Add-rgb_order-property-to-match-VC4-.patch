@@ -1,0 +1,325 @@
+From ba9883e3b667e4f1fbeacc4346f6e9179a3a5479 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Mon, 20 Jan 2025 11:20:48 +0000
+Subject: [PATCH] drm: rp1: rp1-dpi: Add "rgb_order" property (to match VC4
+ DPI)
+
+As on VC4, the OF property overrides the order implied by media
+bus format. Only 4 of the 6 possible orders are supported. New
+add-on hardware designs should not rely on this "legacy" feature.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c    |  15 ++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h    |   8 +
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c | 191 ++++++++++++++---------
+ 3 files changed, 143 insertions(+), 71 deletions(-)
+
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+@@ -292,6 +292,7 @@ static int rp1dpi_platform_probe(struct
+ 	struct device *dev = &pdev->dev;
+ 	struct rp1_dpi *dpi;
+ 	struct drm_bridge *bridge = NULL;
++	const char *rgb_order = NULL;
+ 	struct drm_panel *panel;
+ 	int i, j, ret;
+ 
+@@ -353,6 +354,20 @@ static int rp1dpi_platform_probe(struct
+ 	if (ret)
+ 		goto done_err;
+ 
++	dpi->rgb_order_override = RP1DPI_ORDER_UNCHANGED;
++	if (!of_property_read_string(dev->of_node, "rgb_order", &rgb_order)) {
++		if (!strcmp(rgb_order, "rgb"))
++			dpi->rgb_order_override = RP1DPI_ORDER_RGB;
++		else if (!strcmp(rgb_order, "bgr"))
++			dpi->rgb_order_override = RP1DPI_ORDER_BGR;
++		else if (!strcmp(rgb_order, "grb"))
++			dpi->rgb_order_override = RP1DPI_ORDER_GRB;
++		else if (!strcmp(rgb_order, "brg"))
++			dpi->rgb_order_override = RP1DPI_ORDER_BRG;
++		else
++			DRM_ERROR("Invalid dpi order %s - ignored\n", rgb_order);
++	}
++
+ 	/* Check if PIO can snoop on or override DPI's GPIO1 */
+ 	dpi->gpio1_used = false;
+ 	for (i = 0; !dpi->gpio1_used; i++) {
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+@@ -25,6 +25,13 @@
+ #define RP1DPI_CLK_PLLCORE  2
+ #define RP1DPI_NUM_CLOCKS   3
+ 
++/* Codes (in LE byte order) used for S/W permutation */
++#define RP1DPI_ORDER_UNCHANGED 0
++#define RP1DPI_ORDER_RGB       0x020100
++#define RP1DPI_ORDER_BGR       0x000102
++#define RP1DPI_ORDER_GRB       0x020001
++#define RP1DPI_ORDER_BRG       0x010002
++
+ /* ---------------------------------------------------------------------- */
+ 
+ struct rp1_dpi {
+@@ -45,6 +52,7 @@ struct rp1_dpi {
+ 	u32 bus_fmt;
+ 	bool de_inv, clk_inv;
+ 	bool dpi_running, pipe_enabled;
++	unsigned int rgb_order_override;
+ 	struct completion finished;
+ 
+ 	/* Experimental stuff for interlace follows */
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+@@ -223,12 +223,90 @@ int rp1dpi_hw_busy(struct rp1_dpi *dpi)
+ 	return (rp1dpi_hw_read(dpi, DPI_DMA_STATUS) & 0xF8F) ? 1 : 0;
+ }
+ 
+-/* Table of supported input (in-memory/DMA) pixel formats. */
++/*
++ * Table of supported input (in-memory/DMA) pixel formats.
++ *
++ * RP1 DPI describes RGB components in terms of their MS bit position, a 10-bit
++ * left-aligned bit-mask, and an optional right-shift-and-OR used for scaling.
++ * To make it easier to permute R, G and B components, we re-pack these fields
++ * into 32-bit code-words, which don't themselves correspond to any register.
++ */
++
++#define RGB_CODE(scale, shift, mask) (((scale) << 24) | ((shift) << 16) | (mask))
++#define RGB_SCALE(c) ((c) >> 24)
++#define RGB_SHIFT(c) (((c) >> 16) & 31)
++#define RGB_MASK(c) ((c) & 0x3ff)
++
+ struct rp1dpi_ipixfmt {
+-	u32 format; /* DRM format code                           */
+-	u32 mask;   /* RGB masks (10 bits each, left justified)  */
+-	u32 shift;  /* RGB MSB positions in the memory word      */
+-	u32 rgbsz;  /* Shifts used for scaling; also (BPP/8-1)   */
++	u32 format;       /* DRM format code                          */
++	u32 rgb_code[3];  /* (width&7), MS bit position, 10-bit mask  */
++	u32 bpp;          /* Bytes per pixel minus one                */
++};
++
++static const struct rp1dpi_ipixfmt my_formats[] = {
++	{
++		.format = DRM_FORMAT_XRGB8888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_XBGR8888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_ARGB8888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_ABGR8888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_RGB888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 2,
++	},
++	{
++		.format = DRM_FORMAT_BGR888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 2,
++	},
++	{
++		.format = DRM_FORMAT_RGB565,
++		.rgb_code = {
++			RGB_CODE(5, 15, 0x3e0),
++			RGB_CODE(6, 10, 0x3f0),
++			RGB_CODE(5, 4, 0x3e0),
++		},
++		.bpp = 1,
++	},
+ };
+ 
+ #define IMASK_RGB(r, g, b)  (FIELD_PREP_CONST(DPI_DMA_IMASK_R_MASK, r)  | \
+@@ -244,63 +322,13 @@ struct rp1dpi_ipixfmt {
+ 			     FIELD_PREP_CONST(DPI_DMA_SHIFT_OG_MASK, g) | \
+ 			     FIELD_PREP_CONST(DPI_DMA_SHIFT_OB_MASK, b))
+ 
+-static const struct rp1dpi_ipixfmt my_formats[] = {
+-	{
+-	  .format = DRM_FORMAT_XRGB8888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(23, 15, 7),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 3),
+-	},
+-	{
+-	  .format = DRM_FORMAT_XBGR8888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(7, 15, 23),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 3),
+-	},
+-	{
+-	  .format = DRM_FORMAT_ARGB8888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(23, 15, 7),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 3),
+-	},
+-	{
+-	  .format = DRM_FORMAT_ABGR8888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(7, 15, 23),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 3),
+-	},
+-	{
+-	  .format = DRM_FORMAT_RGB888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(23, 15, 7),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 2),
+-	},
+-	{
+-	  .format = DRM_FORMAT_BGR888,
+-	  .mask	  = IMASK_RGB(0x3fc, 0x3fc, 0x3fc),
+-	  .shift  = ISHIFT_RGB(7, 15, 23),
+-	  .rgbsz  = FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 2),
+-	},
+-	{
+-	  .format = DRM_FORMAT_RGB565,
+-	  .mask	  = IMASK_RGB(0x3e0, 0x3f0, 0x3e0),
+-	  .shift  = ISHIFT_RGB(15, 10, 4),
+-	  .rgbsz  = (FIELD_PREP_CONST(DPI_DMA_RGBSZ_R_MASK, 5) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_G_MASK, 6) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_B_MASK, 5) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 1)),
+-	},
+-	{
+-	  .format = DRM_FORMAT_BGR565,
+-	  .mask	  = IMASK_RGB(0x3e0, 0x3f0, 0x3e0),
+-	  .shift  = ISHIFT_RGB(4, 10, 15),
+-	  .rgbsz  = (FIELD_PREP_CONST(DPI_DMA_RGBSZ_R_MASK, 5) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_G_MASK, 6) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_B_MASK, 5) |
+-		     FIELD_PREP_CONST(DPI_DMA_RGBSZ_BPP_MASK, 1)),
+-	}
+-};
+-
++/*
++ * Function to update *shift with output positions, and return output RGB masks.
++ * By the time we get here, RGB order has been normalized to RGB (R most significant).
++ * Note that an internal bus is 30 bits wide: bits [21:20], [11:10], [1:0] are dropped.
++ * This makes the packed RGB5656 and RGB666 formats problematic, as colour components
++ * need to straddle the gaps; we mitigate this by hijacking input masks and scaling.
++ */
+ static u32 set_output_format(u32 bus_format, u32 *shift, u32 *imask, u32 *rgbsz)
+ {
+ 	switch (bus_format) {
+@@ -308,6 +336,7 @@ static u32 set_output_format(u32 bus_for
+ 		if (*shift == ISHIFT_RGB(15, 10, 4)) {
+ 			/* When framebuffer is RGB565, we can output RGB565 */
+ 			*shift = ISHIFT_RGB(15, 7, 0) | OSHIFT_RGB(19, 9, 0);
++			*imask = IMASK_RGB(0x3fc, 0x3fc, 0);
+ 			*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
+ 			return OMASK_RGB(0x3fc, 0x3fc, 0);
+ 		}
+@@ -322,7 +351,7 @@ static u32 set_output_format(u32 bus_for
+ 	case MEDIA_BUS_FMT_BGR666_1X18:
+ 		/* due to a HW limitation, bit-depth is effectively RGB444 */
+ 		*shift |= OSHIFT_RGB(23, 15, 7);
+-		*imask &= IMASK_RGB(0x3c0, 0x3c0, 0x3c0);
++		*imask = IMASK_RGB(0x3c0, 0x3c0, 0x3c0);
+ 		*rgbsz = BITS(DPI_DMA_RGBSZ_R, 2) | (*rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
+ 		return OMASK_RGB(0x330, 0x3c0, 0x3c0);
+ 
+@@ -359,7 +388,8 @@ void rp1dpi_hw_setup(struct rp1_dpi *dpi
+ 		    struct drm_display_mode const *mode)
+ {
+ 	u32 shift, imask, omask, rgbsz, vctrl;
+-	int i;
++	u32 rgb_code[3];
++	int order, i;
+ 
+ 	drm_info(&dpi->drm,
+ 		 "in_fmt=\'%c%c%c%c\' bus_fmt=0x%x mode=%dx%d total=%dx%d%s %dkHz %cH%cV%cD%cC",
+@@ -373,26 +403,45 @@ void rp1dpi_hw_setup(struct rp1_dpi *dpi
+ 		 de_inv ? '-' : '+',
+ 		 dpi->clk_inv ? '-' : '+');
+ 
+-	/*
+-	 * Configure all DPI/DMA block registers, except base address.
+-	 * DMA will not actually start until a FB base address is specified
+-	 * using rp1dpi_hw_update().
+-	 */
++	/* Look up the input (in-memory) pixel format */
+ 	for (i = 0; i < ARRAY_SIZE(my_formats); ++i) {
+ 		if (my_formats[i].format == in_format)
+ 			break;
+ 	}
+ 	if (i >= ARRAY_SIZE(my_formats)) {
+ 		pr_err("%s: bad input format\n", __func__);
+-		i = 4;
++		i = ARRAY_SIZE(my_formats) - 1;
+ 	}
+-	if (BUS_FMT_IS_BGR(bus_format))
+-		i ^= 1;
+-	shift = my_formats[i].shift;
+-	imask = my_formats[i].mask;
+-	rgbsz = my_formats[i].rgbsz;
++
++	/*
++	 * Although these RGB orderings refer to the output (DPI bus) format,
++	 * here we permute the *input* components. After this point, "Red"
++	 * will be most significant (highest numbered GPIOs), regardless
++	 * of rgb_order or bus_format. This simplifies later workarounds.
++	 */
++	order = dpi->rgb_order_override;
++	if (order == RP1DPI_ORDER_UNCHANGED)
++		order = BUS_FMT_IS_BGR(bus_format) ? RP1DPI_ORDER_BGR : RP1DPI_ORDER_RGB;
++	rgb_code[0] = my_formats[i].rgb_code[order & 3];
++	rgb_code[1] = my_formats[i].rgb_code[(order >> 8) & 3];
++	rgb_code[2] = my_formats[i].rgb_code[(order >> 16) & 3];
++	rgbsz = FIELD_PREP(DPI_DMA_RGBSZ_BPP_MASK, my_formats[i].bpp) |
++		FIELD_PREP(DPI_DMA_RGBSZ_R_MASK, RGB_SCALE(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_RGBSZ_G_MASK, RGB_SCALE(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_RGBSZ_B_MASK, RGB_SCALE(rgb_code[2]));
++	shift = FIELD_PREP(DPI_DMA_SHIFT_IR_MASK, RGB_SHIFT(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_SHIFT_IG_MASK, RGB_SHIFT(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_SHIFT_IB_MASK, RGB_SHIFT(rgb_code[2]));
++	imask = FIELD_PREP(DPI_DMA_IMASK_R_MASK, RGB_MASK(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_IMASK_G_MASK, RGB_MASK(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_IMASK_B_MASK, RGB_MASK(rgb_code[2]));
+ 	omask = set_output_format(bus_format, &shift, &imask, &rgbsz);
+ 
++	/*
++	 * Configure all DPI/DMA block registers, except base address.
++	 * DMA will not actually start until a FB base address is specified
++	 * using rp1dpi_hw_update().
++	 */
+ 	rp1dpi_hw_write(dpi, DPI_DMA_IMASK, imask);
+ 	rp1dpi_hw_write(dpi, DPI_DMA_OMASK, omask);
+ 	rp1dpi_hw_write(dpi, DPI_DMA_SHIFT, shift);

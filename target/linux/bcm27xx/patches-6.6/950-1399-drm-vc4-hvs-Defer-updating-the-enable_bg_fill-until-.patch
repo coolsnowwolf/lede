@@ -1,0 +1,64 @@
+From 57b528e557890f25e010b6bc7356b5a716c79db2 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 12 Nov 2024 17:58:52 +0000
+Subject: [PATCH] drm/vc4: hvs: Defer updating the enable_bg_fill until vblank
+
+The register to enable/disable background fill was being set
+from atomic flush, however that will be applied immediately and
+can be a while before the vblank. If it was required for the
+current frame but not for the next one, that can result in
+corruption for part of the current frame.
+
+Store the state in vc4_hvs, and update it on vblank.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h |  2 ++
+ drivers/gpu/drm/vc4/vc4_hvs.c | 18 ++++++++++--------
+ 2 files changed, 12 insertions(+), 8 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -339,6 +339,8 @@ struct vc4_hvs {
+ 		unsigned int enabled: 1;
+ 	} eof_irq[HVS_NUM_CHANNELS];
+ 
++	bool bg_fill[HVS_NUM_CHANNELS];
++
+ 	unsigned long max_core_rate;
+ 
+ 	/* Memory manager for CRTCs to allocate space in the display
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1470,14 +1470,7 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		/* This sets a black background color fill, as is the case
+ 		 * with other DRM drivers.
+ 		 */
+-		if (enable_bg_fill)
+-			HVS_WRITE(SCALER6_DISPX_CTRL1(channel),
+-				  HVS_READ(SCALER6_DISPX_CTRL1(channel)) |
+-				  SCALER6(DISPX_CTRL1_BGENB));
+-		else
+-			HVS_WRITE(SCALER6_DISPX_CTRL1(channel),
+-				  HVS_READ(SCALER6_DISPX_CTRL1(channel)) &
+-				  ~SCALER6(DISPX_CTRL1_BGENB));
++		hvs->bg_fill[channel] = enable_bg_fill;
+ 	} else {
+ 		/* we can actually run with a lower core clock when background
+ 		 * fill is enabled on VC4_GEN_5 so leave it enabled always.
+@@ -1662,6 +1655,15 @@ static irqreturn_t vc6_hvs_eof_irq_handl
+ 		if (hvs->eof_irq[i].desc != irq)
+ 			continue;
+ 
++		if (hvs->bg_fill[i])
++			HVS_WRITE(SCALER6_DISPX_CTRL1(i),
++				  HVS_READ(SCALER6_DISPX_CTRL1(i)) |
++				  SCALER6(DISPX_CTRL1_BGENB));
++		else
++			HVS_WRITE(SCALER6_DISPX_CTRL1(i),
++				  HVS_READ(SCALER6_DISPX_CTRL1(i)) &
++				  ~SCALER6(DISPX_CTRL1_BGENB));
++
+ 		vc4_hvs_schedule_dlist_sweep(hvs, i);
+ 		return IRQ_HANDLED;
+ 	}

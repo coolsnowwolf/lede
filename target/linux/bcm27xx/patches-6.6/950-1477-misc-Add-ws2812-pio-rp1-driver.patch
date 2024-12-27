@@ -1,0 +1,568 @@
+From d6d83ad3d9a3a594909a1ad1c82b735ab711cd12 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 3 Dec 2024 16:09:30 +0000
+Subject: [PATCH] misc: Add ws2812-pio-rp1 driver
+
+ws2812-pio-rp1 is a PIO-based driver for WS2812 LEDS. It creates a
+character device in /dev, the default name of which is /dev/leds<n>,
+where <n> is the instance number. The number of LEDS should be set
+in the DT overlay, as should whether it is RGB or RGBW, and the default
+brightness.
+
+Write data to the /dev/* entry in a 4 bytes-per-pixel format in RGBW
+order:
+
+  RR GG BB WW RR GG BB WW ...
+
+The white values are ignored unless the rgbw flag is set for the device.
+
+To change the brightness, write a single byte to offset 0, 255 being
+full brightness and 0 being off.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/Kconfig          |  10 +
+ drivers/misc/Makefile         |   1 +
+ drivers/misc/ws2812-pio-rp1.c | 507 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 518 insertions(+)
+ create mode 100644 drivers/misc/ws2812-pio-rp1.c
+
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -25,6 +25,16 @@ config RP1_PIO
+ 		Driver providing control of the Raspberry Pi PIO block, as found in
+ 		RP1.
+ 
++config WS2812_PIO_RP1
++	tristate "Raspberry Pi PIO-base WS2812 driver"
++	depends on RP1_PIO || COMPILE_TEST
++	default n
++	help
++		Driver for the WS2812 (NeoPixel) LEDs using the RP1 PIO hardware.
++		The driver creates a character device to which rgbw pixels may be
++		written. Single-byte writes to offset 0 set the brightness at
++		runtime.
++
+ config AD525X_DPOT
+ 	tristate "Analog Devices Digital Potentiometers"
+ 	depends on (I2C || SPI) && SYSFS
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -19,6 +19,7 @@ obj-$(CONFIG_PHANTOM)		+= phantom.o
+ obj-$(CONFIG_QCOM_COINCELL)	+= qcom-coincell.o
+ obj-$(CONFIG_QCOM_FASTRPC)	+= fastrpc.o
+ obj-$(CONFIG_RP1_PIO)		+= rp1-pio.o
++obj-$(CONFIG_WS2812_PIO_RP1)	+= ws2812-pio-rp1.o
+ obj-$(CONFIG_SENSORS_BH1770)	+= bh1770glc.o
+ obj-$(CONFIG_SENSORS_APDS990X)	+= apds990x.o
+ obj-$(CONFIG_ENCLOSURE_SERVICES) += enclosure.o
+--- /dev/null
++++ b/drivers/misc/ws2812-pio-rp1.c
+@@ -0,0 +1,507 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Raspberry Pi PIO-based WS2812 driver
++ *
++ * Copyright (C) 2014-2024 Raspberry Pi Ltd.
++ *
++ * Author: Phil Elwell (phil@raspberrypi.com)
++ *
++ * Based on the ws2812 driver by Gordon Hollingworth <gordon@raspberrypi.com>
++ */
++
++#include <linux/cdev.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/fcntl.h>
++#include <linux/file.h>
++#include <linux/fs.h>
++#include <linux/pio_rp1.h>
++#include <linux/platform_device.h>
++#include <linux/of.h>
++#include <linux/gpio/consumer.h>
++
++#define DRIVER_NAME	"ws2812-pio-rp1"
++#define MAX_INSTANCES	4
++
++#define RESET_US	50
++#define PIXEL_BYTES	4
++
++struct ws2812_pio_rp1_state {
++	struct device	*dev;
++	struct gpio_desc *gpiod;
++	struct gpio_desc *power_gpiod;
++	uint		gpio;
++	PIO		pio;
++	uint		sm;
++	uint		offset;
++
++	u8		*buffer;
++	u8		*pixbuf;
++	u32		pixbuf_size;
++	u32		write_end;
++
++	u8		brightness;
++	u32		invert;
++	u32		num_leds;
++	u32		xfer_end_us;
++	bool		is_rgbw;
++	struct delayed_work deferred_work;
++
++	struct completion dma_completion;
++	struct cdev	cdev;
++	dev_t		dev_num;
++	const char	*dev_name;
++};
++
++static			DEFINE_MUTEX(ws2812_pio_mutex);
++static			DEFINE_IDA(ws2812_pio_ida);
++static long		ws2812_pio_ref_count;
++static struct class	*ws2812_pio_class;
++static dev_t		ws2812_pio_dev_num;
++/*
++ * WS2812B gamma correction
++ *	GammaE=255*(res/255).^(1/.45)
++ *	From: http://rgb-123.com/ws2812-color-output/
++ */
++
++static const u8 ws2812_gamma[] = {
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2,
++	2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5,
++	6, 6, 6, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 11, 11,
++	11, 12, 12, 13, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18,
++	19, 19, 20, 21, 21, 22, 22, 23, 23, 24, 25, 25, 26, 27, 27, 28,
++	29, 29, 30, 31, 31, 32, 33, 34, 34, 35, 36, 37, 37, 38, 39, 40,
++	40, 41, 42, 43, 44, 45, 46, 46, 47, 48, 49, 50, 51, 52, 53, 54,
++	55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
++	71, 72, 73, 74, 76, 77, 78, 79, 80, 81, 83, 84, 85, 86, 88, 89,
++	90, 91, 93, 94, 95, 96, 98, 99, 100, 102, 103, 104, 106, 107, 109, 110,
++	111, 113, 114, 116, 117, 119, 120, 121, 123, 124, 126, 128, 129, 131, 132, 134,
++	135, 137, 138, 140, 142, 143, 145, 146, 148, 150, 151, 153, 155, 157, 158, 160,
++	162, 163, 165, 167, 169, 170, 172, 174, 176, 178, 179, 181, 183, 185, 187, 189,
++	191, 193, 194, 196, 198, 200, 202, 204, 206, 208, 210, 212, 214, 216, 218, 220,
++	222, 224, 227, 229, 231, 233, 235, 237, 239, 241, 244, 246, 248, 250, 252, 255
++};
++
++// ------ //
++// ws2812 //
++// ------ //
++
++#define ws2812_wrap_target 0
++#define ws2812_wrap 3
++
++#define ws2812_T1 3
++#define ws2812_T2 4
++#define ws2812_T3 3
++
++static const uint16_t ws2812_program_instructions[] = {
++		//     .wrap_target
++	0x6221,	//  0: out    x, 1            side 0 [2]
++	0x1223,	//  1: jmp    !x, 3           side 1 [2]
++	0x1300,	//  2: jmp    0               side 1 [3]
++	0xa342,	//  3: nop                    side 0 [3]
++		//     .wrap
++};
++
++static const struct pio_program ws2812_program = {
++	.instructions = ws2812_program_instructions,
++	.length = 4,
++	.origin = -1,
++};
++
++static inline pio_sm_config ws2812_program_get_default_config(uint offset)
++{
++	pio_sm_config c = pio_get_default_sm_config();
++
++	sm_config_set_wrap(&c, offset + ws2812_wrap_target, offset + ws2812_wrap);
++	sm_config_set_sideset(&c, 1, false, false);
++	return c;
++}
++
++static inline void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, uint freq,
++				       bool rgbw)
++{
++	int cycles_per_bit = ws2812_T1 + ws2812_T2 + ws2812_T3;
++	struct fp24_8 div;
++	pio_sm_config c;
++
++	pio_gpio_init(pio, pin);
++	pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
++	c = ws2812_program_get_default_config(offset);
++	sm_config_set_sideset_pins(&c, pin);
++	sm_config_set_out_shift(&c, false, true, rgbw ? 32 : 24);
++	sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
++	div = make_fp24_8(clock_get_hz(clk_sys), freq * cycles_per_bit);
++	sm_config_set_clkdiv(&c, div);
++	pio_sm_init(pio, sm, offset, &c);
++	pio_sm_set_enabled(pio, sm, true);
++}
++
++static uint8_t ws2812_apply_gamma(uint8_t brightness, uint8_t val)
++{
++	int bright;
++
++	if (!val)
++		return 0;
++	bright = (val * brightness) / 255;
++	return ws2812_gamma[bright];
++}
++
++static inline uint8_t *rgbw_u32(const struct ws2812_pio_rp1_state *state,
++			       uint8_t r, uint8_t g, uint8_t b, uint8_t w, uint8_t *p)
++{
++	p[0] = ws2812_apply_gamma(state->brightness, w);
++	p[1] = ws2812_apply_gamma(state->brightness, b);
++	p[2] = ws2812_apply_gamma(state->brightness, r);
++	p[3] = ws2812_apply_gamma(state->brightness, g);
++	return p + 4;
++}
++
++static void ws2812_dma_complete(void *param)
++{
++	struct ws2812_pio_rp1_state *state = param;
++
++	complete(&state->dma_completion);
++}
++
++static void ws2812_update_leds(struct ws2812_pio_rp1_state *state, uint length)
++{
++	init_completion(&state->dma_completion);
++	if (!pio_sm_xfer_data(state->pio, state->sm, PIO_DIR_TO_SM, length, state->buffer, 0,
++			      (void (*)(void *))ws2812_dma_complete, state)) {
++		wait_for_completion(&state->dma_completion);
++		usleep_range(RESET_US, RESET_US + 100);
++	}
++}
++
++static void ws2812_clear_leds(struct ws2812_pio_rp1_state *state)
++{
++	uint8_t *p_buffer;
++	uint length;
++	int i;
++
++	p_buffer = state->buffer;
++	for (i = 0; i < state->num_leds; i++)
++		p_buffer = rgbw_u32(state, 0, 0, 0, 0, p_buffer);
++
++	length = (void *)p_buffer - (void *)state->buffer;
++
++	ws2812_update_leds(state, length);
++}
++
++/*
++ * Function to write the RGB buffer to the WS2812 leds, the input buffer
++ * contains a sequence of up to num_leds RGB32 integers, these are then
++ * gamma-corrected before being sent to the PIO state machine.
++ */
++
++static ssize_t ws2812_pio_rp1_write(struct file *filp, const char __user *buf, size_t count,
++				    loff_t *ppos)
++{
++	struct ws2812_pio_rp1_state *state;
++	uint32_t pixbuf_size;
++	unsigned long delay;
++	loff_t pos = *ppos;
++	int err = 0;
++
++	state = (struct ws2812_pio_rp1_state *)filp->private_data;
++	pixbuf_size = state->pixbuf_size;
++
++	if (pos > pixbuf_size)
++		return -EFBIG;
++
++	if (count > pixbuf_size) {
++		err = -EFBIG;
++		count = pixbuf_size;
++	}
++
++	if (pos + count > pixbuf_size) {
++		if (!err)
++			err = -ENOSPC;
++
++		count = pixbuf_size - pos;
++	}
++
++	if (!pos && count == 1) {
++		if (copy_from_user(&state->brightness, buf, 1))
++			return -EFAULT;
++	} else {
++		if (copy_from_user(state->pixbuf + pos, buf, count))
++			return -EFAULT;
++		pos += count;
++		state->write_end = (u32)pos;
++	}
++
++	*ppos = pos;
++
++	delay = (state->write_end == pixbuf_size) ? 0 : HZ / 20;
++	schedule_delayed_work(&state->deferred_work, delay);
++
++	return err ? err : count;
++}
++
++static void ws2812_pio_rp1_deferred_work(struct work_struct *work)
++{
++	struct ws2812_pio_rp1_state *state =
++		container_of(work, struct ws2812_pio_rp1_state, deferred_work.work);
++	uint8_t *p_buffer;
++	uint32_t *p_rgb;
++	int blank_bytes;
++	uint length;
++	int i;
++
++	blank_bytes = state->pixbuf_size - state->write_end;
++	if (blank_bytes > 0)
++		memset(state->pixbuf + state->write_end, 0, blank_bytes);
++
++	p_rgb = (uint32_t *)state->pixbuf;
++	p_buffer = state->buffer;
++
++	for (i = 0; i < state->num_leds; i++) {
++		uint32_t rgbw_pix = *(p_rgb++);
++
++		p_buffer = rgbw_u32(state,
++				    (uint8_t)(rgbw_pix >> 0),
++				    (uint8_t)(rgbw_pix >> 8),
++				    (uint8_t)(rgbw_pix >> 16),
++				    (uint8_t)(rgbw_pix >> 24),
++				    p_buffer);
++	}
++
++	length = (void *)p_buffer - (void *)state->buffer;
++
++	ws2812_update_leds(state, length);
++}
++
++static int ws2812_pio_rp1_open(struct inode *inode, struct file *file)
++{
++	struct ws2812_pio_rp1_state *state;
++
++	state  = container_of(inode->i_cdev, struct ws2812_pio_rp1_state, cdev);
++	file->private_data = state;
++
++	return 0;
++}
++
++const struct file_operations ws2812_pio_rp1_fops = {
++	.owner = THIS_MODULE,
++	.write = ws2812_pio_rp1_write,
++	.open = ws2812_pio_rp1_open,
++};
++
++/*
++ * Probe function
++ */
++static int ws2812_pio_rp1_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct of_phandle_args of_args = { 0 };
++	struct ws2812_pio_rp1_state *state;
++	struct device *dev = &pdev->dev;
++	struct device *char_dev;
++	const char *dev_name;
++	uint32_t brightness;
++	bool is_rp1;
++	int minor;
++	int ret;
++
++	state = devm_kzalloc(dev, sizeof(*state), GFP_KERNEL);
++	if (IS_ERR(state))
++		return PTR_ERR(state);
++
++	state->dev = dev;
++
++	platform_set_drvdata(pdev, state);
++
++	ret = of_property_read_u32(np, "rpi,num-leds", &state->num_leds);
++	if (ret)
++		return dev_err_probe(dev, ret, "Could not get num-leds\n");
++
++	brightness = 255;
++	of_property_read_u32(np, "rpi,brightness", &brightness);
++	state->brightness = min(brightness, 255);
++
++	state->pixbuf_size = state->num_leds * PIXEL_BYTES;
++
++	state->is_rgbw = of_property_read_bool(np, "rpi,rgbw");
++	state->gpiod = devm_gpiod_get(dev, "leds", GPIOD_ASIS);
++	if (IS_ERR(state->gpiod))
++		return dev_err_probe(dev, PTR_ERR(state->gpiod),
++				     "Could not get a gpio\n");
++
++	/* This must be an RP1 GPIO in the first bank, and retrieve the offset. */
++	/* Unfortunately I think this has to be done by parsing the gpios property */
++
++	/* This really shouldn't fail, given that we have a gpiod */
++	if (of_parse_phandle_with_args(np, "leds-gpios", "#gpio-cells", 0, &of_args))
++		return dev_err_probe(dev, -EINVAL,
++				     "Can't find gpio declaration\n");
++
++	is_rp1 = of_device_is_compatible(of_args.np, "raspberrypi,rp1-gpio");
++	of_node_put(of_args.np);
++	if (!is_rp1 || of_args.args_count != 2)
++		return dev_err_probe(dev, -EINVAL,
++				     "Not an RP1 gpio\n");
++
++	state->gpio = of_args.args[0];
++
++	state->pixbuf = devm_kmalloc(dev, state->pixbuf_size, GFP_KERNEL);
++	if (state->pixbuf == NULL)
++		return -ENOMEM;
++
++	state->buffer = devm_kmalloc(dev, state->num_leds * PIXEL_BYTES, GFP_KERNEL);
++	if (state->buffer == NULL)
++		return -ENOMEM;
++
++	ret = of_property_read_string(np, "dev-name", &dev_name);
++	if (ret) {
++		pr_err("Failed to read 'dev-name' property\n");
++		return ret;
++	}
++
++	state->pio = pio_open();
++	if (IS_ERR(state->pio))
++		return dev_err_probe(dev, PTR_ERR(state->pio),
++				     "Could not open PIO\n");
++
++	state->sm = pio_claim_unused_sm(state->pio, false);
++	if ((int)state->sm < 0) {
++		dev_err(dev, "No free PIO SM\n");
++		ret = -EBUSY;
++		goto fail_pio;
++	}
++
++	state->offset = pio_add_program(state->pio, &ws2812_program);
++	if (state->offset == PIO_ORIGIN_ANY) {
++		dev_err(dev, "Not enough PIO program space\n");
++		ret = -EBUSY;
++		goto fail_pio;
++	}
++
++	pio_sm_config_xfer(state->pio, state->sm, PIO_DIR_TO_SM, state->num_leds * sizeof(int), 1);
++
++	pio_sm_clear_fifos(state->pio, state->sm);
++	pio_sm_set_clkdiv(state->pio, state->sm, make_fp24_8(1, 1));
++	ws2812_program_init(state->pio, state->sm, state->offset, state->gpio, 800000,
++			    state->is_rgbw);
++
++	mutex_lock(&ws2812_pio_mutex);
++
++	if (!ws2812_pio_ref_count) {
++		ret = alloc_chrdev_region(&ws2812_pio_dev_num, 0, MAX_INSTANCES, DRIVER_NAME);
++		if (ret < 0) {
++			dev_err(dev, "alloc_chrdev_region failed (rc=%d)\n", ret);
++			goto fail_mutex;
++		}
++
++		ws2812_pio_class = class_create(DRIVER_NAME);
++		if (IS_ERR(ws2812_pio_class)) {
++			pr_err("Unable to create class " DRIVER_NAME "\n");
++			ret = PTR_ERR(ws2812_pio_class);
++			goto fail_chrdev;
++		}
++	}
++
++	ws2812_pio_ref_count++;
++
++	minor = ida_alloc_range(&ws2812_pio_ida, 0, MAX_INSTANCES - 1, GFP_KERNEL);
++	if (minor < 0) {
++		pr_err("No free instances\n");
++		ret = minor;
++		goto fail_class;
++
++	}
++
++	mutex_unlock(&ws2812_pio_mutex);
++
++	state->dev_num = MKDEV(MAJOR(ws2812_pio_dev_num), minor);
++	state->dev_name = devm_kasprintf(dev, GFP_KERNEL, dev_name, minor);
++
++	char_dev = device_create(ws2812_pio_class, NULL, state->dev_num, NULL, state->dev_name);
++
++	if (IS_ERR(char_dev)) {
++		pr_err("Unable to create device %s\n", state->dev_name);
++		ret = PTR_ERR(char_dev);
++		goto fail_ida;
++	}
++
++	state->cdev.owner = THIS_MODULE;
++	cdev_init(&state->cdev, &ws2812_pio_rp1_fops);
++
++	ret = cdev_add(&state->cdev, state->dev_num, 1);
++	if (ret) {
++		pr_err("cdev_add failed\n");
++		goto fail_device;
++	}
++
++	INIT_DELAYED_WORK(&state->deferred_work, ws2812_pio_rp1_deferred_work);
++
++	ws2812_clear_leds(state);
++
++	dev_info(&pdev->dev, "Instantiated %d LEDs on GPIO %d as /dev/%s\n",
++		 state->num_leds, state->gpio, state->dev_name);
++
++	return 0;
++
++fail_device:
++	device_destroy(ws2812_pio_class, state->dev_num);
++fail_ida:
++	mutex_lock(&ws2812_pio_mutex);
++	ida_free(&ws2812_pio_ida, minor);
++fail_class:
++	ws2812_pio_ref_count--;
++	if (ws2812_pio_ref_count)
++		goto fail_mutex;
++	class_destroy(ws2812_pio_class);
++fail_chrdev:
++	unregister_chrdev_region(ws2812_pio_dev_num, MAX_INSTANCES);
++fail_mutex:
++	mutex_unlock(&ws2812_pio_mutex);
++fail_pio:
++	pio_close(state->pio);
++
++	return ret;
++}
++
++static void ws2812_pio_rp1_remove(struct platform_device *pdev)
++{
++	struct ws2812_pio_rp1_state *state = platform_get_drvdata(pdev);
++
++	cancel_delayed_work(&state->deferred_work);
++	platform_set_drvdata(pdev, NULL);
++
++	cdev_del(&state->cdev);
++	device_destroy(ws2812_pio_class, state->dev_num);
++
++	mutex_lock(&ws2812_pio_mutex);
++	ida_free(&ws2812_pio_ida, MINOR(state->dev_num));
++	ws2812_pio_ref_count--;
++	if (!ws2812_pio_ref_count) {
++		class_destroy(ws2812_pio_class);
++		unregister_chrdev_region(ws2812_pio_dev_num, MAX_INSTANCES);
++	}
++	mutex_unlock(&ws2812_pio_mutex);
++
++	pio_close(state->pio);
++}
++
++static const struct of_device_id ws2812_pio_rp1_match[] = {
++	{ .compatible = "raspberrypi,ws2812-pio-rp1" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ws2812_pio_rp1_match);
++
++static struct platform_driver ws2812_pio_rp1_driver = {
++	.driver = {
++		.name = "ws2812-pio-rp1",
++		.of_match_table = ws2812_pio_rp1_match,
++	},
++	.probe = ws2812_pio_rp1_probe,
++	.remove_new  = ws2812_pio_rp1_remove,
++};
++module_platform_driver(ws2812_pio_rp1_driver);
++
++MODULE_DESCRIPTION("WS2812 PIO RP1 driver");
++MODULE_AUTHOR("Phil Elwell");
++MODULE_LICENSE("GPL");

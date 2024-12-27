@@ -1,0 +1,84 @@
+From dafde0ac8b6d4b21578a677c8afad8714af47aaf Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 9 Jan 2025 16:33:37 +0000
+Subject: [PATCH] firmware: rp1: Simplify rp1_firmware_get
+
+Simplify the implementation of rp1_firmware_get, requiring its clients
+to have a valid 'firmware' property. Also make it return NULL on error.
+
+Link: https://github.com/raspberrypi/linux/issues/6593
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/firmware/rp1.c | 36 +++++++++++++++---------------------
+ 1 file changed, 15 insertions(+), 21 deletions(-)
+
+--- a/drivers/firmware/rp1.c
++++ b/drivers/firmware/rp1.c
+@@ -159,42 +159,36 @@ struct rp1_firmware *rp1_firmware_get(st
+ 	struct device_node *fwnode;
+ 	struct rp1_firmware *fw;
+ 
+-	if (client) {
+-		fwnode = of_parse_phandle(client, "firmware", 0);
+-		if (!fwnode)
+-			fwnode = of_get_parent(client);
+-		if (fwnode && !of_device_is_compatible(fwnode, match)) {
+-			of_node_put(fwnode);
+-			fwnode = NULL;
+-		}
+-	}
+-
+-	if (!fwnode)
+-		fwnode = of_find_matching_node(NULL, rp1_firmware_of_match);
+-
++	if (!client)
++		return NULL;
++	fwnode = of_parse_phandle(client, "firmware", 0);
+ 	if (!fwnode)
+-		return ERR_PTR(-ENOENT);
++		return NULL;
++	if (!of_device_is_compatible(fwnode, match)) {
++		of_node_put(fwnode);
++		return NULL;
++	}
+ 
+ 	pdev = of_find_device_by_node(fwnode);
+ 	of_node_put(fwnode);
+ 
+ 	if (!pdev)
+-		return ERR_PTR(-EPROBE_DEFER);
++		goto err_exit;
+ 
+ 	fw = platform_get_drvdata(pdev);
+ 	if (!fw)
+-		goto err_defer;
++		goto err_exit;
+ 
+ 	if (!kref_get_unless_zero(&fw->consumers))
+-		goto err_defer;
++		goto err_exit;
+ 
+ 	put_device(&pdev->dev);
+ 
+ 	return fw;
+ 
+-err_defer:
++err_exit:
+ 	put_device(&pdev->dev);
+-	return ERR_PTR(-EPROBE_DEFER);
++	return NULL;
+ }
+ EXPORT_SYMBOL_GPL(rp1_firmware_get);
+ 
+@@ -210,8 +204,8 @@ struct rp1_firmware *devm_rp1_firmware_g
+ 	int ret;
+ 
+ 	fw = rp1_firmware_get(client);
+-	if (IS_ERR(fw))
+-		return fw;
++	if (!fw)
++		return NULL;
+ 
+ 	ret = devm_add_action_or_reset(dev, devm_rp1_firmware_put, fw);
+ 	if (ret)

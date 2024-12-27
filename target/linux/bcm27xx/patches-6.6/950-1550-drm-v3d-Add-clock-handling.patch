@@ -1,0 +1,129 @@
+From 32c319ba2f2fd662a3b7bd042515cd650807dbff Mon Sep 17 00:00:00 2001
+From: Stefan Wahren <wahrenst@gmx.net>
+Date: Sat, 1 Feb 2025 13:50:46 +0100
+Subject: [PATCH] drm/v3d: Add clock handling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+[ Upstream commit 4dd40b5f9c3d89b67af0dbe059cf4a51aac6bf06 ]
+
+Since the initial commit 57692c94dcbe ("drm/v3d: Introduce a new DRM driver
+for Broadcom V3D V3.x+") the struct v3d_dev reserved a pointer for
+an optional V3D clock. But there wasn't any code, which fetched it.
+So add the missing clock handling before accessing any V3D registers.
+
+Signed-off-by: Stefan Wahren <wahrenst@gmx.net>
+Reviewed-by: Maíra Canal <mcanal@igalia.com>
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20250201125046.33030-1-wahrenst@gmx.net
+[ Maíra: Backported to the downstream repository ]
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c | 44 ++++++++++++++++++++++-------------
+ 1 file changed, 28 insertions(+), 16 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -232,11 +232,21 @@ static int v3d_platform_drm_probe(struct
+ 	if (ret)
+ 		return ret;
+ 
++	v3d->clk = devm_clk_get_optional(dev, NULL);
++	if (IS_ERR(v3d->clk))
++		return dev_err_probe(dev, PTR_ERR(v3d->clk), "Failed to get V3D clock\n");
++
++	ret = clk_prepare_enable(v3d->clk);
++	if (ret) {
++		dev_err(&pdev->dev, "Couldn't enable the V3D clock\n");
++		return ret;
++	}
++
+ 	mmu_debug = V3D_READ(V3D_MMU_DEBUG_INFO);
+ 	mask = DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH));
+ 	ret = dma_set_mask_and_coherent(dev, mask);
+ 	if (ret)
+-		return ret;
++		goto clk_disable;
+ 
+ 	v3d->va_width = 30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_VA_WIDTH);
+ 
+@@ -251,32 +261,29 @@ static int v3d_platform_drm_probe(struct
+ 		ret = PTR_ERR(v3d->reset);
+ 
+ 		if (ret == -EPROBE_DEFER)
+-			return ret;
++			goto clk_disable;
+ 
+ 		v3d->reset = NULL;
+ 		ret = map_regs(v3d, &v3d->bridge_regs, "bridge");
+ 		if (ret) {
+ 			dev_err(dev,
+ 				"Failed to get reset control or bridge regs\n");
+-			return ret;
++			goto clk_disable;
+ 		}
+ 	}
+ 
+-	v3d->clk = devm_clk_get(dev, NULL);
+-	if (IS_ERR_OR_NULL(v3d->clk)) {
+-		if (PTR_ERR(v3d->clk) != -EPROBE_DEFER)
+-			dev_err(dev, "Failed to get clock (%ld)\n", PTR_ERR(v3d->clk));
+-		return PTR_ERR(v3d->clk);
+-	}
+-
+ 	node = rpi_firmware_find_node();
+-	if (!node)
+-		return -EINVAL;
++	if (!node) {
++		ret = -EINVAL;
++		goto clk_disable;
++	}
+ 
+ 	firmware = rpi_firmware_get(node);
+ 	of_node_put(node);
+-	if (!firmware)
+-		return -EPROBE_DEFER;
++	if (!firmware) {
++		ret = -EPROBE_DEFER;
++		goto clk_disable;
++	}
+ 
+ 	v3d->clk_up_rate = rpi_firmware_clk_get_max_rate(firmware,
+ 							 RPI_FIRMWARE_V3D_CLK_ID);
+@@ -293,14 +300,15 @@ static int v3d_platform_drm_probe(struct
+ 	if (v3d->ver < 41) {
+ 		ret = map_regs(v3d, &v3d->gca_regs, "gca");
+ 		if (ret)
+-			return ret;
++			goto clk_disable;
+ 	}
+ 
+ 	v3d->mmu_scratch = dma_alloc_wc(dev, 4096, &v3d->mmu_scratch_paddr,
+ 					GFP_KERNEL | __GFP_NOWARN | __GFP_ZERO);
+ 	if (!v3d->mmu_scratch) {
+ 		dev_err(dev, "Failed to allocate MMU scratch page\n");
+-		return -ENOMEM;
++		ret = -ENOMEM;
++		goto clk_disable;
+ 	}
+ 
+ 	ret = v3d_gem_init(drm);
+@@ -326,6 +334,8 @@ gem_destroy:
+ 	v3d_gem_destroy(drm);
+ dma_free:
+ 	dma_free_wc(dev, 4096, v3d->mmu_scratch, v3d->mmu_scratch_paddr);
++clk_disable:
++	clk_disable_unprepare(v3d->clk);
+ 	return ret;
+ }
+ 
+@@ -340,6 +350,8 @@ static void v3d_platform_drm_remove(stru
+ 
+ 	dma_free_wc(v3d->drm.dev, 4096, v3d->mmu_scratch,
+ 		    v3d->mmu_scratch_paddr);
++
++	clk_disable_unprepare(v3d->clk);
+ }
+ 
+ static struct platform_driver v3d_platform_driver = {

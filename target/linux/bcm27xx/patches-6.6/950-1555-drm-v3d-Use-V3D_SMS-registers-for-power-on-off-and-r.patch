@@ -1,0 +1,198 @@
+From 85e1a7592aa192d760159f9bc6e83d56fdf433f3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Sat, 22 Feb 2025 15:49:49 -0300
+Subject: [PATCH] drm/v3d: Use V3D_SMS registers for power on/off and reset on
+ V3D 7.x
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In addition to the standard reset controller, V3D 7.x requires configuring
+the V3D_SMS registers for proper power on/off and reset. Add the new
+registers to `v3d_regs.h` and ensure they are properly configured during
+device probing, removal, and reset.
+
+This change fixes GPU reset issues on the Raspberry Pi 5 (BCM2712).
+Without exposing these registers, a GPU reset causes the GPU to hang,
+stopping any further job execution and freezing the desktop GUI. The same
+issue occurs when unloading and loading the v3d driver.
+
+Link: https://github.com/raspberrypi/linux/issues/6660
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c  | 40 ++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/v3d/v3d_drv.h  | 11 ++++++++++
+ drivers/gpu/drm/v3d/v3d_gem.c  | 17 +++++++++++++++
+ drivers/gpu/drm/v3d/v3d_regs.h | 26 ++++++++++++++++++++++
+ 4 files changed, 94 insertions(+)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -198,6 +198,36 @@ static const struct of_device_id v3d_of_
+ };
+ MODULE_DEVICE_TABLE(of, v3d_of_match);
+ 
++static void
++v3d_idle_sms(struct v3d_dev *v3d)
++{
++	if (v3d->ver < V3D_GEN_71)
++		return;
++
++	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_CLEAR_POWER_OFF);
++
++	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
++				    V3D_SMS_STATE) == V3D_SMS_IDLE), 100)) {
++		DRM_ERROR("Failed to power up SMS\n");
++	}
++
++	v3d_reset_sms(v3d);
++}
++
++static void
++v3d_power_off_sms(struct v3d_dev *v3d)
++{
++	if (v3d->ver < V3D_GEN_71)
++		return;
++
++	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_POWER_OFF);
++
++	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
++				    V3D_SMS_STATE) == V3D_SMS_POWER_OFF_STATE), 100)) {
++		DRM_ERROR("Failed to power off SMS\n");
++	}
++}
++
+ static int
+ map_regs(struct v3d_dev *v3d, void __iomem **regs, const char *name)
+ {
+@@ -237,6 +267,12 @@ static int v3d_platform_drm_probe(struct
+ 	if (ret)
+ 		return ret;
+ 
++	if (v3d->ver >= V3D_GEN_71) {
++		ret = map_regs(v3d, &v3d->sms_regs, "sms");
++		if (ret)
++			return ret;
++	}
++
+ 	v3d->clk = devm_clk_get_optional(dev, NULL);
+ 	if (IS_ERR(v3d->clk))
+ 		return dev_err_probe(dev, PTR_ERR(v3d->clk), "Failed to get V3D clock\n");
+@@ -247,6 +283,8 @@ static int v3d_platform_drm_probe(struct
+ 		return ret;
+ 	}
+ 
++	v3d_idle_sms(v3d);
++
+ 	mmu_debug = V3D_READ(V3D_MMU_DEBUG_INFO);
+ 	mask = DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH));
+ 	ret = dma_set_mask_and_coherent(dev, mask);
+@@ -361,6 +399,8 @@ static void v3d_platform_drm_remove(stru
+ 	dma_free_wc(v3d->drm.dev, 4096, v3d->mmu_scratch,
+ 		    v3d->mmu_scratch_paddr);
+ 
++	v3d_power_off_sms(v3d);
++
+ 	clk_disable_unprepare(v3d->clk);
+ }
+ 
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -135,6 +135,7 @@ struct v3d_dev {
+ 	void __iomem *core_regs[3];
+ 	void __iomem *bridge_regs;
+ 	void __iomem *gca_regs;
++	void __iomem *sms_regs;
+ 	struct clk *clk;
+ 	struct delayed_work clk_down_work;
+ 	unsigned long clk_up_rate, clk_down_rate;
+@@ -277,6 +278,15 @@ to_v3d_fence(struct dma_fence *fence)
+ #define V3D_GCA_READ(offset) readl(v3d->gca_regs + offset)
+ #define V3D_GCA_WRITE(offset, val) writel(val, v3d->gca_regs + offset)
+ 
++#define V3D_SMS_IDLE				0x0
++#define V3D_SMS_ISOLATING_FOR_RESET		0xa
++#define V3D_SMS_RESETTING			0xb
++#define V3D_SMS_ISOLATING_FOR_POWER_OFF	0xc
++#define V3D_SMS_POWER_OFF_STATE		0xd
++
++#define V3D_SMS_READ(offset) readl(v3d->sms_regs + (offset))
++#define V3D_SMS_WRITE(offset, val) writel(val, v3d->sms_regs + (offset))
++
+ #define V3D_CORE_READ(core, offset) readl(v3d->core_regs[core] + offset)
+ #define V3D_CORE_WRITE(core, offset, val) writel(val, v3d->core_regs[core] + offset)
+ 
+@@ -455,6 +465,7 @@ int v3d_wait_bo_ioctl(struct drm_device
+ 		      struct drm_file *file_priv);
+ void v3d_job_cleanup(struct v3d_job *job);
+ void v3d_job_put(struct v3d_job *job);
++void v3d_reset_sms(struct v3d_dev *v3d);
+ void v3d_reset(struct v3d_dev *v3d);
+ void v3d_invalidate_caches(struct v3d_dev *v3d);
+ void v3d_clean_caches(struct v3d_dev *v3d);
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -152,6 +152,22 @@ v3d_reset_v3d(struct v3d_dev *v3d)
+ }
+ 
+ void
++v3d_reset_sms(struct v3d_dev *v3d)
++{
++	if (v3d->ver < V3D_GEN_71)
++		return;
++
++	V3D_SMS_WRITE(V3D_SMS_REE_CS, V3D_SET_FIELD(0x4, V3D_SMS_STATE));
++
++	if (wait_for(!(V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_REE_CS),
++				     V3D_SMS_STATE) == V3D_SMS_ISOLATING_FOR_RESET) &&
++		     !(V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_REE_CS),
++				     V3D_SMS_STATE) == V3D_SMS_RESETTING), 100)) {
++		DRM_ERROR("Failed to wait for SMS reset\n");
++	}
++}
++
++void
+ v3d_reset(struct v3d_dev *v3d)
+ {
+ 	struct drm_device *dev = &v3d->drm;
+@@ -166,6 +182,7 @@ v3d_reset(struct v3d_dev *v3d)
+ 		v3d_idle_axi(v3d, 0);
+ 
+ 	v3d_idle_gca(v3d);
++	v3d_reset_sms(v3d);
+ 	v3d_reset_v3d(v3d);
+ 
+ 	v3d_mmu_set_page_table(v3d);
+--- a/drivers/gpu/drm/v3d/v3d_regs.h
++++ b/drivers/gpu/drm/v3d/v3d_regs.h
+@@ -543,4 +543,30 @@
+ # define V3D_ERR_VPAERGS                               BIT(1)
+ # define V3D_ERR_VPAEABB                               BIT(0)
+ 
++#define V3D_SMS_REE_CS                                 0x00000
++#define V3D_SMS_TEE_CS                                 0x00400
++# define V3D_SMS_INTERRUPT                             BIT(31)
++# define V3D_SMS_POWER_OFF                             BIT(30)
++# define V3D_SMS_CLEAR_POWER_OFF                       BIT(29)
++# define V3D_SMS_LOCK                                  BIT(28)
++# define V3D_SMS_CLEAR_LOCK                            BIT(27)
++# define V3D_SMS_SVP_MODE_EXIT                         BIT(26)
++# define V3D_SMS_CLEAR_SVP_MODE_EXIT                   BIT(25)
++# define V3D_SMS_SVP_MODE_ENTER                        BIT(24)
++# define V3D_SMS_CLEAR_SVP_MODE_ENTER                  BIT(23)
++# define V3D_SMS_THEIR_MODE_EXIT                       BIT(22)
++# define V3D_SMS_THEIR_MODE_ENTER                      BIT(21)
++# define V3D_SMS_OUR_MODE_EXIT                         BIT(20)
++# define V3D_SMS_CLEAR_OUR_MODE_EXIT                   BIT(19)
++# define V3D_SMS_SEQ_PC_MASK                           V3D_MASK(16, 10)
++# define V3D_SMS_SEQ_PC_SHIFT                          10
++# define V3D_SMS_HUBCORE_STATUS_MASK                   V3D_MASK(9, 8)
++# define V3D_SMS_HUBCORE_STATUS_SHIFT                  8
++# define V3D_SMS_NEW_MODE_MASK                         V3D_MASK(7, 6)
++# define V3D_SMS_NEW_MODE_SHIFT                        6
++# define V3D_SMS_OLD_MODE_MASK                         V3D_MASK(5, 4)
++# define V3D_SMS_OLD_MODE_SHIFT                        4
++# define V3D_SMS_STATE_MASK                            V3D_MASK(3, 0)
++# define V3D_SMS_STATE_SHIFT                           0
++
+ #endif /* V3D_REGS_H */

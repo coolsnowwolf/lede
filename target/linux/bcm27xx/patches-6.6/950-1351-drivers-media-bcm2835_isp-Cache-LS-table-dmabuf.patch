@@ -1,0 +1,141 @@
+From 25e6acfe00f589a5989ebd2c8d21a130fb3bf106 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Fri, 18 Oct 2024 09:18:10 +0100
+Subject: [PATCH] drivers: media: bcm2835_isp: Cache LS table dmabuf
+
+Clients such as libcamera do not change the LS table dmabuf on every
+frame. In such cases instead of mapping/remapping the same dmabuf on
+every frame to send to the firmware, cache the dmabuf once and only
+update and remap if the dmabuf has been changed by the userland client.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ .../bcm2835-isp/bcm2835-v4l2-isp.c            | 77 +++++++++++--------
+ 1 file changed, 46 insertions(+), 31 deletions(-)
+
+--- a/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
++++ b/drivers/staging/vc04_services/bcm2835-isp/bcm2835-v4l2-isp.c
+@@ -139,6 +139,8 @@ struct bcm2835_isp_dev {
+ 	/* Image pipeline controls. */
+ 	int r_gain;
+ 	int b_gain;
++	struct dma_buf *last_ls_dmabuf;
++	struct mmal_parameter_lens_shading_v2 ls;
+ };
+ 
+ struct bcm2835_isp_buffer {
+@@ -657,18 +659,18 @@ static void bcm2835_isp_node_stop_stream
+ 	atomic_dec(&dev->num_streaming);
+ 	/* If all ports disabled, then disable the component */
+ 	if (atomic_read(&dev->num_streaming) == 0) {
+-		struct bcm2835_isp_lens_shading ls;
+ 		/*
+ 		 * The ISP component on the firmware has a reference to the
+ 		 * dmabuf handle for the lens shading table.  Pass a null handle
+ 		 * to remove that reference now.
+ 		 */
+-		memset(&ls, 0, sizeof(ls));
++		memset(&dev->ls, 0, sizeof(dev->ls));
+ 		/* Must set a valid grid size for the FW */
+-		ls.grid_cell_size = 16;
++		dev->ls.grid_cell_size = 16;
+ 		set_isp_param(&dev->node[0],
+ 			      MMAL_PARAMETER_LENS_SHADING_OVERRIDE,
+-			      &ls, sizeof(ls));
++			      &dev->ls, sizeof(dev->ls));
++		dev->last_ls_dmabuf = NULL;
+ 
+ 		ret = vchiq_mmal_component_disable(dev->mmal_instance,
+ 						   dev->component);
+@@ -719,6 +721,36 @@ static inline unsigned int get_sizeimage
+ 	return (bpl * height * fmt->size_multiplier_x2) >> 1;
+ }
+ 
++static int map_ls_table(struct bcm2835_isp_dev *dev, struct dma_buf *dmabuf,
++			const struct bcm2835_isp_lens_shading *v4l2_ls)
++{
++	void *vcsm_handle;
++	int ret;
++
++	if (IS_ERR_OR_NULL(dmabuf))
++		return -EINVAL;
++
++	/*
++	 * struct bcm2835_isp_lens_shading and struct
++	 * mmal_parameter_lens_shading_v2 match so that we can do a
++	 * simple memcpy here.
++	 * Only the dmabuf to the actual table needs any manipulation.
++	 */
++	memcpy(&dev->ls, v4l2_ls, sizeof(dev->ls));
++	ret = vc_sm_cma_import_dmabuf(dmabuf, &vcsm_handle);
++	if (ret) {
++		dma_buf_put(dmabuf);
++		return ret;
++	}
++
++	dev->ls.mem_handle_table = vc_sm_cma_int_handle(vcsm_handle);
++	dev->last_ls_dmabuf = dmabuf;
++
++	vc_sm_cma_free(vcsm_handle);
++
++	return 0;
++}
++
+ static int bcm2835_isp_s_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct bcm2835_isp_dev *dev =
+@@ -754,44 +786,27 @@ static int bcm2835_isp_s_ctrl(struct v4l
+ 	case V4L2_CID_USER_BCM2835_ISP_LENS_SHADING:
+ 	{
+ 		struct bcm2835_isp_lens_shading *v4l2_ls;
+-		struct mmal_parameter_lens_shading_v2 ls;
+-		struct dma_buf *dmabuf;
+-		void *vcsm_handle;
+ 
+ 		v4l2_ls = (struct bcm2835_isp_lens_shading *)ctrl->p_new.p_u8;
+-		/*
+-		 * struct bcm2835_isp_lens_shading and struct
+-		 * mmal_parameter_lens_shading_v2 match so that we can do a
+-		 * simple memcpy here.
+-		 * Only the dmabuf to the actual table needs any manipulation.
+-		 */
+-		memcpy(&ls, v4l2_ls, sizeof(ls));
++		struct dma_buf *dmabuf = dma_buf_get(v4l2_ls->dmabuf);
+ 
+-		dmabuf = dma_buf_get(v4l2_ls->dmabuf);
+-		if (IS_ERR_OR_NULL(dmabuf))
+-			return -EINVAL;
+-
+-		ret = vc_sm_cma_import_dmabuf(dmabuf, &vcsm_handle);
+-		if (ret) {
+-			dma_buf_put(dmabuf);
+-			return -EINVAL;
+-		}
++		if (dmabuf != dev->last_ls_dmabuf)
++			ret = map_ls_table(dev, dmabuf, v4l2_ls);
+ 
+-		ls.mem_handle_table = vc_sm_cma_int_handle(vcsm_handle);
+-		if (ls.mem_handle_table)
+-			/* The VPU will take a reference on the vcsm handle,
++		if (!ret && dev->ls.mem_handle_table)
++			/*
++			 * The VPU will take a reference on the vcsm handle,
+ 			 * which in turn will retain a reference on the dmabuf.
+ 			 * This code can therefore safely release all
+ 			 * references to the buffer.
+ 			 */
+-			ret = set_isp_param(node,
+-					    MMAL_PARAMETER_LENS_SHADING_OVERRIDE,
+-					    &ls,
+-					    sizeof(ls));
++			ret =
++			set_isp_param(node,
++				      MMAL_PARAMETER_LENS_SHADING_OVERRIDE,
++				      &dev->ls, sizeof(dev->ls));
+ 		else
+ 			ret = -EINVAL;
+ 
+-		vc_sm_cma_free(vcsm_handle);
+ 		dma_buf_put(dmabuf);
+ 		break;
+ 	}

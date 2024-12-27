@@ -1,0 +1,92 @@
+From 5c07ba20630a629399eaa6583457aca93ff74606 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 9 Dec 2024 09:58:29 +0000
+Subject: [PATCH] misc: rp1-pio: Convert floats to 24.8 fixed point
+
+Floating point arithmetic is not supported in the kernel, so use fixed
+point instead.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ include/linux/pio_rp1.h | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+--- a/include/linux/pio_rp1.h
++++ b/include/linux/pio_rp1.h
+@@ -171,6 +171,10 @@ enum gpio_drive_strength {
+ 	GPIO_DRIVE_STRENGTH_12MA = 3
+ };
+ 
++struct fp24_8 {
++	uint32_t val;
++};
++
+ typedef rp1_pio_sm_config pio_sm_config;
+ 
+ typedef struct rp1_pio_client *PIO;
+@@ -218,6 +222,13 @@ void pio_close(PIO pio);
+ int pio_sm_config_xfer(PIO pio, uint sm, uint dir, uint buf_size, uint buf_count);
+ int pio_sm_xfer_data(PIO pio, uint sm, uint dir, uint data_bytes, void *data);
+ 
++static inline struct fp24_8 make_fp24_8(uint mul, uint div)
++{
++	struct fp24_8 res = { .val = ((unsigned long long)mul << 8) / div };
++
++	return res;
++}
++
+ static inline bool pio_can_add_program(struct rp1_pio_client *client,
+ 				       const pio_program_t *program)
+ {
+@@ -396,16 +407,18 @@ static inline int pio_sm_clear_fifos(str
+ 	return rp1_pio_sm_clear_fifos(client, &args);
+ }
+ 
+-static inline bool pio_calculate_clkdiv_from_float(float div, uint16_t *div_int,
++static inline bool pio_calculate_clkdiv_from_fp24_8(struct fp24_8 div, uint16_t *div_int,
+ 						   uint8_t *div_frac)
+ {
+-	if (bad_params_if(NULL, div < 1 || div > 65536))
++	uint inum = (div.val >> 8);
++
++	if (bad_params_if(NULL, inum < 1 || inum > 65536))
+ 		return false;
+-	*div_int = (uint16_t)div;
++	*div_int = (uint16_t)inum;
+ 	if (*div_int == 0)
+ 		*div_frac = 0;
+ 	else
+-		*div_frac = (uint8_t)((div - (float)*div_int) * (1u << 8u));
++		*div_frac = div.val & 0xff;
+ 	return true;
+ }
+ 
+@@ -421,11 +434,11 @@ static inline int pio_sm_set_clkdiv_int_
+ 	return rp1_pio_sm_set_clkdiv(client, &args);
+ }
+ 
+-static inline int pio_sm_set_clkdiv(struct rp1_pio_client *client, uint sm, float div)
++static inline int pio_sm_set_clkdiv(struct rp1_pio_client *client, uint sm, struct fp24_8 div)
+ {
+ 	struct rp1_pio_sm_set_clkdiv_args args = { .sm = sm };
+ 
+-	if (!pio_calculate_clkdiv_from_float(div, &args.div_int, &args.div_frac))
++	if (!pio_calculate_clkdiv_from_fp24_8(div, &args.div_int, &args.div_frac))
+ 		return -EINVAL;
+ 	return rp1_pio_sm_set_clkdiv(client, &args);
+ }
+@@ -745,12 +758,12 @@ static inline void sm_config_set_clkdiv_
+ 		(((uint)div_int) << PROC_PIO_SM0_CLKDIV_INT_LSB);
+ }
+ 
+-static inline void sm_config_set_clkdiv(pio_sm_config *c, float div)
++static inline void sm_config_set_clkdiv(pio_sm_config *c, struct fp24_8 div)
+ {
+ 	uint16_t div_int;
+ 	uint8_t div_frac;
+ 
+-	pio_calculate_clkdiv_from_float(div, &div_int, &div_frac);
++	pio_calculate_clkdiv_from_fp24_8(div, &div_int, &div_frac);
+ 	sm_config_set_clkdiv_int_frac(c, div_int, div_frac);
+ }
+ 

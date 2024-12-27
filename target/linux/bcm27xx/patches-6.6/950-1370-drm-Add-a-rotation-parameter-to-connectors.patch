@@ -1,0 +1,164 @@
+From 8fec3ff870499256f2c18fe7983f6ed3fea4faaf Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 22 Oct 2024 17:22:40 +0100
+Subject: [PATCH] drm: Add a rotation parameter to connectors.
+
+Some connectors, particularly writeback, can implement flip
+or transpose operations as writing back to memory.
+
+Add a connector rotation property to control this.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/drm_atomic_uapi.c |  4 +++
+ drivers/gpu/drm/drm_blend.c       | 50 ++++++++++++++++++++++++-------
+ include/drm/drm_blend.h           |  5 ++++
+ include/drm/drm_connector.h       | 11 +++++++
+ 4 files changed, 60 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/drm_atomic_uapi.c
++++ b/drivers/gpu/drm/drm_atomic_uapi.c
+@@ -811,6 +811,8 @@ static int drm_atomic_connector_set_prop
+ 		state->max_requested_bpc = val;
+ 	} else if (property == connector->privacy_screen_sw_state_property) {
+ 		state->privacy_screen_sw_state = val;
++	} else if (property == connector->rotation_property) {
++		state->rotation = val;
+ 	} else if (connector->funcs->atomic_set_property) {
+ 		return connector->funcs->atomic_set_property(connector,
+ 				state, property, val);
+@@ -900,6 +902,8 @@ drm_atomic_connector_get_property(struct
+ 		*val = state->max_requested_bpc;
+ 	} else if (property == connector->privacy_screen_sw_state_property) {
+ 		*val = state->privacy_screen_sw_state;
++	} else if (property == connector->rotation_property) {
++		*val = state->rotation;
+ 	} else if (connector->funcs->atomic_get_property) {
+ 		return connector->funcs->atomic_get_property(connector,
+ 				state, property, val);
+--- a/drivers/gpu/drm/drm_blend.c
++++ b/drivers/gpu/drm/drm_blend.c
+@@ -235,6 +235,16 @@ int drm_plane_create_alpha_property(stru
+ }
+ EXPORT_SYMBOL(drm_plane_create_alpha_property);
+ 
++static const struct drm_prop_enum_list drm_rotate_props[] = {
++	{ __builtin_ffs(DRM_MODE_ROTATE_0) - 1,   "rotate-0" },
++	{ __builtin_ffs(DRM_MODE_ROTATE_90) - 1,  "rotate-90" },
++	{ __builtin_ffs(DRM_MODE_ROTATE_180) - 1, "rotate-180" },
++	{ __builtin_ffs(DRM_MODE_ROTATE_270) - 1, "rotate-270" },
++	{ __builtin_ffs(DRM_MODE_REFLECT_X) - 1,  "reflect-x" },
++	{ __builtin_ffs(DRM_MODE_REFLECT_Y) - 1,  "reflect-y" },
++	{ __builtin_ffs(DRM_MODE_TRANSPOSE) - 1,  "transpose" },
++};
++
+ /**
+  * drm_plane_create_rotation_property - create a new rotation property
+  * @plane: drm plane
+@@ -275,15 +285,6 @@ int drm_plane_create_rotation_property(s
+ 				       unsigned int rotation,
+ 				       unsigned int supported_rotations)
+ {
+-	static const struct drm_prop_enum_list props[] = {
+-		{ __builtin_ffs(DRM_MODE_ROTATE_0) - 1,   "rotate-0" },
+-		{ __builtin_ffs(DRM_MODE_ROTATE_90) - 1,  "rotate-90" },
+-		{ __builtin_ffs(DRM_MODE_ROTATE_180) - 1, "rotate-180" },
+-		{ __builtin_ffs(DRM_MODE_ROTATE_270) - 1, "rotate-270" },
+-		{ __builtin_ffs(DRM_MODE_REFLECT_X) - 1,  "reflect-x" },
+-		{ __builtin_ffs(DRM_MODE_REFLECT_Y) - 1,  "reflect-y" },
+-		{ __builtin_ffs(DRM_MODE_TRANSPOSE) - 1,  "transpose" },
+-	};
+ 	struct drm_property *prop;
+ 
+ 	WARN_ON((supported_rotations & DRM_MODE_ROTATE_MASK) == 0);
+@@ -291,7 +292,8 @@ int drm_plane_create_rotation_property(s
+ 	WARN_ON(rotation & ~supported_rotations);
+ 
+ 	prop = drm_property_create_bitmask(plane->dev, 0, "rotation",
+-					   props, ARRAY_SIZE(props),
++					   drm_rotate_props,
++					   ARRAY_SIZE(drm_rotate_props),
+ 					   supported_rotations);
+ 	if (!prop)
+ 		return -ENOMEM;
+@@ -307,6 +309,34 @@ int drm_plane_create_rotation_property(s
+ }
+ EXPORT_SYMBOL(drm_plane_create_rotation_property);
+ 
++int drm_connector_create_rotation_property(struct drm_connector *conn,
++					   unsigned int rotation,
++					   unsigned int supported_rotations)
++{
++	struct drm_property *prop;
++
++	WARN_ON((supported_rotations & DRM_MODE_ROTATE_MASK) == 0);
++	WARN_ON(!is_power_of_2(rotation & DRM_MODE_ROTATE_MASK));
++	WARN_ON(rotation & ~supported_rotations);
++
++	prop = drm_property_create_bitmask(conn->dev, 0, "rotation",
++					   drm_rotate_props,
++					   ARRAY_SIZE(drm_rotate_props),
++					   supported_rotations);
++	if (!prop)
++		return -ENOMEM;
++
++	drm_object_attach_property(&conn->base, prop, rotation);
++
++	if (conn->state)
++		conn->state->rotation = rotation;
++
++	conn->rotation_property = prop;
++
++	return 0;
++}
++EXPORT_SYMBOL(drm_connector_create_rotation_property);
++
+ /**
+  * drm_rotation_simplify() - Try to simplify the rotation
+  * @rotation: Rotation to be simplified
+--- a/include/drm/drm_blend.h
++++ b/include/drm/drm_blend.h
+@@ -34,6 +34,7 @@
+ struct drm_device;
+ struct drm_atomic_state;
+ struct drm_plane;
++struct drm_connector;
+ 
+ static inline bool drm_rotation_90_or_270(unsigned int rotation)
+ {
+@@ -58,4 +59,8 @@ int drm_atomic_normalize_zpos(struct drm
+ 			      struct drm_atomic_state *state);
+ int drm_plane_create_blend_mode_property(struct drm_plane *plane,
+ 					 unsigned int supported_modes);
++
++int drm_connector_create_rotation_property(struct drm_connector *conn,
++					   unsigned int rotation,
++					   unsigned int supported_rotations);
+ #endif
+--- a/include/drm/drm_connector.h
++++ b/include/drm/drm_connector.h
+@@ -1029,6 +1029,11 @@ struct drm_connector_state {
+ 	 * DRM blob property for HDR output metadata
+ 	 */
+ 	struct drm_property_blob *hdr_output_metadata;
++
++	/**
++	 * @rotation: Connector property to rotate the maximum output image.
++	 */
++	u32 rotation;
+ };
+ 
+ /**
+@@ -1696,6 +1701,12 @@ struct drm_connector {
+ 	 */
+ 	struct drm_property *privacy_screen_hw_state_property;
+ 
++	/**
++	 * @rotation_property: Optional DRM property controlling rotation of the
++	 * output.
++	 */
++	struct drm_property *rotation_property;
++
+ #define DRM_CONNECTOR_POLL_HPD (1 << 0)
+ #define DRM_CONNECTOR_POLL_CONNECT (1 << 1)
+ #define DRM_CONNECTOR_POLL_DISCONNECT (1 << 2)

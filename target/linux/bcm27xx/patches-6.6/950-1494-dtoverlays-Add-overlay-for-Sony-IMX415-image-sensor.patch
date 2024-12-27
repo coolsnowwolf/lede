@@ -1,0 +1,214 @@
+From 384e58f63a3a328f7f656052b6357f3408aac6c3 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 31 Dec 2024 20:33:46 +0000
+Subject: [PATCH] dtoverlays: Add overlay for Sony IMX415 image sensor
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |  31 +++++
+ arch/arm/boot/dts/overlays/imx415-overlay.dts | 116 ++++++++++++++++++
+ arch/arm/boot/dts/overlays/imx415.dtsi        |  27 ++++
+ 4 files changed, 175 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/imx415-overlay.dts
+ create mode 100644 arch/arm/boot/dts/overlays/imx415.dtsi
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -135,6 +135,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	imx296.dtbo \
+ 	imx327.dtbo \
+ 	imx378.dtbo \
++	imx415.dtbo \
+ 	imx462.dtbo \
+ 	imx477.dtbo \
+ 	imx500.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2859,6 +2859,37 @@ Params: rotation                Mounting
+                                 450000000 (default), 453000000, 456000000.
+ 
+ 
++Name:   imx415
++Info:   Sony IMX415 camera module.
++        Uses Unicam 1, which is the standard camera connector on most Pi
++        variants. By default this uses 4 CSI2 data lanes, so requires a
++        Compute Module or Pi5.
++Load:   dtoverlay=imx415,<param>
++Params: addr                    Set I2C address of sensor. Valid values are
++                                0x10, 0x1a, 0x36 and 0x37. Default is 0x37.
++        4lane                   Enable 4 CSI2 data lanes.
++        clock-frequency         Sets the clock frequency to match that used on
++                                the board.
++                                Valid values are 24, 27, 37.125, 72, or
++                                74.25MHz.
++                                The default is 24MHz.
++                                Note that the link frequencies permitted vary
++                                based on the oscillator used.
++        link-frequency          Confgures the link frequency to be used. Note
++                                that the permitted values vary based on
++                                clock-frequency and number of lanes.
++                                The default is 360MHz for 720Mbit/s.
++        orientation             Sensor orientation (0 = front, 1 = rear,
++                                2 = external, default external)
++        rotation                Mounting rotation of the camera sensor (0 or
++                                180, default 0)
++        media-controller        Configure use of Media Controller API for
++                                configuring the sensor (default on)
++        cam0                    Adopt the default configuration for CAM0 on a
++                                Compute Module (CSI0, i2c_vc, and cam0_reg).
++        vcm                     Enable ad5398 VCM associated with the sensor.
++
++
+ Name:   imx462
+ Info:   Sony IMX462 camera module.
+         Uses Unicam 1, which is the standard camera connector on most Pi
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx415-overlay.dts
+@@ -0,0 +1,116 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Definitions for IMX415 camera module on VC I2C bus
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++/{
++	compatible = "brcm,bcm2835";
++
++	fragment@0 {
++		target = <&i2c0if>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	clk_frag: fragment@1 {
++		target = <&cam1_clk>;
++		cam_clk: __overlay__ {
++			status = "okay";
++			clock-frequency = <24000000>;
++		};
++	};
++
++	fragment@2 {
++		target = <&i2c0mux>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	reg_frag: fragment@3 {
++		target = <&cam1_reg>;
++		cam_reg: __overlay__ {
++			startup-delay-us = <100000>;
++		};
++	};
++
++	i2c_frag: fragment@100 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++
++			#include "imx415.dtsi"
++
++			vcm: ad5398@c {
++				compatible = "adi,ad5398";
++				reg = <0x0c>;
++				status = "disabled";
++				VANA-supply = <&cam1_reg>;
++			};
++		};
++	};
++
++	csi_frag: fragment@101 {
++		target = <&csi1>;
++		csi: __overlay__ {
++			status = "okay";
++			brcm,media-controller;
++
++			port {
++				csi_ep: endpoint {
++					remote-endpoint = <&cam_endpoint>;
++					clock-lanes = <0>;
++					data-lanes = <1 2>;
++					clock-noncontinuous;
++				};
++			};
++		};
++	};
++
++	fragment@201 {
++		target = <&cam_endpoint>;
++		__dormant__ {
++			data-lanes = <1 2 3 4>;
++		};
++	};
++
++	fragment@202 {
++		target = <&csi_ep>;
++		__dormant__ {
++			data-lanes = <1 2 3 4>;
++		};
++	};
++
++
++	__overrides__ {
++		addr = <&cam_node>, "reg:0";
++		rotation = <&cam_node>,"rotation:0";
++		orientation = <&cam_node>,"orientation:0";
++		media-controller = <&csi>,"brcm,media-controller?";
++		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
++		       <&csi_frag>, "target:0=",<&csi0>,
++		       <&reg_frag>, "target:0=",<&cam0_reg>,
++		       <&clk_frag>, "target:0=",<&cam0_clk>,
++		       <&cam_node>, "clocks:0=",<&cam0_clk>,
++		       <&cam_node>, "avdd-supply:0=",<&cam0_reg>,
++		       <&vcm>, "VANA-supply:0=", <&cam0_reg>;
++		vcm = <&vcm>, "status=okay",
++		      <&cam_node>,"lens-focus:0=", <&vcm>;
++		clock-frequency = <&cam_clk>, "clock-frequency:0";
++		link-frequency = <&cam_endpoint>,"link-frequencies#0";
++		4lane = <0>, "+201+202";
++	};
++};
++
++&cam_node {
++	status = "okay";
++};
++
++&cam_endpoint {
++	remote-endpoint = <&csi_ep>;
++};
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx415.dtsi
+@@ -0,0 +1,27 @@
++// Fragment that configures an imx415
++
++cam_node: imx415@37 {
++	compatible = "sony,imx415";
++	reg = <0x37>;
++	status = "disabled";
++
++	clocks = <&cam1_clk>;
++	clock-names = "inck";
++
++	avdd-supply = <&cam1_reg>;	/* 2.8v */
++	dvdd-supply = <&cam_dummy_reg>;	/* 1.8v */
++	ovdd-supply = <&cam_dummy_reg>;	/* 1.2v */
++
++	rotation = <180>;
++	orientation = <2>;
++
++	port {
++		cam_endpoint: endpoint {
++			clock-lanes = <0>;
++			data-lanes = <1 2>;
++			//clock-noncontinuous;
++			link-frequencies =
++				/bits/ 64 <360000000>;
++		};
++	};
++};

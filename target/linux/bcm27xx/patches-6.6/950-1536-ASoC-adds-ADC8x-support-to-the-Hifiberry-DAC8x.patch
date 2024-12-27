@@ -1,0 +1,75 @@
+From d664f45f77423b03e5a435e480822075c03331bd Mon Sep 17 00:00:00 2001
+From: j-schambacher <joerg@hifiberry.com>
+Date: Mon, 10 Feb 2025 15:08:48 +0100
+Subject: [PATCH] ASoC: adds ADC8x support to the Hifiberry DAC8x
+
+The driver probes for the ADC8x which can be stacked on top
+of the DAC8x. It enables a symmetric 8 channel capture using
+the dummy-dai.
+
+Signed-off-by: j-schambacher <joerg@hifiberry.com>
+---
+ sound/soc/bcm/rpi-simple-soundcard.c | 38 +++++++++++++++++++++++++---
+ 1 file changed, 34 insertions(+), 4 deletions(-)
+
+--- a/sound/soc/bcm/rpi-simple-soundcard.c
++++ b/sound/soc/bcm/rpi-simple-soundcard.c
+@@ -354,16 +354,46 @@ static struct snd_rpi_simple_drvdata drv
+ 	.dai       = snd_hifiberry_dac_dai,
+ };
+ 
++SND_SOC_DAILINK_DEFS(hifiberry_dac8x,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
+ static int hifiberry_dac8x_init(struct snd_soc_pcm_runtime *rtd)
+ {
+ 	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
++	struct snd_soc_card *card = rtd->card;
++	struct gpio_desc *gpio_desc;
++	bool has_adc;
+ 
+-	/* override the defaults to reflect 4 x PCM5102A on the card
+-	 * and limit the sample rate to 192ksps
+-	 */
++	/* Configure the codec for 8 channel playback */
+ 	codec_dai->driver->playback.channels_max = 8;
+ 	codec_dai->driver->playback.rates = SNDRV_PCM_RATE_8000_192000;
+ 
++	/* Activate capture based on ADC8x detection */
++	gpio_desc = devm_gpiod_get(card->dev, "hasadc", GPIOD_IN);
++	if (IS_ERR(gpio_desc)) {
++		dev_err(card->dev, "Failed to get GPIO: %ld\n", PTR_ERR(gpio_desc));
++		return PTR_ERR(gpio_desc);
++	}
++
++	has_adc = gpiod_get_value(gpio_desc);
++
++	if (has_adc) {
++		struct snd_soc_dai_link *dai = rtd->dai_link;
++
++		dev_info(card->dev, "ADC8x detected: capture enabled\n");
++		codec_dai->driver->symmetric_rate = 1;
++		codec_dai->driver->symmetric_channels = 1;
++		codec_dai->driver->symmetric_sample_bits = 1;
++		codec_dai->driver->capture.rates = SNDRV_PCM_RATE_8000_192000;
++		dai->name = "HiFiBerry DAC8xADC8x";
++		dai->stream_name = "HiFiBerry DAC8xADC8x HiFi";
++	} else {
++		dev_info(card->dev, "no ADC8x detected\n");
++		rtd->dai_link->playback_only = 1;  // Disable capture
++	}
++
+ 	return 0;
+ }
+ 
+@@ -375,7 +405,7 @@ static struct snd_soc_dai_link snd_hifib
+ 					SND_SOC_DAIFMT_NB_NF |
+ 					SND_SOC_DAIFMT_CBS_CFS,
+ 		.init           = hifiberry_dac8x_init,
+-		SND_SOC_DAILINK_REG(hifiberry_dac),
++		SND_SOC_DAILINK_REG(hifiberry_dac8x),
+ 	},
+ };
+ 

@@ -1,0 +1,59 @@
+From ca621585c573cae54dc1235d90822e8bcef2f73d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 11 Sep 2024 15:23:33 +0100
+Subject: [PATCH] drm/vc4: Use the TPZ scaling filter for 1x1 source images
+
+The documentation says that the TPZ filter can not upscale,
+and requesting a scaling factor > 1:1 will output the original
+image in the top left, and repeat the right/bottom most pixels
+thereafter.
+That fits perfectly with upscaling a 1x1 image which is done
+a fair amount by some compositors to give solid colour, and it
+saves a large amount of LBM (TPZ is based on src size, whilst
+PPF is based on dest size).
+
+Select TPZ filter for images with source rectangle <=1.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -265,7 +265,11 @@ static enum vc4_scaling_mode vc4_get_sca
+ {
+ 	if (dst == src >> 16)
+ 		return VC4_SCALING_NONE;
+-	if (3 * dst >= 2 * (src >> 16))
++
++	if (src <= (1 << 16))
++		/* Source rectangle <= 1 pixel can use TPZ for resize/upscale */
++		return VC4_SCALING_TPZ;
++	else if (3 * dst >= 2 * (src >> 16))
+ 		return VC4_SCALING_PPF;
+ 	else
+ 		return VC4_SCALING_TPZ;
+@@ -560,12 +564,17 @@ static void vc4_write_tpz(struct vc4_pla
+ 
+ 	WARN_ON_ONCE(vc4->gen > VC4_GEN_6);
+ 
+-	scale = src / dst;
++	if ((dst << 16) < src) {
++		scale = src / dst;
+ 
+-	/* The specs note that while the reciprocal would be defined
+-	 * as (1<<32)/scale, ~0 is close enough.
+-	 */
+-	recip = ~0 / scale;
++		/* The specs note that while the reciprocal would be defined
++		 * as (1<<32)/scale, ~0 is close enough.
++		 */
++		recip = ~0 / scale;
++	} else {
++		scale = (1 << 16) + 1;
++		recip = (1 << 16) - 1;
++	}
+ 
+ 	vc4_dlist_write(vc4_state,
+ 			/*

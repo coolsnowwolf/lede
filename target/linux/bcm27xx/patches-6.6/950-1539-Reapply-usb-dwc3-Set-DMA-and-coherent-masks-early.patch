@@ -1,0 +1,337 @@
+From 1b1e75ae7d69816609a95ff2fb92729a2ff04d8e Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Mon, 10 Feb 2025 13:26:33 +0000
+Subject: [PATCH] Reapply "usb: dwc3: Set DMA and coherent masks early"
+
+This reverts commit 09dfdf6129532e19b2cfd4992d1d09e7119ccd48.
+---
+ drivers/phy/broadcom/Kconfig                  |  2 +-
+ .../phy/broadcom/phy-brcm-usb-init-synopsys.c | 59 +++++++++++++++++++
+ drivers/phy/broadcom/phy-brcm-usb-init.h      |  2 +
+ drivers/phy/broadcom/phy-brcm-usb.c           | 18 +++++-
+ drivers/usb/dwc3/core.c                       | 53 +++++++++++++++++
+ drivers/usb/dwc3/core.h                       |  5 ++
+ drivers/usb/dwc3/host.c                       |  9 ++-
+ 7 files changed, 145 insertions(+), 3 deletions(-)
+
+--- a/drivers/phy/broadcom/Kconfig
++++ b/drivers/phy/broadcom/Kconfig
+@@ -93,7 +93,7 @@ config PHY_BRCM_SATA
+ 
+ config PHY_BRCM_USB
+ 	tristate "Broadcom STB USB PHY driver"
+-	depends on ARCH_BCMBCA || ARCH_BRCMSTB || COMPILE_TEST
++	depends on ARCH_BCMBCA || ARCH_BRCMSTB || ARCH_BCM2835 || COMPILE_TEST
+ 	depends on OF
+ 	select GENERIC_PHY
+ 	select SOC_BRCMSTB if ARCH_BRCMSTB
+--- a/drivers/phy/broadcom/phy-brcm-usb-init-synopsys.c
++++ b/drivers/phy/broadcom/phy-brcm-usb-init-synopsys.c
+@@ -341,6 +341,36 @@ static void usb_init_common_7216(struct
+ 	usb_init_common(params);
+ }
+ 
++static void usb_init_common_2712(struct brcm_usb_init_params *params)
++{
++	void __iomem *ctrl = params->regs[BRCM_REGS_CTRL];
++	void __iomem *bdc_ec = params->regs[BRCM_REGS_BDC_EC];
++	u32 reg;
++
++	if (params->syscon_piarbctl)
++		syscon_piarbctl_init(params->syscon_piarbctl);
++
++	USB_CTRL_UNSET(ctrl, USB_PM, USB_PWRDN);
++
++	usb_wake_enable_7211b0(params, false);
++
++	usb_init_common(params);
++
++	/*
++	 * The BDC controller will get occasional failures with
++	 * the default "Read Transaction Size" of 6 (1024 bytes).
++	 * Set it to 4 (256 bytes).
++	 */
++	if ((params->supported_port_modes != USB_CTLR_MODE_HOST) && bdc_ec) {
++		reg = brcm_usb_readl(bdc_ec + BDC_EC_AXIRDA);
++		reg &= ~BDC_EC_AXIRDA_RTS_MASK;
++		reg |= (0x4 << BDC_EC_AXIRDA_RTS_SHIFT);
++		brcm_usb_writel(reg, bdc_ec + BDC_EC_AXIRDA);
++	}
++
++	usb2_eye_fix_7211b0(params);
++}
++
+ static void usb_init_xhci(struct brcm_usb_init_params *params)
+ {
+ 	pr_debug("%s\n", __func__);
+@@ -386,6 +416,18 @@ static void usb_uninit_common_7211b0(str
+ 
+ }
+ 
++static void usb_uninit_common_2712(struct brcm_usb_init_params *params)
++{
++	void __iomem *ctrl = params->regs[BRCM_REGS_CTRL];
++
++	if (params->wake_enabled) {
++		USB_CTRL_SET(ctrl, TEST_PORT_CTL, TPOUT_SEL_PME_GEN);
++		usb_wake_enable_7211b0(params, true);
++	} else {
++		USB_CTRL_SET(ctrl, USB_PM, USB_PWRDN);
++	}
++}
++
+ static void usb_uninit_xhci(struct brcm_usb_init_params *params)
+ {
+ 
+@@ -440,6 +482,16 @@ static const struct brcm_usb_init_ops bc
+ 	.set_dual_select = usb_set_dual_select,
+ };
+ 
++static const struct brcm_usb_init_ops bcm2712_ops = {
++	.init_ipp = usb_init_ipp,
++	.init_common = usb_init_common_2712,
++	.init_xhci = usb_init_xhci,
++	.uninit_common = usb_uninit_common_2712,
++	.uninit_xhci = usb_uninit_xhci,
++	.get_dual_select = usb_get_dual_select,
++	.set_dual_select = usb_set_dual_select,
++};
++
+ void brcm_usb_dvr_init_7216(struct brcm_usb_init_params *params)
+ {
+ 
+@@ -457,3 +509,10 @@ void brcm_usb_dvr_init_7211b0(struct brc
+ 	params->family_name = "7211";
+ 	params->ops = &bcm7211b0_ops;
+ }
++
++void brcm_usb_dvr_init_2712(struct brcm_usb_init_params *params)
++{
++	params->family_name = "2712";
++	params->ops = &bcm2712_ops;
++	params->suspend_with_clocks = true;
++}
+--- a/drivers/phy/broadcom/phy-brcm-usb-init.h
++++ b/drivers/phy/broadcom/phy-brcm-usb-init.h
+@@ -70,12 +70,14 @@ struct  brcm_usb_init_params {
+ 	const struct brcm_usb_init_ops *ops;
+ 	struct regmap *syscon_piarbctl;
+ 	bool wake_enabled;
++	bool suspend_with_clocks;
+ };
+ 
+ void brcm_usb_dvr_init_4908(struct brcm_usb_init_params *params);
+ void brcm_usb_dvr_init_7445(struct brcm_usb_init_params *params);
+ void brcm_usb_dvr_init_7216(struct brcm_usb_init_params *params);
+ void brcm_usb_dvr_init_7211b0(struct brcm_usb_init_params *params);
++void brcm_usb_dvr_init_2712(struct brcm_usb_init_params *params);
+ 
+ static inline u32 brcm_usb_readl(void __iomem *addr)
+ {
+--- a/drivers/phy/broadcom/phy-brcm-usb.c
++++ b/drivers/phy/broadcom/phy-brcm-usb.c
+@@ -75,7 +75,7 @@ struct brcm_usb_phy_data {
+ };
+ 
+ static s8 *node_reg_names[BRCM_REGS_MAX] = {
+-	"crtl", "xhci_ec", "xhci_gbl", "usb_phy", "usb_mdio", "bdc_ec"
++	"ctrl", "xhci_ec", "xhci_gbl", "usb_phy", "usb_mdio", "bdc_ec"
+ };
+ 
+ static int brcm_pm_notifier(struct notifier_block *notifier,
+@@ -315,6 +315,18 @@ static const struct match_chip_info chip
+ 	.optional_reg = BRCM_REGS_BDC_EC,
+ };
+ 
++static const struct match_chip_info chip_info_2712 = {
++	.init_func = &brcm_usb_dvr_init_2712,
++	.required_regs = {
++		BRCM_REGS_CTRL,
++		BRCM_REGS_XHCI_EC,
++		BRCM_REGS_XHCI_GBL,
++		BRCM_REGS_USB_MDIO,
++		-1,
++	},
++	.optional_reg = BRCM_REGS_BDC_EC,
++};
++
+ static const struct match_chip_info chip_info_7445 = {
+ 	.init_func = &brcm_usb_dvr_init_7445,
+ 	.required_regs = {
+@@ -338,6 +350,10 @@ static const struct of_device_id brcm_us
+ 		.data = &chip_info_7211b0,
+ 	},
+ 	{
++		.compatible = "brcm,bcm2712-usb-phy",
++		.data = &chip_info_2712,
++	},
++	{
+ 		.compatible = "brcm,brcmstb-usb-phy",
+ 		.data = &chip_info_7445,
+ 	},
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -1223,6 +1223,24 @@ static void dwc3_config_threshold(struct
+ 	}
+ }
+ 
++static void dwc3_set_axi_pipe_limit(struct dwc3 *dwc)
++{
++	struct device *dev = dwc->dev;
++	u32 cfg;
++
++	if (!dwc->axi_pipe_limit)
++		return;
++	if (dwc->axi_pipe_limit > 16) {
++		dev_err(dev, "Invalid axi_pipe_limit property\n");
++		return;
++	}
++	cfg = dwc3_readl(dwc->regs, DWC3_GSBUSCFG1);
++	cfg &= ~DWC3_GSBUSCFG1_PIPETRANSLIMIT(15);
++	cfg |= DWC3_GSBUSCFG1_PIPETRANSLIMIT(dwc->axi_pipe_limit - 1);
++
++	dwc3_writel(dwc->regs, DWC3_GSBUSCFG1, cfg);
++}
++
+ /**
+  * dwc3_core_init - Low-level initialization of DWC3 Core
+  * @dwc: Pointer to our controller context structure
+@@ -1288,6 +1306,8 @@ static int dwc3_core_init(struct dwc3 *d
+ 
+ 	dwc3_set_incr_burst_type(dwc);
+ 
++	dwc3_set_axi_pipe_limit(dwc);
++
+ 	ret = dwc3_phy_power_on(dwc);
+ 	if (ret)
+ 		goto err_exit_phy;
+@@ -1386,6 +1406,24 @@ static int dwc3_core_init(struct dwc3 *d
+ 
+ 	dwc3_config_threshold(dwc);
+ 
++	if (DWC3_IP_IS(DWC3) && dwc->dr_mode == USB_DR_MODE_HOST) {
++		u8 tx_thr_num = dwc->tx_thr_num_pkt_prd;
++		u8 tx_maxburst = dwc->tx_max_burst_prd;
++
++		if (tx_thr_num && tx_maxburst) {
++			reg = dwc3_readl(dwc->regs, DWC3_GTXTHRCFG);
++			reg |= DWC3_GTXTHRCFG_PKTCNTSEL;
++
++			reg &= ~DWC3_GTXTHRCFG_TXPKTCNT(~0);
++			reg |= DWC3_GTXTHRCFG_TXPKTCNT(tx_thr_num);
++
++			reg &= ~DWC3_GTXTHRCFG_MAXTXBURSTSIZE(~0);
++			reg |= DWC3_GTXTHRCFG_MAXTXBURSTSIZE(tx_maxburst);
++
++			dwc3_writel(dwc->regs, DWC3_GTXTHRCFG, reg);
++		}
++	}
++
+ 	return 0;
+ 
+ err_power_off_phy:
+@@ -1529,6 +1567,7 @@ static void dwc3_get_properties(struct d
+ 	u8			tx_thr_num_pkt_prd = 0;
+ 	u8			tx_max_burst_prd = 0;
+ 	u8			tx_fifo_resize_max_num;
++	u8			axi_pipe_limit;
+ 
+ 	/* default to highest possible threshold */
+ 	lpm_nyet_threshold = 0xf;
+@@ -1549,6 +1588,9 @@ static void dwc3_get_properties(struct d
+ 	 */
+ 	tx_fifo_resize_max_num = 6;
+ 
++	/* Default to 0 (don't override hardware defaults) */
++	axi_pipe_limit = 0;
++
+ 	dwc->maximum_speed = usb_get_maximum_speed(dev);
+ 	dwc->max_ssp_rate = usb_get_maximum_ssp_rate(dev);
+ 	dwc->dr_mode = usb_get_dr_mode(dev);
+@@ -1669,6 +1711,9 @@ static void dwc3_get_properties(struct d
+ 	dwc->dis_split_quirk = device_property_read_bool(dev,
+ 				"snps,dis-split-quirk");
+ 
++	device_property_read_u8(dev, "snps,axi-pipe-limit",
++				   &axi_pipe_limit);
++
+ 	dwc->lpm_nyet_threshold = lpm_nyet_threshold;
+ 	dwc->tx_de_emphasis = tx_de_emphasis;
+ 
+@@ -1686,6 +1731,8 @@ static void dwc3_get_properties(struct d
+ 	dwc->tx_thr_num_pkt_prd = tx_thr_num_pkt_prd;
+ 	dwc->tx_max_burst_prd = tx_max_burst_prd;
+ 
++	dwc->axi_pipe_limit = axi_pipe_limit;
++
+ 	dwc->tx_fifo_resize_max_num = tx_fifo_resize_max_num;
+ }
+ 
+@@ -1978,6 +2025,12 @@ static int dwc3_probe(struct platform_de
+ 	if (IS_ERR(dwc->usb_psy))
+ 		return dev_err_probe(dev, PTR_ERR(dwc->usb_psy), "couldn't get usb power supply\n");
+ 
++	if (!dwc->sysdev_is_parent) {
++		ret = dma_set_mask_and_coherent(dwc->sysdev, DMA_BIT_MASK(64));
++		if (ret)
++			return ret;
++	}
++
+ 	dwc->reset = devm_reset_control_array_get_optional_shared(dev);
+ 	if (IS_ERR(dwc->reset)) {
+ 		ret = PTR_ERR(dwc->reset);
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -185,6 +185,9 @@
+ #define DWC3_GSBUSCFG0_INCRBRSTENA	(1 << 0) /* undefined length enable */
+ #define DWC3_GSBUSCFG0_INCRBRST_MASK	0xff
+ 
++/* Global SoC Bus Configuration Register 1 */
++#define DWC3_GSBUSCFG1_PIPETRANSLIMIT(n)	(((n) & 0xf) << 8)
++
+ /* Global Debug LSP MUX Select */
+ #define DWC3_GDBGLSPMUX_ENDBC		BIT(15)	/* Host only */
+ #define DWC3_GDBGLSPMUX_HOSTSELECT(n)	((n) & 0x3fff)
+@@ -1070,6 +1073,7 @@ struct dwc3_scratchpad_array {
+  * @tx_max_burst_prd: max periodic ESS transmit burst size
+  * @tx_fifo_resize_max_num: max number of fifos allocated during txfifo resize
+  * @clear_stall_protocol: endpoint number that requires a delayed status phase
++ * @axi_max_pipe: set to override the maximum number of pipelined AXI transfers
+  * @hsphy_interface: "utmi" or "ulpi"
+  * @connected: true when we're connected to a host, false otherwise
+  * @softconnect: true when gadget connect is called, false when disconnect runs
+@@ -1311,6 +1315,7 @@ struct dwc3 {
+ 	u8			tx_max_burst_prd;
+ 	u8			tx_fifo_resize_max_num;
+ 	u8			clear_stall_protocol;
++	u8			axi_pipe_limit;
+ 
+ 	const char		*hsphy_interface;
+ 
+--- a/drivers/usb/dwc3/host.c
++++ b/drivers/usb/dwc3/host.c
+@@ -82,16 +82,23 @@ out:
+ 
+ int dwc3_host_init(struct dwc3 *dwc)
+ {
++	struct platform_device	*pdev = to_platform_device(dwc->dev);
+ 	struct property_entry	props[5];
+ 	struct platform_device	*xhci;
+ 	int			ret, irq;
+ 	int			prop_idx = 0;
++	int			id;
+ 
+ 	irq = dwc3_host_get_irq(dwc);
+ 	if (irq < 0)
+ 		return irq;
+ 
+-	xhci = platform_device_alloc("xhci-hcd", PLATFORM_DEVID_AUTO);
++	id = of_alias_get_id(pdev->dev.of_node, "usb");
++	if (id >= 0)
++		xhci = platform_device_alloc("xhci-hcd", id);
++	else
++		xhci = platform_device_alloc("xhci-hcd", PLATFORM_DEVID_AUTO);
++
+ 	if (!xhci) {
+ 		dev_err(dwc->dev, "couldn't allocate xHCI device\n");
+ 		return -ENOMEM;

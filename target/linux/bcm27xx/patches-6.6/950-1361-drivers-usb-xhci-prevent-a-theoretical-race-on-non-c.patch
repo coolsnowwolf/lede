@@ -1,0 +1,50 @@
+From e9e852af347ae3ccee4e7abb01f9ef91387980f9 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Wed, 6 Nov 2024 11:07:55 +0000
+Subject: [PATCH] drivers: usb: xhci: prevent a theoretical race on
+ non-coherent platforms
+
+For platforms that have xHCI controllers attached over PCIe, and
+non-coherent routes to main memory, a theoretical race exists between
+posting new TRBs to a ring, and writing to the doorbell register.
+
+In a contended system, write traffic from the CPU may be stalled before
+the memory controller, whereas the CPU to Endpoint route is separate
+and not likely to be contended. Similarly, the DMA route from the
+endpoint to main memory may be separate and uncontended.
+
+Therefore the xHCI can receive a doorbell write and find a stale view
+of a transfer ring. In cases where only a single TRB is ping-ponged at
+a time, this can cause the endpoint to not get polled at all.
+
+Adding a readl() before the write forces a round-trip transaction
+across PCIe, definitively serialising the CPU along the PCI
+producer-consumer ordering rules.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/host/xhci-ring.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -507,6 +507,19 @@ void xhci_ring_ep_doorbell(struct xhci_h
+ 
+ 	trace_xhci_ring_ep_doorbell(slot_id, DB_VALUE(ep_index, stream_id));
+ 
++	/*
++	 * For non-coherent systems with PCIe DMA (such as Pi 4, Pi 5) there
++	 * is a theoretical race between the TRB write and barrier, which
++	 * is reported complete as soon as the write leaves the CPU domain,
++	 * the doorbell write, which may be reported as complete by the RC
++	 * at some arbitrary point, and the visibility of new TRBs in system
++	 * RAM by the endpoint DMA engine.
++	 *
++	 * This read before the write positively serialises the CPU state
++	 * by incurring a round-trip across the link.
++	 */
++	readl(db_addr);
++
+ 	writel(DB_VALUE(ep_index, stream_id), db_addr);
+ 	/* flush the write */
+ 	readl(db_addr);

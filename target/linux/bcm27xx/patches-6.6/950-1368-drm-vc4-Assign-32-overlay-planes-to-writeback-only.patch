@@ -1,0 +1,71 @@
+From dd340cb082a020fbd42b794493ffd063dd8e15b4 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 15 Aug 2023 15:44:34 +0100
+Subject: [PATCH] drm/vc4: Assign 32 overlay planes to writeback only
+
+Instead of having 48 generic overlay planes, assign 32 to the
+writeback connector so that there is no ambiguity in wlroots
+when trying to find a plane for composition using the writeback
+connector vs display.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 34 +++++++++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -2517,13 +2517,28 @@ struct drm_plane *vc4_plane_init(struct
+ 	return plane;
+ }
+ 
+-#define VC4_NUM_OVERLAY_PLANES	48
++#define VC4_NUM_OVERLAY_PLANES	16
++#define VC4_NUM_TXP_OVERLAY_PLANES 32
+ 
+ int vc4_plane_create_additional_planes(struct drm_device *drm)
+ {
+ 	struct drm_plane *cursor_plane;
+ 	struct drm_crtc *crtc;
+ 	unsigned int i;
++	struct drm_crtc *txp_crtc;
++	uint32_t non_txp_crtc_mask;
++
++	drm_for_each_crtc(crtc, drm) {
++		struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
++
++		if (vc4_crtc->feeds_txp) {
++			txp_crtc = crtc;
++			break;
++		}
++	}
++
++	non_txp_crtc_mask = GENMASK(drm->mode_config.num_crtc - 1, 0) -
++					drm_crtc_mask(txp_crtc);
+ 
+ 	/* Set up some arbitrary number of planes.  We're not limited
+ 	 * by a set number of physical registers, just the space in
+@@ -2537,7 +2552,22 @@ int vc4_plane_create_additional_planes(s
+ 	for (i = 0; i < VC4_NUM_OVERLAY_PLANES; i++) {
+ 		struct drm_plane *plane =
+ 			vc4_plane_init(drm, DRM_PLANE_TYPE_OVERLAY,
+-				       GENMASK(drm->mode_config.num_crtc - 1, 0));
++				       non_txp_crtc_mask);
++
++		if (IS_ERR(plane))
++			continue;
++
++		/* Create zpos property. Max of all the overlays + 1 primary +
++		 * 1 cursor plane on a crtc.
++		 */
++		drm_plane_create_zpos_property(plane, i + 1, 1,
++					       VC4_NUM_OVERLAY_PLANES + 1);
++	}
++
++	for (i = 0; i < VC4_NUM_TXP_OVERLAY_PLANES; i++) {
++		struct drm_plane *plane =
++			vc4_plane_init(drm, DRM_PLANE_TYPE_OVERLAY,
++				       drm_crtc_mask(txp_crtc));
+ 
+ 		if (IS_ERR(plane))
+ 			continue;

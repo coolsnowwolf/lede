@@ -1,0 +1,1797 @@
+From 2819a61eb000c207589c97eef9d69a237c6cfdf3 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Fri, 8 Nov 2024 09:31:38 +0000
+Subject: [PATCH] misc: rp1-pio: Add an in-kernel API
+
+The header file linux/pio_rp1.h adds a pico-sdk-like interface to the
+RP1 PIO subsystem for other drivers.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-pio.c           | 169 ++++--
+ include/linux/pio_instructions.h | 481 +++++++++++++++++
+ include/linux/pio_rp1.h          | 873 +++++++++++++++++++++++++++++++
+ 3 files changed, 1474 insertions(+), 49 deletions(-)
+ create mode 100644 include/linux/pio_instructions.h
+ create mode 100644 include/linux/pio_rp1.h
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -1,15 +1,17 @@
+ // SPDX-License-Identifier: GPL-2.0
+-// PIO driver for RP1
+-//
+-//  Copyright (C) 2023-2024 Raspberry Pi Ltd.
+-//
+-// Parts of this driver are based on:
+-//  - vcio.c, by Noralf Trønnes
+-//    Copyright (C) 2010 Broadcom
+-//    Copyright (C) 2015 Noralf Trønnes
+-//    Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
+-//  - bcm2835_smi.c & bcm2835_smi_dev.c by Luke Wren
+-//    Copyright (c) 2015 Raspberry Pi (Trading) Ltd.
++/*
++ * PIO driver for RP1
++ *
++ * Copyright (C) 2023-2024 Raspberry Pi Ltd.
++ *
++ * Parts of this driver are based on:
++ *  - vcio.c, by Noralf Trønnes
++ *    Copyright (C) 2010 Broadcom
++ *    Copyright (C) 2015 Noralf Trønnes
++ *    Copyright (C) 2021 Raspberry Pi (Trading) Ltd.
++ *  - bcm2835_smi.c & bcm2835_smi_dev.c by Luke Wren
++ *    Copyright (c) 2015 Raspberry Pi (Trading) Ltd.
++ */
+ 
+ #include <linux/cdev.h>
+ #include <linux/compat.h>
+@@ -97,6 +99,7 @@ struct rp1_pio_client {
+ 	uint32_t claimed_sms;
+ 	uint32_t claimed_instrs;
+ 	uint32_t claimed_dmas;
++	int error;
+ };
+ 
+ static struct rp1_pio_device *g_pio;
+@@ -195,7 +198,7 @@ static int rp1_pio_find_program(struct r
+ 	return -1;
+ }
+ 
+-static int rp1_pio_can_add_program(struct rp1_pio_client *client, void *param)
++int rp1_pio_can_add_program(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_add_program_args *args = param;
+ 	struct rp1_pio_device *pio = client->pio;
+@@ -217,8 +220,9 @@ static int rp1_pio_can_add_program(struc
+ 	return rp1_pio_message(pio, PIO_CAN_ADD_PROGRAM, args,
+ 			       offsetof(struct rp1_pio_add_program_args, instrs));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_can_add_program);
+ 
+-static int rp1_pio_add_program(struct rp1_pio_client *client, void *param)
++int rp1_pio_add_program(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_add_program_args *args = param;
+ 	struct rp1_pio_device *pio = client->pio;
+@@ -254,6 +258,7 @@ static int rp1_pio_add_program(struct rp
+ 	mutex_unlock(&pio->instr_mutex);
+ 	return offset;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_add_program);
+ 
+ static void rp1_pio_remove_instrs(struct rp1_pio_device *pio, uint32_t mask)
+ {
+@@ -277,7 +282,7 @@ static void rp1_pio_remove_instrs(struct
+ 	mutex_unlock(&pio->instr_mutex);
+ }
+ 
+-static int rp1_pio_remove_program(struct rp1_pio_client *client, void *param)
++int rp1_pio_remove_program(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_remove_program_args *args = param;
+ 	uint32_t used_mask;
+@@ -296,8 +301,9 @@ static int rp1_pio_remove_program(struct
+ 	}
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_remove_program);
+ 
+-static int rp1_pio_clear_instr_mem(struct rp1_pio_client *client, void *param)
++int rp1_pio_clear_instr_mem(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_device *pio = client->pio;
+ 
+@@ -309,8 +315,9 @@ static int rp1_pio_clear_instr_mem(struc
+ 	mutex_unlock(&pio->instr_mutex);
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_clear_instr_mem);
+ 
+-static int rp1_pio_sm_claim(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_claim(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_claim_args *args = param;
+ 	struct rp1_pio_device *pio = client->pio;
+@@ -328,8 +335,9 @@ static int rp1_pio_sm_claim(struct rp1_p
+ 	mutex_unlock(&pio->instr_mutex);
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_claim);
+ 
+-static int rp1_pio_sm_unclaim(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_unclaim(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_claim_args *args = param;
+ 	struct rp1_pio_device *pio = client->pio;
+@@ -341,99 +349,113 @@ static int rp1_pio_sm_unclaim(struct rp1
+ 	mutex_unlock(&pio->instr_mutex);
+ 	return 0;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_unclaim);
+ 
+-static int rp1_pio_sm_is_claimed(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_is_claimed(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_claim_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_IS_CLAIMED, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_is_claimed);
+ 
+-static int rp1_pio_sm_init(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_init(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_init_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_INIT, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_init);
+ 
+-static int rp1_pio_sm_set_config(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_config(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_config_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_CONFIG, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_config);
+ 
+-static int rp1_pio_sm_exec(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_exec(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_exec_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_EXEC, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_exec);
+ 
+-static int rp1_pio_sm_clear_fifos(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_clear_fifos(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_clear_fifos_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_CLEAR_FIFOS, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_clear_fifos);
+ 
+-static int rp1_pio_sm_set_clkdiv(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_clkdiv(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_clkdiv_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_CLKDIV, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_clkdiv);
+ 
+-static int rp1_pio_sm_set_pins(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_pins(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_pins_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_PINS, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_pins);
+ 
+-static int rp1_pio_sm_set_pindirs(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_pindirs(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_pindirs_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_PINDIRS, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_pindirs);
+ 
+-static int rp1_pio_sm_set_enabled(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_enabled(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_enabled_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_ENABLED, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_enabled);
+ 
+-static int rp1_pio_sm_restart(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_restart(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_restart_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_RESTART, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_restart);
+ 
+-static int rp1_pio_sm_clkdiv_restart(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_clkdiv_restart(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_restart_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_CLKDIV_RESTART, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_clkdiv_restart);
+ 
+-static int rp1_pio_sm_enable_sync(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_enable_sync(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_enable_sync_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_ENABLE_SYNC, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_enable_sync);
+ 
+-static int rp1_pio_sm_put(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_put(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_put_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_PUT, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_put);
+ 
+-static int rp1_pio_sm_get(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_get(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_get_args *args = param;
+ 	int ret;
+@@ -444,69 +466,79 @@ static int rp1_pio_sm_get(struct rp1_pio
+ 		return offsetof(struct rp1_pio_sm_get_args, data) + ret;
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_get);
+ 
+-static int rp1_pio_sm_set_dmactrl(struct rp1_pio_client *client, void *param)
++int rp1_pio_sm_set_dmactrl(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_pio_sm_set_dmactrl_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, PIO_SM_SET_DMACTRL, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_sm_set_dmactrl);
+ 
+-static int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_init_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_INIT, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_init);
+ 
+-static int rp1_pio_gpio_set_function(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_function(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_function_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_FUNCTION, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_function);
+ 
+-static int rp1_pio_gpio_set_pulls(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_pulls(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_pulls_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_PULLS, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_pulls);
+ 
+-static int rp1_pio_gpio_set_outover(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_outover(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_OUTOVER, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_outover);
+ 
+-static int rp1_pio_gpio_set_inover(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_inover(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_INOVER, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_inover);
+ 
+-static int rp1_pio_gpio_set_oeover(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_oeover(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_OEOVER, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_oeover);
+ 
+-static int rp1_pio_gpio_set_input_enabled(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_input_enabled(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_INPUT_ENABLED, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_input_enabled);
+ 
+-static int rp1_pio_gpio_set_drive_strength(struct rp1_pio_client *client, void *param)
++int rp1_pio_gpio_set_drive_strength(struct rp1_pio_client *client, void *param)
+ {
+ 	struct rp1_gpio_set_args *args = param;
+ 
+ 	return rp1_pio_message(client->pio, GPIO_SET_DRIVE_STRENGTH, args, sizeof(*args));
+ }
++EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_drive_strength);
+ 
+ static void rp1_pio_sm_dma_callback(void *param)
+ {
+@@ -633,7 +665,7 @@ static int rp1_pio_sm_tx_user(struct rp1
+ 	struct device *dev = &pdev->dev;
+ 	int ret = 0;
+ 
+-	// Clean the slate - we're running synchronously
++	/* Clean the slate - we're running synchronously */
+ 	dma->head_idx = 0;
+ 	dma->tail_idx = 0;
+ 
+@@ -686,7 +718,7 @@ static int rp1_pio_sm_tx_user(struct rp1
+ 		bytes -= copy_bytes;
+ 	}
+ 
+-	// Block for completion
++	/* Block for completion */
+ 	while (dma->tail_idx != dma->head_idx) {
+ 		if (down_timeout(&dma->buf_sem, msecs_to_jiffies(1000))) {
+ 			dev_err(dev, "DMA wait timed out\n");
+@@ -830,22 +862,22 @@ struct handler_info {
+ 	HANDLER(WRITE_HW, write_hw),
+ };
+ 
+-static int rp1_pio_open(struct inode *inode, struct file *filp)
++struct rp1_pio_client *pio_open(void)
+ {
+-	struct rp1_pio_device *pio = g_pio;
+ 	struct rp1_pio_client *client;
+ 
+ 	client = kzalloc(sizeof(*client), GFP_KERNEL);
++	if (!client)
++		return ERR_PTR(-ENOMEM);
+ 
+-	client->pio = pio;
+-	filp->private_data = client;
++	client->pio = g_pio;
+ 
+-	return 0;
++	return client;
+ }
++EXPORT_SYMBOL_GPL(pio_open);
+ 
+-static int rp1_pio_release(struct inode *inode, struct file *filp)
++void pio_close(struct rp1_pio_client *client)
+ {
+-	struct rp1_pio_client *client = filp->private_data;
+ 	struct rp1_pio_device *pio = client->pio;
+ 	uint claimed_dmas = client->claimed_dmas;
+ 	int i;
+@@ -885,6 +917,45 @@ static int rp1_pio_release(struct inode
+ 	/* Reinitialise the SM? */
+ 
+ 	kfree(client);
++}
++EXPORT_SYMBOL_GPL(pio_close);
++
++void pio_set_error(struct rp1_pio_client *client, int err)
++{
++	client->error = err;
++}
++EXPORT_SYMBOL_GPL(pio_set_error);
++
++int pio_get_error(const struct rp1_pio_client *client)
++{
++	return client->error;
++}
++EXPORT_SYMBOL_GPL(pio_get_error);
++
++void pio_clear_error(struct rp1_pio_client *client)
++{
++	client->error = 0;
++}
++EXPORT_SYMBOL_GPL(pio_clear_error);
++
++static int rp1_pio_open(struct inode *inode, struct file *filp)
++{
++	struct rp1_pio_client *client;
++
++	client = pio_open();
++	if (IS_ERR(client))
++		return PTR_ERR(client);
++
++	filp->private_data = client;
++
++	return 0;
++}
++
++static int rp1_pio_release(struct inode *inode, struct file *filp)
++{
++	struct rp1_pio_client *client = filp->private_data;
++
++	pio_close(client);
+ 
+ 	return 0;
+ }
+--- /dev/null
++++ b/include/linux/pio_instructions.h
+@@ -0,0 +1,481 @@
++/* SPDX-License-Identifier: BSD-3-Clause */
++/*
++ * Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
++ */
++
++#ifndef _HARDWARE_PIO_INSTRUCTIONS_H
++#define _HARDWARE_PIO_INSTRUCTIONS_H
++
++/** \brief PIO instruction encoding
++ *  \defgroup pio_instructions pio_instructions
++ *  \ingroup hardware_pio
++ *
++ * Functions for generating PIO instruction encodings programmatically. In debug builds
++ *`PARAM_ASSERTIONS_ENABLED_PIO_INSTRUCTIONS` can be set to 1 to enable validation of encoding function
++ * parameters.
++ *
++ * For fuller descriptions of the instructions in question see the "RP2040 Datasheet"
++ */
++
++// PICO_CONFIG: PARAM_ASSERTIONS_ENABLED_PIO_INSTRUCTIONS, Enable/disable assertions in the PIO instructions, type=bool, default=0, group=pio_instructions
++#ifndef PARAM_ASSERTIONS_ENABLED_PIO_INSTRUCTIONS
++#define PARAM_ASSERTIONS_ENABLED_PIO_INSTRUCTIONS 0
++#endif
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum pio_instr_bits {
++    pio_instr_bits_jmp = 0x0000,
++    pio_instr_bits_wait = 0x2000,
++    pio_instr_bits_in = 0x4000,
++    pio_instr_bits_out = 0x6000,
++    pio_instr_bits_push = 0x8000,
++    pio_instr_bits_pull = 0x8080,
++    pio_instr_bits_mov = 0xa000,
++    pio_instr_bits_irq = 0xc000,
++    pio_instr_bits_set = 0xe000,
++};
++
++#ifndef NDEBUG
++#define _PIO_INVALID_IN_SRC    0x08u
++#define _PIO_INVALID_OUT_DEST 0x10u
++#define _PIO_INVALID_SET_DEST 0x20u
++#define _PIO_INVALID_MOV_SRC  0x40u
++#define _PIO_INVALID_MOV_DEST 0x80u
++#else
++#define _PIO_INVALID_IN_SRC    0u
++#define _PIO_INVALID_OUT_DEST 0u
++#define _PIO_INVALID_SET_DEST 0u
++#define _PIO_INVALID_MOV_SRC  0u
++#define _PIO_INVALID_MOV_DEST 0u
++#endif
++
++/*! \brief Enumeration of values to pass for source/destination args for instruction encoding functions
++ *  \ingroup pio_instructions
++ *
++ * \note Not all values are suitable for all functions. Validity is only checked in debug mode when
++ * `PARAM_ASSERTIONS_ENABLED_PIO_INSTRUCTIONS` is 1
++ */
++enum pio_src_dest {
++    pio_pins = 0u,
++    pio_x = 1u,
++    pio_y = 2u,
++    pio_null = 3u | _PIO_INVALID_SET_DEST | _PIO_INVALID_MOV_DEST,
++    pio_pindirs = 4u | _PIO_INVALID_IN_SRC | _PIO_INVALID_MOV_SRC | _PIO_INVALID_MOV_DEST,
++    pio_exec_mov = 4u | _PIO_INVALID_IN_SRC | _PIO_INVALID_OUT_DEST | _PIO_INVALID_SET_DEST | _PIO_INVALID_MOV_SRC,
++    pio_status = 5u | _PIO_INVALID_IN_SRC | _PIO_INVALID_OUT_DEST | _PIO_INVALID_SET_DEST | _PIO_INVALID_MOV_DEST,
++    pio_pc = 5u | _PIO_INVALID_IN_SRC | _PIO_INVALID_SET_DEST | _PIO_INVALID_MOV_SRC,
++    pio_isr = 6u | _PIO_INVALID_SET_DEST,
++    pio_osr = 7u | _PIO_INVALID_OUT_DEST | _PIO_INVALID_SET_DEST,
++    pio_exec_out = 7u | _PIO_INVALID_IN_SRC | _PIO_INVALID_SET_DEST | _PIO_INVALID_MOV_SRC | _PIO_INVALID_MOV_DEST,
++};
++
++static inline uint _pio_major_instr_bits(uint instr) {
++    return instr & 0xe000u;
++}
++
++static inline uint _pio_encode_instr_and_args(enum pio_instr_bits instr_bits, uint arg1, uint arg2) {
++    valid_params_if(PIO_INSTRUCTIONS, arg1 <= 0x7);
++#if PARAM_ASSERTIONS_ENABLED(PIO_INSTRUCTIONS)
++    uint32_t major = _pio_major_instr_bits(instr_bits);
++    if (major == pio_instr_bits_in || major == pio_instr_bits_out) {
++        assert(arg2 && arg2 <= 32);
++    } else {
++        assert(arg2 <= 31);
++    }
++#endif
++    return instr_bits | (arg1 << 5u) | (arg2 & 0x1fu);
++}
++
++static inline uint _pio_encode_instr_and_src_dest(enum pio_instr_bits instr_bits, enum pio_src_dest dest, uint value) {
++    return _pio_encode_instr_and_args(instr_bits, dest & 7u, value);
++}
++
++/*! \brief Encode just the delay slot bits of an instruction
++ *  \ingroup pio_instructions
++ *
++ * \note This function does not return a valid instruction encoding; instead it returns an encoding of the delay
++ * slot suitable for `OR`ing with the result of an encoding function for an actual instruction. Care should be taken when
++ * combining the results of this function with the results of \ref pio_encode_sideset and \ref pio_encode_sideset_opt
++ * as they share the same bits within the instruction encoding.
++ *
++ * \param cycles the number of cycles 0-31 (or less if side set is being used)
++ * \return the delay slot bits to be ORed with an instruction encoding
++ */
++static inline uint pio_encode_delay(uint cycles) {
++    // note that the maximum cycles will be smaller if sideset_bit_count > 0
++    valid_params_if(PIO_INSTRUCTIONS, cycles <= 0x1f);
++    return cycles << 8u;
++}
++
++/*! \brief Encode just the side set bits of an instruction (in non optional side set mode)
++ *  \ingroup pio_instructions
++ *
++ * \note This function does not return a valid instruction encoding; instead it returns an encoding of the side set bits
++ * suitable for `OR`ing with the result of an encoding function for an actual instruction. Care should be taken when
++ * combining the results of this function with the results of \ref pio_encode_delay as they share the same bits
++ * within the instruction encoding.
++ *
++ * \param sideset_bit_count number of side set bits as would be specified via `.sideset` in pioasm
++ * \param value the value to sideset on the pins
++ * \return the side set bits to be ORed with an instruction encoding
++ */
++static inline uint pio_encode_sideset(uint sideset_bit_count, uint value) {
++    valid_params_if(PIO_INSTRUCTIONS, sideset_bit_count >= 1 && sideset_bit_count <= 5);
++    valid_params_if(PIO_INSTRUCTIONS, value <= ((1u << sideset_bit_count) - 1));
++    return value << (13u - sideset_bit_count);
++}
++
++/*! \brief Encode just the side set bits of an instruction (in optional -`opt` side set mode)
++ *  \ingroup pio_instructions
++ *
++ * \note This function does not return a valid instruction encoding; instead it returns an encoding of the side set bits
++ * suitable for `OR`ing with the result of an encoding function for an actual instruction. Care should be taken when
++ * combining the results of this function with the results of \ref pio_encode_delay as they share the same bits
++ * within the instruction encoding.
++ *
++ * \param sideset_bit_count number of side set bits as would be specified via `.sideset <n> opt` in pioasm
++ * \param value the value to sideset on the pins
++ * \return the side set bits to be ORed with an instruction encoding
++ */
++static inline uint pio_encode_sideset_opt(uint sideset_bit_count, uint value) {
++    valid_params_if(PIO_INSTRUCTIONS, sideset_bit_count >= 1 && sideset_bit_count <= 4);
++    valid_params_if(PIO_INSTRUCTIONS, value <= ((1u << sideset_bit_count) - 1));
++    return 0x1000u | value << (12u - sideset_bit_count);
++}
++
++/*! \brief Encode an unconditional JMP instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 0, addr);
++}
++
++/*! \brief Encode a conditional JMP if scratch X zero instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP !X <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_not_x(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 1, addr);
++}
++
++/*! \brief Encode a conditional JMP if scratch X non-zero (and post-decrement X) instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP X-- <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_x_dec(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 2, addr);
++}
++
++/*! \brief Encode a conditional JMP if scratch Y zero instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP !Y <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_not_y(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 3, addr);
++}
++
++/*! \brief Encode a conditional JMP if scratch Y non-zero (and post-decrement Y) instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP Y-- <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_y_dec(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 4, addr);
++}
++
++/*! \brief Encode a conditional JMP if scratch X not equal scratch Y instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP X!=Y <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_x_ne_y(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 5, addr);
++}
++
++/*! \brief Encode a conditional JMP if input pin high instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP PIN <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_pin(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 6, addr);
++}
++
++/*! \brief Encode a conditional JMP if output shift register not empty instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `JMP !OSRE <addr>`
++ *
++ * \param addr The target address 0-31 (an absolute address within the PIO instruction memory)
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_jmp_not_osre(uint addr) {
++    return _pio_encode_instr_and_args(pio_instr_bits_jmp, 7, addr);
++}
++
++static inline uint _pio_encode_irq(bool relative, uint irq) {
++    valid_params_if(PIO_INSTRUCTIONS, irq <= 7);
++    return (relative ? 0x10u : 0x0u) | irq;
++}
++
++/*! \brief Encode a WAIT for GPIO pin instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `WAIT <polarity> GPIO <gpio>`
++ *
++ * \param polarity true for `WAIT 1`, false for `WAIT 0`
++ * \param gpio The real GPIO number 0-31
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_wait_gpio(bool polarity, uint gpio) {
++    return _pio_encode_instr_and_args(pio_instr_bits_wait, 0u | (polarity ? 4u : 0u), gpio);
++}
++
++/*! \brief Encode a WAIT for pin instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `WAIT <polarity> PIN <pin>`
++ *
++ * \param polarity true for `WAIT 1`, false for `WAIT 0`
++ * \param pin The pin number 0-31 relative to the executing SM's input pin mapping
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_wait_pin(bool polarity, uint pin) {
++    return _pio_encode_instr_and_args(pio_instr_bits_wait, 1u | (polarity ? 4u : 0u), pin);
++}
++
++/*! \brief Encode a WAIT for IRQ instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `WAIT <polarity> IRQ <irq> <relative>`
++ *
++ * \param polarity true for `WAIT 1`, false for `WAIT 0`
++ * \param relative true for a `WAIT IRQ <irq> REL`, false for regular `WAIT IRQ <irq>`
++ * \param irq the irq number 0-7
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_wait_irq(bool polarity, bool relative, uint irq) {
++    valid_params_if(PIO_INSTRUCTIONS, irq <= 7);
++    return _pio_encode_instr_and_args(pio_instr_bits_wait, 2u | (polarity ? 4u : 0u), _pio_encode_irq(relative, irq));
++}
++
++/*! \brief Encode an IN instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `IN <src>, <count>`
++ *
++ * \param src The source to take data from
++ * \param count The number of bits 1-32
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_in(enum pio_src_dest src, uint count) {
++    valid_params_if(PIO_INSTRUCTIONS, !(src & _PIO_INVALID_IN_SRC));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_in, src, count);
++}
++
++/*! \brief Encode an OUT instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `OUT <src>, <count>`
++ *
++ * \param dest The destination to write data to
++ * \param count The number of bits 1-32
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_out(enum pio_src_dest dest, uint count) {
++    valid_params_if(PIO_INSTRUCTIONS, !(dest & _PIO_INVALID_OUT_DEST));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_out, dest, count);
++}
++
++/*! \brief Encode a PUSH instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `PUSH <if_full>, <block>`
++ *
++ * \param if_full true for `PUSH IF_FULL ...`, false for `PUSH ...`
++ * \param block true for `PUSH ... BLOCK`, false for `PUSH ...`
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_push(bool if_full, bool block) {
++    return _pio_encode_instr_and_args(pio_instr_bits_push, (if_full ? 2u : 0u) | (block ? 1u : 0u), 0);
++}
++
++/*! \brief Encode a PULL instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `PULL <if_empty>, <block>`
++ *
++ * \param if_empty true for `PULL IF_EMPTY ...`, false for `PULL ...`
++ * \param block true for `PULL ... BLOCK`, false for `PULL ...`
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_pull(bool if_empty, bool block) {
++    return _pio_encode_instr_and_args(pio_instr_bits_pull, (if_empty ? 2u : 0u) | (block ? 1u : 0u), 0);
++}
++
++/*! \brief Encode a MOV instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `MOV <dest>, <src>`
++ *
++ * \param dest The destination to write data to
++ * \param src The source to take data from
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_mov(enum pio_src_dest dest, enum pio_src_dest src) {
++    valid_params_if(PIO_INSTRUCTIONS, !(dest & _PIO_INVALID_MOV_DEST));
++    valid_params_if(PIO_INSTRUCTIONS, !(src & _PIO_INVALID_MOV_SRC));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_mov, dest, src & 7u);
++}
++
++/*! \brief Encode a MOV instruction with bit invert
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `MOV <dest>, ~<src>`
++ *
++ * \param dest The destination to write inverted data to
++ * \param src The source to take data from
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_mov_not(enum pio_src_dest dest, enum pio_src_dest src) {
++    valid_params_if(PIO_INSTRUCTIONS, !(dest & _PIO_INVALID_MOV_DEST));
++    valid_params_if(PIO_INSTRUCTIONS, !(src & _PIO_INVALID_MOV_SRC));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_mov, dest, (1u << 3u) | (src & 7u));
++}
++
++/*! \brief Encode a MOV instruction with bit reverse
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `MOV <dest>, ::<src>`
++ *
++ * \param dest The destination to write bit reversed data to
++ * \param src The source to take data from
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_mov_reverse(enum pio_src_dest dest, enum pio_src_dest src) {
++    valid_params_if(PIO_INSTRUCTIONS, !(dest & _PIO_INVALID_MOV_DEST));
++    valid_params_if(PIO_INSTRUCTIONS, !(src & _PIO_INVALID_MOV_SRC));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_mov, dest, (2u << 3u) | (src & 7u));
++}
++
++/*! \brief Encode a IRQ SET instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `IRQ SET <irq> <relative>`
++ *
++ * \param relative true for a `IRQ SET <irq> REL`, false for regular `IRQ SET <irq>`
++ * \param irq the irq number 0-7
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_irq_set(bool relative, uint irq) {
++    return _pio_encode_instr_and_args(pio_instr_bits_irq, 0, _pio_encode_irq(relative, irq));
++}
++
++/*! \brief Encode a IRQ WAIT instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `IRQ WAIT <irq> <relative>`
++ *
++ * \param relative true for a `IRQ WAIT <irq> REL`, false for regular `IRQ WAIT <irq>`
++ * \param irq the irq number 0-7
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_irq_wait(bool relative, uint irq) {
++    return _pio_encode_instr_and_args(pio_instr_bits_irq, 1, _pio_encode_irq(relative, irq));
++}
++
++/*! \brief Encode a IRQ CLEAR instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `IRQ CLEAR <irq> <relative>`
++ *
++ * \param relative true for a `IRQ CLEAR <irq> REL`, false for regular `IRQ CLEAR <irq>`
++ * \param irq the irq number 0-7
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_irq_clear(bool relative, uint irq) {
++    return _pio_encode_instr_and_args(pio_instr_bits_irq, 2, _pio_encode_irq(relative, irq));
++}
++
++/*! \brief Encode a SET instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `SET <dest>, <value>`
++ *
++ * \param dest The destination to apply the value to
++ * \param value The value 0-31
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_set(enum pio_src_dest dest, uint value) {
++    valid_params_if(PIO_INSTRUCTIONS, !(dest & _PIO_INVALID_SET_DEST));
++    return _pio_encode_instr_and_src_dest(pio_instr_bits_set, dest, value);
++}
++
++/*! \brief Encode a NOP instruction
++ *  \ingroup pio_instructions
++ *
++ * This is the equivalent of `NOP` which is itself encoded as `MOV y, y`
++ *
++ * \return The instruction encoding with 0 delay and no side set value
++ * \see pio_encode_delay, pio_encode_sideset, pio_encode_sideset_opt
++ */
++static inline uint pio_encode_nop(void) {
++    return pio_encode_mov(pio_y, pio_y);
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+--- /dev/null
++++ b/include/linux/pio_rp1.h
+@@ -0,0 +1,873 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (c) 2024 Raspberry Pi Ltd.
++ * All rights reserved.
++ */
++
++#ifndef _PIO_RP1_H
++#define _PIO_RP1_H
++
++#include <uapi/misc/rp1_pio_if.h>
++
++#define PARAM_WARNINGS_ENABLED 1
++
++#ifdef DEBUG
++#define PARAM_WARNINGS_ENABLED 1
++#endif
++
++#ifndef PARAM_WARNINGS_ENABLED
++#define PARAM_WARNINGS_ENABLED 0
++#endif
++
++#define bad_params_if(client, test) \
++	({ bool f = (test); if (f) pio_set_error(client, -EINVAL); \
++		if (f && PARAM_WARNINGS_ENABLED) WARN_ON((test)); \
++		f; })
++
++#ifndef PARAM_ASSERTIONS_ENABLE_ALL
++#define PARAM_ASSERTIONS_ENABLE_ALL 0
++#endif
++
++#ifndef PARAM_ASSERTIONS_DISABLE_ALL
++#define PARAM_ASSERTIONS_DISABLE_ALL 0
++#endif
++
++#define PARAM_ASSERTIONS_ENABLED(x) \
++	((PARAM_ASSERTIONS_ENABLED_ ## x || PARAM_ASSERTIONS_ENABLE_ALL) && \
++	 !PARAM_ASSERTIONS_DISABLE_ALL)
++#define valid_params_if(x, test) ({if (PARAM_ASSERTIONS_ENABLED(x)) WARN_ON(test); })
++
++#include <linux/pio_instructions.h>
++
++#define NUM_PIO_STATE_MACHINES		4
++#define PIO_INSTRUCTION_COUNT		32
++#define PIO_ORIGIN_ANY			((uint)(~0))
++#define GPIOS_MASK			((1 << RP1_PIO_GPIO_COUNT) - 1)
++
++#define PICO_NO_HARDWARE		0
++
++#define pio0				pio_open_helper(0)
++
++#define PROC_PIO_SM0_PINCTRL_OUT_BASE_BITS	0x0000001f
++#define PROC_PIO_SM0_PINCTRL_OUT_BASE_LSB	0
++#define PROC_PIO_SM0_PINCTRL_OUT_COUNT_BITS	0x03f00000
++#define PROC_PIO_SM0_PINCTRL_OUT_COUNT_LSB	20
++#define PROC_PIO_SM0_PINCTRL_SET_BASE_BITS	0x000003e0
++#define PROC_PIO_SM0_PINCTRL_SET_BASE_LSB	5
++#define PROC_PIO_SM0_PINCTRL_SET_COUNT_BITS	0x1c000000
++#define PROC_PIO_SM0_PINCTRL_SET_COUNT_LSB	26
++#define PROC_PIO_SM0_PINCTRL_IN_BASE_BITS	0x000f8000
++#define PROC_PIO_SM0_PINCTRL_IN_BASE_LSB	15
++#define PROC_PIO_SM0_PINCTRL_SIDESET_BASE_BITS	0x00007c00
++#define PROC_PIO_SM0_PINCTRL_SIDESET_BASE_LSB	10
++#define PROC_PIO_SM0_PINCTRL_SIDESET_COUNT_BITS	0xe0000000
++#define PROC_PIO_SM0_PINCTRL_SIDESET_COUNT_LSB	29
++#define PROC_PIO_SM0_EXECCTRL_SIDE_EN_BITS	0x40000000
++#define PROC_PIO_SM0_EXECCTRL_SIDE_EN_LSB	30
++#define PROC_PIO_SM0_EXECCTRL_SIDE_PINDIR_BITS	0x20000000
++#define PROC_PIO_SM0_EXECCTRL_SIDE_PINDIR_LSB	29
++#define PROC_PIO_SM0_CLKDIV_INT_LSB		16
++#define PROC_PIO_SM0_CLKDIV_FRAC_LSB		8
++#define PROC_PIO_SM0_EXECCTRL_WRAP_TOP_BITS	0x0001f000
++#define PROC_PIO_SM0_EXECCTRL_WRAP_TOP_LSB	12
++#define PROC_PIO_SM0_EXECCTRL_WRAP_BOTTOM_BITS	0x00000f80
++#define PROC_PIO_SM0_EXECCTRL_WRAP_BOTTOM_LSB	7
++#define PROC_PIO_SM0_EXECCTRL_JMP_PIN_BITS	0x1f000000
++#define PROC_PIO_SM0_EXECCTRL_JMP_PIN_LSB	24
++#define PROC_PIO_SM0_SHIFTCTRL_IN_SHIFTDIR_BITS	0x00040000
++#define PROC_PIO_SM0_SHIFTCTRL_IN_SHIFTDIR_LSB	18
++#define PROC_PIO_SM0_SHIFTCTRL_AUTOPULL_BITS	0x00020000
++#define PROC_PIO_SM0_SHIFTCTRL_AUTOPULL_LSB	17
++#define PROC_PIO_SM0_SHIFTCTRL_AUTOPUSH_BITS	0x00010000
++#define PROC_PIO_SM0_SHIFTCTRL_AUTOPUSH_LSB	16
++#define PROC_PIO_SM0_SHIFTCTRL_PUSH_THRESH_BITS	0x01f00000
++#define PROC_PIO_SM0_SHIFTCTRL_PUSH_THRESH_LSB	20
++#define PROC_PIO_SM0_SHIFTCTRL_OUT_SHIFTDIR_BITS	0x00080000
++#define PROC_PIO_SM0_SHIFTCTRL_OUT_SHIFTDIR_LSB	19
++#define PROC_PIO_SM0_SHIFTCTRL_PULL_THRESH_BITS	0x3e000000
++#define PROC_PIO_SM0_SHIFTCTRL_PULL_THRESH_LSB	25
++#define PROC_PIO_SM0_SHIFTCTRL_FJOIN_TX_BITS	0x40000000
++#define PROC_PIO_SM0_SHIFTCTRL_FJOIN_TX_LSB	30
++#define PROC_PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS	0x80000000
++#define PROC_PIO_SM0_SHIFTCTRL_FJOIN_RX_LSB	31
++#define PROC_PIO_SM0_EXECCTRL_OUT_STICKY_BITS	0x00020000
++#define PROC_PIO_SM0_EXECCTRL_OUT_STICKY_LSB	17
++#define PROC_PIO_SM0_EXECCTRL_INLINE_OUT_EN_BITS	0x00040000
++#define PROC_PIO_SM0_EXECCTRL_INLINE_OUT_EN_LSB	18
++#define PROC_PIO_SM0_EXECCTRL_OUT_EN_SEL_BITS	0x00f80000
++#define PROC_PIO_SM0_EXECCTRL_OUT_EN_SEL_LSB	19
++#define PROC_PIO_SM0_EXECCTRL_STATUS_SEL_BITS	0x00000020
++#define PROC_PIO_SM0_EXECCTRL_STATUS_SEL_LSB	5
++#define PROC_PIO_SM0_EXECCTRL_STATUS_N_BITS	0x0000001f
++#define PROC_PIO_SM0_EXECCTRL_STATUS_N_LSB	0
++
++enum pio_fifo_join {
++	PIO_FIFO_JOIN_NONE = 0,
++	PIO_FIFO_JOIN_TX = 1,
++	PIO_FIFO_JOIN_RX = 2,
++};
++
++enum pio_mov_status_type {
++	STATUS_TX_LESSTHAN = 0,
++	STATUS_RX_LESSTHAN = 1
++};
++
++enum pio_xfer_dir {
++	PIO_DIR_TO_SM,
++	PIO_DIR_FROM_SM,
++	PIO_DIR_COUNT
++};
++
++enum clock_index {
++	clk_sys = 5
++};
++
++typedef struct pio_program {
++	const uint16_t *instructions;
++	uint8_t length;
++	int8_t origin; // required instruction memory origin or -1
++} pio_program_t;
++
++enum gpio_function {
++	GPIO_FUNC_FSEL0 = 0,
++	GPIO_FUNC_FSEL1 = 1,
++	GPIO_FUNC_FSEL2 = 2,
++	GPIO_FUNC_FSEL3 = 3,
++	GPIO_FUNC_FSEL4 = 4,
++	GPIO_FUNC_FSEL5 = 5,
++	GPIO_FUNC_FSEL6 = 6,
++	GPIO_FUNC_FSEL7 = 7,
++	GPIO_FUNC_FSEL8 = 8,
++	GPIO_FUNC_NULL = 0x1f,
++
++	// Name a few
++	GPIO_FUNC_SYS_RIO = 5,
++	GPIO_FUNC_PROC_RIO = 6,
++	GPIO_FUNC_PIO = 7,
++};
++
++enum gpio_irq_level {
++	GPIO_IRQ_LEVEL_LOW = 0x1u,
++	GPIO_IRQ_LEVEL_HIGH = 0x2u,
++	GPIO_IRQ_EDGE_FALL = 0x4u,
++	GPIO_IRQ_EDGE_RISE = 0x8u,
++};
++
++enum gpio_override {
++	GPIO_OVERRIDE_NORMAL = 0,
++	GPIO_OVERRIDE_INVERT = 1,
++	GPIO_OVERRIDE_LOW = 2,
++	GPIO_OVERRIDE_HIGH = 3,
++};
++enum gpio_slew_rate {
++	GPIO_SLEW_RATE_SLOW = 0,
++	GPIO_SLEW_RATE_FAST = 1
++};
++
++enum gpio_drive_strength {
++	GPIO_DRIVE_STRENGTH_2MA = 0,
++	GPIO_DRIVE_STRENGTH_4MA = 1,
++	GPIO_DRIVE_STRENGTH_8MA = 2,
++	GPIO_DRIVE_STRENGTH_12MA = 3
++};
++
++typedef rp1_pio_sm_config pio_sm_config;
++
++typedef struct rp1_pio_client *PIO;
++
++void pio_set_error(struct rp1_pio_client *client, int err);
++int pio_get_error(struct rp1_pio_client *client);
++void pio_clear_error(struct rp1_pio_client *client);
++
++int rp1_pio_can_add_program(struct rp1_pio_client *client, void *param);
++int rp1_pio_add_program(struct rp1_pio_client *client, void *param);
++int rp1_pio_remove_program(struct rp1_pio_client *client, void *param);
++int rp1_pio_clear_instr_mem(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_claim(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_unclaim(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_is_claimed(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_init(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_config(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_exec(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_clear_fifos(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_clkdiv(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_pins(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_pindirs(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_enabled(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_restart(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_clkdiv_restart(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_enable_sync(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_put(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_get(struct rp1_pio_client *client, void *param);
++int rp1_pio_sm_set_dmactrl(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_init(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_function(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_pulls(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_outover(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_inover(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_oeover(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_input_enabled(struct rp1_pio_client *client, void *param);
++int rp1_pio_gpio_set_drive_strength(struct rp1_pio_client *client, void *param);
++
++int pio_init(void);
++PIO pio_open(void);
++void pio_close(PIO pio);
++
++int pio_sm_config_xfer(PIO pio, uint sm, uint dir, uint buf_size, uint buf_count);
++int pio_sm_xfer_data(PIO pio, uint sm, uint dir, uint data_bytes, void *data);
++
++static inline bool pio_can_add_program(struct rp1_pio_client *client,
++				       const pio_program_t *program)
++{
++	struct rp1_pio_add_program_args args;
++
++	if (bad_params_if(client, program->length > PIO_INSTRUCTION_COUNT))
++		return false;
++	args.origin = (program->origin == -1) ? PIO_ORIGIN_ANY : program->origin;
++	args.num_instrs = program->length;
++
++	memcpy(args.instrs, program->instructions, args.num_instrs * sizeof(args.instrs[0]));
++	return rp1_pio_can_add_program(client, &args);
++}
++
++static inline bool pio_can_add_program_at_offset(struct rp1_pio_client *client,
++						 const pio_program_t *program, uint offset)
++{
++	struct rp1_pio_add_program_args args;
++
++	if (bad_params_if(client, program->length > PIO_INSTRUCTION_COUNT ||
++			  offset >= PIO_INSTRUCTION_COUNT))
++		return false;
++	args.origin = offset;
++	args.num_instrs = program->length;
++
++	memcpy(args.instrs, program->instructions, args.num_instrs * sizeof(args.instrs[0]));
++	return !rp1_pio_can_add_program(client, &args);
++}
++
++uint pio_add_program(struct rp1_pio_client *client, const pio_program_t *program)
++{
++	struct rp1_pio_add_program_args args;
++	int offset;
++
++	if (bad_params_if(client, program->length > PIO_INSTRUCTION_COUNT))
++		return PIO_ORIGIN_ANY;
++	args.origin = (program->origin == -1) ? PIO_ORIGIN_ANY : program->origin;
++	args.num_instrs = program->length;
++
++	memcpy(args.instrs, program->instructions, args.num_instrs * sizeof(args.instrs[0]));
++	offset = rp1_pio_add_program(client, &args);
++	return (offset >= 0) ? offset : PIO_ORIGIN_ANY;
++}
++
++static inline int pio_add_program_at_offset(struct rp1_pio_client *client,
++					    const pio_program_t *program, uint offset)
++{
++	struct rp1_pio_add_program_args args;
++
++	if (bad_params_if(client, program->length > PIO_INSTRUCTION_COUNT ||
++				  offset >= PIO_INSTRUCTION_COUNT))
++		return -EINVAL;
++	args.origin = offset;
++	args.num_instrs = program->length;
++
++	memcpy(args.instrs, program->instructions, args.num_instrs * sizeof(args.instrs[0]));
++	return rp1_pio_add_program(client, &args);
++}
++
++static inline int pio_remove_program(struct rp1_pio_client *client, const pio_program_t *program,
++				     uint loaded_offset)
++{
++	struct rp1_pio_remove_program_args args;
++
++	args.origin = loaded_offset;
++	args.num_instrs = program->length;
++
++	return rp1_pio_remove_program(client, &args);
++}
++
++static inline int pio_clear_instruction_memory(struct rp1_pio_client *client)
++{
++	return rp1_pio_clear_instr_mem(client, NULL);
++}
++
++static inline int pio_sm_claim(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_claim_args args = { .mask = 1 << sm };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++
++	return rp1_pio_sm_claim(client, &args);
++}
++
++static inline int pio_claim_sm_mask(struct rp1_pio_client *client, uint mask)
++{
++	struct rp1_pio_sm_claim_args args = { .mask = mask };
++
++	if (bad_params_if(client, mask >= (1 << NUM_PIO_STATE_MACHINES)))
++		return -EINVAL;
++
++	return rp1_pio_sm_claim(client, &args);
++}
++
++static inline int pio_sm_unclaim(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_claim_args args = { .mask = 1 << sm };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++
++	return rp1_pio_sm_claim(client, &args);
++}
++
++static inline int pio_claim_unused_sm(struct rp1_pio_client *client, bool required)
++{
++	struct rp1_pio_sm_claim_args args = { .mask = 0 };
++	int sm;
++
++	sm = rp1_pio_sm_claim(client, &args);
++	if (sm < 0 && required)
++		WARN_ON("No PIO state machines are available");
++	return sm;
++}
++
++static inline bool pio_sm_is_claimed(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_claim_args args = { .mask = (1 << sm) };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return true;
++	return rp1_pio_sm_is_claimed(client, &args);
++}
++
++static inline int pio_sm_init(struct rp1_pio_client *client, uint sm, uint initial_pc,
++			      const pio_sm_config *config)
++{
++	struct rp1_pio_sm_init_args args = { .sm = sm, .initial_pc = initial_pc,
++					     .config = *config };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES ||
++				  initial_pc >= PIO_INSTRUCTION_COUNT))
++		return -EINVAL;
++
++	return rp1_pio_sm_init(client, &args);
++}
++
++static inline int pio_sm_set_config(struct rp1_pio_client *client, uint sm,
++				    const pio_sm_config *config)
++{
++	struct rp1_pio_sm_init_args args = { .sm = sm, .config = *config };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++
++	return rp1_pio_sm_set_config(client, &args);
++}
++
++int pio_sm_exec(struct rp1_pio_client *client, uint sm, uint instr)
++{
++	struct rp1_pio_sm_exec_args args = { .sm = sm, .instr = instr, .blocking = false };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES || instr > (uint16_t)~0))
++		return -EINVAL;
++
++	return rp1_pio_sm_exec(client, &args);
++}
++
++int pio_sm_exec_wait_blocking(struct rp1_pio_client *client, uint sm, uint instr)
++{
++	struct rp1_pio_sm_exec_args args = { .sm = sm, .instr = instr, .blocking = true };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES || instr > (uint16_t)~0))
++		return -EINVAL;
++
++	return rp1_pio_sm_exec(client, &args);
++}
++
++static inline int pio_sm_clear_fifos(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_clear_fifos_args args = { .sm = sm };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_clear_fifos(client, &args);
++}
++
++static inline bool pio_calculate_clkdiv_from_float(float div, uint16_t *div_int,
++						   uint8_t *div_frac)
++{
++	if (bad_params_if(NULL, div < 1 || div > 65536))
++		return false;
++	*div_int = (uint16_t)div;
++	if (*div_int == 0)
++		*div_frac = 0;
++	else
++		*div_frac = (uint8_t)((div - (float)*div_int) * (1u << 8u));
++	return true;
++}
++
++static inline int pio_sm_set_clkdiv_int_frac(struct rp1_pio_client *client, uint sm,
++					     uint16_t div_int, uint8_t div_frac)
++{
++	struct rp1_pio_sm_set_clkdiv_args args = { .sm = sm, .div_int = div_int,
++						   .div_frac = div_frac };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES ||
++			  (div_int == 0 && div_frac != 0)))
++		return -EINVAL;
++	return rp1_pio_sm_set_clkdiv(client, &args);
++}
++
++static inline int pio_sm_set_clkdiv(struct rp1_pio_client *client, uint sm, float div)
++{
++	struct rp1_pio_sm_set_clkdiv_args args = { .sm = sm };
++
++	if (!pio_calculate_clkdiv_from_float(div, &args.div_int, &args.div_frac))
++		return -EINVAL;
++	return rp1_pio_sm_set_clkdiv(client, &args);
++}
++
++static inline int pio_sm_set_pins(struct rp1_pio_client *client, uint sm, uint32_t pin_values)
++{
++	struct rp1_pio_sm_set_pins_args args = { .sm = sm, .values = pin_values,
++						 .mask = GPIOS_MASK };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_set_pins(client, &args);
++}
++
++static inline int pio_sm_set_pins_with_mask(struct rp1_pio_client *client, uint sm,
++					    uint32_t pin_values, uint32_t pin_mask)
++{
++	struct rp1_pio_sm_set_pins_args args = { .sm = sm, .values = pin_values,
++						 .mask = pin_mask };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_set_pins(client, &args);
++}
++
++static inline int pio_sm_set_pindirs_with_mask(struct rp1_pio_client *client, uint sm,
++					       uint32_t pin_dirs, uint32_t pin_mask)
++{
++	struct rp1_pio_sm_set_pindirs_args args = { .sm = sm, .dirs = pin_dirs,
++						    .mask = pin_mask };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES ||
++			      (pin_dirs & GPIOS_MASK) != pin_dirs ||
++			      (pin_mask & pin_mask) != pin_mask))
++		return -EINVAL;
++	return rp1_pio_sm_set_pindirs(client, &args);
++}
++
++static inline int pio_sm_set_consecutive_pindirs(struct rp1_pio_client *client, uint sm,
++						 uint pin_base, uint pin_count, bool is_out)
++{
++	uint32_t mask = ((1 << pin_count) - 1) << pin_base;
++	struct rp1_pio_sm_set_pindirs_args args = { .sm = sm, .dirs = is_out ? mask : 0,
++						    .mask = mask };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES ||
++			      pin_base >= RP1_PIO_GPIO_COUNT ||
++			      pin_count > RP1_PIO_GPIO_COUNT ||
++			      (pin_base + pin_count) > RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_sm_set_pindirs(client, &args);
++}
++
++static inline int pio_sm_set_enabled(struct rp1_pio_client *client, uint sm, bool enabled)
++{
++	struct rp1_pio_sm_set_enabled_args args = { .mask = (1 << sm), .enable = enabled };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_set_enabled(client, &args);
++}
++
++static inline int pio_set_sm_mask_enabled(struct rp1_pio_client *client, uint32_t mask,
++					  bool enabled)
++{
++	struct rp1_pio_sm_set_enabled_args args = { .mask = mask, .enable = enabled };
++
++	if (bad_params_if(client, mask >= (1 << NUM_PIO_STATE_MACHINES)))
++		return -EINVAL;
++	return rp1_pio_sm_set_enabled(client, &args);
++}
++
++static inline int pio_sm_restart(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_restart_args args = { .mask = (1 << sm) };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_restart(client, &args);
++}
++
++static inline int pio_restart_sm_mask(struct rp1_pio_client *client, uint32_t mask)
++{
++	struct rp1_pio_sm_restart_args args = { .mask = (uint16_t)mask };
++
++	if (bad_params_if(client, mask >= (1 << NUM_PIO_STATE_MACHINES)))
++		return -EINVAL;
++	return rp1_pio_sm_restart(client, &args);
++}
++
++static inline int pio_sm_clkdiv_restart(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_restart_args args = { .mask = (1 << sm) };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_clkdiv_restart(client, &args);
++}
++
++static inline int pio_clkdiv_restart_sm_mask(struct rp1_pio_client *client, uint32_t mask)
++{
++	struct rp1_pio_sm_restart_args args = { .mask = (uint16_t)mask };
++
++	if (bad_params_if(client, mask >= (1 << NUM_PIO_STATE_MACHINES)))
++		return -EINVAL;
++	return rp1_pio_sm_clkdiv_restart(client, &args);
++}
++
++static inline int pio_enable_sm_in_sync_mask(struct rp1_pio_client *client, uint32_t mask)
++{
++	struct rp1_pio_sm_enable_sync_args args = { .mask = (uint16_t)mask };
++
++	if (bad_params_if(client, mask >= (1 << NUM_PIO_STATE_MACHINES)))
++		return -EINVAL;
++	return rp1_pio_sm_enable_sync(client, &args);
++}
++
++static inline int pio_sm_set_dmactrl(struct rp1_pio_client *client, uint sm, bool is_tx,
++				     uint32_t ctrl)
++{
++	struct rp1_pio_sm_set_dmactrl_args args = { .sm = sm, .is_tx = is_tx, .ctrl = ctrl };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_set_dmactrl(client, &args);
++};
++
++static inline int pio_sm_put(struct rp1_pio_client *client, uint sm, uint32_t data)
++{
++	struct rp1_pio_sm_put_args args = { .sm = (uint16_t)sm, .blocking = false, .data = data };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_put(client, &args);
++}
++
++static inline int pio_sm_put_blocking(struct rp1_pio_client *client, uint sm, uint32_t data)
++{
++	struct rp1_pio_sm_put_args args = { .sm = (uint16_t)sm, .blocking = true, .data = data };
++
++	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		return -EINVAL;
++	return rp1_pio_sm_put(client, &args);
++}
++
++static inline uint32_t pio_sm_get(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_get_args args = { .sm = (uint16_t)sm, .blocking = false };
++
++	if (!bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		rp1_pio_sm_get(client, &args);
++	return args.data;
++}
++
++static inline uint32_t pio_sm_get_blocking(struct rp1_pio_client *client, uint sm)
++{
++	struct rp1_pio_sm_get_args args = { .sm = (uint16_t)sm, .blocking = true };
++
++	if (!bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES))
++		rp1_pio_sm_get(client, &args);
++	return args.data;
++}
++
++static inline void sm_config_set_out_pins(pio_sm_config *c, uint out_base, uint out_count)
++{
++	if (bad_params_if(NULL, out_base >= RP1_PIO_GPIO_COUNT ||
++				    out_count > RP1_PIO_GPIO_COUNT))
++		return;
++
++	c->pinctrl = (c->pinctrl & ~(PROC_PIO_SM0_PINCTRL_OUT_BASE_BITS |
++				     PROC_PIO_SM0_PINCTRL_OUT_COUNT_BITS)) |
++			(out_base << PROC_PIO_SM0_PINCTRL_OUT_BASE_LSB) |
++			(out_count << PROC_PIO_SM0_PINCTRL_OUT_COUNT_LSB);
++}
++
++static inline void sm_config_set_set_pins(pio_sm_config *c, uint set_base, uint set_count)
++{
++	if (bad_params_if(NULL, set_base >= RP1_PIO_GPIO_COUNT ||
++				    set_count > 5))
++		return;
++
++	c->pinctrl = (c->pinctrl & ~(PROC_PIO_SM0_PINCTRL_SET_BASE_BITS |
++				     PROC_PIO_SM0_PINCTRL_SET_COUNT_BITS)) |
++			(set_base << PROC_PIO_SM0_PINCTRL_SET_BASE_LSB) |
++			(set_count << PROC_PIO_SM0_PINCTRL_SET_COUNT_LSB);
++}
++
++
++static inline void sm_config_set_in_pins(pio_sm_config *c, uint in_base)
++{
++	if (bad_params_if(NULL, in_base >= RP1_PIO_GPIO_COUNT))
++		return;
++
++	c->pinctrl = (c->pinctrl & ~PROC_PIO_SM0_PINCTRL_IN_BASE_BITS) |
++			(in_base << PROC_PIO_SM0_PINCTRL_IN_BASE_LSB);
++}
++
++static inline void sm_config_set_sideset_pins(pio_sm_config *c, uint sideset_base)
++{
++	if (bad_params_if(NULL, sideset_base >= RP1_PIO_GPIO_COUNT))
++		return;
++
++	c->pinctrl = (c->pinctrl & ~PROC_PIO_SM0_PINCTRL_SIDESET_BASE_BITS) |
++			(sideset_base << PROC_PIO_SM0_PINCTRL_SIDESET_BASE_LSB);
++}
++
++static inline void sm_config_set_sideset(pio_sm_config *c, uint bit_count, bool optional,
++					 bool pindirs)
++{
++	if (bad_params_if(NULL, bit_count > 5 ||
++				    (optional && (bit_count == 0))))
++		return;
++	c->pinctrl = (c->pinctrl & ~PROC_PIO_SM0_PINCTRL_SIDESET_COUNT_BITS) |
++			(bit_count << PROC_PIO_SM0_PINCTRL_SIDESET_COUNT_LSB);
++
++	c->execctrl = (c->execctrl & ~(PROC_PIO_SM0_EXECCTRL_SIDE_EN_BITS |
++				       PROC_PIO_SM0_EXECCTRL_SIDE_PINDIR_BITS)) |
++			(optional << PROC_PIO_SM0_EXECCTRL_SIDE_EN_LSB) |
++			(pindirs << PROC_PIO_SM0_EXECCTRL_SIDE_PINDIR_LSB);
++}
++
++static inline void sm_config_set_clkdiv_int_frac(pio_sm_config *c, uint16_t div_int,
++						 uint8_t div_frac)
++{
++	if (bad_params_if(NULL, div_int == 0 && div_frac != 0))
++		return;
++
++	c->clkdiv =
++		(((uint)div_frac) << PROC_PIO_SM0_CLKDIV_FRAC_LSB) |
++		(((uint)div_int) << PROC_PIO_SM0_CLKDIV_INT_LSB);
++}
++
++static inline void sm_config_set_clkdiv(pio_sm_config *c, float div)
++{
++	uint16_t div_int;
++	uint8_t div_frac;
++
++	pio_calculate_clkdiv_from_float(div, &div_int, &div_frac);
++	sm_config_set_clkdiv_int_frac(c, div_int, div_frac);
++}
++
++static inline void sm_config_set_wrap(pio_sm_config *c, uint wrap_target, uint wrap)
++{
++	if (bad_params_if(NULL, wrap >= PIO_INSTRUCTION_COUNT ||
++				    wrap_target >= PIO_INSTRUCTION_COUNT))
++		return;
++
++	c->execctrl = (c->execctrl & ~(PROC_PIO_SM0_EXECCTRL_WRAP_TOP_BITS |
++				       PROC_PIO_SM0_EXECCTRL_WRAP_BOTTOM_BITS)) |
++			(wrap_target << PROC_PIO_SM0_EXECCTRL_WRAP_BOTTOM_LSB) |
++			(wrap << PROC_PIO_SM0_EXECCTRL_WRAP_TOP_LSB);
++}
++
++static inline void sm_config_set_jmp_pin(pio_sm_config *c, uint pin)
++{
++	if (bad_params_if(NULL, pin >= RP1_PIO_GPIO_COUNT))
++		return;
++
++	c->execctrl = (c->execctrl & ~PROC_PIO_SM0_EXECCTRL_JMP_PIN_BITS) |
++		(pin << PROC_PIO_SM0_EXECCTRL_JMP_PIN_LSB);
++}
++
++static inline void sm_config_set_in_shift(pio_sm_config *c, bool shift_right, bool autopush,
++					  uint push_threshold)
++{
++	if (bad_params_if(NULL, push_threshold > 32))
++		return;
++
++	c->shiftctrl = (c->shiftctrl &
++		~(PROC_PIO_SM0_SHIFTCTRL_IN_SHIFTDIR_BITS |
++		PROC_PIO_SM0_SHIFTCTRL_AUTOPUSH_BITS |
++		PROC_PIO_SM0_SHIFTCTRL_PUSH_THRESH_BITS)) |
++		(shift_right << PROC_PIO_SM0_SHIFTCTRL_IN_SHIFTDIR_LSB) |
++		(autopush << PROC_PIO_SM0_SHIFTCTRL_AUTOPUSH_LSB) |
++		((push_threshold & 0x1fu) << PROC_PIO_SM0_SHIFTCTRL_PUSH_THRESH_LSB);
++}
++
++static inline void sm_config_set_out_shift(pio_sm_config *c, bool shift_right, bool autopull,
++					   uint pull_threshold)
++{
++	if (bad_params_if(NULL, pull_threshold > 32))
++		return;
++
++	c->shiftctrl = (c->shiftctrl &
++		~(PROC_PIO_SM0_SHIFTCTRL_OUT_SHIFTDIR_BITS |
++		PROC_PIO_SM0_SHIFTCTRL_AUTOPULL_BITS |
++		PROC_PIO_SM0_SHIFTCTRL_PULL_THRESH_BITS)) |
++		(shift_right << PROC_PIO_SM0_SHIFTCTRL_OUT_SHIFTDIR_LSB) |
++		(autopull << PROC_PIO_SM0_SHIFTCTRL_AUTOPULL_LSB) |
++		((pull_threshold & 0x1fu) << PROC_PIO_SM0_SHIFTCTRL_PULL_THRESH_LSB);
++}
++
++static inline void sm_config_set_fifo_join(pio_sm_config *c, enum pio_fifo_join join)
++{
++	if (bad_params_if(NULL, join != PIO_FIFO_JOIN_NONE &&
++				    join != PIO_FIFO_JOIN_TX &&
++				    join != PIO_FIFO_JOIN_RX))
++		return;
++
++	c->shiftctrl = (c->shiftctrl & (uint)~(PROC_PIO_SM0_SHIFTCTRL_FJOIN_TX_BITS |
++					       PROC_PIO_SM0_SHIFTCTRL_FJOIN_RX_BITS)) |
++		(((uint)join) << PROC_PIO_SM0_SHIFTCTRL_FJOIN_TX_LSB);
++}
++
++static inline void sm_config_set_out_special(pio_sm_config *c, bool sticky, bool has_enable_pin,
++					     uint enable_pin_index)
++{
++	c->execctrl = (c->execctrl &
++		(uint)~(PROC_PIO_SM0_EXECCTRL_OUT_STICKY_BITS |
++			PROC_PIO_SM0_EXECCTRL_INLINE_OUT_EN_BITS |
++		PROC_PIO_SM0_EXECCTRL_OUT_EN_SEL_BITS)) |
++		(sticky << PROC_PIO_SM0_EXECCTRL_OUT_STICKY_LSB) |
++		(has_enable_pin << PROC_PIO_SM0_EXECCTRL_INLINE_OUT_EN_LSB) |
++		((enable_pin_index << PROC_PIO_SM0_EXECCTRL_OUT_EN_SEL_LSB) &
++		 PROC_PIO_SM0_EXECCTRL_OUT_EN_SEL_BITS);
++}
++
++static inline void sm_config_set_mov_status(pio_sm_config *c, enum pio_mov_status_type status_sel,
++					    uint status_n)
++{
++	if (bad_params_if(NULL, status_sel != STATUS_TX_LESSTHAN &&
++				status_sel != STATUS_RX_LESSTHAN))
++		return;
++
++	c->execctrl = (c->execctrl
++		& ~(PROC_PIO_SM0_EXECCTRL_STATUS_SEL_BITS | PROC_PIO_SM0_EXECCTRL_STATUS_N_BITS))
++		| ((((uint)status_sel) << PROC_PIO_SM0_EXECCTRL_STATUS_SEL_LSB) &
++		   PROC_PIO_SM0_EXECCTRL_STATUS_SEL_BITS)
++		| ((status_n << PROC_PIO_SM0_EXECCTRL_STATUS_N_LSB) &
++		   PROC_PIO_SM0_EXECCTRL_STATUS_N_BITS);
++}
++
++static inline pio_sm_config pio_get_default_sm_config(void)
++{
++	pio_sm_config c = { 0 };
++
++	sm_config_set_clkdiv_int_frac(&c, 1, 0);
++	sm_config_set_wrap(&c, 0, 31);
++	sm_config_set_in_shift(&c, true, false, 32);
++	sm_config_set_out_shift(&c, true, false, 32);
++	return c;
++}
++
++static inline uint32_t clock_get_hz(enum clock_index clk_index)
++{
++	const uint32_t MHZ = 1000000;
++
++	if (bad_params_if(NULL, clk_index != clk_sys))
++		return 0;
++	return 200 * MHZ;
++}
++
++static inline int pio_gpio_set_function(struct rp1_pio_client *client, uint gpio,
++					enum gpio_function fn)
++{
++	struct rp1_gpio_set_function_args args = { .gpio = gpio, .fn = fn };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_function(client, &args);
++}
++
++static inline int pio_gpio_init(struct rp1_pio_client *client, uint gpio)
++{
++	struct rp1_gpio_init_args args = { .gpio = gpio };
++	int ret;
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	ret = rp1_pio_gpio_init(client, &args);
++	if (ret)
++		return ret;
++	return pio_gpio_set_function(client, gpio, RP1_GPIO_FUNC_PIO);
++}
++
++static inline int pio_gpio_set_pulls(struct rp1_pio_client *client, uint gpio, bool up, bool down)
++{
++	struct rp1_gpio_set_pulls_args args = { .gpio = gpio, .up = up, .down = down };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_pulls(client, &args);
++}
++
++static inline int pio_gpio_set_outover(struct rp1_pio_client *client, uint gpio, uint value)
++{
++	struct rp1_gpio_set_args args = { .gpio = gpio, .value = value };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_outover(client, &args);
++}
++
++static inline int pio_gpio_set_inover(struct rp1_pio_client *client, uint gpio, uint value)
++{
++	struct rp1_gpio_set_args args = { .gpio = gpio, .value = value };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_inover(client, &args);
++}
++
++static inline int pio_gpio_set_oeover(struct rp1_pio_client *client, uint gpio, uint value)
++{
++	struct rp1_gpio_set_args args = { .gpio = gpio, .value = value };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_oeover(client, &args);
++}
++
++static inline int pio_gpio_set_input_enabled(struct rp1_pio_client *client, uint gpio,
++					     bool enabled)
++{
++	struct rp1_gpio_set_args args = { .gpio = gpio, .value = enabled };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_input_enabled(client, &args);
++}
++
++static inline int pio_gpio_set_drive_strength(struct rp1_pio_client *client, uint gpio,
++					      enum gpio_drive_strength drive)
++{
++	struct rp1_gpio_set_args args = { .gpio = gpio, .value = drive };
++
++	if (bad_params_if(client, gpio >= RP1_PIO_GPIO_COUNT))
++		return -EINVAL;
++	return rp1_pio_gpio_set_drive_strength(client, &args);
++}
++
++static inline int pio_gpio_pull_up(struct rp1_pio_client *client, uint gpio)
++{
++	return pio_gpio_set_pulls(client, gpio, true, false);
++}
++
++static inline int pio_gpio_pull_down(struct rp1_pio_client *client, uint gpio)
++{
++	return pio_gpio_set_pulls(client, gpio, false, true);
++}
++
++static inline int pio_gpio_disable_pulls(struct rp1_pio_client *client, uint gpio)
++{
++	return pio_gpio_set_pulls(client, gpio, false, false);
++}
++
++#endif

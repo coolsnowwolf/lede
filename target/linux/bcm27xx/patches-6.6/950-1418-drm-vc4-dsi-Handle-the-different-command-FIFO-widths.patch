@@ -1,0 +1,147 @@
+From 008c93b47b9b965368eb5bbfbef60b816931e0ab Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 20 Nov 2024 13:58:08 +0000
+Subject: [PATCH] drm: vc4: dsi: Handle the different command FIFO widths
+
+DSI0 and DSI1 have different widths for the command FIFO (24bit
+vs 32bit), but the driver was assuming the 32bit width of DSI1
+in all cases.
+DSI0 also wants the data packed as 24bit big endian, so the
+formatting code needs updating.
+
+Handle the difference via the variant structure.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_dsi.c | 64 ++++++++++++++++++++++++-----------
+ 1 file changed, 44 insertions(+), 20 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_dsi.c
++++ b/drivers/gpu/drm/vc4/vc4_dsi.c
+@@ -44,7 +44,6 @@
+ 
+ #define DSI_CMD_FIFO_DEPTH  16
+ #define DSI_PIX_FIFO_DEPTH 256
+-#define DSI_PIX_FIFO_WIDTH   4
+ 
+ #define DSI0_CTRL		0x00
+ 
+@@ -170,11 +169,15 @@
+ #define DSI1_DISP1_CTRL		0x2c
+ /* Format of the data written to TXPKT_PIX_FIFO. */
+ # define DSI_DISP1_PFORMAT_MASK		VC4_MASK(2, 1)
+-# define DSI_DISP1_PFORMAT_SHIFT	1
+-# define DSI_DISP1_PFORMAT_16BIT	0
+-# define DSI_DISP1_PFORMAT_24BIT	1
+-# define DSI_DISP1_PFORMAT_32BIT_LE	2
+-# define DSI_DISP1_PFORMAT_32BIT_BE	3
++# define DSI1_DISP1_PFORMAT_SHIFT	1
++# define DSI0_DISP1_PFORMAT_16BIT	0
++# define DSI0_DISP1_PFORMAT_16BIT_ADJ	1
++# define DSI0_DISP1_PFORMAT_24BIT	2
++# define DSI0_DISP1_PFORMAT_32BIT_LE	3 /* NB Invalid, but required for macros to work */
++# define DSI1_DISP1_PFORMAT_16BIT	0
++# define DSI1_DISP1_PFORMAT_24BIT	1
++# define DSI1_DISP1_PFORMAT_32BIT_LE	2
++# define DSI1_DISP1_PFORMAT_32BIT_BE	3
+ 
+ /* DISP1 is always command mode. */
+ # define DSI_DISP1_ENABLE		BIT(0)
+@@ -553,6 +556,7 @@ struct vc4_dsi_variant {
+ 	unsigned int port;
+ 
+ 	bool broken_axi_workaround;
++	unsigned int cmd_fifo_width;
+ 
+ 	const char *debugfs_name;
+ 	const struct debugfs_reg32 *regs;
+@@ -1151,10 +1155,16 @@ static void vc4_dsi_bridge_pre_enable(st
+ 	/* Set up DISP1 for transferring long command payloads through
+ 	 * the pixfifo.
+ 	 */
+-	DSI_PORT_WRITE(DISP1_CTRL,
+-		       VC4_SET_FIELD(DSI_DISP1_PFORMAT_32BIT_LE,
+-				     DSI_DISP1_PFORMAT) |
+-		       DSI_DISP1_ENABLE);
++	if (dsi->variant->cmd_fifo_width == 4)
++		DSI_PORT_WRITE(DISP1_CTRL,
++			       VC4_SET_FIELD(DSI_PORT_BIT(DISP1_PFORMAT_32BIT_LE),
++					     DSI_DISP1_PFORMAT) |
++			       DSI_DISP1_ENABLE);
++	else
++		DSI_PORT_WRITE(DISP1_CTRL,
++			       VC4_SET_FIELD(DSI_PORT_BIT(DISP1_PFORMAT_24BIT),
++					     DSI_DISP1_PFORMAT) |
++			       DSI_DISP1_ENABLE);
+ 
+ 	/* Bring AFE out of reset. */
+ 	DSI_PORT_WRITE(PHY_AFEC0,
+@@ -1235,9 +1245,9 @@ static ssize_t vc4_dsi_transfer(struct v
+ 			pix_fifo_len = 0;
+ 		} else {
+ 			cmd_fifo_len = (packet.payload_length %
+-					DSI_PIX_FIFO_WIDTH);
++					dsi->variant->cmd_fifo_width);
+ 			pix_fifo_len = ((packet.payload_length - cmd_fifo_len) /
+-					DSI_PIX_FIFO_WIDTH);
++					dsi->variant->cmd_fifo_width);
+ 		}
+ 
+ 		WARN_ON_ONCE(pix_fifo_len >= DSI_PIX_FIFO_DEPTH);
+@@ -1255,14 +1265,25 @@ static ssize_t vc4_dsi_transfer(struct v
+ 
+ 	for (i = 0; i < cmd_fifo_len; i++)
+ 		DSI_PORT_WRITE(TXPKT_CMD_FIFO, packet.payload[i]);
+-	for (i = 0; i < pix_fifo_len; i++) {
+-		const u8 *pix = packet.payload + cmd_fifo_len + i * 4;
++	if (dsi->variant->cmd_fifo_width == 4) {
++		for (i = 0; i < pix_fifo_len; i++) {
++			const u8 *pix = packet.payload + cmd_fifo_len + i * 4;
++
++			DSI_PORT_WRITE(TXPKT_PIX_FIFO,
++				       pix[0] |
++				       pix[1] << 8 |
++				       pix[2] << 16 |
++				       pix[3] << 24);
++		}
++	} else {
++		for (i = 0; i < pix_fifo_len; i++) {
++			const u8 *pix = packet.payload + cmd_fifo_len + i * 3;
+ 
+-		DSI_PORT_WRITE(TXPKT_PIX_FIFO,
+-			       pix[0] |
+-			       pix[1] << 8 |
+-			       pix[2] << 16 |
+-			       pix[3] << 24);
++			DSI_PORT_WRITE(TXPKT_PIX_FIFO,
++				       pix[2] |
++				       pix[1] << 8 |
++				       pix[0] << 16);
++		}
+ 	}
+ 
+ 	if (msg->flags & MIPI_DSI_MSG_USE_LPM)
+@@ -1516,6 +1537,7 @@ static const struct drm_encoder_funcs vc
+ 
+ static const struct vc4_dsi_variant bcm2711_dsi1_variant = {
+ 	.port			= 1,
++	.cmd_fifo_width		= 4,
+ 	.debugfs_name		= "dsi1_regs",
+ 	.regs			= dsi1_regs,
+ 	.nregs			= ARRAY_SIZE(dsi1_regs),
+@@ -1523,6 +1545,7 @@ static const struct vc4_dsi_variant bcm2
+ 
+ static const struct vc4_dsi_variant bcm2835_dsi0_variant = {
+ 	.port			= 0,
++	.cmd_fifo_width		= 3,
+ 	.debugfs_name		= "dsi0_regs",
+ 	.regs			= dsi0_regs,
+ 	.nregs			= ARRAY_SIZE(dsi0_regs),
+@@ -1530,6 +1553,7 @@ static const struct vc4_dsi_variant bcm2
+ 
+ static const struct vc4_dsi_variant bcm2835_dsi1_variant = {
+ 	.port			= 1,
++	.cmd_fifo_width		= 4,
+ 	.broken_axi_workaround	= true,
+ 	.debugfs_name		= "dsi1_regs",
+ 	.regs			= dsi1_regs,

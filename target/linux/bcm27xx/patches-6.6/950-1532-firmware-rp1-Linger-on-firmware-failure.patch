@@ -1,0 +1,103 @@
+From 3f60adc5ce8238996ec43d2b76a6e38e46f8271b Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 3 Feb 2025 14:51:52 +0000
+Subject: [PATCH] firmware: rp1: Linger on firmware failure
+
+To avoid pointless retries, let the probe function succeed if the
+firmware interface is configured correctly but the firmware is
+incompatible. The value of the private drvdata field holds the outcome.
+
+Link: https://github.com/raspberrypi/linux/issues/6642
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/firmware/rp1.c | 28 ++++++++++++++--------------
+ 1 file changed, 14 insertions(+), 14 deletions(-)
+
+--- a/drivers/firmware/rp1.c
++++ b/drivers/firmware/rp1.c
+@@ -114,7 +114,8 @@ static void rp1_firmware_delete(struct k
+ 
+ void rp1_firmware_put(struct rp1_firmware *fw)
+ {
+-	kref_put(&fw->consumers, rp1_firmware_delete);
++	if (!IS_ERR_OR_NULL(fw))
++		kref_put(&fw->consumers, rp1_firmware_delete);
+ }
+ EXPORT_SYMBOL_GPL(rp1_firmware_put);
+ 
+@@ -157,7 +158,7 @@ struct rp1_firmware *rp1_firmware_get(st
+ 	const char *match = rp1_firmware_of_match[0].compatible;
+ 	struct platform_device *pdev;
+ 	struct device_node *fwnode;
+-	struct rp1_firmware *fw;
++	struct rp1_firmware *fw = NULL;
+ 
+ 	if (!client)
+ 		return NULL;
+@@ -166,17 +167,17 @@ struct rp1_firmware *rp1_firmware_get(st
+ 		return NULL;
+ 	if (!of_device_is_compatible(fwnode, match)) {
+ 		of_node_put(fwnode);
+-		return NULL;
++		return ERR_PTR(-ENXIO);
+ 	}
+ 
+ 	pdev = of_find_device_by_node(fwnode);
+ 	of_node_put(fwnode);
+ 
+ 	if (!pdev)
+-		goto err_exit;
++		return ERR_PTR(-ENXIO);
+ 
+ 	fw = platform_get_drvdata(pdev);
+-	if (!fw)
++	if (IS_ERR_OR_NULL(fw))
+ 		goto err_exit;
+ 
+ 	if (!kref_get_unless_zero(&fw->consumers))
+@@ -188,7 +189,7 @@ struct rp1_firmware *rp1_firmware_get(st
+ 
+ err_exit:
+ 	put_device(&pdev->dev);
+-	return NULL;
++	return fw;
+ }
+ EXPORT_SYMBOL_GPL(rp1_firmware_get);
+ 
+@@ -204,8 +205,8 @@ struct rp1_firmware *devm_rp1_firmware_g
+ 	int ret;
+ 
+ 	fw = rp1_firmware_get(client);
+-	if (!fw)
+-		return NULL;
++	if (IS_ERR_OR_NULL(fw))
++		return fw;
+ 
+ 	ret = devm_add_action_or_reset(dev, devm_rp1_firmware_put, fw);
+ 	if (ret)
+@@ -270,19 +271,18 @@ static int rp1_firmware_probe(struct pla
+ 	init_completion(&fw->c);
+ 	kref_init(&fw->consumers);
+ 
+-	platform_set_drvdata(pdev, fw);
+-
+ 	ret = rp1_firmware_message(fw, GET_FIRMWARE_VERSION,
+ 				   NULL, 0, &version, sizeof(version));
+ 	if (ret == sizeof(version)) {
+ 		dev_info(dev, "RP1 Firmware version %08x%08x%08x%08x%08x\n",
+ 			 version[0], version[1], version[2], version[3], version[4]);
+-		ret = 0;
+-	} else if (ret >= 0) {
+-		ret = -EIO;
++		platform_set_drvdata(pdev, fw);
++	} else {
++		rp1_firmware_put(fw);
++		platform_set_drvdata(pdev, ERR_PTR(-ENOENT));
+ 	}
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ static int rp1_firmware_remove(struct platform_device *pdev)
