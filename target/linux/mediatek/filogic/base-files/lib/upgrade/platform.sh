@@ -49,6 +49,7 @@ platform_do_upgrade() {
 	glinet,gl-x3000|\
 	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
+        sl,3000-emmc|\
 	huasifei,wh3000-emmc|\
 	jdcloud,re-cs-05)
 		CI_KERNPART="kernel"
@@ -106,6 +107,7 @@ platform_copy_config() {
 	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
 	huasifei,wh3000-emmc|\
+        sl,3000-emmc|\
 	jdcloud,re-cs-05)
 		emmc_copy_config
 		;;
