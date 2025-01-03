@@ -69,6 +69,15 @@ define Package/mt7922bt-firmware/install
 endef
 $(eval $(call BuildPackage,mt7922bt-firmware))
 
+Package/mt7925bt-firmware = $(call Package/firmware-default,mt7925bt firmware)
+define Package/mt7925bt-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7925
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7925/BT_RAM_CODE_MT7925_1_1_hdr.bin \
+		$(1)/lib/firmware/mediatek/mt7925
+endef
+$(eval $(call BuildPackage,mt7925bt-firmware))
+
 Package/mt7981-wo-firmware = $(call Package/firmware-default,MT7981 offload firmware)
 define Package/mt7981-wo-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek
