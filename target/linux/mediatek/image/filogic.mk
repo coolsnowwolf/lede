@@ -461,7 +461,7 @@ endef
 TARGET_DEVICES += h3c_magic-nx30-pro
 
 define Device/huasifei_wh3000-emmc
-  DEVICE_VENDOR := HUASIFEI
+  DEVICE_VENDOR := Huasifei
   DEVICE_MODEL := WH3000 eMMC
   DEVICE_DTS := mt7981b-huasifei-wh3000-emmc
   DEVICE_DTS_DIR := ../dts
