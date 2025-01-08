@@ -1,6 +1,6 @@
-GRUB_SERIAL:=$(call qstrip,$(CONFIG_GRUB_SERIAL))
+GRUB_SERIAL:=$(call qstrip,$(CONFIG_TARGET_SERIAL))
 ifeq ($(GRUB_SERIAL),)
-$(error This platform requires CONFIG_GRUB_SERIAL be set!)
+$(error This platform requires CONFIG_TARGET_SERIAL be set!)
 endif
 
 define Package/base-files/install-target
