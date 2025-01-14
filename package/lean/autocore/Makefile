@@ -11,6 +11,7 @@ PKG_NAME:=autocore
 PKG_RELEASE:=$(COMMITCOUNT)
 
 include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/target.mk
 
 define Package/autocore-arm
   TITLE:=Arm auto core loadbalance script.
@@ -49,7 +50,9 @@ define Package/autocore-arm/install
 	$(INSTALL_BIN) ./files/arm/sbin/cpuinfo $(1)/sbin/cpuinfo
 	$(INSTALL_BIN) ./files/arm/sbin/ethinfo $(1)/sbin/ethinfo
 	$(INSTALL_BIN) ./files/arm/sbin/usage $(1)/sbin/usage
+ifneq ($(filter ipq% %filogic qualcommax%, $(TARGETID)),)
 	$(INSTALL_BIN) ./files/arm/sbin/tempinfo $(1)/sbin/tempinfo
+endif
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
