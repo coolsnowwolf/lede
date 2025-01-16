@@ -152,7 +152,7 @@ define Build/Compile
 		ARCH="$(LINUX_KARCH)" \
 		$(KERNEL_MAKE_FLAGS) \
 		M="$(PKG_BUILD_DIR)" \
-		EXTRA_CFLAGS="$(EXTRA_CFLAGS) -Wno-error=unused-function " \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS) -Wno-error=unused-function -Wno-unused-variable " \
 		SoC=$(SOC) \
 		$(PKG_JOBS) \
 		modules

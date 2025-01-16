@@ -1,0 +1,619 @@
+--- a/nss_core.c
++++ b/nss_core.c
+@@ -65,7 +65,7 @@
+ (((LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(4, 5, 0)))) || \
+ (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)))) || \
+ (((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5, 16, 0)))) || \
+-(((LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0))))))
++(((LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)) && (LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0))))))
+ #error "Check skb recycle code in this file to match Linux version"
+ #endif
+ 
+--- a/nss_dynamic_interface.c
++++ b/nss_dynamic_interface.c
+@@ -226,7 +226,7 @@ int nss_dynamic_interface_alloc_node(enu
+ 	core_id = nss_top_main.dynamic_interface_table[type];
+ 	nss_ctx = (struct nss_ctx_instance *)&nss_top_main.nss[core_id];
+ 	di_data.if_num = -1;
+-	di_data.response = false;
++	di_data.response = -1;
+ 	init_completion(&di_data.complete);
+ 
+ 	nss_dynamic_interface_msg_init(&ndim, NSS_DYNAMIC_INTERFACE, NSS_DYNAMIC_INTERFACE_ALLOC_NODE,
+@@ -285,7 +285,7 @@ nss_tx_status_t nss_dynamic_interface_de
+ 
+ 	core_id = nss_top_main.dynamic_interface_table[type];
+ 	nss_ctx = (struct nss_ctx_instance *)&nss_top_main.nss[core_id];
+-	di_data.response = false;
++	di_data.response = -1;
+ 	init_completion(&di_data.complete);
+ 
+ 	if (nss_is_dynamic_interface(if_num) == false) {
+--- a/nss_init.c
++++ b/nss_init.c
+@@ -592,48 +592,12 @@ static struct ctl_table nss_general_tabl
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_init_dir[] = {
+-#if (NSS_FREQ_SCALE_SUPPORT == 1)
+-	{
+-		.procname               = "clock",
+-		.mode                   = 0555,
+-		.child                  = nss_freq_table,
+-	},
+-#endif
+-	{
+-		.procname               = "general",
+-		.mode                   = 0555,
+-		.child                  = nss_general_table,
+-	},
+-#if (NSS_SKB_REUSE_SUPPORT == 1)
+-	{
+-		.procname               = "skb_reuse",
+-		.mode                   = 0555,
+-		.child                  = nss_skb_reuse_table,
+-	},
+-#endif
+-	{ }
+-};
+-
+-static struct ctl_table nss_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_init_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_root_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table_header *nss_dev_header;
++static struct ctl_table_header *nss_clock_header;
++static struct ctl_table_header *nss_skb_header;
++static struct ctl_table_header *nss_general_header;
++static struct ctl_table *nss_clock_table;
++static struct ctl_table *nss_skb_reuse_tabl;
++static struct ctl_table *nss_general_tabl;
+ 
+ /*
+  * nss_init()
+@@ -785,7 +749,16 @@ nss_info("Init NSS driver");
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_dev_header = register_sysctl_table(nss_root);
++  // to avoid multiple calls to `register_sysctl_table`
++	nss_general_header = register_sysctl("dev/nss/general", nss_general_table);
++
++#if (NSS_SKB_REUSE_SUPPORT == 1)
++  nss_skb_header = register_sysctl("dev/nss/skb_reuse", nss_skb_reuse_table);
++#endif
++
++#if (NSS_FREQ_SCALE_SUPPORT == 1)
++  nss_clock_header = register_sysctl("dev/nss/clock", nss_freq_table);
++#endif
+ 
+ 	/*
+ 	 * Registering sysctl for ipv4/6 specific config.
+@@ -948,8 +921,18 @@ static void __exit nss_cleanup(void)
+ {
+ 	nss_info("Exit NSS driver");
+ 
+-	if (nss_dev_header)
+-		unregister_sysctl_table(nss_dev_header);
++	if (nss_general_header)
++		unregister_sysctl_table(nss_general_header);
++
++#if (NSS_SKB_REUSE_SUPPORT == 1)
++	if (nss_skb_header)
++	  unregister_sysctl_table(nss_skb_header);
++#endif
++
++#if (NSS_FREQ_SCALE_SUPPORT == 1)
++	if (nss_clock_header)
++	  unregister_sysctl_table(nss_clock_header);
++#endif
+ 
+ 	/*
+ 	 * Unregister n2h specific sysctl
+--- a/nss_project.c
++++ b/nss_project.c
+@@ -333,33 +333,6 @@ static struct ctl_table nss_project_tabl
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_project_dir[] = {
+-	{
+-		.procname		= "project",
+-		.mode			= 0555,
+-		.child			= nss_project_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_project_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_project_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_project_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_project_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_project_header;
+ 
+ /*
+@@ -368,7 +341,7 @@ static struct ctl_table_header *nss_proj
+  */
+ void nss_project_register_sysctl(void)
+ {
+-	nss_project_header = register_sysctl_table(nss_project_root);
++	nss_project_header = register_sysctl("dev/nss/project", nss_project_table);
+ }
+ 
+ /*
+--- a/nss_n2h.c
++++ b/nss_n2h.c
+@@ -1904,36 +1904,6 @@ static struct ctl_table nss_n2h_table_mu
+ 	{ }
+ };
+ 
+-/*
+- * This table will be overwritten during single-core registration
+- */
+-static struct ctl_table nss_n2h_dir[] = {
+-	{
+-		.procname		= "n2hcfg",
+-		.mode			= 0555,
+-		.child			= nss_n2h_table_multi_core,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_n2h_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_n2h_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_n2h_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_n2h_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_n2h_header;
+ 
+ /*
+@@ -2282,8 +2252,7 @@ void nss_n2h_single_core_register_sysctl
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_n2h_dir[0].child = nss_n2h_table_single_core;
+-	nss_n2h_header = register_sysctl_table(nss_n2h_root);
++	nss_n2h_header = register_sysctl("dev/nss/n2hcfg", nss_n2h_table_single_core);
+ }
+ 
+ /*
+@@ -2381,7 +2350,7 @@ void nss_n2h_multi_core_register_sysctl(
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_n2h_header = register_sysctl_table(nss_n2h_root);
++	nss_n2h_header = register_sysctl("dev/nss/n2hcfg", nss_n2h_table_multi_core);
+ }
+ 
+ /*
+--- a/nss_ppe_vp.c
++++ b/nss_ppe_vp.c
+@@ -783,24 +783,6 @@ static struct ctl_table nss_ppe_vp_table
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_ppe_vp_dir[] = {
+-	{
+-		.procname	= "ppe_vp",
+-		.mode		= 0555,
+-		.child		= nss_ppe_vp_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_ppe_vp_root_dir[] = {
+-	{
+-		.procname	= "nss",
+-		.mode		= 0555,
+-		.child		= nss_ppe_vp_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_ppe_vp_procfs_header;
+ 
+ /*
+@@ -812,7 +794,7 @@ void nss_ppe_vp_procfs_register(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_ppe_vp_procfs_header = register_sysctl_table(nss_ppe_vp_root_dir);
++	nss_ppe_vp_procfs_header = register_sysctl("dev/nss/ppe_vp", nss_ppe_vp_table);
+ }
+ 
+ /*
+--- a/nss_pppoe.c
++++ b/nss_pppoe.c
+@@ -353,33 +353,6 @@ static struct ctl_table nss_pppoe_table[
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_pppoe_dir[] = {
+-	{
+-		.procname		= "pppoe",
+-		.mode			= 0555,
+-		.child			= nss_pppoe_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_pppoe_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_pppoe_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_pppoe_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_pppoe_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_pppoe_header;
+ 
+ /*
+@@ -391,7 +364,7 @@ void nss_pppoe_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_pppoe_header = register_sysctl_table(nss_pppoe_root);
++	nss_pppoe_header = register_sysctl("dev/nss/pppoe", nss_pppoe_table);
+ }
+ 
+ /*
+--- a/nss_rps.c
++++ b/nss_rps.c
+@@ -577,33 +577,6 @@ static struct ctl_table nss_rps_table[]
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_rps_dir[] = {
+-	{
+-		.procname		= "rps",
+-		.mode			= 0555,
+-		.child			= nss_rps_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_rps_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_rps_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_rps_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_rps_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_rps_header;
+ 
+ /*
+@@ -640,7 +613,7 @@ void nss_rps_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_rps_header = register_sysctl_table(nss_rps_root);
++	nss_rps_header = register_sysctl("dev/nss/rps", nss_rps_table);
+ }
+ 
+ /*
+--- a/nss_stats.c
++++ b/nss_stats.c
+@@ -88,32 +88,6 @@ static struct ctl_table nss_stats_table[
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_stats_dir[] = {
+-	{
+-		.procname		= "stats",
+-		.mode			= 0555,
+-		.child			= nss_stats_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_stats_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_stats_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_stats_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_stats_root_dir,
+-	},
+-	{ }
+-};
+ static struct ctl_table_header *nss_stats_header;
+ 
+ /*
+@@ -125,7 +99,7 @@ void nss_stats_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_stats_header = register_sysctl_table(nss_stats_root);
++	nss_stats_header = register_sysctl("dev/nss/stats", nss_stats_table);
+ }
+ 
+ /*
+--- a/nss_c2c_tx.c
++++ b/nss_c2c_tx.c
+@@ -334,33 +334,6 @@ static struct ctl_table nss_c2c_tx_table
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_c2c_tx_dir[] = {
+-	{
+-		.procname		= "c2c_tx",
+-		.mode			= 0555,
+-		.child			= nss_c2c_tx_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_c2c_tx_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_c2c_tx_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_c2c_tx_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_c2c_tx_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_c2c_tx_header;
+ 
+ /*
+@@ -378,7 +351,7 @@ void nss_c2c_tx_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_c2c_tx_header = register_sysctl_table(nss_c2c_tx_root);
++	nss_c2c_tx_header = register_sysctl("dev/nss/c2c_tx", nss_c2c_tx_table);
+ }
+ 
+ /*
+--- a/nss_dma.c
++++ b/nss_dma.c
+@@ -378,33 +378,6 @@ static struct ctl_table nss_dma_table[]
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_dma_dir[] = {
+-	{
+-		.procname		= "dma",
+-		.mode			= 0555,
+-		.child			= nss_dma_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_dma_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_dma_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_dma_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_dma_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_dma_header;
+ 
+ /*
+@@ -422,7 +395,7 @@ void nss_dma_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_dma_header = register_sysctl_table(nss_dma_root);
++	nss_dma_header = register_sysctl("dev/nss/dma", nss_dma_table);
+ }
+ 
+ /*
+--- a/nss_ipv4.c
++++ b/nss_ipv4.c
+@@ -712,33 +712,6 @@ static struct ctl_table nss_ipv4_table[]
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_ipv4_dir[] = {
+-	{
+-		.procname		= "ipv4cfg",
+-		.mode			= 0555,
+-		.child			= nss_ipv4_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_ipv4_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_ipv4_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_ipv4_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_ipv4_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_ipv4_header;
+ 
+ /*
+@@ -753,7 +726,7 @@ void nss_ipv4_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_ipv4_header = register_sysctl_table(nss_ipv4_root);
++	nss_ipv4_header = register_sysctl("dev/nss/ipv4cfg", nss_ipv4_table);
+ }
+ 
+ /*
+--- a/nss_ipv6.c
++++ b/nss_ipv6.c
+@@ -18,6 +18,7 @@
+  * nss_ipv6.c
+  *	NSS IPv6 APIs
+  */
++#include "linux/ipv6.h"
+ #include <nss_core.h>
+ #include "nss_dscp_map.h"
+ #include "nss_ipv6_stats.h"
+@@ -377,7 +378,7 @@ EXPORT_SYMBOL(nss_ipv6_get_mgr);
+  * nss_ipv6_register_handler()
+  *	Register our handler to receive messages for this interface
+  */
+-void nss_ipv6_register_handler()
++void nss_ipv6_register_handler(void)
+ {
+ 	struct nss_ctx_instance *nss_ctx = nss_ipv6_get_mgr();
+ 
+@@ -706,33 +707,6 @@ static struct ctl_table nss_ipv6_table[]
+ 	{ }
+ };
+ 
+-static struct ctl_table nss_ipv6_dir[] = {
+-	{
+-		.procname		= "ipv6cfg",
+-		.mode			= 0555,
+-		.child			= nss_ipv6_table,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_ipv6_root_dir[] = {
+-	{
+-		.procname		= "nss",
+-		.mode			= 0555,
+-		.child			= nss_ipv6_dir,
+-	},
+-	{ }
+-};
+-
+-static struct ctl_table nss_ipv6_root[] = {
+-	{
+-		.procname		= "dev",
+-		.mode			= 0555,
+-		.child			= nss_ipv6_root_dir,
+-	},
+-	{ }
+-};
+-
+ static struct ctl_table_header *nss_ipv6_header;
+ 
+ /*
+@@ -747,7 +721,7 @@ void nss_ipv6_register_sysctl(void)
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	nss_ipv6_header = register_sysctl_table(nss_ipv6_root);
++	nss_ipv6_header = register_sysctl("dev/nss/ipv6cfg", nss_ipv6_table);
+ }
+ 
+ /*
+--- a/nss_pm.c
++++ b/nss_pm.c
+@@ -323,6 +323,7 @@ error:
+ nss_pm_interface_status_t nss_pm_set_perf_level(void *handle, nss_pm_perf_level_t lvl)
+ {
+ #if ((NSS_DT_SUPPORT == 1) && (NSS_FREQ_SCALE_SUPPORT == 1))
++#if !defined(NSS_HAL_IPQ807x_SUPPORT)
+ 	nss_freq_scales_t index;
+ 
+ 	switch (lvl) {
+@@ -335,10 +336,9 @@ nss_pm_interface_status_t nss_pm_set_per
+ 		break;
+ 
+ 	default:
+-		index = NSS_PM_PERF_LEVEL_IDLE;
++		index = (nss_freq_scales_t)NSS_PM_PERF_LEVEL_IDLE;
+ 	}
+ 
+-#if !defined(NSS_HAL_IPQ807x_SUPPORT)
+ 	nss_freq_sched_change(index, false);
+ #endif
+ 

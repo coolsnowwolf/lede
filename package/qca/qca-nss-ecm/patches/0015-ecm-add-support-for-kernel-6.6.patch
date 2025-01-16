@@ -1,0 +1,132 @@
+--- a/frontends/nss/ecm_nss_common.h
++++ b/frontends/nss/ecm_nss_common.h
+@@ -277,8 +277,10 @@ static inline bool ecm_nss_common_igs_ac
+ 		 */
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
+ 		if (likely(!(to_dev->ingress_cl_list))) {
+-#else
++#elif (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
+ 		if (likely(!(to_dev->miniq_ingress))) {
++#else
++		if (likely(!(to_dev->tcx_ingress))) {
+ #endif
+ 			dev_put(to_dev);
+ 			continue;
+--- a/frontends/ecm_front_end_common.c
++++ b/frontends/ecm_front_end_common.c
+@@ -36,6 +36,9 @@
+ #include <net/addrconf.h>
+ #include <net/gre.h>
+ #include <net/xfrm.h>
++#if (LINUX_VERSION_CODE > KERNEL_VERSION(6, 6, 0))
++#include <net/tcx.h>
++#endif
+ #include <linux/hashtable.h>
+ #include <net/sch_generic.h>
+ #ifdef ECM_FRONT_END_PPE_ENABLE
+@@ -1169,7 +1173,9 @@
+ 	{
+ 		.procname	= "ecm",
+ 		.mode		= 0555,
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0))
+ 		.child		= ecm_front_end_sysctl_tbl,
++#endif
+ 	},
+ 	{ }
+ };
+@@ -1178,7 +1184,9 @@
+ 	{
+ 		.procname		= "net",
+ 		.mode			= 0555,
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0))
+ 		.child			= ecm_front_end_common_root,
++#endif
+ 	},
+ 	{ }
+ };
+@@ -1192,7 +1200,7 @@
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	ecm_front_end_ctl_tbl_hdr = register_sysctl_table(ecm_front_end_common_root_dir);
++	ecm_front_end_ctl_tbl_hdr = register_sysctl("net/ecm", ecm_front_end_sysctl_tbl);
+ #ifdef ECM_FRONT_END_SFE_ENABLE
+ 	if (ecm_front_end_ctl_tbl_hdr) {
+ 		ecm_sfe_sysctl_tbl_init();
+@@ -1712,7 +1720,12 @@
+ 	}
+ 
+ 	BUG_ON(!rcu_read_lock_bh_held());
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
+ 	miniq = rcu_dereference_bh(dev->miniq_ingress);
++#else
++	struct bpf_mprog_entry *entry = rcu_dereference_bh(dev->tcx_ingress);
++	miniq = entry ? tcx_entry(entry)->miniq : NULL;
++#endif
+ 	if (miniq) {
+ 		DEBUG_INFO("Ingress Qdisc is present for device[%s]\n", dev->name);
+ 		dev_put(dev);
+@@ -1767,7 +1780,12 @@
+ 	}
+ 
+ #if defined(CONFIG_NET_CLS_ACT) && defined(CONFIG_NET_EGRESS)
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0))
+ 	miniq = rcu_dereference_bh(dev->miniq_egress);
++#else
++	struct bpf_mprog_entry *entry = rcu_dereference_bh(dev->tcx_egress);
++	miniq = entry ? tcx_entry(entry)->miniq : NULL;
++#endif
+ 	if (miniq) {
+ 		DEBUG_INFO("Egress needed\n");
+ 		dev_put(dev);
+--- a/ecm_interface.c
++++ b/ecm_interface.c
+@@ -341,7 +341,8 @@
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0))
+ 	dev = (struct net_device *)ipv6_dev_find_and_hold(&init_net, &addr6, 1);
+ #else
+-	dev = (struct net_device *)ipv6_dev_find_and_hold(&init_net, &addr6, 1);
++	dev = (struct net_device *)ipv6_dev_find(&init_net, &addr6, NULL);
++	dev_hold(dev);
+ #endif
+ 	return dev;
+ }
+@@ -804,7 +805,8 @@
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0))
+ 	local_dev = ipv6_dev_find_and_hold(&init_net, &daddr, 1);
+ #else
+-	local_dev = ipv6_dev_find_and_hold(&init_net, &daddr, 1);
++	local_dev = ipv6_dev_find(&init_net, &daddr, NULL);
++	dev_hold(local_dev);
+ #endif
+ 	if (local_dev) {
+ 		DEBUG_TRACE("%pi6 is a local address\n", &daddr);
+@@ -8276,7 +8278,9 @@
+ 	{
+ 		.procname		= "ecm",
+ 		.mode			= 0555,
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0))
+ 		.child			= ecm_interface_table,
++#endif
+ 	},
+ 	{ }
+ };
+@@ -8285,7 +8289,9 @@
+ 	{
+ 		.procname		= "net",
+ 		.mode			= 0555,
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0))
+ 		.child			= ecm_interface_root_dir,
++#endif
+ 	},
+ 	{ }
+ };
+@@ -8786,7 +8792,7 @@
+ 	/*
+ 	 * Register sysctl table.
+ 	 */
+-	ecm_interface_ctl_table_header = register_sysctl_table(ecm_interface_root);
++	ecm_interface_ctl_table_header = register_sysctl("net/ecm", ecm_interface_table);
+ 
+ 	result = register_netdevice_notifier(&ecm_interface_netdev_notifier);
+ 	if (result != 0) {
