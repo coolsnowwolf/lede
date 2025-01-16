@@ -2558,6 +2558,15 @@ define Device/zbtlink_zbt-wd323
 endef
 TARGET_DEVICES += zbtlink_zbt-wd323
 
+define Device/zte_e8820
+  SOC := qca9563
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := E8820
+  IMAGE_SIZE := 16000k
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += zte_e8820
+
 define Device/zyxel_nbg6616
   SOC := qca9557
   DEVICE_VENDOR := ZyXEL
