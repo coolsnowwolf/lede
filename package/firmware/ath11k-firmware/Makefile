@@ -47,6 +47,12 @@ $(Package/ath11k-firmware-default)
   TITLE:=IPQ8074 ath11k firmware
 endef
 
+define Package/ath11k-firmware-qcn6122
+$(Package/ath11k-firmware-default)
+  TITLE:=QCN6122 ath11k firmware
+  DEPENDS:=ath11k-firmware-ipq5018
+endef
+
 define Package/ath11k-firmware-qcn9074
 $(Package/ath11k-firmware-default)
   TITLE:=QCN9074 ath11k firmware
@@ -89,6 +95,13 @@ define Package/ath11k-firmware-ipq8074/install
 		$(1)/lib/firmware/IPQ8074/
 endef
 
+define Package/ath11k-firmware-qcn6122/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCN6122/hw1.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k-firmware/IPQ5018_QCN6122_QCN6122/hw1.0/2.7.0.1/WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1/qcn6122/* \
+		$(1)/lib/firmware/ath11k/QCN6122/hw1.0/
+endef
+
 define Package/ath11k-firmware-qcn9074/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCN9074/hw1.0
 	$(INSTALL_DATA) \
@@ -101,4 +114,5 @@ endef
 $(eval $(call BuildPackage,ath11k-firmware-ipq5018))
 $(eval $(call BuildPackage,ath11k-firmware-ipq6018))
 $(eval $(call BuildPackage,ath11k-firmware-ipq8074))
+$(eval $(call BuildPackage,ath11k-firmware-qcn6122))
 $(eval $(call BuildPackage,ath11k-firmware-qcn9074))
