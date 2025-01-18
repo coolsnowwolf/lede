@@ -1,0 +1,1 @@
+cp -r bin/targets/mediatek/filogic/openwrt-mediatek-filogic-cmcc_xr30-nand-ubootmod-squashfs-* /mnt/d/image/openwrt/xr-30/build/lede/0118
