@@ -318,8 +318,8 @@ TARGET_DEVICES += cmcc_rax3000m-nand
 
 define Device/cmcc_xr30-nand
   DEVICE_VENDOR := CMCC
-  DEVICE_MODEL := XR30 NAND version
-  DEVICE_VARIANT := (custom U-Boot layout)
+  DEVICE_MODEL := XR30 NAND
+  DEVICE_VARIANT := (U-Boot mod)
   DEVICE_DTS := mt7981b-cmcc-xr30-nand
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware \
