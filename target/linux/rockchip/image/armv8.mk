@@ -560,19 +560,31 @@ define Device/xunlong_orangepi-r1-plus-lts
 endef
 TARGET_DEVICES += xunlong_orangepi-r1-plus-lts
 
-define Device/widora_mangopi-m28k
+define Device/widora_mangopi-m28
   DEVICE_VENDOR := Widora
-  DEVICE_MODEL := MangoPi M28K
   SOC := rk3528
   UBOOT_DEVICE_NAME := evb-rk3528
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-aic8800 kmod-r8168 wpad-openssl -urngd
 endef
+
+define Device/widora_mangopi-m28c
+$(call Device/widora_mangopi-m28)
+  DEVICE_MODEL := MangoPi M28C
+  DEVICE_PACKAGES += kmod-gpio-button-hotplug kmod-usb-serial-option
+endef
+TARGET_DEVICES += widora_mangopi-m28c
+
+define Device/widora_mangopi-m28k
+$(call Device/widora_mangopi-m28)
+  DEVICE_MODEL := MangoPi M28K
+  DEVICE_PACKAGES += kmod-r8168
+endef
 TARGET_DEVICES += widora_mangopi-m28k
 
 define Device/widora_mangopi-m28k-pro
-$(call Device/widora_mangopi-m28k)
+$(call Device/widora_mangopi-m28)
   DEVICE_MODEL := MangoPi M28K Pro
-  DEVICE_PACKAGES := kmod-aic8800 kmod-i2c-gpio kmod-r8125 wpad-openssl -urngd
+  DEVICE_PACKAGES += kmod-i2c-gpio kmod-r8125
 endef
 TARGET_DEVICES += widora_mangopi-m28k-pro
