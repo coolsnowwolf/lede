@@ -1,0 +1,41 @@
+From: Chuanhong Guo <gch981213@gmail.com>
+Date: Thu, 19 Sep 2024 09:23:27 +0800
+Subject: [PATCH 16/20] spi: spi-mem: allow gpio cs in spi_mem_exec_op
+
+spi_mem_exec_op can use gpio cs, either by not asserting the native
+cs or switching the native cs pin to GPIO mode with pinctrl.
+
+Allow calling exec_op when GPIO CS present and control GPIO CS
+before and after calling exec_op.
+If exec_op decided to return -EOPNOTSUPP, the code will assert and
+deassert GPIO CS without clock pulsing, which should be fine on most
+SPI slaves.
+
+Signed-off-by: Chuanhong Guo <gch981213@gmail.com>
+---
+ drivers/spi/spi-mem.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+--- a/drivers/spi/spi-mem.c
++++ b/drivers/spi/spi-mem.c
+@@ -368,13 +368,19 @@ int spi_mem_exec_op(struct spi_mem *mem,
+ 	if (!spi_mem_internal_supports_op(mem, op))
+ 		return -EOPNOTSUPP;
+ 
+-	if (ctlr->mem_ops && ctlr->mem_ops->exec_op && !spi_get_csgpiod(mem->spi, 0)) {
++	if (ctlr->mem_ops && ctlr->mem_ops->exec_op) {
+ 		ret = spi_mem_access_start(mem);
+ 		if (ret)
+ 			return ret;
+ 
++		if (spi_get_csgpiod(mem->spi, 0))
++			gpiod_set_value_cansleep(spi_get_csgpiod(mem->spi, 0), 1);
++
+ 		ret = ctlr->mem_ops->exec_op(mem, op);
+ 
++		if (spi_get_csgpiod(mem->spi, 0))
++			gpiod_set_value_cansleep(spi_get_csgpiod(mem->spi, 0), 0);
++
+ 		spi_mem_access_end(mem);
+ 
+ 		/*
