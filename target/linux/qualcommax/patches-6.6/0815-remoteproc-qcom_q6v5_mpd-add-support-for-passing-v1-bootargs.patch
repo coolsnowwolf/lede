@@ -1,0 +1,163 @@
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Mon, 09 Dec 2024 09:59:38 +0400
+Subject: [PATCH] remoteproc: qcom_q6v5_mpd: add support for passing v1 bootargs
+
+On multi-PD platforms such as IPQ5018, boot args are passed to the root PD
+run on the Q6 processor which in turn boots the user PDs for internal 
+(IPQ5018) and external wifi radios (such as QCN6122). These boot args 
+let the user PD process know details like what PCIE index, user PD ID, and
+reset GPIO is used. These are otherwise hardcoded in the firmware.
+
+Below is the structure expected of the version 1 boot args including the 
+default values hardcoded in the firmware for IPQ5018:
+
++------------+------+--------------+--------------+
+| Argument   | type | def val UPD2 | def val UPD3 |
++------------+------+--------------+--------------+
+| PCIE Index | u32  | 0x02 (PCIE1) | 0x01 (PCIE0) |
+| Length     | u32  | 0x04         | 0x04         |
+| User PD ID | u32  | 0x02         | 0x03         |
+| Reset GPIO | u32  | 0x12         | 0x0f         |
+| Reserved 1 | u32  | 0x00         | 0x00         |
+| Reserved 2 | u32  | 0x00         | 0x00         |
++------------+------+--------------+--------------+
+
+On IPQ5018/QCN6122 boards, the default mapping is as follows:
+
+          +-> UPD1 ----> IPQ5018 Internal 2.4G Radio
+         / 
+        /
+Root PD +---> UPD2 ----> QCN6122 6G Radio on PCIE1 (if available)
+        \
+         \
+          +-> UPD3 ----> QCN6102 5G Radio on PCIE0
+
+To support (future) boards with other mappings or control what UPD ID is 
+used, let's add support for passing boot args for more flexibility.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -42,7 +42,11 @@
+ #define UPD_BOOT_INFO_SMEM_SIZE		4096
+ #define UPD_BOOT_INFO_HEADER_TYPE	0x2
+ #define UPD_BOOT_INFO_SMEM_ID		507
+-#define VERSION2			2
++
++enum q6_bootargs_version {
++	VERSION1 = 1,
++	VERSION2,
++};
+ 
+ /**
+  * struct userpd_boot_info_header - header of user pd bootinfo
+@@ -94,6 +98,7 @@ struct userpd {
+ struct wcss_data {
+ 	u32 pasid;
+ 	bool share_upd_info_to_q6;
++	u8 bootargs_version;
+ };
+ 
+ /**
+@@ -298,10 +303,13 @@ static void *q6_wcss_da_to_va(struct rpr
+ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ {
+ 	int i, ret;
++	u32 rd_val;
+ 	size_t size;
+ 	u16 cnt = 0, version;
+ 	void *ptr;
++	u8 *bootargs_arr;
+ 	struct q6_wcss *wcss = rproc->priv;
++	struct device_node *np = wcss->dev->of_node;
+ 	struct userpd *upd;
+ 	struct userpd_boot_info upd_bootinfo = {0};
+ 	const struct firmware *fw;
+@@ -323,10 +331,47 @@ static int share_upd_bootinfo_to_q6(stru
+ 	}
+ 
+ 	/*Version*/
+-	version = VERSION2;
++	version = (wcss->desc->bootargs_version) ? wcss->desc->bootargs_version : VERSION2;
+ 	memcpy_toio(ptr, &version, sizeof(version));
+ 	ptr += sizeof(version);
+ 
++	cnt = ret = of_property_count_u32_elems(np, "boot-args");
++	if (ret < 0) {
++		if (ret == -ENODATA) {
++			dev_err(wcss->dev, "failed to read boot args ret:%d\n", ret);
++			return ret;
++		}
++		cnt = 0;
++	}
++
++	/* No of elements */
++	memcpy_toio(ptr, &cnt, sizeof(u16));
++	ptr += sizeof(u16);
++
++	bootargs_arr = kzalloc(cnt, GFP_KERNEL);
++	if (!bootargs_arr) {
++		dev_err(wcss->dev, "failed to allocate memory\n");
++		return PTR_ERR(bootargs_arr);
++	}
++
++	for (i = 0; i < cnt; i++) {
++		ret = of_property_read_u32_index(np, "boot-args", i, &rd_val);
++		if (ret) {
++			dev_err(wcss->dev, "failed to read boot args\n");
++			kfree(bootargs_arr);
++			return ret;
++		}
++		bootargs_arr[i] = (u8)rd_val;
++	}
++
++	/* Copy bootargs */
++	memcpy_toio(ptr, bootargs_arr, cnt);
++	ptr += (cnt);
++
++	of_node_put(np);
++	kfree(bootargs_arr);
++	cnt = 0;
++
+ 	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
+ 		if (wcss->upd[i])
+ 			cnt++;
+@@ -382,12 +427,14 @@ static int q6_wcss_load(struct rproc *rp
+ 
+ 	/* Share user pd boot info to Q6 remote processor */
+ 	if (desc->share_upd_info_to_q6) {
+-		ret = share_upd_bootinfo_to_q6(rproc);
+-		if (ret) {
+-			dev_err(wcss->dev,
+-				"user pd boot info sharing with q6 failed %d\n",
+-				ret);
+-			return ret;
++		if (of_property_present(wcss->dev->of_node, "boot-args")) {
++			ret = share_upd_bootinfo_to_q6(rproc);
++			if (ret) {
++				dev_err(wcss->dev,
++					"user pd boot info sharing with q6 failed %d\n",
++					ret);
++				return ret;
++			}
+ 		}
+ 	}
+ 
+@@ -803,13 +850,15 @@ static int q6_wcss_remove(struct platfor
+ 
+ static const struct wcss_data q6_ipq5018_res_init = {
+ 	.pasid = MPD_WCNSS_PAS_ID,
+-	// .share_upd_info_to_q6 = true, /* Version 1 */
++	.share_upd_info_to_q6 = true,
++	.bootargs_version = VERSION1,
+ 	// .mdt_load_sec = qcom_mdt_load_pd_seg,
+ };
+ 
+ static const struct wcss_data q6_ipq5332_res_init = {
+ 	.pasid = MPD_WCNSS_PAS_ID,
+ 	.share_upd_info_to_q6 = true,
++	.bootargs_version = VERSION2,
+ };
+ 
+ static const struct wcss_data q6_ipq9574_res_init = {
