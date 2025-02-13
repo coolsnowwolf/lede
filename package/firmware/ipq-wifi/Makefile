@@ -31,6 +31,7 @@ ALLWIFIBOARDS:= \
 	aliyun_ap8220 \
 	arcadyan_aw1000 \
 	buffalo_wxr-5950ax12 \
+	cmcc_rax3000q \
 	compex_wpq873 \
 	dynalink_dl-wrx36 \
 	edgecore_eap102 \
@@ -101,10 +102,12 @@ define ipq-wifi-install-one
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),IPQ6018/hw1.0),\
   $(if $(filter $(suffix $(1)),.IPQ8074 .ipq8074),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),IPQ8074/hw2.0),\
+  $(if $(filter $(suffix $(1)),.QCN6122 .qcn6122),\
+    $(call ipq-wifi-install-ath11-one-to,$(1),$(2),QCN6122/hw1.0),\
   $(if $(filter $(suffix $(1)),.QCN9074 .qcn9074),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),QCN9074/hw1.0),\
     $(error Unrecognized board-file suffix '$(suffix $(1))' for '$(1)')\
-  )))))))))
+  ))))))))))
 
 endef
 # Blank line required at end of above define due to foreach context
@@ -143,6 +146,7 @@ endef
 $(eval $(call generate-ipq-wifi-package,aliyun_ap8220,Aliyun AP8220))
 $(eval $(call generate-ipq-wifi-package,arcadyan_aw1000,Arcadyan AW1000))
 $(eval $(call generate-ipq-wifi-package,buffalo_wxr-5950ax12,Buffalo WXR-5950AX12))
+$(eval $(call generate-ipq-wifi-package,cmcc_rax3000q,CMCC RAX3000Q))
 $(eval $(call generate-ipq-wifi-package,compex_wpq873,Compex WPQ-873))
 $(eval $(call generate-ipq-wifi-package,dynalink_dl-wrx36,Dynalink DL-WRX36))
 $(eval $(call generate-ipq-wifi-package,edgecore_eap102,Edgecore EAP102))
