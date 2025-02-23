@@ -57,3 +57,30 @@ define Package/brcmfmac-firmware-43752-sdio/install
 endef
 
 $(eval $(call BuildPackage,brcmfmac-firmware-43752-sdio))
+
+Package/brcmfmac-firmware-43430b0-sdio = $(call Package/armbian-firmware-default,Broadcom BCM43430B0 FullMac SDIO firmware)
+define Package/brcmfmac-firmware-43430b0-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcm/BCM43430B0.hcd \
+		$(1)/lib/firmware/brcm/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcm/brcmfmac43430b0-sdio.bin \
+		$(1)/lib/firmware/brcm/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcm/brcmfmac43430-sdio.clm_blob \
+		$(1)/lib/firmware/brcm/
+endef
+$(eval $(call BuildPackage,brcmfmac-firmware-43430b0-sdio))
+
+Package/brcmfmac-nvram-43430b0-sdio = $(call Package/armbian-firmware-default,Broadcom BCM43430B0 SDIO NVRAM firmware)
+define Package/brcmfmac-nvram-43430b0-sdio/install
+	$(INSTALL_DIR) $(1)/lib/firmware/brcm
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/brcm/brcmfmac43430b0-sdio.txt \
+		$(1)/lib/firmware/brcm/
+	$(LN) \
+		brcmfmac43430b0-sdio.txt \
+		$(1)/lib/firmware/brcm/brcmfmac43430b0-sdio.rumu3f,fine-3399.txt
+endef
+$(eval $(call BuildPackage,brcmfmac-nvram-43430b0-sdio))
