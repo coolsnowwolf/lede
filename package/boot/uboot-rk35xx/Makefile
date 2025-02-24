@@ -35,6 +35,7 @@ define U-Boot/evb-rk3528
     hinlink_opc-h29k \
     hinlink_opc-ht2 \
     radxa_e20c \
+    widora_mangopi-m28c \
     widora_mangopi-m28k \
     widora_mangopi-m28k-pro
   DEPENDS:=+PACKAGE_u-boot-evb-rk3528:rkbin-rk3528
