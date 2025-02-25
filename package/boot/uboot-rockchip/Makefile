@@ -183,6 +183,35 @@ define U-Boot/sv901-eaio-rk3399
   USE_RKBIN:=1
 endef
 
+# RK3528 boards
+
+define U-Boot/rk3528/Default
+  BUILD_SUBTARGET:=armv8
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3528
+  ATF:=rk3528_bl31_v1.17.elf
+  TPL:=rk3528_ddr_1056MHz_v1.10.bin
+endef
+
+define U-Boot/generic-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=GENERIC RK3528
+  BUILD_DEVICES:= \
+    armsom_sige1 \
+    hinlink_opc-h28k \
+    hinlink_opc-h29k \
+    hinlink_opc-ht2 \
+    widora_mangopi-m28c \
+    widora_mangopi-m28k \
+    widora_mangopi-m28k-pro
+endef
+
+define U-Boot/radxa-e20c-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=Radxa E20C
+  BUILD_DEVICES:= \
+    radxa_e20c
+endef
+
 # RK3566 boards
 
 define U-Boot/rk3566/Default
@@ -384,6 +413,8 @@ define U-Boot/rock5a-rk3588s
 endef
 
 UBOOT_TARGETS := \
+  generic-rk3528 \
+  radxa-e20c-rk3528 \
   nanopi-r3s-rk3566 \
   panther-x2-rk3566 \
   rock-3c-rk3566 \
