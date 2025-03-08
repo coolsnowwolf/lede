@@ -39,11 +39,6 @@ if fs.access(storage_info_file) then
         end
     end
 end
-            option = s:option(DummyValue, "_"..k,translate(k))
-            option.value = v
-        end
-    end
-end
 
 openfog_link=s:option(DummyValue, "openfog_link", translate("<input type=\"button\" class=\"cbi-button cbi-button-apply\" value=\"Openfogos.com\" onclick=\"window.open('https://openfogos.com/')\" />"))
 openfog_link.description = translate("OpenFogOS Official Website")
