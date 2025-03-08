@@ -215,6 +215,8 @@ platform_do_upgrade_mikrotik_nand() {
 platform_do_upgrade() {
 	case "$(board_name)" in
 	8dev,jalapeno |\
+	alibaba,ap4220-48m|\
+	alibaba,ap4220-128m|\
 	aruba,ap-303 |\
 	aruba,ap-303h |\
 	aruba,ap-365 |\
