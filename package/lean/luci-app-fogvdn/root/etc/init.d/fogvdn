@@ -1,0 +1,136 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=99
+STOP=1
+
+CONFIG_PATH=/etc/pear/pear_monitor
+target_config_path=${CONFIG_PATH}/config.json
+
+
+function run_instance()
+{
+    if [ -f $target_config_path ];then
+        user_marked=$(cat $target_config_path |jq .user_marked)
+        if [ -n "$user_marked" ] && [ "$user_marked" != "null" ];then
+            json="$(cat $target_config_path)"
+        else
+            json="{}"
+        fi
+    else
+        json="{}"
+    fi
+
+    config_get username $1 username
+    config_get isp $1 isp
+    config_get region $1 region
+    config_get per_line_up_bw $1 per_line_up_bw null
+    config_get per_line_down_bw $1 per_line_down_bw null
+    config_get limited_memory $1 limited_memory null
+    config_get limited_storage $1 limited_storage null
+    config_get limited_area $1 limited_area null
+    country="中国"
+    province=$(echo $region | awk -F'-' '{print $1}')
+    city=$(echo $region | awk -F'-' '{print $2}')
+    mtime=$(date +%s)
+    json=$(echo "$json" | jq --arg username "$username" \
+                        --arg isp "$isp" \
+                        --arg country "$country" \
+                        --arg province "$province" \
+                        --arg city "$city" \
+                        --argjson per_line_up_bw "$per_line_up_bw" \
+                        --argjson per_line_down_bw "$per_line_down_bw" \
+                        --argjson limited_memory "$limited_memory" \
+                        --argjson limited_storage "$limited_storage" \
+                        --argjson limited_area "$limited_area" \
+                        --argjson mtime "$mtime" \
+                        '.user_marked.username = $username |
+                        .user_marked.isp = $isp |
+                        .user_marked.country = $country |
+                        .user_marked.province = $province |
+                        .user_marked.city = $city |
+                        .user_marked.per_line_up_bw = $per_line_up_bw |
+                        .user_marked.per_line_down_bw = $per_line_down_bw |
+                        .user_marked.limited_memory = $limited_memory |
+                        .user_marked.limited_storage = $limited_storage |
+                        .user_marked.limited_area = $limited_area |
+                        .user_marked.mtime = $mtime |
+                        del(.user_marked[] | select(. == null))'
+                        )
+    json=$(echo "$json" | jq '.storage = []')
+    json=$(echo "$json" | jq '.nics = []')
+    config_list_foreach $1 storage storage_hd
+    config_list_foreach $1 nics nics_hd
+    # Save modified JSON back to target_config_path
+    echo "$json" > $target_config_path
+    instance=$1
+    /etc/init.d/openfog.sh stop
+    procd_open_instance ${instance}_check_alive
+    procd_set_param command "/usr/share/pcdn/check_alive.sh"
+    procd_set_param respawn
+    procd_close_instance
+}
+
+function storage_hd()
+{
+    json=$(echo "$json" | jq --arg item "$1" '.storage += [$item]')
+    [ ! -d "$1" ] && mkdir -p $1
+}
+
+function nics_hd()
+{
+#    config=$1
+#     # check if vw$config exists
+#     config_1=$(uci get network.vw$config)
+#     # check if $config exists
+#     config_2=$(uci get network.$config)
+#     if [ -z "$config_1" ] && [ -z "$config_2" ];then
+#         res=$(echo $json |  jq '.nics | index(["'${config}'"])')
+#         [ "$res" == "null" ] && json=$(echo "$json" | jq --arg item "$config" '.nics += [$item]')
+#         return
+#     fi
+#     if [ "$config_1" != "interface" ];then
+#         config=$config
+#     else
+#         config=vw$config
+#     fi
+#     l2_device=$(uci get network.$config.ifname)
+#     proto=$(uci get network.$config.proto)
+#     if [ "$proto" == "pppoe" ];then
+#         nic_name=pppoe-$config
+#     else
+#         nic_name=$l2_device
+#     fi
+    nic_name=$1
+    res=$(echo $json |  jq '.nics | index(["'${nic_name}'"])')
+    [ "$res" == "null" ] && json=$(echo "$json" | jq --arg item "$nic_name" '.nics += [$item]')
+}
+
+function stop_instance()
+{
+    instance=$1
+    service_stop ${instance}_check_alive
+}
+
+start_service()
+{
+    config_load fogvdn
+    config_get enable main enable
+    [ "$enable" == "1" ] && config_foreach run_instance instance || stop
+}
+
+stop_service()
+{
+    config_foreach stop_instance instance
+    /etc/init.d/openfog.sh stop
+}
+
+service_triggers() {
+    procd_add_reload_trigger "fogvdn"
+}
+
+reload_servie()
+{
+    stop
+    start
+}
