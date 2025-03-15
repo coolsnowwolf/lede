@@ -1,0 +1,890 @@
+From f9246c9597e89510ae016c33ffa3b367ed83cf2d Mon Sep 17 00:00:00 2001
+From: Pavithra R <quic_pavir@quicinc.com>
+Date: Wed, 28 Feb 2024 11:25:15 +0530
+Subject: [PATCH 38/50] net: ethernet: qualcomm: Add EDMA support for QCOM
+ IPQ9574 chipset.
+
+Add the infrastructure functions such as Makefile,
+EDMA hardware configuration, clock and IRQ initializations.
+
+Change-Id: I64f65e554e70e9095b0cf3636fec421569ae6895
+Signed-off-by: Pavithra R <quic_pavir@quicinc.com>
+Co-developed-by: Suruchi Agarwal <quic_suruchia@quicinc.com>
+Signed-off-by: Suruchi Agarwal <quic_suruchia@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/Makefile   |   3 +
+ drivers/net/ethernet/qualcomm/ppe/edma.c     | 456 +++++++++++++++++++
+ drivers/net/ethernet/qualcomm/ppe/edma.h     |  99 ++++
+ drivers/net/ethernet/qualcomm/ppe/ppe.c      |  10 +-
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h | 253 ++++++++++
+ 5 files changed, 820 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma.c
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma.h
+
+--- a/drivers/net/ethernet/qualcomm/ppe/Makefile
++++ b/drivers/net/ethernet/qualcomm/ppe/Makefile
+@@ -5,3 +5,6 @@
+ 
+ obj-$(CONFIG_QCOM_PPE) += qcom-ppe.o
+ qcom-ppe-objs := ppe.o ppe_config.o ppe_api.o ppe_debugfs.o ppe_port.o
++
++#EDMA
++qcom-ppe-objs += edma.o
+\ No newline at end of file
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
+@@ -0,0 +1,456 @@
++// SPDX-License-Identifier: GPL-2.0-only
++ /* Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++  */
++
++ /* Qualcomm Ethernet DMA driver setup, HW configuration, clocks and
++  * interrupt initializations.
++  */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/netdevice.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++
++#include "edma.h"
++#include "ppe_regs.h"
++
++#define EDMA_IRQ_NAME_SIZE		32
++
++/* Global EDMA context. */
++struct edma_context *edma_ctx;
++
++/* Priority to multi-queue mapping. */
++static u8 edma_pri_map[PPE_QUEUE_INTER_PRI_NUM] = {
++	0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7};
++
++enum edma_clk_id {
++	EDMA_CLK,
++	EDMA_CFG_CLK,
++	EDMA_CLK_MAX
++};
++
++static const char * const clock_name[EDMA_CLK_MAX] = {
++	[EDMA_CLK] = "edma",
++	[EDMA_CFG_CLK] = "edma-cfg",
++};
++
++/* Rx Fill ring info for IPQ9574. */
++static struct edma_ring_info ipq9574_rxfill_ring_info = {
++	.max_rings = 8,
++	.ring_start = 4,
++	.num_rings = 4,
++};
++
++/* Rx ring info for IPQ9574. */
++static struct edma_ring_info ipq9574_rx_ring_info = {
++	.max_rings = 24,
++	.ring_start = 20,
++	.num_rings = 4,
++};
++
++/* Tx ring info for IPQ9574. */
++static struct edma_ring_info ipq9574_tx_ring_info = {
++	.max_rings = 32,
++	.ring_start = 8,
++	.num_rings = 24,
++};
++
++/* Tx complete ring info for IPQ9574. */
++static struct edma_ring_info ipq9574_txcmpl_ring_info = {
++	.max_rings = 32,
++	.ring_start = 8,
++	.num_rings = 24,
++};
++
++/* HW info for IPQ9574. */
++static struct edma_hw_info ipq9574_hw_info = {
++	.rxfill = &ipq9574_rxfill_ring_info,
++	.rx = &ipq9574_rx_ring_info,
++	.tx = &ipq9574_tx_ring_info,
++	.txcmpl = &ipq9574_txcmpl_ring_info,
++	.max_ports = 6,
++	.napi_budget_rx = 128,
++	.napi_budget_tx = 512,
++};
++
++static int edma_clock_set_and_enable(struct device *dev,
++				     const char *id, unsigned long rate)
++{
++	struct device_node *edma_np;
++	struct clk *clk = NULL;
++	int ret;
++
++	edma_np = of_get_child_by_name(dev->of_node, "edma");
++
++	clk = devm_get_clk_from_child(dev, edma_np, id);
++	if (IS_ERR(clk)) {
++		dev_err(dev, "clk %s get failed\n", id);
++		of_node_put(edma_np);
++		return PTR_ERR(clk);
++	}
++
++	ret = clk_set_rate(clk, rate);
++	if (ret) {
++		dev_err(dev, "set %lu rate for %s failed\n", rate, id);
++		of_node_put(edma_np);
++		return ret;
++	}
++
++	ret = clk_prepare_enable(clk);
++	if (ret) {
++		dev_err(dev, "clk %s enable failed\n", id);
++		of_node_put(edma_np);
++		return ret;
++	}
++
++	of_node_put(edma_np);
++
++	dev_dbg(dev, "set %lu rate for %s\n", rate, id);
++
++	return 0;
++}
++
++static int edma_clock_init(void)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct device *dev = ppe_dev->dev;
++	unsigned long ppe_rate;
++	int ret;
++
++	ppe_rate = ppe_dev->clk_rate;
++
++	ret = edma_clock_set_and_enable(dev, clock_name[EDMA_CLK],
++					ppe_rate);
++	if (ret)
++		return ret;
++
++	ret = edma_clock_set_and_enable(dev, clock_name[EDMA_CFG_CLK],
++					ppe_rate);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++/**
++ * edma_configure_ucast_prio_map_tbl - Configure unicast priority map table.
++ *
++ * Map int_priority values to priority class and initialize
++ * unicast priority map table for default profile_id.
++ */
++static int edma_configure_ucast_prio_map_tbl(void)
++{
++	u8 pri_class, int_pri;
++	int ret = 0;
++
++	/* Set the priority class value for every possible priority. */
++	for (int_pri = 0; int_pri < PPE_QUEUE_INTER_PRI_NUM; int_pri++) {
++		pri_class = edma_pri_map[int_pri];
++
++		/* Priority offset should be less than maximum supported
++		 * queue priority.
++		 */
++		if (pri_class > EDMA_PRI_MAX_PER_CORE - 1) {
++			pr_err("Configured incorrect priority offset: %d\n",
++			       pri_class);
++			return -EINVAL;
++		}
++
++		ret = ppe_edma_queue_offset_config(edma_ctx->ppe_dev,
++						   PPE_QUEUE_CLASS_PRIORITY, int_pri, pri_class);
++
++		if (ret) {
++			pr_err("Failed with error: %d to set queue priority class for int_pri: %d for profile_id: %d\n",
++			       ret, int_pri, 0);
++			return ret;
++		}
++
++		pr_debug("profile_id: %d, int_priority: %d, pri_class: %d\n",
++			 0, int_pri, pri_class);
++	}
++
++	return ret;
++}
++
++static int edma_irq_init(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *txcmpl = hw_info->txcmpl;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct edma_ring_info *rx = hw_info->rx;
++	char edma_irq_name[EDMA_IRQ_NAME_SIZE];
++	struct device *dev = ppe_dev->dev;
++	struct platform_device *pdev;
++	struct device_node *edma_np;
++	u32 i;
++
++	pdev = to_platform_device(dev);
++	edma_np = of_get_child_by_name(dev->of_node, "edma");
++	edma_ctx->intr_info.intr_txcmpl = kzalloc((sizeof(*edma_ctx->intr_info.intr_txcmpl) *
++						  txcmpl->num_rings), GFP_KERNEL);
++	if (!edma_ctx->intr_info.intr_txcmpl) {
++		of_node_put(edma_np);
++		return -ENOMEM;
++	}
++
++	/* Get TXCMPL rings IRQ numbers. */
++	for (i = 0; i < txcmpl->num_rings; i++) {
++		snprintf(edma_irq_name, sizeof(edma_irq_name), "edma_txcmpl_%d",
++			 txcmpl->ring_start + i);
++		edma_ctx->intr_info.intr_txcmpl[i] = of_irq_get_byname(edma_np, edma_irq_name);
++		if (edma_ctx->intr_info.intr_txcmpl[i] < 0) {
++			dev_err(dev, "%s: txcmpl_info.intr[%u] irq get failed\n",
++				edma_np->name, i);
++			of_node_put(edma_np);
++			kfree(edma_ctx->intr_info.intr_txcmpl);
++			return edma_ctx->intr_info.intr_txcmpl[i];
++		}
++
++		dev_dbg(dev, "%s: intr_info.intr_txcmpl[%u] = %u\n",
++			edma_np->name, i, edma_ctx->intr_info.intr_txcmpl[i]);
++	}
++
++	edma_ctx->intr_info.intr_rx = kzalloc((sizeof(*edma_ctx->intr_info.intr_rx) *
++					      rx->num_rings), GFP_KERNEL);
++	if (!edma_ctx->intr_info.intr_rx) {
++		of_node_put(edma_np);
++		kfree(edma_ctx->intr_info.intr_txcmpl);
++		return -ENOMEM;
++	}
++
++	/* Get RXDESC rings IRQ numbers. */
++	for (i = 0; i < rx->num_rings; i++) {
++		snprintf(edma_irq_name, sizeof(edma_irq_name), "edma_rxdesc_%d",
++			 rx->ring_start + i);
++		edma_ctx->intr_info.intr_rx[i] = of_irq_get_byname(edma_np, edma_irq_name);
++		if (edma_ctx->intr_info.intr_rx[i] < 0) {
++			dev_err(dev, "%s: rx_queue_map_info.intr[%u] irq get failed\n",
++				edma_np->name, i);
++			of_node_put(edma_np);
++			kfree(edma_ctx->intr_info.intr_rx);
++			kfree(edma_ctx->intr_info.intr_txcmpl);
++			return edma_ctx->intr_info.intr_rx[i];
++		}
++
++		dev_dbg(dev, "%s: intr_info.intr_rx[%u] = %u\n",
++			edma_np->name, i, edma_ctx->intr_info.intr_rx[i]);
++	}
++
++	/* Get misc IRQ number. */
++	edma_ctx->intr_info.intr_misc = of_irq_get_byname(edma_np, "edma_misc");
++	if (edma_ctx->intr_info.intr_misc < 0) {
++		dev_err(dev, "%s: misc_intr irq get failed\n", edma_np->name);
++		of_node_put(edma_np);
++		kfree(edma_ctx->intr_info.intr_rx);
++		kfree(edma_ctx->intr_info.intr_txcmpl);
++		return edma_ctx->intr_info.intr_misc;
++	}
++
++	of_node_put(edma_np);
++
++	dev_dbg(dev, "%s: misc IRQ:%u\n", edma_np->name,
++		edma_ctx->intr_info.intr_misc);
++
++	return 0;
++}
++
++static int edma_hw_reset(void)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct device *dev = ppe_dev->dev;
++	struct reset_control *edma_hw_rst;
++	struct device_node *edma_np;
++	const char *reset_string;
++	u32 count, i;
++	int ret;
++
++	/* Count and parse reset names from DTSI. */
++	edma_np = of_get_child_by_name(dev->of_node, "edma");
++	count = of_property_count_strings(edma_np, "reset-names");
++	if (count < 0) {
++		dev_err(dev, "EDMA reset entry not found\n");
++		of_node_put(edma_np);
++		return -EINVAL;
++	}
++
++	for (i = 0; i < count; i++) {
++		ret = of_property_read_string_index(edma_np, "reset-names",
++						    i, &reset_string);
++		if (ret) {
++			dev_err(dev, "Error reading reset-names");
++			of_node_put(edma_np);
++			return -EINVAL;
++		}
++
++		edma_hw_rst = of_reset_control_get_exclusive(edma_np, reset_string);
++		if (IS_ERR(edma_hw_rst)) {
++			of_node_put(edma_np);
++			return PTR_ERR(edma_hw_rst);
++		}
++
++		/* 100ms delay is required by hardware to reset EDMA. */
++		reset_control_assert(edma_hw_rst);
++		fsleep(100);
++
++		reset_control_deassert(edma_hw_rst);
++		fsleep(100);
++
++		reset_control_put(edma_hw_rst);
++		dev_dbg(dev, "EDMA HW reset, i:%d reset_string:%s\n", i, reset_string);
++	}
++
++	of_node_put(edma_np);
++
++	return 0;
++}
++
++static int edma_hw_configure(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	u32 data, reg;
++	int ret;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_MAS_CTRL_ADDR;
++	ret = regmap_read(regmap, reg, &data);
++	if (ret)
++		return ret;
++
++	pr_debug("EDMA ver %d hw init\n", data);
++
++	/* Setup private data structure. */
++	edma_ctx->intr_info.intr_mask_rx = EDMA_RXDESC_INT_MASK_PKT_INT;
++	edma_ctx->intr_info.intr_mask_txcmpl = EDMA_TX_INT_MASK_PKT_INT;
++
++	/* Reset EDMA. */
++	ret = edma_hw_reset();
++	if (ret) {
++		pr_err("Error in resetting the hardware. ret: %d\n", ret);
++		return ret;
++	}
++
++	/* Allocate memory for netdevices. */
++	edma_ctx->netdev_arr = kzalloc((sizeof(**edma_ctx->netdev_arr) *
++					 hw_info->max_ports),
++					 GFP_KERNEL);
++	if (!edma_ctx->netdev_arr)
++		return -ENOMEM;
++
++	/* Configure DMA request priority, DMA read burst length,
++	 * and AXI write size.
++	 */
++	data = FIELD_PREP(EDMA_DMAR_BURST_LEN_MASK, EDMA_BURST_LEN_ENABLE);
++	data |= FIELD_PREP(EDMA_DMAR_REQ_PRI_MASK, 0);
++	data |= FIELD_PREP(EDMA_DMAR_TXDATA_OUTSTANDING_NUM_MASK, 31);
++	data |= FIELD_PREP(EDMA_DMAR_TXDESC_OUTSTANDING_NUM_MASK, 7);
++	data |= FIELD_PREP(EDMA_DMAR_RXFILL_OUTSTANDING_NUM_MASK, 7);
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_DMAR_CTRL_ADDR;
++	ret = regmap_write(regmap, reg, data);
++	if (ret)
++		return ret;
++
++	/* Configure Tx Timeout Threshold. */
++	data = EDMA_TX_TIMEOUT_THRESH_VAL;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_TX_TIMEOUT_THRESH_ADDR;
++	ret = regmap_write(regmap, reg, data);
++	if (ret)
++		return ret;
++
++	/* Set Miscellaneous error mask. */
++	data = EDMA_MISC_AXI_RD_ERR_MASK |
++		EDMA_MISC_AXI_WR_ERR_MASK |
++		EDMA_MISC_RX_DESC_FIFO_FULL_MASK |
++		EDMA_MISC_RX_ERR_BUF_SIZE_MASK |
++		EDMA_MISC_TX_SRAM_FULL_MASK |
++		EDMA_MISC_TX_CMPL_BUF_FULL_MASK |
++		EDMA_MISC_DATA_LEN_ERR_MASK;
++	data |= EDMA_MISC_TX_TIMEOUT_MASK;
++	edma_ctx->intr_info.intr_mask_misc = data;
++
++	/* Global EDMA enable and padding enable. */
++	data = EDMA_PORT_PAD_EN | EDMA_PORT_EDMA_EN;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_PORT_CTRL_ADDR;
++	ret = regmap_write(regmap, reg, data);
++	if (ret)
++		return ret;
++
++	/* Initialize unicast priority map table. */
++	ret = (int)edma_configure_ucast_prio_map_tbl();
++	if (ret) {
++		pr_err("Failed to initialize unicast priority map table: %d\n",
++		       ret);
++		kfree(edma_ctx->netdev_arr);
++		return ret;
++	}
++
++	return 0;
++}
++
++/**
++ * edma_destroy - EDMA Destroy.
++ * @ppe_dev: PPE device
++ *
++ * Free the memory allocated during setup.
++ */
++void edma_destroy(struct ppe_device *ppe_dev)
++{
++	kfree(edma_ctx->intr_info.intr_rx);
++	kfree(edma_ctx->intr_info.intr_txcmpl);
++	kfree(edma_ctx->netdev_arr);
++}
++
++/**
++ * edma_setup - EDMA Setup.
++ * @ppe_dev: PPE device
++ *
++ * Configure Ethernet global ctx, clocks, hardware and interrupts.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int edma_setup(struct ppe_device *ppe_dev)
++{
++	struct device *dev = ppe_dev->dev;
++	int ret;
++
++	edma_ctx = devm_kzalloc(dev, sizeof(*edma_ctx), GFP_KERNEL);
++	if (!edma_ctx)
++		return -ENOMEM;
++
++	edma_ctx->hw_info = &ipq9574_hw_info;
++	edma_ctx->ppe_dev = ppe_dev;
++
++	/* Configure the EDMA common clocks. */
++	ret = edma_clock_init();
++	if (ret) {
++		dev_err(dev, "Error in configuring the EDMA clocks\n");
++		return ret;
++	}
++
++	dev_dbg(dev, "QCOM EDMA common clocks are configured\n");
++
++	ret = edma_hw_configure();
++	if (ret) {
++		dev_err(dev, "Error in edma configuration\n");
++		return ret;
++	}
++
++	ret = edma_irq_init();
++	if (ret) {
++		dev_err(dev, "Error in irq initialization\n");
++		return ret;
++	}
++
++	dev_info(dev, "EDMA configuration successful\n");
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.h
+@@ -0,0 +1,99 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef __EDMA_MAIN__
++#define __EDMA_MAIN__
++
++#include "ppe_api.h"
++
++/* One clock cycle = 1/(EDMA clock frequency in Mhz) micro seconds.
++ *
++ * One timer unit is 128 clock cycles.
++ *
++ * So, therefore the microsecond to timer unit calculation is:
++ * Timer unit = time in microseconds / (one clock cycle in microsecond * cycles in 1 timer unit)
++ *            = ('x' microsecond * EDMA clock frequency in MHz ('y') / 128).
++ *
++ */
++#define EDMA_CYCLE_PER_TIMER_UNIT	128
++#define EDMA_MICROSEC_TO_TIMER_UNIT(x, y)	((x) * (y) / EDMA_CYCLE_PER_TIMER_UNIT)
++#define MHZ			1000000UL
++
++/* EDMA profile ID. */
++#define EDMA_CPU_PORT_PROFILE_ID  0
++
++/* Number of PPE queue priorities supported per ARM core. */
++#define EDMA_PRI_MAX_PER_CORE	8
++
++/**
++ * struct edma_ring_info - EDMA ring data structure.
++ * @max_rings: Maximum number of rings
++ * @ring_start: Ring start ID
++ * @num_rings: Number of rings
++ */
++struct edma_ring_info {
++	u32 max_rings;
++	u32 ring_start;
++	u32 num_rings;
++};
++
++/**
++ * struct edma_hw_info - EDMA hardware data structure.
++ * @rxfill: Rx Fill ring information
++ * @rx: Rx Desc ring information
++ * @tx: Tx Desc ring information
++ * @txcmpl: Tx complete ring information
++ * @max_ports: Maximum number of ports
++ * @napi_budget_rx: Rx NAPI budget
++ * @napi_budget_tx: Tx NAPI budget
++ */
++struct edma_hw_info {
++	struct edma_ring_info *rxfill;
++	struct edma_ring_info *rx;
++	struct edma_ring_info *tx;
++	struct edma_ring_info *txcmpl;
++	u32 max_ports;
++	u32 napi_budget_rx;
++	u32 napi_budget_tx;
++};
++
++/**
++ * struct edma_intr_info - EDMA interrupt data structure.
++ * @intr_mask_rx: RX interrupt mask
++ * @intr_rx: Rx interrupts
++ * @intr_mask_txcmpl: Tx completion interrupt mask
++ * @intr_txcmpl: Tx completion interrupts
++ * @intr_mask_misc: Miscellaneous interrupt mask
++ * @intr_misc: Miscellaneous interrupts
++ */
++struct edma_intr_info {
++	u32 intr_mask_rx;
++	u32 *intr_rx;
++	u32 intr_mask_txcmpl;
++	u32 *intr_txcmpl;
++	u32 intr_mask_misc;
++	u32 intr_misc;
++};
++
++/**
++ * struct edma_context - EDMA context.
++ * @netdev_arr: Net device for each EDMA port
++ * @ppe_dev: PPE device
++ * @hw_info: EDMA Hardware info
++ * @intr_info: EDMA Interrupt info
++ */
++struct edma_context {
++	struct net_device **netdev_arr;
++	struct ppe_device *ppe_dev;
++	struct edma_hw_info *hw_info;
++	struct edma_intr_info intr_info;
++};
++
++/* Global EDMA context. */
++extern struct edma_context *edma_ctx;
++
++void edma_destroy(struct ppe_device *ppe_dev);
++int edma_setup(struct ppe_device *ppe_dev);
++
++#endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe.c
+@@ -14,6 +14,7 @@
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
+ 
++#include "edma.h"
+ #include "ppe.h"
+ #include "ppe_config.h"
+ #include "ppe_debugfs.h"
+@@ -208,10 +209,16 @@ static int qcom_ppe_probe(struct platfor
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "PPE HW config failed\n");
+ 
+-	ret = ppe_port_mac_init(ppe_dev);
++	ret = edma_setup(ppe_dev);
+ 	if (ret)
++		return dev_err_probe(dev, ret, "EDMA setup failed\n");
++
++	ret = ppe_port_mac_init(ppe_dev);
++	if (ret) {
++		edma_destroy(ppe_dev);
+ 		return dev_err_probe(dev, ret,
+ 				     "PPE Port MAC initialization failed\n");
++	}
+ 
+ 	ppe_debugfs_setup(ppe_dev);
+ 	platform_set_drvdata(pdev, ppe_dev);
+@@ -226,6 +233,7 @@ static void qcom_ppe_remove(struct platf
+ 	ppe_dev = platform_get_drvdata(pdev);
+ 	ppe_debugfs_teardown(ppe_dev);
+ 	ppe_port_mac_deinit(ppe_dev);
++	edma_destroy(ppe_dev);
+ 
+ 	platform_set_drvdata(pdev, NULL);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -788,4 +788,257 @@
+ #define XGMAC_RXDISCARD_GB_ADDR			0x9AC
+ #define XGMAC_RXDISCARDBYTE_GB_ADDR		0x9B4
+ 
++#define EDMA_BASE_OFFSET			0xb00000
++
++/* EDMA register offsets */
++#define EDMA_REG_MAS_CTRL_ADDR			0x0
++#define EDMA_REG_PORT_CTRL_ADDR			0x4
++#define EDMA_REG_VLAN_CTRL_ADDR			0x8
++#define EDMA_REG_RXDESC2FILL_MAP_0_ADDR		0x14
++#define EDMA_REG_RXDESC2FILL_MAP_1_ADDR		0x18
++#define EDMA_REG_RXDESC2FILL_MAP_2_ADDR		0x1c
++#define EDMA_REG_TXQ_CTRL_ADDR			0x20
++#define EDMA_REG_TXQ_CTRL_2_ADDR		0x24
++#define EDMA_REG_TXQ_FC_0_ADDR			0x28
++#define EDMA_REG_TXQ_FC_1_ADDR			0x30
++#define EDMA_REG_TXQ_FC_2_ADDR			0x34
++#define EDMA_REG_TXQ_FC_3_ADDR			0x38
++#define EDMA_REG_RXQ_CTRL_ADDR			0x3c
++#define EDMA_REG_MISC_ERR_QID_ADDR		0x40
++#define EDMA_REG_RXQ_FC_THRE_ADDR		0x44
++#define EDMA_REG_DMAR_CTRL_ADDR			0x48
++#define EDMA_REG_AXIR_CTRL_ADDR			0x4c
++#define EDMA_REG_AXIW_CTRL_ADDR			0x50
++#define EDMA_REG_MIN_MSS_ADDR			0x54
++#define EDMA_REG_LOOPBACK_CTRL_ADDR		0x58
++#define EDMA_REG_MISC_INT_STAT_ADDR		0x5c
++#define EDMA_REG_MISC_INT_MASK_ADDR		0x60
++#define EDMA_REG_DBG_CTRL_ADDR			0x64
++#define EDMA_REG_DBG_DATA_ADDR			0x68
++#define EDMA_REG_TX_TIMEOUT_THRESH_ADDR		0x6c
++#define EDMA_REG_REQ0_FIFO_THRESH_ADDR		0x80
++#define EDMA_REG_WB_OS_THRESH_ADDR		0x84
++#define EDMA_REG_MISC_ERR_QID_REG2_ADDR		0x88
++#define EDMA_REG_TXDESC2CMPL_MAP_0_ADDR		0x8c
++#define EDMA_REG_TXDESC2CMPL_MAP_1_ADDR		0x90
++#define EDMA_REG_TXDESC2CMPL_MAP_2_ADDR		0x94
++#define EDMA_REG_TXDESC2CMPL_MAP_3_ADDR		0x98
++#define EDMA_REG_TXDESC2CMPL_MAP_4_ADDR		0x9c
++#define EDMA_REG_TXDESC2CMPL_MAP_5_ADDR		0xa0
++
++/* Tx descriptor ring configuration register addresses */
++#define EDMA_REG_TXDESC_BA(n)		(0x1000 + (0x1000 * (n)))
++#define EDMA_REG_TXDESC_PROD_IDX(n)	(0x1004 + (0x1000 * (n)))
++#define EDMA_REG_TXDESC_CONS_IDX(n)	(0x1008 + (0x1000 * (n)))
++#define EDMA_REG_TXDESC_RING_SIZE(n)	(0x100c + (0x1000 * (n)))
++#define EDMA_REG_TXDESC_CTRL(n)		(0x1010 + (0x1000 * (n)))
++#define EDMA_REG_TXDESC_BA2(n)		(0x1014 + (0x1000 * (n)))
++
++/* RxFill ring configuration register addresses */
++#define EDMA_REG_RXFILL_BA(n)		(0x29000 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_PROD_IDX(n)	(0x29004 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_CONS_IDX(n)	(0x29008 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_RING_SIZE(n)	(0x2900c + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_BUFFER1_SIZE(n)	(0x29010 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_FC_THRE(n)	(0x29014 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_UGT_THRE(n)	(0x29018 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_RING_EN(n)	(0x2901c + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_DISABLE(n)	(0x29020 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_DISABLE_DONE(n)	(0x29024 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_INT_STAT(n)	(0x31000 + (0x1000 * (n)))
++#define EDMA_REG_RXFILL_INT_MASK(n)	(0x31004 + (0x1000 * (n)))
++
++/* Rx descriptor ring configuration register addresses */
++#define EDMA_REG_RXDESC_BA(n)		(0x39000 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_PROD_IDX(n)	(0x39004 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_CONS_IDX(n)	(0x39008 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_RING_SIZE(n)	(0x3900c + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_FC_THRE(n)	(0x39010 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_UGT_THRE(n)	(0x39014 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_CTRL(n)		(0x39018 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_BPC(n)		(0x3901c + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_DISABLE(n)	(0x39020 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_DISABLE_DONE(n)	(0x39024 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_PREHEADER_BA(n)	(0x39028 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_INT_STAT(n)	(0x59000 + (0x1000 * (n)))
++#define EDMA_REG_RXDESC_INT_MASK(n)	(0x59004 + (0x1000 * (n)))
++
++#define EDMA_REG_RX_MOD_TIMER(n)	(0x59008 + (0x1000 * (n)))
++#define EDMA_REG_RX_INT_CTRL(n)		(0x5900c + (0x1000 * (n)))
++
++/* Tx completion ring configuration register addresses */
++#define EDMA_REG_TXCMPL_BA(n)		(0x79000 + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_PROD_IDX(n)	(0x79004 + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_CONS_IDX(n)	(0x79008 + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_RING_SIZE(n)	(0x7900c + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_UGT_THRE(n)	(0x79010 + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_CTRL(n)		(0x79014 + (0x1000 * (n)))
++#define EDMA_REG_TXCMPL_BPC(n)		(0x79018 + (0x1000 * (n)))
++
++#define EDMA_REG_TX_INT_STAT(n)		(0x99000 + (0x1000 * (n)))
++#define EDMA_REG_TX_INT_MASK(n)		(0x99004 + (0x1000 * (n)))
++#define EDMA_REG_TX_MOD_TIMER(n)	(0x99008 + (0x1000 * (n)))
++#define EDMA_REG_TX_INT_CTRL(n)		(0x9900c + (0x1000 * (n)))
++
++/* EDMA_QID2RID_TABLE_MEM register field masks */
++#define EDMA_RX_RING_ID_QUEUE0_MASK	GENMASK(7, 0)
++#define EDMA_RX_RING_ID_QUEUE1_MASK	GENMASK(15, 8)
++#define EDMA_RX_RING_ID_QUEUE2_MASK	GENMASK(23, 16)
++#define EDMA_RX_RING_ID_QUEUE3_MASK	GENMASK(31, 24)
++
++/* EDMA_REG_PORT_CTRL register bit definitions */
++#define EDMA_PORT_PAD_EN			0x1
++#define EDMA_PORT_EDMA_EN			0x2
++
++/* EDMA_REG_DMAR_CTRL register field masks */
++#define EDMA_DMAR_REQ_PRI_MASK			GENMASK(2, 0)
++#define EDMA_DMAR_BURST_LEN_MASK		BIT(3)
++#define EDMA_DMAR_TXDATA_OUTSTANDING_NUM_MASK	GENMASK(8, 4)
++#define EDMA_DMAR_TXDESC_OUTSTANDING_NUM_MASK	GENMASK(11, 9)
++#define EDMA_DMAR_RXFILL_OUTSTANDING_NUM_MASK	GENMASK(14, 12)
++
++#define EDMA_BURST_LEN_ENABLE			0
++
++/* Tx timeout threshold */
++#define EDMA_TX_TIMEOUT_THRESH_VAL		0xFFFF
++
++/* Rx descriptor ring base address mask */
++#define EDMA_RXDESC_BA_MASK			0xffffffff
++
++/* Rx Descriptor ring pre-header base address mask */
++#define EDMA_RXDESC_PREHEADER_BA_MASK		0xffffffff
++
++/* Tx descriptor prod ring index mask */
++#define EDMA_TXDESC_PROD_IDX_MASK		0xffff
++
++/* Tx descriptor consumer ring index mask */
++#define EDMA_TXDESC_CONS_IDX_MASK		0xffff
++
++/* Tx descriptor ring size mask */
++#define EDMA_TXDESC_RING_SIZE_MASK		0xffff
++
++/* Tx descriptor ring enable */
++#define EDMA_TXDESC_TX_ENABLE			0x1
++
++#define EDMA_TXDESC_CTRL_TXEN_MASK		BIT(0)
++#define EDMA_TXDESC_CTRL_FC_GRP_ID_MASK		GENMASK(3, 1)
++
++/* Tx completion ring prod index mask */
++#define EDMA_TXCMPL_PROD_IDX_MASK		0xffff
++
++/* Tx completion ring urgent threshold mask */
++#define EDMA_TXCMPL_LOW_THRE_MASK		0xffff
++#define EDMA_TXCMPL_LOW_THRE_SHIFT		0
++
++/* EDMA_REG_TX_MOD_TIMER mask */
++#define EDMA_TX_MOD_TIMER_INIT_MASK		0xffff
++#define EDMA_TX_MOD_TIMER_INIT_SHIFT		0
++
++/* Rx fill ring prod index mask */
++#define EDMA_RXFILL_PROD_IDX_MASK		0xffff
++
++/* Rx fill ring consumer index mask */
++#define EDMA_RXFILL_CONS_IDX_MASK		0xffff
++
++/* Rx fill ring size mask */
++#define EDMA_RXFILL_RING_SIZE_MASK		0xffff
++
++/* Rx fill ring flow control threshold masks */
++#define EDMA_RXFILL_FC_XON_THRE_MASK		0x7ff
++#define EDMA_RXFILL_FC_XON_THRE_SHIFT		12
++#define EDMA_RXFILL_FC_XOFF_THRE_MASK		0x7ff
++#define EDMA_RXFILL_FC_XOFF_THRE_SHIFT		0
++
++/* Rx fill ring enable bit */
++#define EDMA_RXFILL_RING_EN			0x1
++
++/* Rx desc ring prod index mask */
++#define EDMA_RXDESC_PROD_IDX_MASK		0xffff
++
++/* Rx descriptor ring cons index mask */
++#define EDMA_RXDESC_CONS_IDX_MASK		0xffff
++
++/* Rx descriptor ring size masks */
++#define EDMA_RXDESC_RING_SIZE_MASK		0xffff
++#define EDMA_RXDESC_PL_OFFSET_MASK		0x1ff
++#define EDMA_RXDESC_PL_OFFSET_SHIFT		16
++#define EDMA_RXDESC_PL_DEFAULT_VALUE		0
++
++/* Rx descriptor ring flow control threshold masks */
++#define EDMA_RXDESC_FC_XON_THRE_MASK		0x7ff
++#define EDMA_RXDESC_FC_XON_THRE_SHIFT		12
++#define EDMA_RXDESC_FC_XOFF_THRE_MASK		0x7ff
++#define EDMA_RXDESC_FC_XOFF_THRE_SHIFT		0
++
++/* Rx descriptor ring urgent threshold mask */
++#define EDMA_RXDESC_LOW_THRE_MASK		0xffff
++#define EDMA_RXDESC_LOW_THRE_SHIFT		0
++
++/* Rx descriptor ring enable bit */
++#define EDMA_RXDESC_RX_EN			0x1
++
++/* Tx interrupt status bit */
++#define EDMA_TX_INT_MASK_PKT_INT		0x1
++
++/* Rx interrupt mask */
++#define EDMA_RXDESC_INT_MASK_PKT_INT		0x1
++
++#define EDMA_MASK_INT_DISABLE			0x0
++#define EDMA_MASK_INT_CLEAR			0x0
++
++/* EDMA_REG_RX_MOD_TIMER register field masks */
++#define EDMA_RX_MOD_TIMER_INIT_MASK		0xffff
++#define EDMA_RX_MOD_TIMER_INIT_SHIFT		0
++
++/* EDMA Ring mask */
++#define EDMA_RING_DMA_MASK			0xffffffff
++
++/* RXDESC threshold interrupt. */
++#define EDMA_RXDESC_UGT_INT_STAT		0x2
++
++/* RXDESC timer interrupt */
++#define EDMA_RXDESC_PKT_INT_STAT		0x1
++
++/* RXDESC Interrupt status mask */
++#define EDMA_RXDESC_RING_INT_STATUS_MASK \
++	(EDMA_RXDESC_UGT_INT_STAT | EDMA_RXDESC_PKT_INT_STAT)
++
++/* TXCMPL threshold interrupt. */
++#define EDMA_TXCMPL_UGT_INT_STAT		0x2
++
++/* TXCMPL timer interrupt */
++#define EDMA_TXCMPL_PKT_INT_STAT		0x1
++
++/* TXCMPL Interrupt status mask */
++#define EDMA_TXCMPL_RING_INT_STATUS_MASK \
++	(EDMA_TXCMPL_UGT_INT_STAT | EDMA_TXCMPL_PKT_INT_STAT)
++
++#define EDMA_TXCMPL_RETMODE_OPAQUE		0x0
++
++#define EDMA_RXDESC_LOW_THRE			0
++#define EDMA_RX_MOD_TIMER_INIT			1000
++#define EDMA_RX_NE_INT_EN			0x2
++
++#define EDMA_TX_MOD_TIMER			150
++
++#define EDMA_TX_INITIAL_PROD_IDX		0x0
++#define EDMA_TX_NE_INT_EN			0x2
++
++/* EDMA misc error mask */
++#define EDMA_MISC_AXI_RD_ERR_MASK		BIT(0)
++#define EDMA_MISC_AXI_WR_ERR_MASK		BIT(1)
++#define EDMA_MISC_RX_DESC_FIFO_FULL_MASK	BIT(2)
++#define EDMA_MISC_RX_ERR_BUF_SIZE_MASK		BIT(3)
++#define EDMA_MISC_TX_SRAM_FULL_MASK		BIT(4)
++#define EDMA_MISC_TX_CMPL_BUF_FULL_MASK		BIT(5)
++
++#define EDMA_MISC_DATA_LEN_ERR_MASK		BIT(6)
++#define EDMA_MISC_TX_TIMEOUT_MASK		BIT(7)
++
++/* EDMA txdesc2cmpl map */
++#define EDMA_TXDESC2CMPL_MAP_TXDESC_MASK		0x1F
++
++/* EDMA rxdesc2fill map */
++#define EDMA_RXDESC2FILL_MAP_RXDESC_MASK	0x7
++
+ #endif

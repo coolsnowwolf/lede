@@ -1,0 +1,130 @@
+From 0c729f53b8c33b9e5eadc2d5e673759e3510501e Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 29 Oct 2024 13:17:10 +0100
+Subject: [PATCH 2/2] net: airoha: Simplify Tx napi logic
+
+Simplify Tx napi logic relying just on the packet index provided by
+completion queue indicating the completed packet that can be removed
+from the Tx DMA ring.
+This is a preliminary patch to add Qdisc offload for airoha_eth driver.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20241029-airoha-en7581-tx-napi-work-v1-2-96ad1686b946@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/airoha_eth.c | 73 ++++++++++++----------
+ 1 file changed, 41 insertions(+), 32 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/airoha_eth.c
++++ b/drivers/net/ethernet/mediatek/airoha_eth.c
+@@ -1670,8 +1670,12 @@ static int airoha_qdma_tx_napi_poll(stru
+ 	irq_queued = FIELD_GET(IRQ_ENTRY_LEN_MASK, status);
+ 
+ 	while (irq_queued > 0 && done < budget) {
+-		u32 qid, last, val = irq_q->q[head];
++		u32 qid, val = irq_q->q[head];
++		struct airoha_qdma_desc *desc;
++		struct airoha_queue_entry *e;
+ 		struct airoha_queue *q;
++		u32 index, desc_ctrl;
++		struct sk_buff *skb;
+ 
+ 		if (val == 0xff)
+ 			break;
+@@ -1681,9 +1685,7 @@ static int airoha_qdma_tx_napi_poll(stru
+ 		irq_queued--;
+ 		done++;
+ 
+-		last = FIELD_GET(IRQ_DESC_IDX_MASK, val);
+ 		qid = FIELD_GET(IRQ_RING_IDX_MASK, val);
+-
+ 		if (qid >= ARRAY_SIZE(qdma->q_tx))
+ 			continue;
+ 
+@@ -1691,46 +1693,53 @@ static int airoha_qdma_tx_napi_poll(stru
+ 		if (!q->ndesc)
+ 			continue;
+ 
++		index = FIELD_GET(IRQ_DESC_IDX_MASK, val);
++		if (index >= q->ndesc)
++			continue;
++
+ 		spin_lock_bh(&q->lock);
+ 
+-		while (q->queued > 0) {
+-			struct airoha_qdma_desc *desc = &q->desc[q->tail];
+-			struct airoha_queue_entry *e = &q->entry[q->tail];
+-			u32 desc_ctrl = le32_to_cpu(desc->ctrl);
+-			struct sk_buff *skb = e->skb;
+-			u16 index = q->tail;
+-
+-			if (!(desc_ctrl & QDMA_DESC_DONE_MASK) &&
+-			    !(desc_ctrl & QDMA_DESC_DROP_MASK))
+-				break;
++		if (!q->queued)
++			goto unlock;
+ 
+-			q->tail = (q->tail + 1) % q->ndesc;
+-			q->queued--;
++		desc = &q->desc[index];
++		desc_ctrl = le32_to_cpu(desc->ctrl);
+ 
+-			dma_unmap_single(eth->dev, e->dma_addr, e->dma_len,
+-					 DMA_TO_DEVICE);
+-
+-			WRITE_ONCE(desc->msg0, 0);
+-			WRITE_ONCE(desc->msg1, 0);
++		if (!(desc_ctrl & QDMA_DESC_DONE_MASK) &&
++		    !(desc_ctrl & QDMA_DESC_DROP_MASK))
++			goto unlock;
++
++		e = &q->entry[index];
++		skb = e->skb;
++
++		dma_unmap_single(eth->dev, e->dma_addr, e->dma_len,
++				 DMA_TO_DEVICE);
++		memset(e, 0, sizeof(*e));
++		WRITE_ONCE(desc->msg0, 0);
++		WRITE_ONCE(desc->msg1, 0);
++		q->queued--;
++
++		/* completion ring can report out-of-order indexes if hw QoS
++		 * is enabled and packets with different priority are queued
++		 * to same DMA ring. Take into account possible out-of-order
++		 * reports incrementing DMA ring tail pointer
++		 */
++		while (q->tail != q->head && !q->entry[q->tail].dma_addr)
++			q->tail = (q->tail + 1) % q->ndesc;
+ 
+-			if (skb) {
+-				u16 queue = skb_get_queue_mapping(skb);
+-				struct netdev_queue *txq;
+-
+-				txq = netdev_get_tx_queue(skb->dev, queue);
+-				netdev_tx_completed_queue(txq, 1, skb->len);
+-				if (netif_tx_queue_stopped(txq) &&
+-				    q->ndesc - q->queued >= q->free_thr)
+-					netif_tx_wake_queue(txq);
+-
+-				dev_kfree_skb_any(skb);
+-				e->skb = NULL;
+-			}
++		if (skb) {
++			u16 queue = skb_get_queue_mapping(skb);
++			struct netdev_queue *txq;
++
++			txq = netdev_get_tx_queue(skb->dev, queue);
++			netdev_tx_completed_queue(txq, 1, skb->len);
++			if (netif_tx_queue_stopped(txq) &&
++			    q->ndesc - q->queued >= q->free_thr)
++				netif_tx_wake_queue(txq);
+ 
+-			if (index == last)
+-				break;
++			dev_kfree_skb_any(skb);
+ 		}
+-
++unlock:
+ 		spin_unlock_bh(&q->lock);
+ 	}
+ 

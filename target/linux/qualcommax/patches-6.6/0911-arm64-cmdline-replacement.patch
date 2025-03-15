@@ -1,0 +1,105 @@
+Subject: qualcommax: add kernel cmdline replacement hack 
+
+Add kernel command line replacement hack to qualcommax. Now we can
+find and replace arguments in the kernel command line by setting
+bootargs-find-1, bootargs-replace-1, bootargs-exact-match-1
+and bootargs-find-2, bootargs-replace-2, bootargs-exact-match-2
+under the chosen node in the device tree.
+
+This hack replaces the first occurence of bootargs-find-X with
+bootargs-replace-X. If bootargs-exact-match-X is set to "y",
+then the replacement happens only if the kernel command line is
+identical to bootargs-find-X.
+
+Signed-off-by: Qiyuan Zhang <zhang.github@outlook.com>
+---
+ drivers/of/fdt.c |   71 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 71 insertions(+)
+
+--- a/drivers/of/fdt.c
++++ b/drivers/of/fdt.c
+@@ -1158,6 +1158,14 @@ int __init early_init_dt_scan_chosen(cha
+ 	const void *rng_seed;
+ 	const void *fdt = initial_boot_params;
+ 
++	int i, cmd_len, f_len, r_len, offset, step;
++	char *s_ptr, *l_end, *r_end, *cur_ptr, *end_ptr;
++	const char *exact_match;
++	const int bootargs_replace_num = 2;
++	const char *bootargs_replace_props[2][3] =
++		{ {"bootargs-find-1", "bootargs-replace-1", "bootargs-exact-match-1"},
++		{"bootargs-find-2", "bootargs-replace-2", "bootargs-exact-match-2"} };
++
+ 	node = fdt_path_offset(fdt, "/chosen");
+ 	if (node < 0)
+ 		node = fdt_path_offset(fdt, "/chosen@0");
+@@ -1186,6 +1194,69 @@ int __init early_init_dt_scan_chosen(cha
+ 	p = of_get_flat_dt_prop(node, "bootargs", &l);
+ 	if (p != NULL && l > 0)
+ 		strscpy(cmdline, p, min(l, COMMAND_LINE_SIZE));
++
++	for(i = 0; i < bootargs_replace_num; i++) {
++		p = of_get_flat_dt_prop(node, bootargs_replace_props[i][0], &f_len);
++
++		if (p == NULL || f_len == 0 )
++			continue;
++
++		exact_match = of_get_flat_dt_prop(node, bootargs_replace_props[i][2], &l);
++
++		if (exact_match != NULL && l > 0 && exact_match[0] == 'y') {
++			if(strncmp(cmdline, p, r_len) == 0)
++				s_ptr = cmdline;
++			else
++				s_ptr = NULL;
++		} else {
++			s_ptr = strstr(cmdline, p);
++		}
++
++		if(!s_ptr)
++			continue;
++
++		p = of_get_flat_dt_prop(node, bootargs_replace_props[i][1], &r_len);
++
++		if (p == NULL || r_len == 0)
++			continue;
++
++		pr_info("Input kernel commad line: %s\n", cmdline);
++
++		cmd_len = strlen(cmdline);
++
++		if (cmd_len - f_len + r_len < COMMAND_LINE_SIZE) {
++
++			pr_info("Replace kernel command line with %s\n", bootargs_replace_props[i][1]);
++
++			offset = r_len - f_len;
++
++			if (offset != 0) {
++				l_end = s_ptr + f_len -	1;
++				r_end = cmdline + cmd_len;
++
++				if (offset > 0) {
++					step = -1;
++					cur_ptr = r_end;
++					end_ptr = l_end + step;
++				} else {
++					step = 1;
++					cur_ptr = l_end;
++					end_ptr = r_end + step;
++				}
++
++				for (; cur_ptr != end_ptr; cur_ptr += step)
++					*(cur_ptr + offset) = *cur_ptr;
++			}
++
++			strncpy(s_ptr, p, r_len - 1);
++
++			pr_info("Kernel command line after replacement: %s\n", cmdline);
++		} else {
++			pr_err("Replace kernel command line with %s failed\n", bootargs_replace_props[i][1]);
++		}
++
++	}
++
+ 	p = of_get_flat_dt_prop(node, "bootargs-append", &l);
+ 	if (p != NULL && l > 0)
+ 		strlcat(cmdline, p, min_t(int, strlen(cmdline) + (int)l, COMMAND_LINE_SIZE));

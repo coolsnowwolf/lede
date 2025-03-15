@@ -1,0 +1,85 @@
+From fd5ec7c0a9f7167baf377a4bbae72eda391df996 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Wed, 8 Nov 2023 16:18:02 +0800
+Subject: [PATCH 03/50] net: phy: qca808x: Add config_init function for QCA8084
+
+1. The ADC of QCA8084 PHY must be configured as edge inverted
+and falling whenever it is initialized or reset. In addition,
+the default MSE (Mean square error) threshold value is adjusted,
+which comes into play during link partner detection to detect
+the valid link signal.
+
+2. Add the possible interface modes.
+   When QCA8084 works on the interface mode SGMII or 2500BASE-X, the
+   interface mode can be switched according to the PHY link speed.
+
+   When QCA8084 works on the 10G-QXGMII mode, which will be the only
+   possible interface mode.
+
+Change-Id: I832c0d0b069e95cc411a8a7b680a5f60e1d6041a
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/phy/qcom/qca808x.c | 38 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -94,6 +94,15 @@
+ #define QCA8084_MMD3_CDT_NEAR_CTRL		0x807f
+ #define QCA8084_CDT_NEAR_BYPASS			BIT(15)
+ 
++/* QCA8084 ADC clock edge */
++#define QCA8084_ADC_CLK_SEL			0x8b80
++#define QCA8084_ADC_CLK_SEL_ACLK		GENMASK(7, 4)
++#define QCA8084_ADC_CLK_SEL_ACLK_FALL		0xf
++#define QCA8084_ADC_CLK_SEL_ACLK_RISE		0x0
++
++#define QCA8084_MSE_THRESHOLD			0x800a
++#define QCA8084_MSE_THRESHOLD_2P5G_VAL		0x51c6
++
+ MODULE_DESCRIPTION("Qualcomm Atheros QCA808X PHY driver");
+ MODULE_AUTHOR("Matus Ujhelyi, Luo Jie");
+ MODULE_LICENSE("GPL");
+@@ -660,6 +669,34 @@ static int qca808x_led_polarity_set(stru
+ 			      active_low ? 0 : QCA808X_LED_ACTIVE_HIGH);
+ }
+ 
++static int qca8084_config_init(struct phy_device *phydev)
++{
++	int ret;
++
++	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII)
++		__set_bit(PHY_INTERFACE_MODE_10G_QXGMII,
++			  phydev->possible_interfaces);
++	else
++		qca808x_fill_possible_interfaces(phydev);
++
++	/* Configure the ADC to convert the signal using falling edge
++	 * instead of the default rising edge.
++	 */
++	ret = at803x_debug_reg_mask(phydev, QCA8084_ADC_CLK_SEL,
++				    QCA8084_ADC_CLK_SEL_ACLK,
++				    FIELD_PREP(QCA8084_ADC_CLK_SEL_ACLK,
++					       QCA8084_ADC_CLK_SEL_ACLK_FALL));
++	if (ret < 0)
++		return ret;
++
++	/* Adjust MSE threshold value to avoid link issue with
++	 * some link partner.
++	 */
++	return phy_write_mmd(phydev, MDIO_MMD_PMAPMD,
++			     QCA8084_MSE_THRESHOLD,
++			     QCA8084_MSE_THRESHOLD_2P5G_VAL);
++}
++
+ static struct phy_driver qca808x_driver[] = {
+ {
+ 	/* Qualcomm QCA8081 */
+@@ -708,6 +745,7 @@ static struct phy_driver qca808x_driver[
+ 	.soft_reset		= qca808x_soft_reset,
+ 	.cable_test_start	= qca808x_cable_test_start,
+ 	.cable_test_get_status	= qca808x_cable_test_get_status,
++	.config_init		= qca8084_config_init,
+ }, };
+ 
+ module_phy_driver(qca808x_driver);

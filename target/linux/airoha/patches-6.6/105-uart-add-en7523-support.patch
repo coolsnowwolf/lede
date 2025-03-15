@@ -1,0 +1,187 @@
+--- /dev/null
++++ b/drivers/tty/serial/8250/8250_en7523.c
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Airoha EN7523 driver.
++ *
++ * Copyright (c) 2022 Genexis Sweden AB
++ * Author: Benjamin Larsson <benjamin.larsson@genexis.eu>
++ */
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_irq.h>
++#include <linux/of_platform.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/serial_8250.h>
++#include <linux/serial_reg.h>
++#include <linux/console.h>
++#include <linux/dma-mapping.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++
++#include "8250.h"
++
++
++/* The Airoha UART is 16550-compatible except for the baud rate calculation.
++ *
++ * crystal_clock = 20 MHz
++ * xindiv_clock = crystal_clock / clock_div
++ * (x/y) = XYD, 32 bit register with 16 bits of x and and then 16 bits of y
++ * clock_div = XINCLK_DIVCNT (default set to 10 (0x4)),
++ *           - 3 bit register [ 1, 2, 4, 8, 10, 12, 16, 20 ]
++ *
++ * baud_rate = ((xindiv_clock) * (x/y)) / ([BRDH,BRDL] * 16)
++ *
++ * XYD_y seems to need to be larger then XYD_x for things to work.
++ * Setting [BRDH,BRDL] to [0,1] and XYD_y to 65000 give even values
++ * for usual baud rates.
++ *
++ * Selecting divider needs to fulfill
++ * 1.8432 MHz <= xindiv_clk <= APB clock / 2
++ * The clocks are unknown but a divider of value 1 did not work.
++ *
++ * Optimally the XYD, BRD and XINCLK_DIVCNT registers could be searched to
++ * find values that gives the least error for every baud rate. But searching
++ * the space takes time and in practise only a few rates are of interest.
++ * With some value combinations not working a tested subset is used giving
++ * a usable range from 110 to 460800 baud.
++ */
++
++#define CLOCK_DIV_TAB_ELEMS 3
++#define XYD_Y 65000
++#define XINDIV_CLOCK 20000000
++#define UART_BRDL_20M 0x01
++#define UART_BRDH_20M 0x00
++
++static int clock_div_tab[] = { 10, 4, 2};
++static int clock_div_reg[] = {  4, 2, 1};
++
++
++int en7523_set_uart_baud_rate (struct uart_port *port, unsigned int baud)
++{
++	struct uart_8250_port *up = up_to_u8250p(port);
++	unsigned int xyd_x, nom, denom;
++	int i;
++
++	/* set DLAB to access the baud rate divider registers (BRDH, BRDL) */
++	serial_port_out(port, UART_LCR, up->lcr | UART_LCR_DLAB);
++
++	/* set baud rate calculation defaults */
++
++	/* set BRDIV ([BRDH,BRDL]) to 1 */
++	serial_port_out(port, UART_BRDL, UART_BRDL_20M);
++	serial_port_out(port, UART_BRDH, UART_BRDH_20M);
++
++	/* calculate XYD_x and XINCLKDR register */
++
++	for (i = 0 ; i < CLOCK_DIV_TAB_ELEMS ; i++) {
++		denom = (XINDIV_CLOCK/40) / clock_div_tab[i];
++		nom = (baud * (XYD_Y/40));
++		xyd_x = ((nom/denom) << 4);
++		if (xyd_x < XYD_Y) break;
++	}
++
++	serial_port_out(port, UART_XINCLKDR, clock_div_reg[i]);
++	serial_port_out(port, UART_XYD, (xyd_x<<16) | XYD_Y);
++
++	/* unset DLAB */
++	serial_port_out(port, UART_LCR, up->lcr);
++
++	return 0;
++}
++
++EXPORT_SYMBOL_GPL(en7523_set_uart_baud_rate);
+--- a/drivers/tty/serial/8250/8250_of.c
++++ b/drivers/tty/serial/8250/8250_of.c
+@@ -338,6 +338,7 @@ static const struct of_device_id of_plat
+ 	{ .compatible = "ti,da830-uart", .data = (void *)PORT_DA830, },
+ 	{ .compatible = "nuvoton,wpcm450-uart", .data = (void *)PORT_NPCM, },
+ 	{ .compatible = "nuvoton,npcm750-uart", .data = (void *)PORT_NPCM, },
++	{ .compatible = "airoha,en7523-uart", .data = (void *)PORT_AIROHA, },
+ 	{ /* end of list */ },
+ };
+ MODULE_DEVICE_TABLE(of, of_platform_serial_table);
+--- a/drivers/tty/serial/8250/8250_port.c
++++ b/drivers/tty/serial/8250/8250_port.c
+@@ -330,6 +330,14 @@ static const struct serial8250_config ua
+ 		.rxtrig_bytes	= {1, 8, 16, 30},
+ 		.flags		= UART_CAP_FIFO | UART_CAP_AFE,
+ 	},
++	[PORT_AIROHA] = {
++		.name		= "Airoha 16550",
++		.fifo_size	= 8,
++		.tx_loadsz	= 1,
++		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_01,
++		.rxtrig_bytes	= {1, 4},
++		.flags		= UART_CAP_FIFO,
++	},
+ };
+ 
+ /* Uart divisor latch read */
+@@ -2881,6 +2889,12 @@ serial8250_do_set_termios(struct uart_po
+ 
+ 	serial8250_set_divisor(port, baud, quot, frac);
+ 
++#ifdef CONFIG_SERIAL_8250_AIROHA
++	/* Airoha SoCs have custom registers for baud rate settings */
++	if (port->type == PORT_AIROHA)
++		en7523_set_uart_baud_rate(port, baud);
++#endif
++
+ 	/*
+ 	 * LCR DLAB must be set to enable 64-byte FIFO mode. If the FCR
+ 	 * is written without DLAB set, this mode will be disabled.
+--- a/drivers/tty/serial/8250/Makefile
++++ b/drivers/tty/serial/8250/Makefile
+@@ -46,6 +46,7 @@ obj-$(CONFIG_SERIAL_8250_PERICOM)	+= 825
+ obj-$(CONFIG_SERIAL_8250_PXA)		+= 8250_pxa.o
+ obj-$(CONFIG_SERIAL_8250_TEGRA)		+= 8250_tegra.o
+ obj-$(CONFIG_SERIAL_8250_BCM7271)	+= 8250_bcm7271.o
++obj-$(CONFIG_SERIAL_8250_AIROHA)	+= 8250_en7523.o
+ obj-$(CONFIG_SERIAL_OF_PLATFORM)	+= 8250_of.o
+ 
+ CFLAGS_8250_ingenic.o += -I$(srctree)/scripts/dtc/libfdt
+--- a/include/uapi/linux/serial_reg.h
++++ b/include/uapi/linux/serial_reg.h
+@@ -382,5 +382,17 @@
+ #define UART_ALTR_EN_TXFIFO_LW	0x01	/* Enable the TX FIFO Low Watermark */
+ #define UART_ALTR_TX_LOW	0x41	/* Tx FIFO Low Watermark */
+ 
++/*
++ * These are definitions for the Airoha EN75XX uart registers
++ * Normalized because of 32 bits registers.
++ */
++#define UART_BRDL		0
++#define UART_BRDH		1
++#define UART_XINCLKDR		10
++#define UART_XYD		11
++#define UART_TXLVLCNT		12
++#define UART_RXLVLCNT		13
++#define UART_FINTLVL		14
++
+ #endif /* _LINUX_SERIAL_REG_H */
+ 
+--- a/include/uapi/linux/serial_core.h
++++ b/include/uapi/linux/serial_core.h
+@@ -45,6 +45,7 @@
+ #define PORT_ALTR_16550_F128 28 /* Altera 16550 UART with 128 FIFOs */
+ #define PORT_RT2880	29	/* Ralink RT2880 internal UART */
+ #define PORT_16550A_FSL64 30	/* Freescale 16550 UART with 64 FIFOs */
++#define PORT_AIROHA    31	/* Airoha 16550 UART */
+ 
+ /*
+  * ARM specific type numbers.  These are not currently guaranteed
+--- a/include/linux/serial_8250.h
++++ b/include/linux/serial_8250.h
+@@ -195,6 +195,7 @@ void serial8250_do_set_mctrl(struct uart
+ void serial8250_do_set_divisor(struct uart_port *port, unsigned int baud,
+ 			       unsigned int quot, unsigned int quot_frac);
+ int fsl8250_handle_irq(struct uart_port *port);
++int en7523_set_uart_baud_rate(struct uart_port *port, unsigned int baud);
+ int serial8250_handle_irq(struct uart_port *port, unsigned int iir);
+ u16 serial8250_rx_chars(struct uart_8250_port *up, u16 lsr);
+ void serial8250_read_char(struct uart_8250_port *up, u16 lsr);

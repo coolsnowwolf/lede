@@ -12,6 +12,24 @@ define Device/Default
 	IMAGE/sysupgrade.bin/squashfs :=
 endef
 
+define Device/FitImage
+	KERNEL_SUFFIX := -uImage.itb
+	KERNEL = kernel-bin | libdeflate-gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
+endef
+
+define Device/FitImageLzma
+	KERNEL_SUFFIX := -uImage.itb
+	KERNEL = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
+	KERNEL_NAME := Image
+endef
+
+define Device/UbiFit
+	KERNEL_IN_UBI := 1
+	IMAGES += factory.ubi
+	IMAGE/factory.ubi := append-ubi
+endef
+
 include $(SUBTARGET).mk
 
 $(eval $(call BuildImage))

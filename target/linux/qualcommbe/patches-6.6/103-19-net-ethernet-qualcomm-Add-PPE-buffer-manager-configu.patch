@@ -1,0 +1,308 @@
+From 049820d8a0c918cedd4524eda9abf750819ac901 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Tue, 26 Dec 2023 18:19:30 +0800
+Subject: [PATCH 19/50] net: ethernet: qualcomm: Add PPE buffer manager
+ configuration
+
+The BM (Buffer Management) config controls the pause frame generated
+on the PPE port. There are maximum 15 BM ports and 4 groups supported,
+all BM ports are assigned to group 0 by default. The number of hardware
+buffers configured for the port influence the threshold of the flow
+control for that port.
+
+Change-Id: Ifb1b69c89966cf5cab19f8e2661c64a4dc6230fe
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/Makefile    |   2 +-
+ drivers/net/ethernet/qualcomm/ppe/ppe.c       |   5 +
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 181 ++++++++++++++++++
+ .../net/ethernet/qualcomm/ppe/ppe_config.h    |  10 +
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  |  54 ++++++
+ 5 files changed, 251 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+
+--- a/drivers/net/ethernet/qualcomm/ppe/Makefile
++++ b/drivers/net/ethernet/qualcomm/ppe/Makefile
+@@ -4,4 +4,4 @@
+ #
+ 
+ obj-$(CONFIG_QCOM_PPE) += qcom-ppe.o
+-qcom-ppe-objs := ppe.o
++qcom-ppe-objs := ppe.o ppe_config.o
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe.c
+@@ -15,6 +15,7 @@
+ #include <linux/reset.h>
+ 
+ #include "ppe.h"
++#include "ppe_config.h"
+ 
+ #define PPE_PORT_MAX		8
+ #define PPE_CLK_RATE		353000000
+@@ -201,6 +202,10 @@ static int qcom_ppe_probe(struct platfor
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "PPE clock config failed\n");
+ 
++	ret = ppe_hw_config(ppe_dev);
++	if (ret)
++		return dev_err_probe(dev, ret, "PPE HW config failed\n");
++
+ 	platform_set_drvdata(pdev, ppe_dev);
+ 
+ 	return 0;
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* PPE HW initialization configs such as BM(buffer management),
++ * QM(queue management) and scheduler configs.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/device.h>
++#include <linux/regmap.h>
++
++#include "ppe.h"
++#include "ppe_config.h"
++#include "ppe_regs.h"
++
++/**
++ * struct ppe_bm_port_config - PPE BM port configuration.
++ * @port_id_start: The fist BM port ID to configure.
++ * @port_id_end: The last BM port ID to configure.
++ * @pre_alloc: BM port dedicated buffer number.
++ * @in_fly_buf: Buffer number for receiving the packet after pause frame sent.
++ * @ceil: Ceil to generate the back pressure.
++ * @weight: Weight value.
++ * @resume_offset: Resume offset from the threshold value.
++ * @resume_ceil: Ceil to resume from the back pressure state.
++ * @dynamic: Dynamic threshold used or not.
++ *
++ * The is for configuring the threshold that impacts the port
++ * flow control.
++ */
++struct ppe_bm_port_config {
++	unsigned int port_id_start;
++	unsigned int port_id_end;
++	unsigned int pre_alloc;
++	unsigned int in_fly_buf;
++	unsigned int ceil;
++	unsigned int weight;
++	unsigned int resume_offset;
++	unsigned int resume_ceil;
++	bool dynamic;
++};
++
++static int ipq9574_ppe_bm_group_config = 1550;
++static struct ppe_bm_port_config ipq9574_ppe_bm_port_config[] = {
++	{
++		.port_id_start	= 0,
++		.port_id_end	= 0,
++		.pre_alloc	= 0,
++		.in_fly_buf	= 100,
++		.ceil		= 1146,
++		.weight		= 7,
++		.resume_offset	= 8,
++		.resume_ceil	= 0,
++		.dynamic	= true,
++	},
++	{
++		.port_id_start	= 1,
++		.port_id_end	= 7,
++		.pre_alloc	= 0,
++		.in_fly_buf	= 100,
++		.ceil		= 250,
++		.weight		= 4,
++		.resume_offset	= 36,
++		.resume_ceil	= 0,
++		.dynamic	= true,
++	},
++	{
++		.port_id_start	= 8,
++		.port_id_end	= 13,
++		.pre_alloc	= 0,
++		.in_fly_buf	= 128,
++		.ceil		= 250,
++		.weight		= 4,
++		.resume_offset	= 36,
++		.resume_ceil	= 0,
++		.dynamic	= true,
++	},
++	{
++		.port_id_start	= 14,
++		.port_id_end	= 14,
++		.pre_alloc	= 0,
++		.in_fly_buf	= 40,
++		.ceil		= 250,
++		.weight		= 4,
++		.resume_offset	= 36,
++		.resume_ceil	= 0,
++		.dynamic	= true,
++	},
++};
++
++static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
++				   struct ppe_bm_port_config port_cfg)
++{
++	u32 reg, val, bm_fc_val[2];
++	int ret;
++
++	/* Configure BM flow control related threshold */
++	PPE_BM_PORT_FC_SET_WEIGHT(bm_fc_val, port_cfg.weight);
++	PPE_BM_PORT_FC_SET_RESUME_OFFSET(bm_fc_val, port_cfg.resume_offset);
++	PPE_BM_PORT_FC_SET_RESUME_THRESHOLD(bm_fc_val, port_cfg.resume_ceil);
++	PPE_BM_PORT_FC_SET_DYNAMIC(bm_fc_val, port_cfg.dynamic);
++	PPE_BM_PORT_FC_SET_REACT_LIMIT(bm_fc_val, port_cfg.in_fly_buf);
++	PPE_BM_PORT_FC_SET_PRE_ALLOC(bm_fc_val, port_cfg.pre_alloc);
++
++	/* Ceiling is divided into the different register word. */
++	val = FIELD_GET(GENMASK(2, 0), port_cfg.ceil);
++	PPE_BM_PORT_FC_SET_CEILING_LOW(bm_fc_val, val);
++	val = FIELD_GET(GENMASK(10, 3), port_cfg.ceil);
++	PPE_BM_PORT_FC_SET_CEILING_HIGH(bm_fc_val, val);
++
++	reg = PPE_BM_PORT_FC_CFG_ADDR + PPE_BM_PORT_FC_CFG_INC * bm_port_id;
++	ret = regmap_bulk_write(ppe_dev->regmap, reg,
++				bm_fc_val, ARRAY_SIZE(bm_fc_val));
++	if (ret)
++		return ret;
++
++	/* Assign the default group ID 0 to the BM port */
++	val = FIELD_PREP(PPE_BM_PORT_GROUP_ID_SHARED_GROUP_ID, 0);
++	reg = PPE_BM_PORT_GROUP_ID_ADDR + PPE_BM_PORT_GROUP_ID_INC * bm_port_id;
++	ret = regmap_update_bits(ppe_dev->regmap, reg,
++				 PPE_BM_PORT_GROUP_ID_SHARED_GROUP_ID,
++				 val);
++	if (ret)
++		return ret;
++
++	/* Enable BM port flow control */
++	val = FIELD_PREP(PPE_BM_PORT_FC_MODE_EN, true);
++	reg = PPE_BM_PORT_FC_MODE_ADDR + PPE_BM_PORT_FC_MODE_INC * bm_port_id;
++
++	return regmap_update_bits(ppe_dev->regmap, reg,
++				  PPE_BM_PORT_FC_MODE_EN,
++				  val);
++}
++
++/* Configure the buffer threshold for the port flow control function. */
++static int ppe_config_bm(struct ppe_device *ppe_dev)
++{
++	unsigned int i, bm_port_id, port_cfg_cnt;
++	struct ppe_bm_port_config *port_cfg;
++	u32 reg, val;
++	int ret;
++
++	/* Configure the buffer number of group 0 by default. The buffer
++	 * number of group 1-3 is cleared to 0 after PPE reset on the probe
++	 * of PPE driver.
++	 */
++	reg = PPE_BM_SHARED_GROUP_CFG_ADDR;
++	val = FIELD_PREP(PPE_BM_SHARED_GROUP_CFG_SHARED_LIMIT,
++			 ipq9574_ppe_bm_group_config);
++	ret = regmap_update_bits(ppe_dev->regmap, reg,
++				 PPE_BM_SHARED_GROUP_CFG_SHARED_LIMIT,
++				 val);
++	if (ret)
++		goto bm_config_fail;
++
++	port_cfg = ipq9574_ppe_bm_port_config;
++	port_cfg_cnt = ARRAY_SIZE(ipq9574_ppe_bm_port_config);
++	for (i = 0; i < port_cfg_cnt; i++) {
++		for (bm_port_id = port_cfg[i].port_id_start;
++		     bm_port_id <= port_cfg[i].port_id_end; bm_port_id++) {
++			ret = ppe_config_bm_threshold(ppe_dev, bm_port_id,
++						      port_cfg[i]);
++			if (ret)
++				goto bm_config_fail;
++		}
++	}
++
++	return 0;
++
++bm_config_fail:
++	dev_err(ppe_dev->dev, "PPE BM config error %d\n", ret);
++	return ret;
++}
++
++int ppe_hw_config(struct ppe_device *ppe_dev)
++{
++	return ppe_config_bm(ppe_dev);
++}
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ *
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef __PPE_CONFIG_H__
++#define __PPE_CONFIG_H__
++
++int ppe_hw_config(struct ppe_device *ppe_dev);
++#endif
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -0,0 +1,54 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ *
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* PPE hardware register and table declarations. */
++#ifndef __PPE_REGS_H__
++#define __PPE_REGS_H__
++
++/* There are 15 BM ports and 4 BM groups supported by PPE,
++ * BM port (0-7) is matched to EDMA port 0, BM port (8-13) is matched
++ * to PPE physical port 1-6, BM port 14 is matched to EIP.
++ */
++#define PPE_BM_PORT_FC_MODE_ADDR		0x600100
++#define PPE_BM_PORT_FC_MODE_INC			0x4
++#define PPE_BM_PORT_FC_MODE_EN			BIT(0)
++
++#define PPE_BM_PORT_GROUP_ID_ADDR		0x600180
++#define PPE_BM_PORT_GROUP_ID_INC		0x4
++#define PPE_BM_PORT_GROUP_ID_SHARED_GROUP_ID	GENMASK(1, 0)
++
++#define PPE_BM_SHARED_GROUP_CFG_ADDR		0x600290
++#define PPE_BM_SHARED_GROUP_CFG_INC		0x4
++#define PPE_BM_SHARED_GROUP_CFG_SHARED_LIMIT	GENMASK(10, 0)
++
++#define PPE_BM_PORT_FC_CFG_ADDR			0x601000
++#define PPE_BM_PORT_FC_CFG_INC			0x10
++#define PPE_BM_PORT_FC_W0_REACT_LIMIT		GENMASK(8, 0)
++#define PPE_BM_PORT_FC_W0_RESUME_THRESHOLD	GENMASK(17, 9)
++#define PPE_BM_PORT_FC_W0_RESUME_OFFSET		GENMASK(28, 18)
++#define PPE_BM_PORT_FC_W0_CEILING_LOW		GENMASK(31, 29)
++#define PPE_BM_PORT_FC_W1_CEILING_HIGH		GENMASK(7, 0)
++#define PPE_BM_PORT_FC_W1_WEIGHT		GENMASK(10, 8)
++#define PPE_BM_PORT_FC_W1_DYNAMIC		BIT(11)
++#define PPE_BM_PORT_FC_W1_PRE_ALLOC		GENMASK(22, 12)
++
++#define PPE_BM_PORT_FC_SET_REACT_LIMIT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_BM_PORT_FC_W0_REACT_LIMIT)
++#define PPE_BM_PORT_FC_SET_RESUME_THRESHOLD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_BM_PORT_FC_W0_RESUME_THRESHOLD)
++#define PPE_BM_PORT_FC_SET_RESUME_OFFSET(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_BM_PORT_FC_W0_RESUME_OFFSET)
++#define PPE_BM_PORT_FC_SET_CEILING_LOW(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_BM_PORT_FC_W0_CEILING_LOW)
++#define PPE_BM_PORT_FC_SET_CEILING_HIGH(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_CEILING_HIGH)
++#define PPE_BM_PORT_FC_SET_WEIGHT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_WEIGHT)
++#define PPE_BM_PORT_FC_SET_DYNAMIC(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_DYNAMIC)
++#define PPE_BM_PORT_FC_SET_PRE_ALLOC(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_PRE_ALLOC)
++
++#endif

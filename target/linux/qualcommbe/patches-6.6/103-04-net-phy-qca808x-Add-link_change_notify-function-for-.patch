@@ -1,0 +1,90 @@
+From d9b391e7b695b7de04c4363b5ec9ffaaed387353 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Wed, 8 Nov 2023 18:01:14 +0800
+Subject: [PATCH 04/50] net: phy: qca808x: Add link_change_notify function for
+ QCA8084
+
+When the link is changed, QCA8084 needs to do the fifo reset and
+adjust the IPG level for the 10G-QXGMII link on the speed 1000M.
+
+Change-Id: I21de802c78496fb95f1c5119fe3894c9fdebbd65
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/phy/qcom/qca808x.c | 52 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 52 insertions(+)
+
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -103,6 +103,14 @@
+ #define QCA8084_MSE_THRESHOLD			0x800a
+ #define QCA8084_MSE_THRESHOLD_2P5G_VAL		0x51c6
+ 
++/* QCA8084 FIFO reset control */
++#define QCA8084_FIFO_CONTROL			0x19
++#define QCA8084_FIFO_MAC_2_PHY			BIT(1)
++#define QCA8084_FIFO_PHY_2_MAC			BIT(0)
++
++#define QCA8084_MMD7_IPG_OP			0x901d
++#define QCA8084_IPG_10_TO_11_EN			BIT(0)
++
+ MODULE_DESCRIPTION("Qualcomm Atheros QCA808X PHY driver");
+ MODULE_AUTHOR("Matus Ujhelyi, Luo Jie");
+ MODULE_LICENSE("GPL");
+@@ -697,6 +705,49 @@ static int qca8084_config_init(struct ph
+ 			     QCA8084_MSE_THRESHOLD_2P5G_VAL);
+ }
+ 
++static void qca8084_link_change_notify(struct phy_device *phydev)
++{
++	int ret;
++
++	/* Assert the FIFO between PHY and MAC. */
++	ret = phy_modify(phydev, QCA8084_FIFO_CONTROL,
++			 QCA8084_FIFO_MAC_2_PHY | QCA8084_FIFO_PHY_2_MAC,
++			 0);
++	if (ret) {
++		phydev_err(phydev, "Asserting PHY FIFO failed\n");
++		return;
++	}
++
++	/* If the PHY is in 10G_QXGMII mode, the FIFO needs to be kept in
++	 * reset state when link is down, otherwise the FIFO needs to be
++	 * de-asserted after waiting 50 ms to make the assert completed.
++	 */
++	if (phydev->interface != PHY_INTERFACE_MODE_10G_QXGMII ||
++	    phydev->link) {
++		msleep(50);
++
++		/* Deassert the FIFO between PHY and MAC. */
++		ret = phy_modify(phydev, QCA8084_FIFO_CONTROL,
++				 QCA8084_FIFO_MAC_2_PHY |
++				 QCA8084_FIFO_PHY_2_MAC,
++				 QCA8084_FIFO_MAC_2_PHY |
++				 QCA8084_FIFO_PHY_2_MAC);
++		if (ret) {
++			phydev_err(phydev, "De-asserting PHY FIFO failed\n");
++			return;
++		}
++	}
++
++	/* Enable IPG level 10 to 11 tuning for link speed 1000M in the
++	 * 10G_QXGMII mode.
++	 */
++	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII)
++		phy_modify_mmd(phydev, MDIO_MMD_AN, QCA8084_MMD7_IPG_OP,
++			       QCA8084_IPG_10_TO_11_EN,
++			       phydev->speed == SPEED_1000 ?
++			       QCA8084_IPG_10_TO_11_EN : 0);
++}
++
+ static struct phy_driver qca808x_driver[] = {
+ {
+ 	/* Qualcomm QCA8081 */
+@@ -746,6 +797,7 @@ static struct phy_driver qca808x_driver[
+ 	.cable_test_start	= qca808x_cable_test_start,
+ 	.cable_test_get_status	= qca808x_cable_test_get_status,
+ 	.config_init		= qca8084_config_init,
++	.link_change_notify	= qca8084_link_change_notify,
+ }, };
+ 
+ module_phy_driver(qca808x_driver);

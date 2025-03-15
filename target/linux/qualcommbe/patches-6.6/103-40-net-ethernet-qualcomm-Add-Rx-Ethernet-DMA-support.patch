@@ -1,0 +1,2394 @@
+From 7c7baa32e0d110d5446113f5513fca84731bddd3 Mon Sep 17 00:00:00 2001
+From: Suruchi Agarwal <quic_suruchia@quicinc.com>
+Date: Thu, 21 Mar 2024 16:21:19 -0700
+Subject: [PATCH 40/50] net: ethernet: qualcomm: Add Rx Ethernet DMA support
+
+Add Rx queues, rings, descriptors configurations and
+DMA support for the EDMA.
+
+Change-Id: I612bcd661e74d5bf3ecb33de10fd5298d18ff7e9
+Co-developed-by: Pavithra R <quic_pavir@quicinc.com>
+Signed-off-by: Pavithra R <quic_pavir@quicinc.com>
+Signed-off-by: Suruchi Agarwal <quic_suruchia@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/Makefile    |   2 +-
+ drivers/net/ethernet/qualcomm/ppe/edma.c      | 171 +++-
+ drivers/net/ethernet/qualcomm/ppe/edma.h      |  18 +-
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.c   | 964 ++++++++++++++++++
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.h   |  48 +
+ drivers/net/ethernet/qualcomm/ppe/edma_port.c |  39 +-
+ drivers/net/ethernet/qualcomm/ppe/edma_port.h |  31 +
+ drivers/net/ethernet/qualcomm/ppe/edma_rx.c   | 622 +++++++++++
+ drivers/net/ethernet/qualcomm/ppe/edma_rx.h   | 287 ++++++
+ 9 files changed, 2177 insertions(+), 5 deletions(-)
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma_rx.c
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma_rx.h
+
+--- a/drivers/net/ethernet/qualcomm/ppe/Makefile
++++ b/drivers/net/ethernet/qualcomm/ppe/Makefile
+@@ -7,4 +7,4 @@ obj-$(CONFIG_QCOM_PPE) += qcom-ppe.o
+ qcom-ppe-objs := ppe.o ppe_config.o ppe_api.o ppe_debugfs.o ppe_port.o
+ 
+ #EDMA
+-qcom-ppe-objs += edma.o edma_port.o
+\ No newline at end of file
++qcom-ppe-objs += edma.o edma_cfg_rx.o edma_port.o edma_rx.o
+\ No newline at end of file
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
+@@ -18,12 +18,23 @@
+ #include <linux/reset.h>
+ 
+ #include "edma.h"
++#include "edma_cfg_rx.h"
+ #include "ppe_regs.h"
+ 
+ #define EDMA_IRQ_NAME_SIZE		32
+ 
+ /* Global EDMA context. */
+ struct edma_context *edma_ctx;
++static char **edma_rxdesc_irq_name;
++
++/* Module params. */
++static int page_mode;
++module_param(page_mode, int, 0);
++MODULE_PARM_DESC(page_mode, "Enable page mode (default:0)");
++
++static int rx_buff_size;
++module_param(rx_buff_size, int, 0640);
++MODULE_PARM_DESC(rx_buff_size, "Rx Buffer size for Jumbo MRU value (default:0)");
+ 
+ /* Priority to multi-queue mapping. */
+ static u8 edma_pri_map[PPE_QUEUE_INTER_PRI_NUM] = {
+@@ -178,6 +189,59 @@ static int edma_configure_ucast_prio_map
+ 	return ret;
+ }
+ 
++static int edma_irq_register(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	int ret;
++	u32 i;
++
++	/* Request IRQ for RXDESC rings. */
++	edma_rxdesc_irq_name = kzalloc((sizeof(char *) * rx->num_rings),
++				       GFP_KERNEL);
++	if (!edma_rxdesc_irq_name)
++		return -ENOMEM;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		edma_rxdesc_irq_name[i] = kzalloc((sizeof(char *) * EDMA_IRQ_NAME_SIZE),
++						  GFP_KERNEL);
++		if (!edma_rxdesc_irq_name[i]) {
++			ret = -ENOMEM;
++			goto rxdesc_irq_name_alloc_fail;
++		}
++
++		snprintf(edma_rxdesc_irq_name[i], 20, "edma_rxdesc_%d",
++			 rx->ring_start + i);
++
++		irq_set_status_flags(edma_ctx->intr_info.intr_rx[i], IRQ_DISABLE_UNLAZY);
++
++		ret = request_irq(edma_ctx->intr_info.intr_rx[i],
++				  edma_rx_handle_irq, IRQF_SHARED,
++				  edma_rxdesc_irq_name[i],
++				  (void *)&edma_ctx->rx_rings[i]);
++		if (ret) {
++			pr_err("RXDESC ring IRQ:%d request failed\n",
++			       edma_ctx->intr_info.intr_rx[i]);
++			goto rx_desc_ring_intr_req_fail;
++		}
++
++		pr_debug("RXDESC ring: %d IRQ:%d request success: %s\n",
++			 rx->ring_start + i,
++			 edma_ctx->intr_info.intr_rx[i],
++			 edma_rxdesc_irq_name[i]);
++	}
++
++	return 0;
++
++rx_desc_ring_intr_req_fail:
++	for (i = 0; i < rx->num_rings; i++)
++		kfree(edma_rxdesc_irq_name[i]);
++rxdesc_irq_name_alloc_fail:
++	kfree(edma_rxdesc_irq_name);
++
++	return ret;
++}
++
+ static int edma_irq_init(void)
+ {
+ 	struct edma_hw_info *hw_info = edma_ctx->hw_info;
+@@ -260,6 +324,16 @@ static int edma_irq_init(void)
+ 	return 0;
+ }
+ 
++static int edma_alloc_rings(void)
++{
++	if (edma_cfg_rx_rings_alloc()) {
++		pr_err("Error in allocating Rx rings\n");
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
+ static int edma_hw_reset(void)
+ {
+ 	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
+@@ -343,6 +417,40 @@ static int edma_hw_configure(void)
+ 	if (!edma_ctx->netdev_arr)
+ 		return -ENOMEM;
+ 
++	edma_ctx->dummy_dev = alloc_netdev_dummy(0);
++	if (!edma_ctx->dummy_dev) {
++		ret = -ENOMEM;
++		pr_err("Failed to allocate dummy device. ret: %d\n", ret);
++		goto dummy_dev_alloc_failed;
++	}
++
++	/* Set EDMA jumbo MRU if enabled or set page mode. */
++	if (edma_ctx->rx_buf_size) {
++		edma_ctx->rx_page_mode = false;
++		pr_debug("Rx Jumbo mru is enabled: %d\n", edma_ctx->rx_buf_size);
++	} else {
++		edma_ctx->rx_page_mode = page_mode;
++	}
++
++	ret = edma_alloc_rings();
++	if (ret) {
++		pr_err("Error in initializaing the rings. ret: %d\n", ret);
++		goto edma_alloc_rings_failed;
++	}
++
++	/* Disable interrupts. */
++	edma_cfg_rx_disable_interrupts();
++
++	edma_cfg_rx_rings_disable();
++
++	edma_cfg_rx_ring_mappings();
++
++	ret = edma_cfg_rx_rings();
++	if (ret) {
++		pr_err("Error in configuring Rx rings. ret: %d\n", ret);
++		goto edma_cfg_rx_rings_failed;
++	}
++
+ 	/* Configure DMA request priority, DMA read burst length,
+ 	 * and AXI write size.
+ 	 */
+@@ -376,6 +484,10 @@ static int edma_hw_configure(void)
+ 	data |= EDMA_MISC_TX_TIMEOUT_MASK;
+ 	edma_ctx->intr_info.intr_mask_misc = data;
+ 
++	edma_cfg_rx_rings_enable();
++	edma_cfg_rx_napi_add();
++	edma_cfg_rx_napi_enable();
++
+ 	/* Global EDMA enable and padding enable. */
+ 	data = EDMA_PORT_PAD_EN | EDMA_PORT_EDMA_EN;
+ 
+@@ -389,11 +501,32 @@ static int edma_hw_configure(void)
+ 	if (ret) {
+ 		pr_err("Failed to initialize unicast priority map table: %d\n",
+ 		       ret);
+-		kfree(edma_ctx->netdev_arr);
+-		return ret;
++		goto configure_ucast_prio_map_tbl_failed;
++	}
++
++	/* Initialize RPS hash map table. */
++	ret = edma_cfg_rx_rps_hash_map();
++	if (ret) {
++		pr_err("Failed to configure rps hash table: %d\n",
++		       ret);
++		goto edma_cfg_rx_rps_hash_map_failed;
+ 	}
+ 
+ 	return 0;
++
++edma_cfg_rx_rps_hash_map_failed:
++configure_ucast_prio_map_tbl_failed:
++	edma_cfg_rx_napi_disable();
++	edma_cfg_rx_napi_delete();
++	edma_cfg_rx_rings_disable();
++edma_cfg_rx_rings_failed:
++	edma_cfg_rx_rings_cleanup();
++edma_alloc_rings_failed:
++	free_netdev(edma_ctx->dummy_dev);
++dummy_dev_alloc_failed:
++	kfree(edma_ctx->netdev_arr);
++
++	return ret;
+ }
+ 
+ /**
+@@ -404,8 +537,31 @@ static int edma_hw_configure(void)
+  */
+ void edma_destroy(struct ppe_device *ppe_dev)
+ {
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	/* Disable interrupts. */
++	edma_cfg_rx_disable_interrupts();
++
++	/* Free IRQ for RXDESC rings. */
++	for (i = 0; i < rx->num_rings; i++) {
++		synchronize_irq(edma_ctx->intr_info.intr_rx[i]);
++		free_irq(edma_ctx->intr_info.intr_rx[i],
++			 (void *)&edma_ctx->rx_rings[i]);
++		kfree(edma_rxdesc_irq_name[i]);
++	}
++	kfree(edma_rxdesc_irq_name);
++
+ 	kfree(edma_ctx->intr_info.intr_rx);
+ 	kfree(edma_ctx->intr_info.intr_txcmpl);
++
++	edma_cfg_rx_napi_disable();
++	edma_cfg_rx_napi_delete();
++	edma_cfg_rx_rings_disable();
++	edma_cfg_rx_rings_cleanup();
++
++	free_netdev(edma_ctx->dummy_dev);
+ 	kfree(edma_ctx->netdev_arr);
+ }
+ 
+@@ -428,6 +584,7 @@ int edma_setup(struct ppe_device *ppe_de
+ 
+ 	edma_ctx->hw_info = &ipq9574_hw_info;
+ 	edma_ctx->ppe_dev = ppe_dev;
++	edma_ctx->rx_buf_size = rx_buff_size;
+ 
+ 	/* Configure the EDMA common clocks. */
+ 	ret = edma_clock_init();
+@@ -450,6 +607,16 @@ int edma_setup(struct ppe_device *ppe_de
+ 		return ret;
+ 	}
+ 
++	ret = edma_irq_register();
++	if (ret) {
++		dev_err(dev, "Error in irq registration\n");
++		kfree(edma_ctx->intr_info.intr_rx);
++		kfree(edma_ctx->intr_info.intr_txcmpl);
++		return ret;
++	}
++
++	edma_cfg_rx_enable_interrupts();
++
+ 	dev_info(dev, "EDMA configuration successful\n");
+ 
+ 	return 0;
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.h
+@@ -6,6 +6,7 @@
+ #define __EDMA_MAIN__
+ 
+ #include "ppe_api.h"
++#include "edma_rx.h"
+ 
+ /* One clock cycle = 1/(EDMA clock frequency in Mhz) micro seconds.
+  *
+@@ -29,6 +30,11 @@
+ /* Interface ID start. */
+ #define EDMA_START_IFNUM   1
+ 
++#define EDMA_DESC_AVAIL_COUNT(head, tail, _max) ({ \
++			typeof(_max) (max) = (_max); \
++			((((head) - (tail)) + \
++			(max)) & ((max) - 1)); })
++
+ /**
+  * struct edma_ring_info - EDMA ring data structure.
+  * @max_rings: Maximum number of rings
+@@ -82,18 +88,28 @@ struct edma_intr_info {
+ /**
+  * struct edma_context - EDMA context.
+  * @netdev_arr: Net device for each EDMA port
++ * @dummy_dev: Dummy netdevice for RX DMA
+  * @ppe_dev: PPE device
+  * @hw_info: EDMA Hardware info
+  * @intr_info: EDMA Interrupt info
++ * @rxfill_rings: Rx fill Rings, SW is producer
++ * @rx_rings: Rx Desc Rings, SW is consumer
++ * @rx_page_mode: Page mode enabled or disabled
++ * @rx_buf_size: Rx buffer size for Jumbo MRU
+  */
+ struct edma_context {
+ 	struct net_device **netdev_arr;
++	struct net_device *dummy_dev;
+ 	struct ppe_device *ppe_dev;
+ 	struct edma_hw_info *hw_info;
+ 	struct edma_intr_info intr_info;
++	struct edma_rxfill_ring *rxfill_rings;
++	struct edma_rxdesc_ring *rx_rings;
++	u32 rx_page_mode;
++	u32 rx_buf_size;
+ };
+ 
+-/* Global EDMA context. */
++/* Global EDMA context */
+ extern struct edma_context *edma_ctx;
+ 
+ void edma_destroy(struct ppe_device *ppe_dev);
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -0,0 +1,964 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* Configure rings, Buffers and NAPI for receive path along with
++ * providing APIs to enable, disable, clean and map the Rx rings.
++ */
++
++#include <linux/cpumask.h>
++#include <linux/dma-mapping.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/printk.h>
++#include <linux/regmap.h>
++#include <linux/skbuff.h>
++
++#include "edma.h"
++#include "edma_cfg_rx.h"
++#include "ppe.h"
++#include "ppe_regs.h"
++
++/* EDMA Queue ID to Ring ID Table. */
++#define EDMA_QID2RID_TABLE_MEM(q)	(0xb9000 + (0x4 * (q)))
++
++/* Rx ring queue offset. */
++#define EDMA_QUEUE_OFFSET(q_id)	((q_id) / EDMA_MAX_PRI_PER_CORE)
++
++/* Rx EDMA maximum queue supported. */
++#define EDMA_CPU_PORT_QUEUE_MAX(queue_start)	\
++			((queue_start) + (EDMA_MAX_PRI_PER_CORE * num_possible_cpus()) - 1)
++
++/* EDMA Queue ID to Ring ID configuration. */
++#define EDMA_QID2RID_NUM_PER_REG	4
++
++int rx_queues[] = {0, 8, 16, 24};
++
++static u32 edma_rx_ring_queue_map[][EDMA_MAX_CORE] = {{ 0, 8, 16, 24 },
++						{ 1, 9, 17, 25 },
++						{ 2, 10, 18, 26 },
++						{ 3, 11, 19, 27 },
++						{ 4, 12, 20, 28 },
++						{ 5, 13, 21, 29 },
++						{ 6, 14, 22, 30 },
++						{ 7, 15, 23, 31 }};
++
++static int edma_cfg_rx_desc_rings_reset_queue_mapping(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, ret;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		ret = ppe_edma_ring_to_queues_config(edma_ctx->ppe_dev, rxdesc_ring->ring_id,
++						     ARRAY_SIZE(rx_queues), rx_queues);
++		if (ret) {
++			pr_err("Error in unmapping rxdesc ring %d to PPE queue mapping to disable its backpressure configuration\n",
++			       i);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int edma_cfg_rx_desc_ring_reset_queue_priority(u32 rxdesc_ring_idx)
++{
++	u32 i, queue_id, ret;
++
++	for (i = 0; i < EDMA_MAX_PRI_PER_CORE; i++) {
++		queue_id = edma_rx_ring_queue_map[i][rxdesc_ring_idx];
++
++		ret = ppe_queue_priority_set(edma_ctx->ppe_dev, queue_id, i);
++		if (ret) {
++			pr_err("Error in resetting %u queue's priority\n",
++			       queue_id);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int edma_cfg_rx_desc_ring_reset_queue_config(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, ret;
++
++	if (unlikely(rx->num_rings > num_possible_cpus())) {
++		pr_err("Invalid count of rxdesc rings: %d\n",
++		       rx->num_rings);
++		return -EINVAL;
++	}
++
++	/* Unmap Rxdesc ring to PPE queue mapping */
++	ret = edma_cfg_rx_desc_rings_reset_queue_mapping();
++	if (ret)	{
++		pr_err("Error in resetting Rx desc ring backpressure config\n");
++		return ret;
++	}
++
++	/* Reset the priority for PPE queues mapped to Rx rings */
++	for (i = 0; i < rx->num_rings; i++) {
++		ret =  edma_cfg_rx_desc_ring_reset_queue_priority(i);
++		if (ret)	{
++			pr_err("Error in resetting ring:%d queue's priority\n",
++			       i + rx->ring_start);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int edma_cfg_rx_desc_ring_to_queue_mapping(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++	int ret;
++
++	/* Rxdesc ring to PPE queue mapping */
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		ret = ppe_edma_ring_to_queues_config(edma_ctx->ppe_dev,
++						     rxdesc_ring->ring_id,
++						ARRAY_SIZE(rx_queues), rx_queues);
++		if (ret) {
++			pr_err("Error in configuring Rx ring to PPE queue mapping, ret: %d, id: %d\n",
++			       ret, rxdesc_ring->ring_id);
++			if (!edma_cfg_rx_desc_rings_reset_queue_mapping())
++				pr_err("Error in resetting Rx desc ringbackpressure configurations\n");
++
++			return ret;
++		}
++
++		pr_debug("Rx desc ring %d to PPE queue mapping for backpressure:\n",
++			 rxdesc_ring->ring_id);
++	}
++
++	return 0;
++}
++
++static void edma_cfg_rx_desc_ring_configure(struct edma_rxdesc_ring *rxdesc_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	u32 data, reg;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_BA(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, (u32)(rxdesc_ring->pdma & EDMA_RXDESC_BA_MASK));
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_PREHEADER_BA(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, (u32)(rxdesc_ring->sdma & EDMA_RXDESC_PREHEADER_BA_MASK));
++
++	data = rxdesc_ring->count & EDMA_RXDESC_RING_SIZE_MASK;
++	data |= (EDMA_RXDESC_PL_DEFAULT_VALUE & EDMA_RXDESC_PL_OFFSET_MASK)
++		 << EDMA_RXDESC_PL_OFFSET_SHIFT;
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_RING_SIZE(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, data);
++
++	/* Configure the Mitigation timer */
++	data = EDMA_MICROSEC_TO_TIMER_UNIT(EDMA_RX_MITIGATION_TIMER_DEF,
++					   ppe_dev->clk_rate / MHZ);
++	data = ((data & EDMA_RX_MOD_TIMER_INIT_MASK)
++			<< EDMA_RX_MOD_TIMER_INIT_SHIFT);
++	pr_debug("EDMA Rx mitigation timer value: %d\n", data);
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RX_MOD_TIMER(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, data);
++
++	/* Configure the Mitigation packet count */
++	data = (EDMA_RX_MITIGATION_PKT_CNT_DEF & EDMA_RXDESC_LOW_THRE_MASK)
++			<< EDMA_RXDESC_LOW_THRE_SHIFT;
++	pr_debug("EDMA Rx mitigation packet count value: %d\n", data);
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_UGT_THRE(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, data);
++
++	/* Enable ring. Set ret mode to 'opaque'. */
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RX_INT_CTRL(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, EDMA_RX_NE_INT_EN);
++}
++
++static void edma_cfg_rx_qid_to_rx_desc_ring_mapping(void)
++{
++	u32 desc_index, ring_index, reg_index, data, q_id;
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 mcast_start, mcast_end, reg;
++	int ret;
++
++	desc_index = (rx->ring_start & EDMA_RX_RING_ID_MASK);
++
++	/* Here map all the queues to ring. */
++	for (q_id = EDMA_RX_QUEUE_START;
++		q_id <= EDMA_CPU_PORT_QUEUE_MAX(EDMA_RX_QUEUE_START);
++			q_id += EDMA_QID2RID_NUM_PER_REG) {
++		reg_index = q_id / EDMA_QID2RID_NUM_PER_REG;
++		ring_index = desc_index + EDMA_QUEUE_OFFSET(q_id);
++
++		data = FIELD_PREP(EDMA_RX_RING_ID_QUEUE0_MASK, ring_index);
++		data |= FIELD_PREP(EDMA_RX_RING_ID_QUEUE1_MASK, ring_index);
++		data |=	FIELD_PREP(EDMA_RX_RING_ID_QUEUE2_MASK, ring_index);
++		data |=	FIELD_PREP(EDMA_RX_RING_ID_QUEUE3_MASK, ring_index);
++
++		reg = EDMA_BASE_OFFSET + EDMA_QID2RID_TABLE_MEM(reg_index);
++		regmap_write(regmap, reg, data);
++		pr_debug("Configure QID2RID: %d reg:0x%x to 0x%x, desc_index: %d, reg_index: %d\n",
++			 q_id, EDMA_QID2RID_TABLE_MEM(reg_index), data, desc_index, reg_index);
++	}
++
++	ret = ppe_edma_queue_resource_get(edma_ctx->ppe_dev, PPE_RES_MCAST,
++					  &mcast_start, &mcast_end);
++	if (ret < 0) {
++		pr_err("Error in extracting multicast queue values\n");
++		return;
++	}
++
++	/* Map multicast queues to the first Rx ring. */
++	desc_index = (rx->ring_start & EDMA_RX_RING_ID_MASK);
++	for (q_id = mcast_start; q_id <= mcast_end;
++			q_id += EDMA_QID2RID_NUM_PER_REG) {
++		reg_index = q_id / EDMA_QID2RID_NUM_PER_REG;
++
++		data = FIELD_PREP(EDMA_RX_RING_ID_QUEUE0_MASK, desc_index);
++		data |=	FIELD_PREP(EDMA_RX_RING_ID_QUEUE1_MASK, desc_index);
++		data |=	FIELD_PREP(EDMA_RX_RING_ID_QUEUE2_MASK, desc_index);
++		data |=	FIELD_PREP(EDMA_RX_RING_ID_QUEUE3_MASK, desc_index);
++
++		reg = EDMA_BASE_OFFSET + EDMA_QID2RID_TABLE_MEM(reg_index);
++		regmap_write(regmap, reg, data);
++
++		pr_debug("Configure QID2RID: %d reg:0x%x to 0x%x\n",
++			 q_id, EDMA_QID2RID_TABLE_MEM(reg_index), data);
++	}
++}
++
++static void edma_cfg_rx_rings_to_rx_fill_mapping(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, data, reg;
++
++	regmap_write(regmap, EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_0_ADDR, 0);
++	regmap_write(regmap, EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_1_ADDR, 0);
++	regmap_write(regmap, EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_2_ADDR, 0);
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring = &edma_ctx->rx_rings[i];
++		u32 data, reg, ring_id;
++
++		ring_id = rxdesc_ring->ring_id;
++		if (ring_id >= 0 && ring_id <= 9)
++			reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_0_ADDR;
++		else if (ring_id >= 10 && ring_id <= 19)
++			reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_1_ADDR;
++		else
++			reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_2_ADDR;
++
++		pr_debug("Configure RXDESC:%u to use RXFILL:%u\n",
++			 ring_id,
++			 rxdesc_ring->rxfill->ring_id);
++
++		 /* Set the Rx fill ring number in the mapping register. */
++		regmap_read(regmap, reg, &data);
++		data |= (rxdesc_ring->rxfill->ring_id &
++			 EDMA_RXDESC2FILL_MAP_RXDESC_MASK) <<
++			 ((ring_id % 10) * 3);
++		regmap_write(regmap, reg, data);
++	}
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_0_ADDR;
++	regmap_read(regmap, reg, &data);
++	pr_debug("EDMA_REG_RXDESC2FILL_MAP_0_ADDR: 0x%x\n", data);
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_1_ADDR;
++	regmap_read(regmap, reg, &data);
++	pr_debug("EDMA_REG_RXDESC2FILL_MAP_1_ADDR: 0x%x\n", data);
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC2FILL_MAP_2_ADDR;
++	regmap_read(regmap, reg, &data);
++	pr_debug("EDMA_REG_RXDESC2FILL_MAP_2_ADDR: 0x%x\n", data);
++}
++
++/**
++ * edma_cfg_rx_rings_enable - Enable Rx and Rxfill rings
++ *
++ * Enable Rx and Rxfill rings.
++ */
++void edma_cfg_rx_rings_enable(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, reg;
++
++	/* Enable Rx rings */
++	for (i = rx->ring_start; i < rx->ring_start + rx->num_rings; i++) {
++		u32 data;
++
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_CTRL(i);
++		regmap_read(regmap, reg, &data);
++		data |= EDMA_RXDESC_RX_EN;
++		regmap_write(regmap, reg, data);
++	}
++
++	for (i = rxfill->ring_start; i < rxfill->ring_start + rxfill->num_rings; i++) {
++		u32 data;
++
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_RING_EN(i);
++		regmap_read(regmap, reg, &data);
++		data |= EDMA_RXFILL_RING_EN;
++		regmap_write(regmap, reg, data);
++	}
++}
++
++/**
++ * edma_cfg_rx_rings_disable - Disable Rx and Rxfill rings
++ *
++ * Disable Rx and Rxfill rings.
++ */
++void edma_cfg_rx_rings_disable(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, reg;
++
++	/* Disable Rx rings */
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring = NULL;
++		u32 data;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_CTRL(rxdesc_ring->ring_id);
++		regmap_read(regmap, reg, &data);
++		data &= ~EDMA_RXDESC_RX_EN;
++		regmap_write(regmap, reg, data);
++	}
++
++	/* Disable RxFill Rings */
++	for (i = 0; i < rxfill->num_rings; i++) {
++		struct edma_rxfill_ring *rxfill_ring = NULL;
++		u32 data;
++
++		rxfill_ring = &edma_ctx->rxfill_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_RING_EN(rxfill_ring->ring_id);
++		regmap_read(regmap, reg, &data);
++		data &= ~EDMA_RXFILL_RING_EN;
++		regmap_write(regmap, reg, data);
++	}
++}
++
++/**
++ * edma_cfg_rx_mappings - Setup RX ring mapping
++ *
++ * Setup queue ID to Rx desc ring mapping.
++ */
++void edma_cfg_rx_ring_mappings(void)
++{
++	edma_cfg_rx_qid_to_rx_desc_ring_mapping();
++	edma_cfg_rx_rings_to_rx_fill_mapping();
++}
++
++static void edma_cfg_rx_fill_ring_cleanup(struct edma_rxfill_ring *rxfill_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct device *dev = ppe_dev->dev;
++	u16 cons_idx, curr_idx;
++	u32 data, reg;
++
++	/* Get RxFill ring producer index */
++	curr_idx = rxfill_ring->prod_idx & EDMA_RXFILL_PROD_IDX_MASK;
++
++	/* Get RxFill ring consumer index */
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_CONS_IDX(rxfill_ring->ring_id);
++	regmap_read(regmap, reg, &data);
++	cons_idx = data & EDMA_RXFILL_CONS_IDX_MASK;
++
++	while (curr_idx != cons_idx) {
++		struct edma_rxfill_desc *rxfill_desc;
++		struct sk_buff *skb;
++
++		/* Get RxFill descriptor */
++		rxfill_desc = EDMA_RXFILL_DESC(rxfill_ring, cons_idx);
++
++		cons_idx = (cons_idx + 1) & EDMA_RX_RING_SIZE_MASK;
++
++		/* Get skb from opaque */
++		skb = (struct sk_buff *)EDMA_RXFILL_OPAQUE_GET(rxfill_desc);
++		if (unlikely(!skb)) {
++			pr_err("Empty skb reference at index:%d\n",
++			       cons_idx);
++			continue;
++		}
++
++		dev_kfree_skb_any(skb);
++	}
++
++	/* Free RxFill ring descriptors */
++	dma_free_coherent(dev, (sizeof(struct edma_rxfill_desc)
++			   * rxfill_ring->count),
++			   rxfill_ring->desc, rxfill_ring->dma);
++	rxfill_ring->desc = NULL;
++	rxfill_ring->dma = (dma_addr_t)0;
++}
++
++static int edma_cfg_rx_fill_ring_dma_alloc(struct edma_rxfill_ring *rxfill_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct device *dev = ppe_dev->dev;
++
++	/* Allocate RxFill ring descriptors */
++	rxfill_ring->desc = dma_alloc_coherent(dev, (sizeof(struct edma_rxfill_desc)
++					       * rxfill_ring->count),
++					       &rxfill_ring->dma,
++					       GFP_KERNEL | __GFP_ZERO);
++	if (unlikely(!rxfill_ring->desc))
++		return -ENOMEM;
++
++	return 0;
++}
++
++static int edma_cfg_rx_desc_ring_dma_alloc(struct edma_rxdesc_ring *rxdesc_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct device *dev = ppe_dev->dev;
++
++	rxdesc_ring->pdesc = dma_alloc_coherent(dev, (sizeof(struct edma_rxdesc_pri)
++						* rxdesc_ring->count),
++				&rxdesc_ring->pdma, GFP_KERNEL | __GFP_ZERO);
++	if (unlikely(!rxdesc_ring->pdesc))
++		return -ENOMEM;
++
++	rxdesc_ring->sdesc = dma_alloc_coherent(dev, (sizeof(struct edma_rxdesc_sec)
++				* rxdesc_ring->count),
++				&rxdesc_ring->sdma, GFP_KERNEL | __GFP_ZERO);
++	if (unlikely(!rxdesc_ring->sdesc)) {
++		dma_free_coherent(dev, (sizeof(struct edma_rxdesc_pri)
++				  * rxdesc_ring->count),
++				  rxdesc_ring->pdesc,
++				  rxdesc_ring->pdma);
++		rxdesc_ring->pdesc = NULL;
++		rxdesc_ring->pdma = (dma_addr_t)0;
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static void edma_cfg_rx_desc_ring_cleanup(struct edma_rxdesc_ring *rxdesc_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct device *dev = ppe_dev->dev;
++	u32 prod_idx, cons_idx, reg;
++
++	/* Get Rxdesc consumer & producer indices */
++	cons_idx = rxdesc_ring->cons_idx & EDMA_RXDESC_CONS_IDX_MASK;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->ring_id);
++	regmap_read(regmap, reg, &prod_idx);
++	prod_idx = prod_idx & EDMA_RXDESC_PROD_IDX_MASK;
++
++	/* Free any buffers assigned to any descriptors */
++	while (cons_idx != prod_idx) {
++		struct edma_rxdesc_pri *rxdesc_pri =
++			EDMA_RXDESC_PRI_DESC(rxdesc_ring, cons_idx);
++		struct sk_buff *skb;
++
++		/* Update consumer index */
++		cons_idx = (cons_idx + 1) & EDMA_RX_RING_SIZE_MASK;
++
++		/* Get opaque from Rxdesc */
++		skb = (struct sk_buff *)EDMA_RXDESC_OPAQUE_GET(rxdesc_pri);
++		if (unlikely(!skb)) {
++			pr_warn("Empty skb reference at index:%d\n",
++				cons_idx);
++			continue;
++		}
++
++		dev_kfree_skb_any(skb);
++	}
++
++	/* Update the consumer index */
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, cons_idx);
++
++	/* Free Rxdesc ring descriptor */
++	dma_free_coherent(dev, (sizeof(struct edma_rxdesc_pri)
++			  * rxdesc_ring->count), rxdesc_ring->pdesc,
++			  rxdesc_ring->pdma);
++	rxdesc_ring->pdesc = NULL;
++	rxdesc_ring->pdma = (dma_addr_t)0;
++
++	/* Free any buffers assigned to any secondary ring descriptors */
++	dma_free_coherent(dev, (sizeof(struct edma_rxdesc_sec)
++			  * rxdesc_ring->count), rxdesc_ring->sdesc,
++			  rxdesc_ring->sdma);
++	rxdesc_ring->sdesc = NULL;
++	rxdesc_ring->sdma = (dma_addr_t)0;
++}
++
++static int edma_cfg_rx_rings_setup(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 ring_idx, alloc_size, buf_len;
++
++	/* Set buffer allocation size */
++	if (edma_ctx->rx_buf_size) {
++		alloc_size = edma_ctx->rx_buf_size +
++				EDMA_RX_SKB_HEADROOM + NET_IP_ALIGN;
++		buf_len = alloc_size - EDMA_RX_SKB_HEADROOM - NET_IP_ALIGN;
++	} else if (edma_ctx->rx_page_mode) {
++		alloc_size = EDMA_RX_PAGE_MODE_SKB_SIZE +
++				EDMA_RX_SKB_HEADROOM + NET_IP_ALIGN;
++		buf_len = PAGE_SIZE;
++	} else {
++		alloc_size = EDMA_RX_BUFFER_SIZE;
++		buf_len = alloc_size - EDMA_RX_SKB_HEADROOM - NET_IP_ALIGN;
++	}
++
++	pr_debug("EDMA ctx:%p rx_ring alloc_size=%d, buf_len=%d\n",
++		 edma_ctx, alloc_size, buf_len);
++
++	/* Allocate Rx fill ring descriptors */
++	for (ring_idx = 0; ring_idx < rxfill->num_rings; ring_idx++) {
++		u32 ret;
++		struct edma_rxfill_ring *rxfill_ring = NULL;
++
++		rxfill_ring = &edma_ctx->rxfill_rings[ring_idx];
++		rxfill_ring->count = EDMA_RX_RING_SIZE;
++		rxfill_ring->ring_id = rxfill->ring_start + ring_idx;
++		rxfill_ring->alloc_size = alloc_size;
++		rxfill_ring->buf_len = buf_len;
++		rxfill_ring->page_mode = edma_ctx->rx_page_mode;
++
++		ret = edma_cfg_rx_fill_ring_dma_alloc(rxfill_ring);
++		if (ret) {
++			pr_err("Error in setting up %d rxfill ring. ret: %d",
++			       rxfill_ring->ring_id, ret);
++			while (--ring_idx >= 0)
++				edma_cfg_rx_fill_ring_cleanup(&edma_ctx->rxfill_rings[ring_idx]);
++
++			return -ENOMEM;
++		}
++	}
++
++	/* Allocate RxDesc ring descriptors */
++	for (ring_idx = 0; ring_idx < rx->num_rings; ring_idx++) {
++		u32 index, queue_id = EDMA_RX_QUEUE_START;
++		struct edma_rxdesc_ring *rxdesc_ring = NULL;
++		u32 ret;
++
++		rxdesc_ring = &edma_ctx->rx_rings[ring_idx];
++		rxdesc_ring->count = EDMA_RX_RING_SIZE;
++		rxdesc_ring->ring_id = rx->ring_start + ring_idx;
++
++		if (queue_id > EDMA_CPU_PORT_QUEUE_MAX(EDMA_RX_QUEUE_START)) {
++			pr_err("Invalid queue_id: %d\n", queue_id);
++			while (--ring_idx >= 0)
++				edma_cfg_rx_desc_ring_cleanup(&edma_ctx->rx_rings[ring_idx]);
++
++			goto rxdesc_mem_alloc_fail;
++		}
++
++		/* Create a mapping between RX Desc ring and Rx fill ring.
++		 * Number of fill rings are lesser than the descriptor rings
++		 * Share the fill rings across descriptor rings.
++		 */
++		index = rxfill->ring_start +
++				(ring_idx % rxfill->num_rings);
++		rxdesc_ring->rxfill = &edma_ctx->rxfill_rings[index
++						- rxfill->ring_start];
++
++		ret = edma_cfg_rx_desc_ring_dma_alloc(rxdesc_ring);
++		if (ret) {
++			pr_err("Error in setting up %d rxdesc ring. ret: %d",
++			       rxdesc_ring->ring_id, ret);
++			while (--ring_idx >= 0)
++				edma_cfg_rx_desc_ring_cleanup(&edma_ctx->rx_rings[ring_idx]);
++
++			goto rxdesc_mem_alloc_fail;
++		}
++	}
++
++	pr_debug("Rx descriptor count for Rx desc and Rx fill rings : %d\n",
++		 EDMA_RX_RING_SIZE);
++
++	return 0;
++
++rxdesc_mem_alloc_fail:
++	for (ring_idx = 0; ring_idx < rxfill->num_rings; ring_idx++)
++		edma_cfg_rx_fill_ring_cleanup(&edma_ctx->rxfill_rings[ring_idx]);
++
++	return -ENOMEM;
++}
++
++/**
++ * edma_cfg_rx_buff_size_setup - Configure EDMA Rx jumbo buffer
++ *
++ * Configure EDMA Rx jumbo buffer
++ */
++void edma_cfg_rx_buff_size_setup(void)
++{
++	if (edma_ctx->rx_buf_size) {
++		edma_ctx->rx_page_mode = false;
++		pr_debug("Rx Jumbo mru is enabled: %d\n", edma_ctx->rx_buf_size);
++	}
++}
++
++/**
++ * edma_cfg_rx_rings_alloc - Allocate EDMA Rx rings
++ *
++ * Allocate EDMA Rx rings.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int edma_cfg_rx_rings_alloc(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct edma_ring_info *rx = hw_info->rx;
++	int ret;
++
++	edma_ctx->rxfill_rings = kzalloc((sizeof(*edma_ctx->rxfill_rings) *
++					 rxfill->num_rings),
++					 GFP_KERNEL);
++	if (!edma_ctx->rxfill_rings)
++		return -ENOMEM;
++
++	edma_ctx->rx_rings = kzalloc((sizeof(*edma_ctx->rx_rings) *
++					 rx->num_rings),
++					 GFP_KERNEL);
++	if (!edma_ctx->rx_rings)
++		goto rxdesc_ring_alloc_fail;
++
++	pr_debug("RxDesc:%u rx (%u-%u) RxFill:%u (%u-%u)\n",
++		 rx->num_rings, rx->ring_start,
++		 (rx->ring_start + rx->num_rings - 1),
++		 rxfill->num_rings, rxfill->ring_start,
++		 (rxfill->ring_start + rxfill->num_rings - 1));
++
++	if (edma_cfg_rx_rings_setup()) {
++		pr_err("Error in setting up Rx rings\n");
++		goto rx_rings_setup_fail;
++	}
++
++	/* Reset Rx descriptor ring mapped queue's configurations */
++	ret = edma_cfg_rx_desc_ring_reset_queue_config();
++	if (ret) {
++		pr_err("Error in resetting the Rx descriptor rings configurations\n");
++		edma_cfg_rx_rings_cleanup();
++		return ret;
++	}
++
++	return 0;
++
++rx_rings_setup_fail:
++	kfree(edma_ctx->rx_rings);
++	edma_ctx->rx_rings = NULL;
++rxdesc_ring_alloc_fail:
++	kfree(edma_ctx->rxfill_rings);
++	edma_ctx->rxfill_rings = NULL;
++
++	return -ENOMEM;
++}
++
++/**
++ * edma_cfg_rx_rings_cleanup - Cleanup EDMA Rx rings
++ *
++ * Cleanup EDMA Rx rings
++ */
++void edma_cfg_rx_rings_cleanup(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	/* Free RxFill ring descriptors */
++	for (i = 0; i < rxfill->num_rings; i++)
++		edma_cfg_rx_fill_ring_cleanup(&edma_ctx->rxfill_rings[i]);
++
++	/* Free Rx completion ring descriptors */
++	for (i = 0; i < rx->num_rings; i++)
++		edma_cfg_rx_desc_ring_cleanup(&edma_ctx->rx_rings[i]);
++
++	kfree(edma_ctx->rxfill_rings);
++	kfree(edma_ctx->rx_rings);
++	edma_ctx->rxfill_rings = NULL;
++	edma_ctx->rx_rings = NULL;
++}
++
++static void edma_cfg_rx_fill_ring_configure(struct edma_rxfill_ring *rxfill_ring)
++{
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	u32 ring_sz, reg;
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_BA(rxfill_ring->ring_id);
++	regmap_write(regmap, reg, (u32)(rxfill_ring->dma & EDMA_RING_DMA_MASK));
++
++	ring_sz = rxfill_ring->count & EDMA_RXFILL_RING_SIZE_MASK;
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_RING_SIZE(rxfill_ring->ring_id);
++	regmap_write(regmap, reg, ring_sz);
++
++	edma_rx_alloc_buffer(rxfill_ring, rxfill_ring->count - 1);
++}
++
++static void edma_cfg_rx_desc_ring_flow_control(u32 threshold_xoff, u32 threshold_xon)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 data, i, reg;
++
++	data = (threshold_xoff & EDMA_RXDESC_FC_XOFF_THRE_MASK) << EDMA_RXDESC_FC_XOFF_THRE_SHIFT;
++	data |= ((threshold_xon & EDMA_RXDESC_FC_XON_THRE_MASK) << EDMA_RXDESC_FC_XON_THRE_SHIFT);
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_FC_THRE(rxdesc_ring->ring_id);
++		regmap_write(regmap, reg, data);
++	}
++}
++
++static void edma_cfg_rx_fill_ring_flow_control(int threshold_xoff, int threshold_xon)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	u32 data, i, reg;
++
++	data = (threshold_xoff & EDMA_RXFILL_FC_XOFF_THRE_MASK) << EDMA_RXFILL_FC_XOFF_THRE_SHIFT;
++	data |= ((threshold_xon & EDMA_RXFILL_FC_XON_THRE_MASK) << EDMA_RXFILL_FC_XON_THRE_SHIFT);
++
++	for (i = 0; i < rxfill->num_rings; i++) {
++		struct edma_rxfill_ring *rxfill_ring;
++
++		rxfill_ring = &edma_ctx->rxfill_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_FC_THRE(rxfill_ring->ring_id);
++		regmap_write(regmap, reg, data);
++	}
++}
++
++/**
++ * edma_cfg_rx_rings - Configure EDMA Rx rings.
++ *
++ * Configure EDMA Rx rings.
++ */
++int edma_cfg_rx_rings(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rxfill = hw_info->rxfill;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rxfill->num_rings; i++)
++		edma_cfg_rx_fill_ring_configure(&edma_ctx->rxfill_rings[i]);
++
++	for (i = 0; i < rx->num_rings; i++)
++		edma_cfg_rx_desc_ring_configure(&edma_ctx->rx_rings[i]);
++
++	/* Configure Rx flow control configurations */
++	edma_cfg_rx_desc_ring_flow_control(EDMA_RX_FC_XOFF_DEF, EDMA_RX_FC_XON_DEF);
++	edma_cfg_rx_fill_ring_flow_control(EDMA_RX_FC_XOFF_DEF, EDMA_RX_FC_XON_DEF);
++
++	return edma_cfg_rx_desc_ring_to_queue_mapping();
++}
++
++/**
++ * edma_cfg_rx_disable_interrupts - EDMA disable RX interrupts
++ *
++ * Disable RX interrupt masks
++ */
++void edma_cfg_rx_disable_interrupts(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, reg;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring =
++				&edma_ctx->rx_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->ring_id);
++		regmap_write(regmap, reg, EDMA_MASK_INT_CLEAR);
++	}
++}
++
++/**
++ * edma_cfg_rx_enable_interrupts - EDMA enable RX interrupts
++ *
++ * Enable RX interrupt masks
++ */
++void edma_cfg_rx_enable_interrupts(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i, reg;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring =
++				&edma_ctx->rx_rings[i];
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->ring_id);
++		regmap_write(regmap, reg, edma_ctx->intr_info.intr_mask_rx);
++	}
++}
++
++/**
++ * edma_cfg_rx_napi_disable - Disable NAPI for Rx
++ *
++ * Disable NAPI for Rx
++ */
++void edma_cfg_rx_napi_disable(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		if (!rxdesc_ring->napi_added)
++			continue;
++
++		napi_disable(&rxdesc_ring->napi);
++	}
++}
++
++/**
++ * edma_cfg_rx_napi_enable - Enable NAPI for Rx
++ *
++ * Enable NAPI for Rx
++ */
++void edma_cfg_rx_napi_enable(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		if (!rxdesc_ring->napi_added)
++			continue;
++
++		napi_enable(&rxdesc_ring->napi);
++	}
++}
++
++/**
++ * edma_cfg_rx_napi_delete - Delete Rx NAPI
++ *
++ * Delete RX NAPI
++ */
++void edma_cfg_rx_napi_delete(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		if (!rxdesc_ring->napi_added)
++			continue;
++
++		netif_napi_del(&rxdesc_ring->napi);
++		rxdesc_ring->napi_added = false;
++	}
++}
++
++/* Add Rx NAPI */
++/**
++ * edma_cfg_rx_napi_add - Add Rx NAPI
++ * @netdev: Netdevice
++ *
++ * Add RX NAPI
++ */
++void edma_cfg_rx_napi_add(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		netif_napi_add_weight(edma_ctx->dummy_dev, &rxdesc_ring->napi,
++				      edma_rx_napi_poll, hw_info->napi_budget_rx);
++		rxdesc_ring->napi_added = true;
++	}
++
++	netdev_dbg(edma_ctx->dummy_dev, "Rx NAPI budget: %d\n", hw_info->napi_budget_rx);
++}
++
++/**
++ * edma_cfg_rx_rps_hash_map - Configure rx rps hash map.
++ *
++ * Initialize and configure RPS hash map for queues
++ */
++int edma_cfg_rx_rps_hash_map(void)
++{
++	cpumask_t edma_rps_cpumask = {{EDMA_RX_DEFAULT_BITMAP}};
++	int map_len = 0, idx = 0, ret = 0;
++	u32 q_off = EDMA_RX_QUEUE_START;
++	u32 q_map[EDMA_MAX_CORE] = {0};
++	u32 hash, cpu;
++
++	/* Map all possible hash values to queues used by the EDMA Rx
++	 * rings based on a bitmask, which represents the cores to be mapped.
++	 * These queues are expected to be mapped to different Rx rings
++	 * which are assigned to different cores using IRQ affinity configuration.
++	 */
++	for_each_cpu(cpu, &edma_rps_cpumask) {
++		q_map[map_len] = q_off + (cpu * EDMA_MAX_PRI_PER_CORE);
++		map_len++;
++	}
++
++	for (hash = 0; hash < PPE_QUEUE_HASH_NUM; hash++) {
++		ret = ppe_edma_queue_offset_config(edma_ctx->ppe_dev,
++						   PPE_QUEUE_CLASS_HASH, hash, q_map[idx]);
++		if (ret)
++			return ret;
++
++		pr_debug("profile_id: %u, hash: %u, q_off: %u\n",
++			 EDMA_CPU_PORT_PROFILE_ID, hash, q_map[idx]);
++		idx = (idx + 1) % map_len;
++	}
++
++	return 0;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef __EDMA_CFG_RX__
++#define __EDMA_CFG_RX__
++
++/* SKB payload size used in page mode */
++#define EDMA_RX_PAGE_MODE_SKB_SIZE	256
++
++/* Rx flow control X-OFF default value */
++#define EDMA_RX_FC_XOFF_DEF	32
++
++/* Rx flow control X-ON default value */
++#define EDMA_RX_FC_XON_DEF	64
++
++/* Rx AC flow control original threshold */
++#define EDMA_RX_AC_FC_THRE_ORIG		0x190
++
++/* Rx AC flow control default threshold */
++#define EDMA_RX_AC_FC_THRES_DEF		0x104
++/* Rx mitigation timer's default value in microseconds */
++#define EDMA_RX_MITIGATION_TIMER_DEF	25
++
++/* Rx mitigation packet count's default value */
++#define EDMA_RX_MITIGATION_PKT_CNT_DEF	16
++
++/* Default bitmap of cores for RPS to ARM cores */
++#define EDMA_RX_DEFAULT_BITMAP	((1 << EDMA_MAX_CORE) - 1)
++
++int edma_cfg_rx_rings(void);
++int edma_cfg_rx_rings_alloc(void);
++void edma_cfg_rx_ring_mappings(void);
++void edma_cfg_rx_rings_cleanup(void);
++void edma_cfg_rx_disable_interrupts(void);
++void edma_cfg_rx_enable_interrupts(void);
++void edma_cfg_rx_napi_disable(void);
++void edma_cfg_rx_napi_enable(void);
++void edma_cfg_rx_napi_delete(void);
++void edma_cfg_rx_napi_add(void);
++void edma_cfg_rx_mapping(void);
++void edma_cfg_rx_rings_enable(void);
++void edma_cfg_rx_rings_disable(void);
++void edma_cfg_rx_buff_size_setup(void);
++int edma_cfg_rx_rps_hash_map(void);
++int edma_cfg_rx_rps(struct ctl_table *table, int write,
++		    void *buffer, size_t *lenp, loff_t *ppos);
++#endif
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -12,12 +12,39 @@
+ #include <linux/printk.h>
+ 
+ #include "edma.h"
++#include "edma_cfg_rx.h"
+ #include "edma_port.h"
+ #include "ppe_regs.h"
+ 
+ /* Number of netdev queues. */
+ #define EDMA_NETDEV_QUEUE_NUM	4
+ 
++static int edma_port_stats_alloc(struct net_device *netdev)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++
++	if (!port_priv)
++		return -EINVAL;
++
++	/* Allocate per-cpu stats memory. */
++	port_priv->pcpu_stats.rx_stats =
++		netdev_alloc_pcpu_stats(struct edma_port_rx_stats);
++	if (!port_priv->pcpu_stats.rx_stats) {
++		netdev_err(netdev, "Per-cpu EDMA Rx stats alloc failed for %s\n",
++			   netdev->name);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++static void edma_port_stats_free(struct net_device *netdev)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++
++	free_percpu(port_priv->pcpu_stats.rx_stats);
++}
++
+ static u16 __maybe_unused edma_port_select_queue(__maybe_unused struct net_device *netdev,
+ 						 __maybe_unused struct sk_buff *skb,
+ 				__maybe_unused struct net_device *sb_dev)
+@@ -172,6 +199,7 @@ void edma_port_destroy(struct ppe_port *
+ 	int port_id = port->port_id;
+ 	struct net_device *netdev = edma_ctx->netdev_arr[port_id - 1];
+ 
++	edma_port_stats_free(netdev);
+ 	unregister_netdev(netdev);
+ 	free_netdev(netdev);
+ 	ppe_port_phylink_destroy(port);
+@@ -232,6 +260,13 @@ int edma_port_setup(struct ppe_port *por
+ 			    port_id, netdev->dev_addr);
+ 	}
+ 
++	/* Allocate memory for EDMA port statistics. */
++	ret = edma_port_stats_alloc(netdev);
++	if (ret) {
++		netdev_dbg(netdev, "EDMA port stats alloc failed\n");
++		goto stats_alloc_fail;
++	}
++
+ 	netdev_dbg(netdev, "Configuring the port %s(qcom-id:%d)\n",
+ 		   netdev->name, port_id);
+ 
+@@ -263,8 +298,10 @@ int edma_port_setup(struct ppe_port *por
+ register_netdev_fail:
+ 	ppe_port_phylink_destroy(port);
+ port_phylink_setup_fail:
+-	free_netdev(netdev);
+ 	edma_ctx->netdev_arr[port_id - 1] = NULL;
++	edma_port_stats_free(netdev);
++stats_alloc_fail:
++	free_netdev(netdev);
+ 
+ 	return ret;
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.h
+@@ -15,14 +15,45 @@
+ 					| NETIF_F_TSO6)
+ 
+ /**
++ * struct edma_port_rx_stats - EDMA RX per CPU stats for the port.
++ * @rx_pkts: Number of Rx packets
++ * @rx_bytes: Number of Rx bytes
++ * @rx_drops: Number of Rx drops
++ * @rx_nr_frag_pkts: Number of Rx nr_frags packets
++ * @rx_fraglist_pkts: Number of Rx fraglist packets
++ * @rx_nr_frag_headroom_err: nr_frags headroom error packets
++ * @syncp: Synchronization pointer
++ */
++struct edma_port_rx_stats {
++	u64 rx_pkts;
++	u64 rx_bytes;
++	u64 rx_drops;
++	u64 rx_nr_frag_pkts;
++	u64 rx_fraglist_pkts;
++	u64 rx_nr_frag_headroom_err;
++	struct u64_stats_sync syncp;
++};
++
++/**
++ * struct edma_port_pcpu_stats - EDMA per cpu stats data structure for the port.
++ * @rx_stats: Per CPU Rx statistics
++ */
++struct edma_port_pcpu_stats {
++	struct edma_port_rx_stats __percpu *rx_stats;
++};
++
++/**
+  * struct edma_port_priv - EDMA port priv structure.
+  * @ppe_port: Pointer to PPE port
+  * @netdev: Corresponding netdevice
++ * @pcpu_stats: Per CPU netdev statistics
++ * @txr_map: Tx ring per-core mapping
+  * @flags: Feature flags
+  */
+ struct edma_port_priv {
+ 	struct ppe_port *ppe_port;
+ 	struct net_device *netdev;
++	struct edma_port_pcpu_stats pcpu_stats;
+ 	unsigned long flags;
+ };
+ 
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_rx.c
+@@ -0,0 +1,622 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* Provides APIs to alloc Rx Buffers, reap the buffers, receive and
++ * process linear and Scatter Gather packets.
++ */
++
++#include <linux/dma-mapping.h>
++#include <linux/etherdevice.h>
++#include <linux/irqreturn.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <linux/regmap.h>
++
++#include "edma.h"
++#include "edma_cfg_rx.h"
++#include "edma_port.h"
++#include "ppe.h"
++#include "ppe_regs.h"
++
++static int edma_rx_alloc_buffer_list(struct edma_rxfill_ring *rxfill_ring, int alloc_count)
++{
++	struct edma_rxfill_stats *rxfill_stats = &rxfill_ring->rxfill_stats;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	u32 rx_alloc_size = rxfill_ring->alloc_size;
++	struct regmap *regmap = ppe_dev->regmap;
++	bool page_mode = rxfill_ring->page_mode;
++	struct edma_rxfill_desc *rxfill_desc;
++	u32 buf_len = rxfill_ring->buf_len;
++	struct device *dev = ppe_dev->dev;
++	u16 prod_idx, start_idx;
++	u16 num_alloc = 0;
++	u32 reg;
++
++	prod_idx = rxfill_ring->prod_idx;
++	start_idx = prod_idx;
++
++	while (likely(alloc_count--)) {
++		dma_addr_t buff_addr;
++		struct sk_buff *skb;
++		struct page *pg;
++
++		rxfill_desc = EDMA_RXFILL_DESC(rxfill_ring, prod_idx);
++
++		skb = dev_alloc_skb(rx_alloc_size);
++		if (unlikely(!skb)) {
++			u64_stats_update_begin(&rxfill_stats->syncp);
++			++rxfill_stats->alloc_failed;
++			u64_stats_update_end(&rxfill_stats->syncp);
++			break;
++		}
++
++		skb_reserve(skb, EDMA_RX_SKB_HEADROOM + NET_IP_ALIGN);
++
++		if (likely(!page_mode)) {
++			buff_addr = dma_map_single(dev, skb->data, rx_alloc_size, DMA_FROM_DEVICE);
++			if (dma_mapping_error(dev, buff_addr)) {
++				dev_dbg(dev, "edma_context:%p Unable to dma for non page mode",
++					edma_ctx);
++				dev_kfree_skb_any(skb);
++				break;
++			}
++		} else {
++			pg = alloc_page(GFP_ATOMIC);
++			if (unlikely(!pg)) {
++				u64_stats_update_begin(&rxfill_stats->syncp);
++				++rxfill_stats->page_alloc_failed;
++				u64_stats_update_end(&rxfill_stats->syncp);
++				dev_kfree_skb_any(skb);
++				dev_dbg(dev, "edma_context:%p Unable to allocate page",
++					edma_ctx);
++				break;
++			}
++
++			buff_addr = dma_map_page(dev, pg, 0, PAGE_SIZE, DMA_FROM_DEVICE);
++			if (dma_mapping_error(dev, buff_addr)) {
++				dev_dbg(dev, "edma_context:%p Mapping error for page mode",
++					edma_ctx);
++				__free_page(pg);
++				dev_kfree_skb_any(skb);
++				break;
++			}
++
++			skb_fill_page_desc(skb, 0, pg, 0, PAGE_SIZE);
++		}
++
++		EDMA_RXFILL_BUFFER_ADDR_SET(rxfill_desc, buff_addr);
++
++		EDMA_RXFILL_OPAQUE_LO_SET(rxfill_desc, skb);
++#ifdef __LP64__
++		EDMA_RXFILL_OPAQUE_HI_SET(rxfill_desc, skb);
++#endif
++		EDMA_RXFILL_PACKET_LEN_SET(rxfill_desc,
++					   (u32)(buf_len) & EDMA_RXFILL_BUF_SIZE_MASK);
++		prod_idx = (prod_idx + 1) & EDMA_RX_RING_SIZE_MASK;
++		num_alloc++;
++	}
++
++	if (likely(num_alloc)) {
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXFILL_PROD_IDX(rxfill_ring->ring_id);
++		regmap_write(regmap, reg, prod_idx);
++		rxfill_ring->prod_idx = prod_idx;
++	}
++
++	return num_alloc;
++}
++
++/**
++ * edma_rx_alloc_buffer - EDMA Rx alloc buffer.
++ * @rxfill_ring: EDMA Rxfill ring
++ * @alloc_count: Number of rings to alloc
++ *
++ * Alloc Rx buffers for RxFill ring.
++ *
++ * Return the number of rings allocated.
++ */
++int edma_rx_alloc_buffer(struct edma_rxfill_ring *rxfill_ring, int alloc_count)
++{
++	return edma_rx_alloc_buffer_list(rxfill_ring, alloc_count);
++}
++
++/* Mark ip_summed appropriately in the skb as per the L3/L4 checksum
++ * status in descriptor.
++ */
++static void edma_rx_checksum_verify(struct edma_rxdesc_pri *rxdesc_pri,
++				    struct sk_buff *skb)
++{
++	u8 pid = EDMA_RXDESC_PID_GET(rxdesc_pri);
++
++	skb_checksum_none_assert(skb);
++
++	if (likely(EDMA_RX_PID_IS_IPV4(pid))) {
++		if (likely(EDMA_RXDESC_L3CSUM_STATUS_GET(rxdesc_pri)) &&
++		    likely(EDMA_RXDESC_L4CSUM_STATUS_GET(rxdesc_pri)))
++			skb->ip_summed = CHECKSUM_UNNECESSARY;
++	} else if (likely(EDMA_RX_PID_IS_IPV6(pid))) {
++		if (likely(EDMA_RXDESC_L4CSUM_STATUS_GET(rxdesc_pri)))
++			skb->ip_summed = CHECKSUM_UNNECESSARY;
++	}
++}
++
++static void edma_rx_process_last_segment(struct edma_rxdesc_ring *rxdesc_ring,
++					 struct edma_rxdesc_pri *rxdesc_pri,
++					 struct sk_buff *skb)
++{
++	bool page_mode = rxdesc_ring->rxfill->page_mode;
++	struct edma_port_pcpu_stats *pcpu_stats;
++	struct edma_port_rx_stats *rx_stats;
++	struct edma_port_priv *port_dev;
++	struct sk_buff *skb_head;
++	struct net_device *dev;
++	u32 pkt_length;
++
++	/* Get packet length. */
++	pkt_length = EDMA_RXDESC_PACKET_LEN_GET(rxdesc_pri);
++
++	skb_head = rxdesc_ring->head;
++	dev = skb_head->dev;
++
++	/* Check Rx checksum offload status. */
++	if (likely(dev->features & NETIF_F_RXCSUM))
++		edma_rx_checksum_verify(rxdesc_pri, skb_head);
++
++	/* Get stats for the netdevice. */
++	port_dev = netdev_priv(dev);
++	pcpu_stats = &port_dev->pcpu_stats;
++	rx_stats = this_cpu_ptr(pcpu_stats->rx_stats);
++
++	if (unlikely(page_mode)) {
++		if (unlikely(!pskb_may_pull(skb_head, ETH_HLEN))) {
++			/* Discard the SKB that we have been building,
++			 * in addition to the SKB linked to current descriptor.
++			 */
++			dev_kfree_skb_any(skb_head);
++			rxdesc_ring->head = NULL;
++			rxdesc_ring->last = NULL;
++			rxdesc_ring->pdesc_head = NULL;
++
++			u64_stats_update_begin(&rx_stats->syncp);
++			rx_stats->rx_nr_frag_headroom_err++;
++			u64_stats_update_end(&rx_stats->syncp);
++
++			return;
++		}
++	}
++
++	if (unlikely(!pskb_pull(skb_head, EDMA_RXDESC_DATA_OFFSET_GET(rxdesc_ring->pdesc_head)))) {
++		dev_kfree_skb_any(skb_head);
++		rxdesc_ring->head = NULL;
++		rxdesc_ring->last = NULL;
++		rxdesc_ring->pdesc_head = NULL;
++
++		u64_stats_update_begin(&rx_stats->syncp);
++		rx_stats->rx_nr_frag_headroom_err++;
++		u64_stats_update_end(&rx_stats->syncp);
++
++		return;
++	}
++
++	u64_stats_update_begin(&rx_stats->syncp);
++	rx_stats->rx_pkts++;
++	rx_stats->rx_bytes += skb_head->len;
++	rx_stats->rx_nr_frag_pkts += (u64)page_mode;
++	rx_stats->rx_fraglist_pkts += (u64)(!page_mode);
++	u64_stats_update_end(&rx_stats->syncp);
++
++	pr_debug("edma_context:%p skb:%p Jumbo pkt_length:%u\n",
++		 edma_ctx, skb_head, skb_head->len);
++
++	skb_head->protocol = eth_type_trans(skb_head, dev);
++
++	/* Send packet up the stack. */
++	if (dev->features & NETIF_F_GRO)
++		napi_gro_receive(&rxdesc_ring->napi, skb_head);
++	else
++		netif_receive_skb(skb_head);
++
++	rxdesc_ring->head = NULL;
++	rxdesc_ring->last = NULL;
++	rxdesc_ring->pdesc_head = NULL;
++}
++
++static void edma_rx_handle_frag_list(struct edma_rxdesc_ring *rxdesc_ring,
++				     struct edma_rxdesc_pri *rxdesc_pri,
++				     struct sk_buff *skb)
++{
++	u32 pkt_length;
++
++	/* Get packet length. */
++	pkt_length = EDMA_RXDESC_PACKET_LEN_GET(rxdesc_pri);
++	pr_debug("edma_context:%p skb:%p fragment pkt_length:%u\n",
++		 edma_ctx, skb, pkt_length);
++
++	if (!(rxdesc_ring->head)) {
++		skb_put(skb, pkt_length);
++		rxdesc_ring->head = skb;
++		rxdesc_ring->last = NULL;
++		rxdesc_ring->pdesc_head = rxdesc_pri;
++
++		return;
++	}
++
++	/* Append it to the fraglist of head if this is second frame
++	 * If not second frame append to tail.
++	 */
++	skb_put(skb, pkt_length);
++	if (!skb_has_frag_list(rxdesc_ring->head))
++		skb_shinfo(rxdesc_ring->head)->frag_list = skb;
++	else
++		rxdesc_ring->last->next = skb;
++
++	rxdesc_ring->last = skb;
++	rxdesc_ring->last->next = NULL;
++	rxdesc_ring->head->len += pkt_length;
++	rxdesc_ring->head->data_len += pkt_length;
++	rxdesc_ring->head->truesize += skb->truesize;
++
++	/* If there are more segments for this packet,
++	 * then we have nothing to do. Otherwise process
++	 * last segment and send packet to stack.
++	 */
++	if (EDMA_RXDESC_MORE_BIT_GET(rxdesc_pri))
++		return;
++
++	edma_rx_process_last_segment(rxdesc_ring, rxdesc_pri, skb);
++}
++
++static void edma_rx_handle_nr_frags(struct edma_rxdesc_ring *rxdesc_ring,
++				    struct edma_rxdesc_pri *rxdesc_pri,
++				    struct sk_buff *skb)
++{
++	skb_frag_t *frag = NULL;
++	u32 pkt_length;
++
++	/* Get packet length. */
++	pkt_length = EDMA_RXDESC_PACKET_LEN_GET(rxdesc_pri);
++	pr_debug("edma_context:%p skb:%p fragment pkt_length:%u\n",
++		 edma_ctx, skb, pkt_length);
++
++	if (!(rxdesc_ring->head)) {
++		skb->len = pkt_length;
++		skb->data_len = pkt_length;
++		skb->truesize = SKB_TRUESIZE(PAGE_SIZE);
++		rxdesc_ring->head = skb;
++		rxdesc_ring->last = NULL;
++		rxdesc_ring->pdesc_head = rxdesc_pri;
++
++		return;
++	}
++
++	frag = &skb_shinfo(skb)->frags[0];
++
++	/* Append current frag at correct index as nr_frag of parent. */
++	skb_add_rx_frag(rxdesc_ring->head, skb_shinfo(rxdesc_ring->head)->nr_frags,
++			skb_frag_page(frag), 0, pkt_length, PAGE_SIZE);
++	skb_shinfo(skb)->nr_frags = 0;
++
++	/* Free the SKB after we have appended its frag page to the head skb. */
++	dev_kfree_skb_any(skb);
++
++	/* If there are more segments for this packet,
++	 * then we have nothing to do. Otherwise process
++	 * last segment and send packet to stack.
++	 */
++	if (EDMA_RXDESC_MORE_BIT_GET(rxdesc_pri))
++		return;
++
++	edma_rx_process_last_segment(rxdesc_ring, rxdesc_pri, skb);
++}
++
++static bool edma_rx_handle_linear_packets(struct edma_rxdesc_ring *rxdesc_ring,
++					  struct edma_rxdesc_pri *rxdesc_pri,
++					  struct sk_buff *skb)
++{
++	bool page_mode = rxdesc_ring->rxfill->page_mode;
++	struct edma_port_pcpu_stats *pcpu_stats;
++	struct edma_port_rx_stats *rx_stats;
++	struct edma_port_priv *port_dev;
++	skb_frag_t *frag = NULL;
++	u32 pkt_length;
++
++	/* Get stats for the netdevice. */
++	port_dev = netdev_priv(skb->dev);
++	pcpu_stats = &port_dev->pcpu_stats;
++	rx_stats = this_cpu_ptr(pcpu_stats->rx_stats);
++
++	/* Get packet length. */
++	pkt_length = EDMA_RXDESC_PACKET_LEN_GET(rxdesc_pri);
++
++	if (likely(!page_mode)) {
++		skb_put(skb, pkt_length);
++		goto send_to_stack;
++	}
++
++	/* Handle linear packet in page mode. */
++	frag = &skb_shinfo(skb)->frags[0];
++	skb_add_rx_frag(skb, 0, skb_frag_page(frag), 0, pkt_length, PAGE_SIZE);
++
++	/* Pull ethernet header into SKB data area for header processing. */
++	if (unlikely(!pskb_may_pull(skb, ETH_HLEN))) {
++		u64_stats_update_begin(&rx_stats->syncp);
++		rx_stats->rx_nr_frag_headroom_err++;
++		u64_stats_update_end(&rx_stats->syncp);
++		dev_kfree_skb_any(skb);
++
++		return false;
++	}
++
++send_to_stack:
++
++	__skb_pull(skb, EDMA_RXDESC_DATA_OFFSET_GET(rxdesc_pri));
++
++	/* Check Rx checksum offload status. */
++	if (likely(skb->dev->features & NETIF_F_RXCSUM))
++		edma_rx_checksum_verify(rxdesc_pri, skb);
++
++	u64_stats_update_begin(&rx_stats->syncp);
++	rx_stats->rx_pkts++;
++	rx_stats->rx_bytes += pkt_length;
++	rx_stats->rx_nr_frag_pkts += (u64)page_mode;
++	u64_stats_update_end(&rx_stats->syncp);
++
++	skb->protocol = eth_type_trans(skb, skb->dev);
++	if (skb->dev->features & NETIF_F_GRO)
++		napi_gro_receive(&rxdesc_ring->napi, skb);
++	else
++		netif_receive_skb(skb);
++
++	netdev_dbg(skb->dev, "edma_context:%p, skb:%p pkt_length:%u\n",
++		   edma_ctx, skb, skb->len);
++
++	return true;
++}
++
++static struct net_device *edma_rx_get_src_dev(struct edma_rxdesc_stats *rxdesc_stats,
++					      struct edma_rxdesc_pri *rxdesc_pri,
++					      struct sk_buff *skb)
++{
++	u32 src_info = EDMA_RXDESC_SRC_INFO_GET(rxdesc_pri);
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct net_device *ndev = NULL;
++	u8 src_port_num;
++
++	/* Check src_info. */
++	if (likely((src_info & EDMA_RXDESC_SRCINFO_TYPE_MASK)
++	    == EDMA_RXDESC_SRCINFO_TYPE_PORTID)) {
++		src_port_num = src_info & EDMA_RXDESC_PORTNUM_BITS;
++	} else {
++		if (net_ratelimit()) {
++			pr_warn("Invalid src info_type:0x%x. Drop skb:%p\n",
++				(src_info & EDMA_RXDESC_SRCINFO_TYPE_MASK), skb);
++		}
++
++		u64_stats_update_begin(&rxdesc_stats->syncp);
++		++rxdesc_stats->src_port_inval_type;
++		u64_stats_update_end(&rxdesc_stats->syncp);
++
++		return NULL;
++	}
++
++	/* Packet with PP source. */
++	if (likely(src_port_num <= hw_info->max_ports)) {
++		if (unlikely(src_port_num < EDMA_START_IFNUM)) {
++			if (net_ratelimit())
++				pr_warn("Port number error :%d. Drop skb:%p\n",
++					src_port_num, skb);
++
++			u64_stats_update_begin(&rxdesc_stats->syncp);
++			++rxdesc_stats->src_port_inval;
++			u64_stats_update_end(&rxdesc_stats->syncp);
++
++			return NULL;
++		}
++
++		/* Get netdev for this port using the source port
++		 * number as index into the netdev array. We need to
++		 * subtract one since the indices start form '0' and
++		 * port numbers start from '1'.
++		 */
++		ndev = edma_ctx->netdev_arr[src_port_num - 1];
++	}
++
++	if (likely(ndev))
++		return ndev;
++
++	if (net_ratelimit())
++		pr_warn("Netdev Null src_info_type:0x%x src port num:%d Drop skb:%p\n",
++			(src_info & EDMA_RXDESC_SRCINFO_TYPE_MASK),
++			src_port_num, skb);
++
++	u64_stats_update_begin(&rxdesc_stats->syncp);
++	++rxdesc_stats->src_port_inval_netdev;
++	u64_stats_update_end(&rxdesc_stats->syncp);
++
++	return NULL;
++}
++
++static int edma_rx_reap(struct edma_rxdesc_ring *rxdesc_ring, int budget)
++{
++	struct edma_rxdesc_stats *rxdesc_stats = &rxdesc_ring->rxdesc_stats;
++	u32 alloc_size = rxdesc_ring->rxfill->alloc_size;
++	bool page_mode = rxdesc_ring->rxfill->page_mode;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct edma_rxdesc_pri *next_rxdesc_pri;
++	struct regmap *regmap = ppe_dev->regmap;
++	struct device *dev = ppe_dev->dev;
++	u32 prod_idx, cons_idx, end_idx;
++	u32 work_to_do, work_done = 0;
++	struct sk_buff *next_skb;
++	u32 work_leftover, reg;
++
++	/* Get Rx ring producer and consumer indices. */
++	cons_idx = rxdesc_ring->cons_idx;
++
++	if (likely(rxdesc_ring->work_leftover > EDMA_RX_MAX_PROCESS)) {
++		work_to_do = rxdesc_ring->work_leftover;
++	} else {
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_PROD_IDX(rxdesc_ring->ring_id);
++		regmap_read(regmap, reg, &prod_idx);
++		prod_idx = prod_idx & EDMA_RXDESC_PROD_IDX_MASK;
++		work_to_do = EDMA_DESC_AVAIL_COUNT(prod_idx,
++						   cons_idx, EDMA_RX_RING_SIZE);
++		rxdesc_ring->work_leftover = work_to_do;
++	}
++
++	if (work_to_do > budget)
++		work_to_do = budget;
++
++	rxdesc_ring->work_leftover -= work_to_do;
++	end_idx = (cons_idx + work_to_do) & EDMA_RX_RING_SIZE_MASK;
++	next_rxdesc_pri = EDMA_RXDESC_PRI_DESC(rxdesc_ring, cons_idx);
++
++	/* Get opaque from RXDESC. */
++	next_skb = (struct sk_buff *)EDMA_RXDESC_OPAQUE_GET(next_rxdesc_pri);
++
++	work_leftover = work_to_do & (EDMA_RX_MAX_PROCESS - 1);
++	while (likely(work_to_do--)) {
++		struct edma_rxdesc_pri *rxdesc_pri;
++		struct net_device *ndev;
++		struct sk_buff *skb;
++		dma_addr_t dma_addr;
++
++		skb = next_skb;
++		rxdesc_pri = next_rxdesc_pri;
++		dma_addr = EDMA_RXDESC_BUFFER_ADDR_GET(rxdesc_pri);
++
++		if (!page_mode)
++			dma_unmap_single(dev, dma_addr, alloc_size,
++					 DMA_TO_DEVICE);
++		else
++			dma_unmap_page(dev, dma_addr, PAGE_SIZE, DMA_TO_DEVICE);
++
++		/* Update consumer index. */
++		cons_idx = (cons_idx + 1) & EDMA_RX_RING_SIZE_MASK;
++
++		/* Get the next Rx descriptor. */
++		next_rxdesc_pri = EDMA_RXDESC_PRI_DESC(rxdesc_ring, cons_idx);
++
++		/* Handle linear packets or initial segments first. */
++		if (likely(!(rxdesc_ring->head))) {
++			ndev = edma_rx_get_src_dev(rxdesc_stats, rxdesc_pri, skb);
++			if (unlikely(!ndev)) {
++				dev_kfree_skb_any(skb);
++				goto next_rx_desc;
++			}
++
++			/* Update skb fields for head skb. */
++			skb->dev = ndev;
++			skb->skb_iif = ndev->ifindex;
++
++			/* Handle linear packets. */
++			if (likely(!EDMA_RXDESC_MORE_BIT_GET(rxdesc_pri))) {
++				next_skb =
++					(struct sk_buff *)EDMA_RXDESC_OPAQUE_GET(next_rxdesc_pri);
++
++				if (unlikely(!
++					     edma_rx_handle_linear_packets(rxdesc_ring,
++									   rxdesc_pri, skb)))
++					dev_kfree_skb_any(skb);
++
++				goto next_rx_desc;
++			}
++		}
++
++		next_skb = (struct sk_buff *)EDMA_RXDESC_OPAQUE_GET(next_rxdesc_pri);
++
++		/* Handle scatter frame processing for first/middle/last segments. */
++		page_mode ? edma_rx_handle_nr_frags(rxdesc_ring, rxdesc_pri, skb) :
++			edma_rx_handle_frag_list(rxdesc_ring, rxdesc_pri, skb);
++
++next_rx_desc:
++		/* Update work done. */
++		work_done++;
++
++		/* Check if we can refill EDMA_RX_MAX_PROCESS worth buffers,
++		 * if yes, refill and update index before continuing.
++		 */
++		if (unlikely(!(work_done & (EDMA_RX_MAX_PROCESS - 1)))) {
++			reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->ring_id);
++			regmap_write(regmap, reg, cons_idx);
++			rxdesc_ring->cons_idx = cons_idx;
++			edma_rx_alloc_buffer_list(rxdesc_ring->rxfill, EDMA_RX_MAX_PROCESS);
++		}
++	}
++
++	/* Check if we need to refill and update
++	 * index for any buffers before exit.
++	 */
++	if (unlikely(work_leftover)) {
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_CONS_IDX(rxdesc_ring->ring_id);
++		regmap_write(regmap, reg, cons_idx);
++		rxdesc_ring->cons_idx = cons_idx;
++		edma_rx_alloc_buffer_list(rxdesc_ring->rxfill, work_leftover);
++	}
++
++	return work_done;
++}
++
++/**
++ * edma_rx_napi_poll - EDMA Rx napi poll.
++ * @napi: NAPI structure
++ * @budget: Rx NAPI budget
++ *
++ * EDMA RX NAPI handler to handle the NAPI poll.
++ *
++ * Return the number of packets processed.
++ */
++int edma_rx_napi_poll(struct napi_struct *napi, int budget)
++{
++	struct edma_rxdesc_ring *rxdesc_ring = (struct edma_rxdesc_ring *)napi;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	int work_done = 0;
++	u32 status, reg;
++
++	do {
++		work_done += edma_rx_reap(rxdesc_ring, budget - work_done);
++		if (likely(work_done >= budget))
++			return work_done;
++
++		/* Check if there are more packets to process. */
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_INT_STAT(rxdesc_ring->ring_id);
++		regmap_read(regmap, reg, &status);
++		status = status & EDMA_RXDESC_RING_INT_STATUS_MASK;
++	} while (likely(status));
++
++	napi_complete(napi);
++
++	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->ring_id);
++	regmap_write(regmap, reg, edma_ctx->intr_info.intr_mask_rx);
++
++	return work_done;
++}
++
++/**
++ * edma_rx_handle_irq - EDMA Rx handle irq.
++ * @irq: Interrupt to handle
++ * @ctx: Context
++ *
++ * Process RX IRQ and schedule NAPI.
++ *
++ * Return IRQ_HANDLED(1) on success.
++ */
++irqreturn_t edma_rx_handle_irq(int irq, void *ctx)
++{
++	struct edma_rxdesc_ring *rxdesc_ring = (struct edma_rxdesc_ring *)ctx;
++	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
++	struct regmap *regmap = ppe_dev->regmap;
++	u32 reg;
++
++	if (likely(napi_schedule_prep(&rxdesc_ring->napi))) {
++		/* Disable RxDesc interrupt. */
++		reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_INT_MASK(rxdesc_ring->ring_id);
++		regmap_write(regmap, reg, EDMA_MASK_INT_DISABLE);
++		__napi_schedule(&rxdesc_ring->napi);
++	}
++
++	return IRQ_HANDLED;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_rx.h
+@@ -0,0 +1,287 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef __EDMA_RX__
++#define __EDMA_RX__
++
++#include <linux/netdevice.h>
++
++#define EDMA_RXFILL_RING_PER_CORE_MAX	1
++#define EDMA_RXDESC_RING_PER_CORE_MAX	1
++
++/* Max Rx processing without replenishing RxFill ring. */
++#define EDMA_RX_MAX_PROCESS		32
++
++#define EDMA_RX_SKB_HEADROOM		128
++#define EDMA_RX_QUEUE_START		0
++#define EDMA_RX_BUFFER_SIZE		1984
++#define EDMA_MAX_CORE			4
++
++#define EDMA_GET_DESC(R, i, type)	(&(((type *)((R)->desc))[(i)]))
++#define EDMA_GET_PDESC(R, i, type)	(&(((type *)((R)->pdesc))[(i)]))
++#define EDMA_GET_SDESC(R, i, type)	(&(((type *)((R)->sdesc))[(i)]))
++#define EDMA_RXFILL_DESC(R, i)		EDMA_GET_DESC(R, i, \
++						struct edma_rxfill_desc)
++#define EDMA_RXDESC_PRI_DESC(R, i)	EDMA_GET_PDESC(R, i, \
++						struct edma_rxdesc_pri)
++#define EDMA_RXDESC_SEC_DESC(R, i)	EDMA_GET_SDESC(R, i, \
++						struct edma_rxdesc_sec)
++
++#define EDMA_RX_RING_SIZE	2048
++
++#define EDMA_RX_RING_SIZE_MASK	(EDMA_RX_RING_SIZE - 1)
++#define EDMA_RX_RING_ID_MASK		0x1F
++
++#define EDMA_MAX_PRI_PER_CORE      8
++#define EDMA_RX_PID_IPV4_MAX		0x3
++#define EDMA_RX_PID_IPV6		0x4
++#define EDMA_RX_PID_IS_IPV4(pid)	(!((pid) & (~EDMA_RX_PID_IPV4_MAX)))
++#define EDMA_RX_PID_IS_IPV6(pid)	(!(!((pid) & EDMA_RX_PID_IPV6)))
++
++#define EDMA_RXDESC_BUFFER_ADDR_GET(desc)	\
++				((u32)(le32_to_cpu((__force __le32)((desc)->word0))))
++#define EDMA_RXDESC_OPAQUE_GET(_desc) ({ \
++			typeof(_desc) (desc) = (_desc); \
++			((uintptr_t)((u64)((desc)->word2) | \
++			((u64)((desc)->word3) << 0x20))); })
++
++#define EDMA_RXDESC_SRCINFO_TYPE_PORTID		0x2000
++#define EDMA_RXDESC_SRCINFO_TYPE_MASK		0xF000
++#define EDMA_RXDESC_L3CSUM_STATUS_MASK		BIT(13)
++#define EDMA_RXDESC_L4CSUM_STATUS_MASK		BIT(12)
++#define EDMA_RXDESC_PORTNUM_BITS		0x0FFF
++
++#define EDMA_RXDESC_PACKET_LEN_MASK		0x3FFFF
++#define EDMA_RXDESC_PACKET_LEN_GET(_desc) ({ \
++			typeof(_desc) (desc) = (_desc); \
++			((le32_to_cpu((__force __le32)((desc)->word5))) & \
++			EDMA_RXDESC_PACKET_LEN_MASK); })
++
++#define EDMA_RXDESC_MORE_BIT_MASK		0x40000000
++#define EDMA_RXDESC_MORE_BIT_GET(desc)		((le32_to_cpu((__force __le32)((desc)->word1))) & \
++						EDMA_RXDESC_MORE_BIT_MASK)
++#define EDMA_RXDESC_SRC_DST_INFO_GET(desc)	\
++				((u32)((le32_to_cpu((__force __le32)((desc)->word4)))))
++
++#define EDMA_RXDESC_L3_OFFSET_MASK	GENMASK(23, 16)
++#define EDMA_RXDESC_L3_OFFSET_GET(desc)	FIELD_GET(EDMA_RXDESC_L3_OFFSET_MASK, \
++					le32_to_cpu((__force __le32)((desc)->word7)))
++
++#define EDMA_RXDESC_PID_MASK		GENMASK(15, 12)
++#define EDMA_RXDESC_PID_GET(desc)	FIELD_GET(EDMA_RXDESC_PID_MASK, \
++					le32_to_cpu((__force __le32)((desc)->word7)))
++
++#define EDMA_RXDESC_DST_INFO_MASK	GENMASK(31, 16)
++#define EDMA_RXDESC_DST_INFO_GET(desc)	FIELD_GET(EDMA_RXDESC_DST_INFO_MASK, \
++					le32_to_cpu((__force __le32)((desc)->word4)))
++
++#define EDMA_RXDESC_SRC_INFO_MASK	GENMASK(15, 0)
++#define EDMA_RXDESC_SRC_INFO_GET(desc)	FIELD_GET(EDMA_RXDESC_SRC_INFO_MASK, \
++					le32_to_cpu((__force __le32)((desc)->word4)))
++
++#define EDMA_RXDESC_PORT_ID_MASK	GENMASK(11, 0)
++#define EDMA_RXDESC_PORT_ID_GET(x)	FIELD_GET(EDMA_RXDESC_PORT_ID_MASK, x)
++
++#define EDMA_RXDESC_SRC_PORT_ID_GET(desc)	(EDMA_RXDESC_PORT_ID_GET \
++						(EDMA_RXDESC_SRC_INFO_GET(desc)))
++#define EDMA_RXDESC_DST_PORT_ID_GET(desc)	(EDMA_RXDESC_PORT_ID_GET \
++						(EDMA_RXDESC_DST_INFO_GET(desc)))
++
++#define EDMA_RXDESC_DST_PORT		(0x2 << EDMA_RXDESC_PID_SHIFT)
++
++#define EDMA_RXDESC_L3CSUM_STATUS_GET(desc)	FIELD_GET(EDMA_RXDESC_L3CSUM_STATUS_MASK, \
++						le32_to_cpu((__force __le32)(desc)->word6))
++#define EDMA_RXDESC_L4CSUM_STATUS_GET(desc)	FIELD_GET(EDMA_RXDESC_L4CSUM_STATUS_MASK, \
++						le32_to_cpu((__force __le32)(desc)->word6))
++
++#define EDMA_RXDESC_DATA_OFFSET_MASK		GENMASK(11, 0)
++#define EDMA_RXDESC_DATA_OFFSET_GET(desc)	FIELD_GET(EDMA_RXDESC_DATA_OFFSET_MASK, \
++						le32_to_cpu((__force __le32)(desc)->word6))
++
++#define EDMA_RXFILL_BUF_SIZE_MASK		0xFFFF
++#define EDMA_RXFILL_BUF_SIZE_SHIFT		16
++
++/* Opaque values are not accessed by the EDMA HW,
++ * so endianness conversion is not needed.
++ */
++
++#define EDMA_RXFILL_OPAQUE_LO_SET(desc, ptr)	(((desc)->word2) = \
++						(u32)(uintptr_t)(ptr))
++#ifdef __LP64__
++#define EDMA_RXFILL_OPAQUE_HI_SET(desc, ptr)	(((desc)->word3) = \
++						(u32)((u64)(ptr) >> 0x20))
++#endif
++
++#define EDMA_RXFILL_OPAQUE_GET(_desc) ({ \
++			typeof(_desc) (desc) = (_desc); \
++			((uintptr_t)((u64)((desc)->word2) | \
++			((u64)((desc)->word3) << 0x20))); })
++
++#define EDMA_RXFILL_PACKET_LEN_SET(desc, len)	{ \
++	(((desc)->word1) = (u32)((((u32)len) << EDMA_RXFILL_BUF_SIZE_SHIFT) & \
++						0xFFFF0000)); \
++}
++
++#define EDMA_RXFILL_BUFFER_ADDR_SET(desc, addr)	(((desc)->word0) = (u32)(addr))
++
++/* Opaque values are set in word2 and word3, they are not accessed by the EDMA HW,
++ * so endianness conversion is not needed.
++ */
++#define EDMA_RXFILL_ENDIAN_SET(_desc) ({ \
++	typeof(_desc) (desc) = (_desc); \
++	cpu_to_le32s(&((desc)->word0)); \
++	cpu_to_le32s(&((desc)->word1)); \
++})
++
++/* RX DESC size shift to obtain index from descriptor pointer. */
++#define EDMA_RXDESC_SIZE_SHIFT		5
++
++/**
++ * struct edma_rxdesc_stats - RX descriptor ring stats.
++ * @src_port_inval: Invalid source port number
++ * @src_port_inval_type: Source type is not PORT ID
++ * @src_port_inval_netdev: Invalid net device for the source port
++ * @syncp: Synchronization pointer
++ */
++struct edma_rxdesc_stats {
++	u64 src_port_inval;
++	u64 src_port_inval_type;
++	u64 src_port_inval_netdev;
++	struct u64_stats_sync syncp;
++};
++
++/**
++ * struct edma_rxfill_stats - Rx fill descriptor ring stats.
++ * @alloc_failed: Buffer allocation failure count
++ * @page_alloc_failed: Page allocation failure count for page mode
++ * @syncp: Synchronization pointer
++ */
++struct edma_rxfill_stats {
++	u64 alloc_failed;
++	u64 page_alloc_failed;
++	struct u64_stats_sync syncp;
++};
++
++/**
++ * struct edma_rxdesc_pri - Rx descriptor.
++ * @word0: Buffer address
++ * @word1: More bit, priority bit, service code
++ * @word2: Opaque low bits
++ * @word3: Opaque high bits
++ * @word4: Destination and source information
++ * @word5: WiFi QoS, data length
++ * @word6: Hash value, check sum status
++ * @word7: DSCP, packet offsets
++ */
++struct edma_rxdesc_pri {
++	u32 word0;
++	u32 word1;
++	u32 word2;
++	u32 word3;
++	u32 word4;
++	u32 word5;
++	u32 word6;
++	u32 word7;
++};
++
++ /**
++  * struct edma_rxdesc_sec - Rx secondary descriptor.
++  * @word0: Timestamp
++  * @word1: Secondary checksum status
++  * @word2: QoS tag
++  * @word3: Flow index details
++  * @word4: Secondary packet offsets
++  * @word5: Multicast bit, checksum
++  * @word6: SVLAN, CVLAN
++  * @word7: Secondary SVLAN, CVLAN
++  */
++struct edma_rxdesc_sec {
++	u32 word0;
++	u32 word1;
++	u32 word2;
++	u32 word3;
++	u32 word4;
++	u32 word5;
++	u32 word6;
++	u32 word7;
++};
++
++/**
++ * struct edma_rxfill_desc - RxFill descriptor.
++ * @word0: Buffer address
++ * @word1: Buffer size
++ * @word2: Opaque low bits
++ * @word3: Opaque high bits
++ */
++struct edma_rxfill_desc {
++	u32 word0;
++	u32 word1;
++	u32 word2;
++	u32 word3;
++};
++
++/**
++ * struct edma_rxfill_ring - RxFill ring
++ * @ring_id: RxFill ring number
++ * @count: Number of descriptors in the ring
++ * @prod_idx: Ring producer index
++ * @alloc_size: Buffer size to allocate
++ * @desc: Descriptor ring virtual address
++ * @dma: Descriptor ring physical address
++ * @buf_len: Buffer length for rxfill descriptor
++ * @page_mode: Page mode for Rx processing
++ * @rx_fill_stats: Rx fill ring statistics
++ */
++struct edma_rxfill_ring {
++	u32 ring_id;
++	u32 count;
++	u32 prod_idx;
++	u32 alloc_size;
++	struct edma_rxfill_desc *desc;
++	dma_addr_t dma;
++	u32 buf_len;
++	bool page_mode;
++	struct edma_rxfill_stats rxfill_stats;
++};
++
++/**
++ * struct edma_rxdesc_ring - RxDesc ring
++ * @napi: Pointer to napi
++ * @ring_id: Rxdesc ring number
++ * @count: Number of descriptors in the ring
++ * @work_leftover: Leftover descriptors to be processed
++ * @cons_idx: Ring consumer index
++ * @pdesc: Primary descriptor ring virtual address
++ * @pdesc_head: Primary descriptor head in case of scatter-gather frame
++ * @sdesc: Secondary descriptor ring virtual address
++ * @rxdesc_stats: Rx descriptor ring statistics
++ * @rxfill: RxFill ring used
++ * @napi_added: Flag to indicate NAPI add status
++ * @pdma: Primary descriptor ring physical address
++ * @sdma: Secondary descriptor ring physical address
++ * @head: Head of the skb list in case of scatter-gather frame
++ * @last: Last skb of the skb list in case of scatter-gather frame
++ */
++struct edma_rxdesc_ring {
++	struct napi_struct napi;
++	u32 ring_id;
++	u32 count;
++	u32 work_leftover;
++	u32 cons_idx;
++	struct edma_rxdesc_pri *pdesc;
++	struct edma_rxdesc_pri *pdesc_head;
++	struct edma_rxdesc_sec *sdesc;
++	struct edma_rxdesc_stats rxdesc_stats;
++	struct edma_rxfill_ring *rxfill;
++	bool napi_added;
++	dma_addr_t pdma;
++	dma_addr_t sdma;
++	struct sk_buff *head;
++	struct sk_buff *last;
++};
++
++irqreturn_t edma_rx_handle_irq(int irq, void *ctx);
++int edma_rx_alloc_buffer(struct edma_rxfill_ring *rxfill_ring, int alloc_count);
++int edma_rx_napi_poll(struct napi_struct *napi, int budget);
++#endif

@@ -1,0 +1,673 @@
+From 3e8cb061bff0bf74503cd2f206ed5c599a1e7ff7 Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Thu, 29 Feb 2024 20:16:14 +0800
+Subject: [PATCH 33/50] net: ethernet: qualcomm: Add PPE port MAC MIB
+ statistics functions
+
+Add PPE port MAC MIB statistics functions which are used by netdev
+ops and ethtool. For GMAC, a polling task is scheduled to read the
+MIB counters periodically to avoid 32bit register counter overflow.
+
+Change-Id: Ic20e240061278f77d703f652e1f7d959db8fac37
+Signed-off-by: Lei Wei <quic_leiwei@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/ppe_port.c | 465 +++++++++++++++++++
+ drivers/net/ethernet/qualcomm/ppe/ppe_port.h |  13 +
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h |  91 ++++
+ 3 files changed, 569 insertions(+)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -23,6 +23,122 @@
+ /* PPE BM port start for PPE MAC ports */
+ #define PPE_BM_PORT_MAC_START			7
+ 
++/* Poll interval time to poll GMAC MIBs for overflow protection,
++ * the time should ensure that the 32bit GMAC packet counter
++ * register would not overflow within this time at line rate
++ * speed for 64B packet size.
++ */
++#define PPE_GMIB_POLL_INTERVAL_MS		120000
++
++#define PPE_MAC_MIB_DESC(_s, _o, _n)		\
++	{					\
++		.size = (_s),			\
++		.offset = (_o),			\
++		.name = (_n),			\
++	}
++
++/* PPE MAC MIB description */
++struct ppe_mac_mib_info {
++	u32 size;
++	u32 offset;
++	const char *name;
++};
++
++/* PPE GMAC MIB statistics type */
++enum ppe_gmib_stats_type {
++	gmib_rx_broadcast,
++	gmib_rx_pause,
++	gmib_rx_multicast,
++	gmib_rx_fcserr,
++	gmib_rx_alignerr,
++	gmib_rx_runt,
++	gmib_rx_frag,
++	gmib_rx_jumbofcserr,
++	gmib_rx_jumboalignerr,
++	gmib_rx_pkt64,
++	gmib_rx_pkt65to127,
++	gmib_rx_pkt128to255,
++	gmib_rx_pkt256to511,
++	gmib_rx_pkt512to1023,
++	gmib_rx_pkt1024to1518,
++	gmib_rx_pkt1519tomax,
++	gmib_rx_toolong,
++	gmib_rx_bytes_g,
++	gmib_rx_bytes_b,
++	gmib_rx_unicast,
++	gmib_tx_broadcast,
++	gmib_tx_pause,
++	gmib_tx_multicast,
++	gmib_tx_underrun,
++	gmib_tx_pkt64,
++	gmib_tx_pkt65to127,
++	gmib_tx_pkt128to255,
++	gmib_tx_pkt256to511,
++	gmib_tx_pkt512to1023,
++	gmib_tx_pkt1024to1518,
++	gmib_tx_pkt1519tomax,
++	gmib_tx_bytes,
++	gmib_tx_collisions,
++	gmib_tx_abortcol,
++	gmib_tx_multicol,
++	gmib_tx_singlecol,
++	gmib_tx_excdeffer,
++	gmib_tx_deffer,
++	gmib_tx_latecol,
++	gmib_tx_unicast,
++};
++
++/* PPE XGMAC MIB statistics type */
++enum ppe_xgmib_stats_type {
++	xgmib_tx_bytes,
++	xgmib_tx_frames,
++	xgmib_tx_broadcast_g,
++	xgmib_tx_multicast_g,
++	xgmib_tx_pkt64,
++	xgmib_tx_pkt65to127,
++	xgmib_tx_pkt128to255,
++	xgmib_tx_pkt256to511,
++	xgmib_tx_pkt512to1023,
++	xgmib_tx_pkt1024tomax,
++	xgmib_tx_unicast,
++	xgmib_tx_multicast,
++	xgmib_tx_broadcast,
++	xgmib_tx_underflow_err,
++	xgmib_tx_bytes_g,
++	xgmib_tx_frames_g,
++	xgmib_tx_pause,
++	xgmib_tx_vlan_g,
++	xgmib_tx_lpi_usec,
++	xgmib_tx_lpi_tran,
++	xgmib_rx_frames,
++	xgmib_rx_bytes,
++	xgmib_rx_bytes_g,
++	xgmib_rx_broadcast_g,
++	xgmib_rx_multicast_g,
++	xgmib_rx_crc_err,
++	xgmib_rx_runt_err,
++	xgmib_rx_jabber_err,
++	xgmib_rx_undersize_g,
++	xgmib_rx_oversize_g,
++	xgmib_rx_pkt64,
++	xgmib_rx_pkt65to127,
++	xgmib_rx_pkt128to255,
++	xgmib_rx_pkt256to511,
++	xgmib_rx_pkt512to1023,
++	xgmib_rx_pkt1024tomax,
++	xgmib_rx_unicast_g,
++	xgmib_rx_len_err,
++	xgmib_rx_outofrange_err,
++	xgmib_rx_pause,
++	xgmib_rx_fifo_overflow,
++	xgmib_rx_vlan,
++	xgmib_rx_wdog_err,
++	xgmib_rx_lpi_usec,
++	xgmib_rx_lpi_tran,
++	xgmib_rx_drop_frames,
++	xgmib_rx_drop_bytes,
++};
++
+ /* PPE port clock and reset name */
+ static const char * const ppe_port_clk_rst_name[] = {
+ 	[PPE_PORT_CLK_RST_MAC] = "port_mac",
+@@ -30,6 +146,322 @@ static const char * const ppe_port_clk_r
+ 	[PPE_PORT_CLK_RST_TX] = "port_tx",
+ };
+ 
++/* PPE GMAC MIB statistics description information */
++static const struct ppe_mac_mib_info gmib_info[] = {
++	PPE_MAC_MIB_DESC(4, GMAC_RXBROAD_ADDR, "rx_broadcast"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPAUSE_ADDR, "rx_pause"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXMULTI_ADDR, "rx_multicast"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXFCSERR_ADDR, "rx_fcserr"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXALIGNERR_ADDR, "rx_alignerr"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXRUNT_ADDR, "rx_runt"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXFRAG_ADDR, "rx_frag"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXJUMBOFCSERR_ADDR, "rx_jumbofcserr"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXJUMBOALIGNERR_ADDR, "rx_jumboalignerr"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT64_ADDR, "rx_pkt64"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT65TO127_ADDR, "rx_pkt65to127"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT128TO255_ADDR, "rx_pkt128to255"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT256TO511_ADDR, "rx_pkt256to511"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT512TO1023_ADDR, "rx_pkt512to1023"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT1024TO1518_ADDR, "rx_pkt1024to1518"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXPKT1519TOX_ADDR, "rx_pkt1519tomax"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXTOOLONG_ADDR, "rx_toolong"),
++	PPE_MAC_MIB_DESC(8, GMAC_RXBYTE_G_ADDR, "rx_bytes_g"),
++	PPE_MAC_MIB_DESC(8, GMAC_RXBYTE_B_ADDR, "rx_bytes_b"),
++	PPE_MAC_MIB_DESC(4, GMAC_RXUNI_ADDR, "rx_unicast"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXBROAD_ADDR, "tx_broadcast"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPAUSE_ADDR, "tx_pause"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXMULTI_ADDR, "tx_multicast"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXUNDERRUN_ADDR, "tx_underrun"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT64_ADDR, "tx_pkt64"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT65TO127_ADDR, "tx_pkt65to127"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT128TO255_ADDR, "tx_pkt128to255"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT256TO511_ADDR, "tx_pkt256to511"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT512TO1023_ADDR, "tx_pkt512to1023"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT1024TO1518_ADDR, "tx_pkt1024to1518"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXPKT1519TOX_ADDR, "tx_pkt1519tomax"),
++	PPE_MAC_MIB_DESC(8, GMAC_TXBYTE_ADDR, "tx_bytes"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXCOLLISIONS_ADDR, "tx_collisions"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXABORTCOL_ADDR, "tx_abortcol"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXMULTICOL_ADDR, "tx_multicol"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXSINGLECOL_ADDR, "tx_singlecol"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXEXCESSIVEDEFER_ADDR, "tx_excdeffer"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXDEFER_ADDR, "tx_deffer"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXLATECOL_ADDR, "tx_latecol"),
++	PPE_MAC_MIB_DESC(4, GMAC_TXUNI_ADDR, "tx_unicast"),
++};
++
++/* PPE XGMAC MIB statistics description information */
++static const struct ppe_mac_mib_info xgmib_info[] = {
++	PPE_MAC_MIB_DESC(8, XGMAC_TXBYTE_GB_ADDR, "tx_bytes"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT_GB_ADDR, "tx_frames"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXBROAD_G_ADDR, "tx_broadcast_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXMULTI_G_ADDR, "tx_multicast_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT64_GB_ADDR, "tx_pkt64"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT65TO127_GB_ADDR, "tx_pkt65to127"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT128TO255_GB_ADDR, "tx_pkt128to255"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT256TO511_GB_ADDR, "tx_pkt256to511"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT512TO1023_GB_ADDR, "tx_pkt512to1023"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT1024TOMAX_GB_ADDR, "tx_pkt1024tomax"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXUNI_GB_ADDR, "tx_unicast"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXMULTI_GB_ADDR, "tx_multicast"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXBROAD_GB_ADDR, "tx_broadcast"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXUNDERFLOW_ERR_ADDR, "tx_underflow_err"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXBYTE_G_ADDR, "tx_bytes_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPKT_G_ADDR, "tx_frames_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXPAUSE_ADDR, "tx_pause"),
++	PPE_MAC_MIB_DESC(8, XGMAC_TXVLAN_G_ADDR, "tx_vlan_g"),
++	PPE_MAC_MIB_DESC(4, XGMAC_TXLPI_USEC_ADDR, "tx_lpi_usec"),
++	PPE_MAC_MIB_DESC(4, XGMAC_TXLPI_TRAN_ADDR, "tx_lpi_tran"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT_GB_ADDR, "rx_frames"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXBYTE_GB_ADDR, "rx_bytes"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXBYTE_G_ADDR, "rx_bytes_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXBROAD_G_ADDR, "rx_broadcast_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXMULTI_G_ADDR, "rx_multicast_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXCRC_ERR_ADDR, "rx_crc_err"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXRUNT_ERR_ADDR, "rx_runt_err"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXJABBER_ERR_ADDR, "rx_jabber_err"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXUNDERSIZE_G_ADDR, "rx_undersize_g"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXOVERSIZE_G_ADDR, "rx_oversize_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT64_GB_ADDR, "rx_pkt64"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT65TO127_GB_ADDR, "rx_pkt65to127"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT128TO255_GB_ADDR, "rx_pkt128to255"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT256TO511_GB_ADDR, "rx_pkt256to511"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT512TO1023_GB_ADDR, "rx_pkt512to1023"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPKT1024TOMAX_GB_ADDR, "rx_pkt1024tomax"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXUNI_G_ADDR, "rx_unicast_g"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXLEN_ERR_ADDR, "rx_len_err"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXOUTOFRANGE_ADDR, "rx_outofrange_err"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXPAUSE_ADDR, "rx_pause"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXFIFOOVERFLOW_ADDR, "rx_fifo_overflow"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXVLAN_GB_ADDR, "rx_vlan"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXWATCHDOG_ERR_ADDR, "rx_wdog_err"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXLPI_USEC_ADDR, "rx_lpi_usec"),
++	PPE_MAC_MIB_DESC(4, XGMAC_RXLPI_TRAN_ADDR, "rx_lpi_tran"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXDISCARD_GB_ADDR, "rx_drop_frames"),
++	PPE_MAC_MIB_DESC(8, XGMAC_RXDISCARDBYTE_GB_ADDR, "rx_drop_bytes"),
++};
++
++/* Get GMAC MIBs from registers and accumulate to PPE port GMIB stats array */
++static void ppe_port_gmib_update(struct ppe_port *ppe_port)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	const struct ppe_mac_mib_info *mib;
++	int port = ppe_port->port_id;
++	u32 reg, val;
++	int i, ret;
++
++	for (i = 0; i < ARRAY_SIZE(gmib_info); i++) {
++		mib = &gmib_info[i];
++		reg = PPE_PORT_GMAC_ADDR(port) + mib->offset;
++
++		ret = regmap_read(ppe_dev->regmap, reg, &val);
++		if (ret) {
++			dev_warn(ppe_dev->dev, "%s: %d\n", __func__, ret);
++			continue;
++		}
++
++		ppe_port->gmib_stats[i] += val;
++		if (mib->size == 8) {
++			ret = regmap_read(ppe_dev->regmap, reg + 4, &val);
++			if (ret) {
++				dev_warn(ppe_dev->dev, "%s: %d\n",
++					 __func__, ret);
++				continue;
++			}
++
++			ppe_port->gmib_stats[i] += (u64)val << 32;
++		}
++	}
++}
++
++/* Polling task to read GMIB statistics to avoid GMIB 32bit register overflow */
++static void ppe_port_gmib_stats_poll(struct work_struct *work)
++{
++	struct ppe_port *ppe_port = container_of(work, struct ppe_port,
++						 gmib_read.work);
++	spin_lock(&ppe_port->gmib_stats_lock);
++	ppe_port_gmib_update(ppe_port);
++	spin_unlock(&ppe_port->gmib_stats_lock);
++
++	schedule_delayed_work(&ppe_port->gmib_read,
++			      msecs_to_jiffies(PPE_GMIB_POLL_INTERVAL_MS));
++}
++
++/* Get the XGMAC MIB counter based on the specific MIB stats type */
++static u64 ppe_port_xgmib_get(struct ppe_port *ppe_port,
++			      enum ppe_xgmib_stats_type xgmib_type)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	const struct ppe_mac_mib_info *mib;
++	int port = ppe_port->port_id;
++	u32 reg, val;
++	u64 data = 0;
++	int ret;
++
++	mib = &xgmib_info[xgmib_type];
++	reg = PPE_PORT_XGMAC_ADDR(port) + mib->offset;
++
++	ret = regmap_read(ppe_dev->regmap, reg, &val);
++	if (ret) {
++		dev_warn(ppe_dev->dev, "%s: %d\n", __func__, ret);
++		goto data_return;
++	}
++
++	data = val;
++	if (mib->size == 8) {
++		ret = regmap_read(ppe_dev->regmap, reg + 4, &val);
++		if (ret) {
++			dev_warn(ppe_dev->dev, "%s: %d\n", __func__, ret);
++			goto data_return;
++		}
++
++		data |= (u64)val << 32;
++	}
++
++data_return:
++	return data;
++}
++
++/**
++ * ppe_port_get_sset_count() - Get PPE port statistics string count
++ * @ppe_port: PPE port
++ * @sset: string set ID
++ *
++ * Description: Get the MAC statistics string count for the PPE port
++ * specified by @ppe_port.
++ *
++ * Return: The count of the statistics string.
++ */
++int ppe_port_get_sset_count(struct ppe_port *ppe_port, int sset)
++{
++	if (sset != ETH_SS_STATS)
++		return 0;
++
++	if (ppe_port->mac_type == PPE_MAC_TYPE_GMAC)
++		return ARRAY_SIZE(gmib_info);
++	else
++		return ARRAY_SIZE(xgmib_info);
++}
++
++/**
++ * ppe_port_get_strings() - Get PPE port statistics strings
++ * @ppe_port: PPE port
++ * @stringset: string set ID
++ * @data: pointer to statistics strings
++ *
++ * Description: Get the MAC statistics stings for the PPE port
++ * specified by @ppe_port. The strings are stored in the buffer
++ * indicated by @data which used in the ethtool ops.
++ */
++void ppe_port_get_strings(struct ppe_port *ppe_port, u32 stringset, u8 *data)
++{
++	int i;
++
++	if (stringset != ETH_SS_STATS)
++		return;
++
++	if (ppe_port->mac_type == PPE_MAC_TYPE_GMAC) {
++		for (i = 0; i < ARRAY_SIZE(gmib_info); i++)
++			strscpy(data + i * ETH_GSTRING_LEN, gmib_info[i].name,
++				ETH_GSTRING_LEN);
++	} else {
++		for (i = 0; i < ARRAY_SIZE(xgmib_info); i++)
++			strscpy(data + i * ETH_GSTRING_LEN, xgmib_info[i].name,
++				ETH_GSTRING_LEN);
++	}
++}
++
++/**
++ * ppe_port_get_ethtool_stats() - Get PPE port ethtool statistics
++ * @ppe_port: PPE port
++ * @data: pointer to statistics data
++ *
++ * Description: Get the MAC statistics for the PPE port specified
++ * by @ppe_port. The statistics are stored in the buffer indicated
++ * by @data which used in the ethtool ops.
++ */
++void ppe_port_get_ethtool_stats(struct ppe_port *ppe_port, u64 *data)
++{
++	int i;
++
++	if (ppe_port->mac_type == PPE_MAC_TYPE_GMAC) {
++		spin_lock(&ppe_port->gmib_stats_lock);
++
++		ppe_port_gmib_update(ppe_port);
++		for (i = 0; i < ARRAY_SIZE(gmib_info); i++)
++			data[i] = ppe_port->gmib_stats[i];
++
++		spin_unlock(&ppe_port->gmib_stats_lock);
++	} else {
++		for (i = 0; i < ARRAY_SIZE(xgmib_info); i++)
++			data[i] = ppe_port_xgmib_get(ppe_port, i);
++	}
++}
++
++/**
++ * ppe_port_get_stats64() - Get PPE port statistics
++ * @ppe_port: PPE port
++ * @s: statistics pointer
++ *
++ * Description: Get the MAC statistics for the PPE port specified
++ * by @ppe_port.
++ */
++void ppe_port_get_stats64(struct ppe_port *ppe_port,
++			  struct rtnl_link_stats64 *s)
++{
++	if (ppe_port->mac_type == PPE_MAC_TYPE_GMAC) {
++		u64 *src = ppe_port->gmib_stats;
++
++		spin_lock(&ppe_port->gmib_stats_lock);
++
++		ppe_port_gmib_update(ppe_port);
++
++		s->rx_packets = src[gmib_rx_unicast] +
++			src[gmib_rx_broadcast] + src[gmib_rx_multicast];
++
++		s->tx_packets = src[gmib_tx_unicast] +
++			src[gmib_tx_broadcast] + src[gmib_tx_multicast];
++
++		s->rx_bytes = src[gmib_rx_bytes_g];
++		s->tx_bytes = src[gmib_tx_bytes];
++		s->multicast = src[gmib_rx_multicast];
++
++		s->rx_crc_errors = src[gmib_rx_fcserr] + src[gmib_rx_frag];
++		s->rx_frame_errors = src[gmib_rx_alignerr];
++		s->rx_errors = s->rx_crc_errors + s->rx_frame_errors;
++		s->rx_dropped = src[gmib_rx_toolong] + s->rx_errors;
++
++		s->tx_fifo_errors = src[gmib_tx_underrun];
++		s->tx_aborted_errors = src[gmib_tx_abortcol];
++		s->tx_errors = s->tx_fifo_errors + s->tx_aborted_errors;
++		s->collisions = src[gmib_tx_collisions];
++
++		spin_unlock(&ppe_port->gmib_stats_lock);
++	} else {
++		s->multicast = ppe_port_xgmib_get(ppe_port, xgmib_rx_multicast_g);
++
++		s->rx_packets = s->multicast;
++		s->rx_packets += ppe_port_xgmib_get(ppe_port, xgmib_rx_unicast_g);
++		s->rx_packets += ppe_port_xgmib_get(ppe_port, xgmib_rx_broadcast_g);
++
++		s->tx_packets = ppe_port_xgmib_get(ppe_port, xgmib_tx_frames);
++		s->rx_bytes = ppe_port_xgmib_get(ppe_port, xgmib_rx_bytes);
++		s->tx_bytes = ppe_port_xgmib_get(ppe_port, xgmib_tx_bytes);
++
++		s->rx_crc_errors = ppe_port_xgmib_get(ppe_port, xgmib_rx_crc_err);
++		s->rx_fifo_errors = ppe_port_xgmib_get(ppe_port, xgmib_rx_fifo_overflow);
++
++		s->rx_length_errors = ppe_port_xgmib_get(ppe_port, xgmib_rx_len_err);
++		s->rx_errors = s->rx_crc_errors +
++			s->rx_fifo_errors + s->rx_length_errors;
++		s->rx_dropped = s->rx_errors;
++
++		s->tx_fifo_errors = ppe_port_xgmib_get(ppe_port, xgmib_tx_underflow_err);
++		s->tx_errors = s->tx_packets -
++			ppe_port_xgmib_get(ppe_port, xgmib_tx_frames_g);
++	}
++}
++
+ /* PPE port and MAC reset */
+ static int ppe_port_mac_reset(struct ppe_port *ppe_port)
+ {
+@@ -261,6 +693,9 @@ static void ppe_port_mac_link_up(struct
+ 	int ret, port = ppe_port->port_id;
+ 	u32 reg, val;
+ 
++	/* Start GMIB statistics polling */
++	schedule_delayed_work(&ppe_port->gmib_read, 0);
++
+ 	if (mac_type == PPE_MAC_TYPE_GMAC)
+ 		ret = ppe_port_gmac_link_up(ppe_port,
+ 					    speed, duplex, tx_pause, rx_pause);
+@@ -306,6 +741,9 @@ static void ppe_port_mac_link_down(struc
+ 	int ret, port = ppe_port->port_id;
+ 	u32 reg;
+ 
++	/* Stop GMIB statistics polling */
++	cancel_delayed_work_sync(&ppe_port->gmib_read);
++
+ 	/* Disable PPE port TX */
+ 	reg = PPE_PORT_BRIDGE_CTRL_ADDR + PPE_PORT_BRIDGE_CTRL_INC * port;
+ 	ret = regmap_update_bits(ppe_dev->regmap, reg,
+@@ -627,6 +1065,27 @@ static int ppe_port_mac_hw_init(struct p
+ 	return ret;
+ }
+ 
++/* PPE port MAC MIB work task initialization */
++static int ppe_port_mac_mib_work_init(struct ppe_port *ppe_port)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	u64 *gstats;
++
++	gstats = devm_kzalloc(ppe_dev->dev,
++			      sizeof(*gstats) * ARRAY_SIZE(gmib_info),
++			      GFP_KERNEL);
++	if (!gstats)
++		return -ENOMEM;
++
++	ppe_port->gmib_stats = gstats;
++
++	spin_lock_init(&ppe_port->gmib_stats_lock);
++	INIT_DELAYED_WORK(&ppe_port->gmib_read,
++			  ppe_port_gmib_stats_poll);
++
++	return 0;
++}
++
+ /**
+  * ppe_port_mac_init() - Initialization of PPE ports for the PPE device
+  * @ppe_dev: PPE device
+@@ -693,6 +1152,12 @@ int ppe_port_mac_init(struct ppe_device
+ 			goto err_port_node;
+ 		}
+ 
++		ret = ppe_port_mac_mib_work_init(&ppe_ports->port[i]);
++		if (ret) {
++			dev_err(ppe_dev->dev, "Failed to initialize MAC MIB work\n");
++			goto err_port_node;
++		}
++
+ 		i++;
+ 	}
+ 
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+@@ -8,6 +8,8 @@
+ 
+ #include <linux/phylink.h>
+ 
++struct rtnl_link_stats64;
++
+ /**
+  * enum ppe_port_clk_rst_type - PPE port clock and reset ID type
+  * @PPE_PORT_CLK_RST_MAC: The clock and reset ID for port MAC
+@@ -44,6 +46,9 @@ enum ppe_mac_type {
+  * @port_id: Port ID
+  * @clks: Port clocks
+  * @rstcs: Port resets
++ * @gmib_read: Delay work task for GMAC MIB statistics polling function
++ * @gmib_stats: GMAC MIB statistics array
++ * @gmib_stats_lock: Lock to protect GMAC MIB statistics
+  */
+ struct ppe_port {
+ 	struct phylink *phylink;
+@@ -56,6 +61,9 @@ struct ppe_port {
+ 	int port_id;
+ 	struct clk *clks[PPE_PORT_CLK_RST_MAX];
+ 	struct reset_control *rstcs[PPE_PORT_CLK_RST_MAX];
++	struct delayed_work gmib_read;
++	u64 *gmib_stats;
++	spinlock_t gmib_stats_lock; /* Protects GMIB stats */
+ };
+ 
+ /**
+@@ -73,4 +81,9 @@ void ppe_port_mac_deinit(struct ppe_devi
+ int ppe_port_phylink_setup(struct ppe_port *ppe_port,
+ 			   struct net_device *netdev);
+ void ppe_port_phylink_destroy(struct ppe_port *ppe_port);
++int ppe_port_get_sset_count(struct ppe_port *ppe_port, int sset);
++void ppe_port_get_strings(struct ppe_port *ppe_port, u32 stringset, u8 *data);
++void ppe_port_get_ethtool_stats(struct ppe_port *ppe_port, u64 *data);
++void ppe_port_get_stats64(struct ppe_port *ppe_port,
++			  struct rtnl_link_stats64 *s);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -606,6 +606,48 @@
+ #define GMAC_MIB_CTRL_MASK			\
+ 	(GMAC_MIB_RD_CLR | GMAC_MIB_RST | GMAC_MIB_EN)
+ 
++/* GMAC MIB counter registers */
++#define GMAC_RXBROAD_ADDR			0x40
++#define GMAC_RXPAUSE_ADDR			0x44
++#define GMAC_RXMULTI_ADDR			0x48
++#define GMAC_RXFCSERR_ADDR			0x4C
++#define GMAC_RXALIGNERR_ADDR			0x50
++#define GMAC_RXRUNT_ADDR			0x54
++#define GMAC_RXFRAG_ADDR			0x58
++#define GMAC_RXJUMBOFCSERR_ADDR			0x5C
++#define GMAC_RXJUMBOALIGNERR_ADDR		0x60
++#define GMAC_RXPKT64_ADDR			0x64
++#define GMAC_RXPKT65TO127_ADDR			0x68
++#define GMAC_RXPKT128TO255_ADDR			0x6C
++#define GMAC_RXPKT256TO511_ADDR			0x70
++#define GMAC_RXPKT512TO1023_ADDR		0x74
++#define GMAC_RXPKT1024TO1518_ADDR		0x78
++#define GMAC_RXPKT1519TOX_ADDR			0x7C
++#define GMAC_RXTOOLONG_ADDR			0x80
++#define GMAC_RXBYTE_G_ADDR			0x84
++#define GMAC_RXBYTE_B_ADDR			0x8C
++#define GMAC_RXUNI_ADDR				0x94
++#define GMAC_TXBROAD_ADDR			0xA0
++#define GMAC_TXPAUSE_ADDR			0xA4
++#define GMAC_TXMULTI_ADDR			0xA8
++#define GMAC_TXUNDERRUN_ADDR			0xAC
++#define GMAC_TXPKT64_ADDR			0xB0
++#define GMAC_TXPKT65TO127_ADDR			0xB4
++#define GMAC_TXPKT128TO255_ADDR			0xB8
++#define GMAC_TXPKT256TO511_ADDR			0xBC
++#define GMAC_TXPKT512TO1023_ADDR		0xC0
++#define GMAC_TXPKT1024TO1518_ADDR		0xC4
++#define GMAC_TXPKT1519TOX_ADDR			0xC8
++#define GMAC_TXBYTE_ADDR			0xCC
++#define GMAC_TXCOLLISIONS_ADDR			0xD4
++#define GMAC_TXABORTCOL_ADDR			0xD8
++#define GMAC_TXMULTICOL_ADDR			0xDC
++#define GMAC_TXSINGLECOL_ADDR			0xE0
++#define GMAC_TXEXCESSIVEDEFER_ADDR		0xE4
++#define GMAC_TXDEFER_ADDR			0xE8
++#define GMAC_TXLATECOL_ADDR			0xEC
++#define GMAC_TXUNI_ADDR				0xF0
++
+ /* XGMAC TX configuration register */
+ #define XGMAC_TX_CONFIG_ADDR			0x0
+ #define XGMAC_SPEED_M				GENMASK(31, 29)
+@@ -668,4 +710,53 @@
+ #define XGMAC_MCF				BIT(3)
+ #define XGMAC_CNTRST				BIT(0)
+ 
++/* XGMAC MIB counter registers */
++#define XGMAC_TXBYTE_GB_ADDR			0x814
++#define XGMAC_TXPKT_GB_ADDR			0x81C
++#define XGMAC_TXBROAD_G_ADDR			0x824
++#define XGMAC_TXMULTI_G_ADDR			0x82C
++#define XGMAC_TXPKT64_GB_ADDR			0x834
++#define XGMAC_TXPKT65TO127_GB_ADDR		0x83C
++#define XGMAC_TXPKT128TO255_GB_ADDR		0x844
++#define XGMAC_TXPKT256TO511_GB_ADDR		0x84C
++#define XGMAC_TXPKT512TO1023_GB_ADDR		0x854
++#define XGMAC_TXPKT1024TOMAX_GB_ADDR		0x85C
++#define XGMAC_TXUNI_GB_ADDR			0x864
++#define XGMAC_TXMULTI_GB_ADDR			0x86C
++#define XGMAC_TXBROAD_GB_ADDR			0x874
++#define XGMAC_TXUNDERFLOW_ERR_ADDR		0x87C
++#define XGMAC_TXBYTE_G_ADDR			0x884
++#define XGMAC_TXPKT_G_ADDR			0x88C
++#define XGMAC_TXPAUSE_ADDR			0x894
++#define XGMAC_TXVLAN_G_ADDR			0x89C
++#define XGMAC_TXLPI_USEC_ADDR			0x8A4
++#define XGMAC_TXLPI_TRAN_ADDR			0x8A8
++#define XGMAC_RXPKT_GB_ADDR			0x900
++#define XGMAC_RXBYTE_GB_ADDR			0x908
++#define XGMAC_RXBYTE_G_ADDR			0x910
++#define XGMAC_RXBROAD_G_ADDR			0x918
++#define XGMAC_RXMULTI_G_ADDR			0x920
++#define XGMAC_RXCRC_ERR_ADDR			0x928
++#define XGMAC_RXRUNT_ERR_ADDR			0x930
++#define XGMAC_RXJABBER_ERR_ADDR			0x934
++#define XGMAC_RXUNDERSIZE_G_ADDR		0x938
++#define XGMAC_RXOVERSIZE_G_ADDR			0x93C
++#define XGMAC_RXPKT64_GB_ADDR			0x940
++#define XGMAC_RXPKT65TO127_GB_ADDR		0x948
++#define XGMAC_RXPKT128TO255_GB_ADDR		0x950
++#define XGMAC_RXPKT256TO511_GB_ADDR		0x958
++#define XGMAC_RXPKT512TO1023_GB_ADDR		0x960
++#define XGMAC_RXPKT1024TOMAX_GB_ADDR		0x968
++#define XGMAC_RXUNI_G_ADDR			0x970
++#define XGMAC_RXLEN_ERR_ADDR			0x978
++#define XGMAC_RXOUTOFRANGE_ADDR			0x980
++#define XGMAC_RXPAUSE_ADDR			0x988
++#define XGMAC_RXFIFOOVERFLOW_ADDR		0x990
++#define XGMAC_RXVLAN_GB_ADDR			0x998
++#define XGMAC_RXWATCHDOG_ERR_ADDR		0x9A0
++#define XGMAC_RXLPI_USEC_ADDR			0x9A4
++#define XGMAC_RXLPI_TRAN_ADDR			0x9A8
++#define XGMAC_RXDISCARD_GB_ADDR			0x9AC
++#define XGMAC_RXDISCARDBYTE_GB_ADDR		0x9B4
++
+ #endif

@@ -1060,7 +1060,7 @@ static struct genl_family switch_fam = {
 };
 
 #ifdef CONFIG_OF
-void
+static void
 of_switch_load_portmap(struct switch_dev *dev)
 {
 	struct device_node *port;

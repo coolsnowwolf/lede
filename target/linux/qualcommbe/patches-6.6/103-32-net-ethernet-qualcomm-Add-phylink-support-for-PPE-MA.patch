@@ -1,0 +1,1039 @@
+From 028ed86f08a4fdf25213af5f5afd63b30fb7b029 Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Thu, 29 Feb 2024 16:59:53 +0800
+Subject: [PATCH 32/50] net: ethernet: qualcomm: Add phylink support for PPE
+ MAC ports
+
+Add MAC initialization and phylink functions for PPE MAC ports.
+
+Change-Id: I39dcba671732392bcfa2e734473fd083989bfbec
+Signed-off-by: Lei Wei <quic_leiwei@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/Kconfig        |   3 +
+ drivers/net/ethernet/qualcomm/ppe/Makefile   |   2 +-
+ drivers/net/ethernet/qualcomm/ppe/ppe.c      |   9 +
+ drivers/net/ethernet/qualcomm/ppe/ppe.h      |   2 +
+ drivers/net/ethernet/qualcomm/ppe/ppe_port.c | 728 +++++++++++++++++++
+ drivers/net/ethernet/qualcomm/ppe/ppe_port.h |  76 ++
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h | 123 ++++
+ 7 files changed, 942 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+
+--- a/drivers/net/ethernet/qualcomm/Kconfig
++++ b/drivers/net/ethernet/qualcomm/Kconfig
+@@ -66,6 +66,9 @@ config QCOM_PPE
+ 	depends on HAS_IOMEM && OF
+ 	depends on COMMON_CLK
+ 	select REGMAP_MMIO
++	select PHYLINK
++	select PCS_QCOM_IPQ_UNIPHY
++	select SFP
+ 	help
+ 	  This driver supports the Qualcomm Technologies, Inc. packet
+ 	  process engine (PPE) available with IPQ SoC. The PPE houses
+--- a/drivers/net/ethernet/qualcomm/ppe/Makefile
++++ b/drivers/net/ethernet/qualcomm/ppe/Makefile
+@@ -4,4 +4,4 @@
+ #
+ 
+ obj-$(CONFIG_QCOM_PPE) += qcom-ppe.o
+-qcom-ppe-objs := ppe.o ppe_config.o ppe_api.o ppe_debugfs.o
++qcom-ppe-objs := ppe.o ppe_config.o ppe_api.o ppe_debugfs.o ppe_port.o
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe.c
+@@ -17,6 +17,7 @@
+ #include "ppe.h"
+ #include "ppe_config.h"
+ #include "ppe_debugfs.h"
++#include "ppe_port.h"
+ 
+ #define PPE_PORT_MAX		8
+ #define PPE_CLK_RATE		353000000
+@@ -207,6 +208,11 @@ static int qcom_ppe_probe(struct platfor
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "PPE HW config failed\n");
+ 
++	ret = ppe_port_mac_init(ppe_dev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "PPE Port MAC initialization failed\n");
++
+ 	ppe_debugfs_setup(ppe_dev);
+ 	platform_set_drvdata(pdev, ppe_dev);
+ 
+@@ -219,6 +225,9 @@ static void qcom_ppe_remove(struct platf
+ 
+ 	ppe_dev = platform_get_drvdata(pdev);
+ 	ppe_debugfs_teardown(ppe_dev);
++	ppe_port_mac_deinit(ppe_dev);
++
++	platform_set_drvdata(pdev, NULL);
+ }
+ 
+ static const struct of_device_id qcom_ppe_of_match[] = {
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe.h
+@@ -20,6 +20,7 @@ struct dentry;
+  * @clk_rate: PPE clock rate.
+  * @num_ports: Number of PPE ports.
+  * @debugfs_root: PPE debug root entry.
++ * @ports: PPE MAC ports.
+  * @num_icc_paths: Number of interconnect paths.
+  * @icc_paths: Interconnect path array.
+  *
+@@ -33,6 +34,7 @@ struct ppe_device {
+ 	unsigned long clk_rate;
+ 	unsigned int num_ports;
+ 	struct dentry *debugfs_root;
++	struct ppe_ports *ports;
+ 	unsigned int num_icc_paths;
+ 	struct icc_bulk_data icc_paths[] __counted_by(num_icc_paths);
+ };
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -0,0 +1,728 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* PPE Port MAC initialization and PPE port MAC functions. */
++
++#include <linux/clk.h>
++#include <linux/of_net.h>
++#include <linux/pcs/pcs-qcom-ipq-uniphy.h>
++#include <linux/phylink.h>
++#include <linux/reset.h>
++#include <linux/regmap.h>
++#include <linux/rtnetlink.h>
++
++#include "ppe.h"
++#include "ppe_port.h"
++#include "ppe_regs.h"
++
++/* PPE MAC max frame size which including 4bytes FCS */
++#define PPE_PORT_MAC_MAX_FRAME_SIZE		0x3000
++
++/* PPE BM port start for PPE MAC ports */
++#define PPE_BM_PORT_MAC_START			7
++
++/* PPE port clock and reset name */
++static const char * const ppe_port_clk_rst_name[] = {
++	[PPE_PORT_CLK_RST_MAC] = "port_mac",
++	[PPE_PORT_CLK_RST_RX] = "port_rx",
++	[PPE_PORT_CLK_RST_TX] = "port_tx",
++};
++
++/* PPE port and MAC reset */
++static int ppe_port_mac_reset(struct ppe_port *ppe_port)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret;
++
++	ret = reset_control_assert(ppe_port->rstcs[PPE_PORT_CLK_RST_MAC]);
++	if (ret)
++		goto error;
++
++	ret = reset_control_assert(ppe_port->rstcs[PPE_PORT_CLK_RST_RX]);
++	if (ret)
++		goto error;
++
++	ret = reset_control_assert(ppe_port->rstcs[PPE_PORT_CLK_RST_TX]);
++	if (ret)
++		goto error;
++
++	/* 150ms delay is required by hardware to reset PPE port and MAC */
++	msleep(150);
++
++	ret = reset_control_deassert(ppe_port->rstcs[PPE_PORT_CLK_RST_MAC]);
++	if (ret)
++		goto error;
++
++	ret = reset_control_deassert(ppe_port->rstcs[PPE_PORT_CLK_RST_RX]);
++	if (ret)
++		goto error;
++
++	ret = reset_control_deassert(ppe_port->rstcs[PPE_PORT_CLK_RST_TX]);
++	if (ret)
++		goto error;
++
++	return ret;
++
++error:
++	dev_err(ppe_dev->dev, "%s: port %d reset fail %d\n",
++		__func__, ppe_port->port_id, ret);
++	return ret;
++}
++
++/* PPE port MAC configuration for phylink */
++static void ppe_port_mac_config(struct phylink_config *config,
++				unsigned int mode,
++				const struct phylink_link_state *state)
++{
++	struct ppe_port *ppe_port = container_of(config, struct ppe_port,
++						 phylink_config);
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int port = ppe_port->port_id;
++	enum ppe_mac_type mac_type;
++	u32 val, mask;
++	int ret;
++
++	switch (state->interface) {
++	case PHY_INTERFACE_MODE_2500BASEX:
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++	case PHY_INTERFACE_MODE_10G_QXGMII:
++		mac_type = PPE_MAC_TYPE_XGMAC;
++		break;
++	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		mac_type = PPE_MAC_TYPE_GMAC;
++		break;
++	default:
++		dev_err(ppe_dev->dev, "%s: Unsupport interface %s\n",
++			__func__, phy_modes(state->interface));
++		return;
++	}
++
++	/* Reset Port MAC for GMAC */
++	if (mac_type == PPE_MAC_TYPE_GMAC) {
++		ret = ppe_port_mac_reset(ppe_port);
++		if (ret)
++			goto err_mac_config;
++	}
++
++	/* Port mux to select GMAC or XGMAC */
++	mask = PPE_PORT_SEL_XGMAC(port);
++	val = mac_type == PPE_MAC_TYPE_GMAC ? 0 : mask;
++	ret = regmap_update_bits(ppe_dev->regmap,
++				 PPE_PORT_MUX_CTRL_ADDR,
++				 mask, val);
++	if (ret)
++		goto err_mac_config;
++
++	ppe_port->mac_type = mac_type;
++
++	return;
++
++err_mac_config:
++	dev_err(ppe_dev->dev, "%s: port %d MAC config fail %d\n",
++		__func__, port, ret);
++}
++
++/* PPE port GMAC link up configuration */
++static int ppe_port_gmac_link_up(struct ppe_port *ppe_port, int speed,
++				 int duplex, bool tx_pause, bool rx_pause)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 reg, val;
++
++	/* Set GMAC speed */
++	switch (speed) {
++	case SPEED_1000:
++		val = GMAC_SPEED_1000;
++		break;
++	case SPEED_100:
++		val = GMAC_SPEED_100;
++		break;
++	case SPEED_10:
++		val = GMAC_SPEED_10;
++		break;
++	default:
++		dev_err(ppe_dev->dev, "%s: Invalid GMAC speed %s\n",
++			__func__, phy_speed_to_str(speed));
++		return -EINVAL;
++	}
++
++	reg = PPE_PORT_GMAC_ADDR(port);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_SPEED_ADDR,
++				 GMAC_SPEED_M, val);
++	if (ret)
++		return ret;
++
++	/* Set duplex, flow control and enable GMAC */
++	val = GMAC_TRXEN;
++	if (duplex == DUPLEX_FULL)
++		val |= GMAC_DUPLEX_FULL;
++	if (tx_pause)
++		val |= GMAC_TXFCEN;
++	if (rx_pause)
++		val |= GMAC_RXFCEN;
++
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_ENABLE_ADDR,
++				 GMAC_ENABLE_ALL, val);
++
++	return ret;
++}
++
++/* PPE port XGMAC link up configuration */
++static int ppe_port_xgmac_link_up(struct ppe_port *ppe_port,
++				  phy_interface_t interface,
++				  int speed, int duplex,
++				  bool tx_pause, bool rx_pause)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 reg, val;
++
++	/* Set XGMAC TX speed and enable TX */
++	switch (speed) {
++	case SPEED_10000:
++		if (interface == PHY_INTERFACE_MODE_USXGMII)
++			val = XGMAC_SPEED_10000_USXGMII;
++		else
++			val = XGMAC_SPEED_10000;
++		break;
++	case SPEED_5000:
++		val = XGMAC_SPEED_5000;
++		break;
++	case SPEED_2500:
++		if (interface == PHY_INTERFACE_MODE_USXGMII ||
++		    interface == PHY_INTERFACE_MODE_10G_QXGMII)
++			val = XGMAC_SPEED_2500_USXGMII;
++		else
++			val = XGMAC_SPEED_2500;
++		break;
++	case SPEED_1000:
++		val = XGMAC_SPEED_1000;
++		break;
++	case SPEED_100:
++		val = XGMAC_SPEED_100;
++		break;
++	case SPEED_10:
++		val = XGMAC_SPEED_10;
++		break;
++	default:
++		dev_err(ppe_dev->dev, "%s: Invalid XGMAC speed %s\n",
++			__func__, phy_speed_to_str(speed));
++		return -EINVAL;
++	}
++
++	reg = PPE_PORT_XGMAC_ADDR(port);
++	val |= XGMAC_TXEN;
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_TX_CONFIG_ADDR,
++				 XGMAC_SPEED_M | XGMAC_TXEN, val);
++	if (ret)
++		return ret;
++
++	/* Set XGMAC TX flow control */
++	val = FIELD_PREP(XGMAC_PAUSE_TIME_M, FIELD_MAX(XGMAC_PAUSE_TIME_M));
++	val |= tx_pause ? XGMAC_TXFCEN : 0;
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_TX_FLOW_CTRL_ADDR,
++				 XGMAC_PAUSE_TIME_M | XGMAC_TXFCEN, val);
++	if (ret)
++		return ret;
++
++	/* Set XGMAC RX flow control */
++	val = rx_pause ? XGMAC_RXFCEN : 0;
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_RX_FLOW_CTRL_ADDR,
++				 XGMAC_RXFCEN, val);
++	if (ret)
++		return ret;
++
++	/* Enable XGMAC RX*/
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_RX_CONFIG_ADDR,
++				 XGMAC_RXEN, XGMAC_RXEN);
++
++	return ret;
++}
++
++/* PPE port MAC link up configuration for phylink */
++static void ppe_port_mac_link_up(struct phylink_config *config,
++				 struct phy_device *phy,
++				 unsigned int mode,
++				 phy_interface_t interface,
++				 int speed, int duplex,
++				 bool tx_pause, bool rx_pause)
++{
++	struct ppe_port *ppe_port = container_of(config, struct ppe_port,
++						 phylink_config);
++	enum ppe_mac_type mac_type = ppe_port->mac_type;
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 reg, val;
++
++	if (mac_type == PPE_MAC_TYPE_GMAC)
++		ret = ppe_port_gmac_link_up(ppe_port,
++					    speed, duplex, tx_pause, rx_pause);
++	else
++		ret = ppe_port_xgmac_link_up(ppe_port, interface,
++					     speed, duplex, tx_pause, rx_pause);
++	if (ret)
++		goto err_port_mac_link_up;
++
++	/* Set PPE port BM flow control */
++	reg = PPE_BM_PORT_FC_MODE_ADDR +
++		PPE_BM_PORT_FC_MODE_INC * (port + PPE_BM_PORT_MAC_START);
++	val = tx_pause ? PPE_BM_PORT_FC_MODE_EN : 0;
++	ret = regmap_update_bits(ppe_dev->regmap, reg,
++				 PPE_BM_PORT_FC_MODE_EN, val);
++	if (ret)
++		goto err_port_mac_link_up;
++
++	/* Enable PPE port TX */
++	reg = PPE_PORT_BRIDGE_CTRL_ADDR + PPE_PORT_BRIDGE_CTRL_INC * port;
++	ret = regmap_update_bits(ppe_dev->regmap, reg,
++				 PPE_PORT_BRIDGE_TXMAC_EN,
++				 PPE_PORT_BRIDGE_TXMAC_EN);
++	if (ret)
++		goto err_port_mac_link_up;
++
++	return;
++
++err_port_mac_link_up:
++	dev_err(ppe_dev->dev, "%s: port %d link up fail %d\n",
++		__func__, port, ret);
++}
++
++/* PPE port MAC link down configuration for phylink */
++static void ppe_port_mac_link_down(struct phylink_config *config,
++				   unsigned int mode,
++				   phy_interface_t interface)
++{
++	struct ppe_port *ppe_port = container_of(config, struct ppe_port,
++						 phylink_config);
++	enum ppe_mac_type mac_type = ppe_port->mac_type;
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 reg;
++
++	/* Disable PPE port TX */
++	reg = PPE_PORT_BRIDGE_CTRL_ADDR + PPE_PORT_BRIDGE_CTRL_INC * port;
++	ret = regmap_update_bits(ppe_dev->regmap, reg,
++				 PPE_PORT_BRIDGE_TXMAC_EN, 0);
++	if (ret)
++		goto err_port_mac_link_down;
++
++	/* Disable PPE MAC */
++	if (mac_type == PPE_MAC_TYPE_GMAC) {
++		reg = PPE_PORT_GMAC_ADDR(port) + GMAC_ENABLE_ADDR;
++		ret = regmap_update_bits(ppe_dev->regmap, reg, GMAC_TRXEN, 0);
++		if (ret)
++			goto err_port_mac_link_down;
++	} else {
++		reg = PPE_PORT_XGMAC_ADDR(port);
++		ret = regmap_update_bits(ppe_dev->regmap,
++					 reg + XGMAC_RX_CONFIG_ADDR,
++					 XGMAC_RXEN, 0);
++		if (ret)
++			goto err_port_mac_link_down;
++
++		ret = regmap_update_bits(ppe_dev->regmap,
++					 reg + XGMAC_TX_CONFIG_ADDR,
++					 XGMAC_TXEN, 0);
++		if (ret)
++			goto err_port_mac_link_down;
++	}
++
++	return;
++
++err_port_mac_link_down:
++	dev_err(ppe_dev->dev, "%s: port %d link down fail %d\n",
++		__func__, port, ret);
++}
++
++/* PPE port MAC PCS selection for phylink */
++static
++struct phylink_pcs *ppe_port_mac_select_pcs(struct phylink_config *config,
++					    phy_interface_t interface)
++{
++	struct ppe_port *ppe_port = container_of(config, struct ppe_port,
++						 phylink_config);
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 val;
++
++	/* PPE port5 can connects with PCS0 or PCS1. In PSGMII
++	 * mode, it selects PCS0; otherwise, it selects PCS1.
++	 */
++	if (port == 5) {
++		val = interface == PHY_INTERFACE_MODE_PSGMII ?
++			0 : PPE_PORT5_SEL_PCS1;
++		ret = regmap_update_bits(ppe_dev->regmap,
++					 PPE_PORT_MUX_CTRL_ADDR,
++					 PPE_PORT5_SEL_PCS1, val);
++		if (ret) {
++			dev_err(ppe_dev->dev, "%s: port5 select PCS fail %d\n",
++				__func__, ret);
++			return NULL;
++		}
++	}
++
++	return ppe_port->pcs;
++}
++
++static const struct phylink_mac_ops ppe_phylink_ops = {
++	.mac_config = ppe_port_mac_config,
++	.mac_link_up = ppe_port_mac_link_up,
++	.mac_link_down = ppe_port_mac_link_down,
++	.mac_select_pcs = ppe_port_mac_select_pcs,
++};
++
++/**
++ * ppe_port_phylink_setup() - Set phylink instance for the given PPE port
++ * @ppe_port: PPE port
++ * @netdev: Netdevice
++ *
++ * Description: Wrapper function to help setup phylink for the PPE port
++ * specified by @ppe_port and associated with the net device @netdev.
++ *
++ * Return: 0 upon success or a negative error upon failure.
++ */
++int ppe_port_phylink_setup(struct ppe_port *ppe_port, struct net_device *netdev)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	struct device_node *pcs_node;
++	int ret;
++
++	/* Create PCS */
++	pcs_node = of_parse_phandle(ppe_port->np, "pcs-handle", 0);
++	if (!pcs_node)
++		return -ENODEV;
++
++	ppe_port->pcs = ipq_unipcs_create(pcs_node);
++	of_node_put(pcs_node);
++	if (IS_ERR(ppe_port->pcs)) {
++		dev_err(ppe_dev->dev, "%s: port %d failed to create PCS\n",
++			__func__, ppe_port->port_id);
++		return PTR_ERR(ppe_port->pcs);
++	}
++
++	/* Port phylink capability */
++	ppe_port->phylink_config.dev = &netdev->dev;
++	ppe_port->phylink_config.type = PHYLINK_NETDEV;
++	ppe_port->phylink_config.mac_capabilities = MAC_ASYM_PAUSE |
++		MAC_SYM_PAUSE | MAC_10 | MAC_100 | MAC_1000 |
++		MAC_2500FD | MAC_5000FD | MAC_10000FD;
++	__set_bit(PHY_INTERFACE_MODE_QSGMII,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_PSGMII,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_SGMII,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_1000BASEX,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_2500BASEX,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_USXGMII,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_10GBASER,
++		  ppe_port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_10G_QXGMII,
++		  ppe_port->phylink_config.supported_interfaces);
++
++	/* Create phylink */
++	ppe_port->phylink = phylink_create(&ppe_port->phylink_config,
++					   of_fwnode_handle(ppe_port->np),
++					   ppe_port->interface,
++					   &ppe_phylink_ops);
++	if (IS_ERR(ppe_port->phylink)) {
++		dev_err(ppe_dev->dev, "%s: port %d failed to create phylink\n",
++			__func__, ppe_port->port_id);
++		ret = PTR_ERR(ppe_port->phylink);
++		goto err_free_pcs;
++	}
++
++	/* Connect phylink */
++	ret = phylink_of_phy_connect(ppe_port->phylink, ppe_port->np, 0);
++	if (ret) {
++		dev_err(ppe_dev->dev, "%s: port %d failed to connect phylink\n",
++			__func__, ppe_port->port_id);
++		goto err_free_phylink;
++	}
++
++	return 0;
++
++err_free_phylink:
++	phylink_destroy(ppe_port->phylink);
++	ppe_port->phylink = NULL;
++err_free_pcs:
++	ipq_unipcs_destroy(ppe_port->pcs);
++	ppe_port->pcs = NULL;
++	return ret;
++}
++
++/**
++ * ppe_port_phylink_destroy() - Destroy phylink instance for the given PPE port
++ * @ppe_port: PPE port
++ *
++ * Description: Wrapper function to help destroy phylink for the PPE port
++ * specified by @ppe_port.
++ */
++void ppe_port_phylink_destroy(struct ppe_port *ppe_port)
++{
++	/* Destroy phylink */
++	if (ppe_port->phylink) {
++		rtnl_lock();
++		phylink_disconnect_phy(ppe_port->phylink);
++		rtnl_unlock();
++		phylink_destroy(ppe_port->phylink);
++		ppe_port->phylink = NULL;
++	}
++
++	/* Destroy PCS */
++	if (ppe_port->pcs) {
++		ipq_unipcs_destroy(ppe_port->pcs);
++		ppe_port->pcs = NULL;
++	}
++}
++
++/* PPE port clock initialization */
++static int ppe_port_clock_init(struct ppe_port *ppe_port)
++{
++	struct device_node *port_node = ppe_port->np;
++	struct reset_control *rstc;
++	struct clk *clk;
++	int i, j, ret;
++
++	for (i = 0; i < PPE_PORT_CLK_RST_MAX; i++) {
++		/* Get PPE port resets which will be used to reset PPE
++		 * port and MAC.
++		 */
++		rstc = of_reset_control_get_exclusive(port_node,
++						      ppe_port_clk_rst_name[i]);
++		if (IS_ERR(rstc)) {
++			ret =  PTR_ERR(rstc);
++			goto err_rst;
++		}
++
++		clk = of_clk_get_by_name(port_node, ppe_port_clk_rst_name[i]);
++		if (IS_ERR(clk)) {
++			ret = PTR_ERR(clk);
++			goto err_clk_get;
++		}
++
++		ret = clk_prepare_enable(clk);
++		if (ret)
++			goto err_clk_en;
++
++		ppe_port->clks[i] = clk;
++		ppe_port->rstcs[i] = rstc;
++	}
++
++	return 0;
++
++err_clk_en:
++	clk_put(clk);
++err_clk_get:
++	reset_control_put(rstc);
++err_rst:
++	for (j = 0; j < i; j++) {
++		clk_disable_unprepare(ppe_port->clks[j]);
++		clk_put(ppe_port->clks[j]);
++		reset_control_put(ppe_port->rstcs[j]);
++	}
++
++	return ret;
++}
++
++/* PPE port clock deinitialization */
++static void ppe_port_clock_deinit(struct ppe_port *ppe_port)
++{
++	int i;
++
++	for (i = 0; i < PPE_PORT_CLK_RST_MAX; i++) {
++		clk_disable_unprepare(ppe_port->clks[i]);
++		clk_put(ppe_port->clks[i]);
++		reset_control_put(ppe_port->rstcs[i]);
++	}
++}
++
++/* PPE port MAC hardware init configuration */
++static int ppe_port_mac_hw_init(struct ppe_port *ppe_port)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int ret, port = ppe_port->port_id;
++	u32 reg, val;
++
++	/* GMAC RX and TX are initialized as disabled */
++	reg = PPE_PORT_GMAC_ADDR(port);
++	ret = regmap_update_bits(ppe_dev->regmap,
++				 reg + GMAC_ENABLE_ADDR, GMAC_TRXEN, 0);
++	if (ret)
++		return ret;
++
++	/* GMAC max frame size configuration */
++	val = FIELD_PREP(GMAC_JUMBO_SIZE_M, PPE_PORT_MAC_MAX_FRAME_SIZE);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_JUMBO_SIZE_ADDR,
++				 GMAC_JUMBO_SIZE_M, val);
++	if (ret)
++		return ret;
++
++	val = FIELD_PREP(GMAC_MAXFRAME_SIZE_M, PPE_PORT_MAC_MAX_FRAME_SIZE);
++	val |= FIELD_PREP(GMAC_TX_THD_M, 0x1);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_CTRL_ADDR,
++				 GMAC_CTRL_MASK, val);
++	if (ret)
++		return ret;
++
++	val = FIELD_PREP(GMAC_HIGH_IPG_M, 0xc);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_DBG_CTRL_ADDR,
++				 GMAC_HIGH_IPG_M, val);
++	if (ret)
++		return ret;
++
++	/* Enable and reset GMAC MIB counters and set as read clear
++	 * mode, the GMAC MIB counters will be cleared after reading.
++	 */
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_MIB_CTRL_ADDR,
++				 GMAC_MIB_CTRL_MASK, GMAC_MIB_CTRL_MASK);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_MIB_CTRL_ADDR,
++				 GMAC_MIB_RST, 0);
++	if (ret)
++		return ret;
++
++	/* XGMAC RX and TX disabled and max frame size configuration */
++	reg = PPE_PORT_XGMAC_ADDR(port);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_TX_CONFIG_ADDR,
++				 XGMAC_TXEN | XGMAC_JD, XGMAC_JD);
++	if (ret)
++		return ret;
++
++	val = FIELD_PREP(XGMAC_GPSL_M, PPE_PORT_MAC_MAX_FRAME_SIZE);
++	val |= XGMAC_GPSLEN;
++	val |= XGMAC_CST;
++	val |= XGMAC_ACS;
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_RX_CONFIG_ADDR,
++				 XGMAC_RX_CONFIG_MASK, val);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_WD_TIMEOUT_ADDR,
++				 XGMAC_WD_TIMEOUT_MASK, XGMAC_WD_TIMEOUT_VAL);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_PKT_FILTER_ADDR,
++				 XGMAC_PKT_FILTER_MASK, XGMAC_PKT_FILTER_VAL);
++	if (ret)
++		return ret;
++
++	/* Enable and reset XGMAC MIB counters */
++	ret = regmap_update_bits(ppe_dev->regmap, reg + XGMAC_MMC_CTRL_ADDR,
++				 XGMAC_MCF | XGMAC_CNTRST, XGMAC_CNTRST);
++
++	return ret;
++}
++
++/**
++ * ppe_port_mac_init() - Initialization of PPE ports for the PPE device
++ * @ppe_dev: PPE device
++ *
++ * Description: Initialize the PPE MAC ports on the PPE device specified
++ * by @ppe_dev.
++ *
++ * Return: 0 upon success or a negative error upon failure.
++ */
++int ppe_port_mac_init(struct ppe_device *ppe_dev)
++{
++	struct device_node *ports_node, *port_node;
++	int port, num, ret, j, i = 0;
++	struct ppe_ports *ppe_ports;
++	phy_interface_t phy_mode;
++
++	ports_node = of_get_child_by_name(ppe_dev->dev->of_node,
++					  "ethernet-ports");
++	if (!ports_node) {
++		dev_err(ppe_dev->dev, "Failed to get ports node\n");
++		return -ENODEV;
++	}
++
++	num = of_get_available_child_count(ports_node);
++
++	ppe_ports = devm_kzalloc(ppe_dev->dev,
++				 struct_size(ppe_ports, port, num),
++				 GFP_KERNEL);
++	if (!ppe_ports) {
++		ret = -ENOMEM;
++		goto err_ports_node;
++	}
++
++	ppe_dev->ports = ppe_ports;
++	ppe_ports->num = num;
++
++	for_each_available_child_of_node(ports_node, port_node) {
++		ret = of_property_read_u32(port_node, "reg", &port);
++		if (ret) {
++			dev_err(ppe_dev->dev, "Failed to get port id\n");
++			goto err_port_node;
++		}
++
++		ret = of_get_phy_mode(port_node, &phy_mode);
++		if (ret) {
++			dev_err(ppe_dev->dev, "Failed to get phy mode\n");
++			goto err_port_node;
++		}
++
++		ppe_ports->port[i].ppe_dev = ppe_dev;
++		ppe_ports->port[i].port_id = port;
++		ppe_ports->port[i].np = port_node;
++		ppe_ports->port[i].interface = phy_mode;
++
++		ret = ppe_port_clock_init(&ppe_ports->port[i]);
++		if (ret) {
++			dev_err(ppe_dev->dev, "Failed to initialize port clocks\n");
++			goto err_port_clk;
++		}
++
++		ret = ppe_port_mac_hw_init(&ppe_ports->port[i]);
++		if (ret) {
++			dev_err(ppe_dev->dev, "Failed to initialize MAC hardware\n");
++			goto err_port_node;
++		}
++
++		i++;
++	}
++
++	of_node_put(ports_node);
++	return 0;
++
++err_port_clk:
++	for (j = 0; j < i; j++)
++		ppe_port_clock_deinit(&ppe_ports->port[j]);
++err_port_node:
++	of_node_put(port_node);
++err_ports_node:
++	of_node_put(ports_node);
++	return ret;
++}
++
++/**
++ * ppe_port_mac_deinit() - Deinitialization of PPE ports for the PPE device
++ * @ppe_dev: PPE device
++ *
++ * Description: Deinitialize the PPE MAC ports on the PPE device specified
++ * by @ppe_dev.
++ */
++void ppe_port_mac_deinit(struct ppe_device *ppe_dev)
++{
++	struct ppe_port *ppe_port;
++	int i;
++
++	for (i = 0; i < ppe_dev->ports->num; i++) {
++		ppe_port = &ppe_dev->ports->port[i];
++		ppe_port_clock_deinit(ppe_port);
++	}
++}
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+@@ -0,0 +1,76 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ *
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef __PPE_PORT_H__
++#define __PPE_PORT_H__
++
++#include <linux/phylink.h>
++
++/**
++ * enum ppe_port_clk_rst_type - PPE port clock and reset ID type
++ * @PPE_PORT_CLK_RST_MAC: The clock and reset ID for port MAC
++ * @PPE_PORT_CLK_RST_RX: The clock and reset ID for port receive path
++ * @PPE_PORT_CLK_RST_TX: The clock and reset for port transmit path
++ * @PPE_PORT_CLK_RST_MAX: The maximum of port clock and reset
++ */
++enum ppe_port_clk_rst_type {
++	PPE_PORT_CLK_RST_MAC,
++	PPE_PORT_CLK_RST_RX,
++	PPE_PORT_CLK_RST_TX,
++	PPE_PORT_CLK_RST_MAX,
++};
++
++/**
++ * enum ppe_mac_type - PPE MAC type
++ * @PPE_MAC_TYPE_GMAC: GMAC type
++ * @PPE_MAC_TYPE_XGMAC: XGMAC type
++ */
++enum ppe_mac_type {
++	PPE_MAC_TYPE_GMAC,
++	PPE_MAC_TYPE_XGMAC,
++};
++
++/**
++ * struct ppe_port - Private data for each PPE port
++ * @phylink: Linux phylink instance
++ * @phylink_config: Linux phylink configurations
++ * @pcs: Linux phylink PCS instance
++ * @np: Port device tree node
++ * @ppe_dev: Back pointer to PPE device private data
++ * @interface: Port interface mode
++ * @mac_type: Port MAC type, GMAC or XGMAC
++ * @port_id: Port ID
++ * @clks: Port clocks
++ * @rstcs: Port resets
++ */
++struct ppe_port {
++	struct phylink *phylink;
++	struct phylink_config phylink_config;
++	struct phylink_pcs *pcs;
++	struct device_node *np;
++	struct ppe_device *ppe_dev;
++	phy_interface_t interface;
++	enum ppe_mac_type mac_type;
++	int port_id;
++	struct clk *clks[PPE_PORT_CLK_RST_MAX];
++	struct reset_control *rstcs[PPE_PORT_CLK_RST_MAX];
++};
++
++/**
++ * struct ppe_ports - Array of PPE ports
++ * @num: Number of PPE ports
++ * @port: Each PPE port private data
++ */
++struct ppe_ports {
++	unsigned int num;
++	struct ppe_port port[] __counted_by(num);
++};
++
++int ppe_port_mac_init(struct ppe_device *ppe_dev);
++void ppe_port_mac_deinit(struct ppe_device *ppe_dev);
++int ppe_port_phylink_setup(struct ppe_port *ppe_port,
++			   struct net_device *netdev);
++void ppe_port_phylink_destroy(struct ppe_port *ppe_port);
++#endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -7,6 +7,17 @@
+ #ifndef __PPE_REGS_H__
+ #define __PPE_REGS_H__
+ 
++/* PPE port mux select control register */
++#define PPE_PORT_MUX_CTRL_ADDR			0x10
++#define PPE_PORT6_SEL_XGMAC			BIT(13)
++#define PPE_PORT5_SEL_XGMAC			BIT(12)
++#define PPE_PORT4_SEL_XGMAC			BIT(11)
++#define PPE_PORT3_SEL_XGMAC			BIT(10)
++#define PPE_PORT2_SEL_XGMAC			BIT(9)
++#define PPE_PORT1_SEL_XGMAC			BIT(8)
++#define PPE_PORT5_SEL_PCS1			BIT(4)
++#define PPE_PORT_SEL_XGMAC(x)			(BIT(8) << ((x) - 1))
++
+ /* There are 15 BM ports and 4 BM groups supported by PPE,
+  * BM port (0-7) is matched to EDMA port 0, BM port (8-13) is matched
+  * to PPE physical port 1-6, BM port 14 is matched to EIP.
+@@ -545,4 +556,116 @@
+ #define PPE_ENQ_OPR_TBL_INC			0x10
+ #define PPE_ENQ_OPR_TBL_ENQ_DISABLE		BIT(0)
+ 
++/* PPE GMAC and XGMAC register base address */
++#define PPE_PORT_GMAC_ADDR(x)			(0x001000 + ((x) - 1) * 0x200)
++#define PPE_PORT_XGMAC_ADDR(x)			(0x500000 + ((x) - 1) * 0x4000)
++
++/* GMAC enable register */
++#define GMAC_ENABLE_ADDR			0x0
++#define GMAC_TXFCEN				BIT(6)
++#define GMAC_RXFCEN				BIT(5)
++#define GMAC_DUPLEX_FULL			BIT(4)
++#define GMAC_TXEN				BIT(1)
++#define GMAC_RXEN				BIT(0)
++
++#define GMAC_TRXEN				\
++	(GMAC_TXEN | GMAC_RXEN)
++#define GMAC_ENABLE_ALL				\
++	(GMAC_TXFCEN | GMAC_RXFCEN | GMAC_DUPLEX_FULL | GMAC_TXEN | GMAC_RXEN)
++
++/* GMAC speed register */
++#define GMAC_SPEED_ADDR				0x4
++#define GMAC_SPEED_M				GENMASK(1, 0)
++#define GMAC_SPEED_10				0
++#define GMAC_SPEED_100				1
++#define GMAC_SPEED_1000				2
++
++/* GMAC control register */
++#define GMAC_CTRL_ADDR				0x18
++#define GMAC_TX_THD_M				GENMASK(27, 24)
++#define GMAC_MAXFRAME_SIZE_M			GENMASK(21, 8)
++#define GMAC_CRS_SEL				BIT(6)
++
++#define GMAC_CTRL_MASK				\
++	(GMAC_TX_THD_M | GMAC_MAXFRAME_SIZE_M | GMAC_CRS_SEL)
++
++/* GMAC debug control register */
++#define GMAC_DBG_CTRL_ADDR			0x1c
++#define GMAC_HIGH_IPG_M				GENMASK(15, 8)
++
++/* GMAC jumbo size register */
++#define GMAC_JUMBO_SIZE_ADDR			0x30
++#define GMAC_JUMBO_SIZE_M			GENMASK(13, 0)
++
++/* GMAC MIB control register */
++#define GMAC_MIB_CTRL_ADDR			0x34
++#define GMAC_MIB_RD_CLR				BIT(2)
++#define GMAC_MIB_RST				BIT(1)
++#define GMAC_MIB_EN				BIT(0)
++
++#define GMAC_MIB_CTRL_MASK			\
++	(GMAC_MIB_RD_CLR | GMAC_MIB_RST | GMAC_MIB_EN)
++
++/* XGMAC TX configuration register */
++#define XGMAC_TX_CONFIG_ADDR			0x0
++#define XGMAC_SPEED_M				GENMASK(31, 29)
++#define XGMAC_SPEED_10000_USXGMII		FIELD_PREP(XGMAC_SPEED_M, 4)
++#define XGMAC_SPEED_10000			FIELD_PREP(XGMAC_SPEED_M, 0)
++#define XGMAC_SPEED_5000			FIELD_PREP(XGMAC_SPEED_M, 5)
++#define XGMAC_SPEED_2500_USXGMII		FIELD_PREP(XGMAC_SPEED_M, 6)
++#define XGMAC_SPEED_2500			FIELD_PREP(XGMAC_SPEED_M, 2)
++#define XGMAC_SPEED_1000			FIELD_PREP(XGMAC_SPEED_M, 3)
++#define XGMAC_SPEED_100				XGMAC_SPEED_1000
++#define XGMAC_SPEED_10				XGMAC_SPEED_1000
++#define XGMAC_JD				BIT(16)
++#define XGMAC_TXEN				BIT(0)
++
++/* XGMAC RX configuration register */
++#define XGMAC_RX_CONFIG_ADDR			0x4
++#define XGMAC_GPSL_M				GENMASK(29, 16)
++#define XGMAC_WD				BIT(7)
++#define XGMAC_GPSLEN				BIT(6)
++#define XGMAC_CST				BIT(2)
++#define XGMAC_ACS				BIT(1)
++#define XGMAC_RXEN				BIT(0)
++
++#define XGMAC_RX_CONFIG_MASK			\
++	(XGMAC_GPSL_M | XGMAC_WD | XGMAC_GPSLEN | XGMAC_CST | \
++	 XGMAC_ACS | XGMAC_RXEN)
++
++/* XGMAC packet filter register */
++#define XGMAC_PKT_FILTER_ADDR			0x8
++#define XGMAC_RA				BIT(31)
++#define XGMAC_PCF_M				GENMASK(7, 6)
++#define XGMAC_PR				BIT(0)
++
++#define XGMAC_PKT_FILTER_MASK			\
++	(XGMAC_RA | XGMAC_PCF_M | XGMAC_PR)
++#define XGMAC_PKT_FILTER_VAL			\
++	(XGMAC_RA | XGMAC_PR | FIELD_PREP(XGMAC_PCF_M, 0x2))
++
++/* XGMAC watchdog timeout register */
++#define XGMAC_WD_TIMEOUT_ADDR			0xc
++#define XGMAC_PWE				BIT(8)
++#define XGMAC_WTO_M				GENMASK(3, 0)
++
++#define XGMAC_WD_TIMEOUT_MASK			\
++	(XGMAC_PWE | XGMAC_WTO_M)
++#define XGMAC_WD_TIMEOUT_VAL			\
++	(XGMAC_PWE | FIELD_PREP(XGMAC_WTO_M, 0xb))
++
++/* XGMAC TX flow control register */
++#define XGMAC_TX_FLOW_CTRL_ADDR			0x70
++#define XGMAC_PAUSE_TIME_M			GENMASK(31, 16)
++#define XGMAC_TXFCEN				BIT(1)
++
++/* XGMAC RX flow control register */
++#define XGMAC_RX_FLOW_CTRL_ADDR			0x90
++#define XGMAC_RXFCEN				BIT(0)
++
++/* XGMAC management counters control register */
++#define XGMAC_MMC_CTRL_ADDR			0x800
++#define XGMAC_MCF				BIT(3)
++#define XGMAC_CNTRST				BIT(0)
++
+ #endif

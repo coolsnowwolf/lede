@@ -1,0 +1,286 @@
+From c9ad8286ca39c2545f6a6851a8ede8488a9263f3 Mon Sep 17 00:00:00 2001
+From: Pavithra R <quic_pavir@quicinc.com>
+Date: Tue, 11 Jun 2024 00:00:46 +0530
+Subject: [PATCH 44/50] net: ethernet: qualcomm: Add module parameters for
+ driver tunings
+
+Add module params and corresponding functionality for Tx/Rx
+mitigation timer/packet count, napi budget and tx requeue stop.
+
+Change-Id: I1717559c931bba4f355ee06ab89f289818400ca2
+Signed-off-by: Pavithra R <quic_pavir@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/edma.c      | 35 +++++++++++++++++++
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.c   | 29 +++++++++++++--
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.h   | 21 +++++++++++
+ .../net/ethernet/qualcomm/ppe/edma_cfg_tx.c   | 29 +++++++++++++--
+ .../net/ethernet/qualcomm/ppe/edma_cfg_tx.h   | 16 +++++++++
+ drivers/net/ethernet/qualcomm/ppe/edma_rx.h   |  4 +++
+ drivers/net/ethernet/qualcomm/ppe/edma_tx.h   |  4 +++
+ 7 files changed, 134 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
+@@ -38,6 +38,38 @@ static int rx_buff_size;
+ module_param(rx_buff_size, int, 0640);
+ MODULE_PARM_DESC(rx_buff_size, "Rx Buffer size for Jumbo MRU value (default:0)");
+ 
++int edma_rx_napi_budget = EDMA_RX_NAPI_WORK_DEF;
++module_param(edma_rx_napi_budget, int, 0444);
++MODULE_PARM_DESC(edma_rx_napi_budget, "Rx NAPI budget (default:128, min:16, max:512)");
++
++int edma_tx_napi_budget = EDMA_TX_NAPI_WORK_DEF;
++module_param(edma_tx_napi_budget, int, 0444);
++MODULE_PARM_DESC(edma_tx_napi_budget, "Tx NAPI budget (default:512 for ipq95xx, min:16, max:512)");
++
++int edma_rx_mitigation_pkt_cnt = EDMA_RX_MITIGATION_PKT_CNT_DEF;
++module_param(edma_rx_mitigation_pkt_cnt, int, 0444);
++MODULE_PARM_DESC(edma_rx_mitigation_pkt_cnt,
++		 "Rx mitigation packet count value (default:16, min:0, max: 256)");
++
++s32 edma_rx_mitigation_timer = EDMA_RX_MITIGATION_TIMER_DEF;
++module_param(edma_rx_mitigation_timer, int, 0444);
++MODULE_PARM_DESC(edma_dp_rx_mitigation_timer,
++		 "Rx mitigation timer value in microseconds (default:25, min:0, max: 1000)");
++
++int edma_tx_mitigation_timer = EDMA_TX_MITIGATION_TIMER_DEF;
++module_param(edma_tx_mitigation_timer, int, 0444);
++MODULE_PARM_DESC(edma_tx_mitigation_timer,
++		 "Tx mitigation timer value in microseconds (default:250, min:0, max: 1000)");
++
++int edma_tx_mitigation_pkt_cnt = EDMA_TX_MITIGATION_PKT_CNT_DEF;
++module_param(edma_tx_mitigation_pkt_cnt, int, 0444);
++MODULE_PARM_DESC(edma_tx_mitigation_pkt_cnt,
++		 "Tx mitigation packet count value (default:16, min:0, max: 256)");
++
++static int tx_requeue_stop;
++module_param(tx_requeue_stop, int, 0640);
++MODULE_PARM_DESC(tx_requeue_stop, "Disable Tx requeue function (default:0)");
++
+ /* Priority to multi-queue mapping. */
+ static u8 edma_pri_map[PPE_QUEUE_INTER_PRI_NUM] = {
+ 	0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+@@ -828,7 +860,10 @@ int edma_setup(struct ppe_device *ppe_de
+ 	edma_ctx->hw_info = &ipq9574_hw_info;
+ 	edma_ctx->ppe_dev = ppe_dev;
+ 	edma_ctx->rx_buf_size = rx_buff_size;
++
+ 	edma_ctx->tx_requeue_stop = false;
++	if (tx_requeue_stop != 0)
++		edma_ctx->tx_requeue_stop = true;
+ 
+ 	/* Configure the EDMA common clocks. */
+ 	ret = edma_clock_init();
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -166,6 +166,24 @@ static void edma_cfg_rx_desc_ring_config
+ 	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_RING_SIZE(rxdesc_ring->ring_id);
+ 	regmap_write(regmap, reg, data);
+ 
++	/* Validate mitigation timer value */
++	if (edma_rx_mitigation_timer < EDMA_RX_MITIGATION_TIMER_MIN ||
++	    edma_rx_mitigation_timer > EDMA_RX_MITIGATION_TIMER_MAX) {
++		pr_err("Invalid Rx mitigation timer configured:%d for ring:%d. Using the default timer value:%d\n",
++		       edma_rx_mitigation_timer, rxdesc_ring->ring_id,
++			EDMA_RX_MITIGATION_TIMER_DEF);
++		edma_rx_mitigation_timer = EDMA_RX_MITIGATION_TIMER_DEF;
++	}
++
++	/* Validate mitigation packet count value */
++	if (edma_rx_mitigation_pkt_cnt < EDMA_RX_MITIGATION_PKT_CNT_MIN ||
++	    edma_rx_mitigation_pkt_cnt > EDMA_RX_MITIGATION_PKT_CNT_MAX) {
++		pr_err("Invalid Rx mitigation packet count configured:%d for ring:%d. Using the default packet counter value:%d\n",
++		       edma_rx_mitigation_timer, rxdesc_ring->ring_id,
++			EDMA_RX_MITIGATION_PKT_CNT_DEF);
++		edma_rx_mitigation_pkt_cnt = EDMA_RX_MITIGATION_PKT_CNT_DEF;
++	}
++
+ 	/* Configure the Mitigation timer */
+ 	data = EDMA_MICROSEC_TO_TIMER_UNIT(EDMA_RX_MITIGATION_TIMER_DEF,
+ 					   ppe_dev->clk_rate / MHZ);
+@@ -176,7 +194,7 @@ static void edma_cfg_rx_desc_ring_config
+ 	regmap_write(regmap, reg, data);
+ 
+ 	/* Configure the Mitigation packet count */
+-	data = (EDMA_RX_MITIGATION_PKT_CNT_DEF & EDMA_RXDESC_LOW_THRE_MASK)
++	data = (edma_rx_mitigation_pkt_cnt & EDMA_RXDESC_LOW_THRE_MASK)
+ 			<< EDMA_RXDESC_LOW_THRE_SHIFT;
+ 	pr_debug("EDMA Rx mitigation packet count value: %d\n", data);
+ 	reg = EDMA_BASE_OFFSET + EDMA_REG_RXDESC_UGT_THRE(rxdesc_ring->ring_id);
+@@ -915,6 +933,13 @@ void edma_cfg_rx_napi_add(void)
+ 	struct edma_ring_info *rx = hw_info->rx;
+ 	u32 i;
+ 
++	if (edma_rx_napi_budget < EDMA_RX_NAPI_WORK_MIN ||
++	    edma_rx_napi_budget > EDMA_RX_NAPI_WORK_MAX) {
++		pr_err("Incorrect Rx NAPI budget: %d, setting to default: %d",
++		       edma_rx_napi_budget, hw_info->napi_budget_rx);
++		edma_rx_napi_budget = hw_info->napi_budget_rx;
++	}
++
+ 	for (i = 0; i < rx->num_rings; i++) {
+ 		struct edma_rxdesc_ring *rxdesc_ring = &edma_ctx->rx_rings[i];
+ 
+@@ -923,7 +948,7 @@ void edma_cfg_rx_napi_add(void)
+ 		rxdesc_ring->napi_added = true;
+ 	}
+ 
+-	netdev_dbg(edma_ctx->dummy_dev, "Rx NAPI budget: %d\n", hw_info->napi_budget_rx);
++	netdev_dbg(edma_ctx->dummy_dev, "Rx NAPI budget: %d\n", edma_rx_napi_budget);
+ }
+ 
+ /**
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
+@@ -5,6 +5,15 @@
+ #ifndef __EDMA_CFG_RX__
+ #define __EDMA_CFG_RX__
+ 
++/* Rx default NAPI budget */
++#define EDMA_RX_NAPI_WORK_DEF		128
++
++/* RX minimum NAPI budget */
++#define EDMA_RX_NAPI_WORK_MIN		16
++
++/* Rx maximum NAPI budget */
++#define EDMA_RX_NAPI_WORK_MAX		512
++
+ /* SKB payload size used in page mode */
+ #define EDMA_RX_PAGE_MODE_SKB_SIZE	256
+ 
+@@ -22,9 +31,21 @@
+ /* Rx mitigation timer's default value in microseconds */
+ #define EDMA_RX_MITIGATION_TIMER_DEF	25
+ 
++/* Rx mitigation timer's minimum value in microseconds */
++#define EDMA_RX_MITIGATION_TIMER_MIN	0
++
++/* Rx mitigation timer's maximum value in microseconds */
++#define EDMA_RX_MITIGATION_TIMER_MAX	1000
++
+ /* Rx mitigation packet count's default value */
+ #define EDMA_RX_MITIGATION_PKT_CNT_DEF	16
+ 
++/* Rx mitigation packet count's minimum value */
++#define EDMA_RX_MITIGATION_PKT_CNT_MIN	0
++
++/* Rx mitigation packet count's maximum value */
++#define EDMA_RX_MITIGATION_PKT_CNT_MAX	256
++
+ /* Default bitmap of cores for RPS to ARM cores */
+ #define EDMA_RX_DEFAULT_BITMAP	((1 << EDMA_MAX_CORE) - 1)
+ 
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
+@@ -170,6 +170,24 @@ static void edma_cfg_txcmpl_ring_configu
+ 	reg = EDMA_BASE_OFFSET + EDMA_REG_TXCMPL_CTRL(txcmpl_ring->id);
+ 	regmap_write(regmap, reg, EDMA_TXCMPL_RETMODE_OPAQUE);
+ 
++	/* Validate mitigation timer value */
++	if (edma_tx_mitigation_timer < EDMA_TX_MITIGATION_TIMER_MIN ||
++	    edma_tx_mitigation_timer > EDMA_TX_MITIGATION_TIMER_MAX) {
++		pr_err("Invalid Tx mitigation timer configured:%d for ring:%d. Using the default timer value:%d\n",
++		       edma_tx_mitigation_timer, txcmpl_ring->id,
++		       EDMA_TX_MITIGATION_TIMER_DEF);
++		edma_tx_mitigation_timer = EDMA_TX_MITIGATION_TIMER_DEF;
++	}
++
++	/* Validate mitigation packet count value */
++	if (edma_tx_mitigation_pkt_cnt < EDMA_TX_MITIGATION_PKT_CNT_MIN ||
++	    edma_tx_mitigation_pkt_cnt > EDMA_TX_MITIGATION_PKT_CNT_MAX) {
++		pr_err("Invalid Tx mitigation packet count configured:%d for ring:%d. Using the default packet counter value:%d\n",
++		       edma_tx_mitigation_timer, txcmpl_ring->id,
++		       EDMA_TX_MITIGATION_PKT_CNT_DEF);
++		edma_tx_mitigation_pkt_cnt = EDMA_TX_MITIGATION_PKT_CNT_DEF;
++	}
++
+ 	/* Configure the Mitigation timer. */
+ 	data = EDMA_MICROSEC_TO_TIMER_UNIT(EDMA_TX_MITIGATION_TIMER_DEF,
+ 					   ppe_dev->clk_rate / MHZ);
+@@ -180,7 +198,7 @@ static void edma_cfg_txcmpl_ring_configu
+ 	regmap_write(regmap, reg, data);
+ 
+ 	/* Configure the Mitigation packet count. */
+-	data = (EDMA_TX_MITIGATION_PKT_CNT_DEF & EDMA_TXCMPL_LOW_THRE_MASK)
++	data = (edma_tx_mitigation_pkt_cnt & EDMA_TXCMPL_LOW_THRE_MASK)
+ 		<< EDMA_TXCMPL_LOW_THRE_SHIFT;
+ 	pr_debug("EDMA Tx mitigation packet count value: %d\n", data);
+ 	reg = EDMA_BASE_OFFSET + EDMA_REG_TXCMPL_UGT_THRE(txcmpl_ring->id);
+@@ -634,6 +652,13 @@ void edma_cfg_tx_napi_add(struct net_dev
+ 	struct edma_txcmpl_ring *txcmpl_ring;
+ 	u32 i, ring_idx;
+ 
++	if (edma_tx_napi_budget < EDMA_TX_NAPI_WORK_MIN ||
++	    edma_tx_napi_budget > EDMA_TX_NAPI_WORK_MAX) {
++		pr_err("Incorrect Tx NAPI budget: %d, setting to default: %d",
++		       edma_tx_napi_budget, hw_info->napi_budget_tx);
++		edma_tx_napi_budget = hw_info->napi_budget_tx;
++	}
++
+ 	/* Adding tx napi for a interface with each queue. */
+ 	for_each_possible_cpu(i) {
+ 		ring_idx = ((port_id - 1) * num_possible_cpus()) + i;
+@@ -644,5 +669,5 @@ void edma_cfg_tx_napi_add(struct net_dev
+ 		netdev_dbg(netdev, "Napi added for txcmpl ring: %u\n", txcmpl_ring->id);
+ 	}
+ 
+-	netdev_dbg(netdev, "Tx NAPI budget: %d\n", hw_info->napi_budget_tx);
++	netdev_dbg(netdev, "Tx NAPI budget: %d\n", edma_tx_napi_budget);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.h
+@@ -5,12 +5,28 @@
+ #ifndef __EDMA_CFG_TX__
+ #define __EDMA_CFG_TX__
+ 
++#define EDMA_TX_NAPI_WORK_DEF	512
++#define EDMA_TX_NAPI_WORK_MIN	16
++#define EDMA_TX_NAPI_WORK_MAX	512
++
+ /* Tx mitigation timer's default value. */
+ #define EDMA_TX_MITIGATION_TIMER_DEF	250
+ 
++/* Tx mitigation timer's minimum value in microseconds */
++#define EDMA_TX_MITIGATION_TIMER_MIN	0
++
++/* Tx mitigation timer's maximum value in microseconds */
++#define EDMA_TX_MITIGATION_TIMER_MAX	1000
++
+ /* Tx mitigation packet count default value. */
+ #define EDMA_TX_MITIGATION_PKT_CNT_DEF	16
+ 
++/* Tx mitigation packet count's minimum value */
++#define EDMA_TX_MITIGATION_PKT_CNT_MIN	0
++
++/* Tx mitigation packet count's maximum value */
++#define EDMA_TX_MITIGATION_PKT_CNT_MAX	256
++
+ void edma_cfg_tx_rings(void);
+ int edma_cfg_tx_rings_alloc(void);
+ void edma_cfg_tx_rings_cleanup(void);
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_rx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_rx.h
+@@ -281,6 +281,10 @@ struct edma_rxdesc_ring {
+ 	struct sk_buff *last;
+ };
+ 
++extern int edma_rx_napi_budget;
++extern int edma_rx_mitigation_timer;
++extern int edma_rx_mitigation_pkt_cnt;
++
+ irqreturn_t edma_rx_handle_irq(int irq, void *ctx);
+ int edma_rx_alloc_buffer(struct edma_rxfill_ring *rxfill_ring, int alloc_count);
+ int edma_rx_napi_poll(struct napi_struct *napi, int budget);
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
+@@ -288,6 +288,10 @@ struct edma_txcmpl_ring {
+ 	bool napi_added;
+ };
+ 
++extern int edma_tx_napi_budget;
++extern int edma_tx_mitigation_timer;
++extern int edma_tx_mitigation_pkt_cnt;
++
+ enum edma_tx_status edma_tx_ring_xmit(struct net_device *netdev,
+ 				      struct sk_buff *skb,
+ 			       struct edma_txdesc_ring *txdesc_ring,

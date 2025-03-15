@@ -316,6 +316,24 @@ define Device/cmcc_rax3000m-nand
 endef
 TARGET_DEVICES += cmcc_rax3000m-nand
 
+define Device/cmcc_xr30-nand
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := XR30 NAND
+  DEVICE_VARIANT := (U-Boot mod)
+  DEVICE_DTS := mt7981b-cmcc-xr30-nand
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3     
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 116736k
+  KERNEL_IN_UBI := 1
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-ubi | check-size $$$$(IMAGE_SIZE)
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += cmcc_xr30-nand
+
 define Device/cudy_tr3000-mod
   DEVICE_VENDOR := Cudy
   DEVICE_MODEL := TR3000
@@ -443,7 +461,7 @@ endef
 TARGET_DEVICES += h3c_magic-nx30-pro
 
 define Device/huasifei_wh3000-emmc
-  DEVICE_VENDOR := HUASIFEI
+  DEVICE_VENDOR := Huasifei
   DEVICE_MODEL := WH3000 eMMC
   DEVICE_DTS := mt7981b-huasifei-wh3000-emmc
   DEVICE_DTS_DIR := ../dts
@@ -636,6 +654,20 @@ define Device/netcore_n60
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += netcore_n60
+
+define Device/netcore_n60-pro
+  DEVICE_VENDOR := Netcore
+  DEVICE_MODEL := N60 PRO
+  DEVICE_DTS := mt7986a-netcore-n60-pro
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7986-firmware mt7986-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += netcore_n60-pro
 
 define Device/nokia_ea0326gmp
   DEVICE_VENDOR := Nokia

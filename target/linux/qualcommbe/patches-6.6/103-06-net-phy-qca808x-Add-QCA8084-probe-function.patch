@@ -1,0 +1,140 @@
+From 9d0e22124d6f3ca901626dd5537b36c7c0c97812 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Mon, 29 Jan 2024 10:51:38 +0800
+Subject: [PATCH 06/50] net: phy: qca808x: Add QCA8084 probe function
+
+Add the PHY package probe function. The MDIO slave address of
+PHY, PCS and XPCS can be optionally customized by configuring
+the PHY package level register.
+
+In addition, enable system clock of PHY and de-assert PHY in
+the probe function so that the register of PHY device can be
+accessed, and the features of PHY can be acquired.
+
+Change-Id: I2251b9c5c398a21a4ef547a727189a934ad3a44c
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/phy/qcom/qca808x.c | 91 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -2,6 +2,8 @@
+ 
+ #include <linux/phy.h>
+ #include <linux/module.h>
++#include <linux/of.h>
++#include <linux/clk.h>
+ 
+ #include "qcom.h"
+ 
+@@ -127,6 +129,21 @@
+ #define QCA8084_MII_SW_ADDR_MASK		GENMASK(31, 24)
+ #define QCA8084_MII_REG_DATA_UPPER_16_BITS	BIT(1)
+ 
++/* QCA8084 integrates 4 PHYs, PCS0 and PCS1(includes PCS and XPCS). */
++#define QCA8084_MDIO_DEVICE_NUM			7
++
++#define QCA8084_PCS_CFG				0xc90f014
++#define QCA8084_PCS_ADDR0_MASK			GENMASK(4, 0)
++#define QCA8084_PCS_ADDR1_MASK			GENMASK(9, 5)
++#define QCA8084_PCS_ADDR2_MASK			GENMASK(14, 10)
++
++#define QCA8084_EPHY_CFG			0xc90f018
++#define QCA8084_EPHY_ADDR0_MASK			GENMASK(4, 0)
++#define QCA8084_EPHY_ADDR1_MASK			GENMASK(9, 5)
++#define QCA8084_EPHY_ADDR2_MASK			GENMASK(14, 10)
++#define QCA8084_EPHY_ADDR3_MASK			GENMASK(19, 15)
++#define QCA8084_EPHY_LDO_EN			GENMASK(21, 20)
++
+ MODULE_DESCRIPTION("Qualcomm Atheros QCA808X PHY driver");
+ MODULE_AUTHOR("Matus Ujhelyi, Luo Jie");
+ MODULE_LICENSE("GPL");
+@@ -836,6 +853,79 @@ static void qca8084_link_change_notify(s
+ 			       QCA8084_IPG_10_TO_11_EN : 0);
+ }
+ 
++static int qca8084_phy_package_probe_once(struct phy_device *phydev)
++{
++	int addr[QCA8084_MDIO_DEVICE_NUM] = {0, 1, 2, 3, 4, 5, 6};
++	struct phy_package_shared *shared = phydev->shared;
++	int ret, clear, set;
++
++	/* Program the MDIO address of PHY and PCS optionally, the MDIO
++	 * address 0-6 is used for PHY and PCS MDIO devices by default.
++	 */
++	ret = of_property_read_u32_array(shared->np,
++					 "qcom,phy-addr-fixup",
++					 addr, ARRAY_SIZE(addr));
++	if (ret && ret != -EINVAL)
++		return ret;
++
++	/* Configure the MDIO addresses for the four PHY devices. */
++	clear = QCA8084_EPHY_ADDR0_MASK | QCA8084_EPHY_ADDR1_MASK |
++		QCA8084_EPHY_ADDR2_MASK | QCA8084_EPHY_ADDR3_MASK;
++	set = FIELD_PREP(QCA8084_EPHY_ADDR0_MASK, addr[0]);
++	set |= FIELD_PREP(QCA8084_EPHY_ADDR1_MASK, addr[1]);
++	set |= FIELD_PREP(QCA8084_EPHY_ADDR2_MASK, addr[2]);
++	set |= FIELD_PREP(QCA8084_EPHY_ADDR3_MASK, addr[3]);
++
++	ret = qca8084_mii_modify(phydev, QCA8084_EPHY_CFG, clear, set);
++	if (ret)
++		return ret;
++
++	/* Configure the MDIO addresses for PCS0 and PCS1 including
++	 * PCS and XPCS.
++	 */
++	clear = QCA8084_PCS_ADDR0_MASK | QCA8084_PCS_ADDR1_MASK |
++		QCA8084_PCS_ADDR2_MASK;
++	set = FIELD_PREP(QCA8084_PCS_ADDR0_MASK, addr[4]);
++	set |= FIELD_PREP(QCA8084_PCS_ADDR1_MASK, addr[5]);
++	set |= FIELD_PREP(QCA8084_PCS_ADDR2_MASK, addr[6]);
++
++	return qca8084_mii_modify(phydev, QCA8084_PCS_CFG, clear, set);
++}
++
++static int qca8084_probe(struct phy_device *phydev)
++{
++	struct device *dev = &phydev->mdio.dev;
++	struct reset_control *rstc;
++	struct clk *clk;
++	int ret;
++
++	ret = devm_of_phy_package_join(dev, phydev, 0);
++	if (ret)
++		return ret;
++
++	if (phy_package_probe_once(phydev)) {
++		ret = qca8084_phy_package_probe_once(phydev);
++		if (ret)
++			return ret;
++	}
++
++	/* Enable clock of PHY device, so that the PHY register
++	 * can be accessed to get PHY features.
++	 */
++	clk = devm_clk_get_enabled(dev, NULL);
++	if (IS_ERR(clk))
++		return dev_err_probe(dev, PTR_ERR(clk),
++				     "Enable PHY clock failed\n");
++
++	/* De-assert PHY reset after the clock of PHY enabled. */
++	rstc = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(rstc))
++		return dev_err_probe(dev, PTR_ERR(rstc),
++				     "Get PHY reset failed\n");
++
++	return reset_control_deassert(rstc);
++}
++
+ static struct phy_driver qca808x_driver[] = {
+ {
+ 	/* Qualcomm QCA8081 */
+@@ -886,6 +976,7 @@ static struct phy_driver qca808x_driver[
+ 	.cable_test_get_status	= qca808x_cable_test_get_status,
+ 	.config_init		= qca8084_config_init,
+ 	.link_change_notify	= qca8084_link_change_notify,
++	.probe			= qca8084_probe,
+ }, };
+ 
+ module_phy_driver(qca808x_driver);

@@ -1199,14 +1199,20 @@ static int adm6996_gpio_probe(struct platform_device *pdev)
 	return 0;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,11,0)
 static int adm6996_gpio_remove(struct platform_device *pdev)
+#else
+static void adm6996_gpio_remove(struct platform_device *pdev)
+#endif
 {
 	struct adm6996_priv *priv = platform_get_drvdata(pdev);
 
 	if (priv && (priv->model == ADM6996M || priv->model == ADM6996L))
 		unregister_switch(&priv->dev);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,11,0)
 	return 0;
+#endif
 }
 
 static struct platform_driver adm6996_gpio_driver = {

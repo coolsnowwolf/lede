@@ -1,0 +1,600 @@
+From 8dd72bdbb1e3f0061f2e4a9bb4f6fce0966585a6 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Wed, 27 Dec 2023 13:13:46 +0800
+Subject: [PATCH 22/50] net: ethernet: qualcomm: Initialize PPE queue settings
+
+Configure unicast and multicast hardware queues to forward
+the traffic between PPE ports.
+
+Each PPE port is assigned with the specific queue resource,
+and the egress queue ID is decided by the priority and the
+RSS hash value of packet.
+
+Change-Id: I3e4d4e12548a12b11f129106678375cc3b58828d
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/ppe_api.c   |  44 +++
+ drivers/net/ethernet/qualcomm/ppe/ppe_api.h   |  34 ++
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 362 +++++++++++++++++-
+ .../net/ethernet/qualcomm/ppe/ppe_config.h    |  41 ++
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  |  16 +
+ 5 files changed, 496 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_api.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_api.c
+@@ -38,3 +38,47 @@ int ppe_queue_priority_set(struct ppe_de
+ 
+ 	return ppe_queue_scheduler_set(ppe_dev, node_id, level, port, sch_cfg);
+ }
++
++/**
++ * ppe_edma_queue_offset_config - Configure queue offset for EDMA interface
++ * @ppe_dev: PPE device
++ * @class: The class to configure queue offset
++ * @index: Class index, internal priority or hash value
++ * @queue_offset: Queue offset value
++ *
++ * PPE EDMA queue offset is configured based on the PPE internal priority or
++ * RSS hash value, the profile ID is fixed to 0 for EDMA interface.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_edma_queue_offset_config(struct ppe_device *ppe_dev,
++				 enum ppe_queue_class_type class,
++				 int index, int queue_offset)
++{
++	if (class == PPE_QUEUE_CLASS_PRIORITY)
++		return ppe_queue_ucast_pri_class_set(ppe_dev, 0,
++						     index, queue_offset);
++
++	return ppe_queue_ucast_hash_class_set(ppe_dev, 0,
++					      index, queue_offset);
++}
++
++/**
++ * ppe_edma_queue_resource_get - Get EDMA queue resource
++ * @ppe_dev: PPE device
++ * @type: Resource type
++ * @res_start: Resource start ID returned
++ * @res_end: Resource end ID returned
++ *
++ * PPE EDMA queue resource includes unicast queue and multicast queue.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_edma_queue_resource_get(struct ppe_device *ppe_dev, int type,
++				int *res_start, int *res_end)
++{
++	if (type != PPE_RES_UCAST && type != PPE_RES_MCAST)
++		return -EINVAL;
++
++	return ppe_port_resource_get(ppe_dev, 0, type, res_start, res_end);
++};
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_api.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_api.h
+@@ -15,7 +15,41 @@
+ #define PPE_QUEUE_ID_NUM			300
+ #define PPE_FLOW_ID_NUM				64
+ #define PPE_QUEUE_SCH_PRI_NUM			8
++#define PPE_QUEUE_INTER_PRI_NUM			16
++#define PPE_QUEUE_HASH_NUM			256
++
++/**
++ * enum ppe_queue_class_type - PPE queue class type
++ * @PPE_QUEUE_CLASS_PRIORITY: Queue offset configured from internal priority
++ * @PPE_QUEUE_CLASS_HASH: Queue offset configured from RSS hash.
++ */
++enum ppe_queue_class_type {
++	PPE_QUEUE_CLASS_PRIORITY,
++	PPE_QUEUE_CLASS_HASH,
++};
++
++/**
++ * enum ppe_resource_type - PPE resource type
++ * @PPE_RES_UCAST: Unicast queue resource
++ * @PPE_RES_MCAST: Multicast queue resource
++ * @PPE_RES_FLOW_ID: Flow resource
++ * @PPE_RES_L0_NODE: Level 0 QoS node resource
++ * @PPE_RES_L1_NODE: Level 1 QoS node resource
++ */
++enum ppe_resource_type {
++	PPE_RES_UCAST,
++	PPE_RES_MCAST,
++	PPE_RES_FLOW_ID,
++	PPE_RES_L0_NODE,
++	PPE_RES_L1_NODE,
++};
+ 
+ int ppe_queue_priority_set(struct ppe_device *ppe_dev,
+ 			   int queue_id, int priority);
++
++int ppe_edma_queue_offset_config(struct ppe_device *ppe_dev,
++				 enum ppe_queue_class_type class,
++				 int index, int queue_offset);
++int ppe_edma_queue_resource_get(struct ppe_device *ppe_dev, int type,
++				int *res_start, int *res_end);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -119,6 +119,34 @@ struct ppe_port_schedule_config {
+ 	unsigned int drr_node_id;
+ };
+ 
++/**
++ * struct ppe_port_schedule_resource - PPE port scheduler resource.
++ * @ucastq_start: Unicast queue start ID.
++ * @ucastq_end: Unicast queue end ID.
++ * @mcastq_start: Multicast queue start ID.
++ * @mcastq_end: Multicast queue end ID.
++ * @flow_id_start: Flow start ID.
++ * @flow_id_end: Flow end ID.
++ * @l0node_start: Scheduler node start ID for queue level.
++ * @l0node_end: Scheduler node end ID for queue level.
++ * @l1node_start: Scheduler node start ID for flow level.
++ * @l1node_end: Scheduler node end ID for flow level.
++ *
++ * PPE scheduler resource allocated among the PPE ports.
++ */
++struct ppe_port_schedule_resource {
++	unsigned int ucastq_start;
++	unsigned int ucastq_end;
++	unsigned int mcastq_start;
++	unsigned int mcastq_end;
++	unsigned int flow_id_start;
++	unsigned int flow_id_end;
++	unsigned int l0node_start;
++	unsigned int l0node_end;
++	unsigned int l1node_start;
++	unsigned int l1node_end;
++};
++
+ static int ipq9574_ppe_bm_group_config = 1550;
+ static struct ppe_bm_port_config ipq9574_ppe_bm_port_config[] = {
+ 	{
+@@ -648,6 +676,111 @@ static struct ppe_port_schedule_config p
+ 	},
+ };
+ 
++/* The QoS resource is applied to each PPE port, there are some
++ * resource reserved as the last one.
++ */
++static struct ppe_port_schedule_resource ppe_scheduler_res[] = {
++	{	.ucastq_start	= 0,
++		.ucastq_end	= 63,
++		.mcastq_start	= 256,
++		.ucastq_end	= 271,
++		.flow_id_start	= 0,
++		.flow_id_end	= 0,
++		.l0node_start	= 0,
++		.l0node_end	= 7,
++		.l1node_start	= 0,
++		.l1node_end	= 0,
++	},
++	{	.ucastq_start	= 144,
++		.ucastq_end	= 159,
++		.mcastq_start	= 272,
++		.ucastq_end	= 275,
++		.flow_id_start	= 36,
++		.flow_id_end	= 39,
++		.l0node_start	= 48,
++		.l0node_end	= 63,
++		.l1node_start	= 8,
++		.l1node_end	= 11,
++	},
++	{	.ucastq_start	= 160,
++		.ucastq_end	= 175,
++		.mcastq_start	= 276,
++		.ucastq_end	= 279,
++		.flow_id_start	= 40,
++		.flow_id_end	= 43,
++		.l0node_start	= 64,
++		.l0node_end	= 79,
++		.l1node_start	= 12,
++		.l1node_end	= 15,
++	},
++	{	.ucastq_start	= 176,
++		.ucastq_end	= 191,
++		.mcastq_start	= 280,
++		.ucastq_end	= 283,
++		.flow_id_start	= 44,
++		.flow_id_end	= 47,
++		.l0node_start	= 80,
++		.l0node_end	= 95,
++		.l1node_start	= 16,
++		.l1node_end	= 19,
++	},
++	{	.ucastq_start	= 192,
++		.ucastq_end	= 207,
++		.mcastq_start	= 284,
++		.ucastq_end	= 287,
++		.flow_id_start	= 48,
++		.flow_id_end	= 51,
++		.l0node_start	= 96,
++		.l0node_end	= 111,
++		.l1node_start	= 20,
++		.l1node_end	= 23,
++	},
++	{	.ucastq_start	= 208,
++		.ucastq_end	= 223,
++		.mcastq_start	= 288,
++		.ucastq_end	= 291,
++		.flow_id_start	= 52,
++		.flow_id_end	= 55,
++		.l0node_start	= 112,
++		.l0node_end	= 127,
++		.l1node_start	= 24,
++		.l1node_end	= 27,
++	},
++	{	.ucastq_start	= 224,
++		.ucastq_end	= 239,
++		.mcastq_start	= 292,
++		.ucastq_end	= 295,
++		.flow_id_start	= 56,
++		.flow_id_end	= 59,
++		.l0node_start	= 128,
++		.l0node_end	= 143,
++		.l1node_start	= 28,
++		.l1node_end	= 31,
++	},
++	{	.ucastq_start	= 240,
++		.ucastq_end	= 255,
++		.mcastq_start	= 296,
++		.ucastq_end	= 299,
++		.flow_id_start	= 60,
++		.flow_id_end	= 63,
++		.l0node_start	= 144,
++		.l0node_end	= 159,
++		.l1node_start	= 32,
++		.l1node_end	= 35,
++	},
++	{	.ucastq_start	= 64,
++		.ucastq_end	= 143,
++		.mcastq_start	= 0,
++		.ucastq_end	= 0,
++		.flow_id_start	= 1,
++		.flow_id_end	= 35,
++		.l0node_start	= 8,
++		.l0node_end	= 47,
++		.l1node_start	= 1,
++		.l1node_end	= 7,
++	},
++};
++
+ /* Set the first level scheduler configuration. */
+ static int ppe_scheduler_l0_queue_map_set(struct ppe_device *ppe_dev,
+ 					  int node_id, int port,
+@@ -893,6 +1026,147 @@ int ppe_queue_scheduler_get(struct ppe_d
+ 					      port, scheduler_cfg);
+ }
+ 
++/**
++ * ppe_queue_ucast_base_set - Set PPE unicast queue base ID
++ * @ppe_dev: PPE device
++ * @queue_dst: PPE queue destination configuration
++ * @queue_base: PPE queue base ID
++ * @profile_id: Profile ID
++ *
++ * The PPE unicast queue base ID is configured based on the destination
++ * port information per profile ID.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_queue_ucast_base_set(struct ppe_device *ppe_dev,
++			     struct ppe_queue_ucast_dest queue_dst,
++			     int queue_base, int profile_id)
++{
++	int index, profile_size;
++	u32 val, reg;
++
++	profile_size = queue_dst.src_profile << 8;
++	if (queue_dst.service_code_en)
++		index = PPE_QUEUE_BASE_SERVICE_CODE + profile_size +
++			queue_dst.service_code;
++	else if (queue_dst.cpu_code_en)
++		index = PPE_QUEUE_BASE_CPU_CODE + profile_size +
++			queue_dst.cpu_code;
++	else
++		index = profile_size + queue_dst.dest_port;
++
++	val = FIELD_PREP(PPE_UCAST_QUEUE_MAP_TBL_PROFILE_ID, profile_id);
++	val |= FIELD_PREP(PPE_UCAST_QUEUE_MAP_TBL_QUEUE_ID, queue_base);
++	reg = PPE_UCAST_QUEUE_MAP_TBL_ADDR + index * PPE_UCAST_QUEUE_MAP_TBL_INC;
++
++	return regmap_write(ppe_dev->regmap, reg, val);
++}
++
++/**
++ * ppe_queue_ucast_pri_class_set - Set PPE unicast queue class of priority
++ * @ppe_dev: PPE device
++ * @profile_id: Profile ID
++ * @priority: Priority to be used to set class
++ * @class_offset: Class value for the destination queue ID
++ *
++ * The PPE unicast queue class is configured based on the PPE
++ * internal priority.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_queue_ucast_pri_class_set(struct ppe_device *ppe_dev,
++				  int profile_id,
++				  int priority,
++				  int class_offset)
++{
++	u32 val, reg;
++	int index;
++
++	index = (profile_id << 4) + priority;
++	val = FIELD_PREP(PPE_UCAST_PRIORITY_MAP_TBL_CLASS, class_offset);
++	reg = PPE_UCAST_PRIORITY_MAP_TBL_ADDR + index * PPE_UCAST_PRIORITY_MAP_TBL_INC;
++
++	return regmap_write(ppe_dev->regmap, reg, val);
++}
++
++/**
++ * ppe_queue_ucast_hash_class_set - Set PPE unicast queue class of hash value
++ * @ppe_dev: PPE device
++ * @profile_id: Profile ID
++ * @rss_hash: Hash value to be used to set clas
++ * @class_offset: Class value for the destination queue ID
++ *
++ * The PPE unicast queue class is configured based on the RSS hash value.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_queue_ucast_hash_class_set(struct ppe_device *ppe_dev,
++				   int profile_id,
++				   int rss_hash,
++				   int class_offset)
++{
++	u32 val, reg;
++	int index;
++
++	index = (profile_id << 8) + rss_hash;
++	val = FIELD_PREP(PPE_UCAST_HASH_MAP_TBL_HASH, class_offset);
++	reg = PPE_UCAST_HASH_MAP_TBL_ADDR + index * PPE_UCAST_HASH_MAP_TBL_INC;
++
++	return regmap_write(ppe_dev->regmap, reg, val);
++}
++
++/**
++ * ppe_port_resource_get - Get PPE resource per port
++ * @ppe_dev: PPE device
++ * @port: PPE port
++ * @type: Resource type
++ * @res_start: Resource start ID
++ * @res_end: Resource end ID
++ *
++ * PPE resource is assigned per PPE port, which is acquired for QoS scheduler.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_port_resource_get(struct ppe_device *ppe_dev, int port, int type,
++			  int *res_start, int *res_end)
++{
++	struct ppe_port_schedule_resource res;
++
++	/* The reserved resource with the maximum port ID of PPE is
++	 * also allowed to be acquired.
++	 */
++	if (port > ppe_dev->num_ports)
++		return -EINVAL;
++
++	res = ppe_scheduler_res[port];
++	switch (type) {
++	case PPE_RES_UCAST:
++		*res_start = res.ucastq_start;
++		*res_end = res.ucastq_end;
++		break;
++	case PPE_RES_MCAST:
++		*res_start = res.mcastq_start;
++		*res_end = res.mcastq_end;
++		break;
++	case PPE_RES_FLOW_ID:
++		*res_start = res.flow_id_start;
++		*res_end = res.flow_id_end;
++		break;
++	case PPE_RES_L0_NODE:
++		*res_start = res.l0node_start;
++		*res_end = res.l0node_end;
++		break;
++	case PPE_RES_L1_NODE:
++		*res_start = res.l1node_start;
++		*res_end = res.l1node_end;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+ static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
+ 				   struct ppe_bm_port_config port_cfg)
+ {
+@@ -1219,6 +1493,88 @@ sch_config_fail:
+ 	return ret;
+ };
+ 
++/* Configure PPE queue destination of each PPE port. */
++static int ppe_queue_dest_init(struct ppe_device *ppe_dev)
++{
++	int ret, port_id, index, class, res_start, res_end, queue_base, pri_max;
++	struct ppe_queue_ucast_dest queue_dst;
++
++	for (port_id = 0; port_id < ppe_dev->num_ports; port_id++) {
++		memset(&queue_dst, 0, sizeof(queue_dst));
++
++		ret = ppe_port_resource_get(ppe_dev, port_id, PPE_RES_UCAST,
++					    &res_start, &res_end);
++		if (ret)
++			return ret;
++
++		queue_base = res_start;
++		queue_dst.dest_port = port_id;
++
++		/* Configure queue base ID and profile ID that is same as
++		 * physical port ID.
++		 */
++		ret = ppe_queue_ucast_base_set(ppe_dev, queue_dst,
++					       queue_base, port_id);
++		if (ret)
++			return ret;
++
++		/* Queue priority range supported by each PPE port */
++		ret = ppe_port_resource_get(ppe_dev, port_id, PPE_RES_L0_NODE,
++					    &res_start, &res_end);
++		if (ret)
++			return ret;
++
++		pri_max = res_end - res_start;
++
++		/* Redirect ARP reply packet with the max priority on CPU port,
++		 * which keeps the ARP reply directed to CPU (CPU code is 101)
++		 * with highest priority received by EDMA when there is a heavy
++		 * traffic loaded.
++		 */
++		if (port_id == 0) {
++			memset(&queue_dst, 0, sizeof(queue_dst));
++
++			queue_dst.cpu_code_en = true;
++			queue_dst.cpu_code = 101;
++			ret = ppe_queue_ucast_base_set(ppe_dev, queue_dst,
++						       queue_base + pri_max,
++						       0);
++			if (ret)
++				return ret;
++		}
++
++		/* Initialize the class offset of internal priority. */
++		for (index = 0; index < PPE_QUEUE_INTER_PRI_NUM; index++) {
++			class = index > pri_max ? pri_max : index;
++
++			ret = ppe_queue_ucast_pri_class_set(ppe_dev, port_id,
++							    index, class);
++			if (ret)
++				return ret;
++		}
++
++		/* Initialize the class offset of RSS hash as 0 to avoid the
++		 * random hardware value that will lead to the unexpected
++		 * destination queue generated.
++		 */
++		index = 0;
++		for (index = 0; index < PPE_QUEUE_HASH_NUM; index++) {
++			ret = ppe_queue_ucast_hash_class_set(ppe_dev, port_id,
++							     index, 0);
++			if (ret)
++				return ret;
++		}
++	}
++
++	return 0;
++}
++
++/* Initialize PPE device to handle traffic correctly. */
++static int ppe_dev_hw_init(struct ppe_device *ppe_dev)
++{
++	return ppe_queue_dest_init(ppe_dev);
++}
++
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+ {
+ 	int ret;
+@@ -1231,5 +1587,9 @@ int ppe_hw_config(struct ppe_device *ppe
+ 	if (ret)
+ 		return ret;
+ 
+-	return ppe_config_scheduler(ppe_dev);
++	ret = ppe_config_scheduler(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_dev_hw_init(ppe_dev);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+@@ -6,6 +6,13 @@
+ #ifndef __PPE_CONFIG_H__
+ #define __PPE_CONFIG_H__
+ 
++/* There are different queue config ranges for the destination port,
++ * CPU code and service code.
++ */
++#define PPE_QUEUE_BASE_DEST_PORT		0
++#define PPE_QUEUE_BASE_CPU_CODE			1024
++#define PPE_QUEUE_BASE_SERVICE_CODE		2048
++
+ /**
+  * struct ppe_qos_scheduler_cfg - PPE QoS scheduler configuration.
+  * @flow_id: PPE flow ID.
+@@ -26,6 +33,26 @@ struct ppe_qos_scheduler_cfg {
+ 	int node_frame_mode;
+ };
+ 
++/**
++ * struct ppe_queue_ucast_dest - PPE unicast queue destination.
++ * @src_profile: Source profile.
++ * @service_code_en: Enable service code.
++ * @service_code: Service code.
++ * @cpu_code_en: Enable CPU code.
++ * @cpu_code: CPU code.
++ * @dest_port: destination port.
++ *
++ * PPE egress queue ID is decided by the egress port ID.
++ */
++struct ppe_queue_ucast_dest {
++	int src_profile;
++	bool service_code_en;
++	int service_code;
++	bool cpu_code_en;
++	int cpu_code;
++	int dest_port;
++};
++
+ int ppe_hw_config(struct ppe_device *ppe_dev);
+ int ppe_queue_scheduler_set(struct ppe_device *ppe_dev,
+ 			    int node_id, bool flow_level, int port,
+@@ -33,4 +60,18 @@ int ppe_queue_scheduler_set(struct ppe_d
+ int ppe_queue_scheduler_get(struct ppe_device *ppe_dev,
+ 			    int node_id, bool flow_level, int *port,
+ 			    struct ppe_qos_scheduler_cfg *scheduler_cfg);
++int ppe_queue_ucast_base_set(struct ppe_device *ppe_dev,
++			     struct ppe_queue_ucast_dest queue_dst,
++			     int queue_base,
++			     int profile_id);
++int ppe_queue_ucast_pri_class_set(struct ppe_device *ppe_dev,
++				  int profile_id,
++				  int priority,
++				  int class_offset);
++int ppe_queue_ucast_hash_class_set(struct ppe_device *ppe_dev,
++				   int profile_id,
++				   int rss_hash,
++				   int class_offset);
++int ppe_port_resource_get(struct ppe_device *ppe_dev, int port, int type,
++			  int *res_start, int *res_end);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -153,6 +153,22 @@
+ #define PPE_BM_PORT_FC_SET_PRE_ALLOC(tbl_cfg, value)	\
+ 	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_PRE_ALLOC)
+ 
++#define PPE_UCAST_QUEUE_MAP_TBL_ADDR		0x810000
++#define PPE_UCAST_QUEUE_MAP_TBL_NUM		3072
++#define PPE_UCAST_QUEUE_MAP_TBL_INC		0x10
++#define PPE_UCAST_QUEUE_MAP_TBL_PROFILE_ID	GENMASK(3, 0)
++#define PPE_UCAST_QUEUE_MAP_TBL_QUEUE_ID	GENMASK(11, 4)
++
++#define PPE_UCAST_HASH_MAP_TBL_ADDR		0x830000
++#define PPE_UCAST_HASH_MAP_TBL_NUM		4096
++#define PPE_UCAST_HASH_MAP_TBL_INC		0x10
++#define PPE_UCAST_HASH_MAP_TBL_HASH		GENMASK(7, 0)
++
++#define PPE_UCAST_PRIORITY_MAP_TBL_ADDR		0x842000
++#define PPE_UCAST_PRIORITY_MAP_TBL_NUM		256
++#define PPE_UCAST_PRIORITY_MAP_TBL_INC		0x10
++#define PPE_UCAST_PRIORITY_MAP_TBL_CLASS	GENMASK(3, 0)
++
+ /* PPE unicast queue (0-255) configurations. */
+ #define PPE_AC_UNI_QUEUE_CFG_TBL_ADDR		0x848000
+ #define PPE_AC_UNI_QUEUE_CFG_TBL_NUM		256

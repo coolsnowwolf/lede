@@ -1,0 +1,125 @@
+From 8716f3c03d9f71ed0bd12a26f6e9d1e85cff0d12 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 30 Jan 2025 00:27:22 +0100
+Subject: [PATCH 1/2] spi: spi-qpic: fix broken driver with SPINAND_SET_FEATURE
+ command
+
+The driver always return probe error with SPINAND_SET_FEATURE command:
+
+spi-nand: probe of spi0.0 failed with error -1207959538
+
+The error doesn't match any expected negative error but instead seems to
+be an u32 converted to an int. Investigating the entire codeflow I
+reached the culprit: qcom_spi_cmd_mapping.
+
+Such function can return -EOPNOTSUPP or the cmd to run. Problem is that
+in the specific context of SPINAND_SET_FEATURE, BIT(31) is set that in
+the context of an integer, it gets treated as a negative value.
+
+To correctly handle this, rework the function to return 0 or a "correct"
+negative error and pass a pointer to  store the cmd.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/spi/spi-qpic-snand.c | 40 +++++++++++++++++-------------------
+ 1 file changed, 19 insertions(+), 21 deletions(-)
+
+--- a/drivers/spi/spi-qpic-snand.c
++++ b/drivers/spi/spi-qpic-snand.c
+@@ -1200,64 +1200,64 @@ static int qcom_spi_program_execute(stru
+ 	return 0;
+ }
+ 
+-static int qcom_spi_cmd_mapping(struct qcom_nand_controller *snandc, u32 opcode)
++static int qcom_spi_cmd_mapping(struct qcom_nand_controller *snandc, u32 opcode,
++				u32 *cmd)
+ {
+-	int cmd = 0x0;
+-
+ 	switch (opcode) {
+ 	case SPINAND_RESET:
+-		cmd = (SPI_WP | SPI_HOLD | SPI_TRANSFER_MODE_x1 | OP_RESET_DEVICE);
++		*cmd = (SPI_WP | SPI_HOLD | SPI_TRANSFER_MODE_x1 | OP_RESET_DEVICE);
+ 		break;
+ 	case SPINAND_READID:
+-		cmd = (SPI_WP | SPI_HOLD | SPI_TRANSFER_MODE_x1 | OP_FETCH_ID);
++		*cmd = (SPI_WP | SPI_HOLD | SPI_TRANSFER_MODE_x1 | OP_FETCH_ID);
+ 		break;
+ 	case SPINAND_GET_FEATURE:
+-		cmd = (SPI_TRANSFER_MODE_x1 | SPI_WP | SPI_HOLD | ACC_FEATURE);
++		*cmd = (SPI_TRANSFER_MODE_x1 | SPI_WP | SPI_HOLD | ACC_FEATURE);
+ 		break;
+ 	case SPINAND_SET_FEATURE:
+-		cmd = (SPI_TRANSFER_MODE_x1 | SPI_WP | SPI_HOLD | ACC_FEATURE |
++		*cmd = (SPI_TRANSFER_MODE_x1 | SPI_WP | SPI_HOLD | ACC_FEATURE |
+ 			QPIC_SET_FEATURE);
+ 		break;
+ 	case SPINAND_READ:
+ 		if (snandc->qspi->raw_rw) {
+-			cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
++			*cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
+ 					SPI_WP | SPI_HOLD | OP_PAGE_READ);
+ 		} else {
+-			cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
++			*cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
+ 					SPI_WP | SPI_HOLD | OP_PAGE_READ_WITH_ECC);
+ 		}
+ 
+ 		break;
+ 	case SPINAND_ERASE:
+-		cmd = OP_BLOCK_ERASE | PAGE_ACC | LAST_PAGE | SPI_WP |
++		*cmd = OP_BLOCK_ERASE | PAGE_ACC | LAST_PAGE | SPI_WP |
+ 			SPI_HOLD | SPI_TRANSFER_MODE_x1;
+ 		break;
+ 	case SPINAND_WRITE_EN:
+-		cmd = SPINAND_WRITE_EN;
++		*cmd = SPINAND_WRITE_EN;
+ 		break;
+ 	case SPINAND_PROGRAM_EXECUTE:
+-		cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
++		*cmd = (PAGE_ACC | LAST_PAGE | SPI_TRANSFER_MODE_x1 |
+ 				SPI_WP | SPI_HOLD | OP_PROGRAM_PAGE);
+ 		break;
+ 	case SPINAND_PROGRAM_LOAD:
+-		cmd = SPINAND_PROGRAM_LOAD;
++		*cmd = SPINAND_PROGRAM_LOAD;
+ 		break;
+ 	default:
+ 		dev_err(snandc->dev, "Opcode not supported: %u\n", opcode);
+ 		return -EOPNOTSUPP;
+ 	}
+ 
+-	return cmd;
++	return 0;
+ }
+ 
+ static int qcom_spi_write_page(struct qcom_nand_controller *snandc,
+ 			       const struct spi_mem_op *op)
+ {
+-	int cmd;
++	u32 cmd;
++	int ret;
+ 
+-	cmd = qcom_spi_cmd_mapping(snandc, op->cmd.opcode);
+-	if (cmd < 0)
+-		return cmd;
++	ret = qcom_spi_cmd_mapping(snandc, op->cmd.opcode, &cmd);
++	if (ret < 0)
++		return ret;
+ 
+ 	if (op->cmd.opcode == SPINAND_PROGRAM_LOAD)
+ 		snandc->qspi->data_buf = (u8 *)op->data.buf.out;
+@@ -1272,12 +1272,10 @@ static int qcom_spi_send_cmdaddr(struct
+ 	u32 cmd;
+ 	int ret, opcode;
+ 
+-	ret = qcom_spi_cmd_mapping(snandc, op->cmd.opcode);
++	ret = qcom_spi_cmd_mapping(snandc, op->cmd.opcode, &cmd);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	cmd = ret;
+-
+ 	s_op.cmd_reg = cmd;
+ 	s_op.addr1_reg = op->addr.val;
+ 	s_op.addr2_reg = 0;

@@ -1,0 +1,131 @@
+From e618447cf492d04415007336eec025fae6e9a2ea Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 1 Aug 2024 16:35:08 +0200
+Subject: [PATCH 6/8] net: airoha: Allow mapping IO region for multiple qdma
+ controllers
+
+Map MMIO regions of both qdma controllers available on EN7581 SoC.
+Run airoha_hw_cleanup routine for both QDMA controllers available on
+EN7581 SoC removing airoha_eth module or in airoha_probe error path.
+This is a preliminary patch to support multi-QDMA controllers.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/a734ae608da14b67ae749b375d880dbbc70868ea.1722522582.git.lorenzo@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/airoha_eth.c | 56 ++++++++++++----------
+ 1 file changed, 32 insertions(+), 24 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/airoha_eth.c
++++ b/drivers/net/ethernet/mediatek/airoha_eth.c
+@@ -2024,15 +2024,25 @@ static irqreturn_t airoha_irq_handler(in
+ }
+ 
+ static int airoha_qdma_init(struct platform_device *pdev,
+-			    struct airoha_eth *eth)
++			    struct airoha_eth *eth,
++			    struct airoha_qdma *qdma)
+ {
+-	struct airoha_qdma *qdma = &eth->qdma[0];
+-	int err;
++	int err, id = qdma - &eth->qdma[0];
++	const char *res;
+ 
+ 	spin_lock_init(&qdma->irq_lock);
+ 	qdma->eth = eth;
+ 
+-	qdma->irq = platform_get_irq(pdev, 0);
++	res = devm_kasprintf(eth->dev, GFP_KERNEL, "qdma%d", id);
++	if (!res)
++		return -ENOMEM;
++
++	qdma->regs = devm_platform_ioremap_resource_byname(pdev, res);
++	if (IS_ERR(qdma->regs))
++		return dev_err_probe(eth->dev, PTR_ERR(qdma->regs),
++				     "failed to iomap qdma%d regs\n", id);
++
++	qdma->irq = platform_get_irq(pdev, 4 * id);
+ 	if (qdma->irq < 0)
+ 		return qdma->irq;
+ 
+@@ -2053,19 +2063,13 @@ static int airoha_qdma_init(struct platf
+ 	if (err)
+ 		return err;
+ 
+-	err = airoha_qdma_hw_init(qdma);
+-	if (err)
+-		return err;
+-
+-	set_bit(DEV_STATE_INITIALIZED, &eth->state);
+-
+-	return 0;
++	return airoha_qdma_hw_init(qdma);
+ }
+ 
+ static int airoha_hw_init(struct platform_device *pdev,
+ 			  struct airoha_eth *eth)
+ {
+-	int err;
++	int err, i;
+ 
+ 	/* disable xsi */
+ 	reset_control_bulk_assert(ARRAY_SIZE(eth->xsi_rsts), eth->xsi_rsts);
+@@ -2079,12 +2083,19 @@ static int airoha_hw_init(struct platfor
+ 	if (err)
+ 		return err;
+ 
+-	return airoha_qdma_init(pdev, eth);
++	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
++		err = airoha_qdma_init(pdev, eth, &eth->qdma[i]);
++		if (err)
++			return err;
++	}
++
++	set_bit(DEV_STATE_INITIALIZED, &eth->state);
++
++	return 0;
+ }
+ 
+-static void airoha_hw_cleanup(struct airoha_eth *eth)
++static void airoha_hw_cleanup(struct airoha_qdma *qdma)
+ {
+-	struct airoha_qdma *qdma = &eth->qdma[0];
+ 	int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
+@@ -2645,13 +2656,6 @@ static int airoha_probe(struct platform_
+ 		return dev_err_probe(eth->dev, PTR_ERR(eth->fe_regs),
+ 				     "failed to iomap fe regs\n");
+ 
+-	eth->qdma[0].regs = devm_platform_ioremap_resource_byname(pdev,
+-								  "qdma0");
+-	if (IS_ERR(eth->qdma[0].regs))
+-		return dev_err_probe(eth->dev,
+-				     PTR_ERR(eth->qdma[0].regs),
+-				     "failed to iomap qdma regs\n");
+-
+ 	eth->rsts[0].id = "fe";
+ 	eth->rsts[1].id = "pdma";
+ 	eth->rsts[2].id = "qdma";
+@@ -2707,7 +2711,9 @@ static int airoha_probe(struct platform_
+ 	return 0;
+ 
+ error:
+-	airoha_hw_cleanup(eth);
++	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
++		airoha_hw_cleanup(&eth->qdma[i]);
++
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+ 		struct airoha_gdm_port *port = eth->ports[i];
+ 
+@@ -2725,7 +2731,9 @@ static void airoha_remove(struct platfor
+ 	struct airoha_eth *eth = platform_get_drvdata(pdev);
+ 	int i;
+ 
+-	airoha_hw_cleanup(eth);
++	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
++		airoha_hw_cleanup(&eth->qdma[i]);
++
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+ 		struct airoha_gdm_port *port = eth->ports[i];
+ 

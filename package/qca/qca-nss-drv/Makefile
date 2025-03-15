@@ -120,6 +120,7 @@ EXTRA_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-nss-gmac \
 			   -I$(STAGING_DIR)/usr/include/qca-nss-dp \
 			   -I$(STAGING_DIR)/usr/include/qca-ssdk \
 			   -Wno-unused-variable \
+			   -Wno-error=enum-conversion \
 			   -Wno-error=unused-function
 
 ifeq ($(BOARD),qualcommax)

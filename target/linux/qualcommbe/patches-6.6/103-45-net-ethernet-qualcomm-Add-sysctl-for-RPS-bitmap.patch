@@ -1,0 +1,140 @@
+From a36607b554841358733167483d194ae7d3969444 Mon Sep 17 00:00:00 2001
+From: Pavithra R <quic_pavir@quicinc.com>
+Date: Tue, 11 Jun 2024 01:43:22 +0530
+Subject: [PATCH 45/50] net: ethernet: qualcomm: Add sysctl for RPS bitmap
+
+Add sysctl to configure RPS bitmap for EDMA receive.
+This bitmap is used to configure the set of ARM cores
+used to receive packets from EDMA.
+
+Change-Id: Ie0e7d5971db93ea1494608a9e79c4abb13ce69b6
+Signed-off-by: Pavithra R <quic_pavir@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/edma.c      | 23 ++++++++++++++++
+ drivers/net/ethernet/qualcomm/ppe/edma.h      |  2 ++
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.c   | 27 +++++++++++++++++++
+ .../net/ethernet/qualcomm/ppe/edma_cfg_rx.h   |  4 +++
+ 4 files changed, 56 insertions(+)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
+@@ -797,6 +797,11 @@ void edma_destroy(struct ppe_device *ppe
+ 	struct edma_ring_info *rx = hw_info->rx;
+ 	u32 i;
+ 
++	if (edma_ctx->rx_rps_ctl_table_hdr) {
++		unregister_sysctl_table(edma_ctx->rx_rps_ctl_table_hdr);
++		edma_ctx->rx_rps_ctl_table_hdr = NULL;
++	}
++
+ 	/* Disable interrupts. */
+ 	for (i = 1; i <= hw_info->max_ports; i++)
+ 		edma_cfg_tx_disable_interrupts(i);
+@@ -840,6 +845,17 @@ void edma_destroy(struct ppe_device *ppe
+ 	kfree(edma_ctx->netdev_arr);
+ }
+ 
++/* EDMA Rx RPS core sysctl table */
++static struct ctl_table edma_rx_rps_core_table[] = {
++	{
++		.procname	=	"rps_bitmap_cores",
++		.data		=	&edma_cfg_rx_rps_bitmap_cores,
++		.maxlen		=	sizeof(int),
++		.mode		=	0644,
++		.proc_handler	=	edma_cfg_rx_rps_bitmap
++	},
++};
++
+ /**
+  * edma_setup - EDMA Setup.
+  * @ppe_dev: PPE device
+@@ -865,6 +881,13 @@ int edma_setup(struct ppe_device *ppe_de
+ 	if (tx_requeue_stop != 0)
+ 		edma_ctx->tx_requeue_stop = true;
+ 
++	edma_ctx->rx_rps_ctl_table_hdr = register_sysctl("net/edma",
++							 edma_rx_rps_core_table);
++	if (!edma_ctx->rx_rps_ctl_table_hdr) {
++		pr_err("Rx rps sysctl table configuration failed\n");
++		return -EINVAL;
++	}
++
+ 	/* Configure the EDMA common clocks. */
+ 	ret = edma_clock_init();
+ 	if (ret) {
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.h
+@@ -122,6 +122,7 @@ struct edma_intr_info {
+  * @tx_rings: Tx Descriptor Ring, SW is producer
+  * @txcmpl_rings: Tx complete Ring, SW is consumer
+  * @err_stats: Per CPU error statistics
++ * @rx_rps_ctl_table_hdr: Rx RPS sysctl table
+  * @rx_page_mode: Page mode enabled or disabled
+  * @rx_buf_size: Rx buffer size for Jumbo MRU
+  * @tx_requeue_stop: Tx requeue stop enabled or disabled
+@@ -137,6 +138,7 @@ struct edma_context {
+ 	struct edma_txdesc_ring *tx_rings;
+ 	struct edma_txcmpl_ring *txcmpl_rings;
+ 	struct edma_err_stats __percpu *err_stats;
++	struct ctl_table_header *rx_rps_ctl_table_hdr;
+ 	u32 rx_page_mode;
+ 	u32 rx_buf_size;
+ 	bool tx_requeue_stop;
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -43,6 +43,8 @@ static u32 edma_rx_ring_queue_map[][EDMA
+ 						{ 6, 14, 22, 30 },
+ 						{ 7, 15, 23, 31 }};
+ 
++u32 edma_cfg_rx_rps_bitmap_cores = EDMA_RX_DEFAULT_BITMAP;
++
+ static int edma_cfg_rx_desc_rings_reset_queue_mapping(void)
+ {
+ 	struct edma_hw_info *hw_info = edma_ctx->hw_info;
+@@ -987,3 +989,28 @@ int edma_cfg_rx_rps_hash_map(void)
+ 
+ 	return 0;
+ }
++
++/* Configure RPS hash mapping based on bitmap */
++int edma_cfg_rx_rps_bitmap(struct ctl_table *table, int write,
++			   void *buffer, size_t *lenp, loff_t *ppos)
++{
++	int ret;
++
++	ret = proc_dointvec(table, write, buffer, lenp, ppos);
++
++	if (!write)
++		return ret;
++
++	if (!edma_cfg_rx_rps_bitmap_cores ||
++	    edma_cfg_rx_rps_bitmap_cores > EDMA_RX_DEFAULT_BITMAP) {
++		pr_warn("Incorrect CPU bitmap: %x. Setting it to default value: %d",
++			edma_cfg_rx_rps_bitmap_cores, EDMA_RX_DEFAULT_BITMAP);
++		edma_cfg_rx_rps_bitmap_cores = EDMA_RX_DEFAULT_BITMAP;
++	}
++
++	ret = edma_cfg_rx_rps_hash_map();
++
++	pr_info("EDMA RPS bitmap value: %d\n", edma_cfg_rx_rps_bitmap_cores);
++
++	return ret;
++}
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.h
+@@ -49,6 +49,8 @@
+ /* Default bitmap of cores for RPS to ARM cores */
+ #define EDMA_RX_DEFAULT_BITMAP	((1 << EDMA_MAX_CORE) - 1)
+ 
++extern u32 edma_cfg_rx_rps_bitmap_cores;
++
+ int edma_cfg_rx_rings(void);
+ int edma_cfg_rx_rings_alloc(void);
+ void edma_cfg_rx_ring_mappings(void);
+@@ -66,4 +68,6 @@ void edma_cfg_rx_buff_size_setup(void);
+ int edma_cfg_rx_rps_hash_map(void);
+ int edma_cfg_rx_rps(struct ctl_table *table, int write,
+ 		    void *buffer, size_t *lenp, loff_t *ppos);
++int edma_cfg_rx_rps_bitmap(struct ctl_table *table, int write,
++			   void *buffer, size_t *lenp, loff_t *ppos);
+ #endif

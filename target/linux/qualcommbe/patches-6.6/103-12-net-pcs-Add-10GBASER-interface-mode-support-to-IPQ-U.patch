@@ -1,0 +1,120 @@
+From f23eb497c891985126a065f950bc61e9c404bb12 Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Wed, 6 Mar 2024 17:40:52 +0800
+Subject: [PATCH 12/50] net: pcs: Add 10GBASER interface mode support to IPQ
+ UNIPHY PCS driver
+
+10GBASER mode is used when PCS connects with a 10G SFP module.
+
+Change-Id: Ifc3c3bb23811807a9b34e88771aab2c830c2327c
+Signed-off-by: Lei Wei <quic_leiwei@quicinc.com>
+---
+ drivers/net/pcs/pcs-qcom-ipq-uniphy.c | 48 +++++++++++++++++++++++++++
+ 1 file changed, 48 insertions(+)
+
+--- a/drivers/net/pcs/pcs-qcom-ipq-uniphy.c
++++ b/drivers/net/pcs/pcs-qcom-ipq-uniphy.c
+@@ -57,6 +57,9 @@
+ 					 FIELD_PREP(GENMASK(9, 2), \
+ 					 FIELD_GET(XPCS_INDIRECT_ADDR_L, reg)))
+ 
++#define XPCS_10GBASER_STS		0x30020
++#define XPCS_10GBASER_LINK_STS		BIT(12)
++
+ #define XPCS_DIG_CTRL			0x38000
+ #define XPCS_USXG_ADPT_RESET		BIT(10)
+ #define XPCS_USXG_EN			BIT(9)
+@@ -320,6 +323,23 @@ static void ipq_unipcs_get_state_usxgmii
+ 		state->duplex = DUPLEX_HALF;
+ }
+ 
++static void ipq_unipcs_get_state_10gbaser(struct ipq_uniphy_pcs *qunipcs,
++					  struct phylink_link_state *state)
++{
++	u32 val;
++
++	val = ipq_unipcs_reg_read32(qunipcs, XPCS_10GBASER_STS);
++
++	state->link = !!(val & XPCS_10GBASER_LINK_STS);
++
++	if (!state->link)
++		return;
++
++	state->speed = SPEED_10000;
++	state->duplex = DUPLEX_FULL;
++	state->pause |= MLO_PAUSE_TXRX_MASK;
++}
++
+ static int ipq_unipcs_config_mode(struct ipq_uniphy_pcs *qunipcs,
+ 				  phy_interface_t interface)
+ {
+@@ -354,6 +374,7 @@ static int ipq_unipcs_config_mode(struct
+ 					PCS_MODE_PSGMII);
+ 		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
+ 		rate = 312500000;
+ 		ipq_unipcs_reg_modify32(qunipcs, PCS_MODE_CTRL,
+ 					PCS_MODE_SEL_MASK,
+@@ -461,6 +482,25 @@ static int ipq_unipcs_config_usxgmii(str
+ 	return 0;
+ }
+ 
++static int ipq_unipcs_config_10gbaser(struct ipq_uniphy_pcs *qunipcs,
++				      phy_interface_t interface)
++{
++	int ret;
++
++	if (qunipcs->interface != interface) {
++		ret = ipq_unipcs_config_mode(qunipcs, interface);
++		if (ret)
++			return ret;
++
++		/* Deassert XPCS */
++		reset_control_deassert(qunipcs->reset[XPCS_RESET]);
++
++		qunipcs->interface = interface;
++	}
++
++	return 0;
++}
++
+ static unsigned long ipq_unipcs_clock_rate_get_gmii(int speed)
+ {
+ 	unsigned long rate = 0;
+@@ -527,6 +567,7 @@ ipq_unipcs_link_up_clock_rate_set(struct
+ 		rate = ipq_unipcs_clock_rate_get_gmii(speed);
+ 		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
+ 		rate = ipq_unipcs_clock_rate_get_xgmii(speed);
+ 		break;
+ 	default:
+@@ -644,6 +685,9 @@ static void ipq_unipcs_get_state(struct
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		ipq_unipcs_get_state_usxgmii(qunipcs, state);
+ 		break;
++	case PHY_INTERFACE_MODE_10GBASER:
++		ipq_unipcs_get_state_10gbaser(qunipcs, state);
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -675,6 +719,8 @@ static int ipq_unipcs_config(struct phyl
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		return ipq_unipcs_config_usxgmii(qunipcs,
+ 						 neg_mode, interface);
++	case PHY_INTERFACE_MODE_10GBASER:
++		return ipq_unipcs_config_10gbaser(qunipcs, interface);
+ 	default:
+ 		dev_err(qunipcs->dev,
+ 			"interface %s not supported\n", phy_modes(interface));
+@@ -705,6 +751,8 @@ static void ipq_unipcs_link_up(struct ph
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		ipq_unipcs_link_up_config_usxgmii(qunipcs, speed);
+ 		break;
++	case PHY_INTERFACE_MODE_10GBASER:
++		break;
+ 	default:
+ 		dev_err(qunipcs->dev,
+ 			"interface %s not supported\n", phy_modes(interface));

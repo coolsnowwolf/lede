@@ -1,0 +1,171 @@
+From 392a648b7b0324d03e6f6a7b326e33136d79b134 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Thu, 25 Jan 2024 17:13:24 +0800
+Subject: [PATCH 08/50] net: phy: qca808x: Add QCA8084 package init function
+
+The package mode of PHY is configured for the interface mode of two
+PCSes working correctly.
+
+The PHY package level clocks are enabled and their rates configured.
+
+Change-Id: I63d4b22d2a70ee713cc6a6818b0f3c7aa098a5f5
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/phy/qcom/qca808x.c | 115 +++++++++++++++++++++++++++++++++
+ 1 file changed, 115 insertions(+)
+
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ 
++#include <dt-bindings/net/qcom,qca808x.h>
+ #include <linux/phy.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+@@ -145,6 +146,13 @@
+ #define QCA8084_EPHY_ADDR3_MASK			GENMASK(19, 15)
+ #define QCA8084_EPHY_LDO_EN			GENMASK(21, 20)
+ 
++#define QCA8084_WORK_MODE_CFG			0xc90f030
++#define QCA8084_WORK_MODE_MASK			GENMASK(5, 0)
++#define QCA8084_WORK_MODE_QXGMII		(BIT(5) | GENMASK(3, 0))
++#define QCA8084_WORK_MODE_QXGMII_PORT4_SGMII	(BIT(5) | GENMASK(2, 0))
++#define QCA8084_WORK_MODE_SWITCH		BIT(4)
++#define QCA8084_WORK_MODE_SWITCH_PORT4_SGMII	BIT(5)
++
+ MODULE_DESCRIPTION("Qualcomm Atheros QCA808X PHY driver");
+ MODULE_AUTHOR("Matus Ujhelyi, Luo Jie");
+ MODULE_LICENSE("GPL");
+@@ -165,6 +173,7 @@ struct qca808x_priv {
+ };
+ 
+ struct qca808x_shared_priv {
++	int package_mode;
+ 	struct clk *clk[PACKAGE_CLK_MAX];
+ };
+ 
+@@ -808,10 +817,107 @@ static int qca808x_led_polarity_set(stru
+ 			      active_low ? 0 : QCA808X_LED_ACTIVE_HIGH);
+ }
+ 
++static int qca8084_package_clock_init(struct qca808x_shared_priv *shared_priv)
++{
++	int ret;
++
++	/* Configure clock rate 312.5MHZ for the PHY package
++	 * APB bridge clock tree.
++	 */
++	ret = clk_set_rate(shared_priv->clk[APB_BRIDGE_CLK], 312500000);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[APB_BRIDGE_CLK]);
++	if (ret)
++		return ret;
++
++	/* Configure clock rate 104.17MHZ for the PHY package
++	 * AHB clock tree.
++	 */
++	ret = clk_set_rate(shared_priv->clk[AHB_CLK], 104170000);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[AHB_CLK]);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[SEC_CTRL_AHB_CLK]);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[TLMM_CLK]);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[TLMM_AHB_CLK]);
++	if (ret)
++		return ret;
++
++	ret = clk_prepare_enable(shared_priv->clk[CNOC_AHB_CLK]);
++	if (ret)
++		return ret;
++
++	return clk_prepare_enable(shared_priv->clk[MDIO_AHB_CLK]);
++}
++
++static int qca8084_phy_package_config_init_once(struct phy_device *phydev)
++{
++	struct phy_package_shared *shared = phydev->shared;
++	struct qca808x_shared_priv *shared_priv;
++	int ret, mode;
++
++	shared_priv = shared->priv;
++	switch (shared_priv->package_mode) {
++	case QCA808X_PCS1_10G_QXGMII_PCS0_UNUNSED:
++		mode = QCA8084_WORK_MODE_QXGMII;
++		break;
++	case QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_MAC:
++		mode = QCA8084_WORK_MODE_SWITCH;
++		break;
++	case QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_PHY:
++		mode = QCA8084_WORK_MODE_SWITCH_PORT4_SGMII;
++		break;
++	default:
++		phydev_err(phydev, "Invalid qcom,package-mode %d\n",
++			   shared_priv->package_mode);
++		return -EINVAL;
++	}
++
++	ret = qca8084_mii_modify(phydev, QCA8084_WORK_MODE_CFG,
++				 QCA8084_WORK_MODE_MASK,
++				 FIELD_PREP(QCA8084_WORK_MODE_MASK, mode));
++	if (ret)
++		return ret;
++
++	/* Initialize the PHY package clock and reset, which is the
++	 * necessary config sequence after GPIO reset on the PHY package.
++	 */
++	ret = qca8084_package_clock_init(shared_priv);
++	if (ret)
++		return ret;
++
++	/* Enable efuse loading into analog circuit */
++	ret = qca8084_mii_modify(phydev, QCA8084_EPHY_CFG,
++				 QCA8084_EPHY_LDO_EN, 0);
++	if (ret)
++		return ret;
++
++	usleep_range(10000, 11000);
++	return ret;
++}
++
+ static int qca8084_config_init(struct phy_device *phydev)
+ {
+ 	int ret;
+ 
++	if (phy_package_init_once(phydev)) {
++		ret = qca8084_phy_package_config_init_once(phydev);
++		if (ret)
++			return ret;
++	}
++
+ 	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII)
+ 		__set_bit(PHY_INTERFACE_MODE_10G_QXGMII,
+ 			  phydev->possible_interfaces);
+@@ -948,6 +1054,15 @@ static int qca8084_phy_package_probe_onc
+ 		return dev_err_probe(&phydev->mdio.dev, PTR_ERR(rstc),
+ 				     "package reset not ready\n");
+ 
++	/* The package mode 10G-QXGMII of PCS1 is used for Quad PHY and
++	 * PCS0 is unused by default.
++	 */
++	shared_priv->package_mode = QCA808X_PCS1_10G_QXGMII_PCS0_UNUNSED;
++	ret = of_property_read_u32(shared->np, "qcom,package-mode",
++				   &shared_priv->package_mode);
++	if (ret && ret != -EINVAL)
++		return ret;
++
+ 	/* Deassert PHY package. */
+ 	return reset_control_deassert(rstc);
+ }

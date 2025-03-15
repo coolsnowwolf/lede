@@ -1,0 +1,118 @@
+From 51e32e897539663957f7a0950f66b48f8896efee Mon Sep 17 00:00:00 2001
+From: Cristian Ciocaltea <cristian.ciocaltea@collabora.com>
+Date: Sat, 19 Oct 2024 14:16:00 +0300
+Subject: [PATCH] clk: Provide devm_clk_bulk_get_all_enabled() helper
+
+Commit 265b07df758a ("clk: Provide managed helper to get and enable bulk
+clocks") added devm_clk_bulk_get_all_enable() function, but missed to
+return the number of clocks stored in the clk_bulk_data table referenced
+by the clks argument.  Without knowing the number, it's not possible to
+iterate these clocks when needed, hence the argument is useless and
+could have been simply removed.
+
+Introduce devm_clk_bulk_get_all_enabled() variant, which is consistent
+with devm_clk_bulk_get_all() in terms of the returned value:
+
+ > 0 if one or more clocks have been stored
+ = 0 if there are no clocks
+ < 0 if an error occurred
+
+Moreover, the naming is consistent with devm_clk_get_enabled(), i.e. use
+the past form of 'enable'.
+
+To reduce code duplication and improve patch readability, make
+devm_clk_bulk_get_all_enable() use the new helper, as suggested by
+Stephen Boyd.
+
+Reviewed-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Reviewed-by: Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>
+Signed-off-by: Cristian Ciocaltea <cristian.ciocaltea@collabora.com>
+Link: https://lore.kernel.org/r/20241019-clk_bulk_ena_fix-v4-1-57f108f64e70@collabora.com
+Signed-off-by: Stephen Boyd <sboyd@kernel.org>
+---
+ drivers/clk/clk-devres.c |  9 +++++----
+ include/linux/clk.h      | 21 ++++++++++++++++-----
+ 2 files changed, 21 insertions(+), 9 deletions(-)
+
+--- a/drivers/clk/clk-devres.c
++++ b/drivers/clk/clk-devres.c
+@@ -190,8 +190,8 @@ static void devm_clk_bulk_release_all_en
+ 	clk_bulk_put_all(devres->num_clks, devres->clks);
+ }
+ 
+-int __must_check devm_clk_bulk_get_all_enable(struct device *dev,
+-					      struct clk_bulk_data **clks)
++int __must_check devm_clk_bulk_get_all_enabled(struct device *dev,
++					       struct clk_bulk_data **clks)
+ {
+ 	struct clk_bulk_devres *devres;
+ 	int ret;
+@@ -216,11 +216,12 @@ int __must_check devm_clk_bulk_get_all_e
+ 	} else {
+ 		clk_bulk_put_all(devres->num_clks, devres->clks);
+ 		devres_free(devres);
++		return ret;
+ 	}
+ 
+-	return ret;
++	return devres->num_clks;
+ }
+-EXPORT_SYMBOL_GPL(devm_clk_bulk_get_all_enable);
++EXPORT_SYMBOL_GPL(devm_clk_bulk_get_all_enabled);
+ 
+ static int devm_clk_match(struct device *dev, void *res, void *data)
+ {
+--- a/include/linux/clk.h
++++ b/include/linux/clk.h
+@@ -479,11 +479,13 @@ int __must_check devm_clk_bulk_get_all(s
+ 				       struct clk_bulk_data **clks);
+ 
+ /**
+- * devm_clk_bulk_get_all_enable - Get and enable all clocks of the consumer (managed)
++ * devm_clk_bulk_get_all_enabled - Get and enable all clocks of the consumer (managed)
+  * @dev: device for clock "consumer"
+  * @clks: pointer to the clk_bulk_data table of consumer
+  *
+- * Returns success (0) or negative errno.
++ * Returns a positive value for the number of clocks obtained while the
++ * clock references are stored in the clk_bulk_data table in @clks field.
++ * Returns 0 if there're none and a negative value if something failed.
+  *
+  * This helper function allows drivers to get all clocks of the
+  * consumer and enables them in one operation with management.
+@@ -491,8 +493,8 @@ int __must_check devm_clk_bulk_get_all(s
+  * is unbound.
+  */
+ 
+-int __must_check devm_clk_bulk_get_all_enable(struct device *dev,
+-					      struct clk_bulk_data **clks);
++int __must_check devm_clk_bulk_get_all_enabled(struct device *dev,
++					       struct clk_bulk_data **clks);
+ 
+ /**
+  * devm_clk_get - lookup and obtain a managed reference to a clock producer.
+@@ -984,7 +986,7 @@ static inline int __must_check devm_clk_
+ 	return 0;
+ }
+ 
+-static inline int __must_check devm_clk_bulk_get_all_enable(struct device *dev,
++static inline int __must_check devm_clk_bulk_get_all_enabled(struct device *dev,
+ 						struct clk_bulk_data **clks)
+ {
+ 	return 0;
+@@ -1086,6 +1088,15 @@ static inline void clk_restore_context(v
+ 
+ #endif
+ 
++/* Deprecated. Use devm_clk_bulk_get_all_enabled() */
++static inline int __must_check
++devm_clk_bulk_get_all_enable(struct device *dev, struct clk_bulk_data **clks)
++{
++	int ret = devm_clk_bulk_get_all_enabled(dev, clks);
++
++	return ret > 0 ? 0 : ret;
++}
++
+ /* clk_prepare_enable helps cases using clk_enable in non-atomic context. */
+ static inline int clk_prepare_enable(struct clk *clk)
+ {

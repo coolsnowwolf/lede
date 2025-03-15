@@ -1,0 +1,159 @@
+From 809513a92e3aef6ae852b35e118408059929d6d3 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Wed, 27 Dec 2023 15:44:37 +0800
+Subject: [PATCH 26/50] net: ethernet: qualcomm: Add PPE queue map function
+
+Configure the queues of CPU port mapped with the EDMA ring.
+
+All queues of CPU port are mappled to the EDMA ring 0 by default,
+which can be updated by EDMA driver.
+
+Change-Id: I87ab4117af86e4b3fe7a4b41490ba8ac71ce29ef
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/ppe_api.c   | 23 ++++++++++
+ drivers/net/ethernet/qualcomm/ppe/ppe_api.h   |  2 +
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 45 ++++++++++++++++++-
+ .../net/ethernet/qualcomm/ppe/ppe_config.h    |  5 +++
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  |  5 +++
+ 5 files changed, 79 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_api.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_api.c
+@@ -82,3 +82,26 @@ int ppe_edma_queue_resource_get(struct p
+ 
+ 	return ppe_port_resource_get(ppe_dev, 0, type, res_start, res_end);
+ };
++
++/**
++ * ppe_edma_ring_to_queues_config - Map EDMA ring to PPE queues
++ * @ppe_dev: PPE device
++ * @ring_id: EDMA ring ID
++ * @num: Number of queues mapped to EDMA ring
++ * @queues: PPE queue IDs
++ *
++ * PPE queues are configured to map with the special EDMA ring ID.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_edma_ring_to_queues_config(struct ppe_device *ppe_dev, int ring_id,
++				   int num, int queues[] __counted_by(num))
++{
++	u32 queue_bmap[PPE_RING_MAPPED_BP_QUEUE_WORD_COUNT] = {};
++	int index;
++
++	for (index = 0; index < num; index++)
++		queue_bmap[queues[index] / 32] |= BIT_MASK(queues[index] % 32);
++
++	return ppe_ring_queue_map_set(ppe_dev, ring_id, queue_bmap);
++}
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_api.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_api.h
+@@ -55,4 +55,6 @@ int ppe_edma_queue_offset_config(struct
+ 				 int index, int queue_offset);
+ int ppe_edma_queue_resource_get(struct ppe_device *ppe_dev, int type,
+ 				int *res_start, int *res_end);
++int ppe_edma_ring_to_queues_config(struct ppe_device *ppe_dev, int ring_id,
++				   int num, int queues[] __counted_by(num));
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -1419,6 +1419,28 @@ int ppe_rss_hash_config_set(struct ppe_d
+ 	return 0;
+ }
+ 
++/**
++ * ppe_ring_queue_map_set - Set PPE queue mapped with EDMA ring
++ * @ppe_dev: PPE device
++ * @ring_id: EDMA ring ID
++ * @queue_map: Queue bit map
++ *
++ * PPE queue is configured to use the special Ring.
++ *
++ * Return 0 on success, negative error code on failure.
++ */
++int ppe_ring_queue_map_set(struct ppe_device *ppe_dev, int ring_id, u32 *queue_map)
++{
++	u32 reg, queue_bitmap_val[PPE_RING_MAPPED_BP_QUEUE_WORD_COUNT];
++
++	memcpy(queue_bitmap_val, queue_map, sizeof(queue_bitmap_val));
++	reg = PPE_RING_Q_MAP_TBL_ADDR + PPE_RING_Q_MAP_TBL_INC * ring_id;
++
++	return regmap_bulk_write(ppe_dev->regmap, reg,
++				 queue_bitmap_val,
++				 ARRAY_SIZE(queue_bitmap_val));
++}
++
+ static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
+ 				   struct ppe_bm_port_config port_cfg)
+ {
+@@ -1918,6 +1940,23 @@ static int ppe_rss_hash_init(struct ppe_
+ 	return ppe_rss_hash_config_set(ppe_dev, PPE_RSS_HASH_MODE_IPV6, hash_cfg);
+ }
+ 
++/* Initialize queues of CPU port mapped with EDMA ring 0. */
++static int ppe_queues_to_ring_init(struct ppe_device *ppe_dev)
++{
++	u32 queue_bmap[PPE_RING_MAPPED_BP_QUEUE_WORD_COUNT] = {};
++	int ret, queue_id, queue_max;
++
++	ret = ppe_port_resource_get(ppe_dev, 0, PPE_RES_UCAST,
++				    &queue_id, &queue_max);
++	if (ret)
++		return ret;
++
++	for (; queue_id <= queue_max; queue_id++)
++		queue_bmap[queue_id / 32] |= BIT_MASK(queue_id % 32);
++
++	return ppe_ring_queue_map_set(ppe_dev, 0, queue_bmap);
++}
++
+ /* Initialize PPE device to handle traffic correctly. */
+ static int ppe_dev_hw_init(struct ppe_device *ppe_dev)
+ {
+@@ -1935,7 +1974,11 @@ static int ppe_dev_hw_init(struct ppe_de
+ 	if (ret)
+ 		return ret;
+ 
+-	return ppe_rss_hash_init(ppe_dev);
++	ret = ppe_rss_hash_init(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_queues_to_ring_init(ppe_dev);
+ }
+ 
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+@@ -20,6 +20,8 @@
+ #define PPE_RSS_HASH_IP_LENGTH			4
+ #define PPE_RSS_HASH_TUPLES			5
+ 
++#define PPE_RING_MAPPED_BP_QUEUE_WORD_COUNT	10
++
+ /**
+  * struct ppe_qos_scheduler_cfg - PPE QoS scheduler configuration.
+  * @flow_id: PPE flow ID.
+@@ -263,4 +265,7 @@ int ppe_servcode_config_set(struct ppe_d
+ int ppe_counter_set(struct ppe_device *ppe_dev, int port, bool enable);
+ int ppe_rss_hash_config_set(struct ppe_device *ppe_dev, int mode,
+ 			    struct ppe_rss_hash_cfg hash_cfg);
++int ppe_ring_queue_map_set(struct ppe_device *ppe_dev,
++			   int ring_id,
++			   u32 *queue_map);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -212,6 +212,11 @@
+ #define PPE_L0_COMP_CFG_TBL_SHAPER_METER_LEN	GENMASK(1, 0)
+ #define PPE_L0_COMP_CFG_TBL_NODE_METER_LEN	GENMASK(3, 2)
+ 
++/* PPE queue bitmap. */
++#define PPE_RING_Q_MAP_TBL_ADDR			0x42a000
++#define PPE_RING_Q_MAP_TBL_NUM			24
++#define PPE_RING_Q_MAP_TBL_INC			0x40
++
+ #define PPE_DEQ_OPR_TBL_ADDR			0x430000
+ #define PPE_DEQ_OPR_TBL_NUM			300
+ #define PPE_DEQ_OPR_TBL_INC			0x10

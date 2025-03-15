@@ -1,0 +1,340 @@
+From ec30075badd13a3e2ffddd1c5dcb40e3c52202ed Mon Sep 17 00:00:00 2001
+From: Pavithra R <quic_pavir@quicinc.com>
+Date: Thu, 30 May 2024 20:46:36 +0530
+Subject: [PATCH 43/50] net: ethernet: qualcomm: Add ethtool support for EDMA
+
+ethtool ops can be used for EDMA netdevice configuration and statistics.
+
+Change-Id: I57fc19415dacbe51fed000520336463938220609
+Signed-off-by: Pavithra R <quic_pavir@quicinc.com>
+---
+ drivers/net/ethernet/qualcomm/ppe/Makefile    |   2 +-
+ drivers/net/ethernet/qualcomm/ppe/edma.h      |   1 +
+ .../net/ethernet/qualcomm/ppe/edma_ethtool.c  | 294 ++++++++++++++++++
+ drivers/net/ethernet/qualcomm/ppe/edma_port.c |   1 +
+ 4 files changed, 297 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/qualcomm/ppe/edma_ethtool.c
+
+--- a/drivers/net/ethernet/qualcomm/ppe/Makefile
++++ b/drivers/net/ethernet/qualcomm/ppe/Makefile
+@@ -7,4 +7,4 @@ obj-$(CONFIG_QCOM_PPE) += qcom-ppe.o
+ qcom-ppe-objs := ppe.o ppe_config.o ppe_api.o ppe_debugfs.o ppe_port.o
+ 
+ #EDMA
+-qcom-ppe-objs += edma.o edma_cfg_rx.o edma_cfg_tx.o edma_debugfs.o edma_port.o edma_rx.o edma_tx.o
++qcom-ppe-objs += edma.o edma_cfg_rx.o edma_cfg_tx.o edma_debugfs.o edma_port.o edma_rx.o edma_tx.o edma_ethtool.o
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.h
+@@ -151,4 +151,5 @@ void edma_destroy(struct ppe_device *ppe
+ int edma_setup(struct ppe_device *ppe_dev);
+ void edma_debugfs_teardown(void);
+ int edma_debugfs_setup(struct ppe_device *ppe_dev);
++void edma_set_ethtool_ops(struct net_device *netdev);
+ #endif
+--- /dev/null
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_ethtool.c
+@@ -0,0 +1,294 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++/* ethtool support for EDMA */
++
++#include <linux/cpumask.h>
++#include <linux/ethtool.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/phylink.h>
++
++#include "edma.h"
++#include "edma_port.h"
++
++struct edma_ethtool_stats {
++	u8 stat_string[ETH_GSTRING_LEN];
++	u32 stat_offset;
++};
++
++/**
++ * struct edma_gmac_stats - Per-GMAC statistics.
++ * @rx_packets: Number of RX packets
++ * @rx_bytes: Number of RX bytes
++ * @rx_dropped: Number of RX dropped packets
++ * @rx_fraglist_packets: Number of RX fraglist packets
++ * @rx_nr_frag_packets: Number of RX nr fragment packets
++ * @rx_nr_frag_headroom_err: Number of RX nr fragment packets with headroom error
++ * @tx_packets: Number of TX packets
++ * @tx_bytes: Number of TX bytes
++ * @tx_dropped: Number of TX dropped packets
++ * @tx_nr_frag_packets: Number of TX nr fragment packets
++ * @tx_fraglist_packets: Number of TX fraglist packets
++ * @tx_fraglist_with_nr_frags_packets: Number of TX fraglist packets with nr fragments
++ * @tx_tso_packets: Number of TX TCP segmentation offload packets
++ * @tx_tso_drop_packets: Number of TX TCP segmentation dropped packets
++ * @tx_gso_packets: Number of TX SW GSO packets
++ * @tx_gso_drop_packets: Number of TX SW GSO dropped packets
++ * @tx_queue_stopped: Number of times Queue got stopped
++ */
++struct edma_gmac_stats {
++	u64 rx_packets;
++	u64 rx_bytes;
++	u64 rx_dropped;
++	u64 rx_fraglist_packets;
++	u64 rx_nr_frag_packets;
++	u64 rx_nr_frag_headroom_err;
++	u64 tx_packets;
++	u64 tx_bytes;
++	u64 tx_dropped;
++	u64 tx_nr_frag_packets;
++	u64 tx_fraglist_packets;
++	u64 tx_fraglist_with_nr_frags_packets;
++	u64 tx_tso_packets;
++	u64 tx_tso_drop_packets;
++	u64 tx_gso_packets;
++	u64 tx_gso_drop_packets;
++	u64 tx_queue_stopped[EDMA_MAX_CORE];
++};
++
++#define EDMA_STAT(m)		offsetof(struct edma_gmac_stats, m)
++
++static const struct edma_ethtool_stats edma_gstrings_stats[] = {
++	{"rx_bytes", EDMA_STAT(rx_bytes)},
++	{"rx_packets", EDMA_STAT(rx_packets)},
++	{"rx_dropped", EDMA_STAT(rx_dropped)},
++	{"rx_fraglist_packets", EDMA_STAT(rx_fraglist_packets)},
++	{"rx_nr_frag_packets", EDMA_STAT(rx_nr_frag_packets)},
++	{"rx_nr_frag_headroom_err", EDMA_STAT(rx_nr_frag_headroom_err)},
++	{"tx_bytes", EDMA_STAT(tx_bytes)},
++	{"tx_packets", EDMA_STAT(tx_packets)},
++	{"tx_dropped", EDMA_STAT(tx_dropped)},
++	{"tx_nr_frag_packets", EDMA_STAT(tx_nr_frag_packets)},
++	{"tx_fraglist_packets", EDMA_STAT(tx_fraglist_packets)},
++	{"tx_fraglist_nr_frags_packets", EDMA_STAT(tx_fraglist_with_nr_frags_packets)},
++	{"tx_tso_packets", EDMA_STAT(tx_tso_packets)},
++	{"tx_tso_drop_packets", EDMA_STAT(tx_tso_drop_packets)},
++	{"tx_gso_packets", EDMA_STAT(tx_gso_packets)},
++	{"tx_gso_drop_packets", EDMA_STAT(tx_gso_drop_packets)},
++	{"tx_queue_stopped_cpu0", EDMA_STAT(tx_queue_stopped[0])},
++	{"tx_queue_stopped_cpu1", EDMA_STAT(tx_queue_stopped[1])},
++	{"tx_queue_stopped_cpu2", EDMA_STAT(tx_queue_stopped[2])},
++	{"tx_queue_stopped_cpu3", EDMA_STAT(tx_queue_stopped[3])},
++};
++
++#define EDMA_STATS_LEN		ARRAY_SIZE(edma_gstrings_stats)
++
++static void edma_port_get_stats(struct net_device *netdev,
++				struct edma_gmac_stats *stats)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct edma_port_rx_stats *pcpu_rx_stats;
++	struct edma_port_tx_stats *pcpu_tx_stats;
++	int i;
++
++	memset(stats, 0, sizeof(struct edma_port_pcpu_stats));
++
++	for_each_possible_cpu(i) {
++		struct edma_port_rx_stats rxp;
++		struct edma_port_tx_stats txp;
++		unsigned int start;
++
++		pcpu_rx_stats = per_cpu_ptr(port_priv->pcpu_stats.rx_stats, i);
++
++		do {
++			start = u64_stats_fetch_begin(&pcpu_rx_stats->syncp);
++			memcpy(&rxp, pcpu_rx_stats, sizeof(*pcpu_rx_stats));
++		} while (u64_stats_fetch_retry(&pcpu_rx_stats->syncp, start));
++
++		stats->rx_packets += rxp.rx_pkts;
++		stats->rx_bytes += rxp.rx_bytes;
++		stats->rx_dropped += rxp.rx_drops;
++		stats->rx_nr_frag_packets += rxp.rx_nr_frag_pkts;
++		stats->rx_fraglist_packets += rxp.rx_fraglist_pkts;
++		stats->rx_nr_frag_headroom_err += rxp.rx_nr_frag_headroom_err;
++
++		pcpu_tx_stats = per_cpu_ptr(port_priv->pcpu_stats.tx_stats, i);
++
++		do {
++			start = u64_stats_fetch_begin(&pcpu_tx_stats->syncp);
++			memcpy(&txp, pcpu_tx_stats, sizeof(*pcpu_tx_stats));
++		} while (u64_stats_fetch_retry(&pcpu_tx_stats->syncp, start));
++
++		stats->tx_packets += txp.tx_pkts;
++		stats->tx_bytes += txp.tx_bytes;
++		stats->tx_dropped += txp.tx_drops;
++		stats->tx_nr_frag_packets += txp.tx_nr_frag_pkts;
++		stats->tx_fraglist_packets += txp.tx_fraglist_pkts;
++		stats->tx_fraglist_with_nr_frags_packets += txp.tx_fraglist_with_nr_frags_pkts;
++		stats->tx_tso_packets += txp.tx_tso_pkts;
++		stats->tx_tso_drop_packets += txp.tx_tso_drop_pkts;
++		stats->tx_gso_packets += txp.tx_gso_pkts;
++		stats->tx_gso_drop_packets += txp.tx_gso_drop_pkts;
++		stats->tx_queue_stopped[i] += txp.tx_queue_stopped[i];
++	}
++}
++
++static void edma_get_ethtool_stats(struct net_device *netdev,
++				   __maybe_unused struct ethtool_stats *stats,
++				   u64 *data)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct edma_gmac_stats edma_stats;
++	u64 *mib_data;
++	int i;
++	u8 *p;
++
++	if (!port_priv)
++		return;
++
++	/* Get the DMA Driver statistics from the data plane if available. */
++	memset(&edma_stats, 0, sizeof(struct edma_gmac_stats));
++	edma_port_get_stats(netdev, &edma_stats);
++
++	 /* Populate data plane statistics. */
++	for (i = 0; i < EDMA_STATS_LEN; i++) {
++		p = ((u8 *)(&edma_stats) + edma_gstrings_stats[i].stat_offset);
++		data[i] = *(u64 *)p;
++	}
++
++	 /* Get the GMAC MIB statistics along with the DMA driver statistics. */
++	mib_data = &data[EDMA_STATS_LEN];
++	ppe_port_get_ethtool_stats(port_priv->ppe_port, mib_data);
++}
++
++static int edma_get_strset_count(struct net_device *netdev, int sset)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	int sset_count = 0;
++
++	if (!port_priv || sset != ETH_SS_STATS)
++		return 0;
++
++	sset_count = ppe_port_get_sset_count(port_priv->ppe_port, sset);
++
++	return (EDMA_STATS_LEN + sset_count);
++}
++
++static void edma_get_strings(struct net_device *netdev, u32 stringset,
++			     u8 *data)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	int i;
++
++	if (!port_priv || stringset != ETH_SS_STATS)
++		return;
++
++	for (i = 0; i < EDMA_STATS_LEN; i++) {
++		memcpy(data, edma_gstrings_stats[i].stat_string,
++		       strlen(edma_gstrings_stats[i].stat_string));
++		data += ETH_GSTRING_LEN;
++	}
++
++	ppe_port_get_strings(port_priv->ppe_port, stringset, data);
++}
++
++static int edma_get_link_ksettings(struct net_device *netdev,
++				   struct ethtool_link_ksettings *cmd)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++
++	if (!port_priv)
++		return -EINVAL;
++
++	return phylink_ethtool_ksettings_get(port->phylink, cmd);
++}
++
++static int edma_set_link_ksettings(struct net_device *netdev,
++				   const struct ethtool_link_ksettings *cmd)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++
++	if (!port_priv)
++		return -EINVAL;
++
++	return phylink_ethtool_ksettings_set(port->phylink, cmd);
++}
++
++static void edma_get_pauseparam(struct net_device *netdev,
++				struct ethtool_pauseparam *pause)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++
++	if (!port_priv)
++		return;
++
++	phylink_ethtool_get_pauseparam(port->phylink, pause);
++}
++
++static int edma_set_pauseparam(struct net_device *netdev,
++			       struct ethtool_pauseparam *pause)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++
++	if (!port_priv)
++		return -EINVAL;
++
++	return phylink_ethtool_set_pauseparam(port->phylink, pause);
++}
++
++static int edma_get_eee(struct net_device *netdev, struct ethtool_eee *eee)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++
++	if (!port_priv)
++		return -EINVAL;
++
++	return phylink_ethtool_get_eee(port->phylink, eee);
++}
++
++static int edma_set_eee(struct net_device *netdev, struct ethtool_eee *eee)
++{
++	struct edma_port_priv *port_priv = (struct edma_port_priv *)netdev_priv(netdev);
++	struct ppe_port *port =  port_priv->ppe_port;
++	int ret;
++
++	if (!port_priv)
++		return -EINVAL;
++
++	ret = ppe_port_set_mac_eee(port_priv->ppe_port, eee);
++	if (ret)
++		return ret;
++
++	return phylink_ethtool_set_eee(port->phylink, eee);
++}
++
++static const struct ethtool_ops edma_ethtool_ops = {
++	.get_strings = &edma_get_strings,
++	.get_sset_count = &edma_get_strset_count,
++	.get_ethtool_stats = &edma_get_ethtool_stats,
++	.get_link = &ethtool_op_get_link,
++	.get_link_ksettings = edma_get_link_ksettings,
++	.set_link_ksettings = edma_set_link_ksettings,
++	.get_pauseparam = &edma_get_pauseparam,
++	.set_pauseparam = &edma_set_pauseparam,
++	.get_eee = &edma_get_eee,
++	.set_eee = &edma_set_eee,
++};
++
++/**
++ * edma_set_ethtool_ops - Set ethtool operations
++ * @netdev: Netdevice
++ *
++ * Set ethtool operations.
++ */
++void edma_set_ethtool_ops(struct net_device *netdev)
++{
++	netdev->ethtool_ops = &edma_ethtool_ops;
++}
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -380,6 +380,7 @@ int edma_port_setup(struct ppe_port *por
+ 	netdev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+ 	netdev->netdev_ops = &edma_port_netdev_ops;
+ 	netdev->gso_max_segs = GSO_MAX_SEGS;
++	edma_set_ethtool_ops(netdev);
+ 
+ 	maddr = mac_addr;
+ 	if (of_get_mac_address(np, maddr))

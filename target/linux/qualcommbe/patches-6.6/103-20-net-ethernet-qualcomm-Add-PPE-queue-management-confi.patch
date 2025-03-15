@@ -1,0 +1,315 @@
+From 12a50075552d0e2ada65c039e5a09ca50421f152 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Tue, 26 Dec 2023 19:34:49 +0800
+Subject: [PATCH 20/50] net: ethernet: qualcomm: Add PPE queue management
+ config
+
+QM (queue management) config decides the length of PPE port queues
+and the threshold to drop packet.
+
+There are two types of PPE queue, unicast queue (0-255) and multicast
+queue (256-299) are configured with different length, which are used
+to forward the different types of traffic.
+
+Change-Id: I74ffcb6a39618ca8f585b5204d483fb45edecba8
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 176 +++++++++++++++++-
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  |  82 ++++++++
+ 2 files changed, 257 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -43,6 +43,27 @@ struct ppe_bm_port_config {
+ 	bool dynamic;
+ };
+ 
++/**
++ * struct ppe_qm_queue_config - PPE queue config.
++ * @queue_start: PPE start of queue ID.
++ * @queue_end: PPE end of queue ID.
++ * @prealloc_buf: Queue dedicated buffer number.
++ * @ceil: Ceil to start drop packet from queue.
++ * @weight: Weight value.
++ * @resume_offset: Resume offset from the threshold.
++ * @dynamic: Threshold value is decided dynamically or statically.
++ *
++ */
++struct ppe_qm_queue_config {
++	unsigned int queue_start;
++	unsigned int queue_end;
++	unsigned int prealloc_buf;
++	unsigned int ceil;
++	unsigned int weight;
++	unsigned int resume_offset;
++	bool dynamic;
++};
++
+ static int ipq9574_ppe_bm_group_config = 1550;
+ static struct ppe_bm_port_config ipq9574_ppe_bm_port_config[] = {
+ 	{
+@@ -91,6 +112,31 @@ static struct ppe_bm_port_config ipq9574
+ 	},
+ };
+ 
++/* Default QM group settings for IPQ9754. */
++static int ipq9574_ppe_qm_group_config = 2000;
++
++/* Default QM settings for unicast and multicast queues for IPQ9754. */
++static struct ppe_qm_queue_config ipq9574_ppe_qm_queue_config[] = {
++	{
++		.queue_start	= 0,
++		.queue_end	= 255,
++		.prealloc_buf	= 0,
++		.ceil		= 400,
++		.weight		= 4,
++		.resume_offset	= 36,
++		.dynamic	= true,
++	},
++	{
++		.queue_start	= 256,
++		.queue_end	= 299,
++		.prealloc_buf	= 0,
++		.ceil		= 250,
++		.weight		= 0,
++		.resume_offset	= 36,
++		.dynamic	= false,
++	},
++};
++
+ static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
+ 				   struct ppe_bm_port_config port_cfg)
+ {
+@@ -175,7 +221,135 @@ bm_config_fail:
+ 	return ret;
+ }
+ 
++/* Configure PPE hardware queue depth, which is decided by the threshold
++ * of queue.
++ */
++static int ppe_config_qm(struct ppe_device *ppe_dev)
++{
++	struct ppe_qm_queue_config *queue_cfg;
++	int ret, i, queue_id, queue_cfg_count;
++	u32 reg, multicast_queue_cfg[5];
++	u32 unicast_queue_cfg[4];
++	u32 group_cfg[3];
++
++	/* Assign the buffer number to the group 0 by default. */
++	reg = PPE_AC_GRP_CFG_TBL_ADDR;
++	ret = regmap_bulk_read(ppe_dev->regmap, reg,
++			       group_cfg, ARRAY_SIZE(group_cfg));
++	if (ret)
++		goto qm_config_fail;
++
++	PPE_AC_GRP_SET_BUF_LIMIT(group_cfg, ipq9574_ppe_qm_group_config);
++
++	ret = regmap_bulk_write(ppe_dev->regmap, reg,
++				group_cfg, ARRAY_SIZE(group_cfg));
++	if (ret)
++		goto qm_config_fail;
++
++	queue_cfg = ipq9574_ppe_qm_queue_config;
++	queue_cfg_count = ARRAY_SIZE(ipq9574_ppe_qm_queue_config);
++	for (i = 0; i < queue_cfg_count; i++) {
++		queue_id = queue_cfg[i].queue_start;
++
++		/* Configure threshold for dropping packet from unicast queue
++		 * and multicast queue, which belong to the different queue ID.
++		 */
++		while (queue_id <= queue_cfg[i].queue_end) {
++			if (queue_id < PPE_AC_UNI_QUEUE_CFG_TBL_NUM) {
++				reg = PPE_AC_UNI_QUEUE_CFG_TBL_ADDR +
++				      PPE_AC_UNI_QUEUE_CFG_TBL_INC * queue_id;
++
++				ret = regmap_bulk_read(ppe_dev->regmap, reg,
++						       unicast_queue_cfg,
++						       ARRAY_SIZE(unicast_queue_cfg));
++				if (ret)
++					goto qm_config_fail;
++
++				PPE_AC_UNI_QUEUE_SET_EN(unicast_queue_cfg, true);
++				PPE_AC_UNI_QUEUE_SET_GRP_ID(unicast_queue_cfg, 0);
++				PPE_AC_UNI_QUEUE_SET_PRE_LIMIT(unicast_queue_cfg,
++							       queue_cfg[i].prealloc_buf);
++				PPE_AC_UNI_QUEUE_SET_DYNAMIC(unicast_queue_cfg,
++							     queue_cfg[i].dynamic);
++				PPE_AC_UNI_QUEUE_SET_WEIGHT(unicast_queue_cfg,
++							    queue_cfg[i].weight);
++				PPE_AC_UNI_QUEUE_SET_THRESHOLD(unicast_queue_cfg,
++							       queue_cfg[i].ceil);
++				PPE_AC_UNI_QUEUE_SET_GRN_RESUME(unicast_queue_cfg,
++								queue_cfg[i].resume_offset);
++
++				ret = regmap_bulk_write(ppe_dev->regmap, reg,
++							unicast_queue_cfg,
++							ARRAY_SIZE(unicast_queue_cfg));
++				if (ret)
++					goto qm_config_fail;
++			} else {
++				reg = PPE_AC_MUL_QUEUE_CFG_TBL_ADDR +
++				      PPE_AC_MUL_QUEUE_CFG_TBL_INC * queue_id;
++
++				ret = regmap_bulk_read(ppe_dev->regmap, reg,
++						       multicast_queue_cfg,
++						       ARRAY_SIZE(multicast_queue_cfg));
++				if (ret)
++					goto qm_config_fail;
++
++				PPE_AC_MUL_QUEUE_SET_EN(multicast_queue_cfg, true);
++				PPE_AC_MUL_QUEUE_SET_GRN_GRP_ID(multicast_queue_cfg, 0);
++				PPE_AC_MUL_QUEUE_SET_GRN_PRE_LIMIT(multicast_queue_cfg,
++								   queue_cfg[i].prealloc_buf);
++				PPE_AC_MUL_QUEUE_SET_GRN_THRESHOLD(multicast_queue_cfg,
++								   queue_cfg[i].ceil);
++				PPE_AC_MUL_QUEUE_SET_GRN_RESUME(multicast_queue_cfg,
++								queue_cfg[i].resume_offset);
++
++				ret = regmap_bulk_write(ppe_dev->regmap, reg,
++							multicast_queue_cfg,
++							ARRAY_SIZE(multicast_queue_cfg));
++				if (ret)
++					goto qm_config_fail;
++			}
++
++			/* Enable enqueue */
++			reg = PPE_ENQ_OPR_TBL_ADDR + PPE_ENQ_OPR_TBL_INC * queue_id;
++			ret = regmap_update_bits(ppe_dev->regmap, reg,
++						 PPE_ENQ_OPR_TBL_ENQ_DISABLE,
++						 FIELD_PREP(PPE_ENQ_OPR_TBL_ENQ_DISABLE, false));
++			if (ret)
++				goto qm_config_fail;
++
++			/* Enable dequeue */
++			reg = PPE_DEQ_OPR_TBL_ADDR + PPE_DEQ_OPR_TBL_INC * queue_id;
++			ret = regmap_update_bits(ppe_dev->regmap, reg,
++						 PPE_DEQ_OPR_TBL_DEQ_DISABLE,
++						 FIELD_PREP(PPE_ENQ_OPR_TBL_ENQ_DISABLE, false));
++			if (ret)
++				goto qm_config_fail;
++
++			queue_id++;
++		}
++	}
++
++	/* Enable queue counter for all PPE hardware queues. */
++	ret = regmap_update_bits(ppe_dev->regmap, PPE_EG_BRIDGE_CONFIG_ADDR,
++				 PPE_EG_BRIDGE_CONFIG_QUEUE_CNT_EN,
++				 PPE_EG_BRIDGE_CONFIG_QUEUE_CNT_EN);
++	if (ret)
++		goto qm_config_fail;
++
++	return 0;
++
++qm_config_fail:
++	dev_err(ppe_dev->dev, "PPE QM config error %d\n", ret);
++	return ret;
++}
++
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+ {
+-	return ppe_config_bm(ppe_dev);
++	int ret;
++
++	ret = ppe_config_bm(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_config_qm(ppe_dev);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -11,6 +11,14 @@
+  * BM port (0-7) is matched to EDMA port 0, BM port (8-13) is matched
+  * to PPE physical port 1-6, BM port 14 is matched to EIP.
+  */
++#define PPE_EG_BRIDGE_CONFIG_ADDR		0x20044
++#define PPE_EG_BRIDGE_CONFIG_QUEUE_CNT_EN	BIT(2)
++
++#define PPE_DEQ_OPR_TBL_ADDR			0x430000
++#define PPE_DEQ_OPR_TBL_NUM			300
++#define PPE_DEQ_OPR_TBL_INC			0x10
++#define PPE_DEQ_OPR_TBL_DEQ_DISABLE		BIT(0)
++
+ #define PPE_BM_PORT_FC_MODE_ADDR		0x600100
+ #define PPE_BM_PORT_FC_MODE_INC			0x4
+ #define PPE_BM_PORT_FC_MODE_EN			BIT(0)
+@@ -51,4 +59,78 @@
+ #define PPE_BM_PORT_FC_SET_PRE_ALLOC(tbl_cfg, value)	\
+ 	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_BM_PORT_FC_W1_PRE_ALLOC)
+ 
++/* PPE unicast queue (0-255) configurations. */
++#define PPE_AC_UNI_QUEUE_CFG_TBL_ADDR		0x848000
++#define PPE_AC_UNI_QUEUE_CFG_TBL_NUM		256
++#define PPE_AC_UNI_QUEUE_CFG_TBL_INC		0x10
++#define PPE_AC_UNI_QUEUE_CFG_W0_EN		BIT(0)
++#define PPE_AC_UNI_QUEUE_CFG_W0_WRED_EN		BIT(1)
++#define PPE_AC_UNI_QUEUE_CFG_W0_FC_EN		BIT(2)
++#define PPE_AC_UNI_QUEUE_CFG_W0_COLOR_AWARE	BIT(3)
++#define PPE_AC_UNI_QUEUE_CFG_W0_GRP_ID		GENMASK(5, 4)
++#define PPE_AC_UNI_QUEUE_CFG_W0_PRE_LIMIT	GENMASK(16, 6)
++#define PPE_AC_UNI_QUEUE_CFG_W0_DYNAMIC		BIT(17)
++#define PPE_AC_UNI_QUEUE_CFG_W0_WEIGHT		GENMASK(20, 18)
++#define PPE_AC_UNI_QUEUE_CFG_W0_THRESHOLD	GENMASK(31, 21)
++#define PPE_AC_UNI_QUEUE_CFG_W3_GRN_RESUME	GENMASK(23, 13)
++
++#define PPE_AC_UNI_QUEUE_SET_EN(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_EN)
++#define PPE_AC_UNI_QUEUE_SET_GRP_ID(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_GRP_ID)
++#define PPE_AC_UNI_QUEUE_SET_PRE_LIMIT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_PRE_LIMIT)
++#define PPE_AC_UNI_QUEUE_SET_DYNAMIC(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_DYNAMIC)
++#define PPE_AC_UNI_QUEUE_SET_WEIGHT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_WEIGHT)
++#define PPE_AC_UNI_QUEUE_SET_THRESHOLD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_UNI_QUEUE_CFG_W0_THRESHOLD)
++#define PPE_AC_UNI_QUEUE_SET_GRN_RESUME(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x3, value, PPE_AC_UNI_QUEUE_CFG_W3_GRN_RESUME)
++
++/* PPE multicast queue (256-299) configurations. */
++#define PPE_AC_MUL_QUEUE_CFG_TBL_ADDR		0x84a000
++#define PPE_AC_MUL_QUEUE_CFG_TBL_NUM		44
++#define PPE_AC_MUL_QUEUE_CFG_TBL_INC		0x10
++#define PPE_AC_MUL_QUEUE_CFG_W0_EN		BIT(0)
++#define PPE_AC_MUL_QUEUE_CFG_W0_FC_EN		BIT(1)
++#define PPE_AC_MUL_QUEUE_CFG_W0_COLOR_AWARE	BIT(2)
++#define PPE_AC_MUL_QUEUE_CFG_W0_GRP_ID		GENMASK(4, 3)
++#define PPE_AC_MUL_QUEUE_CFG_W0_PRE_LIMIT	GENMASK(15, 5)
++#define PPE_AC_MUL_QUEUE_CFG_W0_THRESHOLD	GENMASK(26, 16)
++#define PPE_AC_MUL_QUEUE_CFG_W2_RESUME		GENMASK(17, 7)
++
++#define PPE_AC_MUL_QUEUE_SET_EN(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_MUL_QUEUE_CFG_W0_EN)
++#define PPE_AC_MUL_QUEUE_SET_GRN_GRP_ID(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_MUL_QUEUE_CFG_W0_GRP_ID)
++#define PPE_AC_MUL_QUEUE_SET_GRN_PRE_LIMIT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_MUL_QUEUE_CFG_W0_PRE_LIMIT)
++#define PPE_AC_MUL_QUEUE_SET_GRN_THRESHOLD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_AC_MUL_QUEUE_CFG_W0_THRESHOLD)
++#define PPE_AC_MUL_QUEUE_SET_GRN_RESUME(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x2, value, PPE_AC_MUL_QUEUE_CFG_W2_RESUME)
++
++/* PPE admission control group (0-3) configurations */
++#define PPE_AC_GRP_CFG_TBL_ADDR			0x84c000
++#define PPE_AC_GRP_CFG_TBL_NUM			0x4
++#define PPE_AC_GRP_CFG_TBL_INC			0x10
++#define PPE_AC_GRP_W0_AC_EN			BIT(0)
++#define PPE_AC_GRP_W0_AC_FC_EN			BIT(1)
++#define PPE_AC_GRP_W0_COLOR_AWARE		BIT(2)
++#define PPE_AC_GRP_W0_THRESHOLD_LOW		GENMASK(31, 25)
++#define PPE_AC_GRP_W1_THRESHOLD_HIGH		GENMASK(3, 0)
++#define PPE_AC_GRP_W1_BUF_LIMIT			GENMASK(14, 4)
++#define PPE_AC_GRP_W2_RESUME_GRN		GENMASK(15, 5)
++#define PPE_AC_GRP_W2_PRE_ALLOC			GENMASK(26, 16)
++
++#define PPE_AC_GRP_SET_BUF_LIMIT(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_AC_GRP_W1_BUF_LIMIT)
++
++#define PPE_ENQ_OPR_TBL_ADDR			0x85c000
++#define PPE_ENQ_OPR_TBL_NUM			300
++#define PPE_ENQ_OPR_TBL_INC			0x10
++#define PPE_ENQ_OPR_TBL_ENQ_DISABLE		BIT(0)
++
+ #endif
