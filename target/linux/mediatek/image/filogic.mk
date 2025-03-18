@@ -366,6 +366,34 @@ define Device/cudy_tr3000-v1
 endef
 TARGET_DEVICES += cudy_tr3000-v1
 
+define Device/e-life_etr631-t
+  DEVICE_VENDOR := E-life
+  DEVICE_MODEL := ETR631-T
+  DEVICE_DTS := mt7981b-e-life-etr631-t
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += e-life_etr631-t
+
+define Device/e-life_etr635-u
+  DEVICE_VENDOR := E-life
+  DEVICE_MODEL := ETR635-U
+  DEVICE_DTS := mt7981b-e-life-etr635-u
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += e-life_etr635-u
+
 define Device/fzs_5gcpe-p3
   DEVICE_VENDOR := FZS
   DEVICE_MODEL := 5GCPE P3
@@ -539,6 +567,20 @@ define Device/jdcloud_re-cs-05
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += jdcloud_re-cs-05
+
+define Device/konka_komi-a31
+  DEVICE_VENDOR := KONKA
+  DEVICE_MODEL := KOMI A31
+  DEVICE_DTS := mt7981b-konka-komi-a31
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += konka_komi-a31
 
 define Device/mediatek_mt7986a-rfb
   DEVICE_VENDOR := MediaTek
