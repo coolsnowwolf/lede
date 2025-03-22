@@ -64,6 +64,9 @@ define Package/brcmfmac-firmware-43752-sdio/install
 	$(LN) \
 		brcmfmac43752-sdio.txt \
 		$(1)/lib/firmware/brcm/brcmfmac43752-sdio.armsom,sige3.txt
+	$(LN) \
+		brcmfmac43752-sdio.txt \
+		$(1)/lib/firmware/brcm/brcmfmac43752-sdio.hinlink,unicombox-v1.txt
 endef
 
 $(eval $(call BuildPackage,brcmfmac-firmware-43752-sdio))

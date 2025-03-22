@@ -283,6 +283,7 @@ define U-Boot/generic-rk3568
     hinlink_opc-h66k \
     hinlink_opc-h68k \
     hinlink_opc-h69k \
+    hinlink_unicombox-v1 \
     lyt_t68m \
     seewo_sv21
 endef
