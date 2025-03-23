@@ -308,6 +308,15 @@ define Device/alfa-network_tube-2hq
 endef
 TARGET_DEVICES += alfa-network_tube-2hq
 
+define Device/alibaba_ap121-db
+  SOC := qca9563
+  DEVICE_VENDOR := Alibaba
+  DEVICE_MODEL := AP121-DB
+  IMAGE_SIZE := 16000k
+  DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += alibaba_ap121-db
+
 define Device/allnet_all-wap02860ac
   $(Device/senao_loader_okli)
   SOC := qca9558
