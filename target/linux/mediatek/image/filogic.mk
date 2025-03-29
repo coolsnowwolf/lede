@@ -869,3 +869,31 @@ define Device/xiaomi_redmi-router-ax6000
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ax6000
+
+define Device/zyxel_ex5700-common
+  DEVICE_VENDOR := ZyXEL
+  DEVICE_DTS := mt7986a-zyxel-ex5700-common
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-ubootenv-nvram kmod-usb3
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 256k
+  PAGESIZE := 4096
+  IMAGE_SIZE := 485888k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+
+define Device/zyxel_ex5700
+  $(call Device/zyxel_ex5700-common)
+  DEVICE_MODEL := EX5700
+  DEVICE_DTS := mt7986a-zyxel-ex5700
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7916-firmware kmod-mt7986-firmware mt7986-wo-firmware
+endef
+TARGET_DEVICES += zyxel_ex5700
+
+define Device/zyxel_ex5700-no-wifi
+  $(call Device/zyxel_ex5700-common)
+  DEVICE_MODEL := EX5700 NO WIFI
+  DEVICE_DTS := mt7986a-zyxel-ex5700-no-wifi
+  DEVICE_PACKAGES := -kmod-mt7915e -kmod-cfg80211
+endef
+TARGET_DEVICES += zyxel_ex5700-no-wifi
