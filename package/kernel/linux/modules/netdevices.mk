@@ -1192,6 +1192,40 @@ endef
 $(eval $(call KernelPackage,iavf))
 
 
+define KernelPackage/ice
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller E810 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_ICE \
+    CONFIG_ICE_HWTS=n \
+    CONFIG_ICE_SWITCHDEV=y
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
+  AUTOLOAD:=$(call AutoProbe,ice)
+endef
+
+define KernelPackage/ice/description
+  Kernel modules for Intel(R) Ethernet Controller E810 Series
+endef
+
+$(eval $(call KernelPackage,ice))
+
+
+define KernelPackage/igc
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller I225 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_IGC
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
+  AUTOLOAD:=$(call AutoLoad,34,igc,1)
+endef
+
+define KernelPackage/igc/description
+  Kernel modules for Intel(R) Ethernet Controller I225 Series
+endef
+
+$(eval $(call KernelPackage,igc))
+
+
 define KernelPackage/b44
   TITLE:=Broadcom 44xx driver
   KCONFIG:=CONFIG_B44
@@ -1845,35 +1879,6 @@ endef
 
 $(eval $(call KernelPackage,sfp))
 
-define KernelPackage/igc
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel(R) Ethernet Controller I225 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  KCONFIG:=CONFIG_IGC
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
-  AUTOLOAD:=$(call AutoLoad,34,igc,1)
-endef
-
-define KernelPackage/igc/description
-  Kernel modules for Intel(R) Ethernet Controller I225 Series
-endef
-
-$(eval $(call KernelPackage,igc))
-
-define KernelPackage/ice
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel(R) Ethernet Controller E810 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  KCONFIG:=CONFIG_ICE
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
-  AUTOLOAD:=$(call AutoProbe,ice)
-endef
-
-define KernelPackage/ice/description
-  Kernel modules for Intel(R) Ethernet Controller E810 Series
-endef
-
-$(eval $(call KernelPackage,ice))
 
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
