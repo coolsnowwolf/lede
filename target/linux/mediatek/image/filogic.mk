@@ -282,6 +282,35 @@ define Device/cetron_ct3003-mod
 endef
 TARGET_DEVICES += cetron_ct3003-mod
 
+define Device/cmcc_a10
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := A10
+  DEVICE_DTS := mt7981b-cmcc-a10
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  SUPPORTED_DEVICES += mediatek,mt7981-spim-snand-rfb
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+endef
+TARGET_DEVICES += cmcc_a10
+
+define Device/cmcc_a10-mod
+  DEVICE_VENDOR := CMCC
+  DEVICE_MODEL := A10 (U-Boot mod)
+  DEVICE_DTS := mt7981b-cmcc-a10-mod
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+endef
+TARGET_DEVICES += cmcc_a10-mod
+
 define Device/cmcc_rax3000m-emmc
   DEVICE_VENDOR := CMCC
   DEVICE_MODEL := RAX3000M (eMMC version)
@@ -539,6 +568,24 @@ define Device/jdcloud_re-cs-05
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 TARGET_DEVICES += jdcloud_re-cs-05
+
+define Device/konka_komi-a31
+  DEVICE_VENDOR := KONKA
+  DEVICE_MODEL := KOMI A31
+  DEVICE_ALT0_VENDOR := E-life
+  DEVICE_ALT0_MODEL := ETR631-T
+  DEVICE_ALT1_VENDOR := E-life
+  DEVICE_ALT1_MODEL := ETR635-U
+  DEVICE_DTS := mt7981b-konka-komi-a31
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += konka_komi-a31
 
 define Device/mediatek_mt7986a-rfb
   DEVICE_VENDOR := MediaTek

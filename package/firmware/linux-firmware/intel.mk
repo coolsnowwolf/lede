@@ -9,6 +9,15 @@ define Package/ibt-firmware/install
 endef
 $(eval $(call BuildPackage,ibt-firmware))
 
+Package/ice-firmware = $(call Package/firmware-default,Intel ICE firmware)
+define Package/ice-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/intel/ice/ddp
+	$(CP) \
+		$(PKG_BUILD_DIR)/intel/ice/ddp/*.pkg \
+		$(1)/lib/firmware/intel/ice/ddp/ice.pkg
+endef
+$(eval $(call BuildPackage,ice-firmware))
+
 Package/iwl3945-firmware = $(call Package/firmware-default,Intel IWL3945 firmware)
 define Package/iwl3945-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware

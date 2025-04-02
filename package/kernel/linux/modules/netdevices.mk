@@ -1118,7 +1118,6 @@ define KernelPackage/ixgbe
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
   DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +!LINUX_5_4:kmod-mdio-devres
   KCONFIG:=CONFIG_IXGBE \
-    CONFIG_IXGBE_VXLAN=n \
     CONFIG_IXGBE_HWMON=y \
     CONFIG_IXGBE_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbe/ixgbe.ko
@@ -1137,7 +1136,6 @@ define KernelPackage/ixgbevf
   TITLE:=Intel(R) 82599 Virtual Function Ethernet support
   DEPENDS:=@PCI_SUPPORT +kmod-ixgbe
   KCONFIG:=CONFIG_IXGBEVF \
-    CONFIG_IXGBE_VXLAN=n \
     CONFIG_IXGBE_HWMON=y \
     CONFIG_IXGBE_DCA=n
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ixgbevf/ixgbevf.ko
@@ -1154,11 +1152,9 @@ $(eval $(call KernelPackage,ixgbevf))
 define KernelPackage/i40e
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller XL710 Family support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +LINUX_6_12:kmod-libie
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +LINUX_6_12:kmod-libie
   KCONFIG:=CONFIG_I40E \
-    CONFIG_I40E_VXLAN=n \
-    CONFIG_I40E_HWMON=y \
-    CONFIG_I40E_DCA=n
+    CONFIG_I40E_DCB=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/i40e/i40e.ko
   AUTOLOAD:=$(call AutoProbe,i40e)
 endef
@@ -1190,6 +1186,40 @@ define KernelPackage/iavf/description
 endef
 
 $(eval $(call KernelPackage,iavf))
+
+
+define KernelPackage/ice
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller E810 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_ICE \
+    CONFIG_ICE_HWTS=n \
+    CONFIG_ICE_SWITCHDEV=y
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
+  AUTOLOAD:=$(call AutoProbe,ice)
+endef
+
+define KernelPackage/ice/description
+  Kernel modules for Intel(R) Ethernet Controller E810 Series
+endef
+
+$(eval $(call KernelPackage,ice))
+
+
+define KernelPackage/igc
+  SUBMENU:=$(NETWORK_DEVICES_MENU)
+  TITLE:=Intel(R) Ethernet Controller I225 Series support
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  KCONFIG:=CONFIG_IGC
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
+  AUTOLOAD:=$(call AutoLoad,34,igc,1)
+endef
+
+define KernelPackage/igc/description
+  Kernel modules for Intel(R) Ethernet Controller I225 Series
+endef
+
+$(eval $(call KernelPackage,igc))
 
 
 define KernelPackage/b44
@@ -1845,35 +1875,6 @@ endef
 
 $(eval $(call KernelPackage,sfp))
 
-define KernelPackage/igc
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel(R) Ethernet Controller I225 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  KCONFIG:=CONFIG_IGC
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/igc/igc.ko
-  AUTOLOAD:=$(call AutoLoad,34,igc,1)
-endef
-
-define KernelPackage/igc/description
-  Kernel modules for Intel(R) Ethernet Controller I225 Series
-endef
-
-$(eval $(call KernelPackage,igc))
-
-define KernelPackage/ice
-  SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel(R) Ethernet Controller E810 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
-  KCONFIG:=CONFIG_ICE
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
-  AUTOLOAD:=$(call AutoProbe,ice)
-endef
-
-define KernelPackage/ice/description
-  Kernel modules for Intel(R) Ethernet Controller E810 Series
-endef
-
-$(eval $(call KernelPackage,ice))
 
 define KernelPackage/sfc
   SUBMENU:=$(NETWORK_DEVICES_MENU)
