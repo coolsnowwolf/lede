@@ -588,7 +588,7 @@ $(eval $(call KernelPackage,dsa-realtek))
 
 define KernelPackage/dsa-rtl8366rb
   SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Realtek RTL8365MB switch DSA support
+  TITLE:=Realtek RTL8366RB switch DSA support
   DEPENDS:=+kmod-dsa-realtek @!TARGET_x86 @!TARGET_bcm47xx @!TARGET_uml
   KCONFIG:= \
 	CONFIG_NET_DSA_REALTEK_RTL8366RB \
