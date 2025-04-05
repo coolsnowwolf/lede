@@ -1,0 +1,252 @@
+--- a/info.c
++++ b/info.c
+@@ -295,6 +295,151 @@ static void print_pmsr_capabilities(stru
+ 	}
+ }
+ 
++static void print_interface_combinations(struct nlattr *ifcomb, bool radio)
++{
++	const char *indent = radio ? "\t" : "";
++	struct nlattr *nl_combi;
++	bool have_combinations = false;
++	int rem;
++
++	nla_for_each_nested(nl_combi, ifcomb, rem) {
++		static struct nla_policy iface_combination_policy[NUM_NL80211_IFACE_COMB] = {
++			[NL80211_IFACE_COMB_LIMITS] = { .type = NLA_NESTED },
++			[NL80211_IFACE_COMB_MAXNUM] = { .type = NLA_U32 },
++			[NL80211_IFACE_COMB_STA_AP_BI_MATCH] = { .type = NLA_FLAG },
++			[NL80211_IFACE_COMB_NUM_CHANNELS] = { .type = NLA_U32 },
++			[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS] = { .type = NLA_U32 },
++		};
++		struct nlattr *tb_comb[NUM_NL80211_IFACE_COMB];
++		static struct nla_policy iface_limit_policy[NUM_NL80211_IFACE_LIMIT] = {
++			[NL80211_IFACE_LIMIT_TYPES] = { .type = NLA_NESTED },
++			[NL80211_IFACE_LIMIT_MAX] = { .type = NLA_U32 },
++		};
++		struct nlattr *tb_limit[NUM_NL80211_IFACE_LIMIT];
++		struct nlattr *nl_limit;
++		int err, rem_limit;
++		bool comma = false;
++
++		if (radio && nla_type(nl_combi) !=
++			     NL80211_WIPHY_RADIO_ATTR_INTERFACE_COMBINATION)
++			continue;
++
++		if (!have_combinations) {
++			printf("\t%svalid interface combinations:\n", indent);
++			have_combinations = true;
++		}
++
++		printf("\t\t%s * ", indent);
++
++		err = nla_parse_nested(tb_comb, MAX_NL80211_IFACE_COMB,
++					   nl_combi, iface_combination_policy);
++		if (err || !tb_comb[NL80211_IFACE_COMB_LIMITS] ||
++			!tb_comb[NL80211_IFACE_COMB_MAXNUM] ||
++			!tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]) {
++			printf(" <failed to parse>\n");
++			goto broken_combination;
++		}
++
++		nla_for_each_nested(nl_limit, tb_comb[NL80211_IFACE_COMB_LIMITS], rem_limit) {
++			err = nla_parse_nested(tb_limit, MAX_NL80211_IFACE_LIMIT,
++						   nl_limit, iface_limit_policy);
++			if (err || !tb_limit[NL80211_IFACE_LIMIT_TYPES]) {
++				printf("<failed to parse>\n");
++				goto broken_combination;
++			}
++
++			if (comma)
++				printf(", ");
++			comma = true;
++			printf("#{ ");
++			print_iftype_line(tb_limit[NL80211_IFACE_LIMIT_TYPES]);
++			printf(" } <= %u", nla_get_u32(tb_limit[NL80211_IFACE_LIMIT_MAX]));
++		}
++		printf(",\n\t\t%s   ", indent);
++
++		printf("total <= %d, #channels <= %d%s",
++			nla_get_u32(tb_comb[NL80211_IFACE_COMB_MAXNUM]),
++			nla_get_u32(tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]),
++			tb_comb[NL80211_IFACE_COMB_STA_AP_BI_MATCH] ?
++				", STA/AP BI must match" : "");
++		if (tb_comb[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS]) {
++			unsigned long widths = nla_get_u32(tb_comb[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS]);
++
++			if (widths) {
++				int width;
++				bool first = true;
++
++				printf(", radar detect widths: {");
++				for (width = 0; width < 32; width++)
++					if (widths & (1 << width)) {
++						printf("%s %s",
++							   first ? "":",",
++							   channel_width_name(width));
++						first = false;
++					}
++				printf(" }\n");
++			}
++		}
++		printf("\n");
++broken_combination:
++		;
++	}
++
++	if (!have_combinations)
++		printf("\t%sinterface combinations are not supported\n", indent);
++}
++
++static void print_radio_freq(struct nlattr *freqs)
++{
++	struct nlattr *freq;
++	int rem;
++
++	nla_for_each_nested(freq, freqs, rem) {
++		static struct nla_policy freq_policy[NL80211_WIPHY_RADIO_FREQ_ATTR_MAX + 1] = {
++			[NL80211_WIPHY_RADIO_FREQ_ATTR_START] = { .type = NLA_U32 },
++			[NL80211_WIPHY_RADIO_FREQ_ATTR_END] = { .type = NLA_U32 },
++		};
++		struct nlattr *tb[NL80211_WIPHY_RADIO_FREQ_ATTR_MAX + 1];
++		uint32_t start, end;
++
++		if (nla_type(freq) != NL80211_WIPHY_RADIO_ATTR_FREQ_RANGE)
++			continue;
++
++		if (nla_parse_nested(tb, NL80211_WIPHY_RADIO_ATTR_MAX + 1,
++				     freq, freq_policy) ||
++		    !tb[NL80211_WIPHY_RADIO_FREQ_ATTR_START] ||
++		    !tb[NL80211_WIPHY_RADIO_FREQ_ATTR_END])
++			continue;
++
++		start = nla_get_u32(tb[NL80211_WIPHY_RADIO_FREQ_ATTR_START]);
++		end = nla_get_u32(tb[NL80211_WIPHY_RADIO_FREQ_ATTR_END]);
++
++		printf("\t\tfreq range: %.1f MHz - %.1f MHz\n", (float)start / 1000, (float)end / 1000);
++	}
++}
++
++static void print_radios(struct nlattr *radios)
++{
++	struct nlattr *radio;
++	int rem, idx = 0;
++
++	nla_for_each_nested(radio, radios, rem) {
++		static struct nla_policy radio_policy[NL80211_WIPHY_RADIO_ATTR_MAX + 1] = {
++			[NL80211_WIPHY_RADIO_ATTR_INDEX] = { .type = NLA_U32 },
++		};
++		struct nlattr *tb[NL80211_WIPHY_RADIO_ATTR_MAX + 1];
++
++		if (nla_parse_nested(tb, NL80211_WIPHY_RADIO_ATTR_MAX + 1,
++				     radio, radio_policy) ||
++		    !tb[NL80211_WIPHY_RADIO_ATTR_INDEX])
++			continue;
++
++		printf("\twiphy radio %d:\n", nla_get_u32(tb[NL80211_WIPHY_RADIO_ATTR_INDEX]));
++		print_radio_freq(radio);
++		print_interface_combinations(radio, true);
++	}
++}
++
+ static int print_phy_handler(struct nl_msg *msg, void *arg)
+ {
+ 	struct nlattr *tb_msg[NL80211_ATTR_MAX + 1];
+@@ -565,93 +710,11 @@ next:
+ 				  "\t\t", tb_msg[NL80211_ATTR_SOFTWARE_IFTYPES]);
+ #endif
+ 
+-	if (tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS]) {
+-		struct nlattr *nl_combi;
+-		int rem_combi;
+-		bool have_combinations = false;
+-
+-		nla_for_each_nested(nl_combi, tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS], rem_combi) {
+-			static struct nla_policy iface_combination_policy[NUM_NL80211_IFACE_COMB] = {
+-				[NL80211_IFACE_COMB_LIMITS] = { .type = NLA_NESTED },
+-				[NL80211_IFACE_COMB_MAXNUM] = { .type = NLA_U32 },
+-				[NL80211_IFACE_COMB_STA_AP_BI_MATCH] = { .type = NLA_FLAG },
+-				[NL80211_IFACE_COMB_NUM_CHANNELS] = { .type = NLA_U32 },
+-				[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS] = { .type = NLA_U32 },
+-			};
+-			struct nlattr *tb_comb[NUM_NL80211_IFACE_COMB];
+-			static struct nla_policy iface_limit_policy[NUM_NL80211_IFACE_LIMIT] = {
+-				[NL80211_IFACE_LIMIT_TYPES] = { .type = NLA_NESTED },
+-				[NL80211_IFACE_LIMIT_MAX] = { .type = NLA_U32 },
+-			};
+-			struct nlattr *tb_limit[NUM_NL80211_IFACE_LIMIT];
+-			struct nlattr *nl_limit;
+-			int err, rem_limit;
+-			bool comma = false;
+-
+-			if (!have_combinations) {
+-				printf("\tvalid interface combinations:\n");
+-				have_combinations = true;
+-			}
+-
+-			printf("\t\t * ");
++	if (tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS])
++		print_interface_combinations(tb_msg[NL80211_ATTR_INTERFACE_COMBINATIONS], false);
+ 
+-			err = nla_parse_nested(tb_comb, MAX_NL80211_IFACE_COMB,
+-					       nl_combi, iface_combination_policy);
+-			if (err || !tb_comb[NL80211_IFACE_COMB_LIMITS] ||
+-			    !tb_comb[NL80211_IFACE_COMB_MAXNUM] ||
+-			    !tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]) {
+-				printf(" <failed to parse>\n");
+-				goto broken_combination;
+-			}
+-
+-			nla_for_each_nested(nl_limit, tb_comb[NL80211_IFACE_COMB_LIMITS], rem_limit) {
+-				err = nla_parse_nested(tb_limit, MAX_NL80211_IFACE_LIMIT,
+-						       nl_limit, iface_limit_policy);
+-				if (err || !tb_limit[NL80211_IFACE_LIMIT_TYPES]) {
+-					printf("<failed to parse>\n");
+-					goto broken_combination;
+-				}
+-
+-				if (comma)
+-					printf(", ");
+-				comma = true;
+-				printf("#{ ");
+-				print_iftype_line(tb_limit[NL80211_IFACE_LIMIT_TYPES]);
+-				printf(" } <= %u", nla_get_u32(tb_limit[NL80211_IFACE_LIMIT_MAX]));
+-			}
+-			printf(",\n\t\t   ");
+-
+-			printf("total <= %d, #channels <= %d%s",
+-				nla_get_u32(tb_comb[NL80211_IFACE_COMB_MAXNUM]),
+-				nla_get_u32(tb_comb[NL80211_IFACE_COMB_NUM_CHANNELS]),
+-				tb_comb[NL80211_IFACE_COMB_STA_AP_BI_MATCH] ?
+-					", STA/AP BI must match" : "");
+-			if (tb_comb[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS]) {
+-				unsigned long widths = nla_get_u32(tb_comb[NL80211_IFACE_COMB_RADAR_DETECT_WIDTHS]);
+-
+-				if (widths) {
+-					int width;
+-					bool first = true;
+-
+-					printf(", radar detect widths: {");
+-					for (width = 0; width < 32; width++)
+-						if (widths & (1 << width)) {
+-							printf("%s %s",
+-							       first ? "":",",
+-							       channel_width_name(width));
+-							first = false;
+-						}
+-					printf(" }\n");
+-				}
+-			}
+-			printf("\n");
+-broken_combination:
+-			;
+-		}
+-
+-		if (!have_combinations)
+-			printf("\tinterface combinations are not supported\n");
+-	}
++	if (tb_msg[NL80211_ATTR_WIPHY_RADIOS])
++		print_radios(tb_msg[NL80211_ATTR_WIPHY_RADIOS]);
+ 
+ #ifdef IW_FULL
+ 	if (tb_msg[NL80211_ATTR_SUPPORTED_COMMANDS]) {
