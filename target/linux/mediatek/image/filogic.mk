@@ -351,7 +351,7 @@ define Device/cmcc_xr30-nand
   DEVICE_VARIANT := (U-Boot mod)
   DEVICE_DTS := mt7981b-cmcc-xr30-nand
   DEVICE_DTS_DIR := ../dts
-  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3     
+  DEVICE_PACKAGES := kmod-mt7981-firmware mt7981-wo-firmware kmod-usb3
   UBINIZE_OPTS := -E 5
   BLOCKSIZE := 128k
   PAGESIZE := 2048
@@ -499,6 +499,7 @@ define Device/huasifei_wh3000-emmc
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES += huasifei,wh3000
 endef
 TARGET_DEVICES += huasifei_wh3000-emmc
 
@@ -508,11 +509,11 @@ define Device/hf_m7986r1-emmc
   DEVICE_DTS := mt7986a-hf-m7986r1-emmc
   DEVICE_DTS_DIR := ../dts
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-net-rndis kmod-usb-serial-option f2fsck mkf2fs
-  SUPPORTED_DEVICES += HF-M7986R1
   KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
   KERNEL_INITRAMFS := kernel-bin | lzma | \
 	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES += HF-M7986R1
 endef
 TARGET_DEVICES += hf_m7986r1-emmc
 
@@ -526,8 +527,8 @@ define Device/hf_m7986r1-nand
   PAGESIZE := 2048
   KERNEL_IN_UBI := 1
   DEVICE_PACKAGES := kmod-usb3 kmod-mt7921e kmod-usb-net-rndis kmod-usb-serial-option
-  SUPPORTED_DEVICES += HF-M7986R1
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  SUPPORTED_DEVICES += HF-M7986R1
 endef
 TARGET_DEVICES += hf_m7986r1-nand
 
