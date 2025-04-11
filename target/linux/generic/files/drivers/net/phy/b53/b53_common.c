@@ -227,7 +227,7 @@ static void b53_set_vlan_entry(struct b53_device *dev, u16 vid, u16 members,
 	}
 }
 
-void b53_set_forwarding(struct b53_device *dev, int enable)
+static void b53_set_forwarding(struct b53_device *dev, int enable)
 {
 	u8 mgmt;
 
