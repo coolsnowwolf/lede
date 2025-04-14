@@ -1,0 +1,85 @@
+From e184e8609f8c1cd9fef703f667245b6ebd89c2ed Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 3 Oct 2023 14:34:24 +0100
+Subject: [PATCH] net: sfp: re-implement ignoring the hardware TX_FAULT signal
+
+Re-implement how we ignore the hardware TX_FAULT signal. Rather than
+having a separate boolean for this, use a bitmask of the hardware
+signals that we wish to ignore. This gives more flexibility in the
+future to ignore other signals such as RX_LOS.
+
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Tested-by: Christian Marangi <ansuelsmth@gmail.com>
+Link: https://lore.kernel.org/r/E1qnfXc-008UDY-91@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/sfp.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -257,6 +257,7 @@ struct sfp {
+ 	unsigned int state_hw_drive;
+ 	unsigned int state_hw_mask;
+ 	unsigned int state_soft_mask;
++	unsigned int state_ignore_mask;
+ 	unsigned int state;
+ 
+ 	struct delayed_work poll;
+@@ -280,7 +281,6 @@ struct sfp {
+ 	unsigned int rs_state_mask;
+ 
+ 	bool have_a2;
+-	bool tx_fault_ignore;
+ 
+ 	const struct sfp_quirk *quirk;
+ 
+@@ -347,7 +347,7 @@ static void sfp_fixup_long_startup(struc
+ 
+ static void sfp_fixup_ignore_tx_fault(struct sfp *sfp)
+ {
+-	sfp->tx_fault_ignore = true;
++	sfp->state_ignore_mask |= SFP_F_TX_FAULT;
+ }
+ 
+ // For 10GBASE-T short-reach modules
+@@ -796,7 +796,8 @@ static void sfp_soft_start_poll(struct s
+ 
+ 	mutex_lock(&sfp->st_mutex);
+ 	// Poll the soft state for hardware pins we want to ignore
+-	sfp->state_soft_mask = ~sfp->state_hw_mask & mask;
++	sfp->state_soft_mask = ~sfp->state_hw_mask & ~sfp->state_ignore_mask &
++			       mask;
+ 
+ 	if (sfp->state_soft_mask & (SFP_F_LOS | SFP_F_TX_FAULT) &&
+ 	    !sfp->need_poll)
+@@ -2321,7 +2322,7 @@ static int sfp_sm_mod_probe(struct sfp *
+ 	sfp->module_t_start_up = T_START_UP;
+ 	sfp->module_t_wait = T_WAIT;
+ 
+-	sfp->tx_fault_ignore = false;
++	sfp->state_ignore_mask = 0;
+ 
+ 	if (sfp->id.base.extended_cc == SFF8024_ECC_10GBASE_T_SFI ||
+ 	    sfp->id.base.extended_cc == SFF8024_ECC_10GBASE_T_SR ||
+@@ -2344,6 +2345,8 @@ static int sfp_sm_mod_probe(struct sfp *
+ 
+ 	if (sfp->quirk && sfp->quirk->fixup)
+ 		sfp->quirk->fixup(sfp);
++
++	sfp->state_hw_mask &= ~sfp->state_ignore_mask;
+ 	mutex_unlock(&sfp->st_mutex);
+ 
+ 	return 0;
+@@ -2844,10 +2847,7 @@ static void sfp_check_state(struct sfp *
+ 	mutex_lock(&sfp->st_mutex);
+ 	state = sfp_get_state(sfp);
+ 	changed = state ^ sfp->state;
+-	if (sfp->tx_fault_ignore)
+-		changed &= SFP_F_PRESENT | SFP_F_LOS;
+-	else
+-		changed &= SFP_F_PRESENT | SFP_F_LOS | SFP_F_TX_FAULT;
++	changed &= SFP_F_PRESENT | SFP_F_LOS | SFP_F_TX_FAULT;
+ 
+ 	for (i = 0; i < GPIO_MAX; i++)
+ 		if (changed & BIT(i))
