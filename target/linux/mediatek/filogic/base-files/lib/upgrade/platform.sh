@@ -51,6 +51,7 @@ platform_do_upgrade() {
 	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
 	huasifei,wh3000-emmc|\
+	huasifei,wh3000-pro|\
 	jdcloud,re-cs-05)
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
@@ -109,6 +110,7 @@ platform_copy_config() {
 	glinet,gl-xe3000|\
 	hf,m7986r1-emmc|\
 	huasifei,wh3000-emmc|\
+	huasifei,wh3000-pro|\
 	jdcloud,re-cs-05)
 		emmc_copy_config
 		;;
