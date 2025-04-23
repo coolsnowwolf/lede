@@ -20,7 +20,7 @@ define KernelPackage/r8127
   TITLE:=Realtek RTL8127 PCI 10 Gigabit Ethernet driver
   DEPENDS:=@PCI_SUPPORT +kmod-libphy
   FILES:=$(PKG_BUILD_DIR)/src/r8127.ko
-  AUTOLOAD:=$(call AutoProbe,r8127)
+  AUTOLOAD:=$(call AutoProbe,r8127,1)
   PROVIDES:=kmod-r8169
   VARIANT:=regular
 endef
@@ -33,7 +33,9 @@ $(call KernelPackage/r8127)
 endef
 
 ifeq ($(BUILD_VARIANT),rss)
-  PKG_MAKE_FLAGS += ENABLE_RSS_SUPPORT=y
+  PKG_MAKE_FLAGS += \
+    ENABLE_RSS_SUPPORT=y \
+    ENABLE_MULTIPLE_TX_QUEUE=y
 endif
 
 define Build/Compile

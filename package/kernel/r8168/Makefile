@@ -20,7 +20,7 @@ define KernelPackage/r8168
   TITLE:=Realtek RTL8168 PCI Gigabit Ethernet driver
   DEPENDS:=@PCI_SUPPORT +kmod-libphy
   FILES:=$(PKG_BUILD_DIR)/src/r8168.ko
-  AUTOLOAD:=$(call AutoProbe,r8168)
+  AUTOLOAD:=$(call AutoProbe,r8168,1)
   PROVIDES:=kmod-r8169
 endef
 

@@ -20,7 +20,7 @@ define KernelPackage/r8126
   TITLE:=Realtek RTL8126 PCI 5 Gigabit Ethernet driver
   DEPENDS:=@PCI_SUPPORT +kmod-libphy
   FILES:=$(PKG_BUILD_DIR)/src/r8126.ko
-  AUTOLOAD:=$(call AutoProbe,r8126)
+  AUTOLOAD:=$(call AutoProbe,r8126,1)
   PROVIDES:=kmod-r8169
   VARIANT:=regular
 endef

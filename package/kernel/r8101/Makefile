@@ -20,7 +20,7 @@ define KernelPackage/r8101
   TITLE:=Realtek RTL8101 PCI Fast Ethernet driver
   DEPENDS:=@PCI_SUPPORT +kmod-libphy
   FILES:=$(PKG_BUILD_DIR)/src/r8101.ko
-  AUTOLOAD:=$(call AutoProbe,r8101)
+  AUTOLOAD:=$(call AutoProbe,r8101,1)
   PROVIDES:=kmod-r8169
 endef
 
