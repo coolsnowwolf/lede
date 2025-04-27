@@ -1340,6 +1340,7 @@ $(eval $(call KernelPackage,mpls))
 define KernelPackage/9pnet
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Plan 9 Resource Sharing Support (9P2000)
+  DEPENDS:=+!LINUX_6_6:kmod-fs-netfs
   KCONFIG:= \
 	CONFIG_NET_9P \
 	CONFIG_NET_9P_DEBUG=n \
