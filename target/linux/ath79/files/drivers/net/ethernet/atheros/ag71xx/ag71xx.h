@@ -40,7 +40,7 @@
 #include <asm/mach-ath79/ar71xx_regs.h>
 #include <asm/mach-ath79/ath79.h>
 
-#define AG71XX_DRV_NAME		"ag71xx"
+#define AG71XX_DRV_NAME		"ag71xx-legacy"
 
 /*
  * For our NAPI weight bigger does *NOT* mean better - it means more
@@ -65,10 +65,10 @@
 #define AG71XX_TX_RING_SIZE_DEFAULT	128
 #define AG71XX_RX_RING_SIZE_DEFAULT	256
 
-#define AG71XX_TX_RING_SIZE_MAX		128
+#define AG71XX_TX_RING_SIZE_MAX		256
 #define AG71XX_RX_RING_SIZE_MAX		256
 
-#ifdef CONFIG_AG71XX_DEBUG
+#ifdef CONFIG_AG71XX_LEGACY_DEBUG
 #define DBG(fmt, args...)	pr_debug(fmt, ## args)
 #else
 #define DBG(fmt, args...)	do {} while (0)
@@ -195,7 +195,7 @@ struct ag71xx {
 	u32			pllreg[3];
 	struct regmap		*pllregmap;
 
-#ifdef CONFIG_AG71XX_DEBUG_FS
+#ifdef CONFIG_AG71XX_LEGACY_DEBUG_FS
 	struct ag71xx_debug	debug;
 #endif
 };
@@ -310,11 +310,11 @@ ag71xx_ring_size_order(int size)
 #define FIFO_CFG4_MC		BIT(8)	/* Multicast Packet */
 #define FIFO_CFG4_BC		BIT(9)	/* Broadcast Packet */
 #define FIFO_CFG4_DR		BIT(10)	/* Dribble */
-#define FIFO_CFG4_LE		BIT(11)	/* Long Event */
-#define FIFO_CFG4_CF		BIT(12)	/* Control Frame */
-#define FIFO_CFG4_PF		BIT(13)	/* Pause Frame */
-#define FIFO_CFG4_UO		BIT(14)	/* Unsupported Opcode */
-#define FIFO_CFG4_VT		BIT(15)	/* VLAN tag detected */
+#define FIFO_CFG4_CF		BIT(11)	/* Control Frame */
+#define FIFO_CFG4_PF		BIT(12)	/* Pause Frame */
+#define FIFO_CFG4_UO		BIT(13)	/* Unsupported Opcode */
+#define FIFO_CFG4_VT		BIT(14)	/* VLAN tag detected */
+#define FIFO_CFG4_LE		BIT(15)	/* Long Event */
 #define FIFO_CFG4_FT		BIT(16)	/* Frame Truncated */
 #define FIFO_CFG4_UC		BIT(17)	/* Unicast Packet */
 
@@ -322,20 +322,20 @@ ag71xx_ring_size_order(int size)
 #define FIFO_CFG5_DV		BIT(1)	/* RX_DV Event */
 #define FIFO_CFG5_FC		BIT(2)	/* False Carrier */
 #define FIFO_CFG5_CE		BIT(3)	/* Code Error */
-#define FIFO_CFG5_LM		BIT(4)	/* Length Mismatch */
-#define FIFO_CFG5_LO		BIT(5)	/* Length Out of Range */
-#define FIFO_CFG5_OK		BIT(6)	/* Packet is OK */
-#define FIFO_CFG5_MC		BIT(7)	/* Multicast Packet */
-#define FIFO_CFG5_BC		BIT(8)	/* Broadcast Packet */
-#define FIFO_CFG5_DR		BIT(9)	/* Dribble */
-#define FIFO_CFG5_CF		BIT(10)	/* Control Frame */
-#define FIFO_CFG5_PF		BIT(11)	/* Pause Frame */
-#define FIFO_CFG5_UO		BIT(12)	/* Unsupported Opcode */
-#define FIFO_CFG5_VT		BIT(13)	/* VLAN tag detected */
-#define FIFO_CFG5_LE		BIT(14)	/* Long Event */
-#define FIFO_CFG5_FT		BIT(15)	/* Frame Truncated */
-#define FIFO_CFG5_16		BIT(16)	/* unknown */
-#define FIFO_CFG5_17		BIT(17)	/* unknown */
+#define FIFO_CFG5_CR		BIT(4)	/* CRC error */
+#define FIFO_CFG5_LM		BIT(5)	/* Length Mismatch */
+#define FIFO_CFG5_LO		BIT(6)	/* Length out of range */
+#define FIFO_CFG5_OK		BIT(7)	/* Packet is OK */
+#define FIFO_CFG5_MC		BIT(8)	/* Multicast Packet */
+#define FIFO_CFG5_BC		BIT(9)	/* Broadcast Packet */
+#define FIFO_CFG5_DR		BIT(10)	/* Dribble */
+#define FIFO_CFG5_CF		BIT(11)	/* Control Frame */
+#define FIFO_CFG5_PF		BIT(12)	/* Pause Frame */
+#define FIFO_CFG5_UO		BIT(13)	/* Unsupported Opcode */
+#define FIFO_CFG5_VT		BIT(14)	/* VLAN tag detected */
+#define FIFO_CFG5_LE		BIT(15)	/* Long Event */
+#define FIFO_CFG5_FT		BIT(16)	/* Frame Truncated */
+#define FIFO_CFG5_UC		BIT(17)	/* Unicast Packet */
 #define FIFO_CFG5_SF		BIT(18)	/* Short Frame */
 #define FIFO_CFG5_BM		BIT(19)	/* Byte Mode */
 
@@ -425,7 +425,7 @@ static inline void ag71xx_int_disable(struct ag71xx *ag, u32 ints)
 	ag71xx_cb(ag, AG71XX_REG_INT_ENABLE, ints);
 }
 
-#ifdef CONFIG_AG71XX_DEBUG_FS
+#ifdef CONFIG_AG71XX_LEGACY_DEBUG_FS
 int ag71xx_debugfs_root_init(void);
 void ag71xx_debugfs_root_exit(void);
 int ag71xx_debugfs_init(struct ag71xx *ag);
@@ -441,7 +441,7 @@ static inline void ag71xx_debugfs_update_int_stats(struct ag71xx *ag,
 						   u32 status) {}
 static inline void ag71xx_debugfs_update_napi_stats(struct ag71xx *ag,
 						    int rx, int tx) {}
-#endif /* CONFIG_AG71XX_DEBUG_FS */
+#endif /* CONFIG_AG71XX_LEGACY_DEBUG_FS */
 
 int ag71xx_ar7240_init(struct ag71xx *ag, struct device_node *np);
 void ag71xx_ar7240_cleanup(struct ag71xx *ag);

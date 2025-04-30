@@ -105,6 +105,7 @@ static int rb4xx_gpio_probe(struct platform_device *pdev)
 	struct device *parent = dev->parent;
 	struct rb4xx_gpio *gpio;
 	u32 val;
+	int err;
 
 	if (!parent)
 		return -ENODEV;
@@ -117,7 +118,10 @@ static int rb4xx_gpio_probe(struct platform_device *pdev)
 	gpio->cpld	= dev_get_drvdata(parent);
 	gpio->dev	= dev;
 	gpio->values	= 0;
-	mutex_init(&gpio->lock);
+
+	err = devm_mutex_init(&pdev->dev, &gpio->lock);
+	if (err)
+		return err;
 
 	gpio->chip.label		= "rb4xx-gpio";
 	gpio->chip.parent		= dev;
@@ -134,29 +138,11 @@ static int rb4xx_gpio_probe(struct platform_device *pdev)
 	if (!of_property_read_u32(dev->of_node, "base", &val))
 		gpio->chip.base = val;
 
-	return gpiochip_add_data(&gpio->chip, gpio);
+	return devm_gpiochip_add_data(&pdev->dev, &gpio->chip, gpio);
 }
-
-static int rb4xx_gpio_remove(struct platform_device *pdev)
-{
-	struct rb4xx_gpio *gpio = platform_get_drvdata(pdev);
-
-	gpiochip_remove(&gpio->chip);
-	mutex_destroy(&gpio->lock);
-
-	return 0;
-}
-
-static const struct platform_device_id rb4xx_gpio_id_table[] = {
-	{ "mikrotik,rb4xx-gpio", },
-	{ },
-};
-MODULE_DEVICE_TABLE(platform, rb4xx_gpio_id_table);
 
 static struct platform_driver rb4xx_gpio_driver = {
 	.probe = rb4xx_gpio_probe,
-	.remove = rb4xx_gpio_remove,
-	.id_table = rb4xx_gpio_id_table,
 	.driver = {
 		.name = "rb4xx-gpio",
 	},
