@@ -304,7 +304,7 @@ mtk_bmt_get_mapping_mask(void)
 	unsigned long *used;
 	int i, k;
 
-	used = kcalloc(sizeof(unsigned long), BIT_WORD(bmtd.bmt_blk_idx) + 1, GFP_KERNEL);
+	used = kcalloc(BIT_WORD(bmtd.bmt_blk_idx) + 1, sizeof(unsigned long), GFP_KERNEL);
 	if (!used)
 		return NULL;
 
