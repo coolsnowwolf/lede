@@ -1,0 +1,90 @@
+From 4eb0d6f33a7fcc5d5e366ccba09673c7dcfc5e49 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 13 Feb 2025 11:27:00 +0000
+Subject: [PATCH] drm/vc4: PV1 can be driven via any HVS channel, so adapt to
+ allow it
+
+It was noted that if PV1 was in use to drive DSI1, then the
+writeback connector could not be used as HVS channel 2 was
+already in use.
+The HVS allows PV1 (HVS output 2) to be driven by any HVS
+channel via the DSP3_MUX setting, but that was hardcoded to be
+either 2 (for PV1) or disabled for TXP.
+
+Expand the available channels field for PV1, and configure
+DSP3_MUX accordingly.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  2 +-
+ drivers/gpu/drm/vc4/vc4_kms.c  | 29 +++++++++++++++--------------
+ 2 files changed, 16 insertions(+), 15 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -1223,7 +1223,7 @@ const struct vc4_pv_data bcm2835_pv1_dat
+ 	.base = {
+ 		.name = "pixelvalve-1",
+ 		.debugfs_name = "crtc1_regs",
+-		.hvs_available_channels = BIT(2),
++		.hvs_available_channels = BIT(0) | BIT(1) | BIT(2),
+ 		.hvs_output = 2,
+ 	},
+ 	.fifo_depth = 64,
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -224,12 +224,11 @@ static void vc4_hvs_pv_muxing_commit(str
+ 		struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+ 		struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
+ 		u32 dispctrl;
+-		u32 dsp3_mux_pri;
+ 
+ 		if (!crtc_state->active)
+ 			continue;
+ 
+-		if (vc4_state->assigned_channel != 2)
++		if (vc4_crtc->data->hvs_output != 2)
+ 			continue;
+ 
+ 		/*
+@@ -237,26 +236,28 @@ static void vc4_hvs_pv_muxing_commit(str
+ 		 * FIFO X'.
+ 		 * SCALER_DISPCTRL_DSP3 = 3 means 'disable DSP 3'.
+ 		 *
+-		 * DSP3 is connected to FIFO2 unless the transposer is
+-		 * enabled. In this case, FIFO 2 is directly accessed by the
+-		 * TXP IP, and we need to disable the FIFO2 -> pixelvalve1
+-		 * route.
++		 * It is more likely that we want the TXP than 3 displays, so
++		 * handle the mapping of DSP3 to any available FIFO.
+ 		 *
+ 		 * TXP can also run with a lower panic level than a live display,
+ 		 * as it doesn't have the same real-time constraint.
+ 		 */
++		dispctrl = HVS_READ(SCALER_DISPCTRL) &
++			     ~SCALER_DISPCTRL_PANIC2_MASK;
++
+ 		if (vc4_crtc->feeds_txp) {
+-			dsp3_mux_pri = VC4_SET_FIELD(3, SCALER_DISPCTRL_DSP3_MUX);
+-			dsp3_mux_pri |= VC4_SET_FIELD(0, SCALER_DISPCTRL_PANIC2);
++			dispctrl |= VC4_SET_FIELD(0, SCALER_DISPCTRL_PANIC2);
++			drm_WARN_ON(&vc4->base,
++				    VC4_GET_FIELD(HVS_READ(SCALER_DISPCTRL),
++						  SCALER_DISPCTRL_DSP3_MUX) == 2);
+ 		} else {
+-			dsp3_mux_pri = VC4_SET_FIELD(2, SCALER_DISPCTRL_DSP3_MUX);
+-			dsp3_mux_pri |= VC4_SET_FIELD(2, SCALER_DISPCTRL_PANIC2);
++			dispctrl &= ~SCALER_DISPCTRL_DSP3_MUX_MASK;
++			dispctrl |= VC4_SET_FIELD(vc4_state->assigned_channel,
++						     SCALER_DISPCTRL_DSP3_MUX);
++			dispctrl |= VC4_SET_FIELD(2, SCALER_DISPCTRL_PANIC2);
+ 		}
+ 
+-		dispctrl = HVS_READ(SCALER_DISPCTRL) &
+-			   ~(SCALER_DISPCTRL_DSP3_MUX_MASK |
+-			     SCALER_DISPCTRL_PANIC2_MASK);
+-		HVS_WRITE(SCALER_DISPCTRL, dispctrl | dsp3_mux_pri);
++		HVS_WRITE(SCALER_DISPCTRL, dispctrl);
+ 	}
+ }
+ 

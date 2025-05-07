@@ -1,0 +1,100 @@
+From 9aa5f00f839d261bfef937425e9c2e929c0db118 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Mon, 23 Sep 2024 10:55:08 -0300
+Subject: [PATCH] drm/gem: Create a drm_gem_object_init_with_mnt() function
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 0992b2541e1cd9580c2e70fab7a78558de054bae upstream
+
+For some applications, such as applications that uses huge pages, we might
+want to have a different mountpoint, for which we pass mount flags that
+better match our usecase.
+
+Therefore, create a new function `drm_gem_object_init_with_mnt()` that
+allow us to define the tmpfs mountpoint where the GEM object will be
+created. If this parameter is NULL, then we fallback to `shmem_file_setup()`.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+Reviewed-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20240923141348.2422499-5-mcanal@igalia.com
+---
+ drivers/gpu/drm/drm_gem.c | 34 ++++++++++++++++++++++++++++++----
+ include/drm/drm_gem.h     |  3 +++
+ 2 files changed, 33 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/drm_gem.c
++++ b/drivers/gpu/drm/drm_gem.c
+@@ -114,22 +114,32 @@ drm_gem_init(struct drm_device *dev)
+ }
+ 
+ /**
+- * drm_gem_object_init - initialize an allocated shmem-backed GEM object
++ * drm_gem_object_init_with_mnt - initialize an allocated shmem-backed GEM
++ * object in a given shmfs mountpoint
++ *
+  * @dev: drm_device the object should be initialized for
+  * @obj: drm_gem_object to initialize
+  * @size: object size
++ * @gemfs: tmpfs mount where the GEM object will be created. If NULL, use
++ * the usual tmpfs mountpoint (`shm_mnt`).
+  *
+  * Initialize an already allocated GEM object of the specified size with
+  * shmfs backing store.
+  */
+-int drm_gem_object_init(struct drm_device *dev,
+-			struct drm_gem_object *obj, size_t size)
++int drm_gem_object_init_with_mnt(struct drm_device *dev,
++				 struct drm_gem_object *obj, size_t size,
++				 struct vfsmount *gemfs)
+ {
+ 	struct file *filp;
+ 
+ 	drm_gem_private_object_init(dev, obj, size);
+ 
+-	filp = shmem_file_setup("drm mm object", size, VM_NORESERVE);
++	if (gemfs)
++		filp = shmem_file_setup_with_mnt(gemfs, "drm mm object", size,
++						 VM_NORESERVE);
++	else
++		filp = shmem_file_setup("drm mm object", size, VM_NORESERVE);
++
+ 	if (IS_ERR(filp))
+ 		return PTR_ERR(filp);
+ 
+@@ -137,6 +147,22 @@ int drm_gem_object_init(struct drm_devic
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL(drm_gem_object_init_with_mnt);
++
++/**
++ * drm_gem_object_init - initialize an allocated shmem-backed GEM object
++ * @dev: drm_device the object should be initialized for
++ * @obj: drm_gem_object to initialize
++ * @size: object size
++ *
++ * Initialize an already allocated GEM object of the specified size with
++ * shmfs backing store.
++ */
++int drm_gem_object_init(struct drm_device *dev, struct drm_gem_object *obj,
++			size_t size)
++{
++	return drm_gem_object_init_with_mnt(dev, obj, size, NULL);
++}
+ EXPORT_SYMBOL(drm_gem_object_init);
+ 
+ /**
+--- a/include/drm/drm_gem.h
++++ b/include/drm/drm_gem.h
+@@ -474,6 +474,9 @@ void drm_gem_object_release(struct drm_g
+ void drm_gem_object_free(struct kref *kref);
+ int drm_gem_object_init(struct drm_device *dev,
+ 			struct drm_gem_object *obj, size_t size);
++int drm_gem_object_init_with_mnt(struct drm_device *dev,
++				 struct drm_gem_object *obj, size_t size,
++				 struct vfsmount *gemfs);
+ void drm_gem_private_object_init(struct drm_device *dev,
+ 				 struct drm_gem_object *obj, size_t size);
+ void drm_gem_private_object_fini(struct drm_gem_object *obj);

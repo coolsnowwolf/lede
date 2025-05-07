@@ -1,0 +1,254 @@
+From 7bc393e32a785f1e5c00dc8190b9baf87e0fe453 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.org>
+Date: Tue, 29 Jan 2019 16:13:25 +0000
+Subject: [PATCH] staging: vchiq_arm: Set up dma ranges on child devices
+
+The VCHIQ driver now loads the audio, camera, codec, and vc-sm
+drivers as platform drivers. However they were not being given
+the correct DMA configuration.
+
+Call of_dma_configure with the parent (VCHIQ) parameters to be
+inherited by the child.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+staging: vchiq: Use the old dma controller for OF config on platform devices
+
+vchiq on Pi4 is no longer under the soc node, therefore it
+doesn't get the dma-ranges for the VPU.
+
+Switch to using the configuration of the old dma controller as
+that will set the dma-ranges correctly.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+staging: vchiq_arm: Give vchiq children DT nodes
+
+vchiq kernel clients are now instantiated as platform drivers rather
+than using DT, but the children of the vchiq interface may still
+benefit from access to DT properties. Give them the option of a
+a sub-node of the vchiq parent for configuration and to allow
+them to be disabled.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+staging: vchiq_arm: Add 36-bit address support
+
+Conditional on a new compatible string, change the pagelist encoding
+such that the top 24 bits are the pfn, leaving 8 bits for run length
+(-1), giving a 36-bit address range.
+
+Manage the split between addresses for the VPU and addresses for the
+40-bit DMA controller with a dedicated DMA device pointer that on non-
+BCM2711 platforms is the same as the main VCHIQ device. This allows
+the VCHIQ node to stay in the usual place in the DT.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+staging: vchiq_arm: children inherit DMA config
+
+Although it is no longer necessary for vchiq's children to have a
+different DMA configuration to the parent, they do still need to
+explicitly to have their DMA configuration set - to be that of the
+parent.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../interface/vchiq_arm/vchiq_arm.c           | 105 ++++++++++++++----
+ .../interface/vchiq_arm/vchiq_arm.h           |   1 +
+ 2 files changed, 87 insertions(+), 19 deletions(-)
+
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
+@@ -20,6 +20,7 @@
+ #include <linux/completion.h>
+ #include <linux/list.h>
+ #include <linux/of.h>
++#include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/compat.h>
+ #include <linux/dma-mapping.h>
+@@ -77,6 +78,11 @@ static const struct vchiq_platform_info
+ 	.cache_line_size = 64,
+ };
+ 
++static const struct vchiq_platform_info bcm2711_info = {
++	.cache_line_size = 64,
++	.use_36bit_addrs = true,
++};
++
+ struct vchiq_arm_state {
+ 	/* Keepalive-related data */
+ 	struct task_struct *ka_thread;
+@@ -123,6 +129,9 @@ struct vchiq_pagelist_info {
+ 	unsigned int scatterlist_mapped;
+ };
+ 
++static unsigned int g_use_36bit_addrs = 0;
++static struct device *g_dma_dev;
++
+ static int
+ vchiq_blocking_bulk_transfer(struct vchiq_instance *instance, unsigned int handle, void *data,
+ 			     unsigned int size, enum vchiq_bulk_dir dir);
+@@ -152,7 +161,7 @@ static void
+ cleanup_pagelistinfo(struct vchiq_instance *instance, struct vchiq_pagelist_info *pagelistinfo)
+ {
+ 	if (pagelistinfo->scatterlist_mapped) {
+-		dma_unmap_sg(instance->state->dev, pagelistinfo->scatterlist,
++		dma_unmap_sg(g_dma_dev, pagelistinfo->scatterlist,
+ 			     pagelistinfo->num_pages, pagelistinfo->dma_dir);
+ 	}
+ 
+@@ -364,7 +373,7 @@ create_pagelist(struct vchiq_instance *i
+ 		count -= len;
+ 	}
+ 
+-	dma_buffers = dma_map_sg(instance->state->dev,
++	dma_buffers = dma_map_sg(g_dma_dev,
+ 				 scatterlist,
+ 				 num_pages,
+ 				 pagelistinfo->dma_dir);
+@@ -378,22 +387,58 @@ create_pagelist(struct vchiq_instance *i
+ 
+ 	/* Combine adjacent blocks for performance */
+ 	k = 0;
+-	for_each_sg(scatterlist, sg, dma_buffers, i) {
+-		unsigned int len = sg_dma_len(sg);
+-		dma_addr_t addr = sg_dma_address(sg);
+-
+-		/* Note: addrs is the address + page_count - 1
+-		 * The firmware expects blocks after the first to be page-
+-		 * aligned and a multiple of the page size
+-		 */
+-		WARN_ON(len == 0);
+-		WARN_ON(i && (i != (dma_buffers - 1)) && (len & ~PAGE_MASK));
+-		WARN_ON(i && (addr & ~PAGE_MASK));
+-		if (is_adjacent_block(addrs, addr, k))
+-			addrs[k - 1] += ((len + PAGE_SIZE - 1) >> PAGE_SHIFT);
+-		else
+-			addrs[k++] = (addr & PAGE_MASK) |
+-				(((len + PAGE_SIZE - 1) >> PAGE_SHIFT) - 1);
++	if (g_use_36bit_addrs) {
++		for_each_sg(scatterlist, sg, dma_buffers, i) {
++			unsigned int len = sg_dma_len(sg);
++			dma_addr_t addr = sg_dma_address(sg);
++			u32 page_id = (u32)((addr >> 4) & ~0xff);
++			u32 sg_pages = (len + PAGE_SIZE - 1) >> PAGE_SHIFT;
++
++			/* Note: addrs is the address + page_count - 1
++			 * The firmware expects blocks after the first to be page-
++			 * aligned and a multiple of the page size
++			 */
++			WARN_ON(len == 0);
++			WARN_ON(i &&
++				(i != (dma_buffers - 1)) && (len & ~PAGE_MASK));
++			WARN_ON(i && (addr & ~PAGE_MASK));
++			WARN_ON(upper_32_bits(addr) > 0xf);
++
++			if (k > 0 &&
++			    ((addrs[k - 1] & ~0xff) +
++			     (((addrs[k - 1] & 0xff) + 1) << 8)
++			     == page_id)) {
++				u32 inc_pages = min(sg_pages,
++						    0xff - (addrs[k - 1] & 0xff));
++				addrs[k - 1] += inc_pages;
++				page_id += inc_pages << 8;
++				sg_pages -= inc_pages;
++			}
++			while (sg_pages) {
++				u32 inc_pages = min(sg_pages, 0x100u);
++				addrs[k++] = page_id | (inc_pages - 1);
++				page_id += inc_pages << 8;
++				sg_pages -= inc_pages;
++			}
++		}
++	} else {
++		for_each_sg(scatterlist, sg, dma_buffers, i) {
++			unsigned int len = sg_dma_len(sg);
++			dma_addr_t addr = sg_dma_address(sg);
++
++			/* Note: addrs is the address + page_count - 1
++			 * The firmware expects blocks after the first to be page-
++			 * aligned and a multiple of the page size
++			 */
++			WARN_ON(len == 0);
++			WARN_ON(i && (i != (dma_buffers - 1)) && (len & ~PAGE_MASK));
++			WARN_ON(i && (addr & ~PAGE_MASK));
++			if (is_adjacent_block(addrs, addr, k))
++				addrs[k - 1] += ((len + PAGE_SIZE - 1) >> PAGE_SHIFT);
++			else
++				addrs[k++] = (addr & PAGE_MASK) |
++					(((len + PAGE_SIZE - 1) >> PAGE_SHIFT) - 1);
++		}
+ 	}
+ 
+ 	/* Partial cache lines (fragments) require special measures */
+@@ -439,7 +484,7 @@ free_pagelist(struct vchiq_instance *ins
+ 	 * NOTE: dma_unmap_sg must be called before the
+ 	 * cpu can touch any of the data/pages.
+ 	 */
+-	dma_unmap_sg(instance->state->dev, pagelistinfo->scatterlist,
++	dma_unmap_sg(g_dma_dev, pagelistinfo->scatterlist,
+ 		     pagelistinfo->num_pages, pagelistinfo->dma_dir);
+ 	pagelistinfo->scatterlist_mapped = 0;
+ 
+@@ -494,6 +539,7 @@ free_pagelist(struct vchiq_instance *ins
+ static int vchiq_platform_init(struct platform_device *pdev, struct vchiq_state *state)
+ {
+ 	struct device *dev = &pdev->dev;
++	struct device *dma_dev = NULL;
+ 	struct vchiq_drv_mgmt *drv_mgmt = platform_get_drvdata(pdev);
+ 	struct rpi_firmware *fw = drv_mgmt->fw;
+ 	struct vchiq_slot_zero *vchiq_slot_zero;
+@@ -514,6 +560,24 @@ static int vchiq_platform_init(struct pl
+ 
+ 	drv_mgmt->fragments_size = 2 * drv_mgmt->info->cache_line_size;
+ 
++	if (drv_mgmt->info->use_36bit_addrs) {
++		struct device_node *dma_node =
++			of_find_compatible_node(NULL, NULL, "brcm,bcm2711-dma");
++
++		if (dma_node) {
++			struct platform_device *pdev;
++
++			pdev = of_find_device_by_node(dma_node);
++			if (pdev)
++				dma_dev = &pdev->dev;
++			of_node_put(dma_node);
++			g_use_36bit_addrs = true;
++		} else {
++			dev_err(dev, "40-bit DMA controller not found\n");
++			return -EINVAL;
++		}
++	}
++
+ 	/* Allocate space for the channels in coherent memory */
+ 	slot_mem_size = PAGE_ALIGN(TOTAL_SLOTS * VCHIQ_SLOT_SIZE);
+ 	frag_mem_size = PAGE_ALIGN(drv_mgmt->fragments_size * MAX_FRAGMENTS);
+@@ -581,6 +645,8 @@ static int vchiq_platform_init(struct pl
+ 		return -ENXIO;
+ 	}
+ 
++	g_dma_dev = dma_dev ?: dev;
++
+ 	dev_dbg(&pdev->dev, "arm: vchiq_init - done (slots %pK, phys %pad)\n",
+ 		vchiq_slot_zero, &slot_phys);
+ 
+@@ -1710,6 +1776,7 @@ void vchiq_platform_conn_state_changed(s
+ static const struct of_device_id vchiq_of_match[] = {
+ 	{ .compatible = "brcm,bcm2835-vchiq", .data = &bcm2835_info },
+ 	{ .compatible = "brcm,bcm2836-vchiq", .data = &bcm2836_info },
++	{ .compatible = "brcm,bcm2711-vchiq", .data = &bcm2711_info },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, vchiq_of_match);
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.h
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.h
+@@ -32,6 +32,7 @@ enum USE_TYPE_E {
+ 
+ struct vchiq_platform_info {
+ 	unsigned int cache_line_size;
++	bool use_36bit_addrs;
+ };
+ 
+ struct vchiq_drv_mgmt {
