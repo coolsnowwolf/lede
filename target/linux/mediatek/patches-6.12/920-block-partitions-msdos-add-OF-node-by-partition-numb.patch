@@ -1,0 +1,98 @@
+From 391630263f08dc853b111c6c3325a0ec510fe5fb Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 9 May 2025 02:38:51 +0100
+Subject: [PATCH] block: partitions: msdos: add OF node by partition number
+
+A hack for some legacy boards...
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ block/partitions/msdos.c | 66 +++++++++++++++++++++++++++++++++-------
+ 1 file changed, 55 insertions(+), 11 deletions(-)
+
+--- a/block/partitions/msdos.c
++++ b/block/partitions/msdos.c
+@@ -27,6 +27,7 @@
+  */
+ #include <linux/msdos_fs.h>
+ #include <linux/msdos_partition.h>
++#include <linux/of.h>
+ 
+ #include "check.h"
+ #include "efi.h"
+@@ -116,6 +117,26 @@ static void set_info(struct parsed_parti
+ 	state->parts[slot].has_info = true;
+ }
+ 
++static struct device_node *find_partno_of_node(struct device_node *partitions_np,
++						  int partno)
++{
++	int np_partno;
++
++	if (!partitions_np ||
++	    !of_device_is_compatible(partitions_np, "msdos-partitions"))
++		return NULL;
++
++	for_each_available_child_of_node_scoped(partitions_np, np) {
++		if (!of_property_read_u32(np, "partno", &np_partno) &&
++		    partno != np_partno)
++			continue;
++
++		return np;
++	}
++
++	return NULL;
++}
++
+ /*
+  * Create devices for each logical partition in an extended partition.
+  * The logical partitions form a linked list, with each entry being
+@@ -131,6 +152,8 @@ static void parse_extended(struct parsed
+ 			   sector_t first_sector, sector_t first_size,
+ 			   u32 disksig)
+ {
++	struct device *ddev = disk_to_dev(state->disk);
++	struct device_node *partitions_np = of_node_get(ddev->of_node);
+ 	struct msdos_partition *p;
+ 	Sector sect;
+ 	unsigned char *data;
+@@ -190,7 +213,8 @@ static void parse_extended(struct parsed
+ 					continue;
+ 			}
+ 
+-			put_partition(state, state->next, next, size);
++			of_put_partition(state, state->next, next, size,
++					 find_partno_of_node(partitions_np, state->next));
+ 			set_info(state, state->next, disksig);
+ 			if (p->sys_ind == LINUX_RAID_PARTITION)
+ 				state->parts[state->next].flags = ADDPART_FLAG_RAID;
+@@ -580,6 +604,8 @@ static struct {
+ 
+ int msdos_partition(struct parsed_partitions *state)
+ {
++	struct device *ddev = disk_to_dev(state->disk);
++	struct device_node *partitions_np = of_node_get(ddev->of_node);
+ 	sector_t sector_size;
+ 	Sector sect;
+ 	unsigned char *data;
+@@ -676,14 +702,18 @@ int msdos_partition(struct parsed_partit
+ 			sector_t n = 2;
+ 
+ 			n = min(size, max(sector_size, n));
+-			put_partition(state, slot, start, n);
++			of_put_partition(state, slot, start, n,
++					 find_partno_of_node(partitions_np,
++							     slot));
+ 
+ 			strlcat(state->pp_buf, " <", PAGE_SIZE);
+ 			parse_extended(state, start, size, disksig);
+ 			strlcat(state->pp_buf, " >", PAGE_SIZE);
+ 			continue;
+ 		}
+-		put_partition(state, slot, start, size);
++		of_put_partition(state, slot, start, size,
++				 find_partno_of_node(partitions_np,
++						     slot));
+ 		set_info(state, slot, disksig);
+ 		if (p->sys_ind == LINUX_RAID_PARTITION)
+ 			state->parts[slot].flags = ADDPART_FLAG_RAID;
