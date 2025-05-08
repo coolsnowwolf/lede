@@ -45,11 +45,6 @@
 #define ETH_P_MAP 0xDA1A
 #endif
 
-#if (ETH_P_MAP == 0x00F9)
-#undef ETH_P_MAP
-#define ETH_P_MAP 0xDA1A
-#endif
-
 #ifndef ARPHRD_RAWIP
 #define ARPHRD_RAWIP ARPHRD_NONE
 #endif
@@ -71,11 +66,25 @@ static struct rmnet_nss_cb __read_mostly *nss_cb = NULL;
 #if defined(CONFIG_PINCTRL_IPQ807x) || defined(CONFIG_PINCTRL_IPQ5018)
 #ifdef CONFIG_RMNET_DATA
 #define CONFIG_QCA_NSS_DRV
-/* define at qsdk/qca/src/linux-4.4/net/rmnet_data/rmnet_data_main.c */
+#define CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+/* define at qca/src/linux-4.4/drivers/net/ethernet/qualcomm/rmnet/rmnet_config.c */ //for spf11.x
+/* define at qsdk/qca/src/datarmnet/core/rmnet_config.c */ //for spf12.x
 /* set at qsdk/qca/src/data-kernel/drivers/rmnet-nss/rmnet_nss.c */
+/* need add DEPENDS:= kmod-rmnet-core in feeds/makefile */
 extern struct rmnet_nss_cb *rmnet_nss_callbacks __rcu __read_mostly;
 #endif
 #endif
+	
+
+int mhi_netdev_use_xfer_type_dma(unsigned chan)
+{
+	(void)chan;
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	return 1;
+#endif
+	return 0;
+}
+
 
 static const unsigned char node_id[ETH_ALEN] = {0x02, 0x50, 0xf4, 0x00, 0x00, 0x00};
 static const unsigned char default_modem_addr[ETH_ALEN] = {0x02, 0x50, 0xf3, 0x00, 0x00, 0x00};
@@ -197,6 +206,8 @@ static void qmap_hex_dump(const char *tag, unsigned char *data, unsigned len) {
 }
 #endif
 
+#define MBIM_MUX_ID_SDX7X	112	//sdx7x is 112-126, others is 0-14
+
 static uint __read_mostly mhi_mbim_enabled = 0;
 module_param(mhi_mbim_enabled, uint, S_IRUGO);
 int mhi_netdev_mbin_enabled(void) { return mhi_mbim_enabled; }
@@ -293,6 +304,22 @@ enum mhi_net_type {
 	MHI_NET_ETHER
 };
 
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+/* Try not to make this structure bigger than 128 bytes, since this take space
+ * in payload packet.
+ * Example: If MRU = 16K, effective MRU = 16K - sizeof(mhi_netbuf)
+ */
+struct mhi_netbuf {
+	struct mhi_buf mhi_buf; /* this must be first element */
+	void (*unmap)(struct device *dev, dma_addr_t addr, size_t size,
+		      enum dma_data_direction dir);
+};
+
+struct mhi_net_chain {
+	struct sk_buff *head, *tail; /* chained skb */
+};
+#endif
+
 //#define TS_DEBUG
 struct mhi_netdev {
 	int alias;
@@ -316,6 +343,7 @@ struct mhi_netdev {
 #endif
 
 	MHI_MBIM_CTX mbim_ctx;
+	u32 mbim_mux_id;
 
 	u32 mru;
 	u32 max_mtu;
@@ -325,6 +353,14 @@ struct mhi_netdev {
 	enum mhi_net_type net_type;
 	struct sk_buff *frag_skb;
 	bool recycle_buf;
+
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	u32 order;
+	struct mhi_netbuf **netbuf_pool;
+	int pool_size; /* must be power of 2 */
+	int current_index;
+	struct mhi_net_chain chain;
+#endif
 
 #if defined(MHI_NETDEV_STATUS64)
 	struct pcpu_sw_netstats __percpu *stats64;
@@ -619,7 +655,7 @@ static struct sk_buff * add_mbim_hdr(struct sk_buff *skb, u8 mux_id) {
 	struct mhi_mbim_hdr *mhdr;
 	__le32 sign;
 	u8 *c;
-	u16 tci = mux_id - QUECTEL_QMAP_MUX_ID;
+	u16 tci = mux_id;
 	unsigned int skb_len = skb->len;
 
 	if (qmap_mode > 1)
@@ -1272,12 +1308,12 @@ static void rmnet_mbim_rx_handler(void *dev, struct sk_buff *skb_in)
 			goto error;
 		}
 
-		if ((qmap_mode == 1 && tci != 0) || (qmap_mode > 1 && tci > qmap_mode)) {
+		if ((qmap_mode == 1 && tci != mhi_netdev->mbim_mux_id) || (qmap_mode > 1 && (tci - mhi_netdev->mbim_mux_id) > qmap_mode)){
 			MSG_ERR("unsupported tci %d by now\n", tci);
 			goto error;
 		}
 		tci = abs(tci);
-		qmap_net = pQmapDev->mpQmapNetDev[qmap_mode == 1 ? 0 : tci - 1];
+		qmap_net = pQmapDev->mpQmapNetDev[qmap_mode == 1 ? 0 : tci - 1 - mhi_netdev->mbim_mux_id];
 
 		dpe16 = ndp16->dpe16;
 
@@ -1961,6 +1997,253 @@ static void mhi_netdev_dealloc(struct mhi_netdev *mhi_netdev)
 	}
 }
 
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+static struct mhi_netbuf *mhi_netdev_alloc(struct device *dev,
+					   gfp_t gfp,
+					   unsigned int order)
+{
+	struct page *page;
+	struct mhi_netbuf *netbuf;
+	struct mhi_buf *mhi_buf;
+	void *vaddr;
+
+	page = __dev_alloc_pages(gfp, order);
+	if (!page)
+		return NULL;
+
+	vaddr = page_address(page);
+
+	/* we going to use the end of page to store cached data */
+	netbuf = vaddr + (PAGE_SIZE << order) - sizeof(*netbuf);
+
+	mhi_buf = (struct mhi_buf *)netbuf;
+	mhi_buf->page = page;
+	mhi_buf->buf = vaddr;
+	mhi_buf->len = (void *)netbuf - vaddr;
+	mhi_buf->dma_addr = dma_map_page(dev, page, 0, mhi_buf->len,
+					 DMA_FROM_DEVICE);
+	if (dma_mapping_error(dev, mhi_buf->dma_addr)) {
+		__free_pages(mhi_buf->page, order);
+		return NULL;
+	}
+
+	return netbuf;
+}
+
+static void mhi_netdev_unmap_page(struct device *dev,
+				  dma_addr_t dma_addr,
+				  size_t len,
+				  enum dma_data_direction dir)
+{
+	dma_unmap_page(dev, dma_addr, len, dir);
+}
+
+static int mhi_netdev_tmp_alloc(struct mhi_netdev *mhi_netdev, int nr_tre)
+{
+	struct mhi_device *mhi_dev = mhi_netdev->mhi_dev;
+	struct device *dev = mhi_dev->dev.parent;
+	const u32 order = mhi_netdev->order;
+	int i, ret;
+
+	for (i = 0; i < nr_tre; i++) {
+		struct mhi_buf *mhi_buf;
+		struct mhi_netbuf *netbuf = mhi_netdev_alloc(dev, GFP_ATOMIC,
+							     order);
+		if (!netbuf)
+			return -ENOMEM;
+
+		mhi_buf = (struct mhi_buf *)netbuf;
+		netbuf->unmap = mhi_netdev_unmap_page;
+
+		ret = mhi_queue_transfer(mhi_dev, DMA_FROM_DEVICE, mhi_buf,
+					 mhi_buf->len, MHI_EOT);
+		if (unlikely(ret)) {
+			MSG_ERR("Failed to queue transfer, ret:%d\n", ret);
+			mhi_netdev_unmap_page(dev, mhi_buf->dma_addr,
+					      mhi_buf->len, DMA_FROM_DEVICE);
+			__free_pages(mhi_buf->page, order);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static void mhi_netdev_queue(struct mhi_netdev *mhi_netdev)
+{
+	struct mhi_device *mhi_dev = mhi_netdev->mhi_dev;
+	struct device *dev = mhi_dev->dev.parent;
+	struct mhi_netbuf *netbuf;
+	struct mhi_buf *mhi_buf;
+	struct mhi_netbuf **netbuf_pool = mhi_netdev->netbuf_pool;
+	int nr_tre = mhi_get_no_free_descriptors(mhi_dev, DMA_FROM_DEVICE);
+	int i, peak, cur_index, ret;
+	const int pool_size = mhi_netdev->pool_size - 1, max_peak = 4;
+
+	MSG_VERB("Enter free_desc:%d\n", nr_tre);
+
+	if (!nr_tre)
+		return;
+
+	/* try going thru reclaim pool first */
+	for (i = 0; i < nr_tre; i++) {
+		/* peak for the next buffer, we going to peak several times,
+		 * and we going to give up if buffers are not yet free
+		 */
+		cur_index = mhi_netdev->current_index;
+		netbuf = NULL;
+		for (peak = 0; peak < max_peak; peak++) {
+			struct mhi_netbuf *tmp = netbuf_pool[cur_index];
+
+			mhi_buf = &tmp->mhi_buf;
+
+			cur_index = (cur_index + 1) & pool_size;
+
+			/* page == 1 idle, buffer is free to reclaim */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 5,4,0 ))
+			if (atomic_read(&mhi_buf->page->_count) == 1)
+#else
+			if (atomic_read(&mhi_buf->page->_refcount) == 1)
+#endif
+			{
+				netbuf = tmp;
+				break;
+			}
+		}
+
+		/* could not find a free buffer */
+		if (!netbuf)
+			break;
+
+		/* increment reference count so when network stack is done
+		 * with buffer, the buffer won't be freed
+		 */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 5,4,0 ))
+		atomic_inc(&mhi_buf->page->_count);
+#else
+		atomic_inc(&mhi_buf->page->_refcount);
+#endif
+		dma_sync_single_for_device(dev, mhi_buf->dma_addr, mhi_buf->len,
+					   DMA_FROM_DEVICE);
+		ret = mhi_queue_transfer(mhi_dev, DMA_FROM_DEVICE, mhi_buf,
+					 mhi_buf->len, MHI_EOT);
+		if (unlikely(ret)) {
+			MSG_ERR("Failed to queue buffer, ret:%d\n", ret);
+			netbuf->unmap(dev, mhi_buf->dma_addr, mhi_buf->len,
+				      DMA_FROM_DEVICE);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 5,4,0 ))
+			atomic_dec(&mhi_buf->page->_count);
+#else
+			atomic_dec(&mhi_buf->page->_refcount);
+#endif
+			return;
+		}
+		mhi_netdev->current_index = cur_index;
+	}
+
+	/* recyling did not work, buffers are still busy allocate temp pkts */
+	if (i < nr_tre)
+		mhi_netdev_tmp_alloc(mhi_netdev, nr_tre - i);
+}
+
+/* allocating pool of memory */
+static int mhi_netdev_alloc_pool(struct mhi_netdev *mhi_netdev)
+{
+	int i;
+	struct mhi_netbuf *netbuf, **netbuf_pool;
+	struct mhi_buf *mhi_buf;
+	const u32 order = mhi_netdev->order;
+	struct device *dev = mhi_netdev->mhi_dev->dev.parent;
+
+	netbuf_pool = kmalloc_array(mhi_netdev->pool_size, sizeof(*netbuf_pool),
+				    GFP_KERNEL);
+	if (!netbuf_pool)
+		return -ENOMEM;
+
+	for (i = 0; i < mhi_netdev->pool_size; i++) {
+		/* allocate paged data */
+		netbuf = mhi_netdev_alloc(dev, GFP_KERNEL, order);
+		if (!netbuf)
+			goto error_alloc_page;
+
+		netbuf->unmap = dma_sync_single_for_cpu;
+		netbuf_pool[i] = netbuf;
+	}
+
+	mhi_netdev->netbuf_pool = netbuf_pool;
+
+	return 0;
+
+error_alloc_page:
+	for (--i; i >= 0; i--) {
+		netbuf = netbuf_pool[i];
+		mhi_buf = &netbuf->mhi_buf;
+		dma_unmap_page(dev, mhi_buf->dma_addr, mhi_buf->len,
+			       DMA_FROM_DEVICE);
+		__free_pages(mhi_buf->page, order);
+	}
+
+	kfree(netbuf_pool);
+
+	return -ENOMEM;
+}
+
+static void mhi_netdev_free_pool(struct mhi_netdev *mhi_netdev)
+{
+	int i;
+	struct mhi_netbuf *netbuf, **netbuf_pool = mhi_netdev->netbuf_pool;
+	struct device *dev = mhi_netdev->mhi_dev->dev.parent;
+	struct mhi_buf *mhi_buf;
+
+	for (i = 0; i < mhi_netdev->pool_size; i++) {
+		netbuf = netbuf_pool[i];
+		mhi_buf = &netbuf->mhi_buf;
+		dma_unmap_page(dev, mhi_buf->dma_addr, mhi_buf->len,
+			       DMA_FROM_DEVICE);
+		__free_pages(mhi_buf->page, mhi_netdev->order);
+	}
+
+	kfree(mhi_netdev->netbuf_pool);
+	mhi_netdev->netbuf_pool = NULL;
+}
+
+static int mhi_netdev_poll(struct napi_struct *napi, int budget)
+{
+	struct net_device *dev = napi->dev;
+	struct mhi_netdev_priv *mhi_netdev_priv = netdev_priv(dev);
+	struct mhi_netdev *mhi_netdev = mhi_netdev_priv->mhi_netdev;
+	struct mhi_device *mhi_dev = mhi_netdev->mhi_dev;
+	struct mhi_net_chain *chain = &mhi_netdev->chain;
+	int rx_work = 0;
+
+	MSG_VERB("Entered\n");
+
+	rx_work = mhi_poll(mhi_dev, budget);
+
+	/* chained skb, push it to stack */
+	if (chain && chain->head) {
+		netif_receive_skb(chain->head);
+		chain->head = NULL;
+	}
+
+	if (rx_work < 0) {
+		MSG_ERR("Error polling ret:%d\n", rx_work);
+		napi_complete(napi);
+		return 0;
+	}
+
+	/* queue new buffers */
+	mhi_netdev_queue(mhi_netdev);
+
+	/* complete work if # of packet processed less than allocated budget */
+	if (rx_work < budget)
+		napi_complete(napi);
+
+	MSG_VERB("polled %d pkts\n", rx_work);
+
+	return rx_work;
+}
+#else
 static int mhi_netdev_poll(struct napi_struct *napi, int budget)
 {
 	struct net_device *dev = napi->dev;
@@ -2038,6 +2321,7 @@ static int mhi_netdev_poll(struct napi_struct *napi, int budget)
 
 	return rx_work;
 }
+#endif
 
 static int mhi_netdev_open(struct net_device *ndev)
 {
@@ -2108,7 +2392,7 @@ static netdev_tx_t mhi_netdev_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (mhi_netdev->net_type == MHI_NET_MBIM) {
-		if (add_mbim_hdr(skb, QUECTEL_QMAP_MUX_ID) == NULL) {
+		if (add_mbim_hdr(skb, mhi_netdev->mbim_mux_id) == NULL) {
 			dev_kfree_skb_any (skb);
 			return NETDEV_TX_OK;
 		}
@@ -2266,7 +2550,7 @@ static int qmap_ndo_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 	case 0x89F3: //SIOCDEVPRIVATE
 		if (mhi_netdev->use_rmnet_usb) {
-			rc = copy_to_user(ifr->ifr_ifru.ifru_data, &mhi_netdev->rmnet_info, sizeof(RMNET_INFO));
+			rc = copy_to_user(ifr->ifr_ifru.ifru_data, &mhi_netdev->rmnet_info, sizeof(mhi_netdev->rmnet_info));
 		}
 	break;
 
@@ -2305,9 +2589,14 @@ static const struct net_device_ops mhi_netdev_ops_ip = {
 static void mhi_netdev_get_drvinfo (struct net_device *ndev, struct ethtool_drvinfo *info)
 {
 	//struct mhi_netdev *mhi_netdev = ndev_to_mhi(ndev);
-
-	strlcpy (info->driver, "pcie_mhi", sizeof info->driver);
-	strlcpy (info->version, PCIE_MHI_DRIVER_VERSION, sizeof info->version);
+	/* strlcpy() is deprecated in kernel 6.8.0+, using strscpy instead */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,8,0))
+	strlcpy(info->driver, "pcie_mhi", sizeof(info->driver));
+	strlcpy(info->version, PCIE_MHI_DRIVER_VERSION, sizeof(info->version));
+#else
+	strscpy(info->driver, "pcie_mhi", sizeof(info->driver));
+	strscpy(info->version, PCIE_MHI_DRIVER_VERSION, sizeof(info->version));
+#endif
 }
 
 static const struct ethtool_ops mhi_netdev_ethtool_ops = {
@@ -2434,6 +2723,34 @@ static int mhi_netdev_enable_iface(struct mhi_netdev *mhi_netdev)
 	mhi_netdev->enabled =  true;
 	write_unlock_irq(&mhi_netdev->pm_lock);
 
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	/* MRU must be multiplication of page size */
+	mhi_netdev->order = 1;
+	while ((PAGE_SIZE << mhi_netdev->order) < mhi_netdev->mru)
+		mhi_netdev->order += 1;
+
+	/* setup pool size ~2x ring length*/
+	no_tre = mhi_get_no_free_descriptors(mhi_dev, DMA_FROM_DEVICE);
+	mhi_netdev->pool_size = 1 << __ilog2_u32(no_tre);
+	if (no_tre > mhi_netdev->pool_size)
+		mhi_netdev->pool_size <<= 1;
+	mhi_netdev->pool_size <<= 1;
+
+	/* allocate memory pool */
+	ret = mhi_netdev_alloc_pool(mhi_netdev);
+	if (ret) {
+		MSG_ERR("mhi_netdev_alloc_pool Fail!\n");
+		goto error_start;
+	}
+
+	napi_enable(&mhi_netdev->napi);
+
+	/* now we have a pool of buffers allocated, queue to hardware
+	 * by triggering a napi_poll
+	 */
+	napi_schedule(&mhi_netdev->napi);
+error_start:
+#else
 	/* queue buffer for rx path */
 	no_tre = mhi_get_no_free_descriptors(mhi_dev, DMA_FROM_DEVICE);
 	ret = mhi_netdev_alloc_skb(mhi_netdev, GFP_KERNEL);
@@ -2441,6 +2758,7 @@ static int mhi_netdev_enable_iface(struct mhi_netdev *mhi_netdev)
 		schedule_delayed_work(&mhi_netdev->alloc_work, msecs_to_jiffies(20));
 
 	napi_enable(&mhi_netdev->napi);
+#endif
 
 	MSG_LOG("Exited.\n");
 
@@ -2497,6 +2815,49 @@ static void mhi_netdev_xfer_ul_cb(struct mhi_device *mhi_dev,
 	dev_kfree_skb(skb);
 }
 
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
+				  struct mhi_result *mhi_result)
+{
+	struct mhi_netdev *mhi_netdev = mhi_device_get_devdata(mhi_dev);
+	struct mhi_netbuf *netbuf = mhi_result->buf_addr;
+	struct mhi_buf *mhi_buf = &netbuf->mhi_buf;
+	struct sk_buff *skb;
+	struct net_device *ndev = mhi_netdev->ndev;
+	struct device *dev = mhi_dev->dev.parent;
+	struct mhi_net_chain *chain = &mhi_netdev->chain;
+
+	netbuf->unmap(dev, mhi_buf->dma_addr, mhi_buf->len, DMA_FROM_DEVICE);
+
+	/* modem is down, drop the buffer */
+	if (mhi_result->transaction_status == -ENOTCONN) {
+		__free_pages(mhi_buf->page, mhi_netdev->order);
+		return;
+	}
+
+	mhi_netdev_upate_rx_stats(mhi_netdev, 1, mhi_result->bytes_xferd);
+
+	/* we support chaining */
+	skb = alloc_skb(0, GFP_ATOMIC);
+	if (likely(skb)) {
+		skb_add_rx_frag(skb, 0, mhi_buf->page, 0,
+				mhi_result->bytes_xferd, mhi_netdev->mru);
+
+		/* this is first on list */
+		if (!chain->head) {
+			skb->dev = ndev;
+			skb->protocol = htons(ETH_P_MAP);
+			chain->head = skb;
+		} else {
+			skb_shinfo(chain->tail)->frag_list = skb;
+		}
+
+		chain->tail = skb;
+	} else {
+		__free_pages(mhi_buf->page, mhi_netdev->order);
+	}
+}
+#else
 static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 				  struct mhi_result *mhi_result)
 {
@@ -2602,6 +2963,7 @@ static void mhi_netdev_xfer_dl_cb(struct mhi_device *mhi_dev,
 	skb_priv->bind_netdev = NULL;
 	skb_queue_tail(&mhi_netdev->qmap_chain, skb);	
 }
+#endif
 
 static void mhi_netdev_status_cb(struct mhi_device *mhi_dev, enum MHI_CB mhi_cb)
 {
@@ -2810,33 +3172,29 @@ static void mhi_netdev_remove(struct mhi_device *mhi_dev)
 	struct sk_buff *skb;
 
 	MSG_LOG("Remove notification received\n");
+#ifndef MHI_NETDEV_ONE_CARD_MODE
+#ifndef	CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
 
+	unsigned i;
 	write_lock_irq(&mhi_netdev->pm_lock);
 	mhi_netdev->enabled = false;
 	write_unlock_irq(&mhi_netdev->pm_lock);
 
-	if (mhi_netdev->use_rmnet_usb) {
-#ifndef MHI_NETDEV_ONE_CARD_MODE
-		unsigned i;
-
-		for (i = 0; i < mhi_netdev->qmap_mode; i++) {
-			if (mhi_netdev->mpQmapNetDev[i]) {
-				rmnet_vnd_unregister_device(mhi_netdev->mpQmapNetDev[i]);
-				mhi_netdev->mpQmapNetDev[i] = NULL;
-			}
+	for (i = 0; i < mhi_netdev->qmap_mode; i++) {
+		if (mhi_netdev->mpQmapNetDev[i]
+			&& mhi_netdev->mpQmapNetDev[i] != mhi_netdev->ndev) {
+			rmnet_vnd_unregister_device(mhi_netdev->mpQmapNetDev[i]);
 		}
-		
-		rtnl_lock();
-#ifdef ANDROID_gki
-		if (mhi_netdev->ndev && rtnl_dereference(mhi_netdev->ndev->rx_handler))
-#else
-		if (netdev_is_rx_handler_busy(mhi_netdev->ndev))
-#endif
-			netdev_rx_handler_unregister(mhi_netdev->ndev);
-		rtnl_unlock();
-#endif
+		mhi_netdev->mpQmapNetDev[i] = NULL;
 	}
-
+		
+	rtnl_lock();
+	if (mhi_netdev->ndev 
+		&& rtnl_dereference(mhi_netdev->ndev->rx_handler) == rmnet_rx_handler)
+		netdev_rx_handler_unregister(mhi_netdev->ndev);
+	rtnl_unlock();
+#endif
+#endif
 	while ((skb = skb_dequeue (&mhi_netdev->skb_chain)))
 		dev_kfree_skb_any(skb);
 	while ((skb = skb_dequeue (&mhi_netdev->qmap_chain)))
@@ -2855,6 +3213,9 @@ static void mhi_netdev_remove(struct mhi_device *mhi_dev)
 #endif
 	free_netdev(mhi_netdev->ndev);
 	flush_delayed_work(&mhi_netdev->alloc_work);
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	mhi_netdev_free_pool(mhi_netdev);
+#endif
 
 	if (!IS_ERR_OR_NULL(mhi_netdev->dentry))
 		debugfs_remove_recursive(mhi_netdev->dentry);
@@ -2865,6 +3226,7 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 {
 	int ret;
 	struct mhi_netdev *mhi_netdev;
+	unsigned i;
 
 	mhi_netdev = devm_kzalloc(&mhi_dev->dev, sizeof(*mhi_netdev),
 				  GFP_KERNEL);
@@ -2921,6 +3283,9 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 	if ((mhi_dev->vendor == 0x17cb && mhi_dev->dev_id == 0x0306)
 		|| (mhi_dev->vendor == 0x17cb && mhi_dev->dev_id == 0x0308)
 		|| (mhi_dev->vendor == 0x1eac && mhi_dev->dev_id == 0x1004)
+		|| (mhi_dev->vendor == 0x17cb && mhi_dev->dev_id == 0x011a)
+		|| (mhi_dev->vendor == 0x1eac && mhi_dev->dev_id == 0x100b)
+		|| (mhi_dev->vendor == 0x17cb && mhi_dev->dev_id == 0x0309)
 	) {
 		mhi_netdev->qmap_version = 9;
 	}
@@ -2928,6 +3293,11 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 		mhi_netdev->qmap_mode = 1;
 		mhi_netdev->qmap_version = 0; 
 		mhi_netdev->use_rmnet_usb = 0;
+	}
+
+	mhi_netdev->mbim_mux_id = 0;
+	if (mhi_dev->vendor == 0x17cb && mhi_dev->dev_id == 0x0309) {
+		mhi_netdev->mbim_mux_id = MBIM_MUX_ID_SDX7X;
 	}
 	rmnet_info_set(mhi_netdev, &mhi_netdev->rmnet_info);
 
@@ -2956,16 +3326,32 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 		mhi_netdev->mpQmapNetDev[0] = mhi_netdev->ndev;
 		netif_carrier_on(mhi_netdev->ndev);
 	}
-	else if (mhi_netdev->use_rmnet_usb) {
 #ifdef MHI_NETDEV_ONE_CARD_MODE
+	else if (1) {
 		mhi_netdev->mpQmapNetDev[0] = mhi_netdev->ndev;
 		strcpy(mhi_netdev->rmnet_info.ifname[0], mhi_netdev->mpQmapNetDev[0]->name);
 		mhi_netdev->rmnet_info.mux_id[0] = QUECTEL_QMAP_MUX_ID;
+		if (mhi_mbim_enabled) {
+			mhi_netdev->rmnet_info.mux_id[0] = mhi_netdev->mbim_mux_id;
+		}
+	}
 #else
-		unsigned i;
 
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	else if (1) {
+		BUG_ON(mhi_netdev->net_type != MHI_NET_RMNET);
 		for (i = 0; i < mhi_netdev->qmap_mode; i++) {
-			u8 mux_id = QUECTEL_QMAP_MUX_ID+i;
+			mhi_netdev->rmnet_info.mux_id[i] = QUECTEL_QMAP_MUX_ID + i;
+			strcpy(mhi_netdev->rmnet_info.ifname[i], "use_rmnet_data");
+		}
+	}
+#endif
+	else if (mhi_netdev->use_rmnet_usb) {
+		for (i = 0; i < mhi_netdev->qmap_mode; i++) {
+			u8 mux_id = QUECTEL_QMAP_MUX_ID + i;
+			if (mhi_mbim_enabled) {
+				mux_id = mhi_netdev->mbim_mux_id + i;
+			}			
 			mhi_netdev->mpQmapNetDev[i] = rmnet_vnd_register_device(mhi_netdev, i, mux_id);
 			if (mhi_netdev->mpQmapNetDev[i]) {
 				strcpy(mhi_netdev->rmnet_info.ifname[i], mhi_netdev->mpQmapNetDev[i]->name);
@@ -2978,11 +3364,11 @@ static int mhi_netdev_probe(struct mhi_device *mhi_dev,
 		//netdev_rx_handler_register(mhi_netdev->ndev, rmnet_rx_handler, mhi_netdev);
 		netdev_rx_handler_register(mhi_netdev->ndev, rmnet_rx_handler, NULL);
 		rtnl_unlock();
-#endif
 	}
 
 #if defined(CONFIG_IPQ5018_RATE_CONTROL)
 	mhi_netdev->mhi_rate_control = 1;
+#endif
 #endif
 
 	return 0;
@@ -3029,4 +3415,12 @@ void mhi_device_netdev_exit(void)
 	debugfs_remove_recursive(mhi_netdev_debugfs_dentry);
 #endif
 	mhi_driver_unregister(&mhi_netdev_driver);
+}
+
+void mhi_netdev_quectel_avoid_unused_function(void) {
+#ifdef CONFIG_USE_RMNET_DATA_FOR_SKIP_MEMCPY
+	qmap_hex_dump(NULL, NULL, 0);
+	mhi_netdev_ip_type_trans(0);
+#else
+#endif
 }

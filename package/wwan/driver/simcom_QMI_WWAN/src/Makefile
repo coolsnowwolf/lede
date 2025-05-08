@@ -1,4 +1,4 @@
-obj-m += qmi_wwan_f.o
+obj-m += qmi_wwan_s.o
 
 PWD := $(shell pwd)
 OUTPUTDIR=/lib/modules/`uname -r`/kernel/drivers/net/usb/
@@ -28,11 +28,11 @@ default:
 	$(MAKE) ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} -C $(KDIR) M=$(PWD) modules
 
 install: default
-	cp $(PWD)/qmi_wwan_f.ko /lib/modules/$(shell uname -r)/kernel/drivers/net/usb/
+	cp $(PWD)/qmi_wwan_s.ko /lib/modules/$(shell uname -r)/kernel/drivers/net/usb/
 	depmod
-	modprobe -r qmi_wwan_f
+	modprobe -r qmi_wwan_s
 	modprobe -r qmi_wwan
-	modprobe qmi_wwan_f
+	modprobe qmi_wwan_s
 clean:
 	rm -rf *~ .tmp_versions modules.order Module.symvers
 	find . -type f -name "*~" -o -name "*.o" -o -name "*.ko" -o -name "*.cmd" -o -name "*.mod.c" |  xargs rm -rf
