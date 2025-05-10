@@ -540,6 +540,14 @@ define Device/tplink_tl-mr6400-v1
 endef
 TARGET_DEVICES += tplink_tl-mr6400-v1
 
+define Device/tplink_tl-r473g
+  $(Device/tplink-safeloader-uimage)
+  SOC := qca9563
+  DEVICE_MODEL := TL-R473G
+  TPLINK_BOARD_ID := TL-R473GP-AC
+endef
+TARGET_DEVICES += tplink_tl-r473g
+
 define Device/tplink_tl-wa1201-v2
   $(Device/tplink-safeloader-uimage)
   SOC := qca9563
