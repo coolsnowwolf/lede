@@ -31,12 +31,11 @@ define KernelPackage/aic8800s
   SUBMENU:=Wireless Drivers
   TITLE:=AIC8800 SDIO wireless support
   DEPENDS:=+kmod-mac80211 +kmod-mmc \
-	+@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT
+	+@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT
   FILES:= \
 	$(PKG_BUILD_DIR)/$(MAKE_PATH)/aic8800_bsp/aic8800_bsp.ko \
 	$(PKG_BUILD_DIR)/$(MAKE_PATH)/aic8800_fdrv/aic8800_fdrv.ko
   AUTOLOAD:=$(call AutoProbe,aic8800_bsp aic8800_fdrv)
-  MODPARAMS.aic8800_fdrv:=he_on=n
   VARIANT:=sdio
 endef
 
@@ -44,12 +43,11 @@ define KernelPackage/aic8800u
   SUBMENU:=Wireless Drivers
   TITLE:=AIC8800 USB wireless support
   DEPENDS:=+kmod-mac80211 +kmod-usb-core @USB_SUPPORT \
-	+@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT
+	+@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT
   FILES:= \
 	$(PKG_BUILD_DIR)/$(MAKE_PATH)/aic_load_fw/aic_load_fw.ko \
-	$(PKG_BUILD_DIR)/$(MAKE_PATH)/aic8800_fdrv/aic8800_fdrv_usb.ko
-  AUTOLOAD:=$(call AutoProbe,aic_load_fw aic8800_fdrv_usb)
-  MODPARAMS.aic8800_fdrv_usb:=he_on=n
+	$(PKG_BUILD_DIR)/$(MAKE_PATH)/aic8800_fdrv/aic8800_usb.ko
+  AUTOLOAD:=$(call AutoProbe,aic_load_fw aic8800_usb)
   VARIANT:=usb
 endef
 
