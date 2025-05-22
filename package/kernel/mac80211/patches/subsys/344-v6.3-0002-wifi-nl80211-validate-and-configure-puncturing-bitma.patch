@@ -1,0 +1,169 @@
+From d7c1a9a0ed180d8884798ce97afe7283622a484f Mon Sep 17 00:00:00 2001
+From: Aloka Dixit <quic_alokad@quicinc.com>
+Date: Mon, 30 Jan 2023 16:12:25 -0800
+Subject: [PATCH] wifi: nl80211: validate and configure puncturing bitmap
+
+- New feature flag, NL80211_EXT_FEATURE_PUNCT, to advertise
+  driver support for preamble puncturing in AP mode.
+- New attribute, NL80211_ATTR_PUNCT_BITMAP, to receive a puncturing
+  bitmap from the userspace during AP bring up (NL80211_CMD_START_AP)
+  and channel switch (NL80211_CMD_CHANNEL_SWITCH) operations. Each bit
+  corresponds to a 20 MHz channel in the operating bandwidth, lowest
+  bit for the lowest channel. Bit set to 1 indicates that the channel
+  is punctured. Higher 16 bits are reserved.
+- New members added to structures cfg80211_ap_settings and
+  cfg80211_csa_settings to propagate the bitmap to the driver after
+  validation.
+
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+Signed-off-by: Muna Sinada <quic_msinada@quicinc.com>
+Link: https://lore.kernel.org/r/20230131001227.25014-3-quic_alokad@quicinc.com
+[move validation against 0xffff into policy]
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ include/net/cfg80211.h       |  8 ++++++++
+ include/uapi/linux/nl80211.h | 11 +++++++++++
+ net/wireless/nl80211.c       | 32 ++++++++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+)
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -1333,6 +1333,9 @@ struct cfg80211_unsol_bcast_probe_resp {
+  * @fils_discovery: FILS discovery transmission parameters
+  * @unsol_bcast_probe_resp: Unsolicited broadcast probe response parameters
+  * @mbssid_config: AP settings for multiple bssid
++ * @punct_bitmap: Preamble puncturing bitmap. Each bit represents
++ *	a 20 MHz channel, lowest bit corresponding to the lowest channel.
++ *	Bit set to 1 indicates that the channel is punctured.
+  */
+ struct cfg80211_ap_settings {
+ 	struct cfg80211_chan_def chandef;
+@@ -1367,6 +1370,7 @@ struct cfg80211_ap_settings {
+ 	struct cfg80211_fils_discovery fils_discovery;
+ 	struct cfg80211_unsol_bcast_probe_resp unsol_bcast_probe_resp;
+ 	struct cfg80211_mbssid_config mbssid_config;
++	u16 punct_bitmap;
+ };
+ 
+ /**
+@@ -1384,6 +1388,9 @@ struct cfg80211_ap_settings {
+  * @radar_required: whether radar detection is required on the new channel
+  * @block_tx: whether transmissions should be blocked while changing
+  * @count: number of beacons until switch
++ * @punct_bitmap: Preamble puncturing bitmap. Each bit represents
++ *	a 20 MHz channel, lowest bit corresponding to the lowest channel.
++ *	Bit set to 1 indicates that the channel is punctured.
+  */
+ struct cfg80211_csa_settings {
+ 	struct cfg80211_chan_def chandef;
+@@ -1396,6 +1403,7 @@ struct cfg80211_csa_settings {
+ 	bool radar_required;
+ 	bool block_tx;
+ 	u8 count;
++	u16 punct_bitmap;
+ };
+ 
+ /**
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -2751,6 +2751,12 @@ enum nl80211_commands {
+  *	the incoming frame RX timestamp.
+  * @NL80211_ATTR_TD_BITMAP: Transition Disable bitmap, for subsequent
+  *	(re)associations.
++ *
++ * @NL80211_ATTR_PUNCT_BITMAP: (u32) Preamble puncturing bitmap, lowest
++ *	bit corresponds to the lowest 20 MHz channel. Each bit set to 1
++ *	indicates that the sub-channel is punctured. Higher 16 bits are
++ *	reserved.
++ *
+  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
+  * @NL80211_ATTR_MAX: highest attribute number currently defined
+  * @__NL80211_ATTR_AFTER_LAST: internal use
+@@ -3280,6 +3286,8 @@ enum nl80211_attrs {
+ 	NL80211_ATTR_RX_HW_TIMESTAMP,
+ 	NL80211_ATTR_TD_BITMAP,
+ 
++	NL80211_ATTR_PUNCT_BITMAP,
++
+ 	/* add attributes here, update the policy in nl80211.c */
+ 
+ 	__NL80211_ATTR_AFTER_LAST,
+@@ -6294,6 +6302,8 @@ enum nl80211_feature_flags {
+  *	might apply, e.g. no scans in progress, no offchannel operations
+  *	in progress, and no active connections.
+  *
++ * @NL80211_EXT_FEATURE_PUNCT: Driver supports preamble puncturing in AP mode.
++ *
+  * @NUM_NL80211_EXT_FEATURES: number of extended features.
+  * @MAX_NL80211_EXT_FEATURES: highest extended feature index.
+  */
+@@ -6362,6 +6372,7 @@ enum nl80211_ext_feature_index {
+ 	NL80211_EXT_FEATURE_FILS_CRYPTO_OFFLOAD,
+ 	NL80211_EXT_FEATURE_RADAR_BACKGROUND,
+ 	NL80211_EXT_FEATURE_POWERED_ADDR_CHANGE,
++	NL80211_EXT_FEATURE_PUNCT,
+ 
+ 	/* add new features before the definition below */
+ 	NUM_NL80211_EXT_FEATURES,
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -829,6 +829,7 @@ static const struct nla_policy nl80211_p
+ 	[NL80211_ATTR_MLD_ADDR] = NLA_POLICY_EXACT_LEN(ETH_ALEN),
+ 	[NL80211_ATTR_MLO_SUPPORT] = { .type = NLA_FLAG },
+ 	[NL80211_ATTR_MAX_NUM_AKM_SUITES] = { .type = NLA_REJECT },
++	[NL80211_ATTR_PUNCT_BITMAP] = NLA_POLICY_RANGE(NLA_U8, 0, 0xffff),
+ };
+ 
+ /* policy for the key attributes */
+@@ -3197,6 +3198,21 @@ static bool nl80211_can_set_dev_channel(
+ 		wdev->iftype == NL80211_IFTYPE_P2P_GO;
+ }
+ 
++static int nl80211_parse_punct_bitmap(struct cfg80211_registered_device *rdev,
++				      struct genl_info *info,
++				      const struct cfg80211_chan_def *chandef,
++				      u16 *punct_bitmap)
++{
++	if (!wiphy_ext_feature_isset(&rdev->wiphy, NL80211_EXT_FEATURE_PUNCT))
++		return -EINVAL;
++
++	*punct_bitmap = nla_get_u32(info->attrs[NL80211_ATTR_PUNCT_BITMAP]);
++	if (!cfg80211_valid_disable_subchannel_bitmap(punct_bitmap, chandef))
++		return -EINVAL;
++
++	return 0;
++}
++
+ int nl80211_parse_chandef(struct cfg80211_registered_device *rdev,
+ 			  struct genl_info *info,
+ 			  struct cfg80211_chan_def *chandef)
+@@ -5969,6 +5985,14 @@ static int nl80211_start_ap(struct sk_bu
+ 		goto out;
+ 	}
+ 
++	if (info->attrs[NL80211_ATTR_PUNCT_BITMAP]) {
++		err = nl80211_parse_punct_bitmap(rdev, info,
++						 &params->chandef,
++						 &params->punct_bitmap);
++		if (err)
++			goto out;
++	}
++
+ 	if (!cfg80211_reg_can_beacon_relax(&rdev->wiphy, &params->chandef,
+ 					   wdev->iftype)) {
+ 		err = -EINVAL;
+@@ -10107,6 +10131,14 @@ skip_beacons:
+ 	if (info->attrs[NL80211_ATTR_CH_SWITCH_BLOCK_TX])
+ 		params.block_tx = true;
+ 
++	if (info->attrs[NL80211_ATTR_PUNCT_BITMAP]) {
++		err = nl80211_parse_punct_bitmap(rdev, info,
++						 &params.chandef,
++						 &params.punct_bitmap);
++		if (err)
++			goto free;
++	}
++
+ 	wdev_lock(wdev);
+ 	err = rdev_channel_switch(rdev, dev, &params);
+ 	wdev_unlock(wdev);

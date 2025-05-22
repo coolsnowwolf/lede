@@ -1,0 +1,84 @@
+From 61403414e1719f929386dda8fb954bb302628ef3 Mon Sep 17 00:00:00 2001
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Thu, 4 May 2023 16:45:11 +0300
+Subject: [PATCH] wifi: mac80211: implement proper AP MLD HW restart
+
+Previously, I didn't implement restarting here at all if the
+interface is an MLD, so it only worked for non-MLO. Add the
+needed code to restart an AP MLD correctly.
+
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+Signed-off-by: Gregory Greenman <gregory.greenman@intel.com>
+Link: https://lore.kernel.org/r/20230504134511.828474-12-gregory.greenman@intel.com
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ net/mac80211/util.c | 44 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 43 insertions(+), 1 deletion(-)
+
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -2348,6 +2348,35 @@ static int ieee80211_reconfig_nan(struct
+ 	return 0;
+ }
+ 
++static void ieee80211_reconfig_ap_links(struct ieee80211_local *local,
++					struct ieee80211_sub_if_data *sdata,
++					u32 changed)
++{
++	int link_id;
++
++	for (link_id = 0; link_id < ARRAY_SIZE(sdata->link); link_id++) {
++		struct ieee80211_link_data *link;
++
++		if (!(sdata->vif.active_links & BIT(link_id)))
++			continue;
++
++		link = sdata_dereference(sdata->link[link_id], sdata);
++		if (!link)
++			continue;
++
++		if (rcu_access_pointer(link->u.ap.beacon))
++			drv_start_ap(local, sdata, link->conf);
++
++		if (!link->conf->enable_beacon)
++			continue;
++
++		changed |= BSS_CHANGED_BEACON |
++			   BSS_CHANGED_BEACON_ENABLED;
++
++		ieee80211_link_info_change_notify(sdata, link, changed);
++	}
++}
++
+ int ieee80211_reconfig(struct ieee80211_local *local)
+ {
+ 	struct ieee80211_hw *hw = &local->hw;
+@@ -2610,7 +2639,13 @@ int ieee80211_reconfig(struct ieee80211_
+ 			changed |= BSS_CHANGED_IBSS;
+ 			fallthrough;
+ 		case NL80211_IFTYPE_AP:
+-			changed |= BSS_CHANGED_SSID | BSS_CHANGED_P2P_PS;
++			changed |= BSS_CHANGED_P2P_PS;
++
++			if (sdata->vif.valid_links)
++				ieee80211_vif_cfg_change_notify(sdata,
++								BSS_CHANGED_SSID);
++			else
++				changed |= BSS_CHANGED_SSID;
+ 
+ 			if (sdata->vif.bss_conf.ftm_responder == 1 &&
+ 			    wiphy_ext_feature_isset(sdata->local->hw.wiphy,
+@@ -2620,6 +2655,13 @@ int ieee80211_reconfig(struct ieee80211_
+ 			if (sdata->vif.type == NL80211_IFTYPE_AP) {
+ 				changed |= BSS_CHANGED_AP_PROBE_RESP;
+ 
++				if (sdata->vif.valid_links) {
++					ieee80211_reconfig_ap_links(local,
++								    sdata,
++								    changed);
++					break;
++				}
++
+ 				if (rcu_access_pointer(sdata->deflink.u.ap.beacon))
+ 					drv_start_ap(local, sdata,
+ 						     sdata->deflink.conf);

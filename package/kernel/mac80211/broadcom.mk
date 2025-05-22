@@ -245,11 +245,11 @@ config PACKAGE_B43_USE_BCMA
 		  This allows choosing buses that b43 should support.
 
 	config PACKAGE_B43_BUSES_BCMA_AND_SSB
-		depends on !TARGET_bcm47xx_legacy && !TARGET_bcm47xx_mips74k && !TARGET_bcm53xx
+		depends on !TARGET_bcm47xx_legacy && !TARGET_bcm47xx_mips74k && !TARGET_bcm53xx && !TARGET_bmips
 		bool "BCMA and SSB"
 
 	config PACKAGE_B43_BUSES_BCMA
-		depends on !TARGET_bcm47xx_legacy
+		depends on !TARGET_bcm47xx_legacy && !TARGET_bmips_bcm6358 && !TARGET_bmips_bcm6368
 		bool "BCMA only"
 
 	config PACKAGE_B43_BUSES_SSB
@@ -429,10 +429,10 @@ define KernelPackage/brcmfmac/config
 
 	config BRCMFMAC_SDIO
 		bool "Enable SDIO bus interface support"
-		default y if TARGET_bcm27xx
-		default y if TARGET_sunxi
-		default y if TARGET_rockchip
 		default y if TARGET_amlogic
+		default y if TARGET_bcm27xx
+		default y if TARGET_rockchip
+		default y if TARGET_sunxi
 		default n
 		help
 		  Enable support for cards attached to an SDIO bus.

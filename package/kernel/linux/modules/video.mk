@@ -362,6 +362,38 @@ endef
 
 $(eval $(call KernelPackage,drm-exec))
 
+define KernelPackage/drm-dma-helper
+  SUBMENU:=$(VIDEO_MENU)
+  HIDDEN:=1
+  TITLE:=GEM DMA helper functions
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_GEM_DMA_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_dma_helper.ko
+  AUTOLOAD:=$(call AutoProbe,drm_dma_helper)
+endef
+
+define KernelPackage/drm-dma-helper/description
+  GEM DMA helper functions.
+endef
+
+$(eval $(call KernelPackage,drm-dma-helper))
+
+define KernelPackage/drm-mipi-dbi
+  SUBMENU:=$(VIDEO_MENU)
+  HIDDEN:=1
+  TITLE:=MIPI DBI helpers
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-backlight +kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_MIPI_DBI
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_mipi_dbi.ko
+  AUTOLOAD:=$(call AutoProbe,drm_mipi_dbi)
+endef
+
+define KernelPackage/drm-mipi-dbi/description
+  MIPI Display Bus Interface (DBI) LCD controller support.
+endef
+
+$(eval $(call KernelPackage,drm-mipi-dbi))
+
 define KernelPackage/drm-ttm
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=GPU memory management subsystem
@@ -425,6 +457,23 @@ define KernelPackage/drm-suballoc-helper/description
 endef
 
 $(eval $(call KernelPackage,drm-suballoc-helper))
+
+define KernelPackage/drm-vram-helper
+  SUBMENU:=$(VIDEO_MENU)
+  HIDDEN:=1
+  TITLE:=DRM helpers for VRAM memory management
+  DEPENDS:=@DISPLAY_SUPPORT \
+    +kmod-drm-kms-helper +kmod-drm-ttm-helper
+  KCONFIG:=CONFIG_DRM_VRAM_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_vram_helper.ko
+  AUTOLOAD:=$(call AutoProbe,drm_vram_helper)
+endef
+
+define KernelPackage/drm-vram-helper/description
+  DRM helpers for VRAM memory management.
+endef
+
+$(eval $(call KernelPackage,drm-vram-helper))
 
 define KernelPackage/drm-amdgpu
   SUBMENU:=$(VIDEO_MENU)
@@ -497,7 +546,7 @@ $(eval $(call KernelPackage,drm-i915))
 define KernelPackage/drm-ivpu
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel VPU DRM support
-  DEPENDS:=@TARGET_x86 +ivpu-firmware
+  DEPENDS:=@TARGET_x86_64 +ivpu-firmware
   KCONFIG:=CONFIG_DRM_ACCEL_IVPU \
        CONFIG_DRM_ACCEL_HABANALABS=n \
        CONFIG_DRM_ACCEL_QAIC=n \
@@ -619,6 +668,24 @@ define KernelPackage/drm-panfrost/description
 endef
 
 $(eval $(call KernelPackage,drm-panfrost))
+
+define KernelPackage/drm-panel-mipi-dbi
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Generic MIPI DBI LCD panel
+  DEPENDS:=+kmod-drm-mipi-dbi +kmod-drm-dma-helper
+  KCONFIG:=CONFIG_DRM_PANEL_MIPI_DBI \
+	CONFIG_DRM_FBDEV_EMULATION=y \
+	CONFIG_DRM_FBDEV_OVERALLOC=100
+  FILES:= \
+	$(LINUX_DIR)/drivers/gpu/drm/tiny/panel-mipi-dbi.ko
+  AUTOLOAD:=$(call AutoProbe,panel-mipi-dbi)
+endef
+
+define KernelPackage/drm-panel-mipi-dbi/description
+  Generic driver for MIPI Alliance Display Bus Interface
+endef
+
+$(eval $(call KernelPackage,drm-panel-mipi-dbi))
 
 define KernelPackage/drm-radeon
   SUBMENU:=$(VIDEO_MENU)

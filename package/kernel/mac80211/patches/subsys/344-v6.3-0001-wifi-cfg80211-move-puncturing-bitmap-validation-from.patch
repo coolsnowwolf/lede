@@ -1,0 +1,219 @@
+From b25413fed3d43e1ed3340df4d928971bb8639f66 Mon Sep 17 00:00:00 2001
+From: Aloka Dixit <quic_alokad@quicinc.com>
+Date: Mon, 30 Jan 2023 16:12:24 -0800
+Subject: [PATCH] wifi: cfg80211: move puncturing bitmap validation from
+ mac80211
+
+- Move ieee80211_valid_disable_subchannel_bitmap() from mlme.c to
+  chan.c, rename it as cfg80211_valid_disable_subchannel_bitmap()
+  and export it.
+- Modify the prototype to include struct cfg80211_chan_def instead
+  of only bandwidth to support a check which returns false if the
+  primary channel is punctured.
+
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+Link: https://lore.kernel.org/r/20230131001227.25014-2-quic_alokad@quicinc.com
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ include/net/cfg80211.h | 12 +++++++
+ net/mac80211/mlme.c    | 73 ++++--------------------------------------
+ net/wireless/chan.c    | 69 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 87 insertions(+), 67 deletions(-)
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -9067,4 +9067,16 @@ static inline int cfg80211_color_change_
+ 					 0, 0);
+ }
+ 
++/**
++ * cfg80211_valid_disable_subchannel_bitmap - validate puncturing bitmap
++ * @bitmap: bitmap to be validated
++ * @chandef: channel definition
++ *
++ * Validate the puncturing bitmap.
++ *
++ * Return: %true if the bitmap is valid. %false otherwise.
++ */
++bool cfg80211_valid_disable_subchannel_bitmap(u16 *bitmap,
++					      const struct cfg80211_chan_def *chandef);
++
+ #endif /* __NET_CFG80211_H */
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -88,67 +88,6 @@ MODULE_PARM_DESC(probe_wait_ms,
+  */
+ #define IEEE80211_SIGNAL_AVE_MIN_COUNT	4
+ 
+-struct ieee80211_per_bw_puncturing_values {
+-	u8 len;
+-	const u16 *valid_values;
+-};
+-
+-static const u16 puncturing_values_80mhz[] = {
+-	0x8, 0x4, 0x2, 0x1
+-};
+-
+-static const u16 puncturing_values_160mhz[] = {
+-	 0x80, 0x40, 0x20, 0x10, 0x8, 0x4, 0x2, 0x1, 0xc0, 0x30, 0xc, 0x3
+-};
+-
+-static const u16 puncturing_values_320mhz[] = {
+-	0xc000, 0x3000, 0xc00, 0x300, 0xc0, 0x30, 0xc, 0x3, 0xf000, 0xf00,
+-	0xf0, 0xf, 0xfc00, 0xf300, 0xf0c0, 0xf030, 0xf00c, 0xf003, 0xc00f,
+-	0x300f, 0xc0f, 0x30f, 0xcf, 0x3f
+-};
+-
+-#define IEEE80211_PER_BW_VALID_PUNCTURING_VALUES(_bw) \
+-	{ \
+-		.len = ARRAY_SIZE(puncturing_values_ ## _bw ## mhz), \
+-		.valid_values = puncturing_values_ ## _bw ## mhz \
+-	}
+-
+-static const struct ieee80211_per_bw_puncturing_values per_bw_puncturing[] = {
+-	IEEE80211_PER_BW_VALID_PUNCTURING_VALUES(80),
+-	IEEE80211_PER_BW_VALID_PUNCTURING_VALUES(160),
+-	IEEE80211_PER_BW_VALID_PUNCTURING_VALUES(320)
+-};
+-
+-static bool ieee80211_valid_disable_subchannel_bitmap(u16 *bitmap,
+-						      enum nl80211_chan_width bw)
+-{
+-	u32 idx, i;
+-
+-	switch (bw) {
+-	case NL80211_CHAN_WIDTH_80:
+-		idx = 0;
+-		break;
+-	case NL80211_CHAN_WIDTH_160:
+-		idx = 1;
+-		break;
+-	case NL80211_CHAN_WIDTH_320:
+-		idx = 2;
+-		break;
+-	default:
+-		*bitmap = 0;
+-		break;
+-	}
+-
+-	if (!*bitmap)
+-		return true;
+-
+-	for (i = 0; i < per_bw_puncturing[idx].len; i++)
+-		if (per_bw_puncturing[idx].valid_values[i] == *bitmap)
+-			return true;
+-
+-	return false;
+-}
+-
+ /*
+  * Extract from the given disabled subchannel bitmap (raw format
+  * from the EHT Operation Element) the bits for the subchannel
+@@ -206,8 +145,8 @@ ieee80211_handle_puncturing_bitmap(struc
+ 			ieee80211_extract_dis_subch_bmap(eht_oper, chandef,
+ 							 bitmap);
+ 
+-		if (ieee80211_valid_disable_subchannel_bitmap(&bitmap,
+-							      chandef->width))
++		if (cfg80211_valid_disable_subchannel_bitmap(&bitmap,
++							     chandef))
+ 			break;
+ 		link->u.mgd.conn_flags |=
+ 			ieee80211_chandef_downgrade(chandef);
+@@ -5613,8 +5552,8 @@ static bool ieee80211_config_puncturing(
+ 	    extracted == link->conf->eht_puncturing)
+ 		return true;
+ 
+-	if (!ieee80211_valid_disable_subchannel_bitmap(&bitmap,
+-						       link->conf->chandef.width)) {
++	if (!cfg80211_valid_disable_subchannel_bitmap(&bitmap,
++						      &link->conf->chandef)) {
+ 		link_info(link,
+ 			  "Got an invalid disable subchannel bitmap from AP %pM: bitmap = 0x%x, bw = 0x%x. disconnect\n",
+ 			  link->u.mgd.bssid,
+@@ -7102,8 +7041,8 @@ ieee80211_setup_assoc_link(struct ieee80
+ 			u16 bitmap;
+ 
+ 			bitmap = get_unaligned_le16(disable_subchannel_bitmap);
+-			if (ieee80211_valid_disable_subchannel_bitmap(&bitmap,
+-								      link->conf->chandef.width))
++			if (cfg80211_valid_disable_subchannel_bitmap(&bitmap,
++								     &link->conf->chandef))
+ 				ieee80211_handle_puncturing_bitmap(link,
+ 								   eht_oper,
+ 								   bitmap,
+--- a/net/wireless/chan.c
++++ b/net/wireless/chan.c
+@@ -1505,3 +1505,72 @@ struct cfg80211_chan_def *wdev_chandef(s
+ 	}
+ }
+ EXPORT_SYMBOL(wdev_chandef);
++
++struct cfg80211_per_bw_puncturing_values {
++	u8 len;
++	const u16 *valid_values;
++};
++
++static const u16 puncturing_values_80mhz[] = {
++	0x8, 0x4, 0x2, 0x1
++};
++
++static const u16 puncturing_values_160mhz[] = {
++	 0x80, 0x40, 0x20, 0x10, 0x8, 0x4, 0x2, 0x1, 0xc0, 0x30, 0xc, 0x3
++};
++
++static const u16 puncturing_values_320mhz[] = {
++	0xc000, 0x3000, 0xc00, 0x300, 0xc0, 0x30, 0xc, 0x3, 0xf000, 0xf00,
++	0xf0, 0xf, 0xfc00, 0xf300, 0xf0c0, 0xf030, 0xf00c, 0xf003, 0xc00f,
++	0x300f, 0xc0f, 0x30f, 0xcf, 0x3f
++};
++
++#define CFG80211_PER_BW_VALID_PUNCTURING_VALUES(_bw) \
++	{ \
++		.len = ARRAY_SIZE(puncturing_values_ ## _bw ## mhz), \
++		.valid_values = puncturing_values_ ## _bw ## mhz \
++	}
++
++static const struct cfg80211_per_bw_puncturing_values per_bw_puncturing[] = {
++	CFG80211_PER_BW_VALID_PUNCTURING_VALUES(80),
++	CFG80211_PER_BW_VALID_PUNCTURING_VALUES(160),
++	CFG80211_PER_BW_VALID_PUNCTURING_VALUES(320)
++};
++
++bool cfg80211_valid_disable_subchannel_bitmap(u16 *bitmap,
++					      const struct cfg80211_chan_def *chandef)
++{
++	u32 idx, i, start_freq;
++
++	switch (chandef->width) {
++	case NL80211_CHAN_WIDTH_80:
++		idx = 0;
++		start_freq = chandef->center_freq1 - 40;
++		break;
++	case NL80211_CHAN_WIDTH_160:
++		idx = 1;
++		start_freq = chandef->center_freq1 - 80;
++		break;
++	case NL80211_CHAN_WIDTH_320:
++		idx = 2;
++		start_freq = chandef->center_freq1 - 160;
++		break;
++	default:
++		*bitmap = 0;
++		break;
++	}
++
++	if (!*bitmap)
++		return true;
++
++	/* check if primary channel is punctured */
++	if (*bitmap & (u16)BIT((chandef->chan->center_freq - start_freq) / 20))
++		return false;
++
++	for (i = 0; i < per_bw_puncturing[idx].len; i++)
++		if (per_bw_puncturing[idx].valid_values[i] == *bitmap)
++			return true;
++
++	return false;
++}
++EXPORT_SYMBOL(cfg80211_valid_disable_subchannel_bitmap);

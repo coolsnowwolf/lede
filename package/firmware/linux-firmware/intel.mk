@@ -279,3 +279,15 @@ define Package/i915-firmware-gsc/install
 	done
 endef
 $(eval $(call BuildPackage,i915-firmware-gsc))
+
+Package/ivpu-firmware = $(call Package/firmware-default,Intel VPU firmware)
+define Package/ivpu-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/intel/vpu
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/intel/vpu/*.bin $(1)/lib/firmware/intel/vpu
+	for t in `cd $(1)/lib/firmware/intel/vpu && ls vpu_*.bin | cut -d. -f1 | cut -d_ -f2 | sort | uniq`; do \
+	  source=`cd $(1)/lib/firmware && ls intel/vpu/vpu_$$$${t}_v*.bin | sort | tail -n1`;                   \
+	  target=$(1)/lib/firmware/vpu_$$$${t}.bin;                                                             \
+	  if [ -n "$$$$source" ]; then ln -sf $$$$source $$$$target; fi                                         \
+	done
+endef
+$(eval $(call BuildPackage,ivpu-firmware))

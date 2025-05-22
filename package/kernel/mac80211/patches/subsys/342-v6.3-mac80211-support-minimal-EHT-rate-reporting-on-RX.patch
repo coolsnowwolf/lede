@@ -1,0 +1,179 @@
+From f66c48af7a110c0d694c4ac4a1257affb272a2ea Mon Sep 17 00:00:00 2001
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Mon, 9 Jan 2023 13:07:21 +0200
+Subject: [PATCH] mac80211: support minimal EHT rate reporting on RX
+
+Add minimal support for RX EHT rate reporting, not yet
+adding (modifying) any radiotap headers, just statistics
+for cfg80211.
+
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ include/net/mac80211.h  | 19 ++++++++++++++++---
+ net/mac80211/rx.c       |  9 +++++++++
+ net/mac80211/sta_info.c |  9 ++++++++-
+ net/mac80211/sta_info.h | 24 ++++++++++++++++++------
+ net/mac80211/util.c     | 13 +++++++++++++
+ 5 files changed, 64 insertions(+), 10 deletions(-)
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -1477,6 +1477,7 @@ enum mac80211_rx_encoding {
+ 	RX_ENC_HT,
+ 	RX_ENC_VHT,
+ 	RX_ENC_HE,
++	RX_ENC_EHT,
+ };
+ 
+ /**
+@@ -1510,7 +1511,7 @@ enum mac80211_rx_encoding {
+  * @antenna: antenna used
+  * @rate_idx: index of data rate into band's supported rates or MCS index if
+  *	HT or VHT is used (%RX_FLAG_HT/%RX_FLAG_VHT)
+- * @nss: number of streams (VHT and HE only)
++ * @nss: number of streams (VHT, HE and EHT only)
+  * @flag: %RX_FLAG_\*
+  * @encoding: &enum mac80211_rx_encoding
+  * @bw: &enum rate_info_bw
+@@ -1518,6 +1519,8 @@ enum mac80211_rx_encoding {
+  * @he_ru: HE RU, from &enum nl80211_he_ru_alloc
+  * @he_gi: HE GI, from &enum nl80211_he_gi
+  * @he_dcm: HE DCM value
++ * @eht.ru: EHT RU, from &enum nl80211_eht_ru_alloc
++ * @eht.gi: EHT GI, from &enum nl80211_eht_gi
+  * @rx_flags: internal RX flags for mac80211
+  * @ampdu_reference: A-MPDU reference number, must be a different value for
+  *	each A-MPDU but the same for each subframe within one A-MPDU
+@@ -1539,8 +1542,18 @@ struct ieee80211_rx_status {
+ 	u32 flag;
+ 	u16 freq: 13, freq_offset: 1;
+ 	u8 enc_flags;
+-	u8 encoding:2, bw:3, he_ru:3;
+-	u8 he_gi:2, he_dcm:1;
++	u8 encoding:3, bw:4;
++	union {
++		struct {
++			u8 he_ru:3;
++			u8 he_gi:2;
++			u8 he_dcm:1;
++		};
++		struct {
++			u8 ru:4;
++			u8 gi:2;
++		} eht;
++	};
+ 	u8 rate_idx;
+ 	u8 nss;
+ 	u8 rx_flags;
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -5358,6 +5358,15 @@ void ieee80211_rx_list(struct ieee80211_
+ 				      status->rate_idx, status->nss))
+ 				goto drop;
+ 			break;
++		case RX_ENC_EHT:
++			if (WARN_ONCE(status->rate_idx > 15 ||
++				      !status->nss ||
++				      status->nss > 8 ||
++				      status->eht.gi > NL80211_RATE_INFO_EHT_GI_3_2,
++				      "Rate marked as an EHT rate but data is invalid: MCS:%d, NSS:%d, GI:%d\n",
++				      status->rate_idx, status->nss, status->eht.gi))
++				goto drop;
++			break;
+ 		default:
+ 			WARN_ON_ONCE(1);
+ 			fallthrough;
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -4,7 +4,7 @@
+  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
+  * Copyright 2013-2014  Intel Mobile Communications GmbH
+  * Copyright (C) 2015 - 2017 Intel Deutschland GmbH
+- * Copyright (C) 2018-2021 Intel Corporation
++ * Copyright (C) 2018-2022 Intel Corporation
+  */
+ 
+ #include <linux/module.h>
+@@ -2403,6 +2403,13 @@ static void sta_stats_decode_rate(struct
+ 		rinfo->he_ru_alloc = STA_STATS_GET(HE_RU, rate);
+ 		rinfo->he_dcm = STA_STATS_GET(HE_DCM, rate);
+ 		break;
++	case STA_STATS_RATE_TYPE_EHT:
++		rinfo->flags = RATE_INFO_FLAGS_EHT_MCS;
++		rinfo->mcs = STA_STATS_GET(EHT_MCS, rate);
++		rinfo->nss = STA_STATS_GET(EHT_NSS, rate);
++		rinfo->eht_gi = STA_STATS_GET(EHT_GI, rate);
++		rinfo->eht_ru_alloc = STA_STATS_GET(EHT_RU, rate);
++		break;
+ 	}
+ }
+ 
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -936,6 +936,7 @@ enum sta_stats_type {
+ 	STA_STATS_RATE_TYPE_VHT,
+ 	STA_STATS_RATE_TYPE_HE,
+ 	STA_STATS_RATE_TYPE_S1G,
++	STA_STATS_RATE_TYPE_EHT,
+ };
+ 
+ #define STA_STATS_FIELD_HT_MCS		GENMASK( 7,  0)
+@@ -945,12 +946,16 @@ enum sta_stats_type {
+ #define STA_STATS_FIELD_VHT_NSS		GENMASK( 7,  4)
+ #define STA_STATS_FIELD_HE_MCS		GENMASK( 3,  0)
+ #define STA_STATS_FIELD_HE_NSS		GENMASK( 7,  4)
+-#define STA_STATS_FIELD_BW		GENMASK(11,  8)
+-#define STA_STATS_FIELD_SGI		GENMASK(12, 12)
+-#define STA_STATS_FIELD_TYPE		GENMASK(15, 13)
+-#define STA_STATS_FIELD_HE_RU		GENMASK(18, 16)
+-#define STA_STATS_FIELD_HE_GI		GENMASK(20, 19)
+-#define STA_STATS_FIELD_HE_DCM		GENMASK(21, 21)
++#define STA_STATS_FIELD_EHT_MCS		GENMASK( 3,  0)
++#define STA_STATS_FIELD_EHT_NSS		GENMASK( 7,  4)
++#define STA_STATS_FIELD_BW		GENMASK(12,  8)
++#define STA_STATS_FIELD_SGI		GENMASK(13, 13)
++#define STA_STATS_FIELD_TYPE		GENMASK(16, 14)
++#define STA_STATS_FIELD_HE_RU		GENMASK(19, 17)
++#define STA_STATS_FIELD_HE_GI		GENMASK(21, 20)
++#define STA_STATS_FIELD_HE_DCM		GENMASK(22, 22)
++#define STA_STATS_FIELD_EHT_RU		GENMASK(20, 17)
++#define STA_STATS_FIELD_EHT_GI		GENMASK(22, 21)
+ 
+ #define STA_STATS_FIELD(_n, _v)		FIELD_PREP(STA_STATS_FIELD_ ## _n, _v)
+ #define STA_STATS_GET(_n, _v)		FIELD_GET(STA_STATS_FIELD_ ## _n, _v)
+@@ -989,6 +994,13 @@ static inline u32 sta_stats_encode_rate(
+ 		r |= STA_STATS_FIELD(HE_RU, s->he_ru);
+ 		r |= STA_STATS_FIELD(HE_DCM, s->he_dcm);
+ 		break;
++	case RX_ENC_EHT:
++		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_EHT);
++		r |= STA_STATS_FIELD(EHT_NSS, s->nss);
++		r |= STA_STATS_FIELD(EHT_MCS, s->rate_idx);
++		r |= STA_STATS_FIELD(EHT_GI, s->eht.gi);
++		r |= STA_STATS_FIELD(EHT_RU, s->eht.ru);
++		break;
+ 	default:
+ 		WARN_ON(1);
+ 		return STA_STATS_RATE_INVALID;
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -3902,6 +3902,19 @@ u64 ieee80211_calculate_rx_timestamp(str
+ 
+ 	/* Fill cfg80211 rate info */
+ 	switch (status->encoding) {
++	case RX_ENC_EHT:
++		ri.flags |= RATE_INFO_FLAGS_EHT_MCS;
++		ri.mcs = status->rate_idx;
++		ri.nss = status->nss;
++		ri.eht_ru_alloc = status->eht.ru;
++		if (status->enc_flags & RX_ENC_FLAG_SHORT_GI)
++			ri.flags |= RATE_INFO_FLAGS_SHORT_GI;
++		/* TODO/FIXME: is this right? handle other PPDUs */
++		if (status->flag & RX_FLAG_MACTIME_PLCP_START) {
++			mpdu_offset += 2;
++			ts += 36;
++		}
++		break;
+ 	case RX_ENC_HE:
+ 		ri.flags |= RATE_INFO_FLAGS_HE_MCS;
+ 		ri.mcs = status->rate_idx;

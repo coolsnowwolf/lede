@@ -1,0 +1,538 @@
+From f1871abd27641c020298b5c7654e1d8341f22e5f Mon Sep 17 00:00:00 2001
+From: Ilan Peer <ilan.peer@intel.com>
+Date: Thu, 8 Jun 2023 16:36:08 +0300
+Subject: [PATCH] wifi: mac80211: Add getter functions for vif MLD state
+
+As a preparation to support disabled/dormant links, add the
+following function:
+
+- ieee80211_vif_usable_links(): returns the bitmap of the links
+  that can be activated. Use this function in all the places that
+  the bitmap of the usable links is needed.
+
+- ieee80211_vif_is_mld(): returns true iff the vif is an MLD.
+  Use this function in all the places where an indication that the
+  connection is a MLD is needed.
+
+Signed-off-by: Ilan Peer <ilan.peer@intel.com>
+Signed-off-by: Gregory Greenman <gregory.greenman@intel.com>
+Link: https://lore.kernel.org/r/20230608163202.86e3351da1fc.If6fe3a339fda2019f13f57ff768ecffb711b710a@changeid
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+ include/net/mac80211.h     | 21 +++++++++++++++++++
+ net/mac80211/cfg.c         |  4 ++--
+ net/mac80211/debug.h       |  8 +++----
+ net/mac80211/ieee80211_i.h |  2 +-
+ net/mac80211/iface.c       |  4 ++--
+ net/mac80211/link.c        |  4 ++--
+ net/mac80211/mlme.c        | 43 +++++++++++++++++++-------------------
+ net/mac80211/rx.c          |  2 +-
+ net/mac80211/tx.c          | 22 +++++++++----------
+ net/mac80211/util.c        | 14 ++++++-------
+ 10 files changed, 73 insertions(+), 51 deletions(-)
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -1936,6 +1936,27 @@ struct ieee80211_vif {
+ 	u8 drv_priv[] __aligned(sizeof(void *));
+ };
+ 
++/**
++ * ieee80211_vif_usable_links - Return the usable links for the vif
++ * @vif: the vif for which the usable links are requested
++ * Return: the usable link bitmap
++ */
++static inline u16 ieee80211_vif_usable_links(const struct ieee80211_vif *vif)
++{
++	return vif->valid_links;
++}
++
++/**
++ * ieee80211_vif_is_mld - Returns true iff the vif is an MLD one
++ * @vif: the vif
++ * Return: %true if the vif is an MLD, %false otherwise.
++ */
++static inline bool ieee80211_vif_is_mld(const struct ieee80211_vif *vif)
++{
++	/* valid_links != 0 indicates this vif is an MLD */
++	return vif->valid_links != 0;
++}
++
+ #define for_each_vif_active_link(vif, link, link_id)				\
+ 	for (link_id = 0; link_id < ARRAY_SIZE((vif)->link_conf); link_id++)	\
+ 		if ((!(vif)->active_links ||					\
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -35,7 +35,7 @@ ieee80211_link_or_deflink(struct ieee802
+ 		 * the return value at all (if it's not a pairwise key),
+ 		 * so in that case (require_valid==false) don't error.
+ 		 */
+-		if (require_valid && sdata->vif.valid_links)
++		if (require_valid && ieee80211_vif_is_mld(&sdata->vif))
+ 			return ERR_PTR(-EINVAL);
+ 
+ 		return &sdata->deflink;
+@@ -228,7 +228,7 @@ static int ieee80211_change_iface(struct
+ 			return 0;
+ 
+ 		/* FIXME: no support for 4-addr MLO yet */
+-		if (sdata->vif.valid_links)
++		if (ieee80211_vif_is_mld(&sdata->vif))
+ 			return -EOPNOTSUPP;
+ 
+ 		sdata->u.mgd.use_4addr = params->use_4addr;
+--- a/net/mac80211/debug.h
++++ b/net/mac80211/debug.h
+@@ -1,7 +1,7 @@
+ /* SPDX-License-Identifier: GPL-2.0 */
+ /*
+  * Portions
+- * Copyright (C) 2022 Intel Corporation
++ * Copyright (C) 2022 - 2023 Intel Corporation
+  */
+ #ifndef __MAC80211_DEBUG_H
+ #define __MAC80211_DEBUG_H
+@@ -136,7 +136,7 @@ do {									\
+ 
+ #define link_info(link, fmt, ...)					\
+ 	do {								\
+-		if ((link)->sdata->vif.valid_links)			\
++		if (ieee80211_vif_is_mld(&(link)->sdata->vif))          \
+ 			_sdata_info((link)->sdata, "[link %d] " fmt,	\
+ 				    (link)->link_id,			\
+ 				    ##__VA_ARGS__);			\
+@@ -145,7 +145,7 @@ do {									\
+ 	} while (0)
+ #define link_err(link, fmt, ...)					\
+ 	do {								\
+-		if ((link)->sdata->vif.valid_links)			\
++		if (ieee80211_vif_is_mld(&(link)->sdata->vif))          \
+ 			_sdata_err((link)->sdata, "[link %d] " fmt,	\
+ 				   (link)->link_id,			\
+ 				   ##__VA_ARGS__);			\
+@@ -154,7 +154,7 @@ do {									\
+ 	} while (0)
+ #define link_dbg(link, fmt, ...)					\
+ 	do {								\
+-		if ((link)->sdata->vif.valid_links)			\
++		if (ieee80211_vif_is_mld(&(link)->sdata->vif))          \
+ 			_sdata_dbg(1, (link)->sdata, "[link %d] " fmt,	\
+ 				   (link)->link_id,			\
+ 				   ##__VA_ARGS__);			\
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -1600,7 +1600,7 @@ ieee80211_get_sband(struct ieee80211_sub
+ 	struct ieee80211_chanctx_conf *chanctx_conf;
+ 	enum nl80211_band band;
+ 
+-	WARN_ON(sdata->vif.valid_links);
++	WARN_ON(ieee80211_vif_is_mld(&sdata->vif));
+ 
+ 	rcu_read_lock();
+ 	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -542,7 +542,7 @@ static void ieee80211_do_stop(struct iee
+ 	cancel_work_sync(&sdata->recalc_smps);
+ 
+ 	sdata_lock(sdata);
+-	WARN(sdata->vif.valid_links,
++	WARN(ieee80211_vif_is_mld(&sdata->vif),
+ 	     "destroying interface with valid links 0x%04x\n",
+ 	     sdata->vif.valid_links);
+ 
+@@ -1855,7 +1855,7 @@ static int ieee80211_runtime_change_ifty
+ 		return -EBUSY;
+ 
+ 	/* for now, don't support changing while links exist */
+-	if (sdata->vif.valid_links)
++	if (ieee80211_vif_is_mld(&sdata->vif))
+ 		return -EBUSY;
+ 
+ 	switch (sdata->vif.type) {
+--- a/net/mac80211/link.c
++++ b/net/mac80211/link.c
+@@ -324,7 +324,7 @@ static int _ieee80211_set_active_links(s
+ 		return -EINVAL;
+ 
+ 	/* cannot activate links that don't exist */
+-	if (active_links & ~sdata->vif.valid_links)
++	if (active_links & ~ieee80211_vif_usable_links(&sdata->vif))
+ 		return -EINVAL;
+ 
+ 	/* nothing to do */
+@@ -463,7 +463,7 @@ void ieee80211_set_active_links_async(st
+ 		return;
+ 
+ 	/* cannot activate links that don't exist */
+-	if (active_links & ~sdata->vif.valid_links)
++	if (active_links & ~ieee80211_vif_usable_links(&sdata->vif))
+ 		return;
+ 
+ 	/* nothing to do */
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -1287,7 +1287,7 @@ static void ieee80211_assoc_add_ml_elem(
+ 	u8 *ml_elem_len;
+ 	void *capab_pos;
+ 
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		return;
+ 
+ 	ift_ext_capa = cfg80211_get_iftype_ext_capa(local->hw.wiphy,
+@@ -1461,7 +1461,7 @@ static int ieee80211_send_assoc(struct i
+ 			capab |= WLAN_CAPABILITY_PRIVACY;
+ 	}
+ 
+-	if (sdata->vif.valid_links) {
++	if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 		/* consider the multi-link element with STA profile */
+ 		size += sizeof(struct ieee80211_multi_link_elem);
+ 		/* max common info field in basic multi-link element */
+@@ -1792,7 +1792,7 @@ void ieee80211_chswitch_done(struct ieee
+ 	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
+ 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
+ 
+-	if (WARN_ON(sdata->vif.valid_links))
++	if (WARN_ON(ieee80211_vif_is_mld(&sdata->vif)))
+ 		success = false;
+ 
+ 	trace_api_chswitch_done(sdata, success);
+@@ -2855,7 +2855,7 @@ static void ieee80211_set_associated(str
+ 	if (vif_cfg->arp_addr_cnt)
+ 		vif_changed |= BSS_CHANGED_ARP_FILTER;
+ 
+-	if (sdata->vif.valid_links) {
++	if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 		for (link_id = 0;
+ 		     link_id < IEEE80211_MLD_MAX_NUM_LINKS;
+ 		     link_id++) {
+@@ -2886,7 +2886,7 @@ static void ieee80211_set_associated(str
+ 	mutex_unlock(&local->iflist_mtx);
+ 
+ 	/* leave this here to not change ordering in non-MLO cases */
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		ieee80211_recalc_smps(sdata, &sdata->deflink);
+ 	ieee80211_recalc_ps_vif(sdata);
+ 
+@@ -2982,7 +2982,7 @@ static void ieee80211_set_disassoc(struc
+ 	sta_info_flush(sdata);
+ 
+ 	/* finally reset all BSS / config parameters */
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		changed |= ieee80211_reset_erp_info(sdata);
+ 
+ 	ieee80211_led_assoc(local, 0);
+@@ -3007,7 +3007,7 @@ static void ieee80211_set_disassoc(struc
+ 	       sizeof(sdata->vif.bss_conf.mu_group.membership));
+ 	memset(sdata->vif.bss_conf.mu_group.position, 0,
+ 	       sizeof(sdata->vif.bss_conf.mu_group.position));
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		changed |= BSS_CHANGED_MU_GROUPS;
+ 	sdata->vif.bss_conf.mu_mimo_owner = false;
+ 
+@@ -3021,7 +3021,7 @@ static void ieee80211_set_disassoc(struc
+ 		changed |= BSS_CHANGED_ARP_FILTER;
+ 
+ 	sdata->vif.bss_conf.qos = false;
+-	if (!sdata->vif.valid_links) {
++	if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 		changed |= BSS_CHANGED_QOS;
+ 		/* The BSSID (not really interesting) and HT changed */
+ 		changed |= BSS_CHANGED_BSSID | BSS_CHANGED_HT;
+@@ -3191,7 +3191,7 @@ static void ieee80211_mgd_probe_ap_send(
+ 	u8 unicast_limit = max(1, max_probe_tries - 3);
+ 	struct sta_info *sta;
+ 
+-	if (WARN_ON(sdata->vif.valid_links))
++	if (WARN_ON(ieee80211_vif_is_mld(&sdata->vif)))
+ 		return;
+ 
+ 	/*
+@@ -3239,7 +3239,7 @@ static void ieee80211_mgd_probe_ap(struc
+ 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
+ 	bool already = false;
+ 
+-	if (WARN_ON_ONCE(sdata->vif.valid_links))
++	if (WARN_ON_ONCE(ieee80211_vif_is_mld(&sdata->vif)))
+ 		return;
+ 
+ 	if (!ieee80211_sdata_running(sdata))
+@@ -3314,7 +3314,7 @@ struct sk_buff *ieee80211_ap_probereq_ge
+ 	int ssid_len;
+ 
+ 	if (WARN_ON(sdata->vif.type != NL80211_IFTYPE_STATION ||
+-		    sdata->vif.valid_links))
++		    ieee80211_vif_is_mld(&sdata->vif)))
+ 		return NULL;
+ 
+ 	sdata_assert_lock(sdata);
+@@ -3379,7 +3379,8 @@ static void __ieee80211_disconnect(struc
+ 	}
+ 
+ 	/* in MLO assume we have a link where we can TX the frame */
+-	tx = sdata->vif.valid_links || !sdata->deflink.csa_block_tx;
++	tx = ieee80211_vif_is_mld(&sdata->vif) ||
++		!sdata->deflink.csa_block_tx;
+ 
+ 	if (!ifmgd->driver_disconnect) {
+ 		unsigned int link_id;
+@@ -3578,7 +3579,7 @@ static void ieee80211_destroy_assoc_data
+ 			for (i = 0; i < ARRAY_SIZE(data.bss); i++)
+ 				data.bss[i] = assoc_data->link[i].bss;
+ 
+-			if (sdata->vif.valid_links)
++			if (ieee80211_vif_is_mld(&sdata->vif))
+ 				data.ap_mld_addr = assoc_data->ap_addr;
+ 
+ 			cfg80211_assoc_failure(sdata->dev, &data);
+@@ -4979,7 +4980,7 @@ static bool ieee80211_assoc_success(stru
+ 	if (WARN_ON(!sta))
+ 		goto out_err;
+ 
+-	if (sdata->vif.valid_links) {
++	if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 		u16 valid_links = 0;
+ 
+ 		for (link_id = 0; link_id < IEEE80211_MLD_MAX_NUM_LINKS; link_id++) {
+@@ -5008,7 +5009,7 @@ static bool ieee80211_assoc_success(stru
+ 		if (WARN_ON(!link))
+ 			goto out_err;
+ 
+-		if (sdata->vif.valid_links)
++		if (ieee80211_vif_is_mld(&sdata->vif))
+ 			link_info(link,
+ 				  "local address %pM, AP link address %pM\n",
+ 				  link->conf->addr,
+@@ -5240,7 +5241,7 @@ static void ieee80211_rx_mgmt_assoc_resp
+ 			ifmgd->broken_ap = true;
+ 		}
+ 
+-		if (sdata->vif.valid_links) {
++		if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 			if (!elems->multi_link) {
+ 				sdata_info(sdata,
+ 					   "MLO association with %pM but no multi-link element in response!\n",
+@@ -5304,7 +5305,7 @@ static void ieee80211_rx_mgmt_assoc_resp
+ 				resp.uapsd_queues |= ieee80211_ac_to_qos_mask[ac];
+ 	}
+ 
+-	if (sdata->vif.valid_links) {
++	if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 		ether_addr_copy(ap_mld_addr, sdata->vif.cfg.ap_addr);
+ 		resp.ap_mld_addr = ap_mld_addr;
+ 	}
+@@ -5629,7 +5630,7 @@ static void ieee80211_rx_mgmt_beacon(str
+ 	rcu_read_unlock();
+ 
+ 	if (ifmgd->assoc_data && ifmgd->assoc_data->need_beacon &&
+-	    !WARN_ON(sdata->vif.valid_links) &&
++	    !WARN_ON(ieee80211_vif_is_mld(&sdata->vif)) &&
+ 	    ieee80211_rx_our_beacon(bssid, ifmgd->assoc_data->link[0].bss)) {
+ 		parse_params.bss = ifmgd->assoc_data->link[0].bss;
+ 		elems = ieee802_11_parse_elems_full(&parse_params);
+@@ -6319,7 +6320,7 @@ static void ieee80211_sta_bcn_mon_timer(
+ 	struct ieee80211_sub_if_data *sdata =
+ 		from_timer(sdata, t, u.mgd.bcn_mon_timer);
+ 
+-	if (WARN_ON(sdata->vif.valid_links))
++	if (WARN_ON(ieee80211_vif_is_mld(&sdata->vif)))
+ 		return;
+ 
+ 	if (sdata->vif.bss_conf.csa_active &&
+@@ -6343,7 +6344,7 @@ static void ieee80211_sta_conn_mon_timer
+ 	struct sta_info *sta;
+ 	unsigned long timeout;
+ 
+-	if (WARN_ON(sdata->vif.valid_links))
++	if (WARN_ON(ieee80211_vif_is_mld(&sdata->vif)))
+ 		return;
+ 
+ 	if (sdata->vif.bss_conf.csa_active &&
+@@ -6898,7 +6899,7 @@ int ieee80211_mgd_auth(struct ieee80211_
+ 	return 0;
+ 
+  err_clear:
+-	if (!sdata->vif.valid_links) {
++	if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 		eth_zero_addr(sdata->deflink.u.mgd.bssid);
+ 		ieee80211_link_info_change_notify(sdata, &sdata->deflink,
+ 						  BSS_CHANGED_BSSID);
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -2526,7 +2526,7 @@ bool ieee80211_is_our_addr(struct ieee80
+ 	if (ether_addr_equal(sdata->vif.addr, addr))
+ 		return true;
+ 
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		return false;
+ 
+ 	for (link_id = 0; link_id < ARRAY_SIZE(sdata->vif.link_conf); link_id++) {
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -870,7 +870,7 @@ ieee80211_tx_h_sequence(struct ieee80211
+ 
+ 	/* SNS11 from 802.11be 10.3.2.14 */
+ 	if (unlikely(is_multicast_ether_addr(hdr->addr1) &&
+-		     info->control.vif->valid_links &&
++		     ieee80211_vif_is_mld(info->control.vif) &&
+ 		     info->control.vif->type == NL80211_IFTYPE_AP)) {
+ 		if (info->control.flags & IEEE80211_TX_CTRL_MCAST_MLO_FIRST_TX)
+ 			tx->sdata->mld_mcast_seq += 0x10;
+@@ -2639,7 +2639,7 @@ static struct sk_buff *ieee80211_build_h
+ 	ethertype = (skb->data[12] << 8) | skb->data[13];
+ 	fc = cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA);
+ 
+-	if (!sdata->vif.valid_links)
++	if (!ieee80211_vif_is_mld(&sdata->vif))
+ 		chanctx_conf =
+ 			rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+ 
+@@ -2656,7 +2656,7 @@ static struct sk_buff *ieee80211_build_h
+ 			authorized = test_sta_flag(sta, WLAN_STA_AUTHORIZED);
+ 			wme_sta = sta->sta.wme;
+ 		}
+-		if (!sdata->vif.valid_links) {
++		if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 			struct ieee80211_sub_if_data *ap_sdata;
+ 
+ 			/* override chanctx_conf from AP (we don't have one) */
+@@ -2674,7 +2674,7 @@ static struct sk_buff *ieee80211_build_h
+ 		/* DA BSSID SA */
+ 		memcpy(hdr.addr1, skb->data, ETH_ALEN);
+ 
+-		if (sdata->vif.valid_links && sta && !sta->sta.mlo) {
++		if (ieee80211_vif_is_mld(&sdata->vif) && sta && !sta->sta.mlo) {
+ 			struct ieee80211_link_data *link;
+ 
+ 			link_id = sta->deflink.link_id;
+@@ -2826,7 +2826,7 @@ static struct sk_buff *ieee80211_build_h
+ 	}
+ 
+ 	if (!chanctx_conf) {
+-		if (!sdata->vif.valid_links) {
++		if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 			ret = -ENOTCONN;
+ 			goto free;
+ 		}
+@@ -3068,7 +3068,7 @@ void ieee80211_check_fast_xmit(struct st
+ 	    !ieee80211_hw_check(&local->hw, SUPPORTS_TX_FRAG))
+ 		goto out;
+ 
+-	if (!sdata->vif.valid_links) {
++	if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 		rcu_read_lock();
+ 		chanctx_conf =
+ 			rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+@@ -3139,7 +3139,7 @@ void ieee80211_check_fast_xmit(struct st
+ 		fc |= cpu_to_le16(IEEE80211_FCTL_FROMDS);
+ 		/* DA BSSID SA */
+ 		build.da_offs = offsetof(struct ieee80211_hdr, addr1);
+-		if (sta->sta.mlo || !sdata->vif.valid_links) {
++		if (sta->sta.mlo || !ieee80211_vif_is_mld(&sdata->vif)) {
+ 			memcpy(hdr->addr2, sdata->vif.addr, ETH_ALEN);
+ 		} else {
+ 			unsigned int link_id = sta->deflink.link_id;
+@@ -4511,7 +4511,7 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 			__ieee80211_subif_start_xmit(skb, dev, 0,
+ 						     IEEE80211_TX_CTRL_MLO_LINK_UNSPEC,
+ 						     NULL);
+-	} else if (sdata->vif.valid_links &&
++	} else if (ieee80211_vif_is_mld(&sdata->vif) &&
+ 		   sdata->vif.type == NL80211_IFTYPE_AP &&
+ 		   !ieee80211_hw_check(&sdata->local->hw, MLO_MCAST_MULTI_LINK_TX)) {
+ 		ieee80211_mlo_multicast_tx(dev, skb);
+@@ -4789,7 +4789,7 @@ static bool ieee80211_tx_pending_skb(str
+ 
+ 	if (info->control.flags & IEEE80211_TX_INTCFL_NEED_TXPROCESSING) {
+ 		/* update band only for non-MLD */
+-		if (!sdata->vif.valid_links) {
++		if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 			chanctx_conf =
+ 				rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+ 			if (unlikely(!chanctx_conf)) {
+@@ -6012,7 +6012,7 @@ void __ieee80211_tx_skb_tid_band(struct
+ 	BUILD_BUG_ON(!FIELD_FIT(IEEE80211_TX_CTRL_MLO_LINK,
+ 				IEEE80211_LINK_UNSPECIFIED));
+ 
+-	if (!sdata->vif.valid_links) {
++	if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 		link = 0;
+ 	} else if (link_id >= 0) {
+ 		link = link_id;
+@@ -6058,7 +6058,7 @@ void ieee80211_tx_skb_tid(struct ieee802
+ 	enum nl80211_band band;
+ 
+ 	rcu_read_lock();
+-	if (!sdata->vif.valid_links) {
++	if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 		WARN_ON(link_id >= 0);
+ 		chanctx_conf =
+ 			rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -1701,7 +1701,7 @@ void ieee80211_send_auth(struct ieee8021
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct sk_buff *skb;
+ 	struct ieee80211_mgmt *mgmt;
+-	bool multi_link = sdata->vif.valid_links;
++	bool multi_link = ieee80211_vif_is_mld(&sdata->vif);
+ 	struct {
+ 		u8 id;
+ 		u8 len;
+@@ -2546,7 +2546,7 @@ int ieee80211_reconfig(struct ieee80211_
+ 			continue;
+ 
+ 		sdata_lock(sdata);
+-		if (sdata->vif.valid_links) {
++		if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 			struct ieee80211_bss_conf *old[IEEE80211_MLD_MAX_NUM_LINKS] = {
+ 				[0] = &sdata->vif.bss_conf,
+ 			};
+@@ -2566,7 +2566,7 @@ int ieee80211_reconfig(struct ieee80211_
+ 		for (link_id = 0;
+ 		     link_id < ARRAY_SIZE(sdata->vif.link_conf);
+ 		     link_id++) {
+-			if (sdata->vif.valid_links &&
++			if (ieee80211_vif_is_mld(&sdata->vif) &&
+ 			    !(sdata->vif.active_links & BIT(link_id)))
+ 				continue;
+ 
+@@ -2598,12 +2598,12 @@ int ieee80211_reconfig(struct ieee80211_
+ 		if (sdata->vif.bss_conf.mu_mimo_owner)
+ 			changed |= BSS_CHANGED_MU_GROUPS;
+ 
+-		if (!sdata->vif.valid_links)
++		if (!ieee80211_vif_is_mld(&sdata->vif))
+ 			changed |= BSS_CHANGED_IDLE;
+ 
+ 		switch (sdata->vif.type) {
+ 		case NL80211_IFTYPE_STATION:
+-			if (!sdata->vif.valid_links) {
++			if (!ieee80211_vif_is_mld(&sdata->vif)) {
+ 				changed |= BSS_CHANGED_ASSOC |
+ 					   BSS_CHANGED_ARP_FILTER |
+ 					   BSS_CHANGED_PS;
+@@ -2641,7 +2641,7 @@ int ieee80211_reconfig(struct ieee80211_
+ 		case NL80211_IFTYPE_AP:
+ 			changed |= BSS_CHANGED_P2P_PS;
+ 
+-			if (sdata->vif.valid_links)
++			if (ieee80211_vif_is_mld(&sdata->vif))
+ 				ieee80211_vif_cfg_change_notify(sdata,
+ 								BSS_CHANGED_SSID);
+ 			else
+@@ -2655,7 +2655,7 @@ int ieee80211_reconfig(struct ieee80211_
+ 			if (sdata->vif.type == NL80211_IFTYPE_AP) {
+ 				changed |= BSS_CHANGED_AP_PROBE_RESP;
+ 
+-				if (sdata->vif.valid_links) {
++				if (ieee80211_vif_is_mld(&sdata->vif)) {
+ 					ieee80211_reconfig_ap_links(local,
+ 								    sdata,
+ 								    changed);

@@ -1,0 +1,121 @@
+From 8dc94a59cfad70ec3a808add56718255eee39ab2 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 29 Mar 2025 12:50:55 +0100
+Subject: [PATCH] backports: handle genlmsg_multicast_allns upstream backport
+ changes
+
+Better handle genlmsg_multicast_allns upstream backport changes that
+dropped a flag to the function middle version. Use a backport function
+if backports project is tried to be built on older kernel version.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ backport-include/net/genetlink.h | 11 +++++
+ compat/Makefile                  |  3 +-
+ compat/backport-genetlink.c      | 60 +++++++++++++++++++++++
+ 3 files changed, 73 insertions(+), 1 deletion(-)
+
+--- a/backport-include/net/genetlink.h
++++ b/backport-include/net/genetlink.h
+@@ -172,4 +172,15 @@ static inline int genlmsg_parse(const st
+ }
+ #endif /* LINUX_VERSION_IS_LESS(5,2,0) */
+ 
++#if LINUX_VERSION_IN_RANGE(5,15,0,5,15,169) || \
++    LINUX_VERSION_IN_RANGE(6,1,0,6,1,115) || \
++    LINUX_VERSION_IN_RANGE(6,6,0,6,6,58)
++#define genlmsg_multicast_allns LINUX_BACKPORT(genlmsg_multicast_allns)
++int backport_genlmsg_multicast_allns(const struct genl_family *family,
++				     struct sk_buff *skb, u32 portid,
++				     unsigned int group);
++#endif /* LINUX_VERSION_IN_RANGE(5,15,0,5,15,169) ||
++	  LINUX_VERSION_IN_RANGE(6,1,0,6,1,115) ||
++	  LINUX_VERSION_IN_RANGE(6,6,0,6,6,58) */
++
+ #endif /* __BACKPORT_NET_GENETLINK_H */
+--- a/compat/Makefile
++++ b/compat/Makefile
+@@ -16,7 +16,8 @@ compat-$(CPTCFG_KERNEL_5_9) += backport-
+ compat-$(CPTCFG_KERNEL_5_10) += backport-5.10.o
+ compat-$(CPTCFG_KERNEL_5_11) += backport-5.11.o
+ compat-$(CPTCFG_KERNEL_5_13) += backport-5.13.o
+-compat-$(CPTCFG_KERNEL_5_15) += backport-5.15.o
++compat-$(CPTCFG_KERNEL_5_15) += backport-5.15.o backport-genetlink.o
++compat-$(CPTCFG_KERNEL_6_1) += backport-genetlink.o
+ compat-$(CPTCFG_KERNEL_6_4) += backport-6.4.o
+ 
+ compat-$(CPTCFG_BPAUTO_BUILD_CRYPTO_LIB_ARC4) += lib-crypto-arc4.o
+--- a/compat/backport-genetlink.c
++++ b/compat/backport-genetlink.c
+@@ -17,6 +17,7 @@
+ #include <net/netlink.h>
+ #include <net/sock.h>
+ 
++#if LINUX_VERSION_IS_LESS(5,2,0)
+ static const struct genl_family *find_family_real_ops(const struct genl_ops **ops)
+ {
+ 	const struct genl_family *family;
+@@ -249,3 +250,63 @@ int backport_genlmsg_multicast_allns(con
+ 	return genlmsg_mcast(skb, portid, group);
+ }
+ EXPORT_SYMBOL_GPL(backport_genlmsg_multicast_allns);
++#endif /* LINUX_VERSION_IS_LESS(5,2,0) */
++
++#if LINUX_VERSION_IN_RANGE(5,15,0,5,15,169) || \
++    LINUX_VERSION_IN_RANGE(6,1,0,6,1,115) || \
++    LINUX_VERSION_IN_RANGE(6,6,0,6,6,58)
++static int genlmsg_mcast(struct sk_buff *skb, u32 portid, unsigned long group)
++{
++	struct sk_buff *tmp;
++	struct net *net, *prev = NULL;
++	bool delivered = false;
++	int err;
++
++	rcu_read_lock();
++	for_each_net_rcu(net) {
++		if (prev) {
++			tmp = skb_clone(skb, GFP_ATOMIC);
++			if (!tmp) {
++				err = -ENOMEM;
++				goto error;
++			}
++			err = nlmsg_multicast(prev->genl_sock, tmp,
++					      portid, group, GFP_ATOMIC);
++			if (!err)
++				delivered = true;
++			else if (err != -ESRCH)
++				goto error;
++		}
++
++		prev = net;
++	}
++	err = nlmsg_multicast(prev->genl_sock, skb, portid, group, GFP_ATOMIC);
++
++	rcu_read_unlock();
++
++	if (!err)
++		delivered = true;
++	else if (err != -ESRCH)
++		return err;
++	return delivered ? 0 : -ESRCH;
++ error:
++	rcu_read_unlock();
++
++	kfree_skb(skb);
++	return err;
++}
++
++int backport_genlmsg_multicast_allns(const struct genl_family *family,
++				     struct sk_buff *skb, u32 portid,
++				     unsigned int group)
++{
++	if (WARN_ON_ONCE(group >= family->n_mcgrps))
++		return -EINVAL;
++
++	group = family->mcgrp_offset + group;
++	return genlmsg_mcast(skb, portid, group);
++}
++EXPORT_SYMBOL_GPL(backport_genlmsg_multicast_allns);
++#endif /* LINUX_VERSION_IN_RANGE(5,15,0,5,15,169) ||
++	  LINUX_VERSION_IN_RANGE(6,1,0,6,1,115) ||
++	  LINUX_VERSION_IN_RANGE(6,6,0,6,6,58) */

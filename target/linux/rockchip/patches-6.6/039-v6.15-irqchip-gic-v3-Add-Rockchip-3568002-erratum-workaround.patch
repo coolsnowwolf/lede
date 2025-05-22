@@ -1,0 +1,105 @@
+From 2d81e1bb625238d40a686ed909ff3e1abab7556a Mon Sep 17 00:00:00 2001
+From: Dmitry Osipenko <dmitry.osipenko@collabora.com>
+Date: Mon, 17 Feb 2025 01:16:32 +0300
+Subject: [PATCH] irqchip/gic-v3: Add Rockchip 3568002 erratum workaround
+
+Rockchip RK3566/RK3568 GIC600 integration has DDR addressing
+limited to the first 32bit of physical address space. Rockchip
+assigned Erratum ID #3568002 for this issue. Add driver quirk for
+this Rockchip GIC Erratum.
+
+Note, that the 0x0201743b GIC600 ID is not Rockchip-specific and is
+common for many ARM GICv3 implementations. Hence, there is an extra
+of_machine_is_compatible() check.
+
+Signed-off-by: Dmitry Osipenko <dmitry.osipenko@collabora.com>
+Signed-off-by: Thomas Gleixner <tglx@linutronix.de>
+Acked-by: Marc Zyngier <maz@kernel.org>
+Link: https://lore.kernel.org/all/20250216221634.364158-2-dmitry.osipenko@collabora.com
+---
+ Documentation/arch/arm64/silicon-errata.rst |  2 ++
+ arch/arm64/Kconfig                          |  9 ++++++++
+ drivers/irqchip/irq-gic-v3-its.c            | 23 ++++++++++++++++++++-
+ 3 files changed, 33 insertions(+), 1 deletion(-)
+
+--- a/Documentation/arch/arm64/silicon-errata.rst
++++ b/Documentation/arch/arm64/silicon-errata.rst
+@@ -270,6 +270,8 @@ stable kernels.
+ +----------------+-----------------+-----------------+-----------------------------+
+ | Rockchip       | RK3588          | #3588001        | ROCKCHIP_ERRATUM_3588001    |
+ +----------------+-----------------+-----------------+-----------------------------+
++| Rockchip       | RK3568          | #3568002        | ROCKCHIP_ERRATUM_3568002    |
+++----------------+-----------------+-----------------+-----------------------------+
+ 
+ +----------------+-----------------+-----------------+-----------------------------+
+ | Fujitsu        | A64FX           | E#010001        | FUJITSU_ERRATUM_010001      |
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -1267,6 +1267,15 @@ config NVIDIA_CARMEL_CNP_ERRATUM
+ 
+ 	  If unsure, say Y.
+ 
++config ROCKCHIP_ERRATUM_3568002
++	bool "Rockchip 3568002: GIC600 can not access physical addresses higher than 4GB"
++	default y
++	help
++	  The Rockchip RK3566 and RK3568 GIC600 SoC integrations have AXI
++	  addressing limited to the first 32bit of physical address space.
++
++	  If unsure, say Y.
++
+ config ROCKCHIP_ERRATUM_3588001
+ 	bool "Rockchip 3588001: GIC600 can not support shareability attributes"
+ 	default y
+--- a/drivers/irqchip/irq-gic-v3-its.c
++++ b/drivers/irqchip/irq-gic-v3-its.c
+@@ -202,13 +202,15 @@ static DEFINE_IDA(its_vpeid_ida);
+ #define gic_data_rdist_rd_base()	(gic_data_rdist()->rd_base)
+ #define gic_data_rdist_vlpi_base()	(gic_data_rdist_rd_base() + SZ_128K)
+ 
++static gfp_t gfp_flags_quirk;
++
+ static struct page *its_alloc_pages_node(int node, gfp_t gfp,
+ 					 unsigned int order)
+ {
+ 	struct page *page;
+ 	int ret = 0;
+ 
+-	page = alloc_pages_node(node, gfp, order);
++	page = alloc_pages_node(node, gfp | gfp_flags_quirk, order);
+ 
+ 	if (!page)
+ 		return NULL;
+@@ -4851,6 +4853,17 @@ static bool its_set_non_coherent(void *d
+ 	return true;
+ }
+ 
++static bool __maybe_unused its_enable_rk3568002(void *data)
++{
++	if (!of_machine_is_compatible("rockchip,rk3566") &&
++	    !of_machine_is_compatible("rockchip,rk3568"))
++		return false;
++
++	gfp_flags_quirk |= GFP_DMA32;
++
++	return true;
++}
++
+ static const struct gic_quirk its_quirks[] = {
+ #ifdef CONFIG_CAVIUM_ERRATUM_22375
+ 	{
+@@ -4910,6 +4923,14 @@ static const struct gic_quirk its_quirks
+ 		.property = "dma-noncoherent",
+ 		.init   = its_set_non_coherent,
+ 	},
++#ifdef CONFIG_ROCKCHIP_ERRATUM_3568002
++	{
++		.desc   = "ITS: Rockchip erratum RK3568002",
++		.iidr   = 0x0201743b,
++		.mask   = 0xffffffff,
++		.init   = its_enable_rk3568002,
++	},
++#endif
+ 	{
+ 	}
+ };
