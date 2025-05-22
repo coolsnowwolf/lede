@@ -30,7 +30,7 @@ define KernelPackage/rtw88-default
 	+@DRIVER_11N_SUPPORT +@DRIVER_11AC_SUPPORT
 endef
 
-define KernelPackage/rtw88-usb
+define KernelPackage/rtw88usb
   $(KernelPackage/rtw88-default)
   HIDDEN:=1
   FILES:= \
@@ -42,7 +42,7 @@ endef
 define KernelPackage/rtl8723du
   $(KernelPackage/rtw88-default)
   TITLE:=Realtek RTL8723DU support
-  DEPENDS+=+kmod-rtw88-usb +rtl8723de-firmware
+  DEPENDS+=+kmod-rtw88usb +rtl8723de-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8723x.ko \
 	$(PKG_BUILD_DIR)/rtw_8723d.ko \
@@ -53,7 +53,7 @@ endef
 define KernelPackage/rtl8821au
   $(KernelPackage/rtw88-default)
   TITLE:=Realtek RTL8812AU/RTL8821AU support
-  DEPENDS+=+kmod-rtw88-usb +rtl8821au-firmware
+  DEPENDS+=+kmod-rtw88usb +rtl8821au-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_88xxa.ko \
 	$(PKG_BUILD_DIR)/rtw_8812a.ko \
@@ -66,7 +66,7 @@ endef
 define KernelPackage/rtl8821cu
   $(KernelPackage/rtw88-default)
   TITLE:=Realtek RTL8821CU support
-  DEPENDS+=+kmod-rtw88-usb +rtl8821ce-firmware
+  DEPENDS+=+kmod-rtw88usb +rtl8821ce-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8821c.ko \
 	$(PKG_BUILD_DIR)/rtw_8821cu.ko
@@ -76,7 +76,7 @@ endef
 define KernelPackage/rtl8822bu
   $(KernelPackage/rtw88-default)
   TITLE:=Realtek RTL8822BU support
-  DEPENDS+=+kmod-rtw88-usb +rtl8822be-firmware
+  DEPENDS+=+kmod-rtw88usb +rtl8822be-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8822b.ko \
 	$(PKG_BUILD_DIR)/rtw_8822bu.ko
@@ -86,7 +86,7 @@ endef
 define KernelPackage/rtl8822cu
   $(KernelPackage/rtw88-default)
   TITLE:=Realtek RTL8822CU support
-  DEPENDS+=+kmod-rtw88-usb +rtl8822ce-firmware
+  DEPENDS+=+kmod-rtw88usb +rtl8822ce-firmware
   FILES:= \
 	$(PKG_BUILD_DIR)/rtw_8822c.ko \
 	$(PKG_BUILD_DIR)/rtw_8822cu.ko
@@ -118,7 +118,7 @@ define KernelPackage/rtl8821au/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/firmware/rtw8812a_fw.bin $(1)/lib/firmware/rtw88
 endef
 
-$(eval $(call KernelPackage,rtw88-usb))
+$(eval $(call KernelPackage,rtw88usb))
 $(eval $(call KernelPackage,rtl8723du))
 $(eval $(call KernelPackage,rtl8821au))
 $(eval $(call KernelPackage,rtl8821cu))
