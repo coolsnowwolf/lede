@@ -81,6 +81,20 @@ define Device/abt_asr3000
 endef
 TARGET_DEVICES += abt_asr3000
 
+define Device/airpi_ap3000e
+  DEVICE_VENDOR := Airpi
+  DEVICE_MODEL := AP3000E
+  DEVICE_DTS := mt7981b-airpi-ap3000e
+  DEVICE_DTS_DIR := ../dts
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES := kmod-usb3 kmod-mt7981-firmware mt7981-wo-firmware
+endef
+TARGET_DEVICES += airpi_ap3000e
+
 define Device/asus_tuf-ax4200
   DEVICE_VENDOR := ASUS
   DEVICE_MODEL := TUF-AX4200
