@@ -1,0 +1,406 @@
+--- a/match/nss_match_cmd.c
++++ b/match/nss_match_cmd.c
+@@ -127,29 +127,30 @@ static enum nss_match_profile_type nss_m
+ static int nss_match_cmd_procfs_config_handler(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	char *command_str, *token, *param, *value;
+-	char *input_msg, *input_msg_orig;
++	char *input_msg, *pos;
+ 	nss_match_cmd_t command;
+ 	struct nss_ctx_instance *nss_ctx = nss_match_get_context();
+ 	size_t count = *lenp;
+ 	int ret = proc_dostring(ctl, write, buffer, lenp, ppos);
++	char cmd_buf[100] = {0}; /* Use a fixed buffer size matching nss_match_data */
+ 
+ 	if (!write) {
+ 		return ret;
+ 	}
+ 
+-	input_msg = (char *)kzalloc(count + 1, GFP_KERNEL);
+-	if (!input_msg) {
+-		nss_match_warn("%px: Dynamic allocation falied while writing input message from file", ctl);
+-		return -ENOMEM;
++	if (count >= sizeof(cmd_buf)) {
++		nss_match_warn("%px: Input too large: %zu\n", ctl, count);
++		return -EINVAL;
+ 	}
+ 
+-	input_msg_orig = input_msg;
+-	if (copy_from_user(input_msg, buffer, count)) {
+-		kfree(input_msg);
+-		nss_match_warn("%px: Cannot copy user's entry to kernel memory\n", ctl);
+-		return -EFAULT;
++	memcpy(cmd_buf, buffer, count);
++	cmd_buf[count] = '\0'; /* Ensure null termination */
++
++	if ((pos = strrchr(cmd_buf, '\n')) != NULL) {
++		*pos = '\0';
+ 	}
+ 
++	input_msg = cmd_buf;
+ 	command_str = strsep(&input_msg, " ");
+ 	command = nss_match_cmd_parse(command_str);
+ 
+@@ -161,20 +162,17 @@ static int nss_match_cmd_procfs_config_h
+ 		profile_type = nss_match_cmd_get_profile_type(input_msg);
+ 		if (profile_type == NSS_MATCH_PROFILE_TYPE_NONE) {
+ 			pr_warn("%px: Please provide a valid profile type\n", ctl);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		table_id = nss_match_instance_create();
+ 		if (table_id <= 0) {
+ 			pr_warn("%px: Cannot create a new match instance\n", ctl);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		nss_match_db_profile_type_add(profile_type, table_id);
+ 		pr_warn("%px: New match instance created, table_id = %d\n", ctl, table_id);
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+@@ -194,32 +192,27 @@ static int nss_match_cmd_procfs_config_h
+ 			ret = sscanf(value, "%u", &table_id);
+ 			if (!ret) {
+ 				pr_warn("%px: Cannot convert to integer. Wrong input!!", ctl);
+-				kfree(input_msg_orig);
+ 				return -EINVAL;
+ 			}
+ 		}
+ 
+ 		if (table_id == 0 || table_id > NSS_MATCH_INSTANCE_MAX) {
+ 			pr_warn("%px: Invalid table_id %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_db_table_validate(table_id)) {
+ 			pr_warn("%px: Table is already configured, %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_db_parse_cmd(table_id, input_msg, &input_mask_param, NSS_MATCH_ADD_MASK)) {
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		nss_match_db_mask_add(&input_mask_param.msg.configure_msg, table_id);
+ 		pr_warn("%px: Mask added to instance successfully. %d", ctl, table_id);
+ 
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+@@ -240,43 +233,36 @@ static int nss_match_cmd_procfs_config_h
+ 			ret = sscanf(value, "%u", &table_id);
+ 			if (!ret) {
+ 				pr_warn("%px: Cannot convert to integer. Wrong input!!", ctl);
+-				kfree(input_msg_orig);
+ 				return -EINVAL;
+ 			}
+ 		}
+ 
+ 		if ((table_id == 0) || (table_id > NSS_MATCH_INSTANCE_MAX)) {
+ 			pr_warn("%px: Invalid table_id %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_db_table_validate(table_id)) {
+ 			pr_warn("%px: Table is already configured, %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (!nss_match_db_instance_config_get(&config_msg, &if_num, table_id)) {
+ 			pr_warn("%px: Unable to fetch stored configuration %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (if_num < 0) {
+ 			nss_match_warn("%px: Incorrect interface number: %d\n", ctl, if_num);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_cmd_enable_instance(&config_msg, if_num, table_id)) {
+ 			pr_warn("%px: Failed to enable table %d\n", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		pr_warn("%px: Table %d enabled successfully\n", ctl, table_id);
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+@@ -298,14 +284,12 @@ static int nss_match_cmd_procfs_config_h
+ 			ret = sscanf(value, "%u", &table_id);
+ 			if (!ret) {
+ 				pr_warn("%px: Cannot convert to integer. Wrong input!!", ctl);
+-				kfree(input_msg_orig);
+ 				return -EINVAL;
+ 			}
+ 		}
+ 
+ 		if (table_id == 0 || table_id > NSS_MATCH_INSTANCE_MAX) {
+ 			pr_warn("%px: Invalid table_id: %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+@@ -313,7 +297,6 @@ static int nss_match_cmd_procfs_config_h
+ 
+ 		if (nss_match_db_parse_cmd(table_id, input_msg, &input_rule_param, NSS_MATCH_ADD_RULE)) {
+ 			pr_warn("%px: Wrong input", ctl);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+@@ -325,12 +308,10 @@ static int nss_match_cmd_procfs_config_h
+ 
+ 		if (rule_id < 0) {
+ 			pr_warn("%px: Failed to add rule into table %d.\n", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		pr_warn("%px: Rule added to table %d successfully with rule_id: %d\n", ctl, table_id, rule_id);
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+@@ -352,7 +333,6 @@ static int nss_match_cmd_procfs_config_h
+ 			if (!(strncasecmp(param, "rule_id", strlen("rule_id")))) {
+ 				if (!sscanf(token, "%hu", &rule_id)) {
+ 					pr_warn("%px: Cannot convert to integer. Wrong input\n", ctl);
+-					kfree(input_msg_orig);
+ 					return -EINVAL;
+ 				}
+ 				continue;
+@@ -361,36 +341,30 @@ static int nss_match_cmd_procfs_config_h
+ 			if (!strncasecmp(param, "table_id", strlen("table_id"))) {
+ 				if (!sscanf(token, "%u", &table_id)) {
+ 					pr_warn("%px: Cannot convert to integer. Wrong input!!", ctl);
+-					kfree(input_msg_orig);
+ 					return -EINVAL;
+ 				}
+ 				continue;
+ 			}
+ 
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (table_id == 0 || table_id > NSS_MATCH_INSTANCE_MAX) {
+ 			pr_warn("%px: Invalid table_id: %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (rule_id == 0 || rule_id > NSS_MATCH_INSTANCE_RULE_MAX) {
+ 			pr_warn("%px: Invalid rule_id: %d", ctl, rule_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_rule_delete(nss_ctx, rule_id, table_id)) {
+ 			pr_warn("%px: Failed to delete rule from table %d.\n", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		pr_warn("%px: Rule deleted from table %d successfully\n", ctl, table_id);
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+@@ -410,39 +384,33 @@ static int nss_match_cmd_procfs_config_h
+ 			ret = sscanf(token, "%u", &table_id);
+ 			if (!ret) {
+ 				pr_warn("%px: Cannot convert to integer. Wrong input!!", input_msg);
+-				kfree(input_msg_orig);
+ 				return -EINVAL;
+ 			}
+ 		}
+ 
+ 		if (table_id == 0 || table_id > NSS_MATCH_INSTANCE_MAX) {
+ 			pr_warn("%px: Invalid table_id: %d", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		if (nss_match_instance_destroy(table_id)) {
+ 			pr_warn("%px: Failed to destroy table %d\n", ctl, table_id);
+-			kfree(input_msg_orig);
+ 			return -EINVAL;
+ 		}
+ 
+ 		pr_warn("%px: Table %d destroyed successfully.\n", ctl, table_id);
+-		kfree(input_msg_orig);
+ 		return count;
+ 	}
+ 
+ 	default:
+ 	{
+ 		pr_warn("%px: Input command is not as per syntax, Please enter a valid command", ctl);
+-		kfree(input_msg_orig);
+ 		return -EINVAL;
+ 	}
+      }
+ 
+ fail:
+ 	pr_warn("%px: Wrong input, check help. (cat /proc/sys/dev/nss/match/help)", ctl);
+-	kfree(input_msg_orig);
+ 	return ret;
+ 
+ }
+@@ -456,11 +424,12 @@ static int nss_match_cmd_procfs_reset_ne
+ 	struct net_device *dev;
+ 	uint32_t if_num, type = 0;
+ 	int ret;
+-	char *dev_name;
+-	char *cmd_buf = nss_match_data;
++	char *pos;
++	char cmd_buf[IFNAMSIZ] = {0};
+ 	nss_tx_status_t nss_tx_status;
+ 	struct nss_ctx_instance *nss_ctx = nss_match_get_context();
+ 	struct nss_ctx_instance *wifili_nss_ctx = nss_wifili_get_context();
++	size_t count = *lenp;
+ 
+ 	if (!nss_ctx || !wifili_nss_ctx) {
+ 		pr_warn("%px: NSS Context not found. wifili_nss_ctx: %px. Reset nexthop failed", nss_ctx, wifili_nss_ctx);
+@@ -473,19 +442,30 @@ static int nss_match_cmd_procfs_reset_ne
+ 		return ret;
+ 	}
+ 
++	if (count >= sizeof(cmd_buf)) {
++		nss_match_warn("%px: Input too large: %zu\n", ctl, count);
++		return -EINVAL;
++	}
++
++	memcpy(cmd_buf, buffer, count);
++	cmd_buf[count] = '\0'; /* Ensure null termination */
++
++	if ((pos = strrchr(cmd_buf, '\n')) != NULL) {
++		*pos = '\0';
++	}
++
+ 	/*
+ 	 * Parse and read the devname from command.
+ 	 */
+-	dev_name = strsep(&cmd_buf, "\0");
+-	dev = dev_get_by_name(&init_net, dev_name);
++	dev = dev_get_by_name(&init_net, cmd_buf);
+ 	if (!dev) {
+-		pr_warn("%px: Cannot find the net device: %s. Reset nexthop failed.\n", nss_ctx, dev_name);
++		pr_warn("%px: Cannot find the net device: %s. Reset nexthop failed.\n", nss_ctx, cmd_buf);
+ 		return -ENODEV;
+ 	}
+ 
+ 	if_num = nss_cmn_get_interface_number_by_dev(dev);
+ 	if (if_num < 0) {
+-		pr_warn("%px: Invalid if_num for interface: %s. Reset nexthop failed.\n", nss_ctx, dev_name);
++		pr_warn("%px: Invalid if_num for interface: %s. Reset nexthop failed.\n", nss_ctx, cmd_buf);
+ 		dev_put(dev);
+ 		return -ENODEV;
+ 	}
+@@ -529,7 +509,7 @@ static int nss_match_cmd_procfs_set_if_n
+ 	int table_id;
+ 	struct nss_ctx_instance *nss_ctx = nss_match_get_context();
+ 	struct nss_ctx_instance *wifili_nss_ctx = nss_wifili_get_context();
+-	char *dev_name, *nexthop_msg;
++	char *dev_name, *pos;
+ 	char *cmd_buf = NULL;
+ 	size_t count = *lenp;
+ 	nss_tx_status_t nss_tx_status;
+@@ -544,31 +524,28 @@ static int nss_match_cmd_procfs_set_if_n
+ 		return -ENOMEM;
+ 	}
+ 
+-	cmd_buf = (char *)kzalloc(count + 1, GFP_KERNEL);
+-	nexthop_msg = cmd_buf;
+-	if (!cmd_buf) {
+-		pr_warn("%px: Cannot allocate buffer to read input", nss_ctx);
+-		return -ENOMEM;
++	if (count >= sizeof(cmd_buf)) {
++		nss_match_warn("%px: Input too large: %zu\n", ctl, count);
++		return -EINVAL;
+ 	}
+ 
+-	if (copy_from_user(cmd_buf, buffer, count)) {
+-		kfree(nexthop_msg);
+-		pr_warn("%px: Cannot copy user's entry to kernel memory\n", nss_ctx);
+-		return -EFAULT;
++	memcpy(cmd_buf, buffer, count);
++	cmd_buf[count] = '\0'; /* Ensure null termination */
++
++	if ((pos = strrchr(cmd_buf, '\n')) != NULL) {
++		*pos = '\0';
+ 	}
+ 
+ 	dev_name = strsep(&cmd_buf, " ");
+ 	dev = dev_get_by_name(&init_net, dev_name);
+ 	if (!dev) {
+ 		pr_warn("%px: Cannot find the net device\n", nss_ctx);
+-		kfree(nexthop_msg);
+ 		return -ENODEV;
+ 	}
+ 
+ 	if_num = nss_cmn_get_interface_number_by_dev(dev);
+ 	if (if_num < 0) {
+ 		pr_warn("%px: Invalid interface number:%d\n", nss_ctx, if_num);
+-		kfree(nexthop_msg);
+ 		dev_put(dev);
+ 		return -ENODEV;
+ 	}
+@@ -576,20 +553,17 @@ static int nss_match_cmd_procfs_set_if_n
+ 	if (isdigit(cmd_buf[0])) {
+ 		if (!sscanf(cmd_buf, "%u", &nh_if_num)) {
+ 			pr_warn("%px, Failed to write the nexthop if_num token to integer\n", nss_ctx);
+-			kfree(nexthop_msg);
+ 			dev_put(dev);
+ 			return -EFAULT;
+ 		}
+ 	} else {
+ 		pr_warn("%px: Invalid nexthop interface number.\n", nss_ctx);
+-		kfree(nexthop_msg);
+ 		dev_put(dev);
+ 		return -ENODEV;
+ 	}
+ 
+ 	if (nh_if_num < 0) {
+ 		pr_warn("%px: Invalid nexthop interface number:%d\n", nss_ctx, if_num);
+-		kfree(nexthop_msg);
+ 		dev_put(dev);
+ 		return -ENODEV;
+ 	}
+@@ -597,7 +571,6 @@ static int nss_match_cmd_procfs_set_if_n
+ 	table_id = nss_match_get_table_id_by_ifnum(nh_if_num);
+ 	if (table_id <= 0 || table_id > NSS_MATCH_INSTANCE_MAX) {
+ 		pr_warn("Invalid match interface. Failed to set %d as nexthop.\n", nh_if_num);
+-		kfree(nexthop_msg);
+ 		dev_put(dev);
+ 		return -EFAULT;
+ 	}
+@@ -614,7 +587,6 @@ static int nss_match_cmd_procfs_set_if_n
+ 		nss_tx_status = nss_phys_if_set_nexthop(nss_ctx, if_num, nh_if_num);
+ 	} else {
+ 		pr_warn("Invalid interface to set nexthop. Failed to set nexthop on if_num %d.\n", if_num);
+-		kfree(nexthop_msg);
+ 		dev_put(dev);
+ 		return -EFAULT;
+ 	}
+@@ -623,7 +595,6 @@ static int nss_match_cmd_procfs_set_if_n
+ 		pr_warn("%px: Sending message failed, cannot change nexthop\n", nss_ctx);
+ 	}
+ 
+-	kfree(nexthop_msg);
+ 	dev_put(dev);
+ 	return ret;
+ }
