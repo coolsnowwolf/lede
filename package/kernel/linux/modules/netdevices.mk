@@ -422,9 +422,11 @@ $(eval $(call KernelPackage,phy-micrel))
 define KernelPackage/phy-realtek
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=Realtek Ethernet PHY driver
-   KCONFIG:=CONFIG_REALTEK_PHY
-   DEPENDS:=+kmod-libphy
-   FILES:=$(LINUX_DIR)/drivers/net/phy/realtek.ko
+   KCONFIG:=CONFIG_REALTEK_PHY \
+    CONFIG_REALTEK_PHY_HWMON=y
+   DEPENDS:=+kmod-libphy +kmod-hwmon-core
+   FILES:=$(LINUX_DIR)/drivers/net/phy/realtek.ko@lt6.12 \
+	  $(LINUX_DIR)/drivers/net/phy/realtek/realtek.ko@ge6.12
    AUTOLOAD:=$(call AutoLoad,18,realtek,1)
 endef
 
@@ -968,7 +970,7 @@ define KernelPackage/r8169
     CONFIG_R8169 \
     CONFIG_R8169_LEDS=y@ge6.6
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/realtek/r8169.ko
-  AUTOLOAD:=$(call AutoProbe,r8169)
+  AUTOLOAD:=$(call AutoProbe,r8169,1)
 endef
 
 define KernelPackage/r8169/description
@@ -1051,29 +1053,28 @@ $(eval $(call KernelPackage,e1000e))
 define KernelPackage/libie
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel Ethernet library
-  DEPENDS:=@PCI_SUPPORT +kmod-i2c-core +kmod-i2c-algo-bit +kmod-ptp +kmod-hwmon-core
+  DEPENDS:=@LINUX_6_12 +kmod-libeth
   KCONFIG:=CONFIG_LIBIE
+  HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libie/libie.ko
-  AUTOLOAD:=$(call AutoLoad,30,libie,1)
 endef
 
 define KernelPackage/libie/description
- Kernel modules for libie (Intel Ethernet library) common library
+ Intel Ethernet library
 endef
 
 $(eval $(call KernelPackage,libie))
 
 define KernelPackage/libeth
   SUBMENU:=$(NETWORK_DEVICES_MENU)
-  TITLE:=Intel Ethernet PHY library
-  DEPENDS:=@PCI_SUPPORT +kmod-i2c-core +kmod-i2c-algo-bit +kmod-ptp +kmod-hwmon-core
-  KCONFIG:=CONFIG_LIBIE
+  TITLE:=Common Intel Ethernet library
+  KCONFIG:=CONFIG_LIBETH
+  HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libeth/libeth.ko
-  AUTOLOAD:=$(call AutoLoad,30,libeth,1)
 endef
 
 define KernelPackage/libeth/description
- Kernel modules for libeth (Intel Ethernet library) common library
+ Common Intel Ethernet library
 endef
 
 $(eval $(call KernelPackage,libeth))
@@ -1157,7 +1158,7 @@ define KernelPackage/i40e
   KCONFIG:=CONFIG_I40E \
     CONFIG_I40E_DCB=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/i40e/i40e.ko
-  AUTOLOAD:=$(call AutoProbe,i40e)
+  AUTOLOAD:=$(call AutoLoad,36,i40e,1)
 endef
 
 define KernelPackage/i40e/description
@@ -1170,13 +1171,12 @@ $(eval $(call KernelPackage,i40e))
 define KernelPackage/iavf
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Adaptive Virtual Function support
-  DEPENDS:=@PCI_SUPPORT +LINUX_6_12:kmod-libie +LINUX_6_12:kmod-libeth
+  DEPENDS:=@PCI_SUPPORT +LINUX_6_12:kmod-libie
   KCONFIG:= \
        CONFIG_I40EVF \
        CONFIG_IAVF
   FILES:= \
        $(LINUX_DIR)/drivers/net/ethernet/intel/iavf/iavf.ko
-  AUTOLOAD:=$(call AutoProbe,i40evf iavf)
   AUTOLOAD:=$(call AutoProbe,iavf)
 endef
 
@@ -1192,8 +1192,9 @@ $(eval $(call KernelPackage,iavf))
 define KernelPackage/ice
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller E810 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +LINUX_6_12:kmod-libie
   KCONFIG:=CONFIG_ICE \
+    CONFIG_ICE_HWMON=y \
     CONFIG_ICE_HWTS=n \
     CONFIG_ICE_SWITCHDEV=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/ice/ice.ko
