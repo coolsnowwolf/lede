@@ -7,36 +7,32 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-large  # 重要：使用更大的 runner
+    runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
+    # --- 步骤 1: 检出代码 ---
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    - name: Deep Clean Disk Space
-      run: |
-        sudo apt-get clean
-        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /swapfile
-        sudo rm -rf /usr/lib/firefox /usr/lib/google-cloud-sdk
-        df -h
-
+    # --- 步骤 2: 生成日期变量 ---
     - name: Generate Date
       id: date
       run: |
         DATE=$(date +'%Y%m%d-%H%M')
         echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
-
+    # --- 步骤 3: 缓存依赖 ---
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
         path: |
-          lede/ccache
-          lede/dl
+          lede/ccache  # 编译缓存
+          lede/dl      # 预下载的源码包
         key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
 
+    # --- 步骤 4: 安装编译依赖 ---
     - name: Install dependencies
       run: |
         sudo apt-get update -y
@@ -48,49 +44,39 @@ jobs:
           libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
           libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev \
-          libjson-c-dev libubox-dev  # 新增关键依赖
-
+          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
+    # --- 步骤 5: 准备编译环境 ---
     - name: Prepare build environment
       run: |
-        [ -d "lede" ] || git clone https://github.com/coolsnowwolf/lede.git lede
+        git clone https://github.com/coolsnowwolf/lede.git lede
         cd lede
-        git pull
-        ./scripts/feeds update -a -f
-        ./scripts/feeds install -a --force
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
         cp $GITHUB_WORKSPACE/.config .
         make defconfig
-
-    - name: Download Sources
-      run: |
-        cd lede
-        make download -j$(nproc)
-        find dl -size -1024c -delete  # 删除不完整的下载
-
+    # --- 步骤 6: 编译固件 ---
     - name: Compile LEDE
       id: compile
       run: |
         cd lede
-        make -j$(($(nproc) / 2)) V=s 2>&1 | tee build.log  # 限制并发数
-      continue-on-error: false
+        make -j$(($(nproc) + 1)) V=s
+      continue-on-error: false  # 失败则停止
 
-    - name: Archive Build Logs
-      if: ${{ failure() }}
-      uses: actions/upload-artifact@v3
-      with:
-        name: build-logs
-        path: lede/build.log
-
+    # --- 步骤 7: 上传到 Release (新增功能) ---
     - name: Upload to Release
-      if: ${{ steps.compile.outcome == 'success' }}
+      if: ${{ steps.compile.outcome == 'success' }}  # 仅在编译成功时触发
       uses: ncipollo/release-action@v1
       with:
         tag: OpenWrt_nokia_ea0326gmp_${{ env.PACKAGED_OUTPUTDATE }}
-        artifacts: "lede/bin/targets/*/*/*.bin"
+        artifacts: "lede/bin/targets/*/*/*.bin"      # 匹配所有固件文件
         allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
         body: |
-          ### 编译信息
-          - 时间: ${{ env.PACKAGED_OUTPUTDATE }}
-          - 机型: Nokia EA0326GMP
-          - 内核版本: $(grep 'LINUX_VERSION-' lede/.config | cut -d= -f2)
+          ### 基于 Lean 的 LEDE 源码构建
+          **首次使用建议全新刷写**
+          
+          **基本信息**
+          - 管理 IP: 192.168.1.1
+          - 用户名: root
+          - 密码: password
+          - 设备型号: nokia_ea0326gmp
