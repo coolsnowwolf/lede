@@ -1,4 +1,4 @@
-name: 🚀 Nokia EA0326GMP 极速编译
+name: 🚀 Nokia EA0326GMP 极速编译 (修复版)
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
 
 env:
   FIRMWARE_PATH: bin/targets/mediatek/filogic/
-  CCACHE_DIR: /github/workspace/ccache
-  DL_DIR: /github/workspace/dl
-  BUILD_DIR: /github/workspace/build_dir
+  CCACHE_DIR: /tmp/ccache
+  DL_DIR: /tmp/dl
+  BUILD_DIR: /tmp/build_dir
 
 jobs:
   build:
@@ -24,18 +24,13 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
-    - name: 🛠️ 设置缓存
-      uses: actions/cache@v3
-      with:
-        path: |
-          ${{ env.CCACHE_DIR }}
-          ${{ env.DL_DIR }}
-          ${{ env.BUILD_DIR }}
-        key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
+    - name: 🛠️ 设置缓存目录
+      run: |
+        mkdir -p $CCACHE_DIR $DL_DIR $BUILD_DIR
+        sudo chown -R $USER:$USER $CCACHE_DIR $DL_DIR $BUILD_DIR
+        ccache -M 4G
+        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
 
-    # 第二阶段：安装依赖
     - name: 📦 安装基础工具链
       run: |
         sudo apt-get update -y
@@ -52,47 +47,51 @@ jobs:
           libunistring-dev libxml2-dev libkmod-dev libtirpc-dev \
           libgpiod-dev glib2.0-dev jq zstd libzstd-dev
 
-        # 初始化ccache
-        ccache -M 4G
-        ccache -s
-
-    # 第三阶段：准备编译
+    # 第二阶段：准备编译
     - name: 🔧 配置环境
       run: |
         export FORCE_UNSAFE_CONFIGURE=1
         export JOBS=$(($(nproc) + 1))
         echo "JOBS=$JOBS" >> $GITHUB_ENV
 
-        # 修复常见警告
+        # 修复工具链链接
         mkdir -p staging_dir/host/bin
-        ln -sf $(which gcc) staging_dir/host/bin/gcc
-        ln -sf $(which g++) staging_dir/host/bin/g++
+        ln -sf $(which gcc) staging_dir/host/bin/gcc || true
+        ln -sf $(which g++) staging_dir/host/bin/g++ || true
 
     - name: ⏬ 下载源码
       run: |
         make defconfig
-        [ -d "$DL_DIR" ] || mkdir -p "$DL_DIR"
         make download -j$JOBS
         find "$DL_DIR" -size -1k -delete
 
-    # 第四阶段：分步编译
+    # 第三阶段：分步编译
     - name: 🛠️ 编译工具链
-      run: make -j$JOBS tools/compile toolchain/compile
+      run: |
+        make -j$JOBS tools/compile toolchain/compile || {
+          echo "::warning::并行编译失败，尝试单线程编译..."
+          make -j1 V=s tools/compile toolchain/compile
+        }
 
     - name: 🧱 编译核心包
-      run: make -j$JOBS package/compile
+      run: |
+        make -j$JOBS package/compile || {
+          echo "::warning::并行编译失败，尝试单线程编译..."
+          make -j1 V=s package/compile
+        }
 
     - name: 🖼️ 生成固件
-      run: make -j$JOBS || make -j1 V=s
+      run: |
+        make -j$JOBS || make -j1 V=s
 
-    # 第五阶段：发布成果
+    # 第四阶段：发布成果
     - name: 📌 收集成果
       run: |
         mkdir -p artifacts
         cp $FIRMWARE_PATH/*.bin artifacts/
         cp $FIRMWARE_PATH/*.manifest artifacts/
-        ccache -s >> artifacts/ccache.log
-        du -sh $DL_DIR > artifacts/size.log
+        ccache -s > artifacts/ccache_stats.txt
+        du -sh $CCACHE_DIR > artifacts/cache_size.txt
 
     - name: 🚀 创建发布版
       if: success()
@@ -105,6 +104,7 @@ jobs:
           - 设备型号：Nokia EA0326GMP
           - 编译时间：$(date +'%Y-%m-%d %H:%M')
           - 源码版本：$(git rev-parse --short HEAD)
+          - CCACHE命中率：$(grep 'cache hit rate' artifacts/ccache_stats.txt | cut -d' ' -f4-)
 
           ### 🔧 刷机指南
           1. 进入原厂固件升级页面
