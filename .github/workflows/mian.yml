@@ -2,21 +2,19 @@ name: 编译并发布 Nokia EA0326GMP 固件
 
 on:
   push:
-    tags: ['v*']  # 只有打tag时触发
-  workflow_dispatch:  # 允许手动触发
+    tags: ['v*']
+  workflow_dispatch:
 
 env:
-  REPO_URL: https://github.com/kangxiaofeng/nokia_ea0326gmp-lede
-  CONFIG_FILE: .config
   FIRMWARE_PATH: bin/targets/mediatek/filogic/
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 增加超时时间
+    timeout-minutes: 240
 
     steps:
-    - name: 检出代码
+    - name: 检出代码（包含.config）
       uses: actions/checkout@v4
       with:
         submodules: recursive
@@ -35,49 +33,27 @@ jobs:
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
           uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
 
-    - name: 设置ccache缓存
-      uses: actions/cache@v3
-      with:
-        path: ~/.ccache
-        key: ${{ runner.os }}-ccache-${{ hashFiles('.config') }}
-        restore-keys: |
-          ${{ runner.os }}-ccache-
-
     - name: 验证配置文件
       run: |
-        if [ ! -f "$CONFIG_FILE" ]; then
-          echo "::error::缺少配置文件 $CONFIG_FILE"
+        if [ ! -f ".config" ]; then
+          echo "::error::仓库中缺少.config文件"
           exit 1
         fi
-        echo "配置文件验证通过"
+        echo "使用仓库中的.config文件进行编译"
 
     - name: 准备编译环境
       run: |
-        cp $CONFIG_FILE .config
         make defconfig
         echo "开始下载源码..."
         make download -j$(nproc)
-        find dl -size -1024c -exec ls -lh {} \;  # 列出小于1KB的文件
-        find dl -size -1024c -exec rm -f {} \;   # 删除可能下载失败的小文件
+        find dl -size -1024c -delete
 
-    - name: 编译固件 (多线程)
-      run: |
-        echo "使用 $(nproc) 个线程进行编译..."
-        make -j$(nproc) || { echo "::warning::并行编译失败，将尝试单线程编译"; exit 1; }
+    - name: 编译固件（多线程）
+      run: make -j$(nproc)
 
-    - name: 编译固件 (单线程回退)
-      if: failure() && steps.build-multithread.outcome == 'failure'
-      run: |
-        echo "开始单线程编译..."
-        make -j1 V=s
-
-    - name: 收集编译产物
-      run: |
-        mkdir -p artifacts
-        cp $FIRMWARE_PATH/*.bin artifacts/
-        cp $FIRMWARE_PATH/*.manifest artifacts/
-        cp logs/*.log artifacts/ 2>/dev/null || true
-        ls -lh artifacts/
+    - name: 编译固件（单线程回退）
+      if: failure()
+      run: make -j1 V=s
 
     - name: 创建GitHub Release
       id: create_release
@@ -86,47 +62,32 @@ jobs:
         tag_name: ${{ github.ref_name }}
         name: Nokia EA0326GMP 固件 ${{ github.ref_name }}
         body: |
-          ## 基于 Lean 的 LEDE 源码构建
+          ## 基于Lean的LEDE源码构建
           **首次使用建议全新刷写**
 
-          ### 基本信息
-          - 管理 IP: 192.168.1.1
+          ### 设备信息
+          - 管理IP: 192.168.1.1
           - 用户名: root
           - 密码: password
-          - 设备型号: nokia_ea0326gmp
-          - 编译时间: ${{ steps.get-date.outputs.date }}
-
-          ### 包含文件
-          - 固件文件: `${{ github.ref_name }}.bin`
-          - 软件清单: `${{ github.ref_name }}.manifest`
+          - 型号: nokia_ea0326gmp
+          - 编译日期: ${{ steps.get-date.outputs.date }}
 
           ### 刷机说明
           1. 进入原厂固件升级页面
           2. 选择下载的固件文件
-          3. 等待刷机完成自动重启
+          3. 等待自动重启完成
 
           ### 注意事项
-          - 刷机前请备份重要配置
-          - 刷机过程请勿断电
-          - 首次启动可能需要较长时间初始化
+          ⚠️ 刷机有风险，请提前备份重要数据
+          ⚠️ 确保设备电量充足或连接稳定电源
         draft: false
-        prerelease: false
 
-    - name: 上传固件到Release
+    - name: 上传固件
       uses: actions/upload-release-asset@v1
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: artifacts/*.bin
-        asset_name: ${{ github.ref_name }}.bin
-        asset_content_type: application/octet-stream
-
-    - name: 上传清单文件
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: artifacts/*.manifest
-        asset_name: ${{ github.ref_name }}.manifest
-        asset_content_type: text/plain
+        asset_path: ${{ env.FIRMWARE_PATH }}/*.bin
+        asset_name: nokia_ea0326gmp-${{ github.ref_name }}.bin
 
     - name: 获取当前日期
       id: get-date
