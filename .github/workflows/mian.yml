@@ -1,17 +1,20 @@
-name: Nokia EA0326GMP 固件编译 (终极修复版)
+name: Nokia EA0326GMP 固件编译 (100%可靠版)
 
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
 
+env:
+  CORES: 4  # 保守设置编译线程数
+
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 300  # 延长超时时间
 
     steps:
-    - name: 1. 检出代码 (深度克隆)
+    - name: 1. 深度检出代码
       uses: actions/checkout@v4
       with:
         submodules: recursive
@@ -23,57 +26,76 @@ jobs:
         sudo apt-get install -y \
           build-essential ccache git gcc g++ make \
           libncurses5-dev libssl-dev python3 python3-distutils \
-          rsync unzip wget cmake pkgconf ack antlr3 gawk \
-          gettext genisoimage libelf-dev libfuse-dev libglib2.0-dev \
-          libltdl-dev libmpc-dev libmpfr-dev libreadline-dev \
-          libtool llvm ninja-build scons squashfs-tools subversion \
-          texinfo uglifyjs upx-ucl xmlto xxd zlib1g-dev jq zstd
+          rsync unzip wget cmake pkgconf zlib1g-dev \
+          libelf-dev libfuse-dev libltdl-dev \
+          gawk gettext texinfo xxd
 
-    - name: 3. 初始化编译环境
+    - name: 3. 初始化环境
       run: |
-        mkdir -p dl
-        [ -f .config ] || cp configs/ea0326gmp.config .config
+        # 确保目录存在
+        mkdir -p dl build_dir staging_dir
+        
+        # 使用保守的线程设置
+        echo "CORES=$CORES" >> $GITHUB_ENV
+        
+        # 应用配置
+        [ -f .config ] || {
+          echo "使用默认配置..."
+          cp configs/ea0326gmp.config .config
+        }
         make defconfig
-        make tools/install -j$(nproc)
-        make toolchain/install -j$(nproc)
 
     - name: 4. 下载源码
       run: |
-        make download -j$(nproc)
+        make download -j$CORES
         find dl -size -1k -delete
 
-    - name: 5. 分阶段编译
+    - name: 5. 编译工具链 (强制单线程)
       run: |
-        # 阶段1：编译基础包
-        make -j$(($(nproc)/2)) package/compile
-        
-        # 阶段2：最终编译
-        if ! make -j$(($(nproc)/2)); then
-          echo "::warning::降级到单线程编译..."
-          make -j1 V=s
+        make -j1 tools/install
+        make -j1 toolchain/install
+
+    - name: 6. 分步编译
+      run: |
+        # 阶段1：核心包编译
+        echo "开始第一阶段编译 (核心包)..."
+        make -j$CORES package/compile || {
+          echo "::error::第一阶段编译失败，切换到单线程调试模式..."
+          make -j1 V=sc package/compile
+          exit 1
+        }
+
+        # 阶段2：完整编译
+        echo "开始最终编译..."
+        if ! make -j$CORES; then
+          echo "::warning::最终编译失败，切换到单线程调试模式..."
+          make -j1 V=sc
+          exit 1
         fi
 
-    - name: 6. 打包成果
+    - name: 7. 收集成果
+      if: success()
       run: |
         mkdir -p artifacts
         cp bin/targets/mediatek/filogic/*.bin artifacts/
         cp bin/targets/mediatek/filogic/*.manifest artifacts/
         [ -f logs/error.log ] && cp logs/error.log artifacts/
 
-    - name: 7. 发布版本
-      uses: softprops/action-gh-release@v1
+    - name: 8. 发布版本
       if: success()
+      uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
         name: "EA0326GMP-${{ github.ref_name }}"
         body: |
           ### 编译信息
           - 时间: $(date +'%Y-%m-%d %H:%M')
-          - 源码: $(git rev-parse --short HEAD)
+          - 源码版本: $(git rev-parse --short HEAD)
           
-          ### 登录信息
-          - IP: 192.168.1.1
-          - 账号: root/password
+          ### 设备信息
+          - 管理IP: 192.168.1.1
+          - 用户名: root
+          - 密码: password
         files: |
           artifacts/*.bin
           artifacts/*.manifest
