@@ -1,45 +1,31 @@
-name: 🚀 Nokia EA0326GMP 极速编译 (修复版)
+name: Nokia EA0326GMP 固件编译
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
-env:
-  FIRMWARE_PATH: bin/targets/mediatek/filogic/
-  CCACHE_DIR: /tmp/ccache
-  DL_DIR: /tmp/dl
-  BUILD_DIR: /tmp/build_dir
-
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
-    # 第一阶段：初始化环境
-    - name: 🔍 检出代码
+    - name: 1. 检出代码
       uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 0
 
-    - name: 🛠️ 设置缓存目录
-      run: |
-        mkdir -p $CCACHE_DIR $DL_DIR $BUILD_DIR
-        sudo chown -R $USER:$USER $CCACHE_DIR $DL_DIR $BUILD_DIR
-        ccache -M 4G
-        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
-
-    - name: 📦 安装基础工具链
+    - name: 2. 安装基础工具
       run: |
         sudo apt-get update -y
         sudo apt-get install -y \
-          build-essential ccache clang flex bison g++ gawk gcc-multilib \
+          build-essential clang flex bison g++ gawk gcc-multilib \
           gettext git libncurses5-dev libssl-dev python3-distutils \
-          rsync unzip zlib1g-dev file wget cmake pkgconf
+          rsync unzip zlib1g-dev file wget cmake ccache
 
-    - name: 💊 修复关键依赖
+    - name: 3. 安装额外依赖
       run: |
         sudo apt-get install -y \
           bc lm-sensors pciutils libpam-dev libcurl4-openssl-dev \
@@ -47,75 +33,56 @@ jobs:
           libunistring-dev libxml2-dev libkmod-dev libtirpc-dev \
           libgpiod-dev glib2.0-dev jq zstd libzstd-dev
 
-    # 第二阶段：准备编译
-    - name: 🔧 配置环境
+    - name: 4. 初始化ccache
       run: |
-        export FORCE_UNSAFE_CONFIGURE=1
-        export JOBS=$(($(nproc) + 1))
-        echo "JOBS=$JOBS" >> $GITHUB_ENV
+        sudo mkdir -p /tmp/ccache
+        sudo chown -R $USER:$USER /tmp/ccache
+        echo "CCACHE_DIR=/tmp/ccache" >> $GITHUB_ENV
+        ccache -M 4G
+        ccache -s
 
-        # 修复工具链链接
-        mkdir -p staging_dir/host/bin
-        ln -sf $(which gcc) staging_dir/host/bin/gcc || true
-        ln -sf $(which g++) staging_dir/host/bin/g++ || true
-
-    - name: ⏬ 下载源码
+    - name: 5. 准备编译环境
       run: |
         make defconfig
-        make download -j$JOBS
-        find "$DL_DIR" -size -1k -delete
+        make download -j$(nproc)
+        find dl -size -1k -delete
 
-    # 第三阶段：分步编译
-    - name: 🛠️ 编译工具链
+    - name: 6. 编译工具链
+      run: make -j$(nproc) tools/compile toolchain/compile
+
+    - name: 7. 编译固件
       run: |
-        make -j$JOBS tools/compile toolchain/compile || {
+        if ! make -j$(nproc); then
           echo "::warning::并行编译失败，尝试单线程编译..."
-          make -j1 V=s tools/compile toolchain/compile
-        }
+          make -j1 V=s
+        fi
 
-    - name: 🧱 编译核心包
-      run: |
-        make -j$JOBS package/compile || {
-          echo "::warning::并行编译失败，尝试单线程编译..."
-          make -j1 V=s package/compile
-        }
-
-    - name: 🖼️ 生成固件
-      run: |
-        make -j$JOBS || make -j1 V=s
-
-    # 第四阶段：发布成果
-    - name: 📌 收集成果
+    - name: 8. 打包固件
       run: |
         mkdir -p artifacts
-        cp $FIRMWARE_PATH/*.bin artifacts/
-        cp $FIRMWARE_PATH/*.manifest artifacts/
-        ccache -s > artifacts/ccache_stats.txt
-        du -sh $CCACHE_DIR > artifacts/cache_size.txt
+        cp bin/targets/mediatek/filogic/*.bin artifacts/
+        cp bin/targets/mediatek/filogic/*.manifest artifacts/
+        ccache -s > artifacts/ccache.log
 
-    - name: 🚀 创建发布版
-      if: success()
+    - name: 9. 创建发布版本
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
         name: "EA0326GMP固件 ${{ github.ref_name }}"
         body: |
-          ### 🚩 固件信息
-          - 设备型号：Nokia EA0326GMP
-          - 编译时间：$(date +'%Y-%m-%d %H:%M')
-          - 源码版本：$(git rev-parse --short HEAD)
-          - CCACHE命中率：$(grep 'cache hit rate' artifacts/ccache_stats.txt | cut -d' ' -f4-)
-
-          ### 🔧 刷机指南
+          ### 固件信息
+          - 型号: Nokia EA0326GMP
+          - 编译时间: $(date +'%Y-%m-%d %H:%M')
+          - 源码版本: $(git rev-parse --short HEAD)
+          
+          ### 登录信息
+          - IP: 192.168.1.1
+          - 用户名: root
+          - 密码: password
+          
+          ### 刷机说明
           1. 进入原厂固件升级页面
-          2. 选择本固件文件
-          3. 等待自动重启（约3分钟）
-
-          ### ⚠️ 注意事项
-          - 首次启动较慢（约5分钟）
-          - 默认IP：192.168.1.1
-          - 默认账号：root/password
-        files: |
-          artifacts/*.bin
-          artifacts/*.manifest
+          2. 上传本固件文件
+          3. 等待自动重启(约3分钟)
+        files: artifacts/*.bin
         draft: false
