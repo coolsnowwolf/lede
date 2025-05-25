@@ -7,30 +7,28 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-large  # 重要：使用更大的 runner
     timeout-minutes: 180
 
     steps:
-    # --- Step 1: Checkout code ---
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    # --- Step 2: Clean disk space ---
-    - name: Clean up disk space
+    - name: Deep Clean Disk Space
       run: |
         sudo apt-get clean
         sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /swapfile
+        sudo rm -rf /usr/lib/firefox /usr/lib/google-cloud-sdk
+        df -h
 
-    # --- Step 3: Generate Date ---
     - name: Generate Date
       id: date
       run: |
         DATE=$(date +'%Y%m%d-%H%M')
         echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
 
-    # --- Step 4: Cache dependencies ---
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
@@ -39,7 +37,6 @@ jobs:
           lede/dl
         key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
 
-    # --- Step 5: Install dependencies ---
     - name: Install dependencies
       run: |
         sudo apt-get update -y
@@ -51,32 +48,39 @@ jobs:
           libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
           libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
+          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev \
+          libjson-c-dev libubox-dev  # 新增关键依赖
 
-    # --- Step 6: Prepare build environment ---
     - name: Prepare build environment
       run: |
-        git clone https://github.com/coolsnowwolf/lede.git lede
+        [ -d "lede" ] || git clone https://github.com/coolsnowwolf/lede.git lede
         cd lede
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
+        git pull
+        ./scripts/feeds update -a -f
+        ./scripts/feeds install -a --force
         cp $GITHUB_WORKSPACE/.config .
         make defconfig
 
-    # --- Step 7: Check disk space ---
-    - name: Check disk space
-      run: df -h
+    - name: Download Sources
+      run: |
+        cd lede
+        make download -j$(nproc)
+        find dl -size -1024c -delete  # 删除不完整的下载
 
-    # --- Step 8: Compile LEDE ---
     - name: Compile LEDE
       id: compile
       run: |
         cd lede
-        make clean
-        make -j$(nproc) V=s
+        make -j$(($(nproc) / 2)) V=s 2>&1 | tee build.log  # 限制并发数
       continue-on-error: false
 
-    # --- Step 9: Upload to Release ---
+    - name: Archive Build Logs
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-logs
+        path: lede/build.log
+
     - name: Upload to Release
       if: ${{ steps.compile.outcome == 'success' }}
       uses: ncipollo/release-action@v1
@@ -86,20 +90,7 @@ jobs:
         allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
         body: |
-          ### Built from Lean's LEDE source
-          **First use recommended to flash fresh**
-          
-          **Basic Info**
-          - Admin IP: 192.168.1.1
-          - Username: root
-          - Password: password
-          - Device: nokia_ea0326gmp
-          
-          **Notes**
-          - Use factory image for first flash
-          - Use sysupgrade for updates
-          - Backup important data before flashing
-          
-          **Build Info**
-          - Build time: ${{ env.PACKAGED_OUTPUTDATE }}
-          - Git commit: ${{ github.sha }}
+          ### 编译信息
+          - 时间: ${{ env.PACKAGED_OUTPUTDATE }}
+          - 机型: Nokia EA0326GMP
+          - 内核版本: $(grep 'LINUX_VERSION-' lede/.config | cut -d= -f2)
