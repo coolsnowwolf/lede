@@ -32,12 +32,6 @@ jobs:
         df -h
         du -sh ~/*
 
-    - name: Generate Date
-      id: date
-      run: |
-        DATE=$(date +'%Y%m%d-%H%M')
-        echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
-
     - name: Display disk space before cache restore
       run: |
         echo "磁盘空间信息 (缓存恢复前):"
@@ -48,8 +42,8 @@ jobs:
       uses: actions/cache@v3
       with:
         path: |
-          lede/ccache
-          lede/dl
+          /mnt/lede/ccache  # 将缓存移动到/mnt分区
+          /mnt/lede/dl      # 将下载的源码包移动到/mnt分区
         key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
@@ -83,13 +77,24 @@ jobs:
         df -h
         du -sh ~/*
 
-    - name: Prepare build environment
+    - name: Prepare build environment on /mnt
       run: |
-        git clone https://github.com/coolsnowwolf/lede.git lede
-        cd lede
+        # 创建/mnt上的编译目录
+        sudo mkdir -p /mnt/lede
+        sudo chown runner:runner /mnt/lede
+        
+        # 克隆源码到/mnt分区
+        git clone https://github.com/coolsnowwolf/lede.git /mnt/lede
+        cd /mnt/lede
+        
+        # 更新feeds并安装
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+        
+        # 复制配置文件
         cp $GITHUB_WORKSPACE/.config .
+        
+        # 生成默认配置
         make defconfig
 
     - name: Display disk space before compilation
@@ -97,21 +102,28 @@ jobs:
         echo "磁盘空间信息 (编译前):"
         df -h
         du -sh ~/*
+        du -sh /mnt/*
 
     - name: Compile LEDE with disk space optimization
       id: compile
       run: |
-        cd lede
+        cd /mnt/lede
         
         # 配置ccache并限制大小
         echo "export USE_CCACHE=1" >> ~/.bashrc
-        echo "export CCACHE_MAXSIZE=300M" >> ~/.bashrc
+        echo "export CCACHE_MAXSIZE=150M" >> ~/.bashrc  # 进一步减小ccache
         echo "export CCACHE_DIR=$(pwd)/ccache" >> ~/.bashrc
         source ~/.bashrc
         ccache -z
         
+        # 将临时文件目录指向/mnt（空间更充足）
+        mkdir -p /mnt/temp
+        export TMPDIR=/mnt/temp
+        
         # 编译过程中定期清理临时文件
-        mkdir -p temp_dir
+        mkdir -p /mnt/temp_dir
+        
+        # 使用更保守的并行编译参数
         make -j$(nproc) V=s || (
           echo "Compilation failed, trying with reduced parallelism and cleaning up..."
           # 清理临时文件
@@ -120,8 +132,16 @@ jobs:
           make -j1 V=s
         )
         
-        # 清理编译过程中产生的不必要文件
+        # 更激进的清理（仅保留必要的固件文件）
         make clean
+        make dirclean
+        
+        # 创建最终输出目录
+        mkdir -p $GITHUB_WORKSPACE/firmware
+        
+        # 复制固件文件到工作区
+        cp bin/targets/*/*/*.bin $GITHUB_WORKSPACE/firmware/
+        cp bin/targets/*/*/*.img.gz $GITHUB_WORKSPACE/firmware/
         
         # 显示ccache统计信息和磁盘使用情况
         ccache -s
@@ -131,14 +151,13 @@ jobs:
         echo "磁盘空间信息 (编译后):"
         df -h
         du -sh ~/*
+        du -sh /mnt/*
 
     - name: Collect firmware files
       if: success() || failure()
       run: |
-        mkdir -p firmware
-        find lede/bin/targets/ -name "*.bin" -exec cp {} firmware/ \;
-        find lede/bin/targets/ -name "*.img.gz" -exec cp {} firmware/ \;
-        ls -la firmware/
+        ls -la $GITHUB_WORKSPACE/firmware/
+        echo "固件文件数量: $(ls $GITHUB_WORKSPACE/firmware/ | wc -l)"
 
     - name: Display disk space before creating PR
       run: |
