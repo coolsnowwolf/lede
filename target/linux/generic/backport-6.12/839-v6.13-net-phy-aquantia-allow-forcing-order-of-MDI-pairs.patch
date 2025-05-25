@@ -1,0 +1,107 @@
+From a2e1ba275eae96a8171deb19e9c7c2f5978fee7b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 4 Oct 2024 17:18:16 +0100
+Subject: [PATCH] net: phy: aquantia: allow forcing order of MDI pairs
+
+Despite supporting Auto MDI-X, it looks like Aquantia only supports
+swapping pair (1,2) with pair (3,6) like it used to be for MDI-X on
+100MBit/s networks.
+
+When all 4 pairs are in use (for 1000MBit/s or faster) the link does not
+come up with pair order is not configured correctly, either using
+MDI_CFG pin or using the "PMA Receive Reserved Vendor Provisioning 1"
+register.
+
+Normally, the order of MDI pairs being either ABCD or DCBA is configured
+by pulling the MDI_CFG pin.
+
+However, some hardware designs require overriding the value configured
+by that bootstrap pin. The PHY allows doing that by setting a bit in
+"PMA Receive Reserved Vendor Provisioning 1" register which allows
+ignoring the state of the MDI_CFG pin and another bit configuring
+whether the order of MDI pairs should be normal (ABCD) or reverse
+(DCBA). Pair polarity is not affected and remains identical in both
+settings.
+
+Introduce property "marvell,mdi-cfg-order" which allows forcing either
+normal or reverse order of the MDI pairs from DT.
+
+If the property isn't present, the behavior is unchanged and MDI pair
+order configuration is untouched (ie. either the result of MDI_CFG pin
+pull-up/pull-down, or pair order override already configured by the
+bootloader before Linux is started).
+
+Forcing normal pair order is required on the Adtran SDG-8733A Wi-Fi 7
+residential gateway.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/9ed760ff87d5fc456f31e407ead548bbb754497d.1728058550.git.daniel@makrotopia.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/aquantia/aquantia_main.c | 33 ++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+--- a/drivers/net/phy/aquantia/aquantia_main.c
++++ b/drivers/net/phy/aquantia/aquantia_main.c
+@@ -11,6 +11,7 @@
+ #include <linux/module.h>
+ #include <linux/delay.h>
+ #include <linux/bitfield.h>
++#include <linux/of.h>
+ #include <linux/phy.h>
+ 
+ #include "aquantia.h"
+@@ -71,6 +72,11 @@
+ #define MDIO_AN_TX_VEND_INT_MASK2		0xd401
+ #define MDIO_AN_TX_VEND_INT_MASK2_LINK		BIT(0)
+ 
++#define PMAPMD_RSVD_VEND_PROV			0xe400
++#define PMAPMD_RSVD_VEND_PROV_MDI_CONF		GENMASK(1, 0)
++#define PMAPMD_RSVD_VEND_PROV_MDI_REVERSE	BIT(0)
++#define PMAPMD_RSVD_VEND_PROV_MDI_FORCE		BIT(1)
++
+ #define MDIO_AN_RX_LP_STAT1			0xe820
+ #define MDIO_AN_RX_LP_STAT1_1000BASET_FULL	BIT(15)
+ #define MDIO_AN_RX_LP_STAT1_1000BASET_HALF	BIT(14)
+@@ -485,6 +491,29 @@ static void aqr107_chip_info(struct phy_
+ 		   fw_major, fw_minor, build_id, prov_id);
+ }
+ 
++static int aqr107_config_mdi(struct phy_device *phydev)
++{
++	struct device_node *np = phydev->mdio.dev.of_node;
++	u32 mdi_conf;
++	int ret;
++
++	ret = of_property_read_u32(np, "marvell,mdi-cfg-order", &mdi_conf);
++
++	/* Do nothing in case property "marvell,mdi-cfg-order" is not present */
++	if (ret == -ENOENT)
++		return 0;
++
++	if (ret)
++		return ret;
++
++	if (mdi_conf & ~PMAPMD_RSVD_VEND_PROV_MDI_REVERSE)
++		return -EINVAL;
++
++	return phy_modify_mmd(phydev, MDIO_MMD_PMAPMD, PMAPMD_RSVD_VEND_PROV,
++			      PMAPMD_RSVD_VEND_PROV_MDI_CONF,
++			      mdi_conf | PMAPMD_RSVD_VEND_PROV_MDI_FORCE);
++}
++
+ static int aqr107_config_init(struct phy_device *phydev)
+ {
+ 	struct aqr107_priv *priv = phydev->priv;
+@@ -514,6 +543,10 @@ static int aqr107_config_init(struct phy
+ 	if (ret)
+ 		return ret;
+ 
++	ret = aqr107_config_mdi(phydev);
++	if (ret)
++		return ret;
++
+ 	/* Restore LED polarity state after reset */
+ 	for_each_set_bit(led_active_low, &priv->leds_active_low, AQR_MAX_LEDS) {
+ 		ret = aqr_phy_led_active_low_set(phydev, led_active_low, true);
