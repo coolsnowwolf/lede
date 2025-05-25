@@ -1,4 +1,4 @@
-name: 编译并发布 Nokia EA0326GMP 固件
+name: 🚀 Nokia EA0326GMP 极速编译
 
 on:
   push:
@@ -7,88 +7,115 @@ on:
 
 env:
   FIRMWARE_PATH: bin/targets/mediatek/filogic/
+  CCACHE_DIR: /github/workspace/ccache
+  DL_DIR: /github/workspace/dl
+  BUILD_DIR: /github/workspace/build_dir
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
-    - name: 检出代码（包含.config）
+    # 第一阶段：初始化环境
+    - name: 🔍 检出代码
       uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 0
 
-    - name: 安装完整编译依赖
+    - name: 🛠️ 设置缓存
+      uses: actions/cache@v3
+      with:
+        path: |
+          ${{ env.CCACHE_DIR }}
+          ${{ env.DL_DIR }}
+          ${{ env.BUILD_DIR }}
+        key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
+
+    # 第二阶段：安装依赖
+    - name: 📦 安装基础工具链
       run: |
         sudo apt-get update -y
         sudo apt-get install -y \
-          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-          bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
-          gettext genisoimage git gperf help2man intltool libc6-dev-i386 libelf-dev \
-          libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-          libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
-          libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
-          python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
+          build-essential ccache clang flex bison g++ gawk gcc-multilib \
+          gettext git libncurses5-dev libssl-dev python3-distutils \
+          rsync unzip zlib1g-dev file wget cmake pkgconf
 
-    - name: 验证配置文件
+    - name: 💊 修复关键依赖
       run: |
-        if [ ! -f ".config" ]; then
-          echo "::error::仓库中缺少.config文件"
-          exit 1
-        fi
-        echo "使用仓库中的.config文件进行编译"
+        sudo apt-get install -y \
+          bc lm-sensors pciutils libpam-dev libcurl4-openssl-dev \
+          libyaml-cpp-dev libaio-dev libpcre2-dev libselinux1-dev \
+          libunistring-dev libxml2-dev libkmod-dev libtirpc-dev \
+          libgpiod-dev glib2.0-dev jq zstd libzstd-dev
 
-    - name: 准备编译环境
+        # 初始化ccache
+        ccache -M 4G
+        ccache -s
+
+    # 第三阶段：准备编译
+    - name: 🔧 配置环境
+      run: |
+        export FORCE_UNSAFE_CONFIGURE=1
+        export JOBS=$(($(nproc) + 1))
+        echo "JOBS=$JOBS" >> $GITHUB_ENV
+
+        # 修复常见警告
+        mkdir -p staging_dir/host/bin
+        ln -sf $(which gcc) staging_dir/host/bin/gcc
+        ln -sf $(which g++) staging_dir/host/bin/g++
+
+    - name: ⏬ 下载源码
       run: |
         make defconfig
-        echo "开始下载源码..."
-        make download -j$(nproc)
-        find dl -size -1024c -delete
+        [ -d "$DL_DIR" ] || mkdir -p "$DL_DIR"
+        make download -j$JOBS
+        find "$DL_DIR" -size -1k -delete
 
-    - name: 编译固件（多线程）
-      run: make -j$(nproc)
+    # 第四阶段：分步编译
+    - name: 🛠️ 编译工具链
+      run: make -j$JOBS tools/compile toolchain/compile
 
-    - name: 编译固件（单线程回退）
-      if: failure()
-      run: make -j1 V=s
+    - name: 🧱 编译核心包
+      run: make -j$JOBS package/compile
 
-    - name: 创建GitHub Release
-      id: create_release
+    - name: 🖼️ 生成固件
+      run: make -j$JOBS || make -j1 V=s
+
+    # 第五阶段：发布成果
+    - name: 📌 收集成果
+      run: |
+        mkdir -p artifacts
+        cp $FIRMWARE_PATH/*.bin artifacts/
+        cp $FIRMWARE_PATH/*.manifest artifacts/
+        ccache -s >> artifacts/ccache.log
+        du -sh $DL_DIR > artifacts/size.log
+
+    - name: 🚀 创建发布版
+      if: success()
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
-        name: Nokia EA0326GMP 固件 ${{ github.ref_name }}
+        name: "EA0326GMP固件 ${{ github.ref_name }}"
         body: |
-          ## 基于Lean的LEDE源码构建
-          **首次使用建议全新刷写**
+          ### 🚩 固件信息
+          - 设备型号：Nokia EA0326GMP
+          - 编译时间：$(date +'%Y-%m-%d %H:%M')
+          - 源码版本：$(git rev-parse --short HEAD)
 
-          ### 设备信息
-          - 管理IP: 192.168.1.1
-          - 用户名: root
-          - 密码: password
-          - 型号: nokia_ea0326gmp
-          - 编译日期: ${{ steps.get-date.outputs.date }}
-
-          ### 刷机说明
+          ### 🔧 刷机指南
           1. 进入原厂固件升级页面
-          2. 选择下载的固件文件
-          3. 等待自动重启完成
+          2. 选择本固件文件
+          3. 等待自动重启（约3分钟）
 
-          ### 注意事项
-          ⚠️ 刷机有风险，请提前备份重要数据
-          ⚠️ 确保设备电量充足或连接稳定电源
+          ### ⚠️ 注意事项
+          - 首次启动较慢（约5分钟）
+          - 默认IP：192.168.1.1
+          - 默认账号：root/password
+        files: |
+          artifacts/*.bin
+          artifacts/*.manifest
         draft: false
-
-    - name: 上传固件
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ${{ env.FIRMWARE_PATH }}/*.bin
-        asset_name: nokia_ea0326gmp-${{ github.ref_name }}.bin
-
-    - name: 获取当前日期
-      id: get-date
-      run: echo "date=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
