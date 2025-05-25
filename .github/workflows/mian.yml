@@ -1,101 +1,76 @@
-name: Nokia EA0326GMP 固件编译 (100%可靠版)
+name: 编译 LEDE 固件
 
 on:
-  workflow_dispatch:
   push:
-    tags: ['v*']
-
-env:
-  CORES: 4  # 保守设置编译线程数
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 300  # 延长超时时间
-
+    runs-on: ubuntu-latest
+    
     steps:
-    - name: 1. 深度检出代码
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v3
       with:
-        submodules: recursive
-        fetch-depth: 0
-
-    - name: 2. 安装完整依赖
+        submodules: true
+        
+    - name: 安装依赖
       run: |
         sudo apt-get update -y
         sudo apt-get install -y \
-          build-essential ccache git gcc g++ make \
-          libncurses5-dev libssl-dev python3 python3-distutils \
-          rsync unzip wget cmake pkgconf zlib1g-dev \
-          libelf-dev libfuse-dev libltdl-dev \
-          gawk gettext texinfo xxd
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
+          gettext genisoimage git gperf help2man intltool libc6-dev-i386 libelf-dev \
+          libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+          libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+          libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+          python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
 
-    - name: 3. 初始化环境
+    - name: 设置编译环境
       run: |
-        # 确保目录存在
-        mkdir -p dl build_dir staging_dir
+        git clone https://github.com/coolsnowwolf/lede.git
+        cd lede
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
         
-        # 使用保守的线程设置
-        echo "CORES=$CORES" >> $GITHUB_ENV
+    - name: 复制配置文件
+      run: |
+        cp .config lede/
         
-        # 应用配置
-        [ -f .config ] || {
-          echo "使用默认配置..."
-          cp configs/ea0326gmp.config .config
-        }
+    - name: 编译固件
+      run: |
+        cd lede
         make defconfig
-
-    - name: 4. 下载源码
-      run: |
-        make download -j$CORES
-        find dl -size -1k -delete
-
-    - name: 5. 编译工具链 (强制单线程)
-      run: |
-        make -j1 tools/install
-        make -j1 toolchain/install
-
-    - name: 6. 分步编译
-      run: |
-        # 阶段1：核心包编译
-        echo "开始第一阶段编译 (核心包)..."
-        make -j$CORES package/compile || {
-          echo "::error::第一阶段编译失败，切换到单线程调试模式..."
-          make -j1 V=sc package/compile
-          exit 1
-        }
-
-        # 阶段2：完整编译
-        echo "开始最终编译..."
-        if ! make -j$CORES; then
-          echo "::warning::最终编译失败，切换到单线程调试模式..."
-          make -j1 V=sc
-          exit 1
-        fi
-
-    - name: 7. 收集成果
-      if: success()
-      run: |
-        mkdir -p artifacts
-        cp bin/targets/mediatek/filogic/*.bin artifacts/
-        cp bin/targets/mediatek/filogic/*.manifest artifacts/
-        [ -f logs/error.log ] && cp logs/error.log artifacts/
-
-    - name: 8. 发布版本
-      if: success()
+        make -j$(nproc) V=s
+        
+    - name: 创建发布版本
+      id: create_release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ github.ref_name }}
-        name: "EA0326GMP-${{ github.ref_name }}"
+        tag_name: v${{ github.run_number }}
+        name: 发布版本 v${{ github.run_number }}
         body: |
-          ### 编译信息
-          - 时间: $(date +'%Y-%m-%d %H:%M')
-          - 源码版本: $(git rev-parse --short HEAD)
+          基于 Lean 的 LEDE 源码构建
           
-          ### 设备信息
-          - 管理IP: 192.168.1.1
-          - 用户名: root
-          - 密码: password
-        files: |
-          artifacts/*.bin
-          artifacts/*.manifest
+          首次使用建议全新刷写
+          
+          基本信息
+          
+          管理 IP: 192.168.1.1
+          用户名: root
+          密码: password
+          设备型号: nokia_ea0326gmp
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 上传固件到发布版本
+      uses: softprops/action-gh-release@v1
+      with:
+        files: lede/bin/targets/**/*.bin
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
