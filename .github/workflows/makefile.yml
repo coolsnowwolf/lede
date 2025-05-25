@@ -1,51 +1,31 @@
-name: Build LEDE
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
     steps:
-    # --- 步骤 1: 检出代码 ---
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         submodules: recursive
 
-    # --- 步骤 2: 生成日期变量 ---
     - name: Generate Date
-      id: date
       run: |
         DATE=$(date +'%Y%m%d-%H%M')
-        echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
-    # --- 步骤 3: 缓存依赖 ---
+        echo "PACKAGED_OUTPUTDATE=$DATE" >> $GITHUB_ENV
+
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
         path: |
-          lede/ccache  # 编译缓存
-          lede/dl      # 预下载的源码包
-        key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
+          lede/ccache
+          lede/dl
+        key: ${{ runner.os }}-lede-cache-${{ hashFiles('feeds.conf.default') }}
 
-    # --- 步骤 4: 安装编译依赖 ---
     - name: Install dependencies
       run: |
-        sudo apt-get update -y
-        sudo apt-get install -y \
-          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-          bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
-          gettext genisoimage git gperf help2man intltool libc6-dev-i386 libelf-dev \
-          libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-          libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
-          libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
-          python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
-    # --- 步骤 5: 准备编译环境 ---
+        sudo apt-get update
+        sudo apt-get install -y build-essential ccache libncurses-dev [...]
+
     - name: Prepare build environment
       run: |
         git clone https://github.com/coolsnowwolf/lede.git lede
@@ -54,29 +34,18 @@ jobs:
         ./scripts/feeds install -a
         cp $GITHUB_WORKSPACE/.config .
         make defconfig
-    # --- 步骤 6: 编译固件 ---
-    - name: Compile LEDE
-      id: compile
+
+    - name: Compile LEDE (with logging)
       run: |
         cd lede
-        make -j$(($(nproc) + 1)) V=s
-      continue-on-error: false  # 失败则停止
+        while sleep 300; do echo "[$(date)] Compiling..."; done &
+        make -j2 V=s
+        kill %1
 
-    # --- 步骤 7: 上传到 Release (新增功能) ---
     - name: Upload to Release
-      if: ${{ steps.compile.outcome == 'success' }}  # 仅在编译成功时触发
+      if: success()
       uses: ncipollo/release-action@v1
       with:
-        tag: OpenWrt_nokia_ea0326gmp_${{ env.PACKAGED_OUTPUTDATE }}
-        artifacts: "lede/bin/targets/*/*/*.bin"      # 匹配所有固件文件
-        allowUpdates: true
+        tag: OpenWrt_${{ env.PACKAGED_OUTPUTDATE }}
+        artifacts: "lede/bin/targets/**/*.bin"
         token: ${{ secrets.GITHUB_TOKEN }}
-        body: |
-          ### 基于 Lean 的 LEDE 源码构建
-          **首次使用建议全新刷写**
-          
-          **基本信息**
-          - 管理 IP: 192.168.1.1
-          - 用户名: root
-          - 密码: password
-          - 设备型号: nokia_ea0326gmp
