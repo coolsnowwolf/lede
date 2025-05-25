@@ -5,37 +5,42 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 增加超时时间
+    timeout-minutes: 240
 
     steps:
-    # --- 步骤 1: 检出代码 ---
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        fetch-depth: 0
 
-    # --- 步骤 2: 生成日期变量 ---
     - name: Generate Date
       id: date
       run: |
         DATE=$(date +'%Y%m%d-%H%M')
         echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
 
-    # --- 步骤 3: 缓存依赖 ---
+    - name: Display disk space before build
+      run: |
+        df -h
+        du -sh ~/*
+
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
         path: |
-          lede/ccache  # 编译缓存
-          lede/dl      # 预下载的源码包
+          lede/ccache
+          lede/dl
         key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
 
-    # --- 步骤 4: 安装编译依赖 ---
     - name: Install dependencies
       run: |
         sudo apt-get update -y
@@ -48,8 +53,11 @@ jobs:
           libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
           uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
+        
+        # 清理 apt 缓存以节省空间
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
 
-    # --- 步骤 5: 准备编译环境 ---
     - name: Prepare build environment
       run: |
         git clone https://github.com/coolsnowwolf/lede.git lede
@@ -59,48 +67,59 @@ jobs:
         cp $GITHUB_WORKSPACE/.config .
         make defconfig
 
-    # --- 步骤 6: 编译固件 ---
-    - name: Compile LEDE
+    - name: Compile LEDE with disk space optimization
       id: compile
       run: |
         cd lede
-        # 配置ccache
+        
+        # 配置ccache并限制大小
         echo "export USE_CCACHE=1" >> ~/.bashrc
-        echo "export CCACHE_MAXSIZE=500M" >> ~/.bashrc
+        echo "export CCACHE_MAXSIZE=300M" >> ~/.bashrc  # 减小ccache最大大小
         echo "export CCACHE_DIR=$(pwd)/ccache" >> ~/.bashrc
         source ~/.bashrc
         ccache -z
         
-        # 使用更保守的并行编译参数
-        make -j$(nproc) V=s || make -j1 V=s
+        # 编译过程中定期清理临时文件
+        mkdir -p temp_dir
+        make -j$(nproc) V=s || (
+          echo "Compilation failed, trying with reduced parallelism and cleaning up..."
+          # 清理临时文件
+          find . -name "*.o" -exec rm -f {} \;
+          find . -name "*.d" -exec rm -f {} \;
+          make -j1 V=s
+        )
         
-        # 显示ccache统计信息
+        # 清理编译过程中产生的不必要文件
+        make clean
+        
+        # 显示ccache统计信息和磁盘使用情况
         ccache -s
-      continue-on-error: false  # 失败则停止
+        df -h
+        du -sh *
 
-    # --- 步骤 7: 收集固件文件 ---
     - name: Collect firmware files
       if: success() || failure()
       run: |
         mkdir -p firmware
         find lede/bin/targets/ -name "*.bin" -exec cp {} firmware/ \;
+        find lede/bin/targets/ -name "*.img.gz" -exec cp {} firmware/ \;  # 也收集gz压缩的镜像
         ls -la firmware/
 
-    # --- 步骤 8: 上传到 Release ---
-    - name: Upload to Release
+    - name: Create Pull Request with changes
       if: ${{ steps.compile.outcome == 'success' }}
-      uses: ncipollo/release-action@v1
+      uses: peter-evans/create-pull-request@v4
       with:
-        tag: OpenWrt_nokia_ea0326gmp_${{ env.PACKAGED_OUTPUTDATE }}
-        artifacts: "firmware/*.bin"
-        allowUpdates: true
         token: ${{ secrets.GITHUB_TOKEN }}
+        branch: update-firmware
+        title: "Update firmware binaries"
         body: |
-          ### 基于 Lean 的 LEDE 源码构建
-          **首次使用建议全新刷写**
-          
-          **基本信息**
-          - 管理 IP: 192.168.1.1
-          - 用户名: root
-          - 密码: password
-          - 设备型号: nokia_ea0326gmp
+          自动更新固件二进制文件
+          构建版本: ${{ env.PACKAGED_OUTPUTDATE }}
+        commit-message: "Update firmware: ${{ env.PACKAGED_OUTPUTDATE }}"
+        path: firmware/
+
+    - name: Display disk space after build
+      if: always()
+      run: |
+        df -h
+        du -sh ~/*
