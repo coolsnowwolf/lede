@@ -42,8 +42,8 @@ jobs:
       uses: actions/cache@v3
       with:
         path: |
-          /mnt/lede/ccache  # 将缓存移动到/mnt分区
-          /mnt/lede/dl      # 将下载的源码包移动到/mnt分区
+          /mnt/lede/ccache
+          /mnt/lede/dl
         key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
@@ -79,13 +79,17 @@ jobs:
 
     - name: Prepare build environment on /mnt
       run: |
-        # 创建/mnt上的编译目录
+        # 创建/mnt上的编译目录并设置权限
         sudo mkdir -p /mnt/lede
-        sudo chown runner:runner /mnt/lede
+        sudo chown -R runner:runner /mnt/lede
         
         # 克隆源码到/mnt分区
         git clone https://github.com/coolsnowwolf/lede.git /mnt/lede
         cd /mnt/lede
+        
+        # 检查目录权限
+        echo "检查目录权限:"
+        ls -ld /mnt/lede
         
         # 更新feeds并安装
         ./scripts/feeds update -a
@@ -94,8 +98,14 @@ jobs:
         # 复制配置文件
         cp $GITHUB_WORKSPACE/.config .
         
-        # 生成默认配置
-        make defconfig
+        # 生成默认配置并保存配置日志
+        make defconfig 2>&1 | tee defconfig.log
+        
+        # 检查配置是否成功
+        if [ ! -f .config ]; then
+          echo "配置文件生成失败!"
+          exit 1
+        fi
 
     - name: Display disk space before compilation
       run: |
@@ -104,44 +114,65 @@ jobs:
         du -sh ~/*
         du -sh /mnt/*
 
-    - name: Compile LEDE with disk space optimization
+    - name: Compile LEDE with error handling
       id: compile
       run: |
         cd /mnt/lede
         
         # 配置ccache并限制大小
         echo "export USE_CCACHE=1" >> ~/.bashrc
-        echo "export CCACHE_MAXSIZE=150M" >> ~/.bashrc  # 进一步减小ccache
+        echo "export CCACHE_MAXSIZE=150M" >> ~/.bashrc
         echo "export CCACHE_DIR=$(pwd)/ccache" >> ~/.bashrc
         source ~/.bashrc
         ccache -z
         
-        # 将临时文件目录指向/mnt（空间更充足）
+        # 将临时文件目录指向/mnt
         mkdir -p /mnt/temp
         export TMPDIR=/mnt/temp
         
-        # 编译过程中定期清理临时文件
-        mkdir -p /mnt/temp_dir
+        # 创建编译日志目录
+        mkdir -p $GITHUB_WORKSPACE/build_logs
         
-        # 使用更保守的并行编译参数
-        make -j$(nproc) V=s || (
-          echo "Compilation failed, trying with reduced parallelism and cleaning up..."
+        # 执行编译并保存详细日志
+        echo "开始编译..."
+        make -j$(nproc) V=s 2>&1 | tee $GITHUB_WORKSPACE/build_logs/full_compile.log
+        
+        # 检查编译状态
+        if [ $? -ne 0 ]; then
+          echo "编译失败，尝试使用单线程继续..."
+          
+          # 保存失败日志
+          cp $GITHUB_WORKSPACE/build_logs/full_compile.log $GITHUB_WORKSPACE/build_logs/failed_compile.log
+          
           # 清理临时文件
           find . -name "*.o" -exec rm -f {} \;
           find . -name "*.d" -exec rm -f {} \;
-          make -j1 V=s
-        )
+          
+          # 使用单线程继续编译
+          make -j1 V=s 2>&1 | tee $GITHUB_WORKSPACE/build_logs/resumed_compile.log
+          
+          # 再次检查编译状态
+          if [ $? -ne 0 ]; then
+            echo "编译仍然失败，保存错误日志..."
+            cp $GITHUB_WORKSPACE/build_logs/resumed_compile.log $GITHUB_WORKSPACE/build_logs/final_failure.log
+            
+            # 收集错误信息
+            echo "最后100行错误日志:"
+            tail -n 100 $GITHUB_WORKSPACE/build_logs/final_failure.log
+            
+            exit 1
+          fi
+        fi
         
-        # 更激进的清理（仅保留必要的固件文件）
+        # 清理非必要文件，但保留配置和依赖信息
         make clean
-        make dirclean
         
         # 创建最终输出目录
         mkdir -p $GITHUB_WORKSPACE/firmware
         
         # 复制固件文件到工作区
-        cp bin/targets/*/*/*.bin $GITHUB_WORKSPACE/firmware/
-        cp bin/targets/*/*/*.img.gz $GITHUB_WORKSPACE/firmware/
+        cp bin/targets/*/*/*.bin $GITHUB_WORKSPACE/firmware/ || true
+        cp bin/targets/*/*/*.img.gz $GITHUB_WORKSPACE/firmware/ || true
         
         # 显示ccache统计信息和磁盘使用情况
         ccache -s
@@ -156,8 +187,22 @@ jobs:
     - name: Collect firmware files
       if: success() || failure()
       run: |
+        echo "收集固件文件..."
         ls -la $GITHUB_WORKSPACE/firmware/
         echo "固件文件数量: $(ls $GITHUB_WORKSPACE/firmware/ | wc -l)"
+        
+        # 检查是否有固件文件
+        if [ ! "$(ls -A $GITHUB_WORKSPACE/firmware/)" ]; then
+          echo "警告: 未找到固件文件!"
+        fi
+
+    - name: Upload build logs as artifact
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-logs
+        path: $GITHUB_WORKSPACE/build_logs/
+        retention-days: 7
 
     - name: Display disk space before creating PR
       run: |
