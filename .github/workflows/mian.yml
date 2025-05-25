@@ -1,61 +1,28 @@
-name: Build LEDE
+name: 编译并发布 Nokia EA0326GMP 固件
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    tags: ['v*']  # 只有打tag时触发
+  workflow_dispatch:  # 允许手动触发
 
-permissions:
-  contents: write
-  actions: read  # 确保有读取actions的权限
+env:
+  REPO_URL: https://github.com/kangxiaofeng/nokia_ea0326gmp-lede
+  CONFIG_FILE: .config
+  FIRMWARE_PATH: bin/targets/mediatek/filogic/
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 240  # 增加超时时间
 
     steps:
-    - name: Display disk space before checkout
-      run: |
-        echo "磁盘空间信息 (checkout 前):"
-        df -h
-        du -sh ~/*
-
-    - name: Checkout code
+    - name: 检出代码
       uses: actions/checkout@v4
       with:
         submodules: recursive
         fetch-depth: 0
 
-    - name: Display disk space after checkout
-      run: |
-        echo "磁盘空间信息 (checkout 后):"
-        df -h
-        du -sh ~/*
-
-    - name: Display disk space before cache restore
-      run: |
-        echo "磁盘空间信息 (缓存恢复前):"
-        df -h
-        du -sh ~/*
-
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          /mnt/lede/ccache
-          /mnt/lede/dl
-        key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-lede-${{ hashFiles('.config') }}-
-
-    - name: Display disk space after cache restore
-      run: |
-        echo "磁盘空间信息 (缓存恢复后):"
-        df -h
-        du -sh ~/*
-
-    - name: Install dependencies
+    - name: 安装完整编译依赖
       run: |
         sudo apt-get update -y
         sudo apt-get install -y \
@@ -67,177 +34,100 @@ jobs:
           libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
           uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
-        
-        # 清理 apt 缓存以节省空间
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
 
-    - name: Display disk space after dependencies install
-      run: |
-        echo "磁盘空间信息 (依赖安装后):"
-        df -h
-        du -sh ~/*
+    - name: 设置ccache缓存
+      uses: actions/cache@v3
+      with:
+        path: ~/.ccache
+        key: ${{ runner.os }}-ccache-${{ hashFiles('.config') }}
+        restore-keys: |
+          ${{ runner.os }}-ccache-
 
-    - name: Prepare build environment on /mnt
+    - name: 验证配置文件
       run: |
-        # 创建/mnt上的编译目录并设置权限
-        sudo mkdir -p /mnt/lede
-        sudo chown -R runner:runner /mnt/lede
-        
-        # 克隆源码到/mnt分区
-        git clone https://github.com/coolsnowwolf/lede.git /mnt/lede
-        cd /mnt/lede
-        
-        # 检查目录权限
-        echo "检查目录权限:"
-        ls -ld /mnt/lede
-        
-        # 更新feeds并安装
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        
-        # 复制配置文件
-        cp $GITHUB_WORKSPACE/.config .
-        
-        # 生成默认配置并保存配置日志
-        make defconfig 2>&1 | tee defconfig.log
-        
-        # 检查配置是否成功
-        if [ ! -f .config ]; then
-          echo "配置文件生成失败!"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "::error::缺少配置文件 $CONFIG_FILE"
           exit 1
         fi
+        echo "配置文件验证通过"
 
-    - name: Display disk space before compilation
+    - name: 准备编译环境
       run: |
-        echo "磁盘空间信息 (编译前):"
-        df -h
-        du -sh ~/*
-        du -sh /mnt/*
+        cp $CONFIG_FILE .config
+        make defconfig
+        echo "开始下载源码..."
+        make download -j$(nproc)
+        find dl -size -1024c -exec ls -lh {} \;  # 列出小于1KB的文件
+        find dl -size -1024c -exec rm -f {} \;   # 删除可能下载失败的小文件
 
-    - name: Compile LEDE with error handling
-      id: compile
+    - name: 编译固件 (多线程)
       run: |
-        cd /mnt/lede
-        
-        # 配置ccache并限制大小
-        echo "export USE_CCACHE=1" >> ~/.bashrc
-        echo "export CCACHE_MAXSIZE=150M" >> ~/.bashrc
-        echo "export CCACHE_DIR=$(pwd)/ccache" >> ~/.bashrc
-        source ~/.bashrc
-        ccache -z
-        
-        # 将临时文件目录指向/mnt
-        mkdir -p /mnt/temp
-        export TMPDIR=/mnt/temp
-        
-        # 创建编译日志目录
-        mkdir -p $GITHUB_WORKSPACE/build_logs
-        
-        # 执行编译并保存详细日志
-        echo "开始编译..."
-        make -j$(nproc) V=s 2>&1 | tee $GITHUB_WORKSPACE/build_logs/full_compile.log
-        
-        # 检查编译状态
-        if [ $? -ne 0 ]; then
-          echo "编译失败，尝试使用单线程继续..."
-          
-          # 保存失败日志
-          cp $GITHUB_WORKSPACE/build_logs/full_compile.log $GITHUB_WORKSPACE/build_logs/failed_compile.log
-          
-          # 清理临时文件
-          find . -name "*.o" -exec rm -f {} \;
-          find . -name "*.d" -exec rm -f {} \;
-          
-          # 使用单线程继续编译
-          make -j1 V=s 2>&1 | tee $GITHUB_WORKSPACE/build_logs/resumed_compile.log
-          
-          # 再次检查编译状态
-          if [ $? -ne 0 ]; then
-            echo "编译仍然失败，保存错误日志..."
-            cp $GITHUB_WORKSPACE/build_logs/resumed_compile.log $GITHUB_WORKSPACE/build_logs/final_failure.log
-            
-            # 收集错误信息
-            echo "最后100行错误日志:"
-            tail -n 100 $GITHUB_WORKSPACE/build_logs/final_failure.log
-            
-            exit 1
-          fi
-        fi
-        
-        # 清理非必要文件，但保留配置和依赖信息
-        make clean
-        
-        # 创建最终输出目录
-        mkdir -p $GITHUB_WORKSPACE/firmware
-        
-        # 复制固件文件到工作区
-        cp bin/targets/*/*/*.bin $GITHUB_WORKSPACE/firmware/ || true
-        cp bin/targets/*/*/*.img.gz $GITHUB_WORKSPACE/firmware/ || true
-        
-        # 显示ccache统计信息和磁盘使用情况
-        ccache -s
+        echo "使用 $(nproc) 个线程进行编译..."
+        make -j$(nproc) || { echo "::warning::并行编译失败，将尝试单线程编译"; exit 1; }
 
-    - name: Display disk space after compilation
+    - name: 编译固件 (单线程回退)
+      if: failure() && steps.build-multithread.outcome == 'failure'
       run: |
-        echo "磁盘空间信息 (编译后):"
-        df -h
-        du -sh ~/*
-        du -sh /mnt/*
+        echo "开始单线程编译..."
+        make -j1 V=s
 
-    - name: Collect firmware files
-      if: success() || failure()
+    - name: 收集编译产物
       run: |
-        echo "收集固件文件..."
-        ls -la $GITHUB_WORKSPACE/firmware/
-        echo "固件文件数量: $(ls $GITHUB_WORKSPACE/firmware/ | wc -l)"
-        
-        # 检查是否有固件文件
-        if [ ! "$(ls -A $GITHUB_WORKSPACE/firmware/)" ]; then
-          echo "警告: 未找到固件文件!"
-        fi
+        mkdir -p artifacts
+        cp $FIRMWARE_PATH/*.bin artifacts/
+        cp $FIRMWARE_PATH/*.manifest artifacts/
+        cp logs/*.log artifacts/ 2>/dev/null || true
+        ls -lh artifacts/
 
-    - name: Upload build logs as artifact (with retry)
-      if: always()
-      uses: actions/upload-artifact@v4  # 更新到最新版本
-      continue-on-error: true  # 允许失败继续
+    - name: 创建GitHub Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
       with:
-        name: build-logs
-        path: $GITHUB_WORKSPACE/build_logs/
-        retention-days: 7
-
-    - name: Alternative method to save build logs
-      if: failure()
-      run: |
-        # 如果上传失败，尝试将日志添加到评论中
-        echo "Build logs:"
-        echo "==========="
-        cat $GITHUB_WORKSPACE/build_logs/final_failure.log || true
-        echo "==========="
-        echo "End of build logs"
-
-    - name: Display disk space before creating PR
-      run: |
-        echo "磁盘空间信息 (创建PR前):"
-        df -h
-        du -sh ~/*
-
-    - name: Create Pull Request with changes
-      if: ${{ steps.compile.outcome == 'success' }}
-      uses: peter-evans/create-pull-request@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        branch: update-firmware
-        title: "Update firmware binaries"
+        tag_name: ${{ github.ref_name }}
+        name: Nokia EA0326GMP 固件 ${{ github.ref_name }}
         body: |
-          自动更新固件二进制文件
-          构建版本: ${{ env.PACKAGED_OUTPUTDATE }}
-        commit-message: "Update firmware: ${{ env.PACKAGED_OUTPUTDATE }}"
-        path: firmware/
+          ## 基于 Lean 的 LEDE 源码构建
+          **首次使用建议全新刷写**
 
-    - name: Display disk space after build
-      if: always()
-      run: |
-        echo "磁盘空间信息 (构建完成后):"
-        df -h
-        du -sh ~/*
+          ### 基本信息
+          - 管理 IP: 192.168.1.1
+          - 用户名: root
+          - 密码: password
+          - 设备型号: nokia_ea0326gmp
+          - 编译时间: ${{ steps.get-date.outputs.date }}
+
+          ### 包含文件
+          - 固件文件: `${{ github.ref_name }}.bin`
+          - 软件清单: `${{ github.ref_name }}.manifest`
+
+          ### 刷机说明
+          1. 进入原厂固件升级页面
+          2. 选择下载的固件文件
+          3. 等待刷机完成自动重启
+
+          ### 注意事项
+          - 刷机前请备份重要配置
+          - 刷机过程请勿断电
+          - 首次启动可能需要较长时间初始化
+        draft: false
+        prerelease: false
+
+    - name: 上传固件到Release
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/*.bin
+        asset_name: ${{ github.ref_name }}.bin
+        asset_content_type: application/octet-stream
+
+    - name: 上传清单文件
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: artifacts/*.manifest
+        asset_name: ${{ github.ref_name }}.manifest
+        asset_content_type: text/plain
+
+    - name: 获取当前日期
+      id: get-date
+      run: echo "date=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
