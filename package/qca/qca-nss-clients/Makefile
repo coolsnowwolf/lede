@@ -4,10 +4,10 @@ PKG_NAME:=qca-nss-clients
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-10-04
+PKG_SOURCE_DATE:=2024-09-11
 PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-clients.git
-PKG_SOURCE_VERSION:=f058ae199b42f30be9925b2ed1ce53afb128200c
-PKG_MIRROR_HASH:=90401b577a7750d3b7eadb423700aab7e1da1af392637598e08f6007f23a92e1
+PKG_SOURCE_VERSION:=51be82d43ef85079f78aa163d014223b05baa6a2
+PKG_MIRROR_HASH:=c65f5602ddb960c1f6dd9382a9560db2525c382227e0efee1b7322f17da06988
 
 PKG_BUILD_PARALLEL:=1
 
@@ -20,9 +20,14 @@ ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
 else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq60xx")
   SOC="ipq60xx_64"
   subtarget:=$(CONFIG_TARGET_SUBTARGET)
+else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")
+  SOC="ipq50xx_64"
+  subtarget:=$(CONFIG_TARGET_SUBTARGET)
+else
+  SOC=$(CONFIG_TARGET_BOARD)
 endif
 
-ifneq (, $(findstring $(subtarget), "ipq807x" "ipq60xx"))
+ifneq (, $(findstring $(subtarget), "ipq807x" "ipq807x_64" "ipq60xx" "ipq60xx_64" "ipq50xx" "ipq50xx_64"))
   DTLSMGR_DIR:=v2.0
   IPSECMGR_DIR:=v2.0
   IPSECMGR_KLIPS:= $(PKG_BUILD_DIR)/ipsecmgr/$(IPSECMGR_DIR)/plugins/klips/qca-nss-ipsec-klips.ko
@@ -580,7 +585,7 @@ define Build/Compile
 	  CROSS_COMPILE="$(TARGET_CROSS)" \
 	  ARCH="$(LINUX_KARCH)" \
 	  M="$(PKG_BUILD_DIR)" \
-	  EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+	  EXTRA_CFLAGS="$(EXTRA_CFLAGS) -Wno-missing-declarations -Wno-missing-prototypes -Wno-enum-conversion -Wno-empty-body -Wno-unused-variable -Wno-int-conversion" \
 	  DTLSMGR_DIR="$(DTLSMGR_DIR)" \
 	  IPSECMGR_DIR="$(IPSECMGR_DIR)" \
 	  SoC=$(SOC) \
