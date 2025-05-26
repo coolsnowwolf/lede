@@ -66,23 +66,30 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +CFLAGS_compr_lzma.o += -Iinclude/linux -Ilib/lzma
 --- a/fs/jffs2/compr.c
 +++ b/fs/jffs2/compr.c
-@@ -382,6 +382,9 @@ int __init jffs2_compressors_init(void)
+@@ -381,6 +381,9 @@ int __init jffs2_compressors_init(void)
+ 	ret = jffs2_lzo_init();
  	if (ret)
  		goto exit_dynrubin;
++	ret = jffs2_lzma_init();
++	if (ret)
++		goto exit_lzo;
  
-+#ifdef CONFIG_JFFS2_LZMA
-+	jffs2_lzma_init();
-+#endif
  
  /* Setting default compression mode */
- #ifdef CONFIG_JFFS2_CMODE_NONE
-@@ -417,6 +420,9 @@ exit:
+@@ -402,6 +405,8 @@ int __init jffs2_compressors_init(void)
+ #endif
+ 	return 0;
+ 
++exit_lzo:
++	jffs2_lzo_exit();
+ exit_dynrubin:
+ 	jffs2_dynrubin_exit();
+ exit_runinmips:
+@@ -417,6 +422,7 @@ exit:
  int jffs2_compressors_exit(void)
  {
  /* Unregistering compressors */
-+#ifdef CONFIG_JFFS2_LZMA
 +	jffs2_lzma_exit();
-+#endif
  	jffs2_lzo_exit();
  	jffs2_dynrubin_exit();
  	jffs2_rubinmips_exit();
@@ -101,15 +108,18 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
  
  #define JFFS2_RUBINMIPS_DISABLED /* RUBINs will be used only */
  #define JFFS2_DYNRUBIN_DISABLED  /*	   for decompression */
-@@ -116,4 +116,9 @@ static inline int jffs2_lzo_init(void) {
+@@ -115,5 +115,12 @@ extern void jffs2_lzo_exit(void);
+ static inline int jffs2_lzo_init(void) { return 0; }
  static inline void jffs2_lzo_exit(void) {}
  #endif
- 
 +#ifdef CONFIG_JFFS2_LZMA
-+int jffs2_lzma_init(void);
-+void jffs2_lzma_exit(void);
++extern int jffs2_lzma_init(void);
++extern void jffs2_lzma_exit(void);
++#else
++static inline int jffs2_lzma_init(void) { return 0; }
++static inline void jffs2_lzma_exit(void) {}
 +#endif
-+
+ 
  #endif /* __JFFS2_COMPR_H__ */
 --- /dev/null
 +++ b/fs/jffs2/compr_lzma.c
@@ -351,7 +361,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +		LZMA_FREE(address);
 +}
 +
-+static ISzAlloc lzma_alloc = {p_lzma_malloc, p_lzma_free};
++static ISzAlloc lzma_alloc = { .Alloc = p_lzma_malloc, .Free = p_lzma_free };
 +
 +#endif
 --- /dev/null
@@ -1176,9 +1186,9 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +}
 +
 +Byte *MatchFinder_GetPointerToCurrentPos(CMatchFinder *p) { return p->buffer; }
-+Byte MatchFinder_GetIndexByte(CMatchFinder *p, Int32 index) { return p->buffer[index]; }
++static Byte MatchFinder_GetIndexByte(CMatchFinder *p, Int32 index) { return p->buffer[index]; }
 +
-+UInt32 MatchFinder_GetNumAvailableBytes(CMatchFinder *p) { return p->streamPos - p->pos; }
++static UInt32 MatchFinder_GetNumAvailableBytes(CMatchFinder *p) { return p->streamPos - p->pos; }
 +
 +void MatchFinder_ReduceOffsets(CMatchFinder *p, UInt32 subValue)
 +{
@@ -2579,7 +2589,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->needFlush = 0;
 +}
 +
-+void LzmaDec_InitDicAndState(CLzmaDec *p, Bool initDic, Bool initState)
++static void LzmaDec_InitDicAndState(CLzmaDec *p, Bool initDic, Bool initState)
 +{
 +  p->needFlush = 1;
 +  p->remainLen = 0;
@@ -3006,7 +3016,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +#define kNumLogBits (9 + (int)sizeof(size_t) / 2)
 +#define kDicLogSizeMaxCompress ((kNumLogBits - 1) * 2 + 7)
 +
-+void LzmaEnc_FastPosInit(Byte *g_FastPos)
++static void LzmaEnc_FastPosInit(Byte *g_FastPos)
 +{
 +  int c = 2, slotFast;
 +  g_FastPos[0] = 0;
@@ -3238,7 +3248,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  CSaveState saveState;
 +} CLzmaEnc;
 +
-+void LzmaEnc_SaveState(CLzmaEncHandle pp)
++/*void LzmaEnc_SaveState(CLzmaEncHandle pp)
 +{
 +  CLzmaEnc *p = (CLzmaEnc *)pp;
 +  CSaveState *dest = &p->saveState;
@@ -3262,9 +3272,9 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  memcpy(dest->posAlignEncoder, p->posAlignEncoder, sizeof(p->posAlignEncoder));
 +  memcpy(dest->reps, p->reps, sizeof(p->reps));
 +  memcpy(dest->litProbs, p->litProbs, (0x300 << p->lclp) * sizeof(CLzmaProb));
-+}
++}*/
 +
-+void LzmaEnc_RestoreState(CLzmaEncHandle pp)
++/*void LzmaEnc_RestoreState(CLzmaEncHandle pp)
 +{
 +  CLzmaEnc *dest = (CLzmaEnc *)pp;
 +  const CSaveState *p = &dest->saveState;
@@ -3288,7 +3298,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  memcpy(dest->posAlignEncoder, p->posAlignEncoder, sizeof(p->posAlignEncoder));
 +  memcpy(dest->reps, p->reps, sizeof(p->reps));
 +  memcpy(dest->litProbs, p->litProbs, (0x300 << dest->lclp) * sizeof(CLzmaProb));
-+}
++}*/
 +
 +SRes LzmaEnc_SetProps(CLzmaEncHandle pp, const CLzmaEncProps *props2)
 +{
@@ -3499,7 +3509,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  while (symbol < 0x10000);
 +}
 +
-+void LzmaEnc_InitPriceTables(UInt32 *ProbPrices)
++static void LzmaEnc_InitPriceTables(UInt32 *ProbPrices)
 +{
 +  UInt32 i;
 +  for (i = (1 << kNumMoveReducingBits) / 2; i < kBitModelTotal; i += (1 << kNumMoveReducingBits))
@@ -4575,7 +4585,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->matchPriceCount = 0;
 +}
 +
-+void LzmaEnc_Construct(CLzmaEnc *p)
++static void LzmaEnc_Construct(CLzmaEnc *p)
 +{
 +  RangeEnc_Construct(&p->rc);
 +  MatchFinder_Construct(&p->matchFinderBase);
@@ -4608,7 +4618,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  return p;
 +}
 +
-+void LzmaEnc_FreeLits(CLzmaEnc *p, ISzAlloc *alloc)
++static void LzmaEnc_FreeLits(CLzmaEnc *p, ISzAlloc *alloc)
 +{
 +  alloc->Free(alloc, p->litProbs);
 +  alloc->Free(alloc, p->saveState.litProbs);
@@ -4616,7 +4626,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->saveState.litProbs = 0;
 +}
 +
-+void LzmaEnc_Destruct(CLzmaEnc *p, ISzAlloc *alloc, ISzAlloc *allocBig)
++static void LzmaEnc_Destruct(CLzmaEnc *p, ISzAlloc *alloc, ISzAlloc *allocBig)
 +{
 +  #ifndef _7ZIP_ST
 +  MatchFinderMt_Destruct(&p->matchFinderMt, allocBig);
@@ -4846,7 +4856,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  return SZ_OK;
 +}
 +
-+void LzmaEnc_Init(CLzmaEnc *p)
++static void LzmaEnc_Init(CLzmaEnc *p)
 +{
 +  UInt32 i;
 +  p->state = 0;
@@ -4904,7 +4914,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->lpMask = (1 << p->lp) - 1;
 +}
 +
-+void LzmaEnc_InitPrices(CLzmaEnc *p)
++static void LzmaEnc_InitPrices(CLzmaEnc *p)
 +{
 +  if (!p->fastMode)
 +  {
@@ -4946,7 +4956,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  return LzmaEnc_AllocAndInit(p, 0, alloc, allocBig);
 +}
 +
-+SRes LzmaEnc_PrepareForLzma2(CLzmaEncHandle pp,
++/*SRes LzmaEnc_PrepareForLzma2(CLzmaEncHandle pp,
 +    ISeqInStream *inStream, UInt32 keepWindowSize,
 +    ISzAlloc *alloc, ISzAlloc *allocBig)
 +{
@@ -4954,7 +4964,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->matchFinderBase.stream = inStream;
 +  p->needInit = 1;
 +  return LzmaEnc_AllocAndInit(p, keepWindowSize, alloc, allocBig);
-+}
++}*/
 +
 +static void LzmaEnc_SetInputBuf(CLzmaEnc *p, const Byte *src, SizeT srcLen)
 +{
@@ -4963,7 +4973,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  p->matchFinderBase.directInputRem = srcLen;
 +}
 +
-+SRes LzmaEnc_MemPrepare(CLzmaEncHandle pp, const Byte *src, SizeT srcLen,
++static SRes LzmaEnc_MemPrepare(CLzmaEncHandle pp, const Byte *src, SizeT srcLen,
 +    UInt32 keepWindowSize, ISzAlloc *alloc, ISzAlloc *allocBig)
 +{
 +  CLzmaEnc *p = (CLzmaEnc *)pp;
@@ -4973,7 +4983,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +  return LzmaEnc_AllocAndInit(p, keepWindowSize, alloc, allocBig);
 +}
 +
-+void LzmaEnc_Finish(CLzmaEncHandle pp)
++static void LzmaEnc_Finish(CLzmaEncHandle pp)
 +{
 +  #ifndef _7ZIP_ST
 +  CLzmaEnc *p = (CLzmaEnc *)pp;
@@ -5007,19 +5017,19 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +}
 +
 +
-+UInt32 LzmaEnc_GetNumAvailableBytes(CLzmaEncHandle pp)
++/*UInt32 LzmaEnc_GetNumAvailableBytes(CLzmaEncHandle pp)
 +{
 +  const CLzmaEnc *p = (CLzmaEnc *)pp;
 +  return p->matchFinder.GetNumAvailableBytes(p->matchFinderObj);
-+}
++}*/
 +
-+const Byte *LzmaEnc_GetCurBuf(CLzmaEncHandle pp)
++/*const Byte *LzmaEnc_GetCurBuf(CLzmaEncHandle pp)
 +{
 +  const CLzmaEnc *p = (CLzmaEnc *)pp;
 +  return p->matchFinder.GetPointerToCurrentPos(p->matchFinderObj) - p->additionalOffset;
-+}
++}*/
 +
-+SRes LzmaEnc_CodeOneMemBlock(CLzmaEncHandle pp, Bool reInit,
++/* SRes LzmaEnc_CodeOneMemBlock(CLzmaEncHandle pp, Bool reInit,
 +    Byte *dest, size_t *destLen, UInt32 desiredPackSize, UInt32 *unpackSize)
 +{
 +  CLzmaEnc *p = (CLzmaEnc *)pp;
@@ -5051,7 +5061,7 @@ Signed-off-by: Alexandros C. Couloumbis <alex@ozo.com>
 +    return SZ_ERROR_OUTPUT_EOF;
 +
 +  return res;
-+}
++}*/
 +
 +static SRes LzmaEnc_Encode2(CLzmaEnc *p, ICompressProgress *progress)
 +{
