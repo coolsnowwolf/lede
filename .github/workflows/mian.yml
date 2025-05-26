@@ -1,36 +1,34 @@
-name: 编译 LEDE 固件
+name: Build LEDE
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 1 * *'  # 每月1号 00:00 运行
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 180
+
     steps:
-    - uses: actions/checkout@v4
+    # --- 步骤 1: 检出代码 ---
+    - name: Checkout code
+      uses: actions/checkout@v4
       with:
-        submodules: true
-        
+        submodules: recursive
+
+    # --- 步骤 2: 生成日期变量 ---
+    - name: Generate Date
+      id: date
+      run: |
+        DATE=$(date +'%Y%m%d-%H%M')
+        echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
     - name: 检查初始空间
       run: |
         echo "======================="
         echo "初始空间使用情况："
         echo "======================="
         df -h
-        
-    # --- 步骤 2: 生成日期变量 ---
-    - name: 生成日期变量
-      id: date
-      run: |
-        DATE=$(date +'%Y%m%d-%H%M')
-        echo "PACKAGED_OUTPUTDATE=${{ github.run_id }}_$DATE" >> $GITHUB_ENV
         
     - name: 清理系统空间
       run: |
@@ -47,8 +45,17 @@ jobs:
         echo "清理后空间使用情况："
         echo "======================="
         df -h
-        
-    - name: 安装依赖
+    # --- 步骤 3: 缓存依赖 ---
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          lede/ccache  # 编译缓存
+          lede/dl      # 预下载的源码包
+        key: ${{ runner.os }}-lede-${{ hashFiles('.config') }}-${{ github.sha }}
+
+    # --- 步骤 4: 安装编译依赖 ---
+    - name: Install dependencies
       run: |
         sudo apt-get update -y
         sudo apt-get install -y \
@@ -60,52 +67,25 @@ jobs:
           libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
           python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
           uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
-
-    - name: 设置编译环境
+    # --- 步骤 5: 准备编译环境 ---
+    - name: Prepare build environment
       run: |
-        git clone https://github.com/coolsnowwolf/lede.git
+        git clone https://github.com/coolsnowwolf/lede.git lede
         cd lede
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        
-    - name: 复制配置文件
-      run: |
-        cp .config lede/
-        
-    - name: 编译固件
+        cp $GITHUB_WORKSPACE/.config .
+        make defconfig
+    # --- 步骤 6: 编译固件 ---
+    - name: Compile LEDE
+      id: compile
       run: |
         cd lede
-        make defconfig
-        # 使用单核编译，减少内存使用，同时保存日志
-        make -j1 V=s 2>&1 | tee build.log
-        if [ $? -ne 0 ]; then
-          echo "编译失败，保存错误日志"
-          cp build.log ../build_error.log
-          exit 1
-        fi
-        # 编译完成后清理
-        make clean
-        
-    - name: 保存编译日志
-      if: always()
-      run: |
-        if [ -f lede/build.log ]; then
-          cp lede/build.log build.log
-        fi
-        
-    - name: 上传编译日志
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs
-        path: |
-          build.log
-          build_error.log
-        if-no-files-found: ignore
-        
-        
+        make -j$(($(nproc) + 1)) V=s
+      continue-on-error: false  # 失败则停止
+
     # --- 步骤 7: 上传到 Release (新增功能) ---
-    - name: 上传到 Release
+    - name: Upload to Release
       if: ${{ steps.compile.outcome == 'success' }}  # 仅在编译成功时触发
       uses: ncipollo/release-action@v1
       with:
