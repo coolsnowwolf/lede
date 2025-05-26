@@ -1,0 +1,145 @@
+name: 编译 LEDE 固件
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        
+    - name: 检查初始空间
+      run: |
+        echo "======================="
+        echo "初始空间使用情况："
+        echo "======================="
+        df -h
+        
+    - name: 清理系统空间
+      run: |
+        sudo apt-get clean
+        sudo apt-get autoremove -y
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /opt/microsoft
+        sudo rm -rf /opt/pipx
+        sudo rm -rf /usr/share/swift
+        echo "======================="
+        echo "清理后空间使用情况："
+        echo "======================="
+        df -h
+        
+    - name: 安装依赖
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
+          gettext genisoimage git gperf help2man intltool libc6-dev-i386 libelf-dev \
+          libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+          libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev \
+          libtool llvm ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+          python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev jq zstd libzstd-dev
+
+    - name: 设置编译环境
+      run: |
+        git clone https://github.com/coolsnowwolf/lede.git
+        cd lede
+        # 设置 ccache
+        ccache -M 10G
+        # 设置编译参数
+        echo 'CONFIG_CCACHE=y' >> .config
+        echo 'CONFIG_CCACHE_DIR="/tmp/ccache"' >> .config
+        echo 'CONFIG_CCACHE_BIN="/usr/bin/ccache"' >> .config
+        # 优化编译配置
+        echo 'CONFIG_BUILDBOT=y' >> .config
+        echo 'CONFIG_SINGLE_IMAGE_FILESYSTEM=y' >> .config
+        echo 'CONFIG_TARGET_ROOTFS_SQUASHFS=y' >> .config
+        echo 'CONFIG_TARGET_IMAGES_GZIP=y' >> .config
+        # 更新 feeds
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        
+    - name: 复制配置文件
+      run: |
+        cp .config lede/
+        
+    - name: 编译固件
+      run: |
+        cd lede
+        make defconfig
+        # 使用多核编译但限制内存使用
+        # -j$(nproc) 使用所有可用核心
+        # -l$(nproc) 限制每个核心的负载
+        # V=s 显示详细输出
+        # 使用 ionice 和 nice 调整进程优先级
+        ionice -c 3 nice -n 19 make -j$(nproc) -l$(nproc) V=s 2>&1 | tee build.log
+        if [ $? -ne 0 ]; then
+          echo "编译失败，保存错误日志"
+          cp build.log ../build_error.log
+          exit 1
+        fi
+        # 编译完成后清理
+        make clean
+        
+    - name: 保存编译日志
+      if: always()
+      run: |
+        if [ -f lede/build.log ]; then
+          cp lede/build.log build.log
+        fi
+        
+    - name: 上传编译日志
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          build.log
+          build_error.log
+        if-no-files-found: ignore
+        
+    - name: 创建标签
+      run: |
+        git tag -a "v${{ github.run_number }}" -m "Release v${{ github.run_number }}"
+        git push origin "v${{ github.run_number }}"
+        
+    - name: 创建发布版本
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ github.run_number }}
+        name: 发布版本 v${{ github.run_number }}
+        body: |
+          基于 Lean 的 LEDE 源码构建
+          
+          首次使用建议全新刷写
+          
+          基本信息
+          
+          管理 IP: 192.168.1.1
+          用户名: root
+          密码: password
+          设备型号: nokia_ea0326gmp
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 上传固件到发布版本
+      uses: softprops/action-gh-release@v1
+      with:
+        files: lede/bin/targets/**/*.bin
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
