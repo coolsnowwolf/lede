@@ -1,0 +1,139 @@
+name: LEDE固件编译（智能缓存优化版）
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_MAXSIZE: 15G
+  LEDE_REPO: https://github.com/coolsnowwolf/lede.git
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 步骤1：检出用户仓库
+    - name: 检出代码库
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 1
+
+    # 步骤2：系统空间优化
+    - name: 清理系统空间
+      run: |
+        sudo apt-get clean
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+
+    # 步骤3：设置分层缓存
+    - name: 资源缓存（下载文件）
+      uses: actions/cache@v3
+      id: cache-resource
+      with:
+        path: |
+          lede/dl
+          ${{ env.CCACHE_DIR }}
+        key: ${{ runner.os }}-lede-res-${{ hashFiles('lede/feeds.conf.default') }}
+        restore-keys: |
+          ${{ runner.os }}-lede-res-
+
+    - name: 编译缓存（构建结果）
+      uses: actions/cache@v3
+      id: cache-build
+      with:
+        path: |
+          lede/build_dir
+          lede/staging_dir
+          lede/toolchain
+        key: ${{ runner.os }}-lede-build-${{ hashFiles('config') }}-${{ steps.setup-lede.outputs.lede_commit }}
+        restore-keys: |
+          ${{ runner.os }}-lede-build-
+
+    # 步骤4：准备LEDE环境
+    - name: 初始化LEDE仓库
+      id: setup-lede
+      run: |
+        if [ ! -d "lede" ]; then
+          git clone --depth=1 ${{ env.LEDE_REPO }}
+        fi
+        cd lede
+        git fetch --depth=1 origin master
+        git reset --hard origin/master
+        echo "lede_commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+        echo "LEDE_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+    # 步骤5：安装构建依赖
+    - name: 安装系统依赖
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y \
+          build-essential ccache python3 rsync subversion \
+          libncurses-dev gawk flex quilt libssl-dev xsltproc \
+
+    # 步骤6：配置编译环境
+    - name: 配置Feeds
+      run: |
+        cd lede
+        if [ ! -f .feeds_updated ]; then
+          ./scripts/feeds update -a
+          touch .feeds_updated
+        fi
+        ./scripts/feeds install -a
+
+    # 步骤7：应用自定义配置
+    - name: 注入配置文件
+      run: |
+        cp config lede/.config
+        cd lede
+        sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=256/" .config
+
+    # 步骤8：编译控制
+    - name: 执行编译
+      timeout-minutes: 120
+      run: |
+        cd lede
+        make defconfig
+        echo "::group::编译日志追踪"
+        make -j$(($(nproc) -1)) \
+            CCACHE=1 \
+            BUILD_LOG=1 \
+            TOOLCHAIN_DIR=/opt/toolchain \
+            V=sc
+        echo "::endgroup::"
+        ccache -s
+
+    # 步骤9：生成版本信息
+    - name: 创建构建标识
+      run: |
+        echo "BUILD_DATE=$(date +'%Y-%m-%d_%H-%M')" >> $GITHUB_ENV
+        echo "IMG_SUFFIX=$(echo ${{ env.LEDE_COMMIT }} | cut -c1-7)" >> $GITHUB_ENV
+
+    # 步骤10：发布成品
+    - name: 上传固件
+      uses: softprops/action-gh-release@v1
+      if: success()
+      with:
+        files: |
+          lede/bin/targets/*/*/*.bin
+          lede/bin/targets/*/*/*.manifest
+        tag_name: lede-${{ env.BUILD_DATE }}-${{ env.IMG_SUFFIX }}
+        body: |
+          ### 智能构建结果
+          **核心信息**
+          - 构建时间: ${{ env.BUILD_DATE }}
+          - LEDE版本: [${{ env.LEDE_COMMIT }}](https://github.com/coolsnowwolf/lede/commit/${{ env.LEDE_COMMIT }})
+          - 缓存状态: ${{ steps.cache-build.outputs.cache-hit }}
+
+          **文件说明**
+          - `*-sysupgrade.bin`: 保留配置升级
+          - `*-factory.bin`: 全新刷机镜像
+
+    # 步骤11：清理陈旧缓存
+    - name: 缓存维护
+      if: always()
+      run: |
+        ccache -c
+        find lede/dl -type f -mtime +7 -exec rm -f {} \;
