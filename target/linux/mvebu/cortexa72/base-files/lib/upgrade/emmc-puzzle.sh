@@ -31,8 +31,8 @@ platform_do_upgrade_emmc() {
 
 	v "Writing new UUID to /dev/$diskdev..."
 	get_image_dd "$1" of="/dev/$diskdev" bs=1 skip=440 count=4 seek=440 conv=fsync
-	
-	mkfs.ext4 -F -L rootfs_data $(find_mmc_part rootfs_data)
+
+	dd if=/dev/zero of=$(find_mmc_part rootfs_data) bs=512 count=8
 
 	sleep 1
 }

@@ -17,6 +17,27 @@ endef
 $(eval $(call KernelPackage,linkstation-poweroff))
 
 
+define KernelPackage/turris-omnia-mcu
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=CZ.NIC's Turris Omnia MCU driver
+  DEPENDS:=@TARGET_mvebu_cortexa9
+  KCONFIG:= \
+   CONFIG_CZNIC_PLATFORMS=y \
+   CONFIG_TURRIS_OMNIA_MCU
+  FILES:=$(LINUX_DIR)/drivers/platform/cznic/turris-omnia-mcu.ko
+  AUTOLOAD:=$(call AutoProbe,turris-omnia-mcu,1)
+endef
+
+define KernelPackage/turris-omnia-mcu/description
+  This adds support for the features implemented by the microcontroller
+  on the CZ.NIC's Turris Omnia SOHO router, including true board
+  poweroff, the ability to configure wake up from powered off state at
+  a specific time, MCU watchdog and MCU connected GPIO pins.
+endef
+
+$(eval $(call KernelPackage,turris-omnia-mcu))
+
+
 define KernelPackage/leds-turris-omnia
    SUBMENU:=$(LEDS_MENU)
    TITLE:=LED support for CZ.NIC's Turris Omnia
