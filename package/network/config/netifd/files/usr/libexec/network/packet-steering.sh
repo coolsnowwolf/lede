@@ -1,6 +1,4 @@
 #!/bin/sh
-[ "$ACTION" = add ] || exit
-
 NPROCS="$(grep -c "^processor.*:" /proc/cpuinfo)"
 [ "$NPROCS" -gt 1 ] || exit
 
@@ -31,7 +29,7 @@ set_hex_val() {
 	local val="$2"
 	val="$(printf %x "$val")"
 	[ -n "$DEBUG" ] && echo "$file = $val"
-	echo "$val" > "$file"
+	echo "$val" > "$file" 2>/dev/null
 }
 
 packet_steering="$(uci get "network.@globals[0].packet_steering")"
@@ -39,6 +37,11 @@ packet_steering="$(uci get "network.@globals[0].packet_steering")"
 
 exec 512>/var/lock/smp_tune.lock
 flock 512 || exit 1
+
+[ -e "/usr/libexec/platform/packet-steering.sh" ] && {
+	/usr/libexec/platform/packet-steering.sh
+	exit 0
+}
 
 for dev in /sys/class/net/*; do
 	[ -d "$dev" ] || continue
