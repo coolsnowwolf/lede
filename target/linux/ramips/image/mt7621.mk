@@ -713,6 +713,24 @@ define Device/elecom_wrc-2533gst2
 endef
 TARGET_DEVICES += elecom_wrc-2533gst2
 
+define Device/fcj_g-ax1800-f
+  $(Device/dsa-migration)
+  $(Device/uimage-lzma-loader)
+  DEVICE_VENDOR := FCJ
+  DEVICE_MODEL := G-AX1800-F
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  KERNEL_SIZE := 8192k
+  IMAGE_SIZE := 121344k
+  IMAGES += factory.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | \
+	check-size
+  DEVICE_PACKAGES := kmod-mt7915-firmware uboot-envtools
+endef
+TARGET_DEVICES += fcj_g-ax1800-f
+
 define Device/firefly_firewrt
   $(Device/dsa-migration)
   IMAGE_SIZE := 16064k
@@ -1426,7 +1444,7 @@ define Device/openfi_5pro
   $(Device/dsa-migration)
   IMAGE_SIZE := 63448k
   DEVICE_VENDOR := OpenFi
-  DEVICE_MODEL := 5Pro 
+  DEVICE_MODEL := 5Pro
   DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615e kmod-mt7663-firmware-ap kmod-usb3
 endef
 TARGET_DEVICES += openfi_5pro
