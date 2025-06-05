@@ -22,6 +22,16 @@ define Device/ariaboard_photonicat
 endef
 TARGET_DEVICES += ariaboard_photonicat
 
+define Device/ariaboard_photonicat2
+  DEVICE_VENDOR := Ariaboard
+  DEVICE_MODEL := Photonicat2
+  SOC := rk3576
+  DEVICE_DTS := rockchip/rk3576-photonicat2
+  UBOOT_DEVICE_NAME := evb-rk3576
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += ariaboard_photonicat2
+
 define Device/armsom_sige1
   DEVICE_VENDOR := ArmSoM
   DEVICE_MODEL := Sige1
