@@ -345,8 +345,7 @@ define Device/beeline_smartbox-turbo-plus
   IMAGE/factory.img := append-ubi | sercomm-tag-factory
   DEVICE_VENDOR := Beeline
   DEVICE_MODEL := SmartBox TURBO+
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
-	-wpad-openssl kmod-usb3 uboot-envtools
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615-firmware kmod-usb3
 endef
 TARGET_DEVICES += beeline_smartbox-turbo-plus
 
@@ -549,8 +548,8 @@ define Device/d-team_newifi-d2
   DEVICE_VENDOR := Newifi
   DEVICE_MODEL := D2
   DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
+	kmod-usb-ledtrig-usbport -uboot-envtools
 endef
 TARGET_DEVICES += d-team_newifi-d2
 
@@ -745,8 +744,8 @@ define Device/gehua_ghl-r-001
   IMAGE_SIZE := 32448k
   DEVICE_VENDOR := GeHua
   DEVICE_MODEL := GHL-R-001
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 \
+	kmod-usb-ledtrig-usbport -uboot-envtools
 endef
 TARGET_DEVICES += gehua_ghl-r-001
 
@@ -1465,7 +1464,7 @@ define Device/phicomm_k2p
   DEVICE_MODEL := K2P
   SUPPORTED_DEVICES += k2p
   DEVICE_COMPAT_VERSION := 1.1
-  DEVICE_PACKAGES := -wpad-openssl kmod-mt7615d_dbdc wireless-tools luci-oldapi
+  DEVICE_PACKAGES := kmod-mt7615-firmware -uboot-envtools
 endef
 TARGET_DEVICES += phicomm_k2p
 
@@ -1893,8 +1892,7 @@ define Device/xiaomi_mi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Mi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
-	-wpad-openssl
+  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7615-firmware -uboot-envtools
 endef
 TARGET_DEVICES += xiaomi_mi-router-ac2100
 
@@ -1921,8 +1919,7 @@ define Device/xiaomi_redmi-router-ac2100
   $(Device/xiaomi_nand_separate)
   DEVICE_MODEL := Redmi Router AC2100
   IMAGE_SIZE := 120320k
-  DEVICE_PACKAGES += kmod-mt7603e kmod-mt7615d luci-app-mtwifi \
-	-wpad-openssl
+  DEVICE_PACKAGES += kmod-mt7603 kmod-mt7615-firmware
 endef
 TARGET_DEVICES += xiaomi_redmi-router-ac2100
 
@@ -2081,7 +2078,6 @@ define Device/zte_e8820s
 	check-size
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := E8820S
-  DEVICE_PACKAGES := kmod-mt7603e kmod-mt76x2e kmod-usb3 \
-	kmod-usb-ledtrig-usbport luci-app-mtwifi -wpad-openssl
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt76x2 kmod-usb3 kmod-usb-ledtrig-usbport
 endef
 TARGET_DEVICES += zte_e8820s
