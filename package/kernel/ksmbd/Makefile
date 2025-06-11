@@ -1,13 +1,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ksmbd
-PKG_VERSION:=2024.10.14
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
+PKG_SOURCE_DATE:=2025-04-04
 PKG_SOURCE_URL:=https://github.com/namjaejeon/ksmbd.git
-PKG_SOURCE_VERSION:=6a0efcd1301d72ccd76b2f457c1d0b56702f4908
-PKG_MIRROR_HASH:=02ba5828aae66d4fac202b8c4dcb1f45beb255655927741eb293d4a257822624
+PKG_SOURCE_VERSION:=5ce517e5d08fa748074ba1422592da739da31e07
+PKG_MIRROR_HASH:=c088ea320fe7ff15f940774884b7c3a70178f58a8e9ddc425c8ddb37df67ab2a
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
@@ -46,14 +46,16 @@ define KernelPackage/fs-ksmbd/description
   Ksmbd is an In-kernel SMBv(1)2/3 fileserver.
   It's an implementation of the SMB protocol in kernel space for sharing files and IPC services over network.
 endef
+
 define KernelPackage/fs-ksmbd/config
 config KSMBD_SMB_INSECURE_SERVER
 	bool "Support for insecure SMB1/CIFS and SMB2.0 protocols"
 	depends on PACKAGE_kmod-fs-ksmbd
+	default n
 	help
 		This enables deprecated insecure protocols dialects: SMB1/CIFS and SMB2.0.
-	default n
 endef
+
 ifeq ($(CONFIG_KSMBD_SMB_INSECURE_SERVER),y)
 PKG_EXTRA_KCONFIG:=CONFIG_SMB_INSECURE_SERVER=y
 EXTRA_CFLAGS += -DCONFIG_SMB_INSECURE_SERVER=1
