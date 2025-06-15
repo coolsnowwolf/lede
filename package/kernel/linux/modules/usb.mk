@@ -576,7 +576,7 @@ define KernelPackage/usb-audio
 	CONFIG_SND_USB_AUDIO
   $(call AddDepends/usb)
   $(call AddDepends/sound)
-  DEPENDS+=+(LINUX_6_1||LINUX_6_6):kmod-media-core
+  DEPENDS+=+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-media-core
   FILES:= \
 	$(LINUX_DIR)/sound/usb/snd-usbmidi-lib.ko \
 	$(LINUX_DIR)/sound/usb/snd-usb-audio.ko
@@ -661,7 +661,7 @@ define KernelPackage/usb-serial-ch348
   KCONFIG:=CONFIG_USB_SERIAL_CH348
   FILES:=$(LINUX_DIR)/drivers/usb/serial/ch348.ko
   AUTOLOAD:=$(call AutoProbe,ch348)
-  DEPENDS:=@(LINUX_6_1||LINUX_6_6)
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12)
   $(call AddDepends/usb-serial)
 endef
 
@@ -1201,9 +1201,10 @@ $(eval $(call KernelPackage,usb-net-aqc111))
 
 define KernelPackage/usb-net-asix
   TITLE:=Kernel module for USB-to-Ethernet Asix convertors
-  DEPENDS:=+kmod-phy-ax88796b +(LINUX_6_1||LINUX_6_6):kmod-phylink \
-	+(LINUX_5_15||LINUX_6_1||LINUX_6_6):kmod-mdio-devres \
-	+(LINUX_5_15||LINUX_6_1||LINUX_6_6):kmod-net-selftests
+  DEPENDS:=+kmod-phy-ax88796b \
+	+!(LINUX_5_4||LINUX_5_10||LINUX_5_15):kmod-phylink \
+	+!(LINUX_5_4||LINUX_5_10):kmod-mdio-devres \
+	+!(LINUX_5_4||LINUX_5_10):kmod-net-selftests
   KCONFIG:=CONFIG_USB_NET_AX8817X
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/asix.ko
   AUTOLOAD:=$(call AutoProbe,asix)
@@ -1332,7 +1333,7 @@ $(eval $(call KernelPackage,usb-net-smsc75xx))
 define KernelPackage/usb-net-smsc95xx
   TITLE:=SMSC LAN95XX based USB 2.0 10/100 ethernet devices
   DEPENDS:=+!LINUX_5_4:kmod-libphy +kmod-phy-smsc \
-	+(LINUX_6_1||LINUX_6_6):kmod-net-selftests
+	+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-net-selftests
   KCONFIG:=CONFIG_USB_NET_SMSC95XX
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/smsc95xx.ko
   AUTOLOAD:=$(call AutoProbe,smsc95xx)

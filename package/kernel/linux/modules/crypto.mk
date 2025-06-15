@@ -893,8 +893,8 @@ define KernelPackage/crypto-rng
   TITLE:=CryptoAPI random number generation
   DEPENDS:=+kmod-crypto-hash +kmod-crypto-hmac \
 	   +(LINUX_5_4||LINUX_5_10):kmod-crypto-sha256 \
-	   +(LINUX_5_15||LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-crypto-sha512 \
-	   +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-crypto-sha3
+	   +!(LINUX_5_4||LINUX_5_10):kmod-crypto-sha512 \
+	   +!(LINUX_5_4||LINUX_5_10||LINUX_5_15):kmod-crypto-sha3
   KCONFIG:= \
 	CONFIG_CRYPTO_DRBG \
 	CONFIG_CRYPTO_DRBG_HMAC=y \
