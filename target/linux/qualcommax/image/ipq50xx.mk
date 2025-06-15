@@ -75,3 +75,20 @@ define Device/linksys_mx5500
 		ipq-wifi-linksys_mx5500
 endef
 TARGET_DEVICES += linksys_mx5500
+
+define Device/redmi_ax3000
+  $(call Device/FitImage)
+  $(call Device/UbiFit)
+  SOC := ipq5018
+  DEVICE_VENDOR := Redmi
+  DEVICE_MODEL := AX3000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  DEVICE_DTS_CONFIG := config@mp02.1
+  DEVICE_PACKAGES := \
+	ath11k-firmware-ipq5018 \
+	ath11k-firmware-qcn6122 \
+	ipq-wifi-redmi_ax3000
+endef
+TARGET_DEVICES += redmi_ax3000
+
