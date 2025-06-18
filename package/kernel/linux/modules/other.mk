@@ -974,6 +974,11 @@ $(eval $(call KernelPackage,ikconfig))
 
 define KernelPackage/zram
   SUBMENU:=$(OTHER_MENU)
+  DEPENDS:= \
+	+(KERNEL_ZRAM_BACKEND_LZO||KERNEL_ZRAM_DEF_COMP_LZORLE||KERNEL_ZRAM_DEF_COMP_LZO):kmod-lib-lzo \
+	+(KERNEL_ZRAM_BACKEND_LZ4||KERNEL_ZRAM_DEF_COMP_LZ4):kmod-lib-lz4 \
+	+(KERNEL_ZRAM_BACKEND_LZ4HC||KERNEL_ZRAM_DEF_COMP_LZ4HC):kmod-lib-lz4hc \
+	+(KERNEL_ZRAM_BACKEND_ZSTD||KERNEL_ZRAM_DEF_COMP_ZSTD):kmod-lib-zstd
   TITLE:=ZRAM
   KCONFIG:= \
 	CONFIG_ZSMALLOC \
@@ -993,29 +998,49 @@ endef
 
 define KernelPackage/zram/config
   if PACKAGE_kmod-zram
+    if LINUX_6_12
+        config KERNEL_ZRAM_BACKEND_LZO
+                bool "lzo and lzo-rle compression support"
+
+        config KERNEL_ZRAM_BACKEND_LZ4
+                bool "lz4 compression support"
+
+        config KERNEL_ZRAM_BACKEND_LZ4HC
+                bool "lz4hc compression support"
+
+        config KERNEL_ZRAM_BACKEND_ZSTD
+                bool "zstd compression support"
+
+        config KERNEL_ZRAM_BACKEND_FORCE_LZO
+                def_bool !KERNEL_ZRAM_BACKEND_LZ4 && \
+                         !KERNEL_ZRAM_BACKEND_LZ4HC && \
+                         !KERNEL_ZRAM_BACKEND_ZSTD
+                select KERNEL_ZRAM_BACKEND_LZO
+
+    endif
     choice
       prompt "ZRAM Default compressor"
-      default ZRAM_DEF_COMP_LZORLE
+      default KERNEL_ZRAM_DEF_COMP_LZORLE
 
-    config ZRAM_DEF_COMP_LZORLE
+    config KERNEL_ZRAM_DEF_COMP_LZORLE
             bool "lzo-rle"
-            select PACKAGE_kmod-lib-lzo
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZO
+    config KERNEL_ZRAM_DEF_COMP_LZO
             bool "lzo"
-            select PACKAGE_kmod-lib-lzo
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZ4
+    config KERNEL_ZRAM_DEF_COMP_LZ4
             bool "lz4"
-            select PACKAGE_kmod-lib-lz4
+            depends on KERNEL_ZRAM_BACKEND_LZ4 || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZ4HC
+    config KERNEL_ZRAM_DEF_COMP_LZ4HC
             bool "lz4-hc"
-            select PACKAGE_kmod-lib-lz4hc
+            depends on KERNEL_ZRAM_BACKEND_LZ4HC || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_ZSTD
+    config KERNEL_ZRAM_DEF_COMP_ZSTD
             bool "zstd"
-            select PACKAGE_kmod-lib-zstd
+            depends on KERNEL_ZRAM_BACKEND_ZSTD || !LINUX_6_12
 
     endchoice
   endif
