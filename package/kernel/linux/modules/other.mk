@@ -998,7 +998,7 @@ endef
 
 define KernelPackage/zram/config
   if PACKAGE_kmod-zram
-    if !LINUX_6_6
+    if LINUX_6_12
         config KERNEL_ZRAM_BACKEND_LZO
                 bool "lzo and lzo-rle compression support"
 
@@ -1024,23 +1024,23 @@ define KernelPackage/zram/config
 
     config KERNEL_ZRAM_DEF_COMP_LZORLE
             bool "lzo-rle"
-            depends on KERNEL_ZRAM_BACKEND_LZO || LINUX_6_6
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
     config KERNEL_ZRAM_DEF_COMP_LZO
             bool "lzo"
-            depends on KERNEL_ZRAM_BACKEND_LZO || LINUX_6_6
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
     config KERNEL_ZRAM_DEF_COMP_LZ4
             bool "lz4"
-            depends on KERNEL_ZRAM_BACKEND_LZ4 || LINUX_6_6
+            depends on KERNEL_ZRAM_BACKEND_LZ4 || !LINUX_6_12
 
     config KERNEL_ZRAM_DEF_COMP_LZ4HC
             bool "lz4-hc"
-            depends on KERNEL_ZRAM_BACKEND_LZ4HC || LINUX_6_6
+            depends on KERNEL_ZRAM_BACKEND_LZ4HC || !LINUX_6_12
 
     config KERNEL_ZRAM_DEF_COMP_ZSTD
             bool "zstd"
-            depends on KERNEL_ZRAM_BACKEND_ZSTD || LINUX_6_6
+            depends on KERNEL_ZRAM_BACKEND_ZSTD || !LINUX_6_12
 
     endchoice
   endif
