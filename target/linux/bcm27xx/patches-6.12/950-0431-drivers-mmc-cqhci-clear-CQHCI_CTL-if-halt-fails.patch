@@ -1,0 +1,46 @@
+From ad6e80f4825b42e965e17c3b0a915b157c4e2323 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 26 Mar 2024 13:17:10 +0000
+Subject: [PATCH] drivers: mmc: cqhci: clear CQHCI_CTL if halt fails
+
+The eMMC spec says that in certain circumstances the controller can't
+respond to a halt request - in practice, this occurs if a CMD
+timeout happens (card went away/crashed).
+
+Clear the halt request by writing 0 to CQHCI_CTL. Also fix a logic error
+testing for halt in cqhci_request.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/mmc/host/cqhci-core.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+--- a/drivers/mmc/host/cqhci-core.c
++++ b/drivers/mmc/host/cqhci-core.c
+@@ -388,9 +388,11 @@ static void cqhci_off(struct mmc_host *m
+ 
+ 	err = readx_poll_timeout(cqhci_read_ctl, cq_host, reg,
+ 				 reg & CQHCI_HALT, 0, CQHCI_OFF_TIMEOUT);
+-	if (err < 0)
++	if (err < 0) {
+ 		pr_err("%s: cqhci: CQE stuck on\n", mmc_hostname(mmc));
+-	else
++		/* eMMC v5.1 B.2.8 recommends writing 0 to CQHCI_CTL if stuck */
++		cqhci_writel(cq_host, 0, CQHCI_CTL);
++	} else
+ 		pr_debug("%s: cqhci: CQE off\n", mmc_hostname(mmc));
+ 
+ 	if (cq_host->ops->post_disable)
+@@ -980,8 +982,11 @@ static bool cqhci_halt(struct mmc_host *
+ 
+ 	ret = cqhci_halted(cq_host);
+ 
+-	if (!ret)
++	if (!ret) {
+ 		pr_warn("%s: cqhci: Failed to halt\n", mmc_hostname(mmc));
++		/* eMMC v5.1 B.2.8 recommends writing 0 to CQHCI_CTL if stuck */
++		cqhci_writel(cq_host, 0, CQHCI_CTL);
++	}
+ 
+ 	return ret;
+ }
