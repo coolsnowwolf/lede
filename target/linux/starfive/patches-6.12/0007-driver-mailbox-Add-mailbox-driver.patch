@@ -1,0 +1,804 @@
+From f7db05ea5fffebed6db6693333a6877aa707b16d Mon Sep 17 00:00:00 2001
+From: "shanlong.li" <shanlong.li@starfivetech.com>
+Date: Thu, 8 Jun 2023 00:07:15 -0700
+Subject: [PATCH 07/55] driver: mailbox: Add mailbox driver
+
+Add mailbox driver.
+
+Signed-off-by: shanlong.li <shanlong.li@starfivetech.com>
+Signed-off-by: Hal Feng <hal.feng@starfivetech.com>
+---
+ drivers/mailbox/Kconfig                 |  13 +
+ drivers/mailbox/Makefile                |   4 +
+ drivers/mailbox/starfive_mailbox-test.c | 405 ++++++++++++++++++++++++
+ drivers/mailbox/starfive_mailbox.c      | 345 ++++++++++++++++++++
+ 4 files changed, 767 insertions(+)
+ create mode 100644 drivers/mailbox/starfive_mailbox-test.c
+ create mode 100644 drivers/mailbox/starfive_mailbox.c
+
+--- a/drivers/mailbox/Kconfig
++++ b/drivers/mailbox/Kconfig
+@@ -295,4 +295,17 @@ config QCOM_IPCC
+ 	  acts as an interrupt controller for receiving interrupts from clients.
+ 	  Say Y here if you want to build this driver.
+ 
++config STARFIVE_MBOX
++	tristate "Platform Starfive Mailbox"
++	depends on OF
++	help
++	  Say Y here if you want to build a platform specific variant RISCV
++	  controller driver.
++
++config STARFIVE_MBOX_TEST
++	tristate "Starfive Mailbox Test Client"
++	depends on OF
++	depends on HAS_IOMEM
++	help
++	  Test client to help with testing new Controller driver implementations.
+ endif
+--- a/drivers/mailbox/Makefile
++++ b/drivers/mailbox/Makefile
+@@ -64,3 +64,7 @@ obj-$(CONFIG_SPRD_MBOX)		+= sprd-mailbox
+ obj-$(CONFIG_QCOM_CPUCP_MBOX)	+= qcom-cpucp-mbox.o
+ 
+ obj-$(CONFIG_QCOM_IPCC)		+= qcom-ipcc.o
++
++obj-$(CONFIG_STARFIVE_MBOX)    += starfive_mailbox.o
++ccflags-$(CONFIG_STARFIVE_MBOX) := -Wno-error=missing-prototypes
++obj-$(CONFIG_STARFIVE_MBOX_TEST)    += starfive_mailbox-test.o
+--- /dev/null
++++ b/drivers/mailbox/starfive_mailbox-test.c
+@@ -0,0 +1,405 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2015 ST Microelectronics
++ *
++ * Author: Lee Jones <lee.jones@linaro.org>
++ */
++
++#include <linux/debugfs.h>
++#include <linux/err.h>
++#include <linux/fs.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/mailbox_client.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/poll.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/sched/signal.h>
++
++#include <linux/mailbox_controller.h>
++
++#define MBOX_MAX_SIG_LEN	8
++#define MBOX_MAX_MSG_LEN	16
++#define MBOX_BYTES_PER_LINE	16
++#define MBOX_HEXDUMP_LINE_LEN	((MBOX_BYTES_PER_LINE * 4) + 2)
++#define MBOX_HEXDUMP_MAX_LEN	(MBOX_HEXDUMP_LINE_LEN * (MBOX_MAX_MSG_LEN / MBOX_BYTES_PER_LINE))
++
++static bool mbox_data_ready;
++
++struct mbox_test_device {
++	struct device		*dev;
++	void __iomem		*tx_mmio;
++	void __iomem		*rx_mmio;
++	struct mbox_chan	*tx_channel;
++	struct mbox_chan	*rx_channel;
++	char			*rx_buffer;
++	char			*signal;
++	char			*message;
++	spinlock_t		lock;
++	wait_queue_head_t	waitq;
++	struct fasync_struct	*async_queue;
++	struct dentry		*root_debugfs_dir;
++};
++
++static ssize_t mbox_test_signal_write(struct file *filp,
++		const char __user *userbuf,
++		size_t count, loff_t *ppos)
++{
++	struct mbox_test_device *tdev = filp->private_data;
++
++	if (!tdev->tx_channel) {
++		dev_err(tdev->dev, "Channel cannot do Tx\n");
++		return -EINVAL;
++	}
++
++	if (count > MBOX_MAX_SIG_LEN) {
++		dev_err(tdev->dev,
++			"Signal length %zd greater than max allowed %d\n",
++			count, MBOX_MAX_SIG_LEN);
++		return -EINVAL;
++	}
++
++	/* Only allocate memory if we need to */
++	if (!tdev->signal) {
++		tdev->signal = kzalloc(MBOX_MAX_SIG_LEN, GFP_KERNEL);
++		if (!tdev->signal)
++			return -ENOMEM;
++	}
++
++	if (copy_from_user(tdev->signal, userbuf, count)) {
++		kfree(tdev->signal);
++		tdev->signal = NULL;
++		return -EFAULT;
++	}
++
++	return count;
++}
++
++static const struct file_operations mbox_test_signal_ops = {
++	.write = mbox_test_signal_write,
++	.open = simple_open,
++	.llseek = generic_file_llseek,
++};
++
++static int mbox_test_message_fasync(int fd, struct file *filp, int on)
++{
++	struct mbox_test_device *tdev = filp->private_data;
++
++	return fasync_helper(fd, filp, on, &tdev->async_queue);
++}
++
++static ssize_t mbox_test_message_write(struct file *filp,
++		const char __user *userbuf,
++		size_t count, loff_t *ppos)
++{
++	struct mbox_test_device *tdev = filp->private_data;
++	void *data;
++	int ret;
++
++	if (!tdev->tx_channel) {
++		dev_err(tdev->dev, "Channel cannot do Tx\n");
++		return -EINVAL;
++	}
++
++	if (count > MBOX_MAX_MSG_LEN) {
++		dev_err(tdev->dev,
++			"Message length %zd greater than max allowed %d\n",
++			count, MBOX_MAX_MSG_LEN);
++		return -EINVAL;
++	}
++
++	tdev->message = kzalloc(MBOX_MAX_MSG_LEN, GFP_KERNEL);
++	if (!tdev->message)
++		return -ENOMEM;
++
++	ret = copy_from_user(tdev->message, userbuf, count);
++	if (ret) {
++		ret = -EFAULT;
++		goto out;
++	}
++
++	if (tdev->tx_mmio && tdev->signal) {
++		print_hex_dump_bytes("Client: Sending: Signal: ", DUMP_PREFIX_ADDRESS,
++			tdev->signal, MBOX_MAX_SIG_LEN);
++
++		data = tdev->signal;
++	} else
++		data = tdev->message;
++
++	print_hex_dump_bytes("Client: Sending: Message: ", DUMP_PREFIX_ADDRESS,
++		tdev->message, MBOX_MAX_MSG_LEN);
++
++	ret = mbox_send_message(tdev->tx_channel, data);
++	mbox_chan_txdone(tdev->tx_channel, ret);
++	if (ret < 0)
++		dev_err(tdev->dev, "Failed to send message via mailbox\n");
++
++out:
++	kfree(tdev->signal);
++	kfree(tdev->message);
++	tdev->signal = NULL;
++
++	return ret < 0 ? ret : count;
++}
++
++static bool mbox_test_message_data_ready(struct mbox_test_device *tdev)
++{
++	bool data_ready;
++	unsigned long flags;
++
++	spin_lock_irqsave(&tdev->lock, flags);
++	data_ready = mbox_data_ready;
++	spin_unlock_irqrestore(&tdev->lock, flags);
++
++	return data_ready;
++}
++
++static ssize_t mbox_test_message_read(struct file *filp, char __user *userbuf,
++		size_t count, loff_t *ppos)
++{
++	struct mbox_test_device *tdev = filp->private_data;
++	unsigned long flags;
++	char *touser, *ptr;
++	int ret;
++
++	touser = kzalloc(MBOX_HEXDUMP_MAX_LEN + 1, GFP_KERNEL);
++	if (!touser)
++		return -ENOMEM;
++
++	if (!tdev->rx_channel) {
++		ret = snprintf(touser, 20, "<NO RX CAPABILITY>\n");
++		ret = simple_read_from_buffer(userbuf, count, ppos,
++			touser, ret);
++		goto kfree_err;
++	}
++
++	do {
++		if (mbox_test_message_data_ready(tdev))
++			break;
++
++		if (filp->f_flags & O_NONBLOCK) {
++			ret = -EAGAIN;
++			goto waitq_err;
++		}
++
++		if (signal_pending(current)) {
++			ret = -ERESTARTSYS;
++			goto waitq_err;
++		}
++		schedule();
++
++	} while (1);
++
++	spin_lock_irqsave(&tdev->lock, flags);
++
++	ptr = tdev->rx_buffer;
++
++	mbox_data_ready = false;
++
++	spin_unlock_irqrestore(&tdev->lock, flags);
++	if (copy_to_user((void __user *)userbuf, ptr, 4))
++		ret = -EFAULT;
++
++waitq_err:
++	__set_current_state(TASK_RUNNING);
++kfree_err:
++	kfree(touser);
++	return ret;
++}
++
++static __poll_t
++mbox_test_message_poll(struct file *filp, struct poll_table_struct *wait)
++{
++	struct mbox_test_device *tdev = filp->private_data;
++
++	poll_wait(filp, &tdev->waitq, wait);
++
++	if (mbox_test_message_data_ready(tdev))
++		return EPOLLIN | EPOLLRDNORM;
++	return 0;
++}
++
++static const struct file_operations mbox_test_message_ops = {
++	.write = mbox_test_message_write,
++	.read = mbox_test_message_read,
++	.fasync = mbox_test_message_fasync,
++	.poll = mbox_test_message_poll,
++	.open = simple_open,
++	.llseek = generic_file_llseek,
++};
++
++static int mbox_test_add_debugfs(struct platform_device *pdev,
++		struct mbox_test_device *tdev)
++{
++	if (!debugfs_initialized())
++		return 0;
++
++	tdev->root_debugfs_dir = debugfs_create_dir(dev_name(&pdev->dev), NULL);
++	if (!tdev->root_debugfs_dir) {
++		dev_err(&pdev->dev, "Failed to create Mailbox debugfs\n");
++		return -EINVAL;
++	}
++
++	debugfs_create_file("message", 0600, tdev->root_debugfs_dir,
++		tdev, &mbox_test_message_ops);
++
++	debugfs_create_file("signal", 0200, tdev->root_debugfs_dir,
++		tdev, &mbox_test_signal_ops);
++
++	return 0;
++}
++
++static void mbox_test_receive_message(struct mbox_client *client, void *message)
++{
++	struct mbox_test_device *tdev = dev_get_drvdata(client->dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&tdev->lock, flags);
++	if (tdev->rx_mmio) {
++		memcpy_fromio(tdev->rx_buffer, tdev->rx_mmio, MBOX_MAX_MSG_LEN);
++		print_hex_dump_bytes("Client: Received [MMIO]: ", DUMP_PREFIX_ADDRESS,
++			tdev->rx_buffer, MBOX_MAX_MSG_LEN);
++	} else if (message) {
++		print_hex_dump_bytes("Client: Received [API]: ", DUMP_PREFIX_ADDRESS,
++			message, MBOX_MAX_MSG_LEN);
++		memcpy(tdev->rx_buffer, message, MBOX_MAX_MSG_LEN);
++	}
++	mbox_data_ready = true;
++	spin_unlock_irqrestore(&tdev->lock, flags);
++}
++
++static void mbox_test_prepare_message(struct mbox_client *client, void *message)
++{
++	struct mbox_test_device *tdev = dev_get_drvdata(client->dev);
++
++	if (tdev->tx_mmio) {
++		if (tdev->signal)
++			memcpy_toio(tdev->tx_mmio, tdev->message, MBOX_MAX_MSG_LEN);
++		else
++			memcpy_toio(tdev->tx_mmio, message, MBOX_MAX_MSG_LEN);
++	}
++}
++
++static struct mbox_chan *
++mbox_test_request_channel(struct platform_device *pdev, const char *name)
++{
++	struct mbox_client *client;
++	struct mbox_chan *channel;
++
++	client = devm_kzalloc(&pdev->dev, sizeof(*client), GFP_KERNEL);
++	if (!client)
++		return ERR_PTR(-ENOMEM);
++
++	client->dev        = &pdev->dev;
++	client->rx_callback    = mbox_test_receive_message;
++	client->tx_prepare    = mbox_test_prepare_message;
++	client->tx_block    = false;
++	client->knows_txdone    = false;
++	client->tx_tout        = 500;
++
++	channel = mbox_request_channel_byname(client, name);
++	if (IS_ERR(channel)) {
++		dev_warn(&pdev->dev, "Failed to request %s channel\n", name);
++		return NULL;
++	}
++
++	return channel;
++}
++
++static int mbox_test_probe(struct platform_device *pdev)
++{
++	struct mbox_test_device *tdev;
++	struct resource *res;
++	resource_size_t size;
++	int ret;
++
++	tdev = devm_kzalloc(&pdev->dev, sizeof(*tdev), GFP_KERNEL);
++	if (!tdev)
++		return -ENOMEM;
++
++	/* It's okay for MMIO to be NULL */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	tdev->tx_mmio = devm_ioremap_resource(&pdev->dev, res);
++	if (PTR_ERR(tdev->tx_mmio) == -EBUSY) {
++		/* if reserved area in SRAM, try just ioremap */
++		size = resource_size(res);
++		tdev->tx_mmio = devm_ioremap(&pdev->dev, res->start, size);
++	} else if (IS_ERR(tdev->tx_mmio)) {
++		tdev->tx_mmio = NULL;
++	}
++
++	/* If specified, second reg entry is Rx MMIO */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
++	tdev->rx_mmio = devm_ioremap_resource(&pdev->dev, res);
++	if (PTR_ERR(tdev->rx_mmio) == -EBUSY) {
++		size = resource_size(res);
++		tdev->rx_mmio = devm_ioremap(&pdev->dev, res->start, size);
++	} else if (IS_ERR(tdev->rx_mmio)) {
++		tdev->rx_mmio = tdev->tx_mmio;
++	}
++
++	tdev->tx_channel = mbox_test_request_channel(pdev, "tx");
++	tdev->rx_channel = mbox_test_request_channel(pdev, "rx");
++
++	if (!tdev->tx_channel && !tdev->rx_channel)
++		return -EPROBE_DEFER;
++
++	/* If Rx is not specified but has Rx MMIO, then Rx = Tx */
++	if (!tdev->rx_channel && (tdev->rx_mmio != tdev->tx_mmio))
++		tdev->rx_channel = tdev->tx_channel;
++
++	tdev->dev = &pdev->dev;
++	platform_set_drvdata(pdev, tdev);
++
++	spin_lock_init(&tdev->lock);
++
++	if (tdev->rx_channel) {
++		tdev->rx_buffer = devm_kzalloc(&pdev->dev,
++			MBOX_MAX_MSG_LEN, GFP_KERNEL);
++		if (!tdev->rx_buffer)
++			return -ENOMEM;
++	}
++
++	ret = mbox_test_add_debugfs(pdev, tdev);
++	if (ret)
++		return ret;
++
++	dev_info(&pdev->dev, "Successfully registered\n");
++
++	return 0;
++}
++
++static void mbox_test_remove(struct platform_device *pdev)
++{
++	struct mbox_test_device *tdev = platform_get_drvdata(pdev);
++
++	debugfs_remove_recursive(tdev->root_debugfs_dir);
++
++	if (tdev->tx_channel)
++		mbox_free_channel(tdev->tx_channel);
++	if (tdev->rx_channel)
++		mbox_free_channel(tdev->rx_channel);
++}
++
++static const struct of_device_id mbox_test_match[] = {
++	{ .compatible = "starfive,mailbox-test" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, mbox_test_match);
++
++static struct platform_driver mbox_test_driver = {
++	.driver = {
++		.name = "mailbox_test",
++		.of_match_table = mbox_test_match,
++	},
++	.probe  = mbox_test_probe,
++	.remove = mbox_test_remove,
++};
++module_platform_driver(mbox_test_driver);
++
++MODULE_DESCRIPTION("Generic Mailbox Testing Facility");
++MODULE_AUTHOR("Lee Jones <lee.jones@linaro.org");
++MODULE_LICENSE("GPL v2");
+--- /dev/null
++++ b/drivers/mailbox/starfive_mailbox.c
+@@ -0,0 +1,345 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * mailbox driver for StarFive JH7110 SoC
++ *
++ * Copyright (c) 2021 StarFive Technology Co., Ltd.
++ * Author: Shanlong Li <shanlong.li@starfivetech.com>
++ */
++
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/mailbox_controller.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/clk.h>
++#include <linux/reset.h>
++#include <linux/pm_runtime.h>
++
++#include "mailbox.h"
++
++#define MBOX_CHAN_MAX		4
++
++#define MBOX_BASE(mbox, ch)	((mbox)->base + ((ch) * 0x10))
++#define MBOX_IRQ_REG		0x00
++#define MBOX_SET_REG		0x04
++#define MBOX_CLR_REG		0x08
++#define MBOX_CMD_REG		0x0c
++#define MBC_PEND_SMRY		0x100
++
++typedef enum {
++	MAILBOX_CORE_U7 = 0,
++	MAILBOX_CORE_HIFI4,
++	MAILBOX_CORE_E2,
++	MAILBOX_CORE_RSVD0,
++	MAILBOX_CORE_NUM,
++} mailbox_core_t;
++
++struct mailbox_irq_name_c{
++	int id;
++	char name[16];
++};
++
++static const struct mailbox_irq_name_c irq_peer_name[MBOX_CHAN_MAX] = {
++	{MAILBOX_CORE_U7,    "u74_core"},
++	{MAILBOX_CORE_HIFI4, "hifi4_core"},
++	{MAILBOX_CORE_E2,    "e24_core"},
++	{MAILBOX_CORE_RSVD0, "" },
++};
++
++/**
++ * starfive mailbox channel information
++ *
++ * A channel can be used for TX or RX, it can trigger remote
++ * processor interrupt to notify remote processor and can receive
++ * interrupt if has incoming message.
++ *
++ * @dst_irq:    Interrupt vector for remote processor
++ * @core_id:    id for remote processor
++ */
++struct starfive_chan_info {
++	unsigned int dst_irq;
++	mailbox_core_t core_id;
++};
++
++/**
++ * starfive mailbox controller data
++ *
++ * Mailbox controller includes 4 channels and can allocate
++ * channel for message transferring.
++ *
++ * @dev:    Device to which it is attached
++ * @base:    Base address of the register mapping region
++ * @chan:    Representation of channels in mailbox controller
++ * @mchan:    Representation of channel info
++ * @controller:    Representation of a communication channel controller
++ */
++struct starfive_mbox {
++	struct device *dev;
++	void __iomem *base;
++	struct mbox_chan chan[MBOX_CHAN_MAX];
++	struct starfive_chan_info mchan[MBOX_CHAN_MAX];
++	struct mbox_controller controller;
++	struct clk *clk;
++	struct reset_control *rst_rresetn;
++};
++
++static struct starfive_mbox *to_starfive_mbox(struct mbox_controller *mbox)
++{
++	return container_of(mbox, struct starfive_mbox, controller);
++}
++
++static struct mbox_chan *
++starfive_of_mbox_index_xlate(struct mbox_controller *mbox,
++			const struct of_phandle_args *sp)
++{
++	struct starfive_mbox *sbox;
++
++	int ind = sp->args[0];
++	int core_id = sp->args[1];
++
++	if (ind >= mbox->num_chans || core_id >= MAILBOX_CORE_NUM)
++		return ERR_PTR(-EINVAL);
++
++	sbox = to_starfive_mbox(mbox);
++
++	sbox->mchan[ind].core_id = core_id;
++
++	return &mbox->chans[ind];
++}
++
++static irqreturn_t starfive_rx_irq_handler(int irq, void *p)
++{
++	struct mbox_chan *chan = p;
++	unsigned long ch = (unsigned long)chan->con_priv;
++	struct starfive_mbox *mbox = to_starfive_mbox(chan->mbox);
++	void __iomem *base = MBOX_BASE(mbox, ch);
++	u32 val;
++
++	val = readl(base + MBOX_CMD_REG);
++	if (!val)
++		return IRQ_NONE;
++
++	mbox_chan_received_data(chan, (void *)&val);
++	writel(val, base + MBOX_CLR_REG);
++	return IRQ_HANDLED;
++}
++
++static int starfive_mbox_check_state(struct mbox_chan *chan)
++{
++	unsigned long ch = (unsigned long)chan->con_priv;
++	struct starfive_mbox *mbox = to_starfive_mbox(chan->mbox);
++	unsigned long irq_flag = IRQF_SHARED;
++	long ret = 0;
++
++	pm_runtime_get_sync(mbox->dev);
++	/* MAILBOX should be with IRQF_NO_SUSPEND set */
++	if (!mbox->dev->pm_domain)
++		irq_flag |= IRQF_NO_SUSPEND;
++
++	/* Mailbox is idle so directly bail out */
++	if (readl(mbox->base + MBC_PEND_SMRY) & BIT(ch))
++		return -EBUSY;
++
++	if (mbox->mchan[ch].dst_irq > 0) {
++		dev_dbg(mbox->dev, "%s: host IRQ = %d, ch:%ld", __func__, mbox->mchan[ch].dst_irq, ch);
++		ret = devm_request_irq(mbox->dev, mbox->mchan[ch].dst_irq, starfive_rx_irq_handler,
++			irq_flag, irq_peer_name[ch].name, chan);
++		if (ret < 0)
++			dev_err(mbox->dev, "request_irq %d failed\n", mbox->mchan[ch].dst_irq);
++	}
++
++	return ret;
++}
++
++static int starfive_mbox_startup(struct mbox_chan *chan)
++{
++	return starfive_mbox_check_state(chan);
++}
++
++static void starfive_mbox_shutdown(struct mbox_chan *chan)
++{
++	struct starfive_mbox *mbox = to_starfive_mbox(chan->mbox);
++	unsigned long ch = (unsigned long)chan->con_priv;
++	void __iomem *base = MBOX_BASE(mbox, ch);
++
++	writel(0x0, base + MBOX_IRQ_REG);
++	writel(0x0, base + MBOX_CLR_REG);
++
++	if (mbox->mchan[ch].dst_irq > 0)
++		devm_free_irq(mbox->dev, mbox->mchan[ch].dst_irq, chan);
++	pm_runtime_put_sync(mbox->dev);
++}
++
++static int starfive_mbox_send_data(struct mbox_chan *chan, void *msg)
++{
++	unsigned long ch = (unsigned long)chan->con_priv;
++	struct starfive_mbox *mbox = to_starfive_mbox(chan->mbox);
++	struct starfive_chan_info *mchan = &mbox->mchan[ch];
++	void __iomem *base = MBOX_BASE(mbox, ch);
++	u32 *buf = msg;
++
++	/* Ensure channel is released */
++	if (readl(mbox->base + MBC_PEND_SMRY) & BIT(ch)) {
++		pr_debug("%s:%d. busy\n", __func__, __LINE__);
++		return -EBUSY;
++	}
++
++	/* Clear mask for destination interrupt */
++	writel(BIT(mchan->core_id), base + MBOX_IRQ_REG);
++
++	/* Fill message data */
++	writel(*buf, base + MBOX_SET_REG);
++	return 0;
++}
++
++static struct mbox_chan_ops starfive_mbox_ops = {
++	.startup = starfive_mbox_startup,
++	.send_data = starfive_mbox_send_data,
++	.shutdown = starfive_mbox_shutdown,
++};
++
++static const struct of_device_id starfive_mbox_of_match[] = {
++	{ .compatible = "starfive,mail_box",},
++	{},
++};
++
++MODULE_DEVICE_TABLE(of, starfive_mbox_of_match);
++
++void starfive_mailbox_init(struct starfive_mbox *mbox)
++{
++	mbox->clk = devm_clk_get_optional(mbox->dev, "clk_apb");
++	if (IS_ERR(mbox->clk)) {
++		dev_err(mbox->dev, "failed to get mailbox\n");
++		return;
++	}
++
++	mbox->rst_rresetn = devm_reset_control_get_exclusive(mbox->dev, "mbx_rre");
++	if (IS_ERR(mbox->rst_rresetn)) {
++		dev_err(mbox->dev, "failed to get mailbox reset\n");
++		return;
++	}
++
++	clk_prepare_enable(mbox->clk);
++	reset_control_deassert(mbox->rst_rresetn);
++}
++
++static int starfive_mbox_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct starfive_mbox *mbox;
++	struct mbox_chan *chan;
++	struct resource *res;
++	unsigned long ch;
++	int err;
++
++	mbox = devm_kzalloc(dev, sizeof(*mbox), GFP_KERNEL);
++	if (!mbox)
++		return -ENOMEM;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	mbox->base = devm_ioremap_resource(dev, res);
++	mbox->dev = dev;
++
++	if (IS_ERR(mbox->base))
++		return PTR_ERR(mbox->base);
++
++	starfive_mailbox_init(mbox);
++
++	mbox->controller.dev = dev;
++	mbox->controller.chans = mbox->chan;
++	mbox->controller.num_chans = MBOX_CHAN_MAX;
++	mbox->controller.ops = &starfive_mbox_ops;
++	mbox->controller.of_xlate = starfive_of_mbox_index_xlate;
++	mbox->controller.txdone_irq = true;
++	mbox->controller.txdone_poll = false;
++
++	/* Initialize mailbox channel data */
++	chan = mbox->chan;
++	for (ch = 0; ch < MBOX_CHAN_MAX; ch++) {
++		mbox->mchan[ch].dst_irq = 0;
++		mbox->mchan[ch].core_id = (mailbox_core_t)ch;
++		chan[ch].con_priv = (void *)ch;
++	}
++	mbox->mchan[MAILBOX_CORE_HIFI4].dst_irq = platform_get_irq(pdev, 0);
++	mbox->mchan[MAILBOX_CORE_E2].dst_irq = platform_get_irq(pdev, 1);
++
++	err = mbox_controller_register(&mbox->controller);
++	if (err) {
++		dev_err(dev, "Failed to register mailbox %d\n", err);
++		return err;
++	}
++
++	platform_set_drvdata(pdev, mbox);
++	dev_info(dev, "Mailbox enabled\n");
++	pm_runtime_set_active(dev);
++	pm_runtime_enable(dev);
++
++	return 0;
++}
++
++static void starfive_mbox_remove(struct platform_device *pdev)
++{
++	struct starfive_mbox *mbox = platform_get_drvdata(pdev);
++
++	mbox_controller_unregister(&mbox->controller);
++	devm_clk_put(mbox->dev, mbox->clk);
++	pm_runtime_disable(mbox->dev);
++}
++
++static int __maybe_unused starfive_mbox_suspend(struct device *dev)
++{
++	struct starfive_mbox *mbox = dev_get_drvdata(dev);
++
++	clk_disable_unprepare(mbox->clk);
++
++	return 0;
++}
++
++static int __maybe_unused starfive_mbox_resume(struct device *dev)
++{
++	struct starfive_mbox *mbox = dev_get_drvdata(dev);
++	int ret;
++
++	ret = clk_prepare_enable(mbox->clk);
++	if (ret)
++		dev_err(dev, "failed to enable clock\n");
++
++	return ret;
++}
++
++static const struct dev_pm_ops starfive_mbox_pm_ops = {
++	.suspend = starfive_mbox_suspend,
++	.resume = starfive_mbox_resume,
++	SET_RUNTIME_PM_OPS(starfive_mbox_suspend, starfive_mbox_resume, NULL)
++};
++static struct platform_driver starfive_mbox_driver = {
++	.probe  = starfive_mbox_probe,
++	.remove = starfive_mbox_remove,
++	.driver = {
++	.name = "mailbox",
++		.of_match_table = starfive_mbox_of_match,
++		.pm = &starfive_mbox_pm_ops,
++	},
++};
++
++static int __init starfive_mbox_init(void)
++{
++	return platform_driver_register(&starfive_mbox_driver);
++}
++core_initcall(starfive_mbox_init);
++
++static void __exit starfive_mbox_exit(void)
++{
++	platform_driver_unregister(&starfive_mbox_driver);
++}
++module_exit(starfive_mbox_exit);
++
++MODULE_DESCRIPTION("StarFive Mailbox Controller driver");
++MODULE_AUTHOR("Shanlong Li <shanlong.li@starfivetech.com>");
++MODULE_LICENSE("GPL");
