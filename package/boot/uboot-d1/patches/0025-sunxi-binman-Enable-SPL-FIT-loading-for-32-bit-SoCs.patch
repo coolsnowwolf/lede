@@ -1,0 +1,192 @@
+From b641ca5f4d272b83ef77ebcf5c75678cf139c69a Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 17 Apr 2021 13:33:54 -0500
+Subject: [PATCH 25/90] sunxi: binman: Enable SPL FIT loading for 32-bit SoCs
+
+Now that Crust (SCP firmware) has support for H3, we need a FIT image to
+load it. H3 also needs to load a SoC-specific eGon blob to support CPU 0
+hotplug. Let's first enable FIT support before adding extra firmware.
+
+Update the binman description to work on either 32-bit or 64-bit SoCs:
+ - Make BL31 optional, since it is not used on 32-bit SoCs (though BL32
+   may be used in the future).
+ - Explicitly set the minimum offset of the FIT to 32 KiB, since SPL on
+   some boards is still only 24 KiB large even with FIT support enabled.
+   CONFIG_SPL_PAD_TO cannot be used because it is not defined for H616.
+
+FIT unlocks more features (signatures, multiple DTBs, etc.), so enable
+it by default. A10 (sun4i) only has 24 KiB of SRAM A1, so it needs
+SPL_FIT_IMAGE_TINY. For simplicity, enable that option everywhere.
+
+Cover-letter:
+sunxi: SPL FIT support for 32-bit sunxi SoCs
+This series makes the necessary changes so 32-bit sunxi SoCs can load
+additional device trees or firmware from SPL along with U-Boot proper.
+
+There was no existing binman entry property that put the FIT at the
+right offset. The minimum offset is 32k, but this matches neither the
+SPL size (which is no more than 24k on some SoCs) nor the FIT alignment
+(which is 512 bytes in practice due to SPL size constraints). So instead
+of adding a new property, I fixed what is arguably a bug in the offset
+property -- though this strategy will not work if someone is
+intentionally creating overlapping entries.
+END
+Series-to: sunxi
+Series-to: sjg
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/arm/Kconfig               |  1 +
+ arch/arm/dts/sunxi-u-boot.dtsi | 46 ++++++++++++++++++++++------------
+ common/spl/Kconfig             |  9 +++----
+ 3 files changed, 35 insertions(+), 21 deletions(-)
+
+--- a/arch/arm/Kconfig
++++ b/arch/arm/Kconfig
+@@ -1135,6 +1135,7 @@ config ARCH_SUNXI
+ 	imply SPL_GPIO
+ 	imply SPL_LIBCOMMON_SUPPORT
+ 	imply SPL_LIBGENERIC_SUPPORT
++	imply SPL_LOAD_FIT
+ 	imply SPL_MMC if MMC
+ 	imply SPL_POWER
+ 	imply SPL_SERIAL
+--- a/arch/arm/dts/sunxi-u-boot.dtsi
++++ b/arch/arm/dts/sunxi-u-boot.dtsi
+@@ -1,13 +1,19 @@
+ #include <config.h>
+ 
+-#ifdef CONFIG_MACH_SUN50I_H6
+-#define BL31_ADDR 0x104000
+-#define  SCP_ADDR 0x114000
+-#elif defined(CONFIG_MACH_SUN50I_H616)
+-#define BL31_ADDR 0x40000000
++#ifdef CONFIG_ARM64
++#define ARCH "arm64"
+ #else
+-#define BL31_ADDR  0x44000
+-#define  SCP_ADDR  0x50000
++#define ARCH "arm"
++#endif
++
++#if defined(CONFIG_MACH_SUN50I) || defined(CONFIG_MACH_SUN50I_H5)
++#define BL31_ADDR	0x00044000
++#define SCP_ADDR	0x00050000
++#elif defined(CONFIG_MACH_SUN50I_H6)
++#define BL31_ADDR	0x00104000
++#define SCP_ADDR	0x00114000
++#elif defined(CONFIG_MACH_SUN50I_H616)
++#define BL31_ADDR	0x40000000
+ #endif
+ 
+ / {
+@@ -34,30 +40,33 @@
+ 			filename = "spl/sunxi-spl.bin";
+ 		};
+ 
+-#ifdef CONFIG_ARM64
++#ifdef CONFIG_SPL_LOAD_FIT
+ 		fit {
+-			description = "Configuration to load ATF before U-Boot";
++			description = "Configuration to load U-Boot and firmware";
++			offset = <32768>;
+ 			#address-cells = <1>;
+ 			fit,fdt-list = "of-list";
+ 
+ 			images {
+ 				uboot {
+-					description = "U-Boot (64-bit)";
++					description = "U-Boot";
+ 					type = "standalone";
+ 					os = "u-boot";
+-					arch = "arm64";
++					arch = ARCH;
+ 					compression = "none";
+ 					load = <CONFIG_TEXT_BASE>;
++					entry = <CONFIG_TEXT_BASE>;
+ 
+ 					u-boot-nodtb {
+ 					};
+ 				};
+ 
++#ifdef BL31_ADDR
+ 				atf {
+ 					description = "ARM Trusted Firmware";
+ 					type = "firmware";
+ 					os = "arm-trusted-firmware";
+-					arch = "arm64";
++					arch = ARCH;
+ 					compression = "none";
+ 					load = <BL31_ADDR>;
+ 					entry = <BL31_ADDR>;
+@@ -67,6 +76,7 @@
+ 						missing-msg = "atf-bl31-sunxi";
+ 					};
+ 				};
++#endif
+ 
+ #ifdef SCP_ADDR
+ 				scp {
+@@ -95,19 +105,23 @@
+ 
+ 				@config-SEQ {
+ 					description = "NAME";
++#ifdef BL31_ADDR
+ 					firmware = "atf";
+-#ifndef SCP_ADDR
+-					loadables = "uboot";
+ #else
+-					loadables = "scp", "uboot";
++					firmware = "uboot";
++#endif
++					loadables =
++#ifdef SCP_ADDR
++						    "scp",
+ #endif
++						    "uboot";
+ 					fdt = "fdt-SEQ";
+ 				};
+ 			};
+ 		};
+ #else
+ 		u-boot-img {
+-			offset = <CONFIG_SPL_PAD_TO>;
++			offset = <32768>;
+ 		};
+ #endif
+ 	};
+--- a/common/spl/Kconfig
++++ b/common/spl/Kconfig
+@@ -76,12 +76,12 @@ config SPL_SIZE_LIMIT_PROVIDE_STACK
+ 
+ config SPL_MAX_SIZE
+ 	hex "Maximum size of the SPL image, excluding BSS"
++	default 0x37fa0 if MACH_SUN50I_H616
+ 	default 0x30000 if ARCH_MX6 && MX6_OCRAM_256KB
++	default 0x25fa0 if MACH_SUN50I_H6
+ 	default 0x1b000 if AM33XX && !TI_SECURE_DEVICE
+ 	default 0x10000 if ARCH_MX6 && !MX6_OCRAM_256KB
+ 	default 0x7fa0 if SUNXI_SRAM_ADDRESS = 0x10000
+-	default 0x7fa0 if SUNXI_SRAM_ADDRESS = 0x20000 && !MACH_SUN50I_H616
+-	default 0xbfa0 if MACH_SUN50I_H616
+ 	default 0x7000 if RCAR_GEN3
+ 	default 0x5fa0 if SUNXI_SRAM_ADDRESS = 0x0
+ 	default 0x10000 if ASPEED_AST2600
+@@ -97,7 +97,7 @@ config SPL_PAD_TO
+ 	default 0x31000 if ARCH_MX6 && MX6_OCRAM_256KB
+ 	default 0x11000 if ARCH_MX7 || (ARCH_MX6 && !MX6_OCRAM_256KB)
+ 	default 0x10000 if ARCH_KEYSTONE
+-	default 0x8000 if ARCH_SUNXI && !MACH_SUN50I_H616
++	default 0x0 if ARCH_SUNXI
+ 	default 0x0 if ARCH_MTMIPS
+ 	default TPL_MAX_SIZE if TPL_MAX_SIZE > SPL_MAX_SIZE
+ 	default SPL_MAX_SIZE
+@@ -575,8 +575,7 @@ config SPL_MD5
+ config SPL_FIT_IMAGE_TINY
+ 	bool "Remove functionality from SPL FIT loading to reduce size"
+ 	depends on SPL_FIT
+-	default y if MACH_SUN50I || MACH_SUN50I_H5 || SUN50I_GEN_H6
+-	default y if ARCH_IMX8M || ARCH_IMX9
++	default y if ARCH_IMX8M || ARCH_IMX9 || ARCH_SUNXI
+ 	help
+ 	  Enable this to reduce the size of the FIT image loading code
+ 	  in SPL, if space for the SPL binary is very tight.

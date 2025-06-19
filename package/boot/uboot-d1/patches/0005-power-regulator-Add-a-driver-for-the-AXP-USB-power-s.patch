@@ -1,0 +1,97 @@
+From e07c1d516c1a7842510d22a7cf88666d500a9a9a Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sun, 22 Aug 2021 21:35:45 -0500
+Subject: [PATCH 05/90] power: regulator: Add a driver for the AXP USB power
+ supply
+
+This driver reports the presence/absence of voltage on the PMIC's USB
+VBUS pin. This information is used by the USB PHY driver. The
+corresponding Linux driver uses the power supply class, which does not
+exist in U-Boot. UCLASS_REGULATOR seems to be the closest match.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/power/regulator/Kconfig         |  7 ++++
+ drivers/power/regulator/Makefile        |  1 +
+ drivers/power/regulator/axp_usb_power.c | 49 +++++++++++++++++++++++++
+ 3 files changed, 57 insertions(+)
+ create mode 100644 drivers/power/regulator/axp_usb_power.c
+
+--- a/drivers/power/regulator/Kconfig
++++ b/drivers/power/regulator/Kconfig
+@@ -43,6 +43,13 @@ config REGULATOR_AS3722
+ 	  but does not yet support change voltages. Currently this must be
+ 	  done using direct register writes to the PMIC.
+ 
++config REGULATOR_AXP_USB_POWER
++	bool "Enable driver for X-Powers AXP PMIC USB power supply"
++	depends on DM_REGULATOR && PMIC_AXP
++	help
++	  Enable support for reading the USB power supply status from
++	  X-Powers AXP2xx and AXP8xx PMICs.
++
+ config DM_REGULATOR_BD71837
+ 	bool "Enable Driver Model for ROHM BD71837/BD71847 regulators"
+ 	depends on DM_REGULATOR && DM_PMIC_BD71837
+--- a/drivers/power/regulator/Makefile
++++ b/drivers/power/regulator/Makefile
+@@ -7,6 +7,7 @@
+ obj-$(CONFIG_$(SPL_)DM_REGULATOR) += regulator-uclass.o
+ obj-$(CONFIG_REGULATOR_ACT8846) += act8846.o
+ obj-$(CONFIG_REGULATOR_AS3722)	+= as3722_regulator.o
++obj-$(CONFIG_$(SPL_)REGULATOR_AXP_USB_POWER) += axp_usb_power.o
+ obj-$(CONFIG_$(SPL_)DM_REGULATOR_DA9063) += da9063.o
+ obj-$(CONFIG_DM_REGULATOR_MAX77686) += max77686.o
+ obj-$(CONFIG_DM_REGULATOR_NPCM8XX) += npcm8xx_regulator.o
+--- /dev/null
++++ b/drivers/power/regulator/axp_usb_power.c
+@@ -0,0 +1,49 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++#include <dm/device.h>
++#include <errno.h>
++#include <power/pmic.h>
++#include <power/regulator.h>
++
++#define AXP_POWER_STATUS		0x00
++#define AXP_POWER_STATUS_VBUS_PRESENT		BIT(5)
++
++static int axp_usb_power_get_enable(struct udevice *dev)
++{
++	int ret;
++
++	ret = pmic_reg_read(dev->parent, AXP_POWER_STATUS);
++	if (ret < 0)
++		return ret;
++
++	return !!(ret & AXP_POWER_STATUS_VBUS_PRESENT);
++}
++
++static const struct dm_regulator_ops axp_usb_power_ops = {
++	.get_enable		= axp_usb_power_get_enable,
++};
++
++static int axp_usb_power_probe(struct udevice *dev)
++{
++	struct dm_regulator_uclass_plat *uc_plat = dev_get_uclass_plat(dev);
++
++	uc_plat->type = REGULATOR_TYPE_FIXED;
++
++	return 0;
++}
++
++static const struct udevice_id axp_usb_power_ids[] = {
++	{ .compatible = "x-powers,axp202-usb-power-supply" },
++	{ .compatible = "x-powers,axp221-usb-power-supply" },
++	{ .compatible = "x-powers,axp223-usb-power-supply" },
++	{ .compatible = "x-powers,axp813-usb-power-supply" },
++	{ }
++};
++
++U_BOOT_DRIVER(axp_usb_power) = {
++	.name		= "axp_usb_power",
++	.id		= UCLASS_REGULATOR,
++	.of_match	= axp_usb_power_ids,
++	.probe		= axp_usb_power_probe,
++	.ops		= &axp_usb_power_ops,
++};

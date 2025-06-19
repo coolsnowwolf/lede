@@ -1,0 +1,375 @@
+From 697eb56ed8c9b3814ddbd87ae0c6e749ccafc9e3 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 28 Aug 2021 00:27:19 -0500
+Subject: [PATCH 50/90] gpio: axp: Select variant from compatible at runtime
+
+There are three major variants of the AXP PMIC GPIO functionality (plus
+PMICs with no GPIOs at all). Except for GPIO3 on the AXP209, which uses
+a different register layout, it is straightforward to support all three
+variants with a single driver. Do this, and in the process remove the
+GPIO-related definitions from the PMIC-specific headers, and therefore
+the dependency on AXP_PMIC_BUS.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/gpio/Kconfig    |   1 -
+ drivers/gpio/axp_gpio.c | 137 +++++++++++++++++++++-------------------
+ drivers/power/axp209.c  |   6 +-
+ drivers/power/axp221.c  |   4 +-
+ include/axp152.h        |  10 ---
+ include/axp209.h        |  16 ++---
+ include/axp221.h        |  13 ++--
+ include/axp809.h        |   8 ---
+ include/axp818.h        |   8 ---
+ 9 files changed, 89 insertions(+), 114 deletions(-)
+
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -107,7 +107,6 @@ config ALTERA_PIO
+ config AXP_GPIO
+ 	bool "X-Powers AXP PMICs GPIO driver"
+ 	depends on DM_GPIO && PMIC_AXP
+-	depends on AXP_PMIC_BUS
+ 	help
+ 	  This driver supports the GPIO pins on
+ 	  X-Powers AXP152, AXP2xx, and AXP8xx PMICs.
+--- a/drivers/gpio/axp_gpio.c
++++ b/drivers/gpio/axp_gpio.c
+@@ -7,110 +7,117 @@
+ 
+ #include <common.h>
+ #include <asm/gpio.h>
+-#include <axp_pmic.h>
+ #include <dm.h>
++#include <dm/device-internal.h>
+ #include <errno.h>
+ #include <power/pmic.h>
+ 
+ #define AXP_GPIO_PREFIX			"AXP0-"
+ #define AXP_GPIO_COUNT			4
+ 
+-static int axp_gpio_set_value(struct udevice *dev, unsigned pin, int val);
+-
+-static u8 axp_get_gpio_ctrl_reg(unsigned pin)
+-{
+-	switch (pin) {
+-	case 0: return AXP_GPIO0_CTRL;
+-	case 1: return AXP_GPIO1_CTRL;
+-#ifdef AXP_GPIO2_CTRL
+-	case 2: return AXP_GPIO2_CTRL;
+-#endif
+-#ifdef AXP_GPIO3_CTRL
+-	case 3: return AXP_GPIO3_CTRL;
+-#endif
+-	}
+-	return 0;
+-}
+-
+-static int axp_gpio_direction_input(struct udevice *dev, unsigned pin)
+-{
+-	u8 reg;
+-
+-	reg = axp_get_gpio_ctrl_reg(pin);
+-	if (reg == 0)
+-		return -EINVAL;
+-
+-	return pmic_reg_write(dev->parent, reg, AXP_GPIO_CTRL_INPUT);
+-}
+-
+-static int axp_gpio_direction_output(struct udevice *dev, unsigned pin,
+-				     int val)
+-{
+-	u8 reg;
+-
+-	reg = axp_get_gpio_ctrl_reg(pin);
+-	if (reg == 0)
+-		return -EINVAL;
+-
+-	return pmic_reg_write(dev->parent, reg,
+-			      val ? AXP_GPIO_CTRL_OUTPUT_HIGH :
+-				    AXP_GPIO_CTRL_OUTPUT_LOW);
+-}
++#define AXP_GPIO_CTRL_MASK		0x7
++#define AXP_GPIO_CTRL_OUTPUT_LOW	0
++#define AXP_GPIO_CTRL_OUTPUT_HIGH	1
++
++struct axp_gpio_desc {
++	const u8	*pins;
++	u8		npins;
++	u8		status_reg;
++	u8		status_offset;
++	u8		input_mux;
++};
+ 
+ static int axp_gpio_get_value(struct udevice *dev, unsigned pin)
+ {
+-	u8 reg, mask;
++	const struct axp_gpio_desc *desc = dev_get_priv(dev);
+ 	int ret;
+ 
+-	reg = axp_get_gpio_ctrl_reg(pin);
+-	if (reg == 0)
+-		return -EINVAL;
+-
+-	ret = pmic_reg_read(dev->parent, AXP_GPIO_STATE);
++	ret = pmic_reg_read(dev->parent, desc->status_reg);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	mask = 1 << (pin + AXP_GPIO_STATE_OFFSET);
+-
+-	return (ret & mask) ? 1 : 0;
++	return !!(ret & BIT(desc->status_offset + pin));
+ }
+ 
+-static int axp_gpio_set_value(struct udevice *dev, unsigned pin, int val)
++static int axp_gpio_set_flags(struct udevice *dev, unsigned pin, ulong flags)
+ {
+-	u8 reg;
++	const struct axp_gpio_desc *desc = dev_get_priv(dev);
++	u8 mux;
+ 
+-	reg = axp_get_gpio_ctrl_reg(pin);
+-	if (reg == 0)
++	if (flags & (GPIOD_MASK_DSTYPE | GPIOD_MASK_PULL))
+ 		return -EINVAL;
+ 
+-	return pmic_reg_write(dev->parent, reg,
+-			      val ? AXP_GPIO_CTRL_OUTPUT_HIGH :
+-				    AXP_GPIO_CTRL_OUTPUT_LOW);
++	if (flags & GPIOD_IS_IN)
++		mux = desc->input_mux;
++	else if (flags & GPIOD_IS_OUT_ACTIVE)
++		mux = AXP_GPIO_CTRL_OUTPUT_HIGH;
++	else
++		mux = AXP_GPIO_CTRL_OUTPUT_LOW;
++
++	return pmic_clrsetbits(dev->parent, desc->pins[pin],
++			       AXP_GPIO_CTRL_MASK, mux);
+ }
+ 
+ static const struct dm_gpio_ops axp_gpio_ops = {
+-	.direction_input	= axp_gpio_direction_input,
+-	.direction_output	= axp_gpio_direction_output,
+ 	.get_value		= axp_gpio_get_value,
+-	.set_value		= axp_gpio_set_value,
++	.xlate			= gpio_xlate_offs_flags,
++	.set_flags		= axp_gpio_set_flags,
+ };
+ 
+ static int axp_gpio_probe(struct udevice *dev)
+ {
++	struct axp_gpio_desc *desc = (void *)dev_get_driver_data(dev);
+ 	struct gpio_dev_priv *uc_priv = dev_get_uclass_priv(dev);
+ 
++	dev_set_priv(dev, desc);
++
+ 	/* Tell the uclass how many GPIOs we have */
+ 	uc_priv->bank_name = AXP_GPIO_PREFIX;
+-	uc_priv->gpio_count = AXP_GPIO_COUNT;
++	uc_priv->gpio_count = desc->npins;
+ 
+ 	return 0;
+ }
+ 
++static const u8 axp152_gpio_pins[] = {
++	0x90, 0x91, 0x92, 0x93,
++};
++
++static const struct axp_gpio_desc axp152_gpio_desc = {
++	.pins		= axp152_gpio_pins,
++	.npins		= ARRAY_SIZE(axp152_gpio_pins),
++	.status_reg	= 0x97,
++	.status_offset	= 4,
++	.input_mux	= 3,
++};
++
++static const u8 axp209_gpio_pins[] = {
++	0x90, 0x92, 0x93,
++};
++
++static const struct axp_gpio_desc axp209_gpio_desc = {
++	.pins		= axp209_gpio_pins,
++	.npins		= ARRAY_SIZE(axp209_gpio_pins),
++	.status_reg	= 0x94,
++	.status_offset	= 4,
++	.input_mux	= 2,
++};
++
++static const u8 axp221_gpio_pins[] = {
++	0x90, 0x92,
++};
++
++static const struct axp_gpio_desc axp221_gpio_desc = {
++	.pins		= axp221_gpio_pins,
++	.npins		= ARRAY_SIZE(axp221_gpio_pins),
++	.status_reg	= 0x94,
++	.input_mux	= 2,
++};
++
+ static const struct udevice_id axp_gpio_ids[] = {
+-	{ .compatible = "x-powers,axp152-gpio" },
+-	{ .compatible = "x-powers,axp209-gpio" },
+-	{ .compatible = "x-powers,axp221-gpio" },
+-	{ .compatible = "x-powers,axp813-gpio" },
++	{ .compatible = "x-powers,axp152-gpio", .data = (ulong)&axp152_gpio_desc },
++	{ .compatible = "x-powers,axp209-gpio", .data = (ulong)&axp209_gpio_desc },
++	{ .compatible = "x-powers,axp221-gpio", .data = (ulong)&axp221_gpio_desc },
++	{ .compatible = "x-powers,axp813-gpio", .data = (ulong)&axp221_gpio_desc },
+ 	{ }
+ };
+ 
+--- a/drivers/power/axp209.c
++++ b/drivers/power/axp209.c
+@@ -215,15 +215,15 @@ int axp_init(void)
+ 	 * Turn off LDOIO regulators / tri-state GPIO pins, when rebooting
+ 	 * from android these are sometimes on.
+ 	 */
+-	rc = pmic_bus_write(AXP_GPIO0_CTRL, AXP_GPIO_CTRL_INPUT);
++	rc = pmic_bus_write(AXP209_GPIO0_CTRL, AXP209_GPIO_CTRL_INPUT);
+ 	if (rc)
+ 		return rc;
+ 
+-	rc = pmic_bus_write(AXP_GPIO1_CTRL, AXP_GPIO_CTRL_INPUT);
++	rc = pmic_bus_write(AXP209_GPIO1_CTRL, AXP209_GPIO_CTRL_INPUT);
+ 	if (rc)
+ 		return rc;
+ 
+-	rc = pmic_bus_write(AXP_GPIO2_CTRL, AXP_GPIO_CTRL_INPUT);
++	rc = pmic_bus_write(AXP209_GPIO2_CTRL, AXP209_GPIO_CTRL_INPUT);
+ 	if (rc)
+ 		return rc;
+ 
+--- a/drivers/power/axp221.c
++++ b/drivers/power/axp221.c
+@@ -226,11 +226,11 @@ int axp_init(void)
+ 	 * Turn off LDOIO regulators / tri-state GPIO pins, when rebooting
+ 	 * from android these are sometimes on.
+ 	 */
+-	ret = pmic_bus_write(AXP_GPIO0_CTRL, AXP_GPIO_CTRL_INPUT);
++	ret = pmic_bus_write(AXP221_GPIO0_CTRL, AXP221_GPIO_CTRL_INPUT);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = pmic_bus_write(AXP_GPIO1_CTRL, AXP_GPIO_CTRL_INPUT);
++	ret = pmic_bus_write(AXP221_GPIO1_CTRL, AXP221_GPIO_CTRL_INPUT);
+ 	if (ret)
+ 		return ret;
+ 
+--- a/include/axp152.h
++++ b/include/axp152.h
+@@ -14,17 +14,7 @@ enum axp152_reg {
+ 
+ #define AXP152_POWEROFF			(1 << 7)
+ 
+-/* For axp_gpio.c */
+ #ifdef CONFIG_AXP152_POWER
+ #define AXP_POWER_STATUS		0x00
+ #define AXP_POWER_STATUS_ALDO_IN		BIT(0)
+-#define AXP_GPIO0_CTRL			0x90
+-#define AXP_GPIO1_CTRL			0x91
+-#define AXP_GPIO2_CTRL			0x92
+-#define AXP_GPIO3_CTRL			0x93
+-#define AXP_GPIO_CTRL_OUTPUT_LOW		0x00 /* Drive pin low */
+-#define AXP_GPIO_CTRL_OUTPUT_HIGH		0x01 /* Drive pin high */
+-#define AXP_GPIO_CTRL_INPUT			0x02 /* Input */
+-#define AXP_GPIO_STATE			0x97
+-#define AXP_GPIO_STATE_OFFSET			0
+ #endif
+--- a/include/axp209.h
++++ b/include/axp209.h
+@@ -21,6 +21,9 @@ enum axp209_reg {
+ 	AXP209_IRQ_ENABLE5 = 0x44,
+ 	AXP209_IRQ_STATUS5 = 0x4c,
+ 	AXP209_SHUTDOWN = 0x32,
++	AXP209_GPIO0_CTRL = 0x90,
++	AXP209_GPIO1_CTRL = 0x92,
++	AXP209_GPIO2_CTRL = 0x93,
+ };
+ 
+ #define AXP209_POWER_STATUS_ON_BY_DC	BIT(0)
+@@ -73,16 +76,11 @@ enum axp209_reg {
+ 
+ #define AXP209_POWEROFF			BIT(7)
+ 
+-/* For axp_gpio.c */
++#define AXP209_GPIO_CTRL_OUTPUT_LOW	0x00
++#define AXP209_GPIO_CTRL_OUTPUT_HIGH	0x01
++#define AXP209_GPIO_CTRL_INPUT		0x02
++
+ #ifdef CONFIG_AXP209_POWER
+ #define AXP_POWER_STATUS		0x00
+ #define AXP_POWER_STATUS_ALDO_IN		BIT(0)
+-#define AXP_GPIO0_CTRL			0x90
+-#define AXP_GPIO1_CTRL			0x92
+-#define AXP_GPIO2_CTRL			0x93
+-#define AXP_GPIO_CTRL_OUTPUT_LOW	0x00 /* Drive pin low */
+-#define AXP_GPIO_CTRL_OUTPUT_HIGH	0x01 /* Drive pin high */
+-#define AXP_GPIO_CTRL_INPUT		0x02 /* Input */
+-#define AXP_GPIO_STATE			0x94
+-#define AXP_GPIO_STATE_OFFSET		4
+ #endif
+--- a/include/axp221.h
++++ b/include/axp221.h
+@@ -44,20 +44,17 @@
+ #define AXP221_ALDO3_CTRL	0x2a
+ #define AXP221_SHUTDOWN		0x32
+ #define AXP221_SHUTDOWN_POWEROFF	(1 << 7)
++#define AXP221_GPIO0_CTRL	0x90
++#define AXP221_GPIO1_CTRL	0x92
++#define AXP221_GPIO_CTRL_OUTPUT_LOW	0x00
++#define AXP221_GPIO_CTRL_OUTPUT_HIGH	0x01
++#define AXP221_GPIO_CTRL_INPUT		0x02
+ #define AXP221_PAGE		0xff
+ 
+ /* Page 1 addresses */
+ #define AXP221_SID		0x20
+ 
+-/* For axp_gpio.c */
+ #ifdef CONFIG_AXP221_POWER
+ #define AXP_POWER_STATUS		0x00
+ #define AXP_POWER_STATUS_ALDO_IN		BIT(0)
+-#define AXP_GPIO0_CTRL			0x90
+-#define AXP_GPIO1_CTRL			0x92
+-#define AXP_GPIO_CTRL_OUTPUT_LOW		0x00 /* Drive pin low */
+-#define AXP_GPIO_CTRL_OUTPUT_HIGH		0x01 /* Drive pin high */
+-#define AXP_GPIO_CTRL_INPUT			0x02 /* Input */
+-#define AXP_GPIO_STATE			0x94
+-#define AXP_GPIO_STATE_OFFSET			0
+ #endif
+--- a/include/axp809.h
++++ b/include/axp809.h
+@@ -43,15 +43,7 @@
+ #define AXP809_SHUTDOWN		0x32
+ #define AXP809_SHUTDOWN_POWEROFF	(1 << 7)
+ 
+-/* For axp_gpio.c */
+ #ifdef CONFIG_AXP809_POWER
+ #define AXP_POWER_STATUS		0x00
+ #define AXP_POWER_STATUS_ALDO_IN		BIT(0)
+-#define AXP_GPIO0_CTRL			0x90
+-#define AXP_GPIO1_CTRL			0x92
+-#define AXP_GPIO_CTRL_OUTPUT_LOW	0x00 /* Drive pin low */
+-#define AXP_GPIO_CTRL_OUTPUT_HIGH	0x01 /* Drive pin high */
+-#define AXP_GPIO_CTRL_INPUT		0x02 /* Input */
+-#define AXP_GPIO_STATE			0x94
+-#define AXP_GPIO_STATE_OFFSET		0
+ #endif
+--- a/include/axp818.h
++++ b/include/axp818.h
+@@ -57,15 +57,7 @@
+ #define AXP818_SHUTDOWN		0x32
+ #define AXP818_SHUTDOWN_POWEROFF	(1 << 7)
+ 
+-/* For axp_gpio.c */
+ #ifdef CONFIG_AXP818_POWER
+ #define AXP_POWER_STATUS		0x00
+ #define AXP_POWER_STATUS_ALDO_IN		BIT(0)
+-#define AXP_GPIO0_CTRL			0x90
+-#define AXP_GPIO1_CTRL			0x92
+-#define AXP_GPIO_CTRL_OUTPUT_LOW	0x00 /* Drive pin low */
+-#define AXP_GPIO_CTRL_OUTPUT_HIGH	0x01 /* Drive pin high */
+-#define AXP_GPIO_CTRL_INPUT		0x02 /* Input */
+-#define AXP_GPIO_STATE			0x94
+-#define AXP_GPIO_STATE_OFFSET		0
+ #endif

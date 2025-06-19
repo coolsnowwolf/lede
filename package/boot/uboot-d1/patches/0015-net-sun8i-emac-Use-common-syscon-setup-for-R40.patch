@@ -1,0 +1,100 @@
+From 9766169812418aee10dbc8d40aca27c1c576f521 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Thu, 14 Jul 2022 23:39:46 -0500
+Subject: [PATCH 15/90] net: sun8i-emac: Use common syscon setup for R40
+
+While R40 puts the EMAC syscon register at a different address from
+other variants, the relevant portion of the register's layout is the
+same. Factor out the register offset so the same code can be shared
+by all variants. This matches what the Linux driver does.
+
+This change provides two benefits beyond the simplification:
+ - R40 boards now respect the RX delays from the devicetree
+ - This resolves a warning on architectures where readl/writel
+   expect the address to have a pointer type, not phys_addr_t.
+
+Series-to: sunxi
+
+Cover-letter:
+net: sun8i-emac: Allwinner D1 Support
+D1 is a RISC-V SoC containing an EMAC compatible with the A64 EMAC.
+However, there are a couple of issues with the driver preventing it
+being built for RISC-V. These are resolved by patches 2-3. Patch 1 is
+a general cleanup.
+END
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/net/sun8i_emac.c | 29 ++++++++++++-----------------
+ 1 file changed, 12 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/sun8i_emac.c
++++ b/drivers/net/sun8i_emac.c
+@@ -162,7 +162,7 @@ struct emac_eth_dev {
+ 
+ 	enum emac_variant variant;
+ 	void *mac_reg;
+-	phys_addr_t sysctl_reg;
++	void *sysctl_reg;
+ 	struct phy_device *phydev;
+ 	struct mii_dev *bus;
+ 	struct clk tx_clk;
+@@ -317,18 +317,7 @@ static int sun8i_emac_set_syscon(struct
+ {
+ 	u32 reg;
+ 
+-	if (priv->variant == R40_GMAC) {
+-		/* Select RGMII for R40 */
+-		reg = readl(priv->sysctl_reg + 0x164);
+-		reg |= SC_ETCS_INT_GMII |
+-		       SC_EPIT |
+-		       (CONFIG_GMAC_TX_DELAY << SC_ETXDC_OFFSET);
+-
+-		writel(reg, priv->sysctl_reg + 0x164);
+-		return 0;
+-	}
+-
+-	reg = readl(priv->sysctl_reg + 0x30);
++	reg = readl(priv->sysctl_reg);
+ 
+ 	reg = sun8i_emac_set_syscon_ephy(priv, reg);
+ 
+@@ -369,7 +358,7 @@ static int sun8i_emac_set_syscon(struct
+ 		reg |= ((pdata->rx_delay_ps / 100) << SC_ERXDC_OFFSET)
+ 			 & SC_ERXDC_MASK;
+ 
+-	writel(reg, priv->sysctl_reg + 0x30);
++	writel(reg, priv->sysctl_reg);
+ 
+ 	return 0;
+ }
+@@ -792,6 +781,7 @@ static int sun8i_emac_eth_of_to_plat(str
+ 	struct sun8i_eth_pdata *sun8i_pdata = dev_get_plat(dev);
+ 	struct eth_pdata *pdata = &sun8i_pdata->eth_pdata;
+ 	struct emac_eth_dev *priv = dev_get_priv(dev);
++	phys_addr_t syscon_base;
+ 	const fdt32_t *reg;
+ 	int node = dev_of_offset(dev);
+ 	int offset = 0;
+@@ -837,13 +827,18 @@ static int sun8i_emac_eth_of_to_plat(str
+ 		      __func__);
+ 		return -EINVAL;
+ 	}
+-	priv->sysctl_reg = fdt_translate_address((void *)gd->fdt_blob,
+-						 offset, reg);
+-	if (priv->sysctl_reg == FDT_ADDR_T_NONE) {
++
++	syscon_base = fdt_translate_address((void *)gd->fdt_blob, offset, reg);
++	if (syscon_base == FDT_ADDR_T_NONE) {
+ 		debug("%s: Cannot find syscon base address\n", __func__);
+ 		return -EINVAL;
+ 	}
+ 
++	if (priv->variant == R40_GMAC)
++		priv->sysctl_reg = (void *)syscon_base + 0x164;
++	else
++		priv->sysctl_reg = (void *)syscon_base + 0x30;
++
+ 	pdata->phy_interface = -1;
+ 	priv->phyaddr = -1;
+ 	priv->use_internal_phy = false;
