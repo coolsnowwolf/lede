@@ -3001,12 +3001,12 @@ static void rtl931x_sds_rst(u32 sds)
 
 static void rtl931x_symerr_clear(u32 sds, phy_interface_t mode)
 {
-
+	u32 xsg_sdsid_0, xsg_sdsid_1;
+		
 	switch (mode) {
 	case PHY_INTERFACE_MODE_NA:
 		break;
 	case PHY_INTERFACE_MODE_XGMII:
-		u32 xsg_sdsid_0, xsg_sdsid_1;
 
 		if (sds < 2)
 			xsg_sdsid_0 = sds;
