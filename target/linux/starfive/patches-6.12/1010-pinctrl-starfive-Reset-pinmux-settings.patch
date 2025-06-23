@@ -1,0 +1,127 @@
+From f3e66db46e8c849e154042c35bfa22fedc03c3df Mon Sep 17 00:00:00 2001
+From: Emil Renner Berthing <kernel@esmil.dk>
+Date: Sat, 17 Jul 2021 21:50:38 +0200
+Subject: [PATCH 1010/1021] pinctrl: starfive: Reset pinmux settings
+
+Current u-boot doesn't seem to take into account that some GPIOs are
+configured as inputs/outputs of certain peripherals on power-up. This
+means it ends up configuring some GPIOs as inputs to more than one
+peripheral which the documentation explicitly says is illegal. Similarly
+it also ends up configuring more than one GPIO as output of the same
+peripheral. While not explicitly mentioned by the documentation this
+also seems like a bad idea.
+
+The easiest way to remedy this mess is to just disconnect all GPIOs from
+peripherals and have our pinmux configuration set everything up
+properly. This, however, means that we'd disconnect the serial console
+from its pins for a while, so add a device tree property to keep
+certain GPIOs from being reset.
+
+Signed-off-by: Emil Renner Berthing <kernel@esmil.dk>
+---
+ .../pinctrl/starfive,jh7100-pinctrl.yaml      |  4 ++
+ .../starfive/pinctrl-starfive-jh7100.c        | 66 +++++++++++++++++++
+ 2 files changed, 70 insertions(+)
+
+--- a/Documentation/devicetree/bindings/pinctrl/starfive,jh7100-pinctrl.yaml
++++ b/Documentation/devicetree/bindings/pinctrl/starfive,jh7100-pinctrl.yaml
+@@ -88,6 +88,10 @@ properties:
+     $ref: /schemas/types.yaml#/definitions/uint32
+     enum: [0, 1, 2, 3, 4, 5, 6]
+ 
++  starfive,keep-gpiomux:
++    description: Keep pinmux for these GPIOs from being reset at boot.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++
+ required:
+   - compatible
+   - reg
+--- a/drivers/pinctrl/starfive/pinctrl-starfive-jh7100.c
++++ b/drivers/pinctrl/starfive/pinctrl-starfive-jh7100.c
+@@ -203,6 +203,10 @@ static u16 starfive_drive_strength_from_
+ 	return (clamp(i, 14U, 63U) - 14) / 7;
+ }
+ 
++static bool keepmux;
++module_param(keepmux, bool, 0644);
++MODULE_PARM_DESC(keepmux, "Keep pinmux settings from previous boot stage");
++
+ struct starfive_pinctrl {
+ 	struct gpio_chip gc;
+ 	struct pinctrl_gpio_range gpios;
+@@ -1210,6 +1214,65 @@ static void starfive_disable_clock(void
+ 	clk_disable_unprepare(data);
+ }
+ 
++#define GPI_END (GPI_USB_OVER_CURRENT + 1)
++static void starfive_pinmux_reset(struct starfive_pinctrl *sfp)
++{
++	static const DECLARE_BITMAP(defaults, GPI_END) = {
++		BIT_MASK(GPI_I2C0_PAD_SCK_IN) |
++		BIT_MASK(GPI_I2C0_PAD_SDA_IN) |
++		BIT_MASK(GPI_I2C1_PAD_SCK_IN) |
++		BIT_MASK(GPI_I2C1_PAD_SDA_IN) |
++		BIT_MASK(GPI_I2C2_PAD_SCK_IN) |
++		BIT_MASK(GPI_I2C2_PAD_SDA_IN) |
++		BIT_MASK(GPI_I2C3_PAD_SCK_IN) |
++		BIT_MASK(GPI_I2C3_PAD_SDA_IN) |
++		BIT_MASK(GPI_SDIO0_PAD_CARD_DETECT_N) |
++
++		BIT_MASK(GPI_SDIO1_PAD_CARD_DETECT_N) |
++		BIT_MASK(GPI_SPI0_PAD_SS_IN_N) |
++		BIT_MASK(GPI_SPI1_PAD_SS_IN_N) |
++		BIT_MASK(GPI_SPI2_PAD_SS_IN_N) |
++		BIT_MASK(GPI_SPI2AHB_PAD_SS_N) |
++		BIT_MASK(GPI_SPI3_PAD_SS_IN_N),
++
++		BIT_MASK(GPI_UART0_PAD_SIN) |
++		BIT_MASK(GPI_UART1_PAD_SIN) |
++		BIT_MASK(GPI_UART2_PAD_SIN) |
++		BIT_MASK(GPI_UART3_PAD_SIN) |
++		BIT_MASK(GPI_USB_OVER_CURRENT)
++	};
++	DECLARE_BITMAP(keep, NR_GPIOS) = {};
++	struct device_node *np = sfp->gc.parent->of_node;
++	int len = of_property_count_u32_elems(np, "starfive,keep-gpiomux");
++	int i;
++
++	for (i = 0; i < len; i++) {
++		u32 gpio;
++
++		of_property_read_u32_index(np, "starfive,keep-gpiomux", i, &gpio);
++		if (gpio < NR_GPIOS)
++			set_bit(gpio, keep);
++	}
++
++	for (i = 0; i < NR_GPIOS; i++) {
++		if (test_bit(i, keep))
++			continue;
++
++		writel_relaxed(GPO_DISABLE, sfp->base + GPON_DOEN_CFG + 8 * i);
++		writel_relaxed(GPO_LOW,     sfp->base + GPON_DOUT_CFG + 8 * i);
++	}
++
++	for (i = 0; i < GPI_END; i++) {
++		void __iomem *reg = sfp->base + GPI_CFG_OFFSET + 4 * i;
++		u32 din = readl_relaxed(reg);
++
++		if (din >= 2 && din < (NR_GPIOS + 2) && test_bit(din - 2, keep))
++			continue;
++
++		writel_relaxed(test_bit(i, defaults), reg);
++	}
++}
++
+ static int starfive_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -1271,6 +1334,9 @@ static int starfive_probe(struct platfor
+ 		writel(value, sfp->padctl + IO_PADSHARE_SEL);
+ 	}
+ 
++	if (!keepmux)
++		starfive_pinmux_reset(sfp);
++
+ 	value = readl(sfp->padctl + IO_PADSHARE_SEL);
+ 	switch (value) {
+ 	case 0:

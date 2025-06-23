@@ -49,7 +49,7 @@ static void rtk_dump_mib_type(rtk_stat_port_type_t cntr_idx)
 		rtk_stat_port_get(port, cntr_idx, &Cntr);
 		printk("%8llu", Cntr);
 	}
-	
+
 	printk("\n");
 }
 static void rtk_hal_dump_mib(void)
@@ -103,7 +103,7 @@ static void rtk_hal_dump_mib(void)
 	rtk_dump_mib_type(STAT_Dot3InPauseFrames);
 	/* clear MIB */
 	rtk_stat_global_reset();
-	
+
 }
 
 static int rtk_hal_dump_vlan(void)
@@ -138,7 +138,7 @@ static int rtk_hal_dump_vlan(void)
 	                                EXT_PORT1) ? '1' : '-');
 		printk("\n");
 	}
-	
+
 	return 0;
 }
 

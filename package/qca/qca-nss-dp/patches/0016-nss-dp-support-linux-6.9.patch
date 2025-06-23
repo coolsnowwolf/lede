@@ -1,0 +1,156 @@
+From 266bd8cebb9b0cd92479f1833a96dfb70345c94d Mon Sep 17 00:00:00 2001
+From: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Date: Sat, 10 May 2025 20:32:50 +0200
+Subject: [PATCH] nss-dp: support linux 6.9
+
+In linux v6.9, struct rps_sock_flow_table has been moved to its own
+header. struct ethtool_eee has been replaced with struct_keee.
+
+The bitfields of struct_keee should not be accessed directly. The
+ethtool_convert_link_mode_to_legacy_u32() and
+ethtool_convert_legacy_u32_to_link_mode() helpers should be used
+instead.
+
+Implement these changes on an #ifdef basis, in order to maintain
+compatibilty with older kernels.
+
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ nss_dp_ethtools.c | 47 +++++++++++++++++++++++++++++++++++++++--------
+ nss_dp_main.c     | 13 ++++++++++++-
+ 2 files changed, 51 insertions(+), 9 deletions(-)
+
+--- a/nss_dp_ethtools.c
++++ b/nss_dp_ethtools.c
+@@ -248,11 +248,15 @@ static inline void nss_dp_fal_to_ethtool
+  * nss_dp_get_eee()
+  *	Get EEE settings.
+  */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++static int32_t nss_dp_get_eee(struct net_device *netdev, struct ethtool_keee *eee)
++#else
+ static int32_t nss_dp_get_eee(struct net_device *netdev, struct ethtool_eee *eee)
++#endif
+ {
+ 	struct nss_dp_dev *dp_priv = (struct nss_dp_dev *)netdev_priv(netdev);
+ 	fal_port_eee_cfg_t port_eee_cfg;
+-	uint32_t port_id;
++	uint32_t port_id, supported, advertised, lp_advertised;
+ 	sw_error_t ret;
+ 
+ 	memset(&port_eee_cfg, 0, sizeof(fal_port_eee_cfg_t));
+@@ -266,9 +270,20 @@ static int32_t nss_dp_get_eee(struct net
+ 	/*
+ 	 * Translate the FAL linkmode types to ethtool linkmode types.
+ 	 */
+-	nss_dp_fal_to_ethtool_linkmode_xlate(&eee->supported, &port_eee_cfg.capability);
+-	nss_dp_fal_to_ethtool_linkmode_xlate(&eee->advertised, &port_eee_cfg.advertisement);
+-	nss_dp_fal_to_ethtool_linkmode_xlate(&eee->lp_advertised, &port_eee_cfg.link_partner_advertisement);
++	nss_dp_fal_to_ethtool_linkmode_xlate(&supported, &port_eee_cfg.capability);
++	nss_dp_fal_to_ethtool_linkmode_xlate(&advertised, &port_eee_cfg.advertisement);
++	nss_dp_fal_to_ethtool_linkmode_xlate(&lp_advertised, &port_eee_cfg.link_partner_advertisement);
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++	ethtool_convert_legacy_u32_to_link_mode(eee->supported, supported);
++	ethtool_convert_legacy_u32_to_link_mode(eee->advertised, advertised);
++	ethtool_convert_legacy_u32_to_link_mode(eee->lp_advertised, lp_advertised);
++#else
++	eee->supported = supported;
++	eee->advertised = advertised;
++	eee->lp_advertised = lp_advertised;
++#endif
++
+ 	eee->eee_enabled = port_eee_cfg.enable;
+ 	eee->eee_active = port_eee_cfg.eee_status;
+ 	eee->tx_lpi_enabled = port_eee_cfg.lpi_tx_enable;
+@@ -281,11 +296,15 @@ static int32_t nss_dp_get_eee(struct net
+  * nss_dp_set_eee()
+  *	Set EEE settings.
+  */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++static int32_t nss_dp_set_eee(struct net_device *netdev, struct ethtool_keee *eee)
++#else
+ static int32_t nss_dp_set_eee(struct net_device *netdev, struct ethtool_eee *eee)
++#endif
+ {
+ 	struct nss_dp_dev *dp_priv = (struct nss_dp_dev *)netdev_priv(netdev);
+ 	fal_port_eee_cfg_t port_eee_cfg, port_eee_cur_cfg;
+-	uint32_t port_id, pos;
++	uint32_t port_id, pos, advertised;
+ 	sw_error_t ret;
+ 
+ 	memset(&port_eee_cfg, 0, sizeof(fal_port_eee_cfg_t));
+@@ -303,11 +322,17 @@ static int32_t nss_dp_set_eee(struct net
+ 
+ 	port_eee_cfg.enable = eee->eee_enabled;
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++	ethtool_convert_link_mode_to_legacy_u32(&advertised, eee->advertised);
++#else
++	advertised = eee->advertised;
++#endif
++
+ 	/*
+ 	 * Translate the ethtool speed types to FAL speed types.
+ 	 */
+-	while (eee->advertised) {
+-		pos = ffs(eee->advertised);
++	while (advertised) {
++		pos = ffs(advertised);
+ 		switch (1 << (pos - 1)) {
+ 		case ADVERTISED_10baseT_Full:
+ 			if (port_eee_cur_cfg.capability & FAL_PHY_EEE_10BASE_T) {
+@@ -359,9 +384,15 @@ static int32_t nss_dp_set_eee(struct net
+ 			return -EIO;
+ 		}
+ 
+-		eee->advertised &= (~(1 << (pos - 1)));
++		advertised &= (~(1 << (pos - 1)));
+ 	}
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0))
++	ethtool_convert_legacy_u32_to_link_mode(eee->advertised, advertised);
++#else
++	eee->advertised = advertised;
++#endif
++
+ 	port_eee_cfg.lpi_tx_enable = eee->tx_lpi_enabled;
+ 	port_eee_cfg.lpi_sleep_timer = eee->tx_lpi_timer;
+ 	ret = fal_port_interface_eee_cfg_set(NSS_DP_ACL_DEV_ID, port_id, &port_eee_cfg);
+--- a/nss_dp_main.c
++++ b/nss_dp_main.c
+@@ -91,6 +91,9 @@ int nss_dp_mht_multi_txring = 0;
+ module_param(nss_dp_mht_multi_txring, int, S_IRUGO);
+ MODULE_PARM_DESC(nss_dp_mht_multi_txring, "MHT SW ports to Tx rings map");
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0))
++#include <net/rps.h>
++#endif
+ 
+ #if defined(NSS_DP_EDMA_V2)
+ int nss_dp_rx_fc_xoff = NSS_DP_RX_FC_XOFF_DEF;
+@@ -497,15 +500,23 @@ static int nss_dp_rx_flow_steer(struct n
+ 	rxflow = &flow_table->flows[hash & flow_table->mask];
+ 	rxcpu = (uint32_t)rxflow->cpu;
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0))
++	sock_flow_table = rcu_dereference(net_hotdata.rps_sock_flow_table);
++#else
+ 	sock_flow_table = rcu_dereference(rps_sock_flow_table);
++#endif
+ 	if (!sock_flow_table) {
+ 		netdev_dbg(netdev, "Global RPS flow table not found\n");
+ 		return -EINVAL;
+ 	}
+ 
+ 	rfscpu = sock_flow_table->ents[hash & sock_flow_table->mask];
+-	rfscpu &= rps_cpu_mask;
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0))
++	rfscpu &= net_hotdata.rps_cpu_mask;
++#else
++	rfscpu &= rps_cpu_mask;
++#endif
+ 	if (rxcpu == rfscpu)
+ 		return 0;
+ 

@@ -1,0 +1,122 @@
+From c4a321bc120fabc318df165a7fcdeddfcf052253 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Sun, 9 Feb 2025 22:29:45 +0800
+Subject: [PATCH] net: ethernet: qualcomm: Initialize PPE queue to Ethernet DMA
+ ring mapping
+
+Configure the selected queues to map with an Ethernet DMA ring for the
+packet to receive on ARM cores.
+
+As default initialization, all queues assigned to CPU port 0 are mapped
+to the EDMA ring 0. This configuration is later updated during Ethernet
+DMA initialization.
+
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 47 ++++++++++++++++++-
+ .../net/ethernet/qualcomm/ppe/ppe_config.h    |  6 +++
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  |  5 ++
+ 3 files changed, 57 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -1328,6 +1328,28 @@ int ppe_rss_hash_config_set(struct ppe_d
+ 	return 0;
+ }
+ 
++/**
++ * ppe_ring_queue_map_set - Set the PPE queue to Ethernet DMA ring mapping
++ * @ppe_dev: PPE device
++ * @ring_id: Ethernet DMA ring ID
++ * @queue_map: Bit map of queue IDs to given Ethernet DMA ring
++ *
++ * Configure the mapping from a set of PPE queues to a given Ethernet DMA ring.
++ *
++ * Return: 0 on success, negative error code on failure.
++ */
++int ppe_ring_queue_map_set(struct ppe_device *ppe_dev, int ring_id, u32 *queue_map)
++{
++	u32 reg, queue_bitmap_val[PPE_RING_TO_QUEUE_BITMAP_WORD_CNT];
++
++	memcpy(queue_bitmap_val, queue_map, sizeof(queue_bitmap_val));
++	reg = PPE_RING_Q_MAP_TBL_ADDR + PPE_RING_Q_MAP_TBL_INC * ring_id;
++
++	return regmap_bulk_write(ppe_dev->regmap, reg,
++				 queue_bitmap_val,
++				 ARRAY_SIZE(queue_bitmap_val));
++}
++
+ static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
+ 				   const struct ppe_bm_port_config port_cfg)
+ {
+@@ -1847,6 +1869,25 @@ static int ppe_rss_hash_init(struct ppe_
+ 	return ppe_rss_hash_config_set(ppe_dev, PPE_RSS_HASH_MODE_IPV6, hash_cfg);
+ }
+ 
++/* Initialize mapping between PPE queues assigned to CPU port 0
++ * to Ethernet DMA ring 0.
++ */
++static int ppe_queues_to_ring_init(struct ppe_device *ppe_dev)
++{
++	u32 queue_bmap[PPE_RING_TO_QUEUE_BITMAP_WORD_CNT] = {};
++	int ret, queue_id, queue_max;
++
++	ret = ppe_port_resource_get(ppe_dev, 0, PPE_RES_UCAST,
++				    &queue_id, &queue_max);
++	if (ret)
++		return ret;
++
++	for (; queue_id <= queue_max; queue_id++)
++		queue_bmap[queue_id / 32] |= BIT_MASK(queue_id % 32);
++
++	return ppe_ring_queue_map_set(ppe_dev, 0, queue_bmap);
++}
++
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+ {
+ 	int ret;
+@@ -1875,5 +1916,9 @@ int ppe_hw_config(struct ppe_device *ppe
+ 	if (ret)
+ 		return ret;
+ 
+-	return ppe_rss_hash_init(ppe_dev);
++	ret = ppe_rss_hash_init(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_queues_to_ring_init(ppe_dev);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+@@ -29,6 +29,9 @@
+ #define PPE_RSS_HASH_IP_LENGTH			4
+ #define PPE_RSS_HASH_TUPLES			5
+ 
++/* PPE supports 300 queues, each bit presents as one queue. */
++#define PPE_RING_TO_QUEUE_BITMAP_WORD_CNT	10
++
+ /**
+  * enum ppe_scheduler_frame_mode - PPE scheduler frame mode.
+  * @PPE_SCH_WITH_IPG_PREAMBLE_FRAME_CRC: The scheduled frame includes IPG,
+@@ -308,4 +311,7 @@ int ppe_sc_config_set(struct ppe_device
+ int ppe_counter_enable_set(struct ppe_device *ppe_dev, int port);
+ int ppe_rss_hash_config_set(struct ppe_device *ppe_dev, int mode,
+ 			    struct ppe_rss_hash_cfg hash_cfg);
++int ppe_ring_queue_map_set(struct ppe_device *ppe_dev,
++			   int ring_id,
++			   u32 *queue_map);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -207,6 +207,11 @@
+ #define PPE_L0_COMP_CFG_TBL_SHAPER_METER_LEN	GENMASK(1, 0)
+ #define PPE_L0_COMP_CFG_TBL_NODE_METER_LEN	GENMASK(3, 2)
+ 
++/* PPE queue to Ethernet DMA ring mapping table. */
++#define PPE_RING_Q_MAP_TBL_ADDR			0x42a000
++#define PPE_RING_Q_MAP_TBL_ENTRIES		24
++#define PPE_RING_Q_MAP_TBL_INC			0x40
++
+ /* Table addresses for per-queue dequeue setting. */
+ #define PPE_DEQ_OPR_TBL_ADDR			0x430000
+ #define PPE_DEQ_OPR_TBL_ENTRIES			300

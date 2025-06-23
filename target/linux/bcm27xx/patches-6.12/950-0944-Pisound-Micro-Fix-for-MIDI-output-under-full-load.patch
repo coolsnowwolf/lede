@@ -1,0 +1,116 @@
+From 1284626bb6c6728a5b792eea2a615f9e0edde32d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Giedrius=20Trainavi=C4=8Dius?= <giedrius@blokas.io>
+Date: Mon, 31 Mar 2025 12:20:22 +0300
+Subject: [PATCH] Pisound Micro: Fix for MIDI output under full load.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This fixes MIDI output of Pisound Micro after running for a while under
+full load and increases timing stability.
+
+Signed-off-by: Giedrius Trainavičius <giedrius@blokas.io>
+---
+ sound/drivers/upisnd/upisnd_comm.c     |  2 +-
+ sound/drivers/upisnd/upisnd_midi.c     | 49 ++++++++++++++++----------
+ sound/drivers/upisnd/upisnd_protocol.h |  3 +-
+ 3 files changed, 33 insertions(+), 21 deletions(-)
+
+--- a/sound/drivers/upisnd/upisnd_comm.c
++++ b/sound/drivers/upisnd/upisnd_comm.c
+@@ -327,7 +327,7 @@ int upisnd_comm_init(struct upisnd_insta
+ 
+ int upisnd_comm_send_midi(struct upisnd_instance *instance, const void *data, unsigned int n)
+ {
+-	if (n >= UPISND_MAX_PACKET_LENGTH)
++	if (n == 0 || n >= UPISND_MAX_PACKET_LENGTH)
+ 		return -EINVAL;
+ 
+ 	u8 buffer[UPISND_MAX_PACKET_LENGTH];
+--- a/sound/drivers/upisnd/upisnd_midi.c
++++ b/sound/drivers/upisnd/upisnd_midi.c
+@@ -129,7 +129,7 @@ static const struct snd_rawmidi_global_o
+ 
+ static void upisnd_midi_in_handler(struct work_struct *work)
+ {
+-	int i, n, err;
++	int n, err;
+ 
+ 	printd("In handler");
+ 	struct upisnd_instance *instance = container_of(work,
+@@ -153,8 +153,7 @@ static void upisnd_midi_in_handler(struc
+ 		instance->midi.rx_cnt += err;
+ 	}
+ 
+-	for (i = 0; i < err; ++i)
+-		kfifo_skip(&instance->midi.midi_in_fifo);
++	kfifo_skip_count(&instance->midi.midi_in_fifo, err);
+ 
+ 	if (!kfifo_is_empty(&instance->midi.midi_in_fifo) &&
+ 	    !work_pending(&instance->midi.midi_in_handler)) {
+@@ -193,25 +192,37 @@ static void upisnd_midi_out_handler(stru
+ 		instance->midi.output_buffer_used_in_millibytes) / 1000;
+ 
+ 	u8 buffer[UPISND_MAX_PACKET_LENGTH - 1];
++	int n, batch, err;
+ 
+ 	printd("Available: %u", output_buffer_available);
+-	int n = snd_rawmidi_transmit_peek(instance->midi.midi_output,
+-					  buffer,
+-					  min(output_buffer_available, sizeof(buffer)));
+-
+-	if (n > 0) {
+-		printd("Peeked: %d", n);
+-		snd_rawmidi_transmit_ack(instance->midi.midi_output, n);
+-		n = upisnd_comm_send_midi(instance, buffer, (unsigned int)n);
+-		if (n < 0)
+-			printe("Error occurred when sending MIDI data over I2C! (%d)", n);
+-	} else {
+-		printe("snd_rawmidi_transmit_peek returned error %d!", n);
+-		goto cleanup;
+-	}
+ 
+-	instance->midi.tx_cnt += n;
+-	instance->midi.output_buffer_used_in_millibytes += n * 1000;
++	for (batch = 0; batch < 3; ++batch) {
++		if (output_buffer_available == 0)
++			break;
++
++		n = snd_rawmidi_transmit_peek(instance->midi.midi_output,
++					      buffer,
++					      min(output_buffer_available, sizeof(buffer)));
++
++		if (n > 0) {
++			printd("Peeked: %d (batch %d)", n, batch);
++			err = upisnd_comm_send_midi(instance, buffer, (unsigned int)n);
++			if (err < 0) {
++				printe("Error occurred when sending MIDI data over I2C! (%d)", n);
++				goto cleanup;
++			}
++			snd_rawmidi_transmit_ack(instance->midi.midi_output, n);
++
++			instance->midi.tx_cnt += n;
++			instance->midi.output_buffer_used_in_millibytes += n * 1000;
++			output_buffer_available -= n;
++		} else if (n < 0) {
++			printe("snd_rawmidi_transmit_peek returned error %d!", n);
++			goto cleanup;
++		} else {
++			break;
++		}
++	}
+ 
+ 	printd("Checking if empty %p", instance->midi.midi_output);
+ 	if (!snd_rawmidi_transmit_empty(instance->midi.midi_output)) {
+--- a/sound/drivers/upisnd/upisnd_protocol.h
++++ b/sound/drivers/upisnd/upisnd_protocol.h
+@@ -273,7 +273,8 @@ static inline u8 upisnd_cmd_decode_lengt
+ 
+ static inline u8 upisnd_cmd_encode(enum upisnd_cmd_type_e type, u8 size)
+ {
+-	return (size < UPISND_MAX_PACKET_LENGTH && size > 0) ? (type | (size - 1)) : 0xff;
++	return (size <= UPISND_MAX_PACKET_LENGTH && size > 0) ? (type | (size - 1))
++		: UPISND_CMD_INVALID;
+ }
+ 
+ static inline u8 upisnd_msg_id_encode(upisnd_msg_id_t msg_id, bool response)

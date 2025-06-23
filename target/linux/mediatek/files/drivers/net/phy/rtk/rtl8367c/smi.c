@@ -15,6 +15,8 @@
 
 #include <rtk_types.h>
 #include <smi.h>
+#include <rtl8367c_asicdrv_mii_mgr.h>
+
 #include "rtk_error.h"
 
 
@@ -35,10 +37,6 @@
 #define MDC_MDIO_WRITE(preamableLength, phyID, regID, data)
 #define MDC_MDIO_READ(preamableLength, phyID, regID, pData)
 #else
-#define u32      unsigned int
-extern u32 mii_mgr_read(u32 phy_addr, u32 phy_register, u32 *read_data);
-extern u32 mii_mgr_write(u32 phy_addr, u32 phy_register, u32 write_data);
-
 #define MDC_MDIO_WRITE(preamableLength, phyID, regID, data) mii_mgr_write(phyID, regID, data)
 #define MDC_MDIO_READ(preamableLength, phyID, regID, pData) mii_mgr_read(phyID, regID, pData)
 #endif

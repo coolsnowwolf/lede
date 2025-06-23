@@ -1,0 +1,192 @@
+From a2e687df29e457621616d5d769688e6c972f9ac6 Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Tue, 2 Apr 2024 18:28:42 +0800
+Subject: [PATCH] net: pcs: Add 2500BASEX interface mode support to IPQ UNIPHY
+ PCS driver
+
+2500BASEX mode is used when PCS connects with QCA8386 switch in a fixed
+2500M link. It is also used when PCS connectes with QCA8081 PHY which
+works at 2500M link speed. In addition, it can be also used when PCS
+connects with a 2.5G SFP module.
+
+Change-Id: I3fe61113c1b3685debc20659736a9488216a029d
+Signed-off-by: Lei Wei <quic_leiwei@quicinc.com>
+Alex G: use regmap to read/write registers
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ drivers/net/pcs/pcs-qcom-ipq9574.c | 94 ++++++++++++++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -29,6 +29,7 @@
+ #define PCS_MODE_SGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x4)
+ #define PCS_MODE_QSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x1)
+ #define PCS_MODE_PSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x2)
++#define PCS_MODE_SGMII_PLUS		FIELD_PREP(PCS_MODE_SEL_MASK, 0x8)
+ #define PCS_MODE_XPCS			FIELD_PREP(PCS_MODE_SEL_MASK, 0x10)
+ 
+ #define PCS_MII_CTRL(x)			(0x480 + 0x18 * (x))
+@@ -188,6 +189,30 @@ static void ipq_pcs_get_state_sgmii(stru
+ 		state->pause |= MLO_PAUSE_RX;
+ }
+ 
++static void ipq_unipcs_get_state_2500basex(struct ipq_pcs *qpcs,
++					   int index,
++					   struct phylink_link_state *state)
++{
++		unsigned int val;
++	int ret;
++
++	ret = regmap_read(qpcs->regmap, PCS_MII_STS(index), &val);
++	if (ret) {
++		state->link = 0;
++		return;
++	}
++
++
++	state->link = !!(val & PCS_MII_LINK_STS);
++
++	if (!state->link)
++		return;
++
++	state->speed = SPEED_2500;
++	state->duplex = DUPLEX_FULL;
++	state->pause |= MLO_PAUSE_TXRX_MASK;
++}
++
+ static void ipq_pcs_get_state_usxgmii(struct ipq_pcs *qpcs,
+ 				      struct phylink_link_state *state)
+ {
+@@ -272,6 +297,10 @@ static int ipq_pcs_config_mode(struct ip
+ 	case PHY_INTERFACE_MODE_QSGMII:
+ 		val = PCS_MODE_QSGMII;
+ 		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		val = PCS_MODE_SGMII_PLUS;
++		rate = 312500000;
++		break;
+ 	case PHY_INTERFACE_MODE_PSGMII:
+ 		val = PCS_MODE_PSGMII;
+ 		break;
+@@ -355,6 +384,22 @@ static int ipq_pcs_config_sgmii(struct i
+ 			       PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
+ }
+ 
++static int ipq_unipcs_config_2500basex(struct ipq_pcs *qpcs,
++				       phy_interface_t interface)
++{
++	int ret;
++
++	if (qpcs->interface != interface) {
++		ret = ipq_pcs_config_mode(qpcs, interface);
++		if (ret)
++			return ret;
++
++		qpcs->interface = interface;
++	}
++
++	return 0;
++}
++
+ static int ipq_pcs_config_usxgmii(struct ipq_pcs *qpcs)
+ {
+ 	int ret;
+@@ -421,6 +466,21 @@ static unsigned long ipq_unipcs_clock_ra
+ 	return rate;
+ }
+ 
++static unsigned long ipq_unipcs_clock_rate_get_gmiiplus(int speed)
++{
++	unsigned long rate = 0;
++
++	switch (speed) {
++	case SPEED_2500:
++		rate = 312500000;
++		break;
++	default:
++		break;
++	}
++
++	return rate;
++}
++
+ static unsigned long ipq_unipcs_clock_rate_get_xgmii(int speed)
+ {
+ 	unsigned long rate = 0;
+@@ -465,6 +525,9 @@ ipq_unipcs_link_up_clock_rate_set(struct
+ 	case PHY_INTERFACE_MODE_PSGMII:
+ 		rate = ipq_unipcs_clock_rate_get_gmii(speed);
+ 		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		rate = ipq_unipcs_clock_rate_get_gmiiplus(speed);
++		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 	case PHY_INTERFACE_MODE_10GBASER:
+ 		rate = ipq_unipcs_clock_rate_get_xgmii(speed);
+@@ -528,6 +591,25 @@ static int ipq_pcs_link_up_config_sgmii(
+ 			       PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
+ }
+ 
++static int ipq_unipcs_link_up_config_2500basex(struct ipq_pcs *qpcs,
++						int index,
++						int speed)
++{
++	unsigned int val;
++	int ret;
++
++	/* 2500BASEX do not support autoneg and do not need to
++	 * configure PCS speed, only reset PCS adapter here.
++	 */
++	ret = regmap_clear_bits(qpcs->regmap,
++				PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
++	if (ret)
++		return ret;
++
++	return regmap_set_bits(qpcs->regmap,
++			       PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
++}
++
+ static int ipq_pcs_link_up_config_usxgmii(struct ipq_pcs *qpcs, int speed)
+ {
+ 	unsigned int val;
+@@ -575,6 +657,10 @@ static int ipq_pcs_validate(struct phyli
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
+ 		return 0;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		/* In-band autoneg is not supported for 2500BASEX */
++		phylink_clear(supported, Autoneg);
++		return 0;
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		/* USXGMII only supports full duplex mode */
+ 		phylink_clear(supported, 100baseT_Half);
+@@ -645,6 +731,9 @@ static void ipq_pcs_get_state(struct phy
+ 	case PHY_INTERFACE_MODE_PSGMII:
+ 		ipq_pcs_get_state_sgmii(qpcs, index, state);
+ 		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		ipq_unipcs_get_state_2500basex(qpcs, index, state);
++		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		ipq_pcs_get_state_usxgmii(qpcs, state);
+ 		break;
+@@ -678,6 +767,8 @@ static int ipq_pcs_config(struct phylink
+ 	case PHY_INTERFACE_MODE_QSGMII:
+ 	case PHY_INTERFACE_MODE_PSGMII:
+ 		return ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
++	case PHY_INTERFACE_MODE_2500BASEX:
++		return ipq_unipcs_config_2500basex(qpcs, interface);
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		return ipq_pcs_config_usxgmii(qpcs);
+ 	case PHY_INTERFACE_MODE_10GBASER:
+@@ -710,6 +801,9 @@ static void ipq_pcs_link_up(struct phyli
+ 		ret = ipq_pcs_link_up_config_sgmii(qpcs, index,
+ 						   neg_mode, speed);
+ 		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		ret = ipq_unipcs_link_up_config_2500basex(qpcs, index, speed);
++		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 		ret = ipq_pcs_link_up_config_usxgmii(qpcs, speed);
+ 		break;

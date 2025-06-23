@@ -1,0 +1,126 @@
+From 38b62b73015e3c843ff05400cd972683a7f3af04 Mon Sep 17 00:00:00 2001
+From: Emil Renner Berthing <emil.renner.berthing@canonical.com>
+Date: Sat, 22 Jul 2023 16:18:24 +0200
+Subject: [PATCH 1017/1021] usb: cdns3: starfive: Don't store device
+ backpointer
+
+Signed-off-by: Emil Renner Berthing <emil.renner.berthing@canonical.com>
+---
+ drivers/usb/cdns3/cdns3-starfive.c | 37 ++++++++++++------------------
+ 1 file changed, 15 insertions(+), 22 deletions(-)
+
+--- a/drivers/usb/cdns3/cdns3-starfive.c
++++ b/drivers/usb/cdns3/cdns3-starfive.c
+@@ -33,7 +33,6 @@
+ #define USB_REFCLK_MODE			BIT(23)
+ 
+ struct cdns_starfive {
+-	struct device *dev;
+ 	struct reset_control *resets;
+ 	struct clk_bulk_data *clks;
+ 	int num_clks;
+@@ -49,7 +48,7 @@ static int cdns_mode_init(struct device
+ 						      "starfive,stg-syscon", 1, &usb_mode);
+ 	if (IS_ERR(syscon))
+ 		return dev_err_probe(dev, PTR_ERR(syscon),
+-				     "Failed to parse starfive,stg-syscon\n");
++				     "failed to parse starfive,stg-syscon\n");
+ 
+ 	regmap_update_bits(syscon, usb_mode,
+ 			   USB_MISC_CFG_MASK,
+@@ -75,18 +74,17 @@ static int cdns_mode_init(struct device
+ 	return 0;
+ }
+ 
+-static int cdns_clk_rst_init(struct cdns_starfive *data)
++static int cdns_clk_rst_init(struct device *dev, struct cdns_starfive *data)
+ {
+ 	int ret;
+ 
+ 	ret = clk_bulk_prepare_enable(data->num_clks, data->clks);
+ 	if (ret)
+-		return dev_err_probe(data->dev, ret,
+-				     "failed to enable clocks\n");
++		return dev_err_probe(dev, ret, "failed to enable clocks\n");
+ 
+ 	ret = reset_control_deassert(data->resets);
+ 	if (ret) {
+-		dev_err(data->dev, "failed to reset clocks\n");
++		dev_err(dev, "failed to reset clocks\n");
+ 		goto err_clk_init;
+ 	}
+ 
+@@ -97,7 +95,7 @@ err_clk_init:
+ 	return ret;
+ }
+ 
+-static void cdns_clk_rst_deinit(struct cdns_starfive *data)
++static void cdns_clk_rst_deinit(struct device *dev, struct cdns_starfive *data)
+ {
+ 	reset_control_assert(data->resets);
+ 	clk_bulk_disable_unprepare(data->num_clks, data->clks);
+@@ -113,31 +111,26 @@ static int cdns_starfive_probe(struct pl
+ 	if (!data)
+ 		return -ENOMEM;
+ 
+-	data->dev = dev;
+-
+-	data->num_clks = devm_clk_bulk_get_all(data->dev, &data->clks);
++	data->num_clks = devm_clk_bulk_get_all(dev, &data->clks);
+ 	if (data->num_clks < 0)
+-		return dev_err_probe(data->dev, -ENODEV,
+-				     "Failed to get clocks\n");
++		return dev_err_probe(dev, -ENODEV, "failed to get clocks\n");
+ 
+-	data->resets = devm_reset_control_array_get_exclusive(data->dev);
++	data->resets = devm_reset_control_array_get_exclusive(dev);
+ 	if (IS_ERR(data->resets))
+-		return dev_err_probe(data->dev, PTR_ERR(data->resets),
+-				     "Failed to get resets");
++		return dev_err_probe(dev, PTR_ERR(data->resets), "failed to get resets\n");
+ 
+ 	ret = cdns_mode_init(dev, data);
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = cdns_clk_rst_init(data);
++	ret = cdns_clk_rst_init(dev, data);
+ 	if (ret)
+ 		return ret;
+ 
+ 	ret = of_platform_populate(dev->of_node, NULL, NULL, dev);
+ 	if (ret) {
+-		dev_err(dev, "Failed to create children\n");
+-		cdns_clk_rst_deinit(data);
+-		return ret;
++		cdns_clk_rst_deinit(dev, data);
++		return dev_err_probe(dev, ret, "failed to create children\n");
+ 	}
+ 
+ 	device_set_wakeup_capable(dev, true);
+@@ -167,7 +160,7 @@ static void cdns_starfive_remove(struct
+ 
+ 	pm_runtime_disable(dev);
+ 	pm_runtime_put_noidle(dev);
+-	cdns_clk_rst_deinit(data);
++	cdns_clk_rst_deinit(dev, data);
+ 	platform_set_drvdata(pdev, NULL);
+ }
+ 
+@@ -193,14 +186,14 @@ static int cdns_starfive_resume(struct d
+ {
+ 	struct cdns_starfive *data = dev_get_drvdata(dev);
+ 
+-	return cdns_clk_rst_init(data);
++	return cdns_clk_rst_init(dev, data);
+ }
+ 
+ static int cdns_starfive_suspend(struct device *dev)
+ {
+ 	struct cdns_starfive *data = dev_get_drvdata(dev);
+ 
+-	cdns_clk_rst_deinit(data);
++	cdns_clk_rst_deinit(dev, data);
+ 
+ 	return 0;
+ }

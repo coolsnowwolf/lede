@@ -1,0 +1,115 @@
+From f73116f62647c74eb0f06f0d8c29e5993d961d82 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 9 Oct 2021 22:43:26 -0500
+Subject: [PATCH 41/90] arm: psci: Add definitions for PSCI v1.1
+
+Add the new option, function IDs, and prototypes for PSCI v1.1
+implementations. In the process, fix some issues with the existing
+definitions:
+ - Fix the incorrectly-named ARM_PSCI_0_2_FN64_SYSTEM_RESET2.
+ - Replace the deprecated "affinity_level" naming with "power_level".
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/arm/cpu/armv7/Kconfig    |  3 +++
+ arch/arm/cpu/armv8/fwcall.c   |  2 +-
+ arch/arm/include/asm/psci.h   |  9 +++++++--
+ arch/arm/include/asm/system.h | 14 +++++++++-----
+ arch/arm/lib/psci-dt.c        |  2 ++
+ 5 files changed, 22 insertions(+), 8 deletions(-)
+
+--- a/arch/arm/cpu/armv7/Kconfig
++++ b/arch/arm/cpu/armv7/Kconfig
+@@ -80,6 +80,9 @@ choice
+ 	help
+ 	  Select the supported PSCI version.
+ 
++config ARMV7_PSCI_1_1
++	bool "PSCI V1.1"
++
+ config ARMV7_PSCI_1_0
+ 	bool "PSCI V1.0"
+ 
+--- a/arch/arm/cpu/armv8/fwcall.c
++++ b/arch/arm/cpu/armv8/fwcall.c
+@@ -103,7 +103,7 @@ void __noreturn psci_system_reset2(u32 r
+ {
+ 	struct pt_regs regs;
+ 
+-	regs.regs[0] = ARM_PSCI_0_2_FN64_SYSTEM_RESET2;
++	regs.regs[0] = ARM_PSCI_1_1_FN64_SYSTEM_RESET2;
+ 	regs.regs[1] = PSCI_RESET2_TYPE_VENDOR | reset_level;
+ 	regs.regs[2] = cookie;
+ 	if (use_smc_for_psci)
+--- a/arch/arm/include/asm/psci.h
++++ b/arch/arm/include/asm/psci.h
+@@ -22,8 +22,9 @@
+ #include <linux/bitops.h>
+ #endif
+ 
+-#define ARM_PSCI_VER_1_0		(0x00010000)
+ #define ARM_PSCI_VER_0_2		(0x00000002)
++#define ARM_PSCI_VER_1_0		(0x00010000)
++#define ARM_PSCI_VER_1_1		(0x00010001)
+ 
+ /* PSCI 0.1 interface */
+ #define ARM_PSCI_FN_BASE		0x95c1ba5e
+@@ -68,7 +69,6 @@
+ #define ARM_PSCI_0_2_FN64_AFFINITY_INFO		ARM_PSCI_0_2_FN64(4)
+ #define ARM_PSCI_0_2_FN64_MIGRATE		ARM_PSCI_0_2_FN64(5)
+ #define ARM_PSCI_0_2_FN64_MIGRATE_INFO_UP_CPU	ARM_PSCI_0_2_FN64(7)
+-#define ARM_PSCI_0_2_FN64_SYSTEM_RESET2		ARM_PSCI_0_2_FN64(18)
+ 
+ /* PSCI 1.0 interface */
+ #define ARM_PSCI_1_0_FN_PSCI_FEATURES		ARM_PSCI_0_2_FN(10)
+@@ -86,6 +86,11 @@
+ #define ARM_PSCI_1_0_FN64_STAT_RESIDENCY	ARM_PSCI_0_2_FN64(16)
+ #define ARM_PSCI_1_0_FN64_STAT_COUNT		ARM_PSCI_0_2_FN64(17)
+ 
++/* PSCI 1.1 interface */
++#define ARM_PSCI_1_1_FN_SYSTEM_RESET2		ARM_PSCI_0_2_FN(18)
++
++#define ARM_PSCI_1_1_FN64_SYSTEM_RESET2		ARM_PSCI_0_2_FN64(18)
++
+ /* 1KB stack per core */
+ #define ARM_PSCI_STACK_SHIFT	10
+ #define ARM_PSCI_STACK_SIZE	(1 << ARM_PSCI_STACK_SHIFT)
+--- a/arch/arm/include/asm/system.h
++++ b/arch/arm/include/asm/system.h
+@@ -557,16 +557,20 @@ void mmu_page_table_flush(unsigned long
+ #ifdef CONFIG_ARMV7_PSCI
+ void psci_arch_cpu_entry(void);
+ void psci_arch_init(void);
++
+ u32 psci_version(void);
+-s32 psci_features(u32 function_id, u32 psci_fid);
++s32 psci_cpu_suspend(u32 function_id, u32 power_state, u32 pc, u32 context_id);
+ s32 psci_cpu_off(void);
+-s32 psci_cpu_on(u32 function_id, u32 target_cpu, u32 pc,
+-		u32 context_id);
+-s32 psci_affinity_info(u32 function_id, u32 target_affinity,
+-		       u32  lowest_affinity_level);
++s32 psci_cpu_on(u32 function_id, u32 target_cpu, u32 pc, u32 context_id);
++s32 psci_affinity_info(u32 function_id, u32 target_affinity, u32 power_level);
+ u32 psci_migrate_info_type(void);
+ void psci_system_off(void);
+ void psci_system_reset(void);
++s32 psci_features(u32 function_id, u32 psci_fid);
++s32 psci_cpu_default_suspend(u32 function_id, u32 pc, u32 context_id);
++s32 psci_node_hw_state(u32 function_id, u32 target_cpu, u32 power_level);
++s32 psci_system_suspend(u32 function_id, u32 pc, u32 context_id);
++s32 psci_system_reset2(u32 function_id, u32 reset_type, u32 cookie);
+ #endif
+ 
+ #endif /* __ASSEMBLY__ */
+--- a/arch/arm/lib/psci-dt.c
++++ b/arch/arm/lib/psci-dt.c
+@@ -66,6 +66,8 @@ int fdt_psci(void *fdt)
+ init_psci_node:
+ #if CONFIG_IS_ENABLED(ARMV8_SEC_FIRMWARE_SUPPORT)
+ 	psci_ver = sec_firmware_support_psci_version();
++#elif defined(CONFIG_ARMV7_PSCI_1_1)
++	psci_ver = ARM_PSCI_VER_1_1;
+ #elif defined(CONFIG_ARMV7_PSCI_1_0) || defined(CONFIG_ARMV8_PSCI)
+ 	psci_ver = ARM_PSCI_VER_1_0;
+ #elif defined(CONFIG_ARMV7_PSCI_0_2)

@@ -1,0 +1,153 @@
+From b6da98cd39612bb5660afbcad06e3a6bac43563e Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 11 Sep 2021 23:27:42 -0500
+Subject: [PATCH 76/90] riscv: cpu: Add cache operations for T-HEAD CPUs
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/riscv/cpu/Makefile      |   1 +
+ arch/riscv/cpu/thead/cache.c | 119 +++++++++++++++++++++++++++++++++++
+ arch/riscv/lib/cache.c       |   2 +-
+ 3 files changed, 121 insertions(+), 1 deletion(-)
+ create mode 100644 arch/riscv/cpu/thead/cache.c
+
+--- a/arch/riscv/cpu/Makefile
++++ b/arch/riscv/cpu/Makefile
+@@ -5,3 +5,4 @@
+ extra-y = start.o
+ 
+ obj-y += cpu.o mtrap.o
++obj-y += thead/cache.o
+--- /dev/null
++++ b/arch/riscv/cpu/thead/cache.c
+@@ -0,0 +1,119 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++#include <asm/cache.h>
++#include <asm/csr.h>
++
++#define CSR_MHCR		0x7c1
++#define CSR_MCOR		0x7c2
++#define CSR_MHINT		0x7c5
++
++#define MHCR_IE			BIT(0)	/* icache enable */
++#define MHCR_DE			BIT(1)	/* dcache enable */
++#define MHCR_WA			BIT(2)	/* dcache write allocate */
++#define MHCR_WB			BIT(3)	/* dcache write back */
++#define MHCR_RS			BIT(4)	/* return stack enable */
++#define MHCR_BPE		BIT(5)	/* branch prediction enable */
++#define MHCR_BTB		BIT(6)	/* branch target prediction enable */
++#define MHCR_WBR		BIT(8)	/* write burst enable */
++#define MHCR_L0BTB		BIT(12)
++
++#define MCOR_CACHE_SEL_ICACHE	(0x1 << 0)
++#define MCOR_CACHE_SEL_DCACHE	(0x2 << 0)
++#define MCOR_CACHE_SEL_BOTH	(0x3 << 0)
++#define MCOR_INV		BIT(4)
++#define MCOR_CLR		BIT(5)
++#define MCOR_BHT_INV		BIT(16)
++#define MCOR_BTB_INV		BIT(17)
++
++#define MHINT_DPLD		BIT(2)	/* dcache prefetch enable */
++#define MHINT_AMR_PAGE		(0x0 << 3)
++#define MHINT_AMR_LIMIT_3	(0x1 << 3)
++#define MHINT_AMR_LIMIT_64	(0x2 << 3)
++#define MHINT_AMR_LIMIT_128	(0x3 << 3)
++#define MHINT_IPLD		BIT(8)	/* icache prefetch enable */
++#define MHINT_IWPE		BIT(9)	/* icache prediction enable */
++#define MHINT_DIS_PREFETCH_2	(0x0 << 13)
++#define MHINT_DIS_PREFETCH_4	(0x1 << 13)
++#define MHINT_DIS_PREFETCH_8	(0x2 << 13)
++#define MHINT_DIS_PREFETCH_16	(0x3 << 13)
++
++#define sync_i()		asm volatile (".long 0x01a0000b" ::: "memory")
++
++void flush_dcache_all(void)
++{
++	asm volatile (".long 0x0030000b" ::: "memory"); /* dcache.ciall */
++	sync_i();
++}
++
++void flush_dcache_range(unsigned long start, unsigned long end)
++{
++	register unsigned long i asm("a0") = start & -CONFIG_SYS_CACHELINE_SIZE;
++
++	for (; i < end; i += CONFIG_SYS_CACHELINE_SIZE)
++		asm volatile (".long 0x02b5000b" ::: "memory"); /* dcache.cipa a0 */
++	sync_i();
++}
++
++void invalidate_icache_range(unsigned long start, unsigned long end)
++{
++	register unsigned long i asm("a0") = start & -CONFIG_SYS_CACHELINE_SIZE;
++
++	for (; i < end; i += CONFIG_SYS_CACHELINE_SIZE)
++		asm volatile (".long 0x0385000b" ::: "memory"); /* icache.ipa a0 */
++	sync_i();
++}
++
++void invalidate_dcache_range(unsigned long start, unsigned long end)
++{
++	register unsigned long i asm("a0") = start & -CONFIG_SYS_CACHELINE_SIZE;
++
++	for (; i < end; i += CONFIG_SYS_CACHELINE_SIZE)
++		asm volatile (".long 0x02a5000b" ::: "memory"); /* dcache.ipa a0 */
++	sync_i();
++}
++
++#if 0
++void icache_enable(void)
++{
++	asm volatile (".long 0x0100000b" ::: "memory"); /* icache.iall */
++	sync_i();
++	csr_set(CSR_MHCR, MHCR_IE | MHCR_RS | MHCR_BPE | MHCR_BTB | MHCR_L0BTB);
++	csr_set(CSR_MHINT, MHINT_IPLD | MHINT_IWPE);
++}
++
++void icache_disable(void)
++{
++	csr_clear(CSR_MHCR, MHCR_IE);
++}
++
++int icache_status(void)
++{
++	return csr_read(CSR_MHCR) & MHCR_IE;
++}
++
++void dcache_enable(void)
++{
++	asm volatile (".long 0x0020000b" ::: "memory"); /* dcache.iall */
++	sync_i();
++	csr_set(CSR_MHCR, MHCR_DE | MHCR_WA | MHCR_WB | MHCR_WBR);
++	csr_set(CSR_MHINT, MHINT_DPLD | MHINT_AMR_LIMIT_3);
++}
++
++void dcache_disable(void)
++{
++	asm volatile (".long 0x0010000b" ::: "memory"); /* dcache.call */
++	sync_i();
++	csr_clear(CSR_MHCR, MHCR_DE);
++}
++
++int dcache_status(void)
++{
++	return csr_read(CSR_MHCR) & MHCR_DE;
++}
++
++void enable_caches(void)
++{
++	icache_enable();
++	dcache_enable();
++}
++#endif
+--- a/arch/riscv/lib/cache.c
++++ b/arch/riscv/lib/cache.c
+@@ -20,7 +20,7 @@ __weak void flush_dcache_range(unsigned
+ {
+ }
+ 
+-void invalidate_icache_range(unsigned long start, unsigned long end)
++__weak void invalidate_icache_range(unsigned long start, unsigned long end)
+ {
+ 	/*
+ 	 * RISC-V does not have an instruction for invalidating parts of the

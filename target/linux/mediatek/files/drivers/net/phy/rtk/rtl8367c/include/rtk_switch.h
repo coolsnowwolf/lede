@@ -734,4 +734,8 @@ extern rtk_uint32 rtk_switch_maxLutAddrNumber_get(void);
  */
 rtk_uint32 rtk_switch_isValidTrunkGrpId(rtk_uint32 grpId);
 
+int gsw_debug_proc_init(void);
+void gsw_debug_proc_exit(void);
+int rtl8367s_swconfig_init(void (*reset_func)(void));
+
 #endif

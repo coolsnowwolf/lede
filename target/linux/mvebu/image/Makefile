@@ -39,16 +39,6 @@ define Build/boot-img-ext4
 		$@.bootimg $@.boot
 endef
 
-define Build/boot-qnap-img-ext4
-	rm -fR $@.boot
-	mkdir -p $@.boot
-	$(foreach dts,$(DEVICE_DTS), $(CP) $(KDIR)/image-$(dts).dtb $@.boot/$(dts).dtb;)
-	$(CP) $(KDIR)/vmlinux $@.boot/Image
-	make_ext4fs -J -L kernel -l $(CONFIG_TARGET_KERNEL_PARTSIZE)M \
-		$(if $(SOURCE_DATE_EPOCH),-T $(SOURCE_DATE_EPOCH)) \
-		$@.bootimg $@.boot
-endef
-
 define Build/buffalo-kernel-jffs2
 	rm -rf $(KDIR)/kernel_jffs2 $@.fakerd
 	mkdir -p $(KDIR)/kernel_jffs2
@@ -61,6 +51,16 @@ define Build/buffalo-kernel-jffs2
 		--little-endian -v --squash-uids -q -f -n -x lzma -x rtime -m none \
 		--eraseblock=128KiB --pad=$(KERNEL_SIZE) -d $(KDIR)/kernel_jffs2 -o $@
 	rm -rf $(KDIR)/kernel_jffs2 $@.fakerd
+endef
+
+define Build/buffalo-kernel-ubifs
+	rm -rf $@-ubidir
+	mkdir -p $@-ubidir
+	mv $@ $@-ubidir/uImage.buffalo
+	touch $@
+	$(call Build/append-uImage-fakehdr, ramdisk)
+	mv $@ $@-ubidir/initrd.buffalo
+	$(STAGING_DIR_HOST)/bin/mkfs.ubifs $(KERNEL_UBIFS_OPTS) -r $@-ubidir $@
 endef
 
 # Some info about Ctera firmware:
@@ -134,17 +134,6 @@ define Build/sdcard-img-ext4
 		$(if $(UBOOT),$(STAGING_DIR_IMAGE)/$(UBOOT)) \
 		83 $(CONFIG_TARGET_KERNEL_PARTSIZE) $@.bootimg \
 		83 $(CONFIG_TARGET_ROOTFS_PARTSIZE) $(IMAGE_ROOTFS)
-endef
-
-define Build/omnia-medkit-initramfs
-	$(TAR) -c -T /dev/null -f $@
-	rm -rf $(dir $(IMAGE_KERNEL))boot
-	mkdir -p $(dir $(IMAGE_KERNEL))boot/boot/
-	cp $(KDIR)/zImage-initramfs $(dir $(IMAGE_KERNEL))boot/boot/zImage
-	cp $(KDIR)/image-$(DEVICE_DTS).dtb $(dir $(IMAGE_KERNEL))boot/boot/dtb
-	$(TAR) -rp --numeric-owner --owner=0 --group=0 --sort=name \
-		$(if $(SOURCE_DATE_EPOCH),--mtime="@$(SOURCE_DATE_EPOCH)") \
-		--file=$@ -C $(dir $(IMAGE_KERNEL))boot/ .
 endef
 
 define Build/uDPU-firmware

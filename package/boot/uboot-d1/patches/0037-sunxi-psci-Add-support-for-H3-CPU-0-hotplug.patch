@@ -1,0 +1,183 @@
+From d11c5971f60d482c05f807c24f3ccd37cf7d0f70 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 9 Oct 2021 17:12:57 -0500
+Subject: [PATCH 37/90] sunxi: psci: Add support for H3 CPU 0 hotplug
+
+Due to a bug in the H3 SoC, where the CPU 0 hotplug flag cannot be
+written, resuming CPU 0 requires using the "Super Standby" code path in
+the BROM instead of the hotplug path. This path requires jumping to an
+eGON image in SRAM.
+
+Add support to the build system to generate this eGON image and include
+it in the FIT, and add code to direct the BROM to its location in SRAM.
+
+Since the Super Standby code path in the BROM initializes the CPU and
+AHB1 clocks to 24 MHz, those registers need to be restored after control
+passes back to U-Boot. Furthermore, because the BROM lowers the AHB1
+clock divider to /1 before switching to the lower-frequency parent,
+PLL_PERIPH0 must be bypassed to prevent AHB1 from temporarily running at
+600 MHz. Otherwise, this locks up the SoC.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ Makefile                        | 17 +++++++++++++++++
+ arch/arm/cpu/armv7/sunxi/psci.c | 31 +++++++++++++++++++++++++++++++
+ arch/arm/dts/sunxi-u-boot.dtsi  | 23 ++++++++++++++++++++++-
+ include/configs/sun8i.h         |  4 ++++
+ 4 files changed, 74 insertions(+), 1 deletion(-)
+
+--- a/Makefile
++++ b/Makefile
+@@ -1013,6 +1013,23 @@ INPUTS-y += u-boot.img
+ endif
+ endif
+ 
++ifeq ($(CONFIG_MACH_SUN8I_H3)$(CONFIG_ARMV7_PSCI),yy)
++INPUTS-$(CONFIG_ARMV7_PSCI) += u-boot-resume.img
++
++MKIMAGEFLAGS_u-boot-resume.img := -B 0x400 -T sunxi_egon
++
++u-boot-resume.img: u-boot-resume.bin
++	$(call if_changed,mkimage)
++
++OBJCOPYFLAGS_u-boot-resume.bin := -O binary
++
++u-boot-resume.bin: u-boot-resume.o
++	$(call if_changed,objcopy)
++
++u-boot-resume.S: u-boot
++	@sed -En 's/(0x[[:xdigit:]]+) +psci_cpu_entry/ldr pc, =\1/p' $<.map > $@
++endif
++
+ INPUTS-$(CONFIG_X86) += u-boot-x86-start16.bin u-boot-x86-reset16.bin \
+ 	$(if $(CONFIG_SPL_X86_16BIT_INIT),spl/u-boot-spl.bin) \
+ 	$(if $(CONFIG_TPL_X86_16BIT_INIT),tpl/u-boot-tpl.bin)
+--- a/arch/arm/cpu/armv7/sunxi/psci.c
++++ b/arch/arm/cpu/armv7/sunxi/psci.c
+@@ -10,6 +10,7 @@
+ #include <common.h>
+ #include <asm/cache.h>
+ 
++#include <asm/arch/clock.h>
+ #include <asm/arch/cpu.h>
+ #include <asm/arch/cpucfg.h>
+ #include <asm/arch/prcm.h>
+@@ -141,6 +142,13 @@ static void __secure sunxi_set_entry_add
+ 		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+ 
+ 	writel((u32)entry, &cpucfg->priv0);
++
++#ifdef CONFIG_MACH_SUN8I_H3
++	/* Redirect CPU 0 to the secure monitor via the resume shim. */
++	writel(0x16aaefe8, &cpucfg->super_standy_flag);
++	writel(0xaa16efe8, &cpucfg->super_standy_flag);
++	writel(SUNXI_RESUME_BASE, &cpucfg->priv1);
++#endif
+ }
+ #endif
+ 
+@@ -255,9 +263,12 @@ out:
+ int __secure psci_cpu_on(u32 __always_unused unused, u32 mpidr, u32 pc,
+ 			 u32 context_id)
+ {
++	struct sunxi_ccm_reg *ccu = (struct sunxi_ccm_reg *)SUNXI_CCM_BASE;
+ 	struct sunxi_cpucfg_reg *cpucfg =
+ 		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+ 	u32 cpu = (mpidr & 0x3);
++	u32 cpu_clk;
++	u32 bus_clk;
+ 
+ 	/* store target PC and context id */
+ 	psci_save(cpu, pc, context_id);
+@@ -274,12 +285,32 @@ int __secure psci_cpu_on(u32 __always_un
+ 	/* Lock CPU (Disable external debug access) */
+ 	clrbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+ 
++	if (IS_ENABLED(CONFIG_MACH_SUN8I_H3) && cpu == 0) {
++		/* Save registers that will be clobbered by the BROM. */
++		cpu_clk = readl(&ccu->cpu_axi_cfg);
++		bus_clk = readl(&ccu->ahb1_apb1_div);
++
++		/* Bypass PLL_PERIPH0 so AHB1 frequency does not spike. */
++		setbits_le32(&ccu->pll6_cfg, BIT(25));
++	}
++
+ 	/* Power up target CPU */
+ 	sunxi_cpu_set_power(cpu, true);
+ 
+ 	/* De-assert reset on target CPU */
+ 	writel(BIT(1) | BIT(0), &cpucfg->cpu[cpu].rst);
+ 
++	if (IS_ENABLED(CONFIG_MACH_SUN8I_H3) && cpu == 0) {
++		/* Spin until the BROM has clobbered the clock registers. */
++		while (readl(&ccu->ahb1_apb1_div) != 0x00001100);
++
++		/* Restore the registers and turn off PLL_PERIPH0 bypass. */
++		writel(cpu_clk, &ccu->cpu_axi_cfg);
++		writel(bus_clk, &ccu->ahb1_apb1_div);
++
++		clrbits_le32(&ccu->pll6_cfg, BIT(25));
++	}
++
+ 	/* Unlock CPU (Disable external debug access) */
+ 	setbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+ 
+--- a/arch/arm/dts/sunxi-u-boot.dtsi
++++ b/arch/arm/dts/sunxi-u-boot.dtsi
+@@ -6,7 +6,11 @@
+ #define ARCH "arm"
+ #endif
+ 
+-#if defined(CONFIG_MACH_SUN50I) || defined(CONFIG_MACH_SUN50I_H5)
++#if defined(CONFIG_MACH_SUN8I_H3)
++#ifdef CONFIG_ARMV7_PSCI
++#define RESUME_ADDR	SUNXI_RESUME_BASE
++#endif
++#elif defined(CONFIG_MACH_SUN50I) || defined(CONFIG_MACH_SUN50I_H5)
+ #define BL31_ADDR	0x00044000
+ #define SCP_ADDR	0x00050000
+ #elif defined(CONFIG_MACH_SUN50I_H6)
+@@ -78,6 +82,20 @@
+ 				};
+ #endif
+ 
++#ifdef RESUME_ADDR
++				resume {
++					description = "Super Standby resume image";
++					type = "standalone";
++					arch = ARCH;
++					compression = "none";
++					load = <RESUME_ADDR>;
++
++					blob-ext {
++						filename = "u-boot-resume.img";
++					};
++				};
++#endif
++
+ #ifdef SCP_ADDR
+ 				scp {
+ 					description = "SCP firmware";
+@@ -111,6 +129,9 @@
+ 					firmware = "uboot";
+ #endif
+ 					loadables =
++#ifdef RESUME_ADDR
++						    "resume",
++#endif
+ #ifdef SCP_ADDR
+ 						    "scp",
+ #endif
+--- a/include/configs/sun8i.h
++++ b/include/configs/sun8i.h
+@@ -8,6 +8,10 @@
+ #ifndef __CONFIG_H
+ #define __CONFIG_H
+ 
++#define SUNXI_RESUME_BASE		(CONFIG_ARMV7_SECURE_BASE + \
++					 CONFIG_ARMV7_SECURE_MAX_SIZE)
++#define SUNXI_RESUME_SIZE		1024
++
+ #include <configs/sunxi-common.h>
+ 
+ #endif /* __CONFIG_H */

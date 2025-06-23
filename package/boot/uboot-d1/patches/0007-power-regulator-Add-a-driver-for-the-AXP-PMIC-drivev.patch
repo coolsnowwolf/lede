@@ -1,0 +1,111 @@
+From 25434a394705d2de92c50981e31347db4074204a Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Thu, 26 Aug 2021 21:32:15 -0500
+Subject: [PATCH 07/90] power: regulator: Add a driver for the AXP PMIC
+ drivevbus
+
+The first AXP regulator converted to use the regulator uclass is the
+drivevbus switch, since it is used by the USB PHY driver.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/power/regulator/Kconfig         | 14 ++++++
+ drivers/power/regulator/Makefile        |  1 +
+ drivers/power/regulator/axp_regulator.c | 58 +++++++++++++++++++++++++
+ 3 files changed, 73 insertions(+)
+ create mode 100644 drivers/power/regulator/axp_regulator.c
+
+--- a/drivers/power/regulator/Kconfig
++++ b/drivers/power/regulator/Kconfig
+@@ -43,6 +43,20 @@ config REGULATOR_AS3722
+ 	  but does not yet support change voltages. Currently this must be
+ 	  done using direct register writes to the PMIC.
+ 
++config REGULATOR_AXP
++	bool "Enable driver for X-Powers AXP PMIC regulators"
++	depends on DM_REGULATOR && PMIC_AXP
++	help
++	  Enable support for the regulators (DCDCs, LDOs) in the
++	  X-Powers AXP152, AXP2xx, and AXP8xx PMICs.
++
++config SPL_REGULATOR_AXP
++	bool "Enable driver for X-Powers AXP PMIC regulators in SPL"
++	depends on SPL_DM_REGULATOR && SPL_PMIC_AXP
++	help
++	  Enable support in SPL for the regulators (DCDCs, LDOs) in the
++	  X-Powers AXP152, AXP2xx, and AXP8xx PMICs.
++
+ config REGULATOR_AXP_USB_POWER
+ 	bool "Enable driver for X-Powers AXP PMIC USB power supply"
+ 	depends on DM_REGULATOR && PMIC_AXP
+--- a/drivers/power/regulator/Makefile
++++ b/drivers/power/regulator/Makefile
+@@ -7,6 +7,7 @@
+ obj-$(CONFIG_$(SPL_)DM_REGULATOR) += regulator-uclass.o
+ obj-$(CONFIG_REGULATOR_ACT8846) += act8846.o
+ obj-$(CONFIG_REGULATOR_AS3722)	+= as3722_regulator.o
++obj-$(CONFIG_$(SPL_)REGULATOR_AXP) += axp_regulator.o
+ obj-$(CONFIG_$(SPL_)REGULATOR_AXP_USB_POWER) += axp_usb_power.o
+ obj-$(CONFIG_$(SPL_)DM_REGULATOR_DA9063) += da9063.o
+ obj-$(CONFIG_DM_REGULATOR_MAX77686) += max77686.o
+--- /dev/null
++++ b/drivers/power/regulator/axp_regulator.c
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-2.0+
++
++#include <dm.h>
++#include <errno.h>
++#include <power/pmic.h>
++#include <power/regulator.h>
++
++#define AXP_VBUS_IPSOUT			0x30
++#define AXP_VBUS_IPSOUT_DRIVEBUS		BIT(2)
++#define AXP_MISC_CTRL			0x8f
++#define AXP_MISC_CTRL_N_VBUSEN_FUNC		BIT(4)
++
++static int axp_drivevbus_get_enable(struct udevice *dev)
++{
++	int ret;
++
++	ret = pmic_reg_read(dev->parent, AXP_VBUS_IPSOUT);
++	if (ret < 0)
++		return ret;
++
++	return !!(ret & AXP_VBUS_IPSOUT_DRIVEBUS);
++}
++
++static int axp_drivevbus_set_enable(struct udevice *dev, bool enable)
++{
++	return pmic_clrsetbits(dev->parent, AXP_VBUS_IPSOUT,
++			       AXP_VBUS_IPSOUT_DRIVEBUS,
++			       enable ? AXP_VBUS_IPSOUT_DRIVEBUS : 0);
++}
++
++static const struct dm_regulator_ops axp_drivevbus_ops = {
++	.get_enable		= axp_drivevbus_get_enable,
++	.set_enable		= axp_drivevbus_set_enable,
++};
++
++static int axp_drivevbus_probe(struct udevice *dev)
++{
++	struct dm_regulator_uclass_plat *uc_plat = dev_get_uclass_plat(dev);
++	int ret;
++
++	uc_plat->type = REGULATOR_TYPE_FIXED;
++
++	if (dev_read_bool(dev->parent, "x-powers,drive-vbus-en")) {
++		ret = pmic_clrsetbits(dev->parent, AXP_MISC_CTRL,
++				      AXP_MISC_CTRL_N_VBUSEN_FUNC, 0);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++U_BOOT_DRIVER(axp_drivevbus) = {
++	.name		= "axp_drivevbus",
++	.id		= UCLASS_REGULATOR,
++	.probe		= axp_drivevbus_probe,
++	.ops		= &axp_drivevbus_ops,
++};

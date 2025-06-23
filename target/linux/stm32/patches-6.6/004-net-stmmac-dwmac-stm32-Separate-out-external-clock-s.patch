@@ -1,0 +1,132 @@
+From d23ba64e733580db2809e6f6dbf6f093fbd1b91b Mon Sep 17 00:00:00 2001
+From: Marek Vasut <marex@denx.de>
+Date: Tue, 11 Jun 2024 10:36:01 +0200
+Subject: [PATCH 4/8] net: stmmac: dwmac-stm32: Separate out external clock
+ selector
+
+Pull the external clock selector into a separate function, to avoid
+conflating it with external clock rate validation and clock mux
+register configuration. This should make the code easier to read and
+understand.
+
+The dwmac->enable_eth_ck variable in the end indicates whether the MAC
+clock are supplied by external oscillator (true) or internal RCC clock
+IP (false). The dwmac->enable_eth_ck value is set based on multiple DT
+properties, some of them deprecated, some of them specific to bus mode.
+
+The following DT properties and variables are taken into account. In
+each case, if the property is present or true, MAC clock is supplied
+by external oscillator.
+- "st,ext-phyclk", assigned to variable dwmac->ext_phyclk
+  - Used in any mode (MII/RMII/GMII/RGMII)
+  - The only non-deprecated DT property of the three
+- "st,eth-clk-sel", assigned to variable dwmac->eth_clk_sel_reg
+  - Valid only in GMII/RGMII mode
+  - Deprecated property, backward compatibility only
+- "st,eth-ref-clk-sel", assigned to variable dwmac->eth_ref_clk_sel_reg
+  - Valid only in RMII mode
+  - Deprecated property, backward compatibility only
+
+The stm32mp1_select_ethck_external() function handles the aforementioned
+DT properties and sets dwmac->enable_eth_ck accordingly.
+
+The stm32mp1_set_mode() is adjusted to call stm32mp1_select_ethck_external()
+first and then only use dwmac->enable_eth_ck to determine hardware clock mux
+settings.
+
+No functional change intended.
+
+Signed-off-by: Marek Vasut <marex@denx.de>
+Signed-off-by: Christophe Roullier <christophe.roullier@foss.st.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ .../net/ethernet/stmicro/stmmac/dwmac-stm32.c | 50 ++++++++++++++-----
+ 1 file changed, 38 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+@@ -157,6 +157,37 @@ static int stm32_dwmac_init(struct plat_
+ 	return stm32_dwmac_clk_enable(dwmac, resume);
+ }
+ 
++static int stm32mp1_select_ethck_external(struct plat_stmmacenet_data *plat_dat)
++{
++	struct stm32_dwmac *dwmac = plat_dat->bsp_priv;
++
++	switch (plat_dat->mac_interface) {
++	case PHY_INTERFACE_MODE_MII:
++		dwmac->enable_eth_ck = dwmac->ext_phyclk;
++		return 0;
++	case PHY_INTERFACE_MODE_GMII:
++		dwmac->enable_eth_ck = dwmac->eth_clk_sel_reg ||
++				       dwmac->ext_phyclk;
++		return 0;
++	case PHY_INTERFACE_MODE_RMII:
++		dwmac->enable_eth_ck = dwmac->eth_ref_clk_sel_reg ||
++				       dwmac->ext_phyclk;
++		return 0;
++	case PHY_INTERFACE_MODE_RGMII:
++	case PHY_INTERFACE_MODE_RGMII_ID:
++	case PHY_INTERFACE_MODE_RGMII_RXID:
++	case PHY_INTERFACE_MODE_RGMII_TXID:
++		dwmac->enable_eth_ck = dwmac->eth_clk_sel_reg ||
++				       dwmac->ext_phyclk;
++		return 0;
++	default:
++		dwmac->enable_eth_ck = false;
++		dev_err(dwmac->dev, "Mode %s not supported",
++			phy_modes(plat_dat->mac_interface));
++		return -EINVAL;
++	}
++}
++
+ static int stm32mp1_validate_ethck_rate(struct plat_stmmacenet_data *plat_dat)
+ {
+ 	struct stm32_dwmac *dwmac = plat_dat->bsp_priv;
+@@ -194,28 +225,25 @@ static int stm32mp1_set_mode(struct plat
+ 	u32 reg = dwmac->mode_reg;
+ 	int val, ret;
+ 
+-	dwmac->enable_eth_ck = false;
++	ret = stm32mp1_select_ethck_external(plat_dat);
++	if (ret)
++		return ret;
++
+ 	switch (plat_dat->mac_interface) {
+ 	case PHY_INTERFACE_MODE_MII:
+-		if (dwmac->ext_phyclk)
+-			dwmac->enable_eth_ck = true;
+ 		val = SYSCFG_PMCR_ETH_SEL_MII;
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_MII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_GMII:
+ 		val = SYSCFG_PMCR_ETH_SEL_GMII;
+-		if (dwmac->eth_clk_sel_reg || dwmac->ext_phyclk) {
+-			dwmac->enable_eth_ck = true;
++		if (dwmac->enable_eth_ck)
+ 			val |= SYSCFG_PMCR_ETH_CLK_SEL;
+-		}
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_GMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RMII:
+ 		val = SYSCFG_PMCR_ETH_SEL_RMII;
+-		if (dwmac->eth_ref_clk_sel_reg || dwmac->ext_phyclk) {
+-			dwmac->enable_eth_ck = true;
++		if (dwmac->enable_eth_ck)
+ 			val |= SYSCFG_PMCR_ETH_REF_CLK_SEL;
+-		}
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_RMII\n");
+ 		break;
+ 	case PHY_INTERFACE_MODE_RGMII:
+@@ -223,10 +251,8 @@ static int stm32mp1_set_mode(struct plat
+ 	case PHY_INTERFACE_MODE_RGMII_RXID:
+ 	case PHY_INTERFACE_MODE_RGMII_TXID:
+ 		val = SYSCFG_PMCR_ETH_SEL_RGMII;
+-		if (dwmac->eth_clk_sel_reg || dwmac->ext_phyclk) {
+-			dwmac->enable_eth_ck = true;
++		if (dwmac->enable_eth_ck)
+ 			val |= SYSCFG_PMCR_ETH_CLK_SEL;
+-		}
+ 		pr_debug("SYSCFG init : PHY_INTERFACE_MODE_RGMII\n");
+ 		break;
+ 	default:

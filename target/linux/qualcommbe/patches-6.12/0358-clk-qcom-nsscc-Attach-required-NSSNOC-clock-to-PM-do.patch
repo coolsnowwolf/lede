@@ -1,0 +1,73 @@
+From 6417cb20e854194a845d4ab092b92fd753c0e405 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 30 Jan 2025 16:11:14 +0100
+Subject: [PATCH] clk: qcom: nsscc: Attach required NSSNOC clock to PM domain
+
+There is currently a problem with ICC clock disabling the NSSNOC clock
+as there isn't any user for them on calling sync_state.
+This cause the kernel to stall if NSS is enabled and reboot with the watchdog.
+
+This is caused by the fact that the NSSNOC clock nsscc, snoc and snoc_1
+are actually required to make the NSS work and make the system continue
+booting.
+
+To attach these clock, setup pm-clk in nsscc and setup the correct
+resume/suspend OPs.
+
+With this change, the clock gets correctly attached and are not disabled
+when ICC call the sync_state.
+
+Suggested-by: Dmitry Baryshkov <dmitry.baryshkov@linaro.org>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Alex G: Retrieve clocks by name rather than index.
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ drivers/clk/qcom/nsscc-ipq9574.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+--- a/drivers/clk/qcom/nsscc-ipq9574.c
++++ b/drivers/clk/qcom/nsscc-ipq9574.c
+@@ -3060,6 +3060,7 @@ MODULE_DEVICE_TABLE(of, nss_cc_ipq9574_m
+ 
+ static int nss_cc_ipq9574_probe(struct platform_device *pdev)
+ {
++	struct device *dev = &pdev->dev;
+ 	struct regmap *regmap;
+ 	int ret;
+ 
+@@ -3075,6 +3076,18 @@ static int nss_cc_ipq9574_probe(struct p
+ 	if (ret)
+ 		return dev_err_probe(&pdev->dev, ret, "Fail to add bus clock\n");
+ 
++	ret = pm_clk_add(&pdev->dev, "nssnoc");
++	if (ret)
++		return dev_err_probe(dev, ret,"failed to acquire nssnoc clock\n");
++
++	ret = pm_clk_add(&pdev->dev, "snoc");
++	if (ret)
++		return dev_err_probe(dev, ret,"failed to acquire snoc clock\n");
++
++	ret = pm_clk_add(&pdev->dev, "snoc_1");
++	if (ret)
++		return dev_err_probe(dev, ret,"failed to acquire snoc_1 clock\n");
++
+ 	ret = pm_runtime_resume_and_get(&pdev->dev);
+ 	if (ret)
+ 		return dev_err_probe(&pdev->dev, ret, "Fail to resume\n");
+@@ -3089,8 +3102,16 @@ static int nss_cc_ipq9574_probe(struct p
+ 	clk_alpha_pll_configure(&ubi32_pll_main, regmap, &ubi32_pll_config);
+ 
+ 	ret = qcom_cc_really_probe(&pdev->dev, &nss_cc_ipq9574_desc, regmap);
++	if (ret)
++		goto err_put_pm;
++
+ 	pm_runtime_put(&pdev->dev);
+ 
++	return 0;
++
++err_put_pm:
++	pm_runtime_put_sync(dev);
++
+ 	return ret;
+ }
+ 

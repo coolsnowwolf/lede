@@ -1,0 +1,74 @@
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Wed, 13 Mar 2024 20:28:37 +0800
+Subject: [PATCH] mips: kernel: fix detect_memory_region() function
+
+1. Do not use memcmp() on unallocated memory, as the new introduced
+   fortify dynamic object size check[1] will report unexpected result.
+2. Use a fixed pattern instead of a random function pointer as the
+   magic value.
+3. Flip magic value and double check it.
+4. Enable this feature only for 32-bit CPUs. Currently, only ath79 and
+   ralink CPUs are using it.
+
+[1] 439a1bcac648 ("fortify: Use __builtin_dynamic_object_size() when available")
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ arch/mips/include/asm/bootinfo.h |  2 ++
+ arch/mips/kernel/setup.c         | 17 ++++++++++++-----
+ 2 files changed, 14 insertions(+), 5 deletions(-)
+
+--- a/arch/mips/include/asm/bootinfo.h
++++ b/arch/mips/include/asm/bootinfo.h
+@@ -93,7 +93,9 @@ const char *get_system_type(void);
+ 
+ extern unsigned long mips_machtype;
+ 
++#ifndef CONFIG_64BIT
+ extern void detect_memory_region(phys_addr_t start, phys_addr_t sz_min,  phys_addr_t sz_max);
++#endif
+ 
+ extern void prom_init(void);
+ extern void prom_free_prom_memory(void);
+--- a/arch/mips/kernel/setup.c
++++ b/arch/mips/kernel/setup.c
+@@ -86,21 +86,27 @@ static struct resource bss_resource = {
+ unsigned long __kaslr_offset __ro_after_init;
+ EXPORT_SYMBOL(__kaslr_offset);
+ 
+-static void *detect_magic __initdata = detect_memory_region;
+-
+ #ifdef CONFIG_MIPS_AUTO_PFN_OFFSET
+ unsigned long ARCH_PFN_OFFSET;
+ EXPORT_SYMBOL(ARCH_PFN_OFFSET);
+ #endif
+ 
++#ifndef CONFIG_64BIT
++static u32 detect_magic __initdata;
++#define MIPS_MEM_TEST_PATTERN		0xaa5555aa
++
+ void __init detect_memory_region(phys_addr_t start, phys_addr_t sz_min, phys_addr_t sz_max)
+ {
+-	void *dm = &detect_magic;
++	void *dm = (void *)KSEG1ADDR(&detect_magic);
+ 	phys_addr_t size;
+ 
+ 	for (size = sz_min; size < sz_max; size <<= 1) {
+-		if (!memcmp(dm, dm + size, sizeof(detect_magic)))
+-			break;
++		__raw_writel(MIPS_MEM_TEST_PATTERN, dm);
++		if (__raw_readl(dm) == __raw_readl(dm + size)) {
++			__raw_writel(~MIPS_MEM_TEST_PATTERN, dm);
++			if (__raw_readl(dm) == __raw_readl(dm + size))
++				break;
++		}
+ 	}
+ 
+ 	pr_debug("Memory: %lluMB of RAM detected at 0x%llx (min: %lluMB, max: %lluMB)\n",
+@@ -111,6 +117,7 @@ void __init detect_memory_region(phys_ad
+ 
+ 	memblock_add(start, size);
+ }
++#endif /* CONFIG_64BIT */
+ 
+ /*
+  * Manage initrd

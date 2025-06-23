@@ -7,8 +7,8 @@ BOARDNAME:=Rockchip
 FEATURES:=ext4 audio usb usbgadget display gpio fpu pci pcie rootfs-part boot-part squashfs
 SUBTARGETS:=armv8
 
-KERNEL_PATCHVER:=6.6
-KERNEL_TESTING_PATCHVER:=6.12
+KERNEL_PATCHVER:=6.12
+KERNEL_TESTING_PATCHVER:=6.6
 
 define Target/Description
 	Build firmware image for Rockchip SoC devices.

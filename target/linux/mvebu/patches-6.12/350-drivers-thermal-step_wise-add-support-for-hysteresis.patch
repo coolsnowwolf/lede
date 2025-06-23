@@ -1,0 +1,62 @@
+From 9685ce100f0d302501117113ef0a526ad1acca1d Mon Sep 17 00:00:00 2001
+From: Ram Chandrasekar <rkumbako@codeaurora.org>
+Date: Mon, 7 May 2018 11:54:08 -0600
+Subject: [PATCH] drivers: thermal: step_wise: add support for hysteresis
+
+Step wise governor increases the mitigation level when the temperature
+goes above a threshold and will decrease the mitigation when the
+temperature falls below the threshold. If it were a case, where the
+temperature hovers around a threshold, the mitigation will be applied
+and removed at every iteration. This reaction to the temperature is
+inefficient for performance.
+
+The use of hysteresis temperature could avoid this ping-pong of
+mitigation by relaxing the mitigation to happen only when the
+temperature goes below this lower hysteresis value.
+
+Signed-off-by: Ram Chandrasekar <rkumbako@codeaurora.org>
+Signed-off-by: Lina Iyer <ilina@codeaurora.org>
+[forward-ported for Linux 6.6, as stop-gap downstream solution]
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/thermal/gov_step_wise.c | 23 ++++++++++++++++-------
+ 1 file changed, 16 insertions(+), 7 deletions(-)
+
+--- a/drivers/thermal/gov_step_wise.c
++++ b/drivers/thermal/gov_step_wise.c
+@@ -74,19 +74,28 @@ static void thermal_zone_trip_update(str
+ 	int trip_id = thermal_zone_trip_id(tz, trip);
+ 	struct thermal_instance *instance;
+ 	bool throttle = false;
++	int hyst_temp;
+ 
+-	if (tz->temperature >= trip_threshold) {
+-		throttle = true;
+-		trace_thermal_zone_trip(tz, trip_id, trip->type);
+-	}
+-
+-	dev_dbg(&tz->device, "Trip%d[type=%d,temp=%d]:trend=%d,throttle=%d\n",
+-		trip_id, trip->type, trip_threshold, trend, throttle);
++	hyst_temp =  trip->temperature - trip->hysteresis;
++	dev_dbg(&tz->device, "Trip%d[type=%d,temp=%d,hyst=%d]:trend=%d,throttle=%d\n",
++		trip_id, trip->type, trip->temperature, hyst_temp, trend, throttle);
+ 
+ 	list_for_each_entry(instance, &td->thermal_instances, trip_node) {
+ 		int old_target;
+ 
+ 		old_target = instance->target;
++		throttle = false;
++		/*
++		 * Lower the mitigation only if the temperature
++		 * goes below the hysteresis temperature.
++		 */
++		if (tz->temperature >= trip->temperature ||
++		   (tz->temperature >= hyst_temp &&
++		   old_target != THERMAL_NO_TARGET)) {
++			throttle = true;
++			trace_thermal_zone_trip(tz, trip_id, trip->type);
++		}
++
+ 		instance->target = get_target_state(instance, trend, throttle);
+ 
+ 		dev_dbg(&instance->cdev->device, "old_target=%d, target=%ld\n",

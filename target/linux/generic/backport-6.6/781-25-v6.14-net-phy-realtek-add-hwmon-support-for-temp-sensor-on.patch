@@ -1,0 +1,180 @@
+From 33700ca45b7d2e1655d4cad95e25671e8a94e2f0 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Sat, 11 Jan 2025 21:51:24 +0100
+Subject: [PATCH] net: phy: realtek: add hwmon support for temp sensor on
+ RTL822x
+
+This adds hwmon support for the temperature sensor on RTL822x.
+It's available on the standalone versions of the PHY's, and on
+the integrated PHY's in RTL8125B/RTL8125D/RTL8126.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/ad6bfe9f-6375-4a00-84b4-bfb38a21bd71@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/Kconfig         |  6 ++
+ drivers/net/phy/realtek/Makefile        |  1 +
+ drivers/net/phy/realtek/realtek.h       | 10 ++++
+ drivers/net/phy/realtek/realtek_hwmon.c | 79 +++++++++++++++++++++++++
+ drivers/net/phy/realtek/realtek_main.c  | 12 ++++
+ 5 files changed, 108 insertions(+)
+ create mode 100644 drivers/net/phy/realtek/realtek.h
+ create mode 100644 drivers/net/phy/realtek/realtek_hwmon.c
+
+--- a/drivers/net/phy/realtek/Kconfig
++++ b/drivers/net/phy/realtek/Kconfig
+@@ -3,3 +3,9 @@ config REALTEK_PHY
+ 	tristate "Realtek PHYs"
+ 	help
+ 	  Currently supports RTL821x/RTL822x and fast ethernet PHYs
++
++config REALTEK_PHY_HWMON
++	def_bool REALTEK_PHY && HWMON
++	depends on !(REALTEK_PHY=y && HWMON=m)
++	help
++	  Optional hwmon support for the temperature sensor
+--- a/drivers/net/phy/realtek/Makefile
++++ b/drivers/net/phy/realtek/Makefile
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ realtek-y			+= realtek_main.o
++realtek-$(CONFIG_REALTEK_PHY_HWMON) += realtek_hwmon.o
+ obj-$(CONFIG_REALTEK_PHY)	+= realtek.o
+--- /dev/null
++++ b/drivers/net/phy/realtek/realtek.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef REALTEK_H
++#define REALTEK_H
++
++#include <linux/phy.h>
++
++int rtl822x_hwmon_init(struct phy_device *phydev);
++
++#endif /* REALTEK_H */
+--- /dev/null
++++ b/drivers/net/phy/realtek/realtek_hwmon.c
+@@ -0,0 +1,86 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * HWMON support for Realtek PHY's
++ *
++ * Author: Heiner Kallweit <hkallweit1@gmail.com>
++ */
++
++#include <linux/hwmon.h>
++#include <linux/phy.h>
++
++#include "realtek.h"
++
++#define RTL822X_VND2_TSALRM				0xa662
++#define RTL822X_VND2_TSRR				0xbd84
++#define RTL822X_VND2_TSSR				0xb54c
++
++static umode_t rtl822x_hwmon_is_visible(const void *drvdata,
++				        enum hwmon_sensor_types type,
++				        u32 attr, int channel)
++{
++	return 0444;
++}
++
++static int rtl822x_hwmon_get_temp(int raw)
++{
++	if (raw >= 512)
++		raw -= 1024;
++
++	return 1000 * raw / 2;
++}
++
++static int rtl822x_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
++			      u32 attr, int channel, long *val)
++{
++	struct phy_device *phydev = dev_get_drvdata(dev);
++	int raw;
++
++	switch (attr) {
++	case hwmon_temp_input:
++		raw = phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL822X_VND2_TSRR) & 0x3ff;
++		*val = rtl822x_hwmon_get_temp(raw);
++		break;
++	case hwmon_temp_max:
++		/* Chip reduces speed to 1G if threshold is exceeded */
++		raw = phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL822X_VND2_TSSR) >> 6;
++		*val = rtl822x_hwmon_get_temp(raw);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static const struct hwmon_ops rtl822x_hwmon_ops = {
++	.is_visible = rtl822x_hwmon_is_visible,
++	.read = rtl822x_hwmon_read,
++};
++
++static const struct hwmon_channel_info * const rtl822x_hwmon_info[] = {
++	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX),
++	NULL
++};
++
++static const struct hwmon_chip_info rtl822x_hwmon_chip_info = {
++	.ops = &rtl822x_hwmon_ops,
++	.info = rtl822x_hwmon_info,
++};
++
++int rtl822x_hwmon_init(struct phy_device *phydev)
++{
++	struct device *hwdev, *dev = &phydev->mdio.dev;
++	const char *name;
++
++	/* Ensure over-temp alarm is reset. */
++	phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, RTL822X_VND2_TSALRM, 3);
++
++	name = devm_hwmon_sanitize_name(dev, dev_name(dev));
++	if (IS_ERR(name))
++		return PTR_ERR(name);
++
++	hwdev = devm_hwmon_device_register_with_info(dev, name, phydev,
++						     &rtl822x_hwmon_chip_info,
++						     NULL);
++	return PTR_ERR_OR_ZERO(hwdev);
++}
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -14,6 +14,8 @@
+ #include <linux/delay.h>
+ #include <linux/clk.h>
+ 
++#include "realtek.h"
++
+ #define RTL821x_PHYSR				0x11
+ #define RTL821x_PHYSR_DUPLEX			BIT(13)
+ #define RTL821x_PHYSR_SPEED			GENMASK(15, 14)
+@@ -820,6 +822,15 @@ static int rtl822x_write_mmd(struct phy_
+ 	return ret;
+ }
+ 
++static int rtl822x_probe(struct phy_device *phydev)
++{
++	if (IS_ENABLED(CONFIG_REALTEK_PHY_HWMON) &&
++	    phydev->phy_id != RTL_GENERIC_PHYID)
++		return rtl822x_hwmon_init(phydev);
++
++	return 0;
++}
++
+ static int rtl822xb_config_init(struct phy_device *phydev)
+ {
+ 	bool has_2500, has_sgmii;
+@@ -1518,6 +1529,7 @@ static struct phy_driver realtek_drvs[]
+ 		.match_phy_device = rtl_internal_nbaset_match_phy_device,
+ 		.name           = "Realtek Internal NBASE-T PHY",
+ 		.flags		= PHY_IS_INTERNAL,
++		.probe		= rtl822x_probe,
+ 		.get_features   = rtl822x_get_features,
+ 		.config_aneg    = rtl822x_config_aneg,
+ 		.read_status    = rtl822x_read_status,

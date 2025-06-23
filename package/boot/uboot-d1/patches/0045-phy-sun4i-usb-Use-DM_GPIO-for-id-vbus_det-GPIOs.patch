@@ -1,0 +1,216 @@
+From afa281decfbb174f57341897e0ad50ee9ad3564f Mon Sep 17 00:00:00 2001
+From: Zoltan HERPAI <wigyori@uid0.hu>
+Date: Tue, 6 Jun 2023 17:59:24 +0000
+Subject: [PATCH 45/90] phy: sun4i-usb: Use DM_GPIO for id/vbus_det GPIOs
+
+Now that the sunxi_gpio driver handles pull-up/down via the driver
+model, we can switch to DM_GPIO for these pins with no loss in
+functionality. Since the driver now gets its pin configuration from
+the device tree, we can remove the Kconfig symbols.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+
+Signed-off-by: Zoltan HERPAI <wigyori@uid0.hu>
+---
+ arch/arm/dts/sun5i-a13-ampe-a76.dts           |  6 ++
+ .../sun6i-a31s-yones-toptech-bs1078-v2.dts    |  1 +
+ arch/arm/dts/sun8i-a33-sinlinx-sina33.dts     |  1 +
+ arch/arm/mach-sunxi/Kconfig                   | 14 ----
+ drivers/phy/allwinner/phy-sun4i-usb.c         | 71 ++++---------------
+ 5 files changed, 22 insertions(+), 71 deletions(-)
+
+--- a/arch/arm/dts/sun5i-a13-ampe-a76.dts
++++ b/arch/arm/dts/sun5i-a13-ampe-a76.dts
+@@ -8,6 +8,8 @@
+ /dts-v1/;
+ #include "sun5i-a13.dtsi"
+ 
++#include <dt-bindings/gpio/gpio.h>
++
+ / {
+ 	model = "Ampe A76";
+ 	compatible = "ampe,a76", "allwinner,sun5i-a13";
+@@ -26,3 +28,7 @@
+ 	pinctrl-0 = <&uart1_pg_pins>;
+ 	status = "okay";
+ };
++
++&usbphy {
++	usb0_id_det-gpios = <&pio 6 2 GPIO_ACTIVE_HIGH>; /* PG2 */
++};
+--- a/arch/arm/dts/sun6i-a31s-yones-toptech-bs1078-v2.dts
++++ b/arch/arm/dts/sun6i-a31s-yones-toptech-bs1078-v2.dts
+@@ -176,6 +176,7 @@
+ };
+ 
+ &usbphy {
++	usb0_id_det-gpios = <&pio 0 15 GPIO_ACTIVE_HIGH>; /* PA15 */
+ 	usb1_vbus-supply = <&reg_dldo1>;
+ 	usb2_vbus-supply = <&reg_dc1sw>;
+ 	status = "okay";
+--- a/arch/arm/dts/sun8i-a33-sinlinx-sina33.dts
++++ b/arch/arm/dts/sun8i-a33-sinlinx-sina33.dts
+@@ -271,5 +271,6 @@
+ 
+ &usbphy {
+ 	status = "okay";
++	usb0_id_det-gpios = <&pio 7 8 GPIO_ACTIVE_HIGH>; /* PH8 */
+ 	usb1_vbus-supply = <&reg_vcc5v0>; /* USB1 VBUS is always on */
+ };
+--- a/arch/arm/mach-sunxi/Kconfig
++++ b/arch/arm/mach-sunxi/Kconfig
+@@ -655,20 +655,6 @@ config MMC_SUNXI_SLOT_EXTRA
+ 	slot or emmc on mmc1 - mmc3. Setting this to 1, 2 or 3 will enable
+ 	support for this.
+ 
+-config USB0_VBUS_DET
+-	string "Vbus detect pin for usb0 (otg)"
+-	default ""
+-	---help---
+-	Set the Vbus detect pin for usb0 (otg). This takes a string in the
+-	format understood by sunxi_name_to_gpio, e.g. PH1 for pin 1 of port H.
+-
+-config USB0_ID_DET
+-	string "ID detect pin for usb0 (otg)"
+-	default ""
+-	---help---
+-	Set the ID detect pin for usb0 (otg). This takes a string in the
+-	format understood by sunxi_name_to_gpio, e.g. PH1 for pin 1 of port H.
+-
+ config I2C0_ENABLE
+ 	bool "Enable I2C/TWI controller 0"
+ 	default y if MACH_SUN4I || MACH_SUN5I || MACH_SUN7I || MACH_SUN8I_R40
+--- a/drivers/phy/allwinner/phy-sun4i-usb.c
++++ b/drivers/phy/allwinner/phy-sun4i-usb.c
+@@ -96,32 +96,8 @@ struct sun4i_usb_phy_cfg {
+ 	int missing_phys;
+ };
+ 
+-struct sun4i_usb_phy_info {
+-	const char *gpio_vbus_det;
+-	const char *gpio_id_det;
+-} phy_info[] = {
+-	{
+-		.gpio_vbus_det = CONFIG_USB0_VBUS_DET,
+-		.gpio_id_det = CONFIG_USB0_ID_DET,
+-	},
+-	{
+-		.gpio_vbus_det = NULL,
+-		.gpio_id_det = NULL,
+-	},
+-	{
+-		.gpio_vbus_det = NULL,
+-		.gpio_id_det = NULL,
+-	},
+-	{
+-		.gpio_vbus_det = NULL,
+-		.gpio_id_det = NULL,
+-	},
+-};
+-
+ struct sun4i_usb_phy_plat {
+ 	void __iomem *pmu;
+-	struct gpio_desc gpio_vbus_det;
+-	struct gpio_desc gpio_id_det;
+ 	struct clk clocks;
+ 	struct reset_ctl resets;
+ 	struct udevice *vbus;
+@@ -132,6 +108,8 @@ struct sun4i_usb_phy_data {
+ 	void __iomem *base;
+ 	const struct sun4i_usb_phy_cfg *cfg;
+ 	struct sun4i_usb_phy_plat *usb_phy;
++	struct gpio_desc id_det_gpio;
++	struct gpio_desc vbus_det_gpio;
+ 	struct udevice *vbus_power_supply;
+ };
+ 
+@@ -393,11 +371,10 @@ static int sun4i_usb_phy_xlate(struct ph
+ int sun4i_usb_phy_vbus_detect(struct phy *phy)
+ {
+ 	struct sun4i_usb_phy_data *data = dev_get_priv(phy->dev);
+-	struct sun4i_usb_phy_plat *usb_phy = &data->usb_phy[phy->id];
+ 	int err = 1, retries = 3;
+ 
+-	if (dm_gpio_is_valid(&usb_phy->gpio_vbus_det)) {
+-		err = dm_gpio_get_value(&usb_phy->gpio_vbus_det);
++	if (dm_gpio_is_valid(&data->vbus_det_gpio)) {
++		err = dm_gpio_get_value(&data->vbus_det_gpio);
+ 		/*
+ 		 * Vbus may have been provided by the board and just turned off
+ 		 * some milliseconds ago on reset. What we're measuring then is
+@@ -405,7 +382,7 @@ int sun4i_usb_phy_vbus_detect(struct phy
+ 		 */
+ 		while (err > 0 && retries--) {
+ 			mdelay(100);
+-			err = dm_gpio_get_value(&usb_phy->gpio_vbus_det);
++			err = dm_gpio_get_value(&data->vbus_det_gpio);
+ 		}
+ 	} else if (data->vbus_power_supply) {
+ 		err = regulator_get_enable(data->vbus_power_supply);
+@@ -417,12 +394,11 @@ int sun4i_usb_phy_vbus_detect(struct phy
+ int sun4i_usb_phy_id_detect(struct phy *phy)
+ {
+ 	struct sun4i_usb_phy_data *data = dev_get_priv(phy->dev);
+-	struct sun4i_usb_phy_plat *usb_phy = &data->usb_phy[phy->id];
+ 
+-	if (!dm_gpio_is_valid(&usb_phy->gpio_id_det))
+-		return -1;
++	if (!dm_gpio_is_valid(&data->id_det_gpio))
++		return -EOPNOTSUPP;
+ 
+-	return dm_gpio_get_value(&usb_phy->gpio_id_det);
++	return dm_gpio_get_value(&data->id_det_gpio);
+ }
+ 
+ void sun4i_usb_phy_set_squelch_detect(struct phy *phy, bool enabled)
+@@ -452,13 +428,18 @@ static int sun4i_usb_phy_probe(struct ud
+ 	if (IS_ERR(data->base))
+ 		return PTR_ERR(data->base);
+ 
++	gpio_request_by_name(dev, "usb0_id_det-gpios", 0, &data->id_det_gpio,
++			     GPIOD_IS_IN | GPIOD_PULL_UP);
++
++	gpio_request_by_name(dev, "usb0_vbus_det-gpios", 0, &data->vbus_det_gpio,
++			     GPIOD_IS_IN);
++
+ 	device_get_supply_regulator(dev, "usb0_vbus_power-supply",
+ 				    &data->vbus_power_supply);
+ 
+ 	data->usb_phy = plat;
+ 	for (i = 0; i < data->cfg->num_phys; i++) {
+ 		struct sun4i_usb_phy_plat *phy = &plat[i];
+-		struct sun4i_usb_phy_info *info = &phy_info[i];
+ 		char name[20];
+ 
+ 		if (data->cfg->missing_phys & BIT(i))
+@@ -472,30 +453,6 @@ static int sun4i_usb_phy_probe(struct ud
+ 				return ret;
+ 		}
+ 
+-		ret = dm_gpio_lookup_name(info->gpio_vbus_det,
+-					  &phy->gpio_vbus_det);
+-		if (ret == 0) {
+-			ret = dm_gpio_request(&phy->gpio_vbus_det,
+-					      "usb_vbus_det");
+-			if (ret)
+-				return ret;
+-			ret = dm_gpio_set_dir_flags(&phy->gpio_vbus_det,
+-						    GPIOD_IS_IN);
+-			if (ret)
+-				return ret;
+-		}
+-
+-		ret = dm_gpio_lookup_name(info->gpio_id_det, &phy->gpio_id_det);
+-		if (ret == 0) {
+-			ret = dm_gpio_request(&phy->gpio_id_det, "usb_id_det");
+-			if (ret)
+-				return ret;
+-			ret = dm_gpio_set_dir_flags(&phy->gpio_id_det,
+-						GPIOD_IS_IN | GPIOD_PULL_UP);
+-			if (ret)
+-				return ret;
+-		}
+-
+ 		if (data->cfg->dedicated_clocks)
+ 			snprintf(name, sizeof(name), "usb%d_phy", i);
+ 		else

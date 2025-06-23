@@ -1,0 +1,209 @@
+From 58c89e8768711a959fdc6e953df3ea2254ff93c1 Mon Sep 17 00:00:00 2001
+From: Syrone Wong <wong.syrone@gmail.com>
+Date: Sat, 9 Apr 2022 00:38:51 +0800
+Subject: [PATCH] nftables: add fullcone expression support
+
+Signed-off-by: Syrone Wong <wong.syrone@gmail.com>
+---
+ include/linux/netfilter/nf_tables.h | 16 ++++++++++
+ include/statement.h                 |  1 +
+ src/netlink_delinearize.c           | 48 +++++++++++++++++++++++++++++
+ src/netlink_linearize.c             |  7 +++++
+ src/parser_bison.y                  | 28 +++++++++++++++--
+ src/scanner.l                       |  1 +
+ src/statement.c                     |  1 +
+ 7 files changed, 100 insertions(+), 2 deletions(-)
+
+--- a/include/linux/netfilter/nf_tables.h
++++ b/include/linux/netfilter/nf_tables.h
+@@ -1485,6 +1485,22 @@ enum nft_masq_attributes {
+ #define NFTA_MASQ_MAX		(__NFTA_MASQ_MAX - 1)
+ 
+ /**
++ * enum nft_fullcone_attributes - nf_tables fullcone expression attributes
++ *
++ * @NFTA_FULLCONE_FLAGS: NAT flags (see NF_NAT_RANGE_* in linux/netfilter/nf_nat.h) (NLA_U32)
++ * @NFTA_FULLCONE_REG_PROTO_MIN: source register of proto range start (NLA_U32: nft_registers)
++ * @NFTA_FULLCONE_REG_PROTO_MAX: source register of proto range end (NLA_U32: nft_registers)
++ */
++enum nft_fullcone_attributes {
++	NFTA_FULLCONE_UNSPEC,
++	NFTA_FULLCONE_FLAGS,
++	NFTA_FULLCONE_REG_PROTO_MIN,
++	NFTA_FULLCONE_REG_PROTO_MAX,
++	__NFTA_FULLCONE_MAX
++};
++#define NFTA_FULLCONE_MAX		(__NFTA_FULLCONE_MAX - 1)
++
++/**
+  * enum nft_redir_attributes - nf_tables redirect expression netlink attributes
+  *
+  * @NFTA_REDIR_REG_PROTO_MIN: source register of proto range start (NLA_U32: nft_registers)
+--- a/include/statement.h
++++ b/include/statement.h
+@@ -129,6 +129,7 @@ enum nft_nat_etypes {
+ 	__NFT_NAT_SNAT = NFT_NAT_SNAT,
+ 	__NFT_NAT_DNAT = NFT_NAT_DNAT,
+ 	NFT_NAT_MASQ,
++	NFT_NAT_FULLCONE,
+ 	NFT_NAT_REDIR,
+ };
+ 
+--- a/src/netlink_delinearize.c
++++ b/src/netlink_delinearize.c
+@@ -1467,6 +1467,53 @@ out_err:
+ 	stmt_free(stmt);
+ }
+ 
++static void netlink_parse_fullcone(struct netlink_parse_ctx *ctx,
++			       const struct location *loc,
++			       const struct nftnl_expr *nle)
++{
++	enum nft_registers reg1, reg2;
++	struct expr *proto;
++	struct stmt *stmt;
++	uint32_t flags = 0;
++
++	if (nftnl_expr_is_set(nle, NFTNL_EXPR_FULLCONE_FLAGS))
++		flags = nftnl_expr_get_u32(nle, NFTNL_EXPR_FULLCONE_FLAGS);
++
++	stmt = nat_stmt_alloc(loc, NFT_NAT_FULLCONE);
++	stmt->nat.flags = flags;
++
++	reg1 = netlink_parse_register(nle, NFTNL_EXPR_FULLCONE_REG_PROTO_MIN);
++	if (reg1) {
++		proto = netlink_get_register(ctx, loc, reg1);
++		if (proto == NULL) {
++			netlink_error(ctx, loc,
++				      "fullcone statement has no proto expression");
++			goto out_err;
++		}
++		expr_set_type(proto, &inet_service_type, BYTEORDER_BIG_ENDIAN);
++		stmt->nat.proto = proto;
++	}
++
++	reg2 = netlink_parse_register(nle, NFTNL_EXPR_FULLCONE_REG_PROTO_MAX);
++	if (reg2 && reg2 != reg1) {
++		proto = netlink_get_register(ctx, loc, reg2);
++		if (proto == NULL) {
++			netlink_error(ctx, loc,
++				      "fullcone statement has no proto expression");
++			goto out_err;
++		}
++		expr_set_type(proto, &inet_service_type, BYTEORDER_BIG_ENDIAN);
++		if (stmt->nat.proto != NULL)
++			proto = range_expr_alloc(loc, stmt->nat.proto, proto);
++		stmt->nat.proto = proto;
++	}
++
++	ctx->stmt = stmt;
++	return;
++out_err:
++	stmt_free(stmt);
++}
++
+ static void netlink_parse_redir(struct netlink_parse_ctx *ctx,
+ 				const struct location *loc,
+ 				const struct nftnl_expr *nle)
+@@ -1897,6 +1944,7 @@ static const struct expr_handler netlink
+ 	{ .name = "tproxy",	.parse = netlink_parse_tproxy },
+ 	{ .name = "notrack",	.parse = netlink_parse_notrack },
+ 	{ .name = "masq",	.parse = netlink_parse_masq },
++	{ .name = "fullcone",	.parse = netlink_parse_fullcone },
+ 	{ .name = "redir",	.parse = netlink_parse_redir },
+ 	{ .name = "dup",	.parse = netlink_parse_dup },
+ 	{ .name = "queue",	.parse = netlink_parse_queue },
+--- a/src/netlink_linearize.c
++++ b/src/netlink_linearize.c
+@@ -1226,6 +1226,13 @@ static void netlink_gen_nat_stmt(struct
+ 		nftnl_reg_pmin = NFTNL_EXPR_MASQ_REG_PROTO_MIN;
+ 		nftnl_reg_pmax = NFTNL_EXPR_MASQ_REG_PROTO_MAX;
+ 		break;
++	case NFT_NAT_FULLCONE:
++		nle = alloc_nft_expr("fullcone");
++
++		nftnl_flag_attr = NFTNL_EXPR_FULLCONE_FLAGS;
++		nftnl_reg_pmin = NFTNL_EXPR_FULLCONE_REG_PROTO_MIN;
++		nftnl_reg_pmax = NFTNL_EXPR_FULLCONE_REG_PROTO_MAX;
++		break;
+ 	case NFT_NAT_REDIR:
+ 		nle = alloc_nft_expr("redir");
+ 
+--- a/src/parser_bison.y
++++ b/src/parser_bison.y
+@@ -643,6 +643,7 @@ int nft_lex(void *, void *, void *);
+ %token SNAT			"snat"
+ %token DNAT			"dnat"
+ %token MASQUERADE		"masquerade"
++%token FULLCONE		"fullcone"
+ %token REDIRECT			"redirect"
+ %token RANDOM			"random"
+ %token FULLY_RANDOM		"fully-random"
+@@ -784,8 +785,8 @@ int nft_lex(void *, void *, void *);
+ %type <val>			limit_burst_pkts limit_burst_bytes limit_mode limit_bytes time_unit quota_mode
+ %type <stmt>			reject_stmt reject_stmt_alloc
+ %destructor { stmt_free($$); }	reject_stmt reject_stmt_alloc
+-%type <stmt>			nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc redir_stmt redir_stmt_alloc
+-%destructor { stmt_free($$); }	nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc redir_stmt redir_stmt_alloc
++%type <stmt>			nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc fullcone_stmt fullcone_stmt_alloc redir_stmt redir_stmt_alloc
++%destructor { stmt_free($$); }	nat_stmt nat_stmt_alloc masq_stmt masq_stmt_alloc fullcone_stmt fullcone_stmt_alloc redir_stmt redir_stmt_alloc
+ %type <val>			nf_nat_flags nf_nat_flag offset_opt
+ %type <stmt>			tproxy_stmt
+ %destructor { stmt_free($$); }	tproxy_stmt
+@@ -3216,6 +3217,7 @@ stmt			:	verdict_stmt
+ 			|	queue_stmt
+ 			|	ct_stmt
+ 			|	masq_stmt	close_scope_nat
++			|	fullcone_stmt	close_scope_nat
+ 			|	redir_stmt	close_scope_nat
+ 			|	dup_stmt	close_scope_dup
+ 			|	fwd_stmt	close_scope_fwd
+@@ -3999,6 +4001,28 @@ masq_stmt_args		:	TO 	COLON	stmt_expr
+ 			{
+ 				$<stmt>0->nat.proto = $3;
+ 			}
++			|	TO 	COLON	stmt_expr	nf_nat_flags
++			{
++				$<stmt>0->nat.proto = $3;
++				$<stmt>0->nat.flags = $4;
++			}
++			|	nf_nat_flags
++			{
++				$<stmt>0->nat.flags = $1;
++			}
++			;
++
++fullcone_stmt		:	fullcone_stmt_alloc		fullcone_stmt_args
++			|	fullcone_stmt_alloc
++			;
++
++fullcone_stmt_alloc		:	FULLCONE	{ $$ = nat_stmt_alloc(&@$, NFT_NAT_FULLCONE); }
++			;
++
++fullcone_stmt_args		:	TO 	COLON	stmt_expr
++			{
++				$<stmt>0->nat.proto = $3;
++			}
+ 			|	TO 	COLON	stmt_expr	nf_nat_flags
+ 			{
+ 				$<stmt>0->nat.proto = $3;
+--- a/src/scanner.l
++++ b/src/scanner.l
+@@ -462,6 +462,7 @@ addrstring	({macaddr}|{ip4addr}|{ip6addr
+ "snat"			{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return SNAT; }
+ "dnat"			{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return DNAT; }
+ "masquerade"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return MASQUERADE; }
++"fullcone"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return FULLCONE; }
+ "redirect"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return REDIRECT; }
+ "random"		{ return RANDOM; }
+ <SCANSTATE_STMT_NAT>{
+--- a/src/statement.c
++++ b/src/statement.c
+@@ -674,6 +674,7 @@ const char *nat_etype2str(enum nft_nat_e
+ 		[NFT_NAT_SNAT]	= "snat",
+ 		[NFT_NAT_DNAT]	= "dnat",
+ 		[NFT_NAT_MASQ]	= "masquerade",
++		[NFT_NAT_FULLCONE] = "fullcone",
+ 		[NFT_NAT_REDIR]	= "redirect",
+ 	};
+ 
