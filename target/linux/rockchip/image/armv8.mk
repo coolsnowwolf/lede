@@ -424,6 +424,17 @@ define Device/radxa_rock-3a
 endef
 TARGET_DEVICES += radxa_rock-3a
 
+define Device/radxa_rock-3b
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 3B
+  SOC := rk3568
+  SUPPORTED_DEVICES := radxa,rock3b
+  UBOOT_DEVICE_NAME := rock-3b-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script vop | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-usb-net-cdc-ncm kmod-usb-net-rndis kmod-ata-ahci-dwc kmod-drm-rockchip kmod-r8125-rss
+endef
+TARGET_DEVICES += radxa_rock-3b
+
 define Device/radxa_rock-3c
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK 3C
