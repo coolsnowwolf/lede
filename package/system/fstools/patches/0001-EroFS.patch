@@ -1,0 +1,139 @@
+From e8cd820cdbb8fba990fd79efda90c5dc10d8e45c Mon Sep 17 00:00:00 2001
+From: Gao Xiang <xiang@kernel.org>
+Subject: [PATCH] libfstools: add support for EroFS based images
+
+Add support to libfstools to parse and support EroFS based images to
+permit correct mounting of OverlayFS with it. (in addition to SquashFS
+support)
+
+While at it rework the code to better handle the 2 different filesystem
+introducing a similar pattern.
+
+Signed-off-by: Gao Xiang <xiang@kernel.org>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ libfstools/rootdisk.c | 83 +++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 77 insertions(+), 6 deletions(-)
+
+--- a/libfstools/rootdisk.c
++++ b/libfstools/rootdisk.c
+@@ -15,6 +15,8 @@
+ 
+ #include <linux/loop.h>
+ 
++#define SQUASHFS_MAGIC		"hsqs"
++#define EROFS_MAGIC		0xE0F5E1E2
+ #define ROOTDEV_OVERLAY_ALIGN	(64ULL * 1024ULL)
+ #define F2FS_MINSIZE		(100ULL * 1024ULL * 1024ULL)
+ 
+@@ -24,6 +26,14 @@ struct squashfs_super_block {
+ 	uint64_t bytes_used;
+ };
+ 
++struct erofs_super_block {
++	uint32_t s_magic;
++	uint32_t pad0[2];
++	uint8_t blkszbits;
++	uint8_t pad1[23];
++	uint32_t blocks;
++};
++
+ struct rootdev_volume {
+ 	struct volume v;
+ 	uint64_t offset;
+@@ -93,10 +103,66 @@ static int get_squashfs(struct squashfs_
+ 	return 0;
+ }
+ 
+-static struct volume *rootdisk_volume_find(char *name)
++static int check_squashfs(uint64_t *offset)
+ {
++	const char *s_magic = SQUASHFS_MAGIC;
+ 	struct squashfs_super_block sb;
++	int ret;
++
++	ret = get_squashfs(&sb);
++	if (ret)
++		return ret;
++
++	if (memcmp(&sb.s_magic, s_magic, sizeof(sb.s_magic)))
++		return -1;
++
++	*offset = le64_to_cpu(sb.bytes_used);
++	return 0;
++}
++
++static int get_erofs(struct erofs_super_block *sb)
++{
++	FILE *f;
++	int len;
++
++	f = fopen(rootdev, "r");
++	if (!f)
++		return -1;
++
++	if (fseek(f, 1024, SEEK_SET))
++		return -1;
++
++	len = fread(sb, sizeof(*sb), 1, f);
++	fclose(f);
++
++	if (len != 1)
++		return -1;
++
++	return 0;
++}
++
++static int check_erofs(uint64_t *offset)
++{
++	uint32_t s_magic = cpu_to_le32(EROFS_MAGIC);
++	struct erofs_super_block sb;
++	int ret;
++
++	ret = get_erofs(&sb);
++	if (ret)
++		return ret;
++
++	if (memcmp(&sb.s_magic, &s_magic, sizeof(sb.s_magic)))
++		return -1;
++
++	*offset = (uint64_t)le32_to_cpu(sb.blocks) << sb.blkszbits;
++	return 0;
++}
++
++static struct volume *rootdisk_volume_find(char *name)
++{
+ 	struct rootdev_volume *p;
++	uint64_t offset;
++	int ret;
+ 
+ 	if (strcmp(name, "rootfs_data") != 0)
+ 		return NULL;
+@@ -108,17 +174,22 @@ static struct volume *rootdisk_volume_fi
+ 	if (!rootdev)
+ 		return NULL;
+ 
+-	if (get_squashfs(&sb))
+-		return NULL;
+-
+-	if (memcmp(&sb.s_magic, "hsqs", sizeof(sb.s_magic)) != 0)
++	/*
++	 * We support both SquashFS and EroFS.
++	 * First check for SquashFS and then check
++	 * for EroFS on new images.
++	 */
++	ret = check_squashfs(&offset);
++	if (ret < 0 || !offset)
++		ret = check_erofs(&offset);
++	if (ret < 0 || !offset)
+ 		return NULL;
+ 
+ 	p = calloc(1, sizeof(*p));
+ 	p->v.drv = &rootdisk_driver;
+ 	p->v.name = "rootfs_data";
+ 
+-	p->offset = le64_to_cpu(sb.bytes_used);
++	p->offset = offset;
+ 	p->offset = ((p->offset + (ROOTDEV_OVERLAY_ALIGN - 1)) &
+ 		     ~(ROOTDEV_OVERLAY_ALIGN - 1));
+ 
