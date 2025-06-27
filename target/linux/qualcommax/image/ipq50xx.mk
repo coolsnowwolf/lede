@@ -102,6 +102,8 @@ define Device/xiaomi_ax6000
 	NAND_SIZE := 128m
 	DEVICE_PACKAGES := kmod-ath11k-pci \
 		ath11k-firmware-qcn9074 \
+		kmod-ath10k kmod-ath10k-smallbuffers \
+		ath10k-firmware-qca9887 \
 		ipq-wifi-xiaomi_ax6000
 ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
 	ARTIFACTS := initramfs-factory.ubi
