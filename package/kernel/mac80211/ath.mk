@@ -41,7 +41,7 @@ ifdef CONFIG_PACKAGE_MAC80211_TRACING
 endif
 
 config-$(call config_package,qcom-qmi-helpers) += QCOM_QMI_HELPERS
-config-$(call config_package,ath) += ATH_CARDS ATH_COMMON
+config-$(call config_package,ath,regular smallbuffers) += ATH_CARDS ATH_COMMON
 config-$(CONFIG_PACKAGE_ATH_DEBUG) += ATH_DEBUG ATH10K_DEBUG ATH11K_DEBUG ATH12K_DEBUG ATH9K_STATION_STATISTICS
 config-$(CONFIG_PACKAGE_ATH_DFS) += ATH9K_DFS_CERTIFIED ATH10K_DFS_CERTIFIED
 config-$(CONFIG_PACKAGE_ATH_SPECTRAL) += ATH9K_COMMON_SPECTRAL ATH10K_SPECTRAL ATH11K_SPECTRAL
@@ -62,7 +62,8 @@ config-$(CONFIG_ATH10K_THERMAL) += ATH10K_THERMAL
 config-$(CONFIG_ATH11K_THERMAL) += ATH11K_THERMAL
 
 config-$(call config_package,ath9k-htc) += ATH9K_HTC
-config-$(call config_package,ath10k) += ATH10K
+config-$(call config_package,ath10k,regular) += ATH10K ATH10K_PCI
+config-$(call config_package,ath10k-smallbuffers,smallbuffers) += ATH10K ATH10K_PCI ATH10K_SMALLBUFFERS
 config-$(call config_package,ath10k-pci) += ATH10K_PCI
 config-$(call config_package,ath10k-sdio) += ATH10K_SDIO
 config-$(call config_package,ath10k-smallbuffers) += ATH10K ATH10K_PCI ATH10K_SMALLBUFFERS
