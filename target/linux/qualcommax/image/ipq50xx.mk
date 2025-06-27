@@ -88,3 +88,24 @@ define Device/linksys_spnmx56
 		ipq-wifi-linksys_spnmx56
 endef
 TARGET_DEVICES += linksys_spnmx56
+
+define Device/xiaomi_ax6000
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Xiaomi
+	DEVICE_MODEL := AX6000
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@mp03.1
+	SOC := ipq5018
+	KERNEL_SIZE := 36864k
+	NAND_SIZE := 128m
+	DEVICE_PACKAGES := kmod-ath11k-pci \
+		ath11k-firmware-qcn9074 \
+		ipq-wifi-xiaomi_ax6000
+ifneq ($(CONFIG_TARGET_ROOTFS_INITRAMFS),)
+	ARTIFACTS := initramfs-factory.ubi
+	ARTIFACT/initramfs-factory.ubi := append-image-stage initramfs-uImage.itb | ubinize-kernel
+endif
+endef
+TARGET_DEVICES += xiaomi_ax6000

@@ -6,11 +6,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firmware/qca-wireless.git
-PKG_SOURCE_DATE:=2025-04-08
-PKG_SOURCE_VERSION:=9591c9b7578af3548c35bb80cd6c37978669f7c9
-PKG_MIRROR_HASH:=74e7c92fdd68488ad5b761fec78eb98fa0dcab6ba2aab04fb463108610e8b758
-
-PKG_FLAGS:=nonshared
+PKG_SOURCE_DATE:=2025-06-13
+PKG_SOURCE_VERSION:=4810aacf3b1c5de99923b9a424a1f0e6341c6bca
+PKG_MIRROR_HASH:=2e2fdf0578e39eb0be36cfd8e11de920c3e8446469dafee0ebbc580f272193a8
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -57,6 +55,7 @@ ALLWIFIBOARDS:= \
 	redmi_ax6 \
 	wallys_dr40x9 \
 	xiaomi_ax3600 \
+	xiaomi_ax6000 \
 	xiaomi_ax9000 \
 	xiaomi_rm1800 \
 	yuncore_ax880 \
@@ -174,6 +173,7 @@ $(eval $(call generate-ipq-wifi-package,redmi_ax5-jdcloud,Redmi AX5 JDCloud))
 $(eval $(call generate-ipq-wifi-package,redmi_ax6,Redmi AX6))
 $(eval $(call generate-ipq-wifi-package,wallys_dr40x9,Wallys DR40X9))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
+$(eval $(call generate-ipq-wifi-package,xiaomi_ax6000,Xiaomi AX6000))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
 $(eval $(call generate-ipq-wifi-package,xiaomi_rm1800,Xiaomi RM1800))
 $(eval $(call generate-ipq-wifi-package,yuncore_ax880,Yuncore AX880))
