@@ -1,0 +1,216 @@
+From c504e5c2f9648a1e5c2be01e8c3f59d394192bd3 Mon Sep 17 00:00:00 2001
+From: Menglong Dong <imagedong@tencent.com>
+Date: Sun, 9 Jan 2022 14:36:26 +0800
+Subject: [PATCH] net: skb: introduce kfree_skb_reason()
+
+Introduce the interface kfree_skb_reason(), which is able to pass
+the reason why the skb is dropped to 'kfree_skb' tracepoint.
+
+Add the 'reason' field to 'trace_kfree_skb', therefor user can get
+more detail information about abnormal skb with 'drop_monitor' or
+eBPF.
+
+All drop reasons are defined in the enum 'skb_drop_reason', and
+they will be print as string in 'kfree_skb' tracepoint in format
+of 'reason: XXX'.
+
+( Maybe the reasons should be defined in a uapi header file, so that
+user space can use them? )
+
+Signed-off-by: Menglong Dong <imagedong@tencent.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ include/linux/skbuff.h     | 23 ++++++++++++++++++++++-
+ include/trace/events/skb.h | 36 +++++++++++++++++++++++++++++-------
+ net/core/dev.c             |  3 ++-
+ net/core/drop_monitor.c    | 10 +++++++---
+ net/core/skbuff.c          | 12 +++++++-----
+ 5 files changed, 67 insertions(+), 17 deletions(-)
+
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 642acb0d1646b7..ef0870abc791c9 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -305,6 +305,17 @@ struct sk_buff_head {
+ 
+ struct sk_buff;
+ 
++/* The reason of skb drop, which is used in kfree_skb_reason().
++ * en...maybe they should be splited by group?
++ *
++ * Each item here should also be in 'TRACE_SKB_DROP_REASON', which is
++ * used to translate the reason to string.
++ */
++enum skb_drop_reason {
++	SKB_DROP_REASON_NOT_SPECIFIED,
++	SKB_DROP_REASON_MAX,
++};
++
+ /* To allow 64K frame to be packed as single skb without frag_list we
+  * require 64K/PAGE_SIZE pages plus 1 additional page to allow for
+  * buffers which do not start on a page boundary.
+@@ -1085,8 +1096,18 @@ static inline bool skb_unref(struct sk_buff *skb)
+ 	return true;
+ }
+ 
++void kfree_skb_reason(struct sk_buff *skb, enum skb_drop_reason reason);
++
++/**
++ *	kfree_skb - free an sk_buff with 'NOT_SPECIFIED' reason
++ *	@skb: buffer to free
++ */
++static inline void kfree_skb(struct sk_buff *skb)
++{
++	kfree_skb_reason(skb, SKB_DROP_REASON_NOT_SPECIFIED);
++}
++
+ void skb_release_head_state(struct sk_buff *skb);
+-void kfree_skb(struct sk_buff *skb);
+ void kfree_skb_list(struct sk_buff *segs);
+ void skb_dump(const char *level, const struct sk_buff *skb, bool full_pkt);
+ void skb_tx_error(struct sk_buff *skb);
+diff --git a/include/trace/events/skb.h b/include/trace/events/skb.h
+index 9e92f22eb086c2..294c61bbe44b6e 100644
+--- a/include/trace/events/skb.h
++++ b/include/trace/events/skb.h
+@@ -9,29 +9,51 @@
+ #include <linux/netdevice.h>
+ #include <linux/tracepoint.h>
+ 
++#define TRACE_SKB_DROP_REASON					\
++	EM(SKB_DROP_REASON_NOT_SPECIFIED, NOT_SPECIFIED)	\
++	EMe(SKB_DROP_REASON_MAX, MAX)
++
++#undef EM
++#undef EMe
++
++#define EM(a, b)	TRACE_DEFINE_ENUM(a);
++#define EMe(a, b)	TRACE_DEFINE_ENUM(a);
++
++TRACE_SKB_DROP_REASON
++
++#undef EM
++#undef EMe
++#define EM(a, b)	{ a, #b },
++#define EMe(a, b)	{ a, #b }
++
+ /*
+  * Tracepoint for free an sk_buff:
+  */
+ TRACE_EVENT(kfree_skb,
+ 
+-	TP_PROTO(struct sk_buff *skb, void *location),
++	TP_PROTO(struct sk_buff *skb, void *location,
++		 enum skb_drop_reason reason),
+ 
+-	TP_ARGS(skb, location),
++	TP_ARGS(skb, location, reason),
+ 
+ 	TP_STRUCT__entry(
+-		__field(	void *,		skbaddr		)
+-		__field(	void *,		location	)
+-		__field(	unsigned short,	protocol	)
++		__field(void *,		skbaddr)
++		__field(void *,		location)
++		__field(unsigned short,	protocol)
++		__field(enum skb_drop_reason,	reason)
+ 	),
+ 
+ 	TP_fast_assign(
+ 		__entry->skbaddr = skb;
+ 		__entry->location = location;
+ 		__entry->protocol = ntohs(skb->protocol);
++		__entry->reason = reason;
+ 	),
+ 
+-	TP_printk("skbaddr=%p protocol=%u location=%p",
+-		__entry->skbaddr, __entry->protocol, __entry->location)
++	TP_printk("skbaddr=%p protocol=%u location=%p reason: %s",
++		  __entry->skbaddr, __entry->protocol, __entry->location,
++		  __print_symbolic(__entry->reason,
++				   TRACE_SKB_DROP_REASON))
+ );
+ 
+ TRACE_EVENT(consume_skb,
+diff --git a/net/core/dev.c b/net/core/dev.c
+index 83a4089990a0af..84a0d9542fe943 100644
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -4899,7 +4899,8 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
+ 			if (likely(get_kfree_skb_cb(skb)->reason == SKB_REASON_CONSUMED))
+ 				trace_consume_skb(skb);
+ 			else
+-				trace_kfree_skb(skb, net_tx_action);
++				trace_kfree_skb(skb, net_tx_action,
++						SKB_DROP_REASON_NOT_SPECIFIED);
+ 
+ 			if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
+ 				__kfree_skb(skb);
+diff --git a/net/core/drop_monitor.c b/net/core/drop_monitor.c
+index 3d0ab2eec91667..7b288a121a41a7 100644
+--- a/net/core/drop_monitor.c
++++ b/net/core/drop_monitor.c
+@@ -110,7 +110,8 @@ static u32 net_dm_queue_len = 1000;
+ 
+ struct net_dm_alert_ops {
+ 	void (*kfree_skb_probe)(void *ignore, struct sk_buff *skb,
+-				void *location);
++				void *location,
++				enum skb_drop_reason reason);
+ 	void (*napi_poll_probe)(void *ignore, struct napi_struct *napi,
+ 				int work, int budget);
+ 	void (*work_item_func)(struct work_struct *work);
+@@ -262,7 +263,9 @@ static void trace_drop_common(struct sk_buff *skb, void *location)
+ 	spin_unlock_irqrestore(&data->lock, flags);
+ }
+ 
+-static void trace_kfree_skb_hit(void *ignore, struct sk_buff *skb, void *location)
++static void trace_kfree_skb_hit(void *ignore, struct sk_buff *skb,
++				void *location,
++				enum skb_drop_reason reason)
+ {
+ 	trace_drop_common(skb, location);
+ }
+@@ -490,7 +493,8 @@ static const struct net_dm_alert_ops net_dm_alert_summary_ops = {
+ 
+ static void net_dm_packet_trace_kfree_skb_hit(void *ignore,
+ 					      struct sk_buff *skb,
+-					      void *location)
++					      void *location,
++					      enum skb_drop_reason reason)
+ {
+ 	ktime_t tstamp = ktime_get_real();
+ 	struct per_cpu_dm_data *data;
+diff --git a/net/core/skbuff.c b/net/core/skbuff.c
+index e514a36bcffcc8..0118f0afaa4fce 100644
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -759,21 +759,23 @@ void __kfree_skb(struct sk_buff *skb)
+ EXPORT_SYMBOL(__kfree_skb);
+ 
+ /**
+- *	kfree_skb - free an sk_buff
++ *	kfree_skb_reason - free an sk_buff with special reason
+  *	@skb: buffer to free
++ *	@reason: reason why this skb is dropped
+  *
+  *	Drop a reference to the buffer and free it if the usage count has
+- *	hit zero.
++ *	hit zero. Meanwhile, pass the drop reason to 'kfree_skb'
++ *	tracepoint.
+  */
+-void kfree_skb(struct sk_buff *skb)
++void kfree_skb_reason(struct sk_buff *skb, enum skb_drop_reason reason)
+ {
+ 	if (!skb_unref(skb))
+ 		return;
+ 
+-	trace_kfree_skb(skb, __builtin_return_address(0));
++	trace_kfree_skb(skb, __builtin_return_address(0), reason);
+ 	__kfree_skb(skb);
+ }
+-EXPORT_SYMBOL(kfree_skb);
++EXPORT_SYMBOL(kfree_skb_reason);
+ 
+ void kfree_skb_list(struct sk_buff *segs)
+ {

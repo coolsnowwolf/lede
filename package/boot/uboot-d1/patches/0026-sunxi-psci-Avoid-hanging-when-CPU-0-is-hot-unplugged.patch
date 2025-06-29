@@ -1,0 +1,51 @@
+From ca1e6f4491981432c3e88441131c8e25067da95e Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 9 Oct 2021 22:00:22 -0500
+Subject: [PATCH 26/90] sunxi: psci: Avoid hanging when CPU 0 is hot-unplugged
+
+Do not try to send an SGI from CPU 0 to itself. Since FIQs are masked
+when entering monitor mode, this will hang. Plus, CPU 0 cannot fully
+power itself off anyway. Instead, have it turn FIQs back on and continue
+servicing SGIs from other cores.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/arm/cpu/armv7/sunxi/psci.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+--- a/arch/arm/cpu/armv7/sunxi/psci.c
++++ b/arch/arm/cpu/armv7/sunxi/psci.c
+@@ -38,6 +38,15 @@
+ #define SUN8I_R40_PWR_CLAMP(cpu)		(0x120 + (cpu) * 0x4)
+ #define SUN8I_R40_SRAMC_SOFT_ENTRY_REG0		(0xbc)
+ 
++static inline u32 __secure cp15_read_mpidr(void)
++{
++	u32 val;
++
++	asm volatile ("mrc p15, 0, %0, c0, c0, 5" : "=r" (val));
++
++	return val;
++}
++
+ static void __secure cp15_write_cntp_tval(u32 tval)
+ {
+ 	asm volatile ("mcr p15, 0, %0, c14, c2, 0" : : "r" (tval));
+@@ -281,9 +290,14 @@ s32 __secure psci_cpu_off(void)
+ {
+ 	psci_cpu_off_common();
+ 
+-	/* Ask CPU0 via SGI15 to pull the rug... */
+-	writel(BIT(16) | 15, GICD_BASE + GICD_SGIR);
+-	dsb();
++	if (cp15_read_mpidr() & 3) {
++		/* Ask CPU0 via SGI15 to pull the rug... */
++		writel(BIT(16) | 15, GICD_BASE + GICD_SGIR);
++		dsb();
++	} else {
++		/* Unmask FIQs to service SGI15. */
++		asm volatile ("cpsie f");
++	}
+ 
+ 	/* Wait to be turned off */
+ 	while (1)

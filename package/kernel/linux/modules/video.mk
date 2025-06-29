@@ -503,7 +503,7 @@ define KernelPackage/drm-i915
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel i915 DRM support
   DEPENDS:=@(TARGET_x86_64||TARGET_x86_generic||TARGET_x86_legacy) \
-	@DISPLAY_SUPPORT +i915-firmware-dmc +kmod-backlight +kmod-drm-ttm \
+	@DISPLAY_SUPPORT +i915-firmware +kmod-backlight +kmod-drm-ttm \
 	+kmod-drm-ttm-helper +kmod-drm-kms-helper +kmod-i2c-algo-bit \
 	+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-display-helper \
 	+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-acpi-video \

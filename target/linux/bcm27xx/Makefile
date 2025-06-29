@@ -12,6 +12,7 @@ FEATURES:=audio boot-part display ext4 fpu gpio rootfs-part rtc squashfs usb usb
 SUBTARGETS:=bcm2708 bcm2709 bcm2710 bcm2711 bcm2712
 
 KERNEL_PATCHVER:=6.6
+KERNEL_TESTING_PATCHVER:=6.12
 
 define Target/Description
 	Build firmware image for Broadcom BCM27xx SoC devices.

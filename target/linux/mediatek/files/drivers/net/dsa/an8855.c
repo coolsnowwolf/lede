@@ -2278,15 +2278,12 @@ static int an8855_switch_probe(struct platform_device *pdev)
 	return dsa_register_switch(priv->ds);
 }
 
-static int an8855_switch_remove(struct platform_device *pdev)
+static void an8855_switch_remove(struct platform_device *pdev)
 {
 	struct an8855_priv *priv = dev_get_drvdata(&pdev->dev);
 
-	if (!priv)
-		return 0;
-
-	dsa_unregister_switch(priv->ds);
-	return 0;
+	if (priv)
+		dsa_unregister_switch(priv->ds);
 }
 
 static const struct of_device_id an8855_switch_of_match[] = {
@@ -2297,7 +2294,7 @@ MODULE_DEVICE_TABLE(of, an8855_switch_of_match);
 
 static struct platform_driver an8855_switch_driver = {
 	.probe = an8855_switch_probe,
-	.remove = an8855_switch_remove,
+	.remove_new = an8855_switch_remove,
 	.driver = {
 		.name = "an8855-switch",
 		.of_match_table = an8855_switch_of_match,

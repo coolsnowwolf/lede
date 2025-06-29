@@ -201,8 +201,8 @@ static int __mtdsplit_parse_uimage(struct mtd_info *master,
 		ret = mtd_find_rootfs_from(master, uimage_offset + uimage_size,
 					   master->size, &rootfs_offset, &type);
 		if (ret) {
-			pr_debug("no rootfs after uImage in \"%s\"\n",
-				 master->name);
+			pr_info("no rootfs after uImage in \"%s\"\n", master->name);
+			ret = 0;
 			goto err_free_buf;
 		}
 
@@ -215,8 +215,8 @@ static int __mtdsplit_parse_uimage(struct mtd_info *master,
 		/* check rootfs presence at offset 0 */
 		ret = mtd_check_rootfs_magic(master, 0, &type);
 		if (ret) {
-			pr_debug("no rootfs before uImage in \"%s\"\n",
-				 master->name);
+			pr_info("no rootfs before uImage in \"%s\"\n", master->name);
+			ret = 0;
 			goto err_free_buf;
 		}
 

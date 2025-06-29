@@ -1,0 +1,408 @@
+From 5a7cd9195d024694fe5c38b0bfde60b1a7d4a8bf Mon Sep 17 00:00:00 2001
+From: Phil Elwell <pelwell@users.noreply.github.com>
+Date: Tue, 14 Jul 2015 14:32:47 +0100
+Subject: [PATCH] mfd: Add Raspberry Pi Sense HAT core driver
+
+mfd: Add rpi_sense_core of compatible string
+
+rpisense-fb: Set pseudo_pallete to prevent crash on fbcon takeover
+
+Signed-off-by: Serge Schneider <serge@raspberrypi.com>
+
+rpisense-fb: Add explicit fb_deferred_io_mmap hook
+
+As of commit [1], introduced in 5.18, fbdev drivers that use
+deferred IO and need mmap support must include an explicit fb_mmap
+pointer to the fb_deferred_io_mmap.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+[1] 590558510327 ("fbdev: Put mmap for deferred I/O into drivers")
+
+drivers: Remove downstream SenseHAT core and joystick drivers
+
+Parts of a SenseHAT driver have been submitted upstream using the
+simple-i2c-mfd framework. The joystick driver has been merged.
+
+It's been noted that there are several issues with the downstream
+joystick and core drivers, so remove these in favour of the upstream
+approach, and fix up the FB driver to match.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/video/fbdev/Kconfig              |  13 +
+ drivers/video/fbdev/Makefile             |   1 +
+ drivers/video/fbdev/rpisense-fb.c        | 295 +++++++++++++++++++++++
+ include/linux/mfd/rpisense/framebuffer.h |  35 +++
+ 4 files changed, 344 insertions(+)
+ create mode 100644 drivers/video/fbdev/rpisense-fb.c
+ create mode 100644 include/linux/mfd/rpisense/framebuffer.h
+
+--- a/drivers/video/fbdev/Kconfig
++++ b/drivers/video/fbdev/Kconfig
+@@ -1826,6 +1826,19 @@ config FB_SM712
+ 	  called sm712fb. If you want to compile it as a module, say M
+ 	  here and read <file:Documentation/kbuild/modules.rst>.
+ 
++config FB_RPISENSE
++	tristate "Raspberry Pi Sense HAT framebuffer"
++	depends on FB && I2C
++	select MFD_SIMPLE_MFD_I2C
++	select FB_SYS_FOPS
++	select FB_SYS_FILLRECT
++	select FB_SYS_COPYAREA
++	select FB_SYS_IMAGEBLIT
++	select FB_DEFERRED_IO
++
++	help
++	  This is the framebuffer driver for the Raspberry Pi Sense HAT
++
+ source "drivers/video/fbdev/omap/Kconfig"
+ source "drivers/video/fbdev/omap2/Kconfig"
+ source "drivers/video/fbdev/mmp/Kconfig"
+--- a/drivers/video/fbdev/Makefile
++++ b/drivers/video/fbdev/Makefile
+@@ -124,6 +124,7 @@ obj-$(CONFIG_FB_VGA16)            += vga
+ obj-$(CONFIG_FB_OF)               += offb.o
+ obj-$(CONFIG_FB_SSD1307)	  += ssd1307fb.o
+ obj-$(CONFIG_FB_SIMPLE)           += simplefb.o
++obj-$(CONFIG_FB_RPISENSE)	  += rpisense-fb.o
+ 
+ # the test framebuffer is last
+ obj-$(CONFIG_FB_VIRTUAL)          += vfb.o
+--- /dev/null
++++ b/drivers/video/fbdev/rpisense-fb.c
+@@ -0,0 +1,295 @@
++/*
++ * Raspberry Pi Sense HAT framebuffer driver
++ * http://raspberrypi.org
++ *
++ * Copyright (C) 2015 Raspberry Pi
++ *
++ * Author: Serge Schneider
++ *
++ *  This program is free software; you can redistribute  it and/or modify it
++ *  under  the terms of  the GNU General  Public License as published by the
++ *  Free Software Foundation;  either version 2 of the  License, or (at your
++ *  option) any later version.
++ *
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/delay.h>
++#include <linux/fb.h>
++#include <linux/init.h>
++#include <linux/vmalloc.h>
++#include <linux/platform_device.h>
++
++#include <linux/mfd/rpisense/framebuffer.h>
++
++static bool lowlight;
++module_param(lowlight, bool, 0);
++MODULE_PARM_DESC(lowlight, "Reduce LED matrix brightness to one third");
++
++struct rpisense_fb_param {
++	char __iomem *vmem;
++	u8 *vmem_work;
++	u32 vmemsize;
++	u8 *gamma;
++};
++
++static u8 gamma_default[32] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01,
++			       0x02, 0x02, 0x03, 0x03, 0x04, 0x05, 0x06, 0x07,
++			       0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0E, 0x0F, 0x11,
++			       0x12, 0x14, 0x15, 0x17, 0x19, 0x1B, 0x1D, 0x1F,};
++
++static u8 gamma_low[32] = {0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
++			   0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x02, 0x02,
++			   0x03, 0x03, 0x03, 0x04, 0x04, 0x05, 0x05, 0x06,
++			   0x06, 0x07, 0x07, 0x08, 0x08, 0x09, 0x0A, 0x0A,};
++
++static u8 gamma_user[32];
++
++static u32 pseudo_palette[16];
++
++static struct rpisense_fb_param rpisense_fb_param = {
++	.vmem = NULL,
++	.vmemsize = 128,
++	.gamma = gamma_default,
++};
++
++static struct fb_deferred_io rpisense_fb_defio;
++
++static struct fb_fix_screeninfo rpisense_fb_fix = {
++	.id =		"RPi-Sense FB",
++	.type =		FB_TYPE_PACKED_PIXELS,
++	.visual =	FB_VISUAL_TRUECOLOR,
++	.xpanstep =	0,
++	.ypanstep =	0,
++	.ywrapstep =	0,
++	.accel =	FB_ACCEL_NONE,
++	.line_length =	16,
++};
++
++static struct fb_var_screeninfo rpisense_fb_var = {
++	.xres		= 8,
++	.yres		= 8,
++	.xres_virtual	= 8,
++	.yres_virtual	= 8,
++	.bits_per_pixel = 16,
++	.red		= {11, 5, 0},
++	.green		= {5, 6, 0},
++	.blue		= {0, 5, 0},
++};
++
++static ssize_t rpisense_fb_write(struct fb_info *info,
++				 const char __user *buf, size_t count,
++				 loff_t *ppos)
++{
++	ssize_t res = fb_sys_write(info, buf, count, ppos);
++
++	schedule_delayed_work(&info->deferred_work, rpisense_fb_defio.delay);
++	return res;
++}
++
++static void rpisense_fb_fillrect(struct fb_info *info,
++				 const struct fb_fillrect *rect)
++{
++	sys_fillrect(info, rect);
++	schedule_delayed_work(&info->deferred_work, rpisense_fb_defio.delay);
++}
++
++static void rpisense_fb_copyarea(struct fb_info *info,
++				 const struct fb_copyarea *area)
++{
++	sys_copyarea(info, area);
++	schedule_delayed_work(&info->deferred_work, rpisense_fb_defio.delay);
++}
++
++static void rpisense_fb_imageblit(struct fb_info *info,
++				  const struct fb_image *image)
++{
++	sys_imageblit(info, image);
++	schedule_delayed_work(&info->deferred_work, rpisense_fb_defio.delay);
++}
++
++static void rpisense_fb_deferred_io(struct fb_info *info,
++				    struct list_head *pagelist)
++{
++	int i;
++	int j;
++	u8 *vmem_work = rpisense_fb_param.vmem_work;
++	u16 *mem = (u16 *)rpisense_fb_param.vmem;
++	u8 *gamma = rpisense_fb_param.gamma;
++	struct rpisense_fb *rpisense_fb = info->par;
++
++	for (j = 0; j < 8; j++) {
++		for (i = 0; i < 8; i++) {
++			vmem_work[(j * 24) + i] =
++				gamma[(mem[(j * 8) + i] >> 11) & 0x1F];
++			vmem_work[(j * 24) + (i + 8)] =
++				gamma[(mem[(j * 8) + i] >> 6) & 0x1F];
++			vmem_work[(j * 24) + (i + 16)] =
++				gamma[(mem[(j * 8) + i]) & 0x1F];
++		}
++	}
++	regmap_bulk_write(rpisense_fb->regmap, 0, vmem_work, 192);
++}
++
++static struct fb_deferred_io rpisense_fb_defio = {
++	.delay		= HZ/100,
++	.deferred_io	= rpisense_fb_deferred_io,
++};
++
++static int rpisense_fb_ioctl(struct fb_info *info, unsigned int cmd,
++			     unsigned long arg)
++{
++	switch (cmd) {
++	case SENSEFB_FBIOGET_GAMMA:
++		if (copy_to_user((void __user *) arg, rpisense_fb_param.gamma,
++				 sizeof(u8[32])))
++			return -EFAULT;
++		return 0;
++	case SENSEFB_FBIOSET_GAMMA:
++		if (copy_from_user(gamma_user, (void __user *)arg,
++				   sizeof(u8[32])))
++			return -EFAULT;
++		rpisense_fb_param.gamma = gamma_user;
++		schedule_delayed_work(&info->deferred_work,
++				      rpisense_fb_defio.delay);
++		return 0;
++	case SENSEFB_FBIORESET_GAMMA:
++		switch (arg) {
++		case 0:
++			rpisense_fb_param.gamma = gamma_default;
++			break;
++		case 1:
++			rpisense_fb_param.gamma = gamma_low;
++			break;
++		case 2:
++			rpisense_fb_param.gamma = gamma_user;
++			break;
++		default:
++			return -EINVAL;
++		}
++		schedule_delayed_work(&info->deferred_work,
++				      rpisense_fb_defio.delay);
++		break;
++	default:
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static struct fb_ops rpisense_fb_ops = {
++	.owner		= THIS_MODULE,
++	.fb_read	= fb_sys_read,
++	.fb_write	= rpisense_fb_write,
++	.fb_fillrect	= rpisense_fb_fillrect,
++	.fb_copyarea	= rpisense_fb_copyarea,
++	.fb_imageblit	= rpisense_fb_imageblit,
++	.fb_ioctl	= rpisense_fb_ioctl,
++	.fb_mmap	= fb_deferred_io_mmap,
++};
++
++static int rpisense_fb_probe(struct platform_device *pdev)
++{
++	struct fb_info *info;
++	int ret = -ENOMEM;
++	struct rpisense_fb *rpisense_fb;
++
++	info = framebuffer_alloc(sizeof(*rpisense_fb), &pdev->dev);
++	if (!info) {
++		dev_err(&pdev->dev, "Could not allocate framebuffer.\n");
++		goto err_malloc;
++	}
++
++	rpisense_fb = info->par;
++	platform_set_drvdata(pdev, rpisense_fb);
++
++	rpisense_fb->pdev = pdev;
++	rpisense_fb->regmap = dev_get_regmap(pdev->dev.parent, NULL);
++	if (!rpisense_fb->regmap) {
++		dev_err(&pdev->dev,
++			"unable to get sensehat regmap");
++		return -ENODEV;
++	}
++
++	rpisense_fb_param.vmem = vzalloc(rpisense_fb_param.vmemsize);
++	if (!rpisense_fb_param.vmem)
++		return ret;
++
++	rpisense_fb_param.vmem_work = devm_kmalloc(&pdev->dev, 193, GFP_KERNEL);
++	if (!rpisense_fb_param.vmem_work)
++		goto err_malloc;
++
++
++	rpisense_fb_fix.smem_start = (unsigned long)rpisense_fb_param.vmem;
++	rpisense_fb_fix.smem_len = rpisense_fb_param.vmemsize;
++
++	info->fbops = &rpisense_fb_ops;
++	info->fix = rpisense_fb_fix;
++	info->var = rpisense_fb_var;
++	info->fbdefio = &rpisense_fb_defio;
++	info->flags = FBINFO_VIRTFB;
++	info->screen_base = rpisense_fb_param.vmem;
++	info->screen_size = rpisense_fb_param.vmemsize;
++	info->pseudo_palette = pseudo_palette;
++
++	if (lowlight)
++		rpisense_fb_param.gamma = gamma_low;
++
++	fb_deferred_io_init(info);
++
++	ret = register_framebuffer(info);
++	if (ret < 0) {
++		dev_err(&pdev->dev, "Could not register framebuffer.\n");
++		goto err_fballoc;
++	}
++
++	fb_info(info, "%s frame buffer device\n", info->fix.id);
++	schedule_delayed_work(&info->deferred_work, rpisense_fb_defio.delay);
++	return 0;
++err_fballoc:
++	framebuffer_release(info);
++err_malloc:
++	vfree(rpisense_fb_param.vmem);
++	return ret;
++}
++
++static void rpisense_fb_remove(struct platform_device *pdev)
++{
++	struct rpisense_fb *rpisense_fb = platform_get_drvdata(pdev);
++	struct fb_info *info = rpisense_fb->info;
++
++	if (info) {
++		unregister_framebuffer(info);
++		fb_deferred_io_cleanup(info);
++		framebuffer_release(info);
++		vfree(rpisense_fb_param.vmem);
++	}
++}
++
++static const struct of_device_id rpisense_fb_id[] = {
++	{ .compatible = "raspberrypi,rpi-sense-fb" },
++	{ },
++};
++MODULE_DEVICE_TABLE(of, rpisense_fb_id);
++
++static struct platform_driver rpisense_fb_driver = {
++	.probe = rpisense_fb_probe,
++	.remove = rpisense_fb_remove,
++	.driver = {
++		.name = "rpi-sense-fb",
++		.owner = THIS_MODULE,
++		.of_match_table = rpisense_fb_id,
++	},
++};
++
++module_platform_driver(rpisense_fb_driver);
++
++MODULE_DESCRIPTION("Raspberry Pi Sense HAT framebuffer driver");
++MODULE_AUTHOR("Serge Schneider <serge@raspberrypi.org>");
++MODULE_LICENSE("GPL");
++
+--- /dev/null
++++ b/include/linux/mfd/rpisense/framebuffer.h
+@@ -0,0 +1,35 @@
++/*
++ * Raspberry Pi Sense HAT framebuffer driver
++ * http://raspberrypi.org
++ *
++ * Copyright (C) 2015 Raspberry Pi
++ *
++ * Author: Serge Schneider
++ *
++ *  This program is free software; you can redistribute  it and/or modify it
++ *  under  the terms of  the GNU General  Public License as published by the
++ *  Free Software Foundation;  either version 2 of the  License, or (at your
++ *  option) any later version.
++ *
++ */
++
++#ifndef __LINUX_RPISENSE_FB_H_
++#define __LINUX_RPISENSE_FB_H_
++
++#include <linux/regmap.h>
++
++#define SENSEFB_FBIO_IOC_MAGIC 0xF1
++
++#define SENSEFB_FBIOGET_GAMMA _IO(SENSEFB_FBIO_IOC_MAGIC, 0)
++#define SENSEFB_FBIOSET_GAMMA _IO(SENSEFB_FBIO_IOC_MAGIC, 1)
++#define SENSEFB_FBIORESET_GAMMA _IO(SENSEFB_FBIO_IOC_MAGIC, 2)
++
++struct rpisense;
++
++struct rpisense_fb {
++	struct fb_info *info;
++	struct platform_device *pdev;
++	struct regmap *regmap;
++};
++
++#endif

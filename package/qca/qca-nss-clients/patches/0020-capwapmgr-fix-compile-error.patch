@@ -1,0 +1,169 @@
+--- a/capwapmgr/nss_capwapmgr.c
++++ b/capwapmgr/nss_capwapmgr.c
+@@ -334,7 +334,7 @@ static struct rtnl_link_stats64 *nss_cap
+ 	 * Netdev seems to be incrementing rx_dropped because we don't give IP header.
+ 	 * So reset it as it's of no use for us.
+ 	 */
+-	atomic_long_set(&dev->rx_dropped, 0);
++	dev->stats.rx_dropped = 0;
+ 
+ 	memset(stats, 0, sizeof (struct rtnl_link_stats64));
+ 	nss_capwapmgr_fill_up_stats(stats, &global.tunneld);
+@@ -379,7 +379,6 @@ static const struct net_device_ops nss_c
+ 	.ndo_stop		= nss_capwapmgr_close,
+ 	.ndo_start_xmit		= nss_capwapmgr_start_xmit,
+ 	.ndo_set_mac_address	= eth_mac_addr,
+-	.ndo_change_mtu		= eth_change_mtu,
+ 	.ndo_get_stats64	= nss_capwapmgr_dev_tunnel_stats,
+ };
+ 
+@@ -403,7 +402,7 @@ static void nss_capwapmgr_dummpy_netdev_
+ #else
+ 	dev->priv_destructor = NULL;
+ #endif
+-	memcpy(dev->dev_addr, "\x00\x00\x00\x00\x00\x00", dev->addr_len);
++	memcpy((u8 *)dev->dev_addr, "\x00\x00\x00\x00\x00\x00", dev->addr_len);
+ 	memset(dev->broadcast, 0xff, dev->addr_len);
+ 	memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
+ }
+@@ -572,7 +571,7 @@ static struct nss_capwapmgr_tunnel *nss_
+  * nss_capwapmgr_netdev_create()
+  *	API to create a CAPWAP netdev
+  */
+-struct net_device *nss_capwapmgr_netdev_create()
++struct net_device *nss_capwapmgr_netdev_create(void)
+ {
+ 	struct nss_capwapmgr_priv *priv;
+ 	struct nss_capwapmgr_response *r;
+@@ -1179,7 +1178,7 @@ static nss_capwapmgr_status_t nss_capwap
+ 	/*
+ 	 * Call NSS driver
+ 	 */
+-	status = nss_capwap_tx_msg(ctx, msg);
++	status = (nss_capwapmgr_status_t)nss_capwap_tx_msg(ctx, msg);
+ 	if (status != NSS_CAPWAPMGR_SUCCESS) {
+ 		up(&r->sem);
+ 		dev_put(dev);
+@@ -1220,7 +1219,7 @@ static nss_capwapmgr_status_t nss_capwap
+ 	struct nss_ctx_instance *ctx = nss_capwap_get_ctx();
+ 	struct nss_capwap_msg capwapmsg;
+ 	struct nss_capwap_rule_msg *capwapcfg;
+-	nss_tx_status_t status;
++	nss_capwapmgr_status_t status;
+ 
+ 	nss_capwapmgr_info("%px: ctx: CAPWAP Rule src_port: 0x%d dest_port:0x%d\n", ctx,
+ 	    ntohl(msg->encap.src_port), ntohl(msg->encap.dest_port));
+@@ -1285,7 +1284,7 @@ static nss_capwapmgr_status_t nss_capwap
+ 			nss_capwapmgr_msg_event_receive, dev);
+ 
+ 	status = nss_capwapmgr_tx_msg_sync(ctx, dev, &capwapmsg);
+-	if (status != NSS_TX_SUCCESS) {
++	if (status != NSS_CAPWAPMGR_SUCCESS) {
+ 		nss_capwapmgr_warn("%px: ctx: create encap data tunnel error %d \n", ctx, status);
+ 		return status;
+ 	}
+@@ -1297,10 +1296,10 @@ static nss_capwapmgr_status_t nss_capwap
+  * nss_capwapmgr_tx_msg_enable_tunnel()
+  *	Common function to send CAPWAP tunnel enable msg
+  */
+-static nss_tx_status_t nss_capwapmgr_tx_msg_enable_tunnel(struct nss_ctx_instance *ctx, struct net_device *dev, uint32_t if_num, uint32_t sibling_if_num)
++static nss_capwapmgr_status_t  nss_capwapmgr_tx_msg_enable_tunnel(struct nss_ctx_instance *ctx, struct net_device *dev, uint32_t if_num, uint32_t sibling_if_num)
+ {
+ 	struct nss_capwap_msg capwapmsg;
+-	nss_tx_status_t status;
++	nss_capwapmgr_status_t  status;
+ 
+ 	/*
+ 	 * Prepare the tunnel configuration parameter to send to NSS FW
+@@ -1314,7 +1313,7 @@ static nss_tx_status_t nss_capwapmgr_tx_
+ 	nss_capwap_msg_init(&capwapmsg, if_num, NSS_CAPWAP_MSG_TYPE_ENABLE_TUNNEL, sizeof(struct nss_capwap_enable_tunnel_msg), nss_capwapmgr_msg_event_receive, dev);
+ 
+ 	status = nss_capwapmgr_tx_msg_sync(ctx, dev, &capwapmsg);
+-	if (status != NSS_TX_SUCCESS) {
++	if (status != NSS_CAPWAPMGR_SUCCESS) {
+ 		nss_capwapmgr_warn("%px: ctx: CMD: %d Tunnel error : %d \n", ctx, NSS_CAPWAP_MSG_TYPE_ENABLE_TUNNEL, status);
+ 	}
+ 
+@@ -1326,7 +1325,7 @@ static nss_tx_status_t nss_capwapmgr_tx_
+  *	Common function for CAPWAP tunnel operation messages without
+  *	any message data structures.
+  */
+-static nss_tx_status_t nss_capwapmgr_tunnel_action(struct nss_ctx_instance *ctx, struct net_device *dev, uint32_t if_num, nss_capwap_msg_type_t cmd)
++static nss_capwapmgr_status_t nss_capwapmgr_tunnel_action(struct nss_ctx_instance *ctx, struct net_device *dev, uint32_t if_num, nss_capwap_msg_type_t cmd)
+ {
+ 	struct nss_capwap_msg capwapmsg;
+ 	nss_tx_status_t status;
+@@ -1341,12 +1340,12 @@ static nss_tx_status_t nss_capwapmgr_tun
+ 	 */
+ 	nss_capwap_msg_init(&capwapmsg, if_num, cmd, 0, nss_capwapmgr_msg_event_receive, dev);
+ 
+-	status = nss_capwapmgr_tx_msg_sync(ctx, dev, &capwapmsg);
++	status = (nss_tx_status_t)nss_capwapmgr_tx_msg_sync(ctx, dev, &capwapmsg);
+ 	if (status != NSS_TX_SUCCESS) {
+ 		nss_capwapmgr_warn("%px: ctx: CMD: %d Tunnel error : %d \n", ctx, cmd, status);
+ 	}
+ 
+-	return status;
++	return (nss_capwapmgr_status_t)status;
+ }
+ 
+ /*
+@@ -1471,7 +1470,6 @@ EXPORT_SYMBOL(nss_capwapmgr_update_path_
+  */
+ nss_capwapmgr_status_t nss_capwapmgr_update_dest_mac_addr(struct net_device *dev, uint8_t tunnel_id, uint8_t *mac_addr)
+ {
+-	struct nss_capwapmgr_priv *priv;
+ 	struct nss_capwapmgr_tunnel *t;
+ 	nss_tx_status_t nss_status;
+ 	nss_capwapmgr_status_t status = NSS_CAPWAPMGR_SUCCESS;
+@@ -1487,7 +1485,6 @@ nss_capwapmgr_status_t nss_capwapmgr_upd
+ 	}
+ 
+ 
+-	priv = netdev_priv(dev);
+ 	nss_capwapmgr_info("%px: %d: tunnel update mac Addr is being called\n", dev, tunnel_id);
+ 
+ 	/*
+@@ -1534,7 +1531,6 @@ EXPORT_SYMBOL(nss_capwapmgr_update_dest_
+  */
+ nss_capwapmgr_status_t nss_capwapmgr_update_src_interface(struct net_device *dev, uint8_t tunnel_id, uint32_t src_interface_num)
+ {
+-	struct nss_capwapmgr_priv *priv;
+ 	struct nss_capwapmgr_tunnel *t;
+ 	nss_tx_status_t nss_status;
+ 	uint32_t outer_trustsec_enabled, dtls_enabled, forward_if_num, src_interface_num_temp;
+@@ -1548,7 +1544,6 @@ nss_capwapmgr_status_t nss_capwapmgr_upd
+ 	}
+ 
+ 
+-	priv = netdev_priv(dev);
+ 	nss_capwapmgr_info("%px: %d: tunnel update source interface is being called\n", dev, tunnel_id);
+ 	outer_trustsec_enabled = t->capwap_rule.enabled_features & NSS_CAPWAPMGR_FEATURE_OUTER_TRUSTSEC_ENABLED;
+ 	dtls_enabled = t->capwap_rule.enabled_features & NSS_CAPWAPMGR_FEATURE_DTLS_ENABLED;
+@@ -1587,7 +1582,7 @@ nss_capwapmgr_status_t nss_capwapmgr_upd
+ 		/*
+ 		 * Destroy the IP rule only if it already exist.
+ 		 */
+-		if (t->tunnel_state & NSS_CAPWAPMGR_TUNNEL_STATE_IPRULE_CONFIGURED) {
++		if (NSS_CAPWAPMGR_TUNNEL_STATE_IPRULE_CONFIGURED) {
+ 			struct nss_ipv4_destroy v4_destroy;
+ 			v4_destroy.protocol = IPPROTO_UDP;
+ 			v4_destroy.src_ip = t->ip_rule.v4.src_ip;
+@@ -1617,7 +1612,7 @@ nss_capwapmgr_status_t nss_capwapmgr_upd
+ 		/*
+ 		 * Destroy the IP rule only if it already exist.
+ 		 */
+-		if (t->tunnel_state & NSS_CAPWAPMGR_TUNNEL_STATE_IPRULE_CONFIGURED) {
++		if (NSS_CAPWAPMGR_TUNNEL_STATE_IPRULE_CONFIGURED) {
+ 			struct nss_ipv6_destroy v6_destroy;
+ 
+ 			if (t->capwap_rule.which_udp == NSS_CAPWAP_TUNNEL_UDP) {
+@@ -1761,7 +1756,7 @@ nss_capwapmgr_status_t nss_capwapmgr_dsc
+ 	uint8_t rule_nr = NSS_CAPWAPMGR_RULE_NR;
+ 	uint8_t list_id, v4_rule_id, v6_rule_id;
+ 	uint8_t lid, rid, i, j;
+-	int8_t err, fail_dscp;
++	uint8_t err, fail_dscp;
+ 	int8_t uid = -1;
+ 
+ 	nss_capwapmgr_info("Setting priority %u for dscp %u mask %u\n", pri, dscp_value, dscp_mask);

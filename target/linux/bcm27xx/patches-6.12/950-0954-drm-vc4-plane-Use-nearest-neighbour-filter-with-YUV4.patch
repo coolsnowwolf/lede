@@ -1,0 +1,101 @@
+From cfe137c1f05fb85732e343770476d4d7c5e92f4d Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 16 Apr 2025 18:33:54 +0100
+Subject: [PATCH] drm/vc4: plane: Use nearest neighbour filter with YUV444
+ workaround
+
+As a follow-up to commit ef79eea9e4b8 ("drm/vc4: plane: Enable scaler
+for YUV444 on GEN6"), the image looks a little soft when rendering at
+1:1 due to the scaling filter being enabled.
+
+Switch to using the nearest neighbour filter automatically when
+not scaling in YUV444 to compensate.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h   |  4 ++++
+ drivers/gpu/drm/vc4/vc4_plane.c | 19 +++++++++++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -475,6 +475,10 @@ struct vc4_plane_state {
+ 	enum vc4_scaling_mode x_scaling[2], y_scaling[2];
+ 	bool is_unity;
+ 	bool is_yuv;
++	/* Allows use of nearest neighbour scaling filter when doing unity YUV444
++	 * workaround
++	 */
++	bool is_yuv444_unity;
+ 
+ 	/* Our allocation in LBM for temporary storage during scaling. */
+ 	unsigned int lbm_handle;
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -302,6 +302,7 @@ struct drm_plane_state *vc4_plane_duplic
+ 		refcount_inc(&hvs->lbm_refcounts[vc4_state->lbm_handle].refcount);
+ 
+ 	vc4_state->dlist_initialized = 0;
++	vc4_state->is_yuv444_unity = false;
+ 
+ 	__drm_atomic_helper_plane_duplicate_state(plane, &vc4_state->base);
+ 
+@@ -871,6 +872,10 @@ static void vc4_write_scaling_parameters
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(state->plane->dev);
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
++	bool no_interpolate = state->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR;
++
++	if (vc4_state->is_yuv444_unity)
++		no_interpolate = 1;
+ 
+ 	WARN_ON_ONCE(vc4->gen > VC4_GEN_6_D);
+ 
+@@ -879,7 +884,7 @@ static void vc4_write_scaling_parameters
+ 		vc4_write_ppf(vc4_state, vc4_state->src_w[channel],
+ 			      vc4_state->crtc_w, vc4_state->src_x, channel,
+ 			      state->chroma_siting_h,
+-			      state->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR);
++			      no_interpolate);
+ 	}
+ 
+ 	/* Ch0 V-PPF Words 0-1: Scaling Parameters, Context */
+@@ -887,7 +892,7 @@ static void vc4_write_scaling_parameters
+ 		vc4_write_ppf(vc4_state, vc4_state->src_h[channel],
+ 			      vc4_state->crtc_h, vc4_state->src_y, channel,
+ 			      state->chroma_siting_v,
+-			      state->scaling_filter == DRM_SCALING_FILTER_NEAREST_NEIGHBOR);
++			      no_interpolate);
+ 		vc4_dlist_write(vc4_state, 0xc0c0c0c0);
+ 	}
+ 
+@@ -1867,12 +1872,19 @@ static int vc6_plane_mode_set(struct drm
+ 		if (vc4_state->x_scaling[0] == VC4_SCALING_NONE) {
+ 			vc4_state->x_scaling[0] = VC4_SCALING_PPF;
+ 			vc4_state->is_unity = false;
++			vc4_state->is_yuv444_unity = true;
+ 		}
+ 
+ 		if (vc4_state->y_scaling[0] == VC4_SCALING_NONE) {
+ 			vc4_state->y_scaling[0] = VC4_SCALING_PPF;
+ 			vc4_state->is_unity = false;
++		} else {
++			/* Ensure that resizing vertically but not horizontally
++			 * doesn't switch the scaling filter.
++			 */
++			vc4_state->is_yuv444_unity = false;
+ 		}
++
+ 	}
+ 
+ 	if (!vc4_state->src_w[0] || !vc4_state->src_h[0] ||
+@@ -2199,6 +2211,9 @@ static int vc6_plane_mode_set(struct drm
+ 				filter = &vc4->hvs->nearest_neighbour_filter;
+ 				break;
+ 			}
++			if (vc4_state->is_yuv444_unity)
++				filter = &vc4->hvs->nearest_neighbour_filter;
++
+ 			u32 kernel = VC4_SET_FIELD(filter->start,
+ 						   SCALER_PPF_KERNEL_OFFSET);
+ 

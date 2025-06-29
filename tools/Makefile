@@ -93,6 +93,7 @@ $(curdir)/automake/compile := $(curdir)/autoconf/compile $(curdir)/pkgconf/compi
 $(curdir)/b43-tools/compile := $(curdir)/bison/compile
 $(curdir)/bc/compile := $(curdir)/bison/compile $(curdir)/libtool/compile
 $(curdir)/bison/compile := $(curdir)/flex/compile
+$(curdir)/bzip2/compile := $(curdir)/cmake/compile
 $(curdir)/cbootimage/compile += $(curdir)/automake/compile
 $(curdir)/cmake/compile += $(curdir)/libressl/compile $(curdir)/ninja/compile $(curdir)/expat/compile $(curdir)/xz/compile $(curdir)/zlib/compile $(curdir)/zstd/compile
 $(curdir)/dosfstools/compile := $(curdir)/automake/compile

@@ -1,0 +1,124 @@
+From 93fd55b94fb07e544b9dca6f30403de07ddb55ac Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 16 Jan 2024 16:03:14 +0000
+Subject: [PATCH] i2c: designware: Support non-standard bus speeds
+
+Add support for non-standard bus speeds by treating them as detuned
+versions of the slowest standard speed not less than the requested
+speed.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/i2c/busses/i2c-designware-common.c | 27 ++++++++++++++++
+ drivers/i2c/busses/i2c-designware-core.h   |  1 +
+ drivers/i2c/busses/i2c-designware-master.c | 37 ++++++++++++++--------
+ 3 files changed, 52 insertions(+), 13 deletions(-)
+
+--- a/drivers/i2c/busses/i2c-designware-common.c
++++ b/drivers/i2c/busses/i2c-designware-common.c
+@@ -360,6 +360,9 @@ static void i2c_dw_adjust_bus_speed(stru
+ {
+ 	u32 acpi_speed = i2c_dw_acpi_round_bus_speed(dev->dev);
+ 	struct i2c_timings *t = &dev->timings;
++	u32 wanted_speed;
++	u32 legal_speed = 0;
++	int i;
+ 
+ 	/*
+ 	 * Find bus speed from the "clock-frequency" device property, ACPI
+@@ -371,6 +374,30 @@ static void i2c_dw_adjust_bus_speed(stru
+ 		t->bus_freq_hz = max(t->bus_freq_hz, acpi_speed);
+ 	else
+ 		t->bus_freq_hz = I2C_MAX_FAST_MODE_FREQ;
++
++	wanted_speed = t->bus_freq_hz;
++
++	/* For unsupported speeds, scale down the lowest speed which is faster. */
++	for (i = 0; i < ARRAY_SIZE(supported_speeds); i++) {
++		/* supported speeds is in decreasing order */
++		if (wanted_speed == supported_speeds[i]) {
++			legal_speed = 0;
++			break;
++		}
++		if (wanted_speed > supported_speeds[i])
++			break;
++
++		legal_speed = supported_speeds[i];
++	}
++
++	if (legal_speed) {
++		/*
++		 * Pretend this was the requested speed, but preserve the preferred
++		 * speed so the clock counts can be scaled.
++		 */
++		t->bus_freq_hz = legal_speed;
++		dev->wanted_bus_speed = wanted_speed;
++	}
+ }
+ 
+ int i2c_dw_fw_parse_and_configure(struct dw_i2c_dev *dev)
+--- a/drivers/i2c/busses/i2c-designware-core.h
++++ b/drivers/i2c/busses/i2c-designware-core.h
+@@ -293,6 +293,7 @@ struct dw_i2c_dev {
+ 	u16			fp_lcnt;
+ 	u16			hs_hcnt;
+ 	u16			hs_lcnt;
++	u32			wanted_bus_speed;
+ 	int			(*acquire_lock)(void);
+ 	void			(*release_lock)(void);
+ 	int			semaphore_idx;
+--- a/drivers/i2c/busses/i2c-designware-master.c
++++ b/drivers/i2c/busses/i2c-designware-master.c
+@@ -41,20 +41,32 @@ static void i2c_dw_configure_fifo_master
+ 	regmap_write(dev->map, DW_IC_CON, dev->master_cfg);
+ }
+ 
+-static u16 clock_calc(struct dw_i2c_dev *dev, bool want_high)
++static u32 linear_interpolate(u32 x, u32 x1, u32 x2, u32 y1, u32 y2)
++{
++	return ((x - x1) * y2 + (x2 - x) * y1) / (x2 - x1);
++}
++
++static u16 u16_clamp(u32 v)
++{
++	return (u16)min(v, 0xffff);
++}
++
++static void clock_calc(struct dw_i2c_dev *dev, u32 *hcnt, u32 *lcnt)
+ {
+ 	struct i2c_timings *t = &dev->timings;
+-	u32 wanted_speed = t->bus_freq_hz;
++	u32 wanted_khz = (dev->wanted_bus_speed ?: t->bus_freq_hz)/1000;
+ 	u32 clk_khz = i2c_dw_clk_rate(dev);
+-	u32 extra_ns = want_high ? t->scl_fall_ns : t->scl_rise_ns;
+-	u32 extra_cycles = (u32)div_u64((u64)clk_khz * extra_ns, 1000000);
+-	u32 period = div_u64((u64)clk_khz * 1000 + wanted_speed - 1, wanted_speed);
+-	u32 cycles = (period + want_high)/2 - extra_cycles;
+-
+-	if (cycles > 0xffff)
+-		cycles = 0xffff;
++	u32 min_high_ns = (wanted_khz <= 100) ? 4000 :
++			  (wanted_khz <= 400) ?
++				linear_interpolate(wanted_khz, 100, 400, 4000, 600) :
++				linear_interpolate(wanted_khz, 400, 1000, 600, 260);
++	u32 high_cycles = (u32)div_u64(((u64)clk_khz * min_high_ns + 999999), 1000000) + 1;
++	u32 extra_high_cycles = (u32)div_u64((u64)clk_khz * t->scl_fall_ns, 1000000);
++	u32 extra_low_cycles = (u32)div_u64((u64)clk_khz * t->scl_rise_ns, 1000000);
++	u32 period = div_u64((u64)clk_khz + wanted_khz - 1, wanted_khz);
+ 
+-	return (u16)cycles;
++	*hcnt = u16_clamp(high_cycles - extra_high_cycles);
++	*lcnt = u16_clamp(period - high_cycles - extra_low_cycles);
+ }
+ 
+ static int i2c_dw_set_timings_master(struct dw_i2c_dev *dev)
+@@ -80,8 +92,7 @@ static int i2c_dw_set_timings_master(str
+ 	sda_falling_time = t->sda_fall_ns ?: 300; /* ns */
+ 	scl_falling_time = t->scl_fall_ns ?: 300; /* ns */
+ 
+-	hcnt = clock_calc(dev, true);
+-	lcnt = clock_calc(dev, false);
++	clock_calc(dev, &hcnt, &lcnt);
+ 
+ 	/* Calculate SCL timing parameters for standard mode if not set */
+ 	if (!dev->ss_hcnt || !dev->ss_lcnt) {

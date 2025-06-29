@@ -1,0 +1,79 @@
+--- a/nss_hal/nss_hal.c
++++ b/nss_hal/nss_hal.c
+@@ -30,7 +30,6 @@
+ #include <linux/ethtool.h>
+ 
+ #include "nss_hal.h"
+-#include "nss_arch.h"
+ #include "nss_core.h"
+ #include "nss_tx_rx_common.h"
+ #ifdef NSS_DATA_PLANE_GENERIC_SUPPORT
+@@ -51,6 +50,57 @@
+  */
+ #define NSS_AP0_IMAGE "qca-nss0.bin"
+ #define NSS_AP1_IMAGE "qca-nss1.bin"
++#define BUFFER_SIZE 8192
++
++// Function to search for the byte sequence in the buffer
++static unsigned char *search_sequence(const unsigned char *buffer,
++				      size_t buffer_size,
++				      const unsigned char *sequence,
++				      size_t sequence_size)
++{
++	for (size_t i = 0; i <= buffer_size - sequence_size; i++) {
++		if (memcmp(buffer + i, sequence, sequence_size) == 0) {
++			return (unsigned char *)(buffer + i);
++		}
++	}
++	return NULL;
++}
++
++static int nss_hal_firmware_info(struct platform_device *nss_dev,
++				 const struct firmware *fw)
++{
++	unsigned char *start_pos, *end_pos;
++	size_t i;
++	unsigned char start_sequence[] = { 0x56, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x3a, 0x20 };
++	unsigned char end_sequence[] = { 0x00 };
++	char version[256];
++	bool found = false;
++
++	// Search for the start sequence
++	start_pos = search_sequence(fw->data, fw->size, start_sequence, sizeof(start_sequence));
++	if (start_pos) {
++		start_pos += sizeof(start_sequence);
++
++		end_pos = search_sequence(start_pos, fw->size - (start_pos - fw->data), end_sequence, sizeof(end_sequence));
++		if (end_pos) {
++			// Convert the version information to a string
++			for (i = 0; start_pos + i < end_pos && i < sizeof(version) - 1; i++) {
++				version[i] = start_pos[i];
++			}
++			version[i] = '\0';
++
++			dev_info(&nss_dev->dev, "NSS fw version: %s\n", version);
++			found = true;
++		}
++	}
++
++	if (!found) {
++		dev_err(&nss_dev->dev, "Unable to get NSS fw version\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
+ 
+ int nss_hal_firmware_load(struct nss_ctx_instance *nss_ctx, struct platform_device *nss_dev, struct nss_platform_data *npd)
+ {
+@@ -83,6 +133,10 @@ int nss_hal_firmware_load(struct nss_ctx
+ 		return rc;
+ 	}
+ 
++	if (nss_ctx->id == 0) {
++	  nss_hal_firmware_info(nss_dev, nss_fw);
++	}
++
+ 	dev_info(&nss_dev->dev, "fw of size %d bytes copied to addr: %x, nss_id: %d\n", (int)nss_fw->size, npd->load_addr, nss_ctx->id);
+ 	memcpy_toio(load_mem, nss_fw->data, nss_fw->size);
+ 	release_firmware(nss_fw);

@@ -34,6 +34,12 @@ GCC_VERSION=$(shell echo "$(CONFIG_GCC_VERSION)" | sed 's/[^0-9.]*\([0-9.]*\).*/
 
 LNX_CONFIG_OPTS = LNX_MAKEOPTS='$(KERNEL_MAKEOPTS)' PRJ_PATH=$(PKG_BUILD_DIR) MODULE_TYPE=KSLIB modules
 
+EXTRA_CFLAGS:= \
+	-fno-stack-protector \
+	-Wno-missing-prototypes \
+	-Wno-missing-declarations \
+	-I$(STAGING_DIR)/usr/include
+
 MAKE_FLAGS+= \
 	TARGET_NAME=$(CONFIG_TARGET_NAME) \
 	TOOL_PATH=$(TOOLCHAIN_DIR)/bin \
@@ -43,12 +49,12 @@ MAKE_FLAGS+= \
 	ARCH=$(LINUX_KARCH) \
 	TARGET_SUFFIX=$(CONFIG_TARGET_SUFFIX) \
 	GCC_VERSION=$(GCC_VERSION) \
-	EXTRA_CFLAGS="-fno-stack-protector -I$(STAGING_DIR)/usr/include" \
+	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 	SoC=$(CONFIG_TARGET_SUBTARGET) \
 	SHELL="$(BASH)" \
 	PTP_FEATURE=disable SWCONFIG_FEATURE=disable \
 	ISISC_ENABLE=disable MHT_ENABLE=disable \
-	IN_MP_PHY=FALSE IN_QCA803X_PHY=FALSE \
+	IN_QCA803X_PHY=FALSE IN_MP_PHY=FALSE \
 	$(LNX_CONFIG_OPTS)
 
 ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
@@ -94,7 +100,6 @@ define Build/InstallDev
 	$(CP) -rf $(PKG_BUILD_DIR)/include/common/*.h $(1)/usr/include/qca-ssdk
 	$(CP) -rf $(PKG_BUILD_DIR)/include/sal/os/linux/*.h $(1)/usr/include/qca-ssdk
 	$(CP) -rf $(PKG_BUILD_DIR)/include/sal/os/*.h $(1)/usr/include/qca-ssdk
-
 endef
 
 $(eval $(call KernelPackage,qca-ssdk))

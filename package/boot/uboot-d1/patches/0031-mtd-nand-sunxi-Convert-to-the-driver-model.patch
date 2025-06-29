@@ -1,0 +1,172 @@
+From 3411a9a1be9a8d8fef236a81edbce2a1a8218a32 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Mon, 16 May 2022 00:16:48 -0500
+Subject: [PATCH 31/90] mtd: nand: sunxi: Convert to the driver model
+
+Clocks, resets, and pinmuxes are now handled by the driver model, so the
+only thing the "board" code needs to do is load the driver. This matches
+the pattern used by other DM raw NAND drivers (there is no NAND uclass).
+
+The actual board code is now only needed in SPL.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ board/sunxi/board.c               |  5 +-
+ drivers/mtd/nand/raw/sunxi_nand.c | 81 ++++++++++++++++++-------------
+ 2 files changed, 49 insertions(+), 37 deletions(-)
+
+--- a/board/sunxi/board.c
++++ b/board/sunxi/board.c
+@@ -311,7 +311,7 @@ int dram_init(void)
+ 	return 0;
+ }
+ 
+-#if defined(CONFIG_NAND_SUNXI)
++#if defined(CONFIG_NAND_SUNXI) && defined(CONFIG_SPL_BUILD)
+ static void nand_pinmux_setup(void)
+ {
+ 	unsigned int pin;
+@@ -347,9 +347,6 @@ void board_nand_init(void)
+ {
+ 	nand_pinmux_setup();
+ 	nand_clock_setup();
+-#ifndef CONFIG_SPL_BUILD
+-	sunxi_nand_init();
+-#endif
+ }
+ #endif /* CONFIG_NAND_SUNXI */
+ 
+--- a/drivers/mtd/nand/raw/sunxi_nand.c
++++ b/drivers/mtd/nand/raw/sunxi_nand.c
+@@ -24,11 +24,13 @@
+  * GNU General Public License for more details.
+  */
+ 
++#include <clk.h>
+ #include <common.h>
+ #include <dm.h>
+ #include <malloc.h>
+ #include <memalign.h>
+ #include <nand.h>
++#include <reset.h>
+ #include <dm/device_compat.h>
+ #include <dm/devres.h>
+ #include <linux/bitops.h>
+@@ -260,7 +262,7 @@ static inline struct sunxi_nand_chip *to
+  * NAND Controller structure: stores sunxi NAND controller information
+  *
+  * @controller:		base controller structure
+- * @dev:		parent device (used to print error messages)
++ * @dev:		DM device (used to print error messages)
+  * @regs:		NAND controller registers
+  * @ahb_clk:		NAND Controller AHB clock
+  * @mod_clk:		NAND Controller mod clock
+@@ -273,7 +275,7 @@ static inline struct sunxi_nand_chip *to
+  */
+ struct sunxi_nfc {
+ 	struct nand_hw_control controller;
+-	struct device *dev;
++	struct udevice *dev;
+ 	void __iomem *regs;
+ 	struct clk *ahb_clk;
+ 	struct clk *mod_clk;
+@@ -1772,54 +1774,67 @@ static void sunxi_nand_chips_cleanup(str
+ }
+ #endif /* __UBOOT__ */
+ 
+-void sunxi_nand_init(void)
++static int sunxi_nand_probe(struct udevice *dev)
+ {
+-	struct sunxi_nfc *nfc;
+-	phys_addr_t regs;
+-	ofnode node;
++	struct sunxi_nfc *nfc = dev_get_priv(dev);
++	struct reset_ctl_bulk rst_bulk;
++	struct clk_bulk clk_bulk;
+ 	int ret;
+ 
+-	nfc = kzalloc(sizeof(*nfc), GFP_KERNEL);
+-	if (!nfc)
+-		return;
+-
++	nfc->dev = dev;
+ 	spin_lock_init(&nfc->controller.lock);
+ 	init_waitqueue_head(&nfc->controller.wq);
+ 	INIT_LIST_HEAD(&nfc->chips);
+ 
+-	node = ofnode_by_compatible(ofnode_null(), "allwinner,sun4i-a10-nand");
+-	if (!ofnode_valid(node)) {
+-		pr_err("unable to find nfc node in device tree\n");
+-		goto err;
+-	}
+-
+-	if (!ofnode_is_enabled(node)) {
+-		pr_err("nfc disabled in device tree\n");
+-		goto err;
+-	}
+-
+-	regs = ofnode_get_addr(node);
+-	if (regs == FDT_ADDR_T_NONE) {
+-		pr_err("unable to find nfc address in device tree\n");
+-		goto err;
+-	}
++	nfc->regs = dev_read_addr_ptr(dev);
++	if (!nfc->regs)
++		return -EINVAL;
+ 
+-	nfc->regs = (void *)regs;
++	ret = reset_get_bulk(dev, &rst_bulk);
++	if (!ret)
++		reset_deassert_bulk(&rst_bulk);
++
++	ret = clk_get_bulk(dev, &clk_bulk);
++	if (!ret)
++		clk_enable_bulk(&clk_bulk);
+ 
+ 	ret = sunxi_nfc_rst(nfc);
+ 	if (ret)
+-		goto err;
++		return ret;
+ 
+-	ret = sunxi_nand_chips_init(node, nfc);
++	ret = sunxi_nand_chips_init(dev_ofnode(dev), nfc);
+ 	if (ret) {
+-		dev_err(nfc->dev, "failed to init nand chips\n");
+-		goto err;
++		dev_err(dev, "failed to init nand chips\n");
++		return ret;
+ 	}
+ 
+-	return;
++	return 0;
++}
+ 
+-err:
+-	kfree(nfc);
++static const struct udevice_id sunxi_nand_ids[] = {
++	{
++		.compatible = "allwinner,sun4i-a10-nand",
++	},
++	{ }
++};
++
++U_BOOT_DRIVER(sunxi_nand) = {
++	.name		= "sunxi_nand",
++	.id		= UCLASS_MTD,
++	.of_match	= sunxi_nand_ids,
++	.probe		= sunxi_nand_probe,
++	.priv_auto	= sizeof(struct sunxi_nfc),
++};
++
++void board_nand_init(void)
++{
++	struct udevice *dev;
++	int ret;
++
++	ret = uclass_get_device_by_driver(UCLASS_MTD,
++					  DM_DRIVER_GET(sunxi_nand), &dev);
++	if (ret && ret != -ENODEV)
++		pr_err("Failed to initialize sunxi NAND controller: %d\n", ret);
+ }
+ 
+ MODULE_LICENSE("GPL v2");

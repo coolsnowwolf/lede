@@ -10,7 +10,7 @@ FEATURES:=fpu pci pcie rtc usb boot-part rootfs-part
 FEATURES+=cpiogz ext4 ramdisk squashfs targz vmdk
 
 KERNEL_PATCHVER:=6.6
-
+KERNEL_TESTING_PATCHVER:=6.12
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += mkf2fs e2fsprogs

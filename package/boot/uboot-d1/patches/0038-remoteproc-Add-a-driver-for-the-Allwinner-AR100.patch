@@ -1,0 +1,155 @@
+From 7585a12ffec6e42c62222d8ee4085413b3a197f7 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sat, 9 Oct 2021 14:58:27 -0500
+Subject: [PATCH 38/90] remoteproc: Add a driver for the Allwinner AR100
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ drivers/remoteproc/Kconfig             |   9 ++
+ drivers/remoteproc/Makefile            |   1 +
+ drivers/remoteproc/sun6i_ar100_rproc.c | 111 +++++++++++++++++++++++++
+ 3 files changed, 121 insertions(+)
+ create mode 100644 drivers/remoteproc/sun6i_ar100_rproc.c
+
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -41,6 +41,15 @@ config REMOTEPROC_STM32_COPRO
+ 	  Say 'y' here to add support for STM32 Cortex-M4 coprocessors via the
+ 	  remoteproc framework.
+ 
++config REMOTEPROC_SUN6I_AR100
++	bool "Support for Allwinner AR100 SCP"
++	select REMOTEPROC
++	depends on ARCH_SUNXI
++	help
++	  Say 'y' here to support Allwinner's AR100 System Control Processor
++	  (SCP), found in various sun6i/sun8i/sun50i family SoCs, through the
++	  remoteproc framework.
++
+ config REMOTEPROC_TI_K3_ARM64
+ 	bool "Support for TI's K3 based ARM64 remoteproc driver"
+ 	select REMOTEPROC
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -10,6 +10,7 @@ obj-$(CONFIG_$(SPL_)REMOTEPROC) += rproc
+ obj-$(CONFIG_K3_SYSTEM_CONTROLLER) += k3_system_controller.o
+ obj-$(CONFIG_REMOTEPROC_SANDBOX) += sandbox_testproc.o
+ obj-$(CONFIG_REMOTEPROC_STM32_COPRO) += stm32_copro.o
++obj-$(CONFIG_REMOTEPROC_SUN6I_AR100) += sun6i_ar100_rproc.o
+ obj-$(CONFIG_REMOTEPROC_TI_K3_ARM64) += ti_k3_arm64_rproc.o
+ obj-$(CONFIG_REMOTEPROC_TI_K3_DSP) += ti_k3_dsp_rproc.o
+ obj-$(CONFIG_REMOTEPROC_TI_K3_R5F) += ti_k3_r5f_rproc.o
+--- /dev/null
++++ b/drivers/remoteproc/sun6i_ar100_rproc.c
+@@ -0,0 +1,111 @@
++// SPDX-License-Identifier: GPL-2.0
++
++#include <dm.h>
++#include <errno.h>
++#include <remoteproc.h>
++#include <asm/io.h>
++
++#define SUNXI_SCP_MAGIC			0xb4400012
++
++#define OR1K_VEC_FIRST			0x01
++#define OR1K_VEC_LAST			0x0e
++#define OR1K_VEC_ADDR(n)		(0x100 * (n))
++
++struct sun6i_ar100_rproc_priv {
++	void	*cfg_base;
++	ulong	sram_base;
++};
++
++static int sun6i_ar100_rproc_load(struct udevice *dev, ulong addr, ulong size)
++{
++	struct sun6i_ar100_rproc_priv *priv = dev_get_priv(dev);
++
++	/* Check for a valid SCP firmware. */
++	if (readl_relaxed(addr) != SUNXI_SCP_MAGIC)
++		return -ENOENT;
++
++	/* Program exception vectors to the firmware entry point. */
++	for (u32 i = OR1K_VEC_FIRST; i <= OR1K_VEC_LAST; ++i) {
++		ulong vector = priv->sram_base + OR1K_VEC_ADDR(i);
++		ulong offset = addr - vector;
++
++		writel_relaxed(offset >> 2, vector);
++	}
++
++	return 0;
++}
++
++static int sun6i_ar100_rproc_start(struct udevice *dev)
++{
++	struct sun6i_ar100_rproc_priv *priv = dev_get_priv(dev);
++
++	setbits_le32(priv->cfg_base, BIT(0));
++
++	return 0;
++}
++
++static int sun6i_ar100_rproc_stop(struct udevice *dev)
++{
++	struct sun6i_ar100_rproc_priv *priv = dev_get_priv(dev);
++
++	clrbits_le32(priv->cfg_base, BIT(0));
++
++	return 0;
++}
++
++static int sun6i_ar100_rproc_reset(struct udevice *dev)
++{
++	int ret;
++
++	ret = sun6i_ar100_rproc_stop(dev);
++	if (ret)
++		return ret;
++
++	return sun6i_ar100_rproc_start(dev);
++}
++
++static int sun6i_ar100_rproc_is_running(struct udevice *dev)
++{
++	struct sun6i_ar100_rproc_priv *priv = dev_get_priv(dev);
++
++	return !(readl_relaxed(priv->cfg_base) & BIT(0));
++}
++
++static const struct dm_rproc_ops sun6i_ar100_rproc_ops = {
++	.load		= sun6i_ar100_rproc_load,
++	.start		= sun6i_ar100_rproc_start,
++	.stop		= sun6i_ar100_rproc_stop,
++	.reset		= sun6i_ar100_rproc_reset,
++	.is_running	= sun6i_ar100_rproc_is_running,
++};
++
++static int sun6i_ar100_rproc_probe(struct udevice *dev)
++{
++	struct sun6i_ar100_rproc_priv *priv = dev_get_priv(dev);
++	struct ofnode_phandle_args sram_handle;
++	int ret;
++
++	priv->cfg_base = dev_read_addr_ptr(dev);
++
++	ret = dev_read_phandle_with_args(dev, "sram", NULL, 0, 0, &sram_handle);
++	if (ret)
++		return ret;
++
++	priv->sram_base = ofnode_get_addr(sram_handle.node);
++
++	return 0;
++}
++
++static const struct udevice_id sun6i_ar100_rproc_ids[] = {
++	{ .compatible = "allwinner,sun6i-a31-ar100" },
++	{ }
++};
++
++U_BOOT_DRIVER(sun6i_ar100_rproc) = {
++	.name		= "sun6i_ar100_rproc",
++	.id		= UCLASS_REMOTEPROC,
++	.of_match	= sun6i_ar100_rproc_ids,
++	.probe		= sun6i_ar100_rproc_probe,
++	.priv_auto	= sizeof(struct sun6i_ar100_rproc_priv),
++	.ops		= &sun6i_ar100_rproc_ops,
++};

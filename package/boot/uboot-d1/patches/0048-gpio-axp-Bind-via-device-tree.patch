@@ -1,0 +1,139 @@
+From a39b1bd1ad0babb355a5cb6f6a3bd8e378433b54 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Fri, 27 Aug 2021 21:43:19 -0500
+Subject: [PATCH 48/90] gpio: axp: Bind via device tree
+
+Now that the PMIC has a DM driver and binds device tree subnodes, the
+GPIO device can be bound that way, instead of from inside board code.
+
+Since the driver still uses the single set of register definitions from
+axpXXX.h (as selected by AXPxxx_POWER), it does not differentiate among
+the supported compatibles.
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/arm/include/asm/arch-sunxi/gpio.h |  6 -----
+ arch/arm/mach-sunxi/Kconfig            |  6 -----
+ board/sunxi/board.c                    |  4 ---
+ drivers/gpio/Kconfig                   |  8 ++++++
+ drivers/gpio/axp_gpio.c                | 34 +++++++++++---------------
+ 5 files changed, 22 insertions(+), 36 deletions(-)
+
+--- a/arch/arm/include/asm/arch-sunxi/gpio.h
++++ b/arch/arm/include/asm/arch-sunxi/gpio.h
+@@ -219,10 +219,4 @@ void sunxi_gpio_set_pull(u32 pin, u32 va
+ void sunxi_gpio_set_pull_bank(struct sunxi_gpio *pio, int bank_offset, u32 val);
+ int sunxi_name_to_gpio(const char *name);
+ 
+-#if !defined CONFIG_SPL_BUILD && defined CONFIG_AXP_GPIO
+-int axp_gpio_init(void);
+-#else
+-static inline int axp_gpio_init(void) { return 0; }
+-#endif
+-
+ #endif /* _SUNXI_GPIO_H */
+--- a/arch/arm/mach-sunxi/Kconfig
++++ b/arch/arm/mach-sunxi/Kconfig
+@@ -682,12 +682,6 @@ config R_I2C_ENABLE
+ 	Set this to y to enable the I2C controller which is part of the PRCM.
+ endif
+ 
+-config AXP_GPIO
+-	bool "Enable support for gpio-s on axp PMICs"
+-	depends on AXP_PMIC_BUS
+-	---help---
+-	Say Y here to enable support for the gpio pins of the axp PMIC ICs.
+-
+ config AXP_DISABLE_BOOT_ON_POWERON
+ 	bool "Disable device boot on power plug-in"
+ 	depends on AXP209_POWER || AXP221_POWER || AXP809_POWER || AXP818_POWER
+--- a/board/sunxi/board.c
++++ b/board/sunxi/board.c
+@@ -221,10 +221,6 @@ int board_init(void)
+ 	}
+ #endif /* !CONFIG_ARM64 && !CONFIG_MACH_SUNIV */
+ 
+-	ret = axp_gpio_init();
+-	if (ret)
+-		return ret;
+-
+ 	/* strcmp() would look better, but doesn't get optimised away. */
+ 	if (CONFIG_SATAPWR[0]) {
+ 		satapwr_pin = sunxi_name_to_gpio(CONFIG_SATAPWR);
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -104,6 +104,14 @@ config ALTERA_PIO
+ 	  Select this to enable PIO for Altera devices. Please find
+ 	  details on the "Embedded Peripherals IP User Guide" of Altera.
+ 
++config AXP_GPIO
++	bool "X-Powers AXP PMICs GPIO driver"
++	depends on DM_GPIO && PMIC_AXP
++	depends on AXP_PMIC_BUS
++	help
++	  This driver supports the GPIO pins on
++	  X-Powers AXP152, AXP2xx, and AXP8xx PMICs.
++
+ config BCM2835_GPIO
+ 	bool "BCM2835 GPIO driver"
+ 	depends on DM_GPIO
+--- a/drivers/gpio/axp_gpio.c
++++ b/drivers/gpio/axp_gpio.c
+@@ -10,9 +10,6 @@
+ #include <asm/gpio.h>
+ #include <axp_pmic.h>
+ #include <dm.h>
+-#include <dm/device-internal.h>
+-#include <dm/lists.h>
+-#include <dm/root.h>
+ #include <errno.h>
+ 
+ #define AXP_GPIO_PREFIX			"AXP0-"
+@@ -99,6 +96,11 @@ static const struct dm_gpio_ops axp_gpio
+ static int axp_gpio_probe(struct udevice *dev)
+ {
+ 	struct gpio_dev_priv *uc_priv = dev_get_uclass_priv(dev);
++	int ret;
++
++	ret = pmic_bus_init();
++	if (ret)
++		return ret;
+ 
+ 	/* Tell the uclass how many GPIOs we have */
+ 	uc_priv->bank_name = AXP_GPIO_PREFIX;
+@@ -107,26 +109,18 @@ static int axp_gpio_probe(struct udevice
+ 	return 0;
+ }
+ 
++static const struct udevice_id axp_gpio_ids[] = {
++	{ .compatible = "x-powers,axp152-gpio" },
++	{ .compatible = "x-powers,axp209-gpio" },
++	{ .compatible = "x-powers,axp221-gpio" },
++	{ .compatible = "x-powers,axp813-gpio" },
++	{ }
++};
++
+ U_BOOT_DRIVER(axp_gpio) = {
+ 	.name		= "axp_gpio",
+ 	.id		= UCLASS_GPIO,
++	.of_match	= axp_gpio_ids,
+ 	.probe		= axp_gpio_probe,
+ 	.ops		= &axp_gpio_ops,
+ };
+-
+-int axp_gpio_init(void)
+-{
+-	struct udevice *dev;
+-	int ret;
+-
+-	ret = pmic_bus_init();
+-	if (ret)
+-		return ret;
+-
+-	/* There is no devicetree support for the axp yet, so bind directly */
+-	ret = device_bind_driver(dm_root(), "axp_gpio", "AXP-gpio", &dev);
+-	if (ret)
+-		return ret;
+-
+-	return 0;
+-}

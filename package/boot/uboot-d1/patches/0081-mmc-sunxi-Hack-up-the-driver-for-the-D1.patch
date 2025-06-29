@@ -1,0 +1,118 @@
+From 4df80766531bc35510981ebc5ea0bb07264beac9 Mon Sep 17 00:00:00 2001
+From: Samuel Holland <samuel@sholland.org>
+Date: Sun, 8 Aug 2021 19:31:20 -0500
+Subject: [PATCH 81/90] mmc: sunxi: Hack up the driver for the D1
+
+Signed-off-by: Samuel Holland <samuel@sholland.org>
+---
+ arch/riscv/include/asm/io.h |  1 +
+ drivers/mmc/sunxi_mmc.c     | 29 +++++++++++++++++++++++++----
+ drivers/mmc/sunxi_mmc.h     |  2 --
+ 3 files changed, 26 insertions(+), 6 deletions(-)
+
+--- a/arch/riscv/include/asm/io.h
++++ b/arch/riscv/include/asm/io.h
+@@ -85,6 +85,7 @@ static inline u16 readw(const volatile v
+ 	return val;
+ }
+ 
++#define readl_relaxed readl
+ static inline u32 readl(const volatile void __iomem *addr)
+ {
+ 	u32	val;
+--- a/drivers/mmc/sunxi_mmc.c
++++ b/drivers/mmc/sunxi_mmc.c
+@@ -23,9 +23,9 @@
+ #include <reset.h>
+ #include <asm/gpio.h>
+ #include <asm/io.h>
++#if !CONFIG_IS_ENABLED(DM_MMC)
+ #include <asm/arch/clock.h>
+ #include <asm/arch/cpu.h>
+-#if !CONFIG_IS_ENABLED(DM_MMC)
+ #include <asm/arch/mmc.h>
+ #endif
+ #include <linux/delay.h>
+@@ -36,6 +36,23 @@
+ #define CCM_MMC_CTRL_MODE_SEL_NEW	0
+ #endif
+ 
++#include "../../arch/arm/include/asm/arch-sunxi/clock_sun50i_h6.h"
++
++unsigned int clock_get_pll6(void)
++{
++	uint32_t rval = readl((void *)0x2001020);
++
++	int n = ((rval & CCM_PLL6_CTRL_N_MASK) >> CCM_PLL6_CTRL_N_SHIFT) + 1;
++	int m = ((rval >> 1) & 0x1) + 1;
++	int p0 = ((rval >> 16) & 0x7) + 1;
++	/* The register defines PLL6-2X, not plain PLL6 */
++	uint32_t freq = 24000000UL * n / m / p0;
++
++	printf("PLL reg = 0x%08x, freq = %d\n", rval, freq);
++
++	return freq;
++}
++
+ struct sunxi_mmc_plat {
+ 	struct mmc_config cfg;
+ 	struct mmc mmc;
+@@ -60,7 +77,8 @@ static bool sunxi_mmc_can_calibrate(void
+ 	return IS_ENABLED(CONFIG_MACH_SUN50I) ||
+ 	       IS_ENABLED(CONFIG_MACH_SUN50I_H5) ||
+ 	       IS_ENABLED(CONFIG_SUN50I_GEN_H6) ||
+-	       IS_ENABLED(CONFIG_MACH_SUN8I_R40);
++	       IS_ENABLED(CONFIG_MACH_SUN8I_R40) ||
++	       IS_ENABLED(CONFIG_TARGET_SUN20I_D1);
+ }
+ 
+ static int mmc_set_mod_clk(struct sunxi_mmc_priv *priv, unsigned int hz)
+@@ -194,7 +212,7 @@ static int mmc_config_clock(struct sunxi
+ 	rval &= ~SUNXI_MMC_CLK_DIVIDER_MASK;
+ 	writel(rval, &priv->reg->clkcr);
+ 
+-#if defined(CONFIG_SUNXI_GEN_SUN6I) || defined(CONFIG_SUN50I_GEN_H6)
++#if defined(CONFIG_SUNXI_GEN_SUN6I) || defined(CONFIG_SUN50I_GEN_H6) || defined(CONFIG_TARGET_SUN20I_D1)
+ 	/* A64 supports calibration of delays on MMC controller and we
+ 	 * have to set delay of zero before starting calibration.
+ 	 * Allwinner BSP driver sets a delay only in the case of
+@@ -622,7 +640,8 @@ static unsigned get_mclk_offset(void)
+ 	if (IS_ENABLED(CONFIG_MACH_SUN9I_A80))
+ 		return 0x410;
+ 
+-	if (IS_ENABLED(CONFIG_SUN50I_GEN_H6))
++	if (IS_ENABLED(CONFIG_SUN50I_GEN_H6) ||
++	    IS_ENABLED(CONFIG_TARGET_SUN20I_D1))
+ 		return 0x830;
+ 
+ 	return 0x88;
+@@ -662,6 +681,7 @@ static int sunxi_mmc_probe(struct udevic
+ 		return ret;
+ 	ccu_reg = (u32 *)(uintptr_t)ofnode_get_addr(args.node);
+ 
++#define SUNXI_MMC0_BASE 0x4020000
+ 	priv->mmc_no = ((uintptr_t)priv->reg - SUNXI_MMC0_BASE) / 0x1000;
+ 	priv->mclkreg = (void *)ccu_reg + get_mclk_offset() + priv->mmc_no * 4;
+ 
+@@ -703,6 +723,7 @@ static const struct udevice_id sunxi_mmc
+ 	{ .compatible = "allwinner,sun7i-a20-mmc" },
+ 	{ .compatible = "allwinner,sun8i-a83t-emmc" },
+ 	{ .compatible = "allwinner,sun9i-a80-mmc" },
++	{ .compatible = "allwinner,sun20i-d1-mmc" },
+ 	{ .compatible = "allwinner,sun50i-a64-mmc" },
+ 	{ .compatible = "allwinner,sun50i-a64-emmc" },
+ 	{ .compatible = "allwinner,sun50i-h6-mmc" },
+--- a/drivers/mmc/sunxi_mmc.h
++++ b/drivers/mmc/sunxi_mmc.h
+@@ -45,11 +45,9 @@ struct sunxi_mmc {
+ 	u32 chda;		/* 0x90 */
+ 	u32 cbda;		/* 0x94 */
+ 	u32 res2[26];
+-#if defined(CONFIG_SUNXI_GEN_SUN6I) || defined(CONFIG_SUN50I_GEN_H6)
+ 	u32 res3[17];
+ 	u32 samp_dl;
+ 	u32 res4[46];
+-#endif
+ 	u32 fifo;		/* 0x100 / 0x200 FIFO access address */
+ };
+ 

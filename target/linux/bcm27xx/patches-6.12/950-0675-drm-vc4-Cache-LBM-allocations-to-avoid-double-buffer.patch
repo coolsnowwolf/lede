@@ -1,0 +1,297 @@
+From 7f0f3f34026295570fd8b39d9b50b55d30e3fc51 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 27 Sep 2024 16:54:01 +0100
+Subject: [PATCH] drm/vc4: Cache LBM allocations to avoid double-buffering
+
+LBM is only relevant for each active dlist, so there is
+no need to double-buffer the allocations.
+
+Cache the allocations per plane so that we can ensure the
+allocations are possible.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c |  8 +-
+ drivers/gpu/drm/vc4/vc4_drv.h                 | 17 +++-
+ drivers/gpu/drm/vc4/vc4_hvs.c                 | 24 +++++
+ drivers/gpu/drm/vc4/vc4_plane.c               | 99 +++++++++++++++----
+ 4 files changed, 128 insertions(+), 20 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
+@@ -188,6 +188,7 @@ static void drm_vc4_test_vc4_lbm_size(st
+ 	struct drm_framebuffer *fb;
+ 	struct drm_plane *plane;
+ 	struct drm_crtc *crtc;
++	struct vc4_dev *vc4;
+ 	unsigned int i;
+ 	int ret;
+ 
+@@ -248,7 +249,12 @@ static void drm_vc4_test_vc4_lbm_size(st
+ 	ret = drm_atomic_check_only(state);
+ 	KUNIT_ASSERT_EQ(test, ret, 0);
+ 
+-	KUNIT_EXPECT_EQ(test, vc4_plane_state->lbm.size, params->expected_lbm_size);
++	vc4 = to_vc4_dev(state->dev);
++	KUNIT_ASSERT_NOT_NULL(test, vc4);
++	KUNIT_ASSERT_NOT_NULL(test, vc4->hvs);
++	KUNIT_EXPECT_EQ(test,
++			vc4->hvs->lbm_refcounts[vc4_plane_state->lbm_handle].size,
++			params->expected_lbm_size);
+ 
+ 	for (i = 0; i < 2; i++) {
+ 		KUNIT_EXPECT_EQ(test,
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -322,6 +322,19 @@ struct vc4_v3d {
+ 	struct debugfs_regset32 regset;
+ };
+ 
++#define VC4_NUM_LBM_HANDLES 64
++struct vc4_lbm_refcounts {
++	refcount_t refcount;
++
++	/* Allocation size */
++	size_t size;
++	/* Our allocation in LBM. */
++	struct drm_mm_node lbm;
++
++	/* Pointer back to the HVS structure */
++	struct vc4_hvs *hvs;
++};
++
+ #define VC4_NUM_UPM_HANDLES 32
+ struct vc4_upm_refcounts {
+ 	refcount_t refcount;
+@@ -363,6 +376,8 @@ struct vc4_hvs {
+ 
+ 	/* Memory manager for the LBM memory used by HVS scaling. */
+ 	struct drm_mm lbm_mm;
++	struct ida lbm_handles;
++	struct vc4_lbm_refcounts lbm_refcounts[VC4_NUM_LBM_HANDLES + 1];
+ 
+ 	/* Memory manager for the UPM memory used for prefetching. */
+ 	struct drm_mm upm_mm;
+@@ -462,7 +477,7 @@ struct vc4_plane_state {
+ 	bool is_yuv;
+ 
+ 	/* Our allocation in LBM for temporary storage during scaling. */
+-	struct drm_mm_node lbm;
++	unsigned int lbm_handle;
+ 
+ 	/* The Unified Pre-Fetcher Handle */
+ 	unsigned int upm_handle[DRM_FORMAT_MAX_PLANES];
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -379,6 +379,27 @@ static int vc4_hvs_debugfs_dlist_allocs(
+ 	return 0;
+ }
+ 
++static int vc4_hvs_debugfs_lbm_allocs(struct seq_file *m, void *data)
++{
++	struct drm_debugfs_entry *entry = m->private;
++	struct drm_device *dev = entry->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hvs *hvs = vc4->hvs;
++	struct drm_printer p = drm_seq_file_printer(m);
++	struct vc4_lbm_refcounts *refcount;
++	unsigned int i;
++
++	drm_printf(&p, "LBM Handles:\n");
++	for (i = 0; i < VC4_NUM_LBM_HANDLES; i++) {
++		refcount = &hvs->lbm_refcounts[i];
++		drm_printf(&p, "handle %u: refcount %u, size %zu [%08llx + %08llx]\n",
++			   i, refcount_read(&refcount->refcount), refcount->size,
++			   refcount->lbm.start, refcount->lbm.size);
++	}
++
++	return 0;
++}
++
+ /* The filter kernel is composed of dwords each containing 3 9-bit
+  * signed integers packed next to each other.
+  */
+@@ -1511,6 +1532,8 @@ int vc4_hvs_debugfs_init(struct drm_mino
+ 		drm_debugfs_add_file(drm, "hvs_dlists", vc4_hvs_debugfs_dlist, NULL);
+ 	}
+ 
++	drm_debugfs_add_file(drm, "hvs_lbm", vc4_hvs_debugfs_lbm_allocs, NULL);
++
+ 	drm_debugfs_add_file(drm, "hvs_underrun", vc4_hvs_debugfs_underrun, NULL);
+ 
+ 	drm_debugfs_add_file(drm, "hvs_dlist_allocs", vc4_hvs_debugfs_dlist_allocs, NULL);
+@@ -1627,6 +1650,7 @@ struct vc4_hvs *__vc4_hvs_alloc(struct v
+ 	}
+ 
+ 	drm_mm_init(&hvs->lbm_mm, 0, lbm_size);
++	ida_init(&hvs->lbm_handles);
+ 
+ 	if (vc4->gen >= VC4_GEN_6_C) {
+ 		ida_init(&hvs->upm_handles);
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -294,12 +294,12 @@ struct drm_plane_state *vc4_plane_duplic
+ 	if (!vc4_state)
+ 		return NULL;
+ 
+-	memset(&vc4_state->lbm, 0, sizeof(vc4_state->lbm));
+-
+ 	for (i = 0; i < DRM_FORMAT_MAX_PLANES; i++) {
+ 		if (vc4_state->upm_handle[i])
+ 			refcount_inc(&hvs->upm_refcounts[vc4_state->upm_handle[i]].refcount);
+ 	}
++	if (vc4_state->lbm_handle)
++		refcount_inc(&hvs->lbm_refcounts[vc4_state->lbm_handle].refcount);
+ 
+ 	vc4_state->dlist_initialized = 0;
+ 
+@@ -319,6 +319,21 @@ struct drm_plane_state *vc4_plane_duplic
+ 	return &vc4_state->base;
+ }
+ 
++static void vc4_plane_release_lbm_ida(struct vc4_hvs *hvs, unsigned int lbm_handle)
++{
++	struct vc4_lbm_refcounts *refcount = &hvs->lbm_refcounts[lbm_handle];
++	unsigned long irqflags;
++
++	spin_lock_irqsave(&hvs->mm_lock, irqflags);
++	drm_mm_remove_node(&refcount->lbm);
++	spin_unlock_irqrestore(&hvs->mm_lock, irqflags);
++	refcount->lbm.start = 0;
++	refcount->lbm.size = 0;
++	refcount->size = 0;
++
++	ida_free(&hvs->lbm_handles, lbm_handle);
++}
++
+ static void vc4_plane_release_upm_ida(struct vc4_hvs *hvs, unsigned int upm_handle)
+ {
+ 	struct vc4_upm_refcounts *refcount = &hvs->upm_refcounts[upm_handle];
+@@ -342,12 +357,13 @@ void vc4_plane_destroy_state(struct drm_
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
+ 	unsigned int i;
+ 
+-	if (drm_mm_node_allocated(&vc4_state->lbm)) {
+-		unsigned long irqflags;
++	if (vc4_state->lbm_handle) {
++		struct vc4_lbm_refcounts *refcount;
+ 
+-		spin_lock_irqsave(&hvs->mm_lock, irqflags);
+-		drm_mm_remove_node(&vc4_state->lbm);
+-		spin_unlock_irqrestore(&hvs->mm_lock, irqflags);
++		refcount = &hvs->lbm_refcounts[vc4_state->lbm_handle];
++
++		if (refcount_dec_and_test(&refcount->refcount))
++			vc4_plane_release_lbm_ida(hvs, vc4_state->lbm_handle);
+ 	}
+ 
+ 	for (i = 0; i < DRM_FORMAT_MAX_PLANES; i++) {
+@@ -939,10 +955,14 @@ static int vc4_plane_allocate_lbm(struct
+ {
+ 	struct drm_device *drm = state->plane->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(drm);
++	struct vc4_hvs *hvs = vc4->hvs;
+ 	struct drm_plane *plane = state->plane;
+ 	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
++	struct vc4_lbm_refcounts *refcount;
+ 	unsigned long irqflags;
++	int lbm_handle;
+ 	u32 lbm_size;
++	int ret;
+ 
+ 	lbm_size = vc4_lbm_size(state);
+ 	if (!lbm_size)
+@@ -966,29 +986,71 @@ static int vc4_plane_allocate_lbm(struct
+ 	/* Allocate the LBM memory that the HVS will use for temporary
+ 	 * storage due to our scaling/format conversion.
+ 	 */
+-	if (!drm_mm_node_allocated(&vc4_state->lbm)) {
+-		int ret;
++	lbm_handle = vc4_state->lbm_handle;
++	if (lbm_handle &&
++	    hvs->lbm_refcounts[lbm_handle].size == lbm_size) {
++		/* Allocation is the same size as the previous user of
++		 * the plane. Keep the allocation.
++		 */
++		vc4_state->lbm_handle = lbm_handle;
++	} else {
++		if (lbm_handle &&
++		    refcount_dec_and_test(&hvs->lbm_refcounts[lbm_handle].refcount)) {
++			vc4_plane_release_lbm_ida(hvs, lbm_handle);
++			vc4_state->lbm_handle = 0;
++		}
++
++		lbm_handle = ida_alloc_range(&hvs->lbm_handles, 1,
++					     VC4_NUM_LBM_HANDLES,
++					     GFP_KERNEL);
++		if (lbm_handle < 0) {
++			drm_err(drm, "Out of lbm_handles\n");
++			return lbm_handle;
++		}
++		vc4_state->lbm_handle = lbm_handle;
++
++		refcount = &hvs->lbm_refcounts[lbm_handle];
++		refcount_set(&refcount->refcount, 1);
++		refcount->size = lbm_size;
+ 
+-		spin_lock_irqsave(&vc4->hvs->mm_lock, irqflags);
++		spin_lock_irqsave(&hvs->mm_lock, irqflags);
+ 		ret = drm_mm_insert_node_generic(&vc4->hvs->lbm_mm,
+-						 &vc4_state->lbm,
++						 &refcount->lbm,
+ 						 lbm_size, 1,
+ 						 0, 0);
+-		spin_unlock_irqrestore(&vc4->hvs->mm_lock, irqflags);
++		spin_unlock_irqrestore(&hvs->mm_lock, irqflags);
+ 
+ 		if (ret) {
+ 			drm_err(drm, "Failed to allocate LBM entry: %d\n", ret);
++			refcount_set(&refcount->refcount, 0);
++			ida_free(&hvs->lbm_handles, lbm_handle);
++			vc4_state->lbm_handle = 0;
+ 			return ret;
+ 		}
+-	} else {
+-		WARN_ON_ONCE(lbm_size != vc4_state->lbm.size);
+ 	}
+ 
+-	vc4_state->dlist[vc4_state->lbm_offset] = vc4_state->lbm.start;
++	vc4_state->dlist[vc4_state->lbm_offset] = hvs->lbm_refcounts[lbm_handle].lbm.start;
+ 
+ 	return 0;
+ }
+ 
++static void vc4_plane_free_lbm(struct drm_plane_state *state)
++{
++	struct vc4_plane_state *vc4_state = to_vc4_plane_state(state);
++	struct drm_device *drm = state->plane->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(drm);
++	struct vc4_hvs *hvs = vc4->hvs;
++	unsigned int lbm_handle;
++
++	lbm_handle = vc4_state->lbm_handle;
++	if (!lbm_handle)
++		return;
++
++	if (refcount_dec_and_test(&hvs->lbm_refcounts[lbm_handle].refcount))
++		vc4_plane_release_lbm_ida(hvs, lbm_handle);
++	vc4_state->lbm_handle = 0;
++}
++
+ static int vc6_plane_allocate_upm(struct drm_plane_state *state)
+ {
+ 	const struct drm_format_info *info = state->fb->format;
+@@ -2174,9 +2236,10 @@ int vc4_plane_atomic_check(struct drm_pl
+ 		struct drm_plane_state *old_plane_state =
+ 				drm_atomic_get_old_plane_state(state, plane);
+ 
+-		if (vc4->gen >= VC4_GEN_6_C && old_plane_state &&
+-		    plane_enabled(old_plane_state)) {
+-			vc6_plane_free_upm(new_plane_state);
++		if (old_plane_state && plane_enabled(old_plane_state)) {
++			if (vc4->gen >= VC4_GEN_6_C)
++				vc6_plane_free_upm(new_plane_state);
++			vc4_plane_free_lbm(new_plane_state);
+ 		}
+ 		return 0;
+ 	}
