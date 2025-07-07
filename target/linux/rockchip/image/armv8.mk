@@ -364,6 +364,17 @@ define Device/mmbox_anas3035
 endef
 TARGET_DEVICES += mmbox_anas3035
 
+define Device/nlnet_xgp
+  DEVICE_VENDOR := NLnet
+  DEVICE_MODEL := XiGuaPi
+  SOC := rk3568
+  UBOOT_DEVICE_NAME := nlnet-xgp-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-mt7921e wpad-openssl
+  DEVICE_DTS = rockchip/rk3568-nlnet-xgp-v3
+endef
+TARGET_DEVICES += nlnet_xgp
+
 define Device/panther_x2
   DEVICE_VENDOR := Panther
   DEVICE_MODEL := X2
