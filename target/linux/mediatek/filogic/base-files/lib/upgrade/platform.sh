@@ -45,6 +45,7 @@ platform_do_upgrade() {
 		esac
 		;;
 	cmcc,rax3000m-emmc|\
+	cmcc,xr30-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
@@ -104,6 +105,7 @@ platform_copy_config() {
 		esac
 		;;
 	cmcc,rax3000m-emmc|\
+	cmcc,xr30-emmc|\
 	glinet,gl-mt2500|\
 	glinet,gl-mt6000|\
 	glinet,gl-x3000|\
