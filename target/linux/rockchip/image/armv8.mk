@@ -114,6 +114,17 @@ define Device/ezpro_mrkaio-m68s-plus
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s-plus
 
+define Device/rumu3f_fine-3399
+  DEVICE_VENDOR := RUMU3F
+  DEVICE_MODEL := FINE 3399
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := fine3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := brcmfmac-firmware-43430b0-sdio brcmfmac-nvram-43430b0-sdio \
+	kmod-brcmfmac kmod-gpio-button-hotplug kmod-usb-net-rtl8152 wpad
+endef
+TARGET_DEVICES += rumu3f_fine-3399
+
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
   SOC := rk3568
@@ -472,16 +483,16 @@ define Device/rocktech_mpc1903
 endef
 TARGET_DEVICES += rocktech_mpc1903
 
-define Device/rumu3f_fine-3399
-  DEVICE_VENDOR := RUMU3F
-  DEVICE_MODEL := FINE 3399
+define Device/erya_fnet-3399
+  DEVICE_VENDOR := ERYA
+  DEVICE_MODEL := FNET 3399
   SOC := rk3399
-  UBOOT_DEVICE_NAME := fine3399-rk3399
+  UBOOT_DEVICE_NAME := fnet3399-rk3399
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := brcmfmac-firmware-43430b0-sdio brcmfmac-nvram-43430b0-sdio \
 	kmod-brcmfmac kmod-gpio-button-hotplug kmod-usb-net-rtl8152 wpad
 endef
-TARGET_DEVICES += rumu3f_fine-3399
+TARGET_DEVICES += erya_fnet-3399
 
 define Device/scensmart_sv901-eaio
   DEVICE_VENDOR := ScenSmart
