@@ -299,6 +299,9 @@ ifeq ($(DUMP),1)
     ifneq ($(CONFIG_PCIEPORTBUS),)
       FEATURES += pcie
     endif
+    ifneq ($(CONFIG_PINCTRL),)
+      FEATURES += pinctrl
+    endif
     ifneq ($(CONFIG_PWM),)
       FEATURES += pwm
     endif
