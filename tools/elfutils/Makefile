@@ -19,6 +19,8 @@ PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
 
+HOST_CFLAGS += -Wno-error -fPIC -std=gnu17
+
 HOST_CONFIGURE_ARGS += \
 	--disable-debuginfod \
 	--disable-libdebuginfod \
