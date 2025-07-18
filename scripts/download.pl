@@ -276,7 +276,6 @@ foreach my $mirror (@ARGV) {
 		push @mirrors, "https://mirrors.tencent.com/gnu/$1";
 		push @mirrors, "https://mirror.csclub.uwaterloo.ca/gnu/$1";
 		push @mirrors, "https://mirror.netcologne.de/gnu/$1";
-		push @mirrors, "http://ftp.kddilabs.jp/GNU/gnu/$1";
 		push @mirrors, "http://www.nic.funet.fi/pub/gnu/gnu/$1";
 		push @mirrors, "http://mirror.internode.on.net/pub/gnu/$1";
 		push @mirrors, "http://mirror.navercorp.com/gnu/$1";
