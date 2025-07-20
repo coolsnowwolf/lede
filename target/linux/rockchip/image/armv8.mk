@@ -371,7 +371,6 @@ define Device/nlnet_xiguapi-v3
   UBOOT_DEVICE_NAME := generic-rk3568
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-hwmon-pwmfan wpad-openssl
-  DEVICE_DTS = rockchip/rk3568-xiguapi-v3
 endef
 TARGET_DEVICES += nlnet_xiguapi-v3
 
