@@ -197,7 +197,7 @@ $(eval $(call KernelPackage,input-touchscreen-ads7846))
 define KernelPackage/input-touchscreen-edt-ft5x06
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=EDT FT5x06 and Focaltech FT6236 based touchscreens
-  DEPENDS:=+kmod-i2c-core +kmod-input-core +LINUX_6_6:kmod-regmap-i2c
+  DEPENDS:=+kmod-i2c-core +kmod-input-core +LINUX_6_6||LINUX_6_12:kmod-regmap-i2c
   KCONFIG:= \
 	CONFIG_INPUT_TOUCHSCREEN=y \
 	CONFIG_TOUCHSCREEN_PROPERTIES=y@lt5.13 \

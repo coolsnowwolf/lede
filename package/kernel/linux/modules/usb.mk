@@ -1626,7 +1626,7 @@ define KernelPackage/usb-hid-mcp2221
   SUBMENU:=$(USB_MENU)
   TITLE:=Microchip USB 2.0 to I2C/UART Protocol Converter with GPIO
   KCONFIG:=CONFIG_HID_MCP2221
-  DEPENDS:=@GPIO_SUPPORT +kmod-usb-hid +kmod-i2c-core +LINUX_6_6:kmod-iio-core
+  DEPENDS:=@GPIO_SUPPORT +kmod-usb-hid +kmod-i2c-core +LINUX_6_6||LINUX_6_12:kmod-iio-core
   FILES:=$(LINUX_DIR)/drivers/hid/hid-mcp2221.ko
   AUTOLOAD:=$(call AutoProbe,hid-mcp2221)
 endef

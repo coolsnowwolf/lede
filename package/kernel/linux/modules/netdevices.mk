@@ -2081,7 +2081,7 @@ define KernelPackage/lan743x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Microchip LAN743x PCI Express Gigabit Ethernet NIC
   DEPENDS:=@PCI_SUPPORT +kmod-ptp \
-	+!LINUX_5_4:kmod-mdio-devres +(LINUX_6_6||LINUX_6_12):kmod-fixed-phy
+	+!LINUX_5_4:kmod-mdio-devres +(LINUX_6_6||LINUX_6_12):kmod-fixed-phy +LINUX_6_12:kmod-phylink
   KCONFIG:=CONFIG_LAN743X
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/microchip/lan743x.ko
   AUTOLOAD:=$(call AutoProbe,lan743x)

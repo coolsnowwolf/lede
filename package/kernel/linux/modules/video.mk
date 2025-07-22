@@ -499,6 +499,21 @@ endef
 
 $(eval $(call KernelPackage,drm-amdgpu))
 
+define KernelPackage/drm-gpuvm
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=DRM GPU-VM support
+  DEPENDS:=@(TARGET_x86_64||TARGET_x86_generic||TARGET_x86_legacy) +kmod-drm-exec
+  KCONFIG:=CONFIG_DRM_GPUVM
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_gpuvm.ko
+  AUTOLOAD:=$(call AutoProbe,drm_gpuvm)
+endef
+
+define KernelPackage/drm-gpuvm/description
+  GPU-VM representation providing helpers to manage a GPUs virtual address space
+endef
+
+$(eval $(call KernelPackage,drm-gpuvm))
+
 define KernelPackage/drm-i915
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Intel i915 DRM support
@@ -723,7 +738,7 @@ define KernelPackage/drm-nouveau
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=nouveau DRM support
   DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-display-helper +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-exec +kmod-drm-kms-helper \
-  +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-sched +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-acpi-video
+  +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-sched +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-acpi-video +(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-drm-gpuvm
   KCONFIG:=CONFIG_DRM_NOUVEAU \
 	NOUVEAU_DEBUG=5 \
 	NOUVEAU_DEBUG_DEFAULT=3 \
