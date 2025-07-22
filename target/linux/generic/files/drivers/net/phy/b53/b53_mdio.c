@@ -400,7 +400,7 @@ static struct phy_driver b53_phy_driver_id3 = {
 	.read_status	= b53_phy_read_status,
 };
 
-int __init b53_phy_driver_register(void)
+static int __init b53_phy_driver_register(void)
 {
 	int ret;
 
@@ -422,7 +422,7 @@ err1:
 	return ret;
 }
 
-void __exit b53_phy_driver_unregister(void)
+static void __exit b53_phy_driver_unregister(void)
 {
 	phy_driver_unregister(&b53_phy_driver_id3);
 	phy_driver_unregister(&b53_phy_driver_id2);
