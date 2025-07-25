@@ -42,7 +42,8 @@ define U-Boot/evb-rk3576
   BUILD_SUBTARGET:=armv8
   NAME:=RK3576 Evaluation
   BUILD_DEVICES:= \
-    armsom_sige5
+    armsom_sige5 \
+    friendlyarm_nanopi-r76s
   DEPENDS:=+PACKAGE_u-boot-evb-rk3576:rkbin-rk3576
   ATF:=rk3576_bl31_v1.12.elf
   DDR:=rk3576_ddr_lp4_2112MHz_lp5_2736MHz_v1.08.bin

@@ -24,7 +24,7 @@ TARGET_DEVICES += ariaboard_photonicat
 
 define Device/ariaboard_photonicat2
   DEVICE_VENDOR := Ariaboard
-  DEVICE_MODEL := Photonicat2
+  DEVICE_MODEL := Photonicat 2
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-photonicat2
   UBOOT_DEVICE_NAME := evb-rk3576
@@ -273,6 +273,17 @@ define Device/friendlyarm_nanopi-r6s
   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-r8125-rss
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r6s
+
+define Device/friendlyarm_nanopi-r76s
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R76S
+  SOC := rk3576
+  DEVICE_DTS := rockchip/rk3576-nanopi-r76s
+  UBOOT_DEVICE_NAME := evb-rk3576
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-r8125
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r76s
 
 define Device/firefly_station-p2
   DEVICE_VENDOR := Firefly
