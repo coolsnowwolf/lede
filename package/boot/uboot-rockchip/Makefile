@@ -97,6 +97,13 @@ define U-Boot/fine3399-rk3399
     rumu3f_fine-3399
 endef
 
+define U-Boot/fnet3399-rk3399
+  $(U-Boot/rk3399/Default)
+  NAME:=Fnet 3399
+  BUILD_DEVICES:= \
+    erya_fnet-3399
+endef
+
 define U-Boot/h3399pc-rk3399
   $(U-Boot/rk3399/Default)
   NAME:=SHAREVDI H3399PC
@@ -449,6 +456,7 @@ UBOOT_TARGETS := \
   dlfr100-rk3399 \
   h3399pc-rk3399 \
   fine3399-rk3399 \
+  fnet3399-rk3399 \
   king3399-rk3399 \
   mpc1903-rk3399 \
   nanopc-t4-rk3399 \
