@@ -1,0 +1,158 @@
+
+The errors were:
+$ src/elflint --gnu src/nm
+section [ 2] '.MIPS.options' contains unknown flag(s) 0x8000000
+section [ 7] '.dynsym': symbol 165 (_DYNAMIC_LINKING): non-local section symbol
+section [24] '.got' contains invalid processor-specific flag(s) 0x10000000
+section [25] '.sdata' contains invalid processor-specific flag(s) 0x10000000
+section [29] '.debug_aranges' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [30] '.debug_info' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [31] '.debug_abbrev' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [32] '.debug_line' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [33] '.debug_frame' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [34] '.debug_str' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [35] '.debug_loc' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [36] '.debug_ranges' has wrong type: expected PROGBITS, is MIPS_DWARF
+section [38] '.symtab': symbol 785 (_gp): st_value out of bounds
+section [38] '.symtab': symbol 910 (_fbss): st_value out of bounds
+section [38] '.symtab': symbol 1051 (_DYNAMIC_LINKING): non-local section symbol
+
+After fixing:
+$ src/elflint --gnu src/nm
+No errors
+
+Signed-off-by: Ying Huang <ying.huang@oss.cipunited.com>
+---
+ backends/mips_init.c   |  3 +++
+ backends/mips_symbol.c | 37 +++++++++++++++++++++++++++++++++++++
+ src/elflint.c          | 26 +++++++++++++++++++++-----
+ 3 files changed, 61 insertions(+), 5 deletions(-)
+
+--- a/backends/mips_init.c
++++ b/backends/mips_init.c
+@@ -51,10 +51,13 @@ mips_init (Elf *elf __attribute__ ((unus
+   HOOK (eh, section_type_name);
+   HOOK (eh, machine_flag_check);
+   HOOK (eh, machine_flag_name);
++  HOOK (eh, machine_section_flag_check);
+   HOOK (eh, segment_type_name);
+   HOOK (eh, dynamic_tag_check);
+   HOOK (eh, dynamic_tag_name);
+   HOOK (eh, check_object_attribute);
++  HOOK (eh, check_special_symbol);
++  HOOK (eh, check_reloc_target_type);
+   HOOK (eh, set_initial_registers_tid);
+   HOOK (eh, abi_cfi);
+   HOOK (eh, unwind);
+--- a/backends/mips_symbol.c
++++ b/backends/mips_symbol.c
+@@ -158,6 +158,43 @@ mips_section_type_name (int type,
+   return NULL;
+ }
+ 
++bool
++mips_check_reloc_target_type (Ebl *ebl __attribute__ ((unused)), Elf64_Word sh_type)
++{
++  return (sh_type == SHT_MIPS_DWARF);
++}
++
++/* Check whether given symbol's st_value and st_size are OK despite failing
++   normal checks.  */
++bool
++mips_check_special_symbol (Elf *elf,
++			    const GElf_Sym *sym __attribute__ ((unused)),
++			    const char *name __attribute__ ((unused)),
++			    const GElf_Shdr *destshdr)
++{
++  size_t shstrndx;
++  if (elf_getshdrstrndx (elf, &shstrndx) != 0)
++    return false;
++  const char *sname = elf_strptr (elf, shstrndx, destshdr->sh_name);
++  if (sname == NULL)
++    return false;
++  return (strcmp (sname, ".got") == 0 || strcmp (sname, ".bss") == 0);
++}
++
++/* Check whether SHF_MASKPROC flags are valid.  */
++bool
++mips_machine_section_flag_check (GElf_Xword sh_flags)
++{
++  return ((sh_flags &~ (SHF_MIPS_GPREL |
++			SHF_MIPS_MERGE |
++			SHF_MIPS_ADDR |
++			SHF_MIPS_STRINGS |
++			SHF_MIPS_NOSTRIP |
++			SHF_MIPS_LOCAL |
++			SHF_MIPS_NAMES |
++			SHF_MIPS_NODUPE)) == 0);
++}
++
+ /* Check whether machine flags are valid.  */
+ bool
+ mips_machine_flag_check (GElf_Word flags)
+--- a/src/elflint.c
++++ b/src/elflint.c
+@@ -936,7 +936,9 @@ section [%2d] '%s': symbol %zu (%s): non
+ 	}
+ 
+       if (GELF_ST_TYPE (sym->st_info) == STT_SECTION
+-	  && GELF_ST_BIND (sym->st_info) != STB_LOCAL)
++	  && GELF_ST_BIND (sym->st_info) != STB_LOCAL
++	  && ehdr->e_machine != EM_MIPS
++	  && strcmp (name, "_DYNAMIC_LINKING") != 0)
+ 	ERROR (_("\
+ section [%2d] '%s': symbol %zu (%s): non-local section symbol\n"),
+ 	       idx, section_name (ebl, idx), cnt, name);
+@@ -3829,6 +3831,10 @@ cannot get section header for section [%
+ 		    && ebl_bss_plt_p (ebl))
+ 		  good_type = SHT_NOBITS;
+ 
++		if (ehdr->e_machine == EM_MIPS
++		    && (strstr(special_sections[s].name, ".debug") != NULL))
++		  good_type = SHT_MIPS_DWARF;
++
+ 		/* In a debuginfo file, any normal section can be SHT_NOBITS.
+ 		   This is only invalid for DWARF sections and .shstrtab.  */
+ 		if (shdr->sh_type != good_type
+@@ -3989,12 +3995,21 @@ section [%2zu] '%s': size not multiple o
+ 		ERROR (_("section [%2zu] '%s'"
+ 				" contains invalid processor-specific flag(s)"
+ 				" %#" PRIx64 "\n"),
+-		       cnt, section_name (ebl, cnt), sh_flags & SHF_MASKPROC);
++			cnt, section_name (ebl, cnt), sh_flags & SHF_MASKPROC);
+ 	      sh_flags &= ~(GElf_Xword) SHF_MASKPROC;
+ 	    }
+ 	  if (sh_flags & SHF_MASKOS)
+-	    if (gnuld)
+-	      sh_flags &= ~(GElf_Xword) SHF_GNU_RETAIN;
++	    {
++	      if (gnuld)
++		sh_flags &= ~(GElf_Xword) SHF_GNU_RETAIN;
++	      if (!ebl_machine_section_flag_check (ebl,
++						   sh_flags & SHF_MASKOS))
++		ERROR (_("section [%2zu] '%s'"
++				" contains invalid os-specific flag(s)"
++				" %#" PRIx64 "\n"),
++			cnt, section_name (ebl, cnt), sh_flags & SHF_MASKOS);
++	      sh_flags &= ~(GElf_Xword) SHF_MASKOS;
++	    }
+ 	  if (sh_flags != 0)
+ 	    ERROR (_("section [%2zu] '%s' contains unknown flag(s)"
+ 			    " %#" PRIx64 "\n"),
+@@ -4060,6 +4075,7 @@ section [%2zu] '%s': merge flag set but
+ 	  switch (shdr->sh_type)
+ 	    {
+ 	    case SHT_PROGBITS:
++	    case SHT_MIPS_DWARF:
+ 	      break;
+ 
+ 	    case SHT_NOBITS:
+@@ -4717,7 +4733,7 @@ program header offset in ELF header and
+ 	      if (shdr != NULL
+ 		  && ((is_debuginfo && shdr->sh_type == SHT_NOBITS)
+ 		      || (! is_debuginfo
+-			  && (shdr->sh_type == SHT_PROGBITS
++			  && (is_debug_section_type(shdr->sh_type)
+ 			      || shdr->sh_type == SHT_X86_64_UNWIND)))
+ 		  && elf_strptr (ebl->elf, shstrndx, shdr->sh_name) != NULL
+ 		  && ! strcmp (".eh_frame_hdr",

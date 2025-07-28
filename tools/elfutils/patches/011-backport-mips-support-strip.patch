@@ -1,0 +1,230 @@
+In mips64 little-endian, r_info consists of four byte fields(contains
+three reloc types) and a 32-bit symbol index. In order to adapt
+GELF_R_SYM and GELF_R_TYPE, need convert raw data to get correct symbol
+index and type.
+
+  libelf/elf_getdata.c: Some eu-utils use read-mmap method to map file,
+so we need to malloc and memcpy raw data to avoid segment fault. After
+modification, the correct value are saved in the malloced memory not in
+process address space.
+  libelf/elf_updata.c: Because we converted the relocation info in mips
+order when we call elf_getdata.c, so we need to convert the modified data
+in original order bits before writing the data to the file.
+
+Signed-off-by: Ying Huang <ying.huang@oss.cipunited.com>
+---
+ libelf/elf_getdata.c | 132 ++++++++++++++++++++++++++++++++++++++++++-
+ libelf/elf_update.c  |  53 +++++++++++++++++
+ 2 files changed, 183 insertions(+), 2 deletions(-)
+
+--- a/libelf/elf_getdata.c
++++ b/libelf/elf_getdata.c
+@@ -135,6 +135,119 @@ __libelf_data_type (GElf_Ehdr *ehdr, int
+ 
+ /* Convert the data in the current section.  */
+ static void
++convert_data_for_mips64el (Elf_Scn *scn, int eclass,
++	      int data, size_t size, Elf_Type type)
++{
++  /* Do we need to convert the data and/or adjust for alignment?  */
++  if (data == MY_ELFDATA || type == ELF_T_BYTE)
++    {
++      /* In order to adapt macro GELF_R_SYM and GELF_R_TYPE on mips64, need to convert
++	relocation info(raw data). Some eu-utils use read-mmap method to map file, so
++	we need to malloc and memcpy raw data to avoid segment fault. After modification,
++	the correct value are saved in the malloced memory not in process address space. */
++      scn->data_base = malloc (size);
++      if (scn->data_base == NULL)
++	{
++	   __libelf_seterrno (ELF_E_NOMEM);
++	  return;
++	}
++
++      /* The copy will be appropriately aligned for direct access.  */
++      memcpy (scn->data_base, scn->rawdata_base, size);
++    }
++  else
++    {
++      xfct_t fp;
++
++      scn->data_base = malloc (size);
++      if (scn->data_base == NULL)
++	{
++	  __libelf_seterrno (ELF_E_NOMEM);
++	  return;
++	}
++
++      /* Make sure the source is correctly aligned for the conversion
++	 function to directly access the data elements.  */
++      char *rawdata_source;
++      /* In order to adapt macro GELF_R_SYM and GELF_R_TYPE on mips64, need to convert
++	relocation info(raw data). Some eu-utils use read-mmap method to map file, so
++	we need to malloc and memcpy raw data to avoid segment fault. After modification,
++	the correct value are saved in the malloced memory not in process address space. */
++      rawdata_source = malloc (size);
++      if (rawdata_source == NULL)
++	{
++	  __libelf_seterrno (ELF_E_NOMEM);
++	  return;
++	}
++
++      /* The copy will be appropriately aligned for direct access.  */
++      memcpy (rawdata_source, scn->rawdata_base, size);
++
++      /* Get the conversion function.  */
++      fp = __elf_xfctstom[eclass - 1][type];
++
++      fp (scn->data_base, rawdata_source, size, 0);
++
++      if (rawdata_source != scn->rawdata_base)
++	free (rawdata_source);
++    }
++
++  scn->data_list.data.d.d_buf = scn->data_base;
++  scn->data_list.data.d.d_size = size;
++  scn->data_list.data.d.d_type = type;
++  scn->data_list.data.d.d_off = scn->rawdata.d.d_off;
++  scn->data_list.data.d.d_align = scn->rawdata.d.d_align;
++  scn->data_list.data.d.d_version = scn->rawdata.d.d_version;
++
++  scn->data_list.data.s = scn;
++
++  /* In mips64 little-endian, r_info consists of four byte fields(contains
++     three reloc types) and a 32-bit symbol index. In order to adapt
++     GELF_R_SYM and GELF_R_TYPE, need to convert r_info to get correct symbol
++     index and type. */
++  /* references:
++     https://www.linux-mips.org/pub/linux/mips/doc/ABI/elf64-2.4.pdf
++     Page40 && Page41 */
++  GElf_Shdr shdr_mem;
++  GElf_Shdr *shdr = gelf_getshdr (scn, &shdr_mem);
++  if (shdr->sh_type == SHT_REL)
++    {
++      size_t sh_entsize = gelf_fsize (scn->elf, ELF_T_REL, 1, EV_CURRENT);
++      int nentries = shdr->sh_size / sh_entsize;
++      for (int cnt = 0; cnt < nentries; ++cnt)
++	{
++	  Elf_Data_Scn *data_scn = (Elf_Data_Scn *) &scn->data_list.data.d;
++	  Elf64_Rel *value = &((Elf64_Rel *) data_scn->d.d_buf)[cnt];
++	  Elf64_Xword info = value->r_info;
++	  value->r_info = (((info & 0xffffffff) << 32)
++			| ((info >> 56) & 0xff)
++			| ((info >> 40) & 0xff00)
++			| ((info >> 24) & 0xff0000)
++			| ((info >> 8) & 0xff000000));
++	  ((Elf64_Rel *) data_scn->d.d_buf)[cnt] = *value;
++	}
++    }
++    else if (shdr->sh_type == SHT_RELA)
++      {
++	size_t sh_entsize = gelf_fsize (scn->elf, ELF_T_RELA, 1, EV_CURRENT);
++	int nentries = shdr->sh_size / sh_entsize;
++	for (int cnt = 0; cnt < nentries; cnt++)
++	  {
++	    Elf_Data_Scn *data_scn = (Elf_Data_Scn *) &scn->data_list.data.d;
++	    Elf64_Rela *value = &((Elf64_Rela *) data_scn->d.d_buf)[cnt];
++	    Elf64_Xword info = value->r_info;
++	    value->r_info = (((info & 0xffffffff) << 32)
++			| ((info >> 56) & 0xff)
++			| ((info >> 40) & 0xff00)
++			| ((info >> 24) & 0xff0000)
++			| ((info >> 8) & 0xff000000));
++	    ((Elf64_Rela *) data_scn->d.d_buf)[cnt] = *value;
++	  }
++      }
++}
++
++/* Convert the data in the current section.  */
++static void
+ convert_data (Elf_Scn *scn, int eclass,
+ 	      int data, size_t size, Elf_Type type)
+ {
+@@ -451,8 +564,23 @@ __libelf_set_data_list_rdlock (Elf_Scn *
+ 	    return;
+ 	}
+ 
+-      /* Convert according to the version and the type.   */
+-      convert_data (scn, elf->class,
++      GElf_Shdr shdr_mem;
++      GElf_Shdr *shdr = gelf_getshdr (scn, &shdr_mem);
++      GElf_Ehdr ehdr_mem;
++      GElf_Ehdr *ehdr = gelf_getehdr (scn->elf, &ehdr_mem);
++      if (shdr != NULL && (shdr->sh_type == SHT_RELA || shdr->sh_type == SHT_REL) &&
++	  scn->elf->class == ELFCLASS64 && ehdr != NULL &&
++	  ehdr->e_machine == EM_MIPS && ehdr->e_ident[EI_DATA] == ELFDATA2LSB)
++	convert_data_for_mips64el (scn, elf->class,
++		    (elf->class == ELFCLASS32
++		     || (offsetof (struct Elf, state.elf32.ehdr)
++			 == offsetof (struct Elf, state.elf64.ehdr))
++		     ? elf->state.elf32.ehdr->e_ident[EI_DATA]
++		     : elf->state.elf64.ehdr->e_ident[EI_DATA]),
++		    scn->rawdata.d.d_size, scn->rawdata.d.d_type);
++      else
++	/* Convert according to the version and the type.   */
++	convert_data (scn, elf->class,
+ 		    (elf->class == ELFCLASS32
+ 		     || (offsetof (struct Elf, state.elf32.ehdr)
+ 			 == offsetof (struct Elf, state.elf64.ehdr))
+--- a/libelf/elf_update.c
++++ b/libelf/elf_update.c
+@@ -228,7 +228,60 @@ elf_update (Elf *elf, Elf_Cmd cmd)
+ 	  size = -1;
+ 	}
+       else
++	{
++	  /* Because we converted the relocation info in mips order when we call elf_getdata.c,
++	     so we need to convert the modified data in original order bits before writing the
++	     data to the file. */
++	  Elf_Scn *scn = NULL;
++	  while ((scn = elf_nextscn (elf, scn)) != NULL)
++	    {
++	      GElf_Shdr shdr_mem;
++	      GElf_Shdr *shdr = gelf_getshdr (scn, &shdr_mem);
++	      GElf_Ehdr ehdr_mem;
++	      GElf_Ehdr *ehdr = gelf_getehdr (scn->elf, &ehdr_mem);
++	      if (shdr != NULL && (shdr->sh_type == SHT_RELA || shdr->sh_type == SHT_REL) &&
++		scn->elf->class == ELFCLASS64 &&
++		ehdr != NULL && ehdr->e_machine == EM_MIPS && ehdr->e_ident[EI_DATA] == ELFDATA2LSB)
++		{
++		  Elf_Data *d = elf_getdata (scn, NULL);
++		  if (shdr->sh_type == SHT_REL)
++		    {
++		      size_t sh_entsize = gelf_fsize (scn->elf, ELF_T_REL, 1, EV_CURRENT);
++		      int nentries = shdr->sh_size / sh_entsize;
++		      for (int cnt = 0; cnt < nentries; ++cnt)
++			{
++			  Elf_Data_Scn *data_scn = (Elf_Data_Scn *) d;
++			  Elf64_Rel *value = &((Elf64_Rel *) data_scn->d.d_buf)[cnt];
++			  Elf64_Xword info = value->r_info;
++			  value->r_info = (info >> 32
++					| ((info << 56) & 0xff00000000000000)
++					| ((info << 40) & 0xff000000000000)
++					| ((info << 24) & 0xff0000000000)
++					| ((info << 8) & 0xff00000000));
++			  ((Elf64_Rel *) data_scn->d.d_buf)[cnt] = *value;
++			}
++		    }
++		  else if (shdr->sh_type == SHT_RELA)
++		    {
++		      size_t sh_entsize = gelf_fsize (scn->elf, ELF_T_RELA, 1, EV_CURRENT);
++		      int nentries = shdr->sh_size / sh_entsize;
++		      for (int cnt = 0; cnt < nentries; cnt++)
++			{
++			  Elf_Data_Scn *data_scn = (Elf_Data_Scn *) d;
++			  Elf64_Rela *value = &((Elf64_Rela *) data_scn->d.d_buf)[cnt];
++			  Elf64_Xword info = value->r_info;
++			  value->r_info = (info >> 32
++					| ((info << 56) & 0xff00000000000000)
++					| ((info << 40) & 0xff000000000000)
++					| ((info << 24) & 0xff0000000000)
++					| ((info << 8) & 0xff00000000));
++			  ((Elf64_Rela *) data_scn->d.d_buf)[cnt] = *value;
++			}
++		    }
++		}
++	    }
+ 	size = write_file (elf, size, change_bo, shnum);
++      }
+     }
+ 
+  out:
