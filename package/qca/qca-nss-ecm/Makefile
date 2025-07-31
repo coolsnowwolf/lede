@@ -28,8 +28,9 @@ define KernelPackage/qca-nss-ecm
 		   +@NSS_DRV_VIRT_IF_ENABLE \
 		   +@NSS_DRV_WIFI_ENABLE \
 		   +kmod-qca-nss-drv \
-    	   +kmod-bonding +kmod-nf-conntrack \
+		   +kmod-bonding +kmod-nf-conntrack \
 		   +kmod-ppp +kmod-pppoe +kmod-pptp \
+		   +PACKAGE_iptables:iptables-mod-physdev \
 		   +PACKAGE_kmod-pppol2tp:kmod-pppol2tp \
 		   +PACKAGE_kmod-qca-mcs:kmod-qca-mcs \
 		   +PACKAGE_kmod-nat46:kmod-nat46 \
@@ -64,15 +65,15 @@ EXTRA_CFLAGS+= \
 		 -I$(STAGING_DIR)/usr/include/nat46
 
 ifeq ($(BOARD),qualcommax)
-ECM_MAKE_OPTS+=ECM_FRONT_END_NSS_ENABLE=y \
-			   ECM_FRONT_END_SFE_ENABLE=n \
-			   ECM_NON_PORTED_SUPPORT_ENABLE=y \
-			   ECM_INTERFACE_BOND_ENABLE=y \
-			   ECM_INTERFACE_VLAN_ENABLE=y \
-			   ECM_CLASSIFIER_MARK_ENABLE=y \
-			   ECM_CLASSIFIER_DSCP_ENABLE=y \
-			   ECM_CLASSIFIER_PCC_ENABLE=n \
-			   ECM_BAND_STEERING_ENABLE=n
+ECM_MAKE_OPTS+= ECM_FRONT_END_NSS_ENABLE=y \
+		ECM_FRONT_END_SFE_ENABLE=n \
+		ECM_NON_PORTED_SUPPORT_ENABLE=y \
+		ECM_INTERFACE_BOND_ENABLE=y \
+		ECM_INTERFACE_VLAN_ENABLE=y \
+		ECM_CLASSIFIER_MARK_ENABLE=y \
+		ECM_CLASSIFIER_DSCP_ENABLE=y \
+		ECM_CLASSIFIER_PCC_ENABLE=n \
+		ECM_BAND_STEERING_ENABLE=n
 endif
 
 # Disable ECM IPv6 support when global IPv6 support is disabled.
