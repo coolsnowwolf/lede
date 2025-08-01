@@ -1,11 +1,11 @@
 include $(TOPDIR)/rules.mk
 
-PKG_NAME:=photonicat-firmware
+PKG_NAME:=pcat-firmware
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/photonicat-firmware
+define Package/pcat-firmware
   SECTION:=firmware
   CATEGORY:=Firmware
   TITLE:=Photonicat WiFi Firmware
@@ -15,7 +15,7 @@ endef
 define Build/Compile
 endef
 
-define Package/photonicat-firmware/install
+define Package/pcat-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath10k/QCA9377/hw1.0
 	$(INSTALL_DATA) \
 		./files/board.bin \
@@ -25,4 +25,4 @@ define Package/photonicat-firmware/install
 		$(1)/lib/firmware/ath10k/QCA9377/hw1.0/firmware-sdio-5.bin
 endef
 
-$(eval $(call BuildPackage,photonicat-firmware))
+$(eval $(call BuildPackage,pcat-firmware))
