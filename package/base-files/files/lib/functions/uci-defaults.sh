@@ -106,12 +106,20 @@ ucidef_set_bridge_mac() {
 	json_select ..
 }
 
-ucidef_set_network_device_mac() {
+_ucidef_set_network_device_common() {
 	json_select_object "network-device"
 	json_select_object "${1}"
-	json_add_string macaddr "${2}"
+	json_add_string "${2}" "${3}"
 	json_select ..
 	json_select ..
+}
+
+ucidef_set_network_device_mac() {
+	_ucidef_set_network_device_common $1 macaddr $2
+}
+
+ucidef_set_network_device_path() {
+	_ucidef_set_network_device_common $1 path $2
 }
 
 ucidef_set_network_device_gro() {
