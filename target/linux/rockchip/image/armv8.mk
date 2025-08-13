@@ -462,16 +462,6 @@ define Device/radxa_rock-5b
 endef
 TARGET_DEVICES += radxa_rock-5b
 
-define Device/rongpin_king3399
-  DEVICE_VENDOR := Rongpin
-  DEVICE_MODEL := King3399
-  SOC := rk3399
-  UBOOT_DEVICE_NAME := king3399-rk3399
-  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-r8168 kmod-brcmfmac cypress-firmware-4356-sdio wpad-openssl
-endef
-TARGET_DEVICES += rongpin_king3399
-
 define Device/rocktech_mpc1903
   DEVICE_VENDOR := Rocktech
   DEVICE_MODEL := MPC1903
@@ -481,6 +471,16 @@ define Device/rocktech_mpc1903
   DEVICE_PACKAGES := kmod-usb-net-smsc75xx kmod-usb-serial-cp210x
 endef
 TARGET_DEVICES += rocktech_mpc1903
+
+define Device/rongpin_king3399
+  DEVICE_VENDOR := Rongpin
+  DEVICE_MODEL := King3399
+  SOC := rk3399
+  UBOOT_DEVICE_NAME := king3399-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8168 kmod-brcmfmac cypress-firmware-4356-sdio wpad-openssl
+endef
+TARGET_DEVICES += rongpin_king3399
 
 define Device/rumu3f_fine-3399
   DEVICE_VENDOR := RUMU3F
