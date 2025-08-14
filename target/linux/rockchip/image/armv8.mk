@@ -155,6 +155,17 @@ define Device/friendlyarm_nanopc-t6
 endef
 TARGET_DEVICES += friendlyarm_nanopc-t6
 
+define Device/friendlyarm_nanopi-m5
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi M5
+  SOC := rk3576
+  DEVICE_DTS := rockchip/rk3576-nanopi-m5
+  UBOOT_DEVICE_NAME := evb-rk3576
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += friendlyarm_nanopi-m5
+
 define Device/friendlyarm_nanopi-neo3
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi NEO3
