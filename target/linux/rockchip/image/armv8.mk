@@ -425,6 +425,16 @@ define Device/radxa_e20c
 endef
 TARGET_DEVICES += radxa_e20c
 
+define Device/radxa_e24c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := E24C
+  DEVICE_DTS := rockchip/rk3528-radxa-e24c
+  UBOOT_DEVICE_NAME := radxa-e20c-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-dsa-rtl8365mb -urngd
+endef
+TARGET_DEVICES += radxa_e24c
+
 define Device/radxa_e25
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := E25
@@ -434,6 +444,26 @@ define Device/radxa_e25
   DEVICE_PACKAGES := kmod-ata-ahci-dwc kmod-r8125-rss
 endef
 TARGET_DEVICES += radxa_e25
+
+define Device/radxa_e52c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := E52C
+  DEVICE_DTS := rockchip/rk3582-radxa-e52c
+  UBOOT_DEVICE_NAME := generic-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-r8125-rss
+endef
+TARGET_DEVICES += radxa_e52c
+
+define Device/radxa_e54c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := E54C
+  DEVICE_DTS := rockchip/rk3582-radxa-e54c
+  UBOOT_DEVICE_NAME := generic-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-dsa-rtl8365mb
+endef
+TARGET_DEVICES += radxa_e54c
 
 define Device/radxa_rock-3a
   DEVICE_VENDOR := Radxa
