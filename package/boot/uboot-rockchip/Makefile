@@ -375,7 +375,9 @@ define U-Boot/orangepi-5-plus-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=OrangePi 5 Plus
   BUILD_DEVICES:= \
-    xunlong_orangepi-5-plus
+    xunlong_orangepi-5-max \
+    xunlong_orangepi-5-plus \
+    xunlong_orangepi-5-ultra
 endef
 
 define U-Boot/rock5b-rk3588
