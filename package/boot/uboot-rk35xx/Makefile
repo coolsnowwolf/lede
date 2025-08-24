@@ -44,6 +44,7 @@ define U-Boot/evb-rk3576
   BUILD_DEVICES:= \
     armsom_sige5 \
     ariaboard_photonicat2 \
+    friendlyarm_nanopi-m5 \
     friendlyarm_nanopi-r76s
   DEPENDS:=+PACKAGE_u-boot-evb-rk3576:rkbin-rk3576
   ATF:=rk3576_bl31_v1.12.elf

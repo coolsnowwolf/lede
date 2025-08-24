@@ -209,7 +209,8 @@ define U-Boot/radxa-e20c-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=Radxa E20C
   BUILD_DEVICES:= \
-    radxa_e20c
+    radxa_e20c \
+    radxa_e24c
 endef
 
 # RK3566 boards
@@ -284,6 +285,7 @@ define U-Boot/generic-rk3568
     hinlink_opc-h68k \
     hinlink_opc-h69k \
     lyt_t68m \
+    nlnet_xiguapi-v3 \
     seewo_sv21
 endef
 
@@ -356,7 +358,8 @@ define U-Boot/generic-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=Generic RK3588
   BUILD_DEVICES:= \
-    hinlink_owl-h88k \
+    radxa_e52c \
+    radxa_e54c \
     seewo_srcm3588-io \
     seewo_srcm3588-sw
 endef
@@ -372,7 +375,9 @@ define U-Boot/orangepi-5-plus-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=OrangePi 5 Plus
   BUILD_DEVICES:= \
-    xunlong_orangepi-5-plus
+    xunlong_orangepi-5-max \
+    xunlong_orangepi-5-plus \
+    xunlong_orangepi-5-ultra
 endef
 
 define U-Boot/rock5b-rk3588
