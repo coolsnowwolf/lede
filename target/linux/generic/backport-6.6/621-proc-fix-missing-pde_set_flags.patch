@@ -1,0 +1,121 @@
+From: wangzijie <wangzijie1@honor.com>
+To: <akpm@linux-foundation.org>, <brauner@kernel.org>,
+	<viro@zeniv.linux.org.uk>, <adobriyan@gmail.com>,
+	<rick.p.edgecombe@intel.com>, <ast@kernel.org>,
+	<k.shutemov@gmail.com>, <jirislaby@kernel.org>,
+	<linux-fsdevel@vger.kernel.org>
+Cc: <polynomial-c@gmx.de>, <gregkh@linuxfoundation.org>,
+	<stable@vger.kernel.org>, <regressions@lists.linux.dev>,
+	wangzijie <wangzijie1@honor.com>
+Subject: [PATCH v3] proc: fix missing pde_set_flags() for net proc files
+Date: Thu, 21 Aug 2025 18:58:06 +0800	[thread overview]
+Message-ID: <20250821105806.1453833-1-wangzijie1@honor.com> (raw)
+
+To avoid potential UAF issues during module removal races, we use pde_set_flags()
+to save proc_ops flags in PDE itself before proc_register(), and then use
+pde_has_proc_*() helpers instead of directly dereferencing pde->proc_ops->*.
+
+However, the pde_set_flags() call was missing when creating net related proc files.
+This omission caused incorrect behavior which FMODE_LSEEK was being cleared
+inappropriately in proc_reg_open() for net proc files. Lars reported it in this link[1].
+
+Fix this by ensuring pde_set_flags() is called when register proc entry, and add
+NULL check for proc_ops in pde_set_flags().
+
+[1]: https://lore.kernel.org/all/20250815195616.64497967@chagall.paradoxon.rec/
+
+Fixes: ff7ec8dc1b64 ("proc: use the same treatment to check proc_lseek as ones for proc_read_iter et.al")
+Cc: stable@vger.kernel.org
+Reported-by: Lars Wendler <polynomial-c@gmx.de>
+Signed-off-by: wangzijie <wangzijie1@honor.com>
+---
+v3:
+- followed by Christian's suggestion to stash pde->proc_ops in a local const variable
+v2:
+- followed by Jiri's suggestion to refractor code and reformat commit message
+---
+ fs/proc/generic.c | 38 +++++++++++++++++++++-----------------
+ 1 file changed, 21 insertions(+), 17 deletions(-)
+
+--- a/fs/proc/generic.c
++++ b/fs/proc/generic.c
+@@ -362,6 +362,25 @@ static const struct inode_operations pro
+ 	.setattr	= proc_notify_change,
+ };
+ 
++static void pde_set_flags(struct proc_dir_entry *pde)
++{
++	const struct proc_ops *proc_ops = pde->proc_ops;
++
++	if (!proc_ops)
++		return;
++
++	if (proc_ops->proc_flags & PROC_ENTRY_PERMANENT)
++		pde->flags |= PROC_ENTRY_PERMANENT;
++	if (proc_ops->proc_read_iter)
++		pde->flags |= PROC_ENTRY_proc_read_iter;
++#ifdef CONFIG_COMPAT
++	if (proc_ops->proc_compat_ioctl)
++		pde->flags |= PROC_ENTRY_proc_compat_ioctl;
++#endif
++	if (proc_ops->proc_lseek)
++		pde->flags |= PROC_ENTRY_proc_lseek;
++}
++
+ /* returns the registered entry, or frees dp and returns NULL on failure */
+ struct proc_dir_entry *proc_register(struct proc_dir_entry *dir,
+ 		struct proc_dir_entry *dp)
+@@ -369,6 +388,8 @@ struct proc_dir_entry *proc_register(str
+ 	if (proc_alloc_inum(&dp->low_ino))
+ 		goto out_free_entry;
+ 
++	pde_set_flags(dp);
++
+ 	write_lock(&proc_subdir_lock);
+ 	dp->parent = dir;
+ 	if (pde_subdir_insert(dir, dp) == false) {
+@@ -557,20 +578,6 @@ struct proc_dir_entry *proc_create_reg(c
+ 	return p;
+ }
+ 
+-static void pde_set_flags(struct proc_dir_entry *pde)
+-{
+-	if (pde->proc_ops->proc_flags & PROC_ENTRY_PERMANENT)
+-		pde->flags |= PROC_ENTRY_PERMANENT;
+-	if (pde->proc_ops->proc_read_iter)
+-		pde->flags |= PROC_ENTRY_proc_read_iter;
+-#ifdef CONFIG_COMPAT
+-	if (pde->proc_ops->proc_compat_ioctl)
+-		pde->flags |= PROC_ENTRY_proc_compat_ioctl;
+-#endif
+-	if (pde->proc_ops->proc_lseek)
+-		pde->flags |= PROC_ENTRY_proc_lseek;
+-}
+-
+ struct proc_dir_entry *proc_create_data(const char *name, umode_t mode,
+ 		struct proc_dir_entry *parent,
+ 		const struct proc_ops *proc_ops, void *data)
+@@ -581,7 +588,6 @@ struct proc_dir_entry *proc_create_data(
+ 	if (!p)
+ 		return NULL;
+ 	p->proc_ops = proc_ops;
+-	pde_set_flags(p);
+ 	return proc_register(parent, p);
+ }
+ EXPORT_SYMBOL(proc_create_data);
+@@ -632,7 +638,6 @@ struct proc_dir_entry *proc_create_seq_p
+ 	p->proc_ops = &proc_seq_ops;
+ 	p->seq_ops = ops;
+ 	p->state_size = state_size;
+-	pde_set_flags(p);
+ 	return proc_register(parent, p);
+ }
+ EXPORT_SYMBOL(proc_create_seq_private);
+@@ -663,7 +668,6 @@ struct proc_dir_entry *proc_create_singl
+ 		return NULL;
+ 	p->proc_ops = &proc_single_ops;
+ 	p->single_show = show;
+-	pde_set_flags(p);
+ 	return proc_register(parent, p);
+ }
+ EXPORT_SYMBOL(proc_create_single_data);
