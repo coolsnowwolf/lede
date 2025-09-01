@@ -114,6 +114,18 @@ define Device/ezpro_mrkaio-m68s-plus
 endef
 TARGET_DEVICES += ezpro_mrkaio-m68s-plus
 
+define Device/nsy_g68-plus
+  DEVICE_VENDOR := NSY
+  DEVICE_MODEL := G68
+  SOC := rk3568
+  DEVICE_DTS := rockchip/rk3568-nsy-g68-plus
+  SUPPORTED_DEVICES := nsy,g68-plus
+  UBOOT_DEVICE_NAME := generic-rk3568
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-nvme kmod-scsi-core kmod-hwmon-pwmfan kmod-thermal kmod-switch-rtl8306 kmod-switch-rtl8366-smi kmod-switch-rtl8366rb kmod-switch-rtl8366s kmod-switch-rtl8367b swconfig kmod-swconfig kmod-r8168 kmod-mt7916-firmware
+endef
+TARGET_DEVICES += nsy_g68-plus
+
 define Device/fastrhino_common
   DEVICE_VENDOR := FastRhino
   SOC := rk3568
