@@ -459,6 +459,13 @@ define U-Boot/rock5a-rk3588s
     radxa_rock-5a
 endef
 
+define U-Boot/rock-5c-rk3588s
+  $(U-Boot/rk3588/Default)
+  NAME:=ROCK 5C/5C Lite
+  BUILD_DEVICES:= \
+    radxa_rock-5c
+endef
+
 UBOOT_TARGETS := \
   generic-rk3528 \
   radxa-e20c-rk3528 \
@@ -489,6 +496,7 @@ UBOOT_TARGETS := \
   nanopi-r6s-rk3588s \
   orangepi-5-rk3588s \
   rock5a-rk3588s \
+  rock-5c-rk3588s \
   dlfr100-rk3399 \
   h3399pc-rk3399 \
   fine3399-rk3399 \

@@ -524,6 +524,15 @@ define Device/radxa_rock-5b
 endef
 TARGET_DEVICES += radxa_rock-5b
 
+define Device/radxa_rock-5c
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5C/5C Lite
+  SOC := rk3588s
+  UBOOT_DEVICE_NAME := rock-5c-rk3588s
+  DEVICE_PACKAGES := kmod-aic8800u wpad-openssl
+endef
+TARGET_DEVICES += radxa_rock-5c
+
 define Device/radxa_zero-3e
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ZERO 3E
