@@ -191,3 +191,19 @@ define KernelPackage/w1-slave-ds2413/description
 endef
 
 $(eval $(call KernelPackage,w1-slave-ds2413))
+
+
+define KernelPackage/w1-slave-ds2438
+  TITLE:=DS2438 Smart Battery Monitor
+  KCONFIG:= \
+       CONFIG_W1_SLAVE_DS2438
+  FILES:=$(W1_SLAVES_DIR)/w1_ds2438.ko
+  AUTOLOAD:=$(call AutoProbe,w1_ds2438)
+  $(call AddDepends/w1)
+endef
+
+define KernelPackage/w1-slave-ds2438/description
+ Kernel module for 1-wire DS2438 Smart Battery Monitor support
+endef
+
+$(eval $(call KernelPackage,w1-slave-ds2438))
