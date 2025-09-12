@@ -1,107 +1,144 @@
-# 
-# <https://github.com/KFERMercer/OpenWrt-CI>
-#
-# Copyright (C) 2019 P3TERX
-#
-# Copyright (C) 2020 KFERMercer
-#
 name: OpenWrt-CI
 
 on:
-  schedule:
-    - cron: 0 20 * * *
-
-permissions:
-  contents: read
+  workflow_dispatch:   # ✅ 手动触发
+  push:                # ✅ 每次推送代码时触发
+    branches:
+      - master
 
 jobs:
-
-  build_openwrt:
-
-    name: Build OpenWrt Firmware
-
+  build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Space cleanup and Initialization environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          docker rmi `docker images -q`
-          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-          sudo -E apt-mark hold grub-efi-amd64-signed
-          sudo -E apt update
-          sudo -E apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* dotnet* snap*
-          sudo -E apt -y full-upgrade
-          sudo -E apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-          sudo -E systemctl daemon-reload
-          sudo -E apt -y autoremove --purge
-          sudo -E apt clean
-          sudo -E timedatectl set-timezone "Asia/Shanghai"
+    - name: Checkout
+      uses: actions/checkout@v3
 
-      - name: Checkout OpenWrt
-        uses: actions/checkout@v4
+    - name: Initialization environment
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential clang flex bison g++ gawk gcc-multilib \
+          g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils \
+          rsync unzip zlib1g-dev file wget curl
 
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6 GB
-          tool-cache: true
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+    - name: Clone OpenWrt
+      run: |
+        git clone https://github.com/openwrt/openwrt.git openwrt
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-      - name: Update feeds
-        run: |
-          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+    - name: Add custom packages (Passwall2)
+      run: |
+        cd openwrt
+        git clone https://github.com/xiaorouji/openwrt-passwall2.git package/passwall2
 
-      - name: Generate configuration file
-        run: make defconfig
+    - name: Custom config
+      run: |
+        cd openwrt
+        rm -f .config
+        cat >> .config <<EOF
+        CONFIG_TARGET_ipq806x=y
+        CONFIG_TARGET_ipq806x_generic=y
+        CONFIG_TARGET_ipq806x_generic_DEVICE_netgear_d7800=y
 
-      - name: Download packages
-        run: make download -j16
+        # Passwall2
+        CONFIG_PACKAGE_luci-app-passwall2=y
+        CONFIG_PACKAGE_passwall2=y
+        CONFIG_PACKAGE_passwall2-xray=y
+        CONFIG_PACKAGE_passwall2-ssr=y
+        CONFIG_PACKAGE_xray-core=y
+        CONFIG_PACKAGE_shadowsocksr-libev-ssr-redir=y
+        CONFIG_PACKAGE_shadowsocksr-libev-ssr-local=y
+        CONFIG_PACKAGE_shadowsocksr-libev-ssr-check=y
+        CONFIG_PACKAGE_shadowsocksr-libev-ssr-server=n
+        CONFIG_PACKAGE_shadowsocks-rust-sslocal=y
+        CONFIG_PACKAGE_shadowsocks-rust-ssserver=n
 
-      - name: Compile firmware
-        run: |
-          make -j$(nproc) || make -j1 V=s
-          echo "======================="
-          echo "Space usage:"
-          echo "======================="
-          df -h
-          echo "======================="
-          du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
-          du -h --max-depth=1 ./build_dir
-          du -h --max-depth=1 ./bin
+        # LuCI + 常用组件
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-ssl-nginx=y
+        CONFIG_PACKAGE_openssh-server=y
+        CONFIG_PACKAGE_openssh-client=y
+        CONFIG_PACKAGE_htop=y
+        CONFIG_PACKAGE_vim-full=y
+        CONFIG_PACKAGE_wget=y
+        EOF
+        make defconfig
 
-      - name: Prepare artifact
-        run: |
-          mkdir -p ./artifact/package
-          mkdir -p ./artifact/buildinfo
-          rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+    - name: Add custom files
+      run: |
+        mkdir -p openwrt/files/etc/uci-defaults
+        cat > openwrt/files/etc/uci-defaults/99-custom-settings <<'EOF'
+        #!/bin/sh
 
-      - name: Upload buildinfo
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_buildinfo
-          path: ./artifact/buildinfo/
+        ### 基础设置：远程管理
+        passwd -d root
+        uci set dropbear.@dropbear[0].Port='22'
+        uci set dropbear.@dropbear[0].PasswordAuth='on'
+        uci commit dropbear
 
-      - name: Upload package
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_package
-          path: ./artifact/package/
+        uci set uhttpd.main.listen_http=''
+        uci set uhttpd.main.listen_https='0.0.0.0:443'
+        uci commit uhttpd
+        /etc/init.d/uhttpd disable
+        /etc/init.d/nginx enable
 
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt_firmware
-          path: ./bin/targets/
+        uci set firewall.@zone[1].input='REJECT'
+        uci commit firewall
+
+        ### Passwall2 默认配置：多节点
+        uci set passwall2.@global[0].enabled='1'
+        uci set passwall2.@global[0].china_dns='default'
+        uci set passwall2.@global[0].proxy_mode='chnroute'
+
+        # 节点1 (Xray VLESS)
+        uci add passwall2 nodes
+        uci set passwall2.@nodes[-1].type='Xray'
+        uci set passwall2.@nodes[-1].protocol='vless'
+        uci set passwall2.@nodes[-1].address='1.2.3.4'
+        uci set passwall2.@nodes[-1].port='443'
+        uci set passwall2.@nodes[-1].uuid='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+        uci set passwall2.@nodes[-1].tls='1'
+        uci set passwall2.@nodes[-1].transport='tcp'
+
+        # 节点2 (ShadowsocksR)
+        uci add passwall2 nodes
+        uci set passwall2.@nodes[-1].type='SSR'
+        uci set passwall2.@nodes[-1].address='5.6.7.8'
+        uci set passwall2.@nodes[-1].port='8388'
+        uci set passwall2.@nodes[-1].password='yourpassword'
+        uci set passwall2.@nodes[-1].method='aes-256-cfb'
+        uci set passwall2.@nodes[-1].protocol='origin'
+        uci set passwall2.@nodes[-1].obfs='plain'
+
+        uci set passwall2.@global[0].tcp_node='1'
+        uci set passwall2.@global[0].udp_node='1'
+
+        uci set passwall2.@auto_switch[0].enable='1'
+        uci set passwall2.@auto_switch[0].tcp_check='1'
+        uci set passwall2.@auto_switch[0].testing_time='60'
+        uci add_list passwall2.@auto_switch[0].node='1'
+        uci add_list passwall2.@auto_switch[0].node='2'
+
+        uci commit passwall2
+
+        exit 0
+        EOF
+        chmod +x openwrt/files/etc/uci-defaults/99-custom-settings
+
+    - name: Download package
+      run: |
+        cd openwrt
+        make download -j8
+
+    - name: Build
+      run: |
+        cd openwrt
+        make -j$(nproc) || make -j1 V=s
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: OpenWrt-D7800
+        path: openwrt/bin/targets/
