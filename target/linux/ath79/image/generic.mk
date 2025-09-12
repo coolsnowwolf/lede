@@ -1812,6 +1812,16 @@ define Device/dragino_lps8
 endef
 TARGET_DEVICES += dragino_lps8
 
+define Device/dragino_lps8n
+  SOC := ar9331
+  DEVICE_VENDOR := Dragino
+  DEVICE_MODEL := LPS8N
+  DEVICE_PACKAGES := kmod-usb-chipidea2 kmod-usb-ledtrig-usbport
+  IMAGE_SIZE := 16000k
+  SUPPORTED_DEVICES += dragino2
+endef
+TARGET_DEVICES += dragino_lps8n
+
 define Device/openmesh_common_64k
   DEVICE_VENDOR := OpenMesh
   DEVICE_PACKAGES := uboot-envtools
