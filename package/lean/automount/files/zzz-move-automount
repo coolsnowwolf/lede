@@ -1,4 +1,0 @@
-#!/bin/sh
-
-sleep 15
-mv /etc/15-automount /etc/hotplug.d/block/
